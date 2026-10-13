@@ -188,6 +188,101 @@ def test_model_settings_session_env_overrides_both_auth_vars(tmp_path, monkeypat
     assert env["ANTHROPIC_MODEL"] == "some-model"
 
 
+def test_model_context_settings_inject_cli_env(tmp_path, monkeypatch):
+    """上下文与压缩参数转成 CLI 环境变量；未设置的不注入（真实窗口除外）。"""
+    from app import config
+    from app.services import model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    model_settings.save("https://gateway.example.com", "test-key-value", "some-model")
+
+    saved = model_settings.save_context(
+        {"max_context_tokens": 1000000, "auto_compact_window": 800000, "max_output_tokens": 16000}
+    )
+    assert saved["context"] == {
+        "max_context_tokens": 1000000,
+        "auto_compact_window": 800000,
+        "max_output_tokens": 16000,
+        "autocompact_pct": None,
+    }
+    env = model_settings.session_env()
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "1000000"
+    assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "800000"
+    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "16000"
+    assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" not in env
+    # 网关配置不受影响
+    assert env["ANTHROPIC_API_KEY"] == "test-key-value"
+
+    model_settings.save_context({})
+    claude_env = {k: v for k, v in model_settings.session_env().items() if k.startswith("CLAUDE_")}
+    assert claude_env == {"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000"}
+
+
+def test_model_context_window_defaults_to_1m_when_unset(tmp_path, monkeypatch):
+    """只配了模型、没配上下文参数时，真实窗口按 1M 注入，配置页可读到默认值。"""
+    from app import config
+    from app.services import model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    saved = model_settings.save("https://gateway.example.com", "test-key-value", "some-model")
+
+    assert saved["context"]["max_context_tokens"] is None
+    assert saved["context_defaults"] == {"max_context_tokens": 1000000}
+    env = model_settings.session_env()
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "1000000"
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in env
+    assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in env
+
+    # 显式填写的真实窗口优先于默认值
+    model_settings.save_context({"max_context_tokens": 128000})
+    assert model_settings.session_env()["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "128000"
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"auto_compact_window": 50000},  # 低于 CLI 接受的 100k
+        {"autocompact_pct": 0},
+        {"autocompact_pct": 101},
+        {"max_output_tokens": True},
+        {"max_context_tokens": 800000, "auto_compact_window": 1000000},
+        {"max_context_tokens": 1000000, "max_output_tokens": 1000000},
+        {"max_output_tokens": 1000000},  # 未填真实窗口时按默认 1M 校验
+    ],
+)
+def test_model_context_settings_reject_invalid(tmp_path, monkeypatch, values):
+    from app import config
+    from app.services import model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    with pytest.raises(model_settings.ModelConfigError):
+        model_settings.save_context(values)
+    assert model_settings.context_config()["autocompact_pct"] is None
+
+
+def test_model_context_route_requires_admin(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app import config
+    from app.routers import settings as settings_router
+    from app.services import auth, model_settings
+    from app.services.auth import AuthError
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(auth, "ENABLED", True)
+    body = settings_router.ContextBody(autocompact_pct=80)
+
+    modeler = SimpleNamespace(state=SimpleNamespace(user={"role": "modeler"}))
+    with pytest.raises(AuthError) as exc:
+        settings_router.put_model_context_settings(body, modeler)
+    assert exc.value.status == 403
+    assert model_settings.context_config()["autocompact_pct"] is None
+
+    admin = SimpleNamespace(state=SimpleNamespace(user={"role": "admin"}))
+    saved = settings_router.put_model_context_settings(body, admin)
+    assert saved["context"]["autocompact_pct"] == 80
+
+
 def test_expire_orphan_permissions_broadcasts_expired():
     from app.services.agent_sessions import Session, _expire_orphan_permissions
 

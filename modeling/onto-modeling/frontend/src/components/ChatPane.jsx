@@ -31,6 +31,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, openEventStream } from '../lib/api.js';
 import { orderResearchActions } from '../lib/researchGate.js';
 import {
+  EMPTY_CONTEXT,
+  compactionNotice,
+  describeContext,
+  nextContext,
+} from '../lib/contextUsage.js';
+import {
   buildSubagentFlow,
   buildSubagentLifecycle,
   isSubagentCardMessage,
@@ -53,14 +59,17 @@ const ALL_COMMANDS = [
   { key: 'update', label: '增量更新', text: '/ontology-update ' },
 ];
 
-const CONTEXT_WINDOW_TOKENS = 200000; // 上下文水位估算基准（标注"估算"）
 const HISTORY_TAIL = 400;
 
 function isVisibleChatEvent(event) {
   if (
-    ['user_message', 'workspace_changes', 'session_interrupted', 'permission_request'].includes(
-      event.type,
-    )
+    [
+      'user_message',
+      'workspace_changes',
+      'session_interrupted',
+      'permission_request',
+      'context_compacted',
+    ].includes(event.type)
   ) {
     return true;
   }
@@ -754,7 +763,7 @@ export default function ChatPane({
   const projectIdRef = useRef(project.id);
   const historyEndRef = useRef(null);
   const pendingNewCountRef = useRef(0);
-  const [ctxTokens, setCtxTokens] = useState(null); // 最近一轮输入侧 tokens（水位估算）
+  const [ctx, setCtx] = useState(EMPTY_CONTEXT); // 上下文用量：已用/窗口/压缩触发点
   const [reportErrors, setReportErrors] = useState(null); // 最新校验报告的错误项统计
   const historyRef = useRef(null);
   const seenRef = useRef(new Set());
@@ -857,6 +866,7 @@ export default function ChatPane({
     liveRef.current = { text: '', thinking: '' };
     setPending(null);
     setMetrics(null);
+    setCtx(EMPTY_CONTEXT); // 由历史回放重建
     seenRef.current = new Set();
     setQueueInfo(null);
     setUploads([]);
@@ -905,6 +915,7 @@ export default function ChatPane({
         historyEndRef.current !== null &&
         event.seq < historyEndRef.current;
       if (event.type === 'system') return;
+      setCtx((prev) => nextContext(prev, event));
       if (event.type === 'user_message') {
         setPending(null);
         setUploads([]); // 附件进度卡由历史里的正式消息接棒
@@ -921,7 +932,6 @@ export default function ChatPane({
         const outputTokens = usage.output_tokens;
         const cacheRead = usage.cache_read_input_tokens || 0;
         const inputTokens = (usage.input_tokens || 0) + cacheRead;
-        setCtxTokens(inputTokens || null);
         if (m?.firstTs) {
           setMetrics({
             ttft: m.firstTs - m.sentTs,
@@ -1278,6 +1288,8 @@ export default function ChatPane({
         list.push({ key: event.seq, role: 'changes', content: event });
       } else if (event.type === 'session_interrupted') {
         list.push({ key: event.seq, role: 'system', content: '已打断' });
+      } else if (event.type === 'context_compacted') {
+        list.push({ key: event.seq, role: 'system', content: compactionNotice(event) });
       } else if (event.type === 'permission_request') {
         const fingerprint = `${event.tool_name}:${JSON.stringify(event.tool_input ?? {})}`;
         const repeat = (fingerprints.get(fingerprint) || 0) + 1;
@@ -1356,7 +1368,7 @@ export default function ChatPane({
         : state === 'error'
           ? { cls: 'error', text: '出错了' }
           : { cls: 'idle', text: '空闲' };
-  const ctxPct = ctxTokens ? Math.min(100, Math.round((ctxTokens / CONTEXT_WINDOW_TOKENS) * 100)) : null;
+  const ctxInfo = describeContext(ctx);
 
   // ↑ 键召回历史输入（仅空输入框且非运行中，不抢正常光标行为）
   const userMessages = useMemo(
@@ -1446,18 +1458,16 @@ export default function ChatPane({
             </span>
           </Popover>
         )}
-        {ctxPct != null && (
-          <Tooltip
-            title={`上下文约 ${ctxPct}%（估算）${ctxPct > 80 ? '，建议重启会话以压缩' : ''}`}
-          >
-            <svg className={`ctx-ring${ctxPct > 80 ? ' danger' : ctxPct > 60 ? ' warn' : ''}`} viewBox="0 0 20 20">
+        {ctxInfo && (
+          <Tooltip title={ctxInfo.text}>
+            <svg className={`ctx-ring${ctxInfo.level ? ` ${ctxInfo.level}` : ''}`} viewBox="0 0 20 20">
               <circle className="ctx-ring-bg" cx="10" cy="10" r="8" />
               <circle
                 className="ctx-ring-fg"
                 cx="10"
                 cy="10"
                 r="8"
-                strokeDasharray={`${(ctxPct / 100) * 50.27} 50.27`}
+                strokeDasharray={`${(ctxInfo.pct / 100) * 50.27} 50.27`}
                 transform="rotate(-90 10 10)"
               />
             </svg>
@@ -1468,7 +1478,7 @@ export default function ChatPane({
           description="历史保留；模型上下文经 resume 续接，配置按最新生效"
           onConfirm={async () => {
             await api.closeSession(project.id).catch(() => {});
-            setCtxTokens(null);
+            setCtx(EMPTY_CONTEXT);
             message.success('会话已重置，下次发消息生效');
           }}
         >

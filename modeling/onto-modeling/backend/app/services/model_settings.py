@@ -45,6 +45,9 @@ def masked() -> dict:
         "model": data.get("model", ""),
         "api_key_masked": _mask(key),
         "configured": bool(key or data.get("base_url")),
+        "context": context_config(),
+        # 上下文参数留空时实际生效的默认值，供配置页提示与阈值估算
+        "context_defaults": {"max_context_tokens": DEFAULT_MAX_CONTEXT_TOKENS},
         # 新建/导入项目使用的默认引擎，以及各引擎在本部署的可用性
         "default_engine": default_engine(),
         "engines": available_engines(),
@@ -135,6 +138,53 @@ def save_default_engine(name: str) -> dict:
     return masked()
 
 
+# 稳定引擎的上下文与自动压缩参数：字段 → (CLI 环境变量, 下限, 上限)。
+# 网关后接的模型窗口与 CLI 内置假定不一致时，CLI 会按假定窗口计算压缩阈值，
+# 输入加输出预留先超过真实窗口，请求被网关以 400 拒绝而压缩始终不触发。
+# 压缩窗口的 100k–1M 区间是 CLI 自身接受的范围。
+CONTEXT_FIELDS = {
+    "max_context_tokens": ("CLAUDE_CODE_MAX_CONTEXT_TOKENS", 1_000, 10_000_000),
+    "auto_compact_window": ("CLAUDE_CODE_AUTO_COMPACT_WINDOW", 100_000, 1_000_000),
+    "max_output_tokens": ("CLAUDE_CODE_MAX_OUTPUT_TOKENS", 1_000, 1_000_000),
+    "autocompact_pct": ("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", 1, 100),
+}
+
+# 模型真实窗口未配置时注入的默认值。CLI 对不认识的模型名一律按 200K 计算，
+# 接入的模型以 1M 窗口为主，故默认按 1M；窗口更小的模型必须由管理员填写，
+# 否则压缩点落在真实窗口之外。CLI 只对不认识的模型名读取该变量，
+# Claude 官方模型名仍按 CLI 内置窗口。
+DEFAULT_MAX_CONTEXT_TOKENS = 1_000_000
+
+
+def context_config() -> dict:
+    section = load().get("claude_context") or {}
+    return {name: section.get(name) for name in CONTEXT_FIELDS}
+
+
+def save_context(values: dict) -> dict:
+    """保存上下文与压缩参数；None 表示不设置：模型真实窗口按默认值，其余交由 CLI 默认。"""
+    section = {}
+    for name, (_, low, high) in CONTEXT_FIELDS.items():
+        value = values.get(name)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+            raise ModelConfigError(f"{name} 须为 {low}–{high} 之间的整数")
+        section[name] = value
+    real_window = section.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
+    if section.get("auto_compact_window", 0) > real_window:
+        raise ModelConfigError("压缩窗口不能大于模型真实窗口")
+    if section.get("max_output_tokens", 0) >= real_window:
+        raise ModelConfigError("最大输出必须小于模型真实窗口")
+    data = load()
+    data["claude_context"] = section
+    path = _file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.chmod(0o600)
+    return masked()
+
+
 def jiuwen_config() -> dict:
     """Jiuwen 引擎读取用的明文配置（仅服务端内部使用，不经接口外发）。"""
     section = load().get("jiuwen") or {}
@@ -146,7 +196,7 @@ def jiuwen_config() -> dict:
 
 
 def session_env() -> dict:
-    """转成会话子进程的环境变量；空值不注入。
+    """转成会话子进程的环境变量；空值不注入，模型真实窗口除外（未配置时注入默认值）。
 
     key 同时覆盖 ANTHROPIC_API_KEY 与 ANTHROPIC_AUTH_TOKEN：CLI 优先用
     AUTH_TOKEN 做 Bearer 鉴权，若只覆盖 API_KEY，部署机 .env 里残留的
@@ -161,4 +211,10 @@ def session_env() -> dict:
         env["ANTHROPIC_AUTH_TOKEN"] = data["api_key"]
     if data.get("model"):
         env["ANTHROPIC_MODEL"] = data["model"]
+    context = context_config()
+    if context["max_context_tokens"] is None:
+        context["max_context_tokens"] = DEFAULT_MAX_CONTEXT_TOKENS
+    for name, value in context.items():
+        if value is not None:
+            env[CONTEXT_FIELDS[name][0]] = str(value)
     return env

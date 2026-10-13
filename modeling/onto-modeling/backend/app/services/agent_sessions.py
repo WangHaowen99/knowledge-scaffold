@@ -69,6 +69,7 @@ def _is_visible_chat_event(event: dict) -> bool:
         "workspace_changes",
         "session_interrupted",
         "permission_request",
+        "context_compacted",
     }:
         return True
     if event_type == "session_error":

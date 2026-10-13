@@ -1,6 +1,7 @@
 import { Alert, Button, Divider, Form, Input, Radio, Typography, message } from 'antd';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import ModelContextSettings from './ModelContextSettings.jsx';
 
 export default function ModelSettings({ project }) {
   const [form] = Form.useForm();
@@ -116,6 +117,9 @@ export default function ModelSettings({ project }) {
           保存
         </Button>
       </Form>
+
+      <Divider />
+      <ModelContextSettings current={current} onSaved={setCurrent} />
 
       <Divider />
       <Typography.Title level={5}>OpenAI 兼容（内测引擎）</Typography.Title>

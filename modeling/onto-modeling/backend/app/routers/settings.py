@@ -47,6 +47,23 @@ def put_jiuwen_model_settings(body: ModelBody, request: Request):
         return JSONResponse(status_code=400, content={"error": str(exc)})
 
 
+class ContextBody(BaseModel):
+    max_context_tokens: int | None = None
+    auto_compact_window: int | None = None
+    max_output_tokens: int | None = None
+    autocompact_pct: int | None = None
+
+
+@router.put("/model/context")
+def put_model_context_settings(body: ContextBody, request: Request):
+    """稳定引擎的上下文窗口与自动压缩参数，注入 CLI 会话环境。"""
+    _require_admin(request)
+    try:
+        return model_settings.save_context(body.model_dump())
+    except model_settings.ModelConfigError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
 class DefaultEngineBody(BaseModel):
     engine: str
 
