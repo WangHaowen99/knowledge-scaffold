@@ -29,6 +29,11 @@ import {
 } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, openEventStream } from '../lib/api.js';
+import {
+  buildSubagentFlow,
+  buildSubagentLifecycle,
+  isSubagentCardMessage,
+} from '../lib/subagentEvents.js';
 import { FileChip, Markdown } from './CenterPane.jsx';
 import { STAGES, stageForCommand } from './LeftPane.jsx';
 
@@ -60,6 +65,7 @@ function isVisibleChatEvent(event) {
   }
   if (event.type === 'session_error') return !/exit code[:\s]*143/.test(event.error || '');
   if (event.type !== 'assistant_message') return false;
+  if (isSubagentCardMessage(event)) return false;
   return (event.blocks || []).some((block) => {
     if (block.kind === 'tool_use') return true;
     if (event.subagent) return false;
@@ -247,6 +253,7 @@ const TOOL_VERBS = {
   WebFetch: '读取网页',
   TodoWrite: '更新任务清单',
   Task: '派遣子任务',
+  Agent: '派遣子任务',
   ExitPlanMode: '提交计划',
   AskUserQuestion: '征询确认',
 };
@@ -279,6 +286,29 @@ function presentTool(block) {
   }
   if (summary.length > 64) summary = `${summary.slice(0, 64)}…`;
   return { verb, summary };
+}
+
+function formatSubagentDuration(durationMs) {
+  if (durationMs == null) return '';
+  const seconds = Number(durationMs) / 1000;
+  if (!Number.isFinite(seconds) || seconds < 0) return '';
+  if (seconds < 60) return `${Math.round(seconds)} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes} 分 ${Math.round(seconds % 60)} 秒`;
+}
+
+// 子代理步骤 → ToolLine 契约（复用主对话工具行的中文动作与详情展开）
+function subagentToolLine(step) {
+  const shown = presentTool({ tool: step.tool, input: step.input || {} });
+  const input = step.input && Object.keys(step.input).length ? step.input : null;
+  return {
+    key: step.key,
+    tool: shown.verb,
+    summary: shown.summary,
+    status: step.status == null ? undefined : step.status === 'error',
+    excerpt: step.excerpt,
+    input,
+  };
 }
 
 function ThinkingBlock({ text }) {
@@ -370,6 +400,105 @@ function ToolGroup({ tools }) {
             <ToolLine tool={latest} />
           </div>
         )
+      )}
+    </div>
+  );
+}
+
+// 子任务卡：默认折叠，展开后是这个子代理自己的实时步骤流。
+// 展开状态是卡片局部的，派发多个子代理时各自独立。
+function SubagentCard({ item }) {
+  const [open, setOpen] = useState(false);
+  const [expandedKey, setExpandedKey] = useState(null);
+  const steps = item.steps || [];
+  const stopped = item.stopped && !item.failed;
+  const stateText = item.done
+    ? item.failed
+      ? '失败'
+      : stopped
+        ? '已停止'
+        : '完成'
+    : '运行中';
+  const duration = item.done ? formatSubagentDuration(item.durationMs) : '';
+  const hasDetail = steps.length > 0 || !!item.excerpt;
+
+  let preview = '';
+  if (item.done) {
+    preview = item.summary || '';
+  } else {
+    const latest = steps[steps.length - 1];
+    if (!latest) preview = '已启动，等待子代理反馈';
+    else if (latest.kind === 'text')
+      preview = latest.text.length > 60 ? `${latest.text.slice(0, 60)}…` : latest.text;
+    else {
+      const shown = presentTool({ tool: latest.tool, input: latest.input || {} });
+      preview = `正在${shown.verb}${shown.summary ? ` ${shown.summary}` : ''}`;
+    }
+  }
+
+  return (
+    <div
+      className={`subagent-card${
+        item.done ? (item.failed ? ' failed' : stopped ? ' stopped' : ' done') : ' running'
+      }`}
+    >
+      <div className="subagent-head">
+        <span className="subagent-icon">
+          {item.done ? (
+            item.failed || stopped ? (
+              <CloseOutlined />
+            ) : (
+              <CheckOutlined />
+            )
+          ) : (
+            <LoadingOutlined />
+          )}
+        </span>
+        <span className="subagent-main">
+          <span className="subagent-title">
+            子任务{stateText} · {item.description}
+            {duration && ` · 耗时 ${duration}`}
+          </span>
+          <span className="subagent-sub">
+            {item.agentType && <span className="subagent-type">{item.agentType}</span>}
+            {preview && <span className="subagent-hint">{preview}</span>}
+          </span>
+        </span>
+        {hasDetail && (
+          <button
+            type="button"
+            className="subagent-toggle"
+            aria-expanded={open}
+            onClick={() => setOpen(!open)}
+          >
+            {open ? '收起' : '展开'}
+            <DownOutlined className={`subagent-caret${open ? ' open' : ''}`} />
+          </button>
+        )}
+      </div>
+      {open && hasDetail && (
+        <div className="subagent-steps">
+          {steps.map((step) =>
+            step.kind === 'text' ? (
+              <div key={step.key} className="subagent-say">
+                {sanitizeInternal(step.text)}
+              </div>
+            ) : (
+              <ToolLine
+                key={step.key}
+                tool={subagentToolLine(step)}
+                expanded={expandedKey === step.key}
+                onToggle={() => setExpandedKey(expandedKey === step.key ? null : step.key)}
+              />
+            ),
+          )}
+          {item.excerpt && (
+            <div className="subagent-result">
+              <div className="tool-detail-label">结果摘录</div>
+              <pre>{sanitizeInternal(item.excerpt)}</pre>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -1079,6 +1208,10 @@ export default function ChatPane({
     return map;
   }, [events]);
 
+  // 子代理生命周期（开始/终态）与实时步骤流：归并规则在 lib/subagentEvents.js
+  const subagentLifecycle = useMemo(() => buildSubagentLifecycle(events), [events]);
+  const subagentFlow = useMemo(() => buildSubagentFlow(events, toolResults), [events, toolResults]);
+
   const items = useMemo(() => {
     const list = [];
     const fingerprints = new Map(); // 相同确认要求跨轮重复计数（防挂卡死循环，方案风险#4）
@@ -1092,21 +1225,28 @@ export default function ChatPane({
       if (event.type === 'user_message') {
         list.push({ key: event.seq, role: 'user', content: event.text, ts: event.ts });
       } else if (event.type === 'assistant_message') {
+        // 已归到子任务卡的子代理消息不再进主对话流
+        if (subagentFlow.cards.has(event.parent_tool_use_id)) continue;
         for (const [index, block] of event.blocks.entries()) {
           const key = `${event.seq}-${index}`;
           if (block.kind === 'tool_use') {
             const result = toolResults.get(block.tool_use_id);
-            if (block.tool === 'Task' && !event.subagent) {
-              // 子代理派遣：独立卡片呈现运行状态，而不是淹没在工具行里
+            if (['Task', 'Agent'].includes(block.tool) && !event.subagent) {
+              // 子代理派遣：独立卡片呈现运行状态与可展开的执行过程
+              const progress = subagentLifecycle.get(block.tool_use_id);
+              const terminalStatus = progress?.status;
               list.push({
                 key,
                 role: 'subagent',
-                description: block.input?.description || '子任务',
-                agentType: block.input?.subagent_type || '',
-                prompt: block.input?.prompt || '',
-                done: result !== undefined,
-                failed: result?.isError,
+                description: progress?.description || block.input?.description || '子任务',
+                agentType: block.input?.subagent_type || progress?.agentType || '',
+                done: result !== undefined || progress?.done === true,
+                failed: result?.isError || terminalStatus === 'failed',
+                stopped: terminalStatus === 'stopped' || terminalStatus === 'killed',
                 excerpt: result?.excerpt,
+                summary: progress?.summary || '',
+                durationMs: progress?.durationMs ?? null,
+                steps: subagentFlow.steps.get(block.tool_use_id) || [],
               });
               continue;
             }
@@ -1158,7 +1298,7 @@ export default function ChatPane({
       }
     }
     return list;
-  }, [events, resolvedPermissions, toolResults]);
+  }, [events, resolvedPermissions, subagentFlow, subagentLifecycle, toolResults]);
 
   const hasLive = live.text || live.thinking;
 
@@ -1459,34 +1599,7 @@ export default function ChatPane({
               );
             }
             if (item.role === 'subagent') {
-              return (
-                <div
-                  key={item.key}
-                  className={`subagent-card${item.done ? (item.failed ? ' failed' : ' done') : ' running'}`}
-                >
-                  <span className="subagent-icon">
-                    {item.done ? (
-                      item.failed ? (
-                        <CloseOutlined />
-                      ) : (
-                        <CheckOutlined />
-                      )
-                    ) : (
-                      <LoadingOutlined />
-                    )}
-                  </span>
-                  <span className="subagent-main">
-                    <span className="subagent-title">
-                      子任务{item.done ? (item.failed ? '失败' : '完成') : '运行中'} ·{' '}
-                      {item.description}
-                    </span>
-                    {item.agentType && <span className="subagent-type">{item.agentType}</span>}
-                    {!item.done && (
-                      <span className="subagent-hint">独立子代理执行中，主对话稍后汇总结果</span>
-                    )}
-                  </span>
-                </div>
-              );
+              return <SubagentCard key={item.key} item={item} />;
             }
             if (item.role === 'toolgroup') {
               return (

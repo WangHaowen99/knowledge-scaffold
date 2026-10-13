@@ -158,6 +158,8 @@ def normalize_message(message: Any) -> dict | None:
             "blocks": blocks,
             "model": message.model,
             "subagent": bool(getattr(message, "parent_tool_use_id", None)),
+            # 子代理消息带上派遣它的 Task/Agent 调用 id，前端据此把过程归到对应卡片
+            "parent_tool_use_id": getattr(message, "parent_tool_use_id", None),
         }
     if isinstance(message, UserMessage):
         blocks = []
@@ -176,10 +178,14 @@ def normalize_message(message: Any) -> dict | None:
         if not blocks:
             return None  # 用户文本消息已在 send() 时广播过
         return {"type": "tool_results", "blocks": blocks}
+    lifecycle_event = _normalize_task_event(message)
+    if lifecycle_event:
+        return lifecycle_event
     if isinstance(message, SystemMessage):
         # SDK diagnostics can arrive at token frequency. They are not chat
         # content; keeping them in the session log starves the visible history
         # window and makes the unread badge count runtime noise.
+        # task_* 生命周期消息已在上面归一化为子代理事件，这里一并丢弃。
         return None
     if isinstance(message, ResultMessage):
         return {
@@ -192,7 +198,8 @@ def normalize_message(message: Any) -> dict | None:
             "usage": safe_json(getattr(message, "usage", None)),
         }
     if isinstance(message, StreamEvent):
-        # 只转发主 agent 的文本/思考增量；子代理的过程以工具行形式呈现，不混进主气泡
+        # 子代理的增量不转发：它的过程由带 parent_tool_use_id 的整条消息呈现在
+        # 子任务卡里，增量混进主气泡会把内部上下文摊到主对话上
         if message.parent_tool_use_id:
             return None
         raw = message.event
@@ -208,6 +215,88 @@ def normalize_message(message: Any) -> dict | None:
                 }
         return None
     return None
+
+
+_TERMINAL_TASK_STATUSES = {"completed", "failed", "stopped", "killed"}
+_TASK_SUBTYPES = {"task_started", "task_progress", "task_notification", "task_updated"}
+
+
+def _task_value(message: Any, name: str, default: Any = None) -> Any:
+    """读取 SDK task 生命周期对象字段，并兼容旧版的 data 回退。"""
+    value = getattr(message, name, None)
+    if value is not None:
+        return value
+    data = getattr(message, "data", None)
+    if isinstance(data, dict):
+        return data.get(name, default)
+    return default
+
+
+def _task_usage(value: Any) -> dict:
+    """只保留耗时：卡片不展示工具次数与 tokens，其余 SDK 载荷不入事件历史。"""
+    if not isinstance(value, dict) or "duration_ms" not in value:
+        return {}
+    return {"duration_ms": value["duration_ms"]}
+
+
+def _short_task_summary(value: Any, limit: int = 400) -> str:
+    text = str(value or "").strip()
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _normalize_task_event(message: Any) -> dict | None:
+    """把 Claude SDK 的 task_* 系统消息转成稳定的平台子代理事件。
+
+    只取开始与终态：子代理的实时过程由带 ``parent_tool_use_id`` 的子代理消息
+    提供，``task_progress`` 这类周期心跳不再入事件历史。
+    SDK 的 task 生命周期消息在不同版本中既可能是专用 dataclass，也可能
+    回落为带 ``subtype``/``data`` 的 SystemMessage，因此这里按字段读取，
+    不把 SDK 类型泄漏到会话层。
+    """
+    subtype = str(getattr(message, "subtype", "") or "")
+    if subtype not in _TASK_SUBTYPES:
+        return None
+    task_id = str(_task_value(message, "task_id", "") or "")
+    if not task_id:
+        return None
+    tool_use_id = _task_value(message, "tool_use_id")
+    description = _short_task_summary(_task_value(message, "description", ""), 240)
+    common = {
+        "task_id": task_id,
+        "tool_use_id": str(tool_use_id) if tool_use_id else None,
+        "description": description,
+    }
+    if subtype == "task_started":
+        return {
+            "type": "subagent_started",
+            **common,
+            "agent_type": _short_task_summary(_task_value(message, "task_type", ""), 80),
+        }
+    if subtype == "task_progress":
+        return None
+    if subtype == "task_updated":
+        patch = _task_value(message, "patch", {})
+        if not isinstance(patch, dict):
+            patch = {}
+        status = str(_task_value(message, "status", "") or patch.get("status") or "")
+        if status not in _TERMINAL_TASK_STATUSES:
+            return None  # 非终态的后台任务变更对卡片没有新信息
+        return {
+            "type": "subagent_finished",
+            **common,
+            "description": description
+            or _short_task_summary(patch.get("description"), 240),
+            "status": status,
+            "summary": _short_task_summary(patch.get("summary")),
+            "usage": _task_usage(patch.get("usage", {})),
+        }
+    return {
+        "type": "subagent_finished",
+        **common,
+        "status": str(_task_value(message, "status", "failed") or "failed"),
+        "summary": _short_task_summary(_task_value(message, "summary", "")),
+        "usage": _task_usage(_task_value(message, "usage", {})),
+    }
 
 
 def _tool_result_excerpt(content: Any, limit: int = 400) -> str:
