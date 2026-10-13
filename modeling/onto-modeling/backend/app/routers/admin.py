@@ -73,6 +73,7 @@ def overview(request: Request):
     sessions = [
         {
             "project_id": pid,
+            "conversation_id": s.conversation_id,
             "state": s.state,
             "events": len(s.events),
             "connected": s.client is not None,
@@ -127,7 +128,8 @@ def _usage_daily(days: int = 14) -> list[dict]:
     buckets: dict[str, dict] = {}
     sessions_dir = Path(config.DATA_DIR) / "sessions"
     if sessions_dir.is_dir():
-        for history_file in sessions_dir.glob("*.jsonl"):
+        # 递归：多会话的历史与已删除会话留存的用量都在 sessions/{项目}/ 下
+        for history_file in sessions_dir.rglob("*.jsonl"):
             try:
                 lines = history_file.read_text(encoding="utf-8").splitlines()
             except OSError:

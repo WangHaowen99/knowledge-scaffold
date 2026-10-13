@@ -11,6 +11,7 @@ from .routers import admin, auth_routes, projects, sessions, settings
 from .services import auth
 from .services.agent_sessions import SDK_AVAILABLE, SessionError
 from .services.auth import AuthError
+from .services.conversation_store import ConversationError
 from .services.workspace import WorkspaceError
 
 @asynccontextmanager
@@ -97,7 +98,8 @@ async def workspace_error_handler(request: Request, exc: WorkspaceError):
 
 
 @app.exception_handler(SessionError)
-async def session_error_handler(request: Request, exc: SessionError):
+@app.exception_handler(ConversationError)
+async def session_error_handler(request: Request, exc: SessionError | ConversationError):
     return JSONResponse(status_code=exc.status, content={"error": str(exc)})
 
 

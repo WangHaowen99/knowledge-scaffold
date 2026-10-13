@@ -437,7 +437,10 @@ class JiuwenEngine:
         self._queue: asyncio.Queue = asyncio.Queue()
         self._turn_task: asyncio.Task | None = None
         self._buffered: list[str] = []  # 轮内追加的消息，本轮结束后接续
+        # 上下文引擎与流式运行都按这个 id 寻址：每条会话一个，default 沿用单会话时期的值
         self._sid = f"onto-{ctx.project_id}"
+        if ctx.conversation_id != "default":
+            self._sid += f"-{ctx.conversation_id}"
         from .jiuwen_assets import JiuwenAssetLoader
 
         self._loader = JiuwenAssetLoader(Path(config.ASSETS_DIR))

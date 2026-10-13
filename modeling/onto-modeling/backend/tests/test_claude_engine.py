@@ -316,3 +316,24 @@ def test_compaction_resets_used_and_unsupported_cli_omits_limits(tmp_path, monke
         {"type": "context_usage", "used": 12000, "window": None, "compact_at": None}
     ]
     assert any(e["type"] == "context_compacted" for e in events)
+
+
+def test_disconnect_cancels_pending_context_limits_task(tmp_path, monkeypatch):
+    class _HangingClient(_ScriptedClient):
+        async def get_context_usage(self):
+            await asyncio.Event().wait()
+
+    engine = _engine(tmp_path, _HangingClient([]), monkeypatch)
+
+    async def scenario():
+        await engine.connect()
+        task = engine._limits_task
+        await asyncio.sleep(0)  # 让后台任务先跑到 get_context_usage
+        await engine.disconnect()
+        await asyncio.gather(task, return_exceptions=True)
+        return task
+
+    task = asyncio.run(scenario())
+
+    # 取消不能被兜底的 except Exception 吞成"取不到用量"
+    assert task.cancelled()

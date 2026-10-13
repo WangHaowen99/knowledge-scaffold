@@ -437,10 +437,9 @@ class ClaudeEngine:
         """get_context_usage 一次约 5 秒，放后台只取一次；旧版 CLI 不支持时只显示已用量。"""
         try:
             usage = await asyncio.wait_for(client.get_context_usage(), timeout=60)
-        except asyncio.CancelledError:
-            raise
         except Exception:
-            return
+            # 旧版 CLI 不支持或超时：按取不到处理。CancelledError 是 BaseException，不会落到这里
+            usage = None
         self._context_window, self._compact_at = context_limits(usage, _session_env())
 
     def _cancel_limits_task(self) -> None:

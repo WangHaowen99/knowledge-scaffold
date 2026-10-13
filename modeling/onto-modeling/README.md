@@ -49,6 +49,10 @@ npm run dev
 `ONTO_WEB_SESSION_IDLE_TTL`（默认 600 秒）的会话被回收，下次发消息用
 resume 续接模型上下文，界面无感。
 
+每个项目可有多条会话（聊天面板顶部下拉：新建、切换续聊、重命名、删除），各自保存历史与模型
+上下文，但同一时刻只有一个在线引擎。往另一条会话发消息时，原会话空闲就换绑，忙则返回 409。
+存储与取舍见 `docs/decisions/0013-multi-conversation-sessions.md`。
+
 ## 测试
 
 ```bash
