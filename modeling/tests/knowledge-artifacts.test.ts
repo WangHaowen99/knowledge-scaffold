@@ -347,6 +347,28 @@ test('对象关系名称拒绝纯基数和重复端点名称并保留模型生�
   assert.doesNotThrow(() => validateSpecIntegrity(valid));
 });
 
+test('评测前校验可跳过存量关系命名规范但保留关系结构校验', () => {
+  const lenient = { validateRelationNames: false };
+  const legacy = baseSpec();
+  legacy.objects[0].title = '申请项';
+  legacy.objects[0].relations = [{ relation: '属于申请', target: 'application' }];
+  legacy.objects.push({
+    key: 'application', title: '申请', description: '用于存量关系名称兼容的合成申请对象',
+    fields: [{ key: 'id', cnName: '申请编号' }],
+    relations: [{ relation: '1:N', target: 'customer' }],
+  });
+  assert.throws(() => validateSpecIntegrity(legacy), /目标对象名称.*申请/);
+  assert.doesNotThrow(() => validateSpecIntegrity(legacy, [], undefined, lenient));
+
+  const selfRelation = baseSpec();
+  selfRelation.objects[0].relations = [{ relation: '属于', target: selfRelation.objects[0].key }];
+  assert.throws(() => validateSpecIntegrity(selfRelation, [], undefined, lenient), /不允许自关联/);
+
+  const dangling = baseSpec();
+  dangling.objects[0].relations = [{ relation: '属于', target: 'missing_object' }];
+  assert.throws(() => validateSpecIntegrity(dangling, [], undefined, lenient), /不存在的对象 missing_object/);
+});
+
 test('规则指标候选可以逐项生成或延期，但不得静默遗漏', async () => {
   const project = createProject({ owner: 'tester', name: '指标补全回归', domain: '金融', background: '' });
   await initializeGenerationDraft(project);
