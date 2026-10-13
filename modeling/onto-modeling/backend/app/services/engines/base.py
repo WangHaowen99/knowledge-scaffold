@@ -3,8 +3,13 @@
 平台事件（引擎 events() 产出的归一化 dict，前端与事件 JSONL 的唯一稳定接口）：
 
 - ``stream_delta``        流式增量（kind: text | thinking），transient 不进历史
-- ``assistant_message``   助手消息（blocks: text / thinking / tool_use）
+- ``assistant_message``   助手消息（blocks: text / thinking / tool_use）；
+  ``parent_tool_use_id`` 非空表示这是子代理消息，归到对应子任务卡
 - ``tool_results``        工具结果摘录（blocks: tool_result）
+- ``subagent_started``    子代理开始执行（task_id / tool_use_id / description）
+- ``subagent_activity``   子代理单步过程（step_id / kind: tool | text），同
+  step_id 的后续事件只更新 status；参数只留摘要键，步骤数有上限
+- ``subagent_finished``   子代理终态（completed / failed / stopped，usage.duration_ms）
 - ``system``              运行时系统事件（已过滤，不进入会话历史）
 - ``result``              一轮终态（成本 / usage / 时长）
 - ``_engine_end``         引擎内部终止信号（reason: closed | error），由

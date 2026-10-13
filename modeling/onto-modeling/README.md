@@ -46,7 +46,7 @@ resume 续接模型上下文，界面无感。
 
 ```bash
 cd backend && ./venv/bin/python -m pytest tests/
-cd frontend && npm run build
+cd frontend && npm test && npm run build
 ```
 
 ## 构建与部署
