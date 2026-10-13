@@ -9,10 +9,11 @@
 - resume = 历史回放：连接时把事件历史注水 create_new_context_engine，
   跨进程天然成立，不依赖任何 transcript 文件
 - 目录分层：DeepAgentConfig.cwd = 项目 git 工作区（文件/Shell 工具的根），
-  workspace = DATA_DIR/jiuwen/<pid>（框架私有工件区），互不污染
+  workspace = DATA_DIR/jiuwen/<pid>（框架私有工件区），互不污染；子代理工件区
+  再下沉到 workspace/sub_agents（必须与主 agent 分开，见 _general_purpose_spec）
 
-Phase 2 边界：系统提示词为最小建模助手版（完整资产装载在 Phase 3）；
-todo/子代理运行时事件桥接为通用工具行；成本无单价来源，result 事件只报 tokens。
+同步 task_tool 的子代理执行步骤由 jiuwen_progress.py 通过 Rail 回调送回主事件队列；
+成本无单价来源，result 事件只报 tokens。
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from typing import Any
 
 from ... import config
 from .base import CONFIG_ERROR, FRIENDLY_ERROR, EngineContext, safe_json
+from .jiuwen_progress import JiuwenProgressTracker, build_progress_rail, progress_scope
 
 JIUWEN_AVAILABLE = importlib.util.find_spec("openjiuwen") is not None
 
@@ -106,8 +108,8 @@ async def _ensure_runner_started() -> None:
 class _ChunkBridge:
     """openjiuwen chunk 流 → 平台事件（契约见 engines/base.py 模块文档）。
 
-    tool_call chunk 不带调用 id，桥接层自造 id 并按 FIFO 与 tool_result 配对
-    （引擎以 parallel_tool_calls=False 运行以保证配对正确性）。
+    优先使用进度 Rail 携带的原生调用 id；旧 chunk 无 id 时保留 FIFO 配对
+    （主引擎以 parallel_tool_calls=False 运行）。
     """
 
     def __init__(self):
@@ -170,7 +172,8 @@ class _ChunkBridge:
             if isinstance(payload, dict):
                 raw_name = str(payload.get("tool_name") or "")
                 args = payload.get("tool_args")
-            call_id = uuid.uuid4().hex[:12]
+            native_id = payload.get("tool_use_id") if isinstance(payload, dict) else None
+            call_id = str(native_id or uuid.uuid4().hex[:12])
             self._open_calls.append(call_id)
             tool_block = {
                 "kind": "tool_use",
@@ -181,7 +184,13 @@ class _ChunkBridge:
             return self._flush_blocks([tool_block]), None
 
         if ctype == "tool_result":
-            call_id = self._open_calls.popleft() if self._open_calls else ""
+            native_id = payload.get("tool_use_id") if isinstance(payload, dict) else None
+            if native_id:
+                call_id = str(native_id)
+                if call_id in self._open_calls:
+                    self._open_calls.remove(call_id)
+            else:
+                call_id = self._open_calls.popleft() if self._open_calls else ""
             excerpt = ""
             is_error = False
             if isinstance(payload, dict):
@@ -218,6 +227,66 @@ class _ChunkBridge:
 
     def finish(self) -> list[dict]:
         return self._flush_blocks()
+
+
+def _general_purpose_spec(
+    model: Any, system_prompt: str, rails: list, workspace_root: Path, sys_operation: Any
+):
+    """自带的 general-purpose 子代理 spec（必须与主 agent 的 workspace 根分开）。
+
+    openjiuwen 的 ``add_general_purpose_agent=True`` 会注入一个把**父 agent 的
+    workspace 原样带上**的子代理 spec，父子共用同一个 workspace 根时子代理会在
+    首个模型调用之前永久挂住（父 agent 停在 task_tool 的子流迭代上，子代理一个
+    Rail 回调都发不出）。这里显式提供同名 spec 抢在注入之前，并给子代理独立的
+    工件目录；spec 的 sys_operation 只在 workspace 同时给出时才被采纳，必须一起
+    传，否则子代理会自建 LOCAL sysop、丢掉沙箱三根。
+
+    这里给的只是初值，真正生效的是每次派发时 _bind_subagent_workspace_rotation
+    换上的按派遣命名的目录。
+    """
+    from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+    from openjiuwen.harness.prompts.tools.task_tool import GENERAL_PURPOSE_AGENT_DESC
+    from openjiuwen.harness.schema.config import SubAgentConfig
+    from openjiuwen.harness.workspace.workspace import Workspace
+
+    return SubAgentConfig(
+        agent_card=AgentCard(
+            name="general-purpose",
+            description=GENERAL_PURPOSE_AGENT_DESC["cn"],
+        ),
+        system_prompt=system_prompt,
+        model=model,
+        rails=list(rails),
+        workspace=Workspace(root_path=str(workspace_root), language="cn"),
+        sys_operation=sys_operation,
+        restrict_to_work_dir=False,
+    )
+
+
+def _bind_subagent_workspace_rotation(agent: Any, spec: Any, root: Path) -> None:
+    """每次派发都给子代理一个独立工件目录（不能复用同一个根）。
+
+    openjiuwen 的文件锁按"目标路径哈希"建 SQLite 锁库，而租约释放后进程内的
+    锁并不会立刻放掉。两次派发若共用同一个 workspace 根，第二个子代理写同名
+    脚手架文件（sub_agents/memory/.workspace 等）会卡满 ``write_file`` 的 300 秒
+    lock_timeout 再失败——界面上就是子任务卡一直停在"已启动，等待子代理反馈"。
+
+    ``create_subagent`` 是所有派发路径的唯一汇聚点（SDK 自己的 observability
+    也挂在这里），派发前把 spec 的 workspace 换成按 subsession 命名的目录即可。
+    赋值与调用之间没有 await，并发派发也不会互相串台；spec.workspace 必须保持
+    非空，否则 SDK 不采纳我们的 sys_operation（沙箱三根会丢）。
+    """
+    from openjiuwen.harness.workspace.workspace import Workspace
+
+    original = agent.create_subagent
+
+    def create_subagent(subagent_type: str, subsession_id: str, *args: Any, **kwargs: Any):
+        spec.workspace = Workspace(
+            root_path=str(root / str(subsession_id)), language="cn"
+        )
+        return original(subagent_type, subsession_id, *args, **kwargs)
+
+    agent.create_subagent = create_subagent
 
 
 def _req_get(request: Any, key: str, default: Any = None) -> Any:
@@ -370,6 +439,7 @@ class JiuwenEngine:
         self._fingerprint = ""
         self._tracker: Any = None
         self._closed = False
+        self._progress_tracker: JiuwenProgressTracker | None = None
 
     @classmethod
     def available(cls) -> bool:
@@ -410,7 +480,6 @@ class JiuwenEngine:
         )
         from openjiuwen.harness import create_deep_agent
         from openjiuwen.harness.cli.rails import TokenTrackingRail
-        from openjiuwen.harness.cli.rails.tool_tracker import ToolTrackingRail
         from openjiuwen.harness.rails import AskUserRail
         from openjiuwen.harness.rails.sys_operation_rail import SysOperationRail
         from openjiuwen.harness.workspace.workspace import Workspace
@@ -450,21 +519,34 @@ class JiuwenEngine:
             )
         sys_operation = Runner.resource_mgr.get_sys_operation(sysop_id)
         tracker = TokenTrackingRail()
+        progress_rail = build_progress_rail(_TOOL_NAME_MAP)
+        system_prompt = self._loader.system_prompt()
+        subagent_root = shadow / "sub_agents"
+        rails = [
+            tracker,
+            progress_rail,
+            SysOperationRail(),
+            AskUserRail(),
+            build_hooks_rail(self._loader, self._ctx.cwd),
+        ]
+        gp_spec = _general_purpose_spec(
+            model=model,
+            system_prompt=system_prompt,
+            rails=rails,
+            workspace_root=subagent_root,
+            sys_operation=sys_operation,
+        )
         agent = create_deep_agent(
             model=model,
-            system_prompt=self._loader.system_prompt(),
-            rails=[
-                tracker,
-                ToolTrackingRail(),
-                SysOperationRail(),
-                AskUserRail(),
-                build_hooks_rail(self._loader, self._ctx.cwd),
-            ],
+            system_prompt=system_prompt,
+            rails=rails,
             workspace=Workspace(root_path=str(shadow), language="cn"),
             sys_operation=sys_operation,
             enable_task_loop=True,
             # 命令资产的 Task 派遣模式：读 agents/*.md 内容作为子代理 prompt
             add_general_purpose_agent=True,
+            # 子代理工件区与主 agent 分开，否则子代理会挂死（见 _general_purpose_spec）
+            subagents=[gp_spec],
             max_iterations=config.JIUWEN_MAX_ITERATIONS,
             language="cn",
             # tool_call chunk 无调用 id，串行执行保证桥接层 FIFO 配对正确
@@ -472,6 +554,8 @@ class JiuwenEngine:
             cwd=str(self._ctx.cwd),
             project_root=str(self._ctx.cwd),
         )
+        # 每次派发再换一个独立子目录，避免第二个子任务撞上第一个留下的文件锁
+        _bind_subagent_workspace_rotation(agent, gp_spec, subagent_root)
         return agent, tracker
 
     async def send(self, text: str) -> None:
@@ -498,6 +582,8 @@ class JiuwenEngine:
                 task.cancel()
 
     async def disconnect(self) -> None:
+        if self._progress_tracker is not None:
+            await self._progress_tracker.finish_all("stopped")
         self._closed = True
         if self._turn_task and not self._turn_task.done():
             self._turn_task.cancel()
@@ -540,6 +626,8 @@ class JiuwenEngine:
 
         started = time.time()
         before = self._usage_snapshot()
+        if self._progress_tracker is None:
+            self._progress_tracker = JiuwenProgressTracker(self._queue.put)
         try:
             queries: list[Any] = [text]
             while queries:
@@ -548,18 +636,23 @@ class JiuwenEngine:
                 while True:
                     bridge = _ChunkBridge()
                     pending: list[tuple[str, Any]] = []
-                    stream = Runner.run_agent_streaming(
-                        self.client, {"query": round_query}, session=self._sid
-                    )
-                    async for chunk in stream:
-                        events, interaction = bridge.feed(chunk)
-                        for event in events:
-                            await self._queue.put(event)
-                        if interaction:
-                            pending.append(interaction)
+                    with progress_scope(self._progress_tracker):
+                        stream = Runner.run_agent_streaming(
+                            self.client, {"query": round_query}, session=self._sid
+                        )
+                        async for chunk in stream:
+                            events, interaction = bridge.feed(chunk)
+                            for event in events:
+                                await self._queue.put(event)
+                            if interaction:
+                                pending.append(interaction)
                     for event in bridge.finish():
                         await self._queue.put(event)
                     if not pending:
+                        # 一轮真正走完：仍挂着的子任务卡收成"已停止"。
+                        # 有待确认 interaction 时流只是被挂起，下一轮会接着跑，
+                        # 这里不能把在飞的子任务判成停止
+                        await self._progress_tracker.finish_all("stopped")
                         break
                     ii = InteractiveInput()
                     for iid, request in pending:
@@ -590,6 +683,7 @@ class JiuwenEngine:
                 if self._buffered:
                     queries.append(self._buffered.pop(0))
         except asyncio.CancelledError:
+            await self._progress_tracker.finish_all("stopped")
             # 打断：以 interrupted 终态收轮，会话保持可用
             self._queue.put_nowait(
                 {
@@ -604,6 +698,7 @@ class JiuwenEngine:
             )
             raise
         except Exception as exc:
+            await self._progress_tracker.finish_all("failed")
             if self._closed:
                 return
             self._ctx.log_error("session", str(exc))
@@ -618,3 +713,5 @@ class JiuwenEngine:
             await self._queue.put(
                 {"type": "_engine_end", "reason": "error", "error": friendly}
             )
+        finally:
+            await self._progress_tracker.finish_all("stopped")
