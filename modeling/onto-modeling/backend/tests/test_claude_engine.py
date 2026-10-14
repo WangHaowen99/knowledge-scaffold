@@ -192,32 +192,32 @@ def test_other_system_messages_are_still_dropped():
 
 def test_context_limits_uses_cli_threshold_without_override():
     usage = {
-        "rawMaxTokens": 1000000,
-        "maxTokens": 1000000,
+        "rawMaxTokens": 200000,
+        "maxTokens": 200000,
         "isAutoCompactEnabled": True,
-        "autoCompactThreshold": 967000,
+        "autoCompactThreshold": 167000,
     }
 
-    assert context_limits(usage, {}) == (1000000, 967000)
+    assert context_limits(usage, {}) == (200000, 167000)
 
 
 def test_context_limits_applies_pct_override_cli_does_not_report():
-    """CLI 报告的阈值不含百分比覆盖：有效窗口 980000 × 60% = 588000。"""
+    """CLI 报告的阈值不含百分比覆盖：有效窗口 180000 × 60% = 108000。"""
     usage = {
-        "rawMaxTokens": 1000000,
+        "rawMaxTokens": 200000,
         "isAutoCompactEnabled": True,
-        "autoCompactThreshold": 967000,
+        "autoCompactThreshold": 167000,
     }
 
-    assert context_limits(usage, {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "60"}) == (1000000, 588000)
+    assert context_limits(usage, {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "60"}) == (200000, 108000)
     # 百分比只能让压缩提前，不会推后
-    assert context_limits(usage, {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "99"}) == (1000000, 967000)
+    assert context_limits(usage, {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "99"}) == (200000, 167000)
 
 
 def test_context_limits_without_auto_compact_has_no_trigger():
-    usage = {"maxTokens": 1000000, "isAutoCompactEnabled": False, "autoCompactThreshold": 967000}
+    usage = {"maxTokens": 200000, "isAutoCompactEnabled": False, "autoCompactThreshold": 167000}
 
-    assert context_limits(usage, {}) == (1000000, None)
+    assert context_limits(usage, {}) == (200000, None)
     assert context_limits(None, {}) == (None, None)
 
 
@@ -275,9 +275,9 @@ def test_turn_end_reports_last_call_usage_not_cumulative_result(tmp_path, monkey
             _result({"input_tokens": 75000, "output_tokens": 900}),
         ],
         context_usage={
-            "rawMaxTokens": 1000000,
+            "rawMaxTokens": 200000,
             "isAutoCompactEnabled": True,
-            "autoCompactThreshold": 967000,
+            "autoCompactThreshold": 167000,
         },
     )
     engine = _engine(tmp_path, client, monkeypatch)
@@ -288,8 +288,8 @@ def test_turn_end_reports_last_call_usage_not_cumulative_result(tmp_path, monkey
     assert events[-2] == {
         "type": "context_usage",
         "used": 45800,
-        "window": 1000000,
-        "compact_at": 967000,
+        "window": 200000,
+        "compact_at": 167000,
     }
 
 

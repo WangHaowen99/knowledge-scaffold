@@ -345,8 +345,13 @@ export const api = {
     request('/api/settings/model', { method: 'PUT', body: JSON.stringify(payload) }),
   saveJiuwenModelSettings: (payload) =>
     request('/api/settings/model/jiuwen', { method: 'PUT', body: JSON.stringify(payload) }),
-  saveModelContextSettings: (payload) =>
-    request('/api/settings/model/context', { method: 'PUT', body: JSON.stringify(payload) }),
+  getModelContextPresets: () => request('/api/settings/model/context-presets'),
+  saveCustomContextPresets: (payload) =>
+    request('/api/settings/model/context-presets/custom', { method: 'PUT', body: JSON.stringify(payload) }),
+  disableCustomContextPresets: () =>
+    request('/api/settings/model/context-presets/custom/disable', { method: 'POST' }),
+  matchModelContextPreset: (model) =>
+    request(`/api/settings/model/context-presets/match?model=${encodeURIComponent(model)}`),
   saveDefaultEngine: (engine) =>
     request('/api/settings/model/default-engine', {
       method: 'PUT',
