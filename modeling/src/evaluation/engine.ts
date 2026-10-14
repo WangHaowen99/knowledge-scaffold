@@ -303,9 +303,14 @@ export function startEvaluation(
   if (!latest) throw new Error('启动评测必须提供知识包快照');
   if (!String(latest.revisionOid ?? '').trim()) throw new Error('知识包快照缺少工件修订');
   // 评测必须能够记录存量脚本的执行契约失败，而不是在轮次创建前整体拦截。
-  // 安全检查仍然强制执行；候选接受、导出和发布继续使用严格契约。
+  // 关系命名规范只约束新生成和新修改的关系；存量包或外部导入包（如图关系类型）
+  // 的关系名不影响评测执行，不能在评测前强制改名。
+  // 安全检查和关系结构检查仍然强制执行；候选接受、导出和发布继续使用严格契约。
   try {
-    validateSpecIntegrity(latest.spec, [], undefined, { validateScriptExecutionContract: false });
+    validateSpecIntegrity(latest.spec, [], undefined, {
+      validateScriptExecutionContract: false,
+      validateRelationNames: false,
+    });
   } catch (error) {
     throw new EvaluationOperationError(
       'EVALUATION_PACKAGE_INVALID',
