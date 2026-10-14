@@ -71,6 +71,15 @@ python3 .claude/scripts/state_helper.py check-prereq {COMMAND_NAME}
 
   > 注：流程图阶段是可选的。`extract-object` 的前置只要求有研究报告或流程图其一；`extract-operation` 的前置要求对象已提取。
 
+  缺少 `调研完成` 时先用 `detect-stage` 区分两种情况，话术不同：
+
+  - `未开始` → 确实没有任何来源，建议先做调研或画流程图。
+  - `调研待核验` → **报告已经有了，只是内容没过验收**。不要让用户重新调研，
+    先跑 `python3 .claude/scripts/research_checker.py check` 拿到具体错误项，
+    按 `.claude/commands/ontology-research.md` 的 Step 4.5 修正或转人工确认。
+    后果描述改为："报告的计数、ID 或引用字段尚未对账，直接提取会把错误字段和
+    ID 带进对象、规则与追溯。"
+
   - **继续**：跳过守卫继续第 3 步。
   - **先做 …**：读取对应命令文件并按照它执行，结束后再询问是否回来跑本命令。
   - **取消**：立即 stop。

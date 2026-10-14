@@ -117,6 +117,39 @@ def load_ontology(ontology_dir: Path) -> dict:
     return docs
 
 
+# 资料分析报告的业务项分类。提取阶段按它分流（操作→ontology/operation、
+# 规则→ontology/rule、指标→ontology/metric），这里反过来用它查文档有没有落错
+# 目录。报告格式与报告侧的检查见 `.claude/scripts/research_checker.py`。
+REPORT_INVENTORY_SECTION = '业务项清单'
+REPORT_CATEGORY_TYPES = {'对象': 'object', '操作': 'operation', '规则': 'rule', '指标': 'metric'}
+
+
+def load_report_categories(ontology_dir: Path) -> dict:
+    """{业务项名称: doc_type}；没有报告或没有分类列时为空，放错目录的检查随之跳过。
+
+    同一名称在多份报告里分类不一致时整条丢弃——互相矛盾的依据不足以判错。
+    """
+    research_dir = ontology_dir.resolve().parent / 'research'
+    if not research_dir.is_dir():
+        return {}
+    seen = {}
+    for path in sorted(research_dir.glob('*.md')):
+        if path.name.lower() == 'index.md':
+            continue
+        try:
+            raw = path.read_text(encoding='utf-8')
+        except OSError:
+            continue
+        section = extract_sections(raw).get(REPORT_INVENTORY_SECTION, '')
+        for row in parse_markdown_table(section):
+            name = (row.get('业务项名称') or '').strip()
+            doc_type = REPORT_CATEGORY_TYPES.get((row.get('分类') or '').strip())
+            if not name or doc_type is None:
+                continue
+            seen.setdefault(name, set()).add(doc_type)
+    return {name: types.pop() for name, types in seen.items() if len(types) == 1}
+
+
 KNOWLEDGE_REQUIRED_FIELDS = (
     'name', 'type', 'slug', 'scopes', 'source', 'confidence', 'revisions', 'related'
 )
@@ -452,6 +485,67 @@ def check_entity_links(doc: OntologyDoc, all_docs: dict, cn: str) -> list:
                 source='规则检查',
             ))
     return issues
+
+
+# 实体类型由所在目录决定（见 load_ontology）：规则/指标留在 operation 目录，
+# 发布包会把它们当 operations 打包、studio 图谱也按 operation 建节点，知识包
+# 五元组整条链路都跟着错。放错目录因此是错误级。
+ENTITY_TARGET_DIRS = {'rule': 'ontology/rule/', 'metric': 'ontology/metric/'}
+ENTITY_TYPE_LABELS = {'object': '对象', 'operation': '操作', 'rule': '规则', 'metric': '指标'}
+# 提取时常把报告里的「XX规则」落成「XX」。这只能算迹象、不是依据：流程图来源的操作
+# 完全可能和某条规则同名、只差这个后缀，所以按后缀对上的只给警告，不拦提交。
+ENTITY_NAME_SUFFIXES = {'规则': 'rule', '指标': 'metric'}
+
+
+def _suffix_inferred_placement(doc: OntologyDoc, report_categories: dict) -> list:
+    """报告里没有同名项，却有"同名 + 规则/指标后缀"的项：疑似改名后放错目录。"""
+    stem = doc.path.stem
+    if stem in report_categories:
+        return []  # 报告对这个名字有明确分类，以它为准，不做推断
+    for suffix, doc_type in ENTITY_NAME_SUFFIXES.items():
+        if report_categories.get(stem + suffix) != doc_type:
+            continue
+        label = ENTITY_TYPE_LABELS[doc_type]
+        return [Issue(
+            file=_rel(doc), severity='警告', category='目录归属',
+            message=(f'疑似{label}被写成了操作：资料分析报告的业务项清单里有{label}'
+                     f'「{stem}{suffix}」，本文档同名但少了后缀。若它就是那条{label}，'
+                     f'按 .claude/templates/{doc_type}-template.md 重写后迁到 '
+                     f'{ENTITY_TARGET_DIRS[doc_type]}；若是另一个同名操作，忽略本条'),
+            source='规则检查',
+        )]
+    return []
+
+
+def check_entity_placement(doc: OntologyDoc, report_categories: dict) -> list:
+    """规则/指标被写进了 operation 目录。
+
+    判错误只认确定性信号：资料分析报告对这个文件名声明的分类，或文档自身就是
+    rule/metric 模板的段落集。名字只是"少了规则/指标后缀"的按警告提示，不拦提交。
+    纯按文件名猜的启发式不进这里——命名约束由提取侧的 agent 守住。
+    """
+    if doc.doc_type != 'operation':
+        return []
+    declared = report_categories.get(doc.path.stem)
+    sections = set(doc.sections)
+    if declared in ENTITY_TARGET_DIRS:
+        expected = declared
+        reason = f'资料分析报告的业务项清单把它的分类写成「{ENTITY_TYPE_LABELS[declared]}」'
+    elif set(RULE_REQUIRED_SECTIONS) <= sections:
+        expected = 'rule'
+        reason = f'文档章节是规则模板（{"、".join(RULE_REQUIRED_SECTIONS)}）'
+    elif set(METRIC_REQUIRED_SECTIONS) <= sections:
+        expected = 'metric'
+        reason = f'文档章节是指标模板（{"、".join(METRIC_REQUIRED_SECTIONS)}）'
+    else:
+        return _suffix_inferred_placement(doc, report_categories)
+    return [Issue(
+        file=_rel(doc), severity='错误', category='目录归属',
+        message=(f'{reason}，但文件在 ontology/operation/ 下：'
+                 f'{ENTITY_TYPE_LABELS[expected]}必须放在 {ENTITY_TARGET_DIRS[expected]}，'
+                 f'按 .claude/templates/{expected}-template.md 重写后迁过去'),
+        source='规则检查',
+    )]
 
 
 # --- Object checks ---
@@ -1457,6 +1551,7 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
     issues += check_unpackaged_knowledge(ontology_dir)
     term_map = build_term_map(all_docs)
     tables = load_table_headers(ontology_dir)
+    report_categories = load_report_categories(ontology_dir)
 
     print("Running rule checks...", file=sys.stderr)
     for doc in check_docs.values():
@@ -1472,6 +1567,7 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
             issues += check_object_relation_joins(doc, all_docs, tables)
             issues += check_derived_attribute_markers(doc, all_docs)
         elif doc.doc_type == 'operation':
+            issues += check_entity_placement(doc, report_categories)
             issues += check_operation_structure(doc)
             issues += check_operation_table(doc)
             issues += check_operation_links(doc, all_docs)

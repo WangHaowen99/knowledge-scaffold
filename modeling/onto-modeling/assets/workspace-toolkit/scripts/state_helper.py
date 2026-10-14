@@ -27,6 +27,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.append(str(Path(__file__).resolve().parent))
+import research_review
+
 STATE_DIR = Path('.ontology-state')
 PROGRESS_FILE = STATE_DIR / 'progress.json'
 
@@ -261,8 +264,11 @@ def show_progress() -> int:
 # 阶段推断
 # 调研（research）保持启用，是常规建模起点之一。提取已拆为 object / operation
 # 两个命令，阶段终点以 operation 文档存在为准。
+# `调研待核验`：报告已落盘但没通过 research_checker 的内容验收。报告存在不等于
+# 内容可用，所以它独立成一个阶段，不并入 `调研完成`（见 research_review.py）。
 STAGE_ORDER = [
     ('未开始', '未开始'),
+    ('调研待核验', '调研待核验'),
     ('调研完成', '调研完成'),
     ('流程图就绪', '流程图就绪'),
     ('对象已提取', '对象已提取'),
@@ -304,16 +310,18 @@ COMMAND_PREREQS = {
 
 STAGE_SORT = {
     '未开始': 0,
-    '调研完成': 1,
-    '流程图就绪': 2,
-    '对象已提取': 3,
-    '逻辑已提取': 4,
-    '校验待审阅': 5,
-    '完成': 6,
+    '调研待核验': 1,
+    '调研完成': 2,
+    '流程图就绪': 3,
+    '对象已提取': 4,
+    '逻辑已提取': 5,
+    '校验待审阅': 6,
+    '完成': 7,
 }
 
 STAGE_NEXT_COMMAND = {
     '未开始': ('/ontology-research 或 /ontology-flowchart', '调研或直接画流程图'),
+    '调研待核验': ('python3 .claude/scripts/research_checker.py', '核验调研报告内容后才能提取对象'),
     '调研完成': ('/ontology-flowchart 或 /ontology-extract-object', '可选画流程图或直接提取对象'),
     '流程图就绪': ('/ontology-extract-object', '提取业务对象'),
     '对象已提取': ('/ontology-extract-operation', '继续提取业务逻辑'),
@@ -348,7 +356,8 @@ def _compute_stage() -> str:
     if diagrams_has:
         return '流程图就绪'
     if research_has:
-        return '调研完成'
+        # 报告以内容验收为准：没有有效回执时只到 `调研待核验`，不放行对象提取。
+        return '调研完成' if research_review.accepted(Path('.')) else '调研待核验'
     return '未开始'
 
 

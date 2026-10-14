@@ -29,13 +29,14 @@ import {
 } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, openEventStream } from '../lib/api.js';
+import { orderResearchActions } from '../lib/researchGate.js';
 import {
   buildSubagentFlow,
   buildSubagentLifecycle,
   isSubagentCardMessage,
 } from '../lib/subagentEvents.js';
 import { FileChip, Markdown } from './CenterPane.jsx';
-import { STAGES, stageForCommand } from './LeftPane.jsx';
+import { STAGES, stageForCommand, stageHits } from './LeftPane.jsx';
 
 // 「⋯ 更多」里的全量命令（希克定律：常显建议 ≤4，全集收进菜单）
 const ALL_COMMANDS = [
@@ -134,8 +135,10 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
       command: `/ontology-evolution ${evolution.report.split('/').pop()}`,
     });
   }
-  // 下一步 = 第一个未完成阶段；用户已越过的可选阶段不再主推
-  const hits = STAGES.map((stage) => stage.probe(paths));
+  // 下一步 = 第一个未完成阶段；用户已越过的可选阶段不再主推。
+  // 资料分析未验收且对象尚未提取时不算完成，不会主推对象提取（issue #362）
+  const researchReview = meta?.research_review || null;
+  const hits = stageHits(paths, researchReview);
   const lastHit = hits.lastIndexOf(true);
   let nextIndex = -1;
   for (let i = 0; i < STAGES.length; i += 1) {
@@ -155,7 +158,10 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
   }
   if (nextIndex >= 0) {
     const next = STAGES[nextIndex];
-    for (const action of next.actions) {
+    // 报告已生成但没通过验收时先核验，而不是先推重新调研
+    const actions =
+      next.key === 'research' ? orderResearchActions(next.actions, researchReview) : next.actions;
+    for (const action of actions) {
       if (out.length >= 4) break;
       out.push({
         key: `st-${next.key}-${action.label}`,
