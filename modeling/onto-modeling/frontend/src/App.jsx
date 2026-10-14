@@ -99,6 +99,10 @@ export default function App() {
   const [transferBusy, setTransferBusy] = useState(false);
   const transferInputRef = useRef(null);
   const importInputRef = useRef(null);
+  // 删除确认与提示用 hook 实例（随首页渲染）：静态 Modal.confirm / message.* 拿不到
+  // ConfigProvider 的主题与语言配置
+  const [modal, modalContext] = Modal.useModal();
+  const [messageApi, messageContext] = message.useMessage();
 
   // ---- 手写 hash 路由：刷新/深链回到原页面 ----
   useEffect(() => {
@@ -233,20 +237,23 @@ export default function App() {
   };
 
   const removeProject = (item) => {
-    Modal.confirm({
+    modal.confirm({
       title: `删除任务「${item.name}」？`,
-      content: '将移入回收目录（软删除），数据与版本历史保留，可人工找回。',
-      okText: '删除',
+      content:
+        '无论任务当前状态如何都会直接删除：进行中的建模会话、排队中的消息和数据评测立即强制终止。'
+        + '删除后不可恢复，工作区文件、对话记录与版本历史将被永久清除。',
+      okText: '确认删除',
       okButtonProps: { danger: true },
       onOk: async () => {
         try {
           await api.deleteProject(item.id);
         } catch (error) {
           // antd 只把 onOk 的 rejection 打到 console，不提示用户；不接这一下，
-          // 403/409/500 都表现为"点了删除没反应"。提示后继续抛出，让弹窗留着可重试
-          message.error(error.message || '删除失败');
+          // 403/404/500 都表现为"点了删除没反应"。提示后继续抛出，让弹窗留着可重试
+          messageApi.error(error.message || '删除失败');
           throw error;
         }
+        messageApi.success(`已删除「${item.name}」`);
         refreshProjects();
         if (projectId === item.id) nav('#/');
       },
@@ -458,6 +465,8 @@ export default function App() {
 
     return (
       <div className="mwr shell">
+        {modalContext}
+        {messageContext}
         <div className="topbar">
           <div className="logo"><span className="mk">知</span>知识工程建模工作台</div>
           <span className="crumb">项目</span>

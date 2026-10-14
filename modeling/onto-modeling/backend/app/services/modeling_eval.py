@@ -449,8 +449,12 @@ def read_state(root: Path) -> dict:
 
 
 def _write_state(root: Path, **fields: Any) -> None:
+    # 工作区已不在（项目被删除）时不落状态：编排线程可能晚于删除才收尾，
+    # 照常建目录会在原位置重建出只有状态文件的残壳
+    if not root.is_dir():
+        return
     path = _state_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(exist_ok=True)
     state = read_state(root)
     state.update(fields, ts=int(time.time()))
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -585,7 +589,7 @@ def _write_report(
             f"- **判分理由**：{item.get('reason', '')}",
             "",
         ]
-    (root / "reports").mkdir(parents=True, exist_ok=True)
+    (root / "reports").mkdir(exist_ok=True)  # 不带 parents：项目已删除时不重建工作区
     (root / rel).write_text("\n".join(lines), encoding="utf-8")
     terminal = {"status": "failed", "message": (
         f"{failure}（已执行 {executed}/{len(results)} 条，报告已生成）"[:300]
@@ -675,12 +679,19 @@ def _poll_round(
     def tok() -> str:
         return _live_tokens.get(project_id) or token
 
+    def check_stop() -> None:
+        # 停止请求可能早于轮次坐标落盘（项目删除后更是再也写不进状态），停止方据状态
+        # 取消不到这一轮：由手握坐标的编排自己取消。停止方已取消过的，modeling 回 409，无害
+        if project_id in _stop_requested:
+            cancel_round(mp_project, round_id, tok())
+        _check_stop(project_id)
+
     deadline = time.time() + ROUND_TIMEOUT_SECONDS
     details: dict = {}
     auth_wait_until: float | None = None
     while time.time() < deadline:
         time.sleep(POLL_INTERVAL_SECONDS)
-        _check_stop(project_id)
+        check_stop()
         try:
             details = _http("GET", f"/api/projects/{mp_project}/rounds/{round_id}", tok())
         except urllib.error.HTTPError as exc:
@@ -696,7 +707,7 @@ def _poll_round(
                 "重新打开项目页并重跑评测即可续接收取结果"
             ) from exc
         auth_wait_until = None
-        _check_stop(project_id)  # 取消请求已落 stopped 状态，不再覆写进度
+        check_stop()  # 取消请求已落 stopped 状态，不再覆写进度
         round_info = details.get("round") or {}
         _write_state(
             root,
@@ -820,20 +831,9 @@ def request_stop(project_id: str, root: Path, token: str) -> dict:
     mp_project, round_id = state.get("modeling_project"), state.get("round_id")
     cancelled, detail = False, ""
     if mp_project and round_id:
-        try:
-            _http(
-                "POST",
-                f"/api/projects/{mp_project}/evaluate/cancel",
-                _live_tokens.get(project_id) or token,
-                body={"roundId": round_id},
-                timeout=30,
-            )
-            cancelled = True
-        except urllib.error.HTTPError as exc:
-            if exc.code not in (404, 409):
-                detail = str(getattr(exc, "detail", "") or exc)
-        except Exception as exc:  # 网络不通等：本地状态照样收敛
-            detail = str(exc)
+        cancelled, detail = cancel_round(
+            mp_project, round_id, _live_tokens.get(project_id) or token
+        )
 
     message = (
         STOPPED_MESSAGE if not detail
@@ -841,6 +841,47 @@ def request_stop(project_id: str, root: Path, token: str) -> dict:
     )
     _write_state(root, status="stopped", message=message)
     return {"stopped": True, "cancelled": cancelled, "message": message}
+
+
+def cancel_round(mp_project: str, round_id: str, token: str) -> tuple[bool, str]:
+    """取消 modeling 侧评测轮次，返回（是否取消、未确认的原因）。
+
+    404/409（轮次不存在或已结束）视为目标状态已达成：未取消，但也不算失败。
+    """
+    try:
+        _http(
+            "POST",
+            f"/api/projects/{mp_project}/evaluate/cancel",
+            token,
+            body={"roundId": round_id},
+            timeout=30,
+        )
+        return True, ""
+    except urllib.error.HTTPError as exc:
+        if exc.code in (404, 409):
+            return False, ""
+        return False, str(getattr(exc, "detail", "") or exc)
+    except Exception as exc:  # 网络不通等：由调用方决定如何呈现
+        return False, str(exc)
+
+
+def abort_for_delete(project_id: str, root: Path, token: str) -> tuple[str, str, str] | None:
+    """删除项目时终止评测：只改内存标记、读状态，不发网络请求，立即返回。
+
+    进程内有编排就置协作取消标记——刚起步、状态还没写成 running 的也算，否则它会在
+    项目删除后照常去 modeling 侧发起一轮没人收取的评测。状态里有未完成的轮次时，
+    返回取消它所需的（modeling 项目、轮次、token），由调用方放到响应之后调用 cancel_round。
+    失败、已停止的也算：轮询因凭据过期或超时失败、停止时取消未确认，modeling 侧都可能
+    还在跑；其实已结束的，modeling 回 409，无害。
+    """
+    if project_id in _running:
+        _stop_requested.add(project_id)
+    state = read_state(root)
+    mp_project, round_id = state.get("modeling_project"), state.get("round_id")
+    unfinished = state.get("status") in ("running", "interrupted", "failed", "stopped")
+    if unfinished and mp_project and round_id:
+        return mp_project, round_id, _live_tokens.get(project_id) or token
+    return None
 
 
 def can_resume(root: Path) -> bool:

@@ -63,6 +63,11 @@ _RUNNER_STARTED = False
 _RUNNER_LOCK: asyncio.Lock | None = None
 
 
+def shadow_dir(project_id: str) -> Path:
+    """框架私有工件区（见模块文档「目录分层」）；删除项目时随之清除。"""
+    return Path(config.DATA_DIR) / "jiuwen" / project_id
+
+
 def model_config() -> dict:
     """Jiuwen 引擎的 OpenAI 兼容模型配置：UI 配置优先，env 兜底。"""
     cfg = {
@@ -495,7 +500,7 @@ class JiuwenEngine:
             timeout=300.0,
         )
         # 框架私有工件区与项目 git 工作区分离（官方 cwd/workspace 分层）
-        shadow = Path(config.DATA_DIR) / "jiuwen" / self._ctx.project_id
+        shadow = shadow_dir(self._ctx.project_id)
         shadow.mkdir(parents=True, exist_ok=True)
         # 文件沙箱三根：项目区 + 私有工件区 + 资产目录（工作区 .claude/CLAUDE.md
         # 是指向资产的符号链接，沙箱按 resolve 后路径判定，不加资产根则读不穿；

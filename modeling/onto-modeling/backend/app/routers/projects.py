@@ -4,14 +4,14 @@ import re
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from .. import config
 from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets, package_mapping
 from ..services import modeling_cleanup, modeling_mcp, package_archive
-from ..services.workspace import WorkspaceError, WorkspaceManager
+from ..services.workspace import WorkspaceError, WorkspaceManager, remove_tree
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 workspaces = WorkspaceManager(config.DATA_DIR, config.ASSETS_DIR)
@@ -269,74 +269,73 @@ def rename_project(project_id: str, body: RenameBody, request: Request):
     return workspaces.rename_project(project_id, body.name)
 
 
-# 忙碌时的用户提示：排队并没有在跑，套用"正在执行任务"会让人以为要等自己的活干完
-BUSY_HINTS = {
-    "agent-session-queued": "项目正在排队等待会话槽位，请等待开始并完成后再删除",
-}
-BUSY_HINT_DEFAULT = "项目正在执行任务，请等待完成后再删除"
-
-
-def _running_operation(project_id: str, root: Path) -> str | None:
-    """项目里进行中的任务名；空闲返回 None。
-
-    running/queued 与评测三类之外一律放行，且都不会把项目锁成永远删不掉：
-    等待权限确认卡时会话仍是 running，但卡片有超时自动拒绝；排队会在别的会话让出
-    槽位时出队，用户也能用"打断"立即退出队列；评测走 status_view 而不是
-    read_state，它会把"进程重启后遗留的 running"收敛为 interrupted。
-    """
-    from ..services import modeling_eval
-    from ..services.agent_sessions import manager
-
-    session = manager.get(project_id)
-    if session is not None:
-        if session.state == "running":
-            return "agent-session"
-        if session.state == "queued":
-            return "agent-session-queued"
-    try:
-        if modeling_eval.status_view(project_id, root).get("status") == "running":
-            return "modeling-eval"
-    except Exception:  # 状态读不出来不该挡住删除，否则坏一个状态文件就删不掉项目
-        pass
-    return None
-
-
 @router.delete("/{project_id}")
-async def delete_project(project_id: str, request: Request):
+async def delete_project(project_id: str, request: Request, background: BackgroundTasks):
+    """永久删除项目（不进回收站）。不看项目状态，二次确认由前端弹窗完成。
+
+    响应前只做快的：硬杀会话（含排队）、给评测编排置取消标记、把工作区移出列表、
+    清掉存着凭据的配置。远端评测轮次取消、modeling 侧级联删除与目录递归删除都要等
+    网络或磁盘，放到响应之后（_finish_delete）。
+    """
+    from ..services import modeling_eval, studio
     from ..services.agent_sessions import manager
 
     root = ensure_owner(project_id, request)
-    # 忙碌判定放在权限校验之后：无权删除的人不该从错误码里探出项目在不在跑
-    operation = _running_operation(project_id, root)
-    if operation:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "code": "PROJECT_BUSY",
-                "error": BUSY_HINTS.get(operation, BUSY_HINT_DEFAULT),
-                "operation": operation,
-            },
-        )
     meta = workspaces.get_project(project_id)  # 删除后读不到，级联清理要用，先取
-    try:
-        await manager.close(project_id)
-    except Exception:  # 会话回收失败不阻断删除，否则有活跃会话的项目永远删不掉
-        pass
-    result = workspaces.delete_project(project_id)
+    eval_round = modeling_eval.abort_for_delete(project_id, root, _modeling_token(request))
+    await manager.discard(project_id)
+    staged = await asyncio.to_thread(workspaces.stage_delete, project_id)
+    await manager.discard(project_id)  # 移走期间并发发消息新建的会话一并清掉
+    eval_data_sources.purge_project(project_id)
+    studio.purge_project(project_id)
+    background.add_task(_finish_delete, project_id, staged, meta, request, eval_round)
+    return {"deleted": project_id}
+
+
+async def _finish_delete(
+    project_id: str,
+    staged: Path,
+    meta: dict,
+    request: Request,
+    eval_round: tuple[str, str, str] | None,
+) -> None:
+    """删除收尾（响应之后执行）。各项互不依赖，并发进行，一项失败不拖累其余；
+    没清干净的记入运维错误日志（工作区目录的残留由下次启动清扫兜底）。"""
+    from ..services import error_log, modeling_eval
+    from ..services.engines import jiuwen
+
+    jobs = {
+        "工作区目录": asyncio.to_thread(workspaces.purge_staged, staged),
+        "引擎工件区": asyncio.to_thread(remove_tree, jiuwen.shadow_dir(project_id)),
+    }
+    if eval_round:
+        jobs["评测轮次取消"] = asyncio.to_thread(modeling_eval.cancel_round, *eval_round)
     if meta.get("modeling_project_id"):
-        try:
-            modeling_mcp.delete_project(meta, request, operation="project_delete")
-        except modeling_mcp.ModelingMcpError as exc:
-            if exc.status == 404:
-                result["modeling_cleanup"] = "already_deleted"
-            else:
-                modeling_cleanup.enqueue(
-                    meta,
-                    reason=str(exc),
-                    operation="project_delete",
-                )
-                result["modeling_cleanup"] = "pending"
-    return result
+        jobs["modeling 侧项目"] = asyncio.to_thread(_cascade_modeling_delete, meta, request)
+    results = await asyncio.gather(*jobs.values(), return_exceptions=True)
+    for label, result in zip(jobs, results):
+        problem = _cleanup_problem(result)
+        if problem:
+            error_log.log(project_id, "project_delete", f"{label}未清理完成：{problem}")
+
+
+def _cleanup_problem(result) -> str:
+    """收尾结果 → 未完成的原因（空串表示已完成）。"""
+    if isinstance(result, BaseException):
+        return str(result) or type(result).__name__
+    if isinstance(result, tuple):  # cancel_round：（是否已取消，未确认的原因）
+        return result[1]
+    return "仍有文件被占用" if result is False else ""
+
+
+def _cascade_modeling_delete(meta: dict, request: Request) -> None:
+    """级联删除 modeling 侧关联项目；失败转入持久化重试队列。"""
+    try:
+        modeling_mcp.delete_project(meta, request, operation="project_delete")
+    except Exception as exc:
+        if isinstance(exc, modeling_mcp.ModelingMcpError) and exc.status == 404:
+            return  # 那边早已不在
+        modeling_cleanup.enqueue(meta, reason=str(exc), operation="project_delete")
 
 
 @router.post("/{project_id}/archive")

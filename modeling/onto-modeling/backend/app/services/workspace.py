@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -30,6 +32,10 @@ from .. import config
 from . import package_mapping
 
 META_FILE = ".onto-web.json"  # 历史文件名保留：存量项目的识别键（ADR-0006）
+PURGE_MARKER = ".onto-web.purging"  # 原地清除兜底：顶替 META_FILE，重启清扫据此认领残留
+# 删除时 Windows 上刚被杀的进程要片刻才释放目录句柄，rename/rmtree 短暂重试
+_DELETE_RETRIES = 5
+_DELETE_RETRY_SECONDS = 0.2
 SKIP_DIRS = {".git", ".ontology-state", ".obsidian"}
 RESOURCE_SUBDIRS = {"diagrams", "excel", "others"}
 # 已发布知识包导入时的原包留底区：随 git 版本化（跨环境迁移要带走），
@@ -618,14 +624,74 @@ class WorkspaceManager:
         _git(dest_root, "commit", "-m", f"clone: 自 {project_id} 克隆", "--allow-empty")
         return meta
 
-    def delete_project(self, project_id: str) -> dict:
-        """软删除：移入回收目录，保留 git 历史，可人工找回。"""
-        root = self.project_root(project_id)
-        trash = self.workspaces_dir.parent / "trash"
-        trash.mkdir(parents=True, exist_ok=True)
-        dest = trash / f"{project_id}-{int(time.time())}"
-        shutil.move(str(root), str(dest))
-        return {"trashed_to": str(dest)}
+    def delete_project(self, project_id: str) -> None:
+        """永久删除：工作区连同 git 历史一并清除，不进回收站。
+
+        删除接口把两步拆开（stage_delete 后立即响应，purge_staged 放到响应之后），
+        这里供同步场景（导入、开通失败的回滚）一次做完。
+        """
+        self.purge_staged(self.stage_delete(project_id))
+
+    def purge_dir(self) -> Path:
+        return self.workspaces_dir.parent / ".purging"
+
+    def stage_delete(self, project_id: str) -> Path:
+        """把工作区移出 workspaces/，返回待清除的路径；返回即视为已删除。
+
+        同盘 rename 是原子的：项目立刻从列表和所有接口消失（404），耗时的递归删除
+        交给 purge_staged。目录被占用时 rename 会失败（Windows），短暂重试；仍不成
+        （或跨文件系统）就原地把元数据换成清除标记——对外同样立即消失，目录原地清除。
+        """
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            staged = self.purge_dir() / f"{project_id}-{uuid.uuid4().hex[:8]}"
+            staged.parent.mkdir(parents=True, exist_ok=True)
+            for attempt in range(_DELETE_RETRIES):
+                try:
+                    os.replace(root, staged)
+                    return staged
+                except OSError as exc:
+                    if exc.errno == errno.EXDEV or attempt + 1 == _DELETE_RETRIES:
+                        break
+                    time.sleep(_DELETE_RETRY_SECONDS)
+            try:
+                os.replace(root / META_FILE, root / PURGE_MARKER)
+            except OSError as exc:
+                raise WorkspaceError(
+                    "项目目录被占用，暂时无法删除，请稍后重试", 409, "project_busy"
+                ) from exc
+            return root
+
+    def purge_staged(self, path: Path) -> bool:
+        """递归删除 stage_delete 交出的目录；删不净（文件仍被占用）时留给重启清扫。"""
+        if path.parent not in (self.purge_dir(), self.workspaces_dir):
+            raise ValueError(f"拒绝清除工作区之外的路径：{path}")
+        for attempt in range(_DELETE_RETRIES):
+            if remove_tree(path):
+                return True
+            if attempt + 1 < _DELETE_RETRIES:
+                time.sleep(_DELETE_RETRY_SECONDS)
+        if path.parent == self.workspaces_dir:
+            # 原地清除删到一半时标记文件可能已被删掉：补回，否则重启清扫认不出这个残留
+            try:
+                (path / PURGE_MARKER).touch()
+            except OSError:
+                pass
+        return False
+
+    def purge_leftovers(self) -> int:
+        """启动清扫：清除上次没删净的残留（.purging/ 下的条目、带清除标记的原地目录）。"""
+        try:
+            purging = self.purge_dir()
+            leftovers = list(purging.iterdir()) if purging.is_dir() else []
+            leftovers += [
+                entry
+                for entry in self.workspaces_dir.iterdir()
+                if (entry / PURGE_MARKER).exists() and not (entry / META_FILE).exists()
+            ]
+        except OSError:
+            return 0
+        return sum(1 for path in leftovers if self.purge_staged(path))
 
     EXPORT_ONTOLOGY_DIRS = ("ontology", "research", "reports", "knowledge")
 
@@ -1280,7 +1346,7 @@ class WorkspaceManager:
         _git(root, "commit", "-m", f"knowledge: 删除 {rel_posix}{who}", "--allow-empty")
         return {"deleted": rel_path}
 
-    # ---- 回收站 ----
+    # ---- 回收站（仅存量：删除已改为永久删除，这里只管旧版软删除留下的条目） ----
 
     def trash_dir(self) -> Path:
         return self.workspaces_dir.parent / "trash"
@@ -1517,3 +1583,38 @@ def _git(cwd: Path, *args: str) -> str:
     if result.returncode != 0:
         raise WorkspaceError(f"git {args[0]} 失败: {result.stderr.strip()}", 500)
     return result.stdout
+
+
+def remove_tree(path: Path) -> bool:
+    """尽力递归删除，返回是否已删净。
+
+    链接（符号链接、Windows 目录联接）只删链接本身：工作区里的 .claude 等指向
+    所有项目共用的资产目录，跟进去会把资产一起删掉。只读文件（git 对象）去掉只读位再删。
+    """
+    try:
+        if _is_link(path) or path.is_file():
+            os.unlink(path)
+        elif path.is_dir():
+            shutil.rmtree(path, onerror=_force_remove)
+    except OSError:
+        pass
+    return not os.path.lexists(path)
+
+
+def _force_remove(func, path, _exc_info) -> None:
+    if func not in (os.unlink, os.remove, os.rmdir) or _is_link(path):
+        return
+    try:
+        os.chmod(path, os.lstat(path).st_mode | stat.S_IWRITE)
+        func(path)
+    except OSError:
+        pass
+
+
+def _is_link(path) -> bool:
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    reparse = getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    return stat.S_ISLNK(st.st_mode) or bool(reparse)
