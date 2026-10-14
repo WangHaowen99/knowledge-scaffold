@@ -358,3 +358,16 @@ def mark_used(project_id: str, source_id: str) -> None:
             source["used_at"] = int(time.time())
             _save(project_id, sources)
             return
+
+
+def purge_project(project_id: str) -> None:
+    """删除项目时清除其全部数据源配置：里面存着连接凭据，不得留在盘上。"""
+    try:
+        path = _file(project_id)
+    except DataSourceError:
+        return
+    for target in (path, path.with_suffix(".tmp")):
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            pass

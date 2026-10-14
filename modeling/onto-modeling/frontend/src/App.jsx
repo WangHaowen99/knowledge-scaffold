@@ -34,6 +34,7 @@ import CenterPane from './components/CenterPane.jsx';
 import ChatPane from './components/ChatPane.jsx';
 import LeftPane from './components/LeftPane.jsx';
 import LoginPage from './components/LoginPage.jsx';
+import { MAX_NAME_LENGTH, useNameConflict } from './components/NameConflictDialog.jsx';
 import { usePackagePublish } from './components/PublishCheckDialog.jsx';
 import CreatePage from './components/home/CreatePage.jsx';
 import './components/home/modeling-home.css';
@@ -80,6 +81,7 @@ export default function App() {
   const [engineWiz, setEngineWiz] = useState(null); // {project, engine, available}
   const [initialFiles, setInitialFiles] = useState(null); // {projectId, files} 新建项目待发送的初始资料
   const homePublish = usePackagePublish(); // 首页卡片菜单发布：无聊天区，只给表级修复与降级
+  const nameConflict = useNameConflict(); // 导入 / 重命名 / 克隆的同名改名
   // 移动端：≤768px 时工作台切换为单栏 + 底部页签
   const [isMobile, setIsMobile] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches,
@@ -100,6 +102,10 @@ export default function App() {
   const [transferBusy, setTransferBusy] = useState(false);
   const transferInputRef = useRef(null);
   const importInputRef = useRef(null);
+  // 删除确认与提示用 hook 实例（随首页渲染）：静态 Modal.confirm / message.* 拿不到
+  // ConfigProvider 的主题与语言配置
+  const [modal, modalContext] = Modal.useModal();
+  const [messageApi, messageContext] = message.useMessage();
 
   // ---- 手写 hash 路由：刷新/深链回到原页面 ----
   useEffect(() => {
@@ -209,46 +215,121 @@ export default function App() {
     return false;
   };
 
-  const importInspect = async () => {
-    setImportWiz((w) => ({ ...w, importing: true }));
+  // 名称作参数传入：同名冲突改名重试时，向导状态里还是旧名称。失败抛出，由调用方分流
+  const inspectImportAs = async (name) => {
+    const { file } = importWiz;
+    setImportWiz((w) => w && { ...w, name, importing: true });
     try {
-      const summary = await api.importProject(importWiz.name, importWiz.file, true);
-      setImportWiz((w) => ({ ...w, step: 1, summary, importing: false }));
+      const summary = await api.importProject(name, file, true);
+      setImportWiz((w) => w && { ...w, step: 1, summary, importing: false });
     } catch (error) {
-      message.error(error.message);
-      setImportWiz((w) => ({ ...w, importing: false }));
+      setImportWiz((w) => w && { ...w, importing: false });
+      throw error;
+    }
+  };
+
+  const importInspect = async () => {
+    if (!importWiz.name.trim()) {
+      messageApi.warning('请输入任务名称');
+      return;
+    }
+    try {
+      await inspectImportAs(importWiz.name.trim());
+    } catch (error) {
+      const texts = { confirmText: '改名并检查', busyText: '检查中…' };
+      if (!nameConflict.offer(error, inspectImportAs, texts)) messageApi.error(error.message);
+    }
+  };
+
+  const confirmImportAs = async (name) => {
+    const { file } = importWiz;
+    setImportWiz((w) => w && { ...w, name, importing: true });
+    try {
+      const created = await api.importProject(name, file);
+      setImportWiz(null);
+      // 先等列表刷新拿到新任务再进入，否则 project 解析为空会被深链守卫送回首页
+      await refreshProjects();
+      nav(`#/p/${created.id}`);
+      message.success('导入完成');
+    } catch (error) {
+      setImportWiz((w) => w && { ...w, importing: false });
+      throw error;
     }
   };
 
   const importConfirm = async () => {
-    setImportWiz((w) => ({ ...w, importing: true }));
     try {
-      const created = await api.importProject(importWiz.name, importWiz.file);
-      setImportWiz(null);
-      refreshProjects();
-      nav(`#/p/${created.id}`);
-      message.success('导入完成');
+      await confirmImportAs(importWiz.name.trim());
     } catch (error) {
-      message.error(error.message);
-      setImportWiz((w) => ({ ...w, importing: false }));
+      const texts = { confirmText: '改名并导入', busyText: '导入中…' };
+      if (!nameConflict.offer(error, confirmImportAs, texts)) messageApi.error(error.message);
+    }
+  };
+
+  const transferImportAs = async (file, projectName = '') => {
+    const created = await api.transferImport(file, projectName);
+    await refreshProjects(); // 同上：先拿到新任务再进入
+    nav(`#/p/${created.id}`);
+    message.success('迁移导入完成（版本历史已保留）');
+  };
+
+  // 重命名 / 克隆：名称作参数传入，同名冲突改名后用新名称重试。失败抛出，由调用方分流
+  const renameAs = async (id, name) => {
+    await api.renameProject(id, name);
+    setRenaming(null);
+    refreshProjects();
+  };
+
+  const submitRename = async () => {
+    const { id } = renaming;
+    const name = renaming.name.trim();
+    if (!name) {
+      messageApi.warning('请输入任务名称');
+      return;
+    }
+    try {
+      await renameAs(id, name);
+    } catch (error) {
+      const texts = { confirmText: '改名并保存', busyText: '保存中…' };
+      const retry = (nextName) => renameAs(id, nextName);
+      if (!nameConflict.offer(error, retry, texts)) messageApi.error(error.message);
+    }
+  };
+
+  const cloneAs = async (item, name = '') => {
+    const clone = await api.cloneProject(item.id, name);
+    refreshProjects();
+    messageApi.success(`已克隆为「${clone.name}」`);
+  };
+
+  const cloneProject = async (item) => {
+    try {
+      await cloneAs(item);
+    } catch (error) {
+      const texts = { confirmText: '改名并克隆', busyText: '克隆中…' };
+      const retry = (name) => cloneAs(item, name);
+      if (!nameConflict.offer(error, retry, texts)) messageApi.error(error.message);
     }
   };
 
   const removeProject = (item) => {
-    Modal.confirm({
+    modal.confirm({
       title: `删除任务「${item.name}」？`,
-      content: '将移入回收目录（软删除），数据与版本历史保留，可人工找回。',
-      okText: '删除',
+      content:
+        '无论任务当前状态如何都会直接删除：进行中的建模会话、排队中的消息和数据评测立即强制终止。'
+        + '删除后不可恢复，工作区文件、对话记录与版本历史将被永久清除。',
+      okText: '确认删除',
       okButtonProps: { danger: true },
       onOk: async () => {
         try {
           await api.deleteProject(item.id);
         } catch (error) {
           // antd 只把 onOk 的 rejection 打到 console，不提示用户；不接这一下，
-          // 403/409/500 都表现为"点了删除没反应"。提示后继续抛出，让弹窗留着可重试
-          message.error(error.message || '删除失败');
+          // 403/404/500 都表现为"点了删除没反应"。提示后继续抛出，让弹窗留着可重试
+          messageApi.error(error.message || '删除失败');
           throw error;
         }
+        messageApi.success(`已删除「${item.name}」`);
         refreshProjects();
         if (projectId === item.id) nav('#/');
       },
@@ -274,15 +355,7 @@ export default function App() {
       domEvent.stopPropagation();
       if (key === 'open') nav(`#/p/${item.id}`);
       if (key === 'rename') setRenaming({ id: item.id, name: item.name });
-      if (key === 'clone') {
-        try {
-          const clone = await api.cloneProject(item.id);
-          refreshProjects();
-          message.success(`已克隆为「${clone.name}」`);
-        } catch (error) {
-          message.error(error.message);
-        }
-      }
+      if (key === 'clone') cloneProject(item);
       if (key === 'engine') {
         try {
           const data = await api.getProjectEngine(item.id);
@@ -460,6 +533,8 @@ export default function App() {
 
     return (
       <div className="mwr shell">
+        {modalContext}
+        {messageContext}
         <div className="topbar">
           <div className="logo"><span className="mk">知</span>知识工程建模工作台</div>
           <span className="crumb">项目</span>
@@ -484,12 +559,11 @@ export default function App() {
                 if (!file) return;
                 setTransferBusy(true);
                 try {
-                  const created = await api.transferImport(file);
-                  refreshProjects();
-                  nav(`#/p/${created.id}`);
-                  message.success('迁移导入完成（版本历史已保留）');
+                  await transferImportAs(file);
                 } catch (error) {
-                  message.error(error.message);
+                  const retry = (name) => transferImportAs(file, name);
+                  const texts = { confirmText: '改名并导入', busyText: '导入中…' };
+                  if (!nameConflict.offer(error, retry, texts)) messageApi.error(error.message);
                 } finally {
                   setTransferBusy(false);
                 }
@@ -592,18 +666,16 @@ export default function App() {
           open={!!renaming}
           title="重命名任务"
           onCancel={() => setRenaming(null)}
-          onOk={async () => {
-            await api.renameProject(renaming.id, renaming.name);
-            setRenaming(null);
-            refreshProjects();
-          }}
+          onOk={() => submitRename()}
         >
           <Input
             value={renaming?.name}
+            maxLength={MAX_NAME_LENGTH}
             onChange={(e) => setRenaming({ ...renaming, name: e.target.value })}
           />
         </Modal>
         {homePublish.dialog}
+        {nameConflict.dialog}
         <Modal
           title={engineWiz ? `会话引擎 · ${engineWiz.project.name}` : ''}
           open={!!engineWiz}
@@ -737,10 +809,11 @@ export default function App() {
                   <Input
                     addonBefore="任务名称"
                     value={importWiz.name}
+                    maxLength={MAX_NAME_LENGTH}
                     onChange={(e) => setImportWiz({ ...importWiz, name: e.target.value })}
                     style={{ marginBottom: 16 }}
                   />
-                  <Button type="primary" loading={importWiz.importing} onClick={importInspect}>
+                  <Button type="primary" loading={importWiz.importing} onClick={() => importInspect()}>
                     检查内容
                   </Button>
                 </>
@@ -813,7 +886,7 @@ export default function App() {
                     type="primary"
                     loading={importWiz.importing}
                     disabled={importWiz.summary.blockers?.length > 0}
-                    onClick={importConfirm}
+                    onClick={() => importConfirm()}
                   >
                     确认导入
                   </Button>{' '}

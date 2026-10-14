@@ -166,6 +166,15 @@ def clear_resume_id(project_id: str) -> None:
         pass
 
 
+def purge_history(project_id: str) -> None:
+    """删除项目时清除事件历史与续接点：永久删除不留可回放的对话。"""
+    for path in (_history_path(project_id), _meta_path(project_id)):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 # 打断的应答超时：引擎/CLI 悬死（如网关调用无响应）时优雅打断永远等不到应答，
 # 超时即硬终止引擎（续接点保留，下一条消息 resume）——保证"停止"按钮总能停
 INTERRUPT_TIMEOUT_SECONDS = 10
@@ -205,6 +214,7 @@ class Session:
     resume_attempted: bool = False
     last_activity: float = field(default_factory=time.time)
     round_base_commit: str = ""  # 本轮起点 HEAD，用于 result 后产出"产物变更"事件
+    discarded: bool = False  # 项目已删除：事件不再落盘，也不再申请槽位
 
     @property
     def client(self) -> Any:
@@ -220,11 +230,12 @@ class Session:
             return
         event["seq"] = len(self.events)
         self.events.append(event)
-        try:
-            with open(_history_path(self.project_id), "a", encoding="utf-8") as f:
-                f.write(json.dumps(event, ensure_ascii=False) + "\n")
-        except OSError:
-            pass  # 落盘失败不阻断会话
+        if not self.discarded:  # 已删除项目的历史文件已清除，再写会重建出残留
+            try:
+                with open(_history_path(self.project_id), "a", encoding="utf-8") as f:
+                    f.write(json.dumps(event, ensure_ascii=False) + "\n")
+            except OSError:
+                pass  # 落盘失败不阻断会话
         for queue in list(self.subscribers):
             queue.put_nowait(event)
 
@@ -272,12 +283,36 @@ def _expire_orphan_permissions(session: "Session") -> None:
         )
 
 
+async def _stop_engine(engine: Any) -> None:
+    """断开引擎；CLI 悬死不应答时超时硬杀，保证调用方总能返回。"""
+    # disconnect 要等 CLI 应答，CLI 悬死时会永久挂起，并把 _lock 一起拖住——
+    # 走 close() 的调用方（如删除项目）因此永远不返回。超时按 interrupt 同样的方式硬杀。
+    try:
+        await asyncio.wait_for(engine.disconnect(), timeout=INTERRUPT_TIMEOUT_SECONDS)
+    except Exception:  # 含 wait_for 的 TimeoutError
+        await _kill_engine(engine)
+
+
+async def _kill_engine(engine: Any) -> None:
+    """硬终止引擎，不等 CLI 应答。"""
+    try:
+        await asyncio.wait_for(engine.kill(), timeout=KILL_TIMEOUT_SECONDS)
+    except Exception:
+        pass
+
+
 class SessionManager:
     def __init__(self):
         self._sessions: dict[str, Session] = {}  # project_id -> session
         self._waiters: list[str] = []  # 等待会话槽位的项目（FIFO）
         self._lock = asyncio.Lock()
         self._reaper_task: asyncio.Task | None = None
+        self._tasks: set[asyncio.Task] = set()  # 后台收尾任务的强引用，免得执行中被回收
+
+    def _spawn(self, coro) -> None:
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     # ---- 查询 ----
 
@@ -360,7 +395,7 @@ class SessionManager:
     async def _request_slot(self, session: Session) -> None:
         """为无引擎的会话申请槽位：够用直接连，可驱逐则驱逐，否则排队。"""
         async with self._lock:
-            if session.is_connecting():
+            if session.discarded or session.is_connecting():
                 return
             if self.active_count() < config.MAX_ACTIVE_SESSIONS:
                 self._start_connect(session)
@@ -368,7 +403,8 @@ class SessionManager:
             victim = self._pick_idle_victim()
             if victim is not None:
                 await self._recycle(victim)
-                self._start_connect(session)
+                if not session.discarded:  # 驱逐期间项目被删除：不再为它连接
+                    self._start_connect(session)
                 return
             if session.project_id not in self._waiters:
                 self._waiters.append(session.project_id)
@@ -402,6 +438,8 @@ class SessionManager:
         project_id = session.project_id
 
         def save_token(token: str) -> None:
+            if session.discarded:  # 续接点文件已随项目清除
+                return
             session.sdk_session_id = token
             save_resume_id(project_id, token)
 
@@ -429,6 +467,11 @@ class SessionManager:
         try:
             engine = self._make_engine(session)
             resumed = await engine.connect()
+            if self._sessions.get(project_id) is not session:
+                # 连接期间会话已被关闭（如删除项目）：晚到的引擎没人认领，不当场断开就成了
+                # 游离子进程——不占池上限，也不会被空闲回收。项目已删除时直接硬杀
+                await (_kill_engine if session.discarded else _stop_engine)(engine)
+                return
             session.resume_attempted = resumed
             session.engine = engine
             session.reader_task = asyncio.create_task(self._read_loop(session))
@@ -448,6 +491,8 @@ class SessionManager:
                 await engine.send(prompt)
             session.set_state("running" if prompts else "idle")
         except Exception as exc:
+            if session.discarded:  # 项目已删除，工作区没了连接失败是预期内的，不报错
+                return
             error_log.log(project_id, "session_connect", str(exc))
             session.engine = None
             session.broadcast({"type": "session_error", "error": FRIENDLY_ERROR})
@@ -492,15 +537,7 @@ class SessionManager:
         engine, session.engine = session.engine, None
         if engine is None:
             return
-        # disconnect 要等 CLI 应答，CLI 悬死时会永久挂起，并把 _lock 一起拖住——
-        # 走 close() 的调用方（如删除项目）因此永远不返回。超时按 interrupt 同样的方式硬杀。
-        try:
-            await asyncio.wait_for(engine.disconnect(), timeout=INTERRUPT_TIMEOUT_SECONDS)
-        except Exception:  # 含 wait_for 的 TimeoutError
-            try:
-                await asyncio.wait_for(engine.kill(), timeout=KILL_TIMEOUT_SECONDS)
-            except Exception:
-                pass
+        await _stop_engine(engine)
 
     async def recycle_project(self, project_id: str) -> bool:
         """运维手动回收：断开引擎但保留续接点（与空闲回收同语义）。"""
@@ -547,6 +584,8 @@ class SessionManager:
         if self._reaper_task:
             self._reaper_task.cancel()
             self._reaper_task = None
+        for task in list(self._tasks):
+            task.cancel()
         self._waiters.clear()
         for session in list(self._sessions.values()):
             async with self._lock:
@@ -565,6 +604,34 @@ class SessionManager:
             await self._recycle(session)
         clear_resume_id(project_id)
         await self._drain_waiters()
+
+    async def discard(self, project_id: str) -> None:
+        """删除项目专用：立即硬杀引擎、退出队列、清除历史，不等 CLI 应答也不等 _lock。
+
+        close() 先排 _lock、再等 CLI 优雅断开（悬死时最长 15 秒）；删除什么都不保留，
+        直接摘掉会话并硬杀。摘除在同一段同步代码里完成，事件循环不会在中途切走，无需加锁。
+        连接中的会话不取消连接任务：引擎连上后由 _connect 发现会话已摘除，当场硬杀。
+        """
+        if project_id in self._waiters:
+            self._waiters.remove(project_id)
+        session = self._sessions.pop(project_id, None)
+        engine = None
+        if session is not None:
+            session.discarded = True
+            session.pending_prompts.clear()
+            for request in list(session.pending_permissions.values()):
+                if not request.future.done():
+                    request.future.set_result({"behavior": "deny", "message": "项目已删除"})
+            if session.reader_task:
+                session.reader_task.cancel()
+            engine, session.engine = session.engine, None
+            session.set_state("closed")  # 在线订阅者收到终态；discarded 后不落盘
+        purge_history(project_id)
+        self._broadcast_queue_positions()
+        if engine is not None:
+            await _kill_engine(engine)
+        # 让出的槽位交给排队者；_drain_waiters 要排 _lock，放后台，删除不等它
+        self._spawn(self._drain_waiters())
 
     # ---- 会话内操作 ----
 
@@ -620,10 +687,7 @@ class SessionManager:
             error_log.log(project_id, "interrupt_force", "打断超时，已硬终止引擎进程")
             if session.reader_task:
                 session.reader_task.cancel()
-            try:
-                await asyncio.wait_for(engine.kill(), timeout=KILL_TIMEOUT_SECONDS)
-            except Exception:
-                pass
+            await _kill_engine(engine)
             session.engine = None
             session.broadcast({"type": "session_interrupted"})
             session.set_state("idle")
