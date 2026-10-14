@@ -469,7 +469,7 @@ function HealthTab() {
   );
 }
 
-// 回收站：软删除项目的可视化恢复
+// 回收站：旧版软删除留下的存量项目的可视化恢复（删除已改为永久删除，不再产生新条目）
 function TrashTab() {
   const [entries, setEntries] = useState(null);
 

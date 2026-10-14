@@ -581,6 +581,15 @@ def _save(project_id: str, name: str, data: dict) -> None:
     )
 
 
+def purge_project(project_id: str) -> None:
+    """删除项目时清除其写锁与草稿。"""
+    for name in ("leases", "drafts"):
+        try:
+            _state_file(project_id, name).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def lease_status(project_id: str, rel_path: str) -> dict | None:
     leases = _load(project_id, "leases")
     lease = leases.get(rel_path)

@@ -599,10 +599,14 @@ def test_stop_request_aborts_orchestration_before_spending(tmp_path, monkeypatch
 
 
 def test_poll_round_exits_on_stop_without_report(tmp_path, monkeypatch):
-    """轮询中被停止：抛 EvalStopped，不落报告、不覆写停止话术。"""
+    """轮询中被停止：编排先取消手里的轮次再抛 EvalStopped，不落报告、不覆写停止话术。
+
+    停止请求可能早于轮次坐标落盘（如删除项目），停止方取消不到这一轮，只能靠编排兜底。
+    """
     import pytest
 
-    StubModeling.calls = []
+    StubModeling.calls, CancelStub.cancels = [], []
+    CancelStub.cancel_status = 200
     CancelStub.round_status = "running"
     server = _serve(CancelStub, tmp_path, monkeypatch)
     try:
@@ -611,6 +615,7 @@ def test_poll_round_exits_on_stop_without_report(tmp_path, monkeypatch):
         with pytest.raises(modeling_eval.EvalStopped):
             modeling_eval._poll_round(pid, root, "t", "mp-1", "r9",
                                       [{"question": "Q1", "groundTruth": "G1"}])
+        assert CancelStub.cancels == [("/api/projects/mp-1/evaluate/cancel", {"roundId": "r9"})]
         assert not list((root / "reports").glob("eval-*.md"))
     finally:
         server.shutdown()
@@ -761,3 +766,16 @@ def test_can_resume_requires_round_coordinates(tmp_path, monkeypatch):
     modeling_eval._write_state(root, modeling_project="mp-1", round_id="r9")
     assert modeling_eval.can_resume(root)
 
+
+def test_write_state_does_not_recreate_deleted_workspace(tmp_path):
+    """项目已删除（工作区已移除）后编排线程才收尾：不得在原位置重建出状态文件残壳。"""
+    root = tmp_path / "gone"
+    modeling_eval._write_state(root, status="stopped", message="停止")
+    assert not root.exists()
+
+
+def test_write_report_does_not_recreate_deleted_workspace(tmp_path):
+    root = tmp_path / "gone"
+    with pytest.raises(FileNotFoundError):
+        modeling_eval._write_report(root, {"id": "r1"}, [])
+    assert not root.exists()

@@ -27,12 +27,17 @@ async def _lifespan(app: FastAPI):
     sweep_interrupted()
     backup_task = asyncio.create_task(backup_scheduler_loop())  # workspace 定期备份
     modeling_cleanup_task = asyncio.create_task(scheduler_loop())
+    # 上次删除项目时没删净的目录（文件被占用、删到一半停机）在后台清扫掉
+    purge_task = asyncio.create_task(asyncio.to_thread(projects.workspaces.purge_leftovers))
     try:
         yield
     finally:
         backup_task.cancel()
         modeling_cleanup_task.cancel()
-        await asyncio.gather(backup_task, modeling_cleanup_task, return_exceptions=True)
+        purge_task.cancel()
+        await asyncio.gather(
+            backup_task, modeling_cleanup_task, purge_task, return_exceptions=True
+        )
         await manager.shutdown()
 
 
@@ -84,10 +89,11 @@ async def auth_error_handler(request: Request, exc: AuthError):
 
 @app.exception_handler(WorkspaceError)
 async def workspace_error_handler(request: Request, exc: WorkspaceError):
-    return JSONResponse(
-        status_code=exc.status,
-        content={"error": str(exc), "code": exc.code},
-    )
+    content = {"error": str(exc), "code": exc.code}
+    conflict = getattr(exc, "conflict", None)  # 同名冲突：候选名随错误带给前端
+    if conflict:
+        content["conflict"] = conflict
+    return JSONResponse(status_code=exc.status, content=content)
 
 
 @app.exception_handler(SessionError)

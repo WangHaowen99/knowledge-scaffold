@@ -1,5 +1,6 @@
 """Studio 写路径（草稿/租约/确定性分流）、报告条目解析与回收站的测试。"""
 
+import shutil
 import time
 from pathlib import Path
 
@@ -258,9 +259,18 @@ def manager(tmp_path: Path) -> WorkspaceManager:
     return WorkspaceManager(tmp_path / "data", assets)
 
 
+def _legacy_trash(manager: WorkspaceManager, project_id: str) -> None:
+    """模拟旧版软删除留下的存量条目（现在的删除已是永久删除，不再产生回收站条目）。"""
+    manager.trash_dir().mkdir(parents=True, exist_ok=True)
+    shutil.move(
+        str(manager.project_root(project_id)),
+        str(manager.trash_dir() / f"{project_id}-{int(time.time())}"),
+    )
+
+
 def test_trash_list_and_restore(manager: WorkspaceManager):
     meta = manager.create_project("待恢复")
-    manager.delete_project(meta["id"])
+    _legacy_trash(manager, meta["id"])
     entries = manager.list_trash()
     assert entries and entries[0]["project_name"] == "待恢复"
     restored = manager.restore_trash(entries[0]["name"])
@@ -271,7 +281,7 @@ def test_trash_list_and_restore(manager: WorkspaceManager):
 
 def test_restore_conflicting_id_gets_new_id(manager: WorkspaceManager):
     meta = manager.create_project("重名")
-    manager.delete_project(meta["id"])
+    _legacy_trash(manager, meta["id"])
     entry = manager.list_trash()[0]
     # 人为占用原 id
     (manager.workspaces_dir / meta["id"]).mkdir(parents=True)
