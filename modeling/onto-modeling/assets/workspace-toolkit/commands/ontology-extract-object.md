@@ -9,8 +9,10 @@ This command is the object-only half of extraction. It reads flowchart summaries
 1. `python3 .claude/scripts/state_helper.py check-lock extract-object`
    - `locked:{ts}:{phase}` → 按 **错误恢复类** 提示；phase 可能是 `source` / `objects`，**续执**时跳到对应阶段。
 2. `python3 .claude/scripts/state_helper.py check-prereq extract-object`
-   - `missing:调研完成` → 按 **跳步守卫** 提示："当前既无调研报告也无流程图，提取无源。" 选项 **先做 调研**（/ontology-research）/ **先做 流程图**（/ontology-flowchart）。
-   - 若只有研究报告或只有流程图，prereq 会通过；Step 1 会依据实际存在的素材决定提取模式。
+   - `missing:调研完成` → 先 `python3 .claude/scripts/state_helper.py detect-stage` 区分两种情况：
+     - `未开始` → 按 **跳步守卫** 提示："当前既无调研报告也无流程图，提取无源。" 选项 **先做 调研**（/ontology-research）/ **先做 流程图**（/ontology-flowchart）。
+     - `调研待核验` → 报告已存在但内容未通过验收。按 **跳步守卫** 提示："调研报告的计数、ID 或引用字段尚未对账，直接提取会把错误字段和 ID 带进对象、规则与追溯。" 选项 **先做 核验**（`python3 .claude/scripts/research_checker.py check`，按 `/ontology-research` 的 Step 4.5 处理结果）；用户仍选 **继续** 时照常放行，但在本轮摘要里标注"来源报告未通过内容验收"。
+   - 若只有研究报告（已验收）或只有流程图，prereq 会通过；Step 1 会依据实际存在的素材决定提取模式。
 3. `python3 .claude/scripts/state_helper.py acquire extract-object source`
 4. 加载已沉淀业务知识。SCOPE_HINTS 取已存在的对象名（首次提取时仅 `global`）：
    ```bash
@@ -42,6 +44,25 @@ agent prompt 需 transclude 该文件全文。
 - `ontology/diagrams-summary/` 下的 `.md` 文件（流程图摘要）→ `SUMMARIES`
 - `ontology/excel/` 下与流程图摘要同名的 `.xlsx` 文件（Excel 补充表）→ 后续绑定到对应流程图
 - `research/` 下的 `.md` 文件（调研报告）→ `REPORTS`
+
+**调研报告只有通过内容验收才作为来源。** `REPORTS` 非空时先确认验收状态：
+
+```bash
+python3 .claude/scripts/research_checker.py status
+```
+
+退出码 0 = 已验收，按下面的模式继续。非 0（待核验或未通过）时，这份报告的计数、ID
+与字段还没对过账——有流程图不代表报告可用，阶段前置只看得到"有流程图"：
+
+- `SUMMARIES` 非空 → 置 `REPORTS = empty`，按模式 B 只用流程图继续，并告诉用户：
+  "调研报告（`research/{文件名列表}`）尚未通过内容验收，本次只基于流程图提取。
+  用 `python3 .claude/scripts/research_checker.py check` 核验通过后，可再以增量模式
+  补充报告里的内容。"
+- `SUMMARIES` 为空（报告是唯一来源）→ 用户已在 Step 0 的跳步守卫里选过 **继续** 时，
+  保留 `REPORTS` 并在本轮摘要里标注"来源报告未通过内容验收"；否则按
+  `.claude/STEP0_TEMPLATE.md` 的 **跳步守卫** 给出同样的后果说明与选项
+  （**先做 核验** / **继续** / **取消**），用户选 **继续** 才保留 `REPORTS`，
+  选 **取消** 时先 `python3 .claude/scripts/state_helper.py release extract-object` 再 stop。
 
 根据存在情况分四种模式：
 

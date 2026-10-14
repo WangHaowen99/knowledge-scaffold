@@ -31,7 +31,7 @@ Read `EXCEL_CONTEXT` when present. Do not read `.xlsx` files directly; their con
 Identify candidate business objects by analyzing:
 - **From flowchart summaries (when present):** data entities referenced in flowchart nodes (nouns that represent business data); input/output parameters in start/end nodes; objects referenced in operation descriptions and decision conditions; entities that appear across multiple flowcharts.
 - **From Excel 补充表 (when present):** Excel 中同名流程的「业务活动」行 is detail for the matching flowchart node. Extract objects, fields, state values, business rules, formulas, units, and input/output data mentioned in the row columns. If an Excel row expands a flowchart activity, use it to enrich the object attributes rather than creating a separate object for the row itself.
-- **From research reports (always consulted when present; primary when summaries are empty):** bolded names in 核心业务对象候选, entities mentioned in 详细信息, nouns that recur across multiple sections.
+- **From research reports (always consulted when present; primary when summaries are empty):** bolded names in 核心业务对象候选, entities mentioned in 详细信息, nouns that recur across multiple sections. 报告「业务项清单」里分类为 `操作` / `规则` / `指标` 的条目**不是对象候选**——它们分别由 `extract-operation-agent` 与 `rule-metric-extraction-agent` 写入各自目录。
 
 If multiple sources mention the same object, consolidate using the most detailed description.
 When flowchart summary and Excel supplement conflict, prefer the flowchart for process identity and record the Excel detail as an assumption/attention item in the return summary.

@@ -15,6 +15,9 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
 - `PAIRED_EXCEL_PATHS` (optional): same-name Excel supplements in `ontology/excel/`; these are provenance paths for `EXCEL_CONTEXT`.
 - `EXCEL_CONTEXT` (optional): markdown exported from the paired Excel 补充表. Treat it as detail for the same-name flowchart, not as a standalone global source.
 - `REPORT_PATHS` (optional): research report paths. When `SUMMARY_PATHS` is empty, these become the **primary source** instead of supplementary context.
+- `OPERATION_CANDIDATES` (optional): 报告「业务项清单」里分类为 `操作` 的名称，逗号分隔。报告来源的操作就是这份名单：**每一个都要生成，文件名逐字使用这些名称**（提取后按名称与报告对账）。它不限制流程图对应的操作，那部分见 `FLOWCHART_SUPPLEMENTS`。写成 `(无报告分类，按来源材料识别)` 时才回退到自行识别。
+- `FLOWCHART_SUPPLEMENTS` (optional): 报告没有收录的流程图，逗号分隔；每项是 `流程图名`，或用户决定改名时的 `文档名=流程图名`。写成 `无` 时没有。
+- `FLOWCHART_SKIPPED` (optional): 用户决定不单独成文的流程图，不要为它们生成操作文档。写成 `无` 时没有。
 - `OBJECTS_DIR`: path to confirmed object docs (e.g. `ontology/object/`)
 - `OPERATION_DIR`: target directory (e.g. `ontology/operation/`)
 - `TEMPLATES_DIR`: path to templates (e.g. `.claude/templates/`)
@@ -34,9 +37,13 @@ Read `.claude/reference/OPERATION_STYLE_GUIDE.md` —— 这是"逻辑描述"段
 ## Step 2: Extract business operation
 
 **Source mapping:**
-- **With flowcharts**: each flowchart summary generally maps to one operation document. Use the flowchart name as the operation name.
+- **With flowcharts**: each flowchart summary generally maps to one operation document. Use the flowchart name as the operation name. 同时给了报告（`OPERATION_CANDIDATES` 是名单）时，按下面三种情况处理每份流程图：
+  - 流程图名称就在 `OPERATION_CANDIDATES` 里：两边合成**一份**文档，流程图提供步骤与数据流，报告补充细节。
+  - 在 `FLOWCHART_SUPPLEMENTS` 里：先判断它是不是报告里某个操作换了名字的同一流程。是，就并入那个操作（文件名用报告名称），并在返回摘要的「合并」一栏写明；不是，就按流程图单独成文（文件名用流程图名称；给了 `文档名=流程图名` 的用文档名）。
+  - 在 `FLOWCHART_SKIPPED` 里：不生成。
+  报告里的操作不因为"没有对应的流程图"而跳过；流程图独有的流程也不因为"报告里没有"而丢掉。
 - **With Excel 补充表**: Excel 中同名流程的「业务活动」行 refines the matching flowchart operation. Use row-level descriptions, objects, fields, conditions, formulas, and rules to fill `输入` / `输出` / `与object的关联` / `逻辑描述`. Do not create a separate operation document for each Excel row unless the source explicitly marks it as a reusable sub-process.
-- **Research reports only**: operation candidates come from 核心业务逻辑候选 bolded names, section headings describing processes, and verb-phrase narratives. When the report does not supply step-by-step flow, write a best-effort sequence in `逻辑描述` and flag unclear steps with `TODO: 待补充逻辑步骤`.
+- **Research reports only**: 候选就是 `OPERATION_CANDIDATES`（报告「业务项清单」里分类为 `操作` 的名称，与「核心业务逻辑候选」的加粗名一一对应）。不要再从小节标题或动宾短语里另找候选——分类为 `规则` / `指标` 的条目由 `rule-metric-extraction-agent` 写入 `ontology/rule/` 与 `ontology/metric/`，**不归你处理**；把它们写进 operation 目录会让发布包和 studio 图谱把规则当成操作。只有 `OPERATION_CANDIDATES` 写成 `(无报告分类，按来源材料识别)` 时，才回退到按「核心业务逻辑候选」的加粗名识别。When the report does not supply step-by-step flow, write a best-effort sequence in `逻辑描述` and flag unclear steps with `TODO: 待补充逻辑步骤`.
 
 **Flowchart data-flow fidelity (when SUMMARY_PATHS is non-empty):**
 - Treat each flowchart summary's `## 节点列表` and `## 流程连接` as a paired source. Build the operation from both the node annotations and the edge chain, not from node names alone.
@@ -92,7 +99,7 @@ Write `OPERATION_DIR/{流程名称}.md`:
 ```
 
 Rules:
-- File name = operation/process name in Chinese
+- File name = operation/process name in Chinese，**不得以「规则」或「指标」结尾**：判定条款写进本文档的 `逻辑描述`，独立成文档的规则与指标属于 `ontology/rule/`、`ontology/metric/`。报告来源的操作逐字使用 `OPERATION_CANDIDATES` 里的名称，不要改写、不要加前后缀——对账按名称比对，改一个字就会被报成"报告里有、没生成"。
 - 与operation的关联（双向强约束）：
   - `调用operation` 行的 `[[X]]` 集合必须**等于** `逻辑描述` 中所有 `调用[[X]]逻辑文档` 调用点的集合（多一个少一个都会被 rule-check 拦下）。
   - `被operation调用` 行**只在**本 operation 真的由某个父 operation 在其 `逻辑描述` 中显式 `调用[[本operation]]逻辑文档` 时才填父 operation；否则按下表填"无（…触发方式…）"。这是一个反向关系，写错会被规则层和语义层各拦一次。
@@ -110,7 +117,8 @@ Rules:
 
 - Follow `TEMPLATES_DIR/operation-template.md` for sections and table columns. In particular, the `# 输入` table must include `输入源`, and that source must be specific enough for a weaker runtime model to follow the data path.
 - 与object的关联: categorize objects as input/output/support, only link to objects in OBJECTS_DIR. Fill `与object的语义关联` with concise core relations used for object-to-operation and operation-to-object lookup.
-- 逻辑描述: translate flowchart flow into numbered steps at attribute-level granularity. **遵守 `.claude/reference/OPERATION_STYLE_GUIDE.md`**：先判断组织类型，再选择写法。端到端 SOP 流程型（有明确起点、输入准备、业务决策、结果校验、输出闭环）可参考指南 §九 的推荐骨架；判断密集型业务使用 `if X then Y else Z` + 符号（`==/>=/<=`）+ 嵌套 ≤ 3；"多维条件 → 离散结果"型业务（评级、分类、状态判定、推荐方案等）且改写成嵌套 if-else 会 ≥ 3 层时，优先用 markdown 决策表替代（格式见指南 §八；单元格内可写 `调用[[子流程]]逻辑文档`，rule-check 会正常识别）；规则多、有明确优先级且命中一条即停止时，可用指南 §十 的 `prior` 扁平化首匹配，并提供默认兜底；对同一集合逐项执行相同逻辑时，可用指南 §十一 的 `loop`，但集合来源、循环体产出和聚合方式必须来自源材料；顺序流程或调用脚本/外部服务为主时，可用编号步骤的 prose 描述。无论哪种写法，仍禁用口语化词（先看/够的话/比如/可能等）。不要把子规则、判定器、决策表、脚本/外部服务包装强行改写成 SOP 骨架。
+- 逻辑描述: translate flowchart flow into numbered steps at attribute-level granularity. **遵守 `.claude/reference/OPERATION_STYLE_GUIDE.md`**：先判断组织类型，再选择写法。端到端 SOP 流程型（有明确起点、输入准备、业务决策、结果校验、输出闭环）可参考指南 §九 的推荐骨架；判断密集型业务使用 `if X then Y else Z` + 符号（`==/>=/<=`）+ 嵌套 ≤ 3；"多维条件 → 离散结果"型业务（评级、分类、状态判定、推荐方案等）且改写成嵌套 if-else 会 ≥ 3 层时，优先用 markdown 决策表替代（格式见指南 §八；单元格内可写 `调用[[子流程]]逻辑文档`，rule-check 会正常识别）；规则多、有明确优先级且命中一条即停止时，可用指南 §十 的 `prior` 扁平化首匹配，并提供默认兜底；对同一集合逐项执行相同逻辑时，可用指南 §十一 的 `loop`，但集合来源、循环体产出和聚合方式必须来自源材料；顺序流程或调用脚本/外部服务为主时，可用编号步骤的 prose 描述。无论哪种写法，仍禁用口语化词（先看/够的话/比如/可能等）。不要把子规则、判定器、决策表、脚本/外部服务包装强行改写成 SOP 骨架（判定条款留在本
+operation 的 `逻辑描述` 里；需要独立成文档的规则属于 `ontology/rule/`，不要写进本目录）。
 - Data / Operation 口径：Operation 只写业务规则，不重复 Data 层已定义的层次关系推理、属性继承或纯查询。使用对象名、字段名、枚举值、单位、公式时优先对齐 OBJECTS_DIR 中已有 object 文档；源材料要求新增字段或新口径时，在注意事项中提示需要同步 Data 层定义，不要只在 Operation 中隐式改口径。
 - Mark `TODO: 待补充逻辑步骤` if detail insufficient
 
@@ -125,6 +133,11 @@ Rules:
 
 跳过（已存在，{N} 个）：...
 
+合并（流程图 → 报告里的操作，没有则写 无）：
+- 流程图「{流程图名}」→ 操作「{报告里的操作名}」
+
 注意事项：
 - {TODOs, external side effects that need business confirmation, etc.}
 ```
+
+「合并」一栏要写全：提取后会按名称对账，没有同名操作文档的流程图必须能在这里找到去处。
