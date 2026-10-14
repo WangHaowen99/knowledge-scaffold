@@ -30,6 +30,10 @@ class RenameBody(BaseModel):
     name: str
 
 
+class CloneBody(BaseModel):
+    name: str = ""  # 留空用默认的「原名-副本」；同名冲突后带选定的名称重新提交
+
+
 class WriteFileBody(BaseModel):
     path: str
     content: str
@@ -61,6 +65,14 @@ class ArchiveBody(BaseModel):
 def _request_user(request: Request) -> str:
     user = getattr(request.state, "user", None)
     return (user or {}).get("sub", "")
+
+
+def _name_viewer(request: Request) -> tuple[str, bool] | None:
+    """同名校验的查重范围：当前用户可见的任务；鉴权关闭时为 None（全部任务）。"""
+    user = getattr(request.state, "user", None)
+    if user is None:
+        return None
+    return user.get("sub", ""), user.get("role") == "admin"
 
 
 def ensure_access(project_id: str, request: Request, write: bool = False):
@@ -140,9 +152,10 @@ def list_projects(request: Request):
 
 @router.post("")
 def create_project(body: CreateProjectBody, request: Request):
-    meta = workspaces.create_project(
-        body.name, owner=_request_user(request), background=body.background
-    )
+    with workspaces.name_claim(body.name, _name_viewer(request)):
+        meta = workspaces.create_project(
+            body.name, owner=_request_user(request), background=body.background
+        )
     if body.template == "example":
         workspaces.seed_example(meta["id"])
     try:
@@ -216,23 +229,33 @@ async def import_project(
 
     预览与正式导入共用 inspect_archive 的同一份判别结果：已发布知识包按工作区布局
     转换，工作区内容原样铺开，不支持的格式在建项目之前就拒掉，不留空任务。
+    任务名称与已有任务重名时返回 409 与候选名；预览阶段就校验，不等用户确认完内容。
     """
     with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
         tmp.write(await file.read())
         tmp_path = Path(tmp.name)
     try:
         summary = package_archive.inspect_archive(tmp_path)
+        viewer = _name_viewer(request)
         if dry_run:
+            # 有阻断项时导入本就不可用，先让用户看到阻断原因
+            if not summary["blockers"]:
+                workspaces.check_name_available(name, viewer, importing=True)
             return summary
         if summary["blockers"]:
             raise WorkspaceError(
                 "；".join(summary["blockers"]), 400, "unsupported_archive_kind"
             )
         owner = _request_user(request)
-        if summary["kind"] == package_archive.KIND_KNOWLEDGE_PACKAGE:
-            meta = workspaces.import_package_zip(name, tmp_path, owner=owner)
-        else:
-            meta = workspaces.import_zip(name, tmp_path, owner=owner)
+
+        def claim_and_import() -> dict:
+            # 查重与落盘在名称锁内串行；放进线程，等锁时不卡住事件循环
+            with workspaces.name_claim(name, viewer, importing=True):
+                if summary["kind"] == package_archive.KIND_KNOWLEDGE_PACKAGE:
+                    return workspaces.import_package_zip(name, tmp_path, owner=owner)
+                return workspaces.import_zip(name, tmp_path, owner=owner)
+
+        meta = await asyncio.to_thread(claim_and_import)
         try:
             return provision_modeling_project(meta, request)
         except modeling_mcp.ModelingMcpError as exc:
@@ -242,13 +265,35 @@ async def import_project(
 
 
 @router.post("/transfer-import")
-async def transfer_import(request: Request, file: UploadFile = File(...)):
-    """导入项目迁移包（导出的完整工作区 zip，含版本历史）。"""
+async def transfer_import(
+    request: Request,
+    file: UploadFile = File(...),
+    project_name: str = Form(""),
+):
+    """导入项目迁移包（导出的完整工作区 zip，含版本历史）。
+
+    project_name 为空时沿用迁移包里的任务名；与已有任务重名时返回 409 与候选名，
+    前端改名后带 project_name 重新提交。
+    """
     with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
         tmp.write(await file.read())
         tmp_path = Path(tmp.name)
     try:
-        meta = workspaces.import_transfer_zip(tmp_path, owner=_request_user(request))
+        original = workspaces.transfer_archive_name(tmp_path)
+        requested = project_name.strip()
+        viewer, owner = _name_viewer(request), _request_user(request)
+
+        def claim_and_import() -> dict:
+            with workspaces.name_claim(
+                requested or original,
+                viewer,
+                original_name=original,
+                importing=True,
+                check_length=bool(requested),  # 包里的原名不受长度上限约束（历史行为）
+            ):
+                return workspaces.import_transfer_zip(tmp_path, owner=owner, name=requested)
+
+        meta = await asyncio.to_thread(claim_and_import)
         try:
             return provision_modeling_project(meta, request)
         except modeling_mcp.ModelingMcpError as exc:
@@ -265,8 +310,13 @@ def get_project(project_id: str, request: Request):
 
 @router.patch("/{project_id}")
 def rename_project(project_id: str, body: RenameBody, request: Request):
+    """重命名任务。新名称与其他任务重名时返回 409 与候选名；名称没变则不校验。"""
     ensure_owner(project_id, request)
-    return workspaces.rename_project(project_id, body.name)
+    meta = workspaces.get_project(project_id)
+    if body.name.strip() == meta.get("name"):
+        return meta
+    with workspaces.name_claim(body.name, _name_viewer(request), exclude_id=project_id):
+        return workspaces.rename_project(project_id, body.name)
 
 
 @router.delete("/{project_id}")
@@ -345,9 +395,14 @@ def archive_project(project_id: str, body: ArchiveBody, request: Request):
 
 
 @router.post("/{project_id}/clone")
-def clone_project(project_id: str, request: Request):
+def clone_project(project_id: str, request: Request, body: CloneBody | None = None):
+    """克隆任务，默认命名「原名-副本」；与已有任务重名时返回 409 与候选名，
+    前端改名后带 name 重新提交。"""
     ensure_access(project_id, request)
-    meta = workspaces.clone_project(project_id, owner=_request_user(request))
+    default_name = workspaces.clone_name(project_id)
+    name = (body.name.strip() if body else "") or default_name
+    with workspaces.name_claim(name, _name_viewer(request), original_name=default_name):
+        meta = workspaces.clone_project(project_id, owner=_request_user(request), name=name)
     try:
         return provision_modeling_project(meta, request)
     except modeling_mcp.ModelingMcpError as exc:

@@ -143,19 +143,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name, template, background }),
     }),
-  transferImport: (file) => {
+  // projectName 为空时沿用迁移包里的任务名；同名冲突（409）改名后带上新名称重新提交
+  transferImport: (file, projectName = '') => {
     const form = new FormData();
     form.append('file', file);
-    // request() 会强加 JSON Content-Type，FormData 走裸 fetch
-    return fetch('/api/projects/transfer-import', {
-      method: 'POST',
-      headers: authHeaders(),
-      body: form,
-    }).then(async (r) => {
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.error || `导入失败 ${r.status}`);
-      return data;
-    });
+    if (projectName) form.append('project_name', projectName);
+    return request('/api/projects/transfer-import', { method: 'POST', body: form });
   },
   renameProject: (pid, name) =>
     request(`/api/projects/${pid}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
@@ -198,22 +191,16 @@ export const api = {
     form.append('name', name);
     form.append('file', file);
     if (dryRun) form.append('dry_run', 'true');
-    return fetch('/api/projects/import', {
-      method: 'POST',
-      headers: authHeaders(),
-      body: form,
-    }).then(async (r) => {
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.error || `导入失败 ${r.status}`);
-      return data;
-    });
+    return request('/api/projects/import', { method: 'POST', body: form });
   },
   archiveProject: (pid, archived) =>
     request(`/api/projects/${pid}/archive`, {
       method: 'POST',
       body: JSON.stringify({ archived }),
     }),
-  cloneProject: (pid) => request(`/api/projects/${pid}/clone`, { method: 'POST' }),
+  // name 为空时用默认的「原名-副本」；同名冲突（409）改名后带上新名称重新提交
+  cloneProject: (pid, name = '') =>
+    request(`/api/projects/${pid}/clone`, { method: 'POST', body: JSON.stringify({ name }) }),
   getMembers: (pid) => request(`/api/projects/${pid}/members`),
   saveMembers: (pid, members) =>
     request(`/api/projects/${pid}/members`, {

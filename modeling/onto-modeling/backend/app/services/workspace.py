@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover - Windows development fallback
 
 from .. import config
 from . import package_mapping
+from .name_conflict import MAX_DISPLAY_NAME_LENGTH, detect_name_conflict
 
 META_FILE = ".onto-web.json"  # 历史文件名保留：存量项目的识别键（ADR-0006）
 PURGE_MARKER = ".onto-web.purging"  # 原地清除兜底：顶替 META_FILE，重启清扫据此认领残留
@@ -52,6 +53,8 @@ tmp/
 
 _PROJECT_LOCKS: dict[str, threading.RLock] = {}
 _PROJECT_LOCKS_GUARD = threading.Lock()
+# 同名校验到项目落盘之间不能被另一个同名请求插队
+_NAME_CLAIM_LOCK = threading.Lock()
 
 
 class WorkspaceError(Exception):
@@ -59,6 +62,14 @@ class WorkspaceError(Exception):
         super().__init__(message)
         self.status = status
         self.code = code
+
+
+class NameConflictError(WorkspaceError):
+    """任务名称与查重范围内的已有任务重名；conflict 带候选名，供前端改名后重试。"""
+
+    def __init__(self, message: str, conflict: dict):
+        super().__init__(message, 409, "project_name_conflict")
+        self.conflict = conflict
 
 
 class WorkspaceManager:
@@ -303,6 +314,70 @@ class WorkspaceManager:
     @classmethod
     def can_write(cls, meta: dict, username: str, is_admin: bool) -> bool:
         return cls.role_of(meta, username, is_admin) in cls.WRITE_ROLES
+
+    # ---- 任务名称同名校验 ----
+
+    def _project_metas(self, exclude_id: str = "") -> list[dict]:
+        """全部任务的元数据，不算阶段进度（查重只看名称与归属）。"""
+        metas = []
+        for entry in self.workspaces_dir.iterdir():
+            if entry.name == exclude_id:
+                continue
+            try:
+                meta = json.loads((entry / META_FILE).read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if isinstance(meta, dict):
+                metas.append(meta)
+        return metas
+
+    def check_name_available(
+        self,
+        name: str,
+        viewer: tuple[str, bool] | None,
+        *,
+        original_name: str = "",
+        importing: bool = False,
+        check_length: bool = True,
+        exclude_id: str = "",
+    ) -> None:
+        """新建/导入/重命名/克隆前的同名校验：去首尾空白、全角半角与大小写差异都算同名。
+
+        查重范围是当前用户可见的任务：viewer 为（用户名, 是否管理员），鉴权关闭时
+        传 None，全部任务都算。重名抛 NameConflictError（409），附候选名。
+        exclude_id 是重命名时的任务自身：只改自己名称的大小写或全半角不算重名。
+        """
+        name = (name or "").strip()
+        if not name:
+            return  # 空名由 create_project 统一报错
+        if check_length and len(name) > MAX_DISPLAY_NAME_LENGTH:
+            raise WorkspaceError(
+                f"任务名称不能超过 {MAX_DISPLAY_NAME_LENGTH} 个字符",
+                400,
+                "project_name_too_long",
+            )
+        metas = self._project_metas(exclude_id)
+        if viewer is not None:
+            metas = self.visible_to(metas, *viewer)
+        conflict = detect_name_conflict(
+            (meta.get("name") for meta in metas), name, original_name or name
+        )
+        if conflict is None:
+            return
+        if importing:
+            message = (
+                f"任务名称「{name}」已存在，不可重复导入。请选择候选名称或输入新名称后继续导入。"
+            )
+        else:
+            message = f"任务名称「{name}」已存在，请选择候选名称或输入新名称。"
+        raise NameConflictError(message, conflict)
+
+    @contextmanager
+    def name_claim(self, name: str, viewer: tuple[str, bool] | None, **options):
+        """同名校验通过后执行块内的落盘操作；校验与落盘一起串行，同名并发只成功一个。"""
+        with _NAME_CLAIM_LOCK:
+            self.check_name_available(name, viewer, **options)
+            yield
 
     def set_members(self, project_id: str, members: dict[str, str]) -> dict:
         for username, role in members.items():
@@ -605,11 +680,17 @@ class WorkspaceManager:
 
     # 克隆/导入时不带过去的顶层条目：资产由本服务重新挂载，git 历史不迁移
     CLONE_SKIP_TOP = {".claude", "CLAUDE.md", "README.md", ".git", ".ontology-state", META_FILE}
+    CLONE_NAME_SUFFIX = "-副本"
 
-    def clone_project(self, project_id: str, owner: str = "") -> dict:
+    def clone_name(self, project_id: str) -> str:
+        """克隆的默认名称「原名-副本」；原名过长时截断，保证不超过名称长度上限。"""
+        name = self.get_project(project_id)["name"]
+        keep = MAX_DISPLAY_NAME_LENGTH - len(self.CLONE_NAME_SUFFIX)
+        return name[:keep].rstrip() + self.CLONE_NAME_SUFFIX
+
+    def clone_project(self, project_id: str, owner: str = "", name: str = "") -> dict:
         source_root = self.project_root(project_id)
-        source_meta = self.get_project(project_id)
-        meta = self.create_project(f"{source_meta['name']}-副本", owner=owner)
+        meta = self.create_project(name or self.clone_name(project_id), owner=owner)
         dest_root = self.project_root(meta["id"])
         for path in sorted(source_root.rglob("*")):
             if path.is_symlink() or not path.is_file():
@@ -969,23 +1050,44 @@ class WorkspaceManager:
                     zf.writestr(f"{pkg}/scripts/{key}.md", front("script", key, key, extra) + body)
         return dest_path
 
-    def import_transfer_zip(self, archive_path: Path, owner: str = "") -> dict:
+    @staticmethod
+    def _read_transfer_meta(zf) -> dict:
+        if META_FILE not in zf.namelist():
+            raise WorkspaceError("不是有效的项目迁移包（缺少工作区元数据）")
+        try:
+            meta = json.loads(zf.read(META_FILE).decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise WorkspaceError("迁移包元数据无法解析") from exc
+        if not isinstance(meta, dict):
+            raise WorkspaceError("迁移包元数据无法解析")
+        return meta
+
+    @staticmethod
+    def _transfer_meta_name(meta: dict) -> str:
+        return str(meta.get("name") or "").strip() or "导入项目"
+
+    def transfer_archive_name(self, archive_path: Path) -> str:
+        """迁移包里记录的任务名称（导入前查重用），包不合法时与正式导入报同样的错。"""
+        import zipfile
+
+        try:
+            with zipfile.ZipFile(archive_path) as zf:
+                return self._transfer_meta_name(self._read_transfer_meta(zf))
+        except zipfile.BadZipFile as exc:
+            raise WorkspaceError("不是有效的项目迁移包（压缩包无法解析）") from exc
+
+    def import_transfer_zip(self, archive_path: Path, owner: str = "", name: str = "") -> dict:
         """导入迁移包（workspace 导出 zip）：恢复完整工作区含 git 版本历史。
 
         与 import_zip 的区别：保留 .git（但剥离 hooks，防止恶意钩子），
-        沿用原 meta 的名称与统计，仅重写 id/owner/created_at。
+        沿用原 meta 的统计，仅重写 id/name/owner/created_at。name 为空时沿用
+        迁移包里的任务名；同名冲突后改名导入时传入新名称。
         """
         import zipfile
 
         with zipfile.ZipFile(archive_path) as zf:
-            names = set(zf.namelist())
-            if META_FILE not in names:
-                raise WorkspaceError("不是有效的项目迁移包（缺少工作区元数据）")
-            try:
-                old_meta = json.loads(zf.read(META_FILE).decode("utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                raise WorkspaceError("迁移包元数据无法解析") from exc
-            name = str(old_meta.get("name") or "").strip() or "导入项目"
+            old_meta = self._read_transfer_meta(zf)
+            name = (name or "").strip() or self._transfer_meta_name(old_meta)
             project_id = f"{_slugify(name)}-{uuid.uuid4().hex[:8]}"
             root = self.workspaces_dir / project_id
             root.mkdir(parents=True)
@@ -1010,6 +1112,7 @@ class WorkspaceManager:
                 if k not in ("members", "modeling_project_id")
             },
             "id": project_id,
+            "name": name,
             "owner": owner or "",
             "created_at": int(time.time()),
             # 引擎是部署侧配置而非包内容：导入方按本部署的默认引擎跑

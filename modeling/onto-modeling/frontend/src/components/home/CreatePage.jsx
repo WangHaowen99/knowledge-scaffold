@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { message } from 'antd';
 import { api } from '../../lib/api.js';
 import { MATERIAL_PURPOSES } from '../LeftPane.jsx';
+import { MAX_NAME_LENGTH, useNameConflict } from '../NameConflictDialog.jsx';
 import './modeling-home.css';
 
 /* 全屏新建项目页 —— 结构与样式复刻 modeling workbench/pages/CreatePage.jsx。
@@ -14,6 +15,7 @@ export default function CreatePage({ onBack, onCreated }) {
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
   const input = useRef(null);
+  const nameConflict = useNameConflict();
 
   const addFiles = (items) => {
     const incoming = [...(items || [])];
@@ -37,17 +39,30 @@ export default function CreatePage({ onBack, onCreated }) {
   const updateFile = (name, patch) =>
     setFiles((current) => current.map((item) => (item.name === name ? { ...item, ...patch } : item)));
 
-  const start = async () => {
-    if (!name.trim() || creating) return;
+  // 名称作参数传入：同名冲突改名重试时，输入框状态还是旧名称。失败抛出，由调用方分流
+  const createAs = async (projectName) => {
+    setName(projectName);
     setCreating(true);
-    setError('');
     try {
-      const created = await api.createProject(name.trim(), 'blank', goal.trim());
+      const created = await api.createProject(projectName, 'blank', goal.trim());
       // 资料不在本页上传：立即进入项目，由聊天框作为文档附件发送（带进度卡）
       onCreated(created, files);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '项目创建失败');
       setCreating(false);
+      throw cause;
+    }
+  };
+
+  const start = async () => {
+    if (!name.trim() || creating) return;
+    setError('');
+    try {
+      await createAs(name.trim());
+    } catch (cause) {
+      const texts = { confirmText: '改名并创建', busyText: '正在创建…' };
+      if (!nameConflict.offer(cause, createAs, texts)) {
+        setError(cause instanceof Error ? cause.message : '项目创建失败');
+      }
     }
   };
 
@@ -72,6 +87,7 @@ export default function CreatePage({ onBack, onCreated }) {
               id="pn"
               className="input"
               value={name}
+              maxLength={MAX_NAME_LENGTH}
               onChange={(event) => setName(event.target.value)}
               placeholder="例如：电商订单建模"
               autoFocus
@@ -207,6 +223,7 @@ export default function CreatePage({ onBack, onCreated }) {
           </div>
         </div>
       </div>
+      {nameConflict.dialog}
     </div>
   );
 }
