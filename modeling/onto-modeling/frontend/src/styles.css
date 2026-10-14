@@ -64,6 +64,15 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
   border: 1px solid var(--border-default); padding: 4px 10px;
 }
 .wiki-link { color: var(--color-primary); cursor: pointer; }
+.report-attachment-link {
+  color: var(--color-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.report-attachment-link:hover {
+  color: var(--color-primary-strong, var(--color-primary));
+}
 
 .tool-line {
   display: flex; align-items: center; gap: 6px;
@@ -742,6 +751,24 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
   margin: 8px 0; padding: 6px 14px; color: var(--text-secondary);
   border-left: 3px solid var(--color-primary-muted, var(--color-primary));
   background: var(--color-primary-soft); border-radius: 0 8px 8px 0;
+}
+/* 评测报告中的摘要只是结构隔离，不使用任何视觉容器样式。 */
+.report-body .markdown-body blockquote {
+  color: var(--text-primary);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+}
+/* 从“完整报告”按钮进入的文件预览不在 .report-body 内，也保持同样的纯文本呈现。 */
+.md-doc .markdown-body blockquote {
+  color: var(--text-primary);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 0;
 }
 .markdown-body table { display: block; overflow-x: auto; border-radius: 8px; }
 .markdown-body th { background: var(--surface-subtle); }
@@ -1657,6 +1684,27 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
   line-height: 1.6;
 }
 .erd-error-details li + li { margin-top: 4px; }
+.erd-answer-more {
+  grid-column: 2;
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-primary);
+  cursor: pointer;
+  font-size: 12px;
+}
+.erd-full-answer-meta { margin-bottom: 8px; color: var(--text-secondary); font-size: 12px; }
+.erd-full-answer {
+  max-height: 60vh;
+  margin: 0;
+  overflow: auto;
+  padding: 0 2px;
+}
+.erd-full-answer .markdown-body {
+  line-height: 1.7;
+  word-break: break-word;
+}
 
 /* 总览：大数字 + 四格判分（可点选筛选）+ 分段进度条 */
 .erd-overview {

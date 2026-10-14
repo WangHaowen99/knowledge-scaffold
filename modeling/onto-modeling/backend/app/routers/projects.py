@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import tempfile
+import urllib.error
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
@@ -787,9 +788,26 @@ def eval_status(project_id: str, request: Request):
     return {
         "enabled": modeling_eval.enabled(),
         "reachable": modeling_eval.reachable() if modeling_eval.enabled() else False,
+        "project_id": project_id,
         "state": state,
         "evolution": modeling_eval.evolution_hint(state),
     }
+
+
+@router.get("/{project_id}/eval/answers/{result_id}")
+def eval_full_answer(project_id: str, result_id: str, request: Request):
+    """按需读取评测结果的完整 finalAnswer；列表状态中的 answer 仅是摘要。"""
+    from ..services import modeling_eval
+
+    root = ensure_access(project_id, request)
+    auth = request.headers.get("Authorization") or ""
+    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    try:
+        return modeling_eval.full_answer(project_id, root, token, result_id)
+    except urllib.error.HTTPError as exc:
+        return JSONResponse(status_code=exc.code, content={"error": "完整回答暂时无法读取"})
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
 
 
 @router.get("/{project_id}/eval/cases")

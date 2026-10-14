@@ -345,6 +345,8 @@ export const api = {
     }),
   getProjectEngine: (pid) => request(`/api/projects/${pid}/engine`),
   evalStatus: (pid) => request(`/api/projects/${pid}/eval/status`),
+  evalFullAnswer: (pid, resultId) =>
+    request(`/api/projects/${pid}/eval/answers/${encodeURIComponent(resultId)}`),
   evalCases: (pid) => request(`/api/projects/${pid}/eval/cases`),
   evalDataSourceOptions: (pid) => request(`/api/projects/${pid}/eval/data-source`),
   evalCasesTemplateUrl: (pid) =>
