@@ -673,6 +673,34 @@ if __name__ == "__main__":
   }
 });
 
+test('evaluation：存量关系名称不符合命名规范时仍创建正式评测轮次', async () => {
+  const { startEvaluation, waitForEvaluation } = await import('../src/evaluation/engine.js');
+  const ready = await createReadyEvaluationProject({ name: '存量关系名称评测' });
+  const spec: PackageSpec = {
+    ...ready.packageSnapshot.spec,
+    objects: [
+      {
+        key: 'application_item', title: '申请项', description: '合成申请项',
+        fields: [{ key: 'id', cnName: '申请项编号' }],
+        relations: [{ relation: '属于申请', target: 'application' }],
+      },
+      {
+        key: 'application', title: '申请', description: '合成申请',
+        fields: [{ key: 'id', cnName: '申请编号' }],
+      },
+    ],
+  };
+
+  const round = startEvaluation({
+    projectId: ready.project.id,
+    token: 'token',
+    packageSnapshot: { ...ready.packageSnapshot, spec },
+  }, { runRound: async () => {} });
+  assert.ok(round.roundId);
+  assert.equal(ready.m3repo.listRounds(ready.project.id).length, 1);
+  await waitForEvaluation(ready.project.id, round.roundId);
+});
+
 test('evaluation：连接工作空间必须与数据源 Workspace 隔离值一致', async () => {
   const { evaluationWorkspaceForRun } = await import('../src/evaluation/engine.js');
   const dataSource = {
