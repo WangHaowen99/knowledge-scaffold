@@ -908,6 +908,7 @@ export default function LeftPane({
 
       <EvalRunDetail
         open={evalDetailOpen}
+        projectId={project.id}
         state={evalInfo?.state}
         evolution={evolution}
         onClose={() => setEvalDetailOpen(false)}

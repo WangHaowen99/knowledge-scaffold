@@ -198,7 +198,7 @@ function linkifyPaths(md) {
 }
 
 // memo：流式期间每帧重渲染的开销主要在 markdown 解析，内容不变时跳过
-export const Markdown = memo(function Markdown({ content, onWikiLink, onOpenFile, knownPaths }) {
+export const Markdown = memo(function Markdown({ content, onWikiLink, onOpenFile, onOpenAnswer, knownPaths }) {
   const prepared = linkifyPaths(
     content.replace(
       /\[\[([^\]]+)\]\]/g,
@@ -224,6 +224,29 @@ export const Markdown = memo(function Markdown({ content, onWikiLink, onOpenFile
               const path = decodeURIComponent(href.slice('#file:'.length));
               const exists = knownPaths ? knownPaths.has(path) : true;
               return <FileChip path={path} exists={exists} onOpen={onOpenFile} />;
+            }
+            // 评测报告中的完整答案附件是工作区文件，并非站点静态 URL。
+            // 拦截带结果 ID 的相对链接，去掉 fragment 后交给工作区文件打开链路，
+            // 避免浏览器直接请求 /reports/...answers.json 导致 NOT FOUND。
+            const answerAttachment = /^(reports\/[^\s#]+\.answers\.json)#([^\s#]+)$/.exec(href || '');
+            if (answerAttachment) {
+              const [, path, resultId] = answerAttachment;
+              return (
+                <span
+                  className="report-attachment-link"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => onOpenAnswer?.(resultId, path) || onOpenFile?.(path)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      onOpenAnswer?.(resultId, path) || onOpenFile?.(path);
+                    }
+                  }}
+                >
+                  {children}
+                </span>
+              );
             }
             return (
               <a href={href} target="_blank" rel="noreferrer">
@@ -413,7 +436,7 @@ function extractHeadings(md) {
 }
 
 // 文件预览按类型分流：md 带目录、mmd 图、csv 表格、代码高亮、纯文本
-function FilePreviewBody({ file, content, onWikiLink, onOpenFile, knownPaths }) {
+function FilePreviewBody({ file, content, onWikiLink, onOpenFile, onOpenAnswer, knownPaths }) {
   const ext = (file.split('.').pop() || '').toLowerCase();
   const containerRef = useRef(null);
   const isMd = ext === 'md' || ext === 'markdown';
@@ -442,6 +465,7 @@ function FilePreviewBody({ file, content, onWikiLink, onOpenFile, knownPaths }) 
           content={content}
           onWikiLink={onWikiLink}
           onOpenFile={onOpenFile}
+          onOpenAnswer={onOpenAnswer}
           knownPaths={knownPaths}
         />
       </div>
@@ -652,6 +676,7 @@ export default function CenterPane({
   diffFiles,
   onPickFile,
   recentFiles,
+  workspaceRevision,
   drawioAvailable,
   onWorkspaceChanged,
 }) {
@@ -668,6 +693,7 @@ export default function CenterPane({
   const [reportContent, setReportContent] = useState(null);
   const [reportMode, setReportMode] = useState('review'); // review | raw
   const [reportItems, setReportItems] = useState(null);
+  const [reportFullAnswer, setReportFullAnswer] = useState(null);
   const [checkedItems, setCheckedItems] = useState(new Set());
   const [knowledge, setKnowledge] = useState(null);
   const [knowledgeDraft, setKnowledgeDraft] = useState(null); // {name, content}
@@ -720,6 +746,7 @@ export default function CenterPane({
     if (focus !== 'reports' || !reportPath) {
       setReportContent(null);
       setReportItems(null);
+      setReportFullAnswer(null);
       return;
     }
     setCheckedItems(new Set());
@@ -732,6 +759,36 @@ export default function CenterPane({
       .then(setReportItems)
       .catch(() => setReportItems({ items: [] }));
   }, [focus, project.id, reportPath]);
+
+  const openReportAnswer = async (resultId, attachmentPath) => {
+    try {
+      // 报告可能不是最近一轮；优先读取报告同目录的 sidecar，避免把旧报告
+      // 的结果 ID 错配到当前轮次。旧报告没有 sidecar 时再回退到当前轮接口。
+      if (attachmentPath) {
+        const attachment = await api.readFile(project.id, attachmentPath);
+        const payload = JSON.parse(attachment.content || '{}');
+        const record = (payload.answers || []).find(
+          (item) => String(item.resultId || item.result_id || '') === String(resultId),
+        );
+        if (record) {
+          const fullAnswer = String(record.finalAnswer || '');
+          setReportFullAnswer({
+            resultId: String(record.resultId || record.result_id || resultId),
+            question: record.question || '',
+            fullAnswer,
+            originalLength: fullAnswer.length,
+            sha256: record.sha256 || '',
+            verdict: record.verdict,
+            reason: record.reason || '',
+          });
+          return;
+        }
+      }
+      setReportFullAnswer(await api.evalFullAnswer(project.id, resultId));
+    } catch (error) {
+      message.error(error.message);
+    }
+  };
 
   useEffect(() => {
     if (focus !== 'knowledge') return;
@@ -939,6 +996,8 @@ export default function CenterPane({
               onOpenFile={onOpenFile}
               onCommand={onCommand}
               onWorkspaceChanged={onWorkspaceChanged}
+              active={focus === 'studio'}
+              workspaceRevision={workspaceRevision}
             />
           </Suspense>
         </div>
@@ -1147,6 +1206,7 @@ export default function CenterPane({
                   content={content.content}
                   onWikiLink={openWikiLink}
                   onOpenFile={onOpenFile}
+                  onOpenAnswer={openReportAnswer}
                   knownPaths={knownPaths}
                 />
               )}
@@ -1268,7 +1328,13 @@ export default function CenterPane({
                       </Button>
                     </Space>
                     {reportMode === 'raw' && (
-                      <Markdown content={reportContent.content} onWikiLink={openWikiLink} onOpenFile={onOpenFile} knownPaths={knownPaths} />
+                      <Markdown
+                        content={reportContent.content}
+                        onWikiLink={openWikiLink}
+                        onOpenFile={onOpenFile}
+                        onOpenAnswer={openReportAnswer}
+                        knownPaths={knownPaths}
+                      />
                     )}
                     {reportMode === 'review' && reportItems?.type === 'codegen' && (
                       <CodegenReview
@@ -1439,6 +1505,25 @@ export default function CenterPane({
           )}
         </div>
       )}
+
+      <Modal
+        title="原始最终答复"
+        open={!!reportFullAnswer}
+        footer={null}
+        onCancel={() => setReportFullAnswer(null)}
+        width={860}
+      >
+        {reportFullAnswer && (
+          <>
+            <div className="erd-full-answer-meta">
+              {reportFullAnswer.originalLength} 字符
+            </div>
+            <div className="erd-full-answer">
+              <Markdown content={reportFullAnswer.fullAnswer} />
+            </div>
+          </>
+        )}
+      </Modal>
 
       <Modal
         title="文件已被他人或助手修改"

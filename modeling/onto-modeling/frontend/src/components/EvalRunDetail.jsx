@@ -1,5 +1,7 @@
-import { Button, Modal, Tooltip } from 'antd';
+import { Button, Modal, Tooltip, message } from 'antd';
 import { useEffect, useRef, useState } from 'react';
+import { api } from '../lib/api.js';
+import { Markdown } from './CenterPane.jsx';
 
 // 数据评测 · 执行详情：编排阶段 + 逐用例进度。
 // 配色只用主题色、错误色与中性灰；判分靠图形区分（实心勾 / 半圆 / 叉 / 感叹号），
@@ -240,7 +242,7 @@ function ProgressBar({ counts, total, running }) {
   );
 }
 
-function CaseRow({ item, index, open, onToggle, delay }) {
+function CaseRow({ item, index, open, onToggle, delay, onLoadFullAnswer }) {
   const verdict = item.verdict || 'pending';
   const hasDetail = Boolean(item.answer || item.reason);
   const expandable = TERMINAL.has(verdict) && hasDetail;
@@ -277,8 +279,16 @@ function CaseRow({ item, index, open, onToggle, delay }) {
             <div className="erd-row-fields">
               {item.answer && (
                 <>
-                  <span className="erd-row-label">回答</span>
+                  <span className="erd-row-label">回答摘要</span>
                   <span className="erd-row-answer">{item.answer}</span>
+                  {item.is_truncated && (
+                    <button type="button" className="erd-answer-more" onClick={(event) => {
+                      event.stopPropagation();
+                      onLoadFullAnswer?.(item);
+                    }}>
+                      查看完整回答（{item.original_length} 字符）
+                    </button>
+                  )}
                 </>
               )}
               {item.reason && (
@@ -368,7 +378,7 @@ function Overview({ st, counts, total, filter, onFilter }) {
 }
 
 // 用例列表：开场逐行错峰浮入；执行中的用例自动滚入视野（按判分筛选时不打扰）
-function CaseList({ cases, filter, onClearFilter }) {
+function CaseList({ cases, filter, onClearFilter, onLoadFullAnswer }) {
   const [openIndex, setOpenIndex] = useState(null);
   const [intro, setIntro] = useState(true);
   useEffect(() => {
@@ -413,6 +423,7 @@ function CaseList({ cases, filter, onClearFilter }) {
             open={openIndex === index}
             delay={intro ? Math.min(order * 35, 420) : 0}
             onToggle={() => setOpenIndex(openIndex === index ? null : index)}
+            onLoadFullAnswer={onLoadFullAnswer}
           />
         ))}
         {!cases.length && (
@@ -424,7 +435,8 @@ function CaseList({ cases, filter, onClearFilter }) {
   );
 }
 
-function DetailBody({ st, evolution, onOpenReport, onEvolution }) {
+function DetailBody({ projectId, st, evolution, onOpenReport, onEvolution }) {
+  const [fullAnswer, setFullAnswer] = useState(null);
   const [filter, setFilter] = useState(null);
   const cases = st.cases || [];
   const counts = { pass: 0, partial: 0, fail: 0, error: 0 };
@@ -437,6 +449,17 @@ function DetailBody({ st, evolution, onOpenReport, onEvolution }) {
     ? (st.error_details?.conflicts || st.conflicts || [])
     : [];
   const hasFooterAction = Boolean(st.report || evolution);
+  const loadFullAnswer = async (item) => {
+    if (!item.result_id || !projectId) {
+      message.warning('完整回答证据不可用');
+      return;
+    }
+    try {
+      setFullAnswer(await api.evalFullAnswer(projectId, item.result_id));
+    } catch (error) {
+      message.error(error.message);
+    }
+  };
   return (
     <div className="erd-body">
       <MetaLine st={st} />
@@ -465,7 +488,20 @@ function DetailBody({ st, evolution, onOpenReport, onEvolution }) {
         </div>
       )}
       <Overview st={st} counts={counts} total={cases.length} filter={filter} onFilter={setFilter} />
-      <CaseList cases={cases} filter={filter} onClearFilter={() => setFilter(null)} />
+      <CaseList
+        cases={cases}
+        filter={filter}
+        onClearFilter={() => setFilter(null)}
+        onLoadFullAnswer={loadFullAnswer}
+      />
+      {fullAnswer && (
+        <Modal open title="原始最终答复" footer={null} onCancel={() => setFullAnswer(null)}>
+          <div className="erd-full-answer-meta">{fullAnswer.originalLength} 字符</div>
+          <div className="erd-full-answer">
+            <Markdown content={fullAnswer.fullAnswer} />
+          </div>
+        </Modal>
+      )}
       {hasFooterAction && !running && (
         <div className="erd-footer">
           {st.report && <Button onClick={() => onOpenReport(st.report)}>查看完整报告</Button>}
@@ -484,6 +520,7 @@ function DetailBody({ st, evolution, onOpenReport, onEvolution }) {
 
 export default function EvalRunDetail({
   open,
+  projectId,
   state,
   evolution,
   onClose,
@@ -515,6 +552,7 @@ export default function EvalRunDetail({
       }
     >
       <DetailBody
+        projectId={projectId}
         st={st}
         evolution={evolution}
         onOpenReport={onOpenReport}

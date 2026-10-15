@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import time
@@ -551,6 +552,7 @@ def _write_report(
     score = round((counts["pass"] + counts["partial"] * 0.5) * 100 / total)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     rel = f"reports/eval-{stamp}.md"
+    answers_rel = f"reports/eval-{stamp}.answers.json"
     state = read_state(root)
     lines = [
         f"# 数据评测报告 — {time.strftime('%Y-%m-%d %H:%M')}",
@@ -578,19 +580,65 @@ def _write_report(
         "## 逐用例明细",
         "",
     ]
+    answer_records = []
     for index, item in enumerate(results, 1):
         mark = {"pass": "✅", "partial": "⚠️", "fail": "❌"}.get(item.get("verdict"), "🛑")
+        # 报告附件保存原始 finalAnswer；展示摘要另行裁剪，不能用 strip/摘要覆盖原件。
+        answer = str(item.get("finalAnswer") or "")
+        result_id = str(item.get("id") or item.get("result_id") or f"case-{index}").strip()
+        answer_records.append({
+            "resultId": result_id,
+            "question": item.get("question", ""),
+            "finalAnswer": answer,
+            "originalLength": len(answer),
+            "sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest(),
+            "verdict": item.get("verdict", "error"),
+            "reason": item.get("reason", ""),
+        })
+        display = answer[:600]
+        # 将回答逐行包进引用块：回答内部的标题、列表、表格仍按 Markdown 渲染，
+        # 但不会改变报告外层的章节层级或把固定字段挤成同级小标题。
+        def nested_quote(text: str) -> str:
+            return "\n".join(
+                f"  > {line}" if line else "  >"
+                for line in (str(text).splitlines() or ["（无）"])
+            )
+
+        quoted_display = nested_quote(display)
+        answer_meta_lines = [
+            "  >",
+            f"  > - **原始回答长度**：{len(answer)} 字符；是否截断：{'是' if len(answer) > len(display) else '否'}",
+        ]
+        if len(answer) > len(display):
+            answer_meta_lines.append(
+                f"  > - **完整回答**：[按结果 ID 查看附件]({answers_rel}#{result_id})"
+            )
+        answer_meta = "\n".join(answer_meta_lines)
         lines += [
             f"### {index}. {mark} {item.get('verdict', 'error')}",
             "",
             f"- **问题**：{item.get('question', '')}",
-            f"- **标准答案**：{item.get('groundTruth', '')}",
-            f"- **智能体回答**：{(item.get('finalAnswer') or '').strip()[:600] or '（无）'}",
-            f"- **判分理由**：{item.get('reason', '')}",
+            "",
+            "- **标准答案**：",
+            "",
+            nested_quote(item.get("groundTruth") or "（无）"),
+            "",
+            "- **智能体回答**：",
+            "",
+            quoted_display,
+            answer_meta,
+            "",
+            "- **判分理由**：",
+            "",
+            nested_quote(item.get("reason") or "（无）"),
             "",
         ]
     (root / "reports").mkdir(exist_ok=True)  # 不带 parents：项目已删除时不重建工作区
     (root / rel).write_text("\n".join(lines), encoding="utf-8")
+    (root / answers_rel).write_text(
+        json.dumps({"roundId": round_info.get("id", ""), "answers": answer_records}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     terminal = {"status": "failed", "message": (
         f"{failure}（已执行 {executed}/{len(results)} 条，报告已生成）"[:300]
     )} if failure else {"status": "done"}
@@ -638,6 +686,40 @@ def evolution_hint(state: dict) -> dict | None:
     }
 
 
+def full_answer(project_id: str, root: Path, token: str, result_id: str) -> dict:
+    """按结果 ID 从 Modeling Core 读取完整 finalAnswer；不使用 Onto 摘要。"""
+    state = read_state(root)
+    modeling_project = str(state.get("modeling_project") or "").strip()
+    round_id = str(state.get("round_id") or "").strip()
+    wanted = str(result_id or "").strip()
+    if not modeling_project or not round_id or not wanted:
+        raise ValueError("完整回答证据不可用")
+    details = _http(
+        "GET",
+        f"/api/projects/{modeling_project}/rounds/{round_id}",
+        token,
+        timeout=30,
+    )
+    result = next(
+        (item for item in details.get("results") or []
+         if str(item.get("id") or item.get("result_id") or "").strip() == wanted),
+        None,
+    )
+    if result is None:
+        raise ValueError("完整回答证据不存在或不属于当前评测轮次")
+    answer = str(result.get("finalAnswer") or "")
+    return {
+        "resultId": wanted,
+        "question": result.get("question", ""),
+        "groundTruth": result.get("groundTruth", ""),
+        "fullAnswer": answer,
+        "originalLength": len(answer),
+        "sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest(),
+        "verdict": result.get("verdict"),
+        "reason": result.get("reason", ""),
+    }
+
+
 def _case_progress(cases: list[dict], results: list[dict], round_running: bool) -> list[dict]:
     """逐用例执行状态（前端进度视图）：已出结果的带判分与摘要；modeling 按序
     执行，第一个未出结果的用例标记为执行中，其余待执行。"""
@@ -655,10 +737,18 @@ def _case_progress(cases: list[dict], results: list[dict], round_running: bool) 
                 (r for q, r in by_question.items() if q.startswith(question)), None
             )
         if item is not None:
+            answer = str(item.get("finalAnswer") or "").strip()
+            display = answer[:200]
             out.append({
                 "question": question[:120],
                 "verdict": item.get("verdict") or "error",
-                "answer": str(item.get("finalAnswer") or "").strip()[:200],
+                "answer": display,
+                "result_id": str(item.get("id") or item.get("result_id") or "").strip(),
+                "is_truncated": len(answer) > len(display),
+                "original_length": len(answer),
+                "display_length": len(display),
+                "full_answer_available": bool(item.get("id") or item.get("result_id")),
+                "answer_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest() if answer else "",
                 "reason": str(item.get("reason") or "").strip()[:160],
             })
         else:

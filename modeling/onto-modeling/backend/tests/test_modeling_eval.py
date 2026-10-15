@@ -73,6 +73,56 @@ def test_trace_cases_conversion(tmp_path):
     assert cases[1]["groundTruth"] == "结论：不推荐任何产品"
 
 
+def test_report_keeps_long_answer_in_sidecar_and_marks_summary(tmp_path):
+    """报告摘要可截断，但完整 finalAnswer 必须进入可追溯附件。"""
+    answer = "长回答起点：" + ("结论证据片段。" * 160)
+    root = tmp_path
+    (root / ".ontology-state").mkdir(parents=True)
+    rel = modeling_eval._write_report(root, {"id": "round-long"}, [{
+        "id": "result-long",
+        "question": "Q-long",
+        "groundTruth": "G-long",
+        "finalAnswer": answer,
+        "verdict": "fail",
+        "reason": "测试",
+    }])
+
+    report = (root / rel).read_text(encoding="utf-8")
+    assert "- **标准答案**：" in report
+    assert "- **智能体回答**：" in report
+    assert "  > - **原始回答长度**：" in report
+    assert "  > - **完整回答**：[按结果 ID 查看附件]" in report
+    assert "- **判分理由**：" in report
+    assert "#### 元信息" not in report
+    assert "#### 回答区" not in report
+    assert "  > 长回答起点：" in report
+    assert "原始回答长度" in report and "是否截断：是" in report
+    sidecar = root / rel.replace(".md", ".answers.json")
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    item = payload["answers"][0]
+    assert item["resultId"] == "result-long"
+    assert item["finalAnswer"] == answer
+    assert item["originalLength"] == len(answer)
+    assert len(item["sha256"]) == 64
+
+
+def test_report_hides_full_answer_link_for_short_answer(tmp_path):
+    root = tmp_path
+    (root / ".ontology-state").mkdir(parents=True)
+    rel = modeling_eval._write_report(root, {"id": "round-short"}, [{
+        "id": "result-short",
+        "question": "Q-short",
+        "groundTruth": "G-short",
+        "finalAnswer": "简短回答",
+        "verdict": "pass",
+        "reason": "一致",
+    }])
+    report = (root / rel).read_text(encoding="utf-8")
+    assert "原始回答长度" in report and "是否截断：否" in report
+    assert "完整回答" not in report
+    assert (root / rel.replace(".md", ".answers.json")).is_file()
+
+
 class StubModeling(BaseHTTPRequestHandler):
     """最小 modeling 评测 API stub：导入→用例→evaluate→round 详情。"""
 
