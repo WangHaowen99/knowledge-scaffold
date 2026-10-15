@@ -10,7 +10,7 @@ Then compute the authoritative current stage:
 python3 .claude/scripts/state_helper.py detect-stage
 ```
 
-Output is one of: `未开始 / 调研完成 / 流程图就绪 / 对象已提取 / 逻辑已提取 / 校验待审阅 / 完成`。
+Output is one of: `未开始 / 调研待核验 / 调研完成 / 流程图就绪 / 对象已提取 / 逻辑已提取 / 校验待审阅 / 完成`。
 
 Also run `python3 .claude/scripts/state_helper.py check-lock <command>`（替换 `<command>` 为待诊断的具体命令名，如 `extract-object` / `extract-operation` / `validate` / `codegen`）for any command you suspect is stuck (optional; only when diagnosing "is there a stuck task?") — skipped on happy path.
 
@@ -36,6 +36,34 @@ After showing, listen for the user's next reply:
 - **调研** → read `.claude/commands/ontology-research.md` and follow it (ask for TOPIC if not given)
 - **流程图** → read `.claude/commands/ontology-flowchart.md` and follow it
 - other → treat as normal input
+
+**调研待核验:**
+
+`research/` 下有报告，但没有通过内容验收的回执（新报告未核验、报告或源资料改动后
+回执失效、或旧项目本来就没有回执）。先跑检查拿到具体结论，再决定怎么说：
+
+```bash
+python3 .claude/scripts/research_checker.py check
+```
+
+```
+当前状态：调研待核验 ⏳
+报告：research/{latest_filename}
+{退出码 0：确定性检查已通过，阶段随即变为「调研完成」}
+{退出码 1：逐条列出错误项与待人工确认条目}
+
+**下一步建议：**
+- 回复 **修正** → 按错误项修改报告后重新核验
+- 回复 **人工确认** → 你逐条给出结论，我据此补充报告再核验
+- 回复 **重新调研**（/ontology-research）→ 重做本轮资料分析
+验收通过前不建议提取对象：错误的字段或 ID 会被后续映射、规则与追溯继续沿用。
+```
+
+Handle reply:
+- **修正** / **人工确认** → 按 `.claude/commands/ontology-research.md` 的 Step 4.5 处理
+- **重新调研** → read `.claude/commands/ontology-research.md` and follow it
+- **提取对象** → 用户坚持时按 `.claude/STEP0_TEMPLATE.md` 的 **跳步守卫** 先提示后果，
+  再由用户决定；不要主动推荐这条路。
 
 **调研完成:**
 
@@ -93,14 +121,14 @@ Handle reply:
 
 **逻辑已提取:**
 
-Count .md files in `ontology/object/` and `ontology/operation/`. Show:
+Count .md files in `ontology/object/`、`ontology/operation/`、`ontology/rule/` 与 `ontology/metric/`（跳过 index.md）. Show:
 ```
 当前状态：提取完成 ✅
-对象：{M} 个  |  逻辑：{K} 个
+对象：{M} 个  |  逻辑：{K} 个  |  规则：{R} 条  |  指标：{P} 个
 
 **下一步建议：**
 - 回复 **校验**（/ontology-validate）→ 开始校验
-- 回复 **规则与指标**（/ontology-extract-rule-metric）→ 把规则/指标抽取为一等实体（对齐知识包五元组，可选）
+- 回复 **规则与指标**（/ontology-extract-rule-metric）→ 补抽规则/指标：有调研报告的项目在逻辑提取阶段已按分类分流，这里用于从存量 operation 文档与 object 属性规则列补抽遗漏（可选）
 - 回复 **整体视图**（/ontology-overview）→ 先看全局关系
 - 回复 **更新**（/ontology-update）→ 按新的参考内容增量更新已有 ontology
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
@@ -137,6 +165,7 @@ Count all docs. Get last git log line. Show:
 
   对象：{M} 个（ontology/object/）
   逻辑：{K} 个（ontology/operation/）
+  规则：{R} 条（ontology/rule/）  指标：{P} 个（ontology/metric/）
   上次提交：{git log --oneline -1}
 
 **可选操作：**

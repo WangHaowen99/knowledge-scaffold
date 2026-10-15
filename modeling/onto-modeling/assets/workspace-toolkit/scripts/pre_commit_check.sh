@@ -104,8 +104,32 @@ print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=Fals
     fi
 fi
 
+# --- Research report check ---------------------------------------------------
+# 调研报告的内容验收。"报告已保存"不等于内容已通过：只要暂存了 research/ 下的
+# 报告，就必须过 research_checker 的确定性检查（计数、ID、字段、来源），
+# 否则错误报告会被下游的对象提取直接当成事实来源。
+RESEARCH_STAGED=$(git diff --cached --name-only -z 2>/dev/null | tr '\0' '\n' \
+    | grep -E '^research/.*\.md$' | grep -v '/index\.md$' || true)
+if [ -n "$RESEARCH_STAGED" ]; then
+    RESEARCH_OUTPUT=$(python3 .claude/scripts/research_checker.py check 2>&1)
+    RESEARCH_CODE=$?
+    RESEARCH_OUTPUT=$(printf '%s' "$RESEARCH_OUTPUT" | head -40)
+    # 1=有确定性错误或人工待决未完成 → 阻止；2=已无报告可核验（如删除报告）→ 放过
+    if [ "$RESEARCH_CODE" -eq 1 ]; then
+        REASON=$(printf '调研报告未通过内容验收，已阻止提交：\n\n%s\n\n修正报告后重新 git add 并提交；需人工判断的条目请先确认再在报告中勾选。' "$RESEARCH_OUTPUT")
+        python3 -c '
+import json, sys
+print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))
+' "$REASON"
+        exit 0
+    fi
+fi
+
 # --- Ontology rule check（原逻辑） -------------------------------------------
 # Only relevant when staged files include ontology docs. Use -z for NUL-safe parsing.
+# rule / metric 有意不在范围内：从知识包导入的规则、指标是知识包契约的格式（规则内容 /
+# 判断条件 / 知识证据 …），与工具箱模板不同，结构检查会把它们整篇判为缺章节。两套
+# 格式对齐之前在这里拦，导入项目里任何改到规则、指标的提交都会被挡住。
 STAGED=$(git diff --cached --name-only -z 2>/dev/null | tr '\0' '\n' \
     | grep -E '^ontology/(object|operation|action|data-mock|knowledge)/.*\.md$' || true)
 if [ -z "$STAGED" ]; then

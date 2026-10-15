@@ -215,6 +215,8 @@ class WorkspaceManager:
         (("reports/eval-*.md",), True),
     )
     STAGE_TOTAL = len(STAGES)
+    # 资料分析在 STAGES 中的位置：它不按目录探针判完成，改读验收回执（issue #362）
+    RESEARCH_STAGE_INDEX = 0
 
     @staticmethod
     def _dir_has_entries(directory: Path) -> bool:
@@ -228,14 +230,27 @@ class WorkspaceManager:
 
     @classmethod
     def _project_progress(cls, root: Path) -> dict:
+        review = _research_review.review_status(root)
+        # 验收只管"进入对象提取之前"：报告没通过、对象也还没提取时才挡住后续阶段。
+        # 对象一旦提取，资料分析按已越过处理，只留待核验的提醒——与 state_helper
+        # 的"已到达的最高阶段优先"同口径。否则旧项目升级后进度会整体归零，回执
+        # 因打标签、换评测表而失效时也一样。
+        research_blocking = (
+            review["status"] in (_research_review.PENDING, _research_review.FAILED)
+            and not cls._dir_has_entries(root / "ontology" / "object")
+        )
         done = 0
-        for dirs, optional in cls.STAGES:
+        for index, (dirs, optional) in enumerate(cls.STAGES):
             hit = any(
                 (next(root.glob(rel), None) is not None)
                 if "*" in rel
                 else cls._dir_has_entries(root / rel)
                 for rel in dirs
             )
+            # 资料分析：报告落盘不等于内容已验收，挡着的时候停在这一阶段，
+            # 后续阶段不会被标记为当前阶段。有没有报告以回执状态为准，不看目录探针。
+            if index == cls.RESEARCH_STAGE_INDEX:
+                hit = review["status"] != _research_review.NONE and not research_blocking
             if hit:
                 done += 1
             elif optional:
@@ -267,6 +282,17 @@ class WorkspaceManager:
             "eval_evolution": evolution_hint(eval_summary),
             "stages_done": done,
             "stages_total": cls.STAGE_TOTAL,
+            # 资料分析的验收状态（none/pending/failed/passed）+ 计数与下一步提示。
+            # 只给结论和条数，错误明细由 research_checker 在工作区内输出。
+            # blocking：未验收是否还挡着后续阶段；前端据此决定阶段完成态，不自行推断。
+            "research_review": {
+                "status": review["status"],
+                "reason": review["reason"],
+                "blocking": research_blocking,
+                "errors": len(review["errors"]),
+                "manual_pending": len(review["manual_pending"]),
+                "hint": _research_review.hint(review),
+            },
             "objects": count_md("ontology/object"),
             "operations": count_md("ontology/operation") + count_md("ontology/logic"),
         }
@@ -1614,6 +1640,20 @@ def _package_script_filename(key: str) -> str:
     return f"script_{hashlib.sha1(key.encode('utf-8')).hexdigest()[:10]}.py"
 
 
+def _load_research_review():
+    """资料分析验收状态以 workspace-toolkit/scripts/research_review.py 为单一事实源。
+
+    项目进度（本文件）、CLI 阶段前置（state_helper）与报告检查器（research_checker）
+    共用同一份失效判定，避免"目录里有报告就算完成"在多处各自实现（issue #362）。
+    """
+    path = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts" / "research_review.py"
+    spec = importlib.util.spec_from_file_location("onto_workspace_research_review", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_script_contract():
     """脚本契约解析以 workspace-toolkit/scripts/script_contract.py 为单一事实源。
 
@@ -1631,6 +1671,8 @@ def _load_script_contract():
 _script_contract = _load_script_contract()
 ScriptContractError = _script_contract.ScriptContractError
 _script_header_meta = _script_contract.parse_script_contract
+
+_research_review = _load_research_review()
 
 
 def _first_heading(path: Path) -> str:
