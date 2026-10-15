@@ -54,19 +54,23 @@ prepare_vendor() {
 
   if [ -f "$drawio/index.html" ]; then
     echo 'Reusing prepared drawio webapp'
+  elif ! command -v npm >/dev/null 2>&1; then
+    echo 'Warning: host npm unavailable; drawio editing will be unavailable in this package.' >&2
   else
-    command -v npm >/dev/null 2>&1 || { echo 'Error: npm is required to prepare drawio.' >&2; return 1; }
-    (
-      set -e
-      temp="$(mktemp -d)"
+    if (
+      temp="$(mktemp -d)" || exit 1
       trap 'rm -rf "$temp"' EXIT
       npm pack '@yank-note/extension-drawio@2.7.0' \
-        --pack-destination "$temp" --registry=https://registry.npmmirror.com >/dev/null
-      tar -xzf "$temp/yank-note-extension-drawio-2.7.0.tgz" \
-        -C "$temp" package/drawio/src/main/webapp
-      cp -a "$temp/package/drawio/src/main/webapp/." "$drawio/"
-    )
-    test -f "$drawio/index.html" || { echo 'Error: drawio preparation failed.' >&2; return 1; }
+        --pack-destination "$temp" --registry=https://registry.npmmirror.com >/dev/null 2>&1 \
+      && tar -xzf "$temp/yank-note-extension-drawio-2.7.0.tgz" \
+        -C "$temp" package/drawio/src/main/webapp \
+      && cp -a "$temp/package/drawio/src/main/webapp/." "$drawio/" \
+        && test -f "$drawio/index.html"
+    ); then
+      echo 'Drawio webapp prepared.'
+    else
+      echo 'Warning: drawio preparation failed; drawio editing will be unavailable in this package.' >&2
+    fi
   fi
 }
 

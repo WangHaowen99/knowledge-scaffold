@@ -55,6 +55,12 @@ run before production delivery. A successful Pod rollout also does not prove
 script test execution; perform a real synthetic script execution in each
 target architecture as part of acceptance.
 
+For a data-preserving upgrade, see `upgrade-and-recovery.md`. The upgrade path
+requires a tested no-migration compatibility transition, stopped old Modeling
+Pods, ready PVC snapshots and a verified backup record. Joint execution is
+always Consumer upgrade and verify, then Modeling upgrade and verify. Consumer
+package upgrade behavior belongs to its independent repository.
+
 For source checkout validation, the Modeling-side command expects the package
 layout. Point `--package-root` at an extracted Modeling CCE package when
 running the Python entry directly; in the delivered package this is resolved
@@ -71,7 +77,15 @@ The default output is `modeling/dist/modeling-cce-v1.0.0-amd64.tar.gz`.
 Pass a third argument to choose another output path. `build-images.sh` prepares
 and reuses the vendor inputs before loading three images into local Docker;
 `build-offline.sh` then packages them.
-It stops if any step fails; rerunning uses the same versioned image tags.
+Drawio preparation follows the VM release behavior: an existing
+`modeling/onto-modeling/vendor/drawio/webapp/index.html` is reused; otherwise
+the script tries host `npm pack`. If `npm` is missing or preparation fails, it
+warns and continues building without the Drawio editor. To include the editor
+on a disconnected build host, transfer the complete `vendor/drawio/webapp/`
+directory from an online build host before building. Docker base images and
+Python dependencies must also be available locally or through an approved
+mirror. Other build failures stop the script; rerunning uses the same versioned
+image tags.
 Use `arm64` consistently for an arm64 target. A cross-architecture builder
 needs working emulation or a native node. The local images are tagged
 `modeling-offline/modeling`, `modeling-offline/modeling-agent` and

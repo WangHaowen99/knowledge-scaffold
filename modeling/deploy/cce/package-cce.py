@@ -102,7 +102,7 @@ def main():
             chart.extractall(deploy, filter="data")
         (deploy / "modeling").rename(deploy / "chart")
         chart_archive.unlink()
-        for name in ("install-cce.sh", "install-cce.py", "common.py", "joint-cce.py", "deployment.schema.json",
+        for name in ("install-cce.sh", "install-cce.py", "common.py", "upgrade.py", "joint-cce.py", "deployment.schema.json",
                      "deployment.customer.example.yaml", "storage-inventory.yaml", "endpoints.yaml", "compatibility.yaml",
                      "values.customer.example.yaml", "resolved-images.example.yaml"):
             shutil.copy2(root / "deploy/cce" / name, deploy / name)

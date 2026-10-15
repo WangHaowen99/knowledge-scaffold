@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: {{ include "modeling.name" . }}-core
 spec:
-  replicas: 1
+  replicas: {{ .Values.modeling.workloads.core.replicas }}
   strategy:
     type: Recreate
   selector:
@@ -127,7 +127,7 @@ kind: Deployment
 metadata:
   name: {{ include "modeling.name" . }}-agent
 spec:
-  replicas: 1
+  replicas: {{ .Values.modeling.workloads.agent.replicas }}
   strategy: {type: Recreate}
   selector:
     matchLabels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: agent}
@@ -180,7 +180,7 @@ kind: Deployment
 metadata:
   name: {{ include "modeling.name" . }}-onto
 spec:
-  replicas: 1
+  replicas: {{ .Values.modeling.workloads.onto.replicas }}
   strategy: {type: Recreate}
   selector:
     matchLabels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: onto}

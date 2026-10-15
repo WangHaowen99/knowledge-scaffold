@@ -4,16 +4,19 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import subprocess
 import sys
+import time
 import uuid
 
 import jsonschema
 
-from common import (CompatibilityError, ConfigError, MigrationUnavailable, endpoint_results, read_yaml, validate_compatibility,
+from common import (CompatibilityError, ConfigError, endpoint_results, read_yaml, validate_compatibility,
                     validate_images, validate_name, validate_release)
+from upgrade import assert_same_bindings, bindings, transition, verified_snapshots, verify_persisted_data
 
 
 def run(*command: str) -> str:
@@ -51,6 +54,19 @@ def installed_values(args) -> dict:
     return json.loads(run(*helm_base(args), "get", "values", args.release, "-o", "json"))
 
 
+def installed_release(args) -> dict:
+    current = release_status(args)
+    if not current or current.get("info", {}).get("status") != "deployed":
+        raise ConfigError("installed Modeling release is not deployed")
+    chart = current.get("chart", "")
+    if not chart.startswith("modeling-"):
+        raise ConfigError("installed release is not a Modeling Chart")
+    version = installed_values(args).get("global", {}).get("releaseVersion")
+    if not version:
+        raise ConfigError("installed release version is missing")
+    return {"releaseVersion": version, "chartVersion": chart.removeprefix("modeling-")}
+
+
 def load_inputs(args, root: Path):
     release = validate_release(root, "modeling")
     if not args.values or not args.resolved_images or not args.compatibility:
@@ -76,12 +92,15 @@ def load_inputs(args, root: Path):
             raise ConfigError(f"incomplete {key} Secret reference")
     if merged["modeling"]["nl2sql"]["enabled"] and not merged["modeling"]["secrets"]["evalDbUrl"]["name"]:
         raise ConfigError("NL2SQL requires the evalDbUrl Secret reference")
+    if args.action != "upgrade" and any(merged["modeling"]["workloads"][name]["replicas"] != 1
+            for name in ("core", "agent", "onto")):
+        raise ConfigError("stateful workloads must run at one replica")
     if not images["jiuwenbox"]:
         raise ConfigError("JiuwenBox reference missing")
     return release, merged
 
 
-def preflight(args, merged: dict) -> None:
+def preflight(args, merged: dict, *, check_external_services: bool = True) -> None:
     namespace = kube(args, "get", "namespace", args.namespace)
     if namespace["status"]["phase"] != "Active":
         raise ConfigError("namespace is not Active")
@@ -104,11 +123,12 @@ def preflight(args, merged: dict) -> None:
         kube(args, "get", "secret", secret_name, "-n", args.namespace)
     if merged["global"]["access"]["protocol"] == "HTTPS":
         kube(args, "get", "secret", merged["global"]["access"]["tlsSecretName"], "-n", args.namespace)
-    for field in ("externalAuth", "externalConsumer"):
-        target = merged[field]
-        service = kube(args, "get", "service", target["serviceName"], "-n", target["namespace"])
-        if target["servicePort"] not in [port["port"] for port in service["spec"]["ports"]]:
-            raise ConfigError(f"{field} service port mismatch")
+    if check_external_services:
+        for field in ("externalAuth", "externalConsumer"):
+            target = merged[field]
+            service = kube(args, "get", "service", target["serviceName"], "-n", target["namespace"])
+            if target["servicePort"] not in [port["port"] for port in service["spec"]["ports"]]:
+                raise ConfigError(f"{field} service port mismatch")
     nodes = kube(args, "get", "nodes")
     arch = merged["global"]["targetArch"]
     if not any(node["metadata"]["labels"].get("kubernetes.io/arch") == arch and
@@ -139,11 +159,75 @@ def verify(args, root: Path):
             f"deployment/{args.release}-nl2sql", f"--timeout={args.timeout_seconds}s")
 
 
+def upgrade_precheck(args, release: dict, merged: dict) -> dict:
+    if not args.backup_record or not args.transition_id:
+        raise ConfigError("upgrade requires --backup-record and --transition-id")
+    if not args.lock_holder or not args.lock_name or not args.lock_namespace:
+        raise ConfigError("upgrade requires a delegated operation Lease")
+    lease = kube(args, "get", "lease", args.lock_name, "-n", args.lock_namespace)
+    if lease.get("spec", {}).get("holderIdentity") != args.lock_holder or args.lock_holder != args.operation_id:
+        raise ConfigError("operation Lease is not held by this upgrade")
+    spec = lease["spec"]
+    try:
+        renewed = datetime.fromisoformat(spec["renewTime"].replace("Z", "+00:00"))
+        expires = renewed + timedelta(seconds=int(spec["leaseDurationSeconds"]))
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise ConfigError("operation Lease has no valid expiry") from exc
+    if expires <= datetime.now(timezone.utc):
+        raise ConfigError("operation Lease has expired")
+    installed = installed_release(args)
+    transition(args.compatibility, args.transition_id, installed, release)
+    old_values = installed_values(args)
+    if old_values.get("global", {}).get("targetArch") != merged["global"]["targetArch"]:
+        raise CompatibilityError("target architecture differs from the installed release")
+    if old_values.get("global", {}).get("auth", {}) != merged["global"]["auth"]:
+        raise CompatibilityError("shared auth settings changed during Modeling upgrade")
+    for component in ("core", "agent", "onto"):
+        old_claim = old_values.get("modeling", {}).get("workloads", {}).get(component, {}).get("persistence", {}).get("existingClaim")
+        target_claim = merged["modeling"]["workloads"][component]["persistence"]["existingClaim"]
+        if old_claim != target_claim:
+            raise ConfigError(f"{component} target PVC differs from installed values")
+    before = bindings(kube, args, merged, stopped=True)
+    verified_snapshots(kube, args, args.backup_record, before)
+    return before
+
+
+def wait_old_pods_gone(args) -> None:
+    deadline = time.monotonic() + args.timeout_seconds
+    for component in ("core", "agent", "onto"):
+        while True:
+            pods = kube(args, "get", "pods", "-n", args.namespace,
+                        "-l", f"app.kubernetes.io/instance={args.release},app.kubernetes.io/component={component}")
+            if not pods.get("items"):
+                break
+            if time.monotonic() >= deadline:
+                raise ConfigError(f"old {component} Pods did not exit before timeout")
+            time.sleep(2)
+
+
+def apply_upgrade(args, root: Path, release: dict, merged: dict, before: dict) -> None:
+    helm_args = (*helm_base(args), "upgrade", args.release, str(root / "deploy/chart"),
+                 "-f", str(args.values), "-f", str(args.resolved_images),
+                 "--set-string", f"global.releaseVersion={release['releaseVersion']}",
+                 "--set-string", f"global.operationId={args.operation_id}")
+    run(*helm_args, "--set", "modeling.workloads.core.replicas=0",
+        "--set", "modeling.workloads.agent.replicas=0",
+        "--set", "modeling.workloads.onto.replicas=0",
+        f"--timeout={args.timeout_seconds}s")
+    wait_old_pods_gone(args)
+    assert_same_bindings(before, bindings(kube, args, merged, stopped=True))
+    run(*helm_args, "--wait", f"--timeout={args.timeout_seconds}s")
+    verify(args, root)
+    assert_same_bindings(before, bindings(kube, args, merged, stopped=False))
+    verify_persisted_data(run, args, args.backup_record)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("plan", "preflight", "install", "upgrade", "status", "verify"))
-    for option in ("context", "namespace", "release", "operation-id", "state-dir", "values", "resolved-images", "compatibility", "resume", "backup-record", "lock-holder"):
+    for option in ("context", "namespace", "release", "operation-id", "state-dir", "values", "resolved-images", "compatibility", "resume", "backup-record", "lock-holder", "lock-name", "lock-namespace"):
         parser.add_argument(f"--{option}")
+    parser.add_argument("--transition-id")
     parser.add_argument("--timeout-seconds", type=int, default=900)
     parser.add_argument("--package-root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -151,10 +235,13 @@ def main():
     args.values = Path(args.values).resolve() if args.values else None
     args.resolved_images = Path(args.resolved_images).resolve() if args.resolved_images else None
     args.compatibility = Path(args.compatibility).resolve() if args.compatibility else None
+    args.backup_record = Path(args.backup_record).resolve() if args.backup_record else None
     if args.resume and not args.operation_id:
         parser.error("resume requires operation-id")
     if args.action != "status" and not args.operation_id:
         args.operation_id = str(uuid.uuid4())
+    if args.action == "upgrade" and not args.transition_id:
+        parser.error("upgrade requires --transition-id")
     root = args.package_root or Path(__file__).resolve().parent.parent
     result = dict(schemaVersion="cce-operation/v1", operationId=args.operation_id, side="modeling",
                   action=args.action, status="failed", releaseName=args.release, namespace=args.namespace,
@@ -165,8 +252,6 @@ def main():
             raise ConfigError("context, namespace, release and positive timeout required")
         validate_name(args.namespace, "namespace")
         validate_name(args.release, "release")
-        if args.action == "upgrade":
-            raise MigrationUnavailable("CCE upgrade requires verified stop, backup and data migration workflow; not implemented")
         if args.action == "status":
             current = release_status(args)
             if current is None:
@@ -189,6 +274,8 @@ def main():
                 result["phase"] = "preflight"
                 preflight(args, merged)
                 current = release_status(args)
+                if args.action == "preflight" and args.transition_id:
+                    upgrade_precheck(args, release, merged)
                 if args.action == "install":
                     if current and not args.resume:
                         raise ConfigError("release already exists; use explicit resume or upgrade")
@@ -204,6 +291,14 @@ def main():
                         "--set-string", f"global.operationId={args.operation_id}",
                         "--wait", f"--timeout={args.timeout_seconds}s")
                     verify(args, root)
+                elif args.action == "upgrade":
+                    result["phase"] = "upgrade-precheck"
+                    before = upgrade_precheck(args, release, merged)
+                    if any(merged["modeling"]["workloads"][name]["replicas"] != 1
+                           for name in ("core", "agent", "onto")):
+                        raise ConfigError("target values must request one replica per stateful workload")
+                    result["phase"] = "upgrade"
+                    apply_upgrade(args, root, release, merged, before)
                 elif args.action == "verify":
                     if not current:
                         raise ConfigError("release absent")
@@ -213,8 +308,6 @@ def main():
         result["status"] = "succeeded"
     except CompatibilityError as exc:
         result.update(errorCode="INCOMPATIBLE_VERSION", message=str(exc))
-    except MigrationUnavailable as exc:
-        result.update(errorCode="MIGRATION_FAILED", message=str(exc))
     except (ConfigError, FileNotFoundError, KeyError, TypeError, jsonschema.SchemaError) as exc:
         result.update(errorCode="CONFIG_INVALID", message=str(exc))
     except subprocess.TimeoutExpired:
