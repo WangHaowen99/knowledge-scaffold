@@ -276,6 +276,11 @@ def _recyclable(session: "Session") -> bool:
     )
 
 
+def _bound_to(session: "Session | None", conversation_id: str) -> bool:
+    """引擎当前是否绑定着这条会话。"""
+    return session is not None and session.conversation_id == conversation_id
+
+
 def _busy(session: "Session") -> bool:
     """在跑、排队、连接中、有待确认卡或有处理中的发送：此时不能把引擎换绑到别的会话。
 
@@ -339,11 +344,44 @@ class SessionManager:
         self._lock = asyncio.Lock()
         self._reaper_task: asyncio.Task | None = None
         self._tasks: set[asyncio.Task] = set()  # 后台收尾任务的强引用，免得执行中被回收
+        # 各（项目, 会话）打开着的事件流队列：会话新建时直接挂上（首条消息、
+        # 空闲回收后再发、切换会话后再发）
+        self._watchers: dict[tuple[str, str], set[asyncio.Queue]] = {}
 
     def _spawn(self, coro) -> None:
         task = asyncio.create_task(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    # ---- 事件流订阅 ----
+
+    def watch(
+        self,
+        project_id: str,
+        queue: asyncio.Queue,
+        conversation_id: str = DEFAULT_CONVERSATION,
+    ) -> None:
+        """登记事件流队列；引擎正绑定这条会话时立即挂上，之后新建的会话由 _bind_session 挂上。"""
+        self._watchers.setdefault((project_id, conversation_id), set()).add(queue)
+        session = self._sessions.get(project_id)
+        if _bound_to(session, conversation_id) and queue not in session.subscribers:
+            session.subscribers.append(queue)
+
+    def unwatch(
+        self,
+        project_id: str,
+        queue: asyncio.Queue,
+        conversation_id: str = DEFAULT_CONVERSATION,
+    ) -> None:
+        key = (project_id, conversation_id)
+        watchers = self._watchers.get(key)
+        if watchers is not None:
+            watchers.discard(queue)
+            if not watchers:
+                self._watchers.pop(key, None)
+        session = self._sessions.get(project_id)
+        if session and queue in session.subscribers:
+            session.subscribers.remove(queue)
 
     # ---- 查询 ----
 
@@ -460,6 +498,8 @@ class SessionManager:
             )
             # 续接历史，seq 连续
             session.events = load_history(project_id, conversation_id)
+            # 这条会话已打开的事件流在广播任何事件之前挂上，本轮过程即时推送
+            session.subscribers.extend(self._watchers.get((project_id, conversation_id), ()))
             self._sessions[project_id] = session
             _expire_orphan_permissions(session)
         return session

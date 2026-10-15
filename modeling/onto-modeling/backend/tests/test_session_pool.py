@@ -533,3 +533,66 @@ def test_interrupt_ghost_running_reconciles(pool_env):
     assert tail[-1] == {"type": "session_state", "state": "idle", "ts": tail[-1]["ts"], "seq": 2}
     # 不存在历史的项目：打断是无害幂等操作
     assert asyncio.run(manager.interrupt("nonexistent")) is False
+
+
+def _drain(queue: asyncio.Queue) -> list[dict]:
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    return events
+
+
+def test_open_stream_receives_first_message_events_immediately(pool_env, tmp_path):
+    """事件流先于会话建立（打开项目后发第一条消息）：新会话一建立就推送，不等心跳超时。"""
+    manager, created, _ = pool_env
+
+    async def scenario():
+        queue: asyncio.Queue = asyncio.Queue()
+        manager.watch("p1", queue)
+        await manager.send("p1", tmp_path / "w1", "第一条")
+        await _settle(manager, "p1")
+        events = _drain(queue)
+        assert events[0]["type"] == "user_message"
+        assert "session_started" in [e["type"] for e in events]
+        assert "running" in [e.get("state") for e in events if e["type"] == "session_state"]
+        manager.unwatch("p1", queue)
+        assert queue not in manager.get("p1").subscribers
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_open_stream_follows_session_recreated_after_reap(pool_env, tmp_path):
+    """空闲回收后再发消息会新建会话：已打开的事件流自动挂上，过程照常即时推送。"""
+    manager, created, _ = pool_env
+
+    async def scenario():
+        queue: asyncio.Queue = asyncio.Queue()
+        manager.watch("p1", queue)
+        await manager.send("p1", tmp_path / "w1", "第一条")
+        first = await _settle(manager, "p1")
+        first.state = "idle"
+        first.last_activity = time.time() - 10_000
+        assert await manager.reap_idle() == 1
+        _drain(queue)
+
+        await manager.send("p1", tmp_path / "w1", "第二条")
+        second = await _settle(manager, "p1")
+        assert second is not first
+        assert queue in second.subscribers
+        events = _drain(queue)
+        assert events[0]["type"] == "user_message" and events[0]["text"] == "第二条"
+        # seq 与历史连续：前端按 seq 水位去重不会误丢
+        seqs = [e["seq"] for e in events if "seq" in e]
+        assert seqs == sorted(seqs) and seqs[0] == len(first.events)
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_unwatch_forgets_project_without_open_streams(pool_env):
+    manager, _created, _ = pool_env
+    queue: asyncio.Queue = asyncio.Queue()
+    manager.watch("p1", queue)
+    manager.unwatch("p1", queue)
+    assert ("p1", "default") not in manager._watchers

@@ -1,6 +1,5 @@
 import asyncio
 import json
-import time
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
@@ -13,8 +12,6 @@ from .projects import ensure_access
 router = APIRouter(prefix="/api/projects/{project_id}/session", tags=["session"])
 
 HEARTBEAT_SECONDS = 15
-# 流还没挂上会话时的轮询间隔：此时没有任何事件能唤醒它，只能靠轮询等 send() 建出会话
-ATTACH_POLL_SECONDS = 1
 
 
 class MessageBody(BaseModel):
@@ -139,49 +136,25 @@ async def stream(
     ensure_access(project_id, request)
     conversation_id = manager.resolve_conversation(project_id, conversation)
 
-    def bound_session():
-        """引擎正绑定这条会话时返回它；绑着别的会话时这条流只回放历史并发心跳。"""
-        session = manager.get(project_id)
-        if session and session.conversation_id == conversation_id:
-            return session
-        return None
-
     async def generate():
         queue: asyncio.Queue = asyncio.Queue()
-        sent = after  # 已发送到的 seq 水位，避免"文件历史 + 会话补挂"重复发送
-        # 先订阅再重放：重放长历史时事件循环会让出，期间新事件先进队列，
-        # 重放结束后按 seq 水位去重续发，不会再丢失重放窗口内的事件
-        session = bound_session()
-        if session:
-            session.subscribers.append(queue)
-        history = list(manager.get_history(project_id, conversation_id))
-        for event in history[sent:]:
-            yield _sse(event)
-        sent = max(sent, len(history))
-        last_sent = time.monotonic()
+        sent = after  # 已发送到的 seq 水位，避免"历史重放 + 实时推送"重复发送
+        # 先登记再重放：重放长历史时事件循环会让出，期间新事件先进队列，
+        # 重放结束后按 seq 水位去重续发。登记在会话管理器上：此后为这条会话新建的
+        # Session（首条消息、空闲回收后再发、切换会话后再发）建立时即挂上本队列；
+        # 引擎绑着别的会话时这条流只回放历史并发心跳
+        manager.watch(project_id, queue, conversation_id)
         try:
+            history = list(manager.get_history(project_id, conversation_id))
+            for event in history[sent:]:
+                yield _sse(event)
+            sent = max(sent, len(history))
             while True:
-                current = bound_session()
-                attached = current is not None and queue in current.subscribers
-                if current and not attached:
-                    # send() 之后才建立的会话：补挂订阅并补发缺口
-                    for event in current.events[sent:]:
-                        yield _sse(event)
-                    sent = max(sent, len(current.events))
-                    current.subscribers.append(queue)
-                    attached = True
                 try:
-                    # 没挂上时用短超时：等一个完整心跳周期才补挂的话，
-                    # 期间的流式增量（不进历史）会全部丢掉
-                    event = await asyncio.wait_for(
-                        queue.get(),
-                        timeout=HEARTBEAT_SECONDS if attached else ATTACH_POLL_SECONDS,
-                    )
+                    event = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECONDS)
                 except asyncio.TimeoutError:
-                    if time.monotonic() - last_sent >= HEARTBEAT_SECONDS:
-                        # 可见心跳：前端据此判断连接是否僵死（SSE 注释行不触发 onmessage）
-                        yield _sse({"type": "ping"})
-                        last_sent = time.monotonic()
+                    # 可见心跳：前端据此判断连接是否僵死（SSE 注释行不触发 onmessage）
+                    yield _sse({"type": "ping"})
                     continue
                 seq = event.get("seq")
                 if seq is not None:
@@ -189,11 +162,8 @@ async def stream(
                         continue
                     sent = seq + 1
                 yield _sse(event)
-                last_sent = time.monotonic()
         finally:
-            current = bound_session()
-            if current and queue in current.subscribers:
-                current.subscribers.remove(queue)
+            manager.unwatch(project_id, queue, conversation_id)
 
     return StreamingResponse(
         generate(),

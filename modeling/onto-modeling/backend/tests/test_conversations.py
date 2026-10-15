@@ -507,3 +507,36 @@ def test_jiuwen_session_id_is_per_conversation(tmp_path):
 
     assert make("default")._sid == "onto-p1"  # 存量会话沿用单会话时期的 id
     assert make("0123456789ab")._sid == "onto-p1-0123456789ab"
+
+
+# ---- 事件流按会话挂接 ----
+
+
+def _drain(queue: asyncio.Queue) -> list[dict]:
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    return events
+
+
+def test_open_stream_attaches_only_to_its_own_conversation(conv_env):
+    """事件流登记在某条会话上：引擎绑着别的会话时不挂，切到这条会话新建 Session 时即时挂上。"""
+
+    async def scenario():
+        await _send_and_idle(conv_env, "默认会话的消息")
+        cid = conversation_store.create("p1")["id"]
+        queue: asyncio.Queue = asyncio.Queue()
+        conv_env.manager.watch("p1", queue, cid)
+        assert queue not in conv_env.manager.get("p1").subscribers
+
+        session = await _send_and_idle(conv_env, "新会话的消息", cid)
+        assert queue in session.subscribers
+        events = _drain(queue)
+        assert events[0]["type"] == "user_message" and events[0]["text"] == "新会话的消息"
+
+        conv_env.manager.unwatch("p1", queue, cid)
+        assert queue not in session.subscribers
+        assert ("p1", cid) not in conv_env.manager._watchers
+        await conv_env.manager.shutdown()
+
+    asyncio.run(scenario())
