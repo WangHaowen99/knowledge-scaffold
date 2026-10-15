@@ -22,12 +22,15 @@ import asyncio
 import hashlib
 import json
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
 import uuid
+import weakref
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .. import config
 from . import eval_data_sources, eval_import, package_mapping
@@ -47,6 +50,16 @@ _running: set[str] = set()  # project_id 去重（单进程内防并发重复触
 _live_tokens: dict[str, str] = {}  # project_id → 前端轮询接力的最新 token
 _stop_requested: set[str] = set()  # 用户请求停止的 project_id（协作式取消）
 
+# 一轮编排从打包到收报告都占着一个线程（含每 6 秒一次的轮询等待，最长 30 分钟），
+# 放进评测专用线程池：不占事件循环的默认线程池——后者还承担上传、git、项目导入删除
+# 等短任务，被评测占满时这些操作要排队几十秒到几分钟。专用池容量即同时执行的评测轮数，
+# 由同容量的信号量把关：排队发生在事件循环里，排队中的轮次可以直接取消出队
+_executor: ThreadPoolExecutor | None = None
+_slots: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # 事件循环 → 槽位信号量
+_queue_lock = threading.Lock()
+# 等待评测槽位的 project_id → (入队时间, 所在事件循环, 编排任务)，按入队顺序
+_queued: dict[str, tuple[int, asyncio.AbstractEventLoop, asyncio.Task]] = {}
+
 STOPPED_MESSAGE = "评测已停止（modeling 侧轮次已取消，已完成用例的结果仍保留在 modeling 侧）"
 INTERRUPTED_MESSAGE = (
     "上一轮评测被服务重启中断：modeling 侧轮次可能仍在执行或已完成，"
@@ -56,6 +69,73 @@ INTERRUPTED_MESSAGE = (
 
 class EvalStopped(Exception):
     """用户主动停止评测——与编排失败区分开：状态落 stopped，且允许重跑。"""
+
+
+QUEUED_STOP_MESSAGE = "评测已停止（排队中，尚未执行）"
+
+
+def _eval_executor() -> ThreadPoolExecutor:
+    global _executor
+    if _executor is None:
+        _executor = ThreadPoolExecutor(
+            max_workers=config.EVAL_MAX_CONCURRENT_ROUNDS, thread_name_prefix="onto-eval"
+        )
+    return _executor
+
+
+def _eval_slots() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    slots = _slots.get(loop)
+    if slots is None:
+        slots = _slots[loop] = asyncio.Semaphore(config.EVAL_MAX_CONCURRENT_ROUNDS)
+    return slots
+
+
+def queue_position(project_id: str) -> int | None:
+    """排队中返回 1 起的位次，未排队返回 None。"""
+    with _queue_lock:
+        for position, queued_id in enumerate(_queued, start=1):
+            if queued_id == project_id:
+                return position
+    return None
+
+
+def _queued_since(project_id: str) -> int | None:
+    with _queue_lock:
+        entry = _queued.get(project_id)
+    return entry[0] if entry else None
+
+
+def _cancel_queued(project_id: str) -> bool:
+    """排队中的轮次直接出队并取消等待；已开始执行的返回 False（走协作式取消）。
+
+    可从路由的工作线程调用：取消经 call_soon_threadsafe 投递回编排所在的事件循环。
+    """
+    with _queue_lock:
+        entry = _queued.pop(project_id, None)
+    if entry is None:
+        return False
+    _since, loop, task = entry
+    loop.call_soon_threadsafe(task.cancel)
+    return True
+
+
+async def _run_in_eval_pool(project_id: str, func: Callable[..., None], *args: Any) -> None:
+    """在评测专用线程池里执行一轮编排；槽位满时排队，排队中可被停止。"""
+    loop = asyncio.get_running_loop()
+    with _queue_lock:
+        _queued[project_id] = (int(time.time()), loop, asyncio.current_task())
+    try:
+        async with _eval_slots():
+            with _queue_lock:
+                # 出队与停止方的出队互斥：先拿到的一方说了算
+                still_queued = _queued.pop(project_id, None) is not None
+            if not still_queued:
+                return  # 拿到槽位前已被停止：request_stop 已落 stopped 状态
+            await loop.run_in_executor(_eval_executor(), func, *args)
+    finally:
+        with _queue_lock:
+            _queued.pop(project_id, None)
 
 
 def _check_stop(project_id: str) -> None:
@@ -476,6 +556,21 @@ def status_view(project_id: str, root: Path) -> dict:
     内存态消失，而 eval.json 会永远停在 running，把运行按钮永久锁死；此处按
     "无内存态 + ts 停滞"双条件收敛，并标出是否可续接。
     """
+    position = queue_position(project_id)
+    if position is not None:
+        # 排队态只叠加在视图上、不落盘：落盘的 running 会被「同题续接」误判为上一轮
+        queued_at = _queued_since(project_id) or int(time.time())
+        return {
+            "status": "running",
+            "phase": "queued",
+            "message": (
+                f"排队等待评测执行（第 {position} 位，"
+                f"同时执行上限 {config.EVAL_MAX_CONCURRENT_ROUNDS} 轮）"
+            ),
+            "queue_position": position,
+            "started_at": queued_at,
+            "ts": int(time.time()),
+        }
     state = read_state(root)
     if (
         state.get("status") == "running"
@@ -1045,10 +1140,16 @@ def request_stop(project_id: str, root: Path, token: str) -> dict:
 
     modeling 返回 404/409（轮次不存在或已结束）视为目标状态已达成，不算失败。
     """
+    if _cancel_queued(project_id):
+        # 还在排队：直接出队，不产生任何 modeling 侧开销，随即可重新运行
+        _write_state(root, status="stopped", message=QUEUED_STOP_MESSAGE)
+        return {"stopped": True, "cancelled": False, "message": QUEUED_STOP_MESSAGE}
     state = read_state(root)
-    if state.get("status") not in ("running", "interrupted"):
+    in_process = project_id in _running
+    # 刚出队、编排还没写下 running 的瞬间：以内存态为准
+    if state.get("status") not in ("running", "interrupted") and not in_process:
         raise ValueError("当前没有进行中的评测")
-    if project_id in _running:
+    if in_process:
         _stop_requested.add(project_id)
 
     mp_project, round_id = state.get("modeling_project"), state.get("round_id")
@@ -1097,6 +1198,7 @@ def abort_for_delete(project_id: str, root: Path, token: str) -> tuple[str, str,
     失败、已停止的也算：轮询因凭据过期或超时失败、停止时取消未确认，modeling 侧都可能
     还在跑；其实已结束的，modeling 回 409，无害。
     """
+    _cancel_queued(project_id)  # 还在排队的轮次直接出队，不再等槽位
     if project_id in _running:
         _stop_requested.add(project_id)
     state = read_state(root)
@@ -1121,7 +1223,7 @@ async def resume(project_id: str, root: Path, token: str) -> None:
     _stop_requested.discard(project_id)
     _live_tokens[project_id] = token
     try:
-        await asyncio.to_thread(_resume_sync, project_id, root, token)
+        await _run_in_eval_pool(project_id, _resume_sync, project_id, root, token)
     finally:
         _running.discard(project_id)
         _live_tokens.pop(project_id, None)
@@ -1195,8 +1297,9 @@ async def run(
     _stop_requested.discard(project_id)  # 上一轮遗留的取消标记不影响新编排
     _live_tokens[project_id] = token
     try:
-        await asyncio.to_thread(
-            _run_sync, project_id, root, token, cases, data_source, eval_set_name, allow_unbound,
+        await _run_in_eval_pool(
+            project_id, _run_sync,
+            project_id, root, token, cases, data_source, eval_set_name, allow_unbound,
             refresh_token,
         )
     finally:

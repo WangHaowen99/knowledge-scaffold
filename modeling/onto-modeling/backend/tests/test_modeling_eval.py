@@ -1018,3 +1018,126 @@ def test_evolution_command_reads_tool_failure_section():
     assert "「工具失败」" in command
     assert "SCRIPT_ARGUMENT_VALIDATION_FAILED" in command
     assert "执行轨迹未取到" in command
+
+
+@pytest.fixture()
+def eval_pool(tmp_path, monkeypatch):
+    """评测专用线程池：容量 2，编排主体换成可控阻塞的假实现。"""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(config, "EVAL_MAX_CONCURRENT_ROUNDS", 2)
+    monkeypatch.setattr(modeling_eval, "_executor", None)
+    monkeypatch.setattr(modeling_eval, "_slots", __import__("weakref").WeakKeyDictionary())
+    monkeypatch.setattr(modeling_eval, "_queued", {})
+    monkeypatch.setattr(modeling_eval, "_running", set())
+    monkeypatch.setattr(modeling_eval, "_stop_requested", set())
+    release = threading.Event()
+    started: list[str] = []
+
+    def fake_run_sync(project_id, root, token, cases, *rest):
+        started.append(project_id)
+        release.wait(timeout=10)
+        modeling_eval._write_state(root, status="done", message="完成")
+
+    monkeypatch.setattr(modeling_eval, "_run_sync", fake_run_sync)
+    yield release, started
+    release.set()
+    if modeling_eval._executor is not None:
+        modeling_eval._executor.shutdown(wait=True)
+
+
+async def _wait_for(predicate, timeout=5.0):
+    import asyncio
+
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("条件未在时限内满足")
+        await asyncio.sleep(0.01)
+
+
+def test_eval_rounds_do_not_starve_default_executor(tmp_path, eval_pool):
+    """评测占满专用池时，默认线程池上的短任务（上传、git）照常即时完成。"""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    release, started = eval_pool
+    projects = [_eval_workspace(tmp_path, f"评测{i}") for i in range(3)]
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        tasks = [
+            asyncio.create_task(modeling_eval.run(pid, root, "t", [{"question": "Q", "groundTruth": "G"}]))
+            for pid, root in projects
+        ]
+        await _wait_for(lambda: len(started) == 2)
+        # 第 3 轮排队，状态视图显示位次，而状态文件不被改写
+        third_pid, third_root = projects[2]
+        await _wait_for(lambda: modeling_eval.queue_position(third_pid) == 1)
+        view = modeling_eval.status_view(third_pid, third_root)
+        assert view["status"] == "running" and view["phase"] == "queued", view
+        assert view["queue_position"] == 1
+        assert modeling_eval.read_state(third_root) == {}
+        # 评测线程全占着，默认线程池仍可立即执行短任务
+        assert await asyncio.wait_for(asyncio.to_thread(lambda: "ok"), timeout=1) == "ok"
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=10)
+
+    asyncio.run(scenario())
+    assert sorted(started) == sorted(pid for pid, _ in projects)
+    assert modeling_eval._queued == {}
+    for _pid, root in projects:
+        assert modeling_eval.read_state(root)["status"] == "done"
+
+
+def test_stop_while_queued_skips_orchestration(tmp_path, eval_pool):
+    """排队中停止：立即落 stopped，轮到时不再执行编排（不产生 modeling 侧开销）。"""
+    import asyncio
+
+    release, started = eval_pool
+    projects = [_eval_workspace(tmp_path, f"排队{i}") for i in range(3)]
+
+    async def scenario():
+        tasks = [
+            asyncio.create_task(modeling_eval.run(pid, root, "t", [{"question": "Q", "groundTruth": "G"}]))
+            for pid, root in projects
+        ]
+        third_pid, third_root = projects[2]
+        await _wait_for(lambda: modeling_eval.queue_position(third_pid) == 1)
+        result = modeling_eval.request_stop(third_pid, third_root, "t")
+        assert result["stopped"] and not result["cancelled"]
+        assert modeling_eval.read_state(third_root)["status"] == "stopped"
+        # 停止后立即出队、释放项目锁：状态视图不再显示排队，可马上重新运行
+        await _wait_for(lambda: third_pid not in modeling_eval._running)
+        assert modeling_eval.queue_position(third_pid) is None
+        assert modeling_eval.status_view(third_pid, third_root)["status"] == "stopped"
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10)
+
+    asyncio.run(scenario())
+    assert projects[2][0] not in started
+    assert modeling_eval.read_state(projects[2][1])["status"] == "stopped"
+
+
+def test_delete_while_queued_dequeues_round(tmp_path, eval_pool):
+    """项目在评测排队期间被删除：排队的轮次立即出队，不再等槽位也不执行编排。"""
+    import asyncio
+
+    release, started = eval_pool
+    projects = [_eval_workspace(tmp_path, f"删除{i}") for i in range(3)]
+
+    async def scenario():
+        tasks = [
+            asyncio.create_task(modeling_eval.run(pid, root, "t", [{"question": "Q", "groundTruth": "G"}]))
+            for pid, root in projects
+        ]
+        third_pid, third_root = projects[2]
+        await _wait_for(lambda: modeling_eval.queue_position(third_pid) == 1)
+        assert modeling_eval.abort_for_delete(third_pid, third_root, "t") is None
+        assert modeling_eval.queue_position(third_pid) is None
+        await _wait_for(lambda: third_pid not in modeling_eval._running)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10)
+
+    asyncio.run(scenario())
+    assert projects[2][0] not in started
