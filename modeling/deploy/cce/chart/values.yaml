@@ -1,0 +1,81 @@
+global:
+  releaseVersion: ""
+  operationId: ""
+  clusterFlavor: standard
+  targetArch: amd64
+  imageDelivery:
+    pullSecretNames: []
+  resolvedImages:
+    modeling: ""
+    modelingAgent: ""
+    ontoModeling: ""
+    jiuwenbox: ""
+  auth:
+    issuer: ""
+    audience: ""
+  integration:
+    serviceTokenSecret:
+      name: ""
+      key: ""
+  access:
+    elb:
+      id: ""
+    protocol: HTTPS
+    listenerPort: 443
+    tlsSecretName: ""
+    ingressClassName: cce
+    routes: []
+externalAuth:
+  serviceName: ""
+  namespace: ""
+  servicePort: 5056
+externalConsumer:
+  serviceName: ""
+  namespace: ""
+  servicePort: 5055
+modeling:
+  config:
+    llmBaseUrl: ""
+    llmModel: ""
+    taskLlmBaseUrl: ""
+    taskLlmModel: ""
+    mcpPublicBaseUrl: ""
+    ontoJiuwenBaseUrl: ""
+    ontoJiuwenModel: ""
+    ontoAnthropicBaseUrl: ""
+  workloads:
+    core:
+      nodeSelector: {}
+      persistence:
+        existingClaim: ""
+      resources: {}
+    agent:
+      nodeSelector: {}
+      persistence:
+        existingClaim: ""
+      resources: {}
+    onto:
+      nodeSelector: {}
+      persistence:
+        existingClaim: ""
+      resources: {}
+    jiuwenbox:
+      nodeSelector: {}
+      runtimeClassName: ""
+      resources: {}
+  secrets:
+    llmApiKey:
+      name: ""
+      key: ""
+    evalDbUrl:
+      name: ""
+      key: ""
+    cleanupToken:
+      name: ""
+      key: ""
+    anthropicAuthToken:
+      name: ""
+      key: ""
+  nl2sql:
+    enabled: false
+    resources: {}

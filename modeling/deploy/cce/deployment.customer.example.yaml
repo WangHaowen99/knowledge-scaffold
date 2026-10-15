@@ -1,0 +1,18 @@
+schemaVersion: cce-joint/v1
+cluster:
+  context: customer-demo
+stateDir: ./customer-state
+compatibilityFile: ./compatibility-verified.yaml
+consumer:
+  package: ./consumer-cce-example-amd64.tar.gz
+  releaseName: consumer
+  namespace: consumer-demo
+  values: ./consumer-values.yaml
+  resolvedImages: ./consumer-images.yaml
+modeling:
+  package: ./modeling-cce-example-amd64.tar.gz
+  releaseName: modeling
+  namespace: modeling-demo
+  values: ./modeling-values.yaml
+  resolvedImages: ./modeling-images.yaml
+timeoutSeconds: 900

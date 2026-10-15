@@ -1,0 +1,47 @@
+{{- if .Values.global.access.routes }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "modeling.name" . }}
+  annotations:
+    kubernetes.io/elb.id: {{ .Values.global.access.elb.id | quote }}
+    kubernetes.io/elb.port: {{ .Values.global.access.listenerPort | quote }}
+spec:
+  ingressClassName: {{ .Values.global.access.ingressClassName | quote }}
+  {{- if eq .Values.global.access.protocol "HTTPS" }}
+  tls:
+    - secretName: {{ .Values.global.access.tlsSecretName | quote }}
+      hosts:
+        {{- range .Values.global.access.routes }}
+        {{- if .host }}
+        - {{ .host | quote }}
+        {{- end }}
+        {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.global.access.routes }}
+    {{- if .host }}
+    - host: {{ .host | quote }}
+      http:
+    {{- else }}
+    - http:
+    {{- end }}
+        paths:
+          - path: {{ .path | quote }}
+            pathType: Prefix
+            backend:
+              service:
+                {{- if eq .endpointId "modeling-core" }}
+                name: {{ $.Release.Name }}-core
+                port: {name: http}
+                {{- else if eq .endpointId "modeling-mcp" }}
+                name: {{ $.Release.Name }}-core
+                port: {name: mcp}
+                {{- else if eq .endpointId "onto-modeling" }}
+                name: {{ $.Release.Name }}-onto
+                port: {name: http}
+                {{- else }}
+                {{- fail (printf "unknown external endpointId %s" .endpointId) }}
+                {{- end }}
+    {{- end }}
+{{- end }}

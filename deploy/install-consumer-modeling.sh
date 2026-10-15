@@ -1,6 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
+if [ "${1:-}" = "cce" ]; then
+    shift
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "${script_dir}/joint-cce.py" ]; then
+        exec python3 "${script_dir}/joint-cce.py" "$@"
+    fi
+    exec python3 "${script_dir}/../modeling/deploy/cce/joint-cce.py" "$@"
+fi
+
 CONSUMER_PACKAGE=""
 MODELING_PACKAGE=""
 ONTO_MODELING_PACKAGE=""
