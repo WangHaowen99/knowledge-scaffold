@@ -1,46 +1,16 @@
-# Upgrade and recovery
+# 升级与恢复
 
-An upgrade must preserve all existing Core, Agent and Onto Modeling data. Their
-three precreated PVCs belong to the customer, not to this Helm release. The
-Chart mounts them at the same paths and uses one replica with `Recreate` updates;
-it does not create, initialize, replace or delete PVCs. Keep the shared
-Consumer auth data under Consumer ownership as well.
+升级必须保留 Core、Agent 和 Onto Modeling 的全部已有数据。三个预创建 PVC 由客户负责，不属于本 Helm 发布；Chart 会以相同路径挂载它们，并使用单副本 `Recreate` 更新，不会创建、初始化、替换或删除 PVC。共享 Consumer 认证数据也必须由 Consumer 负责。
 
-For the no-data-migration upgrade path, the installer:
+对于不迁移数据的升级路径，安装器会：
 
-1. Read the installed release and record each workload's PVC claim name,
-   namespace, bound PV identity and data format version. Reject a missing,
-   empty, replaced or differently bound claim. Target values must retain these
-   bindings unless an explicit, separately tested data migration is requested.
-2. Match the installed and target versions to one verified compatibility
-   transition. A joint upgrade always runs Consumer first, waits for its
-   verification to pass, then runs Modeling. Verify that the new Consumer can
-   coexist with the old Modeling during the interval; otherwise keep cross-side
-   requests stopped throughout that interval. Stop relevant writes and wait
-   for the old writer to exit before a maintenance task mounts the same volume.
-   Keep Core, Agent and Onto Modeling at one replica during this process.
-3. Requires a VolumeSnapshot for every Modeling PVC and verifies that each
-   snapshot is ready, points to the same claim, has the recorded UID, and was
-   created after writes stopped. The backup record stays in the customer's
-   controlled operations area, outside both release packages. The storage
-   driver must support restorable VolumeSnapshots, verified by a restore test.
-4. Accepts only a transition explicitly marked `modelingDataMigration: none`
-   and `preserveModelingData: true`. Those flags must come from a tested
-   target binary/data-format combination. Data-changing releases require a
-   separate migration implementation; never initialize an empty volume as a
-   substitute for the prior data.
-5. Update and verify the Consumer Helm release before starting the Modeling
-   upgrade. Then verify that the new Modeling Pods mount the same claims and PVs
-   and that existing projects, sessions and other persisted records remain
-   accessible. If Consumer fails, do not start Modeling. If Modeling fails after
-   Consumer succeeds, retain the upgraded Consumer and the maintenance state
-   until the actual versions and data are checked. Do not automatically roll
-   back Consumer. Keep old images and the verified backup until acceptance.
+1. 读取已安装发布，记录每个工作负载的 PVC claim 名称、命名空间、绑定 PV 身份和数据格式版本。缺失、为空、已替换或绑定关系变化的 claim 会被拒绝。除非明确请求并单独测试数据迁移，否则目标 values 必须保留这些绑定。
+2. 将已安装版本和目标版本匹配到一个经过验证的兼容性迁移。联合升级始终先升级 Consumer 并等待验证通过，再升级 Modeling。验证新 Consumer 能否与旧 Modeling 共存；否则在维护期间持续停止跨侧请求。停止相关写入，等待旧写入进程退出后，维护任务才能挂载同一卷。整个过程中 Core、Agent 和 Onto Modeling 保持单副本。
+3. 要求每个 Modeling PVC 都有 VolumeSnapshot，并验证快照已就绪、指向同一 claim、UID 与记录一致，且创建时间晚于停止写入的时间。备份记录应存放在客户控制的运维区域，不得放入两个发布包。存储驱动必须支持可恢复的 VolumeSnapshot，并通过恢复测试验证。
+4. 只接受明确标记为 `modelingDataMigration: none` 且 `preserveModelingData: true` 的迁移。这些标记必须来自使用已有数据完成测试的目标二进制与数据格式组合。会改变数据的迁移需要独立实现；不能用空卷初始化代替原有数据。
+5. 在开始 Modeling 升级前先更新并验证 Consumer Helm 发布，然后验证新的 Modeling Pod 仍挂载原 claim 和 PV，且已有项目、会话和其他持久化记录仍可访问。如果 Consumer 失败，不得开始 Modeling。如果 Consumer 成功后 Modeling 失败，应保留已升级的 Consumer 和维护状态，待核对实际版本与数据后处理；不得自动回滚 Consumer。验收完成前保留旧镜像和已验证的备份。
 
-Before invoking upgrade, stop incoming writes, scale the three Modeling
-Deployments to zero, and wait until their old Pods are gone. Take one snapshot
-per PVC and record its immutable identity. A customer-controlled backup record
-has this shape (all values below are synthetic):
+执行升级前，停止传入写入，将三个 Modeling Deployment 缩容到 0，并等待旧 Pod 消失。为每个 PVC 创建一个快照并记录不可变身份。客户控制的备份记录形如以下合成示例：
 
 ```json
 {
@@ -58,43 +28,19 @@ has this shape (all values below are synthetic):
 }
 ```
 
-The installer checks the Kubernetes VolumeSnapshot objects and the live PVC/PV
-bindings; it does not create snapshots or test a restore. This record alone is
-not evidence of backup recoverability. The installer also checks that the old
-Deployments have zero replicas and no old Pods before it updates the Chart.
-`dataEvidence` contains the pre-upgrade Core project count, Agent run count,
-and Onto Modeling workspace count. Gather these from the stopped volumes using
-an approved read-only maintenance process. After startup, the installer checks
-database readability and verifies these counts have not decreased. This count
-check does not replace business-level data validation or a snapshot restore
-test.
+安装器会检查 Kubernetes VolumeSnapshot 对象和实时 PVC/PV 绑定，但不会创建快照或测试恢复。备份记录本身不能证明备份可恢复。安装器还会检查旧 Deployment 已缩容为 0 且旧 Pod 已消失，之后才更新 Chart。`dataEvidence` 包含升级前 Core 项目数、Agent 运行记录数和 Onto Modeling 工作区数量。这些数据应由经过批准的只读维护流程从已停止的卷中采集。启动后，安装器会检查数据库可读性，并验证这些数量没有减少。数量检查不能替代业务级数据校验或快照恢复测试。
 
-The Modeling-side `deploy/install-cce.sh upgrade` is called by the joint entry
-with the usual context, namespace, release, values, resolved-images,
-compatibility and state-dir arguments, plus `--transition-id`, `--backup-record`
-and a delegated operation Lease. A standalone invocation without a verified
-operation Lease is rejected. The joint
-entry accepts `cce upgrade --scope both --config ... --transition-id ...
---backup-record <Modeling record> --consumer-backup-record <Consumer record>`.
-It calls the Consumer package's own upgrade entry first, waits for its success,
-then calls Modeling. The Consumer package must implement its backup and data
-retention checks independently. These commands must be exercised against a
-real CCE cluster and both packages before customer production use.
+Modeling 侧 `deploy/install-cce.sh upgrade` 由联合入口调用，并接收通常的 context、namespace、release、values、resolved-images、compatibility 和 state-dir 参数，以及 `--transition-id`、`--backup-record` 和委派的操作 Lease。没有经过验证的操作 Lease 时，单独调用会被拒绝。联合入口接受：
 
-The Modeling Chart is first upgraded with all three data-writing Deployments
-at zero replicas. The installer waits for their old Pods to disappear, checks
-PVC/PV identity again, then applies the target Chart at one replica and checks
-the data evidence. A failed volume check leaves the workloads stopped. The
-updated Chart and backup snapshots remain available for controlled recovery.
+```text
+cce upgrade --scope both --config ... --transition-id ... \
+  --backup-record <Modeling record> --consumer-backup-record <Consumer record>
+```
 
-If a step fails, inspect the operation ID and customer state directory.
-`--resume <operation-id>` resumes only when package/configuration checksums
-match and the actual Helm versions agree with the journal. A half-applied step
-whose actual version cannot be verified remains blocked for manual recovery.
-Helm rollback changes manifests only and cannot restore modified data.
-Uninstalling a release must not delete its PVCs.
+它会先调用 Consumer 软件包的升级入口，等待成功后再调用 Modeling。Consumer 软件包必须独立实现自己的备份与数据保留检查。这些命令必须在真实 CCE 集群及两个软件包上完成演练后，才能用于客户生产环境。
 
-If installation of the second release fails, leave the first release intact,
-inspect actual cluster state and retry with the same operation ID only after
-confirming the failed phase. Do not automatically uninstall the successful
-side or clear either side's data.
+Modeling Chart 首先以三个写数据 Deployment 均为 0 副本的状态升级。安装器等待旧 Pod 消失，再次检查 PVC/PV 身份，然后以单副本应用目标 Chart 并检查数据证据。卷检查失败时，工作负载保持停止状态。更新后的 Chart 和备份快照应保留，以便受控恢复。
+
+如果步骤失败，请检查操作 ID 和客户状态目录。`--resume <operation-id>` 只有在软件包与配置校验和一致、且实际 Helm 版本与日志一致时才会恢复。无法验证实际版本的半完成步骤必须转人工恢复。Helm 回滚只改变 manifest，不能恢复已修改的数据。卸载发布不得删除 PVC。
+
+如果第二个发布安装失败，应保留第一个发布，检查实际集群状态；只有确认失败阶段后，才可使用同一操作 ID 重试。不得自动卸载已成功的一侧或清空任一侧的数据。

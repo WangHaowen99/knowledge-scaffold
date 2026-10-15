@@ -106,7 +106,7 @@ def safe_extract(archive: Path, destination: Path, side: str) -> Path:
             path = Path(member.name)
             if path.is_absolute() or ".." in path.parts or not (member.isfile() or member.isdir()):
                 raise ConfigError("archive contains unsafe path or special file")
-        source.extractall(destination, filter="data")
+        source.extractall(destination)
     root = destination / next(iter(roots))
     verify_checksums(root)
     return root

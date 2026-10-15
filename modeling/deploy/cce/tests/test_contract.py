@@ -1,6 +1,7 @@
 """Synthetic CCE package and cross-release contract checks."""
 
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,8 @@ import tempfile
 import unittest
 from unittest import mock
 from types import SimpleNamespace
+from contextlib import redirect_stdout
+from io import StringIO
 
 import yaml
 
@@ -378,7 +381,9 @@ class CceContractTests(unittest.TestCase):
                 sys.argv.extend(("--image", f"{image_id}=registry.example.com/{image_id}@sha256:" + "a" * 64))
             from contextlib import redirect_stdout
             from io import StringIO
-            with mock.patch.object(PACKAGE, "run", side_effect=fake_run), redirect_stdout(StringIO()):
+            with mock.patch.object(PACKAGE, "run", side_effect=fake_run), \
+                 mock.patch.object(PACKAGE, "resolve_helm", return_value=("helm", "helm-tgz")), \
+                 redirect_stdout(StringIO()):
                 PACKAGE.main()
         finally:
             sys.argv = old
@@ -415,7 +420,9 @@ class CceContractTests(unittest.TestCase):
                         "--local", "--output", str(output)]
             from contextlib import redirect_stdout
             from io import StringIO
-            with mock.patch.object(PACKAGE, "run", side_effect=fake_run), redirect_stdout(StringIO()):
+            with mock.patch.object(PACKAGE, "run", side_effect=fake_run), \
+                 mock.patch.object(PACKAGE, "resolve_helm", return_value=("helm", "helm-tgz")), \
+                 redirect_stdout(StringIO()):
                 PACKAGE.main()
         finally:
             sys.argv = old
@@ -430,6 +437,69 @@ class CceContractTests(unittest.TestCase):
             "modeling-offline/modeling:demo-amd64", "modeling-offline/modeling-agent:demo-amd64",
             "modeling-offline/onto-modeling:demo-amd64",
         })
+
+    def test_package_copies_chart_source_when_helm_is_unavailable(self):
+        output = self.base / "no-helm.tar.gz"
+
+        def fake_run(*command, capture=False):
+            if command[:3] == ("docker", "image", "inspect"):
+                return "amd64" if command[-1] == "{{.Architecture}}" else "sha256:" + "b" * 64
+            if command[:2] == ("docker", "save"):
+                Path(command[command.index("--output") + 1]).write_bytes(b"synthetic image archive")
+            return None
+
+        old = sys.argv
+        try:
+            sys.argv = ["package-cce.py", "--version", "demo", "--arch", "amd64", "--local", "--output", str(output)]
+            with mock.patch.object(PACKAGE, "run", side_effect=fake_run), \
+                 mock.patch.object(PACKAGE, "resolve_helm", return_value=(None, "chart-source")), \
+                 redirect_stdout(StringIO()):
+                PACKAGE.main()
+        finally:
+            sys.argv = old
+        with tarfile.open(output, "r:gz") as stream:
+            names = set(stream.getnames())
+            self.assertIn("modeling-cce-demo-amd64/deploy/chart/Chart.yaml", names)
+            release = yaml.safe_load(stream.extractfile("modeling-cce-demo-amd64/release.yaml"))
+        self.assertEqual(release["chartDelivery"], "chart-source")
+
+    def test_missing_helm_download_failure_uses_chart_source(self):
+        with mock.patch.object(PACKAGE.shutil, "which", return_value=None), \
+             mock.patch.object(PACKAGE.platform, "machine", return_value="x86_64"), \
+             mock.patch.object(PACKAGE.urllib.request, "urlopen", side_effect=OSError("offline")), \
+             mock.patch.dict(os.environ, {"CCE_HELM_VERSION": "v3.19.0"}), \
+             mock.patch("sys.stderr", new_callable=StringIO):
+            self.assertEqual(PACKAGE.resolve_helm(self.base), (None, "chart-source"))
+
+    def test_missing_helm_downloads_temporary_working_binary(self):
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
+            payload = b"#!/bin/sh\nprintf 'v3.19.0\\n'\n"
+            item = tarfile.TarInfo("linux-amd64/helm")
+            item.mode = 0o755
+            item.size = len(payload)
+            bundle.addfile(item, io.BytesIO(payload))
+        with mock.patch.object(PACKAGE.shutil, "which", return_value=None), \
+             mock.patch.object(PACKAGE.platform, "machine", return_value="x86_64"), \
+             mock.patch.object(PACKAGE.urllib.request, "urlopen", return_value=io.BytesIO(archive.getvalue())), \
+             mock.patch.dict(os.environ, {"CCE_HELM_VERSION": "v3.19.0"}):
+            helm, delivery = PACKAGE.resolve_helm(self.base)
+        self.assertEqual(delivery, "helm-tgz")
+        self.assertEqual(subprocess.check_output((helm, "version", "--short"), text=True).strip(), "v3.19.0")
+
+    def test_downloaded_helm_that_cannot_run_uses_chart_source(self):
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
+            payload = b"not an executable Helm binary"
+            item = tarfile.TarInfo("linux-amd64/helm")
+            item.size = len(payload)
+            bundle.addfile(item, io.BytesIO(payload))
+        with mock.patch.object(PACKAGE.shutil, "which", return_value=None), \
+             mock.patch.object(PACKAGE.platform, "machine", return_value="x86_64"), \
+             mock.patch.object(PACKAGE.urllib.request, "urlopen", return_value=io.BytesIO(archive.getvalue())), \
+             mock.patch.dict(os.environ, {"CCE_HELM_VERSION": "v3.19.0"}), \
+             mock.patch("sys.stderr", new_callable=StringIO):
+            self.assertEqual(PACKAGE.resolve_helm(self.base), (None, "chart-source"))
 
     def test_build_script_loads_locally_or_pushes_explicit_registry(self):
         root = self.base / "build-root"

@@ -4,11 +4,15 @@
 import argparse
 import hashlib
 from pathlib import Path
+import os
+import platform
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
+import urllib.request
 
 import yaml
 
@@ -29,6 +33,46 @@ def sha256(path):
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def resolve_helm(temp_root: Path) -> tuple[str | None, str]:
+    """Use local Helm, a temporary download, or fall back to Chart source."""
+    existing = shutil.which("helm")
+    if existing:
+        try:
+            subprocess.run((existing, "version", "--short"), check=True, capture_output=True, timeout=10)
+            return existing, "helm-tgz"
+        except (OSError, subprocess.SubprocessError):
+            print("Warning: installed Helm is unusable; trying a temporary download.", file=sys.stderr)
+    machine = platform.machine().lower()
+    helm_arch = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(machine)
+    if not helm_arch:
+        print(f"Warning: unsupported Helm host architecture {machine}; copying Chart source.", file=sys.stderr)
+        return None, "chart-source"
+    version = os.environ.get("CCE_HELM_VERSION", "v3.19.0")
+    if not re.fullmatch(r"v3\.[0-9]+\.[0-9]+", version):
+        print("Warning: invalid CCE_HELM_VERSION; copying Chart source.", file=sys.stderr)
+        return None, "chart-source"
+    archive = temp_root / f"helm-{version}-linux-{helm_arch}.tar.gz"
+    url = f"https://get.helm.sh/helm-{version}-linux-{helm_arch}.tar.gz"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response, archive.open("wb") as output:
+            shutil.copyfileobj(response, output)
+        with tarfile.open(archive, "r:gz") as source:
+            expected = f"linux-{helm_arch}/helm"
+            member = next(item for item in source.getmembers() if item.name == expected)
+            if not member.isfile():
+                raise RuntimeError("downloaded Helm entry is not a regular file")
+            helm = temp_root / expected
+            helm.parent.mkdir(parents=True, exist_ok=True)
+            with source.extractfile(member) as binary, helm.open("wb") as target:
+                shutil.copyfileobj(binary, target)
+        helm.chmod(0o755)
+        subprocess.run((str(helm), "version", "--short"), check=True, capture_output=True, timeout=10)
+        return str(helm), "helm-tgz"
+    except Exception as exc:
+        print(f"Warning: Helm unavailable ({exc}); copying Chart source.", file=sys.stderr)
+        return None, "chart-source"
 
 
 def main():
@@ -90,29 +134,41 @@ def main():
                 "platform": f"linux/{args.arch}",
                 "purpose": "business",
             }
-        run("helm", "lint", str(chart_source), "-f", str(root / "deploy/cce/values.customer.example.yaml"),
-            "-f", str(root / "deploy/cce/resolved-images.example.yaml"))
-        run("helm", "package", str(chart_source), "--destination", str(deploy))
-        chart_archive = next(deploy.glob("modeling-*.tgz"))
-        with tarfile.open(chart_archive, "r:gz") as chart:
-            members = chart.getmembers()
-            if any(not (member.isfile() or member.isdir()) or Path(member.name).is_absolute()
-                   or ".." in Path(member.name).parts for member in members):
-                raise SystemExit("Chart archive contains unsafe entries")
-            chart.extractall(deploy, filter="data")
-        (deploy / "modeling").rename(deploy / "chart")
-        chart_archive.unlink()
+        helm, chart_delivery = resolve_helm(Path(temp))
+        if helm:
+            run(helm, "lint", str(chart_source), "-f", str(root / "deploy/cce/values.customer.example.yaml"),
+                "-f", str(root / "deploy/cce/resolved-images.example.yaml"))
+            run(helm, "package", str(chart_source), "--destination", str(deploy))
+            chart_archive = next(deploy.glob("modeling-*.tgz"))
+            with tarfile.open(chart_archive, "r:gz") as chart:
+                members = chart.getmembers()
+                paths = [Path(member.name) for member in members]
+                if (len(paths) != len(set(paths)) or
+                        any(not (member.isfile() or member.isdir()) or path.is_absolute()
+                            or ".." in path.parts or not path.parts or path.parts[0] != "modeling"
+                            for member, path in zip(members, paths))):
+                    raise SystemExit("Chart archive contains unsafe entries")
+                chart.extractall(deploy)
+            (deploy / "modeling").rename(deploy / "chart")
+            chart_archive.unlink()
+        else:
+            shutil.copytree(chart_source, deploy / "chart")
         for name in ("install-cce.sh", "install-cce.py", "common.py", "upgrade.py", "joint-cce.py", "deployment.schema.json",
                      "deployment.customer.example.yaml", "storage-inventory.yaml", "endpoints.yaml", "compatibility.yaml",
                      "values.customer.example.yaml", "resolved-images.example.yaml"):
             shutil.copy2(root / "deploy/cce" / name, deploy / name)
         shutil.copy2(root.parent / "deploy/install-consumer-modeling.sh", deploy / "install-consumer-modeling.sh")
         for name in ("install.md", "import-images.md", "upgrade-and-recovery.md", "compatibility.md"):
-            shutil.copy2(root / "deploy/cce/docs" / name, docs / name)
+            documentation = root / "deploy/cce/docs" / name
+            if documentation.is_file():
+                shutil.copy2(documentation, docs / name)
+            else:
+                print(f"Warning: optional documentation missing, skipping {name}", file=sys.stderr)
         manifest = {
             "schemaVersion": "cce-release/v1", "releaseVersion": args.version,
             "chartVersion": chart_version, "platform": f"linux/{args.arch}",
             "components": ["modeling", "modelingAgent", "ontoModeling"],
+            "chartDelivery": chart_delivery,
             "images": package_images,
             "imageDependencies": {"jiuwenbox": {"sourceSide": "consumer", "sourceImageId": "jiuwenbox"}},
         }
