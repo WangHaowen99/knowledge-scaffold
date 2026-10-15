@@ -529,3 +529,66 @@ def test_migrate_from_modeling_end_to_end(manager: WorkspaceManager, tmp_path: P
     # 幂等：再跑一次跳过
     assert mig.main() == 0
     assert sum(1 for p in manager.list_projects() if p.get("migrated_from") == "pj_test1") == 1
+
+
+def test_migrate_render_excel_tables_skips_null_entries():
+    import sys
+
+    sys.path.append(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import migrate_from_modeling as mig
+
+    body = mig.render_excel_tables(
+        '[null, {"name": null, "fields": null},'
+        ' {"name": "T1", "fields": [null, {"name": "ID", "inferredType": "string",'
+        ' "sampleValues": ["a"]}]}]'
+    )
+    assert "## 未命名表" in body
+    assert "| ID | string | a |" in body
+    assert mig.render_excel_tables('{"name": "T1"}') == ""
+
+
+def test_migrate_from_modeling_failed_project_is_retried(
+    manager: WorkspaceManager, tmp_path: Path, monkeypatch
+):
+    import sqlite3
+    import sys
+
+    sys.path.append(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import migrate_from_modeling as mig
+
+    source = tmp_path / "modeling-data"
+    source.mkdir()
+    db = sqlite3.connect(source / "modeling.db")
+    db.execute("CREATE TABLE projects (id TEXT, owner TEXT, name TEXT, domain TEXT, background TEXT)")
+    db.execute(
+        "CREATE TABLE documents (project_id TEXT, filename TEXT, kind TEXT,"
+        " text_content TEXT, tables_json TEXT, lifecycle_status TEXT)"
+    )
+    db.execute("INSERT INTO projects VALUES ('pj_bad', 'alice', '坏项目', '', '')")
+    db.execute("INSERT INTO projects VALUES ('pj_ok', 'bob', '好项目', '', '')")
+    db.execute("INSERT INTO documents VALUES ('pj_bad', '说明.docx', 'word', '正文', NULL, 'active')")
+    db.commit()
+    db.close()
+
+    from app import config as app_config
+
+    monkeypatch.setattr(app_config, "DATA_DIR", manager.workspaces_dir.parent)
+    monkeypatch.setattr(app_config, "ASSETS_DIR", manager.assets_dir)
+    monkeypatch.setattr(sys, "argv", ["mig", "--source", str(source)])
+
+    real_migrate_documents = mig.migrate_documents
+
+    def broken_for_bad(db, project_id, *args):
+        if project_id == "pj_bad":
+            raise AttributeError("boom")
+        return real_migrate_documents(db, project_id, *args)
+
+    monkeypatch.setattr(mig, "migrate_documents", broken_for_bad)
+    assert mig.main() == 1
+    projects = manager.list_projects()
+    assert [p["name"] for p in projects] == ["好项目"]  # 失败项目不留半成品，也不阻断后续项目
+
+    monkeypatch.setattr(mig, "migrate_documents", real_migrate_documents)
+    assert mig.main() == 0
+    sources = sorted(p.get("migrated_from") for p in manager.list_projects())
+    assert sources == ["pj_bad", "pj_ok"]
