@@ -86,5 +86,4 @@ separate.
 
 For a development registry workflow, pass `REGISTRY_PREFIX` as the third
 argument to `build-images.sh`; it pushes the three images. Package the approved
-digest refs with repeated `--image id=repository@sha256:digest` arguments, as
-described in `codearts.md`.
+digest refs with repeated `--image id=repository@sha256:digest` arguments.

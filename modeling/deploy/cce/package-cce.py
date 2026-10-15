@@ -107,7 +107,7 @@ def main():
                      "values.customer.example.yaml", "resolved-images.example.yaml"):
             shutil.copy2(root / "deploy/cce" / name, deploy / name)
         shutil.copy2(root.parent / "deploy/install-consumer-modeling.sh", deploy / "install-consumer-modeling.sh")
-        for name in ("install.md", "import-images.md", "upgrade-and-recovery.md", "compatibility.md", "codearts.md"):
+        for name in ("install.md", "import-images.md", "upgrade-and-recovery.md", "compatibility.md"):
             shutil.copy2(root / "deploy/cce/docs" / name, docs / name)
         manifest = {
             "schemaVersion": "cce-release/v1", "releaseVersion": args.version,
