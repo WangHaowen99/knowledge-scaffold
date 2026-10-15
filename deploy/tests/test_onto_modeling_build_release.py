@@ -1,3 +1,5 @@
+import gzip
+import io
 import os
 import shutil
 import subprocess
@@ -104,10 +106,32 @@ printf '%s\\n' "$*" >> "${FAKE_LOG_DIR}/pip3.log"
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert (project_root / "dist" / "onto-modeling-v-test-linux-amd64.tar.gz").is_file()
-    with tarfile.open(project_root / "dist" / "onto-modeling-v-test-linux-amd64.tar.gz") as package:
-        helper = package.getmember("onto-modeling/configure-modeling-association.sh")
-        assert helper.mode & 0o111
+    _assert_packaged_association_helper(project_root / "dist" / "onto-modeling-v-test-linux-amd64.tar.gz")
     return result, log_dir
+
+
+def _assert_packaged_association_helper(archive: Path, max_bytes: int = 8 * 1024 * 1024) -> None:
+    # This fixture contains empty image stubs. Bound decompression before parsing
+    # tar headers, and inspect metadata only; never extract files to disk.
+    assert archive.stat().st_size <= max_bytes, "Compressed test package exceeds size limit"
+    with gzip.open(archive, "rb") as compressed:
+        payload = compressed.read(max_bytes + 1)
+    assert len(payload) <= max_bytes, "Expanded test package exceeds size limit"
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as package:  # NOSONAR(S5042): bounded metadata-only read
+        members = package.getmembers()
+        assert len(members) <= 512, "Test package contains too many members"
+        assert all(0 <= member.size <= max_bytes for member in members), "Invalid test member size"
+        helper = package.getmember("onto-modeling/configure-modeling-association.sh")
+        assert helper.isfile()
+        assert helper.mode & 0o111
+
+
+def test_package_metadata_check_rejects_excessive_expansion(tmp_path: Path) -> None:
+    archive = tmp_path / "synthetic-package.tar.gz"
+    with gzip.open(archive, "wb") as compressed:
+        compressed.write(b"0" * 2048)
+    with pytest.raises(AssertionError, match="Expanded test package exceeds size limit"):
+        _assert_packaged_association_helper(archive, max_bytes=1024)
 
 
 def _onto_modeling_build_command(log_dir: Path) -> str:

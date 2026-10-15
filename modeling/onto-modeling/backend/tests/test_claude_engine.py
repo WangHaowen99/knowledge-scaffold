@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
-"""Claude ??????????????????????????"""
+"""Claude 引擎事件归一化测试（子代理开始/终态与归卡、上下文用量与压缩提示）。"""
 
 import asyncio
 from pathlib import Path
@@ -96,7 +96,7 @@ def test_failed_result_classifies_legacy_error_text(tmp_path):
         )
     )
 
-    assert "???????" in events[0]["blocks"][0]["text"]
+    assert "模型网关未配置" in events[0]["blocks"][0]["text"]
     assert logged == [("assistant_text", text)]
 
 
@@ -127,7 +127,7 @@ def test_assistant_structured_error_is_classified(tmp_path):
     )
     events = collect(make_engine(tmp_path, [message], logged))
 
-    assert "???????" in events[0]["blocks"][0]["text"]
+    assert "模型网关未配置" in events[0]["blocks"][0]["text"]
     assert logged == [("assistant_error", text)]
 
 

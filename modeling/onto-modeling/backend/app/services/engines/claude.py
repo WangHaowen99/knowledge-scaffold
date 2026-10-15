@@ -420,7 +420,7 @@ class ClaudeEngine:
         self._received_any = False
         self._sdk_session_id: str | None = None
         self._fingerprint = ""
-        # ?????????????????????????????????
+        # 上下文用量：已用取最近一次主代理调用，窗口与触发点连接后后台取一次
         self._context_used: int | None = None
         self._context_window: int | None = None
         self._compact_at: int | None = None
@@ -549,6 +549,7 @@ class ClaudeEngine:
 
                 event = normalize_message(message)
                 assistant_error = getattr(message, "error", None)
+                usage_event = self._track_context(event) if event else None
                 if event and event.get("type") == "assistant_message":
                     if assistant_error:
                         evidence = str(assistant_error)
@@ -567,7 +568,6 @@ class ClaudeEngine:
                         self._pending_assistant = event
                         continue
                 if event:
-                    usage_event = self._track_context(event)
                     if usage_event:
                         yield usage_event
                     yield event
