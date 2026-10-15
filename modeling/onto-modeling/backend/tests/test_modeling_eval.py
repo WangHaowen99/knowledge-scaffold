@@ -4,6 +4,7 @@
 
 import json
 import threading
+import weakref
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -1026,7 +1027,7 @@ def eval_pool(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "EVAL_MAX_CONCURRENT_ROUNDS", 2)
     monkeypatch.setattr(modeling_eval, "_executor", None)
-    monkeypatch.setattr(modeling_eval, "_slots", __import__("weakref").WeakKeyDictionary())
+    monkeypatch.setattr(modeling_eval, "_slots", weakref.WeakKeyDictionary())
     monkeypatch.setattr(modeling_eval, "_queued", {})
     monkeypatch.setattr(modeling_eval, "_running", set())
     monkeypatch.setattr(modeling_eval, "_stop_requested", set())

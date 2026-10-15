@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from app.services import auth
 
-ISSUER = "http://auth.example.com"
+ISSUER = "https://auth.example.com"
 AUDIENCE = "meta-wise"
 
 
