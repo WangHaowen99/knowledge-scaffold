@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from app.services import auth
 
-ISSUER = "http://auth-server.example:5056"
+ISSUER = "https://auth-server.example"
 
 
 @pytest.fixture(scope="module")
