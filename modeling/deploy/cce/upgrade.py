@@ -6,16 +6,14 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from common import CompatibilityError, ConfigError, read_yaml
+from common import CompatibilityError, ConfigError, read_yaml, validate_compatibility_manifest
 
 
 WORKLOADS = ("core", "agent", "onto")
 
 
 def transition(path: Path, transition_id: str, installed: dict, target: dict) -> dict:
-    manifest = read_yaml(path)
-    if manifest.get("schemaVersion") != "cce-compatibility/v1":
-        raise CompatibilityError("unsupported compatibility manifest")
+    manifest = validate_compatibility_manifest(read_yaml(path))
     combinations = manifest.get("combinations", [])
     if not isinstance(combinations, list):
         raise CompatibilityError("compatibility combinations must be a list")
@@ -41,6 +39,8 @@ def transition(path: Path, transition_id: str, installed: dict, target: dict) ->
         raise CompatibilityError("upgrade cannot change CPU architecture")
     if item.get("steps") not in (["modeling"], ["consumer", "modeling"]):
         raise CompatibilityError("upgrade steps must keep Consumer before Modeling")
+    if item.get("requiresJointMaintenance") is not True:
+        raise CompatibilityError("upgrade transition must require joint maintenance")
     if item["steps"] == ["modeling"]:
         for key in ("consumerReleaseVersion", "consumerChartVersion"):
             if old.get(key) != new.get(key):

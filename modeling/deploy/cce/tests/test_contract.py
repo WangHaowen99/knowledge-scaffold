@@ -21,7 +21,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from common import ConfigError, checksum, safe_extract, validate_release  # noqa: E402
+from common import ConfigError, checksum, safe_extract, validate_release, validate_compatibility_manifest  # noqa: E402
 
 
 def load_script(name):
@@ -54,7 +54,7 @@ class CceContractTests(unittest.TestCase):
                 archiveRef=f"example/{image_id}:demo", sourceManifestDigest="sha256:" + "a" * 64,
                 configDigest="sha256:" + "b" * 64, platform="linux/amd64", purpose="business")
         release = dict(schemaVersion="cce-release/v1", releaseVersion="demo", chartVersion="0.1.0",
-                       platform="linux/amd64", components=list(records), images=records,
+                       platform="linux-amd64", components=list(records), images=records,
                        imageDependencies={"jiuwenbox": {"sourceSide": "consumer", "sourceImageId": "jiuwenbox"}})
         (root / "release.yaml").write_text(yaml.safe_dump(release))
         (root / "checksums.sha256").write_text("".join(
@@ -64,21 +64,28 @@ class CceContractTests(unittest.TestCase):
     def upgrade_fixture(self):
         combinations = [
             {"id": "old", "consumerReleaseVersion": "c1", "consumerChartVersion": "1.0.0",
-             "modelingReleaseVersion": "m1", "modelingChartVersion": "1.0.0", "platform": "linux/amd64"},
+             "modelingReleaseVersion": "m1", "modelingChartVersion": "1.0.0", "platform": "linux-amd64",
+             "operationSchemaVersion": "cce-operation/v1", "endpointSchemaVersion": "cce-endpoints/v1",
+             "authApiVersion": "v1", "consumerApiVersion": "v1"},
             {"id": "middle", "consumerReleaseVersion": "c2", "consumerChartVersion": "2.0.0",
-             "modelingReleaseVersion": "m1", "modelingChartVersion": "1.0.0", "platform": "linux/amd64"},
+             "modelingReleaseVersion": "m1", "modelingChartVersion": "1.0.0", "platform": "linux-amd64",
+             "operationSchemaVersion": "cce-operation/v1", "endpointSchemaVersion": "cce-endpoints/v1",
+             "authApiVersion": "v1", "consumerApiVersion": "v1"},
             {"id": "new", "consumerReleaseVersion": "c2", "consumerChartVersion": "2.0.0",
-             "modelingReleaseVersion": "m2", "modelingChartVersion": "2.0.0", "platform": "linux/amd64"},
+             "modelingReleaseVersion": "m2", "modelingChartVersion": "2.0.0", "platform": "linux-amd64",
+             "operationSchemaVersion": "cce-operation/v1", "endpointSchemaVersion": "cce-endpoints/v1",
+             "authApiVersion": "v1", "consumerApiVersion": "v1"},
         ]
         step = {"id": "upgrade-demo", "from": "old", "to": "new", "intermediateCombinationId": "middle",
-                "steps": ["consumer", "modeling"], "modelingDataMigration": "none", "preserveModelingData": True}
+                "steps": ["consumer", "modeling"], "requiresJointMaintenance": True,
+                "modelingDataMigration": "none", "preserveModelingData": True}
         path = self.base / "compatibility.yaml"
         path.write_text(yaml.safe_dump({"schemaVersion": "cce-compatibility/v1",
                                         "combinations": combinations, "transitions": [step]}))
         installed = {"consumer": {"releaseVersion": "c1", "chartVersion": "1.0.0"},
                      "modeling": {"releaseVersion": "m1", "chartVersion": "1.0.0"}}
         packages = {"consumer": (self.base, {"releaseVersion": "c2", "chartVersion": "2.0.0"}),
-                    "modeling": (self.base, {"releaseVersion": "m2", "chartVersion": "2.0.0", "platform": "linux/amd64"})}
+                    "modeling": (self.base, {"releaseVersion": "m2", "chartVersion": "2.0.0", "platform": "linux-amd64"})}
         return path, installed, packages
 
     def test_upgrade_transition_requires_consumer_then_modeling_and_no_data_migration(self):
@@ -209,8 +216,8 @@ class CceContractTests(unittest.TestCase):
             config[side] = {"package": self.base / f"{side}.tar.gz", "releaseName": side,
                             "namespace": f"{side}-demo", "values": self.base / f"{side}-values.yaml",
                             "resolvedImages": self.base / f"{side}-images.yaml"}
-        releases = {"consumer": {"releaseVersion": "c2", "chartVersion": "2.0.0", "platform": "linux/amd64"},
-                    "modeling": {"releaseVersion": "m2", "chartVersion": "2.0.0", "platform": "linux/amd64"}}
+        releases = {"consumer": {"releaseVersion": "c2", "chartVersion": "2.0.0", "platform": "linux-amd64"},
+                    "modeling": {"releaseVersion": "m2", "chartVersion": "2.0.0", "platform": "linux-amd64"}}
         installed = {"consumer": {"releaseVersion": "c1", "chartVersion": "1.0.0"},
                      "modeling": {"releaseVersion": "m1", "chartVersion": "1.0.0"}}
         calls = []
@@ -241,8 +248,7 @@ class CceContractTests(unittest.TestCase):
         try:
             sys.argv = ["joint-cce.py", "upgrade", "--config", str(self.base / "deployment.yaml"),
                         "--scope", "both", "--transition-id", "upgrade-demo",
-                        "--backup-record", str(self.base / "modeling-backup.json"),
-                        "--consumer-backup-record", str(self.base / "consumer-backup.json")]
+                        "--backup-record", str(self.base / "modeling-backup.json")]
             from contextlib import redirect_stdout
             from io import StringIO
             with mock.patch.object(JOINT, "load_config", return_value=config), \
@@ -289,10 +295,110 @@ class CceContractTests(unittest.TestCase):
 
     def test_package_validates_and_detects_tampering(self):
         root = self.package()
-        self.assertEqual(validate_release(root, "modeling")["platform"], "linux/amd64")
+        self.assertEqual(validate_release(root, "modeling")["platform"], "linux-amd64")
         (root / "images/modeling.tar").write_bytes(b"changed")
         with self.assertRaises(ConfigError):
             validate_release(root, "modeling")
+
+    def test_release_platform_and_image_platform_are_distinct(self):
+        root = self.package()
+        release_path = root / "release.yaml"
+        release = yaml.safe_load(release_path.read_text())
+        for bad_platform in ("linux/amd64", "linux-arm64"):
+            release["platform"] = bad_platform
+            release_path.write_text(yaml.safe_dump(release))
+            self._refresh_checksums(root)
+            with self.assertRaises(ConfigError):
+                validate_release(root, "modeling")
+        release["platform"] = "linux-amd64"
+        release["images"]["modeling"]["platform"] = "linux/arm64"
+        release_path.write_text(yaml.safe_dump(release))
+        self._refresh_checksums(root)
+        with self.assertRaises(ConfigError):
+            validate_release(root, "modeling")
+
+    def _refresh_checksums(self, root):
+        (root / "checksums.sha256").write_text("".join(
+            f"{checksum(path)}  {path.relative_to(root)}\n" for path in sorted(root.rglob("*"))
+            if path.is_file() and path.name != "checksums.sha256"))
+
+    def test_compatibility_rejects_empty_duplicate_and_incomplete_combinations(self):
+        path, _, _ = self.upgrade_fixture()
+        manifest = yaml.safe_load(path.read_text())
+        validate_compatibility_manifest(manifest)
+        for combinations in ([], manifest["combinations"] + [dict(manifest["combinations"][0])],
+                             [{key: value for key, value in manifest["combinations"][0].items()
+                               if key != "consumerApiVersion"}]):
+            changed = {**manifest, "combinations": combinations}
+            with self.assertRaises(ConfigError):
+                validate_compatibility_manifest(changed)
+
+    def test_consumer_service_names_follow_release_identity(self):
+        root = self.base / "consumer-cce-demo"
+        (root / "deploy").mkdir(parents=True)
+        (root / "deploy/endpoints.yaml").write_text(yaml.safe_dump({"schemaVersion": "cce-endpoints/v1",
+            "endpoints": [{"id": "auth", "port": 5056, "apiVersion": "v1"},
+                          {"id": "consumer-api", "port": 5055, "apiVersion": "v1"}]}))
+        package = {"consumer": (root, {})}
+        config = {"consumer": {"releaseName": "custom-consumer", "namespace": "consumer-demo"}}
+        consumer_values = {"global": {"auth": {"issuer": "https://auth.example.com", "audience": "demo"}}}
+        modeling_values = {"global": {"auth": dict(consumer_values["global"]["auth"])},
+            "externalAuth": {"serviceName": "custom-consumer-auth", "namespace": "consumer-demo", "servicePort": 5056},
+            "externalConsumer": {"serviceName": "custom-consumer-backend", "namespace": "consumer-demo", "servicePort": 5055}}
+        combo = {"authApiVersion": "v1", "consumerApiVersion": "v1"}
+        JOINT.validate_cross_side(config, package, consumer_values, modeling_values, combo)
+        for field, key, value in (("externalAuth", "servicePort", 9999),
+                                  ("externalConsumer", "serviceName", "consumer-api"),
+                                  ("externalConsumer", "namespace", "other-demo")):
+            bad = json.loads(json.dumps(modeling_values))
+            bad[field][key] = value
+            with self.assertRaises(ConfigError):
+                JOINT.validate_cross_side(config, package, consumer_values, bad, combo)
+
+    def test_consumer_invocation_omits_unsupported_options(self):
+        root = self.base / "consumer-cce-demo"
+        (root / "deploy").mkdir(parents=True)
+        (root / "deploy/install-cce.sh").write_text("#!/bin/sh\n")
+        config = {"cluster": {"context": "synthetic"}, "stateDir": self.base, "timeoutSeconds": 30,
+                  "consumer": {"namespace": "consumer-demo", "releaseName": "consumer",
+                               "values": self.base / "values.yaml"}}
+        package = (root, {"releaseVersion": "c2", "chartVersion": "2.0.0"})
+        response = SimpleNamespace(returncode=0, stdout=json.dumps({"schemaVersion": "cce-operation/v1",
+            "status": "succeeded", "releaseVersion": "c2", "chartVersion": "2.0.0"}))
+        for action in ("plan", "preflight", "install", "upgrade", "status", "verify"):
+            with mock.patch.object(JOINT.subprocess, "run", return_value=response) as call:
+                JOINT.invoke("consumer", action, config, package, "operation-demo", self.base / "images.yaml",
+                             backup_record="unused", transition_id="unused", lock_holder="operation-demo")
+            command = call.call_args.args[0]
+            for forbidden in ("--compatibility", "--backup-record", "--transition-id", "--transition-record"):
+                self.assertNotIn(forbidden, command)
+
+    def test_second_operation_lease_failure_releases_only_first_lease(self):
+        config = {"cluster": {"context": "synthetic"},
+                  "consumer": {"releaseName": "consumer", "namespace": "a-demo"},
+                  "modeling": {"releaseName": "modeling", "namespace": "z-demo"}}
+        leases = {}
+        def fake_get(lease):
+            return leases.get((lease.namespace, lease.name))
+        def fake_kubectl(_config, *argv, input_text=None):
+            namespace = argv[argv.index("-n") + 1]
+            if "create" in argv and namespace == "z-demo":
+                raise JOINT.LockError("second lease is held")
+            if "-f" in argv:
+                document = json.loads(input_text)
+                leases[(namespace, document["metadata"]["name"])] = document
+            return ""
+        with mock.patch.object(JOINT.Lease, "_get", fake_get), \
+             mock.patch.object(JOINT, "kubectl", side_effect=fake_kubectl), \
+             mock.patch.object(JOINT.threading, "Thread"):
+            first = JOINT.Lease(config, "consumer", "operation-demo")
+            first.acquire()
+            second = JOINT.Lease(config, "modeling", "operation-demo")
+            with self.assertRaises(JOINT.LockError):
+                second.acquire()
+            first.release()
+        self.assertEqual(leases[("a-demo", "consumer-cce-operation")]["spec"]["holderIdentity"], "")
+        self.assertNotIn(("z-demo", "modeling-cce-operation"), leases)
 
     def test_archive_rejects_symlink(self):
         archive = self.base / "bad.tar.gz"
@@ -434,8 +540,8 @@ class CceContractTests(unittest.TestCase):
         release = validate_release(safe_extract(output, unpacked, "modeling"), "modeling")
         self.assertTrue(all(record["sourceManifestDigest"] is None for record in release["images"].values()))
         self.assertEqual({record["archiveRef"] for record in release["images"].values()}, {
-            "modeling-offline/modeling:demo-amd64", "modeling-offline/modeling-agent:demo-amd64",
-            "modeling-offline/onto-modeling:demo-amd64",
+            "modeling-offline/modeling:demo", "modeling-offline/modeling-agent:demo",
+            "modeling-offline/onto-modeling:demo",
         })
 
     def test_package_copies_chart_source_when_helm_is_unavailable(self):
@@ -526,7 +632,7 @@ class CceContractTests(unittest.TestCase):
         local_calls = calls.read_text().splitlines()
         self.assertEqual(sum("--load" in line for line in local_calls), 3)
         self.assertFalse(any("--push" in line or "imagetools" in line for line in local_calls))
-        self.assertTrue(any("modeling-offline/onto-modeling:demo-amd64" in line for line in local_calls))
+        self.assertTrue(any("modeling-offline/onto-modeling:demo" in line for line in local_calls))
         calls.unlink()
         subprocess.run(["bash", str(script_dir / "build-images.sh"), "demo", "amd64", "registry.example.com/demo"],
                        env=environment, check=True, capture_output=True, text=True)
@@ -688,7 +794,7 @@ class CceContractTests(unittest.TestCase):
         compatibility = self.base / "compatibility.yaml"
         compatibility.write_text(yaml.safe_dump({"schemaVersion": "cce-compatibility/v1", "combinations": [{
             "id": "synthetic-demo", "consumerReleaseVersion": "demo", "consumerChartVersion": "0.1.0",
-            "modelingReleaseVersion": "demo", "modelingChartVersion": "0.1.0", "platform": "linux/amd64",
+            "modelingReleaseVersion": "demo", "modelingChartVersion": "0.1.0", "platform": "linux-amd64",
             "authApiVersion": "v1", "consumerApiVersion": "v1",
             "operationSchemaVersion": "cce-operation/v1", "endpointSchemaVersion": "cce-endpoints/v1",
         }]}))
@@ -697,7 +803,7 @@ class CceContractTests(unittest.TestCase):
         try:
             sys.argv = ["install-cce.py", "plan", "--context", "synthetic", "--namespace", "modeling-demo",
                 "--release", "modeling", "--package-root", str(root), "--values", str(values),
-                "--resolved-images", str(image_map), "--compatibility", str(compatibility),
+                "--resolved-images", str(image_map),
                 "--state-dir", str(output_dir)]
             from contextlib import redirect_stdout
             from io import StringIO

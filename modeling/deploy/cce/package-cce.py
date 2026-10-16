@@ -88,7 +88,7 @@ def main():
         parser.error("invalid version")
     if args.local:
         images = {
-            image_id: f"modeling-offline/{name}:{args.version}-{args.arch}"
+            image_id: f"modeling-offline/{name}:{args.version}"
             for image_id, name in LOCAL_NAMES.items()
         }
     else:
@@ -120,7 +120,7 @@ def main():
             if image_arch != args.arch:
                 raise SystemExit(f"{image_id}: expected {args.arch}, got {image_arch}")
             config_digest = run("docker", "image", "inspect", reference, "--format", "{{.Id}}", capture=True)
-            archive_ref = f"modeling-offline/{LOCAL_NAMES[image_id]}:{args.version}-{args.arch}"
+            archive_ref = f"modeling-offline/{LOCAL_NAMES[image_id]}:{args.version}"
             archive = folder / "images" / f"{image_id}.tar"
             if reference != archive_ref:
                 run("docker", "tag", reference, archive_ref)
@@ -166,7 +166,7 @@ def main():
                 print(f"Warning: optional documentation missing, skipping {name}", file=sys.stderr)
         manifest = {
             "schemaVersion": "cce-release/v1", "releaseVersion": args.version,
-            "chartVersion": chart_version, "platform": f"linux/{args.arch}",
+            "chartVersion": chart_version, "platform": f"linux-{args.arch}",
             "components": ["modeling", "modelingAgent", "ontoModeling"],
             "chartDelivery": chart_delivery,
             "images": package_images,

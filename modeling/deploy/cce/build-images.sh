@@ -87,17 +87,17 @@ fi
 docker buildx version >/dev/null
 
 docker buildx build --platform "linux/$arch" "${output[@]}" \
-  -t "$registry/modeling:$version-$arch" "$root/modeling"
+  -t "$registry/modeling:$version" "$root/modeling"
 docker buildx build --platform "linux/$arch" "${output[@]}" --target runtime \
-  -t "$registry/modeling-agent:$version-$arch" "$root/modeling/modeling-agent"
+  -t "$registry/modeling-agent:$version" "$root/modeling/modeling-agent"
 docker buildx build --platform "linux/$arch" "${output[@]}" \
   -f "$project/Dockerfile" \
-  -t "$registry/onto-modeling:$version-$arch" "$project"
+  -t "$registry/onto-modeling:$version" "$project"
 
 if [ "$#" -eq 3 ]; then
   echo 'Record and verify the immutable manifest digest for each pushed tag before packaging:'
   for component in modeling modeling-agent onto-modeling; do
-    docker buildx imagetools inspect "$registry/$component:$version-$arch"
+    docker buildx imagetools inspect "$registry/$component:$version"
   done
 else
   echo "Local images are ready. Package with: python3 modeling/deploy/cce/package-cce.py --version $version --arch $arch --local --output <package.tar.gz>"

@@ -12,6 +12,17 @@ import yaml
 
 IMAGE_REF = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 RELEASE_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+RELEASE_PLATFORMS = {"linux-amd64": "amd64", "linux-arm64": "arm64"}
+COMPATIBILITY_COMBINATION_FIELDS = (
+    "id", "consumerReleaseVersion", "consumerChartVersion",
+    "modelingReleaseVersion", "modelingChartVersion", "platform",
+    "operationSchemaVersion", "endpointSchemaVersion", "authApiVersion",
+    "consumerApiVersion",
+)
+COMPATIBILITY_TRANSITION_FIELDS = (
+    "id", "from", "to", "intermediateCombinationId", "steps",
+    "requiresJointMaintenance", "modelingDataMigration", "preserveModelingData",
+)
 
 
 class ConfigError(ValueError):
@@ -115,7 +126,7 @@ def safe_extract(archive: Path, destination: Path, side: str) -> Path:
 def validate_release(root: Path, side: str) -> dict:
     verify_checksums(root)
     release = read_yaml(root / "release.yaml")
-    if release.get("schemaVersion") != "cce-release/v1" or release.get("platform") not in ("linux/amd64", "linux/arm64"):
+    if release.get("schemaVersion") != "cce-release/v1" or release.get("platform") not in RELEASE_PLATFORMS:
         raise ConfigError("unsupported release schema or platform")
     if not release.get("releaseVersion") or not release.get("chartVersion"):
         raise ConfigError("release version or chart version missing")
@@ -134,7 +145,7 @@ def validate_release(root: Path, side: str) -> dict:
         if not archive.is_file() or checksum(archive) != record.get("archiveSha256"):
             raise ConfigError(f"image archive invalid: {image_id}")
         source_digest = record.get("sourceManifestDigest")
-        if record.get("platform") != release["platform"] or (
+        if record.get("platform") != f"linux/{RELEASE_PLATFORMS[release['platform']]}" or (
             source_digest is not None and (
                 not isinstance(source_digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", source_digest)
             )
@@ -158,23 +169,69 @@ def validate_images(values: dict, image_map: dict, release: dict) -> dict:
     required = set(release["images"]) | set(release.get("imageDependencies", {}))
     if set(images) != required or any(not isinstance(ref, str) or not IMAGE_REF.fullmatch(ref) for ref in images.values()):
         raise ConfigError("all owned and external images require immutable digest references")
-    if values.get("global", {}).get("targetArch") != release["platform"].split("/")[1]:
+    if values.get("global", {}).get("targetArch") != RELEASE_PLATFORMS[release["platform"]]:
         raise ConfigError("values architecture does not match release")
     return images
 
 
 def validate_compatibility(path: Path, release: dict) -> None:
-    manifest = read_yaml(path)
-    if manifest.get("schemaVersion") != "cce-compatibility/v1" or not isinstance(manifest.get("combinations"), list):
-        raise ConfigError("unsupported compatibility manifest")
+    manifest = validate_compatibility_manifest(read_yaml(path))
     if not any(all(item.get(key) == value for key, value in {
         "modelingReleaseVersion": release["releaseVersion"],
         "modelingChartVersion": release["chartVersion"],
         "platform": release["platform"],
         "operationSchemaVersion": "cce-operation/v1",
         "endpointSchemaVersion": "cce-endpoints/v1",
-    }.items()) for item in manifest["combinations"] if isinstance(item, dict)):
+        }.items()) for item in manifest["combinations"] if isinstance(item, dict)):
         raise CompatibilityError("no verified compatibility combination for this Modeling release")
+
+
+def validate_compatibility_manifest(manifest: dict) -> dict:
+    """Validate the cross-repository compatibility contract without matching a package."""
+    if manifest.get("schemaVersion") != "cce-compatibility/v1":
+        raise ConfigError("unsupported compatibility manifest")
+    combinations = manifest.get("combinations")
+    transitions = manifest.get("transitions")
+    if not isinstance(combinations, list) or not combinations:
+        raise CompatibilityError("compatibility combinations must not be empty")
+    if not isinstance(transitions, list):
+        raise CompatibilityError("compatibility transitions must be a list")
+    ids = set()
+    identities = set()
+    for item in combinations:
+        if not isinstance(item, dict) or any(not isinstance(item.get(key), str) or not item[key].strip()
+                                             for key in COMPATIBILITY_COMBINATION_FIELDS):
+            raise CompatibilityError("compatibility combinations have incomplete fields")
+        if item["id"] in ids:
+            raise CompatibilityError("compatibility combination IDs must be unique")
+        ids.add(item["id"])
+        if item["platform"] not in RELEASE_PLATFORMS:
+            raise CompatibilityError("compatibility combination platform is invalid")
+        identity = tuple(item[key] for key in COMPATIBILITY_COMBINATION_FIELDS if key != "id")
+        if identity in identities:
+            raise CompatibilityError("duplicate compatibility combination")
+        identities.add(identity)
+    transition_ids = set()
+    for item in transitions:
+        if not isinstance(item, dict) or any(key not in item for key in COMPATIBILITY_TRANSITION_FIELDS):
+            raise CompatibilityError("compatibility transition has incomplete fields")
+        if any(not isinstance(item[key], str) or not item[key].strip()
+               for key in ("id", "from", "to", "intermediateCombinationId", "modelingDataMigration")):
+            raise CompatibilityError("compatibility transition has invalid fields")
+        if item["id"] in transition_ids:
+            raise CompatibilityError("compatibility transition IDs must be unique")
+        transition_ids.add(item["id"])
+        if item["from"] not in ids or item["to"] not in ids or item["intermediateCombinationId"] not in ids:
+            raise CompatibilityError("compatibility transition references an unknown combination")
+        if item["steps"] not in (["modeling"], ["consumer", "modeling"]):
+            raise CompatibilityError("compatibility transition steps must keep Consumer before Modeling")
+        if not isinstance(item["requiresJointMaintenance"], bool):
+            raise CompatibilityError("compatibility transition maintenance flag is invalid")
+        if item["modelingDataMigration"] not in ("none", "required"):
+            raise CompatibilityError("compatibility transition data migration value is invalid")
+        if not isinstance(item["preserveModelingData"], bool) or not item["preserveModelingData"]:
+            raise CompatibilityError("compatibility transition must preserve Modeling data")
+    return manifest
 
 
 def endpoint_results(root: Path, release: str, namespace: str) -> list[dict]:

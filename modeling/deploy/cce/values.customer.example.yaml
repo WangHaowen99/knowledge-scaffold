@@ -25,7 +25,7 @@ externalAuth:
   namespace: consumer-demo
   servicePort: 5056
 externalConsumer:
-  serviceName: consumer-api
+  serviceName: consumer-backend
   namespace: consumer-demo
   servicePort: 5055
 modeling:

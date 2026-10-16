@@ -19,7 +19,7 @@ import yaml
 
 from common import (CompatibilityError, ConfigError, LockError, MigrationUnavailable,
                     checksum, read_yaml, safe_extract, validate_name,
-                    validate_release, IMAGE_REF)
+                    validate_release, validate_compatibility_manifest, IMAGE_REF)
 from upgrade import transition as modeling_transition
 
 JOINT_SIDE_ORDER = ("consumer", "modeling")
@@ -52,6 +52,8 @@ def load_config(path: Path):
     for side in JOINT_SIDE_ORDER:
         validate_name(raw[side]["releaseName"], "releaseName")
         validate_name(raw[side]["namespace"], "namespace")
+        if len(raw[side]["releaseName"]) > 49:
+            raise ConfigError("releaseName is too long for its operation Lease")
         for field in ("package", "values", "resolvedImages"):
             raw[side][field] = absolute(path.parent, raw[side][field])
     raw["stateDir"] = absolute(path.parent, raw["stateDir"])
@@ -60,9 +62,7 @@ def load_config(path: Path):
 
 
 def validate_combination(config, packages):
-    document = read_yaml(config["compatibilityFile"])
-    if document.get("schemaVersion") != "cce-compatibility/v1":
-        raise ConfigError("invalid compatibility schema")
+    document = validate_compatibility_manifest(read_yaml(config["compatibilityFile"]))
     consumer = packages["consumer"][1]
     modeling = packages["modeling"][1]
     if "jiuwenbox" not in consumer["images"]:
@@ -81,12 +81,12 @@ def validate_combination(config, packages):
     combinations = document.get("combinations", [])
     matched = [item for item in combinations if isinstance(item, dict) and
                all(item.get(key) == value for key, value in expected.items())]
-    if len(matched) != 1 or any(not matched[0].get(key) for key in ("id", "authApiVersion", "consumerApiVersion")):
+    if len(matched) != 1:
         raise CompatibilityError("exactly one verified Consumer/Modeling combination required")
     return matched[0]
 
 
-def validate_cross_side(config, packages, consumer_values, modeling_values):
+def validate_cross_side(config, packages, consumer_values, modeling_values, combination):
     auth_a = consumer_values.get("global", {}).get("auth", {})
     auth_b = modeling_values.get("global", {}).get("auth", {})
     for key in ("issuer", "audience"):
@@ -95,13 +95,22 @@ def validate_cross_side(config, packages, consumer_values, modeling_values):
     endpoints = read_yaml(packages["consumer"][0] / "deploy/endpoints.yaml")
     if endpoints.get("schemaVersion") != "cce-endpoints/v1":
         raise ConfigError("invalid Consumer endpoint schema")
-    by_id = {item["id"]: item for item in endpoints["endpoints"]}
-    for field, endpoint_id in (("externalAuth", "auth"), ("externalConsumer", "consumer-api")):
+    items = endpoints.get("endpoints")
+    if not isinstance(items, list) or any(not isinstance(item, dict) or not item.get("id") for item in items):
+        raise ConfigError("Consumer endpoint list is invalid")
+    by_id = {item["id"]: item for item in items}
+    if len(by_id) != len(items):
+        raise ConfigError("duplicate Consumer endpoint ID")
+    for field, endpoint_id, suffix, port, api_field in (
+            ("externalAuth", "auth", "auth", 5056, "authApiVersion"),
+            ("externalConsumer", "consumer-api", "backend", 5055, "consumerApiVersion")):
         item = by_id.get(endpoint_id)
         if not item:
             raise ConfigError(f"Consumer endpoint {endpoint_id} missing")
+        if item.get("apiVersion") != combination[api_field] or item.get("port") != port:
+            raise CompatibilityError(f"Consumer endpoint {endpoint_id} interface differs from verified combination")
         reference = modeling_values.get(field, {})
-        expected_name = f"{config['consumer']['releaseName']}-{item['serviceNameSuffix']}"
+        expected_name = f"{config['consumer']['releaseName']}-{suffix}"
         if reference.get("serviceName") != expected_name or reference.get("namespace") != config["consumer"]["namespace"] or reference.get("servicePort") != item["port"]:
             raise ConfigError(f"Modeling {field} does not match Consumer endpoint {endpoint_id}")
 
@@ -128,26 +137,25 @@ def effective_images(config, state: Path, source: str, operation_id: str) -> Pat
     return effective
 
 
-def invoke(side, action, config, package, operation_id, image_file, resume="", backup_record="", transition_id="", lock_holder="", lock_name=""):
+def invoke(side, action, config, package, operation_id, image_file, resume="", backup_record="", transition_id="", lock_holder="", transition_record=""):
     script = package[0] / "deploy/install-cce.sh"
     if not script.is_file():
         raise ConfigError(f"{side} package has no deploy/install-cce.sh")
     options = ["bash", str(script), action, "--context", config["cluster"]["context"],
                "--namespace", config[side]["namespace"], "--release", config[side]["releaseName"],
                "--values", str(config[side]["values"]), "--resolved-images", str(image_file),
-               "--compatibility", str(config["compatibilityFile"]), "--operation-id", operation_id,
+               "--operation-id", operation_id,
                "--state-dir", str(config["stateDir"]), "--timeout-seconds", str(config.get("timeoutSeconds", 900))]
     if resume:
         options.extend(("--resume", resume))
-    if backup_record:
+    if backup_record and side == "modeling":
         options.extend(("--backup-record", backup_record))
     if transition_id and side == "modeling":
         options.extend(("--transition-id", transition_id))
+    if transition_record and side == "modeling":
+        options.extend(("--transition-record", str(transition_record)))
     if lock_holder:
         options.extend(("--lock-holder", lock_holder))
-        if side == "modeling":
-            options.extend(("--lock-name", lock_name,
-                            "--lock-namespace", config["consumer"]["namespace"]))
     result = subprocess.run(options, text=True, capture_output=True, timeout=config.get("timeoutSeconds", 900) + 30)
     try:
         payload = json.loads(result.stdout)
@@ -196,7 +204,7 @@ def installed_identity(config, side):
                             "--namespace", entry["namespace"], "get", "values", entry["releaseName"], "-o", "json"))
     if status.get("info", {}).get("status") != "deployed" or not values.get("global", {}).get("releaseVersion"):
         raise ConfigError(f"installed {side} release is not deployed with a recorded version")
-    manifest = read_yaml(config["compatibilityFile"])
+    manifest = validate_compatibility_manifest(read_yaml(config["compatibilityFile"]))
     versions = {item.get(f"{side}ChartVersion") for item in manifest.get("combinations", [])
                 if isinstance(item, dict) and item.get(f"{side}ChartVersion")}
     chart = str(status.get("chart", ""))
@@ -208,7 +216,7 @@ def installed_identity(config, side):
 
 
 def verified_joint_transition(config, packages, transition_id, installed):
-    manifest = read_yaml(config["compatibilityFile"])
+    manifest = validate_compatibility_manifest(read_yaml(config["compatibilityFile"]))
     combinations = manifest.get("combinations", [])
     transitions = manifest.get("transitions", [])
     if not isinstance(combinations, list) or not isinstance(transitions, list):
@@ -220,6 +228,8 @@ def verified_joint_transition(config, packages, transition_id, installed):
     if len(matches) != 1 or matches[0].get("steps") != list(JOINT_SIDE_ORDER):
         raise CompatibilityError("joint upgrade requires one Consumer-then-Modeling transition")
     item = matches[0]
+    if item.get("requiresJointMaintenance") is not True:
+        raise CompatibilityError("joint upgrade requires a maintained cross-side transition")
     old, new = by_id.get(item.get("from")), by_id.get(item.get("to"))
     middle = by_id.get(item.get("intermediateCombinationId"))
     if not old or not new or not middle:
@@ -240,14 +250,19 @@ def verified_joint_transition(config, packages, transition_id, installed):
     modeling_transition(config["compatibilityFile"], transition_id, installed["modeling"], packages["modeling"][1])
     if not all(combo.get("platform") == packages["modeling"][1]["platform"] for combo in (old, middle, new)):
         raise CompatibilityError("upgrade cannot change CPU architecture")
+    return {"schemaVersion": "cce-transition-record/v1", "transition": item,
+            "from": old, "intermediate": middle, "to": new,
+            "compatibilityFile": str(config["compatibilityFile"]),
+            "compatibilitySha256": checksum(config["compatibilityFile"])}
 
 
 class Lease:
-    def __init__(self, config, name, holder):
+    def __init__(self, config, side, holder):
         self.config = config
-        self.name = name
+        self.side = side
+        self.name = f"{config[side]['releaseName']}-cce-operation"
         self.holder = holder
-        self.namespace = config["consumer"]["namespace"]
+        self.namespace = config[side]["namespace"]
         self.stop = threading.Event()
         self.thread = None
         self.error = None
@@ -259,7 +274,8 @@ class Lease:
                     "spec": {"holderIdentity": self.holder, "leaseDurationSeconds": 90,
                              "acquireTime": now, "renewTime": now}}
         if current:
-            document["metadata"]["resourceVersion"] = current["metadata"]["resourceVersion"]
+            if current.get("metadata", {}).get("resourceVersion"):
+                document["metadata"]["resourceVersion"] = current["metadata"]["resourceVersion"]
             document["spec"]["acquireTime"] = current["spec"].get("acquireTime", now)
         return json.dumps(document)
 
@@ -317,7 +333,12 @@ class Lease:
             self.thread.join(timeout=3)
         current = self._get()
         if current and current["spec"].get("holderIdentity") == self.holder:
-            kubectl(self.config, "-n", self.namespace, "delete", "lease", self.name)
+            released = self._document(current)
+            document = json.loads(released)
+            document["spec"].update(holderIdentity="", renewTime="1970-01-01T00:00:00Z",
+                                    leaseDurationSeconds=1)
+            kubectl(self.config, "-n", self.namespace, "replace", "-f", "-",
+                    input_text=json.dumps(document))
 
 
 def main():
@@ -326,20 +347,19 @@ def main():
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--scope", choices=("consumer", "modeling", "both"))
     parser.add_argument("--resume")
-    parser.add_argument("--backup-record")
-    parser.add_argument("--consumer-backup-record")
+    parser.add_argument("--backup-record", help="customer-managed Modeling backup record")
     parser.add_argument("--transition-id")
     args = parser.parse_args()
     if args.action == "upgrade" and not args.scope:
         parser.error("upgrade requires --scope")
     if args.action == "upgrade" and args.scope != "both":
         parser.error("this joint entry currently supports only --scope both for upgrade")
-    if args.action == "upgrade" and (not args.transition_id or not args.backup_record or not args.consumer_backup_record):
-        parser.error("upgrade requires --transition-id, --backup-record and --consumer-backup-record")
+    if args.action == "upgrade" and (not args.transition_id or not args.backup_record):
+        parser.error("upgrade requires --transition-id and --backup-record")
     if args.resume and args.action not in ("install", "upgrade"):
         parser.error("--resume is only supported for install or upgrade")
     operation_id = args.resume or str(uuid.uuid4())
-    lease = None
+    leases = []
     result = {"schemaVersion": "cce-joint-operation/v1", "operationId": operation_id,
               "action": args.action, "status": "failed", "phase": "input", "errorCode": None,
               "message": "", "results": {}}
@@ -364,10 +384,10 @@ def main():
             for side in JOINT_SIDE_ORDER:
                 root = safe_extract(config[side]["package"], Path(temporary), side)
                 packages[side] = root, validate_release(root, side)
-            validate_combination(config, packages)
+            combination = validate_combination(config, packages)
             consumer_values = read_yaml(config["consumer"]["values"])
             modeling_values = read_yaml(config["modeling"]["values"])
-            validate_cross_side(config, packages, consumer_values, modeling_values)
+            validate_cross_side(config, packages, consumer_values, modeling_values, combination)
             if consumer_values.get("global", {}).get("clusterFlavor") != modeling_values.get("global", {}).get("clusterFlavor"):
                 raise ConfigError("clusterFlavor differs between releases")
             if (consumer_values.get("global", {}).get("access", {}).get("elb", {}).get("id") ==
@@ -379,11 +399,13 @@ def main():
             image_files = {"consumer": config["consumer"]["resolvedImages"], "modeling": model_images}
             journal_path = state / f"{operation_id}.json"
             journal = None
+            transition_record = None
+            transition_record_path = state / f"{operation_id}-transition.json"
             if args.action in ("install", "upgrade"):
                 fingerprint = operation_fingerprint(config)
                 if args.action == "upgrade":
                     fingerprint = hashlib.sha256((fingerprint + args.transition_id +
-                        checksum(Path(args.backup_record)) + checksum(Path(args.consumer_backup_record))).encode()).hexdigest()
+                        checksum(Path(args.backup_record))).encode()).hexdigest()
                 if args.resume:
                     if not journal_path.is_file():
                         raise ConfigError("resume operation journal missing")
@@ -394,7 +416,9 @@ def main():
                         installed = journal.get("installed")
                         if not isinstance(installed, dict):
                             raise ConfigError("upgrade journal lacks the original installed versions")
-                        verified_joint_transition(config, packages, args.transition_id, installed)
+                        transition_record = verified_joint_transition(config, packages, args.transition_id, installed)
+                        if isinstance(transition_record, dict):
+                            transition_record_path.write_text(json.dumps(transition_record, sort_keys=True), encoding="utf-8")
                         for side in JOINT_SIDE_ORDER:
                             current = installed_identity(config, side)
                             expected = packages[side][1] if side in journal.get("completed", []) else installed[side]
@@ -408,25 +432,30 @@ def main():
                                "completed": [], "phase": "prepared"}
                     if args.action == "upgrade":
                         installed = {side: installed_identity(config, side) for side in JOINT_SIDE_ORDER}
-                        verified_joint_transition(config, packages, args.transition_id, installed)
+                        transition_record = verified_joint_transition(config, packages, args.transition_id, installed)
+                        if isinstance(transition_record, dict):
+                            transition_record_path.write_text(json.dumps(transition_record, sort_keys=True), encoding="utf-8")
                         journal["installed"] = installed
                     write_journal(journal_path, journal)
             if args.action in ("install", "upgrade"):
-                lock_name = f"cce-{config['consumer']['releaseName']}-{config['modeling']['releaseName']}"[:63].rstrip("-")
-                lease = Lease(config, lock_name, operation_id)
-                lease.acquire()
+                lock_identities = sorted((config[side]["namespace"], config[side]["releaseName"], side)
+                                         for side in JOINT_SIDE_ORDER)
+                for _, _, side in lock_identities:
+                    current_lease = Lease(config, side, operation_id)
+                    current_lease.acquire()
+                    leases.append(current_lease)
             if args.action == "upgrade":
                 if "consumer" not in journal["completed"] and journal.get("phase") != "consumer-started":
                     invoke("consumer", "preflight", config, packages["consumer"], operation_id,
-                           image_files["consumer"], backup_record=args.consumer_backup_record,
-                           lock_holder=operation_id, lock_name=lock_name)
+                           image_files["consumer"], lock_holder=operation_id)
                 if "modeling" not in journal["completed"] and journal.get("phase") != "modeling-started":
                     invoke("modeling", "preflight", config, packages["modeling"], operation_id,
                            image_files["modeling"], backup_record=args.backup_record,
-                           transition_id=args.transition_id, lock_holder=operation_id, lock_name=lock_name)
+                           transition_id=args.transition_id, lock_holder=operation_id,
+                           transition_record=transition_record_path)
             for side in JOINT_SIDE_ORDER:
-                if lease:
-                    lease.check()
+                for current_lease in leases:
+                    current_lease.check()
                 result["phase"] = side
                 if journal and side in journal["completed"]:
                     if not completed_release_matches(config, side, packages[side]):
@@ -440,11 +469,12 @@ def main():
                     write_journal(journal_path, journal)
                 result["results"][side] = invoke(side, args.action, config, packages[side], operation_id,
                     image_files[side], args.resume if args.action == "install" else "",
-                    (args.consumer_backup_record if side == "consumer" else args.backup_record) or "",
-                    args.transition_id or "", operation_id if args.action == "upgrade" else "",
-                    lock_name if args.action == "upgrade" else "")
+                    (args.backup_record if side == "modeling" else "") or "",
+                    args.transition_id or "", operation_id if args.action in ("install", "upgrade") else "",
+                    transition_record_path if side == "modeling" and args.action == "upgrade" else "")
                 if args.action == "upgrade":
-                    lease.check()
+                    for current_lease in leases:
+                        current_lease.check()
                     invoke(side, "verify", config, packages[side], operation_id, image_files[side])
                 if journal:
                     journal["completed"].append(side)
@@ -466,9 +496,9 @@ def main():
             code = "RESOURCE_NOT_READY"
         result.update(errorCode=code, message=str(exc))
     finally:
-        if lease:
+        for current_lease in reversed(leases):
             try:
-                lease.release()
+                current_lease.release()
             except Exception:
                 result.update(status="failed", errorCode="LOCK_CONFLICT", message="could not release operation lease")
     print(json.dumps(result, ensure_ascii=False))

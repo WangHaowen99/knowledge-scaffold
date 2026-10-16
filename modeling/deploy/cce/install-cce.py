@@ -14,7 +14,7 @@ import uuid
 
 import jsonschema
 
-from common import (CompatibilityError, ConfigError, endpoint_results, read_yaml, validate_compatibility,
+from common import (CompatibilityError, ConfigError, checksum, endpoint_results, read_yaml,
                     validate_images, validate_name, validate_release)
 from upgrade import assert_same_bindings, bindings, transition, verified_snapshots, verify_persisted_data
 
@@ -69,12 +69,11 @@ def installed_release(args) -> dict:
 
 def load_inputs(args, root: Path):
     release = validate_release(root, "modeling")
-    if not args.values or not args.resolved_images or not args.compatibility:
-        raise ConfigError("values, resolved-images and compatibility are required")
+    if not args.values or not args.resolved_images:
+        raise ConfigError("values and resolved-images are required")
     values = read_yaml(args.values)
     mapping = read_yaml(args.resolved_images)
     images = validate_images(values, mapping, release)
-    validate_compatibility(args.compatibility, release)
     defaults = read_yaml(root / "deploy/chart/values.yaml")
     merged = merge(merge(defaults, values), mapping)
     schema = json.loads((root / "deploy/chart/values.schema.json").read_text())
@@ -159,24 +158,43 @@ def verify(args, root: Path):
             f"deployment/{args.release}-nl2sql", f"--timeout={args.timeout_seconds}s")
 
 
-def upgrade_precheck(args, release: dict, merged: dict) -> dict:
+def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
     if not args.backup_record or not args.transition_id:
         raise ConfigError("upgrade requires --backup-record and --transition-id")
-    if not args.lock_holder or not args.lock_name or not args.lock_namespace:
+    if not args.lock_holder:
         raise ConfigError("upgrade requires a delegated operation Lease")
-    lease = kube(args, "get", "lease", args.lock_name, "-n", args.lock_namespace)
-    if lease.get("spec", {}).get("holderIdentity") != args.lock_holder or args.lock_holder != args.operation_id:
-        raise ConfigError("operation Lease is not held by this upgrade")
-    spec = lease["spec"]
-    try:
-        renewed = datetime.fromisoformat(spec["renewTime"].replace("Z", "+00:00"))
-        expires = renewed + timedelta(seconds=int(spec["leaseDurationSeconds"]))
-    except (KeyError, TypeError, ValueError, AttributeError) as exc:
-        raise ConfigError("operation Lease has no valid expiry") from exc
-    if expires <= datetime.now(timezone.utc):
-        raise ConfigError("operation Lease has expired")
+    check_delegated_lease(args)
     installed = installed_release(args)
-    transition(args.compatibility, args.transition_id, installed, release)
+    if args.transition_record:
+        try:
+            record = json.loads(args.transition_record.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise CompatibilityError("cannot read delegated transition record") from exc
+        if (record.get("schemaVersion") != "cce-transition-record/v1" or
+                record.get("transition", {}).get("id") != args.transition_id):
+            raise CompatibilityError("delegated transition record does not match this upgrade")
+        manifest_path = Path(record.get("compatibilityFile", ""))
+        if not manifest_path.is_file() or record.get("compatibilitySha256") != checksum(manifest_path):
+            raise CompatibilityError("delegated compatibility manifest checksum differs")
+        if transition(manifest_path, args.transition_id, installed, release) != record["transition"]:
+            raise CompatibilityError("delegated transition differs from compatibility manifest")
+        transition = record["transition"]
+        old = record.get("from", {})
+        middle = record.get("intermediate", {})
+        new = record.get("to", {})
+        if ((old.get("modelingReleaseVersion"), old.get("modelingChartVersion")) !=
+                (installed["releaseVersion"], installed["chartVersion"]) or
+                (new.get("modelingReleaseVersion"), new.get("modelingChartVersion")) !=
+                (release["releaseVersion"], release["chartVersion"]) or
+                (middle.get("modelingReleaseVersion"), middle.get("modelingChartVersion")) !=
+                (installed["releaseVersion"], installed["chartVersion"]) or
+                transition.get("steps") not in (["modeling"], ["consumer", "modeling"]) or
+                transition.get("requiresJointMaintenance") is not True or
+                transition.get("modelingDataMigration") != "none" or
+                transition.get("preserveModelingData") is not True):
+            raise CompatibilityError("delegated transition does not match installed or target Modeling")
+    else:
+        transition(root / "deploy/compatibility.yaml", args.transition_id, installed, release)
     old_values = installed_values(args)
     if old_values.get("global", {}).get("targetArch") != merged["global"]["targetArch"]:
         raise CompatibilityError("target architecture differs from the installed release")
@@ -190,6 +208,23 @@ def upgrade_precheck(args, release: dict, merged: dict) -> dict:
     before = bindings(kube, args, merged, stopped=True)
     verified_snapshots(kube, args, args.backup_record, before)
     return before
+
+
+def check_delegated_lease(args) -> None:
+    """Verify that the caller still owns this release's fixed operation Lease."""
+    if not args.lock_holder:
+        raise ConfigError("joint operation requires a delegated operation Lease")
+    lease = kube(args, "get", "lease", f"{args.release}-cce-operation", "-n", args.namespace)
+    spec = lease.get("spec", {})
+    if spec.get("holderIdentity") != args.lock_holder or args.lock_holder != args.operation_id:
+        raise ConfigError("operation Lease is not held by this operation")
+    try:
+        renewed = datetime.fromisoformat(spec["renewTime"].replace("Z", "+00:00"))
+        expires = renewed + timedelta(seconds=int(spec["leaseDurationSeconds"]))
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise ConfigError("operation Lease has no valid expiry") from exc
+    if expires <= datetime.now(timezone.utc):
+        raise ConfigError("operation Lease has expired")
 
 
 def wait_old_pods_gone(args) -> None:
@@ -225,7 +260,7 @@ def apply_upgrade(args, root: Path, release: dict, merged: dict, before: dict) -
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("plan", "preflight", "install", "upgrade", "status", "verify"))
-    for option in ("context", "namespace", "release", "operation-id", "state-dir", "values", "resolved-images", "compatibility", "resume", "backup-record", "lock-holder", "lock-name", "lock-namespace"):
+    for option in ("context", "namespace", "release", "operation-id", "state-dir", "values", "resolved-images", "resume", "backup-record", "lock-holder", "transition-record"):
         parser.add_argument(f"--{option}")
     parser.add_argument("--transition-id")
     parser.add_argument("--timeout-seconds", type=int, default=900)
@@ -234,8 +269,8 @@ def main():
     args.state_dir = Path(args.state_dir).resolve() if args.state_dir else None
     args.values = Path(args.values).resolve() if args.values else None
     args.resolved_images = Path(args.resolved_images).resolve() if args.resolved_images else None
-    args.compatibility = Path(args.compatibility).resolve() if args.compatibility else None
     args.backup_record = Path(args.backup_record).resolve() if args.backup_record else None
+    args.transition_record = Path(args.transition_record).resolve() if args.transition_record else None
     if args.resume and not args.operation_id:
         parser.error("resume requires operation-id")
     if args.action != "status" and not args.operation_id:
@@ -273,9 +308,11 @@ def main():
             else:
                 result["phase"] = "preflight"
                 preflight(args, merged)
+                if args.lock_holder and args.action in ("install", "upgrade"):
+                    check_delegated_lease(args)
                 current = release_status(args)
                 if args.action == "preflight" and args.transition_id:
-                    upgrade_precheck(args, release, merged)
+                    upgrade_precheck(args, root, release, merged)
                 if args.action == "install":
                     if current and not args.resume:
                         raise ConfigError("release already exists; use explicit resume or upgrade")
@@ -293,7 +330,7 @@ def main():
                     verify(args, root)
                 elif args.action == "upgrade":
                     result["phase"] = "upgrade-precheck"
-                    before = upgrade_precheck(args, release, merged)
+                    before = upgrade_precheck(args, root, release, merged)
                     if any(merged["modeling"]["workloads"][name]["replicas"] != 1
                            for name in ("core", "agent", "onto")):
                         raise ConfigError("target values must request one replica per stateful workload")

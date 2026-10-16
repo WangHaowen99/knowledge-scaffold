@@ -30,14 +30,14 @@
 
 安装器会检查 Kubernetes VolumeSnapshot 对象和实时 PVC/PV 绑定，但不会创建快照或测试恢复。备份记录本身不能证明备份可恢复。安装器还会检查旧 Deployment 已缩容为 0 且旧 Pod 已消失，之后才更新 Chart。`dataEvidence` 包含升级前 Core 项目数、Agent 运行记录数和 Onto Modeling 工作区数量。这些数据应由经过批准的只读维护流程从已停止的卷中采集。启动后，安装器会检查数据库可读性，并验证这些数量没有减少。数量检查不能替代业务级数据校验或快照恢复测试。
 
-Modeling 侧 `deploy/install-cce.sh upgrade` 由联合入口调用，并接收通常的 context、namespace、release、values、resolved-images、compatibility 和 state-dir 参数，以及 `--transition-id`、`--backup-record` 和委派的操作 Lease。没有经过验证的操作 Lease 时，单独调用会被拒绝。联合入口接受：
+Modeling 侧 `deploy/install-cce.sh upgrade` 由联合入口调用，并接收通常的 context、namespace、release、values、resolved-images 和 state-dir 参数，以及 `--transition-id`、`--backup-record`、`--transition-record` 和委派的操作 Lease；兼容清单由联合入口校验后以内部 transition 记录传递。没有经过验证的操作 Lease 时，单独调用会被拒绝。联合入口接受：
 
 ```text
 cce upgrade --scope both --config ... --transition-id ... \
-  --backup-record <Modeling record> --consumer-backup-record <Consumer record>
+  --backup-record <Modeling record>
 ```
 
-它会先调用 Consumer 软件包的升级入口，等待成功后再调用 Modeling。Consumer 软件包必须独立实现自己的备份与数据保留检查。这些命令必须在真实 CCE 集群及两个软件包上完成演练后，才能用于客户生产环境。
+它会先调用 Consumer 软件包的升级入口，等待成功后再调用 Modeling。Consumer 软件包根据自身 values 中的 `maintenance.backupExistingClaim` 执行备份与数据保留检查，联合入口不传递外部备份记录。这些命令必须在真实 CCE 集群及两个软件包上完成演练后，才能用于客户生产环境。
 
 Modeling Chart 首先以三个写数据 Deployment 均为 0 副本的状态升级。安装器等待旧 Pod 消失，再次检查 PVC/PV 身份，然后以单副本应用目标 Chart 并检查数据证据。卷检查失败时，工作负载保持停止状态。更新后的 Chart 和备份快照应保留，以便受控恢复。
 
