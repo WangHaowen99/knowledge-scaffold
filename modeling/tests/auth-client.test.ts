@@ -145,6 +145,22 @@ test('jwks verify：aud 不匹配 → null', async () => {
   assert.equal(await jwksClient().verify(await signToken({ aud: 'other-app' })), null);
 });
 
+test('jwks verify：配置为产品旧名时接受 Consumer 升级后签发的新名 audience', async () => {
+  const user = await jwksClient().verify(await signToken({ aud: 'knowledge-scaffold' }));
+  assert.equal(user?.username, 'alice');
+});
+
+test('jwks verify：配置为产品新名时仍接受旧名 audience（Consumer 尚未升级）', async () => {
+  const client = new AuthServerJwksClient({ issuerUrl: baseUrl, jwtIssuer: ISS, audience: 'knowledge-scaffold' });
+  assert.equal((await client.verify(await signToken({ aud: 'meta-wise' })))?.username, 'alice');
+});
+
+test('jwks verify：自定义 audience 不扩展到产品名', async () => {
+  const client = new AuthServerJwksClient({ issuerUrl: baseUrl, jwtIssuer: ISS, audience: 'custom-app' });
+  assert.equal(await client.verify(await signToken({ aud: 'knowledge-scaffold' })), null);
+  assert.equal((await client.verify(await signToken({ aud: 'custom-app' })))?.username, 'alice');
+});
+
 test('jwks verify：typ=refresh 不得当访问凭据 → null', async () => {
   assert.equal(await jwksClient().verify(await signToken({ typ: 'refresh' })), null);
 });
