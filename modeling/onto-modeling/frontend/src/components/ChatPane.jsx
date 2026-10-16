@@ -31,11 +31,18 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, openEventStream } from '../lib/api.js';
 import { orderResearchActions } from '../lib/researchGate.js';
 import {
+  EMPTY_CONTEXT,
+  compactionNotice,
+  describeContext,
+  nextContext,
+} from '../lib/contextUsage.js';
+import {
   buildSubagentFlow,
   buildSubagentLifecycle,
   isSubagentCardMessage,
 } from '../lib/subagentEvents.js';
 import { FileChip, Markdown } from './CenterPane.jsx';
+import ConversationSwitcher from './ConversationSwitcher.jsx';
 import { STAGES, stageForCommand, stageHits } from './LeftPane.jsx';
 
 // 「⋯ 更多」里的全量命令（希克定律：常显建议 ≤4，全集收进菜单）
@@ -53,14 +60,17 @@ const ALL_COMMANDS = [
   { key: 'update', label: '增量更新', text: '/ontology-update ' },
 ];
 
-const CONTEXT_WINDOW_TOKENS = 200000; // 上下文水位估算基准（标注"估算"）
 const HISTORY_TAIL = 400;
 
 function isVisibleChatEvent(event) {
   if (
-    ['user_message', 'workspace_changes', 'session_interrupted', 'permission_request'].includes(
-      event.type,
-    )
+    [
+      'user_message',
+      'workspace_changes',
+      'session_interrupted',
+      'permission_request',
+      'context_compacted',
+    ].includes(event.type)
   ) {
     return true;
   }
@@ -750,11 +760,17 @@ export default function ChatPane({
   const [newCount, setNewCount] = useState(0); // 未读新消息（滚动锚定用）
   const [skippedEvents, setSkippedEvents] = useState(0); // 历史截断：跳过的较早事件数
   const [historyEpoch, setHistoryEpoch] = useState(0); // 触发全量重放
+  // 用户选中的会话；按项目区分，切项目时回到服务端默认（null = 引擎绑定的或最近更新的）
+  const [selection, setSelection] = useState({ projectId: project.id, id: null });
+  const requestedConversation = selection.projectId === project.id ? selection.id : null;
+  const [conversationId, setConversationId] = useState(null); // 服务端解析后的当前会话
+  const conversationIdRef = useRef(null); // send() 等异步流程读最新值
+  const [conversationsEpoch, setConversationsEpoch] = useState(0); // 发消息后刷新会话标题
   const fullHistoryRef = useRef(false);
-  const projectIdRef = useRef(project.id);
+  const viewKeyRef = useRef('');
   const historyEndRef = useRef(null);
   const pendingNewCountRef = useRef(0);
-  const [ctxTokens, setCtxTokens] = useState(null); // 最近一轮输入侧 tokens（水位估算）
+  const [ctx, setCtx] = useState(EMPTY_CONTEXT); // 上下文用量：已用/窗口/压缩触发点
   const [reportErrors, setReportErrors] = useState(null); // 最新校验报告的错误项统计
   const historyRef = useRef(null);
   const seenRef = useRef(new Set());
@@ -848,15 +864,31 @@ export default function ChatPane({
   }, [project.id, paths]);
 
   useEffect(() => {
-    if (projectIdRef.current !== project.id) {
-      projectIdRef.current = project.id;
+    const viewKey = `${project.id}/${requestedConversation || ''}`;
+    if (viewKeyRef.current !== viewKey) {
+      // 换了项目或会话：上一条会话的状态与指标都不再适用（上下文用量随历史回放重建）
+      viewKeyRef.current = viewKey;
       fullHistoryRef.current = false;
+      conversationIdRef.current = requestedConversation;
+      setConversationId(requestedConversation);
+      setState('idle');
+      setLocalResolved(new Set());
+      metricsRef.current = null;
+      recallIndexRef.current = -1;
     }
+    let resolved = requestedConversation;
+    // 选中的会话已被删除（如在另一个标签页）：回到服务端默认会话
+    const fallBackIfMissing = (error) => {
+      if (error?.status !== 404 || !requestedConversation) return false;
+      setSelection({ projectId: project.id, id: null });
+      return true;
+    };
     setEvents([]);
     setLive({ text: '', thinking: '' });
     liveRef.current = { text: '', thinking: '' };
     setPending(null);
     setMetrics(null);
+    setCtx(EMPTY_CONTEXT); // 由历史回放重建
     seenRef.current = new Set();
     setQueueInfo(null);
     setUploads([]);
@@ -905,6 +937,7 @@ export default function ChatPane({
         historyEndRef.current !== null &&
         event.seq < historyEndRef.current;
       if (event.type === 'system') return;
+      setCtx((prev) => nextContext(prev, event));
       if (event.type === 'user_message') {
         setPending(null);
         setUploads([]); // 附件进度卡由历史里的正式消息接棒
@@ -921,7 +954,6 @@ export default function ChatPane({
         const outputTokens = usage.output_tokens;
         const cacheRead = usage.cache_read_input_tokens || 0;
         const inputTokens = (usage.input_tokens || 0) + cacheRead;
-        setCtxTokens(inputTokens || null);
         if (m?.firstTs) {
           setMetrics({
             ttft: m.firstTs - m.sentTs,
@@ -954,7 +986,7 @@ export default function ChatPane({
     const connect = (after) => {
       if (cancelled) return;
       source?.close();
-      source = openEventStream(project.id, handleEvent, after);
+      source = openEventStream(project.id, handleEvent, after, resolved);
       source.onopen = () => {
         retryDelay = 2000;
         lastMsgTsRef.current = Date.now();
@@ -971,17 +1003,24 @@ export default function ChatPane({
       retryTimer = setTimeout(async () => {
         if (cancelled) return;
         try {
-          await api.sessionState(project.id); // request() 遇 401 会刷新 token
-        } catch { /* 服务暂不可达，下轮再试 */ }
+          await api.sessionState(project.id, resolved); // request() 遇 401 会刷新 token
+        } catch (error) {
+          if (fallBackIfMissing(error)) return;
+          /* 服务暂不可达，下轮再试 */
+        }
         connect(nextAfterRef.current);
       }, retryDelay);
       retryDelay = Math.min(retryDelay * 2, 30000);
     };
 
     api
-      .sessionState(project.id)
+      .sessionState(project.id, requestedConversation)
       .then((info) => {
         if (cancelled) return;
+        resolved = info.conversation_id || requestedConversation;
+        conversationIdRef.current = resolved;
+        setConversationId(resolved);
+        setState(info.state || 'idle');
         const total = info.events || 0;
         historyEndRef.current = total;
         const historyStart = Number.isInteger(info.history_start)
@@ -992,11 +1031,10 @@ export default function ChatPane({
         nextAfterRef.current = skip;
         connect(skip);
       })
-      .catch(() => {
-        if (!cancelled) {
-          historyEndRef.current = 0;
-          connect(0);
-        }
+      .catch((error) => {
+        if (cancelled || fallBackIfMissing(error)) return;
+        historyEndRef.current = 0;
+        connect(0);
       });
 
     // 看门狗：后端每 15s 发一次 ping，40s 静默视为连接僵死（半开），强制重建
@@ -1016,7 +1054,7 @@ export default function ChatPane({
     };
     // onWorkspaceChanged 变化不应重建 SSE 连接
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project.id, historyEpoch]);
+  }, [project.id, requestedConversation, historyEpoch]);
 
   // 滚动锚定：贴底（<80px）才自动滚；上翻阅读时不打扰，浮出"新消息"按钮
   const reducedMotion =
@@ -1058,6 +1096,8 @@ export default function ChatPane({
     if (uploading) return;
     const toUpload = explicitAttachments ?? attachments;
     if (!trimmed && toUpload.length === 0) return;
+    // 上传可能持续数秒：消息发往点发送时所在的会话
+    const targetConversation = conversationIdRef.current;
     setInput('');
     recallIndexRef.current = -1;
     // 附件立即离开输入框，进入对话区变成带进度条的文件卡（并行上传）
@@ -1113,14 +1153,19 @@ export default function ChatPane({
         ? `（我通过界面上传了资料，已存入工作区：${uploaded.join('、')}）\n`
         : '';
       const body = trimmed || '请查看我刚上传的资料，说明接下来可以怎么用。';
-      await api.sendMessage(project.id, prefix + body);
+      await api.sendMessage(project.id, prefix + body, targetConversation);
       setState('running');
+      setConversationsEpoch((epoch) => epoch + 1);
     } catch (error) {
       // 走到这里说明附件都已入工作区，只是消息未发出；不退回附件避免重复上传
+      // 409：引擎正被另一条会话占用；404：会话已被删除，回到默认会话
       setPending(null);
       setUploads([]);
       setInput(trimmed);
       message.error(error.message);
+      if (error.status === 404 && targetConversation) {
+        setSelection({ projectId: project.id, id: null });
+      }
     } finally {
       setUploading(false);
     }
@@ -1141,10 +1186,13 @@ export default function ChatPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialFiles]);
 
+  // 外部入口（左栏命令等）只注册一次，经 ref 调最新的 send，避免读到旧的上传态与附件
+  const sendRef = useRef(send);
+  sendRef.current = send;
   useEffect(() => {
     registerSend?.((command) => {
       if (command.endsWith(' ')) setInput(command);
-      else send(command);
+      else sendRef.current(command);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id]);
@@ -1278,6 +1326,8 @@ export default function ChatPane({
         list.push({ key: event.seq, role: 'changes', content: event });
       } else if (event.type === 'session_interrupted') {
         list.push({ key: event.seq, role: 'system', content: '已打断' });
+      } else if (event.type === 'context_compacted') {
+        list.push({ key: event.seq, role: 'system', content: compactionNotice(event) });
       } else if (event.type === 'permission_request') {
         const fingerprint = `${event.tool_name}:${JSON.stringify(event.tool_input ?? {})}`;
         const repeat = (fingerprints.get(fingerprint) || 0) + 1;
@@ -1356,7 +1406,9 @@ export default function ChatPane({
         : state === 'error'
           ? { cls: 'error', text: '出错了' }
           : { cls: 'idle', text: '空闲' };
-  const ctxPct = ctxTokens ? Math.min(100, Math.round((ctxTokens / CONTEXT_WINDOW_TOKENS) * 100)) : null;
+  const ctxInfo = describeContext(ctx);
+  // 运行、排队、上传或消息未落定时不能换会话：引擎同一时刻只绑定一条会话
+  const conversationBusy = state === 'running' || state === 'queued' || uploading || Boolean(pending);
 
   // ↑ 键召回历史输入（仅空输入框且非运行中，不抢正常光标行为）
   const userMessages = useMemo(
@@ -1426,6 +1478,13 @@ export default function ChatPane({
       <div className="chat-header">
         <span className={`status-dot ${statusInfo.cls}`} />
         <span className="status-text">{statusInfo.text}</span>
+        <ConversationSwitcher
+          projectId={project.id}
+          conversationId={conversationId}
+          busy={conversationBusy}
+          refreshKey={conversationsEpoch}
+          onSwitch={(id) => setSelection({ projectId: project.id, id })}
+        />
         <span style={{ flex: 1 }} />
         {usage && usage.calls > 0 && (
           <Popover
@@ -1446,18 +1505,16 @@ export default function ChatPane({
             </span>
           </Popover>
         )}
-        {ctxPct != null && (
-          <Tooltip
-            title={`上下文约 ${ctxPct}%（估算）${ctxPct > 80 ? '，建议重启会话以压缩' : ''}`}
-          >
-            <svg className={`ctx-ring${ctxPct > 80 ? ' danger' : ctxPct > 60 ? ' warn' : ''}`} viewBox="0 0 20 20">
+        {ctxInfo && (
+          <Tooltip title={ctxInfo.text}>
+            <svg className={`ctx-ring${ctxInfo.level ? ` ${ctxInfo.level}` : ''}`} viewBox="0 0 20 20">
               <circle className="ctx-ring-bg" cx="10" cy="10" r="8" />
               <circle
                 className="ctx-ring-fg"
                 cx="10"
                 cy="10"
                 r="8"
-                strokeDasharray={`${(ctxPct / 100) * 50.27} 50.27`}
+                strokeDasharray={`${(ctxInfo.pct / 100) * 50.27} 50.27`}
                 transform="rotate(-90 10 10)"
               />
             </svg>
@@ -1465,10 +1522,10 @@ export default function ChatPane({
         )}
         <Popconfirm
           title="重启会话？"
-          description="历史保留；模型上下文经 resume 续接，配置按最新生效"
+          description="对话记录保留，按最新配置重连模型；稳定引擎会清空模型上下文。要从空白上下文开始，请新建会话"
           onConfirm={async () => {
-            await api.closeSession(project.id).catch(() => {});
-            setCtxTokens(null);
+            await api.closeSession(project.id, conversationIdRef.current).catch(() => {});
+            setCtx(EMPTY_CONTEXT);
             message.success('会话已重置，下次发消息生效');
           }}
         >
@@ -1859,7 +1916,7 @@ export default function ChatPane({
             // 上传阶段还没有会话消息可打断，忽略停止按钮
             if (!uploading)
               api
-                .interrupt(project.id)
+                .interrupt(project.id, conversationIdRef.current)
                 .then((r) => {
                   // 幽灵运行态（无活跃会话）：后端只补写了历史，SSE 无推送
                   // 通道，重建流拉取补写的中断标记与 idle 终态

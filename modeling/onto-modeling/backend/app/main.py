@@ -11,6 +11,7 @@ from .routers import admin, auth_routes, projects, sessions, settings
 from .services import auth
 from .services.agent_sessions import SDK_AVAILABLE, SessionError
 from .services.auth import AuthError
+from .services.conversation_store import ConversationError
 from .services.workspace import WorkspaceError
 
 @asynccontextmanager
@@ -19,10 +20,12 @@ async def _lifespan(app: FastAPI):
 
     from .routers.admin import backup_scheduler_loop
     from .services.agent_sessions import manager
+    from .services.model_context_presets import write_example
     from .services.modeling_eval import sweep_interrupted
     from .services.modeling_cleanup import retry_due, scheduler_loop
 
     manager.start_background()  # 空闲会话回收（方案 4.1.1）
+    write_example()  # 内置推荐表副本，供管理员复制成自定义表
     # 评测编排只活在进程内：重启后仍标 running 的工作区改判中断，否则前端永久锁死
     sweep_interrupted()
     backup_task = asyncio.create_task(backup_scheduler_loop())  # workspace 定期备份
@@ -97,7 +100,8 @@ async def workspace_error_handler(request: Request, exc: WorkspaceError):
 
 
 @app.exception_handler(SessionError)
-async def session_error_handler(request: Request, exc: SessionError):
+@app.exception_handler(ConversationError)
+async def session_error_handler(request: Request, exc: SessionError | ConversationError):
     return JSONResponse(status_code=exc.status, content={"error": str(exc)})
 
 

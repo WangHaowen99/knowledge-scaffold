@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Any
 
 from .. import config
-from . import error_log
+from . import conversation_store, error_log
+from .conversation_store import DEFAULT_ID as DEFAULT_CONVERSATION
 from .engines import EngineContext, get_engine_class
 from .engines.base import CONFIG_ERROR, FRIENDLY_ERROR, safe_json as _safe_json
 
@@ -35,14 +36,12 @@ from .engines.claude import (  # noqa: F401
 )
 
 
-def _history_path(project_id: str) -> Path:
-    sessions_dir = Path(config.DATA_DIR) / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-    return sessions_dir / f"{project_id}.jsonl"
+def _history_path(project_id: str, conversation_id: str = DEFAULT_CONVERSATION) -> Path:
+    return conversation_store.history_path(project_id, conversation_id)
 
 
-def load_history(project_id: str) -> list[dict]:
-    path = _history_path(project_id)
+def load_history(project_id: str, conversation_id: str = DEFAULT_CONVERSATION) -> list[dict]:
+    path = _history_path(project_id, conversation_id)
     if not path.exists():
         return []
     events = []
@@ -69,6 +68,7 @@ def _is_visible_chat_event(event: dict) -> bool:
         "workspace_changes",
         "session_interrupted",
         "permission_request",
+        "context_compacted",
     }:
         return True
     if event_type == "session_error":
@@ -103,11 +103,13 @@ def visible_history_start(events: list[dict], limit: int = VISIBLE_HISTORY_TAIL)
     return oldest_visible
 
 
-def _reconcile_stale_history(project_id: str) -> list[dict] | None:
+def _reconcile_stale_history(
+    project_id: str, conversation_id: str = DEFAULT_CONVERSATION
+) -> list[dict] | None:
     """会话进程被重启/强杀后，事件日志尾部可能停在 running 等非终态，
     前端回放即成"幽灵运行态"（永远执行中、打断 404 无效）。无活跃会话时
     补写中断标记与 idle 终态使日志自愈；返回补写后的事件，未补写返回 None。"""
-    events = load_history(project_id)
+    events = load_history(project_id, conversation_id)
     state = None
     for event in reversed(events):
         if event.get("type") == "session_state":
@@ -127,7 +129,7 @@ def _reconcile_stale_history(project_id: str) -> list[dict] | None:
         {"type": "session_state", "state": "idle", "ts": now, "seq": len(events) + 1},
     ]
     try:
-        with open(_history_path(project_id), "a", encoding="utf-8") as f:
+        with open(_history_path(project_id, conversation_id), "a", encoding="utf-8") as f:
             for event in patch:
                 f.write(json.dumps(event, ensure_ascii=False) + "\n")
     except OSError:
@@ -135,13 +137,13 @@ def _reconcile_stale_history(project_id: str) -> list[dict] | None:
     return events + patch
 
 
-def _meta_path(project_id: str) -> Path:
-    return _history_path(project_id).with_suffix(".meta.json")
+def _meta_path(project_id: str, conversation_id: str = DEFAULT_CONVERSATION) -> Path:
+    return conversation_store.meta_path(project_id, conversation_id)
 
 
-def load_resume_id(project_id: str) -> str | None:
-    """上次会话的引擎续接 token；重连时恢复模型上下文。"""
-    path = _meta_path(project_id)
+def load_resume_id(project_id: str, conversation_id: str = DEFAULT_CONVERSATION) -> str | None:
+    """该会话上次的引擎续接 token；重连时恢复模型上下文。"""
+    path = _meta_path(project_id, conversation_id)
     if not path.exists():
         return None
     try:
@@ -150,29 +152,27 @@ def load_resume_id(project_id: str) -> str | None:
         return None
 
 
-def save_resume_id(project_id: str, session_id: str) -> None:
+def save_resume_id(
+    project_id: str, session_id: str, conversation_id: str = DEFAULT_CONVERSATION
+) -> None:
     try:
-        _meta_path(project_id).write_text(
+        _meta_path(project_id, conversation_id).write_text(
             json.dumps({"sdk_session_id": session_id}), encoding="utf-8"
         )
     except OSError:
         pass  # 落盘失败只影响下次续接，不阻断会话
 
 
-def clear_resume_id(project_id: str) -> None:
+def clear_resume_id(project_id: str, conversation_id: str = DEFAULT_CONVERSATION) -> None:
     try:
-        _meta_path(project_id).unlink(missing_ok=True)
+        _meta_path(project_id, conversation_id).unlink(missing_ok=True)
     except OSError:
         pass
 
 
 def purge_history(project_id: str) -> None:
-    """删除项目时清除事件历史与续接点：永久删除不留可回放的对话。"""
-    for path in (_history_path(project_id), _meta_path(project_id)):
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
+    """删除项目时清除全部会话的事件历史与续接点：永久删除不留可回放的对话。"""
+    conversation_store.purge(project_id)
 
 
 # 打断的应答超时：引擎/CLI 悬死（如网关调用无响应）时优雅打断永远等不到应答，
@@ -215,6 +215,9 @@ class Session:
     last_activity: float = field(default_factory=time.time)
     round_base_commit: str = ""  # 本轮起点 HEAD，用于 result 后产出"产物变更"事件
     discarded: bool = False  # 项目已删除：事件不再落盘，也不再申请槽位
+    # 引擎绑定的会话：决定事件历史写到哪份文件、续接哪个 token
+    conversation_id: str = DEFAULT_CONVERSATION
+    sending: int = 0  # 处理中的 send() 数；期间不可回收或换绑，否则消息会落到已丢弃的会话上
 
     @property
     def client(self) -> Any:
@@ -232,7 +235,8 @@ class Session:
         self.events.append(event)
         if not self.discarded:  # 已删除项目的历史文件已清除，再写会重建出残留
             try:
-                with open(_history_path(self.project_id), "a", encoding="utf-8") as f:
+                path = _history_path(self.project_id, self.conversation_id)
+                with open(path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(event, ensure_ascii=False) + "\n")
             except OSError:
                 pass  # 落盘失败不阻断会话
@@ -249,12 +253,26 @@ class Session:
 
 
 def _recyclable(session: "Session") -> bool:
-    """可驱逐/可回收：引擎在、空闲、无待确认卡、无积压消息。"""
+    """可驱逐/可回收：引擎在、空闲、无待确认卡、无积压消息、无处理中的发送。"""
     return (
         session.engine is not None
         and session.state == "idle"
         and not session.pending_permissions
         and not session.pending_prompts
+        and not session.sending
+    )
+
+
+def _busy(session: "Session") -> bool:
+    """在跑、排队、连接中、有待确认卡或有处理中的发送：此时不能把引擎换绑到别的会话。
+
+    连接期间 state 仍是 idle，所以不能只看 state。
+    """
+    return (
+        session.state in ("running", "queued")
+        or session.is_connecting()
+        or bool(session.pending_permissions)
+        or session.sending > 0
     )
 
 
@@ -319,15 +337,42 @@ class SessionManager:
     def get(self, project_id: str) -> Session | None:
         return self._sessions.get(project_id)
 
-    def get_history(self, project_id: str) -> list[dict]:
-        """活跃会话的事件，或磁盘上的历史（服务重启后仍可回放）。"""
+    def resolve_conversation(
+        self, project_id: str, conversation_id: str | None = None
+    ) -> str:
+        """校验会话 id；省略时取引擎当前绑定的会话，没有在线引擎则取最近更新的一条。"""
+        if conversation_id:
+            if not conversation_store.exists(project_id, conversation_id):
+                raise SessionError("会话不存在或已删除", 404)
+            return conversation_id
         session = self._sessions.get(project_id)
-        if session:
+        if session is not None:
+            return session.conversation_id
+        return conversation_store.list_conversations(project_id)[0]["id"]
+
+    def live_status(self, project_id: str) -> dict | None:
+        """引擎当前绑定哪条会话、是否正忙（前端据此标记运行中的会话）。"""
+        session = self._sessions.get(project_id)
+        if session is None:
+            return None
+        return {
+            "conversation_id": session.conversation_id,
+            "state": session.state,
+            "busy": _busy(session),
+        }
+
+    def get_history(
+        self, project_id: str, conversation_id: str | None = None
+    ) -> list[dict]:
+        """会话的事件：引擎正绑定它时取内存，否则取磁盘上的历史（服务重启后仍可回放）。"""
+        conversation_id = self.resolve_conversation(project_id, conversation_id)
+        session = self._sessions.get(project_id)
+        if session and session.conversation_id == conversation_id:
             return session.events
-        reconciled = _reconcile_stale_history(project_id)
+        reconciled = _reconcile_stale_history(project_id, conversation_id)
         if reconciled is not None:
             return reconciled
-        return load_history(project_id)
+        return load_history(project_id, conversation_id)
 
     def active_count(self) -> int:
         """占用槽位的会话数：引擎已连接的 + 正在连接的。"""
@@ -353,7 +398,13 @@ class SessionManager:
 
     # ---- 发送与槽位调度 ----
 
-    async def send(self, project_id: str, cwd: Path, text: str) -> Session:
+    async def send(
+        self,
+        project_id: str,
+        cwd: Path,
+        text: str,
+        conversation_id: str | None = None,
+    ) -> Session:
         text = (text or "").strip()
         if not text:
             raise SessionError("消息不能为空")
@@ -366,12 +417,41 @@ class SessionManager:
             raise SessionError(
                 getattr(engine_cls, "UNAVAILABLE_MESSAGE", "所选引擎不可用"), 503
             )
+        # 换绑要回收旧引擎（await 断开，且第一步就把旧 Session 移出字典）：不加锁时
+        # 并发的 send 会各建一个 Session，被覆盖的那个带着引擎却不在字典里，无人回收
+        async with self._lock:
+            session = await self._bind_session(project_id, conversation_id)
+            session.sending += 1
+        try:
+            await self._deliver(session, cwd, text)
+        finally:
+            session.sending -= 1
+        return session
+
+    async def _bind_session(
+        self, project_id: str, conversation_id: str | None
+    ) -> Session:
+        """取得绑定目标会话的 Session；引擎绑着别的会话时先回收（调用方持有 _lock）。"""
+        conversation_id = self.resolve_conversation(project_id, conversation_id)
         session = self._sessions.get(project_id)
+        if session is not None and session.conversation_id != conversation_id:
+            if _busy(session):
+                raise SessionError("另一条会话正在运行，请等它结束或先打断", 409)
+            await self._recycle(session)  # 续接 token 已落盘，切回时 resume
+            session = None
         if session is None or session.state == "closed":
-            session = Session(id=uuid.uuid4().hex[:12], project_id=project_id)
-            session.events = load_history(project_id)  # 续接历史，seq 连续
+            session = Session(
+                id=uuid.uuid4().hex[:12],
+                project_id=project_id,
+                conversation_id=conversation_id,
+            )
+            # 续接历史，seq 连续
+            session.events = load_history(project_id, conversation_id)
             self._sessions[project_id] = session
             _expire_orphan_permissions(session)
+        return session
+
+    async def _deliver(self, session: Session, cwd: Path, text: str) -> None:
         session.cwd = cwd
         session.last_activity = time.time()
         if session.state != "running":
@@ -384,13 +464,16 @@ class SessionManager:
             await session.engine.disconnect()
             session.engine = None
         session.broadcast({"type": "user_message", "text": text})
+        if not session.discarded:  # 已删除项目再写标题会重建出会话索引
+            conversation_store.note_message(
+                session.project_id, session.conversation_id, text
+            )
         if session.engine is not None:
             await session.engine.send(text)
             session.set_state("running")
-            return session
+            return
         session.pending_prompts.append(text)
         await self._request_slot(session)
-        return session
 
     async def _request_slot(self, session: Session) -> None:
         """为无引擎的会话申请槽位：够用直接连，可驱逐则驱逐，否则排队。"""
@@ -436,12 +519,14 @@ class SessionManager:
 
     def _make_engine(self, session: Session):
         project_id = session.project_id
+        # 构造时定住会话 id：续接 token 的存取必须跟着这个引擎实例绑定的会话走
+        conversation_id = session.conversation_id
 
         def save_token(token: str) -> None:
             if session.discarded:  # 续接点文件已随项目清除
                 return
             session.sdk_session_id = token
-            save_resume_id(project_id, token)
+            save_resume_id(project_id, token, conversation_id)
 
         async def request_permission(
             tool_name: str, tool_input: dict, title: str | None, description: str | None
@@ -454,11 +539,12 @@ class SessionManager:
             project_id=project_id,
             cwd=session.cwd,
             request_permission=request_permission,
-            load_resume_token=lambda: load_resume_id(project_id),
+            load_resume_token=lambda: load_resume_id(project_id, conversation_id),
             save_resume_token=save_token,
-            clear_resume_token=lambda: clear_resume_id(project_id),
+            clear_resume_token=lambda: clear_resume_id(project_id, conversation_id),
             log_error=lambda kind, text: error_log.log(project_id, kind, text),
             load_history=lambda: list(session.events),
+            conversation_id=conversation_id,
         )
         return self._engine_class_for(project_id)(ctx)
 
@@ -468,7 +554,7 @@ class SessionManager:
             engine = self._make_engine(session)
             resumed = await engine.connect()
             if self._sessions.get(project_id) is not session:
-                # 连接期间会话已被关闭（如删除项目）：晚到的引擎没人认领，不当场断开就成了
+                # 连接期间会话已被关闭、换绑或删除项目：晚到的引擎没人认领，不当场断开就成了
                 # 游离子进程——不占池上限，也不会被空闲回收。项目已删除时直接硬杀
                 await (_kill_engine if session.discarded else _stop_engine)(engine)
                 return
@@ -591,18 +677,33 @@ class SessionManager:
             async with self._lock:
                 await self._recycle(session)
 
-    async def close(self, project_id: str) -> None:
-        """终止并丢弃当前会话（历史保留，续接点清除）；下次发消息全新开始。"""
+    async def close(
+        self,
+        project_id: str,
+        conversation_id: str | None = None,
+        all_conversations: bool = False,
+    ) -> None:
+        """丢弃会话的模型上下文（历史保留，续接点清除）；下次发消息全新开始。
+
+        引擎正绑定该会话时一并终止；绑定的是别的会话时只清续接点，不动引擎。
+        all_conversations 用于切换引擎：终止引擎，全部会话的续接点作废（删除项目走 discard）。
+        """
         async with self._lock:
-            if project_id in self._waiters:
-                self._waiters.remove(project_id)
             session = self._sessions.get(project_id)
-            if session is None:
-                clear_resume_id(project_id)
-                return
-            session.pending_prompts.clear()
-            await self._recycle(session)
-        clear_resume_id(project_id)
+            if not all_conversations:
+                conversation_id = self.resolve_conversation(project_id, conversation_id)
+            bound = session is not None and (
+                all_conversations or session.conversation_id == conversation_id
+            )
+            if (bound or session is None) and project_id in self._waiters:
+                self._waiters.remove(project_id)
+            if bound:
+                session.pending_prompts.clear()
+                await self._recycle(session)
+        if all_conversations:
+            conversation_store.clear_all_resume_tokens(project_id)
+        else:
+            clear_resume_id(project_id, conversation_id)
         await self._drain_waiters()
 
     async def discard(self, project_id: str) -> None:
@@ -632,6 +733,21 @@ class SessionManager:
             await _kill_engine(engine)
         # 让出的槽位交给排队者；_drain_waiters 要排 _lock，放后台，删除不等它
         self._spawn(self._drain_waiters())
+
+    async def delete_conversation(
+        self, project_id: str, conversation_id: str
+    ) -> list[dict]:
+        """删除会话的历史与续接点，返回剩余会话；引擎正绑定它时先回收，忙则拒绝。"""
+        async with self._lock:
+            conversation_id = self.resolve_conversation(project_id, conversation_id)
+            session = self._sessions.get(project_id)
+            if session is not None and session.conversation_id == conversation_id:
+                if _busy(session):
+                    raise SessionError("会话正在运行，请等它结束或先打断后再删除", 409)
+                await self._recycle(session)
+            remaining = conversation_store.delete(project_id, conversation_id)
+        await self._drain_waiters()
+        return remaining
 
     # ---- 会话内操作 ----
 
@@ -663,12 +779,16 @@ class SessionManager:
                 {"behavior": "deny", "message": message or "用户拒绝了该操作"}
             )
 
-    async def interrupt(self, project_id: str) -> bool:
+    async def interrupt(
+        self, project_id: str, conversation_id: str | None = None
+    ) -> bool:
         """打断当前轮。返回是否做了幽灵态和解（调用方据此让前端重放刷新）。"""
+        conversation_id = self.resolve_conversation(project_id, conversation_id)
         session = self._sessions.get(project_id)
-        if not session:
-            # 无活跃会话：不再 404——若历史尾部停在非终态（重启幽灵），补写终态
-            return _reconcile_stale_history(project_id) is not None
+        if not session or session.conversation_id != conversation_id:
+            # 引擎没绑定这条会话（未启动，或正绑着另一条——那条不该被这里打断）：
+            # 不 404——若历史尾部停在非终态（重启幽灵），补写终态
+            return _reconcile_stale_history(project_id, conversation_id) is not None
         if session.engine is None:
             # 排队/连接中：清空积压消息并退出队列（排队的取消出口）
             async with self._lock:
@@ -798,16 +918,27 @@ class SessionManager:
 
 
 def usage_summary(project_id: str) -> dict:
-    """项目累计模型用量（从事件历史统计），会话接口与运维页共用。"""
-    history = manager.get_history(project_id)
+    """项目累计模型用量（从事件历史统计），会话接口与运维页共用。
+
+    汇总全部会话，加上已删除会话留存的 result 事件。不走 get_history：
+    运维总览每次请求都会调到这里，不该顺带触发幽灵态自愈写盘。
+    """
+    session = manager.get(project_id)
+    histories = [conversation_store.load_deleted_usage(project_id)]
+    for conversation in conversation_store.list_conversations(project_id):
+        if session and session.conversation_id == conversation["id"]:
+            histories.append(session.events)
+        else:
+            histories.append(load_history(project_id, conversation["id"]))
     total_cost = 0.0
     output_tokens = 0
     input_tokens = 0
     calls = 0
     last_activity = None
-    for event in history:
-        if event.get("ts"):
-            last_activity = event["ts"]
+    for event in (event for history in histories for event in history):
+        ts = event.get("ts")
+        if ts and (last_activity is None or ts > last_activity):
+            last_activity = ts
         if event.get("type") != "result":
             continue
         calls += 1

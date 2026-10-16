@@ -1092,7 +1092,8 @@ async def put_project_engine(project_id: str, body: ProjectEngineBody, request: 
             content={"error": getattr(engine_cls, "UNAVAILABLE_MESSAGE", "引擎不可用")},
         )
     workspaces._update_meta(project_id, engine=name)
-    await manager.close(project_id)
+    # 全部会话的续接点一并作废：换引擎期间产生的轮次不在旧引擎的 transcript 里
+    await manager.close(project_id, all_conversations=True)
     return {"engine": name}
 
 

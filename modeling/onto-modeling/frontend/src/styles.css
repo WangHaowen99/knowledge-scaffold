@@ -935,6 +935,29 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .ctx-ring.warn .ctx-ring-fg { stroke: var(--status-warning, #b77909); }
 .ctx-ring.danger .ctx-ring-fg { stroke: var(--status-error); }
 
+/* 会话下拉（多会话切换） */
+.conv-trigger.ant-btn { max-width: 180px; min-width: 0; font-size: 12px; color: var(--text-secondary); }
+.conv-trigger-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-panel { width: 280px; max-height: 360px; overflow-y: auto; }
+.conv-item {
+  display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+  border-radius: 6px; cursor: pointer;
+}
+.conv-item:hover { background: var(--surface-subtle); }
+.conv-item.active { background: var(--color-primary-soft); }
+.conv-item.editing { cursor: default; }
+.conv-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.conv-item-title {
+  font-size: 13px; color: var(--text-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.conv-item-time { font-size: 11px; color: var(--text-tertiary); }
+.conv-item .ant-tag { margin-inline-end: 0; }
+.conv-item-ops { display: inline-flex; flex: none; opacity: 0; }
+.conv-item:hover .conv-item-ops,
+.conv-item:focus-within .conv-item-ops { opacity: 1; }
+.conv-empty { padding: 12px; text-align: center; }
+
 /* 新消息浮标（滚动锚定） */
 .new-msg-pill {
   position: absolute; right: 16px; bottom: 148px; z-index: 5;

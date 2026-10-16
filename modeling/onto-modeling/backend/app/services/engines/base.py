@@ -71,6 +71,8 @@ class EngineContext:
     log_error: Callable[[str, str], None]
     # 事件历史（平台事件 dict 列表）：历史回放型引擎（Jiuwen）用它重建模型上下文
     load_history: Callable[[], list[dict]] | None = None
+    # 引擎绑定的会话；同一项目的多条会话各有独立的模型上下文
+    conversation_id: str = "default"
 
 
 class AgentEngine(Protocol):

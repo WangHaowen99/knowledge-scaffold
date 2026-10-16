@@ -2,7 +2,7 @@ from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ..services import auth, mcp_settings, model_settings
+from ..services import auth, mcp_settings, model_context_presets, model_settings
 from ..services.auth import AuthError
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -22,6 +22,15 @@ class ModelBody(BaseModel):
     model: str = ""
 
 
+class ContextBody(BaseModel):
+    max_context_tokens: int | None = None
+    max_output_tokens: int | None = None
+
+
+class ClaudeModelBody(ModelBody):
+    context: ContextBody | None = None  # 不传表示不修改上下文参数
+
+
 @router.get("/model")
 def get_model_settings(request: Request):
     _require_admin(request)
@@ -29,10 +38,12 @@ def get_model_settings(request: Request):
 
 
 @router.put("/model")
-def put_model_settings(body: ModelBody, request: Request):
+def put_model_settings(body: ClaudeModelBody, request: Request):
+    """稳定引擎的网关配置；配置页带上 context，与上下文参数一起校验、一起保存。"""
     _require_admin(request)
+    context = body.context.model_dump() if body.context is not None else None
     try:
-        return model_settings.save(body.base_url, body.api_key, body.model)
+        return model_settings.save(body.base_url, body.api_key, body.model, context)
     except model_settings.ModelConfigError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
 
@@ -45,6 +56,61 @@ def put_jiuwen_model_settings(body: ModelBody, request: Request):
         return model_settings.save_jiuwen(body.base_url, body.api_key, body.model)
     except model_settings.ModelConfigError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
+@router.put("/model/context")
+def put_model_context_settings(body: ContextBody, request: Request):
+    """稳定引擎的上下文窗口与最大输出；压缩参数由服务端按 .env 或自动推算，一并注入 CLI 会话环境。"""
+    _require_admin(request)
+    try:
+        return model_settings.save_context(body.model_dump())
+    except model_settings.ModelConfigError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
+@router.get("/model/context-presets")
+def get_model_context_presets(request: Request):
+    """模型上下文推荐表全文（内置表 + 数据目录下的自定义表，只做推荐，不参与运行时取值）。"""
+    _require_admin(request)
+    return model_context_presets.presets()
+
+
+class CustomPresetsBody(BaseModel):
+    version: str  # 读取推荐表时的 custom.version；文件已被改过时拒绝保存
+    presets: list[dict]  # 整份自定义条目
+    verified_at: str | None = None  # 自定义表的核对日期；不传表示不改
+
+
+@router.put("/model/context-presets/custom")
+def put_custom_model_context_presets(body: CustomPresetsBody, request: Request):
+    """页面保存自定义推荐表：校验与手改文件相同，原子写入，上一版存为 .prev；已保存的上下文参数不受影响。"""
+    _require_admin(request)
+    user = (getattr(request.state, "user", None) or {}).get("sub", "")
+    try:
+        return model_context_presets.save_custom(body.presets, body.version, body.verified_at, user)
+    except model_context_presets.PresetConflictError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+    except model_context_presets.PresetFileError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except OSError as exc:
+        return JSONResponse(status_code=500, content={"error": f"保存失败：{exc.strerror or exc}"})
+
+
+@router.post("/model/context-presets/custom/disable")
+def disable_custom_model_context_presets(request: Request):
+    """停用数据目录下的自定义推荐表：改名备份，推荐表恢复为内置表；已保存的上下文参数不受影响。"""
+    _require_admin(request)
+    try:
+        return model_context_presets.disable_custom()
+    except OSError as exc:
+        return JSONResponse(status_code=500, content={"error": f"停用失败：{exc.strerror or exc}"})
+
+
+@router.get("/model/context-presets/match")
+def match_model_context_preset(request: Request, model: str = ""):
+    """按模型名查推荐表；查不到时 preset 为 null。"""
+    _require_admin(request)
+    return {"model": model, "preset": model_context_presets.match(model)}
 
 
 class DefaultEngineBody(BaseModel):

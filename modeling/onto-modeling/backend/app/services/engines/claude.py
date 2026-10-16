@@ -5,6 +5,7 @@
 - SDK 消息 → 平台事件归一化
 - CLI 原始错误翻译（原文留档，聊天流只出中文提示）
 - resume 续接：捕获 SDK session id 经 ctx 落盘；连接失败自动清点重试
+- 上下文用量：每轮结束发 context_usage（已用/窗口/压缩触发点），压缩时发 context_compacted
 """
 
 from __future__ import annotations
@@ -153,7 +154,7 @@ def normalize_message(message: Any) -> dict | None:
                         "tool_use_id": block.id,
                     }
                 )
-        return {
+        event = {
             "type": "assistant_message",
             "blocks": blocks,
             "model": message.model,
@@ -161,6 +162,11 @@ def normalize_message(message: Any) -> dict | None:
             # 子代理消息带上派遣它的 Task/Agent 调用 id，前端据此把过程归到对应卡片
             "parent_tool_use_id": getattr(message, "parent_tool_use_id", None),
         }
+        if not event["subagent"]:
+            context_tokens = _context_tokens(getattr(message, "usage", None))
+            if context_tokens:
+                event["context_tokens"] = context_tokens
+        return event
     if isinstance(message, UserMessage):
         blocks = []
         content = message.content
@@ -182,6 +188,14 @@ def normalize_message(message: Any) -> dict | None:
     if lifecycle_event:
         return lifecycle_event
     if isinstance(message, SystemMessage):
+        if message.subtype == "compact_boundary":
+            metadata = (message.data or {}).get("compact_metadata") or {}
+            return {
+                "type": "context_compacted",
+                "trigger": metadata.get("trigger") or "auto",
+                "pre_tokens": metadata.get("pre_tokens"),
+                "post_tokens": metadata.get("post_tokens"),
+            }
         # SDK diagnostics can arrive at token frequency. They are not chat
         # content; keeping them in the session log starves the visible history
         # window and makes the unread badge count runtime noise.
@@ -215,6 +229,54 @@ def normalize_message(message: Any) -> dict | None:
                 }
         return None
     return None
+
+
+_CONTEXT_USAGE_KEYS = (
+    "input_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "output_tokens",
+)
+# CLI 的自动压缩阈值 = 有效窗口 − 13000（有效窗口 = 窗口 − 输出预留）
+_AUTOCOMPACT_BUFFER_TOKENS = 13000
+
+
+def _context_tokens(usage: Any) -> int | None:
+    """单次模型调用占用的上下文（输入含缓存读写 + 输出），与 CLI 判断自动压缩的口径一致。
+
+    ResultMessage.usage 是一轮内多次调用的累加，不能拿来算上下文。
+    """
+    if not isinstance(usage, dict):
+        return None
+    total = 0
+    for key in _CONTEXT_USAGE_KEYS:
+        value = usage.get(key)
+        if isinstance(value, (int, float)):
+            total += int(value)
+    return total or None
+
+
+def context_limits(usage: Any, env: dict) -> tuple[int | None, int | None]:
+    """从 get_context_usage 的结果取（模型窗口, 自动压缩触发点）。
+
+    CLI 报告的 autoCompactThreshold 不含 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE，
+    这里按 CLI 的规则补算：触发点 = min(有效窗口 × 百分比, 有效窗口 − 13000)。
+    """
+    if not isinstance(usage, dict):
+        return None, None
+    window = usage.get("rawMaxTokens") or usage.get("maxTokens")
+    window = window if isinstance(window, int) and window > 0 else None
+    threshold = usage.get("autoCompactThreshold")
+    if not usage.get("isAutoCompactEnabled") or not isinstance(threshold, int):
+        return window, None
+    try:
+        pct = float(env.get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE") or 0)
+    except ValueError:
+        pct = 0
+    if 0 < pct <= 100:
+        effective = threshold + _AUTOCOMPACT_BUFFER_TOKENS
+        threshold = min(threshold, int(effective * pct / 100))
+    return window, threshold
 
 
 _TERMINAL_TASK_STATUSES = {"completed", "failed", "stopped", "killed"}
@@ -336,6 +398,11 @@ class ClaudeEngine:
         self._received_any = False
         self._sdk_session_id: str | None = None
         self._fingerprint = ""
+        # 上下文用量：已用取最近一次主代理调用，窗口与触发点连接后后台取一次
+        self._context_used: int | None = None
+        self._context_window: int | None = None
+        self._compact_at: int | None = None
+        self._limits_task: asyncio.Task | None = None
 
     # ---- 连接生命周期 ----
 
@@ -361,7 +428,24 @@ class ClaudeEngine:
         self._received_any = False
         self.client = client
         self._fingerprint = _env_fingerprint()
+        self._context_used = None
+        self._cancel_limits_task()
+        self._limits_task = asyncio.create_task(self._load_context_limits(client))
         return bool(resume_id)
+
+    async def _load_context_limits(self, client: Any) -> None:
+        """get_context_usage 一次约 5 秒，放后台只取一次；旧版 CLI 不支持时只显示已用量。"""
+        try:
+            usage = await asyncio.wait_for(client.get_context_usage(), timeout=60)
+        except Exception:
+            # 旧版 CLI 不支持或超时：按取不到处理。CancelledError 是 BaseException，不会落到这里
+            usage = None
+        self._context_window, self._compact_at = context_limits(usage, _session_env())
+
+    def _cancel_limits_task(self) -> None:
+        if self._limits_task is not None and not self._limits_task.done():
+            self._limits_task.cancel()
+        self._limits_task = None
 
     async def send(self, text: str) -> None:
         await self.client.query(text)
@@ -370,6 +454,7 @@ class ClaudeEngine:
         await self.client.interrupt()
 
     async def disconnect(self) -> None:
+        self._cancel_limits_task()
         if self.client is None:
             return
         try:
@@ -384,6 +469,7 @@ class ClaudeEngine:
         interrupt/disconnect 都要等 CLI 应答，CLI 悬死（如网关调用无响应）时
         它们会永久挂起——此路径不与 CLI 对话，杀进程了事（续接点保留）。
         """
+        self._cancel_limits_task()
         client, self.client = self.client, None
         if client is None:
             return
@@ -423,6 +509,9 @@ class ClaudeEngine:
                                 else FRIENDLY_ERROR
                             )
                 if event:
+                    usage_event = self._track_context(event)
+                    if usage_event:
+                        yield usage_event
                     yield event
         except asyncio.CancelledError:
             raise
@@ -440,6 +529,22 @@ class ClaudeEngine:
                     CONFIG_ERROR if _looks_like_config_error(str(exc)) else FRIENDLY_ERROR
                 )
                 yield {"type": "_engine_end", "reason": "error", "error": friendly}
+
+    def _track_context(self, event: dict) -> dict | None:
+        """跟踪上下文占用；本轮结束（result 之前）返回一条用量事件供前端显示剩余。"""
+        kind = event.get("type")
+        if kind == "assistant_message" and event.get("context_tokens"):
+            self._context_used = event["context_tokens"]
+        elif kind == "context_compacted":
+            self._context_used = event.get("post_tokens")
+        elif kind == "result" and self._context_used:
+            return {
+                "type": "context_usage",
+                "used": self._context_used,
+                "window": self._context_window,
+                "compact_at": self._compact_at,
+            }
+        return None
 
     # ---- 权限回调（SDK 契约 → 中立决策 dict）----
 

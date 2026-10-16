@@ -100,6 +100,10 @@ async function responseError(response) {
   return error;
 }
 
+function conversationQuery(conversationId) {
+  return conversationId ? `?conversation=${encodeURIComponent(conversationId)}` : '';
+}
+
 function filenameOf(response, fallback) {
   const header = response.headers.get('content-disposition') || '';
   const encoded = header.match(/filename\*=UTF-8''([^;]+)/i);
@@ -313,10 +317,26 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ commit }),
     }),
-  sessionState: (pid) => request(`/api/projects/${pid}/session`),
+  // conversationId 省略 = 引擎当前绑定的会话，没有在线引擎则取最近更新的一条
+  sessionState: (pid, conversationId) =>
+    request(`/api/projects/${pid}/session${conversationQuery(conversationId)}`),
   usage: (pid) => request(`/api/projects/${pid}/session/usage`),
-  closeSession: (pid) =>
-    request(`/api/projects/${pid}/session/close`, { method: 'POST' }),
+  closeSession: (pid, conversationId) =>
+    request(`/api/projects/${pid}/session/close${conversationQuery(conversationId)}`, {
+      method: 'POST',
+    }),
+  listConversations: (pid) => request(`/api/projects/${pid}/session/conversations`),
+  createConversation: (pid) =>
+    request(`/api/projects/${pid}/session/conversations`, { method: 'POST' }),
+  renameConversation: (pid, conversationId, title) =>
+    request(`/api/projects/${pid}/session/conversations/${conversationId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    }),
+  deleteConversation: (pid, conversationId) =>
+    request(`/api/projects/${pid}/session/conversations/${conversationId}`, {
+      method: 'DELETE',
+    }),
   getMcp: () => request('/api/settings/mcp'),
   saveMcp: (servers) =>
     request('/api/settings/mcp', { method: 'PUT', body: JSON.stringify({ servers }) }),
@@ -325,6 +345,13 @@ export const api = {
     request('/api/settings/model', { method: 'PUT', body: JSON.stringify(payload) }),
   saveJiuwenModelSettings: (payload) =>
     request('/api/settings/model/jiuwen', { method: 'PUT', body: JSON.stringify(payload) }),
+  getModelContextPresets: () => request('/api/settings/model/context-presets'),
+  saveCustomContextPresets: (payload) =>
+    request('/api/settings/model/context-presets/custom', { method: 'PUT', body: JSON.stringify(payload) }),
+  disableCustomContextPresets: () =>
+    request('/api/settings/model/context-presets/custom/disable', { method: 'POST' }),
+  matchModelContextPreset: (model) =>
+    request(`/api/settings/model/context-presets/match?model=${encodeURIComponent(model)}`),
   saveDefaultEngine: (engine) =>
     request('/api/settings/model/default-engine', {
       method: 'PUT',
@@ -449,18 +476,20 @@ export const api = {
   studioGraph: (pid) => request(`/api/projects/${pid}/studio/graph`),
   studioElement: (pid, path) =>
     request(`/api/projects/${pid}/studio/element?path=${encodeURIComponent(path)}`),
-  sendMessage: (pid, text) =>
+  sendMessage: (pid, text, conversationId) =>
     request(`/api/projects/${pid}/session/messages`, {
       method: 'POST',
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, conversation_id: conversationId || null }),
     }),
   respondPermission: (pid, requestId, behavior, message = '', answers = null) =>
     request(`/api/projects/${pid}/session/permissions/${requestId}`, {
       method: 'POST',
       body: JSON.stringify({ behavior, message, answers }),
     }),
-  interrupt: (pid) =>
-    request(`/api/projects/${pid}/session/interrupt`, { method: 'POST' }),
+  interrupt: (pid, conversationId) =>
+    request(`/api/projects/${pid}/session/interrupt${conversationQuery(conversationId)}`, {
+      method: 'POST',
+    }),
   uploadResource: (pid, subdir, file, onProgress, purpose = 'auto', readingMode = 'on_demand') => {
     const form = new FormData();
     form.append('subdir', subdir);
@@ -512,10 +541,13 @@ function xhrUpload(path, form, onProgress, retried = false) {
   });
 }
 
-export function openEventStream(pid, onEvent, after = 0) {
+export function openEventStream(pid, onEvent, after = 0, conversationId = null) {
   const token = encodeURIComponent(authStore.token);
+  const conversation = conversationId
+    ? `&conversation=${encodeURIComponent(conversationId)}`
+    : '';
   const source = new EventSource(
-    `/api/projects/${pid}/session/stream?after=${after}&token=${token}`,
+    `/api/projects/${pid}/session/stream?after=${after}&token=${token}${conversation}`,
   );
   source.onmessage = (msg) => {
     try {
