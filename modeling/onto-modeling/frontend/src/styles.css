@@ -1330,7 +1330,7 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .tool-group-err { color: #ff4d4f; font-size: 12px; }
 
 /* 资料用途行内打标 */
-.resource-directive { display: flex; align-items: center; gap: 8px; margin-top: 1px; }
+.resource-directive { display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; margin-top: 1px; }
 .resource-directive .ant-select { margin-left: -7px; }
 .resource-directive .ant-select-selection-item { font-size: 11.5px; color: var(--text-tertiary); }
 .resource-reading {
@@ -1338,6 +1338,8 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
   font-size: 11px; color: var(--text-tertiary); cursor: pointer; white-space: nowrap;
 }
 .resource-reading input { width: 12px; height: 12px; accent-color: var(--color-primary); }
+.resource-detect-tag { margin: 0; font-size: 11px; line-height: 16px; padding: 0 4px; }
+.resource-detect-action.ant-btn { height: 18px; padding: 0; font-size: 11.5px; }
 
 /* 流程图视图宿主 */
 .flowchart-host { display: flex; flex-direction: column; gap: 8px; }

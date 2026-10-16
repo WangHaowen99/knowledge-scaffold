@@ -97,6 +97,8 @@ These rules apply to all work in this repository.
 
    `reading_mode`：`full` = 必须全文精读后再使用；`on_demand` = 按需检索片段即可。该文件由平台维护，模型同样**不得修改**。
 
+   条目带 `auto_detected: true` 表示平台上传时按表格结构识别为数据表、预填了 `schema`，与人工标注同等对待。没有 `schema` 资料、但 `resource/` 里有像数据库表的表格（首行是英文列名）时，**不要让用户编辑 `materials.json`**：请用户在左侧资料列表把该表格的用途改为「数据 Schema」（平台会在疑似数据表旁给出「设为 Schema」按钮），或改在「数据评测」的数据源里上传；改完后重新读取清单再继续。
+
 ## Business Knowledge
 
 9. **业务知识识别守则** —

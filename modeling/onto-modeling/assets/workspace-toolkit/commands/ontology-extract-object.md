@@ -147,7 +147,7 @@ Set `EXCEL_CONTEXT` = 脚本 stdout。若 stdout 为空，置为 `（无同名 E
 - `reading_mode=full` 的资料在提取前必须已全文读取。
 - 运行 `python3 .claude/scripts/check_eval_data.py --headers`，stdout（JSON：`{Sheet 名: [表头列]}`，来自 schema 资料与评测数据源上传的数据表）记为 `TABLE_HEADERS`；为空（`{}`）时记为 `（无）`。
   `TABLE_HEADERS` 非空时，它是表名与列名的**唯一依据**：对象「# 数据来源」取其中的 Sheet 名，对不上任何 Sheet 的对象填「无」；从库里读取的属性英文名称逐字取自该 Sheet 的表头；数据字典类文档、调研报告里的字段名与之冲突时以 `TABLE_HEADERS` 为准，冲突清单写进返回摘要的注意事项。提取后的规则检查会按对象逐列对账：声明的表不存在、一列都对不上、或属性别名里才是真实列名，均判为错误并阻止提交（发布时同样会被阻断）。
-  `TABLE_HEADERS` 为 `（无）` 时，所有对象的「# 数据来源」填「无」，不得臆造表名；规则检查会对声明了表名的对象给出警告。
+  `TABLE_HEADERS` 为 `（无）` 时，先看 `resource/` 下有没有像数据库表的表格资料（首行是英文列名）：有的话按 CLAUDE.md 8.1 请用户在资料列表把它标为「数据 Schema」，标好后重跑上面的命令；用户确认没有数据表时，所有对象的「# 数据来源」填「无」，不得臆造表名；规则检查会对声明了表名的对象给出警告。
 
 ## Step 2: Determine object mode
 

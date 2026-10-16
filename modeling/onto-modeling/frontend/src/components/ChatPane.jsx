@@ -1131,7 +1131,9 @@ export default function ChatPane({
               att.readingMode,
             );
             patchUpload(att.uid, { percent: 100, status: 'done' });
-            return { att, path: saved.path };
+            // 平台按结构识别为数据表并预填了 schema：告诉助手，免得它再按「无 schema」处理
+            const label = saved.detected ? `${saved.path}（已自动标为数据 Schema）` : saved.path;
+            return { att, path: saved.path, label };
           } catch (error) {
             patchUpload(att.uid, { status: 'error', error: error.message });
             return { att, error };
@@ -1148,7 +1150,7 @@ export default function ChatPane({
         message.error(`${failed.length} 个文件上传失败：${failed[0].error.message}`);
         return;
       }
-      const uploaded = results.map((r) => r.path);
+      const uploaded = results.map((r) => r.label);
       const prefix = uploaded.length
         ? `（我通过界面上传了资料，已存入工作区：${uploaded.join('、')}）\n`
         : '';

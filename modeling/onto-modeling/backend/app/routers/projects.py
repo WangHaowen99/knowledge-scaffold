@@ -643,6 +643,7 @@ def resource_meta(project_id: str, request: Request):
     return {
         "directives": workspaces.resource_directives(project_id),
         "purposes": list(workspaces.MATERIAL_PURPOSES),
+        "schema_candidates": workspaces.schema_candidates(project_id),
     }
 
 

@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - Windows development fallback
     fcntl = None
 
 from .. import config
-from . import package_mapping
+from . import material_detect, package_mapping
 from .name_conflict import MAX_DISPLAY_NAME_LENGTH, detect_name_conflict
 
 META_FILE = ".onto-web.json"  # 历史文件名保留：存量项目的识别键（ADR-0006）
@@ -70,6 +70,10 @@ class NameConflictError(WorkspaceError):
     def __init__(self, message: str, conflict: dict):
         super().__init__(message, 409, "project_name_conflict")
         self.conflict = conflict
+
+
+def _is_auto_detected(directive) -> bool:
+    return isinstance(directive, dict) and bool(directive.get("auto_detected"))
 
 
 class WorkspaceManager:
@@ -656,22 +660,63 @@ class WorkspaceManager:
             try:
                 self._atomic_write(dest, data)
                 rel = f"resource/{subdir}/{safe_name}"
-                if purpose != "auto" or reading_mode != "on_demand":
-                    directives = self.resource_directives(project_id)
-                    directives[rel] = {
-                        "purpose": purpose if purpose in self.MATERIAL_PURPOSES else "auto",
-                        "reading_mode": reading_mode
-                        if reading_mode in self.MATERIAL_READING_MODES
-                        else "on_demand",
-                    }
-                    self._write_resource_directives(root, directives)
+                detected = self._update_upload_directive(project_id, rel, purpose, reading_mode)
                 # 变更提醒依据：前端对比该时间与派生产物版本，提示"资料已更新，可让助手增量刷新"
                 self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
             except Exception:
                 self._restore_snapshot(dest, file_snapshot)
                 self._restore_snapshot(directives_path, directives_snapshot)
                 raise
-            return {"path": rel, "size": len(data), "replaced": replaced}
+            result = {"path": rel, "size": len(data), "replaced": replaced}
+            if detected:
+                result["detected"] = {"purpose": "schema", **detected}
+            return result
+
+    def _update_upload_directive(
+        self, project_id: str, rel: str, purpose: str, reading_mode: str
+    ) -> dict | None:
+        """写入上传时指定的用途；未指定（auto）时按结构识别预填：判为数据表就标 schema 并记
+        auto_detected，用户之后在资料区改用途即覆盖。替换文件时只重判没有条目或此前自动标注的，
+        不动人工标注。返回识别结果（未预填为 None）。"""
+        root = self.project_root(project_id)
+        directives = self.resource_directives(project_id)
+        before = json.dumps(directives, sort_keys=True)
+        existing = directives.get(rel)
+        reading_mode = reading_mode if reading_mode in self.MATERIAL_READING_MODES else "on_demand"
+        if purpose != "auto" or reading_mode != "on_demand":
+            directives[rel] = {
+                "purpose": purpose if purpose in self.MATERIAL_PURPOSES else "auto",
+                "reading_mode": reading_mode,
+            }
+        detected = None
+        if purpose == "auto" and (existing is None or _is_auto_detected(existing)):
+            detected = material_detect.detect_data_table(root / rel)
+        if detected:
+            directives[rel] = {
+                "purpose": "schema",
+                "reading_mode": reading_mode,
+                "auto_detected": True,
+            }
+        elif _is_auto_detected(directives.get(rel)):
+            # 替换后不再像数据表：撤掉之前的自动标注
+            directives.pop(rel)
+        if json.dumps(directives, sort_keys=True) != before:
+            self._write_resource_directives(root, directives)
+        return detected
+
+    def schema_candidates(self, project_id: str) -> dict:
+        """资料区「疑似数据表」：用途仍为「由助手判断」、结构上判为数据表的表格资料。"""
+        root = self.project_root(project_id)
+        directives = self.resource_directives(project_id)
+        candidates = {}
+        for rel in self._unmarked_table_resources(project_id, root):
+            directive = directives.get(rel)
+            if isinstance(directive, dict) and directive.get("purpose") != "auto":
+                continue
+            detected = material_detect.detect_data_table(root / rel)
+            if detected:
+                candidates[rel] = detected
+        return candidates
 
     # ---- 生命周期扩展 ----
 
