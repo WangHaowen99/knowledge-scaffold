@@ -309,7 +309,7 @@ def connect_with(tmp_path, monkeypatch, token, checkpointer, history=None):
     agent = FakeAgent()
     monkeypatch.setattr(
         jiuwen, "model_config",
-        lambda: {"base_url": "https://gateway.example.com/v1", "api_key": "k", "model": "m"},
+        lambda owner="": {"base_url": "https://gateway.example.com/v1", "api_key": "k", "model": "m"},
     )
     monkeypatch.setattr(jiuwen, "_ensure_runner_started", no_runner)
     monkeypatch.setattr(JiuwenEngine, "_build_agent", lambda self, cfg: (agent, None))

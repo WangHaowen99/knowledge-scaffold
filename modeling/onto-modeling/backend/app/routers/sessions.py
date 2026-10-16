@@ -94,7 +94,10 @@ async def delete_conversation(project_id: str, conversation_id: str, request: Re
 @router.post("/messages")
 async def send_message(project_id: str, body: MessageBody, request: Request):
     cwd = ensure_access(project_id, request, write=True)
-    session = await manager.send(project_id, cwd, body.text, body.conversation_id)
+    user = getattr(request.state, "user", None) or {}
+    session = await manager.send(
+        project_id, cwd, body.text, body.conversation_id, username=user.get("sub", "")
+    )
     return {
         "session_id": session.id,
         "state": session.state,

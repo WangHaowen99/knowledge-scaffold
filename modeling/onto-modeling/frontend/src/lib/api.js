@@ -369,6 +369,16 @@ export const api = {
     request('/api/settings/model/context-presets/custom/disable', { method: 'POST' }),
   matchModelContextPreset: (model) =>
     request(`/api/settings/model/context-presets/match?model=${encodeURIComponent(model)}`),
+  saveModelPersonalPolicy: (allow) =>
+    request('/api/settings/model/personal-policy', {
+      method: 'PUT',
+      body: JSON.stringify({ allow }),
+    }),
+  getMyModelSettings: () => request('/api/settings/model/me'),
+  saveMyModelSettings: (engine, payload) =>
+    request(`/api/settings/model/me/${engine}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  clearMyModelSettings: (engine) =>
+    request(`/api/settings/model/me/${engine}`, { method: 'DELETE' }),
   saveDefaultEngine: (engine) =>
     request('/api/settings/model/default-engine', {
       method: 'PUT',

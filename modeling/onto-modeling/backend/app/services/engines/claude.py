@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ... import config
-from .base import CONFIG_ERROR, FRIENDLY_ERROR, EngineContext, safe_json
+from .base import FRIENDLY_ERROR, EngineContext, config_error_for, safe_json
 
 _RAW_ERROR_PATTERN = None  # 延迟编译
 _CONFIG_ERROR_PATTERN = None
@@ -135,21 +135,31 @@ def _permission_mode() -> str:
         return config.PERMISSION_MODE
 
 
-def _env_fingerprint() -> str:
+def _env_fingerprint(owner: str = "") -> str:
     import hashlib
 
     return hashlib.sha256(
-        json.dumps(_session_env(), sort_keys=True).encode("utf-8")
+        json.dumps(_owner_env(owner), sort_keys=True).encode("utf-8")
     ).hexdigest()[:16]
 
 
-def _session_env() -> dict:
+def _owner_env(owner: str) -> dict:
+    # 管理员配置仍按原样无参调用 _session_env
+    return _session_env(owner) if owner else _session_env()
+
+
+def _session_env(owner: str = "") -> dict:
+    """owner 为空 = 管理员配置（原行为）；非空 = 该用户的个人 Key。"""
     env = {}
     if config.MAX_THINKING_TOKENS:
         env["MAX_THINKING_TOKENS"] = config.MAX_THINKING_TOKENS
-    try:
-        from .. import model_settings
+    from .. import model_settings
 
+    if owner:
+        # 个人配置出错要让本次连接失败，吞掉会悄悄改用部署机的 Key
+        env.update(model_settings.session_env(owner))
+        return env
+    try:
         env.update(model_settings.session_env())
     except Exception:
         pass
@@ -452,7 +462,7 @@ class ClaudeEngine:
         self.resume_attempted = bool(resume_id)
         self._received_any = False
         self.client = client
-        self._fingerprint = _env_fingerprint()
+        self._fingerprint = _env_fingerprint(self._ctx.model_owner)
         self._context_used = None
         self._cancel_limits_task()
         self._limits_task = asyncio.create_task(self._load_context_limits(client))
@@ -465,7 +475,9 @@ class ClaudeEngine:
         except Exception:
             # 旧版 CLI 不支持或超时：按取不到处理。CancelledError 是 BaseException，不会落到这里
             usage = None
-        self._context_window, self._compact_at = context_limits(usage, _session_env())
+        self._context_window, self._compact_at = context_limits(
+            usage, _owner_env(self._ctx.model_owner)
+        )
 
     def _cancel_limits_task(self) -> None:
         if self._limits_task is not None and not self._limits_task.done():
@@ -506,7 +518,9 @@ class ClaudeEngine:
             pass
 
     def config_stale(self) -> bool:
-        return bool(self._fingerprint) and self._fingerprint != _env_fingerprint()
+        return bool(self._fingerprint) and self._fingerprint != _env_fingerprint(
+            self._ctx.model_owner
+        )
 
     # ---- 事件流 ----
 
@@ -538,7 +552,7 @@ class ClaudeEngine:
                                 )
                                 self._ctx.log_error(source, original)
                                 block["text"] = (
-                                    CONFIG_ERROR
+                                    config_error_for(self._ctx.model_owner)
                                     if _looks_like_config_error(combined)
                                     else FRIENDLY_ERROR
                                 )
@@ -558,7 +572,7 @@ class ClaudeEngine:
                                 self._ctx.log_error("assistant_error", block["text"])
                                 combined = block["text"] + "\n" + evidence
                                 block["text"] = (
-                                    CONFIG_ERROR
+                                    config_error_for(self._ctx.model_owner)
                                     if _looks_like_config_error(combined)
                                     else FRIENDLY_ERROR
                                 )
@@ -591,7 +605,7 @@ class ClaudeEngine:
                     self._ctx.log_error("session_error", block["text"])
                     combined = block["text"] + "\n" + failure_text
                     block["text"] = (
-                        CONFIG_ERROR
+                        config_error_for(self._ctx.model_owner)
                         if _looks_like_config_error(combined)
                         else FRIENDLY_ERROR
                     )
@@ -602,7 +616,9 @@ class ClaudeEngine:
             else:
                 self._ctx.log_error("session", str(exc))
                 friendly = (
-                    CONFIG_ERROR if _looks_like_config_error(str(exc)) else FRIENDLY_ERROR
+                    config_error_for(self._ctx.model_owner)
+                    if _looks_like_config_error(str(exc))
+                    else FRIENDLY_ERROR
                 )
                 yield {"type": "_engine_end", "reason": "error", "error": friendly}
 
@@ -650,8 +666,19 @@ class ClaudeEngine:
             can_use_tool=can_use_tool,
             include_partial_messages=True,
             mcp_servers=_mcp_servers(self._ctx.project_id),
-            env=_session_env(),
+            env=_owner_env(self._ctx.model_owner),
         )
+        if self._ctx.model_owner:
+            # 部署机 ~/.claude/settings.json 的 env 会盖过上面的 env 参数（实测），
+            # 个人 Key 若被它覆盖就会悄悄改用部署机的 Key；--settings 优先级更高。
+            # 只覆盖网关 / Key / 模型，其余变量仍与管理员配置下的会话一致。
+            # 管理员配置（model_owner 为空）不走这里，保持原行为
+            gateway_env = {
+                name: value
+                for name, value in kwargs["env"].items()
+                if name.startswith("ANTHROPIC_")
+            }
+            kwargs["settings"] = json.dumps({"env": gateway_env})
         if resume_id:
             kwargs["resume"] = resume_id
         if config.CLI_PATH:

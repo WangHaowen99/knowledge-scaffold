@@ -56,6 +56,8 @@ def masked() -> dict:
         # 新建/导入项目使用的默认引擎，以及各引擎在本部署的可用性
         "default_engine": default_engine(),
         "engines": available_engines(),
+        # 是否允许用户用个人 Key 覆盖本页配置（默认允许；未配个人 Key 的用户不受影响）
+        "allow_personal": personal_override_allowed(),
         # Jiuwen 引擎（OpenAI 兼容）配置：与 Anthropic 网关配置并列的第二组
         "jiuwen": {
             "base_url": jiuwen.get("base_url", ""),
@@ -322,6 +324,20 @@ def save_context(values: dict) -> dict:
     return masked()
 
 
+def personal_override_allowed() -> bool:
+    return load().get("allow_personal", True) is not False
+
+
+def save_personal_policy(allow: bool) -> dict:
+    data = load()
+    data["allow_personal"] = bool(allow)
+    path = _file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.chmod(0o600)
+    return masked()
+
+
 def jiuwen_config() -> dict:
     """Jiuwen 引擎读取用的明文配置（仅服务端内部使用，不经接口外发）。"""
     section = load().get("jiuwen") or {}
@@ -332,14 +348,26 @@ def jiuwen_config() -> dict:
     }
 
 
-def session_env() -> dict:
+def session_env(owner: str = "") -> dict:
     """转成稳定引擎会话子进程的环境变量；空值不注入，模型真实窗口与最大输出总有值（见 effective_context）。
 
     key 同时覆盖 ANTHROPIC_API_KEY 与 ANTHROPIC_AUTH_TOKEN：CLI 优先用
     AUTH_TOKEN 做 Bearer 鉴权，若只覆盖 API_KEY，部署机 .env 里残留的
     旧令牌会继续生效，导致新网关 401（实测踩坑）。
+
+    owner 非空时用该用户的个人 Key，网关地址 / 模型个人未填则沿用管理员配置；
+    个人配置读取失败直接抛错，不能悄悄回落到管理员 Key。
     """
     data = load()
+    if owner:
+        from . import personal_model_settings
+
+        personal = personal_model_settings.resolve(owner, "claude")
+        data = {
+            "base_url": personal["base_url"] or data.get("base_url", ""),
+            "api_key": personal["api_key"],
+            "model": personal["model"] or data.get("model", ""),
+        }
     env = {}
     if data.get("base_url"):
         env["ANTHROPIC_BASE_URL"] = data["base_url"]

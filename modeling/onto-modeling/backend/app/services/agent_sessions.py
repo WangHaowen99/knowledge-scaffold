@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import config
-from . import conversation_store, error_log
+from . import conversation_store, error_log, personal_model_settings
 from .conversation_store import DEFAULT_ID as DEFAULT_CONVERSATION
 from .engines import EngineContext, get_engine_class
 from .engines.base import CONFIG_ERROR, FRIENDLY_ERROR, safe_json as _safe_json
@@ -231,6 +231,8 @@ class Session:
     # 引擎绑定的会话：决定事件历史写到哪份文件、续接哪个 token
     conversation_id: str = DEFAULT_CONVERSATION
     sending: int = 0  # 处理中的 send() 数；期间不可回收或换绑，否则消息会落到已丢弃的会话上
+    # 引擎使用谁的模型配置：用户名 = 该用户的个人 Key；"" = 管理员配置（原行为）
+    model_owner: str = ""
 
     @property
     def client(self) -> Any:
@@ -292,6 +294,11 @@ def _busy(session: "Session") -> bool:
         or bool(session.pending_permissions)
         or session.sending > 0
     )
+
+
+def _busy_for_owner_switch(session: "Session") -> bool:
+    """本轮未结束（含积压待发的消息）：不能换模型配置，否则别人的消息会用你的 Key 发出。"""
+    return _busy(session) or bool(session.pending_prompts)
 
 
 def _expire_orphan_permissions(session: "Session") -> None:
@@ -455,6 +462,7 @@ class SessionManager:
         cwd: Path,
         text: str,
         conversation_id: str | None = None,
+        username: str = "",
     ) -> Session:
         text = (text or "").strip()
         if not text:
@@ -470,8 +478,10 @@ class SessionManager:
             )
         # 换绑要回收旧引擎（await 断开，且第一步就把旧 Session 移出字典）：不加锁时
         # 并发的 send 会各建一个 Session，被覆盖的那个带着引擎却不在字典里，无人回收
+        owner = personal_model_settings.model_owner(username, engine_cls.name)
         async with self._lock:
             session = await self._bind_session(project_id, conversation_id)
+            await self._bind_model_owner(session, owner, engine_cls.name)
             session.sending += 1
         try:
             await self._deliver(session, cwd, text)
@@ -503,6 +513,29 @@ class SessionManager:
             self._sessions[project_id] = session
             _expire_orphan_permissions(session)
         return session
+
+    async def _bind_model_owner(self, session: Session, owner: str, engine: str) -> None:
+        """让引擎使用发送人的模型配置（调用方持有 _lock）。
+
+        项目会话由成员共用：谁发消息就用谁的配置。换人且配置来源不同时断开重连
+        （resume 续接）；本轮没结束就拒绝，免得别人的消息花掉你的 Key。
+        """
+        if owner != session.model_owner:
+            if _busy_for_owner_switch(session):
+                raise SessionError(
+                    "本项目会话正在使用其他成员的模型配置运行，请等本轮结束后再发送", 409
+                )
+            if session.engine is not None:
+                if session.reader_task:
+                    session.reader_task.cancel()
+                await session.engine.disconnect()
+                session.engine = None
+            session.model_owner = owner
+        if owner:
+            try:
+                personal_model_settings.resolve(owner, engine)
+            except personal_model_settings.PersonalConfigError as exc:
+                raise SessionError(str(exc), exc.status) from exc
 
     async def _deliver(self, session: Session, cwd: Path, text: str) -> None:
         session.cwd = cwd
@@ -602,6 +635,7 @@ class SessionManager:
             log_error=lambda kind, text: error_log.log(project_id, kind, text),
             load_history=lambda: list(session.events),
             conversation_id=conversation_id,
+            model_owner=session.model_owner,
         )
         return engine_cls(ctx)
 

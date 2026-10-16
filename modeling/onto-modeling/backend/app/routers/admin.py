@@ -359,6 +359,10 @@ def update_user(username: str, body: UserUpdateBody, request: Request):
 def delete_user(username: str, request: Request):
     _require_admin(request)
     status_code, data = _auth_admin_request("DELETE", f"/admin/users/{username}")
+    if 200 <= status_code < 300:
+        from ..services import personal_model_settings
+
+        personal_model_settings.delete_user(username)
     return JSONResponse(status_code=status_code, content=data)
 
 

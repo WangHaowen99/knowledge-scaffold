@@ -2,7 +2,13 @@ from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ..services import auth, mcp_settings, model_context_presets, model_settings
+from ..services import (
+    auth,
+    mcp_settings,
+    model_context_presets,
+    model_settings,
+    personal_model_settings,
+)
 from ..services.auth import AuthError
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -125,6 +131,52 @@ def put_default_engine(body: DefaultEngineBody, request: Request):
         return model_settings.save_default_engine(body.engine)
     except model_settings.ModelConfigError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
+class PersonalPolicyBody(BaseModel):
+    allow: bool
+
+
+@router.put("/model/personal-policy")
+def put_personal_policy(body: PersonalPolicyBody, request: Request):
+    """是否允许用户用个人 Key 覆盖管理员配置；关闭后所有会话回到管理员配置。"""
+    _require_admin(request)
+    return model_settings.save_personal_policy(body.allow)
+
+
+# ---- 个人模型配置：登录用户自助，只读写自己的那份 ----
+
+
+def _username(request: Request) -> str:
+    user = getattr(request.state, "user", None) or {}
+    return user.get("sub", "")
+
+
+def _personal_error(exc: personal_model_settings.PersonalConfigError) -> JSONResponse:
+    return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+
+
+@router.get("/model/me")
+def get_my_model_settings(request: Request):
+    return personal_model_settings.masked(_username(request))
+
+
+@router.put("/model/me/{engine}")
+def put_my_model_settings(engine: str, body: ModelBody, request: Request):
+    try:
+        return personal_model_settings.save(
+            _username(request), engine, body.base_url, body.api_key, body.model
+        )
+    except personal_model_settings.PersonalConfigError as exc:
+        return _personal_error(exc)
+
+
+@router.delete("/model/me/{engine}")
+def delete_my_model_settings(engine: str, request: Request):
+    try:
+        return personal_model_settings.clear(_username(request), engine)
+    except personal_model_settings.PersonalConfigError as exc:
+        return _personal_error(exc)
 
 
 class McpBody(BaseModel):

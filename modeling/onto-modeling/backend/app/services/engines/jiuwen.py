@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from ... import config
-from .base import CONFIG_ERROR, FRIENDLY_ERROR, EngineContext, safe_json
+from .base import FRIENDLY_ERROR, EngineContext, config_error_for, safe_json
 from .jiuwen_progress import JiuwenProgressTracker, build_progress_rail, progress_scope
 
 JIUWEN_AVAILABLE = importlib.util.find_spec("openjiuwen") is not None
@@ -71,8 +71,12 @@ def shadow_dir(project_id: str) -> Path:
     return Path(config.DATA_DIR) / "jiuwen" / project_id
 
 
-def model_config() -> dict:
-    """Jiuwen 引擎的 OpenAI 兼容模型配置：UI 配置优先，env 兜底。"""
+def model_config(owner: str = "") -> dict:
+    """Jiuwen 引擎的 OpenAI 兼容模型配置：UI 配置优先，env 兜底。
+
+    owner 非空时 Key 换成该用户的个人 Key，网关地址 / 模型个人未填则沿用上述结果；
+    个人配置读取失败直接抛错，不回落到管理员 Key。
+    """
     cfg = {
         "base_url": config.JIUWEN_BASE_URL,
         "api_key": config.JIUWEN_API_KEY,
@@ -87,6 +91,15 @@ def model_config() -> dict:
                 cfg[key] = ui[key]
     except Exception:
         pass
+    if owner:
+        from .. import personal_model_settings
+
+        personal = personal_model_settings.resolve(owner, "jiuwen")
+        cfg = {
+            "base_url": personal["base_url"] or cfg["base_url"],
+            "api_key": personal["api_key"],
+            "model": personal["model"] or cfg["model"],
+        }
     return cfg
 
 
@@ -488,7 +501,7 @@ class JiuwenEngine:
     async def connect(self) -> bool:
         if not JIUWEN_AVAILABLE:
             raise RuntimeError(UNAVAILABLE_MESSAGE)
-        cfg = model_config()
+        cfg = model_config(self._ctx.model_owner)
         if not (cfg.get("base_url") and cfg.get("api_key") and cfg.get("model")):
             raise RuntimeError(UNCONFIGURED_MESSAGE)
         # openjiuwen 首次 import 较重（秒级），放线程避免卡住事件循环
@@ -664,7 +677,7 @@ class JiuwenEngine:
 
     def config_stale(self) -> bool:
         return bool(self._fingerprint) and self._fingerprint != _fingerprint(
-            model_config()
+            model_config(self._ctx.model_owner)
         )
 
     # ---- 事件流 ----
@@ -770,7 +783,7 @@ class JiuwenEngine:
                 return
             self._ctx.log_error("session", str(exc))
             friendly = (
-                CONFIG_ERROR
+                config_error_for(self._ctx.model_owner)
                 if any(
                     marker in str(exc).lower()
                     for marker in ("401", "unauthorized", "api key", "authentication")
