@@ -26,6 +26,11 @@ class ScriptContractError(ValueError):
     """A generated script cannot be exported with an unverifiable CLI contract."""
 
 
+def _type_conflicts(documented: str, declared: str) -> bool:
+    """头部类型与 argparse 类型不一致；integer 与 number 互写不算冲突（见 NUMERIC_TYPES）。"""
+    return documented != declared and {documented, declared} != NUMERIC_TYPES
+
+
 def parse_script_contract(code: str) -> tuple[str, list[dict]]:
     """Read the operation binding and verify the documented CLI against argparse.
 
@@ -144,7 +149,7 @@ def parse_script_contract(code: str) -> tuple[str, list[dict]]:
     for item in source_params:
         doc = next((entry for entry in documented if entry["name"] == item["name"]), {})
         source_required = "是" if item["required"] else "否"
-        if doc and doc["type"] != item["type"] and {doc["type"], item["type"]} != NUMERIC_TYPES:
+        if doc and _type_conflicts(doc["type"], item["type"]):
             raise ScriptContractError(
                 f"参数 {item['name']} 的类型与 argparse 不一致：头部为 {doc['type']}，"
                 f"argparse 为 {item['type']}（{TYPE_HINT}）"

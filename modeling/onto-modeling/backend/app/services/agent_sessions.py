@@ -147,7 +147,8 @@ def load_resume_id(
     """该会话上次的引擎续接 token；重连时恢复模型上下文。
 
     token 只对写下它的引擎有效（切换引擎后旧 token 不可用）；
-    旧格式无 engine 字段，均由 Claude 引擎写入。"""
+    旧格式无 engine 字段，均由 Claude 引擎写入。
+    """
     path = _meta_path(project_id, conversation_id)
     if not path.exists():
         return None

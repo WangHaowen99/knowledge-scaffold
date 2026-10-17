@@ -50,16 +50,14 @@ function EngineForm({ engine, data, disabled, onSaved }) {
   };
 
   const hasKey = Boolean(data?.api_key_masked);
+  let fallbackSource = '使用部署默认配置';
+  if (data?.admin_configured) fallbackSource = '使用管理员配置';
   return (
     <>
       <Typography.Title level={5}>
         <Space>
           {engine.title}
-          {data?.active ? (
-            <Tag color="success">使用个人 Key</Tag>
-          ) : (
-            <Tag>{data?.admin_configured ? '使用管理员配置' : '使用部署默认配置'}</Tag>
-          )}
+          {data?.active ? <Tag color="success">使用个人 Key</Tag> : <Tag>{fallbackSource}</Tag>}
         </Space>
       </Typography.Title>
       <Form form={form} layout="vertical" onFinish={save} disabled={disabled}>
@@ -104,13 +102,14 @@ export default function PersonalModelSettings() {
   }, []);
 
   const disabled = !current?.enabled;
+  const policyOff = Boolean(current) && disabled;
   return (
     <div style={{ maxWidth: 520 }}>
       <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
         填写后，你在任意项目里发送的消息都用你自己的 Key 调用模型；不填则使用管理员配置。
         同一项目有他人正在运行的轮次时，需等其结束后再发送。
       </Typography.Paragraph>
-      {current && disabled && (
+      {policyOff && (
         <Alert
           type="info"
           showIcon

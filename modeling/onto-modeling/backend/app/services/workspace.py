@@ -675,9 +675,11 @@ class WorkspaceManager:
     def _update_upload_directive(
         self, project_id: str, rel: str, purpose: str, reading_mode: str
     ) -> dict | None:
-        """写入上传时指定的用途；未指定（auto）时按结构识别预填：判为数据表就标 schema 并记
-        auto_detected，用户之后在资料区改用途即覆盖。替换文件时只重判没有条目或此前自动标注的，
-        不动人工标注。返回识别结果（未预填为 None）。"""
+        """写入上传时指定的用途；未指定（auto）时按结构识别预填。
+
+        判为数据表就标 schema 并记 auto_detected，用户之后在资料区改用途即覆盖。替换文件时
+        只重判没有条目或此前自动标注的，不动人工标注。返回识别结果（未预填为 None）。
+        """
         root = self.project_root(project_id)
         directives = self.resource_directives(project_id)
         before = json.dumps(directives, sort_keys=True)
@@ -689,7 +691,8 @@ class WorkspaceManager:
                 "reading_mode": reading_mode,
             }
         detected = None
-        if purpose == "auto" and (existing is None or _is_auto_detected(existing)):
+        redetectable = existing is None or _is_auto_detected(existing)
+        if purpose == "auto" and redetectable:
             detected = material_detect.detect_data_table(root / rel)
         if detected:
             directives[rel] = {

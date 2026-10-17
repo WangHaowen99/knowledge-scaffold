@@ -343,6 +343,13 @@ def _declared_binding(
     }
 
 
+def _may_infer(tables: dict[str, list[str]], parsed: dict) -> bool:
+    """未声明来源表时能否按重合度推断：「无」是显式不落库，没有数据表或属性也无从推断。"""
+    if parsed["declared_none"]:
+        return False
+    return bool(tables and parsed["fields"])
+
+
 def resolve_object_tables(
     root: Path,
     tables: dict[str, list[str]] | None = None,
@@ -391,7 +398,7 @@ def resolve_object_tables(
                 reported = True
         elif hints.get(key) in tables:
             table, matched_by = hints[key], "seed"
-        elif tables and fields and not parsed["declared_none"]:
+        elif _may_infer(tables, parsed):
             table = _match_table(field_keys, tables)
             matched_by = "inferred" if table else ""
 
@@ -722,6 +729,12 @@ def _join_text(relation: dict) -> str:
     return f"{source} → {target}" if source and target else "未声明关联字段"
 
 
+def _relation_prefixes(key: str, doc: dict) -> set[str]:
+    """括注 `表名.字段` 可用的前缀：对象名与「# 数据来源」声明的表名（小写）。"""
+    candidates = (key, doc["declared_table"], *doc["declared_mentions"])
+    return {name.lower() for name in candidates if name}
+
+
 def graph_relations(
     object_texts: dict[str, str], mapped: set[str], report: dict | None = None,
     allow_unbound: bool = False,
@@ -740,13 +753,13 @@ def graph_relations(
     （图里本来就没有该类节点）。端点根本不存在、以及关系名与关联字段写错，仍然是阻断项——
     那是文档本身要改，降级确认与它无关。
     """
-    docs = {key: parse_object_doc(text) for key, text in object_texts.items()}
-    fields = {key: {field["key"] for field in doc["fields"]} for key, doc in docs.items()}
+    fields: dict[str, set[str]] = {}
     # 括注里 `表名.字段` 的前缀可以是对象名或「# 数据来源」声明的表名
-    names = {
-        key: {name.lower() for name in (key, doc["declared_table"], *doc["declared_mentions"]) if name}
-        for key, doc in docs.items()
-    }
+    names: dict[str, set[str]] = {}
+    for key, text in object_texts.items():
+        doc = parse_object_doc(text)
+        fields[key] = {field["key"] for field in doc["fields"]}
+        names[key] = _relation_prefixes(key, doc)
     relations: dict[str, list] = {}
     skipped: list[str] = []
     unbound: list[str] = []

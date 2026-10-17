@@ -16,6 +16,7 @@ import pytest
 from app import config
 from app.services import agent_sessions, auth, model_settings, personal_model_settings
 from app.services.agent_sessions import SessionError, SessionManager
+from app.services.engines import jiuwen
 from app.services.engines.base import CONFIG_ERROR, PERSONAL_CONFIG_ERROR, config_error_for
 from app.services.engines.claude import ClaudeEngine, _session_env
 
@@ -172,8 +173,6 @@ def test_claude_session_env_owner_errors_are_not_swallowed(data_dir, auth_on):
 
 
 def test_jiuwen_model_config_personal_overlay(data_dir, auth_on, monkeypatch):
-    from app.services.engines import jiuwen
-
     monkeypatch.setattr(config, "JIUWEN_BASE_URL", "https://env.example.org/v1")
     monkeypatch.setattr(config, "JIUWEN_API_KEY", "env-key-synthetic")
     monkeypatch.setattr(config, "JIUWEN_MODEL", "env-model")

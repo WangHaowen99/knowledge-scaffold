@@ -65,7 +65,9 @@ def _first_row(rows: list) -> list[str] | None:
 
 
 def _classify_header(header: list[str], header_merged: bool) -> str:
-    if len(header) < 2 or header_merged or len(set(header)) != len(header):
+    if len(header) < 2 or header_merged:
+        return DOCUMENT
+    if len(set(header)) != len(header):  # 列名重复
         return DOCUMENT
     if _is_dictionary_header(header):
         return DICTIONARY

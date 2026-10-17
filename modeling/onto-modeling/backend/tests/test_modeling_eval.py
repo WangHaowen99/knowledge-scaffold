@@ -2,11 +2,15 @@
 状态与报告落盘、端点门控。
 """
 
+import asyncio
 import json
+import secrets
 import threading
 import weakref
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -861,8 +865,10 @@ def _fake_modeling_http(calls: list, traces: dict | None = None):
 
 @pytest.mark.parametrize("refresh_token", [SYNTHETIC_REFRESH, ""])
 def test_evaluate_start_passes_refresh_token_only_in_request(tmp_path, monkeypatch, refresh_token):
-    """评测轮常超 access token 有效期：/evaluate 请求体带上 refresh token 让 modeling 续期；
-    无鉴权部署没有 refresh token 时仍发空 body。refresh token 不得落进工作区任何文件。"""
+    """评测轮常超 access token 有效期：/evaluate 请求体带上 refresh token 让 modeling 续期。
+
+    无鉴权部署没有 refresh token 时仍发空 body。refresh token 不得落进工作区任何文件。
+    """
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.01)
     calls: list = []
@@ -888,9 +894,6 @@ def test_evaluate_start_passes_refresh_token_only_in_request(tmp_path, monkeypat
 
 
 def test_eval_router_forwards_refresh_token_only_for_user_token(tmp_path, monkeypatch):
-    import asyncio
-    from types import SimpleNamespace
-
     from app.routers import projects
     from app.services.workspace import WorkspaceManager
 
@@ -974,6 +977,8 @@ def test_tool_failure_section_handles_text_errors_and_caps(tmp_path):
     (root / ".ontology-state").mkdir(parents=True)
     truncated_json = VALIDATION_ERROR[:-3]  # consumer 端把 error 截到 1KB，JSON 可能不完整
     many = [{"toolName": f"tool_{i}", "error": f"失败 {i}"} for i in range(8)]
+    # 测试密钥运行时生成，代码里不写凭据样式的字面量
+    leaked = secrets.token_hex(8)
     rel = modeling_eval._write_report(root, {"id": "r1"}, [
         {"id": "er-script", "question": "Q1", "verdict": "error", "reason": "运行失败"},
         {"id": "er-many", "question": "Q2", "verdict": "fail", "reason": "错"},
@@ -983,7 +988,7 @@ def test_tool_failure_section_handles_text_errors_and_caps(tmp_path):
     ], traces={
         "er-script": {"status": "complete", "toolCalls": [], "toolFailures": [
             {"toolName": "execute_script",
-             "error": "Error: Script exited with code 2. KeyError: CUSTOMER_CODE token=abc123 "
+             "error": f"Error: Script exited with code 2. KeyError: CUSTOMER_CODE token={leaked} "
                       + "x" * 400},
             {"toolName": "execute_script", "error": truncated_json},
         ]},
@@ -997,7 +1002,7 @@ def test_tool_failure_section_handles_text_errors_and_caps(tmp_path):
 
     assert "`execute_script` · 退出码 2 · 详情：Error: Script exited with code 2." in script
     assert "CUSTOMER_CODE" in script and "`CUSTOMER_CODE`" not in script  # 列名不当错误码
-    assert "abc123" not in script and "token=***" in script
+    assert leaked not in script and "token=***" in script
     assert "x" * (modeling_eval.TOOL_FAILURE_DETAIL_CHARS + 1) not in script
     # 截断的 JSON 仍能抽出错误码与问题路径
     assert "`SCRIPT_ARGUMENT_VALIDATION_FAILED`" in script
@@ -1047,8 +1052,6 @@ def eval_pool(tmp_path, monkeypatch):
 
 
 async def _wait_for(predicate, timeout=5.0):
-    import asyncio
-
     deadline = asyncio.get_running_loop().time() + timeout
     while not predicate():
         if asyncio.get_running_loop().time() > deadline:
@@ -1058,9 +1061,6 @@ async def _wait_for(predicate, timeout=5.0):
 
 def test_eval_rounds_do_not_starve_default_executor(tmp_path, eval_pool):
     """评测占满专用池时，默认线程池上的短任务（上传、git）照常即时完成。"""
-    import asyncio
-    from concurrent.futures import ThreadPoolExecutor
-
     release, started = eval_pool
     projects = [_eval_workspace(tmp_path, f"评测{i}") for i in range(3)]
 
@@ -1093,8 +1093,6 @@ def test_eval_rounds_do_not_starve_default_executor(tmp_path, eval_pool):
 
 def test_stop_while_queued_skips_orchestration(tmp_path, eval_pool):
     """排队中停止：立即落 stopped，轮到时不再执行编排（不产生 modeling 侧开销）。"""
-    import asyncio
-
     release, started = eval_pool
     projects = [_eval_workspace(tmp_path, f"排队{i}") for i in range(3)]
 
@@ -1122,8 +1120,6 @@ def test_stop_while_queued_skips_orchestration(tmp_path, eval_pool):
 
 def test_delete_while_queued_dequeues_round(tmp_path, eval_pool):
     """项目在评测排队期间被删除：排队的轮次立即出队，不再等槽位也不执行编排。"""
-    import asyncio
-
     release, started = eval_pool
     projects = [_eval_workspace(tmp_path, f"删除{i}") for i in range(3)]
 

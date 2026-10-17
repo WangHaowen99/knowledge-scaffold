@@ -655,11 +655,44 @@ def _redact(text: str) -> str:
     return text
 
 
+def _issue_labels(error: dict) -> list[str]:
+    """结构化错误里的「问题码 字段路径」列表；issues 不是数组时为空。"""
+    issues = error.get("issues")
+    if not isinstance(issues, list):
+        return []
+    labels = []
+    for issue in issues:
+        if isinstance(issue, dict) and issue.get("code"):
+            labels.append(f"{issue.get('code')} {issue.get('path') or ''}".strip())
+    return labels
+
+
+def _parsed_message(parsed: dict, error: dict) -> str:
+    """解析成功的错误 JSON → 详情：message、顶层字符串 error、stderr 依次拼接。"""
+    top_error = parsed.get("error")
+    values = (
+        error.get("message"),
+        top_error if isinstance(top_error, str) else "",
+        error.get("stderr") or parsed.get("stderr"),
+    )
+    return " ".join(str(value) for value in values if value)
+
+
+def _text_error_code(raw: str) -> str:
+    """从原文抽错误码：先认 JSON 的 code 字段（截断的 JSON 也行），再认错误码形态的大写标识。"""
+    match = _JSON_CODE_RE.search(raw)
+    if match:
+        return match.group(1)
+    match = _ERROR_CODE_RE.search(raw)
+    return match.group(0) if match else ""
+
+
 def _tool_failure_line(failure: dict) -> str:
     """一条工具失败 → 工具名 · 错误码 · 问题码与字段路径 · 退出码 · 截断详情。
 
     consumer 的 error 是截断到 1KB 的文本：参数校验失败是 JSON（可能被截断），
-    脚本非零退出是「Error: Script exited with code N. …」——两种都按需抽取。"""
+    脚本非零退出是「Error: Script exited with code N. …」——两种都按需抽取。
+    """
     tool = str(failure.get("toolName") or failure.get("tool_name") or "未知工具")
     tool = tool.replace("`", "").strip()[:64] or "未知工具"
     raw = str(failure.get("error") or "").strip()
@@ -670,26 +703,15 @@ def _tool_failure_line(failure: dict) -> str:
     parsed = parsed if isinstance(parsed, dict) else {}
     error = parsed.get("error") if isinstance(parsed.get("error"), dict) else parsed
     code = str(error.get("code") or error.get("error_code") or "").strip()
-    issues = [
-        f"{issue.get('code')} {issue.get('path') or ''}".strip()
-        for issue in error.get("issues") or []
-        if isinstance(issue, dict) and issue.get("code")
-    ] if isinstance(error.get("issues"), list) else []
+    issues = _issue_labels(error)
     if parsed:
-        message = " ".join(
-            str(value) for value in (
-                error.get("message"),
-                parsed.get("error") if isinstance(parsed.get("error"), str) else "",
-                error.get("stderr") or parsed.get("stderr"),
-            ) if value
-        )
+        message = _parsed_message(parsed, error)
     else:
         # 截断的 JSON 解析不了：有 message 字段就只取它，免得详情是半截 JSON
         match = _JSON_MESSAGE_RE.search(raw)
         message = match.group(1) if match else raw
     if not code:
-        match = _JSON_CODE_RE.search(raw) or _ERROR_CODE_RE.search(raw)
-        code = match.group(1 if match and match.re is _JSON_CODE_RE else 0) if match else ""
+        code = _text_error_code(raw)
     if not issues:
         issues = [f"{issue} {path}" for issue, path in _ISSUE_RE.findall(raw)]
     parts = [f"`{tool}`"]
@@ -739,7 +761,6 @@ def _tool_failure_lines(trace: Any) -> list[str]:
         kept.append(line)
         used += len(line)
     return kept
-
 
 
 def _write_report(

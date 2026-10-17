@@ -798,7 +798,10 @@ def _join_side(side: str, own: set, other: set) -> str:
     if len(names) == 1:
         return names[0]
     prefixed = _REL_PREFIXED_RE.fullmatch(side.strip())
-    if prefixed and (prefixed.group(1).lower() in own or prefixed.group(1).lower() not in other):
+    if not prefixed:
+        return ''
+    prefix = prefixed.group(1).lower()
+    if prefix in own or prefix not in other:
         return prefixed.group(2)
     return ''
 
@@ -1354,11 +1357,12 @@ def _find_primary_key(obj_doc: OntologyDoc) -> str:
 
 def _find_primary_keys(obj_doc: OntologyDoc) -> list:
     """All 主键=是 columns in declaration order; several columns form a composite key."""
-    return [
-        row.get('中文名称', '').strip()
-        for row in obj_doc.attribute_rows
-        if row.get('主键', '').strip() == '是' and row.get('中文名称', '').strip()
-    ]
+    keys = []
+    for row in obj_doc.attribute_rows:
+        name = row.get('中文名称', '').strip()
+        if row.get('主键', '').strip() == '是' and name:
+            keys.append(name)
+    return keys
 
 
 def check_mock_data(all_docs: dict, mock_dir: Path) -> list:

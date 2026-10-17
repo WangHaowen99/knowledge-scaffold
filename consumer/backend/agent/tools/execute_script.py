@@ -1695,14 +1695,7 @@ def _validate_structured_arguments_against_request(
             field: value for field, value in record.items()
             if any(evidence.get(field) == value for evidence in evidence_records)
         }
-        if (
-            len(supported) >= 2
-            and any(_is_identity_field(field) for field in supported)
-            and not all(
-                _has_consistent_evidence_source(field, value, supported, evidence_records)
-                for field, value in supported.items()
-            )
-        ):
+        if _mixes_evidence_records(supported, evidence_records):
             reject("evidence_record_mismatch", path,
                    "{} combines fields from different tool-result records".format(path))
     raw_segments = [
@@ -1919,6 +1912,19 @@ def _has_consistent_evidence_source(
         if all(evidence.get(other, expected) == expected for other, expected in supported.items()):
             return True
     return False
+
+
+def _mixes_evidence_records(
+    supported: Mapping[str, str],
+    evidence_records: Sequence[Mapping[str, str]],
+) -> bool:
+    """Whether identity-bearing record fields cannot all be traced to consistent source rows."""
+    if len(supported) < 2 or not any(_is_identity_field(field) for field in supported):
+        return False
+    return not all(
+        _has_consistent_evidence_source(field, value, supported, evidence_records)
+        for field, value in supported.items()
+    )
 
 
 def _tool_evidence_records(evidence: str) -> List[Dict[str, str]]:

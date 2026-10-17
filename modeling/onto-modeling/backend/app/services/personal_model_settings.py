@@ -17,11 +17,13 @@ import json
 import os
 import secrets
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .. import config
 from . import auth
 
 ENGINES = ("claude", "jiuwen")
+_GATEWAY_SCHEMES = ("http", "https")
 _CIPHER_PREFIX = "enc:v1:"
 _MANAGED_KEY_FILE = ".model-secret-key"
 _MIN_MASTER_KEY_BYTES = 32
@@ -136,7 +138,9 @@ def allowed() -> bool:
 
 def model_owner(username: str, engine: str) -> str:
     """该用户在该引擎下实际使用谁的模型配置：自己的用户名，或 ""（管理员配置）。"""
-    if not username or engine not in ENGINES or not allowed():
+    if not username or engine not in ENGINES:
+        return ""
+    if not allowed():
         return ""
     return username if _section(username, engine).get("api_key") else ""
 
@@ -156,6 +160,15 @@ def resolve(owner: str, engine: str) -> dict:
 
 
 # ---- 用户自助接口 ----
+
+
+def _is_gateway_url(url: str) -> bool:
+    """网关地址按 scheme 判断：http / https 且带主机名。"""
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # 如方括号不配对的 IPv6 主机
+        return False
+    return parts.scheme in _GATEWAY_SCHEMES and bool(parts.netloc)
 
 
 def masked(username: str) -> dict:
@@ -190,7 +203,7 @@ def save(username: str, engine: str, base_url: str, api_key: str, model: str) ->
     base_url = (base_url or "").strip()
     model = (model or "").strip()
     api_key = (api_key or "").strip()
-    if base_url and not base_url.startswith(("http://", "https://")):
+    if base_url and not _is_gateway_url(base_url):
         raise PersonalConfigError("网关地址必须以 http(s):// 开头")
     data = _load()
     users = data.setdefault("users", {})

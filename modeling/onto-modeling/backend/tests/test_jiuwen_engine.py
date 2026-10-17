@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+import secrets
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -291,6 +292,9 @@ class FakeAgent:
         return session_id
 
 
+# 测试密钥运行时生成，代码里不写凭据样式的字面量
+FAKE_API_KEY = secrets.token_hex(8)
+
 HISTORY = [
     {"type": "user_message", "text": "读一下资料"},
     {"type": "assistant_message", "blocks": [{"kind": "tool_use", "tool": "Read"}]},
@@ -309,7 +313,7 @@ def connect_with(tmp_path, monkeypatch, token, checkpointer, history=None):
     agent = FakeAgent()
     monkeypatch.setattr(
         jiuwen, "model_config",
-        lambda owner="": {"base_url": "https://gateway.example.com/v1", "api_key": "k", "model": "m"},
+        lambda owner="": {"base_url": "https://gateway.example.com/v1", "api_key": FAKE_API_KEY, "model": "m"},
     )
     monkeypatch.setattr(jiuwen, "_ensure_runner_started", no_runner)
     monkeypatch.setattr(JiuwenEngine, "_build_agent", lambda self, cfg: (agent, None))
