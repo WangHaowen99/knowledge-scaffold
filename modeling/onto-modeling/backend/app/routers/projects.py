@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import config
 from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets, package_mapping
@@ -990,6 +990,9 @@ class EvalRunBody(BaseModel):
     eval_set_id: str = ""
     # 用户已确认降级：数据绑定对不上的对象不阻断评测，按未绑定处理
     allow_unbound: bool = False
+    # 当前登录的 refresh token：转交 modeling 侧为本轮评测续期 access token（轮次常超
+    # access token 有效期）。只在内存里透传一次，不落状态、不进日志（repr=False）
+    refresh_token: str = Field(default="", repr=False)
 
 
 @router.post("/{project_id}/eval/run")
@@ -1064,10 +1067,12 @@ async def eval_run(project_id: str, body: EvalRunBody, request: Request):
     if body.data_source_id:
         eval_data_sources.mark_used(project_id, body.data_source_id)
 
+    # 部署级兜底令牌不属于当前用户：此时不转交用户的 refresh token，避免身份错配
+    refresh_token = "" if config.MODELING_TOKEN else body.refresh_token.strip()
     _asyncio.create_task(
         modeling_eval.run(
             project_id, root, token, cases, data_source, eval_set_name,
-            allow_unbound=body.allow_unbound,
+            allow_unbound=body.allow_unbound, refresh_token=refresh_token,
         )
     )
     return {"started": True, "cases": len(cases)}

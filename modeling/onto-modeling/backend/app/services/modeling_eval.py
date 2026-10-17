@@ -530,17 +530,136 @@ def _unexecuted_as_errors(
     return list(results) + missing
 
 
+# 报告「工具失败」摘要：/ontology-evolution 据此判断运行异常的真实根因（脚本参数/
+# 数据映射/环境），而不是只看「运行失败」一句话去猜。逐用例限量，防报告膨胀。
+TOOL_FAILURES_PER_CASE = 5
+TOOL_FAILURE_DETAIL_CHARS = 240
+TOOL_FAILURE_CASE_CHARS = 1500
+_JSON_CODE_RE = re.compile(r'"(?:code|error_code)"\s*:\s*"([A-Z][A-Z0-9_]{2,79})"')
+# 自由文本里只认错误码形态的大写标识，免得把表名/列名（如 CUSTOMER_CODE）误当错误码
+_ERROR_CODE_RE = re.compile(
+    r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(?:FAILED|ERROR|DENIED|TIMEOUT|STALLED|INVALID"
+    r"|NOT_FOUND|UNAVAILABLE|EXCEEDED|REJECTED|MISSING)\b"
+)
+_ISSUE_RE = re.compile(r'"code"\s*:\s*"([a-z][a-z0-9_]*)"\s*,\s*"path"\s*:\s*"([^"]{1,240})"')
+_JSON_MESSAGE_RE = re.compile(r'"message"\s*:\s*"([^"]{1,500})"')
+_EXIT_CODE_RE = re.compile(r"exited with code (-?\d+)", re.IGNORECASE)
+_SECRET_PATTERNS = (
+    (re.compile(r"(?i)\bbearer\s+[\w.~+/=-]+"), "Bearer ***"),
+    (re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]+"), "***"),
+    (re.compile(
+        r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)"
+        r"(\"?\s*[=:]\s*\"?)[^\s\"',;}]+"
+    ), r"\1\2***"),
+)
+
+
+def _redact(text: str) -> str:
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def _tool_failure_line(failure: dict) -> str:
+    """一条工具失败 → 工具名 · 错误码 · 问题码与字段路径 · 退出码 · 截断详情。
+
+    consumer 的 error 是截断到 1KB 的文本：参数校验失败是 JSON（可能被截断），
+    脚本非零退出是「Error: Script exited with code N. …」——两种都按需抽取。"""
+    tool = str(failure.get("toolName") or failure.get("tool_name") or "未知工具")
+    tool = tool.replace("`", "").strip()[:64] or "未知工具"
+    raw = str(failure.get("error") or "").strip()
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        parsed = None
+    parsed = parsed if isinstance(parsed, dict) else {}
+    error = parsed.get("error") if isinstance(parsed.get("error"), dict) else parsed
+    code = str(error.get("code") or error.get("error_code") or "").strip()
+    issues = [
+        f"{issue.get('code')} {issue.get('path') or ''}".strip()
+        for issue in error.get("issues") or []
+        if isinstance(issue, dict) and issue.get("code")
+    ] if isinstance(error.get("issues"), list) else []
+    if parsed:
+        message = " ".join(
+            str(value) for value in (
+                error.get("message"),
+                parsed.get("error") if isinstance(parsed.get("error"), str) else "",
+                error.get("stderr") or parsed.get("stderr"),
+            ) if value
+        )
+    else:
+        # 截断的 JSON 解析不了：有 message 字段就只取它，免得详情是半截 JSON
+        match = _JSON_MESSAGE_RE.search(raw)
+        message = match.group(1) if match else raw
+    if not code:
+        match = _JSON_CODE_RE.search(raw) or _ERROR_CODE_RE.search(raw)
+        code = match.group(1 if match and match.re is _JSON_CODE_RE else 0) if match else ""
+    if not issues:
+        issues = [f"{issue} {path}" for issue, path in _ISSUE_RE.findall(raw)]
+    parts = [f"`{tool}`"]
+    if code:
+        parts.append(f"`{code[:80]}`")
+    if issues:
+        parts.append("问题：" + "、".join(
+            f"`{_redact(issue).replace('`', '')}`" for issue in list(dict.fromkeys(issues))[:6]
+        ))
+    exit_code = _EXIT_CODE_RE.search(raw)
+    if exit_code:
+        parts.append(f"退出码 {exit_code.group(1)}")
+    detail = " ".join(_redact(message).split())
+    if detail:
+        if len(detail) > TOOL_FAILURE_DETAIL_CHARS:
+            detail = detail[:TOOL_FAILURE_DETAIL_CHARS] + "…"
+        parts.append(f"详情：{detail}")
+    return " · ".join(parts)
+
+
+def _tool_failure_lines(trace: Any) -> list[str]:
+    """单个用例的「工具失败」小节（Markdown 嵌套列表行）；无失败、无轨迹问题时为空。"""
+    if not isinstance(trace, dict):
+        return []
+    failures = [item for item in trace.get("toolFailures") or [] if isinstance(item, dict)]
+    lines: list[str] = []
+    if failures:
+        counted: dict[str, int] = {}
+        for failure in failures:
+            line = _tool_failure_line(failure)
+            counted[line] = counted.get(line, 0) + 1
+        for line, times in list(counted.items())[:TOOL_FAILURES_PER_CASE]:
+            lines.append(f"  - {line}" + (f"（×{times}）" if times > 1 else ""))
+        if len(counted) > TOOL_FAILURES_PER_CASE:
+            lines.append(f"  - …另有 {len(counted) - TOOL_FAILURES_PER_CASE} 类失败未列出")
+        calls = trace.get("toolCalls")
+        if isinstance(calls, list) and calls:
+            lines.append(f"  - 本用例共调用工具 {len(calls)} 次，失败 {len(failures)} 次")
+    if trace.get("status") == "unavailable":
+        reason = " ".join(_redact(str(trace.get("error") or "原因未知")).split())[:160]
+        lines.append(f"  - 执行轨迹未取到（{reason}），工具失败情况未知")
+    kept, used = [], 0
+    for line in lines:
+        if used + len(line) > TOOL_FAILURE_CASE_CHARS:
+            kept.append("  - …（已截断）")
+            break
+        kept.append(line)
+        used += len(line)
+    return kept
+
+
+
 def _write_report(
     root: Path,
     round_info: dict,
     results: list[dict],
     cases: list[dict] | None = None,
     failure: str = "",
+    traces: dict | None = None,
 ) -> str:
     """落评测报告并把状态收敛到终态。
 
     failure 非空 = modeling 侧轮次异常终止但已有部分结果：照样出报告（状态 failed），
     让失分与异常用例能进入 /ontology-evolution，而不是随失败状态一起丢掉。
+    traces = modeling 轮次详情里按结果 ID 索引的执行轨迹：失分用例附「工具失败」摘要。
     """
     executed = len(results)
     if failure:
@@ -633,6 +752,12 @@ def _write_report(
             nested_quote(item.get("reason") or "（无）"),
             "",
         ]
+        failure_lines = (
+            [] if item.get("verdict") == "pass"
+            else _tool_failure_lines((traces or {}).get(str(item.get("id") or "").strip()))
+        )
+        if failure_lines:
+            lines += ["- **工具失败**：", "", *failure_lines, ""]
     (root / "reports").mkdir(exist_ok=True)  # 不带 parents：项目已删除时不重建工作区
     (root / rel).write_text("\n".join(lines), encoding="utf-8")
     (root / answers_rel).write_text(
@@ -815,9 +940,11 @@ def _poll_round(
     if round_info.get("status") not in ("done", "failed"):
         raise TimeoutError("评测超时（modeling 侧轮次未在时限内结束）")
     if round_info.get("status") == "failed":
-        _collect_failed_round(root, round_info, details.get("results") or [], cases)
+        _collect_failed_round(
+            root, round_info, details.get("results") or [], cases, details.get("traces")
+        )
         return
-    rel = _write_report(root, round_info, details.get("results") or [])
+    rel = _write_report(root, round_info, details.get("results") or [], traces=details.get("traces"))
     _git_commit(root, f"eval: 数据评测报告 {rel.split('/')[-1]}")
 
 
@@ -827,7 +954,8 @@ def _round_failure(round_info: dict) -> str:
 
 
 def _collect_failed_round(
-    root: Path, round_info: dict, results: list[dict], cases: list[dict]
+    root: Path, round_info: dict, results: list[dict], cases: list[dict],
+    traces: dict | None = None,
 ) -> None:
     """轮次在 modeling 侧失败：透出其日志，有结果就落报告。
 
@@ -836,7 +964,7 @@ def _collect_failed_round(
     failure = _round_failure(round_info)
     if not results:
         raise RuntimeError(failure)
-    rel = _write_report(root, round_info, results, cases, failure=failure)
+    rel = _write_report(root, round_info, results, cases, failure=failure, traces=traces)
     _git_commit(root, f"eval: 数据评测报告（轮次异常终止） {rel.split('/')[-1]}")
 
 
@@ -878,14 +1006,19 @@ def _try_resume(
     if status == "done":
         _write_state(root, status="running", phase="evaluate",
                      message="续接上一轮（收取已完成结果）")
-        rel = _write_report(root, details.get("round") or {}, details.get("results") or [])
+        rel = _write_report(
+            root, details.get("round") or {}, details.get("results") or [],
+            traces=details.get("traces"),
+        )
         _git_commit(root, f"eval: 数据评测报告 {rel.split('/')[-1]}")
         return True
     partial_results = collect_failed and bool(details.get("results"))
     if status == "failed" and partial_results:
         _write_state(root, status="running", phase="evaluate",
                      message="续接上一轮（收取异常终止前的结果）")
-        _collect_failed_round(root, details.get("round") or {}, details["results"], cases)
+        _collect_failed_round(
+            root, details.get("round") or {}, details["results"], cases, details.get("traces")
+        )
         return True
     return False
 
@@ -1053,6 +1186,7 @@ def _configure_connection(
 async def run(
     project_id: str, root: Path, token: str, cases: list[dict],
     data_source: dict | None = None, eval_set_name: str = "", allow_unbound: bool = False,
+    refresh_token: str = "",
 ) -> None:
     """后台评测编排；进度经 .ontology-state/eval.json 供前端轮询。"""
     if project_id in _running:
@@ -1062,7 +1196,8 @@ async def run(
     _live_tokens[project_id] = token
     try:
         await asyncio.to_thread(
-            _run_sync, project_id, root, token, cases, data_source, eval_set_name, allow_unbound
+            _run_sync, project_id, root, token, cases, data_source, eval_set_name, allow_unbound,
+            refresh_token,
         )
     finally:
         _running.discard(project_id)
@@ -1073,6 +1208,7 @@ async def run(
 def _run_sync(
     project_id: str, root: Path, token: str, cases: list[dict],
     data_source: dict | None = None, eval_set_name: str = "", allow_unbound: bool = False,
+    refresh_token: str = "",
 ) -> None:
     from .workspace import WorkspaceManager
 
@@ -1191,7 +1327,13 @@ def _run_sync(
             root, phase="evaluate", message="评测执行中（consumer 逐用例问答）",
             cases=_case_progress(cases, [], True),
         )
-        started = _http("POST", f"/api/projects/{mp_project}/evaluate", tok(), body={})
+        # 轮次在 modeling 侧后台执行，常超 access token 有效期：带上 refresh token，
+        # modeling 据此为本轮登记可续期的凭据会话。无鉴权部署没有 refresh token，照旧空 body。
+        # refresh token 只经此请求体转交，不落状态、不写日志
+        started = _http(
+            "POST", f"/api/projects/{mp_project}/evaluate", tok(),
+            body={"refresh_token": refresh_token} if refresh_token else {},
+        )
         round_id = started["roundId"]
         _write_state(root, round_id=round_id)
         _poll_round(project_id, root, token, mp_project, round_id, cases)

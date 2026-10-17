@@ -829,3 +829,192 @@ def test_write_report_does_not_recreate_deleted_workspace(tmp_path):
     with pytest.raises(FileNotFoundError):
         modeling_eval._write_report(root, {"id": "r1"}, [])
     assert not root.exists()
+
+
+# ---- 评测凭据续期：refresh token 透传给 modeling 的 /evaluate ----
+
+SYNTHETIC_REFRESH = "synthetic-refresh-value"
+
+
+def _fake_modeling_http(calls: list, traces: dict | None = None):
+    """替身 _http：记录每次调用（方法、路径、请求体），按路径回协议响应。"""
+
+    def fake_http(method, path, token, body=None, data=None, content_type="", timeout=60.0):
+        calls.append((method, path, body))
+        if path == "/api/package-workspaces/import":
+            return {"project": {"id": "mp-1"}, "version": 1}
+        if path.endswith("/evaluate"):
+            return {"roundId": "r1"}
+        if "/rounds/" in path:
+            return {
+                "round": {"id": "r1", "status": "done", "progressDone": 1, "progressTotal": 1},
+                "results": [{"id": "er-1", "question": "Q1", "groundTruth": "G1",
+                             "finalAnswer": "", "verdict": "error",
+                             "reason": "运行失败：Tool execution stopped after a repeated failure."}],
+                "traces": traces or {},
+            }
+        return {}
+
+    return fake_http
+
+
+@pytest.mark.parametrize("refresh_token", [SYNTHETIC_REFRESH, ""])
+def test_evaluate_start_passes_refresh_token_only_in_request(tmp_path, monkeypatch, refresh_token):
+    """评测轮常超 access token 有效期：/evaluate 请求体带上 refresh token 让 modeling 续期；
+    无鉴权部署没有 refresh token 时仍发空 body。refresh token 不得落进工作区任何文件。"""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.01)
+    calls: list = []
+    monkeypatch.setattr(modeling_eval, "_http", _fake_modeling_http(calls))
+    pid, root = _eval_workspace(tmp_path, "凭据续期")
+
+    modeling_eval._run_sync(
+        pid, root, "access", [{"question": "Q1", "groundTruth": "G1"}],
+        allow_unbound=True, refresh_token=refresh_token,
+    )
+
+    evaluate = [body for method, path, body in calls if path.endswith("/evaluate")]
+    assert evaluate == [{"refresh_token": refresh_token} if refresh_token else {}]
+    # 其余调用都不携带 refresh token
+    assert all(
+        SYNTHETIC_REFRESH not in json.dumps(body or {})
+        for method, path, body in calls if not path.endswith("/evaluate")
+    )
+    assert modeling_eval.read_state(root)["status"] == "done"
+    for path in root.rglob("*"):
+        if path.is_file() and ".git" not in path.parts:
+            assert SYNTHETIC_REFRESH not in path.read_text(encoding="utf-8", errors="ignore"), path
+
+
+def test_eval_router_forwards_refresh_token_only_for_user_token(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.routers import projects
+    from app.services.workspace import WorkspaceManager
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
+    monkeypatch.setattr(projects, "workspaces", manager)
+    monkeypatch.setattr(modeling_eval, "enabled", lambda: True)
+    monkeypatch.setattr(modeling_eval, "reachable", lambda: True)
+    pid = manager.create_project("凭据转交")["id"]
+    request = SimpleNamespace(state=SimpleNamespace(user=None), headers={"authorization": "Bearer t"})
+    captured: list = []
+
+    async def fake_run(project_id, root_, token, cases, data_source, eval_set_name="",
+                       allow_unbound=False, refresh_token=""):
+        captured.append((token, refresh_token))
+
+    monkeypatch.setattr(modeling_eval, "run", fake_run)
+    body = projects.EvalRunBody(
+        cases=[{"question": "Q1", "groundTruth": "G1"}], allow_unbound=True,
+        refresh_token=SYNTHETIC_REFRESH,
+    )
+    assert SYNTHETIC_REFRESH not in repr(body)  # 请求体模型的 repr 不暴露 refresh token
+
+    async def call():
+        result = await projects.eval_run(pid, body, request)
+        await asyncio.sleep(0)
+        return result
+
+    monkeypatch.setattr(config, "MODELING_TOKEN", "")
+    assert asyncio.run(call())["started"] is True
+    # 部署级兜底令牌不属于当前用户：不转交用户的 refresh token
+    monkeypatch.setattr(config, "MODELING_TOKEN", "deploy-token")
+    assert asyncio.run(call())["started"] is True
+    assert captured == [("t", SYNTHETIC_REFRESH), ("deploy-token", "")]
+
+
+# ---- 报告「工具失败」小节：供 /ontology-evolution 判断运行异常根因 ----
+
+VALIDATION_ERROR = json.dumps({
+    "ok": False,
+    "error": {
+        "code": "SCRIPT_ARGUMENT_VALIDATION_FAILED",
+        "message": "Script arguments failed validation; the script did not run.",
+        "correctable": True,
+        "issues": [{"code": "ungrounded_identity", "path": "arguments.customer_code"}],
+    },
+})
+
+
+def test_report_lists_tool_failures_from_round_traces(tmp_path, monkeypatch):
+    """异常用例报告只有「运行失败」一句话不够归因：从轮次详情 traces 附上工具失败摘要。"""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.01)
+    calls: list = []
+    traces = {"er-1": {
+        "status": "complete",
+        "toolCalls": ["business_data_search", "execute_script", "execute_script"],
+        "toolFailures": [
+            {"toolName": "execute_script", "error": VALIDATION_ERROR},
+            {"toolName": "execute_script", "error": VALIDATION_ERROR},
+        ],
+    }}
+    monkeypatch.setattr(modeling_eval, "_http", _fake_modeling_http(calls, traces))
+    pid, root = _eval_workspace(tmp_path, "工具失败")
+
+    modeling_eval._run_sync(pid, root, "t", [{"question": "Q1", "groundTruth": "G1"}],
+                            allow_unbound=True)
+
+    report = (root / modeling_eval.read_state(root)["report"]).read_text(encoding="utf-8")
+    assert "- **工具失败**：" in report
+    assert (
+        "  - `execute_script` · `SCRIPT_ARGUMENT_VALIDATION_FAILED` · "
+        "问题：`ungrounded_identity arguments.customer_code` · "
+        "详情：Script arguments failed validation; the script did not run.（×2）"
+    ) in report
+    assert "  - 本用例共调用工具 3 次，失败 2 次" in report
+
+
+def test_tool_failure_section_handles_text_errors_and_caps(tmp_path):
+    root = tmp_path
+    (root / ".ontology-state").mkdir(parents=True)
+    truncated_json = VALIDATION_ERROR[:-3]  # consumer 端把 error 截到 1KB，JSON 可能不完整
+    many = [{"toolName": f"tool_{i}", "error": f"失败 {i}"} for i in range(8)]
+    rel = modeling_eval._write_report(root, {"id": "r1"}, [
+        {"id": "er-script", "question": "Q1", "verdict": "error", "reason": "运行失败"},
+        {"id": "er-many", "question": "Q2", "verdict": "fail", "reason": "错"},
+        {"id": "er-pass", "question": "Q3", "verdict": "pass", "reason": "对"},
+        {"id": "er-none", "question": "Q4", "verdict": "error", "reason": "运行失败"},
+        {"id": "er-lost", "question": "Q5", "verdict": "error", "reason": "运行失败"},
+    ], traces={
+        "er-script": {"status": "complete", "toolCalls": [], "toolFailures": [
+            {"toolName": "execute_script",
+             "error": "Error: Script exited with code 2. KeyError: CUSTOMER_CODE token=abc123 "
+                      + "x" * 400},
+            {"toolName": "execute_script", "error": truncated_json},
+        ]},
+        "er-many": {"status": "complete", "toolCalls": [], "toolFailures": many},
+        "er-pass": {"status": "complete", "toolCalls": [], "toolFailures": many},
+        "er-lost": {"status": "unavailable", "error": "Consumer 未返回 run_id", "toolCalls": []},
+    })
+    report = (root / rel).read_text(encoding="utf-8")
+    sections = report.split("### ")
+    script, many_case, pass_case, none_case, lost_case = sections[1:]
+
+    assert "`execute_script` · 退出码 2 · 详情：Error: Script exited with code 2." in script
+    assert "CUSTOMER_CODE" in script and "`CUSTOMER_CODE`" not in script  # 列名不当错误码
+    assert "abc123" not in script and "token=***" in script
+    assert "x" * (modeling_eval.TOOL_FAILURE_DETAIL_CHARS + 1) not in script
+    # 截断的 JSON 仍能抽出错误码与问题路径
+    assert "`SCRIPT_ARGUMENT_VALIDATION_FAILED`" in script
+    assert "`ungrounded_identity arguments.customer_code`" in script
+    assert "详情：Script arguments failed validation; the script did not run." in script
+
+    assert many_case.count("  - `tool_") == modeling_eval.TOOL_FAILURES_PER_CASE
+    assert "另有 3 类失败未列出" in many_case
+    assert "工具失败" not in pass_case  # 通过用例不附失败摘要
+    assert "工具失败" not in none_case  # 没有轨迹的用例不出空小节
+    assert "执行轨迹未取到（Consumer 未返回 run_id）" in lost_case
+
+
+def test_evolution_command_reads_tool_failure_section():
+    """报告小节名与 /ontology-evolution 的归因指引必须对得上，否则命令读不到工具失败证据。"""
+    command = (
+        Path(config.ASSETS_DIR) / "workspace-toolkit" / "commands" / "ontology-evolution.md"
+    ).read_text(encoding="utf-8")
+    assert "「工具失败」" in command
+    assert "SCRIPT_ARGUMENT_VALIDATION_FAILED" in command
+    assert "执行轨迹未取到" in command
