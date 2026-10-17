@@ -48,8 +48,11 @@ TERM_ROWS = [["术语", "别名", "释义"], ["订单", "单据", "客户提交�
         ("orders", ORDER_ROWS, False, "table"),
         ("sensor", [["unit_id", "41_M11", "41_M12"], ["U1", 1, 2]], False, "table"),
         ("机场", [["code", "region_code", "国家", "名称"], ["AAA", "X", "甲国", "甲机场"]], False, "maybe"),
-        ("术语表", TERM_ROWS, False, "document"),
         ("字段表", [["字段名", "类型", "说明"], ["order_id", "string", "订单编号"]], False, "dictionary"),
+        ("术语表", TERM_ROWS, False, "term"),
+        ("glossary", [["term", "definition"], ["order", "a purchase request"]], False, "term"),
+        # 只有「名称」「说明」的中文表头是普通表格，不是术语表
+        ("商品", [["商品名称", "规格", "说明"], ["甲商品", "500g", "常规款"]], False, "document"),
         ("issues", [["issue_id", "description", "type"], ["I1", "描述", "缺陷"]], False, "table"),
         ("清单", [["api", "service", "param"], ["", "", "name"]], True, "document"),
         ("dup", [["id", "id", "name"]], False, "document"),
@@ -98,8 +101,19 @@ def test_upload_prefills_schema_for_data_table(manager: WorkspaceManager):
     }
 
     term = manager.save_resource(pid, "excel", "术语.xlsx", _xlsx({"术语表": TERM_ROWS}))
-    assert "detected" not in term
-    assert term["path"] not in manager.resource_directives(pid)
+    assert term["detected"] == {"purpose": "term", "tables": ["术语表"]}
+    assert manager.resource_directives(pid)[term["path"]] == {
+        "purpose": "term",
+        "reading_mode": "on_demand",
+        "auto_detected": True,
+    }
+
+    # 术语表与数据表混在一份文件里：两种用途都不预填
+    mixed = manager.save_resource(
+        pid, "excel", "混合.xlsx", _xlsx({"orders": ORDER_ROWS, "术语表": TERM_ROWS})
+    )
+    assert "detected" not in mixed
+    assert mixed["path"] not in manager.resource_directives(pid)
 
 
 def test_upload_respects_explicit_purpose_and_manual_tags(manager: WorkspaceManager):
@@ -132,6 +146,10 @@ def test_replacing_auto_detected_file_redetects(manager: WorkspaceManager):
     assert manager.resource_directives(pid)[saved["path"]]["auto_detected"] is True
 
     manager.save_resource(pid, "excel", "x.xlsx", _xlsx({"术语表": TERM_ROWS}))
+    assert manager.resource_directives(pid)[saved["path"]]["purpose"] == "term"
+
+    plain = [["商品名称", "规格", "说明"], ["甲商品", "500g", "常规款"]]
+    manager.save_resource(pid, "excel", "x.xlsx", _xlsx({"商品": plain}))
     assert saved["path"] not in manager.resource_directives(pid)
 
 

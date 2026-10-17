@@ -1,9 +1,11 @@
-"""表格资料的数据表识别：判断一份 xlsx/csv 是否为「数据 Schema」资料。
+"""表格资料的用途识别：判断一份 xlsx/csv 是「数据 Schema」还是「术语表」资料。
 
-只看结构、不看业务语义，结果用于上传时预填用途与资料区的一键标注，最终仍由用户确认。
+只看结构、不看业务语义，结果用于上传时预填用途与资料区的一键标注，用户可在资料区改用途。
 判定逐 Sheet 进行：首行是不重复、不合并的英文标识符列名（≥80%）才算数据表；
 中英混合（50%～80%）记为疑似；表头同时出现「字段名」类和「类型/说明」类词的是数据字典，
-不是数据表。全部有内容的 Sheet 都是数据表或疑似、且至少一张数据表，整份才判为数据表。
+不是数据表；表头同时出现「术语」类列和「别名/英文/释义」类列的是术语表。
+全部有内容的 Sheet 都是数据表或疑似、且至少一张数据表，整份判为数据表；
+全部有内容的 Sheet 都是术语表，整份判为术语表。
 """
 
 from __future__ import annotations
@@ -37,8 +39,16 @@ DICTIONARY_ATTR_WORDS = frozenset({
     "type", "data_type", "description", "comment",
 })
 
-TABLE, MAYBE, DICTIONARY, DOCUMENT, META, EMPTY = (
-    "table", "maybe", "dictionary", "document", "meta", "empty"
+# 术语表：一列术语本身，另有别名、英文或释义列。单独的「名称」列不算——中文表头的
+# 数据表也常有，误标成术语表会把数据表当成命名依据
+TERM_NAME_WORDS = frozenset({"术语", "术语名称", "业务术语", "名词", "概念", "term"})
+TERM_ATTR_WORDS = frozenset({
+    "别名", "同义词", "近义词", "缩写", "英文", "英文名", "英文名称", "英文术语",
+    "释义", "定义", "含义", "解释", "alias", "synonym", "english", "definition", "meaning",
+})
+
+TABLE, MAYBE, DICTIONARY, TERM, DOCUMENT, META, EMPTY = (
+    "table", "maybe", "dictionary", "term", "document", "meta", "empty"
 )
 
 
@@ -53,6 +63,11 @@ def _identifier_ratio(cells: list[str]) -> float:
 def _is_dictionary_header(header: list[str]) -> bool:
     lowered = {cell.lower() for cell in header}
     return bool(lowered & DICTIONARY_NAME_WORDS) and bool(lowered & DICTIONARY_ATTR_WORDS)
+
+
+def _is_term_header(header: list[str]) -> bool:
+    lowered = {cell.lower() for cell in header}
+    return bool(lowered & TERM_NAME_WORDS) and bool(lowered & TERM_ATTR_WORDS)
 
 
 def _first_row(rows: list) -> list[str] | None:
@@ -71,6 +86,8 @@ def _classify_header(header: list[str], header_merged: bool) -> str:
         return DOCUMENT
     if _is_dictionary_header(header):
         return DICTIONARY
+    if _is_term_header(header):
+        return TERM
     ratio = _identifier_ratio(header)
     if ratio >= IDENTIFIER_RATIO_TABLE:
         return TABLE
@@ -78,7 +95,7 @@ def _classify_header(header: list[str], header_merged: bool) -> str:
 
 
 def classify_sheet(name: str, rows: list, header_merged: bool = False) -> str:
-    """单个 Sheet 的结构类别：table / maybe / dictionary / document / meta / empty。"""
+    """单个 Sheet 的结构类别：table / maybe / dictionary / term / document / meta / empty。"""
     if META_SHEET.match(name.strip()):
         return META
     header = _first_row(rows)
@@ -126,8 +143,11 @@ def _read_sheets(path: Path):
 
 
 @functools.lru_cache(maxsize=256)
-def _detect_cached(path_str: str, mtime_ns: int, size: int) -> tuple[bool, tuple[str, ...]]:
-    """按 (路径, 修改时间, 大小) 缓存：资料区每次展开都要列候选，文件不变就不重读。"""
+def _detect_cached(path_str: str, mtime_ns: int, size: int) -> tuple[str, tuple[str, ...]]:
+    """按 (路径, 修改时间, 大小) 缓存：资料区每次展开都要列候选，文件不变就不重读。
+
+    返回（整份类别, 相关 Sheet 名）：类别为 "schema"、"term" 或 ""（不预填）。
+    """
     del mtime_ns, size  # 只参与缓存键
     kinds = [
         (name, classify_sheet(name, rows, merged))
@@ -135,17 +155,28 @@ def _detect_cached(path_str: str, mtime_ns: int, size: int) -> tuple[bool, tuple
     ]
     content = [(name, kind) for name, kind in kinds if kind not in (META, EMPTY)]
     tables = tuple(name for name, kind in content if kind == TABLE)
-    is_table = bool(tables) and all(kind in (TABLE, MAYBE) for _, kind in content)
-    return is_table, tables
+    if tables and all(kind in (TABLE, MAYBE) for _, kind in content):
+        return "schema", tables
+    if content and all(kind == TERM for _, kind in content):
+        return "term", tuple(name for name, _ in content)
+    return "", ()
 
 
-def detect_data_table(path: Path) -> dict | None:
-    """整份资料判为数据表时返回 {"tables": [数据表 Sheet 名]}，否则 None。"""
+def detect_material(path: Path) -> dict | None:
+    """整份表格资料可预填用途时返回 {"purpose": "schema"|"term", "tables": [Sheet 名]}，否则 None。"""
     if path.suffix.lower() not in TABLE_SUFFIXES:
         return None
     try:
         stat = path.stat()
     except OSError:
         return None
-    is_table, tables = _detect_cached(str(path.resolve()), stat.st_mtime_ns, stat.st_size)
-    return {"tables": list(tables)} if is_table else None
+    purpose, sheets = _detect_cached(str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+    return {"purpose": purpose, "tables": list(sheets)} if purpose else None
+
+
+def detect_data_table(path: Path) -> dict | None:
+    """整份资料判为数据表时返回 {"tables": [数据表 Sheet 名]}，否则 None。"""
+    detected = detect_material(path)
+    if detected is None or detected["purpose"] != "schema":
+        return None
+    return {"tables": detected["tables"]}

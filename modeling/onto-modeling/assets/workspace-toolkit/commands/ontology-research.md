@@ -57,8 +57,8 @@ Ask the user to select one or more directions (or type a custom direction). Reco
 
 读取 `resource/materials.json`（不存在则跳过）。本步骤只建立处理计划，不逐个精读：
 
-- `purpose=goal` 的资料 → 在 Step 2 确认分析主题时必须先引用其内容；
-- `reading_mode=full` 的资料 → 在 Step 1.5 中必须全文读取，不得只扫开头；
+- `purpose=goal` 的资料 → 在 Step 2 确认分析主题时必须先引用其内容；没有 `goal` 标注时，从文档类资料里找出说明建模场景、目标或范围的文档（如场景说明、需求说明）按同样方式优先引用，并在报告「信息来源」里注明；
+- 需要全文读取的资料（`reading_mode=full`，或没有写 `reading_mode` 的文档类资料，规则见 CLAUDE.md 8.1）→ 在 Step 1.5 中必须全文读取，不得只扫开头；
 - `purpose=schema` / `term` 的表格 → 资料分析报告中列入"数据与术语来源"清单，供后续对象提取直接引用；
 - 其余按 `auto` 处理。
 

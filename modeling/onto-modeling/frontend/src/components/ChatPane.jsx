@@ -61,6 +61,8 @@ const ALL_COMMANDS = [
 ];
 
 const HISTORY_TAIL = 400;
+// 上传时平台按结构识别出的资料用途（见后端 material_detect）
+const DETECTED_PURPOSE_LABELS = { schema: '数据 Schema', term: '术语表' };
 
 function isVisibleChatEvent(event) {
   if (
@@ -1127,12 +1129,11 @@ export default function ChatPane({
               resourceSubdir(att.name),
               att.file,
               (ratio) => patchUpload(att.uid, { percent: Math.round(ratio * 100) }),
-              att.purpose,
-              att.readingMode,
             );
             patchUpload(att.uid, { percent: 100, status: 'done' });
-            // 平台按结构识别为数据表并预填了 schema：告诉助手，免得它再按「无 schema」处理
-            const label = saved.detected ? `${saved.path}（已自动标为数据 Schema）` : saved.path;
+            // 平台按结构识别并预填了用途：告诉助手，免得它再按「无 schema / 无术语表」处理
+            const detectedLabel = DETECTED_PURPOSE_LABELS[saved.detected?.purpose];
+            const label = detectedLabel ? `${saved.path}（已自动标为${detectedLabel}）` : saved.path;
             return { att, path: saved.path, label };
           } catch (error) {
             patchUpload(att.uid, { status: 'error', error: error.message });
@@ -1180,8 +1181,6 @@ export default function ChatPane({
       name: f.name,
       file: f.file,
       preview: null,
-      purpose: f.purpose,
-      readingMode: f.readingMode,
     }));
     onInitialFilesConsumed?.();
     void send('这是本项目的初始领域资料，请接收并简要浏览，等待我的下一步指令。', atts);

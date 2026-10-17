@@ -825,22 +825,8 @@ export default function LeftPane({
                           disabled: opt.tableOnly && !isTableFile(item.path),
                         }))}
                       />
-                      <label className="resource-reading">
-                        <input
-                          type="checkbox"
-                          checked={directives[item.path]?.reading_mode === 'full'}
-                          onChange={(e) =>
-                            changeDirective(
-                              item.path,
-                              directives[item.path]?.purpose || 'auto',
-                              e.target.checked ? 'full' : 'on_demand',
-                            )
-                          }
-                        />
-                        全文精读
-                      </label>
                       {directives[item.path]?.auto_detected && (
-                        <Tooltip title="上传时按表格结构自动识别为数据表；改用途即覆盖">
+                        <Tooltip title="上传时按表格结构自动识别（数据表或术语表）；改用途即覆盖">
                           <Tag className="resource-detect-tag">自动识别</Tag>
                         </Tooltip>
                       )}
