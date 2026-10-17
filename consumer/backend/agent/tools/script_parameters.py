@@ -179,6 +179,18 @@ def script_parameter_argument_keys(parameter: Mapping[str, Any]) -> List[str]:
     return keys
 
 
+def format_number_cli_value(value: Any) -> str:
+    """Render a ``number`` argument; integral values stay integer text.
+
+    Scripts commonly declare such inputs with argparse ``type=int``, which
+    rejects ``"2026.0"`` while ``type=float`` still accepts ``"2026"``.
+    """
+    number = float(value)
+    if not isinstance(value, bool) and number.is_integer():
+        return str(value) if isinstance(value, int) else str(int(number))
+    return str(number)
+
+
 def normalize_boolean_action(value: Any) -> str:
     """Return a supported argparse boolean action, if one is declared."""
     action = str(value or "").strip().lower()

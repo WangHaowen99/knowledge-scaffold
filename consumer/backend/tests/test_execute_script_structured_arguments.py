@@ -1,7 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
+import argparse
 import json
+
+import pytest
 
 from agent.direct_execution.arguments import build_direct_cli_args
 from agent.direct_execution.models import RuntimeContext
@@ -322,3 +325,41 @@ def test_structured_collection_does_not_reject_derived_items_without_request_evi
         )
         == []
     )
+
+
+NUMBER_PARAMETER = [{"name": "year", "flag": "--year", "type": "number", "required": True, "multiple": False}]
+
+
+@pytest.mark.parametrize("value, expected", [
+    (2026, "2026"), (2026.0, "2026"), ("2026", "2026"), ("2026.0", "2026"), (-3.0, "-3"),
+    (0.035, "0.035"), ("2.5", "2.5"),
+])
+def test_integral_number_arguments_keep_integer_text_for_both_execution_paths(value, expected):
+    args, missing, invalid = _build_cli_args(
+        script_args=[], script_parameters=NUMBER_PARAMETER, arguments={"year": value},
+    )
+    assert (missing, invalid) == ([], [])
+    assert args == ["--year", expected]
+
+    direct_args, direct_missing, error = build_direct_cli_args(
+        script_parameters=NUMBER_PARAMETER,
+        business_arguments={"year": value},
+        runtime_context=RuntimeContext(
+            session_id="session-1", run_id="run-1", turn_id=1, user_id="user-1",
+            workspace_id="workspace-1", selected_ontology_id="demo",
+        ),
+    )
+    assert (direct_missing, error) == ([], None)
+    assert direct_args == ["--year", expected]
+
+
+def test_integral_number_text_is_accepted_by_int_and_float_argparse():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--year", type=int)
+    parser.add_argument("--ratio", type=float)
+    args, _missing, _invalid = _build_cli_args(
+        script_args=[],
+        script_parameters=[*NUMBER_PARAMETER, {"name": "ratio", "flag": "--ratio", "type": "number"}],
+        arguments={"year": 2026.0, "ratio": 2},
+    )
+    assert vars(parser.parse_args(args)) == {"year": 2026, "ratio": 2.0}
