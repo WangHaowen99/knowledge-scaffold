@@ -395,6 +395,7 @@
 .flowchart-editor-inspector select,
 .flowchart-editor-inspector textarea {
   width: 100%;
+  box-sizing: border-box;
   padding: 8px 9px;
   color: #273142;
   background: #fff;

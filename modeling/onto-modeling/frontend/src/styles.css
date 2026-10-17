@@ -547,7 +547,9 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .stat-label { font-size: 12px; color: var(--text-secondary); }
 
 /* ---- 中栏视图切换淡入 ---- */
-.center-anim { animation: soft-in 0.2s ease both; }
+/* 只在播放期间生效（backwards）：fill 到结束会让中栏一直保持独立层叠上下文，
+   流程图 / drawio 全屏的 z-index 被困在中栏里，右栏和页签会盖在全屏编辑器上 */
+.center-anim { animation: soft-in 0.2s ease backwards; }
 
 /* ---- 工具执行组 ---- */
 .tool-group {
@@ -1336,11 +1338,26 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .resource-detect-tag { margin: 0; font-size: 11px; line-height: 16px; padding: 0 4px; }
 .resource-detect-action.ant-btn { height: 18px; padding: 0; font-size: 11.5px; }
 
-/* 流程图视图宿主 */
-.flowchart-host { display: flex; flex-direction: column; gap: 8px; }
-.flowchart-host-bar { display: flex; align-items: center; gap: 10px; }
+/* 流程图视图宿主：与 drawio 视图一样占满中栏剩余高度，编辑器随之铺满 */
+.flowchart-host {
+  display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  height: calc(100dvh - 132px); min-height: 480px;
+}
+.flowchart-host-bar { display: flex; align-items: center; gap: 10px; flex: none; }
 .flowchart-host-hint { font-size: 12px; color: var(--text-tertiary); }
-.flowchart-host .flowchart-editor { min-height: 520px; border: 1px solid var(--border-subtle); border-radius: 12px; overflow: hidden; background: var(--surface-card); }
+.flowchart-host-fullscreen { margin-left: auto; }
+.flowchart-host .flowchart-editor {
+  flex: 1; min-height: 0; height: auto;
+  border: 1px solid var(--border-subtle); border-radius: 12px; overflow: hidden; background: var(--surface-card);
+}
+/* drawio 高级编辑放在宿主里时由宿主给高度；它自己的全屏仍铺满视口 */
+.flowchart-host .drawio-root { flex: 1; height: auto; min-height: 0; }
+.flowchart-host .drawio-root.fullscreen { height: 100dvh; }
+/* 标准编辑器全屏 */
+.flowchart-host.fullscreen {
+  position: fixed; inset: 0; z-index: 1000; height: 100dvh; min-height: 0;
+  box-sizing: border-box; padding: 12px 16px; background: var(--surface-page);
+}
 
 /* ---- 数据评测用例复核 ---- */
 .eval-case-row { padding: 8px 0; border-bottom: 1px dashed var(--border-default); }
