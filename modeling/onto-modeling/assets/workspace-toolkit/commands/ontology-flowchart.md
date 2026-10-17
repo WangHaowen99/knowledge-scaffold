@@ -76,9 +76,10 @@ Check these locations to determine mode:
 `ontology/diagrams-summary/` is a derived artifact. Do not treat a newer summary as source truth, and do not regenerate `.drawio` files from edited summaries.
 
 **Mode detection:**
-1. `ontology/diagrams/` has .drawio files → Mode C (already exists)
-2. `ontology/diagrams/` empty BUT `resource/diagrams/` has .drawio files → Mode B (init from source)
-3. Both empty → Mode A (create from scratch)
+1. `$ARGUMENTS` 含「补充」「新增」「追加」，且 `ontology/diagrams/` 已有 .drawio 文件 → Mode D (add missing processes)
+2. `ontology/diagrams/` has .drawio files → Mode C (already exists)
+3. `ontology/diagrams/` empty BUT `resource/diagrams/` has .drawio files → Mode B (init from source)
+4. Both empty → Mode A (create from scratch)
 
 Display detected mode to user.
 
@@ -117,6 +118,15 @@ Display detected mode to user.
    ```
 2. Read summaries and present to user.
 3. Proceed to Step 3 (commit).
+
+### Mode D — 补充新流程
+
+用户在流程图编辑器里点「AI 推荐新流程」时进入本分支：在已有流程图之外补画还没有覆盖的业务流程，已有流程图一律不动。
+
+1. 读 `research/` 下的资料分析报告与 `ontology/diagrams-summary/` 下已有流程图的摘要，找出报告里有、但还没有流程图的业务流程。
+2. 用业务语言列出候选（每条一句话说明它是什么流程、为什么值得单独画），请用户确认要补画哪些；没有候选时说明「资料分析报告里的业务流程都已有流程图」，并询问用户是否要描述新的流程。
+3. 对确认的流程按 Mode A 第 4～6 步生成 `.drawio` 与摘要，只写新文件。
+4. Proceed to Step 3 (commit).
 
 ### Mode C — Already exists
 

@@ -12,7 +12,10 @@ const DrawioView = lazy(() => import('../DrawioView.jsx'));
 
 /* drawio 流程图视图：默认用 modeling 同款 ReactFlow 编辑器（秒开、样式统一），
    保存时按资产节点样式约定回写 drawio XML；压缩存储或解析失败回退 drawio 编辑器。 */
-export default function FlowchartView({ project, path, drawioAvailable, onWorkspaceChanged }) {
+// 「AI 推荐新流程」交给助手：对照资料分析报告补画还没有的业务流程（ontology-flowchart Mode D）
+const RECOMMEND_FLOWCHART_COMMAND = '/ontology-flowchart 补充流程图';
+
+export default function FlowchartView({ project, path, drawioAvailable, onWorkspaceChanged, onCommand }) {
   const [mode, setMode] = useState('standard'); // standard | drawio
   const [state, setState] = useState({ loading: true });
   // 标准编辑器全屏：铺满视口，Esc 退出（drawio 高级编辑自带全屏按钮）
@@ -117,6 +120,7 @@ export default function FlowchartView({ project, path, drawioAvailable, onWorksp
           document={state.doc}
           savedRevision={state.revision}
           onSave={save}
+          onRecommendDiagram={onCommand ? () => onCommand(RECOMMEND_FLOWCHART_COMMAND) : undefined}
         />
       )}
     </div>
