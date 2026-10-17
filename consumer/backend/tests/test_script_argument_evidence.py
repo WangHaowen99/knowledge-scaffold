@@ -431,3 +431,88 @@ def test_restored_engine_history_gets_a_current_turn_boundary(bound_script, requ
     error = json.loads(_execute(bound_script, record).content)["error"]
     assert error["issues"][0]["code"] == "ungrounded_identity"
     assert bound_script.executions == []
+
+
+LOOKUP_REQUEST = "为示例客户甲生成一份 P-01 报价单，渠道甲。"
+
+
+def _search_messages(*payloads):
+    messages = [{"role": "user", "content": LOOKUP_REQUEST}]
+    for index, payload in enumerate(payloads):
+        call_id = "call_search_{}".format(index)
+        messages.extend([
+            {"role": "assistant", "tool_calls": [{
+                "id": call_id, "function": {"name": "business_data_search", "arguments": "{}"},
+            }]},
+            {"role": "tool", "name": "business_data_search", "tool_call_id": call_id,
+             "content": json.dumps({"success": True, "data": payload}, ensure_ascii=False)},
+        ])
+    return messages
+
+
+def _validate_against_searches(arguments, *payloads):
+    messages = _search_messages(*payloads)
+    issues = []
+    internal(scripts).validate_structured_arguments_against_request(
+        arguments, internal(scripts).latest_user_request(messages),
+        internal(scripts).current_turn_business_data_evidence(messages, ontology_id="knowledge_package_demo"),
+        issues=issues,
+    )
+    return issues
+
+
+LIMIT_ITEMS = [
+    {"item_code": "ITEM_A_MAX", "item_name": "指标A上限", "category": "类别甲", "target_name": "A"},
+    {"item_code": "ITEM_B_MAX", "item_name": "指标B上限", "category": "类别甲", "target_name": "B"},
+]
+TARGET_LIMITS = [
+    {"target": "C", "min_value": "0.420", "max_value": "0.500"},
+    {"target": "A", "min_value": None, "max_value": "0.035"},
+]
+
+
+def test_item_codes_from_a_searched_table_ground_json_record_arguments():
+    standard_values = [
+        {"item_code": "ITEM_A_MAX", "standard_value": 0.035},
+        {"item_code": "ITEM_B_MAX", "standard_value": 0.035},
+    ]
+    assert _validate_against_searches(
+        {"standard_values": json.dumps(standard_values)}, LIMIT_ITEMS, TARGET_LIMITS,
+    ) == []
+
+
+def test_item_code_composed_from_other_row_values_stays_ungrounded():
+    # "ITEM_C_MAX" appears in no tool record; it is assembled from target "C".
+    standard_values = [
+        {"item_code": "ITEM_A_MAX", "standard_value": 0.035},
+        {"item_code": "ITEM_C_MAX", "standard_value": 0.5},
+    ]
+    assert _validate_against_searches(
+        {"standard_values": json.dumps(standard_values)}, LIMIT_ITEMS, TARGET_LIMITS,
+    ) == [{"code": "ungrounded_identity", "path": "arguments.standard_values[1].item_code"}]
+
+
+CUSTOMERS = [
+    {"customer_code": "C0001", "customer_name": "示例客户甲"},
+    {"customer_code": "C0002", "customer_name": "示例客户乙"},
+]
+GRADES = [{"product_code": "P-02", "product_category": "类别乙", "spec_no": "STD-0001"}]
+DELIVERY_STATES = [{"sales_channel": "渠道甲", "size_min": 20, "size_max": 120}]
+
+
+def test_independent_lookups_from_different_tables_are_not_forced_into_one_record():
+    arguments = {"product_code": "P-02", "sales_channel": "渠道甲", "customer_code": "C0002"}
+    assert _validate_against_searches(arguments, CUSTOMERS, GRADES, DELIVERY_STATES) == []
+
+
+def test_unrelated_table_carrying_both_fields_does_not_force_their_pairing():
+    ledger = [{"order_no": "ORD-0001", "customer_code": "C0002", "product_code": "P-01"}]
+    arguments = {"product_code": "P-02", "customer_code": "C0002"}
+    assert _validate_against_searches(arguments, CUSTOMERS, GRADES, ledger) == []
+
+
+def test_fields_from_two_rows_of_one_table_result_are_still_rejected():
+    arguments = {"customer_code": "C0001", "customer_name": "示例客户乙", "product_code": "P-02"}
+    assert _validate_against_searches(arguments, CUSTOMERS, GRADES) == [
+        {"code": "evidence_record_mismatch", "path": "arguments"},
+    ]

@@ -1698,9 +1698,9 @@ def _validate_structured_arguments_against_request(
         if (
             len(supported) >= 2
             and any(_is_identity_field(field) for field in supported)
-            and not any(
-                all(evidence.get(field) == value for field, value in supported.items())
-                for evidence in evidence_records
+            and not all(
+                _has_consistent_evidence_source(field, value, supported, evidence_records)
+                for field, value in supported.items()
             )
         ):
             reject("evidence_record_mismatch", path,
@@ -1899,6 +1899,26 @@ def _argument_records(value: Any, path: str = "arguments") -> List[tuple[str, Di
         for index, nested in enumerate(value):
             records.extend(_argument_records(nested, "{}[{}]".format(path, index)))
     return records
+
+
+def _has_consistent_evidence_source(
+    field: str,
+    value: str,
+    supported: Mapping[str, str],
+    evidence_records: Sequence[Mapping[str, str]],
+) -> bool:
+    """Whether one source row backs ``field`` without contradicting the other supported fields.
+
+    Rows lacking those fields come from independent lookups (other tables); a row
+    holding a different value for them means fields were taken from different
+    rows of the same collection.
+    """
+    for evidence in evidence_records:
+        if evidence.get(field) != value:
+            continue
+        if all(evidence.get(other, expected) == expected for other, expected in supported.items()):
+            return True
+    return False
 
 
 def _tool_evidence_records(evidence: str) -> List[Dict[str, str]]:
