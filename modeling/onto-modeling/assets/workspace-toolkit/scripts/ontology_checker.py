@@ -738,6 +738,11 @@ def check_object_links(doc: OntologyDoc, all_docs: dict) -> list:
 # 图关系名与属性英文名的字符集：从括注里取字段候选，再拿两端属性清单裁决
 _REL_IDENTIFIER_RE = re.compile(r'[A-Za-z_一-鿿][A-Za-z0-9_一-鿿]*')
 _REL_NOTE_RE = re.compile(r'[（(]([^()（）]*)[）)]')
+# 括注一侧写成 `表名.字段`（表名、字段可各带反引号）
+_REL_PREFIXED_RE = re.compile(
+    rf'`?({_REL_IDENTIFIER_RE.pattern})`?\s*\.\s*`?({_REL_IDENTIFIER_RE.pattern})`?')
+# 关系端点里指代"本文档对象"的写法；「当前对象名」是旧版抽取模板的字面占位，已写进文档的照认
+_CURRENT_OBJECT_ALIASES = ('当前对象', '当前对象名')
 
 
 def _relation_parts(value: str):
@@ -782,16 +787,38 @@ def _single_primary_key(doc: OntologyDoc) -> str:
     return keys[0] if len(keys) == 1 and keys[0] not in ('', '无', '-') else ''
 
 
-def _parse_join_note(note: str, source_fields: set, target_fields: set) -> tuple:
-    """括注 → (源对象字段, 目标对象字段, 错误说明)。判据是两端属性清单，不是括注的措辞。"""
+def _relation_names(doc: OntologyDoc, by_lower: dict) -> set:
+    """括注里 `表名.字段` 的前缀可以是对象名或「# 数据来源」声明的表名（小写比较）。"""
+    return {name.lower() for name in (doc.path.stem, *_source_declaration(doc, by_lower)) if name}
+
+
+def _join_side(side: str, own: set, other: set) -> str:
+    """括注箭头一侧 → 字段名；`表名.字段` 去掉前缀，前缀只认得是另一端的表（方向写反）时不认。"""
+    names = _REL_IDENTIFIER_RE.findall(side)
+    if len(names) == 1:
+        return names[0]
+    prefixed = _REL_PREFIXED_RE.fullmatch(side.strip())
+    if prefixed and (prefixed.group(1).lower() in own or prefixed.group(1).lower() not in other):
+        return prefixed.group(2)
+    return ''
+
+
+def _parse_join_note(note: str, source_fields: set, target_fields: set,
+                     source_names: set = frozenset(), target_names: set = frozenset()) -> tuple:
+    """括注 → (源对象字段, 目标对象字段, 错误说明)。判据是两端属性清单，不是括注的措辞。
+
+    箭头两侧可写成 `表名.字段`；*_names 是两端的对象名与声明表名（小写），用来核对前缀。
+    """
     if not note:
         return '', '', ''
     if '→' in note or '->' in note:
         sides = re.split(r'→|->', note)
-        names = [_REL_IDENTIFIER_RE.findall(side) for side in sides]
-        if len(sides) != 2 or any(len(found) != 1 for found in names):
+        if len(sides) != 2:
             return '', '', '的关联字段括注不明确，应写成「关系名（源对象字段 → 目标对象字段）」'
-        source_join, target_join = names[0][0], names[1][0]
+        source_join = _join_side(sides[0], source_names, target_names)
+        target_join = _join_side(sides[1], target_names, source_names)
+        if not source_join or not target_join:
+            return '', '', '的关联字段括注不明确，应写成「关系名（源对象字段 → 目标对象字段）」'
         absent = [name for name, fields in ((source_join, source_fields), (target_join, target_fields))
                   if fields and name not in fields]
         if absent:
@@ -840,8 +867,8 @@ def check_object_relation_joins(doc: OntologyDoc, all_docs: dict, tables: dict) 
         if not parsed:
             continue  # 关系行格式问题由发布与评测侧报，这里只管关联字段
         source, name, target, note = parsed
-        source = stem if source in ('当前对象', stem) else source
-        target = stem if target in ('当前对象', stem) else target
+        source = stem if source in (*_CURRENT_OBJECT_ALIASES, stem) else source
+        target = stem if target in (*_CURRENT_OBJECT_ALIASES, stem) else target
         other = target if source == stem else source if target == stem else ''
         other_doc = all_docs.get(other)
         if not other or other_doc is None or other_doc.doc_type != 'object':
@@ -850,7 +877,8 @@ def check_object_relation_joins(doc: OntologyDoc, all_docs: dict, tables: dict) 
         target_doc = doc if target == stem else other_doc
         label = f'关系「{source} -{name}→ {target}」'
         source_join, target_join, error = _parse_join_note(
-            note, _field_keys(source_doc), _field_keys(target_doc))
+            note, _field_keys(source_doc), _field_keys(target_doc),
+            _relation_names(source_doc, by_lower), _relation_names(target_doc, by_lower))
         if error:
             issues.append(Issue(file=_rel(doc), severity='警告', category='关联字段',
                                 message=label + error, source='规则检查'))

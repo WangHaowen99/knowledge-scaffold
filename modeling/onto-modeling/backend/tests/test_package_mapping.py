@@ -125,9 +125,10 @@ def test_template_placeholder_and_none_are_not_table_names(tmp_path):
     assert result["objects"]["订单"]["table"] == "T_ORDER"
     assert not result["problems"]
 
+    # 「无」是显式声明不落库：不当表名，也不再按重合度推断
     write_object(root, "订单", [("订单号", "ORDER_ID"), ("金额", "AMOUNT")], source="无")
     result = package_mapping.resolve_object_tables(root)
-    assert result["objects"]["订单"]["table"] == "T_ORDER"
+    assert result["objects"]["订单"]["table"] == ""
     assert not result["problems"]
 
 
@@ -158,12 +159,12 @@ def test_backticked_bare_name_is_a_declaration(tmp_path):
     "无（派生对象，不落库）\n\n> 见 `T_ARCHIVE`",
 ])
 def test_none_with_notes_declares_nothing(tmp_path, source):
-    """首行「无」即不声明：后面的说明行不能被当成表名。"""
+    """首行「无」即不绑定：后面的说明行不能被当成表名。"""
     root = make_workspace(tmp_path, {"T_ORDER": ["ORDER_ID", "AMOUNT"]})
     write_object(root, "订单", [("订单号", "ORDER_ID"), ("金额", "AMOUNT")], source=source)
     result = package_mapping.resolve_object_tables(root)
     assert result["objects"]["订单"]["declared_table"] == ""
-    assert result["objects"]["订单"]["matched_by"] == "inferred"
+    assert result["objects"]["订单"]["table"] == ""
     assert not result["problems"]
 
 
@@ -458,3 +459,94 @@ def test_studio_uses_the_same_relation_label_with_nested_arrow():
 
     line = "- 当前对象 → references（fk → id） → [[object_b]]"
     assert studio._object_relation_label(line, "object_a", "object_b") == "references"
+
+
+@pytest.mark.parametrize("placeholder", ["当前对象名", "[[当前对象名]]"])
+def test_literal_current_object_name_placeholder_means_current_object(placeholder):
+    """旧版抽取模板把「当前对象」写成了「当前对象名」，照抄进文档的关系不能在发布时静默丢掉。"""
+    texts = _related_pair("（fk → id）", ["fk"], ["id"])
+    texts = {key: text.replace("当前对象", placeholder) for key, text in texts.items()}
+    report = {}
+    relations, skipped = package_mapping.graph_relations(texts, set(texts), report)
+    assert skipped == []
+    assert report.get("relations_exported") == 1 and report.get("relations_duplicates") == 1
+    edge = relations["object_a"][0]
+    assert (edge["target"], edge["sourceJoinProperty"], edge["targetJoinProperty"]) == ("object_b", "fk", "id")
+
+
+def test_studio_treats_current_object_name_placeholder_as_current_object():
+    from app.services import studio
+
+    line = "- 当前对象名 → references（fk → id） → [[object_b]]"
+    assert studio._object_relation_label(line, "object_a", "object_b") == "references"
+    incoming = "- [[object_b]] → references → 当前对象名"
+    assert studio._object_relation_label(incoming, "object_a", "object_b") == "references"
+    assert studio._target_points_to_current(incoming, "object_a", "object_b")
+
+
+def _table_pair(note: str) -> dict:
+    """两端各自声明了数据表的合成对象：括注里的字段可带表名前缀。"""
+    def doc(table: str, fields: list[str], line: str) -> str:
+        rows = "".join(f"| {key} | {key} | 合成 | 否 | 字符串 |\n" for key in fields)
+        return (
+            f"# 数据来源\n{table}\n\n"
+            "# 对象属性清单\n| 中文名称 | 英文名称 | 描述 | 主键 | 类型 |\n"
+            "| --- | --- | --- | --- | --- |\n" + rows
+            + "\n# 关联对象\n" + line
+        )
+
+    return {
+        "订单明细": doc("order_line", ["line_id", "product_code"], f"- 当前对象 → 包含{note} → [[商品]]"),
+        "商品": doc("product", ["product_code", "product_name"], "- [[订单明细]] → 包含 → 当前对象"),
+    }
+
+
+@pytest.mark.parametrize("note", [
+    "（order_line.product_code → product.product_code）",
+    "（`order_line`.`product_code` → product . product_code）",
+    # 前缀写对象名同样认得
+    "（订单明细.product_code → 商品.product_code）",
+    # 只有一侧带前缀
+    "（product_code → product.product_code）",
+])
+def test_join_fields_with_table_prefix_are_accepted(note):
+    texts = _table_pair(note)
+    relations, skipped = package_mapping.graph_relations(texts, set(texts))
+    assert skipped == []
+    edge = relations["订单明细"][0]
+    assert (edge["sourceJoinProperty"], edge["targetJoinProperty"]) == ("product_code", "product_code")
+
+
+@pytest.mark.parametrize("note", [
+    # 前缀是另一端的表：方向写反了，按前缀剥掉会连错方向
+    "（product.product_code → order_line.product_code）",
+    # 多级前缀、一侧多个字段：仍然取不出唯一的一对
+    "（db.order_line.product_code → product.product_code）",
+    "（order_line.product_code line_id → product_code）",
+])
+def test_ambiguous_prefixed_join_fields_are_still_rejected(note):
+    texts = _table_pair(note)
+    relations, skipped = package_mapping.graph_relations(texts, set(texts))
+    assert relations == {}
+    assert len(skipped) == 1 and "关联字段" in skipped[0]
+
+
+@pytest.mark.parametrize("source", ["无", "无（输出实体，不落库）", "—", "N/A"])
+def test_explicit_none_source_skips_overlap_inference(tmp_path, source):
+    """「# 数据来源」写「无」是显式声明不落库：列名再像某张表也不能按重合度绑上去。"""
+    root = make_workspace(tmp_path, {"summary_ledger": ["summary_no", "customer_name", "summary_date"]})
+    write_object(
+        root, "汇总单",
+        [("单据编号", "summary_no"), ("客户名称", "customer_name"), ("汇总日期", "summary_date")],
+        source=source,
+    )
+    result = package_mapping.resolve_object_tables(root)
+    item = result["objects"]["汇总单"]
+    assert item["table"] == "" and item["matched_by"] == ""
+    assert not result["problems"]
+    # 没写「# 数据来源」的对象照旧按重合度推断
+    write_object(
+        root, "汇总单",
+        [("单据编号", "summary_no"), ("客户名称", "customer_name"), ("汇总日期", "summary_date")],
+    )
+    assert package_mapping.resolve_object_tables(root)["objects"]["汇总单"]["matched_by"] == "inferred"

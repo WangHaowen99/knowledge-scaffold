@@ -137,3 +137,37 @@ def test_plain_note_is_not_mistaken_for_join(checker, tmp_path: Path):
     write(ontology, "客户", "宽表", CUSTOMER_ROWS)
 
     assert join_issues(checker, ontology) == []
+
+
+@pytest.mark.parametrize("note", [
+    "（订单表.BUYER_NO → 客户表.CUST_NO）",
+    "（订单.BUYER_NO → `客户`.`CUST_NO`）",
+])
+def test_table_prefixed_join_fields_pass(checker, tmp_path: Path, note):
+    """括注字段带上本端的表名或对象名前缀，与发布侧同口径照认。"""
+    ontology = tmp_path / "ontology"
+    write(ontology, "订单", "订单表", ORDER_ROWS, f"- 当前对象 → 属于{note} → [[客户]]")
+    write(ontology, "客户", "客户表", CUSTOMER_ROWS)
+
+    assert join_issues(checker, ontology) == []
+
+
+def test_prefix_of_the_other_end_is_flagged(checker, tmp_path: Path):
+    """前缀写成另一端的表：方向写反了，不能剥掉前缀了事。"""
+    ontology = tmp_path / "ontology"
+    write(ontology, "订单", "订单表", ORDER_ROWS,
+          "- 当前对象 → 属于（客户表.BUYER_NO → 订单表.CUST_NO） → [[客户]]")
+    write(ontology, "客户", "客户表", CUSTOMER_ROWS)
+
+    messages = join_issues(checker, ontology)
+    assert len(messages) == 1 and "括注不明确" in messages[0]
+
+
+def test_literal_current_object_name_placeholder_is_checked(checker, tmp_path: Path):
+    """旧版抽取模板的字面占位「当前对象名」按当前对象处理，关联字段照样核对。"""
+    ontology = tmp_path / "ontology"
+    write(ontology, "订单", "订单表", ORDER_ROWS, "- 当前对象名 → 属于 → [[客户]]")
+    write(ontology, "客户", "客户表", CUSTOMER_ROWS)
+
+    messages = join_issues(checker, ontology)
+    assert len(messages) == 1 and "未声明关联字段" in messages[0]
