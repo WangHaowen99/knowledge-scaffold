@@ -30,6 +30,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, openEventStream } from '../lib/api.js';
 import { orderResearchActions } from '../lib/researchGate.js';
+import { STATUS_LABELS, changeHeadline, groupChanges } from '../lib/changeSummary.js';
 import {
   EMPTY_CONTEXT,
   compactionNotice,
@@ -666,49 +667,70 @@ function decodeGitPath(path) {
   }
 }
 
-// 每轮产物变更卡：让"助手改了什么"零成本可见（设计稿 §3）
-function ChangesCard({ added, modified, deleted, total, knownPaths, onOpenFile, onOpenDiff }) {
-  const [expanded, setExpanded] = useState(false);
+// 每轮文件改动卡：让"助手这一轮改了什么"零成本可见（设计稿 §3）。
+// 按业务类别分组、纯文字排版：少于 7 个文件直接列出，多了先给各类数量，展开看明细
+const CHANGES_INLINE_LIMIT = 6;
+
+function ChangesCard({ added, modified, deleted, knownPaths, onOpenFile, onOpenDiff }) {
   const entries = [
     ...added.map((p) => ({ path: decodeGitPath(p), status: 'added' })),
     ...modified.map((p) => ({ path: decodeGitPath(p), status: 'modified' })),
     ...deleted.map((p) => ({ path: decodeGitPath(p), status: 'deleted' })),
   ];
-  const shown = expanded ? entries : entries.slice(0, 3);
+  const [expanded, setExpanded] = useState(entries.length <= CHANGES_INLINE_LIMIT);
+  const groups = groupChanges(entries);
+  const mixed = new Set(entries.map((entry) => entry.status)).size > 1;
+  const headline = changeHeadline({
+    added: added.length,
+    modified: modified.length,
+    deleted: deleted.length,
+  });
   return (
-    <div className="changes-card msg-soft">
-      <div className="changes-head">
-        <span className="changes-title">
-          本轮产物变更
-          {added.length > 0 && ` · 新增 ${added.length}`}
-          {modified.length > 0 && ` · 修改 ${modified.length}`}
-          {deleted.length > 0 && ` · 删除 ${deleted.length}`}
-        </span>
-        <button type="button" className="changes-diff" onClick={onOpenDiff}>
-          查看对比
+    <section className="changes-card msg-soft" aria-label={headline}>
+      <header className="changes-head">
+        <span className="changes-title">{headline}</span>
+        <button type="button" className="changes-link" onClick={onOpenDiff}>
+          查看改动
         </button>
-      </div>
-      <div className="changes-files">
-        {shown.map((entry) => (
-          <FileChip
-            key={entry.path}
-            path={entry.path}
-            status={entry.status}
-            exists={entry.status !== 'deleted' && (!knownPaths || knownPaths.has(entry.path))}
-            onOpen={onOpenFile}
-          />
-        ))}
-        {entries.length > 3 && (
-          <button
-            type="button"
-            className="changes-more"
-            onClick={() => setExpanded(!expanded)}
-          >
-            {expanded ? '收起' : `展开全部（${total}）`}
-          </button>
-        )}
-      </div>
-    </div>
+      </header>
+      {expanded ? (
+        <dl className="changes-groups">
+          {groups.map((group) => (
+            <div className="changes-group" key={group.label}>
+              <dt>{group.label}</dt>
+              <dd>
+                {group.items.map((item) => {
+                  const exists =
+                    item.status !== 'deleted' && (!knownPaths || knownPaths.has(item.path));
+                  return (
+                    <button
+                      type="button"
+                      key={item.path}
+                      className={`changes-file ${item.status}`}
+                      title={item.path}
+                      disabled={!exists}
+                      onClick={() => onOpenFile?.(item.path)}
+                    >
+                      {item.name}
+                      {mixed && <small>{STATUS_LABELS[item.status]}</small>}
+                    </button>
+                  );
+                })}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p className="changes-summary">
+          {groups.map((group) => `${group.label} ${group.items.length}`).join(' · ')}
+        </p>
+      )}
+      {entries.length > CHANGES_INLINE_LIMIT && (
+        <button type="button" className="changes-toggle" onClick={() => setExpanded(!expanded)}>
+          {expanded ? '收起明细' : '展开明细'}
+        </button>
+      )}
+    </section>
   );
 }
 
@@ -1627,14 +1649,12 @@ export default function ChatPane({
             }
             if (item.role === 'changes') {
               const { added = [], modified = [], deleted = [] } = item.content;
-              const total = added.length + modified.length + deleted.length;
               return (
                 <ChangesCard
                   key={item.key}
                   added={added}
                   modified={modified}
                   deleted={deleted}
-                  total={total}
                   knownPaths={knownPaths}
                   onOpenFile={onOpenFile}
                   onOpenDiff={() =>
