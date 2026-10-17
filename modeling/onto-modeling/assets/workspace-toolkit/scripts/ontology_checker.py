@@ -1352,6 +1352,15 @@ def _find_primary_key(obj_doc: OntologyDoc) -> str:
     return ''
 
 
+def _find_primary_keys(obj_doc: OntologyDoc) -> list:
+    """All 主键=是 columns in declaration order; several columns form a composite key."""
+    return [
+        row.get('中文名称', '').strip()
+        for row in obj_doc.attribute_rows
+        if row.get('主键', '').strip() == '是' and row.get('中文名称', '').strip()
+    ]
+
+
 def check_mock_data(all_docs: dict, mock_dir: Path) -> list:
     """Rule-level mock data checks: primary-key uniqueness + foreign-key integrity.
 
@@ -1371,22 +1380,23 @@ def check_mock_data(all_docs: dict, mock_dir: Path) -> list:
         obj_doc = all_docs.get(stem)
         if obj_doc is None or obj_doc.doc_type != 'object':
             continue
-        pk = _find_primary_key(obj_doc)
-        if not pk:
+        pk_cols = _find_primary_keys(obj_doc)
+        if not pk_cols:
             continue
+        pk = ', '.join(pk_cols)
         seen = {}
         for label, rows in tables.items():
             for row in rows:
-                val = row.get(pk, '').strip()
-                if not val:
+                key = tuple(row.get(col, '').strip() for col in pk_cols)
+                if not all(key):
                     continue
-                if val in seen:
+                if key in seen:
                     issues.append(Issue(
                         file=f'data-mock/{stem}.md', severity='错误', category='主键重复',
-                        message=f'主键 "{pk}" 的值 "{val}" 在 {seen[val]} 与 {label}数据 中同时出现',
+                        message=f'主键 "{pk}" 的值 "{", ".join(key)}" 在 {seen[key]} 与 {label}数据 中同时出现',
                         source='规则检查'))
                 else:
-                    seen[val] = f'{label}数据'
+                    seen[key] = f'{label}数据'
 
     # Foreign-key integrity: for each object ref attribute, check normal rows point to valid target pk values
     for stem, (path, tables) in mocks.items():
