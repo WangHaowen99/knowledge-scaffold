@@ -17,7 +17,7 @@ from pathlib import Path
 
 MANIFEST_FILE = '.ontology-state/seed-example.manifest'
 
-RESEARCH_MD = """# 外卖订单领域调研（示例）
+RESEARCH_MD = """# 外卖订单领域资料分析（示例）
 
 ## 业务背景
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""调研报告与提取产物的对账：按「名称 + 分类」比对报告清单与 ontology 下的实际文档。
+"""资料分析报告与提取产物的对账：按「名称 + 分类」比对报告清单与 ontology 下的实际文档。
 
 资料分析的检查只保证报告自己前后一致；报告里的操作、规则、指标最终有没有生成、生成的
 东西是不是都有来源，要在提取前后各对一次账，差异才不会被埋掉。只比名称与分类（文件名
@@ -15,7 +15,7 @@
       提取之后：报告里有、没生成的；生成了、报告里没有的（标明来源）；放错目录的。
       --alias 声明"按用户决定改了名的流程图操作"，它们按流程图来源计。
 
---reports / --summaries 不给时取工作区里全部的调研报告与流程图摘要；给了但不带值表示本轮
+--reports / --summaries 不给时取工作区里全部的资料分析报告与流程图摘要；给了但不带值表示本轮
 没用这一类来源。
 
 退出码：0 = 一致，或差异都有来源；1 = 有需要处理的差异；2 = 无法对账（没有报告，或报告
@@ -377,9 +377,9 @@ def render_check(result: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _parse_args(argv):
-    parser = argparse.ArgumentParser(description='调研报告与提取产物的对账')
+    parser = argparse.ArgumentParser(description='资料分析报告与提取产物的对账')
     parser.add_argument('command', choices=('plan', 'check'))
-    parser.add_argument('--reports', nargs='*', default=None, help='本轮使用的调研报告')
+    parser.add_argument('--reports', nargs='*', default=None, help='本轮使用的资料分析报告')
     parser.add_argument('--summaries', nargs='*', default=None, help='本轮使用的流程图摘要')
     parser.add_argument('--alias', action='append', default=[],
                         help='改了名的流程图操作：文档名=流程图名，可重复')
@@ -389,7 +389,7 @@ def _parse_args(argv):
 
 def _unavailable(inventory: Inventory, reports: list[str]) -> str:
     if not reports:
-        return '本轮没有使用调研报告，无从对账'
+        return '本轮没有使用资料分析报告，无从对账'
     if inventory.uncategorized:
         return (f'报告的「{REPORT_INVENTORY_SECTION}」没有分类列或分类取值非法：'
                 f'{"、".join(inventory.uncategorized)}。'

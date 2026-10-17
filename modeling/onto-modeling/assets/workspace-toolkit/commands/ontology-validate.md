@@ -537,7 +537,7 @@ Tell user:
 - 回复 **代码生成**（/ontology-codegen）→ 选定 operation 后生成 Python 脚本（不支持一键全部）
 - 回复 **增量对象**（/ontology-extract-object）→ 补充提取缺失对象
 - 回复 **增量逻辑**（/ontology-extract-operation）→ 补充提取缺失逻辑
-- 回复 **补充调研**（/ontology-research）→ 定向补充调研后增量提取
+- 回复 **补充资料分析**（/ontology-research）→ 定向补充资料分析后增量提取
 - 回复 **再校验** → 重新执行完整校验流程
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
 
@@ -559,6 +559,6 @@ Tell user:
 
 **If user replies 增量逻辑:** release validate，然后 Read `.claude/commands/ontology-extract-operation.md` and follow its instructions with these overrides: MODE = incremental; collect EXISTING_FILES from current `ontology/operation/` contents before dispatching the agent. After the agent returns its summary, ask: "增量逻辑完成。是否重新校验？回复 **是** 或 **否**。" — if yes, restart from Step 1 of this command.
 
-**If user replies 补充调研:** Ask: "请描述要补充的调研方向（例如：「XX子流程的逻辑细节」「YY对象的状态转换」「某个引用断裂的缺失实体」）：". Then release validate 并 read `.claude/commands/ontology-research.md` and follow it using **追加调研（append）mode** with the user's direction as FOCUS_DIRECTIONS; **skip research's Step 5 next-step prompt** (do not ask about running flowchart). After research completes, ask: "调研完成。要增量提取哪一类？回复 **对象**、**逻辑** 或 **否**。" — if object, follow `/ontology-extract-object` incremental; if operation, follow `/ontology-extract-operation` incremental; then ask: "增量提取完成。是否重新校验？回复 **是** 或 **否**。" — if yes, restart from Step 1.
+**If user replies 补充资料分析:** Ask: "请描述要补充的分析方向（例如：「XX子流程的逻辑细节」「YY对象的状态转换」「某个引用断裂的缺失实体」）：". Then release validate 并 read `.claude/commands/ontology-research.md` and follow it using **追加资料分析（append）mode** with the user's direction as FOCUS_DIRECTIONS; **skip research's Step 5 next-step prompt** (do not ask about running flowchart). After research completes, ask: "资料分析完成。要增量提取哪一类？回复 **对象**、**逻辑** 或 **否**。" — if object, follow `/ontology-extract-object` incremental; if operation, follow `/ontology-extract-operation` incremental; then ask: "增量提取完成。是否重新校验？回复 **是** 或 **否**。" — if yes, restart from Step 1.
 
 **If user replies 完成:** `python3 .claude/scripts/state_helper.py release validate`，Stop.

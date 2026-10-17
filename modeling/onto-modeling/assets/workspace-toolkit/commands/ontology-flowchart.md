@@ -87,9 +87,9 @@ Display detected mode to user.
 ### Mode A — Create from scratch
 
 1. Check for research reports in `research/`. If found, read them to identify key business processes.
-2. If no research reports, ask user: "未找到调研报告或现有流程图。请选择：
+2. If no research reports, ask user: "未找到资料分析报告或现有流程图。请选择：
    - 描述你的业务流程，我来生成流程图
-   - 先运行 `/ontology-research <领域>` 进行调研"
+   - 先运行 `/ontology-research <领域>` 进行资料分析"
 3. Once business processes are identified (from research or user description), list them and ask user to confirm which ones to create flowcharts for.
 4. For each confirmed process, generate a .drawio XML file:
    - Read `resource/diagrams/图示说明定义.drawio` (if exists) to understand node type conventions

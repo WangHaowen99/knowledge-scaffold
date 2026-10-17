@@ -200,7 +200,7 @@ def test_export_and_import_roundtrip(manager: WorkspaceManager, tmp_path: Path):
     (root / "ontology" / "object").mkdir(parents=True, exist_ok=True)
     (root / "ontology" / "object" / "订单.md").write_text("# 订单", encoding="utf-8")
     (root / "research").mkdir(exist_ok=True)
-    (root / "research" / "调研.md").write_text("调研", encoding="utf-8")
+    (root / "research" / "资料分析.md").write_text("资料分析", encoding="utf-8")
 
     dest = tmp_path / "out.zip"
     manager.export_zip(meta["id"], "ontology", dest)

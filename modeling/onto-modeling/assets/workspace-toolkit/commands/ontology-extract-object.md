@@ -9,9 +9,9 @@ This command is the object-only half of extraction. It reads flowchart summaries
 1. `python3 .claude/scripts/state_helper.py check-lock extract-object`
    - `locked:{ts}:{phase}` → 按 **错误恢复类** 提示；phase 可能是 `source` / `objects`，**续执**时跳到对应阶段。
 2. `python3 .claude/scripts/state_helper.py check-prereq extract-object`
-   - `missing:调研完成` → 先 `python3 .claude/scripts/state_helper.py detect-stage` 区分两种情况：
-     - `未开始` → 按 **跳步守卫** 提示："当前既无调研报告也无流程图，提取无源。" 选项 **先做 调研**（/ontology-research）/ **先做 流程图**（/ontology-flowchart）。
-     - `调研待核验` → 报告已存在但内容未通过验收。按 **跳步守卫** 提示："调研报告的计数、ID 或引用字段尚未对账，直接提取会把错误字段和 ID 带进对象、规则与追溯。" 选项 **先做 核验**（`python3 .claude/scripts/research_checker.py check`，按 `/ontology-research` 的 Step 4.5 处理结果）；用户仍选 **继续** 时照常放行，但在本轮摘要里标注"来源报告未通过内容验收"。
+   - `missing:资料分析完成` → 先 `python3 .claude/scripts/state_helper.py detect-stage` 区分两种情况：
+     - `未开始` → 按 **跳步守卫** 提示："当前既无资料分析报告也无流程图，提取无源。" 选项 **先做 资料分析**（/ontology-research）/ **先做 流程图**（/ontology-flowchart）。
+     - `资料分析待核验` → 报告已存在但内容未通过验收。按 **跳步守卫** 提示："资料分析报告的计数、ID 或引用字段尚未对账，直接提取会把错误字段和 ID 带进对象、规则与追溯。" 选项 **先做 核验**（`python3 .claude/scripts/research_checker.py check`，按 `/ontology-research` 的 Step 4.5 处理结果）；用户仍选 **继续** 时照常放行，但在本轮摘要里标注"来源报告未通过内容验收"。
    - 若只有研究报告（已验收）或只有流程图，prereq 会通过；Step 1 会依据实际存在的素材决定提取模式。
 3. `python3 .claude/scripts/state_helper.py acquire extract-object source`
 4. 加载已沉淀业务知识。SCOPE_HINTS 取已存在的对象名（首次提取时仅 `global`）：
@@ -43,9 +43,9 @@ agent prompt 需 transclude 该文件全文。
 检查两个可能的提取来源：
 - `ontology/diagrams-summary/` 下的 `.md` 文件（流程图摘要）→ `SUMMARIES`
 - `ontology/excel/` 下与流程图摘要同名的 `.xlsx` 文件（Excel 补充表）→ 后续绑定到对应流程图
-- `research/` 下的 `.md` 文件（调研报告）→ `REPORTS`
+- `research/` 下的 `.md` 文件（资料分析报告）→ `REPORTS`
 
-**调研报告只有通过内容验收才作为来源。** `REPORTS` 非空时先确认验收状态：
+**资料分析报告只有通过内容验收才作为来源。** `REPORTS` 非空时先确认验收状态：
 
 ```bash
 python3 .claude/scripts/research_checker.py status
@@ -55,7 +55,7 @@ python3 .claude/scripts/research_checker.py status
 与字段还没对过账——有流程图不代表报告可用，阶段前置只看得到"有流程图"：
 
 - `SUMMARIES` 非空 → 置 `REPORTS = empty`，按模式 B 只用流程图继续，并告诉用户：
-  "调研报告（`research/{文件名列表}`）尚未通过内容验收，本次只基于流程图提取。
+  "资料分析报告（`research/{文件名列表}`）尚未通过内容验收，本次只基于流程图提取。
   用 `python3 .claude/scripts/research_checker.py check` 核验通过后，可再以增量模式
   补充报告里的内容。"
 - `SUMMARIES` 为空（报告是唯一来源）→ 用户已在 Step 0 的跳步守卫里选过 **继续** 时，
@@ -68,8 +68,8 @@ python3 .claude/scripts/research_checker.py status
 
 **模式 A — 两者都为空：**
 Tell user:
-"未找到流程图摘要，也未找到调研报告。对象提取需要至少一个来源，请先：
-- 回复 **调研**（/ontology-research）→ 做领域调研
+"未找到流程图摘要，也未找到资料分析报告。对象提取需要至少一个来源，请先：
+- 回复 **资料分析**（/ontology-research）→ 做资料分析
 - 回复 **流程图**（/ontology-flowchart）→ 直接画流程图
 "
 任一选择都会离开本命令，因此在等待用户回复前先释放锁：
@@ -81,10 +81,10 @@ python3 .claude/scripts/state_helper.py release extract-object
 **模式 B — 仅有流程图摘要（`SUMMARIES` 非空，`REPORTS` 空）：**
 Set `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = empty`。Proceed to Step 2。
 
-**模式 C — 仅有调研报告（`SUMMARIES` 空，`REPORTS` 非空）：**
+**模式 C — 仅有资料分析报告（`SUMMARIES` 空，`REPORTS` 非空）：**
 Tell user:
-"未找到流程图摘要，将仅基于调研报告提取对象（`research/{文件名列表}`）。流程图是可选步骤，概念明确时可跳过。
-- 回复 **继续** → 仅基于调研报告提取对象
+"未找到流程图摘要，将仅基于资料分析报告提取对象（`research/{文件名列表}`）。流程图是可选步骤，概念明确时可跳过。
+- 回复 **继续** → 仅基于资料分析报告提取对象
 - 回复 **先做流程图** → 转入 /ontology-flowchart 创建流程图后再回来
 "
 - **继续**: set `SUMMARY_PATHS = empty`, `REPORT_PATHS = REPORTS`，进入 Step 2。
@@ -93,13 +93,13 @@ Tell user:
 
 **模式 D — 两者都有：**
 Tell user:
-"已发现流程图摘要 {N} 份和调研报告 {M} 份。
-- 回复 **两者结合**（推荐）→ 流程图为主，调研报告补充细节
-- 回复 **跳过调研** → 只用流程图摘要
-- 回复 **跳过流程图** → 只用调研报告（适合流程图过时或不完整时）
+"已发现流程图摘要 {N} 份和资料分析报告 {M} 份。
+- 回复 **两者结合**（推荐）→ 流程图为主，资料分析报告补充细节
+- 回复 **跳过资料分析** → 只用流程图摘要
+- 回复 **跳过流程图** → 只用资料分析报告（适合流程图过时或不完整时）
 "
 - **两者结合**（或默认）: `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = REPORTS`。
-- **跳过调研**: `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = empty`。
+- **跳过资料分析**: `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = empty`。
 - **跳过流程图**: `SUMMARY_PATHS = empty`, `REPORT_PATHS = REPORTS`。
 - **取消**: `python3 .claude/scripts/state_helper.py release extract-object`，stop。
 
@@ -133,7 +133,7 @@ Set `EXCEL_CONTEXT` = 脚本 stdout。若 stdout 为空，置为 `（无同名 E
 
 若 `SUMMARY_PATHS` 为空：`PAIRED_EXCEL_PATHS = empty`，`ORPHAN_EXCEL_PATHS = empty`，`EXCEL_CONTEXT = （无流程图摘要，Excel 不参与本次提取）`。
 
-> 传给 agent 时：若 `SUMMARY_PATHS` 为空，在 prompt 中写 `SUMMARY_PATHS: (无，仅基于调研报告)`；若 `REPORT_PATHS` 为空，省略该行；若 `PAIRED_EXCEL_PATHS` 为空，写 `PAIRED_EXCEL_PATHS: (无同名 Excel 补充表)`。
+> 传给 agent 时：若 `SUMMARY_PATHS` 为空，在 prompt 中写 `SUMMARY_PATHS: (无，仅基于资料分析报告)`；若 `REPORT_PATHS` 为空，省略该行；若 `PAIRED_EXCEL_PATHS` 为空，写 `PAIRED_EXCEL_PATHS: (无同名 Excel 补充表)`。
 
 ## Step 1.6: 资料用途约束（schema / term / 数据表表头）
 
@@ -146,7 +146,7 @@ Set `EXCEL_CONTEXT` = 脚本 stdout。若 stdout 为空，置为 `（无同名 E
 - 存在 `purpose=term` 的术语表时，对象命名、别名、属性中文名必须与术语表对齐；冲突时以术语表为准并在文档"来源"处标注。
 - `reading_mode=full` 的资料在提取前必须已全文读取。
 - 运行 `python3 .claude/scripts/check_eval_data.py --headers`，stdout（JSON：`{Sheet 名: [表头列]}`，来自 schema 资料与评测数据源上传的数据表）记为 `TABLE_HEADERS`；为空（`{}`）时记为 `（无）`。
-  `TABLE_HEADERS` 非空时，它是表名与列名的**唯一依据**：对象「# 数据来源」取其中的 Sheet 名，对不上任何 Sheet 的对象填「无」；从库里读取的属性英文名称逐字取自该 Sheet 的表头；数据字典类文档、调研报告里的字段名与之冲突时以 `TABLE_HEADERS` 为准，冲突清单写进返回摘要的注意事项。提取后的规则检查会按对象逐列对账：声明的表不存在、一列都对不上、或属性别名里才是真实列名，均判为错误并阻止提交（发布时同样会被阻断）。
+  `TABLE_HEADERS` 非空时，它是表名与列名的**唯一依据**：对象「# 数据来源」取其中的 Sheet 名，对不上任何 Sheet 的对象填「无」；从库里读取的属性英文名称逐字取自该 Sheet 的表头；数据字典类文档、资料分析报告里的字段名与之冲突时以 `TABLE_HEADERS` 为准，冲突清单写进返回摘要的注意事项。提取后的规则检查会按对象逐列对账：声明的表不存在、一列都对不上、或属性别名里才是真实列名，均判为错误并阻止提交（发布时同样会被阻断）。
   `TABLE_HEADERS` 为 `（无）` 时，先看 `resource/` 下有没有像数据库表的表格资料（首行是英文列名）：有的话按 CLAUDE.md 8.1 请用户在资料列表把它标为「数据 Schema」，标好后重跑上面的命令；用户确认没有数据表时，所有对象的「# 数据来源」填「无」，不得臆造表名；规则检查会对声明了表名的对象给出警告。
 
 ## Step 2: Determine object mode
@@ -181,7 +181,7 @@ python3 .claude/scripts/state_helper.py acquire extract-object objects
 
 Tell user: "**对象提取**\n正在从{source_label}中识别和提取业务对象..."
 
-> `{source_label}` 取值：`SUMMARY_PATHS` 非空且 `PAIRED_EXCEL_PATHS` 非空且 `REPORT_PATHS` 非空 → "流程图、Excel 补充表和调研报告"；`SUMMARY_PATHS` 非空且 `PAIRED_EXCEL_PATHS` 非空 → "流程图和 Excel 补充表"；`SUMMARY_PATHS` 非空且 `REPORT_PATHS` 非空 → "流程图和调研报告"；仅 `SUMMARY_PATHS` → "流程图摘要"；仅 `REPORT_PATHS` → "调研报告"。
+> `{source_label}` 取值：`SUMMARY_PATHS` 非空且 `PAIRED_EXCEL_PATHS` 非空且 `REPORT_PATHS` 非空 → "流程图、Excel 补充表和资料分析报告"；`SUMMARY_PATHS` 非空且 `PAIRED_EXCEL_PATHS` 非空 → "流程图和 Excel 补充表"；`SUMMARY_PATHS` 非空且 `REPORT_PATHS` 非空 → "流程图和资料分析报告"；仅 `SUMMARY_PATHS` → "流程图摘要"；仅 `REPORT_PATHS` → "资料分析报告"。
 
 Read `.claude/agents/extract-objects-agent.md`. Dispatch it as a subagent with:
 
@@ -195,7 +195,7 @@ EXCEL_CONTEXT:
 TABLE_HEADERS:
 {TABLE_HEADERS}
 
-REPORT_PATHS: {调研报告路径，无则省略此行}
+REPORT_PATHS: {资料分析报告路径，无则省略此行}
 OBJECTS_DIR: ontology/object/
 TEMPLATES_DIR: .claude/templates/
 {如 MODE=incremental: EXISTING_FILES: {逗号分隔的现有文件名}}

@@ -222,7 +222,7 @@ def entry_count(project: str, container: str, rel: str) -> int:
 
 
 def review_status(project: str, container: str) -> dict:
-    """调研报告的验收回执状态；读不到时按"无回执"处理，不算通过。"""
+    """资料分析报告的验收回执状态；读不到时按"无回执"处理，不算通过。"""
     out = workspace_exec(
         project, "python3 .claude/scripts/research_checker.py status --json 2>/dev/null", container)
     try:

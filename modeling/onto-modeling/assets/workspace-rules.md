@@ -49,7 +49,7 @@ These rules apply to all work in this repository.
 
 4. **No external LLM APIs** — Semantic validation is performed by Claude itself. Never call external LLM APIs (Gemini, OpenAI, etc.) for validation tasks in this project.
 
-4.1 **"已保存"不等于"已验收"** — 调研报告（`research/*.md`）写进工作区后必须通过
+4.1 **"已保存"不等于"已验收"** — 资料分析报告（`research/*.md`）写进工作区后必须通过
    `python3 .claude/scripts/research_checker.py check` 的确定性检查，才算验收通过。
    脚本对账计数、ID 唯一与溯源（每个规范 ID 必须逐字出现在它声明的来源文件或 `resource/`
    的文本资料里，本轮新造的 ID 走「ID变更对照」声明）、引用字段是否真实、来源位置能否定位、
@@ -57,7 +57,7 @@ These rules apply to all work in this repository.
    结果写入 `.ontology-state/research-review.json`；阶段状态（CLI 前置、项目进度、左栏展示）
    只认这份回执。报告或源资料改动后回执自动失效，需重新核验。
    验收管的是进入对象提取之前：对象已经提取的项目，回执缺失或失效只在界面上留一个
-   待核验的提醒，不再挡后续阶段，也不要因此建议用户重做调研。
+   待核验的提醒，不再挡后续阶段，也不要因此建议用户重做资料分析。
    任何时候都不要用自己的总结代替这份检查结论，也不要在报告里写"检查无问题"；
    需要人工判断的条目列进「缺口与待决」，由用户确认后勾选。
 
@@ -69,7 +69,7 @@ These rules apply to all work in this repository.
 
 ## Tool State Directory
 
-7. **`.ontology-state/` is tool-managed** — 该目录下的锁文件（`lock-*.json`）、进度文件（`progress.json`）、调研验收回执（`research-review.json`）、只读来源快照（`research-inventory.json`）与已验收 ID 基线（`research-baseline.json`）由命令脚本（`state_helper.py`、`research_checker.py` 等）维护，用于跨命令协调。不要手工编辑；遇到异常残留锁时用 `python3 .claude/scripts/state_helper.py force-release <cmd>` 清理。手工改写回执等于伪造验收结论。
+7. **`.ontology-state/` is tool-managed** — 该目录下的锁文件（`lock-*.json`）、进度文件（`progress.json`）、资料分析验收回执（`research-review.json`）、只读来源快照（`research-inventory.json`）与已验收 ID 基线（`research-baseline.json`）由命令脚本（`state_helper.py`、`research_checker.py` 等）维护，用于跨命令协调。不要手工编辑；遇到异常残留锁时用 `python3 .claude/scripts/state_helper.py force-release <cmd>` 清理。手工改写回执等于伪造验收结论。
 
 ## Protected Source Material
 
@@ -89,11 +89,11 @@ These rules apply to all work in this repository.
    | purpose | 语义 | 建模约束 |
    |---|---|---|
    | `auto` | 由助手判断 | 按文件名/类型/内容自行判断用途 |
-   | `goal` | 建模目标依据 | 目标确认（Step 0 / 调研范围）必须优先引用该资料 |
+   | `goal` | 建模目标依据 | 目标确认（Step 0 / 资料分析范围）必须优先引用该资料 |
    | `schema` | 数据 Schema | 该表格是对象与属性的**事实来源**：对象属性清单的英文名称/类型必须来自真实表头列，逐 Sheet 覆盖、不得虚构或合并；类型与主键只能标注为推断，不得据样例行编造业务含义 |
    | `term` | 术语表 | 对象/操作/规则/指标的命名与别名必须与术语表对齐；冲突时以术语表为准并在文档标注 |
    | `evidence` | 通用业务依据 | 作为佐证材料按需引用，引用时注明出处文件 |
-   - **评测数据**（评测库导入用的业务数据表）不走资料区打标，由用户在「数据评测」的数据源里上传，存于 `.ontology-state/eval-data/<文件ID>/`。它**不是业务语义来源**——不得据样例行编造业务含义、枚举或规则；但它的 **Sheet 名与表头是表名、列名的依据**：没有 `schema` 资料时，对象「# 数据来源」写它的 Sheet 名，从库里读取的属性英文名称逐字取自该 Sheet 的表头（`python3 .claude/scripts/check_eval_data.py --headers` 列出全部表头）。文档形式的数据字典与真实表头冲突时以表头为准，并在调研报告或抽取结果里列出差异。其结构应与 `schema` 资料对账一致（`python3 .claude/scripts/check_eval_data.py` 默认检查这些上传文件）。旧项目 `materials.json` 里残留的 `eval_data` 标签同此处理。
+   - **评测数据**（评测库导入用的业务数据表）不走资料区打标，由用户在「数据评测」的数据源里上传，存于 `.ontology-state/eval-data/<文件ID>/`。它**不是业务语义来源**——不得据样例行编造业务含义、枚举或规则；但它的 **Sheet 名与表头是表名、列名的依据**：没有 `schema` 资料时，对象「# 数据来源」写它的 Sheet 名，从库里读取的属性英文名称逐字取自该 Sheet 的表头（`python3 .claude/scripts/check_eval_data.py --headers` 列出全部表头）。文档形式的数据字典与真实表头冲突时以表头为准，并在资料分析报告或抽取结果里列出差异。其结构应与 `schema` 资料对账一致（`python3 .claude/scripts/check_eval_data.py` 默认检查这些上传文件）。旧项目 `materials.json` 里残留的 `eval_data` 标签同此处理。
 
    `reading_mode`：`full` = 必须全文精读后再使用；`on_demand` = 按需检索片段即可。该文件由平台维护，模型同样**不得修改**。
 

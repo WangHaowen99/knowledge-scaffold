@@ -13,7 +13,7 @@
     manual_pending  需人工确认的条目
 
 对外状态由 `review_status()` 给出，共四种：
-    none     还没有调研报告
+    none     还没有资料分析报告
     pending  有报告但没有有效回执（无回执 / 回执失效 / 有人工待决项）
     failed   回执判定存在确定性错误
     passed   回执有效且通过
@@ -81,7 +81,7 @@ def file_revision(path: Path) -> str:
 
 
 def report_paths(root: Path) -> list[str]:
-    """工作区内的调研报告相对路径（排序去重），目录索引 index.md 不算报告。
+    """工作区内的资料分析报告相对路径（排序去重），目录索引 index.md 不算报告。
 
     相对 `research/` 拼路径而不是 relative_to(root)：root 可能是 `Path('.')`
     （工作区 CLI 的用法），那时 relative_to 会抛 ValueError。

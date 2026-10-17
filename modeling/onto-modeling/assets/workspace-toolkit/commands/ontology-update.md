@@ -46,7 +46,7 @@ update-impact-agent / update-apply-agent 的 prompt 都需 transclude 该文件�
   ```
   请输入参考内容（更新依据），任选一种：
   - 直接粘贴提示词文本（如"客户对象增加手机号字段，必填"）
-  - 输入文件路径（如 `notes/2026-05-20-客户字段补充.md`、`research/最新调研.md`）
+  - 输入文件路径（如 `notes/2026-05-20-客户字段补充.md`、`research/最新资料分析.md`）
   ```
   等待用户输入后继续。
 

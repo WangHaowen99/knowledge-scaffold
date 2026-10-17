@@ -262,14 +262,14 @@ def show_progress() -> int:
 
 
 # 阶段推断
-# 调研（research）保持启用，是常规建模起点之一。提取已拆为 object / operation
+# 资料分析（research）保持启用，是常规建模起点之一。提取已拆为 object / operation
 # 两个命令，阶段终点以 operation 文档存在为准。
-# `调研待核验`：报告已落盘但没通过 research_checker 的内容验收。报告存在不等于
-# 内容可用，所以它独立成一个阶段，不并入 `调研完成`（见 research_review.py）。
+# `资料分析待核验`：报告已落盘但没通过 research_checker 的内容验收。报告存在不等于
+# 内容可用，所以它独立成一个阶段，不并入 `资料分析完成`（见 research_review.py）。
 STAGE_ORDER = [
     ('未开始', '未开始'),
-    ('调研待核验', '调研待核验'),
-    ('调研完成', '调研完成'),
+    ('资料分析待核验', '资料分析待核验'),
+    ('资料分析完成', '资料分析完成'),
     ('流程图就绪', '流程图就绪'),
     ('对象已提取', '对象已提取'),
     ('逻辑已提取', '逻辑已提取'),
@@ -288,13 +288,13 @@ def _has_drawio_files(path: Path) -> bool:
 
 # 每个命令的前置阶段要求。
 # 注意：
-# - extract-object 只要求"有调研报告或流程图之一"。`未开始` 状态会触发
-#   跳步守卫，提示用户先画流程图或显式做调研（/ontology-research）。
+# - extract-object 只要求"有资料分析报告或流程图之一"。`未开始` 状态会触发
+#   跳步守卫，提示用户先画流程图或显式做资料分析（/ontology-research）。
 # - extract-operation 要求对象已提取；逻辑提取完成即可校验、生成代码。
 COMMAND_PREREQS = {
     'research': [],
     'flowchart': [],
-    'extract-object': ['调研完成'],
+    'extract-object': ['资料分析完成'],
     'extract-operation': ['对象已提取'],
     'validate': ['逻辑已提取', '对象已提取'],
     'mock': ['对象已提取'],
@@ -310,8 +310,8 @@ COMMAND_PREREQS = {
 
 STAGE_SORT = {
     '未开始': 0,
-    '调研待核验': 1,
-    '调研完成': 2,
+    '资料分析待核验': 1,
+    '资料分析完成': 2,
     '流程图就绪': 3,
     '对象已提取': 4,
     '逻辑已提取': 5,
@@ -320,9 +320,9 @@ STAGE_SORT = {
 }
 
 STAGE_NEXT_COMMAND = {
-    '未开始': ('/ontology-research 或 /ontology-flowchart', '调研或直接画流程图'),
-    '调研待核验': ('python3 .claude/scripts/research_checker.py', '核验调研报告内容后才能提取对象'),
-    '调研完成': ('/ontology-flowchart 或 /ontology-extract-object', '可选画流程图或直接提取对象'),
+    '未开始': ('/ontology-research 或 /ontology-flowchart', '资料分析或直接画流程图'),
+    '资料分析待核验': ('python3 .claude/scripts/research_checker.py', '核验资料分析报告内容后才能提取对象'),
+    '资料分析完成': ('/ontology-flowchart 或 /ontology-extract-object', '可选画流程图或直接提取对象'),
     '流程图就绪': ('/ontology-extract-object', '提取业务对象'),
     '对象已提取': ('/ontology-extract-operation', '继续提取业务逻辑'),
     '逻辑已提取': ('/ontology-validate', '进入校验'),
@@ -356,8 +356,8 @@ def _compute_stage() -> str:
     if diagrams_has:
         return '流程图就绪'
     if research_has:
-        # 报告以内容验收为准：没有有效回执时只到 `调研待核验`，不放行对象提取。
-        return '调研完成' if research_review.accepted(Path('.')) else '调研待核验'
+        # 报告以内容验收为准：没有有效回执时只到 `资料分析待核验`，不放行对象提取。
+        return '资料分析完成' if research_review.accepted(Path('.')) else '资料分析待核验'
     return '未开始'
 
 

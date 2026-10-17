@@ -43,9 +43,9 @@ agent prompt 需 transclude 该文件全文。
 检查两个可能的提取来源：
 - `ontology/diagrams-summary/` 下的 `.md` 文件（流程图摘要）→ `SUMMARIES`
 - `ontology/excel/` 下与流程图摘要同名的 `.xlsx` 文件（Excel 补充表）→ 后续绑定到对应流程图
-- `research/` 下的 `.md` 文件（调研报告）→ `REPORTS`
+- `research/` 下的 `.md` 文件（资料分析报告）→ `REPORTS`
 
-**调研报告只有通过内容验收才作为来源。** `REPORTS` 非空时先确认验收状态：
+**资料分析报告只有通过内容验收才作为来源。** `REPORTS` 非空时先确认验收状态：
 
 ```bash
 python3 .claude/scripts/research_checker.py status
@@ -55,11 +55,11 @@ python3 .claude/scripts/research_checker.py status
 字段与分类还没对过账——Step 1.6 的分流正是按它的分类列做的：
 
 - `SUMMARIES` 非空 → 置 `REPORTS = empty`，按模式 B 只用流程图继续，并告诉用户：
-  "调研报告（`research/{文件名列表}`）尚未通过内容验收，本次只基于流程图提取。
+  "资料分析报告（`research/{文件名列表}`）尚未通过内容验收，本次只基于流程图提取。
   用 `python3 .claude/scripts/research_checker.py check` 核验通过后，可再以增量模式
   补充报告里的内容。"
 - `SUMMARIES` 为空（报告是唯一来源）→ 按 `.claude/STEP0_TEMPLATE.md` 的 **跳步守卫**
-  提示："调研报告的计数、ID、引用字段或分类尚未对账，直接提取会把错误内容带进逻辑、
+  提示："资料分析报告的计数、ID、引用字段或分类尚未对账，直接提取会把错误内容带进逻辑、
   规则与指标，并可能分流到错误目录。" 选项 **先做 核验** / **继续** / **取消**。
   用户选 **继续** 才保留 `REPORTS`，并在本轮摘要里标注"来源报告未通过内容验收"；
   选 **取消** 时先 `python3 .claude/scripts/state_helper.py release extract-operation` 再 stop。
@@ -68,8 +68,8 @@ python3 .claude/scripts/research_checker.py status
 
 **模式 A — 两者都为空：**
 Tell user:
-"未找到流程图摘要，也未找到调研报告。逻辑提取需要至少一个来源，请先：
-- 回复 **调研**（/ontology-research）→ 做领域调研
+"未找到流程图摘要，也未找到资料分析报告。逻辑提取需要至少一个来源，请先：
+- 回复 **资料分析**（/ontology-research）→ 做资料分析
 - 回复 **流程图**（/ontology-flowchart）→ 直接画流程图
 "
 任一选择都会离开本命令，因此在等待用户回复前先释放锁：
@@ -81,10 +81,10 @@ python3 .claude/scripts/state_helper.py release extract-operation
 **模式 B — 仅有流程图摘要（`SUMMARIES` 非空，`REPORTS` 空）：**
 Set `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = empty`。Proceed to Step 2。
 
-**模式 C — 仅有调研报告（`SUMMARIES` 空，`REPORTS` 非空）：**
+**模式 C — 仅有资料分析报告（`SUMMARIES` 空，`REPORTS` 非空）：**
 Tell user:
-"未找到流程图摘要，将仅基于调研报告提取逻辑（`research/{文件名列表}`）。流程图是可选步骤，概念明确时可跳过。
-- 回复 **继续** → 仅基于调研报告提取逻辑
+"未找到流程图摘要，将仅基于资料分析报告提取逻辑（`research/{文件名列表}`）。流程图是可选步骤，概念明确时可跳过。
+- 回复 **继续** → 仅基于资料分析报告提取逻辑
 - 回复 **先做流程图** → 转入 /ontology-flowchart 创建流程图后再回来
 "
 - **继续**: set `SUMMARY_PATHS = empty`, `REPORT_PATHS = REPORTS`，进入 Step 2。
@@ -93,13 +93,13 @@ Tell user:
 
 **模式 D — 两者都有：**
 Tell user:
-"已发现流程图摘要 {N} 份和调研报告 {M} 份。
+"已发现流程图摘要 {N} 份和资料分析报告 {M} 份。
 - 回复 **两者结合**（推荐）→ 报告里的操作、规则、指标全部生成，流程图提供步骤与数据流；报告没收录的流程图作为补充单独成文，提取后对账标明来源
-- 回复 **跳过调研** → 只用流程图摘要
-- 回复 **跳过流程图** → 只用调研报告（适合流程图过时或不完整时）
+- 回复 **跳过资料分析** → 只用流程图摘要
+- 回复 **跳过流程图** → 只用资料分析报告（适合流程图过时或不完整时）
 "
 - **两者结合**（或默认）: `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = REPORTS`。
-- **跳过调研**: `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = empty`。
+- **跳过资料分析**: `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = empty`。
 - **跳过流程图**: `SUMMARY_PATHS = empty`, `REPORT_PATHS = REPORTS`。
 - **取消**: `python3 .claude/scripts/state_helper.py release extract-operation`，stop。
 
@@ -133,7 +133,7 @@ Set `EXCEL_CONTEXT` = 脚本 stdout。若 stdout 为空，置为 `（无同名 E
 
 若 `SUMMARY_PATHS` 为空：`PAIRED_EXCEL_PATHS = empty`，`ORPHAN_EXCEL_PATHS = empty`，`EXCEL_CONTEXT = （无流程图摘要，Excel 不参与本次提取）`。
 
-> 传给 agent 时：若 `SUMMARY_PATHS` 为空，在 prompt 中写 `SUMMARY_PATHS: (无，仅基于调研报告)`；若 `REPORT_PATHS` 为空，省略该行；若 `PAIRED_EXCEL_PATHS` 为空，写 `PAIRED_EXCEL_PATHS: (无同名 Excel 补充表)`。
+> 传给 agent 时：若 `SUMMARY_PATHS` 为空，在 prompt 中写 `SUMMARY_PATHS: (无，仅基于资料分析报告)`；若 `REPORT_PATHS` 为空，省略该行；若 `PAIRED_EXCEL_PATHS` 为空，写 `PAIRED_EXCEL_PATHS: (无同名 Excel 补充表)`。
 
 ## Step 1.6: 按分类拆分候选，比对流程图
 
@@ -165,7 +165,7 @@ python3 .claude/scripts/report_reconcile.py plan --json --reports {REPORT_PATHS�
   - `flowchart_conflicts`：流程图名称在报告里是规则、指标或对象，流程图把它当操作、报告不是。
     逐条问用户：
 
-    "流程图「{name}」在调研报告里是{对应类型}，不能直接按操作生成。
+    "流程图「{name}」在资料分析报告里是{对应类型}，不能直接按操作生成。
     - 回复 **改报告** → 把报告里这一条的分类改成「操作」并重新核验后再提取
     - 回复 **改名生成** → 按流程图生成操作，换一个名字（默认「{name}流程」，也可以直接给名字）
     - 回复 **不单独成文** → 这份流程图不生成操作文档"
@@ -182,7 +182,7 @@ python3 .claude/scripts/report_reconcile.py plan --json --reports {REPORT_PATHS�
 List `ontology/operation/*.md`、`ontology/rule/*.md` 与 `ontology/metric/*.md`（目录索引 `index.md` 不算文档）。
 本命令同时产出这三类文档。增量对三个目录一视同仁，已存在的一律不重新生成——否则会把
 校验阶段修过的规则再生成一遍。重做只清空本轮生成得回来的目录：`ontology/operation/` 总是
-清空；`ontology/rule/` 与 `ontology/metric/` 只在本轮用了调研报告（`REPORT_PATHS` 非空，
+清空；`ontology/rule/` 与 `ontology/metric/` 只在本轮用了资料分析报告（`REPORT_PATHS` 非空，
 Step 1.6 已按分类拆出候选）时才清空，这时规则与指标以报告为准，清掉才不会留下报告里已经
 没有的旧规则。本轮没用报告时，这两个目录里的文档本轮生成不回来（可能是从知识包导入的，
 也可能是 /ontology-extract-rule-metric 补抽的），一律保留。
@@ -196,7 +196,7 @@ If any of the three directories already has documents and MODE is not pre-set:
 - 回复 **增量** → 只补充缺失的逻辑、规则与指标，不覆盖已有文档
 - 回复 **重做** → 清空 {REPORT_PATHS 非空：`ontology/operation/`、`ontology/rule/`、`ontology/metric/`；REPORT_PATHS 为空：`ontology/operation/`} 后重新提取
 {若 REPORT_PATHS 为空且 R+P > 0，追加一行：
-"注意：本轮没有使用调研报告，重做只清空 `ontology/operation/`，现有的 {R} 条规则与 {P} 个指标保留不动。"}
+"注意：本轮没有使用资料分析报告，重做只清空 `ontology/operation/`，现有的 {R} 条规则与 {P} 个指标保留不动。"}
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
 ```
 
@@ -217,7 +217,7 @@ python3 .claude/scripts/state_helper.py acquire extract-operation operation
 
 Tell user: "**逻辑提取**\n正在从{source_label}中识别和提取业务逻辑..."
 
-> `{source_label}` 取值：`SUMMARY_PATHS` 非空且 `PAIRED_EXCEL_PATHS` 非空且 `REPORT_PATHS` 非空 → "流程图、Excel 补充表和调研报告"；`SUMMARY_PATHS` 非空且 `PAIRED_EXCEL_PATHS` 非空 → "流程图和 Excel 补充表"；`SUMMARY_PATHS` 非空且 `REPORT_PATHS` 非空 → "流程图和调研报告"；仅 `SUMMARY_PATHS` → "流程图摘要"；仅 `REPORT_PATHS` → "调研报告"。
+> `{source_label}` 取值：`SUMMARY_PATHS` 非空且 `PAIRED_EXCEL_PATHS` 非空且 `REPORT_PATHS` 非空 → "流程图、Excel 补充表和资料分析报告"；`SUMMARY_PATHS` 非空且 `PAIRED_EXCEL_PATHS` 非空 → "流程图和 Excel 补充表"；`SUMMARY_PATHS` 非空且 `REPORT_PATHS` 非空 → "流程图和资料分析报告"；仅 `SUMMARY_PATHS` → "流程图摘要"；仅 `REPORT_PATHS` → "资料分析报告"。
 
 Read `.claude/agents/extract-operation-agent.md`. Dispatch it with:
 
@@ -229,7 +229,7 @@ PAIRED_EXCEL_PATHS: {逗号分隔的同名 Excel 路径；无则写 (无同名 E
 EXCEL_CONTEXT:
 {EXCEL_CONTEXT}
 
-REPORT_PATHS: {调研报告路径，无则省略}
+REPORT_PATHS: {资料分析报告路径，无则省略}
 OPERATION_CANDIDATES: {Step 1.6 的操作组，逗号分隔；无报告时写 (无报告分类，按来源材料识别)}
 FLOWCHART_SUPPLEMENTS: {Step 1.6 的流程图补充，逗号分隔；无则写 无}
 FLOWCHART_SKIPPED: {用户决定不单独成文的流程图，逗号分隔；无则写 无}
@@ -257,7 +257,7 @@ Read `.claude/agents/rule-metric-extraction-agent.md`. Dispatch it with:
 {若 KNOWLEDGE_BLOCK 非空：原样粘贴 KNOWLEDGE_BLOCK 在此处，紧跟一行分隔符 ---}
 
 SOURCE_MODE=report
-REPORT_PATHS={调研报告路径}
+REPORT_PATHS={资料分析报告路径}
 RULE_CANDIDATES={Step 1.6 的规则组，逗号分隔；无则写 无}
 METRIC_CANDIDATES={Step 1.6 的指标组，逗号分隔；无则写 无}
 OBJECT_DIR=ontology/object/
@@ -290,7 +290,7 @@ CHECK_TYPE: {本轮有规则或指标候选时写 operation,rule,metric；否则
 
 Handle gaps（全部补充 / 选择性补充 / 跳过），with one-retry limit.
 
-**对账（调研报告 ↔ 本轮产物）：** 仅当 `REPORT_PATHS` 非空时执行。覆盖率检查是模型判断，
+**对账（资料分析报告 ↔ 本轮产物）：** 仅当 `REPORT_PATHS` 非空时执行。覆盖率检查是模型判断，
 报告条目有没有落地以这里的确定性对账为准：
 
 ```bash

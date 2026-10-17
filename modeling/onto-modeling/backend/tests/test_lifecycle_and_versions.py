@@ -200,7 +200,7 @@ def test_import_summary_reports_contents(manager: WorkspaceManager, tmp_path: Pa
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("ontology/object/订单.md", "# 订单")
         zf.writestr("ontology/logic/创建订单.md", "# 创建订单")
-        zf.writestr("research/summary.md", "调研")
+        zf.writestr("research/summary.md", "资料分析")
         zf.writestr(".git/config", "skip me")
     summary = manager.import_summary(archive)
     assert summary["objects"] == 1

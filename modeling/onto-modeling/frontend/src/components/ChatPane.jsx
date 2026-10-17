@@ -168,7 +168,7 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
   }
   if (nextIndex >= 0) {
     const next = STAGES[nextIndex];
-    // 报告已生成但没通过验收时先核验，而不是先推重新调研
+    // 报告已生成但没通过验收时先核验，而不是先推重新做资料分析
     const actions =
       next.key === 'research' ? orderResearchActions(next.actions, researchReview) : next.actions;
     for (const action of actions) {
