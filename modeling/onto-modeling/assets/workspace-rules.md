@@ -14,6 +14,14 @@ These rules apply to all work in this repository.
 
 每个 `.claude/commands/*.md` 与 `.claude/agents/*.md` 都假设上述四份约定在 context 中；若你正在新增/修改 prompt 而需要明确引用条目，**优先 cite 文件路径而不是把约定原文复制进 prompt**，以避免漂移。
 
+## Subagent Dispatch（子任务派发）
+
+命令里写「Read `.claude/agents/X.md`. Dispatch it …」时，agent 文件就是子任务的完整指令：
+
+- 派发提示第一行固定写：`请先完整阅读 .claude/agents/X.md，严格按其中的规则与输出格式执行。`，之后再接命令要求的输入（如 TARGET_FILES、CHANGE_DIFF）。
+- 不要把 agent 文件改写成摘要或几句话代替，也不要在派发提示里另加 agent 文件没有的检查范围或任务。
+- 子任务不得再派发子任务；需要别的检查时，结束并把结果交回主对话。
+
 ## Formatting Rules
 
 1. **Wiki 链接** — `[[文件名]]` must exactly match the target filename with no `.md` extension and no path prefix. Example: `[[订单]]` links to `ontology/object/订单.md`. Links resolve across `object/`, `operation/`, `rule/` and `metric/` directories (legacy `logic/` remains readable).

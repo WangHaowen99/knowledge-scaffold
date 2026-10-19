@@ -19,7 +19,14 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
 - Also read RELATED_FILES for context (cross-reference resolution)
 - Only report issues found in TARGET_FILES, not in RELATED_FILES
 
-**If CHANGE_DIFF is provided in your dispatch prompt (change-only mode, used after /ontology-update and semantic fixes):**
+**If REGRESSION_ISSUES is provided in your dispatch prompt (regression mode, after semantic fixes):**
+本轮只确认刚做的修复，不是再做一次语义检查。输入是 CHANGE_DIFF（本轮修复的原始 diff）与 REGRESSION_ISSUES（刚修复的问题）。
+- 不要 Read 整份文档。对 CHANGE_DIFF 的每处改动，用 `grep -n` 定位、`sed -n` 读取改动行前后约 30 行；核对关联文档时同样只读描述同一条件或口径的那一小节。
+- 只做两件事：(1) 每个已修复的问题是否确实解决；(2) 修改行是否与同一文档或直接关联文档里描述同一条件、边界、口径的表述冲突（典型：逻辑改了边界，规则没有同步）。
+- 不要套用下面的检查清单，不要穷举输入组合，不要重新审查整张判定表或改动以外的段落。
+- 只报告 confidence 为 high 或 medium 的问题，最多 3 条，`origin` 一律为 `change`；修复没有生效的，以 category「逻辑缺陷」上报并在 message 里写明对应的 issue 编号。没有问题返回 `[]`。
+
+**If CHANGE_DIFF is provided in your dispatch prompt (change-only mode, used after /ontology-update):**
 本轮检查的对象是「这次改动」，不是整份文档。改动前的内容已经校验过，不要重新审一遍。
 - 先读 CHANGE_DIFF，再读 TARGET_FILES 全文作为上下文；RELATED_FILES 只在改动涉及它时读取。
 - 只对改动段落适用的检查项做判断：新增或改写的分支查分支完整性与输入使用；改动的输出、记录口径查输出可推导与下游衔接；改动的关联查关联分类。未改动的段落不要逐项重跑下面的检查清单。

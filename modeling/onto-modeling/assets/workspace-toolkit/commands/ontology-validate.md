@@ -408,7 +408,7 @@ Per selection round before entering B4:
 
 If `B4_SELECTED` is empty, do not enter the fix loop; proceed directly to B6.
 
-只查改动模式：每轮修复开始前先 `git add {TARGET_FILES 的路径}` 暂存当前内容，让 B5 能单独取出本轮修复的改动。
+每轮修复开始前先 `git add ontology/` 暂存当前内容（不提交），让 B5 能单独取出本轮修复的改动。
 
 #### B4a: Bulk-apply via semantic-fix-agent（默认路径）
 
@@ -499,9 +499,17 @@ B4d 处理完毕后进入 B5。
 
 If B4_MODIFIED is empty (no files were modified), skip this step and proceed to B6.
 
-Re-dispatch the semantic-check-agent in incremental mode, passing only the stems in B4_MODIFIED as TARGET_FILES (do not pass RELATED_FILES). Wait for it to return results.
+Re-dispatch the semantic-check-agent in **regression mode**（全量、增量、只查改动三种模式通用）。派发提示按工作区规则「子任务派发」第一行要求完整阅读 agent 文件，之后附：
 
-只查改动模式下，同时传入 `CHANGE_DIFF` = `git diff -- {B4_MODIFIED 的路径}`（未暂存部分，即本轮修复的改动，不是从基线算起的累计改动），回归检查只看这几处修改；返回的 `existing` 问题不算回归，直接丢弃。回归发现的新问题照常列给用户选择，不要直接修。
+```
+TARGET_FILES: {B4_MODIFIED 的 stem，空格分隔}
+REGRESSION_ISSUES: |
+{本轮修复的问题，每条一行：issue_id、file、message 原文}
+CHANGE_DIFF: |
+{原样粘贴 `git diff -U3 -- {B4_MODIFIED 的路径}` 的输出（未暂存部分，即本轮修复的改动），每行前加 2 个空格缩进}
+```
+
+CHANGE_DIFF 必须是命令输出原文，不要改写、概括或补充说明；不传 RELATED_FILES，也不要在派发提示里另加检查范围。Wait for it to return results. 回归发现的新问题照常列给用户选择，不要直接修。
 
 Filter the new results: remove any issue whose `file` + `message` combination was already present in **any previous semantic-check run this session** (B1 results, plus any issues found by prior B5 loops). Only issues not previously seen count as regressions introduced by the fixes.
 
