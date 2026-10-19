@@ -69,8 +69,8 @@ def _encrypt(plain: str, username: str, engine: str) -> str:
 
     # AES-256-GCM：每次随机 96 位 nonce，附加数据绑定用户名与引擎
     nonce = secrets.token_bytes(12)
-    cipher = AESGCM(_master_key())
-    sealed = cipher.encrypt(nonce, plain.encode("utf-8"), _aad(username, engine))  # NOSONAR(S4787)
+    data, aad = plain.encode("utf-8"), _aad(username, engine)
+    sealed = AESGCM(_master_key()).encrypt(nonce, data, aad)  # NOSONAR(S4787)
     return _CIPHER_PREFIX + base64.urlsafe_b64encode(nonce + sealed).decode("ascii")
 
 
@@ -82,8 +82,8 @@ def _decrypt(token: str, username: str, engine: str) -> str:
         raise PersonalConfigError("个人 API Key 存储格式无效，请重新保存", 409)
     try:
         raw = base64.urlsafe_b64decode(token[len(_CIPHER_PREFIX):])
-        cipher = AESGCM(_master_key())
-        plain = cipher.decrypt(raw[:12], raw[12:], _aad(username, engine))  # NOSONAR(S4787)
+        aad = _aad(username, engine)
+        plain = AESGCM(_master_key()).decrypt(raw[:12], raw[12:], aad)  # NOSONAR(S4787)
     except (InvalidTag, ValueError) as exc:
         raise PersonalConfigError(
             "个人 API Key 无法解密（加密密钥可能已更换），请在「我的模型配置」重新保存", 409
