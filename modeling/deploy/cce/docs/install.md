@@ -24,6 +24,8 @@ Modeling 软件包包含三个自有镜像以及用于 Core、Agent 和 Onto Mod
 bash deploy/install-consumer-modeling.sh cce install --config deployment.customer.yaml
 ```
 
+首次联合 `preflight` 在 Consumer release 与其 auth/backend Service 均不存在时，先校验两侧发布包、兼容组合和建模对 Consumer 的配置引用，并检查 Modeling PVC、Secret、节点等已有资源；此时仅延后查询待安装的 Consumer Service。Consumer 安装完成后，联合入口会再次运行 Modeling 的完整预检，确认实际 auth/backend Service 与端口，再开始 Modeling 安装。单独 Modeling 预检及联合升级仍要求实际 Consumer Service 已存在。
+
 联合入口遵循 Consumer 软件包的 `deploy/install-cce.sh` 契约，不读取 Consumer 源码。两侧分别拥有自己的 Helm 发布和运行时资源。入口会在调用任一侧前校验软件包校验和以及精确的兼容性组合。操作租约要求有权在两侧 release 所在命名空间创建、更新和释放各自的 `<releaseName>-cce-operation` Lease。客户 values、密钥和运行状态必须保留在发布包及 Git 之外。
 
 当前预检会检查声明式资源和集群基础可用性，但不能证明所有候选节点都能拉取每个镜像，也不能证明选定 CCE 类型的 ELB 与 Ingress 注解可用，或特权 JiuwenBox 会被允许。这些内容必须在真实集群验收中验证。Pod 成功滚动也不能证明脚本执行正常；请在目标架构上执行真实的合成脚本验收。

@@ -235,8 +235,8 @@ class CceContractTests(unittest.TestCase):
             def release(self):
                 pass
 
-        def fake_invoke(side, action, _config, package, *_args, **_kwargs):
-            calls.append((side, action))
+        def fake_invoke(side, action, _config, package, *_args, **kwargs):
+            calls.append((side, action, kwargs.get("lock_holder")))
             if side == "consumer" and action == "upgrade" and self.consumer_fails:
                 raise RuntimeError("synthetic Consumer upgrade failure")
             if side == "consumer" and action == "verify" and self.consumer_verify_fails:
@@ -271,15 +271,19 @@ class CceContractTests(unittest.TestCase):
                 with redirect_stdout(output):
                     code = JOINT.main()
                 self.assertEqual(code, 0, output.getvalue())
-                self.assertEqual(calls, [("consumer", "preflight"), ("modeling", "preflight"), ("consumer", "upgrade"),
-                                         ("consumer", "verify"), ("modeling", "upgrade"),
-                                         ("modeling", "verify")])
+                self.assertEqual([(side, action) for side, action, _ in calls],
+                                 [("consumer", "preflight"), ("modeling", "preflight"), ("consumer", "upgrade"),
+                                  ("consumer", "verify"), ("modeling", "upgrade"), ("modeling", "verify")])
+                operation_id = json.loads(output.getvalue())["operationId"]
+                self.assertEqual([holder for side, action, holder in calls if action == "verify"],
+                                 [operation_id, operation_id])
                 calls.clear()
                 self.consumer_fails = True
                 output = StringIO()
                 with redirect_stdout(output):
                     self.assertEqual(JOINT.main(), 1)
-                self.assertEqual(calls, [("consumer", "preflight"), ("modeling", "preflight"), ("consumer", "upgrade")])
+                self.assertEqual([(side, action) for side, action, _ in calls],
+                                 [("consumer", "preflight"), ("modeling", "preflight"), ("consumer", "upgrade")])
                 self.assertEqual(json.loads(output.getvalue())["phase"], "consumer")
                 calls.clear()
                 self.consumer_fails = False
@@ -287,8 +291,9 @@ class CceContractTests(unittest.TestCase):
                 output = StringIO()
                 with redirect_stdout(output):
                     self.assertEqual(JOINT.main(), 1)
-                self.assertEqual(calls, [("consumer", "preflight"), ("modeling", "preflight"), ("consumer", "upgrade"),
-                                         ("consumer", "verify")])
+                self.assertEqual([(side, action) for side, action, _ in calls],
+                                 [("consumer", "preflight"), ("modeling", "preflight"), ("consumer", "upgrade"),
+                                  ("consumer", "verify")])
                 self.assertEqual(json.loads(output.getvalue())["phase"], "consumer")
         finally:
             sys.argv = original
@@ -355,6 +360,182 @@ class CceContractTests(unittest.TestCase):
             with self.assertRaises(ConfigError):
                 JOINT.validate_cross_side(config, package, consumer_values, bad, combo)
 
+    def test_modeling_preflight_checks_existing_resources_when_consumer_services_are_deferred(self):
+        args = SimpleNamespace(context="synthetic", namespace="modeling-demo")
+        merged = yaml.safe_load((ROOT / "values.customer.example.yaml").read_text())
+        def resource(_args, verb, kind, *rest):
+            if kind == "namespace":
+                return {"status": {"phase": "Active"}}
+            if kind == "pvc":
+                return {"status": {"phase": "Bound"},
+                        "spec": {"volumeMode": "Filesystem", "accessModes": ["ReadWriteOnce"]}}
+            if kind == "secret":
+                return {"data": {"service-token": "synthetic"}}
+            if kind == "nodes":
+                return {"items": [{"metadata": {"labels": {"kubernetes.io/arch": "amd64"}},
+                                   "spec": {"unschedulable": False}}]}
+            if kind == "service":
+                raise ConfigError("Consumer Service is missing")
+            raise AssertionError((verb, kind, rest))
+        with mock.patch.object(INSTALL, "kube", side_effect=resource) as calls:
+            INSTALL.preflight(args, merged, check_external_services=False)
+            self.assertFalse(any(call.args[1:3] == ("get", "service") for call in calls.call_args_list))
+            self.assertEqual(sum(call.args[2] == "pvc" for call in calls.call_args_list), 3)
+            self.assertTrue(any(call.args[2] == "nodes" for call in calls.call_args_list))
+            with self.assertRaises(ConfigError):
+                INSTALL.preflight(args, merged)
+        def wrong_port(_args, verb, kind, *rest):
+            if kind == "service":
+                return {"spec": {"ports": [{"port": 9999}]}}
+            return resource(_args, verb, kind, *rest)
+        with mock.patch.object(INSTALL, "kube", side_effect=wrong_port):
+            with self.assertRaisesRegex(ConfigError, "service port mismatch"):
+                INSTALL.preflight(args, merged)
+        def ready_service(_args, verb, kind, *rest):
+            if kind == "service":
+                return {"spec": {"ports": [{"port": 5056 if rest[0] == "consumer-auth" else 5055}]}}
+            return resource(_args, verb, kind, *rest)
+        with mock.patch.object(INSTALL, "kube", side_effect=ready_service):
+            INSTALL.preflight(args, merged)
+
+    def test_deferred_preflight_flag_only_reaches_modeling(self):
+        root = self.base / "modeling-cce-demo"
+        (root / "deploy").mkdir(parents=True)
+        (root / "deploy/install-cce.sh").write_text("#!/bin/sh\n")
+        config = {"cluster": {"context": "synthetic"}, "stateDir": self.base, "timeoutSeconds": 30,
+                  "modeling": {"namespace": "modeling-demo", "releaseName": "modeling",
+                               "values": self.base / "values.yaml"}}
+        package = (root, {"releaseVersion": "m2", "chartVersion": "2.0.0"})
+        response = SimpleNamespace(returncode=0, stdout=json.dumps({"schemaVersion": "cce-operation/v1",
+            "status": "succeeded", "releaseVersion": "m2", "chartVersion": "2.0.0"}))
+        with mock.patch.object(JOINT.subprocess, "run", return_value=response) as call:
+            JOINT.invoke("modeling", "preflight", config, package, "operation-demo",
+                         self.base / "images.yaml", defer_external_services=True)
+        self.assertIn("--defer-external-services", call.call_args.args[0])
+        with self.assertRaises(ConfigError):
+            JOINT.invoke("modeling", "install", config, package, "operation-demo",
+                         self.base / "images.yaml", defer_external_services=True)
+
+    def test_initial_joint_preflight_defers_only_when_consumer_release_and_services_are_absent(self):
+        config = {"cluster": {"context": "synthetic"},
+                  "consumer": {"namespace": "consumer-demo", "releaseName": "consumer"}}
+        absent = SimpleNamespace(returncode=1, stdout="", stderr="Error: release: not found")
+        services = SimpleNamespace(returncode=0, stdout=json.dumps({"items": []}), stderr="")
+        with mock.patch.object(JOINT.subprocess, "run", side_effect=(absent, services)) as commands:
+            self.assertTrue(JOINT.defer_consumer_services(config))
+            self.assertEqual(commands.call_count, 2)
+        present = SimpleNamespace(returncode=0, stdout="{}", stderr="")
+        with mock.patch.object(JOINT.subprocess, "run", return_value=present) as commands:
+            self.assertFalse(JOINT.defer_consumer_services(config))
+            commands.assert_called_once()
+        partial = SimpleNamespace(returncode=0, stdout=json.dumps({"items": [
+            {"metadata": {"name": "consumer-auth"}}]}), stderr="")
+        with mock.patch.object(JOINT.subprocess, "run", side_effect=(absent, partial)):
+            with self.assertRaisesRegex(ConfigError, "without its Helm release"):
+                JOINT.defer_consumer_services(config)
+
+    def test_joint_install_checks_consumer_services_before_modeling_install(self):
+        config = {"stateDir": self.base, "cluster": {"context": "synthetic"},
+                  "compatibilityFile": self.base / "compatibility.yaml"}
+        releases = {}
+        for side in JOINT.JOINT_SIDE_ORDER:
+            config[side] = {"package": self.base / f"{side}.tar.gz", "releaseName": side,
+                            "namespace": f"{side}-demo", "values": self.base / f"{side}-values.yaml",
+                            "resolvedImages": self.base / f"{side}-images.yaml"}
+            releases[side] = {"releaseVersion": "demo", "chartVersion": "0.1.0"}
+
+        class FakeLease:
+            def __init__(self, *_):
+                pass
+            def acquire(self):
+                pass
+            def check(self):
+                pass
+            def release(self):
+                pass
+
+        calls = []
+        service_ready = True
+        def fake_invoke(side, action, _config, package, *_args, **kwargs):
+            calls.append((side, action, kwargs))
+            if side == "modeling" and action == "preflight" and not service_ready:
+                raise ConfigError("Consumer Service is missing or has an unexpected port")
+            return {"schemaVersion": "cce-operation/v1", "status": "succeeded",
+                    "releaseVersion": package[1]["releaseVersion"], "chartVersion": package[1]["chartVersion"]}
+
+        original = sys.argv
+        try:
+            with mock.patch.object(JOINT, "load_config", return_value=config), \
+                 mock.patch.object(JOINT, "safe_extract", side_effect=lambda path, *_: self.base / path.name), \
+                 mock.patch.object(JOINT, "validate_release", side_effect=lambda _root, side: releases[side]), \
+                 mock.patch.object(JOINT, "validate_combination", return_value={}), \
+                 mock.patch.object(JOINT, "validate_cross_side"), \
+                 mock.patch.object(JOINT, "read_yaml", side_effect=lambda path: {"global": {"clusterFlavor": "standard",
+                     "access": {"elb": {"id": "synthetic"},
+                                "listenerPort": 80 if "consumer" in str(path) else 8080}}}), \
+                 mock.patch.object(JOINT, "effective_images", return_value=self.base / "effective.yaml"), \
+                 mock.patch.object(JOINT, "operation_fingerprint", return_value="synthetic"), \
+                 mock.patch.object(JOINT, "defer_consumer_services", return_value=True), \
+                 mock.patch.object(JOINT, "Lease", FakeLease), \
+                 mock.patch.object(JOINT, "invoke", side_effect=fake_invoke):
+                sys.argv = ["joint-cce.py", "preflight", "--config", str(self.base / "joint.yaml")]
+                with redirect_stdout(StringIO()):
+                    self.assertEqual(JOINT.main(), 0)
+                self.assertEqual([(side, action) for side, action, _ in calls],
+                                 [("consumer", "preflight"), ("modeling", "preflight")])
+                self.assertTrue(calls[1][2]["defer_external_services"])
+                calls.clear()
+                sys.argv[1] = "install"
+                with redirect_stdout(StringIO()):
+                    self.assertEqual(JOINT.main(), 0)
+                self.assertEqual([(side, action) for side, action, _ in calls],
+                                 [("consumer", "install"), ("modeling", "preflight"), ("modeling", "install")])
+                self.assertTrue(calls[1][2]["lock_holder"])
+                self.assertFalse(calls[2][2]["defer_external_services"])
+                calls.clear()
+                service_ready = False
+                with redirect_stdout(StringIO()) as output:
+                    self.assertEqual(JOINT.main(), 1)
+                self.assertEqual([(side, action) for side, action, _ in calls],
+                                 [("consumer", "install"), ("modeling", "preflight")])
+                self.assertEqual(json.loads(output.getvalue())["phase"], "modeling")
+        finally:
+            sys.argv = original
+
+    def test_upgrade_precheck_handles_delegated_and_packaged_transitions(self):
+        path, installed, packages = self.upgrade_fixture()
+        release = packages["modeling"][1]
+        root = self.base / "modeling-cce-demo"
+        (root / "deploy").mkdir(parents=True)
+        shutil.copy2(path, root / "deploy/compatibility.yaml")
+        record = JOINT.verified_joint_transition({"compatibilityFile": path}, packages,
+                                                  "upgrade-demo", installed)
+        record_path = self.base / "transition.json"
+        record_path.write_text(json.dumps(record))
+        backup_path = self.base / "backup.json"
+        backup_path.write_text("{}")
+        args = SimpleNamespace(backup_record=backup_path, transition_id="upgrade-demo",
+                               transition_record=record_path, lock_holder="operation-demo")
+        merged = {"global": {"targetArch": "amd64", "auth": {"issuer": "synthetic"}},
+                  "modeling": {"workloads": {name: {"persistence": {"existingClaim": f"{name}-data"}}
+                                             for name in UPGRADE.WORKLOADS}}}
+        old_values = json.loads(json.dumps(merged))
+        def precheck():
+            with mock.patch.object(INSTALL, "check_delegated_lease"), \
+                 mock.patch.object(INSTALL, "installed_release", return_value=installed["modeling"]), \
+                 mock.patch.object(INSTALL, "installed_values", return_value=old_values), \
+                 mock.patch.object(INSTALL, "bindings", return_value={"synthetic": "binding"}), \
+                 mock.patch.object(INSTALL, "verified_snapshots"):
+                return INSTALL.upgrade_precheck(args, root, release, merged)
+        self.assertEqual(precheck(), {"synthetic": "binding"})
+        args.transition_record = None
+        self.assertEqual(precheck(), {"synthetic": "binding"})
+        manifest = yaml.safe_load(path.read_text())
+        manifest["transitions"][0]["modelingDataMigration"] = "required"
+        (root / "deploy/compatibility.yaml").write_text(yaml.safe_dump(manifest))
+        with self.assertRaises(ConfigError):
+            precheck()
+
     def test_consumer_invocation_omits_unsupported_options(self):
         root = self.base / "consumer-cce-demo"
         (root / "deploy").mkdir(parents=True)
@@ -372,6 +553,8 @@ class CceContractTests(unittest.TestCase):
             command = call.call_args.args[0]
             for forbidden in ("--compatibility", "--backup-record", "--transition-id", "--transition-record"):
                 self.assertNotIn(forbidden, command)
+            if action == "verify":
+                self.assertEqual(command[command.index("--lock-holder") + 1], "operation-demo")
 
     def test_second_operation_lease_failure_releases_only_first_lease(self):
         config = {"cluster": {"context": "synthetic"},

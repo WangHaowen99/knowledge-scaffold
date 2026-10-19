@@ -137,7 +137,7 @@ def effective_images(config, state: Path, source: str, operation_id: str) -> Pat
     return effective
 
 
-def invoke(side, action, config, package, operation_id, image_file, resume="", backup_record="", transition_id="", lock_holder="", transition_record=""):
+def invoke(side, action, config, package, operation_id, image_file, resume="", backup_record="", transition_id="", lock_holder="", transition_record="", defer_external_services=False):
     script = package[0] / "deploy/install-cce.sh"
     if not script.is_file():
         raise ConfigError(f"{side} package has no deploy/install-cce.sh")
@@ -156,6 +156,10 @@ def invoke(side, action, config, package, operation_id, image_file, resume="", b
         options.extend(("--transition-record", str(transition_record)))
     if lock_holder:
         options.extend(("--lock-holder", lock_holder))
+    if defer_external_services:
+        if side != "modeling" or action != "preflight":
+            raise ConfigError("only Modeling preflight may defer Consumer Service lookup")
+        options.append("--defer-external-services")
     result = subprocess.run(options, text=True, capture_output=True, timeout=config.get("timeoutSeconds", 900) + 30)
     try:
         payload = json.loads(result.stdout)
@@ -194,6 +198,37 @@ def completed_release_matches(config, side, package) -> bool:
     values = json.loads(run("helm", "--kube-context", config["cluster"]["context"],
                             "--namespace", entry["namespace"], "get", "values", entry["releaseName"], "-o", "json"))
     return values.get("global", {}).get("releaseVersion") == package[1]["releaseVersion"]
+
+
+def consumer_release_exists(config) -> bool:
+    entry = config["consumer"]
+    result = subprocess.run(("helm", "--kube-context", config["cluster"]["context"],
+                             "--namespace", entry["namespace"], "status", entry["releaseName"],
+                             "-o", "json"), text=True, capture_output=True)
+    if result.returncode:
+        if "not found" in result.stderr.lower():
+            return False
+        raise RuntimeError("unable to read Consumer Helm release status")
+    return True
+
+
+def defer_consumer_services(config) -> bool:
+    if consumer_release_exists(config):
+        return False
+    entry = config["consumer"]
+    result = subprocess.run(("kubectl", "--context", config["cluster"]["context"],
+                             "-n", entry["namespace"], "get", "services", "-o", "json"),
+                            text=True, capture_output=True)
+    if result.returncode:
+        raise RuntimeError("unable to inspect Consumer Services before joint preflight")
+    items = json.loads(result.stdout).get("items", [])
+    if not isinstance(items, list):
+        raise ConfigError("Consumer Service list is invalid")
+    expected = {f"{entry['releaseName']}-auth", f"{entry['releaseName']}-backend"}
+    existing = {item.get("metadata", {}).get("name") for item in items if isinstance(item, dict)}
+    if expected & existing:
+        raise ConfigError("Consumer Service exists without its Helm release; inspect cluster state")
+    return True
 
 
 def installed_identity(config, side):
@@ -453,6 +488,7 @@ def main():
                            image_files["modeling"], backup_record=args.backup_record,
                            transition_id=args.transition_id, lock_holder=operation_id,
                            transition_record=transition_record_path)
+            defer_external_services = False
             for side in JOINT_SIDE_ORDER:
                 for current_lease in leases:
                     current_lease.check()
@@ -465,17 +501,25 @@ def main():
                 if journal:
                     if args.action == "upgrade" and journal.get("phase") == f"{side}-started":
                         raise ConfigError(f"{side} upgrade outcome is uncertain; inspect actual state before retry")
+                if args.action == "preflight" and side == "modeling":
+                    defer_external_services = defer_consumer_services(config)
+                if args.action == "install" and side == "modeling":
+                    invoke("modeling", "preflight", config, packages["modeling"], operation_id,
+                           image_files["modeling"], lock_holder=operation_id)
+                if journal:
                     journal["phase"] = f"{side}-started"
                     write_journal(journal_path, journal)
                 result["results"][side] = invoke(side, args.action, config, packages[side], operation_id,
                     image_files[side], args.resume if args.action == "install" else "",
                     (args.backup_record if side == "modeling" else "") or "",
                     args.transition_id or "", operation_id if args.action in ("install", "upgrade") else "",
-                    transition_record_path if side == "modeling" and args.action == "upgrade" else "")
+                    transition_record_path if side == "modeling" and args.action == "upgrade" else "",
+                    defer_external_services=defer_external_services and side == "modeling")
                 if args.action == "upgrade":
                     for current_lease in leases:
                         current_lease.check()
-                    invoke(side, "verify", config, packages[side], operation_id, image_files[side])
+                    invoke(side, "verify", config, packages[side], operation_id, image_files[side],
+                           lock_holder=operation_id)
                 if journal:
                     journal["completed"].append(side)
                     journal["phase"] = f"{side}-completed"

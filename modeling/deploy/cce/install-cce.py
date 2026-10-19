@@ -178,7 +178,7 @@ def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
             raise CompatibilityError("delegated compatibility manifest checksum differs")
         if transition(manifest_path, args.transition_id, installed, release) != record["transition"]:
             raise CompatibilityError("delegated transition differs from compatibility manifest")
-        transition = record["transition"]
+        transition_entry = record["transition"]
         old = record.get("from", {})
         middle = record.get("intermediate", {})
         new = record.get("to", {})
@@ -188,10 +188,10 @@ def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
                 (release["releaseVersion"], release["chartVersion"]) or
                 (middle.get("modelingReleaseVersion"), middle.get("modelingChartVersion")) !=
                 (installed["releaseVersion"], installed["chartVersion"]) or
-                transition.get("steps") not in (["modeling"], ["consumer", "modeling"]) or
-                transition.get("requiresJointMaintenance") is not True or
-                transition.get("modelingDataMigration") != "none" or
-                transition.get("preserveModelingData") is not True):
+                transition_entry.get("steps") not in (["modeling"], ["consumer", "modeling"]) or
+                transition_entry.get("requiresJointMaintenance") is not True or
+                transition_entry.get("modelingDataMigration") != "none" or
+                transition_entry.get("preserveModelingData") is not True):
             raise CompatibilityError("delegated transition does not match installed or target Modeling")
     else:
         transition(root / "deploy/compatibility.yaml", args.transition_id, installed, release)
@@ -263,6 +263,8 @@ def main():
     for option in ("context", "namespace", "release", "operation-id", "state-dir", "values", "resolved-images", "resume", "backup-record", "lock-holder", "transition-record"):
         parser.add_argument(f"--{option}")
     parser.add_argument("--transition-id")
+    parser.add_argument("--defer-external-services", action="store_true",
+                        help="defer Consumer Service lookup during initial joint preflight only")
     parser.add_argument("--timeout-seconds", type=int, default=900)
     parser.add_argument("--package-root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -277,6 +279,10 @@ def main():
         args.operation_id = str(uuid.uuid4())
     if args.action == "upgrade" and not args.transition_id:
         parser.error("upgrade requires --transition-id")
+    if args.defer_external_services and args.action != "preflight":
+        parser.error("--defer-external-services is only supported for preflight")
+    if args.defer_external_services and args.transition_id:
+        parser.error("--defer-external-services cannot be used for upgrade preflight")
     root = args.package_root or Path(__file__).resolve().parent.parent
     result = dict(schemaVersion="cce-operation/v1", operationId=args.operation_id, side="modeling",
                   action=args.action, status="failed", releaseName=args.release, namespace=args.namespace,
@@ -307,7 +313,7 @@ def main():
                 result["artifacts"] = [str(render(args, root, release))]
             else:
                 result["phase"] = "preflight"
-                preflight(args, merged)
+                preflight(args, merged, check_external_services=not args.defer_external_services)
                 if args.lock_holder and args.action in ("install", "upgrade"):
                     check_delegated_lease(args)
                 current = release_status(args)
