@@ -175,6 +175,8 @@ Handle reply:
 
 `acquire update apply`。
 
+先记下改动前的版本，供 Step 5 只校验本次改动：`UPDATE_BASE=$(git rev-parse HEAD)`，并写入 `.ontology-state/update-plan.json` 的 `base_commit`（续执时从这里读回）。
+
 按 plan 中 `operation != cascading-only` 的条目（即出现在「直接变更」表格里的）逐个执行。
 
 Read `.claude/agents/update-apply-agent.md`. Dispatch it as a subagent with：
@@ -225,7 +227,7 @@ git add ontology/
 
 Tell user: "更新已写入，自动进入规则+语义校验……"
 
-Read `.claude/commands/ontology-validate.md`. Follow it in **incremental mode** —— `$ARGUMENTS` 取 PLAN 中所有被实际改动的 **ontology 文档** 的 stem（即 `kind ∈ {object, operation}` 的条目；脚本/mock/testcase 不进 validate 增量范围，因为 ontology-validate 只校验 object/operation 两类文档）。stem 去掉 `ontology/{kind}/` 前缀和 `.md` 后缀，空格分隔，传给 ontology-validate 的 Step 0.5。
+Read `.claude/commands/ontology-validate.md`. Follow it in **incremental mode** —— `$ARGUMENTS` 取 PLAN 中所有被实际改动的 **ontology 文档** 的 stem（即 `kind ∈ {object, operation}` 的条目；脚本/mock/testcase 不进 validate 增量范围，因为 ontology-validate 只校验 object/operation 两类文档）。stem 去掉 `ontology/{kind}/` 前缀和 `.md` 后缀，空格分隔，末尾追加 `--since {UPDATE_BASE}`，传给 ontology-validate 的 Step 0.5。这样语义检查只看本次改动及其牵连，改动前就有的问题单独列出、默认不处理。
 
 若 PLAN 中 **没有任何** ontology 文档被改动（极端情况：只改了脚本），跳过 validate，直接进入 Step 6 提交。
 
@@ -279,5 +281,5 @@ Handle reply by reading the corresponding command file.
 若 Step 0 检查到 `locked:{ts}:{phase}` 且用户选了 **续执**：
 - `phase = analyze` → 重新跑 Step 2（agent 是无状态的，重做一次即可）
 - `phase = confirm` → 读 `.ontology-state/update-plan.json`，重新展示清单等用户确认
-- `phase = apply` → 读 plan，跳过已成功执行的条目（按 git status 推断），继续剩余条目
-- `phase = validate` → 直接读 plan 中的 changed stems 进 ontology-validate
+- `phase = apply` → 读 plan，跳过已成功执行的条目（按 git status 推断），继续剩余条目；`UPDATE_BASE` 取 plan 的 `base_commit`，不要重新取 HEAD
+- `phase = validate` → 直接读 plan 中的 changed stems 进 ontology-validate，同样带上 `--since {base_commit}`
