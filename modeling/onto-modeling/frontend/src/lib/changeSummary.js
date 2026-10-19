@@ -12,6 +12,7 @@ const CATEGORIES = [
   ['ontology/diagrams/', '流程图'],
   ['ontology/excel/', 'Excel 补充表'],
   ['ontology/data-mock/', '测试数据'],
+  ['ontology/testcase/', '测试场景'],
   ['ontology/scripts/', '生成代码'],
   ['ontology/knowledge/', '业务知识'],
   ['reports/', '校验报告'],

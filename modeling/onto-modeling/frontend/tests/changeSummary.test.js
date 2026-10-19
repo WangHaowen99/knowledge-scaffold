@@ -20,6 +20,7 @@ test('按业务类别分组，按固定顺序展示，未知目录归入其他�
     { path: 'ontology/operation/订单审核.md', status: 'added' },
     { path: 'ontology/diagrams/订单审核.drawio', status: 'modified' },
     { path: 'ontology/diagrams-summary/订单审核.md', status: 'added' },
+    { path: 'ontology/testcase/订单审核.md', status: 'added' },
     { path: 'notes/备忘.txt', status: 'deleted' },
   ]);
   assert.deepEqual(
@@ -29,6 +30,7 @@ test('按业务类别分组，按固定顺序展示，未知目录归入其他�
       ['流程图摘要', ['订单审核']],
       ['流程图', ['订单审核']],
       ['Excel 补充表', ['订单明细']],
+      ['测试场景', ['订单审核']],
       ['其他文件', ['备忘']],
     ],
   );
