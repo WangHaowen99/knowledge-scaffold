@@ -290,6 +290,50 @@ def derived_compaction(real_window: int, max_output: int | None) -> dict:
     return result
 
 
+# CLI 按内置窗口处理的模型名：Claude 官方模型名及其别名
+_CLI_MODEL_ALIASES = {"sonnet", "opus", "haiku", "default", "best", "opusplan"}
+
+
+def cli_uses_env_window(model: str) -> bool:
+    """CLI 是否按环境变量定该模型的窗口：只有它不认识的模型名才读 CLAUDE_CODE_MAX_CONTEXT_TOKENS。
+
+    模型名为空时 CLI 用自己的默认模型，同样按内置窗口。
+    """
+    name = model.strip().lower().split("[", 1)[0]
+    if not name or name in _CLI_MODEL_ALIASES:
+        return False
+    return "claude" not in name
+
+
+def _env_number(env: dict, name: str) -> float | None:
+    try:
+        return float(str(env.get(name, "")).strip())
+    except ValueError:
+        return None
+
+
+def cli_context_limits(env: dict) -> tuple[int | None, int | None]:
+    """按 CLI 的规则从会话环境变量推算（窗口, 自动压缩触发点），与 CLI 查询结果的口径一致。
+
+    窗口 = min(压缩窗口, 模型窗口)（CLI 报告的 rawMaxTokens）；有效窗口 = 窗口 − min(最大输出, 20000)，
+    触发点 = 有效窗口 − 13000；设了触发百分比时取 min(有效窗口 × 百分比, 上式)。
+    只适用于 cli_uses_env_window 为真的模型。
+    """
+    window = _env_number(env, "CLAUDE_CODE_MAX_CONTEXT_TOKENS")
+    if not window or window <= 0:
+        return None, None
+    window = min(int(window), int(_env_number(env, "CLAUDE_CODE_AUTO_COMPACT_WINDOW") or window))
+    if any(env.get(name) for name in ("DISABLE_AUTO_COMPACT", "DISABLE_COMPACT")):
+        return window, None
+    max_output = int(_env_number(env, "CLAUDE_CODE_MAX_OUTPUT_TOKENS") or DEFAULT_MAX_OUTPUT_TOKENS)
+    effective = window - min(max_output, _CLI_OUTPUT_RESERVE_CAP)
+    threshold = effective - _CLI_AUTOCOMPACT_BUFFER
+    pct = _env_number(env, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")
+    if pct is not None and 0 < pct <= 100:
+        threshold = min(threshold, int(effective * pct / 100))
+    return window, threshold if threshold > 0 else None
+
+
 def _context_section(values: dict) -> dict:
     """校验配置页的模型真实窗口与最大输出，返回要存的 context 段；None 表示留空，按 .env 或默认值生效。"""
     section = {}

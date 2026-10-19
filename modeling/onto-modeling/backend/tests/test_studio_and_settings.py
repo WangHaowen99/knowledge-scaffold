@@ -260,6 +260,49 @@ def test_model_context_derives_pct_below_compact_window_minimum(tmp_path, monkey
     assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in env
 
 
+@pytest.mark.parametrize(
+    "model, expected",
+    [
+        ("gateway-model-x", True),
+        ("some-gateway-model", True),
+        ("claude-sonnet-4-5", False),
+        ("Claude-Opus-4-1[1m]", False),
+        ("sonnet", False),
+        ("opus[1m]", False),
+        ("", False),
+    ],
+)
+def test_cli_uses_env_window_only_for_models_cli_does_not_know(model, expected):
+    from app.services import model_settings
+
+    assert model_settings.cli_uses_env_window(model) is expected
+
+
+def test_cli_context_limits_match_cli_report():
+    """实测：窗口 200000、压缩窗口 180000、最大输出 32000 时 CLI 报告 180000 / 147000。"""
+    from app.services import model_settings
+
+    env = {
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "180000",
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "32000",
+    }
+    assert model_settings.cli_context_limits(env) == (180000, 147000)
+    # 没有压缩窗口：按模型窗口；最大输出未给按 CLI 默认 32000（预留封顶 20000）
+    assert model_settings.cli_context_limits({"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000"}) == (200000, 167000)
+    # 触发百分比只会让压缩提前：(128000 − 20000) × 45% = 48600
+    env = {
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "128000",
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "65536",
+        "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "45",
+    }
+    assert model_settings.cli_context_limits(env) == (128000, 48600)
+    assert model_settings.cli_context_limits(
+        {"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000", "DISABLE_AUTO_COMPACT": "1"}
+    ) == (200000, None)
+    assert model_settings.cli_context_limits({}) == (None, None)
+
+
 def test_model_context_env_fallback_below_settings_page(tmp_path, monkeypatch):
     """优先级：配置页 > .env > 内置默认；.env 名与引擎无关，按项回落。"""
     from app import config

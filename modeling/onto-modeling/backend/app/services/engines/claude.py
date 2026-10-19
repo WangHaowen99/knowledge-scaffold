@@ -430,11 +430,12 @@ class ClaudeEngine:
         self._received_any = False
         self._sdk_session_id: str | None = None
         self._fingerprint = ""
-        # 上下文用量：已用取最近一次主代理调用，窗口与触发点连接后后台取一次
+        # 上下文用量：已用取最近一次主代理调用；窗口与触发点见 _init_context_limits
         self._context_used: int | None = None
         self._context_window: int | None = None
         self._compact_at: int | None = None
         self._limits_task: asyncio.Task | None = None
+        self._limits_after_turn = False
         # Hold text-only assistant messages until the same turn's structured
         # result confirms success or failure of a legacy CLI envelope.
         self._pending_assistant: dict | None = None
@@ -465,11 +466,35 @@ class ClaudeEngine:
         self._fingerprint = _env_fingerprint(self._ctx.model_owner)
         self._context_used = None
         self._cancel_limits_task()
-        self._limits_task = asyncio.create_task(self._load_context_limits(client))
+        self._init_context_limits()
         return bool(resume_id)
 
+    def _init_context_limits(self) -> None:
+        """连接后定窗口与触发点，不能挡住首条消息。
+
+        向 CLI 查用量时，它会先对网关逐类计数 token（一次十几个请求）再处理后续消息；
+        网关不支持计数时每个请求要等到失败，首条消息因此空等几十秒到几分钟。
+        CLI 按环境变量定窗口的模型（非 Claude 官方模型名）本地按同一规则算出；
+        Claude 官方模型名按 CLI 内置窗口，本地不知道，等首轮结束再查。
+        """
+        from .. import model_settings
+
+        env = _owner_env(self._ctx.model_owner)
+        if model_settings.cli_uses_env_window(env.get("ANTHROPIC_MODEL", "")):
+            self._context_window, self._compact_at = model_settings.cli_context_limits(env)
+            self._limits_after_turn = False
+        else:
+            self._context_window = self._compact_at = None
+            self._limits_after_turn = True
+
+    def _load_limits_after_turn(self) -> None:
+        if not self._limits_after_turn or self.client is None:
+            return
+        self._limits_after_turn = False
+        self._limits_task = asyncio.create_task(self._load_context_limits(self.client))
+
     async def _load_context_limits(self, client: Any) -> None:
-        """get_context_usage 一次约 5 秒，放后台只取一次；旧版 CLI 不支持时只显示已用量。"""
+        """向 CLI 查窗口与触发点（Claude 官方模型名用），首轮结束后在后台取一次；旧版 CLI 不支持时只显示已用量。"""
         try:
             usage = await asyncio.wait_for(client.get_context_usage(), timeout=60)
         except Exception:
@@ -629,13 +654,15 @@ class ClaudeEngine:
             self._context_used = event["context_tokens"]
         elif kind == "context_compacted":
             self._context_used = event.get("post_tokens")
-        elif kind == "result" and self._context_used:
-            return {
-                "type": "context_usage",
-                "used": self._context_used,
-                "window": self._context_window,
-                "compact_at": self._compact_at,
-            }
+        elif kind == "result":
+            self._load_limits_after_turn()
+            if self._context_used:
+                return {
+                    "type": "context_usage",
+                    "used": self._context_used,
+                    "window": self._context_window,
+                    "compact_at": self._compact_at,
+                }
         return None
 
     # ---- 权限回调（SDK 契约 → 中立决策 dict）----
