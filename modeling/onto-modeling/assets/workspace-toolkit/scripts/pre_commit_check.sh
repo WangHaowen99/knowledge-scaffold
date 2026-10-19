@@ -104,6 +104,23 @@ print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=Fals
     fi
 fi
 
+# --- Script run verification -------------------------------------------------
+# 新增或修改的脚本必须用 script_verify.py 跑通（jiuwenbox 沙箱优先，不可用时在容器内），
+# 有与当前源码一致的通过记录才能提交。
+VERIFY_TARGETS=$(git diff --cached --name-only --diff-filter=ACMR -z 2>/dev/null | tr '\0' '\n' \
+    | grep -E '^ontology/scripts/[^/]+\.py$' || true)
+if [ -n "$VERIFY_TARGETS" ]; then
+    mapfile -t VERIFY_FILES <<< "$VERIFY_TARGETS"
+    if ! VERIFY_OUTPUT=$(python3 .claude/scripts/script_verify.py check "${VERIFY_FILES[@]}" 2>&1); then
+        REASON=$(printf '以下脚本还没有通过当前版本的运行验证，已阻止提交：\n%s\n\n按 /ontology-codegen Step 4.6 编写用例，运行 python3 .claude/scripts/script_verify.py run <脚本> --cases <用例文件>，全部通过后再提交。' "$VERIFY_OUTPUT")
+        python3 -c '
+import json, sys
+print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))
+' "$REASON"
+        exit 0
+    fi
+fi
+
 # --- Research report check ---------------------------------------------------
 # 调研报告的内容验收。"报告已保存"不等于内容已通过：只要暂存了 research/ 下的
 # 报告，就必须过 research_checker 的确定性检查（计数、ID、字段、来源），

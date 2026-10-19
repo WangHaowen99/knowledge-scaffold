@@ -14,6 +14,8 @@ services:
 
   onto-modeling:
     build: .
+    # 显式镜像名：脚本验证网关复用同一镜像
+    image: onto-modeling-dev:latest
     container_name: onto-modeling-dev
     ports:
       - "${ONTO_WEB_PORT:-5100}:8100"
@@ -24,11 +26,42 @@ services:
       - ONTO_WEB_AUTH_URL=http://auth-server:5056
       # .env 的 ONTO_WEB_PORT 只控制上面 ports 的宿主发布端口，容器内固定 8100
       - ONTO_WEB_PORT=8100
+      # 代码生成脚本的运行验证经网关进 jiuwenbox 沙箱；本容器不挂 jiuwenbox socket
+      - ONTO_WEB_SANDBOX_GATEWAY_URL=http://sandbox-gateway:8110
     volumes:
       - onto-modeling-data-dev:/data
     depends_on:
       auth-server:
         condition: service_healthy
+
+  # 脚本验证网关：唯一挂载 jiuwenbox 管理 socket 的容器（整栈部署时 deploy/deploy.sh 生成的
+  # docker-compose.stack.yml 加挂），说明见 deploy/docker-compose.release.yml
+  sandbox-gateway:
+    image: onto-modeling-dev:latest
+    pull_policy: never
+    container_name: onto-modeling-sandbox-gateway-dev
+    command: ["python", "-m", "app.sandbox_gateway"]
+    user: "65534:65534"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 64
+    expose:
+      - "8110"
+    environment:
+      - ONTO_WEB_SANDBOX_GATEWAY_PORT=8110
+      - PYTHONDONTWRITEBYTECODE=1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8110/health', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 
 volumes:
   onto-modeling-data-dev:

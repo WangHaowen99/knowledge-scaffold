@@ -448,6 +448,7 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ permission_mode }),
     }),
+  getSandboxStatus: () => request('/api/settings/sandbox'),
   getAssets: () => request('/api/settings/assets'),
   uploadAssets: (file) => {
     const form = new FormData();
