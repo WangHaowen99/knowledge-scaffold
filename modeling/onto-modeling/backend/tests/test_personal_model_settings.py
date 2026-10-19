@@ -115,7 +115,10 @@ def test_personal_config_requires_own_key(data_dir, auth_on):
     with pytest.raises(personal_model_settings.PersonalConfigError):
         personal_model_settings.save("employee_0001", "claude", USER_URL, "", "")
     with pytest.raises(personal_model_settings.PersonalConfigError):
-        personal_model_settings.save("employee_0001", "claude", "ftp://bad", USER_KEY, "")
+        # 非 http(s) 网关地址一律拒绝
+        personal_model_settings.save(
+            "employee_0001", "claude", "sftp://gateway.example.net", USER_KEY, ""
+        )
     with pytest.raises(personal_model_settings.PersonalConfigError):
         personal_model_settings.save("employee_0001", "unknown", "", USER_KEY, "")
 

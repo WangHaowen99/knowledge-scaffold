@@ -67,10 +67,10 @@ def _aad(username: str, engine: str) -> bytes:
 def _encrypt(plain: str, username: str, engine: str) -> str:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+    # AES-256-GCM：每次随机 96 位 nonce，附加数据绑定用户名与引擎
     nonce = secrets.token_bytes(12)
-    sealed = AESGCM(_master_key()).encrypt(
-        nonce, plain.encode("utf-8"), _aad(username, engine)
-    )
+    cipher = AESGCM(_master_key())
+    sealed = cipher.encrypt(nonce, plain.encode("utf-8"), _aad(username, engine))  # NOSONAR(S4787)
     return _CIPHER_PREFIX + base64.urlsafe_b64encode(nonce + sealed).decode("ascii")
 
 
@@ -82,7 +82,8 @@ def _decrypt(token: str, username: str, engine: str) -> str:
         raise PersonalConfigError("个人 API Key 存储格式无效，请重新保存", 409)
     try:
         raw = base64.urlsafe_b64decode(token[len(_CIPHER_PREFIX):])
-        plain = AESGCM(_master_key()).decrypt(raw[:12], raw[12:], _aad(username, engine))
+        cipher = AESGCM(_master_key())
+        plain = cipher.decrypt(raw[:12], raw[12:], _aad(username, engine))  # NOSONAR(S4787)
     except (InvalidTag, ValueError) as exc:
         raise PersonalConfigError(
             "个人 API Key 无法解密（加密密钥可能已更换），请在「我的模型配置」重新保存", 409
@@ -176,7 +177,14 @@ def masked(username: str) -> dict:
 
     users = _load().get("users") or {}
     mine = users.get(username) or {}
-    result = {"enabled": allowed(), "auth": auth.ENABLED}
+    enabled = allowed()
+    # 用户可见的管理员默认值只到“是否已配置”，不暴露地址与 Key
+    admin = model_settings.masked()
+    admin_configured = {
+        "claude": bool(admin.get("configured")),
+        "jiuwen": bool((admin.get("jiuwen") or {}).get("configured")),
+    }
+    result = {"enabled": enabled, "auth": auth.ENABLED}
     for engine in ENGINES:
         section = mine.get(engine) or {}
         has_key = bool(section.get("api_key"))
@@ -185,12 +193,9 @@ def masked(username: str) -> dict:
             "model": section.get("model", ""),
             # 掩码不解密：只表明存在，不回显任何字符
             "api_key_masked": "已设置" if has_key else "",
-            "active": has_key and result["enabled"],
+            "active": has_key and enabled,
+            "admin_configured": admin_configured.get(engine, False),
         }
-    # 用户可见的管理员默认值只到“是否已配置”，不暴露地址与 Key
-    admin = model_settings.masked()
-    result["claude"]["admin_configured"] = bool(admin["configured"])
-    result["jiuwen"]["admin_configured"] = bool(admin["jiuwen"]["configured"])
     return result
 
 
