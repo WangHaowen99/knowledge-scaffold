@@ -20,8 +20,8 @@ global:
   access:
     elb:
       id: ""
-    protocol: HTTPS
-    listenerPort: 443
+    protocol: HTTP
+    listenerPort: 80
     tlsSecretName: ""
     ingressClassName: cce
     routes: []

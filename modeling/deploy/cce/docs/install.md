@@ -2,10 +2,10 @@
 
 Modeling 软件包包含三个自有镜像以及用于 Core、Agent 和 Onto Modeling 的 Helm 发布。Core Pod 同时运行 JiuwenBox sidecar。JiuwenBox 镜像由 Consumer 软件包提供；共享的 auth-server 和 Consumer API 通过 Service 引用。本软件包不会安装第二个 auth-server。
 
-环境要求：Python 3.11 及以上（含 PyYAML 和 jsonschema）、Helm 3、kubectl、具有部署权限的 Kubernetes context、预先创建的命名空间、三个独立的 RWO Filesystem PVC、镜像拉取 Secret、服务令牌 Secret、TLS Secret，以及兼容 CCE 的 ELB Ingress 控制器。随附示例文件中的值均为合成值，必须在仓库外填写真实部署值。
+环境要求：Python 3.11 及以上（含 PyYAML 和 jsonschema）、Helm 3、kubectl、具有部署权限的 Kubernetes context、预先创建的命名空间、三个独立的 RWO Filesystem PVC、镜像拉取 Secret、服务令牌 Secret，以及兼容 CCE 的 ELB Ingress 控制器。默认入口使用 HTTP；显式配置 HTTPS 时还需准备 TLS Secret。随附示例文件中的值均为合成值，必须在仓库外填写真实部署值。
 
 1. 使用 `import-images.md` 导入三个自有镜像，同时导入 Consumer 软件包中的 JiuwenBox 镜像。将客户镜像仓库中的 manifest digest 记录到 `resolved-images.yaml`。示例中的 JiuwenBox digest 只是不可用的占位值；联合操作时应删除该项或替换为精确的 Consumer digest，联合入口会创建临时的有效镜像映射。单独执行 Modeling 操作时，必须显式提供经过验证的 Consumer digest。
-2. 在 `values.customer.yaml` 中填写预创建 PVC 的名称、共享认证与 Consumer Service、issuer、audience 以及本次发布的 Ingress 路由。
+2. 在 `values.customer.yaml` 中填写预创建 PVC 的名称、共享认证与 Consumer Service、issuer、audience 以及本次发布的 Ingress 路由。示例默认使用 HTTP 和监听端口 80；若两侧复用同一个 ELB，须分别分配监听端口。需要 HTTPS 时显式设置 `global.access.protocol: HTTPS`、监听端口及 `tlsSecretName`，并把 `modeling.config.mcpPublicBaseUrl` 改为实际对外地址。
 3. 联合部署时提供双方共同验证的兼容性 manifest。包内 `compatibility.yaml` 是字段完整的模板，必须替换为实际已验证的组合；未验证的组合会被拒绝。单独 Modeling 安装不读取该参数。
 4. 执行以下 `plan` 命令并检查 `STATE_DIR` 中渲染出的 YAML：
 
