@@ -53,6 +53,10 @@
 - `ontology/scripts/*.py` 可解析、可执行脚本使用 argparse 长选项、CLI 输出单个 JSON → 缺失为 `错误 / 脚本契约`
 - 头部「输入参数」与 argparse 声明一一对应，类型、必填一致 → 不一致为 `错误 / 脚本契约`；解析逻辑在 `.claude/scripts/script_contract.py`，与知识包导出共用
 
+### 脚本运行验证（pre-commit 门禁）
+- 提交新增或修改的 `ontology/scripts/*.py` 时，脚本（以及 import 了改动模块的脚本）必须有与当前源码一致的 `script_verify.py run` 通过记录（`.ontology-state/script-verifications.json`），否则拦下提交
+- 验证经脚本验证网关在 jiuwenbox 沙箱中执行，网关或 jiuwenbox 不可用时在 onto-modeling 容器内执行；规则检查（`ontology_checker.py`）只做静态检查，不运行脚本
+
 ### 打包范围
 - 白名单内但不进知识包的目录（如 `ontology/knowledge/`）存放知识文档 → `警告 / 打包范围`；只有 `ontology/{object,operation,logic,rule,metric}` 与 `ontology/scripts/*.py` 会导出给 consumer
 

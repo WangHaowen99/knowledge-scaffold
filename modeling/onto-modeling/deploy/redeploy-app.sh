@@ -63,11 +63,16 @@ fi
 COMPOSE="docker compose"
 docker compose version >/dev/null 2>&1 || COMPOSE="docker-compose"
 COMPOSE_FILES=(-f docker-compose.release.yml)
-# 外接账号中心 override 由 deploy.sh 生成；存在即沿用（网络接入随 compose 自动完成）
+# 外接账号中心、jiuwenbox socket 的 override 由 deploy.sh 生成；存在即沿用，
+# 否则替换容器后网络接入或网关的 socket 挂载会丢失
 [ -f "${DEPLOY_DIR}/docker-compose.external-auth.yml" ] \
     && COMPOSE_FILES+=(-f docker-compose.external-auth.yml)
+[ -f "${DEPLOY_DIR}/docker-compose.jiuwenbox.yml" ] \
+    && COMPOSE_FILES+=(-f docker-compose.jiuwenbox.yml)
 
+# 脚本验证网关与 onto-modeling 同一镜像，一起替换（旧部署目录的 compose 没有网关时跳过）
 SERVICES=(onto-modeling)
+grep -q '^  sandbox-gateway:' "${DEPLOY_DIR}/docker-compose.release.yml" && SERVICES+=(sandbox-gateway)
 [ "${WITH_AUTH}" -eq 1 ] && SERVICES+=(auth-server)
 
 (cd "${DEPLOY_DIR}" && ${COMPOSE} --env-file .env --env-file images.env \

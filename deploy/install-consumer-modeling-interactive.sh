@@ -199,6 +199,10 @@ deploy_onto_modeling() {
     write_env_value "${env_file}" ONTO_WEB_PORT "${ONTO_WEB_PORT}"
     # 网络名由本脚本现场探测，是权威值：无条件写入，存量 .env 里失效的名字就地纠正
     write_env_value "${env_file}" ONTO_MODELING_EXTERNAL_AUTH_NETWORK "${network}"
+    # consumer 的 jiuwenbox socket 卷：onto-modeling 只读挂载后，脚本运行验证在沙箱中执行；
+    # 现场探测为准，探测不到写空值，验证改在 onto-modeling 容器内执行
+    write_env_value "${env_file}" ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME \
+        "$(container_mount_volume onto-agent-backend /run/jiuwenbox || true)"
     # 评测要调 Modeling Workbench，容器网内地址与宿主端口无关
     grep -q '^ONTO_WEB_MODELING_URL=..*' "${env_file}" \
         || write_env_value "${env_file}" ONTO_WEB_MODELING_URL 'http://mw-modeling:5100'

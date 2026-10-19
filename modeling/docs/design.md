@@ -78,7 +78,7 @@ AI 辅助构建中的动态任务限定在受控类型内：
 
 1. 生成包 zip → `POST /agentic/ontologies/import-zip`（影子工作区头；已存在则 `action=overwrite_active` 或版本参数递增）；
 2. `PUT /agentic/ontologies/<id>/data-source`（以 `direct_provider` 覆盖影子知识包本轮评测数据源）；
-3. 逐用例 `POST /agentic/runs/sync`（`session_id` 每用例独立；429/503 退避重试）；
+3. 逐用例 `POST /agentic/runs/sync`（`session_id` 每用例独立；429/503 退避重试；consumer 返回 `SESSION_PREPARE_FAILED` 瞬时失败终态时换新会话按同一退避重试，最多 6 次）；
 4. Judge（轻量模型可选）：`(question, ground_truth, final_answer) → {verdict, reason}`；
 5. 失败诊断复用本轮评测工作空间的数据源进行只读核对；上传资料中的表格只作为 schema/样例证据，不能用样例行数推断运行时记录是否存在；
 6. 优化器（pi agent run）：输入失败用例 + 包全文 + judge 理由 → 建议清单；采纳项由 agent 应用 → `packages/v<N+1>` → 回到 1。

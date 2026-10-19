@@ -73,6 +73,29 @@ EOF2
     echo "已启用外接账号中心：网络 ${EXTERNAL_AUTH_NETWORK}（自带 auth-server 停用）"
 fi
 
+# 脚本运行验证的沙箱：.env 记着 consumer 的 jiuwenbox socket 卷（整栈部署脚本探测写入）时
+# 只读挂给脚本验证网关 sandbox-gateway（不挂进跑建模 agent 的 onto-modeling 容器），代码生成的
+# 脚本经网关在沙箱中验证；没有该卷则网关报不可用，验证在 onto-modeling 容器内执行。
+JIUWENBOX_SOCKET_VOLUME="$(sed -n 's/^ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME=//p' .env | head -1)"
+if [ -n "${JIUWENBOX_SOCKET_VOLUME}" ] && docker volume inspect "${JIUWENBOX_SOCKET_VOLUME}" >/dev/null 2>&1; then
+    cat > docker-compose.jiuwenbox.yml <<EOF2
+# 由 deploy.sh 生成：把 consumer 的 jiuwenbox socket 只读挂给脚本验证网关（勿手改，改 .env 后重跑 deploy.sh）
+services:
+  sandbox-gateway:
+    volumes:
+      - jiuwenbox-sock:/run/jiuwenbox:ro
+volumes:
+  jiuwenbox-sock:
+    external: true
+    name: ${JIUWENBOX_SOCKET_VOLUME}
+EOF2
+    COMPOSE_FILES+=(-f docker-compose.jiuwenbox.yml)
+    echo "已把 jiuwenbox 沙箱 socket 挂给脚本验证网关：卷 ${JIUWENBOX_SOCKET_VOLUME}"
+else
+    rm -f docker-compose.jiuwenbox.yml
+    echo "未挂载 jiuwenbox 沙箱：代码生成的脚本运行验证将在 onto-modeling 容器内执行"
+fi
+
 # 镜像 tag 经 --env-file 注入 compose 插值：不依赖 shell 进程环境，
 # WSL 下 docker 为 Windows 进程（interop 不透传 export 变量）时同样生效
 ${COMPOSE} --env-file .env --env-file images.env "${COMPOSE_FILES[@]}" up -d --remove-orphans

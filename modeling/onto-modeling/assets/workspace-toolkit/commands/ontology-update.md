@@ -209,7 +209,7 @@ Wait for completion. Display 执行摘要：
 - 跳过 {N4} 个：{filenames}（原因：...）
 ```
 
-把变更暂存：
+把变更暂存（改动涉及 `ontology/scripts/*.py` 时先按 `/ontology-codegen` Step 4.6 用 `script_verify.py run` 跑通改过的脚本，否则 pre-commit 会拦下）：
 
 ```bash
 git add ontology/
