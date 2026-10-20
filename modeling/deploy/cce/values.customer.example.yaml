@@ -11,15 +11,18 @@ global:
       name: modeling-integration
       key: service-token
   access:
+    mode: port
     elb:
       id: example-elb-id
     protocol: HTTP
     listenerPort: 80
     tlsSecretName: ""
-    ingressClassName: cce
-    routes:
-      - {id: core, host: modeling.example.com, path: /, pathType: Prefix, endpointId: modeling-core}
-      - {id: onto, host: onto.example.com, path: /, pathType: Prefix, endpointId: onto-modeling}
+    ingressClassName: ""
+    routes: []
+    listeners:
+      - {id: core, protocol: HTTP, listenerPort: 8100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-core}
+      - {id: onto, protocol: HTTP, listenerPort: 5100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: onto-modeling}
+      - {id: mcp, protocol: HTTP, listenerPort: 5188, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-mcp}
 externalAuth:
   serviceName: consumer-auth
   namespace: consumer-demo
@@ -34,7 +37,7 @@ modeling:
     llmModel: demo-model
     taskLlmBaseUrl: ""
     taskLlmModel: ""
-    mcpPublicBaseUrl: http://modeling.example.com
+    mcpPublicBaseUrl: http://<ELB_IP>:5188
     ontoJiuwenBaseUrl: ""
     ontoJiuwenModel: ""
     ontoAnthropicBaseUrl: ""

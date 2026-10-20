@@ -18,13 +18,18 @@ global:
       name: ""
       key: ""
   access:
+    mode: port
     elb:
       id: ""
     protocol: HTTP
     listenerPort: 80
     tlsSecretName: ""
-    ingressClassName: cce
+    ingressClassName: ""
     routes: []
+    listeners:
+      - {id: core, protocol: HTTP, listenerPort: 8100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-core}
+      - {id: onto, protocol: HTTP, listenerPort: 5100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: onto-modeling}
+      - {id: mcp, protocol: HTTP, listenerPort: 5188, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-mcp}
 externalAuth:
   serviceName: ""
   namespace: ""

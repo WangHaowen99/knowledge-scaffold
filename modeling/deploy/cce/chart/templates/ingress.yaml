@@ -1,4 +1,49 @@
-{{- if .Values.global.access.routes }}
+{{- if eq .Values.global.access.mode "port" }}
+{{- range .Values.global.access.listeners }}
+{{- $name := printf "%s-%s" (include "modeling.name" $) .id | trunc 63 | trimSuffix "-" }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $name }}
+  annotations:
+    kubernetes.io/elb.id: {{ $.Values.global.access.elb.id | quote }}
+    kubernetes.io/elb.port: {{ .listenerPort | quote }}
+spec:
+  {{- if $.Values.global.access.ingressClassName }}
+  ingressClassName: {{ $.Values.global.access.ingressClassName | quote }}
+  {{- end }}
+  {{- if eq .protocol "HTTPS" }}
+  tls:
+    - secretName: {{ .tlsSecretName | quote }}
+      {{- if .host }}
+      hosts: [{{ .host | quote }}]
+      {{- end }}
+  {{- end }}
+  rules:
+    - {{- if .host }}
+      host: {{ .host | quote }}
+      {{- end }}
+      http:
+        paths:
+          - path: {{ .path | quote }}
+            pathType: {{ .pathType | quote }}
+            backend:
+              service:
+                {{- if eq .endpointId "modeling-core" }}
+                name: {{ $.Release.Name }}-core
+                port: {name: http}
+                {{- else if eq .endpointId "modeling-mcp" }}
+                name: {{ $.Release.Name }}-core
+                port: {name: mcp}
+                {{- else if eq .endpointId "onto-modeling" }}
+                name: {{ $.Release.Name }}-onto
+                port: {name: http}
+                {{- else }}
+                {{- fail (printf "unknown external endpointId %s" .endpointId) }}
+                {{- end }}
+---
+{{- end }}
+{{- else if .Values.global.access.routes }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -7,7 +52,9 @@ metadata:
     kubernetes.io/elb.id: {{ .Values.global.access.elb.id | quote }}
     kubernetes.io/elb.port: {{ .Values.global.access.listenerPort | quote }}
 spec:
+  {{- if .Values.global.access.ingressClassName }}
   ingressClassName: {{ .Values.global.access.ingressClassName | quote }}
+  {{- end }}
   {{- if eq .Values.global.access.protocol "HTTPS" }}
   tls:
     - secretName: {{ .Values.global.access.tlsSecretName | quote }}
@@ -20,15 +67,13 @@ spec:
   {{- end }}
   rules:
     {{- range .Values.global.access.routes }}
-    {{- if .host }}
-    - host: {{ .host | quote }}
+    - {{- if .host }}
+      host: {{ .host | quote }}
+      {{- end }}
       http:
-    {{- else }}
-    - http:
-    {{- end }}
         paths:
           - path: {{ .path | quote }}
-            pathType: Prefix
+            pathType: {{ .pathType | quote }}
             backend:
               service:
                 {{- if eq .endpointId "modeling-core" }}

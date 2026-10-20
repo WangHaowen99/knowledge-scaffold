@@ -83,6 +83,25 @@ def load_inputs(args, root: Path):
         raise ConfigError(f"values schema invalid at {'.'.join(map(str, exc.path))}: {exc.message}") from exc
     if merged["global"]["access"]["protocol"] == "HTTPS" and not merged["global"]["access"]["tlsSecretName"]:
         raise ConfigError("HTTPS requires tlsSecretName")
+    access = merged["global"]["access"]
+    if access["mode"] == "host" and access["listeners"]:
+        raise ConfigError("host access mode cannot define listeners")
+    if access["mode"] == "host" and not access["routes"]:
+        raise ConfigError("host access mode requires routes")
+    if access["mode"] == "port":
+        listeners = access["listeners"]
+        if not listeners:
+            raise ConfigError("port access mode requires listeners")
+        if access["routes"]:
+            raise ConfigError("port access mode cannot define routes")
+        ids = [item["id"] for item in listeners]
+        ports = [item["listenerPort"] for item in listeners]
+        endpoints = [item["endpointId"] for item in listeners]
+        if len(set(ids)) != len(ids) or len(set(ports)) != len(ports) or len(set(endpoints)) != len(endpoints):
+            raise ConfigError("port access listeners require unique IDs, ports and endpoints")
+        for item in listeners:
+            if item["protocol"] == "HTTPS" and not item["tlsSecretName"]:
+                raise ConfigError(f"HTTPS listener {item['id']} requires tlsSecretName")
     if merged["modeling"]["workloads"]["core"]["nodeSelector"].keys() & merged["modeling"]["workloads"]["jiuwenbox"]["nodeSelector"].keys():
         raise ConfigError("core and JiuwenBox nodeSelector keys must not overlap")
     for key in ("llmApiKey", "evalDbUrl", "cleanupToken", "anthropicAuthToken"):

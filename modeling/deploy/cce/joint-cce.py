@@ -425,11 +425,14 @@ def main():
             validate_cross_side(config, packages, consumer_values, modeling_values, combination)
             if consumer_values.get("global", {}).get("clusterFlavor") != modeling_values.get("global", {}).get("clusterFlavor"):
                 raise ConfigError("clusterFlavor differs between releases")
-            if (consumer_values.get("global", {}).get("access", {}).get("elb", {}).get("id") ==
-                modeling_values.get("global", {}).get("access", {}).get("elb", {}).get("id") and
-                consumer_values.get("global", {}).get("access", {}).get("listenerPort") ==
-                modeling_values.get("global", {}).get("access", {}).get("listenerPort")):
-                raise ConfigError("both releases claim the same ELB listener")
+            consumer_access = consumer_values.get("global", {}).get("access", {})
+            modeling_access = modeling_values.get("global", {}).get("access", {})
+            if consumer_access.get("elb", {}).get("id") == modeling_access.get("elb", {}).get("id"):
+                def ports(access):
+                    listeners = access.get("listeners") or []
+                    return {item.get("listenerPort") for item in listeners} or {access.get("listenerPort")}
+                if ports(consumer_access) & ports(modeling_access):
+                    raise ConfigError("both releases claim the same ELB listener")
             model_images = effective_images(config, state, "consumer", operation_id)
             image_files = {"consumer": config["consumer"]["resolvedImages"], "modeling": model_images}
             journal_path = state / f"{operation_id}.json"
