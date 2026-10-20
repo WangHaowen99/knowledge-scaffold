@@ -146,6 +146,8 @@ spec:
           imagePullPolicy: IfNotPresent
           ports: [{name: http, containerPort: 5110}]
           env:
+            # 覆盖 Kubernetes 为 modeling-agent Service 自动注入的同名 URL 变量。
+            - {name: MODELING_AGENT_PORT, value: "5110"}
             - {name: MODELING_AGENT_DATA_DIR, value: /data}
             - {name: MODELING_CORE_BASE_URL, value: "http://{{ include "modeling.name" . }}-core:5100"}
             - {name: MODELING_LLM_BASE_URL, value: {{ .Values.modeling.config.llmBaseUrl | quote }}}
