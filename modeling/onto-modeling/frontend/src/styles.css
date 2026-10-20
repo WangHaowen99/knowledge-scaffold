@@ -653,6 +653,12 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 }
 .settings-body { flex: 1; padding: 24px 32px; overflow-y: auto; }
 
+/* ---- 配置中心 · 沙箱包列表 ----
+ * 带边框的表格只滚动表体：框底边画在表体上，滚到中间时外框也封口；
+ * 最后一行自带的底线去掉，滚到底时不会与框底边叠成双线。颜色与表格网格线同一 token。 */
+.sandbox-package-table .ant-table-body { border-bottom: 1px solid var(--border-subtle); }
+.sandbox-package-table .ant-table-tbody > tr:last-child > td { border-bottom: none !important; }
+
 /* ---- 顶栏待处理徽标 ---- */
 .pending-widget {
   font-size: 12px; color: var(--status-warning, #b77909);

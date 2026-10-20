@@ -151,13 +151,40 @@ require_consumer_network() {
     printf '%s\n' "${network}"
 }
 
+container_mount_volume() { # <容器> <容器内挂载点>
+    docker inspect --format '{{range .Mounts}}{{if eq .Destination "'"$2"'"}}{{println .Name}}{{end}}{{end}}' \
+        "$1" 2>/dev/null | head -n 1 || true
+}
+
+# consumer 的 jiuwenbox 管理 socket 卷：只读挂给 onto-modeling 的脚本验证网关后，代码生成的脚本
+# 运行验证在沙箱中执行。与 deploy-stack.sh 同策略：取运行中 consumer 后端在 /run/jiuwenbox 的挂载，
+# 兜底按卷名查找；探测不到返回空，调用方跳过挂载（验证改在 onto-modeling 容器内执行）。
+detect_jiuwenbox_socket_volume() {
+    local container volume
+    container="$(consumer_container)"
+    if [ -n "${container}" ]; then
+        volume="$(container_mount_volume "${container}" /run/jiuwenbox)"
+        [ -z "${volume}" ] || { printf '%s\n' "${volume}"; return 0; }
+    fi
+    docker volume ls --format '{{.Name}}' 2>/dev/null \
+        | grep -E '(^|_)onto-jiuwenbox-sock$' | head -n 1 || true
+}
+
 write_onto_modeling_stack_override() { # <onto-modeling 目录> <mw-modeling 地址>
-    local dir="$1" modeling_url="$2" network
+    local dir="$1" modeling_url="$2" network socket_volume sandbox_service="" sandbox_volume=""
     network="$(require_consumer_network)"
+    socket_volume="$(detect_jiuwenbox_socket_volume)"
+    if [ -n "${socket_volume}" ]; then
+        # socket 只挂给脚本验证网关，不挂进跑建模 agent 的 onto-modeling 容器
+        sandbox_service=$'  sandbox-gateway:\n    volumes:\n      - jiuwenbox-sock:/run/jiuwenbox:ro\n'
+        sandbox_volume=$'volumes:\n  jiuwenbox-sock:\n    external: true\n    name: '"${socket_volume}"
+    else
+        warn "未探测到 consumer 的 jiuwenbox socket 卷：onto-modeling 的脚本运行验证将在容器内执行"
+    fi
     cat > "${dir}/docker-compose.stack.yml" <<EOF2
 # 由 deploy.sh 生成（整栈部署形态，勿手改；单独部署 onto-modeling 时删除即可）：
 # 停用自带 dev auth-server，共享 consumer 账号中心；接入 consumer 网络；
-# 配置数据评测所需的 Modeling Workbench 地址。
+# 配置数据评测所需的 Modeling Workbench 地址；把 consumer 的 jiuwenbox socket 只读挂给脚本验证网关。
 services:
   auth-server:
     profiles: ["disabled"]
@@ -169,15 +196,16 @@ services:
     networks:
       - default
       - consumer-net
-networks:
+${sandbox_service}networks:
   consumer-net:
     external: true
     name: ${network}
+${sandbox_volume}
 EOF2
 }
 
 seed_onto_modeling_bundle_env() { # <bundle 的 onto-modeling 目录>
-    local dir="$1" env_file="$1/.env" network current_network
+    local dir="$1" env_file="$1/.env" network current_network socket_volume
     [ -f "${env_file}" ] || { [ -f "${dir}/.env.example" ] && cp "${dir}/.env.example" "${env_file}"; }
     [ -f "${env_file}" ] || touch "${env_file}"
     chmod 600 "${env_file}"
@@ -195,6 +223,16 @@ seed_onto_modeling_bundle_env() { # <bundle 的 onto-modeling 目录>
     fi
     grep -q '^ONTO_MODELING_EXTERNAL_AUTH_NETWORK=..*' "${env_file}"         || printf 'ONTO_MODELING_EXTERNAL_AUTH_NETWORK=%s
 ' "${network}" >> "${env_file}"
+    # jiuwenbox socket 卷以现场探测为准：每次部署重写，探测不到就不挂载
+    socket_volume="$(detect_jiuwenbox_socket_volume)"
+    sed -i.bak '/^ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME=/d' "${env_file}"
+    command rm -f "${env_file}.bak"
+    if [ -n "${socket_volume}" ]; then
+        printf 'ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME=%s\n' "${socket_volume}" >> "${env_file}"
+    else
+        warn "未探测到 consumer 的 jiuwenbox socket 卷：onto-modeling 的脚本运行验证将在容器内执行"
+    fi
+    chmod 600 "${env_file}"
 }
 
 CONSUMER_ONLY=0

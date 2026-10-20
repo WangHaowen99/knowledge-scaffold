@@ -17,7 +17,7 @@ import { ACCENTS } from '../theme.js';
 import McpSettings from './McpSettings.jsx';
 import ModelSettings from './ModelSettings.jsx';
 import PersonalModelSettings from './PersonalModelSettings.jsx';
-import { AssetsSettings, RuntimeSettings } from './SystemSettings.jsx';
+import { AssetsSettings, RuntimeSettings, SandboxStatus } from './SystemSettings.jsx';
 
 const ACCENT_LABELS = {
   blue: '默认蓝',
@@ -136,6 +136,7 @@ const SECTION_TITLES = {
   model: '模型接入',
   myModel: '我的模型配置',
   runtime: '会话',
+  sandbox: '沙箱',
   assets: '提示词资产',
   mcp: 'MCP 服务器',
 };
@@ -173,6 +174,7 @@ export default function SettingsPage({
             children: [
               { key: 'model', label: '模型接入' },
               { key: 'runtime', label: '会话' },
+              { key: 'sandbox', label: '沙箱' },
               { key: 'assets', label: '提示词资产' },
             ],
           },
@@ -212,6 +214,7 @@ export default function SettingsPage({
         {section === 'myModel' && authEnabled && <PersonalModelSettings />}
         {section === 'model' && isAdmin && <ModelSettings project={project} />}
         {section === 'runtime' && isAdmin && <RuntimeSettings project={project} />}
+        {section === 'sandbox' && isAdmin && <SandboxStatus />}
         {section === 'assets' && isAdmin && <AssetsSettings />}
         {section === 'mcp' && project && <McpSettings project={project} />}
       </div>

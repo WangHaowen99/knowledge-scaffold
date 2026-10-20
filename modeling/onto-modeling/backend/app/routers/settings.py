@@ -210,6 +210,15 @@ def put_runtime(body: RuntimeBody, request: Request):
     return {"permission_mode": runtime_settings.permission_mode()}
 
 
+@router.get("/sandbox")
+def get_sandbox_status(request: Request):
+    """是否连上 onto-agent-jiuwenbox；连不上时脚本运行验证在 onto-modeling 容器内执行。"""
+    _require_admin(request)
+    from ..services import sandbox_status
+
+    return sandbox_status.status()
+
+
 @router.get("/assets")
 def get_assets(request: Request):
     _require_admin(request)
