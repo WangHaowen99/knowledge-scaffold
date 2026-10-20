@@ -27,3 +27,12 @@ spec:
   selector: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: nl2sql}
   ports: [{name: http, port: 5600, targetPort: 5600}]
 {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-sandbox-gateway
+spec:
+  type: ClusterIP
+  selector: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: sandbox-gateway}
+  ports: [{name: http, port: 8110, targetPort: http}]

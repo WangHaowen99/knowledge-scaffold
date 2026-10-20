@@ -208,6 +208,14 @@ spec:
             - {name: ONTO_WEB_AUTH_ISSUER, value: {{ .Values.global.auth.issuer | quote }}}
             - {name: ONTO_WEB_AUTH_AUDIENCE, value: {{ .Values.global.auth.audience | quote }}}
             - {name: ONTO_WEB_MODELING_URL, value: "http://{{ include "modeling.name" . }}-core:5100"}
+            - {name: ONTO_WEB_SANDBOX_GATEWAY_URL, value: "http://{{ include "modeling.name" . }}-sandbox-gateway:8110"}
+            - name: ONTO_WEB_MODELING_ASSOCIATION_URL
+              value: "http://{{ include "modeling.name" . }}-core:5100"
+            - name: ONTO_WEB_MODELING_ASSOCIATION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.global.integration.serviceTokenSecret.name | quote }}
+                  key: {{ .Values.global.integration.serviceTokenSecret.key | quote }}
             - {name: ONTO_WEB_JIUWEN_BASE_URL, value: {{ .Values.modeling.config.ontoJiuwenBaseUrl | quote }}}
             - {name: ONTO_WEB_JIUWEN_MODEL, value: {{ .Values.modeling.config.ontoJiuwenModel | quote }}}
             - {name: ANTHROPIC_BASE_URL, value: {{ .Values.modeling.config.ontoAnthropicBaseUrl | quote }}}
@@ -237,6 +245,79 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim: {claimName: {{ .Values.modeling.workloads.onto.persistence.existingClaim | quote }}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "modeling.name" . }}-sandbox-gateway
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: sandbox-gateway}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: sandbox-gateway}
+    spec:
+      securityContext:
+        fsGroup: 65534
+      {{- if .Values.global.imageDelivery.pullSecretNames }}
+      imagePullSecrets: {{ include "modeling.pullSecrets" . | nindent 8 }}
+      {{- end }}
+      nodeSelector:
+        {{- toYaml (dict "kubernetes.io/arch" .Values.global.targetArch) | nindent 8 }}
+      containers:
+        - name: sandbox-gateway
+          image: {{ .Values.global.resolvedImages.ontoModeling | quote }}
+          imagePullPolicy: IfNotPresent
+          command: [python, -m, app.sandbox_gateway]
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          env:
+            - {name: ONTO_WEB_SANDBOX_GATEWAY_PORT, value: "8110"}
+            - {name: PYTHONDONTWRITEBYTECODE, value: "1"}
+          ports: [{name: http, containerPort: 8110}]
+          volumeMounts:
+            - {name: jiuwenbox-socket, mountPath: /run/jiuwenbox}
+            - {name: tmp, mountPath: /tmp}
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 30
+          resources: {{ toYaml .Values.modeling.workloads.sandboxGateway.resources | nindent 12 }}
+        - name: jiuwenbox
+          image: {{ .Values.global.resolvedImages.jiuwenbox | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          env:
+            - {name: JIUWENBOX_LISTEN, value: "unix:///run/jiuwenbox/jiuwenbox.sock"}
+            - {name: JIUWENBOX_UDS_MODE, value: "0666"}
+            - {name: JIUWENBOX_POLICY_PATH, value: /app/jiuwenbox-policy.yaml}
+          volumeMounts:
+            - {name: jiuwenbox-socket, mountPath: /run/jiuwenbox}
+            - {name: policy, mountPath: /app/jiuwenbox-policy.yaml, subPath: jiuwenbox-policy.yaml, readOnly: true}
+            - {name: cgroup, mountPath: /sys/fs/cgroup}
+          readinessProbe:
+            exec:
+              command: [python3, -c, "import socket; s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.connect('/run/jiuwenbox/jiuwenbox.sock'); s.close()"]
+            periodSeconds: 10
+          resources: {{ toYaml .Values.modeling.workloads.jiuwenbox.resources | nindent 12 }}
+      volumes:
+        - name: jiuwenbox-socket
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: policy
+          configMap: {name: {{ include "modeling.name" . }}-jiuwenbox-policy}
+        - name: cgroup
+          hostPath: {path: /sys/fs/cgroup, type: Directory}
 {{- if .Values.modeling.nl2sql.enabled }}
 ---
 apiVersion: apps/v1

@@ -1,8 +1,8 @@
 # Modeling CCE 安装
 
-Modeling 软件包包含三个自有镜像以及用于 Core、Agent 和 Onto Modeling 的 Helm 发布。Core Pod 同时运行 JiuwenBox sidecar。JiuwenBox 镜像由 Consumer 软件包提供；共享的 auth-server 和 Consumer API 通过 Service 引用。本软件包不会安装第二个 auth-server。
+Modeling 软件包包含三个自有镜像以及用于 Core、Agent、Onto Modeling 和 Onto 脚本验证网关的 Helm 发布。Core Pod 同时运行 JiuwenBox sidecar；sandbox-gateway Pod 也运行一个 JiuwenBox sidecar，并只把管理 socket 共享给非特权网关容器。JiuwenBox 镜像由 Consumer 软件包提供；共享的 auth-server 和 Consumer API 通过 Service 引用。本软件包不会安装第二个 auth-server。
 
-环境要求：Python 3.11 及以上（含 PyYAML 和 jsonschema）、Helm 3、kubectl、具有部署权限的 Kubernetes context、预先创建的命名空间、三个独立的 RWO Filesystem PVC、镜像拉取 Secret、服务令牌 Secret，以及 CCE 内置或客户启用的 ELB Ingress 能力。默认入口使用 HTTP；显式配置 HTTPS 时还需准备 TLS Secret。CCE Standard 的内置 ELB Ingress 可以不创建 IngressClass，此时将 `ingressClassName` 留空；只有客户明确使用某个 IngressClass 时才填写它。复用已有 ELB 时，在 `global.access.elb.class` 填入与该 ELB 类别一致的值；Chart 会为所有 Modeling Ingress 写入 `kubernetes.io/elb.class` 注解。此项与 `ingressClassName` 不同，不能仅凭后者代替。随附示例文件中的值均为合成值，必须在仓库外填写真实部署值。
+环境要求：Python 3.11 及以上（含 PyYAML 和 jsonschema）、Helm 3、kubectl、具有部署权限的 Kubernetes context、预先创建的命名空间、三个独立的 RWO Filesystem PVC、镜像拉取 Secret、服务令牌 Secret，以及 CCE 内置或客户启用的 ELB Ingress 能力。Chart 还会部署一个内部 `sandbox-gateway` 和 JiuwenBox sidecar，用于 Onto Modeling 脚本验证；该 Service 不对外暴露。默认入口使用 HTTP；显式配置 HTTPS 时还需准备 TLS Secret。CCE Standard 的内置 ELB Ingress 可以不创建 IngressClass，此时将 `ingressClassName` 留空；只有客户明确使用某个 IngressClass 时才填写它。复用已有 ELB 时，在 `global.access.elb.class` 填入与该 ELB 类别一致的值；Chart 会为所有 Modeling Ingress 写入 `kubernetes.io/elb.class` 注解。此项与 `ingressClassName` 不同，不能仅凭后者代替。随附示例文件中的值均为合成值，必须在仓库外填写真实部署值。
 
 1. 使用 `import-images.md` 导入三个自有镜像，同时导入 Consumer 软件包中的 JiuwenBox 镜像。将客户镜像仓库中的 manifest digest 记录到 `resolved-images.yaml`。示例中的 JiuwenBox digest 只是不可用的占位值；联合操作时应删除该项或替换为精确的 Consumer digest，联合入口会创建临时的有效镜像映射。单独执行 Modeling 操作时，必须显式提供经过验证的 Consumer digest。
 2. 在 `values.customer.yaml` 中填写预创建 PVC 的名称、共享认证与 Consumer Service、issuer、audience 以及本次发布的 Ingress 入口。示例默认使用 HTTP 端口模式：Core 使用 8100、Onto Modeling 使用 5100、MCP 使用 5188，访问形式为 `http://<ELB_IP>:<端口>`；`modeling.config.mcpPublicBaseUrl` 对应填写 `http://<ELB_IP>:5188`。需要 HTTPS 时分别将 listener 的 `protocol` 和 `tlsSecretName` 配置为实际值。
@@ -44,7 +44,7 @@ bash deploy/install-consumer-modeling.sh cce install --config deployment.custome
 
 联合入口遵循 Consumer 软件包的 `deploy/install-cce.sh` 契约，不读取 Consumer 源码。两侧分别拥有自己的 Helm 发布和运行时资源。入口会在调用任一侧前校验软件包校验和以及精确的兼容性组合。操作租约要求有权在两侧 release 所在命名空间创建、更新和释放各自的 `<releaseName>-cce-operation` Lease。客户 values、密钥和运行状态必须保留在发布包及 Git 之外。
 
-当前预检会检查声明式资源和集群基础可用性，但不能证明所有候选节点都能拉取每个镜像，也不能证明选定 CCE 类型的 ELB 与 Ingress 注解可用，或特权 JiuwenBox 会被允许。这些内容必须在真实集群验收中验证。Pod 成功滚动也不能证明脚本执行正常；请在目标架构上执行真实的合成脚本验收。
+当前预检会检查声明式资源和集群基础可用性，但不能证明所有候选节点都能拉取每个镜像，也不能证明选定 CCE 类型的 ELB 与 Ingress 注解可用，或特权 JiuwenBox 会被允许。这些内容必须在真实集群验收中验证。安装验证还会检查 sandbox-gateway Deployment 和 Onto 到其内部健康接口的连通性。Pod 成功滚动也不能证明脚本执行正常；请在目标架构上执行真实的合成脚本验收。
 
 数据保留升级请参阅 `upgrade-and-recovery.md`。升级要求经过测试的无迁移兼容组合、已停止的旧 Modeling Pod、就绪的 PVC 快照和经过验证的备份记录。联合执行顺序始终为 Consumer 升级并验证，然后 Modeling 升级并验证。Consumer 软件包的升级行为由其独立仓库负责。
 

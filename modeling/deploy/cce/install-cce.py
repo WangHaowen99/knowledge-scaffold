@@ -169,6 +169,11 @@ def verify(args, root: Path):
     for component in ("agent", "core", "onto"):
         run("kubectl", "--context", args.context, "-n", args.namespace, "rollout", "status",
             f"deployment/{args.release}-{component}", f"--timeout={args.timeout_seconds}s")
+    run("kubectl", "--context", args.context, "-n", args.namespace, "rollout", "status",
+        f"deployment/{args.release}-sandbox-gateway", f"--timeout={args.timeout_seconds}s")
+    run("kubectl", "--context", args.context, "-n", args.namespace, "exec",
+        f"deployment/{args.release}-onto", "-c", "onto", "--", "python", "-c",
+        "import urllib.request; r=urllib.request.urlopen('http://%s-sandbox-gateway:8110/health', timeout=5); raise SystemExit(0 if r.status == 200 else 1)" % args.release)
     run("kubectl", "--context", args.context, "-n", args.namespace, "exec",
         f"deployment/{args.release}-core", "-c", "core", "--", "node", "-e",
         "const http=require('http');const q=http.request({socketPath:'/run/jiuwenbox/jiuwenbox.sock',path:'/health'},r=>process.exit(r.statusCode===200?0:1));q.on('error',()=>process.exit(1));q.end()")

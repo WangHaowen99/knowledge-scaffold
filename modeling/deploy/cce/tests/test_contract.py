@@ -306,6 +306,23 @@ class CceContractTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             validate_release(root, "modeling")
 
+    def test_cce_chart_declares_onto_sandbox_gateway_and_association(self):
+        workloads = (ROOT / "chart/templates/workloads.yaml").read_text()
+        services = (ROOT / "chart/templates/services.yaml").read_text()
+        values = yaml.safe_load((ROOT / "values.customer.example.yaml").read_text())
+        self.assertIn("-sandbox-gateway", workloads)
+        self.assertIn("app.sandbox_gateway", workloads)
+        self.assertIn("ONTO_WEB_SANDBOX_GATEWAY_URL", workloads)
+        self.assertIn("ONTO_WEB_MODELING_ASSOCIATION_URL", workloads)
+        self.assertIn("ONTO_WEB_MODELING_ASSOCIATION_TOKEN", workloads)
+        self.assertIn("-sandbox-gateway", services)
+        self.assertEqual(values["modeling"]["workloads"]["sandboxGateway"]["resources"]["requests"]["memory"], "256Mi")
+
+    def test_modeling_verify_checks_sandbox_gateway(self):
+        source = (ROOT / "install-cce.py").read_text()
+        self.assertIn("deployment/{args.release}-sandbox-gateway", source)
+        self.assertIn("-sandbox-gateway:8110/health", source)
+
     def test_installer_bytecode_does_not_invalidate_extracted_package(self):
         root = self.package()
         cache = root / "deploy/__pycache__"

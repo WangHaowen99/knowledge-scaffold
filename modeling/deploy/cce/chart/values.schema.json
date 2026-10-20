@@ -49,6 +49,9 @@
         "core": {"$ref": "#/definitions/statefulWorkload"}, "agent": {"$ref": "#/definitions/statefulWorkload"}, "onto": {"$ref": "#/definitions/statefulWorkload"},
         "jiuwenbox": {"type": "object", "additionalProperties": false, "required": ["nodeSelector", "runtimeClassName", "resources"], "properties": {
           "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}}, "runtimeClassName": {"type": "string"}, "resources": {"type": "object"}
+        }},
+        "sandboxGateway": {"type": "object", "additionalProperties": false, "required": ["resources"], "properties": {
+          "resources": {"type": "object"}
         }}
       }},
       "secrets": {"type": "object", "additionalProperties": false, "required": ["llmApiKey", "evalDbUrl", "cleanupToken", "anthropicAuthToken"], "properties": {

@@ -72,6 +72,8 @@ modeling:
       nodeSelector: {}
       runtimeClassName: ""
       resources: {}
+    sandboxGateway:
+      resources: {requests: {cpu: 100m, memory: 256Mi}}
   secrets:
     llmApiKey:
       name: ""
