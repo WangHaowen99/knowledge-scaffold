@@ -27,7 +27,7 @@ except ImportError:  # pragma: no cover - Windows development fallback
     fcntl = None
 
 from .. import config
-from . import package_mapping
+from . import package_mapping, solver_contract, solver_validation
 
 META_FILE = ".onto-web.json"  # 历史文件名保留：存量项目的识别键（ADR-0006）
 SKIP_DIRS = {".git", ".ontology-state", ".obsidian"}
@@ -706,6 +706,10 @@ class WorkspaceManager:
         graph：Neo4j 图导入用的包——mapping 按图模式导出，「关联对象」转为 `# 关系` 表；
         allow_unbound：降级发布——声明对不上的对象不阻断，来源Sheet 写 UNBOUND、不进 mapping；
         图模式下，端点因此未绑定的关系也只记原因不阻断（图里本来就没有该类节点）。
+
+        工作区有求解契约（ontology/solver/）时升级为 v0.2 operation-centric.v1：求解
+        Operation 改名为 solver_key 并补 execution 声明，sidecar 原字节写到 operations/，
+        manifest 与两级 index 带上求解声明。没有求解契约的包逐字节保持 v0.1。
         """
         import zipfile
 
@@ -757,6 +761,21 @@ class WorkspaceManager:
         metrics = entry_items("ontology/metric")
         scripts = entry_items("ontology/scripts", pattern="*.py")
         object_keys = {key for key, _ in objects}
+        solver_contracts, solver_problems = solver_contract.load_workspace_solver(
+            root, [key for key, _ in operations]
+        )
+        if solver_problems:
+            raise WorkspaceError(
+                "求解契约无法发布：" + "；".join(f"{p}（{p.path}）" for p in solver_problems),
+                code=solver_problems[0].code,
+            )
+        solver = solver_contract.render_package_solver(solver_contracts)
+        solver_by_stem = {item.operation: item for item in solver.contracts}
+
+        def package_operation_key(stem: str) -> str:
+            item = solver_by_stem.get(stem)
+            return item.solver_key if item else stem
+
         def q(s):
             return json.dumps(s, ensure_ascii=False)  # JSON 字符串是合法 YAML 标量
 
@@ -772,6 +791,10 @@ class WorkspaceManager:
             f"status: released\n"
             f"language: zh-CN\n"
         )
+        if solver.contracts:
+            manifest = manifest.replace(
+                "schema_version: '0.1'\n", "schema_version: '0.2'\n"
+            ) + solver_contract.manifest_solver_section(solver)
 
         def front(resource: str, key: str, title: str, extra: str = "") -> str:
             return f"---\nresource: {resource}\nkey: {q(key)}\ntitle: {q(title)}\n{extra}---\n\n"
@@ -792,7 +815,11 @@ class WorkspaceManager:
 
         with zipfile.ZipFile(dest_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(f"{pkg}/manifest.yaml", manifest)
-            zf.writestr(f"{pkg}/index.md", front("root", "root", meta["name"]) + f"# {meta['name']}\n")
+            zf.writestr(
+                f"{pkg}/index.md",
+                front("root", "root", meta["name"]) + f"# {meta['name']}\n"
+                + solver_contract.index_block(solver),
+            )
             zf.writestr(
                 f"{pkg}/objects/index.md",
                 index_md(
@@ -826,18 +853,39 @@ class WorkspaceManager:
                     f"{pkg}/mappings/object-data-mappings.json",
                     json.dumps(mappings, ensure_ascii=False, indent=2) + "\n",
                 )
+            if solver.contracts:
+                # execution 列让 consumer 认出求解行；停用的求解 operation 不进求解索引
+                def operation_row(k: str) -> str:
+                    item = solver_by_stem.get(k)
+                    execution = solver_contract.SOLVER_EXECUTION_MODE if item and item.enabled else ""
+                    return f"| {package_operation_key(k)} | {k} | {k} | {k} | {execution} |\n"
+
+                operation_headers = ["operation key", "标题", "输入", "输出", "execution"]
+            else:
+                def operation_row(k: str) -> str:
+                    return f"| {k} | {k} | {k} | {k} |\n"
+
+                operation_headers = ["operation key", "标题", "输入", "输出"]
             zf.writestr(
                 f"{pkg}/operations/index.md",
                 index_md(
                     "operation_index", "operations", "操作目录", operations,
-                    ["operation key", "标题", "输入", "输出"],
-                    lambda k: f"| {k} | {k} | {k} | {k} |\n",
+                    operation_headers, operation_row,
                 ),
             )
             for key, body in operations:
                 used = sorted({m for m in _WIKILINK_RE.findall(body) if m in object_keys})
-                extra = f"uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n"
-                zf.writestr(f"{pkg}/operations/{key}.md", front("operation", key, key, extra) + body)
+                item = solver_by_stem.get(key)
+                if item is None:
+                    extra = f"uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n"
+                    zf.writestr(f"{pkg}/operations/{key}.md", front("operation", key, key, extra) + body)
+                    continue
+                zf.writestr(
+                    f"{pkg}/operations/{item.solver_key}.md",
+                    solver_contract.operation_frontmatter(item, key, used, object_keys) + body,
+                )
+            for path, data in solver.files.items():
+                zf.writestr(f"{pkg}/{path}", data)
             # 规则/指标/脚本：五元组一等实体（范式升级 ADR-0004），可选目录
             if rules:
                 zf.writestr(
@@ -888,7 +936,7 @@ class WorkspaceManager:
                         raise WorkspaceError(f"脚本 {key} 契约无效：{exc}") from exc
                     extra = f"entrypoint: {filename}\n"
                     if bound and bound in operation_keys:
-                        extra += f"bound_operation: {q(bound)}\n"
+                        extra += f"bound_operation: {q(package_operation_key(bound))}\n"
                     body = f"由 /ontology-codegen 生成的确定性脚本，实现见 `{filename}`。\n"
                     if params:
                         rows = "".join(
@@ -1095,7 +1143,181 @@ class WorkspaceManager:
             or len(tables) > self.PACKAGE_CHECK_TABLE_LIMIT,
             "last_publish": self.get_project(project_id).get("last_package_publish"),
             "table_resources": self._unmarked_table_resources(project_id, root),
+            # 求解契约体检单列：blocking 仍只计数据绑定，普通包这里只有 enabled=False
+            "solver": self.solver_release_status(project_id),
         }
+
+    # ---- 求解契约静态检查与发布门禁 ----
+
+    @staticmethod
+    def _operation_stems(root: Path) -> list[str]:
+        stems: list[str] = []
+        for rel_dir in ("ontology/operation", "ontology/logic"):
+            directory = root / rel_dir
+            if directory.is_dir():
+                stems.extend(
+                    path.stem for path in sorted(directory.glob("*.md"))
+                    if path.name != "index.md" and path.stem not in stems
+                )
+        return stems
+
+    @staticmethod
+    def _package_scripts(root: Path) -> dict[str, Path]:
+        """包内脚本路径 → 工作区脚本：与 export_package_zip 的脚本文件名规则一致。"""
+        directory = root / "ontology" / "scripts"
+        if not directory.is_dir():
+            return {}
+        return {
+            f"scripts/{_package_script_filename(path.stem)}": path
+            for path in sorted(directory.glob("*.py"))
+            if path.is_file() and not path.is_symlink()
+        }
+
+    def solver_check(self, project_id: str) -> solver_contract.SolverCheck:
+        root = self.project_root(project_id)
+        return solver_contract.check_workspace_solver(
+            root, self._operation_stems(root), self._package_scripts(root)
+        )
+
+    def solver_release_status(self, project_id: str) -> dict:
+        """求解契约的静态检查结论与当前修订的验证门禁；普通包返回 enabled=False。"""
+        root = self.project_root(project_id)
+        check = self.solver_check(project_id)
+        if not check.enabled:
+            return {"enabled": False}
+        gate = solver_validation.gate(root, check.revision) if check.needs_validation else []
+        limit = self.PACKAGE_CHECK_LIMIT
+        return {
+            "enabled": True,
+            "revision": check.revision,
+            "operations": [
+                {
+                    "solver_key": item.solver_key,
+                    "operation": item.operation,
+                    "decision_model": item.decision_model,
+                    "enabled": item.enabled,
+                    "evaluator": check.evaluators.get(item.solver_key, ""),
+                }
+                for item in check.contracts
+            ],
+            "findings": check.findings[:limit],
+            "gate": gate,
+            "blocking": len(check.findings) + len(gate),
+            "validation": solver_validation.latest(root, check.revision),
+            "truncated": len(check.findings) > limit,
+        }
+
+    def solver_contract_view(self, project_id: str) -> dict:
+        """求解模型面板读取：当前修订、全部契约（binding 全量 + sidecar 原文）与检查结论。"""
+        root = self.project_root(project_id)
+        check = self.solver_check(project_id)
+        status = self.solver_release_status(project_id)
+        scripts = self._package_scripts(root)
+        return {
+            "revision": check.revision,
+            "enabled": check.enabled,
+            "contract": {
+                "operations": [
+                    {
+                        **solver_contract.contract_view(item),
+                        "evaluator": check.evaluators.get(item.solver_key, ""),
+                        "unit_options": solver_contract.evaluator_unit_options(
+                            root / check.evaluators[item.solver_key]
+                            if item.solver_key in check.evaluators else None
+                        ),
+                    }
+                    for item in check.contracts
+                ],
+            },
+            "findings": check.findings,
+            "gate": status.get("gate") or [],
+            "validation": status.get("validation"),
+            "available_operations": self._operation_stems(root),
+            "evaluators": sorted(str(path.relative_to(root)) for path in scripts.values()),
+            # 模板参数 evaluator_path 填包内路径（scripts/…），面板按工作区文件名展示
+            "evaluator_options": [
+                {"path": package_path, "file": str(path.relative_to(root))}
+                for package_path, path in sorted(scripts.items())
+            ],
+            "supported_profiles": list(solver_contract.SUPPORTED_PROFILES),
+            "problem_families": solver_contract.problem_family_catalog(),
+            "template": solver_contract.NEW_CONTRACT_TEMPLATE,
+        }
+
+    def check_solver_contract_draft(self, project_id: str, operations: list) -> dict:
+        """求解模型面板的即时检查：未保存的草稿按保存与发布体检的同一套规则检查，不落盘。
+
+        rejected 是保存会被拒的结构问题，findings 是保存后发布检查仍会拦截的问题，
+        rendered 按提交顺序给出模板契约将生成的 sidecar 原文（供预览）；
+        验证门禁跟修订走，草稿保存后修订必然改变，这里不给出。
+        """
+        root = self.project_root(project_id)
+        rejected, findings, rendered = solver_contract.check_draft(
+            operations, self._operation_stems(root), root, self._package_scripts(root)
+        )
+        return {"rejected": rejected, "findings": findings, "rendered": rendered}
+
+    def save_solver_contract(
+        self, project_id: str, operations: list, base_revision: str,
+        author: str = "", summary: str = "",
+    ) -> dict:
+        """整体保存求解契约（受管目录全量替换），基线修订不一致返回 409。
+
+        结构不合法抛 SolverContractRejected；语义问题（Profile、评估器等）不阻止保存，
+        随返回的 findings 给出，发布时再由门禁拦截。
+        """
+        root = self.project_root(project_id)
+        with self._project_lock(project_id):
+            current = self.solver_check(project_id).revision
+            if (base_revision or "") != current:
+                raise WorkspaceError(
+                    "求解契约已被他人或助手修改，请刷新对比后再保存", 409,
+                    code="solver_contract_revision_conflict",
+                )
+            staged = solver_contract.stage_contracts(operations, self._operation_stems(root))
+            base = root / solver_contract.SOLVER_DIR
+            if base.is_dir():
+                for directory in base.iterdir():
+                    if directory.name not in staged:
+                        if directory.is_dir() and not directory.is_symlink():
+                            shutil.rmtree(directory)
+                        else:
+                            directory.unlink()
+            for solver_key, files in staged.items():
+                directory = base / solver_key
+                if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+                    directory.unlink()
+                directory.mkdir(parents=True, exist_ok=True)
+                for path in directory.iterdir():
+                    if path.name not in files:
+                        shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink()
+                for filename, data in files.items():
+                    target = directory / filename
+                    existing = target.read_bytes() if target.is_file() else None
+                    if existing is not None and solver_contract.same_content(filename, existing, data):
+                        # 导入时原样保存的 binding 不因一次无改动的保存被重排格式
+                        continue
+                    self._atomic_write(target, data)
+            if base.is_dir() and not any(base.iterdir()):
+                base.rmdir()
+            rel = solver_contract.SOLVER_DIR
+            commit = ""
+            if _git(root, "status", "--porcelain", "--", rel).strip():
+                _git(root, "add", "-A", "--", rel)
+                who = f" by {author}" if author else ""
+                note = f"：{' '.join(summary.split())[:80]}" if summary.strip() else ""
+                _git(root, "commit", "-m", f"web: 保存求解契约{note}{who}", "--", rel)
+                commit = _git(root, "rev-parse", "HEAD").strip()
+        return {**self.solver_contract_view(project_id), "commit": commit}
+
+    def _ensure_solver_publishable(self, project_id: str) -> None:
+        status = self.solver_release_status(project_id)
+        blocking = (status.get("findings") or []) + (status.get("gate") or [])
+        if blocking:
+            raise WorkspaceError(
+                "求解契约未通过发布检查：" + "；".join(item["message"] for item in blocking[:3]),
+                code=blocking[0]["code"],
+            )
 
     def _unmarked_table_resources(self, project_id: str, root: Path) -> list[str]:
         """已上传但未标 schema 的表格资料：改标用途即可让其中的表参与核对，不必重新上传。"""
@@ -1152,8 +1374,13 @@ class WorkspaceManager:
         allow_unbound: bool = False,
         author: str = "",
     ) -> Path:
-        """用户发布知识包。降级发布须可追溯：记录谁、何时发布，以及哪些对象因此未绑定数据表。"""
+        """用户发布知识包。降级发布须可追溯：记录谁、何时发布，以及哪些对象因此未绑定数据表。
+
+        求解知识包另有门禁：静态检查无错误，且当前求解契约修订有通过的权威端到端验证。
+        allow_unbound 只放宽数据绑定，不放宽求解门禁。
+        """
         root = self.project_root(project_id)
+        self._ensure_solver_publishable(project_id)
         binding = package_mapping.resolve_object_tables(root, strict_declared=not allow_unbound)
         path = self.export_package_zip(
             project_id, dest_path, binding=binding, allow_unbound=allow_unbound
@@ -1188,6 +1415,9 @@ class WorkspaceManager:
         rel = target.relative_to(root.resolve())
         if not rel.parts or rel.parts[0] in self.WRITE_FORBIDDEN_TOP:
             raise WorkspaceError("该路径不允许编辑", 403)
+        if rel.as_posix().startswith(f"{solver_contract.SOLVER_DIR}/"):
+            # 求解契约要求多文件一致（binding 与五份 sidecar），单文件编辑无法保证
+            raise WorkspaceError("求解契约是受管目录，请在求解模型面板中维护", 403)
         if target.is_symlink():
             raise WorkspaceError("该路径不允许编辑", 403)
         # 乐观并发（方案 7.4 双写合并）：Web 编辑与 agent 写同一文件不互相静默覆盖

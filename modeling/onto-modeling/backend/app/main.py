@@ -21,10 +21,12 @@ async def _lifespan(app: FastAPI):
     from .services.agent_sessions import manager
     from .services.modeling_eval import sweep_interrupted
     from .services.modeling_cleanup import retry_due, scheduler_loop
+    from .services.solver_validation_run import sweep_interrupted as sweep_solver_validations
 
     manager.start_background()  # 空闲会话回收（方案 4.1.1）
     # 评测编排只活在进程内：重启后仍标 running 的工作区改判中断，否则前端永久锁死
     sweep_interrupted()
+    sweep_solver_validations()
     backup_task = asyncio.create_task(backup_scheduler_loop())  # workspace 定期备份
     modeling_cleanup_task = asyncio.create_task(scheduler_loop())
     try:

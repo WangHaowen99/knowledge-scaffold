@@ -12,7 +12,14 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 
 .pane { height: 100%; overflow: auto; padding: 12px; box-sizing: border-box; }
 .pane-left { background: var(--surface-card); }
-.pane-center { background: var(--surface-page); }
+.pane-center { --center-pad: 12px; background: var(--surface-page); }
+/* 中栏页签栏吸顶：负外边距抵消滚动容器内边距，贴住顶边不随正文滚动。
+   z-index 高于 Studio 图区浮层（最高 12），低于全屏视图（1000） */
+.center-topbar {
+  position: sticky; top: 0; z-index: 20;
+  margin-top: calc(-1 * var(--center-pad)); padding: var(--center-pad) 0 12px;
+  background: var(--surface-page);
+}
 .pane-right { background: var(--surface-card); display: flex; flex-direction: column; padding: 0; }
 .chat-root { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
 
@@ -1083,7 +1090,7 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .md-with-toc { display: flex; gap: 16px; align-items: flex-start; }
 .md-with-toc .md-doc { flex: 1; min-width: 0; }
 .md-toc {
-  position: sticky; top: 8px; width: 168px; flex: none;
+  position: sticky; top: calc(var(--center-bar-height, 0px) + 8px); width: 168px; flex: none;
   border-left: 2px solid var(--border-subtle); padding-left: 10px;
   max-height: calc(100dvh - 200px); overflow-y: auto;
 }
@@ -1316,6 +1323,120 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .pcd-resource-name { color: var(--text-primary); }
 .pcd-warning { font-size: 12px; color: var(--text-secondary); padding: 2px 0; }
 
+/* 求解模型面板（SolverModelPanel）：契约列表 + 表单 + sidecar 编辑 */
+.solver-loading { display: flex; justify-content: center; padding: 48px 0; }
+.solver-panel { display: flex; flex-direction: column; gap: 12px; }
+/* 状态与操作栏吸在页签栏下方，滚动正文时保存/放弃等按钮随时可点 */
+.solver-head {
+  position: sticky; top: var(--center-bar-height, 0px); z-index: 4;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--border-subtle); background: var(--surface-page);
+}
+.solver-title { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.solver-section-title { font-weight: 600; color: var(--text-primary); }
+.solver-meta { font-size: 12px; color: var(--text-tertiary); }
+.solver-empty { padding: 32px 0; }
+.solver-empty-text { max-width: 520px; margin: 0 auto 12px; font-size: 13px; }
+.solver-findings,
+.solver-validation {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-card);
+}
+.solver-finding + .solver-finding { padding-top: 8px; border-top: 1px dashed var(--border-subtle); }
+.solver-finding-head,
+.solver-validation-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.solver-finding-msg,
+.solver-validation-msg { font-size: 12px; color: var(--text-secondary); word-break: break-all; }
+.solver-finding-hint { font-size: 12px; color: var(--text-tertiary); }
+.solver-validation-cases { display: flex; flex-direction: column; gap: 4px; }
+.solver-validation-case { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 13px; }
+.solver-validation-case .ant-tag { margin-inline-end: 0; }
+.solver-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 12px; align-items: start; }
+.solver-list { display: flex; flex-direction: column; gap: 6px; }
+.solver-list-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-card);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.solver-list-item.on { border-color: var(--color-primary); background: var(--surface-subtle); }
+.solver-list-key { font-family: var(--font-mono, monospace); font-size: 13px; color: var(--text-primary); }
+.solver-list-op { font-size: 12px; color: var(--text-secondary); }
+.solver-list-tags { display: flex; flex-wrap: wrap; gap: 2px; }
+.solver-list-tags .ant-tag { margin-inline-end: 0; font-size: 11px; }
+.solver-detail {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-card);
+}
+.solver-detail-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.solver-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
+.solver-field-hit { border-radius: 6px; outline: 2px solid var(--color-primary); outline-offset: 4px; }
+.solver-units { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.solver-sidecar { display: flex; flex-direction: column; gap: 6px; }
+.solver-sidecar .cm-host .cm-editor { min-height: 160px; max-height: 360px; }
+.solver-tab-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: #ff4d4f;
+  vertical-align: middle;
+}
+.solver-diff { display: flex; flex-direction: column; gap: 4px; }
+.solver-diff-row { display: flex; align-items: baseline; gap: 6px; font-size: 13px; word-break: break-all; }
+.solver-advanced-toggle { padding-inline: 0; margin-bottom: 8px; }
+.solver-preview {
+  max-height: 360px; margin: 0; padding: 8px 10px; overflow: auto;
+  border-radius: 6px; background: var(--surface-subtle);
+  font-family: var(--font-mono, monospace); font-size: 12px; line-height: 1.5; white-space: pre;
+}
+/* 验证用例表单：每条用例一张卡片，模板契约的入参按批次表格填写 */
+.solver-cases { display: flex; flex-direction: column; gap: 8px; }
+.solver-case {
+  display: flex; flex-direction: column; gap: 8px; padding: 8px 10px;
+  border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--surface-page);
+}
+.solver-case-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.solver-case-head > .ant-input { flex: 1 1 200px; min-width: 0; }
+.solver-case-head > .ant-select { min-width: 220px; }
+.solver-case-fields { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.solver-case-field { display: flex; align-items: center; gap: 8px; }
+.solver-case-field > span:first-child { flex: none; font-size: 12px; color: var(--text-secondary); }
+.solver-case-field > .ant-input,
+.solver-case-field > .ant-select { width: 180px; }
+.solver-route-case { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.solver-batch-scroll { align-self: stretch; overflow-x: auto; }
+.solver-batch-table { border-collapse: collapse; font-size: 12px; }
+.solver-batch-table th {
+  padding: 4px 6px; text-align: left; font-weight: 500; white-space: nowrap;
+  color: var(--text-secondary); border-bottom: 1px solid var(--border-subtle);
+}
+.solver-batch-table td { padding: 4px 6px; vertical-align: middle; }
+.solver-batch-table td .ant-input { min-width: 110px; }
+.solver-batch-actions { white-space: nowrap; }
+.solver-case-hint { font-size: 12px; color: var(--status-warning, #b77909); }
+@media (max-width: 768px) {
+  .solver-body,
+  .solver-form-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* ==== 移动端适配（≤768px）：工作台单栏 + 底部页签，全局自适应 ==== */
 .mobile-body { display: flex; flex-direction: column; height: 100%; }
 .mobile-panes { flex: 1; min-height: 0; }
@@ -1373,7 +1494,7 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
   .ant-modal { max-width: calc(100vw - 16px); top: 12px; padding-bottom: 12px; }
   /* 中栏 */
   .center-tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .pane-center { padding: 8px; }
+  .pane-center { --center-pad: 8px; padding: 8px; }
   /* 聊天 */
   .chat-history { padding: 8px; }
   .msg-bubble-max, .chat-history .ant-bubble { max-width: 92vw; }

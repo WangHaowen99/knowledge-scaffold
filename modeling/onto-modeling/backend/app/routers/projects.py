@@ -6,11 +6,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from .. import config
 from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets, package_mapping
-from ..services import modeling_cleanup, modeling_mcp, package_archive
+from ..services import modeling_cleanup, modeling_mcp, package_archive, solver_contract
 from ..services.workspace import WorkspaceError, WorkspaceManager
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -56,6 +56,17 @@ class MembersBody(BaseModel):
 
 class ArchiveBody(BaseModel):
     archived: bool
+
+
+class SolverContractBody(BaseModel):
+    """字段名沿用需求规格的接口定义：{ baseRevision, contract, summary }。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    base_revision: str = Field("", alias="baseRevision")  # 读取时拿到的修订；不一致则 409
+    # {operations: [{binding, sidecars: {role: 原文}} 或 {binding, template: 模板参数}]}
+    contract: dict = Field(default_factory=dict)
+    summary: str = ""  # 写进版本点说明
 
 
 def _request_user(request: Request) -> str:
@@ -398,6 +409,107 @@ def package_check(project_id: str, request: Request):
     """发布前数据绑定体检：阻断项、无从核对项、提示，以及修复所需的表清单与文档版本。"""
     ensure_access(project_id, request)
     return workspaces.package_binding_check(project_id)
+
+
+@router.get("/{project_id}/package/solver-contract")
+def get_solver_contract(project_id: str, request: Request):
+    """求解模型面板：当前修订、契约原文、静态检查与验证门禁。"""
+    ensure_access(project_id, request)
+    return workspaces.solver_contract_view(project_id)
+
+
+@router.put("/{project_id}/package/solver-contract")
+def save_solver_contract(project_id: str, body: SolverContractBody, request: Request):
+    """整体保存求解契约；结构问题 400 并逐条返回 findings，修订冲突 409。"""
+    ensure_access(project_id, request, write=True)
+    try:
+        operations = body.contract.get("operations")
+        if not isinstance(operations, list):
+            raise WorkspaceError("contract.operations 必须是列表", code=solver_contract.CODE_INVALID)
+        return workspaces.save_solver_contract(
+            project_id, operations, body.base_revision,
+            author=_request_user(request), summary=body.summary,
+        )
+    except solver_contract.SolverContractRejected as exc:
+        findings = [solver_contract.finding(problem) for problem in exc.problems]
+        return JSONResponse(
+            status_code=400,
+            content={"error": str(exc), "code": findings[0]["code"], "findings": findings},
+        )
+
+
+@router.post("/{project_id}/package/solver-contract/check")
+def check_solver_contract(project_id: str, body: SolverContractBody, request: Request):
+    """即时检查面板草稿（不保存）：rejected 为保存会被拒的问题，findings 为发布会被拦截的问题，
+    rendered 为模板契约将生成的 sidecar 原文。"""
+    ensure_access(project_id, request)
+    operations = body.contract.get("operations")
+    if not isinstance(operations, list):
+        raise WorkspaceError("contract.operations 必须是列表", code=solver_contract.CODE_INVALID)
+    return workspaces.check_solver_contract_draft(project_id, operations)
+
+
+class SolverValidationCasesBody(BaseModel):
+    cases: list  # [{id, name, solver_key, arguments, expected_candidate_count?}]
+
+
+class SolverValidationStartBody(BaseModel):
+    revision: str  # 面板读取到的求解契约修订；与当前不一致返回 409
+    case_ids: list[str] = Field(default_factory=list)  # 空表示全部已保存用例
+    data_source_id: str = ""  # 已保存的评测数据源；空表示不使用数据源
+    allow_unbound: bool = False  # 与发布一致：用户确认后数据绑定对不上的对象按未绑定处理
+
+
+@router.get("/{project_id}/package/solver-validations/cases")
+def get_solver_validation_cases(project_id: str, request: Request):
+    from ..services import solver_validation_run
+
+    root = ensure_access(project_id, request)
+    return {"cases": solver_validation_run.list_cases(root)}
+
+
+@router.put("/{project_id}/package/solver-validations/cases")
+def save_solver_validation_cases(project_id: str, body: SolverValidationCasesBody, request: Request):
+    from ..services import solver_validation_run
+
+    root = ensure_access(project_id, request, write=True)
+    return {"cases": solver_validation_run.save_cases(root, body.cases)}
+
+
+@router.post("/{project_id}/package/solver-validations")
+async def start_solver_validation(
+    project_id: str, body: SolverValidationStartBody, request: Request
+):
+    """对当前修订启动 Consumer 端到端验证（后台执行，经 latest 轮询）。
+
+    请求只含修订、用例与已保存的数据源 ID：Solver 地址与凭据只存在于 Consumer 侧。
+    """
+    from ..services import solver_validation_run
+
+    ensure_access(project_id, request, write=True)
+    record, plan = await asyncio.to_thread(
+        solver_validation_run.start,
+        workspaces, project_id,
+        revision=body.revision,
+        case_ids=body.case_ids,
+        token=_modeling_token(request),
+        data_source_id=body.data_source_id,
+        allow_unbound=body.allow_unbound,
+        by=_request_user(request),
+    )
+    solver_validation_run.launch(plan)
+    return {"validation": record}
+
+
+@router.get("/{project_id}/package/solver-validations/latest")
+def latest_solver_validation(project_id: str, request: Request):
+    """当前修订最后一次验证：状态、断言、候选数、权威结果摘要、错误码与诊断引用。"""
+    from ..services import solver_validation
+
+    root = ensure_access(project_id, request)
+    revision = workspaces.solver_check(project_id).revision
+    validation = solver_validation.latest(root, revision) if revision else None
+    return {"revision": revision, "validation": validation}
 
 
 @router.post("/{project_id}/objects/{key}/data-source")

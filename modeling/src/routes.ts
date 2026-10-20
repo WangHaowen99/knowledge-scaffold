@@ -200,6 +200,7 @@ import {
   savePackageDraftFile,
 } from './workflow/package-draft.js';
 import { registerArtifactRoutes, sendArtifactError } from './artifacts/routes.js';
+import { registerSolverContractValidationRoutes } from './evaluation/solver-contract-validation-routes.js';
 import { registerAuthoringRoutes } from './authoring/routes.js';
 import { buildProjectAuditFiles } from './authoring/audit-export.js';
 import { getAuthoringState } from './authoring/state.js';
@@ -3857,6 +3858,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
 
     registerAuthoringRoutes(r, { packageChatApply: runPackageChatApply, jobs: inFlight });
     registerArtifactRoutes(r);
+    registerSolverContractValidationRoutes(r);
     registerAgentCoreRoutes(r);
     registerPackageFusionRoutes(r);
     registerAgentProxyRoutes(r);

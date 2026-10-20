@@ -10,6 +10,7 @@ import {
   FileSearchOutlined,
   FileTextOutlined,
   HistoryOutlined,
+  NodeIndexOutlined,
 } from '@ant-design/icons';
 import {
   Alert,
@@ -37,12 +38,14 @@ import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
 import { api } from '../lib/api.js';
+import { SOLVER_DIR, isManagedSolverPath } from '../lib/solver-contract-model.js';
 import CodeEditor from './cm/CodeEditor.jsx';
 import MergeDiff from './cm/MergeDiff.jsx';
 import ExcelView from './ExcelView.jsx';
 import HtmlPreview from './HtmlPreview.jsx';
 
 const StudioView = lazy(() => import('./StudioView.jsx'));
+const SolverModelPanel = lazy(() => import('./SolverModelPanel.jsx'));
 // modeling 同款流程图编辑器（ReactFlow）；drawio iframe 只在高级编辑时加载
 const FlowchartView = lazy(() => import('./flowchart/FlowchartView.jsx'));
 
@@ -676,11 +679,28 @@ export default function CenterPane({
   const [queryResult, setQueryResult] = useState(null);
   const [queryLoading, setQueryLoading] = useState(false);
   const [studioVisited, setStudioVisited] = useState(false); // Studio 保持挂载不丢状态
+  const [solverVisited, setSolverVisited] = useState(false); // 求解模型同样保持挂载，草稿不随切页丢失
   const [restoredDraft, setRestoredDraft] = useState(false); // 恢复了未保存草稿的提示
   const draftsRef = useRef(new Map()); // path -> 未保存草稿（跨文件切换保留，防丢稿）
+  const rootRef = useRef(null);
+  const topbarRef = useRef(null);
+
+  // 页签栏吸顶：把它的实际高度交给正文里的二级吸顶元素（求解面板状态栏、文档目录）作偏移
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    const bar = topbarRef.current;
+    if (!root || !bar || typeof ResizeObserver === 'undefined') return undefined;
+    const sync = () => root.style.setProperty('--center-bar-height', `${bar.offsetHeight}px`);
+    sync();
+    const observer = new ResizeObserver(sync);
+    observer.observe(bar);
+    return () => observer.disconnect();
+  }, []);
 
   const paths = useMemo(() => flattenPaths(tree), [tree]);
   const knownPaths = useMemo(() => new Set(paths), [paths]);
+  // 求解契约是可选能力：已有契约、或用户从进度/发布检查进入过时才露出页签
+  const hasSolver = useMemo(() => paths.some((p) => p.startsWith(SOLVER_DIR)), [paths]);
   const reportPaths = useMemo(
     () => paths.filter((p) => p.startsWith('reports/') && p.endsWith('.md')).sort().reverse(),
     [paths],
@@ -694,7 +714,10 @@ export default function CenterPane({
 
   useEffect(() => {
     if (focus === 'studio') setStudioVisited(true);
+    if (focus === 'solver') setSolverVisited(true);
   }, [focus]);
+
+  useEffect(() => setSolverVisited(false), [project.id]);
 
   // 报告页默认选中最新一份（不再进门先见空态）
   useEffect(() => {
@@ -893,38 +916,43 @@ export default function CenterPane({
   };
 
   return (
-    <div>
-      <Space style={{ marginBottom: 12 }} align="center">
-        {canBack && (
-          <Button
-            size="small"
-            icon={<ArrowLeftOutlined />}
-            onClick={onBack}
-            title="返回上一个视图"
+    <div ref={rootRef}>
+      <div className="center-topbar" ref={topbarRef}>
+        <Space align="center">
+          {canBack && (
+            <Button
+              size="small"
+              icon={<ArrowLeftOutlined />}
+              onClick={onBack}
+              title="返回上一个视图"
+            />
+          )}
+          <CenterTabs
+            value={focus}
+            // 页签是平级切换（重置返回栈）；只有下钻动作（打开文件/对比/评审）才入栈
+            // 对比/报告/反查暂不露出（保留内部路由，入口后续再开）
+            onChange={(next) => (onFocusPlain || onFocus)(next)}
+            items={[
+              { label: '概览', value: 'overview', icon: <AppstoreOutlined /> },
+              { label: 'Studio', value: 'studio', icon: <DeploymentUnitOutlined /> },
+              {
+                label: file
+                  ? (() => {
+                      const name = file.split('/').pop();
+                      return name.length > 12 ? `${name.slice(0, 11)}…` : name;
+                    })()
+                  : '文件',
+                value: 'file',
+                icon: <FileTextOutlined />,
+              },
+              { label: '知识', value: 'knowledge', icon: <BookOutlined /> },
+              ...(hasSolver || solverVisited || focus === 'solver'
+                ? [{ label: '求解', value: 'solver', icon: <NodeIndexOutlined /> }]
+                : []),
+            ]}
           />
-        )}
-        <CenterTabs
-          value={focus}
-          // 页签是平级切换（重置返回栈）；只有下钻动作（打开文件/对比/评审）才入栈
-          // 对比/报告/反查暂不露出（保留内部路由，入口后续再开）
-          onChange={(next) => (onFocusPlain || onFocus)(next)}
-          items={[
-            { label: '概览', value: 'overview', icon: <AppstoreOutlined /> },
-            { label: 'Studio', value: 'studio', icon: <DeploymentUnitOutlined /> },
-            {
-              label: file
-                ? (() => {
-                    const name = file.split('/').pop();
-                    return name.length > 12 ? `${name.slice(0, 11)}…` : name;
-                  })()
-                : '文件',
-              value: 'file',
-              icon: <FileTextOutlined />,
-            },
-            { label: '知识', value: 'knowledge', icon: <BookOutlined /> },
-          ]}
-        />
-      </Space>
+        </Space>
+      </div>
 
       {studioVisited && (
         // 保持挂载：从条目跳文件再返回时不丢 Studio 的视图/选中状态
@@ -938,6 +966,24 @@ export default function CenterPane({
               project={project}
               onOpenFile={onOpenFile}
               onCommand={onCommand}
+              onWorkspaceChanged={onWorkspaceChanged}
+            />
+          </Suspense>
+        </div>
+      )}
+
+      {solverVisited && (
+        <div
+          className="center-anim"
+          key="solver"
+          style={{ display: focus === 'solver' ? undefined : 'none' }}
+        >
+          <Suspense fallback={<Spin style={{ marginTop: 48 }} />}>
+            <SolverModelPanel
+              key={project.id}
+              project={project}
+              versions={versions}
+              onOpenFile={onOpenFile}
               onWorkspaceChanged={onWorkspaceChanged}
             />
           </Suspense>
@@ -1098,7 +1144,12 @@ export default function CenterPane({
                 </span>
                 {content.truncated && <Tag color="warning">仅显示前 512KB</Tag>}
                 {dirty && <Tag color="warning">未保存</Tag>}
-                {!editing ? (
+                {isManagedSolverPath(file) ? (
+                  // 求解契约整目录受管（文件写接口拒绝），只能在面板里整体编辑与校验
+                  <Button size="small" onClick={() => onFocus('solver')}>
+                    在求解模型中编辑
+                  </Button>
+                ) : !editing ? (
                   <Button size="small" onClick={() => setEditing(true)}>
                     编辑
                   </Button>
@@ -1185,7 +1236,7 @@ export default function CenterPane({
                 label: `版本 ${v.version} · ${v.message.slice(0, 24)}`,
               }))}
             />
-            {diffState && (
+            {diffState && !isManagedSolverPath(file) && (
               <Button
                 size="small"
                 type="primary"

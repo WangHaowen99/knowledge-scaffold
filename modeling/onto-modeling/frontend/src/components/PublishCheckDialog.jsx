@@ -15,6 +15,15 @@ import {
 } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import {
+  FINDING_TITLES,
+  VALIDATION_STATES,
+  VALIDATIONS_FILE,
+  findingSource,
+  isManagedSolverPath,
+  shortRevision,
+  validationState,
+} from '../lib/solver-contract-model.js';
 
 // 发布 / 评测前的数据绑定检查（ADR-0007）：阻断项给修复入口，也允许降级继续
 const KIND_TEXT = {
@@ -39,6 +48,7 @@ const MODE_TEXT = {
 };
 
 const formatTime = (seconds) => new Date(seconds * 1000).toLocaleString();
+const SOLVER_POLL_MS = 3000;
 
 // 不以空格结尾：ChatPane 收到后直接发送，而不是只填进输入框
 function assistantPrompt(issues) {
@@ -168,6 +178,62 @@ function CheckSummary({ check, mode }) {
   );
 }
 
+// 求解知识包的发布门禁（静态检查 + 当前修订的端到端验证）：降级发布不能绕过，只能去面板修正；
+// 验证用例与数据源在求解模型面板里选，这里只看结论并在运行中跟随刷新
+function SolverSection({ solver, onOpenSolver, onOpenFile, onRefresh }) {
+  const state = validationState(solver);
+  const items = [...(solver.findings || []), ...(solver.gate || [])];
+  const record = solver.validation;
+  return (
+    <div className="pcd-section">
+      <div className="pcd-section-title">
+        <Space size={6}>
+          <span>求解契约</span>
+          <Tag color={VALIDATION_STATES[state].color}>{VALIDATION_STATES[state].label}</Tag>
+          {onOpenSolver && (
+            <Button size="small" type="link" onClick={onOpenSolver}>
+              {['required', 'stale', 'failed'].includes(state) ? '去求解模型发起验证' : '打开求解模型'}
+            </Button>
+          )}
+          <Button size="small" type="link" onClick={onRefresh}>
+            刷新
+          </Button>
+        </Space>
+      </div>
+      <div className="pcd-issue-msg">
+        当前修订 {shortRevision(solver.revision)}
+        {record
+          ? ` · 最近一次验证 ${formatTime(record.completed_at || record.created_at)}${
+            record.message ? `：${record.message}` : ''}`
+          : ' · 尚未验证'}
+      </div>
+      {state === 'running' && <div className="pcd-issue-msg">验证进行中，完成后自动刷新。</div>}
+      {items.length === 0 ? (
+        <div className="pcd-issue-msg">求解契约检查通过，当前修订已完成端到端验证。</div>
+      ) : (
+        items.map((item, index) => (
+          // eslint-disable-next-line react/no-array-index-key
+          <div key={index} className="pcd-issue">
+            <div className="pcd-issue-head">
+              {item.solver_key && <Typography.Text strong>{item.solver_key}</Typography.Text>}
+              <Tag color="error">{FINDING_TITLES[item.code] || item.code}</Tag>
+            </div>
+            <div className="pcd-issue-msg">{item.message}</div>
+            {item.hint && <div className="pcd-issue-msg">{item.hint}</div>}
+            <div className="pcd-last">{findingSource(item)}</div>
+            {onOpenFile && item.path && item.path !== VALIDATIONS_FILE && !isManagedSolverPath(item.path) && (
+              <Button size="small" type="link" onClick={() => onOpenFile(item.path)}>
+                打开文件
+              </Button>
+            )}
+          </div>
+        ))
+      )}
+      {solver.truncated && <div className="pcd-issue-msg">问题较多，只列出前一部分。</div>}
+    </div>
+  );
+}
+
 function useBindingCheck(open, projectId) {
   const [check, setCheck] = useState(null);
   const load = useCallback(async () => {
@@ -193,6 +259,7 @@ export default function PublishCheckDialog({
   onCommand,
   onOpenFile,
   onChanged,
+  onOpenSolver,
 }) {
   const [check, reload] = useBindingCheck(open, projectId);
   const [busy, setBusy] = useState('');
@@ -245,6 +312,11 @@ export default function PublishCheckDialog({
     onClose();
   };
 
+  const openSolver = () => {
+    onOpenSolver();
+    onClose();
+  };
+
   const proceed = async (allowUnbound) => {
     setBusy('proceed');
     try {
@@ -257,6 +329,14 @@ export default function PublishCheckDialog({
     }
   };
 
+  const solver = mode === 'publish' && check?.solver?.enabled ? check.solver : null;
+  const solverBlocking = solver?.blocking || 0;
+  const solverRunning = solver ? validationState(solver) === 'running' : false;
+  useEffect(() => {
+    if (!open || !solverRunning) return undefined;
+    const timer = setInterval(reload, SOLVER_POLL_MS);
+    return () => clearInterval(timer);
+  }, [open, solverRunning, reload]);
   const blockingIssues = check ? check.issues.filter((issue) => issue.blocking) : [];
   const pendingIssues = check ? check.issues.filter((issue) => !issue.blocking) : [];
   const rowProps = {
@@ -296,25 +376,33 @@ export default function PublishCheckDialog({
         key="degrade"
         title={`${check.blocking} 个对象未通过检查`}
         description={text.degradeNote}
+        disabled={solverBlocking > 0}
         onConfirm={() => proceed(true)}
       >
-        <Button danger loading={busy === 'proceed'}>{text.degrade}</Button>
+        <Button
+          danger
+          disabled={solverBlocking > 0}
+          title={solverBlocking > 0 ? '降级只放宽数据绑定，求解契约问题须先修正' : undefined}
+          loading={busy === 'proceed'}
+        >
+          {text.degrade}
+        </Button>
       </Popconfirm>
     ),
     <Button
       key="proceed"
       type="primary"
-      disabled={!check || check.blocking > 0}
+      disabled={!check || check.blocking > 0 || solverBlocking > 0}
       loading={busy === 'proceed'}
       onClick={() => proceed(false)}
     >
-      {check?.blocking ? `${text.proceed}（需先修复）` : text.proceed}
+      {check?.blocking || solverBlocking ? `${text.proceed}（需先修复）` : text.proceed}
     </Button>,
   ].filter(Boolean);
 
   return (
     <Modal
-      title={text.title}
+      title={solver ? '发布知识包 · 发布检查' : text.title}
       open={open}
       onCancel={onClose}
       width={760}
@@ -329,6 +417,14 @@ export default function PublishCheckDialog({
           <CheckSummary check={check} mode={mode} />
           {check.truncated && (
             <Alert type="info" showIcon message="条目较多，只列出前一部分；修复后会重新检查。" />
+          )}
+          {solver && (
+            <SolverSection
+              solver={solver}
+              onOpenSolver={onOpenSolver && openSolver}
+              onOpenFile={onOpenFile && openFile}
+              onRefresh={reload}
+            />
           )}
           {blockingIssues.length > 0 && (
             <div className="pcd-section">
@@ -359,10 +455,11 @@ export function usePackagePublish(dialogExtras = {}) {
     setPublishing(true);
     try {
       const check = await api.packageCheck(pid);
-      if (check.issues.length) setProjectId(pid);
+      if (check.issues.length || check.solver?.blocking) setProjectId(pid);
       else await download(pid, false);
     } catch (error) {
-      if (error.code === 'binding_problems') setProjectId(pid);
+      // 检查后才出现的问题（并发修改）：回到弹窗看最新结论
+      if (error.code === 'binding_problems' || error.code?.startsWith('solver_')) setProjectId(pid);
       else message.error(error.message);
     } finally {
       setPublishing(false);

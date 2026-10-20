@@ -59,6 +59,14 @@ These rules apply to all work in this repository.
    写到工作区 `tmp/` 目录（已 gitignore），用完删除；正式的代码产物走 codegen 流程进
    `ontology/scripts/`。`.claude/` 是只读工具箱（资产源，受守卫保护），任何时候不要往里写文件。
 
+8.06 **`ontology/solver/` 是平台受管的求解契约目录** — 每个 `<solver_key>/` 子目录由
+   `binding.yaml` 与 `model.yaml`、`input.schema.json`、`result.schema.json`、
+   `fact-snapshot.schema.json`、`presentation.yaml` 成组组成，只能由用户在「求解模型」面板保存或经
+   知识包导入写入；守卫会拒绝模型对该目录的任何写入。模型只读取和解释其中内容，需要调整时提示用户
+   在求解模型面板中修改。`binding.yaml` 的 `operation` 指向已绑定的 Operation：不要删除或改名这些
+   Operation；修改其正文或 `model.yaml` 所用的 Evaluator 脚本（`ontology/scripts/`，须继续导出
+   `SOLVER_CONTEXT` 等契约符号）都会让已有的求解验证过期，发布前需用户重新发起验证。
+
 8.1 **资料用途标签（`resource/materials.json`）** — 用户可为每份资料指定用途与读取模式（对齐 modeling 的资料用途体系）。读取任何资料前先查该清单（不存在或无条目视为 `auto`）：
 
    | purpose | 语义 | 建模约束 |

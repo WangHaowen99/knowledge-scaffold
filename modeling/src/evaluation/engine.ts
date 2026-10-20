@@ -732,8 +732,8 @@ export async function runCase(
   }
 }
 
-async function authenticatedConsumerRequest(
-  auth: EvaluationAuthSession,
+export async function authenticatedConsumerRequest(
+  auth: Pick<EvaluationAuthSession, 'getAccessToken' | 'refreshAfterUnauthorized'>,
   path: string,
   options: RequestInit & { workspaceId?: string } = {},
 ): Promise<Response> {

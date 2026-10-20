@@ -192,6 +192,9 @@ RECOMMENDED_PACKAGED_SUBDIRS = ('object', 'operation', 'rule', 'metric')
 # 按设计就不该进知识包的过程产物目录——不提示。
 WORKING_ARTIFACT_SUBDIRS = ('data-mock', 'diagrams-summary', 'testcase')
 
+# 求解契约受管目录：只由后端接口写入（守卫拒绝直接写），检查器只读取、提示断链。
+SOLVER_SUBDIR = 'solver'
+
 
 def check_file_locations(ontology_dir: Path) -> list:
     """CLAUDE.md 规则 3：ontology/ 下的 .md 文件必须放在白名单子目录中。"""
@@ -212,6 +215,12 @@ def check_file_locations(ontology_dir: Path) -> list:
             issues.append(Issue(
                 file=str(rel), severity='错误', category='文件位置',
                 message=f'ontology/ 根目录不允许直接放 .md 文件；请移至白名单子目录之一：{allowed_str}',
+                source='规则检查',
+            ))
+        elif parts[0] == SOLVER_SUBDIR:
+            issues.append(Issue(
+                file=str(rel), severity='错误', category='文件位置',
+                message=f'ontology/solver/ 是平台受管的求解契约目录，不放知识文档；允许的子目录：{allowed_str}',
                 source='规则检查',
             ))
         elif parts[0] not in ALLOWED_MD_SUBDIRS:
@@ -250,6 +259,43 @@ def check_unpackaged_knowledge(ontology_dir: Path) -> list:
                 f'consumer 检索不到；若这些内容需要被问答使用，请建模为 {packaged_str} '
                 f'中的条目（案例/方案类知识 → ontology/rule/ 的场景规则）。'
             ),
+            source='规则检查',
+        ))
+    return issues
+
+
+def _solver_bound_operation(binding: Path) -> str:
+    """binding.yaml 顶层 `operation:` 标量；后端用 yaml.safe_dump 写出，逐行即可取到。"""
+    for line in binding.read_text(encoding='utf-8').splitlines():
+        m = re.match(r'^operation:\s*(.+?)\s*$', line)
+        if m:
+            return m.group(1).strip('\'"')
+    return ''
+
+
+def check_solver_bindings(ontology_dir: Path) -> list:
+    """求解契约绑定的 Operation 被删除或改名后，发布会被求解门禁阻断。
+
+    只提示断链（警告，不阻断提交）：契约由求解模型面板维护，模型不能改
+    ontology/solver/，修复方式是恢复 Operation 原名，或请用户在面板里改绑定。
+    """
+    solver_dir = ontology_dir / SOLVER_SUBDIR
+    if not solver_dir.is_dir():
+        return []
+    stems = {
+        f.stem
+        for subdir in ('operation', 'logic') if (ontology_dir / subdir).is_dir()
+        for f in (ontology_dir / subdir).glob('*.md')
+    }
+    issues = []
+    for binding in sorted(solver_dir.glob('*/binding.yaml')):
+        operation = _solver_bound_operation(binding)
+        if not operation or operation in stems:
+            continue
+        issues.append(Issue(
+            file=str(binding.relative_to(ontology_dir)), severity='警告', category='求解契约',
+            message=(f'求解契约「{binding.parent.name}」绑定的 Operation「{operation}」不存在，发布会被求解门禁阻断；'
+                     '已绑定求解契约的 Operation 不要删除或改名，确需调整请恢复原名，或提示用户在求解模型面板中修改绑定。'),
             source='规则检查',
         ))
     return issues
@@ -1455,6 +1501,7 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
     issues = list(check_duplicate_stems(ontology_dir))
     issues += check_file_locations(ontology_dir)
     issues += check_unpackaged_knowledge(ontology_dir)
+    issues += check_solver_bindings(ontology_dir)
     term_map = build_term_map(all_docs)
     tables = load_table_headers(ontology_dir)
 
