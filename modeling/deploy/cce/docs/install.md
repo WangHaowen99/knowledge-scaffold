@@ -2,7 +2,7 @@
 
 Modeling 软件包包含三个自有镜像以及用于 Core、Agent 和 Onto Modeling 的 Helm 发布。Core Pod 同时运行 JiuwenBox sidecar。JiuwenBox 镜像由 Consumer 软件包提供；共享的 auth-server 和 Consumer API 通过 Service 引用。本软件包不会安装第二个 auth-server。
 
-环境要求：Python 3.11 及以上（含 PyYAML 和 jsonschema）、Helm 3、kubectl、具有部署权限的 Kubernetes context、预先创建的命名空间、三个独立的 RWO Filesystem PVC、镜像拉取 Secret、服务令牌 Secret，以及 CCE 内置或客户启用的 ELB Ingress 能力。默认入口使用 HTTP；显式配置 HTTPS 时还需准备 TLS Secret。CCE Standard 的内置 ELB Ingress 可以不创建 IngressClass，此时将 `ingressClassName` 留空；只有客户明确使用某个 IngressClass 时才填写它。随附示例文件中的值均为合成值，必须在仓库外填写真实部署值。
+环境要求：Python 3.11 及以上（含 PyYAML 和 jsonschema）、Helm 3、kubectl、具有部署权限的 Kubernetes context、预先创建的命名空间、三个独立的 RWO Filesystem PVC、镜像拉取 Secret、服务令牌 Secret，以及 CCE 内置或客户启用的 ELB Ingress 能力。默认入口使用 HTTP；显式配置 HTTPS 时还需准备 TLS Secret。CCE Standard 的内置 ELB Ingress 可以不创建 IngressClass，此时将 `ingressClassName` 留空；只有客户明确使用某个 IngressClass 时才填写它。复用已有 ELB 时，在 `global.access.elb.class` 填入与该 ELB 类别一致的值；Chart 会为所有 Modeling Ingress 写入 `kubernetes.io/elb.class` 注解。此项与 `ingressClassName` 不同，不能仅凭后者代替。随附示例文件中的值均为合成值，必须在仓库外填写真实部署值。
 
 1. 使用 `import-images.md` 导入三个自有镜像，同时导入 Consumer 软件包中的 JiuwenBox 镜像。将客户镜像仓库中的 manifest digest 记录到 `resolved-images.yaml`。示例中的 JiuwenBox digest 只是不可用的占位值；联合操作时应删除该项或替换为精确的 Consumer digest，联合入口会创建临时的有效镜像映射。单独执行 Modeling 操作时，必须显式提供经过验证的 Consumer digest。
 2. 在 `values.customer.yaml` 中填写预创建 PVC 的名称、共享认证与 Consumer Service、issuer、audience 以及本次发布的 Ingress 入口。示例默认使用 HTTP 端口模式：Core 使用 8100、Onto Modeling 使用 5100、MCP 使用 5188，访问形式为 `http://<ELB_IP>:<端口>`；`modeling.config.mcpPublicBaseUrl` 对应填写 `http://<ELB_IP>:5188`。需要 HTTPS 时分别将 listener 的 `protocol` 和 `tlsSecretName` 配置为实际值。
@@ -13,7 +13,7 @@ Modeling 软件包包含三个自有镜像以及用于 Core、Agent 和 Onto Mod
 global:
   access:
     mode: port
-    elb: {id: <ELB_ID>}
+    elb: {id: <ELB_ID>, class: performance} # 示例值；按实际 ELB 类别填写
     ingressClassName: "" # CCE Standard 内置 ELB Ingress 未创建 IngressClass 时留空
     listeners:
       - {id: core, protocol: HTTP, listenerPort: 8100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-core}

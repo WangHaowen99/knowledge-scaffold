@@ -21,7 +21,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from common import ConfigError, checksum, safe_extract, validate_release, validate_compatibility_manifest  # noqa: E402
+from common import (ConfigError, checksum, safe_extract, validate_release,
+                    validate_compatibility_manifest, verify_checksums)  # noqa: E402
 
 
 def load_script(name):
@@ -304,6 +305,38 @@ class CceContractTests(unittest.TestCase):
         (root / "images/modeling.tar").write_bytes(b"changed")
         with self.assertRaises(ConfigError):
             validate_release(root, "modeling")
+
+    def test_installer_bytecode_does_not_invalidate_extracted_package(self):
+        root = self.package()
+        cache = root / "deploy/__pycache__"
+        cache.mkdir(parents=True)
+        (cache / "common.cpython-310.pyc").write_bytes(b"synthetic bytecode")
+        (cache / "upgrade.cpython-310.pyc").write_bytes(b"synthetic bytecode")
+        verify_checksums(root)
+        validate_release(root, "modeling")
+        with self.assertRaisesRegex(ConfigError, "package file list differs"):
+            verify_checksums(root, allow_runtime_bytecode=False)
+        (root / "deploy/extra.txt").write_text("unexpected file")
+        with self.assertRaisesRegex(ConfigError, "package file list differs"):
+            verify_checksums(root)
+
+    def test_archive_with_unlisted_bytecode_is_rejected(self):
+        root = self.package()
+        cache = root / "deploy/__pycache__"
+        cache.mkdir(parents=True)
+        (cache / "common.cpython-310.pyc").write_bytes(b"synthetic bytecode")
+        archive = self.base / "release.tar.gz"
+        with tarfile.open(archive, "w:gz") as output:
+            output.add(root, arcname=root.name)
+        with self.assertRaisesRegex(ConfigError, "package file list differs"):
+            safe_extract(archive, self.base / "extracted", "modeling")
+
+    def test_installer_entry_disables_bytecode_generation(self):
+        script = (ROOT / "install-cce.sh").read_text()
+        joint = (ROOT.parents[2] / "deploy/install-consumer-modeling.sh").read_text()
+        self.assertIn('exec python3 -B "$(dirname "$0")/install-cce.py"', script)
+        self.assertIn('exec python3 -B "${script_dir}/joint-cce.py"', joint)
+        self.assertIn('exec python3 -B "${script_dir}/../modeling/deploy/cce/joint-cce.py"', joint)
 
     def test_release_platform_and_image_platform_are_distinct(self):
         root = self.package()

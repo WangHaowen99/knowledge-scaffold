@@ -83,7 +83,16 @@ def package_file(root: Path, relative: str) -> Path:
     return path
 
 
-def verify_checksums(root: Path) -> None:
+def _runtime_bytecode(root: Path, path: Path) -> bool:
+    relative = path.relative_to(root)
+    return (
+        not path.is_symlink()
+        and relative.parent.name == "__pycache__"
+        and re.fullmatch(r"[^/]+\.cpython-\d+(?:\.opt-\d+)?\.pyc", relative.name) is not None
+    )
+
+
+def verify_checksums(root: Path, *, allow_runtime_bytecode: bool = True) -> None:
     checksums = root / "checksums.sha256"
     if not checksums.is_file():
         raise ConfigError("missing checksums.sha256")
@@ -99,7 +108,13 @@ def verify_checksums(root: Path) -> None:
         path = package_file(root, name)
         if not path.is_file() or checksum(path) != expected:
             raise ConfigError(f"checksum failed: {name}")
-    actual = {str(path.relative_to(root)) for path in root.rglob("*") if path.is_file() and path != checksums}
+    # Running the extracted installer can create bytecode beside its modules.
+    # A newly extracted archive is checked strictly by safe_extract below.
+    actual = {
+        str(path.relative_to(root)) for path in root.rglob("*")
+        if path.is_file() and path != checksums
+        and not (allow_runtime_bytecode and _runtime_bytecode(root, path))
+    }
     if actual != listed:
         raise ConfigError("package file list differs from checksums")
 
@@ -119,7 +134,7 @@ def safe_extract(archive: Path, destination: Path, side: str) -> Path:
                 raise ConfigError("archive contains unsafe path or special file")
         source.extractall(destination)
     root = destination / next(iter(roots))
-    verify_checksums(root)
+    verify_checksums(root, allow_runtime_bytecode=False)
     return root
 
 

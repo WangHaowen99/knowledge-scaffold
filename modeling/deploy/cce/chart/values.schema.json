@@ -21,7 +21,7 @@
         "integration": {"type": "object", "additionalProperties": false, "required": ["serviceTokenSecret"], "properties": {"serviceTokenSecret": {"$ref": "#/definitions/secretRef"}}},
         "access": {"type": "object", "additionalProperties": false, "required": ["mode", "elb", "protocol", "listenerPort", "tlsSecretName", "ingressClassName", "routes", "listeners"], "properties": {
           "mode": {"enum": ["host", "port"]},
-          "elb": {"type": "object", "additionalProperties": false, "required": ["id"], "properties": {"id": {"type": "string", "minLength": 1}}},
+          "elb": {"type": "object", "additionalProperties": false, "required": ["id"], "properties": {"id": {"type": "string", "minLength": 1}, "class": {"type": "string"}}},
           "protocol": {"enum": ["HTTP", "HTTPS"]}, "listenerPort": {"type": "integer", "minimum": 1, "maximum": 65535},
           "tlsSecretName": {"type": "string"}, "ingressClassName": {"type": "string"},
           "routes": {"type": "array", "minItems": 0, "items": {"type": "object", "additionalProperties": false,

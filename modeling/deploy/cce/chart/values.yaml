@@ -21,6 +21,7 @@ global:
     mode: port
     elb:
       id: ""
+      class: ""
     protocol: HTTP
     listenerPort: 80
     tlsSecretName: ""

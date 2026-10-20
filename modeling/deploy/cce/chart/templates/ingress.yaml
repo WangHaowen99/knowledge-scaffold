@@ -8,6 +8,9 @@ metadata:
   annotations:
     kubernetes.io/elb.id: {{ $.Values.global.access.elb.id | quote }}
     kubernetes.io/elb.port: {{ .listenerPort | quote }}
+    {{- if $.Values.global.access.elb.class }}
+    kubernetes.io/elb.class: {{ $.Values.global.access.elb.class | quote }}
+    {{- end }}
 spec:
   {{- if $.Values.global.access.ingressClassName }}
   ingressClassName: {{ $.Values.global.access.ingressClassName | quote }}
@@ -51,6 +54,9 @@ metadata:
   annotations:
     kubernetes.io/elb.id: {{ .Values.global.access.elb.id | quote }}
     kubernetes.io/elb.port: {{ .Values.global.access.listenerPort | quote }}
+    {{- if .Values.global.access.elb.class }}
+    kubernetes.io/elb.class: {{ .Values.global.access.elb.class | quote }}
+    {{- end }}
 spec:
   {{- if .Values.global.access.ingressClassName }}
   ingressClassName: {{ .Values.global.access.ingressClassName | quote }}
