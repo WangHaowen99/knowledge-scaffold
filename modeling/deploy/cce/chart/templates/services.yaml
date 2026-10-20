@@ -4,7 +4,12 @@ kind: Service
 metadata:
   name: {{ $.Release.Name }}-{{ $component }}
 spec:
+  {{- if or (eq $component "core") (eq $component "onto") }}
+  # CCE ELB Ingress 通过节点端口接入对外 Modeling 服务。
+  type: NodePort
+  {{- else }}
   type: ClusterIP
+  {{- end }}
   selector: {app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/component: {{ $component }}}
   ports:
     {{- range $ports }}
