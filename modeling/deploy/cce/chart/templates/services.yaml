@@ -8,7 +8,7 @@ spec:
   selector: {app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/component: {{ $component }}}
   ports:
     {{- range $ports }}
-    - {name: {{ .name }}, port: {{ .port }}, targetPort: {{ .name }}}
+    - {name: {{ .name }}, port: {{ .port }}, targetPort: {{ .port }}}
     {{- end }}
 ---
 {{- end }}
@@ -20,5 +20,5 @@ metadata:
 spec:
   type: ClusterIP
   selector: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: nl2sql}
-  ports: [{name: http, port: 5600, targetPort: http}]
+  ports: [{name: http, port: 5600, targetPort: 5600}]
 {{- end }}

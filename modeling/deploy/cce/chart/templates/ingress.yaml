@@ -34,13 +34,13 @@ spec:
               service:
                 {{- if eq .endpointId "modeling-core" }}
                 name: {{ $.Release.Name }}-core
-                port: {name: http}
+                port: {number: 5100}
                 {{- else if eq .endpointId "modeling-mcp" }}
                 name: {{ $.Release.Name }}-core
-                port: {name: mcp}
+                port: {number: 5188}
                 {{- else if eq .endpointId "onto-modeling" }}
                 name: {{ $.Release.Name }}-onto
-                port: {name: http}
+                port: {number: 8100}
                 {{- else }}
                 {{- fail (printf "unknown external endpointId %s" .endpointId) }}
                 {{- end }}
@@ -84,13 +84,13 @@ spec:
               service:
                 {{- if eq .endpointId "modeling-core" }}
                 name: {{ $.Release.Name }}-core
-                port: {name: http}
+                port: {number: 5100}
                 {{- else if eq .endpointId "modeling-mcp" }}
                 name: {{ $.Release.Name }}-core
-                port: {name: mcp}
+                port: {number: 5188}
                 {{- else if eq .endpointId "onto-modeling" }}
                 name: {{ $.Release.Name }}-onto
-                port: {name: http}
+                port: {number: 8100}
                 {{- else }}
                 {{- fail (printf "unknown external endpointId %s" .endpointId) }}
                 {{- end }}
