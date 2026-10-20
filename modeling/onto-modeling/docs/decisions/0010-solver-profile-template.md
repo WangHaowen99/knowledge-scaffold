@@ -14,17 +14,24 @@
 
 ## Decision
 
-- **模板参数**：`{display_mapping: {OPTION_0, OPTION_1}, title, evaluator_path}`，后端
+- **模板参数**：`{display_mapping: {OPTION_0, OPTION_1}, title, evaluator_path, process_name, stream_name}`，后端
   `normalize_template_params` 去空白后由 `render_template` 确定性生成五份附属文件。
   - 保存与即时检查的条目可提交 `{binding, template}`（忽略 sidecars，按模板生成）或
     `{binding, sidecars}`（按原文写入）；未知参数、非文本值、超长或含控制字符的标题、
     越出包目录的评估器路径直接拒收。
   - 显示名称为空、重名、超长只作为语义问题给出（field `display_mapping`），与手动编辑同口径。
+  - 可选的 `process_name`、`stream_name` 是结果文字的工艺名称与物流名称，任一项非空时 model.yaml
+    写入 `text_presentation: {kind: ordered_route_plan_zh.v1, process_name, stream_name}`。Consumer 据此把
+    最终回答写成「<装置编号><工艺名称>的 N 月度生产规划」，逐批列出品种、批次量、天数与
+    「<物流名称>→<选项显示名称>」。两项都留空时不写这一段，产物与加入这两个参数之前逐字节一致，
+    已保存的契约仍受管。
+  - 只填一项、首尾空白、超长或含控制字符作为语义问题给出（field `text_presentation`）：配置不合法时
+    Consumer 拒收整个求解结果，而不只是少一段文字，所以须在发布前拦下。
 - **managed 判定不落标记**：读取时从已保存文件还原参数（`extract_template_params`），重新生成后
   与磁盘五份文件逐字节一致即 `managed: true`。视图用 `template_params` 回传参数，与提交用的
   `template` 键区分，原样回传视图不会触发重新生成。磁盘上不新增任何元数据文件，导出包不变。
 - **面板**：
-  - 模板契约只显示「选项显示名称 / 结果标题 / 评估器」表单，solver_key（中文 Operation 自动取
+  - 模板契约只显示「选项显示名称 / 结果标题 / 结果文字（可选）/ 评估器」表单，solver_key（中文 Operation 自动取
     `route_choice_N`）、Decision Model、问题族等收进默认折叠的「高级设置」，有问题时自动展开；
   - 附属文件页签只读预览即时检查返回的 `rendered`，参数未改动时直接用已保存的文件；
   - 「转为手动编辑」以当前生成结果为起点按原文编辑，「按模板重新生成」回到表单（覆盖手动修改）。

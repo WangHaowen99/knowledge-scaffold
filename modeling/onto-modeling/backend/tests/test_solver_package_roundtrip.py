@@ -441,6 +441,71 @@ def test_chinese_operation_is_renamed_to_solver_key_on_export(
     assert "units" not in files[f"{pid}/manifest.yaml"].decode()
 
 
+DECLARATIVE_EVALUATOR = '"""声明式评估器（合成示例）\n\n关联operation：无\n"""\n\nTABLE_SOURCES = {}\n'
+LEGACY_EVALUATOR = (
+    '"""旧式评估器（合成示例）\n\n关联operation：无\n"""\n\n'
+    "class BatchPlan:\n    pass\n\n\n"
+    "def build_report(plan):\n    return {}\n\n\n"
+    "def load_tables(source):\n    return {}\n\n\n"
+    "def normalize_crude_name(name):\n    return name\n"
+)
+
+
+@pytest.mark.parametrize("evaluator", [DECLARATIVE_EVALUATOR, LEGACY_EVALUATOR])
+def test_solver_evaluator_ships_source_without_script_descriptor(
+    manager: WorkspaceManager, tmp_path: Path, evaluator: str
+):
+    # modeling 把每个脚本描述符都当 operation 实现校验，评估器带描述符会让整包被拒
+    meta = manager.create_project("评估器任务")
+    root = manager.project_root(meta["id"])
+    scripts = root / "ontology" / "scripts"
+    (root / "ontology" / "object" / "站点.md").write_text("# 站点\n", encoding="utf-8")
+    (root / "ontology" / "operation" / "规划路线.md").write_text(
+        "# 规划路线\n\n排序[[站点]]\n", encoding="utf-8"
+    )
+    (scripts / "route_eval.py").write_text(
+        '"""路线评估\n\n关联operation：规划路线\n"""\n\ndef run():\n    return {}\n',
+        encoding="utf-8",
+    )
+    (scripts / "site_evaluator.py").write_text(evaluator, encoding="utf-8")
+    _workspace_solver(root, solver_key="plan_route", operation="规划路线")
+    pid = meta["id"]
+    files = _read_zip(manager.export_package_zip(pid, tmp_path / "out.zip"))
+
+    assert files[f"{pid}/scripts/site_evaluator.py"] == evaluator.encode("utf-8")
+    assert f"{pid}/scripts/site_evaluator.md" not in files
+    index = files[f"{pid}/scripts/index.md"].decode()
+    assert "| route_eval | route_eval |" in index and "site_evaluator" not in index
+    assert 'bound_operation: "plan_route"' in files[f"{pid}/scripts/route_eval.md"].decode()
+
+    # 没有描述符也按包内文件名落回工作区
+    again = manager.import_package_zip("回导任务", tmp_path / "out.zip")
+    restored = manager.project_root(again["id"]) / "ontology" / "scripts" / "site_evaluator.py"
+    assert restored.read_text(encoding="utf-8") == evaluator
+
+
+def test_package_with_only_evaluator_script_has_no_script_index(
+    manager: WorkspaceManager, tmp_path: Path
+):
+    meta = manager.create_project("仅评估器任务")
+    root = manager.project_root(meta["id"])
+    (root / "ontology" / "object" / "站点.md").write_text("# 站点\n", encoding="utf-8")
+    (root / "ontology" / "operation" / "规划路线.md").write_text(
+        "# 规划路线\n\n排序[[站点]]\n", encoding="utf-8"
+    )
+    (root / "ontology" / "scripts" / "site_evaluator.py").write_text(
+        DECLARATIVE_EVALUATOR, encoding="utf-8"
+    )
+    _workspace_solver(root, solver_key="plan_route", operation="规划路线")
+    pid = meta["id"]
+    files = _read_zip(manager.export_package_zip(pid, tmp_path / "out.zip"))
+
+    assert f"{pid}/scripts/site_evaluator.py" in files
+    assert not any(
+        name.startswith(f"{pid}/scripts/") and name.endswith(".md") for name in files
+    )
+
+
 def test_disabled_solver_operation_is_left_out_of_solver_indexes(
     manager: WorkspaceManager, tmp_path: Path
 ):

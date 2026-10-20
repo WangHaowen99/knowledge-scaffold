@@ -1,14 +1,16 @@
 """求解契约静态检查、结构化读写与发布门禁（需求 PR2）。
 
 覆盖：五个稳定错误码、评估器的 Consumer 兼容层接口（符号、模块常量、SOLVER_CONTEXT 键与提示）、
+声明式评估器（与旧式并列发现、错误码映射、引用对象文档计入修订）、
 普通包无额外门禁、未验证/非权威/过期验证阻止发布、
 面板保存的修订冲突与结构拒绝、受管目录整体替换、输入 Schema 的消费平台口径、
-模板化契约的生成与受管判定。fixture 全部为合成数据。
+模板化契约的生成与受管判定、导出时受管输入 Schema 的可选值投影。fixture 全部为合成数据。
 """
 
 import asyncio
 import json
 import subprocess
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +19,17 @@ import yaml
 
 from app.services import solver_contract, solver_validation
 from app.services.workspace import WorkspaceError, WorkspaceManager
+from tests.test_solver_evaluator_contract import (
+    FACTORS,
+    LOOKUP_OBJECT,
+    OBJECTS,
+    OMIT,
+    TABLE_SOURCES,
+    declarative_source,
+    lookup_source,
+    object_docs,
+    with_fields,
+)
 
 MODEL_YAML = """id: route_plan
 profile_id: ordered_binary_route.v1
@@ -520,6 +533,85 @@ def test_ambiguous_evaluator_requires_explicit_path(manager: WorkspaceManager):
     assert manager.solver_release_status(pid)["operations"][0]["evaluator"] == "ontology/scripts/route_eval.py"
 
 
+# ---- 声明式评估器（/ontology-solver-evaluator 生成）----
+
+
+def _declarative_contract(
+    manager: WorkspaceManager, source: str | None = None, **objects: dict[str, str]
+) -> tuple[str, Path]:
+    """声明式评估器及其引用的对象文档；objects 按对象覆盖 {属性: 类型}。"""
+    pid, root = _project(manager, evaluator=declarative_source() if source is None else source)
+    for name, text in object_docs(**objects).items():
+        (root / "ontology" / "object" / f"{name}.md").write_text(text, encoding="utf-8")
+    manager.save_solver_contract(pid, [_item()], "")
+    return pid, root
+
+
+def test_declarative_evaluator_only_waits_for_validation(manager: WorkspaceManager):
+    pid, root = _declarative_contract(manager)
+    scripts = root / "ontology" / "scripts"
+    (scripts / "helper.py").write_text('"""辅助脚本（合成示例）"""\nVALUE = 1\n', encoding="utf-8")
+    status = manager.solver_release_status(pid)
+    assert status["findings"] == []  # 非评估器脚本不参与发现
+    assert status["operations"][0]["evaluator"] == "ontology/scripts/route_eval.py"
+    assert _codes(status) == {solver_contract.CODE_VALIDATION_REQUIRED}
+    assert solver_contract.evaluator_unit_options(scripts / "route_eval.py") == ["UNIT_1", "UNIT_2"]
+
+
+def test_declarative_placeholder_blocks_release(manager: WorkspaceManager):
+    pid, _root = _declarative_contract(manager, declarative_source(VGO_UNIT_ID="<待填写：二次加工单元 ID>"))
+    [finding] = manager.solver_release_status(pid)["findings"]
+    assert finding["code"] == solver_contract.CODE_INVALID
+    assert finding["path"] == "ontology/scripts/route_eval.py" and finding["field"] == "VGO_UNIT_ID"
+    assert "未填写的模板占位符" in finding["message"]
+    assert finding["hint"] == solver_contract.EVALUATOR_DECLARATIVE_HINT
+
+
+def test_declarative_problem_kinds_map_to_stable_codes(manager: WorkspaceManager):
+    source = declarative_source(TABLE_SOURCES={
+        **with_fields("logic_tank", {"LowSafetyThrd_Tons": "missing_attr"}),
+        "energy_consume": {**TABLE_SOURCES["energy_consume"], "object": "MissingObject"},
+    })
+    pid, _root = _declarative_contract(manager, source)
+    findings = manager.solver_release_status(pid)["findings"]
+    assert [f["code"] for f in findings] == [solver_contract.CODE_REFERENCE_MISSING] * 2
+
+    pid, _root = _declarative_contract(manager, declarative_source(SOLVER_CONTEXT=OMIT))
+    [finding] = manager.solver_release_status(pid)["findings"]
+    assert finding["code"] == solver_contract.CODE_CONTEXT_MISSING and finding["field"] == "SOLVER_CONTEXT"
+
+
+def test_declarative_numeric_id_attribute_blocks_release(manager: WorkspaceManager):
+    pid, _root = _declarative_contract(manager, StorageTank={**OBJECTS["StorageTank"], "tank_id": "整数"})
+    [finding] = manager.solver_release_status(pid)["findings"]
+    assert finding["code"] == solver_contract.CODE_INVALID
+    assert finding["field"] == "TABLE_SOURCES.logic_tank.fields['LogicTankID']" and "前导零" in finding["message"]
+
+
+def test_legacy_and_declarative_evaluators_are_ambiguous(manager: WorkspaceManager):
+    pid, root = _with_contract(manager)
+    (root / "ontology" / "scripts" / "plan_route_evaluator.py").write_text(declarative_source(), encoding="utf-8")
+    [finding] = manager.solver_release_status(pid)["findings"]
+    assert finding["code"] == solver_contract.CODE_INVALID and "不唯一" in finding["message"]
+
+
+@pytest.mark.parametrize(
+    "name, stale", [("StorageTank", True), ("StreamLink", True), ("OtherObject", False)]
+)
+def test_referenced_object_edit_makes_declarative_validation_stale(
+    manager: WorkspaceManager, name: str, stale: bool
+):
+    # StreamLink 只经 lookup 引用，同样计入修订
+    pid, root = _declarative_contract(manager, lookup_source(), StreamLink=LOOKUP_OBJECT)
+    _accept(root, manager.solver_release_status(pid)["revision"])
+    assert manager.solver_release_status(pid)["blocking"] == 0
+    doc = root / "ontology" / "object" / f"{name}.md"
+    text = doc.read_text(encoding="utf-8") if doc.exists() else f"# {name}\n"
+    doc.write_text(text + "\n", encoding="utf-8")
+    expected = {solver_contract.CODE_VALIDATION_STALE} if stale else set()
+    assert _codes(manager.solver_release_status(pid)) == expected
+
+
 # ---- 验证门禁与发布 ----
 
 
@@ -751,6 +843,50 @@ def test_template_render_is_deterministic_and_profile_complete():
         solver_contract.parse_sidecar(data, solver_contract.SIDECAR_BY_ROLE[role].filename, role)
 
 
+def test_text_presentation_is_rendered_only_when_named():
+    base = {"display_mapping": {"OPTION_0": "路线甲", "OPTION_1": "路线乙"}, "title": "", "evaluator_path": ""}
+    blank = solver_contract.render_template({**base, "process_name": "", "stream_name": ""})
+    # 都留空时与加入这两个参数之前逐字节一致，已保存的契约仍受管
+    assert blank == solver_contract.render_template(base)
+    assert "text_presentation" not in yaml.safe_load(blank["entry"])
+
+    params = {**base, "process_name": "工序甲", "stream_name": "物流甲"}
+    rendered = solver_contract.render_template(params)
+    model = yaml.safe_load(rendered["entry"])
+    assert model["text_presentation"] == {
+        "kind": "ordered_route_plan_zh.v1", "process_name": "工序甲", "stream_name": "物流甲",
+    }
+    assert solver_contract._check_ordered_route_model(model, "model.yaml") == []
+    assert solver_contract.extract_template_params(rendered) == params
+    assert solver_contract.render_template(solver_contract.extract_template_params(rendered)) == rendered
+
+
+_TEXT = {"kind": "ordered_route_plan_zh.v1", "process_name": "工序甲", "stream_name": "物流甲"}
+
+
+@pytest.mark.parametrize(
+    ("value", "text"),
+    [
+        ("工序甲", "不允许其他字段"),
+        ({"kind": _TEXT["kind"], "process_name": "工序甲"}, "不允许其他字段"),
+        ({**_TEXT, "unit": "工序乙"}, "不允许其他字段"),
+        ({**_TEXT, "kind": "plan_text.v2"}, "不允许其他字段"),
+        ({**_TEXT, "stream_name": ""}, "须同时填写"),
+        ({**_TEXT, "process_name": " 工序甲"}, "首尾不能有空白"),
+        ({**_TEXT, "process_name": 3}, "须同时填写"),
+        ({**_TEXT, "process_name": "工序\n甲"}, "控制字符"),
+        ({**_TEXT, "stream_name": "甲" * 129}, "128"),
+    ],
+)
+def test_text_presentation_follows_consumer_rules(value, text: str):
+    # 不合法时 consumer 拒收整个求解结果，须在发布前拦下
+    rendered = solver_contract.render_template({"display_mapping": {"OPTION_0": "路线甲", "OPTION_1": "路线乙"}})
+    model = {**yaml.safe_load(rendered["entry"]), "text_presentation": value}
+    [problem] = solver_contract._check_ordered_route_model(model, "model.yaml")
+    assert problem.code == solver_contract.CODE_INVALID and problem.field == "text_presentation"
+    assert text in str(problem)
+
+
 def test_saved_template_contract_is_managed(manager: WorkspaceManager):
     pid, root = _project(manager)
     item = _template_item(title="  路线方案 ")
@@ -759,7 +895,7 @@ def test_saved_template_contract_is_managed(manager: WorkspaceManager):
     assert saved["findings"] == []
     directory = root / solver_contract.SOLVER_DIR / "plan_route"
     params = {"display_mapping": {"OPTION_0": "路线甲", "OPTION_1": "路线乙"}, "title": "路线方案",
-              "evaluator_path": ""}
+              "evaluator_path": "", "process_name": "", "stream_name": ""}
     for role, data in solver_contract.render_template(params).items():
         assert (directory / solver_contract.SIDECAR_BY_ROLE[role].filename).read_bytes() == data
     [operation] = saved["contract"]["operations"]
@@ -792,6 +928,7 @@ def test_hand_written_contract_is_not_managed(manager: WorkspaceManager):
     assert operation["managed"] is False
     assert operation["template_params"] == {
         "display_mapping": {"OPTION_0": "路线甲", "OPTION_1": "路线乙"}, "title": "", "evaluator_path": "",
+        "process_name": "", "stream_name": "",
     }
 
 
@@ -806,6 +943,7 @@ def test_hand_written_contract_is_not_managed(manager: WorkspaceManager):
         ({"title": "路线\n方案"}, "title"),
         ({"evaluator_path": "/srv/route_eval.py"}, "fact_source.evaluator_path"),
         ({"evaluator_path": "scripts/../route_eval.py"}, "fact_source.evaluator_path"),
+        ({"process_name": ["工序"]}, "process_name"),
     ],
 )
 def test_invalid_template_params_are_rejected(manager: WorkspaceManager, template, field: str):
@@ -842,6 +980,80 @@ def test_unit_options_need_a_literal_mapping(tmp_path: Path, source: str):
     path.write_text(source, encoding="utf-8")
     assert solver_contract.evaluator_unit_options(path) == []
     assert solver_contract.evaluator_unit_options(None) == []
+
+
+# ---- 导出时按评估器给受管输入 Schema 补可选值 ----
+
+
+def _crude_description(schema: dict) -> str:
+    return schema["properties"]["items"]["items"]["properties"]["crude_origin"]["description"]
+
+
+def test_export_projects_evaluator_options_into_managed_input_schema(
+    manager: WorkspaceManager, tmp_path: Path
+):
+    pid, root = _project(manager, evaluator=declarative_source())
+    for name, text in object_docs().items():
+        (root / "ontology" / "object" / f"{name}.md").write_text(text, encoding="utf-8")
+    manager.save_solver_contract(pid, [_template_item()], "")
+    workspace_schema = root / solver_contract.SOLVER_DIR / "plan_route" / "input.schema.json"
+    template = workspace_schema.read_bytes()
+    member = f"{pid}/operations/plan_route.input.schema.json"
+
+    package = manager.export_package_zip(pid, tmp_path / "out.zip")
+    with zipfile.ZipFile(package) as archive:
+        exported = archive.read(member)
+    schema = json.loads(exported)
+    assert schema["properties"]["diesel_unit_no"]["enum"] == ["UNIT_1", "UNIT_2"]
+    # enum 挡不住 Agent 把可选值之外的装置就近换成可选值，描述要求它先问用户
+    assert schema["properties"]["diesel_unit_no"]["description"].endswith("先向用户确认")
+    assert _crude_description(schema) == (
+        "原油品种，须是评估器有修正系数的品种之一：source-a、source-b"
+        "；用户给出的品种与这些品种对应不上时，不要改用其他品种，先向用户确认"
+    )
+    # 原油品种由 consumer 按规范化名称匹配，逐字比较的 enum 会拒掉等价写法
+    assert "enum" not in schema["properties"]["items"]["items"]["properties"]["crude_origin"]
+    assert solver_contract._check_ordered_route_input(schema, "input.schema.json") == []
+    assert workspace_schema.read_bytes() == template  # 受管判定与修订摘要都按工作区字节
+
+    # 回导还原成模板字节，契约仍受管；再导出得到同一份 Schema
+    again = manager.import_package_zip("回导任务", package)
+    restored = manager.project_root(again["id"]) / solver_contract.SOLVER_DIR / "plan_route"
+    assert (restored / "input.schema.json").read_bytes() == template
+    [operation] = manager.solver_contract_view(again["id"])["contract"]["operations"]
+    assert operation["managed"] is True
+    with zipfile.ZipFile(manager.export_package_zip(again["id"], tmp_path / "again.zip")) as archive:
+        assert archive.read(f"{again['id']}/operations/plan_route.input.schema.json") == exported
+
+
+def test_input_schema_projection_only_touches_the_template(tmp_path: Path):
+    template = solver_contract.render_template({})["input_schema"]
+    evaluator = tmp_path / "route_eval.py"
+    evaluator.write_text(declarative_source(), encoding="utf-8")
+    projected = solver_contract.project_input_schema(template, evaluator)
+    assert projected != template
+    assert solver_contract.restore_template_input_schema(projected) == template
+
+    # 手写 Schema、取不到评估器时原样保留
+    custom = INPUT_SCHEMA.encode("utf-8")
+    assert solver_contract.project_input_schema(custom, evaluator) == custom
+    assert solver_contract.restore_template_input_schema(custom) == custom
+    assert solver_contract.project_input_schema(template, None) == template
+
+    # 改过的投影不再是模板产物，回导时原样保留
+    edited = projected.replace(b"UNIT_2", b"UNIT_9")
+    assert solver_contract.restore_template_input_schema(edited) == edited
+    assert solver_contract.restore_template_input_schema(b"\xff") == b"\xff"
+
+
+def test_oversized_source_list_is_not_projected(tmp_path: Path):
+    factors = {f"source-{index}": FACTORS for index in range(solver_contract.MAX_PROJECTED_OPTIONS + 1)}
+    evaluator = tmp_path / "route_eval.py"
+    evaluator.write_text(declarative_source(CORRECTION_FACTORS=factors), encoding="utf-8")
+    template = solver_contract.render_template({})["input_schema"]
+    schema = json.loads(solver_contract.project_input_schema(template, evaluator))
+    assert schema["properties"]["diesel_unit_no"]["enum"] == ["UNIT_1", "UNIT_2"]
+    assert _crude_description(schema) == "原油品种"
 
 
 # ---- 面板即时检查（不落盘）----

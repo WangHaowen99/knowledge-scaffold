@@ -1421,6 +1421,9 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .solver-case-field > span:first-child { flex: none; font-size: 12px; color: var(--text-secondary); }
 .solver-case-field > .ant-input,
 .solver-case-field > .ant-select { width: 180px; }
+.solver-case-field.solver-case-question { align-items: flex-start; }
+.solver-case-field.solver-case-question > span:first-child { line-height: 24px; }
+.solver-case-field.solver-case-question > .ant-input { flex: 1; width: auto; min-width: 0; }
 .solver-route-case { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
 .solver-batch-scroll { align-self: stretch; overflow-x: auto; }
 .solver-batch-table { border-collapse: collapse; font-size: 12px; }

@@ -80,7 +80,9 @@ export const isManagedSolverPath = (path) =>
 // 参数口径同后端 normalize_template_params；生成结果由即时检查接口返回（rendered）
 
 export const ROUTE_OPTIONS = ['OPTION_0', 'OPTION_1'];
-export const MAX_TEMPLATE_TEXT = 128; // 标题与选项显示名称的长度上限
+export const MAX_TEMPLATE_TEXT = 128; // 标题、选项显示名称与结果文字名称的长度上限
+// 结果文字的两个名称（口径同后端 TEXT_PRESENTATION_FIELDS）：都留空时不生成结果文字
+export const TEXT_PRESENTATION_FIELDS = ['process_name', 'stream_name'];
 
 // 与 Python str.strip() 去掉的空白一致（比 String.prototype.trim 多 \x1c-\x1f、\x85，不含 \ufeff）
 const PY_EDGE_SPACE = /^[\t-\r\x1c-\x20\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\t-\r\x1c-\x20\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/g;
@@ -103,6 +105,7 @@ export function normalizeParams(params) {
     display_mapping: Object.fromEntries(ROUTE_OPTIONS.map((option) => [option, trimmed(mapping[option])])),
     title: trimmed(source.title),
     evaluator_path: trimmed(source.evaluator_path),
+    ...Object.fromEntries(TEXT_PRESENTATION_FIELDS.map((name) => [name, trimmed(source[name])])),
   };
 }
 
@@ -368,7 +371,8 @@ function familyProblems(binding, families) {
 
 // 模板参数：空名、重名与超长在保存前就拦下，免得生成一份发布时才被拦截的契约
 function templateProblems(params) {
-  const { display_mapping: mapping, title } = normalizeParams(params);
+  const normalized = normalizeParams(params);
+  const { display_mapping: mapping, title } = normalized;
   const labels = ROUTE_OPTIONS.map((option) => mapping[option]);
   const problems = [];
   if (labels.some((label) => !label)) problems.push(['display_mapping', '填写两个选项的显示名称']);
@@ -378,6 +382,13 @@ function templateProblems(params) {
   }
   if (charLength(title) > MAX_TEMPLATE_TEXT || hasControlChar(title)) {
     problems.push(['title', `标题不能超过 ${MAX_TEMPLATE_TEXT} 个字符，也不能含换行等控制字符`]);
+  }
+  // 口径同后端 _check_text_presentation：只填一项时 Consumer 会拒收整个求解结果
+  const names = TEXT_PRESENTATION_FIELDS.map((name) => normalized[name]);
+  if (names.some(Boolean) && !names.every(Boolean)) {
+    problems.push(['text_presentation', '结果文字的工艺名称与物流名称须同时填写，或都留空']);
+  } else if (names.some((name) => charLength(name) > MAX_TEMPLATE_TEXT || hasControlChar(name))) {
+    problems.push(['text_presentation', `结果文字的名称不能超过 ${MAX_TEMPLATE_TEXT} 个字符，也不能含换行等控制字符`]);
   }
   return problems;
 }
@@ -432,7 +443,12 @@ export function localProblems(items, availableOperations = [], problemFamilies =
 // ---- 差异：保存确认、停用预览与冲突摘要共用 ----
 
 // 模板参数各自落在哪份文件（口径同后端 render_template）
-const PARAM_FILES = { display_mapping: 'model.yaml', evaluator_path: 'model.yaml', title: 'presentation.yaml' };
+const PARAM_FILES = {
+  display_mapping: 'model.yaml',
+  evaluator_path: 'model.yaml',
+  title: 'presentation.yaml',
+  ...Object.fromEntries(TEXT_PRESENTATION_FIELDS.map((name) => [name, 'model.yaml'])),
+};
 
 function changedParts(base, item) {
   const parts = [];
@@ -526,6 +542,7 @@ function templateField(field) {
   if (name === 'template' || name === 'display_mapping' || name.startsWith('display_mapping.')) return 'display_mapping';
   if (name === 'title') return 'title';
   if (name === 'evaluator_path' || name.endsWith('.evaluator_path')) return 'evaluator_path';
+  if (name === 'text_presentation' || TEXT_PRESENTATION_FIELDS.includes(name)) return 'text_presentation';
   return '';
 }
 
@@ -629,6 +646,7 @@ export const casesText = (cases) => `${JSON.stringify(cases || [], null, 2)}\n`;
 // 上限与后端 solver_validation_run.normalize_cases 一致
 export const MAX_CASES = 20;
 export const MAX_CASE_NAME = 80;
+export const MAX_QUESTION = 4000;
 export const MAX_EXPECTED_CANDIDATES = 100000;
 const CASE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const MAX_ARGUMENTS_BYTES = 64 * 1024;
@@ -768,6 +786,8 @@ function caseError(cases) {
     if (ids.has(id)) return `用例 id 重复：${id}`;
     ids.add(id);
     if (charLength(String(item.name ?? '').trim()) > MAX_CASE_NAME) return `${label}的名称超过 ${MAX_CASE_NAME} 个字符`;
+    if (item.question != null && typeof item.question !== 'string') return `${label}的 question 须是文本`;
+    if (charLength(String(item.question ?? '').trim()) > MAX_QUESTION) return `${label}的提问超过 ${MAX_QUESTION} 个字符`;
     if (byteLength(JSON.stringify(item.arguments)) > MAX_ARGUMENTS_BYTES) return `${label}的 arguments 超过 64 KB`;
     const expected = item.expected_candidate_count;
     if (expected != null && !(Number.isInteger(expected) && expected >= 0 && expected <= MAX_EXPECTED_CANDIDATES)) {
@@ -810,6 +830,21 @@ export function startBlocker(view, { dirty = false, casesDirty = false, cases = 
   return '';
 }
 
+// ---- 评估器：助手按已保存的契约（ontology/solver/<solver_key>/）生成声明式评估器 ----
+
+export const EVALUATOR_COMMAND = '/ontology-solver-evaluator';
+
+export const evaluatorCommand = (item) => `${EVALUATOR_COMMAND} ${String(item?.origin ?? '').trim()}`;
+
+// 让助手生成评估器前的阻断原因；空串表示可以发起。dirty 为面板是否有未保存的修改：
+// 助手只读已保存的契约，且它的提交会改变修订，草稿再保存时会冲突
+export function evaluatorCommandBlocker(item, { dirty = false } = {}) {
+  if (item?.origin == null) return '先保存该求解契约，助手按已保存的契约生成评估器';
+  if (dirty) return '求解契约有未保存的修改，先保存再让助手生成评估器';
+  if (!SOLVER_KEY_PATTERN.test(String(item.origin))) return '求解标识不合法，先在高级设置中修正并保存';
+  return '';
+}
+
 // 验证可选的数据源：要先整理导入工作簿的（dataset、带导入的 Neo4j 连接，口径同后端
 // modeling_eval.needs_import）暂不支持，列出但置灰
 export function validationSourceOptions(sources = []) {
@@ -844,6 +879,12 @@ export function validationCaseRows(record) {
       expected: item.expected_candidate_count ?? null,
       code: item.code || item.candidate_results_error || '',
       failedAssertion: failed?.name || '',
+      // Agent 链路：null 表示没走到这一步（如 Agent 运行本身失败），不按未调用展示
+      toolCalled: typeof item.solver_tool_called === 'boolean' ? item.solver_tool_called : null,
+      argumentsMatch: typeof item.arguments_match === 'boolean' ? item.arguments_match : null,
+      argumentDiff: Array.isArray(item.argument_diff) ? item.argument_diff : [],
+      question: item.question || '',
+      detail: item.detail || '',
     };
   });
 }

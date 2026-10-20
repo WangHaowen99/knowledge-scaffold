@@ -3,8 +3,13 @@
 onto-modeling 不直连 Consumer、Connector 或 Solver，也不接收它们的地址与凭据：
   导出当前修订的知识包 → 导入 modeling 建评测项目并配置数据源 →
   POST /api/projects/:id/solver-contract-validations（modeling 把原始 ZIP 导入 Consumer
-  评测工作空间、激活精确版本，逐用例调用 Consumer 公开求解接口）→
-  按「权威结果 + 候选数量」判定，结论写进 solver_validation 记录供发布门禁使用。
+  评测工作空间、激活精确版本，逐用例向 Consumer 的 Agent 提问，与用户在 Consumer 对话求解
+  走同一条链路，并从运行事件取求解工具的调用入参与公开结果）→
+  按「调用了对应求解工具 + 入参与用例一致 + 权威结果 + 候选数量」判定，
+  结论写进 solver_validation 记录供发布门禁使用。
+
+用例的 question 可选：留空时按求解操作名与入参生成提问，要求 Agent 原样传入参；
+填写时原样提问，用来检验 Agent 能否从自然语言里取出与 arguments 一致的入参。
 
 验证用例放在 .ontology-state/（不进 git、不进导出包）：月份和批次属于每次请求的数据，
 换数据不需要复制知识包。记录与证据只存状态、摘要和诊断引用，不存令牌或连接信息。
@@ -37,6 +42,7 @@ logger = logging.getLogger(__name__)
 CASES_FILE = ".ontology-state/solver-validation-cases.json"
 MAX_CASES = 20
 MAX_CASE_NAME = 80
+MAX_QUESTION = 4000
 MAX_ARGUMENTS_BYTES = 64 * 1024
 # modeling 用 multipart 文本字段接收用例，单字段默认上限 1 MB，这里留足余量
 MAX_CASES_BYTES = 512 * 1024
@@ -59,6 +65,9 @@ CODE_REVISION_CHANGED = "solver_contract_revision_changed"
 CODE_NOT_AUTHORITATIVE = "solver_result_not_authoritative"
 CODE_EVIDENCE_INCOMPLETE = "solver_evidence_incomplete"
 CODE_CANDIDATE_MISMATCH = "solver_candidate_count_mismatch"
+# Agent 链路问题（提问或 Agent 行为），与知识包本身的求解失败分开
+CODE_TOOL_NOT_CALLED = "solver_tool_not_called"
+CODE_ARGUMENTS_MISMATCH = "solver_arguments_mismatch"
 CODE_MODELING_UNAVAILABLE = "modeling_unavailable"
 CODE_INTERRUPTED = "solver_validation_interrupted"
 CODE_FAILED = "solver_validation_failed"
@@ -66,7 +75,8 @@ CODE_FAILED = "solver_validation_failed"
 INTERRUPTED_MESSAGE = "上一次验证被服务重启中断，请对当前修订重新验证"
 # 只把 modeling/Consumer 公开摘要里的这些字段写进证据
 _CASE_EVIDENCE_FIELDS = (
-    "status", "authoritative", "code", "phase", "retryable", "missing",
+    "status", "authoritative", "code", "phase", "retryable", "detail", "missing",
+    "solver_tool_called", "solver_tool", "arguments_match", "argument_diff",
     "feasibility", "optimality", "proof_kind", "run_id", "job_id",
     "result_artifact_ref", "verification_evidence_ref", "knowledge_revision_id",
     "fact_snapshot_digest", "problem_digest",
@@ -135,6 +145,14 @@ def normalize_cases(raw: object) -> list[dict]:
         if len(json.dumps(arguments, ensure_ascii=False).encode()) > MAX_ARGUMENTS_BYTES:
             raise _invalid(f"验证用例 {case_id} 的 arguments 超过 64 KB")
         case = {"id": case_id, "name": name, "solver_key": solver_key, "arguments": arguments}
+        question = item.get("question")
+        if question is not None and not isinstance(question, str):
+            raise _invalid(f"验证用例 {case_id} 的 question 必须是文本")
+        question = (question or "").strip()
+        if len(question) > MAX_QUESTION:
+            raise _invalid(f"验证用例 {case_id} 的提问超过 {MAX_QUESTION} 个字符")
+        if question:
+            case["question"] = question
         expected = item.get("expected_candidate_count")
         if expected is not None:
             if isinstance(expected, bool) or not isinstance(expected, int) or not (
@@ -175,6 +193,17 @@ def expected_candidate_count(
     if isinstance(items, list) and 1 <= len(items) <= MAX_ROUTE_ITEMS:
         return 2 * len(items)
     return None
+
+
+def default_question(contract: solver_contract.WorkspaceSolverContract, case: dict) -> str:
+    """未填写提问时的默认提问：点名求解操作并给出完整入参，只检验契约链路，不考 Agent 的取数能力。"""
+    # 与入参大小上限同一口径序列化，不缩进，避免超出 modeling 的提问上限
+    arguments = json.dumps(case.get("arguments") or {}, ensure_ascii=False, sort_keys=True)
+    return (
+        f"请调用求解能力「{contract.operation}」（operation_key：{contract.solver_key}）求解。"
+        "入参如下，请原样使用，不要增删或改写字段，也不要再向我确认：\n"
+        f"```json\n{arguments}\n```"
+    )
 
 
 # ---- 启动 ----
@@ -236,9 +265,10 @@ def start(
             "以下求解操作还没有验证用例：" + "、".join(uncovered), 400, CODE_CASES_INCOMPLETE
         )
     for item in selected:
-        item["expected_candidate_count"] = expected_candidate_count(
-            contracts[item["solver_key"]], item
-        )
+        contract = contracts[item["solver_key"]]
+        item["expected_candidate_count"] = expected_candidate_count(contract, item)
+        item["question_generated"] = not item.get("question")
+        item["question"] = item.get("question") or default_question(contract, item)
 
     data_source: dict = {"mode": "none"}
     if data_source_id:
@@ -334,10 +364,7 @@ def execute(plan: ValidationPlan, manager: WorkspaceManager | None = None) -> di
     solver_validation.update(
         plan.root, plan.run_id, status=solver_validation.STATUS_RUNNING,
         message="导出知识包并导入 modeling 评测项目",
-        request_digest=_digest([
-            {"id": item["id"], "operation_key": item["solver_key"], "arguments": item["arguments"]}
-            for item in plan.cases
-        ]),
+        request_digest=_digest([_case_request(item) for item in plan.cases]),
     )
     evidence: dict = {
         "data_source": safe_message(
@@ -424,11 +451,15 @@ def _configure_data_source(plan: ValidationPlan, modeling_project: str) -> None:
     )
 
 
+def _case_request(item: dict) -> dict:
+    return {
+        "id": item["id"], "operation_key": item["solver_key"],
+        "question": item["question"], "arguments": item["arguments"],
+    }
+
+
 def _validate(plan: ValidationPlan, modeling_project: str, content: bytes) -> dict:
-    cases = [
-        {"id": item["id"], "operation_key": item["solver_key"], "arguments": item["arguments"]}
-        for item in plan.cases
-    ]
+    cases = [_case_request(item) for item in plan.cases]
     # 文本字段必须在文件之前：modeling 读到文件时只看得到已解析的字段
     body, ctype = modeling_eval._multipart_zip(
         "file", "package.zip", content,
@@ -445,14 +476,48 @@ def _validate(plan: ValidationPlan, modeling_project: str, content: bytes) -> di
 
 
 def _assess(result: dict, expected: int | None) -> tuple[list[dict], str, str]:
-    """单条用例的断言、首个失败码与说明；全部通过时失败码为空串。"""
+    """单条用例的断言、首个失败码与说明；全部通过时失败码为空串。
+
+    先判 Agent 链路（是否调用对应求解工具、入参是否与用例一致），再判求解结果：
+    前两类失败说明的是提问或 Agent 行为，不是知识包求解契约的问题。
+    """
+    detail = str(result.get("detail") or "").strip()
+    if result.get("solver_tool_called") is False:
+        return (
+            [{"name": "solver_tool_called", "passed": False}],
+            CODE_TOOL_NOT_CALLED,
+            "Agent 未调用该求解操作的求解工具（Agent 链路问题，非知识包求解失败）"
+            + (f"：{detail}" if detail else ""),
+        )
+    assertions: list[dict] = []
+    if result.get("solver_tool_called") is True:
+        assertions.append({"name": "solver_tool_called", "passed": True})
+    if result.get("arguments_match") is False:
+        diff = [str(path) for path in result.get("argument_diff") or []][:20]
+        assertions.append({"name": "arguments_match", "diff": diff, "passed": False})
+        return (
+            assertions,
+            CODE_ARGUMENTS_MISMATCH,
+            "Agent 传给求解工具的入参与用例不一致（Agent 链路问题，非知识包求解失败）"
+            + (f"：{'、'.join(diff[:5])}" if diff else ""),
+        )
+    if result.get("arguments_match") is True:
+        assertions.append({"name": "arguments_match", "passed": True})
+    assessed, code, reason = _assess_solver_result(result, expected, detail)
+    return assertions + assessed, code, reason
+
+
+def _assess_solver_result(
+    result: dict, expected: int | None, detail: str
+) -> tuple[list[dict], str, str]:
     if result.get("status") != "completed":
         code = str(result.get("code") or "solver_result_rejected")
         phase = str(result.get("phase") or "")
+        # Consumer 为调用方写的失败原因（如取不到哪张表），有就带上，免得只剩错误码
         return (
             [{"name": "completed", "passed": False}],
             code,
-            f"未得到求解结果（{code}{'，阶段 ' + phase if phase else ''}）",
+            f"未得到求解结果（{code}{'，阶段 ' + phase if phase else ''}）{'：' + detail if detail else ''}",
         )
     authoritative = result.get("authoritative") is True
     assertions = [{"name": "authoritative", "passed": authoritative}]
@@ -492,6 +557,8 @@ def _finish(plan: ValidationPlan, report: dict, evidence: dict) -> dict | None:
         result = results.get(item["id"]) or {
             "status": "error", "code": "solver_result_missing", "authoritative": False,
         }
+        if "detail" in result:
+            result = {**result, "detail": safe_message(result["detail"])}
         expected = item.get("expected_candidate_count")
         assertions, code, reason = _assess(result, expected)
         if code:
@@ -504,6 +571,9 @@ def _finish(plan: ValidationPlan, report: dict, evidence: dict) -> dict | None:
             "id": item["id"],
             "name": item["name"],
             "solver_key": item["solver_key"],
+            # 自动生成的提问内嵌整份入参，可由用例重新生成，不重复落证据
+            **({} if item.get("question_generated") else {"question": item["question"]}),
+            "question_generated": bool(item.get("question_generated")),
             **{key: result[key] for key in _CASE_EVIDENCE_FIELDS if key in result},
             "expected_candidate_count": expected,
             "assertions": assertions,

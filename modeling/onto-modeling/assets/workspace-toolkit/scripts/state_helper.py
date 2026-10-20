@@ -295,6 +295,7 @@ COMMAND_PREREQS = {
     'trace': ['逻辑已提取'],
     'codegen': ['逻辑已提取'],
     'codegen-scan': ['逻辑已提取'],
+    'solver-evaluator': ['对象已提取'],
     'overview': ['对象已提取'],
     'impact': ['对象已提取'],
     'query': ['对象已提取'],

@@ -28,9 +28,12 @@ binding.yaml 的 solver_key 改名。binding.yaml 本身不随包发布。
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
+import importlib.util
 import json
 import re
+import sys
 import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -39,6 +42,9 @@ from typing import Any
 
 import yaml
 from jsonschema import Draft202012Validator
+
+from .. import config
+from . import package_mapping
 
 SOLVER_DIR = "ontology/solver"
 BINDING_FILE = "binding.yaml"
@@ -97,6 +103,10 @@ ORDERED_ROUTE_OBJECTIVES = (
 ORDERED_ROUTE_OPTIONS = ("OPTION_0", "OPTION_1")
 MAX_OPTION_LABEL_LENGTH = 128
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# consumer 结果文字：声明后最终回答写成「<装置编号><process_name>的 N 月度生产规划」，并逐批列出
+# 品种、批次量、天数与「<stream_name>→<选项显示名称>」；配置不合法时 consumer 拒收整个求解结果
+TEXT_PRESENTATION_KIND = "ordered_route_plan_zh.v1"
+TEXT_PRESENTATION_FIELDS = ("process_name", "stream_name")
 # consumer 适配器与事实 worker 读取的输入字段；同组内任一别名即可（适配器归一到首个），
 # input_weight_tons 会被适配器丢弃，不算批次量
 ORDERED_ROUTE_INPUT_FIELDS = ("plan_month", "diesel_unit_no", "items")
@@ -112,34 +122,35 @@ _BINDER_SCHEMA_KEYWORDS = frozenset({
     "unit", "precision",
 })
 _BINDER_SCHEMA_TYPES = frozenset({"string", "integer", "number", "boolean", "object", "array", "null"})
-# consumer 按这组顶层定义自动发现评估器，加载后还要读模块级 SOLVER_CONTEXT
-EVALUATOR_DISCOVERY_SYMBOLS = frozenset(
-    {"BatchPlan", "build_report", "load_tables", "normalize_crude_name"}
-)
-EVALUATOR_CONTEXT_SYMBOL = "SOLVER_CONTEXT"
-# consumer 事实 worker 每次评估都会读取的评估器模块常量，缺任一项运行时即判契约不兼容
-EVALUATOR_MODULE_CONSTANTS = frozenset({
-    "ATMOS_DIESEL_FEED", "ATMOS_HC_FEED", "ATMOS_UNIT_ID", "CORRECTION_FACTORS",
-    "DEFAULT_DIESEL_UNIT_ID", "DIESEL_UNIT_IDS", "RULE_DAILY_CAPACITIES",
-    "VGO_INTERMEDIATE_NAMES", "VGO_UNIT_ID", "YIELD_ATMOS", "YIELD_DIESEL_WITHOUT_VGO",
-    "YIELD_DIESEL_WITH_VGO", "YIELD_VGO_WITHOUT_VGO", "YIELD_VGO_WITH_VGO",
-})
-# SOLVER_CONTEXT 必填键 → 值为字典字面量时须含的子键（consumer _solver_context_config）；
-# atmospheric_product_tanks 可省略
-EVALUATOR_CONTEXT_KEYS = {
-    "option_routes": ORDERED_ROUTE_OPTIONS,
-    "route_stream_products": (),
-    "special_tanks": ("diesel", "vgo"),
-    "unit_capacity_keys": ("atmospheric", "diesel_by_unit", "vgo"),
-    "correction_factor_prefix_by_unit": (),
-    "production_condition": (),
+
+
+def _load_evaluator_contract():
+    """评估器规则以 workspace-toolkit/scripts/solver_evaluator_contract.py 为单一事实源。
+
+    /ontology-solver-evaluator 的自检与这里的契约检查共用同一份实现，避免两处规则漂移。
+    """
+    path = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts" / "solver_evaluator_contract.py"
+    spec = importlib.util.spec_from_file_location("onto_workspace_solver_evaluator_contract", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_evaluator_contract = _load_evaluator_contract()
+EVALUATOR_DISCOVERY_SYMBOLS = _evaluator_contract.EVALUATOR_DISCOVERY_SYMBOLS
+EVALUATOR_CONTEXT_SYMBOL = _evaluator_contract.EVALUATOR_CONTEXT_SYMBOL
+EVALUATOR_MODULE_CONSTANTS = _evaluator_contract.EVALUATOR_MODULE_CONSTANTS
+EVALUATOR_CONTEXT_KEYS = _evaluator_contract.EVALUATOR_CONTEXT_KEYS
+EVALUATOR_INTERFACE_HINT = _evaluator_contract.EVALUATOR_INTERFACE_HINT
+EVALUATOR_DECLARATIVE_HINT = _evaluator_contract.DECLARATIVE_HINT
+MAX_EVALUATOR_BYTES = _evaluator_contract.MAX_EVALUATOR_BYTES
+# 声明式评估器的问题类别 → 稳定错误码；警告（如未找到对象目录）只在助手自检里提示
+_DECLARATIVE_KIND_CODES = {
+    _evaluator_contract.KIND_INVALID: CODE_INVALID,
+    _evaluator_contract.KIND_REFERENCE: CODE_REFERENCE_MISSING,
+    _evaluator_contract.KIND_CONTEXT: CODE_CONTEXT_MISSING,
 }
-# 评估器接口问题沿用稳定错误码，但通用提示（改用契约版本或 Profile）不适用，改给接口提示
-EVALUATOR_INTERFACE_HINT = (
-    "评估器须按 Consumer 兼容层接口实现：读取业务表、按批次方案给出评估报告，路线由求解器选择；"
-    "自行选路线的决策脚本不适用。请改选符合接口的评估器脚本，或按接口补全当前脚本。"
-)
-MAX_EVALUATOR_BYTES = 2 * 1024 * 1024
 
 # 与 consumer validate_solver_package_layout 的布局标记识别口径一致
 _MARKER_KEYS = ("solver_layout", "solver_layout_version", "layout_version", "layout")
@@ -574,6 +585,8 @@ def _extract_operation(
                     CODE_INVALID, f"Decision Model 文档 id {document_id} 与声明 {model_id} 不一致",
                     path=declared, field="id",
                 )
+        if sidecar.role == "input_schema":
+            data = restore_template_input_schema(data)
         out[f"{workspace_dir}/{sidecar.filename}"] = data
     binding = {
         "solver_key": key,
@@ -692,9 +705,15 @@ def _load_contract(directory: Path, stems: set[str]) -> WorkspaceSolverContract:
     return WorkspaceSolverContract(solver_key, operation, decision_model, binding, sidecars)
 
 
-def render_package_solver(contracts: Iterable[WorkspaceSolverContract]) -> PackageSolverRender:
-    """求解契约 → 包内 sidecar 与 manifest capabilities（确定性：按 solver_key 排序）。"""
+def render_package_solver(
+    contracts: Iterable[WorkspaceSolverContract], evaluators: Mapping[str, Path] | None = None
+) -> PackageSolverRender:
+    """求解契约 → 包内 sidecar 与 manifest capabilities（确定性：按 solver_key 排序）。
+
+    evaluators 是 solver_key → 工作区评估器文件，受管模板的输入 Schema 据此补可选值。
+    """
     ordered = tuple(sorted(contracts, key=lambda item: item.solver_key))
+    evaluators = evaluators or {}
     files: dict[str, bytes] = {}
     models = []
     for contract in ordered:
@@ -702,7 +721,10 @@ def render_package_solver(contracts: Iterable[WorkspaceSolverContract]) -> Packa
         for sidecar in SIDECARS:
             path = f"operations/{contract.solver_key}{sidecar.suffix}"
             entry[sidecar.role] = path
-            files[path] = contract.sidecars[sidecar.role]
+            data = contract.sidecars[sidecar.role]
+            if sidecar.role == "input_schema":
+                data = project_input_schema(data, evaluators.get(contract.solver_key))
+            files[path] = data
         entry.update(contract.binding.get("declaration") or {})
         models.append(entry)
     capabilities = {"decision_models": models} if models else {}
@@ -786,84 +808,36 @@ def finding(problem: SolverContractError, solver_key: str = "") -> dict:
     }
 
 
-@dataclass
-class _EvaluatorSymbols:
-    defined: set[str]  # 顶层类/函数定义
-    assigned: set[str]  # 顶层赋值与导入的名字
-    context: ast.expr | None  # SOLVER_CONTEXT 最终绑定的表达式；来自导入或顶层另有改写时为 None
+def is_evaluator(source: bytes | None) -> bool:
+    """按 consumer 的评估器发现规则判断脚本源码是否为求解评估器（旧式或声明式）。"""
+    return _evaluator_contract.evaluator_kind(source) is not None
 
 
-def _rebinds(statement: ast.stmt, name: str) -> bool:
-    """顶层语句是否可能改写 name：对它或它的下标、属性赋值/删除，或调用它的方法。"""
-    for node in ast.walk(statement):
-        if isinstance(node, ast.Call):
-            node = node.func
-        elif not isinstance(getattr(node, "ctx", None), (ast.Store, ast.Del)):
-            continue
-        while isinstance(node, (ast.Subscript, ast.Attribute)):
-            node = node.value
-        if isinstance(node, ast.Name) and node.id == name:
-            return True
-    return False
-
-
-def _module_symbols(path: Path) -> _EvaluatorSymbols | None:
-    """只解析不执行地读出评估器顶层符号；读不了或语法错误返回 None。"""
+def _read_evaluator(path: Path) -> bytes | None:
     try:
-        data = path.read_bytes()
-        if not data or len(data) > MAX_EVALUATOR_BYTES:
-            return None
-        module = ast.parse(data.decode("utf-8"), filename=path.name)
-    except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+        return path.read_bytes()
+    except OSError:
         return None
-    symbols = _EvaluatorSymbols(set(), set(), None)
-    for node in module.body:
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            symbols.defined.add(node.name)
-            continue
-        names: list[str] = []
-        value = None
-        if isinstance(node, ast.Assign):
-            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
-            value = node.value
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value:
-            names, value = [node.target.id], node.value
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            names = [(alias.asname or alias.name).split(".")[0] for alias in node.names]
-        symbols.assigned.update(names)
-        if EVALUATOR_CONTEXT_SYMBOL in names:
-            symbols.context = value
-        elif _rebinds(node, EVALUATOR_CONTEXT_SYMBOL):
-            symbols.context = None
-    return symbols
 
 
-def _literal_dict(node: ast.expr | None) -> dict[str, ast.expr] | None:
-    """字符串键的字典字面量；含展开或非字符串键时无法静态确定，返回 None。"""
-    if not isinstance(node, ast.Dict):
-        return None
-    entries = {}
-    for key, value in zip(node.keys, node.values):
-        if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
-            return None
-        entries[key.value] = value
-    return entries
+def _object_fields(root: Path) -> dict[str, list[dict]]:
+    """本体对象 → 字段（与发布包导出同一来源），供声明式评估器核对对象与属性引用。"""
+    return {
+        key: package_mapping.parse_object_doc(text)["fields"]
+        for key, text in package_mapping.read_object_texts(root).items()
+    }
 
 
-def _missing_context_keys(context: ast.expr | None) -> list[str]:
-    """SOLVER_CONTEXT 字面量缺少的必填键（子键记作 键.子键）；运行时拼装的留给端到端验证。"""
-    entries = _literal_dict(context)
-    if entries is None:
-        return []
-    missing = []
-    for key, sub_keys in EVALUATOR_CONTEXT_KEYS.items():
-        if key not in entries:
-            missing.append(key)
-            continue
-        nested = _literal_dict(entries[key])
-        if nested is not None:
-            missing += [f"{key}.{sub}" for sub in sub_keys if sub not in nested]
-    return missing
+def _check_declarative_evaluator(source: bytes | None, root: Path, rel: str) -> list[SolverContractError]:
+    """声明式评估器的全部错误；警告不阻断发布，留给助手自检。"""
+    return [
+        SolverContractError(
+            _DECLARATIVE_KIND_CODES[problem.kind], problem.message,
+            path=rel, field=problem.field, hint=EVALUATOR_DECLARATIVE_HINT,
+        )
+        for problem in _evaluator_contract.check_declarative(source, _object_fields(root))
+        if problem.severity == _evaluator_contract.SEVERITY_ERROR
+    ]
 
 
 def _check_evaluator(
@@ -872,7 +846,7 @@ def _check_evaluator(
     root: Path,
     model_rel: str,
 ) -> tuple[list[SolverContractError], str]:
-    """按 consumer 的评估器发现规则定位评估器，并检查兼容层要求的符号。"""
+    """按 consumer 的评估器发现规则定位评估器：旧式检查兼容层符号，声明式做完整校验。"""
     explicit = fact_source.get("evaluator_path")
     if explicit is not None:
         package_path = _safe_package_path(explicit)
@@ -883,35 +857,39 @@ def _check_evaluator(
                 f"fact_source.evaluator_path 指向的评估器不存在：{explicit}",
                 path=model_rel, field="fact_source.evaluator_path",
             )], ""
-        symbols = _module_symbols(path)
+        source = _read_evaluator(path)
         required = EVALUATOR_DISCOVERY_SYMBOLS
     else:
+        # 旧式与声明式评估器合计必须恰好一个，两份并存时不静默挑一份
         matches = []
-        for _package_path, path in sorted(scripts.items()):
-            symbols = _module_symbols(path)
-            if symbols and EVALUATOR_DISCOVERY_SYMBOLS <= symbols.defined:
-                matches.append(path)
+        for _package_path, candidate in sorted(scripts.items()):
+            candidate_source = _read_evaluator(candidate)
+            if _evaluator_contract.evaluator_kind(candidate_source):
+                matches.append((candidate, candidate_source))
         if not matches:
             return [SolverContractError(
                 CODE_REFERENCE_MISSING,
                 "未找到评估器：ontology/scripts/ 下没有同时定义 "
-                + "、".join(sorted(EVALUATOR_DISCOVERY_SYMBOLS)) + " 的脚本",
+                + "、".join(sorted(EVALUATOR_DISCOVERY_SYMBOLS))
+                + " 的脚本，也没有声明 TABLE_SOURCES 的声明式评估器",
                 path=model_rel, field="fact_source.evaluator_path", hint=EVALUATOR_INTERFACE_HINT,
             )], ""
         if len(matches) > 1:
             return [SolverContractError(
                 CODE_INVALID,
-                f"评估器不唯一（{'、'.join(_rel(root, m) for m in matches)}），"
+                f"评估器不唯一（{'、'.join(_rel(root, m) for m, _source in matches)}），"
                 "请用 fact_source.evaluator_path 指定",
                 path=model_rel, field="fact_source.evaluator_path",
             )], ""
-        path = matches[0]
-        symbols = _module_symbols(path)
+        path, source = matches[0]
         required = frozenset()
     rel = _rel(root, path)
+    if _evaluator_contract.evaluator_kind(source) == _evaluator_contract.DECLARATIVE_KIND:
+        return _check_declarative_evaluator(source, root, rel), rel
+    symbols = _evaluator_contract.module_symbols(source)
     if symbols is None:
         return [SolverContractError(
-            CODE_INVALID, "评估器无法解析（非 UTF-8、语法错误或超过 2 MiB）", path=rel
+            CODE_INVALID, _evaluator_contract.UNPARSEABLE_MESSAGE, path=rel
         )], rel
     defined, assigned = symbols.defined, symbols.assigned
     problems = []
@@ -936,7 +914,7 @@ def _check_evaluator(
             path=rel, field=EVALUATOR_CONTEXT_SYMBOL,
         ))
         return problems, rel
-    missing = _missing_context_keys(symbols.context)
+    missing = _evaluator_contract.missing_context_keys(symbols.context)
     if missing:
         problems.append(SolverContractError(
             CODE_CONTEXT_MISSING,
@@ -1046,6 +1024,8 @@ def _check_ordered_route_model(model: Mapping, model_rel: str) -> list[SolverCon
             + " → ".join(f"{item['metric']} {item['sense']}" for item in ORDERED_ROUTE_OBJECTIVES),
             path=model_rel, field="objectives",
         ))
+    if "text_presentation" in model:
+        problems += _check_text_presentation(model["text_presentation"], model_rel)
     mapping = model.get("display_mapping")
     if not isinstance(mapping, Mapping) or set(mapping) != set(ORDERED_ROUTE_OPTIONS):
         problems.append(SolverContractError(
@@ -1075,6 +1055,32 @@ def _check_ordered_route_model(model: Mapping, model_rel: str) -> list[SolverCon
             path=model_rel, field="display_mapping",
         ))
     return problems
+
+
+def _check_text_presentation(value: Any, model_rel: str) -> list[SolverContractError]:
+    """consumer 渲染结果文字前的同口径检查：它不合法时 consumer 拒收整个求解结果，不只是少一段文字。"""
+    if (
+        not isinstance(value, Mapping) or set(value) != {"kind", *TEXT_PRESENTATION_FIELDS}
+        or value.get("kind") != TEXT_PRESENTATION_KIND
+    ):
+        return [SolverContractError(
+            CODE_INVALID,
+            f"text_presentation 须为 {{kind: {TEXT_PRESENTATION_KIND}, process_name, stream_name}}，不允许其他字段",
+            path=model_rel, field="text_presentation",
+        )]
+    names = [value[name] for name in TEXT_PRESENTATION_FIELDS]
+    if not all(isinstance(name, str) and name and name == name.strip() for name in names):
+        return [SolverContractError(
+            CODE_INVALID, "结果文字的工艺名称与物流名称须同时填写，首尾不能有空白",
+            path=model_rel, field="text_presentation",
+        )]
+    if any(len(name) > MAX_OPTION_LABEL_LENGTH or _CONTROL_CHARS_RE.search(name) for name in names):
+        return [SolverContractError(
+            CODE_INVALID,
+            f"结果文字的工艺名称与物流名称不能超过 {MAX_OPTION_LABEL_LENGTH} 个字符，也不能含换行等控制字符",
+            path=model_rel, field="text_presentation",
+        )]
+    return []
 
 
 def _binder_schema_problem(node: Mapping, path: str) -> str:
@@ -1237,8 +1243,9 @@ def _problem_solver_key(problem: SolverContractError) -> str:
 def _revision(root: Path, contracts: list[WorkspaceSolverContract], evaluators: Iterable[str]) -> str:
     """求解契约修订摘要：契约目录全部文件、被绑定的 Operation 文档与评估器源码。
 
-    只覆盖会改变求解行为的内容：改对象文档不使已有验证失效，改模型、Schema、
-    绑定或评估器则立即失效。
+    只覆盖会改变求解行为的内容：改模型、Schema、绑定或评估器立即使已有验证失效；
+    对象文档只有被声明式评估器的 TABLE_SOURCES 引用时才计入，旧式评估器下改对象
+    文档不使验证失效。
     """
     paths: set[str] = set()
     base = root / SOLVER_DIR
@@ -1253,7 +1260,18 @@ def _revision(root: Path, contracts: list[WorkspaceSolverContract], evaluators: 
             if path.is_file():
                 paths.add(_rel(root, path))
                 break
+    evaluators = set(evaluators)
     paths.update(evaluators)
+    declared: set[str] = set()
+    for rel in evaluators:
+        declared.update(_evaluator_contract.declared_objects(_read_evaluator(root / rel)))
+    object_dir = root / "ontology" / "object"
+    if declared and object_dir.is_dir():
+        # 按目录枚举再比对文件名，对象 key 不拼进路径
+        paths.update(
+            _rel(root, doc) for doc in object_dir.glob("*.md")
+            if doc.stem in declared and doc.name != "index.md" and doc.is_file()
+        )
     digest = hashlib.sha256()
     for rel in sorted(paths):
         data = (root / rel).read_bytes()
@@ -1315,7 +1333,7 @@ ORDERED_ROUTE_FACT_SNAPSHOT_SCHEMA = {
     "type": "object",
     "properties": {"facts": {"type": "array"}},
 }
-TEMPLATE_PARAM_KEYS = ("display_mapping", "title", "evaluator_path")
+TEMPLATE_PARAM_KEYS = ("display_mapping", "title", "evaluator_path", *TEXT_PRESENTATION_FIELDS)
 MAX_TEMPLATE_TITLE_LENGTH = 128
 
 # 「添加求解契约」的起始参数：声明扩展字段固定，模板参数（选项显示名称等）由用户填写
@@ -1328,6 +1346,7 @@ NEW_CONTRACT_TEMPLATE = {
         "display_mapping": {option: "" for option in ORDERED_ROUTE_OPTIONS},
         "title": "",
         "evaluator_path": "",
+        **{name: "" for name in TEXT_PRESENTATION_FIELDS},
     },
 }
 
@@ -1349,6 +1368,10 @@ def render_template(params: Mapping) -> dict[str, bytes]:
         "display_mapping": {option: mapping.get(option, "") for option in ORDERED_ROUTE_OPTIONS},
         "fact_source": fact_source,
     }
+    text = {name: params.get(name) or "" for name in TEXT_PRESENTATION_FIELDS}
+    if any(text.values()):
+        # 两项都留空时不写，产物与加入这两个参数之前逐字节一致，已保存的契约仍受管
+        model["text_presentation"] = {"kind": TEXT_PRESENTATION_KIND, **text}
     title = params.get("title") or ""
     return {
         "entry": _dump_yaml(model),
@@ -1391,7 +1414,10 @@ def normalize_template_params(raw: Any, rel_dir: str) -> tuple[dict, list[Solver
                 ))
             else:
                 params["display_mapping"][option] = label.strip()
-    for name, rel in (("title", presentation_rel), ("evaluator_path", model_rel)):
+    for name, rel in (
+        ("title", presentation_rel), ("evaluator_path", model_rel),
+        *((field, model_rel) for field in TEXT_PRESENTATION_FIELDS),
+    ):
         value = raw.get(name, "")
         value = "" if value is None else value
         if not isinstance(value, str):
@@ -1418,6 +1444,7 @@ def extract_template_params(sidecars: Mapping[str, bytes]) -> dict:
         "display_mapping": {option: "" for option in ORDERED_ROUTE_OPTIONS},
         "title": "",
         "evaluator_path": "",
+        **{name: "" for name in TEXT_PRESENTATION_FIELDS},
     }
 
     def load(role: str) -> Mapping:
@@ -1436,17 +1463,19 @@ def extract_template_params(sidecars: Mapping[str, bytes]) -> dict:
     fact_source = model.get("fact_source")
     if isinstance(fact_source, Mapping) and isinstance(fact_source.get("evaluator_path"), str):
         params["evaluator_path"] = fact_source["evaluator_path"].strip()
+    text = model.get("text_presentation")
+    if isinstance(text, Mapping):
+        for name in TEXT_PRESENTATION_FIELDS:
+            if isinstance(text.get(name), str):
+                params[name] = text[name].strip()
     title = load("presentation").get("title")
     if isinstance(title, str):
         params["title"] = title.strip()
     return params
 
 
-def evaluator_unit_options(path: Path | None) -> list[str]:
-    """评估器顶层 DIESEL_UNIT_IDS 字典字面量的字符串键（只解析不执行）；取不到返回空列表。
-
-    consumer 事实 worker 只接受这些装置编号，面板据此给出下拉选项。
-    """
+def _evaluator_dict_keys(path: Path | None, symbol: str) -> list[str]:
+    """评估器顶层 symbol 字典字面量的字符串键（只解析不执行）；取不到返回空列表。"""
     if path is None:
         return []
     try:
@@ -1461,13 +1490,77 @@ def evaluator_unit_options(path: Path | None) -> list[str]:
         targets = node.targets if isinstance(node, ast.Assign) else (
             [node.target] if isinstance(node, ast.AnnAssign) else []
         )
-        if any(isinstance(target, ast.Name) and target.id == "DIESEL_UNIT_IDS" for target in targets):
+        if any(isinstance(target, ast.Name) and target.id == symbol for target in targets):
             value = node.value
             options = [
                 key.value for key in value.keys
                 if isinstance(key, ast.Constant) and isinstance(key.value, str)
             ] if isinstance(value, ast.Dict) else []
     return list(dict.fromkeys(options))
+
+
+def evaluator_unit_options(path: Path | None) -> list[str]:
+    """评估器 DIESEL_UNIT_IDS 的键：consumer 事实 worker 只接受这些装置编号，面板据此给出下拉选项。"""
+    return _evaluator_dict_keys(path, "DIESEL_UNIT_IDS")
+
+
+def evaluator_source_options(path: Path | None) -> list[str]:
+    """评估器 CORRECTION_FACTORS 的键：没有修正系数的原油品种，consumer 取数时拒绝。"""
+    return _evaluator_dict_keys(path, "CORRECTION_FACTORS")
+
+
+# 受管模板的输入 Schema 在导出时按评估器补上可选值，让 consumer 的 Agent 填参前就知道取值范围；
+# 工作区文件保持模板原样（受管判定与修订摘要都按工作区字节），回导时再还原。
+MAX_PROJECTED_OPTIONS = 64
+_SOURCE_OPTIONS_PREFIX = "，须是评估器有修正系数的品种之一："
+# enum 只限定取值，Agent 遇到可选值之外的装置会就近挑一个照样求解；描述里要求它先问用户
+_UNIT_CONFIRM_SUFFIX = "；用户给出的装置与可选值对应不上时，不要改用其他装置，先向用户确认"
+_SOURCE_CONFIRM_SUFFIX = "；用户给出的品种与这些品种对应不上时，不要改用其他品种，先向用户确认"
+_TEMPLATE_INPUT_SCHEMA = _dump_json(ORDERED_ROUTE_INPUT_SCHEMA)
+
+
+def _crude_field(schema: Mapping) -> dict:
+    return schema["properties"]["items"]["items"]["properties"]["crude_origin"]
+
+
+def _projected_input_schema(units: list[str], sources: list[str]) -> dict:
+    schema = copy.deepcopy(ORDERED_ROUTE_INPUT_SCHEMA)
+    if 0 < len(units) <= MAX_PROJECTED_OPTIONS:
+        unit_field = schema["properties"]["diesel_unit_no"]
+        unit_field["enum"] = list(units)
+        unit_field["description"] += _UNIT_CONFIRM_SUFFIX
+    if 0 < len(sources) <= MAX_PROJECTED_OPTIONS and not any("、" in source for source in sources):
+        # 原油品种只写进描述不做 enum：consumer 按规范化名称（去空白、全半角统一）匹配，
+        # enum 是逐字比较，会把等价写法拒在门外
+        _crude_field(schema)["description"] += (
+            _SOURCE_OPTIONS_PREFIX + "、".join(sources) + _SOURCE_CONFIRM_SUFFIX
+        )
+    return schema
+
+
+def project_input_schema(data: bytes, evaluator: Path | None) -> bytes:
+    """导出用的输入 Schema：受管模板按评估器补可选值，手写的 Schema 原样返回。"""
+    if data != _TEMPLATE_INPUT_SCHEMA:
+        return data
+    return _dump_json(_projected_input_schema(
+        evaluator_unit_options(evaluator), evaluator_source_options(evaluator),
+    ))
+
+
+def restore_template_input_schema(data: bytes) -> bytes:
+    """导入时把 project_input_schema 的产物还原成模板字节，其他内容原样返回。"""
+    try:
+        schema = json.loads(data.decode("utf-8"))
+        units = schema["properties"]["diesel_unit_no"].get("enum", [])
+        description = _crude_field(schema)["description"]
+        if not isinstance(units, list) or not all(isinstance(unit, str) for unit in units):
+            return data
+        prefix = _crude_field(ORDERED_ROUTE_INPUT_SCHEMA)["description"] + _SOURCE_OPTIONS_PREFIX
+        projected = description.startswith(prefix) and description.endswith(_SOURCE_CONFIRM_SUFFIX)
+        sources = description[len(prefix):-len(_SOURCE_CONFIRM_SUFFIX)].split("、") if projected else []
+    except (UnicodeDecodeError, ValueError, LookupError, TypeError, AttributeError):
+        return data
+    return _TEMPLATE_INPUT_SCHEMA if _dump_json(_projected_input_schema(units, sources)) == data else data
 
 
 class SolverContractRejected(ValueError):

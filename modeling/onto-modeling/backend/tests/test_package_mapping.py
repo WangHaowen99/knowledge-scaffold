@@ -106,6 +106,29 @@ def test_single_column_overlap_is_not_enough(tmp_path):
     assert any("没有绑定真实数据表" in w for w in result["warnings"])
 
 
+def test_inference_skips_tables_without_declared_primary_key(tmp_path):
+    """主键列不在表里的表不作推断候选：概念对象撞上别的表两三列同名属性时不能被错绑。"""
+    root = make_workspace(tmp_path, {"T_STOCK": ["TANK_ID", "MONTH", "OPENING"]})
+    (root / "ontology" / "object" / "月度汇总.md").write_text(
+        "# 数据来源\n无\n\n# 对象属性清单\n"
+        "| 中文名称 | 英文名称 | 描述 | 主键 | 类型 | 属性别名 | 属性规则 |\n"
+        "| --- | --- | --- | --- | --- | --- | --- |\n"
+        "| 记录号 | RECORD_ID | 说明 | 是 | 字符串 | 无 | 无 |\n"
+        "| 罐号 | TANK_ID | 说明 | 否 | 字符串 | 无 | 无 |\n"
+        "| 月份 | MONTH | 说明 | 否 | 字符串 | 无 | 无 |\n",
+        encoding="utf-8",
+    )
+    result = package_mapping.resolve_object_tables(root)
+    assert result["objects"]["月度汇总"]["table"] == ""
+    assert package_mapping.object_data_mappings(result)["objects"] == {}
+
+    # 含主键列的表即使重合列数与别的表并列，也是唯一候选
+    tables = {"T_STOCK": ["TANK_ID", "MONTH", "OPENING"], "T_RECORD": ["RECORD_ID", "TANK_ID"]}
+    item = package_mapping.resolve_object_tables(root, tables=tables)["objects"]["月度汇总"]
+    assert item["table"] == "T_RECORD" and item["matched_by"] == "inferred"
+    assert item["primary_key"] == ["RECORD_ID"]
+
+
 def test_declared_table_missing_is_a_problem(tmp_path):
     root = make_workspace(tmp_path, {"T_ORDER": ["ORDER_ID", "AMOUNT"]})
     write_object(root, "订单", [("订单号", "ORDER_ID")], source="T_NOT_THERE")
@@ -380,6 +403,31 @@ def test_unbound_endpoints_block_unless_publish_was_degraded():
     assert relations == {} and skipped == []
     assert degraded.get("relations_skipped") == 1 and degraded.get("relations_unbound") == 1
     assert notes and "未绑定数据表" in notes[0]
+
+
+@pytest.mark.parametrize("source", ["无", "无（合成概念对象，不落库）"])
+def test_relations_to_concept_objects_are_noted_without_degrading(source):
+    """「# 数据来源」显式写「无」的概念对象图里本来就没有节点，关系只记原因，不需要降级确认。"""
+    texts = {
+        "object_a": "# 关联对象\n- 当前对象 → references（{待确认：合成说明}）→ [[concept_b]]",
+        "concept_b": f"# 数据来源\n{source}\n> 合成概念对象\n\n# 关联对象\n- 当前对象 → triggers → [[concept_c]]",
+        "concept_c": "# 数据来源\n无",
+    }
+    report = {}
+    relations, skipped = package_mapping.graph_relations(texts, {"object_a"}, report)
+    assert relations == {} and skipped == []
+    assert report.get("relations_skipped") == report.get("relations_unbound") == 2
+    assert all("概念对象" in note for note in report["notes"])
+
+
+def test_unbound_endpoint_next_to_a_concept_object_still_blocks():
+    """没写数据来源的端点说明的是绑定出了问题；同一条关系里另一端是概念对象也不能放过。"""
+    texts = {
+        "concept_a": "# 数据来源\n无\n\n# 关联对象\n- 当前对象 → references → [[object_b]]",
+        "object_b": "# 对象描述\n合成对象",
+    }
+    _, skipped = package_mapping.graph_relations(texts, set())
+    assert len(skipped) == 1 and "未绑定数据表" in skipped[0]
 
 
 def test_absent_endpoint_blocks_even_when_degraded():

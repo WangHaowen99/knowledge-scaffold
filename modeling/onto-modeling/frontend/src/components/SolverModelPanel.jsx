@@ -35,10 +35,12 @@ import {
   MAX_CASES,
   MAX_CASE_NAME,
   MAX_EXPECTED_CANDIDATES,
+  MAX_QUESTION,
   MAX_TEMPLATE_TEXT,
   ROUTE_OPTIONS,
   SIDECAR_TABS,
   SOLVER_DIR,
+  TEXT_PRESENTATION_FIELDS,
   VALIDATION_STATES,
   advancedText,
   caseBatches,
@@ -49,6 +51,8 @@ import {
   draftFromView,
   draftKey,
   engineCapabilities,
+  evaluatorCommand,
+  evaluatorCommandBlocker,
   findProblemFamily,
   findingSource,
   isEnabled,
@@ -99,9 +103,9 @@ const STATE_TEXT = {
   none: '普通知识包不需要求解验证。',
   not_needed: '求解能力均已停用，发布不需要端到端验证。',
   required: '求解知识包发布前，须对当前修订完成一次经 Consumer 的端到端验证。',
-  running: '当前修订的验证进行中（经 Consumer 求解，可能需要数分钟），完成后自动刷新。',
+  running: '当前修订的验证进行中（经 Consumer Agent 提问求解，可能需要数分钟），完成后自动刷新。',
   passed: 'Consumer 已返回当前修订的权威求解结果，可以发布。',
-  stale: '求解契约、绑定的 Operation 或评估器在通过验证后已修改，请对当前修订重新验证。',
+  stale: '求解契约、绑定的 Operation、评估器或声明式评估器引用的对象文档在通过验证后已修改，请对当前修订重新验证。',
   failed: '当前修订的验证未通过，按诊断修正后重新验证。',
 };
 
@@ -168,12 +172,17 @@ function DiffList({ diff, unloaded = [] }) {
 }
 
 function caseDetail(row) {
+  // 未调用求解工具、入参不一致是 Agent 链路问题，先于求解结果展示
+  if (row.toolCalled === false) return ['Agent 未调用求解工具', row.detail].filter(Boolean).join('：');
+  const diff = row.argumentDiff.slice(0, 5).join('、');
   return [
+    row.argumentsMatch === false ? `入参与用例不一致${diff ? `：${diff}` : ''}` : '',
     row.authoritative ? '权威结果' : '非权威结果',
     row.feasibility === 'infeasible' ? '全不可行' : '',
     row.candidateCount != null ? `候选 ${row.candidateCount} 个` : '',
     row.expected != null ? `预期 ${row.expected} 个` : '',
     row.code,
+    row.passed ? '' : row.detail,
   ].filter(Boolean).join(' · ');
 }
 
@@ -313,6 +322,12 @@ function CaseCard({ item, operations, onChange, onRemove }) {
     else next.expected_candidate_count = value;
     onChange(next);
   };
+  const setQuestion = (value) => {
+    const next = { ...item };
+    if (value) next.question = value;
+    else delete next.question;
+    onChange(next);
+  };
   return (
     <div className="solver-case">
       <div className="solver-case-head">
@@ -347,6 +362,17 @@ function CaseCard({ item, operations, onChange, onRemove }) {
           该求解契约的附属文件为手动编辑，入参在「以 JSON 编辑」中按它的输入 Schema 填写。
         </div>
       )}
+      <div className="solver-case-field solver-case-question">
+        <span>提问</span>
+        <Input.TextArea
+          size="small"
+          value={String(item.question ?? '')}
+          maxLength={MAX_QUESTION}
+          autoSize={{ minRows: 1, maxRows: 4 }}
+          placeholder="留空时按求解能力与入参自动生成提问；填写则原样向 Consumer Agent 提问"
+          onChange={(event) => setQuestion(event.target.value)}
+        />
+      </div>
       <div className="solver-case-field">
         <span>预期候选数</span>
         <InputNumber
@@ -488,7 +514,7 @@ function ValidationCard({ projectId, view, dirty, innerRef, onRecord, onReload }
           {rows.map((row) => (
             <div key={row.id} className="solver-validation-case">
               <Tag color={row.passed ? 'success' : 'error'}>{row.passed ? '通过' : '未通过'}</Tag>
-              <span>{row.name}</span>
+              <span title={row.question ? `提问：${row.question}` : '提问：按求解能力与入参自动生成'}>{row.name}</span>
               <Typography.Text code>{row.solverKey}</Typography.Text>
               <span className="solver-meta">{caseDetail(row)}</span>
             </div>
@@ -504,7 +530,7 @@ function ValidationCard({ projectId, view, dirty, innerRef, onRecord, onReload }
             <span className="solver-section-title">验证用例</span>
             {casesDirty && <Tag color="warning">未保存</Tag>}
             <Typography.Text type="secondary" className="solver-meta">
-              模板生成的求解契约按表单填写批次；预期候选数留空时按 2×批次数断言。用例只存于工作区，不随知识包导出。
+              模板生成的求解契约按表单填写批次；预期候选数留空时按 2×批次数断言。验证经 Consumer Agent 提问执行，并核对 Agent 是否调用对应求解工具、传入的入参是否与用例一致。用例只存于工作区，不随知识包导出。
             </Typography.Text>
           </div>
           {saved != null && !parsed.error && (
@@ -525,7 +551,7 @@ function ValidationCard({ projectId, view, dirty, innerRef, onRecord, onReload }
           {saved != null && jsonOpen && (
             <div className="solver-sidecar">
               <div className="solver-meta">
-                每条用例：id、solver_key、arguments（按输入 Schema 填写），可选 name 与 expected_candidate_count
+                每条用例：id、solver_key、arguments（按输入 Schema 填写），可选 name、question（向 Agent 的提问，留空自动生成）与 expected_candidate_count
               </div>
               <CodeEditor key={editorKey} value={text} onChange={setText} />
             </div>
@@ -641,6 +667,8 @@ function MarkAlerts({ marks = [] }) {
 const ADVANCED_FIELDS = ['solver_key', 'decision_model', 'problem_family', 'engine_capabilities', 'units'];
 const OPTION_LABELS = { OPTION_0: '选项一', OPTION_1: '选项二' };
 const OPTION_EXAMPLES = { OPTION_0: '如 方案甲', OPTION_1: '如 方案乙' };
+const TEXT_PRESENTATION_LABELS = { process_name: '工艺名称', stream_name: '物流名称' };
+const TEXT_PRESENTATION_EXAMPLES = { process_name: '如 加工装置', stream_name: '如 中间物流' };
 
 function ContractEditor({
   item,
@@ -657,6 +685,8 @@ function ContractEditor({
   onChange,
   onRemove,
   onOpenFile,
+  commandBlocker,
+  onCommand,
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const status = (field, label, extra) => {
@@ -695,6 +725,22 @@ function ContractEditor({
   const showAdvanced = !managed || advancedOpen || advancedHit;
   const evaluatorLink = item.evaluator && (
     <Typography.Link onClick={() => onOpenFile?.(item.evaluator)}>{item.evaluator}</Typography.Link>
+  );
+  // 评估器由助手生成（只含取数映射与参数的声明式评估器），用户不必手写
+  const evaluatorAction = onCommand && (
+    <Space wrap size={8}>
+      <Button
+        size="small"
+        disabled={Boolean(commandBlocker)}
+        title={commandBlocker || undefined}
+        onClick={() => onCommand(evaluatorCommand(item))}
+      >
+        让助手生成评估器
+      </Button>
+      <span className="solver-meta">
+        {commandBlocker || '助手按已保存的契约生成或修正声明式评估器并自检，完成后需重新验证'}
+      </span>
+    </Space>
   );
   return (
     <div className="solver-detail">
@@ -761,9 +807,30 @@ function ContractEditor({
             </Form.Item>
             <Form.Item
               {...status(
+                'text_presentation',
+                '结果文字（可选）',
+                'Consumer 按「<装置编号><工艺名称>的 N 月度生产规划」逐批写出品种、批次量、天数与「<物流名称>→<选项显示名称>」；两项须同时填写，都留空则不生成',
+              )}
+            >
+              <div className="solver-form-grid">
+                {TEXT_PRESENTATION_FIELDS.map((name, index) => (
+                  <Input
+                    key={name}
+                    id={index === 0 ? 'solver-field-text_presentation' : undefined}
+                    prefix={<span className="solver-meta">{TEXT_PRESENTATION_LABELS[name]}</span>}
+                    maxLength={MAX_TEMPLATE_TEXT}
+                    value={item.params[name] || ''}
+                    placeholder={TEXT_PRESENTATION_EXAMPLES[name]}
+                    onChange={(event) => onChange((it) => setTemplateParam(it, name, event.target.value))}
+                  />
+                ))}
+              </div>
+            </Form.Item>
+            <Form.Item
+              {...status(
                 'evaluator_path',
                 '评估器',
-                '留空时自动查找 ontology/scripts/ 下导出 SOLVER_CONTEXT 等契约符号的脚本；有多个时须指定',
+                '留空时自动查找 ontology/scripts/ 下的评估器（自带计算代码的旧式或助手生成的声明式）；有多个时须指定',
               )}
             >
               <Select
@@ -775,6 +842,7 @@ function ContractEditor({
                 onChange={(value) => onChange((it) => setTemplateParam(it, 'evaluator_path', value || ''))}
               />
               {evaluatorLink && <div className="solver-meta">已保存的修订解析到：{evaluatorLink}</div>}
+              {evaluatorAction}
             </Form.Item>
           </>
         )}
@@ -863,9 +931,10 @@ function ContractEditor({
               <Typography.Text type="secondary">
                 {item.origin
                   ? '未解析到评估器，见上方检查结果'
-                  : '保存后自动解析：ontology/scripts/ 下导出 SOLVER_CONTEXT 等契约符号的脚本'}
+                  : '保存后自动解析：ontology/scripts/ 下的旧式或声明式评估器'}
               </Typography.Text>
             )}
+            {evaluatorAction}
           </Form.Item>
         )}
       </Form>
@@ -972,7 +1041,7 @@ function ContractEditor({
 
 const EMPTY_MARKS = { fields: new Map(), roles: new Map(), count: 0 };
 
-export default function SolverModelPanel({ project, versions = [], onOpenFile, onWorkspaceChanged }) {
+export default function SolverModelPanel({ project, versions = [], onOpenFile, onWorkspaceChanged, onCommand }) {
   const [view, setView] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [items, setItems] = useState([]);
@@ -1367,6 +1436,8 @@ export default function SolverModelPanel({ project, versions = [], onOpenFile, o
                 onChange={(change) => update(current.uid, change)}
                 onRemove={() => remove(current.uid)}
                 onOpenFile={onOpenFile}
+                commandBlocker={evaluatorCommandBlocker(current, { dirty })}
+                onCommand={onCommand}
               />
             ) : (
               <div className="solver-detail" />
@@ -1460,7 +1531,7 @@ export default function SolverModelPanel({ project, versions = [], onOpenFile, o
                 <DiffList diff={conflictTheirs} />
               ) : (
                 <Typography.Text type="secondary">
-                  求解契约文件没有变化，变化来自绑定的 Operation 或评估器；覆盖保存不会丢失它们。
+                  求解契约文件没有变化，变化来自绑定的 Operation、评估器或它引用的对象文档；覆盖保存不会丢失它们。
                 </Typography.Text>
               )}
             </div>

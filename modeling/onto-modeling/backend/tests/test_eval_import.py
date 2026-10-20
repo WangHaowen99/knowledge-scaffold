@@ -581,6 +581,22 @@ def test_invalid_relation_blocks_export_and_retains_full_diagnostics(tmp_path, m
     assert notes and "第 " in notes[0] and "关联/包含" in notes[0]
 
 
+def test_relations_to_concept_objects_do_not_block_graph_import(tmp_path, monkeypatch):
+    manager, pid, root = _export(tmp_path, monkeypatch, {}, True)
+    _objects(root)
+    (root / "ontology" / "object" / "合成概念.md").write_text(
+        "# 数据来源\n无\n> 合成概念对象，不落库\n\n# 关联对象\n- 当前对象 → 涉及 → [[客户]]\n",
+        encoding="utf-8",
+    )
+    plan = eval_import.prepare(root, {"files": [_business_data(root)]}, graph=True)
+    assert any("合成概念" in note and "概念对象" in note for note in plan["warnings"])
+    report = {}
+    manager.export_package_zip(pid, tmp_path / "concept.zip", plan["binding"], graph=True,
+                               relation_report=report)
+    assert report.get("relations_exported") == 1 and report.get("relations_unbound") == 1
+    assert "概念对象" in report["notes"][0]
+
+
 def test_export_preserves_explicit_join_fields(tmp_path, monkeypatch):
     manager, pid, root = _export(tmp_path, monkeypatch, {}, True)
     _objects(root)
@@ -613,6 +629,24 @@ def test_relation_mapping_failure_stops_before_database_write(tmp_path, monkeypa
     state = modeling_eval.read_state(tmp_path)
     assert state["graph_import"]["relations_skipped"] == 1
     assert "端点不存在" in state["graph_import"]["notes"][0]
+
+
+def test_relations_skipped_at_export_stay_in_graph_import_notes(tmp_path, monkeypatch):
+    def http(method, path, token, **kwargs):
+        return {"upload": {"schema": {"objects": [], "relations": [
+            {"sourceObject": "object_a", "relationName": "references", "targetObject": "object_b"},
+        ]}}}
+
+    monkeypatch.setattr(modeling_eval, "_http", http)
+    plan = {"tables": [], "workbook": b"", "relation_report": {
+        "relations_exported": 1, "relations_skipped": 1, "notes": ["合成提示：概念对象关系未导入"],
+    }}
+    with pytest.raises(RuntimeError, match="图关系映射未完成"):
+        modeling_eval._graph_import("project_alpha", tmp_path, lambda: "", "project_alpha", {}, plan)
+    graph_state = modeling_eval.read_state(tmp_path)["graph_import"]
+    assert graph_state["relations_skipped"] == 2
+    assert graph_state["notes"][0] == "合成提示：概念对象关系未导入"
+    assert "端点不存在" in graph_state["notes"][1]
 
 
 def _plan_with_one_object(tmp_path) -> dict:

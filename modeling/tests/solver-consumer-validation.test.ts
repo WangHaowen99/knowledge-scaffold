@@ -325,6 +325,26 @@ test('单条用例直接驱动时，HTTP 错误与未知状态都不会被当作
   assert.deepEqual([unknown.status, unknown.code, unknown.phase], ['error', 'solver_result_rejected', 'solve']);
 });
 
+test('Consumer 拒绝求解时回传它给出的阶段与原因，原因中的地址被隐藏', async () => {
+  const item = { id: 'c1', operationKey: 'plan_route', arguments: batches(1) };
+  const common = { workspaceId: 'synthetic-ws', ontologyId: ONTOLOGY_ID, version: VERSION, item, idempotencyKey: 'k', deadline: Date.now() + 1000 };
+  const rejected = await runSolverValidationCase({
+    ...common,
+    request: async () => json({
+      status: 'error',
+      code: 'fact_snapshot_invalid',
+      phase: 'snapshot',
+      error: 'business data table synthetic_table is empty, see https://graph.example.net',
+    }, 422),
+  });
+  assert.deepEqual([rejected.status, rejected.code, rejected.phase, rejected.retryable], [
+    'error', 'fact_snapshot_invalid', 'snapshot', false,
+  ]);
+  assert.equal(rejected.detail, 'business data table synthetic_table is empty, see [地址已隐藏]');
+  const bare = await runSolverValidationCase({ ...common, request: async () => json({}, 500) });
+  assert.deepEqual([bare.phase, 'detail' in bare], ['request', false]);
+});
+
 function packageSpec(): PackageSpec {
   return {
     id: ONTOLOGY_ID,

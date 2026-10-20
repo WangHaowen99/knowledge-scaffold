@@ -95,9 +95,10 @@ def test_published_package_import_restores_entities(
     overview = _overview(manager, imported["id"])
     assert overview["objects"] == 2
     assert overview["operations"] == 1
-    # 已发布知识包只有交付物、没有过程资产，第一个必选阶段探针（research/）仍不命中，
-    # 阶段进度因此仍为 0。阶段链按 ADR-0004 不动；固定该行为，避免被当成新缺陷。
-    assert overview["stages_done"] == 0
+    # 已发布知识包只有交付物、没有过程资产：research/ 等必选阶段不命中，但不截断后续，
+    # 对象、操作、规则与指标、代码生成四个阶段各自计入（与前端 stageStatuses 一致）
+    assert overview["stages_done"] == 4
+    assert overview["stages_total"] == len(WorkspaceManager.STAGES)
 
     # 工作区文档不带包契约 frontmatter，正文原样
     body = (root / "ontology" / "operation" / "创建订单.md").read_text(encoding="utf-8")

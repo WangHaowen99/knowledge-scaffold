@@ -825,6 +825,72 @@ def check_object_relation_joins(doc: OntologyDoc, all_docs: dict, tables: dict) 
     return issues
 
 
+# --- 关联对象的关系名称（与建模工作台 modeling/src/workflow/relation-name.ts 同一口径）---
+
+_CARDINALITY_WORDS = {'一对一', '一对多', '多对一', '多对多',
+                      'onetoone', 'onetomany', 'manytoone', 'manytomany'}
+_CARDINALITY_END = r'(?:0|1|n|m|x|\*|0\.\.1|0\.\.\*|1\.\.\*)'
+_CARDINALITY_PAIR_RE = re.compile(rf'{_CARDINALITY_END}(?::|-|~|to|对){_CARDINALITY_END}', re.IGNORECASE)
+_CARDINALITY_RANGE_RE = re.compile(r'(?:0|1)\.\.(?:1|n|m|x|\*)', re.IGNORECASE)
+
+
+def _relation_token(value: str) -> str:
+    """NFKC、小写、去掉空白与标点符号后的语义串：判断关系名是否重复了端点名称。"""
+    text = unicodedata.normalize('NFKC', value).strip().lower()
+    return ''.join(ch for ch in text
+                   if not ch.isspace() and unicodedata.category(ch)[0] not in 'PS')
+
+
+def _relation_name_problem(name: str, source: str, target: str) -> str:
+    compact = re.sub(r'\s+', '', name).lower()
+    if (compact.replace('-', '').replace('_', '') in _CARDINALITY_WORDS
+            or _CARDINALITY_PAIR_RE.fullmatch(compact) or _CARDINALITY_RANGE_RE.fullmatch(compact)):
+        return f'只写了关系基数「{name}」，基数不是关系谓词'
+    token = _relation_token(name)
+    for side, endpoint in (('目标', target), ('源', source)):
+        endpoint_token = _relation_token(endpoint)
+        if len(endpoint_token) >= 2 and endpoint_token in token:
+            return f'包含{side}对象名称「{endpoint}」'
+    return ''
+
+
+def check_object_relation_names(doc: OntologyDoc) -> list:
+    """「# 关联对象」的关系名只写谓词：不含两端对象名称，也不只写基数。
+
+    建模工作台启动数据评测时按同一规则校验，不合规就拒绝整个知识包。发布包里对象的 key 与
+    标题都取文件名、不带别名，所以端点名称就是两端的文件名。
+    """
+    section = doc.sections.get('关联对象', '')
+    if not section:
+        return []
+    stem = doc.path.stem
+    issues = []
+    for line in section.split('\n'):
+        value = line.strip().lstrip('-*').strip()
+        if not value or value.startswith(('>', '|', '{')) or value in ('无', '-', '—'):
+            continue
+        parsed = _relation_parts(value)
+        if not parsed or any(part.startswith('{') for part in parsed[:3]):
+            continue  # 关系行格式问题由发布与评测侧报；模板占位符还没填写
+        source, name, target, _ = parsed
+        name = unicodedata.normalize('NFKC', name).strip()
+        if not name:
+            continue
+        source = stem if source in ('当前对象', stem) else source
+        target = stem if target in ('当前对象', stem) else target
+        problem = _relation_name_problem(name, source, target)
+        if not problem:
+            continue
+        issues.append(Issue(
+            file=_rel(doc), severity='警告', category='关系名称',
+            message=f'关系「{source} -{name}→ {target}」的关系名{problem}：建模工作台按同一规则校验，'
+                    f'数据评测会因此拒绝整个知识包。请只写关系谓词（如「属于」「包含」「适用于」），'
+                    f'使「源对象 → 关系名 → 目标对象」连读通顺；两端对象里的这条关系要一起改，'
+                    f'同一对对象之间的多条关系用不同谓词区分',
+            source='规则检查'))
+    return issues
+
+
 # 派生属性强信号关键词：
 # - 属性规则 / 描述任一列出现这些词,说明该属性"被某个 operation 写入"
 # - 命中后,属性规则列必须使用规范格式 `派生：由 [[operation名]] 写入[；公式 = 表达式]`
@@ -1517,6 +1583,7 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
             issues += check_object_primary_key(doc)
             issues += check_object_links(doc, all_docs)
             issues += check_object_relation_joins(doc, all_docs, tables)
+            issues += check_object_relation_names(doc)
             issues += check_derived_attribute_markers(doc, all_docs)
         elif doc.doc_type == 'operation':
             issues += check_operation_structure(doc)

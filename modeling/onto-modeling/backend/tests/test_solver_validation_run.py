@@ -531,6 +531,22 @@ def test_consumer_unavailable_is_recorded_without_addresses(manager: WorkspaceMa
     assert "[地址已隐藏]" in record["message"]
 
 
+def test_consumer_reason_for_a_rejected_case_reaches_the_message(manager: WorkspaceManager, stub):
+    stub(lambda cases: (200, {"validation": {"package": {}, "cases": [{
+        "id": cases[0]["id"], "operation_key": "plan_route", "status": "error",
+        "code": "fact_snapshot_invalid", "phase": "snapshot", "retryable": False, "authoritative": False,
+        "detail": "business data table synthetic_table is empty, see https://graph.example.net",
+    }]}}))
+    pid, root, revision = _project(manager)
+    solver_validation_run.save_cases(root, [_case("n7", 7)])
+
+    record = _run(manager, pid, revision)
+
+    assert record["error_code"] == "fact_snapshot_invalid"
+    assert "（fact_snapshot_invalid，阶段 snapshot）：business data table synthetic_table is empty" in record["message"]
+    assert "example.net" not in record["message"]
+
+
 def test_modeling_going_away_mid_run_is_recorded(manager: WorkspaceManager, stub, monkeypatch):
     stub()
     pid, root, revision = _project(manager)

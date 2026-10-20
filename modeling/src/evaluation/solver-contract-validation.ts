@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { EvaluationAuthenticationError, type EvaluationAuthSession } from './auth-session.js';
 import { importPackageZip } from './data-source-consumer-sync.js';
 import { prepareProjectDataSourceForEvaluation } from './data-source-evaluation-service.js';
@@ -8,21 +10,41 @@ import {
   EvaluationOperationError,
   evaluationWorkspaceForRun,
   isEnvironmentFailureMessage,
+  rateLimitBackoffMs,
 } from './engine.js';
 import { ensureEvaluationWorkspace, shadowWorkspaceId, type ConsumerRequest } from './shadow-workspace.js';
 
 // 求解契约端到端验证：把建模侧导出的原始 ZIP 导入 Consumer 评测工作空间、激活精确版本，
-// 再按验证用例调用 Consumer 公开求解接口。Consumer 经 Connector 调独立求解器并由
-// Verifier 给出权威结果；这里只回传公开摘要字段，不接收也不返回 Solver Endpoint/Token。
+// 再按验证用例向 Consumer 的 Agent 提问（与用户在 Consumer 对话求解同一条链路）。
+// Agent 调用知识包生成的求解工具，Consumer 经 Connector 调独立求解器并由 Verifier
+// 给出权威结果；这里从运行事件里取求解工具的调用入参与公开结果摘要，
+// 不接收也不返回 Solver Endpoint/Token。
 
 export const MAX_SOLVER_VALIDATION_CASES = 20;
 export const SOLVER_VALIDATION_DEADLINE_MS = 25 * 60_000;
+// 单条用例：模型推理 + 求解工具（Consumer 默认 360 秒超时）+ 回复，留足余量
+const CASE_DEADLINE_MS = 10 * 60_000;
 const OPERATION_KEY_RE = /^[a-z][a-z0-9_]{0,31}$/;
 const CASE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const IDEMPOTENCY_PREFIX_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const MAX_ARGUMENTS_BYTES = 64 * 1024;
+// 自动生成的提问内嵌入参 JSON，上限按入参上限留余量
+const MAX_QUESTION_BYTES = 96 * 1024;
 const MAX_SUMMARY_BYTES = 4 * 1024;
 const MAX_TEXT = 512;
+const MAX_ARGUMENT_DIFFS = 20;
+const MAX_EVENT_BUFFER = 4 * 1024 * 1024;
+const MAX_STREAM_RECONNECTS = 5;
+const MAX_ADMISSION_RETRIES = 6;
+const SOLVER_EVENT_TYPES = new Set([
+  'solver.input.awaiting_confirmation',
+  'solver.progress',
+  'solver.verification.completed',
+  'solver.verification.rejected',
+  'solver.result.authoritative',
+]);
+// 求解工具卡名：solve_<operation_key 规范化>_<契约摘要前 8 位>；兼容卡名 solve 的入参带 operation_key
+const SOLVER_CARD_RE = /^solve_([a-z0-9_]+)_[0-9a-f]{8}$/;
 const PUBLIC_RESULT_FIELDS = [
   'run_id',
   'job_id',
@@ -41,6 +63,8 @@ const PUBLIC_RESULT_FIELDS = [
 export interface SolverValidationCase {
   id: string;
   operationKey: string;
+  /** 向 Consumer Agent 提的问题；由 onto-modeling 生成或取用例里填写的提问。 */
+  question: string;
   arguments: Record<string, unknown>;
 }
 
@@ -51,11 +75,20 @@ export interface SolverValidationCaseResult {
   authoritative: boolean;
   code?: string;
   phase?: string;
+  /** Consumer 为调用方写的失败原因（已脱敏截断），没有时省略。 */
+  detail?: string;
   retryable?: boolean;
   missing?: string[];
   candidate_count?: number | null;
   candidate_results_error?: string;
   summary?: unknown;
+  /** Agent 是否调用了该用例求解能力对应的求解工具；Agent 运行没有开始时省略。 */
+  solver_tool_called?: boolean;
+  solver_tool?: string;
+  /** 求解工具入参与用例 arguments 是否一致；没调用时省略。 */
+  arguments_match?: boolean;
+  /** 不一致的入参路径（如 items[2].process_days），最多 20 条。 */
+  argument_diff?: string[];
   [field: string]: unknown;
 }
 
@@ -120,7 +153,12 @@ export function parseSolverValidationCases(raw: unknown): SolverValidationCase[]
     if (Buffer.byteLength(JSON.stringify(item.arguments)) > MAX_ARGUMENTS_BYTES) {
       throw invalidCases(`验证用例 ${id} 的 arguments 超过 64 KB`);
     }
-    return { id, operationKey, arguments: item.arguments };
+    const question = typeof item.question === 'string' ? item.question.trim() : '';
+    if (!question) throw invalidCases(`验证用例 ${id} 缺少提问 question`);
+    if (Buffer.byteLength(question) > MAX_QUESTION_BYTES) {
+      throw invalidCases(`验证用例 ${id} 的提问超过 96 KB`);
+    }
+    return { id, operationKey, question, arguments: item.arguments };
   });
 }
 
@@ -137,8 +175,13 @@ function errorResult(
   code: string,
   phase: string,
   retryable: boolean,
+  detail?: string,
 ): SolverValidationCaseResult {
-  return { id: item.id, operation_key: item.operationKey, status: 'error', code, phase, retryable, authoritative: false };
+  const result: SolverValidationCaseResult = {
+    id: item.id, operation_key: item.operationKey, status: 'error', code, phase, retryable, authoritative: false,
+  };
+  if (detail) result.detail = safeValidationMessage(detail);
+  return result;
 }
 
 function publicFields(data: any): Record<string, unknown> {
@@ -184,9 +227,407 @@ async function candidateCount(
   return { count: null, error: errorCode(data, `http_${response.status}`) };
 }
 
+/** 单条用例内部失败：在 runSolverValidationCase 里统一转成用例结果，不中断整轮验证。 */
+class CaseFailure extends Error {
+  constructor(
+    readonly code: string,
+    readonly phase: string,
+    readonly retryable: boolean,
+    readonly detail?: string,
+  ) {
+    super(code);
+    this.name = 'CaseFailure';
+  }
+}
+
+class CaseTimeout extends Error {
+  constructor() {
+    super('solver_timeout');
+    this.name = 'CaseTimeout';
+  }
+}
+
+interface SolverToolCall {
+  name: string;
+  /** 兼容卡 solve 的入参里显式带 operation_key。 */
+  operationKey?: string;
+  /** 精确卡名里的 operation_key 规范化片段。 */
+  slug?: string;
+  arguments: unknown;
+  output?: Record<string, unknown>;
+  toolStatus?: string;
+  toolErrorCode?: string;
+  /** 同一 tool_call_id 的 solver.* 事件，后到的字段覆盖先到的。 */
+  progress: Record<string, unknown>;
+}
+
+interface AgentRunObservation {
+  status: string;
+  content: string;
+  interactionPrompt?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  calls: Map<string, SolverToolCall>;
+}
+
+interface SseFrame {
+  event: string;
+  data: string;
+}
+
+function parseSseFrame(raw: string): SseFrame | null {
+  let event = 'message';
+  const data: string[] = [];
+  for (const rawLine of raw.split('\n')) {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    if (!line || line.startsWith(':')) continue;
+    const colon = line.indexOf(':');
+    const field = colon < 0 ? line : line.slice(0, colon);
+    const value = colon < 0 ? '' : line.slice(colon + 1).replace(/^ /u, '');
+    if (field === 'event') event = value;
+    else if (field === 'data') data.push(value);
+  }
+  return data.length ? { event, data: data.join('\n') } : null;
+}
+
+async function* sseFrames(body: ReadableStream<Uint8Array>): AsyncGenerator<SseFrame> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary >= 0) {
+        const frame = parseSseFrame(buffer.slice(0, boundary));
+        buffer = buffer.slice(boundary + 2);
+        if (frame) yield frame;
+        boundary = buffer.indexOf('\n\n');
+      }
+      if (buffer.length > MAX_EVENT_BUFFER) throw new CaseFailure('agent_event_too_large', 'events', false);
+      if (done) return;
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+}
+
+/** 与 Consumer 生成精确卡名的规则一致：非字母数字折叠为下划线，卡名总长上限 64。 */
+function cardSlug(operationKey: string): string {
+  return operationKey
+    .replace(/[^A-Za-z0-9]+/gu, '_')
+    .replace(/^_+|_+$/gu, '')
+    .toLowerCase()
+    .slice(0, 64 - 'solve_'.length - '_xxxxxxxx'.length)
+    .replace(/_+$/u, '');
+}
+
+function toolInput(payload: Record<string, any>): unknown {
+  const input = payload.input_preview;
+  if (typeof input !== 'string') return input;
+  try {
+    return JSON.parse(input);
+  } catch {
+    return input;
+  }
+}
+
+function solverToolCall(payload: Record<string, any>): SolverToolCall | null {
+  const name = String(payload.name ?? '');
+  const input = toolInput(payload) as any;
+  if (name === 'solve') {
+    return { name, operationKey: String(input?.operation_key ?? ''), arguments: input?.arguments, progress: {} };
+  }
+  const match = SOLVER_CARD_RE.exec(name);
+  return match ? { name, slug: match[1], arguments: input, progress: {} } : null;
+}
+
+function callsOperation(call: SolverToolCall, operationKey: string): boolean {
+  return call.operationKey !== undefined ? call.operationKey === operationKey : call.slug === cardSlug(operationKey);
+}
+
+function parseToolOutput(preview: unknown): Record<string, unknown> | undefined {
+  if (isPlainObject(preview)) return preview;
+  if (typeof preview !== 'string') return undefined;
+  try {
+    const value = JSON.parse(preview);
+    return isPlainObject(value) ? value : undefined;
+  } catch {
+    // 超过 4 KB 的工具输出被截断，改用同一调用的 solver.* 事件字段
+    return undefined;
+  }
+}
+
+function observeRunEvent(observation: AgentRunObservation, event: any): void {
+  const payload: Record<string, any> = isPlainObject(event?.payload) ? event.payload : {};
+  const type = String(event?.event_type ?? '');
+  const toolCallId = String(payload.tool_call_id ?? '');
+  if (type === 'tool.started') {
+    const call = solverToolCall(payload);
+    const key = toolCallId || `seq-${String(event?.seq ?? observation.calls.size)}`;
+    if (call && !observation.calls.has(key)) observation.calls.set(key, call);
+    return;
+  }
+  const call = toolCallId ? observation.calls.get(toolCallId) : undefined;
+  if (type === 'tool.finished' && call) {
+    call.toolStatus = text(payload.status);
+    call.toolErrorCode = text(payload.error_code);
+    call.output = parseToolOutput(payload.output_preview);
+  } else if (SOLVER_EVENT_TYPES.has(type) && call) {
+    Object.assign(call.progress, payload);
+  } else if (type === 'interaction.requested') {
+    observation.interactionPrompt = text(payload.prompt);
+  } else if (type === 'turn.finished') {
+    observation.status = String(payload.status ?? event?.status ?? '');
+    observation.content = typeof payload.content === 'string' ? payload.content : '';
+    if (isPlainObject(payload.error)) {
+      observation.errorCode = text(payload.error.error_code);
+      observation.errorMessage = text(payload.error.message);
+    }
+  }
+}
+
+function agentErrorCode(status: number, data: any): string {
+  const code = text(data?.error?.error_code);
+  return code ? code.toLowerCase() : `http_${status}`;
+}
+
+/** 每条用例一个独立会话：同一验证运行重复提交同一用例时，Idempotency-Key 让 Consumer 续接原运行。 */
+async function startAgentRun(input: {
+  request: ConsumerRequest;
+  workspaceId: string;
+  ontologyId: string;
+  version: string;
+  item: SolverValidationCase;
+  idempotencyKey: string;
+  signal: AbortSignal;
+}): Promise<string> {
+  const sessionId = `mw-solver-${createHash('sha256').update(input.idempotencyKey).digest('hex').slice(0, 24)}`;
+  for (let attempt = 1; ; attempt += 1) {
+    const response = await input.request('', '/agentic/runs', {
+      method: 'POST',
+      workspaceId: input.workspaceId,
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': input.idempotencyKey },
+      body: JSON.stringify({
+        request: input.item.question,
+        session_id: sessionId,
+        // 钉住刚激活的知识包精确版本，避免 Agent 落到工作空间里其他知识包
+        arguments: { selected_ontology_id: input.ontologyId, selected_ontology_version: input.version },
+      }),
+      signal: input.signal,
+    });
+    const data = await readJson(response);
+    if (response.ok) {
+      const runId = text(data?.run_id);
+      if (!runId) throw new CaseFailure('agent_run_invalid', 'admission', true, 'Consumer 未返回运行标识');
+      return runId;
+    }
+    const retryable = data?.error?.retriable === true;
+    if (retryable && attempt < MAX_ADMISSION_RETRIES) {
+      await sleep(rateLimitBackoffMs(attempt), input.signal);
+      continue;
+    }
+    throw new CaseFailure(agentErrorCode(response.status, data), 'admission', retryable, text(data?.error?.detail));
+  }
+}
+
+/** 订阅运行事件直到 turn.finished；流意外中断时按已收到的 seq 续订。 */
+async function followAgentRun(input: {
+  request: ConsumerRequest;
+  workspaceId: string;
+  runId: string;
+  observation: AgentRunObservation;
+  signal: AbortSignal;
+}): Promise<void> {
+  const { observation, signal } = input;
+  let afterSeq = 0;
+  let reconnects = 0;
+  for (;;) {
+    const response = await input.request(
+      '',
+      `/agentic/runs/${encodeURIComponent(input.runId)}/events?after_seq=${afterSeq}`,
+      { workspaceId: input.workspaceId, headers: { Accept: 'text/event-stream' }, signal },
+    );
+    if (!response.ok || !response.body) {
+      const data = await readJson(response);
+      if (data?.error?.retriable === true && reconnects < MAX_STREAM_RECONNECTS) {
+        reconnects += 1;
+        await sleep(rateLimitBackoffMs(reconnects), signal);
+        continue;
+      }
+      throw new CaseFailure(
+        agentErrorCode(response.status, data), 'events', data?.error?.retriable === true, text(data?.error?.detail),
+      );
+    }
+    try {
+      for await (const frame of sseFrames(response.body)) {
+        let event: any;
+        try {
+          event = JSON.parse(frame.data);
+        } catch {
+          continue;
+        }
+        const seq = Number(event?.seq);
+        if (Number.isSafeInteger(seq)) {
+          if (seq <= afterSeq) continue;
+          afterSeq = seq;
+        }
+        observeRunEvent(observation, event);
+        if (event?.event_type === 'turn.finished') return;
+      }
+    } catch (error) {
+      if (signal.aborted || error instanceof CaseFailure) throw error;
+    }
+    reconnects += 1;
+    if (reconnects > MAX_STREAM_RECONNECTS) {
+      throw new CaseFailure('agent_event_stream_lost', 'events', true, 'Consumer 运行事件流多次中断');
+    }
+    await sleep(rateLimitBackoffMs(reconnects), signal);
+  }
+}
+
+async function cancelAgentRun(request: ConsumerRequest, workspaceId: string, runId: string, reason: string) {
+  try {
+    const response = await request('', `/agentic/runs/${encodeURIComponent(runId)}/cancel`, {
+      method: 'POST',
+      workspaceId,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    await response.body?.cancel();
+  } catch {
+    // 尽力取消：Consumer 不可达时运行会按自身超时结束
+  }
+}
+
+const REDACTED = '[REDACTED]';
+
+function sameScalar(expected: unknown, actual: unknown): boolean {
+  if (expected === actual || (expected == null && actual == null)) return true;
+  // Agent 可能把数字写成数字字符串（或反之），值相同即视为一致
+  if (typeof expected === 'number' && typeof actual === 'string') {
+    return actual.trim() !== '' && Number(actual) === expected;
+  }
+  if (typeof expected === 'string' && typeof actual === 'number') {
+    return expected.trim() !== '' && Number(expected) === actual;
+  }
+  return false;
+}
+
+/** 列出 Agent 实际入参与用例 arguments 不一致的路径；对象键顺序不计，null 与缺省等价。 */
+export function argumentDiffPaths(expected: unknown, actual: unknown, path = '', out: string[] = []): string[] {
+  const label = path || '(全部入参)';
+  // Consumer 事件对敏感键名脱敏，这类值无法比对
+  if (out.length >= MAX_ARGUMENT_DIFFS || actual === REDACTED) return out;
+  if (Array.isArray(expected)) {
+    if (!Array.isArray(actual) || actual.length !== expected.length) out.push(label);
+    else expected.forEach((value, index) => argumentDiffPaths(value, actual[index], `${path}[${index}]`, out));
+    return out;
+  }
+  if (isPlainObject(expected)) {
+    if (!isPlainObject(actual)) {
+      out.push(label);
+      return out;
+    }
+    const keys = [...new Set([...Object.keys(expected), ...Object.keys(actual)])].sort();
+    for (const key of keys) argumentDiffPaths(expected[key], actual[key], path ? `${path}.${key}` : key, out);
+    return out;
+  }
+  if (!sameScalar(expected, actual)) out.push(label);
+  return out;
+}
+
+function failureDetail(data: Record<string, any>): string | undefined {
+  const message = text(data.message);
+  if (message) return message;
+  if (!Array.isArray(data.errors)) return undefined;
+  const parts = data.errors
+    .map((entry: any) => (typeof entry === 'string' ? text(entry) : text(entry?.message) ?? text(entry?.code)))
+    .filter(Boolean)
+    .slice(0, 3);
+  return parts.length ? parts.join('；') : undefined;
+}
+
+function answerExcerpt(observation: AgentRunObservation): string {
+  const answer = (observation.content || observation.interactionPrompt || '').replace(/\s+/gu, ' ').trim();
+  return answer.slice(0, 200);
+}
+
+function notCalledResult(item: SolverValidationCase, observation: AgentRunObservation): SolverValidationCaseResult {
+  const others = [...new Set([...observation.calls.values()].map((call) => call.name))];
+  const excerpt = answerExcerpt(observation);
+  const detail = others.length
+    ? `Agent 调用了其他求解工具：${others.slice(0, 5).join('、')}`
+    : `Agent 未调用求解工具${excerpt ? `，回复：${excerpt}` : ''}`;
+  return { ...errorResult(item, 'solver_tool_not_called', 'agent', false, detail), solver_tool_called: false };
+}
+
+/** 按求解工具的公开结果判定用例；工具输出缺失或被截断时用同一调用的 solver.* 事件字段补齐。 */
+function solverCallResult(item: SolverValidationCase, call: SolverToolCall): SolverValidationCaseResult {
+  const diff = argumentDiffPaths(item.arguments, call.arguments);
+  const tool: Partial<SolverValidationCaseResult> = {
+    solver_tool_called: true,
+    solver_tool: call.name,
+    arguments_match: diff.length === 0,
+    ...(diff.length ? { argument_diff: diff } : {}),
+  };
+  const data: Record<string, any> = { ...call.progress, ...(call.output ?? {}) };
+  const status = String(data.status ?? '');
+  if (status === 'completed') {
+    return {
+      id: item.id,
+      operation_key: item.operationKey,
+      status: 'completed',
+      authoritative: data.authoritative === true,
+      ...publicFields(data),
+      candidate_count: null,
+      ...tool,
+    };
+  }
+  if (status === 'awaiting_input') {
+    const missing = Array.isArray(data.missing) ? data.missing.map(text).filter(Boolean).slice(0, 20) as string[] : [];
+    return {
+      id: item.id, operation_key: item.operationKey, status: 'awaiting_input',
+      code: 'awaiting_input', phase: text(data.phase) ?? 'bind', retryable: false, authoritative: false, missing,
+      ...tool,
+    };
+  }
+  if (status === 'running' || (!status && !call.toolStatus)) {
+    return { ...errorResult(item, 'solver_timeout', text(data.phase) ?? 'solve', true), ...tool };
+  }
+  const fallback = call.toolErrorCode ?? (call.toolStatus === 'failed' ? 'solver_tool_failed' : 'solver_result_rejected');
+  return {
+    ...errorResult(item, errorCode(data, fallback), text(data.phase) ?? 'unknown', data.retryable === true, failureDetail(data)),
+    ...tool,
+  };
+}
+
+/** 多次调用时以最后一次为准（Agent 可能补齐入参后重试）。 */
+function lastMatchedCall(observation: AgentRunObservation, operationKey: string): SolverToolCall | undefined {
+  return [...observation.calls.values()].filter((call) => callsOperation(call, operationKey)).pop();
+}
+
+function agentRunResult(item: SolverValidationCase, observation: AgentRunObservation): SolverValidationCaseResult {
+  const call = lastMatchedCall(observation, item.operationKey);
+  if (call) return solverCallResult(item, call);
+  if (['failed', 'cancelled'].includes(observation.status) && !observation.calls.size) {
+    return errorResult(
+      item,
+      observation.errorCode?.toLowerCase() ?? 'agent_run_failed',
+      'agent',
+      false,
+      observation.errorMessage ?? `Agent 运行${observation.status === 'cancelled' ? '已取消' : '失败'}`,
+    );
+  }
+  return notCalledResult(item, observation);
+}
+
 /**
- * 单条验证用例：同一个 Idempotency-Key 重复提交即续接同一 Job，直到 Consumer 给出终态。
- * 只有 Consumer 明确标记 authoritative=true 的 completed 才算权威结果；不可行也是有效终态。
+ * 单条验证用例：向 Consumer Agent 提问（异步运行 + 事件流），从事件里取求解工具的调用入参与公开结果。
+ * 只有求解工具返回 authoritative=true 的 completed 才算权威结果；不可行也是有效终态。
+ * Agent 未调用对应求解工具、入参与用例不一致，分别用 solver_tool_called / arguments_match 标出。
  */
 export async function runSolverValidationCase(input: {
   request: ConsumerRequest;
@@ -197,66 +638,50 @@ export async function runSolverValidationCase(input: {
   idempotencyKey: string;
   deadline: number;
   signal?: AbortSignal;
-  pollIntervalMs?: number;
   now?: () => number;
 }): Promise<SolverValidationCaseResult> {
   const { request, workspaceId, item, signal } = input;
   const now = input.now ?? Date.now;
-  const pollIntervalMs = input.pollIntervalMs ?? 2_000;
-  for (;;) {
-    const response = await request('', '/api/solver/runs', {
-      method: 'POST',
-      workspaceId,
-      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': input.idempotencyKey },
-      body: JSON.stringify({
-        knowledge_package_id: input.ontologyId,
-        knowledge_package_revision: input.version,
-        operation_key: item.operationKey,
-        arguments: item.arguments,
-      }),
-      signal,
-    });
-    const data = await readJson(response);
-    if (!response.ok) {
-      return errorResult(item, errorCode(data, `http_${response.status}`), 'request', data?.retryable === true);
+  const caseDeadline = Math.min(input.deadline, now() + CASE_DEADLINE_MS);
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) throw signal.reason;
+  signal?.addEventListener('abort', onAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(new CaseTimeout()), Math.max(0, caseDeadline - now()));
+  const observation: AgentRunObservation = { status: '', content: '', calls: new Map() };
+  let runId = '';
+  let timedOut = false;
+  try {
+    runId = await startAgentRun({ ...input, signal: controller.signal });
+    await followAgentRun({ request, workspaceId, runId, observation, signal: controller.signal });
+  } catch (error) {
+    if (signal?.aborted) {
+      if (runId) await cancelAgentRun(request, workspaceId, runId, 'solver_validation_cancelled');
+      throw error;
     }
-    const status = String(data?.status ?? '');
-    if (status === 'running') {
-      if (now() + pollIntervalMs > input.deadline) return errorResult(item, 'solver_timeout', 'poll', true);
-      await sleep(pollIntervalMs, signal);
-      continue;
+    if (!(controller.signal.reason instanceof CaseTimeout)) {
+      if (error instanceof CaseFailure) return errorResult(item, error.code, error.phase, error.retryable, error.detail);
+      throw error;
     }
-    if (status === 'awaiting_input') {
-      const missing = Array.isArray(data?.missing) ? data.missing.map(text).filter(Boolean).slice(0, 20) as string[] : [];
-      return {
-        id: item.id, operation_key: item.operationKey, status: 'awaiting_input',
-        code: 'awaiting_input', phase: text(data?.phase) ?? 'bind', retryable: false, authoritative: false, missing,
-      };
-    }
-    if (status !== 'completed') {
-      return errorResult(
-        item,
-        errorCode(data, 'solver_result_rejected'),
-        text(data?.phase) ?? 'unknown',
-        data?.retryable === true,
-      );
-    }
-    const result: SolverValidationCaseResult = {
-      id: item.id,
-      operation_key: item.operationKey,
-      status: 'completed',
-      authoritative: data?.authoritative === true,
-      ...publicFields(data),
-      candidate_count: null,
-    };
-    const jobId = text(data?.job_id);
-    if (result.authoritative && jobId && result.candidate_results_artifact_ref) {
-      const candidates = await candidateCount(request, workspaceId, jobId, signal);
-      result.candidate_count = candidates.count;
-      if (candidates.error) result.candidate_results_error = candidates.error;
-    }
-    return result;
+    if (runId) await cancelAgentRun(request, workspaceId, runId, 'solver_validation_timeout');
+    timedOut = true;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
   }
+  // 超时：求解工具已返回结果时仍按结果判定（仅 Agent 回复超时），未返回则记为超时
+  const timedOutCall = timedOut ? lastMatchedCall(observation, item.operationKey) : undefined;
+  let result: SolverValidationCaseResult;
+  if (!timedOut) result = agentRunResult(item, observation);
+  else if (timedOutCall) result = solverCallResult(item, timedOutCall);
+  else result = errorResult(item, 'solver_timeout', runId ? 'agent' : 'admission', true);
+  const jobId = text(result.job_id);
+  if (result.status === 'completed' && result.authoritative && jobId && result.candidate_results_artifact_ref) {
+    const candidates = await candidateCount(request, workspaceId, jobId, signal);
+    result.candidate_count = candidates.count;
+    if (candidates.error) result.candidate_results_error = candidates.error;
+  }
+  return result;
 }
 
 function isAuthenticationError(error: unknown): boolean {
@@ -320,7 +745,6 @@ export async function runSolverContractValidation(input: {
   idempotencyPrefix: string;
   signal?: AbortSignal;
   request?: ConsumerRequest;
-  pollIntervalMs?: number;
   deadlineMs?: number;
   now?: () => number;
 }): Promise<SolverContractValidationReport> {
@@ -375,7 +799,7 @@ export async function runSolverContractValidation(input: {
   const results: SolverValidationCaseResult[] = [];
   for (const item of input.cases) {
     if (now() >= deadline) {
-      results.push(errorResult(item, 'solver_timeout', 'poll', true));
+      results.push(errorResult(item, 'solver_timeout', 'admission', true));
       continue;
     }
     results.push(await stage('cases', () => runSolverValidationCase({
@@ -387,7 +811,6 @@ export async function runSolverContractValidation(input: {
       idempotencyKey: `${input.idempotencyPrefix}:${item.id}`,
       deadline,
       signal,
-      pollIntervalMs: input.pollIntervalMs,
       now,
     })));
   }

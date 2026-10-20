@@ -525,15 +525,18 @@ def graph_plan(root: Path, tables: list[Table], binding: dict) -> dict:
     声明转换不出来。前两种不影响这轮评测能不能跑，只作提示。
     """
     mapping = package_mapping.object_data_mappings(binding, graph=True)
+    relation_report: dict = {}
     declared, relation_notes = package_mapping.graph_relations(
-        package_mapping.read_object_texts(root), set(mapping["objects"]),
+        package_mapping.read_object_texts(root), set(mapping["objects"]), relation_report,
     )
     relations, unusable = graph_relation_mapping(_upload_shape(tables, mapping, declared))
     nodes, node_problems, node_warnings = _node_rows(tables, mapping)
     edges, edge_problems, edge_warnings = _edge_counts(tables, mapping, relations, nodes)
     instances = {key: len(rows) for key, rows in nodes.items()}
     problems = relation_notes + unusable + node_problems + edge_problems
-    warnings = node_warnings + edge_warnings
+    # 端点是概念对象的关系不导入也不阻断，只作提示
+    skipped_quietly = [note for note in relation_report["notes"] if note not in relation_notes]
+    warnings = skipped_quietly + node_warnings + edge_warnings
     if mapping["objects"] and not sum(instances.values()):
         problems.append("导入数据里没有一行主键完整，图里不会有任何实例")
     if edges and not sum(item["instances"] for item in edges):

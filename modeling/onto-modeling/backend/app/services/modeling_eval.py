@@ -225,17 +225,20 @@ def _graph_import(
             data=body, content_type=ctype, timeout=180,
         )["upload"]
         relations, skipped = eval_import.graph_relation_mapping(upload)
-        exported_count = (plan.get("relation_report") or {}).get("relations_exported")
+        relation_report = plan.get("relation_report") or {}
+        # 导包时已放过的关系（端点是概念对象或已确认降级）只作提示，跟着本轮结果一起展示
+        export_notes = list(relation_report.get("notes") or [])
+        exported_count = relation_report.get("relations_exported")
         if exported_count is not None and exported_count != len((upload.get("schema") or {}).get("relations") or []):
             skipped.append("知识包导出与图导入读取的关系定义数不一致，请检查知识包转换")
         report = {
-            **(plan.get("relation_report") or {}),
+            **relation_report,
             "nodes": 0, "relationships": 0,
             "entities": entities,
             "expected_instances": plan.get("expected_instances"),
             "expected_edges": plan.get("expected_edges"),
             "relations_mapped": len(relations),
-            "relations_skipped": len(skipped), "notes": skipped,
+            "relations_skipped": len(export_notes) + len(skipped), "notes": export_notes + skipped,
         }
         _write_state(root, graph_import=report)
         if skipped:
@@ -247,7 +250,7 @@ def _graph_import(
         )["validation"]
         mismatches = _graph_plan_mismatches(validation, plan)
         if mismatches:
-            _write_state(root, graph_import={**report, "notes": skipped + mismatches})
+            _write_state(root, graph_import={**report, "notes": report["notes"] + mismatches})
             raise RuntimeError("导入预检与预览不一致，已在写入图库前停下：" + "；".join(mismatches))
         _check_stop(project_id)
         run = _http(
@@ -264,7 +267,7 @@ def _graph_import(
         detail = str(getattr(exc, "detail", "") or "") or f"HTTP {exc.code}"
         raise RuntimeError(f"图数据导入失败：{detail}") from exc
     finished = _poll_graph_import(project_id, root, tok, mp_project, run["id"])
-    notes = skipped + list(validation.get("warnings") or [])
+    notes = report["notes"] + list(validation.get("warnings") or [])
     counts = validation.get("counts") or {}
     notes += [
         f"实体「{item.get('objectKey')}」{item.get('message') or item.get('code')}"

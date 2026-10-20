@@ -181,8 +181,10 @@ class WorkspaceManager:
         _git(root, "commit", "-m", "init: 任务工作区基线", "--allow-empty")
         return meta
 
-    # 与前端阶段定义保持一致的目录探针：可选阶段未完成时跳过继续，
-    # 必选阶段未完成即停。index.md 是目录索引，不算产物。
+    # 与前端 LeftPane STAGES 一一对应的目录探针；完成数与前端 stageStatuses 的
+    # finish 数一致：逐阶段独立计数，必选阶段缺失不截断后续（导入包、空 research/
+    # 等后续阶段已有产物的项目不再显示 0）。optional 只决定前端展示，不影响计数。
+    # index.md 是目录索引，不算产物。
     # ontology/logic 是旧目录别名（范式升级 ADR-0004），探针两者取或。
     STAGES = (
         (("research",), False),
@@ -194,6 +196,8 @@ class WorkspaceManager:
         (("ontology/data-mock",), False),
         (("ontology/testcase",), False),
         (("ontology/scripts",), True),
+        # 求解适配（可选）：受管目录 ontology/solver/<key>/
+        (("ontology/solver",), True),
         # 数据评测（可选，方案 eval-optimization-integration）：探针为报告文件 glob
         (("reports/eval-*.md",), True),
     )
@@ -211,20 +215,16 @@ class WorkspaceManager:
 
     @classmethod
     def _project_progress(cls, root: Path) -> dict:
-        done = 0
-        for dirs, optional in cls.STAGES:
-            hit = any(
+        done = sum(
+            1
+            for dirs, _optional in cls.STAGES
+            if any(
                 (next(root.glob(rel), None) is not None)
                 if "*" in rel
                 else cls._dir_has_entries(root / rel)
                 for rel in dirs
             )
-            if hit:
-                done += 1
-            elif optional:
-                continue
-            else:
-                break
+        )
 
         def count_md(rel: str) -> int:
             directory = root / rel
@@ -708,7 +708,8 @@ class WorkspaceManager:
         图模式下，端点因此未绑定的关系也只记原因不阻断（图里本来就没有该类节点）。
 
         工作区有求解契约（ontology/solver/）时升级为 v0.2 operation-centric.v1：求解
-        Operation 改名为 solver_key 并补 execution 声明，sidecar 原字节写到 operations/，
+        Operation 改名为 solver_key 并补 execution 声明，sidecar 原字节写到 operations/
+        （受管模板的输入 Schema 例外：按评估器补装置与原油品种的可选值），
         manifest 与两级 index 带上求解声明。没有求解契约的包逐字节保持 v0.1。
         """
         import zipfile
@@ -769,7 +770,10 @@ class WorkspaceManager:
                 "求解契约无法发布：" + "；".join(f"{p}（{p.path}）" for p in solver_problems),
                 code=solver_problems[0].code,
             )
-        solver = solver_contract.render_package_solver(solver_contracts)
+        solver_evaluators = self.solver_check(project_id).evaluators if solver_contracts else {}
+        solver = solver_contract.render_package_solver(
+            solver_contracts, {key: root / rel for key, rel in solver_evaluators.items()}
+        )
         solver_by_stem = {item.operation: item for item in solver.contracts}
 
         def package_operation_key(stem: str) -> str:
@@ -914,28 +918,39 @@ class WorkspaceManager:
                     extra = f"uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n"
                     zf.writestr(f"{pkg}/metrics/{key}.md", front("metric", key, key, extra) + body)
             if scripts:
-                zf.writestr(
-                    f"{pkg}/scripts/index.md",
-                    index_md(
-                        "script_index", "scripts", "脚本目录", scripts,
-                        ["script key", "标题"],
-                        lambda k: f"| {k} | {k} |\n",
-                    ),
-                )
                 operation_keys = {key for key, _ in operations}
+                described = []
                 for key, code in scripts:
                     filename = _package_script_filename(key)
                     zf.writestr(f"{pkg}/scripts/{filename}", code)
-                    # 执行契约：描述符须声明 entrypoint；bound_operation 使脚本
-                    # 成为该 operation 的可执行实现；参数表驱动 CLI 参数组装。
-                    # entrypoint 是相对 scripts/ 的文件名：modeling 按 scripts/<entrypoint>
-                    # 取源码且只收 ASCII 文件名，consumer 缺 scripts/ 前缀时自动补齐。
                     try:
                         bound, params = _script_header_meta(code)
                     except ScriptContractError as exc:
                         raise WorkspaceError(f"脚本 {key} 契约无效：{exc}") from exc
+                    bound = bound if bound in operation_keys else None
+                    # 求解评估器由求解契约引用、不是 operation 的可执行实现：只带源码不写描述符。
+                    # consumer 扫描 scripts/*.py 发现评估器；modeling 把每个描述符都当
+                    # operation 脚本校验，未绑定 operation 的描述符会让整包被拒。
+                    if bound is None and solver_contract.is_evaluator(code.encode("utf-8")):
+                        continue
+                    described.append((key, filename, bound, params))
+                if described:
+                    zf.writestr(
+                        f"{pkg}/scripts/index.md",
+                        index_md(
+                            "script_index", "scripts", "脚本目录",
+                            [(key, "") for key, *_rest in described],
+                            ["script key", "标题"],
+                            lambda k: f"| {k} | {k} |\n",
+                        ),
+                    )
+                for key, filename, bound, params in described:
+                    # 执行契约：描述符须声明 entrypoint；bound_operation 使脚本
+                    # 成为该 operation 的可执行实现；参数表驱动 CLI 参数组装。
+                    # entrypoint 是相对 scripts/ 的文件名：modeling 按 scripts/<entrypoint>
+                    # 取源码且只收 ASCII 文件名，consumer 缺 scripts/ 前缀时自动补齐。
                     extra = f"entrypoint: {filename}\n"
-                    if bound and bound in operation_keys:
+                    if bound:
                         extra += f"bound_operation: {q(package_operation_key(bound))}\n"
                     body = f"由 /ontology-codegen 生成的确定性脚本，实现见 `{filename}`。\n"
                     if params:

@@ -985,6 +985,7 @@ export default function CenterPane({
               versions={versions}
               onOpenFile={onOpenFile}
               onWorkspaceChanged={onWorkspaceChanged}
+              onCommand={onCommand}
             />
           </Suspense>
         </div>

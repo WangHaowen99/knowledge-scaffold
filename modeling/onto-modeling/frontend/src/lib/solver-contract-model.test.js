@@ -10,6 +10,8 @@ import {
   draftFromView,
   draftKey,
   engineCapabilities,
+  evaluatorCommand,
+  evaluatorCommandBlocker,
   findProblemFamily,
   isEnabled,
   isManagedSolverPath,
@@ -93,6 +95,8 @@ const PARAMS = {
   display_mapping: { OPTION_0: '方案甲', OPTION_1: '方案乙' },
   title: '路线方案',
   evaluator_path: '',
+  process_name: '',
+  stream_name: '',
 };
 
 // 附属文件与模板参数生成结果一致的契约（后端按字节比对判定为 managed）
@@ -191,7 +195,9 @@ test('units are trimmed, blank rows dropped and extra keys kept', () => {
 test('new contracts start from the template with an automatic key and form parameters', () => {
   const template = {
     declaration: { engine_requirements: { problem_family: 'p' } },
-    params: { display_mapping: { OPTION_0: '', OPTION_1: '' }, title: '', evaluator_path: '' },
+    params: {
+      display_mapping: { OPTION_0: '', OPTION_1: '' }, title: '', evaluator_path: '', process_name: '', stream_name: '',
+    },
   };
   const items = draftFromView(view());
   const added = newDraftItem(template, '规划路线', items);
@@ -215,11 +221,19 @@ test('new contracts start from the template with an automatic key and form param
 });
 
 test('template parameters are trimmed and limited to the known keys', () => {
-  const empty = { display_mapping: { OPTION_0: '', OPTION_1: '' }, title: '', evaluator_path: '' };
+  const empty = {
+    display_mapping: { OPTION_0: '', OPTION_1: '' }, title: '', evaluator_path: '', process_name: '', stream_name: '',
+  };
   assert.deepEqual(normalizeParams(null), empty);
   assert.deepEqual(
-    normalizeParams({ display_mapping: { OPTION_0: ' 甲 ', OPTION_2: '丙' }, title: 3, evaluator_path: ' scripts/e.py ', x: 1 }),
-    { display_mapping: { OPTION_0: '甲', OPTION_1: '' }, title: '', evaluator_path: 'scripts/e.py' },
+    normalizeParams({
+      display_mapping: { OPTION_0: ' 甲 ', OPTION_2: '丙' }, title: 3, evaluator_path: ' scripts/e.py ', x: 1,
+      process_name: ' 工序甲 ', stream_name: null,
+    }),
+    {
+      display_mapping: { OPTION_0: '甲', OPTION_1: '' }, title: '', evaluator_path: 'scripts/e.py',
+      process_name: '工序甲', stream_name: '',
+    },
   );
 });
 
@@ -248,6 +262,7 @@ test('parameter edits report only the files the template writes them to', () => 
   assert.deepEqual(files(setOptionLabel(item, 'OPTION_1', '方案丙')), ['model.yaml']);
   assert.deepEqual(files(setTemplateParam(item, 'evaluator_path', 'scripts/other_eval.py')), ['model.yaml']);
   assert.deepEqual(files(setTemplateParam(item, 'title', '新标题')), ['presentation.yaml']);
+  assert.deepEqual(files(setTemplateParam(item, 'stream_name', '物流甲')), ['model.yaml']);
   assert.deepEqual(
     files(setField(setTemplateParam(item, 'title', '新标题'), 'decision_model', 'route_plan_v2')),
     ['binding.yaml', 'presentation.yaml'],
@@ -294,6 +309,14 @@ test('template parameter problems block saving before the backend would', () => 
   assert.deepEqual(problems(setOptionLabel(item, 'OPTION_0', '甲\n乙')).map(([field]) => field), ['display_mapping']);
   assert.deepEqual(problems(setTemplateParam(item, 'title', '标\u0007题')).map(([field]) => field), ['title']);
   assert.deepEqual(problems(setTemplateParam(item, 'title', '标题\n\u0085')), [], 'edge whitespace is stripped like the backend');
+
+  // 结果文字：两项同时填写或都留空，口径同后端 _check_text_presentation
+  const named = setTemplateParam(setTemplateParam(item, 'process_name', '工序甲'), 'stream_name', '物流甲');
+  assert.deepEqual(problems(named), []);
+  assert.deepEqual(problems(setTemplateParam(named, 'stream_name', ' ')).map(([field]) => field), ['text_presentation']);
+  assert.match(problems(setTemplateParam(named, 'stream_name', ''))[0][1], /同时填写/);
+  assert.match(problems(setTemplateParam(named, 'process_name', 'x'.repeat(129)))[0][1], /128/);
+  assert.deepEqual(problems(setTemplateParam(named, 'process_name', '工\u0007序')).map(([field]) => field), ['text_presentation']);
 });
 
 test('template findings point at the form field that produced them', () => {
@@ -305,6 +328,8 @@ test('template findings point at the form field that produced them', () => {
   assert.deepEqual(at('model.yaml', 'template'), { uid, field: 'display_mapping' });
   assert.deepEqual(at('model.yaml', 'fact_source.evaluator_path'), { uid, field: 'evaluator_path' });
   assert.deepEqual(at('presentation.yaml', 'title'), { uid, field: 'title' });
+  assert.deepEqual(at('model.yaml', 'text_presentation'), { uid, field: 'text_presentation' });
+  assert.deepEqual(at('model.yaml', 'process_name'), { uid, field: 'text_presentation' });
   assert.deepEqual(at('model.yaml', 'objectives'), { uid, role: 'entry' });
   assert.deepEqual(at('model.yaml', 'display_mapping', [toManual(items[0], SIDECARS)]), { uid, role: 'entry' });
 
@@ -664,6 +689,18 @@ test('starting a validation needs a saved, clean contract with full case coverag
   assert.match(startBlocker(two, { cases }), /find_station/);
   assert.equal(isValidationActive({ status: 'running' }), true);
   assert.equal(isValidationActive({ status: 'failed' }), false);
+});
+
+test('the evaluator command targets the saved contract and waits for a clean, saved draft', () => {
+  const [saved] = draftFromView(view([managedOperation()]));
+  assert.equal(evaluatorCommand(saved), '/ontology-solver-evaluator plan_route');
+  assert.equal(evaluatorCommandBlocker(saved), '');
+  assert.match(evaluatorCommandBlocker(saved, { dirty: true }), /未保存/);
+  const renamed = setField(saved, 'solver_key', 'other_route');
+  assert.equal(evaluatorCommand(renamed), '/ontology-solver-evaluator plan_route', 'renames apply after saving');
+  assert.match(evaluatorCommandBlocker(newDraftItem({}, '规划路线', [saved])), /先保存/);
+  const [invalid] = draftFromView(view([operation('Bad Key')]));
+  assert.match(evaluatorCommandBlocker(invalid), /求解标识/);
 });
 
 test('case rows expose the per-case verdict, 2N expectation and first failed assertion', () => {
