@@ -7,7 +7,6 @@ import {
   Input,
   Select,
   Space,
-  Switch,
   Table,
   Tag,
   Typography,
@@ -15,8 +14,7 @@ import {
 } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { api, authStore } from '../lib/api.js';
-
-const EMPTY_DRAFT = { name: '', transport: 'http', url: '', command: '' };
+import { buildClientConfigs } from '../lib/mcpClientConfig.js';
 
 function copyText(text, label) {
   if (navigator.clipboard?.writeText) {
@@ -35,36 +33,6 @@ function copyText(text, label) {
   const copied = document.execCommand('copy');
   textarea.remove();
   copied ? message.success(`${label}已复制`) : message.warning('复制失败，请手动选择复制');
-}
-
-function mcpUrl(runtime, toolset) {
-  return (runtime?.urls || []).find(
-    (item) => item.toolset === toolset && item.transport === 'streamable-http',
-  )?.url || '';
-}
-
-function buildClientConfigs(runtime, token, scopes) {
-  const selected = Array.isArray(scopes) ? scopes : [
-    'ontology.read', 'ontology.change.validate', 'ontology.change.apply',
-  ];
-  const auth = { Authorization: `Bearer ${token || '<MCP_TOKEN>'}` };
-  const read = selected.includes('ontology.read') && mcpUrl(runtime, 'read')
-    ? { type: 'http', url: mcpUrl(runtime, 'read'), headers: auth }
-    : null;
-  const change = selected.some((scope) => scope.startsWith('ontology.change.')) && mcpUrl(runtime, 'change')
-    ? { type: 'http', url: mcpUrl(runtime, 'change'), headers: auth }
-    : null;
-  const json = (servers) => Object.keys(servers).length
-    ? JSON.stringify({ mcpServers: servers }, null, 2)
-    : '';
-  return {
-    read: read ? json({ 'modeling-read': read }) : '',
-    change: change ? json({ 'modeling-change': change }) : '',
-    combined: json({
-      ...(read ? { 'modeling-read': read } : {}),
-      ...(change ? { 'modeling-change': change } : {}),
-    }),
-  };
 }
 
 function formatMcpTime(value) {
@@ -201,7 +169,7 @@ function ExposedService({ project }) {
       <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
         <Space size={[6, 6]} wrap>
           <Tag color={runtime.running ? 'success' : 'warning'}>{runtime.running ? '运行中' : '未运行'}</Tag>
-          <Tag>{runtime.transport || 'streamable-http'}</Tag>
+          <Tag>{runtime.transport === 'both' ? 'HTTP / SSE' : runtime.transport || 'streamable-http'}</Tag>
           <Tag>{runtime.server_name}@{runtime.server_version}</Tag>
           {(runtime.protocol_versions || []).map((version) => <Tag key={version}>{version}</Tag>)}
         </Space>
@@ -296,181 +264,6 @@ function ExposedService({ project }) {
   );
 }
 
-// 消费外部 MCP 服务器的配置（会话装配用）
-function ExternalServers({ project }) {
-  const [servers, setServers] = useState([]);
-  const [draft, setDraft] = useState(EMPTY_DRAFT);
-
-  useEffect(() => {
-    api.getMcp().then((data) => setServers(data.servers)).catch(() => {});
-  }, []);
-
-  const persist = async (next) => {
-    try {
-      const saved = await api.saveMcp(next);
-      setServers(saved.servers);
-      return true;
-    } catch (error) {
-      message.error(error.message);
-      return false;
-    }
-  };
-
-  return (
-    <div>
-      {servers.length === 0 ? (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未配置外部服务器" />
-      ) : (
-        <Space direction="vertical" style={{ width: '100%' }} size={8}>
-          {servers.map((server, index) => (
-            <div key={server.name} className="mcp-row">
-              <Tag color="processing">{server.transport}</Tag>
-              <div className="mcp-meta">
-                <div className="mcp-name">{server.name}</div>
-                <div className="mcp-target">{server.url || server.command}</div>
-              </div>
-              <Switch
-                size="small"
-                checked={server.enabled}
-                onChange={(checked) =>
-                  persist(servers.map((s, i) => (i === index ? { ...s, enabled: checked } : s)))
-                }
-              />
-              <Button
-                size="small"
-                type="text"
-                onClick={async () => {
-                  try {
-                    const result = await api.mcpTest(server);
-                    (result.ok ? message.success : message.warning)(
-                      `${server.name}：${result.detail}`,
-                    );
-                  } catch (error) {
-                    message.error(error.message);
-                  }
-                }}
-              >
-                测试
-              </Button>
-              <Button
-                size="small"
-                type="text"
-                icon={<DeleteOutlined />}
-                onClick={() => persist(servers.filter((_, i) => i !== index))}
-              />
-            </div>
-          ))}
-        </Space>
-      )}
-      <div className="mcp-add">
-        <Typography.Text strong>添加服务器</Typography.Text>
-        <Space.Compact style={{ width: '100%', marginTop: 8 }}>
-          <Input
-            placeholder="名称"
-            value={draft.name}
-            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-            style={{ width: '38%' }}
-          />
-          <Select
-            value={draft.transport}
-            onChange={(transport) => setDraft({ ...draft, transport })}
-            options={[
-              { value: 'http', label: 'HTTP' },
-              { value: 'sse', label: 'SSE' },
-              { value: 'stdio', label: 'stdio' },
-            ]}
-            style={{ width: '28%' }}
-          />
-        </Space.Compact>
-        <Input
-          style={{ marginTop: 8 }}
-          placeholder={draft.transport === 'stdio' ? '启动命令（含参数）' : '服务地址 http(s)://…'}
-          value={draft.transport === 'stdio' ? draft.command : draft.url}
-          onChange={(e) =>
-            setDraft(
-              draft.transport === 'stdio'
-                ? { ...draft, command: e.target.value }
-                : { ...draft, url: e.target.value },
-            )
-          }
-        />
-        <Button
-          type="primary"
-          size="small"
-          icon={<PlusOutlined />}
-          style={{ marginTop: 8 }}
-          onClick={async () => {
-            if (await persist([...servers, { ...draft, enabled: true }])) setDraft(EMPTY_DRAFT);
-          }}
-        >
-          添加
-        </Button>
-      </div>
-      <Typography.Paragraph type="secondary" style={{ marginTop: 12, fontSize: 12 }}>
-        配置在新会话生效。
-        {project && (
-          <Typography.Link
-            onClick={async () => {
-              await api.closeSession(project.id).catch(() => {});
-              message.success('会话已重置，下次发消息按最新配置启动');
-            }}
-          >
-            {' '}
-            重启当前任务的会话
-          </Typography.Link>
-        )}
-      </Typography.Paragraph>
-    </div>
-  );
-}
-
-// 项目级启用开关：全局启用的服务器可在单个任务里停用（新会话生效）
-export function ProjectMcpToggle({ project }) {
-  const [data, setData] = useState(null);
-
-  useEffect(() => {
-    if (!project) return;
-    api.getProjectMcp(project.id).then(setData).catch(() => {});
-  }, [project]);
-
-  if (!project || !data || data.servers.length === 0) return null;
-
-  const toggle = async (name, enabled) => {
-    const disabled = new Set(data.disabled);
-    if (enabled) disabled.delete(name);
-    else disabled.add(name);
-    try {
-      await api.saveProjectMcp(project.id, [...disabled]);
-      setData(await api.getProjectMcp(project.id));
-      message.success('已保存，本任务新会话生效');
-    } catch (error) {
-      message.error(error.message);
-    }
-  };
-
-  return (
-    <div style={{ marginTop: 16 }}>
-      <Typography.Text strong>本任务启用状态（{project.name}）</Typography.Text>
-      <Space direction="vertical" style={{ width: '100%', marginTop: 8 }} size={4}>
-        {data.servers.map((server) => (
-          <div key={server.name} className="mcp-row">
-            <Tag color="processing">{server.transport}</Tag>
-            <div className="mcp-meta">
-              <div className="mcp-name">{server.name}</div>
-            </div>
-            <Switch
-              size="small"
-              disabled={!server.enabled_globally}
-              checked={server.enabled}
-              onChange={(checked) => toggle(server.name, checked)}
-            />
-          </div>
-        ))}
-      </Space>
-    </div>
-  );
-}
-
 export default function McpSettings({ project }) {
   return (
     <div>
@@ -481,14 +274,6 @@ export default function McpSettings({ project }) {
         当前项目复用 Modeling 的 5188 MCP 服务，Read 和 Change 地址、Token 及权限由 Modeling 统一管理。
       </Typography.Paragraph>
       <ExposedService project={project} />
-      <Typography.Title level={5} style={{ marginTop: 24 }}>
-        外部 MCP 服务器
-      </Typography.Title>
-      <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-        为建模助手接入外部工具能力。
-      </Typography.Paragraph>
-      <ExternalServers project={project} />
-      <ProjectMcpToggle project={project} />
     </div>
   );
 }
