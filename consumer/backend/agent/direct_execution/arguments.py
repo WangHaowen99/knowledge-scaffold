@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 from agent.direct_execution.models import RuntimeContext
 from agent.tools.script_parameters import (
     append_script_parameter_cli_argument,
+    format_number_cli_value,
     is_runtime_parameter,
     runtime_parameter_field,
     runtime_reserved_parameter_field,
@@ -690,7 +691,7 @@ def _convert_parameter_value(
             return None, "expected integer"
     if param_type in ("float", "number"):
         try:
-            return str(float(value)), None
+            return format_number_cli_value(value), None
         except (TypeError, ValueError):
             return None, "expected number"
     if param_type in {"bool", "boolean"}:

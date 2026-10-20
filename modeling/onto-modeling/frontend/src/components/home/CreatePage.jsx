@@ -1,12 +1,12 @@
 import { useRef, useState } from 'react';
 import { message } from 'antd';
 import { api } from '../../lib/api.js';
-import { MATERIAL_PURPOSES } from '../LeftPane.jsx';
 import { MAX_NAME_LENGTH, useNameConflict } from '../NameConflictDialog.jsx';
 import './modeling-home.css';
 
 /* 全屏新建项目页 —— 结构与样式复刻 modeling workbench/pages/CreatePage.jsx。
-   资料用途/精读模式随上传写入 resource/materials.json；无数据源选择（onto-web 不区分）。 */
+   资料用途不在这里选：上传时平台按结构识别数据表、术语表，其余由助手按内容判断；
+   识别结果在资料区可见可改。阅读方式由平台按资料类型决定。无数据源选择（onto-web 不区分）。 */
 export default function CreatePage({ onBack, onCreated }) {
   const [over, setOver] = useState(false);
   const [files, setFiles] = useState([]);
@@ -29,15 +29,10 @@ export default function CreatePage({ onBack, onCreated }) {
             file,
             name: file.name,
             meta: formatSize(file.size),
-            purpose: 'auto',
-            readingMode: 'on_demand',
           })),
       ];
     });
   };
-
-  const updateFile = (name, patch) =>
-    setFiles((current) => current.map((item) => (item.name === name ? { ...item, ...patch } : item)));
 
   // 名称作参数传入：同名冲突改名重试时，输入框状态还是旧名称。失败抛出，由调用方分流
   const createAs = async (projectName) => {
@@ -158,39 +153,13 @@ export default function CreatePage({ onBack, onCreated }) {
                     移除
                   </button>
                 </div>
-                <div className="wb-material-directives">
-                  <label>
-                    <span>用途</span>
-                    <select
-                      className="input"
-                      value={f.purpose}
-                      aria-label={`${f.name}的资料用途`}
-                      onChange={(event) => updateFile(f.name, { purpose: event.target.value })}
-                    >
-                      {MATERIAL_PURPOSES.map((opt) => (
-                        <option
-                          key={opt.value}
-                          value={opt.value}
-                          disabled={opt.tableOnly && !/\.(xlsx?|csv)$/i.test(f.name)}
-                        >
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="wb-material-reading">
-                    <input
-                      type="checkbox"
-                      checked={f.readingMode === 'full'}
-                      onChange={(event) =>
-                        updateFile(f.name, { readingMode: event.target.checked ? 'full' : 'on_demand' })
-                      }
-                    />
-                    <span>全文精读</span>
-                  </label>
-                </div>
               </div>
             ))}
+            {files.length > 0 && (
+              <div className="wb-create-hint">
+                资料用途自动识别（数据表、术语表按表格结构识别，其余由助手按内容判断），建模开始后可在左侧资料区查看和修改。
+              </div>
+            )}
           </div>
 
           {error && (

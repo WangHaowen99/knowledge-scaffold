@@ -42,6 +42,8 @@ const prefersReducedMotion = () =>
 
 function phaseIndex(st) {
   if (st.status === 'done') return PHASES.length;
+  // 排队等待评测槽位：还没进入任何阶段（排队位次在 message 里）
+  if (st.phase === 'queued') return -1;
   const key = DS_PHASES.includes(st.phase) ? 'ds' : st.phase;
   return Math.max(0, PHASES.findIndex(([k]) => k === key));
 }

@@ -6,8 +6,10 @@
   桥接为平台事件推入内部队列；events() 从队列产出
 - 确认卡：ask_user / 审批 interaction 桥到 ctx.request_permission（与 Claude 引擎
   同一张前端卡），答案经 InteractiveInput 回填后续跑
-- resume = 历史回放：连接时把事件历史注水 create_new_context_engine，
-  跨进程天然成立，不依赖任何 transcript 文件
+- resume = 框架 checkpoint 续接：会话状态（含工具调用/结果、思考的完整上下文）
+  落 DATA_DIR 下的 SQLite，回收、重启后凭续接 token 由 Runner 恢复；无可用存档时
+  （首次切到本引擎、显式关闭过会话、上一轮停在确认卡上）退回历史回放——
+  把事件历史里的问答文本注水 create_new_context_engine
 - 目录分层：DeepAgentConfig.cwd = 项目 git 工作区（文件/Shell 工具的根），
   workspace = DATA_DIR/jiuwen/<pid>（框架私有工件区），互不污染；子代理工件区
   再下沉到 workspace/sub_agents（必须与主 agent 分开，见 _general_purpose_spec）
@@ -25,11 +27,12 @@ import json
 import time
 import uuid
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from ... import config
-from .base import CONFIG_ERROR, FRIENDLY_ERROR, EngineContext, safe_json
+from .base import FRIENDLY_ERROR, EngineContext, config_error_for, safe_json
 from .jiuwen_progress import JiuwenProgressTracker, build_progress_rail, progress_scope
 
 JIUWEN_AVAILABLE = importlib.util.find_spec("openjiuwen") is not None
@@ -68,8 +71,12 @@ def shadow_dir(project_id: str) -> Path:
     return Path(config.DATA_DIR) / "jiuwen" / project_id
 
 
-def model_config() -> dict:
-    """Jiuwen 引擎的 OpenAI 兼容模型配置：UI 配置优先，env 兜底。"""
+def model_config(owner: str = "") -> dict:
+    """Jiuwen 引擎的 OpenAI 兼容模型配置：UI 配置优先，env 兜底。
+
+    owner 非空时 Key 换成该用户的个人 Key，网关地址 / 模型个人未填则沿用上述结果；
+    个人配置读取失败直接抛错，不回落到管理员 Key。
+    """
     cfg = {
         "base_url": config.JIUWEN_BASE_URL,
         "api_key": config.JIUWEN_API_KEY,
@@ -84,6 +91,15 @@ def model_config() -> dict:
                 cfg[key] = ui[key]
     except Exception:
         pass
+    if owner:
+        from .. import personal_model_settings
+
+        personal = personal_model_settings.resolve(owner, "jiuwen")
+        cfg = {
+            "base_url": personal["base_url"] or cfg["base_url"],
+            "api_key": personal["api_key"],
+            "model": personal["model"] or cfg["model"],
+        }
     return cfg
 
 
@@ -93,7 +109,11 @@ def _fingerprint(cfg: dict) -> str:
     ).hexdigest()[:16]
 
 
-async def _ensure_runner_started() -> None:
+def _checkpoint_db_path() -> Path:
+    return Path(config.DATA_DIR) / "jiuwen" / "checkpoints.db"
+
+
+async def _ensure_runner_started(log_error: Callable[[str, str], None]) -> None:
     global _RUNNER_STARTED, _RUNNER_LOCK
     if _RUNNER_LOCK is None:
         _RUNNER_LOCK = asyncio.Lock()
@@ -101,8 +121,29 @@ async def _ensure_runner_started() -> None:
         if _RUNNER_STARTED:
             return
         from openjiuwen.core.runner import Runner
+        from openjiuwen.core.runner.runner_config import (
+            get_runner_config,
+            set_runner_config,
+        )
+        from openjiuwen.core.session.checkpointer.checkpointer import CheckpointerConfig
 
-        await Runner.start()
+        # 默认的内存 checkpointer 随进程消失；改为持久化，Runner.start 据此装配
+        checkpointer = CheckpointerConfig(
+            type="persistence",
+            conf={"db_type": "sqlite", "db_path": str(_checkpoint_db_path())},
+        )
+        set_runner_config(
+            get_runner_config().model_copy(update={"checkpointer_config": checkpointer})
+        )
+        try:
+            await Runner.start()
+        except Exception as exc:
+            # 持久化存档装配失败（如缺 aiosqlite）：退回内存版，续接降级为历史回放，不阻断会话
+            log_error("checkpoint", f"持久化存档不可用，已退回内存存档：{exc}")
+            set_runner_config(
+                get_runner_config().model_copy(update={"checkpointer_config": None})
+            )
+            await Runner.start()
         _RUNNER_STARTED = True
 
 
@@ -437,7 +478,12 @@ class JiuwenEngine:
         self._queue: asyncio.Queue = asyncio.Queue()
         self._turn_task: asyncio.Task | None = None
         self._buffered: list[str] = []  # 轮内追加的消息，本轮结束后接续
+        # 上下文引擎与流式运行都按这个 id 寻址：每条会话一个，default 沿用单会话时期的值
         self._sid = f"onto-{ctx.project_id}"
+        if ctx.conversation_id != "default":
+            self._sid += f"-{ctx.conversation_id}"
+        # 续接 token：本引擎每轮正常收尾后写下，表示 checkpoint 可用于续接
+        self._resume_token = f"jiuwen:{self._sid}"
         from .jiuwen_assets import JiuwenAssetLoader
 
         self._loader = JiuwenAssetLoader(Path(config.ASSETS_DIR))
@@ -455,29 +501,47 @@ class JiuwenEngine:
     async def connect(self) -> bool:
         if not JIUWEN_AVAILABLE:
             raise RuntimeError(UNAVAILABLE_MESSAGE)
-        cfg = model_config()
+        cfg = model_config(self._ctx.model_owner)
         if not (cfg.get("base_url") and cfg.get("api_key") and cfg.get("model")):
             raise RuntimeError(UNCONFIGURED_MESSAGE)
         # openjiuwen 首次 import 较重（秒级），放线程避免卡住事件循环
         agent, tracker = await asyncio.to_thread(self._build_agent, cfg)
-        await _ensure_runner_started()
-        history = list(self._ctx.load_history()) if self._ctx.load_history else []
-        replayed = _history_to_messages(history)
-        if replayed:
-            agent.ensure_initialized()
-            await agent.create_new_context_engine(
-                session_id=self._sid, messages=replayed
-            )
+        await _ensure_runner_started(self._ctx.log_error)
+        resumed = await self._resume_from_checkpoint()
+        if not resumed:
+            history = list(self._ctx.load_history()) if self._ctx.load_history else []
+            replayed = _history_to_messages(history)
+            if replayed:
+                await agent.create_new_context_engine(
+                    session_id=self._sid, messages=replayed
+                )
+            resumed = bool(replayed)
         self.client = agent
         self._tracker = tracker
         self._fingerprint = _fingerprint(cfg)
-        self.resume_attempted = bool(replayed)
-        return bool(replayed)
+        self.resume_attempted = resumed
+        return resumed
+
+    async def _resume_from_checkpoint(self) -> bool:
+        """续接 token 有效且存档仍在：首轮由 Runner 从 checkpoint 恢复完整上下文。
+
+        否则清掉残留存档，交给历史回放——显式关闭过会话（token 已清）、
+        上一轮停在确认卡上（存档带挂起中断，普通消息会被当成卡片答复）都走这里。
+        """
+        from openjiuwen.core.session.checkpointer import CheckpointerFactory
+
+        checkpointer = CheckpointerFactory.get_checkpointer()
+        if self._ctx.load_resume_token() == self._resume_token:
+            if await checkpointer.session_exists(self._sid):
+                return True
+        await checkpointer.release(self._sid)
+        return False
 
     def _build_agent(self, cfg: dict):
         """测试替换点：单测注入假 agent，不触碰真实框架。"""
         from openjiuwen.core.foundation.llm import init_model
         from openjiuwen.core.runner import Runner
+        from openjiuwen.core.single_agent import AgentCard
         from openjiuwen.core.sys_operation import (
             LocalWorkConfig,
             OperationMode,
@@ -543,6 +607,13 @@ class JiuwenEngine:
         )
         agent = create_deep_agent(
             model=model,
+            # checkpoint 按（会话 id, agent id）存取：agent id 默认每个实例随机，
+            # 重建的实例读不到上一个实例的存档，故按项目固定
+            card=AgentCard(
+                id=f"onto-jiuwen-{self._ctx.project_id}",
+                name="deep_agent",
+                description="DeepAgent instance",
+            ),
             system_prompt=system_prompt,
             rails=rails,
             workspace=Workspace(root_path=str(shadow), language="cn"),
@@ -606,7 +677,7 @@ class JiuwenEngine:
 
     def config_stale(self) -> bool:
         return bool(self._fingerprint) and self._fingerprint != _fingerprint(
-            model_config()
+            model_config(self._ctx.model_owner)
         )
 
     # ---- 事件流 ----
@@ -659,6 +730,8 @@ class JiuwenEngine:
                         # 这里不能把在飞的子任务判成停止
                         await self._progress_tracker.finish_all("stopped")
                         break
+                    # 此刻存档带着挂起中断：等确认期间若进程重启，下次连接不能用它续接
+                    self._ctx.clear_resume_token()
                     ii = InteractiveInput()
                     for iid, request in pending:
                         tool_name, tool_input = _interaction_to_permission(request)
@@ -667,6 +740,8 @@ class JiuwenEngine:
                         )
                         _fill_interactive_input(ii, iid, request, decision)
                     round_query = ii
+                # 本轮正常收尾，Runner 已把会话状态落盘
+                self._ctx.save_resume_token(self._resume_token)
                 after = self._usage_snapshot()
                 await self._queue.put(
                     {
@@ -708,7 +783,7 @@ class JiuwenEngine:
                 return
             self._ctx.log_error("session", str(exc))
             friendly = (
-                CONFIG_ERROR
+                config_error_for(self._ctx.model_owner)
                 if any(
                     marker in str(exc).lower()
                     for marker in ("401", "unauthorized", "api key", "authentication")

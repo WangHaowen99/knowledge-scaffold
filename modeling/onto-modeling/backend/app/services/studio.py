@@ -341,14 +341,17 @@ def _operation_object_role(line: str) -> str | None:
 
 def _object_relation_label(line: str, source: str, target: str) -> str:
     for relation in package_mapping.parse_relation_definitions("# 关联对象\n" + line, []):
-        endpoints = {source if relation[key] == "当前对象" else relation[key] for key in ("source", "target")}
+        endpoints = {
+            source if relation[key] == package_mapping.CURRENT_OBJECT else relation[key]
+            for key in ("source", "target")
+        }
         if endpoints == {source, target}:
             return relation["relation"]
     escaped_source = re.escape(source)
     escaped_target = re.escape(target)
     patterns = (
-        rf"(?:当前对象|{escaped_source})\s*(?:→|->|>)\s*([^→>]+?)\s*(?:→|->|>)\s*\[\[{escaped_target}",
-        rf"\[\[{escaped_target}[^\]]*\]\]\s*(?:→|->|>)\s*([^→>]+?)\s*(?:→|->|>)\s*(?:当前对象|{escaped_source})",
+        rf"(?:当前对象名?|{escaped_source})\s*(?:→|->|>)\s*([^→>]+?)\s*(?:→|->|>)\s*\[\[{escaped_target}",
+        rf"\[\[{escaped_target}[^\]]*\]\]\s*(?:→|->|>)\s*([^→>]+?)\s*(?:→|->|>)\s*(?:当前对象名?|{escaped_source})",
     )
     for pattern in patterns:
         match = re.search(pattern, line)
@@ -362,7 +365,7 @@ def _object_relation_label(line: str, source: str, target: str) -> str:
 def _target_points_to_current(line: str, source: str, target: str) -> bool:
     return bool(
         re.search(
-            rf"\[\[{re.escape(target)}[^\]]*\]\]\s*(?:→|->|>).*?(?:→|->|>)\s*(?:当前对象|{re.escape(source)})",
+            rf"\[\[{re.escape(target)}[^\]]*\]\]\s*(?:→|->|>).*?(?:→|->|>)\s*(?:当前对象名?|{re.escape(source)})",
             line,
         )
     )

@@ -1128,6 +1128,7 @@ export default function CenterPane({
                 path={file}
                 drawioAvailable={drawioAvailable}
                 onWorkspaceChanged={onWorkspaceChanged}
+                onCommand={onCommand}
               />
             </Suspense>
           )}

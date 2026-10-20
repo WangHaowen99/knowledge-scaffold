@@ -239,7 +239,7 @@ def test_eval_run_reports_binding_problems_until_user_allows_unbound(tmp_path, m
     projects, pid, request = eval_router(tmp_path, monkeypatch)
     captured = {}
 
-    async def fake_run(project_id, root_, token, cases, data_source, eval_set_name="", allow_unbound=False):
+    async def fake_run(project_id, root_, token, cases, data_source, eval_set_name="", allow_unbound=False, refresh_token=""):
         captured["allow_unbound"] = allow_unbound
 
     monkeypatch.setattr(modeling_eval, "run", fake_run)

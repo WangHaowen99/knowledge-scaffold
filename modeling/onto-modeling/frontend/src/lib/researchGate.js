@@ -11,7 +11,7 @@ export function isResearchBlocking(review) {
 }
 
 // 报告挡着后续阶段时，把核验入口排到最前；其余入口保持原有顺序。
-// 这时最该做的是核验现有报告，而不是重新调研。
+// 这时最该做的是核验现有报告，而不是重新做资料分析。
 export function orderResearchActions(actions, review) {
   if (!isResearchBlocking(review)) return actions;
   const verify = actions.filter((action) => action.verify);

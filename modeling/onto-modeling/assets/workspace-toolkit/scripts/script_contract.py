@@ -10,17 +10,25 @@ import ast
 import re
 
 SCRIPT_TYPE_MAP = {
-    "str": "string", "string": "string", "int": "number", "integer": "number",
+    "str": "string", "string": "string", "int": "integer", "integer": "integer",
     "float": "number", "number": "number", "bool": "boolean", "boolean": "boolean",
     "list": "array", "tuple": "array", "dict": "object", "object": "object", "json": "json", "loads": "json",
 }
 
 PARAMS_SCOPE_HINT = "「输入参数」只列 argparse 声明的 CLI 参数；仅供 import 调用的函数参数写在「用法」段"
 TYPE_HINT = '未写 type= 的参数按 str；布尔开关用 action="store_true" 并标 bool'
+# 头部 number 与 argparse int（或反之）只是精度描述不同，不拦导出；导出类型以 argparse 为准，
+# integer 让运行端按整数拼参数，避免 type=int 收到 "2026.0"。
+NUMERIC_TYPES = {"integer", "number"}
 
 
 class ScriptContractError(ValueError):
     """A generated script cannot be exported with an unverifiable CLI contract."""
+
+
+def _type_conflicts(documented: str, declared: str) -> bool:
+    """头部类型与 argparse 类型不一致；integer 与 number 互写不算冲突（见 NUMERIC_TYPES）。"""
+    return documented != declared and {documented, declared} != NUMERIC_TYPES
 
 
 def parse_script_contract(code: str) -> tuple[str, list[dict]]:
@@ -141,7 +149,7 @@ def parse_script_contract(code: str) -> tuple[str, list[dict]]:
     for item in source_params:
         doc = next((entry for entry in documented if entry["name"] == item["name"]), {})
         source_required = "是" if item["required"] else "否"
-        if doc and doc["type"] != item["type"]:
+        if doc and _type_conflicts(doc["type"], item["type"]):
             raise ScriptContractError(
                 f"参数 {item['name']} 的类型与 argparse 不一致：头部为 {doc['type']}，"
                 f"argparse 为 {item['type']}（{TYPE_HINT}）"

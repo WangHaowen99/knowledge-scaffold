@@ -338,7 +338,7 @@ def test_import_summary_counts_unchanged_for_workspace_layout(
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("ontology/object/订单.md", "# 订单")
         zf.writestr("ontology/logic/创建订单.md", "# 创建订单")
-        zf.writestr("research/summary.md", "调研")
+        zf.writestr("research/summary.md", "资料分析")
         zf.writestr(".git/config", "skip me")
 
     summary = manager.import_summary(archive)

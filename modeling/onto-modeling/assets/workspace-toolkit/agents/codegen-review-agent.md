@@ -57,7 +57,7 @@ dispatcher 在 prompt 中提供：
 
 纯库脚本（无 `__main__` 块、无 `_cli`）允许跳过 CLI 检查；此时头部「用法」段允许只保留 `import` 一行。
 
-复审还必须运行脚本验证：正常、边界、缺少必填参数、未知参数、空结果和预期业务错误各至少一次；stdout 必须是单个可解析 JSON，stderr 只能承载诊断信息。
+运行验证不在复审里做：由 `/ontology-codegen` Step 4.6 用 `python3 .claude/scripts/script_verify.py run` 统一执行（经脚本验证网关在 jiuwenbox 沙箱中执行，不可用时在 onto-modeling 容器内），覆盖正常、边界、缺少必填参数、未知参数、空结果和预期业务错误。复审不要直接用 `python3` 运行 `ontology/scripts/` 下的脚本；stdout 必须是单个可解析 JSON、stderr 只承载诊断信息这两条，仍按源码静态检查。
 
 ### 3. import / 骨架规范
 

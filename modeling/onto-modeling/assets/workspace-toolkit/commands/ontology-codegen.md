@@ -287,11 +287,44 @@ Wait for it to return a JSON array.
 ```
 
 - **全部** / **编号**：逐条按 `[修改 {N}/{TOTAL}]` 模板提出修复方案，用户选 `[确认修改]` / `[我来提供方案]` / `[跳过]`。
-- **跳过**：保留现状，继续 Step 5。
+- **跳过**：保留现状，继续 Step 4.6。
 
 ### 4.5.3: 无问题 / 处理完毕
 
-首轮 agent 返回 `[]`，或 4.5.1 + 4.5.2 处理完毕后无遗留 `错误` → 直接进入 Step 5。
+首轮 agent 返回 `[]`，或 4.5.1 + 4.5.2 处理完毕后无遗留 `错误` → 进入 Step 4.6。
+
+---
+
+## Step 4.6: 脚本运行验证（必做，不可跳过）
+
+每个新建或修改过的脚本都必须真正跑通：pre-commit 会拦下没有当前版本通过记录的脚本。
+
+1. 为每个脚本写用例文件 `tmp/verify/<脚本名>.cases.json`（`tmp/` 不进 git）：
+
+   ```json
+   [
+     {"name": "正常", "argv": ["--orders", "[{\"sku_id\":\"sku-a\",\"quantity\":2}]", "--quantity", "3"], "expect": "success"},
+     {"name": "缺少必填参数", "argv": ["--quantity", "3"], "expect": "error"}
+   ]
+   ```
+
+   - argv 按脚本头部「输入参数」里的 CLI 参数写，每一项都是字符串（数字和 JSON 也写成字符串）；
+   - 覆盖正常、边界、缺少必填参数、未知参数、空结果、预期业务错误（没有对应场景的可以省略），至少一个 `expect: success`，最多 12 个；
+   - `success`：退出码 0 且 stdout 是单个 JSON；`error`：非 0 退出（argparse 报错或业务错误）；
+   - 输入用调用方会传进来的合成数据，不要依赖数据库或网络：沙箱内禁止出网。
+
+2. 运行：
+
+   ```bash
+   python3 .claude/scripts/script_verify.py run ontology/scripts/<脚本名>.py --cases tmp/verify/<脚本名>.cases.json
+   ```
+
+   - 经脚本验证网关（`ONTO_WEB_SANDBOX_GATEWAY_URL`）在 jiuwenbox 沙箱中执行；网关或 jiuwenbox 不可用时自动改在 onto-modeling 容器内执行，此时结果里 `runtime` 为 `local`，`fallback_reason` 写明原因；
+   - 退出码 0 = 全部通过且已记录；1 = 有用例失败（看 `cases[].reason` 和 `stderr`）；2 = 用例文件或参数写错；3 = 执行器本身失败。
+
+3. 有失败就修脚本（或修正写错的用例），重跑 Step 4.4 的契约检查和本步，直到全部通过。同一用例连续两轮因相同原因失败，停下来把失败用例和 stderr 汇报给用户。
+
+> 改了脚本或它 import 的同目录模块，之前的验证记录自动失效，需要重跑本步。
 
 ---
 
@@ -304,6 +337,8 @@ Show list of generated files（示例同时含整段与片段两种命名）：
 - ontology/scripts/风控审批_steps2_4.py          ← 片段（步骤2,4）
 ...
 
+运行验证：{N} 个脚本全部通过（在 jiuwenbox 沙箱中 / jiuwenbox 不可用，在 onto-modeling 容器内）。
+
 共 {N} 个文件。如需修改请说明；确认无误请回复 **确认**。"
 
 ## Step 6: Commit
@@ -313,7 +348,7 @@ git add ontology/scripts/ ontology/operation/
 git commit -m "codegen: {TOPIC}"
 ```
 
-> Step 4.5.1 可能改写 `ontology/operation/*.md` 的「逻辑描述」段（简化为业务步骤 + 调用示例），故一并纳入 `git add`。
+> pre-commit 会拦下没有当前版本运行验证记录的脚本。Step 4.5.1 可能改写 `ontology/operation/*.md` 的「逻辑描述」段（简化为业务步骤 + 调用示例），故一并纳入 `git add`。
 
 ## Step 7: Suggest next step
 

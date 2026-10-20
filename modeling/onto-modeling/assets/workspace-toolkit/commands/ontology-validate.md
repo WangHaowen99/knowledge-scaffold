@@ -33,7 +33,7 @@ Validate the ontology documents in two sequential phases: rule check first, then
 
 If $ARGUMENTS is not empty, enter **incremental mode**:
 
-1. Parse $ARGUMENTS as space-separated bare names (e.g. `订单 创建订单 支付`).
+1. Parse $ARGUMENTS as space-separated bare names (e.g. `订单 创建订单 支付`). If $ARGUMENTS contains `--since <rev>`, take `<rev>` out as `CHANGE_BASE` before parsing names (see 6 below).
 2. For each name, recursively search the four packaged entry types — `ontology/object/**/{name}.md`, `ontology/operation/**/{name}.md`, `ontology/rule/**/{name}.md`, `ontology/metric/**/{name}.md`. If none exists, warn: "⚠️ 未找到文件：{name}，已跳过。"
 3. The resolved list is TARGET_FILES. If all names were invalid, fall back to full mode.
 4. Compute RELATED_FILES: for each target file, read it and collect all `[[link]]` stems. Also scan all other ontology files and include any whose `[[link]]` targets include a TARGET_FILE stem. Remove TARGET_FILES from this set.
@@ -42,6 +42,16 @@ If $ARGUMENTS is not empty, enter **incremental mode**:
    增量校验模式：检查 {TARGET_FILES joined by 、}
    相关文件未包含在本次校验中：{RELATED_FILES joined by 、}
    ```
+6. **只查改动（change-only）**：若取到了 `CHANGE_BASE`（/ontology-update 调用时传入改动前的版本），计算本次改动：
+
+   ```bash
+   git diff {CHANGE_BASE} -- {TARGET_FILES 的路径，空格分隔}
+   ```
+
+   - 结果记为 `CHANGE_DIFF`（含已暂存与未暂存的改动）。没有任何改动的目标文件从 TARGET_FILES 中去掉；全部为空则跳过 Phase B 的语义检查（规则检查照常）。
+   - `RELATED_FILES` 改为只取 `CHANGE_DIFF` 新增、删除行里出现的 `[[链接]]`，不再收集全部引用方；引用方由语义检查子任务在改动涉及输入、输出时按需读取。
+   - `CHANGE_DIFF` 超过 800 行时不进入只查改动模式，按普通增量模式校验。
+   - 第 5 步的提示改为：`本次只检查改动部分：{TARGET_FILES joined by 、}`。
 
 If $ARGUMENTS is empty, proceed in **full mode** (no message needed).
 
@@ -286,6 +296,12 @@ If incremental mode: include in the dispatch prompt:
 - "TARGET_FILES: {space-separated stems from TARGET_FILES}"
 - "RELATED_FILES: {space-separated stems from RELATED_FILES}"
 
+If change-only mode (Step 0.5 第 6 条): additionally include
+```
+CHANGE_DIFF: |
+{CHANGE_DIFF 原文，每行前加 2 个空格缩进}
+```
+
 在 dispatch prompt 底部（在已有的收尾指令之后）追加：
 
 ```
@@ -334,6 +350,15 @@ Write the report:
 
 If the agent didn't provide `confidence`, default to `medium` and render 🟡. If no `evidence`, omit the 依据 line.
 
+**只查改动模式**：先写 `origin = change` 的问题（按上面的文件、置信度规则排列），再写一节原有问题，编号接着往下排：
+
+```markdown
+### 原有问题（与本次改动无关，不影响本次结论）
+{id}. 🟡 ⚠️ [{category}] {file} → {message}
+```
+
+没有 `origin` 的问题按 `change` 处理。标题行的计数只算 `change` 问题，另起一行写「另有 {K} 个原有问题，见文末」。
+
 If no issues (N=0): write "（无问题，本体文档通过全部语义检查。）" — skip to B5.
 
 ### B3: Prompt user for review
@@ -362,8 +387,10 @@ Tell the user:
 
 我已按置信度分组列出。建议先处理 🔴 高置信档。请回复 **全部**、**高置信**、**展开低置信** 或具体编号如 **1,3**，或回复 **跳过**。"
 
+**只查改动模式**：终端只列 `change` 问题（仍按置信度分组）；原有问题只写一行「另有 {K} 个原有问题与本次改动无关，已记入报告；需要一并处理请回复编号」。
+
 Parse the user's selection:
-- **全部**: set `B4_SELECTED` = all semantic issue IDs in this round
+- **全部**: set `B4_SELECTED` = all semantic issue IDs in this round（只查改动模式下只含 `change` 问题；原有问题需回复编号才处理）
 - **高置信**: set `B4_SELECTED` = IDs whose `confidence == "high"`; if none, tell user "本轮无高置信问题，请改用其他选项。"
 - **展开低置信**: expand and re-print the low-confidence block, then ask again for a selection
 - **输入编号如 1,3**: parse comma-separated IDs; ignore spaces; if any ID does not exist, warn the user and only keep valid IDs
@@ -380,6 +407,8 @@ Per selection round before entering B4:
 ### B4: Apply fixes
 
 If `B4_SELECTED` is empty, do not enter the fix loop; proceed directly to B6.
+
+每轮修复开始前先 `git add ontology/` 暂存当前内容（不提交），让 B5 能单独取出本轮修复的改动。
 
 #### B4a: Bulk-apply via semantic-fix-agent（默认路径）
 
@@ -470,7 +499,17 @@ B4d 处理完毕后进入 B5。
 
 If B4_MODIFIED is empty (no files were modified), skip this step and proceed to B6.
 
-Re-dispatch the semantic-check-agent in incremental mode, passing only the stems in B4_MODIFIED as TARGET_FILES (do not pass RELATED_FILES). Wait for it to return results.
+Re-dispatch the semantic-check-agent in **regression mode**（全量、增量、只查改动三种模式通用）。派发提示按工作区规则「子任务派发」第一行要求完整阅读 agent 文件，之后附：
+
+```
+TARGET_FILES: {B4_MODIFIED 的 stem，空格分隔}
+REGRESSION_ISSUES: |
+{本轮修复的问题，每条一行：issue_id、file、message 原文}
+CHANGE_DIFF: |
+{原样粘贴 `git diff -U3 -- {B4_MODIFIED 的路径}` 的输出（未暂存部分，即本轮修复的改动），每行前加 2 个空格缩进}
+```
+
+CHANGE_DIFF 必须是命令输出原文，不要改写、概括或补充说明；不传 RELATED_FILES，也不要在派发提示里另加检查范围。Wait for it to return results. 回归发现的新问题照常列给用户选择，不要直接修。
 
 Filter the new results: remove any issue whose `file` + `message` combination was already present in **any previous semantic-check run this session** (B1 results, plus any issues found by prior B5 loops). Only issues not previously seen count as regressions introduced by the fixes.
 
@@ -537,7 +576,7 @@ Tell user:
 - 回复 **代码生成**（/ontology-codegen）→ 选定 operation 后生成 Python 脚本（不支持一键全部）
 - 回复 **增量对象**（/ontology-extract-object）→ 补充提取缺失对象
 - 回复 **增量逻辑**（/ontology-extract-operation）→ 补充提取缺失逻辑
-- 回复 **补充调研**（/ontology-research）→ 定向补充调研后增量提取
+- 回复 **补充资料分析**（/ontology-research）→ 定向补充资料分析后增量提取
 - 回复 **再校验** → 重新执行完整校验流程
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
 
@@ -559,6 +598,6 @@ Tell user:
 
 **If user replies 增量逻辑:** release validate，然后 Read `.claude/commands/ontology-extract-operation.md` and follow its instructions with these overrides: MODE = incremental; collect EXISTING_FILES from current `ontology/operation/` contents before dispatching the agent. After the agent returns its summary, ask: "增量逻辑完成。是否重新校验？回复 **是** 或 **否**。" — if yes, restart from Step 1 of this command.
 
-**If user replies 补充调研:** Ask: "请描述要补充的调研方向（例如：「XX子流程的逻辑细节」「YY对象的状态转换」「某个引用断裂的缺失实体」）：". Then release validate 并 read `.claude/commands/ontology-research.md` and follow it using **追加调研（append）mode** with the user's direction as FOCUS_DIRECTIONS; **skip research's Step 5 next-step prompt** (do not ask about running flowchart). After research completes, ask: "调研完成。要增量提取哪一类？回复 **对象**、**逻辑** 或 **否**。" — if object, follow `/ontology-extract-object` incremental; if operation, follow `/ontology-extract-operation` incremental; then ask: "增量提取完成。是否重新校验？回复 **是** 或 **否**。" — if yes, restart from Step 1.
+**If user replies 补充资料分析:** Ask: "请描述要补充的分析方向（例如：「XX子流程的逻辑细节」「YY对象的状态转换」「某个引用断裂的缺失实体」）：". Then release validate 并 read `.claude/commands/ontology-research.md` and follow it using **追加资料分析（append）mode** with the user's direction as FOCUS_DIRECTIONS; **skip research's Step 5 next-step prompt** (do not ask about running flowchart). After research completes, ask: "资料分析完成。要增量提取哪一类？回复 **对象**、**逻辑** 或 **否**。" — if object, follow `/ontology-extract-object` incremental; if operation, follow `/ontology-extract-operation` incremental; then ask: "增量提取完成。是否重新校验？回复 **是** 或 **否**。" — if yes, restart from Step 1.
 
 **If user replies 完成:** `python3 .claude/scripts/state_helper.py release validate`，Stop.

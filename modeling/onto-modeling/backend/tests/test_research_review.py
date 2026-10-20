@@ -79,7 +79,7 @@ class ReportRow(NamedTuple):
 def make_report(rows, total=None, subtotal=None, changes=NO_CHANGE_ROW, gaps="（无）",
                 candidates=True, category_column=True) -> str:
     """按 research-agent.md 的 Step 4 模板拼一份报告。rows 是 ReportRow 列表。"""
-    lines = ["# 调研主题", "合成领域。", ""]
+    lines = ["# 分析主题", "合成领域。", ""]
     # 下游（coverage-check / extract-operation / rule-metric-extraction）按加粗名称取候选，
     # 候选所在段落必须与清单「分类」一致，否则实体会落错目录
     for category, section in CANDIDATE_SECTIONS.items():
@@ -203,7 +203,7 @@ def test_correct_report_passes(workspace, toolkit):
     pytest.param(make_report([row("ITEM-01", "RULE-01",
                                   location="resource/others/不存在.md#1")]),
                  {"来源缺失"}, id="来源位置定位不到"),
-    pytest.param("# 调研主题\n合成领域。\n\n合计26项。资料分析完成。\n",
+    pytest.param("# 分析主题\n合成领域。\n\n合计26项。资料分析完成。\n",
                  {"结构缺失"}, id="自由格式无必需段落"),
     # 下游按加粗名称取对象/操作候选，不加粗会静默漏项
     pytest.param(make_report(GOOD_ROWS, candidates=False), {"候选缺失"}, id="候选名未加粗"),
@@ -308,7 +308,7 @@ def test_silent_id_rename_fails_until_declared(workspace, toolkit):
 
 
 def test_first_round_id_rename_fails_without_baseline(workspace, toolkit):
-    """issue #362 现场：首轮调研，规范清单只在上传资料里，没有报告基线。
+    """issue #362 现场：首轮资料分析，规范清单只在上传资料里，没有报告基线。
 
     此时 check_id_stability 无从比对，必须由 ID 溯源捉住改名。
     """
@@ -327,7 +327,7 @@ def test_first_round_id_rename_fails_without_baseline(workspace, toolkit):
 def test_failed_report_ids_never_become_baseline(workspace, toolkit):
     """未通过报告里编造的 ID 不能经下一轮 capture 变成基线。
 
-    失败后重新调研 / 追加调研都会再跑一次 capture；基线若取自当前报告，编造的
+    失败后重新做资料分析 / 追加资料分析都会再跑一次 capture；基线若取自当前报告，编造的
     ID 就成了"已验收的合法出处"，报告一字不改第二轮即可通过。
     """
     checker, review = toolkit
@@ -481,17 +481,17 @@ def test_stage_blocks_extract_object_until_accepted(workspace, toolkit, monkeypa
 
     assert state_helper._compute_stage() == "未开始"
 
-    # 错误报告存在 → 调研待核验，对象提取不放行
+    # 错误报告存在 → 资料分析待核验，对象提取不放行
     write_report(workspace, make_report(GOOD_ROWS, total=9, subtotal=9))
     checker.run_check(workspace)
-    assert state_helper._compute_stage() == "调研待核验"
+    assert state_helper._compute_stage() == "资料分析待核验"
     state_helper.check_prereq("extract-object")
-    assert capsys.readouterr().out.strip() == "missing:调研完成"
+    assert capsys.readouterr().out.strip() == "missing:资料分析完成"
 
-    # 修正并通过验收 → 调研完成，前置放行
+    # 修正并通过验收 → 资料分析完成，前置放行
     write_report(workspace, make_report(GOOD_ROWS))
     assert checker.run_check(workspace)["status"] == review.PASSED
-    assert state_helper._compute_stage() == "调研完成"
+    assert state_helper._compute_stage() == "资料分析完成"
     state_helper.check_prereq("extract-object")
     assert capsys.readouterr().out.strip() == "ok"
 

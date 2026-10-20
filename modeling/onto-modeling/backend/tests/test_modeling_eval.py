@@ -2,10 +2,15 @@
 状态与报告落盘、端点门控。
 """
 
+import asyncio
 import json
+import secrets
 import threading
+import weakref
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -829,3 +834,307 @@ def test_write_report_does_not_recreate_deleted_workspace(tmp_path):
     with pytest.raises(FileNotFoundError):
         modeling_eval._write_report(root, {"id": "r1"}, [])
     assert not root.exists()
+
+
+# ---- 评测凭据续期：refresh token 透传给 modeling 的 /evaluate ----
+
+SYNTHETIC_REFRESH = "synthetic-refresh-value"
+
+
+def _fake_modeling_http(calls: list, traces: dict | None = None):
+    """替身 _http：记录每次调用（方法、路径、请求体），按路径回协议响应。"""
+
+    def fake_http(method, path, token, body=None, data=None, content_type="", timeout=60.0):
+        calls.append((method, path, body))
+        if path == "/api/package-workspaces/import":
+            return {"project": {"id": "mp-1"}, "version": 1}
+        if path.endswith("/evaluate"):
+            return {"roundId": "r1"}
+        if "/rounds/" in path:
+            return {
+                "round": {"id": "r1", "status": "done", "progressDone": 1, "progressTotal": 1},
+                "results": [{"id": "er-1", "question": "Q1", "groundTruth": "G1",
+                             "finalAnswer": "", "verdict": "error",
+                             "reason": "运行失败：Tool execution stopped after a repeated failure."}],
+                "traces": traces or {},
+            }
+        return {}
+
+    return fake_http
+
+
+@pytest.mark.parametrize("refresh_token", [SYNTHETIC_REFRESH, ""])
+def test_evaluate_start_passes_refresh_token_only_in_request(tmp_path, monkeypatch, refresh_token):
+    """评测轮常超 access token 有效期：/evaluate 请求体带上 refresh token 让 modeling 续期。
+
+    无鉴权部署没有 refresh token 时仍发空 body。refresh token 不得落进工作区任何文件。
+    """
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.01)
+    calls: list = []
+    monkeypatch.setattr(modeling_eval, "_http", _fake_modeling_http(calls))
+    pid, root = _eval_workspace(tmp_path, "凭据续期")
+
+    modeling_eval._run_sync(
+        pid, root, "access", [{"question": "Q1", "groundTruth": "G1"}],
+        allow_unbound=True, refresh_token=refresh_token,
+    )
+
+    evaluate = [body for method, path, body in calls if path.endswith("/evaluate")]
+    assert evaluate == [{"refresh_token": refresh_token} if refresh_token else {}]
+    # 其余调用都不携带 refresh token
+    assert all(
+        SYNTHETIC_REFRESH not in json.dumps(body or {})
+        for method, path, body in calls if not path.endswith("/evaluate")
+    )
+    assert modeling_eval.read_state(root)["status"] == "done"
+    for path in root.rglob("*"):
+        if path.is_file() and ".git" not in path.parts:
+            assert SYNTHETIC_REFRESH not in path.read_text(encoding="utf-8", errors="ignore"), path
+
+
+def test_eval_router_forwards_refresh_token_only_for_user_token(tmp_path, monkeypatch):
+    from app.routers import projects
+    from app.services.workspace import WorkspaceManager
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
+    monkeypatch.setattr(projects, "workspaces", manager)
+    monkeypatch.setattr(modeling_eval, "enabled", lambda: True)
+    monkeypatch.setattr(modeling_eval, "reachable", lambda: True)
+    pid = manager.create_project("凭据转交")["id"]
+    request = SimpleNamespace(state=SimpleNamespace(user=None), headers={"authorization": "Bearer t"})
+    captured: list = []
+
+    async def fake_run(project_id, root_, token, cases, data_source, eval_set_name="",
+                       allow_unbound=False, refresh_token=""):
+        captured.append((token, refresh_token))
+
+    monkeypatch.setattr(modeling_eval, "run", fake_run)
+    body = projects.EvalRunBody(
+        cases=[{"question": "Q1", "groundTruth": "G1"}], allow_unbound=True,
+        refresh_token=SYNTHETIC_REFRESH,
+    )
+    assert SYNTHETIC_REFRESH not in repr(body)  # 请求体模型的 repr 不暴露 refresh token
+
+    async def call():
+        result = await projects.eval_run(pid, body, request)
+        await asyncio.sleep(0)
+        return result
+
+    monkeypatch.setattr(config, "MODELING_TOKEN", "")
+    assert asyncio.run(call())["started"] is True
+    # 部署级兜底令牌不属于当前用户：不转交用户的 refresh token
+    monkeypatch.setattr(config, "MODELING_TOKEN", "deploy-token")
+    assert asyncio.run(call())["started"] is True
+    assert captured == [("t", SYNTHETIC_REFRESH), ("deploy-token", "")]
+
+
+# ---- 报告「工具失败」小节：供 /ontology-evolution 判断运行异常根因 ----
+
+VALIDATION_ERROR = json.dumps({
+    "ok": False,
+    "error": {
+        "code": "SCRIPT_ARGUMENT_VALIDATION_FAILED",
+        "message": "Script arguments failed validation; the script did not run.",
+        "correctable": True,
+        "issues": [{"code": "ungrounded_identity", "path": "arguments.customer_code"}],
+    },
+})
+
+
+def test_report_lists_tool_failures_from_round_traces(tmp_path, monkeypatch):
+    """异常用例报告只有「运行失败」一句话不够归因：从轮次详情 traces 附上工具失败摘要。"""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.01)
+    calls: list = []
+    traces = {"er-1": {
+        "status": "complete",
+        "toolCalls": ["business_data_search", "execute_script", "execute_script"],
+        "toolFailures": [
+            {"toolName": "execute_script", "error": VALIDATION_ERROR},
+            {"toolName": "execute_script", "error": VALIDATION_ERROR},
+        ],
+    }}
+    monkeypatch.setattr(modeling_eval, "_http", _fake_modeling_http(calls, traces))
+    pid, root = _eval_workspace(tmp_path, "工具失败")
+
+    modeling_eval._run_sync(pid, root, "t", [{"question": "Q1", "groundTruth": "G1"}],
+                            allow_unbound=True)
+
+    report = (root / modeling_eval.read_state(root)["report"]).read_text(encoding="utf-8")
+    assert "- **工具失败**：" in report
+    assert (
+        "  - `execute_script` · `SCRIPT_ARGUMENT_VALIDATION_FAILED` · "
+        "问题：`ungrounded_identity arguments.customer_code` · "
+        "详情：Script arguments failed validation; the script did not run.（×2）"
+    ) in report
+    assert "  - 本用例共调用工具 3 次，失败 2 次" in report
+
+
+def test_tool_failure_section_handles_text_errors_and_caps(tmp_path):
+    root = tmp_path
+    (root / ".ontology-state").mkdir(parents=True)
+    truncated_json = VALIDATION_ERROR[:-3]  # consumer 端把 error 截到 1KB，JSON 可能不完整
+    many = [{"toolName": f"tool_{i}", "error": f"失败 {i}"} for i in range(8)]
+    # 测试密钥运行时生成，代码里不写凭据样式的字面量
+    leaked = secrets.token_hex(8)
+    rel = modeling_eval._write_report(root, {"id": "r1"}, [
+        {"id": "er-script", "question": "Q1", "verdict": "error", "reason": "运行失败"},
+        {"id": "er-many", "question": "Q2", "verdict": "fail", "reason": "错"},
+        {"id": "er-pass", "question": "Q3", "verdict": "pass", "reason": "对"},
+        {"id": "er-none", "question": "Q4", "verdict": "error", "reason": "运行失败"},
+        {"id": "er-lost", "question": "Q5", "verdict": "error", "reason": "运行失败"},
+    ], traces={
+        "er-script": {"status": "complete", "toolCalls": [], "toolFailures": [
+            {"toolName": "execute_script",
+             "error": f"Error: Script exited with code 2. KeyError: CUSTOMER_CODE token={leaked} "
+                      + "x" * 400},
+            {"toolName": "execute_script", "error": truncated_json},
+        ]},
+        "er-many": {"status": "complete", "toolCalls": [], "toolFailures": many},
+        "er-pass": {"status": "complete", "toolCalls": [], "toolFailures": many},
+        "er-lost": {"status": "unavailable", "error": "Consumer 未返回 run_id", "toolCalls": []},
+    })
+    report = (root / rel).read_text(encoding="utf-8")
+    sections = report.split("### ")
+    script, many_case, pass_case, none_case, lost_case = sections[1:]
+
+    assert "`execute_script` · 退出码 2 · 详情：Error: Script exited with code 2." in script
+    assert "CUSTOMER_CODE" in script and "`CUSTOMER_CODE`" not in script  # 列名不当错误码
+    assert leaked not in script and "token=***" in script
+    assert "x" * (modeling_eval.TOOL_FAILURE_DETAIL_CHARS + 1) not in script
+    # 截断的 JSON 仍能抽出错误码与问题路径
+    assert "`SCRIPT_ARGUMENT_VALIDATION_FAILED`" in script
+    assert "`ungrounded_identity arguments.customer_code`" in script
+    assert "详情：Script arguments failed validation; the script did not run." in script
+
+    assert many_case.count("  - `tool_") == modeling_eval.TOOL_FAILURES_PER_CASE
+    assert "另有 3 类失败未列出" in many_case
+    assert "工具失败" not in pass_case  # 通过用例不附失败摘要
+    assert "工具失败" not in none_case  # 没有轨迹的用例不出空小节
+    assert "执行轨迹未取到（Consumer 未返回 run_id）" in lost_case
+
+
+def test_evolution_command_reads_tool_failure_section():
+    """报告小节名与 /ontology-evolution 的归因指引必须对得上，否则命令读不到工具失败证据。"""
+    command = (
+        Path(config.ASSETS_DIR) / "workspace-toolkit" / "commands" / "ontology-evolution.md"
+    ).read_text(encoding="utf-8")
+    assert "「工具失败」" in command
+    assert "SCRIPT_ARGUMENT_VALIDATION_FAILED" in command
+    assert "执行轨迹未取到" in command
+
+
+@pytest.fixture()
+def eval_pool(tmp_path, monkeypatch):
+    """评测专用线程池：容量 2，编排主体换成可控阻塞的假实现。"""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(config, "EVAL_MAX_CONCURRENT_ROUNDS", 2)
+    monkeypatch.setattr(modeling_eval, "_executor", None)
+    monkeypatch.setattr(modeling_eval, "_slots", weakref.WeakKeyDictionary())
+    monkeypatch.setattr(modeling_eval, "_queued", {})
+    monkeypatch.setattr(modeling_eval, "_running", set())
+    monkeypatch.setattr(modeling_eval, "_stop_requested", set())
+    release = threading.Event()
+    started: list[str] = []
+
+    def fake_run_sync(project_id, root, token, cases, *rest):
+        started.append(project_id)
+        release.wait(timeout=10)
+        modeling_eval._write_state(root, status="done", message="完成")
+
+    monkeypatch.setattr(modeling_eval, "_run_sync", fake_run_sync)
+    yield release, started
+    release.set()
+    if modeling_eval._executor is not None:
+        modeling_eval._executor.shutdown(wait=True)
+
+
+async def _wait_for(predicate, timeout=5.0):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("条件未在时限内满足")
+        await asyncio.sleep(0.01)
+
+
+def test_eval_rounds_do_not_starve_default_executor(tmp_path, eval_pool):
+    """评测占满专用池时，默认线程池上的短任务（上传、git）照常即时完成。"""
+    release, started = eval_pool
+    projects = [_eval_workspace(tmp_path, f"评测{i}") for i in range(3)]
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        tasks = [
+            asyncio.create_task(modeling_eval.run(pid, root, "t", [{"question": "Q", "groundTruth": "G"}]))
+            for pid, root in projects
+        ]
+        await _wait_for(lambda: len(started) == 2)
+        # 第 3 轮排队，状态视图显示位次，而状态文件不被改写
+        third_pid, third_root = projects[2]
+        await _wait_for(lambda: modeling_eval.queue_position(third_pid) == 1)
+        view = modeling_eval.status_view(third_pid, third_root)
+        assert view["status"] == "running" and view["phase"] == "queued", view
+        assert view["queue_position"] == 1
+        assert modeling_eval.read_state(third_root) == {}
+        # 评测线程全占着，默认线程池仍可立即执行短任务
+        assert await asyncio.wait_for(asyncio.to_thread(lambda: "ok"), timeout=1) == "ok"
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=10)
+
+    asyncio.run(scenario())
+    assert sorted(started) == sorted(pid for pid, _ in projects)
+    assert modeling_eval._queued == {}
+    for _pid, root in projects:
+        assert modeling_eval.read_state(root)["status"] == "done"
+
+
+def test_stop_while_queued_skips_orchestration(tmp_path, eval_pool):
+    """排队中停止：立即落 stopped，轮到时不再执行编排（不产生 modeling 侧开销）。"""
+    release, started = eval_pool
+    projects = [_eval_workspace(tmp_path, f"排队{i}") for i in range(3)]
+
+    async def scenario():
+        tasks = [
+            asyncio.create_task(modeling_eval.run(pid, root, "t", [{"question": "Q", "groundTruth": "G"}]))
+            for pid, root in projects
+        ]
+        third_pid, third_root = projects[2]
+        await _wait_for(lambda: modeling_eval.queue_position(third_pid) == 1)
+        result = modeling_eval.request_stop(third_pid, third_root, "t")
+        assert result["stopped"] and not result["cancelled"]
+        assert modeling_eval.read_state(third_root)["status"] == "stopped"
+        # 停止后立即出队、释放项目锁：状态视图不再显示排队，可马上重新运行
+        await _wait_for(lambda: third_pid not in modeling_eval._running)
+        assert modeling_eval.queue_position(third_pid) is None
+        assert modeling_eval.status_view(third_pid, third_root)["status"] == "stopped"
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10)
+
+    asyncio.run(scenario())
+    assert projects[2][0] not in started
+    assert modeling_eval.read_state(projects[2][1])["status"] == "stopped"
+
+
+def test_delete_while_queued_dequeues_round(tmp_path, eval_pool):
+    """项目在评测排队期间被删除：排队的轮次立即出队，不再等槽位也不执行编排。"""
+    release, started = eval_pool
+    projects = [_eval_workspace(tmp_path, f"删除{i}") for i in range(3)]
+
+    async def scenario():
+        tasks = [
+            asyncio.create_task(modeling_eval.run(pid, root, "t", [{"question": "Q", "groundTruth": "G"}]))
+            for pid, root in projects
+        ]
+        third_pid, third_root = projects[2]
+        await _wait_for(lambda: modeling_eval.queue_position(third_pid) == 1)
+        assert modeling_eval.abort_for_delete(third_pid, third_root, "t") is None
+        assert modeling_eval.queue_position(third_pid) is None
+        await _wait_for(lambda: third_pid not in modeling_eval._running)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10)
+
+    asyncio.run(scenario())
+    assert projects[2][0] not in started

@@ -14,6 +14,14 @@ These rules apply to all work in this repository.
 
 每个 `.claude/commands/*.md` 与 `.claude/agents/*.md` 都假设上述四份约定在 context 中；若你正在新增/修改 prompt 而需要明确引用条目，**优先 cite 文件路径而不是把约定原文复制进 prompt**，以避免漂移。
 
+## Subagent Dispatch（子任务派发）
+
+命令里写「Read `.claude/agents/X.md`. Dispatch it …」时，agent 文件就是子任务的完整指令：
+
+- 派发提示第一行固定写：`请先完整阅读 .claude/agents/X.md，严格按其中的规则与输出格式执行。`，之后再接命令要求的输入（如 TARGET_FILES、CHANGE_DIFF）。
+- 不要把 agent 文件改写成摘要或几句话代替，也不要在派发提示里另加 agent 文件没有的检查范围或任务。
+- 子任务不得再派发子任务；需要别的检查时，结束并把结果交回主对话。
+
 ## Formatting Rules
 
 1. **Wiki 链接** — `[[文件名]]` must exactly match the target filename with no `.md` extension and no path prefix. Example: `[[订单]]` links to `ontology/object/订单.md`. Links resolve across `object/`, `operation/`, `rule/` and `metric/` directories (legacy `logic/` remains readable).
@@ -26,7 +34,7 @@ These rules apply to all work in this repository.
    - `ontology/rule/` — 规则实体文档：判定、约束、门禁、阈值拦截
    - `ontology/metric/` — 指标实体文档：评分、比率、汇总等可度量口径
    - `ontology/data-mock/` — mock test data
-   - `ontology/scripts/` — codegen 产出的逻辑脚本（headers 按 `.claude/templates/script-template.py`，CLI 入参用 argparse）
+   - `ontology/scripts/` — codegen 产出的逻辑脚本（headers 按 `.claude/templates/script-template.py`，CLI 入参用 argparse）；新增或修改的脚本必须用 `python3 .claude/scripts/script_verify.py run` 跑通（优先在 jiuwenbox 沙箱，不可用时在容器内），没有当前版本的通过记录不能提交
    - `ontology/diagrams/` — flowchart .drawio files
    - `ontology/diagrams-summary/` — flowchart summaries
    - `ontology/excel/` — Excel supplements split from `resource/excel/*.xlsx` by sheet
@@ -49,7 +57,7 @@ These rules apply to all work in this repository.
 
 4. **No external LLM APIs** — Semantic validation is performed by Claude itself. Never call external LLM APIs (Gemini, OpenAI, etc.) for validation tasks in this project.
 
-4.1 **"已保存"不等于"已验收"** — 调研报告（`research/*.md`）写进工作区后必须通过
+4.1 **"已保存"不等于"已验收"** — 资料分析报告（`research/*.md`）写进工作区后必须通过
    `python3 .claude/scripts/research_checker.py check` 的确定性检查，才算验收通过。
    脚本对账计数、ID 唯一与溯源（每个规范 ID 必须逐字出现在它声明的来源文件或 `resource/`
    的文本资料里，本轮新造的 ID 走「ID变更对照」声明）、引用字段是否真实、来源位置能否定位、
@@ -57,7 +65,7 @@ These rules apply to all work in this repository.
    结果写入 `.ontology-state/research-review.json`；阶段状态（CLI 前置、项目进度、左栏展示）
    只认这份回执。报告或源资料改动后回执自动失效，需重新核验。
    验收管的是进入对象提取之前：对象已经提取的项目，回执缺失或失效只在界面上留一个
-   待核验的提醒，不再挡后续阶段，也不要因此建议用户重做调研。
+   待核验的提醒，不再挡后续阶段，也不要因此建议用户重做资料分析。
    任何时候都不要用自己的总结代替这份检查结论，也不要在报告里写"检查无问题"；
    需要人工判断的条目列进「缺口与待决」，由用户确认后勾选。
 
@@ -69,7 +77,7 @@ These rules apply to all work in this repository.
 
 ## Tool State Directory
 
-7. **`.ontology-state/` is tool-managed** — 该目录下的锁文件（`lock-*.json`）、进度文件（`progress.json`）、调研验收回执（`research-review.json`）、只读来源快照（`research-inventory.json`）与已验收 ID 基线（`research-baseline.json`）由命令脚本（`state_helper.py`、`research_checker.py` 等）维护，用于跨命令协调。不要手工编辑；遇到异常残留锁时用 `python3 .claude/scripts/state_helper.py force-release <cmd>` 清理。手工改写回执等于伪造验收结论。
+7. **`.ontology-state/` is tool-managed** — 该目录下的锁文件（`lock-*.json`）、进度文件（`progress.json`）、资料分析验收回执（`research-review.json`）、只读来源快照（`research-inventory.json`）与已验收 ID 基线（`research-baseline.json`）由命令脚本（`state_helper.py`、`research_checker.py` 等）维护，用于跨命令协调。不要手工编辑；遇到异常残留锁时用 `python3 .claude/scripts/state_helper.py force-release <cmd>` 清理。手工改写回执等于伪造验收结论。
 
 ## Protected Source Material
 
@@ -84,18 +92,20 @@ These rules apply to all work in this repository.
    写到工作区 `tmp/` 目录（已 gitignore），用完删除；正式的代码产物走 codegen 流程进
    `ontology/scripts/`。`.claude/` 是只读工具箱（资产源，受守卫保护），任何时候不要往里写文件。
 
-8.1 **资料用途标签（`resource/materials.json`）** — 用户可为每份资料指定用途与读取模式（对齐 modeling 的资料用途体系）。读取任何资料前先查该清单（不存在或无条目视为 `auto`）：
+8.1 **资料用途标签（`resource/materials.json`）** — 用户上传时不再选择用途与读取模式：平台按表格结构识别数据 Schema 与术语表并预填用途，其余资料由你按内容判断；用户可在左侧资料区查看并修改用途。读取任何资料前先查该清单（不存在或无条目视为 `auto`）：
 
    | purpose | 语义 | 建模约束 |
    |---|---|---|
-   | `auto` | 由助手判断 | 按文件名/类型/内容自行判断用途 |
-   | `goal` | 建模目标依据 | 目标确认（Step 0 / 调研范围）必须优先引用该资料 |
+   | `auto` | 由助手判断 | 按文件名/类型/内容自行判断用途；说明建模场景、目标或范围的文档（如场景说明、需求说明）按 `goal` 对待 |
+   | `goal` | 建模目标依据 | 目标确认（Step 0 / 资料分析范围）必须优先引用该资料 |
    | `schema` | 数据 Schema | 该表格是对象与属性的**事实来源**：对象属性清单的英文名称/类型必须来自真实表头列，逐 Sheet 覆盖、不得虚构或合并；类型与主键只能标注为推断，不得据样例行编造业务含义 |
    | `term` | 术语表 | 对象/操作/规则/指标的命名与别名必须与术语表对齐；冲突时以术语表为准并在文档标注 |
    | `evidence` | 通用业务依据 | 作为佐证材料按需引用，引用时注明出处文件 |
-   - **评测数据**（评测库导入用的业务数据表）不走资料区打标，由用户在「数据评测」的数据源里上传，存于 `.ontology-state/eval-data/<文件ID>/`。它**不是业务语义来源**——不得据样例行编造业务含义、枚举或规则；但它的 **Sheet 名与表头是表名、列名的依据**：没有 `schema` 资料时，对象「# 数据来源」写它的 Sheet 名，从库里读取的属性英文名称逐字取自该 Sheet 的表头（`python3 .claude/scripts/check_eval_data.py --headers` 列出全部表头）。文档形式的数据字典与真实表头冲突时以表头为准，并在调研报告或抽取结果里列出差异。其结构应与 `schema` 资料对账一致（`python3 .claude/scripts/check_eval_data.py` 默认检查这些上传文件）。旧项目 `materials.json` 里残留的 `eval_data` 标签同此处理。
+   - **评测数据**（评测库导入用的业务数据表）不走资料区打标，由用户在「数据评测」的数据源里上传，存于 `.ontology-state/eval-data/<文件ID>/`。它**不是业务语义来源**——不得据样例行编造业务含义、枚举或规则；但它的 **Sheet 名与表头是表名、列名的依据**：没有 `schema` 资料时，对象「# 数据来源」写它的 Sheet 名，从库里读取的属性英文名称逐字取自该 Sheet 的表头（`python3 .claude/scripts/check_eval_data.py --headers` 列出全部表头）。文档形式的数据字典与真实表头冲突时以表头为准，并在资料分析报告或抽取结果里列出差异。其结构应与 `schema` 资料对账一致（`python3 .claude/scripts/check_eval_data.py` 默认检查这些上传文件）。旧项目 `materials.json` 里残留的 `eval_data` 标签同此处理。
 
-   `reading_mode`：`full` = 必须全文精读后再使用；`on_demand` = 按需检索片段即可。该文件由平台维护，模型同样**不得修改**。
+   `reading_mode`：由平台按资料类型决定，用户不再选择。条目显式写了 `full` / `on_demand`（存量项目）时照旧执行；没有写时：文档类资料（docx、doc、pdf、md、txt）全文读取后再使用，篇幅过长（如超过约 3 万字或 50 页）时可按需检索，但要在报告「信息来源」里注明哪些部分未通读；表格、图片、流程图按需检索（数据 Schema 与术语表的表头、术语由脚本读取）。该文件由平台维护，模型同样**不得修改**。
+
+   条目带 `auto_detected: true` 表示平台上传时按表格结构识别为数据表或术语表、预填了 `schema` / `term`，与人工标注同等对待。没有 `schema` 资料、但 `resource/` 里有像数据库表的表格（首行是英文列名）时，**不要让用户编辑 `materials.json`**：请用户在左侧资料列表把该表格的用途改为「数据 Schema」（平台会在疑似数据表旁给出「设为 Schema」按钮），或改在「数据评测」的数据源里上传；改完后重新读取清单再继续。
 
 ## Business Knowledge
 

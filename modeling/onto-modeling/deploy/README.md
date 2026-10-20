@@ -10,6 +10,7 @@ onto-modeling/
   images.env                  # 镜像 tag 清单（deploy.sh 自动读取）
   docker-compose.release.yml
   deploy.sh                   # 预检 → 加载镜像 → 拉起
+  configure-modeling-association.sh  # 自动配置导入项目的 MCP 关联
   preflight.sh                # 可单独运行的部署预检
   .env.example                # 环境变量说明（复制为 .env 后填写）
   README.md
@@ -28,6 +29,24 @@ vi .env              # 填 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN
 访问 `http://<部署机地址>:5100`（端口可用 `ONTO_WEB_PORT` 覆盖）。
 
 ### Modeling MCP 关联与远端清理
+
+整栈部署继续使用原有共用认证和全局 Modeling 地址。独立部署 Onto 发布包时，
+若同机 Modeling 已通过项目部署脚本生成服务令牌，Onto 部署脚本自动读取该令牌及通信地址，
+将 `ONTO_WEB_MODELING_ASSOCIATION_URL/TOKEN` 写入本机 `.env`，无需手工填写。
+重复部署原样保留完整的关联地址和令牌；只有一项时停止并提示配置不完整。
+已有全局 Modeling 地址时继续使用原用户鉴权，不注入本机服务令牌。
+不会改变登录鉴权、网络连接或全局评测地址。
+`.env` 含运行凭据，不可提交到 Git 或打入发布包。
+
+独立部署 Onto 时，若同机已有运行中的 Modeling，脚本自动使用其已发布 HTTP 端口；
+Docker Desktop 使用宿主网关域名，Linux Docker 使用宿主 bridge 网关，无需添加 `extra_hosts`。
+只有 Onto、没有 Modeling 服务的部署无法提供 Modeling MCP；脚本会提示并保留独立部署能力。
+自定义跨机部署仍需由运维提供关联地址和令牌，无法从本机自动发现远端服务。
+
+专用关联通道只接受服务凭据和匹配的 Onto 项目归属。管理员授权仅限当前项目的
+MCP 管理接口，不授予 Modeling 全局管理员权限、不修改成员列表。管理员代项目签发
+Token 时使用项目所有者作为访问主体，签发及吊销记录保留实际管理员身份；运行时
+继续校验原有项目成员权限、Token scope 和吊销状态。
 
 如果 Onto Modeling 与核心 Modeling 共用认证中心，配置：
 
@@ -61,6 +80,10 @@ MODELING_MCP_CLEANUP_TOKEN=<与 Onto 相同的值>
 - 几十用户同时建模为目标时建议 16G 主机，并按比例调高 `ONTO_WEB_MAX_SESSIONS`
   与 compose 里的 `ONTO_WEB_MEM_LIMIT`。
 - 建议主机配置 2–4G swap 或 zram 吸收峰值。
+- 数据评测每轮在评测专用线程池里执行，`ONTO_WEB_EVAL_MAX_CONCURRENT_ROUNDS`
+  （默认 16）限制同时执行的轮数，超出的轮次排队并在状态里显示位次；评测不占用
+  上传、git、建模发消息共用的默认线程池。每轮在 modeling 侧按用例并发调用
+  consumer，调高上限前先确认 consumer 与模型网关的承载。
 - 空闲会话默认 10 分钟回收（`ONTO_WEB_SESSION_IDLE_TTL`），回收后靠 resume
   续接模型上下文，用户无感；会话 transcript 持久化在数据卷 `/data/home/.claude/`。
 
@@ -103,6 +126,24 @@ ONTO_MODELING_EXTERNAL_AUTH_NETWORK=consumer_onto-agent-network
 deploy.sh 会停用自带 auth-server、让应用容器加入 consumer 栈网络，直接复用其
 `auth-server` 服务（issuer/audience 一致，token 互认）。切换回自带模式：删除这
 两行重跑 deploy.sh 即可（自带 auth 数据卷始终保留）。需要 docker compose v2.24+。
+
+## 脚本运行验证的沙箱（jiuwenbox）
+
+代码生成的脚本必须跑通才能提交（`/ontology-codegen` Step 4.6）。验证在 consumer 的
+`onto-agent-jiuwenbox` 沙箱里执行，脚本随请求送进一次性沙箱（禁止出网、仅 `/tmp` 可写）。
+
+jiuwenbox 的管理 socket 只挂给脚本验证网关 `onto-modeling-sandbox-gateway`（compose 服务
+`sandbox-gateway`），不挂进 onto-modeling 容器：建模 agent 在 onto-modeling 容器里能执行任意命令，
+拿到 socket 就能自己定沙箱策略。网关与 onto-modeling 同一镜像，以非 root、只读根文件系统、无
+capability 运行，不读 `.env`、不挂数据卷、不发布端口；它只按固定策略运行脚本，onto-modeling 经
+`ONTO_WEB_SANDBOX_GATEWAY_URL=http://sandbox-gateway:8110` 调用它。
+
+- 整栈部署（根目录 `deploy/deploy.sh`、`install-consumer-modeling*.sh`）会探测 consumer 的
+  socket 卷，写入 `.env`：`ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME=<卷名>`；deploy.sh 据此生成
+  `docker-compose.jiuwenbox.yml`，把卷只读挂给网关。`redeploy-app.sh` 沿用该文件并一起替换网关。
+- 单独部署、或探测不到 consumer 的沙箱时不挂载，网关报 jiuwenbox 不可用，脚本验证在 onto-modeling
+  容器内执行。
+- 管理员可在「配置中心 → 沙箱」查看是否已连接、沙箱内 Python 版本与包列表，并重新检测。
 
 ## 从原 modeling 服务迁移数据
 

@@ -211,6 +211,7 @@ function ExposedService({ project }) {
       </Space>
 
       {loadError && <Alert type="warning" showIcon message={`最近一次刷新失败：${loadError}`} />}
+      {status?.package?.synced === false && <Alert type="warning" showIcon message="知识包尚未同步到 MCP" description={status.package.detail} />}
       {!runtime.running && <Alert type="error" showIcon message={runtime.detail || 'MCP 服务当前不可用'} />}
       {isLoopbackUrl(runtime.base_url) && (
         <Alert type="warning" showIcon message="当前 MCP 地址仅限本机访问" description="请将 MODELING_MCP_PUBLIC_BASE_URL 配置为其他机器可访问的 HTTPS 域名或 IP。" />

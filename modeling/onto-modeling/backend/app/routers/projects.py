@@ -1,3 +1,4 @@
+from ..services.modeling_package_sync import sync_workspace_package
 import asyncio
 import json
 import re
@@ -7,7 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import config
 from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets, package_mapping
@@ -140,6 +141,52 @@ def provision_modeling_project(meta: dict, request: Request) -> dict:
         raise
 
 
+def associate_imported_project(meta: dict, request: Request) -> dict:
+    """Best-effort association for imports; a Modeling outage must not undo import."""
+    try:
+        result = modeling_mcp.ensure_project_association(
+            meta, request, workspaces._update_meta
+        )
+        updated = workspaces.get_project(meta["id"])
+        result["package"] = sync_workspace_package(updated, request, workspaces)
+        updated["modeling_association"] = result
+        return updated
+    except modeling_mcp.ModelingMcpError as exc:
+        updated = workspaces.get_project(meta["id"])
+        project_id = str(updated.get("modeling_project_id") or "").strip()
+        updated["modeling_association"] = {
+            "linked": bool(project_id),
+            "configured": modeling_mcp.configured() or modeling_mcp.association_configured(),
+            "synced": False if project_id else None,
+            "detail": str(exc),
+        }
+        return updated
+
+
+def _may_auto_associate(meta: dict, request: Request) -> bool:
+    user = getattr(request.state, "user", None)
+    if user is None:
+        return True
+    role = workspaces.role_of(
+        meta, user.get("sub", ""), user.get("role") == "admin"
+    )
+    return role in ("owner", "admin")
+
+
+def ensure_mcp_association(
+    meta: dict, request: Request, *, require_association: bool = False
+) -> dict:
+    """Lazy repair for owner/admin requests; never create a remote project for a reader."""
+    if not _may_auto_associate(meta, request):
+        if require_association and not modeling_mcp._modeling_project_id(meta):
+            raise modeling_mcp.ModelingMcpError(
+                "当前用户无权自动关联 Modeling 项目，请联系项目所有者或管理员", 403
+            )
+        return meta
+    modeling_mcp.ensure_project_association(meta, request, workspaces._update_meta)
+    return workspaces.get_project(meta["id"])
+
+
 @router.get("")
 def list_projects(request: Request):
     projects = workspaces.list_projects()
@@ -171,8 +218,15 @@ def get_modeling_mcp(project_id: str, request: Request):
     ensure_access(project_id, request)
     meta = workspaces.get_project(project_id)
     try:
+        meta = ensure_mcp_association(meta, request)
         runtime = modeling_mcp.status(meta, request)
-        return {"runtime": runtime}
+        package = None
+        if _may_auto_associate(meta, request):
+            try:
+                package = sync_workspace_package(meta, request, workspaces)
+            except modeling_mcp.ModelingMcpError as exc:
+                package = {"synced": False, "detail": str(exc), "status": exc.status}
+        return {"runtime": runtime, "package": package}
     except modeling_mcp.ModelingMcpError as exc:
         return JSONResponse(status_code=exc.status, content={"error": str(exc)})
 
@@ -182,6 +236,7 @@ def list_modeling_mcp_tokens(project_id: str, request: Request):
     ensure_access(project_id, request, write=True)
     meta = workspaces.get_project(project_id)
     try:
+        meta = ensure_mcp_association(meta, request, require_association=True)
         return modeling_mcp.tokens(meta, request)
     except modeling_mcp.ModelingMcpError as exc:
         return JSONResponse(status_code=exc.status, content={"error": str(exc)})
@@ -200,6 +255,7 @@ def create_modeling_mcp_token(
     ensure_access(project_id, request, write=True)
     meta = workspaces.get_project(project_id)
     try:
+        meta = ensure_mcp_association(meta, request, require_association=True)
         payload = body.model_dump(exclude_none=True)
         # Modeling API distinguishes omitted expiry (use default) from null (never expires).
         if "expires_in_seconds" in body.model_fields_set:
@@ -214,6 +270,7 @@ def revoke_modeling_mcp_token(project_id: str, token_id: str, request: Request):
     ensure_access(project_id, request, write=True)
     meta = workspaces.get_project(project_id)
     try:
+        meta = ensure_mcp_association(meta, request, require_association=True)
         return modeling_mcp.revoke_token(meta, request, token_id)
     except modeling_mcp.ModelingMcpError as exc:
         return JSONResponse(status_code=exc.status, content={"error": str(exc)})
@@ -258,7 +315,7 @@ async def import_project(
 
         meta = await asyncio.to_thread(claim_and_import)
         try:
-            return provision_modeling_project(meta, request)
+            return associate_imported_project(meta, request)
         except modeling_mcp.ModelingMcpError as exc:
             return JSONResponse(status_code=exc.status, content={"error": str(exc)})
     finally:
@@ -296,7 +353,7 @@ async def transfer_import(
 
         meta = await asyncio.to_thread(claim_and_import)
         try:
-            return provision_modeling_project(meta, request)
+            return associate_imported_project(meta, request)
         except modeling_mcp.ModelingMcpError as exc:
             return JSONResponse(status_code=exc.status, content={"error": str(exc)})
     finally:
@@ -586,6 +643,7 @@ def resource_meta(project_id: str, request: Request):
     return {
         "directives": workspaces.resource_directives(project_id),
         "purposes": list(workspaces.MATERIAL_PURPOSES),
+        "schema_candidates": workspaces.schema_candidates(project_id),
     }
 
 
@@ -933,6 +991,9 @@ class EvalRunBody(BaseModel):
     eval_set_id: str = ""
     # 用户已确认降级：数据绑定对不上的对象不阻断评测，按未绑定处理
     allow_unbound: bool = False
+    # 当前登录的 refresh token：转交 modeling 侧为本轮评测续期 access token（轮次常超
+    # access token 有效期）。只在内存里透传一次，不落状态、不进日志（repr=False）
+    refresh_token: str = Field(default="", repr=False)
 
 
 @router.post("/{project_id}/eval/run")
@@ -1007,10 +1068,12 @@ async def eval_run(project_id: str, body: EvalRunBody, request: Request):
     if body.data_source_id:
         eval_data_sources.mark_used(project_id, body.data_source_id)
 
+    # 部署级兜底令牌不属于当前用户：此时不转交用户的 refresh token，避免身份错配
+    refresh_token = "" if config.MODELING_TOKEN else body.refresh_token.strip()
     _asyncio.create_task(
         modeling_eval.run(
             project_id, root, token, cases, data_source, eval_set_name,
-            allow_unbound=body.allow_unbound,
+            allow_unbound=body.allow_unbound, refresh_token=refresh_token,
         )
     )
     return {"started": True, "cases": len(cases)}
@@ -1092,7 +1155,8 @@ async def put_project_engine(project_id: str, body: ProjectEngineBody, request: 
             content={"error": getattr(engine_cls, "UNAVAILABLE_MESSAGE", "引擎不可用")},
         )
     workspaces._update_meta(project_id, engine=name)
-    await manager.close(project_id)
+    # 全部会话的续接点一并作废：换引擎期间产生的轮次不在旧引擎的 transcript 里
+    await manager.close(project_id, all_conversations=True)
     return {"engine": name}
 
 
