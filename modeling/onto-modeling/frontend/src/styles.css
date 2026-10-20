@@ -547,7 +547,9 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .stat-label { font-size: 12px; color: var(--text-secondary); }
 
 /* ---- 中栏视图切换淡入 ---- */
-.center-anim { animation: soft-in 0.2s ease both; }
+/* 只在播放期间生效（backwards）：fill 到结束会让中栏一直保持独立层叠上下文，
+   流程图 / drawio 全屏的 z-index 被困在中栏里，右栏和页签会盖在全屏编辑器上 */
+.center-anim { animation: soft-in 0.2s ease backwards; }
 
 /* ---- 工具执行组 ---- */
 .tool-group {
@@ -1001,23 +1003,37 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .file-chip.deleted { text-decoration: line-through; opacity: .55; }
 .file-chip-icon { font-size: 11px; }
 
-/* 每轮产物变更卡 */
+/* 每轮文件改动卡：纯文字排版，直角、细线分隔，不用胶囊与图标 */
 .changes-card {
-  border-left: 2px solid var(--color-primary); background: var(--surface-subtle);
-  border-radius: 10px; padding: 8px 12px;
+  margin-top: 2px; padding: 10px 0 2px;
+  border-top: 1px solid var(--border-default);
+  font-size: 12px; color: var(--text-secondary);
 }
-.changes-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.changes-title { font-size: 12px; color: var(--text-secondary); font-weight: 500; flex: 1; }
-.changes-diff {
-  border: none; background: none; color: var(--color-primary);
-  font-size: 12px; cursor: pointer; padding: 0;
+.changes-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px; }
+.changes-title { flex: 1; color: var(--text-primary); font-weight: 500; letter-spacing: .01em; }
+.changes-link, .changes-toggle {
+  border: 0; padding: 0; background: none; font: inherit; cursor: pointer;
+  color: var(--text-tertiary);
 }
-.changes-files { display: flex; flex-wrap: wrap; gap: 4px; }
-.changes-more {
-  border: none; background: none; color: var(--text-tertiary);
-  font-size: 12px; cursor: pointer;
+.changes-link:hover, .changes-toggle:hover { color: var(--color-primary); text-decoration: underline; text-underline-offset: 3px; }
+.changes-summary { margin: 0 0 4px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.changes-groups { margin: 0 0 4px; }
+.changes-group {
+  display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: 12px;
+  padding: 5px 0; border-top: 1px solid var(--border-subtle);
 }
-.changes-more:hover { color: var(--color-primary); }
+.changes-group:first-child { border-top: 0; }
+.changes-group dt { color: var(--text-tertiary); }
+.changes-group dd { margin: 0; display: flex; flex-wrap: wrap; gap: 2px 14px; }
+.changes-file {
+  border: 0; padding: 0; background: none; font: inherit; cursor: pointer;
+  color: var(--text-primary); text-align: left;
+}
+.changes-file:hover:not(:disabled) { color: var(--color-primary); text-decoration: underline; text-underline-offset: 3px; }
+.changes-file:disabled { cursor: default; color: var(--text-tertiary); }
+.changes-file.deleted { text-decoration: line-through; }
+.changes-file small { margin-left: 4px; font-size: 11px; color: var(--text-tertiary); }
+.changes-file.modified small { color: var(--status-warning, #b77909); }
 
 /* 轮次分隔与时间戳 */
 .round-divider {
@@ -1158,10 +1174,6 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .html-preview { height: calc(100dvh - 210px); }
 .excel-scroll { max-height: calc(100dvh - 250px); }
 
-/* 变更卡精致化：芯片更紧凑，长名截断不撑行 */
-.changes-card .file-chip { max-width: 168px; }
-.changes-card { padding: 7px 10px; }
-.changes-head { margin-bottom: 5px; }
 
 /* 中栏页签：滑动指示条 + 图标 */
 .center-tabs {
@@ -1336,20 +1348,32 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .tool-group-err { color: #ff4d4f; font-size: 12px; }
 
 /* 资料用途行内打标 */
-.resource-directive { display: flex; align-items: center; gap: 8px; margin-top: 1px; }
+.resource-directive { display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; margin-top: 1px; }
 .resource-directive .ant-select { margin-left: -7px; }
 .resource-directive .ant-select-selection-item { font-size: 11.5px; color: var(--text-tertiary); }
-.resource-reading {
-  display: inline-flex; align-items: center; gap: 4px;
-  font-size: 11px; color: var(--text-tertiary); cursor: pointer; white-space: nowrap;
-}
-.resource-reading input { width: 12px; height: 12px; accent-color: var(--color-primary); }
+.resource-detect-tag { margin: 0; font-size: 11px; line-height: 16px; padding: 0 4px; }
+.resource-detect-action.ant-btn { height: 18px; padding: 0; font-size: 11.5px; }
 
-/* 流程图视图宿主 */
-.flowchart-host { display: flex; flex-direction: column; gap: 8px; }
-.flowchart-host-bar { display: flex; align-items: center; gap: 10px; }
+/* 流程图视图宿主：与 drawio 视图一样占满中栏剩余高度，编辑器随之铺满 */
+.flowchart-host {
+  display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  height: calc(100dvh - 132px); min-height: 480px;
+}
+.flowchart-host-bar { display: flex; align-items: center; gap: 10px; flex: none; }
 .flowchart-host-hint { font-size: 12px; color: var(--text-tertiary); }
-.flowchart-host .flowchart-editor { min-height: 520px; border: 1px solid var(--border-subtle); border-radius: 12px; overflow: hidden; background: var(--surface-card); }
+.flowchart-host-fullscreen { margin-left: auto; }
+.flowchart-host .flowchart-editor {
+  flex: 1; min-height: 0; height: auto;
+  border: 1px solid var(--border-subtle); border-radius: 12px; overflow: hidden; background: var(--surface-card);
+}
+/* drawio 高级编辑放在宿主里时由宿主给高度；它自己的全屏仍铺满视口 */
+.flowchart-host .drawio-root { flex: 1; height: auto; min-height: 0; }
+.flowchart-host .drawio-root.fullscreen { height: 100dvh; }
+/* 标准编辑器全屏 */
+.flowchart-host.fullscreen {
+  position: fixed; inset: 0; z-index: 1000; height: 100dvh; min-height: 0;
+  box-sizing: border-box; padding: 12px 16px; background: var(--surface-page);
+}
 
 /* ---- 数据评测用例复核 ---- */
 .eval-case-row { padding: 8px 0; border-bottom: 1px dashed var(--border-default); }

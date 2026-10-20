@@ -56,6 +56,8 @@ def masked() -> dict:
         # 新建/导入项目使用的默认引擎，以及各引擎在本部署的可用性
         "default_engine": default_engine(),
         "engines": available_engines(),
+        # 是否允许用户用个人 Key 覆盖本页配置（默认允许；未配个人 Key 的用户不受影响）
+        "allow_personal": personal_override_allowed(),
         # Jiuwen 引擎（OpenAI 兼容）配置：与 Anthropic 网关配置并列的第二组
         "jiuwen": {
             "base_url": jiuwen.get("base_url", ""),
@@ -288,6 +290,50 @@ def derived_compaction(real_window: int, max_output: int | None) -> dict:
     return result
 
 
+# CLI 按内置窗口处理的模型名：Claude 官方模型名及其别名
+_CLI_MODEL_ALIASES = {"sonnet", "opus", "haiku", "default", "best", "opusplan"}
+
+
+def cli_uses_env_window(model: str) -> bool:
+    """CLI 是否按环境变量定该模型的窗口：只有它不认识的模型名才读 CLAUDE_CODE_MAX_CONTEXT_TOKENS。
+
+    模型名为空时 CLI 用自己的默认模型，同样按内置窗口。
+    """
+    name = model.strip().lower().split("[", 1)[0]
+    if not name or name in _CLI_MODEL_ALIASES:
+        return False
+    return "claude" not in name
+
+
+def _env_number(env: dict, name: str) -> float | None:
+    try:
+        return float(str(env.get(name, "")).strip())
+    except ValueError:
+        return None
+
+
+def cli_context_limits(env: dict) -> tuple[int | None, int | None]:
+    """按 CLI 的规则从会话环境变量推算（窗口, 自动压缩触发点），与 CLI 查询结果的口径一致。
+
+    窗口 = min(压缩窗口, 模型窗口)（CLI 报告的 rawMaxTokens）；有效窗口 = 窗口 − min(最大输出, 20000)，
+    触发点 = 有效窗口 − 13000；设了触发百分比时取 min(有效窗口 × 百分比, 上式)。
+    只适用于 cli_uses_env_window 为真的模型。
+    """
+    window = _env_number(env, "CLAUDE_CODE_MAX_CONTEXT_TOKENS")
+    if not window or window <= 0:
+        return None, None
+    window = min(int(window), int(_env_number(env, "CLAUDE_CODE_AUTO_COMPACT_WINDOW") or window))
+    if any(env.get(name) for name in ("DISABLE_AUTO_COMPACT", "DISABLE_COMPACT")):
+        return window, None
+    max_output = int(_env_number(env, "CLAUDE_CODE_MAX_OUTPUT_TOKENS") or DEFAULT_MAX_OUTPUT_TOKENS)
+    effective = window - min(max_output, _CLI_OUTPUT_RESERVE_CAP)
+    threshold = effective - _CLI_AUTOCOMPACT_BUFFER
+    pct = _env_number(env, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")
+    if pct is not None and 0 < pct <= 100:
+        threshold = min(threshold, int(effective * pct / 100))
+    return window, threshold if threshold > 0 else None
+
+
 def _context_section(values: dict) -> dict:
     """校验配置页的模型真实窗口与最大输出，返回要存的 context 段；None 表示留空，按 .env 或默认值生效。"""
     section = {}
@@ -322,6 +368,20 @@ def save_context(values: dict) -> dict:
     return masked()
 
 
+def personal_override_allowed() -> bool:
+    return load().get("allow_personal", True) is not False
+
+
+def save_personal_policy(allow: bool) -> dict:
+    data = load()
+    data["allow_personal"] = bool(allow)
+    path = _file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.chmod(0o600)
+    return masked()
+
+
 def jiuwen_config() -> dict:
     """Jiuwen 引擎读取用的明文配置（仅服务端内部使用，不经接口外发）。"""
     section = load().get("jiuwen") or {}
@@ -332,14 +392,26 @@ def jiuwen_config() -> dict:
     }
 
 
-def session_env() -> dict:
+def session_env(owner: str = "") -> dict:
     """转成稳定引擎会话子进程的环境变量；空值不注入，模型真实窗口与最大输出总有值（见 effective_context）。
 
     key 同时覆盖 ANTHROPIC_API_KEY 与 ANTHROPIC_AUTH_TOKEN：CLI 优先用
     AUTH_TOKEN 做 Bearer 鉴权，若只覆盖 API_KEY，部署机 .env 里残留的
     旧令牌会继续生效，导致新网关 401（实测踩坑）。
+
+    owner 非空时用该用户的个人 Key，网关地址 / 模型个人未填则沿用管理员配置；
+    个人配置读取失败直接抛错，不能悄悄回落到管理员 Key。
     """
     data = load()
+    if owner:
+        from . import personal_model_settings
+
+        personal = personal_model_settings.resolve(owner, "claude")
+        data = {
+            "base_url": personal["base_url"] or data.get("base_url", ""),
+            "api_key": personal["api_key"],
+            "model": personal["model"] or data.get("model", ""),
+        }
     env = {}
     if data.get("base_url"):
         env["ANTHROPIC_BASE_URL"] = data["base_url"]

@@ -80,6 +80,10 @@ MODELING_MCP_CLEANUP_TOKEN=<与 Onto 相同的值>
 - 几十用户同时建模为目标时建议 16G 主机，并按比例调高 `ONTO_WEB_MAX_SESSIONS`
   与 compose 里的 `ONTO_WEB_MEM_LIMIT`。
 - 建议主机配置 2–4G swap 或 zram 吸收峰值。
+- 数据评测每轮在评测专用线程池里执行，`ONTO_WEB_EVAL_MAX_CONCURRENT_ROUNDS`
+  （默认 16）限制同时执行的轮数，超出的轮次排队并在状态里显示位次；评测不占用
+  上传、git、建模发消息共用的默认线程池。每轮在 modeling 侧按用例并发调用
+  consumer，调高上限前先确认 consumer 与模型网关的承载。
 - 空闲会话默认 10 分钟回收（`ONTO_WEB_SESSION_IDLE_TTL`），回收后靠 resume
   续接模型上下文，用户无感；会话 transcript 持久化在数据卷 `/data/home/.claude/`。
 

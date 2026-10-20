@@ -83,3 +83,44 @@ def test_include_scripts_passes_consistent_script(tmp_path: Path):
 def test_scripts_are_not_checked_without_flag(tmp_path: Path):
     ontology = make_ontology(tmp_path, BAD_SCRIPT)
     assert [i for i in run_checker(ontology) if i["category"] == "脚本契约"] == []
+
+
+INT_SCRIPT = '''"""
+关联operation：无
+
+功能描述：示例
+
+输入参数：
+    year      {doc_type}    统计年份；必填
+    ratio     float         折算系数；默认值：1.0
+
+输出：
+    return dict
+"""
+import argparse
+
+
+def _cli():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--year", type=int, required=True)
+    parser.add_argument("--ratio", type=float, default=1.0)
+    parser.parse_args()
+
+
+if __name__ == "__main__":
+    _cli()
+'''
+
+
+@pytest.mark.parametrize("doc_type", ["int", "integer"])
+def test_int_params_export_as_integer_not_number(doc_type: str):
+    """type=int 的参数必须导出为 integer：导出 number 时运行端按浮点拼成 2026.0，argparse int 直接退出。"""
+    _, params = _script_header_meta(INT_SCRIPT.format(doc_type=doc_type))
+    types = {p["name"]: p["type"] for p in params}
+    assert types == {"year": "integer", "ratio": "number"}
+
+
+def test_header_number_for_argparse_int_is_still_accepted():
+    """头部写 number、argparse 写 type=int 的旧脚本仍可导出，类型以 argparse 为准。"""
+    _, params = _script_header_meta(INT_SCRIPT.format(doc_type="number"))
+    assert {p["name"]: p["type"] for p in params}["year"] == "integer"

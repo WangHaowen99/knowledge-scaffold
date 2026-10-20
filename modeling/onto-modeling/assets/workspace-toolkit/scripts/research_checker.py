@@ -15,7 +15,7 @@
 4. ID 唯一：同一报告内业务项 ID、规则 ID 均不重复；
 5. ID 溯源：每个 ID 必须逐字出现在它声明的来源文件里（找不到则退而在 resource/
    与既有报告里找）；哪里都找不到就是改名或臆造，除非在「ID变更对照」声明为新增。
-   首轮调研没有报告基线，这条是捉 ID 静默改名的唯一确定性信号；
+   首轮资料分析没有报告基线，这条是捉 ID 静默改名的唯一确定性信号；
 6. ID 稳定：派遣前固化的既有清单里的 ID 必须仍在报告中，新增 ID 必须在
    「ID变更对照」给出依据——不允许静默改名；
 7. 字段保真：「引用字段」列的每个字段必须是真实表头里的列（表名.列名 或列名）；
@@ -24,7 +24,7 @@
 
 用法（工作区根目录执行）：
   python3 .claude/scripts/research_checker.py capture [--json]
-      派遣调研子代理**之前**执行：把真实表头与既有规范清单固化成只读快照
+      派遣资料分析子代理**之前**执行：把真实表头与既有规范清单固化成只读快照
       （.ontology-state/research-inventory.json），并打印可直接注入 prompt 的区块。
   python3 .claude/scripts/research_checker.py [check] [--json]
       报告落盘后执行：核验内容并写验收回执；通过才允许进入对象提取。
@@ -190,7 +190,7 @@ def inventory_block(snapshot: dict) -> str:
         lines.append('- 这些 ID 只能沿用。新增、删除、归并或改名必须在「ID变更对照」段'
                      '逐条写出原 ID、新 ID、变更类型与依据。')
     else:
-        lines.append('- 首次调研，暂无既有清单。本轮产出的 ID 将成为后续轮次的基线。')
+        lines.append('- 首次资料分析，暂无既有清单。本轮产出的 ID 将成为后续轮次的基线。')
     return '\n'.join(lines)
 
 
@@ -454,7 +454,7 @@ def _trace_ids(item_id: str, rule_id: str, source_rel: str,
                ctx: CheckContext) -> list[tuple[str, str, str]]:
     """ID 溯源：返回 (严重度, 标签, ID)。
 
-    规范 ID 来自用户上传的资料或上一轮已验收的报告。首轮调研没有报告基线，
+    规范 ID 来自用户上传的资料或上一轮已验收的报告。首轮资料分析没有报告基线，
     `check_id_stability` 无从比对，此时"ID 在任何来源里都找不到"就是改名或臆造的
     唯一确定性信号（issue #362 的现场正是首轮）。
     合法出处依次是：自己声明的来源文件 → resource/ 下的文本资料 → 快照里已验收的
@@ -599,7 +599,7 @@ def _declared_changes(root: Path, reports) -> tuple[set[str], set[str]]:
 
 
 def check_id_stability(items: list[dict], ctx: CheckContext) -> list[dict]:
-    """既有 ID 不得静默消失，新 ID 不得静默出现。首次调研无基线时跳过。
+    """既有 ID 不得静默消失，新 ID 不得静默出现。首次资料分析无基线时跳过。
 
     首轮没有基线时由 `_trace_ids` 的 ID 溯源兜住——那条检查不依赖既有报告。
     """
@@ -693,7 +693,7 @@ def _emit(text: str, stream=None) -> None:
 
 def _print_check(result: dict) -> None:
     if result['status'] == NO_REPORT:
-        _emit('research/ 下没有调研报告，无法核验（请先运行 /ontology-research）')
+        _emit('research/ 下没有资料分析报告，无法核验（请先运行 /ontology-research）')
         return
     errors = [i for i in result['issues'] if i['severity'] == ERROR]
     warnings = [i for i in result['issues'] if i['severity'] == WARNING]

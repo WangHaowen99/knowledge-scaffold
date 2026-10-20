@@ -301,14 +301,22 @@ export default function LeftPane({
   const resources = useMemo(() => collectResources(tree), [tree]);
   const [deleting, setDeleting] = useState(null);
   const [directives, setDirectives] = useState({});
+  // 结构上像数据表、用途仍是「由助手判断」的表格资料：{路径: {tables}}，可一键标为 schema
+  const [schemaCandidates, setSchemaCandidates] = useState({});
+  const loadDirectives = () =>
+    api
+      .resourceDirectives(project.id)
+      .then((data) => {
+        setDirectives(data.directives || {});
+        setSchemaCandidates(data.schema_candidates || {});
+      })
+      .catch(() => {});
 
   useEffect(() => {
     if (section !== 'resources') return;
-    api
-      .resourceDirectives(project.id)
-      .then((data) => setDirectives(data.directives || {}))
-      .catch(() => {});
-  }, [section, project.id]);
+    loadDirectives();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section, project.id, tree]);
 
   // ---- 数据评测（方案 P2）：状态轮询 + 评测向导 ----
   const [evalInfo, setEvalInfo] = useState(null); // {enabled, reachable, state, evolution}
@@ -398,6 +406,10 @@ export default function LeftPane({
     try {
       await api.setResourceDirective(project.id, path, purpose, readingMode);
       setDirectives((prev) => ({ ...prev, [path]: { purpose, reading_mode: readingMode } }));
+      setSchemaCandidates((prev) => {
+        const { [path]: _removed, ...rest } = prev;
+        return rest;
+      });
     } catch (error) {
       message.error(error.message);
     }
@@ -420,7 +432,12 @@ export default function LeftPane({
       const subdir =
         forcedSubdir || (uploadSubdir === 'auto' ? autoSubdir(file.name) : uploadSubdir);
       const saved = await api.uploadResource(project.id, subdir, file);
-      message.success(saved.replaced ? `已替换 ${file.name}` : `已上传 ${file.name}`);
+      const done = saved.replaced ? `已替换 ${file.name}` : `已上传 ${file.name}`;
+      message.success(
+        saved.detected
+          ? `${done}，识别为数据表（${saved.detected.tables.length} 张），用途已设为「数据 Schema」，可在资料列表修改`
+          : done,
+      );
       onRefresh();
     } catch (error) {
       message.error(error.message);
@@ -808,20 +825,31 @@ export default function LeftPane({
                           disabled: opt.tableOnly && !isTableFile(item.path),
                         }))}
                       />
-                      <label className="resource-reading">
-                        <input
-                          type="checkbox"
-                          checked={directives[item.path]?.reading_mode === 'full'}
-                          onChange={(e) =>
-                            changeDirective(
-                              item.path,
-                              directives[item.path]?.purpose || 'auto',
-                              e.target.checked ? 'full' : 'on_demand',
-                            )
-                          }
-                        />
-                        全文精读
-                      </label>
+                      {directives[item.path]?.auto_detected && (
+                        <Tooltip title="上传时按表格结构自动识别（数据表或术语表）；改用途即覆盖">
+                          <Tag className="resource-detect-tag">自动识别</Tag>
+                        </Tooltip>
+                      )}
+                      {schemaCandidates[item.path] && (
+                        <Tooltip
+                          title={`表头像数据库列名，识别出 ${schemaCandidates[item.path].tables.length} 张表：${schemaCandidates[item.path].tables.slice(0, 8).join('、')}`}
+                        >
+                          <Button
+                            size="small"
+                            type="link"
+                            className="resource-detect-action"
+                            onClick={() =>
+                              changeDirective(
+                                item.path,
+                                'schema',
+                                directives[item.path]?.reading_mode || 'on_demand',
+                              )
+                            }
+                          >
+                            疑似数据表 · 设为 Schema
+                          </Button>
+                        </Tooltip>
+                      )}
                     </div>
                   </div>
                 </List.Item>

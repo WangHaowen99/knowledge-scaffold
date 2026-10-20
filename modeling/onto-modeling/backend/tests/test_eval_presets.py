@@ -168,7 +168,7 @@ def test_run_uses_saved_source_and_syncs_eval_set(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "MODELING_TOKEN", "")
     captured = {}
 
-    async def fake_run(project_id, root_, token, cases, data_source, eval_set_name="", allow_unbound=False):
+    async def fake_run(project_id, root_, token, cases, data_source, eval_set_name="", allow_unbound=False, refresh_token=""):
         captured.update(cases=cases, data_source=data_source, eval_set_name=eval_set_name)
 
     monkeypatch.setattr(modeling_eval, "run", fake_run)

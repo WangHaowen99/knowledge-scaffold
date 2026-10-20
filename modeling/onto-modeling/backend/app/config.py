@@ -51,6 +51,9 @@ MODELING_CLEANUP_TOKEN = os.environ.get("ONTO_WEB_MODELING_CLEANUP_TOKEN", "")
 MODELING_CLEANUP_INTERVAL_SECONDS = int(
     os.environ.get("ONTO_WEB_MODELING_CLEANUP_INTERVAL", "30")
 )
+# 同时执行的评测轮数上限（评测专用线程池容量）；超出的轮次排队，状态里显示位次。
+# 每轮在 modeling 侧按用例并发调用 consumer，上限同时约束下游负载
+EVAL_MAX_CONCURRENT_ROUNDS = max(1, int(os.environ.get("ONTO_WEB_EVAL_MAX_CONCURRENT_ROUNDS", "16")))
 
 # workspace 定期备份间隔（小时，0 关闭）；保留份数固定为最近 3 份
 BACKUP_INTERVAL_HOURS = int(os.environ.get("ONTO_WEB_BACKUP_INTERVAL_HOURS", "24"))

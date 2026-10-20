@@ -339,7 +339,7 @@
 .wb-policy-warning span { color: var(--c-muted); font-size: var(--t-sm); line-height: 1.5; }
 
 .wb-create-file { padding: var(--s-2) 0; border-bottom: 1px solid var(--c-line-soft); }
-.wb-create-file .wb-material-directives { padding-left: 19px; }
+.wb-create-hint { margin-top: var(--s-2); color: var(--c-muted); font-size: var(--t-xs); }
 
 .wb-create { flex: 1; overflow-y: auto; }
 .wb-create .inner { max-width: 780px; margin: 0 auto; padding: var(--s-8) var(--s-7) 56px; }
@@ -489,10 +489,3 @@
 .wb-bar i { display: block; height: 100%; background: var(--c-accent); transition: width 240ms linear; }
 
 
-/* ===== modeling workbench/app.css（wb-material-directives 摘录）===== */
-.wb-material-directives { display: flex; align-items: flex-end; gap: var(--s-3); padding: var(--s-2) 0 0 17px; }
-.wb-material-directives > label:not(.wb-material-reading) { display: flex; align-items: center; gap: var(--s-2); color: var(--c-muted); font-size: var(--t-xs); }
-.wb-material-directives select { width: 132px; min-height: 28px; padding: 3px 24px 3px 7px; font-size: var(--t-xs); }
-.wb-material-reading { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; color: var(--c-ink-2); font-size: var(--t-xs); cursor: pointer; }
-.wb-material-reading input { width: 14px; height: 14px; }
-.wb-create-file .wb-material-directives { padding-left: 19px; }

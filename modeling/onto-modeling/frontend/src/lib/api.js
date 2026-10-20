@@ -100,6 +100,23 @@ async function responseError(response) {
   return error;
 }
 
+// 评测轮在 modeling 侧后台执行，常超 access token 有效期：带上 refresh token，
+// 由 modeling 为本轮续期凭据。未登录（无鉴权部署）时不带该字段。
+export function evalRunPayload(
+  { cases, dataSource, dataSourceId = '', evalSetId = '', allowUnbound = false },
+  refreshToken = authStore.refreshToken,
+) {
+  const payload = {
+    cases,
+    data_source: dataSource || { mode: 'none' },
+    data_source_id: dataSourceId,
+    eval_set_id: evalSetId,
+    allow_unbound: allowUnbound,
+  };
+  if (refreshToken) payload.refresh_token = refreshToken;
+  return payload;
+}
+
 function conversationQuery(conversationId) {
   return conversationId ? `?conversation=${encodeURIComponent(conversationId)}` : '';
 }
@@ -352,6 +369,16 @@ export const api = {
     request('/api/settings/model/context-presets/custom/disable', { method: 'POST' }),
   matchModelContextPreset: (model) =>
     request(`/api/settings/model/context-presets/match?model=${encodeURIComponent(model)}`),
+  saveModelPersonalPolicy: (allow) =>
+    request('/api/settings/model/personal-policy', {
+      method: 'PUT',
+      body: JSON.stringify({ allow }),
+    }),
+  getMyModelSettings: () => request('/api/settings/model/me'),
+  saveMyModelSettings: (engine, payload) =>
+    request(`/api/settings/model/me/${engine}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  clearMyModelSettings: (engine) =>
+    request(`/api/settings/model/me/${engine}`, { method: 'DELETE' }),
   saveDefaultEngine: (engine) =>
     request('/api/settings/model/default-engine', {
       method: 'PUT',
@@ -378,13 +405,7 @@ export const api = {
   evalRun: (pid, { cases, dataSource, dataSourceId = '', evalSetId = '', allowUnbound = false }) =>
     request(`/api/projects/${pid}/eval/run`, {
       method: 'POST',
-      body: JSON.stringify({
-        cases,
-        data_source: dataSource || { mode: 'none' },
-        data_source_id: dataSourceId,
-        eval_set_id: evalSetId,
-        allow_unbound: allowUnbound,
-      }),
+      body: JSON.stringify(evalRunPayload({ cases, dataSource, dataSourceId, evalSetId, allowUnbound })),
     }),
   evalDataSources: (pid) => request(`/api/projects/${pid}/eval/data-sources`),
   // 数据源表单上传业务数据表（Excel）→ { file: { id, name, size } }

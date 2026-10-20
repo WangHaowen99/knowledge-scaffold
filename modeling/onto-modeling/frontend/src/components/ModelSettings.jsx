@@ -1,4 +1,4 @@
-import { Alert, Button, Divider, Form, Input, Radio, Typography, message } from 'antd';
+import { Alert, Button, Divider, Form, Input, Radio, Switch, Typography, message } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import {
@@ -37,6 +37,7 @@ export default function ModelSettings({ project }) {
   const contextPending = useRef(false);
   const lookupTimer = useRef(null);
   const lookupSeq = useRef(0);
+  const [savingPolicy, setSavingPolicy] = useState(false);
 
   useEffect(() => {
     const seq = lookupSeq.current;
@@ -196,6 +197,18 @@ export default function ModelSettings({ project }) {
     }
   };
 
+  const savePersonalPolicy = async (allow) => {
+    setSavingPolicy(true);
+    try {
+      setCurrent(await api.saveModelPersonalPolicy(allow));
+      message.success(allow ? '已允许成员使用个人 Key' : '已关闭个人 Key，全部会话改用本页配置');
+    } catch (error) {
+      message.error(error.message);
+    } finally {
+      setSavingPolicy(false);
+    }
+  };
+
   return (
     <div>
       {current && !current.configured && (
@@ -309,6 +322,21 @@ export default function ModelSettings({ project }) {
           保存
         </Button>
       </Form>
+
+      <Divider />
+      <Typography.Title level={5}>个人 API Key</Typography.Title>
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: -4 }}>
+        开启后，成员可在「设置 → 我的模型配置」填写自己的 API Key，只用于本人发起的会话；
+        未填写的成员继续使用本页配置。关闭后全部会话都使用本页配置。
+      </Typography.Paragraph>
+      <Switch
+        checked={current?.allow_personal !== false}
+        loading={savingPolicy}
+        disabled={!current}
+        onChange={savePersonalPolicy}
+        checkedChildren="允许"
+        unCheckedChildren="关闭"
+      />
 
       <Typography.Paragraph type="secondary" style={{ marginTop: 12, fontSize: 12 }}>
         配置在新会话生效。
