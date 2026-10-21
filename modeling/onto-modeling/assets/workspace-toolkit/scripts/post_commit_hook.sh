@@ -47,6 +47,15 @@ print_header() {
     echo "如需回退到上一版本，回复\"回退\""
 }
 
+verified_hint() {
+    # 保存成功与产物核验分开；只读当前回执，不重复调用检查器或模型。
+    if (cd "$ROOT" && python3 .claude/scripts/verify_artifacts.py "$1" --status >/dev/null 2>&1); then
+        echo "💡 产物轻量核验通过；$2（业务覆盖与语义检查仍按原流程执行）"
+    else
+        echo "⚠️ 版本已保存，完整阶段产物仍待核验；不要据此宣布提取完成。运行 python3 .claude/scripts/verify_artifacts.py $1"
+    fi
+}
+
 case "$MSG" in
     research:*)
         print_header
@@ -60,15 +69,15 @@ case "$MSG" in
         ;;
     flowchart:*)
         print_header
-        echo "💡 流程图就绪，建议运行 /ontology-extract-object 开始提取对象"
+        verified_hint diagrams "建议运行 /ontology-extract-object 开始提取对象"
         ;;
     extract:*objects*)
         print_header
-        echo "💡 对象提取完成，建议运行 /ontology-extract-operation 继续提取逻辑"
+        verified_hint objects "建议运行 /ontology-extract-operation 继续提取逻辑"
         ;;
     extract:*operation*)
         print_header
-        echo "💡 逻辑提取完成，建议运行 /ontology-validate 开始校验"
+        verified_hint operations "建议运行 /ontology-validate 开始校验"
         ;;
     trace:*testcases*)
         print_header

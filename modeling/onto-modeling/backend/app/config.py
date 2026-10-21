@@ -24,7 +24,8 @@ MAX_ACTIVE_SESSIONS = int(os.environ.get("ONTO_WEB_MAX_SESSIONS", "12"))
 # 空闲回收 TTL：连续对话期间进程常驻（轮间零延迟），停顿超过该时长即回收
 # 子进程释放内存（~400MB/会话），下次消息经 resume 续接（多付 2~5s 冷启动，
 # 且该场景通常已过 API prompt cache 的 5 分钟 TTL，感知很弱）。
-SESSION_IDLE_TTL_SECONDS = int(os.environ.get("ONTO_WEB_SESSION_IDLE_TTL", "120"))
+# 临时缓解长步骤期间的空闲回收；不改变池满驱逐或会话换绑策略。
+SESSION_IDLE_TTL_SECONDS = int(os.environ.get("ONTO_WEB_SESSION_IDLE_TTL", "600"))
 SESSION_REAPER_INTERVAL = int(os.environ.get("ONTO_WEB_SESSION_REAPER_INTERVAL", "30"))
 
 # 降级兼容包（无 AVX 环境的最后手段）：指向外部 JS 版 CLI 的路径，空 = 用捆绑 CLI

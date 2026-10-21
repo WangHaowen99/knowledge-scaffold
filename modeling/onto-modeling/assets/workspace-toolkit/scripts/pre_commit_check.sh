@@ -143,6 +143,23 @@ print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=Fals
 fi
 
 # --- Ontology rule check（原逻辑） -------------------------------------------
+# 流程图生成收尾和提交复用同一修订回执；不调用语义 Agent。
+declare -a DIAGRAMS=()
+while IFS= read -r path; do
+    [ -f "$path" ] && DIAGRAMS+=("$path")
+done < <(git diff --cached --name-only --diff-filter=ACMR -- 'ontology/diagrams/*.drawio')
+if [ "${#DIAGRAMS[@]}" -gt 0 ]; then
+    if [ -n "$(git diff --name-only -- "${DIAGRAMS[@]}")" ]; then
+        echo '{"decision":"block","reason":"流程图暂存版本与当前文件不同，请先将核验版本完整暂存。"}'
+        exit 0
+    fi
+    DIAGRAM_OUTPUT=$(python3 .claude/scripts/verify_artifacts.py diagrams --files "${DIAGRAMS[@]}" 2>&1)
+    if [ "$?" -ne 0 ]; then
+        python3 -c 'import json,sys; print(json.dumps({"decision":"block","reason":"流程图轻量核验未通过："+sys.argv[1]},ensure_ascii=False))' "${DIAGRAM_OUTPUT:0:4000}"
+        exit 0
+    fi
+fi
+
 # Only relevant when staged files include ontology docs. Use -z for NUL-safe parsing.
 # rule / metric 有意不在范围内：从知识包导入的规则、指标是知识包契约的格式（规则内容 /
 # 判断条件 / 知识证据 …），与工具箱模板不同，结构检查会把它们整篇判为缺章节。两套
@@ -183,20 +200,45 @@ if [ "${#STEMS[@]}" -eq 0 ]; then
     exit 0
 fi
 
-# ontology_checker emits progress to stderr; stdout is pure JSON.
-OUTPUT=$(python3 .claude/scripts/ontology_checker.py ontology --json --include-mock --files "${STEMS[@]}" 2>/dev/null || echo '[]')
+# 数据样例/知识由各自检查器处理，不作为本体产物的存在证明。
+declare -a VERIFY_FILES=()
+while IFS= read -r path; do
+    [ -f "$path" ] && VERIFY_FILES+=("$path")
+done < <(printf '%s\n' "$STAGED" | grep -E '^ontology/(object|operation|action)/' | grep -vi '/index\.md$' || true)
+if [ "${#VERIFY_FILES[@]}" -gt 0 ]; then
+    if [ -n "$(git diff --name-only -- "${VERIFY_FILES[@]}")" ]; then
+        echo '{"decision":"block","reason":"本体暂存版本与当前文件不同，请先将核验版本完整暂存。"}'
+        exit 0
+    fi
+    OUTPUT=$(python3 .claude/scripts/verify_artifacts.py ontology --issues-json --files "${VERIFY_FILES[@]}" 2>/dev/null)
+    CHECK_CODE=$?
+else
+    OUTPUT=$(python3 .claude/scripts/ontology_checker.py ontology --json --include-mock --files "${STEMS[@]}" 2>/dev/null)
+    CHECK_CODE=$?
+fi
+if [ "$CHECK_CODE" -gt 1 ]; then
+    echo '{"decision":"block","reason":"轻量核验执行失败，不能按通过处理。请运行 verify_artifacts.py 查看错误。"}'
+    exit 0
+fi
 
 COUNTS=$(echo "$OUTPUT" | python3 -c '
 import json, sys
 try:
-    issues = json.loads(sys.stdin.read() or "[]")
+    issues = json.loads(sys.stdin.read())
+    if not isinstance(issues, list) or not all(isinstance(i, dict) and i.get("severity") in ("错误", "警告", "建议") for i in issues):
+        raise ValueError("invalid result")
 except Exception:
-    issues = []
+    print("1 0 0")
+    sys.exit(0)
 def c(s): return sum(1 for i in issues if i.get("severity") == s)
 print(c("错误"), c("警告"), c("建议"))
-' 2>/dev/null || echo '0 0 0')
+' 2>/dev/null || echo '1 0 0')
 
 ERRORS=$(echo "$COUNTS" | awk '{print $1+0}')
+if [ "$CHECK_CODE" -ne 0 ] && [ "$ERRORS" -eq 0 ]; then
+    echo '{"decision":"block","reason":"核验退出状态与结果不一致，不能按通过处理。"}'
+    exit 0
+fi
 WARNINGS=$(echo "$COUNTS" | awk '{print $2+0}')
 SUGGESTIONS=$(echo "$COUNTS" | awk '{print $3+0}')
 

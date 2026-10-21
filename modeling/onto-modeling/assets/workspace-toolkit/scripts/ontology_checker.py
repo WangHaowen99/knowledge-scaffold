@@ -866,7 +866,7 @@ def _parse_join_note(note: str, source_fields: set, target_fields: set,
         if not source_join or not target_join:
             return '', '', '的关联字段括注不明确，应写成「关系名（源对象字段 → 目标对象字段）」'
         absent = [name for name, fields in ((source_join, source_fields), (target_join, target_fields))
-                  if fields and name not in fields]
+                  if name not in fields]
         if absent:
             return '', '', (f'声明的关联字段 {source_join} → {target_join} 里，'
                             f'「{"、".join(absent)}」不在对应对象属性清单的「英文名称」列里')
@@ -914,9 +914,36 @@ def check_object_relation_joins(doc: OntologyDoc, all_docs: dict, tables: dict) 
             note, _field_keys(source_doc), _field_keys(target_doc),
             _relation_names(source_doc, by_lower), _relation_names(target_doc, by_lower))
         if error:
-            issues.append(Issue(file=_rel(doc), severity='警告', category='关联字段',
+            issues.append(Issue(file=_rel(doc), severity='错误', category='关联字段',
                                 message=label + error, source='规则检查'))
             continue
+        # 发布支持只在关系的一端声明 join；轻量门禁必须遵守同一契约。
+        opposite_joins = set()
+        opposite_errors = []
+        for opposite_line in other_doc.sections.get('关联对象', '').splitlines():
+            opposite = _relation_parts(opposite_line.strip().lstrip('-*').strip())
+            if not opposite:
+                continue
+            left, rel_name, right, rel_note = opposite
+            left = other if left == '当前对象' else left
+            right = other if right == '当前对象' else right
+            if (left, rel_name, right) != (source, name, target):
+                continue
+            a, b, err = _parse_join_note(rel_note, _field_keys(source_doc), _field_keys(target_doc))
+            if err:
+                opposite_errors.append(err)
+            if a and b and not err:
+                opposite_joins.add((a, b))
+        if opposite_errors:
+            issues.append(Issue(file=_rel(doc), severity='错误', category='关联字段',
+                                message=label + '对端声明无效：' + opposite_errors[0], source='规则检查'))
+            continue
+        if len(opposite_joins | ({(source_join, target_join)} if source_join else set())) > 1:
+            issues.append(Issue(file=_rel(doc), severity='错误', category='关联字段',
+                                message=label + '两端声明的关联字段不一致', source='规则检查'))
+            continue
+        if not source_join and opposite_joins:
+            source_join, target_join = next(iter(opposite_joins))
         if source_join and target_join:
             continue
         source_table = _source_declaration(source_doc, by_lower)[0]
@@ -926,7 +953,7 @@ def check_object_relation_joins(doc: OntologyDoc, all_docs: dict, tables: dict) 
         if _joinable_by_same_name(source_doc, target_doc):
             continue
         issues.append(Issue(
-            file=_rel(doc), severity='警告', category='关联字段',
+            file=_rel(doc), severity='错误', category='关联字段',
             message=f'{label}跨表（{source_table} / {target_table}）且未声明关联字段，'
                     f'两端也没有同名的单字段主键可依据：图模式的数据评测会报「找不到关联字段」'
                     f'并跳过这条关系，发布包里这条关系也连不上。请补成「{name}（源对象字段 → '
@@ -1915,7 +1942,8 @@ def generate_report(issues: list, ontology_dir: str) -> str:
 # =============================================================================
 
 def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool = False,
-               include_knowledge: bool = False, include_scripts: bool = False) -> list:
+               include_knowledge: bool = False, include_scripts: bool = False,
+               tables: dict = None, strict_targets: bool = False) -> list:
     print(f"Loading ontology from {ontology_dir}...", file=sys.stderr)
     all_docs = load_ontology(ontology_dir)
     print(f"  {len(all_docs)} documents loaded", file=sys.stderr)
@@ -1925,6 +1953,8 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
         check_docs = {k: v for k, v in all_docs.items() if k in target_files}
         skipped = [f for f in target_files if f not in all_docs]
         if skipped:
+            if strict_targets:
+                raise ValueError('指定产物未被检查器加载，不能按通过处理')
             print(f"  WARNING: stems not found: {skipped}", file=sys.stderr)
         print(f"  Incremental mode: checking {len(check_docs)} of {len(all_docs)} docs", file=sys.stderr)
     else:
@@ -1934,7 +1964,7 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
     issues += check_file_locations(ontology_dir)
     issues += check_unpackaged_knowledge(ontology_dir)
     term_map = build_term_map(all_docs)
-    tables = load_table_headers(ontology_dir)
+    tables = load_table_headers(ontology_dir) if tables is None else tables
     report_categories = load_report_categories(ontology_dir)
 
     print("Running rule checks...", file=sys.stderr)
