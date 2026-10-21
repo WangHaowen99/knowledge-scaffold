@@ -201,6 +201,16 @@ def validate_compatibility(path: Path, release: dict) -> None:
         raise CompatibilityError("no verified compatibility combination for this Modeling release")
 
 
+def release_chart_from_list(releases: list, release_name: str) -> str:
+    """Read the chart name from Helm list; Helm status JSON omits it."""
+    if not isinstance(releases, list):
+        raise ConfigError("Helm release list is invalid")
+    matching = [item for item in releases if isinstance(item, dict) and item.get("name") == release_name]
+    if len(matching) != 1 or not isinstance(matching[0].get("chart"), str) or not matching[0]["chart"]:
+        raise ConfigError(f"Helm chart for release {release_name} is missing or ambiguous")
+    return matching[0]["chart"]
+
+
 def validate_compatibility_manifest(manifest: dict) -> dict:
     """Validate the cross-repository compatibility contract without matching a package."""
     if manifest.get("schemaVersion") != "cce-compatibility/v1":

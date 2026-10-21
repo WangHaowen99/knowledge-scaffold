@@ -21,7 +21,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from common import (ConfigError, checksum, safe_extract, validate_release,
+from common import (ConfigError, checksum, release_chart_from_list, safe_extract, validate_release,
                     validate_compatibility_manifest, verify_checksums)  # noqa: E402
 
 
@@ -110,10 +110,32 @@ class CceContractTests(unittest.TestCase):
                   "consumer": {"namespace": "consumer-demo", "releaseName": "consumer"}}
         def response(*command):
             if "status" in command:
-                return json.dumps({"info": {"status": "deployed"}, "chart": "knowledge-consumer-1.0.0"})
+                return json.dumps({"name": "consumer", "info": {"status": "deployed"}})
+            if "list" in command:
+                return json.dumps([
+                    {"name": "consumer-other", "chart": "knowledge-consumer-9.0.0"},
+                    {"name": "consumer", "chart": "knowledge-consumer-1.0.0"},
+                ])
             return json.dumps({"global": {"releaseVersion": "c1"}})
         with mock.patch.object(JOINT, "run", side_effect=response):
             self.assertEqual(JOINT.installed_identity(config, "consumer"), installed["consumer"])
+
+    def test_installed_modeling_reads_chart_from_helm_list(self):
+        args = SimpleNamespace(context="synthetic", namespace="modeling-demo", release="modeling")
+        with mock.patch.object(INSTALL, "release_status", return_value={
+                 "name": "modeling", "info": {"status": "deployed"}}), \
+             mock.patch.object(INSTALL, "installed_values", return_value={
+                 "global": {"releaseVersion": "v1.0"}}), \
+             mock.patch.object(INSTALL, "run", return_value=json.dumps([
+                 {"name": "modeling-old", "chart": "modeling-9.0.0"},
+                 {"name": "modeling", "chart": "modeling-0.1.0"},
+             ])):
+            self.assertEqual(INSTALL.installed_release(args), {
+                "releaseVersion": "v1.0", "chartVersion": "0.1.0"})
+
+    def test_helm_list_requires_exact_release_name(self):
+        with self.assertRaises(ConfigError):
+            release_chart_from_list([{"name": "modeling-old", "chart": "modeling-0.1.0"}], "modeling")
 
     def test_upgrade_rejects_changed_claim_and_requires_ready_snapshots(self):
         args = SimpleNamespace(release="modeling", namespace="demo", context="demo")

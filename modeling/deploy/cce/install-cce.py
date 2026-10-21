@@ -18,7 +18,7 @@ import uuid
 import jsonschema
 
 from common import (CompatibilityError, ConfigError, checksum, endpoint_results, read_yaml,
-                    validate_images, validate_name, validate_release)
+                    release_chart_from_list, validate_images, validate_name, validate_release)
 from upgrade import (DATA_COUNTS, assert_same_bindings, bindings, transition,
                      verified_snapshots, verify_persisted_data)
 
@@ -187,11 +187,16 @@ def installed_values(args) -> dict:
     return json.loads(run(*helm_base(args), "get", "values", args.release, "-o", "json"))
 
 
+def release_chart(args) -> str:
+    releases = json.loads(run(*helm_base(args), "list", "--all", "-o", "json"))
+    return release_chart_from_list(releases, args.release)
+
+
 def installed_release(args) -> dict:
     current = release_status(args)
     if not current or current.get("info", {}).get("status") != "deployed":
         raise ConfigError("installed Modeling release is not deployed")
-    chart = current.get("chart", "")
+    chart = release_chart(args)
     if not chart.startswith("modeling-"):
         raise ConfigError("installed release is not a Modeling Chart")
     version = installed_values(args).get("global", {}).get("releaseVersion")
@@ -750,7 +755,7 @@ def main():
                 raise ConfigError("release not installed")
             result["phase"] = "status"
             result["releaseVersion"] = installed_values(args).get("global", {}).get("releaseVersion")
-            result["chartVersion"] = current.get("chart", "").removeprefix("modeling-")
+            result["chartVersion"] = release_chart(args).removeprefix("modeling-")
             result["message"] = current.get("info", {}).get("status", "unknown")
         else:
             if not args.state_dir:

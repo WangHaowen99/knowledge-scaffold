@@ -19,7 +19,8 @@ import yaml
 
 from common import (CompatibilityError, ConfigError, LockError, MigrationUnavailable,
                     checksum, read_yaml, safe_extract, validate_name,
-                    validate_release, validate_compatibility_manifest, IMAGE_REF)
+                    validate_release, validate_compatibility_manifest,
+                    release_chart_from_list, IMAGE_REF)
 from upgrade import transition as modeling_transition
 
 JOINT_SIDE_ORDER = ("consumer", "modeling")
@@ -188,12 +189,21 @@ def write_journal(path: Path, journal: dict) -> None:
     temporary.replace(path)
 
 
+def release_chart(config, side) -> str:
+    entry = config[side]
+    releases = json.loads(run(
+        "helm", "--kube-context", config["cluster"]["context"],
+        "--namespace", entry["namespace"], "list", "--all", "-o", "json",
+    ))
+    return release_chart_from_list(releases, entry["releaseName"])
+
+
 def completed_release_matches(config, side, package) -> bool:
     entry = config[side]
     output = run("helm", "--kube-context", config["cluster"]["context"],
                  "--namespace", entry["namespace"], "status", entry["releaseName"], "-o", "json")
     status = json.loads(output)
-    if status.get("info", {}).get("status") != "deployed" or not str(status.get("chart", "")).endswith(f"-{package[1]['chartVersion']}"):
+    if status.get("info", {}).get("status") != "deployed" or not release_chart(config, side).endswith(f"-{package[1]['chartVersion']}"):
         return False
     values = json.loads(run("helm", "--kube-context", config["cluster"]["context"],
                             "--namespace", entry["namespace"], "get", "values", entry["releaseName"], "-o", "json"))
@@ -242,7 +252,7 @@ def installed_identity(config, side):
     manifest = validate_compatibility_manifest(read_yaml(config["compatibilityFile"]))
     versions = {item.get(f"{side}ChartVersion") for item in manifest.get("combinations", [])
                 if isinstance(item, dict) and item.get(f"{side}ChartVersion")}
-    chart = str(status.get("chart", ""))
+    chart = release_chart(config, side)
     matches = [version for version in versions if chart.endswith(f"-{version}")]
     if len(matches) != 1:
         raise CompatibilityError(f"installed {side} Chart version is absent or ambiguous in compatibility manifest")
@@ -409,7 +419,7 @@ def main():
                              "--namespace", entry["namespace"], "status", entry["releaseName"], "-o", "json")
                 current = json.loads(output)
                 result["results"][side] = {"releaseName": entry["releaseName"],
-                    "namespace": entry["namespace"], "chart": current.get("chart"),
+                    "namespace": entry["namespace"], "chart": release_chart(config, side),
                     "status": current.get("info", {}).get("status")}
             result.update(status="succeeded", phase="status", message="completed")
             print(json.dumps(result, ensure_ascii=False))
