@@ -586,23 +586,12 @@ class CceContractTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             precheck()
 
-    def test_standalone_upgrade_requires_modeling_only_transition(self):
-        path, installed, packages = self.upgrade_fixture()
-        manifest = yaml.safe_load(path.read_text())
-        manifest["combinations"] = [manifest["combinations"][0], manifest["combinations"][2]]
-        manifest["combinations"][1]["consumerReleaseVersion"] = "c1"
-        manifest["combinations"][1]["consumerChartVersion"] = "1.0.0"
-        manifest["transitions"][0]["steps"] = ["modeling"]
-        manifest["transitions"][0]["intermediateCombinationId"] = "old"
-        path.write_text(yaml.safe_dump(manifest))
-        release = packages["modeling"][1]
-        root = self.base / "modeling-cce-demo"
-        (root / "deploy").mkdir(parents=True)
-        shutil.copy2(path, root / "deploy/compatibility.yaml")
+    def test_standalone_upgrade_does_not_require_transition(self):
+        release = {"releaseVersion": "m2", "chartVersion": "2.0.0", "platform": "linux-amd64"}
         backup_path = self.base / "backup.json"
         backup_path.write_text("{}")
         args = SimpleNamespace(
-            backup_record=backup_path, transition_id="upgrade-demo", transition_record=None,
+            backup_record=backup_path, transition_id=None, transition_record=None,
             lock_holder="operation-demo", standalone_upgrade=True,
         )
         merged = {
@@ -614,25 +603,49 @@ class CceContractTests(unittest.TestCase):
         }
         old_values = json.loads(json.dumps(merged))
         with mock.patch.object(INSTALL, "check_delegated_lease"), \
-             mock.patch.object(INSTALL, "installed_release", return_value=installed["modeling"]), \
+             mock.patch.object(INSTALL, "installed_release", return_value={"releaseVersion": "m1", "chartVersion": "1.0.0"}), \
              mock.patch.object(INSTALL, "installed_values", return_value=old_values), \
              mock.patch.object(INSTALL, "bindings", return_value={"synthetic": "binding"}), \
-             mock.patch.object(INSTALL, "verified_snapshots"):
+             mock.patch.object(INSTALL, "verified_snapshots"), \
+             mock.patch.object(INSTALL, "transition", side_effect=AssertionError("transition must not be read")):
             self.assertEqual(
-                INSTALL.upgrade_precheck(args, root, release, merged),
+                INSTALL.upgrade_precheck(args, self.base, release, merged),
                 {"synthetic": "binding"},
             )
+            args.transition_id = "any-value"
+            self.assertEqual(INSTALL.upgrade_precheck(args, self.base, release, merged),
+                             {"synthetic": "binding"})
 
-        manifest["transitions"][0]["steps"] = ["consumer", "modeling"]
-        path.write_text(yaml.safe_dump(manifest))
-        shutil.copy2(path, root / "deploy/compatibility.yaml")
-        with mock.patch.object(INSTALL, "check_delegated_lease"), \
-             mock.patch.object(INSTALL, "installed_release", return_value=installed["modeling"]), \
+    def test_automatic_backup_without_transition_keeps_pvc_evidence(self):
+        args = SimpleNamespace(
+            context="synthetic", namespace="modeling-demo", release="modeling",
+            operation_id="upgrade-demo", transition_id=None,
+            state_dir=self.base, timeout_seconds=10, min_free_percent=15,
+            backup_record=None,
+        )
+        merged = {"global": {"targetArch": "amd64", "auth": {"issuer": "synthetic"}}}
+        claim_bindings = {
+            name: {"claimName": f"{name}-data", "claimUid": f"uid-{name}",
+                   "volumeName": f"pv-{name}"}
+            for name in UPGRADE.WORKLOADS
+        }
+        old_values = {**merged}
+        with mock.patch.object(INSTALL, "installed_release", return_value={"releaseVersion": "m1"}), \
              mock.patch.object(INSTALL, "installed_values", return_value=old_values), \
-             mock.patch.object(INSTALL, "bindings", return_value={"synthetic": "binding"}), \
-             mock.patch.object(INSTALL, "verified_snapshots"):
-            with self.assertRaises(ConfigError):
-                INSTALL.upgrade_precheck(args, root, release, merged)
+             mock.patch.object(INSTALL, "bindings", return_value=claim_bindings), \
+             mock.patch.object(INSTALL, "_check_capacity"), \
+             mock.patch.object(INSTALL, "_optional_json", return_value={"items": [{"metadata": {"name": "synthetic-class"}}]}), \
+             mock.patch.object(INSTALL, "_count_persisted_data", return_value={"core": 3, "agent": 2, "onto": 1}), \
+             mock.patch.object(INSTALL, "_stop_for_backup"), \
+             mock.patch.object(INSTALL, "_ensure_volume_snapshot",
+                               side_effect=lambda _args, name, _claim, _deadline: {
+                                   "snapshotName": f"snapshot-{name}", "snapshotUid": f"snapshot-uid-{name}"}), \
+             mock.patch.object(INSTALL, "transition", side_effect=AssertionError("transition must not be read")):
+            record_path = INSTALL.prepare_auto_backup(args, self.base, {"releaseVersion": "m2"}, merged)
+        record = json.loads(record_path.read_text())
+        self.assertEqual(record["dataEvidence"], {"core": 3, "agent": 2, "onto": 1})
+        self.assertEqual(set(record["claims"]), set(UPGRADE.WORKLOADS))
+        self.assertEqual(args.backup_record, record_path)
 
     def test_standalone_operation_lease_document_and_expiry(self):
         args = SimpleNamespace(context="synthetic", namespace="modeling-demo", release="modeling")
@@ -727,9 +740,9 @@ class CceContractTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             JOINT.effective_images(config, self.base, "consumer", "operation-demo")
 
-    def test_upgrade_rejected_before_cluster_access(self):
+    def test_delegated_upgrade_requires_transition_before_cluster_access(self):
         args = ["install-cce.py", "upgrade", "--context", "demo", "--namespace", "modeling-demo",
-                "--release", "modeling"]
+                "--release", "modeling", "--lock-holder", "operation-demo"]
         old = sys.argv
         try:
             sys.argv = args
@@ -739,14 +752,15 @@ class CceContractTests(unittest.TestCase):
             sys.argv = old
         self.assertEqual(raised.exception.code, 2)
 
-    def test_upgrade_cannot_be_enabled_by_backup_record_alone(self):
+    def test_standalone_upgrade_rejects_delegated_transition_record(self):
         backup_record = self.base / "backup-record.json"
         backup_record.write_text('{"status":"synthetic"}')
         old = sys.argv
         try:
             sys.argv = ["install-cce.py", "upgrade", "--context", "demo",
                         "--namespace", "modeling-demo", "--release", "modeling",
-                        "--backup-record", str(backup_record)]
+                        "--backup-record", str(backup_record),
+                        "--transition-record", str(backup_record)]
             with self.assertRaises(SystemExit) as raised:
                 INSTALL.main()
         finally:

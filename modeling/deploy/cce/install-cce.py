@@ -316,8 +316,8 @@ def verify(args, root: Path):
 
 
 def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
-    if not args.backup_record or not args.transition_id:
-        raise ConfigError("upgrade requires --backup-record and --transition-id")
+    if not args.backup_record or (not args.transition_id and not getattr(args, "standalone_upgrade", False)):
+        raise ConfigError("upgrade requires a backup record and joint upgrades require --transition-id")
     if not args.lock_holder:
         raise ConfigError("upgrade requires a delegated operation Lease")
     check_delegated_lease(args)
@@ -352,9 +352,8 @@ def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
                 transition_entry.get("preserveModelingData") is not True):
             raise CompatibilityError("delegated transition does not match installed or target Modeling")
     else:
-        transition_entry = transition(root / "deploy/compatibility.yaml", args.transition_id, installed, release)
-    if getattr(args, "standalone_upgrade", False) and transition_entry.get("steps") != ["modeling"]:
-        raise CompatibilityError("standalone Modeling upgrade requires a modeling-only transition")
+        if not getattr(args, "standalone_upgrade", False):
+            transition_entry = transition(root / "deploy/compatibility.yaml", args.transition_id, installed, release)
     old_values = installed_values(args)
     if old_values.get("global", {}).get("targetArch") != merged["global"]["targetArch"]:
         raise CompatibilityError("target architecture differs from the installed release")
@@ -605,10 +604,7 @@ def prepare_auto_backup(args, root: Path, release: dict, merged: dict) -> Path:
         args.snapshot_group = _snapshot_group(args)
         args.backup_record = backup_path
         return backup_path
-    installed = installed_release(args)
-    transition_entry = transition(root / "deploy/compatibility.yaml", args.transition_id, installed, release)
-    if transition_entry.get("steps") != ["modeling"]:
-        raise CompatibilityError("automatic standalone backup requires a modeling-only transition")
+    installed_release(args)
     old_values = installed_values(args)
     if old_values.get("global", {}).get("targetArch") != merged["global"]["targetArch"]:
         raise CompatibilityError("target architecture differs from the installed release")
@@ -719,8 +715,10 @@ def main():
         parser.error("resume requires operation-id")
     if args.action != "status" and not args.operation_id:
         args.operation_id = str(uuid.uuid4())
-    if args.action == "upgrade" and not args.transition_id:
-        parser.error("upgrade requires --transition-id")
+    if args.action == "upgrade" and args.lock_holder and not args.transition_id:
+        parser.error("delegated upgrade requires --transition-id")
+    if args.action == "upgrade" and args.transition_record and not args.lock_holder:
+        parser.error("--transition-record requires a delegated --lock-holder")
     if args.auto_backup and args.action != "upgrade":
         parser.error("--auto-backup is only supported for upgrade")
     if args.auto_backup and args.backup_record:
