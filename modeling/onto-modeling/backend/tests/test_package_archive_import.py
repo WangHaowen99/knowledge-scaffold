@@ -48,7 +48,7 @@ def _seed_project(manager: WorkspaceManager, name: str = "外卖订单") -> dict
     )
     for key in ("calc_price", "计算折扣"):
         (root / "ontology" / "scripts" / f"{key}.py").write_text(
-            "def run():\n    return {}\n", encoding="utf-8"
+            '"""\n关联operation：创建订单\n"""\ndef run():\n    return {}\n', encoding="utf-8"
         )
     return meta
 
@@ -169,6 +169,20 @@ def test_script_filename_restored_from_descriptor(
     assert (scripts / "计算折扣.py").is_file()
     assert (scripts / "calc_price.py").is_file()
     assert not list(scripts.glob("script_*.py"))
+
+
+def test_helper_script_name_survives_round_trip(manager: WorkspaceManager, tmp_path: Path):
+    """不绑定操作的辅助脚本没有描述符可还原，包内直接用原文件名。"""
+    source = _seed_project(manager)
+    root = manager.project_root(source["id"])
+    (root / "ontology" / "scripts" / "公共工具.py").write_text(
+        '"""\n关联operation：无\n"""\ndef helper():\n    return 1\n', encoding="utf-8"
+    )
+    archive = _export_package(manager, source["id"], tmp_path / "pkg.zip")
+    imported = manager.import_package_zip("辅助脚本回导", archive)
+    scripts = manager.project_root(imported["id"]) / "ontology" / "scripts"
+    assert (scripts / "公共工具.py").is_file()
+    assert (scripts / "计算折扣.py").is_file()
 
 
 def test_original_package_is_preserved_for_fidelity(

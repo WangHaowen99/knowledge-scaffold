@@ -78,6 +78,39 @@ def test_trace_cases_conversion(tmp_path):
     assert cases[1]["groundTruth"] == "结论：不推荐任何产品"
 
 
+SCENE_DOC = """# 测试场景：订单审核
+
+> 由 /ontology-trace 生成。
+> 对应逻辑：[[订单审核]]
+
+## 场景 1：金额超限
+
+- **输入**：
+  - `订单号` = `ORD-001`
+  - `金额` = `50000`
+- **预期路径**：异常终止于步骤2，提示金额超限
+- **数据来源**：正常数据第1行
+
+## 场景 2：缺少预期
+
+- **输入**：
+  - `订单号` = `ORD-002`
+- **数据来源**：自定义
+"""
+
+
+def test_trace_cases_accepts_trace_scene_format(tmp_path):
+    """/ontology-trace 按 testcase-template.md 写的场景段也要能转成用例，缺预期的场景跳过。"""
+    tc = tmp_path / "ontology" / "testcase"
+    tc.mkdir(parents=True)
+    (tc / "订单审核.md").write_text(SCENE_DOC, encoding="utf-8")
+    cases = modeling_eval.trace_cases(tmp_path)
+    assert len(cases) == 1
+    assert "订单审核" in cases[0]["question"] and "场景 1：金额超限" in cases[0]["question"]
+    assert "订单号：ORD-001" in cases[0]["question"] and "金额：50000" in cases[0]["question"]
+    assert cases[0]["groundTruth"] == "预期路径：异常终止于步骤2，提示金额超限"
+
+
 def test_report_keeps_long_answer_in_sidecar_and_marks_summary(tmp_path):
     """报告摘要可截断，但完整 finalAnswer 必须进入可追溯附件。"""
     answer = "长回答起点：" + ("结论证据片段。" * 160)
