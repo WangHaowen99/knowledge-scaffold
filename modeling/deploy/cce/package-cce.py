@@ -158,7 +158,7 @@ def main():
                      "values.customer.example.yaml", "resolved-images.example.yaml"):
             shutil.copy2(root / "deploy/cce" / name, deploy / name)
         shutil.copy2(root.parent / "deploy/install-consumer-modeling.sh", deploy / "install-consumer-modeling.sh")
-        for name in ("install.md", "import-images.md", "upgrade-and-recovery.md", "compatibility.md"):
+        for name in ("offline-package-build.md", "modeling-deployment.md", "joint-deployment.md"):
             documentation = root / "deploy/cce/docs" / name
             if documentation.is_file():
                 shutil.copy2(documentation, docs / name)

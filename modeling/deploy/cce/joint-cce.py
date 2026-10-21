@@ -116,6 +116,147 @@ def validate_cross_side(config, packages, consumer_values, modeling_values, comb
             raise ConfigError(f"Modeling {field} does not match Consumer endpoint {endpoint_id}")
 
 
+def candidate_combination(packages: dict) -> dict:
+    """Derive version and interface fields from checked release archives."""
+    consumer = packages["consumer"][1]
+    modeling = packages["modeling"][1]
+    if consumer["platform"] != modeling["platform"]:
+        raise CompatibilityError("Consumer and Modeling platforms differ")
+    if "jiuwenbox" not in consumer["images"]:
+        raise ConfigError("Consumer release does not contain the JiuwenBox image archive")
+    endpoints = read_yaml(packages["consumer"][0] / "deploy/endpoints.yaml")
+    if endpoints.get("schemaVersion") != "cce-endpoints/v1":
+        raise ConfigError("invalid Consumer endpoint schema")
+    items = endpoints.get("endpoints")
+    if not isinstance(items, list):
+        raise ConfigError("Consumer endpoint list is invalid")
+    by_id = {item.get("id"): item for item in items if isinstance(item, dict)}
+    if len(by_id) != len(items):
+        raise ConfigError("Consumer endpoint list contains duplicate or invalid items")
+    for endpoint_id, port in (("auth", 5056), ("consumer-api", 5055)):
+        item = by_id.get(endpoint_id)
+        if not item or item.get("port") != port or not isinstance(item.get("apiVersion"), str) or not item["apiVersion"]:
+            raise ConfigError(f"Consumer endpoint {endpoint_id} has no supported port or API version")
+    return {
+        "consumerReleaseVersion": consumer["releaseVersion"],
+        "consumerChartVersion": consumer["chartVersion"],
+        "modelingReleaseVersion": modeling["releaseVersion"],
+        "modelingChartVersion": modeling["chartVersion"],
+        "platform": modeling["platform"],
+        "operationSchemaVersion": "cce-operation/v1",
+        "endpointSchemaVersion": endpoints["schemaVersion"],
+        "authApiVersion": by_id["auth"]["apiVersion"],
+        "consumerApiVersion": by_id["consumer-api"]["apiVersion"],
+    }
+
+
+def combination_id(fields: dict) -> str:
+    identity = json.dumps(fields, sort_keys=True).encode("utf-8")
+    return "combo-" + hashlib.sha256(identity).hexdigest()[:12]
+
+
+def include_combination(manifest: dict, fields: dict) -> str:
+    matches = [item["id"] for item in manifest["combinations"]
+               if all(item.get(key) == value for key, value in fields.items())]
+    if len(matches) > 1:
+        raise CompatibilityError("candidate combination is ambiguous")
+    if matches:
+        return matches[0]
+    candidate_id = combination_id(fields)
+    if any(item["id"] == candidate_id for item in manifest["combinations"]):
+        raise CompatibilityError("generated combination ID conflicts with existing manifest")
+    manifest["combinations"].append({"id": candidate_id, **fields})
+    return candidate_id
+
+
+def matches_installed_combination(combination: dict, installed: dict) -> bool:
+    return all(
+        combination.get(f"{side}ReleaseVersion") == installed[side]["releaseVersion"] and
+        combination.get(f"{side}ChartVersion") == installed[side]["chartVersion"]
+        for side in JOINT_SIDE_ORDER
+    )
+
+
+def prepare_compatibility(config: dict, *, upgrade: bool, confirmed: bool,
+                          no_migration_confirmed: bool) -> dict:
+    path = config["compatibilityFile"]
+    if upgrade:
+        if not path.is_file():
+            raise ConfigError("existing verified compatibility manifest required for upgrade")
+        original_checksum = checksum(path)
+        manifest = validate_compatibility_manifest(read_yaml(path))
+    elif path.exists():
+        raise ConfigError("compatibilityFile already exists; keep the verified manifest")
+    else:
+        manifest = {"schemaVersion": "cce-compatibility/v1", "combinations": [], "transitions": []}
+    state = config["stateDir"]
+    state.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="cce-compatibility-", dir=state) as temporary:
+        packages = {}
+        for side in JOINT_SIDE_ORDER:
+            root = safe_extract(config[side]["package"], Path(temporary), side)
+            packages[side] = root, validate_release(root, side)
+        target = candidate_combination(packages)
+        validate_cross_side(config, packages, read_yaml(config["consumer"]["values"]),
+                            read_yaml(config["modeling"]["values"]), target)
+    target_id = include_combination(manifest, target)
+    transition_id = None
+    old_combination = None
+    middle_combination = None
+    if upgrade:
+        installed = {side: installed_identity(config, side) for side in JOINT_SIDE_ORDER}
+        old = [item for item in manifest["combinations"]
+               if matches_installed_combination(item, installed)]
+        if len(old) != 1:
+            raise CompatibilityError("installed Consumer/Modeling combination is missing or ambiguous")
+        old_combination = old[0]
+        if old_combination["platform"] != target["platform"]:
+            raise CompatibilityError("upgrade cannot change CPU architecture")
+        if old_combination["id"] == target_id:
+            raise CompatibilityError("target combination already matches installed releases")
+        middle = dict(target, modelingReleaseVersion=old_combination["modelingReleaseVersion"],
+                      modelingChartVersion=old_combination["modelingChartVersion"])
+        middle_id = include_combination(manifest, middle)
+        middle_combination = next(item for item in manifest["combinations"] if item["id"] == middle_id)
+        transition_id = "transition-" + hashlib.sha256(
+            f"{old_combination['id']}:{target_id}".encode("utf-8")).hexdigest()[:12]
+        transition = {"id": transition_id, "from": old_combination["id"], "to": target_id,
+                      "intermediateCombinationId": middle_id, "steps": list(JOINT_SIDE_ORDER),
+                      "requiresJointMaintenance": True, "modelingDataMigration": "none",
+                      "preserveModelingData": True}
+        existing = [item for item in manifest["transitions"] if item.get("id") == transition_id]
+        if existing and existing != [transition]:
+            raise CompatibilityError("generated transition ID conflicts with existing manifest")
+        if not existing:
+            manifest["transitions"].append(transition)
+    validate_compatibility_manifest(manifest)
+    if confirmed and upgrade and not no_migration_confirmed:
+        raise ConfigError("confirm that existing Modeling data needs no migration before writing upgrade transition")
+    if confirmed:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        output = yaml.safe_dump(manifest, allow_unicode=True, sort_keys=False)
+        if upgrade:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                             prefix=".compatibility-", delete=False) as stream:
+                stream.write(output)
+                temporary_path = Path(stream.name)
+            try:
+                if checksum(path) != original_checksum:
+                    raise ConfigError("compatibility manifest changed while preparing upgrade")
+                temporary_path.replace(path)
+            finally:
+                temporary_path.unlink(missing_ok=True)
+        else:
+            with path.open("x", encoding="utf-8") as stream:
+                stream.write(output)
+    return {"status": "written" if confirmed else "preview", "compatibilityFile": str(path),
+            "targetCombinationId": target_id, "targetCombination": {"id": target_id, **target},
+            "oldCombination": old_combination, "intermediateCombination": middle_combination,
+            "transitionId": transition_id,
+            "confirmationsRequired": (["joint-compatibility", "modeling-data-no-migration"] if upgrade
+                                      else ["joint-compatibility"])}
+
+
 def effective_images(config, state: Path, source: str, operation_id: str) -> Path:
     consumer = read_yaml(config["consumer"]["resolvedImages"])
     modeling = read_yaml(config["modeling"]["resolvedImages"])
@@ -138,10 +279,14 @@ def effective_images(config, state: Path, source: str, operation_id: str) -> Pat
     return effective
 
 
-def invoke(side, action, config, package, operation_id, image_file, resume="", backup_record="", transition_id="", lock_holder="", transition_record="", defer_external_services=False):
+def invoke(side, action, config, package, operation_id, image_file, resume="", backup_record="",
+           transition_id="", lock_holder="", transition_record="", defer_external_services=False,
+           auto_backup=False, snapshot_retention=2, min_free_percent=15.0):
     script = package[0] / "deploy/install-cce.sh"
     if not script.is_file():
         raise ConfigError(f"{side} package has no deploy/install-cce.sh")
+    if side == "modeling" and action == "upgrade" and auto_backup and backup_record:
+        raise ConfigError("automatic Modeling backup cannot use an existing backup record")
     options = ["bash", str(script), action, "--context", config["cluster"]["context"],
                "--namespace", config[side]["namespace"], "--release", config[side]["releaseName"],
                "--values", str(config[side]["values"]), "--resolved-images", str(image_file),
@@ -151,6 +296,9 @@ def invoke(side, action, config, package, operation_id, image_file, resume="", b
         options.extend(("--resume", resume))
     if backup_record and side == "modeling":
         options.extend(("--backup-record", backup_record))
+    if auto_backup and side == "modeling" and action == "upgrade":
+        options.extend(("--auto-backup", "--snapshot-retention", str(snapshot_retention),
+                        "--min-free-percent", str(min_free_percent)))
     if transition_id and side == "modeling":
         options.extend(("--transition-id", transition_id))
     if transition_record and side == "modeling":
@@ -301,6 +449,21 @@ def verified_joint_transition(config, packages, transition_id, installed):
             "compatibilitySha256": checksum(config["compatibilityFile"])}
 
 
+def unique_target_transition(config: dict, target_combination: dict, installed: dict) -> str:
+    manifest = validate_compatibility_manifest(read_yaml(config["compatibilityFile"]))
+    installed_combinations = [item for item in manifest["combinations"]
+                              if matches_installed_combination(item, installed)]
+    if len(installed_combinations) != 1:
+        raise CompatibilityError("installed Consumer/Modeling combination is missing or ambiguous")
+    source_id = installed_combinations[0]["id"]
+    matches = [item["id"] for item in manifest["transitions"]
+               if item.get("from") == source_id and item.get("to") == target_combination["id"]
+               and item.get("steps") == list(JOINT_SIDE_ORDER)]
+    if len(matches) != 1:
+        raise CompatibilityError("current-to-target upgrade has no unique joint transition; specify --transition-id")
+    return matches[0]
+
+
 class Lease:
     def __init__(self, config, side, holder):
         self.config = config
@@ -388,19 +551,33 @@ class Lease:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("plan", "preflight", "install", "upgrade", "status", "verify"))
+    parser.add_argument("action", choices=("prepare-compatibility", "plan", "preflight", "install", "upgrade", "status", "verify"))
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--scope", choices=("consumer", "modeling", "both"))
     parser.add_argument("--resume")
-    parser.add_argument("--backup-record", help="customer-managed Modeling backup record")
+    parser.add_argument("--backup-record", help="optional existing Modeling backup record; otherwise snapshots are created automatically")
     parser.add_argument("--transition-id")
+    parser.add_argument("--snapshot-retention", type=int, default=2)
+    parser.add_argument("--min-free-percent", type=float, default=15.0)
+    parser.add_argument("--upgrade-candidate", action="store_true",
+                        help="derive old, intermediate and target combinations for a joint upgrade")
+    parser.add_argument("--confirm-verified", action="store_true",
+                        help="write only after the proposed combination has been jointly verified")
+    parser.add_argument("--confirm-no-modeling-migration", action="store_true",
+                        help="confirm target Modeling reads existing data without migration")
     args = parser.parse_args()
+    if args.action != "prepare-compatibility" and (args.upgrade_candidate or args.confirm_verified or args.confirm_no_modeling_migration):
+        parser.error("compatibility preparation options require prepare-compatibility")
+    if args.confirm_no_modeling_migration and not args.upgrade_candidate:
+        parser.error("--confirm-no-modeling-migration requires --upgrade-candidate")
     if args.action == "upgrade" and not args.scope:
         parser.error("upgrade requires --scope")
     if args.action == "upgrade" and args.scope != "both":
         parser.error("this joint entry currently supports only --scope both for upgrade")
-    if args.action == "upgrade" and (not args.transition_id or not args.backup_record):
-        parser.error("upgrade requires --transition-id and --backup-record")
+    if args.snapshot_retention < 1:
+        parser.error("--snapshot-retention must be at least 1")
+    if not 0 <= args.min_free_percent <= 100:
+        parser.error("--min-free-percent must be between 0 and 100")
     if args.resume and args.action not in ("install", "upgrade"):
         parser.error("--resume is only supported for install or upgrade")
     operation_id = args.resume or str(uuid.uuid4())
@@ -410,6 +587,12 @@ def main():
               "message": "", "results": {}}
     try:
         config = load_config(args.config.resolve())
+        if args.action == "prepare-compatibility":
+            result = prepare_compatibility(config, upgrade=args.upgrade_candidate,
+                                           confirmed=args.confirm_verified,
+                                           no_migration_confirmed=args.confirm_no_modeling_migration)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
         state = config["stateDir"]
         state.mkdir(parents=True, exist_ok=True)
         if args.action == "status":
@@ -430,6 +613,14 @@ def main():
                 root = safe_extract(config[side]["package"], Path(temporary), side)
                 packages[side] = root, validate_release(root, side)
             combination = validate_combination(config, packages)
+            if args.action == "upgrade":
+                installed_for_transition = {
+                    side: installed_identity(config, side) for side in JOINT_SIDE_ORDER
+                }
+                args.transition_id = args.transition_id or unique_target_transition(
+                    config, combination, installed_for_transition,
+                )
+                result["transitionId"] = args.transition_id
             consumer_values = read_yaml(config["consumer"]["values"])
             modeling_values = read_yaml(config["modeling"]["values"])
             validate_cross_side(config, packages, consumer_values, modeling_values, combination)
@@ -452,8 +643,10 @@ def main():
             if args.action in ("install", "upgrade"):
                 fingerprint = operation_fingerprint(config)
                 if args.action == "upgrade":
+                    backup_identity = (checksum(Path(args.backup_record)) if args.backup_record else
+                                       f"auto:{args.snapshot_retention}:{args.min_free_percent}")
                     fingerprint = hashlib.sha256((fingerprint + args.transition_id +
-                        checksum(Path(args.backup_record))).encode()).hexdigest()
+                        backup_identity).encode()).hexdigest()
                 if args.resume:
                     if not journal_path.is_file():
                         raise ConfigError("resume operation journal missing")
@@ -498,9 +691,10 @@ def main():
                            image_files["consumer"], lock_holder=operation_id)
                 if "modeling" not in journal["completed"] and journal.get("phase") != "modeling-started":
                     invoke("modeling", "preflight", config, packages["modeling"], operation_id,
-                           image_files["modeling"], backup_record=args.backup_record,
-                           transition_id=args.transition_id, lock_holder=operation_id,
-                           transition_record=transition_record_path)
+                           image_files["modeling"], backup_record=args.backup_record or "",
+                           transition_id=args.transition_id if args.backup_record else "",
+                           lock_holder=operation_id,
+                           transition_record=transition_record_path if args.backup_record else "")
             defer_external_services = False
             for side in JOINT_SIDE_ORDER:
                 for current_lease in leases:
@@ -527,7 +721,10 @@ def main():
                     (args.backup_record if side == "modeling" else "") or "",
                     args.transition_id or "", operation_id if args.action in ("install", "upgrade") else "",
                     transition_record_path if side == "modeling" and args.action == "upgrade" else "",
-                    defer_external_services=defer_external_services and side == "modeling")
+                    defer_external_services=defer_external_services and side == "modeling",
+                    auto_backup=side == "modeling" and args.action == "upgrade" and not args.backup_record,
+                    snapshot_retention=args.snapshot_retention,
+                    min_free_percent=args.min_free_percent)
                 if args.action == "upgrade":
                     for current_lease in leases:
                         current_lease.check()

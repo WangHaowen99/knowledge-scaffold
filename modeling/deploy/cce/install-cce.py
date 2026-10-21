@@ -23,6 +23,13 @@ from upgrade import (DATA_COUNTS, assert_same_bindings, bindings, transition,
                      verified_snapshots, verify_persisted_data)
 
 
+SNAPSHOT_RETRY_LIMIT = 5
+SNAPSHOT_TRANSIENT_ERROR = re.compile(
+    r"(?:EVS\.1070|detaching|attaching|in[- ]use|busy|operation\s+in\s+progress|being\s+(?:deleted|updated))",
+    re.IGNORECASE,
+)
+
+
 class OperationLockError(ConfigError):
     """The Modeling release operation Lease is held by another operation."""
 
@@ -364,6 +371,9 @@ def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
         raise CompatibilityError("target architecture differs from the installed release")
     if old_values.get("global", {}).get("auth", {}) != merged["global"]["auth"]:
         raise CompatibilityError("shared auth settings changed during Modeling upgrade")
+    if any(old_values.get("modeling", {}).get("workloads", {}).get(name, {}).get("replicas", 1) != 1
+           for name in ("core", "agent", "onto")):
+        raise ConfigError("installed Modeling release must request one replica per stateful workload")
     for component in ("core", "agent", "onto"):
         old_claim = old_values.get("modeling", {}).get("workloads", {}).get(component, {}).get("persistence", {}).get("existingClaim")
         target_claim = merged["modeling"]["workloads"][component]["persistence"]["existingClaim"]
@@ -476,6 +486,9 @@ def _check_capacity(args) -> None:
 
 
 def _stop_for_backup(args) -> None:
+    # Arm recovery before the first scale: even a partial stop must be undone
+    # if a later scale, snapshot or backup-record check fails.
+    args.restore_workloads_on_failure = True
     for workload in ("core", "agent", "onto"):
         run(
             "kubectl", "--context", args.context, "-n", args.namespace,
@@ -484,10 +497,46 @@ def _stop_for_backup(args) -> None:
     wait_old_pods_gone(args)
 
 
-def _ensure_volume_snapshot(args, workload: str, claim_name: str, deadline: float) -> dict:
+def _wait_volume_detached(args, volume_name: str, deadline: float) -> None:
+    """Wait until CSI no longer reports the PVC's PV attached to a node."""
+    while True:
+        attachments = _optional_json(args, "get", "volumeattachment") or {"items": []}
+        active = [item for item in attachments.get("items", [])
+                  if item.get("spec", {}).get("source", {}).get("persistentVolumeName") == volume_name
+                  and item.get("status", {}).get("attached") is True]
+        if not active:
+            return
+        if time.monotonic() >= deadline:
+            nodes = ", ".join(
+                str(item.get("spec", {}).get("nodeName") or "unknown") for item in active
+            )
+            raise ConfigError(f"PV {volume_name} remains attached to {nodes} before snapshot")
+        time.sleep(2)
+
+
+def _discard_snapshot_for_retry(args, name: str, deadline: float) -> None:
+    """Delete one operation-owned failed snapshot and wait for its removal."""
+    result = subprocess.run(
+        ("kubectl", "--context", args.context, "-n", args.namespace,
+         "delete", "volumesnapshot", name, "--ignore-not-found", "--wait=false"),
+        text=True, capture_output=True,
+    )
+    if result.returncode:
+        raise ConfigError(f"VolumeSnapshot {name} retry cleanup failed: {result.stderr.strip()[:300]}")
+    while True:
+        current = _optional_json(args, "-n", args.namespace, "get", "volumesnapshot", name)
+        if current is None:
+            return
+        if time.monotonic() >= deadline:
+            raise ConfigError(f"VolumeSnapshot {name} did not disappear before retry")
+        time.sleep(2)
+
+
+def _ensure_volume_snapshot(args, workload: str, claim_name: str, volume_name: str, deadline: float) -> dict:
     name = _snapshot_name(args, workload)
-    current = _optional_json(args, "-n", args.namespace, "get", "volumesnapshot", name)
-    if current is None:
+    retries = 0
+
+    def create_snapshot() -> None:
         manifest = {
             "apiVersion": "snapshot.storage.k8s.io/v1",
             "kind": "VolumeSnapshot",
@@ -508,9 +557,17 @@ def _ensure_volume_snapshot(args, workload: str, claim_name: str, deadline: floa
             ("kubectl", "--context", args.context, "-n", args.namespace, "apply", "-f", "-"),
             json.dumps(manifest),
         )
-    elif current.get("spec", {}).get("source", {}).get("persistentVolumeClaimName") != claim_name:
-        raise ConfigError(f"existing VolumeSnapshot {name} points to a different PVC")
-    else:
+
+    while True:
+        if time.monotonic() >= deadline:
+            raise ConfigError(f"VolumeSnapshot {name} was not ready before timeout")
+        _wait_volume_detached(args, volume_name, deadline)
+        current = _optional_json(args, "-n", args.namespace, "get", "volumesnapshot", name)
+        if current is None:
+            create_snapshot()
+            continue
+        if current.get("spec", {}).get("source", {}).get("persistentVolumeClaimName") != claim_name:
+            raise ConfigError(f"existing VolumeSnapshot {name} points to a different PVC")
         labels = current.get("metadata", {}).get("labels", {})
         expected = {
             "modeling.cce/release": args.release,
@@ -518,14 +575,17 @@ def _ensure_volume_snapshot(args, workload: str, claim_name: str, deadline: floa
         }
         if any(labels.get(key) != value for key, value in expected.items()):
             raise ConfigError(f"existing VolumeSnapshot {name} is not owned by this backup group")
-
-    while True:
-        current = _optional_json(args, "-n", args.namespace, "get", "volumesnapshot", name)
-        if current is None:
-            raise ConfigError(f"VolumeSnapshot {name} disappeared while waiting")
         status = current.get("status", {})
-        if status.get("error", {}).get("message"):
-            raise ConfigError(f"VolumeSnapshot {name} failed: {status['error']['message']}")
+        error_message = str(status.get("error", {}).get("message") or "").strip()
+        if error_message:
+            if not SNAPSHOT_TRANSIENT_ERROR.search(error_message) or retries >= SNAPSHOT_RETRY_LIMIT:
+                raise ConfigError(f"VolumeSnapshot {name} failed: {error_message}")
+            retries += 1
+            _discard_snapshot_for_retry(args, name, deadline)
+            if time.monotonic() >= deadline:
+                raise ConfigError(f"VolumeSnapshot {name} retry deadline exceeded")
+            time.sleep(min(5 * (2 ** (retries - 1)), 30))
+            continue
         if status.get("readyToUse") is True and status.get("boundVolumeSnapshotContentName"):
             uid = current.get("metadata", {}).get("uid")
             created = current.get("metadata", {}).get("creationTimestamp")
@@ -647,7 +707,7 @@ def prepare_auto_backup(args, root: Path, release: dict, merged: dict) -> Path:
         claims[workload] = {
             **stopped[workload],
             **_ensure_volume_snapshot(
-                args, workload, stopped[workload]["claimName"], deadline,
+                args, workload, stopped[workload]["claimName"], stopped[workload]["volumeName"], deadline,
             ),
         }
     backup_path.write_text(json.dumps({
@@ -682,6 +742,8 @@ def apply_upgrade(args, root: Path, release: dict, merged: dict, before: dict) -
                  "-f", str(args.values), "-f", str(args.resolved_images),
                  "--set-string", f"global.releaseVersion={release['releaseVersion']}",
                  "--set-string", f"global.operationId={args.operation_id}")
+    args.restore_workloads_on_failure = True
+    args.helm_update_started = True
     run(*helm_args, "--set", "modeling.workloads.core.replicas=0",
         "--set", "modeling.workloads.agent.replicas=0",
         "--set", "modeling.workloads.onto.replicas=0",
@@ -692,6 +754,48 @@ def apply_upgrade(args, root: Path, release: dict, merged: dict, before: dict) -
     verify(args, root)
     assert_same_bindings(before, bindings(kube, args, merged, stopped=False))
     verify_persisted_data(run, args, args.backup_record)
+
+
+def restore_workloads_after_failed_upgrade(args) -> dict:
+    """Return the previously deployed release to service after an interrupted upgrade.
+
+    A failed snapshot leaves the old Helm release deployed, so scaling suffices.
+    Once Helm has changed the release, roll back its manifest before starting
+    Pods: scaling the staging revision would start unverified target images.
+    """
+    issues = []
+    previous_revision = getattr(args, "previous_helm_revision", None)
+    if getattr(args, "helm_update_started", False):
+        try:
+            current = release_status(args)
+            current_revision = current.get("version") if current else None
+            if previous_revision is None or current_revision is None:
+                issues.append("cannot establish Helm revision for automatic rollback")
+            elif current_revision != previous_revision:
+                run(*helm_base(args), "rollback", args.release,
+                    str(previous_revision), "--wait", f"--timeout={args.timeout_seconds}s")
+        except (RuntimeError, subprocess.SubprocessError) as exc:
+            issues.append(f"Helm rollback failed: {exc}")
+        if issues:
+            return {"status": "degraded", "issues": issues}
+
+    for workload in ("core", "agent", "onto"):
+        try:
+            deployment = kube(args, "get", "deployment", f"{args.release}-{workload}", "-n", args.namespace)
+            if deployment.get("spec", {}).get("replicas", 1) == 0:
+                run("kubectl", "--context", args.context, "-n", args.namespace,
+                    "scale", "deployment", f"{args.release}-{workload}", "--replicas=1")
+        except (RuntimeError, subprocess.SubprocessError, KeyError, ValueError) as exc:
+            issues.append(f"{workload} replica restore failed: {exc}")
+
+    for workload in ("core", "agent", "onto"):
+        try:
+            run("kubectl", "--context", args.context, "-n", args.namespace,
+                "rollout", "status", f"deployment/{args.release}-{workload}",
+                f"--timeout={args.timeout_seconds}s")
+        except (RuntimeError, subprocess.SubprocessError) as exc:
+            issues.append(f"{workload} did not become ready: {exc}")
+    return {"status": "ready" if not issues else "degraded", "issues": issues}
 
 
 def main():
@@ -728,8 +832,6 @@ def main():
         parser.error("--auto-backup is only supported for upgrade")
     if args.auto_backup and args.backup_record:
         parser.error("--auto-backup cannot be combined with --backup-record")
-    if args.auto_backup and args.lock_holder:
-        parser.error("--auto-backup is only supported for standalone upgrade")
     if args.snapshot_retention < 1:
         parser.error("--snapshot-retention must be at least 1")
     if args.min_free_percent < 0 or args.min_free_percent > 100:
@@ -781,6 +883,8 @@ def main():
                 if args.lock_holder and args.action in ("install", "upgrade"):
                     check_delegated_lease(args)
                 current = release_status(args)
+                if args.action == "upgrade" and current:
+                    args.previous_helm_revision = current.get("version")
                 if args.action == "preflight" and args.transition_id:
                     upgrade_precheck(args, root, release, merged)
                 if args.action == "install":
@@ -799,7 +903,7 @@ def main():
                         "--wait", f"--timeout={args.timeout_seconds}s")
                     verify(args, root)
                 elif args.action == "upgrade":
-                    if operation_lease and (args.auto_backup or not args.backup_record):
+                    if args.auto_backup or (operation_lease and not args.backup_record):
                         result["phase"] = "automatic-backup"
                         backup_path = prepare_auto_backup(args, root, release, merged)
                         result["artifacts"].append(str(backup_path))
@@ -811,10 +915,14 @@ def main():
                     result["phase"] = "upgrade"
                     if operation_lease:
                         operation_lease.check()
+                    else:
+                        check_delegated_lease(args)
                     apply_upgrade(args, root, release, merged, before)
                     if operation_lease:
                         operation_lease.check()
-                    if operation_lease and getattr(args, "snapshot_group", None):
+                    else:
+                        check_delegated_lease(args)
+                    if getattr(args, "snapshot_group", None):
                         _label_snapshot_group(args, "successful")
                         result["warnings"] = _cleanup_old_successful_snapshots(args)
                 elif args.action == "verify":
@@ -835,6 +943,12 @@ def main():
     except (RuntimeError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
         result.update(errorCode="RESOURCE_NOT_READY", message=str(exc), retryable=True)
     finally:
+        if args.action == "upgrade" and result["status"] == "failed" \
+                and getattr(args, "restore_workloads_on_failure", False):
+            try:
+                result["recovery"] = restore_workloads_after_failed_upgrade(args)
+            except Exception as exc:  # preserve the original upgrade error
+                result["recovery"] = {"status": "failed", "issues": [str(exc)]}
         if operation_lease:
             operation_lease.release()
     print(json.dumps(result, ensure_ascii=False))
