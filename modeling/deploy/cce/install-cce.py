@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -16,7 +19,137 @@ import jsonschema
 
 from common import (CompatibilityError, ConfigError, checksum, endpoint_results, read_yaml,
                     validate_images, validate_name, validate_release)
-from upgrade import assert_same_bindings, bindings, transition, verified_snapshots, verify_persisted_data
+from upgrade import (DATA_COUNTS, assert_same_bindings, bindings, transition,
+                     verified_snapshots, verify_persisted_data)
+
+
+class OperationLockError(ConfigError):
+    """The Modeling release operation Lease is held by another operation."""
+
+
+class OperationLease:
+    """A short-lived Kubernetes Lease for a standalone Modeling upgrade.
+
+    Joint upgrades create and renew this Lease in joint-cce.py.  Standalone
+    upgrades use the same Lease name and lifecycle here so both entry points
+    serialize changes to the Modeling release.
+    """
+
+    def __init__(self, args, holder: str):
+        self.args = args
+        self.holder = holder
+        self.name = f"{args.release}-cce-operation"
+        self.thread: threading.Thread | None = None
+        self.stop = threading.Event()
+        self.error: Exception | None = None
+
+    def _get(self) -> dict | None:
+        result = subprocess.run(
+            ("kubectl", "--context", self.args.context, "-n", self.args.namespace,
+             "get", "lease", self.name, "-o", "json"),
+            text=True, capture_output=True,
+        )
+        if result.returncode:
+            if "notfound" in result.stderr.lower() or "not found" in result.stderr.lower():
+                return None
+            raise RuntimeError(f"unable to read operation Lease: {result.stderr.strip()[:300]}")
+        return json.loads(result.stdout)
+
+    def _document(self, current: dict | None = None) -> str:
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        document = {
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "metadata": {"name": self.name, "namespace": self.args.namespace},
+            "spec": {
+                "holderIdentity": self.holder,
+                "leaseDurationSeconds": 90,
+                "acquireTime": now,
+                "renewTime": now,
+            },
+        }
+        if current:
+            resource_version = current.get("metadata", {}).get("resourceVersion")
+            if resource_version:
+                document["metadata"]["resourceVersion"] = resource_version
+            document["spec"]["acquireTime"] = current.get("spec", {}).get("acquireTime", now)
+        return json.dumps(document)
+
+    @staticmethod
+    def _active(current: dict) -> bool:
+        spec = current.get("spec", {})
+        renewed = spec.get("renewTime") or spec.get("acquireTime")
+        if not renewed:
+            return False
+        try:
+            timestamp = datetime.fromisoformat(renewed.replace("Z", "+00:00"))
+            duration = int(spec.get("leaseDurationSeconds", 90))
+        except (TypeError, ValueError):
+            return False
+        return timestamp + timedelta(seconds=duration) > datetime.now(timezone.utc)
+
+    def acquire(self) -> None:
+        current = self._get()
+        if current and self._active(current):
+            owner = current.get("spec", {}).get("holderIdentity") or "unknown"
+            if owner != self.holder:
+                raise OperationLockError(f"Modeling operation Lease is held by {owner}")
+        action = "replace" if current else "create"
+        result = subprocess.run(
+            ("kubectl", "--context", self.args.context, "-n", self.args.namespace,
+             action, "-f", "-"),
+            input=self._document(current), text=True, capture_output=True,
+        )
+        if result.returncode:
+            raise OperationLockError(f"unable to acquire Modeling operation Lease: {result.stderr.strip()[:300]}")
+        self.thread = threading.Thread(target=self._renew, daemon=True)
+        self.thread.start()
+
+    def _renew(self) -> None:
+        while not self.stop.wait(20):
+            try:
+                current = self._get()
+                if not current or current.get("spec", {}).get("holderIdentity") != self.holder:
+                    raise OperationLockError("Modeling operation Lease was lost")
+                result = subprocess.run(
+                    ("kubectl", "--context", self.args.context, "-n", self.args.namespace,
+                     "replace", "-f", "-"),
+                    input=self._document(current), text=True, capture_output=True,
+                )
+                if result.returncode:
+                    raise OperationLockError("unable to renew Modeling operation Lease")
+            except Exception as exc:  # pragma: no cover - timing-dependent worker path
+                self.error = exc
+                return
+
+    def check(self) -> None:
+        if self.error:
+            raise OperationLockError("Modeling operation Lease was lost") from self.error
+        current = self._get()
+        if not current or current.get("spec", {}).get("holderIdentity") != self.holder:
+            raise OperationLockError("Modeling operation Lease is not held by this operation")
+        if not self._active(current):
+            raise OperationLockError("Modeling operation Lease has expired")
+
+    def release(self) -> None:
+        self.stop.set()
+        if self.thread:
+            self.thread.join(timeout=3)
+        try:
+            current = self._get()
+            if current and current.get("spec", {}).get("holderIdentity") == self.holder:
+                document = json.loads(self._document(current))
+                document["spec"].update(
+                    holderIdentity="", renewTime="1970-01-01T00:00:00Z", leaseDurationSeconds=1,
+                )
+                subprocess.run(
+                    ("kubectl", "--context", self.args.context, "-n", self.args.namespace,
+                     "replace", "-f", "-"),
+                    input=json.dumps(document), text=True, capture_output=True,
+                )
+        except Exception:
+            # A failed cleanup must not hide the original upgrade result.
+            pass
 
 
 def run(*command: str) -> str:
@@ -189,6 +322,7 @@ def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
         raise ConfigError("upgrade requires a delegated operation Lease")
     check_delegated_lease(args)
     installed = installed_release(args)
+    transition_entry = None
     if args.transition_record:
         try:
             record = json.loads(args.transition_record.read_text(encoding="utf-8"))
@@ -218,7 +352,9 @@ def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
                 transition_entry.get("preserveModelingData") is not True):
             raise CompatibilityError("delegated transition does not match installed or target Modeling")
     else:
-        transition(root / "deploy/compatibility.yaml", args.transition_id, installed, release)
+        transition_entry = transition(root / "deploy/compatibility.yaml", args.transition_id, installed, release)
+    if getattr(args, "standalone_upgrade", False) and transition_entry.get("steps") != ["modeling"]:
+        raise CompatibilityError("standalone Modeling upgrade requires a modeling-only transition")
     old_values = installed_values(args)
     if old_values.get("global", {}).get("targetArch") != merged["global"]["targetArch"]:
         raise CompatibilityError("target architecture differs from the installed release")
@@ -249,6 +385,282 @@ def check_delegated_lease(args) -> None:
         raise ConfigError("operation Lease has no valid expiry") from exc
     if expires <= datetime.now(timezone.utc):
         raise ConfigError("operation Lease has expired")
+
+
+def _operation_slug(operation_id: str) -> str:
+    value = re.sub(r"[^a-z0-9-]+", "-", (operation_id or "").lower()).strip("-")
+    digest = hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:8]
+    return f"{value[:30].rstrip('-') or 'operation'}-{digest}"
+
+
+def _snapshot_name(args, workload: str) -> str:
+    # Keep the name deterministic for resume/retry while staying within the
+    # Kubernetes 63-character DNS label limit.
+    suffix = hashlib.sha256(args.operation_id.encode("utf-8")).hexdigest()[:12]
+    prefix = f"{args.release}-{workload}-snapshot"
+    return f"{prefix[:63 - len(suffix) - 1].rstrip('-')}-{suffix}"
+
+
+def _snapshot_group(args) -> str:
+    return _operation_slug(args.operation_id)
+
+
+def _run_with_input(command: tuple[str, ...], input_text: str) -> str:
+    result = subprocess.run(command, input=input_text, text=True, capture_output=True)
+    if result.returncode:
+        raise RuntimeError(f"{command[0]} failed: {result.stderr.strip()[:500]}")
+    return result.stdout
+
+
+def _optional_json(args, *rest: str) -> dict | None:
+    command = ("kubectl", "--context", args.context, *rest, "-o", "json")
+    result = subprocess.run(command, text=True, capture_output=True)
+    if result.returncode:
+        if "notfound" in result.stderr.lower() or "not found" in result.stderr.lower():
+            return None
+        raise RuntimeError(f"kubectl failed: {result.stderr.strip()[:500]}")
+    return json.loads(result.stdout)
+
+
+def _count_persisted_data(args) -> dict:
+    counts = {}
+    for workload in ("core", "agent", "onto"):
+        output = run(
+            "kubectl", "--context", args.context, "-n", args.namespace,
+            "exec", f"deployment/{args.release}-{workload}", "-c", workload,
+            "--", *DATA_COUNTS[workload],
+        )
+        try:
+            counts[workload] = int(output.strip())
+        except ValueError as exc:
+            raise ConfigError(f"{workload} returned invalid pre-upgrade data evidence") from exc
+    return counts
+
+
+def _check_capacity(args) -> None:
+    """Require enough free space in each Modeling data filesystem.
+
+    This is a conservative local guard.  It cannot expose the backend pool's
+    copy-on-write reserve, but it prevents starting a snapshot when a mounted
+    PVC is already close to full.
+    """
+    minimum = args.min_free_percent
+    if minimum < 0 or minimum > 100:
+        raise ConfigError("min-free-percent must be between 0 and 100")
+    for workload in ("core", "agent", "onto"):
+        output = run(
+            "kubectl", "--context", args.context, "-n", args.namespace,
+            "exec", f"deployment/{args.release}-{workload}", "-c", workload,
+            "--", "df", "-Pk", "/data",
+        )
+        rows = [line.split() for line in output.splitlines() if line.strip()]
+        if len(rows) < 2 or len(rows[-1]) < 5:
+            raise ConfigError(f"{workload} returned invalid /data capacity information")
+        try:
+            total = int(rows[-1][1])
+            available = int(rows[-1][3])
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(f"{workload} returned invalid /data capacity numbers") from exc
+        if total <= 0 or available < 0:
+            raise ConfigError(f"{workload} returned invalid /data capacity values")
+        free_percent = available * 100.0 / total
+        if free_percent < minimum:
+            raise ConfigError(
+                f"{workload} /data free space {free_percent:.1f}% is below the "
+                f"minimum {minimum:.1f}%"
+            )
+
+
+def _stop_for_backup(args) -> None:
+    for workload in ("core", "agent", "onto"):
+        run(
+            "kubectl", "--context", args.context, "-n", args.namespace,
+            "scale", "deployment", f"{args.release}-{workload}", "--replicas=0",
+        )
+    wait_old_pods_gone(args)
+
+
+def _ensure_volume_snapshot(args, workload: str, claim_name: str, deadline: float) -> dict:
+    name = _snapshot_name(args, workload)
+    current = _optional_json(args, "-n", args.namespace, "get", "volumesnapshot", name)
+    if current is None:
+        manifest = {
+            "apiVersion": "snapshot.storage.k8s.io/v1",
+            "kind": "VolumeSnapshot",
+            "metadata": {"name": name, "namespace": args.namespace,
+                          "labels": {
+                              "app.kubernetes.io/managed-by": "modeling-cce",
+                              "modeling.cce/release": args.release,
+                              "modeling.cce/backup-group": args.snapshot_group,
+                              "modeling.cce/workload": workload,
+                              "modeling.cce/status": "pending",
+                          }},
+            "spec": {"source": {"persistentVolumeClaimName": claim_name}},
+        }
+        snapshot_class = getattr(args, "snapshot_class", None)
+        if snapshot_class:
+            manifest["spec"]["volumeSnapshotClassName"] = snapshot_class
+        _run_with_input(
+            ("kubectl", "--context", args.context, "-n", args.namespace, "apply", "-f", "-"),
+            json.dumps(manifest),
+        )
+    elif current.get("spec", {}).get("source", {}).get("persistentVolumeClaimName") != claim_name:
+        raise ConfigError(f"existing VolumeSnapshot {name} points to a different PVC")
+    else:
+        labels = current.get("metadata", {}).get("labels", {})
+        expected = {
+            "modeling.cce/release": args.release,
+            "modeling.cce/backup-group": args.snapshot_group,
+        }
+        if any(labels.get(key) != value for key, value in expected.items()):
+            raise ConfigError(f"existing VolumeSnapshot {name} is not owned by this backup group")
+
+    while True:
+        current = _optional_json(args, "-n", args.namespace, "get", "volumesnapshot", name)
+        if current is None:
+            raise ConfigError(f"VolumeSnapshot {name} disappeared while waiting")
+        status = current.get("status", {})
+        if status.get("error", {}).get("message"):
+            raise ConfigError(f"VolumeSnapshot {name} failed: {status['error']['message']}")
+        if status.get("readyToUse") is True and status.get("boundVolumeSnapshotContentName"):
+            uid = current.get("metadata", {}).get("uid")
+            created = current.get("metadata", {}).get("creationTimestamp")
+            if not uid or not created:
+                raise ConfigError(f"VolumeSnapshot {name} identity is incomplete")
+            return {"snapshotName": name, "snapshotUid": uid}
+        if time.monotonic() >= deadline:
+            raise ConfigError(f"VolumeSnapshot {name} was not ready before timeout")
+        time.sleep(2)
+
+
+def _label_snapshot_group(args, status: str) -> None:
+    for workload in ("core", "agent", "onto"):
+        name = _snapshot_name(args, workload)
+        run(
+            "kubectl", "--context", args.context, "-n", args.namespace,
+            "label", "volumesnapshot", name,
+            f"modeling.cce/status={status}", "--overwrite",
+        )
+
+
+def _cleanup_old_successful_snapshots(args) -> list[str]:
+    """Delete only complete, successful groups older than retention count."""
+    if args.snapshot_retention < 1:
+        raise ConfigError("snapshot-retention must be at least 1")
+    snapshots = _optional_json(
+        args, "-n", args.namespace, "get", "volumesnapshot",
+        "-l", f"modeling.cce/release={args.release},modeling.cce/status=successful",
+    ) or {"items": []}
+    groups: dict[str, list[dict]] = {}
+    for item in snapshots.get("items", []):
+        labels = item.get("metadata", {}).get("labels", {})
+        group = labels.get("modeling.cce/backup-group")
+        if group:
+            groups.setdefault(group, []).append(item)
+    ordered = sorted(
+        groups.items(),
+        key=lambda pair: max(
+            item.get("metadata", {}).get("creationTimestamp", "") for item in pair[1]
+        ),
+        reverse=True,
+    )
+    stale = ordered[args.snapshot_retention:]
+    warnings: list[str] = []
+    for group, items in stale:
+        workloads = {
+            item.get("metadata", {}).get("labels", {}).get("modeling.cce/workload")
+            for item in items
+        }
+        if len(items) != 3 or workloads != {"core", "agent", "onto"}:
+            # Never delete a partial or externally modified snapshot group.
+            continue
+        for item in items:
+            name = item.get("metadata", {}).get("name")
+            if not name:
+                continue
+            result = subprocess.run(
+                ("kubectl", "--context", args.context, "-n", args.namespace,
+                 "delete", "volumesnapshot", name, "--ignore-not-found"),
+                text=True, capture_output=True,
+            )
+            if result.returncode:
+                warnings.append(f"snapshot cleanup failed for {name}: {result.stderr.strip()[:180]}")
+    return warnings
+
+
+def prepare_auto_backup(args, root: Path, release: dict, merged: dict) -> Path:
+    """Stop Modeling, snapshot all PVCs, and write a verified backup record."""
+    args.state_dir.mkdir(parents=True, exist_ok=True)
+    backup_path = args.state_dir / f"{args.release}-{_operation_slug(args.operation_id)}-modeling-backup.json"
+    if backup_path.is_file():
+        try:
+            record = json.loads(backup_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ConfigError("automatic backup record exists but is invalid") from exc
+        if (record.get("schemaVersion") != "cce-backup/v1" or
+                record.get("context") != args.context or
+                record.get("namespace") != args.namespace or
+                record.get("releaseName") != args.release):
+            raise ConfigError("automatic backup record belongs to another operation or release")
+        args.snapshot_group = _snapshot_group(args)
+        args.backup_record = backup_path
+        return backup_path
+    installed = installed_release(args)
+    transition_entry = transition(root / "deploy/compatibility.yaml", args.transition_id, installed, release)
+    if transition_entry.get("steps") != ["modeling"]:
+        raise CompatibilityError("automatic standalone backup requires a modeling-only transition")
+    old_values = installed_values(args)
+    if old_values.get("global", {}).get("targetArch") != merged["global"]["targetArch"]:
+        raise CompatibilityError("target architecture differs from the installed release")
+    if old_values.get("global", {}).get("auth", {}) != merged["global"]["auth"]:
+        raise CompatibilityError("shared auth settings changed during Modeling upgrade")
+    before = bindings(kube, args, merged, stopped=False)
+    _check_capacity(args)
+    args.snapshot_group = _snapshot_group(args)
+    snapshot_classes = _optional_json(args, "get", "volumesnapshotclass")
+    classes = snapshot_classes.get("items", []) if snapshot_classes else []
+    defaults = [item for item in classes if str(
+        item.get("metadata", {}).get("annotations", {}).get(
+            "snapshot.storage.kubernetes.io/is-default-class", ""
+        )
+    ).lower() == "true"]
+    if len(defaults) > 1:
+        raise ConfigError("multiple default VolumeSnapshotClasses are configured")
+    if defaults:
+        args.snapshot_class = defaults[0].get("metadata", {}).get("name")
+    elif len(classes) == 1:
+        args.snapshot_class = classes[0].get("metadata", {}).get("name")
+    else:
+        raise ConfigError("no unambiguous VolumeSnapshotClass is available for automatic backup")
+    if not args.snapshot_class:
+        raise ConfigError("VolumeSnapshotClass name is missing")
+    evidence = _count_persisted_data(args)
+    stopped_at = datetime.now(timezone.utc)
+    _stop_for_backup(args)
+    stopped = bindings(kube, args, merged, stopped=True)
+    if stopped != before:
+        raise ConfigError("stopping Modeling changed a PVC or its bound PV")
+    deadline = time.monotonic() + args.timeout_seconds
+    claims = {}
+    for workload in ("core", "agent", "onto"):
+        claims[workload] = {
+            **stopped[workload],
+            **_ensure_volume_snapshot(
+                args, workload, stopped[workload]["claimName"], deadline,
+            ),
+        }
+    backup_path.write_text(json.dumps({
+        "schemaVersion": "cce-backup/v1",
+        "context": args.context,
+        "namespace": args.namespace,
+        "releaseName": args.release,
+        "stoppedAt": stopped_at.isoformat().replace("+00:00", "Z"),
+        "dataEvidence": evidence,
+        "claims": claims,
+    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    backup_path.chmod(0o600)
+    args.backup_record = backup_path
+    return backup_path
 
 
 def wait_old_pods_gone(args) -> None:
@@ -287,6 +699,12 @@ def main():
     for option in ("context", "namespace", "release", "operation-id", "state-dir", "values", "resolved-images", "resume", "backup-record", "lock-holder", "transition-record"):
         parser.add_argument(f"--{option}")
     parser.add_argument("--transition-id")
+    parser.add_argument("--auto-backup", action="store_true",
+                        help="automatically stop Modeling, create PVC snapshots, and generate backup record")
+    parser.add_argument("--snapshot-retention", type=int, default=2,
+                        help="number of successful snapshot groups to retain (default: 2)")
+    parser.add_argument("--min-free-percent", type=float, default=15.0,
+                        help="minimum free percentage on each /data filesystem (default: 15)")
     parser.add_argument("--defer-external-services", action="store_true",
                         help="defer Consumer Service lookup during initial joint preflight only")
     parser.add_argument("--timeout-seconds", type=int, default=900)
@@ -303,6 +721,16 @@ def main():
         args.operation_id = str(uuid.uuid4())
     if args.action == "upgrade" and not args.transition_id:
         parser.error("upgrade requires --transition-id")
+    if args.auto_backup and args.action != "upgrade":
+        parser.error("--auto-backup is only supported for upgrade")
+    if args.auto_backup and args.backup_record:
+        parser.error("--auto-backup cannot be combined with --backup-record")
+    if args.auto_backup and args.lock_holder:
+        parser.error("--auto-backup is only supported for standalone upgrade")
+    if args.snapshot_retention < 1:
+        parser.error("--snapshot-retention must be at least 1")
+    if args.min_free_percent < 0 or args.min_free_percent > 100:
+        parser.error("--min-free-percent must be between 0 and 100")
     if args.defer_external_services and args.action != "preflight":
         parser.error("--defer-external-services is only supported for preflight")
     if args.defer_external_services and args.transition_id:
@@ -312,6 +740,7 @@ def main():
                   action=args.action, status="failed", releaseName=args.release, namespace=args.namespace,
                   releaseVersion=None, chartVersion=None, phase="input", errorCode=None,
                   message="", retryable=False, endpoints=[], artifacts=[])
+    operation_lease: OperationLease | None = None
     try:
         if not args.context or not args.namespace or not args.release or args.timeout_seconds < 1:
             raise ConfigError("context, namespace, release and positive timeout required")
@@ -337,6 +766,14 @@ def main():
                 result["artifacts"] = [str(render(args, root, release))]
             else:
                 result["phase"] = "preflight"
+                # A standalone Modeling upgrade owns the same Lease used by
+                # joint-cce.py.  The joint entry passes --lock-holder and
+                # therefore keeps ownership outside this process.
+                if args.action == "upgrade" and not args.lock_holder:
+                    args.lock_holder = args.operation_id
+                    args.standalone_upgrade = True
+                    operation_lease = OperationLease(args, args.operation_id)
+                    operation_lease.acquire()
                 preflight(args, merged, check_external_services=not args.defer_external_services)
                 if args.lock_holder and args.action in ("install", "upgrade"):
                     check_delegated_lease(args)
@@ -359,13 +796,24 @@ def main():
                         "--wait", f"--timeout={args.timeout_seconds}s")
                     verify(args, root)
                 elif args.action == "upgrade":
+                    if operation_lease and (args.auto_backup or not args.backup_record):
+                        result["phase"] = "automatic-backup"
+                        backup_path = prepare_auto_backup(args, root, release, merged)
+                        result["artifacts"].append(str(backup_path))
                     result["phase"] = "upgrade-precheck"
                     before = upgrade_precheck(args, root, release, merged)
                     if any(merged["modeling"]["workloads"][name]["replicas"] != 1
                            for name in ("core", "agent", "onto")):
                         raise ConfigError("target values must request one replica per stateful workload")
                     result["phase"] = "upgrade"
+                    if operation_lease:
+                        operation_lease.check()
                     apply_upgrade(args, root, release, merged, before)
+                    if operation_lease:
+                        operation_lease.check()
+                    if operation_lease and getattr(args, "snapshot_group", None):
+                        _label_snapshot_group(args, "successful")
+                        result["warnings"] = _cleanup_old_successful_snapshots(args)
                 elif args.action == "verify":
                     if not current:
                         raise ConfigError("release absent")
@@ -373,6 +821,8 @@ def main():
                     verify(args, root)
                 result["message"] = "completed"
         result["status"] = "succeeded"
+    except OperationLockError as exc:
+        result.update(errorCode="LOCK_CONFLICT", message=str(exc), retryable=True)
     except CompatibilityError as exc:
         result.update(errorCode="INCOMPATIBLE_VERSION", message=str(exc))
     except (ConfigError, FileNotFoundError, KeyError, TypeError, jsonschema.SchemaError) as exc:
@@ -381,6 +831,9 @@ def main():
         result.update(errorCode="TIMEOUT", message="operation timed out", retryable=True)
     except (RuntimeError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
         result.update(errorCode="RESOURCE_NOT_READY", message=str(exc), retryable=True)
+    finally:
+        if operation_lease:
+            operation_lease.release()
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result["status"] == "succeeded" else 1
 

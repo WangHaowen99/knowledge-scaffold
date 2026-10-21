@@ -586,6 +586,72 @@ class CceContractTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             precheck()
 
+    def test_standalone_upgrade_requires_modeling_only_transition(self):
+        path, installed, packages = self.upgrade_fixture()
+        manifest = yaml.safe_load(path.read_text())
+        manifest["combinations"] = [manifest["combinations"][0], manifest["combinations"][2]]
+        manifest["combinations"][1]["consumerReleaseVersion"] = "c1"
+        manifest["combinations"][1]["consumerChartVersion"] = "1.0.0"
+        manifest["transitions"][0]["steps"] = ["modeling"]
+        manifest["transitions"][0]["intermediateCombinationId"] = "old"
+        path.write_text(yaml.safe_dump(manifest))
+        release = packages["modeling"][1]
+        root = self.base / "modeling-cce-demo"
+        (root / "deploy").mkdir(parents=True)
+        shutil.copy2(path, root / "deploy/compatibility.yaml")
+        backup_path = self.base / "backup.json"
+        backup_path.write_text("{}")
+        args = SimpleNamespace(
+            backup_record=backup_path, transition_id="upgrade-demo", transition_record=None,
+            lock_holder="operation-demo", standalone_upgrade=True,
+        )
+        merged = {
+            "global": {"targetArch": "amd64", "auth": {"issuer": "synthetic"}},
+            "modeling": {"workloads": {
+                name: {"persistence": {"existingClaim": f"{name}-data"}}
+                for name in UPGRADE.WORKLOADS
+            }},
+        }
+        old_values = json.loads(json.dumps(merged))
+        with mock.patch.object(INSTALL, "check_delegated_lease"), \
+             mock.patch.object(INSTALL, "installed_release", return_value=installed["modeling"]), \
+             mock.patch.object(INSTALL, "installed_values", return_value=old_values), \
+             mock.patch.object(INSTALL, "bindings", return_value={"synthetic": "binding"}), \
+             mock.patch.object(INSTALL, "verified_snapshots"):
+            self.assertEqual(
+                INSTALL.upgrade_precheck(args, root, release, merged),
+                {"synthetic": "binding"},
+            )
+
+        manifest["transitions"][0]["steps"] = ["consumer", "modeling"]
+        path.write_text(yaml.safe_dump(manifest))
+        shutil.copy2(path, root / "deploy/compatibility.yaml")
+        with mock.patch.object(INSTALL, "check_delegated_lease"), \
+             mock.patch.object(INSTALL, "installed_release", return_value=installed["modeling"]), \
+             mock.patch.object(INSTALL, "installed_values", return_value=old_values), \
+             mock.patch.object(INSTALL, "bindings", return_value={"synthetic": "binding"}), \
+             mock.patch.object(INSTALL, "verified_snapshots"):
+            with self.assertRaises(ConfigError):
+                INSTALL.upgrade_precheck(args, root, release, merged)
+
+    def test_standalone_operation_lease_document_and_expiry(self):
+        args = SimpleNamespace(context="synthetic", namespace="modeling-demo", release="modeling")
+        lease = INSTALL.OperationLease(args, "operation-demo")
+        document = json.loads(lease._document())
+        self.assertEqual(document["metadata"]["name"], "modeling-cce-operation")
+        self.assertEqual(document["spec"]["holderIdentity"], "operation-demo")
+        self.assertTrue(INSTALL.OperationLease._active(document))
+        document["spec"]["renewTime"] = "1970-01-01T00:00:00Z"
+        self.assertFalse(INSTALL.OperationLease._active(document))
+
+    def test_auto_snapshot_names_are_dns_safe_and_deterministic(self):
+        args = SimpleNamespace(release="modeling", operation_id="modeling-upgrade/2026-10-20")
+        first = INSTALL._snapshot_name(args, "onto")
+        second = INSTALL._snapshot_name(args, "onto")
+        self.assertEqual(first, second)
+        self.assertLessEqual(len(first), 63)
+        self.assertRegex(first, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+
     def test_consumer_invocation_omits_unsupported_options(self):
         root = self.base / "consumer-cce-demo"
         (root / "deploy").mkdir(parents=True)

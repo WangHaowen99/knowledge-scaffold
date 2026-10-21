@@ -28,9 +28,16 @@
 }
 ```
 
-安装器会检查 Kubernetes VolumeSnapshot 对象和实时 PVC/PV 绑定，但不会创建快照或测试恢复。备份记录本身不能证明备份可恢复。安装器还会检查旧 Deployment 已缩容为 0 且旧 Pod 已消失，之后才更新 Chart。`dataEvidence` 包含升级前 Core 项目数、Agent 运行记录数和 Onto Modeling 工作区数量。这些数据应由经过批准的只读维护流程从已停止的卷中采集。启动后，安装器会检查数据库可读性，并验证这些数量没有减少。数量检查不能替代业务级数据校验或快照恢复测试。
+安装器会检查 Kubernetes VolumeSnapshot 对象和实时 PVC/PV 绑定。使用 `--auto-backup` 的 Modeling 单独升级会在停止写入后自动创建并等待三个 VolumeSnapshot，同时采集 `dataEvidence`；手工提供备份记录的联合升级仍只校验已有快照，不会替用户创建快照。备份记录本身不能证明备份可恢复。安装器还会检查旧 Deployment 已缩容为 0 且旧 Pod 已消失，之后才更新 Chart。`dataEvidence` 包含升级前 Core 项目数、Agent 运行记录数和 Onto Modeling 工作区数量。启动后，安装器会检查数据库可读性，并验证这些数量没有减少。数量检查不能替代业务级数据校验或快照恢复测试。
 
-Modeling 侧 `deploy/install-cce.sh upgrade` 由联合入口调用，并接收通常的 context、namespace、release、values、resolved-images 和 state-dir 参数，以及 `--transition-id`、`--backup-record`、`--transition-record` 和委派的操作 Lease；兼容清单由联合入口校验后以内部 transition 记录传递。没有经过验证的操作 Lease 时，单独调用会被拒绝。联合入口接受：
+Modeling 侧 `deploy/install-cce.sh upgrade` 支持两种入口：
+
+- 联合升级由 `joint-cce.py` 创建并持有操作 Lease，同时传入 `--lock-holder` 和内部 `--transition-record`；
+- Modeling 单独升级在未传 `--lock-holder` 时由 `install-cce.sh` 自己创建、续租并释放 `modeling-cce-operation` Lease，不再依赖 Consumer 联合入口。
+
+两种入口都接收通常的 context、namespace、release、values、resolved-images 和 state-dir 参数，以及 `--transition-id`、`--backup-record`。单独升级仍必须通过兼容清单、PVC/PV 绑定、VolumeSnapshot 和数据证据校验；它只允许 `steps: [modeling]` 的 transition，并要求该 transition 的 Consumer 版本与当前已部署 Consumer 版本保持一致。
+
+联合入口接受：
 
 ```text
 cce upgrade --scope both --config ... --transition-id ... \
@@ -38,6 +45,33 @@ cce upgrade --scope both --config ... --transition-id ... \
 ```
 
 它会先调用 Consumer 软件包的升级入口，等待成功后再调用 Modeling。Consumer 软件包根据自身 values 中的 `maintenance.backupExistingClaim` 执行备份与数据保留检查，联合入口不传递外部备份记录。这些命令必须在真实 CCE 集群及两个软件包上完成演练后，才能用于客户生产环境。
+
+Consumer 已单独升级、且只需更新 Modeling 时，可直接执行：
+
+```bash
+bash deploy/install-cce.sh upgrade \
+  --context CONTEXT --namespace NAMESPACE --release modeling \
+  --values values.customer.yaml --resolved-images resolved-images.yaml \
+  --state-dir STATE_DIR --operation-id modeling-upgrade-<id> \
+  --transition-id modeling-only-upgrade-<id> \
+  --backup-record modeling-backup.json --timeout-seconds 900
+```
+
+如果不想人工创建备份记录，可在单独升级时使用 `--auto-backup`，省略 `--backup-record`：
+
+```bash
+bash deploy/install-cce.sh upgrade \
+  --context CONTEXT --namespace NAMESPACE --release modeling \
+  --values values.customer.yaml --resolved-images resolved-images.yaml \
+  --state-dir STATE_DIR --operation-id modeling-upgrade-<id> \
+  --transition-id modeling-only-upgrade-<id> --auto-backup \
+  --snapshot-retention 2 --min-free-percent 15 \
+  --timeout-seconds 900
+```
+
+安装器会统计三个工作负载的数据、检查每个 `/data` 文件系统的可用空间、停止旧 Pod、创建并等待三个 PVC 的 VolumeSnapshot，自动在 `state-dir` 写入权限为 0600 的备份记录，然后继续升级和数据校验。`--min-free-percent` 默认是 15%，低于阈值时不会停止 Pod。快照先标记为 `pending`；只有 Helm 更新、健康检查和数据证据验证全部成功后才标记为 `successful`。升级失败或中断时，本次快照不会清理。成功后只清理超过 `--snapshot-retention`（默认 2）组的旧成功快照，且不删除不完整或未由本次脚本标记的快照。
+
+该过程仍要求集群已安装 VolumeSnapshot CRD/CSI 驱动、存在唯一默认或唯一可用的 VolumeSnapshotClass 且当前身份有快照权限；不支持快照的存储会在升级前失败，并保持工作负载停止以避免无备份替换。重复同一 `operation-id` 时会复用已经生成的备份记录。不要为单独升级手工创建 `modeling-cce-operation` Lease；不传 `--lock-holder` 时安装器会自动管理它。只有联合入口委托升级时才传 `--lock-holder` 和 `--transition-record`。如果 Lease 已被其他操作持有，命令会以 `LOCK_CONFLICT` 失败，不会执行 Helm 更新。
 
 Modeling Chart 首先以三个写数据 Deployment 均为 0 副本的状态升级。安装器等待旧 Pod 消失，再次检查 PVC/PV 身份，然后以单副本应用目标 Chart 并检查数据证据。卷检查失败时，工作负载保持停止状态。更新后的 Chart 和备份快照应保留，以便受控恢复。
 
