@@ -307,8 +307,11 @@ def _graph_import(
         )["upload"]
         relations, skipped = eval_import.graph_relation_mapping(upload)
         exported_count = (plan.get("relation_report") or {}).get("relations_exported")
-        if exported_count is not None and exported_count != len((upload.get("schema") or {}).get("relations") or []):
-            skipped.append("知识包导出与图导入读取的关系定义数不一致，请检查知识包转换")
+        mismatched = exported_count is not None and exported_count != len(
+            (upload.get("schema") or {}).get("relations") or []
+        )
+        # 关系转换不出来只跳过那一条；导出与读取对不上是转换本身的缺陷，才停下
+        skipped = (plan.get("relation_report") or {}).get("notes", []) + skipped
         report = {
             **(plan.get("relation_report") or {}),
             "nodes": 0, "relationships": 0,
@@ -319,8 +322,8 @@ def _graph_import(
             "relations_skipped": len(skipped), "notes": skipped,
         }
         _write_state(root, graph_import=report)
-        if skipped:
-            raise RuntimeError("图关系映射未完成，请修正后重试：" + "；".join(skipped))
+        if mismatched:
+            raise RuntimeError("知识包导出与图导入读取的关系定义数不一致，请检查知识包转换")
         mapping = {"relations": relations}
         validation = _http(
             "POST", f"/api/projects/{mp_project}/graph-import/uploads/{upload['id']}/validate",
@@ -413,10 +416,29 @@ def _poll_data_import(project_id: str, root: Path, tok, mp_project: str) -> None
 # ---- trace 场景 → 评测用例 ----
 
 
-def trace_cases(root: Path) -> list[dict]:
-    """ontology/testcase/*.md 的 TC 段落 → (question, groundTruth) 用例。
+_SCENE_INPUT_RE = re.compile(r"^\s*[-*]\s*`([^`]+)`\s*=\s*(.+?)\s*$")
+_SCENE_EXPECTED_RE = re.compile(r"^\s*[-*]\s*\*\*(预期[^*]*)\*\*\s*[：:]\s*(.+?)\s*$")
 
-    TC 段落是 K-V 表：`输入-*` 行拼为问题条件，`预期-*` 行拼为标准答案。
+
+def _scene_case(body: str) -> tuple[list[str], list[str]]:
+    """/ontology-trace 的场景段（testcase-template.md）→ (输入条件, 预期结果)。
+
+    输入是 `参数` = `值` 列表，预期取「预期路径 / 预期结果」等以「预期」开头的加粗项。
+    """
+    inputs, expected = [], []
+    for line in body.splitlines():
+        if match := _SCENE_EXPECTED_RE.match(line):
+            expected.append(f"{match.group(1)}：{match.group(2)}")
+        elif match := _SCENE_INPUT_RE.match(line):
+            inputs.append(f"{match.group(1)}：{match.group(2).strip('`')}")
+    return inputs, expected
+
+
+def trace_cases(root: Path) -> list[dict]:
+    """ontology/testcase/*.md 的 TC 段落或场景段 → (question, groundTruth) 用例。
+
+    TC 段落是 K-V 表：`输入-*` 行拼为问题条件，`预期-*` 行拼为标准答案；场景段是
+    /ontology-trace 按 testcase-template.md 写出的格式，见 _scene_case。
     """
     cases: list[dict] = []
     tc_dir = root / "ontology" / "testcase"
@@ -430,6 +452,10 @@ def trace_cases(root: Path) -> list[dict]:
         except OSError:
             continue
         subject = doc.stem
+        for match in re.finditer(r"##\s*(场景\s*\d+[：:][^\n]*)\n(.*?)(?=\n##\s|\Z)", text, re.S):
+            inputs, expected = _scene_case(match.group(2))
+            if inputs and expected:
+                cases.append(_trace_case(subject, match.group(1).strip(), inputs, expected, doc.name))
         for match in re.finditer(r"##\s*(TC-\d+[：:][^\n]*)\n(.*?)(?=\n##\s|\Z)", text, re.S):
             title, body = match.group(1).strip(), match.group(2)
             inputs, expected = [], []
@@ -446,14 +472,16 @@ def trace_cases(root: Path) -> list[dict]:
                     expected.append(f"{key.split('-', 1)[-1]}：{value}")
             if not inputs or not expected:
                 continue
-            cases.append(
-                {
-                    "question": f"关于「{subject}」（{title}）：{'；'.join(inputs)}。按业务规则应得到什么结果？",
-                    "groundTruth": "；".join(expected),
-                    "source": f"ontology/testcase/{doc.name}",
-                }
-            )
+            cases.append(_trace_case(subject, title, inputs, expected, doc.name))
     return cases
+
+
+def _trace_case(subject: str, title: str, inputs: list[str], expected: list[str], name: str) -> dict:
+    return {
+        "question": f"关于「{subject}」（{title}）：{'；'.join(inputs)}。按业务规则应得到什么结果？",
+        "groundTruth": "；".join(expected),
+        "source": f"ontology/testcase/{name}",
+    }
 
 
 MAX_IMPORT_CASES = 500

@@ -55,7 +55,7 @@ You are a rule-and-metric extraction agent for the ontology project. 你把规�
 
 - 文档命名：report 模式**逐字使用候选名**（它要与报告清单和下游检查对账）；workspace
   模式用业务语义名（如 `退款时限规则.md`、`客单价.md`）。与既有 object/operation 同名
-  时加「规则」/「指标」后缀。
+  时加「规则」/「指标」后缀。文件名就是知识包 key：不超过 80 字符，不含 `/ \ # ? & |` 与 `..`。
 - 「来源」/「数据来源」章节必须可回溯：workspace 模式用 `[[链接]]` 指向抽取处的文档；
   report 模式写报告的相对路径（可加 `#小节`）与清单里的 `规则ID`。
 - **回链**：workspace 模式在来源 operation 的相应步骤后追加 `（规则：[[名称]]）`，在来源

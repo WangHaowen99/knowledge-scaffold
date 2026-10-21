@@ -35,12 +35,12 @@ dispatcher 在 prompt 中提供：
 
 | 字段 | 必填 | 校验 |
 |---|---|---|
-| 关联operation | 是 | 非空；值为「无」、或一个真实存在的 operation 名（在 `ontology/operation/` 中可找到对应 `.md`）、或 `<operation名> / 步骤N[-M\|,M]`（片段脚本，operation 名部分须真实存在；步骤号须能在该 operation 的「# 逻辑描述」中找到）|
+| 关联operation | 是 | 非空；值为一个真实存在的 operation 名（在 `ontology/operation/` 中可找到对应 `.md`）、或 `<operation名> / 步骤N[-M\|,M]`（片段脚本，operation 名部分须真实存在；步骤号须能在该 operation 的「# 逻辑描述」中找到）。写了不存在的名字或填「无」，导出时都不会成为独立脚本；「无」只允许用于被其他脚本 import 复用的辅助模块，供 operation 调用的脚本填「无」记 `头部字段错误` |
 | 功能描述 | 是 | 非空，一句话 |
 | 详细逻辑 | 是 | 非空；不得只写「见 operation 文档」之类占位 |
 | 用法 | 是 | 包含 `CLI` 与 `import` 两种调用形式各一行 |
 | 输入参数 | 是 | 与 argparse 声明一一对应：每个 `add_argument` 有一行（参数名/类型/说明/必填或默认值），且不得出现 argparse 没有的参数（仅供 import 的函数形参不写在这里）；纯库脚本填「无」|
-| 输出 | 是 | 非空；写 return 结构 / 写入表 / 生成文件 等 |
+| 输出 | 是 | 非空；写 stdout 输出的 JSON 结构及字段说明（脚本不写表、不生成文件）|
 | 依赖 | 可选 | 若使用了 `pymysql / pandas / numpy / sklearn` 等第三方包则必填 |
 
 字段在但内容不对：`category=头部字段错误`。
@@ -66,6 +66,16 @@ dispatcher 在 prompt 中提供：
 | `from __future__ import annotations` | 文件缺失该行 | 警告 | 骨架不规范 |
 | 主函数命名 | 主入口函数名应与脚本英文名（去 `.py`）一致；不一致时报告 | 建议 | 骨架不规范 |
 | 默认值常量 | argparse 中使用了可被业务复用的固定值但未抽为模块级常量（如直接写 `default=["A","B"]`）| 建议 | 骨架不规范 |
+
+### 3.1 脚本安全
+
+评测打包前会逐字扫描整份源码（含注释与字符串），命中即拒绝整份脚本。禁用清单以 `.claude/commands/ontology-codegen.md`「脚本安全」为准：子进程与系统命令（`subprocess`、`os.system` / `os.popen` / `os.spawn*`）、网络（`requests` / `httpx` / `aiohttp` / `socket` / `urllib.request` / `urlopen`）、高风险模块（`ctypes` / `multiprocessing` / `pickle` / `marshal`）、写模式 `open` 与 `shutil.rmtree`、动态执行（`eval` / `exec` / `compile` / `__import__`）、源码超过 100000 字符。
+
+| 检查项 | 报告条件 | severity | category |
+|---|---|---|---|
+| 禁用写法 | `ontology_checker.py ontology/ --json --include-scripts` 对 TARGET_SCRIPTS 报 `category=脚本安全` 的 `错误`，`message` 原样引用 | 错误 | 脚本安全 |
+| 绑定 operation | 同一命令报 `category=脚本绑定` 的 `错误`（关联operation 不存在）| 错误 | 头部字段错误 |
+| 评测侧误判 | 同一命令报 `category=脚本安全` 的 `警告`（如 `open` 同行出现 `encoding="ascii"`）| 警告 | 脚本安全 |
 
 ### 4. operation 文档对应段落已简化
 
@@ -117,7 +127,7 @@ Return ONLY a raw JSON array — no markdown, no explanation, no code fences:
 ```
 
 Valid severity values: `"错误"` | `"警告"` | `"建议"`
-Valid category values: `"头部缺失"` | `"头部字段错误"` | `"CLI不规范"` | `"骨架不规范"` | `"operation未简化"` | `"业务知识冲突"`
+Valid category values: `"头部缺失"` | `"头部字段错误"` | `"CLI不规范"` | `"骨架不规范"` | `"脚本安全"` | `"operation未简化"` | `"业务知识冲突"`
 
 **confidence 必填**，取值 `high` | `medium` | `low`，含义对齐 `semantic-check-agent.md`：
 
