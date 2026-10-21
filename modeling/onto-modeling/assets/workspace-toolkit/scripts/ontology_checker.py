@@ -788,6 +788,11 @@ def _relation_node(value: str) -> str:
 _RELATIONS_HEADING_RE = re.compile(r'^#{1,3}\s+关联对象\s*[:：]?\s*$')
 
 
+def _is_relation_placeholder(value: str) -> bool:
+    """「关联对象」段里不是关系声明的行：空行、说明、表格、模板占位、「无」。"""
+    return not value or value.startswith(('>', '|', '{')) or value in ('无', '-', '—')
+
+
 def _object_relations(doc: OntologyDoc) -> list:
     """「# 关联对象」的关系行 → [(行号, 源, 关系名, 目标, 括注)]，「当前对象」已换成文件名 stem。
 
@@ -800,7 +805,7 @@ def _object_relations(doc: OntologyDoc) -> list:
             active = bool(_RELATIONS_HEADING_RE.match(line))
             continue
         value = line.strip().lstrip('-*').strip()
-        if not active or not value or value.startswith(('>', '|', '{')) or value in ('无', '-', '—'):
+        if not active or _is_relation_placeholder(value):
             continue
         parsed = _relation_parts(value)
         if not parsed or any(part.startswith('{') for part in parsed[:3]):
@@ -1730,14 +1735,17 @@ def check_scripts(ontology_dir: Path) -> list:
 # 知识包渲染与评测打包前逐字匹配整份源码（含注释与字符串），命中即拒绝该脚本。
 # re.ASCII 让 \b 与 JS 正则一样只按 ASCII 判单词边界。
 SCRIPT_MAX_CHARS = 100_000
-_SCRIPT_FORBIDDEN = tuple((re.compile(pattern, re.ASCII), label) for pattern, label in (
+_SCRIPT_FORBIDDEN_RULES = (
     (r'\b(?:import|from)\s+subprocess\b|\bsubprocess\s*\.', 'subprocess'),
     (r'\b(?:import|from)\s+(?:ctypes|multiprocessing|pickle|marshal)\b', '高风险模块（ctypes / multiprocessing / pickle / marshal）'),
     (r'\b(?:import|from)\s+(?:requests|httpx|aiohttp|socket)\b|\bfrom\s+urllib\.request\b|\burlopen\s*\(',
      '网络访问（requests / httpx / aiohttp / socket / urllib.request）'),
     (r'\bos\s*\.\s*(?:system|popen|spawn\w*)\s*\(', '系统命令（os.system / os.popen / os.spawn*）'),
     (r'\bshutil\s*\.\s*rmtree\s*\(', '递归删除（shutil.rmtree）'),
-))
+)
+_SCRIPT_FORBIDDEN = tuple(
+    (re.compile(pattern, re.ASCII), label) for pattern, label in _SCRIPT_FORBIDDEN_RULES
+)
 # script-safety.ts 判文件写入的正则：同一行 open( 之后任一以 w/a/x/+ 开头的字符串都会命中，
 # 会把 encoding="ascii" 之类误判成写模式。这里用语法树判真实的写模式，正则只用来提示误判
 _SCRIPT_WRITE_RE = re.compile(r'\bopen\s*\([^\n]*,[^\n]*["\'][wax+][^"\']*["\']', re.ASCII)

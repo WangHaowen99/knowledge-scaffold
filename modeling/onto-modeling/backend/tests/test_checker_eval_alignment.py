@@ -146,8 +146,8 @@ def test_conflict_respects_files_filter(checker, tmp_path: Path):
     write_object(ontology, "订单", ORDER_ROWS, "- 当前对象 → 客户（buyer_no → customer_no） → [[客户]]")
     write_object(ontology, "客户", CUSTOMER_ROWS, "- [[订单]] → 客户（seller_no → customer_no） → 当前对象")
 
-    found = [i for i in issues(checker, ontology, "关联字段", target_files=["客户"])
-             if "不同的关联字段" in i["message"]]
+    related = issues(checker, ontology, "关联字段", target_files=["客户"])
+    found = [i for i in related if "不同的关联字段" in i["message"]]
     assert [i["file"] for i in found] == ["object/客户.md"]
 
 
@@ -342,8 +342,9 @@ def test_valid_keys_pass(checker, tmp_path: Path):
 
 def test_consumer_limits_warn(checker, tmp_path: Path):
     ontology = tmp_path / "ontology"
-    rows = "\n".join(f"| 属性{i} | field_{i} | 示例 | {'是' if i == 0 else '否'} | 字符串 | 无 | 无 |"
-                     for i in range(checker.CONSUMER_ATTRIBUTE_MAX + 1))
+    row = "| 属性{0} | field_{0} | 示例 | {1} | 字符串 | 无 | 无 |"
+    count = checker.CONSUMER_ATTRIBUTE_MAX + 1
+    rows = "\n".join(row.format(i, "是" if i == 0 else "否") for i in range(count))
     write_object(ontology, "宽对象", rows)
     write_operation(ontology, "长操作", OPERATION_DOC + "说明。" * checker.CONSUMER_OPERATION_MAX_CHARS)
     for i in range(checker.CONSUMER_OPERATION_MAX):

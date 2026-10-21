@@ -427,10 +427,13 @@ def _scene_case(body: str) -> tuple[list[str], list[str]]:
     """
     inputs, expected = [], []
     for line in body.splitlines():
-        if match := _SCENE_EXPECTED_RE.match(line):
-            expected.append(f"{match.group(1)}：{match.group(2)}")
-        elif match := _SCENE_INPUT_RE.match(line):
-            inputs.append(f"{match.group(1)}：{match.group(2).strip('`')}")
+        expected_match = _SCENE_EXPECTED_RE.match(line)
+        if expected_match:
+            expected.append(f"{expected_match.group(1)}：{expected_match.group(2)}")
+            continue
+        input_match = _SCENE_INPUT_RE.match(line)
+        if input_match:
+            inputs.append(f"{input_match.group(1)}：{input_match.group(2).strip('`')}")
     return inputs, expected
 
 
