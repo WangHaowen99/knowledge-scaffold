@@ -359,3 +359,66 @@ def test_import_summary_counts_unchanged_for_workspace_layout(
     assert (summary["objects"], summary["operations"], summary["files"]) == (1, 1, 4)
     assert ".git" in summary["skipped"]
     assert [d["name"] for d in summary["top_dirs"]] == ["ontology", "research"]
+
+
+@pytest.mark.parametrize("business_name", ["synthetic_a/b", 'synthetic_甲/乙\\"丙', "synthetic_a%2Fb"])
+def test_business_name_survives_repeated_package_roundtrip(manager, tmp_path, business_name):
+    """Synthetic entities keep safe IDs and original names across publication/import."""
+    from urllib.parse import quote
+    from app.services import studio
+    from app.services.document_metadata import report_name
+
+    source = manager.create_project("workspace_demo")
+    root = manager.project_root(source["id"])
+    body = "# 业务描述\n\nsynthetic description\n"
+    identities = {}
+    for kind in ("object", "operation", "rule", "metric"):
+        original = f"{kind}_{business_name}"
+        stem = quote(original, safe="")
+        identities[kind] = (stem, original)
+        (root / "ontology" / kind / f"{stem}.md").write_text(
+            "---\nreport_name: " + json.dumps(original, ensure_ascii=False)
+            + "\n---\n" + body, encoding="utf-8",
+        )
+    (root / "ontology/metric/synthetic_plain.md").write_text(body, encoding="utf-8")
+    (root / "ontology/scripts/synthetic_script.py").write_text("def run():\n    return {}\n", encoding="utf-8")
+
+    for cycle in range(2):
+        archive = tmp_path / f"synthetic_{cycle}.zip"
+        manager.export_package_zip(source["id"], archive, allow_unbound=True)
+        with zipfile.ZipFile(archive) as zf:
+            for kind, (stem, original) in identities.items():
+                text = zf.read(f"{source['id']}/{kind}s/{stem}.md").decode("utf-8")
+                assert report_name(text) == original
+                assert f"key: {json.dumps(stem)}" in text
+                assert text.count("report_name:") == 1
+        source = manager.import_package_zip("workspace_demo_import", archive)
+        root = manager.project_root(source["id"])
+        nodes = {node["id"]: node for node in studio.graph(root)["nodes"]}
+        for kind, (stem, original) in identities.items():
+            path = f"ontology/{kind}/{stem}.md"
+            text = (root / path).read_text(encoding="utf-8")
+            assert report_name(text) == original
+            assert text.endswith(body)
+            assert "resource:" not in text and "uses:" not in text
+            assert nodes[stem]["label"] == original
+            assert studio.element(root, path)["label"] == original
+        assert (root / "ontology/metric/synthetic_plain.md").read_text() == body
+        assert (root / "ontology/scripts/synthetic_script.py").exists()
+
+
+@pytest.mark.parametrize("metadata", [
+    'report_name: "synthetic_a/b"\nreport_name: "synthetic_other"',
+    'report_name: invalid',
+    'report_name: 123',
+])
+def test_invalid_business_name_blocks_export_and_import(manager, tmp_path, metadata):
+    """Do not silently discard an explicit but invalid business-name mapping."""
+    raw = f"---\n{metadata}\n---\n# synthetic document\n"
+    with pytest.raises(WorkspaceError):
+        package_archive._workspace_document(raw)
+    source = manager.create_project("workspace_demo")
+    path = manager.project_root(source["id"]) / "ontology/operation/synthetic_plain.md"
+    path.write_text(raw, encoding="utf-8")
+    with pytest.raises(WorkspaceError):
+        manager.export_package_zip(source["id"], tmp_path / "synthetic_invalid.zip", allow_unbound=True)

@@ -322,8 +322,8 @@ def build_plan(inventory: Inventory, summary_names: list[str], docs: dict | None
 
 
 def plan_exit_code(plan: dict) -> int:
-    return DIFF if any(plan[key] for key in
-                       ('flowchart_conflicts', 'category_conflicts', 'naming_conflicts')) else OK
+    conflict_keys = ('flowchart_conflicts', 'category_conflicts', 'naming_conflicts')
+    return DIFF if any(plan[key] for key in conflict_keys) else OK
 
 
 # ---------------------------------------------------------------------------

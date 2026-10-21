@@ -52,7 +52,7 @@ function toolsetScopes(toolset) {
   return scopes.length ? `${toolset.scope_requirement === 'any' ? '任一' : '全部'}：${scopes.join('、')}` : '无';
 }
 
-// 管理 Modeling 服务的项目级 MCP：实际服务和 Token 均由 5188 统一提供。
+// 管理 Onto 本地服务的项目级 MCP 地址、Token 和权限。
 function ExposedService({ project }) {
   const [status, setStatus] = useState(null);
   const [tokens, setTokens] = useState([]);
@@ -161,7 +161,7 @@ function ExposedService({ project }) {
     );
   }
   if (runtime.configured === false) {
-    return <Alert type="warning" showIcon message={runtime.detail || '当前项目尚未关联 Modeling 项目'} />;
+    return <Alert type="warning" showIcon message={runtime.detail || '当前项目 MCP 尚未就绪'} />;
   }
 
   return (
@@ -179,10 +179,9 @@ function ExposedService({ project }) {
       </Space>
 
       {loadError && <Alert type="warning" showIcon message={`最近一次刷新失败：${loadError}`} />}
-      {status?.package?.synced === false && <Alert type="warning" showIcon message="知识包尚未同步到 MCP" description={status.package.detail} />}
       {!runtime.running && <Alert type="error" showIcon message={runtime.detail || 'MCP 服务当前不可用'} />}
       {isLoopbackUrl(runtime.base_url) && (
-        <Alert type="warning" showIcon message="当前 MCP 地址仅限本机访问" description="请将 MODELING_MCP_PUBLIC_BASE_URL 配置为其他机器可访问的 HTTPS 域名或 IP。" />
+        <Alert type="warning" showIcon message="当前 MCP 地址仅限本机访问" description="本机客户端可直接使用当前地址；远程访问时请使用本工作台的可访问地址。" />
       )}
 
       <div>
@@ -268,10 +267,10 @@ export default function McpSettings({ project }) {
   return (
     <div>
       <Typography.Title level={5} style={{ marginTop: 0 }}>
-        Modeling MCP 服务
+        Onto MCP 服务
       </Typography.Title>
       <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-        当前项目复用 Modeling 的 5188 MCP 服务，Read 和 Change 地址、Token 及权限由 Modeling 统一管理。
+        当前项目的 MCP 服务由 Onto 本地提供，可在此查看 Read 和 Change 地址并管理 Token 及访问权限。
       </Typography.Paragraph>
       <ExposedService project={project} />
     </div>

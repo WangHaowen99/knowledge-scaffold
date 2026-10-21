@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover - Windows development fallback
 
 from .. import config
 from . import material_detect, package_mapping
+from .document_metadata import report_name
 from .name_conflict import MAX_DISPLAY_NAME_LENGTH, detect_name_conflict
 
 META_FILE = ".onto-web.json"  # 历史文件名保留：存量项目的识别键（ADR-0006）
@@ -935,6 +936,8 @@ class WorkspaceManager:
         version = f"0.1.{len(self.versions(project_id))}"
         pkg = meta["id"]
 
+        report_names: dict[tuple[str, str], str] = {}
+
         def entry_items(*rel_dirs: str, pattern: str = "*.md") -> list[tuple[str, str]]:
             items = []
             seen = set()
@@ -946,7 +949,16 @@ class WorkspaceManager:
                     if path.name == "index.md" or path.stem in seen:
                         continue
                     seen.add(path.stem)
-                    items.append((path.stem, _strip_frontmatter(path.read_text(encoding="utf-8"))))
+                    raw = path.read_text(encoding="utf-8")
+                    if path.suffix == ".md":
+                        try:
+                            original_name = report_name(raw)
+                        except ValueError as exc:
+                            raise WorkspaceError(f"{rel_dir}/{path.name}: {exc}") from exc
+                        if original_name is not None:
+                            resource = "operation" if directory.name == "logic" else directory.name
+                            report_names[(resource, path.stem)] = original_name
+                    items.append((path.stem, _strip_frontmatter(raw)))
             return items
 
         objects = entry_items("ontology/object")
@@ -989,6 +1001,9 @@ class WorkspaceManager:
         )
 
         def front(resource: str, key: str, title: str, extra: str = "") -> str:
+            original_name = report_names.get((resource, key))
+            if original_name is not None:
+                extra += f"report_name: {q(original_name)}\n"
             return f"---\nresource: {resource}\nkey: {q(key)}\ntitle: {q(title)}\n{extra}---\n\n"
 
         def index_md(
@@ -1427,6 +1442,10 @@ class WorkspaceManager:
         base_revision: str = "",
         author: str = "",
     ) -> dict:
+        with self._project_lock(project_id):
+            return self._write_file_unlocked(project_id, rel_path, content, base_revision, author)
+
+    def _write_file_unlocked(self, project_id, rel_path, content, base_revision, author):
         root = self.project_root(project_id)
         target = self._resolve_inside(root, rel_path)
         rel = target.relative_to(root.resolve())

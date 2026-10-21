@@ -15,6 +15,7 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
+from .document_metadata import name_frontmatter, report_name
 from .workspace import (
     IMPORTED_PACKAGE_DIR,
     META_FILE,
@@ -272,6 +273,15 @@ def _workspace_target(rel: str, script_keys: dict[str, str]) -> tuple[str, str] 
     return None
 
 
+def _workspace_document(text: str) -> str:
+    """Keep business-name metadata when removing the package contract frontmatter."""
+    try:
+        prefix = name_frontmatter(report_name(text))
+    except ValueError as exc:
+        raise WorkspaceError(str(exc)) from exc
+    return prefix + _strip_frontmatter(text)
+
+
 def _write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
@@ -301,9 +311,9 @@ def materialize(workspace_root: Path, archive_path: Path, package_root: str) -> 
                 continue
             key, workspace_rel = target
             if workspace_rel.endswith(".md"):
-                # 工作区文档不带包契约 frontmatter；发布时由 export_package_zip 重新注入
+                # 去掉包契约字段，保留业务原名；发布时重新注入包契约
                 try:
-                    data = _strip_frontmatter(data.decode("utf-8")).encode("utf-8")
+                    data = _workspace_document(data.decode("utf-8")).encode("utf-8")
                 except UnicodeDecodeError:
                     pass
             _write(workspace_root / workspace_rel, data)
