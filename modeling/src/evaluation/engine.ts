@@ -310,6 +310,7 @@ export function startEvaluation(
     validateSpecIntegrity(latest.spec, [], undefined, {
       validateScriptExecutionContract: false,
       validateRelationNames: false,
+      allowSelfRelations: false,
     });
   } catch (error) {
     throw new EvaluationOperationError(

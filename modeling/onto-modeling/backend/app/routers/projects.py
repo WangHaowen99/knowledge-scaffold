@@ -924,6 +924,15 @@ async def eval_run(project_id: str, body: EvalRunBody, request: Request):
     from ..services import modeling_eval
 
     root = ensure_access(project_id, request, write=True)
+    try:
+        modeling_eval.evaluation_object_snapshot(root)
+    except modeling_eval.EvaluationPackageInvalid as exc:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": str(exc), "code": exc.error_code, **exc.error_details,
+            },
+        )
     if not modeling_eval.enabled():
         return JSONResponse(status_code=400, content={"error": "未配置 modeling 评测服务（ONTO_WEB_MODELING_URL）"})
     if not modeling_eval.reachable():

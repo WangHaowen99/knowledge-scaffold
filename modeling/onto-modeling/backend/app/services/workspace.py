@@ -917,6 +917,7 @@ class WorkspaceManager:
         graph: bool = False,
         relation_report: dict | None = None,
         allow_unbound: bool = False,
+        object_texts: dict[str, str] | None = None,
     ) -> Path:
         """发布为知识包（consumer 可导入的 ontology-package v0.1）。
 
@@ -925,7 +926,7 @@ class WorkspaceManager:
         operation 必须声明 uses.objects、index 首列与详情 key 逐字相等。
 
         binding：评测导入时传入按本轮导入工作簿算出的绑定，mapping 与导入库同源；
-        graph：Neo4j 图导入用的包——mapping 按图模式导出，「关联对象」转为 `# 关系` 表；
+        所有模式均将「关联对象」转为 `# 关系` 表，graph 模式额外补齐物理关联字段；
         转不出来的关系只跳过那一条，原因记进 relation_report["notes"]，不阻断导出；
         allow_unbound：降级发布——声明对不上的对象不阻断，来源Sheet 写 UNBOUND、不进 mapping。
         """
@@ -961,7 +962,16 @@ class WorkspaceManager:
                     items.append((path.stem, _strip_frontmatter(raw)))
             return items
 
-        objects = entry_items("ontology/object")
+        object_texts = object_texts if object_texts is not None else package_mapping.read_object_texts(root, strict=True)
+        objects = []
+        for key, raw in sorted(object_texts.items()):
+            try:
+                original_name = report_name(raw)
+            except ValueError as exc:
+                raise WorkspaceError(f"ontology/object/{key}.md: {exc}") from exc
+            if original_name is not None:
+                report_names[("object", key)] = original_name
+            objects.append((key, _strip_frontmatter(raw)))
         # ontology/logic 为旧目录兼容（范式升级 ADR-0004）
         operations = entry_items("ontology/operation", "ontology/logic")
         # 对象 ↔ 真实数据表：来源Sheet、`# 字段` 段与 mappings 三处同一份绑定结果
@@ -978,8 +988,12 @@ class WorkspaceManager:
         graph_edges: dict[str, list] = {}
         if graph:
             graph_edges, _ = package_mapping.graph_relations(
-                package_mapping.read_object_texts(root), set(mappings["objects"]), relation_report,
+                object_texts, set(mappings["objects"]), relation_report,
             )
+        else:
+            graph_edges, relation_notes = package_mapping.package_relations(object_texts)
+            if relation_report is not None:
+                relation_report.update(notes=relation_notes)
         rules = entry_items("ontology/rule")
         metrics = entry_items("ontology/metric")
         scripts = entry_items("ontology/scripts", pattern="*.py")
@@ -1043,10 +1057,7 @@ class WorkspaceManager:
                     if table else ""
                 )
                 body = package_mapping.rewrite_object_body(body, item.get("fields") or [])
-                if graph_edges.get(key):
-                    body = body.rstrip("\n") + "\n\n" + package_mapping.render_relations_section(
-                        graph_edges[key]
-                    )
+                body = package_mapping.rewrite_relations_section(body, graph_edges.get(key, []))
                 zf.writestr(
                     f"{pkg}/objects/{key}.md",
                     front("object", key, key, extra) + self._sanitize_placeholder_aliases(body),
