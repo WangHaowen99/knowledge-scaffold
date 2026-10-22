@@ -323,6 +323,10 @@ test('对象关系名称拒绝纯基数和重复端点名称并保留模型生�
   selfRelation.objects[0].relations = [{ relation: '上级', target: selfRelation.objects[0].key }];
   assert.deepEqual(validateObjectBatch([], selfRelation.objects), []);
   assert.doesNotThrow(() => validateSpecIntegrity(selfRelation));
+  assert.throws(
+    () => validateSpecIntegrity(selfRelation, [], undefined, { allowSelfRelations: false }),
+    /评测不允许自关联/u,
+  );
 
   const duplicateRelation = baseSpec();
   duplicateRelation.objects[0].relations = [

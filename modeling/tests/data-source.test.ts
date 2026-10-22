@@ -701,6 +701,33 @@ test('evaluation：存量关系名称不符合命名规范时仍创建正式评�
   await waitForEvaluation(ready.project.id, round.roundId);
 });
 
+test('evaluation：自关联和不存在的关系目标在创建轮次前被拒绝', async () => {
+  const { startEvaluation } = await import('../src/evaluation/engine.js');
+  const cases: Array<{ relation: string; target: string; message: RegExp }> = [
+    { relation: '上级', target: 'application_item', message: /评测不允许自关联/u },
+    { relation: '属于', target: 'missing_object', message: /不存在的对象 missing_object/u },
+  ];
+
+  for (const [index, invalid] of cases.entries()) {
+    const ready = await createReadyEvaluationProject({ name: `关系结构校验-${index}` });
+    const spec: PackageSpec = {
+      ...ready.packageSnapshot.spec,
+      objects: [{
+        key: 'application_item', title: '申请项', description: '合成申请项',
+        fields: [{ key: 'id', cnName: '申请项编号' }],
+        relations: [{ relation: invalid.relation, target: invalid.target }],
+      }],
+    };
+
+    assert.throws(() => startEvaluation({
+      projectId: ready.project.id,
+      token: 'synthetic-token',
+      packageSnapshot: { ...ready.packageSnapshot, spec },
+    }), invalid.message);
+    assert.equal(ready.m3repo.listRounds(ready.project.id).length, 0);
+  }
+});
+
 test('evaluation：连接工作空间必须与数据源 Workspace 隔离值一致', async () => {
   const { evaluationWorkspaceForRun } = await import('../src/evaluation/engine.js');
   const dataSource = {

@@ -116,12 +116,15 @@ def test_set_declared_source_inserts_missing_section_after_english_name():
 
 
 @pytest.fixture()
-def manager(tmp_path: Path) -> WorkspaceManager:
+def manager(tmp_path: Path, monkeypatch) -> WorkspaceManager:
     assets = tmp_path / "assets"
     (assets / "workspace-toolkit" / "templates").mkdir(parents=True)
     (assets / "workspace-rules.md").write_text("# rules", encoding="utf-8")
     (assets / "resource-template" / "others").mkdir(parents=True)
-    return WorkspaceManager(tmp_path / "data", assets)
+    instance = WorkspaceManager(tmp_path / "data", assets)
+    # 绑定门禁不依赖交互式资产链接，也能在无符号链接权限的环境验证。
+    monkeypatch.setattr(instance, "_mount_assets", lambda root: None)
+    return instance
 
 
 def gated_project(manager: WorkspaceManager) -> tuple[str, Path]:
@@ -224,6 +227,7 @@ def eval_router(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "MODELING_TOKEN", "")
     manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
+    monkeypatch.setattr(manager, "_mount_assets", lambda root: None)
     monkeypatch.setattr(projects, "workspaces", manager)
     monkeypatch.setattr(modeling_eval, "enabled", lambda: True)
     monkeypatch.setattr(modeling_eval, "reachable", lambda: True)
@@ -258,3 +262,84 @@ def test_eval_run_reports_binding_problems_until_user_allows_unbound(tmp_path, m
 
     assert asyncio.run(call())["started"] is True
     assert captured["allow_unbound"] is True
+
+
+@pytest.mark.parametrize(
+    ("relation", "expected"),
+    [
+        ("- 当前对象 → references → 当前对象", "不允许自关联"),
+        ("- 当前对象 → references → [[missing_object]]", "missing_object"),
+    ],
+)
+@pytest.mark.parametrize("data_source", [
+    {"mode": "none"},
+    {"mode": "dataset"},
+    {"mode": "connection", "provider": "nl2sql_template"},
+    {"mode": "connection", "provider": "neo4j"},
+])
+@pytest.mark.parametrize("allow_unbound", [False, True])
+def test_eval_run_blocks_invalid_relations_before_background_task(
+    tmp_path, monkeypatch, relation, expected, data_source, allow_unbound,
+):
+    projects, pid, request = eval_router(tmp_path, monkeypatch)
+    root = projects.workspaces.project_root(pid)
+    path = root / "ontology" / "object" / "订单.md"
+    path.write_text(
+        path.read_text(encoding="utf-8") + f"\n# 关联对象\n{relation}\n",
+        encoding="utf-8",
+    )
+    started = []
+
+    async def fake_run(*args, **kwargs):
+        started.append((args, kwargs))
+
+    monkeypatch.setattr(modeling_eval, "run", fake_run)
+    result = asyncio.run(projects.eval_run(
+        pid,
+        projects.EvalRunBody(
+            cases=[{"question": "Q1", "groundTruth": "G1"}],
+            data_source=data_source, allow_unbound=allow_unbound,
+        ),
+        request,
+    ))
+    payload = json.loads(result.body)
+
+    assert result.status_code == 422
+    assert payload["code"] == "EVALUATION_PACKAGE_INVALID"
+    assert expected in payload["error"]
+    assert started == []
+
+
+def test_eval_run_allows_normal_relation_with_legacy_name(tmp_path, monkeypatch):
+    projects, pid, request = eval_router(tmp_path, monkeypatch)
+    root = projects.workspaces.project_root(pid)
+    object_dir = root / "ontology" / "object"
+    (object_dir / "客户.md").write_text(object_doc(None, ["CUSTOMER_ID"]), encoding="utf-8")
+    path = object_dir / "订单.md"
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        + "\n# 关联对象\n- 当前对象 → 属于客户 → [[客户]]\n",
+        encoding="utf-8",
+    )
+    started = []
+
+    async def fake_run(*args, **kwargs):
+        started.append((args, kwargs))
+
+    monkeypatch.setattr(modeling_eval, "run", fake_run)
+
+    async def call():
+        result = await projects.eval_run(
+            pid,
+            projects.EvalRunBody(
+                cases=[{"question": "Q1", "groundTruth": "G1"}], allow_unbound=True,
+            ),
+            request,
+        )
+        await asyncio.sleep(0)
+        return result
+
+    result = asyncio.run(call())
+
+    assert result["started"] is True
+    assert len(started) == 1

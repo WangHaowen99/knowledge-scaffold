@@ -290,6 +290,91 @@ def test_relation_parser_ignores_join_arrow_inside_parentheses():
     }
 
 
+def test_package_relations_preflight_checks_arrow_and_table_formats_without_name_rules():
+    texts = {
+        "object_a": (
+            "# 关联对象\n"
+            "- 当前对象 → 1:N → [[object_b]]\n"
+            "- 当前对象 → references → [[missing_object]]\n"
+        ),
+        "object_b": (
+            "# 关系\n\n"
+            "| 关系 | 目标 | 说明 |\n"
+            "| --- | --- | --- |\n"
+            "| reports_to | object_b | 自关联 |\n"
+        ),
+    }
+
+    relations, problems = package_mapping.package_relations(texts, allow_self_relations=False)
+
+    assert set(relations) == {"object_a"}
+    assert relations["object_a"][0]["relation"] == "1:N"
+    assert [problem for problem in problems if "不存在" in problem] == [
+        "ontology/object/object_a.md 第 3 行：关系端点「missing_object」不存在",
+    ]
+    assert any("object_b" in problem and "不允许自关联" in problem for problem in problems)
+
+
+def test_package_relations_deduplicates_forward_incoming_and_standard_declarations():
+    texts = {
+        "object_a": "# 关联对象\n- 当前对象 → references → [[object_b]]\n"
+        + package_mapping.render_relations_section([{
+            "relation": "references", "target": "object_b", "sourceJoinProperty": "fk", "targetJoinProperty": "id",
+        }]),
+        "object_b": "# 关联对象\n- [[object_a]] → references → 当前对象\n",
+    }
+
+    relations, problems = package_mapping.package_relations(texts, allow_self_relations=False)
+
+    assert problems == []
+    assert list(relations) == ["object_a"]
+    assert len(relations["object_a"]) == 1
+    assert relations["object_a"][0]["target"] == "object_b"
+    assert relations["object_a"][0]["sourceJoinProperty"] == "fk"
+
+
+def test_standard_relation_table_keeps_graph_join_fields_and_evidence():
+    texts = {
+        "object_a": package_mapping.render_relations_section([{
+            "relation": "references", "target": "object_b", "sourceJoinProperty": "fk", "targetJoinProperty": "id",
+            "note": "synthetic note", "evidence": "synthetic evidence",
+        }]),
+        "object_b": "# 对象描述\n合成对象 B\n",
+    }
+
+    relations, problems = package_mapping.graph_relations(texts, set(texts))
+
+    assert problems == []
+    assert relations["object_a"][0] == {
+        "relation": "references", "target": "object_b", "sourceJoinProperty": "fk", "targetJoinProperty": "id",
+        "note": "synthetic note", "evidence": "synthetic evidence",
+    }
+
+
+@pytest.mark.parametrize("table", [
+    "| 说明 | 引用 |\n| --- | --- |\n| synthetic | object_b |\n",
+    "| 关系 | 目标 |\n| --- | --- |\n| references | |\n",
+])
+def test_malformed_relation_table_is_not_treated_as_no_relations(table):
+    _, problems = package_mapping.package_relations({"object_a": "# 关系\n" + table})
+
+    assert len(problems) == 1
+    assert "ontology/object/object_a.md" in problems[0]
+    assert "缺少" in problems[0]
+
+
+def test_conflicting_standard_join_declarations_are_rejected():
+    relation = {"relation": "references", "target": "object_b", "sourceJoinProperty": "fk", "targetJoinProperty": "id"}
+    text = package_mapping.render_relations_section([
+        relation, {**relation, "sourceJoinProperty": "other_fk"},
+    ])
+
+    _, problems = package_mapping.package_relations({"object_a": text, "object_b": ""})
+
+    assert len(problems) == 1
+    assert "关联字段声明不一致" in problems[0]
+
+
 def _related_pair(note: str, source_fields: list[str], target_fields: list[str]) -> dict:
     """两个互指的合成对象：括注写法由参数给出，属性清单决定能否认出关联字段。"""
     def doc(fields: list[str], line: str) -> str:
