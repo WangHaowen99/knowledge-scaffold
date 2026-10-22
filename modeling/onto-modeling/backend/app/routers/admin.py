@@ -182,6 +182,16 @@ def run_backup() -> str:
     dest = directory / f"workspaces-{time.strftime('%Y%m%d-%H%M%S')}.tar.gz"
     with tarfile.open(dest, "w:gz") as tar:
         tar.add(workspaces.workspaces_dir, arcname="workspaces")
+        from ..services import knowledge_hub
+        tasks = Path(config.DATA_DIR) / 'hub-tasks'
+        if tasks.exists():
+            for project in sorted(tasks.iterdir()):
+                if project.is_dir() and project.name != 'cleanup':
+                    with knowledge_hub.lock(project.name):
+                        if project.exists():
+                            tar.add(project, arcname=f'hub-tasks/{project.name}')
+            if (tasks / 'cleanup').exists():
+                tar.add(tasks / 'cleanup', arcname='hub-tasks/cleanup')
     for old in sorted(directory.glob("*.tar.gz"), reverse=True)[BACKUP_KEEP:]:
         old.unlink(missing_ok=True)
     return dest.name

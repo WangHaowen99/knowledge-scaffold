@@ -26,6 +26,14 @@ if [ ! -f .env ]; then
     echo "已从 .env.example 生成 .env（模型网关可稍后在「配置中心」里填写）。"
 fi
 
+# Keep the shared service credential only in the deployment environment file.
+if ! grep -q '^ONTO_HUB_SERVICE_TOKEN=..*' .env; then
+    HUB_GENERATED="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+    printf 'ONTO_HUB_SERVICE_TOKEN=%s\n' "${HUB_GENERATED}" >> .env
+    chmod 600 .env
+    unset HUB_GENERATED
+fi
+
 # auth-server 零配置直连：首次部署自动生成初始管理员密码，写入 .env 并在结尾提示。
 # 已有用户数据的部署（卷非空）该变量不再生效，保留无害。
 BOOTSTRAP_GENERATED=""

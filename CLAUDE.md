@@ -226,6 +226,14 @@ Commands for the Onto Modeling application (`modeling/onto-modeling/`):
 - Build onto-modeling release package: `cd modeling/onto-modeling && ./build.sh <version> [amd|arm]`
 - Run onto-modeling full stack from source: `cd modeling/onto-modeling && docker compose up --build`
 
+Commands for the Knowledge Package Hub (`knowledge-hub/`):
+
+- Install runtime and test dependencies: `cd knowledge-hub/backend && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt`
+- Start Hub with runtime configuration: `cd knowledge-hub/backend && .venv/bin/python run.py`
+- Run Hub tests: `cd knowledge-hub/backend && .venv/bin/python -m pytest tests`
+- Build and start Hub with Onto from source: `bash deploy/deploy.sh --onto-modeling-only`
+- Configuration, API and backup procedures: `knowledge-hub/README.md` and `knowledge-hub/API.md`.
+
 After initializing the project, Claude must update this section with real commands.
 
 ### 8.1 Consumer 前端收敛约束

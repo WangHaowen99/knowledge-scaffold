@@ -3,6 +3,21 @@
 name: onto-web
 
 services:
+  knowledge-hub:
+    image: ${KNOWLEDGE_HUB_IMAGE:-knowledge-hub:latest}
+    restart: unless-stopped
+    environment:
+      - HUB_DATA_DIR=/data/knowledge-hub
+      - ONTO_AUTHZ_URL=http://onto-modeling:8100/api/internal/hub/authorize
+      - HUB_SERVICE_TOKEN=${ONTO_HUB_SERVICE_TOKEN:?Set ONTO_HUB_SERVICE_TOKEN}
+    volumes:
+      - knowledge-hub-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8200/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   auth-server:
     image: ${AUTH_SERVER_IMAGE:-onto-modeling-auth-server:latest}
     container_name: onto-modeling-auth-server
@@ -39,6 +54,8 @@ services:
       # 容器内固定监听 8100（environment 覆盖 env_file），
       # .env 的 ONTO_WEB_PORT 只控制上面 ports 的宿主发布端口
       - ONTO_WEB_PORT=8100
+      - ONTO_HUB_URL=http://knowledge-hub:8200
+      - ONTO_HUB_SERVICE_TOKEN=${ONTO_HUB_SERVICE_TOKEN:?Set ONTO_HUB_SERVICE_TOKEN}
       # 代码生成脚本的运行验证经网关进 jiuwenbox 沙箱；本容器不挂 jiuwenbox socket
       - ONTO_WEB_SANDBOX_GATEWAY_URL=http://sandbox-gateway:8110
     volumes:
@@ -78,5 +95,6 @@ services:
       retries: 3
 
 volumes:
+  knowledge-hub-data:
   onto-web-data:
   onto-web-auth-data:

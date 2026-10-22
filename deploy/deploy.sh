@@ -172,6 +172,13 @@ detect_jiuwenbox_socket_volume() {
 
 write_onto_modeling_stack_override() { # <onto-modeling 目录> <mw-modeling 地址>
     local dir="$1" modeling_url="$2" network socket_volume sandbox_service="" sandbox_volume=""
+    local hub_env="${dir}/.env" hub_secret
+    if ! grep -q '^ONTO_HUB_SERVICE_TOKEN=..*' "${hub_env}" 2>/dev/null; then
+        hub_secret="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+        printf '\nONTO_HUB_SERVICE_TOKEN=%s\n' "${hub_secret}" >> "${hub_env}"
+        chmod 600 "${hub_env}"
+        unset hub_secret
+    fi
     network="$(require_consumer_network)"
     socket_volume="$(detect_jiuwenbox_socket_volume)"
     if [ -n "${socket_volume}" ]; then

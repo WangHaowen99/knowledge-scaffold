@@ -674,6 +674,9 @@ export default function LeftPane({
               )}
             </Button>
           )}
+          <Button block style={{ marginBottom: 8 }} onClick={() => packagePublish.showVersions(project.id)}>
+            已发布版本
+          </Button>
           {statuses.every((st, i) => st === 'finish' || STAGES[i].optional) &&
             evalInfo?.enabled &&
             evalInfo?.state?.status !== 'done' && (

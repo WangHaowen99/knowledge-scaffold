@@ -223,11 +223,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ table, base_revision: baseRevision }),
     }),
-  // 发布知识包：走 fetch 才能拿到阻断错误（window.open 只会打开一页 JSON）；allowUnbound 即降级发布
-  downloadPackage: async (pid, { allowUnbound = false } = {}) => {
-    const query = allowUnbound ? '&allow_unbound=true' : '';
-    const send = () =>
-      fetch(`/api/projects/${pid}/export?scope=package${query}`, { headers: authHeaders() });
+  packageReleases: (pid, { offset = 0, limit = 20 } = {}) =>
+    request(`/api/projects/${pid}/package/releases?offset=${offset}&limit=${limit}`),
+  packageResourcesStatus: (pid) => request(`/api/projects/${pid}/package/resources/status`),
+  downloadRelease: async (pid, releaseId) => {
+    const send = () => fetch(`/api/projects/${pid}/package/releases/${releaseId}/download`, { headers: authHeaders() });
     let response = await send();
     if (response.status === 401 && (await tryRefresh())) response = await send();
     if (!response.ok) throw await responseError(response);
@@ -239,6 +239,31 @@ export const api = {
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  },
+  downloadPackage: async (pid, { allowUnbound = false } = {}) => {
+    const key = `onto-publish:${authStore.username || 'local-dev'}:${pid}:${allowUnbound}`;
+    let requestId = localStorage.getItem(key);
+    if (!requestId) {
+      requestId = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('');
+      localStorage.setItem(key, requestId);
+    }
+    let receipt;
+    try {
+      receipt = await request(`/api/projects/${pid}/package/releases`, {
+        method: 'POST', body: JSON.stringify({ request_id: requestId, allow_unbound: allowUnbound }),
+      });
+    } catch (error) {
+      // Validation precedes reservation; a corrected workspace starts a new request.
+      if (error.code === 'binding_problems' || error.status === 410) localStorage.removeItem(key);
+      throw error;
+    }
+    try {
+      await api.downloadRelease(pid, receipt.release_id);
+    } catch (error) {
+      throw new Error(`知识包已发布，下载失败；可在「已发布版本」重试下载。${error.message}`);
+    }
+    localStorage.removeItem(key);
+    return receipt;
   },
   importProject: (name, file, dryRun = false) => {
     const form = new FormData();

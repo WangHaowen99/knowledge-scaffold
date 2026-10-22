@@ -918,6 +918,7 @@ class WorkspaceManager:
         relation_report: dict | None = None,
         allow_unbound: bool = False,
         object_texts: dict[str, str] | None = None,
+        version: str | None = None,
     ) -> Path:
         """发布为知识包（consumer 可导入的 ontology-package v0.1）。
 
@@ -939,7 +940,7 @@ class WorkspaceManager:
         """
         root = self.project_root(project_id)
         meta = self.get_project(project_id)
-        version = f"0.1.{len(self.versions(project_id))}"
+        version = version or f"0.1.{len(self.versions(project_id))}"
         pkg = meta["id"]
 
         report_names: dict[tuple[str, str], str] = {}

@@ -1,3 +1,4 @@
+import PublishedVersionsDialog from './PublishedVersionsDialog';
 import { UploadOutlined } from '@ant-design/icons';
 import {
   Alert,
@@ -444,10 +445,12 @@ export default function PublishCheckDialog({
 export function usePackagePublish(dialogExtras = {}) {
   const [projectId, setProjectId] = useState('');
   const [publishing, setPublishing] = useState(false);
+  const [versionsProject, setVersionsProject] = useState('');
 
   const download = async (pid, allowUnbound) => {
-    await api.downloadPackage(pid, { allowUnbound });
-    message.success(allowUnbound ? '已降级发布，未通过检查的对象不绑定数据表' : '知识包已导出');
+    const receipt = await api.downloadPackage(pid, { allowUnbound });
+    if (receipt.local_record_pending) message.warning('知识包已发布并下载，本地发布记录待恢复');
+    else message.success(allowUnbound ? '已降级发布，未通过检查的对象不绑定数据表' : '知识包已发布并下载');
     setProjectId('');
   };
 
@@ -467,6 +470,8 @@ export function usePackagePublish(dialogExtras = {}) {
   };
 
   const dialog = (
+    <>
+    <PublishedVersionsDialog projectId={versionsProject} onClose={() => setVersionsProject('')} />
     <PublishCheckDialog
       {...dialogExtras}
       open={!!projectId}
@@ -475,6 +480,7 @@ export function usePackagePublish(dialogExtras = {}) {
       onClose={() => setProjectId('')}
       onProceed={(allowUnbound) => download(projectId, allowUnbound)}
     />
+    </>
   );
-  return { publish, publishing, dialog };
+  return { publish, publishing, dialog, showVersions: setVersionsProject };
 }
