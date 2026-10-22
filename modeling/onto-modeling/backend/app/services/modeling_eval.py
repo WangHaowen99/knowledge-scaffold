@@ -71,6 +71,30 @@ class EvalStopped(Exception):
     """用户主动停止评测——与编排失败区分开：状态落 stopped，且允许重跑。"""
 
 
+class EvaluationPackageInvalid(ValueError):
+    error_code = "EVALUATION_PACKAGE_INVALID"
+
+    def __init__(self, problems: list[str]):
+        self.error_details = {"problems": problems}
+        super().__init__("对象关系未通过评测前校验：" + "；".join(problems[:3]))
+
+
+def evaluation_object_snapshot(root: Path) -> dict[str, str]:
+    """评测检查与导出共用同一份对象内容，不受数据源模式或降级绑定选项影响。"""
+    try:
+        texts = package_mapping.read_object_texts(root, strict=True)
+    except ValueError as exc:
+        raise EvaluationPackageInvalid([str(exc)]) from exc
+    _, problems = package_mapping.package_relations(texts, allow_self_relations=False)
+    if problems:
+        raise EvaluationPackageInvalid(problems)
+    return texts
+
+
+def object_snapshot_fingerprint(texts: dict[str, str]) -> str:
+    return hashlib.sha256(json.dumps(texts, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 QUEUED_STOP_MESSAGE = "评测已停止（排队中，尚未执行）"
 
 
@@ -1118,6 +1142,7 @@ def _collect_failed_round(
 def _try_resume(
     project_id: str, root: Path, token: str, cases: list[dict],
     collect_failed: bool = False,
+    object_fingerprint: str | None = None,
 ) -> bool:
     """续接 modeling 侧已有轮次，收取结果而不重跑。
 
@@ -1127,6 +1152,8 @@ def _try_resume(
     collect_failed：显式「续接上一轮」时，已失败但有部分结果的轮次也收取成报告；
     重新运行评测时不收（用户要的是新一轮）。"""
     prior = read_state(root)
+    if object_fingerprint is not None and prior.get("object_fingerprint") != object_fingerprint:
+        return False
     mp_project, round_id = prior.get("modeling_project"), prior.get("round_id")
     if not mp_project or not round_id:
         return False
@@ -1374,18 +1401,23 @@ def _run_sync(
     mode = str(data_source.get("mode") or "none")
     dataset_mode = mode == "dataset"
     try:
+        object_texts = evaluation_object_snapshot(root)
+        object_fingerprint = object_snapshot_fingerprint(object_texts)
         # 导入数据先整理成工作簿：坏输入快速失败，不浪费一次包导入
         plan = (
             eval_import.prepare(root, data_source, graph=is_graph(data_source))
             if needs_import(data_source) else None
         )
-        if _try_resume(project_id, root, token, cases):
+        if _try_resume(project_id, root, token, cases, object_fingerprint=object_fingerprint):
             return
         _check_stop(project_id)
         _write_state(
             root, status="running", phase="package", message="打包知识包",
             # 新一轮的逐轮字段清空：图导入结果等只属于产生它的那一轮
             report_round=None, graph_import=None, unbound_objects=None, started_at=int(time.time()),
+            modeling_project=None, round_id=None,
+            error_code=None, error_details=None,
+            object_fingerprint=object_fingerprint,
             data_source_name=data_source.get("name") or eval_data_sources.default_name(data_source),
             eval_set_name=eval_set_name,
         )
@@ -1402,6 +1434,7 @@ def _run_sync(
             manager.export_package_zip(
                 project_id, zip_path, binding=binding, graph=is_graph(data_source),
                 relation_report=relation_report, allow_unbound=allow_unbound,
+                object_texts=object_texts,
             )
         finally:
             if is_graph(data_source):

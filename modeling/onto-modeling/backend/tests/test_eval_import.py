@@ -255,7 +255,8 @@ def test_export_matches_import_workbook_nl2sql_and_graph(tmp_path, monkeypatch):
             assert "# 关系" in order_doc and "| 属于 | 客户 |" in order_doc
         else:
             assert order["resource"] == "订单表"
-            assert "# 关系" not in order_doc
+            assert "# 关系" in order_doc and "| 属于 | 客户 |" in order_doc
+            assert "# 关联对象" not in order_doc
 
 
 def test_mock_headers_translated_and_bound_by_object(tmp_path):
@@ -278,10 +279,80 @@ def test_mock_headers_translated_and_bound_by_object(tmp_path):
     assert any("备注" in w for w in plan["warnings"])
 
 
+def test_non_graph_export_preserves_checked_relations_without_table_bindings(tmp_path, monkeypatch):
+    manager, pid, root = _export(tmp_path, monkeypatch, {}, False)
+    snapshot = {
+        "object_a": "# 对象描述\n合成对象 A\n",
+        "object_b": "# 关联对象\n- [[object_a]] → references → 当前对象\n",
+    }
+    # 检查后工作区被修改；打包必须继续使用已检查的对象内容。
+    object_dir = root / "ontology" / "object"
+    object_dir.mkdir(parents=True, exist_ok=True)
+    (object_dir / "object_a.md").write_text(
+        "# 关联对象\n- 当前对象 → references → [[missing_object]]\n", encoding="utf-8",
+    )
+    destination = io.BytesIO()
+
+    manager.export_package_zip(
+        pid, destination, binding={"objects": {}, "problems": []}, object_texts=snapshot,
+    )
+
+    with zipfile.ZipFile(destination) as archive:
+        object_a = archive.read(f"{pid}/objects/object_a.md").decode("utf-8")
+        object_b = archive.read(f"{pid}/objects/object_b.md").decode("utf-8")
+    assert "| references | object_b |" in object_a
+    assert "missing_object" not in object_a
+    assert "# 关系" not in object_b
+    assert "# 关联对象" not in object_b
+
+
+def test_export_rewrites_standard_relation_table_once_without_losing_metadata(tmp_path, monkeypatch):
+    manager, pid, root = _export(tmp_path, monkeypatch, {}, False)
+    snapshot = {
+        "object_a": package_mapping.render_relations_section([{
+            "relation": "references", "target": "object_b", "note": "synthetic note",
+            "evidence": "synthetic evidence", "sourceJoinProperty": "fk", "targetJoinProperty": "id",
+        }]),
+        "object_b": "# 对象描述\n合成对象 B\n",
+    }
+    destination = io.BytesIO()
+
+    manager.export_package_zip(
+        pid, destination, binding={"objects": {}, "problems": []}, object_texts=snapshot,
+    )
+
+    with zipfile.ZipFile(destination) as archive:
+        doc = archive.read(f"{pid}/objects/object_a.md").decode("utf-8")
+    assert doc.count("# 关系") == 1
+    assert "| references | object_b | synthetic note | synthetic evidence | fk | id |" in doc
+
+
 def test_mock_without_data_mock_dir_is_a_problem(tmp_path):
     _objects(tmp_path)
     plan = eval_import.collect(tmp_path, {"include_mock": True})
     assert any("示例数据种子生成失败" in p and "data-mock" in p for p in plan["problems"])
+
+
+def test_export_preserves_checked_object_name_metadata(tmp_path, monkeypatch):
+    from app.services.document_metadata import report_name
+
+    manager, pid, root = _export(tmp_path, monkeypatch, {}, False)
+    snapshot = {
+        "object_a": '---\nreport_name: "synthetic_a/b"\n---\n'
+        "# 关联对象\n- 当前对象 → references → [[object_b]]\n",
+        "object_b": "# 对象描述\n合成对象 B\n",
+    }
+    destination = io.BytesIO()
+
+    manager.export_package_zip(
+        pid, destination, binding={"objects": {}, "problems": []}, object_texts=snapshot,
+    )
+
+    with zipfile.ZipFile(destination) as archive:
+        doc = archive.read(f"{pid}/objects/object_a.md").decode("utf-8")
+    assert report_name(doc) == "synthetic_a/b"
+    assert doc.count("report_name:") == 1
+    assert "| references | object_b |" in doc
 
 
 def test_mock_table_without_object_doc_keeps_headers(tmp_path):

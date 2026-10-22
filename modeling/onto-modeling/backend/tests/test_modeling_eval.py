@@ -17,6 +17,15 @@ import pytest
 from app import config
 from app.services import modeling_eval
 
+
+@pytest.fixture(autouse=True)
+def without_interactive_asset_links(monkeypatch):
+    from app.services.workspace import WorkspaceManager
+
+    # 本模块验证评测编排，不依赖交互式资产挂载或系统符号链接权限。
+    monkeypatch.setattr(WorkspaceManager, "_mount_assets", lambda self, root: None)
+
+
 TC_DOC = """# 产品匹配 — 测试用例
 
 ## TC-1：正常路径 — 双维叠加
@@ -472,6 +481,9 @@ def test_resume_attaches_to_existing_round(tmp_path, monkeypatch):
             root, status="failed", message="HTTP Error 401: Unauthorized",
             modeling_project="mp-1", round_id="r9",
             cases=[{"question": "Q1", "verdict": "running"}],
+            object_fingerprint=modeling_eval.object_snapshot_fingerprint(
+                modeling_eval.evaluation_object_snapshot(root),
+            ),
         )
         modeling_eval._run_sync(meta["id"], root, "t", [{"question": "Q1", "groundTruth": "G1"}])
         state = modeling_eval.read_state(root)
@@ -480,6 +492,57 @@ def test_resume_attaches_to_existing_round(tmp_path, monkeypatch):
         assert not [c for c in ResumeStub.calls if c[0] == "POST"], ResumeStub.calls
     finally:
         server.shutdown()
+
+
+def test_run_sync_rechecks_relation_structure_before_resume_or_import(tmp_path, monkeypatch):
+    pid, root = _eval_workspace(tmp_path, "合成关系校验")
+    object_dir = root / "ontology" / "object"
+    object_dir.mkdir(parents=True, exist_ok=True)
+    (object_dir / "object_a.md").write_text(
+        "# 关联对象\n- 当前对象 → references → [[missing_object]]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(modeling_eval, "_try_resume", lambda *args, **kwargs: pytest.fail("invalid package resumed"))
+    calls = []
+    monkeypatch.setattr(modeling_eval, "_http", lambda *args, **kwargs: calls.append(args))
+
+    modeling_eval._run_sync(
+        pid, root, "synthetic-token", [{"question": "synthetic question", "groundTruth": "synthetic answer"}],
+        allow_unbound=True,
+    )
+
+    state = modeling_eval.read_state(root)
+    assert state["status"] == "failed"
+    assert state["error_code"] == "EVALUATION_PACKAGE_INVALID"
+    assert "missing_object" in state["message"]
+    assert calls == []
+
+
+def test_changed_objects_do_not_resume_previous_round(tmp_path, monkeypatch):
+    root = tmp_path
+    modeling_eval._write_state(
+        root, status="failed", modeling_project="project_alpha", round_id="round_demo",
+        object_fingerprint=modeling_eval.object_snapshot_fingerprint({"object_a": "old synthetic document"}),
+    )
+    monkeypatch.setattr(modeling_eval, "_http", lambda *args, **kwargs: pytest.fail("changed objects resumed"))
+
+    assert not modeling_eval._try_resume(
+        "project_alpha", root, "synthetic-token", [],
+        object_fingerprint=modeling_eval.object_snapshot_fingerprint({"object_a": "new synthetic document"}),
+    )
+
+
+def test_unreadable_object_is_not_silently_skipped_by_evaluation(tmp_path):
+    from app.services import package_mapping
+
+    object_dir = tmp_path / "ontology" / "object"
+    object_dir.mkdir(parents=True)
+    (object_dir / "object_a.md").write_bytes(b"\xff")
+
+    with pytest.raises(modeling_eval.EvaluationPackageInvalid, match="object_a.md"):
+        modeling_eval.evaluation_object_snapshot(tmp_path)
+    with pytest.raises(UnicodeDecodeError):
+        package_mapping.read_object_texts(tmp_path)
 
 
 def test_dataset_mode_runs_quick_import(tmp_path, monkeypatch):

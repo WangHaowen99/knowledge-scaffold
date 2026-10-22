@@ -285,7 +285,7 @@ def _match_table(field_keys: list[str], tables: dict[str, list[str]]) -> str:
     return scores[0][1]
 
 
-def read_object_texts(root: Path) -> dict[str, str]:
+def read_object_texts(root: Path, *, strict: bool = False) -> dict[str, str]:
     """对象文档原文：{对象 key: 正文}，绑定解析、关系解析与发布包导出共用同一来源。"""
     object_dir = root / "ontology" / "object"
     texts: dict[str, str] = {}
@@ -294,7 +294,11 @@ def read_object_texts(root: Path) -> dict[str, str]:
             continue
         try:
             texts[doc.stem] = doc.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeError) as exc:
+            if strict:
+                raise ValueError(f"ontology/object/{doc.name}：无法读取对象文档") from exc
+            if isinstance(exc, UnicodeError):
+                raise
             continue
     return texts
 
@@ -680,8 +684,83 @@ def _relation_join(
     return (shared[0], shared[0]) if shared else (None, None)
 
 
+def _relation_table_cells(line: str) -> list[str]:
+    value = line.strip().removeprefix("|").removesuffix("|")
+    cells: list[str] = []
+    current = ""
+    escaped = False
+    for char in value:
+        if escaped:
+            current += char
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == "|":
+            cells.append(current.strip())
+            current = ""
+        else:
+            current += char
+    cells.append(current.strip())
+    return cells
+
+
+def _relation_table_cell(headers: list[str], cells: list[str], *names: str) -> str:
+    for name in names:
+        if name in headers:
+            index = headers.index(name)
+            return cells[index] if index < len(cells) else ""
+    return ""
+
+
+def _parse_relation_table(text: str, diagnostics: list[str] | None) -> list[dict]:
+    """读取标准包的关系表，保留行号、方向及可选的关联字段。"""
+    out: list[dict] = []
+    active = False
+    headers: list[str] = []
+    for line_number, line in enumerate(text.splitlines(), 1):
+        if line.strip() == "# 关系":
+            active, headers = True, []
+            continue
+        if re.match(r"^#\s+", line):
+            active = False
+        if not active or not line.strip().startswith("|"):
+            continue
+        cells = _relation_table_cells(line)
+        if not headers:
+            headers = cells
+            if not ({"关系", "关系名"} & set(headers) and {"目标对象", "目标"} & set(headers)):
+                problem = f"第 {line_number} 行：关系表缺少关系名或目标对象列"
+                if diagnostics is None:
+                    raise ValueError(problem)
+                diagnostics.append(problem)
+                active = False
+            continue
+        if all(re.fullmatch(r":?-+:?", cell) for cell in cells):
+            continue
+
+        name = _relation_table_cell(headers, cells, "关系", "关系名")
+        target = _relation_table_cell(headers, cells, "目标对象", "目标")
+        if _is_empty(name) and _is_empty(target):
+            continue
+        if _is_empty(name) or _is_empty(target):
+            problem = f"第 {line_number} 行：关系表缺少关系名或目标对象"
+            if diagnostics is None:
+                raise ValueError(problem)
+            diagnostics.append(problem)
+            continue
+        out.append({
+            "line": line_number, "source": CURRENT_OBJECT,
+            "relation": name, "target": _relation_node(target),
+            "note": _relation_table_cell(headers, cells, "说明"),
+            "evidence": _relation_table_cell(headers, cells, "证据"),
+            "sourceJoinProperty": _relation_table_cell(headers, cells, "源关联字段") or None,
+            "targetJoinProperty": _relation_table_cell(headers, cells, "目标关联字段") or None,
+        })
+    return out
+
+
 def parse_relation_definitions(text: str, diagnostics: list[str] | None = None) -> list[dict]:
-    """解析对象关系为 (行号, 源, 关系名, 目标, 括注)；关联字段由 graph_relations 裁决。"""
+    """解析工作区箭头声明及标准关系表；物理关联字段由 graph_relations 裁决。"""
     out: list[dict] = []
     active = False
     for line_number, line in enumerate(text.splitlines(), 1):
@@ -718,7 +797,51 @@ def parse_relation_definitions(text: str, diagnostics: list[str] | None = None) 
             "target": _relation_node(parts[2]),
             "note": note,
         })
-    return out
+    return sorted(out + _parse_relation_table(text, diagnostics), key=lambda item: item["line"])
+
+
+def package_relations(
+    object_texts: dict[str, str], *, allow_self_relations: bool = True,
+) -> tuple[dict[str, list], list[str]]:
+    """按包内对象检查关系结构，与物理表是否绑定无关。双端声明按有向三元组归并。"""
+    relations: dict[str, list] = {}
+    problems: list[str] = []
+    seen: dict[tuple, dict] = {}
+    for key, text in object_texts.items():
+        diagnostics: list[str] = []
+        items = parse_relation_definitions(text, diagnostics)
+        path = f"ontology/object/{key}.md"
+        problems.extend(f"{path} {problem}" for problem in diagnostics)
+        for item in items:
+            source = key if item["source"] == CURRENT_OBJECT else item["source"]
+            target = key if item["target"] == CURRENT_OBJECT else item["target"]
+            label = f"{path} 第 {item['line']} 行"
+            missing = sorted({source, target} - object_texts.keys())
+            if missing:
+                problems.append(f"{label}：关系端点「{'、'.join(missing)}」不存在")
+                continue
+            if key not in (source, target):
+                problems.append(f"{label}：关系两端不包含当前对象")
+                continue
+            if not allow_self_relations and source == target:
+                problems.append(f"{label}：评测不允许自关联「{item['relation']}」")
+                continue
+            relation = {field: value for field, value in item.items() if field not in ("line", "source")}
+            relation["target"] = target
+            triple = (source, item["relation"], target)
+            if triple in seen:
+                previous = seen[triple]
+                if any(previous.get(field) and relation.get(field) and previous[field] != relation[field]
+                       for field in ("sourceJoinProperty", "targetJoinProperty")):
+                    problems.append(f"{label}：同一关系的关联字段声明不一致")
+                    continue
+                for field in ("note", "evidence", "sourceJoinProperty", "targetJoinProperty"):
+                    if not previous.get(field) and relation.get(field):
+                        previous[field] = relation[field]
+                continue
+            seen[triple] = relation
+            relations.setdefault(source, []).append(relation)
+    return relations, problems
 
 
 JOIN_FIELDS = ("sourceJoinProperty", "targetJoinProperty")
@@ -809,10 +932,17 @@ def graph_relations(
                 skipped.append(f"{label}：关系名「{name}」不是合法的图关系名，请确认名称")
                 continue
             try:
-                source_join, target_join = _relation_join(
-                    item["note"], fields.get(source, set()), fields.get(target, set()),
-                    names.get(source, {source.lower()}), names.get(target, {target.lower()}),
-                )
+                source_join, target_join = item.get("sourceJoinProperty"), item.get("targetJoinProperty")
+                if source_join or target_join:
+                    if not (source_join and target_join):
+                        raise ValueError("关联字段必须同时声明源字段和目标字段")
+                    if _missing_field(source_join, fields.get(source, set())) or _missing_field(target_join, fields.get(target, set())):
+                        raise ValueError(f"关联字段 {source_join} → {target_join} 不在两端对象的属性清单里")
+                else:
+                    source_join, target_join = _relation_join(
+                        item["note"], fields.get(source, set()), fields.get(target, set()),
+                        names.get(source, {source.lower()}), names.get(target, {target.lower()}),
+                    )
             except ValueError as exc:
                 skipped.append(f"{label}：{exc}")
                 reject(triple, source, label)
@@ -830,6 +960,8 @@ def graph_relations(
             }
             if item["note"]:
                 relation["note"] = item["note"]
+            if item.get("evidence"):
+                relation["evidence"] = item["evidence"]
             if triple in seen:
                 previous = seen[triple]
                 edge = previous["edge"]
@@ -874,7 +1006,7 @@ def render_relations_section(relations: list[dict | tuple[str, str]]) -> str:
                 relation.get("relation", ""),
                 relation.get("target", ""),
                 relation.get("note") or "",
-                "",
+                relation.get("evidence") or "",
                 relation.get("sourceJoinProperty") or "",
                 relation.get("targetJoinProperty") or "",
             )
@@ -888,3 +1020,19 @@ def render_relations_section(relations: list[dict | tuple[str, str]]) -> str:
         "| --- | --- | --- | --- | --- | --- |\n"
         + "".join(rows)
     )
+
+
+def rewrite_relations_section(body: str, relations: list[dict]) -> str:
+    """把箭头声明及旧标准表替换成同一份关系表，避免旧表遮住新表。"""
+    lines: list[str] = []
+    active = False
+    for line in body.splitlines():
+        if line.strip() in ("# 关系", "# 关联对象"):
+            active = True
+            continue
+        if re.match(r"^#\s+", line):
+            active = False
+        if not active:
+            lines.append(line)
+    result = "\n".join(lines).rstrip("\n")
+    return result + ("\n\n" + render_relations_section(relations) if relations else "\n")
