@@ -106,6 +106,23 @@ docker compose up --build          # 本地从源码起全栈（onto-modeling + 
 
 目标机部署流程与容量规划（含 AVX 预检、降级兼容包）见 `deploy/README.md`。
 
+## 项目级本地 MCP
+
+在项目设置的 MCP 页面创建 Token 并复制 Read / Change 地址。MCP 直接读写当前
+Onto 工作区，新建、导入和克隆项目无需创建 Modeling 关联。旧 Modeling MCP
+地址及 Token 不会自动迁移，请为本地端点重新创建 Token。
+
+- HTTP：`/api/onto-mcp/{project_id}/{read|change}/mcp`。
+- SSE：`/api/onto-mcp/{project_id}/{read|change}/sse`。
+- Token 通过 `Authorization: Bearer <token>` 传递，按项目隔离；读、校验、保存
+  分别要求 `ontology.read`、`ontology.change.validate`、`ontology.change.apply`。
+- 写操作必须提供最新 `expected_revision`；修改保存到本项目的 Git 工作区。
+- 默认按访问工作台的地址生成 MCP 地址。反向代理部署可选用
+  `ONTO_WEB_MCP_PUBLIC_BASE_URL` 指定公开地址，例如 `https://example.com`。
+- 本次独立化仅针对 MCP；原有 Modeling 评测配置仍按原流程使用。
+
+设计与兼容边界见 [本地 MCP 设计说明](docs/decisions/onto-local-mcp.md)。
+
 ## 当前状态
 
 已有：项目生命周期（创建/导入向导（已发布知识包与工作区内容格式自动识别，识别不出

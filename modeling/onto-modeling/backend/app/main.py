@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config
-from .routers import admin, auth_routes, projects, sessions, settings
+from .routers import admin, auth_routes, projects, sessions, settings, onto_mcp
 from .services import auth
 from .services.agent_sessions import SDK_AVAILABLE, SessionError
 from .services.auth import AuthError
@@ -46,6 +46,8 @@ async def _lifespan(app: FastAPI):
 
 app = FastAPI(title="Onto Modeling", version="0.1.0", lifespan=_lifespan)
 app.include_router(auth_routes.router)
+app.include_router(onto_mcp.router)
+app.include_router(onto_mcp.transport_router)
 app.include_router(projects.router)
 app.include_router(sessions.router)
 app.include_router(settings.router)
@@ -53,7 +55,7 @@ app.include_router(admin.router)
 
 # 白名单外的 /api 路由要求有效 access token；token 可来自
 # Authorization 头或 ?token=（EventSource / 导出下载链接无法带头）
-AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health")
+AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/onto-mcp/")
 
 
 @app.middleware("http")

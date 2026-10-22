@@ -41,6 +41,7 @@ JIUWEN_MAX_ITERATIONS = int(os.environ.get("ONTO_WEB_JIUWEN_MAX_ITERATIONS", "60
 # modeling 评测服务（数据评测阶段，方案 docs/eval-optimization-integration.md）：
 # 未配置 URL 时「数据评测」阶段自动隐藏；TOKEN 为无共享 auth 部署的兜底令牌
 # （共享账号中心/方案 A 下透传当前用户 token，无需配置）
+ONTO_MCP_PUBLIC_BASE_URL = os.environ.get("ONTO_WEB_MCP_PUBLIC_BASE_URL", "").rstrip("/")
 MODELING_URL = os.environ.get("ONTO_WEB_MODELING_URL", "").rstrip("/")
 MODELING_TOKEN = os.environ.get("ONTO_WEB_MODELING_TOKEN", "")
 # 独立的导入/MCP 补关联通道；不影响新建项目的全局 Modeling 配置
