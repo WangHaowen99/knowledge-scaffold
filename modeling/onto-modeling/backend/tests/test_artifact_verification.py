@@ -85,9 +85,11 @@ def test_default_idle_ttl_and_explicit_override():
     env = dict(os.environ)
     env.pop('ONTO_WEB_SESSION_IDLE_TTL', None)
     code = 'from app import config; print(config.SESSION_IDLE_TTL_SECONDS)'
-    assert subprocess.check_output([sys.executable, '-c', code], env=env, text=True).strip() == '600'
+    assert subprocess.check_output([sys.executable, '-c', code], env=env, text=True,
+                                   shell=False, timeout=30).strip() == '600'
     env['ONTO_WEB_SESSION_IDLE_TTL'] = '0'
-    assert subprocess.check_output([sys.executable, '-c', code], env=env, text=True).strip() == '0'
+    assert subprocess.check_output([sys.executable, '-c', code], env=env, text=True,
+                                   shell=False, timeout=30).strip() == '0'
 
 
 def test_idle_reaper_obeys_600_seconds(tmp_path, monkeypatch):
@@ -109,7 +111,7 @@ def test_idle_reaper_obeys_600_seconds(tmp_path, monkeypatch):
     monkeypatch.setattr(manager, '_recycle', recycle)
     monkeypatch.setattr(manager, '_drain_waiters', drain)
     for now in (1121, 1599, 1600):
-        monkeypatch.setattr(agent_sessions.time, 'time', lambda: now)
+        monkeypatch.setattr(agent_sessions.time, 'time', lambda now=now: now)
         assert asyncio.run(manager.reap_idle()) == 0
     monkeypatch.setattr(agent_sessions.time, 'time', lambda: 1601)
     assert asyncio.run(manager.reap_idle()) == 1
@@ -279,7 +281,8 @@ zoneinfo.ZoneInfo = missing
 import check_diagrams
 assert check_diagrams.REPORT_TZ.utcoffset(None).total_seconds() == 28800
 '''
-    subprocess.run([sys.executable, '-c', code, str(SCRIPTS)], check=True)
+    subprocess.run([sys.executable, '-c', code, str(SCRIPTS)], check=True,
+                   shell=False, timeout=30)
 
 
 def test_reverse_join_direction_and_one_sided_declaration(tmp_path, verifier):
@@ -324,8 +327,11 @@ def test_external_symlink_rejected(tmp_path, verifier):
 @pytest.fixture
 def git_workspace(tmp_path):
     shutil.copytree(SCRIPTS, tmp_path / '.claude/scripts', ignore=shutil.ignore_patterns('__pycache__'))
+    executable = shutil.which('git')
+    assert executable, 'Git is required for save-hook regression'
     def git(*args):
-        return subprocess.check_output(['git', *args], cwd=tmp_path, stderr=subprocess.STDOUT, text=True)
+        return subprocess.check_output([str(Path(executable).resolve()), *args], cwd=tmp_path,
+                                       stderr=subprocess.STDOUT, text=True, shell=False, timeout=30)
     git('init', '-q')
     git('config', 'user.name', 'Synthetic Test')
     git('config', 'user.email', 'test@example.invalid')
@@ -334,10 +340,18 @@ def git_workspace(tmp_path):
 
 
 def hook(root, name, command='git commit -m "extract: synthetic objects"'):
+    if name not in ('pre_commit_check.sh', 'post_commit_hook.sh'):
+        raise ValueError('Only the checked-in save hooks may run')
+    script = (root / '.claude/scripts' / name).resolve()
+    if not script.is_relative_to(root.resolve()) or script.read_bytes() != (SCRIPTS / name).read_bytes():
+        raise ValueError('Hook must be an unchanged copy inside the synthetic workspace')
+    script.chmod(script.stat().st_mode | 0o100)
     env = dict(os.environ, PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ['PATH'])
-    return subprocess.run(['bash', str(root / '.claude/scripts' / name)], cwd=root, env=env,
+    # Execute the verified hook's shebang entry point; the command is JSON stdin,
+    # never shell source or an interpreter -c argument.
+    return subprocess.run([str(script)], cwd=root, env=env,
                           input=json.dumps({'tool_input': {'command': command}, 'tool_response': {'exitCode': 0}}),
-                          capture_output=True, text=True, check=True)
+                          capture_output=True, text=True, check=True, shell=False, timeout=60)
 
 
 def test_save_hook_blocks_bad_diagram_and_checker_failure(git_workspace):

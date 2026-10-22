@@ -139,7 +139,8 @@ def main() -> int:
                              'truncated': start > 0 or len(s['text']) > start + 1000,
                              'next_text_offset': start + 1000 if len(s['text']) > start + 1000 else None} for s in page],
                   next_offset=offset + limit if offset + limit < len(segments) else None)
-    print(json.dumps(result, ensure_ascii=False))
+    json.dump(result, sys.stdout, ensure_ascii=False)
+    sys.stdout.write('\n')
     return 0 if result['status'] == 'ok' else 2
 
 

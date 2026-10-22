@@ -88,11 +88,14 @@ def parse_source(path: Path) -> dict:
             'operation': title[1].strip(), 'scenarios': scenarios}
 
 
+def _canonical_json(value: object) -> str:
+    # Canonical JSON is type-sensitive (false != 0); equality of Python dicts isn't.
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
+
+
 def verify(source: Path, actual: dict) -> dict:
     expected = parse_source(source)
-    # Canonical JSON is type-sensitive (false != 0); equality of Python dicts isn't.
-    dump = lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
-    if dump(expected) != dump(actual):
+    if _canonical_json(expected) != _canonical_json(actual):
         raise ValueError('实际交接输入与已保存确认稿不一致（修订、场景、字段、类型或值发生变化）；禁止推演')
     return expected
 
@@ -100,7 +103,6 @@ def verify(source: Path, actual: dict) -> dict:
 def verify_results(payload: dict, results: list) -> None:
     if not isinstance(results, list) or len(results) != len(payload['scenarios']):
         raise ValueError('推演结果与确认稿场景数不一致')
-    dump = lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
     seen = set()
     expected = {s['id']: s['inputs'] for s in payload['scenarios']}
     for result in results:
@@ -110,7 +112,8 @@ def verify_results(payload: dict, results: list) -> None:
         if case_id not in expected or case_id in seen:
             raise ValueError('推演结果场景编号重复或不匹配')
         seen.add(case_id)
-        if result.get('source_sha256') != payload['source_sha256'] or dump(result.get('initial_inputs')) != dump(expected[case_id]):
+        if (result.get('source_sha256') != payload['source_sha256']
+                or _canonical_json(result.get('initial_inputs')) != _canonical_json(expected[case_id])):
             raise ValueError(f'场景 {case_id} 实际初始输入不一致，不能计为通过')
 
 
@@ -133,12 +136,14 @@ def main() -> int:
                 raise ValueError('不能覆盖场景确认稿')
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
-        print(json.dumps({'status': 'passed', 'source_sha256': result['source_sha256'],
+        json.dump({'status': 'passed', 'source_sha256': result['source_sha256'],
                           'scenarios': len(result['scenarios']),
-                          'fields': sum(len(s['inputs']) for s in result['scenarios'])}, ensure_ascii=False))
+                          'fields': sum(len(s['inputs']) for s in result['scenarios'])}, sys.stdout, ensure_ascii=False)
+        sys.stdout.write('\n')
         return 0
     except (OSError, ValueError) as exc:
-        print(json.dumps({'status': 'failed', 'reason': str(exc)[:300]}, ensure_ascii=False))
+        json.dump({'status': 'failed', 'reason': str(exc)[:300]}, sys.stdout, ensure_ascii=False)
+        sys.stdout.write('\n')
         return 1
 
 

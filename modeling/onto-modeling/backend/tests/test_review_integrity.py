@@ -130,7 +130,8 @@ def test_source_cli_long_segment_continuation_is_lossless(tmp_path, scripts):
     offset, parts, hashes = 0, [], set()
     for _ in range(3):
         process = subprocess.run([sys.executable, '-I', source.__file__, str(path),
-                                  '--anchor', 'L1', '--text-offset', str(offset)], capture_output=True)
+                                  '--anchor', 'L1', '--text-offset', str(offset)], capture_output=True,
+                                 shell=False, timeout=30)
         assert process.returncode == 0, process.stderr
         page = json.loads(process.stdout.decode('utf-8'))
         hashes.add(page['source_sha256'])
@@ -202,7 +203,8 @@ def test_utf8_cli_in_isolated_ascii_environment(tmp_path, scripts):
     docx(path)
     for module, args in [(source, [str(path)]), (trace, [str(scenario_file(tmp_path))])]:
         result = subprocess.run([sys.executable, '-I', module.__file__, *args],
-                                capture_output=True, env={**os.environ, 'PYTHONIOENCODING': 'ascii'})
+                                capture_output=True, env={**os.environ, 'PYTHONIOENCODING': 'ascii'},
+                                shell=False, timeout=30)
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout.decode('utf-8'))['status'] in {'ok', 'passed'}
 
