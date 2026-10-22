@@ -154,12 +154,14 @@ python3 .claude/scripts/report_reconcile.py plan --json --reports {REPORT_PATHS�
 - 其余情况按 JSON 取值：
   - `OPERATION_CANDIDATES` = `candidates.operation`；`RULE_CANDIDATES` = `candidates.rule`；
     `METRIC_CANDIDATES` = `candidates.metric`（`candidates.object` 归对象提取，本命令不处理）
+  - `DOCUMENT_NAMES` = `document_names`：每项提供原名 `name`、实际路径 `path`、`exists` 和需要写入的 `frontmatter`；`operation` 同时包含流程图补充项（`source=flowchart`），统一检查跨目录实体文件名冲突。原名与路径分开传递，禁止自行替换标点或解码路径。
   - `flowchart_matches`：与报告里的操作同名的流程图，两边合成一份文档
   - `FLOWCHART_SUPPLEMENTS` = `flowchart_supplements`：报告没收录的流程图，允许作为流程图补充
     生成操作，提取后在对账里标明来源
   - `FLOWCHART_SKIPPED` 初始为空，`ALIASES` 初始为空
 
 - 退出码 1：有需要用户决定的冲突，提取前逐条处理：
+  - `naming_conflicts`：安全文件名被其他名称占用、原名映射无效或重复。展示冲突，先 release 再 stop；禁止覆盖文件或凭标点相似度猜测归属。
   - `category_conflicts`：多份报告给同一名称不同的分类。告诉用户统一报告里的分类并重新核验后
     再提取；先 release 再 stop。
   - `flowchart_conflicts`：流程图名称在报告里是规则、指标或对象，流程图把它当操作、报告不是。
@@ -201,13 +203,19 @@ If any of the three directories already has documents and MODE is not pre-set:
 ```
 
 Handle user choice:
-- **增量**: set `MODE = incremental`; collect `EXISTING_FILES` from current `ontology/operation/*.md` stems，collect `EXISTING_RULE_METRIC_FILES` from current `ontology/rule/*.md` 与 `ontology/metric/*.md` stems.
+- **增量**: set `MODE = incremental`。报告模式使用目录处理后重新生成的 `DOCUMENT_NAMES` 判断已有项；仅无报告模式收集 `EXISTING_FILES`（当前 `ontology/operation/*.md` stems）。
 - **重做**: clear `ontology/operation/*.md`；`REPORT_PATHS` 非空时同时清空 `ontology/rule/*.md` 与 `ontology/metric/*.md`，为空时这两个目录不动; set `MODE = full`.
 - **完成**: `python3 .claude/scripts/state_helper.py release extract-operation`，Stop.
 
 If none of the three directories has documents, set `MODE = full`.
 
-When called from another command with `MODE = incremental` pre-set, skip this prompt and collect `EXISTING_FILES` from current `ontology/operation/*.md`，`EXISTING_RULE_METRIC_FILES` from current `ontology/rule/*.md` 与 `ontology/metric/*.md`.
+When called from another command with `MODE = incremental` pre-set, skip this prompt；报告模式仍须重新生成 `DOCUMENT_NAMES`，仅无报告模式收集 `EXISTING_FILES`（当前 `ontology/operation/*.md` stems）。
+
+选择增量或重做、完成目录处理后，报告模式必须重跑 plan，刷新 `DOCUMENT_NAMES`（尤其是重做删除文件后的 `exists` 和历史路径）：沿用 Step 1.6 的报告参数，`--summaries` 排除 `FLOWCHART_SKIPPED`，并为 `ALIASES` 每项传入 `--alias 文档名=流程图名`。
+流程图补充项的原名、用户指定的新名与报告候选共同参与路径规划和跨目录 stem 检查。用户修改补充项名称后也要重新规划，存在 `naming_conflicts` 时不得派发或覆盖文件。
+报告模式中，是否已存在仅以最新 `DOCUMENT_NAMES` 内对应分类、业务原名 `name` 的 `exists` 为准；不得用 `EXISTING_FILES` 或其他文件 stem 列表匹配业务原名。每次重做、补提或修改文件后重新规划，丢弃旧计划。
+既有文件被人工改名但没有原名记录时，不自动合并：核实报告来源后可在该文档头部补充
+`report_name: "原始业务名称"`（JSON 字符串，放在文件开头的一对 `---` 内；已有文档头时合并字段），再重跑 plan/check，不批量重命名。
 
 ## Step 3: Execute operation extraction
 
@@ -230,13 +238,14 @@ EXCEL_CONTEXT:
 {EXCEL_CONTEXT}
 
 REPORT_PATHS: {资料分析报告路径，无则省略}
+DOCUMENT_NAMES: {最新 plan 的 document_names.operation，包含报告操作及流程图补充项，保留 JSON 结构；无报告时省略}
 OPERATION_CANDIDATES: {Step 1.6 的操作组，逗号分隔；无报告时写 (无报告分类，按来源材料识别)}
 FLOWCHART_SUPPLEMENTS: {Step 1.6 的流程图补充，逗号分隔；无则写 无}
 FLOWCHART_SKIPPED: {用户决定不单独成文的流程图，逗号分隔；无则写 无}
 OBJECTS_DIR: ontology/object/
 OPERATION_DIR: ontology/operation/
 TEMPLATES_DIR: .claude/templates/
-{如 MODE=incremental: EXISTING_FILES: {现有文件名}}
+{仅无报告模式且 MODE=incremental: EXISTING_FILES: {现有文件名}}
 
 请按照你的指令完整提取所有业务逻辑，写入 OPERATION_DIR。规则与指标不归你处理。
 
@@ -251,6 +260,8 @@ Wait for completion. Display summary.
 
 Tell user: "**规则与指标提取**\n正在按报告分类生成规则 {R} 条、指标 {M} 个..."
 
+派发规则/指标前按 Step 2 的参数重跑 plan，更新 `DOCUMENT_NAMES`；只使用这次最新计划，发现冲突时先处理，不回退到 Step 1.6 的旧计划。
+
 Read `.claude/agents/rule-metric-extraction-agent.md`. Dispatch it with:
 
 ```
@@ -258,6 +269,7 @@ Read `.claude/agents/rule-metric-extraction-agent.md`. Dispatch it with:
 
 SOURCE_MODE=report
 REPORT_PATHS={资料分析报告路径}
+DOCUMENT_NAMES={最新 plan 的 document_names.rule 与 document_names.metric，保留分类与 JSON 结构}
 RULE_CANDIDATES={Step 1.6 的规则组，逗号分隔；无则写 无}
 METRIC_CANDIDATES={Step 1.6 的指标组，逗号分隔；无则写 无}
 OBJECT_DIR=ontology/object/
@@ -266,12 +278,11 @@ RULE_DIR=ontology/rule/
 METRIC_DIR=ontology/metric/
 RULE_TEMPLATE=.claude/templates/rule-template.md
 METRIC_TEMPLATE=.claude/templates/metric-template.md
-{如 MODE=incremental: EXISTING_FILES={EXISTING_RULE_METRIC_FILES，逗号分隔；无则省略本行}}
 ```
 
 Wait for the JSON summary `{"rules": [...], "metrics": [...], "backlinks_added": N, "skipped": [...]}`。
 派发失败或返回项少于候选数时，把缺的名称逐条告诉用户，不要把缺口留在静默里
-（增量模式下因 `EXISTING_FILES` 跳过的不算缺口）。
+（因最新 `DOCUMENT_NAMES` 中对应项 `exists=true` 跳过的不算缺口；`exists=false` 的候选不可因原名碰巧等于其他文件 stem 而跳过）。
 
 **Coverage check:**
 Dispatch `coverage-check-agent` with:
@@ -300,6 +311,7 @@ python3 .claude/scripts/report_reconcile.py check --reports {REPORT_PATHS，空�
 把脚本输出原样展示给用户，作为提取摘要里的「对账」一节。退出码 0 = 报告条目都已落在正确目录，
 多出来的都有来源（流程图补充，或本轮没动的已有文档）。退出码 1 时逐类处理，处理完重跑本步骤：
 
+- **名称映射冲突**：先修正重复或无效的 `report_name` 记录并重跑；禁止以覆盖文档消除冲突。
 - **报告里有、没生成**：默认回到 Step 3 以增量模式补提这些名称（`补充提取目标` = 缺的名称）；
   用户明确说不生成的，逐条记下原因。
 - **生成在错误目录**（报告里是规则或指标，却写成了操作）：按报告分类和对应模板重写到

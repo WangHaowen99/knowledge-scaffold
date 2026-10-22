@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from test_artifact_verification import git_workspace, hook, object_doc, put, SCRIPTS
+from test_artifact_verification import diagram_xml, git_workspace, hook, object_doc, put, SCRIPTS
 from test_review_integrity import scenario_file
 import benchmark_artifact_verification as benchmark
 from artifact_process_policy import child_environment, system_search_path, validate_fixture_git_args
@@ -225,3 +225,28 @@ def test_json_cli_isolated_from_root_handlers_and_repeated_calls(
         payload = json.loads(captured.out)
         assert payload['status'] == expected_status
         assert captured.err == ''
+
+
+@pytest.mark.parametrize('invalid', [False, True])
+@pytest.mark.parametrize('issues_json', [False, True])
+def test_verifier_json_channel_isolated_from_root_handlers_and_repeated_calls(
+        tmp_path, monkeypatch, capsys, invalid, issues_json):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    verifier = importlib.import_module('verify_artifacts')
+    diagram = diagram_xml().replace('id="ab"', 'id="a"') if invalid else diagram_xml()
+    put(tmp_path, 'ontology/diagrams/FlowA.drawio', diagram)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(logging.getLogger(), 'level', logging.CRITICAL)
+    args = ['verify_artifacts.py', 'diagrams']
+    if issues_json:
+        args.append('--issues-json')
+    monkeypatch.setattr(sys, 'argv', args)
+    for _ in range(2):
+        assert verifier.main() == (1 if invalid else 0)
+        captured = capsys.readouterr()
+        assert captured.out.endswith('\n')
+        payload = json.loads(captured.out)
+        if issues_json:
+            assert any(issue['severity'] == '错误' for issue in payload) == invalid
+        else:
+            assert payload['status'] == ('failed' if invalid else 'passed')

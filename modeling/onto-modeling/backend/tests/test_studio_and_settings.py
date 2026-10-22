@@ -511,3 +511,54 @@ def test_config_error_translation():
     assert not _looks_like_config_error("模型输出正常文本")
     # 未登录也必须先被识别为原始错误才会进入替换分支
     assert _looks_like_raw_error("Not logged in · Please run /login")
+
+
+
+def test_studio_original_names_keep_encoded_links_and_ids(tmp_path):
+    """Synthetic slash and literal-percent names must remain distinct navigation IDs."""
+    import json
+    from app.services.document_metadata import report_name
+
+    entities = [
+        ("operation", "synthetic_a%2Fb", "synthetic_a/b"),
+        ("operation", "synthetic_a%252Fb", "synthetic_a%2Fb"),
+        ("rule", "synthetic_rule%2Fdemo", "synthetic_rule/demo"),
+    ]
+    for kind, stem, name in entities:
+        path = tmp_path / "ontology" / kind / f"{stem}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("---\nreport_name: " + json.dumps(name) + "\n---\n"
+                        + "# 业务描述\n\n[[synthetic_rule%2Fdemo]]\n"
+                        + "# 逻辑描述\n\n1. synthetic step\n", encoding="utf-8")
+    result = studio.graph(tmp_path)
+    nodes = {node["id"]: node for node in result["nodes"]}
+    for kind, stem, name in entities:
+        assert nodes[stem]["label"] == name
+        assert nodes[stem]["path"] == f"ontology/{kind}/{stem}.md"
+    assert {(edge["source"], edge["target"]) for edge in result["edges"]} == {
+        ("synthetic_a%2Fb", "synthetic_rule%2Fdemo"),
+        ("synthetic_a%252Fb", "synthetic_rule%2Fdemo"),
+    }
+    entry = studio.element(tmp_path, "ontology/operation/synthetic_a%2Fb.md")
+    assert entry["name"] == "synthetic_a%2Fb"
+    assert entry["label"] == "synthetic_a/b"
+    assert entry["links"] == ["synthetic_rule%2Fdemo"]
+    assert "report_name" not in entry["intro"]
+    edited = entry["name_frontmatter"] + studio.serialize_sections(entry["sections"])
+    assert report_name(edited) == "synthetic_a/b"
+    rule = studio.element(tmp_path, "ontology/rule/synthetic_rule%2Fdemo.md")
+    assert {back["label"] for back in rule["backlinks"]} == {"synthetic_a/b", "synthetic_a%2Fb"}
+    assert studio.operation_flow(tmp_path, "synthetic_a%2Fb")["operationId"] == "synthetic_a%2Fb"
+
+
+@pytest.mark.parametrize("raw", [
+    '---\nreport_name: "synthetic_a/b"\nreport_name: "synthetic_other"\n---\n',
+    '---\nreport_name: invalid\n---\n',
+    '---\nreport_name: "synthetic_a/b"\n',
+])
+def test_invalid_name_metadata_does_not_break_studio(tmp_path, raw):
+    target = tmp_path / "ontology/operation/synthetic_plain.md"
+    target.parent.mkdir(parents=True)
+    target.write_text(raw + "# 业务描述\n\nsynthetic description\n", encoding="utf-8")
+    assert studio.graph(tmp_path)["nodes"][0]["label"] == "synthetic_plain"
+    assert studio.element(tmp_path, "ontology/operation/synthetic_plain.md")["label"] == "synthetic_plain"

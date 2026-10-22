@@ -1,4 +1,3 @@
-from ..services.modeling_package_sync import sync_workspace_package
 import asyncio
 import json
 import re
@@ -148,7 +147,6 @@ def associate_imported_project(meta: dict, request: Request) -> dict:
             meta, request, workspaces._update_meta
         )
         updated = workspaces.get_project(meta["id"])
-        result["package"] = sync_workspace_package(updated, request, workspaces)
         updated["modeling_association"] = result
         return updated
     except modeling_mcp.ModelingMcpError as exc:
@@ -206,74 +204,7 @@ def create_project(body: CreateProjectBody, request: Request):
         )
     if body.template == "example":
         workspaces.seed_example(meta["id"])
-    try:
-        meta = provision_modeling_project(meta, request)
-    except modeling_mcp.ModelingMcpError as exc:
-        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
     return meta
-
-
-@router.get("/{project_id}/modeling-mcp")
-def get_modeling_mcp(project_id: str, request: Request):
-    ensure_access(project_id, request)
-    meta = workspaces.get_project(project_id)
-    try:
-        meta = ensure_mcp_association(meta, request)
-        runtime = modeling_mcp.status(meta, request)
-        package = None
-        if _may_auto_associate(meta, request):
-            try:
-                package = sync_workspace_package(meta, request, workspaces)
-            except modeling_mcp.ModelingMcpError as exc:
-                package = {"synced": False, "detail": str(exc), "status": exc.status}
-        return {"runtime": runtime, "package": package}
-    except modeling_mcp.ModelingMcpError as exc:
-        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
-
-
-@router.get("/{project_id}/modeling-mcp/tokens")
-def list_modeling_mcp_tokens(project_id: str, request: Request):
-    ensure_access(project_id, request, write=True)
-    meta = workspaces.get_project(project_id)
-    try:
-        meta = ensure_mcp_association(meta, request, require_association=True)
-        return modeling_mcp.tokens(meta, request)
-    except modeling_mcp.ModelingMcpError as exc:
-        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
-
-
-class ModelingMcpTokenBody(BaseModel):
-    name: str
-    scopes: list[str] | None = None
-    expires_in_seconds: int | None = None
-
-
-@router.post("/{project_id}/modeling-mcp/tokens")
-def create_modeling_mcp_token(
-    project_id: str, body: ModelingMcpTokenBody, request: Request
-):
-    ensure_access(project_id, request, write=True)
-    meta = workspaces.get_project(project_id)
-    try:
-        meta = ensure_mcp_association(meta, request, require_association=True)
-        payload = body.model_dump(exclude_none=True)
-        # Modeling API distinguishes omitted expiry (use default) from null (never expires).
-        if "expires_in_seconds" in body.model_fields_set:
-            payload["expires_in_seconds"] = body.expires_in_seconds
-        return modeling_mcp.issue_token(meta, request, payload)
-    except modeling_mcp.ModelingMcpError as exc:
-        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
-
-
-@router.delete("/{project_id}/modeling-mcp/tokens/{token_id}")
-def revoke_modeling_mcp_token(project_id: str, token_id: str, request: Request):
-    ensure_access(project_id, request, write=True)
-    meta = workspaces.get_project(project_id)
-    try:
-        meta = ensure_mcp_association(meta, request, require_association=True)
-        return modeling_mcp.revoke_token(meta, request, token_id)
-    except modeling_mcp.ModelingMcpError as exc:
-        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
 
 
 @router.post("/import")
@@ -314,10 +245,7 @@ async def import_project(
                 return workspaces.import_zip(name, tmp_path, owner=owner)
 
         meta = await asyncio.to_thread(claim_and_import)
-        try:
-            return associate_imported_project(meta, request)
-        except modeling_mcp.ModelingMcpError as exc:
-            return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+        return meta
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -352,10 +280,7 @@ async def transfer_import(
                 return workspaces.import_transfer_zip(tmp_path, owner=owner, name=requested)
 
         meta = await asyncio.to_thread(claim_and_import)
-        try:
-            return associate_imported_project(meta, request)
-        except modeling_mcp.ModelingMcpError as exc:
-            return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+        return meta
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -461,10 +386,7 @@ def clone_project(project_id: str, request: Request, body: CloneBody | None = No
     name = (body.name.strip() if body else "") or default_name
     with workspaces.name_claim(name, _name_viewer(request), original_name=default_name):
         meta = workspaces.clone_project(project_id, owner=_request_user(request), name=name)
-    try:
-        return provision_modeling_project(meta, request)
-    except modeling_mcp.ModelingMcpError as exc:
-        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+    return meta
 
 
 @router.get("/{project_id}/members")

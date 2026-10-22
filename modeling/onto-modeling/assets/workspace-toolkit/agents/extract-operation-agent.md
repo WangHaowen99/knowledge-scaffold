@@ -15,13 +15,14 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
 - `PAIRED_EXCEL_PATHS` (optional): same-name Excel supplements in `ontology/excel/`; these are provenance paths for `EXCEL_CONTEXT`.
 - `EXCEL_CONTEXT` (optional): markdown exported from the paired Excel 补充表. Treat it as detail for the same-name flowchart, not as a standalone global source.
 - `REPORT_PATHS` (optional): research report paths. When `SUMMARY_PATHS` is empty, these become the **primary source** instead of supplementary context.
-- `OPERATION_CANDIDATES` (optional): 报告「业务项清单」里分类为 `操作` 的名称，逗号分隔。报告来源的操作就是这份名单：**每一个都要生成，文件名逐字使用这些名称**（提取后按名称与报告对账）。它不限制流程图对应的操作，那部分见 `FLOWCHART_SUPPLEMENTS`。写成 `(无报告分类，按来源材料识别)` 时才回退到自行识别。
+- `OPERATION_CANDIDATES` (optional): 报告「业务项清单」里分类为 `操作` 的名称，逗号分隔。报告来源的操作就是这份名单：**每一个都要生成，业务原名保留，文件路径使用 DOCUMENT_NAMES**（提取后按原名与报告对账）。它不限制流程图对应的操作，那部分见 `FLOWCHART_SUPPLEMENTS`。写成 `(无报告分类，按来源材料识别)` 时才回退到自行识别。
 - `FLOWCHART_SUPPLEMENTS` (optional): 报告没有收录的流程图，逗号分隔；每项是 `流程图名`，或用户决定改名时的 `文档名=流程图名`。写成 `无` 时没有。
 - `FLOWCHART_SKIPPED` (optional): 用户决定不单独成文的流程图，不要为它们生成操作文档。写成 `无` 时没有。
 - `OBJECTS_DIR`: path to confirmed object docs (e.g. `ontology/object/`)
 - `OPERATION_DIR`: target directory (e.g. `ontology/operation/`)
 - `TEMPLATES_DIR`: path to templates (e.g. `.claude/templates/`)
-- `EXISTING_FILES` (optional): filenames to skip
+- `DOCUMENT_NAMES`（报告模式）: 对账 plan 返回的原名、path、exists 与 frontmatter，包含报告操作和流程图补充项。缺失或用户改名后先运行 `python3 .claude/scripts/report_reconcile.py plan --json --reports {REPORT_PATHS} --summaries {SUMMARY_PATHS 中未跳过的路径}`，并为已决定改名的流程图附加 `--alias 文档名=流程图名`；naming_conflicts 非空时停止写入并返回冲突。
+- `EXISTING_FILES`（仅无报告模式，可选）: 已存在的文件名；报告模式忽略此参数，仅使用最新 `DOCUMENT_NAMES`。
 - `补充提取目标` (optional): only extract these names
 
 **At least one of `SUMMARY_PATHS` / `REPORT_PATHS` is guaranteed to be non-empty** — if both are empty, stop and report rather than fabricate operation.
@@ -39,7 +40,7 @@ Read `.claude/reference/OPERATION_STYLE_GUIDE.md` —— 这是"逻辑描述"段
 **Source mapping:**
 - **With flowcharts**: each flowchart summary generally maps to one operation document. Use the flowchart name as the operation name. 同时给了报告（`OPERATION_CANDIDATES` 是名单）时，按下面三种情况处理每份流程图：
   - 流程图名称就在 `OPERATION_CANDIDATES` 里：两边合成**一份**文档，流程图提供步骤与数据流，报告补充细节。
-  - 在 `FLOWCHART_SUPPLEMENTS` 里：先判断它是不是报告里某个操作换了名字的同一流程。是，就并入那个操作（文件名用报告名称），并在返回摘要的「合并」一栏写明；不是，就按流程图单独成文（文件名用流程图名称；给了 `文档名=流程图名` 的用文档名）。
+  - 在 `FLOWCHART_SUPPLEMENTS` 里：先判断它是不是报告里某个操作换了名字的同一流程。是，就并入那个操作（报告模式下使用 DOCUMENT_NAMES 的实际路径），并在返回摘要的「合并」一栏写明；不是，就按流程图单独成文（报告模式下也必须使用 DOCUMENT_NAMES 已检查的路径；无报告时文件名用流程图名称，给了 `文档名=流程图名` 的用文档名）。
   - 在 `FLOWCHART_SKIPPED` 里：不生成。
   报告里的操作不因为"没有对应的流程图"而跳过；流程图独有的流程也不因为"报告里没有"而丢掉。
 - **With Excel 补充表**: Excel 中同名流程的「业务活动」行 refines the matching flowchart operation. Use row-level descriptions, objects, fields, conditions, formulas, and rules to fill `输入` / `输出` / `与object的关联` / `逻辑描述`. Do not create a separate operation document for each Excel row unless the source explicitly marks it as a reusable sub-process.
@@ -55,9 +56,12 @@ Read `.claude/reference/OPERATION_STYLE_GUIDE.md` —— 这是"逻辑描述"段
 
 For each candidate:
 
-**Skip if in EXISTING_FILES or not in 补充提取目标 (when set).**
+- 设置了 `补充提取目标` 时，仅处理目标内的候选。
+- 报告模式（`REPORT_PATHS` 非空，含本轮流程图补充）：以业务原名 `name` 查找最新 `DOCUMENT_NAMES` 的对应项；仅 `exists=true` 表示已存在并跳过，`exists=false` 必须生成。忽略 `EXISTING_FILES`，不得把业务原名与文件 stem 比较。对应项缺失或计划过期时先重新规划，不能猜测或按旧列表跳过。
+- 无报告模式：沿用 `EXISTING_FILES` 的文件名匹配跳过规则。
 
-Write `OPERATION_DIR/{流程名称}.md`:
+报告模式下，报告候选和流程图补充项都写入 `DOCUMENT_NAMES` 给出的 `path`，非空 `frontmatter` 原样放在文档最前，再按以下模板写正文；路径转义不可解码，不把 `/` 当目录创建。正文及摘要保留业务原名，Wiki 链接目标使用实际文件 stem，后续修改保留 `report_name`，不覆盖其他候选文件。
+流程图补充沿用原文件名，但必须与报告候选共同通过命名冲突检查；仅无报告模式仍直接写 `OPERATION_DIR/{流程名称}.md`:
 
 ```markdown
 # 业务描述
@@ -99,7 +103,7 @@ Write `OPERATION_DIR/{流程名称}.md`:
 ```
 
 Rules:
-- File name = operation/process name in Chinese，**不得以「规则」或「指标」结尾**：判定条款写进本文档的 `逻辑描述`，独立成文档的规则与指标属于 `ontology/rule/`、`ontology/metric/`。报告来源的操作逐字使用 `OPERATION_CANDIDATES` 里的名称，不要改写、不要加前后缀——对账按名称比对，改一个字就会被报成"报告里有、没生成"。文件名就是知识包里的操作 key：不超过 80 字符，不含 `/ \ # ? & |` 与 `..`。
+- File name = operation/process name in Chinese，**不得以「规则」或「指标」结尾**：判定条款写进本文档的 `逻辑描述`，独立成文档的规则与指标属于 `ontology/rule/`、`ontology/metric/`。报告来源的操作保留 `OPERATION_CANDIDATES` 原名，实际文件路径与原名记录使用 `DOCUMENT_NAMES`，不要自行替换标点。文件名就是知识包里的操作 key：不超过 80 字符，不含 `/ \ # ? & |` 与 `..`。
 - 单个操作文档不超过 15000 字符、全项目操作不超过 100 个（consumer 导入上限）；篇幅过长时拆成子操作。
 - 与operation的关联（双向强约束）：
   - `调用operation` 行的 `[[X]]` 集合必须**等于** `逻辑描述` 中所有 `调用[[X]]逻辑文档` 调用点的集合（多一个少一个都会被 rule-check 拦下）。

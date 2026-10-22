@@ -80,6 +80,9 @@ python -B backend/tests/benchmark_artifact_verification.py --baseline-ref "<已�
 基线必须显式指定，运行时固定为提交摘要；仅读取该提交中的普通脚本文件，
 最多 500 个、总计 16 MiB，不展开归档。子进程使用参数数组、禁用 shell 解析，
 单次调用最长 60 秒；不同合成工作区的测量回调独立绑定，不捕获外层循环变量。
+脚本输出仍为 JSON，错误走 stderr；
+新增安全及输出协议回归见 `backend/tests/test_artifact_gate_safety.py`，
+逐项命令安全复核依据见 `codecheck-test-command-review.md`。下述性能数字是原始历史结果，不冒称新版本复测。
 测试数据为合成对象、简单关系、操作、规则、指标和流程图，另含 10 万行单列 CSV 场景。
 其中“核验/缓存/状态读取”序列模拟三次脚本调用，不含 Git 提交、模型、网络和浏览器时间。
 这些数据不能当作线上端到端建模时长或峰值容量结论。
