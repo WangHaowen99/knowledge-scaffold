@@ -18,7 +18,7 @@ import jsonschema
 import yaml
 
 from common import (CompatibilityError, ConfigError, LockError, MigrationUnavailable,
-                    checksum, read_yaml, safe_extract, validate_name,
+                    checksum, emit_stdout, read_yaml, safe_extract, validate_name,
                     run_program, validate_release, validate_compatibility_manifest,
                     release_chart_from_list, IMAGE_REF)
 from upgrade import transition as modeling_transition
@@ -615,7 +615,7 @@ def main():
             result = prepare_compatibility(config, upgrade=args.upgrade_candidate,
                                            confirmed=args.confirm_verified,
                                            no_migration_confirmed=args.confirm_no_modeling_migration)
-            sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+            emit_stdout(json.dumps(result, ensure_ascii=False))
             return 0
         state = config["stateDir"]
         state.mkdir(parents=True, exist_ok=True)
@@ -629,7 +629,7 @@ def main():
                     "namespace": entry["namespace"], "chart": release_chart(config, side),
                     "status": current.get("info", {}).get("status")}
             result.update(status="succeeded", phase="status", message="completed")
-            sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+            emit_stdout(json.dumps(result, ensure_ascii=False))
             return 0
         with tempfile.TemporaryDirectory(prefix="cce-packages-", dir=state) as temporary:
             packages = {}
@@ -721,11 +721,15 @@ def main():
                            transition_record=transition_record_path if args.backup_record else "")
             defer_external_services = False
             for side in JOINT_SIDE_ORDER:
+                side_package = packages.get(side)
+                side_images = image_files.get(side)
+                if side_package is None or side_images is None:
+                    raise ConfigError(f"{side} package or image mapping is missing")
                 for current_lease in leases:
                     current_lease.check()
                 result["phase"] = side
                 if journal and side in journal.get("completed", []):
-                    if not completed_release_matches(config, side, packages[side], operation_id, image_files[side]):
+                    if not completed_release_matches(config, side, side_package, operation_id, side_images):
                         raise ConfigError(f"completed {side} release no longer matches operation journal")
                     result["results"][side] = {"status": "succeeded", "phase": "already-completed"}
                     continue
@@ -740,8 +744,8 @@ def main():
                 if journal:
                     journal["phase"] = f"{side}-started"
                     write_journal(journal_path, journal)
-                result["results"][side] = invoke(side, args.action, config, packages[side], operation_id,
-                    image_files[side], args.resume if args.action == "install" else "",
+                result["results"][side] = invoke(side, args.action, config, side_package, operation_id,
+                    side_images, args.resume if args.action == "install" else "",
                     args.backup_record if side == "modeling" and args.backup_record else "",
                     args.transition_id or "", operation_id if args.action in ("install", "upgrade") else "",
                     transition_record_path if side == "modeling" and args.action == "upgrade" else "",
@@ -752,7 +756,7 @@ def main():
                 if args.action == "upgrade":
                     for current_lease in leases:
                         current_lease.check()
-                    invoke(side, "verify", config, packages[side], operation_id, image_files[side],
+                    invoke(side, "verify", config, side_package, operation_id, side_images,
                            lock_holder=operation_id)
                 if journal:
                     journal.setdefault("completed", []).append(side)
@@ -779,7 +783,7 @@ def main():
                 current_lease.release()
             except Exception:
                 result.update(status="failed", errorCode="LOCK_CONFLICT", message="could not release operation lease")
-    sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+    emit_stdout(json.dumps(result, ensure_ascii=False))
     return 0 if result["status"] == "succeeded" else 1
 
 

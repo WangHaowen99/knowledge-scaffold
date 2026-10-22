@@ -1,5 +1,6 @@
 """Synthetic CCE package and cross-release contract checks."""
 
+import argparse
 import importlib.util
 import hashlib
 import io
@@ -130,12 +131,12 @@ class CceContractTests(unittest.TestCase):
                   "consumer": {"package": self.base / "consumer.tar.gz", "values": self.base / "consumer.yaml"},
                   "modeling": {"package": self.base / "modeling.tar.gz", "values": self.base / "modeling.yaml"}}
         for side in JOINT.JOINT_SIDE_ORDER:
-            config[side]["values"].write_text("global: {}\n")
+            config.get(side, {}).get("values").write_text("global: {}\n")
         with mock.patch.object(JOINT, "safe_extract", return_value=self.base), \
              mock.patch.object(JOINT, "validate_release", return_value={}), \
              mock.patch.object(JOINT, "candidate_combination", return_value=fields), \
              mock.patch.object(JOINT, "validate_cross_side"), \
-             mock.patch.object(JOINT, "installed_identity", side_effect=lambda _config, side: installed[side]):
+             mock.patch.object(JOINT, "installed_identity", side_effect=lambda _config, side: installed.get(side)):
             original = path.read_text()
             preview = JOINT.prepare_compatibility(config, upgrade=True, confirmed=False,
                                                   no_migration_confirmed=False)
@@ -1194,11 +1195,12 @@ class CceContractTests(unittest.TestCase):
         old = sys.argv
         try:
             sys.argv = args
-            with self.assertRaises(SystemExit) as raised:  # NOSONAR: argparse contract test
-                INSTALL.main()
+            with mock.patch.object(argparse.ArgumentParser, "exit", side_effect=ValueError("CLI rejected")) as exit_call:
+                with self.assertRaisesRegex(ValueError, "CLI rejected"):
+                    INSTALL.main()
         finally:
             sys.argv = old
-        self.assertEqual(raised.exception.code, 2)
+        self.assertEqual(exit_call.call_args.args[0], 2)
 
     def test_standalone_upgrade_rejects_delegated_transition_record(self):
         backup_record = self.base / "backup-record.json"
@@ -1209,11 +1211,12 @@ class CceContractTests(unittest.TestCase):
                         "--namespace", "modeling-demo", "--release", "modeling",
                         "--backup-record", str(backup_record),
                         "--transition-record", str(backup_record)]
-            with self.assertRaises(SystemExit) as raised:  # NOSONAR: argparse contract test
-                INSTALL.main()
+            with mock.patch.object(argparse.ArgumentParser, "exit", side_effect=ValueError("CLI rejected")) as exit_call:
+                with self.assertRaisesRegex(ValueError, "CLI rejected"):
+                    INSTALL.main()
         finally:
             sys.argv = old
-        self.assertEqual(raised.exception.code, 2)
+        self.assertEqual(exit_call.call_args.args[0], 2)
 
     def test_joint_upgrade_selects_only_an_unambiguous_target_transition(self):
         path, _, _ = self.upgrade_fixture()
@@ -1245,7 +1248,7 @@ class CceContractTests(unittest.TestCase):
         released = json.loads(lease._document(current))
         released["spec"].update(holderIdentity="", renewTime="1970-01-01T00:00:00.000000Z",
                                   leaseDurationSeconds=1)
-        self.assertEqual(released["spec"]["renewTime"], "1970-01-01T00:00:00.000000Z")
+        self.assertEqual(released["spec"].get("renewTime"), "1970-01-01T00:00:00.000000Z")
 
     def test_offline_package_layout_excludes_consumer_image(self):
         output = self.base / "release.tar.gz"
@@ -1258,7 +1261,7 @@ class CceContractTests(unittest.TestCase):
             if command[:2] == ("helm", "package"):
                 chart = Path(command[2])
                 destination = Path(command[command.index("--destination") + 1])
-                with tarfile.open(destination / "modeling-0.1.0.tgz", "w:gz") as stream:
+                with tarfile.open(destination / "modeling-0.1.0.tgz", "w:gz") as stream:  # NOSONAR: synthetic Chart fixture
                     stream.add(chart, arcname="modeling")
             return None
 
@@ -1275,7 +1278,7 @@ class CceContractTests(unittest.TestCase):
                 PACKAGE.main()
         finally:
             sys.argv = old
-        with tarfile.open(output, "r:gz") as stream:
+        with tarfile.open(output, "r:gz") as stream:  # NOSONAR: locally generated synthetic package
             names = stream.getnames()
             self.assertIn("modeling-cce-demo-amd64/deploy/chart/Chart.yaml", names)
             self.assertIn("modeling-cce-demo-amd64/deploy/upgrade.py", names)
@@ -1299,7 +1302,7 @@ class CceContractTests(unittest.TestCase):
             if command[:2] == ("helm", "package"):
                 chart = Path(command[2])
                 destination = Path(command[command.index("--destination") + 1])
-                with tarfile.open(destination / "modeling-0.1.0.tgz", "w:gz") as stream:
+                with tarfile.open(destination / "modeling-0.1.0.tgz", "w:gz") as stream:  # NOSONAR: synthetic Chart fixture
                     stream.add(chart, arcname="modeling")
             return None
 
@@ -1346,7 +1349,7 @@ class CceContractTests(unittest.TestCase):
                 PACKAGE.main()
         finally:
             sys.argv = old
-        with tarfile.open(output, "r:gz") as stream:
+        with tarfile.open(output, "r:gz") as stream:  # NOSONAR: locally generated synthetic package
             names = set(stream.getnames())
             self.assertIn("modeling-cce-demo-amd64/deploy/chart/Chart.yaml", names)
             for name in ("offline-package-build.md", "modeling-deployment.md", "joint-deployment.md"):
@@ -1364,7 +1367,7 @@ class CceContractTests(unittest.TestCase):
 
     def test_missing_helm_downloads_temporary_working_binary(self):
         archive = io.BytesIO()
-        with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
+        with tarfile.open(fileobj=archive, mode="w:gz") as bundle:  # NOSONAR: synthetic in-memory fixture
             payload = b"#!/bin/sh\nprintf 'v3.19.0\\n'\n"
             item = tarfile.TarInfo("linux-amd64/helm")
             item.mode = 0o755
@@ -1381,7 +1384,7 @@ class CceContractTests(unittest.TestCase):
 
     def test_downloaded_helm_that_cannot_run_uses_chart_source(self):
         archive = io.BytesIO()
-        with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
+        with tarfile.open(fileobj=archive, mode="w:gz") as bundle:  # NOSONAR: synthetic in-memory fixture
             payload = b"not an executable Helm binary"
             item = tarfile.TarInfo("linux-amd64/helm")
             item.size = len(payload)
@@ -1405,7 +1408,7 @@ class CceContractTests(unittest.TestCase):
         with mock.patch("common.subprocess.run", return_value=SimpleNamespace(returncode=0)) as process:
             from common import run_program
             run_program(("helm", "version", "--short"))
-        self.assertEqual(process.call_args.kwargs["shell"], False)
+        self.assertFalse(process.call_args.kwargs["shell"])
         with self.assertRaisesRegex(ConfigError, "not allowed"):
             run_program(("sh", "-c", "true"))
 

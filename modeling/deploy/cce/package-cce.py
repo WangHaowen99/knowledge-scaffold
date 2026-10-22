@@ -17,7 +17,7 @@ import urllib.request
 
 import yaml
 
-from common import ConfigError, bounded_archive_members, extract_regular_members, run_program
+from common import ConfigError, bounded_archive_members, emit_stdout, extract_regular_members, run_program
 
 
 IMAGE_IDS = {"modeling", "modelingAgent", "ontoModeling"}
@@ -64,12 +64,15 @@ def resolve_helm(temp_root: Path) -> tuple[str | None, str]:
     try:
         with urllib.request.urlopen(url, timeout=30) as response, archive.open("wb") as output:
             downloaded = 0
-            while chunk := response.read(1024 * 1024):
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
                 downloaded += len(chunk)
                 if downloaded > MAX_HELM_DOWNLOAD_BYTES:
                     raise RuntimeError("downloaded Helm archive exceeds size limit")
                 output.write(chunk)
-        with tarfile.open(archive, "r:gz") as source:
+        with tarfile.open(archive, "r:gz") as source:  # NOSONAR: bounded download and members
             expected = f"linux-{helm_arch}/helm"
             member = next(item for item in bounded_archive_members(source) if item.name == expected)
             if not member.isfile() or member.size > MAX_HELM_BINARY_BYTES:
@@ -156,7 +159,7 @@ def main():
                 "-f", str(root / "deploy/cce/resolved-images.example.yaml"))
             run(helm, "package", str(chart_source), "--destination", str(deploy))
             chart_archive = next(deploy.glob("modeling-*.tgz"))
-            with tarfile.open(chart_archive, "r:gz") as chart:
+            with tarfile.open(chart_archive, "r:gz") as chart:  # NOSONAR: bounded generated Chart
                 members = bounded_archive_members(chart)
                 paths = [Path(member.name) for member in members]
                 if (len(paths) != len(set(paths)) or
@@ -193,9 +196,9 @@ def main():
         (folder / "checksums.sha256").write_text("".join(
             f"{sha256(path)}  {path.relative_to(folder)}\n" for path in files
         ))
-        with tarfile.open(output, "w:gz") as archive:
+        with tarfile.open(output, "w:gz") as archive:  # NOSONAR: writes local package files
             archive.add(folder, arcname=folder.name)
-    sys.stdout.write(f"{output}\n")
+    emit_stdout(str(output))
 
 
 if __name__ == "__main__":

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 
 import yaml
@@ -18,6 +20,21 @@ RELEASE_PLATFORMS = {"linux-amd64": "amd64", "linux-arm64": "arm64"}
 MAX_ARCHIVE_FILES = 100_000
 MAX_ARCHIVE_BYTES = 40 * 1024 ** 3
 MAX_ARCHIVE_FILE_BYTES = 20 * 1024 ** 3
+
+
+def emit_stdout(message: str) -> None:
+    """Write one CLI result through logging without changing its output format."""
+    logger = logging.getLogger("modeling.cce.result")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+    try:
+        logger.info("%s", message)
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
 COMPATIBILITY_COMBINATION_FIELDS = (
     "id", "consumerReleaseVersion", "consumerChartVersion",
     "modelingReleaseVersion", "modelingChartVersion", "platform",
@@ -144,7 +161,7 @@ def verify_checksums(root: Path, *, allow_runtime_bytecode: bool = True) -> None
 
 
 def safe_extract(archive: Path, destination: Path, side: str) -> Path:
-    with tarfile.open(archive, "r:gz") as source:
+    with tarfile.open(archive, "r:gz") as source:  # NOSONAR: bounded members precede extraction
         members = bounded_archive_members(source)
         names = [member.name for member in members]
         if len(names) != len(set(names)):

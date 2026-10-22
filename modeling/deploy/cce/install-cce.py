@@ -17,7 +17,7 @@ import uuid
 
 import jsonschema
 
-from common import (CompatibilityError, ConfigError, checksum, endpoint_results, read_yaml,
+from common import (CompatibilityError, ConfigError, checksum, emit_stdout, endpoint_results, read_yaml,
                     release_chart_from_list, run_program, validate_images, validate_name, validate_release)
 from upgrade import (DATA_COUNTS, assert_same_bindings, bindings, transition,
                      verified_snapshots, verify_persisted_data)
@@ -960,7 +960,7 @@ def main():
                 result["recovery"] = {"status": "failed", "issues": [str(exc)]}
         if operation_lease:
             operation_lease.release()
-    sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+    emit_stdout(json.dumps(result, ensure_ascii=False))
     return 0 if result["status"] == "succeeded" else 1
 
 
