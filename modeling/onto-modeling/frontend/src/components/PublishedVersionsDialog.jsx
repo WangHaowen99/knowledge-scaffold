@@ -37,7 +37,7 @@ export default function PublishedVersionsDialog({ projectId, onClose }) {
     <Modal title="已发布版本" open={!!projectId} onCancel={onClose} width={900}
       footer={<Button onClick={onClose}>关闭</Button>} destroyOnHidden>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        <Typography.Text type="secondary">共 {data.total} 个已发布版本。下载所选版本不会生成新版本。</Typography.Text>
+        <Typography.Text type="secondary">当前账号拥有 {data.total} 个已发布版本。下载所选版本不会生成新版本。</Typography.Text>
         {resources?.pending && <Alert type="warning" showIcon message="项目最新资料待同步" />}
         {error ? <Alert type="error" showIcon message={error}
           action={<Button size="small" onClick={() => setRevision((n) => n + 1)}>重试</Button>} /> : (
@@ -47,7 +47,7 @@ export default function PublishedVersionsDialog({ projectId, onClose }) {
             columns={[
               { title: '版本', dataIndex: 'version', render: (v, row, i) => <Space><strong>{v}</strong>{page === 1 && i === 0 && <Tag color="blue">最新</Tag>}</Space> },
               { title: '发布时间', dataIndex: 'created_at', render: (v) => new Date(v).toLocaleString() },
-              { title: '发布方式', render: (_, row) => row.publish_options?.degraded ? <Tag color="orange">降级发布</Tag> : '正常发布' },
+              { title: '来源', dataIndex: 'source_service' },
               { title: '操作', render: (_, row) => <Button type="link" loading={downloading === row.release_id}
                 onClick={() => download(row.release_id)}>下载知识包</Button> },
             ]} />

@@ -1432,14 +1432,19 @@ def _run_sync(
         )
         relation_report: dict = {}
         try:
-            from . import knowledge_hub
-            snapshot = knowledge_hub.publish(
-                manager, project_id, uuid.uuid4().hex, tok(), 'evaluation', allow_unbound,
+            from . import hub_packages, auth
+            claims = auth.verify_access_token(tok()) if auth.ENABLED else None
+            if not claims or not claims.get('sub'):
+                raise WorkspaceError('Hub 评测快照需要有效用户身份', 401)
+            subject = json.dumps([claims.get('iss', auth.ISSUER), claims['sub']], ensure_ascii=False)
+            snapshot = hub_packages.publish(
+                manager, project_id, uuid.uuid4().hex, tok(), subject, allow_unbound,
                 kind='evaluation_snapshot', binding=binding, graph=is_graph(data_source),
-                relation_report=relation_report,
+                relation_report=relation_report, object_texts=object_texts,
             )
-            knowledge_hub.download(project_id, snapshot['release_id'], tok(), zip_path)
+            hub_packages.download(snapshot['hub_package_id'], snapshot['release_id'], tok(), zip_path)
             _write_state(root, hub_snapshot_id=snapshot['release_id'],
+                         hub_package_id=snapshot['hub_package_id'],
                          hub_snapshot_digest=snapshot['package_digest'])
         finally:
             if is_graph(data_source):

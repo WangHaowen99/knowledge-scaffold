@@ -441,16 +441,16 @@ export default function PublishCheckDialog({
   );
 }
 
-// 发布入口共用：检查通过直接下载，有问题项再打开检查弹窗
+// 发布入口共用：检查通过提交发布，有问题项再打开检查弹窗
 export function usePackagePublish(dialogExtras = {}) {
   const [projectId, setProjectId] = useState('');
   const [publishing, setPublishing] = useState(false);
   const [versionsProject, setVersionsProject] = useState('');
 
-  const download = async (pid, allowUnbound) => {
-    const receipt = await api.downloadPackage(pid, { allowUnbound });
-    if (receipt.local_record_pending) message.warning('知识包已发布并下载，本地发布记录待恢复');
-    else message.success(allowUnbound ? '已降级发布，未通过检查的对象不绑定数据表' : '知识包已发布并下载');
+  const submitRelease = async (pid, allowUnbound) => {
+    const receipt = await api.publishPackage(pid, { allowUnbound });
+    if (receipt.local_record_pending) message.warning('知识包已发布，本地发布记录待恢复');
+    else message.success(allowUnbound ? '已降级发布，未通过检查的对象不绑定数据表' : '知识包已发布');
     setProjectId('');
   };
 
@@ -459,7 +459,7 @@ export function usePackagePublish(dialogExtras = {}) {
     try {
       const check = await api.packageCheck(pid);
       if (check.issues.length || check.solver?.blocking) setProjectId(pid);
-      else await download(pid, false);
+      else await submitRelease(pid, false);
     } catch (error) {
       // 检查后才出现的问题（并发修改）：回到弹窗看最新结论
       if (error.code === 'binding_problems' || error.code?.startsWith('solver_')) setProjectId(pid);
@@ -478,7 +478,7 @@ export function usePackagePublish(dialogExtras = {}) {
       projectId={projectId}
       mode="publish"
       onClose={() => setProjectId('')}
-      onProceed={(allowUnbound) => download(projectId, allowUnbound)}
+      onProceed={(allowUnbound) => submitRelease(projectId, allowUnbound)}
     />
     </>
   );

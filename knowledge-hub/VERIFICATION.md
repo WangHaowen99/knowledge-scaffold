@@ -1,20 +1,26 @@
-# Hub1 开发验证记录
+# Hub2 开发验证记录
 
-本记录覆盖代码实现和隔离测试；未执行镜像发布或运行环境部署。
+本记录覆盖本地实现和合成数据回归，未执行提交、镜像发布或运行环境部署。
 
 ## 已验证
 
-- Onto 相关既有回归与初版 Hub 测试：90 项通过，覆盖发布绑定、包回导、MCP 草稿、评测编排和鉴权。
-- 最终 Hub 与 Onto 针对性测试：25 项通过，包含版本幂等、超过 50 次及并发分配、真实回环 HTTP 发布/列表/下载/撤权、项目角色、资料替换与删除、Git 故障恢复、过期请求、备份恢复、删除重放、工作区备份保留 Hub 任务及旧请求不倒退最新回执。
-- 实际 Onto ZIP 经 Hub 原样归档后，通过消费端当前检查及归一化导入：1 项通过。
-- 消费端既有包导入回归：59 项通过、1 项原有跳过。
-- Onto 前端：10 个测试文件通过，包含新增发布/下载请求行为测试；生产构建通过。构建仍有已有的大分块提示。
-- Compose YAML 结构、Shell 语法、增量 diff 与敏感模式检查通过；新增测试资料均为临时合成数据，无新增二进制资料或凭据。
+- Hub 后端及建模相关回归：145 项通过（包含最新 develop 的 Solver 包往返回归）。覆盖独立包身份、用户隔离、服务能力限制、无项目外部导入、mapping 派生范围、不可变版本、幂等重试、撤权、Git 故障恢复、备份恢复，以及项目最新资料同步和清理。
+- 旧 Hub 项目包 API 已删除，测试确认旧路径返回 404；建模发布和现有评测快照使用 Hub2。没有历史复制、双发布目标或旧包读取适配。
+- 建模前端：14 个测试文件通过；生产构建通过，仍有大分块提示。标准构建曾在压缩体积统计阶段被系统终止，最终使用 Vite 的 `reportCompressedSize: false` 完成构建，产物仍正常压缩。
+- 建模部署脚本语法、两份 Compose YAML 解析及单一建模凭据映射检查通过。仅配置原有 `ONTO_HUB_SERVICE_TOKEN` / `HUB_SERVICE_TOKEN` 的回环测试同时完成资料同步、包发布和下载；评测/消费不能调用建模资料清理接口，重复服务凭据被拒绝。
 
-后端 HTTP 测试在无外网、无业务卷的临时 Python 3.11 应用镜像内运行，只读挂载当前源码与资产。宿主隔离 Python 环境的最小 FastAPI TestClient 也出现等待，因此没有用该宿主运行结果替代容器验证。
+后端针对性回归命令（在安装依赖的 Python 环境执行）：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=modeling/onto-modeling/backend:knowledge-hub/backend python -m pytest knowledge-hub/backend/tests modeling/onto-modeling/backend/tests/test_hub_packages.py modeling/onto-modeling/backend/tests/test_knowledge_hub.py modeling/onto-modeling/backend/tests/test_hub_transport.py modeling/onto-modeling/backend/tests/test_publish_binding_gate.py modeling/onto-modeling/backend/tests/test_modeling_eval.py modeling/onto-modeling/backend/tests/test_solver_package_roundtrip.py -q -p no:cacheprovider
+```
+
+本次使用临时 Python 3.12 环境运行；HTTP 测试使用本机回环地址和合成身份服务。测试输出有两项提示：TestClient 的 httpx 使用方式弃用提示，以及刻意构造重复 ZIP 成员时的警告。
+
+补充验证：0.2 operation-centric 求解包可归档，mapping 派生不能修改求解 sidecar 或 capabilities；正式发布执行求解门禁，评测校验后的对象变化会在预留 Hub 版本前拒绝。
 
 ## 验证边界
 
-未构建完整交付镜像、运行生产部署或访问真实数据库、工作区、账号及模型服务。评测和消费验证使用既有合成测试与协议替身，不代表真实模型问答质量、实际部署网络或容量压测已验收。
+消费服务未修改；外部导入和评测发版仅验证 Hub 服务端能力，使用合成调用方，不代表消费适配或 eval1 已实施。现有建模评测只替换知识包交接，未扩展独立评测服务。
 
-部署前需要注入专用服务凭据、确认授权回调可达、初始化独立 Hub 卷，并按 README 执行备份及恢复演练。新发布没有本地成功旁路；旧项目在下一次真实发布时接入，不伪造历史发布包。
+未访问真实账号、业务数据或模型服务，未验证实际部署网络、容量及真实评测质量。部署前需注入统一身份服务配置和各调用服务独立凭据，确认鉴权可达，并按 README 执行备份恢复演练。没有 Hub1 存量数据，不提供迁移流程。

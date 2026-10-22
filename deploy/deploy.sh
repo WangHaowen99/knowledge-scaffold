@@ -195,6 +195,10 @@ write_onto_modeling_stack_override() { # <onto-modeling 目录> <mw-modeling 地
 services:
   auth-server:
     profiles: ["disabled"]
+  knowledge-hub:
+    networks:
+      - default
+      - consumer-net
   onto-modeling:
     depends_on: !override []
     environment:

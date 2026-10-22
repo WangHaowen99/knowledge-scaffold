@@ -102,16 +102,24 @@ def call(method, path, token='', body=None, upload=None, headers=None, download=
         elif payload:
             conn.send(payload)
         response = conn.getresponse()
-        if response.status >= 400:
+        if response.status >= 300:
             response.read(65536)
             raise WorkspaceError(f'知识包 Hub 请求失败（{response.status}）', response.status, 'hub_error')
         if download is not None:
             target = Path(download)
             target.parent.mkdir(parents=True, exist_ok=True)
             with target.open('wb') as f:
+                total = 0
                 while chunk := response.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > int(os.environ.get('ONTO_HUB_MAX_DOWNLOAD_BYTES', 256 * 1024**2)):
+                        target.unlink(missing_ok=True)
+                        raise WorkspaceError('Hub 下载超过限制', 413)
                     f.write(chunk)
             expected = response.getheader('X-Package-Digest') or response.getheader('X-Resource-Digest')
+            if not expected:
+                target.unlink(missing_ok=True)
+                raise WorkspaceError('Hub 下载缺少完整性摘要', 502)
             if expected and file_digest(target) != expected:
                 target.unlink(missing_ok=True)
                 raise WorkspaceError('Hub 下载完整性校验失败', 502)
@@ -153,97 +161,6 @@ def source_state(manager, pid, allow_unbound, binding=None, graph=False):
              'allow_unbound': allow_unbound, 'graph': graph}
     digest = hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     return value, digest
-
-
-def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
-            kind='release', binding=None, graph=False, relation_report=None):
-    identifier(pid)
-    identifier(request_id)
-    with lock(pid):
-        task_dir = state_dir() / pid / request_id
-        task_file = task_dir / 'task.json'
-        task = load(task_file)
-        if task and (task['subject'] != subject or task['allow_unbound'] != allow_unbound or task['kind'] != kind):
-            raise WorkspaceError('发布请求与已有任务冲突', 409)
-        if not task:
-            if task_dir.exists():
-                shutil.rmtree(task_dir)
-            task_dir.mkdir(parents=True, exist_ok=True)
-            value, source_digest = source_state(manager, pid, allow_unbound, binding, graph)
-            snapshot = WorkspaceManager(task_dir / 'input', manager.assets_dir)
-            root = snapshot.workspaces_dir / pid
-            root.mkdir(parents=True, exist_ok=True)
-            meta = manager.get_project(pid)
-            save(root / META_FILE, {'id': pid, 'name': meta['name']})
-            for rel in value['files']:
-                dest = root / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(manager.project_root(pid) / rel, dest)
-                if file_digest(dest) != value['files'][rel]:
-                    raise WorkspaceError('建模内容发生变化，请重试发布', 409)
-            _, after = source_state(manager, pid, allow_unbound, binding, graph)
-            if source_digest != after:
-                shutil.rmtree(task_dir)
-                raise WorkspaceError('建模内容发生变化，请重试发布', 409)
-            import subprocess
-            commit = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=manager.project_root(pid),
-                                    capture_output=True, text=True).stdout.strip()
-            task = {'subject': subject, 'allow_unbound': allow_unbound, 'kind': kind,
-                    'source_digest': source_digest, 'source_commit': commit, 'binding': value['binding'],
-                    'graph': graph, 'files': value['files']}
-            save(task_file, task)
-        options = {'allow_unbound': allow_unbound,
-                   'degraded': any(i['kind'] != 'declared_unverifiable' for i in task['binding']['issues']),
-                   'unbound_objects': sorted({i['object'] for i in task['binding']['issues']
-                                             if i['kind'] != 'declared_unverifiable'})[:50]}
-        base = f'/api/projects/{pid}/release-requests'
-        receipt = call('POST', base, token, body={'request_id': request_id,
-                       'source_digest': task['source_digest'], 'source_commit': task['source_commit'],
-                       'publish_options': options, 'kind': kind})
-        zip_path = task_dir / 'package.zip'
-        if receipt['status'] != 'committed':
-            if not zip_path.exists():
-                snapshot = WorkspaceManager(task_dir / 'input', manager.assets_dir)
-                for rel, expected in task['files'].items():
-                    source = snapshot.project_root(pid) / rel
-                    if not source.is_file() or file_digest(source) != expected:
-                        raise WorkspaceError('发布快照校验失败，请检查存储', 503)
-                temp = task_dir / 'package.tmp'
-                snapshot.export_package_zip(pid, temp, binding=task['binding'], graph=task['graph'],
-                                            relation_report=relation_report, allow_unbound=allow_unbound,
-                                            version=receipt['version'])
-                with temp.open('rb') as f:
-                    os.fsync(f.fileno())
-                os.replace(temp, zip_path)
-            call('PUT', f'{base}/{request_id}/content', token, upload=zip_path,
-                 headers={'X-Package-Digest': file_digest(zip_path)})
-            receipt = call('POST', f'{base}/{request_id}/commit', token)
-        if kind == 'release':
-            try:
-                record_release(manager, pid, receipt)
-            except (WorkspaceError, OSError):
-                receipt = {**receipt, 'local_record_pending': True}
-        save(task_dir / 'receipt.json', receipt)
-        shutil.rmtree(task_dir / 'input', ignore_errors=True)
-        zip_path.unlink(missing_ok=True)
-        return receipt
-
-
-def record_release(manager, pid, receipt):
-    from datetime import datetime
-    previous = manager.get_project(pid).get('last_package_publish') or {}
-    options = receipt['publish_options']
-    if int(previous.get('sequence', 0)) <= receipt['sequence']:
-        manager._update_meta(pid, last_package_publish={
-            'at': int(datetime.fromisoformat(receipt['created_at']).timestamp()),
-            'by': receipt['actor_subject'], 'degraded': options['degraded'],
-            'unbound_count': len(options['unbound_objects']), 'unbound_objects': options['unbound_objects'],
-            'release_id': receipt['release_id'], 'version': receipt['version'],
-            'sequence': receipt['sequence'], 'request_id': receipt['request_id']})
-
-
-def download(pid, rid, token, dest):
-    return call('GET', f'/api/projects/{identifier(pid)}/releases/{identifier(rid)}/package', token, download=dest)
 
 
 def resources_archive(manager, pid, dest):
@@ -316,23 +233,8 @@ def queue_delete(pid):
 
 
 def retry_tasks(manager):
-    import time
-    ttl = int(os.environ.get('ONTO_HUB_PENDING_TTL_SECONDS', 7 * 86400))
-    for task_file in state_dir().glob('*/*/task.json'):
-        if time.time() - task_file.stat().st_mtime > ttl:
-            with lock(task_file.parent.parent.name):
-                shutil.rmtree(task_file.parent / 'input', ignore_errors=True)
-                (task_file.parent / 'package.zip').unlink(missing_ok=True)
-    for receipt_file in state_dir().glob('*/*/receipt.json'):
-        receipt = load(receipt_file)
-        if receipt.get('local_record_pending') and receipt.get('kind') == 'release':
-            try:
-                with lock(receipt['project_id']):
-                    record_release(manager, receipt['project_id'], receipt)
-                    receipt.pop('local_record_pending', None)
-                    save(receipt_file, receipt)
-            except (WorkspaceError, OSError):
-                pass
+    from . import hub_packages
+    hub_packages.maintain(manager)
     if not configured():
         return
     for path in (state_dir() / 'cleanup').glob('*.json'):

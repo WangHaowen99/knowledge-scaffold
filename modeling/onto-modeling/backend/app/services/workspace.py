@@ -919,6 +919,7 @@ class WorkspaceManager:
         allow_unbound: bool = False,
         object_texts: dict[str, str] | None = None,
         version: str | None = None,
+        manifest_id: str | None = None,
     ) -> Path:
         """发布为知识包（consumer 可导入的 ontology-package v0.1）。
 
@@ -941,7 +942,9 @@ class WorkspaceManager:
         root = self.project_root(project_id)
         meta = self.get_project(project_id)
         version = version or f"0.1.{len(self.versions(project_id))}"
-        pkg = meta["id"]
+        pkg = manifest_id or meta["id"]
+        if not re.fullmatch(r'[a-zA-Z0-9_][a-zA-Z0-9_-]{0,127}', pkg):
+            raise WorkspaceError('知识包标识无效')
 
         report_names: dict[tuple[str, str], str] = {}
 

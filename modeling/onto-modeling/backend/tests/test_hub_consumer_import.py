@@ -6,6 +6,8 @@ import pytest
 
 consumer_import = pytest.importorskip('ontology.package_import')
 from hub.storage import Store, digest
+from hub.package_store import PackageStore
+from hub.user_auth import Identity
 from app.services.workspace import WorkspaceManager
 
 
@@ -18,13 +20,15 @@ def test_hub_archive_is_accepted_by_consumer(tmp_path):
         '# 对象描述\n合成示例。\n\n# 数据来源\n无\n\n# 对象属性清单\n'
         '| 中文名称 | 英文名称 | 描述 | 主键 | 类型 |\n| --- | --- | --- | --- | --- |\n'
         '| 标识 | item_id | 合成字段 | 是 | 字符串 |\n', encoding='utf-8')
-    store = Store(tmp_path / 'hub')
-    receipt = store.reserve(pid, 'request-a', {'source_digest': 'a' * 64}, 'operator_a')
+    store = PackageStore(Store(tmp_path / 'hub'))
+    actor = Identity('synthetic-owner', 'modeling')
+    receipt, _ = store.reserve({'request_id': 'request-a', 'input_digest': 'a' * 64,
+        'manifest_id': pid, 'change_type': 'modeling_content'}, actor)
     package = manager.export_package_zip(pid, tmp_path / 'package.zip', version=receipt['version'])
     with package.open('rb') as content:
-        store.upload(pid, 'request-a', 'operator_a', content, digest(package))
-    committed = store.commit(pid, 'request-a', 'operator_a')
-    _, archived = store.release(pid, committed['release_id'])
+        store.upload('request-a', actor, content, digest(package))
+    committed = store.commit('request-a', actor)
+    _, archived = store.release(committed['hub_package_id'], committed['release_id'], actor.subject)
     assert archived.read_bytes() == package.read_bytes()
     extracted = tmp_path / 'extracted'
     with zipfile.ZipFile(archived) as archive:

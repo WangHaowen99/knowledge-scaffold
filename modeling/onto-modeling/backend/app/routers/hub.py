@@ -15,7 +15,7 @@ router = APIRouter(prefix='/api/internal/hub', tags=['hub'])
 
 class AuthorizeBody(BaseModel):
     project_id: str
-    operation: Literal['read', 'publish', 'evaluation', 'sync_resources', 'cleanup']
+    operation: Literal['read', 'sync_resources', 'cleanup']
 
 
 @router.post('/authorize')
@@ -47,6 +47,6 @@ def authorize(body: AuthorizeBody, request: Request):
         request.state.user = claims
     elif os.environ.get('ONTO_HUB_DEV_ALLOW_UNAUTH') != '1':
         raise WorkspaceError('Hub 本地开发鉴权未显式启用', 503)
-    projects.ensure_access(body.project_id, request, write=body.operation == 'evaluation')
+    projects.ensure_access(body.project_id, request)
     return {'project_id': body.project_id, 'subject': projects._request_user(request) or 'local-dev',
             'allowed': True, 'project_state': 'active', 'development': not auth.ENABLED}

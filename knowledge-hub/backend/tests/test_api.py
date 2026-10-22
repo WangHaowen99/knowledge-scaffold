@@ -37,35 +37,28 @@ class ApiTests(unittest.TestCase):
         return io.BytesIO(json.dumps({'project_id': 'project-alpha', 'allowed': allowed,
                                      'subject': subject, **extra}).encode())
 
-    def test_service_credential_never_replaces_user_authorization(self):
-        with patch('hub.main.urllib.request.urlopen', side_effect=urllib.error.HTTPError(
-                'http://service.example.net', 403, 'forbidden', {}, None)):
-            response = self.client.post('/api/projects/project-alpha/release-requests',
-                headers=self.headers, json={'request_id': 'request-a', 'source_digest': 'a' * 64})
-        self.assertEqual(response.status_code, 403)
-
-    def test_browser_cannot_upload_even_with_project_permission(self):
-        with patch('hub.main.urllib.request.urlopen', return_value=self.auth_response()):
-            response = self.client.post('/api/projects/project-alpha/release-requests',
-                json={'request_id': 'request-a', 'source_digest': 'a' * 64})
-        self.assertEqual(response.status_code, 401)
+    def test_removed_project_package_routes_are_not_available(self):
+        for method, path in [('post', '/api/projects/project-alpha/release-requests'),
+                             ('get', '/api/projects/project-alpha/releases'),
+                             ('get', '/api/projects/project-alpha/releases/release_demo/package')]:
+            self.assertEqual(getattr(self.client, method)(path).status_code, 404)
 
     def test_permission_revocation_and_outage_fail_closed(self):
         with patch('hub.main.urllib.request.urlopen', return_value=self.auth_response()):
-            self.assertEqual(self.client.get('/api/projects/project-alpha/releases').status_code, 200)
+            self.assertEqual(self.client.get('/api/projects/project-alpha/resources/current').status_code, 200)
         with patch('hub.main.urllib.request.urlopen', return_value=self.auth_response(False)):
-            self.assertEqual(self.client.get('/api/projects/project-alpha/releases').status_code, 403)
+            self.assertEqual(self.client.get('/api/projects/project-alpha/resources/current').status_code, 403)
         with patch('hub.main.urllib.request.urlopen', side_effect=TimeoutError):
-            self.assertEqual(self.client.get('/api/projects/project-alpha/releases').status_code, 503)
+            self.assertEqual(self.client.get('/api/projects/project-alpha/resources/current').status_code, 503)
 
     def test_missing_callback_is_never_anonymous_even_in_development(self):
         with patch.dict(os.environ, {'ONTO_AUTHZ_URL': '', 'HUB_DEV_ALLOW_UNAUTH': '1'}):
-            self.assertEqual(self.client.get('/api/projects/project-alpha/releases').status_code, 503)
+            self.assertEqual(self.client.get('/api/projects/project-alpha/resources/current').status_code, 503)
 
     def test_development_modes_must_match(self):
         with patch.dict(os.environ, {'HUB_DEV_ALLOW_UNAUTH': '0'}), patch(
                 'hub.main.urllib.request.urlopen', return_value=self.auth_response(development=True)):
-            self.assertEqual(self.client.get('/api/projects/project-alpha/releases').status_code, 503)
+            self.assertEqual(self.client.get('/api/projects/project-alpha/resources/current').status_code, 503)
 
     def test_resources_and_cleanup_require_project_state_callback(self):
         with patch('hub.main.urllib.request.urlopen', return_value=self.auth_response(False)):
@@ -74,7 +67,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.delete('/api/internal/projects/project-alpha/artifacts').status_code, 401)
 
     def test_pagination_validation(self):
-        self.assertEqual(self.client.get('/api/projects/project-alpha/releases?limit=101').status_code, 422)
+        self.assertEqual(self.client.get('/api/projects/project-alpha/resources/current?limit=101').status_code, 422)
 
 
 if __name__ == '__main__':

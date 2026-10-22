@@ -129,6 +129,23 @@ function filenameOf(response, fallback) {
   return plain ? plain[1] : fallback;
 }
 
+async function stableHubRequest(path, body) {
+  const key = `onto-hub:${authStore.username}:${path}:${JSON.stringify(body)}`;
+  let requestId = localStorage.getItem(key);
+  if (!requestId) {
+    requestId = crypto.randomUUID();
+    localStorage.setItem(key, requestId);
+  }
+  try {
+    const result = await request(path, { method: 'POST', body: JSON.stringify({ ...body, request_id: requestId }) });
+    localStorage.removeItem(key);
+    return result;
+  } catch (error) {
+    if (error.status === 410) localStorage.removeItem(key);
+    throw error;
+  }
+}
+
 export const api = {
   health: () => request('/api/health'),
   authStatus: () => request('/api/auth/status'),
@@ -240,7 +257,7 @@ export const api = {
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   },
-  downloadPackage: async (pid, { allowUnbound = false } = {}) => {
+  publishPackage: async (pid, { allowUnbound = false } = {}) => {
     const key = `onto-publish:${authStore.username || 'local-dev'}:${pid}:${allowUnbound}`;
     let requestId = localStorage.getItem(key);
     if (!requestId) {
@@ -257,14 +274,13 @@ export const api = {
       if (error.code === 'binding_problems' || error.status === 410) localStorage.removeItem(key);
       throw error;
     }
-    try {
-      await api.downloadRelease(pid, receipt.release_id);
-    } catch (error) {
-      throw new Error(`知识包已发布，下载失败；可在「已发布版本」重试下载。${error.message}`);
-    }
     localStorage.removeItem(key);
     return receipt;
   },
+  hubPackages: (offset = 0) => request(`/api/hub/packages?offset=${offset}&limit=20`),
+  hubPackageVersions: (packageId, offset = 0) =>
+    request(`/api/hub/packages/${encodeURIComponent(packageId)}/releases?offset=${offset}&limit=20`),
+  importHubPackage: (body) => stableHubRequest('/api/hub/imports', body),
   importProject: (name, file, dryRun = false) => {
     const form = new FormData();
     form.append('name', name);

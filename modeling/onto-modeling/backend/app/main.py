@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config
-from .routers import admin, auth_routes, projects, sessions, settings, onto_mcp, hub
+from .routers import admin, auth_routes, projects, sessions, settings, onto_mcp, hub, hub_packages
 from .services import auth
 from .services.agent_sessions import SDK_AVAILABLE, SessionError
 from .services.auth import AuthError
@@ -58,6 +58,7 @@ app.include_router(sessions.router)
 app.include_router(settings.router)
 app.include_router(admin.router)
 app.include_router(hub.router)
+app.include_router(hub_packages.router)
 
 # 白名单外的 /api 路由要求有效 access token；token 可来自
 # Authorization 头或 ?token=（EventSource / 导出下载链接无法带头）

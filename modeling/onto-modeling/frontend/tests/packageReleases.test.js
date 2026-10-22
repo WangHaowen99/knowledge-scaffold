@@ -20,16 +20,16 @@ const response = (body, status = 200) => ({
   headers: new Headers(), blob: async () => new Blob(['synthetic package']),
 });
 
-test('publication saves a release before downloading its fixed ID', async () => {
+test('publication saves a release without downloading', async () => {
   const calls = [];
   globalThis.fetch = async (path, options) => {
     calls.push({ path, options });
     return response({ release_id: 'release-a', version: '0.1.1' });
   };
-  await api.downloadPackage('project-alpha');
+  await api.publishPackage('project-alpha');
   assert.equal(calls[0].options.method, 'POST');
   assert.ok(JSON.parse(calls[0].options.body).request_id);
-  assert.equal(calls[1].path, '/api/projects/project-alpha/package/releases/release-a/download');
+  assert.equal(calls.length, 1);
   assert.equal(values.size, 0);
 });
 
@@ -39,17 +39,9 @@ test('a lost publish response retains the same request across retries', async ()
     ids.push(JSON.parse(options.body).request_id);
     throw new Error('synthetic network failure');
   };
-  await assert.rejects(api.downloadPackage('project-alpha'));
-  await assert.rejects(api.downloadPackage('project-alpha'));
+  await assert.rejects(api.publishPackage('project-alpha'));
+  await assert.rejects(api.publishPackage('project-alpha'));
   assert.equal(ids[0], ids[1]);
-});
-
-test('download failure reports successful publication and keeps retry identity', async () => {
-  globalThis.fetch = async (path) => path.endsWith('/download')
-    ? response({ error: 'synthetic download failure' }, 503)
-    : response({ release_id: 'release-a' });
-  await assert.rejects(api.downloadPackage('project-alpha'), /知识包已发布，下载失败/);
-  assert.equal(values.size, 1);
 });
 
 test('history download never calls the publication endpoint', async () => {

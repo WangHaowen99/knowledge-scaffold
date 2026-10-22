@@ -16,25 +16,30 @@ def evaluation_hub_archive(request, tmp_path, monkeypatch):
     if request.module.__name__.split('.')[-1] not in ('test_modeling_eval', 'test_publish_binding_gate'):
         return
     from hub.storage import Store
-    from app.services import knowledge_hub
-    store = Store(tmp_path / 'synthetic-hub')
+    from hub.package_store import PackageStore
+    from hub.user_auth import Identity
+    from app.services import hub_packages, auth
+    store = PackageStore(Store(tmp_path / 'synthetic-hub'))
+    monkeypatch.setattr(auth, 'ENABLED', True)
+    monkeypatch.setattr(auth, 'verify_access_token', lambda token: {'sub': 'operator_a', 'iss': 'https://example.com'})
 
     def call(method, path, token='', body=None, upload=None, headers=None, download=None):
         import shutil
+        actor = Identity('synthetic-owner', 'modeling')
         parts = path.strip('/').split('/')
-        pid = parts[2]
-        with store.lock():
-            if parts[-1] == 'release-requests':
-                return store.reserve(pid, body['request_id'], body, 'operator_a')
+        with store.io.lock():
+            if path == '/api/package-publish-requests':
+                return store.reserve(body, actor)[0]
             if parts[-1] == 'content':
                 with Path(upload).open('rb') as f:
-                    return store.upload(pid, parts[-2], 'operator_a', f, headers['X-Package-Digest'])
+                    return store.upload(parts[-2], actor, f, headers['X-Package-Digest'])
             if parts[-1] == 'commit':
-                return store.commit(pid, parts[-2], 'operator_a')
-            if parts[-1] == 'package':
-                _, package = store.release(pid, parts[-2])
+                return store.commit(parts[-2], actor)
+            receipt, package = store.release(parts[2], parts[4], actor.subject)
+            if download:
                 shutil.copyfile(package, download)
                 return Path(download)
+            return receipt
         raise AssertionError(f'Unexpected synthetic Hub operation: {method}')
 
-    monkeypatch.setattr(knowledge_hub, 'call', call)
+    monkeypatch.setattr(hub_packages, 'call', call)

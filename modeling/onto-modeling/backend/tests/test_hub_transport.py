@@ -1,4 +1,4 @@
-"""Loopback HTTP integration with real Hub transport and a synthetic authority."""
+"""Loopback HTTP integration with real Hub transport and a synthetic account service."""
 import importlib
 import json
 import os
@@ -12,7 +12,7 @@ from pathlib import Path
 import uvicorn
 
 from app import config
-from app.services import knowledge_hub
+from app.services import knowledge_hub, hub_packages
 from app.services.workspace import WorkspaceManager, WorkspaceError
 
 
@@ -29,18 +29,15 @@ def test_publish_list_download_and_revocation_over_http(tmp_path, monkeypatch):
     class Authority(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
-        def do_POST(self):
-            payload = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-            valid = (allowed and payload['project_id'] == pid and
-                     self.headers.get('X-Hub-Service-Token') == secret)
-            self.send_response(200 if valid else 403)
+        def do_GET(self):
+            self.send_response(200 if allowed else 401)
             self.end_headers()
-            self.wfile.write(json.dumps({'project_id': pid, 'subject': 'operator_a', 'allowed': valid}).encode())
+            self.wfile.write(json.dumps({'sub': 'operator_a'}).encode())
 
     authority = ThreadingHTTPServer(('127.0.0.1', 0), Authority)
     authority_thread = threading.Thread(target=authority.serve_forever, daemon=True)
     authority_thread.start()
-    monkeypatch.setenv('ONTO_AUTHZ_URL', f'http://127.0.0.1:{authority.server_port}/authorize')
+    monkeypatch.setenv('HUB_AUTH_URL', f'http://127.0.0.1:{authority.server_port}')
     main = importlib.import_module('hub.main')
     from hub.storage import Store
     monkeypatch.setattr(main, 'store', Store(tmp_path / 'hub'))
@@ -57,20 +54,28 @@ def test_publish_list_download_and_revocation_over_http(tmp_path, monkeypatch):
                 break
             time.sleep(.02)
         assert server.started
-        first = knowledge_hub.publish(manager, pid, 'request-a', 'synthetic', 'operator_a')
-        second = knowledge_hub.publish(manager, pid, 'request-a', 'synthetic', 'operator_a')
+        # The deployment's single modeling credential also authenticates resource
+        # synchronization; project authorization remains a separate check.
+        resource_checks = []
+        def authorize_resource(request, project_id, operation):
+            resource_checks.append((project_id, operation))
+            return 'operator_a'
+        monkeypatch.setattr(main, 'authorize', authorize_resource)
+        knowledge_hub.sync_resources(manager, pid)
+        assert (pid, 'sync_resources') in resource_checks
+        first = hub_packages.publish(manager, pid, 'request-a', 'synthetic', 'operator_a')
+        second = hub_packages.publish(manager, pid, 'request-a', 'synthetic', 'operator_a')
         assert first == second
-        listing = knowledge_hub.call('GET', f'/api/projects/{pid}/releases', 'synthetic')
+        listing = hub_packages.call('GET', f"/api/packages/{first['hub_package_id']}/releases", 'synthetic')
         assert listing['total'] == 1
         destination = tmp_path / 'download.zip'
-        knowledge_hub.download(pid, first['release_id'], 'synthetic', destination)
+        hub_packages.download(first['hub_package_id'], first['release_id'], 'synthetic', destination)
         assert knowledge_hub.file_digest(destination) == first['package_digest']
-        knowledge_hub.sync_resources(manager, pid)
         allowed = False
         try:
-            knowledge_hub.download(pid, first['release_id'], 'synthetic', destination)
+            hub_packages.download(first['hub_package_id'], first['release_id'], 'synthetic', destination)
         except WorkspaceError as exc:
-            assert exc.status == 403
+            assert exc.status == 401
         else:
             raise AssertionError('Revoked access was accepted')
     finally:

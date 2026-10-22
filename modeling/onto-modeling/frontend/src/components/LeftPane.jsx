@@ -1,3 +1,4 @@
+import { missingPublishStages } from '../lib/packagePublish';
 import {
   DeleteOutlined,
   InboxOutlined,
@@ -659,25 +660,33 @@ export default function LeftPane({
             }))}
           />
           <Divider style={{ margin: '8px 0' }} />
-          {statuses.every((st, i) => st === 'finish' || STAGES[i].optional) && (
-            <Button
-              type="primary"
-              block
-              className="export-package-btn"
-              style={{ marginBottom: 8 }}
-              loading={packagePublish.publishing}
-              onClick={() => packagePublish.publish(project.id)}
-            >
-              导出知识包
-              {evalInfo?.state?.summary != null && (
-                <span className="export-eval-score">评测 {evalInfo.state.summary.score}</span>
-              )}
-            </Button>
-          )}
+          <Button
+            type={missingPublishStages(STAGES, statuses).length ? 'default' : 'primary'}
+            block
+            className="export-package-btn"
+            aria-disabled={missingPublishStages(STAGES, statuses).length > 0}
+            style={{ marginBottom: 8, ...(missingPublishStages(STAGES, statuses).length ? {
+              color: '#999', background: '#f5f5f5', borderColor: '#d9d9d9', cursor: 'not-allowed',
+            } : {}) }}
+            loading={packagePublish.publishing}
+            onClick={() => {
+              const missing = missingPublishStages(STAGES, statuses);
+              if (missing.length) {
+                message.info(`建模未完成，请先完成：${missing.map((stage) => stage.title).join('、')}`);
+                return;
+              }
+              packagePublish.publish(project.id);
+            }}
+          >
+            发布知识包
+            {evalInfo?.state?.summary != null && (
+              <span className="export-eval-score">评测 {evalInfo.state.summary.score}</span>
+            )}
+          </Button>
           <Button block style={{ marginBottom: 8 }} onClick={() => packagePublish.showVersions(project.id)}>
             已发布版本
           </Button>
-          {statuses.every((st, i) => st === 'finish' || STAGES[i].optional) &&
+          {missingPublishStages(STAGES, statuses).length === 0 &&
             evalInfo?.enabled &&
             evalInfo?.state?.status !== 'done' && (
               <Alert

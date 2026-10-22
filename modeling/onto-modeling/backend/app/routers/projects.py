@@ -427,19 +427,11 @@ def export_project(
     ensure_access(project_id, request)
     if scope not in ("ontology", "workspace", "package"):
         raise WorkspaceError("scope 必须是 ontology、workspace 或 package")
+    if scope == "package":
+        raise WorkspaceError('请先发布，再从已发布版本列表下载指定版本', 400)
     meta = workspaces.get_project(project_id)
     dest = Path(tempfile.mkdtemp()) / f"{meta['name']}-{scope}.zip"
-    if scope == "package":
-        # Compatibility export maps the stable input to a durable request ID.
-        import hashlib
-        _, source_digest = knowledge_hub.source_state(workspaces, project_id, allow_unbound)
-        subject = _request_user(request) or 'local-dev'
-        request_id = hashlib.sha256(f'{subject}:{source_digest}'.encode()).hexdigest()
-        receipt = knowledge_hub.publish(workspaces, project_id, request_id,
-                                        knowledge_hub.token_of(request), subject, allow_unbound)
-        knowledge_hub.download(project_id, receipt['release_id'], knowledge_hub.token_of(request), dest)
-    else:
-        workspaces.export_zip(project_id, scope, dest)
+    workspaces.export_zip(project_id, scope, dest)
     import shutil
     from starlette.background import BackgroundTask
     return FileResponse(dest, filename=dest.name, media_type="application/zip",
@@ -447,41 +439,41 @@ def export_project(
 
 
 class ReleaseBody(BaseModel):
+    model_config = {"extra": "forbid"}
     request_id: str = Field(min_length=1, max_length=128)
     allow_unbound: bool = False
 
 
 @router.post("/{project_id}/package/releases")
 def publish_release(project_id: str, body: ReleaseBody, request: Request):
+    from .hub_packages import identity
+    from ..services import hub_packages
+    token, subject, _ = identity(request)
     ensure_access(project_id, request)
-    return knowledge_hub.publish(workspaces, project_id, body.request_id,
-                                 knowledge_hub.token_of(request), _request_user(request) or 'local-dev',
-                                 body.allow_unbound)
+    return hub_packages.publish(workspaces, project_id, body.request_id, token, subject, body.allow_unbound)
 
 
 @router.get("/{project_id}/package/releases")
 def package_releases(project_id: str, request: Request, offset: int = 0, limit: int = 20):
+    from .hub_packages import identity
+    from ..services import hub_packages
+    token, subject, _ = identity(request)
     ensure_access(project_id, request)
     if offset < 0 or not 1 <= limit <= 100:
         raise WorkspaceError('分页参数无效')
-    return knowledge_hub.call('GET', f'/api/projects/{project_id}/releases?offset={offset}&limit={limit}',
-                              knowledge_hub.token_of(request))
+    return hub_packages.releases(project_id, subject, token, offset, limit)
 
 
 @router.get("/{project_id}/package/releases/{release_id}/download")
 def download_release(project_id: str, release_id: str, request: Request):
-    import shutil
-    from starlette.background import BackgroundTask
+    from .hub_packages import identity, download
+    from ..services import hub_packages
+    _, subject, _ = identity(request)
     ensure_access(project_id, request)
-    directory = Path(tempfile.mkdtemp(prefix='onto-hub-download-'))
-    dest = directory / 'package.zip'
-    try:
-        knowledge_hub.download(project_id, release_id, knowledge_hub.token_of(request), dest)
-    except Exception:
-        shutil.rmtree(directory)
-        raise
-    return FileResponse(dest, filename=f'{project_id}-{release_id}.zip', media_type='application/zip',
-                        background=BackgroundTask(shutil.rmtree, directory))
+    linked = hub_packages.association(project_id, subject)
+    if not linked:
+        raise WorkspaceError('尚未关联个人 Hub 包', 404)
+    return download(linked['hub_package_id'], release_id, request)
 
 
 @router.get("/{project_id}/package/resources/status")

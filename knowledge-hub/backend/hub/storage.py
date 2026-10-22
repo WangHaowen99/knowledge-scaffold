@@ -1,6 +1,5 @@
 """Single-volume archive with process locks, durable intents and Git recovery."""
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 import fcntl
 import hashlib
@@ -11,11 +10,8 @@ import shutil
 import stat
 import subprocess
 import tempfile
-import uuid
 import unicodedata
 import zipfile
-
-import yaml
 
 
 class HubError(Exception):
@@ -109,20 +105,6 @@ class Store:
         if not root.exists():
             return
         self.initialize(root)
-        # Receipt+ZIP directories are durable commit intents. Publish only after Git succeeds.
-        for kind in ('releases', 'snapshots'):
-            for folder in sorted((root / kind).glob('*')):
-                receipt = read_json(folder / 'receipt.json')
-                if not receipt or not (folder / 'package.zip').is_file():
-                    raise HubError('Incomplete archive intent', 503)
-                if digest(folder / 'package.zip') != receipt['package_digest']:
-                    raise HubError('Archive integrity failure', 503)
-        self.git(root, 'add', '--', '.gitignore')
-        for kind in ('releases', 'snapshots'):
-            if (root / kind).exists():
-                self.git(root, 'add', '--', kind)
-        if self.git(root, 'diff', '--cached', '--name-only'):
-            self.git(root, 'commit', '-q', '-m', 'Archive knowledge package')
         current, old = root / 'resources-current', root / '.resources-old'
         if not current.exists() and old.exists():
             os.replace(old, current)
@@ -130,76 +112,6 @@ class Store:
             shutil.rmtree(old)
         for stale in root.glob('.resources-upload-*'):
             shutil.rmtree(stale)
-        for path in (root / 'pending').glob('*/receipt.json'):
-            receipt = read_json(path)
-            age = (datetime.now(timezone.utc) - datetime.fromisoformat(receipt['created_at'])).total_seconds()
-            if age > self.pending_ttl and receipt.get('status') != 'expired':
-                receipt['status'] = 'expired'
-                write_json(path, receipt)
-                (path.parent / 'package.zip').unlink(missing_ok=True)
-                (path.parent / 'upload.tmp').unlink(missing_ok=True)
-
-
-    def receipts(self, root, kind='release'):
-        directory = 'releases' if kind == 'release' else 'snapshots'
-        return [read_json(p) for p in (root / directory).glob('*/receipt.json')]
-
-    def reserve(self, pid, request_id, payload, subject):
-        identifier(request_id)
-        root = self.project(pid)
-        self.initialize(root)
-        self.recover(root)
-        identity = {'source_digest': payload['source_digest'], 'source_commit': payload.get('source_commit', ''),
-                    'publish_options': payload.get('publish_options', {}), 'kind': payload.get('kind', 'release'),
-                    'actor_subject': subject}
-        if identity['kind'] not in ('release', 'evaluation_snapshot'):
-            raise HubError('Invalid package kind')
-        if not re.fullmatch('[a-f0-9]{64}', identity['source_digest']):
-            raise HubError('Invalid source digest')
-        for receipt in self.receipts(root) + self.receipts(root, 'evaluation_snapshot'):
-            if receipt['request_id'] == request_id:
-                if any(receipt[k] != v for k, v in identity.items()):
-                    raise HubError('Request content conflict', 409)
-                return receipt
-        pending = root / 'pending' / request_id
-        existing = read_json(pending / 'receipt.json')
-        if existing:
-            if existing.get('status') == 'expired':
-                raise HubError('Publication request expired', 410)
-            if any(existing[k] != v for k, v in identity.items()):
-                raise HubError('Request content conflict', 409)
-            existing['status'] = 'pending'
-            return existing
-        meta = read_json(root / 'metadata.json', {'sequence': 0})
-        # Include durable intents if metadata was restored independently.
-        numbers = [r['sequence'] for r in self.receipts(root) + self.receipts(root, 'evaluation_snapshot')]
-        numbers += [read_json(p)['sequence'] for p in (root / 'pending').glob('*/receipt.json')]
-        sequence = max([meta['sequence'], *numbers]) + 1
-        write_json(root / 'metadata.json', {'sequence': sequence})
-        receipt = dict(identity, project_id=pid, package_id=pid, request_id=request_id,
-                       release_id=uuid.uuid4().hex, sequence=sequence, version=f'0.1.{sequence}',
-                       status='pending', created_at=datetime.now(timezone.utc).isoformat())
-        write_json(pending / 'receipt.json', receipt)
-        return receipt
-
-    def request(self, pid, request_id, subject):
-        root = self.project(pid)
-        self.recover(root)
-        identifier(request_id)
-        candidates = self.receipts(root) + self.receipts(root, 'evaluation_snapshot')
-        pending = read_json(root / 'pending' / request_id / 'receipt.json')
-        if pending:
-            if pending.get('status') == 'expired':
-                raise HubError('Publication request expired', 410)
-            pending['status'] = 'pending'
-            candidates.append(pending)
-        for receipt in candidates:
-            if receipt['request_id'] == request_id:
-                if receipt['actor_subject'] != subject:
-                    raise HubError('Request belongs to another subject', 403)
-                return receipt
-        raise HubError('Request not found', 404)
-
     def inspect_zip(self, path):
         try:
             with zipfile.ZipFile(path) as z:
@@ -246,84 +158,6 @@ class Store:
                 out.write(chunk)
             out.flush()
             os.fsync(out.fileno())
-
-    def upload(self, pid, request_id, subject, stream, expected_digest):
-        receipt = self.request(pid, request_id, subject)
-        root = self.project(pid)
-        pending = root / 'pending' / identifier(request_id)
-        pending.mkdir(parents=True, exist_ok=True)
-        path = pending / 'upload.tmp'
-        try:
-            self.copy_upload(stream, path)
-            actual = digest(path)
-            if actual != expected_digest:
-                raise HubError('Package digest mismatch', 409)
-            if receipt.get('package_digest'):
-                if receipt['package_digest'] != actual:
-                    raise HubError('Request content conflict', 409)
-                return receipt
-            infos = self.inspect_zip(path)
-            with zipfile.ZipFile(path) as z:
-                manifest_name = f'{pid}/manifest.yaml'
-                if any(not i.filename.startswith(pid + '/') for i in infos):
-                    raise HubError('Package root mismatch')
-                if manifest_name not in z.namelist() or z.getinfo(manifest_name).file_size > 65536:
-                    raise HubError('Missing or oversized manifest')
-                manifest = yaml.safe_load(z.read(manifest_name))
-                if not isinstance(manifest, dict) or any(str(manifest.get(k)) != v for k, v in {
-                    'kind': 'ontology-package', 'schema_version': '0.1', 'id': pid,
-                    'version': receipt['version']}.items()):
-                    raise HubError('Package manifest mismatch')
-                for name in ('name', 'description'):
-                    if not isinstance(manifest.get(name), str):
-                        raise HubError('Missing manifest field')
-                for name in ('objects/index.md', 'operations/index.md'):
-                    if f'{pid}/{name}' not in z.namelist():
-                        raise HubError('Missing package index')
-            os.replace(path, pending / 'package.zip')
-            receipt.update(package_digest=actual, size=(pending / 'package.zip').stat().st_size)
-            write_json(pending / 'receipt.json', receipt)
-            return receipt
-        except yaml.YAMLError as exc:
-            raise HubError('Invalid manifest') from exc
-        finally:
-            path.unlink(missing_ok=True)
-
-    def commit(self, pid, request_id, subject):
-        receipt = self.request(pid, request_id, subject)
-        if receipt['status'] == 'committed':
-            for folder in ('releases', 'snapshots'):
-                if (self.project(pid) / folder / receipt['release_id'] / 'receipt.json').exists():
-                    return receipt
-        root = self.project(pid)
-        pending = root / 'pending' / request_id
-        package = pending / 'package.zip'
-        if not receipt.get('package_digest') or not package.exists() or digest(package) != receipt['package_digest']:
-            raise HubError('Package upload incomplete', 409)
-        receipt['status'] = 'committed'
-        write_json(pending / 'receipt.json', receipt)
-        folder = root / ('releases' if receipt['kind'] == 'release' else 'snapshots')
-        folder.mkdir(exist_ok=True)
-        os.replace(pending, folder / receipt['release_id'])
-        sync_dir(folder)
-        self.recover(root)
-        return receipt
-
-    def listing(self, pid, offset=0, limit=20):
-        root = self.project(pid)
-        self.recover(root)
-        rows = sorted(self.receipts(root), key=lambda r: r['sequence'], reverse=True)
-        return {'releases': rows[offset:offset + limit], 'total': len(rows)}
-
-    def release(self, pid, rid):
-        root = self.project(pid)
-        self.recover(root)
-        identifier(rid)
-        for folder in ('releases', 'snapshots'):
-            path = root / folder / rid
-            if (path / 'receipt.json').is_file():
-                return read_json(path / 'receipt.json'), path / 'package.zip'
-        raise HubError('Version not found', 404)
 
     def resources(self, pid, generation, stream, expected_digest):
         root = self.project(pid)
@@ -409,3 +243,5 @@ class Store:
         for root in (self.root / 'projects').glob('*'):
             self.recover(root)
             self.validate_resources(root)
+        from .package_store import PackageStore
+        PackageStore(self).recover_all()

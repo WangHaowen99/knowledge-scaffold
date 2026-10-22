@@ -1,23 +1,49 @@
-# Hub1 API
+# Knowledge Hub API
 
-所有用户操作带 `Authorization: Bearer <access-token>`，身份转发到 Onto；服务写操作还须带 `X-Hub-Service-Token`。后者只证明调用服务，不授予用户读取权限。请求体中的角色或主体不作为权限依据。无效身份 401、无权限 403、项目/版本不存在 404、内容冲突 409、已删除项目 410、超限 413、依赖不可用 503。
+Hub2 没有 Hub1 存量兼容：原项目级包 release-requests、releases 和 ZIP 下载路由已删除。当前包操作只使用以下通用接口。建模服务已接入；评测服务在后续 eval1 接入，消费服务在后续阶段适配。
 
-| 方法和路径 | 行为 |
-| --- | --- |
-| `POST /api/projects/{pid}/release-requests` | `{request_id, source_digest, source_commit, publish_options, kind}`，分配不可复用 `0.1.N`；相同请求/身份/内容幂等，变化返回 409 |
-| `PUT .../release-requests/{request_id}/content` | multipart `file`，`X-Package-Digest` SHA-256；校验包根、manifest ID/版本/格式、索引、路径和 ZIP 完整性 |
-| `POST .../release-requests/{request_id}/commit` | 重新检查权限，完整包和 Git 成功后返回 committed 回执 |
-| `GET .../release-requests/{request_id}` | 原用户查请求状态；pending 不出现在发布列表 |
-| `GET /api/projects/{pid}/releases?offset=0&limit=20` | 仅正式版本，倒序；limit 1–100 |
-| `GET .../releases/{release_id}` | 回执，含版本、摘要、大小、发布时间、来源和发布选项 |
-| `GET .../releases/{release_id}/package` | 原样流式下载，`X-Package-Digest` 校验 |
-| `PUT /api/projects/{pid}/resources/current` | Onto 后台同步专用；multipart file，`X-Resource-Generation` 和 `X-Resource-Digest`；低序号/同序号不同摘要 409 |
-| `GET .../resources/current?offset=0&limit=20` | 当前资料分页清单，含句柄、相对路径、大小、摘要；不返回正文 |
-| `GET .../resources/current/{file_id}` | 当前资料下载；不能传任意磁盘路径 |
-| `DELETE /api/internal/projects/{pid}/artifacts` | 服务专用；Onto 必须确认项目不存在且有删除任务，再建立 tombstone 并永久删除包、资料、快照和 Git |
+## 鉴权
 
-`kind=release` 为正式发布；`evaluation_snapshot` 为内部评测快照，另存目录、不进入发布列表、不更新正式发布记录，要求项目写权限。下载仍按源项目读权限校验。
+所有包请求同时携带 `Authorization: Bearer <access-token>` 和 `X-Hub-Service-Token`。Hub 根据不同服务凭据识别 modeling/evaluation/consumer；通过配置的统一账号服务 `/userinfo` 在线验证访问令牌及撤销状态，不回查建模项目。账号服务检查签名、issuer、audience、access 类型和 token version。用户所有权来自可信 issuer 命名空间与 subject，不接受请求体 owner、角色、项目或空间。
 
-最新资料 ZIP 只包含 `resource/{diagrams,excel,others}/` 与 `resource/materials.json`。空集合保留空元数据文件即可；元数据不能引用不存在的资料。资料不进入知识包 ZIP，不保存在发布回执中，不进入 Hub Git。相同资料 generation 的重试要求相同 ZIP 字节。
+同一用户可通过三个服务访问自己的包；服务密钥不能代替用户权限。服务写入类型：modeling=`modeling_content`，evaluation=`mapping_update`，consumer=`external_import`。只有 modeling/evaluation 可创建 `evaluation_snapshot`。生产未接入的服务凭据可留空。
 
-Onto 对浏览器提供 `POST /api/projects/{pid}/package/releases` 和相应列表、指定版本下载接口。发布请求 ID 在浏览器本地保存至发布且下载成功；超时重试沿用 ID。下载失败提示“已发布，下载失败”，可从已发布列表重试。旧 `export?scope=package` 入口按用户与输入摘要生成稳定请求 ID，同样必须先保存到 Hub。
+## 发布与读取
+
+| API | 调用方 | 输入 | 输出 |
+| --- | --- | --- | --- |
+| `POST /api/package-publish-requests` | 三种服务 | request_id、manifest_id、change_type、input_digest、kind；已有包指定 hub_package_id；派生指定 base_release_id/base_digest；外部导入必须给 version | 首次 201，幂等 200；包 ID、预留版本 ID/版本号、状态、过期时间 |
+| `PUT /api/package-publish-requests/{request_id}/content` | 原用户和原服务 | multipart file、X-Package-Digest | uploaded 状态、摘要、大小 |
+| `POST /api/package-publish-requests/{request_id}/commit` | 原用户和原服务 | 无额外业务参数 | committed 回执 |
+| `GET /api/package-publish-requests/{request_id}` | 原用户和原服务 | 请求 ID | pending/uploaded/committed/expired 回执 |
+| `GET /api/packages` | 三种服务 | offset/limit | 当前用户可见的包摘要 |
+| `GET /api/packages/{id}/releases` | 三种服务 | kind，默认 release；offset/limit | 已提交版本摘要 |
+| `GET /api/packages/{id}/releases/{rid}` | 三种服务 | 精确包和版本 | 版本回执 |
+| `GET /api/packages/{id}/releases/{rid}/package` | 三种服务 | 精确包和版本 | 原 ZIP、Content-Length、X-Package-Digest |
+
+列表返回 `items,total,offset,limit,next_offset`，limit 默认 20、上限 100；响应有 64 KiB 边界，按 next_offset 继续。回执包含 `hub_package_id,release_id,manifest_id,version,kind,source_service,change_type,package_digest,size,created_at,committed_at`，派生包另含基础版本及摘要。响应不含 owner、项目、空间或磁盘路径。
+
+新建包省略 hub_package_id，由 Hub 分配。建模/评测按包分配不可复用 `0.1.N`；外部导入保留其版本和原 ZIP 字节。同包版本（含快照）唯一。幂等键是用户、服务、request_id，改变输入返回 409；响应丢失先查状态，不换请求 ID。
+
+当前支持 `ontology-package` schema `0.1` / `0.2`（`operation-centric.v1`），单包根为 manifest ID。校验 ZIP、路径、大小、manifest、索引引用及 mapping。`mapping_update` 必须基于同包已提交版本，只允许增加/替换 `mappings/object-data-mappings.json` 和修改 manifest version；其他文件、manifest 字段、Markdown 索引保持不变。Hub 不生成 mapping，不连接评测数据源。未知格式或变更拒绝。
+
+错误返回 `code,phase,retryable,message`：401 身份无效，403 服务能力不足，404 资源不存在/不属于当前用户，409 输入/版本/摘要冲突，410 请求过期，413 超限，422 请求字段错误，503 认证或存储不可用。不会回显请求体中的秘密或上游内部异常。
+
+## 项目最新资料（独立业务）
+
+资料按项目授权，仍由建模服务的授权回调处理；它与通用包权限无关。
+
+| API | 调用方 | 说明 |
+| --- | --- | --- |
+| `PUT /api/projects/{pid}/resources/current` | 建模后台 | multipart file、X-Resource-Generation、X-Resource-Digest；当前资料全量替换 |
+| `GET /api/projects/{pid}/resources/current` | 有项目读取权限的用户 | 分页当前资料清单 |
+| `GET /api/projects/{pid}/resources/current/{file_id}` | 同上 | 当前资料下载 |
+| `DELETE /api/internal/projects/{pid}/artifacts` | 建模后台 | 回查已持久化删除任务与项目不存在，清理项目资料；不删除独立包 |
+
+资料只保留当前状态，不入包、不入归档 Git。低 generation 或同 generation 异摘要返回冲突。
+
+## 建模业务入口
+
+建模本地 `POST /api/projects/{pid}/package/releases` 直接使用 Hub2，输入 request_id、allow_unbound；项目只用于本地权限及编辑内容，不传给 Hub。发布入口继续提示调研、对象、操作、校验阶段；成功只刷新版本状态，不自动下载。对应 GET 列表与指定版本下载按当前用户的本地包关联读取。
+
+`GET /api/hub/packages`、包版本列表和下载用于个人包浏览；`POST /api/hub/imports` 接收 request_id、name、hub_package_id、release_id、package_digest，创建本地建模项目并保留包身份与基础版本。GET `export?scope=package` 不再隐式发布。没有旧版本复制接口或发布目标开关。

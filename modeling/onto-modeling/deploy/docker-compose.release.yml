@@ -10,6 +10,10 @@ services:
       - HUB_DATA_DIR=/data/knowledge-hub
       - ONTO_AUTHZ_URL=http://onto-modeling:8100/api/internal/hub/authorize
       - HUB_SERVICE_TOKEN=${ONTO_HUB_SERVICE_TOKEN:?Set ONTO_HUB_SERVICE_TOKEN}
+      - HUB_AUTH_URL=${HUB_AUTH_URL:-http://auth-server:5056}
+      - HUB_AUTH_ISSUER=${HUB_AUTH_ISSUER:-}
+      - HUB_EVALUATION_SERVICE_TOKEN=${HUB_EVALUATION_SERVICE_TOKEN:-}
+      - HUB_CONSUMER_SERVICE_TOKEN=${HUB_CONSUMER_SERVICE_TOKEN:-}
     volumes:
       - knowledge-hub-data:/data
     healthcheck:

@@ -1,5 +1,4 @@
 """Knowledge package Hub HTTP API."""
-from typing import Literal
 from pathlib import Path
 from contextlib import asynccontextmanager
 import hmac
@@ -10,10 +9,10 @@ import json
 
 from fastapi import FastAPI, File, Header, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel, Field
 
 from .storage import HubError, Store, digest
 from .limits import UploadLimit
+from .package_contract import PackageError
 
 DATA_DIR = Path(os.environ.get('HUB_DATA_DIR', '/data/knowledge-hub'))
 store = Store(DATA_DIR,
@@ -36,6 +35,8 @@ app.add_middleware(UploadLimit, max_bytes=store.max_bytes + 1024**2)
 
 
 def error_response(exc):
+    if isinstance(exc, PackageError):
+        return JSONResponse(status_code=exc.status, content=exc.payload())
     return JSONResponse(status_code=exc.status, content={'error': str(exc)})
 
 
@@ -80,14 +81,6 @@ def internal(request: Request):
         raise HubError('Internal service authentication failed', 401)
 
 
-class ReserveBody(BaseModel):
-    request_id: str = Field(min_length=1, max_length=128)
-    source_digest: str = Field(min_length=64, max_length=64)
-    source_commit: str = Field(default='', max_length=128)
-    publish_options: dict = Field(default_factory=dict)
-    kind: Literal['release', 'evaluation_snapshot'] = 'release'
-
-
 @app.exception_handler(HubError)
 async def hub_error_handler(request: Request, exc: HubError):
     return error_response(exc)
@@ -98,72 +91,6 @@ def health():
     import shutil
     free = shutil.disk_usage(DATA_DIR).free
     return {'ok': True, 'service': 'knowledge-hub', 'free_bytes': free}
-
-
-@app.post('/api/projects/{project_id}/release-requests')
-def reserve(project_id: str, body: ReserveBody, request: Request):
-    internal(request)
-    subject = authorize(request, project_id, 'evaluation' if body.kind == 'evaluation_snapshot' else 'publish')
-    allowed_options = {'allow_unbound', 'degraded', 'unbound_objects'}
-    if set(body.publish_options) - allowed_options or len(json.dumps(body.publish_options)) > 16384:
-        raise HubError('Invalid publication options')
-    if body.kind == 'evaluation_snapshot':
-        # Snapshot creation is internal and cannot be requested by a browser.
-        internal(request)
-    with store.lock():
-        return store.reserve(project_id, body.request_id, body.model_dump(), subject)
-
-
-@app.put('/api/projects/{project_id}/release-requests/{request_id}/content')
-def upload_content(project_id: str, request_id: str, request: Request,
-                   file: UploadFile = File(...), package_digest: str = Header(..., alias='X-Package-Digest')):
-    internal(request)
-    subject = authorize(request, project_id, 'publish')
-    with store.lock():
-        receipt = store.request(project_id, request_id, subject)
-        if receipt['kind'] == 'evaluation_snapshot':
-            authorize(request, project_id, 'evaluation')
-        return store.upload(project_id, request_id, subject, file.file, package_digest)
-
-
-@app.post('/api/projects/{project_id}/release-requests/{request_id}/commit')
-def commit(project_id: str, request_id: str, request: Request):
-    internal(request)
-    subject = authorize(request, project_id, 'publish')
-    with store.lock():
-        receipt = store.request(project_id, request_id, subject)
-        authorize(request, project_id, 'evaluation' if receipt['kind'] == 'evaluation_snapshot' else 'publish')
-        return store.commit(project_id, request_id, subject)
-
-
-@app.get('/api/projects/{project_id}/release-requests/{request_id}')
-def request_status(project_id: str, request_id: str, request: Request):
-    subject = authorize(request, project_id, 'read')
-    with store.lock():
-        return store.request(project_id, request_id, subject)
-
-
-@app.get('/api/projects/{project_id}/releases')
-def releases(project_id: str, request: Request, offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=100)):
-    authorize(request, project_id, 'read')
-    with store.lock():
-        return store.listing(project_id, offset, limit)
-
-
-@app.get('/api/projects/{project_id}/releases/{release_id}')
-def release(project_id: str, release_id: str, request: Request):
-    authorize(request, project_id, 'read')
-    with store.lock():
-        receipt, _ = store.release(project_id, release_id)
-        return receipt
-
-
-@app.get('/api/projects/{project_id}/releases/{release_id}/package')
-def package_download(project_id: str, release_id: str, request: Request):
-    authorize(request, project_id, 'read')
-    with store.lock():
-        receipt, path = store.release(project_id, release_id)
-        return stream_file(path, f"{project_id}-{receipt['version']}.zip", receipt['package_digest'], 'application/zip')
 
 
 @app.put('/api/projects/{project_id}/resources/current')
@@ -226,3 +153,18 @@ def stream_file(path, filename, digest, media_type='application/octet-stream'):
     return StreamingResponse(chunks(), media_type=media_type,
                              headers={'X-Package-Digest': digest,
                                       'Content-Disposition': "attachment; filename*=UTF-8''" + quote(filename)})
+
+
+from .package_routes import create_router
+from fastapi.exceptions import RequestValidationError
+
+app.include_router(create_router(lambda: store, stream_file))
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request, exc):
+    if request.url.path.startswith(('/api/packages', '/api/package-publish-requests')):
+        return JSONResponse(status_code=422, content=PackageError(
+            'invalid_request', 'Invalid package request', 422).payload())
+    from fastapi.exception_handlers import request_validation_exception_handler
+    return await request_validation_exception_handler(request, exc)

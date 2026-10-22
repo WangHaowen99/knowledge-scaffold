@@ -67,6 +67,10 @@ if [ -n "${EXTERNAL_AUTH_NETWORK}" ]; then
 services:
   auth-server:
     profiles: ["disabled"]
+  knowledge-hub:
+    networks:
+      - default
+      - external-auth
   onto-modeling:
     depends_on: !override []
     networks:

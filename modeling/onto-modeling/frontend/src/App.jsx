@@ -34,6 +34,7 @@ import CenterPane from './components/CenterPane.jsx';
 import ChatPane from './components/ChatPane.jsx';
 import LeftPane from './components/LeftPane.jsx';
 import LoginPage from './components/LoginPage.jsx';
+import HubPackagesDialog from './components/HubPackagesDialog.jsx';
 import { MAX_NAME_LENGTH, useNameConflict } from './components/NameConflictDialog.jsx';
 import { usePackagePublish } from './components/PublishCheckDialog.jsx';
 import CreatePage from './components/home/CreatePage.jsx';
@@ -102,6 +103,7 @@ export default function App() {
   const [transferBusy, setTransferBusy] = useState(false);
   const transferInputRef = useRef(null);
   const importInputRef = useRef(null);
+  const [hubPackagesOpen, setHubPackagesOpen] = useState(false);
   // 删除确认与提示用 hook 实例（随首页渲染）：静态 Modal.confirm / message.* 拿不到
   // ConfigProvider 的主题与语言配置
   const [modal, modalContext] = Modal.useModal();
@@ -537,10 +539,13 @@ export default function App() {
       <div className="mwr shell">
         {modalContext}
         {messageContext}
+        <HubPackagesDialog open={hubPackagesOpen} onClose={() => setHubPackagesOpen(false)}
+          onImported={async (created) => { await refreshProjects(); nav(`#/p/${created.id}`); }} />
         <div className="topbar">
           <div className="logo"><span className="mk">知</span>知识工程建模工作台</div>
           <span className="crumb">项目</span>
           <div className="right">
+            <button className="tb-btn" onClick={() => setHubPackagesOpen(true)}>我的 Hub 知识包</button>
             <button
               className="tb-btn"
               disabled={transferBusy}
