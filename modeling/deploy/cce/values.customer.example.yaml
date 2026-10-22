@@ -66,4 +66,3 @@ modeling:
     evalDbUrl: {name: "", key: ""}
     cleanupToken: {name: "", key: ""}
     anthropicAuthToken: {name: "", key: ""}
-  nl2sql: {enabled: false, resources: {}}

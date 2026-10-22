@@ -253,7 +253,7 @@ def load_inputs(args, root: Path):
         secret = merged["modeling"]["secrets"][key]
         if bool(secret["name"]) != bool(secret["key"]):
             raise ConfigError(f"incomplete {key} Secret reference")
-    if merged["modeling"]["nl2sql"]["enabled"] and not merged["modeling"]["secrets"]["evalDbUrl"]["name"]:
+    if merged["modeling"].get("nl2sql", {}).get("enabled", False) and not merged["modeling"]["secrets"]["evalDbUrl"]["name"]:
         raise ConfigError("NL2SQL requires the evalDbUrl Secret reference")
     if args.action != "upgrade" and any(merged["modeling"]["workloads"][name]["replicas"] != 1
             for name in ("core", "agent", "onto")):

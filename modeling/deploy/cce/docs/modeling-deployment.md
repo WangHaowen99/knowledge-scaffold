@@ -183,9 +183,6 @@ modeling:
       resources: {}
     sandboxGateway:
       resources: {requests: {cpu: 100m, memory: 256Mi}}
-  nl2sql:
-    enabled: false
-    resources: {}
 ```
 
 必须编辑：
@@ -194,8 +191,7 @@ modeling:
 - `workloads.core.persistence.existingClaim`：Core PVC 名称；
 - `workloads.agent.persistence.existingClaim`：Agent PVC 名称；
 - `workloads.onto.persistence.existingClaim`：Onto Modeling PVC 名称；
-- `workloads.*.replicas`：单实例部署保持为 `1`；
-- `nl2sql.enabled`：不部署 NL2SQL 时保持 `false`。
+- `workloads.*.replicas`：单实例部署保持为 `1`。
 
 可选 Secret 引用位于：
 

@@ -1,3 +1,4 @@
+{{- $nl2sql := .Values.modeling.nl2sql | default dict }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -37,7 +38,7 @@ spec:
             - {name: MODELING_LLM_MODEL, value: {{ .Values.modeling.config.llmModel | quote }}}
             - {name: MODELING_TASK_LLM_BASE_URL, value: {{ .Values.modeling.config.taskLlmBaseUrl | quote }}}
             - {name: MODELING_TASK_LLM_MODEL, value: {{ .Values.modeling.config.taskLlmModel | quote }}}
-            {{- if .Values.modeling.nl2sql.enabled }}
+            {{- if $nl2sql.enabled }}
             - {name: MODELING_EVAL_BINDING_URL, value: "http://{{ include "modeling.name" . }}-nl2sql:5600"}
             {{- end }}
             - {name: JIUWENBOX_SOCKET_PATH, value: /run/jiuwenbox/jiuwenbox.sock}
@@ -318,7 +319,7 @@ spec:
           configMap: {name: {{ include "modeling.name" . }}-jiuwenbox-policy}
         - name: cgroup
           hostPath: {path: /sys/fs/cgroup, type: Directory}
-{{- if .Values.modeling.nl2sql.enabled }}
+{{- if $nl2sql.enabled }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -368,5 +369,5 @@ spec:
           readinessProbe:
             httpGet: {path: /health, port: http}
             periodSeconds: 10
-          resources: {{ toYaml .Values.modeling.nl2sql.resources | nindent 12 }}
+          resources: {{ toYaml $nl2sql.resources | nindent 12 }}
 {{- end }}

@@ -40,7 +40,7 @@
     },
     "externalAuth": {"$ref": "#/definitions/externalService"},
     "externalConsumer": {"$ref": "#/definitions/externalService"},
-    "modeling": {"type": "object", "additionalProperties": false, "required": ["config", "workloads", "secrets", "nl2sql"], "properties": {
+    "modeling": {"type": "object", "additionalProperties": false, "required": ["config", "workloads", "secrets"], "properties": {
       "config": {"type": "object", "additionalProperties": false, "required": ["llmBaseUrl", "llmModel", "taskLlmBaseUrl", "taskLlmModel", "mcpPublicBaseUrl", "ontoJiuwenBaseUrl", "ontoJiuwenModel", "ontoAnthropicBaseUrl"], "properties": {
         "llmBaseUrl": {"type": "string"}, "llmModel": {"type": "string"}, "taskLlmBaseUrl": {"type": "string"}, "taskLlmModel": {"type": "string"},
         "mcpPublicBaseUrl": {"type": "string"}, "ontoJiuwenBaseUrl": {"type": "string"}, "ontoJiuwenModel": {"type": "string"}, "ontoAnthropicBaseUrl": {"type": "string"}

@@ -87,6 +87,3 @@ modeling:
     anthropicAuthToken:
       name: ""
       key: ""
-  nl2sql:
-    enabled: false
-    resources: {}
