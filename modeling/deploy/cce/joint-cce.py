@@ -355,6 +355,22 @@ def release_chart(config, side) -> str:
     return release_chart_from_list(releases, entry["releaseName"])
 
 
+def consumer_installed_metadata(config):
+    entry = config["consumer"]
+    metadata = json.loads(run(
+        "helm", "--kube-context", config["cluster"]["context"],
+        "--namespace", entry["namespace"], "get", "metadata",
+        entry["releaseName"], "-o", "json",
+    ))
+    if (metadata.get("name") != entry["releaseName"] or
+            metadata.get("namespace") != entry["namespace"] or
+            any(not isinstance(metadata.get(key), str) or not metadata[key]
+                for key in ("appVersion", "version"))):
+        raise ConfigError("installed Consumer Helm metadata is invalid")
+    return {"releaseVersion": metadata["appVersion"],
+            "chartVersion": metadata["version"]}
+
+
 def completed_release_matches(config, side, package, operation_id, image_file) -> bool:
     entry = config[side]
     output = run("helm", "--kube-context", config["cluster"]["context"],
@@ -362,6 +378,10 @@ def completed_release_matches(config, side, package, operation_id, image_file) -
     status = json.loads(output)
     if status.get("info", {}).get("status") != "deployed" or not release_chart(config, side).endswith(f"-{package[1]['chartVersion']}"):
         return False
+    if side == "consumer":
+        actual = consumer_installed_metadata(config)
+        return all(actual[key] == package[1][key]
+                   for key in ("releaseVersion", "chartVersion"))
     values = json.loads(run("helm", "--kube-context", config["cluster"]["context"],
                             "--namespace", entry["namespace"], "get", "values", entry["releaseName"], "-o", "json"))
     global_values = values.get("global", {})
@@ -410,6 +430,15 @@ def installed_identity(config, side):
     entry = config[side]
     status = json.loads(run("helm", "--kube-context", config["cluster"]["context"],
                             "--namespace", entry["namespace"], "status", entry["releaseName"], "-o", "json"))
+    if side == "consumer":
+        if status.get("info", {}).get("status") != "deployed":
+            raise ConfigError("installed consumer release is not deployed")
+        actual = consumer_installed_metadata(config)
+        manifest = validate_compatibility_manifest(read_yaml(config["compatibilityFile"]))
+        versions = {item["consumerChartVersion"] for item in manifest["combinations"]}
+        if actual["chartVersion"] not in versions:
+            raise CompatibilityError("installed consumer Chart version is absent in compatibility manifest")
+        return actual
     values = json.loads(run("helm", "--kube-context", config["cluster"]["context"],
                             "--namespace", entry["namespace"], "get", "values", entry["releaseName"], "-o", "json"))
     if status.get("info", {}).get("status") != "deployed" or not values.get("global", {}).get("releaseVersion"):

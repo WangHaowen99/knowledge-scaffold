@@ -241,7 +241,7 @@ class CceContractTests(unittest.TestCase):
             installed = {"consumer": {"releaseVersion": "c1", "chartVersion": "1.0.0"},
                          "modeling": {"releaseVersion": "m1", "chartVersion": "1.0.0"}}
             original = compatibility.read_text()
-            with mock.patch.object(JOINT, "installed_identity", side_effect=lambda _config, side: installed[side]):
+            with mock.patch.object(JOINT, "installed_identity", side_effect=lambda _config, side: installed.get(side)):
                 upgrade_preview = JOINT.prepare_compatibility(config, upgrade=True, confirmed=False,
                                                                no_migration_confirmed=False)
                 self.assertEqual(compatibility.read_text(), original)
@@ -261,21 +261,64 @@ class CceContractTests(unittest.TestCase):
         self.assertEqual((middle["consumerReleaseVersion"], middle["modelingReleaseVersion"]),
                          ("c2", "m1"))
 
-    def test_installed_identity_accepts_consumer_chart_name_from_own_repository(self):
+    def test_installed_consumer_identity_uses_helm_metadata_without_values(self):
         path, installed, _ = self.upgrade_fixture()
         config = {"compatibilityFile": path, "cluster": {"context": "synthetic"},
                   "consumer": {"namespace": "consumer-demo", "releaseName": "consumer"}}
         def response(*command):
             if "status" in command:
                 return json.dumps({"name": "consumer", "info": {"status": "deployed"}})
-            if "list" in command:
-                return json.dumps([
-                    {"name": "consumer-other", "chart": "knowledge-consumer-9.0.0"},
-                    {"name": "consumer", "chart": "knowledge-consumer-1.0.0"},
-                ])
-            return json.dumps({"global": {"releaseVersion": "c1"}})
-        with mock.patch.object(JOINT, "run", side_effect=response):
+            self.assertIn("metadata", command)
+            return json.dumps({"name": "consumer", "namespace": "consumer-demo",
+                               "appVersion": "c1", "version": "1.0.0"})
+        with mock.patch.object(JOINT, "run", side_effect=response) as run:
             self.assertEqual(JOINT.installed_identity(config, "consumer"), installed["consumer"])
+        self.assertEqual(len(run.call_args_list), 2)
+        self.assertNotIn("values", str(run.call_args_list))
+
+    def test_installed_consumer_identity_rejects_invalid_metadata_and_unknown_chart(self):
+        path, _, _ = self.upgrade_fixture()
+        config = {"compatibilityFile": path, "cluster": {"context": "synthetic"},
+                  "consumer": {"namespace": "consumer-demo", "releaseName": "consumer"}}
+        status = {"info": {"status": "deployed"}}
+        metadata = {"name": "consumer", "namespace": "consumer-demo",
+                    "appVersion": "c1", "version": "1.0.0"}
+
+        def response(*command):
+            return json.dumps(status if "status" in command else metadata)
+
+        with mock.patch.object(JOINT, "run", side_effect=response):
+            metadata["namespace"] = "other-demo"
+            with self.assertRaisesRegex(ConfigError, "metadata is invalid"):
+                JOINT.installed_identity(config, "consumer")
+            metadata["namespace"] = "consumer-demo"
+            metadata["version"] = "9.0.0"
+            with self.assertRaisesRegex(ConfigError, "absent in compatibility manifest"):
+                JOINT.installed_identity(config, "consumer")
+            status["info"]["status"] = "failed"
+            with self.assertRaisesRegex(ConfigError, "not deployed"):
+                JOINT.installed_identity(config, "consumer")
+
+    def test_completed_consumer_release_matches_helm_metadata_without_values(self):
+        config = {"cluster": {"context": "synthetic"},
+                  "consumer": {"namespace": "consumer-demo", "releaseName": "consumer"}}
+        package = (self.base, {"releaseVersion": "c1", "chartVersion": "1.0.0"})
+        metadata = {"name": "consumer", "namespace": "consumer-demo",
+                    "appVersion": "c1", "version": "1.0.0"}
+
+        def response(*command):
+            if "status" in command:
+                return json.dumps({"info": {"status": "deployed"}})
+            self.assertIn("metadata", command)
+            return json.dumps(metadata)
+
+        with mock.patch.object(JOINT, "run", side_effect=response), \
+             mock.patch.object(JOINT, "release_chart", return_value="knowledge-consumer-1.0.0"):
+            self.assertTrue(JOINT.completed_release_matches(config, "consumer", package,
+                                                              "operation-demo", self.base / "unused.yaml"))
+            metadata["appVersion"] = "c2"
+            self.assertFalse(JOINT.completed_release_matches(config, "consumer", package,
+                                                               "operation-demo", self.base / "unused.yaml"))
 
     def test_installed_modeling_reads_chart_from_helm_list(self):
         args = SimpleNamespace(context="synthetic", namespace="modeling-demo", release="modeling")
