@@ -79,7 +79,7 @@ global:
       key: <TOKEN_KEY>
 ```
 
-`global.auth.issuer` 和 `global.auth.audience` 必须与 Consumer 使用的值完全一致。`serviceTokenSecret` 必须引用 Modeling 命名空间中已创建的 Secret 和 key。
+示例文件中的 `global.auth.issuer` 为 `http://consumer-auth:5056`、`global.auth.audience` 为 `knowledge-scaffold`。部署前须确认这两个值与 Consumer 实际签发的 JWT `iss`、`aud` 完全一致；它们是验签参数，不是 Modeling Pod 访问 Auth Service 的地址。`serviceTokenSecret` 必须引用 Modeling 命名空间中已创建的 Secret 和 key。
 
 ### 3.3 引用 Consumer Service
 
@@ -101,6 +101,8 @@ externalConsumer:
 - `externalConsumer.serviceName` 必须是 Consumer release 生成的 Backend Service 名称；
 - `namespace` 是 Consumer 所在命名空间，不是 Modeling 命名空间；
 - 端口固定分别为 `5056` 和 `5055`，并且必须与 Consumer 的 `deploy/endpoints.yaml` 一致。
+
+示例文件使用 `onto-consumer` 作为 Consumer 命名空间。Chart 会据此生成跨命名空间 Service 地址，例如 `http://consumer-auth.onto-consumer.svc.cluster.local:5056`；须确认 Service 确实存在于该命名空间。
 
 ### 3.4 对外访问
 

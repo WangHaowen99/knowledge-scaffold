@@ -69,6 +69,8 @@ global:
 - Consumer 生成 Backend Service 的端口是 `5055`；
 - Consumer 的 ELB 监听端口不与 Modeling 共用 ELB 的端口重复。
 
+Modeling 示例文件将 `global.auth.issuer` 设为 `http://consumer-auth:5056`、`global.auth.audience` 设为 `knowledge-scaffold`。这两个值必须与 Consumer 实际签发的 JWT `iss`、`aud` 一致；`issuer` 不用于跨命名空间 Service 访问。Consumer 命名空间为 `onto-consumer` 时，`externalAuth.namespace` 和 `externalConsumer.namespace` 都应填写 `onto-consumer`，并与本文件 `consumer.namespace` 相同。
+
 Consumer release 名称决定 Service 名称。例如：
 
 ```yaml

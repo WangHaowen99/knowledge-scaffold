@@ -4,8 +4,8 @@ global:
   imageDelivery:
     pullSecretNames: [modeling-registry]
   auth:
-    issuer: https://auth.example.com
-    audience: modeling-demo
+    issuer: http://consumer-auth:5056
+    audience: knowledge-scaffold
   integration:
     serviceTokenSecret:
       name: modeling-integration
@@ -17,52 +17,34 @@ global:
       class: performance
     protocol: HTTP
     listenerPort: 80
-    tlsSecretName: ""
-    ingressClassName: ""
-    routes: []
     listeners:
       - {id: core, protocol: HTTP, listenerPort: 8100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-core}
       - {id: onto, protocol: HTTP, listenerPort: 5100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: onto-modeling}
       - {id: mcp, protocol: HTTP, listenerPort: 5188, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-mcp}
 externalAuth:
   serviceName: consumer-auth
-  namespace: consumer-demo
+  namespace: onto-consumer
   servicePort: 5056
 externalConsumer:
   serviceName: consumer-backend
-  namespace: consumer-demo
+  namespace: onto-consumer
   servicePort: 5055
 modeling:
   config:
     llmBaseUrl: https://llm.example.com
     llmModel: demo-model
-    taskLlmBaseUrl: ""
-    taskLlmModel: ""
     mcpPublicBaseUrl: http://<ELB_IP>:5188
-    ontoJiuwenBaseUrl: ""
-    ontoJiuwenModel: ""
-    ontoAnthropicBaseUrl: ""
   workloads:
     core:
-      nodeSelector: {}
       persistence: {existingClaim: modeling-core-data}
       resources: {requests: {cpu: 500m, memory: 1Gi}}
     agent:
-      nodeSelector: {}
       persistence: {existingClaim: modeling-agent-data}
       resources: {requests: {cpu: 500m, memory: 1Gi}}
     onto:
-      nodeSelector: {}
       persistence: {existingClaim: modeling-onto-data}
       resources: {requests: {cpu: 500m, memory: 2Gi}}
     jiuwenbox:
-      nodeSelector: {}
-      runtimeClassName: ""
       resources: {requests: {cpu: 500m, memory: 1Gi}}
     sandboxGateway:
       resources: {requests: {cpu: 100m, memory: 256Mi}}
-  secrets:
-    llmApiKey: {name: "", key: ""}
-    evalDbUrl: {name: "", key: ""}
-    cleanupToken: {name: "", key: ""}
-    anthropicAuthToken: {name: "", key: ""}

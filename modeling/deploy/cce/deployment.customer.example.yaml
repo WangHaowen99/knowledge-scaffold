@@ -6,13 +6,13 @@ compatibilityFile: ./compatibility-verified.yaml
 consumer:
   package: ./consumer-cce-example-amd64.tar.gz
   releaseName: consumer
-  namespace: consumer-demo
+  namespace: onto-consumer
   values: ./consumer-values.yaml
   resolvedImages: ./consumer-images.yaml
 modeling:
   package: ./modeling-cce-example-amd64.tar.gz
   releaseName: modeling
-  namespace: modeling-demo
+  namespace: onto-modeling
   values: ./modeling-values.yaml
   resolvedImages: ./modeling-images.yaml
 timeoutSeconds: 900

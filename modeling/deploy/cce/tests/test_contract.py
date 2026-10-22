@@ -507,7 +507,10 @@ class CceContractTests(unittest.TestCase):
 
     def test_modeling_preflight_checks_existing_resources_when_consumer_services_are_deferred(self):
         args = SimpleNamespace(context="synthetic", namespace="modeling-demo")
-        merged = yaml.safe_load((ROOT / "values.customer.example.yaml").read_text())
+        merged = INSTALL.merge(
+            yaml.safe_load((ROOT / "chart/values.yaml").read_text()),
+            yaml.safe_load((ROOT / "values.customer.example.yaml").read_text()),
+        )
         def resource(_args, verb, kind, *rest):
             if kind == "namespace":
                 return {"status": {"phase": "Active"}}
