@@ -99,7 +99,8 @@ Write `OPERATION_DIR/{流程名称}.md`:
 ```
 
 Rules:
-- File name = operation/process name in Chinese，**不得以「规则」或「指标」结尾**：判定条款写进本文档的 `逻辑描述`，独立成文档的规则与指标属于 `ontology/rule/`、`ontology/metric/`。报告来源的操作逐字使用 `OPERATION_CANDIDATES` 里的名称，不要改写、不要加前后缀——对账按名称比对，改一个字就会被报成"报告里有、没生成"。
+- File name = operation/process name in Chinese，**不得以「规则」或「指标」结尾**：判定条款写进本文档的 `逻辑描述`，独立成文档的规则与指标属于 `ontology/rule/`、`ontology/metric/`。报告来源的操作逐字使用 `OPERATION_CANDIDATES` 里的名称，不要改写、不要加前后缀——对账按名称比对，改一个字就会被报成"报告里有、没生成"。文件名就是知识包里的操作 key：不超过 80 字符，不含 `/ \ # ? & |` 与 `..`。
+- 单个操作文档不超过 15000 字符、全项目操作不超过 100 个（consumer 导入上限）；篇幅过长时拆成子操作。
 - 与operation的关联（双向强约束）：
   - `调用operation` 行的 `[[X]]` 集合必须**等于** `逻辑描述` 中所有 `调用[[X]]逻辑文档` 调用点的集合（多一个少一个都会被 rule-check 拦下）。
   - `被operation调用` 行**只在**本 operation 真的由某个父 operation 在其 `逻辑描述` 中显式 `调用[[本operation]]逻辑文档` 时才填父 operation；否则按下表填"无（…触发方式…）"。这是一个反向关系，写错会被规则层和语义层各拦一次。

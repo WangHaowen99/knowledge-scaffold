@@ -31,20 +31,28 @@ def _type_conflicts(documented: str, declared: str) -> bool:
     return documented != declared and {documented, declared} != NUMERIC_TYPES
 
 
+def _script_header(code: str) -> str:
+    doc = code.split('"""')
+    return doc[1] if len(doc) >= 2 else ""
+
+
+def script_bound_operation(code: str) -> str:
+    """头部「关联operation」的 operation 名（片段写法去掉「/ 步骤X」）；「无」或未写时为空。"""
+    match = re.search(r"关联operation[：:]\s*(.+)", _script_header(code))
+    if not match:
+        return ""
+    bound = match.group(1).split("/")[0].strip()
+    return "" if bound in ("无", "-") else bound
+
+
 def parse_script_contract(code: str) -> tuple[str, list[dict]]:
     """Read the operation binding and verify the documented CLI against argparse.
 
     The Python source is the single source of truth for flags and argparse semantics.
     The docstring supplies descriptions, but never invents or renames a flag.
     """
-    doc = code.split('"""')
-    header = doc[1] if len(doc) >= 2 else ""
-    bound = ""
-    match = re.search(r"关联operation[：:]\s*(.+)", header)
-    if match:
-        bound = match.group(1).split("/")[0].strip()
-        if bound in ("无", "-", ""):
-            bound = ""
+    header = _script_header(code)
+    bound = script_bound_operation(code)
 
     documented: list[dict] = []
     lines = header.splitlines()

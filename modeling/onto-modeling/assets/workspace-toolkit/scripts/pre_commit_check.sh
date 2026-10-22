@@ -90,12 +90,12 @@ if [ -n "$STAGED_SCRIPTS" ]; then
     SCRIPT_ERRORS=$(printf '%s' "$SCRIPT_OUTPUT" | python3 -c '
 import json, sys
 try:
-    print(sum(1 for item in json.loads(sys.stdin.read() or "[]") if item.get("severity") == "错误" and item.get("category") == "脚本契约"))
+    print(sum(1 for item in json.loads(sys.stdin.read() or "[]") if item.get("severity") == "错误" and item.get("category") in ("脚本契约", "脚本安全", "脚本绑定")))
 except Exception:
     print(1)
 ' 2>/dev/null || echo 1)
     if [ "$SCRIPT_ERRORS" -gt 0 ]; then
-        REASON='ontology/scripts 中存在脚本契约错误：请运行 python3 .claude/scripts/ontology_checker.py ontology --include-scripts 修复后再提交。'
+        REASON='ontology/scripts 中存在脚本契约、安全或绑定错误：请运行 python3 .claude/scripts/ontology_checker.py ontology --include-scripts 修复后再提交。'
         python3 -c '
 import json, sys
 print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))

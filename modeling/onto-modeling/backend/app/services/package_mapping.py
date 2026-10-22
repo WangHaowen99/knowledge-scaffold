@@ -737,21 +737,19 @@ def _relation_prefixes(key: str, doc: dict) -> set[str]:
 
 def graph_relations(
     object_texts: dict[str, str], mapped: set[str], report: dict | None = None,
-    allow_unbound: bool = False,
 ) -> tuple[dict[str, list], list[str]]:
-    """生成可执行关系及逐条诊断。返回的 skipped 只含阻断项。
+    """生成可执行关系及逐条诊断。返回的 skipped 是没导入的关系及原因，都不阻断。
 
     关联字段取自关系括注，判据是两端对象的属性清单（见 _relation_join）：写法不固定，但字段
     名必须在清单里，所以不靠措辞也能认出来。
 
     同一条关系通常在两端对象里各写一次（`当前对象 → 关系名 → [[对象A]]` /
     `[[对象B]] → 关系名 → 当前对象`）。只有一端写出关联字段时按该端补齐——少写不等于冲突；
-    两端都写出且不是同一对字段才报错，这种情况无从判断该连哪一对，错连比不连更难发现。
+    两端都写出且不是同一对字段时整条不导出，这种情况无从判断该连哪一对，错连比不连更难发现。
     同理，一端的声明有问题时整条都不导出，否则另一端那条会把问题盖掉、退回按主键猜。
 
-    allow_unbound 即用户已确认降级发布：端点存在但没绑数据表时，这条关系只记原因不阻断
-    （图里本来就没有该类节点）。端点根本不存在、以及关系名与关联字段写错，仍然是阻断项——
-    那是文档本身要改，降级确认与它无关。
+    每条关系只影响自己：写错或端点没绑数据表（概念对象数据来源写「无」是正常结论）时只跳过
+    这一条并记原因，评测与发布照常进行，原因进 report["notes"] 给用户看。
     """
     fields: dict[str, set[str]] = {}
     # 括注里 `表名.字段` 的前缀可以是对象名或「# 数据来源」声明的表名
@@ -762,7 +760,7 @@ def graph_relations(
         names[key] = _relation_prefixes(key, doc)
     relations: dict[str, list] = {}
     skipped: list[str] = []
-    unbound: list[str] = []
+    unbound = 0
     seen: dict[tuple, dict] = {}
     triples: set[tuple] = set()
     declared = parsed = duplicates = 0
@@ -803,10 +801,9 @@ def graph_relations(
                 absent = [item for item in missing if item not in object_texts]
                 if absent:
                     skipped.append(f"{label}：关系端点「{'、'.join(absent)}」不存在")
-                elif allow_unbound:
-                    unbound.append(f"{label}：关系端点「{'、'.join(missing)}」未绑定数据表，本条关系不导入")
                 else:
-                    skipped.append(f"{label}：关系端点「{'、'.join(missing)}」未绑定数据表")
+                    unbound += 1
+                    skipped.append(f"{label}：关系端点「{'、'.join(missing)}」未绑定数据表，本条关系不导入")
                 continue
             if not GRAPH_IDENTIFIER.fullmatch(name):
                 skipped.append(f"{label}：关系名「{name}」不是合法的图关系名，请确认名称")
@@ -818,6 +815,11 @@ def graph_relations(
                 )
             except ValueError as exc:
                 skipped.append(f"{label}：{exc}")
+                reject(triple, source, label)
+                continue
+            if source == target and not (source_join and target_join):
+                # 自关联两端是同一张表，不写关联字段就会按同一行把每个节点连到它自己
+                skipped.append(f"{label}：自关联「{name}」要写明关联字段（源对象字段 → 目标对象字段）")
                 reject(triple, source, label)
                 continue
             relation = {
@@ -856,9 +858,9 @@ def graph_relations(
             # 去重后的关系条数：两端各声明一次只算一条，和 relations_exported 同一量纲
             relations_distinct=len(triples),
             relations_exported=sum(map(len, relations.values())),
-            # relations_skipped 是没导出的总数；其中降级放过的那部分另记一个数，便于对账
-            relations_skipped=len(skipped) + len(unbound), relations_unbound=len(unbound),
-            relations_duplicates=duplicates, notes=skipped + unbound,
+            # relations_skipped 是没导出的总数；其中端点未绑定数据表的另记一个数，便于对账
+            relations_skipped=len(skipped), relations_unbound=unbound,
+            relations_duplicates=duplicates, notes=skipped,
         )
     return relations, skipped
 

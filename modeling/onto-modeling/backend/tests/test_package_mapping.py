@@ -361,36 +361,55 @@ def test_relation_names_and_notes_are_separated(name):
     assert "（" not in relations["object_a"][0]["relation"]
 
 
-def test_unbound_endpoints_block_unless_publish_was_degraded():
-    """降级发布已确认「这些对象不查库」：端点因此未绑定的关系只记原因，不该再拦住导包。"""
+def test_unbound_endpoints_are_skipped_with_reason():
+    """概念对象数据来源写「无」是正常结论：连到它的关系只跳过并记原因，不需要降级确认。"""
     texts = {
         "object_a": "# 关联对象\n- 当前对象 → references → [[object_b]]",
         "object_b": "# 对象描述\n合成对象",
     }
     # object_b 存在但没绑数据表
     report = {}
-    _, skipped = package_mapping.graph_relations(texts, {"object_a"}, report)
-    assert len(skipped) == 1 and "未绑定数据表" in skipped[0]
-    assert report.get("relations_skipped") == 1 and report.get("relations_unbound") == 0
-
-    degraded = {}
-    relations, skipped = package_mapping.graph_relations(
-        texts, {"object_a"}, degraded, allow_unbound=True,
-    )
-    notes = degraded.get("notes") or []
-    assert relations == {} and skipped == []
-    assert degraded.get("relations_skipped") == 1 and degraded.get("relations_unbound") == 1
-    assert notes and "未绑定数据表" in notes[0]
+    relations, skipped = package_mapping.graph_relations(texts, {"object_a"}, report)
+    assert relations == {}
+    assert len(skipped) == 1 and "未绑定数据表，本条关系不导入" in skipped[0]
+    assert report.get("relations_skipped") == 1 and report.get("relations_unbound") == 1
+    assert report.get("notes") == skipped
 
 
-def test_absent_endpoint_blocks_even_when_degraded():
-    """端点根本不存在是文档要改，降级确认与它无关，仍然阻断。"""
+def test_absent_endpoint_is_reported():
     texts = {"object_a": "# 关联对象\n- 当前对象 → references → [[missing]]"}
-    relations, skipped = package_mapping.graph_relations(
-        texts, {"object_a"}, allow_unbound=True,
-    )
+    report = {}
+    relations, skipped = package_mapping.graph_relations(texts, {"object_a"}, report)
     assert relations == {}
     assert len(skipped) == 1 and "不存在" in skipped[0]
+    assert report.get("relations_unbound") == 0
+
+
+def _self_object(line: str) -> dict:
+    return {"employee": (
+        "# 对象属性清单\n| 中文名称 | 英文名称 | 描述 | 主键 | 类型 |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| 员工编号 | employee_id | 合成 | 是 | 字符串 |\n"
+        "| 上级编号 | manager_id | 合成 | 否 | 字符串 |\n"
+        "\n# 关联对象\n" + line
+    )}
+
+
+def test_self_relation_needs_explicit_join_fields():
+    """自关联两端是同一张表：写明关联字段才导出，否则会按同一行把节点连到自己。"""
+    relations, skipped = package_mapping.graph_relations(
+        _self_object("- 当前对象 → 上级（manager_id → employee_id） → 当前对象"), {"employee"},
+    )
+    assert skipped == []
+    assert relations["employee"][0]["target"] == "employee"
+    assert (relations["employee"][0]["sourceJoinProperty"],
+            relations["employee"][0]["targetJoinProperty"]) == ("manager_id", "employee_id")
+
+    relations, skipped = package_mapping.graph_relations(
+        _self_object("- 当前对象 → 上级 → 当前对象"), {"employee"},
+    )
+    assert relations == {}
+    assert len(skipped) == 1 and "自关联" in skipped[0]
 
 
 @pytest.mark.parametrize("line", [

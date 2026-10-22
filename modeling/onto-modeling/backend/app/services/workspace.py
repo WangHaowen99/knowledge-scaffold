@@ -925,8 +925,8 @@ class WorkspaceManager:
 
         binding：评测导入时传入按本轮导入工作簿算出的绑定，mapping 与导入库同源；
         graph：Neo4j 图导入用的包——mapping 按图模式导出，「关联对象」转为 `# 关系` 表；
-        allow_unbound：降级发布——声明对不上的对象不阻断，来源Sheet 写 UNBOUND、不进 mapping；
-        图模式下，端点因此未绑定的关系也只记原因不阻断（图里本来就没有该类节点）。
+        转不出来的关系只跳过那一条，原因记进 relation_report["notes"]，不阻断导出；
+        allow_unbound：降级发布——声明对不上的对象不阻断，来源Sheet 写 UNBOUND、不进 mapping。
         """
         import zipfile
 
@@ -964,16 +964,10 @@ class WorkspaceManager:
         bound = binding["objects"]
         mappings = package_mapping.object_data_mappings(binding, graph=graph)
         graph_edges: dict[str, list] = {}
-        graph_relation_skips: list[str] = []
         if graph:
-            graph_edges, graph_relation_skips = package_mapping.graph_relations(
-                package_mapping.read_object_texts(root),
-                set(mappings["objects"]), relation_report, allow_unbound=allow_unbound,
+            graph_edges, _ = package_mapping.graph_relations(
+                package_mapping.read_object_texts(root), set(mappings["objects"]), relation_report,
             )
-            if graph_relation_skips:
-                raise WorkspaceError(
-                    "图关系转换未完成，请修正关联对象后重试：" + "；".join(graph_relation_skips)
-                )
         rules = entry_items("ontology/rule")
         metrics = entry_items("ontology/metric")
         scripts = entry_items("ontology/scripts", pattern="*.py")
@@ -1086,30 +1080,37 @@ class WorkspaceManager:
                     used = sorted({m for m in _WIKILINK_RE.findall(body) if m in object_keys})
                     extra = f"uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n"
                     zf.writestr(f"{pkg}/metrics/{key}.md", front("metric", key, key, extra) + body)
-            if scripts:
+            operation_keys = {key for key, _ in operations}
+            executable = []
+            for key, code in scripts:
+                try:
+                    bound, params = _script_header_meta(code)
+                except ScriptContractError as exc:
+                    raise WorkspaceError(f"脚本 {key} 契约无效：{exc}") from exc
+                # 「关联operation」为「无」或不是现有操作：只是被复用的辅助模块，不单独执行，
+                # 只带源码、不写描述符——modeling 要求每个脚本描述符都绑定一个存在的操作。
+                # 没有描述符就没有 entrypoint 契约，保留原文件名，回导时才还原得了
+                if bound in operation_keys:
+                    filename = _package_script_filename(key)
+                    executable.append((key, filename, bound, params))
+                else:
+                    filename = f"{key}.py"
+                zf.writestr(f"{pkg}/scripts/{filename}", code)
+            if executable:
                 zf.writestr(
                     f"{pkg}/scripts/index.md",
                     index_md(
-                        "script_index", "scripts", "脚本目录", scripts,
+                        "script_index", "scripts", "脚本目录", [(key, "") for key, *_ in executable],
                         ["script key", "标题"],
                         lambda k: f"| {k} | {k} |\n",
                     ),
                 )
-                operation_keys = {key for key, _ in operations}
-                for key, code in scripts:
-                    filename = _package_script_filename(key)
-                    zf.writestr(f"{pkg}/scripts/{filename}", code)
+                for key, filename, bound, params in executable:
                     # 执行契约：描述符须声明 entrypoint；bound_operation 使脚本
                     # 成为该 operation 的可执行实现；参数表驱动 CLI 参数组装。
                     # entrypoint 是相对 scripts/ 的文件名：modeling 按 scripts/<entrypoint>
                     # 取源码且只收 ASCII 文件名，consumer 缺 scripts/ 前缀时自动补齐。
-                    try:
-                        bound, params = _script_header_meta(code)
-                    except ScriptContractError as exc:
-                        raise WorkspaceError(f"脚本 {key} 契约无效：{exc}") from exc
-                    extra = f"entrypoint: {filename}\n"
-                    if bound and bound in operation_keys:
-                        extra += f"bound_operation: {q(bound)}\n"
+                    extra = f"entrypoint: {filename}\nbound_operation: {q(bound)}\n"
                     body = f"由 /ontology-codegen 生成的确定性脚本，实现见 `{filename}`。\n"
                     if params:
                         rows = "".join(

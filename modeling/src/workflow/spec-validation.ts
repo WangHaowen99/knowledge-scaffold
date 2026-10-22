@@ -114,9 +114,6 @@ export function validateObjectBatch(
       if (!knownObjects.has(normalizeKey(relation.target))) {
         issues.push(`对象 ${object.key} 引用了不存在的对象 ${relation.target}`);
       }
-      if (normalizeKey(relation.target) === normalizeKey(object.key)) {
-        issues.push(`对象 ${object.key} 的 relations[${index}] 不允许自关联`);
-      }
       const relationKey = `${normalizeKey(relation.target)}\u0000${normalizeKey(relation.relation)}`;
       if (relationKeys.has(relationKey)) {
         issues.push(`对象 ${object.key} 的 relations[${index}] 与已有 source-target-relation 重复`);
@@ -362,9 +359,6 @@ export function validateSpecIntegrity(
         if (problem) errors.push(`对象 ${object.key} 的 relations[${index}].relation：${problem}`);
       }
       if (!objectKeys.has(normalizeKey(relation.target))) errors.push(`对象 ${object.key} 引用了不存在的对象 ${relation.target}`);
-      if (normalizeKey(relation.target) === normalizeKey(object.key)) {
-        errors.push(`对象 ${object.key} 的 relations[${index}] 不允许自关联`);
-      }
       const relationKey = `${normalizeKey(relation.target)}\u0000${normalizeKey(relation.relation)}`;
       if (relationKeys.has(relationKey)) {
         errors.push(`对象 ${object.key} 的 relations[${index}] 与已有 source-target-relation 重复`);
