@@ -5,6 +5,7 @@ CLI 走真实 subprocess，与命令里的调用方式一致。fixture 全部为
 """
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from tests.test_script_contract_checker import run_checker
 
 TOOLKIT = Path(config.ASSETS_DIR) / "workspace-toolkit"
 CLI = TOOLKIT / "scripts" / "solver_evaluator_contract.py"
+PYTHON3 = shutil.which("python3")
 TEMPLATE = TOOLKIT / "templates" / "solver-evaluator-template.py"
 contract = solver_contract._evaluator_contract
 
@@ -526,7 +528,11 @@ def test_template_passes_script_contract_checks(tmp_path: Path):
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["python3", str(CLI), *args], capture_output=True, text=True, timeout=60)
+    # 安全审查：argv 是 shutil.which 解析出的 python3 路径加工具箱自带的 CLI 与本测试的合成参数，
+    # 以序列传入、不经 shell 解析；CLI 只读取传入的评估器文件与本体目录。
+    return subprocess.run(  # NOSONAR(S4721)
+        [PYTHON3, str(CLI), *args], capture_output=True, text=True, shell=False, timeout=60,
+    )
 
 
 def write_workspace(tmp_path: Path, source: str, objects: dict[str, str] | None = None) -> tuple[Path, Path]:

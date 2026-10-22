@@ -83,7 +83,13 @@ _CASE_EVIDENCE_FIELDS = (
     "candidate_results_artifact_ref", "candidate_results_artifact_digest",
     "candidate_count", "candidate_results_error",
 )
-_REQUIRED_EVIDENCE = ("result_artifact_ref", "verification_evidence_ref")
+# Consumer 的权威结果（AuthoritativeResult）必带这些字段，缺任一项说明结果不完整或不是权威结果
+_REQUIRED_EVIDENCE = (
+    "feasibility", "job_id", "result_artifact_ref", "verification_evidence_ref",
+    "knowledge_revision_id", "fact_snapshot_digest", "problem_digest",
+)
+# 有候选结果时两项成对出现；不可行结果可以没有候选
+_CANDIDATE_EVIDENCE = ("candidate_results_artifact_ref", "candidate_results_artifact_digest")
 
 _running: set[str] = set()  # 单进程内防同一项目并发验证
 _tasks: set[asyncio.Task] = set()  # 持有后台任务引用，避免被回收
@@ -170,10 +176,17 @@ def save_cases(root: Path, raw: object) -> list[dict]:
     cases = normalize_cases(raw)
     path = _cases_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".solver-validation-cases-")
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump({"cases": cases}, handle, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".solver-validation-cases-")
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = None
+            json.dump({"cases": cases}, handle, ensure_ascii=False, indent=2)
+        os.replace(temporary_path, path)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        temporary_path.unlink(missing_ok=True)
     return cases
 
 
@@ -220,6 +233,7 @@ class ValidationPlan:
     decision_models: dict[str, str]
     data_source: dict = field(default_factory=lambda: {"mode": "none"})
     allow_unbound: bool = False
+    contract_digests: dict = field(default_factory=dict)
 
 
 def start(
@@ -303,12 +317,19 @@ def start(
             raise WorkspaceError("该项目已有求解契约验证在运行，请等待完成", 409, CODE_BUSY)
         _running.add(project_id)
     try:
-        record = solver_validation.create(root, check.revision, sorted(contracts), by)
+        record = solver_validation.create(
+            root, check.revision, sorted(contracts), by,
+            contract_digest=str(check.digests.get("total") or ""),
+        )
     except Exception:
         _running.discard(project_id)
         raise
     if data_source_id:
-        eval_data_sources.mark_used(project_id, data_source_id)
+        # 只更新最近使用时间；失败不影响验证，也不能在记录已登记后抛出，否则并发占位不释放
+        try:
+            eval_data_sources.mark_used(project_id, data_source_id)
+        except Exception:
+            logger.warning("solver validation could not mark data source used", exc_info=True)
     plan = ValidationPlan(
         project_id=project_id,
         root=root,
@@ -319,6 +340,7 @@ def start(
         decision_models={key: item.decision_model for key, item in contracts.items()},
         data_source=data_source,
         allow_unbound=allow_unbound,
+        contract_digests=check.digests,
     )
     return record, plan
 
@@ -371,9 +393,12 @@ def execute(plan: ValidationPlan, manager: WorkspaceManager | None = None) -> di
             plan.data_source.get("name") or eval_data_sources.default_name(plan.data_source)
         ),
         "decision_models": plan.decision_models,
+        "contract_digests": plan.contract_digests,
     }
     try:
         content = _export(manager, plan)
+        # 导出 ZIP 可复现：同一修订总得到同一字节，这个摘要可与发布产物比对
+        evidence["package_digest"] = "sha256:" + hashlib.sha256(content).hexdigest()
         if manager.solver_check(plan.project_id).revision != plan.revision:
             return _fail(plan, CODE_REVISION_CHANGED, "验证期间求解契约已被修改，请对当前修订重新验证", evidence)
         modeling_project = _import(plan, content)
@@ -482,7 +507,8 @@ def _assess(result: dict, expected: int | None) -> tuple[list[dict], str, str]:
     前两类失败说明的是提问或 Agent 行为，不是知识包求解契约的问题。
     """
     detail = str(result.get("detail") or "").strip()
-    if result.get("solver_tool_called") is False:
+    called = result.get("solver_tool_called")
+    if called is False:
         return (
             [{"name": "solver_tool_called", "passed": False}],
             CODE_TOOL_NOT_CALLED,
@@ -490,9 +516,10 @@ def _assess(result: dict, expected: int | None) -> tuple[list[dict], str, str]:
             + (f"：{detail}" if detail else ""),
         )
     assertions: list[dict] = []
-    if result.get("solver_tool_called") is True:
+    if called is True:
         assertions.append({"name": "solver_tool_called", "passed": True})
-    if result.get("arguments_match") is False:
+    matched = result.get("arguments_match")
+    if matched is False:
         diff = [str(path) for path in result.get("argument_diff") or []][:20]
         assertions.append({"name": "arguments_match", "diff": diff, "passed": False})
         return (
@@ -501,10 +528,21 @@ def _assess(result: dict, expected: int | None) -> tuple[list[dict], str, str]:
             "Agent 传给求解工具的入参与用例不一致（Agent 链路问题，非知识包求解失败）"
             + (f"：{'、'.join(diff[:5])}" if diff else ""),
         )
-    if result.get("arguments_match") is True:
+    if matched is True:
         assertions.append({"name": "arguments_match", "passed": True})
+    # 得到求解结果却缺调用或入参比对结论时不能默认通过：无法确认结果来自这条用例的求解工具调用
+    if result.get("status") == "completed" and called is not True:
+        assertions.append({"name": "solver_tool_called", "passed": False})
+        return assertions, CODE_TOOL_NOT_CALLED, "验证结果缺少求解工具调用记录，无法确认结果来自该求解操作"
+    if result.get("status") == "completed" and matched is not True:
+        assertions.append({"name": "arguments_match", "passed": False})
+        return assertions, CODE_ARGUMENTS_MISMATCH, "验证结果缺少入参比对结论，无法确认按用例入参求解"
     assessed, code, reason = _assess_solver_result(result, expected, detail)
     return assertions + assessed, code, reason
+
+
+def _present(result: dict, key: str) -> bool:
+    return bool(str(result.get(key) or "").strip())
 
 
 def _assess_solver_result(
@@ -522,16 +560,22 @@ def _assess_solver_result(
     authoritative = result.get("authoritative") is True
     assertions = [{"name": "authoritative", "passed": authoritative}]
     if not authoritative:
-        return assertions, CODE_NOT_AUTHORITATIVE, "结果不是 Consumer 的权威求解结果"
-    # 权威结果必须带求解结果与 Verifier 证据的引用，缺任一项不算联调通过（REQ-BLD-005）
-    missing = [key for key in _REQUIRED_EVIDENCE if not str(result.get(key) or "").strip()]
+        return (
+            assertions, CODE_NOT_AUTHORITATIVE,
+            "结果不是 Consumer 的权威求解结果" + (f"：{detail}" if detail else ""),
+        )
+    # 权威结果必须带远程 Job、求解结果、Verifier 证据、事实与问题摘要的引用，缺任一项不算联调通过（REQ-BLD-005）
+    infeasible = result.get("feasibility") == "infeasible"
+    required = list(_REQUIRED_EVIDENCE)
+    if (expected and not infeasible) or any(_present(result, key) for key in _CANDIDATE_EVIDENCE):
+        required.extend(_CANDIDATE_EVIDENCE)
+    missing = [key for key in required if not _present(result, key)]
     assertions.append({"name": "evidence", "missing": missing, "passed": not missing})
     if missing:
-        return assertions, CODE_EVIDENCE_INCOMPLETE, f"权威结果缺少证据引用 {'、'.join(missing)}"
+        return assertions, CODE_EVIDENCE_INCOMPLETE, f"权威结果缺少证据 {'、'.join(missing)}"
     if expected is None:
         return assertions, "", ""
     actual = result.get("candidate_count")
-    infeasible = result.get("feasibility") == "infeasible"
     passed = actual == expected if actual is not None else infeasible
     assertions.append({
         "name": "candidate_count", "expected": expected, "actual": actual, "passed": passed,
@@ -574,6 +618,8 @@ def _finish(plan: ValidationPlan, report: dict, evidence: dict) -> dict | None:
             # 自动生成的提问内嵌整份入参，可由用例重新生成，不重复落证据
             **({} if item.get("question_generated") else {"question": item["question"]}),
             "question_generated": bool(item.get("question_generated")),
+            # 输入摘要：与 Consumer 的事实摘要、问题摘要一起把结果钉到这份入参（REQ-BLD-005）
+            "input_digest": _digest(item["arguments"]),
             **{key: result[key] for key in _CASE_EVIDENCE_FIELDS if key in result},
             "expected_candidate_count": expected,
             "assertions": assertions,

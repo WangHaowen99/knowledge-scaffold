@@ -8,7 +8,7 @@ import {
   notifyAiConstructionMessageWritten,
 } from './ai-construction/messages.js';
 import { PackageChatConversation } from './ai-construction/package-chat-conversation.js';
-import { requireAuth } from './auth/middleware.js';
+import { isOntoAdminRequest, requireAuth } from './auth/middleware.js';
 import { getAuthClient, PasswordChangeRequiredError } from './auth/client.js';
 import { backgroundAuthSessions } from './auth/background-session.js';
 import { getDb } from './db/index.js';
@@ -925,10 +925,15 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const b = (req.body ?? {}) as any;
       if (!b.name) return reply.code(400).send({ error: '项目名必填' });
       const externalId = String(b.external_id ?? '').trim();
+      const ontoOwner = typeof b.onto_owner === 'string' ? b.onto_owner.trim() : '';
+      const owner = ontoOwner && isOntoAdminRequest(req, externalId) ? ontoOwner : req.user!.username;
+      if (ontoOwner.length > 128 && isOntoAdminRequest(req, externalId)) {
+        return reply.code(400).send({ error: '请输入有效的项目所有者' });
+      }
       if (externalId) {
         const existing = getProjectByExternalId(externalId);
         if (existing) {
-          if (existing.owner !== req.user!.username) {
+          if (existing.owner !== owner) {
             return reply.code(409).send({
               code: 'PROJECT_EXTERNAL_ID_CONFLICT',
               error: 'external_id 已被其他项目使用',
@@ -939,7 +944,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       }
       try {
         const project = createProject({
-          owner: req.user!.username, name: b.name, externalId, domain: b.domain,
+          owner, name: b.name, externalId, domain: b.domain,
           background: b.background, targetUsers: b.targetUsers, glossaryPrefs: b.glossaryPrefs,
           runtime: b.runtime === 'agent' ? 'agent' : 'legacy',
         });
@@ -948,7 +953,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         // A concurrent request may have won the unique external_id insert.
         if (externalId && String((error as any)?.message || '').includes('UNIQUE')) {
           const existing = getProjectByExternalId(externalId);
-          if (existing?.owner === req.user!.username) {
+          if (existing?.owner === owner) {
             return reply.send({ project: existing, created: false });
           }
           if (existing) {
@@ -966,7 +971,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const externalId = String((req.query as any)?.external_id ?? '').trim();
       if (!externalId) return reply.code(400).send({ error: 'external_id 必填' });
       const project = getProjectByExternalId(externalId);
-      if (!project || project.owner !== req.user!.username) {
+      if (!project || (project.owner !== req.user!.username && !isOntoAdminRequest(req, project.externalId))) {
         return reply.code(404).send({ error: '项目不存在' });
       }
       return { project };

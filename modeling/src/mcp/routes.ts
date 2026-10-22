@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
+import { registerOntoPackageSyncRoute } from './onto-package-sync.js';
 import { sendHttpError } from '../http-error.js';
 import { canReadProject, canWriteProject, getProject } from '../projects/repo.js';
 import {
@@ -13,10 +14,11 @@ import { toolNamesByToolset } from './toolset.js';
 const TOOL_NAMES = toolNamesByToolset();
 
 export function registerProjectMcpManagementRoutes(app: FastifyInstance): void {
+  registerOntoPackageSyncRoute(app);
   app.get('/api/projects/:id/mcp/runtime/status', async (request, reply) => {
     const projectId = String((request.params as any).id ?? '');
     const project = getProject(projectId);
-    if (!project || !canReadProject(project.id, request.user!.username)) {
+    if (!project || (request.ontoAdminProjectId !== project.id && !canReadProject(project.id, request.user!.username))) {
       return reply.code(404).send({ error: '项目不存在' });
     }
     try {
@@ -29,7 +31,7 @@ export function registerProjectMcpManagementRoutes(app: FastifyInstance): void {
   app.get('/api/projects/:id/mcp/tokens', async (request, reply) => {
     const projectId = String((request.params as any).id ?? '');
     const project = getProject(projectId);
-    if (!project || !canWriteProject(project.id, request.user!.username)) {
+    if (!project || (request.ontoAdminProjectId !== project.id && !canWriteProject(project.id, request.user!.username))) {
       return reply.code(404).send({ error: '项目不存在' });
     }
     return {
@@ -40,7 +42,7 @@ export function registerProjectMcpManagementRoutes(app: FastifyInstance): void {
   app.post('/api/projects/:id/mcp/tokens', async (request, reply) => {
     const projectId = String((request.params as any).id ?? '');
     const project = getProject(projectId);
-    if (!project || !canWriteProject(project.id, request.user!.username)) {
+    if (!project || (request.ontoAdminProjectId !== project.id && !canWriteProject(project.id, request.user!.username))) {
       return reply.code(404).send({ error: '项目不存在' });
     }
     try {
@@ -48,7 +50,10 @@ export function registerProjectMcpManagementRoutes(app: FastifyInstance): void {
       const issued = await issueProjectMcpToken({
         projectId: project.id,
         name: String(body.name ?? ''),
-        subjectUsername: request.user!.username,
+        // A delegated administrator issues a project-owner token; the actual
+        // administrator remains the issuer in the audit record. Runtime ACL
+        // and scope checks continue to use the existing project membership.
+        subjectUsername: request.ontoAdminProjectId === project.id ? project.owner : request.user!.username,
         issuedBy: request.user!.username,
         scopes: Array.isArray(body.scopes) ? body.scopes.map(String) : undefined,
         ttlSeconds: body.expires_in_seconds === null
@@ -71,7 +76,7 @@ export function registerProjectMcpManagementRoutes(app: FastifyInstance): void {
     const projectId = String((request.params as any).id ?? '');
     const tokenId = String((request.params as any).tokenId ?? '');
     const project = getProject(projectId);
-    if (!project || !canWriteProject(project.id, request.user!.username)) {
+    if (!project || (request.ontoAdminProjectId !== project.id && !canWriteProject(project.id, request.user!.username))) {
       return reply.code(404).send({ error: '项目不存在' });
     }
     const revoked = revokeProjectMcpToken(project.id, tokenId, request.user!.username);

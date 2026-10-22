@@ -245,11 +245,13 @@ def test_rename_and_delete_project(manager: WorkspaceManager):
     assert renamed["name"] == "新名"
     assert manager.get_project(meta["id"])["name"] == "新名"
 
+    root = manager.project_root(meta["id"])
     manager.delete_project(meta["id"])
     with pytest.raises(WorkspaceError):
         manager.project_root(meta["id"])
-    trash = manager.workspaces_dir.parent / "trash"
-    assert any(d.name.startswith(meta["id"]) for d in trash.iterdir())
+    assert not root.exists()  # 永久删除：git 历史一并清除，不进回收站
+    assert manager.list_trash() == []
+    assert not any(manager.purge_dir().iterdir())
 
 
 def test_export_and_import_roundtrip(manager: WorkspaceManager, tmp_path: Path):
@@ -258,7 +260,7 @@ def test_export_and_import_roundtrip(manager: WorkspaceManager, tmp_path: Path):
     (root / "ontology" / "object").mkdir(parents=True, exist_ok=True)
     (root / "ontology" / "object" / "订单.md").write_text("# 订单", encoding="utf-8")
     (root / "research").mkdir(exist_ok=True)
-    (root / "research" / "调研.md").write_text("调研", encoding="utf-8")
+    (root / "research" / "资料分析.md").write_text("资料分析", encoding="utf-8")
 
     dest = tmp_path / "out.zip"
     manager.export_zip(meta["id"], "ontology", dest)

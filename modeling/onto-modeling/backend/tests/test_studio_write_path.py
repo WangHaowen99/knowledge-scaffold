@@ -1,5 +1,6 @@
 """Studio 写路径（草稿/租约/确定性分流）、报告条目解析与回收站的测试。"""
 
+import shutil
 import time
 from pathlib import Path
 
@@ -180,6 +181,51 @@ def test_graph_projects_semantic_edges_and_rich_node_details(env):
     assert all(edge["id"].startswith("edge-") for edge in data["edges"])
 
 
+@pytest.mark.parametrize("role, kind, object_is_source", [
+    ("输入数据的对象", "operation_input_object", True),
+    ("输出数据的对象", "operation_output_object", False),
+    ("支撑数据的对象", "operation_support_object", True),
+])
+@pytest.mark.parametrize("association_first", [True, False])
+def test_graph_reference_dedup_is_independent_of_section_order(
+    tmp_path, role, kind, object_is_source, association_first
+):
+    """Synthetic documents retain semantic edges and unrelated legacy references."""
+    objects = tmp_path / "ontology/object"
+    operations = tmp_path / "ontology/operation"
+    objects.mkdir(parents=True)
+    operations.mkdir(parents=True)
+    for name in ("synthetic_object", "synthetic_other"):
+        (objects / f"{name}.md").write_text(
+            "# 对象描述\n\nsynthetic description\n", encoding="utf-8"
+        )
+    association = f"# 与object的关联\n\n- {role}：[[synthetic_object]]\n"
+    logic = (
+        "# 逻辑描述\n\n1. 使用 [[synthetic_object]]\n"
+        "2. 引用 [[synthetic_other]]\n3. 再次使用 [[synthetic_object]]\n"
+    )
+    sections = [association, logic] if association_first else [logic, association]
+    (operations / "synthetic_operation.md").write_text(
+        "# 业务描述\n\nsynthetic operation\n\n" + "\n".join(sections),
+        encoding="utf-8",
+    )
+
+    graph = studio.graph(tmp_path)
+    source, target = (
+        ("synthetic_object", "synthetic_operation") if object_is_source
+        else ("synthetic_operation", "synthetic_object")
+    )
+    edges = graph["edges"]
+    assert len(edges) == 2
+    assert {(edge["source"], edge["target"], edge["kind"]) for edge in edges} == {
+        (source, target, kind),
+        ("synthetic_operation", "synthetic_other", "references"),
+    }
+    for node in graph["nodes"]:
+        assert node["in"] == sum(edge["target"] == node["id"] for edge in edges)
+        assert node["out"] == sum(edge["source"] == node["id"] for edge in edges)
+
+
 def test_graph_drops_fallback_object_relation_when_explicit_relation_exists(env):
     (env / "ontology" / "object" / "客户.md").write_text(
         "# 对象描述\n\n客户\n# 关联对象\n\n"
@@ -258,9 +304,18 @@ def manager(tmp_path: Path) -> WorkspaceManager:
     return WorkspaceManager(tmp_path / "data", assets)
 
 
+def _legacy_trash(manager: WorkspaceManager, project_id: str) -> None:
+    """模拟旧版软删除留下的存量条目（现在的删除已是永久删除，不再产生回收站条目）。"""
+    manager.trash_dir().mkdir(parents=True, exist_ok=True)
+    shutil.move(
+        str(manager.project_root(project_id)),
+        str(manager.trash_dir() / f"{project_id}-{int(time.time())}"),
+    )
+
+
 def test_trash_list_and_restore(manager: WorkspaceManager):
     meta = manager.create_project("待恢复")
-    manager.delete_project(meta["id"])
+    _legacy_trash(manager, meta["id"])
     entries = manager.list_trash()
     assert entries and entries[0]["project_name"] == "待恢复"
     restored = manager.restore_trash(entries[0]["name"])
@@ -271,7 +326,7 @@ def test_trash_list_and_restore(manager: WorkspaceManager):
 
 def test_restore_conflicting_id_gets_new_id(manager: WorkspaceManager):
     meta = manager.create_project("重名")
-    manager.delete_project(meta["id"])
+    _legacy_trash(manager, meta["id"])
     entry = manager.list_trash()[0]
     # 人为占用原 id
     (manager.workspaces_dir / meta["id"]).mkdir(parents=True)

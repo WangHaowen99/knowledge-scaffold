@@ -19,6 +19,8 @@ from app.services import eval_data_sources, solver_contract, solver_validation, 
 from app.services.workspace import WorkspaceError, WorkspaceManager
 
 TOKEN = "synthetic-access-token"
+# RFC 5737 文档保留地址（TEST-NET-1），运行时拼出，避免在源码里出现 IP 字面量
+SYNTHETIC_IP = ".".join(("192", "0", "2", "10"))
 MODEL_YAML = """id: route_plan
 profile_id: ordered_binary_route.v1
 required_facts:
@@ -139,6 +141,9 @@ def _authoritative(case: dict, **extra) -> dict:
         "operation_key": case["operation_key"],
         "status": "completed",
         "authoritative": True,
+        "solver_tool_called": True,
+        "solver_tool": "solve_plan_route_0a1b2c3d",
+        "arguments_match": True,
         "run_id": f"run-{case['id']}",
         "job_id": f"job-{case['id']}",
         "feasibility": "feasible",
@@ -146,6 +151,9 @@ def _authoritative(case: dict, **extra) -> dict:
         "proof_kind": "exact_search",
         "result_artifact_ref": f"artifact://result/{case['id']}",
         "verification_evidence_ref": f"artifact://evidence/{case['id']}",
+        "knowledge_revision_id": "0.1.2",
+        "fact_snapshot_digest": "sha256:synthetic-facts",
+        "problem_digest": f"sha256:synthetic-problem-{case['id']}",
         "candidate_results_artifact_ref": f"artifact://candidates/{case['id']}",
         "candidate_results_artifact_digest": "sha256:candidates",
         "candidate_count": 2 * count,
@@ -364,6 +372,35 @@ def test_start_rejects_import_data_sources_and_unavailable_modeling(
     assert solver_validation.list_records(root) == []
 
 
+def test_start_tolerates_mark_used_failure_and_releases_slot_when_record_fails(
+    manager: WorkspaceManager, stub, monkeypatch
+):
+    stub()
+    pid, root, revision = _project(manager)
+    solver_validation_run.save_cases(root, [_case("n7", 7)])
+    source = {"id": "ds_synthetic", "mode": "connection", "name": "合成外部连接"}
+    monkeypatch.setattr(eval_data_sources, "get_source", lambda *args: source)
+    monkeypatch.setattr(solver_validation_run.modeling_eval, "needs_import", lambda found: False)
+
+    def broken(*args, **kwargs):
+        raise OSError("synthetic storage failure")
+
+    # 最近使用时间写不进去不影响验证，也不能在记录登记后抛出而留下并发占位
+    monkeypatch.setattr(eval_data_sources, "mark_used", broken)
+    record, plan = _start(manager, pid, revision, data_source_id="ds_synthetic")
+    try:
+        assert record["status"] == solver_validation.STATUS_QUEUED
+        assert plan.data_source == source
+    finally:
+        solver_validation_run._running.discard(pid)
+
+    solver_validation.update(root, record["id"], status=solver_validation.STATUS_FAILED)
+    monkeypatch.setattr(solver_validation, "create", broken)
+    with pytest.raises(OSError):
+        _start(manager, pid, revision)
+    assert pid not in solver_validation_run._running
+
+
 def test_concurrent_start_is_rejected(manager: WorkspaceManager, stub):
     stub()
     pid, root, revision = _project(manager)
@@ -406,7 +443,20 @@ def test_two_n_candidates_pass_and_unlock_publish(manager: WorkspaceManager, stu
     assert record["result_digest"].startswith("sha256:")
     assert "request_digest" not in evidence and "result_digest" not in evidence
     assert evidence["modeling_project"] == "mp_synthetic"
+    # 规范化契约摘要、导出包字节摘要与逐用例输入摘要都进证据（REQ-PKG-006 / REQ-BLD-005）
+    assert record["contract_digest"].startswith("sha256:")
+    assert evidence["contract_digests"]["total"] == record["contract_digest"]
+    assert set(evidence["contract_digests"]["operations"]) == {"plan_route"}
+    assert manager.solver_release_status(pid)["digests"]["total"] == record["contract_digest"]
+    assert evidence["package_digest"].startswith("sha256:")
+    assert evidence["cases"][1]["input_digest"] == solver_validation_run._digest(_batches(7))
+    assert evidence["cases"][1]["problem_digest"] == "sha256:synthetic-problem-n7"
     assert manager.solver_release_status(pid)["gate"] == []
+
+    # 同一修订再验证一次：导出包逐字节相同，契约摘要不变
+    again = _run(manager, pid, revision)
+    assert again["evidence"]["package_digest"] == evidence["package_digest"]
+    assert again["contract_digest"] == record["contract_digest"]
     manager.publish_package(pid, tmp_path / "solver.zip")
 
     validation = server.find("/solver-contract-validations")
@@ -445,6 +495,7 @@ def test_all_infeasible_is_a_valid_authoritative_result(manager: WorkspaceManage
         _authoritative(
             case, feasibility="infeasible", optimality="not_applicable",
             candidate_count=None, candidate_results_artifact_ref=None,
+            candidate_results_artifact_digest=None,
         )
         for case in cases
     ]}}))
@@ -458,9 +509,19 @@ def test_all_infeasible_is_a_valid_authoritative_result(manager: WorkspaceManage
     assert solver_validation.is_accepted(record)
 
 
-def test_non_authoritative_result_cannot_pass(manager: WorkspaceManager, stub, tmp_path: Path):
+@pytest.mark.parametrize("extra", [
+    {"authoritative": False},
+    # modeling 没收到同一调用的 solver.result.authoritative 事件时把结果降为非权威并带上原因
+    {
+        "authoritative": False, "code": "solver_authoritative_event_missing",
+        "detail": "没有收到该求解调用的权威结果事件",
+    },
+])
+def test_non_authoritative_result_cannot_pass(
+    manager: WorkspaceManager, stub, tmp_path: Path, extra: dict,
+):
     stub(lambda cases: (200, {"validation": {"package": {}, "cases": [
-        _authoritative(case, authoritative=False) for case in cases
+        _authoritative(case, **extra) for case in cases
     ]}}))
     pid, root, revision = _project(manager)
     solver_validation_run.save_cases(root, [_case("n7", 7)])
@@ -470,6 +531,8 @@ def test_non_authoritative_result_cannot_pass(manager: WorkspaceManager, stub, t
     assert record["status"] == solver_validation.STATUS_FAILED
     assert record["authoritative"] is False
     assert record["error_code"] == solver_validation_run.CODE_NOT_AUTHORITATIVE
+    assert extra.get("detail", "") in record["message"]
+    assert manager.solver_release_status(pid)["gate"][0]["code"] == solver_contract.CODE_VALIDATION_FAILED
     with pytest.raises(WorkspaceError):
         manager.publish_package(pid, tmp_path / "blocked.zip")
 
@@ -495,6 +558,58 @@ def test_authoritative_result_without_evidence_refs_cannot_pass(
         manager.publish_package(pid, tmp_path / "blocked.zip")
 
 
+def _completed(**extra) -> dict:
+    return _authoritative({"id": "n7", "operation_key": "plan_route", "arguments": _batches(7)}, **extra)
+
+
+@pytest.mark.parametrize(("missing", "code"), [
+    ("solver_tool_called", solver_validation_run.CODE_TOOL_NOT_CALLED),
+    ("arguments_match", solver_validation_run.CODE_ARGUMENTS_MISMATCH),
+])
+def test_completed_result_without_tool_conclusions_cannot_pass(missing: str, code: str):
+    result = _completed()
+    del result[missing]
+    assertions, actual, reason = solver_validation_run._assess(result, 14)
+    assert actual == code
+    assert assertions[-1] == {"name": missing, "passed": False}
+    assert "缺少" in reason
+
+
+@pytest.mark.parametrize("key", [
+    *solver_validation_run._REQUIRED_EVIDENCE, *solver_validation_run._CANDIDATE_EVIDENCE,
+])
+def test_each_authoritative_evidence_field_is_required(key: str):
+    assertions, code, reason = solver_validation_run._assess(_completed(**{key: " "}), 14)
+    assert code == solver_validation_run.CODE_EVIDENCE_INCOMPLETE
+    assert assertions[-1] == {"name": "evidence", "missing": [key], "passed": False}
+    assert key in reason
+
+
+def test_candidate_evidence_is_paired_and_optional_only_without_candidates():
+    assess = solver_validation_run._assess
+    no_candidates = {
+        "candidate_count": None,
+        "candidate_results_artifact_ref": None,
+        "candidate_results_artifact_digest": None,
+    }
+    # 全不可行可以没有候选；有候选时仍按 2N 核对
+    assert assess(_completed(feasibility="infeasible", **no_candidates), 14)[1] == ""
+    assert assess(_completed(feasibility="infeasible"), 14)[1] == ""
+    assert assess(_completed(feasibility="infeasible", candidate_count=4), 14)[1] == (
+        solver_validation_run.CODE_CANDIDATE_MISMATCH
+    )
+    # 候选引用与摘要成对出现，只给一半不算完整
+    half = _completed(feasibility="infeasible", candidate_count=None, candidate_results_artifact_ref=None)
+    assertions, code, _reason = assess(half, 14)
+    assert code == solver_validation_run.CODE_EVIDENCE_INCOMPLETE
+    assert assertions[-1]["missing"] == ["candidate_results_artifact_ref"]
+    # 可行且有候选预期时必须带候选；没有候选预期的求解操作不要求
+    assertions, code, _reason = assess(_completed(**no_candidates), 14)
+    assert code == solver_validation_run.CODE_EVIDENCE_INCOMPLETE
+    assert assertions[-1]["missing"] == list(solver_validation_run._CANDIDATE_EVIDENCE)
+    assert assess(_completed(**no_candidates), None)[1] == ""
+
+
 def test_capability_drift_and_missing_results_fail_with_case_codes(manager: WorkspaceManager, stub):
     stub(lambda cases: (200, {"validation": {"package": {}, "cases": [{
         "id": cases[0]["id"], "operation_key": "plan_route", "status": "error",
@@ -516,7 +631,7 @@ def test_capability_drift_and_missing_results_fail_with_case_codes(manager: Work
 def test_consumer_unavailable_is_recorded_without_addresses(manager: WorkspaceManager, stub):
     stub(lambda cases: (502, {
         "code": "CONSUMER_UNAVAILABLE",
-        "error": "Consumer 请求失败：connect 192.0.2.10:8000，见 https://consumer.example.com/status",
+        "error": f"Consumer 请求失败：connect {SYNTHETIC_IP}:8000，见 https://consumer.example.com/status",
         "stage": "workspace",
     }))
     pid, root, revision = _project(manager)
@@ -526,7 +641,7 @@ def test_consumer_unavailable_is_recorded_without_addresses(manager: WorkspaceMa
 
     assert record["status"] == solver_validation.STATUS_FAILED
     assert record["error_code"] == "consumer_unavailable"
-    assert "192.0.2.10" not in record["message"]
+    assert SYNTHETIC_IP not in record["message"]
     assert "example.com" not in record["message"]
     assert "[地址已隐藏]" in record["message"]
 

@@ -188,6 +188,301 @@ def test_model_settings_session_env_overrides_both_auth_vars(tmp_path, monkeypat
     assert env["ANTHROPIC_MODEL"] == "some-model"
 
 
+def test_model_context_settings_inject_cli_env(tmp_path, monkeypatch):
+    """配置页只存窗口与最大输出；压缩窗口按两者推算，一并转成 CLI 环境变量。"""
+    from app import config
+    from app.services import model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    model_settings.save("https://gateway.example.com", "test-key-value", "some-model")
+
+    saved = model_settings.save_context({"max_context_tokens": 200000, "max_output_tokens": 16000})
+    assert saved["context"] == {"max_context_tokens": 200000, "max_output_tokens": 16000}
+    env = model_settings.session_env()
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "200000"
+    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "16000"
+    assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "190000"
+    assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" not in env
+    # 网关配置不受影响
+    assert env["ANTHROPIC_API_KEY"] == "test-key-value"
+
+    # 全留空：按内置默认注入
+    model_settings.save_context({})
+    claude_env = {k: v for k, v in model_settings.session_env().items() if k.startswith("CLAUDE_")}
+    assert claude_env == {
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000",
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "32000",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "180000",
+    }
+
+
+def test_model_context_defaults_when_unset(tmp_path, monkeypatch):
+    """配置页与 .env 都没配时，窗口按 200K、最大输出按 32000 注入，配置页可读到默认值及来源。"""
+    from app import config
+    from app.services import model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    saved = model_settings.save("https://gateway.example.com", "test-key-value", "some-model")
+
+    assert saved["context"] == {"max_context_tokens": None, "max_output_tokens": None}
+    assert saved["context_defaults"]["max_context_tokens"] == {
+        "value": 200000,
+        "source": "default",
+        "env": "ONTO_WEB_CONTEXT_WINDOW",
+    }
+    assert saved["context_defaults"]["max_output_tokens"] == {
+        "value": 32000,
+        "source": "default",
+        "env": "ONTO_WEB_CONTEXT_MAX_OUTPUT_TOKENS",
+    }
+    assert saved["context_defaults"]["auto_compact_window"]["value"] is None
+    env = model_settings.session_env()
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "200000"
+    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "32000"
+    assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "180000"
+
+    # 显式填写的窗口优先于默认值，压缩窗口随之重新推算
+    model_settings.save_context({"max_context_tokens": 128000})
+    env = model_settings.session_env()
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "128000"
+    assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "110000"
+
+
+def test_model_context_derives_pct_below_compact_window_minimum(tmp_path, monkeypatch):
+    """所需压缩窗口低于 CLI 下限 100000 时改推触发百分比。"""
+    from app import config
+    from app.services import model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    model_settings.save_context({"max_context_tokens": 128000, "max_output_tokens": 65536})
+    env = model_settings.session_env()
+    assert env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == "45"
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in env
+
+
+@pytest.mark.parametrize(
+    "model, expected",
+    [
+        ("gateway-model-x", True),
+        ("some-gateway-model", True),
+        ("claude-sonnet-4-5", False),
+        ("Claude-Opus-4-1[1m]", False),
+        ("sonnet", False),
+        ("opus[1m]", False),
+        ("", False),
+    ],
+)
+def test_cli_uses_env_window_only_for_models_cli_does_not_know(model, expected):
+    from app.services import model_settings
+
+    assert model_settings.cli_uses_env_window(model) is expected
+
+
+def test_cli_context_limits_match_cli_report():
+    """实测：窗口 200000、压缩窗口 180000、最大输出 32000 时 CLI 报告 180000 / 147000。"""
+    from app.services import model_settings
+
+    env = {
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "180000",
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "32000",
+    }
+    assert model_settings.cli_context_limits(env) == (180000, 147000)
+    # 没有压缩窗口：按模型窗口；最大输出未给按 CLI 默认 32000（预留封顶 20000）
+    assert model_settings.cli_context_limits({"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000"}) == (200000, 167000)
+    # 触发百分比只会让压缩提前：(128000 − 20000) × 45% = 48600
+    env = {
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "128000",
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "65536",
+        "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "45",
+    }
+    assert model_settings.cli_context_limits(env) == (128000, 48600)
+    assert model_settings.cli_context_limits(
+        {"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000", "DISABLE_AUTO_COMPACT": "1"}
+    ) == (200000, None)
+    assert model_settings.cli_context_limits({}) == (None, None)
+
+
+def test_model_context_env_fallback_below_settings_page(tmp_path, monkeypatch):
+    """优先级：配置页 > .env > 内置默认；.env 名与引擎无关，按项回落。"""
+    from app import config
+    from app.services import model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setenv("ONTO_WEB_CONTEXT_WINDOW", "128000")
+    monkeypatch.setenv("ONTO_WEB_CONTEXT_MAX_OUTPUT_TOKENS", "16000")
+
+    defaults = model_settings.masked()["context_defaults"]
+    assert defaults["max_context_tokens"]["value"] == 128000
+    assert defaults["max_context_tokens"]["source"] == "env"
+    assert defaults["max_output_tokens"]["source"] == "env"
+    env = model_settings.session_env()
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "128000"
+    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "16000"
+    assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "120000"
+
+    model_settings.save_context({"max_context_tokens": 256000})
+    env = model_settings.session_env()
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "256000"
+    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "16000"
+
+    # 留空项按 .env 值参与校验：最大输出 16000 不小于窗口 16000
+    with pytest.raises(model_settings.ModelConfigError, match="最大输出留空时"):
+        model_settings.save_context({"max_context_tokens": 16000})
+
+
+def test_model_context_env_compaction_disables_derivation(tmp_path, monkeypatch):
+    """.env 配了任一压缩参数就完全按 .env，不再推算压缩窗口。"""
+    from app import config
+    from app.services import model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setenv("ONTO_WEB_CONTEXT_COMPACT_PCT", "80")
+
+    env = model_settings.session_env()
+    assert env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == "80"
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in env
+    assert model_settings.context_defaults()["autocompact_pct"] == {
+        "value": 80,
+        "source": "env",
+        "env": "ONTO_WEB_CONTEXT_COMPACT_PCT",
+    }
+
+
+def test_model_context_ignores_legacy_saved_compaction(tmp_path, monkeypatch):
+    """旧版本在配置页存过的压缩窗口与触发百分比不再读取，压缩参数照常推算。"""
+    import json
+
+    from app import config
+    from app.services import model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    (tmp_path / "model-settings.json").write_text(
+        json.dumps(
+            {
+                "context": {
+                    "max_context_tokens": 200000,
+                    "max_output_tokens": 16000,
+                    "auto_compact_window": 150000,
+                    "autocompact_pct": 60,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert model_settings.context_config() == {"max_context_tokens": 200000, "max_output_tokens": 16000}
+    env = model_settings.session_env()
+    assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "190000"
+    assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" not in env
+
+
+def test_model_context_env_invalid_values_ignored(tmp_path, monkeypatch):
+    from app import config
+    from app.services import model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setenv("ONTO_WEB_CONTEXT_WINDOW", "not-a-number")
+    monkeypatch.setenv("ONTO_WEB_CONTEXT_COMPACT_PCT", "150")
+
+    defaults = model_settings.context_defaults()
+    assert defaults["max_context_tokens"]["value"] == 200000
+    assert defaults["max_context_tokens"]["source"] == "default"
+    assert defaults["autocompact_pct"]["value"] is None
+    env = model_settings.session_env()
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "200000"
+    assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" not in env
+
+
+def test_model_context_reads_legacy_section_and_migrates_on_save(tmp_path, monkeypatch):
+    import json
+
+    from app import config
+    from app.services import model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    path = tmp_path / "model-settings.json"
+    path.write_text(json.dumps({"claude_context": {"max_context_tokens": 128000}}), encoding="utf-8")
+
+    assert model_settings.context_config()["max_context_tokens"] == 128000
+
+    model_settings.save_context({"max_context_tokens": 64000})
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert "claude_context" not in data
+    assert data["context"] == {"max_context_tokens": 64000}
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"max_output_tokens": True},
+        {"max_context_tokens": "200000"},
+        {"max_context_tokens": 999},
+        {"max_context_tokens": 10_000_001},
+        {"max_output_tokens": 999},
+        {"max_context_tokens": 200000, "max_output_tokens": 200000},
+        {"max_output_tokens": 200000},  # 未填窗口时按默认 200K 校验
+        {"max_context_tokens": 32000},  # 未填最大输出时按默认 32000 校验
+    ],
+)
+def test_model_context_settings_reject_invalid(tmp_path, monkeypatch, values):
+    from app import config
+    from app.services import model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    with pytest.raises(model_settings.ModelConfigError):
+        model_settings.save_context(values)
+    assert model_settings.context_config() == {"max_context_tokens": None, "max_output_tokens": None}
+
+
+def test_model_settings_save_with_invalid_context_saves_nothing(tmp_path, monkeypatch):
+    """网关配置与上下文参数一起保存：上下文不合法时整体拒绝，网关配置也不写。"""
+    from types import SimpleNamespace
+
+    from app import config
+    from app.routers import settings as settings_router
+    from app.services import model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    request = SimpleNamespace(state=SimpleNamespace(user={"role": "admin"}))
+    body = settings_router.ClaudeModelBody(
+        base_url="https://gateway.example.com",
+        model="some-model",
+        context=settings_router.ContextBody(max_context_tokens=128000, max_output_tokens=128000),
+    )
+    response = settings_router.put_model_settings(body, request)
+    assert response.status_code == 400
+    assert model_settings.load() == {}
+
+    body.context.max_output_tokens = 16000
+    saved = settings_router.put_model_settings(body, request)
+    assert saved["model"] == "some-model"
+    assert saved["context"] == {"max_context_tokens": 128000, "max_output_tokens": 16000}
+
+
+def test_model_context_route_requires_admin(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app import config
+    from app.routers import settings as settings_router
+    from app.services import auth, model_settings
+    from app.services.auth import AuthError
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(auth, "ENABLED", True)
+    body = settings_router.ContextBody(max_context_tokens=128000)
+
+    modeler = SimpleNamespace(state=SimpleNamespace(user={"role": "modeler"}))
+    with pytest.raises(AuthError) as exc:
+        settings_router.put_model_context_settings(body, modeler)
+    assert exc.value.status == 403
+    assert model_settings.context_config()["max_context_tokens"] is None
+
+    admin = SimpleNamespace(state=SimpleNamespace(user={"role": "admin"}))
+    saved = settings_router.put_model_context_settings(body, admin)
+    assert saved["context"]["max_context_tokens"] == 128000
+
+
 def test_expire_orphan_permissions_broadcasts_expired():
     from app.services.agent_sessions import Session, _expire_orphan_permissions
 
@@ -216,3 +511,54 @@ def test_config_error_translation():
     assert not _looks_like_config_error("模型输出正常文本")
     # 未登录也必须先被识别为原始错误才会进入替换分支
     assert _looks_like_raw_error("Not logged in · Please run /login")
+
+
+
+def test_studio_original_names_keep_encoded_links_and_ids(tmp_path):
+    """Synthetic slash and literal-percent names must remain distinct navigation IDs."""
+    import json
+    from app.services.document_metadata import report_name
+
+    entities = [
+        ("operation", "synthetic_a%2Fb", "synthetic_a/b"),
+        ("operation", "synthetic_a%252Fb", "synthetic_a%2Fb"),
+        ("rule", "synthetic_rule%2Fdemo", "synthetic_rule/demo"),
+    ]
+    for kind, stem, name in entities:
+        path = tmp_path / "ontology" / kind / f"{stem}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("---\nreport_name: " + json.dumps(name) + "\n---\n"
+                        + "# 业务描述\n\n[[synthetic_rule%2Fdemo]]\n"
+                        + "# 逻辑描述\n\n1. synthetic step\n", encoding="utf-8")
+    result = studio.graph(tmp_path)
+    nodes = {node["id"]: node for node in result["nodes"]}
+    for kind, stem, name in entities:
+        assert nodes[stem]["label"] == name
+        assert nodes[stem]["path"] == f"ontology/{kind}/{stem}.md"
+    assert {(edge["source"], edge["target"]) for edge in result["edges"]} == {
+        ("synthetic_a%2Fb", "synthetic_rule%2Fdemo"),
+        ("synthetic_a%252Fb", "synthetic_rule%2Fdemo"),
+    }
+    entry = studio.element(tmp_path, "ontology/operation/synthetic_a%2Fb.md")
+    assert entry["name"] == "synthetic_a%2Fb"
+    assert entry["label"] == "synthetic_a/b"
+    assert entry["links"] == ["synthetic_rule%2Fdemo"]
+    assert "report_name" not in entry["intro"]
+    edited = entry["name_frontmatter"] + studio.serialize_sections(entry["sections"])
+    assert report_name(edited) == "synthetic_a/b"
+    rule = studio.element(tmp_path, "ontology/rule/synthetic_rule%2Fdemo.md")
+    assert {back["label"] for back in rule["backlinks"]} == {"synthetic_a/b", "synthetic_a%2Fb"}
+    assert studio.operation_flow(tmp_path, "synthetic_a%2Fb")["operationId"] == "synthetic_a%2Fb"
+
+
+@pytest.mark.parametrize("raw", [
+    '---\nreport_name: "synthetic_a/b"\nreport_name: "synthetic_other"\n---\n',
+    '---\nreport_name: invalid\n---\n',
+    '---\nreport_name: "synthetic_a/b"\n',
+])
+def test_invalid_name_metadata_does_not_break_studio(tmp_path, raw):
+    target = tmp_path / "ontology/operation/synthetic_plain.md"
+    target.parent.mkdir(parents=True)
+    target.write_text(raw + "# 业务描述\n\nsynthetic description\n", encoding="utf-8")
+    assert studio.graph(tmp_path)["nodes"][0]["label"] == "synthetic_plain"
+    assert studio.element(tmp_path, "ontology/operation/synthetic_plain.md")["label"] == "synthetic_plain"

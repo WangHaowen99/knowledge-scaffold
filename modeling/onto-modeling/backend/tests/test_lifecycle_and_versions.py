@@ -200,7 +200,7 @@ def test_import_summary_reports_contents(manager: WorkspaceManager, tmp_path: Pa
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("ontology/object/订单.md", "# 订单")
         zf.writestr("ontology/logic/创建订单.md", "# 创建订单")
-        zf.writestr("research/summary.md", "调研")
+        zf.writestr("research/summary.md", "资料分析")
         zf.writestr(".git/config", "skip me")
     summary = manager.import_summary(archive)
     assert summary["objects"] == 1
@@ -325,9 +325,11 @@ def test_export_package_zip_script_entrypoint_is_ascii_filename(manager: Workspa
     """modeling 要求 entrypoint 满足 ^[A-Za-z0-9_.-]+\\.py$，并按 scripts/<entrypoint> 取源码。"""
     meta = manager.create_project("脚本入口")
     root = manager.project_root(meta["id"])
+    (root / "ontology" / "operation" / "定价.md").write_text("# 定价\n", encoding="utf-8")
+    header = '"""\n关联operation：定价\n"""\n'
     sources = {
-        "calc_price": "def run():\n    return {'price': 1}\n",
-        "计算折扣": "def run():\n    return {'discount': 2}\n",
+        "calc_price": header + "def run():\n    return {'price': 1}\n",
+        "计算折扣": header + "def run():\n    return {'discount': 2}\n",
     }
     for key, code in sources.items():
         (root / "ontology" / "scripts" / f"{key}.py").write_text(code, encoding="utf-8")
@@ -348,6 +350,34 @@ def test_export_package_zip_script_entrypoint_is_ascii_filename(manager: Workspa
     with zipfile.ZipFile(dest) as first, zipfile.ZipFile(again) as second:
         doc = f"{pid}/scripts/计算折扣.md"
         assert first.read(doc) == second.read(doc)
+
+
+def test_export_package_zip_keeps_helper_scripts_as_source_only(manager: WorkspaceManager, tmp_path: Path):
+    """「关联operation」为「无」或不是现有操作的脚本是辅助模块：只带源码，不写描述符、不进脚本目录。"""
+    meta = manager.create_project("辅助脚本")
+    root = manager.project_root(meta["id"])
+    (root / "ontology" / "operation" / "定价.md").write_text("# 定价\n", encoding="utf-8")
+    scripts = {
+        "calc_price": "定价",
+        "shared_utils": "无",
+        "orphan_calc": "不存在的操作",
+    }
+    for key, bound in scripts.items():
+        (root / "ontology" / "scripts" / f"{key}.py").write_text(
+            f'"""\n关联operation：{bound}\n"""\ndef run():\n    return 1\n', encoding="utf-8",
+        )
+    dest = tmp_path / "pkg.zip"
+    manager.export_package_zip(meta["id"], dest)
+    pid = meta["id"]
+    with zipfile.ZipFile(dest) as zf:
+        names = set(zf.namelist())
+        index = zf.read(f"{pid}/scripts/index.md").decode("utf-8")
+    for key in scripts:
+        assert f"{pid}/scripts/{key}.py" in names
+    assert f"{pid}/scripts/calc_price.md" in names and "| calc_price |" in index
+    for helper in ("shared_utils", "orphan_calc"):
+        assert f"{pid}/scripts/{helper}.md" not in names
+        assert f"| {helper} |" not in index
 
 
 def test_excel_preview_roundtrip(tmp_path: Path):
@@ -529,3 +559,66 @@ def test_migrate_from_modeling_end_to_end(manager: WorkspaceManager, tmp_path: P
     # 幂等：再跑一次跳过
     assert mig.main() == 0
     assert sum(1 for p in manager.list_projects() if p.get("migrated_from") == "pj_test1") == 1
+
+
+def test_migrate_render_excel_tables_skips_null_entries():
+    import sys
+
+    sys.path.append(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import migrate_from_modeling as mig
+
+    body = mig.render_excel_tables(
+        '[null, {"name": null, "fields": null},'
+        ' {"name": "T1", "fields": [null, {"name": "ID", "inferredType": "string",'
+        ' "sampleValues": ["a"]}]}]'
+    )
+    assert "## 未命名表" in body
+    assert "| ID | string | a |" in body
+    assert mig.render_excel_tables('{"name": "T1"}') == ""
+
+
+def test_migrate_from_modeling_failed_project_is_retried(
+    manager: WorkspaceManager, tmp_path: Path, monkeypatch
+):
+    import sqlite3
+    import sys
+
+    sys.path.append(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import migrate_from_modeling as mig
+
+    source = tmp_path / "modeling-data"
+    source.mkdir()
+    db = sqlite3.connect(source / "modeling.db")
+    db.execute("CREATE TABLE projects (id TEXT, owner TEXT, name TEXT, domain TEXT, background TEXT)")
+    db.execute(
+        "CREATE TABLE documents (project_id TEXT, filename TEXT, kind TEXT,"
+        " text_content TEXT, tables_json TEXT, lifecycle_status TEXT)"
+    )
+    db.execute("INSERT INTO projects VALUES ('pj_bad', 'alice', '坏项目', '', '')")
+    db.execute("INSERT INTO projects VALUES ('pj_ok', 'bob', '好项目', '', '')")
+    db.execute("INSERT INTO documents VALUES ('pj_bad', '说明.docx', 'word', '正文', NULL, 'active')")
+    db.commit()
+    db.close()
+
+    from app import config as app_config
+
+    monkeypatch.setattr(app_config, "DATA_DIR", manager.workspaces_dir.parent)
+    monkeypatch.setattr(app_config, "ASSETS_DIR", manager.assets_dir)
+    monkeypatch.setattr(sys, "argv", ["mig", "--source", str(source)])
+
+    real_migrate_documents = mig.migrate_documents
+
+    def broken_for_bad(db, project_id, *args):
+        if project_id == "pj_bad":
+            raise AttributeError("boom")
+        return real_migrate_documents(db, project_id, *args)
+
+    monkeypatch.setattr(mig, "migrate_documents", broken_for_bad)
+    assert mig.main() == 1
+    projects = manager.list_projects()
+    assert [p["name"] for p in projects] == ["好项目"]  # 失败项目不留半成品，也不阻断后续项目
+
+    monkeypatch.setattr(mig, "migrate_documents", real_migrate_documents)
+    assert mig.main() == 0
+    sources = sorted(p.get("migrated_from") for p in manager.list_projects())
+    assert sources == ["pj_bad", "pj_ok"]

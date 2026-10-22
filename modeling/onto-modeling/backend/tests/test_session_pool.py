@@ -13,7 +13,13 @@ import pytest
 
 from app import config
 from app.services import agent_sessions
-from app.services.agent_sessions import SessionManager, load_resume_id, save_resume_id
+from app.services.agent_sessions import (
+    SessionManager,
+    _is_visible_chat_event,
+    load_resume_id,
+    save_resume_id,
+    visible_history_start,
+)
 from app.services.engines.claude import ClaudeEngine
 
 
@@ -174,6 +180,29 @@ def test_resume_id_passed_to_options(pool_env, tmp_path):
     asyncio.run(scenario())
 
 
+def test_resume_id_scoped_to_engine(pool_env, tmp_path):
+    manager, _, _ = pool_env
+
+    async def scenario():
+        # 切到 jiuwen 引擎后写下的 token，Claude 引擎不得拿去 resume
+        save_resume_id("p1", "jiuwen:onto-p1", engine="jiuwen")
+        assert load_resume_id("p1", engine="jiuwen") == "jiuwen:onto-p1"
+        assert load_resume_id("p1") is None
+        await manager.send("p1", tmp_path / "w1", "继续")
+        session = await _settle(manager, "p1")
+        assert session.client.options.resume is None
+        assert session.resume_attempted is False
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+    # 旧格式 meta 无 engine 字段：由 Claude 引擎写入，只归 Claude
+    meta = Path(config.DATA_DIR) / "sessions" / "p2.meta.json"
+    meta.write_text(json.dumps({"sdk_session_id": "sdk-session-old"}), encoding="utf-8")
+    assert load_resume_id("p2") == "sdk-session-old"
+    assert load_resume_id("p2", engine="jiuwen") is None
+
+
 def test_close_clears_resume_id(pool_env, tmp_path):
     manager, created, _ = pool_env
 
@@ -250,6 +279,22 @@ def test_tool_result_excerpt_and_git_changes(tmp_path):
     assert changes["modified"] == []
 
 
+def test_visible_history_window_ignores_runtime_noise():
+    history = [
+        {"type": "system", "subtype": "thinking_tokens", "seq": 0},
+        {"type": "session_state", "state": "running", "seq": 1},
+        {"type": "user_message", "text": "开始", "seq": 2},
+        {"type": "tool_results", "blocks": [], "seq": 3},
+        {"type": "assistant_message", "blocks": [{"kind": "text", "text": "完成"}], "seq": 4},
+        {"type": "result", "seq": 5},
+    ]
+
+    assert _is_visible_chat_event(history[0]) is False
+    assert _is_visible_chat_event(history[2]) is True
+    assert visible_history_start(history, 400) == 2
+    assert visible_history_start(history, 1) == 4
+
+
 def test_interrupt_force_kills_hung_engine(pool_env, tmp_path, monkeypatch):
     """CLI 悬死时打断必须在超时后硬停：引擎释放、状态回 idle、事件到位。"""
     manager, created, _ = pool_env
@@ -312,6 +357,150 @@ def test_close_force_kills_hung_engine(pool_env, tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
+def test_close_during_connect_stops_late_engine(pool_env, tmp_path, monkeypatch):
+    """连接中途被关闭（如删除项目）：晚到的引擎要当场断开，不能留成没人管的游离子进程。"""
+    manager, created, _ = pool_env
+
+    async def scenario():
+        gate = asyncio.Event()
+
+        async def slow_connect(self):
+            await gate.wait()
+            self.connected = True
+
+        monkeypatch.setattr(FakeClient, "connect", slow_connect)
+        session = await manager.send("p1", tmp_path / "w1", "任务")
+        connect_task = session.connect_task  # _connect 收尾时会清空该字段，先留住
+        assert connect_task is not None
+        await asyncio.sleep(0)
+        await manager.close("p1")
+        gate.set()
+        await connect_task
+
+        assert created[0].connected is False  # 连上即断开
+        assert session.engine is None and session.reader_task is None
+        assert session.state == "closed"
+        assert manager.get("p1") is None
+        assert manager.active_count() == 0
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_discard_kills_without_waiting_for_hung_engine(pool_env, tmp_path):
+    """删除项目走 discard：不等 CLI 优雅断开，立即硬杀；对话历史与续接点一并清除。
+
+    close() 遇到悬死的 CLI 要等断开超时（10 秒）才硬杀，删除接口因此变慢；discard 不能等。
+    """
+    manager, created, _ = pool_env
+
+    async def scenario():
+        await manager.send("p1", tmp_path / "w1", "任务")
+        session = await _settle(manager, "p1")
+        save_resume_id("p1", "sdk-session-abc")
+
+        async def hang():
+            await asyncio.Event().wait()
+
+        client = session.engine.client
+        client.disconnect = hang  # 模拟 CLI 对 disconnect 无应答
+        await asyncio.wait_for(manager.discard("p1"), timeout=1)
+
+        assert client.terminated is True
+        assert session.discarded and session.engine is None
+        assert session.state == "closed"
+        assert manager.get("p1") is None
+        assert not agent_sessions._history_path("p1").exists()
+        assert load_resume_id("p1") is None
+        # 晚到的事件（如读循环收尾）不能把已清除的历史文件重建出来
+        session.broadcast({"type": "assistant_text", "text": "晚到的事件"})
+        assert not agent_sessions._history_path("p1").exists()
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_discard_during_connect_kills_late_engine(pool_env, tmp_path, monkeypatch):
+    """连接中途项目被删除：晚到的引擎当场硬杀，积压的消息不再发给它。"""
+    manager, created, _ = pool_env
+
+    async def scenario():
+        gate = asyncio.Event()
+
+        async def slow_connect(self):
+            await gate.wait()
+            self.connected = True
+
+        monkeypatch.setattr(FakeClient, "connect", slow_connect)
+        session = await manager.send("p1", tmp_path / "w1", "任务")
+        connect_task = session.connect_task  # _connect 收尾时会清空该字段，先留住
+        await asyncio.sleep(0)
+        await manager.discard("p1")
+        gate.set()
+        await connect_task
+
+        assert created[0].terminated is True
+        assert created[0].queries == []
+        assert session.engine is None and session.state == "closed"
+        assert manager.active_count() == 0
+        assert not agent_sessions._history_path("p1").exists()
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_discard_hands_slot_to_waiter(pool_env, tmp_path):
+    """删除在跑的项目，让出的槽位交给排队者。"""
+    manager, created, _ = pool_env
+
+    async def scenario():
+        await manager.send("p1", tmp_path / "w1", "任务一")
+        first_client = (await _settle(manager, "p1")).client
+        await manager.send("p2", tmp_path / "w2", "任务二")
+        assert manager.queue_position("p2") == 1
+
+        await manager.discard("p1")
+        await asyncio.gather(*manager._tasks)  # 续接排队者在后台进行，删除不等它
+        second = await _settle(manager, "p2")
+
+        assert first_client.terminated is True
+        assert second.client is not None and second.client.queries == ["任务二"]
+        assert manager.queue_position("p2") is None
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_discard_dequeues_and_denies_pending_permission(pool_env, tmp_path):
+    """排队中的项目删除即出队、不波及在跑的项目；待确认卡按拒绝了结，权限回调不会一直挂着。"""
+    manager, created, _ = pool_env
+
+    async def scenario():
+        await manager.send("p1", tmp_path / "w1", "任务一")
+        first = await _settle(manager, "p1")
+        await manager.send("p2", tmp_path / "w2", "任务二")
+        queued = manager.get("p2")
+
+        await manager.discard("p2")
+        assert manager.queue_position("p2") is None
+        assert queued.pending_prompts == [] and queued.state == "closed"
+        assert manager.get("p2") is None
+        assert first.client is not None and first.client.terminated is False
+
+        permission = asyncio.create_task(
+            manager._request_permission(first, "Write", {"file_path": "a.md"}, None, None)
+        )
+        await asyncio.sleep(0)
+        assert first.pending_permissions
+        await manager.discard("p1")
+        decision = await asyncio.wait_for(permission, timeout=1)
+        assert decision == {"behavior": "deny", "message": "项目已删除"}
+        assert not agent_sessions._history_path("p1").exists()
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
 def test_stale_running_history_reconciles(pool_env):
     """重启杀掉运行中的轮后，历史尾部停在 running：读取或打断都要自愈为终态，
     而不是让前端永远显示"执行中"、打断 404（幽灵运行态修复）。"""
@@ -344,3 +533,66 @@ def test_interrupt_ghost_running_reconciles(pool_env):
     assert tail[-1] == {"type": "session_state", "state": "idle", "ts": tail[-1]["ts"], "seq": 2}
     # 不存在历史的项目：打断是无害幂等操作
     assert asyncio.run(manager.interrupt("nonexistent")) is False
+
+
+def _drain(queue: asyncio.Queue) -> list[dict]:
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    return events
+
+
+def test_open_stream_receives_first_message_events_immediately(pool_env, tmp_path):
+    """事件流先于会话建立（打开项目后发第一条消息）：新会话一建立就推送，不等心跳超时。"""
+    manager, created, _ = pool_env
+
+    async def scenario():
+        queue: asyncio.Queue = asyncio.Queue()
+        manager.watch("p1", queue)
+        await manager.send("p1", tmp_path / "w1", "第一条")
+        await _settle(manager, "p1")
+        events = _drain(queue)
+        assert events[0]["type"] == "user_message"
+        assert "session_started" in [e["type"] for e in events]
+        assert "running" in [e.get("state") for e in events if e["type"] == "session_state"]
+        manager.unwatch("p1", queue)
+        assert queue not in manager.get("p1").subscribers
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_open_stream_follows_session_recreated_after_reap(pool_env, tmp_path):
+    """空闲回收后再发消息会新建会话：已打开的事件流自动挂上，过程照常即时推送。"""
+    manager, created, _ = pool_env
+
+    async def scenario():
+        queue: asyncio.Queue = asyncio.Queue()
+        manager.watch("p1", queue)
+        await manager.send("p1", tmp_path / "w1", "第一条")
+        first = await _settle(manager, "p1")
+        first.state = "idle"
+        first.last_activity = time.time() - 10_000
+        assert await manager.reap_idle() == 1
+        _drain(queue)
+
+        await manager.send("p1", tmp_path / "w1", "第二条")
+        second = await _settle(manager, "p1")
+        assert second is not first
+        assert queue in second.subscribers
+        events = _drain(queue)
+        assert events[0]["type"] == "user_message" and events[0]["text"] == "第二条"
+        # seq 与历史连续：前端按 seq 水位去重不会误丢
+        seqs = [e["seq"] for e in events if "seq" in e]
+        assert seqs == sorted(seqs) and seqs[0] == len(first.events)
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_unwatch_forgets_project_without_open_streams(pool_env):
+    manager, _created, _ = pool_env
+    queue: asyncio.Queue = asyncio.Queue()
+    manager.watch("p1", queue)
+    manager.unwatch("p1", queue)
+    assert ("p1", "default") not in manager._watchers

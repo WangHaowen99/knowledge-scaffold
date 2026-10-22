@@ -7,8 +7,8 @@
 
 import importlib
 import json
+import shutil
 import subprocess
-import sys
 import zipfile
 from pathlib import Path
 
@@ -16,9 +16,10 @@ import pytest
 import yaml
 
 from app.services import package_archive, solver_contract
-from app.services.workspace import WorkspaceError, WorkspaceManager
+from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 
 TOOLKIT_SCRIPTS = Path(__file__).resolve().parents[2] / "assets" / "workspace-toolkit" / "scripts"
+BASH = shutil.which("bash")
 
 MODEL_YAML = b"""id: route_plan
 profile_id: ordered_binary_route.v1
@@ -259,6 +260,10 @@ def test_v02_import_materializes_solver_contract_verbatim(
         ),
         ({"model": MODEL_YAML + b"service_endpoint: example\n"},
          solver_contract.CODE_RUNTIME_BINDING_FORBIDDEN),
+        ({"model": MODEL_YAML + b'fallback: "192.0.2.10:8443"\n'},
+         solver_contract.CODE_RUNTIME_BINDING_FORBIDDEN),
+        ({"manifest_overrides": {"providerRevision": "synthetic-rev"}},
+         solver_contract.CODE_RUNTIME_BINDING_FORBIDDEN),
         (
             {"frontmatter": {**OPERATION_FRONTMATTER, "runtime_binding": {"x": 1}}},
             solver_contract.CODE_RUNTIME_BINDING_FORBIDDEN,
@@ -384,10 +389,16 @@ def test_import_export_roundtrip_is_semantically_lossless(
 
 
 def test_repeated_export_is_deterministic(manager: WorkspaceManager, tmp_path: Path):
+    """REQ-BLD-010：同一工作区重复导出逐字节相同（成员顺序、时间戳、权限都固定）。"""
     meta, _root = _import(manager, tmp_path)
-    first = _read_zip(manager.export_package_zip(meta["id"], tmp_path / "a.zip"))
-    second = _read_zip(manager.export_package_zip(meta["id"], tmp_path / "b.zip"))
-    assert first == second
+    first = manager.export_package_zip(meta["id"], tmp_path / "a.zip")
+    second = manager.export_package_zip(meta["id"], tmp_path / "b.zip")
+    assert _read_zip(first) == _read_zip(second)
+    assert first.read_bytes() == second.read_bytes()
+    with zipfile.ZipFile(first) as zf:
+        infos = zf.infolist()
+    assert [info.filename for info in infos] == sorted(info.filename for info in infos)
+    assert {info.date_time for info in infos} == {(1980, 1, 1, 0, 0, 0)}
 
 
 def _workspace_solver(root: Path, *, solver_key: str, operation: str, enabled: bool = True):
@@ -590,13 +601,15 @@ def test_solver_directory_is_not_writable_through_file_editor(
 
 def test_scope_guard_denies_agent_writes_to_solver_directory(tmp_path: Path):
     guard = TOOLKIT_SCRIPTS / "ontology_scope_guard.sh"
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    _git(tmp_path, "init", "-q")
 
     def decide(rel: str) -> str:
-        result = subprocess.run(
-            ["bash", str(guard)],
+        # 安全审查：argv 是 shutil.which 解析出的 bash 路径加工具箱自带的守卫脚本，以序列传入、
+        # 不经 shell 解析；stdin 是合成的工具调用，只作用于 tmp_path 下的临时仓库。
+        result = subprocess.run(  # NOSONAR(S4721)
+            [BASH, str(guard)],
             input=json.dumps({"tool_input": {"file_path": str(tmp_path / rel)}}),
-            capture_output=True, text=True, cwd=tmp_path, check=True,
+            capture_output=True, text=True, cwd=tmp_path, check=True, shell=False, timeout=60,
         )
         return result.stdout
 
@@ -634,10 +647,9 @@ def test_workspace_rules_tell_agent_solver_directory_is_managed():
 # ---- consumer 导入边界 ----
 
 
-def _consumer_validators():
+def _consumer_validators(monkeypatch):
     consumer = Path(__file__).resolve().parents[4] / "consumer" / "backend"
-    if str(consumer) not in sys.path:
-        sys.path.insert(0, str(consumer))
+    monkeypatch.syspath_prepend(str(consumer))
     try:
         from ontology.package_import import validate_ontology_revision
         from ontology.solver_package_layout import validate_solver_package_layout
@@ -648,9 +660,9 @@ def _consumer_validators():
 
 
 def test_exported_package_passes_consumer_import_contract(
-    manager: WorkspaceManager, tmp_path: Path
+    manager: WorkspaceManager, tmp_path: Path, monkeypatch
 ):
-    validate_revision, validate_layout, load_catalog = _consumer_validators()
+    validate_revision, validate_layout, load_catalog = _consumer_validators(monkeypatch)
     meta = manager.create_project("契约任务")
     root = manager.project_root(meta["id"])
     (root / "ontology" / "object" / "站点.md").write_text("# 站点\n", encoding="utf-8")

@@ -173,7 +173,7 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
   }, [project.id, entry.path]);
 
   const serialize = (list) =>
-    list
+    (entry.name_frontmatter || '') + list
       .map((s) => `${'#'.repeat(s.level || 1)} ${s.title}\n\n${(s.content || '').trim()}\n`)
       .join('\n');
 
@@ -247,7 +247,7 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
     <div className="studio-editor">
       <Space style={{ marginBottom: 10 }} align="center" wrap>
         <Typography.Title level={5} style={{ margin: 0 }}>
-          编辑：{entry.name}
+          编辑：{entry.label || entry.name}
         </Typography.Title>
         {readOnly ? (
           <Tag color="warning">他人编辑中 · 只读</Tag>

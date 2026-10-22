@@ -7,7 +7,22 @@ import test from 'node:test';
 import multipart from '@fastify/multipart';
 import Fastify from 'fastify';
 
-import type { PackageSpec } from '../src/types.js';
+import {
+  agentReplyEvents,
+  authoritativeResult,
+  batches,
+  cardName,
+  fakeConsumer,
+  json,
+  multipartBody,
+  ONTOLOGY_ID,
+  packageSpec,
+  solverCase,
+  solverToolEvents,
+  syntheticDataSource,
+  VERSION,
+  WORKSPACE_ID,
+} from './helpers/solver-consumer-fake.js';
 
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'modeling-solver-validation-'));
 
@@ -36,272 +51,318 @@ const {
   SolverContractValidationError,
 } = validation;
 
-// 全部为合成数据：知识包、批次与工作空间均为测试虚构。
-const ONTOLOGY_ID = 'synthetic-route-package';
-const VERSION = '0.1.3';
-
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
-
-function batches(count: number) {
-  return { items: Array.from({ length: count }, (_, index) => ({ batch: `B${index + 1}` })) };
-}
-
-function authoritative(jobId: string, extra: Record<string, unknown> = {}) {
-  return {
-    status: 'completed',
-    authoritative: true,
-    run_id: `run-${jobId}`,
-    job_id: jobId,
-    feasibility: 'feasible',
-    optimality: 'proven_optimal',
-    proof_kind: 'exact_search',
-    summary: { selected: 1 },
-    result_artifact_ref: `artifact://result/${jobId}`,
-    verification_evidence_ref: `artifact://evidence/${jobId}`,
-    knowledge_revision_id: VERSION,
-    fact_snapshot_digest: 'sha256:facts',
-    problem_digest: 'sha256:problem',
-    candidate_results_artifact_ref: `artifact://candidates/${jobId}`,
-    candidate_results_artifact_digest: 'sha256:candidates',
-    ...extra,
-  };
-}
-
-interface Call { path: string; method: string; headers: Record<string, string>; body?: any }
-
-/** 合成 Consumer：按 operation_key 决定求解结果，按批次数给出 2N 个候选。 */
-function fakeConsumer(options: {
-  solve?: (body: any, attempt: number) => { status?: number; body: unknown };
-  candidates?: (jobId: string) => { status?: number; body: unknown };
-} = {}) {
-  const calls: Call[] = [];
-  const attempts = new Map<string, number>();
-  const counts = new Map<string, number>();
-  const request = async (_token: string, path: string, init: RequestInit & { workspaceId?: string } = {}) => {
-    const method = String(init.method ?? 'GET');
-    const headers = { ...(init.headers as Record<string, string> ?? {}) };
-    const body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined;
-    calls.push({ path, method, headers, body });
-    if (path === '/agentic/workspaces' && method === 'GET') return json({ workspaces: [{ id: 'synthetic-ws' }] });
-    if (path === '/agentic/ontologies/import-zip') return json({ ontology_id: ONTOLOGY_ID, objects_count: 0 });
-    if (path.endsWith('/active-version')) return json({ active_version: JSON.parse(String(init.body)).version });
-    if (path.endsWith('/data-source')) return json({ ok: true });
-    if (path === '/api/solver/runs') {
-      const key = headers['Idempotency-Key'];
-      const attempt = (attempts.get(key) ?? 0) + 1;
-      attempts.set(key, attempt);
-      const outcome = options.solve?.(body, attempt)
-        ?? { body: authoritative(`job-${key}`) };
-      const jobId = (outcome.body as any)?.job_id;
-      if (jobId) counts.set(jobId, (body.arguments.items?.length ?? 0) * 2);
-      return json(outcome.body, outcome.status ?? 200);
-    }
-    const match = /^\/api\/solver\/history\/([^/]+)\/candidate-results$/.exec(path);
-    if (match) {
-      const jobId = decodeURIComponent(match[1]);
-      const outcome = options.candidates?.(jobId) ?? { body: { candidate_count: counts.get(jobId) } };
-      return json(outcome.body, outcome.status ?? 200);
-    }
-    return json({ error: 'not found' }, 404);
-  };
-  return { request, calls };
-}
-
-const dataSource = {
-  projectId: 'pj_synthetic',
-  mode: 'none' as const,
-  workspaceId: 'synthetic-ws',
-  config: {},
-  createdAt: '2026-01-01T00:00:00Z',
-  updatedAt: '2026-01-01T00:00:00Z',
-};
+// 全部为合成数据：知识包、批次、工作空间与引用均为测试虚构。
 
 function validate(request: any, cases: any[], extra: Record<string, unknown> = {}) {
   return runSolverContractValidation({
     projectId: 'pj_synthetic',
     owner: 'alice',
     auth: relayAuthSession('synthetic-access'),
-    dataSource,
+    dataSource: syntheticDataSource,
     ontologyId: ONTOLOGY_ID,
     version: VERSION,
     zip: new Uint8Array([1, 2, 3]),
     cases: parseSolverValidationCases(cases),
     idempotencyPrefix: 'run1',
     request,
-    pollIntervalMs: 1,
     ...extra,
   });
 }
 
-test('验证用例只接受合法的 operation_key、唯一 id 和对象参数', () => {
-  const [item] = parseSolverValidationCases('[{"id":"c1","operation_key":"plan_route","arguments":{"items":[]}}]');
-  assert.deepEqual(item, { id: 'c1', operationKey: 'plan_route', arguments: { items: [] } });
+function singleCase(request: any, args: Record<string, unknown> = batches(1)) {
+  const [item] = parseSolverValidationCases([solverCase('c1', args)]);
+  return runSolverValidationCase({
+    request,
+    workspaceId: WORKSPACE_ID,
+    ontologyId: ONTOLOGY_ID,
+    version: VERSION,
+    item,
+    idempotencyKey: 'run1:c1',
+    deadline: Date.now() + 60_000,
+  });
+}
+
+const candidateQueries = (calls: { path: string }[]) => calls.filter((call) => call.path.includes('candidate-results'));
+
+test('验证用例只接受合法的 operation_key、唯一 id、对象参数和非空提问', () => {
+  const [item] = parseSolverValidationCases(
+    '[{"id":"c1","operation_key":"plan_route","question":"求解","arguments":{"items":[]}}]',
+  );
+  assert.deepEqual(item, { id: 'c1', operationKey: 'plan_route', question: '求解', arguments: { items: [] } });
+  const valid = (extra: Record<string, unknown> = {}) => ({
+    id: 'c1', operation_key: 'a', question: '求解', arguments: {}, ...extra,
+  });
   const rejects = (raw: unknown, pattern: RegExp) => assert.throws(
     () => parseSolverValidationCases(raw),
     (error: any) => error.code === 'SOLVER_VALIDATION_CASES_INVALID' && pattern.test(error.message),
   );
   rejects('not json', /JSON 数组/);
   rejects([], /至少/);
-  rejects(Array.from({ length: 21 }, (_, i) => ({ id: `c${i}`, operation_key: 'a', arguments: {} })), /最多 20/);
-  rejects([{ id: 'c1', operation_key: 'Plan-Route', arguments: {} }], /operation_key/);
-  rejects([{ id: 'c1', operation_key: 'a', arguments: {} }, { id: 'c1', operation_key: 'a', arguments: {} }], /重复/);
-  rejects([{ id: 'c1', operation_key: 'a', arguments: [] }], /arguments/);
-  rejects([{ id: 'c 1', operation_key: 'a', arguments: {} }], /id 不合法/);
+  rejects(Array.from({ length: 21 }, (_, i) => valid({ id: `c${i}` })), /最多 20/);
+  rejects([valid({ operation_key: 'Plan-Route' })], /operation_key/);
+  rejects([valid(), valid()], /重复/);
+  rejects([valid({ arguments: [] })], /arguments/);
+  rejects([valid({ id: 'c 1' })], /id 不合法/);
+  rejects([valid({ question: '  ' })], /question/);
 });
 
 test('Consumer 不可用时整体失败，且不回传连接地址', async () => {
   const request = async () => {
     throw new Error('Consumer 请求失败：fetch failed（ECONNREFUSED：connect 192.0.2.10:8000）');
   };
-  await assert.rejects(
-    validate(request, [{ id: 'c1', operation_key: 'plan_route', arguments: batches(1) }]),
-    (error: any) => {
-      assert.ok(error instanceof SolverContractValidationError);
-      assert.equal(error.code, 'CONSUMER_UNAVAILABLE');
-      assert.equal(error.statusCode, 502);
-      assert.equal(error.stage, 'workspace');
-      assert.doesNotMatch(error.message, /192\.0\.2\.10/);
-      return true;
-    },
-  );
+  await assert.rejects(validate(request, [solverCase('c1', batches(1))]), (error: any) => {
+    assert.ok(error instanceof SolverContractValidationError);
+    assert.equal(error.code, 'CONSUMER_UNAVAILABLE');
+    assert.equal(error.statusCode, 502);
+    assert.equal(error.stage, 'workspace');
+    assert.doesNotMatch(error.message, /192\.0\.2\.10/);
+    return true;
+  });
 });
 
 test('导入阶段被拒映射为包被拒，报错中的地址被隐藏', async () => {
-  const consumer = fakeConsumer();
-  const request = async (token: string, path: string, init?: any) => (
-    path === '/agentic/ontologies/import-zip'
-      ? json({ error: '校验失败，详见 https://consumer.example.com/docs' }, 422)
-      : consumer.request(token, path, init)
-  );
-  await assert.rejects(
-    validate(request, [{ id: 'c1', operation_key: 'plan_route', arguments: batches(1) }]),
-    (error: any) => {
-      assert.equal(error.code, 'SOLVER_PACKAGE_REJECTED');
-      assert.equal(error.stage, 'package');
-      assert.doesNotMatch(error.message, /example\.com/);
-      return true;
-    },
-  );
+  const consumer = fakeConsumer({
+    importZip: () => json({ error: '校验失败，详见 https://consumer.example.com/docs' }, 422),
+  });
+  await assert.rejects(validate(consumer.request, [solverCase('c1', batches(1))]), (error: any) => {
+    assert.equal(error.code, 'SOLVER_PACKAGE_REJECTED');
+    assert.equal(error.stage, 'package');
+    assert.doesNotMatch(error.message, /example\.com/);
+    return true;
+  });
 });
 
-test('导入、激活、数据源、求解按顺序执行，并以运行 ID 派生幂等键', async () => {
+test('导入、激活、数据源后逐用例向 Agent 提问，钉住精确版本并以运行 ID 派生幂等键', async () => {
   const consumer = fakeConsumer();
-  const report = await validate(consumer.request, [
-    { id: 'n7', operation_key: 'plan_route', arguments: batches(7) },
-    { id: 'n9', operation_key: 'plan_route', arguments: batches(9) },
-  ]);
+  const cases = [solverCase('n7', batches(7)), solverCase('n9', batches(9))];
+  const report = await validate(consumer.request, cases);
   const order = consumer.calls.map((call) => `${call.method} ${call.path}`);
-  assert.deepEqual(order.slice(0, 4), [
+  assert.deepEqual(order, [
     'GET /agentic/workspaces',
     'POST /agentic/ontologies/import-zip',
     `PUT /agentic/ontologies/${ONTOLOGY_ID}/active-version`,
     `DELETE /agentic/ontologies/${ONTOLOGY_ID}/data-source`,
+    'POST /agentic/runs',
+    'GET /agentic/runs/agent-run-1/events?after_seq=0',
+    `GET /api/solver/history/${encodeURIComponent('job-run1:n7')}/candidate-results`,
+    'POST /agentic/runs',
+    'GET /agentic/runs/agent-run-2/events?after_seq=0',
+    `GET /api/solver/history/${encodeURIComponent('job-run1:n9')}/candidate-results`,
   ]);
-  const runs = consumer.calls.filter((call) => call.path === '/api/solver/runs');
+  const runs = consumer.calls.filter((call) => call.path === '/agentic/runs');
   assert.deepEqual(runs.map((call) => call.headers['Idempotency-Key']), ['run1:n7', 'run1:n9']);
-  assert.deepEqual(Object.keys(runs[0].body).sort(), [
-    'arguments', 'knowledge_package_id', 'knowledge_package_revision', 'operation_key',
-  ]);
-  assert.equal(runs[0].body.knowledge_package_revision, VERSION);
+  assert.deepEqual(runs[0].body.arguments, { selected_ontology_id: ONTOLOGY_ID, selected_ontology_version: VERSION });
+  assert.equal(runs[0].body.request, cases[0].question);
+  assert.match(runs[0].body.session_id, /^mw-solver-[0-9a-f]{24}$/);
+  assert.notEqual(runs[0].body.session_id, runs[1].body.session_id, '每条用例一个独立会话');
+  assert.ok(consumer.calls.slice(4).every((call) => call.workspaceId === WORKSPACE_ID));
   assert.deepEqual(report.package, { id: ONTOLOGY_ID, version: VERSION });
-  assert.deepEqual(report.cases.map((item) => [item.id, item.status, item.authoritative, item.candidate_count]), [
-    ['n7', 'completed', true, 14],
-    ['n9', 'completed', true, 18],
-  ]);
+  assert.deepEqual(
+    report.cases.map((item) => [
+      item.id, item.status, item.authoritative, item.candidate_count, item.solver_tool, item.arguments_match,
+    ]),
+    [
+      ['n7', 'completed', true, 14, cardName('plan_route'), true],
+      ['n9', 'completed', true, 18, cardName('plan_route'), true],
+    ],
+  );
 });
 
-test('running 时用同一幂等键续接，直到 Consumer 给出终态', async () => {
+test('Agent 未调用对应求解工具或运行失败时如实标出，不当作求解结果', async () => {
   const consumer = fakeConsumer({
-    solve: (_body, attempt) => (attempt < 3
-      ? { body: { status: 'running', job_id: 'job-poll', phase: 'solve' } }
-      : { body: authoritative('job-poll') }),
-  });
-  const [result] = (await validate(consumer.request, [
-    { id: 'c1', operation_key: 'plan_route', arguments: batches(1) },
-  ])).cases;
-  const keys = consumer.calls.filter((call) => call.path === '/api/solver/runs')
-    .map((call) => call.headers['Idempotency-Key']);
-  assert.deepEqual(keys, ['run1:c1', 'run1:c1', 'run1:c1']);
-  assert.equal(result.status, 'completed');
-  assert.equal(result.candidate_count, 2);
-});
-
-test('超过截止时间仍在运行的用例记为超时，后续用例不再提交', async () => {
-  let clock = 0;
-  const consumer = fakeConsumer({
-    solve: () => {
-      clock += 10;
-      return { body: { status: 'running', job_id: 'job-slow' } };
+    agent: (ask) => {
+      if (ask.idempotencyKey === 'run1:reply') return { events: agentReplyEvents('请先告诉我计划月份。') };
+      if (ask.idempotencyKey === 'run1:other') {
+        return {
+          events: solverToolEvents({
+            operationKey: 'other_route', arguments: ask.arguments, result: authoritativeResult('job-other'),
+          }),
+        };
+      }
+      return {
+        events: [{
+          event_type: 'turn.finished',
+          payload: { status: 'failed', error: { error_code: 'MODEL_UNAVAILABLE', message: '模型暂不可用' } },
+        }],
+      };
     },
   });
   const report = await validate(consumer.request, [
-    { id: 'c1', operation_key: 'plan_route', arguments: batches(1) },
-    { id: 'c2', operation_key: 'plan_route', arguments: batches(1) },
-  ], { now: () => clock, deadlineMs: 25 });
-  assert.deepEqual(report.cases.map((item) => [item.id, item.code]), [['c1', 'solver_timeout'], ['c2', 'solver_timeout']]);
-  assert.equal(consumer.calls.filter((call) => call.body?.operation_key).length, 3);
+    solverCase('reply', batches(1)),
+    solverCase('other', batches(1)),
+    solverCase('failed', batches(1)),
+  ]);
+  const [reply, other, failed] = report.cases;
+  assert.deepEqual([reply.status, reply.code, reply.solver_tool_called, reply.authoritative], [
+    'error', 'solver_tool_not_called', false, false,
+  ]);
+  assert.match(String(reply.detail), /请先告诉我计划月份/);
+  assert.equal(other.code, 'solver_tool_not_called');
+  assert.match(String(other.detail), new RegExp(cardName('other_route')));
+  assert.deepEqual([failed.code, failed.phase, failed.detail], ['model_unavailable', 'agent', '模型暂不可用']);
+  assert.equal('solver_tool_called' in failed, false, 'Agent 运行没有开始求解时不给调用结论');
+  assert.equal(candidateQueries(consumer.calls).length, 0);
 });
 
-test('契约不兼容与不可用以用例错误码回传，不中断其余用例', async () => {
+test('Agent 改写入参时标出不一致的路径；数字与数字字符串视为一致', async () => {
+  const expected = batches(2);
   const consumer = fakeConsumer({
-    solve: (body) => (body.operation_key === 'drifted'
-      ? { status: 409, body: { code: 'solver_capability_drift' } }
-      : body.operation_key === 'down'
-        ? { status: 503, body: { code: 'solver_unavailable', retryable: true } }
-        : { body: authoritative('job-ok') }),
+    agent: (ask) => {
+      const changed = structuredClone(ask.arguments);
+      changed.items[0].item_order = '1';
+      changed.items[1].item_id = 'B9';
+      return {
+        events: solverToolEvents({
+          operationKey: ask.operationKey, arguments: changed, result: authoritativeResult('job-changed'),
+        }),
+      };
+    },
+  });
+  const [result] = (await validate(consumer.request, [solverCase('c1', expected)])).cases;
+  assert.equal(result.solver_tool_called, true);
+  assert.equal(result.arguments_match, false);
+  assert.deepEqual(result.argument_diff, ['items[1].item_id']);
+});
+
+test('工具结果自称权威但缺少或对不上权威结果事件时，不算权威结果，也不读候选', async () => {
+  const consumer = fakeConsumer({
+    agent: (ask) => {
+      const result = authoritativeResult(`job-${ask.idempotencyKey}`);
+      const base = { operationKey: ask.operationKey, arguments: ask.arguments, result };
+      if (ask.idempotencyKey === 'run1:missing') return { events: solverToolEvents({ ...base, authoritativeEvent: false }) };
+      if (ask.idempotencyKey === 'run1:mismatch') {
+        return { events: solverToolEvents({ ...base, authoritativeEvent: { problem_digest: 'sha256:synthetic-other' } }) };
+      }
+      return { events: solverToolEvents({ ...base, result: { ...result, authoritative: false } }) };
+    },
   });
   const report = await validate(consumer.request, [
-    { id: 'c1', operation_key: 'drifted', arguments: batches(1) },
-    { id: 'c2', operation_key: 'down', arguments: batches(1) },
-    { id: 'c3', operation_key: 'plan_route', arguments: batches(1) },
+    solverCase('missing', batches(2)),
+    solverCase('mismatch', batches(2)),
+    solverCase('weak', batches(2)),
   ]);
-  assert.deepEqual(report.cases.map((item) => [item.status, item.code ?? '', item.retryable ?? false]), [
-    ['error', 'solver_capability_drift', false],
-    ['error', 'solver_unavailable', true],
-    ['completed', '', false],
+  assert.deepEqual(report.cases.map((item) => [item.id, item.status, item.authoritative, item.code ?? '']), [
+    ['missing', 'completed', false, 'solver_authoritative_event_missing'],
+    ['mismatch', 'completed', false, 'solver_authoritative_event_mismatch'],
+    ['weak', 'completed', false, ''],
   ]);
+  assert.ok(report.cases.every((item) => item.candidate_count === null));
+  assert.equal(candidateQueries(consumer.calls).length, 0);
 });
 
-test('全不可行是有效的权威终态；非权威结果原样标记且不查询候选', async () => {
+test('工具输出被截断时用同一调用的 solver.* 事件补齐公开字段', async () => {
   const consumer = fakeConsumer({
-    solve: (body) => (body.operation_key === 'infeasible_case'
-      ? { body: authoritative('job-inf', {
-        feasibility: 'infeasible', optimality: 'not_applicable', proof_kind: 'infeasibility_certificate',
-        candidate_results_artifact_ref: undefined, candidate_results_artifact_digest: undefined,
-      }) }
-      : { body: { ...authoritative('job-weak'), authoritative: false } }),
+    agent: (ask) => ({
+      events: solverToolEvents({
+        operationKey: ask.operationKey,
+        arguments: ask.arguments,
+        result: authoritativeResult('job-truncated'),
+        outputPreview: '{"status":"completed","authoritative":true,"summary":{"rows":[',
+      }),
+    }),
   });
-  const report = await validate(consumer.request, [
-    { id: 'c1', operation_key: 'infeasible_case', arguments: batches(3) },
-    { id: 'c2', operation_key: 'weak_case', arguments: batches(3) },
+  const [result] = (await validate(consumer.request, [solverCase('c1', batches(3))])).cases;
+  assert.deepEqual([result.status, result.authoritative, result.job_id, result.candidate_count], [
+    'completed', true, 'job-truncated', 6,
   ]);
-  const [infeasible, weak] = report.cases;
-  assert.equal(infeasible.authoritative, true);
-  assert.equal(infeasible.feasibility, 'infeasible');
-  assert.equal(infeasible.candidate_count, null);
-  assert.equal(weak.status, 'completed');
-  assert.equal(weak.authoritative, false);
-  assert.equal(consumer.calls.some((call) => call.path.includes('candidate-results')), false);
+  assert.equal(result.problem_digest, 'sha256:synthetic-problem-job-truncated');
 });
 
-test('缺少输入与候选读取失败都带诊断码，结果只保留公开字段', async () => {
+test('Consumer 拒绝求解或等待补充输入时回传阶段与原因，原因中的地址被隐藏', async () => {
   const consumer = fakeConsumer({
-    solve: (body) => (body.operation_key === 'needs_input'
-      ? { body: { status: 'awaiting_input', code: 'awaiting_input', phase: 'bind', missing: ['month'], authoritative: false } }
-      : { body: { ...authoritative('job-x'), solver_endpoint: 'https://solver.example.net', summary: { blob: 'x'.repeat(5000) } } }),
+    agent: (ask) => {
+      const result = ask.idempotencyKey === 'run1:snapshot'
+        ? {
+          status: 'error', code: 'fact_snapshot_invalid', phase: 'snapshot', retryable: false,
+          message: 'business data table synthetic_table is empty, see https://graph.example.net',
+        }
+        : { status: 'awaiting_input', phase: 'bind', missing: ['plan_month'], authoritative: false };
+      return {
+        events: solverToolEvents({
+          operationKey: ask.operationKey, arguments: ask.arguments, result,
+          toolStatus: result.status === 'error' ? 'failed' : 'succeeded',
+        }),
+      };
+    },
+  });
+  const [rejected, awaiting] = (await validate(consumer.request, [
+    solverCase('snapshot', batches(1)),
+    solverCase('awaiting', batches(1)),
+  ])).cases;
+  assert.deepEqual([rejected.status, rejected.code, rejected.phase, rejected.retryable, rejected.authoritative], [
+    'error', 'fact_snapshot_invalid', 'snapshot', false, false,
+  ]);
+  assert.equal(rejected.detail, 'business data table synthetic_table is empty, see [地址已隐藏]');
+  assert.deepEqual([awaiting.status, awaiting.missing, awaiting.authoritative], ['awaiting_input', ['plan_month'], false]);
+});
+
+test('候选读取失败带诊断码，结果只保留公开字段', async () => {
+  const consumer = fakeConsumer({
+    agent: (ask) => ({
+      events: solverToolEvents({
+        operationKey: ask.operationKey,
+        arguments: ask.arguments,
+        result: {
+          ...authoritativeResult('job-x'),
+          solver_endpoint: 'https://solver.example.net',
+          summary: { blob: 'x'.repeat(5000) },
+        },
+      }),
+    }),
     candidates: () => ({ status: 409, body: { code: 'candidate_digest_mismatch' } }),
   });
-  const report = await validate(consumer.request, [
-    { id: 'c1', operation_key: 'needs_input', arguments: {} },
-    { id: 'c2', operation_key: 'plan_route', arguments: batches(2) },
+  const [result] = (await validate(consumer.request, [solverCase('c1', batches(2))])).cases;
+  assert.equal(result.authoritative, true);
+  assert.equal(result.candidate_count, null);
+  assert.equal(result.candidate_results_error, 'candidate_digest_mismatch');
+  assert.equal('solver_endpoint' in result, false);
+  assert.equal('summary' in result, false, '超过 4 KB 的摘要不回传');
+});
+
+test('受理失败与事件流失败按用例错误回传，不中断其余用例', async () => {
+  const consumer = fakeConsumer({
+    agent: (ask) => (ask.idempotencyKey === 'run1:rejected'
+      ? {
+        admission: {
+          status: 500,
+          body: { error: { error_code: 'INTERNAL_ERROR', retriable: false, detail: '详见 https://consumer.example.com' } },
+        },
+      }
+      : undefined),
+  });
+  const report = await validate(consumer.request, [solverCase('rejected', batches(1)), solverCase('ok', batches(1))]);
+  const [rejected, ok] = report.cases;
+  assert.deepEqual([rejected.status, rejected.code, rejected.phase, rejected.retryable], [
+    'error', 'internal_error', 'admission', false,
   ]);
-  const [awaiting, completed] = report.cases;
-  assert.equal(awaiting.status, 'awaiting_input');
-  assert.deepEqual(awaiting.missing, ['month']);
-  assert.equal(completed.candidate_count, null);
-  assert.equal(completed.candidate_results_error, 'candidate_digest_mismatch');
-  assert.equal('solver_endpoint' in completed, false);
-  assert.equal('summary' in completed, false, '超过 4 KB 的摘要不回传');
+  assert.doesNotMatch(String(rejected.detail), /example\.com/);
+  assert.deepEqual([ok.status, ok.authoritative], ['completed', true]);
+
+  const lost = await singleCase(async (_token: string, path: string) => (path === '/agentic/runs'
+    ? json({ run_id: 'agent-run-x' }, 202)
+    : json({ error: { error_code: 'RUN_NOT_FOUND', retriable: false } }, 404)));
+  assert.deepEqual([lost.status, lost.code, lost.phase], ['error', 'run_not_found', 'events']);
+  const bare = await singleCase(async () => json({}, 500));
+  assert.deepEqual([bare.code, bare.phase, 'detail' in bare], ['http_500', 'admission', false]);
+});
+
+test('超过截止时间后剩余用例记为超时，不再提问', async () => {
+  let clock = 0;
+  const consumer = fakeConsumer({
+    agent: () => {
+      clock = 10_000;
+      return undefined;
+    },
+  });
+  const report = await validate(consumer.request, [solverCase('c1', batches(1)), solverCase('c2', batches(1))], {
+    now: () => clock,
+    deadlineMs: 5_000,
+  });
+  assert.deepEqual(report.cases.map((item) => [item.id, item.status, item.code ?? '']), [
+    ['c1', 'completed', ''],
+    ['c2', 'error', 'solver_timeout'],
+  ]);
+  assert.equal(consumer.calls.filter((call) => call.path === '/agentic/runs').length, 1);
 });
 
 test('调用方令牌被拒后借用可续期会话，没有会话时提示重新登录', async () => {
@@ -315,65 +376,6 @@ test('调用方令牌被拒后借用可续期会话，没有会话时提示重�
   assert.equal(await relay.getAccessToken(), 'renewed-access');
   await assert.rejects(relayAuthSession('caller-access').refreshAfterUnauthorized(), /重新登录/);
 });
-
-test('单条用例直接驱动时，HTTP 错误与未知状态都不会被当作通过', async () => {
-  const item = { id: 'c1', operationKey: 'plan_route', arguments: batches(1) };
-  const common = { workspaceId: 'synthetic-ws', ontologyId: ONTOLOGY_ID, version: VERSION, item, idempotencyKey: 'k', deadline: Date.now() + 1000 };
-  const failed = await runSolverValidationCase({ ...common, request: async () => json({}, 500) });
-  assert.deepEqual([failed.status, failed.code, failed.authoritative], ['error', 'http_500', false]);
-  const unknown = await runSolverValidationCase({ ...common, request: async () => json({ status: 'cancelled', phase: 'solve' }) });
-  assert.deepEqual([unknown.status, unknown.code, unknown.phase], ['error', 'solver_result_rejected', 'solve']);
-});
-
-test('Consumer 拒绝求解时回传它给出的阶段与原因，原因中的地址被隐藏', async () => {
-  const item = { id: 'c1', operationKey: 'plan_route', arguments: batches(1) };
-  const common = { workspaceId: 'synthetic-ws', ontologyId: ONTOLOGY_ID, version: VERSION, item, idempotencyKey: 'k', deadline: Date.now() + 1000 };
-  const rejected = await runSolverValidationCase({
-    ...common,
-    request: async () => json({
-      status: 'error',
-      code: 'fact_snapshot_invalid',
-      phase: 'snapshot',
-      error: 'business data table synthetic_table is empty, see https://graph.example.net',
-    }, 422),
-  });
-  assert.deepEqual([rejected.status, rejected.code, rejected.phase, rejected.retryable], [
-    'error', 'fact_snapshot_invalid', 'snapshot', false,
-  ]);
-  assert.equal(rejected.detail, 'business data table synthetic_table is empty, see [地址已隐藏]');
-  const bare = await runSolverValidationCase({ ...common, request: async () => json({}, 500) });
-  assert.deepEqual([bare.phase, 'detail' in bare], ['request', false]);
-});
-
-function packageSpec(): PackageSpec {
-  return {
-    id: ONTOLOGY_ID,
-    name: '合成求解知识包',
-    description: '用于验证求解契约端到端接口的合成知识包',
-    version: VERSION,
-    language: 'zh-CN',
-    defaultProviderAlias: 'data',
-    objects: [],
-    operations: [],
-  };
-}
-
-function multipartBody(fields: Record<string, string>, zip?: Uint8Array) {
-  const boundary = 'solver-validation-test-boundary';
-  const parts: Buffer[] = Object.entries(fields).map(([name, value]) => Buffer.from(
-    `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
-  ));
-  if (zip) {
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="package.zip"\r\n`
-      + 'Content-Type: application/zip\r\n\r\n',
-    ));
-    parts.push(Buffer.from(zip));
-    parts.push(Buffer.from('\r\n'));
-  }
-  parts.push(Buffer.from(`--${boundary}--\r\n`));
-  return { payload: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` };
-}
 
 async function routeApp(dependencies: Parameters<typeof registerSolverContractValidationRoutes>[1]) {
   const app = Fastify();
@@ -391,7 +393,7 @@ test('验证接口校验归属、数据源和忙碌状态，并把 ZIP 中的包
   const bare = createProject({ owner: 'alice', name: '合成未配置数据源项目', kind: 'package' });
   saveProjectDataSource({ projectId: project.id, mode: 'none', workspaceId: shadowWorkspaceId(project.id) });
   const zip = zipPackage(renderPackage(packageSpec()));
-  const cases = JSON.stringify([{ id: 'n1', operation_key: 'plan_route', arguments: batches(1) }]);
+  const cases = JSON.stringify([solverCase('n1', batches(1))]);
   const seen: any[] = [];
   let busy = false;
   const app = await routeApp({
@@ -451,7 +453,7 @@ test('编排阶段错误按稳定错误码返回', async () => {
   });
   try {
     const body = multipartBody(
-      { run_id: 'r1', cases: JSON.stringify([{ id: 'n1', operation_key: 'plan_route', arguments: batches(1) }]) },
+      { run_id: 'r1', cases: JSON.stringify([solverCase('n1', batches(1))]) },
       zipPackage(renderPackage(packageSpec())),
     );
     const response = await app.inject({

@@ -1,11 +1,12 @@
 import { useRef, useState } from 'react';
 import { message } from 'antd';
 import { api } from '../../lib/api.js';
-import { MATERIAL_PURPOSES } from '../LeftPane.jsx';
+import { MAX_NAME_LENGTH, useNameConflict } from '../NameConflictDialog.jsx';
 import './modeling-home.css';
 
 /* 全屏新建项目页 —— 结构与样式复刻 modeling workbench/pages/CreatePage.jsx。
-   资料用途/精读模式随上传写入 resource/materials.json；无数据源选择（onto-web 不区分）。 */
+   资料用途不在这里选：上传时平台按结构识别数据表、术语表，其余由助手按内容判断；
+   识别结果在资料区可见可改。阅读方式由平台按资料类型决定。无数据源选择（onto-web 不区分）。 */
 export default function CreatePage({ onBack, onCreated }) {
   const [over, setOver] = useState(false);
   const [files, setFiles] = useState([]);
@@ -14,6 +15,7 @@ export default function CreatePage({ onBack, onCreated }) {
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
   const input = useRef(null);
+  const nameConflict = useNameConflict();
 
   const addFiles = (items) => {
     const incoming = [...(items || [])];
@@ -27,27 +29,35 @@ export default function CreatePage({ onBack, onCreated }) {
             file,
             name: file.name,
             meta: formatSize(file.size),
-            purpose: 'auto',
-            readingMode: 'on_demand',
           })),
       ];
     });
   };
 
-  const updateFile = (name, patch) =>
-    setFiles((current) => current.map((item) => (item.name === name ? { ...item, ...patch } : item)));
-
-  const start = async () => {
-    if (!name.trim() || creating) return;
+  // 名称作参数传入：同名冲突改名重试时，输入框状态还是旧名称。失败抛出，由调用方分流
+  const createAs = async (projectName) => {
+    setName(projectName);
     setCreating(true);
-    setError('');
     try {
-      const created = await api.createProject(name.trim(), 'blank', goal.trim());
+      const created = await api.createProject(projectName, 'blank', goal.trim());
       // 资料不在本页上传：立即进入项目，由聊天框作为文档附件发送（带进度卡）
       onCreated(created, files);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '项目创建失败');
       setCreating(false);
+      throw cause;
+    }
+  };
+
+  const start = async () => {
+    if (!name.trim() || creating) return;
+    setError('');
+    try {
+      await createAs(name.trim());
+    } catch (cause) {
+      const texts = { confirmText: '改名并创建', busyText: '正在创建…' };
+      if (!nameConflict.offer(cause, createAs, texts)) {
+        setError(cause instanceof Error ? cause.message : '项目创建失败');
+      }
     }
   };
 
@@ -72,6 +82,7 @@ export default function CreatePage({ onBack, onCreated }) {
               id="pn"
               className="input"
               value={name}
+              maxLength={MAX_NAME_LENGTH}
               onChange={(event) => setName(event.target.value)}
               placeholder="例如：电商订单建模"
               autoFocus
@@ -142,39 +153,13 @@ export default function CreatePage({ onBack, onCreated }) {
                     移除
                   </button>
                 </div>
-                <div className="wb-material-directives">
-                  <label>
-                    <span>用途</span>
-                    <select
-                      className="input"
-                      value={f.purpose}
-                      aria-label={`${f.name}的资料用途`}
-                      onChange={(event) => updateFile(f.name, { purpose: event.target.value })}
-                    >
-                      {MATERIAL_PURPOSES.map((opt) => (
-                        <option
-                          key={opt.value}
-                          value={opt.value}
-                          disabled={opt.tableOnly && !/\.(xlsx?|csv)$/i.test(f.name)}
-                        >
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="wb-material-reading">
-                    <input
-                      type="checkbox"
-                      checked={f.readingMode === 'full'}
-                      onChange={(event) =>
-                        updateFile(f.name, { readingMode: event.target.checked ? 'full' : 'on_demand' })
-                      }
-                    />
-                    <span>全文精读</span>
-                  </label>
-                </div>
               </div>
             ))}
+            {files.length > 0 && (
+              <div className="wb-create-hint">
+                资料用途自动识别（数据表、术语表按表格结构识别，其余由助手按内容判断），建模开始后可在左侧资料区查看和修改。
+              </div>
+            )}
           </div>
 
           {error && (
@@ -207,6 +192,7 @@ export default function CreatePage({ onBack, onCreated }) {
           </div>
         </div>
       </div>
+      {nameConflict.dialog}
     </div>
   );
 }

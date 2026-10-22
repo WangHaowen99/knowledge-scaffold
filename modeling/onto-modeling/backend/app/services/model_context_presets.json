@@ -1,0 +1,251 @@
+{
+  "verified_at": "2026-10-15",
+  "presets": [
+    {
+      "id": "deepseek-v4-pro",
+      "vendor": "DeepSeek",
+      "aliases": [],
+      "max_context_tokens": 1000000,
+      "max_output_tokens": 64000,
+      "note": "思考模式默认开启，最大输出取思考模式默认 64K（非思考默认 8K，上限 384K）；1M、64K 按十进制取整",
+      "sources": [
+        "https://api-docs.deepseek.com/zh-cn/quick_start/pricing",
+        "https://api-docs.deepseek.com/zh-cn/api/create-chat-completion"
+      ]
+    },
+    {
+      "id": "deepseek-flash",
+      "vendor": "DeepSeek",
+      "aliases": ["deepseek-v4.1-flash", "deepseek-v4-flash"],
+      "max_context_tokens": 1000000,
+      "max_output_tokens": 64000,
+      "note": "即 DeepSeek-V4.1-Flash；旧名 deepseek-v4-flash 由它提供服务。思考模式默认开启，最大输出取思考模式默认 64K（非思考默认 8K，上限 384K）；1M、64K 按十进制取整",
+      "sources": [
+        "https://api-docs.deepseek.com/zh-cn/quick_start/pricing",
+        "https://api-docs.deepseek.com/zh-cn/api/create-chat-completion"
+      ]
+    },
+    {
+      "id": "qwen3.8-max",
+      "vendor": "Qwen",
+      "aliases": ["qwen3.8-max-0902", "qwen3.8-max-2026-09-02"],
+      "max_context_tokens": 1000000,
+      "max_output_tokens": 131072,
+      "note": "默认开启思考，思考与非思考最大输出同为 131072",
+      "sources": ["https://help.aliyun.com/zh/model-studio/qwen3-8-max"]
+    },
+    {
+      "id": "qwen3.8-flash",
+      "vendor": "Qwen",
+      "aliases": [],
+      "max_context_tokens": 1000000,
+      "max_output_tokens": 131072,
+      "note": "默认开启思考，思考与非思考最大输出同为 131072",
+      "sources": ["https://help.aliyun.com/zh/model-studio/qwen3-8-flash"]
+    },
+    {
+      "id": "qwen3.7-max",
+      "vendor": "Qwen",
+      "aliases": ["qwen3.7-max-2026-05-20"],
+      "max_context_tokens": 1000000,
+      "max_output_tokens": 131072,
+      "note": "官方已列为旧版模型；默认开启思考，思考与非思考最大输出同为 131072",
+      "sources": ["https://help.aliyun.com/zh/model-studio/qwen3-7-max"]
+    },
+    {
+      "id": "qwen3.7-plus",
+      "vendor": "Qwen",
+      "aliases": ["qwen3.7-plus-2026-05-26"],
+      "max_context_tokens": 1000000,
+      "max_output_tokens": 131072,
+      "note": "默认开启思考，思考与非思考最大输出同为 131072",
+      "sources": ["https://help.aliyun.com/zh/model-studio/qwen3-7-plus"]
+    },
+    {
+      "id": "qwen-plus",
+      "vendor": "Qwen",
+      "aliases": ["qwen-plus-2025-12-01"],
+      "max_context_tokens": 1000000,
+      "max_output_tokens": 32768,
+      "note": "默认不开启思考，思考与非思考最大输出同为 32768；更早的 qwen-plus 快照窗口只有 131072，不在表中",
+      "sources": ["https://help.aliyun.com/zh/model-studio/qwen-plus"]
+    },
+    {
+      "id": "qwen-max",
+      "vendor": "Qwen",
+      "aliases": ["qwen-max-2025-01-25"],
+      "max_context_tokens": 32768,
+      "max_output_tokens": 8192,
+      "note": "千问 2.5，不支持思考",
+      "sources": ["https://help.aliyun.com/zh/model-studio/qwen-max"]
+    },
+    {
+      "id": "MiniMax-M3",
+      "vendor": "MiniMax",
+      "aliases": [],
+      "max_context_tokens": 1000000,
+      "max_output_tokens": 131072,
+      "note": "最大输出取官方推荐值（官方未写默认值，不分思考与非思考），思考 token 计入输出",
+      "sources": [
+        "https://platform.minimaxi.com/docs/api-reference/api-overview",
+        "https://platform.minimaxi.com/docs/api-reference/text-chat-anthropic"
+      ]
+    },
+    {
+      "id": "MiniMax-M2.7",
+      "vendor": "MiniMax",
+      "aliases": [],
+      "max_context_tokens": 204800,
+      "max_output_tokens": 65536,
+      "note": "始终思考，最大输出取官方推荐值，思考 token 计入输出；官方公告 2026-10-19 起停止向新用户开放，2026-11-18 下线",
+      "sources": [
+        "https://platform.minimaxi.com/docs/api-reference/api-overview",
+        "https://platform.minimaxi.com/docs/api-reference/text-chat-anthropic"
+      ]
+    },
+    {
+      "id": "MiniMax-M2.7-highspeed",
+      "vendor": "MiniMax",
+      "aliases": [],
+      "max_context_tokens": 204800,
+      "max_output_tokens": 65536,
+      "note": "始终思考，最大输出取官方推荐值，思考 token 计入输出；官方公告 2026-10-19 起停止向新用户开放，2026-11-18 下线",
+      "sources": [
+        "https://platform.minimaxi.com/docs/api-reference/api-overview",
+        "https://platform.minimaxi.com/docs/api-reference/text-chat-anthropic"
+      ]
+    },
+    {
+      "id": "glm-5.3",
+      "vendor": "GLM",
+      "aliases": [],
+      "max_context_tokens": 1000000,
+      "max_output_tokens": 65536,
+      "note": "官方只写 1M，按十进制取整；最大输出取 max_tokens 默认值（不分思考与非思考，上限 131072）",
+      "sources": [
+        "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3",
+        "https://docs.bigmodel.cn/cn/guide/start/concept-param"
+      ]
+    },
+    {
+      "id": "glm-5.3-flash",
+      "vendor": "GLM",
+      "aliases": [],
+      "max_context_tokens": 1000000,
+      "max_output_tokens": 65536,
+      "note": "官方只写 1M，按十进制取整；最大输出取 max_tokens 默认值（不分思考与非思考，上限 131072）",
+      "sources": [
+        "https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash",
+        "https://docs.bigmodel.cn/cn/guide/start/concept-param"
+      ]
+    },
+    {
+      "id": "glm-5.3-flashx",
+      "vendor": "GLM",
+      "aliases": [],
+      "max_context_tokens": 1000000,
+      "max_output_tokens": 65536,
+      "note": "官方只写 1M，按十进制取整；最大输出取 max_tokens 默认值（不分思考与非思考，上限 131072）",
+      "sources": [
+        "https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash",
+        "https://docs.bigmodel.cn/cn/guide/start/concept-param"
+      ]
+    },
+    {
+      "id": "glm-5.2",
+      "vendor": "GLM",
+      "aliases": [],
+      "max_context_tokens": 1000000,
+      "max_output_tokens": 65536,
+      "note": "官方只写 1M，按十进制取整；最大输出取 max_tokens 默认值（不分思考与非思考，上限 131072）",
+      "sources": [
+        "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2",
+        "https://docs.bigmodel.cn/cn/guide/start/concept-param"
+      ]
+    },
+    {
+      "id": "glm-5.1",
+      "vendor": "GLM",
+      "aliases": [],
+      "max_context_tokens": 200000,
+      "max_output_tokens": 65536,
+      "note": "官方只写 200K，按十进制取整；最大输出取 max_tokens 默认值（不分思考与非思考，上限 131072）",
+      "sources": [
+        "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.1",
+        "https://docs.bigmodel.cn/cn/guide/start/concept-param"
+      ]
+    },
+    {
+      "id": "glm-5-turbo",
+      "vendor": "GLM",
+      "aliases": [],
+      "max_context_tokens": 200000,
+      "max_output_tokens": 65536,
+      "note": "官方只写 200K，按十进制取整；最大输出取 max_tokens 默认值（不分思考与非思考，上限 131072）",
+      "sources": [
+        "https://docs.bigmodel.cn/cn/guide/models/text/glm-5-turbo",
+        "https://docs.bigmodel.cn/cn/guide/start/concept-param"
+      ]
+    },
+    {
+      "id": "glm-5",
+      "vendor": "GLM",
+      "aliases": [],
+      "max_context_tokens": 200000,
+      "max_output_tokens": 65536,
+      "note": "官方只写 200K，按十进制取整；最大输出取 max_tokens 默认值（不分思考与非思考，上限 131072）",
+      "sources": [
+        "https://docs.bigmodel.cn/cn/guide/models/text/glm-5",
+        "https://docs.bigmodel.cn/cn/guide/start/concept-param"
+      ]
+    },
+    {
+      "id": "kimi-k3",
+      "vendor": "Kimi",
+      "aliases": ["kimi-k3[1m]"],
+      "max_context_tokens": 1048576,
+      "max_output_tokens": 131072,
+      "note": "始终思考，最大输出取官方默认值",
+      "sources": [
+        "https://platform.kimi.com/docs/pricing/chat",
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart"
+      ]
+    },
+    {
+      "id": "kimi-k2.7-code",
+      "vendor": "Kimi",
+      "aliases": [],
+      "max_context_tokens": 262144,
+      "max_output_tokens": 32768,
+      "note": "始终思考，最大输出取官方默认值，思考 token 计入输出",
+      "sources": [
+        "https://platform.kimi.com/docs/pricing/chat",
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ]
+    },
+    {
+      "id": "kimi-k2.7-code-highspeed",
+      "vendor": "Kimi",
+      "aliases": [],
+      "max_context_tokens": 262144,
+      "max_output_tokens": 32768,
+      "note": "始终思考，最大输出取官方默认值，思考 token 计入输出",
+      "sources": [
+        "https://platform.kimi.com/docs/pricing/chat",
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ]
+    },
+    {
+      "id": "kimi-k2.6",
+      "vendor": "Kimi",
+      "aliases": [],
+      "max_context_tokens": 262144,
+      "max_output_tokens": 32768,
+      "note": "默认开启思考，思考与非思考共用最大输出默认值，思考 token 计入输出",
+      "sources": [
+        "https://platform.kimi.com/docs/pricing/chat",
+        "https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart"
+      ]
+    }
+  ]
+}

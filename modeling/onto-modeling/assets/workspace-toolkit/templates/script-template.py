@@ -1,6 +1,6 @@
 #查数脚本（涉及mindsdb查数的脚本才会加这个标签）
 """
-关联operation：{调用该脚本的operation名称，没有则填“无”}
+关联operation：{调用该脚本的operation名称，即 ontology/operation/ 下已存在的文件名；要被评测或 consumer 执行的脚本必须填。“无”只用于被其他脚本 import 复用的辅助模块，它不会被单独导出执行}
 
 功能描述：{一句话描述脚本功能}
 
@@ -18,7 +18,7 @@
     函数形参不写在此处。纯库脚本填"无"。填写后删除本括号说明）
 
 输出：
-    {输出形式，如：return 值结构 / 写入表 xxx / 生成文件 xxx；含字段或结构说明}
+    {stdout 输出的 JSON 结构（即业务函数的 return 值）及字段说明；脚本只做纯计算，不写表、不生成文件}
 
 依赖：pip install {外部包，无则删除本行}
 """
@@ -31,6 +31,7 @@ import json
 
 def function_name(arg1: str, arg2: str | None = None) -> dict:
     # {在此实现业务逻辑，并替换函数名与签名}
+    # 纯计算：禁用写法见 .claude/commands/ontology-codegen.md「脚本安全」，注释里也不要提这些模块名
     return {}
 
 

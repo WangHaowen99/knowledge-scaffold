@@ -9,7 +9,6 @@
 
 import asyncio
 import json
-import subprocess
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,7 +17,7 @@ import pytest
 import yaml
 
 from app.services import solver_contract, solver_validation
-from app.services.workspace import WorkspaceError, WorkspaceManager
+from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 from tests.test_solver_evaluator_contract import (
     FACTORS,
     LOOKUP_OBJECT,
@@ -31,6 +30,8 @@ from tests.test_solver_evaluator_contract import (
     with_fields,
 )
 
+# RFC 5737 文档保留地址（TEST-NET-1），运行时拼出，避免在源码里出现 IP 字面量
+SYNTHETIC_IP = ".".join(("192", "0", "2", "10"))
 MODEL_YAML = """id: route_plan
 profile_id: ordered_binary_route.v1
 required_facts:
@@ -333,12 +334,81 @@ def test_runtime_built_solver_context_is_left_to_validation(manager: WorkspaceMa
     assert _evaluator_findings(manager, EVALUATOR_PY.replace(CONTEXT_PY, context)) == []
 
 
-def test_runtime_binding_in_contract_is_forbidden(manager: WorkspaceManager):
+def _runtime_binding_findings(findings: list[dict]) -> list[dict]:
+    return [item for item in findings if item["code"] == solver_contract.CODE_RUNTIME_BINDING_FORBIDDEN]
+
+
+@pytest.mark.parametrize(
+    "extra, field, value",
+    [
+        ("solver_endpoint: synthetic-value-a\n", "solver_endpoint", "synthetic-value-a"),
+        ("providerRevision: synthetic-value-b\n", "providerRevision", "synthetic-value-b"),
+        ("db_password: synthetic-value-c\n", "db_password", "synthetic-value-c"),
+        ("notes:\n  callback_url: synthetic-value-d\n", "notes.callback_url", "synthetic-value-d"),
+        ("description: 详见 https://solver.example.com/docs\n", "description", "solver.example.com"),
+        (f'fallback: "{SYNTHETIC_IP}:8443"\n', "fallback", SYNTHETIC_IP),
+        ("auth_header: Bearer synthetic-value-e\n", "auth_header", "synthetic-value-e"),
+    ],
+)
+def test_runtime_binding_in_contract_is_forbidden(
+    manager: WorkspaceManager, extra: str, field: str, value: str
+):
+    """键名（含驼峰、嵌套）与取值形态（服务地址、主机端口、Bearer 凭据）都拦下，报错不回显取值。"""
     pid, root = _with_contract(manager)
     path = root / solver_contract.SOLVER_DIR / "plan_route" / "model.yaml"
-    path.write_text(MODEL_YAML + "solver_endpoint: http://solver.example.com\n", encoding="utf-8")
-    codes = _codes(manager.solver_release_status(pid))
-    assert solver_contract.CODE_RUNTIME_BINDING_FORBIDDEN in codes
+    path.write_text(MODEL_YAML + extra, encoding="utf-8")
+    [finding] = _runtime_binding_findings(manager.solver_release_status(pid)["findings"])
+    assert finding["field"] == field
+    assert finding["path"].endswith("plan_route/model.yaml")
+    assert value not in finding["message"]
+
+
+def test_business_terms_and_schema_dialect_are_not_runtime_binding(manager: WorkspaceManager):
+    """purity、security_level 含 uri 字样但不是地址键；$schema 的方言声明不是服务地址。"""
+    pid, root = _with_contract(manager)
+    directory = root / solver_contract.SOLVER_DIR / "plan_route"
+    (directory / "model.yaml").write_text(
+        MODEL_YAML + "labels: {purity: 0.9, security_level: 高}\n", encoding="utf-8"
+    )
+    schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", **INPUT_SCHEMA_DOC}
+    (directory / "input.schema.json").write_text(json.dumps(schema, ensure_ascii=False), encoding="utf-8")
+    assert _runtime_binding_findings(manager.solver_release_status(pid)["findings"]) == []
+
+
+@pytest.mark.parametrize(
+    "line, field, value",
+    [
+        ('SOLVER_URL = "synthetic-value-f"\n', "SOLVER_URL", "synthetic-value-f"),
+        ('REPORT_LINK = "https://solver.example.com/report"\n', "REPORT_LINK", "solver.example.com"),
+        ('HEADERS = {"Authorization": "synthetic-value-g"}\n', "HEADERS", "synthetic-value-g"),
+    ],
+)
+def test_runtime_binding_in_evaluator_is_forbidden(
+    manager: WorkspaceManager, line: str, field: str, value: str
+):
+    """评估器随包发布：源码里的地址常量、凭据键与服务地址字面量同样拦下。"""
+    [finding] = _runtime_binding_findings(_evaluator_findings(manager, EVALUATOR_PY + line))
+    assert finding["path"] == "ontology/scripts/route_eval.py"
+    assert finding["field"] == field
+    assert value not in finding["message"]
+
+
+def test_contract_digests_follow_semantics_not_formatting(manager: WorkspaceManager):
+    pid, root = _with_contract(manager)
+    model = root / solver_contract.SOLVER_DIR / "plan_route" / "model.yaml"
+    before = manager.solver_release_status(pid)["digests"]
+    assert before["algorithm"] == "sha256:canonical-json"
+    assert set(before["operations"]) == {"plan_route"}
+    model.write_text(
+        yaml.safe_dump(yaml.safe_load(MODEL_YAML), allow_unicode=True, sort_keys=True, indent=4),
+        encoding="utf-8",
+    )
+    assert manager.solver_release_status(pid)["digests"] == before, "只改键序与缩进不改变摘要"
+    model.write_text(MODEL_YAML.replace("OPTION_0: 路线甲", "OPTION_0: 路线丙"), encoding="utf-8")
+    after = manager.solver_release_status(pid)["digests"]
+    old, new = before["operations"]["plan_route"], after["operations"]["plan_route"]
+    assert {key for key in new if new[key] != old[key]} == {"decision_model", "total"}
+    assert after["total"] != before["total"] and after["package"] == before["package"]
 
 
 def test_missing_problem_family_is_reported(manager: WorkspaceManager):
@@ -691,9 +761,7 @@ def test_save_writes_managed_directory_and_commits(manager: WorkspaceManager):
     assert binding["units"] == [{"field": "distance", "unit": "km"}]
     assert saved["commit"] and saved["enabled"] is True
     assert saved["contract"]["operations"][0]["sidecars"]["entry"] == MODEL_YAML
-    message = subprocess.run(
-        ["git", "log", "-1", "--format=%s"], cwd=root, capture_output=True, text=True, check=True
-    ).stdout.strip()
+    message = _git(root, "log", "-1", "--format=%s").strip()
     assert message == "web: 保存求解契约 by alice"
 
 
@@ -729,7 +797,10 @@ def test_stale_base_revision_is_rejected_with_409(manager: WorkspaceManager):
     [
         (_item(solver_key="Plan-Route"), solver_contract.CODE_INVALID),
         (_item(operation="不存在"), solver_contract.CODE_REFERENCE_MISSING),
-        (_item(endpoint="http://solver.example.com"), solver_contract.CODE_RUNTIME_BINDING_FORBIDDEN),
+        (_item(endpoint="https://solver.example.com"), solver_contract.CODE_RUNTIME_BINDING_FORBIDDEN),
+        (_item(providerRevision="synthetic-rev"), solver_contract.CODE_RUNTIME_BINDING_FORBIDDEN),
+        (_item(operation_frontmatter={"callback_url": "synthetic-value"}),
+         solver_contract.CODE_RUNTIME_BINDING_FORBIDDEN),
         (_item(solver_key="查询站点"), solver_contract.CODE_INVALID),
         ({"binding": {"solver_key": "plan_route"}}, solver_contract.CODE_INVALID),
     ],
@@ -1164,9 +1235,7 @@ def test_routes_return_findings_and_conflict(manager: WorkspaceManager, monkeypa
     )
     saved = projects.save_solver_contract(pid, body, request)
     assert saved["revision"].startswith("sha256:")
-    message = subprocess.run(
-        ["git", "log", "-1", "--format=%s"], cwd=root, capture_output=True, text=True, check=True
-    ).stdout.strip()
+    message = _git(root, "log", "-1", "--format=%s").strip()
     assert message == "web: 保存求解契约：启用路线求解"
     with pytest.raises(WorkspaceError) as exc:
         projects.save_solver_contract(

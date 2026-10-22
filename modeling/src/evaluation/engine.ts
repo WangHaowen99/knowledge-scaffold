@@ -303,9 +303,14 @@ export function startEvaluation(
   if (!latest) throw new Error('启动评测必须提供知识包快照');
   if (!String(latest.revisionOid ?? '').trim()) throw new Error('知识包快照缺少工件修订');
   // 评测必须能够记录存量脚本的执行契约失败，而不是在轮次创建前整体拦截。
-  // 安全检查仍然强制执行；候选接受、导出和发布继续使用严格契约。
+  // 关系命名规范只约束新生成和新修改的关系；存量包或外部导入包（如图关系类型）
+  // 的关系名不影响评测执行，不能在评测前强制改名。
+  // 安全检查和关系结构检查仍然强制执行；候选接受、导出和发布继续使用严格契约。
   try {
-    validateSpecIntegrity(latest.spec, [], undefined, { validateScriptExecutionContract: false });
+    validateSpecIntegrity(latest.spec, [], undefined, {
+      validateScriptExecutionContract: false,
+      validateRelationNames: false,
+    });
   } catch (error) {
     throw new EvaluationOperationError(
       'EVALUATION_PACKAGE_INVALID',
@@ -537,11 +542,14 @@ async function runRound(
     onStart: () => repo.roundCaseStarted(roundId),
     run: async (tc) => {
       assertEvaluationNotCancelled(signal);
-      // runCase 内部只处理「响应返回了非 2xx」；网关限流是直接抛异常的，
-      // 那条路径绕过了内层重试，外面再包一层才兜得住。
+      // runCase 内部只处理「响应返回了非 2xx」和「2xx 里的瞬时失败终态」；
+      // 网关限流是直接抛异常的，那条路径绕过了内层重试，外面再包一层才兜得住。
       const runHooks: RunCaseHooks = {
         onRateLimited: (attempt, waitMs, failure) => {
           log(`⏳ 被限流，${Math.round(waitMs / 1000)} 秒后重试（第 ${attempt} 次）：${failure.slice(0, 80)}`);
+        },
+        onTransientFailure: (attempt, waitMs, failure) => {
+          log(`⏳ ${failure.slice(0, 80)}，${Math.round(waitMs / 1000)} 秒后换新会话重试（第 ${attempt} 次）`);
         },
       };
       const run = await withRateLimitRetry(
@@ -647,6 +655,31 @@ export function rateLimitBackoffMs(attempt: number, random: () => number = Math.
 
 const RATE_LIMIT_MAX_ATTEMPTS = 6;
 
+/**
+ * consumer 以 2xx 返回的「失败终态」里，哪些是瞬时的、换个会话再跑就能过。
+ * 目前只有 SESSION_PREPARE_FAILED：并发跑用例时同一 workspace 的会话老化撞上
+ * 摘要索引投影冲突，consumer 把它记成不可重试的运行失败；对评测来说这条用例
+ * 并没有真的跑过，直接判 error 会把偶发的并发冲突算成知识包的问题。
+ * 旧版 consumer 的终态没有 error_code，只能靠文案兜住。
+ */
+export function isTransientRunFailure(data: any): boolean {
+  const status = String(data?.status ?? '').trim().toLowerCase();
+  if (!['error', 'failed'].includes(status)) return false;
+  if (String(data?.error_code ?? '').trim() === 'SESSION_PREPARE_FAILED') return true;
+  return String(data?.error ?? '').includes('会话运行状态准备失败');
+}
+
+/** 退避等待；用户停止评测时立即中断，不把剩余等待时间耗完。 */
+function waitForBackoff(waitMs: number, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, waitMs);
+    signal.addEventListener('abort', () => {
+      clearTimeout(timer);
+      reject(new Error('本轮评测已由用户停止'));
+    }, { once: true });
+  });
+}
+
 /** 限流重试包装：runs/sync 与判分调用共用同一套退避策略。 */
 export async function withRateLimitRetry<T>(
   label: string,
@@ -668,13 +701,7 @@ export async function withRateLimitRetry<T>(
       }
       const waitMs = (hooks.backoffMs ?? rateLimitBackoffMs)(attempts);
       hooks.onRateLimited?.(attempts, waitMs, message);
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(resolve, waitMs);
-        signal.addEventListener('abort', () => {
-          clearTimeout(timer);
-          reject(new Error('本轮评测已由用户停止'));
-        }, { once: true });
-      });
+      await waitForBackoff(waitMs, signal);
     }
   }
 }
@@ -682,6 +709,8 @@ export async function withRateLimitRetry<T>(
 export interface RunCaseHooks {
   /** 每次因限流而等待前回调，用于把重试写进轮次日志。 */
   onRateLimited?: (attempt: number, waitMs: number, failure: string) => void;
+  /** 每次因 consumer 瞬时失败终态而换会话重试前回调。 */
+  onTransientFailure?: (attempt: number, waitMs: number, failure: string) => void;
   /** 退避时长，仅测试会覆盖，避免真的等满一轮指数退避。 */
   backoffMs?: (attempt: number) => number;
 }
@@ -694,10 +723,12 @@ export async function runCase(
   signal: AbortSignal,
   hooks: RunCaseHooks = {},
 ): Promise<{ finalAnswer: string; trace: EvaluationExecutionTrace }> {
-  const sessionId = `mw-eval-${randomUUID().slice(0, 8)}`;
   let rateLimitAttempts = 0;
+  let transientAttempts = 0;
   for (;;) {
     assertEvaluationNotCancelled(signal);
+    // 每次尝试都用新会话：失败的会话已经留下 failed 轮次，复用会污染下一次的上下文。
+    const sessionId = `mw-eval-${randomUUID().slice(0, 8)}`;
     const res = await request('', '/agentic/runs/sync', {
       method: 'POST', workspaceId: ws, headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ request: question, session_id: sessionId, include_trace: true }),
@@ -712,16 +743,21 @@ export async function runCase(
       }
       const waitMs = (hooks.backoffMs ?? rateLimitBackoffMs)(rateLimitAttempts);
       hooks.onRateLimited?.(rateLimitAttempts, waitMs, String(failure));
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(resolve, waitMs);
-        signal.addEventListener('abort', () => {
-          clearTimeout(timer);
-          reject(new Error('本轮评测已由用户停止'));
-        }, { once: true });
-      });
+      await waitForBackoff(waitMs, signal);
       continue;
     }
     if (!res.ok) throw new Error(failure);
+    if (isTransientRunFailure(data)) {
+      const detail = String(data.error ?? '').trim();
+      transientAttempts += 1;
+      if (transientAttempts >= RATE_LIMIT_MAX_ATTEMPTS) {
+        throw new Error(`runs/sync 重试 ${RATE_LIMIT_MAX_ATTEMPTS} 次后仍然${detail}`);
+      }
+      const waitMs = (hooks.backoffMs ?? rateLimitBackoffMs)(transientAttempts);
+      hooks.onTransientFailure?.(transientAttempts, waitMs, detail);
+      await waitForBackoff(waitMs, signal);
+      continue;
+    }
     const resolvedSessionId = String(data.session_id || sessionId);
     const runId = String(data.run_id || '');
     const trace = traceFromSyncResponse(data) ?? await fetchEvaluationRunTrace({

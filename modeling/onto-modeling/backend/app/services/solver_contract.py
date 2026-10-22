@@ -70,7 +70,7 @@ FINDING_HINTS = {
     CODE_VERSION_INCOMPATIBLE: "请改用平台支持的契约版本或 Profile。",
     CODE_REFERENCE_MISSING: "补齐被引用的文件，或修正引用路径与 Operation 绑定。",
     CODE_CONTEXT_MISSING: "在评估器模块顶层定义 SOLVER_CONTEXT。",
-    CODE_RUNTIME_BINDING_FORBIDDEN: "Endpoint、Token 等运行时配置属于消费平台，删除后再发布。",
+    CODE_RUNTIME_BINDING_FORBIDDEN: "Endpoint、Token、口令、服务地址等运行时配置属于消费平台，删除后再发布。",
     CODE_VALIDATION_STALE: "内容已修改，请对当前修订重新验证。",
     CODE_INVALID: "按提示修正文件格式或字段取值。",
     CODE_VALIDATION_REQUIRED: "求解知识包发布前须对当前修订完成一次 Consumer 端到端验证。",
@@ -159,8 +159,26 @@ _KNOWN_MARKERS = {
     "operation-centric.v1", "operation-centric", "operation_centric.v1",
     "operation_centric", "legacy",
 }
-# 与 consumer ontology.ontologies.validate_no_runtime_binding_data 同一规则
-_FORBIDDEN_KEY_PARTS = frozenset({"endpoint", "token", "secret", "platform"})
+# 运行时绑定检测（REQ-PKG-005）比 consumer ontology.ontologies.validate_no_runtime_binding_data 更严：
+# consumer 只认 endpoint、token、secret、platform 四个键名片段，建模侧另查凭据类键名与取值形态，
+# 在保存与发布前拦下 consumer 漏判的内容。报错只给字段路径与类别，不回显取值。
+# 键名去掉分隔符后按子串匹配：providerRevision、api_key、connectionString 都能识别
+_FORBIDDEN_KEY_TERMS = (
+    "endpoint", "token", "secret", "password", "passwd", "credential", "cookie", "authorization",
+    "platform", "runtimebinding", "providerrevision", "apikey", "accesskey", "privatekey",
+    "connectionstring",
+)
+# 短词按完整片段匹配，避免 purity、security 之类的业务词误判
+_FORBIDDEN_KEY_PARTS = frozenset({"url", "urls", "uri", "uris", "dsn"})
+_FORBIDDEN_VALUE_PATTERNS = (
+    ("服务地址", re.compile(r"[a-z][a-z0-9+.-]*://", re.IGNORECASE)),
+    ("主机端口", re.compile(r"\b(?:localhost|\d{1,3}(?:\.\d{1,3}){3}):\d{1,5}\b", re.IGNORECASE)),
+    ("证书或私钥", re.compile(r"-----BEGIN [A-Z0-9 ]+-----")),
+    ("Bearer 凭据", re.compile(r"\bBearer\s+[A-Za-z0-9._~+/-]{8,}")),
+    ("JWT", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}")),
+)
+# JSON Schema 方言声明（$schema）是规范标识，不是服务地址
+_SCHEMA_DIALECT_RE = re.compile(r"^https?://json-schema\.org/[A-Za-z0-9/._-]*#?$")
 _FRONTMATTER_RE = re.compile(
     r"^---[ \t]*\r?\n(?P<body>.*?)^---[ \t]*(?:\r?\n|$)", re.MULTILINE | re.DOTALL
 )
@@ -232,14 +250,12 @@ class WorkspaceSolverContract:
         frontmatter = self.binding.get("operation_frontmatter") or {}
         execution = frontmatter.get("execution") or {}
         declaration = self.binding.get("declaration") or {}
-        return all(
-            _enabled(value)
-            for value in (
-                frontmatter.get("enabled", True),
-                execution.get("enabled", True),
-                declaration.get("enabled", True),
-            )
+        flags = (
+            frontmatter.get("enabled", True),
+            execution.get("enabled", True),
+            declaration.get("enabled", True),
         )
+        return all(_enabled(value) for value in flags)
 
 
 @dataclass
@@ -281,37 +297,93 @@ def read_frontmatter(text: str) -> Mapping | None:
     return value if isinstance(value, Mapping) else None
 
 
-def find_runtime_binding(value: Any, prefix: str = "") -> str:
-    """返回第一个运行时绑定字段的路径；没有返回空串。"""
+def _forbidden_key(key: str) -> bool:
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key)
+    normalized = re.sub(r"[^a-z0-9]+", "_", separated.lower()).strip("_")
+    compact = normalized.replace("_", "")
+    return any(term in compact for term in _FORBIDDEN_KEY_TERMS) or bool(
+        set(normalized.split("_")) & _FORBIDDEN_KEY_PARTS
+    )
+
+
+def _forbidden_value(key: str, value: str) -> str:
+    """取值形如服务地址或凭据时返回类别，否则返回空串。"""
+    if key == "$schema" and _SCHEMA_DIALECT_RE.match(value.strip()):
+        return ""
+    return next((label for label, pattern in _FORBIDDEN_VALUE_PATTERNS if pattern.search(value)), "")
+
+
+def find_runtime_binding(
+    value: Any, prefix: str = "", *, check_values: bool = True, key: str = ""
+) -> tuple[str, str] | None:
+    """返回第一处运行时绑定的 (字段路径, 类别)；没有返回 None。check_values=False 只查键名。"""
+    if isinstance(value, str):
+        label = _forbidden_value(key, value) if check_values else ""
+        return (prefix, label) if label else None
     if isinstance(value, Mapping):
         for raw_key, item in value.items():
-            key = str(raw_key or "").strip()
-            separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key)
-            normalized = re.sub(r"[^a-z0-9]+", "_", separated.lower()).strip("_")
-            parts = frozenset(part for part in normalized.split("_") if part)
-            here = f"{prefix}.{key}" if prefix else key
-            if normalized == "runtime_binding" or parts & _FORBIDDEN_KEY_PARTS:
-                return here
-            found = find_runtime_binding(item, here)
+            name = str(raw_key or "").strip()
+            here = f"{prefix}.{name}" if prefix else name
+            if _forbidden_key(name):
+                return here, "键名"
+            found = find_runtime_binding(item, here, check_values=check_values, key=name)
             if found:
                 return found
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
-            found = find_runtime_binding(item, f"{prefix}[{index}]")
+            found = find_runtime_binding(item, f"{prefix}[{index}]", check_values=check_values)
             if found:
                 return found
-    return ""
+    return None
 
 
-def _reject_runtime_binding(value: Any, path: str) -> None:
-    found = find_runtime_binding(value)
-    if found:
-        raise SolverContractError(
-            CODE_RUNTIME_BINDING_FORBIDDEN,
-            f"{path} 含运行时绑定字段 {found}：Endpoint、Token、Secret、平台名等由消费平台管理，"
-            "禁止随知识包发布",
-            path=path, field=found,
+def _runtime_binding_error(path: str, field: str, label: str) -> SolverContractError:
+    if label == "键名":
+        message = (
+            f"{path} 含运行时绑定字段 {field}：Endpoint、Token、Secret、口令、平台名等由消费平台管理，"
+            "禁止随知识包发布"
         )
+    else:
+        message = f"{path} 的 {field} 取值含{label}：服务地址与凭据由消费平台管理，禁止随知识包发布"
+    return SolverContractError(CODE_RUNTIME_BINDING_FORBIDDEN, message, path=path, field=field)
+
+
+def _reject_runtime_binding(value: Any, path: str, *, check_values: bool = True) -> None:
+    found = find_runtime_binding(value, check_values=check_values)
+    if found:
+        raise _runtime_binding_error(path, *found)
+
+
+def _evaluator_runtime_binding(source: bytes | None, rel: str) -> list[SolverContractError]:
+    """评估器源码里的运行时绑定（只解析不执行）：顶层赋值名、字典字面量的键与全部字符串常量。
+
+    评估器随包发布，写进源码的服务地址或凭据同样会进入消费平台。
+    """
+    try:
+        module = ast.parse((source or b"").decode("utf-8"))
+    except (SyntaxError, ValueError):  # UnicodeDecodeError 是 ValueError 的子类
+        return []  # 无法解析由评估器检查另行报告
+    for statement in module.body:
+        if isinstance(statement, ast.Assign):
+            names = [target.id for target in statement.targets if isinstance(target, ast.Name)]
+        elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+            names = [statement.target.id]
+        else:
+            names = []
+        for name in names:
+            if _forbidden_key(name):
+                return [_runtime_binding_error(rel, name, "键名")]
+        owner = names[0] if names else ""
+        for node in ast.walk(statement):
+            keys = node.keys if isinstance(node, ast.Dict) else ()
+            for key in keys:
+                if isinstance(key, ast.Constant) and isinstance(key.value, str) and _forbidden_key(key.value):
+                    return [_runtime_binding_error(rel, owner or f"第 {key.lineno} 行", "键名")]
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                label = _forbidden_value("", node.value)
+                if label:
+                    return [_runtime_binding_error(rel, owner or f"第 {node.lineno} 行", label)]
+    return []
 
 
 def _reject_remote_refs(value: Any) -> None:
@@ -336,7 +408,7 @@ def parse_sidecar(data: bytes, filename: str, path: str) -> Mapping:
     try:
         text = data.decode("utf-8")
         value = json.loads(text) if filename.endswith(".json") else yaml.safe_load(text)
-    except (UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
+    except (ValueError, yaml.YAMLError) as exc:  # ValueError 已涵盖 UnicodeDecodeError 与 JSONDecodeError
         raise SolverContractError(CODE_INVALID, f"{path} 无法解析：{exc}", path=path) from exc
     if value is None:
         value = {}
@@ -422,12 +494,8 @@ def _declarations(manifest: Mapping) -> tuple[dict[str, dict], list[Mapping]]:
                 path="manifest.yaml", field="capabilities.decision_models",
             )
         models[model_id] = dict(raw)
-    overrides = [
-        raw
-        for raw in as_list(capabilities.get("solver_operations"))
-        + as_list(manifest.get("solver_operations"))
-        if isinstance(raw, Mapping)
-    ]
+    operations = as_list(capabilities.get("solver_operations")) + as_list(manifest.get("solver_operations"))
+    overrides = [raw for raw in operations if isinstance(raw, Mapping)]
     return models, overrides
 
 
@@ -483,7 +551,11 @@ def extract_package_solver(files: Mapping[str, bytes]) -> PackageSolver:
             path="manifest.yaml", field="solver_layout",
         ))
     try:
-        _reject_runtime_binding(manifest, "manifest.yaml")
+        # 清单的通用字段（名称、说明等）不归求解契约，取值形态只查求解声明所在的 capabilities
+        _reject_runtime_binding(manifest, "manifest.yaml", check_values=False)
+        _reject_runtime_binding(
+            {"capabilities": manifest.get("capabilities")}, "manifest.yaml"
+        )
         models, overrides = _declarations(manifest)
     except SolverContractError as exc:
         return PackageSolver(problems=(*problems, exc))
@@ -732,10 +804,18 @@ def render_package_solver(
 
 
 def operation_frontmatter(
-    contract: WorkspaceSolverContract, title: str, used_objects: list[str], object_keys: set[str]
+    contract: WorkspaceSolverContract, title: str, used_objects: list[str], object_keys: set[str],
+    report_name: str | None = None,
 ) -> str:
-    """求解 Operation 的包内 frontmatter：保留导入时的扩展字段，身份与执行模式以 binding 为准。"""
+    """求解 Operation 的包内 frontmatter：保留导入时的扩展字段，身份与执行模式以 binding 为准。
+
+    report_name 是工作区文档记录的业务原名，与普通 Operation 一样随包带出，回导时据此还原。
+    回导按 JSON 字符串解析该行（document_metadata.report_name），不能交给 YAML 序列化。
+    """
     preserved = dict(contract.binding.get("operation_frontmatter") or {})
+    kept_name = preserved.pop("report_name", None)
+    if report_name is None and isinstance(kept_name, str):
+        report_name = kept_name
     for alias in ("decision_model", "decision_model_id"):
         if alias in preserved:
             preserved[alias] = contract.decision_model
@@ -756,7 +836,10 @@ def operation_frontmatter(
         "execution": execution,
         "uses": uses,
     }
-    return "---\n" + _dump_yaml(document).decode("utf-8") + "---\n\n"
+    text = _dump_yaml(document).decode("utf-8")
+    if report_name is not None:
+        text += f"report_name: {json.dumps(report_name, ensure_ascii=False)}\n"
+    return "---\n" + text + "---\n\n"
 
 
 def manifest_solver_section(render: PackageSolverRender) -> str:
@@ -789,6 +872,7 @@ class SolverCheck:
     findings: list[dict] = field(default_factory=list)
     revision: str = ""  # 求解契约修订：契约文件、绑定 Operation 与评估器源码的摘要
     evaluators: dict[str, str] = field(default_factory=dict)  # solver_key -> 工作区评估器路径
+    digests: dict = field(default_factory=dict)  # 规范化契约摘要，见 contract_digests
 
     @property
     def enabled(self) -> bool:
@@ -884,15 +968,15 @@ def _check_evaluator(
         path, source = matches[0]
         required = frozenset()
     rel = _rel(root, path)
+    problems = _evaluator_runtime_binding(source, rel)
     if _evaluator_contract.evaluator_kind(source) == _evaluator_contract.DECLARATIVE_KIND:
-        return _check_declarative_evaluator(source, root, rel), rel
+        return problems + _check_declarative_evaluator(source, root, rel), rel
     symbols = _evaluator_contract.module_symbols(source)
     if symbols is None:
         return [SolverContractError(
             CODE_INVALID, _evaluator_contract.UNPARSEABLE_MESSAGE, path=rel
         )], rel
     defined, assigned = symbols.defined, symbols.assigned
-    problems = []
     missing = sorted(required - defined - assigned)
     if missing:
         problems.append(SolverContractError(
@@ -985,16 +1069,22 @@ def _check_engine_requirements(requirements: Any, binding_rel: str) -> list[Solv
     )]
 
 
+def _fact_names(facts: Any) -> list[str] | None:
+    """required_facts 去首尾空白后的事实名；不是不重复的非空字符串列表时返回 None。"""
+    if not isinstance(facts, list):
+        return None
+    names = [item.strip() for item in facts if isinstance(item, str)]
+    if len(names) != len(facts) or not all(names):
+        return None
+    return names if len(set(names)) == len(names) else None
+
+
 def _check_ordered_route_model(model: Mapping, model_rel: str) -> list[SolverContractError]:
     """ordered_binary_route.v1 的事实声明、词典序目标与选项显示名（consumer 运行时据此 fail closed）。"""
     profile = SUPPORTED_PROFILES[0]
     problems: list[SolverContractError] = []
-    facts = model.get("required_facts")
-    names = [item.strip() for item in facts if isinstance(item, str)] if isinstance(facts, list) else []
-    if (
-        not isinstance(facts, list) or len(names) != len(facts)
-        or not all(names) or len(set(names)) != len(names)
-    ):
+    names = _fact_names(model.get("required_facts"))
+    if names is None:
         problems.append(SolverContractError(
             CODE_INVALID, "required_facts 须是不重复的事实名列表",
             path=model_rel, field="required_facts",
@@ -1158,6 +1248,13 @@ def _check_ordered_route_input(schema: Mapping, input_rel: str) -> list[SolverCo
     )]
 
 
+def _is_external_snapshot(fact_source: Any) -> bool:
+    """fact_source 是否为 {kind: external_snapshot, fail_closed: true}，且只多出可选的 evaluator_path。"""
+    if not isinstance(fact_source, Mapping) or not set(fact_source) <= FACT_SOURCE_KEYS:
+        return False
+    return fact_source.get("kind") == "external_snapshot" and fact_source.get("fail_closed") is True
+
+
 def _check_contract(
     root: Path, contract: WorkspaceSolverContract, scripts: Mapping[str, Path]
 ) -> tuple[list[SolverContractError], str]:
@@ -1182,12 +1279,7 @@ def _check_contract(
         parse_sidecar(contract.sidecars["input_schema"], "input.schema.json", input_rel), input_rel
     )
     fact_source = model.get("fact_source")
-    if (
-        not isinstance(fact_source, Mapping)
-        or fact_source.get("kind") != "external_snapshot"
-        or fact_source.get("fail_closed") is not True
-        or not set(fact_source) <= FACT_SOURCE_KEYS
-    ):
+    if not _is_external_snapshot(fact_source):
         problems.append(SolverContractError(
             CODE_INVALID,
             "fact_source 须为 {kind: external_snapshot, fail_closed: true}，"
@@ -1231,6 +1323,7 @@ def check_workspace_solver(
     check = SolverCheck(contracts, findings, evaluators=evaluators)
     if check.enabled:
         check.revision = _revision(root, contracts, evaluators.values())
+        check.digests = contract_digests(root, contracts, evaluators)
     return check
 
 
@@ -1238,6 +1331,14 @@ def _problem_solver_key(problem: SolverContractError) -> str:
     parts = problem.path.split("/")
     prefix = SOLVER_DIR.split("/")
     return parts[len(prefix)] if parts[: len(prefix)] == prefix and len(parts) > len(prefix) else ""
+
+
+def _operation_doc(root: Path, contract: WorkspaceSolverContract) -> Path | None:
+    for directory in ("ontology/operation", "ontology/logic"):
+        path = root / directory / f"{contract.operation}.md"
+        if path.is_file():
+            return path
+    return None
 
 
 def _revision(root: Path, contracts: list[WorkspaceSolverContract], evaluators: Iterable[str]) -> str:
@@ -1255,11 +1356,9 @@ def _revision(root: Path, contracts: list[WorkspaceSolverContract], evaluators: 
             if path.is_file() and not path.is_symlink()
         )
     for contract in contracts:
-        for directory in ("ontology/operation", "ontology/logic"):
-            path = root / directory / f"{contract.operation}.md"
-            if path.is_file():
-                paths.add(_rel(root, path))
-                break
+        path = _operation_doc(root, contract)
+        if path is not None:
+            paths.add(_rel(root, path))
     evaluators = set(evaluators)
     paths.update(evaluators)
     declared: set[str] = set()
@@ -1277,6 +1376,96 @@ def _revision(root: Path, contracts: list[WorkspaceSolverContract], evaluators: 
         data = (root / rel).read_bytes()
         digest.update(rel.encode("utf-8") + b"\0" + str(len(data)).encode() + b"\0" + data)
     return "sha256:" + digest.hexdigest()
+
+
+# 规范化契约摘要的逐项名称；sidecar 按角色映射，entry 即 Decision Model
+_DIGEST_ITEM_BY_ROLE = {"entry": "decision_model"}
+
+
+def _canonical(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _canonical(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonical(item) for item in value]
+    return value
+
+
+def canonical_digest(value: Any) -> str:
+    """键排序、紧凑分隔的 UTF-8 JSON 的 sha256：只改缩进、键序或 YAML/JSON 写法不改变摘要。"""
+    text = json.dumps(
+        _canonical(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    )
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _normalized_text(text: str) -> str:
+    """统一换行、去掉行尾空白与首尾空行，纯排版差异不进入摘要。"""
+    return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
+def _sidecar_document(data: bytes, filename: str) -> Any:
+    try:
+        text = data.decode("utf-8")
+        return json.loads(text) if filename.endswith(".json") else yaml.safe_load(text)
+    except (ValueError, yaml.YAMLError):  # ValueError 已涵盖 UnicodeDecodeError 与 JSONDecodeError
+        return {"unparsed": _normalized_text(data.decode("utf-8", "replace"))}
+
+
+def _operation_document(root: Path, contract: WorkspaceSolverContract) -> dict:
+    """求解 Operation 的发布语义：身份、执行声明、工作区文档的 frontmatter 与正文。"""
+    path = _operation_doc(root, contract)
+    text = path.read_bytes().decode("utf-8", "replace") if path is not None else ""
+    match = _FRONTMATTER_RE.match(text)
+    return {
+        "key": contract.solver_key,
+        "decision_model": contract.decision_model,
+        "frontmatter": contract.binding.get("operation_frontmatter") or {},
+        "document": {
+            "frontmatter": read_frontmatter(text) or {},
+            "body": _normalized_text(text[match.end():] if match else text),
+        },
+    }
+
+
+def contract_digests(
+    root: Path, contracts: Iterable[WorkspaceSolverContract], evaluators: Mapping[str, str]
+) -> dict:
+    """求解契约的规范化摘要（REQ-PKG-006）：逐项、逐契约与总摘要。
+
+    各项按发布形态取值（输入 Schema 含导出时的可选值投影），解析后规范化再计算，
+    同一内容总得到同一摘要；任一项语义变化同时改变该项、所在契约与总摘要。
+    package 项是知识包格式版本（schema_version 与布局），不含每次发布递增的包版本号。
+    摘要只在建模侧展示与留证，不写进知识包。
+    """
+    package = canonical_digest({"schema_version": "0.2", "solver_layout": OPERATION_CENTRIC_LAYOUT})
+    operations: dict[str, dict[str, str]] = {}
+    for contract in sorted(contracts, key=lambda item: item.solver_key):
+        evaluator_rel = evaluators.get(contract.solver_key, "")
+        evaluator_path = root / evaluator_rel if evaluator_rel else None
+        items = {"operation": canonical_digest(_operation_document(root, contract))}
+        for sidecar in SIDECARS:
+            data = contract.sidecars[sidecar.role]
+            if sidecar.role == "input_schema":
+                data = project_input_schema(data, evaluator_path)
+            items[_DIGEST_ITEM_BY_ROLE.get(sidecar.role, sidecar.role)] = canonical_digest(
+                _sidecar_document(data, sidecar.filename)
+            )
+        # Policy：随 manifest 声明发布的扩展字段（引擎要求、启用状态等）
+        items["policy"] = canonical_digest(contract.binding.get("declaration") or {})
+        source = _read_evaluator(evaluator_path) if evaluator_path is not None else None
+        items["evaluator"] = canonical_digest(
+            _normalized_text(source.decode("utf-8", "replace")) if source is not None else None
+        )
+        operations[contract.solver_key] = {**items, "total": canonical_digest(items)}
+    return {
+        "algorithm": "sha256:canonical-json",
+        "package": package,
+        "operations": operations,
+        "total": canonical_digest({
+            "package": package,
+            "operations": {key: item["total"] for key, item in operations.items()},
+        }),
+    }
 
 
 # ---- 结构化读写（求解模型面板）----
@@ -1483,7 +1672,7 @@ def _evaluator_dict_keys(path: Path | None, symbol: str) -> list[str]:
         if not data or len(data) > MAX_EVALUATOR_BYTES:
             return []
         module = ast.parse(data.decode("utf-8"), filename=path.name)
-    except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+    except (OSError, SyntaxError, ValueError):  # UnicodeDecodeError 是 ValueError 的子类
         return []
     options: list[str] = []
     for node in module.body:
@@ -1558,7 +1747,7 @@ def restore_template_input_schema(data: bytes) -> bytes:
         prefix = _crude_field(ORDERED_ROUTE_INPUT_SCHEMA)["description"] + _SOURCE_OPTIONS_PREFIX
         projected = description.startswith(prefix) and description.endswith(_SOURCE_CONFIRM_SUFFIX)
         sources = description[len(prefix):-len(_SOURCE_CONFIRM_SUFFIX)].split("、") if projected else []
-    except (UnicodeDecodeError, ValueError, LookupError, TypeError, AttributeError):
+    except (ValueError, LookupError, TypeError, AttributeError):  # ValueError 已涵盖 UnicodeDecodeError 与 JSONDecodeError
         return data
     return _TEMPLATE_INPUT_SCHEMA if _dump_json(_projected_input_schema(units, sources)) == data else data
 

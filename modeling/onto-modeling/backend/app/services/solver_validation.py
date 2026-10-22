@@ -46,18 +46,29 @@ def list_records(root: Path) -> list[dict]:
 def _save(root: Path, records: list[dict]) -> None:
     path = _path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".solver-validations-")
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump({"runs": records[:MAX_RECORDS]}, handle, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".solver-validations-")
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = None
+            json.dump({"runs": records[:MAX_RECORDS]}, handle, ensure_ascii=False, indent=2)
+        os.replace(temporary_path, path)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        temporary_path.unlink(missing_ok=True)
 
 
-def create(root: Path, revision: str, solver_keys: list[str], by: str = "") -> dict:
+def create(
+    root: Path, revision: str, solver_keys: list[str], by: str = "", contract_digest: str = ""
+) -> dict:
     record = {
         "id": uuid.uuid4().hex,
         "revision": revision,
         "solver_keys": sorted(solver_keys),
         "status": STATUS_QUEUED,
+        # 规范化契约总摘要（solver_contract.contract_digests 的 total），与 revision 的文件字节摘要互补
+        "contract_digest": contract_digest,
         "request_digest": "",
         "result_digest": "",
         "authoritative": False,

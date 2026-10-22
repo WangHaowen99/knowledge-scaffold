@@ -395,6 +395,7 @@
 .flowchart-editor-inspector select,
 .flowchart-editor-inspector textarea {
   width: 100%;
+  box-sizing: border-box;
   padding: 8px 9px;
   color: #273142;
   background: #fff;
@@ -413,180 +414,6 @@
   .flowchart-editor-body { grid-template-columns: minmax(0, 1fr) 210px; }
 }
 
-.flowchart-add-dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 1200;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  background: rgba(20, 29, 43, .38);
-}
-
-.flowchart-add-dialog {
-  width: min(620px, 100%);
-  max-height: min(760px, calc(100vh - 48px));
-  overflow: auto;
-  color: #273142;
-  background: #fff;
-  border: 1px solid #dce2eb;
-  border-radius: 10px;
-  box-shadow: 0 24px 70px rgba(21, 34, 52, .24);
-}
-
-.flowchart-add-dialog > header,
-.flowchart-add-dialog > footer {
-  padding: 16px 18px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.flowchart-add-dialog > header { border-bottom: 1px solid #e9edf2; }
-.flowchart-add-dialog > header span { color: #738095; font-size: 11px; }
-.flowchart-add-dialog > header h3 { margin: 3px 0 0; font-size: 17px; }
-.flowchart-add-dialog > header button {
-  width: 32px;
-  height: 32px;
-  border: 0;
-  border-radius: 6px;
-  color: #647084;
-  background: #f3f5f8;
-  font-size: 20px;
-  cursor: pointer;
-}
-
-.flowchart-add-dialog__tabs {
-  padding: 12px 18px 0;
-  display: flex;
-  gap: 8px;
-}
-.flowchart-add-dialog__tabs button {
-  padding: 8px 11px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: #607087;
-  background: #f5f7fa;
-  border: 1px solid #dce2eb;
-  border-radius: 7px;
-  cursor: pointer;
-}
-.flowchart-add-dialog__tabs button.is-active {
-  color: #245f9f;
-  background: #edf6ff;
-  border-color: #8dbbe9;
-}
-
-.flowchart-add-dialog__goal {
-  margin: 14px 18px 0;
-  padding: 11px 13px;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 10px;
-  color: #315b8e;
-  background: #eef6ff;
-  border-radius: 7px;
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.flowchart-add-dialog__section { padding: 15px 18px 0; }
-.flowchart-add-dialog__section > strong,
-.flowchart-add-dialog__section > label { display: block; margin-bottom: 8px; font-size: 12px; font-weight: 700; }
-.flowchart-add-dialog__candidates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.flowchart-add-dialog__candidates button {
-  padding: 11px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  text-align: left;
-  color: #334155;
-  background: #fbfcfe;
-  border: 1px solid #dce3ed;
-  border-radius: 7px;
-  cursor: pointer;
-}
-.flowchart-add-dialog__candidates button:hover:not(:disabled) { border-color: #78a9e3; background: #f2f7fd; }
-.flowchart-add-dialog__candidates span { font-size: 12.5px; font-weight: 700; }
-.flowchart-add-dialog__candidates small { color: #7b8798; font-size: 10.5px; line-height: 1.5; }
-.flowchart-add-dialog textarea {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 9px 10px;
-  border: 1px solid #d8dfe9;
-  border-radius: 7px;
-  color: #273142;
-  font: inherit;
-  font-size: 12px;
-  resize: vertical;
-}
-.flowchart-import-form > input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 9px 10px;
-  border: 1px solid #d8dfe9;
-  border-radius: 7px;
-  color: #273142;
-  font: inherit;
-  font-size: 12px;
-}
-.flowchart-import-form label:not(:first-child) { margin-top: 13px; }
-.flowchart-import-form label em { margin-left: 4px; color: #b33b35; font-style: normal; font-size: 10px; }
-.flowchart-import-form > small { margin-top: 7px; display: block; color: #758196; font-size: 10.5px; line-height: 1.5; }
-.flowchart-import-drop {
-  margin-top: 11px;
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 5px;
-  color: #597086;
-  background: #f8fafc;
-  border: 1px dashed #aebccc;
-  border-radius: 8px;
-  cursor: pointer;
-}
-.flowchart-import-drop.is-dragging { color: #1f67ae; background: #eaf5ff; border-color: #4c93d8; }
-.flowchart-import-drop strong { font-size: 12px; }
-.flowchart-import-drop span { font-size: 10.5px; }
-.flowchart-import-error {
-  margin: 12px 18px 0;
-  padding: 11px 12px;
-  color: #8f2924;
-  background: #fff2f0;
-  border: 1px solid #f2c5c0;
-  border-radius: 7px;
-}
-.flowchart-import-error > div { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
-.flowchart-import-error > div span { color: #a05d58; font-size: 10.5px; }
-.flowchart-import-error p { margin: 7px 0; font-size: 12px; }
-.flowchart-import-error pre { margin: 8px 0; padding: 8px; overflow: auto; color: #6f2722; background: #fffafa; border-radius: 5px; font-size: 10.5px; }
-.flowchart-import-error small { display: block; line-height: 1.5; }
-.flowchart-import-preview {
-  margin: 12px 18px 0;
-  padding: 12px;
-  color: #30475e;
-  background: #f2f8ff;
-  border: 1px solid #c9ddf2;
-  border-radius: 7px;
-}
-.flowchart-import-preview > div:first-child { display: flex; justify-content: space-between; gap: 12px; }
-.flowchart-import-preview > div:first-child span { color: #647a91; font-size: 10.5px; }
-.flowchart-import-preview dl { margin: 10px 0; display: flex; gap: 18px; }
-.flowchart-import-preview dl div { display: flex; gap: 5px; font-size: 11px; }
-.flowchart-import-preview dd { margin: 0; font-weight: 700; }
-.flowchart-import-preview__path { font-size: 11px; line-height: 1.6; }
-.flowchart-import-preview p,
-.flowchart-import-preview li { margin: 6px 0 0; color: #60758b; font-size: 10.5px; line-height: 1.5; }
-.flowchart-import-preview ul { margin: 6px 0 0; padding-left: 18px; }
-.flowchart-add-dialog__error { margin: 12px 18px 0; padding: 8px 10px; color: #a8322c; background: #fff2f0; border-radius: 6px; font-size: 12px; }
-.flowchart-add-dialog > footer { margin-top: 16px; justify-content: flex-end; border-top: 1px solid #e9edf2; }
-.flowchart-add-dialog > footer button { padding: 7px 13px; border: 1px solid #d9dfe8; border-radius: 6px; background: #fff; cursor: pointer; }
-.flowchart-add-dialog > footer button.is-primary { color: #fff; background: #2a78d6; border-color: #2a78d6; }
-.flowchart-add-dialog button:disabled { opacity: .5; cursor: not-allowed; }
-
 @media (max-width: 640px) {
   .flowchart-editor { display: flex; flex-direction: column; height: auto; min-height: 900px; overflow: visible; }
   .flowchart-editor-rail { flex: none; border-right: 0; border-bottom: 1px solid var(--hair, #e3e6ec); }
@@ -598,5 +425,4 @@
   .flowchart-editor-toolbar__save { width: 100%; margin-left: 0; justify-content: flex-end; }
   .flowchart-editor-body { display: grid; grid-template-columns: 1fr; grid-template-rows: minmax(440px, 1fr) auto; }
   .flowchart-editor-inspector { min-height: 260px; border-left: 0; border-top: 1px solid var(--hair, #e3e6ec); }
-  .flowchart-add-dialog__candidates { grid-template-columns: 1fr; }
 }

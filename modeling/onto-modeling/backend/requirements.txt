@@ -8,5 +8,5 @@ openpyxl>=3.1
 pyyaml>=6
 jsonschema>=4.18
 # Jiuwen 引擎（openjiuwen 进程内 SDK，方案 docs/openjiuwen-engine-migration.md）
-openjiuwen>=0.1.18; python_version >= "3.11"
+openjiuwen[sqlite]>=0.1.18; python_version >= "3.11"
 opentelemetry-sdk>=1.25; python_version >= "3.11"

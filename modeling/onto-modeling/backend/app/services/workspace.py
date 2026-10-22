@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -27,9 +29,15 @@ except ImportError:  # pragma: no cover - Windows development fallback
     fcntl = None
 
 from .. import config
-from . import package_mapping, solver_contract, solver_validation
+from . import material_detect, package_mapping, solver_contract, solver_validation
+from .document_metadata import report_name
+from .name_conflict import MAX_DISPLAY_NAME_LENGTH, detect_name_conflict
 
 META_FILE = ".onto-web.json"  # 历史文件名保留：存量项目的识别键（ADR-0006）
+PURGE_MARKER = ".onto-web.purging"  # 原地清除兜底：顶替 META_FILE，重启清扫据此认领残留
+# 删除时 Windows 上刚被杀的进程要片刻才释放目录句柄，rename/rmtree 短暂重试
+_DELETE_RETRIES = 5
+_DELETE_RETRY_SECONDS = 0.2
 SKIP_DIRS = {".git", ".ontology-state", ".obsidian"}
 RESOURCE_SUBDIRS = {"diagrams", "excel", "others"}
 # 已发布知识包导入时的原包留底区：随 git 版本化（跨环境迁移要带走），
@@ -46,6 +54,8 @@ tmp/
 
 _PROJECT_LOCKS: dict[str, threading.RLock] = {}
 _PROJECT_LOCKS_GUARD = threading.Lock()
+# 同名校验到项目落盘之间不能被另一个同名请求插队
+_NAME_CLAIM_LOCK = threading.Lock()
 
 
 class WorkspaceError(Exception):
@@ -53,6 +63,18 @@ class WorkspaceError(Exception):
         super().__init__(message)
         self.status = status
         self.code = code
+
+
+class NameConflictError(WorkspaceError):
+    """任务名称与查重范围内的已有任务重名；conflict 带候选名，供前端改名后重试。"""
+
+    def __init__(self, message: str, conflict: dict):
+        super().__init__(message, 409, "project_name_conflict")
+        self.conflict = conflict
+
+
+def _is_auto_detected(directive) -> bool:
+    return isinstance(directive, dict) and bool(directive.get("auto_detected"))
 
 
 class WorkspaceManager:
@@ -202,6 +224,8 @@ class WorkspaceManager:
         (("reports/eval-*.md",), True),
     )
     STAGE_TOTAL = len(STAGES)
+    # 资料分析在 STAGES 中的位置：它不按目录探针判完成，改读验收回执（issue #362）
+    RESEARCH_STAGE_INDEX = 0
 
     @staticmethod
     def _dir_has_entries(directory: Path) -> bool:
@@ -215,16 +239,29 @@ class WorkspaceManager:
 
     @classmethod
     def _project_progress(cls, root: Path) -> dict:
-        done = sum(
-            1
-            for dirs, _optional in cls.STAGES
-            if any(
+        review = _research_review.review_status(root)
+        # 验收只管"进入对象提取之前"：报告没通过、对象也还没提取时才挡住后续阶段。
+        # 对象一旦提取，资料分析按已越过处理，只留待核验的提醒——与 state_helper
+        # 的"已到达的最高阶段优先"同口径。否则旧项目升级后进度会整体归零，回执
+        # 因打标签、换评测表而失效时也一样。
+        research_blocking = (
+            review["status"] in (_research_review.PENDING, _research_review.FAILED)
+            and not cls._dir_has_entries(root / "ontology" / "object")
+        )
+        done = 0
+        for index, (dirs, _optional) in enumerate(cls.STAGES):
+            hit = any(
                 (next(root.glob(rel), None) is not None)
                 if "*" in rel
                 else cls._dir_has_entries(root / rel)
                 for rel in dirs
             )
-        )
+            # 资料分析：报告落盘不等于内容已验收，挡着的时候不计完成（与前端 stageHits 同口径）。
+            # 有没有报告以回执状态为准，不看目录探针。
+            if index == cls.RESEARCH_STAGE_INDEX:
+                hit = review["status"] != _research_review.NONE and not research_blocking
+            if hit:
+                done += 1
 
         def count_md(rel: str) -> int:
             directory = root / rel
@@ -250,6 +287,17 @@ class WorkspaceManager:
             "eval_evolution": evolution_hint(eval_summary),
             "stages_done": done,
             "stages_total": cls.STAGE_TOTAL,
+            # 资料分析的验收状态（none/pending/failed/passed）+ 计数与下一步提示。
+            # 只给结论和条数，错误明细由 research_checker 在工作区内输出。
+            # blocking：未验收是否还挡着后续阶段；前端据此决定阶段完成态，不自行推断。
+            "research_review": {
+                "status": review["status"],
+                "reason": review["reason"],
+                "blocking": research_blocking,
+                "errors": len(review["errors"]),
+                "manual_pending": len(review["manual_pending"]),
+                "hint": _research_review.hint(review),
+            },
             "objects": count_md("ontology/object"),
             "operations": count_md("ontology/operation") + count_md("ontology/logic"),
         }
@@ -297,6 +345,70 @@ class WorkspaceManager:
     @classmethod
     def can_write(cls, meta: dict, username: str, is_admin: bool) -> bool:
         return cls.role_of(meta, username, is_admin) in cls.WRITE_ROLES
+
+    # ---- 任务名称同名校验 ----
+
+    def _project_metas(self, exclude_id: str = "") -> list[dict]:
+        """全部任务的元数据，不算阶段进度（查重只看名称与归属）。"""
+        metas = []
+        for entry in self.workspaces_dir.iterdir():
+            if entry.name == exclude_id:
+                continue
+            try:
+                meta = json.loads((entry / META_FILE).read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if isinstance(meta, dict):
+                metas.append(meta)
+        return metas
+
+    def check_name_available(
+        self,
+        name: str,
+        viewer: tuple[str, bool] | None,
+        *,
+        original_name: str = "",
+        importing: bool = False,
+        check_length: bool = True,
+        exclude_id: str = "",
+    ) -> None:
+        """新建/导入/重命名/克隆前的同名校验：去首尾空白、全角半角与大小写差异都算同名。
+
+        查重范围是当前用户可见的任务：viewer 为（用户名, 是否管理员），鉴权关闭时
+        传 None，全部任务都算。重名抛 NameConflictError（409），附候选名。
+        exclude_id 是重命名时的任务自身：只改自己名称的大小写或全半角不算重名。
+        """
+        name = (name or "").strip()
+        if not name:
+            return  # 空名由 create_project 统一报错
+        if check_length and len(name) > MAX_DISPLAY_NAME_LENGTH:
+            raise WorkspaceError(
+                f"任务名称不能超过 {MAX_DISPLAY_NAME_LENGTH} 个字符",
+                400,
+                "project_name_too_long",
+            )
+        metas = self._project_metas(exclude_id)
+        if viewer is not None:
+            metas = self.visible_to(metas, *viewer)
+        conflict = detect_name_conflict(
+            (meta.get("name") for meta in metas), name, original_name or name
+        )
+        if conflict is None:
+            return
+        if importing:
+            message = (
+                f"任务名称「{name}」已存在，不可重复导入。请选择候选名称或输入新名称后继续导入。"
+            )
+        else:
+            message = f"任务名称「{name}」已存在，请选择候选名称或输入新名称。"
+        raise NameConflictError(message, conflict)
+
+    @contextmanager
+    def name_claim(self, name: str, viewer: tuple[str, bool] | None, **options):
+        """同名校验通过后执行块内的落盘操作；校验与落盘一起串行，同名并发只成功一个。"""
+        with _NAME_CLAIM_LOCK:
+            self.check_name_available(name, viewer, **options)
+            yield
 
     def set_members(self, project_id: str, members: dict[str, str]) -> dict:
         for username, role in members.items():
@@ -549,22 +661,66 @@ class WorkspaceManager:
             try:
                 self._atomic_write(dest, data)
                 rel = f"resource/{subdir}/{safe_name}"
-                if purpose != "auto" or reading_mode != "on_demand":
-                    directives = self.resource_directives(project_id)
-                    directives[rel] = {
-                        "purpose": purpose if purpose in self.MATERIAL_PURPOSES else "auto",
-                        "reading_mode": reading_mode
-                        if reading_mode in self.MATERIAL_READING_MODES
-                        else "on_demand",
-                    }
-                    self._write_resource_directives(root, directives)
+                detected = self._update_upload_directive(project_id, rel, purpose, reading_mode)
                 # 变更提醒依据：前端对比该时间与派生产物版本，提示"资料已更新，可让助手增量刷新"
                 self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
             except Exception:
                 self._restore_snapshot(dest, file_snapshot)
                 self._restore_snapshot(directives_path, directives_snapshot)
                 raise
-            return {"path": rel, "size": len(data), "replaced": replaced}
+            result = {"path": rel, "size": len(data), "replaced": replaced}
+            if detected:
+                result["detected"] = detected
+            return result
+
+    def _update_upload_directive(
+        self, project_id: str, rel: str, purpose: str, reading_mode: str
+    ) -> dict | None:
+        """写入上传时指定的用途；未指定（auto）时按结构识别预填。
+
+        判为数据表或术语表就标 schema / term 并记 auto_detected，用户之后在资料区改用途即覆盖。
+        替换文件时只重判没有条目或此前自动标注的，不动人工标注。返回识别结果（未预填为 None）。
+        """
+        root = self.project_root(project_id)
+        directives = self.resource_directives(project_id)
+        before = json.dumps(directives, sort_keys=True)
+        existing = directives.get(rel)
+        reading_mode = reading_mode if reading_mode in self.MATERIAL_READING_MODES else "on_demand"
+        if purpose != "auto" or reading_mode != "on_demand":
+            directives[rel] = {
+                "purpose": purpose if purpose in self.MATERIAL_PURPOSES else "auto",
+                "reading_mode": reading_mode,
+            }
+        detected = None
+        redetectable = existing is None or _is_auto_detected(existing)
+        if purpose == "auto" and redetectable:
+            detected = material_detect.detect_material(root / rel)
+        if detected:
+            directives[rel] = {
+                "purpose": detected["purpose"],
+                "reading_mode": reading_mode,
+                "auto_detected": True,
+            }
+        elif _is_auto_detected(directives.get(rel)):
+            # 替换后不再像数据表或术语表：撤掉之前的自动标注
+            directives.pop(rel)
+        if json.dumps(directives, sort_keys=True) != before:
+            self._write_resource_directives(root, directives)
+        return detected
+
+    def schema_candidates(self, project_id: str) -> dict:
+        """资料区「疑似数据表」：用途仍为「由助手判断」、结构上判为数据表的表格资料。"""
+        root = self.project_root(project_id)
+        directives = self.resource_directives(project_id)
+        candidates = {}
+        for rel in self._unmarked_table_resources(project_id, root):
+            directive = directives.get(rel)
+            if isinstance(directive, dict) and directive.get("purpose") != "auto":
+                continue
+            detected = material_detect.detect_data_table(root / rel)
+            if detected:
+                candidates[rel] = detected
+        return candidates
 
     # ---- 生命周期扩展 ----
 
@@ -599,11 +755,17 @@ class WorkspaceManager:
 
     # 克隆/导入时不带过去的顶层条目：资产由本服务重新挂载，git 历史不迁移
     CLONE_SKIP_TOP = {".claude", "CLAUDE.md", "README.md", ".git", ".ontology-state", META_FILE}
+    CLONE_NAME_SUFFIX = "-副本"
 
-    def clone_project(self, project_id: str, owner: str = "") -> dict:
+    def clone_name(self, project_id: str) -> str:
+        """克隆的默认名称「原名-副本」；原名过长时截断，保证不超过名称长度上限。"""
+        name = self.get_project(project_id)["name"]
+        keep = MAX_DISPLAY_NAME_LENGTH - len(self.CLONE_NAME_SUFFIX)
+        return name[:keep].rstrip() + self.CLONE_NAME_SUFFIX
+
+    def clone_project(self, project_id: str, owner: str = "", name: str = "") -> dict:
         source_root = self.project_root(project_id)
-        source_meta = self.get_project(project_id)
-        meta = self.create_project(f"{source_meta['name']}-副本", owner=owner)
+        meta = self.create_project(name or self.clone_name(project_id), owner=owner)
         dest_root = self.project_root(meta["id"])
         for path in sorted(source_root.rglob("*")):
             if path.is_symlink() or not path.is_file():
@@ -618,14 +780,74 @@ class WorkspaceManager:
         _git(dest_root, "commit", "-m", f"clone: 自 {project_id} 克隆", "--allow-empty")
         return meta
 
-    def delete_project(self, project_id: str) -> dict:
-        """软删除：移入回收目录，保留 git 历史，可人工找回。"""
-        root = self.project_root(project_id)
-        trash = self.workspaces_dir.parent / "trash"
-        trash.mkdir(parents=True, exist_ok=True)
-        dest = trash / f"{project_id}-{int(time.time())}"
-        shutil.move(str(root), str(dest))
-        return {"trashed_to": str(dest)}
+    def delete_project(self, project_id: str) -> None:
+        """永久删除：工作区连同 git 历史一并清除，不进回收站。
+
+        删除接口把两步拆开（stage_delete 后立即响应，purge_staged 放到响应之后），
+        这里供同步场景（导入、开通失败的回滚）一次做完。
+        """
+        self.purge_staged(self.stage_delete(project_id))
+
+    def purge_dir(self) -> Path:
+        return self.workspaces_dir.parent / ".purging"
+
+    def stage_delete(self, project_id: str) -> Path:
+        """把工作区移出 workspaces/，返回待清除的路径；返回即视为已删除。
+
+        同盘 rename 是原子的：项目立刻从列表和所有接口消失（404），耗时的递归删除
+        交给 purge_staged。目录被占用时 rename 会失败（Windows），短暂重试；仍不成
+        （或跨文件系统）就原地把元数据换成清除标记——对外同样立即消失，目录原地清除。
+        """
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            staged = self.purge_dir() / f"{project_id}-{uuid.uuid4().hex[:8]}"
+            staged.parent.mkdir(parents=True, exist_ok=True)
+            for attempt in range(_DELETE_RETRIES):
+                try:
+                    os.replace(root, staged)
+                    return staged
+                except OSError as exc:
+                    if exc.errno == errno.EXDEV or attempt + 1 == _DELETE_RETRIES:
+                        break
+                    time.sleep(_DELETE_RETRY_SECONDS)
+            try:
+                os.replace(root / META_FILE, root / PURGE_MARKER)
+            except OSError as exc:
+                raise WorkspaceError(
+                    "项目目录被占用，暂时无法删除，请稍后重试", 409, "project_busy"
+                ) from exc
+            return root
+
+    def purge_staged(self, path: Path) -> bool:
+        """递归删除 stage_delete 交出的目录；删不净（文件仍被占用）时留给重启清扫。"""
+        if path.parent not in (self.purge_dir(), self.workspaces_dir):
+            raise ValueError(f"拒绝清除工作区之外的路径：{path}")
+        for attempt in range(_DELETE_RETRIES):
+            if remove_tree(path):
+                return True
+            if attempt + 1 < _DELETE_RETRIES:
+                time.sleep(_DELETE_RETRY_SECONDS)
+        if path.parent == self.workspaces_dir:
+            # 原地清除删到一半时标记文件可能已被删掉：补回，否则重启清扫认不出这个残留
+            try:
+                (path / PURGE_MARKER).touch()
+            except OSError:
+                pass
+        return False
+
+    def purge_leftovers(self) -> int:
+        """启动清扫：清除上次没删净的残留（.purging/ 下的条目、带清除标记的原地目录）。"""
+        try:
+            purging = self.purge_dir()
+            leftovers = list(purging.iterdir()) if purging.is_dir() else []
+            leftovers += [
+                entry
+                for entry in self.workspaces_dir.iterdir()
+                if (entry / PURGE_MARKER).exists() and not (entry / META_FILE).exists()
+            ]
+        except OSError:
+            return 0
+        return sum(1 for path in leftovers if self.purge_staged(path))
 
     EXPORT_ONTOLOGY_DIRS = ("ontology", "research", "reports", "knowledge")
 
@@ -704,20 +926,22 @@ class WorkspaceManager:
 
         binding：评测导入时传入按本轮导入工作簿算出的绑定，mapping 与导入库同源；
         graph：Neo4j 图导入用的包——mapping 按图模式导出，「关联对象」转为 `# 关系` 表；
-        allow_unbound：降级发布——声明对不上的对象不阻断，来源Sheet 写 UNBOUND、不进 mapping；
-        图模式下，端点因此未绑定的关系也只记原因不阻断（图里本来就没有该类节点）。
+        转不出来的关系只跳过那一条，原因记进 relation_report["notes"]，不阻断导出；
+        allow_unbound：降级发布——声明对不上的对象不阻断，来源Sheet 写 UNBOUND、不进 mapping。
 
         工作区有求解契约（ontology/solver/）时升级为 v0.2 operation-centric.v1：求解
         Operation 改名为 solver_key 并补 execution 声明，sidecar 原字节写到 operations/
         （受管模板的输入 Schema 例外：按评估器补装置与原油品种的可选值），
-        manifest 与两级 index 带上求解声明。没有求解契约的包逐字节保持 v0.1。
-        """
-        import zipfile
+        manifest 与两级 index 带上求解声明。没有求解契约的包内容保持 v0.1。
 
+        ZIP 按 _ReproducibleZip 确定性写出：同一工作区内容重复导出逐字节相同。
+        """
         root = self.project_root(project_id)
         meta = self.get_project(project_id)
         version = f"0.1.{len(self.versions(project_id))}"
         pkg = meta["id"]
+
+        report_names: dict[tuple[str, str], str] = {}
 
         def entry_items(*rel_dirs: str, pattern: str = "*.md") -> list[tuple[str, str]]:
             items = []
@@ -730,7 +954,16 @@ class WorkspaceManager:
                     if path.name == "index.md" or path.stem in seen:
                         continue
                     seen.add(path.stem)
-                    items.append((path.stem, _strip_frontmatter(path.read_text(encoding="utf-8"))))
+                    raw = path.read_text(encoding="utf-8")
+                    if path.suffix == ".md":
+                        try:
+                            original_name = report_name(raw)
+                        except ValueError as exc:
+                            raise WorkspaceError(f"{rel_dir}/{path.name}: {exc}") from exc
+                        if original_name is not None:
+                            resource = "operation" if directory.name == "logic" else directory.name
+                            report_names[(resource, path.stem)] = original_name
+                    items.append((path.stem, _strip_frontmatter(raw)))
             return items
 
         objects = entry_items("ontology/object")
@@ -748,16 +981,10 @@ class WorkspaceManager:
         bound = binding["objects"]
         mappings = package_mapping.object_data_mappings(binding, graph=graph)
         graph_edges: dict[str, list] = {}
-        graph_relation_skips: list[str] = []
         if graph:
-            graph_edges, graph_relation_skips = package_mapping.graph_relations(
-                package_mapping.read_object_texts(root),
-                set(mappings["objects"]), relation_report, allow_unbound=allow_unbound,
+            graph_edges, _ = package_mapping.graph_relations(
+                package_mapping.read_object_texts(root), set(mappings["objects"]), relation_report,
             )
-            if graph_relation_skips:
-                raise WorkspaceError(
-                    "图关系转换未完成，请修正关联对象后重试：" + "；".join(graph_relation_skips)
-                )
         rules = entry_items("ontology/rule")
         metrics = entry_items("ontology/metric")
         scripts = entry_items("ontology/scripts", pattern="*.py")
@@ -801,6 +1028,9 @@ class WorkspaceManager:
             ) + solver_contract.manifest_solver_section(solver)
 
         def front(resource: str, key: str, title: str, extra: str = "") -> str:
+            original_name = report_names.get((resource, key))
+            if original_name is not None:
+                extra += f"report_name: {q(original_name)}\n"
             return f"---\nresource: {resource}\nkey: {q(key)}\ntitle: {q(title)}\n{extra}---\n\n"
 
         def index_md(
@@ -817,7 +1047,7 @@ class WorkspaceManager:
             rows = "".join(row(k) for k, _ in items)
             return front(resource, key, title) + head + rows
 
-        with zipfile.ZipFile(dest_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        with _ReproducibleZip(dest_path) as zf:
             zf.writestr(f"{pkg}/manifest.yaml", manifest)
             zf.writestr(
                 f"{pkg}/index.md",
@@ -886,7 +1116,9 @@ class WorkspaceManager:
                     continue
                 zf.writestr(
                     f"{pkg}/operations/{item.solver_key}.md",
-                    solver_contract.operation_frontmatter(item, key, used, object_keys) + body,
+                    solver_contract.operation_frontmatter(
+                        item, key, used, object_keys, report_names.get(("operation", key))
+                    ) + body,
                 )
             for path, data in solver.files.items():
                 zf.writestr(f"{pkg}/{path}", data)
@@ -917,41 +1149,44 @@ class WorkspaceManager:
                     used = sorted({m for m in _WIKILINK_RE.findall(body) if m in object_keys})
                     extra = f"uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n"
                     zf.writestr(f"{pkg}/metrics/{key}.md", front("metric", key, key, extra) + body)
-            if scripts:
-                operation_keys = {key for key, _ in operations}
-                described = []
-                for key, code in scripts:
+            operation_keys = {key for key, _ in operations}
+            executable = []
+            for key, code in scripts:
+                try:
+                    bound, params = _script_header_meta(code)
+                except ScriptContractError as exc:
+                    raise WorkspaceError(f"脚本 {key} 契约无效：{exc}") from exc
+                # 「关联operation」为「无」或不是现有操作：只是被复用的辅助模块，不单独执行，
+                # 只带源码、不写描述符——modeling 要求每个脚本描述符都绑定一个存在的操作。
+                # 没有描述符就没有 entrypoint 契约，保留原文件名，回导时才还原得了
+                if bound in operation_keys:
                     filename = _package_script_filename(key)
-                    zf.writestr(f"{pkg}/scripts/{filename}", code)
-                    try:
-                        bound, params = _script_header_meta(code)
-                    except ScriptContractError as exc:
-                        raise WorkspaceError(f"脚本 {key} 契约无效：{exc}") from exc
-                    bound = bound if bound in operation_keys else None
-                    # 求解评估器由求解契约引用、不是 operation 的可执行实现：只带源码不写描述符。
-                    # consumer 扫描 scripts/*.py 发现评估器；modeling 把每个描述符都当
-                    # operation 脚本校验，未绑定 operation 的描述符会让整包被拒。
-                    if bound is None and solver_contract.is_evaluator(code.encode("utf-8")):
-                        continue
-                    described.append((key, filename, bound, params))
-                if described:
-                    zf.writestr(
-                        f"{pkg}/scripts/index.md",
-                        index_md(
-                            "script_index", "scripts", "脚本目录",
-                            [(key, "") for key, *_rest in described],
-                            ["script key", "标题"],
-                            lambda k: f"| {k} | {k} |\n",
-                        ),
-                    )
-                for key, filename, bound, params in described:
+                    executable.append((key, filename, bound, params))
+                elif solver_contract.is_evaluator(code.encode("utf-8")):
+                    # 求解评估器同样只带源码；求解契约按包内路径引用它（见 _package_scripts），
+                    # 文件名须与之一致
+                    filename = _package_script_filename(key)
+                else:
+                    filename = f"{key}.py"
+                zf.writestr(f"{pkg}/scripts/{filename}", code)
+            if executable:
+                zf.writestr(
+                    f"{pkg}/scripts/index.md",
+                    index_md(
+                        "script_index", "scripts", "脚本目录", [(key, "") for key, *_ in executable],
+                        ["script key", "标题"],
+                        lambda k: f"| {k} | {k} |\n",
+                    ),
+                )
+                for key, filename, bound, params in executable:
                     # 执行契约：描述符须声明 entrypoint；bound_operation 使脚本
                     # 成为该 operation 的可执行实现；参数表驱动 CLI 参数组装。
                     # entrypoint 是相对 scripts/ 的文件名：modeling 按 scripts/<entrypoint>
                     # 取源码且只收 ASCII 文件名，consumer 缺 scripts/ 前缀时自动补齐。
-                    extra = f"entrypoint: {filename}\n"
-                    if bound:
-                        extra += f"bound_operation: {q(package_operation_key(bound))}\n"
+                    extra = (
+                        f"entrypoint: {filename}\n"
+                        f"bound_operation: {q(package_operation_key(bound))}\n"
+                    )
                     body = f"由 /ontology-codegen 生成的确定性脚本，实现见 `{filename}`。\n"
                     if params:
                         rows = "".join(
@@ -966,23 +1201,44 @@ class WorkspaceManager:
                     zf.writestr(f"{pkg}/scripts/{key}.md", front("script", key, key, extra) + body)
         return dest_path
 
-    def import_transfer_zip(self, archive_path: Path, owner: str = "") -> dict:
+    @staticmethod
+    def _read_transfer_meta(zf) -> dict:
+        if META_FILE not in zf.namelist():
+            raise WorkspaceError("不是有效的项目迁移包（缺少工作区元数据）")
+        try:
+            meta = json.loads(zf.read(META_FILE).decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise WorkspaceError("迁移包元数据无法解析") from exc
+        if not isinstance(meta, dict):
+            raise WorkspaceError("迁移包元数据无法解析")
+        return meta
+
+    @staticmethod
+    def _transfer_meta_name(meta: dict) -> str:
+        return str(meta.get("name") or "").strip() or "导入项目"
+
+    def transfer_archive_name(self, archive_path: Path) -> str:
+        """迁移包里记录的任务名称（导入前查重用），包不合法时与正式导入报同样的错。"""
+        import zipfile
+
+        try:
+            with zipfile.ZipFile(archive_path) as zf:
+                return self._transfer_meta_name(self._read_transfer_meta(zf))
+        except zipfile.BadZipFile as exc:
+            raise WorkspaceError("不是有效的项目迁移包（压缩包无法解析）") from exc
+
+    def import_transfer_zip(self, archive_path: Path, owner: str = "", name: str = "") -> dict:
         """导入迁移包（workspace 导出 zip）：恢复完整工作区含 git 版本历史。
 
         与 import_zip 的区别：保留 .git（但剥离 hooks，防止恶意钩子），
-        沿用原 meta 的名称与统计，仅重写 id/owner/created_at。
+        沿用原 meta 的统计，仅重写 id/name/owner/created_at。name 为空时沿用
+        迁移包里的任务名；同名冲突后改名导入时传入新名称。
         """
         import zipfile
 
         with zipfile.ZipFile(archive_path) as zf:
-            names = set(zf.namelist())
-            if META_FILE not in names:
-                raise WorkspaceError("不是有效的项目迁移包（缺少工作区元数据）")
-            try:
-                old_meta = json.loads(zf.read(META_FILE).decode("utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                raise WorkspaceError("迁移包元数据无法解析") from exc
-            name = str(old_meta.get("name") or "").strip() or "导入项目"
+            old_meta = self._read_transfer_meta(zf)
+            name = (name or "").strip() or self._transfer_meta_name(old_meta)
             project_id = f"{_slugify(name)}-{uuid.uuid4().hex[:8]}"
             root = self.workspaces_dir / project_id
             root.mkdir(parents=True)
@@ -1007,6 +1263,7 @@ class WorkspaceManager:
                 if k not in ("members", "modeling_project_id")
             },
             "id": project_id,
+            "name": name,
             "owner": owner or "",
             "created_at": int(time.time()),
             # 引擎是部署侧配置而非包内容：导入方按本部署的默认引擎跑
@@ -1205,6 +1462,7 @@ class WorkspaceManager:
         return {
             "enabled": True,
             "revision": check.revision,
+            "digests": check.digests,
             "operations": [
                 {
                     "solver_key": item.solver_key,
@@ -1230,6 +1488,7 @@ class WorkspaceManager:
         scripts = self._package_scripts(root)
         return {
             "revision": check.revision,
+            "digests": check.digests,
             "enabled": check.enabled,
             "contract": {
                 "operations": [
@@ -1425,6 +1684,10 @@ class WorkspaceManager:
         base_revision: str = "",
         author: str = "",
     ) -> dict:
+        with self._project_lock(project_id):
+            return self._write_file_unlocked(project_id, rel_path, content, base_revision, author)
+
+    def _write_file_unlocked(self, project_id, rel_path, content, base_revision, author):
         root = self.project_root(project_id)
         target = self._resolve_inside(root, rel_path)
         rel = target.relative_to(root.resolve())
@@ -1525,7 +1788,7 @@ class WorkspaceManager:
         _git(root, "commit", "-m", f"knowledge: 删除 {rel_posix}{who}", "--allow-empty")
         return {"deleted": rel_path}
 
-    # ---- 回收站 ----
+    # ---- 回收站（仅存量：删除已改为永久删除，这里只管旧版软删除留下的条目） ----
 
     def trash_dir(self) -> Path:
         return self.workspaces_dir.parent / "trash"
@@ -1690,6 +1953,55 @@ def _package_script_filename(key: str) -> str:
     return f"script_{hashlib.sha1(key.encode('utf-8')).hexdigest()[:10]}.py"
 
 
+class _ReproducibleZip:
+    """知识包 ZIP 的确定性写出（REQ-BLD-010）：先收集成员，正常退出时按路径排序写入。
+
+    成员统一 UTF-8 编码，时间戳固定为 ZIP 纪元、权限固定为 0644，同一内容重复导出逐字节相同；
+    同一路径写两次说明导出规则冲突，直接报错而不是让后写的静默覆盖。
+    """
+
+    EPOCH = (1980, 1, 1, 0, 0, 0)
+
+    def __init__(self, dest_path: Path):
+        self.dest_path = dest_path
+        self.entries: dict[str, bytes] = {}
+
+    def __enter__(self) -> "_ReproducibleZip":
+        return self
+
+    def writestr(self, name: str, data: str | bytes) -> None:
+        if name in self.entries:
+            raise WorkspaceError(f"知识包内路径重复：{name}")
+        self.entries[name] = data.encode("utf-8") if isinstance(data, str) else bytes(data)
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        if exc_type is not None:
+            return
+        import zipfile
+
+        with zipfile.ZipFile(self.dest_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name in sorted(self.entries):
+                info = zipfile.ZipInfo(name, date_time=self.EPOCH)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.create_system = 3
+                info.external_attr = 0o644 << 16
+                zf.writestr(info, self.entries[name])
+
+
+def _load_research_review():
+    """资料分析验收状态以 workspace-toolkit/scripts/research_review.py 为单一事实源。
+
+    项目进度（本文件）、CLI 阶段前置（state_helper）与报告检查器（research_checker）
+    共用同一份失效判定，避免"目录里有报告就算完成"在多处各自实现（issue #362）。
+    """
+    path = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts" / "research_review.py"
+    spec = importlib.util.spec_from_file_location("onto_workspace_research_review", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_script_contract():
     """脚本契约解析以 workspace-toolkit/scripts/script_contract.py 为单一事实源。
 
@@ -1707,6 +2019,8 @@ def _load_script_contract():
 _script_contract = _load_script_contract()
 ScriptContractError = _script_contract.ScriptContractError
 _script_header_meta = _script_contract.parse_script_contract
+
+_research_review = _load_research_review()
 
 
 def _first_heading(path: Path) -> str:
@@ -1762,3 +2076,38 @@ def _git(cwd: Path, *args: str) -> str:
     if result.returncode != 0:
         raise WorkspaceError(f"git {args[0]} 失败: {result.stderr.strip()}", 500)
     return result.stdout
+
+
+def remove_tree(path: Path) -> bool:
+    """尽力递归删除，返回是否已删净。
+
+    链接（符号链接、Windows 目录联接）只删链接本身：工作区里的 .claude 等指向
+    所有项目共用的资产目录，跟进去会把资产一起删掉。只读文件（git 对象）去掉只读位再删。
+    """
+    try:
+        if _is_link(path) or path.is_file():
+            os.unlink(path)
+        elif path.is_dir():
+            shutil.rmtree(path, onerror=_force_remove)
+    except OSError:
+        pass
+    return not os.path.lexists(path)
+
+
+def _force_remove(func, path, _exc_info) -> None:
+    if func not in (os.unlink, os.remove, os.rmdir) or _is_link(path):
+        return
+    try:
+        os.chmod(path, os.lstat(path).st_mode | stat.S_IWRITE)
+        func(path)
+    except OSError:
+        pass
+
+
+def _is_link(path) -> bool:
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    reparse = getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    return stat.S_ISLNK(st.st_mode) or bool(reparse)

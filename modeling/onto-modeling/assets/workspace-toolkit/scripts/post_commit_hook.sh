@@ -50,7 +50,13 @@ print_header() {
 case "$MSG" in
     research:*)
         print_header
-        echo "💡 调研完成，建议运行 /ontology-flowchart 创建或完善流程图"
+        # 提交成功不代表内容已验收（回执可能因源资料改动而失效），按实际阶段提示
+        STAGE=$(cd "$ROOT" && python3 .claude/scripts/state_helper.py detect-stage 2>/dev/null | tr -d '[:space:]')
+        if [ "$STAGE" = "资料分析待核验" ]; then
+            echo "⚠️ 报告已保存但未通过内容验收，运行 python3 .claude/scripts/research_checker.py 查看错误项"
+        else
+            echo "💡 资料分析完成，建议运行 /ontology-flowchart 创建或完善流程图"
+        fi
         ;;
     flowchart:*)
         print_header

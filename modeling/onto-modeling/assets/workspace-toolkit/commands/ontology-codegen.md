@@ -103,15 +103,17 @@ For each operation doc in scope:
 | `步骤N-M` | `ontology/scripts/{逻辑英文名}_steps{N}-{M}.py`（区间保留 `-`）|
 | `步骤N1,N2,...` | `ontology/scripts/{逻辑英文名}_steps{N1}_{N2}_...py`（按用户输入顺序，每个数字用 `_` 拼接，不要排序）|
 
+> 文件名就是知识包里的脚本 key：不超过 80 字符，不含 `/ \ # ? & |` 与 `..`。
+>
 > 区间与列表用不同分隔符以避免冲突（`步骤1-3` → `_steps1-3.py`；`步骤1,3` → `_steps1_3.py`，不会撞）。同一条 operation 的多个片段脚本可以共存；与原"一 operation 一脚本"约定向后兼容（整段命名不变）。
 
 **头部注释**：严格按 `.claude/templates/script-template.py` 模板填写，须包含：
-- `关联operation`：本脚本对应的 operation 名称。整段填 operation 名（如 `客群聚类`）；片段填 `客群聚类 / 步骤2-4`（用 ` / 步骤X` 后缀标注覆盖范围）；无关联填"无"
+- `关联operation`：本脚本对应的 operation 名称。整段填 operation 名（如 `客群聚类`）；片段填 `客群聚类 / 步骤2-4`（用 ` / 步骤X` 后缀标注覆盖范围）。**要被评测或 consumer 执行的脚本必须绑定一个已存在的 operation**（`ontology/operation/` 下的文件名，不带 `.md`）：写了不存在的名字或填"无"，导出时都不会成为独立脚本，只留源码文件。"无"只用于被其他脚本 import 复用的辅助模块
 - `功能描述`：一句话说明脚本做什么
 - `详细逻辑`：对应原 operation 中被脚本实现的那段逻辑的展开描述（片段脚本只展开 fragment_scope 内的步骤）
 - `用法`：CLI（`python3 ... --参数 值`）+ import 两种调用范例
 - `输入参数`：只列 `_cli()` 中 argparse 声明的 CLI 参数，每个一行"名称 / 类型 / 必填或默认值"；仅供 import 调用的函数形参不写在这里，放到「用法」的 import 示例中说明。纯库脚本（无 argparse）本段填"无"
-- `输出`：return 结构 / 写入表 / 生成文件 等，含字段或结构说明
+- `输出`：stdout 输出的 JSON 结构（即业务函数的 return 值），含字段说明；脚本不写表、不生成文件
 - `依赖`：所需 pip 包，无则删除本行
 
 **CLI 契约**：源码中 `argparse.add_argument()` 的实际声明是唯一契约来源。头部参数表只能描述这些声明，不能根据参数 key 自动推导 flag；长选项统一使用源码中声明的 `--kebab-case`（如 `--crude-name`），导出器会校验 flag、类型、`required`、默认值、`action` 和多值语义是否一致。CLI 必须把业务函数返回值序列化为单个 JSON 写到 stdout，诊断信息写 stderr。
@@ -120,6 +122,17 @@ For each operation doc in scope:
 - 头部「类型」写 argparse 实际接收的类型，而不是函数形参类型：未写 `type=` 的写 `str`；`type=int` / `type=float` 写 `int` / `float`；`action="store_true"` 写 `bool`；`type=json.loads` 写 `json`。
 - 布尔开关统一用 `parser.add_argument("--has-jet-fuel", action="store_true")`，头部写 `bool`、「默认 False」。不要写 `default="false"` 再在函数里解析字符串——那样 argparse 按 `str` 接收，头部就必须写 `str`。
 - 必填：`required=True` 的参数头部说明含「必填」；其余写「默认 X」或不标必填。
+
+**脚本安全**：评测打包前会逐字扫描整份源码（**含注释与字符串**），命中下列写法整份脚本被拒，所以注释里也不要出现这些模块名或调用：
+
+- 起子进程或执行系统命令：`subprocess`、`os.system` / `os.popen` / `os.spawn*`
+- 网络访问：`requests`、`httpx`、`aiohttp`、`socket`、`urllib.request` / `urlopen`
+- 高风险模块：`ctypes`、`multiprocessing`、`pickle`、`marshal`
+- 写文件：写模式的 `open(..., "w" / "a" / "x" / "+")`；递归删除 `shutil.rmtree`
+- 动态执行：`eval`、`exec`、`compile`、`__import__`（`re.compile` 这类模块方法不算）
+- 源码超过 100000 字符
+
+结果一律作为 JSON 写到 stdout，交给调用方落库或展示。另外，评测侧判写文件的正则会把 `open(` 同一行里以 w / a / x / + 开头的任何字符串（如 `encoding="ascii"`）当成写模式，`open` 调用里只用 `encoding="utf-8"` 这类写法。
 
 **主体结构**：
 ```python
@@ -194,7 +207,7 @@ sku_details = json.loads(args.sku)
 1. {步骤1（高层业务语义）}
 2. {步骤2}
 ...
-N. 调用脚本 `ontology/scripts/{script}.py` 执行 {核心操作}，将结果 {写入 xxx / 返回 xxx}。
+N. 调用脚本 `ontology/scripts/{script}.py` 执行 {核心操作}，返回 {结果}。
 
 **调用示例：**
 
@@ -221,7 +234,7 @@ python3 ontology/scripts/{script}.py --参数1 值1 --参数2 值2
 python3 .claude/scripts/ontology_checker.py ontology/ --json --include-scripts
 ```
 
-过滤 `category=脚本契约` 的 issue，必须在这里清零：其中头部与 argparse 不一致的问题在导出/评测打包时会被同一实现拦截，其余（长选项、stdout 单个 JSON 等）是脚本被调用执行时依赖的约定。按上方「CLI 契约」修正头部「输入参数」、argparse 声明或 CLI 输出，然后重跑本命令直到没有 `脚本契约` 错误。其他类别的 issue 不在本步处理。
+过滤 `file` 在 `scripts/` 下、`category` 为 `脚本契约` / `脚本安全` / `脚本绑定` / `命名约束` 的 `错误` 级 issue，必须在这里清零：其中头部与 argparse 不一致的问题在导出/评测打包时会被同一实现拦截，安全写法与脚本绑定的口径见上方「脚本安全」与头部「关联operation」，其余（长选项、stdout 单个 JSON 等）是脚本被调用执行时依赖的约定。按上方规则修正头部、argparse 声明、源码写法或文件名，然后重跑本命令直到这些错误清零。`脚本绑定` 的「建议」（关联operation 为「无」）只需确认该脚本确实是辅助模块。其他类别的 issue 不在本步处理。
 
 ---
 
@@ -257,6 +270,7 @@ Wait for it to return a JSON array.
 - `头部缺失` / `头部字段错误` → 按 `.claude/templates/script-template.py` 补齐 7 字段
 - `CLI不规范` → 替换为 argparse + 源码实际声明的 `--kebab-case` 形式；结构化参数使用一个 JSON value
 - `骨架不规范` → 按模板补 `from __future__ import annotations` / `_cli()` 等
+- `脚本安全` → 按 Step 4「脚本安全」去掉禁用写法：外部数据改由 CLI 参数传入，结果改为 stdout JSON
 - `operation未简化` → 改写对应 `ontology/operation/{name}.md` 的「逻辑描述」段（按 Step 4.2 执行）。本应在 Step 4.2 生成时已完成；如果跑到这里说明 Step 4.2 漏做了，现在补
 - `业务知识冲突` → 按 KNOWLEDGE_BLOCK 中对应高置信条目调整脚本（如 `';'` 边界匹配 SQL）
 
@@ -287,11 +301,44 @@ Wait for it to return a JSON array.
 ```
 
 - **全部** / **编号**：逐条按 `[修改 {N}/{TOTAL}]` 模板提出修复方案，用户选 `[确认修改]` / `[我来提供方案]` / `[跳过]`。
-- **跳过**：保留现状，继续 Step 5。
+- **跳过**：保留现状，继续 Step 4.6。
 
 ### 4.5.3: 无问题 / 处理完毕
 
-首轮 agent 返回 `[]`，或 4.5.1 + 4.5.2 处理完毕后无遗留 `错误` → 直接进入 Step 5。
+首轮 agent 返回 `[]`，或 4.5.1 + 4.5.2 处理完毕后无遗留 `错误` → 进入 Step 4.6。
+
+---
+
+## Step 4.6: 脚本运行验证（必做，不可跳过）
+
+每个新建或修改过的脚本都必须真正跑通：pre-commit 会拦下没有当前版本通过记录的脚本。
+
+1. 为每个脚本写用例文件 `tmp/verify/<脚本名>.cases.json`（`tmp/` 不进 git）：
+
+   ```json
+   [
+     {"name": "正常", "argv": ["--orders", "[{\"sku_id\":\"sku-a\",\"quantity\":2}]", "--quantity", "3"], "expect": "success"},
+     {"name": "缺少必填参数", "argv": ["--quantity", "3"], "expect": "error"}
+   ]
+   ```
+
+   - argv 按脚本头部「输入参数」里的 CLI 参数写，每一项都是字符串（数字和 JSON 也写成字符串）；
+   - 覆盖正常、边界、缺少必填参数、未知参数、空结果、预期业务错误（没有对应场景的可以省略），至少一个 `expect: success`，最多 12 个；
+   - `success`：退出码 0 且 stdout 是单个 JSON；`error`：非 0 退出（argparse 报错或业务错误）；
+   - 输入用调用方会传进来的合成数据，不要依赖数据库或网络：沙箱内禁止出网。
+
+2. 运行：
+
+   ```bash
+   python3 .claude/scripts/script_verify.py run ontology/scripts/<脚本名>.py --cases tmp/verify/<脚本名>.cases.json
+   ```
+
+   - 经脚本验证网关（`ONTO_WEB_SANDBOX_GATEWAY_URL`）在 jiuwenbox 沙箱中执行；网关或 jiuwenbox 不可用时自动改在 onto-modeling 容器内执行，此时结果里 `runtime` 为 `local`，`fallback_reason` 写明原因；
+   - 退出码 0 = 全部通过且已记录；1 = 有用例失败（看 `cases[].reason` 和 `stderr`）；2 = 用例文件或参数写错；3 = 执行器本身失败。
+
+3. 有失败就修脚本（或修正写错的用例），重跑 Step 4.4 的契约检查和本步，直到全部通过。同一用例连续两轮因相同原因失败，停下来把失败用例和 stderr 汇报给用户。
+
+> 改了脚本或它 import 的同目录模块，之前的验证记录自动失效，需要重跑本步。
 
 ---
 
@@ -304,6 +351,8 @@ Show list of generated files（示例同时含整段与片段两种命名）：
 - ontology/scripts/风控审批_steps2_4.py          ← 片段（步骤2,4）
 ...
 
+运行验证：{N} 个脚本全部通过（在 jiuwenbox 沙箱中 / jiuwenbox 不可用，在 onto-modeling 容器内）。
+
 共 {N} 个文件。如需修改请说明；确认无误请回复 **确认**。"
 
 ## Step 6: Commit
@@ -313,7 +362,7 @@ git add ontology/scripts/ ontology/operation/
 git commit -m "codegen: {TOPIC}"
 ```
 
-> Step 4.5.1 可能改写 `ontology/operation/*.md` 的「逻辑描述」段（简化为业务步骤 + 调用示例），故一并纳入 `git add`。
+> pre-commit 会拦下没有当前版本运行验证记录的脚本。Step 4.5.1 可能改写 `ontology/operation/*.md` 的「逻辑描述」段（简化为业务步骤 + 调用示例），故一并纳入 `git add`。
 
 ## Step 7: Suggest next step
 

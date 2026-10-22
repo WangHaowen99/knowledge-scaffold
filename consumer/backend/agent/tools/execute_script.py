@@ -32,6 +32,7 @@ from agent.tools.business_data.script_env import (
 )
 from agent.tools.script_parameters import (
     append_script_parameter_cli_argument,
+    format_number_cli_value,
     is_runtime_parameter,
     runtime_parameter_field,
     script_parameter_argument_keys,
@@ -1694,14 +1695,7 @@ def _validate_structured_arguments_against_request(
             field: value for field, value in record.items()
             if any(evidence.get(field) == value for evidence in evidence_records)
         }
-        if (
-            len(supported) >= 2
-            and any(_is_identity_field(field) for field in supported)
-            and not any(
-                all(evidence.get(field) == value for field, value in supported.items())
-                for evidence in evidence_records
-            )
-        ):
+        if _mixes_evidence_records(supported, evidence_records):
             reject("evidence_record_mismatch", path,
                    "{} combines fields from different tool-result records".format(path))
     raw_segments = [
@@ -1898,6 +1892,39 @@ def _argument_records(value: Any, path: str = "arguments") -> List[tuple[str, Di
         for index, nested in enumerate(value):
             records.extend(_argument_records(nested, "{}[{}]".format(path, index)))
     return records
+
+
+def _has_consistent_evidence_source(
+    field: str,
+    value: str,
+    supported: Mapping[str, str],
+    evidence_records: Sequence[Mapping[str, str]],
+) -> bool:
+    """Whether one source row backs ``field`` without contradicting the other supported fields.
+
+    Rows lacking those fields come from independent lookups (other tables); a row
+    holding a different value for them means fields were taken from different
+    rows of the same collection.
+    """
+    for evidence in evidence_records:
+        if evidence.get(field) != value:
+            continue
+        if all(evidence.get(other, expected) == expected for other, expected in supported.items()):
+            return True
+    return False
+
+
+def _mixes_evidence_records(
+    supported: Mapping[str, str],
+    evidence_records: Sequence[Mapping[str, str]],
+) -> bool:
+    """Whether identity-bearing record fields cannot all be traced to consistent source rows."""
+    if len(supported) < 2 or not any(_is_identity_field(field) for field in supported):
+        return False
+    return not all(
+        _has_consistent_evidence_source(field, value, supported, evidence_records)
+        for field, value in supported.items()
+    )
 
 
 def _tool_evidence_records(evidence: str) -> List[Dict[str, str]]:
@@ -2845,7 +2872,7 @@ def _convert_parameter_value(
             return None, "expected integer"
     if param_type in ("float", "number"):
         try:
-            return str(float(value)), None
+            return format_number_cli_value(value), None
         except (TypeError, ValueError):
             return None, "expected number"
     if param_type in {"bool", "boolean"}:

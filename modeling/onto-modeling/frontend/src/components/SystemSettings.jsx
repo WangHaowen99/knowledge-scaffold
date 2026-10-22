@@ -1,7 +1,21 @@
-import { UploadOutlined } from '@ant-design/icons';
-import { Alert, Button, List, Popconfirm, Segmented, Typography, Upload, message } from 'antd';
-import { useEffect, useState } from 'react';
+import { ReloadOutlined, UploadOutlined } from '@ant-design/icons';
+import {
+  Alert,
+  Button,
+  ConfigProvider,
+  Descriptions,
+  Input,
+  List,
+  Popconfirm,
+  Segmented,
+  Table,
+  Typography,
+  Upload,
+  message,
+} from 'antd';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { useRemainingHeight } from '../lib/useRemainingHeight.js';
 
 const MODE_LABELS = {
   bypassPermissions: '全放行（默认）',
@@ -54,6 +68,153 @@ export function RuntimeSettings({ project }) {
           </Typography.Link>
         )}
       </Typography.Paragraph>
+    </div>
+  );
+}
+
+export function SandboxStatus() {
+  const [status, setStatus] = useState(null);
+  const [checking, setChecking] = useState(false);
+  const [keyword, setKeyword] = useState('');
+
+  const check = async () => {
+    setChecking(true);
+    try {
+      setStatus(await api.getSandboxStatus());
+    } catch (error) {
+      message.error(error.message);
+    } finally {
+      setChecking(false);
+    }
+  };
+  useEffect(() => {
+    check();
+  }, []);
+
+  const packages = status?.packages || [];
+  const query = keyword.trim().toLowerCase();
+  const shown = query ? packages.filter((item) => item.name.toLowerCase().includes(query)) : packages;
+  let title = '正在检测 onto-agent-jiuwenbox…';
+  let description;
+  if (status?.connected) {
+    title = '已连接 onto-agent-jiuwenbox';
+    description = '代码生成时，脚本运行验证在沙箱中执行。';
+  } else if (status) {
+    title = '未连接 onto-agent-jiuwenbox';
+    description = `${status.detail}。脚本运行验证将改在 onto-modeling 容器内执行。`;
+  }
+
+  return (
+    <div>
+      <Alert
+        type={!status ? 'info' : status.connected ? 'success' : 'warning'}
+        showIcon
+        message={title}
+        description={description}
+        action={
+          <Button size="small" icon={<ReloadOutlined />} loading={checking} onClick={check}>
+            重新检测
+          </Button>
+        }
+        style={{ marginBottom: 16 }}
+      />
+      {status && (
+        <Descriptions column={2} size="small" bordered style={{ marginBottom: 20 }}>
+          <Descriptions.Item label="验证用 Python">
+            <Typography.Text code>{status.path}</Typography.Text> {status.python || ''}
+          </Descriptions.Item>
+          <Descriptions.Item label="pip">
+            {status.connected ? status.pip || '未安装（按包元数据列出）' : '—'}
+          </Descriptions.Item>
+          <Descriptions.Item label="脚本验证网关" span={2}>
+            <Typography.Text code>{status.gateway || '未配置'}</Typography.Text>
+            {status.socket ? (
+              <Typography.Text type="secondary">
+                {'  经 '}
+                <Typography.Text code>{status.socket}</Typography.Text>
+                {' 连接 jiuwenbox'}
+              </Typography.Text>
+            ) : null}
+          </Descriptions.Item>
+          <Descriptions.Item label="检测时间" span={2}>
+            {new Date(status.checked_at).toLocaleString('zh-CN', { hour12: false })}
+          </Descriptions.Item>
+        </Descriptions>
+      )}
+      {status?.connected && (
+        <>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: 8,
+            }}
+          >
+            <Typography.Title level={5} style={{ margin: 0 }}>
+              沙箱验证环境的 Python 包
+              <Typography.Text type="secondary" style={{ fontSize: 13, fontWeight: 'normal' }}>
+                {query ? `（匹配 ${shown.length} / ${packages.length}）` : `（共 ${packages.length} 个）`}
+              </Typography.Text>
+            </Typography.Title>
+            <Input.Search
+              allowClear
+              placeholder="按包名筛选"
+              onChange={(event) => setKeyword(event.target.value)}
+              style={{ width: 220 }}
+            />
+          </div>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 12, fontSize: 12 }}>
+            {`代码生成的脚本运行验证在沙箱里用 ${status.path} 执行，与 consumer 执行脚本的方式相同，脚本只能 import 下列包和 Python 标准库。`}
+            {'沙箱禁止出网，查数脚本请用合成输入验证。'}
+          </Typography.Paragraph>
+          <SandboxPackageTable packages={shown} layoutKey={status} />
+        </>
+      )}
+    </div>
+  );
+}
+
+const PACKAGE_COLUMNS = [
+  // 包名列定宽：版本号紧挨包名，不用横跨整行去对照
+  { title: '包名', dataIndex: 'name', width: 320 },
+  {
+    title: '版本',
+    dataIndex: 'version',
+    render: (version) => <Typography.Text code>{version}</Typography.Text>,
+  },
+];
+// 网格表格的单元格比小号默认值略宽松，行与列之间留出间隔
+const PACKAGE_TABLE_THEME = { components: { Table: { cellPaddingBlockSM: 9, cellPaddingInlineSM: 14 } } };
+
+/**
+ * 带边框的包列表：向下延伸到页面底部，包更多时只滚动表体，表头和外框保持完整。
+ * layoutKey 变化表示上方内容变了、表格位置会移动，需要重算高度。
+ */
+function SandboxPackageTable({ packages, layoutKey }) {
+  const box = useRef(null);
+  const available = useRemainingHeight(box, { deps: [layoutKey] });
+  // scroll.y 只限制表体，表头和上下边框另占高度，按实际渲染结果量出来
+  const [chromeHeight, setChromeHeight] = useState(42);
+  useLayoutEffect(() => {
+    const body = box.current?.querySelector('.ant-table-body');
+    if (body) setChromeHeight(box.current.offsetHeight - body.offsetHeight);
+  }, [layoutKey]);
+
+  return (
+    <div ref={box} className="sandbox-package-table">
+      <ConfigProvider theme={PACKAGE_TABLE_THEME}>
+        <Table
+          bordered
+          size="small"
+          rowKey="name"
+          dataSource={packages}
+          columns={PACKAGE_COLUMNS}
+          pagination={false}
+          scroll={{ y: Math.max(120, available - chromeHeight) }}
+          locale={{ emptyText: '没有匹配的包' }}
+        />
+      </ConfigProvider>
     </div>
   );
 }

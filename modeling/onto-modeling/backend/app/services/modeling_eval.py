@@ -19,14 +19,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
 import uuid
+import weakref
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .. import config
 from . import eval_data_sources, eval_import, package_mapping
@@ -46,6 +50,16 @@ _running: set[str] = set()  # project_id 去重（单进程内防并发重复触
 _live_tokens: dict[str, str] = {}  # project_id → 前端轮询接力的最新 token
 _stop_requested: set[str] = set()  # 用户请求停止的 project_id（协作式取消）
 
+# 一轮编排从打包到收报告都占着一个线程（含每 6 秒一次的轮询等待，最长 30 分钟），
+# 放进评测专用线程池：不占事件循环的默认线程池——后者还承担上传、git、项目导入删除
+# 等短任务，被评测占满时这些操作要排队几十秒到几分钟。专用池容量即同时执行的评测轮数，
+# 由同容量的信号量把关：排队发生在事件循环里，排队中的轮次可以直接取消出队
+_executor: ThreadPoolExecutor | None = None
+_slots: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # 事件循环 → 槽位信号量
+_queue_lock = threading.Lock()
+# 等待评测槽位的 project_id → (入队时间, 所在事件循环, 编排任务)，按入队顺序
+_queued: dict[str, tuple[int, asyncio.AbstractEventLoop, asyncio.Task]] = {}
+
 STOPPED_MESSAGE = "评测已停止（modeling 侧轮次已取消，已完成用例的结果仍保留在 modeling 侧）"
 INTERRUPTED_MESSAGE = (
     "上一轮评测被服务重启中断：modeling 侧轮次可能仍在执行或已完成，"
@@ -55,6 +69,73 @@ INTERRUPTED_MESSAGE = (
 
 class EvalStopped(Exception):
     """用户主动停止评测——与编排失败区分开：状态落 stopped，且允许重跑。"""
+
+
+QUEUED_STOP_MESSAGE = "评测已停止（排队中，尚未执行）"
+
+
+def _eval_executor() -> ThreadPoolExecutor:
+    global _executor
+    if _executor is None:
+        _executor = ThreadPoolExecutor(
+            max_workers=config.EVAL_MAX_CONCURRENT_ROUNDS, thread_name_prefix="onto-eval"
+        )
+    return _executor
+
+
+def _eval_slots() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    slots = _slots.get(loop)
+    if slots is None:
+        slots = _slots[loop] = asyncio.Semaphore(config.EVAL_MAX_CONCURRENT_ROUNDS)
+    return slots
+
+
+def queue_position(project_id: str) -> int | None:
+    """排队中返回 1 起的位次，未排队返回 None。"""
+    with _queue_lock:
+        for position, queued_id in enumerate(_queued, start=1):
+            if queued_id == project_id:
+                return position
+    return None
+
+
+def _queued_since(project_id: str) -> int | None:
+    with _queue_lock:
+        entry = _queued.get(project_id)
+    return entry[0] if entry else None
+
+
+def _cancel_queued(project_id: str) -> bool:
+    """排队中的轮次直接出队并取消等待；已开始执行的返回 False（走协作式取消）。
+
+    可从路由的工作线程调用：取消经 call_soon_threadsafe 投递回编排所在的事件循环。
+    """
+    with _queue_lock:
+        entry = _queued.pop(project_id, None)
+    if entry is None:
+        return False
+    _since, loop, task = entry
+    loop.call_soon_threadsafe(task.cancel)
+    return True
+
+
+async def _run_in_eval_pool(project_id: str, func: Callable[..., None], *args: Any) -> None:
+    """在评测专用线程池里执行一轮编排；槽位满时排队，排队中可被停止。"""
+    loop = asyncio.get_running_loop()
+    with _queue_lock:
+        _queued[project_id] = (int(time.time()), loop, asyncio.current_task())
+    try:
+        async with _eval_slots():
+            with _queue_lock:
+                # 出队与停止方的出队互斥：先拿到的一方说了算
+                still_queued = _queued.pop(project_id, None) is not None
+            if not still_queued:
+                return  # 拿到槽位前已被停止：request_stop 已落 stopped 状态
+            await loop.run_in_executor(_eval_executor(), func, *args)
+    finally:
+        with _queue_lock:
+            _queued.pop(project_id, None)
 
 
 def _check_stop(project_id: str) -> None:
@@ -225,24 +306,24 @@ def _graph_import(
             data=body, content_type=ctype, timeout=180,
         )["upload"]
         relations, skipped = eval_import.graph_relation_mapping(upload)
-        relation_report = plan.get("relation_report") or {}
-        # 导包时已放过的关系（端点是概念对象或已确认降级）只作提示，跟着本轮结果一起展示
-        export_notes = list(relation_report.get("notes") or [])
-        exported_count = relation_report.get("relations_exported")
-        if exported_count is not None and exported_count != len((upload.get("schema") or {}).get("relations") or []):
-            skipped.append("知识包导出与图导入读取的关系定义数不一致，请检查知识包转换")
+        exported_count = (plan.get("relation_report") or {}).get("relations_exported")
+        mismatched = exported_count is not None and exported_count != len(
+            (upload.get("schema") or {}).get("relations") or []
+        )
+        # 关系转换不出来只跳过那一条；导出与读取对不上是转换本身的缺陷，才停下
+        skipped = (plan.get("relation_report") or {}).get("notes", []) + skipped
         report = {
-            **relation_report,
+            **(plan.get("relation_report") or {}),
             "nodes": 0, "relationships": 0,
             "entities": entities,
             "expected_instances": plan.get("expected_instances"),
             "expected_edges": plan.get("expected_edges"),
             "relations_mapped": len(relations),
-            "relations_skipped": len(export_notes) + len(skipped), "notes": export_notes + skipped,
+            "relations_skipped": len(skipped), "notes": skipped,
         }
         _write_state(root, graph_import=report)
-        if skipped:
-            raise RuntimeError("图关系映射未完成，请修正后重试：" + "；".join(skipped))
+        if mismatched:
+            raise RuntimeError("知识包导出与图导入读取的关系定义数不一致，请检查知识包转换")
         mapping = {"relations": relations}
         validation = _http(
             "POST", f"/api/projects/{mp_project}/graph-import/uploads/{upload['id']}/validate",
@@ -250,7 +331,7 @@ def _graph_import(
         )["validation"]
         mismatches = _graph_plan_mismatches(validation, plan)
         if mismatches:
-            _write_state(root, graph_import={**report, "notes": report["notes"] + mismatches})
+            _write_state(root, graph_import={**report, "notes": skipped + mismatches})
             raise RuntimeError("导入预检与预览不一致，已在写入图库前停下：" + "；".join(mismatches))
         _check_stop(project_id)
         run = _http(
@@ -267,7 +348,7 @@ def _graph_import(
         detail = str(getattr(exc, "detail", "") or "") or f"HTTP {exc.code}"
         raise RuntimeError(f"图数据导入失败：{detail}") from exc
     finished = _poll_graph_import(project_id, root, tok, mp_project, run["id"])
-    notes = report["notes"] + list(validation.get("warnings") or [])
+    notes = skipped + list(validation.get("warnings") or [])
     counts = validation.get("counts") or {}
     notes += [
         f"实体「{item.get('objectKey')}」{item.get('message') or item.get('code')}"
@@ -335,10 +416,32 @@ def _poll_data_import(project_id: str, root: Path, tok, mp_project: str) -> None
 # ---- trace 场景 → 评测用例 ----
 
 
-def trace_cases(root: Path) -> list[dict]:
-    """ontology/testcase/*.md 的 TC 段落 → (question, groundTruth) 用例。
+_SCENE_INPUT_RE = re.compile(r"^\s*[-*]\s*`([^`]+)`\s*=\s*(.+?)\s*$")
+_SCENE_EXPECTED_RE = re.compile(r"^\s*[-*]\s*\*\*(预期[^*]*)\*\*\s*[：:]\s*(.+?)\s*$")
 
-    TC 段落是 K-V 表：`输入-*` 行拼为问题条件，`预期-*` 行拼为标准答案。
+
+def _scene_case(body: str) -> tuple[list[str], list[str]]:
+    """/ontology-trace 的场景段（testcase-template.md）→ (输入条件, 预期结果)。
+
+    输入是 `参数` = `值` 列表，预期取「预期路径 / 预期结果」等以「预期」开头的加粗项。
+    """
+    inputs, expected = [], []
+    for line in body.splitlines():
+        expected_match = _SCENE_EXPECTED_RE.match(line)
+        if expected_match:
+            expected.append(f"{expected_match.group(1)}：{expected_match.group(2)}")
+            continue
+        input_match = _SCENE_INPUT_RE.match(line)
+        if input_match:
+            inputs.append(f"{input_match.group(1)}：{input_match.group(2).strip('`')}")
+    return inputs, expected
+
+
+def trace_cases(root: Path) -> list[dict]:
+    """ontology/testcase/*.md 的 TC 段落或场景段 → (question, groundTruth) 用例。
+
+    TC 段落是 K-V 表：`输入-*` 行拼为问题条件，`预期-*` 行拼为标准答案；场景段是
+    /ontology-trace 按 testcase-template.md 写出的格式，见 _scene_case。
     """
     cases: list[dict] = []
     tc_dir = root / "ontology" / "testcase"
@@ -352,6 +455,10 @@ def trace_cases(root: Path) -> list[dict]:
         except OSError:
             continue
         subject = doc.stem
+        for match in re.finditer(r"##\s*(场景\s*\d+[：:][^\n]*)\n(.*?)(?=\n##\s|\Z)", text, re.S):
+            inputs, expected = _scene_case(match.group(2))
+            if inputs and expected:
+                cases.append(_trace_case(subject, match.group(1).strip(), inputs, expected, doc.name))
         for match in re.finditer(r"##\s*(TC-\d+[：:][^\n]*)\n(.*?)(?=\n##\s|\Z)", text, re.S):
             title, body = match.group(1).strip(), match.group(2)
             inputs, expected = [], []
@@ -368,14 +475,16 @@ def trace_cases(root: Path) -> list[dict]:
                     expected.append(f"{key.split('-', 1)[-1]}：{value}")
             if not inputs or not expected:
                 continue
-            cases.append(
-                {
-                    "question": f"关于「{subject}」（{title}）：{'；'.join(inputs)}。按业务规则应得到什么结果？",
-                    "groundTruth": "；".join(expected),
-                    "source": f"ontology/testcase/{doc.name}",
-                }
-            )
+            cases.append(_trace_case(subject, title, inputs, expected, doc.name))
     return cases
+
+
+def _trace_case(subject: str, title: str, inputs: list[str], expected: list[str], name: str) -> dict:
+    return {
+        "question": f"关于「{subject}」（{title}）：{'；'.join(inputs)}。按业务规则应得到什么结果？",
+        "groundTruth": "；".join(expected),
+        "source": f"ontology/testcase/{name}",
+    }
 
 
 MAX_IMPORT_CASES = 500
@@ -452,8 +561,12 @@ def read_state(root: Path) -> dict:
 
 
 def _write_state(root: Path, **fields: Any) -> None:
+    # 工作区已不在（项目被删除）时不落状态：编排线程可能晚于删除才收尾，
+    # 照常建目录会在原位置重建出只有状态文件的残壳
+    if not root.is_dir():
+        return
     path = _state_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(exist_ok=True)
     state = read_state(root)
     state.update(fields, ts=int(time.time()))
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -474,6 +587,21 @@ def status_view(project_id: str, root: Path) -> dict:
     内存态消失，而 eval.json 会永远停在 running，把运行按钮永久锁死；此处按
     "无内存态 + ts 停滞"双条件收敛，并标出是否可续接。
     """
+    position = queue_position(project_id)
+    if position is not None:
+        # 排队态只叠加在视图上、不落盘：落盘的 running 会被「同题续接」误判为上一轮
+        queued_at = _queued_since(project_id) or int(time.time())
+        return {
+            "status": "running",
+            "phase": "queued",
+            "message": (
+                f"排队等待评测执行（第 {position} 位，"
+                f"同时执行上限 {config.EVAL_MAX_CONCURRENT_ROUNDS} 轮）"
+            ),
+            "queue_position": position,
+            "started_at": queued_at,
+            "ts": int(time.time()),
+        }
     state = read_state(root)
     if (
         state.get("status") == "running"
@@ -528,17 +656,157 @@ def _unexecuted_as_errors(
     return list(results) + missing
 
 
+# 报告「工具失败」摘要：/ontology-evolution 据此判断运行异常的真实根因（脚本参数/
+# 数据映射/环境），而不是只看「运行失败」一句话去猜。逐用例限量，防报告膨胀。
+TOOL_FAILURES_PER_CASE = 5
+TOOL_FAILURE_DETAIL_CHARS = 240
+TOOL_FAILURE_CASE_CHARS = 1500
+_JSON_CODE_RE = re.compile(r'"(?:code|error_code)"\s*:\s*"([A-Z][A-Z0-9_]{2,79})"')
+# 自由文本里只认错误码形态的大写标识，免得把表名/列名（如 CUSTOMER_CODE）误当错误码
+_ERROR_CODE_RE = re.compile(
+    r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(?:FAILED|ERROR|DENIED|TIMEOUT|STALLED|INVALID"
+    r"|NOT_FOUND|UNAVAILABLE|EXCEEDED|REJECTED|MISSING)\b"
+)
+_ISSUE_RE = re.compile(r'"code"\s*:\s*"([a-z][a-z0-9_]*)"\s*,\s*"path"\s*:\s*"([^"]{1,240})"')
+_JSON_MESSAGE_RE = re.compile(r'"message"\s*:\s*"([^"]{1,500})"')
+_EXIT_CODE_RE = re.compile(r"exited with code (-?\d+)", re.IGNORECASE)
+_SECRET_PATTERNS = (
+    (re.compile(r"(?i)\bbearer\s+[\w.~+/=-]+"), "Bearer ***"),
+    (re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]+"), "***"),
+    (re.compile(
+        r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)"
+        r"(\"?\s*[=:]\s*\"?)[^\s\"',;}]+"
+    ), r"\1\2***"),
+)
+
+
+def _redact(text: str) -> str:
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def _issue_labels(error: dict) -> list[str]:
+    """结构化错误里的「问题码 字段路径」列表；issues 不是数组时为空。"""
+    issues = error.get("issues")
+    if not isinstance(issues, list):
+        return []
+    labels = []
+    for issue in issues:
+        if isinstance(issue, dict) and issue.get("code"):
+            labels.append(f"{issue.get('code')} {issue.get('path') or ''}".strip())
+    return labels
+
+
+def _parsed_message(parsed: dict, error: dict) -> str:
+    """解析成功的错误 JSON → 详情：message、顶层字符串 error、stderr 依次拼接。"""
+    top_error = parsed.get("error")
+    values = (
+        error.get("message"),
+        top_error if isinstance(top_error, str) else "",
+        error.get("stderr") or parsed.get("stderr"),
+    )
+    return " ".join(str(value) for value in values if value)
+
+
+def _text_error_code(raw: str) -> str:
+    """从原文抽错误码：先认 JSON 的 code 字段（截断的 JSON 也行），再认错误码形态的大写标识。"""
+    match = _JSON_CODE_RE.search(raw)
+    if match:
+        return match.group(1)
+    match = _ERROR_CODE_RE.search(raw)
+    return match.group(0) if match else ""
+
+
+def _tool_failure_line(failure: dict) -> str:
+    """一条工具失败 → 工具名 · 错误码 · 问题码与字段路径 · 退出码 · 截断详情。
+
+    consumer 的 error 是截断到 1KB 的文本：参数校验失败是 JSON（可能被截断），
+    脚本非零退出是「Error: Script exited with code N. …」——两种都按需抽取。
+    """
+    tool = str(failure.get("toolName") or failure.get("tool_name") or "未知工具")
+    tool = tool.replace("`", "").strip()[:64] or "未知工具"
+    raw = str(failure.get("error") or "").strip()
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        parsed = None
+    parsed = parsed if isinstance(parsed, dict) else {}
+    error = parsed.get("error") if isinstance(parsed.get("error"), dict) else parsed
+    code = str(error.get("code") or error.get("error_code") or "").strip()
+    issues = _issue_labels(error)
+    if parsed:
+        message = _parsed_message(parsed, error)
+    else:
+        # 截断的 JSON 解析不了：有 message 字段就只取它，免得详情是半截 JSON
+        match = _JSON_MESSAGE_RE.search(raw)
+        message = match.group(1) if match else raw
+    if not code:
+        code = _text_error_code(raw)
+    if not issues:
+        issues = [f"{issue} {path}" for issue, path in _ISSUE_RE.findall(raw)]
+    parts = [f"`{tool}`"]
+    if code:
+        parts.append(f"`{code[:80]}`")
+    if issues:
+        parts.append("问题：" + "、".join(
+            f"`{_redact(issue).replace('`', '')}`" for issue in list(dict.fromkeys(issues))[:6]
+        ))
+    exit_code = _EXIT_CODE_RE.search(raw)
+    if exit_code:
+        parts.append(f"退出码 {exit_code.group(1)}")
+    detail = " ".join(_redact(message).split())
+    if detail:
+        if len(detail) > TOOL_FAILURE_DETAIL_CHARS:
+            detail = detail[:TOOL_FAILURE_DETAIL_CHARS] + "…"
+        parts.append(f"详情：{detail}")
+    return " · ".join(parts)
+
+
+def _tool_failure_lines(trace: Any) -> list[str]:
+    """单个用例的「工具失败」小节（Markdown 嵌套列表行）；无失败、无轨迹问题时为空。"""
+    if not isinstance(trace, dict):
+        return []
+    failures = [item for item in trace.get("toolFailures") or [] if isinstance(item, dict)]
+    lines: list[str] = []
+    if failures:
+        counted: dict[str, int] = {}
+        for failure in failures:
+            line = _tool_failure_line(failure)
+            counted[line] = counted.get(line, 0) + 1
+        for line, times in list(counted.items())[:TOOL_FAILURES_PER_CASE]:
+            lines.append(f"  - {line}" + (f"（×{times}）" if times > 1 else ""))
+        if len(counted) > TOOL_FAILURES_PER_CASE:
+            lines.append(f"  - …另有 {len(counted) - TOOL_FAILURES_PER_CASE} 类失败未列出")
+        calls = trace.get("toolCalls")
+        if isinstance(calls, list) and calls:
+            lines.append(f"  - 本用例共调用工具 {len(calls)} 次，失败 {len(failures)} 次")
+    if trace.get("status") == "unavailable":
+        reason = " ".join(_redact(str(trace.get("error") or "原因未知")).split())[:160]
+        lines.append(f"  - 执行轨迹未取到（{reason}），工具失败情况未知")
+    kept, used = [], 0
+    for line in lines:
+        if used + len(line) > TOOL_FAILURE_CASE_CHARS:
+            kept.append("  - …（已截断）")
+            break
+        kept.append(line)
+        used += len(line)
+    return kept
+
+
 def _write_report(
     root: Path,
     round_info: dict,
     results: list[dict],
     cases: list[dict] | None = None,
     failure: str = "",
+    traces: dict | None = None,
 ) -> str:
     """落评测报告并把状态收敛到终态。
 
     failure 非空 = modeling 侧轮次异常终止但已有部分结果：照样出报告（状态 failed），
     让失分与异常用例能进入 /ontology-evolution，而不是随失败状态一起丢掉。
+    traces = modeling 轮次详情里按结果 ID 索引的执行轨迹：失分用例附「工具失败」摘要。
     """
     executed = len(results)
     if failure:
@@ -550,6 +818,7 @@ def _write_report(
     score = round((counts["pass"] + counts["partial"] * 0.5) * 100 / total)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     rel = f"reports/eval-{stamp}.md"
+    answers_rel = f"reports/eval-{stamp}.answers.json"
     state = read_state(root)
     lines = [
         f"# 数据评测报告 — {time.strftime('%Y-%m-%d %H:%M')}",
@@ -577,19 +846,71 @@ def _write_report(
         "## 逐用例明细",
         "",
     ]
+    answer_records = []
     for index, item in enumerate(results, 1):
         mark = {"pass": "✅", "partial": "⚠️", "fail": "❌"}.get(item.get("verdict"), "🛑")
+        # 报告附件保存原始 finalAnswer；展示摘要另行裁剪，不能用 strip/摘要覆盖原件。
+        answer = str(item.get("finalAnswer") or "")
+        result_id = str(item.get("id") or item.get("result_id") or f"case-{index}").strip()
+        answer_records.append({
+            "resultId": result_id,
+            "question": item.get("question", ""),
+            "finalAnswer": answer,
+            "originalLength": len(answer),
+            "sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest(),
+            "verdict": item.get("verdict", "error"),
+            "reason": item.get("reason", ""),
+        })
+        display = answer[:600]
+        # 将回答逐行包进引用块：回答内部的标题、列表、表格仍按 Markdown 渲染，
+        # 但不会改变报告外层的章节层级或把固定字段挤成同级小标题。
+        def nested_quote(text: str) -> str:
+            return "\n".join(
+                f"  > {line}" if line else "  >"
+                for line in (str(text).splitlines() or ["（无）"])
+            )
+
+        quoted_display = nested_quote(display)
+        answer_meta_lines = [
+            "  >",
+            f"  > - **原始回答长度**：{len(answer)} 字符；是否截断：{'是' if len(answer) > len(display) else '否'}",
+        ]
+        if len(answer) > len(display):
+            answer_meta_lines.append(
+                f"  > - **完整回答**：[按结果 ID 查看附件]({answers_rel}#{result_id})"
+            )
+        answer_meta = "\n".join(answer_meta_lines)
         lines += [
             f"### {index}. {mark} {item.get('verdict', 'error')}",
             "",
             f"- **问题**：{item.get('question', '')}",
-            f"- **标准答案**：{item.get('groundTruth', '')}",
-            f"- **智能体回答**：{(item.get('finalAnswer') or '').strip()[:600] or '（无）'}",
-            f"- **判分理由**：{item.get('reason', '')}",
+            "",
+            "- **标准答案**：",
+            "",
+            nested_quote(item.get("groundTruth") or "（无）"),
+            "",
+            "- **智能体回答**：",
+            "",
+            quoted_display,
+            answer_meta,
+            "",
+            "- **判分理由**：",
+            "",
+            nested_quote(item.get("reason") or "（无）"),
             "",
         ]
-    (root / "reports").mkdir(parents=True, exist_ok=True)
+        failure_lines = (
+            [] if item.get("verdict") == "pass"
+            else _tool_failure_lines((traces or {}).get(str(item.get("id") or "").strip()))
+        )
+        if failure_lines:
+            lines += ["- **工具失败**：", "", *failure_lines, ""]
+    (root / "reports").mkdir(exist_ok=True)  # 不带 parents：项目已删除时不重建工作区
     (root / rel).write_text("\n".join(lines), encoding="utf-8")
+    (root / answers_rel).write_text(
+        json.dumps({"roundId": round_info.get("id", ""), "answers": answer_records}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     terminal = {"status": "failed", "message": (
         f"{failure}（已执行 {executed}/{len(results)} 条，报告已生成）"[:300]
     )} if failure else {"status": "done"}
@@ -637,6 +958,40 @@ def evolution_hint(state: dict) -> dict | None:
     }
 
 
+def full_answer(project_id: str, root: Path, token: str, result_id: str) -> dict:
+    """按结果 ID 从 Modeling Core 读取完整 finalAnswer；不使用 Onto 摘要。"""
+    state = read_state(root)
+    modeling_project = str(state.get("modeling_project") or "").strip()
+    round_id = str(state.get("round_id") or "").strip()
+    wanted = str(result_id or "").strip()
+    if not modeling_project or not round_id or not wanted:
+        raise ValueError("完整回答证据不可用")
+    details = _http(
+        "GET",
+        f"/api/projects/{modeling_project}/rounds/{round_id}",
+        token,
+        timeout=30,
+    )
+    result = next(
+        (item for item in details.get("results") or []
+         if str(item.get("id") or item.get("result_id") or "").strip() == wanted),
+        None,
+    )
+    if result is None:
+        raise ValueError("完整回答证据不存在或不属于当前评测轮次")
+    answer = str(result.get("finalAnswer") or "")
+    return {
+        "resultId": wanted,
+        "question": result.get("question", ""),
+        "groundTruth": result.get("groundTruth", ""),
+        "fullAnswer": answer,
+        "originalLength": len(answer),
+        "sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest(),
+        "verdict": result.get("verdict"),
+        "reason": result.get("reason", ""),
+    }
+
+
 def _case_progress(cases: list[dict], results: list[dict], round_running: bool) -> list[dict]:
     """逐用例执行状态（前端进度视图）：已出结果的带判分与摘要；modeling 按序
     执行，第一个未出结果的用例标记为执行中，其余待执行。"""
@@ -654,10 +1009,18 @@ def _case_progress(cases: list[dict], results: list[dict], round_running: bool) 
                 (r for q, r in by_question.items() if q.startswith(question)), None
             )
         if item is not None:
+            answer = str(item.get("finalAnswer") or "").strip()
+            display = answer[:200]
             out.append({
                 "question": question[:120],
                 "verdict": item.get("verdict") or "error",
-                "answer": str(item.get("finalAnswer") or "").strip()[:200],
+                "answer": display,
+                "result_id": str(item.get("id") or item.get("result_id") or "").strip(),
+                "is_truncated": len(answer) > len(display),
+                "original_length": len(answer),
+                "display_length": len(display),
+                "full_answer_available": bool(item.get("id") or item.get("result_id")),
+                "answer_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest() if answer else "",
                 "reason": str(item.get("reason") or "").strip()[:160],
             })
         else:
@@ -678,12 +1041,19 @@ def _poll_round(
     def tok() -> str:
         return _live_tokens.get(project_id) or token
 
+    def check_stop() -> None:
+        # 停止请求可能早于轮次坐标落盘（项目删除后更是再也写不进状态），停止方据状态
+        # 取消不到这一轮：由手握坐标的编排自己取消。停止方已取消过的，modeling 回 409，无害
+        if project_id in _stop_requested:
+            cancel_round(mp_project, round_id, tok())
+        _check_stop(project_id)
+
     deadline = time.time() + ROUND_TIMEOUT_SECONDS
     details: dict = {}
     auth_wait_until: float | None = None
     while time.time() < deadline:
         time.sleep(POLL_INTERVAL_SECONDS)
-        _check_stop(project_id)
+        check_stop()
         try:
             details = _http("GET", f"/api/projects/{mp_project}/rounds/{round_id}", tok())
         except urllib.error.HTTPError as exc:
@@ -699,7 +1069,7 @@ def _poll_round(
                 "重新打开项目页并重跑评测即可续接收取结果"
             ) from exc
         auth_wait_until = None
-        _check_stop(project_id)  # 取消请求已落 stopped 状态，不再覆写进度
+        check_stop()  # 取消请求已落 stopped 状态，不再覆写进度
         round_info = details.get("round") or {}
         _write_state(
             root,
@@ -717,9 +1087,11 @@ def _poll_round(
     if round_info.get("status") not in ("done", "failed"):
         raise TimeoutError("评测超时（modeling 侧轮次未在时限内结束）")
     if round_info.get("status") == "failed":
-        _collect_failed_round(root, round_info, details.get("results") or [], cases)
+        _collect_failed_round(
+            root, round_info, details.get("results") or [], cases, details.get("traces")
+        )
         return
-    rel = _write_report(root, round_info, details.get("results") or [])
+    rel = _write_report(root, round_info, details.get("results") or [], traces=details.get("traces"))
     _git_commit(root, f"eval: 数据评测报告 {rel.split('/')[-1]}")
 
 
@@ -729,7 +1101,8 @@ def _round_failure(round_info: dict) -> str:
 
 
 def _collect_failed_round(
-    root: Path, round_info: dict, results: list[dict], cases: list[dict]
+    root: Path, round_info: dict, results: list[dict], cases: list[dict],
+    traces: dict | None = None,
 ) -> None:
     """轮次在 modeling 侧失败：透出其日志，有结果就落报告。
 
@@ -738,7 +1111,7 @@ def _collect_failed_round(
     failure = _round_failure(round_info)
     if not results:
         raise RuntimeError(failure)
-    rel = _write_report(root, round_info, results, cases, failure=failure)
+    rel = _write_report(root, round_info, results, cases, failure=failure, traces=traces)
     _git_commit(root, f"eval: 数据评测报告（轮次异常终止） {rel.split('/')[-1]}")
 
 
@@ -780,14 +1153,19 @@ def _try_resume(
     if status == "done":
         _write_state(root, status="running", phase="evaluate",
                      message="续接上一轮（收取已完成结果）")
-        rel = _write_report(root, details.get("round") or {}, details.get("results") or [])
+        rel = _write_report(
+            root, details.get("round") or {}, details.get("results") or [],
+            traces=details.get("traces"),
+        )
         _git_commit(root, f"eval: 数据评测报告 {rel.split('/')[-1]}")
         return True
     partial_results = collect_failed and bool(details.get("results"))
     if status == "failed" and partial_results:
         _write_state(root, status="running", phase="evaluate",
                      message="续接上一轮（收取异常终止前的结果）")
-        _collect_failed_round(root, details.get("round") or {}, details["results"], cases)
+        _collect_failed_round(
+            root, details.get("round") or {}, details["results"], cases, details.get("traces")
+        )
         return True
     return False
 
@@ -814,29 +1192,24 @@ def request_stop(project_id: str, root: Path, token: str) -> dict:
 
     modeling 返回 404/409（轮次不存在或已结束）视为目标状态已达成，不算失败。
     """
+    if _cancel_queued(project_id):
+        # 还在排队：直接出队，不产生任何 modeling 侧开销，随即可重新运行
+        _write_state(root, status="stopped", message=QUEUED_STOP_MESSAGE)
+        return {"stopped": True, "cancelled": False, "message": QUEUED_STOP_MESSAGE}
     state = read_state(root)
-    if state.get("status") not in ("running", "interrupted"):
+    in_process = project_id in _running
+    # 刚出队、编排还没写下 running 的瞬间：以内存态为准
+    if state.get("status") not in ("running", "interrupted") and not in_process:
         raise ValueError("当前没有进行中的评测")
-    if project_id in _running:
+    if in_process:
         _stop_requested.add(project_id)
 
     mp_project, round_id = state.get("modeling_project"), state.get("round_id")
     cancelled, detail = False, ""
     if mp_project and round_id:
-        try:
-            _http(
-                "POST",
-                f"/api/projects/{mp_project}/evaluate/cancel",
-                _live_tokens.get(project_id) or token,
-                body={"roundId": round_id},
-                timeout=30,
-            )
-            cancelled = True
-        except urllib.error.HTTPError as exc:
-            if exc.code not in (404, 409):
-                detail = str(getattr(exc, "detail", "") or exc)
-        except Exception as exc:  # 网络不通等：本地状态照样收敛
-            detail = str(exc)
+        cancelled, detail = cancel_round(
+            mp_project, round_id, _live_tokens.get(project_id) or token
+        )
 
     message = (
         STOPPED_MESSAGE if not detail
@@ -844,6 +1217,48 @@ def request_stop(project_id: str, root: Path, token: str) -> dict:
     )
     _write_state(root, status="stopped", message=message)
     return {"stopped": True, "cancelled": cancelled, "message": message}
+
+
+def cancel_round(mp_project: str, round_id: str, token: str) -> tuple[bool, str]:
+    """取消 modeling 侧评测轮次，返回（是否取消、未确认的原因）。
+
+    404/409（轮次不存在或已结束）视为目标状态已达成：未取消，但也不算失败。
+    """
+    try:
+        _http(
+            "POST",
+            f"/api/projects/{mp_project}/evaluate/cancel",
+            token,
+            body={"roundId": round_id},
+            timeout=30,
+        )
+        return True, ""
+    except urllib.error.HTTPError as exc:
+        if exc.code in (404, 409):
+            return False, ""
+        return False, str(getattr(exc, "detail", "") or exc)
+    except Exception as exc:  # 网络不通等：由调用方决定如何呈现
+        return False, str(exc)
+
+
+def abort_for_delete(project_id: str, root: Path, token: str) -> tuple[str, str, str] | None:
+    """删除项目时终止评测：只改内存标记、读状态，不发网络请求，立即返回。
+
+    进程内有编排就置协作取消标记——刚起步、状态还没写成 running 的也算，否则它会在
+    项目删除后照常去 modeling 侧发起一轮没人收取的评测。状态里有未完成的轮次时，
+    返回取消它所需的（modeling 项目、轮次、token），由调用方放到响应之后调用 cancel_round。
+    失败、已停止的也算：轮询因凭据过期或超时失败、停止时取消未确认，modeling 侧都可能
+    还在跑；其实已结束的，modeling 回 409，无害。
+    """
+    _cancel_queued(project_id)  # 还在排队的轮次直接出队，不再等槽位
+    if project_id in _running:
+        _stop_requested.add(project_id)
+    state = read_state(root)
+    mp_project, round_id = state.get("modeling_project"), state.get("round_id")
+    unfinished = state.get("status") in ("running", "interrupted", "failed", "stopped")
+    if unfinished and mp_project and round_id:
+        return mp_project, round_id, _live_tokens.get(project_id) or token
+    return None
 
 
 def can_resume(root: Path) -> bool:
@@ -860,7 +1275,7 @@ async def resume(project_id: str, root: Path, token: str) -> None:
     _stop_requested.discard(project_id)
     _live_tokens[project_id] = token
     try:
-        await asyncio.to_thread(_resume_sync, project_id, root, token)
+        await _run_in_eval_pool(project_id, _resume_sync, project_id, root, token)
     finally:
         _running.discard(project_id)
         _live_tokens.pop(project_id, None)
@@ -925,6 +1340,7 @@ def _configure_connection(
 async def run(
     project_id: str, root: Path, token: str, cases: list[dict],
     data_source: dict | None = None, eval_set_name: str = "", allow_unbound: bool = False,
+    refresh_token: str = "",
 ) -> None:
     """后台评测编排；进度经 .ontology-state/eval.json 供前端轮询。"""
     if project_id in _running:
@@ -933,8 +1349,10 @@ async def run(
     _stop_requested.discard(project_id)  # 上一轮遗留的取消标记不影响新编排
     _live_tokens[project_id] = token
     try:
-        await asyncio.to_thread(
-            _run_sync, project_id, root, token, cases, data_source, eval_set_name, allow_unbound
+        await _run_in_eval_pool(
+            project_id, _run_sync,
+            project_id, root, token, cases, data_source, eval_set_name, allow_unbound,
+            refresh_token,
         )
     finally:
         _running.discard(project_id)
@@ -945,6 +1363,7 @@ async def run(
 def _run_sync(
     project_id: str, root: Path, token: str, cases: list[dict],
     data_source: dict | None = None, eval_set_name: str = "", allow_unbound: bool = False,
+    refresh_token: str = "",
 ) -> None:
     from .workspace import WorkspaceManager
 
@@ -1063,7 +1482,13 @@ def _run_sync(
             root, phase="evaluate", message="评测执行中（consumer 逐用例问答）",
             cases=_case_progress(cases, [], True),
         )
-        started = _http("POST", f"/api/projects/{mp_project}/evaluate", tok(), body={})
+        # 轮次在 modeling 侧后台执行，常超 access token 有效期：带上 refresh token，
+        # modeling 据此为本轮登记可续期的凭据会话。无鉴权部署没有 refresh token，照旧空 body。
+        # refresh token 只经此请求体转交，不落状态、不写日志
+        started = _http(
+            "POST", f"/api/projects/{mp_project}/evaluate", tok(),
+            body={"refresh_token": refresh_token} if refresh_token else {},
+        )
         round_id = started["roundId"]
         _write_state(root, round_id=round_id)
         _poll_round(project_id, root, token, mp_project, round_id, cases)

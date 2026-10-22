@@ -27,6 +27,7 @@ import {
 } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { isResearchBlocking } from '../lib/researchGate.js';
 import EvalRunDetail from './EvalRunDetail.jsx';
 import EvalWizard from './EvalWizard.jsx';
 import PublishCheckDialog, { usePackagePublish } from './PublishCheckDialog.jsx';
@@ -47,11 +48,19 @@ export const STAGES = [
   {
     key: 'research',
     title: '资料分析',
+    // 探针只回答"有没有报告"。是否完成由验收回执决定，见 stageStatuses（issue #362）
     probe: (paths) => hasEntry(paths, 'research/'),
     actions: [
       { label: '联网资料分析', command: '/ontology-research ' },
       { label: '仅本地资料', command: '/ontology-research 仅基于本地文档 ' },
       { label: '追加分析', command: '/ontology-research 追加' },
+      {
+        label: '核验报告',
+        // 报告挡着后续阶段时，聊天区把这个入口排到最前（lib/researchGate.js）
+        verify: true,
+        command:
+          '运行 python3 .claude/scripts/research_checker.py 核验资料分析报告，逐条列出错误项与来源位置',
+      },
     ],
   },
   {
@@ -137,9 +146,23 @@ export const STAGES = [
   },
 ];
 
-// 每个阶段的展示状态：可选阶段未完成不阻塞后续（finish/process/wait）
-export function stageStatuses(paths) {
+export const RESEARCH_STAGE_INDEX = STAGES.findIndex((stage) => stage.key === 'research');
+
+// 资料分析阶段的完成态不看产物树：报告在 research/，验收回执在 .ontology-state/
+// （不进产物树）。review 取后端项目进度的 research_review；只有它声明 blocking
+// （未验收且对象尚未提取）时才把资料分析判为未完成。未取到时沿用原路径探针，
+// 不凭空判未通过。
+export function stageHits(paths, review = null) {
   const hits = STAGES.map((stage) => stage.probe(paths));
+  if (hits[RESEARCH_STAGE_INDEX] && isResearchBlocking(review)) {
+    hits[RESEARCH_STAGE_INDEX] = false;
+  }
+  return hits;
+}
+
+// 每个阶段的展示状态：可选阶段未完成不阻塞后续（finish/process/error/wait）
+export function stageStatuses(paths, review = null) {
+  const hits = stageHits(paths, review);
   let firstPending = -1;
   for (let i = 0; i < STAGES.length; i += 1) {
     if (!hits[i] && !STAGES[i].optional) {
@@ -149,9 +172,21 @@ export function stageStatuses(paths) {
   }
   return STAGES.map((stage, i) => {
     if (hits[i]) return 'finish';
+    // 报告已生成但检查出确定性错误：显示未通过，而不是"进行中"
+    if (i === RESEARCH_STAGE_INDEX && review?.status === 'failed') return 'error';
     if (i === firstPending) return 'process';
     return 'wait';
   });
+}
+
+// 资料分析阶段标题后的状态角标；无需提示时为空
+export function researchBadge(review) {
+  if (!review) return '';
+  if (review.status === 'failed') return `未通过（${review.errors || 0} 项错误）`;
+  if (review.status !== 'pending') return '';
+  return review.manual_pending
+    ? `待核验（${review.manual_pending} 项待人工确认）`
+    : '已生成，待核验';
 }
 
 // 资料用途（对齐 modeling 的 material purpose 体系）；schema/term 仅表格类可选。
@@ -191,9 +226,9 @@ function flattenPaths(nodes, out = []) {
 }
 
 // 供 App 顶栏与概览复用：从产物树推断阶段进度
-export function stageProgress(tree) {
+export function stageProgress(tree, review = null) {
   const paths = flattenPaths(tree);
-  const statuses = stageStatuses(paths);
+  const statuses = stageStatuses(paths, review);
   const done = statuses.filter((status) => status === 'finish').length;
   const pending = statuses.indexOf('process');
   const current = pending >= 0 ? STAGES[pending].title : null;
@@ -258,26 +293,39 @@ export default function LeftPane({
   const [tagging, setTagging] = useState(null); // {commit, label}
 
   const paths = useMemo(() => flattenPaths(tree), [tree]);
+  // 资料分析的验收状态由后端项目进度给出（回执不在产物树里）
+  const researchReview = meta?.research_review || null;
+  const researchStatus = researchReview?.status || null;
+  const researchBlocking = isResearchBlocking(researchReview);
+  const researchTag = researchBadge(researchReview);
   const statuses = useMemo(() => {
-    const base = stageStatuses(paths);
+    const base = stageStatuses(paths, { status: researchStatus, blocking: researchBlocking });
     // 会话正在执行某阶段命令时，进行中的高亮跟随实际执行的阶段
     const activeIndex = activeStage ? STAGES.findIndex((s) => s.key === activeStage) : -1;
     if (activeIndex < 0) return base;
     return base.map((status, index) =>
       index === activeIndex ? 'process' : status === 'process' ? 'wait' : status,
     );
-  }, [paths, activeStage]);
+  }, [paths, activeStage, researchStatus, researchBlocking]);
   const resources = useMemo(() => collectResources(tree), [tree]);
   const [deleting, setDeleting] = useState(null);
   const [directives, setDirectives] = useState({});
+  // 结构上像数据表、用途仍是「由助手判断」的表格资料：{路径: {tables}}，可一键标为 schema
+  const [schemaCandidates, setSchemaCandidates] = useState({});
+  const loadDirectives = () =>
+    api
+      .resourceDirectives(project.id)
+      .then((data) => {
+        setDirectives(data.directives || {});
+        setSchemaCandidates(data.schema_candidates || {});
+      })
+      .catch(() => {});
 
   useEffect(() => {
     if (section !== 'resources') return;
-    api
-      .resourceDirectives(project.id)
-      .then((data) => setDirectives(data.directives || {}))
-      .catch(() => {});
-  }, [section, project.id]);
+    loadDirectives();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section, project.id, tree]);
 
   // ---- 数据评测（方案 P2）：状态轮询 + 评测向导 ----
   const [evalInfo, setEvalInfo] = useState(null); // {enabled, reachable, state, evolution}
@@ -372,6 +420,10 @@ export default function LeftPane({
     try {
       await api.setResourceDirective(project.id, path, purpose, readingMode);
       setDirectives((prev) => ({ ...prev, [path]: { purpose, reading_mode: readingMode } }));
+      setSchemaCandidates((prev) => {
+        const { [path]: _removed, ...rest } = prev;
+        return rest;
+      });
     } catch (error) {
       message.error(error.message);
     }
@@ -394,7 +446,12 @@ export default function LeftPane({
       const subdir =
         forcedSubdir || (uploadSubdir === 'auto' ? autoSubdir(file.name) : uploadSubdir);
       const saved = await api.uploadResource(project.id, subdir, file);
-      message.success(saved.replaced ? `已替换 ${file.name}` : `已上传 ${file.name}`);
+      const done = saved.replaced ? `已替换 ${file.name}` : `已上传 ${file.name}`;
+      message.success(
+        saved.detected
+          ? `${done}，识别为数据表（${saved.detected.tables.length} 张），用途已设为「数据 Schema」，可在资料列表修改`
+          : done,
+      );
       onRefresh();
     } catch (error) {
       message.error(error.message);
@@ -469,6 +526,16 @@ export default function LeftPane({
                   }
                 >
                   {stage.title}
+                  {stage.key === 'research' && researchTag && (
+                    <Tooltip title={researchReview?.hint || ''}>
+                      <Tag
+                        color={researchStatus === 'failed' ? 'red' : 'gold'}
+                        style={{ marginLeft: 6 }}
+                      >
+                        {researchTag}
+                      </Tag>
+                    </Tooltip>
+                  )}
                 </span>
               ),
               description:
@@ -776,20 +843,31 @@ export default function LeftPane({
                           disabled: opt.tableOnly && !isTableFile(item.path),
                         }))}
                       />
-                      <label className="resource-reading">
-                        <input
-                          type="checkbox"
-                          checked={directives[item.path]?.reading_mode === 'full'}
-                          onChange={(e) =>
-                            changeDirective(
-                              item.path,
-                              directives[item.path]?.purpose || 'auto',
-                              e.target.checked ? 'full' : 'on_demand',
-                            )
-                          }
-                        />
-                        全文精读
-                      </label>
+                      {directives[item.path]?.auto_detected && (
+                        <Tooltip title="上传时按表格结构自动识别（数据表或术语表）；改用途即覆盖">
+                          <Tag className="resource-detect-tag">自动识别</Tag>
+                        </Tooltip>
+                      )}
+                      {schemaCandidates[item.path] && (
+                        <Tooltip
+                          title={`表头像数据库列名，识别出 ${schemaCandidates[item.path].tables.length} 张表：${schemaCandidates[item.path].tables.slice(0, 8).join('、')}`}
+                        >
+                          <Button
+                            size="small"
+                            type="link"
+                            className="resource-detect-action"
+                            onClick={() =>
+                              changeDirective(
+                                item.path,
+                                'schema',
+                                directives[item.path]?.reading_mode || 'on_demand',
+                              )
+                            }
+                          >
+                            疑似数据表 · 设为 Schema
+                          </Button>
+                        </Tooltip>
+                      )}
                     </div>
                   </div>
                 </List.Item>
@@ -876,6 +954,7 @@ export default function LeftPane({
 
       <EvalRunDetail
         open={evalDetailOpen}
+        projectId={project.id}
         state={evalInfo?.state}
         evolution={evolution}
         onClose={() => setEvalDetailOpen(false)}

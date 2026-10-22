@@ -29,8 +29,22 @@ import {
 } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, openEventStream } from '../lib/api.js';
+import { orderResearchActions } from '../lib/researchGate.js';
+import { STATUS_LABELS, changeHeadline, groupChanges } from '../lib/changeSummary.js';
+import {
+  EMPTY_CONTEXT,
+  compactionNotice,
+  describeContext,
+  nextContext,
+} from '../lib/contextUsage.js';
+import {
+  buildSubagentFlow,
+  buildSubagentLifecycle,
+  isSubagentCardMessage,
+} from '../lib/subagentEvents.js';
 import { FileChip, Markdown } from './CenterPane.jsx';
-import { STAGES, stageForCommand } from './LeftPane.jsx';
+import ConversationSwitcher from './ConversationSwitcher.jsx';
+import { STAGES, stageForCommand, stageHits } from './LeftPane.jsx';
 
 // 「⋯ 更多」里的全量命令（希克定律：常显建议 ≤4，全集收进菜单）
 const ALL_COMMANDS = [
@@ -47,7 +61,34 @@ const ALL_COMMANDS = [
   { key: 'update', label: '增量更新', text: '/ontology-update ' },
 ];
 
-const CONTEXT_WINDOW_TOKENS = 200000; // 上下文水位估算基准（标注"估算"）
+const HISTORY_TAIL = 400;
+// 上传时平台按结构识别出的资料用途（见后端 material_detect）
+const DETECTED_PURPOSE_LABELS = { schema: '数据 Schema', term: '术语表' };
+
+function isVisibleChatEvent(event) {
+  if (
+    [
+      'user_message',
+      'workspace_changes',
+      'session_interrupted',
+      'permission_request',
+      'context_compacted',
+    ].includes(event.type)
+  ) {
+    return true;
+  }
+  if (event.type === 'session_error') return !/exit code[:\s]*143/.test(event.error || '');
+  if (event.type !== 'assistant_message') return false;
+  if (isSubagentCardMessage(event)) return false;
+  return (event.blocks || []).some((block) => {
+    if (block.kind === 'tool_use') return true;
+    if (event.subagent) return false;
+    return (
+      (block.kind === 'text' || block.kind === 'thinking') &&
+      Boolean(block.text?.trim())
+    );
+  });
+}
 
 function flattenTreePaths(nodes, out = []) {
   for (const node of nodes || []) {
@@ -107,8 +148,10 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
       command: `/ontology-evolution ${evolution.report.split('/').pop()}`,
     });
   }
-  // 下一步 = 第一个未完成阶段；用户已越过的可选阶段、只有面板入口的可选阶段不再主推
-  const hits = STAGES.map((stage) => stage.probe(paths));
+  // 下一步 = 第一个未完成阶段；用户已越过的可选阶段、只有面板入口的可选阶段不再主推。
+  // 资料分析未验收且对象尚未提取时不算完成，不会主推对象提取（issue #362）
+  const researchReview = meta?.research_review || null;
+  const hits = stageHits(paths, researchReview);
   const lastHit = hits.lastIndexOf(true);
   let nextIndex = -1;
   for (let i = 0; i < STAGES.length; i += 1) {
@@ -128,7 +171,10 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
   }
   if (nextIndex >= 0) {
     const next = STAGES[nextIndex];
-    for (const action of next.actions) {
+    // 报告已生成但没通过验收时先核验，而不是先推重新做资料分析
+    const actions =
+      next.key === 'research' ? orderResearchActions(next.actions, researchReview) : next.actions;
+    for (const action of actions) {
       if (out.length >= 4) break;
       out.push({
         key: `st-${next.key}-${action.label}`,
@@ -226,6 +272,7 @@ const TOOL_VERBS = {
   WebFetch: '读取网页',
   TodoWrite: '更新任务清单',
   Task: '派遣子任务',
+  Agent: '派遣子任务',
   ExitPlanMode: '提交计划',
   AskUserQuestion: '征询确认',
 };
@@ -258,6 +305,29 @@ function presentTool(block) {
   }
   if (summary.length > 64) summary = `${summary.slice(0, 64)}…`;
   return { verb, summary };
+}
+
+function formatSubagentDuration(durationMs) {
+  if (durationMs == null) return '';
+  const seconds = Number(durationMs) / 1000;
+  if (!Number.isFinite(seconds) || seconds < 0) return '';
+  if (seconds < 60) return `${Math.round(seconds)} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes} 分 ${Math.round(seconds % 60)} 秒`;
+}
+
+// 子代理步骤 → ToolLine 契约（复用主对话工具行的中文动作与详情展开）
+function subagentToolLine(step) {
+  const shown = presentTool({ tool: step.tool, input: step.input || {} });
+  const input = step.input && Object.keys(step.input).length ? step.input : null;
+  return {
+    key: step.key,
+    tool: shown.verb,
+    summary: shown.summary,
+    status: step.status == null ? undefined : step.status === 'error',
+    excerpt: step.excerpt,
+    input,
+  };
 }
 
 function ThinkingBlock({ text }) {
@@ -349,6 +419,105 @@ function ToolGroup({ tools }) {
             <ToolLine tool={latest} />
           </div>
         )
+      )}
+    </div>
+  );
+}
+
+// 子任务卡：默认折叠，展开后是这个子代理自己的实时步骤流。
+// 展开状态是卡片局部的，派发多个子代理时各自独立。
+function SubagentCard({ item }) {
+  const [open, setOpen] = useState(false);
+  const [expandedKey, setExpandedKey] = useState(null);
+  const steps = item.steps || [];
+  const stopped = item.stopped && !item.failed;
+  const stateText = item.done
+    ? item.failed
+      ? '失败'
+      : stopped
+        ? '已停止'
+        : '完成'
+    : '运行中';
+  const duration = item.done ? formatSubagentDuration(item.durationMs) : '';
+  const hasDetail = steps.length > 0 || !!item.excerpt;
+
+  let preview = '';
+  if (item.done) {
+    preview = item.summary || '';
+  } else {
+    const latest = steps[steps.length - 1];
+    if (!latest) preview = '已启动，等待子代理反馈';
+    else if (latest.kind === 'text')
+      preview = latest.text.length > 60 ? `${latest.text.slice(0, 60)}…` : latest.text;
+    else {
+      const shown = presentTool({ tool: latest.tool, input: latest.input || {} });
+      preview = `正在${shown.verb}${shown.summary ? ` ${shown.summary}` : ''}`;
+    }
+  }
+
+  return (
+    <div
+      className={`subagent-card${
+        item.done ? (item.failed ? ' failed' : stopped ? ' stopped' : ' done') : ' running'
+      }`}
+    >
+      <div className="subagent-head">
+        <span className="subagent-icon">
+          {item.done ? (
+            item.failed || stopped ? (
+              <CloseOutlined />
+            ) : (
+              <CheckOutlined />
+            )
+          ) : (
+            <LoadingOutlined />
+          )}
+        </span>
+        <span className="subagent-main">
+          <span className="subagent-title">
+            子任务{stateText} · {item.description}
+            {duration && ` · 耗时 ${duration}`}
+          </span>
+          <span className="subagent-sub">
+            {item.agentType && <span className="subagent-type">{item.agentType}</span>}
+            {preview && <span className="subagent-hint">{preview}</span>}
+          </span>
+        </span>
+        {hasDetail && (
+          <button
+            type="button"
+            className="subagent-toggle"
+            aria-expanded={open}
+            onClick={() => setOpen(!open)}
+          >
+            {open ? '收起' : '展开'}
+            <DownOutlined className={`subagent-caret${open ? ' open' : ''}`} />
+          </button>
+        )}
+      </div>
+      {open && hasDetail && (
+        <div className="subagent-steps">
+          {steps.map((step) =>
+            step.kind === 'text' ? (
+              <div key={step.key} className="subagent-say">
+                {sanitizeInternal(step.text)}
+              </div>
+            ) : (
+              <ToolLine
+                key={step.key}
+                tool={subagentToolLine(step)}
+                expanded={expandedKey === step.key}
+                onToggle={() => setExpandedKey(expandedKey === step.key ? null : step.key)}
+              />
+            ),
+          )}
+          {item.excerpt && (
+            <div className="subagent-result">
+              <div className="tool-detail-label">结果摘录</div>
+              <pre>{sanitizeInternal(item.excerpt)}</pre>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -498,49 +667,70 @@ function decodeGitPath(path) {
   }
 }
 
-// 每轮产物变更卡：让"助手改了什么"零成本可见（设计稿 §3）
-function ChangesCard({ added, modified, deleted, total, knownPaths, onOpenFile, onOpenDiff }) {
-  const [expanded, setExpanded] = useState(false);
+// 每轮文件改动卡：让"助手这一轮改了什么"零成本可见（设计稿 §3）。
+// 按业务类别分组、纯文字排版：少于 7 个文件直接列出，多了先给各类数量，展开看明细
+const CHANGES_INLINE_LIMIT = 6;
+
+function ChangesCard({ added, modified, deleted, knownPaths, onOpenFile, onOpenDiff }) {
   const entries = [
     ...added.map((p) => ({ path: decodeGitPath(p), status: 'added' })),
     ...modified.map((p) => ({ path: decodeGitPath(p), status: 'modified' })),
     ...deleted.map((p) => ({ path: decodeGitPath(p), status: 'deleted' })),
   ];
-  const shown = expanded ? entries : entries.slice(0, 3);
+  const [expanded, setExpanded] = useState(entries.length <= CHANGES_INLINE_LIMIT);
+  const groups = groupChanges(entries);
+  const mixed = new Set(entries.map((entry) => entry.status)).size > 1;
+  const headline = changeHeadline({
+    added: added.length,
+    modified: modified.length,
+    deleted: deleted.length,
+  });
   return (
-    <div className="changes-card msg-soft">
-      <div className="changes-head">
-        <span className="changes-title">
-          本轮产物变更
-          {added.length > 0 && ` · 新增 ${added.length}`}
-          {modified.length > 0 && ` · 修改 ${modified.length}`}
-          {deleted.length > 0 && ` · 删除 ${deleted.length}`}
-        </span>
-        <button type="button" className="changes-diff" onClick={onOpenDiff}>
-          查看对比
+    <section className="changes-card msg-soft" aria-label={headline}>
+      <header className="changes-head">
+        <span className="changes-title">{headline}</span>
+        <button type="button" className="changes-link" onClick={onOpenDiff}>
+          查看改动
         </button>
-      </div>
-      <div className="changes-files">
-        {shown.map((entry) => (
-          <FileChip
-            key={entry.path}
-            path={entry.path}
-            status={entry.status}
-            exists={entry.status !== 'deleted' && (!knownPaths || knownPaths.has(entry.path))}
-            onOpen={onOpenFile}
-          />
-        ))}
-        {entries.length > 3 && (
-          <button
-            type="button"
-            className="changes-more"
-            onClick={() => setExpanded(!expanded)}
-          >
-            {expanded ? '收起' : `展开全部（${total}）`}
-          </button>
-        )}
-      </div>
-    </div>
+      </header>
+      {expanded ? (
+        <dl className="changes-groups">
+          {groups.map((group) => (
+            <div className="changes-group" key={group.label}>
+              <dt>{group.label}</dt>
+              <dd>
+                {group.items.map((item) => {
+                  const exists =
+                    item.status !== 'deleted' && (!knownPaths || knownPaths.has(item.path));
+                  return (
+                    <button
+                      type="button"
+                      key={item.path}
+                      className={`changes-file ${item.status}`}
+                      title={item.path}
+                      disabled={!exists}
+                      onClick={() => onOpenFile?.(item.path)}
+                    >
+                      {item.name}
+                      {mixed && <small>{STATUS_LABELS[item.status]}</small>}
+                    </button>
+                  );
+                })}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p className="changes-summary">
+          {groups.map((group) => `${group.label} ${group.items.length}`).join(' · ')}
+        </p>
+      )}
+      {entries.length > CHANGES_INLINE_LIMIT && (
+        <button type="button" className="changes-toggle" onClick={() => setExpanded(!expanded)}>
+          {expanded ? '收起明细' : '展开明细'}
+        </button>
+      )}
+    </section>
   );
 }
 
@@ -594,8 +784,17 @@ export default function ChatPane({
   const [newCount, setNewCount] = useState(0); // 未读新消息（滚动锚定用）
   const [skippedEvents, setSkippedEvents] = useState(0); // 历史截断：跳过的较早事件数
   const [historyEpoch, setHistoryEpoch] = useState(0); // 触发全量重放
+  // 用户选中的会话；按项目区分，切项目时回到服务端默认（null = 引擎绑定的或最近更新的）
+  const [selection, setSelection] = useState({ projectId: project.id, id: null });
+  const requestedConversation = selection.projectId === project.id ? selection.id : null;
+  const [conversationId, setConversationId] = useState(null); // 服务端解析后的当前会话
+  const conversationIdRef = useRef(null); // send() 等异步流程读最新值
+  const [conversationsEpoch, setConversationsEpoch] = useState(0); // 发消息后刷新会话标题
   const fullHistoryRef = useRef(false);
-  const [ctxTokens, setCtxTokens] = useState(null); // 最近一轮输入侧 tokens（水位估算）
+  const viewKeyRef = useRef('');
+  const historyEndRef = useRef(null);
+  const pendingNewCountRef = useRef(0);
+  const [ctx, setCtx] = useState(EMPTY_CONTEXT); // 上下文用量：已用/窗口/压缩触发点
   const [reportErrors, setReportErrors] = useState(null); // 最新校验报告的错误项统计
   const historyRef = useRef(null);
   const seenRef = useRef(new Set());
@@ -689,17 +888,39 @@ export default function ChatPane({
   }, [project.id, paths]);
 
   useEffect(() => {
+    const viewKey = `${project.id}/${requestedConversation || ''}`;
+    if (viewKeyRef.current !== viewKey) {
+      // 换了项目或会话：上一条会话的状态与指标都不再适用（上下文用量随历史回放重建）
+      viewKeyRef.current = viewKey;
+      fullHistoryRef.current = false;
+      conversationIdRef.current = requestedConversation;
+      setConversationId(requestedConversation);
+      setState('idle');
+      setLocalResolved(new Set());
+      metricsRef.current = null;
+      recallIndexRef.current = -1;
+    }
+    let resolved = requestedConversation;
+    // 选中的会话已被删除（如在另一个标签页）：回到服务端默认会话
+    const fallBackIfMissing = (error) => {
+      if (error?.status !== 404 || !requestedConversation) return false;
+      setSelection({ projectId: project.id, id: null });
+      return true;
+    };
     setEvents([]);
     setLive({ text: '', thinking: '' });
     liveRef.current = { text: '', thinking: '' };
     setPending(null);
     setMetrics(null);
+    setCtx(EMPTY_CONTEXT); // 由历史回放重建
     seenRef.current = new Set();
     setQueueInfo(null);
     setUploads([]);
     setSkippedEvents(0);
-    // 只回放最近一段事件：长历史项目秒开；"查看更早"再全量重放
-    const HISTORY_TAIL = 400;
+    setNewCount(0);
+    historyEndRef.current = null;
+    pendingNewCountRef.current = 0;
+    nearBottomRef.current = true;
     let source = null;
     let cancelled = false;
     let retryTimer = 0;
@@ -707,6 +928,7 @@ export default function ChatPane({
     const lastMsgTsRef = { current: Date.now() };
     const nextAfterRef = { current: 0 };
     const handleEvent = (event) => {
+      if (cancelled) return;
       lastMsgTsRef.current = Date.now();
       if (event.type === 'ping') return; // 心跳仅用于连接活性判断
       if (event.seq !== undefined) {
@@ -734,6 +956,12 @@ export default function ChatPane({
         if (seenRef.current.has(key)) return;
         seenRef.current.add(key);
       }
+      const isHistoryEvent =
+        event.seq !== undefined &&
+        historyEndRef.current !== null &&
+        event.seq < historyEndRef.current;
+      if (event.type === 'system') return;
+      setCtx((prev) => nextContext(prev, event));
       if (event.type === 'user_message') {
         setPending(null);
         setUploads([]); // 附件进度卡由历史里的正式消息接棒
@@ -750,7 +978,6 @@ export default function ChatPane({
         const outputTokens = usage.output_tokens;
         const cacheRead = usage.cache_read_input_tokens || 0;
         const inputTokens = (usage.input_tokens || 0) + cacheRead;
-        setCtxTokens(inputTokens || null);
         if (m?.firstTs) {
           setMetrics({
             ttft: m.firstTs - m.sentTs,
@@ -767,6 +994,9 @@ export default function ChatPane({
           });
         }
       }
+      if (!isHistoryEvent && isVisibleChatEvent(event)) {
+        pendingNewCountRef.current += 1;
+      }
       setEvents((prev) => [...prev, event]);
       if (event.type === 'session_state') {
         setState(event.state);
@@ -780,7 +1010,7 @@ export default function ChatPane({
     const connect = (after) => {
       if (cancelled) return;
       source?.close();
-      source = openEventStream(project.id, handleEvent, after);
+      source = openEventStream(project.id, handleEvent, after, resolved);
       source.onopen = () => {
         retryDelay = 2000;
         lastMsgTsRef.current = Date.now();
@@ -797,25 +1027,38 @@ export default function ChatPane({
       retryTimer = setTimeout(async () => {
         if (cancelled) return;
         try {
-          await api.sessionState(project.id); // request() 遇 401 会刷新 token
-        } catch { /* 服务暂不可达，下轮再试 */ }
+          await api.sessionState(project.id, resolved); // request() 遇 401 会刷新 token
+        } catch (error) {
+          if (fallBackIfMissing(error)) return;
+          /* 服务暂不可达，下轮再试 */
+        }
         connect(nextAfterRef.current);
       }, retryDelay);
       retryDelay = Math.min(retryDelay * 2, 30000);
     };
 
     api
-      .sessionState(project.id)
+      .sessionState(project.id, requestedConversation)
       .then((info) => {
         if (cancelled) return;
+        resolved = info.conversation_id || requestedConversation;
+        conversationIdRef.current = resolved;
+        setConversationId(resolved);
+        setState(info.state || 'idle');
         const total = info.events || 0;
-        const skip = fullHistoryRef.current ? 0 : Math.max(0, total - HISTORY_TAIL);
+        historyEndRef.current = total;
+        const historyStart = Number.isInteger(info.history_start)
+          ? info.history_start
+          : Math.max(0, total - HISTORY_TAIL);
+        const skip = fullHistoryRef.current ? 0 : Math.max(0, historyStart);
         setSkippedEvents(skip);
         nextAfterRef.current = skip;
         connect(skip);
       })
-      .catch(() => {
-        if (!cancelled) connect(0);
+      .catch((error) => {
+        if (cancelled || fallBackIfMissing(error)) return;
+        historyEndRef.current = 0;
+        connect(0);
       });
 
     // 看门狗：后端每 15s 发一次 ping，40s 静默视为连接僵死（半开），强制重建
@@ -835,7 +1078,7 @@ export default function ChatPane({
     };
     // onWorkspaceChanged 变化不应重建 SSE 连接
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project.id, historyEpoch]);
+  }, [project.id, requestedConversation, historyEpoch]);
 
   // 滚动锚定：贴底（<80px）才自动滚；上翻阅读时不打扰，浮出"新消息"按钮
   const reducedMotion =
@@ -864,8 +1107,11 @@ export default function ChatPane({
   }, [live, pending, uploads]);
   const eventCount = events.length;
   useEffect(() => {
+    const count = pendingNewCountRef.current;
+    pendingNewCountRef.current = 0;
+    if (count === 0) return;
     if (nearBottomRef.current) scrollToBottom(false);
-    else setNewCount((count) => count + 1);
+    else setNewCount((current) => current + count);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventCount]);
 
@@ -874,6 +1120,8 @@ export default function ChatPane({
     if (uploading) return;
     const toUpload = explicitAttachments ?? attachments;
     if (!trimmed && toUpload.length === 0) return;
+    // 上传可能持续数秒：消息发往点发送时所在的会话
+    const targetConversation = conversationIdRef.current;
     setInput('');
     recallIndexRef.current = -1;
     // 附件立即离开输入框，进入对话区变成带进度条的文件卡（并行上传）
@@ -903,11 +1151,12 @@ export default function ChatPane({
               resourceSubdir(att.name),
               att.file,
               (ratio) => patchUpload(att.uid, { percent: Math.round(ratio * 100) }),
-              att.purpose,
-              att.readingMode,
             );
             patchUpload(att.uid, { percent: 100, status: 'done' });
-            return { att, path: saved.path };
+            // 平台按结构识别并预填了用途：告诉助手，免得它再按「无 schema / 无术语表」处理
+            const detectedLabel = DETECTED_PURPOSE_LABELS[saved.detected?.purpose];
+            const label = detectedLabel ? `${saved.path}（已自动标为${detectedLabel}）` : saved.path;
+            return { att, path: saved.path, label };
           } catch (error) {
             patchUpload(att.uid, { status: 'error', error: error.message });
             return { att, error };
@@ -924,19 +1173,24 @@ export default function ChatPane({
         message.error(`${failed.length} 个文件上传失败：${failed[0].error.message}`);
         return;
       }
-      const uploaded = results.map((r) => r.path);
+      const uploaded = results.map((r) => r.label);
       const prefix = uploaded.length
         ? `（我通过界面上传了资料，已存入工作区：${uploaded.join('、')}）\n`
         : '';
       const body = trimmed || '请查看我刚上传的资料，说明接下来可以怎么用。';
-      await api.sendMessage(project.id, prefix + body);
+      await api.sendMessage(project.id, prefix + body, targetConversation);
       setState('running');
+      setConversationsEpoch((epoch) => epoch + 1);
     } catch (error) {
       // 走到这里说明附件都已入工作区，只是消息未发出；不退回附件避免重复上传
+      // 409：引擎正被另一条会话占用；404：会话已被删除，回到默认会话
       setPending(null);
       setUploads([]);
       setInput(trimmed);
       message.error(error.message);
+      if (error.status === 404 && targetConversation) {
+        setSelection({ projectId: project.id, id: null });
+      }
     } finally {
       setUploading(false);
     }
@@ -949,18 +1203,19 @@ export default function ChatPane({
       name: f.name,
       file: f.file,
       preview: null,
-      purpose: f.purpose,
-      readingMode: f.readingMode,
     }));
     onInitialFilesConsumed?.();
     void send('这是本项目的初始领域资料，请接收并简要浏览，等待我的下一步指令。', atts);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialFiles]);
 
+  // 外部入口（左栏命令等）只注册一次，经 ref 调最新的 send，避免读到旧的上传态与附件
+  const sendRef = useRef(send);
+  sendRef.current = send;
   useEffect(() => {
     registerSend?.((command) => {
       if (command.endsWith(' ')) setInput(command);
-      else send(command);
+      else sendRef.current(command);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id]);
@@ -1030,6 +1285,10 @@ export default function ChatPane({
     return map;
   }, [events]);
 
+  // 子代理生命周期（开始/终态）与实时步骤流：归并规则在 lib/subagentEvents.js
+  const subagentLifecycle = useMemo(() => buildSubagentLifecycle(events), [events]);
+  const subagentFlow = useMemo(() => buildSubagentFlow(events, toolResults), [events, toolResults]);
+
   const items = useMemo(() => {
     const list = [];
     const fingerprints = new Map(); // 相同确认要求跨轮重复计数（防挂卡死循环，方案风险#4）
@@ -1043,21 +1302,28 @@ export default function ChatPane({
       if (event.type === 'user_message') {
         list.push({ key: event.seq, role: 'user', content: event.text, ts: event.ts });
       } else if (event.type === 'assistant_message') {
+        // 已归到子任务卡的子代理消息不再进主对话流
+        if (subagentFlow.cards.has(event.parent_tool_use_id)) continue;
         for (const [index, block] of event.blocks.entries()) {
           const key = `${event.seq}-${index}`;
           if (block.kind === 'tool_use') {
             const result = toolResults.get(block.tool_use_id);
-            if (block.tool === 'Task' && !event.subagent) {
-              // 子代理派遣：独立卡片呈现运行状态，而不是淹没在工具行里
+            if (['Task', 'Agent'].includes(block.tool) && !event.subagent) {
+              // 子代理派遣：独立卡片呈现运行状态与可展开的执行过程
+              const progress = subagentLifecycle.get(block.tool_use_id);
+              const terminalStatus = progress?.status;
               list.push({
                 key,
                 role: 'subagent',
-                description: block.input?.description || '子任务',
-                agentType: block.input?.subagent_type || '',
-                prompt: block.input?.prompt || '',
-                done: result !== undefined,
-                failed: result?.isError,
+                description: progress?.description || block.input?.description || '子任务',
+                agentType: block.input?.subagent_type || progress?.agentType || '',
+                done: result !== undefined || progress?.done === true,
+                failed: result?.isError || terminalStatus === 'failed',
+                stopped: terminalStatus === 'stopped' || terminalStatus === 'killed',
                 excerpt: result?.excerpt,
+                summary: progress?.summary || '',
+                durationMs: progress?.durationMs ?? null,
+                steps: subagentFlow.steps.get(block.tool_use_id) || [],
               });
               continue;
             }
@@ -1083,6 +1349,8 @@ export default function ChatPane({
         list.push({ key: event.seq, role: 'changes', content: event });
       } else if (event.type === 'session_interrupted') {
         list.push({ key: event.seq, role: 'system', content: '已打断' });
+      } else if (event.type === 'context_compacted') {
+        list.push({ key: event.seq, role: 'system', content: compactionNotice(event) });
       } else if (event.type === 'permission_request') {
         const fingerprint = `${event.tool_name}:${JSON.stringify(event.tool_input ?? {})}`;
         const repeat = (fingerprints.get(fingerprint) || 0) + 1;
@@ -1109,7 +1377,7 @@ export default function ChatPane({
       }
     }
     return list;
-  }, [events, resolvedPermissions, toolResults]);
+  }, [events, resolvedPermissions, subagentFlow, subagentLifecycle, toolResults]);
 
   const hasLive = live.text || live.thinking;
 
@@ -1161,7 +1429,9 @@ export default function ChatPane({
         : state === 'error'
           ? { cls: 'error', text: '出错了' }
           : { cls: 'idle', text: '空闲' };
-  const ctxPct = ctxTokens ? Math.min(100, Math.round((ctxTokens / CONTEXT_WINDOW_TOKENS) * 100)) : null;
+  const ctxInfo = describeContext(ctx);
+  // 运行、排队、上传或消息未落定时不能换会话：引擎同一时刻只绑定一条会话
+  const conversationBusy = state === 'running' || state === 'queued' || uploading || Boolean(pending);
 
   // ↑ 键召回历史输入（仅空输入框且非运行中，不抢正常光标行为）
   const userMessages = useMemo(
@@ -1231,6 +1501,13 @@ export default function ChatPane({
       <div className="chat-header">
         <span className={`status-dot ${statusInfo.cls}`} />
         <span className="status-text">{statusInfo.text}</span>
+        <ConversationSwitcher
+          projectId={project.id}
+          conversationId={conversationId}
+          busy={conversationBusy}
+          refreshKey={conversationsEpoch}
+          onSwitch={(id) => setSelection({ projectId: project.id, id })}
+        />
         <span style={{ flex: 1 }} />
         {usage && usage.calls > 0 && (
           <Popover
@@ -1251,18 +1528,16 @@ export default function ChatPane({
             </span>
           </Popover>
         )}
-        {ctxPct != null && (
-          <Tooltip
-            title={`上下文约 ${ctxPct}%（估算）${ctxPct > 80 ? '，建议重启会话以压缩' : ''}`}
-          >
-            <svg className={`ctx-ring${ctxPct > 80 ? ' danger' : ctxPct > 60 ? ' warn' : ''}`} viewBox="0 0 20 20">
+        {ctxInfo && (
+          <Tooltip title={ctxInfo.text}>
+            <svg className={`ctx-ring${ctxInfo.level ? ` ${ctxInfo.level}` : ''}`} viewBox="0 0 20 20">
               <circle className="ctx-ring-bg" cx="10" cy="10" r="8" />
               <circle
                 className="ctx-ring-fg"
                 cx="10"
                 cy="10"
                 r="8"
-                strokeDasharray={`${(ctxPct / 100) * 50.27} 50.27`}
+                strokeDasharray={`${(ctxInfo.pct / 100) * 50.27} 50.27`}
                 transform="rotate(-90 10 10)"
               />
             </svg>
@@ -1270,10 +1545,10 @@ export default function ChatPane({
         )}
         <Popconfirm
           title="重启会话？"
-          description="历史保留；模型上下文经 resume 续接，配置按最新生效"
+          description="对话记录保留，按最新配置重连模型；稳定引擎会清空模型上下文。要从空白上下文开始，请新建会话"
           onConfirm={async () => {
-            await api.closeSession(project.id).catch(() => {});
-            setCtxTokens(null);
+            await api.closeSession(project.id, conversationIdRef.current).catch(() => {});
+            setCtx(EMPTY_CONTEXT);
             message.success('会话已重置，下次发消息生效');
           }}
         >
@@ -1374,14 +1649,12 @@ export default function ChatPane({
             }
             if (item.role === 'changes') {
               const { added = [], modified = [], deleted = [] } = item.content;
-              const total = added.length + modified.length + deleted.length;
               return (
                 <ChangesCard
                   key={item.key}
                   added={added}
                   modified={modified}
                   deleted={deleted}
-                  total={total}
                   knownPaths={knownPaths}
                   onOpenFile={onOpenFile}
                   onOpenDiff={() =>
@@ -1410,34 +1683,7 @@ export default function ChatPane({
               );
             }
             if (item.role === 'subagent') {
-              return (
-                <div
-                  key={item.key}
-                  className={`subagent-card${item.done ? (item.failed ? ' failed' : ' done') : ' running'}`}
-                >
-                  <span className="subagent-icon">
-                    {item.done ? (
-                      item.failed ? (
-                        <CloseOutlined />
-                      ) : (
-                        <CheckOutlined />
-                      )
-                    ) : (
-                      <LoadingOutlined />
-                    )}
-                  </span>
-                  <span className="subagent-main">
-                    <span className="subagent-title">
-                      子任务{item.done ? (item.failed ? '失败' : '完成') : '运行中'} ·{' '}
-                      {item.description}
-                    </span>
-                    {item.agentType && <span className="subagent-type">{item.agentType}</span>}
-                    {!item.done && (
-                      <span className="subagent-hint">独立子代理执行中，主对话稍后汇总结果</span>
-                    )}
-                  </span>
-                </div>
-              );
+              return <SubagentCard key={item.key} item={item} />;
             }
             if (item.role === 'toolgroup') {
               return (
@@ -1691,7 +1937,7 @@ export default function ChatPane({
             // 上传阶段还没有会话消息可打断，忽略停止按钮
             if (!uploading)
               api
-                .interrupt(project.id)
+                .interrupt(project.id, conversationIdRef.current)
                 .then((r) => {
                   // 幽灵运行态（无活跃会话）：后端只补写了历史，SSE 无推送
                   // 通道，重建流拉取补写的中断标记与 idle 终态

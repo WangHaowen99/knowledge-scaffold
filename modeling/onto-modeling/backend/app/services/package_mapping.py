@@ -16,6 +16,7 @@ schema 标签的表格资料与评测数据源上传的业务数据表（一个 
 绑定优先级：对象文档「# 数据来源」的显式声明 > 属性英文名与 Sheet 列头的唯一最佳重合。
 推断只在重合列数达标且候选唯一时成立（声明了主键的对象，候选表还须含全部主键列），
 够不着就留空（来源Sheet 写 UNBOUND），不猜。
+首行写「无」是显式声明不落库（如只作为输出的单据），不再按重合度推断。
 
 评测导入时数据表来源换成「本轮实际导入的工作簿」（eval_import），mapping 与导入库同源；
 Neo4j 图导入的包按 modeling 图模式契约导出（object_data_mappings(graph=True)）。
@@ -58,6 +59,13 @@ _PLACEHOLDER_RE = re.compile(r"^\{")
 # 「无」后面带括注或标点的说明（如 `无（派生对象，不落库）`）同样表示不声明
 _NONE_WITH_NOTE_RE = re.compile(r"^无\s*[（(，,。：:；;]")
 _QUOTED_RE = re.compile(r"`([^`\n]+)`")
+# 关系端点里指代"本文档对象"的写法；「当前对象名」是旧版抽取模板的字面占位，已写进文档的照认
+CURRENT_OBJECT = "当前对象"
+_CURRENT_OBJECT_ALIASES = (CURRENT_OBJECT, "当前对象名")
+# 括注一侧写成 `表名.字段`（表名、字段可各带反引号）
+_PREFIXED_FIELD_RE = re.compile(
+    rf"`?({_IDENTIFIER_RE.pattern})`?\s*\.\s*`?({_IDENTIFIER_RE.pattern})`?"
+)
 # 属性规则带这些标记的属性本来就不在表里（operation 计算得到的、取自文档的常量），不算缺列；
 # 与工具箱 ontology_checker 的列名对账同一口径
 _NON_STORED_MARKERS = ("派生：", "派生:", "非库字段")
@@ -138,7 +146,7 @@ def _first_existing(names: list[str], by_lower: dict[str, str]) -> str:
 
 
 def _declared_source(text: str) -> tuple[str, list[str], bool]:
-    """「# 数据来源」首行 → (声明的表名, 首行里反引号标出的名字, 是否显式声明「无」)。
+    """「# 数据来源」首行 → (声明的表名, 首行里反引号标出的名字, 是否声明了「无」)。
 
     首行即表名；写成说明句时整句仍作为声明返回（找不到时报错要能看见原文），反引号里的
     名字留给绑定时兜底。首行是「无」则不声明，后面的说明行也不再当表名。
@@ -159,12 +167,11 @@ def _declared_source(text: str) -> tuple[str, list[str], bool]:
 
 
 def parse_object_doc(text: str) -> dict:
-    """对象文档 → {declared_table, declared_mentions, no_source, fields[]}。
+    """对象文档 → {declared_table, declared_mentions, declared_none, fields[]}。
 
-    fields 的 key 即属性英文名（真实列名）；no_source 表示「# 数据来源」显式写了「无」（概念对象），
-    与没写这一段区分开。
+    fields 的 key 即属性英文名（真实列名）；declared_none 表示「# 数据来源」首行写了「无」。
     """
-    declared, mentions, no_source = _declared_source(text)
+    declared, mentions, declared_none = _declared_source(text)
 
     headers, rows = _table(_fields_section(text))
     key_index = _column_index(headers, "key")
@@ -190,7 +197,10 @@ def parse_object_doc(text: str) -> dict:
                 "rule": "" if _is_empty(rule) else rule,
                 "primary": cell(row, "primary").strip() in ("是", "true", "yes", "Y"),
             })
-    return {"declared_table": declared, "declared_mentions": mentions, "no_source": no_source, "fields": fields}
+    return {
+        "declared_table": declared, "declared_mentions": mentions,
+        "declared_none": declared_none, "fields": fields,
+    }
 
 
 def read_table_headers(path: Path) -> dict[str, list[str]]:
@@ -266,7 +276,7 @@ def _match_table(field_keys: list[str], tables: dict[str, list[str]], primary_ke
     """属性英文名与各表列头的重合度 → 唯一最佳表名；并列第一或不达标时返回空，不猜。
 
     声明了主键的对象只在含全部主键列的表里找：主键列不在表里，实例身份无从确定，
-    绑上去只会造出身份错的节点（如概念对象与别的对象的表撞上两三列同名属性）。
+    绑上去只会造出身份错的节点（如未声明来源的对象与别的对象的表撞上两三列同名属性）。
     """
     lowered = {k.lower() for k in field_keys}
     required = {k.lower() for k in primary_keys}
@@ -340,6 +350,13 @@ def _declared_binding(
     }
 
 
+def _may_infer(tables: dict[str, list[str]], parsed: dict) -> bool:
+    """未声明来源表时能否按重合度推断：「无」是显式不落库，没有数据表或属性也无从推断。"""
+    if parsed["declared_none"]:
+        return False
+    return bool(tables and parsed["fields"])
+
+
 def resolve_object_tables(
     root: Path,
     tables: dict[str, list[str]] | None = None,
@@ -388,7 +405,7 @@ def resolve_object_tables(
                 reported = True
         elif hints.get(key) in tables:
             table, matched_by = hints[key], "seed"
-        elif tables and fields:
+        elif _may_infer(tables, parsed):
             table = _match_table(field_keys, tables, [f["key"] for f in fields if f["primary"]])
             matched_by = "inferred" if table else ""
 
@@ -569,9 +586,10 @@ def rewrite_object_body(body: str, fields: list[dict]) -> str:
 
 
 def _relation_node(value: str) -> str:
-    """关系端点：`[[对象]]`（可带别名/锚点）取对象名，其余原样。"""
+    """关系端点：`[[对象]]`（可带别名/锚点）取对象名，「当前对象名」归一为「当前对象」，其余原样。"""
     link = re.fullmatch(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]", value)
-    return link.group(1).strip() if link else value
+    name = link.group(1).strip() if link else value
+    return CURRENT_OBJECT if name in _CURRENT_OBJECT_ALIASES else name
 
 
 def _split_relation_arrows(value: str) -> list[str]:
@@ -623,22 +641,40 @@ def _missing_field(name: str, fields: set[str]) -> bool:
     return bool(fields) and name not in fields
 
 
+def _join_side(side: str, own: set[str], other: set[str]) -> str:
+    """括注箭头一侧 → 字段名。`表名.字段` 去掉前缀；前缀只认得是另一端的表时说明方向写反了，不认。"""
+    names = _IDENTIFIER_RE.findall(side)
+    if len(names) == 1:
+        return names[0]
+    prefixed = _PREFIXED_FIELD_RE.fullmatch(side.strip())
+    if prefixed:
+        prefix = prefixed.group(1).lower()
+        if prefix in own or prefix not in other:
+            return prefixed.group(2)
+        raise ValueError(
+            f"关联字段「{side.strip()}」的前缀是另一端对象的表，请按箭头方向写成：关系名（源字段 → 目标字段）"
+        )
+    raise ValueError("关联字段不明确，请写成：关系名（源字段 → 目标字段）")
+
+
 def _relation_join(
     note: str, source_fields: set[str], target_fields: set[str],
+    source_names: set[str] = frozenset(), target_names: set[str] = frozenset(),
 ) -> tuple[str | None, str | None]:
     """括注 → (源对象字段, 目标对象字段)。判据是两端的属性清单，不是括注的措辞。
 
     括注里的箭头是显式声明，按方向取两侧字段，属性清单只用于纠错。没有箭头时只认两端清单
     都有的那个标识符：取不到就是一句纯说明，取到多个则无从判断该连哪一对。
+    箭头两侧可写成 `表名.字段`；*_names 是两端的对象名与声明表名（小写），用来核对前缀。
     """
     if not note:
         return None, None
     if "→" in note or "->" in note:
         sides = re.split(r"→|->", note)
-        names = [_IDENTIFIER_RE.findall(side) for side in sides]
-        if len(sides) != 2 or any(len(found) != 1 for found in names):
+        if len(sides) != 2:
             raise ValueError("关联字段不明确，请写成：关系名（源字段 → 目标字段）")
-        source_join, target_join = names[0][0], names[1][0]
+        source_join = _join_side(sides[0], source_names, target_names)
+        target_join = _join_side(sides[1], target_names, source_names)
         if _missing_field(source_join, source_fields) or _missing_field(target_join, target_fields):
             raise ValueError(f"关联字段 {source_join} → {target_join} 不在两端对象的属性清单里")
         return source_join, target_join
@@ -700,34 +736,42 @@ def _join_text(relation: dict) -> str:
     return f"{source} → {target}" if source and target else "未声明关联字段"
 
 
+def _relation_prefixes(key: str, doc: dict) -> set[str]:
+    """括注 `表名.字段` 可用的前缀：对象名与「# 数据来源」声明的表名（小写）。"""
+    candidates = (key, doc["declared_table"], *doc["declared_mentions"])
+    return {name.lower() for name in candidates if name}
+
+
 def graph_relations(
     object_texts: dict[str, str], mapped: set[str], report: dict | None = None,
-    allow_unbound: bool = False,
 ) -> tuple[dict[str, list], list[str]]:
-    """生成可执行关系及逐条诊断。返回的 skipped 只含阻断项。
+    """生成可执行关系及逐条诊断。返回的 skipped 是没导入的关系及原因，都不阻断。
 
     关联字段取自关系括注，判据是两端对象的属性清单（见 _relation_join）：写法不固定，但字段
     名必须在清单里，所以不靠措辞也能认出来。
 
     同一条关系通常在两端对象里各写一次（`当前对象 → 关系名 → [[对象A]]` /
     `[[对象B]] → 关系名 → 当前对象`）。只有一端写出关联字段时按该端补齐——少写不等于冲突；
-    两端都写出且不是同一对字段才报错，这种情况无从判断该连哪一对，错连比不连更难发现。
+    两端都写出且不是同一对字段时整条不导出，这种情况无从判断该连哪一对，错连比不连更难发现。
     同理，一端的声明有问题时整条都不导出，否则另一端那条会把问题盖掉、退回按主键猜。
 
-    allow_unbound 即用户已确认降级发布：端点存在但没绑数据表时，这条关系只记原因不阻断
-    （图里本来就没有该类节点）。端点根本不存在、以及关系名与关联字段写错，仍然是阻断项——
-    那是文档本身要改，降级确认与它无关。
-
-    概念对象（「# 数据来源」显式写「无」）本来就不落库，图里没有它的节点：未绑定的端点全是
-    概念对象时，不需要降级确认也只记原因不阻断。没写数据来源、或声明了表却没绑上的端点，
-    说明的是绑定出了问题，仍按上面的规则处理。
+    每条关系只影响自己：写错或端点没绑数据表（概念对象数据来源写「无」是正常结论）时只跳过
+    这一条并记原因，评测与发布照常进行，原因进 report["notes"] 给用户看。
     """
-    docs = {key: parse_object_doc(text) for key, text in object_texts.items()}
-    fields = {key: {field["key"] for field in doc["fields"]} for key, doc in docs.items()}
-    concepts = {key for key, doc in docs.items() if doc["no_source"]}
+    fields: dict[str, set[str]] = {}
+    # 括注里 `表名.字段` 的前缀可以是对象名或「# 数据来源」声明的表名
+    names: dict[str, set[str]] = {}
+    # 概念对象（数据来源写「无」）：端点未绑定时提示里点明原因，免得被当成绑定出错
+    concepts: set[str] = set()
+    for key, text in object_texts.items():
+        doc = parse_object_doc(text)
+        fields[key] = {field["key"] for field in doc["fields"]}
+        names[key] = _relation_prefixes(key, doc)
+        if doc["declared_none"]:
+            concepts.add(key)
     relations: dict[str, list] = {}
     skipped: list[str] = []
-    unbound: list[str] = []
+    unbound = 0
     seen: dict[tuple, dict] = {}
     triples: set[tuple] = set()
     declared = parsed = duplicates = 0
@@ -755,8 +799,8 @@ def graph_relations(
             source = item["source"] or ""
             name = item["relation"] or ""
             target = item["target"] or ""
-            source = key if source == "当前对象" else source
-            target = key if target == "当前对象" else target
+            source = key if source == CURRENT_OBJECT else source
+            target = key if target == CURRENT_OBJECT else target
             triple = (source, name, target)
             triples.add(triple)
             label = f"对象「{key}」第 {item['line']} 行"
@@ -769,14 +813,14 @@ def graph_relations(
                 if absent:
                     skipped.append(f"{label}：关系端点「{'、'.join(absent)}」不存在")
                 elif set(missing) <= concepts:
-                    unbound.append(
+                    unbound += 1
+                    skipped.append(
                         f"{label}：关系端点「{'、'.join(missing)}」的数据来源为「无」（概念对象，"
                         "图里没有该类节点），本条关系不导入"
                     )
-                elif allow_unbound:
-                    unbound.append(f"{label}：关系端点「{'、'.join(missing)}」未绑定数据表，本条关系不导入")
                 else:
-                    skipped.append(f"{label}：关系端点「{'、'.join(missing)}」未绑定数据表")
+                    unbound += 1
+                    skipped.append(f"{label}：关系端点「{'、'.join(missing)}」未绑定数据表，本条关系不导入")
                 continue
             if not GRAPH_IDENTIFIER.fullmatch(name):
                 skipped.append(f"{label}：关系名「{name}」不是合法的图关系名，请确认名称")
@@ -784,9 +828,15 @@ def graph_relations(
             try:
                 source_join, target_join = _relation_join(
                     item["note"], fields.get(source, set()), fields.get(target, set()),
+                    names.get(source, {source.lower()}), names.get(target, {target.lower()}),
                 )
             except ValueError as exc:
                 skipped.append(f"{label}：{exc}")
+                reject(triple, source, label)
+                continue
+            if source == target and not (source_join and target_join):
+                # 自关联两端是同一张表，不写关联字段就会按同一行把每个节点连到它自己
+                skipped.append(f"{label}：自关联「{name}」要写明关联字段（源对象字段 → 目标对象字段）")
                 reject(triple, source, label)
                 continue
             relation = {
@@ -825,9 +875,9 @@ def graph_relations(
             # 去重后的关系条数：两端各声明一次只算一条，和 relations_exported 同一量纲
             relations_distinct=len(triples),
             relations_exported=sum(map(len, relations.values())),
-            # relations_skipped 是没导出的总数；其中因端点未绑定而放过（概念对象或降级确认）的另记一个数，便于对账
-            relations_skipped=len(skipped) + len(unbound), relations_unbound=len(unbound),
-            relations_duplicates=duplicates, notes=skipped + unbound,
+            # relations_skipped 是没导出的总数；其中端点未绑定数据表的另记一个数，便于对账
+            relations_skipped=len(skipped), relations_unbound=unbound,
+            relations_duplicates=duplicates, notes=skipped,
         )
     return relations, skipped
 

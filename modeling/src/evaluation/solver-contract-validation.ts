@@ -59,6 +59,17 @@ const PUBLIC_RESULT_FIELDS = [
   'candidate_results_artifact_ref',
   'candidate_results_artifact_digest',
 ] as const;
+// 权威结果事件与工具结果都带这些字段时必须一致，否则工具结果不是这次权威完成的产物
+const AUTHORITATIVE_EVENT_FIELDS = [
+  'job_id',
+  'result_artifact_ref',
+  'verification_evidence_ref',
+  'knowledge_revision_id',
+  'fact_snapshot_digest',
+  'problem_digest',
+  'candidate_results_artifact_ref',
+  'candidate_results_artifact_digest',
+] as const;
 
 export interface SolverValidationCase {
   id: string;
@@ -259,6 +270,8 @@ interface SolverToolCall {
   toolErrorCode?: string;
   /** 同一 tool_call_id 的 solver.* 事件，后到的字段覆盖先到的。 */
   progress: Record<string, unknown>;
+  /** 同一 tool_call_id 的 solver.result.authoritative 事件载荷；Consumer 只在 Verifier 通过后发出。 */
+  authoritativeEvent?: Record<string, unknown>;
 }
 
 interface AgentRunObservation {
@@ -376,6 +389,7 @@ function observeRunEvent(observation: AgentRunObservation, event: any): void {
     call.output = parseToolOutput(payload.output_preview);
   } else if (SOLVER_EVENT_TYPES.has(type) && call) {
     Object.assign(call.progress, payload);
+    if (type === 'solver.result.authoritative') call.authoritativeEvent = payload;
   } else if (type === 'interaction.requested') {
     observation.interactionPrompt = text(payload.prompt);
   } else if (type === 'turn.finished') {
@@ -564,6 +578,28 @@ function notCalledResult(item: SolverValidationCase, observation: AgentRunObserv
   return { ...errorResult(item, 'solver_tool_not_called', 'agent', false, detail), solver_tool_called: false };
 }
 
+/**
+ * 工具结果自称权威时，核对同一调用的 solver.result.authoritative 事件：没有事件、事件不是权威完成、
+ * 或关键证据与工具结果不一致，都返回失败码。只看工具结果的 authoritative 字段会被伪造或残缺的输出蒙混。
+ */
+function authoritativeEventProblem(call: SolverToolCall): string | undefined {
+  const event = call.authoritativeEvent;
+  if (!event || event.authoritative !== true || !text(event.job_id)) return 'solver_authoritative_event_missing';
+  // 工具输出超过 4 KB 被截断时没有可比对的字段，公开字段整份取自 solver.* 事件
+  const output = call.output ?? {};
+  const mismatched = AUTHORITATIVE_EVENT_FIELDS.some((key) => {
+    const fromEvent = text(event[key]);
+    const fromOutput = text(output[key]);
+    return Boolean(fromEvent && fromOutput && fromEvent !== fromOutput);
+  });
+  return mismatched ? 'solver_authoritative_event_mismatch' : undefined;
+}
+
+const AUTHORITATIVE_EVENT_DETAILS: Record<string, string> = {
+  solver_authoritative_event_missing: '没有收到该求解调用的权威结果事件',
+  solver_authoritative_event_mismatch: '求解工具结果与权威结果事件的证据不一致',
+};
+
 /** 按求解工具的公开结果判定用例；工具输出缺失或被截断时用同一调用的 solver.* 事件字段补齐。 */
 function solverCallResult(item: SolverValidationCase, call: SolverToolCall): SolverValidationCaseResult {
   const diff = argumentDiffPaths(item.arguments, call.arguments);
@@ -576,11 +612,13 @@ function solverCallResult(item: SolverValidationCase, call: SolverToolCall): Sol
   const data: Record<string, any> = { ...call.progress, ...(call.output ?? {}) };
   const status = String(data.status ?? '');
   if (status === 'completed') {
+    const problem = data.authoritative === true ? authoritativeEventProblem(call) : undefined;
     return {
       id: item.id,
       operation_key: item.operationKey,
       status: 'completed',
-      authoritative: data.authoritative === true,
+      authoritative: data.authoritative === true && !problem,
+      ...(problem ? { code: problem, detail: AUTHORITATIVE_EVENT_DETAILS[problem] } : {}),
       ...publicFields(data),
       candidate_count: null,
       ...tool,
@@ -626,7 +664,8 @@ function agentRunResult(item: SolverValidationCase, observation: AgentRunObserva
 
 /**
  * 单条验证用例：向 Consumer Agent 提问（异步运行 + 事件流），从事件里取求解工具的调用入参与公开结果。
- * 只有求解工具返回 authoritative=true 的 completed 才算权威结果；不可行也是有效终态。
+ * 只有求解工具返回 authoritative=true 的 completed、且同一调用有 solver.result.authoritative 事件佐证，
+ * 才算权威结果；不可行也是有效终态。
  * Agent 未调用对应求解工具、入参与用例不一致，分别用 solver_tool_called / arguments_match 标出。
  */
 export async function runSolverValidationCase(input: {

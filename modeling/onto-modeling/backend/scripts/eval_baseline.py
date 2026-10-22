@@ -221,6 +221,17 @@ def entry_count(project: str, container: str, rel: str) -> int:
     return len([f for f in out.split() if f.endswith(".md") and f != "index.md"])
 
 
+def review_status(project: str, container: str) -> dict:
+    """资料分析报告的验收回执状态；读不到时按"无回执"处理，不算通过。"""
+    out = workspace_exec(
+        project, "python3 .claude/scripts/research_checker.py status --json 2>/dev/null", container)
+    try:
+        data = json.loads(out.strip() or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def score_chain(client: Client, project: str, container: str) -> dict:
     """三命令链 + 逐命令确定性记分。满分 100。"""
     card = {"commands": {}, "total": 0}
@@ -248,14 +259,21 @@ def score_chain(client: Client, project: str, container: str) -> dict:
                           "/ontology-research 外卖订单（仅本地资料，不要联网）",
                           done_check=research_done)
     report_chars = len(workspace_exec(project, "cat research/*.md 2>/dev/null", container))
+    review = review_status(project, container)
     item = {
-        "produced_report": report_chars > 1500,       # 20
+        "produced_report": report_chars > 1500,       # 10
+        # 内容验收：计数、ID、引用字段对账通过才给分，报告长度不能替代它
+        "review_passed": review.get("status") == "passed",  # 10
+        "review_reason": review.get("reason", ""),
+        "review_errors": len(review.get("errors") or []),
+        "review_manual_pending": len(review.get("manual_pending") or []),
         "lock_released": lock_free(),                 # 10
         "committed": git_count() > commits0,          # 5
         "no_inline_question": stats["inline_questions"] == 0,  # 5
         "stats": stats,
     }
-    item["score"] = (20 if item["produced_report"] else 0) + (10 if item["lock_released"] else 0) \
+    item["score"] = (10 if item["produced_report"] else 0) \
+        + (10 if item["review_passed"] else 0) + (10 if item["lock_released"] else 0) \
         + (5 if item["committed"] else 0) + (5 if item["no_inline_question"] else 0)
     card["commands"]["research"] = item
 
@@ -319,6 +337,7 @@ def rescore(project: str, container: str) -> dict:
 
     log = workspace_exec(project, "git log --format=%s 2>/dev/null", container)
     report_chars = len(workspace_exec(project, "cat research/*.md 2>/dev/null", container))
+    review_passed = review_status(project, container).get("status") == "passed"
     objects = entry_count(project, container, "ontology/object")
     structure_ok = "对象属性清单" in workspace_exec(
         project, "cat ontology/object/*.md 2>/dev/null | head -200", container)
@@ -336,8 +355,10 @@ def rescore(project: str, container: str) -> dict:
         "project": project,
         "research": {
             "produced_report": report_chars > 1500,
+            "review_passed": review_passed,
             "committed": "research:" in log,
-            "score": (20 if report_chars > 1500 else 0) + (5 if "research:" in log else 0) + (10 if lock_free() else 0),
+            "score": (10 if report_chars > 1500 else 0) + (10 if review_passed else 0)
+            + (5 if "research:" in log else 0) + (10 if lock_free() else 0),
         },
         "extract-object": {
             "objects_extracted": objects,

@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import logging
 import re
 import sys
 import unicodedata
@@ -192,7 +193,7 @@ def _parse(source: bytes | None) -> ast.Module | None:
         return None
     try:
         return ast.parse(source.decode("utf-8"))
-    except (UnicodeDecodeError, SyntaxError, ValueError, RecursionError):
+    except (SyntaxError, ValueError, RecursionError):  # UnicodeDecodeError 是 ValueError 的子类
         return None
 
 
@@ -1027,6 +1028,15 @@ def _report(path: str, kind: str | None, problems: list[Problem]) -> dict[str, A
     }
 
 
+# 控制字符与 Unicode 行分隔符 → 转义写法，如换行 → \n
+_LINE_ESCAPES = {code: repr(chr(code))[1:-1] for code in (*range(0x20), *range(0x7F, 0xA0), 0x2028, 0x2029)}
+
+
+def _single_line(text: str) -> str:
+    # 文字结论逐行输出：文件名或评估器里的键名即使含换行，也伪造不出额外的结论行
+    return text.translate(_LINE_ESCAPES)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="校验声明式求解评估器（只解析，不执行）")
     parser.add_argument("file", help="评估器文件，如 ontology/scripts/<文件>.py")
@@ -1056,17 +1066,24 @@ def main(argv: list[str] | None = None) -> int:
         exit_code = 0 if report["ok"] else 1
 
     if args.json:
-        print(json.dumps(report, ensure_ascii=False, indent=2))
+        logging.info("%s", json.dumps(report, ensure_ascii=False, indent=2))
     else:
         status = "通过" if report["ok"] else "未通过"
-        print(f"{args.file}：{status}（错误 {report['errors']}，警告 {report['warnings']}）")
+        logging.info(
+            "%s：%s（错误 %s，警告 %s）", _single_line(args.file), status, report["errors"], report["warnings"]
+        )
         for problem in report["problems"]:
             label = "错误" if problem["severity"] == SEVERITY_ERROR else "警告"
-            print(f"- [{label}] {problem['message']}")
+            logging.info("- [%s] %s", label, _single_line(problem["message"]))
         if report["truncated"]:
-            print(f"- 仅列出前 {MAX_REPORTED_PROBLEMS} 条，修正后重新运行查看其余问题")
+            logging.info("- 仅列出前 %s 条，修正后重新运行查看其余问题", MAX_REPORTED_PROBLEMS)
     return exit_code
 
 
 if __name__ == "__main__":
+    # 安全审查：日志配置写死在命令行入口，后端 import 本模块时不执行；只把本次自检结论（文件路径与
+    # 问题描述，不含凭据或个人信息）以 INFO 级写到本进程标准输出，不读外部配置、不落盘，条数上限
+    # MAX_REPORTED_PROBLEMS。文字结论已转义控制字符，`--json` 由 json.dumps 转义。标准输出即自检结果，
+    # `--json` 须能被助手直接解析，因此只输出消息本身，不加时间与主机名；stderr 留给解释器告警。
+    logging.basicConfig(stream=sys.stdout, format="%(message)s", level=logging.INFO)  # NOSONAR(S4792)
     sys.exit(main())

@@ -16,6 +16,7 @@ from deploy_synthetic_credentials import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_ROOT = REPO_ROOT / "deploy"
+ONTO_MODELING_DEPLOY = REPO_ROOT / "modeling" / "onto-modeling" / "deploy" / "deploy.sh"
 MODELING_ROOT = REPO_ROOT / "modeling"
 
 
@@ -541,6 +542,191 @@ def test_root_deploy_source_writes_onto_modeling_stack_override(tmp_path: Path) 
     assert "consumer_onto-agent-network" not in content
     assert 'profiles: ["disabled"]' in content  # 自带 dev auth 停用，共享账号中心
     assert "docker-compose.stack.yml" in calls_file.read_text(encoding="utf-8")
+    # consumer 没有 jiuwenbox socket 卷时不挂载，脚本运行验证改在 onto-modeling 容器内
+    assert "jiuwenbox-sock" not in content
+    assert "未探测到 consumer 的 jiuwenbox socket 卷" in result.stderr
+
+
+def test_root_deploy_source_mounts_consumer_jiuwenbox_socket(tmp_path: Path) -> None:
+    """整栈部署默认把 consumer 的 jiuwenbox socket 只读挂给脚本验证网关，不挂进跑 agent 的 onto-modeling。"""
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    shutil.copy2(DEPLOY_ROOT / "deploy.sh", deploy_dir / "deploy.sh")
+    onto_dir = tmp_path / "modeling" / "onto-modeling"
+    onto_dir.mkdir(parents=True)
+    _write_executable(deploy_dir / "deploy-stack.sh", "exit 0")
+    _write_executable(deploy_dir / "docker", _DOCKER_STUB_WITH_JIUWENBOX_SOCKET)
+
+    # 安全审查：argv 只有复制到 tmp_path 的仓库自带 deploy.sh，以序列传入、不经 shell 解析；
+    # 它调用的 docker 与 deploy-stack.sh 都是本测试写入 tmp_path 的替身。
+    result = subprocess.run(  # NOSONAR(S4721)
+        [str(deploy_dir / "deploy.sh")],
+        env={
+            **os.environ,
+            "DOCKER_CALLS_FILE": str(tmp_path / "docker-calls.txt"),
+            "PATH": f"{deploy_dir}:{os.environ['PATH']}",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+        shell=False,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    content = (onto_dir / "docker-compose.stack.yml").read_text(encoding="utf-8")
+    assert (
+        "      - consumer-net\n  sandbox-gateway:\n    volumes:\n      - jiuwenbox-sock:/run/jiuwenbox:ro\n"
+    ) in content
+    onto_modeling_block = content.split("  onto-modeling:\n", 1)[1].split("  sandbox-gateway:\n", 1)[0]
+    assert "jiuwenbox" not in onto_modeling_block
+    assert (
+        "volumes:\n  jiuwenbox-sock:\n    external: true\n    name: onto-agent_onto-jiuwenbox-sock\n"
+    ) in content
+
+
+def test_onto_modeling_deploy_mounts_jiuwenbox_socket_only_when_volume_exists(
+    tmp_path: Path,
+) -> None:
+    """发布包 deploy.sh：.env 记着的 socket 卷真实存在才生成挂载覆盖文件。"""
+    bundle = tmp_path / "onto-modeling"
+    bundle.mkdir()
+    shutil.copy2(ONTO_MODELING_DEPLOY, bundle / "deploy.sh")
+    _write_executable(bundle / "preflight.sh", "exit 0")
+    bin_dir = tmp_path / "bin"
+    _write_executable(bin_dir / "docker", _ONTO_DEPLOY_DOCKER_STUB)
+    calls = tmp_path / "docker-calls.txt"
+    env = {
+        **os.environ,
+        "DOCKER_CALLS_FILE": str(calls),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+    }
+
+    def deploy(existing_volume: str) -> subprocess.CompletedProcess:
+        (bundle / ".env").write_text(
+            "ONTO_WEB_PORT=5100\nONTO_MODELING_JIUWENBOX_SOCKET_VOLUME=onto-agent_onto-jiuwenbox-sock\n",
+            encoding="utf-8",
+        )
+        calls.unlink(missing_ok=True)
+        # 安全审查：argv 是解析出的 bash 路径加复制到 tmp_path 的发布包 deploy.sh，以序列传入、
+        # 不经 shell 解析；它调用的 docker 是本测试写入的替身。
+        return subprocess.run(  # NOSONAR(S4721)
+            [_bash_executable(), str(bundle / "deploy.sh")],
+            env={**env, "STUB_EXISTING_VOLUME": existing_volume},
+            text=True,
+            capture_output=True,
+            check=False,
+            shell=False,
+            timeout=60,
+        )
+
+    result = deploy("onto-agent_onto-jiuwenbox-sock")
+    assert result.returncode == 0, result.stdout + result.stderr
+    override = (bundle / "docker-compose.jiuwenbox.yml").read_text(encoding="utf-8")
+    assert "  sandbox-gateway:\n    volumes:\n      - jiuwenbox-sock:/run/jiuwenbox:ro" in override
+    assert "onto-modeling:" not in override
+    assert "    name: onto-agent_onto-jiuwenbox-sock" in override
+    assert "docker-compose.jiuwenbox.yml" in calls.read_text(encoding="utf-8")
+
+    # 卷已不存在（consumer 被卸载）：不挂载，清掉旧覆盖文件，验证在容器内执行
+    result = deploy("some-other-volume")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (bundle / "docker-compose.jiuwenbox.yml").exists()
+    assert "docker-compose.jiuwenbox.yml" not in calls.read_text(encoding="utf-8")
+    assert "未挂载 jiuwenbox 沙箱" in result.stdout
+
+
+def _compose_service_block(compose_text: str, service: str) -> str:
+    """compose 文本里某个服务的配置段（到下一个服务或顶层键为止）。"""
+    block = compose_text.split(f"\n  {service}:\n", 1)[1]
+    return re.split(r"\n  [a-z-]+:\n|\n[a-z]", block, maxsplit=1)[0]
+
+
+@pytest.mark.parametrize(
+    "compose_path",
+    [
+        MODELING_ROOT / "onto-modeling" / "docker-compose.yml",
+        MODELING_ROOT / "onto-modeling" / "deploy" / "docker-compose.release.yml",
+    ],
+)
+def test_onto_modeling_compose_keeps_jiuwenbox_socket_out_of_the_agent_container(compose_path: Path) -> None:
+    """建模 agent 与 onto-modeling 后端同容器、能执行任意命令：socket 只给无特权的脚本验证网关。"""
+    content = compose_path.read_text(encoding="utf-8")
+    onto_modeling = _compose_service_block(content, "onto-modeling")
+    gateway = _compose_service_block(content, "sandbox-gateway")
+
+    assert "/run/jiuwenbox" not in onto_modeling
+    assert "ONTO_WEB_SANDBOX_GATEWAY_URL=http://sandbox-gateway:8110" in onto_modeling
+    assert 'command: ["python", "-m", "app.sandbox_gateway"]' in gateway
+    assert 'user: "65534:65534"' in gateway and "read_only: true" in gateway
+    assert "cap_drop:\n      - ALL" in gateway and "no-new-privileges:true" in gateway
+    # 网关不读 .env、不挂数据卷、不发布端口：容器里没有密钥和项目数据，宿主上也访问不到
+    assert "env_file" not in gateway and "/data" not in gateway and "ports:" not in gateway
+    assert "8110/health" in gateway
+
+
+def test_redeploy_app_replaces_gateway_and_keeps_socket_override(tmp_path: Path) -> None:
+    """快速重部署要连同网关一起替换，并沿用 deploy.sh 生成的 socket 挂载，否则挂载随容器重建丢失。"""
+    deploy_dir = tmp_path / "deploy-dir"
+    deploy_dir.mkdir()
+    shutil.copy2(
+        MODELING_ROOT / "onto-modeling" / "deploy" / "docker-compose.release.yml",
+        deploy_dir / "docker-compose.release.yml",
+    )
+    (deploy_dir / ".env").write_text("ONTO_WEB_PORT=5100\n", encoding="utf-8")
+    (deploy_dir / "images.env").write_text(
+        "ONTO_WEB_IMAGE=onto-modeling:v1\nRELEASE_VERSION=v1\n", encoding="utf-8"
+    )
+    (deploy_dir / "docker-compose.jiuwenbox.yml").write_text("services: {}\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    _write_executable(bin_dir / "docker", """\
+if [ "$1" = "compose" ] && [ "$2" = "version" ]; then exit 0; fi
+if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then exit 0; fi
+printf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"\
+""")
+    calls = tmp_path / "docker-calls.txt"
+
+    # 安全审查：argv 是解析出的 bash 路径、仓库自带的 redeploy-app.sh 与字面量参数，以序列传入、
+    # 不经 shell 解析；它调用的 docker 是本测试写入的替身。
+    result = subprocess.run(  # NOSONAR(S4721)
+        [_bash_executable(), str(MODELING_ROOT / "onto-modeling" / "deploy" / "redeploy-app.sh"), "v2", "--no-build"],
+        env={
+            **os.environ,
+            "ONTO_MODELING_DEPLOY_DIR": str(deploy_dir),
+            "DOCKER_CALLS_FILE": str(calls),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+        shell=False,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    arguments = calls.read_text(encoding="utf-8").split("\n")
+    assert "docker-compose.jiuwenbox.yml" in arguments
+    assert arguments[-3:-1] == ["onto-modeling", "sandbox-gateway"]
+    assert "ONTO_WEB_IMAGE=onto-modeling:v2" in (deploy_dir / "images.env").read_text(encoding="utf-8")
+
+
+# consumer 后端在 /run/jiuwenbox 挂着 socket 卷（其余同 _DOCKER_STUB_ON_DEFAULT_NETWORK）
+_DOCKER_STUB_WITH_JIUWENBOX_SOCKET = """\
+if [ "$1" = "inspect" ] && [ "$2" = "--type" ] && [ "$3" = "container" ]; then exit 0; fi
+if [ "$1" = "inspect" ] && [ "$2" = "--format" ]; then printf 'onto-agent_onto-jiuwenbox-sock\\n'; exit 0; fi
+if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then printf 'onto-agent_default\\n'; exit 0; fi
+if [ "$1" = "ps" ]; then printf 'onto-agent-backend\\n'; exit 0; fi
+if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then [ "$3" = "onto-agent_default" ]; exit $?; fi
+printf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"\
+"""
+
+# onto-modeling 发布包 deploy.sh 用到的 docker 子命令：只有 STUB_EXISTING_VOLUME 这个卷存在
+_ONTO_DEPLOY_DOCKER_STUB = """\
+if [ "$1" = "compose" ] && [ "$2" = "version" ]; then exit 0; fi
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then [ "$3" = "${STUB_EXISTING_VOLUME}" ]; exit $?; fi
+if [ "$1" = "ps" ]; then exit 0; fi
+printf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"\
+"""
 
 
 # compose 项目名为 onto-agent 时网络叫 onto-agent_default，不含 "onto-agent-network"
@@ -624,11 +810,12 @@ def test_interactive_installer_deploys_onto_modeling() -> None:
     # 缺包时跳过，不能硬失败——存量发布没有这个包
     assert _INTERACTIVE_INSTALLER.count('[ -z "${ONTO_MODELING_PACKAGE}" ] || ') >= 2
 
-    # 接线：宿主端口 + 共享账号中心的网络 + 评测用的 Modeling 地址
+    # 接线：宿主端口 + 共享账号中心的网络 + 评测用的 Modeling 地址 + 脚本验证用的沙箱 socket 卷
     for key in (
         "ONTO_WEB_PORT",
         "ONTO_MODELING_EXTERNAL_AUTH_NETWORK",
         "ONTO_WEB_MODELING_URL",
+        "ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME",
     ):
         assert f'write_env_value "${{env_file}}" {key}' in _INTERACTIVE_INSTALLER
 
@@ -826,6 +1013,8 @@ def test_installer_upgrade_deploys_onto_modeling_after_consumer_and_modeling(
     # 共享 Consumer 账号中心：网络取运行中容器的实际网络，不按命名规律猜
     assert "ONTO_MODELING_EXTERNAL_AUTH_NETWORK=onto-agent_default" in onto_env
     assert "ONTO_WEB_MODELING_URL=http://mw-modeling:5100" in onto_env
+    # 沙箱 socket 卷同样取 consumer 容器的实际挂载（桩按容器名回卷名）
+    assert "ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME=mw-modeling_onto-agent-backend-data" in onto_env
     assert (setup["root"] / "onto-modeling" / ".env").stat().st_mode & 0o777 == 0o600
     # 等到健康检查通过才算部署完成
     curl_calls = (tmp_path / "curl-calls.txt").read_text(encoding="utf-8")
@@ -961,6 +1150,7 @@ def test_interactive_upgrade_asks_onto_port_when_it_clashes_with_modeling(
     onto_env = (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
     assert "ONTO_WEB_PORT=5110" in onto_env
     assert "ONTO_MODELING_EXTERNAL_AUTH_NETWORK=onto-agent_default" in onto_env
+    assert "ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME=mw-modeling_onto-agent-backend-data" in onto_env
     assert "http://127.0.0.1:5110/api/health" in (tmp_path / "curl-calls.txt").read_text(
         encoding="utf-8"
     )
@@ -1076,6 +1266,7 @@ def test_legacy_migration_deploys_onto_modeling_on_a_free_port(tmp_path: Path) -
     assert "ONTO_WEB_PORT=5110" in onto_env
     assert "ONTO_MODELING_EXTERNAL_AUTH_NETWORK=onto-agent_default" in onto_env
     assert "ONTO_WEB_MODELING_URL=http://mw-modeling:5100" in onto_env
+    assert "ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME=mw-modeling_onto-agent-backend-data" in onto_env
     assert (stack_root / "onto-modeling" / ".env").stat().st_mode & 0o777 == 0o600
     assert "Onto Modeling deployment finished" in output
 

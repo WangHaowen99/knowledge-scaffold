@@ -114,9 +114,6 @@ export function validateObjectBatch(
       if (!knownObjects.has(normalizeKey(relation.target))) {
         issues.push(`对象 ${object.key} 引用了不存在的对象 ${relation.target}`);
       }
-      if (normalizeKey(relation.target) === normalizeKey(object.key)) {
-        issues.push(`对象 ${object.key} 的 relations[${index}] 不允许自关联`);
-      }
       const relationKey = `${normalizeKey(relation.target)}\u0000${normalizeKey(relation.relation)}`;
       if (relationKeys.has(relationKey)) {
         issues.push(`对象 ${object.key} 的 relations[${index}] 与已有 source-target-relation 重复`);
@@ -323,7 +320,7 @@ export function validateSpecIntegrity(
   spec: PackageSpec,
   selectedQuestions: string[] = [],
   analysis?: AnalysisResult,
-  options: { validateScriptExecutionContract?: boolean } = {},
+  options: { validateScriptExecutionContract?: boolean; validateRelationNames?: boolean } = {},
 ): CoverageResult {
   const errors: string[] = [];
   const objectsByKey = new Map((spec.objects ?? []).map((item) => [normalizeKey(item.key), item]));
@@ -354,15 +351,14 @@ export function validateSpecIntegrity(
   for (const object of spec.objects ?? []) {
     const relationKeys = new Set<string>();
     for (const [index, relation] of (object.relations ?? []).entries()) {
-      const problem = relationNameProblem(relation.relation, {
-        source: object,
-        target: objectsByKey.get(normalizeKey(relation.target)),
-      });
-      if (problem) errors.push(`对象 ${object.key} 的 relations[${index}].relation：${problem}`);
-      if (!objectKeys.has(normalizeKey(relation.target))) errors.push(`对象 ${object.key} 引用了不存在的对象 ${relation.target}`);
-      if (normalizeKey(relation.target) === normalizeKey(object.key)) {
-        errors.push(`对象 ${object.key} 的 relations[${index}] 不允许自关联`);
+      if (options.validateRelationNames !== false) {
+        const problem = relationNameProblem(relation.relation, {
+          source: object,
+          target: objectsByKey.get(normalizeKey(relation.target)),
+        });
+        if (problem) errors.push(`对象 ${object.key} 的 relations[${index}].relation：${problem}`);
       }
+      if (!objectKeys.has(normalizeKey(relation.target))) errors.push(`对象 ${object.key} 引用了不存在的对象 ${relation.target}`);
       const relationKey = `${normalizeKey(relation.target)}\u0000${normalizeKey(relation.relation)}`;
       if (relationKeys.has(relationKey)) {
         errors.push(`对象 ${object.key} 的 relations[${index}] 与已有 source-target-relation 重复`);

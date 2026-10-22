@@ -11,7 +11,7 @@ python3 .claude/scripts/state_helper.py check-prereq query
 - 输出 `ok` → 继续。
 - 输出 `missing:对象已提取,...` → 提示"当前缺少 {阶段列表}，反查需要先有对象文档。回复 **先做 对象提取**（/ontology-extract-object）/ **继续**（结果可能为空）/ **取消**。"
 
-若最终仍是空仓库，可回退提示："当前无本体数据，无法查询。回复 **调研** 开始建模。"并停止。
+若最终仍是空仓库，可回退提示："当前无本体数据，无法查询。回复 **资料分析** 开始建模。"并停止。
 
 ## Step 1: Parse $ARGUMENTS
 
