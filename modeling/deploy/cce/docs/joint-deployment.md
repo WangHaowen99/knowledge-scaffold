@@ -274,6 +274,10 @@ bash deploy/install-consumer-modeling.sh cce prepare-compatibility \
 
 脚本在原兼容性清单中保留旧记录并加入目标组合、中间组合与迁移记录。联合升级会先读取集群当前两侧版本，按当前组合筛选 `from`，再匹配本次离线包对应的 `to`；因此正常情况下会自动得到唯一 transition。只有同一“当前组合 → 目标组合”被记录了多条不同迁移策略时，才需要从预览结果取得 `transitionId`，并通过 `--transition-id` 显式指定。其他旧版本到同一目标版本的路径不会干扰当前升级。若旧清单丢失、集群实际版本与旧组合不符、两个新包平台不一致或端点不符合契约，脚本会拒绝生成。不要仅凭脚本成功就确认数据兼容性。
 
+### 7.3 同版本联合升级
+
+当已安装组合与两份目标包的发布版本、Chart 版本、平台和接口版本完全相同时，仍按第 7.2 节的预览与确认命令操作。脚本会自动识别同版本，在预览结果中显示 `sameVersion: true`，并生成 `from`、`intermediateCombinationId` 和 `to` 指向同一个组合的路径。重复生成时沿用同一条记录。确认前仍需核对两侧联调结果，以及 Modeling 原数据无需迁移。先按第 6 节确认包、values 和镜像清单指向本次要部署的内容。
+
 ## 8. 联合首次部署
 
 从 Modeling 包解压目录执行：
@@ -335,6 +339,8 @@ bash deploy/install-consumer-modeling.sh cce upgrade \
 ```
 
 `--snapshot-retention` 是保留的成功快照组数，默认 `2`；`--min-free-percent` 是每个 Modeling `/data` 文件系统的最低剩余空间百分比，默认 `15`。省略这两个参数也会使用默认值。
+
+同版本联合升级先按第 7.3 节生成路径，再执行本节相同的 `plan`、`preflight`、`upgrade` 命令；恢复时使用原有 `--resume <operation-id>` 参数。同版本升级仍执行 Consumer 升级与验证，然后对 Modeling 自动创建快照、升级与验证；恢复时会核对已完成 release 的本次操作 ID 和目标镜像引用。必须使用包含同版本支持的新 Modeling 离线包；Consumer 的安装器来自其独立离线包，执行前还需确认该包的 `upgrade` 命令允许同版本调用。
 
 联合入口的实际顺序：
 

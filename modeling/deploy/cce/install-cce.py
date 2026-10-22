@@ -18,7 +18,7 @@ import uuid
 import jsonschema
 
 from common import (CompatibilityError, ConfigError, checksum, endpoint_results, read_yaml,
-                    release_chart_from_list, validate_images, validate_name, validate_release)
+                    release_chart_from_list, run_program, validate_images, validate_name, validate_release)
 from upgrade import (DATA_COUNTS, assert_same_bindings, bindings, transition,
                      verified_snapshots, verify_persisted_data)
 
@@ -51,7 +51,7 @@ class OperationLease:
         self.error: Exception | None = None
 
     def _get(self) -> dict | None:
-        result = subprocess.run(
+        result = run_program(
             ("kubectl", "--context", self.args.context, "-n", self.args.namespace,
              "get", "lease", self.name, "-o", "json"),
             text=True, capture_output=True,
@@ -102,7 +102,7 @@ class OperationLease:
             if owner != self.holder:
                 raise OperationLockError(f"Modeling operation Lease is held by {owner}")
         action = "replace" if current else "create"
-        result = subprocess.run(
+        result = run_program(
             ("kubectl", "--context", self.args.context, "-n", self.args.namespace,
              action, "-f", "-"),
             input=self._document(current), text=True, capture_output=True,
@@ -118,7 +118,7 @@ class OperationLease:
                 current = self._get()
                 if not current or current.get("spec", {}).get("holderIdentity") != self.holder:
                     raise OperationLockError("Modeling operation Lease was lost")
-                result = subprocess.run(
+                result = run_program(
                     ("kubectl", "--context", self.args.context, "-n", self.args.namespace,
                      "replace", "-f", "-"),
                     input=self._document(current), text=True, capture_output=True,
@@ -149,7 +149,7 @@ class OperationLease:
                 document["spec"].update(
                     holderIdentity="", renewTime="1970-01-01T00:00:00Z", leaseDurationSeconds=1,
                 )
-                subprocess.run(
+                run_program(
                     ("kubectl", "--context", self.args.context, "-n", self.args.namespace,
                      "replace", "-f", "-"),
                     input=json.dumps(document), text=True, capture_output=True,
@@ -160,7 +160,7 @@ class OperationLease:
 
 
 def run(*command: str) -> str:
-    result = subprocess.run(command, text=True, capture_output=True)
+    result = run_program(command, text=True, capture_output=True)
     if result.returncode:
         raise RuntimeError(f"{command[0]} {command[1] if len(command) > 1 else ''} failed: {result.stderr.strip()[:500]}")
     return result.stdout
@@ -182,7 +182,7 @@ def kube(args, *rest: str) -> dict:
 
 
 def release_status(args) -> dict | None:
-    result = subprocess.run((*helm_base(args), "status", args.release, "-o", "json"), text=True, capture_output=True)
+    result = run_program((*helm_base(args), "status", args.release, "-o", "json"), text=True, capture_output=True)
     if result.returncode:
         if "not found" in result.stderr.lower():
             return None
@@ -328,7 +328,9 @@ def verify(args, root: Path):
 
 
 def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
-    if not args.backup_record or (not args.transition_id and not getattr(args, "standalone_upgrade", False)):
+    if not args.backup_record:
+        raise ConfigError("upgrade requires a backup record and joint upgrades require --transition-id")
+    if not args.transition_id and not getattr(args, "standalone_upgrade", False):
         raise ConfigError("upgrade requires a backup record and joint upgrades require --transition-id")
     if not args.lock_holder:
         raise ConfigError("upgrade requires a delegated operation Lease")
@@ -352,16 +354,18 @@ def upgrade_precheck(args, root: Path, release: dict, merged: dict) -> dict:
         old = record.get("from", {})
         middle = record.get("intermediate", {})
         new = record.get("to", {})
-        if ((old.get("modelingReleaseVersion"), old.get("modelingChartVersion")) !=
-                (installed["releaseVersion"], installed["chartVersion"]) or
-                (new.get("modelingReleaseVersion"), new.get("modelingChartVersion")) !=
-                (release["releaseVersion"], release["chartVersion"]) or
-                (middle.get("modelingReleaseVersion"), middle.get("modelingChartVersion")) !=
-                (installed["releaseVersion"], installed["chartVersion"]) or
-                transition_entry.get("steps") not in (["modeling"], ["consumer", "modeling"]) or
-                transition_entry.get("requiresJointMaintenance") is not True or
-                transition_entry.get("modelingDataMigration") != "none" or
-                transition_entry.get("preserveModelingData") is not True):
+        installed_version = (installed["releaseVersion"], installed["chartVersion"])
+        target_version = (release["releaseVersion"], release["chartVersion"])
+        def modeling_version(combination):
+            return combination.get("modelingReleaseVersion"), combination.get("modelingChartVersion")
+        versions_match = (modeling_version(old) == installed_version
+                          and modeling_version(middle) == installed_version
+                          and modeling_version(new) == target_version)
+        policy_matches = (transition_entry.get("steps") in (["modeling"], ["consumer", "modeling"])
+                          and transition_entry.get("requiresJointMaintenance") is True
+                          and transition_entry.get("modelingDataMigration") == "none"
+                          and transition_entry.get("preserveModelingData") is True)
+        if not versions_match or not policy_matches:
             raise CompatibilityError("delegated transition does not match installed or target Modeling")
     else:
         if not getattr(args, "standalone_upgrade", False):
@@ -420,7 +424,7 @@ def _snapshot_group(args) -> str:
 
 
 def _run_with_input(command: tuple[str, ...], input_text: str) -> str:
-    result = subprocess.run(command, input=input_text, text=True, capture_output=True)
+    result = run_program(command, input=input_text, text=True, capture_output=True)
     if result.returncode:
         raise RuntimeError(f"{command[0]} failed: {result.stderr.strip()[:500]}")
     return result.stdout
@@ -428,7 +432,7 @@ def _run_with_input(command: tuple[str, ...], input_text: str) -> str:
 
 def _optional_json(args, *rest: str) -> dict | None:
     command = ("kubectl", "--context", args.context, *rest, "-o", "json")
-    result = subprocess.run(command, text=True, capture_output=True)
+    result = run_program(command, text=True, capture_output=True)
     if result.returncode:
         if "notfound" in result.stderr.lower() or "not found" in result.stderr.lower():
             return None
@@ -501,9 +505,13 @@ def _wait_volume_detached(args, volume_name: str, deadline: float) -> None:
     """Wait until CSI no longer reports the PVC's PV attached to a node."""
     while True:
         attachments = _optional_json(args, "get", "volumeattachment") or {"items": []}
-        active = [item for item in attachments.get("items", [])
-                  if item.get("spec", {}).get("source", {}).get("persistentVolumeName") == volume_name
-                  and item.get("status", {}).get("attached") is True]
+        active = []
+        for item in attachments.get("items", []):
+            source = item.get("spec", {}).get("source", {})
+            if source.get("persistentVolumeName") != volume_name:
+                continue
+            if item.get("status", {}).get("attached") is True:
+                active.append(item)
         if not active:
             return
         if time.monotonic() >= deadline:
@@ -516,7 +524,7 @@ def _wait_volume_detached(args, volume_name: str, deadline: float) -> None:
 
 def _discard_snapshot_for_retry(args, name: str, deadline: float) -> None:
     """Delete one operation-owned failed snapshot and wait for its removal."""
-    result = subprocess.run(
+    result = run_program(
         ("kubectl", "--context", args.context, "-n", args.namespace,
          "delete", "volumesnapshot", name, "--ignore-not-found", "--wait=false"),
         text=True, capture_output=True,
@@ -642,7 +650,7 @@ def _cleanup_old_successful_snapshots(args) -> list[str]:
             name = item.get("metadata", {}).get("name")
             if not name:
                 continue
-            result = subprocess.run(
+            result = run_program(
                 ("kubectl", "--context", args.context, "-n", args.namespace,
                  "delete", "volumesnapshot", name, "--ignore-not-found"),
                 text=True, capture_output=True,
@@ -661,10 +669,11 @@ def prepare_auto_backup(args, root: Path, release: dict, merged: dict) -> Path:
             record = json.loads(backup_path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             raise ConfigError("automatic backup record exists but is invalid") from exc
-        if (record.get("schemaVersion") != "cce-backup/v1" or
-                record.get("context") != args.context or
-                record.get("namespace") != args.namespace or
-                record.get("releaseName") != args.release):
+        expected_identity = {
+            "schemaVersion": "cce-backup/v1", "context": args.context,
+            "namespace": args.namespace, "releaseName": args.release,
+        }
+        if any(record.get(key) != value for key, value in expected_identity.items()):
             raise ConfigError("automatic backup record belongs to another operation or release")
         args.snapshot_group = _snapshot_group(args)
         args.backup_record = backup_path
@@ -680,11 +689,11 @@ def prepare_auto_backup(args, root: Path, release: dict, merged: dict) -> Path:
     args.snapshot_group = _snapshot_group(args)
     snapshot_classes = _optional_json(args, "get", "volumesnapshotclass")
     classes = snapshot_classes.get("items", []) if snapshot_classes else []
-    defaults = [item for item in classes if str(
-        item.get("metadata", {}).get("annotations", {}).get(
-            "snapshot.storage.kubernetes.io/is-default-class", ""
-        )
-    ).lower() == "true"]
+    defaults = []
+    for item in classes:
+        annotations = item.get("metadata", {}).get("annotations", {})
+        if str(annotations.get("snapshot.storage.kubernetes.io/is-default-class", "")).lower() == "true":
+            defaults.append(item)
     if len(defaults) > 1:
         raise ConfigError("multiple default VolumeSnapshotClasses are configured")
     if defaults:
@@ -847,7 +856,7 @@ def main():
                   message="", retryable=False, endpoints=[], artifacts=[])
     operation_lease: OperationLease | None = None
     try:
-        if not args.context or not args.namespace or not args.release or args.timeout_seconds < 1:
+        if not all((args.context, args.namespace, args.release)) or args.timeout_seconds < 1:
             raise ConfigError("context, namespace, release and positive timeout required")
         validate_name(args.namespace, "namespace")
         validate_name(args.release, "release")
@@ -883,7 +892,7 @@ def main():
                 if args.lock_holder and args.action in ("install", "upgrade"):
                     check_delegated_lease(args)
                 current = release_status(args)
-                if args.action == "upgrade" and current:
+                if args.action == "upgrade" and current is not None:
                     args.previous_helm_revision = current.get("version")
                 if args.action == "preflight" and args.transition_id:
                     upgrade_precheck(args, root, release, merged)
@@ -951,7 +960,7 @@ def main():
                 result["recovery"] = {"status": "failed", "issues": [str(exc)]}
         if operation_lease:
             operation_lease.release()
-    print(json.dumps(result, ensure_ascii=False))
+    sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
     return 0 if result["status"] == "succeeded" else 1
 
 

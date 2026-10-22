@@ -99,10 +99,11 @@ def verified_snapshots(kube, args, path: Path, current_bindings: dict) -> None:
         raise ConfigError("cannot read backup record") from exc
     if not isinstance(record, dict):
         raise ConfigError("backup record must be a JSON object")
-    if (record.get("schemaVersion") != "cce-backup/v1" or
-            record.get("context") != args.context or
-            record.get("namespace") != args.namespace or
-            record.get("releaseName") != args.release):
+    expected_identity = {
+        "schemaVersion": "cce-backup/v1", "context": args.context,
+        "namespace": args.namespace, "releaseName": args.release,
+    }
+    if any(record.get(key) != value for key, value in expected_identity.items()):
         raise ConfigError("backup record is for another cluster or release")
     try:
         stopped_at = datetime.fromisoformat(record["stoppedAt"].replace("Z", "+00:00"))
@@ -133,11 +134,12 @@ def verified_snapshots(kube, args, path: Path, current_bindings: dict) -> None:
             created_at = datetime.fromisoformat(snapshot["metadata"]["creationTimestamp"].replace("Z", "+00:00"))
         except (KeyError, AttributeError, ValueError) as exc:
             raise ConfigError(f"{workload} VolumeSnapshot has no creation time") from exc
-        if (snapshot.get("spec", {}).get("source", {}).get("persistentVolumeClaimName") != saved["claimName"] or
-                snapshot.get("metadata", {}).get("uid") != saved.get("snapshotUid") or
-                created_at < stopped_at or
-                snapshot.get("status", {}).get("readyToUse") is not True or
-                not snapshot.get("status", {}).get("boundVolumeSnapshotContentName")):
+        source_matches = snapshot.get("spec", {}).get("source", {}).get("persistentVolumeClaimName") == saved["claimName"]
+        identity_matches = snapshot.get("metadata", {}).get("uid") == saved.get("snapshotUid")
+        status = snapshot.get("status", {})
+        usable = status.get("readyToUse") is True and bool(status.get("boundVolumeSnapshotContentName"))
+        identity_valid = source_matches and identity_matches and created_at >= stopped_at
+        if not identity_valid or not usable:
             raise ConfigError(f"{workload} VolumeSnapshot is not ready for restoration")
 
 

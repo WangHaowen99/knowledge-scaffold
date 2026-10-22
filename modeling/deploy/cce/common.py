@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import tarfile
 
 import yaml
@@ -13,6 +15,9 @@ import yaml
 IMAGE_REF = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 RELEASE_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 RELEASE_PLATFORMS = {"linux-amd64": "amd64", "linux-arm64": "arm64"}
+MAX_ARCHIVE_FILES = 100_000
+MAX_ARCHIVE_BYTES = 40 * 1024 ** 3
+MAX_ARCHIVE_FILE_BYTES = 20 * 1024 ** 3
 COMPATIBILITY_COMBINATION_FIELDS = (
     "id", "consumerReleaseVersion", "consumerChartVersion",
     "modelingReleaseVersion", "modelingChartVersion", "platform",
@@ -41,6 +46,19 @@ class MigrationUnavailable(ConfigError):
     pass
 
 
+def run_program(command, **options):
+    """Run one allowlisted executable with argv, never through a shell."""
+    if not isinstance(command, (tuple, list)) or not command:
+        raise ConfigError("external command must be a nonempty argv sequence")
+    if Path(command[0]).name not in {"kubectl", "helm", "docker", "bash"}:
+        raise ConfigError("external command is not allowed")
+    if any(not isinstance(part, str) or "\x00" in part for part in command):
+        raise ConfigError("external command contains an invalid argument")
+    # Fixed executable allowlist and argv prevent shell expansion; command
+    # arguments are passed as separate strings to the operating system.
+    return subprocess.run(command, shell=False, **options)  # NOSONAR
+
+
 class UniqueKeyLoader(yaml.SafeLoader):
     pass
 
@@ -60,7 +78,11 @@ UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, 
 
 def read_yaml(path: Path) -> dict:
     try:
-        data = yaml.load(path.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
+        loader = UniqueKeyLoader(path.read_text(encoding="utf-8"))
+        try:
+            data = loader.get_single_data()
+        finally:
+            loader.dispose()
     except (OSError, yaml.YAMLError) as exc:
         raise ConfigError(f"cannot read YAML: {path.name}: {exc}") from exc
     if not isinstance(data, dict):
@@ -110,32 +132,81 @@ def verify_checksums(root: Path, *, allow_runtime_bytecode: bool = True) -> None
             raise ConfigError(f"checksum failed: {name}")
     # Running the extracted installer can create bytecode beside its modules.
     # A newly extracted archive is checked strictly by safe_extract below.
-    actual = {
-        str(path.relative_to(root)) for path in root.rglob("*")
-        if path.is_file() and path != checksums
-        and not (allow_runtime_bytecode and _runtime_bytecode(root, path))
-    }
+    actual = set()
+    for path in root.rglob("*"):
+        if not path.is_file() or path == checksums:
+            continue
+        if allow_runtime_bytecode and _runtime_bytecode(root, path):
+            continue
+        actual.add(str(path.relative_to(root)))
     if actual != listed:
         raise ConfigError("package file list differs from checksums")
 
 
 def safe_extract(archive: Path, destination: Path, side: str) -> Path:
     with tarfile.open(archive, "r:gz") as source:
-        members = source.getmembers()
+        members = bounded_archive_members(source)
         names = [member.name for member in members]
         if len(names) != len(set(names)):
             raise ConfigError("archive contains duplicate entries")
         roots = {Path(member.name).parts[0] for member in members if member.name}
         if len(roots) != 1 or not next(iter(roots)).startswith(f"{side}-cce-"):
             raise ConfigError(f"unexpected {side} package root")
-        for member in members:
-            path = Path(member.name)
-            if path.is_absolute() or ".." in path.parts or not (member.isfile() or member.isdir()):
-                raise ConfigError("archive contains unsafe path or special file")
-        source.extractall(destination)
+        extract_regular_members(source, members, destination)
     root = destination / next(iter(roots))
     verify_checksums(root, allow_runtime_bytecode=False)
     return root
+
+
+def extract_regular_members(source: tarfile.TarFile, members: list[tarfile.TarInfo], destination: Path) -> None:
+    """Extract bounded regular files into a directory with no escaping paths."""
+    if len(members) > MAX_ARCHIVE_FILES:
+        raise ConfigError("archive has too many entries")
+    total_size = 0
+    for member in members:
+        path = Path(member.name)
+        if path.is_absolute() or ".." in path.parts or not (member.isfile() or member.isdir()):
+            raise ConfigError("archive contains unsafe path or special file")
+        if member.isfile():
+            if member.size > MAX_ARCHIVE_FILE_BYTES:
+                raise ConfigError("archive entry exceeds size limit")
+            total_size += member.size
+            if total_size > MAX_ARCHIVE_BYTES:
+                raise ConfigError("archive exceeds expanded size limit")
+    for member in members:
+        target = destination / member.name
+        if not target.resolve().is_relative_to(destination.resolve()):
+            raise ConfigError("archive entry escapes destination")
+        if member.isdir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = source.extractfile(member)
+        if payload is None:
+            raise ConfigError("archive entry has no payload")
+        with payload, target.open("xb") as output:
+            shutil.copyfileobj(payload, output, length=1024 * 1024)
+        target.chmod(0o755 if member.mode & 0o111 else 0o644)
+
+
+def bounded_archive_members(source: tarfile.TarFile) -> list[tarfile.TarInfo]:
+    """Stop walking an archive as soon as an entry or size limit is exceeded."""
+    members = []
+    total_size = 0
+    for member in source:
+        if len(members) >= MAX_ARCHIVE_FILES:
+            raise ConfigError("archive has too many entries")
+        path = Path(member.name)
+        if path.is_absolute() or ".." in path.parts or not (member.isfile() or member.isdir()):
+            raise ConfigError("archive contains unsafe path or special file")
+        if member.isfile():
+            if member.size > MAX_ARCHIVE_FILE_BYTES:
+                raise ConfigError("archive entry exceeds size limit")
+            total_size += member.size
+            if total_size > MAX_ARCHIVE_BYTES:
+                raise ConfigError("archive exceeds expanded size limit")
+        members.append(member)
+    return members
 
 
 def validate_release(root: Path, side: str) -> dict:
@@ -160,11 +231,11 @@ def validate_release(root: Path, side: str) -> dict:
         if not archive.is_file() or checksum(archive) != record.get("archiveSha256"):
             raise ConfigError(f"image archive invalid: {image_id}")
         source_digest = record.get("sourceManifestDigest")
-        if record.get("platform") != f"linux/{RELEASE_PLATFORMS[release['platform']]}" or (
-            source_digest is not None and (
-                not isinstance(source_digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", source_digest)
-            )
-        ):
+        platform_valid = record.get("platform") == f"linux/{RELEASE_PLATFORMS[release['platform']]}"
+        source_valid = source_digest is None or (
+            isinstance(source_digest, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", source_digest)
+        )
+        if not platform_valid or not source_valid:
             raise ConfigError(f"image identity invalid: {image_id}")
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", record.get("configDigest", "")):
             raise ConfigError(f"image config digest invalid: {image_id}")
@@ -191,13 +262,16 @@ def validate_images(values: dict, image_map: dict, release: dict) -> dict:
 
 def validate_compatibility(path: Path, release: dict) -> None:
     manifest = validate_compatibility_manifest(read_yaml(path))
-    if not any(all(item.get(key) == value for key, value in {
+    expected = {
         "modelingReleaseVersion": release["releaseVersion"],
         "modelingChartVersion": release["chartVersion"],
         "platform": release["platform"],
         "operationSchemaVersion": "cce-operation/v1",
         "endpointSchemaVersion": "cce-endpoints/v1",
-        }.items()) for item in manifest["combinations"] if isinstance(item, dict)):
+    }
+    def matches(item):
+        return isinstance(item, dict) and all(item.get(key) == value for key, value in expected.items())
+    if not any(matches(item) for item in manifest["combinations"]):
         raise CompatibilityError("no verified compatibility combination for this Modeling release")
 
 

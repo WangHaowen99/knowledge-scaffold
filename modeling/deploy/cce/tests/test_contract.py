@@ -1,6 +1,7 @@
 """Synthetic CCE package and cross-release contract checks."""
 
 import importlib.util
+import hashlib
 import io
 import json
 import os
@@ -21,22 +22,37 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-from common import (ConfigError, checksum, release_chart_from_list, safe_extract, validate_release,
-                    validate_compatibility_manifest, verify_checksums)  # noqa: E402
-
-
-def load_script(name):
-    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), ROOT / name)
+def load_module(module_name, path):
+    spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
 
 
+sys.modules["common"] = load_module("common", ROOT / "common.py")
+from common import (ConfigError, checksum, read_yaml, release_chart_from_list, safe_extract, validate_release,
+                    validate_compatibility_manifest, verify_checksums)  # noqa: E402
+
+
+def load_script(name):
+    return load_module(name.replace("-", "_"), ROOT / name)
+
+
+UPGRADE = load_module("upgrade", ROOT / "upgrade.py")
 JOINT = load_script("joint-cce.py")
 INSTALL = load_script("install-cce.py")
 PACKAGE = load_script("package-cce.py")
-UPGRADE = load_script("upgrade.py")
+
+
+def run_test_command(command, **options):
+    """Run a synthetic fixture with a fixed shell binary and argv."""
+    command = list(command)
+    if command[0] == "bash":
+        command[0] = "/bin/bash"
+    if not Path(command[0]).is_absolute():
+        raise AssertionError("test executable must have an absolute path")
+    return sys.modules["common"].run_program(command, **options)
 
 
 class CceContractTests(unittest.TestCase):
@@ -105,6 +121,77 @@ class CceContractTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             JOINT.verified_joint_transition(config, packages, "upgrade-demo", installed)
 
+    def test_same_version_candidate_is_detected_and_requires_verification(self):
+        path, installed, packages = self.upgrade_fixture()
+        manifest = yaml.safe_load(path.read_text())
+        old = manifest["combinations"][0]
+        fields = {key: value for key, value in old.items() if key != "id"}
+        config = {"compatibilityFile": path, "stateDir": self.base / "state",
+                  "consumer": {"package": self.base / "consumer.tar.gz", "values": self.base / "consumer.yaml"},
+                  "modeling": {"package": self.base / "modeling.tar.gz", "values": self.base / "modeling.yaml"}}
+        for side in JOINT.JOINT_SIDE_ORDER:
+            config[side]["values"].write_text("global: {}\n")
+        with mock.patch.object(JOINT, "safe_extract", return_value=self.base), \
+             mock.patch.object(JOINT, "validate_release", return_value={}), \
+             mock.patch.object(JOINT, "candidate_combination", return_value=fields), \
+             mock.patch.object(JOINT, "validate_cross_side"), \
+             mock.patch.object(JOINT, "installed_identity", side_effect=lambda _config, side: installed[side]):
+            original = path.read_text()
+            preview = JOINT.prepare_compatibility(config, upgrade=True, confirmed=False,
+                                                  no_migration_confirmed=False)
+            self.assertEqual(path.read_text(), original)
+            self.assertEqual(preview["oldCombination"]["id"], old["id"])
+            self.assertTrue(preview["sameVersion"])
+            with self.assertRaisesRegex(ConfigError, "no migration"):
+                JOINT.prepare_compatibility(config, upgrade=True, confirmed=True,
+                                            no_migration_confirmed=False)
+            written = JOINT.prepare_compatibility(config, upgrade=True, confirmed=True,
+                                                   no_migration_confirmed=True)
+            repeated = JOINT.prepare_compatibility(config, upgrade=True, confirmed=True,
+                                                    no_migration_confirmed=True)
+        self.assertEqual(written["transitionId"], preview["transitionId"])
+        self.assertEqual(repeated["transitionId"], written["transitionId"])
+        transitions = yaml.safe_load(path.read_text())["transitions"]
+        self.assertEqual(len(transitions), 2)
+        same_transition = transitions[-1]
+        self.assertEqual((same_transition["from"], same_transition["intermediateCombinationId"],
+                          same_transition["to"]), (old["id"],) * 3)
+        packages["consumer"][1].update(releaseVersion="c1", chartVersion="1.0.0")
+        packages["modeling"][1].update(releaseVersion="m1", chartVersion="1.0.0")
+        self.assertEqual(JOINT.unique_target_transition(config, old, installed), written["transitionId"])
+        record = JOINT.verified_joint_transition(config, packages, written["transitionId"], installed)
+        self.assertEqual(record["transition"]["id"], written["transitionId"])
+        malformed = yaml.safe_load(path.read_text())
+        malformed["transitions"][-1]["intermediateCombinationId"] = "middle"
+        path.write_text(yaml.safe_dump(malformed))
+        with self.assertRaisesRegex(ConfigError, "same intermediate combination"):
+            JOINT.verified_joint_transition(config, packages, written["transitionId"], installed)
+
+    def test_completed_release_requires_operation_and_target_images(self):
+        images = self.base / "images.yaml"
+        reference = "registry.example.com/modeling@sha256:" + "a" * 64
+        images.write_text(yaml.safe_dump({"global": {"resolvedImages": {"modeling": reference}}}))
+        config = {"cluster": {"context": "synthetic"},
+                  "modeling": {"namespace": "modeling-demo", "releaseName": "modeling"}}
+        package = (self.base, {"releaseVersion": "demo", "chartVersion": "1.0.0"})
+        values = {"global": {"releaseVersion": "demo", "operationId": "operation-demo",
+                             "resolvedImages": {"modeling": reference}}}
+
+        def response(*command):
+            if "status" in command:
+                return json.dumps({"info": {"status": "deployed"}})
+            return json.dumps(values)
+
+        with mock.patch.object(JOINT, "run", side_effect=response), \
+             mock.patch.object(JOINT, "release_chart", return_value="modeling-1.0.0"):
+            self.assertTrue(JOINT.completed_release_matches(config, "modeling", package,
+                                                              "operation-demo", images))
+            self.assertFalse(JOINT.completed_release_matches(config, "modeling", package,
+                                                               "another-operation", images))
+            values["global"]["resolvedImages"]["modeling"] = "registry.example.com/modeling@sha256:" + "b" * 64
+            self.assertFalse(JOINT.completed_release_matches(config, "modeling", package,
+                                                               "operation-demo", images))
+
     def test_compatibility_is_derived_from_packages_and_installed_releases(self):
         consumer_root = self.base / "consumer-cce-demo"
         modeling_root = self.base / "modeling-cce-demo"
@@ -118,9 +205,9 @@ class CceContractTests(unittest.TestCase):
         consumer_values = self.base / "consumer-values.yaml"
         modeling_values = self.base / "modeling-values.yaml"
         consumer_values.write_text(yaml.safe_dump({"global": {"auth": {
-            "issuer": "http://auth.example.com", "audience": "demo"}}}))
+            "issuer": "https://auth.example.com", "audience": "demo"}}}))
         modeling_values.write_text(yaml.safe_dump({
-            "global": {"auth": {"issuer": "http://auth.example.com", "audience": "demo"}},
+            "global": {"auth": {"issuer": "https://auth.example.com", "audience": "demo"}},
             "externalAuth": {"serviceName": "consumer-auth", "namespace": "consumer-demo", "servicePort": 5056},
             "externalConsumer": {"serviceName": "consumer-backend", "namespace": "consumer-demo", "servicePort": 5055},
         }))
@@ -139,7 +226,7 @@ class CceContractTests(unittest.TestCase):
             return consumer_root if side == "consumer" else modeling_root
 
         with mock.patch.object(JOINT, "safe_extract", side_effect=extracted), \
-             mock.patch.object(JOINT, "validate_release", side_effect=lambda _root, side: releases[side]):
+             mock.patch.object(JOINT, "validate_release", side_effect=lambda _root, side: releases.get(side)):
             preview = JOINT.prepare_compatibility(config, upgrade=False, confirmed=False,
                                                    no_migration_confirmed=False)
             self.assertEqual(preview["status"], "preview")
@@ -354,7 +441,7 @@ class CceContractTests(unittest.TestCase):
                  mock.patch.object(JOINT, "operation_fingerprint", return_value="synthetic"), \
                  mock.patch.object(JOINT, "checksum", return_value="synthetic"), \
                  mock.patch.object(JOINT, "installed_identity", side_effect=lambda _config, side: installed[side]), \
-                 mock.patch.object(JOINT, "verified_joint_transition"), \
+                 mock.patch.object(JOINT, "verified_joint_transition") as verified, \
                  mock.patch.object(JOINT, "Lease", FakeLease), \
                  mock.patch.object(JOINT, "invoke", side_effect=fake_invoke):
                 self.consumer_fails = False
@@ -367,12 +454,31 @@ class CceContractTests(unittest.TestCase):
                                  [("consumer", "preflight"), ("modeling", "preflight"), ("consumer", "upgrade"),
                                   ("consumer", "verify"), ("modeling", "upgrade"), ("modeling", "verify")])
                 operation_id = json.loads(output.getvalue())["operationId"]
+                normal_fingerprint = hashlib.sha256(b"syntheticupgrade-demoauto:2:15.0").hexdigest()
+                self.assertEqual(json.loads((self.base / f"{operation_id}.json").read_text())["fingerprint"],
+                                 normal_fingerprint)
                 self.assertEqual([kwargs.get("lock_holder") for side, action, kwargs in calls if action == "verify"],
                                  [operation_id, operation_id])
                 self.assertTrue(next(kwargs for side, action, kwargs in calls
                                      if side == "modeling" and action == "upgrade")["auto_backup"])
                 self.assertFalse(next(kwargs for side, action, kwargs in calls
                                       if side == "modeling" and action == "preflight")["backup_record"])
+                calls.clear()
+                installed["consumer"].update(releaseVersion="c2", chartVersion="2.0.0")
+                installed["modeling"].update(releaseVersion="m2", chartVersion="2.0.0")
+                output = StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(JOINT.main(), 0, output.getvalue())
+                same_operation_id = json.loads(output.getvalue())["operationId"]
+                self.assertEqual(json.loads((self.base / f"{same_operation_id}.json").read_text())["fingerprint"],
+                                 normal_fingerprint)
+                verified.assert_called_with(config, mock.ANY, "upgrade-demo", installed)
+                self.assertEqual([(side, action) for side, action, _ in calls],
+                                 [("consumer", "preflight"), ("modeling", "preflight"),
+                                  ("consumer", "upgrade"), ("consumer", "verify"),
+                                  ("modeling", "upgrade"), ("modeling", "verify")])
+                installed["consumer"].update(releaseVersion="c1", chartVersion="1.0.0")
+                installed["modeling"].update(releaseVersion="m1", chartVersion="1.0.0")
                 calls.clear()
                 self.consumer_fails = True
                 output = StringIO()
@@ -438,10 +544,29 @@ class CceContractTests(unittest.TestCase):
         cache.mkdir(parents=True)
         (cache / "common.cpython-310.pyc").write_bytes(b"synthetic bytecode")
         archive = self.base / "release.tar.gz"
-        with tarfile.open(archive, "w:gz") as output:
+        with tarfile.open(archive, "w:gz") as output:  # NOSONAR: synthetic test archive
             output.add(root, arcname=root.name)
         with self.assertRaisesRegex(ConfigError, "package file list differs"):
             safe_extract(archive, self.base / "extracted", "modeling")
+
+    def test_archive_expansion_has_a_size_limit(self):
+        archive = self.base / "oversize.tar.gz"
+        with tarfile.open(archive, "w:gz") as output:  # NOSONAR: synthetic test archive
+            item = tarfile.TarInfo("modeling-cce-demo-amd64/payload")
+            item.size = 5
+            output.addfile(item, io.BytesIO(b"12345"))
+        with mock.patch("common.MAX_ARCHIVE_BYTES", 4):
+            with self.assertRaisesRegex(ConfigError, "expanded size limit"):
+                safe_extract(archive, self.base / "extracted", "modeling")
+
+    def test_yaml_reader_rejects_duplicate_keys_and_python_tags(self):
+        path = self.base / "synthetic.yaml"
+        path.write_text("version: 1\nversion: 2\n")
+        with self.assertRaisesRegex(ConfigError, "duplicate YAML key"):
+            read_yaml(path)
+        path.write_text("value: !!python/object/apply:os.system ['true']\n")
+        with self.assertRaises(ConfigError):
+            read_yaml(path)
 
     def test_installer_entry_disables_bytecode_generation(self):
         script = (ROOT / "install-cce.sh").read_text()
@@ -1037,7 +1162,7 @@ class CceContractTests(unittest.TestCase):
 
     def test_archive_rejects_symlink(self):
         archive = self.base / "bad.tar.gz"
-        with tarfile.open(archive, "w:gz") as output:
+        with tarfile.open(archive, "w:gz") as output:  # NOSONAR: synthetic test archive
             info = tarfile.TarInfo("modeling-cce-demo-amd64/link")
             info.type = tarfile.SYMTYPE
             info.linkname = "/tmp/elsewhere"
@@ -1069,7 +1194,7 @@ class CceContractTests(unittest.TestCase):
         old = sys.argv
         try:
             sys.argv = args
-            with self.assertRaises(SystemExit) as raised:
+            with self.assertRaises(SystemExit) as raised:  # NOSONAR: argparse contract test
                 INSTALL.main()
         finally:
             sys.argv = old
@@ -1084,7 +1209,7 @@ class CceContractTests(unittest.TestCase):
                         "--namespace", "modeling-demo", "--release", "modeling",
                         "--backup-record", str(backup_record),
                         "--transition-record", str(backup_record)]
-            with self.assertRaises(SystemExit) as raised:
+            with self.assertRaises(SystemExit) as raised:  # NOSONAR: argparse contract test
                 INSTALL.main()
         finally:
             sys.argv = old
@@ -1103,6 +1228,24 @@ class CceContractTests(unittest.TestCase):
         path.write_text(yaml.safe_dump(manifest))
         with self.assertRaisesRegex(ConfigError, "current-to-target upgrade has no unique joint transition"):
             JOINT.unique_target_transition(config, target, installed)
+
+    def test_joint_lease_uses_microsecond_rfc3339_for_create_and_release(self):
+        args = {"cluster": {"context": "synthetic"},
+                "consumer": {"releaseName": "consumer", "namespace": "consumer-demo"},
+                "modeling": {"releaseName": "modeling", "namespace": "modeling-demo"}}
+        lease = JOINT.Lease(args, "consumer", "operation-demo")
+        document = json.loads(lease._document())
+        for field in ("acquireTime", "renewTime"):
+            self.assertRegex(document["spec"][field],
+                             r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
+
+        current = {"metadata": {"resourceVersion": "7"},
+                   "spec": {"holderIdentity": "operation-demo",
+                            "acquireTime": document["spec"]["acquireTime"]}}
+        released = json.loads(lease._document(current))
+        released["spec"].update(holderIdentity="", renewTime="1970-01-01T00:00:00.000000Z",
+                                  leaseDurationSeconds=1)
+        self.assertEqual(released["spec"]["renewTime"], "1970-01-01T00:00:00.000000Z")
 
     def test_offline_package_layout_excludes_consumer_image(self):
         output = self.base / "release.tar.gz"
@@ -1158,6 +1301,7 @@ class CceContractTests(unittest.TestCase):
                 destination = Path(command[command.index("--destination") + 1])
                 with tarfile.open(destination / "modeling-0.1.0.tgz", "w:gz") as stream:
                     stream.add(chart, arcname="modeling")
+            return None
 
         old = sys.argv
         try:
@@ -1232,7 +1376,8 @@ class CceContractTests(unittest.TestCase):
              mock.patch.dict(os.environ, {"CCE_HELM_VERSION": "v3.19.0"}):
             helm, delivery = PACKAGE.resolve_helm(self.base)
         self.assertEqual(delivery, "helm-tgz")
-        self.assertEqual(subprocess.check_output((helm, "version", "--short"), text=True).strip(), "v3.19.0")
+        self.assertEqual(run_test_command((helm, "version", "--short"), check=True,
+                                          capture_output=True, text=True).stdout.strip(), "v3.19.0")
 
     def test_downloaded_helm_that_cannot_run_uses_chart_source(self):
         archive = io.BytesIO()
@@ -1247,6 +1392,22 @@ class CceContractTests(unittest.TestCase):
              mock.patch.dict(os.environ, {"CCE_HELM_VERSION": "v3.19.0"}), \
              mock.patch("sys.stderr", new_callable=StringIO):
             self.assertEqual(PACKAGE.resolve_helm(self.base), (None, "chart-source"))
+
+    def test_oversized_helm_download_uses_chart_source(self):
+        with mock.patch.object(PACKAGE.shutil, "which", return_value=None), \
+             mock.patch.object(PACKAGE.platform, "machine", return_value="x86_64"), \
+             mock.patch.object(PACKAGE.urllib.request, "urlopen", return_value=io.BytesIO(b"12345")), \
+             mock.patch.object(PACKAGE, "MAX_HELM_DOWNLOAD_BYTES", 4), \
+             mock.patch.dict(os.environ, {"CCE_HELM_VERSION": "v3.19.0"}):
+            self.assertEqual(PACKAGE.resolve_helm(self.base), (None, "chart-source"))
+
+    def test_external_commands_use_fixed_argv_without_shell(self):
+        with mock.patch("common.subprocess.run", return_value=SimpleNamespace(returncode=0)) as process:
+            from common import run_program
+            run_program(("helm", "version", "--short"))
+        self.assertEqual(process.call_args.kwargs["shell"], False)
+        with self.assertRaisesRegex(ConfigError, "not allowed"):
+            run_program(("sh", "-c", "true"))
 
     def test_build_script_loads_locally_or_pushes_explicit_registry(self):
         root = self.base / "build-root"
@@ -1268,14 +1429,14 @@ class CceContractTests(unittest.TestCase):
         docker.chmod(0o755)
         calls = self.base / "docker-calls"
         environment = {**os.environ, "PATH": f"{binary}:{os.environ['PATH']}", "DOCKER_CALLS": str(calls)}
-        subprocess.run(["bash", str(script_dir / "build-images.sh"), "demo", "amd64"],
+        run_test_command(["bash", str(script_dir / "build-images.sh"), "demo", "amd64"],
                        env=environment, check=True, capture_output=True, text=True)
         local_calls = calls.read_text().splitlines()
         self.assertEqual(sum("--load" in line for line in local_calls), 3)
         self.assertFalse(any("--push" in line or "imagetools" in line for line in local_calls))
         self.assertTrue(any("modeling-offline/onto-modeling:demo" in line for line in local_calls))
         calls.unlink()
-        subprocess.run(["bash", str(script_dir / "build-images.sh"), "demo", "amd64", "registry.example.com/demo"],
+        run_test_command(["bash", str(script_dir / "build-images.sh"), "demo", "amd64", "registry.example.com/demo"],
                        env=environment, check=True, capture_output=True, text=True)
         registry_calls = calls.read_text().splitlines()
         self.assertEqual(sum("--push" in line for line in registry_calls), 3)
@@ -1311,7 +1472,7 @@ class CceContractTests(unittest.TestCase):
         environment = {**os.environ, "PATH": f"{binary}:{os.environ['PATH']}",
                        "DEPENDENCY_CALLS": str(calls), "FIXTURE_ROOT": str(self.base / "fixture")}
         command = ["bash", str(script_dir / "build-images.sh"), "demo", "amd64"]
-        first = subprocess.run(command, env=environment, check=False, capture_output=True, text=True)
+        first = run_test_command(command, env=environment, check=False, capture_output=True, text=True)
         self.assertEqual(first.returncode, 0, first.stderr)
         first_calls = calls.read_text().splitlines()
         self.assertEqual(sum(line.startswith("pip:") for line in first_calls), 1)
@@ -1319,14 +1480,14 @@ class CceContractTests(unittest.TestCase):
         self.assertEqual(sum(line.startswith("docker:buildx build") for line in first_calls), 3)
         self.assertEqual((root / "modeling/onto-modeling/vendor/wheels/.prepared-amd64").read_text().strip(), checksum(requirements))
         calls.unlink()
-        second = subprocess.run(command, env=environment, check=False, capture_output=True, text=True)
+        second = run_test_command(command, env=environment, check=False, capture_output=True, text=True)
         self.assertEqual(second.returncode, 0, second.stderr)
         second_calls = calls.read_text().splitlines()
         self.assertFalse(any(line.startswith("pip:") or line.startswith("npm:") for line in second_calls))
         self.assertEqual(sum(line.startswith("docker:buildx build") for line in second_calls), 3)
         requirements.write_text("synthetic-package==2.0\n")
         calls.unlink()
-        third = subprocess.run(command, env=environment, check=False, capture_output=True, text=True)
+        third = run_test_command(command, env=environment, check=False, capture_output=True, text=True)
         self.assertEqual(third.returncode, 0, third.stderr)
         self.assertEqual(sum(line.startswith("pip:") for line in calls.read_text().splitlines()), 1)
 
@@ -1350,7 +1511,7 @@ class CceContractTests(unittest.TestCase):
         docker.chmod(0o755)
         calls = self.base / "docker-calls"
         environment = {**os.environ, "PATH": str(binary), "DOCKER_CALLS": str(calls)}
-        result = subprocess.run(["bash", str(script_dir / "build-images.sh"), "demo", "amd64"],
+        result = run_test_command(["bash", str(script_dir / "build-images.sh"), "demo", "amd64"],
                                 env=environment, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("host npm unavailable", result.stderr)
@@ -1359,7 +1520,7 @@ class CceContractTests(unittest.TestCase):
         self.assertFalse(any(line.startswith("run") for line in docker_calls))
         self.assertEqual(sum(line.startswith("buildx build") for line in docker_calls), 3)
         calls.unlink()
-        second = subprocess.run(["bash", str(script_dir / "build-images.sh"), "demo", "amd64"],
+        second = run_test_command(["bash", str(script_dir / "build-images.sh"), "demo", "amd64"],
                                 env=environment, capture_output=True, text=True)
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertIn("host npm unavailable", second.stderr)
@@ -1371,7 +1532,7 @@ class CceContractTests(unittest.TestCase):
         npm.write_text("#!/bin/sh\nexit 9\n")
         npm.chmod(0o755)
         calls.unlink()
-        failed_pack = subprocess.run(["bash", str(script_dir / "build-images.sh"), "demo", "amd64"],
+        failed_pack = run_test_command(["bash", str(script_dir / "build-images.sh"), "demo", "amd64"],
                                      env=environment, capture_output=True, text=True)
         self.assertEqual(failed_pack.returncode, 0, failed_pack.stderr)
         self.assertIn("drawio preparation failed", failed_pack.stderr)
@@ -1393,7 +1554,7 @@ class CceContractTests(unittest.TestCase):
         )
         for path in (wrapper, script_dir / "build-images.sh", script_dir / "package-cce.py"):
             path.chmod(0o755)
-        result = subprocess.run(["bash", str(wrapper), "demo", "amd64"], cwd=self.base,
+        result = run_test_command(["bash", str(wrapper), "demo", "amd64"], cwd=self.base,
                                 check=False, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = calls.read_text().splitlines()
@@ -1401,7 +1562,7 @@ class CceContractTests(unittest.TestCase):
         self.assertIn("--local", lines[1])
         self.assertIn("modeling/dist/modeling-cce-demo-amd64.tar.gz", lines[1])
         custom_output = self.base / "release files" / "modeling demo.tar.gz"
-        result = subprocess.run(["bash", str(wrapper), "demo", "arm64", str(custom_output)],
+        result = run_test_command(["bash", str(wrapper), "demo", "arm64", str(custom_output)],
                                 cwd=self.base, check=False, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"--output {custom_output}", calls.read_text().splitlines()[-1])
@@ -1416,7 +1577,7 @@ class CceContractTests(unittest.TestCase):
         (script_dir / "package-cce.py").write_text(f"#!/bin/sh\nprintf package >> {calls}\n")
         for path in (wrapper, script_dir / "build-images.sh", script_dir / "package-cce.py"):
             path.chmod(0o755)
-        result = subprocess.run(["bash", str(wrapper), "demo", "amd64"], check=False,
+        result = run_test_command(["bash", str(wrapper), "demo", "amd64"], check=False,
                                 capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls.read_text(), "build")
@@ -1443,7 +1604,7 @@ class CceContractTests(unittest.TestCase):
         for path in (wrapper, script_dir / "build-images.sh", script_dir / "package-cce.py", docker):
             path.chmod(0o755)
         environment = {**os.environ, "PATH": f"{self.base}:{os.environ['PATH']}"}
-        result = subprocess.run(["bash", str(wrapper), "demo", "amd64", "--cleanup-images"],
+        result = run_test_command(["bash", str(wrapper), "demo", "amd64", "--cleanup-images"],
                                 cwd=self.base, env=environment, check=False,
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)

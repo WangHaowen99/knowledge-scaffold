@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import logging
 from pathlib import Path
 import os
 import platform
@@ -16,14 +17,19 @@ import urllib.request
 
 import yaml
 
+from common import ConfigError, bounded_archive_members, extract_regular_members, run_program
+
 
 IMAGE_IDS = {"modeling", "modelingAgent", "ontoModeling"}
 LOCAL_NAMES = {"modeling": "modeling", "modelingAgent": "modeling-agent", "ontoModeling": "onto-modeling"}
 IMAGE_RE = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
+LOGGER = logging.getLogger(__name__)
+MAX_HELM_BINARY_BYTES = 100 * 1024 * 1024
+MAX_HELM_DOWNLOAD_BYTES = 120 * 1024 * 1024
 
 
 def run(*args, capture=False):
-    result = subprocess.run(args, check=True, text=True, capture_output=capture)
+    result = run_program(args, check=True, text=True, capture_output=capture)
     return result.stdout.strip() if capture else None
 
 
@@ -40,38 +46,46 @@ def resolve_helm(temp_root: Path) -> tuple[str | None, str]:
     existing = shutil.which("helm")
     if existing:
         try:
-            subprocess.run((existing, "version", "--short"), check=True, capture_output=True, timeout=10)
+            run_program((existing, "version", "--short"), check=True, capture_output=True, timeout=10)
             return existing, "helm-tgz"
         except (OSError, subprocess.SubprocessError):
-            print("Warning: installed Helm is unusable; trying a temporary download.", file=sys.stderr)
+            LOGGER.warning("Installed Helm is unusable; trying a temporary download.")
     machine = platform.machine().lower()
     helm_arch = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(machine)
     if not helm_arch:
-        print(f"Warning: unsupported Helm host architecture {machine}; copying Chart source.", file=sys.stderr)
+        LOGGER.warning("Unsupported Helm host architecture %s; copying Chart source.", machine)
         return None, "chart-source"
     version = os.environ.get("CCE_HELM_VERSION", "v3.19.0")
     if not re.fullmatch(r"v3\.[0-9]+\.[0-9]+", version):
-        print("Warning: invalid CCE_HELM_VERSION; copying Chart source.", file=sys.stderr)
+        LOGGER.warning("Invalid CCE_HELM_VERSION; copying Chart source.")
         return None, "chart-source"
     archive = temp_root / f"helm-{version}-linux-{helm_arch}.tar.gz"
     url = f"https://get.helm.sh/helm-{version}-linux-{helm_arch}.tar.gz"
     try:
         with urllib.request.urlopen(url, timeout=30) as response, archive.open("wb") as output:
-            shutil.copyfileobj(response, output)
+            downloaded = 0
+            while chunk := response.read(1024 * 1024):
+                downloaded += len(chunk)
+                if downloaded > MAX_HELM_DOWNLOAD_BYTES:
+                    raise RuntimeError("downloaded Helm archive exceeds size limit")
+                output.write(chunk)
         with tarfile.open(archive, "r:gz") as source:
             expected = f"linux-{helm_arch}/helm"
-            member = next(item for item in source.getmembers() if item.name == expected)
-            if not member.isfile():
+            member = next(item for item in bounded_archive_members(source) if item.name == expected)
+            if not member.isfile() or member.size > MAX_HELM_BINARY_BYTES:
                 raise RuntimeError("downloaded Helm entry is not a regular file")
             helm = temp_root / expected
             helm.parent.mkdir(parents=True, exist_ok=True)
-            with source.extractfile(member) as binary, helm.open("wb") as target:
-                shutil.copyfileobj(binary, target)
+            binary = source.extractfile(member)
+            if binary is None:
+                raise RuntimeError("downloaded Helm binary is missing")
+            with binary, helm.open("wb") as target:
+                shutil.copyfileobj(binary, target, length=1024 * 1024)
         helm.chmod(0o755)
-        subprocess.run((str(helm), "version", "--short"), check=True, capture_output=True, timeout=10)
+        run_program((str(helm), "version", "--short"), check=True, capture_output=True, timeout=10)
         return str(helm), "helm-tgz"
     except Exception as exc:
-        print(f"Warning: Helm unavailable ({exc}); copying Chart source.", file=sys.stderr)
+        LOGGER.warning("Helm unavailable (%s); copying Chart source.", exc)
         return None, "chart-source"
 
 
@@ -95,7 +109,9 @@ def main():
         images = {}
         for item in args.image:
             image_id, separator, reference = item.partition("=")
-            if not separator or image_id in images or image_id not in IMAGE_IDS or not IMAGE_RE.fullmatch(reference):
+            if not separator or image_id in images:
+                parser.error("provide modeling, modelingAgent and ontoModeling once each, pinned by digest")
+            if image_id not in IMAGE_IDS or not IMAGE_RE.fullmatch(reference):
                 parser.error("provide modeling, modelingAgent and ontoModeling once each, pinned by digest")
             images[image_id] = reference
         if images.keys() != IMAGE_IDS:
@@ -141,14 +157,14 @@ def main():
             run(helm, "package", str(chart_source), "--destination", str(deploy))
             chart_archive = next(deploy.glob("modeling-*.tgz"))
             with tarfile.open(chart_archive, "r:gz") as chart:
-                members = chart.getmembers()
+                members = bounded_archive_members(chart)
                 paths = [Path(member.name) for member in members]
                 if (len(paths) != len(set(paths)) or
                         any(not (member.isfile() or member.isdir()) or path.is_absolute()
                             or ".." in path.parts or not path.parts or path.parts[0] != "modeling"
                             for member, path in zip(members, paths))):
                     raise SystemExit("Chart archive contains unsafe entries")
-                chart.extractall(deploy)
+                extract_regular_members(chart, members, deploy)
             (deploy / "modeling").rename(deploy / "chart")
             chart_archive.unlink()
         else:
@@ -163,7 +179,7 @@ def main():
             if documentation.is_file():
                 shutil.copy2(documentation, docs / name)
             else:
-                print(f"Warning: optional documentation missing, skipping {name}", file=sys.stderr)
+                LOGGER.warning("Optional documentation missing, skipping %s", name)
         manifest = {
             "schemaVersion": "cce-release/v1", "releaseVersion": args.version,
             "chartVersion": chart_version, "platform": f"linux-{args.arch}",
@@ -179,7 +195,7 @@ def main():
         ))
         with tarfile.open(output, "w:gz") as archive:
             archive.add(folder, arcname=folder.name)
-    print(output)
+    sys.stdout.write(f"{output}\n")
 
 
 if __name__ == "__main__":
