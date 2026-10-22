@@ -63,7 +63,7 @@ def test_hook_rejects_other_or_changed_executable(tmp_path):
         hook(tmp_path, 'pre_commit_check.sh')
 
 
-@pytest.mark.parametrize('kind', ['outside', 'other-name', 'symlink'])
+@pytest.mark.parametrize('kind', ['outside', 'other-name', 'symlink', 'relative', 'missing'])
 def test_benchmark_rejects_unapproved_script_before_spawn(tmp_path, monkeypatch, kind):
     script = put(tmp_path, 'verify_artifacts.py', 'raise SystemExit(0)\n')
     if kind == 'other-name':
@@ -71,6 +71,10 @@ def test_benchmark_rejects_unapproved_script_before_spawn(tmp_path, monkeypatch,
     elif kind == 'symlink':
         script = tmp_path / 'ontology_checker.py'
         script.symlink_to(SCRIPTS / 'ontology_checker.py')
+    elif kind == 'relative':
+        script = Path('verify_artifacts.py')
+    elif kind == 'missing':
+        script = tmp_path / 'missing' / 'verify_artifacts.py'
     monkeypatch.setattr(benchmark.subprocess, 'run', lambda *a, **k: pytest.fail('Must reject before spawn'))
     with pytest.raises(ValueError, match='allowlisted'):
         benchmark.cli(script, ['objects'], tmp_path)

@@ -43,8 +43,9 @@ def cli(script, args, root, *, baseline=None):
     if baseline is not None:
         # The caller supplies only the directory returned by baseline_scripts.
         allowed_roots.add(baseline.resolve(strict=True))
-    if (not script.is_absolute() or not script.is_file() or script.is_symlink()
-            or script.name not in CHECKER_NAMES or script.parent.resolve() not in allowed_roots):
+    if not script.is_absolute() or not script.is_file() or script.is_symlink():
+        raise ValueError('Checker must be an allowlisted file in an approved scripts directory')
+    if script.name not in CHECKER_NAMES or script.parent.resolve() not in allowed_roots:
         raise ValueError('Checker must be an allowlisted file in an approved scripts directory')
     # Local checker path and argv are separate; no shell or command-string parsing.
     result = subprocess.run([sys.executable, '-B', str(script), *args], cwd=root,
