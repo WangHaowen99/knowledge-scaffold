@@ -9,6 +9,7 @@ import pytest
 
 from app import config
 from app.services import modeling_eval
+from artifact_process_policy import child_environment
 
 
 @pytest.fixture
@@ -131,7 +132,7 @@ def test_source_cli_long_segment_continuation_is_lossless(tmp_path, scripts):
     for _ in range(3):
         process = subprocess.run([sys.executable, '-I', source.__file__, str(path),
                                   '--anchor', 'L1', '--text-offset', str(offset)], capture_output=True,
-                                 shell=False, timeout=30)
+                                 shell=False, timeout=30, cwd=tmp_path, env=child_environment(tmp_path))
         assert process.returncode == 0, process.stderr
         page = json.loads(process.stdout.decode('utf-8'))
         hashes.add(page['source_sha256'])
@@ -195,15 +196,19 @@ def test_trace_verifies_actual_result_receipts(tmp_path, scripts):
 
 
 def test_utf8_cli_in_isolated_ascii_environment(tmp_path, scripts):
-    import os
     import subprocess
     import sys
     trace, source = scripts
     path = tmp_path / '说明.docx'
     docx(path)
     for module, args in [(source, [str(path)]), (trace, [str(scenario_file(tmp_path))])]:
-        result = subprocess.run([sys.executable, '-I', module.__file__, *args],
-                                capture_output=True, env={**os.environ, 'PYTHONIOENCODING': 'ascii'},
+        env = child_environment(tmp_path)
+        env['PYTHONIOENCODING'] = 'ascii'
+        # -I would ignore PYTHONIOENCODING and make the ASCII condition ineffective.
+        # -s plus the allowlisted environment disables user startup imports while
+        # preserving the real encoding condition exercised by these CLI tools.
+        result = subprocess.run([sys.executable, '-B', '-s', module.__file__, *args],
+                                capture_output=True, env=env, cwd=tmp_path,
                                 shell=False, timeout=30)
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout.decode('utf-8'))['status'] in {'ok', 'passed'}

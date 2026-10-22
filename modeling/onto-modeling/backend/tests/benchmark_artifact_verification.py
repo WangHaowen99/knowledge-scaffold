@@ -11,19 +11,21 @@ import json
 import logging
 import math
 from pathlib import Path
+import re
 import statistics
-import shutil
 import subprocess
 import sys
 import tempfile
 import time
 
 from test_artifact_verification import diagram_xml, object_doc, operation_doc, rule_doc, metric_doc, put
+from artifact_process_policy import child_environment, git_executable
 
 SCRIPTS = Path(__file__).resolve().parents[2] / 'assets/workspace-toolkit/scripts'
 PREFIX = SCRIPTS.relative_to(Path(__file__).resolve().parents[4]).as_posix()
 MAX_BASELINE_FILES = 500
 MAX_BASELINE_BYTES = 16 * 1024 * 1024
+CHECKER_NAMES = {'verify_artifacts.py', 'ontology_checker.py', 'check_diagrams.py'}
 
 
 def measure(fn, count=15):
@@ -36,25 +38,42 @@ def measure(fn, count=15):
             'p95_ms': round(sorted(samples)[math.ceil(len(samples)*.95)-1], 2), 'runs': count}
 
 
-def cli(script, args, root):
-    if not script.is_absolute() or not script.is_file():
-        raise ValueError('Checker must be an existing absolute file path')
+def cli(script, args, root, *, baseline=None):
+    allowed_roots = {SCRIPTS.resolve()}
+    if baseline is not None:
+        # The caller supplies only the directory returned by baseline_scripts.
+        allowed_roots.add(baseline.resolve(strict=True))
+    if (not script.is_absolute() or not script.is_file() or script.is_symlink()
+            or script.name not in CHECKER_NAMES or script.parent.resolve() not in allowed_roots):
+        raise ValueError('Checker must be an allowlisted file in an approved scripts directory')
     # Local checker path and argv are separate; no shell or command-string parsing.
     result = subprocess.run([sys.executable, '-B', str(script), *args], cwd=root,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                            shell=False, timeout=60)
+                            shell=False, timeout=60, env=child_environment(root))
     if result.returncode:
         raise RuntimeError(result.stderr[:500] + result.stdout[:500])
     return result.stdout
 
 
 def git_output(repo, *args):
-    executable = shutil.which('git')
-    if not executable:
-        raise RuntimeError('Git is required for the baseline comparison')
-    # Only the fixed read-only Git operations below call this helper.
-    return subprocess.check_output([str(Path(executable).resolve()), *args], cwd=repo,
-                                   shell=False, timeout=60)
+    if repo.resolve() != Path(__file__).resolve().parents[4]:
+        raise ValueError('Baseline Git reads must target this checkout')
+    valid = (
+        len(args) == 4 and args[:3] == ('rev-parse', '--verify', '--end-of-options')
+        and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/-]*\^\{commit\}', args[3])
+    ) or (
+        len(args) == 5 and args[:2] == ('ls-tree', '-rlz')
+        and re.fullmatch(r'(?:[a-f0-9]{40}|[a-f0-9]{64})', args[2])
+        and args[3:] == ('--', PREFIX)
+    ) or (
+        len(args) == 3 and args[:2] == ('cat-file', 'blob')
+        and re.fullmatch(r'(?:[a-f0-9]{40}|[a-f0-9]{64})', args[2])
+    )
+    if not valid:
+        raise ValueError('Git operation or arguments are outside the baseline read allowlist')
+    with tempfile.TemporaryDirectory(prefix='artifact-git-read-') as temporary:
+        return subprocess.check_output([git_executable(), *args], cwd=repo,
+                                       env=child_environment(Path(temporary)), shell=False, timeout=60)
 
 
 def baseline_scripts(tmp, repo, commit):
@@ -135,14 +154,14 @@ def run():
                      'schema_rows': schema_rows}
             datum['baseline_ontology_cli'] = measure(partial(cli, baseline / 'ontology_checker.py',
                 ['ontology', '--json', '--include-mock', '--files',
-                 *(f'Entity{i}' for i in range(objects))], root))
+                 *(f'Entity{i}' for i in range(objects))], root, baseline=baseline))
             # Unique revision per run defeats the cache without deleting evidence.
             sequence = iter(range(100))
             datum['cold_ontology_cli'] = measure(partial(cold_objects, root, sequence))
             datum['cached_ontology_cli'] = measure(partial(cli, SCRIPTS / 'verify_artifacts.py', ['objects'], root))
             datum['receipt_status_cli'] = measure(partial(cli, SCRIPTS / 'verify_artifacts.py', ['objects', '--status'], root))
             datum['phase_check_cache_status_sequence'] = measure(partial(phase_sequence, root, sequence))
-            datum['baseline_diagram_cli'] = measure(partial(cli, baseline / 'check_diagrams.py', ['ontology/diagrams'], root))
+            datum['baseline_diagram_cli'] = measure(partial(cli, baseline / 'check_diagrams.py', ['ontology/diagrams'], root, baseline=baseline))
             sequence = iter(range(100))
             datum['cold_diagram_cli'] = measure(partial(cold_diagrams, root, sequence))
             datum['cached_diagram_cli'] = measure(partial(cli, SCRIPTS / 'verify_artifacts.py', ['diagrams'], root))

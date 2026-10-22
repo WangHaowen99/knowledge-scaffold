@@ -3,13 +3,16 @@ from functools import partial
 import importlib
 import json
 import logging
+import os
+from pathlib import Path
 import sys
 
 import pytest
 
-from test_artifact_verification import hook, object_doc, put, SCRIPTS
+from test_artifact_verification import git_workspace, hook, object_doc, put, SCRIPTS
 from test_review_integrity import scenario_file
 import benchmark_artifact_verification as benchmark
+from artifact_process_policy import child_environment, system_search_path, validate_fixture_git_args
 
 
 def test_baseline_reads_regular_blobs_without_archive(tmp_path, monkeypatch):
@@ -58,6 +61,109 @@ def test_hook_rejects_other_or_changed_executable(tmp_path):
     put(tmp_path, '.claude/scripts/pre_commit_check.sh', '#!/bin/sh\nexit 0\n')
     with pytest.raises(ValueError, match='unchanged copy'):
         hook(tmp_path, 'pre_commit_check.sh')
+
+
+@pytest.mark.parametrize('kind', ['outside', 'other-name', 'symlink'])
+def test_benchmark_rejects_unapproved_script_before_spawn(tmp_path, monkeypatch, kind):
+    script = put(tmp_path, 'verify_artifacts.py', 'raise SystemExit(0)\n')
+    if kind == 'other-name':
+        script = SCRIPTS / 'state_helper.py'
+    elif kind == 'symlink':
+        script = tmp_path / 'ontology_checker.py'
+        script.symlink_to(SCRIPTS / 'ontology_checker.py')
+    monkeypatch.setattr(benchmark.subprocess, 'run', lambda *a, **k: pytest.fail('Must reject before spawn'))
+    with pytest.raises(ValueError, match='allowlisted'):
+        benchmark.cli(script, ['objects'], tmp_path)
+
+
+@pytest.mark.parametrize('args', [
+    ('fetch', 'origin'), ('-c', 'core.pager=example', 'status'),
+    ('cat-file', 'blob', '--batch'), ('cat-file', 'blob', 'HEAD:path'),
+    ('ls-tree', '-rlz', 'a' * 40, '--', 'other/path'),
+    ('rev-parse', '--verify', '--end-of-options', '--help^{commit}'),
+    ('rev-parse', '--verify', '--end-of-options', 'HEAD;other^{commit}'),
+])
+def test_benchmark_git_rejects_non_read_contract(monkeypatch, args):
+    monkeypatch.setattr(benchmark.subprocess, 'check_output',
+                        lambda *a, **k: pytest.fail('Must reject before spawn'))
+    with pytest.raises(ValueError, match='allowlist'):
+        benchmark.git_output(Path(benchmark.__file__).resolve().parents[4], *args)
+
+
+def test_benchmark_git_rejects_other_checkout(tmp_path):
+    with pytest.raises(ValueError, match='this checkout'):
+        benchmark.git_output(tmp_path, 'cat-file', 'blob', 'a' * 40)
+
+
+@pytest.mark.parametrize('args', [
+    ('push', 'origin'), ('config', 'core.hooksPath', 'other'),
+    ('add', '../other'), ('add', '--all'), ('commit', '-qm', 'unexpected'),
+])
+def test_fixture_git_rejects_arbitrary_operations(args):
+    with pytest.raises(ValueError, match='allowlist'):
+        validate_fixture_git_args(args)
+
+
+def test_child_environment_does_not_forward_host_settings(tmp_path, monkeypatch):
+    poison = ('BASH_ENV', 'ENV', 'PYTHONPATH', 'PYTHONHOME', 'LD_PRELOAD',
+              'DYLD_INSERT_LIBRARIES', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE',
+              'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_KEY_99', 'SYNTHETIC_SECRET')
+    for key in poison:
+        monkeypatch.setenv(key, 'synthetic-host-value')
+    monkeypatch.setenv('PATH', str(tmp_path / 'untrusted-bin'))
+    monkeypatch.setenv('GIT_CONFIG_COUNT', '100')
+    env = child_environment(tmp_path)
+    assert not set(poison).intersection(env)
+    assert 'untrusted-bin' not in env['PATH']
+    assert env['GIT_CONFIG_GLOBAL'] == os.devnull
+    assert env['GIT_CONFIG_NOSYSTEM'] == '1'
+    assert env['GIT_CONFIG_COUNT'] == '6'
+    assert Path(env['HOME']).is_relative_to(tmp_path)
+
+
+@pytest.mark.parametrize('with_absolute', [False, True])
+def test_tool_search_path_never_includes_current_or_relative_directory(tmp_path, monkeypatch, with_absolute):
+    absolute = str(tmp_path / 'synthetic-system-bin') if with_absolute else ''
+    monkeypatch.setattr(os, 'defpath', os.pathsep.join(('.', '', 'relative-bin', absolute)))
+    assert system_search_path() == absolute
+    assert all(os.path.isabs(part) for part in child_environment(tmp_path)['PATH'].split(os.pathsep))
+
+
+def test_real_git_and_hooks_ignore_host_config_and_command_text(tmp_path, monkeypatch, request):
+    marker = tmp_path / 'unexpected-execution'
+    startup = put(tmp_path, 'host-startup.sh', f'#!/bin/sh\ntouch "{marker}"\n')
+    startup.chmod(0o700)
+    hook_dir = tmp_path / 'host-hooks'
+    hook_dir.mkdir()
+    (hook_dir / 'pre-commit').symlink_to(startup)
+    config = put(tmp_path, 'host.gitconfig', f'[core]\n hooksPath = {hook_dir}\n')
+    monkeypatch.setenv('GIT_CONFIG_GLOBAL', str(config))
+    monkeypatch.setenv('GIT_DIR', str(tmp_path / 'not-a-repo'))
+    monkeypatch.setenv('GIT_WORK_TREE', str(tmp_path / 'other-worktree'))
+    monkeypatch.setenv('BASH_ENV', str(startup))
+    monkeypatch.setenv('PATH', str(tmp_path / 'not-a-bin'))
+    root, git = request.getfixturevalue('git_workspace')
+    put(root, 'ontology/object/EntityA.md', object_doc())
+    git('add', 'ontology/object')
+    response = hook(root, 'pre_commit_check.sh', f'git commit -m "$(touch {marker})"')
+    assert 'block' not in response.stdout
+    git('commit', '-qm', 'extract: synthetic objects')
+    assert '产物轻量核验通过' in hook(root, 'post_commit_hook.sh').stdout
+    assert not marker.exists()
+
+
+def test_benchmark_real_current_and_baseline_cli(tmp_path):
+    repo = Path(benchmark.__file__).resolve().parents[4]
+    commit = benchmark.git_output(repo, 'rev-parse', '--verify', '--end-of-options',
+                                  'HEAD^{commit}').decode('ascii').strip()
+    baseline = benchmark.baseline_scripts(tmp_path, repo, commit)
+    root = tmp_path / 'synthetic'
+    put(root, 'ontology/object/EntityA.md', object_doc())
+    current = json.loads(benchmark.cli(SCRIPTS / 'verify_artifacts.py', ['objects'], root))
+    previous = json.loads(benchmark.cli(baseline / 'verify_artifacts.py', ['objects'], root,
+                                        baseline=baseline))
+    assert current['status'] == previous['status'] == 'passed'
+    assert json.loads(benchmark.cli(SCRIPTS / 'verify_artifacts.py', ['objects', '--status'], root))['cached']
 
 
 @pytest.mark.parametrize('issues_json', [False, True])
