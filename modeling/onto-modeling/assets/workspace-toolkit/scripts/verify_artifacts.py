@@ -11,13 +11,13 @@ import argparse
 import dataclasses
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import sys
 import tempfile
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_diagrams
 import check_eval_data
 import ontology_checker
@@ -41,14 +41,18 @@ def targets(root: Path, kind: str, names: list[str] | None = None) -> list[Path]
     if kind == 'diagrams':
         candidates = sorted((root / 'ontology/diagrams').glob('*.drawio'))
     else:
-        candidates = sorted(p for group in GROUPS[kind]
-                            for p in (root / 'ontology' / group).rglob('*.md')
-                            if p.name.lower() != 'index.md')
+        candidates = []
+        for group in GROUPS[kind]:
+            for path in (root / 'ontology' / group).rglob('*.md'):
+                if path.name.lower() != 'index.md':
+                    candidates.append(path)
+        candidates.sort()
     candidates = [_contained(root, p) for p in candidates if p.is_file()]
     if names:
         selected = [p for p in candidates if p.stem in names or p.relative_to(root).as_posix() in names]
-        found = {name for name in names for p in selected
-                 if name in (p.stem, p.relative_to(root).as_posix())}
+        found = set()
+        for path in selected:
+            found.update(set(names).intersection((path.stem, path.relative_to(root).as_posix())))
         if found != set(names):
             raise ValueError('部分指定产物不存在；不能把空检查当作通过')
         return selected
@@ -90,10 +94,13 @@ def input_digest(root: Path, mode: str) -> str:
 
 def _check(root: Path, mode: str, paths: list[Path]) -> list[dict]:
     if mode == 'diagrams':
-        return [dict(file=p.relative_to(root).as_posix(), severity='错误', category='流程图结构',
-                     message=message, source='规则检查')
-                for p in paths for message in check_diagrams.check_diagram(
-                    p, root / check_diagrams.DEFAULT_LEGEND)['issues']]
+        issues = []
+        for path in paths:
+            report = check_diagrams.check_diagram(path, root / check_diagrams.DEFAULT_LEGEND)
+            for message in report['issues']:
+                issues.append(dict(file=path.relative_to(root).as_posix(), severity='错误',
+                                   category='流程图结构', message=message, source='规则检查'))
+        return issues
     # All docs remain available as reference context; only the requested stems are checked.
     # The existing duplicate-stem check prevents ambiguous path/stem identities passing.
     # A supplied but unreadable table is not the same as having no table.
@@ -113,9 +120,10 @@ def _check(root: Path, mode: str, paths: list[Path]) -> list[dict]:
             raise ValueError('数据表无法解析或没有表头，字段核验未完成')
         for name, columns in headers.items():
             tables.setdefault(name, columns)
-    return [dataclasses.asdict(issue) for issue in ontology_checker.run_checks(
+    issues = ontology_checker.run_checks(
         root / 'ontology', target_files=[p.stem for p in paths], include_mock=True,
-        tables=tables, strict_targets=True)]
+        tables=tables, strict_targets=True)
+    return [dataclasses.asdict(issue) for issue in issues]
 
 
 def _write_receipt(path: Path, data: dict) -> None:
@@ -155,8 +163,8 @@ def verify(root: Path, kind: str, names: list[str] | None = None, *, status_only
              and all(isinstance(i, dict) and i.get('severity') in ('错误', '警告', '建议')
                      for i in receipt.get('issues', [])))
     if valid:
-        expected = 'failed' if any(i['severity'] == '错误' for i in receipt['issues']) else 'passed'
-        valid = receipt['status'] == expected
+        expected = 'failed' if any(i.get('severity') == '错误' for i in receipt.get('issues', [])) else 'passed'
+        valid = receipt.get('status') == expected
     if valid:
         result = {**receipt, 'cached': True}
     elif not status_only:
@@ -185,16 +193,18 @@ def main() -> int:
     try:
         result = verify(Path.cwd(), args.kind, args.files, status_only=args.status)
     except Exception as exc:
-        print(f'轻量核验未完成：{type(exc).__name__}: {str(exc)[:240]}', file=sys.stderr)
+        logging.error('轻量核验未完成：%s: %s', type(exc).__name__, str(exc)[:240])
         return 2
+    output = logging.Logger('verify_artifacts.json', logging.INFO)
+    output.addHandler(logging.StreamHandler(sys.stdout))
     if args.issues_json:
-        print(json.dumps(result['issues'], ensure_ascii=False))
+        output.info(json.dumps(result['issues'], ensure_ascii=False))
     else:
         summary = {k: result.get(k) for k in ('status', 'reason', 'checked_files', 'cached', 'elapsed_ms', 'receipt')}
         summary['errors'] = sum(i['severity'] == '错误' for i in result['issues'])
         summary['warnings'] = sum(i['severity'] == '警告' for i in result['issues'])
         summary['details'] = [f"{i.get('file', '')}: {i.get('message', '')}"[:200] for i in result['issues'][:12]]
-        print(json.dumps(summary, ensure_ascii=False))
+        output.info(json.dumps(summary, ensure_ascii=False))
     return {'passed': 0, 'failed': 1}.get(result['status'], 2)
 
 

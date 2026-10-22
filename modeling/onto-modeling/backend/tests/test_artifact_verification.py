@@ -2,13 +2,13 @@
 import importlib
 import asyncio
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 
 import pytest
+from artifact_process_policy import child_environment, git_executable, validate_fixture_git_args
 
 SCRIPTS = Path(__file__).resolve().parents[2] / 'assets/workspace-toolkit/scripts'
 
@@ -81,13 +81,25 @@ def diagram_xml():
 </root></mxGraphModel></diagram></mxfile>'''
 
 
-def test_default_idle_ttl_and_explicit_override():
-    env = dict(os.environ)
-    env.pop('ONTO_WEB_SESSION_IDLE_TTL', None)
-    code = 'from app import config; print(config.SESSION_IDLE_TTL_SECONDS)'
-    assert subprocess.check_output([sys.executable, '-c', code], env=env, text=True).strip() == '600'
-    env['ONTO_WEB_SESSION_IDLE_TTL'] = '0'
-    assert subprocess.check_output([sys.executable, '-c', code], env=env, text=True).strip() == '0'
+def fresh_module(path):
+    # A new namespace on every load; never reuse or replace app.config/check_diagrams
+    # in sys.modules. These two modules contain only stdlib imports and definitions.
+    spec = importlib.util.spec_from_file_location('_artifact_fresh_module', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_default_idle_ttl_and_explicit_override(monkeypatch):
+    path = Path(__file__).resolve().parents[1] / 'app/config.py'
+    monkeypatch.delenv('ONTO_WEB_SESSION_IDLE_TTL', raising=False)
+    default = fresh_module(path)
+    assert default.SESSION_IDLE_TTL_SECONDS == 600
+    monkeypatch.setenv('ONTO_WEB_SESSION_IDLE_TTL', '0')
+    override = fresh_module(path)
+    assert override.SESSION_IDLE_TTL_SECONDS == 0
+    assert default.SESSION_IDLE_TTL_SECONDS == 600
+    assert default is not override
 
 
 def test_idle_reaper_obeys_600_seconds(tmp_path, monkeypatch):
@@ -109,7 +121,7 @@ def test_idle_reaper_obeys_600_seconds(tmp_path, monkeypatch):
     monkeypatch.setattr(manager, '_recycle', recycle)
     monkeypatch.setattr(manager, '_drain_waiters', drain)
     for now in (1121, 1599, 1600):
-        monkeypatch.setattr(agent_sessions.time, 'time', lambda: now)
+        monkeypatch.setattr(agent_sessions.time, 'time', lambda now=now: now)
         assert asyncio.run(manager.reap_idle()) == 0
     monkeypatch.setattr(agent_sessions.time, 'time', lambda: 1601)
     assert asyncio.run(manager.reap_idle()) == 1
@@ -270,16 +282,18 @@ def test_diagram_ids_are_page_scoped(tmp_path, verifier):
     assert verifier.verify(tmp_path, 'diagrams')['status'] == 'passed'
 
 
-def test_diagram_import_without_timezone_database():
-    code = '''import sys, zoneinfo
-sys.path.insert(0, sys.argv[1])
-def missing(name):
-    raise zoneinfo.ZoneInfoNotFoundError(name)
-zoneinfo.ZoneInfo = missing
-import check_diagrams
-assert check_diagrams.REPORT_TZ.utcoffset(None).total_seconds() == 28800
-'''
-    subprocess.run([sys.executable, '-c', code, str(SCRIPTS)], check=True)
+def test_diagram_import_without_timezone_database(monkeypatch):
+    import zoneinfo
+    original = zoneinfo.ZoneInfo
+    cached = sys.modules.get('check_diagrams')
+    def missing(name):
+        raise zoneinfo.ZoneInfoNotFoundError(name)
+    with monkeypatch.context() as isolated:
+        isolated.setattr(zoneinfo, 'ZoneInfo', missing)
+        checker = fresh_module(SCRIPTS / 'check_diagrams.py')
+        assert checker.REPORT_TZ.utcoffset(None).total_seconds() == 28800
+    assert zoneinfo.ZoneInfo is original
+    assert sys.modules.get('check_diagrams') is cached
 
 
 def test_reverse_join_direction_and_one_sided_declaration(tmp_path, verifier):
@@ -324,8 +338,12 @@ def test_external_symlink_rejected(tmp_path, verifier):
 @pytest.fixture
 def git_workspace(tmp_path):
     shutil.copytree(SCRIPTS, tmp_path / '.claude/scripts', ignore=shutil.ignore_patterns('__pycache__'))
+    executable = git_executable()
+    env = child_environment(tmp_path)
     def git(*args):
-        return subprocess.check_output(['git', *args], cwd=tmp_path, stderr=subprocess.STDOUT, text=True)
+        validate_fixture_git_args(args)
+        return subprocess.check_output([executable, *args], cwd=tmp_path, env=env,
+                                       stderr=subprocess.STDOUT, text=True, shell=False, timeout=30)
     git('init', '-q')
     git('config', 'user.name', 'Synthetic Test')
     git('config', 'user.email', 'test@example.invalid')
@@ -334,10 +352,18 @@ def git_workspace(tmp_path):
 
 
 def hook(root, name, command='git commit -m "extract: synthetic objects"'):
-    env = dict(os.environ, PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ['PATH'])
-    return subprocess.run(['bash', str(root / '.claude/scripts' / name)], cwd=root, env=env,
+    if name not in ('pre_commit_check.sh', 'post_commit_hook.sh'):
+        raise ValueError('Only the checked-in save hooks may run')
+    script = (root / '.claude/scripts' / name).resolve()
+    if not script.is_relative_to(root.resolve()) or script.read_bytes() != (SCRIPTS / name).read_bytes():
+        raise ValueError('Hook must be an unchanged copy inside the synthetic workspace')
+    script.chmod(script.stat().st_mode | 0o100)
+    env = child_environment(root)
+    # Execute the verified hook's shebang entry point; the command is JSON stdin,
+    # never shell source or an interpreter -c argument.
+    return subprocess.run([str(script)], cwd=root, env=env,
                           input=json.dumps({'tool_input': {'command': command}, 'tool_response': {'exitCode': 0}}),
-                          capture_output=True, text=True, check=True)
+                          capture_output=True, text=True, check=True, shell=False, timeout=60)
 
 
 def test_save_hook_blocks_bad_diagram_and_checker_failure(git_workspace):
