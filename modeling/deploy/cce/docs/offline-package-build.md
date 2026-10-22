@@ -50,6 +50,23 @@ bash modeling/deploy/cce/build-offline.sh v2.0 amd64 \
   /path/to/modeling-cce-v2.0-amd64.tar.gz
 ```
 
+如果希望离线包成功生成后删除本次构建的三个本地镜像，可追加 `--cleanup-images`：
+
+```bash
+bash modeling/deploy/cce/build-offline.sh v2.0 amd64 \
+  /path/to/modeling-cce-v2.0-amd64.tar.gz --cleanup-images
+```
+
+该选项只执行以下三个精确标签的 `docker image rm`，不会执行 `docker prune`，也不会删除其他版本或其他仓库的镜像：
+
+```text
+modeling-offline/modeling:v2.0
+modeling-offline/modeling-agent:v2.0
+modeling-offline/onto-modeling:v2.0
+```
+
+清理发生在组包成功之后；构建或组包失败时不会执行清理。
+
 ### 2.1 Python wheels 缓存
 
 缓存目录是：

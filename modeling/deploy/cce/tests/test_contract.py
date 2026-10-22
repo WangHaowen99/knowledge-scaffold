@@ -1418,6 +1418,36 @@ class CceContractTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls.read_text(), "build")
 
+    def test_build_offline_can_remove_only_current_version_images_after_package(self):
+        script_dir = self.base / "modeling/deploy/cce"
+        script_dir.mkdir(parents=True)
+        wrapper = script_dir / "build-offline.sh"
+        shutil.copy2(ROOT / "build-offline.sh", wrapper)
+        calls = self.base / "cleanup.log"
+        (script_dir / "build-images.sh").write_text(
+            f"#!/bin/sh\nprintf 'build:%s\\n' \"$*\" >> {calls}\n"
+        )
+        (script_dir / "package-cce.py").write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib, sys\n"
+            f"pathlib.Path({str(calls)!r}).open('a').write('package:' + ' '.join(sys.argv[1:]) + '\\n')\n"
+        )
+        docker = self.base / "docker"
+        docker.write_text(
+            "#!/bin/sh\n"
+            f"printf 'docker:%s\\n' \"$*\" >> {calls}\n"
+        )
+        for path in (wrapper, script_dir / "build-images.sh", script_dir / "package-cce.py", docker):
+            path.chmod(0o755)
+        environment = {**os.environ, "PATH": f"{self.base}:{os.environ['PATH']}"}
+        result = subprocess.run(["bash", str(wrapper), "demo", "amd64", "--cleanup-images"],
+                                cwd=self.base, env=environment, check=False,
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = calls.read_text().splitlines()
+        self.assertLess(lines.index("docker:image rm modeling-offline/modeling:demo modeling-offline/modeling-agent:demo modeling-offline/onto-modeling:demo"),
+                        len(lines))
+
     def test_modeling_plan_accepts_verified_synthetic_release(self):
         root = self.package()
         deploy = root / "deploy"
