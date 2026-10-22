@@ -14,7 +14,8 @@ schema 标签的表格资料与评测数据源上传的业务数据表（一个 
 也可以降级发布（strict_declared=False）：对不上的对象来源Sheet 写 UNBOUND，不进 mapping。
 
 绑定优先级：对象文档「# 数据来源」的显式声明 > 属性英文名与 Sheet 列头的唯一最佳重合。
-推断只在重合列数达标且候选唯一时成立，够不着就留空（来源Sheet 写 UNBOUND），不猜。
+推断只在重合列数达标且候选唯一时成立（声明了主键的对象，候选表还须含全部主键列），
+够不着就留空（来源Sheet 写 UNBOUND），不猜。
 首行写「无」是显式声明不落库（如只作为输出的单据），不再按重合度推断。
 
 评测导入时数据表来源换成「本轮实际导入的工作簿」（eval_import），mapping 与导入库同源；
@@ -271,11 +272,17 @@ def read_source_tables(root: Path) -> dict[str, list[str]]:
     return tables
 
 
-def _match_table(field_keys: list[str], tables: dict[str, list[str]]) -> str:
-    """属性英文名与各表列头的重合度 → 唯一最佳表名；并列第一或不达标时返回空，不猜。"""
+def _match_table(field_keys: list[str], tables: dict[str, list[str]], primary_keys: list[str]) -> str:
+    """属性英文名与各表列头的重合度 → 唯一最佳表名；并列第一或不达标时返回空，不猜。
+
+    声明了主键的对象只在含全部主键列的表里找：主键列不在表里，实例身份无从确定，
+    绑上去只会造出身份错的节点（如未声明来源的对象与别的对象的表撞上两三列同名属性）。
+    """
     lowered = {k.lower() for k in field_keys}
+    required = {k.lower() for k in primary_keys}
+    candidates = {name: {c.lower() for c in columns} for name, columns in tables.items()}
     scores = sorted(
-        ((len(lowered & {c.lower() for c in columns}), name) for name, columns in tables.items()),
+        ((len(lowered & columns), name) for name, columns in candidates.items() if required <= columns),
         reverse=True,
     )
     if not scores or scores[0][0] < MIN_INFERRED_COLUMNS:
@@ -403,7 +410,7 @@ def resolve_object_tables(
         elif hints.get(key) in tables:
             table, matched_by = hints[key], "seed"
         elif _may_infer(tables, parsed):
-            table = _match_table(field_keys, tables)
+            table = _match_table(field_keys, tables, [f["key"] for f in fields if f["primary"]])
             matched_by = "inferred" if table else ""
 
         columns = tables.get(table, [])
@@ -877,10 +884,14 @@ def graph_relations(
     fields: dict[str, set[str]] = {}
     # 括注里 `表名.字段` 的前缀可以是对象名或「# 数据来源」声明的表名
     names: dict[str, set[str]] = {}
+    # 概念对象（数据来源写「无」）：端点未绑定时提示里点明原因，免得被当成绑定出错
+    concepts: set[str] = set()
     for key, text in object_texts.items():
         doc = parse_object_doc(text)
         fields[key] = {field["key"] for field in doc["fields"]}
         names[key] = _relation_prefixes(key, doc)
+        if doc["declared_none"]:
+            concepts.add(key)
     relations: dict[str, list] = {}
     skipped: list[str] = []
     unbound = 0
@@ -924,6 +935,12 @@ def graph_relations(
                 absent = [item for item in missing if item not in object_texts]
                 if absent:
                     skipped.append(f"{label}：关系端点「{'、'.join(absent)}」不存在")
+                elif set(missing) <= concepts:
+                    unbound += 1
+                    skipped.append(
+                        f"{label}：关系端点「{'、'.join(missing)}」的数据来源为「无」（概念对象，"
+                        "图里没有该类节点），本条关系不导入"
+                    )
                 else:
                     unbound += 1
                     skipped.append(f"{label}：关系端点「{'、'.join(missing)}」未绑定数据表，本条关系不导入")

@@ -221,7 +221,7 @@ Commands for the Onto Modeling application (`modeling/onto-modeling/`):
 - Run onto-modeling backend tests: `cd modeling/onto-modeling/backend && ./venv/bin/python -m pytest tests/`
 - Install onto-modeling frontend dependencies: `cd modeling/onto-modeling/frontend && npm install`
 - Start onto-modeling frontend dev server: `cd modeling/onto-modeling/frontend && npm run dev`
-- Run onto-modeling frontend tests: `cd modeling/onto-modeling/frontend && npm test`
+- Run onto-modeling frontend unit tests (`node:test`, covers `tests/` and `src/**/*.test.js`): `cd modeling/onto-modeling/frontend && npm test`
 - Build onto-modeling frontend: `cd modeling/onto-modeling/frontend && npm run build`
 - Build onto-modeling release package: `cd modeling/onto-modeling && ./build.sh <version> [amd|arm]`
 - Run onto-modeling full stack from source: `cd modeling/onto-modeling && docker compose up --build`

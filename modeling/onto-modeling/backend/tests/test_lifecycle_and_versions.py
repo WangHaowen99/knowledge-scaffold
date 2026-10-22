@@ -419,9 +419,9 @@ def test_ensure_package_layout_migrates_logic_and_indexes(
     assert "| 创建订单.md | 创建订单 |" in index
     # 幂等：第二次无变化，也不产生新提交
     assert manager.ensure_package_layout(meta["id"]) is False
-    # index.md 不计入进度探针与实体计数
+    # index.md 不计入进度探针与实体计数：只有迁移来的 operation 阶段算完成
     progress = manager._project_progress(root)
-    assert progress["stages_done"] == 0  # 各目录只有 index.md 时不算阶段完成
+    assert progress["stages_done"] == 1
     assert progress["operations"] == 1
 
 

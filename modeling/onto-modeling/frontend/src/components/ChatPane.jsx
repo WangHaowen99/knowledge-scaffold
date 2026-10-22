@@ -148,7 +148,7 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
       command: `/ontology-evolution ${evolution.report.split('/').pop()}`,
     });
   }
-  // 下一步 = 第一个未完成阶段；用户已越过的可选阶段不再主推。
+  // 下一步 = 第一个未完成阶段；用户已越过的可选阶段、只有面板入口的可选阶段不再主推。
   // 资料分析未验收且对象尚未提取时不算完成，不会主推对象提取（issue #362）
   const researchReview = meta?.research_review || null;
   const hits = stageHits(paths, researchReview);
@@ -156,7 +156,7 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
   let nextIndex = -1;
   for (let i = 0; i < STAGES.length; i += 1) {
     if (hits[i]) continue;
-    if (STAGES[i].optional && i < lastHit) continue;
+    if (STAGES[i].optional && (i < lastHit || STAGES[i].panel)) continue;
     nextIndex = i;
     break;
   }

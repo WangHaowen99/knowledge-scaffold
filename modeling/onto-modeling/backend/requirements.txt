@@ -4,6 +4,9 @@ python-multipart>=0.0.9
 pyjwt[crypto]>=2.8
 claude-agent-sdk>=0.2.100
 openpyxl>=3.1
+# 求解契约（solver_contract）：YAML sidecar 解析与 JSON Schema 2020-12 校验
+pyyaml>=6
+jsonschema>=4.18
 # Jiuwen 引擎（openjiuwen 进程内 SDK，方案 docs/openjiuwen-engine-migration.md）
 openjiuwen[sqlite]>=0.1.18; python_version >= "3.11"
 opentelemetry-sdk>=1.25; python_version >= "3.11"

@@ -129,6 +129,14 @@ export const STAGES = [
     ],
   },
   {
+    key: 'solver',
+    title: '求解适配（可选）',
+    optional: true,
+    panel: true, // 入口是中栏「求解模型」面板，不走聊天命令
+    probe: (paths) => hasEntry(paths, 'ontology/solver/'),
+    actions: [],
+  },
+  {
     key: 'eval',
     title: '数据评测（可选）',
     optional: true,
@@ -276,6 +284,7 @@ export default function LeftPane({
   onRefresh,
   onCommand,
   onKnowledge,
+  onSolver,
 }) {
   const [section, setSection] = useState('progress');
   const [expandedStage, setExpandedStage] = useState(null);
@@ -323,7 +332,12 @@ export default function LeftPane({
   const [evalDetailOpen, setEvalDetailOpen] = useState(false);
   const [evalWizardOpen, setEvalWizardOpen] = useState(false);
   const [evalBindingRetry, setEvalBindingRetry] = useState(null); // 数据绑定未过检时的续跑函数
-  const packagePublish = usePackagePublish({ onCommand, onOpenFile: onSelectFile, onChanged: onRefresh });
+  const packagePublish = usePackagePublish({
+    onCommand,
+    onOpenFile: onSelectFile,
+    onChanged: onRefresh,
+    onOpenSolver: onSolver,
+  });
   useEffect(() => {
     if (section !== 'progress') return undefined;
     let stop = false;
@@ -527,7 +541,11 @@ export default function LeftPane({
               description:
                 expandedStage === stage.key ? (
                   <Space wrap size={4} style={{ marginTop: 4 }}>
-                    {stage.key === 'eval' ? (
+                    {stage.key === 'solver' ? (
+                      <Button size="small" onClick={() => onSolver?.()}>
+                        {statuses[index] === 'finish' ? '打开求解模型' : '启用求解契约'}
+                      </Button>
+                    ) : stage.key === 'eval' ? (
                       !evalInfo?.enabled ? (
                         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                           未配置 modeling 评测服务
