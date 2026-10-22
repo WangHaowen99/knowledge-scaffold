@@ -16,7 +16,12 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
 
 If `Local document paths` is specified in your task prompt:
 
-Read each file at the listed paths. For each document, extract and record:
+For local text, DOCX and XLSX, use `python3 .claude/scripts/source_extract.py "{path}" --offset 0 --limit 20`.
+Follow next_offset until the required scope is read; retain source_sha256, extractor_version and the returned anchors.
+For long segments, continue with `--anchor "{anchor}" --text-offset {next_text_offset}` until that segment is complete.
+Do not read compressed Office bytes as UTF-8 or write ad hoc extraction scripts. `unverifiable`, truncated output,
+unsupported formats and decode failures are not evidence of missing rules. Record the exact gap and do not claim source verification.
+For each document, extract and record:
 - Business entities / objects mentioned (names, attributes, business rules)
 - Business processes / operations (trigger conditions, operation steps, inputs/outputs)
 - Domain terminology, constraints, and relationships
@@ -165,11 +170,14 @@ dispatching command 会在你 prompt 顶部注入 `# 只读来源快照（自动
 4. **ID 不重复、不静默变化、能溯源。** 同一报告内业务项 ID、规则 ID 均不得重复；
    每个 ID 必须**逐字出现在它「来源位置」所指的那个文件里**（规范 ID 来自用户上传的
    资料，不是你起的名）。快照里已有的 ID 必须仍出现在清单里。确实是本轮新造的 ID，
-   在「ID变更对照」写一行「无 → 新ID / 新增 / 依据」；否则一律判错。
+   在「ID变更对照」写一行「无 → 新ID / 新增 / 原始资料路径#锚点」。新增声明不替代来源核验；
+   检查器返回「新增ID确认」时需真实人工确认后在「缺口与待决」记 `- [x] 新增ID确认：ID1、ID2`。
+   不得自行勾选，不得把源资料原有 ID 当作新造；新增到本清单但源中已存在的编号用「沿用来源ID」。
 5. **字段逐字取自真实表头。** 「引用字段」里的每个字段都要能在快照的表头里找到；
    找不到就填 `无` 并把这个缺口写进「缺口与待决」。
 6. **来源位置必须可定位。** 写工作区内的真实相对路径（如
-   `resource/others/业务说明.md#3.1`），不要写"见资料"这类无法核对的说法。
+   `resource/others/业务说明.md#L12`、`resource/others/规则.docx#p:2` 或
+   `resource/others/表.xlsx#sheet:规则!B3`），逐字使用抽取器返回的位置，不要编造锚点或写"见资料"。
 7. **缺失就是缺失。** 缺系数、价格、数量等数据时不要隐式补 1 或 0；只把受这项
    缺失影响的条目标为待决，不要因此阻塞其他条目。
 8. **不要自己宣布通过。** 报告里不写"资料分析完成""检查无问题"之类的结论——

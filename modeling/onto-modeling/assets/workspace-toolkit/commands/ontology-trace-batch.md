@@ -115,6 +115,10 @@ MOCK_DATA_DIR = {Step B2 决议出的值，可能为空}
 
 Wait for it to return a JSON array `JOB_SUMMARIES`（按 OPERATION_JOBS 顺序排列；每项含 `operation_name / status / report_path / branch_metrics / scenario_metrics / issues_by_type / issues / generated_testcase`）。**不要再 Read 详细报告文件**——主上下文只保留 summary。
 
+汇总前，逐个已执行 job 使用该 job 的确认稿路径及 summary 返回的 inputs_path / results_path 运行
+`python3 .claude/scripts/trace_inputs.py "{testcase_path}" --actual "{inputs_path}" --results "{results_path}"`。
+回执缺失或非零退出，将该 job 标为 failed，并保留原因；不得把子任务自报通过数直接汇总。
+
 #### B3.3 进度回放
 
 agent 返回后，按 `JOB_SUMMARIES` 顺序打印一次性进度块（每行对应一个 job）：
@@ -142,25 +146,23 @@ git commit -m "trace: batch testcases ({N} operations)"
 
 Also write a combined summary to `reports/{BATCH_TS}-trace-batch.md`：
 
-每个逻辑的 `设计覆盖率` 与 `推演通过率` 直接取自 Step B3 单次 dispatch 返回的 `JOB_SUMMARIES`（`branch_metrics`、`scenario_metrics`），不要重新计算或读详细报告。汇总报告**必须**把两类指标分开呈现：
+从 JOB_SUMMARIES 取具体缺失分支与推演结果。branch_metrics 仅用于内部缺项检查，不对用户展示覆盖率、分母或百分比；推演通过率保留。
 
 ```markdown
 # 批量追踪汇总（{timestamp} Asia/Shanghai）
 
 ## 总体统计
 - 逻辑文件数：{N}
-- 判断分支总数：{∑TOTAL_BRANCHES}
-- 平均设计覆盖率：{avg_pct}% — 衡量场景对分支的覆盖
 - 场景总数：{∑TOTAL_SCENARIOS}
 - 平均推演通过率：{avg_pct}% — 衡量场景实际推演是否通过
 - 发现问题总数：{total_issues}
 
-> 注：设计覆盖率高 ≠ 逻辑没问题；推演通过率低意味着逻辑或数据有缺陷。
+> 注：未发现缺项不代表逻辑正确，仍需检查实际推演结果。
 
 ## 按逻辑文件
 
 ### {operation_name_1}
-- 设计覆盖率：{c}/{t}（{pct}%）{若未达 100%，列出未覆盖分支}
+- 待补场景：{具体缺失分支或本次未发现缺项}
 - 推演通过率：{p}/{n}（{pct}%）
 - 问题概览：{分支缺失:x, 死路径:y, 隐式兜底:z, 规则定义与执行脱节:w, ...}
 - 详细报告：`reports/{detail_filename}`
@@ -185,11 +187,10 @@ Show only the combined summary in terminal:
 
 "批量追踪完成。
 - 已追踪：{N} 个逻辑，{scenario_total} 个场景
-- 平均设计覆盖率：{pct}% — 衡量场景对分支的覆盖
 - 平均推演通过率：{pct}% — 衡量场景实际推演是否通过
 - 发现问题：{issue_total} 个
 
-⚠️ 两者意义不同：设计覆盖率高 ≠ 逻辑没问题；推演通过率低意味着逻辑或数据有缺陷。
+⚠️ 未发现缺项不代表逻辑正确；推演通过率低意味着逻辑或数据有缺陷。
 
 汇总报告：`reports/{batch-filename}`
 逐个详细报告见汇总中的链接。

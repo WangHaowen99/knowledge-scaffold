@@ -30,7 +30,7 @@ const TERMINAL = new Set(VERDICTS.map(([key]) => key));
 const STATUS_TEXT = {
   running: '运行中',
   done: '已完成',
-  failed: '异常终止',
+  failed: '存在技术异常',
   stopped: '已停止',
   interrupted: '已中断',
 };
@@ -212,7 +212,19 @@ function Headline({ st, finished, total }) {
           {big}
           <small>分</small>
         </span>
-        <span className="erd-headline-caption">综合得分 · 共 {total} 条用例</span>
+        <span className="erd-headline-caption">
+          {st.summary?.result_status === 'partial'
+            ? `有效用例得分 · 仅 ${st.summary.valid}/${total} 条有效，非全量结果`
+            : `综合得分 · 共 ${total} 条用例`}
+        </span>
+      </div>
+    );
+  }
+  if (st.summary?.result_status === 'unavailable') {
+    return (
+      <div className="erd-headline">
+        <span className="erd-headline-value">—</span>
+        <span className="erd-headline-caption">未形成有效评测 · 技术异常不代表业务答错</span>
       </div>
     );
   }
