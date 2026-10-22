@@ -920,7 +920,12 @@ def test_evaluate_start_passes_refresh_token_only_in_request(tmp_path, monkeypat
         SYNTHETIC_REFRESH not in json.dumps(body or {})
         for method, path, body in calls if not path.endswith("/evaluate")
     )
-    assert modeling_eval.read_state(root)["status"] == "done"
+    # 凭据透传成功不代表业务评测成功；替身返回的是技术异常。
+    state = modeling_eval.read_state(root)
+    assert state["status"] == "failed"
+    assert state["summary"]["valid"] == 0
+    assert state["summary"]["score"] is None
+    assert state["summary"]["result_status"] == "unavailable"
     for path in root.rglob("*"):
         if path.is_file() and ".git" not in path.parts:
             assert SYNTHETIC_REFRESH not in path.read_text(encoding="utf-8", errors="ignore"), path
@@ -1014,8 +1019,8 @@ def test_tool_failure_section_handles_text_errors_and_caps(tmp_path):
     leaked = secrets.token_hex(8)
     rel = modeling_eval._write_report(root, {"id": "r1"}, [
         {"id": "er-script", "question": "Q1", "verdict": "error", "reason": "运行失败"},
-        {"id": "er-many", "question": "Q2", "verdict": "fail", "reason": "错"},
-        {"id": "er-pass", "question": "Q3", "verdict": "pass", "reason": "对"},
+        {"id": "er-many", "question": "Q2", "verdict": "fail", "finalAnswer": "错误的合成回答", "reason": "错"},
+        {"id": "er-pass", "question": "Q3", "verdict": "pass", "finalAnswer": "正确的合成回答", "reason": "对"},
         {"id": "er-none", "question": "Q4", "verdict": "error", "reason": "运行失败"},
         {"id": "er-lost", "question": "Q5", "verdict": "error", "reason": "运行失败"},
     ], traces={
@@ -1047,6 +1052,34 @@ def test_tool_failure_section_handles_text_errors_and_caps(tmp_path):
     assert "工具失败" not in pass_case  # 通过用例不附失败摘要
     assert "工具失败" not in none_case  # 没有轨迹的用例不出空小节
     assert "执行轨迹未取到（Consumer 未返回 run_id）" in lost_case
+
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_done_round_preserves_missing_case_detection_and_tool_traces(tmp_path, monkeypatch, resume):
+    """目标分支轨迹能力与本轮缺结果核验同时保留，覆盖轮询和续接入口。"""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.01)
+    traces = {"er-1": {"status": "complete", "toolFailures": [
+        {"toolName": "synthetic_tool", "error": "SYNTHETIC_TOOL_FAILED"}
+    ]}}
+    calls = []
+    monkeypatch.setattr(modeling_eval, "_http", _fake_modeling_http(calls, traces))
+    pid, root = _eval_workspace(tmp_path, "结果与轨迹兼容")
+    cases = [{"question": "Q1", "groundTruth": "G1"}, {"question": "Q2", "groundTruth": "G2"}]
+    if resume:
+        modeling_eval._write_state(root, status="interrupted", modeling_project="mp-1", round_id="r1")
+        assert modeling_eval._try_resume(pid, root, "t", cases, False)
+    else:
+        modeling_eval._poll_round(pid, root, "t", "mp-1", "r1", cases)
+    state = modeling_eval.read_state(root)
+    assert state["status"] == "failed"
+    assert state["summary"]["total"] == 2
+    assert state["summary"]["error"] == 2
+    assert state["summary"]["valid"] == 0 and state["summary"]["score"] is None
+    report = (root / state["report"]).read_text(encoding="utf-8")
+    assert "Q2" in report and "未取得可核验结果" in report
+    assert "synthetic_tool" in report and "SYNTHETIC_TOOL_FAILED" in report
 
 
 def test_evolution_command_reads_tool_failure_section():
