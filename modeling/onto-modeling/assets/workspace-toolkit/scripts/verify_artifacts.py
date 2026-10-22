@@ -195,15 +195,16 @@ def main() -> int:
     except Exception as exc:
         logging.error('轻量核验未完成：%s: %s', type(exc).__name__, str(exc)[:240])
         return 2
+    output = logging.Logger('verify_artifacts.json', logging.INFO)
+    output.addHandler(logging.StreamHandler(sys.stdout))
     if args.issues_json:
-        json.dump(result['issues'], sys.stdout, ensure_ascii=False)
+        output.info(json.dumps(result['issues'], ensure_ascii=False))
     else:
         summary = {k: result.get(k) for k in ('status', 'reason', 'checked_files', 'cached', 'elapsed_ms', 'receipt')}
         summary['errors'] = sum(i['severity'] == '错误' for i in result['issues'])
         summary['warnings'] = sum(i['severity'] == '警告' for i in result['issues'])
         summary['details'] = [f"{i.get('file', '')}: {i.get('message', '')}"[:200] for i in result['issues'][:12]]
-        json.dump(summary, sys.stdout, ensure_ascii=False)
-    sys.stdout.write('\n')
+        output.info(json.dumps(summary, ensure_ascii=False))
     return {'passed': 0, 'failed': 1}.get(result['status'], 2)
 
 

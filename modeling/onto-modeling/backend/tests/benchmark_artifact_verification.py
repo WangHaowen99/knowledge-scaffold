@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 from functools import partial
 import json
+import logging
 import math
 from pathlib import Path
 import statistics
@@ -146,8 +147,9 @@ def run():
             datum['cold_diagram_cli'] = measure(partial(cold_diagrams, root, sequence))
             datum['cached_diagram_cli'] = measure(partial(cli, SCRIPTS / 'verify_artifacts.py', ['diagrams'], root))
             result['datasets'].append(datum)
-    json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
-    sys.stdout.write('\n')
+    output = logging.Logger('artifact_benchmark.json', logging.INFO)
+    output.addHandler(logging.StreamHandler(sys.stdout))
+    output.info(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == '__main__':

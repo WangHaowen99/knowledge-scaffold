@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import re
 import sys
 from pathlib import Path
@@ -126,6 +127,9 @@ def main() -> int:
     parser.add_argument('--output', type=Path)
     parser.add_argument('--results', type=Path)
     args = parser.parse_args()
+    # Standalone JSON channel: no root handlers, timestamps, or level prefixes.
+    output = logging.Logger('trace_inputs.json', logging.INFO)
+    output.addHandler(logging.StreamHandler(sys.stdout))
     try:
         result = (verify(args.source, json.loads(args.actual.read_text(encoding='utf-8')))
                   if args.actual else parse_source(args.source))
@@ -136,14 +140,12 @@ def main() -> int:
                 raise ValueError('不能覆盖场景确认稿')
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
-        json.dump({'status': 'passed', 'source_sha256': result['source_sha256'],
+        output.info(json.dumps({'status': 'passed', 'source_sha256': result['source_sha256'],
                           'scenarios': len(result['scenarios']),
-                          'fields': sum(len(s['inputs']) for s in result['scenarios'])}, sys.stdout, ensure_ascii=False)
-        sys.stdout.write('\n')
+                          'fields': sum(len(s['inputs']) for s in result['scenarios'])}, ensure_ascii=False))
         return 0
     except (OSError, ValueError) as exc:
-        json.dump({'status': 'failed', 'reason': str(exc)[:300]}, sys.stdout, ensure_ascii=False)
-        sys.stdout.write('\n')
+        output.info(json.dumps({'status': 'failed', 'reason': str(exc)[:300]}, ensure_ascii=False))
         return 1
 
 

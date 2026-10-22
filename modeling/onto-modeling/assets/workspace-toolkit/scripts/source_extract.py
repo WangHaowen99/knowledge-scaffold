@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import io
 import json
+import logging
 import sys
 import zipfile
 from pathlib import Path
@@ -139,8 +140,10 @@ def main() -> int:
                              'truncated': start > 0 or len(s['text']) > start + 1000,
                              'next_text_offset': start + 1000 if len(s['text']) > start + 1000 else None} for s in page],
                   next_offset=offset + limit if offset + limit < len(segments) else None)
-    json.dump(result, sys.stdout, ensure_ascii=False)
-    sys.stdout.write('\n')
+    # Keep the CLI JSON protocol independent of application logging configuration.
+    output = logging.Logger('source_extract.json', logging.INFO)
+    output.addHandler(logging.StreamHandler(sys.stdout))
+    output.info(json.dumps(result, ensure_ascii=False))
     return 0 if result['status'] == 'ok' else 2
 
 
