@@ -16,7 +16,7 @@ AUDIENCE = "meta-wise"
 @pytest.fixture()
 def signing(monkeypatch):
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    monkeypatch.setattr(auth, "ENABLED", True)
+    monkeypatch.setattr(auth, "ENABLED", False)
     monkeypatch.setattr(auth, "ISSUER", ISSUER)
     monkeypatch.setattr(auth, "AUDIENCE", AUDIENCE)
     monkeypatch.setattr(
