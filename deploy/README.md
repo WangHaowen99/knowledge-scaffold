@@ -17,7 +17,7 @@
 | auth-server | `auth-server/` | 不暴露宿主端口（容器网内 5056） | onto-agent-auth-server | — | 必备鉴权服务，consumer 与 modeling 共用 |
 | eval-mysql（可选） | — | 3306 → 3306 | mysql:8 | — | 建模评测库（Excel 数据自动落库供查询类用例） |
 
-服务间调用链：`浏览器 → frontend(8888) → backend(5055)`；`浏览器 → modeling(8100) → modeling-agent(5110)`；modeling 登录直连 auth-server，评测调用 consumer。所有容器同处一个 Docker 网络。
+服务间调用链：`浏览器 → frontend(8888) → backend(5055)`；`浏览器 → modeling(8100) → modeling-agent(5110)`；modeling 登录直连 auth-server，评测调用 consumer。consumer 与 modeling 容器共享 Docker 网络；独立评测使用单独 Compose 网络，通过运行配置中的可达地址连接依赖。
 
 数据持久化位置：
 
@@ -39,7 +39,7 @@
 | B. 完整工作台（推荐） | A + modeling core + modeling-agent | `./deploy/deploy.sh` |
 | C. B + 评测闭环 | B + 评测库 MySQL / NL2SQL | `./deploy/deploy-stack.sh up --with-eval` |
 
-`deploy/deploy.sh` 会自动识别源码树和解压后的发布包：源码树转入 `deploy-stack.sh` 构建镜像，发布包依次部署 consumer 与 Modeling Workbench。自动化流水线构建入口仍是 `./deploy/build.sh <version> [amd|arm]`。
+`deploy/deploy.sh` 会自动识别源码树和解压后的发布包：源码树转入 `deploy-stack.sh` 构建镜像，源码和发布包均依次部署 consumer、Modeling Workbench、Onto Modeling 与独立评测服务。默认部署前须设置 `EVAL_ENV_FILE`，指向仓库外受保护的评测运行配置文件；缺失时在变更服务前报错。完整离线包包含评测镜像。自动化流水线构建入口仍是 `./deploy/build.sh <version> [amd|arm]`。
 
 ## 2. 前置条件
 
@@ -231,3 +231,8 @@ docker exec -e MYSQL_PWD="${EVAL_MYSQL_ROOT_PASSWORD:?请先设置评测库密�
 - NL2SQL 桥接服务随 modeling 的 `eval` profile 容器化运行；非 compose 部署可继续使用宿主进程入口。
 - modeling-agent 仅通过容器网络访问，不发布宿主 5110 端口；浏览器统一经 modeling core 的同源代理访问。
 - 建模上传的文档正文存于 SQLite（卷 `mw-modeling_modeling-data`），不落宿主文件系统。
+
+
+## 独立评测服务
+
+`bash deploy/deploy.sh --eval-only` 只部署 `eval-service/`，与其他 only 参数互斥；默认全栈 `bash deploy/deploy.sh` 包含评测服务，源码、离线首次安装和升级均在其他服务之后部署评测；`--onto-modeling-only` 不包含评测服务。需要在进程环境设置 `EVAL_ENV_FILE` 指向仓库外受保护的运行配置，并提供账号、Hub、consumer 和可选数据库依赖。独立镜像、离线包及同源网关配置见 [评测部署说明](../eval-service/README.md)。

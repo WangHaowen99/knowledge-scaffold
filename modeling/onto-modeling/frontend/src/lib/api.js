@@ -41,26 +41,26 @@ function authHeaders() {
 let refreshing = null;
 async function tryRefresh() {
   if (!authStore.refreshToken) return false;
-  refreshing =
-    refreshing ||
-    fetch('/api/auth/refresh', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: authStore.refreshToken }),
-    })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (data) {
-          authStore.save(data);
-          return true;
-        }
-        authStore.clear();
-        return false;
-      })
-      .catch(() => false)
-      .finally(() => {
-        refreshing = null;
+  const access = authStore.token;
+  const refresh = authStore.refreshToken;
+  const update = async () => {
+    if (authStore.token !== access) return false;
+    try {
+      const response = await fetch('/api/auth/refresh', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refresh }),
       });
+      if (authStore.token !== access || authStore.refreshToken !== refresh) return false;
+      if (!response.ok) { authStore.clear(); return false; }
+      const data = await response.json();
+      if (authStore.token !== access || authStore.refreshToken !== refresh) return false;
+      authStore.save(data);
+      return true;
+    } catch { return false; }
+  };
+  refreshing = refreshing || (globalThis.navigator?.locks
+    ? navigator.locks.request('onto-auth-refresh', update) : update())
+    .finally(() => { refreshing = null; });
   return refreshing;
 }
 

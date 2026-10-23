@@ -1,0 +1,10 @@
+# Merge these locations into an independently managed SAME-ORIGIN gateway.
+# The evaluation upstream is independent from the modeling process.
+# Reserved example hostnames must be replaced by approved runtime routing values.
+location /evaluation/ {
+    proxy_pass http://evaluation.example.net;
+    proxy_read_timeout 120s;
+    client_max_body_size 51m;
+    add_header Referrer-Policy no-referrer always;
+}
+# Keep the existing modeling route; do not move this gateway into its container.

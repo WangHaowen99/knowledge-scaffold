@@ -60,6 +60,18 @@ app.include_router(admin.router)
 app.include_router(hub.router)
 app.include_router(hub_packages.router)
 
+@app.middleware("http")
+async def retired_evaluation_mutations(request: Request, call_next):
+    path = request.url.path
+    if (path.startswith("/api/projects/") and "/eval/" in path
+            and request.method in {"POST", "PUT", "PATCH", "DELETE"}
+            and not path.endswith(("/eval/stop", "/eval/resume"))):
+        return JSONResponse({"code": "evaluation_moved",
+                             "message": "请在独立评测页面管理数据源和新评测", "url": "/evaluation/"},
+                            status_code=410)
+    return await call_next(request)
+
+
 # 白名单外的 /api 路由要求有效 access token；token 可来自
 # Authorization 头或 ?token=（EventSource / 导出下载链接无法带头）
 AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/onto-mcp/")

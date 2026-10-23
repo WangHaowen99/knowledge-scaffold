@@ -234,6 +234,16 @@ Commands for the Knowledge Package Hub (`knowledge-hub/`):
 - Build and start Hub with Onto from source: `bash deploy/deploy.sh --onto-modeling-only`
 - Configuration, API and backup procedures: `knowledge-hub/README.md` and `knowledge-hub/API.md`.
 
+Commands for the independent evaluation service (`eval-service/`):
+
+- Install: `cd eval-service && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt`
+- Backend tests: `PYTHONPATH=eval-service eval-service/.venv/bin/python -m pytest eval-service/tests -q`
+- Frontend: `cd eval-service/frontend && npm ci && npm test && npm run build`
+- Run after injecting protected configuration: `cd eval-service && .venv/bin/python run.py`
+- Independent deployment: `bash deploy/deploy.sh --eval-only`; included in default full-stack deployment; excluded from `--onto-modeling-only`. Full-stack deployment requires `EVAL_ENV_FILE`.
+- Offline package: `bash eval-service/build.sh <version> [amd|arm]`
+- Configuration, API, model configuration debt and recovery: `eval-service/README.md`, `eval-service/API.md`.
+
 After initializing the project, Claude must update this section with real commands.
 
 ### 8.1 Consumer 前端收敛约束

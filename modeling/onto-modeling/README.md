@@ -167,3 +167,16 @@ Hub 不可用时发布失败；Hub 已提交、本地关联尚未写入时提示
 部署配置 `ONTO_HUB_URL`、`ONTO_HUB_SERVICE_TOKEN`（对应 Hub `HUB_SERVICE_TOKEN`）和统一账号认证；包操作和项目资料共用建模服务身份，部署脚本沿用原有 token 自动生成逻辑。源码/发布 Compose 已透传，评测/消费服务凭据按后续接入分别配置。启动、API、限制与备份见 [Hub README](../../knowledge-hub/README.md)。
 
 建模备份包含 `hub-tasks/` 中的主体包关联、冻结发布输入及恢复记录，不保存用户令牌；Hub 卷单独备份。发布门槛继续提示资料分析、对象提取、操作提取和质量检查；示例数据、场景验证及可选步骤不阻塞发布。带发布副作用的 GET `export?scope=package` 已取消，应先 POST 发布，再下载指定版本。
+
+
+## 独立评测入口（eval1）
+
+本地开发时，建模 Vite 将 `/evaluation/`（页面和 API）代理到 `http://127.0.0.1:8090`，可在启动 Vite 时通过 `EVAL_DEV_API_URL` 覆盖。需要先构建评测前端并独立启动评测服务，步骤见 [评测服务说明](../../eval-service/README.md)。修改代理环境变量后须重启 Vite。
+
+部署环境需要在建模页面所在的同源独立网关接入 `/evaluation/`，保留完整路径并转发至评测服务，参考 [网关配置示例](../../eval-service/deploy/nginx.conf.example)。默认全栈 `bash deploy/deploy.sh` 包含评测；仅部署建模不会启动评测。也可从仓库根执行 `bash deploy/deploy.sh --eval-only` 独立部署评测，并按说明注入受保护的运行配置。健康检查返回 404 时检查路由，502/503 时检查评测上游，返回 HTML 时检查是否误入建模页面回退。正确响应应为 `{"status":"ok","service":"evaluation"}`。
+
+进度栏不再提供“数据评测（可选）”和数据源编辑。项目已发布版本及“我的 Hub 知识包”的版本列表新增“评测”，仅携带 Hub 包/版本引用跳转同源 `/evaluation/`，不自动执行、不传令牌或项目 ID。未配置独立评测时明确提示，不回退到 Core。
+
+评测服务自行管理用例、数据源、mapping 与运行结果，直接访问账号、Hub 和 consumer。有效登录通过同源浏览器存储复用，刷新协调使用共享锁；独立网关不依赖建模容器。部署见 `../../eval-service/README.md`，使用 `--eval-only`，不随 `--onto-modeling-only` 启动。
+
+旧版评测记录按明确的历史入口查看；旧任务停止和对账接口保留。新的旧评测创建、用例/数据源修改接口返回 410。旧工作台和 MCP 的 Core 调用仍保留，不能据此下线整个 Core。评测服务不接管历史项目成员关系，也不随建模项目删除独立记录。

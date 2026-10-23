@@ -100,6 +100,9 @@ ONTO_MODELING_PACKAGE="${REPO_ROOT}/modeling/onto-modeling/dist/onto-modeling-${
 }
 tar -C "${BUNDLE_DIR}" -xzf "${ONTO_MODELING_PACKAGE}"
 
+RELEASE_BUNDLE_DIR="${BUNDLE_DIR}" \
+    bash "${REPO_ROOT}/eval-service/build.sh" "${VERSION}" "${ARCH}"
+
 cp "${SCRIPT_DIR}/deploy.sh" "${BUNDLE_DIR}/deploy/deploy.sh"
 
 cat > "${BUNDLE_DIR}/deploy/manifest.json" <<EOF
@@ -122,6 +125,9 @@ cat > "${BUNDLE_DIR}/deploy/manifest.json" <<EOF
   "onto_modeling_image": "onto-modeling:${VERSION}",
   "onto_modeling_auth_server_image": "onto-modeling-auth-server:${VERSION}",
   "onto_modeling_bundle_dir": "onto-modeling",
+  "evaluation_image": "knowledge-evaluation:${VERSION}",
+  "evaluation_image_tar": "eval-service/evaluation-image.tar",
+  "evaluation_bundle_dir": "eval-service",
   "jiuwenswarm_commit": "d7c2ab2f299cd2c73201afb41ebb8b9c00cc7015"
 }
 EOF
@@ -134,7 +140,7 @@ find "${BUNDLE_DIR}/deploy" -type f -name '*.sh' -exec chmod +x {} +
 if command -v sha256sum >/dev/null 2>&1; then
     (
         cd "${BUNDLE_DIR}"
-        sha256sum VERSION deploy/manifest.json images/*.tar > checksums.txt
+        sha256sum VERSION deploy/manifest.json images/*.tar eval-service/evaluation-image.tar > checksums.txt
     )
 fi
 

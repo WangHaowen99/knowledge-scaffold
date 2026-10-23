@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Empty, Modal, Space, Table, Tag, Typography, message } from 'antd';
 import { api } from '../lib/api';
+import { openEvaluation } from '../lib/evaluation.js';
 
 export default function PublishedVersionsDialog({ projectId, onClose }) {
   const [page, setPage] = useState(1);
@@ -48,8 +49,8 @@ export default function PublishedVersionsDialog({ projectId, onClose }) {
               { title: '版本', dataIndex: 'version', render: (v, row, i) => <Space><strong>{v}</strong>{page === 1 && i === 0 && <Tag color="blue">最新</Tag>}</Space> },
               { title: '发布时间', dataIndex: 'created_at', render: (v) => new Date(v).toLocaleString() },
               { title: '来源', dataIndex: 'source_service' },
-              { title: '操作', render: (_, row) => <Button type="link" loading={downloading === row.release_id}
-                onClick={() => download(row.release_id)}>下载知识包</Button> },
+              { title: '操作', render: (_, row) => <Space><Button type="link" loading={downloading === row.release_id}
+                onClick={() => download(row.release_id)}>下载知识包</Button><Button type="link" onClick={() => openEvaluation(row).catch((e) => message.error(e.message))}>评测</Button></Space> },
             ]} />
         )}
         <Typography.Text type="secondary">原始资料仅保存项目最新状态，不提供资料历史版本。</Typography.Text>

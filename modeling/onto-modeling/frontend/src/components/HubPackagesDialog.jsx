@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Input, Modal, Space, Table, Typography, message } from 'antd';
 import { api } from '../lib/api.js';
+import { openEvaluation } from '../lib/evaluation.js';
 
 export default function HubPackagesDialog({ open, onClose, onImported }) {
   const [packages, setPackages] = useState({ items: [], total: 0 });
@@ -65,7 +66,8 @@ export default function HubPackagesDialog({ open, onClose, onImported }) {
         rowSelection={{ type: 'radio', selectedRowKeys: release ? [release.release_id] : [], onChange: (_, rows) => setRelease(rows[0]) }}
         pagination={{ current: versionPage, pageSize: 20, total: versions.total, showSizeChanger: false, onChange: setVersionPage }}
         columns={[{ title: '版本', dataIndex: 'version' }, { title: '来源', dataIndex: 'source_service' },
-          { title: '摘要', dataIndex: 'package_digest', ellipsis: true }]} />}
+          { title: '摘要', dataIndex: 'package_digest', ellipsis: true },
+          { title: '操作', render: (_, row) => <Button onClick={() => openEvaluation({ ...row, hub_package_id: selected.hub_package_id }).catch((e) => message.error(e.message))}>评测</Button> }]} />}
       <Input aria-label="新建模项目名称" placeholder="新建模项目名称" value={name} maxLength={128} disabled={busy} onChange={(e) => setName(e.target.value)} />
     </Space>
   </Modal>;

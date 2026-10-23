@@ -33,7 +33,16 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
-def test_root_deploy_dispatches_source_checkout_to_full_stack(tmp_path: Path) -> None:
+@pytest.fixture
+def evaluation_runtime(tmp_path: Path, monkeypatch) -> None:
+    """Synthetic config and a no-op evaluation deployer for existing stack tests."""
+    config = tmp_path / "evaluation.config"
+    config.write_text("# Synthetic configuration; no credentials.\n", encoding="utf-8")
+    monkeypatch.setenv("EVAL_ENV_FILE", str(config))
+    _write_executable(tmp_path / "eval-service" / "deploy" / "deploy.sh", "exit 0")
+
+
+def test_root_deploy_dispatches_source_checkout_to_full_stack(tmp_path: Path, evaluation_runtime) -> None:
     deploy_dir = tmp_path / "deploy"
     deploy_dir.mkdir()
     shutil.copy2(DEPLOY_ROOT / "deploy.sh", deploy_dir / "deploy.sh")
@@ -80,7 +89,7 @@ def test_root_deploy_forwards_modeling_only_in_source_checkout(tmp_path: Path) -
     ]
 
 
-def test_root_release_dispatches_consumer_before_workbench(tmp_path: Path) -> None:
+def test_root_release_dispatches_consumer_before_workbench(tmp_path: Path, evaluation_runtime) -> None:
     deploy_dir = tmp_path / "deploy"
     deploy_dir.mkdir()
     shutil.copy2(DEPLOY_ROOT / "deploy.sh", deploy_dir / "deploy.sh")
@@ -502,7 +511,7 @@ def test_source_deploy_generates_eval_mysql_password_without_printing_it(
     assert env_file.stat().st_mode & 0o777 == 0o600
 
 
-def test_root_deploy_source_writes_onto_modeling_stack_override(tmp_path: Path) -> None:
+def test_root_deploy_source_writes_onto_modeling_stack_override(tmp_path: Path, evaluation_runtime) -> None:
     """根源码部署为 onto-modeling 生成整栈 override（共享 auth + 网络 + 评测地址）。"""
     deploy_dir = tmp_path / "deploy"
     deploy_dir.mkdir()
@@ -547,7 +556,7 @@ def test_root_deploy_source_writes_onto_modeling_stack_override(tmp_path: Path) 
     assert "未探测到 consumer 的 jiuwenbox socket 卷" in result.stderr
 
 
-def test_root_deploy_source_mounts_consumer_jiuwenbox_socket(tmp_path: Path) -> None:
+def test_root_deploy_source_mounts_consumer_jiuwenbox_socket(tmp_path: Path, evaluation_runtime) -> None:
     """整栈部署默认把 consumer 的 jiuwenbox socket 只读挂给脚本验证网关，不挂进跑 agent 的 onto-modeling。"""
     deploy_dir = tmp_path / "deploy"
     deploy_dir.mkdir()
@@ -747,7 +756,7 @@ printf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"\
 """
 
 
-def test_root_deploy_fails_loudly_when_consumer_network_undetectable(tmp_path: Path) -> None:
+def test_root_deploy_fails_loudly_when_consumer_network_undetectable(tmp_path: Path, evaluation_runtime) -> None:
     """探测不到 consumer 网络时直接报错。
 
     回归：旧实现只匹配 'onto-agent-network$'，匹配不到就回退到写死的

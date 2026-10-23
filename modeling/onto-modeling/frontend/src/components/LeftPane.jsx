@@ -30,8 +30,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { isResearchBlocking } from '../lib/researchGate.js';
 import EvalRunDetail from './EvalRunDetail.jsx';
-import EvalWizard from './EvalWizard.jsx';
-import PublishCheckDialog, { usePackagePublish } from './PublishCheckDialog.jsx';
+import { usePackagePublish } from './PublishCheckDialog.jsx';
 
 // 阶段定义：探测产物目录推断完成态（对应 CLI 版 detect-stage），
 // actions 是该阶段的操作入口；command 以空格结尾表示"填入输入框待补参数"
@@ -137,14 +136,7 @@ export const STAGES = [
     probe: (paths) => hasEntry(paths, 'ontology/solver/'),
     actions: [],
   },
-  {
-    key: 'eval',
-    title: '数据评测（可选）',
-    optional: true,
-    // 探针：评测报告文件（由平台编排落盘），非目录占位
-    probe: (paths) => paths.some((p) => p.startsWith('reports/eval-')),
-    actions: [], // 入口是平台编排（复核 Modal），不走聊天命令
-  },
+
 ];
 
 export const RESEARCH_STAGE_INDEX = STAGES.findIndex((stage) => stage.key === 'research');
@@ -328,11 +320,9 @@ export default function LeftPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section, project.id, tree]);
 
-  // ---- 数据评测（方案 P2）：状态轮询 + 评测向导 ----
+  // Legacy results are loaded only when explicitly opened; new evaluations live independently.
   const [evalInfo, setEvalInfo] = useState(null); // {enabled, reachable, state, evolution}
   const [evalDetailOpen, setEvalDetailOpen] = useState(false);
-  const [evalWizardOpen, setEvalWizardOpen] = useState(false);
-  const [evalBindingRetry, setEvalBindingRetry] = useState(null); // 数据绑定未过检时的续跑函数
   const packagePublish = usePackagePublish({
     onCommand,
     onOpenFile: onSelectFile,
@@ -340,7 +330,7 @@ export default function LeftPane({
     onOpenSolver: onSolver,
   });
   useEffect(() => {
-    if (section !== 'progress') return undefined;
+    if (!evalDetailOpen) return undefined;
     let stop = false;
     const pull = () =>
       api.evalStatus(project.id).then((d) => {
@@ -406,11 +396,6 @@ export default function LeftPane({
     }
   };
 
-  const onEvalStarted = async () => {
-    setEvalWizardOpen(false);
-    setEvalDetailOpen(true);
-    refreshEvalStatus();
-  };
 
   // 失分/异常用例 → /ontology-evolution 归因修订（与聊天区建议同一判定）
   const evolution = evalInfo?.evolution;
@@ -546,102 +531,6 @@ export default function LeftPane({
                       <Button size="small" onClick={() => onSolver?.()}>
                         {statuses[index] === 'finish' ? '打开求解模型' : '启用求解契约'}
                       </Button>
-                    ) : stage.key === 'eval' ? (
-                      !evalInfo?.enabled ? (
-                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                          未配置 modeling 评测服务
-                        </Typography.Text>
-                      ) : (
-                        <>
-                          <Tooltip title={evalInfo?.reachable ? '' : 'modeling 评测服务不可达，请先启动'}>
-                            <Button
-                              size="small"
-                              type="primary"
-                              ghost
-                              disabled={!evalInfo?.reachable || evalInfo?.state?.status === 'running'}
-                              onClick={() => setEvalWizardOpen(true)}
-                            >
-                              {evalInfo?.state?.status === 'running' ? '评测运行中…' : '运行评测'}
-                            </Button>
-                          </Tooltip>
-                          {evalInfo?.state?.status === 'running' && (
-                            <Popconfirm
-                              title="停止本轮评测？"
-                              description="modeling 侧轮次会被取消，已完成用例的判分结果保留；停止后可重新运行。"
-                              okText="停止"
-                              okButtonProps={{ danger: true }}
-                              cancelText="继续评测"
-                              onConfirm={stopEval}
-                            >
-                              <Button size="small" danger loading={evalActing}>
-                                停止评测
-                              </Button>
-                            </Popconfirm>
-                          )}
-                          {evalInfo?.state?.resumable && (
-                            <Tooltip title="只收取 modeling 侧已有轮次的结果，不重跑用例、不重复计费">
-                              <Button size="small" loading={evalActing} onClick={resumeEval}>
-                                续接上一轮
-                              </Button>
-                            </Tooltip>
-                          )}
-                          {evalInfo?.state?.status === 'running' && (
-                            <Typography.Link
-                              style={{ fontSize: 12 }}
-                              onClick={() => setEvalDetailOpen(true)}
-                            >
-                              <span className="eval-live-dot" />
-                              {evalInfo.state.message}
-                            </Typography.Link>
-                          )}
-                          {evalInfo?.state?.status === 'done' && evalInfo.state.summary && (
-                            <Tag
-                              color={evalInfo.state.summary.score >= 80 ? 'green' : 'orange'}
-                              style={{ cursor: 'pointer' }}
-                              onClick={() => onSelectFile(evalInfo.state.report)}
-                            >
-                              最近得分 {evalInfo.state.summary.score}（{evalInfo.state.summary.pass}✓/
-                              {evalInfo.state.summary.fail}✗）
-                            </Tag>
-                          )}
-                          {evalInfo?.state?.status === 'failed' && (
-                            <Tooltip title={evalInfo.state.message}>
-                              <Tag
-                                color="red"
-                                style={{ cursor: evalInfo.state.cases?.length ? 'pointer' : undefined }}
-                                onClick={() => evalInfo.state.cases?.length && setEvalDetailOpen(true)}
-                              >
-                                {evolution?.round_failed
-                                  ? `上次评测异常终止（${evolution.errors} 条异常）`
-                                  : '上次评测失败'}
-                              </Tag>
-                            </Tooltip>
-                          )}
-                          {evolution && evalInfo?.state?.status !== 'running' && (
-                            <Tooltip title="根据最近一轮评测的失分与异常用例归因并优化知识包">
-                              <Button size="small" onClick={runEvolution}>
-                                评测优化
-                              </Button>
-                            </Tooltip>
-                          )}
-                          {(evalInfo?.state?.status === 'interrupted'
-                            || evalInfo?.state?.status === 'stopped') && (
-                            <Tooltip title={evalInfo.state.message}>
-                              <Tag color={evalInfo.state.status === 'stopped' ? 'default' : 'gold'}>
-                                {evalInfo.state.status === 'stopped' ? '上次评测已停止' : '上次评测被中断'}
-                              </Tag>
-                            </Tooltip>
-                          )}
-                          {evalInfo?.state?.status !== 'running' && evalInfo?.state?.cases?.length > 0 && (
-                            <Typography.Link
-                              style={{ fontSize: 12 }}
-                              onClick={() => setEvalDetailOpen(true)}
-                            >
-                              执行详情
-                            </Typography.Link>
-                          )}
-                        </>
-                      )
                     ) : (
                       stage.actions.map((action) => (
                         <Button
@@ -679,24 +568,17 @@ export default function LeftPane({
             }}
           >
             发布知识包
-            {evalInfo?.state?.summary != null && (
-              <span className="export-eval-score">评测 {evalInfo.state.summary.score}</span>
-            )}
           </Button>
           <Button block style={{ marginBottom: 8 }} onClick={() => packagePublish.showVersions(project.id)}>
             已发布版本
           </Button>
-          {missingPublishStages(STAGES, statuses).length === 0 &&
-            evalInfo?.enabled &&
-            evalInfo?.state?.status !== 'done' && (
-              <Alert
-                type="warning"
-                showIcon
-                className="export-eval-hint"
-                message="尚未数据评测——建议发布前在「数据评测」阶段跑一轮，验证知识包问答质量"
-                style={{ marginBottom: 8, fontSize: 12, padding: '4px 10px' }}
-              />
-            )}
+          <Button block style={{ marginBottom: 8 }} onClick={() => setEvalDetailOpen(true)}>
+            旧版评测记录（历史链路）
+          </Button>
+          {evalDetailOpen && evalInfo?.state?.status === 'running' &&
+            <Button danger loading={evalActing} onClick={stopEval}>停止旧任务</Button>}
+          {evalDetailOpen && evalInfo?.state?.resumable &&
+            <Button loading={evalActing} onClick={resumeEval}>对账旧任务</Button>}
           <Space wrap size={4}>
             {EXTRA_ACTIONS.map((action) => (
               <Button key={action.label} size="small" onClick={() => onCommand(action.command)}>
@@ -977,32 +859,6 @@ export default function LeftPane({
         onEvolution={() => {
           setEvalDetailOpen(false);
           runEvolution();
-        }}
-      />
-      <EvalWizard
-        project={project}
-        open={evalWizardOpen}
-        onClose={() => setEvalWizardOpen(false)}
-        onStarted={onEvalStarted}
-        onBindingProblems={(retry) => setEvalBindingRetry(() => retry)}
-      />
-      <PublishCheckDialog
-        onChanged={onRefresh}
-        onCommand={(text) => {
-          setEvalWizardOpen(false);
-          onCommand(text);
-        }}
-        onOpenFile={(path) => {
-          setEvalWizardOpen(false);
-          onSelectFile(path);
-        }}
-        open={!!evalBindingRetry}
-        projectId={project.id}
-        mode="eval"
-        onClose={() => setEvalBindingRetry(null)}
-        onProceed={async (allowUnbound) => {
-          await evalBindingRetry(allowUnbound);
-          setEvalBindingRetry(null);
         }}
       />
       {packagePublish.dialog}

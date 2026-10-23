@@ -6,10 +6,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--consumer-only|--modeling-only|--onto-modeling-only]
+Usage: $(basename "$0") [--consumer-only|--modeling-only|--onto-modeling-only|--eval-only]
 
-Deploy the full stack — consumer, Modeling Workbench and Onto Modeling — from
-either a source checkout or an extracted release package.
+Deploy the full stack — consumer, Modeling Workbench, Onto Modeling and evaluation —
+from either a source checkout or an extracted release package.
+Full-stack and --eval-only deployments require EVAL_ENV_FILE pointing to a
+protected evaluation runtime configuration file outside the repository.
 EOF
 }
 
@@ -249,9 +251,13 @@ seed_onto_modeling_bundle_env() { # <bundle 的 onto-modeling 目录>
 CONSUMER_ONLY=0
 MODELING_ONLY=0
 ONTO_MODELING_ONLY=0
+EVAL_ONLY=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --eval-only)
+            EVAL_ONLY=1
+            ;;
         --consumer-only)
             CONSUMER_ONLY=1
             ;;
@@ -273,8 +279,35 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-if [ "$(( CONSUMER_ONLY + MODELING_ONLY + ONTO_MODELING_ONLY ))" -gt 1 ]; then
-    die "--consumer-only / --modeling-only / --onto-modeling-only cannot be combined"
+if [ "$(( CONSUMER_ONLY + MODELING_ONLY + ONTO_MODELING_ONLY + EVAL_ONLY ))" -gt 1 ]; then
+    die "--consumer-only / --modeling-only / --onto-modeling-only / --eval-only cannot be combined"
+fi
+
+DEPLOY_EVALUATION=0
+if [ "$(( CONSUMER_ONLY + MODELING_ONLY + ONTO_MODELING_ONLY ))" = "0" ]; then
+    DEPLOY_EVALUATION=1
+    # Fail before changing any services if evaluation cannot be deployed.
+    [ -f "$SCRIPT_DIR/../eval-service/deploy/deploy.sh" ] \
+        || die "Evaluation deployment files missing; use a full release package including eval-service"
+    [ -n "${EVAL_ENV_FILE:-}" ] \
+        || die "Set EVAL_ENV_FILE to a protected evaluation runtime configuration file"
+    [ -f "$EVAL_ENV_FILE" ] && [ -r "$EVAL_ENV_FILE" ] \
+        || die "Evaluation runtime configuration file is missing or unreadable"
+    # Child deployment scripts can change directories.
+    EVAL_ENV_FILE="$(cd "$(dirname "$EVAL_ENV_FILE")" && pwd)/$(basename "$EVAL_ENV_FILE")"
+    export EVAL_ENV_FILE
+fi
+
+deploy_evaluation() {
+    if [ "$DEPLOY_EVALUATION" = "1" ]; then
+        log "Deploying independent evaluation service"
+        bash "$SCRIPT_DIR/../eval-service/deploy/deploy.sh"
+    fi
+}
+
+if [ "$EVAL_ONLY" = "1" ]; then
+    deploy_evaluation
+    exit 0
 fi
 
 # A release archive is commonly unpacked into a staging directory by CI or a
@@ -319,6 +352,7 @@ if [ -f "${SCRIPT_DIR}/manifest.json" ] && [ "${BUNDLE_ROOT}" != "${INSTALL_DIR}
             seed_onto_modeling_bundle_env "${BUNDLE_ROOT}/onto-modeling"
             bash "${BUNDLE_ROOT}/onto-modeling/deploy.sh"
         fi
+        deploy_evaluation
         exit 0
     fi
 fi
@@ -349,6 +383,7 @@ elif [ -f "${SCRIPT_DIR}/deploy-stack.sh" ]; then
             log "Onto Modeling source directory not present; skipping"
         fi
     fi
+    deploy_evaluation
     log "Deployment finished successfully"
     exit 0
 else
@@ -384,4 +419,5 @@ if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]; then
     fi
 fi
 
+deploy_evaluation
 log "Deployment finished successfully"
