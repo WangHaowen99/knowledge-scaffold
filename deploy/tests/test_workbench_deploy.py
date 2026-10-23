@@ -233,11 +233,24 @@ exit 0
     package = modeling_root / "dist" / "modeling-v-test-linux-amd64.tar.gz"
     with tarfile.open(package) as archive:
         names = set(archive.getnames())
+        packaged_deploy_files = {
+            member.name for member in archive.getmembers()
+            if member.isfile() and member.name.startswith("modeling/deploy/")
+        }
+        legacy_deploy_files = {
+            f"modeling/deploy/{path.relative_to(MODELING_ROOT / 'deploy')}"
+            for path in (MODELING_ROOT / "deploy").rglob("*")
+            if path.is_file() and path.relative_to(MODELING_ROOT / "deploy").parts[0] != "cce"
+        }
+        assert packaged_deploy_files == legacy_deploy_files | {
+            "modeling/deploy/bin/docker-compose", "modeling/deploy/manifest.json"
+        }
         assert "modeling/images/mw-modeling-v-test.tar" in names
         assert "modeling/images/mw-modeling-agent-v-test.tar" in names
         assert "modeling/.env.example" in names
         assert "modeling/deploy/install.sh" in names
         assert "modeling/deploy/bin/docker-compose" in names
+        assert not any(name.startswith("modeling/deploy/cce/") for name in names)
         manifest_file = archive.extractfile("modeling/deploy/manifest.json")
         assert manifest_file is not None
         manifest = json.load(manifest_file)

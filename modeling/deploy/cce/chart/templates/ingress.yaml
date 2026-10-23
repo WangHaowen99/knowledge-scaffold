@@ -1,0 +1,98 @@
+{{- if eq .Values.global.access.mode "port" }}
+{{- range .Values.global.access.listeners }}
+{{- $name := printf "%s-%s" (include "modeling.name" $) .id | trunc 63 | trimSuffix "-" }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $name }}
+  annotations:
+    kubernetes.io/elb.id: {{ $.Values.global.access.elb.id | quote }}
+    kubernetes.io/elb.port: {{ .listenerPort | quote }}
+    {{- if $.Values.global.access.elb.class }}
+    kubernetes.io/elb.class: {{ $.Values.global.access.elb.class | quote }}
+    {{- end }}
+spec:
+  {{- if $.Values.global.access.ingressClassName }}
+  ingressClassName: {{ $.Values.global.access.ingressClassName | quote }}
+  {{- end }}
+  {{- if eq .protocol "HTTPS" }}
+  tls:
+    - secretName: {{ .tlsSecretName | quote }}
+      {{- if .host }}
+      hosts: [{{ .host | quote }}]
+      {{- end }}
+  {{- end }}
+  rules:
+    - {{- if .host }}
+      host: {{ .host | quote }}
+      {{- end }}
+      http:
+        paths:
+          - path: {{ .path | quote }}
+            pathType: {{ .pathType | quote }}
+            backend:
+              service:
+                {{- if eq .endpointId "modeling-core" }}
+                name: {{ $.Release.Name }}-core
+                port: {number: 5100}
+                {{- else if eq .endpointId "modeling-mcp" }}
+                name: {{ $.Release.Name }}-core
+                port: {number: 5188}
+                {{- else if eq .endpointId "onto-modeling" }}
+                name: {{ $.Release.Name }}-onto
+                port: {number: 8100}
+                {{- else }}
+                {{- fail (printf "unknown external endpointId %s" .endpointId) }}
+                {{- end }}
+---
+{{- end }}
+{{- else if .Values.global.access.routes }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "modeling.name" . }}
+  annotations:
+    kubernetes.io/elb.id: {{ .Values.global.access.elb.id | quote }}
+    kubernetes.io/elb.port: {{ .Values.global.access.listenerPort | quote }}
+    {{- if .Values.global.access.elb.class }}
+    kubernetes.io/elb.class: {{ .Values.global.access.elb.class | quote }}
+    {{- end }}
+spec:
+  {{- if .Values.global.access.ingressClassName }}
+  ingressClassName: {{ .Values.global.access.ingressClassName | quote }}
+  {{- end }}
+  {{- if eq .Values.global.access.protocol "HTTPS" }}
+  tls:
+    - secretName: {{ .Values.global.access.tlsSecretName | quote }}
+      hosts:
+        {{- range .Values.global.access.routes }}
+        {{- if .host }}
+        - {{ .host | quote }}
+        {{- end }}
+        {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.global.access.routes }}
+    - {{- if .host }}
+      host: {{ .host | quote }}
+      {{- end }}
+      http:
+        paths:
+          - path: {{ .path | quote }}
+            pathType: {{ .pathType | quote }}
+            backend:
+              service:
+                {{- if eq .endpointId "modeling-core" }}
+                name: {{ $.Release.Name }}-core
+                port: {number: 5100}
+                {{- else if eq .endpointId "modeling-mcp" }}
+                name: {{ $.Release.Name }}-core
+                port: {number: 5188}
+                {{- else if eq .endpointId "onto-modeling" }}
+                name: {{ $.Release.Name }}-onto
+                port: {number: 8100}
+                {{- else }}
+                {{- fail (printf "unknown external endpointId %s" .endpointId) }}
+                {{- end }}
+    {{- end }}
+{{- end }}

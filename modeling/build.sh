@@ -105,7 +105,10 @@ docker save -o "${IMAGES_DIR}/mw-modeling-${VERSION}.tar" "mw-modeling:${VERSION
     "${SCRIPT_DIR}/modeling-agent"
 docker save -o "${IMAGES_DIR}/mw-modeling-agent-${VERSION}.tar" "mw-modeling-agent:${VERSION}"
 
-cp -r "${SCRIPT_DIR}/deploy/"* "${DEPLOY_DIR}/"
+for source in "${SCRIPT_DIR}/deploy/"*; do
+    [ "${source##*/}" = "cce" ] && continue
+    cp -r "${source}" "${DEPLOY_DIR}/"
+done
 
 if [ "${STANDALONE}" = "1" ]; then
     mkdir -p "${DEPLOY_DIR}/bin"
