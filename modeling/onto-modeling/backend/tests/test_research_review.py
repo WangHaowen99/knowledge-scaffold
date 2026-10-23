@@ -719,4 +719,5 @@ def test_objects_alone_do_not_count_research_as_done(workspace, toolkit):
 
     assert progress["research_review"]["status"] == "none"
     assert progress["research_review"]["blocking"] is False
-    assert progress["stages_done"] == 0
+    # 各阶段独立计数：只算对象提取，资料分析不计完成
+    assert progress["stages_done"] == 1

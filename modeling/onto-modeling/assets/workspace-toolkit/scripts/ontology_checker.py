@@ -225,6 +225,9 @@ RECOMMENDED_PACKAGED_SUBDIRS = ('object', 'operation', 'rule', 'metric')
 # 按设计就不该进知识包的过程产物目录——不提示。
 WORKING_ARTIFACT_SUBDIRS = ('data-mock', 'diagrams-summary', 'testcase')
 
+# 求解契约受管目录：只由后端接口写入（守卫拒绝直接写），检查器只读取、提示断链。
+SOLVER_SUBDIR = 'solver'
+
 
 def check_file_locations(ontology_dir: Path) -> list:
     """CLAUDE.md 规则 3：ontology/ 下的 .md 文件必须放在白名单子目录中。"""
@@ -245,6 +248,12 @@ def check_file_locations(ontology_dir: Path) -> list:
             issues.append(Issue(
                 file=str(rel), severity='错误', category='文件位置',
                 message=f'ontology/ 根目录不允许直接放 .md 文件；请移至白名单子目录之一：{allowed_str}',
+                source='规则检查',
+            ))
+        elif parts[0] == SOLVER_SUBDIR:
+            issues.append(Issue(
+                file=str(rel), severity='错误', category='文件位置',
+                message=f'ontology/solver/ 是平台受管的求解契约目录，不放知识文档；允许的子目录：{allowed_str}',
                 source='规则检查',
             ))
         elif parts[0] not in ALLOWED_MD_SUBDIRS:
@@ -283,6 +292,43 @@ def check_unpackaged_knowledge(ontology_dir: Path) -> list:
                 f'consumer 检索不到；若这些内容需要被问答使用，请建模为 {packaged_str} '
                 f'中的条目（案例/方案类知识 → ontology/rule/ 的场景规则）。'
             ),
+            source='规则检查',
+        ))
+    return issues
+
+
+def _solver_bound_operation(binding: Path) -> str:
+    """binding.yaml 顶层 `operation:` 标量；后端用 yaml.safe_dump 写出，逐行即可取到。"""
+    for line in binding.read_text(encoding='utf-8').splitlines():
+        m = re.match(r'^operation:\s*(.+?)\s*$', line)
+        if m:
+            return m.group(1).strip('\'"')
+    return ''
+
+
+def check_solver_bindings(ontology_dir: Path) -> list:
+    """求解契约绑定的 Operation 被删除或改名后，发布会被求解门禁阻断。
+
+    只提示断链（警告，不阻断提交）：契约由求解模型面板维护，模型不能改
+    ontology/solver/，修复方式是恢复 Operation 原名，或请用户在面板里改绑定。
+    """
+    solver_dir = ontology_dir / SOLVER_SUBDIR
+    if not solver_dir.is_dir():
+        return []
+    stems = set()
+    for subdir in ('operation', 'logic'):
+        directory = ontology_dir / subdir
+        if directory.is_dir():
+            stems.update(f.stem for f in directory.glob('*.md'))
+    issues = []
+    for binding in sorted(solver_dir.glob('*/binding.yaml')):
+        operation = _solver_bound_operation(binding)
+        if not operation or operation in stems:
+            continue
+        issues.append(Issue(
+            file=str(binding.relative_to(ontology_dir)), severity='警告', category='求解契约',
+            message=(f'求解契约「{binding.parent.name}」绑定的 Operation「{operation}」不存在，发布会被求解门禁阻断；'
+                     '已绑定求解契约的 Operation 不要删除或改名，确需调整请恢复原名，或提示用户在求解模型面板中修改绑定。'),
             source='规则检查',
         ))
     return issues
@@ -982,7 +1028,7 @@ def check_object_self_relations(doc: OntologyDoc, tables: dict) -> list:
             file=_rel(doc), severity='警告', category='关联字段',
             message=f'自关联「{stem} -{name}→ {stem}」没有写关联字段括注：两端是同一张表，不写会把每个节点'
                     f'连到它自己，发布包与图模式数据评测都会跳过这条关系。请写成「{name}（指向方字段 → '
-                    '被指向方字段）」，如「上级员工（manager_id → employee_id）」',
+                    '被指向方字段）」，如「直属上级（manager_id → employee_id）」',
             source='规则检查'))
     return issues
 
@@ -1019,7 +1065,7 @@ def check_relation_join_conflicts(all_docs: dict, tables: dict, check_docs: dict
         where = '；'.join(f'{doc.path.name} 第 {lineno} 行为 {pair}' for doc, lineno, pair in places)
         message = (f'关系「{source} -{name}→ {target}」在多处声明了不同的关联字段（{where}），'
                    '发布包与图模式数据评测会跳过这条关系的全部声明。若是两种不同的关联方式（如订单的买方 / '
-                   '卖方），每种改用不同的关系名（如「买方客户」「卖方客户」）；'
+                   '卖方），每种改用不同的关系名（如「买方」「卖方」）；'
                    '若是同一种，各处改成同一对字段')
         for path in dict.fromkeys(doc.path for doc, _, _ in places):
             if path.stem in check_docs:
@@ -1139,6 +1185,59 @@ def check_package_limits(all_docs: dict, check_docs: dict) -> list:
                 message=f'操作文档 {len(doc.raw)} 字符，超过 consumer 单个操作 {CONSUMER_OPERATION_MAX_CHARS} '
                         '字符的上限，导入 consumer 时会被拒：拆成子操作，或把实现细节下沉到脚本',
                 source='规则检查'))
+    return issues
+
+
+# --- 关联对象的关系名称（与建模工作台 modeling/src/workflow/relation-name.ts 同一口径）---
+
+_CARDINALITY_WORDS = {'一对一', '一对多', '多对一', '多对多',
+                      'onetoone', 'onetomany', 'manytoone', 'manytomany'}
+_CARDINALITY_END = r'(?:0|1|n|m|x|\*|0\.\.1|0\.\.\*|1\.\.\*)'
+_CARDINALITY_PAIR_RE = re.compile(rf'{_CARDINALITY_END}(?::|-|~|to|对){_CARDINALITY_END}', re.IGNORECASE)
+_CARDINALITY_RANGE_RE = re.compile(r'(?:0|1)\.\.(?:1|n|m|x|\*)', re.IGNORECASE)
+
+
+def _relation_token(value: str) -> str:
+    """NFKC、小写、去掉空白与标点符号后的语义串：判断关系名是否重复了端点名称。"""
+    text = unicodedata.normalize('NFKC', value).strip().lower()
+    return ''.join(ch for ch in text
+                   if not ch.isspace() and unicodedata.category(ch)[0] not in 'PS')
+
+
+def _relation_name_problem(name: str, source: str, target: str) -> str:
+    compact = re.sub(r'\s+', '', name).lower()
+    if (compact.replace('-', '').replace('_', '') in _CARDINALITY_WORDS
+            or _CARDINALITY_PAIR_RE.fullmatch(compact) or _CARDINALITY_RANGE_RE.fullmatch(compact)):
+        return f'只写了关系基数「{name}」，基数不是关系谓词'
+    token = _relation_token(name)
+    for side, endpoint in (('目标', target), ('源', source)):
+        endpoint_token = _relation_token(endpoint)
+        if len(endpoint_token) >= 2 and endpoint_token in token:
+            return f'包含{side}对象名称「{endpoint}」'
+    return ''
+
+
+def check_object_relation_names(doc: OntologyDoc) -> list:
+    """「# 关联对象」的关系名只写谓词：不含两端对象名称，也不只写基数。
+
+    建模工作台生成、编辑、优化、融合知识包时按同一规则校验，不合规会被拦下（数据评测启动时不查）。
+    发布包里对象的 key 与标题都取文件名、不带别名，所以端点名称就是两端的文件名。
+    """
+    issues = []
+    for _, source, name, target, _ in _object_relations(doc):
+        name = unicodedata.normalize('NFKC', name).strip()
+        if not name:
+            continue
+        problem = _relation_name_problem(name, source, target)
+        if not problem:
+            continue
+        issues.append(Issue(
+            file=_rel(doc), severity='警告', category='关系名称',
+            message=f'关系「{source} -{name}→ {target}」的关系名{problem}：建模工作台按同一规则校验，'
+                    f'在工作台里编辑、优化这个知识包时会被拦下。请只写关系谓词（如「属于」「包含」「适用于」），'
+                    f'使「源对象 → 关系名 → 目标对象」连读通顺；两端对象里的这条关系要一起改，'
+                    f'同一对对象之间的多条关系用不同谓词区分',
+            source='规则检查'))
     return issues
 
 
@@ -1963,6 +2062,7 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
     issues = list(check_duplicate_stems(ontology_dir))
     issues += check_file_locations(ontology_dir)
     issues += check_unpackaged_knowledge(ontology_dir)
+    issues += check_solver_bindings(ontology_dir)
     term_map = build_term_map(all_docs)
     tables = load_table_headers(ontology_dir) if tables is None else tables
     report_categories = load_report_categories(ontology_dir)
@@ -1980,6 +2080,7 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
             issues += check_object_primary_key(doc)
             issues += check_object_links(doc, all_docs)
             issues += check_object_relation_joins(doc, all_docs, tables)
+            issues += check_object_relation_names(doc)
             issues += check_object_self_relations(doc, tables)
             issues += check_graph_identifiers(doc, tables)
             issues += check_derived_attribute_markers(doc, all_docs)

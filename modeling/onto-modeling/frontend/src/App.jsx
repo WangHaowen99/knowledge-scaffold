@@ -922,6 +922,7 @@ export default function App() {
                   pushFocus('query');
                 }}
                 onKnowledge={() => pushFocus('knowledge')}
+                onSolver={() => pushFocus('solver')}
               />
             </div>
   );
