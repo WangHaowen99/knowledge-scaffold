@@ -295,7 +295,10 @@ modeling 服务时再评估。
     → 轮询 `graph-imports`；
   - 关系关联由 `graph_relation_mapping` 推断：同一 Sheet 的两类对象按同行关联；跨 Sheet 时
     找「一端主键在另一端有同名属性」的外键约定，按字段值关联；推断不出的关系跳过，
-    并在执行详情里给出说明。
+    并在执行详情里给出说明；
+  - 求解验证不导入数据：可直接选带导入的 Neo4j 配置，`PUT /data-source` 只下发连接，
+    再调 modeling `graph-import/isolation` 只读统计隔离范围内已有的节点与关系；
+    范围为空时在提问前失败，提示先用该数据源跑一次评测完成导入。数据集模式仍不支持。
 - **图模式导出**：
   - modeling 对 Neo4j 包的约定是 mapping 的 `resource` 为对象 key（即 Label），`fields`
     覆盖对象的全部字段，Sheet 与列由 `sources[]` 声明；

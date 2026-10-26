@@ -7,6 +7,7 @@
 
 import asyncio
 import json
+import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -178,6 +179,7 @@ class StubModeling:
 
     def __init__(self, respond=None):
         self.requests: list[dict] = []
+        self.graph = {"nodeCount": 0, "relationshipCount": 0}  # 图隔离范围内已有的数据量
         self.respond = respond or (lambda cases: (200, {"validation": {
             "package": {"id": "pkg", "version": "0.1.2"},
             "cases": [_authoritative(case) for case in cases],
@@ -219,6 +221,8 @@ class StubModeling:
                     self._send(200, {"project": {"id": "mp_synthetic"}})
                 elif self.path == "/api/projects/mp_synthetic/data-source":
                     self._send(200, {"dataSource": {"mode": "none"}})
+                elif self.path == "/api/projects/mp_synthetic/graph-import/isolation":
+                    self._send(200, {"existing": stub.graph})
                 elif self.path == "/api/projects/mp_synthetic/solver-contract-validations":
                     fields = dict(_multipart_fields(body, entry["content_type"]))
                     entry["fields"] = [name for name, _ in _multipart_fields(body, entry["content_type"])]
@@ -347,7 +351,7 @@ def test_start_requires_current_revision_and_complete_cases(manager: WorkspaceMa
     assert solver_validation.list_records(root) == []
 
 
-def test_start_rejects_import_data_sources_and_unavailable_modeling(
+def test_start_rejects_dataset_sources_and_unavailable_modeling(
     manager: WorkspaceManager, stub, monkeypatch
 ):
     pid, root, revision = _project(manager)
@@ -468,6 +472,54 @@ def test_two_n_candidates_pass_and_unlock_publish(manager: WorkspaceManager, stu
     assert json.loads(server.find("/data-source")["body"]) == {"mode": "none"}
     stored = (root / solver_validation.VALIDATIONS_FILE).read_text(encoding="utf-8")
     assert TOKEN not in stored and "127.0.0.1" not in stored
+
+
+GRAPH_PASSWORD = secrets.token_hex(8)
+
+
+@pytest.mark.parametrize(("nodes", "status"), [
+    (5, solver_validation.STATUS_PASSED),
+    (0, solver_validation.STATUS_FAILED),
+])
+def test_graph_source_with_import_selection_reads_existing_graph_data(
+    manager: WorkspaceManager, stub, nodes: int, status: str,
+):
+    server = stub()
+    server.graph = {"nodeCount": nodes, "relationshipCount": 2 if nodes else 0}
+    pid, root, revision = _project(manager)
+    solver_validation_run.save_cases(root, [_case("n7", 7)])
+    source = eval_data_sources.create_source(pid, {
+        "mode": "connection", "provider": "neo4j", "include_mock": True,
+        "config": {
+            "uri": "bolt://graph.example.com:7687", "username": "neo4j", "password": GRAPH_PASSWORD,
+            "workspace_value": "solver-eval-ws", "ontology_property": "d2o_ontology_id",
+        },
+    }, root)
+
+    record = _run(manager, pid, revision, data_source_id=source["id"])
+
+    assert record["status"] == status
+    assert record["evidence"]["graph_data"] == {"nodes": nodes, "relationships": 2 if nodes else 0}
+    # 只配置连接、统计已有数据，不做图导入
+    paths = [item["path"] for item in server.requests]
+    assert not any("/graph-import/uploads" in path for path in paths)
+    configured = json.loads(server.find("/data-source")["body"])
+    assert "files" not in configured and "include_mock" not in configured
+    assert configured["config"]["ontology_value"] == pid
+    assert json.loads(server.find("/graph-import/isolation")["body"]) == {"password": GRAPH_PASSWORD}
+    assert paths.index("/api/projects/mp_synthetic/data-source") < paths.index(
+        "/api/projects/mp_synthetic/graph-import/isolation"
+    )
+    validated = any(path.endswith("/solver-contract-validations") for path in paths)
+    if nodes:
+        assert validated
+    else:
+        # 范围为空时在提问前失败，不产生 Agent 开销
+        assert not validated
+        assert record["error_code"] == solver_validation_run.CODE_GRAPH_DATA_EMPTY
+        assert "solver-eval-ws" in record["message"] and "评测" in record["message"]
+    stored = (root / solver_validation.VALIDATIONS_FILE).read_text(encoding="utf-8")
+    assert GRAPH_PASSWORD not in stored and "graph.example.com" not in stored
 
 
 def test_candidate_count_mismatch_fails(manager: WorkspaceManager, stub):

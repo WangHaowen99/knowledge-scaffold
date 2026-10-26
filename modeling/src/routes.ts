@@ -138,6 +138,7 @@ import {
   GraphImportAlreadyRunningError,
   GraphImportPackageStaleError,
   getGraphImportHistory,
+  inspectProjectGraphIsolation,
   uploadGraphImportExcel,
   validateGraphImportUpload,
   type GraphImportExecutionDependencies,
@@ -2860,6 +2861,32 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       return { imports: getGraphImportHistory(c.p.id) };
+    });
+
+    // 只读统计数据源隔离范围内已有的节点与关系数；Password 同导入一样只随本次请求传入
+    r.post('/api/projects/:id/graph-import/isolation', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const { password } = (req.body ?? {}) as any;
+      try {
+        const existing = await inspectProjectGraphIsolation({
+          projectId: c.p.id,
+          password: String(password ?? ''),
+        }, options.graphImportExecutionDependencies);
+        return { existing };
+      } catch (error) {
+        if (error instanceof GraphImportInputError) {
+          return reply.code(error.statusCode).send({
+            code: error.code,
+            error: error.message,
+            details: error.details,
+          });
+        }
+        return sendHttpError(reply, error, {
+          includeReason: false,
+          logMessage: '统计图数据隔离范围失败',
+        });
+      }
     });
 
     // ---- 节点 9 评测用例录入 ----

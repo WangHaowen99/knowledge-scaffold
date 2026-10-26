@@ -10,8 +10,7 @@ import {
   draftFromView,
   draftKey,
   engineCapabilities,
-  evaluatorCommand,
-  evaluatorCommandBlocker,
+  evaluatorCommandPlan,
   findProblemFamily,
   isEnabled,
   isManagedSolverPath,
@@ -691,16 +690,27 @@ test('starting a validation needs a saved, clean contract with full case coverag
   assert.equal(isValidationActive({ status: 'failed' }), false);
 });
 
-test('the evaluator command targets the saved contract and waits for a clean, saved draft', () => {
+test('the evaluator command saves pending drafts first and targets the saved solver key', () => {
   const [saved] = draftFromView(view([managedOperation()]));
-  assert.equal(evaluatorCommand(saved), '/ontology-solver-evaluator plan_route');
-  assert.equal(evaluatorCommandBlocker(saved), '');
-  assert.match(evaluatorCommandBlocker(saved, { dirty: true }), /未保存/);
+  assert.deepEqual(evaluatorCommandPlan(saved), {
+    command: '/ontology-solver-evaluator plan_route', needsSave: false, blocker: '',
+  });
+  // 有未保存的修改：先保存，命令按保存后的求解标识
   const renamed = setField(saved, 'solver_key', 'other_route');
-  assert.equal(evaluatorCommand(renamed), '/ontology-solver-evaluator plan_route', 'renames apply after saving');
-  assert.match(evaluatorCommandBlocker(newDraftItem({}, '规划路线', [saved])), /先保存/);
+  assert.deepEqual(evaluatorCommandPlan(renamed, { dirty: true }), {
+    command: '/ontology-solver-evaluator other_route', needsSave: true, blocker: '',
+  });
+  // 保存不可用时不能发起；不需要保存时与保存状态无关
+  assert.equal(evaluatorCommandPlan(renamed, { dirty: true, saveBlocker: '还有 1 个问题需要先修正' }).blocker,
+    '还有 1 个问题需要先修正');
+  assert.equal(evaluatorCommandPlan(saved, { saveBlocker: '还有 1 个问题需要先修正' }).blocker, '');
+  const draft = setField(newDraftItem({}, '规划路线', [saved]), 'solver_key', 'new_route');
+  assert.deepEqual(evaluatorCommandPlan(draft), {
+    command: '/ontology-solver-evaluator new_route', needsSave: true, blocker: '',
+  }, 'unsaved contracts are saved first');
+  assert.match(evaluatorCommandPlan(setField(saved, 'solver_key', 'Bad Key'), { dirty: true }).blocker, /求解标识/);
   const [invalid] = draftFromView(view([operation('Bad Key')]));
-  assert.match(evaluatorCommandBlocker(invalid), /求解标识/);
+  assert.match(evaluatorCommandPlan(invalid).blocker, /求解标识/);
 });
 
 test('case rows expose the per-case verdict, 2N expectation and first failed assertion', () => {
@@ -731,7 +741,7 @@ test('case rows expose the per-case verdict, 2N expectation and first failed ass
   assert.deepEqual(validationCaseRows(null), []);
 });
 
-test('data sources that need a workbook import are listed but disabled', () => {
+test('dataset sources are disabled and graph sources with imports reuse existing graph data', () => {
   const options = validationSourceOptions([
     { id: 's1', mode: 'connection', provider: 'nl2sql_http', name: '查询服务' },
     { id: 's2', mode: 'dataset', name: '业务数据表（1 份）', files: ['f1'] },
@@ -740,6 +750,8 @@ test('data sources that need a workbook import are listed but disabled', () => {
     { id: 's5', mode: 'none', name: '不使用数据源' },
   ]);
   assert.deepEqual(options.map((option) => [option.value, Boolean(option.disabled)]), [
-    ['', false], ['s1', false], ['s2', true], ['s3', true], ['s4', false],
+    ['', false], ['s1', false], ['s2', true], ['s3', false], ['s4', false],
   ]);
+  assert.equal(options[3].label, '图库（使用图中已有数据，不导入）');
+  assert.equal(options[4].label, '图库直连');
 });
