@@ -15,6 +15,7 @@ ONTO_WEB_PORT=""
 CONSUMER_PACKAGE=""
 MODELING_PACKAGE=""
 ONTO_MODELING_PACKAGE=""
+KNOWLEDGE_HUB_PACKAGE=""
 PORT_MODE="default"
 scope=""
 OLD_MODELING_RUNNING=""
@@ -186,7 +187,7 @@ detect_consumer_network() {
 }
 
 deploy_onto_modeling() {
-    local dir="${INSTALL_ROOT}/onto-modeling" env_file="${INSTALL_ROOT}/onto-modeling/.env" network
+    local dir="${INSTALL_ROOT}/onto-modeling" env_file="${INSTALL_ROOT}/onto-modeling/.env" network hub_token
     [ -f "${dir}/deploy.sh" ] || die "Onto Modeling 部署脚本不存在：${dir}/deploy.sh"
     [ -x "${dir}/deploy.sh" ] || chmod +x "${dir}/deploy.sh"
     network="$(detect_consumer_network)"
@@ -206,9 +207,36 @@ deploy_onto_modeling() {
     # 评测要调 Modeling Workbench，容器网内地址与宿主端口无关
     grep -q '^ONTO_WEB_MODELING_URL=..*' "${env_file}" \
         || write_env_value "${env_file}" ONTO_WEB_MODELING_URL 'http://mw-modeling:5100'
+    # 与独立部署的知识包 Hub 使用同一服务凭据；未部署 Hub 时保留原值（缺失由 Onto 部署脚本生成）
+    hub_token="$(env_get "${INSTALL_ROOT}/knowledge-hub/.env" HUB_SERVICE_TOKEN)"
+    [ -z "${hub_token}" ] || write_env_value "${env_file}" ONTO_HUB_SERVICE_TOKEN "${hub_token}"
     log "Onto Modeling 共享 Consumer 账号中心：网络 ${network}"
     bash "${dir}/deploy.sh"
     wait_for_onto_modeling
+}
+
+# Hub 是独立 compose 项目，排在 Onto Modeling 之前部署；服务凭据沿用已部署 Onto Modeling 的值，
+# 两边都没有时由 Hub 部署脚本生成，随后 deploy_onto_modeling 对齐。值只经子进程环境传递，不打印。
+deploy_knowledge_hub() {
+    local dir="${INSTALL_ROOT}/knowledge-hub" network onto_token
+    [ -f "${dir}/deploy.sh" ] || die "知识包 Hub 部署脚本不存在：${dir}/deploy.sh"
+    network="$(detect_consumer_network)"
+    [ -n "${network}" ] || die '无法探测 Consumer 容器网络，请确认 onto-agent-backend 已在运行'
+    onto_token="$(env_get "${INSTALL_ROOT}/onto-modeling/.env" ONTO_HUB_SERVICE_TOKEN)"
+    log "部署知识包 Hub：${dir}（网络 ${network}）"
+    (cd "${dir}" && CONSUMER_NETWORK="${network}" HUB_SERVICE_TOKEN="${onto_token}" bash ./deploy.sh) \
+        || die "知识包 Hub 部署失败；修复后可单独执行 bash ${dir}/deploy.sh"
+}
+
+# Hub 容器名固定：已有容器不属于本安装根目录时，在任何变更之前拒绝接管
+precheck_knowledge_hub() {
+    local dir="${INSTALL_ROOT}/knowledge-hub" expected owner
+    expected="$(cd "${dir}" 2>/dev/null && pwd || printf '%s' "${dir}")"
+    if docker container inspect knowledge-hub >/dev/null 2>&1; then
+        owner="$(container_working_dir knowledge-hub)"
+        [ "${owner}" = "${expected}" ] \
+            || die "容器 knowledge-hub 属于 ${owner:-未知目录}，不是 ${expected}，拒绝接管"
+    fi
 }
 
 wait_for_onto_modeling() {
@@ -465,6 +493,9 @@ if [ "${MODE}" = install ]; then
     ONTO_MODELING_PACKAGE="$(ask_optional '请输入 Onto Modeling 发布包路径（留空跳过）：')"
     [ -z "${ONTO_MODELING_PACKAGE}" ] \
         || ONTO_MODELING_PACKAGE="$(resolve_package "${ONTO_MODELING_PACKAGE}" 'Onto Modeling发布包')"
+    KNOWLEDGE_HUB_PACKAGE="$(ask_optional '请输入知识包 Hub 发布包路径（留空跳过）：')"
+    [ -z "${KNOWLEDGE_HUB_PACKAGE}" ] \
+        || KNOWLEDGE_HUB_PACKAGE="$(resolve_package "${KNOWLEDGE_HUB_PACKAGE}" '知识包 Hub发布包')"
 else
     # 升级部署始终沿用已安装配置中的端口，不重新询问或覆盖端口。
     load_upgrade_ports
@@ -474,10 +505,13 @@ else
     if [ "${scope}" != 1 ]; then
         MODELING_PACKAGE="$(resolve_package "$(ask '请输入 Modeling 发布包路径：')" Modeling发布包)"
     fi
-    # Onto Modeling 是独立组件，升不升级与上面的范围选择无关
+    # Onto Modeling 与知识包 Hub 是独立组件，升不升级与上面的范围选择无关
     ONTO_MODELING_PACKAGE="$(ask_optional '请输入 Onto Modeling 发布包路径（留空跳过）：')"
     [ -z "${ONTO_MODELING_PACKAGE}" ] \
         || ONTO_MODELING_PACKAGE="$(resolve_package "${ONTO_MODELING_PACKAGE}" 'Onto Modeling发布包')"
+    KNOWLEDGE_HUB_PACKAGE="$(ask_optional '请输入知识包 Hub 发布包路径（留空跳过）：')"
+    [ -z "${KNOWLEDGE_HUB_PACKAGE}" ] \
+        || KNOWLEDGE_HUB_PACKAGE="$(resolve_package "${KNOWLEDGE_HUB_PACKAGE}" '知识包 Hub发布包')"
 fi
 [ -z "${ONTO_MODELING_PACKAGE}" ] || ensure_onto_web_port_free
 check_dependencies
@@ -485,17 +519,21 @@ check_dependencies
 [ -z "${MODELING_PACKAGE}" ] || validate_package "${MODELING_PACKAGE}" modeling Modeling发布包
 [ -z "${ONTO_MODELING_PACKAGE}" ] \
     || validate_package "${ONTO_MODELING_PACKAGE}" onto-modeling 'Onto Modeling发布包'
+[ -z "${KNOWLEDGE_HUB_PACKAGE}" ] \
+    || validate_package "${KNOWLEDGE_HUB_PACKAGE}" knowledge-hub '知识包 Hub发布包'
 if [ "${MODE}" = upgrade ] && [ "${scope}" != 1 ]; then
     validate_modeling_installation
 fi
 
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/separated-interactive.XXXXXX")"
 [ -z "${ONTO_MODELING_PACKAGE}" ] || precheck_onto_modeling
+[ -z "${KNOWLEDGE_HUB_PACKAGE}" ] || precheck_knowledge_hub
 if [ "${MODE}" = install ]; then
     mkdir -p "${INSTALL_ROOT}"
     tar -xzf "${CONSUMER_PACKAGE}" -C "${INSTALL_ROOT}"
     tar -xzf "${MODELING_PACKAGE}" -C "${INSTALL_ROOT}"
     [ -z "${ONTO_MODELING_PACKAGE}" ] || tar -xzf "${ONTO_MODELING_PACKAGE}" -C "${INSTALL_ROOT}"
+    [ -z "${KNOWLEDGE_HUB_PACKAGE}" ] || tar -xzf "${KNOWLEDGE_HUB_PACKAGE}" -C "${INSTALL_ROOT}"
     [ -f "${INSTALL_ROOT}/onto-agent/backend/.env.example" ] || die "Consumer 发布包缺少 backend/.env.example"
     [ -f "${INSTALL_ROOT}/modeling/.env.example" ] || die "Modeling 发布包缺少 .env.example"
     cp "${INSTALL_ROOT}/onto-agent/backend/.env.example" "${INSTALL_ROOT}/onto-agent/backend/.env"
@@ -512,6 +550,7 @@ if [ "${MODE}" = install ]; then
         bash "${INSTALL_ROOT}/onto-agent/deploy/install.sh"
     MODELING_PORT="${MODELING_PORT}" MODELING_MCP_PORT="${MODELING_MCP_PORT}" \
         bash "${INSTALL_ROOT}/modeling/deploy/install.sh"
+    [ -z "${KNOWLEDGE_HUB_PACKAGE}" ] || deploy_knowledge_hub
     [ -z "${ONTO_MODELING_PACKAGE}" ] || deploy_onto_modeling
 else
     mkdir -p "${TMP_ROOT}/consumer" "${TMP_ROOT}/modeling"
@@ -525,9 +564,13 @@ else
         run_modeling_upgrade "${backup_dir}" \
             || die "Modeling 升级失败，备份位于 ${backup_dir}"
     fi
+    # Hub 先于 onto-modeling；两者的部署都是幂等的：数据在具名卷里，.env 不在发布包内
+    # （onto-modeling 包里只有 .env.example），解包覆盖交付物后重跑 deploy.sh 即可
+    if [ -n "${KNOWLEDGE_HUB_PACKAGE}" ]; then
+        tar -xzf "${KNOWLEDGE_HUB_PACKAGE}" -C "${INSTALL_ROOT}"
+        deploy_knowledge_hub
+    fi
     if [ -n "${ONTO_MODELING_PACKAGE}" ]; then
-        # onto-modeling 的部署是幂等的：数据在具名卷里，.env 不在发布包内
-        # （包里只有 .env.example），解包覆盖交付物后重跑 deploy.sh 即可
         tar -xzf "${ONTO_MODELING_PACKAGE}" -C "${INSTALL_ROOT}"
         deploy_onto_modeling
     fi

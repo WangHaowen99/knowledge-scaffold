@@ -82,7 +82,7 @@ def check_only_modes_remain_independent(deployment, option):
     assert result.returncode == 0, result.stdout + result.stderr
     actual = calls.read_text().splitlines() if calls.exists() else []
     assert actual == (['evaluation'] if option == '--eval-only' else
-                      [] if option == '--onto-modeling-only' else ['stack'])
+                      [] if option in ('--onto-modeling-only', '--knowledge-hub-only') else ['stack'])
 
 
 def check_missing_evaluation_prerequisites_fail_before_stack_changes(deployment, missing):
@@ -138,7 +138,8 @@ class EvaluationDeploymentTests(unittest.TestCase):
                 check_default_deploy_includes_evaluation_last(fixture, mode)
 
     def test_only_modes(self):
-        for option in ['--consumer-only', '--modeling-only', '--onto-modeling-only', '--eval-only']:
+        for option in ['--consumer-only', '--modeling-only', '--onto-modeling-only',
+                       '--knowledge-hub-only', '--eval-only']:
             with self.subTest(option=option), deployment() as fixture:
                 check_only_modes_remain_independent(fixture, option)
 

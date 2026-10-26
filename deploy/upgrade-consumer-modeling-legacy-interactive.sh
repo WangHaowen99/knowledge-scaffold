@@ -177,6 +177,10 @@ deploy_onto_modeling() {
     # 评测调用 Modeling Workbench 走容器网络，与宿主端口无关
     [ -n "$(env_get "${env_file}" ONTO_WEB_MODELING_URL)" ] \
         || write_env_value "${env_file}" ONTO_WEB_MODELING_URL 'http://mw-modeling:5100'
+    # 与独立部署的知识包 Hub 使用同一服务凭据；未部署 Hub 时保留原值（缺失由 Onto 部署脚本生成）
+    hub_token="$(env_get "${hub_dir}/.env" HUB_SERVICE_TOKEN)"
+    [ -z "${hub_token}" ] || write_env_value "${env_file}" ONTO_HUB_SERVICE_TOKEN "${hub_token}"
+    unset hub_token
     log "Onto Modeling 共享 Consumer 账号中心：网络 ${network}"
     (cd "${onto_modeling_dir}" && bash ./deploy.sh) || die \
         "Onto Modeling 部署失败；Consumer 与 Modeling 已迁移完成，修复后可单独执行 bash ${onto_modeling_dir}/deploy.sh"
@@ -190,20 +194,51 @@ deploy_onto_modeling() {
     log "Onto Modeling deployment finished: http://localhost:${onto_web_port}"
 }
 
+# Hub 容器名固定：已有容器不属于迁移目标目录时，在任何变更之前拒绝接管
+precheck_knowledge_hub() {
+    if docker container inspect knowledge-hub >/dev/null 2>&1; then
+        owner="$(docker container inspect knowledge-hub --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null || true)"
+        [ "${owner}" = "${hub_dir}" ] \
+            || die "容器 knowledge-hub 属于 ${owner:-未知目录}，不是 ${hub_dir}，拒绝接管"
+    fi
+}
+
+# Hub 是独立 compose 项目，排在 Onto Modeling 之前部署；服务凭据沿用已部署 Onto Modeling 的值，
+# 两边都没有时由 Hub 部署脚本生成，随后 deploy_onto_modeling 对齐。值只经子进程环境传递，不打印。
+deploy_knowledge_hub() {
+    log "部署知识包 Hub：${hub_dir}"
+    # 数据在具名卷里、.env 不在发布包内，覆盖解压即可
+    tar -xzf "${hub_package}" -C "$(dirname "${hub_dir}")"
+    [ -f "${hub_dir}/deploy.sh" ] || die '知识包 Hub 发布包缺少 deploy.sh'
+    network="$(docker container inspect onto-agent-backend \
+        --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' \
+        2>/dev/null | head -n 1)"
+    [ -n "${network}" ] || die '无法探测 Consumer 容器网络，请确认 onto-agent-backend 已在运行'
+    onto_token="$(env_get "${onto_modeling_dir}/.env" ONTO_HUB_SERVICE_TOKEN)"
+    (cd "${hub_dir}" && CONSUMER_NETWORK="${network}" HUB_SERVICE_TOKEN="${onto_token}" bash ./deploy.sh) || die \
+        "知识包 Hub 部署失败；Consumer 与 Modeling 已迁移完成，修复后可单独执行 bash ${hub_dir}/deploy.sh"
+    unset onto_token
+    log "Knowledge Hub deployment finished: ${hub_dir}"
+}
+
 old_install_dir="$(prompt_value '请输入旧的合并部署根目录，例如 /opt/onto-agent：')"
 consumer_package="$(prompt_value '请输入新的 Consumer 镜像 tar 包路径：')"
 modeling_package="$(prompt_value '请输入新的 Modeling 镜像 tar 包路径：')"
 onto_package="$(prompt_optional '请输入新的 Onto Modeling 发布包路径（留空跳过）：')"
+hub_package="$(prompt_optional '请输入新的知识包 Hub 发布包路径（留空跳过）：')"
 
 case "${old_install_dir}" in /*) ;; *) old_install_dir="$(pwd)/${old_install_dir}" ;; esac
 case "${consumer_package}" in /*) ;; *) consumer_package="$(pwd)/${consumer_package}" ;; esac
 case "${modeling_package}" in /*) ;; *) modeling_package="$(pwd)/${modeling_package}" ;; esac
 case "${onto_package}" in ''|/*) ;; *) onto_package="$(pwd)/${onto_package}" ;; esac
+case "${hub_package}" in ''|/*) ;; *) hub_package="$(pwd)/${hub_package}" ;; esac
 
 consumer_package="$(resolve_package_path "${consumer_package}" 'Consumer 发布包')"
 modeling_package="$(resolve_package_path "${modeling_package}" 'Modeling 发布包')"
 [ -z "${onto_package}" ] || onto_package="$(resolve_package_path "${onto_package}" 'Onto Modeling 发布包')"
+[ -z "${hub_package}" ] || hub_package="$(resolve_package_path "${hub_package}" '知识包 Hub 发布包')"
 onto_modeling_dir="$(dirname "${old_install_dir}")/onto-modeling"
+hub_dir="$(dirname "${old_install_dir}")/knowledge-hub"
 
 [ -d "${old_install_dir}" ] || die "旧合并部署根目录不存在：${old_install_dir}"
 [ -f "${old_install_dir}/VERSION" ] || die "旧目录缺少 VERSION：${old_install_dir}"
@@ -217,6 +252,7 @@ if [ -n "${onto_package}" ]; then
     validate_package "${onto_package}" onto-modeling 'Onto Modeling 发布包'
     check_command curl
 fi
+[ -z "${hub_package}" ] || validate_package "${hub_package}" knowledge-hub '知识包 Hub 发布包'
 
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/consumer-preflight.XXXXXX")" || die "无法创建预检暂存目录"
 tar -xzf "${consumer_package}" -C "${TMP_ROOT}"
@@ -226,6 +262,7 @@ manifest="${staged_root}/deploy/manifest.json"
 [ -x "${opsctl}" ] || die "Consumer 发布包缺少 deploy/opsctl"
 [ -f "${manifest}" ] || die "Consumer 发布包缺少 deploy/manifest.json"
 [ -z "${onto_package}" ] || precheck_onto_modeling
+[ -z "${hub_package}" ] || precheck_knowledge_hub
 
 # opsctl preflight reads the staged bundle's backend/.env for published ports.
 # Reuse the old deployment's resolved configuration so custom ports are checked
@@ -388,6 +425,7 @@ upgrade_legacy_deployment() {
     (cd "${modeling_dir}" && bash deploy/install.sh) || die "Modeling 部署失败，备份位于 ${backup_dir}"
     [ "$(container_mount_volume mw-modeling /data)" = "${modeling_volume}" ] || die 'Modeling 未复用原数据卷'
     [ "$(container_mount_volume mw-modeling-agent /data)" = "${agent_volume}" ] || die 'Agent 未复用原数据卷'
+    [ -z "${hub_package}" ] || deploy_knowledge_hub
     [ -z "${onto_package}" ] || deploy_onto_modeling
     log "旧合并部署迁移完成，备份位于 ${backup_dir}"
 }
