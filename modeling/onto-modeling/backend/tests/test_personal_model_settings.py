@@ -188,6 +188,8 @@ def test_jiuwen_model_config_personal_overlay(data_dir, auth_on, monkeypatch):
         "base_url": "https://env.example.org/v1",
         "api_key": USER_KEY,
         "model": "user-model",
+        # 个人配置不含上下文参数，沿用管理员配置
+        "context": admin_cfg["context"],
     }
 
 
