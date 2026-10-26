@@ -372,7 +372,7 @@ class _ScriptedClient:
             await asyncio.sleep(0)
 
 
-# 网关后接非 Claude 模型：CLI 按环境变量定窗口（实测 CLI 报告 180000 / 147000）
+# 网关后接非 Claude 模型：CLI 按环境变量定窗口（实测触发点 147000；用量环的窗口取模型窗口 200000）
 _CUSTOM_MODEL_ENV = {
     "ANTHROPIC_MODEL": "gateway-model-x",
     "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000",
@@ -424,7 +424,7 @@ def test_turn_end_reports_last_call_usage_not_cumulative_result(tmp_path, monkey
     assert events[-2] == {
         "type": "context_usage",
         "used": 45800,
-        "window": 180000,
+        "window": 200000,
         "compact_at": 147000,
     }
 
@@ -437,7 +437,7 @@ def test_custom_model_limits_come_from_env_without_querying_cli(tmp_path, monkey
     asyncio.run(_collect(engine))
 
     assert client.usage_queries == 0
-    assert (engine._context_window, engine._compact_at) == (180000, 147000)
+    assert (engine._context_window, engine._compact_at) == (200000, 147000)
 
 
 def test_claude_model_queries_limits_only_after_first_turn(tmp_path, monkeypatch):
