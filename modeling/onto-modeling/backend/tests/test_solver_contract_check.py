@@ -845,7 +845,11 @@ def test_save_replaces_managed_directory(manager: WorkspaceManager):
 
 
 def test_view_exposes_template_and_profiles(manager: WorkspaceManager):
-    pid, _root = _project(manager)
+    pid, root = _project(manager)
+    # 不是评估器的脚本（Operation 脚本、辅助模块）不进可选评估器
+    (root / "ontology" / "scripts" / "query_station.py").write_text(
+        "def run(params):\n    return {}\n", encoding="utf-8"
+    )
     view = manager.solver_contract_view(pid)
     assert view["supported_profiles"] == ["ordered_binary_route.v1"]
     assert view["problem_families"] == [{
