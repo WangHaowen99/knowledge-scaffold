@@ -23,7 +23,16 @@ python3 -m venv .venv
 - `ONTO_AUTHZ_URL`：项目资料的权限回调地址。包 API 直接使用统一用户鉴权；资料的开发免登录开关不适用于包 API。
 - 包上传默认 256 MiB，解压总量 1 GiB、单文件 256 MiB、成员数 10000；pending 默认保留 7 天。已占版本不会回收，已提交包不按 pending TTL 清理。
 
-建模源码 Compose 和发布 Compose 已传递上述 Hub 配置，缺少统一服务身份时失败关闭。接入外部账号服务时同时设置 Hub 的可达地址及稳定 issuer 命名空间，不仅设置建模的认证地址。生产凭据由受控运行环境注入，不写入仓库。
+建模服务通过 `ONTO_HUB_URL`、`ONTO_HUB_SERVICE_TOKEN` 访问 Hub，缺少统一服务身份时失败关闭。接入外部账号服务时同时设置 Hub 的可达地址及稳定 issuer 命名空间，不仅设置建模的认证地址。生产凭据由受控运行环境注入，不写入仓库。
+
+## 容器部署
+
+Hub 是独立 compose 项目（[`deploy/docker-compose.knowledge-hub.yml`](../deploy/docker-compose.knowledge-hub.yml)，项目名与容器名均为 `knowledge-hub`，数据卷 `knowledge-hub_knowledge-hub-data`），与 onto-modeling 分开部署、升级和重建，不发布宿主端口。它加入与账号中心、onto-modeling 共享的 Docker 网络（整栈即 consumer 网络），onto-modeling 经 `http://knowledge-hub:8200` 访问。
+
+- 源码：`bash deploy/deploy.sh --knowledge-hub-only` 只部署 Hub（自动探测 consumer 网络，从源码构建镜像）；默认整栈在 onto-modeling 之前部署 Hub，`--onto-modeling-only` 不触碰 Hub。
+- 离线包：`bash knowledge-hub/build.sh <version> [amd|arm]` 生成 `knowledge-hub/dist/knowledge-hub-<version>-linux-<arch>.tar.gz`（镜像、compose、`deploy.sh`）。根目录 `deploy/build.sh` 的完整包内含该子包；分离安装脚本用 `--knowledge-hub-package` 或交互提问部署到 `INSTALL_ROOT/knowledge-hub`。
+- 运行配置：部署脚本读写所在目录的 `.env`（源码为 `deploy/.env`，权限 600，不入库）。`HUB_SERVICE_TOKEN` 缺失时生成；整栈脚本和安装脚本优先沿用 onto-modeling 已有的 `ONTO_HUB_SERVICE_TOKEN`，并在部署 onto-modeling 前把它对齐为 Hub 实际使用的值。`CONSUMER_NETWORK` 由编排脚本现场探测注入；手动运行包内 `deploy.sh` 时在 `.env` 或环境中显式设置，单独部署的 onto-modeling 填其 compose 网络（如 `onto-web_default`）。`HUB_AUTH_URL`、`HUB_AUTH_ISSUER`、`HUB_EVALUATION_SERVICE_TOKEN`、`HUB_CONSUMER_SERVICE_TOKEN` 也写在该 `.env`。
+- 从 Hub 随 onto-modeling 部署的旧版本切换时，重新部署 onto-modeling 会以 `--remove-orphans` 清理旧 Hub 容器；旧卷（`onto-web_knowledge-hub-data` / `onto-modeling_knowledge-hub-data`）不自动迁移，确认无数据后可手动删除。
 
 ## 数据与恢复
 

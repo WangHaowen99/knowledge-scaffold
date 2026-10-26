@@ -15,6 +15,7 @@
 | modeling | `modeling/` | 8100 → 5100 | mw-modeling | modeling-agent / consumer / auth-server | Workbench 静态页面与确定性 core |
 | modeling-agent | `modeling/modeling-agent/` | 仅容器网 5110 | mw-modeling-agent | modeling core / LLM | 新 Workbench 的 openJiuwen Agent 运行时 |
 | auth-server | `auth-server/` | 不暴露宿主端口（容器网内 5056） | onto-agent-auth-server | — | 必备鉴权服务，consumer 与 modeling 共用 |
+| knowledge-hub | `knowledge-hub/` | 不暴露宿主端口（容器网内 8200） | knowledge-hub | auth-server / onto-modeling | 知识包 Hub，独立 compose 项目（`deploy/docker-compose.knowledge-hub.yml`） |
 | eval-mysql（可选） | — | 3306 → 3306 | mysql:8 | — | 建模评测库（Excel 数据自动落库供查询类用例） |
 
 服务间调用链：`浏览器 → frontend(8888) → backend(5055)`；`浏览器 → modeling(8100) → modeling-agent(5110)`；modeling 登录直连 auth-server，评测调用 consumer。consumer 与 modeling 容器共享 Docker 网络；独立评测使用单独 Compose 网络，通过运行配置中的可达地址连接依赖。
@@ -27,6 +28,7 @@
 | 建模项目（SQLite） | docker 卷 `mw-modeling_modeling-data` | 第 8 节 |
 | Agent 运行与 checkpoint | docker 卷 `mw-modeling_modeling-agent-data` | 第 8 节 |
 | 评测库 | docker 卷 `mw-modeling_eval-mysql-data` | 第 8 节 |
+| 知识包 Hub（包归档、请求日志、项目最新资料） | docker 卷 `knowledge-hub_knowledge-hub-data` | [Hub README](../knowledge-hub/README.md#备份) |
 | 鉴权数据 | `consumer/.onto-auth/`（宿主目录挂载） | 第 8 节 |
 
 ## 1. 部署形态选择
@@ -39,7 +41,7 @@
 | B. 完整工作台（推荐） | A + modeling core + modeling-agent | `./deploy/deploy.sh` |
 | C. B + 评测闭环 | B + 评测库 MySQL / NL2SQL | `./deploy/deploy-stack.sh up --with-eval` |
 
-`deploy/deploy.sh` 会自动识别源码树和解压后的发布包：源码树转入 `deploy-stack.sh` 构建镜像，源码和发布包均依次部署 consumer、Modeling Workbench、Onto Modeling 与独立评测服务。默认部署前须设置 `EVAL_ENV_FILE`，指向仓库外受保护的评测运行配置文件；缺失时在变更服务前报错。完整离线包包含评测镜像。自动化流水线构建入口仍是 `./deploy/build.sh <version> [amd|arm]`。
+`deploy/deploy.sh` 会自动识别源码树和解压后的发布包：源码树转入 `deploy-stack.sh` 构建镜像，源码和发布包均依次部署 consumer、Modeling Workbench、知识包 Hub、Onto Modeling 与独立评测服务。默认部署前须设置 `EVAL_ENV_FILE`，指向仓库外受保护的评测运行配置文件；缺失时在变更服务前报错。完整离线包包含 Hub 与评测镜像。自动化流水线构建入口仍是 `./deploy/build.sh <version> [amd|arm]`。
 
 ## 2. 前置条件
 
@@ -233,6 +235,15 @@ docker exec -e MYSQL_PWD="${EVAL_MYSQL_ROOT_PASSWORD:?请先设置评测库密�
 - 建模上传的文档正文存于 SQLite（卷 `mw-modeling_modeling-data`），不落宿主文件系统。
 
 
+## 知识包 Hub（独立部署）
+
+Hub 不再写在 onto-modeling 的 compose 里，而是独立 compose 项目 `deploy/docker-compose.knowledge-hub.yml`（项目名、容器名 `knowledge-hub`，数据卷 `knowledge-hub_knowledge-hub-data`），由 `deploy/deploy-knowledge-hub.sh` 部署：加入 consumer 网络，onto-modeling 经 `http://knowledge-hub:8200` 访问，Hub 经 `auth-server` 校验令牌、经 `onto-modeling` 回调资料授权；不发布宿主端口，部署后在容器内做健康检查。
+
+- `bash deploy/deploy.sh --knowledge-hub-only` 只部署 Hub，与其他 only 参数互斥，不包含评测；源码树从 `knowledge-hub/` 构建镜像，发布包使用包内 `knowledge-hub/` 子包。默认整栈在 Onto Modeling 之前部署 Hub；`--onto-modeling-only` 不再连带部署 Hub。
+- 服务凭据：Hub 读写所在目录 `.env` 的 `HUB_SERVICE_TOKEN`（源码为 `deploy/.env`），首次部署沿用 onto-modeling 已有的 `ONTO_HUB_SERVICE_TOKEN`，都没有时生成；部署 onto-modeling 前，脚本把后者对齐为 Hub 实际使用的值。值只写入权限 600 的 `.env`，不打印。
+- 离线包：`bash knowledge-hub/build.sh <version> [amd|arm]`；分离安装脚本通过 `--knowledge-hub-package`（交互脚本按提示输入）部署到 `INSTALL_ROOT/knowledge-hub`，详见[交互式部署与升级脚本说明](交互式部署与升级脚本说明.md)。
+- 从 Hub 随 onto-modeling 部署的旧版本切换：重新部署 onto-modeling 时 `--remove-orphans` 会清理旧 Hub 容器；旧卷不自动迁移。
+
 ## 独立评测服务
 
-`bash deploy/deploy.sh --eval-only` 只部署 `eval-service/`，与其他 only 参数互斥；默认全栈 `bash deploy/deploy.sh` 包含评测服务，源码、离线首次安装和升级均在其他服务之后部署评测；`--onto-modeling-only` 不包含评测服务。需要在进程环境设置 `EVAL_ENV_FILE` 指向仓库外受保护的运行配置，并提供账号、Hub、consumer 和可选数据库依赖。独立镜像、离线包及同源网关配置见 [评测部署说明](../eval-service/README.md)。
+`bash deploy/deploy.sh --eval-only` 只部署 `eval-service/`，与其他 only 参数互斥；默认全栈 `bash deploy/deploy.sh` 包含评测服务，源码、离线首次安装和升级均在其他服务之后部署评测；`--onto-modeling-only`、`--knowledge-hub-only` 不包含评测服务。需要在进程环境设置 `EVAL_ENV_FILE` 指向仓库外受保护的运行配置，并提供账号、Hub、consumer 和可选数据库依赖。独立镜像、离线包及同源网关配置见 [评测部署说明](../eval-service/README.md)。

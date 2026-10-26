@@ -27,6 +27,7 @@ if [ ! -f .env ]; then
 fi
 
 # Keep the shared service credential only in the deployment environment file.
+# 知识包 Hub 独立部署：整栈 deploy.sh 与安装脚本会先把它对齐为 Hub 实际使用的值，这里只补缺失。
 if ! grep -q '^ONTO_HUB_SERVICE_TOKEN=..*' .env; then
     HUB_GENERATED="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
     printf 'ONTO_HUB_SERVICE_TOKEN=%s\n' "${HUB_GENERATED}" >> .env
@@ -58,7 +59,8 @@ else
 fi
 
 # 外接账号中心：.env 声明外部 auth 网络时，停用自带 auth-server 并加入该网络
-# （consumer 栈的服务名同为 auth-server，容器网络内地址无需变化）
+# （consumer 栈的服务名同为 auth-server，容器网络内地址无需变化）。独立部署的知识包 Hub
+# 同样加入该网络，onto-modeling 经服务名 knowledge-hub 访问。
 COMPOSE_FILES=(-f docker-compose.release.yml)
 EXTERNAL_AUTH_NETWORK="$(sed -n 's/^ONTO_MODELING_EXTERNAL_AUTH_NETWORK=//p' .env | head -1)"
 if [ -n "${EXTERNAL_AUTH_NETWORK}" ]; then
@@ -67,10 +69,6 @@ if [ -n "${EXTERNAL_AUTH_NETWORK}" ]; then
 services:
   auth-server:
     profiles: ["disabled"]
-  knowledge-hub:
-    networks:
-      - default
-      - external-auth
   onto-modeling:
     depends_on: !override []
     networks:

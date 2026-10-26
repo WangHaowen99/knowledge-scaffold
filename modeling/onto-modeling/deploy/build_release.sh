@@ -135,9 +135,7 @@ AUTH_SERVER_SRC="${REPOSITORY_ROOT}/auth-server"
 (cd "${AUTH_SERVER_SRC}" && ${BUILD_CMD} -t "onto-modeling-auth-server:${VERSION}" .)
 (cd "${IMAGES_DIR}" && docker save -o "onto-modeling-auth-server-${VERSION}.tar" "onto-modeling-auth-server:${VERSION}")
 
-# Hub has its own runtime image and persistent volume.
-(cd "${REPOSITORY_ROOT}/knowledge-hub" && ${BUILD_CMD} -t "knowledge-hub:${VERSION}" .)
-(cd "${IMAGES_DIR}" && docker save -o "knowledge-hub-${VERSION}.tar" "knowledge-hub:${VERSION}")
+# 知识包 Hub 是独立交付包（knowledge-hub/build.sh），不随本包打入镜像
 
 cp "${SCRIPT_DIR}/docker-compose.release.yml" "${BUNDLE_DIR}/"
 cp "${SCRIPT_DIR}/deploy.sh" "${SCRIPT_DIR}/preflight.sh" \
@@ -151,7 +149,6 @@ chmod +x "${BUNDLE_DIR}/deploy.sh" "${BUNDLE_DIR}/preflight.sh" \
 
 # 镜像清单：deploy.sh / compose 从这里取镜像 tag，目标机不需要再传参数
 cat > "${BUNDLE_DIR}/images.env" <<EOF
-KNOWLEDGE_HUB_IMAGE=knowledge-hub:${VERSION}
 ONTO_WEB_IMAGE=onto-modeling:${VERSION}
 AUTH_SERVER_IMAGE=onto-modeling-auth-server:${VERSION}
 RELEASE_VERSION=${VERSION}

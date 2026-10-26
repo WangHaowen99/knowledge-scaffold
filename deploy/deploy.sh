@@ -6,10 +6,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--consumer-only|--modeling-only|--onto-modeling-only|--eval-only]
+Usage: $(basename "$0") [--consumer-only|--modeling-only|--onto-modeling-only|--knowledge-hub-only|--eval-only]
 
-Deploy the full stack — consumer, Modeling Workbench, Onto Modeling and evaluation —
-from either a source checkout or an extracted release package.
+Deploy the full stack — consumer, Modeling Workbench, Knowledge Package Hub,
+Onto Modeling and evaluation — from either a source checkout or an extracted
+release package. Knowledge Package Hub and Onto Modeling are independent
+compose projects; --onto-modeling-only does not touch the Hub.
 Full-stack and --eval-only deployments require EVAL_ENV_FILE pointing to a
 protected evaluation runtime configuration file outside the repository.
 EOF
@@ -33,6 +35,21 @@ env_get() {
     value="$([ -f "${file}" ] && grep -E "^${key}=" "${file}" | tail -n 1 | cut -d= -f2- || true)"
     value="${value%$'\r'}"
     printf '%s' "${value}" | sed -E "s/[[:space:]]+#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//; s/^\"(.*)\"$/\1/; s/^'(.*)'$/\1/"
+}
+
+env_set() { # <文件> <键> <值>：替换或追加，权限 600，值不输出
+    local temp_file
+    [ -f "$1" ] || (umask 077 && : > "$1")
+    temp_file="$(mktemp "$1.tmp.XXXXXX")" || die "Cannot update $1"
+    chmod 600 "${temp_file}"
+    awk -v key="$2" -v value="$3" '
+        BEGIN { updated = 0 }
+        index($0, key "=") == 1 { if (!updated) { print key "=" value; updated = 1 } next }
+        { print }
+        END { if (!updated) print key "=" value }
+    ' "$1" > "${temp_file}" || { rm -f "${temp_file}"; die "Cannot update $1"; }
+    mv "${temp_file}" "$1"
+    chmod 600 "$1"
 }
 
 ensure_release_modeling_service_token() {
@@ -175,6 +192,7 @@ detect_jiuwenbox_socket_volume() {
 write_onto_modeling_stack_override() { # <onto-modeling 目录> <mw-modeling 地址>
     local dir="$1" modeling_url="$2" network socket_volume sandbox_service="" sandbox_volume=""
     local hub_env="${dir}/.env" hub_secret
+    # Hub 未部署过时补一个凭据，onto-modeling 才能启动；部署过 Hub 时调用方已对齐为 Hub 的值
     if ! grep -q '^ONTO_HUB_SERVICE_TOKEN=..*' "${hub_env}" 2>/dev/null; then
         hub_secret="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
         printf '\nONTO_HUB_SERVICE_TOKEN=%s\n' "${hub_secret}" >> "${hub_env}"
@@ -192,15 +210,11 @@ write_onto_modeling_stack_override() { # <onto-modeling 目录> <mw-modeling 地
     fi
     cat > "${dir}/docker-compose.stack.yml" <<EOF2
 # 由 deploy.sh 生成（整栈部署形态，勿手改；单独部署 onto-modeling 时删除即可）：
-# 停用自带 dev auth-server，共享 consumer 账号中心；接入 consumer 网络；
+# 停用自带 dev auth-server，共享 consumer 账号中心；接入 consumer 网络（独立部署的知识包 Hub 也在此网络）；
 # 配置数据评测所需的 Modeling Workbench 地址；把 consumer 的 jiuwenbox socket 只读挂给脚本验证网关。
 services:
   auth-server:
     profiles: ["disabled"]
-  knowledge-hub:
-    networks:
-      - default
-      - consumer-net
   onto-modeling:
     depends_on: !override []
     environment:
@@ -248,9 +262,27 @@ seed_onto_modeling_bundle_env() { # <bundle 的 onto-modeling 目录>
     chmod 600 "${env_file}"
 }
 
+# 知识包 Hub 与 onto-modeling 分属两个 compose 项目，经 consumer 网络互通。Hub 沿用 onto-modeling
+# 已有的服务凭据（都没有时由 Hub 部署脚本生成）；值只经子进程环境传递，不输出。
+deploy_knowledge_hub() { # <Hub 部署脚本> <onto-modeling 目录>
+    local network onto_token
+    network="$(require_consumer_network)"
+    onto_token="$(env_get "$2/.env" ONTO_HUB_SERVICE_TOKEN)"
+    log "Deploying Knowledge Package Hub (independent compose project)"
+    CONSUMER_NETWORK="${network}" HUB_SERVICE_TOKEN="${onto_token:-${HUB_SERVICE_TOKEN:-}}" bash "$1"
+}
+
+# onto-modeling 部署前改用 Hub 实际生效的服务凭据；Hub 未部署过时保持原值。
+adopt_hub_service_token() { # <Hub .env> <onto-modeling .env>
+    local token
+    token="$(env_get "$1" HUB_SERVICE_TOKEN)"
+    [ -z "${token}" ] || env_set "$2" ONTO_HUB_SERVICE_TOKEN "${token}"
+}
+
 CONSUMER_ONLY=0
 MODELING_ONLY=0
 ONTO_MODELING_ONLY=0
+KNOWLEDGE_HUB_ONLY=0
 EVAL_ONLY=0
 
 while [ "$#" -gt 0 ]; do
@@ -267,6 +299,9 @@ while [ "$#" -gt 0 ]; do
         --onto-modeling-only)
             ONTO_MODELING_ONLY=1
             ;;
+        --knowledge-hub-only)
+            KNOWLEDGE_HUB_ONLY=1
+            ;;
         -h|--help|help)
             usage
             exit 0
@@ -279,12 +314,13 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-if [ "$(( CONSUMER_ONLY + MODELING_ONLY + ONTO_MODELING_ONLY + EVAL_ONLY ))" -gt 1 ]; then
-    die "--consumer-only / --modeling-only / --onto-modeling-only / --eval-only cannot be combined"
+ONLY_FLAGS="$(( CONSUMER_ONLY + MODELING_ONLY + ONTO_MODELING_ONLY + KNOWLEDGE_HUB_ONLY ))"
+if [ "$(( ONLY_FLAGS + EVAL_ONLY ))" -gt 1 ]; then
+    die "--consumer-only / --modeling-only / --onto-modeling-only / --knowledge-hub-only / --eval-only cannot be combined"
 fi
 
 DEPLOY_EVALUATION=0
-if [ "$(( CONSUMER_ONLY + MODELING_ONLY + ONTO_MODELING_ONLY ))" = "0" ]; then
+if [ "${ONLY_FLAGS}" = "0" ]; then
     DEPLOY_EVALUATION=1
     # Fail before changing any services if evaluation cannot be deployed.
     [ -f "$SCRIPT_DIR/../eval-service/deploy/deploy.sh" ] \
@@ -302,6 +338,32 @@ deploy_evaluation() {
     if [ "$DEPLOY_EVALUATION" = "1" ]; then
         log "Deploying independent evaluation service"
         bash "$SCRIPT_DIR/../eval-service/deploy/deploy.sh"
+    fi
+}
+
+# 发布包内的 knowledge-hub/ 与 onto-modeling/ 是两个独立子包：先 Hub，再 onto-modeling（沿用
+# Hub 的服务凭据）。各自部署幂等，数据卷由各自固定的 compose 项目名锚定，升级后照常拉起。
+deploy_bundle_hub_and_onto_modeling() {
+    local hub_dir="${BUNDLE_ROOT}/knowledge-hub" onto_dir="${BUNDLE_ROOT}/onto-modeling"
+    if [ "${ONTO_MODELING_ONLY}" = "0" ]; then
+        if [ -f "${hub_dir}/deploy.sh" ]; then
+            deploy_knowledge_hub "${hub_dir}/deploy.sh" "${onto_dir}"
+        elif [ "${KNOWLEDGE_HUB_ONLY}" = "1" ]; then
+            die "Knowledge Hub deploy script not found: ${hub_dir}/deploy.sh"
+        else
+            log "Knowledge Hub bundle not present; skipping (older release package)"
+        fi
+    fi
+    [ "${KNOWLEDGE_HUB_ONLY}" = "0" ] || return 0
+    if [ -f "${onto_dir}/deploy.sh" ]; then
+        log "Deploying Onto Modeling (guided modeling workbench)"
+        seed_onto_modeling_bundle_env "${onto_dir}"
+        adopt_hub_service_token "${hub_dir}/.env" "${onto_dir}/.env"
+        bash "${onto_dir}/deploy.sh"
+    elif [ "${ONTO_MODELING_ONLY}" = "1" ]; then
+        die "Onto Modeling deploy script not found: ${onto_dir}/deploy.sh"
+    else
+        log "Onto Modeling bundle not present; skipping (older release package)"
     fi
 }
 
@@ -334,7 +396,8 @@ if [ -f "${SCRIPT_DIR}/manifest.json" ] && [ "${BUNDLE_ROOT}" != "${INSTALL_DIR}
             fi
         done
     fi
-    if [ "${EXISTING_INSTALL}" = true ] && [ "${ONTO_MODELING_ONLY}" = "0" ]; then
+    if [ "${EXISTING_INSTALL}" = true ] && [ "${ONTO_MODELING_ONLY}" = "0" ] \
+        && [ "${KNOWLEDGE_HUB_ONLY}" = "0" ]; then
         [ -f "${SCRIPT_DIR}/upgrade.sh" ] \
             || die "Existing installation detected but upgrade.sh is missing"
         log "Existing installation detected at ${INSTALL_DIR}; dispatching upgrade flow"
@@ -345,12 +408,9 @@ if [ -f "${SCRIPT_DIR}/manifest.json" ] && [ "${BUNDLE_ROOT}" != "${INSTALL_DIR}
             UPGRADE_ARGS+=(--modeling-only)
         fi
         bash "${SCRIPT_DIR}/upgrade.sh" "${UPGRADE_ARGS[@]}"
-        # upgrade.sh 只覆盖 consumer 与 modeling；onto-modeling 的部署自身幂等，
-        # 升级后继续拉起（数据卷由 compose 项目名锚定，不受升级影响）
-        if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]             && [ -f "${BUNDLE_ROOT}/onto-modeling/deploy.sh" ]; then
-            log "Deploying Onto Modeling (guided modeling workbench)"
-            seed_onto_modeling_bundle_env "${BUNDLE_ROOT}/onto-modeling"
-            bash "${BUNDLE_ROOT}/onto-modeling/deploy.sh"
+        # upgrade.sh 只覆盖 consumer 与 modeling；Hub 与 onto-modeling 升级后继续拉起
+        if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]; then
+            deploy_bundle_hub_and_onto_modeling
         fi
         deploy_evaluation
         exit 0
@@ -369,18 +429,29 @@ if [ -f "${SCRIPT_DIR}/deploy-consumer.sh" ]; then
     MODELING_DEPLOY="${SCRIPT_DIR}/modeling/deploy.sh"
 elif [ -f "${SCRIPT_DIR}/deploy-stack.sh" ]; then
     log "Detected source checkout; deploying with deploy-stack.sh"
-    if [ "${ONTO_MODELING_ONLY}" = "0" ]; then
+    if [ "${ONTO_MODELING_ONLY}" = "0" ] && [ "${KNOWLEDGE_HUB_ONLY}" = "0" ]; then
         bash "${SCRIPT_DIR}/deploy-stack.sh" up "${DEPLOY_ARGS[@]}"
     fi
     if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]; then
-        if [ -d "${SCRIPT_DIR}/../modeling/onto-modeling" ]; then
-            log "Deploying Onto Modeling (source, docker compose, joined to consumer stack)"
-            write_onto_modeling_stack_override \
-                "${SCRIPT_DIR}/../modeling/onto-modeling" "http://mw-modeling:5100"
-            (cd "${SCRIPT_DIR}/../modeling/onto-modeling" \
-                && docker compose -f docker-compose.yml -f docker-compose.stack.yml up -d --build)
-        else
-            log "Onto Modeling source directory not present; skipping"
+        ONTO_MODELING_SOURCE="${SCRIPT_DIR}/../modeling/onto-modeling"
+        if [ "${ONTO_MODELING_ONLY}" = "0" ]; then
+            if [ -d "${SCRIPT_DIR}/../knowledge-hub" ]; then
+                deploy_knowledge_hub "${SCRIPT_DIR}/deploy-knowledge-hub.sh" "${ONTO_MODELING_SOURCE}"
+            else
+                log "Knowledge Hub source directory not present; skipping"
+            fi
+        fi
+        if [ "${KNOWLEDGE_HUB_ONLY}" = "0" ]; then
+            if [ -d "${ONTO_MODELING_SOURCE}" ]; then
+                log "Deploying Onto Modeling (source, docker compose, joined to consumer stack)"
+                adopt_hub_service_token "${SCRIPT_DIR}/.env" "${ONTO_MODELING_SOURCE}/.env"
+                write_onto_modeling_stack_override "${ONTO_MODELING_SOURCE}" "http://mw-modeling:5100"
+                # --remove-orphans 清掉旧版本随 onto-modeling 部署的 Hub 容器，避免与独立 Hub 抢同一服务名
+                (cd "${ONTO_MODELING_SOURCE}" \
+                    && docker compose -f docker-compose.yml -f docker-compose.stack.yml up -d --build --remove-orphans)
+            else
+                log "Onto Modeling source directory not present; skipping"
+            fi
         fi
     fi
     deploy_evaluation
@@ -394,29 +465,20 @@ BUNDLE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ensure_release_modeling_service_token "${BUNDLE_ROOT}"
 ensure_release_modeling_mcp_token_secret "${BUNDLE_ROOT}"
 
-if [ "${MODELING_ONLY}" = "0" ] && [ "${ONTO_MODELING_ONLY}" = "0" ]; then
+if [ "${MODELING_ONLY}" = "0" ] && [ "${ONTO_MODELING_ONLY}" = "0" ] && [ "${KNOWLEDGE_HUB_ONLY}" = "0" ]; then
     [ -f "${CONSUMER_DEPLOY}" ] || die "Consumer deploy script not found: ${CONSUMER_DEPLOY}"
     log "Deploying consumer services"
     bash "${CONSUMER_DEPLOY}"
 fi
 
-if [ "${CONSUMER_ONLY}" = "0" ] && [ "${ONTO_MODELING_ONLY}" = "0" ]; then
+if [ "${CONSUMER_ONLY}" = "0" ] && [ "${ONTO_MODELING_ONLY}" = "0" ] && [ "${KNOWLEDGE_HUB_ONLY}" = "0" ]; then
     [ -f "${MODELING_DEPLOY}" ] || die "Modeling deploy script not found: ${MODELING_DEPLOY}"
     log "Deploying Modeling Workbench (core + Agent)"
     bash "${MODELING_DEPLOY}"
 fi
 
-ONTO_MODELING_DEPLOY="${BUNDLE_ROOT}/onto-modeling/deploy.sh"
 if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]; then
-    if [ -f "${ONTO_MODELING_DEPLOY}" ]; then
-        log "Deploying Onto Modeling (guided modeling workbench)"
-        seed_onto_modeling_bundle_env "${BUNDLE_ROOT}/onto-modeling"
-        bash "${ONTO_MODELING_DEPLOY}"
-    elif [ "${ONTO_MODELING_ONLY}" = "1" ]; then
-        die "Onto Modeling deploy script not found: ${ONTO_MODELING_DEPLOY}"
-    else
-        log "Onto Modeling bundle not present; skipping (older release package)"
-    fi
+    deploy_bundle_hub_and_onto_modeling
 fi
 
 deploy_evaluation
