@@ -834,32 +834,35 @@ export function startBlocker(view, { dirty = false, casesDirty = false, cases = 
 
 export const EVALUATOR_COMMAND = '/ontology-solver-evaluator';
 
-export const evaluatorCommand = (item) => `${EVALUATOR_COMMAND} ${String(item?.origin ?? '').trim()}`;
-
-// 让助手生成评估器前的阻断原因；空串表示可以发起。dirty 为面板是否有未保存的修改：
-// 助手只读已保存的契约，且它的提交会改变修订，草稿再保存时会冲突
-export function evaluatorCommandBlocker(item, { dirty = false } = {}) {
-  if (item?.origin == null) return '先保存该求解契约，助手按已保存的契约生成评估器';
-  if (dirty) return '求解契约有未保存的修改，先保存再让助手生成评估器';
-  if (!SOLVER_KEY_PATTERN.test(String(item.origin))) return '求解标识不合法，先在高级设置中修正并保存';
-  return '';
+// 让助手生成评估器：助手只读已保存的契约，且它的提交会改变修订（草稿再保存时会冲突），
+// 所以契约未保存或面板有未保存的修改（dirty）时先保存（needsSave），保存成功后再发命令，
+// 命令按保存后的求解标识。saveBlocker 是面板「保存」不可用的原因；blocker 为空表示可以发起
+export function evaluatorCommandPlan(item, { dirty = false, saveBlocker = '' } = {}) {
+  const needsSave = dirty || item?.origin == null;
+  const solverKey = String((needsSave ? item?.binding?.solver_key : item?.origin) ?? '').trim();
+  let blocker = '';
+  if (!SOLVER_KEY_PATTERN.test(solverKey)) blocker = '求解标识不合法，先在高级设置中修正';
+  else if (needsSave && saveBlocker) blocker = saveBlocker;
+  return { command: `${EVALUATOR_COMMAND} ${solverKey}`, needsSave, blocker };
 }
 
-// 验证可选的数据源：要先整理导入工作簿的（dataset、带导入的 Neo4j 连接，口径同后端
-// modeling_eval.needs_import）暂不支持，列出但置灰
+// 验证可选的数据源：验证不导入数据。带导入的 Neo4j 连接直接读图中已有数据（后端先核对
+// 隔离范围非空）；dataset 要先建评测库，暂不支持，列出但置灰
 export function validationSourceOptions(sources = []) {
-  const needsImport = (source) =>
-    source.mode === 'dataset'
-    || (source.mode === 'connection' && source.provider === 'neo4j'
-      && Boolean(source.files?.length || source.include_mock));
+  const label = (source) => {
+    if (source.mode === 'dataset') return `${source.name}（数据集需导入评测库，暂不支持）`;
+    const importsGraph = source.mode === 'connection' && source.provider === 'neo4j'
+      && Boolean(source.files?.length || source.include_mock);
+    return importsGraph ? `${source.name}（使用图中已有数据，不导入）` : source.name;
+  };
   return [
     { value: '', label: '不使用数据源' },
     ...sources
       .filter((source) => source.mode !== 'none')
       .map((source) => ({
         value: source.id,
-        label: needsImport(source) ? `${source.name}（需导入数据，暂不支持）` : source.name,
-        disabled: needsImport(source),
+        label: label(source),
+        disabled: source.mode === 'dataset',
       })),
   ];
 }
