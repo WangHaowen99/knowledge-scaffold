@@ -11,6 +11,9 @@ onto-modeling 不直连 Consumer、Connector 或 Solver，也不接收它们的�
 用例的 question 可选：留空时按求解操作名与入参生成提问，要求 Agent 原样传入参；
 填写时原样提问，用来检验 Agent 能否从自然语言里取出与 arguments 一致的入参。
 
+验证不导入数据：带导入数据的 Neo4j 配置按普通连接使用，直接读图中该隔离范围已有的数据
+（通常由评测导入）；范围为空时在提问前失败。数据集模式要先建评测库，不支持。
+
 验证用例放在 .ontology-state/（不进 git、不进导出包）：月份和批次属于每次请求的数据，
 换数据不需要复制知识包。记录与证据只存状态、摘要和诊断引用，不存令牌或连接信息。
 """
@@ -60,6 +63,7 @@ CODE_NOT_REQUIRED = "solver_validation_not_required"
 CODE_BUSY = "solver_validation_busy"
 CODE_UNAVAILABLE = "solver_validation_unavailable"
 CODE_DATA_SOURCE_UNSUPPORTED = "solver_validation_data_source_unsupported"
+CODE_GRAPH_DATA_EMPTY = "solver_validation_graph_data_empty"
 CODE_REVISION_CONFLICT = "solver_contract_revision_conflict"
 CODE_REVISION_CHANGED = "solver_contract_revision_changed"
 CODE_NOT_AUTHORITATIVE = "solver_result_not_authoritative"
@@ -289,9 +293,9 @@ def start(
         found = eval_data_sources.get_source(project_id, data_source_id, root)
         if not found:
             raise WorkspaceError("数据源配置不存在或已删除，请重新选择", 404, "data_source_not_found")
-        if modeling_eval.needs_import(found):
+        if found.get("mode") == "dataset":
             raise WorkspaceError(
-                "求解验证暂不支持需要导入数据的数据源，请选择已保存的外部连接或不使用数据源",
+                "求解验证不支持数据集模式的数据源（需要先建评测库），请选择外部连接或不使用数据源",
                 400, CODE_DATA_SOURCE_UNSUPPORTED,
             )
         data_source = found
@@ -404,6 +408,17 @@ def execute(plan: ValidationPlan, manager: WorkspaceManager | None = None) -> di
         modeling_project = _import(plan, content)
         evidence["modeling_project"] = modeling_project
         _configure_data_source(plan, modeling_project)
+        if _uses_existing_graph_data(plan.data_source):
+            solver_validation.update(plan.root, plan.run_id, message="核对图中已有数据（验证不导入数据）")
+            evidence["graph_data"] = _graph_data(plan, modeling_project)
+            if not evidence["graph_data"]["nodes"]:
+                workspace = (plan.data_source.get("config") or {}).get("workspace_value", "")
+                return _fail(
+                    plan, CODE_GRAPH_DATA_EMPTY,
+                    f"所选数据源在图中的隔离范围（Workspace {workspace}、知识包 {plan.project_id}）还没有数据；"
+                    "求解验证不导入数据，请先用该数据源运行一次评测完成导入，再发起验证",
+                    evidence,
+                )
         solver_validation.update(
             plan.root, plan.run_id, message=f"Consumer 端到端验证中（{len(plan.cases)} 条用例）",
         )
@@ -474,6 +489,25 @@ def _configure_data_source(plan: ValidationPlan, modeling_project: str) -> None:
         "PUT", f"/api/projects/{modeling_project}/data-source", plan.token,
         body=payload, timeout=120,
     )
+
+
+def _uses_existing_graph_data(source: dict) -> bool:
+    """带导入数据的 Neo4j 配置：评测每轮先导入，验证跳过导入、读图中已有数据。"""
+    return source.get("mode") == "connection" and modeling_eval.needs_import(source)
+
+
+def _graph_data(plan: ValidationPlan, modeling_project: str) -> dict:
+    """统计数据源隔离范围（Workspace + 知识包 ID）内已有的节点与关系数，只读不写。"""
+    password = (plan.data_source.get("config") or {}).get("password", "")
+    result = modeling_eval._http(
+        "POST", f"/api/projects/{modeling_project}/graph-import/isolation", plan.token,
+        body={"password": password}, timeout=120,
+    )
+    existing = (result.get("existing") if isinstance(result, dict) else None) or {}
+    return {
+        "nodes": int(existing.get("nodeCount") or 0),
+        "relationships": int(existing.get("relationshipCount") or 0),
+    }
 
 
 def _case_request(item: dict) -> dict:

@@ -897,6 +897,10 @@ def is_evaluator(source: bytes | None) -> bool:
     return _evaluator_contract.evaluator_kind(source) is not None
 
 
+def is_evaluator_file(path: Path) -> bool:
+    return is_evaluator(_read_evaluator(path))
+
+
 def _read_evaluator(path: Path) -> bytes | None:
     try:
         return path.read_bytes()
