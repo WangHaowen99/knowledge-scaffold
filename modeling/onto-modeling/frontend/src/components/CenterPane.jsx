@@ -1029,6 +1029,7 @@ export default function CenterPane({
                 key={project.id}
                 project={project}
                 versions={versions}
+                active={focus === 'solver'}
                 onOpenFile={onOpenFile}
                 onWorkspaceChanged={onWorkspaceChanged}
                 onCommand={onCommand}
