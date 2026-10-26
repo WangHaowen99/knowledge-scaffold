@@ -1103,6 +1103,7 @@ def test_input_schema_projection_only_touches_the_template(tmp_path: Path):
     evaluator.write_text(declarative_source(), encoding="utf-8")
     projected = solver_contract.project_input_schema(template, evaluator)
     assert projected != template
+    assert solver_contract._check_ordered_route_input(json.loads(projected), "input.schema.json") == []
     assert solver_contract.restore_template_input_schema(projected) == template
 
     # 手写 Schema、取不到评估器时原样保留
@@ -1114,6 +1115,10 @@ def test_input_schema_projection_only_touches_the_template(tmp_path: Path):
     # 改过的投影不再是模板产物，回导时原样保留
     edited = projected.replace(b"UNIT_2", b"UNIT_9")
     assert solver_contract.restore_template_input_schema(edited) == edited
+    unsigned = json.loads(projected)
+    unsigned.pop("$id")
+    legacy_projection = solver_contract._dump_json(unsigned)
+    assert solver_contract.restore_template_input_schema(legacy_projection) == legacy_projection
     assert solver_contract.restore_template_input_schema(b"\xff") == b"\xff"
 
 

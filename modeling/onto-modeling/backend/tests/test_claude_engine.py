@@ -460,7 +460,14 @@ def test_claude_model_queries_limits_only_after_first_turn(tmp_path, monkeypatch
     async def scenario():
         await engine.connect()
         assert engine._limits_task is None
-        return [event async for event in engine.events()]
+        events = []
+        async for event in engine.events():
+            events.append(event)
+            if event["type"] == "context_usage" and engine._limits_task is not None:
+                # The production lookup runs in the background. Wait for the
+                # scripted lookup before expecting its value in a later turn.
+                await engine._limits_task
+        return events
 
     events = asyncio.run(scenario())
 
