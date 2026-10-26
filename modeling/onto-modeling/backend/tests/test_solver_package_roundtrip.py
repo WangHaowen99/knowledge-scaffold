@@ -19,6 +19,15 @@ from app.services import package_archive, solver_contract
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 
 TOOLKIT_SCRIPTS = Path(__file__).resolve().parents[2] / "assets" / "workspace-toolkit" / "scripts"
+
+
+def _project_root():
+    source = Path(__file__).resolve()
+    for candidate in source.parents:
+        if (candidate / "consumer" / "backend").is_dir() and \
+                (candidate / "modeling" / "onto-modeling").is_dir():
+            return candidate
+    return source.parents[2]
 BASH = shutil.which("bash")
 
 MODEL_YAML = b"""id: route_plan
@@ -648,7 +657,9 @@ def test_workspace_rules_tell_agent_solver_directory_is_managed():
 
 
 def _consumer_validators(monkeypatch):
-    consumer = Path(__file__).resolve().parents[4] / "consumer" / "backend"
+    consumer = _project_root() / "consumer" / "backend"
+    if not consumer.is_dir():
+        pytest.skip("consumer backend is not included in standalone onto-modeling tests")
     monkeypatch.syspath_prepend(str(consumer))
     try:
         from ontology.package_import import validate_ontology_revision
