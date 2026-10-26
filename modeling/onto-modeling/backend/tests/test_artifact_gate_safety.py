@@ -90,7 +90,7 @@ def test_benchmark_git_rejects_non_read_contract(monkeypatch, args):
     monkeypatch.setattr(benchmark.subprocess, 'check_output',
                         lambda *a, **k: pytest.fail('Must reject before spawn'))
     with pytest.raises(ValueError, match='allowlist'):
-        benchmark.git_output(Path(benchmark.__file__).resolve().parents[4], *args)
+        benchmark.git_output(benchmark.PROJECT_ROOT, *args)
 
 
 def test_benchmark_git_rejects_other_checkout(tmp_path):
@@ -156,7 +156,9 @@ def test_real_git_and_hooks_ignore_host_config_and_command_text(tmp_path, monkey
 
 
 def test_benchmark_real_current_and_baseline_cli(tmp_path):
-    repo = Path(benchmark.__file__).resolve().parents[4]
+    repo = benchmark.PROJECT_ROOT
+    if not (repo / '.git').exists():
+        pytest.skip('standalone onto-modeling source has no Git checkout for baseline comparison')
     commit = benchmark.git_output(repo, 'rev-parse', '--verify', '--end-of-options',
                                   'HEAD^{commit}').decode('ascii').strip()
     baseline = benchmark.baseline_scripts(tmp_path, repo, commit)
