@@ -2929,6 +2929,14 @@ test('图导入 API：支持取消后台任务并在删除项目时等待任务�
     skippedBlankCount: 0,
     skippedUnmatchedCount: 0,
   });
+  const isolation = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${projectId}/graph-import/isolation`,
+    headers: { authorization },
+    payload: { password: 'one-time-secret' },
+  });
+  assert.equal(isolation.statusCode, 200, isolation.body);
+  assert.deepEqual(isolation.json().existing, { nodeCount: 0, relationshipCount: 0 });
 
   const noPassword = await app.inject({
     method: 'POST',
