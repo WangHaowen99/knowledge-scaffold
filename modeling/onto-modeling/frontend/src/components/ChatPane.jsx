@@ -29,6 +29,11 @@ import {
 } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, openEventStream } from '../lib/api.js';
+import {
+  createBuildAlertTracker,
+  notifyBuild,
+  requestPermissionOnFirstBuild,
+} from '../lib/buildNotifier.js';
 import { orderResearchActions } from '../lib/researchGate.js';
 import { STATUS_LABELS, changeHeadline, groupChanges } from '../lib/changeSummary.js';
 import {
@@ -927,6 +932,7 @@ export default function ChatPane({
     let retryDelay = 2000;
     const lastMsgTsRef = { current: Date.now() };
     const nextAfterRef = { current: 0 };
+    const alertTracker = createBuildAlertTracker();
     const handleEvent = (event) => {
       if (cancelled) return;
       lastMsgTsRef.current = Date.now();
@@ -960,6 +966,8 @@ export default function ChatPane({
         event.seq !== undefined &&
         historyEndRef.current !== null &&
         event.seq < historyEndRef.current;
+      const alert = alertTracker.next(event, { history: isHistoryEvent });
+      if (alert) notifyBuild(alert, { projectName: project.name, tag: resolved || project.id });
       if (event.type === 'system') return;
       setCtx((prev) => nextContext(prev, event));
       if (event.type === 'user_message') {
@@ -1045,6 +1053,7 @@ export default function ChatPane({
         conversationIdRef.current = resolved;
         setConversationId(resolved);
         setState(info.state || 'idle');
+        alertTracker.seed(info.state);
         const total = info.events || 0;
         historyEndRef.current = total;
         const historyStart = Number.isInteger(info.history_start)
@@ -1120,6 +1129,7 @@ export default function ChatPane({
     if (uploading) return;
     const toUpload = explicitAttachments ?? attachments;
     if (!trimmed && toUpload.length === 0) return;
+    requestPermissionOnFirstBuild(); // 须在用户发送这一操作中申请，浏览器才弹申请框
     // 上传可能持续数秒：消息发往点发送时所在的会话
     const targetConversation = conversationIdRef.current;
     setInput('');
