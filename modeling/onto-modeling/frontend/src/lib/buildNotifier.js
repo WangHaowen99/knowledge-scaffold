@@ -1,37 +1,51 @@
 // 本体构建进度提醒：一轮跑完、agent 提问或请求确认、构建出错时，用户不在页面上就弹系统通知、
-// 标签页标题闪烁，把用户叫回来。只覆盖当前标签页正在显示的会话。
-// 判断逻辑（createBuildAlertTracker / planAlert / notificationAvailability）不碰 DOM：
+// 标签页标题与图标按提醒色闪烁，把用户叫回来。只覆盖当前标签页正在显示的会话。
+// 判断逻辑（createBuildAlertTracker / planAlert / notificationAvailability / flashFrame）不碰 DOM：
 // 便于单测，后续给切走的会话做后台订阅时也可直接复用。
 
-// 本轮耗时不足该秒数的不提醒"已完成"，避免短问答也弹窗
-export const MIN_ROUND_SECONDS = 60;
 // 服务重启遗留的 SIGTERM 报错，与 ChatPane 的展示过滤一致
 const RESTART_EXIT = /exit code[:\s]*143/;
 const ROUND_STATES = new Set(['running', 'queued', 'connecting']);
 
-// rank 越大越优先：标题只显示优先级最高的提醒，同级的新提醒替换旧的
+// rank 越大越优先：标题只显示优先级最高的提醒，同级的新提醒替换旧的。
+// 标签页底色网页改不了，颜色靠标签图标（color）与标题前的彩色圆点（dot）体现
 export const ALERTS = {
-  done: { rank: 1, label: '【已完成】', body: '本体构建已完成这一步，可以继续对话' },
-  question: { rank: 2, label: '【待确认】', body: '需要你回答问题' },
-  permission: { rank: 2, label: '【待确认】', body: '需要你确认操作' },
-  error: { rank: 2, label: '【出错】', body: '构建出错，请查看' },
+  done: { rank: 1, label: '【已完成】', dot: '🟢', color: '#2f9e44', body: '本体构建已完成这一步，可以继续对话' },
+  question: { rank: 2, label: '【待确认】', dot: '🟠', color: '#f08c00', body: '需要你回答问题' },
+  permission: { rank: 2, label: '【待确认】', dot: '🟠', color: '#f08c00', body: '需要你确认操作' },
+  error: { rank: 2, label: '【出错】', dot: '🔴', color: '#e03131', body: '构建出错，请查看' },
 };
+
+// 闪烁的一帧：提醒态（marked）显示圆点 + 前缀标题与变色图标，原样态还原标题、图标（favicon 为 null）
+export function flashFrame(kind, marked, baseTitle) {
+  const alert = ALERTS[kind];
+  if (!marked) return { title: baseTitle, favicon: null };
+  return { title: `${alert.dot}${alert.label}${baseTitle}`, favicon: alertFaviconHref(alert.color) };
+}
+
+// 与 public/favicon.svg 同形的标签图标，仅底色换成提醒色
+export function alertFaviconHref(color) {
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
+    `<rect width="64" height="64" rx="14" fill="${color}"/>` +
+    '<text x="32" y="44" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" ' +
+    'font-size="36" font-weight="700" fill="#ffffff" text-anchor="middle">知</text></svg>';
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
 
 // 引擎把这一轮明确失败（如模型调用失败）写在 result 里，不另发 session_error；与后端 claude._result_failed 一致
 function isFailedResult(event) {
   return Boolean(event.is_error) || String(event.subtype || '').startsWith('error');
 }
 
-// 逐个喂入会话事件（含回放的历史事件，用来还原本轮开始时间等状态），
+// 逐个喂入会话事件（含回放的历史事件，用来还原会话状态），
 // 返回应发的提醒类型（ALERTS 的键）或 null。历史事件只更新状态，不提醒。
-export function createBuildAlertTracker({ minRoundSeconds = MIN_ROUND_SECONDS } = {}) {
+export function createBuildAlertTracker() {
   let state = null;
-  let roundStart = null;
   let interrupted = false;
   let failed = false;
   const requests = new Set();
   const endRound = () => {
-    roundStart = null;
     interrupted = false;
     failed = false;
   };
@@ -42,10 +56,6 @@ export function createBuildAlertTracker({ minRoundSeconds = MIN_ROUND_SECONDS } 
     },
     next(event, { history = false } = {}) {
       switch (event.type) {
-        case 'user_message':
-          // 运行中追加的消息不算新一轮
-          if (roundStart === null) roundStart = event.ts ?? null;
-          return null;
         case 'session_interrupted':
           interrupted = true;
           return null;
@@ -66,21 +76,13 @@ export function createBuildAlertTracker({ minRoundSeconds = MIN_ROUND_SECONDS } 
         case 'session_state': {
           const previous = state;
           state = event.state;
-          if (ROUND_STATES.has(state)) {
-            if (roundStart === null) roundStart = event.ts ?? null;
-            return null;
-          }
-          const start = roundStart;
+          if (ROUND_STATES.has(state)) return null;
           const wasInterrupted = interrupted;
           const wasFailed = failed;
           endRound();
           // 只有真正跑过（running → idle）才算结束：排队中取消也会直接回到 idle
           if (history || state !== 'idle' || previous !== 'running' || wasInterrupted) return null;
-          // 出错是高优先级，不论耗时长短都提醒
-          if (wasFailed) return 'error';
-          // 开始时间不可知（历史被截断）时，本轮必然已跑了很久，照常提醒
-          if (start !== null && event.ts != null && event.ts - start < minRoundSeconds) return null;
-          return 'done';
+          return wasFailed ? 'error' : 'done';
         }
         default:
           return null;
@@ -91,7 +93,7 @@ export function createBuildAlertTracker({ minRoundSeconds = MIN_ROUND_SECONDS } 
 
 const AVAILABILITY_TEXT = {
   insecure:
-    '当前为 HTTP 访问，无法弹出系统通知，只有标签页标题闪烁。如需系统通知，请联系管理员改用 HTTPS 访问',
+    '当前为 HTTP 访问，无法弹出系统通知，只有标签页标题和图标闪烁。如需系统通知，请联系管理员改用 HTTPS 访问',
   unsupported: '当前浏览器不支持系统通知',
   denied: '浏览器已禁止本站通知，需要在浏览器设置里开启',
   default: '首次发起构建时会请求通知权限',
@@ -118,7 +120,7 @@ export function planAlert({ present, enabled, availability }) {
 
 const ENABLED_KEY = 'onto-desktop-notify';
 const ASKED_KEY = 'onto-desktop-notify-asked';
-const FLASH_INTERVAL_MS = 1000;
+const FLASH_INTERVAL_MS = 500;
 
 export function isDesktopNotifyEnabled() {
   return localStorage.getItem(ENABLED_KEY) !== 'off';
@@ -160,17 +162,46 @@ function userPresent() {
   return document.visibilityState === 'visible' && document.hasFocus();
 }
 
-let flash = null; // { kind, baseTitle, timer }
+let flash = null; // { kind, baseTitle, baseIcon, ticker }
 const shown = new Map(); // tag → Notification，同一会话只留最新一条
 let listening = false;
 
+// 后台标签页主线程定时器会被浏览器节流（≥1 秒，隐藏久了可能 1 分钟一次）；
+// Worker 里的定时器受限更少，用它驱动闪烁，创建失败时退回主线程定时器
+function startTicker(intervalMs, onTick) {
+  try {
+    const source = `setInterval(() => postMessage(0), ${intervalMs});`;
+    const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+    const worker = new Worker(url);
+    URL.revokeObjectURL(url);
+    worker.onmessage = onTick;
+    return () => worker.terminate();
+  } catch {
+    const timer = setInterval(onTick, intervalMs);
+    return () => clearInterval(timer);
+  }
+}
+
+function iconLink() {
+  return document.querySelector('link[rel~="icon"]');
+}
+
+function renderFrame(frame) {
+  document.title = frame.title;
+  const link = iconLink();
+  if (link) link.href = frame.favicon ?? flash.baseIcon;
+}
+
+function stopFlash() {
+  if (!flash) return;
+  flash.ticker();
+  renderFrame({ title: flash.baseTitle, favicon: null });
+  flash = null;
+}
+
 function onPresenceChange() {
   if (!userPresent()) return;
-  if (flash) {
-    clearInterval(flash.timer);
-    document.title = flash.baseTitle;
-    flash = null;
-  }
+  stopFlash();
   // 人回来了，通知中心里的旧提醒已无意义
   for (const notification of shown.values()) notification.close();
   shown.clear();
@@ -184,18 +215,17 @@ function listenPresence() {
 }
 
 function startFlash(kind) {
-  const alert = ALERTS[kind];
-  if (flash && ALERTS[flash.kind].rank > alert.rank) return;
+  if (flash && ALERTS[flash.kind].rank > ALERTS[kind].rank) return;
   const baseTitle = flash?.baseTitle ?? document.title;
-  if (flash) clearInterval(flash.timer);
+  const baseIcon = flash?.baseIcon ?? iconLink()?.getAttribute('href');
+  flash?.ticker();
   let marked = true;
-  document.title = alert.label + baseTitle;
-  // 后台标签页的定时器会被浏览器降频，闪烁可能变慢，但标题前缀仍会出现
-  const timer = setInterval(() => {
+  flash = { kind, baseTitle, baseIcon, ticker: () => {} };
+  renderFrame(flashFrame(kind, marked, baseTitle));
+  flash.ticker = startTicker(FLASH_INTERVAL_MS, () => {
     marked = !marked;
-    document.title = marked ? alert.label + baseTitle : baseTitle;
-  }, FLASH_INTERVAL_MS);
-  flash = { kind, baseTitle, timer };
+    renderFrame(flashFrame(kind, marked, baseTitle));
+  });
 }
 
 function showNotification(kind, { projectName, tag }) {
