@@ -154,8 +154,8 @@ function NotificationSection() {
         桌面通知 <Switch checked={enabled} onChange={toggle} style={{ marginLeft: 8 }} />
       </Typography.Paragraph>
       <Typography.Paragraph type="secondary">
-        {'本体构建跑完一步（耗时超过 1 分钟）、需要你回答问题或确认操作、构建出错时，如果你不在工作台页面，' +
-          '会弹出系统通知并让标签页标题闪烁。关闭后不再弹系统通知，标题仍会闪烁。'}
+        {'本体构建跑完一步、需要你回答问题或确认操作、构建出错时，如果你不在工作台页面，' +
+          '会弹出系统通知，并让标签页的标题和图标闪烁。关闭后不再弹系统通知，标题和图标仍会闪烁。'}
       </Typography.Paragraph>
       {enabled && availability.text && (
         <Alert
