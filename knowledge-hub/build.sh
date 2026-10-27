@@ -1,11 +1,11 @@
 #!/bin/bash
 # 构建知识包 Hub 离线交付包：镜像 tar + compose + 部署脚本，与 onto-modeling 包相互独立。
-# compose 与部署脚本的源文件在仓库 deploy/ 下，与源码部署共用同一份。
+# compose 与部署脚本的源文件在 knowledge-hub/deploy/ 下，与源码部署共用同一份；包内布局不变。
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEPLOY_SOURCE="$(cd "${SCRIPT_DIR}/../deploy" && pwd)"
+DEPLOY_SOURCE="${SCRIPT_DIR}/deploy"
 
 usage() {
     cat <<EOF
@@ -59,13 +59,19 @@ else
     BUILD_CMD=(docker build)
 fi
 
+# 镜像源默认见 Dockerfile（国内镜像）；显式配置时覆盖，企业内网可指向自有镜像
+BUILD_ARGS=()
+[ -z "${KNOWLEDGE_HUB_APT_MIRROR:-}" ] || BUILD_ARGS+=(--build-arg "APT_MIRROR=${KNOWLEDGE_HUB_APT_MIRROR}")
+PIP_INDEX="${KNOWLEDGE_HUB_PIP_INDEX_URL:-${PIP_INDEX_URL:-}}"
+[ -z "${PIP_INDEX}" ] || BUILD_ARGS+=(--build-arg "PIP_INDEX_URL=${PIP_INDEX}")
+
 # docker 一律在目标目录内用相对路径调用：WSL 下 docker 可能是 Windows 侧
 # docker.exe（interop），不认 /mnt/* 绝对路径
-(cd "${SCRIPT_DIR}" && "${BUILD_CMD[@]}" -t "knowledge-hub:${VERSION}" .)
+(cd "${SCRIPT_DIR}" && "${BUILD_CMD[@]}" ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"} -t "knowledge-hub:${VERSION}" .)
 (cd "${IMAGES_DIR}" && docker save -o "knowledge-hub-${VERSION}.tar" "knowledge-hub:${VERSION}")
 
 cp "${DEPLOY_SOURCE}/docker-compose.knowledge-hub.yml" "${BUNDLE_DIR}/"
-cp "${DEPLOY_SOURCE}/deploy-knowledge-hub.sh" "${BUNDLE_DIR}/deploy.sh"
+cp "${DEPLOY_SOURCE}/deploy.sh" "${BUNDLE_DIR}/deploy.sh"
 cp "${SCRIPT_DIR}/README.md" "${BUNDLE_DIR}/README.md"
 chmod +x "${BUNDLE_DIR}/deploy.sh"
 

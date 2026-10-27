@@ -80,7 +80,21 @@ def test_independent_deploy_dispatch(tmp_path):
     result=subprocess.run(['bash',str(script),'--eval-only','--onto-modeling-only'],capture_output=True,text=True)
     assert result.returncode!=0
     assert 'cannot be combined' in result.stderr
-    compose=(root/'eval-service/deploy/compose.yml').read_text()
+    compose=(root/'eval-service/deploy/docker-compose.eval-service.yml').read_text()
+    assert 'container_name: knowledge-evaluation' in compose
+    assert 'name: ${CONSUMER_NETWORK:?' in compose and 'external: true' in compose
+    # Only non-secret stack addresses default here; credentials stay in the runtime configuration.
+    assert 'EVAL_HUB_URL: ${EVAL_HUB_URL:-http://knowledge-hub:8200}' in compose
+    assert 'TOKEN' not in compose and 'ENCRYPTION_KEY' not in compose
+    # Judge settings are declared for discoverability but only reference the runtime configuration.
+    for key in ('EVAL_JUDGE_BASE_URL','EVAL_JUDGE_API_KEY','EVAL_JUDGE_MODEL','EVAL_JUDGE_CONFIG_REVISION'):
+        assert f'{key}: ${{{key}:-}}' in compose
+    assert compose.count('API_KEY')==2
+    # Package mirrors default in the Dockerfile; compose passes overrides only when they are set.
+    dockerfile=(root/'eval-service/Dockerfile').read_text()
+    assert 'ARG NPM_REGISTRY=' in dockerfile and '--registry="${NPM_REGISTRY}"' in dockerfile
+    assert 'ARG PIP_INDEX_URL=' in dockerfile and '-i "${PIP_INDEX_URL}"' in dockerfile
+    assert '- PIP_INDEX_URL' in compose and '- NPM_REGISTRY' in compose
     assert 'depends_on' not in compose
     assert 'onto-modeling' not in compose
 

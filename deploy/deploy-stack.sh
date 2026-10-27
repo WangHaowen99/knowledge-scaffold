@@ -261,6 +261,34 @@ ensure_modeling_service_token() {
   ok "Modeling 服务令牌已配置（值不写入日志）"
 }
 
+# 独立评测服务调用 consumer 的服务凭据：已有值保留，缺失时生成；须与 MODELING_SERVICE_TOKEN 不同
+ensure_evaluation_service_token() {
+  local env_file="$CONSUMER_DIR/backend/.env" secret temp_file
+  secret="${EVALUATION_SERVICE_TOKEN:-$(env_get "$env_file" EVALUATION_SERVICE_TOKEN)}"
+  [ -n "$secret" ] || secret="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  [ "${#secret}" -ge 32 ] || fail \
+    "EVALUATION_SERVICE_TOKEN 少于 32 个字符；请改为独立强随机值" 2
+  [ "$secret" != "$(env_get "$env_file" MODELING_SERVICE_TOKEN)" ] || fail \
+    "EVALUATION_SERVICE_TOKEN 不能与 MODELING_SERVICE_TOKEN 相同" 2
+  temp_file="$(mktemp "${env_file}.tmp.XXXXXX")" || fail "无法更新 $env_file" 2
+  chmod 600 "$temp_file"
+  if ! awk -v secret="$secret" '
+    BEGIN { updated = 0 }
+    /^EVALUATION_SERVICE_TOKEN=/ {
+      if (!updated) { print "EVALUATION_SERVICE_TOKEN=" secret; updated = 1 }
+      next
+    }
+    { print }
+    END { if (!updated) print "EVALUATION_SERVICE_TOKEN=" secret }
+  ' "$env_file" > "$temp_file"; then
+    command rm -f -- "$temp_file"
+    fail "无法更新 $env_file" 2
+  fi
+  mv "$temp_file" "$env_file"
+  chmod 600 "$env_file"
+  ok "评测服务令牌已配置（值不写入日志）"
+}
+
 ensure_eval_mysql_password() {
   # 评测库 root 密码：显式 env > backend/.env 留存值 > 首次自动生成（开箱即用，
   # 与 MCP_TOKEN_SECRET 同款持久化——不打印、0600 落盘、幂等复用）
@@ -438,6 +466,7 @@ cmd_up() {
     ensure_modeling_service_token
     ensure_modeling_mcp_token_secret
   fi
+  [ "$modeling_only" -eq 1 ] || ensure_evaluation_service_token
   local url="" token="" bootstrap_password="" config_errors=0
   if [ "$modeling_only" -eq 0 ]; then
     url="$(env_get "$CONSUMER_DIR/backend/.env" AUTH_SERVER_URL)"

@@ -1,0 +1,49 @@
+name: knowledge-evaluation
+services:
+  evaluation:
+    image: ${EVAL_IMAGE:-knowledge-evaluation:local}
+    # 固定容器名，同时让 Compose 拒绝扩容：服务只支持单实例（SQLite 与文件锁）
+    container_name: knowledge-evaluation
+    build:
+      context: ..
+      # 镜像源默认见 Dockerfile；仅在环境中设置时传入（deploy.sh 由 EVAL_PIP_INDEX_URL、EVAL_NPM_REGISTRY 设置）
+      args:
+        - PIP_INDEX_URL
+        - NPM_REGISTRY
+    restart: unless-stopped
+    env_file: ${EVAL_ENV_FILE:?Set EVAL_ENV_FILE to the protected runtime configuration}
+    environment:
+      EVAL_DATA_DIR: /var/lib/evaluation
+      EVAL_PORT: '8090'
+      # 整栈默认地址。deploy.sh 以 --env-file 传入运行配置，配置中的同名值优先；凭据只在运行配置中
+      EVAL_AUTH_URL: ${EVAL_AUTH_URL:-http://auth-server:5056}
+      EVAL_HUB_URL: ${EVAL_HUB_URL:-http://knowledge-hub:8200}
+      EVAL_CONSUMER_API_URL: ${EVAL_CONSUMER_API_URL:-http://backend:5055}
+      # Judge 判分模型，四项必填、由部署方提供：OpenAI 兼容 /chat/completions，需支持工具调用。
+      # 值写在运行配置（deploy/.env 或 EVAL_ENV_FILE）中，本文件只声明不写值；缺失时无法开始评测
+      EVAL_JUDGE_BASE_URL: ${EVAL_JUDGE_BASE_URL:-}
+      EVAL_JUDGE_API_KEY: ${EVAL_JUDGE_API_KEY:-}
+      EVAL_JUDGE_MODEL: ${EVAL_JUDGE_MODEL:-}
+      EVAL_JUDGE_CONFIG_REVISION: ${EVAL_JUDGE_CONFIG_REVISION:-}
+    volumes:
+      - evaluation-data:/var/lib/evaluation
+    ports:
+      - '${EVAL_BIND_ADDRESS:-127.0.0.1}:${EVAL_PORT:-8090}:8090'
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/evaluation/api/health',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+    # 与账号服务、知识包 Hub、consumer 共享的 Docker 网络（整栈即 consumer 网络），按服务名访问依赖
+    networks:
+      - consumer-net
+
+networks:
+  consumer-net:
+    external: true
+    name: ${CONSUMER_NETWORK:?Set CONSUMER_NETWORK to the Docker network shared with auth-server, knowledge-hub and consumer}
+
+volumes:
+  evaluation-data:

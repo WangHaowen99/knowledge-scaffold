@@ -15,7 +15,9 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_ROOT = REPO_ROOT / "deploy"
-HUB_COMPOSE = DEPLOY_ROOT / "docker-compose.knowledge-hub.yml"
+HUB_DEPLOY_ROOT = REPO_ROOT / "knowledge-hub" / "deploy"
+HUB_COMPOSE = HUB_DEPLOY_ROOT / "docker-compose.knowledge-hub.yml"
+HUB_DEPLOY = HUB_DEPLOY_ROOT / "deploy.sh"
 ONTO_COMPOSE_FILES = (
     REPO_ROOT / "modeling" / "onto-modeling" / "docker-compose.yml",
     REPO_ROOT / "modeling" / "onto-modeling" / "deploy" / "docker-compose.release.yml",
@@ -96,7 +98,7 @@ def test_onto_modeling_external_auth_override_does_not_reference_the_hub() -> No
     assert "up -d --remove-orphans" in script
 
 
-# ---------- deploy-knowledge-hub.sh ----------
+# ---------- knowledge-hub/deploy/deploy.sh ----------
 
 _HUB_DOCKER_STUB = """\
 printf '%s\\n' "$*" >> "$DOCKER_CALLS_FILE"
@@ -108,16 +110,21 @@ exit 0\
 """
 
 
+_HUB_ENV_KEYS = ("HUB_SERVICE_TOKEN", "HUB_EVALUATION_SERVICE_TOKEN", "CONSUMER_NETWORK", "KNOWLEDGE_HUB_IMAGE",
+                 "KNOWLEDGE_HUB_APT_MIRROR", "KNOWLEDGE_HUB_PIP_INDEX_URL", "PIP_INDEX_URL")
+_MIRRORS = {"KNOWLEDGE_HUB_APT_MIRROR": "mirrors.example.com",
+            "KNOWLEDGE_HUB_PIP_INDEX_URL": "https://pypi.example.com/simple"}
+
+
 def _hub_source_layout(tmp_path: Path) -> tuple[Path, dict[str, str]]:
-    deploy_dir = tmp_path / "deploy"
-    deploy_dir.mkdir()
-    shutil.copy2(DEPLOY_ROOT / "deploy-knowledge-hub.sh", deploy_dir / "deploy-knowledge-hub.sh")
+    deploy_dir = tmp_path / "knowledge-hub" / "deploy"
+    deploy_dir.mkdir(parents=True)
+    shutil.copy2(HUB_DEPLOY, deploy_dir / "deploy.sh")
     shutil.copy2(HUB_COMPOSE, deploy_dir / HUB_COMPOSE.name)
-    (tmp_path / "knowledge-hub").mkdir()
+    (tmp_path / "knowledge-hub" / "Dockerfile").write_text("# Synthetic build fixture\n")
     _write_executable(tmp_path / "bin" / "docker", _HUB_DOCKER_STUB)
     env = {
-        **{key: value for key, value in os.environ.items()
-           if key not in ("HUB_SERVICE_TOKEN", "CONSUMER_NETWORK", "KNOWLEDGE_HUB_IMAGE")},
+        **{key: value for key, value in os.environ.items() if key not in _HUB_ENV_KEYS},
         "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
         "DOCKER_CALLS_FILE": str(tmp_path / "docker-calls.txt"),
         "STUB_NETWORK": "shared-net",
@@ -127,7 +134,7 @@ def _hub_source_layout(tmp_path: Path) -> tuple[Path, dict[str, str]]:
 
 def test_hub_deploy_builds_from_source_and_generates_a_private_token(tmp_path: Path) -> None:
     deploy_dir, env = _hub_source_layout(tmp_path)
-    script = str(deploy_dir / "deploy-knowledge-hub.sh")
+    script = str(deploy_dir / "deploy.sh")
 
     result = _run([script], {**env, "CONSUMER_NETWORK": "shared-net"})
 
@@ -151,25 +158,85 @@ def test_hub_deploy_builds_from_source_and_generates_a_private_token(tmp_path: P
     assert f"HUB_SERVICE_TOKEN={match.group(1)}" in env_file.read_text()
 
 
+def test_hub_source_build_passes_configured_mirrors_only(tmp_path: Path) -> None:
+    deploy_dir, env = _hub_source_layout(tmp_path)
+
+    result = _run([str(deploy_dir / "deploy.sh")], {**env, **_MIRRORS, "CONSUMER_NETWORK": "shared-net"})
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (
+        "build --build-arg APT_MIRROR=mirrors.example.com "
+        "--build-arg PIP_INDEX_URL=https://pypi.example.com/simple -t knowledge-hub:latest ."
+    ) in _lines(tmp_path / "docker-calls.txt")
+
+
+def test_hub_dockerfile_defaults_to_mirrors_that_build_args_can_override() -> None:
+    dockerfile = (REPO_ROOT / "knowledge-hub" / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "ARG APT_MIRROR=" in dockerfile
+    assert 's|deb.debian.org|${APT_MIRROR}|g' in dockerfile
+    assert "ARG PIP_INDEX_URL=" in dockerfile
+    assert '-i "${PIP_INDEX_URL}"' in dockerfile
+
+
 def test_hub_deploy_prefers_the_injected_token(tmp_path: Path) -> None:
     deploy_dir, env = _hub_source_layout(tmp_path)
     (deploy_dir / ".env").write_text(f"HUB_SERVICE_TOKEN={secrets.token_hex(32)}\n")
     injected = secrets.token_hex(32)
 
     result = _run(
-        [str(deploy_dir / "deploy-knowledge-hub.sh")],
+        [str(deploy_dir / "deploy.sh")],
         {**env, "CONSUMER_NETWORK": "shared-net", "HUB_SERVICE_TOKEN": injected},
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert _lines(deploy_dir / ".env") == [f"HUB_SERVICE_TOKEN={injected}"]
+    lines = _lines(deploy_dir / ".env")
+    assert lines[0] == f"HUB_SERVICE_TOKEN={injected}"
+    assert [line.split("=", 1)[0] for line in lines] == ["HUB_SERVICE_TOKEN", "HUB_EVALUATION_SERVICE_TOKEN"]
+
+
+def test_hub_deploy_generates_a_distinct_evaluation_token_and_keeps_it(tmp_path: Path) -> None:
+    deploy_dir, env = _hub_source_layout(tmp_path)
+    script = str(deploy_dir / "deploy.sh")
+    env = {**env, "CONSUMER_NETWORK": "shared-net"}
+
+    result = _run([script], env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    content = (deploy_dir / ".env").read_text()
+    service = re.search(r"^HUB_SERVICE_TOKEN=([0-9a-f]{64})$", content, re.MULTILINE).group(1)
+    evaluation = re.search(r"^HUB_EVALUATION_SERVICE_TOKEN=([0-9a-f]{64})$", content, re.MULTILINE).group(1)
+    assert evaluation != service
+    assert evaluation not in result.stdout + result.stderr
+    assert _run([script], env).returncode == 0
+    assert f"HUB_EVALUATION_SERVICE_TOKEN={evaluation}" in _lines(deploy_dir / ".env")
+
+    same = _run([script], {**env, "HUB_EVALUATION_SERVICE_TOKEN": service})
+    assert same.returncode != 0
+    assert "不能与 HUB_SERVICE_TOKEN 相同" in same.stderr
+
+
+def test_hub_source_deploy_migrates_the_legacy_runtime_configuration(tmp_path: Path) -> None:
+    deploy_dir, env = _hub_source_layout(tmp_path)
+    legacy_token = secrets.token_hex(32)
+    legacy = tmp_path / "deploy" / ".env"
+    legacy.parent.mkdir()
+    legacy.write_text(f"HUB_SERVICE_TOKEN={legacy_token}\nCONSUMER_NETWORK=shared-net\n")
+
+    result = _run([str(deploy_dir / "deploy.sh")], env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    lines = _lines(deploy_dir / ".env")
+    assert f"HUB_SERVICE_TOKEN={legacy_token}" in lines and "CONSUMER_NETWORK=shared-net" in lines
+    assert (deploy_dir / ".env").stat().st_mode & 0o777 == 0o600
+    assert legacy_token not in result.stdout + result.stderr
 
 
 def test_hub_deploy_rejects_a_short_token(tmp_path: Path) -> None:
     deploy_dir, env = _hub_source_layout(tmp_path)
 
     result = _run(
-        [str(deploy_dir / "deploy-knowledge-hub.sh")],
+        [str(deploy_dir / "deploy.sh")],
         {**env, "CONSUMER_NETWORK": "shared-net", "HUB_SERVICE_TOKEN": "too-short"},
     )
 
@@ -184,7 +251,7 @@ def test_hub_deploy_rejects_a_short_token(tmp_path: Path) -> None:
 def test_hub_deploy_requires_an_existing_shared_network(tmp_path: Path, network: str) -> None:
     deploy_dir, env = _hub_source_layout(tmp_path)
 
-    result = _run([str(deploy_dir / "deploy-knowledge-hub.sh")], {**env, "CONSUMER_NETWORK": network})
+    result = _run([str(deploy_dir / "deploy.sh")], {**env, "CONSUMER_NETWORK": network})
 
     assert result.returncode != 0
     assert ("未指定共享 Docker 网络" if not network else "Docker 网络不存在") in result.stderr
@@ -196,7 +263,7 @@ def test_hub_deploy_requires_an_existing_shared_network(tmp_path: Path, network:
 def test_hub_deploy_from_package_loads_only_the_release_image(tmp_path: Path) -> None:
     bundle = tmp_path / "knowledge-hub"
     (bundle / "images").mkdir(parents=True)
-    shutil.copy2(DEPLOY_ROOT / "deploy-knowledge-hub.sh", bundle / "deploy.sh")
+    shutil.copy2(HUB_DEPLOY, bundle / "deploy.sh")
     shutil.copy2(HUB_COMPOSE, bundle / HUB_COMPOSE.name)
     (bundle / "images.env").write_text(
         "KNOWLEDGE_HUB_IMAGE=knowledge-hub:v-test\nRELEASE_VERSION=v-test\nRELEASE_ARCH=amd64\n"
@@ -205,8 +272,7 @@ def test_hub_deploy_from_package_loads_only_the_release_image(tmp_path: Path) ->
         (bundle / "images" / f"knowledge-hub-{version}.tar").write_bytes(b"")
     _write_executable(tmp_path / "bin" / "docker", _HUB_DOCKER_STUB)
     env = {
-        **{key: value for key, value in os.environ.items()
-           if key not in ("HUB_SERVICE_TOKEN", "CONSUMER_NETWORK", "KNOWLEDGE_HUB_IMAGE")},
+        **{key: value for key, value in os.environ.items() if key not in _HUB_ENV_KEYS},
         "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
         "DOCKER_CALLS_FILE": str(tmp_path / "docker-calls.txt"),
         "STUB_NETWORK": "shared-net",
@@ -271,8 +337,7 @@ def _source_checkout(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     deploy_dir.mkdir()
     shutil.copy2(DEPLOY_ROOT / "deploy.sh", deploy_dir / "deploy.sh")
     _write_executable(deploy_dir / "deploy-stack.sh", 'printf "stack\\n" >> "$CALLS_FILE"')
-    _write_executable(deploy_dir / "deploy-knowledge-hub.sh", _HUB_DEPLOY_STUB)
-    (tmp_path / "knowledge-hub").mkdir()
+    _write_executable(tmp_path / "knowledge-hub" / "deploy" / "deploy.sh", _HUB_DEPLOY_STUB)
     (tmp_path / "modeling" / "onto-modeling").mkdir(parents=True)
     return deploy_dir, _stack_env(tmp_path)
 
@@ -311,7 +376,7 @@ def test_source_hub_reuses_the_existing_onto_modeling_token(tmp_path: Path) -> N
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"RECEIVED_TOKEN={existing}" in _lines(tmp_path / "hub-snapshot.txt")
-    assert f"HUB_SERVICE_TOKEN={existing}" in _lines(deploy_dir / ".env")
+    assert f"HUB_SERVICE_TOKEN={existing}" in _lines(tmp_path / "knowledge-hub" / "deploy" / ".env")
     assert _lines(onto_env) == ["ONTO_WEB_PORT=5100", f"ONTO_HUB_SERVICE_TOKEN={existing}"]
 
 
@@ -330,7 +395,7 @@ def test_onto_modeling_only_does_not_redeploy_the_hub(tmp_path: Path) -> None:
     deploy_dir, env = _source_checkout(tmp_path)
     env.pop("EVAL_ENV_FILE")
     hub_token = secrets.token_hex(32)
-    (deploy_dir / ".env").write_text(f"HUB_SERVICE_TOKEN={hub_token}\n")
+    (tmp_path / "knowledge-hub" / "deploy" / ".env").write_text(f"HUB_SERVICE_TOKEN={hub_token}\n")
 
     result = _run([str(deploy_dir / "deploy.sh"), "--onto-modeling-only"], env)
 
@@ -412,15 +477,15 @@ def test_release_without_hub_bundle_still_deploys_onto_modeling(tmp_path: Path) 
 
 def test_hub_build_produces_a_standalone_package(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
-    (repo / "knowledge-hub").mkdir(parents=True)
-    (repo / "deploy").mkdir()
+    (repo / "knowledge-hub" / "deploy").mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "knowledge-hub" / "build.sh", repo / "knowledge-hub" / "build.sh")
     (repo / "knowledge-hub" / "README.md").write_text("# Synthetic README\n")
-    shutil.copy2(DEPLOY_ROOT / "deploy-knowledge-hub.sh", repo / "deploy" / "deploy-knowledge-hub.sh")
-    shutil.copy2(HUB_COMPOSE, repo / "deploy" / HUB_COMPOSE.name)
+    shutil.copy2(HUB_DEPLOY, repo / "knowledge-hub" / "deploy" / "deploy.sh")
+    shutil.copy2(HUB_COMPOSE, repo / "knowledge-hub" / "deploy" / HUB_COMPOSE.name)
     _write_executable(tmp_path / "bin" / "docker", _HUB_DOCKER_STUB)
     env = {
-        **os.environ,
+        **{key: value for key, value in os.environ.items() if key not in _HUB_ENV_KEYS},
+        **_MIRRORS,
         "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
         "DOCKER_CALLS_FILE": str(tmp_path / "docker-calls.txt"),
     }
@@ -428,7 +493,11 @@ def test_hub_build_produces_a_standalone_package(tmp_path: Path) -> None:
     result = _run([str(repo / "knowledge-hub" / "build.sh"), "v-test", "amd"], env)
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert any("-t knowledge-hub:v-test ." in call for call in _lines(tmp_path / "docker-calls.txt"))
+    assert any(
+        "--build-arg APT_MIRROR=mirrors.example.com --build-arg PIP_INDEX_URL=https://pypi.example.com/simple"
+        " -t knowledge-hub:v-test ." in call
+        for call in _lines(tmp_path / "docker-calls.txt")
+    )
     archive = repo / "knowledge-hub" / "dist" / "knowledge-hub-v-test-linux-amd64.tar.gz"
     with tarfile.open(archive, "r:gz") as package:  # NOSONAR(S5042): synthetic stub archive, metadata only
         members = {member.name: member for member in package.getmembers()}

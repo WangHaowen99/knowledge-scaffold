@@ -1,6 +1,6 @@
 # 本地从源码构建并拉起全栈（onto-modeling + auth-server），用于交付前验证。
 # 生产部署用 deploy/ 下的离线交付包流程。
-# 知识包 Hub 独立部署（仓库 deploy/docker-compose.knowledge-hub.yml），需加入本项目或整栈共享的网络。
+# 知识包 Hub 独立部署（仓库 knowledge-hub/deploy/docker-compose.knowledge-hub.yml），需加入本项目或整栈共享的网络。
 services:
   auth-server:
     build: ../../auth-server
