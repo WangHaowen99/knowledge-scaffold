@@ -6,8 +6,11 @@ Hub 写在 onto-modeling 的源码与发布 Compose 里：与 onto-modeling 同�
 
 ## Decision
 
-- 新增 `deploy/docker-compose.knowledge-hub.yml`：固定项目名与容器名 `knowledge-hub`，数据卷 `knowledge-hub_knowledge-hub-data`；加入共享 Docker 网络（整栈即 consumer 网络，`CONSUMER_NETWORK` 必填），服务名不变，onto-modeling 仍经 `http://knowledge-hub:8200` 访问；不发布宿主端口。compose 不写 `build`，源码与离线包共用：源码由部署脚本先构建镜像，离线包加载包内镜像。
-- `deploy/deploy-knowledge-hub.sh` 是唯一的 Hub 部署脚本（离线包内为 `knowledge-hub/deploy.sh`）：读写所在目录 `.env` 的 `HUB_SERVICE_TOKEN`（注入 > 已有 > 生成），网络必须由调用方注入或显式配置，部署后在容器内做健康检查。
+- 新增 `knowledge-hub/deploy/docker-compose.knowledge-hub.yml`（原位于 `deploy/`，已随 Hub 部署文件迁入 `knowledge-hub/deploy/`）：固定项目名与容器名 `knowledge-hub`，数据卷 `knowledge-hub_knowledge-hub-data`；加入共享 Docker 网络（整栈即 consumer 网络，`CONSUMER_NETWORK` 必填），服务名不变，onto-modeling 仍经 `http://knowledge-hub:8200` 访问；不发布宿主端口。compose 不写 `build`，源码与离线包共用：源码由部署脚本先构建镜像，离线包加载包内镜像。
+- `knowledge-hub/deploy/deploy.sh`（原 `deploy/deploy-knowledge-hub.sh`）是唯一的 Hub 部署脚本，离线包内为 `knowledge-hub/deploy.sh`，包内布局不变。
+  - 读写所在目录 `.env` 的 `HUB_SERVICE_TOKEN`（注入 > 已有 > 生成）和评测服务凭据 `HUB_EVALUATION_SERVICE_TOKEN`（缺失时生成）。
+  - 源码部署首次运行时迁移旧位置 `deploy/.env`。
+  - 网络必须由调用方注入或显式配置，部署后在容器内做健康检查。
 - `knowledge-hub/build.sh` 产出独立离线包；`deploy/build.sh` 把它并入完整包。onto-modeling 的 compose、override 与打包脚本移除 Hub。
 - 编排顺序为 Hub → onto-modeling。共享凭据由编排方对齐：Hub 首次部署沿用 onto-modeling 已有的 `ONTO_HUB_SERVICE_TOKEN`，onto-modeling 部署前改用 Hub 实际使用的值。`deploy.sh` 新增 `--knowledge-hub-only`，`--onto-modeling-only` 不再触碰 Hub；分离安装脚本新增 `--knowledge-hub-package`（交互脚本为可选提问）。
 

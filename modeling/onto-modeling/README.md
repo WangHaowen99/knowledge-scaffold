@@ -164,7 +164,7 @@ consumer 同源色系。
 
 Hub 不可用时发布失败；Hub 已提交、本地关联尚未写入时提示待恢复，并由定时任务或原请求重试收敛。最新项目资料独立同步、失败后台重试；当前建模内评测使用 Hub2 快照，执行编排及 MCP 草稿不变。独立 eval1 和消费侧接入后续实施。
 
-部署配置 `ONTO_HUB_URL`、`ONTO_HUB_SERVICE_TOKEN`（对应 Hub `HUB_SERVICE_TOKEN`）和统一账号认证；包操作和项目资料共用建模服务身份，部署脚本沿用原有 token 自动生成逻辑。Hub 不在本项目的源码/发布 Compose 中，而是独立 compose 项目（`deploy/docker-compose.knowledge-hub.yml`、独立离线包），需与本服务同处一个 Docker 网络；整栈 `deploy/deploy.sh` 与安装脚本先部署 Hub，再把本服务的 `ONTO_HUB_SERVICE_TOKEN` 对齐为 Hub 实际使用的值。评测/消费服务凭据按后续接入分别配置。启动、部署、API、限制与备份见 [Hub README](../../knowledge-hub/README.md)。
+部署配置 `ONTO_HUB_URL`、`ONTO_HUB_SERVICE_TOKEN`（对应 Hub `HUB_SERVICE_TOKEN`）和统一账号认证；包操作和项目资料共用建模服务身份，部署脚本沿用原有 token 自动生成逻辑。Hub 不在本项目的源码/发布 Compose 中，而是独立 compose 项目（`knowledge-hub/deploy/docker-compose.knowledge-hub.yml`、独立离线包），需与本服务同处一个 Docker 网络；整栈 `deploy/deploy.sh` 与安装脚本先部署 Hub，再把本服务的 `ONTO_HUB_SERVICE_TOKEN` 对齐为 Hub 实际使用的值。评测服务凭据由 Hub 部署脚本生成并由评测部署沿用，消费服务凭据按后续接入配置。启动、部署、API、限制与备份见 [Hub README](../../knowledge-hub/README.md)。
 
 建模备份包含 `hub-tasks/` 中的主体包关联、冻结发布输入及恢复记录，不保存用户令牌；Hub 卷单独备份。发布门槛继续提示资料分析、对象提取、操作提取和质量检查；示例数据、场景验证及可选步骤不阻塞发布。带发布副作用的 GET `export?scope=package` 已取消，应先 POST 发布，再下载指定版本。
 

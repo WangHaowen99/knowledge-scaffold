@@ -101,7 +101,7 @@ ONTO_MODELING_PACKAGE="${REPO_ROOT}/modeling/onto-modeling/dist/onto-modeling-${
 tar -C "${BUNDLE_DIR}" -xzf "${ONTO_MODELING_PACKAGE}"
 
 # 知识包 Hub：独立子包并入 bundle，与 Onto Modeling 分开部署
-chmod +x "${REPO_ROOT}/knowledge-hub/build.sh" "${SCRIPT_DIR}/deploy-knowledge-hub.sh"
+chmod +x "${REPO_ROOT}/knowledge-hub/build.sh" "${REPO_ROOT}/knowledge-hub/deploy/deploy.sh"
 bash "${REPO_ROOT}/knowledge-hub/build.sh" "${VERSION}" "${ARCH}"
 KNOWLEDGE_HUB_PACKAGE="${REPO_ROOT}/knowledge-hub/dist/knowledge-hub-${VERSION}-linux-${RELEASE_ARCH}.tar.gz"
 [ -f "${KNOWLEDGE_HUB_PACKAGE}" ] || {

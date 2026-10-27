@@ -231,7 +231,7 @@ Commands for the Knowledge Package Hub (`knowledge-hub/`):
 - Install runtime and test dependencies: `cd knowledge-hub/backend && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt`
 - Start Hub with runtime configuration: `cd knowledge-hub/backend && .venv/bin/python run.py`
 - Run Hub tests: `cd knowledge-hub/backend && .venv/bin/python -m pytest tests`
-- Deploy Hub from source as an independent compose project (`deploy/docker-compose.knowledge-hub.yml`; consumer must be running): `bash deploy/deploy.sh --knowledge-hub-only`; the default full-stack deployment deploys Hub before Onto Modeling, and `--onto-modeling-only` does not touch Hub.
+- Deploy Hub from source as an independent compose project (`knowledge-hub/deploy/docker-compose.knowledge-hub.yml`, deploy script `knowledge-hub/deploy/deploy.sh`; consumer must be running): `bash deploy/deploy.sh --knowledge-hub-only`; the default full-stack deployment deploys Hub before Onto Modeling, and `--onto-modeling-only` does not touch Hub.
 - Offline Hub package: `bash knowledge-hub/build.sh <version> [amd|arm]`; included in `./deploy/build.sh`, installed by the separated installers via `--knowledge-hub-package`.
 - Run deployment script tests (Linux; interactive tests need `pty`): `python -m pytest deploy/tests -q`
 - Configuration, API and backup procedures: `knowledge-hub/README.md` and `knowledge-hub/API.md`.
@@ -242,7 +242,7 @@ Commands for the independent evaluation service (`eval-service/`):
 - Backend tests: `PYTHONPATH=eval-service eval-service/.venv/bin/python -m pytest eval-service/tests -q`
 - Frontend: `cd eval-service/frontend && npm ci && npm test && npm run build`
 - Run after injecting protected configuration: `cd eval-service && .venv/bin/python run.py`
-- Independent deployment: `bash deploy/deploy.sh --eval-only`; included in default full-stack deployment; excluded from `--onto-modeling-only` and `--knowledge-hub-only`. Full-stack deployment requires `EVAL_ENV_FILE`.
+- Independent deployment: `bash deploy/deploy.sh --eval-only` (compose `eval-service/deploy/docker-compose.eval-service.yml`); included in default full-stack deployment; excluded from `--onto-modeling-only` and `--knowledge-hub-only`. Runtime configuration lives in `eval-service/deploy/.env` (generated, mode 600, never committed) and reuses the Hub and consumer evaluation credentials; `EVAL_ENV_FILE` optionally points to an external protected configuration instead. Judge model settings (`EVAL_JUDGE_*`) must still be provided.
 - Offline package: `bash eval-service/build.sh <version> [amd|arm]`
 - Configuration, API, model configuration debt and recovery: `eval-service/README.md`, `eval-service/API.md`.
 

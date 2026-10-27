@@ -20,13 +20,13 @@ cd ..
 
 ## 配置与权限
 
-变量见 `.env.example`；该文件仅是占位说明，不是可直接运行的凭据文件。实际配置须在仓库和构建上下文之外注入。
+变量见 `.env.example`；该文件仅是占位说明，不是可直接运行的凭据文件。部署时的实际配置由部署脚本维护在 `deploy/.env`（权限 600，不入库），或通过 `EVAL_ENV_FILE` 从仓库和构建上下文之外注入，见下文“独立部署”。
 
 - `EVAL_AUTH_URL`、`EVAL_AUTH_ISSUER`：与 Hub 使用同一可信账号及稳定身份命名空间。
-- `EVAL_HUB_URL`、`EVAL_HUB_SERVICE_TOKEN`：对应 Hub 的 evaluation 服务身份，不复用 modeling 凭据。
+- `EVAL_HUB_URL`、`EVAL_HUB_SERVICE_TOKEN`：对应 Hub 的 evaluation 服务身份（Hub 的 `HUB_EVALUATION_SERVICE_TOKEN`），不复用 modeling 凭据。
 - `EVAL_CONSUMER_API_URL`、`EVAL_CONSUMER_SERVICE_TOKEN`：后者对应 consumer 的 `EVALUATION_SERVICE_TOKEN`，与其 modeling 密钥不同；用户身份仍必需。
 - `EVAL_DATA_DIR`：独立卷。默认 `.runtime/` 仅用于合成数据本地开发，部署必须使用外部运行卷。
-- `EVAL_ENCRYPTION_KEY`：外部生成并注入的 Fernet 密钥；用于连接配置、上传数据和执行数据快照。密钥不在卷内，备份时单独受控保管；变更密钥须先迁移加密数据。
+- `EVAL_ENCRYPTION_KEY`：Fernet 密钥，用于连接配置、上传数据和执行数据快照。部署脚本首次部署时生成并保存在 `deploy/.env`，不在数据卷内；备份时须与数据卷分开、同样受控保管。变更或丢失密钥会导致已有加密数据无法解密：已有数据卷而缺少密钥时部署脚本拒绝生成新密钥。
 - `EVAL_JUDGE_BASE_URL`、`EVAL_JUDGE_API_KEY`、`EVAL_JUDGE_MODEL`、`EVAL_JUDGE_CONFIG_REVISION`：临时 Judge 配置。问答沿用 consumer 默认 profile，记录其非敏感配置摘要。此方案标记 **MODEL-CONFIG-01，待 eval2 整改**。
 - dataset 可选配置：`EVAL_SQL_CONFIG` 为 MySQL 连接参数 JSON，`EVAL_NL2SQL_URL` 为 consumer 可达的评测查询入口，路径 `/evaluation/api/nl2sql`。每轮只管理 `eval_<run_id>` 数据库；查询使用绑定 scene 的 HMAC 凭据、SQL AST 检查及只读事务。数据库账号应按评测库前缀限定权限。
 
@@ -47,15 +47,24 @@ cd ..
 ## 独立部署
 
 ```bash
-# EVAL_ENV_FILE 指向仓库之外、仅运行账号可读的配置文件
+# 从仓库根执行；consumer 与知识包 Hub 需已部署
 bash deploy/deploy.sh --eval-only
 ```
 
-已有服务使用独立 Docker 网络或需要同源网关时，可设置 `EVAL_COMPOSE_OVERRIDE` 指向仓库外的受保护 Compose 覆盖文件，加入外部网络和网关服务。部署脚本会将其叠加到 `deploy/compose.yml`；再次部署应继续提供相同覆盖文件。网关接管建模原入口端口时，建模服务应取消重复的宿主端口绑定，后续建模重部署也须保留这项覆盖。
+- 运行配置：未设置 `EVAL_ENV_FILE` 时，`deploy/deploy.sh` 读写 `deploy/.env`，只保存凭据和显式配置的值，取值顺序为 进程环境 > `.env` 已有值：
+  - 首次部署生成 `EVAL_ENCRYPTION_KEY`。
+  - 评测凭据沿用 Hub 的 `HUB_EVALUATION_SERVICE_TOKEN` 与 consumer 的 `EVALUATION_SERVICE_TOKEN`，由根目录 `deploy/deploy.sh` 读取后注入，两者分别由 Hub 部署脚本和 consumer 部署生成。
+- 默认地址：账号、Hub、consumer 地址的默认值 `http://auth-server:5056`、`http://knowledge-hub:8200`、`http://backend:5055` 写在 `deploy/docker-compose.eval-service.yml` 中，compose 文件不含任何凭据。部署脚本用 `--env-file` 把运行配置交给 compose，配置中写了同名地址时优先生效；手动执行 compose 并使用外部配置时，也需要加上 `--env-file <配置文件>`。
+- 网络：`CONSUMER_NETWORK` 必填，评测容器加入该网络，按服务名访问依赖。根目录部署脚本会自动探测并注入，本地 `.env` 会记住它，所以在 `deploy/` 下手动执行 `docker compose` 时无需另设变量。不在整栈旁部署时，指定任一已有网络，并在 `.env` 中把依赖地址改为该网络可达的地址。
+- Judge：`EVAL_JUDGE_BASE_URL`、`EVAL_JUDGE_API_KEY`、`EVAL_JUDGE_MODEL`、`EVAL_JUDGE_CONFIG_REVISION` 四项必填，只能由部署方提供（OpenAI 兼容 `/chat/completions`，需支持工具调用），已在 `deploy/docker-compose.eval-service.yml` 中声明但不含值。缺失时部署只告警，无法开始评测；写入 `deploy/.env` 或进程环境后重新部署评测即可。
+- 外部配置：设置 `EVAL_ENV_FILE` 指向仓库之外、仅运行账号可读的配置文件时，脚本原样使用、不改写，也不自动补齐凭据。
+- 镜像源：构建时 npm 默认 `registry.npmmirror.com`，PyPI 默认华为云镜像。可用 `EVAL_NPM_REGISTRY`、`EVAL_PIP_INDEX_URL`（或 `NPM_REGISTRY`、`PIP_INDEX_URL`）覆盖，源码部署和离线包构建都生效；未设置时不传构建参数，沿用 Dockerfile 中的默认值。基础镜像 `node:24-bookworm-slim`、`python:3.12-slim-bookworm` 仍从 Docker Hub 拉取，需要加速时在 Docker 守护进程中配置 registry mirror。
 
-以上从仓库根执行。独立 Compose 不启动账号、Hub、consumer 或建模依赖；这些服务按注入地址连接。默认全栈 `bash deploy/deploy.sh` 会在其他服务之后部署评测，也要求先设置 `EVAL_ENV_FILE`；`--onto-modeling-only` 不包含评测。默认宿主回环端口 8090，网关按实际网络配置访问。`/evaluation/api/health` 只报告进程活性，不能替代依赖与模型协议验证。
+已有服务使用独立 Docker 网络或需要同源网关时，可设置 `EVAL_COMPOSE_OVERRIDE` 指向仓库外的受保护 Compose 覆盖文件，加入外部网络和网关服务。部署脚本会将其叠加到 `deploy/docker-compose.eval-service.yml`；再次部署应继续提供相同覆盖文件。网关接管建模原入口端口时，建模服务应取消重复的宿主端口绑定，后续建模重部署也须保留这项覆盖。
 
-离线包：`bash eval-service/build.sh <version> [amd|arm]`。产物包含镜像、Compose、部署脚本和说明；目标机设置 `EVAL_IMAGE=knowledge-evaluation:<version>`、`EVAL_ENV_FILE` 后执行包内 `deploy/deploy.sh`。不包含运行配置和数据。根目录 `bash deploy/build.sh <version> [amd|arm]` 生成的完整离线包也包含评测镜像、部署脚本及网关配置示例。
+独立 Compose 不启动账号、Hub、consumer 或建模依赖。默认全栈 `bash deploy/deploy.sh` 会在其他服务之后部署评测；`--onto-modeling-only` 不包含评测。默认宿主回环端口 8090，网关按实际网络配置访问。`/evaluation/api/health` 只报告进程活性，不能替代依赖与模型协议验证。
+
+离线包：`bash eval-service/build.sh <version> [amd|arm]`。产物包含镜像、Compose、部署脚本和说明；目标机设置 `EVAL_IMAGE=knowledge-evaluation:<version>` 后执行包内 `deploy/deploy.sh`，运行配置规则同上。不包含运行配置和数据。根目录 `bash deploy/build.sh <version> [amd|arm]` 生成的完整离线包也包含评测镜像、部署脚本及网关配置示例。
 
 ## 恢复与清理
 

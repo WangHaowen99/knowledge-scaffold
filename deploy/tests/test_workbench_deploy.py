@@ -348,6 +348,48 @@ def test_source_deploy_generates_modeling_service_token_without_printing_it(
     assert env_file.stat().st_mode & 0o777 == 0o600
 
 
+def test_source_deploy_generates_a_distinct_evaluation_service_token(tmp_path: Path) -> None:
+    consumer_root = tmp_path / "consumer"
+    backend_root = consumer_root / "backend"
+    backend_root.mkdir(parents=True)
+    env_file = backend_root / ".env"
+    modeling = "m" * 64
+    env_file.write_text(f"MODELING_SERVICE_TOKEN={modeling}\nEVALUATION_SERVICE_TOKEN=\n", encoding="utf-8")
+    inherited = {key: value for key, value in os.environ.items() if key != "EVALUATION_SERVICE_TOKEN"}
+
+    def ensure(extra: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                _bash_executable(),
+                "-c",
+                'source "$DEPLOY_STACK" >/dev/null; CONSUMER_DIR="$TEST_CONSUMER_DIR"; ensure_evaluation_service_token',
+            ],
+            env={
+                **inherited,
+                "DEPLOY_STACK": str(DEPLOY_ROOT / "deploy-stack.sh"),
+                "TEST_CONSUMER_DIR": str(consumer_root),
+                **extra,
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    result = ensure({})
+    assert result.returncode == 0, result.stdout + result.stderr
+    match = re.search(r"^EVALUATION_SERVICE_TOKEN=([0-9a-f]{64})$", env_file.read_text(), re.MULTILINE)
+    assert match is not None and match.group(1) != modeling
+    assert match.group(1) not in result.stdout + result.stderr
+    assert env_file.stat().st_mode & 0o777 == 0o600
+    assert f"MODELING_SERVICE_TOKEN={modeling}" in env_file.read_text()
+    # 重跑沿用已有值；与 Modeling 凭据相同的值被拒绝
+    assert ensure({}).returncode == 0
+    assert f"EVALUATION_SERVICE_TOKEN={match.group(1)}" in env_file.read_text()
+    same = ensure({"EVALUATION_SERVICE_TOKEN": modeling})
+    assert same.returncode == 2
+    assert "不能与 MODELING_SERVICE_TOKEN 相同" in same.stderr
+
+
 def test_source_deploy_only_blocks_missing_auth_config_before_docker(
     tmp_path: Path,
 ) -> None:
