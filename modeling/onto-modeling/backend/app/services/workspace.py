@@ -1496,7 +1496,12 @@ class WorkspaceManager:
         root = self.project_root(project_id)
         check = self.solver_check(project_id)
         status = self.solver_release_status(project_id)
-        scripts = self._package_scripts(root)
+        # 可选评估器与自动查找同一规则（旧式或声明式），辅助模块、Operation 脚本不列出
+        scripts = {
+            package_path: path
+            for package_path, path in self._package_scripts(root).items()
+            if solver_contract.is_evaluator_file(path)
+        }
         return {
             "revision": check.revision,
             "digests": check.digests,
