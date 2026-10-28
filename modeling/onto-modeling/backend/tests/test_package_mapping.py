@@ -338,7 +338,7 @@ def test_package_relations_preflight_checks_arrow_and_table_formats_without_name
     assert any("object_b" in problem and "不允许自关联" in problem for problem in problems)
 
 
-def test_package_relations_deduplicates_forward_incoming_and_standard_declarations():
+def test_package_relations_merges_only_matching_fields_across_formats():
     texts = {
         "object_a": "# 关联对象\n- 当前对象 → references → [[object_b]]\n"
         + package_mapping.render_relations_section([{
@@ -351,9 +351,151 @@ def test_package_relations_deduplicates_forward_incoming_and_standard_declaratio
 
     assert problems == []
     assert list(relations) == ["object_a"]
-    assert len(relations["object_a"]) == 1
+    assert len(relations["object_a"]) == 2
     assert relations["object_a"][0]["target"] == "object_b"
-    assert relations["object_a"][0]["sourceJoinProperty"] == "fk"
+    assert relations["object_a"][1]["sourceJoinProperty"] == "fk"
+
+
+@pytest.mark.parametrize(("source_text", "target_text", "duplicate_location"), [
+    (
+        "# 关联对象\n- 当前对象 → references → [[object_b]]\n"
+        "- 当前对象名 ->  references  -> [[object_b|合成别名]]\n",
+        "",
+        "ontology/object/object_a.md 第 3 行",
+    ),
+    (
+        "# 关系\n| 关系 | 目标 |\n| --- | --- |\n"
+        "| references | object_b |\n| references | [[object_b#合成段落]] |\n",
+        "",
+        "ontology/object/object_a.md 第 5 行",
+    ),
+    (
+        "# 关联对象\n- 当前对象 → references → [[object_b]]\n"
+        "# 关系\n| 关系 | 目标 |\n| --- | --- |\n| references | object_b |\n",
+        "",
+        "ontology/object/object_a.md 第 6 行",
+    ),
+    (
+        "# 关联对象\n- 当前对象 → references → [[object_b]]\n",
+        "# 关联对象\n- [[object_a]] → references → 当前对象\n",
+        "ontology/object/object_b.md 第 2 行",
+    ),
+    (
+        "# 关联对象\n- 当前对象 → caf\u00e9 → [[object_b]]\n"
+        "- 当前对象 → cafe\u0301 → [[object_b]]\n",
+        "",
+        "ontology/object/object_a.md 第 3 行",
+    ),
+])
+def test_evaluation_rejects_normalized_duplicates_with_both_locations(
+    source_text, target_text, duplicate_location,
+):
+    # 全合成声明：别名、当前对象占位符、箭头/表格格式及 Unicode 等价写法不应绕过检查。
+    _, problems = package_mapping.package_relations(
+        {"object_a": source_text, "object_b": target_text},
+        allow_self_relations=False, reject_duplicate_relations=True,
+    )
+
+    first_line = 4 if source_text.startswith("# 关系") else 2
+    assert len(problems) == 1
+    assert "重复关系" in problems[0]
+    assert duplicate_location in problems[0]
+    assert f"首次声明于 ontology/object/object_a.md 第 {first_line} 行" in problems[0]
+
+
+def test_evaluation_keeps_distinct_directed_relations_and_legacy_names():
+    relations, problems = package_mapping.package_relations({
+        "object_a": "# 关联对象\n"
+        "- 当前对象 → 属于申请 → [[object_b]]\n"
+        "- 当前对象 → references → [[object_b]]\n"
+        "- 当前对象 → references → [[object_c]]\n",
+        "object_b": "# 关联对象\n- 当前对象 → references → [[object_a]]\n",
+        "object_c": "",
+    }, allow_self_relations=False, reject_duplicate_relations=True)
+
+    assert problems == []
+    assert sum(map(len, relations.values())) == 4
+    assert relations["object_a"][0]["relation"] == "属于申请"
+    assert relations["object_b"][0]["target"] == "object_a"
+
+
+def test_duplicate_check_normalizes_endpoint_unicode_before_validating_references():
+    _, problems = package_mapping.package_relations({
+        "object_a": "# 关联对象\n"
+        "- 当前对象 → references → [[object_\u00e9]]\n"
+        "- 当前对象 → references → [[object_e\u0301|合成别名]]\n",
+        "object_\u00e9": "",
+    }, allow_self_relations=False, reject_duplicate_relations=True)
+
+    assert len(problems) == 1
+    assert "重复关系" in problems[0]
+    assert "不存在" not in problems[0]
+    assert "ontology/object/object_a.md 第 3 行" in problems[0]
+    assert "首次声明于 ontology/object/object_a.md 第 2 行" in problems[0]
+
+
+def test_each_duplicate_reports_the_first_declaration_not_the_previous_duplicate():
+    _, problems = package_mapping.package_relations({
+        "object_a": "# 关联对象\n"
+        "- 当前对象 → references（fk → id） → [[object_b]]\n"
+        "- 当前对象 → references（fk → id） → [[object_b]]\n"
+        "- 当前对象 → references（fk -> id） → [[object_b]]\n",
+        "object_b": "",
+    }, allow_self_relations=False, reject_duplicate_relations=True)
+
+    assert len(problems) == 2
+    assert all("重复关系" in problem for problem in problems)
+    assert all("首次声明于 ontology/object/object_a.md 第 2 行" in problem for problem in problems)
+    assert "object_a.md 第 3 行" in problems[0]
+    assert "object_a.md 第 4 行" in problems[1]
+
+
+@pytest.mark.parametrize("graph", [False, True])
+def test_same_named_relations_keep_distinct_join_field_pairs(graph):
+    texts = _related_pair("（fk → id）", ["fk", "other_fk", "id"], ["id", "other_id"])
+    texts["object_a"] += "\n- 当前对象 → references（other_fk → id） → [[object_b]]\n"
+    texts["object_b"] = texts["object_b"].replace("→ references →", "→ references（fk → id） →")
+    if graph:
+        relations, problems = package_mapping.graph_relations(texts, set(texts))
+    else:
+        relations, problems = package_mapping.package_relations(texts)
+
+    assert problems == []
+    assert len(relations["object_a"]) == 2
+    assert {(item["sourceJoinProperty"], item["targetJoinProperty"]) for item in relations["object_a"]} == {
+        ("fk", "id"), ("other_fk", "id"),
+    }
+
+
+def test_evaluation_rejects_only_matching_join_field_pairs_across_formats():
+    texts = _related_pair("（object_a.fk → object_b.id）", ["fk", "other_fk"], ["id"])
+    texts["object_b"] = ""
+    texts["object_a"] += "\n" + package_mapping.render_relations_section([
+        {"relation": "references", "target": "object_b", "sourceJoinProperty": "other_fk", "targetJoinProperty": "id"},
+        {"relation": "references", "target": "object_b", "sourceJoinProperty": "fk", "targetJoinProperty": "id"},
+    ])
+
+    _, problems = package_mapping.package_relations(texts, reject_duplicate_relations=True)
+
+    assert len(problems) == 1
+    assert "重复关系" in problems[0]
+    assert "fk → id" in problems[0]
+    assert "首次声明于" in problems[0]
+
+
+def test_evaluation_accepts_self_relations_with_different_join_fields(tmp_path):
+    from app.services import modeling_eval
+
+    texts = _self_object(
+        "- 当前对象 → references（manager_id → employee_id） → 当前对象\n"
+        "- 当前对象 → references（employee_id → manager_id） → 当前对象\n"
+    )
+    directory = tmp_path / "ontology" / "object"
+    directory.mkdir(parents=True)
+    for key, text in texts.items():
+        (directory / f"{key}.md").write_text(text, encoding="utf-8")
+
+    assert modeling_eval.evaluation_object_snapshot(tmp_path) == texts
 
 
 def test_standard_relation_table_keeps_graph_join_fields_and_evidence():
@@ -386,16 +528,18 @@ def test_malformed_relation_table_is_not_treated_as_no_relations(table):
     assert "缺少" in problems[0]
 
 
-def test_conflicting_standard_join_declarations_are_rejected():
+def test_standard_same_named_relations_keep_different_join_fields():
     relation = {"relation": "references", "target": "object_b", "sourceJoinProperty": "fk", "targetJoinProperty": "id"}
     text = package_mapping.render_relations_section([
         relation, {**relation, "sourceJoinProperty": "other_fk"},
     ])
 
-    _, problems = package_mapping.package_relations({"object_a": text, "object_b": ""})
+    relations, problems = package_mapping.package_relations(
+        {"object_a": text, "object_b": ""}, reject_duplicate_relations=True,
+    )
 
-    assert len(problems) == 1
-    assert "关联字段声明不一致" in problems[0]
+    assert problems == []
+    assert len(relations["object_a"]) == 2
 
 
 def _related_pair(note: str, source_fields: list[str], target_fields: list[str]) -> dict:
@@ -443,7 +587,8 @@ def test_join_fields_are_resolved_by_property_lists(note, expected):
 def test_ambiguous_or_absent_join_fields_are_reported(note, message):
     texts = _related_pair(note, ["fk", "shared", "both"], ["id", "shared", "both"])
     relations, skipped = package_mapping.graph_relations(texts, set(texts))
-    assert relations == {}
+    assert len(relations["object_a"]) == 1
+    assert relations["object_a"][0]["sourceJoinProperty"] is None
     assert len(skipped) == 1 and message in skipped[0]
 
 
@@ -530,8 +675,8 @@ def _self_object(line: str) -> dict:
     )}
 
 
-def test_self_relation_needs_explicit_join_fields():
-    """自关联两端是同一张表：写明关联字段才导出，否则会按同一行把节点连到自己。"""
+def test_self_relation_is_preserved_with_or_without_join_fields():
+    """自关联本身合法；显式字段对和同一行关联都可以导出。"""
     relations, skipped = package_mapping.graph_relations(
         _self_object("- 当前对象 → 上级（manager_id → employee_id） → 当前对象"), {"employee"},
     )
@@ -543,8 +688,9 @@ def test_self_relation_needs_explicit_join_fields():
     relations, skipped = package_mapping.graph_relations(
         _self_object("- 当前对象 → 上级 → 当前对象"), {"employee"},
     )
-    assert relations == {}
-    assert len(skipped) == 1 and "自关联" in skipped[0]
+    assert skipped == []
+    assert relations["employee"][0]["target"] == "employee"
+    assert relations["employee"][0]["sourceJoinProperty"] is None
 
 
 @pytest.mark.parametrize("line", [
@@ -565,7 +711,7 @@ def test_bad_relation_declarations_have_line_diagnostics(line):
     assert report.get("relations_declared") == report.get("relations_skipped") == 1
 
 
-def test_incoming_relations_keep_direction_and_conflicts_are_visible():
+def test_incoming_relations_keep_direction_and_distinct_join_fields():
     report = {}
     texts = {
         "object_a": "# 关联对象\n- 当前对象 → references（fk -> id） → [[object_b]]",
@@ -577,17 +723,15 @@ def test_incoming_relations_keep_direction_and_conflicts_are_visible():
     assert report.get("relations_duplicates") == 1
     texts["object_b"] = texts["object_b"].replace("fk -> id", "other_fk -> id")
     relations, skipped = package_mapping.graph_relations(texts, set(texts), report)
-    # 两端都写了关联字段且不是同一对：无从判断该连哪一对，整条不导出并指出另一处声明
-    assert relations == {} and report.get("relations_exported") == 0
-    assert len(skipped) == 1
-    assert "object_b" in skipped[0] and "第 2 行" in skipped[0]
-    assert "对象「object_a」第 2 行" in skipped[0]
-    assert "fk → id" in skipped[0] and "other_fk → id" in skipped[0]
+    assert skipped == [] and report.get("relations_exported") == 2
+    assert {(edge["sourceJoinProperty"], edge["targetJoinProperty"]) for edge in relations["object_a"]} == {
+        ("fk", "id"), ("other_fk", "id"),
+    }
 
 
 @pytest.mark.parametrize("declaring", ["object_a", "object_b"])
-def test_relation_declared_on_one_end_only_keeps_its_join_fields(declaring):
-    """一端写出关联字段、另一端只写关系名：按已声明的补齐，不是冲突。"""
+def test_implicit_and_explicit_join_declarations_remain_distinct(declaring):
+    """空字段对与显式字段对不是同一关系，不猜字段或合并声明。"""
     def name(key: str) -> str:
         return "references（fk → id）" if key == declaring else "references"
 
@@ -598,8 +742,8 @@ def test_relation_declared_on_one_end_only_keeps_its_join_fields(declaring):
     report = {}
     relations, skipped = package_mapping.graph_relations(texts, set(texts), report)
     assert skipped == []
-    assert report.get("relations_exported") == 1 and report.get("relations_duplicates") == 1
-    edge = relations["object_a"][0]
+    assert report.get("relations_exported") == 2 and report.get("relations_duplicates") == 0
+    edge = next(item for item in relations["object_a"] if item["sourceJoinProperty"])
     assert (edge["sourceJoinProperty"], edge["targetJoinProperty"]) == ("fk", "id")
 
 
@@ -619,6 +763,7 @@ def test_studio_uses_the_same_relation_label_with_nested_arrow():
 def test_literal_current_object_name_placeholder_means_current_object(placeholder):
     """旧版抽取模板把「当前对象」写成了「当前对象名」，照抄进文档的关系不能在发布时静默丢掉。"""
     texts = _related_pair("（fk → id）", ["fk"], ["id"])
+    texts["object_b"] = texts["object_b"].replace("→ references →", "→ references（fk → id） →")
     texts = {key: text.replace("当前对象", placeholder) for key, text in texts.items()}
     report = {}
     relations, skipped = package_mapping.graph_relations(texts, set(texts), report)
@@ -681,7 +826,8 @@ def test_join_fields_with_table_prefix_are_accepted(note):
 def test_ambiguous_prefixed_join_fields_are_still_rejected(note):
     texts = _table_pair(note)
     relations, skipped = package_mapping.graph_relations(texts, set(texts))
-    assert relations == {}
+    assert len(relations["订单明细"]) == 1
+    assert relations["订单明细"][0]["sourceJoinProperty"] is None
     assert len(skipped) == 1 and "关联字段" in skipped[0]
 
 

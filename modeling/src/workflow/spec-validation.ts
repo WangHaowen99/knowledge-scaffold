@@ -1,5 +1,5 @@
 import type {
-  AnalysisResult, CoverageResult, PackageSpec, SpecMetric, SpecObject, SpecOperation, SpecRule,
+  AnalysisResult, CoverageResult, PackageSpec, SpecMetric, SpecObject, SpecOperation, SpecRelation, SpecRule,
 } from '../types.js';
 import { normalizeKey, validateSpecKeys } from './keys.js';
 import {
@@ -90,6 +90,12 @@ function findDuplicates(keys: string[]): string[] {
 type ObjectCandidate = AnalysisResult['candidateObjects'][number];
 export type ObjectCandidateRef = ObjectCandidate & { id: string };
 
+function relationIdentity(relation: SpecRelation): string {
+  return JSON.stringify([
+    relation.target, relation.relation, relation.sourceJoinProperty ?? '', relation.targetJoinProperty ?? '',
+  ].map(normalizeKey));
+}
+
 /** 进入对象生成计划的逻辑候选必须逐项认领，不能再被模型静默省略。 */
 export function validateObjectBatch(
   candidates: ObjectCandidateRef[],
@@ -114,7 +120,7 @@ export function validateObjectBatch(
       if (!knownObjects.has(normalizeKey(relation.target))) {
         issues.push(`对象 ${object.key} 引用了不存在的对象 ${relation.target}`);
       }
-      const relationKey = `${normalizeKey(relation.target)}\u0000${normalizeKey(relation.relation)}`;
+      const relationKey = relationIdentity(relation);
       if (relationKeys.has(relationKey)) {
         issues.push(`对象 ${object.key} 的 relations[${index}] 与已有 source-target-relation 重复`);
       }
@@ -366,7 +372,7 @@ export function validateSpecIntegrity(
       if (options.allowSelfRelations === false && normalizeKey(relation.target) === normalizeKey(object.key)) {
         errors.push(`对象 ${object.key} 的 relations[${index}] 评测不允许自关联`);
       }
-      const relationKey = `${normalizeKey(relation.target)}\u0000${normalizeKey(relation.relation)}`;
+      const relationKey = relationIdentity(relation);
       if (relationKeys.has(relationKey)) {
         errors.push(`对象 ${object.key} 的 relations[${index}] 与已有 source-target-relation 重复`);
       }

@@ -267,7 +267,6 @@ def test_eval_run_reports_binding_problems_until_user_allows_unbound(tmp_path, m
 @pytest.mark.parametrize(
     ("relation", "expected"),
     [
-        ("- 当前对象 → references → 当前对象", "不允许自关联"),
         ("- 当前对象 → references → [[missing_object]]", "missing_object"),
     ],
 )
@@ -343,3 +342,87 @@ def test_eval_run_allows_normal_relation_with_legacy_name(tmp_path, monkeypatch)
 
     assert result["started"] is True
     assert len(started) == 1
+
+
+@pytest.mark.parametrize("data_source", [
+    {"mode": "none"},
+    {"mode": "dataset"},
+    {"mode": "connection", "provider": "nl2sql_template"},
+    {"mode": "connection", "provider": "neo4j"},
+])
+@pytest.mark.parametrize("allow_unbound", [False, True])
+@pytest.mark.parametrize("cross_file", [False, True])
+def test_eval_run_rejects_duplicate_relations_with_both_locations(
+    tmp_path, monkeypatch, data_source, allow_unbound, cross_file,
+):
+    projects, pid, request = eval_router(tmp_path, monkeypatch)
+    object_dir = projects.workspaces.project_root(pid) / "ontology" / "object"
+    source = "# 关联对象\n- 当前对象 → references → [[object_b]]\n"
+    target = "# 关联对象\n- [[object_a]] → references → 当前对象\n" if cross_file else ""
+    if not cross_file:
+        source += "- 当前对象名 -> references -> [[object_b|合成别名]]\n"
+    (object_dir / "object_a.md").write_text(source, encoding="utf-8")
+    (object_dir / "object_b.md").write_text(target, encoding="utf-8")
+    started = []
+
+    async def fake_run(*args, **kwargs):
+        started.append((args, kwargs))
+
+    monkeypatch.setattr(modeling_eval, "run", fake_run)
+
+    async def call():
+        result = await projects.eval_run(
+            pid,
+            projects.EvalRunBody(
+                cases=[{"question": "synthetic question", "groundTruth": "synthetic answer"}],
+                data_source=data_source, allow_unbound=allow_unbound,
+            ),
+            request,
+        )
+        await asyncio.sleep(0)
+        return result
+
+    result = asyncio.run(call())
+    assert result.status_code == 422
+    payload = json.loads(result.body)
+    assert payload["code"] == "EVALUATION_PACKAGE_INVALID"
+    assert len(payload["problems"]) == 1
+    problem = payload["problems"][0]
+    assert "重复关系" in problem
+    assert "首次声明于 ontology/object/object_a.md 第 2 行" in problem
+    duplicate_location = "object_b.md 第 2 行" if cross_file else "object_a.md 第 3 行"
+    assert f"ontology/object/{duplicate_location}" in problem
+    assert started == []
+
+
+@pytest.mark.parametrize("self_relation", [False, True])
+def test_eval_run_allows_same_name_different_fields_and_self_relations(tmp_path, monkeypatch, self_relation):
+    projects, pid, request = eval_router(tmp_path, monkeypatch)
+    root = projects.workspaces.project_root(pid)
+    directory = root / "ontology" / "object"
+    target = "object_a" if self_relation else "object_b"
+    body = object_doc(None, ["id", "parent_id", "other_parent_id"])
+    (directory / "object_a.md").write_text(
+        body + "\n# 关联对象\n"
+        f"- 当前对象 → references（parent_id → id） → [[{target}]]\n"
+        f"- 当前对象 → references（other_parent_id → id） → [[{target}]]\n",
+        encoding="utf-8",
+    )
+    if not self_relation:
+        (directory / "object_b.md").write_text(body, encoding="utf-8")
+    started = []
+
+    async def fake_run(*args, **kwargs):
+        started.append(True)
+
+    monkeypatch.setattr(modeling_eval, "run", fake_run)
+
+    async def call():
+        result = await projects.eval_run(pid, projects.EvalRunBody(
+            cases=[{"question": "synthetic question", "groundTruth": "synthetic answer"}], allow_unbound=True,
+        ), request)
+        await asyncio.sleep(0)
+        return result
+
+    assert asyncio.run(call())["started"] is True
+    assert started == [True]
