@@ -1,34 +1,68 @@
 #!/usr/bin/env python3
 """ontology/scripts/*.py 的 CLI 契约解析：头部「输入参数」与 argparse 声明必须一一对应。
 
-单一事实源：知识包导出（backend `workspace.py`）与 `ontology_checker.py --include-scripts`
-共用本模块，建模阶段的规则检查与导出时的拦截结论一致。仅依赖标准库。
+单一事实源：知识包导出（backend `workspace.py`）、脚本描述符（`script_descriptor.py`）与
+`ontology_checker.py --include-scripts` 共用本模块，建模阶段的规则检查与导出时的拦截结论一致。
+
+参数类型按 consumer 的调用口径（consumer/backend/agent/tools/execute_script.py 把参数表
+转成 JSON Schema，再把智能体给的值转成 `--flag 值`）只用六种：
+string / integer / number / boolean / object / array。头部仍兼容旧写法 str / int / float /
+bool / json。仅依赖标准库。
 """
 from __future__ import annotations
 
 import ast
+import json
 import re
+from dataclasses import dataclass
 
-SCRIPT_TYPE_MAP = {
+# 头部「输入参数」「输出」里的类型写法 → consumer 类型；json 是旧写法，consumer 只能当字符串传
+TYPE_ALIASES = {
     "str": "string", "string": "string", "int": "integer", "integer": "integer",
     "float": "number", "number": "number", "bool": "boolean", "boolean": "boolean",
-    "list": "array", "tuple": "array", "dict": "object", "object": "object", "json": "json", "loads": "json",
+    "dict": "object", "object": "object", "list": "array", "array": "array", "json": "json",
 }
+STRUCTURED_TYPES = ("object", "array")
+
+# argparse 的 type= → 脚本实际收到的值；其余可调用对象收到的都是字符串
+_SOURCE_TYPES = {"str": "string", "int": "integer", "float": "number", "loads": "json"}
+# consumer 传入的都是字符串，这些 type= 会把值解析错
+_UNPASSABLE_TYPES = {
+    "bool": 'type=bool 会把 "false" 也当成 True；布尔开关请用 action="store_true"',
+    "list": "结构化参数请用 type=json.loads，头部类型写 array",
+    "tuple": "结构化参数请用 type=json.loads，头部类型写 array",
+    "set": "结构化参数请用 type=json.loads，头部类型写 array",
+    "dict": "结构化参数请用 type=json.loads，头部类型写 object",
+}
+_PASSABLE_ACTIONS = {"", "store", "store_true", "store_false", "append", "extend"}
+_BOOLEAN_ACTIONS = {"store_true", "store_false"}
 
 PARAMS_SCOPE_HINT = "「输入参数」只列 argparse 声明的 CLI 参数；仅供 import 调用的函数参数写在「用法」段"
-TYPE_HINT = '未写 type= 的参数按 str；布尔开关用 action="store_true" 并标 bool'
+TYPE_HINT = (
+    '类型写 consumer 的取值：未写 type= 的参数为 string，type=int 为 integer，type=float 为 number，'
+    'action="store_true" 为 boolean，type=json.loads 按取值写 object 或 array'
+)
 # 头部 number 与 argparse int（或反之）只是精度描述不同，不拦导出；导出类型以 argparse 为准，
 # integer 让运行端按整数拼参数，避免 type=int 收到 "2026.0"。
 NUMERIC_TYPES = {"integer", "number"}
+
+_LABEL_RE = re.compile(r"^([\w一-鿿]+)[：:]\s*(.*)$")
+_NO_BINDING_RE = re.compile(r"^(无|-|—)(\s|[（(]|$)")
 
 
 class ScriptContractError(ValueError):
     """A generated script cannot be exported with an unverifiable CLI contract."""
 
 
-def _type_conflicts(documented: str, declared: str) -> bool:
-    """头部类型与 argparse 类型不一致；integer 与 number 互写不算冲突（见 NUMERIC_TYPES）。"""
-    return documented != declared and {documented, declared} != NUMERIC_TYPES
+@dataclass(frozen=True)
+class ScriptContract:
+    bound: str  # 关联operation（片段已去掉「/ 步骤」后缀）；库模块为空串
+    fragment: str  # 片段范围（如「步骤2-4」）；整段脚本为空串
+    title: str  # 功能描述
+    params: tuple[dict, ...]
+    outputs: tuple[dict, ...]  # 头部「输出」逐行声明的字段：name / type / desc
+    output_text: str  # 头部「输出」里没写成字段行的原文
+    warnings: tuple[str, ...]  # 不阻断导出、但 consumer 调用会吃亏的写法
 
 
 def _script_header(code: str) -> str:
@@ -51,51 +85,21 @@ def parse_script_contract(code: str) -> tuple[str, list[dict]]:
     The Python source is the single source of truth for flags and argparse semantics.
     The docstring supplies descriptions, but never invents or renames a flag.
     """
-    header = _script_header(code)
-    bound = script_bound_operation(code)
+    contract = parse_script(code)
+    return contract.bound, list(contract.params)
 
-    documented: list[dict] = []
-    lines = header.splitlines()
-    in_params = False
-    for line in lines:
-        stripped = line.strip()
-        if re.match(r"^输入参数[：:]\s*$", stripped):
-            in_params = True
-            continue
-        if in_params:
-            # 下一个段落标题（形如 "输出：" "依赖："）结束参数段
-            if re.match(r"^[\w一-鿿]+[：:]", stripped) and not stripped.startswith("-"):
-                break
-            if not stripped:
-                continue
-            fields = re.split(r"\s{2,}|\t", stripped)
-            if len(fields) < 2:
-                continue
-            name = fields[0].strip().lstrip("-").strip()
-            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-                continue
-            raw_type = fields[1].strip().lower()
-            desc = fields[2].strip() if len(fields) > 2 else ""
-            required = "是" if "必填" in desc else "否"
-            default = ""
-            dmatch = re.search(r"默认[值为]?\s*[：:]?\s*([^\s，。；;]+)", desc)
-            if dmatch:
-                default = dmatch.group(1)
-                required = "否"
-            documented.append({
-                "name": name,
-                "type": SCRIPT_TYPE_MAP.get(raw_type, "string"),
-                "required": required,
-                "default": default,
-                "desc": desc.replace("|", "，"),
-            })
+
+def parse_script(code: str) -> ScriptContract:
+    header = _script_header(code)
+    blocks = _header_blocks(header)
+    bound, fragment = _binding(blocks)
+    documented = _documented_params(blocks.get("输入参数", []))
 
     try:
         tree = ast.parse(code)
     except SyntaxError as exc:
         raise ScriptContractError(f"脚本语法错误：{exc.msg}（第 {exc.lineno} 行）") from exc
 
-    source_params: list[dict] = []
     argument_calls = []
     for node in ast.walk(tree):
         if (
@@ -105,41 +109,7 @@ def parse_script_contract(code: str) -> tuple[str, list[dict]]:
         ):
             argument_calls.append(node)
     argument_calls.sort(key=lambda item: getattr(item, "lineno", 0))
-
-    for node in argument_calls:
-        flags = [_literal_string(arg) for arg in node.args]
-        flags = [flag for flag in flags if flag]
-        long_flags = [flag for flag in flags if flag.startswith("--")]
-        flag = (long_flags or flags[:1])
-        if not flag:
-            raise ScriptContractError("argparse.add_argument 必须声明 option flag（例如 --records）")
-        flag = flag[0]
-        name = _literal_keyword(node, "dest") or flag.lstrip("-").replace("-", "_")
-        raw_type = _ast_type_name(_keyword_node(node, "type"))
-        action = _literal_keyword(node, "action") or ""
-        nargs = _literal_keyword(node, "nargs")
-        required = _literal_keyword(node, "required")
-        if required is None and _keyword_node(node, "required") is not None:
-            raise ScriptContractError(f"参数 {name} 的 required 必须是字面量布尔值")
-        required = bool(required) if required is not None else False
-        default_node = _keyword_node(node, "default")
-        default = _literal_node(default_node)
-        if default_node is not None and default is None:
-            default = ast.unparse(default_node)
-        if action in {"store_true", "store_false"}:
-            required = False
-            default = action == "store_false"
-            raw_type = "boolean"
-        multiple = action in {"append", "extend"} or nargs in {"*", "+"} or isinstance(nargs, int) and nargs != 1
-        source_params.append({
-            "name": str(name),
-            "flag": flag,
-            "type": SCRIPT_TYPE_MAP.get(raw_type.lower(), "string"),
-            "required": required,
-            "default": default,
-            "multiple": multiple,
-            "action": action,
-        })
+    source_params = [_source_param(node) for node in argument_calls]
 
     if documented and not source_params:
         raise ScriptContractError(f"头部声明了输入参数，但脚本没有 argparse.add_argument()（{PARAMS_SCOPE_HINT}）")
@@ -154,31 +124,220 @@ def parse_script_contract(code: str) -> tuple[str, list[dict]]:
             )
 
     params = []
+    warnings = []
     for item in source_params:
         doc = next((entry for entry in documented if entry["name"] == item["name"]), {})
         source_required = "是" if item["required"] else "否"
-        if doc and _type_conflicts(doc["type"], item["type"]):
-            raise ScriptContractError(
-                f"参数 {item['name']} 的类型与 argparse 不一致：头部为 {doc['type']}，"
-                f"argparse 为 {item['type']}（{TYPE_HINT}）"
-            )
+        param_type = _resolve_type(item["name"], doc.get("type"), item["type"])
         if doc and doc["required"] != source_required:
             raise ScriptContractError(
                 f"参数 {item['name']} 的必填标记与 argparse 不一致：头部为 {doc['required']}，argparse 为 {source_required}"
             )
+        desc = doc.get("desc", "")
+        if param_type == "json":
+            warnings.append(
+                f"参数 {item['name']} 的类型写成了 json：consumer 只能把它当字符串传，智能体要自己拼 JSON 文本。"
+                "请在头部「输入参数」写明 object（JSON 对象）或 array（JSON 数组）"
+            )
+        if param_type in STRUCTURED_TYPES and not re.search(r"[\[{]", desc):
+            warnings.append(
+                f"参数 {item['name']} 是 {param_type}，说明里要写清字段并给一个示例"
+                '（如 例：[{"order_id":"A-001","qty":2}]）：consumer 的智能体只看得到这句说明'
+            )
         params.append({
-            "name": item["name"], "flag": item["flag"], "type": item["type"],
+            "name": item["name"], "flag": item["flag"], "type": param_type,
             "required": source_required,
-            "default": "" if item["default"] is None else str(item["default"]),
+            "default": item["default"],
             "multiple": "是" if item["multiple"] else "否", "action": item["action"],
-            "desc": doc.get("desc", ""),
+            "desc": desc,
         })
-    return bound, params
+
+    outputs, output_text = _outputs(blocks.get("输出", []))
+    title = next(iter(blocks.get("功能描述", [])), "")
+    return ScriptContract(
+        bound=bound,
+        fragment=fragment,
+        title=title,
+        params=tuple(params),
+        outputs=tuple(outputs),
+        output_text=output_text,
+        warnings=tuple(warnings),
+    )
+
+
+def _header_blocks(header: str) -> dict[str, list[str]]:
+    """头部注释按「标签：」切段；标签行冒号后的内容也算本段第一行。"""
+    blocks: dict[str, list[str]] = {}
+    current = None
+    for line in header.splitlines():
+        stripped = line.strip()
+        match = _LABEL_RE.match(stripped)
+        if match and not stripped.startswith("-"):
+            current = match.group(1)
+            blocks.setdefault(current, [])
+            if match.group(2).strip():
+                blocks[current].append(match.group(2).strip())
+            continue
+        if current is not None and stripped:
+            blocks[current].append(stripped)
+    return blocks
+
+
+def _binding(blocks: dict[str, list[str]]) -> tuple[str, str]:
+    value = next(iter(blocks.get("关联operation", [])), "")
+    if not value or _NO_BINDING_RE.match(value):
+        return "", ""
+    operation, _, fragment = value.partition("/")
+    return operation.strip(), fragment.strip()
+
+
+def _documented_params(lines: list[str]) -> list[dict]:
+    documented = []
+    for line in lines:
+        fields = re.split(r"\s{2,}|\t", line)
+        if len(fields) < 2:
+            continue
+        name = fields[0].strip().lstrip("-").strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            continue
+        raw_type = fields[1].strip().lower()
+        desc = fields[2].strip() if len(fields) > 2 else ""
+        required = "是" if "必填" in desc else "否"
+        if re.search(r"默认[值为]?\s*[：:]?\s*([^\s，。；;]+)", desc):
+            required = "否"
+        documented.append({
+            "name": name,
+            "type": TYPE_ALIASES.get(raw_type, "string"),
+            "required": required,
+            "desc": desc.replace("|", "，"),
+        })
+    return documented
+
+
+def _source_param(node: ast.Call) -> dict:
+    flags = [_literal_string(arg) for arg in node.args]
+    flags = [flag for flag in flags if flag]
+    if not flags:
+        raise ScriptContractError("argparse.add_argument 必须声明 option flag（例如 --records）")
+    if not any(flag.startswith("-") for flag in flags):
+        raise ScriptContractError(
+            f"参数 {flags[0]} 是位置参数：consumer 只按 --长选项 传参，请改成 --{flags[0].replace('_', '-')}"
+        )
+    long_flags = [flag for flag in flags if flag.startswith("--")]
+    flag = (long_flags or flags)[0]
+    name = str(_literal_keyword(node, "dest") or flag.lstrip("-").replace("-", "_"))
+    action = _literal_keyword(node, "action") or ""
+    if action not in _PASSABLE_ACTIONS:
+        raise ScriptContractError(
+            f"参数 {name} 的 action={action!r} consumer 传不进去：只支持 store_true、store_false、append、extend"
+        )
+    nargs = _literal_keyword(node, "nargs")
+    if _collects_several(nargs) and action != "extend":
+        raise ScriptContractError(
+            f"参数 {name} 用 nargs={nargs!r} 收多个值：consumer 传多个值时会重复 {flag}，argparse 只保留最后一组。"
+            '请改用 action="append"，或改成一个 JSON 数组参数（type=json.loads，头部类型写 array）'
+        )
+    raw_type = _ast_type_name(_keyword_node(node, "type"))
+    if raw_type in _UNPASSABLE_TYPES:
+        raise ScriptContractError(
+            f"参数 {name} 的 type={raw_type} consumer 传不进去（consumer 传入的都是字符串）：{_UNPASSABLE_TYPES[raw_type]}"
+        )
+    required = _literal_keyword(node, "required")
+    if required is None and _keyword_node(node, "required") is not None:
+        raise ScriptContractError(f"参数 {name} 的 required 必须是字面量布尔值")
+    required = bool(required) if required is not None else False
+    if action in _BOOLEAN_ACTIONS:
+        if required:
+            raise ScriptContractError(f"参数 {name} 是布尔开关，不能设为必填")
+        source_type = "boolean"
+    else:
+        source_type = _SOURCE_TYPES.get(raw_type, "string")
+    return {
+        "name": name,
+        "flag": flag,
+        "type": source_type,
+        "required": required,
+        "default": _descriptor_default(_keyword_node(node, "default"), action),
+        "multiple": action in {"append", "extend"},
+        "action": action if action in _BOOLEAN_ACTIONS else "",
+    }
+
+
+def _resolve_type(name: str, documented: str | None, source: str) -> str:
+    """头部类型与 argparse 实际接收的类型对账，得出 consumer 调用时用的类型。"""
+    if source == "boolean":
+        allowed = {source}
+    elif source in NUMERIC_TYPES:
+        allowed = set(NUMERIC_TYPES)  # 互写不算冲突，下面按 argparse 定类型
+    else:  # string / json：脚本收到字符串，对象、数组由 consumer 序列化成 JSON 文本
+        allowed = {"string", "json", *STRUCTURED_TYPES}
+    if documented is not None and documented not in allowed:
+        raise ScriptContractError(
+            f"参数 {name} 的类型与 argparse 不一致：头部为 {documented}，argparse 为 {source}（{TYPE_HINT}）"
+        )
+    if documented in STRUCTURED_TYPES:
+        return documented
+    if source == "json" or documented == "json":
+        return "json"
+    return source
+
+
+def _descriptor_default(node: ast.AST | None, action: str) -> str:
+    """描述符「默认值」列：consumer 按 JSON 解析，智能体不传时原样补上。
+
+    只写与 argparse 默认值等价的字面量；引用常量、调用函数等写法留空，让脚本自己的默认值生效。
+    """
+    if action in _BOOLEAN_ACTIONS:
+        return "true" if action == "store_false" else "false"
+    value = _literal_node(node)
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return json.dumps(value)
+    if isinstance(value, str):
+        # consumer 先按 JSON 解析默认值：「true」「12」这类字符串要加引号才不会被转成布尔或数字
+        try:
+            json.loads(value)
+        except ValueError:
+            return value.replace("|", "，")
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, (list, tuple, dict)):
+        try:
+            return json.dumps(list(value) if isinstance(value, tuple) else value, ensure_ascii=False).replace("|", "，")
+        except TypeError:
+            return ""
+    return ""
+
+
+def _outputs(lines: list[str]) -> tuple[list[dict], str]:
+    outputs = []
+    text = []
+    for line in lines:
+        fields = re.split(r"\s{2,}|\t", line)
+        output_type = TYPE_ALIASES.get(fields[1].strip().lower()) if len(fields) >= 2 else None
+        if output_type and re.fullmatch(r"[^\W\d][\w.]*", fields[0].strip()):
+            outputs.append({
+                "name": fields[0].strip(),
+                "type": output_type,
+                "desc": (fields[2].strip() if len(fields) > 2 else "").replace("|", "，"),
+            })
+        else:
+            text.append(line)
+    return outputs, "\n".join(text)
 
 
 def _literal_string(node: ast.AST) -> str:
     value = _literal_node(node)
     return value if isinstance(value, str) else ""
+
+
+def _collects_several(nargs) -> bool:
+    """nargs 让一个 flag 收多个值（"*"、"+" 或大于 1 的整数）。"""
+    if isinstance(nargs, int):
+        return nargs != 1
+    return nargs in ("*", "+")
 
 
 def _literal_keyword(call: ast.Call, name: str):
