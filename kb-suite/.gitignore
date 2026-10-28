@@ -8,6 +8,6 @@ dist/
 .pytest_cache/
 deploy/compose/da/build/
 # openJiuwen 运行时在当前目录写的日志
-da-harness/logs/
+harness/da-harness/logs/
 deploy/compose/swarm/build/
-lf-service/target/
+service/lf-service/target/

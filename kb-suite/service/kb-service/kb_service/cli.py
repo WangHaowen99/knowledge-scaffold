@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 import uuid
 from pathlib import Path
 
 from . import auth, db
 from .config import get_settings
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_KEYS = (
     # (name, env var, capabilities, can_assert_tenant)
@@ -61,10 +64,11 @@ async def bootstrap(tenant: str, out: Path, rotate: bool) -> None:
     out.write_text("\n".join(lines) + "\n")
     os.chmod(out, 0o600)
     await db.close()
-    print(f"wrote {len(DEFAULT_KEYS)} keys for tenant {tenant} to {out}")
+    logger.info("wrote %d keys for tenant %s to %s", len(DEFAULT_KEYS), tenant, out)
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")  # NOSONAR(S4792): CLI progress to stderr only
     parser = argparse.ArgumentParser(prog="kb-service")
     sub = parser.add_subparsers(dest="cmd", required=True)
     boot = sub.add_parser("bootstrap")

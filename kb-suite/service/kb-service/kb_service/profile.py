@@ -38,7 +38,7 @@ async def generate(kb_id: str, *, force: bool = False) -> str | None:
         )
         return None
     listing = "\n".join(f"- {d['title']}：{(d['summary'] or '')[:300]}" for d in docs)
-    digest = hashlib.sha1((listing + cfg.profile.instructions + cfg.language).encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256((listing + cfg.profile.instructions + cfg.language).encode("utf-8")).hexdigest()[:16]
     if not force and row["profile_digest"] == digest and row["profile"]:
         return row["profile"]
     await db.pool().execute("UPDATE knowledge_bases SET profile_status = 'processing' WHERE id = $1", kb_id)

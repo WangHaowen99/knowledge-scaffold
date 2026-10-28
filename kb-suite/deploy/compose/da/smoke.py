@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import time
 import urllib.request
@@ -19,13 +20,16 @@ import urllib.request
 DA_URL = "http://127.0.0.1:5197"
 KBS_URL = "http://127.0.0.1:5198"
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+logger = logging.getLogger("smoke")
 
 
 def load_env() -> dict[str, str]:
     env: dict[str, str] = {}
     root = os.path.expanduser(os.environ.get("KBS_SECRETS_DIR", "~/.config/kb-suite"))
     for name in ("secrets.env", "keys.env"):
-        for line in open(os.path.join(root, name), encoding="utf-8").read().splitlines():
+        with open(os.path.join(root, name), encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        for line in lines:
             if "=" in line and not line.startswith("#"):
                 key, value = line.split("=", 1)
                 env[key] = value
@@ -38,6 +42,7 @@ def first_kb(env: dict[str, str]) -> str:
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")  # NOSONAR(S4792)
     parser = argparse.ArgumentParser()
     parser.add_argument("question")
     parser.add_argument("--kb")
@@ -74,13 +79,13 @@ def main() -> None:
         if event == "content_delta":
             answer.append(data.get("delta", ""))
         elif event == "tool_call":
-            print(f"[tool] {data.get('toolName')} {json.dumps(data.get('input'), ensure_ascii=False)[:160]}")
+            logger.info("[tool] %s %s", data.get("toolName"), json.dumps(data.get("input"), ensure_ascii=False)[:160])
         elif event == "tool_result":
-            print(f"   -> {str(data.get('output'))[:160]}")
+            logger.info("   -> %s", str(data.get("output"))[:160])
         elif event in ("done", "error"):
-            print(f"[{event}] {json.dumps(data, ensure_ascii=False)[:200]}")
+            logger.info("[%s] %s", event, json.dumps(data, ensure_ascii=False)[:200])
             break
-    print("\n" + "".join(answer)[-2000:])
+    logger.info("\n%s", "".join(answer)[-2000:])
 
 
 if __name__ == "__main__":

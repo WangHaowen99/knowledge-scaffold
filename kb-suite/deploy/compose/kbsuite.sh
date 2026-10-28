@@ -79,7 +79,7 @@ cmd="${1:-}"
 shift || true
 build_swarm() {
   docker build -t kb-suite/swarm:0.2.7 \
-    --build-context da-harness="$ROOT/da-harness" "$HERE/swarm"
+    --build-context da-harness="$ROOT/harness/da-harness" "$HERE/swarm"
 }
 
 # 开发版 Swarm：只 fetch 再 git archive 导出 $SWARM_REPO@$SWARM_REF，不碰工作副本。
@@ -92,21 +92,21 @@ build_swarm_dev() {
     mkdir -p "$src.tmp" && git -C "$repo" archive "$commit" | tar -x -C "$src.tmp" && mv "$src.tmp" "$src"
   fi
   docker build -f "$HERE/swarm/Dockerfile.dev" \
-    --build-context swarm-src="$src" --build-context da-harness="$ROOT/da-harness" \
-    --build-context lf-harness="$ROOT/lf-harness" \
+    --build-context swarm-src="$src" --build-context da-harness="$ROOT/harness/da-harness" \
+    --build-context lf-harness="$ROOT/harness/lf-harness" \
     --label kb-suite.swarm-commit="$commit" \
     -t kb-suite/swarm:"dev-$commit" -t kb-suite/swarm:dev "$HERE/swarm"
 }
 
 case "$cmd" in
   build)
-    docker build -t kb-suite/kb-service:"${KBS_TAG:-dev}" "$ROOT/kb-service"
+    docker build -t kb-suite/kb-service:"${KBS_TAG:-dev}" "$ROOT/service/kb-service"
     build_plugin
     build_docreader
     # compose defaults to the develop Swarm; SWARM_TAG=0.2.7 builds the PyPI one.
     if [ "${SWARM_TAG:-dev}" = 0.2.7 ]; then build_swarm; else build_swarm_dev; fi
     ;;
-  build-kbs) docker build -t kb-suite/kb-service:"${KBS_TAG:-dev}" "$ROOT/kb-service" ;;
+  build-kbs) docker build -t kb-suite/kb-service:"${KBS_TAG:-dev}" "$ROOT/service/kb-service" ;;
   build-plugin) build_plugin ;;
   build-swarm) build_plugin; build_swarm ;;
   build-swarm-dev) build_plugin; build_swarm_dev ;;

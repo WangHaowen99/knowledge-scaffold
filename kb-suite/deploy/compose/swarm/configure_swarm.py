@@ -17,12 +17,13 @@ Only touches the user workspace (~/.jiuwenswarm): never the installed package.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
 from pathlib import Path
 
-from ruamel.yaml import YAML
+logger = logging.getLogger("configure")
 
 HOME = Path(os.environ.get("JIUWENSWARM_DATA_DIR") or Path.home() / ".jiuwenswarm")
 CONFIG = HOME / "config" / "config.yaml"
@@ -31,7 +32,10 @@ DOTENV = HOME / "config" / ".env"
 
 def ensure_init() -> None:
     if not CONFIG.exists():
-        subprocess.run(["jiuwenswarm-init"], check=True)
+        init = shutil.which("jiuwenswarm-init")
+        if init is None:
+            raise RuntimeError("jiuwenswarm-init not found on PATH")
+        subprocess.run([init], check=True)  # NOSONAR(S4721): fixed argv, no shell
 
 
 def set_dotenv(values: dict[str, str]) -> None:
@@ -55,16 +59,15 @@ MCP_NAME = "kb-service"
 
 def drop_config_yaml_mcp() -> None:
     """Remove the earlier config.yaml entry so the merged list has one kb-service."""
-    yaml = YAML()
-    yaml.preserve_quotes = True
-    data = yaml.load(CONFIG.read_text(encoding="utf-8"))
+    from jiuwenswarm.common.config import dump_yaml_round_trip, load_yaml_round_trip
+
+    data = load_yaml_round_trip(CONFIG)
     mcp = data.get("mcp") or {}
     servers = mcp.get("servers") or []
     kept = [s for s in servers if s.get("name") != MCP_NAME]
     if len(kept) != len(servers):
         mcp["servers"] = kept
-        with CONFIG.open("w", encoding="utf-8") as fh:
-            yaml.dump(data, fh)
+        dump_yaml_round_trip(CONFIG, data)
 
 
 def register_connector() -> None:
@@ -82,7 +85,7 @@ def register_connector() -> None:
     previous = connectors.get(MCP_NAME) or {}
     connectors[MCP_NAME] = {
         "transport": "streamable-http",
-        "url": os.environ.get("KBS_MCP_URL", "http://kbs-api:8080/mcp/"),
+        "url": os.environ["KBS_MCP_URL"],
         # Placeholder only; the key comes from the process environment.
         "headers": {"Authorization": "Bearer ${KBS_MCP_KEY}"},
         "timeout_s": 60,
@@ -136,23 +139,23 @@ def ensure_expert() -> None:
         epm.create_agent_template(params)
     ok, payload = epm.install_equipment_gated("agent_templates", {"id": EXPERT_ID})
     if not ok:
-        print(f"[configure] expert {EXPERT_ID} not installed: {payload}")
+        logger.warning("expert %s not installed: %s", EXPERT_ID, payload)
 
 
 def install_plugins() -> None:
     """Copy every plugin dir (one with extension.yaml) into the Swarm workspace."""
     root = Path(os.environ.get("KB_PLUGINS_DIR", "/opt/kb-plugins"))
     if not root.exists():
-        print(f"[configure] plugin dir {root} missing, skipped")
+        logger.info("plugin dir %s missing, skipped", root)
         return
     for src in sorted(p for p in root.iterdir() if (p / "extension.yaml").exists()):
         if not (src / "frontend" / "dist").exists():
-            print(f"[configure] plugin {src.name} has no frontend/dist, skipped")
+            logger.info("plugin %s has no frontend/dist, skipped", src.name)
             continue
         dst = HOME / "application_plugins" / src.name
         shutil.rmtree(dst, ignore_errors=True)
         shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__"))
-        print(f"[configure] plugin {src.name} installed")
+        logger.info("plugin %s installed", src.name)
 
 
 def install_custom_agents() -> None:
@@ -167,11 +170,11 @@ def install_custom_agents() -> None:
     try:
         from jiuwenswarm.common.custom_agent_runtime import install_custom_agent
     except ImportError:
-        print("[configure] this Swarm has no custom agents, provider wheels skipped")
+        logger.info("this Swarm has no custom agents, provider wheels skipped")
         return
     for wheel in wheels:
         agent = install_custom_agent(wheel)
-        print(f"[configure] custom agent {agent.name} {agent.version} installed")
+        logger.info("custom agent %s %s installed", agent.name, agent.version)
     enable_team_custom_agents()
 
 
@@ -201,10 +204,11 @@ def enable_team_custom_agents() -> None:
     if missing:
         update_external_cli_agents_in_config([*current, *({"cli_agent": n} for n in missing)],
                                              build_external_cli_publish_url())
-        print(f"[configure] team external_cli_agents += {', '.join(missing)}")
+        logger.info("team external_cli_agents += %s", ", ".join(missing))
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="[configure] %(message)s")  # NOSONAR(S4792)
     ensure_init()
     values = {
         "API_BASE": os.environ["SWARM_API_BASE"],
@@ -220,7 +224,7 @@ def main() -> None:
     ensure_expert()
     install_plugins()
     install_custom_agents()
-    print("[configure] swarm workspace ready")
+    logger.info("swarm workspace ready")
 
 
 if __name__ == "__main__":

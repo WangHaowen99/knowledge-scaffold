@@ -184,12 +184,8 @@ async def patch_kb(kb_id: str, body: KbPatch, caller: Caller = Depends(need(auth
 @router.delete("/kbs/{kb_id}", status_code=204)
 async def delete_kb(kb_id: str, caller: Caller = Depends(need(auth.CAP_MANAGE))) -> None:
     await caller.check_kb(kb_id)
-    doc_ids = [
-        r["id"]
-        for r in await db.pool().fetch(
-            "SELECT id FROM documents WHERE kb_id = $1 AND deleted_at IS NULL", kb_id
-        )
-    ]
+    rows = await db.pool().fetch("SELECT id FROM documents WHERE kb_id = $1 AND deleted_at IS NULL", kb_id)
+    doc_ids = [r["id"] for r in rows]
     for doc_id in doc_ids:
         await documents.delete(caller.tenant_id, doc_id)
     await db.pool().execute(

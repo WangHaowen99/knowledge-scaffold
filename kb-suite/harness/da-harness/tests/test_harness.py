@@ -92,7 +92,7 @@ class Handler:
 
 def make(fake: FakeDA, monkeypatch: pytest.MonkeyPatch, **config: Any) -> DeepAnalyzeHarness:
     monkeypatch.setenv("DA_ENGINE_SECRET", "s3cret")
-    cfg = DeepAnalyzeConfig.from_mapping({"base_url": "http://da", "tenant_id": "t1", "kb_ids": ["kb1"],
+    cfg = DeepAnalyzeConfig.from_mapping({"base_url": "https://da.example.com", "tenant_id": "t1", "kb_ids": ["kb1"],
                                           "reconnect_backoff_s": 0.01, "abort_wait_s": 0.5, **config})
     return DeepAnalyzeHarness(cfg, transport=httpx.MockTransport(fake.handler))
 
@@ -311,7 +311,7 @@ async def test_abort_cancels_and_ends_aborted(monkeypatch: pytest.MonkeyPatch) -
     fake.run_stream = slow_stream()
     monkeypatch.setenv("DA_ENGINE_SECRET", "s3cret")
     harness = DeepAnalyzeHarness(
-        DeepAnalyzeConfig.from_mapping({"base_url": "http://da", "tenant_id": "t1"}),
+        DeepAnalyzeConfig.from_mapping({"base_url": "https://da.example.com", "tenant_id": "t1"}),
         transport=httpx.MockTransport(handler),
     )
     await harness.start(context())
@@ -392,16 +392,16 @@ async def test_engine_busy_is_retried_before_output(monkeypatch: pytest.MonkeyPa
 
 async def test_start_requires_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DA_ENGINE_SECRET", raising=False)
-    harness = DeepAnalyzeHarnessProvider.create({"base_url": "http://da", "tenant_id": "t"})
+    harness = DeepAnalyzeHarnessProvider.create({"base_url": "https://da.example.com", "tenant_id": "t"})
     with pytest.raises(ProviderStartupError):
         await harness.start(context())
 
 
 def test_config_rejects_unknown_keys() -> None:
     with pytest.raises(ValueError):
-        DeepAnalyzeConfig.from_mapping({"base_url": "http://da", "bogus": 1})
+        DeepAnalyzeConfig.from_mapping({"base_url": "https://da.example.com", "bogus": 1})
     with pytest.raises(ValueError):
-        DeepAnalyzeConfig.from_mapping({"base_url": "ftp://x"})
+        DeepAnalyzeConfig.from_mapping({"base_url": "da.example.com"})
     assert DeepAnalyzeHarnessProvider().card.name == "deepanalyze"
 
 

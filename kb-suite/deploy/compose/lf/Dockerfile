@@ -1,4 +1,4 @@
-# Loop Forest 服务镜像：构建上下文是 lf-service/target（只含打好的 lf-service.jar）。
+# Loop Forest 服务镜像：构建上下文是导出的 lf-service/target（只含打好的 lf-service.jar）。
 ARG JRE_IMAGE=eclipse-temurin:17-jre
 FROM ${JRE_IMAGE}
 WORKDIR /app

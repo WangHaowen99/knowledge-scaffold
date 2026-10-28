@@ -19,7 +19,7 @@ from openjiuwen.harness_protocol import (
 from deepanalyze_harness.config import DeepAnalyzeConfig
 from loopforest_harness import LoopForestHarness, LoopForestHarnessProvider
 
-LF_ENV = {"LF_BASE_URL": "http://lf:8193", "LF_TENANT_ID": "t1", "LF_ENGINE_SECRET": "lf-secret"}
+LF_ENV = {"LF_BASE_URL": "https://lf.example.com:8193", "LF_TENANT_ID": "t1", "LF_ENGINE_SECRET": "lf-secret"}
 
 
 def sse(events: list[tuple[str, dict[str, Any]]]) -> bytes:
@@ -29,7 +29,7 @@ def sse(events: list[tuple[str, dict[str, Any]]]) -> bytes:
 
 def test_settings_come_from_lf_variables() -> None:
     cfg = DeepAnalyzeConfig.from_mapping({"env": dict(LF_ENV), "cwd": "/w"}, env_prefix="LF_")
-    assert (cfg.base_url, cfg.tenant_id, cfg.secret_env) == ("http://lf:8193", "t1", "LF_ENGINE_SECRET")
+    assert (cfg.base_url, cfg.tenant_id, cfg.secret_env) == ("https://lf.example.com:8193", "t1", "LF_ENGINE_SECRET")
     with pytest.raises(ValueError, match="LF_BASE_URL"):
         DeepAnalyzeConfig.from_mapping({"env": {}}, env_prefix="LF_")
 

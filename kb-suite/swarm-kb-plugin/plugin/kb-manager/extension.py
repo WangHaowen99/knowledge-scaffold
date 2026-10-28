@@ -81,7 +81,9 @@ class KbManagerPlugin(ApplicationPluginExtension):
 
     def _http(self) -> httpx.AsyncClient:
         if self._client is None:
-            base = os.getenv("KB_SERVICE_URL", "http://kbs-api:8080").rstrip("/")
+            base = os.getenv("KB_SERVICE_URL", "").rstrip("/")
+            if not base:
+                raise RpcError("kb_service_unconfigured", "知识服务地址 KB_SERVICE_URL 未配置", 503)
             key = os.getenv("KBS_PLUGIN_KEY", "")
             self._client = httpx.AsyncClient(
                 base_url=base,
@@ -115,8 +117,12 @@ class KbManagerPlugin(ApplicationPluginExtension):
         return resp.text
 
     async def _dispatch(self, method: str, params: dict) -> Any:
-        kb = lambda: _p(params, "kb_id", required=True)  # noqa: E731
-        doc = lambda: _p(params, "doc_id", required=True)  # noqa: E731
+        def kb() -> str:
+            return _p(params, "kb_id", required=True)
+
+        def doc() -> str:
+            return _p(params, "doc_id", required=True)
+
         if method == "status":
             health = await self._call("GET", "/healthz")
             me = await self._call("GET", "/v1/me")
@@ -232,7 +238,10 @@ class KbManagerPlugin(ApplicationPluginExtension):
 
     async def _wiki(self, action: str, kb_id: str, params: dict) -> Any:
         base = f"/v1/kbs/{kb_id}/wiki"
-        slug = lambda: {"slug": _p(params, "slug", required=True)}  # noqa: E731
+
+        def slug() -> dict:
+            return {"slug": _p(params, "slug", required=True)}
+
         if action == "status":
             return await self._call("GET", f"{base}/status")
         if action == "pages":

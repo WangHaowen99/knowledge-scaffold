@@ -245,7 +245,7 @@ cd auth-server
 python -m pytest tests -q
 
 # kb-suite（Python 3.11+，其余包见 kb-suite/README.md）
-cd kb-suite/kb-service
+cd kb-suite/service/kb-service
 python -m pytest -q
 ```
 

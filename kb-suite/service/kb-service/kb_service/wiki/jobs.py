@@ -111,6 +111,14 @@ def _unique_slugs(items: list[dict]) -> list[dict]:
     return list(seen.values())
 
 
+def _match_by_name(by_norm: dict[str, dict], names: list[str]) -> dict | None:
+    for name in names:
+        page = by_norm.get(links.normalize_title(name))
+        if page is not None:
+            return page
+    return None
+
+
 async def _resolve_identity(kb_id: str, items: list[dict], cfg: kb_config.KbConfig) -> None:
     """Point items at existing pages: same slug, exact title/alias match, or LLM-confirmed duplicate."""
 
@@ -124,12 +132,10 @@ async def _resolve_identity(kb_id: str, items: list[dict], cfg: kb_config.KbConf
             by_norm.setdefault(links.normalize_title(name), page)
     pending: list[tuple[dict, list[dict]]] = []
     for item in items:
-        if item["slug"] in by_slug and by_slug[item["slug"]]["page_type"] == item["type"]:
+        same_slug = by_slug.get(item["slug"])
+        if same_slug is not None and same_slug["page_type"] == item["type"]:
             continue
-        match = next(
-            (by_norm[n] for n in (links.normalize_title(x) for x in (item["name"], *item["aliases"])) if n in by_norm),
-            None,
-        )
+        match = _match_by_name(by_norm, [item["name"], *item["aliases"]])
         if match is not None:
             item["slug"] = match["slug"]
             continue
@@ -404,13 +410,11 @@ async def _load_doc(doc_id: str, attempt: int | None) -> dict:
 
 async def ingest_document(doc: dict, cfg: kb_config.KbConfig) -> dict:
     kb_id = doc["kb_id"]
-    chunks = [
-        dict(r)
-        for r in await db.pool().fetch(
-            "SELECT id, seq, chunk_type, content FROM chunks WHERE document_id = $1 AND is_active ORDER BY seq",
-            doc["id"],
-        )
-    ]
+    rows = await db.pool().fetch(
+        "SELECT id, seq, chunk_type, content FROM chunks WHERE document_id = $1 AND is_active ORDER BY seq",
+        doc["id"],
+    )
+    chunks = [dict(r) for r in rows]
     content = storage.get_text(doc["l1_key"])[:CONTENT_CHARS] if doc.get("l1_key") else ""
     previous = await store.pages_for_doc(kb_id, doc["id"])
     prev_items = [p for p in previous if p["page_type"] in links.PAGE_TYPES]
@@ -606,12 +610,10 @@ async def finalize(kb_id: str, cfg: kb_config.KbConfig, tenant_id: str) -> dict:
     )
     pages = [dict(r) for r in rows]
     live = {p["slug"] for p in pages}
-    targets = [
-        (name, p["slug"])
-        for p in pages
-        if p["page_type"] in links.PAGE_TYPES
-        for name in (p["title"], *(p["aliases"] or []))
-    ]
+    targets: list[tuple[str, str]] = []
+    for p in pages:
+        if p["page_type"] in links.PAGE_TYPES:
+            targets.extend((name, p["slug"]) for name in (p["title"], *(p["aliases"] or [])))
     changed: list[dict] = []
     for page in pages:
         if page["page_type"] == "index":

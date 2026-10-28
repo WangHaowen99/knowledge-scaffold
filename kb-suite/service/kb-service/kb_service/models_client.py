@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
+import secrets
 from typing import Sequence
 
 import httpx
@@ -67,7 +67,7 @@ async def _post_json(url: str, body: dict, *, attempts: int = 4) -> dict:
             if resp.status_code not in _RETRY_STATUS:
                 raise ModelError(last, retriable=False)
         if attempt < attempts:
-            await asyncio.sleep(delay + random.random() * 0.5)
+            await asyncio.sleep(delay + secrets.randbelow(500) / 1000)
             delay *= 2
     raise ModelError(last or "model request failed", retriable=True)
 

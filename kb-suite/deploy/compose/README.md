@@ -42,7 +42,7 @@
 | `SWARM_REPO` | jiuwenswarm | `build`、`build-swarm-dev` |
 | `WEKNORA_REPO` | WeKnora | `build`、`build-docreader` |
 | `DA_CORE_REPO`、`DA_RUNTIME_REPO`、`DA_SOLUTION_REPO` | agent-core-java、agent-runtime-java、agent-solution | `build-da`（`build-lf` 只用 `DA_SOLUTION_REPO`） |
-| `AGENT_CORE_REPO` | agent-core | `da-harness/e2e/run_contract.sh` |
+| `AGENT_CORE_REPO` | agent-core | `harness/da-harness/e2e/run_contract.sh` |
 
 ```bash
 cd deploy/compose
@@ -128,7 +128,7 @@ WeKnora 发布的 docreader 镜像（09-24 版）不返回原文定位，main �
 
 ## DA 分析页（DA 作为 harness provider）
 
-`da-harness/` 是一个 openJiuwen HarnessProtocol 1.0 的 provider 包（`deepanalyze-harness`），把远端 DA-java 包成标准 harness：
+`harness/da-harness/` 是一个 openJiuwen HarnessProtocol 1.0 的 provider 包（`deepanalyze-harness`），把远端 DA-java 包成标准 harness：
 
 - 一次 `send` 对应 DA 的一次 `run-stream`。文字、思考、工具调用、用量都映射成协议事件。
 - DA 的 `ask_user` 映射成宿主的 `UserInputRequest` 或 `ToolApprovalRequest`，回答后调 `/answer` 续跑。
@@ -161,14 +161,14 @@ DA 有两种用法。
 
 测试：
 
-- `da-harness/tests` 是单元测试，用 `httpx.MockTransport` 模拟 DA。团队成员相关的用例里，MCP 桥接起的是真实的 stdio MCP 进程，走 streamable HTTP 调用。
-- `da-harness/e2e/run_contract.sh` 拿 agent-core 自带的 harness 契约用例跑真实 DA，需要 da-engine 在运行。默认用 0.2.7 镜像和 v0.1.19 的用例；开发版用 `SWARM_IMAGE=kb-suite/swarm:dev AGENT_CORE_REF=<develop 锁定的 agent-core 提交>`。
+- `harness/da-harness/tests` 是单元测试，用 `httpx.MockTransport` 模拟 DA。团队成员相关的用例里，MCP 桥接起的是真实的 stdio MCP 进程，走 streamable HTTP 调用。
+- `harness/da-harness/e2e/run_contract.sh` 拿 agent-core 自带的 harness 契约用例跑真实 DA，需要 da-engine 在运行。默认用 0.2.7 镜像和 v0.1.19 的用例；开发版用 `SWARM_IMAGE=kb-suite/swarm:dev AGENT_CORE_REF=<develop 锁定的 agent-core 提交>`。
 
 ## Loop Forest（第二个分析引擎）
 
 agent-solution 里的 `loop-forest` 是一个 Java 库：在 agent-core 的 ReActAgent 外面加一套「循环纪律」rail，包括目标重锚、否决、分叉与收敛、预算、token 上限、完成校验、续跑。它本身不是服务，所以 kb-suite 加了两样东西：
 
-- **`lf-service/`（Java 服务）**：用 JDK 自带的 HTTP server 提供 DA `/api/agents` 的兼容子集，包括 `run-stream`（SSE）、`stream/{taskId}`（按 Last-Event-ID 重放）、`status`、`cancel`、`inject`。请求头、事件名和错误码（`ENGINE_BUSY`）都和 DA 一致。
+- **`service/lf-service/`（Java 服务）**：用 JDK 自带的 HTTP server 提供 DA `/api/agents` 的兼容子集，包括 `run-stream`（SSE）、`stream/{taskId}`（按 Last-Event-ID 重放）、`status`、`cancel`、`inject`。请求头、事件名和错误码（`ENGINE_BUSY`）都和 DA 一致。
   - 每次运行照 `LoopForestAgent` 的配方装配：ReActAgent 加上 `LoopForestSuite`（分叉、token 上限、预算）。区别是在服务里自己装配，这样才能流式输出、注入系统提示、挂 MCP、取消和补充指令。
   - 知识库工具用 kb-service 的 MCP，请求里的 `scope.kbIds` 通过 `X-KB-Scope` 请求头强制限定（kb-service 的 MCP 支持这个头，交集为空时直接拒绝）。请求里的 `runtimeConfig.mcpServers`（团队工具）同样挂上。每次运行的注册在结束时注销。
   - 分叉：模型调用分叉工具时，服务用同一个模型和同一套知识库工具起一个子 agent 去完成子目标（最多 `LF_FORK_MAX_ITERATIONS` 轮），把结论返回给主循环。
@@ -176,7 +176,7 @@ agent-solution 里的 `loop-forest` 是一个 Java 库：在 agent-core 的 ReAc
   - 取消：标记后，任务在下一次模型调用前收尾；补充指令推进 Loop Forest 的 steering 队列。
   - Loop Forest 不会向用户提问，`/answer` 返回 404。
   - **同一时刻只跑一个任务**：Loop Forest 的工具（分叉工具）用固定 id 注册在进程全局，并发运行会冲突。其他请求收到 `ENGINE_BUSY`，provider 会自动重试，最多等 180 秒。
-- **`lf-harness/`（provider，入口点名 `loopforest`）**：直接复用 `deepanalyze-harness` 的实现，只换了 card（不声明提问和审批）、引擎名和变量前缀 `LF_`。wheel 里带一份同版本的 `deepanalyze_harness`。
+- **`harness/lf-harness/`（provider，入口点名 `loopforest`）**：直接复用 `deepanalyze-harness` 的实现，只换了 card（不声明提问和审批）、引擎名和变量前缀 `LF_`。wheel 里带一份同版本的 `deepanalyze_harness`。
 
 **构建**：`./kbsuite.sh build-lf`，需要先跑过 `build-da`（core、runtime、react-rails 要已经在 `kbs-m2` 里）。脚本按 `LF_SOLUTION_REF`（默认同 `DA_SOLUTION_REF`）导出 agent-solution 的 loop-forest 模块，装进本地 Maven 仓库，再打出 `lf-service.jar`（含单测）和镜像。
 

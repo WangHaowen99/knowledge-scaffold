@@ -1,8 +1,8 @@
 kb-suite contains code and interface definitions ported from or derived from
 Tencent WeKnora (https://github.com/Tencent/WeKnora):
 
-- kb-service/proto/docreader.proto (copied)
-- kb-service/kb_service/chunking.py, locators.py, migrations/001_init.sql,
+- service/kb-service/proto/docreader.proto (copied)
+- service/kb-service/kb_service/chunking.py, locators.py, migrations/001_init.sql,
   retrieval.py (logic ported from WeKnora's Go chunker, source locator,
   ParadeDB schema and hybrid retrieval)
 

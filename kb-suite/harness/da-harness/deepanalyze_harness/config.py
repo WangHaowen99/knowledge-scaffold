@@ -14,6 +14,7 @@ Two kinds of hosts create this harness:
 from __future__ import annotations
 
 import os
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field, fields
 from typing import Any, Mapping
 
@@ -91,7 +92,8 @@ class DeepAnalyzeConfig:
                     data[key] = value
         data.setdefault("secret_env", f"{env_prefix}ENGINE_SECRET")
         base_url = str(data.get("base_url") or "").strip()
-        if not base_url.startswith(("http://", "https://")):
+        parts = urlsplit(base_url)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
             raise ValueError(f"base_url (or {env_prefix}BASE_URL) must be an http(s) URL")
         data["base_url"] = base_url.rstrip("/")
         kb_ids = data.get("kb_ids") or ()

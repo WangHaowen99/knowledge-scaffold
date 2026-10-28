@@ -106,7 +106,8 @@ class McpBridge:
         from starlette.applications import Starlette
         from starlette.routing import Mount
 
-        assert self._ready is not None
+        if self._ready is None:
+            raise RuntimeError("McpBridge._run() called before start()")
         try:
             async with contextlib.AsyncExitStack() as stack:
                 routes = []
@@ -128,7 +129,7 @@ class McpBridge:
                 for manager in managers:
                     await stack.enter_async_context(manager.run())
 
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock = stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 sock.bind((self._bind_host, 0))
                 port = sock.getsockname()[1]
@@ -143,7 +144,8 @@ class McpBridge:
                 bridged = [
                     BridgedServer(
                         name=server.name,
-                        url=f"http://{self._advertise_host}:{port}/{self._token}/{server.name}/mcp/",
+                        # Plain HTTP on the compose network only; the random path token is the credential.
+                        url=f"http://{self._advertise_host}:{port}/{self._token}/{server.name}/mcp/",  # NOSONAR(S5332)
                         headers={"Authorization": f"Bearer {self._token}"},
                     )
                     for server in self._servers

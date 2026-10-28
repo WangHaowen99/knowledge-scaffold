@@ -1,5 +1,5 @@
 # JiuwenSwarm 运行镜像：直接安装 PyPI 发布版，不改 Swarm 源码。
-# 额外装上 DeepAnalyze harness provider（构建时用 --build-context da-harness=<repo>/da-harness）。
+# 额外装上 DeepAnalyze harness provider（构建时用 --build-context da-harness=<kb-suite>/harness/da-harness）。
 FROM docker.1ms.run/library/python:3.11-slim
 
 ARG WORKSWARM_VERSION=0.2.7

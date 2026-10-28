@@ -16,10 +16,10 @@ from deepanalyze_harness.bridge import McpBridge
 from test_harness import TEXT_TURN, FakeDA, context, run_turn, sse
 
 TEAM_ENV = {
-    "DA_BASE_URL": "http://da/",
+    "DA_BASE_URL": "https://da.example.com/",
     "DA_TENANT_ID": "t9",
     "DA_ENGINE_SECRET": "from-env",
-    "DA_KB_CATALOG_URL": "http://kbs/v1/kbs",
+    "DA_KB_CATALOG_URL": "https://kbs.example.com/v1/kbs",
     "DA_KB_CATALOG_KEY_ENV": "KBS_KEY",
     "KBS_KEY": "kb-key",
 }
@@ -41,10 +41,10 @@ def member(fake: FakeDA, monkeypatch: pytest.MonkeyPatch, **extra: Any) -> DeepA
 
 def test_team_spawn_keys_are_accepted_and_settings_come_from_env() -> None:
     cfg = DeepAnalyzeConfig.from_mapping(team_config(cli_path="/bin/x", system_prompt_mode="append"))
-    assert (cfg.base_url, cfg.tenant_id, cfg.kb_catalog_url) == ("http://da", "t9", "http://kbs/v1/kbs")
+    assert (cfg.base_url, cfg.tenant_id, cfg.kb_catalog_url) == ("https://da.example.com", "t9", "https://kbs.example.com/v1/kbs")
     assert "from-env" not in repr(cfg)
     with pytest.raises(ValueError, match="unknown deepanalyze config keys: base_ur"):
-        DeepAnalyzeConfig.from_mapping({"base_ur": "http://da"})
+        DeepAnalyzeConfig.from_mapping({"base_ur": "https://da.example.com"})
 
 
 def test_provider_maps_any_model_choice_to_engine_default() -> None:
@@ -77,7 +77,7 @@ async def test_http_mcp_servers_pass_through_to_runtime_config(monkeypatch: pyte
     fake = FakeDA()
     fake.run_stream = sse(TEXT_TURN)
     harness = member(fake, monkeypatch)
-    server = McpServerConfig(name="team", transport=McpTransport.HTTP, url="http://host:9/mcp",
+    server = McpServerConfig(name="team", transport=McpTransport.HTTP, url="https://mcp.example.com:9/mcp",
                              headers={"Authorization": "Bearer x"})
     await harness.start(context(mcp_servers=(server,)))
     await run_turn(harness)
@@ -85,7 +85,7 @@ async def test_http_mcp_servers_pass_through_to_runtime_config(monkeypatch: pyte
     runtime = body["runtimeConfig"]
     assert runtime["version"] == 1 and runtime["tenantId"] == "t9"
     assert runtime["mcpServers"] == [{
-        "serverId": "team", "serverName": "team", "clientType": "streamable-http", "serverPath": "http://host:9/mcp",
+        "serverId": "team", "serverName": "team", "clientType": "streamable-http", "serverPath": "https://mcp.example.com:9/mcp",
         "authHeaders": {"Authorization": "Bearer x"}, "callTimeoutSeconds": 300,
     }]
     await harness.stop()
@@ -144,7 +144,7 @@ async def test_host_mounted_mcp_tools_are_approved_others_denied(monkeypatch: py
         ("done", {"status": "completed", "output": "ok"}),
     ])
     harness = member(fake, monkeypatch)
-    server = McpServerConfig(name="team", transport=McpTransport.HTTP, url="http://host:9/mcp")
+    server = McpServerConfig(name="team", transport=McpTransport.HTTP, url="https://mcp.example.com:9/mcp")
     await harness.start(context(mcp_servers=(server,)))
     await run_turn(harness)
     assert fake.posted("answer") == [{"answer": "允许", "toolCallId": "p1"}, {"answer": "拒绝", "toolCallId": "p2"}]

@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # (``<prefix>BASE_URL``, ``<prefix>ENGINE_SECRET``, ``<prefix>TENANT_ID``).
 ENGINES: dict[str, dict[str, str]] = {
     "deepanalyze": {"label": "DeepAnalyze", "prefix": "DA_", "module": "deepanalyze_harness",
-                    "provider": "DeepAnalyzeHarnessProvider", "default_url": "http://da-engine:8192"},
+                    "provider": "DeepAnalyzeHarnessProvider", "default_url": ""},
     "loopforest": {"label": "Loop Forest", "prefix": "LF_", "module": "loopforest_harness",
                    "provider": "LoopForestHarnessProvider", "default_url": ""},
 }
@@ -274,7 +274,10 @@ def _engine_url(engine: str) -> str:
 
 
 async def _list_kbs() -> list[dict[str, Any]]:
-    base = os.getenv("KB_SERVICE_URL", "http://kbs-api:8080").rstrip("/")
+    base = os.getenv("KB_SERVICE_URL", "").rstrip("/")
+    if not base:
+        logger.warning("[da-analyst] KB_SERVICE_URL is not set, no knowledge bases to offer")
+        return []
     key = os.getenv("KBS_PLUGIN_KEY", "")
     try:
         async with httpx.AsyncClient(timeout=10, trust_env=False) as client:

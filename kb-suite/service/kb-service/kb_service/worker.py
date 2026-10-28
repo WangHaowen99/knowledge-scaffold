@@ -14,7 +14,7 @@ from .pipeline import handlers
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")  # NOSONAR(S4792)
     settings = get_settings()
     await db.migrate(settings.database_url)
     await db.connect(settings.database_url, max_size=settings.worker_concurrency + settings.llm_concurrency + 4)

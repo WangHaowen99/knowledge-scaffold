@@ -156,7 +156,10 @@ async def read_wiki_page(ctx: Context, kb_id: str, slug: str) -> str:
     more = ""
     if len(content) > WIKI_PAGE_CHARS:
         content, more = content[:WIKI_PAGE_CHARS], f"\n\n（页面较长，已截断到前 {WIKI_PAGE_CHARS} 字）"
-    rel = lambda slugs: "、".join(f"{related[s]['title']}({s})" for s in slugs if s in related) or "无"  # noqa: E731
+
+    def rel(slugs: list[str]) -> str:
+        return "、".join(f"{related[s]['title']}({s})" for s in slugs if s in related) or "无"
+
     return (
         f"# {page['title']}（{page['page_type']}，slug={slug}）\n摘要：{page['summary']}\n"
         f"来源文档：{'、'.join(f'{t}(doc_id={d})' for d, t in docs.items()) or '无'}\n"

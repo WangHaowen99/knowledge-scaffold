@@ -295,11 +295,16 @@ class DeepAnalyzeHarness(SerializedTurnHarness):
             elif key == "id":
                 event_id = value
 
+    def _client(self) -> httpx.AsyncClient:
+        if self._http is None:
+            raise RuntimeError(f"{self.engine_name} harness is not started")
+        return self._http
+
     def _stream_timeout(self) -> httpx.Timeout:
         return httpx.Timeout(self._config.read_idle_timeout_s, connect=self._config.connect_timeout_s)
 
     async def _open_run(self, turn: PendingTurn, text: str) -> httpx.Response:
-        assert self._http is not None
+        http = self._client()
         body: dict[str, Any] = {
             "sessionId": self._session_id,
             "input": text,
@@ -316,25 +321,27 @@ class DeepAnalyzeHarness(SerializedTurnHarness):
             body["agentType"] = self._config.agent_type
         if self._config.max_turns:
             body["maxTurns"] = self._config.max_turns
-        request = self._http.build_request(
+        request = http.build_request(
             "POST", f"{API}/run-stream", json=body,
             headers={"Accept": "text/event-stream"}, timeout=self._stream_timeout(),
         )
-        response = await self._http.send(request, stream=True)
+        response = await http.send(request, stream=True)
         if response.status_code >= 400:
             await response.aread()
             response.raise_for_status()
         return response
 
     async def _open_reconnect(self) -> httpx.Response:
-        assert self._http is not None and self._task_id
+        http = self._client()
+        if not self._task_id:
+            raise RuntimeError(f"no {self.engine_name} task to reconnect to")
         headers = {"Accept": "text/event-stream"}
         if self._last_event_id:
             headers["Last-Event-ID"] = self._last_event_id
-        request = self._http.build_request(
+        request = http.build_request(
             "GET", f"{API}/stream/{self._task_id}", headers=headers, timeout=self._stream_timeout(),
         )
-        response = await self._http.send(request, stream=True)
+        response = await http.send(request, stream=True)
         if response.status_code >= 400:
             await response.aread()
             response.raise_for_status()

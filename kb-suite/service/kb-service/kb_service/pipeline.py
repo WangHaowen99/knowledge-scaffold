@@ -284,6 +284,13 @@ def summary_prompt(row: dict, cfg: kb_config.KbConfig, text: str) -> str:
     )
 
 
+def is_current_parse(row, attempt: int) -> bool:
+    """The document still exists and ``attempt`` is its latest completed parse."""
+    if row is None or row["deleted_at"]:
+        return False
+    return row["attempt"] == attempt and row["parse_status"] == "completed"
+
+
 async def handle_summary(job: jobs.Job) -> None:
     doc_id = job.document_id or ""
     attempt = int(job.payload["attempt"])
@@ -293,7 +300,7 @@ async def handle_summary(job: jobs.Job) -> None:
         " FROM documents d JOIN knowledge_bases k ON k.id = d.kb_id WHERE d.id = $1",
         doc_id,
     )
-    if row is None or row["deleted_at"] or row["attempt"] != attempt or row["parse_status"] != "completed":
+    if not is_current_parse(row, attempt):
         raise jobs.Abandon("document changed")
     row = dict(row)
     cfg = doc_config(row)

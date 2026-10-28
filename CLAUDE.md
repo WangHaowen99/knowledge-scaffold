@@ -228,8 +228,8 @@ Commands for the Onto Modeling application (`modeling/onto-modeling/`):
 
 Commands for kb-suite (`kb-suite/`, Python 3.11+):
 
-- Run kb-service tests: `cd kb-suite/kb-service && pip install -e '.[dev]' && python -m pytest -q`
-- Run harness provider tests: `cd kb-suite/da-harness && python -m pytest -q tests`, `cd kb-suite/lf-harness && python -m pytest -q tests`
+- Run kb-service tests: `cd kb-suite/service/kb-service && pip install -e '.[dev]' && python -m pytest -q`
+- Run harness provider tests: `cd kb-suite/harness/da-harness && python -m pytest -q tests`, `cd kb-suite/harness/lf-harness && python -m pytest -q tests`
 - Build and run the stack: `cd kb-suite/deploy/compose && ./kbsuite.sh build && ./kbsuite.sh up` (see `kb-suite/deploy/compose/README.md` for secrets and required `*_REPO` variables)
 
 After initializing the project, Claude must update this section with real commands.

@@ -52,13 +52,17 @@ def _protected_spans(content: str) -> list[tuple[int, int]]:
     return [m.span() for m in _PROTECTED_RE.finditer(content)]
 
 
+def _linkable_title(title: str) -> bool:
+    return len(title) >= 2 and not _HAN_ONLY.match(title)
+
+
 def linkify(content: str, targets: list[tuple[str, str]], self_slug: str = "") -> str:
     """Link the first safe occurrence of each ``(title, slug)`` not yet linked."""
 
     linked = set(parse_links(content))
     for title, slug in sorted(targets, key=lambda t: len(t[0]), reverse=True):
         title = title.strip()
-        if slug == self_slug or slug in linked or len(title) < 2 or _HAN_ONLY.match(title):
+        if slug == self_slug or slug in linked or not _linkable_title(title):
             continue
         spans = _protected_spans(content)
         start = 0

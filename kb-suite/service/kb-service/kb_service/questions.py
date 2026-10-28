@@ -16,7 +16,7 @@ import uuid
 
 from . import db, jobs, models_client
 from .kb_config import KbConfig
-from .pipeline import doc_config, vector_literal
+from .pipeline import doc_config, is_current_parse, vector_literal
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ async def _load(doc_id: str, attempt: int) -> dict:
         " FROM documents d JOIN knowledge_bases k ON k.id = d.kb_id WHERE d.id = $1",
         doc_id,
     )
-    if row is None or row["deleted_at"] or row["attempt"] != attempt or row["parse_status"] != "completed":
+    if not is_current_parse(row, attempt):
         raise jobs.Abandon("document changed")
     return dict(row)
 
@@ -173,15 +173,13 @@ async def handle_questions(job: jobs.Job) -> None:
     await db.pool().execute(
         "UPDATE documents SET question_status = 'processing' WHERE id = $1 AND attempt = $2", doc_id, attempt
     )
-    chunks = [
-        dict(r)
-        for r in await db.pool().fetch(
-            "SELECT id, seq, chunk_type, content, context_header FROM chunks"
-            " WHERE document_id = $1 AND attempt = $2 AND is_active ORDER BY seq",
-            doc_id,
-            attempt,
-        )
-    ]
+    rows = await db.pool().fetch(
+        "SELECT id, seq, chunk_type, content, context_header FROM chunks"
+        " WHERE document_id = $1 AND attempt = $2 AND is_active ORDER BY seq",
+        doc_id,
+        attempt,
+    )
+    chunks = [dict(r) for r in rows]
     questions, failures, retriable = await generate_for_chunks(doc["title"], chunks, cfg)
     if not questions and failures:
         if retriable and job.attempts < job.max_attempts:

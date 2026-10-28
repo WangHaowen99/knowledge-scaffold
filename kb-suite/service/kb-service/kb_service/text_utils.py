@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 
@@ -46,10 +45,6 @@ def overlap_min(a: set[str], b: set[str]) -> float:
 
 def normalize(text: str) -> str:
     return _SPACE_RE.sub(" ", text).strip().lower()
-
-
-def signature(text: str) -> str:
-    return hashlib.md5(normalize(text).encode("utf-8")).hexdigest()
 
 
 def parse_json_object(text: str) -> dict:

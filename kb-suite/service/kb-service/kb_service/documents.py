@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from urllib.parse import urlsplit
 
 import asyncpg
 
@@ -139,7 +140,8 @@ async def create_text_document(
 async def create_url_document(
     tenant_id: str, kb_id: str, url: str, *, folder_path: str = "", overrides: dict | None = None
 ) -> dict:
-    if not url.startswith(("http://", "https://")):
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
         raise DocumentError(400, "bad_url", "只支持 http/https 地址")
     digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
     async with db.pool().acquire() as conn:

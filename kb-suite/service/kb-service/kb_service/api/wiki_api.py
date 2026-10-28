@@ -167,7 +167,9 @@ async def graph(
         {"slug": s, "title": r["title"], "page_type": r["page_type"], "degree": int(r["degree"])}
         for s, r in pages.items()
     ]
-    edges = [{"source": s, "target": t} for s, r in pages.items() for t in r["out_links"] if t in pages and t != s]
+    edges = []
+    for slug, row in pages.items():
+        edges.extend({"source": slug, "target": t} for t in row["out_links"] if t in pages and t != slug)
     return {"nodes": nodes, "edges": edges}
 
 

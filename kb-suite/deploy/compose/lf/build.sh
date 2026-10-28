@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the Loop Forest service image: lf-service (this repo) on top of
+# Build the Loop Forest service image: service/lf-service (this repo) on top of
 # agent-solution's loop-forest module.
 #
 # Needs agent-core-java, agent-runtime-java and agent-core-ext-* already in the
@@ -16,7 +16,7 @@ git -C "$SOLUTION_REPO" fetch -q origin common:refs/remotes/origin/common
 solution="$(git -C "$SOLUTION_REPO" rev-parse --short "$REF")"
 rm -rf "$WORK" && mkdir -p "$WORK/agent-solution"
 git -C "$SOLUTION_REPO" archive "$solution" pom.xml common/agents/loop-forest | tar -x -C "$WORK/agent-solution"
-cp -r "$ROOT/lf-service" "$WORK/lf-service"
+cp -r "$ROOT/service/lf-service" "$WORK/lf-service"
 rm -rf "$WORK/lf-service/target"
 
 cat > "$WORK/settings.xml" <<'XML'
