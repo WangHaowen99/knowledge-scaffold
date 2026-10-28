@@ -85,8 +85,9 @@ def _section_blocks(text: str) -> dict[str, str]:
 
 
 def parse_codegen(text: str) -> dict:
-    """✅/⚠️ 两表编号连续；候选带片段范围/类型/输入/输出，供勾选后组装
-    `/ontology-codegen operation名[:片段区间]` 指令。"""
+    """✅ 表编号的候选按流程给出：生成脚本的 operation、覆盖的子操作、类型、输入、输出，
+    供勾选后组装 `/ontology-codegen operation名...` 指令（一个 operation 一个脚本，没有片段）。
+    ⚠️ 部分适合要先拆子操作，报告里不编号，不进候选。"""
     candidates = []
     unsuitable = []
     generated = []
@@ -100,7 +101,7 @@ def parse_codegen(text: str) -> dict:
                     {
                         "id": int(cells[0]),
                         "operation": cells[1],
-                        "fragment": cells[2],
+                        "covers": cells[2],
                         "type": cells[3],
                         "inputs": cells[4].strip("`"),
                         "outputs": cells[5].strip("`"),

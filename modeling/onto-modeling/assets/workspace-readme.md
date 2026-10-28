@@ -27,7 +27,7 @@
 | 示例数据 | `/ontology-mock` | 为业务对象生成 mock 测试数据，并保存 mock 规则校验报告 |
 | 场景验证 | `/ontology-trace <操作文件>` | 用具体场景和 mock 数据模拟执行操作；`/ontology-trace 交互` 可逐分支构造场景 |
 | 代码生成扫描 | `/ontology-codegen-scan` | 扫全量操作，判定哪些适合转脚本，写带编号的候选报告供人工评审 |
-| 代码生成 | `/ontology-codegen [操作名 [操作名:步骤区间]...]` | 从验证过的操作生成 Python 脚本；**禁止一键全部**，必须显式指定 |
+| 代码生成 | `/ontology-codegen [操作名...]` | 从验证过的操作按完整流程生成 Python 脚本与同名描述符（子操作并入主操作脚本）；**禁止一键全部**，必须显式指定 |
 | 求解评估器 | `/ontology-solver-evaluator [solver_key]` | 为求解契约生成或修正声明式评估器：只声明取数映射与参数，不写计算代码，并运行自检 |
 | 整体视图 | `/ontology-overview` | 生成交互式 HTML 报告：对象关系图 + 操作调用图 + 依赖矩阵 + 脚本清单 + 问题清单 |
 | 影响分析 | `/ontology-impact <文件>` | 查看修改该文件会波及的下游文档 |

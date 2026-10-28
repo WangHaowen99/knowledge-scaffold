@@ -541,7 +541,7 @@ function CodegenReview({ data, checked, onChecked, onGenerate }) {
             <div className="codegen-head">
               <span className="codegen-id">#{c.id}</span>
               <Typography.Text strong>{c.operation}</Typography.Text>
-              {c.fragment && c.fragment !== '整段' && <Tag>{c.fragment}</Tag>}
+              {c.covers && c.covers !== '—' && <Tag>覆盖：{c.covers}</Tag>}
               <Tag color={c.verdict === '适合' ? 'success' : 'warning'}>{c.verdict}</Tag>
               {c.type && <Tag color="blue">{c.type}</Tag>}
             </div>
@@ -1383,16 +1383,8 @@ export default function CenterPane({
                           checked={checkedItems}
                           onChecked={setCheckedItems}
                           onGenerate={(selected) =>
-                            onCommand?.(
-                              '/ontology-codegen ' +
-                                selected
-                                  .map((c) =>
-                                    c.fragment && c.fragment !== '整段'
-                                      ? `${c.operation}:${c.fragment}`
-                                      : c.operation,
-                                  )
-                                  .join(' '),
-                            )
+                            // 一个 operation 一个脚本：子操作由 codegen 按流程并入主操作脚本
+                            onCommand?.('/ontology-codegen ' + selected.map((c) => c.operation).join(' '))
                           }
                         />
                       )}

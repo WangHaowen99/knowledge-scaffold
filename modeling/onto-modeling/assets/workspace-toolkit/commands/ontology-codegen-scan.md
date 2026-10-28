@@ -1,4 +1,4 @@
-Scan all operation docs to identify which operations (whole or by step fragments) are suitable for translation into executable Python scripts. Outputs a markdown report for human review before running `/ontology-codegen`.
+Scan all operation docs to identify which business flows (an operation together with the sub-operations it calls) are suitable for translation into executable Python scripts. Outputs a markdown report for human review before running `/ontology-codegen`.
 
 > 本命令只读 + 写报告，不修改 ontology/ 文档、不 commit。是 `/ontology-codegen` 前的可选准备步骤。
 
@@ -94,13 +94,13 @@ n_done   = count(len(existing_scripts) > 0)
 - ❌ 不适合：{n_no}
 - 📦 已生成（跳过）：{n_done}
 
-报告中每个候选都带有编号、片段范围（如 `步骤2-4`）、输入输出概要与判定理由。
+报告按流程给出候选：每个 ✅ 候选是一个要生成脚本的 operation，带编号、覆盖的子操作、输入输出概要与判定理由；⚠️ 部分适合给出拆分建议，要先拆成子操作再生成。
 
 **下一步建议：**
 - 回复 **打开** → 打开报告
-- 回复 **生成 全部** → 对 ✅ + ⚠️ 全部候选生成（会先复述清单等你确认）
+- 回复 **生成 全部** → 对 ✅ 全部候选生成（会先复述清单等你确认）
 - 回复 **生成 1,3** → 按报告编号生成（支持 `1,3` / `1-5` / 空格分隔）
-- 回复 **生成 客群聚类 活动归因:步骤1-3** → 按 operation 名生成（可带 `:步骤区间`）
+- 回复 **生成 订单审核 交易对账** → 按 operation 名生成（子操作会按流程并入主操作脚本）
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
 ```
 
@@ -108,33 +108,28 @@ On **打开**：执行 `open {REPORT_PATH}`（macOS）。
 
 On **生成 …**：分三步处理。
 
-**Step A. 翻译用户输入为 `(operation, scope)` 字串列表**：
+**Step A. 翻译用户输入为 operation 名列表**：
 
 | 用户输入形态 | 翻译做法 |
 |---|---|
-| `全部` | 取 agent JSON 中 `verdict ∈ {适合, 部分适合}` 的所有条目；逐 fragment 展开 |
+| `全部` | 取 agent JSON 中 `verdict == 适合` 的所有条目的 `operation` |
 | 编号（`1,3` / `1-5` / 混合）| 按 `id` 字段查找对应条目（编号即 agent 返回的 `id`）；非法编号回 "编号 X 不存在，已忽略"，继续处理其余 |
-| operation 名 / `operation名:步骤区间` | 原样保留，跳过翻译 |
+| operation 名 | 原样保留，跳过翻译 |
+| `operation名:步骤区间` | 提示"片段不再单独生成脚本，请先把这几步拆成子操作"，跳过该项 |
 
-每条选中条目按 `fragments` 数组展开：
+每条选中条目输出它的 `operation`（`covers` / `standalone` 里的子操作由 `/ontology-codegen` 按流程一并处理，不单独列出）。把结果去重后按空格拼接得到 `ARGS`，例如 `订单审核 交易对账`。
 
-- `fragment.scope == "整段"` → 输出 `<operation名>`
-- `fragment.scope == "步骤..."` → 输出 `<operation名>:<scope>`
-
-把所有展开结果按空格拼接得到 `ARGS`，例如 `客群聚类 活动归因:步骤1-3 交易对账`。
-
-> 编号混合 operation 名也可：`生成 1 客群聚类 3` 会先翻译 `1` 和 `3`，把 `客群聚类` 原样保留，结果去重。
+> 编号混合 operation 名也可：`生成 1 交易对账 3` 会先翻译 `1` 和 `3`，把 `交易对账` 原样保留，结果去重。
 
 **Step B. 路径分支：**
 
 - **用户输入是 `全部`** → 复述展开后的清单**等二次确认**：
 
   ```
-  即将对以下 {N} 条 operation 生成代码：
+  即将对以下 {N} 个流程生成代码：
 
-  - 客群聚类
+  - 订单审核（覆盖：库存校验；折扣计算 单独脚本）
   - 交易对账
-  - 活动归因:步骤1-3
   ...
 
   - 回复 **确认** → 进入 /ontology-codegen
@@ -148,7 +143,7 @@ On **生成 …**：分三步处理。
 
 **Step C. 转交 codegen**：
 
-Read `.claude/commands/ontology-codegen.md` and follow it with `$ARGUMENTS = ARGS`。`/ontology-codegen` 的 Step 2 已支持 `operation:步骤区间` 语法。
+Read `.claude/commands/ontology-codegen.md` and follow it with `$ARGUMENTS = ARGS`。`/ontology-codegen` 的 Step 2 会把子操作换算到它所属流程的主脚本。
 
 ## Note
 

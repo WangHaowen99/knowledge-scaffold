@@ -70,6 +70,7 @@ For each candidate:
 # 与operation的关联
 - 被operation调用 > [[父operation]]，调用本operation的父operation（必须能在父的 逻辑描述 中找到 `调用[[本operation]]逻辑文档` 一行）；如果没有，填 "无（说明触发方式，如：异步回调 / 定时任务 / 用户直接发起 / 接口直接触发）"
 - 调用operation > [[子operation]]，本operation在 逻辑描述 中调用的子operation；如果没有，填 "无"
+- 可单独调用 > 是 / 否，只有子operation（被operation调用 不为"无"）写这一行：同时满足「会被单独询问或单独触发」和「单独执行时结论仍然成立」两条才填 "是"，否则填 "否"（判据见下方规则）；没有父operation时不写
 
 # 与object的关联
 - 输入数据的对象：[[对象1]]、[[对象2]]
@@ -119,6 +120,14 @@ Rules:
   | 外部系统推送 | "OMS 推送 / WMS 接收 / 上游系统下发" | `无（XX 系统推送独立触发）` |
 
   常见反例：在源材料里 A 流程"业务上发生在 B 之后"，但 A 不是 B 的子例程（A 由回调/定时任务/外部推送触发）→ A.被operation调用 应该填 `无（…）`，**不要**写成 `[[B]]`。判断标准只有一个：B 的逻辑描述里有没有 `调用[[A]]逻辑文档`。
+
+- 什么时候拆出子operation（子operation 会影响 consumer 选哪个 operation 执行，拆多了容易被单独选中，只跑半个流程）：只在以下三种情况把一段逻辑拆成独立的子operation，其余只被一个流程用到的步骤直接写成本operation 逻辑描述里的步骤：
+  1. 被两个及以上流程复用；
+  2. 来源材料明确把它标为子流程（如流程图的子流程节点、Excel 标明可复用子流程）；
+  3. 这一步会被单独询问或单独触发，且单独执行时结论仍然成立——此时子operation 写 `可单独调用 > 是`（见下一条）。
+- `可单独调用`：子operation 填 "是" 时会有自己的脚本，consumer 可以只执行这一步；填 "否" 时它的逻辑并入父operation 的脚本，consumer 选中它会执行父operation 的完整流程，用户只问这一步时由父流程的分步结论作答。只有同时满足下面两条才填 "是"，拿不准时填 "否"：
+  1. 来源材料表明这一步会被单独询问或单独触发；
+  2. 单独执行时结论仍然成立：父operation 在调用它之前没有它所依赖的输入检查、评分、前置判断或停止条件。父流程先做「不满足前提时终止流程」这类检查、再调用它的（例如排在前置判断之后的各项判定、推荐、计算），一律填 "否"——单独执行会跳过那些检查，在资料缺失或冲突时给出错误结论。规则检查对这种组合会给出警告。
 
 - Follow `TEMPLATES_DIR/operation-template.md` for sections and table columns. In particular, the `# 输入` table must include `输入源`, and that source must be specific enough for a weaker runtime model to follow the data path.
 - 与object的关联: categorize objects as input/output/support, only link to objects in OBJECTS_DIR. Fill `与object的语义关联` with concise core relations used for object-to-operation and operation-to-object lookup.
