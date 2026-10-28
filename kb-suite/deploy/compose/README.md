@@ -8,7 +8,8 @@
 
 | 服务 | 镜像 | 端口 | 说明 |
 |---|---|---|---|
-| swarm | `kb-suite/swarm:dev`（或 `:0.2.7`） | 5199 → 5173 | Swarm 的 Web、Gateway、AgentServer；镜像里带 `deepanalyze-harness`、`loopforest-harness` |
+| edge | `nginx:alpine` | 5199 → 8080 | 对外入口，反代到 swarm:5173；加 gzip，插件页带哈希的资源改长缓存（见下文「切换插件页」） |
+| swarm | `kb-suite/swarm:dev`（或 `:0.2.7`） | 只在 compose 网络内（5173） | Swarm 的 Web、Gateway、AgentServer；镜像里带 `deepanalyze-harness`、`loopforest-harness` |
 | kbs-api | `kb-suite/kb-service:dev` | 127.0.0.1:5198 → 8080 | 管理 API、DA 工具接口 `/v1/tools/*`、MCP `/mcp/` |
 | kbs-worker | 同上 | — | 解析、切分、向量化，以及摘要、问题生成、Wiki、知识库描述等增强任务 |
 | kbs-docreader | `kb-suite/docreader:current` | — | 以 WeKnora 发布镜像为底，覆盖了 WeKnora main 的解析源码，用来拿原文定位 |
@@ -140,9 +141,20 @@ DA 有两种用法。
 
 **「知识求索」页**（0.2.7 和开发版都有）：da-analyst 插件当宿主。
 
-- 插件后端给每个页面连接起一个 `DeepAnalyzeHarness`，把 harness 事件转成简化的 JSON 推给页面；
+- 插件后端给每个对话起一个 `DeepAnalyzeHarness`，把 harness 事件转成简化的 JSON 推给页面；
 - DA 的提问和审批在页面上以卡片形式作答；
-- 页面支持多选知识库、停止、执行中补充指令、新对话。
+- 页面支持多选知识库（一个都不选等于全部）、停止、执行中补充指令、新对话。
+- **对话不随页面断开而停止**：在左侧导航切到别的页面会重建 iframe、断开插件 WS，正在跑的分析照常跑完；切回来时页面按会话 id 重新接上，补齐期间的输出。没人看着、也没在跑的对话 10 分钟后才停掉 harness。
+- **历史对话**：页面左栏列出最近 50 个对话，可以打开、继续追问或删除。插件后端把每个对话的转录（用户输入加上页面用到的事件，流式输出合并成整段）存在 `~/.jiuwenswarm/da-analyst/history/<会话 id>.json`（`DA_ANALYST_HISTORY_DIR` 可改），在 swarm 的工作区卷里，重启不丢。打开一个已经停掉的对话时，用同一个会话 id 起新的 harness；DA 的会话 id 由它推出，所以只要 DA 还留着上下文，追问就能接上。Swarm 重启时正在跑的那一轮会显示为「已中断」。
+
+插件后端的单元测试（在 Swarm 镜像里跑，需要镜像里的 jiuwenswarm 和 openjiuwen）：
+
+```bash
+docker run --rm --entrypoint sh -v "$PWD/swarm-kb-plugin:/src:ro" kb-suite/swarm:dev -c \
+  "pip install -q pytest pytest-asyncio && cd /tmp && python -m pytest -q -p no:cacheprovider -o asyncio_mode=auto /src/tests"
+```
+
+**切换插件页**：Swarm 每次切到插件页都会重建 iframe，并且对插件资源回 `Cache-Control: no-cache`、不认条件请求，于是每次都整份重下未压缩的 JS（两个插件页各三百多 KB）。远程访问链路只有几百 KB/s 时，切一次要白屏 1 到 2 秒。edge 给响应加 gzip（插件 JS 压到约 1/3），并让带内容哈希的插件资源长缓存；入口 html 仍每次回源，所以重新构建插件后能拿到新文件名。插件 html 里还有一小段内联脚本，在主题同步前先沿用 Swarm 页面的背景色，避免闪白。回到直连 Swarm：删掉 compose 里的 `edge` 服务，把 swarm 的端口恢复成 `5199:5173`。
 
 **集群模式的团队成员**（开发版）：openJiuwen 团队把 `cli_agent=deepanalyze` 的成员交给这个 provider，provider 接收团队传来的通用配置，DA 相关设置从环境变量读取。
 
@@ -200,4 +212,4 @@ agent-solution 里的 `loop-forest` 是一个 Java 库：在 agent-core 的 ReAc
 - leader 不会自己把「deepanalyze」和 `cli_agent` 参数对上，没写明时会改用专家（实测第一次就是这样）。
 - 每次团队工具调用都多一轮 DA 的确认续跑（约 3 秒）；每个 DA 任务开始时重连一次团队 MCP（几十毫秒）。
 - 停止后，正在进行的那一次模型调用会跑完（几秒），这期间下一轮会收到 `ENGINE_BUSY`，provider 在没有输出时自动重试。
-- 页面会话的 checkpoint 存在插件进程的内存里，Swarm 重启后没法走 resume。不过 DA 的会话 id 是从页面会话 id 推出来的，只要 DA 那边还留着上下文，就会接着用。
+- 页面会话的 checkpoint 存在插件进程的内存里，Swarm 重启后没法走 resume。不过 DA 的会话 id 是从页面会话 id 推出来的，只要 DA 那边还留着上下文，就会接着用；对话的转录另存在工作区卷里，历史列表不受影响。

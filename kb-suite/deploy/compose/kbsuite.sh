@@ -115,7 +115,7 @@ case "$cmd" in
     compose up -d kbs-postgres kbs-docreader kbs-api kbs-worker
     wait_healthy kbs-api
     if ! grep -q '^KBS_MCP_KEY=' "$KEYS" 2>/dev/null; then bootstrap; fi
-    compose up -d swarm
+    compose up -d swarm edge
     if docker image inspect kb-suite/deepanalyze-java:"${DA_TAG:-current}" >/dev/null 2>&1; then
       compose up -d kbs-redis da-engine
     else

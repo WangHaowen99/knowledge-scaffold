@@ -106,11 +106,20 @@ services:
     volumes:
       - swarm-home:/root/.jiuwenswarm
       - ../../swarm-kb-plugin/plugin:/opt/kb-plugins:ro
-    ports:
-      - "5199:5173"
     depends_on:
       kbs-api:
         condition: service_healthy
+    restart: unless-stopped
+
+  # 对外入口：给 Swarm 加 gzip，并让插件页带哈希的资源长缓存（见 edge/nginx.conf）
+  edge:
+    image: nginx:alpine
+    volumes:
+      - ./edge/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "5199:8080"
+    depends_on:
+      - swarm
     restart: unless-stopped
 
   kbs-redis:
