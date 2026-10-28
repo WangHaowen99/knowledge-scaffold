@@ -114,6 +114,8 @@ Wait for it to return a JSON array of impact entries. 每条结构：
 - `kind ∈ {object, operation, mock, testcase, script}`
 - `cascading[].needs_change` = `true` 表示该级联文件也需要改动，会出现在变更清单里；`false` 仅作为提醒。
 - `kind = script` 指 `ontology/scripts/*.py`：脚本与某个 operation 通过头部 docstring 的「关联operation」字段或首行 operation 名称绑定。若该 operation 的改动会影响脚本（如输入/输出参数变化、字段重命名、逻辑步骤改写），就出现一条 `kind=script` 的 modify 条目。纯数据结构变化（如 operation 文档措辞调整）不必涉及脚本。
+  - 子操作（「可单独调用」为否）没有自己的脚本，它的逻辑写在所属主操作的脚本里：改了这类子操作的逻辑、输入或输出，要修改的是主操作的脚本（按「被operation调用」找到有脚本的上级）。
+  - 改了「与operation的关联」（增删子操作、改「可单独调用」）也会改变哪个脚本覆盖哪一步，按 `/ontology-codegen` Step 2「按流程生成」同步合并或拆分脚本。
 
 把 agent 返回的原始 JSON 写入 `.ontology-state/update-plan.json`，方便续执。
 
@@ -211,7 +213,7 @@ Wait for completion. Display 执行摘要：
 - 跳过 {N4} 个：{filenames}（原因：...）
 ```
 
-把变更暂存（改动涉及 `ontology/scripts/*.py` 时先按 `/ontology-codegen` Step 4.6 用 `script_verify.py run` 跑通改过的脚本，否则 pre-commit 会拦下）：
+把变更暂存（改动涉及 `ontology/scripts/*.py` 时先按 `/ontology-codegen` Step 4.6 用 `script_verify.py run` 跑通改过的脚本，再运行 `python3 .claude/scripts/script_descriptor.py render ontology` 刷新同名描述符，否则 pre-commit 会拦下）：
 
 ```bash
 git add ontology/

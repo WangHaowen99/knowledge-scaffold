@@ -19,6 +19,16 @@ REPORT_TZ = ZoneInfo("Asia/Shanghai")
 sys.path.append(str(Path(__file__).resolve().parent))
 from knowledge_helper import parse_frontmatter as _hk_parse_frontmatter
 from script_contract import ScriptContractError, parse_script_contract, script_bound_operation
+from script_descriptor import descriptor_issues
+from operation_relations import (
+    called_operation_stems as _called_operation_stems,
+    caller_operation_stems as _caller_operation_stems,
+    link_stems as _stems_in_section,
+    parse_relation,
+    standalone_flag,
+    stops_before_call,
+    sub_operation_call_sites as _extract_sub_operation_refs,
+)
 from check_eval_data import table_headers as _read_table_headers
 
 # =============================================================================
@@ -211,11 +221,13 @@ def check_knowledge(ontology_dir):
 
 
 # CLAUDE.md 规则 3：ontology/ 下允许放 .md 文件的子目录白名单。
-# scripts/ 仅放 .py（codegen 输出），diagrams/ 仅放 .drawio，因此都不在 .md 白名单内。
+# diagrams/ 仅放 .drawio，不在 .md 白名单内；scripts/ 下只允许与 .py 同名的脚本描述符
+# （script_descriptor.py 生成，--include-scripts 校验它与 .py 是否同步），见 check_file_locations。
 ALLOWED_MD_SUBDIRS = (
     'object', 'operation', 'logic', 'rule', 'metric', 'action', 'data-mock',
     'diagrams-summary', 'testcase', 'knowledge',
 )
+SCRIPT_DESCRIPTOR_SUBDIR = 'scripts'
 
 # 知识包导出范围（与 backend export_package_zip 一致）：只有这些目录的内容
 # 会送达 consumer。logic 为 operation 的旧目录兼容（ADR-0004），不再推荐新建。
@@ -244,6 +256,8 @@ def check_file_locations(ontology_dir: Path) -> list:
         # index.md 是平台维护的目录索引，允许出现在任意子目录
         if f.name.lower() == 'index.md':
             continue
+        if len(parts) == 2 and parts[0] == SCRIPT_DESCRIPTOR_SUBDIR and f.with_suffix('.py').is_file():
+            continue  # 脚本描述符
         if len(parts) == 1:
             issues.append(Issue(
                 file=str(rel), severity='错误', category='文件位置',
@@ -1301,12 +1315,7 @@ def check_derived_attribute_markers(doc: OntologyDoc, all_docs: dict) -> list:
 
 
 # --- Operation checks ---
-
-def _extract_sub_operation_refs(operation_text: str) -> list:
-    """Extract sub-operation references from operation description."""
-    refs = re.findall(r'调用\[\[([^\]]+)\]\]逻辑文档', operation_text)
-    refs += re.findall(r'调用\s*"([^"]+)"\s*逻辑文档', operation_text)
-    return refs
+# 子 operation 调用点与「与operation的关联」行的解析见 operation_relations.py（脚本绑定与导出共用）
 
 
 def check_operation_structure(doc: OntologyDoc) -> list:
@@ -1362,34 +1371,49 @@ def check_operation_links(doc: OntologyDoc, all_docs: dict) -> list:
     ]
 
 
-def _stems_in_section(section_text: str) -> set:
-    """Return the set of [[stem]] targets in a section, alias- and path-aware."""
-    stems = set()
-    for m in re.finditer(r'\[\[([^\]]+)\]\]', section_text):
-        target = m.group(1).split('|')[0].strip()      # drop alias
-        stem = target.split('/')[-1].strip()            # drop path prefix
-        stem = re.sub(r'\.md$', '', stem, flags=re.IGNORECASE)
-        if stem and stem != '无':
-            stems.add(stem)
-    return stems
+def _operations_calling(stem: str, all_docs: dict) -> set:
+    """在「与operation的关联 → 调用operation」里写了 stem 的 operation。"""
+    callers = set()
+    for key, other in all_docs.items():
+        if other.doc_type != 'operation':
+            continue
+        if stem in _called_operation_stems(other.sections.get('与operation的关联', '')):
+            callers.add(key)
+    return callers
 
 
-def _called_operation_stems(flow_section: str) -> set:
-    """Extract sub-operation stems declared on the '调用operation' line(s) of 与operation的关联."""
-    stems = set()
-    for line in flow_section.split('\n'):
-        if re.match(r'^\s*[-•]?\s*调用\s*operation\b', line, re.IGNORECASE):
-            stems |= _stems_in_section(line)
-    return stems
+def check_operation_standalone(doc: OntologyDoc, all_docs: dict) -> list:
+    """「可单独调用」只能填 是 / 否，且只对子操作有意义（决定 consumer 能否单独执行它）。
 
-
-def _caller_operation_stems(flow_section: str) -> set:
-    """Extract parent-operation stems declared on the '被operation调用' line(s) of 与operation的关联."""
-    stems = set()
-    for line in flow_section.split('\n'):
-        if re.match(r'^\s*[-•]?\s*被\s*operation\s*调用\b', line, re.IGNORECASE):
-            stems |= _stems_in_section(line)
-    return stems
+    标「是」的子操作会有自己的脚本被 consumer 直接选中执行；父 operation 在调用它之前有停止条件
+    （输入检查、前置判断等）时，单独执行会跳过这些检查。
+    """
+    relation = parse_relation(doc.raw)
+    if not relation.standalone:
+        return []
+    if standalone_flag(relation) is None:
+        return [Issue(file=_rel(doc), severity='错误', category='流程关联不完整',
+                      message=f'与operation的关联 → 可单独调用 只能填「是」或「否」，现在是「{relation.standalone}」',
+                      source='规则检查')]
+    stem = doc.path.stem
+    parents = set(relation.callers) | _operations_calling(stem, all_docs)
+    if standalone_flag(relation) and not parents:
+        return [Issue(file=_rel(doc), severity='建议', category='流程关联不完整',
+                      message='本operation没有父operation（被operation调用 为无），「可单独调用」只对子操作有意义，可以删掉这一行',
+                      source='规则检查')]
+    issues = []
+    for parent in sorted(parents):
+        parent_doc = all_docs.get(parent)
+        if standalone_flag(relation) and parent_doc is not None and stops_before_call(parent_doc.raw, stem):
+            issues.append(Issue(
+                file=_rel(doc), severity='警告', category='流程关联不完整',
+                message=(
+                    f'本operation标了「可单独调用 > 是」，但「{parent}」在调用它之前有停止条件（输入检查、前置判断等）：'
+                    f'consumer 直接执行本operation的脚本时会跳过这些检查，结论可能与走完整流程不一致。'
+                    f'除非本operation的脚本也执行这些检查，请改为「可单独调用 > 否」，由「{parent}」的脚本统一执行'
+                ),
+                source='规则检查'))
+    return issues
 
 
 def check_operation_sub_refs(doc: OntologyDoc, all_docs: dict) -> list:
@@ -1853,6 +1877,9 @@ def check_scripts(ontology_dir: Path) -> list:
             parse_script_contract(source)
         except ScriptContractError as exc:
             issues.append(Issue(str(rel), "错误", "脚本契约", str(exc), "规则检查"))
+    # 同样与导出同一实现：每个 operation 只对外一个脚本、子操作与主操作脚本的覆盖关系、描述符与 .py 同步
+    for file, severity, message in descriptor_issues(ontology_dir):
+        issues.append(Issue(file, severity, "脚本契约", message, "规则检查"))
     return issues
 
 
@@ -2091,6 +2118,7 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
             issues += check_operation_links(doc, all_docs)
             issues += check_operation_sub_refs(doc, all_docs)
             issues += check_operation_caller_refs(doc, all_docs)
+            issues += check_operation_standalone(doc, all_docs)
             issues += check_operation_flow_refs(doc, all_docs)
             issues += check_terminology(doc, term_map)
             issues += check_branch_completeness(doc)

@@ -62,7 +62,7 @@ def migrate_package(package_dir: Path, root: Path) -> int:
             continue
         if top == "scripts":
             if entry.suffix != ".py":
-                continue  # 伴生 .md 描述符是 consumer 执行契约，工作区不需要
+                continue  # 伴生 .md 描述符不搬：迁移后 ensure_package_layout 按 .py 重新生成
             dest = root / "ontology/scripts" / entry.name
         elif top in PACKAGE_DIR_MAP:
             dest = root / PACKAGE_DIR_MAP[top] / entry.name

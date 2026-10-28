@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import unicodedata
@@ -11,7 +12,7 @@ from enum import Enum
 from functools import lru_cache
 from operator import getitem
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import yaml
 from ontology.ontologies import (
@@ -1829,7 +1830,138 @@ def load_script_catalog(ontology_dir: Path) -> List[Dict[str, Any]]:
             entry["_is_deterministic_handler"] = normalize_operation_token(entry.get("operation_key")) in protected_keys
             catalog.append(entry)
 
+    relations = load_operation_relations(ontology_dir)
+    if relations:
+        # Borrowed entries go last so lookups by an owner's own key still
+        # return the owner's descriptor first.
+        catalog.extend(
+            _apply_operation_stage_routing(
+                catalog,
+                relations=relations,
+                protected_keys=protected_keys,
+                normalize=normalize_operation_token,
+            )
+        )
     return catalog
+
+
+def load_operation_relations(ontology_dir: Path) -> Dict[str, Tuple[str, ...]]:
+    """Read the sub-operations each operation declares in ``uses.operations``.
+
+    Returns ``{operation_key: (child_key, ...)}`` in declaration order, only for
+    operations that declare at least one child.  Unreadable or malformed
+    operation documents are skipped.
+    """
+    relations: Dict[str, Tuple[str, ...]] = {}
+    operations_dir = Path(ontology_dir) / "operations"
+    if not operations_dir.is_dir():
+        return relations
+    for path in sorted(operations_dir.glob("*.md"), key=lambda item: item.name.lower()):
+        if path.name.lower() == "index.md":
+            continue
+        frontmatter = read_markdown_frontmatter(path)
+        key = str(frontmatter.get("key") or path.stem).strip()
+        uses = frontmatter.get("uses")
+        declared = uses.get("operations") if isinstance(uses, dict) else None
+        if not key or not isinstance(declared, list):
+            continue
+        children: List[str] = []
+        for item in declared:
+            child = item.strip() if isinstance(item, str) else ""
+            if child and child != key and child not in children:
+                children.append(child)
+        if children:
+            relations[key] = tuple(children)
+    return relations
+
+
+def _operation_parents(relations: Dict[str, Tuple[str, ...]]) -> Dict[str, Tuple[str, ...]]:
+    parents: Dict[str, List[str]] = {}
+    for parent, children in relations.items():
+        for child in children:
+            bucket = parents.setdefault(child, [])
+            if parent not in bucket:
+                bucket.append(parent)
+    return {child: tuple(items) for child, items in parents.items()}
+
+
+def _nearest_scripted_ancestors(
+    operation_key: str,
+    parents: Dict[str, Tuple[str, ...]],
+    scripted: Set[str],
+) -> List[str]:
+    """Return the closest scripted ancestor on every upward path.
+
+    The search stops at the first scripted operation of each path: that
+    script already covers everything below it.  Cycles are ignored.
+    """
+    found: List[str] = []
+    seen = {operation_key}
+    queue = list(parents.get(operation_key, ()))
+    while queue:
+        current = queue.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        if current in scripted:
+            found.append(current)
+            continue
+        queue.extend(parents.get(current, ()))
+    return found
+
+
+def _apply_operation_stage_routing(
+    catalog: List[Dict[str, Any]],
+    *,
+    relations: Dict[str, Tuple[str, ...]],
+    protected_keys: Set[str],
+    normalize: Callable[[Any], str],
+) -> List[Dict[str, Any]]:
+    """Mark stage scripts and derive entries for stages without a script.
+
+    A declared stage that has no script of its own runs the script of its
+    single nearest scripted ancestor, so selecting the stage still executes
+    the complete flow instead of half of it.  Stages under several scripted
+    flows stay unscripted because the right flow cannot be chosen here.
+    """
+    parents = _operation_parents(relations)
+    owners: Dict[str, Dict[str, Any]] = {}
+    for entry in catalog:
+        operation_key = str(entry.get("operation_key") or "").strip()
+        if entry.get("_is_bound_operation") and not entry.get("_is_deterministic_handler") and operation_key:
+            owners.setdefault(operation_key, entry)
+    scripted = set(owners)
+    for operation_key, entry in owners.items():
+        if operation_key in parents:
+            entry["_stage_of"] = parents[operation_key]
+            entry["_stage_owners"] = tuple(_nearest_scripted_ancestors(operation_key, parents, scripted))
+
+    borrowed: List[Dict[str, Any]] = []
+    for stage in parents:
+        if stage in owners or normalize(stage) in protected_keys:
+            continue
+        ancestors = _nearest_scripted_ancestors(stage, parents, scripted)
+        if len(ancestors) != 1:
+            continue
+        owner_key = ancestors[0]
+        owner = owners.get(owner_key)
+        if owner is None:
+            continue
+        entry = copy.deepcopy(owner)
+        entry.pop("_stage_of", None)
+        entry.pop("_stage_owners", None)
+        entry.update(
+            {
+                "operation_key": stage,
+                "title": "Runs the full '{owner}' script; '{stage}' is one of its stages - read steps['{stage}'] for this"
+                " stage".format(owner=owner_key, stage=stage),
+                "_is_bound_operation": True,
+                "_is_deterministic_handler": False,
+                "_borrowed_from": owner_key,
+            }
+        )
+        borrowed.append(entry)
+    return borrowed
 
 
 def load_script_entry_from_descriptor(
@@ -2219,6 +2351,7 @@ def build_root_payload(
     operations_catalog = _annotate_coordinating_operations(
         operations_catalog,
         ontology_dir=ontology_dir,
+        script_catalog=script_catalog,
     )
 
     payload = {
@@ -2265,6 +2398,7 @@ def _annotate_coordinating_operations(
     catalog: Any,
     *,
     ontology_dir: Path,
+    script_catalog: Optional[List[Dict[str, Any]]] = None,
 ) -> Any:
     """Expose package-declared parent/child operation structure to the Agent.
 
@@ -2277,7 +2411,9 @@ def _annotate_coordinating_operations(
 
     Only rows that reference at least two other catalog operations are
     annotated.  This keeps ordinary leaf catalogs byte-for-byte compatible and
-    avoids assigning hierarchy from a single incidental mention.
+    avoids assigning hierarchy from a single incidental mention.  Packages that
+    declare sub-operations in ``uses.operations`` are annotated from those
+    declarations instead.
     """
 
     if not isinstance(catalog, list):
@@ -2295,6 +2431,14 @@ def _annotate_coordinating_operations(
         "name",
         "key",
     )
+    relations = load_operation_relations(ontology_dir)
+    if relations:
+        return _annotate_declared_operation_roles(
+            catalog,
+            relations=relations,
+            script_catalog=script_catalog or [],
+            key_candidates=key_candidates,
+        )
     row_keys = {_object_row_value(row, key_candidates) for row in rows if _object_row_value(row, key_candidates)}
     if len(row_keys) < 3:
         return catalog
@@ -2333,6 +2477,82 @@ def _annotate_coordinating_operations(
         row["referenced_operation_count"] = referenced_count
         annotated.append(row)
     return annotated
+
+
+def _annotate_declared_operation_roles(
+    catalog: List[Any],
+    *,
+    relations: Dict[str, Tuple[str, ...]],
+    script_catalog: List[Dict[str, Any]],
+    key_candidates: Tuple[str, ...],
+) -> List[Any]:
+    """Annotate coordinator and stage rows from declared ``uses.operations``."""
+    parents = _operation_parents(relations)
+    row_keys = {
+        _object_row_value(row, key_candidates)
+        for row in catalog
+        if isinstance(row, dict) and _object_row_value(row, key_candidates)
+    }
+    own_scripts: Set[str] = set()
+    borrowed: Dict[str, str] = {}
+    for entry in script_catalog:
+        operation_key = str(entry.get("operation_key") or "").strip()
+        if not operation_key or not entry.get("_is_bound_operation") or entry.get("_is_deterministic_handler"):
+            continue
+        owner = str(entry.get("_borrowed_from") or "").strip()
+        if owner:
+            borrowed.setdefault(operation_key, owner)
+        else:
+            own_scripts.add(operation_key)
+
+    annotated: List[Any] = []
+    for original in catalog:
+        operation_key = _object_row_value(original, key_candidates) if isinstance(original, dict) else ""
+        if not operation_key:
+            annotated.append(original)
+            continue
+        roles: List[str] = []
+        children = [child for child in relations.get(operation_key, ()) if child in row_keys]
+        if children:
+            roles.append("coordinator; load before referenced stages")
+        stage_parents = parents.get(operation_key, ())
+        if stage_parents:
+            roles.append(_stage_role(operation_key, stage_parents, parents, own_scripts, borrowed))
+        if not roles:
+            annotated.append(original)
+            continue
+        row = dict(original)
+        row["execution_role"] = "; ".join(roles)
+        if children:
+            row["referenced_operation_count"] = len(children)
+        annotated.append(row)
+    return annotated
+
+
+def _stage_role(
+    stage: str,
+    stage_parents: Tuple[str, ...],
+    parents: Dict[str, Tuple[str, ...]],
+    own_scripts: Set[str],
+    borrowed: Dict[str, str],
+) -> str:
+    role = "stage of {}".format(_quoted_operations(stage_parents, ", "))
+    owner = borrowed.get(stage)
+    if owner:
+        return "{}; executing it runs the full '{}' script".format(role, owner)
+    if stage not in own_scripts:
+        return role
+    owners = _nearest_scripted_ancestors(stage, parents, own_scripts)
+    if not owners:
+        return "{}; its own script covers only this stage".format(role)
+    return "{}; its own script covers only this stage - run {} when the complete result is requested".format(
+        role,
+        _quoted_operations(owners, " or "),
+    )
+
+
+def _quoted_operations(keys: Any, separator: str) -> str:
+    return separator.join("'{}'".format(key) for key in keys)
 
 
 def _public_operations_catalog(

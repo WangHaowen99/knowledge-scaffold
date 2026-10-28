@@ -314,6 +314,8 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         assert "entrypoint: calc_price.py\n" in script_doc
         # 执行契约：绑定 operation + 参数表（consumer execute_script 按此组装 CLI）
         assert 'bound_operation: "创建订单"' in script_doc
+        # 一级标题与 modeling scriptMd 一致：modeling 只认 `# 输入参数`
+        assert "\n# 输入参数\n" in script_doc and "## 输入参数" not in script_doc
         assert "| 参数 key | CLI 参数 | 类型 | 必填 | 默认值 | 说明 |" in script_doc
         assert "| orders | --orders | json | 是 |  | 订单列表，必填 | 否 |  |" in script_doc
         assert "| factor | --factor | number | 否 | 1.0 | 加权因子，默认 1.0 | 否 |  |" in script_doc
@@ -325,14 +327,17 @@ def test_export_package_zip_script_entrypoint_is_ascii_filename(manager: Workspa
     """modeling 要求 entrypoint 满足 ^[A-Za-z0-9_.-]+\\.py$，并按 scripts/<entrypoint> 取源码。"""
     meta = manager.create_project("脚本入口")
     root = manager.project_root(meta["id"])
-    (root / "ontology" / "operation" / "定价.md").write_text("# 定价\n", encoding="utf-8")
-    header = '"""\n关联operation：定价\n"""\n'
+    for operation in ("计价", "折扣"):
+        (root / "ontology" / "operation" / f"{operation}.md").write_text(f"# 业务描述\n{operation}\n", encoding="utf-8")
     sources = {
-        "calc_price": header + "def run():\n    return {'price': 1}\n",
-        "计算折扣": header + "def run():\n    return {'discount': 2}\n",
+        "calc_price": '"""\n关联operation：计价\n"""\ndef run():\n    return {\'price\': 1}\n',
+        "计算折扣": '"""\n关联operation：折扣\n"""\ndef run():\n    return {\'discount\': 2}\n',
     }
     for key, code in sources.items():
         (root / "ontology" / "scripts" / f"{key}.py").write_text(code, encoding="utf-8")
+    # 「关联operation：无」的库模块随包发布供 import，但不对外调用、没有描述符
+    library = "def helper():\n    return 1\n"
+    (root / "ontology" / "scripts" / "shared_math.py").write_text(library, encoding="utf-8")
     dest = tmp_path / "pkg.zip"
     manager.export_package_zip(meta["id"], dest)
     pid = meta["id"]
@@ -344,6 +349,8 @@ def test_export_package_zip_script_entrypoint_is_ascii_filename(manager: Workspa
             assert re.fullmatch(r"[A-Za-z0-9_.-]+\.py", entrypoint), entrypoint
             assert zf.read(f"{pid}/scripts/{entrypoint}").decode("utf-8") == code
         assert f"{pid}/scripts/计算折扣.py" not in zf.namelist()
+        assert zf.read(f"{pid}/scripts/shared_math.py").decode("utf-8") == library
+        assert f"{pid}/scripts/shared_math.md" not in zf.namelist()
     # 同一脚本多次导出文件名不变，版本间 diff 与 consumer 升级不会把它当成新脚本
     again = tmp_path / "again.zip"
     manager.export_package_zip(meta["id"], again)
@@ -551,7 +558,7 @@ def test_migrate_from_modeling_end_to_end(manager: WorkspaceManager, tmp_path: P
     body = (root / "ontology/object/customer.md").read_text(encoding="utf-8")
     assert body.startswith("# 业务定义")  # 发布 frontmatter 已剥离
     assert (root / "ontology/scripts/calc.py").is_file()
-    assert not (root / "ontology/scripts/calc.md").exists()  # 描述符不迁
+    assert not (root / "ontology/scripts/calc.md").exists()  # 描述符不迁；calc.py 没有关联operation，是库模块
     assert "解析文本" in (root / "resource/others/手册.md").read_text(encoding="utf-8")
     excel = (root / "resource/excel/数据表.md").read_text(encoding="utf-8")
     assert "| ID | string | a |" in excel
