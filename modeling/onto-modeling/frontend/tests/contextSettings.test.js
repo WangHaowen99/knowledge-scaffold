@@ -9,7 +9,9 @@ import {
   contextPayload,
   defaultValuesOf,
   estimateCompaction,
+  estimateJiuwenCompaction,
   filledHint,
+  jiuwenTriggerRatio,
   presetChange,
   presetSuggestion,
   restoredHint,
@@ -160,4 +162,30 @@ test('保存不了或算不出压缩点时返回错误', () => {
   assert.deepEqual(estimateCompaction({ max_context_tokens: 10000, max_output_tokens: 1000 }, DEFAULTS), {
     error: '上下文窗口过小，留不出回答和自动压缩所需的空间',
   });
+});
+
+// 内测引擎留空时的生效值，示例取最大输出 8192 的模型
+const JIUWEN_DEFAULTS = { max_context_tokens: 200000, max_output_tokens: 8192 };
+
+test('内测引擎的触发比例与后端一致：留 10% 余量，限定在 0.3–0.8，向下取到 0.01', () => {
+  assert.equal(jiuwenTriggerRatio(200000, 8192), 0.8);
+  assert.equal(jiuwenTriggerRatio(128000, 16384), 0.77);
+  assert.equal(jiuwenTriggerRatio(32000, 16000), 0.4);
+  assert.equal(jiuwenTriggerRatio(32000, 24000), 0.3);
+});
+
+test('内测引擎按窗口 × 触发比例估算压缩点', () => {
+  assert.equal(estimateJiuwenCompaction({}, JIUWEN_DEFAULTS), null);
+  assert.deepEqual(estimateJiuwenCompaction({ max_context_tokens: 128000, max_output_tokens: 16384 }, JIUWEN_DEFAULTS), {
+    compactAt: 98560,
+    percent: 77,
+    margin: 13056,
+  });
+  // 最大输出大到留不出余量：比例取下限 0.3，余量为负由配置页提示调小最大输出
+  assert.deepEqual(estimateJiuwenCompaction({ max_context_tokens: 32000, max_output_tokens: 24000 }, JIUWEN_DEFAULTS), {
+    compactAt: 9600,
+    percent: 30,
+    margin: -1600,
+  });
+  assert.match(estimateJiuwenCompaction({ max_context_tokens: 8000 }, JIUWEN_DEFAULTS).error, /^最大输出留空时按 8,192 生效/);
 });

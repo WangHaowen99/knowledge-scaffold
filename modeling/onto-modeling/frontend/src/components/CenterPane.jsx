@@ -1096,10 +1096,10 @@ export default function CenterPane({
                   </div>
                 </div>
               )}
-              {usage && usage.calls > 0 && (
+              {usage && (usage.calls > 0 || usage.output_tokens > 0) && (
                 <Card size="small" title="模型用量">
                   <Space size={24} wrap>
-                    <span>调用 {usage.calls} 次</span>
+                    {usage.calls > 0 && <span>调用 {usage.calls} 次</span>}
                     <span>输出 {usage.output_tokens.toLocaleString()} tokens</span>
                   </Space>
                 </Card>
