@@ -1856,9 +1856,12 @@ class WorkspaceManager:
 
     # ---- 版本 ----
 
-    def versions(self, project_id: str, limit: int = 50) -> list[dict]:
+    def versions(self, project_id: str, limit: int = 50, offset: int = 0) -> list[dict]:
         root = self.project_root(project_id)
-        out = _git(root, "log", f"--max-count={limit}", "--pretty=format:%H%x1f%ct%x1f%s")
+        total = int(_git(root, "rev-list", "--count", "HEAD").strip())
+        out = _git(
+            root, "log", f"--skip={offset}", f"--max-count={limit}", "--pretty=format:%H%x1f%ct%x1f%s"
+        )
         tags = self._tags_by_commit(root)
         entries = []
         for line in out.splitlines():
@@ -1872,10 +1875,9 @@ class WorkspaceManager:
                         "tags": tags.get(parts[0], []),
                     }
                 )
-        # "已保存版本 N"：N = 距基线的序号，最早的提交是版本 1
-        total = len(entries)
+        # 「迭代 N」：N = 第几次提交，最早的提交是 1；不随分页和新保存变化
         for index, entry in enumerate(entries):
-            entry["version"] = total - index
+            entry["version"] = total - offset - index
         return entries
 
     @staticmethod

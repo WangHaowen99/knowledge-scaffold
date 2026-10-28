@@ -403,6 +403,9 @@ export const api = {
       method: 'DELETE',
     }),
   versions: (pid) => request(`/api/projects/${pid}/versions`),
+  // 历史时间线：迭代与发布版本由后端合并分页，cursor 原样回传
+  history: (pid, { limit = 50, cursor = '' } = {}) =>
+    request(`/api/projects/${pid}/history?${new URLSearchParams({ limit: String(limit), cursor })}`),
   revert: (pid, commit) =>
     request(`/api/projects/${pid}/versions/revert`, {
       method: 'POST',

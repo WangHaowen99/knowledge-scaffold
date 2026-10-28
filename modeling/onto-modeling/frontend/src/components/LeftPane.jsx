@@ -17,6 +17,7 @@ import {
   Segmented,
   Select,
   Space,
+  Spin,
   Steps,
   Tag,
   Tooltip,
@@ -28,7 +29,9 @@ import {
 } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { openEvaluation } from '../lib/evaluation.js';
 import { isResearchBlocking } from '../lib/researchGate.js';
+import { EMPTY_HISTORY, appendHistoryPage, historyEntryKey, versionTitle } from '../lib/versionHistory.js';
 import EvalRunDetail from './EvalRunDetail.jsx';
 import { usePackagePublish } from './PublishCheckDialog.jsx';
 
@@ -329,6 +332,48 @@ export default function LeftPane({
     onChanged: onRefresh,
     onOpenSolver: onSolver,
   });
+  // 「历史」页签：后端合并迭代与发布版本并分页；打开页签或迭代刷新时从第一页重新读取
+  const [history, setHistory] = useState(EMPTY_HISTORY);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyRevision, setHistoryRevision] = useState(0);
+  const [downloading, setDownloading] = useState('');
+  useEffect(() => setHistory(EMPTY_HISTORY), [project.id]);
+  useEffect(() => {
+    if (section !== 'versions') return undefined;
+    let active = true;
+    setHistoryLoading(true);
+    api.history(project.id)
+      .then((page) => { if (active) setHistory(appendHistoryPage(EMPTY_HISTORY, page)); })
+      .catch((error) => { if (active) setHistory({ ...EMPTY_HISTORY, error: error.message }); })
+      .finally(() => { if (active) setHistoryLoading(false); });
+    return () => { active = false; };
+  }, [section, project.id, versions, historyRevision]);
+
+  const loadMoreHistory = async () => {
+    const cursor = history.nextCursor;
+    setHistoryLoading(true);
+    try {
+      const page = await api.history(project.id, { cursor });
+      // 读取期间列表已重新加载（游标变了）时丢弃这一页
+      setHistory((prev) => (prev.nextCursor === cursor ? appendHistoryPage(prev, page) : prev));
+    } catch (error) {
+      message.error(error.message);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const downloadRelease = async (releaseId) => {
+    setDownloading(releaseId);
+    try {
+      await api.downloadRelease(project.id, releaseId);
+    } catch (error) {
+      message.error(error.message);
+    } finally {
+      setDownloading('');
+    }
+  };
+
   useEffect(() => {
     if (!evalDetailOpen) return undefined;
     let stop = false;
@@ -415,7 +460,7 @@ export default function LeftPane({
     }
   };
 
-  // 资料变更提醒：资料上传/删除时间晚于最近版本 → 派生产物可能过期
+  // 资料变更提醒：资料上传/删除时间晚于最近迭代 → 派生产物可能过期
   const latestVersionTime = versions[0]?.time || 0;
   const resourceStale =
     (meta?.resource_updated_at || 0) > latestVersionTime && hasEntry(paths, 'research/');
@@ -461,7 +506,7 @@ export default function LeftPane({
   const revertTo = async (commit) => {
     try {
       await api.revert(project.id, commit);
-      message.success('已回退并生成新版本');
+      message.success('已回退并生成新的迭代');
       onRefresh();
     } catch (error) {
       message.error(error.message);
@@ -491,7 +536,7 @@ export default function LeftPane({
           { label: '进度', value: 'progress' },
           { label: '知识包', value: 'files' },
           { label: '资料', value: 'resources' },
-          { label: '版本', value: 'versions' },
+          { label: '历史', value: 'versions' },
         ]}
         style={{ marginBottom: 12 }}
       />
@@ -649,7 +694,7 @@ export default function LeftPane({
               showIcon
               style={{ marginBottom: 8 }}
               message="资料区有更新"
-              description="上传/删除时间晚于最近版本，派生产物可能已过期。"
+              description="上传/删除时间晚于最近迭代，派生产物可能已过期。"
               action={
                 <Button
                   size="small"
@@ -773,63 +818,114 @@ export default function LeftPane({
 
       {section === 'versions' && (
         <>
-          {versions.length === 0 ? (
+          {(history.error || history.releaseError) && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 8 }}
+              message={history.error
+                ? `历史记录读取失败：${history.error}`
+                : `发布版本读取失败：${history.releaseError}`}
+              action={
+                <Button size="small" onClick={() => setHistoryRevision((n) => n + 1)}>
+                  重试
+                </Button>
+              }
+            />
+          )}
+          {history.items.length === 0 && historyLoading && (
+            <Spin size="small" style={{ display: 'block', margin: '16px auto' }} />
+          )}
+          {history.items.length === 0 && !historyLoading && !history.error && (
             <Typography.Paragraph type="secondary">还没有版本记录</Typography.Paragraph>
-          ) : (
+          )}
+          {history.items.length > 0 && (
             <Timeline
-              items={versions.map((v) => ({
-                key: v.commit,
-                color: v.tags?.length ? 'green' : 'blue',
+              items={history.items.map((v) => ({
+                key: historyEntryKey(v),
+                color: v.kind === 'release' ? '#722ed1' : v.tags?.length ? 'green' : 'blue',
                 children: (
                   <div className="version-item">
                     <div>
-                      <Typography.Text strong>版本 {v.version}</Typography.Text>{' '}
+                      <Typography.Text strong>{versionTitle(v.kind, v.version)}</Typography.Text>{' '}
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                         {new Date(v.time * 1000).toLocaleString()}
                       </Typography.Text>
                     </div>
-                    <div className="version-msg">{v.message}</div>
-                    {v.tags?.map((t) => (
-                      <Tag
-                        key={t.name}
-                        color="green"
-                        closable
-                        onClose={(e) => {
-                          e.preventDefault();
-                          api.deleteTag(project.id, t.name).then(onRefresh).catch((err) =>
-                            message.error(err.message),
-                          );
-                        }}
-                        icon={<TagOutlined />}
-                      >
-                        {t.label}
-                      </Tag>
-                    ))}
-                    <Space size={4} style={{ marginTop: 2 }}>
-                      <Button
-                        size="small"
-                        type="text"
-                        onClick={() => setTagging({ commit: v.commit, label: '' })}
-                      >
-                        标记
-                      </Button>
-                      <Popconfirm
-                        title={`回退到版本 ${v.version}？`}
-                        description="回退会生成新版本，历史保留可再回退"
-                        onConfirm={() => revertTo(v.commit)}
-                      >
-                        <Button size="small" type="text" danger>
-                          回退
-                        </Button>
-                      </Popconfirm>
-                    </Space>
+                    {v.kind === 'release' ? (
+                      <>
+                        <div className="version-msg">
+                          发布知识包{v.source_service ? ` · 来源 ${v.source_service}` : ''}
+                        </div>
+                        <Space size={4} style={{ marginTop: 2 }}>
+                          <Button
+                            size="small"
+                            type="text"
+                            loading={downloading === v.release_id}
+                            onClick={() => downloadRelease(v.release_id)}
+                          >
+                            下载
+                          </Button>
+                          <Button
+                            size="small"
+                            type="text"
+                            onClick={() => openEvaluation(v).catch((e) => message.error(e.message))}
+                          >
+                            评测
+                          </Button>
+                        </Space>
+                      </>
+                    ) : (
+                      <>
+                        <div className="version-msg">{v.message}</div>
+                        {v.tags?.map((t) => (
+                          <Tag
+                            key={t.name}
+                            color="green"
+                            closable
+                            onClose={(e) => {
+                              e.preventDefault();
+                              api.deleteTag(project.id, t.name).then(onRefresh).catch((err) =>
+                                message.error(err.message),
+                              );
+                            }}
+                            icon={<TagOutlined />}
+                          >
+                            {t.label}
+                          </Tag>
+                        ))}
+                        <Space size={4} style={{ marginTop: 2 }}>
+                          <Button
+                            size="small"
+                            type="text"
+                            onClick={() => setTagging({ commit: v.commit, label: '' })}
+                          >
+                            标记
+                          </Button>
+                          <Popconfirm
+                            title={`回退到${versionTitle(v.kind, v.version)}？`}
+                            description="回退会生成新的迭代，历史保留可再回退"
+                            onConfirm={() => revertTo(v.commit)}
+                          >
+                            <Button size="small" type="text" danger>
+                              回退
+                            </Button>
+                          </Popconfirm>
+                        </Space>
+                      </>
+                    )}
                   </div>
                 ),
               }))}
             />
           )}
+          {history.nextCursor && (
+            <Button block size="small" loading={historyLoading} onClick={loadMoreHistory}>
+              加载更多
+            </Button>
+          )}
           <Modal
-            title="标记版本"
+            title="标记迭代"
             open={!!tagging}
             onCancel={() => setTagging(null)}
             onOk={saveTag}

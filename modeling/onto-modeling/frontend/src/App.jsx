@@ -272,7 +272,7 @@ export default function App() {
     const created = await api.transferImport(file, projectName);
     await refreshProjects(); // 同上：先拿到新任务再进入
     nav(`#/p/${created.id}`);
-    message.success('迁移导入完成（版本历史已保留）');
+    message.success('迁移导入完成（迭代历史已保留）');
   };
 
   // 重命名 / 克隆：名称作参数传入，同名冲突改名后用新名称重试。失败抛出，由调用方分流
@@ -319,7 +319,7 @@ export default function App() {
       title: `删除任务「${item.name}」？`,
       content:
         '无论任务当前状态如何都会直接删除：进行中的建模会话、排队中的消息和数据评测立即强制终止。'
-        + '删除后不可恢复，工作区文件、对话记录与版本历史将被永久清除。',
+        + '删除后不可恢复，工作区文件、对话记录与迭代历史将被永久清除。',
       okText: '确认删除',
       okButtonProps: { danger: true },
       onOk: async () => {
@@ -549,7 +549,7 @@ export default function App() {
             <button
               className="tb-btn"
               disabled={transferBusy}
-              title="从其他环境导入完整项目迁移包（含版本历史）"
+              title="从其他环境导入完整项目迁移包（含迭代历史）"
               onClick={() => transferInputRef.current?.click()}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
