@@ -73,12 +73,14 @@ python3 .claude/scripts/verify_artifacts.py operations --files "ontology/operati
 
 ```bash
 PYTHONPATH=backend python -m pytest -q -p no:cacheprovider backend/tests
-python -B backend/tests/benchmark_artifact_verification.py --baseline-ref <trusted-baseline-ref>
+python -B backend/tests/benchmark_artifact_verification.py --baseline-ref "<已确认的基线分支或提交>"
 ```
 
 性能脚本比较基线检查器与当前检查器；每项执行 15 次，包含 Python 启动成本。
-CodeCheck 整改后须显式指定可信基线引用并解析为提交；基线只读取普通 Git blob，
-限制 500 个文件和 16 MiB，不再展开归档。脚本输出仍为 JSON，错误走 stderr；
+基线必须显式指定，运行时固定为提交摘要；仅读取该提交中的普通脚本文件，
+最多 500 个、总计 16 MiB，不展开归档。子进程使用参数数组、禁用 shell 解析，
+单次调用最长 60 秒；不同合成工作区的测量回调独立绑定，不捕获外层循环变量。
+脚本输出仍为 JSON，错误走 stderr；
 新增安全及输出协议回归见 `backend/tests/test_artifact_gate_safety.py`，
 逐项命令安全复核依据见 `codecheck-test-command-review.md`。下述性能数字是原始历史结果，不冒称新版本复测。
 测试数据为合成对象、简单关系、操作、规则、指标和流程图，另含 10 万行单列 CSV 场景。

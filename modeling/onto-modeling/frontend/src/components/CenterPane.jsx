@@ -35,6 +35,7 @@ import 'highlight.js/styles/atom-one-light.css';
 import mermaid from 'mermaid';
 import { Suspense, lazy, memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { hideCoverageMetrics } from '../lib/coveragePresentation.js';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
 import { api } from '../lib/api.js';
@@ -211,7 +212,7 @@ export const Markdown = memo(function Markdown({ content, onWikiLink, onOpenFile
   return (
     <div className="markdown-body">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, hideCoverageMetrics]}
         rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]}
         components={{
           a({ href, children }) {
@@ -1073,14 +1074,8 @@ export default function CenterPane({
                   <div className="stat-label">版本数</div>
                 </div>
               </div>
-              {coverage && (coverage.design_coverage != null || coverage.pass_rate != null) && (
+              {coverage && coverage.pass_rate != null && (
                 <div className="stat-grid">
-                  <div className="stat-tile tone-green">
-                    <div className="stat-num">
-                      {coverage.design_coverage != null ? `${coverage.design_coverage}%` : '—'}
-                    </div>
-                    <div className="stat-label">设计覆盖率</div>
-                  </div>
                   <div className="stat-tile tone-blue">
                     <div className="stat-num">
                       {coverage.pass_rate != null ? `${coverage.pass_rate}%` : '—'}

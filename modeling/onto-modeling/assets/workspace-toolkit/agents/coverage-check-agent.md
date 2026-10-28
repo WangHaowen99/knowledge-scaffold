@@ -71,48 +71,46 @@ For each mentioned item, try matching against extracted filenames (without .md) 
 
 For each extracted item not in mentioned list: mark as **EXTRA**.
 
-Compute coverage percentages per type. Fuzzy-matched items count as MISSING for coverage percentage (not yet covered until confirmed). If a type has 0 mentioned items, mark as N/A and omit that section.
+Keep the matched/missing/extra sets for deterministic reconciliation. Fuzzy-matched items remain MISSING until confirmed. Do not expose coverage counts, ratios or percentages. If a type has no mentioned items, omit that section. Hiding metrics does not waive missing-item checks.
 
 ## Step 4: Return coverage report
 
 Return structured markdown:
 
 ```
-## 提取覆盖度报告
+## 提取缺项检查
 
-### 对象覆盖率：{covered}/{total} ({pct}%)
+### 对象
 
-**已覆盖（{n} 个）：**
+**已匹配：**
 - ✅ 对象名称
 
-**未覆盖（{n} 个）：**
+**待补充：**
 - ❌ 对象名称 — {简短描述}
 - ❌ 对象名称 — 未找到匹配文件（相似：{最相似的已提取文件名}.md，是否为同一概念？）
 
-**额外提取（{n} 个）：**
+**额外提取：**
 - ➕ 对象名称
 
-### 逻辑覆盖率：{covered}/{total} ({pct}%)
+### 逻辑
 
-**已覆盖（{n} 个）：**
+**已匹配：**
 - ✅ 逻辑名称
 
-**未覆盖（{n} 个）：**
+**待补充：**
 - ❌ 逻辑名称 — {简短描述}
 - ❌ 逻辑名称 — 未找到匹配文件（相似：{最相似的已提取文件名}.md，是否为同一概念？）
 
-**额外提取（{n} 个）：**
+**额外提取：**
 - ➕ 逻辑名称
 
-### 规则覆盖率：{covered}/{total} ({pct}%)
+### 规则
 
-与「逻辑覆盖率」同样的三小节格式（已覆盖 / 未覆盖 / 额外提取），对象是 `RULE_DIR`。
+与「逻辑」同样的三小节格式（已匹配 / 待补充 / 额外提取），对象是 `RULE_DIR`。
 
-### 指标覆盖率：{covered}/{total} ({pct}%)
+### 指标
 
 同上，对象是 `METRIC_DIR`。
-
-### 总体覆盖率：{total_covered}/{total_mentioned} ({pct}%)
 
 ### 说明
 {contextual notes}

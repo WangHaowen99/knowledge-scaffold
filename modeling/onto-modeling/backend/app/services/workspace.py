@@ -248,7 +248,7 @@ class WorkspaceManager:
         # 的"已到达的最高阶段优先"同口径。否则旧项目升级后进度会整体归零，回执
         # 因打标签、换评测表而失效时也一样。
         research_blocking = (
-            review["status"] in (_research_review.PENDING, _research_review.FAILED)
+            review["status"] in (_research_review.PENDING, _research_review.FAILED, _research_review.UNVERIFIABLE)
             and not cls._dir_has_entries(root / "ontology" / "object")
         )
         done = 0
