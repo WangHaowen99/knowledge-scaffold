@@ -355,6 +355,35 @@ def test_export_preserves_checked_object_name_metadata(tmp_path, monkeypatch):
     assert "| references | object_b |" in doc
 
 
+@pytest.mark.parametrize("graph", [False, True])
+def test_export_keeps_same_named_join_variants_and_self_relation(tmp_path, monkeypatch, graph):
+    manager, pid, root = _export(tmp_path, monkeypatch, {}, graph)
+    source = "# 字段\n| 字段 key | 中文名 | 类型 | 必填 | 业务说明 |\n| --- | --- | --- | --- | --- |\n"
+    source += "| id | id | string | 是 | synthetic |\n| fk | fk | string | 否 | synthetic |\n"
+    source += "| other_fk | other_fk | string | 否 | synthetic |\n"
+    snapshot = {"object_a": source + "# 关联对象\n"
+                "- 当前对象 → references（fk → id） → [[object_b]]\n"
+                "- 当前对象 → references（other_fk → id） → [[object_b]]\n"
+                "- 当前对象 → reports_to（fk → id） → 当前对象\n",
+                "object_b": source}
+    binding = {"objects": {}, "problems": []}
+    for key in snapshot:
+        binding["objects"][key] = {"table": "table_" + key, "primary_key": ["id"], "fields": [
+            {"key": field, "column": field, "type": "string", "primary": field == "id"}
+            for field in ("id", "fk", "other_fk")
+        ]}
+    destination = io.BytesIO()
+
+    manager.export_package_zip(pid, destination, binding=binding, graph=graph, object_texts=snapshot)
+
+    with zipfile.ZipFile(destination) as archive:
+        doc = archive.read(f"{pid}/objects/object_a.md").decode("utf-8")
+    assert "| references | object_b | fk → id |" in doc
+    assert "| references | object_b | other_fk → id |" in doc
+    assert "| reports_to | object_a | fk → id |" in doc
+    assert len(package_mapping.parse_relation_definitions(doc)) == 3
+
+
 def test_mock_table_without_object_doc_keeps_headers(tmp_path):
     _objects(tmp_path)
     mock = tmp_path / "ontology" / "data-mock"
@@ -500,7 +529,7 @@ def test_preview_counts_mirrored_declarations_once(tmp_path):
     _objects(tmp_path)
     customer = tmp_path / "ontology" / "object" / "客户.md"
     customer.write_text(
-        CUSTOMER_DOC + "\n# 关联对象\n- [[订单]] → 属于（CUSTOMER_ID → CUSTOMER_ID） → 当前对象\n",
+        CUSTOMER_DOC + "\n# 关联对象\n- [[订单]] → 属于 → 当前对象\n",
         encoding="utf-8",
     )
     file_id = _business_data(tmp_path)

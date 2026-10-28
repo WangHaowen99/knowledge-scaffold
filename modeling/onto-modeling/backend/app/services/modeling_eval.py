@@ -85,7 +85,9 @@ def evaluation_object_snapshot(root: Path) -> dict[str, str]:
         texts = package_mapping.read_object_texts(root, strict=True)
     except ValueError as exc:
         raise EvaluationPackageInvalid([str(exc)]) from exc
-    _, problems = package_mapping.package_relations(texts, allow_self_relations=False)
+    _, problems = package_mapping.package_relations(
+        texts, reject_duplicate_relations=True,
+    )
     if problems:
         raise EvaluationPackageInvalid(problems)
     return texts
