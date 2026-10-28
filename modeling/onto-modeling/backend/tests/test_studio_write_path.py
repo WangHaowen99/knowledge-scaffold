@@ -345,19 +345,19 @@ def test_delete_file_only_knowledge(manager: WorkspaceManager):
 
 CODEGEN_REPORT = """# 脚本化候选扫描 — 2026-01-01 10:00 Asia/Shanghai
 
-共扫描 4 条 logic：✅ 适合 1 / ⚠️ 部分适合 1 / ❌ 不适合 1 / 📦 已生成 1
+共扫描 6 条 operation：✅ 适合 1 / ⚠️ 部分适合 1 / ❌ 不适合 1 / 📦 已生成 1
 
 ## ✅ 适合（1）
 
-| # | 逻辑 | 片段 | 类型 | 输入 | 输出 | 已有脚本 |
+| # | 流程（生成脚本的 operation） | 覆盖的子操作 | 类型 | 输入 | 输出 | 已有脚本 |
 |---|---|---|---|---|---|---|
-| 1 | 客群聚类 | 整段 | 算法计算 | `factors, k` | `DataFrame[user_id]` | — |
+| 1 | 订单审核 | 库存校验；折扣计算（单独脚本） | 流程编排 | `orders, level` | `conclusion, steps` | — |
 
-## ⚠️ 部分适合（1）
+## ⚠️ 部分适合（1；先拆子操作再生成）
 
-| # | 逻辑 | 片段 | 类型 | 输入 | 输出 | 备注 |
-|---|---|---|---|---|---|---|
-| 2 | 活动归因 | 步骤1-3 | SQL查询封装 | `activity_id` | `DataFrame[score]` | 步骤4 留 logic |
+| 逻辑 | 拆分建议 | 备注 |
+|---|---|---|
+| 活动归因 | 步骤1-3 拆成子操作「活动归因计算」 | 步骤4 为人工分桶 |
 
 ## ❌ 不适合（1）
 
@@ -376,13 +376,12 @@ CODEGEN_REPORT = """# 脚本化候选扫描 — 2026-01-01 10:00 Asia/Shanghai
 def test_parse_codegen_report():
     parsed = report_items.parse(CODEGEN_REPORT)
     assert parsed["type"] == "codegen"
-    assert parsed["summary"].startswith("共扫描 4 条")
-    assert [c["id"] for c in parsed["candidates"]] == [1, 2]
+    assert parsed["summary"].startswith("共扫描 6 条")
+    # 部分适合要先拆子操作，不编号、不进候选
+    assert [c["id"] for c in parsed["candidates"]] == [1]
     first = parsed["candidates"][0]
-    assert first["operation"] == "客群聚类" and first["fragment"] == "整段"
-    assert first["verdict"] == "适合" and first["inputs"] == "factors, k"
-    second = parsed["candidates"][1]
-    assert second["verdict"] == "部分适合" and second["fragment"] == "步骤1-3"
+    assert first["operation"] == "订单审核" and first["covers"] == "库存校验；折扣计算（单独脚本）"
+    assert first["verdict"] == "适合" and first["inputs"] == "orders, level"
     assert parsed["unsuitable"][0]["operation"] == "上架审批"
     assert "、" in parsed["generated"][0]["scripts"]
 

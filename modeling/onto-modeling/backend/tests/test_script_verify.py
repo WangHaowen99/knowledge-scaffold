@@ -191,6 +191,104 @@ def test_invalid_cases_are_rejected(workspace, capsys, cases, message):
     assert code == 2 and message in out.err
 
 
+def test_ok_false_counts_as_failed_call_like_consumer(workspace, capsys):
+    """consumer 把退出码 0、输出 ok=false 的结果当作调用失败（不终止对话）：成功用例不能这样，参数错误用例可以。"""
+    (workspace / "ontology" / "scripts" / "reject.py").write_text(
+        "import json\nif __name__ == \"__main__\":\n"
+        "    print(json.dumps({'ok': False, 'error': {'code': 'INVALID_INPUT', 'message': 'qty 不是整数'}}))\n",
+        encoding="utf-8",
+    )
+    cases = write_cases(workspace, "reject", [
+        {"name": "预期成功", "argv": [], "expect": "success"},
+        {"name": "参数错误", "argv": [], "expect": "error"},
+    ])
+    code, out = run_cli(workspace, capsys, "run", "ontology/scripts/reject.py", "--cases", cases)
+    reported = json.loads(out.out)["cases"]
+    assert code == 1
+    assert "失败结果" in reported[0]["reason"] and reported[1]["ok"]
+
+
+ORDER_SCRIPT = '''"""
+关联operation：订单审核
+
+功能描述：给出订单审核结论
+
+输入参数：
+    orders    array    [[订单]] 查询结果，必填；例：[{"order_id":"A-001","qty":2}]
+    order_id    string    订单编号
+
+输出：
+    conclusion    string    审核结论
+"""
+import argparse
+import json
+
+
+def _cli():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--orders", required=True, type=json.loads)
+    parser.add_argument("--order-id")
+    args = parser.parse_args()
+    print(json.dumps({"conclusion": "通过" if args.orders else "资料不足"}, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    _cli()
+'''
+
+
+def test_scripts_with_identity_need_a_success_case_without_any(workspace, capsys):
+    """只去掉顶层编号参数、记录里仍带编号的用例不算：要模拟用户只描述情况、没给编号的提问。"""
+    (workspace / "ontology" / "scripts" / "order_review.py").write_text(ORDER_SCRIPT, encoding="utf-8")
+    with_ids = [
+        {"name": "按编号", "argv": ["--order-id", "A-001", "--orders", '[{"qty":2}]'], "expect": "success"},
+        {"name": "顶层不传编号", "argv": ['--orders=[{"order_id":"A-001","qty":2}]'], "expect": "success"},
+        {"name": "嵌套编号", "argv": ["--orders", '[{"qty":2,"lines":[{"sku_code":"S-1"}]}]'], "expect": "success"},
+    ]
+    code, out = run_cli(
+        workspace, capsys, "run", "ontology/scripts/order_review.py",
+        "--cases", write_cases(workspace, "order_review", with_ids),
+    )
+    assert code == 2 and "不带编号的成功用例" in out.err and "order_id" in out.err
+
+    without_ids = [*with_ids, {"name": "不带编号", "argv": ["--orders", '[{"order_id":"","qty":2}]'], "expect": "success"}]
+    code, out = run_cli(
+        workspace, capsys, "run", "ontology/scripts/order_review.py",
+        "--cases", write_cases(workspace, "order_review", without_ids),
+    )
+    # 只看退出码时，脚本把资料完整的场景判成资料不足也会通过：不带编号的用例要写明预期结论
+    assert code == 2 and "stdout_contains" in out.err
+
+    without_ids[-1]["stdout_contains"] = ["通过"]
+    code, out = run_cli(
+        workspace, capsys, "run", "ontology/scripts/order_review.py",
+        "--cases", write_cases(workspace, "order_review", without_ids),
+    )
+    assert code == 0, out.err
+
+
+def test_stdout_contains_checks_the_conclusion(workspace, capsys):
+    (workspace / "ontology" / "scripts" / "escaped.py").write_text(
+        "import json\nif __name__ == \"__main__\":\n    print(json.dumps({'conclusion': '资料不足', 'total': 0}))\n",
+        encoding="utf-8",
+    )
+    cases = write_cases(workspace, "escaped", [
+        {"name": "中文被转义也认得出", "argv": [], "expect": "success", "stdout_contains": ["资料不足"]},
+        {"name": "结论不对", "argv": [], "expect": "success", "stdout_contains": ["有效线索", "资料不足"]},
+    ])
+    code, out = run_cli(workspace, capsys, "run", "ontology/scripts/escaped.py", "--cases", cases)
+    reported = json.loads(out.out)["cases"]
+    assert code == 1 and reported[0]["ok"]
+    assert "没有预期的结论：有效线索（" in reported[1]["reason"]  # 只列出缺的那个
+
+
+@pytest.mark.parametrize("expected", ["有效线索", [""], [1], ["x"] * 11])
+def test_invalid_stdout_contains_is_rejected(workspace, capsys, expected):
+    cases = [{"name": "正常", "argv": ["--quantity", "2"], "expect": "success", "stdout_contains": expected}]
+    code, _report, out = verify_quote(workspace, capsys, write_cases(workspace, "invalid", cases))
+    assert code == 2 and "stdout_contains" in out.err
+
+
 def test_run_uses_jiuwenbox_when_available(workspace, capsys, monkeypatch):
     with FakeJiuwenbox() as box, RunningGateway(box.url) as gateway:
         monkeypatch.setattr(client, "gateway_url", lambda: gateway.url)

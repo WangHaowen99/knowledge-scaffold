@@ -34,7 +34,7 @@ These rules apply to all work in this repository.
    - `ontology/rule/` — 规则实体文档：判定、约束、门禁、阈值拦截
    - `ontology/metric/` — 指标实体文档：评分、比率、汇总等可度量口径
    - `ontology/data-mock/` — mock test data
-   - `ontology/scripts/` — codegen 产出的逻辑脚本（headers 按 `.claude/templates/script-template.py`，CLI 入参用 argparse）；新增或修改的脚本必须用 `python3 .claude/scripts/script_verify.py run` 跑通（优先在 jiuwenbox 沙箱，不可用时在容器内），没有当前版本的通过记录不能提交；脚本只做纯计算，禁用写法与「关联operation」要求见 `.claude/commands/ontology-codegen.md`「脚本安全」与头部注释说明
+   - `ontology/scripts/` — codegen 产出的逻辑脚本（headers 按 `.claude/templates/script-template.py`，CLI 入参用 argparse）；按完整流程一个 operation 一个脚本，没标「可单独调用 > 是」的子操作并入主操作脚本；新增或修改的脚本必须用 `python3 .claude/scripts/script_verify.py run` 跑通（优先在 jiuwenbox 沙箱，不可用时在容器内），没有当前版本的通过记录不能提交；脚本只做纯计算，禁用写法与「关联operation」要求见 `.claude/commands/ontology-codegen.md`「脚本安全」与头部注释说明。每个对外脚本旁有同名 `.md` 描述符（consumer 调用契约），由 `python3 .claude/scripts/script_descriptor.py render ontology` 按脚本生成，不要手改
    - `ontology/diagrams/` — flowchart .drawio files
    - `ontology/diagrams-summary/` — flowchart summaries
    - `ontology/excel/` — Excel supplements split from `resource/excel/*.xlsx` by sheet
