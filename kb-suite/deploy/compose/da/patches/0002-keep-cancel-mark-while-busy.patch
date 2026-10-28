@@ -1,0 +1,32 @@
+DaToolContextRegistry: keep an in-flight task's cancel mark
+
+/cancel marks the conversation cancelled; DaToolContextRail then force-finishes
+the run before its next model call, so a cancelled task stops within one model
+call. But DaAgentHandler registers the tool context for every incoming request
+before core rejects it as busy, and register() cleared the cancel mark. A client
+that retries right after cancelling (every host does: its next message gets
+ENGINE_BUSY) therefore un-cancels the task, which then runs to its natural end
+while the conversation keeps answering ENGINE_BUSY (measured: still busy 90 s
+after cancel with 1 s retries; without retries the run stopped ~5 s after it).
+
+Only a request that opens a new registration (no task in flight) clears the mark.
+
+Applied by deploy/compose/da/build.sh until fixed upstream (agent-solution common).
+
+--- a/common/agents/deepanalyze-java/engine/src/main/java/com/openjiuwen/da/toolcontext/DaToolContextRegistry.java
++++ b/common/agents/deepanalyze-java/engine/src/main/java/com/openjiuwen/da/toolcontext/DaToolContextRegistry.java
+@@ -32,8 +32,12 @@
+      * @param context 请求级工具上下文
+      */
+     public static void register(DaToolContext context) {
+-        CANCELLED.remove(context.sessionId());
+-        CONTEXTS.put(context.sessionId(), context);
++        // 会话还登记着，说明上一个任务仍在跑（任务结束才在 afterInvoke 销档），这次请求会被 core
++        // 以会话忙拒绝。此时不能清掉在途任务的取消标记：取消后紧接着重试的请求会把它抹掉，
++        // 已取消的任务就一直跑到自然结束，会话也一直报忙。
++        if (CONTEXTS.put(context.sessionId(), context) == null) {
++            CANCELLED.remove(context.sessionId());
++        }
+     }
+ 
+     /**

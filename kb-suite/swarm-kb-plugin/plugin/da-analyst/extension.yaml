@@ -1,0 +1,10 @@
+id: da-analyst
+name: DA 深度分析
+version: 0.1.0
+description: 通过 HarnessProtocol（deepanalyze provider）驱动 DeepAnalyze-Java，在知识库上做长程分析
+author: kb-suite
+min_jiuwenswarm_version: "0.2.5"
+package_type: application
+dependencies: {}
+permissions:
+  - outbound_network
