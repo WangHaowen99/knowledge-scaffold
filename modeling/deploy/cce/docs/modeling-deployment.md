@@ -343,6 +343,8 @@ bash deploy/install-cce.sh upgrade \
 
 升级失败时，安装器会尝试将三个业务 Deployment 恢复为单副本。如果 Helm 已切换到新版本，会先尝试回滚原有 Helm revision，再恢复副本数；返回 JSON 的 `recovery.status` 为 `ready` 才表示三个 Deployment 已重新就绪。`degraded` 或 `failed` 时按 `recovery.issues` 排查，并立即检查实际副本数和 Pod 状态。Helm 回滚只恢复部署清单，不能替代数据卷恢复。
 
+升级会尝试将操作阶段写入包外 `*-operation.json` 和命名空间内的 `<release>-cce-state` ConfigMap；写入失败会在结果中告警，不改变升级结果。续跑时仅对同一操作、尚未开始 Helm 变更且本地与集群阶段记录一致的状态放行；结果不明确时须先核实，不能通过删除状态绕过检查。
+
 升级失败后：
 
 1. 保留 PVC、VolumeSnapshot、旧镜像和 `state-dir`；

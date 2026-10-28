@@ -252,7 +252,7 @@ bash deploy/install-consumer-modeling.sh cce prepare-compatibility \
 
 ### 7.2 联合升级
 
-保留上次安装时的 `compatibility-verified.yaml`，将 `deployment.customer.yaml` 中两侧 `package` 指向新包，再预览候选升级路径：
+优先保留上次安装时的 `compatibility-verified.yaml`，将 `deployment.customer.yaml` 中两侧 `package` 指向新包，再预览候选升级路径：
 
 ```bash
 bash deploy/install-consumer-modeling.sh cce prepare-compatibility \
@@ -260,7 +260,7 @@ bash deploy/install-consumer-modeling.sh cce prepare-compatibility \
   --upgrade-candidate
 ```
 
-脚本从现有兼容性清单和集群里两个已安装的 Helm release 识别旧组合；从新包识别目标组合；自动生成“新 Consumer + 旧 Modeling”的中间组合、`from`、`to`、`intermediateCombinationId` 和 `transitionId`。此时仍不会修改文件。
+清单完整时沿用原有已验证组合及其 ID。若清单丢失或缺少当前已安装组合，脚本从 Helm 读取两侧实际版本，并从 Consumer 命名空间中与 Helm 版本一致、处于 `ready` 的 `<release>-cce-state` 读取旧端点 API 版本，再核对实际 Auth、Backend Service 端口，自动生成旧组合 ID；从目标包生成目标组合，并生成“新 Consumer + 旧 Modeling”的中间组合及 `transitionId`。预览结果的 `reconstructedOldCombination` 和 `oldCombinationSource` 会指出是否重建旧组合及其来源。此时不会写文件；若集群旧契约缺失或不一致，必须恢复可信记录，不能推测 API 版本。
 
 确认新旧组合及中间组合已联调，且新 Modeling 能不经数据迁移读取原 PVC 后执行：
 
@@ -272,7 +272,7 @@ bash deploy/install-consumer-modeling.sh cce prepare-compatibility \
   --confirm-no-modeling-migration
 ```
 
-脚本在原兼容性清单中保留旧记录并加入目标组合、中间组合与迁移记录。联合升级会先读取集群当前两侧版本，按当前组合筛选 `from`，再匹配本次离线包对应的 `to`；因此正常情况下会自动得到唯一 transition。只有同一“当前组合 → 目标组合”被记录了多条不同迁移策略时，才需要从预览结果取得 `transitionId`，并通过 `--transition-id` 显式指定。其他旧版本到同一目标版本的路径不会干扰当前升级。若旧清单丢失、集群实际版本与旧组合不符、两个新包平台不一致或端点不符合契约，脚本会拒绝生成。不要仅凭脚本成功就确认数据兼容性。
+清单存在时，脚本保留原有记录并补齐缺失组合、迁移记录；清单不存在时，在确认后新建文件。联合升级会先读取集群当前两侧版本，按当前组合筛选 `from`，再匹配本次离线包对应的 `to`；因此正常情况下会自动得到唯一 transition。只有同一“当前组合 → 目标组合”被记录了多条不同迁移策略时，才需要从预览结果取得 `transitionId`，并通过 `--transition-id` 显式指定。其他旧版本到同一目标版本的路径不会干扰当前升级。若集群实际版本与旧契约不符、两个新包平台不一致或端点不符合契约，脚本会拒绝生成。**自动重建只是恢复字段来源，不代表已完成旧→目标版本的联调或数据兼容验证**；运行确认命令前仍须取得发布方的验证结论。
 
 ### 7.3 同版本联合升级
 

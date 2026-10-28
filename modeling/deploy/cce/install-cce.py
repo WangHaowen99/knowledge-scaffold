@@ -7,6 +7,7 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -455,6 +456,134 @@ def _count_persisted_data(args) -> dict:
     return counts
 
 
+def _pvc_bindings(args, merged: dict) -> dict:
+    result = {}
+    for workload in ("core", "agent", "onto"):
+        claim = merged["modeling"]["workloads"][workload]["persistence"]["existingClaim"]
+        pvc = kube(args, "get", "pvc", claim, "-n", args.namespace)
+        uid = pvc.get("metadata", {}).get("uid")
+        pv = pvc.get("spec", {}).get("volumeName")
+        if pvc.get("status", {}).get("phase") != "Bound" or not uid or not pv:
+            raise ConfigError(f"{workload} PVC identity is incomplete")
+        result[workload] = {"claimName": claim, "claimUid": uid, "volumeName": pv}
+    return result
+
+
+def _write_private_json(path: Path, document: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(document, stream, ensure_ascii=False, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _operation_state_path(args) -> Path:
+    return args.state_dir / f"{args.release}-{_operation_slug(args.operation_id)}-operation.json"
+
+
+def _cluster_operation_state(args) -> dict | None:
+    resource = _optional_json(args, "-n", args.namespace, "get", "configmap", f"{args.release}-cce-state")
+    if resource is None:
+        return None
+    try:
+        return json.loads(resource.get("data", {})["state.json"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigError("Modeling cluster operation state is invalid") from exc
+
+
+def _write_cluster_state(args, document: dict) -> None:
+    manifest = {"apiVersion": "v1", "kind": "ConfigMap",
+                "metadata": {"name": f"{args.release}-cce-state", "namespace": args.namespace,
+                             "labels": {"app.kubernetes.io/instance": args.release}},
+                "data": {"state.json": json.dumps(document, sort_keys=True)}}
+    _run_with_input(("kubectl", "--context", args.context, "-n", args.namespace,
+                     "apply", "-f", "-"), json.dumps(manifest))
+
+
+def _record_upgrade_stage(args, stage: str, **details) -> None:
+    if getattr(args, "state_dir", None):
+        path = _operation_state_path(args)
+        document = {}
+        try:
+            if path.is_file():
+                document = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(document, dict):
+                    raise ConfigError("existing Modeling operation state is invalid")
+                if document.get("operationId") != args.operation_id:
+                    raise ConfigError("existing Modeling operation belongs to another operation")
+        except (OSError, ValueError, TypeError, ConfigError):
+            args.stage_warnings = getattr(args, "stage_warnings", []) + ["local operation state could not be read"]
+            return
+        document.update({"schemaVersion": "cce-modeling-operation/v1", "operationId": args.operation_id,
+                         "context": args.context, "namespace": args.namespace, "releaseName": args.release,
+                         "action": "upgrade", "stage": stage, **details})
+        try:
+            _write_cluster_state(args, document)
+        except (OSError, RuntimeError, ConfigError):
+            args.stage_warnings = getattr(args, "stage_warnings", []) + ["cluster operation state could not be written"]
+        try:
+            _write_private_json(path, document)
+        except (OSError, RuntimeError, ConfigError):
+            args.stage_warnings = getattr(args, "stage_warnings", []) + ["local operation state could not be written"]
+    args.upgrade_stage = stage
+
+
+def _diagnose(args, release: dict, merged: dict) -> dict:
+    current = release_status(args)
+    state = _cluster_operation_state(args)
+    claims = _pvc_bindings(args, merged)
+    issues = []
+    if current is None:
+        issues.append("Helm release is absent")
+    elif current.get("info", {}).get("status") != "deployed":
+        issues.append("Helm release is not deployed")
+    else:
+        installed = installed_release(args)
+        if (installed["releaseVersion"], installed["chartVersion"]) != (
+                release["releaseVersion"], release["chartVersion"]):
+            issues.append("installed release differs from target")
+    if state and state.get("stage") not in ("complete", "old-service-restored", "preparing-backup"):
+        issues.append(f"unfinished Modeling operation at stage {state.get('stage', 'unknown')}")
+    return {"ready": not issues, "issues": issues, "claims": claims,
+            "installed": current is not None,
+            "operationState": {"operationId": state.get("operationId"), "stage": state.get("stage")}
+            if state else None}
+
+
+def _require_upgrade_state_ready(args) -> None:
+    state = _cluster_operation_state(args)
+    if not state or state.get("stage") in ("complete", "old-service-restored"):
+        return
+    if (getattr(args, "resume", None) == args.operation_id and
+            state.get("action") == "upgrade" and state.get("operationId") == args.operation_id and
+            state.get("stage") in ("preparing-backup", "backup-ready")):
+        path = _operation_state_path(args)
+        try:
+            local = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as exc:
+            raise ConfigError("local upgrade operation state is unavailable; inspect before resuming") from exc
+        if (not isinstance(local, dict) or local.get("action") != "upgrade" or
+                local.get("operationId") != args.operation_id or local.get("stage") != state["stage"]):
+            raise ConfigError("cluster and local upgrade stages differ; inspect before resuming")
+        # A Helm revision created by this operation means its outcome needs
+        # inspection, even when a state write left an older stage behind.
+        if installed_values(args).get("global", {}).get("operationId") == args.operation_id:
+            raise ConfigError("upgrade outcome is uncertain; inspect the Helm release before resuming")
+        if state["stage"] == "backup-ready":
+            backup = args.state_dir / f"{args.release}-{_operation_slug(args.operation_id)}-modeling-backup.json"
+            if not backup.is_file():
+                raise ConfigError("completed backup record is missing; inspect before resuming")
+        return
+    raise ConfigError(f"unfinished Modeling operation at stage {state.get('stage', 'unknown')}; inspect before upgrading")
+
+
 def _check_capacity(args) -> None:
     """Require enough free space in each Modeling data filesystem.
 
@@ -705,8 +834,13 @@ def prepare_auto_backup(args, root: Path, release: dict, merged: dict) -> Path:
     if not args.snapshot_class:
         raise ConfigError("VolumeSnapshotClass name is missing")
     evidence = _count_persisted_data(args)
+    _record_upgrade_stage(args, "preparing-backup", source=installed_release(args),
+                          target={"releaseVersion": release["releaseVersion"],
+                                  "chartVersion": release.get("chartVersion")}, claims=before)
     stopped_at = datetime.now(timezone.utc)
+    _record_upgrade_stage(args, "stopping-writers", claims=before, dataEvidence=evidence)
     _stop_for_backup(args)
+    _record_upgrade_stage(args, "writers-stopped", claims=before, dataEvidence=evidence)
     stopped = bindings(kube, args, merged, stopped=True)
     if stopped != before:
         raise ConfigError("stopping Modeling changed a PVC or its bound PV")
@@ -730,6 +864,7 @@ def prepare_auto_backup(args, root: Path, release: dict, merged: dict) -> Path:
     }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     backup_path.chmod(0o600)
     args.backup_record = backup_path
+    _record_upgrade_stage(args, "backup-ready", backupRecord=str(backup_path))
     return backup_path
 
 
@@ -753,16 +888,19 @@ def apply_upgrade(args, root: Path, release: dict, merged: dict, before: dict) -
                  "--set-string", f"global.operationId={args.operation_id}")
     args.restore_workloads_on_failure = True
     args.helm_update_started = True
+    _record_upgrade_stage(args, "helm-staging", backupRecord=str(args.backup_record))
     run(*helm_args, "--set", "modeling.workloads.core.replicas=0",
         "--set", "modeling.workloads.agent.replicas=0",
         "--set", "modeling.workloads.onto.replicas=0",
         f"--timeout={args.timeout_seconds}s")
     wait_old_pods_gone(args)
     assert_same_bindings(before, bindings(kube, args, merged, stopped=True))
+    _record_upgrade_stage(args, "target-may-start", backupRecord=str(args.backup_record))
     run(*helm_args, "--wait", f"--timeout={args.timeout_seconds}s")
     verify(args, root)
     assert_same_bindings(before, bindings(kube, args, merged, stopped=False))
     verify_persisted_data(run, args, args.backup_record)
+    _record_upgrade_stage(args, "target-verified", backupRecord=str(args.backup_record))
 
 
 def restore_workloads_after_failed_upgrade(args) -> dict:
@@ -809,7 +947,7 @@ def restore_workloads_after_failed_upgrade(args) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("plan", "preflight", "install", "upgrade", "status", "verify"))
+    parser.add_argument("action", choices=("plan", "preflight", "diagnose", "install", "upgrade", "status", "verify"))
     for option in ("context", "namespace", "release", "operation-id", "state-dir", "values", "resolved-images", "resume", "backup-record", "lock-holder", "transition-record"):
         parser.add_argument(f"--{option}")
     parser.add_argument("--transition-id")
@@ -831,7 +969,7 @@ def main():
     args.transition_record = Path(args.transition_record).resolve() if args.transition_record else None
     if args.resume and not args.operation_id:
         parser.error("resume requires operation-id")
-    if args.action != "status" and not args.operation_id:
+    if args.action not in ("status", "diagnose") and not args.operation_id:
         args.operation_id = str(uuid.uuid4())
     if args.action == "upgrade" and args.lock_holder and not args.transition_id:
         parser.error("delegated upgrade requires --transition-id")
@@ -871,6 +1009,8 @@ def main():
         else:
             if not args.state_dir:
                 raise ConfigError("state-dir required")
+            if args.action == "diagnose" and not args.state_dir.is_dir():
+                raise ConfigError("diagnose requires an existing state-dir and does not create one")
             release, merged = load_inputs(args, root)
             result["releaseVersion"] = release["releaseVersion"]
             result["chartVersion"] = release["chartVersion"]
@@ -878,6 +1018,10 @@ def main():
             if args.action == "plan":
                 result["phase"] = "render"
                 result["artifacts"] = [str(render(args, root, release))]
+            elif args.action == "diagnose":
+                result["phase"] = "diagnose"
+                result["diagnosis"] = _diagnose(args, release, merged)
+                result["message"] = "completed"
             else:
                 result["phase"] = "preflight"
                 # A standalone Modeling upgrade owns the same Lease used by
@@ -894,6 +1038,8 @@ def main():
                 current = release_status(args)
                 if args.action == "upgrade" and current is not None:
                     args.previous_helm_revision = current.get("version")
+                if args.action == "upgrade":
+                    _require_upgrade_state_ready(args)
                 if args.action == "preflight" and args.transition_id:
                     upgrade_precheck(args, root, release, merged)
                 if args.action == "install":
@@ -934,6 +1080,8 @@ def main():
                     if getattr(args, "snapshot_group", None):
                         _label_snapshot_group(args, "successful")
                         result["warnings"] = _cleanup_old_successful_snapshots(args)
+                    if getattr(args, "upgrade_stage", None):
+                        _record_upgrade_stage(args, "complete", backupRecord=str(args.backup_record))
                 elif args.action == "verify":
                     if not current:
                         raise ConfigError("release absent")
@@ -958,8 +1106,15 @@ def main():
                 result["recovery"] = restore_workloads_after_failed_upgrade(args)
             except Exception as exc:  # preserve the original upgrade error
                 result["recovery"] = {"status": "failed", "issues": [str(exc)]}
+            try:
+                _record_upgrade_stage(args, "old-service-restored" if result["recovery"]["status"] == "ready"
+                                      else "recovery-degraded")
+            except Exception as exc:  # preserve the original upgrade error
+                result.setdefault("warnings", []).append(f"operation state could not be recorded: {exc}")
         if operation_lease:
             operation_lease.release()
+        if getattr(args, "stage_warnings", None):
+            result.setdefault("warnings", []).extend(args.stage_warnings)
     emit_stdout(json.dumps(result, ensure_ascii=False))
     return 0 if result["status"] == "succeeded" else 1
 

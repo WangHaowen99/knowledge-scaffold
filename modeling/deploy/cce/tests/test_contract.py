@@ -32,7 +32,7 @@ def load_module(module_name, path):
 
 
 sys.modules["common"] = load_module("common", ROOT / "common.py")
-from common import (ConfigError, checksum, read_yaml, release_chart_from_list, safe_extract, validate_release,
+from common import (CompatibilityError, ConfigError, checksum, read_yaml, release_chart_from_list, safe_extract, validate_release,
                     validate_compatibility_manifest, verify_checksums)  # noqa: E402
 
 
@@ -260,6 +260,157 @@ class CceContractTests(unittest.TestCase):
                       if item["id"] == transition["intermediateCombinationId"])
         self.assertEqual((middle["consumerReleaseVersion"], middle["modelingReleaseVersion"]),
                          ("c2", "m1"))
+
+    def test_missing_manifest_rebuilds_old_combination_from_installed_contract(self):
+        path, installed, _ = self.upgrade_fixture()
+        path.unlink()
+        consumer_root = self.base / "consumer-cce-demo"
+        modeling_root = self.base / "modeling-cce-demo"
+        (consumer_root / "deploy").mkdir(parents=True)
+        modeling_root.mkdir()
+        (consumer_root / "deploy/endpoints.yaml").write_text(yaml.safe_dump({
+            "schemaVersion": "cce-endpoints/v1", "endpoints": [
+                {"id": "auth", "port": 5056, "apiVersion": "v2"},
+                {"id": "consumer-api", "port": 5055, "apiVersion": "v2"}],
+        }))
+        consumer_values = self.base / "consumer-values.yaml"
+        modeling_values = self.base / "modeling-values.yaml"
+        consumer_values.write_text("global: {}\n")
+        modeling_values.write_text("global: {}\n")
+        config = {"compatibilityFile": path, "stateDir": self.base / "state",
+                  "cluster": {"context": "synthetic"},
+                  "consumer": {"package": self.base / "consumer.tar.gz", "releaseName": "consumer",
+                               "namespace": "consumer-demo", "values": consumer_values},
+                  "modeling": {"package": self.base / "modeling.tar.gz", "releaseName": "modeling",
+                               "namespace": "modeling-demo", "values": modeling_values}}
+        releases = {"consumer": {"releaseVersion": "c2", "chartVersion": "2.0.0",
+                                 "platform": "linux-amd64", "images": {"jiuwenbox": {}}},
+                    "modeling": {"releaseVersion": "m2", "chartVersion": "2.0.0",
+                                 "platform": "linux-amd64"}}
+        consumer_state = {"releaseName": "consumer", "namespace": "consumer-demo",
+                          "releaseVersion": "c1", "chartVersion": "1.0.0", "platform": "linux-amd64",
+                          "phase": "ready", "endpoints": [
+                              {"id": "auth", "serviceName": "consumer-auth", "namespace": "consumer-demo",
+                               "port": 5056, "apiVersion": "v1"},
+                              {"id": "consumer-api", "serviceName": "consumer-backend", "namespace": "consumer-demo",
+                               "port": 5055, "apiVersion": "v1"}]}
+
+        def extracted(_archive, _destination, side):
+            return consumer_root if side == "consumer" else modeling_root
+
+        def cluster_resource(_config, *command):
+            if "configmap" in command:
+                return json.dumps({"data": {"state.json": json.dumps(consumer_state)}})
+            return json.dumps({"spec": {"ports": [{"port": 5056 if "consumer-auth" in command else 5055}]}})
+
+        with mock.patch.object(JOINT, "safe_extract", side_effect=extracted), \
+             mock.patch.object(JOINT, "validate_release", side_effect=lambda _root, side: releases[side]), \
+             mock.patch.object(JOINT, "validate_cross_side"), \
+             mock.patch.object(JOINT, "installed_identity_without_manifest", side_effect=lambda _config, side: installed[side]), \
+             mock.patch.object(JOINT, "kubectl", side_effect=cluster_resource):
+            preview = JOINT.prepare_compatibility(config, upgrade=True, confirmed=False,
+                                                  no_migration_confirmed=False)
+            self.assertFalse(path.exists())
+            self.assertTrue(preview["reconstructedOldCombination"])
+            self.assertEqual(preview["oldCombination"]["consumerReleaseVersion"], "c1")
+            self.assertEqual(preview["oldCombination"]["authApiVersion"], "v1")
+            self.assertEqual(preview["targetCombination"]["authApiVersion"], "v2")
+            with self.assertRaisesRegex(ConfigError, "no migration"):
+                JOINT.prepare_compatibility(config, upgrade=True, confirmed=True,
+                                            no_migration_confirmed=False)
+            self.assertFalse(path.exists())
+            written = JOINT.prepare_compatibility(config, upgrade=True, confirmed=True,
+                                                   no_migration_confirmed=True)
+        document = validate_compatibility_manifest(yaml.safe_load(path.read_text()))
+        self.assertEqual(written["transitionId"], preview["transitionId"])
+        self.assertEqual(len(document["combinations"]), 3)
+        self.assertEqual(document["transitions"][0]["from"], preview["oldCombination"]["id"])
+        self.assertEqual(document["transitions"][0]["to"], preview["targetCombinationId"])
+
+    def test_missing_manifest_same_version_still_checks_installed_contract(self):
+        path, installed, _ = self.upgrade_fixture()
+        path.unlink()
+        config = {"compatibilityFile": path, "stateDir": self.base / "state",
+                  "consumer": {"package": self.base / "consumer.tar.gz", "values": self.base / "consumer.yaml"},
+                  "modeling": {"package": self.base / "modeling.tar.gz", "values": self.base / "modeling.yaml"}}
+        config["consumer"]["values"].write_text("global: {}\n")
+        config["modeling"]["values"].write_text("global: {}\n")
+        fields = {"consumerReleaseVersion": "c1", "consumerChartVersion": "1.0.0",
+                  "modelingReleaseVersion": "m1", "modelingChartVersion": "1.0.0",
+                  "platform": "linux-amd64", "operationSchemaVersion": "cce-operation/v1",
+                  "endpointSchemaVersion": "cce-endpoints/v1", "authApiVersion": "v1",
+                  "consumerApiVersion": "v1"}
+        with mock.patch.object(JOINT, "safe_extract", return_value=self.base), \
+             mock.patch.object(JOINT, "validate_release", return_value={}), \
+             mock.patch.object(JOINT, "candidate_combination", return_value=fields), \
+             mock.patch.object(JOINT, "validate_cross_side"), \
+             mock.patch.object(JOINT, "installed_identity_without_manifest",
+                               side_effect=lambda _config, side: installed[side]), \
+             mock.patch.object(JOINT, "installed_consumer_contract", side_effect=CompatibilityError(
+                 "old contract unavailable")) as contract:
+            with self.assertRaisesRegex(CompatibilityError, "old contract unavailable"):
+                JOINT.prepare_compatibility(config, upgrade=True, confirmed=False,
+                                            no_migration_confirmed=False)
+            contract.assert_called_once()
+            self.assertFalse(path.exists())
+
+    def test_rebuilding_old_contract_rejects_state_mismatch(self):
+        config = {"cluster": {"context": "synthetic"}, "consumer": {"namespace": "consumer-demo",
+                  "releaseName": "consumer"}}
+        installed = {"consumer": {"releaseVersion": "c1", "chartVersion": "1.0.0"},
+                     "modeling": {"releaseVersion": "m1", "chartVersion": "1.0.0"}}
+        target = {"platform": "linux-amd64"}
+        state = {"releaseName": "consumer", "namespace": "consumer-demo", "releaseVersion": "wrong",
+                 "chartVersion": "1.0.0", "platform": "linux-amd64", "phase": "ready", "endpoints": []}
+        with mock.patch.object(JOINT, "kubectl", return_value=json.dumps({"data": {"state.json": json.dumps(state)}})):
+            with self.assertRaisesRegex(ConfigError, "differs from Helm"):
+                JOINT.installed_consumer_contract(config, installed, target)
+
+    def test_target_only_manifest_uses_cluster_old_contract(self):
+        config = {"compatibilityFile": self.base / "compatibility.yaml"}
+        installed = {"consumer": {"releaseVersion": "c1", "chartVersion": "1.0.0"},
+                     "modeling": {"releaseVersion": "m1", "chartVersion": "1.0.0"}}
+        with mock.patch.object(JOINT, "installed_identity", side_effect=CompatibilityError(
+                "installed consumer Chart version is absent in compatibility manifest")), \
+             mock.patch.object(JOINT, "installed_identity_without_manifest",
+                               side_effect=lambda _config, side: installed[side]):
+            self.assertEqual(JOINT._installed_for_compatibility(config, True), installed)
+        with mock.patch.object(JOINT, "installed_identity", side_effect=CompatibilityError(
+                "installed modeling Chart version is absent in compatibility manifest")), \
+             mock.patch.object(JOINT, "installed_identity_without_manifest",
+                               side_effect=lambda _config, side: installed[side]):
+            self.assertEqual(JOINT._installed_for_compatibility(config, True), installed)
+        with mock.patch.object(JOINT, "installed_identity", side_effect=CompatibilityError(
+                "installed modeling Chart version is ambiguous in compatibility manifest")), \
+             mock.patch.object(JOINT, "installed_identity_without_manifest") as fallback:
+            with self.assertRaisesRegex(CompatibilityError, "ambiguous"):
+                JOINT._installed_for_compatibility(config, True)
+            fallback.assert_not_called()
+        with mock.patch.object(JOINT, "installed_identity", side_effect=CompatibilityError(
+                "another compatibility failure")), \
+             mock.patch.object(JOINT, "installed_identity_without_manifest") as fallback:
+            with self.assertRaisesRegex(CompatibilityError, "another compatibility failure"):
+                JOINT._installed_for_compatibility(config, True)
+            fallback.assert_not_called()
+
+    def test_old_contract_rejects_actual_service_port_mismatch(self):
+        config = {"cluster": {"context": "synthetic"}, "consumer": {"namespace": "consumer-demo",
+                  "releaseName": "consumer"}}
+        installed = {"consumer": {"releaseVersion": "c1", "chartVersion": "1.0.0"},
+                     "modeling": {"releaseVersion": "m1", "chartVersion": "1.0.0"}}
+        state = {"releaseName": "consumer", "namespace": "consumer-demo", "releaseVersion": "c1",
+                 "chartVersion": "1.0.0", "platform": "linux-amd64", "phase": "ready", "endpoints": [
+                     {"id": "auth", "serviceName": "consumer-auth", "namespace": "consumer-demo",
+                      "port": 5056, "apiVersion": "v1"},
+                     {"id": "consumer-api", "serviceName": "consumer-backend", "namespace": "consumer-demo",
+                      "port": 5055, "apiVersion": "v1"}]}
+        def resource(_config, *command):
+            if "configmap" in command:
+                return json.dumps({"data": {"state.json": json.dumps(state)}})
+            return json.dumps({"spec": {"ports": [{"port": 9999}]}})
+        with mock.patch.object(JOINT, "kubectl", side_effect=resource):
+            with self.assertRaisesRegex(CompatibilityError, "Service port differs"):
+                JOINT.installed_consumer_contract(config, installed, {"platform": "linux-amd64"})
 
     def test_installed_consumer_identity_uses_helm_metadata_without_values(self):
         path, installed, _ = self.upgrade_fixture()
@@ -904,6 +1055,7 @@ class CceContractTests(unittest.TestCase):
              mock.patch.object(INSTALL, "_optional_json", return_value={"items": [{"metadata": {"name": "synthetic-class"}}]}), \
              mock.patch.object(INSTALL, "_count_persisted_data", return_value={"core": 3, "agent": 2, "onto": 1}), \
              mock.patch.object(INSTALL, "_stop_for_backup"), \
+             mock.patch.object(INSTALL, "_run_with_input", return_value=""), \
              mock.patch.object(INSTALL, "_ensure_volume_snapshot",
                                side_effect=lambda _args, name, _claim, *_rest: {
                                    "snapshotName": f"snapshot-{name}", "snapshotUid": f"snapshot-uid-{name}"}), \
@@ -913,6 +1065,23 @@ class CceContractTests(unittest.TestCase):
         self.assertEqual(record["dataEvidence"], {"core": 3, "agent": 2, "onto": 1})
         self.assertEqual(set(record["claims"]), set(UPGRADE.WORKLOADS))
         self.assertEqual(args.backup_record, record_path)
+
+    def test_snapshot_class_precheck_failure_does_not_record_or_stop_upgrade(self):
+        args = SimpleNamespace(context="synthetic", namespace="modeling-demo", release="modeling",
+                               operation_id="upgrade-demo", state_dir=self.base,
+                               min_free_percent=15, backup_record=None)
+        merged = {"global": {"targetArch": "amd64", "auth": {"issuer": "synthetic"}}}
+        with mock.patch.object(INSTALL, "installed_release", return_value={"releaseVersion": "m1"}), \
+             mock.patch.object(INSTALL, "installed_values", return_value=merged), \
+             mock.patch.object(INSTALL, "bindings", return_value={}), \
+             mock.patch.object(INSTALL, "_check_capacity"), \
+             mock.patch.object(INSTALL, "_optional_json", return_value={"items": []}), \
+             mock.patch.object(INSTALL, "_record_upgrade_stage") as record_stage, \
+             mock.patch.object(INSTALL, "_stop_for_backup") as stop_writers:
+            with self.assertRaisesRegex(ConfigError, "no unambiguous VolumeSnapshotClass"):
+                INSTALL.prepare_auto_backup(args, self.base, {"releaseVersion": "m2"}, merged)
+        record_stage.assert_not_called()
+        stop_writers.assert_not_called()
 
     def test_snapshot_waits_for_detach_and_retries_transient_evs_error(self):
         args = SimpleNamespace(
@@ -1006,12 +1175,14 @@ class CceContractTests(unittest.TestCase):
                  mock.patch.object(INSTALL, "endpoint_results", return_value=[]), \
                  mock.patch.object(INSTALL, "preflight"), \
                  mock.patch.object(INSTALL, "check_delegated_lease"), \
+                 mock.patch.object(INSTALL, "_require_upgrade_state_ready"), \
                  mock.patch.object(INSTALL, "release_status", return_value={"version": 6, "info": {"status": "deployed"}}), \
                  mock.patch.object(INSTALL.OperationLease, "acquire"), \
                  mock.patch.object(INSTALL.OperationLease, "release"), \
                  mock.patch.object(INSTALL, "wait_old_pods_gone"), \
                  mock.patch.object(INSTALL, "prepare_auto_backup", side_effect=fail_after_stop), \
                  mock.patch.object(INSTALL, "run", side_effect=fake_run), \
+                 mock.patch.object(INSTALL, "_run_with_input", return_value=""), \
                  mock.patch.object(INSTALL, "kube", side_effect=fake_kube), \
                  redirect_stdout(StringIO()) as output:
                 self.assertEqual(INSTALL.main(), 1)
@@ -1068,6 +1239,57 @@ class CceContractTests(unittest.TestCase):
         self.assertFalse(any("scale" in command for command in commands))
         kube.assert_not_called()
 
+    def test_unfinished_upgrade_state_blocks_new_upgrade(self):
+        args = SimpleNamespace(operation_id="new-operation")
+        with mock.patch.object(INSTALL, "_cluster_operation_state", return_value={
+                "action": "upgrade", "stage": "manual-review", "operationId": "old-operation"}):
+            with self.assertRaisesRegex(ConfigError, "unfinished Modeling operation"):
+                INSTALL._require_upgrade_state_ready(args)
+        with mock.patch.object(INSTALL, "_cluster_operation_state", return_value={
+                "action": "upgrade", "stage": "old-service-restored"}):
+            INSTALL._require_upgrade_state_ready(args)
+
+    def test_upgrade_stage_write_failure_warns_without_interrupting_operation(self):
+        args = SimpleNamespace(context="synthetic", namespace="modeling-demo", release="modeling",
+                               operation_id="upgrade-demo", state_dir=self.base)
+        with mock.patch.object(INSTALL, "_write_cluster_state", side_effect=RuntimeError("synthetic write failure")), \
+             mock.patch.object(INSTALL, "_write_private_json", side_effect=OSError("synthetic disk failure")):
+            INSTALL._record_upgrade_stage(args, "target-verified")
+        self.assertEqual(args.upgrade_stage, "target-verified")
+        self.assertEqual(len(args.stage_warnings), 2)
+
+    def test_resume_allows_only_same_operation_before_helm_change(self):
+        args = SimpleNamespace(operation_id="upgrade-demo", resume="upgrade-demo",
+                               release="modeling", state_dir=self.base)
+        state = {"action": "upgrade", "stage": "preparing-backup", "operationId": "upgrade-demo"}
+        operation_state = INSTALL._operation_state_path(args)
+        operation_state.write_text(json.dumps(state))
+        with mock.patch.object(INSTALL, "_cluster_operation_state", return_value=state), \
+             mock.patch.object(INSTALL, "installed_values", return_value={"global": {"operationId": "old"}}):
+            INSTALL._require_upgrade_state_ready(args)
+            state["stage"] = "backup-ready"
+            with self.assertRaisesRegex(ConfigError, "stages differ"):
+                INSTALL._require_upgrade_state_ready(args)
+            operation_state.write_text(json.dumps(state))
+            with self.assertRaisesRegex(ConfigError, "backup record is missing"):
+                INSTALL._require_upgrade_state_ready(args)
+            backup = self.base / f"modeling-{INSTALL._operation_slug(args.operation_id)}-modeling-backup.json"
+            backup.write_text('{"schemaVersion":"cce-backup/v1"}')
+            INSTALL._require_upgrade_state_ready(args)
+            state["operationId"] = "another-operation"
+            with self.assertRaisesRegex(ConfigError, "unfinished Modeling operation"):
+                INSTALL._require_upgrade_state_ready(args)
+            state["operationId"] = args.operation_id
+            state["stage"] = "helm-staging"
+            with self.assertRaisesRegex(ConfigError, "unfinished Modeling operation"):
+                INSTALL._require_upgrade_state_ready(args)
+        state["stage"] = "preparing-backup"
+        operation_state.write_text(json.dumps(state))
+        with mock.patch.object(INSTALL, "_cluster_operation_state", return_value=state), \
+             mock.patch.object(INSTALL, "installed_values", return_value={"global": {"operationId": args.operation_id}}):
+            with self.assertRaisesRegex(ConfigError, "outcome is uncertain"):
+                INSTALL._require_upgrade_state_ready(args)
+
     def test_delegated_upgrade_creates_backup_before_helm_and_marks_snapshots_after_success(self):
         root = self.package()
         backup_path = self.base / "modeling-backup.json"
@@ -1099,6 +1321,7 @@ class CceContractTests(unittest.TestCase):
                  mock.patch.object(INSTALL, "endpoint_results", return_value=[]), \
                  mock.patch.object(INSTALL, "preflight"), \
                  mock.patch.object(INSTALL, "check_delegated_lease"), \
+                 mock.patch.object(INSTALL, "_require_upgrade_state_ready"), \
                  mock.patch.object(INSTALL, "release_status", return_value={"info": {"status": "deployed"}}), \
                  mock.patch.object(INSTALL, "prepare_auto_backup", side_effect=prepare) as backup, \
                  mock.patch.object(INSTALL, "upgrade_precheck", return_value={}) as precheck, \
