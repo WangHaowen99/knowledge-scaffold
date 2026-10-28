@@ -562,6 +562,31 @@ def test_open_stream_receives_first_message_events_immediately(pool_env, tmp_pat
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("limits", [(200000, 167000), (None, None)])
+def test_session_started_carries_context_limits_known_at_connect(
+    pool_env, tmp_path, monkeypatch, limits
+):
+    """连接时已知窗口与触发点就随 session_started 下发：切换引擎后的第一轮进行中，用量圈即按新值显示。"""
+    manager, _, _ = pool_env
+    monkeypatch.setattr(ClaudeEngine, "context_limits", lambda self: limits)
+
+    async def scenario():
+        queue: asyncio.Queue = asyncio.Queue()
+        manager.watch("p1", queue)
+        await manager.send("p1", tmp_path / "w1", "第一条")
+        await _settle(manager, "p1")
+        started = next(e for e in _drain(queue) if e["type"] == "session_started")
+        manager.unwatch("p1", queue)
+        await manager.shutdown()
+        return started
+
+    started = asyncio.run(scenario())
+    if limits[0]:
+        assert (started["window"], started["compact_at"]) == limits
+    else:
+        assert "window" not in started and "compact_at" not in started
+
+
 def test_open_stream_follows_session_recreated_after_reap(pool_env, tmp_path):
     """空闲回收后再发消息会新建会话：已打开的事件流自动挂上，过程照常即时推送。"""
     manager, created, _ = pool_env

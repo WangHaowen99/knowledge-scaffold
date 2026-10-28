@@ -1,6 +1,7 @@
 // 上下文配置页辅助：表单提交体、留空生效值，以及模型上下文推荐表的预填逻辑。
 // 推荐表只预填配置页表单（命中填入、未命中清空），用户可改；运行时仍是 配置页 > .env > 内置默认。
 // 压缩窗口与触发百分比不在配置页，由服务端按生效的窗口与最大输出推算。
+// 稳定引擎与内测引擎各存一组窗口与最大输出，推荐表两边共用。
 
 // 配置页可填的项，也是推荐表给出的项
 export const CONTEXT_FIELD_NAMES = ['max_context_tokens', 'max_output_tokens'];
@@ -62,10 +63,9 @@ function derivedCompaction(real, output) {
   return none;
 }
 
-// 按输入框里的窗口与最大输出实时估算自动压缩触发点；留空的项按 defaults（.env 或内置默认）。
-// 两项都留空时返回 null 不显示。返回 { error } 表示这组值保存不了或压缩点算不出来；
-// 否则 { compactAt, percent（占上下文窗口）, margin（压缩前请求的余量，最大输出未知时为 null）}
-export function estimateCompaction(values, defaults) {
+// 按输入框里的值取生效的窗口与最大输出；留空的项按 defaults（.env 或内置默认）。
+// 两项都留空或窗口未知时返回 null；最大输出不小于窗口时返回 { error }（这组值保存不了）
+function pickContext(values, defaults) {
   const filled = contextPayload(values);
   if (CONTEXT_FIELD_NAMES.every((name) => filled[name] === null)) return null;
   const pick = (name) => filled[name] ?? defaults?.[name] ?? null;
@@ -80,6 +80,16 @@ export function estimateCompaction(values, defaults) {
           : '最大输出必须小于上下文窗口',
     };
   }
+  return { real, output, pick };
+}
+
+// 按输入框里的窗口与最大输出实时估算稳定引擎的自动压缩触发点。
+// 两项都留空时返回 null 不显示。返回 { error } 表示这组值保存不了或压缩点算不出来；
+// 否则 { compactAt, percent（占上下文窗口）, margin（压缩前请求的余量，最大输出未知时为 null）}
+export function estimateCompaction(values, defaults) {
+  const picked = pickContext(values, defaults);
+  if (!picked || picked.error) return picked;
+  const { real, output, pick } = picked;
   let compact = { auto_compact_window: pick('auto_compact_window'), autocompact_pct: pick('autocompact_pct') };
   if (!compact.auto_compact_window && !compact.autocompact_pct) compact = derivedCompaction(real, output);
   const reserve = Math.min(output || OUTPUT_RESERVE_CAP, OUTPUT_RESERVE_CAP);
@@ -93,6 +103,31 @@ export function estimateCompaction(values, defaults) {
     compactAt,
     percent: Math.round((compactAt / real) * 100),
     margin: output ? real - compactAt - output : null,
+  };
+}
+
+// 内测引擎的压缩器在上下文达到「窗口 × 触发比例」时压缩，须与后端 model_settings.jiuwen_trigger_ratio 一致：
+// 比例 = (窗口 × 90% − 最大输出) / 窗口，限定在 0.3–0.8，向下取到 0.01
+const JIUWEN_TRIGGER_RATIO_MIN = 0.3;
+const JIUWEN_TRIGGER_RATIO_MAX = 0.8;
+
+export function jiuwenTriggerRatio(real, output) {
+  const ratio = (real * (1 - COMPACT_MARGIN_RATIO) - output) / real;
+  const clamped = Math.min(Math.max(ratio, JIUWEN_TRIGGER_RATIO_MIN), JIUWEN_TRIGGER_RATIO_MAX);
+  return Math.floor(clamped * 100) / 100;
+}
+
+// 内测引擎的自动压缩估算，返回格式同 estimateCompaction；最大输出总有生效值（留空按 .env 或内置默认）
+export function estimateJiuwenCompaction(values, defaults) {
+  const picked = pickContext(values, defaults);
+  if (!picked || picked.error) return picked;
+  const { real, output } = picked;
+  if (!output) return null;
+  const compactAt = Math.floor(real * jiuwenTriggerRatio(real, output));
+  return {
+    compactAt,
+    percent: Math.round((compactAt / real) * 100),
+    margin: real - compactAt - output,
   };
 }
 

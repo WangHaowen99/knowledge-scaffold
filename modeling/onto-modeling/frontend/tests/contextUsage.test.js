@@ -47,6 +47,21 @@ test('未续接的新会话清空用量，续接保留', () => {
   assert.equal(replay([usage(40000), { type: 'session_started', resumed: true }]).used, 40000);
 });
 
+test('连接时下发的窗口与触发点替换上一轮的值', () => {
+  // 切换引擎后续接：本轮进行中就按新引擎的窗口显示，不沿用旧引擎的
+  const started = { type: 'session_started', window: 128000, compact_at: 102400 };
+  assert.deepEqual(replay([usage(40000), { ...started, resumed: true }]), {
+    used: 40000,
+    window: 128000,
+    compactAt: 102400,
+  });
+  assert.deepEqual(replay([usage(40000), { ...started, resumed: false }]), {
+    used: null,
+    window: 128000,
+    compactAt: 102400,
+  });
+});
+
 test('提示给出已用、窗口、剩余与距压缩点的余量', () => {
   const info = describeContext({ used: 100000, window: 200000, compactAt: 167000 });
 
@@ -68,6 +83,14 @@ test('没有压缩点时按窗口占比告警，窗口未知不显示', () => {
   assert.doesNotMatch(info.text, /压缩/);
   assert.equal(describeContext({ used: 170000, window: null, compactAt: null }), null);
   assert.equal(describeContext(EMPTY_CONTEXT), null);
+});
+
+test('新会话尚未调用模型时给空环提示，已有用量时照常显示', () => {
+  const fresh = describeContext(EMPTY_CONTEXT, { fresh: true });
+  assert.equal(fresh.pct, 0);
+  assert.match(fresh.text, /新会话，尚未调用模型/);
+  const info = describeContext({ used: 100000, window: 200000, compactAt: 167000 }, { fresh: true });
+  assert.equal(info.pct, 50);
 });
 
 test('压缩提示区分自动与手动', () => {
