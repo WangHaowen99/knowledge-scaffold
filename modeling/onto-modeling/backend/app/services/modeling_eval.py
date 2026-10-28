@@ -658,7 +658,7 @@ def sweep_interrupted(data_dir: Path | None = None) -> list[str]:
 def _unexecuted_as_errors(
     results: list[dict], cases: list[dict] | None, failure: str
 ) -> list[dict]:
-    """轮次异常终止时，没跑到的用例补记为异常。
+    """未取得可核验结果的用例补记为异常（不推断是否已执行）。
 
     报告与得分覆盖整个用例集，/ontology-evolution 按 E 类（运行异常）给出指引，
     而不是只看跑完的那几条。
@@ -668,14 +668,21 @@ def _unexecuted_as_errors(
     for case in cases or []:
         question = str(case.get("question", "")).strip()
         # 续接场景的 cases 取自状态里截断过的问题，前缀匹配同时覆盖完全相等
-        if not question or any(q.startswith(question) for q in executed):
+        if not question:
+            continue
+        exact = [i for i, q in enumerate(executed) if q == question]
+        # Only old, explicitly truncated progress entries may use a unique prefix.
+        candidates = exact or ([i for i, q in enumerate(executed) if q.startswith(question)]
+                               if case.get('question_truncated') else [])
+        if len(candidates) == 1:
+            executed.pop(candidates[0])
             continue
         missing.append({
             "question": question,
             "groundTruth": case.get("groundTruth", ""),
             "finalAnswer": "",
             "verdict": "error",
-            "reason": f"轮次异常终止，本用例未执行：{failure}",
+            "reason": f"本用例未取得可核验结果：{failure}",
         })
     return list(results) + missing
 
@@ -833,13 +840,29 @@ def _write_report(
     traces = modeling 轮次详情里按结果 ID 索引的执行轨迹：失分用例附「工具失败」摘要。
     """
     executed = len(results)
-    if failure:
-        results = _unexecuted_as_errors(results, cases, failure)
+    # A transport-level done is not proof that every question produced a usable answer.
+    results = _unexecuted_as_errors(results, cases, failure or '服务未返回用例结果')
+    normalized = []
+    for original in results:
+        item = dict(original)
+        verdict = item.get('verdict')
+        if verdict not in {'pass', 'partial', 'fail', 'error'} or (
+            verdict != 'error' and not str(item.get('finalAnswer') or '').strip()
+        ):
+            item.update(verdict='error', reason=(
+                f"无有效回答或有效判分（原判定：{verdict}）；" + str(item.get('reason') or '')
+            ))
+        normalized.append(item)
+    results = normalized
     counts = {"pass": 0, "partial": 0, "fail": 0, "error": 0}
     for item in results:
         counts[item.get("verdict", "error")] = counts.get(item.get("verdict", "error"), 0) + 1
-    total = len(results) or 1
-    score = round((counts["pass"] + counts["partial"] * 0.5) * 100 / total)
+    valid = counts['pass'] + counts['partial'] + counts['fail']
+    score = round((counts['pass'] + counts['partial'] * 0.5) * 100 / valid) if valid else None
+    technical_failure = bool(failure or counts['error'] or not results)
+    result_status = 'unavailable' if not valid else ('partial' if technical_failure else 'complete')
+    outcome = {'unavailable': '未形成有效评测', 'partial': '部分有效，存在技术异常',
+               'complete': '评测完成'}[result_status]
     stamp = time.strftime("%Y%m%d-%H%M%S")
     rel = f"reports/eval-{stamp}.md"
     answers_rel = f"reports/eval-{stamp}.answers.json"
@@ -865,7 +888,10 @@ def _write_report(
         "",
         f"- 用例：{len(results)}",
         f"- 通过 {counts['pass']} / 部分 {counts['partial']} / 失败 {counts['fail']} / 异常 {counts['error']}",
-        f"- 综合得分：**{score}**（pass=1、partial=0.5 加权）",
+        f"- 结果状态：{outcome}",
+        f"- 有效判分：{valid}/{len(results)}；技术异常不计为业务答错，不进入得分分母。",
+        (f"- {'有效用例得分' if technical_failure else '综合得分'}：**{score}**（仅 {valid} 条有效用例，pass=1、partial=0.5 加权）"
+         if score is not None else '- 得分：未形成有效评测（不是 0 分）'),
         "",
         "## 逐用例明细",
         "",
@@ -935,16 +961,17 @@ def _write_report(
         json.dumps({"roundId": round_info.get("id", ""), "answers": answer_records}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    terminal = {"status": "failed", "message": (
-        f"{failure}（已执行 {executed}/{len(results)} 条，报告已生成）"[:300]
-    )} if failure else {"status": "done"}
+    terminal = {'status': 'failed' if technical_failure else 'done', 'message': (
+        f"{failure or outcome}（有效 {valid}/{len(results)} 条，异常 {counts['error']} 条；报告已生成）"[:300]
+    )}
     _write_state(
         root,
         **terminal,
         report=rel,
         # 报告出自哪一轮：新一轮发起时清空，用来判断报告是否属于最近一轮
         report_round=round_info.get("id") or state.get("round_id") or rel,
-        summary={"total": len(results), **counts, "score": score},
+        summary={"total": len(results), **counts, "score": score, "valid": valid,
+                 "result_status": result_status},
         cases=_case_progress(
             [{"question": i.get("question", "")} for i in results], results, False
         ),
@@ -955,8 +982,8 @@ def _write_report(
 def evolution_hint(state: dict) -> dict | None:
     """最近一轮评测是否该进入 /ontology-evolution（聊天区建议与左栏按钮共用）。
 
-    得分低于阈值、或出现异常（error）用例即提示——异常用例会拉低得分，但少量异常
-    可能仍在阈值之上；轮次异常终止但有部分结果时同样提示（报告已落盘）。
+    得分低于阈值、或出现异常（error）用例即提示。异常不参与业务得分；
+    轮次异常终止但有部分结果时同样提示（报告已落盘）。
     """
     report = state.get("report")
     summary = state.get("summary") or {}
@@ -1115,7 +1142,10 @@ def _poll_round(
             root, round_info, details.get("results") or [], cases, details.get("traces")
         )
         return
-    rel = _write_report(root, round_info, details.get("results") or [], traces=details.get("traces"))
+    rel = _write_report(
+        root, round_info, details.get("results") or [], cases,
+        traces=details.get("traces"),
+    )
     _git_commit(root, f"eval: 数据评测报告 {rel.split('/')[-1]}")
 
 
@@ -1152,6 +1182,10 @@ def _try_resume(
     collect_failed：显式「续接上一轮」时，已失败但有部分结果的轮次也收取成报告；
     重新运行评测时不收（用户要的是新一轮）。"""
     prior = read_state(root)
+    if prior.get('report_round') and not _resumable(prior):
+        # A collected round with technical errors must not trap reruns in the
+        # same upstream done round forever. A rerun creates a new evaluation.
+        return False
     if object_fingerprint is not None and prior.get("object_fingerprint") != object_fingerprint:
         return False
     mp_project, round_id = prior.get("modeling_project"), prior.get("round_id")
@@ -1181,7 +1215,7 @@ def _try_resume(
         _write_state(root, status="running", phase="evaluate",
                      message="续接上一轮（收取已完成结果）")
         rel = _write_report(
-            root, details.get("round") or {}, details.get("results") or [],
+            root, details.get("round") or {}, details.get("results") or [], cases,
             traces=details.get("traces"),
         )
         _git_commit(root, f"eval: 数据评测报告 {rel.split('/')[-1]}")
@@ -1313,7 +1347,8 @@ def _resume_sync(project_id: str, root: Path, token: str) -> None:
     prior = read_state(root)
     # 状态里的问题是截断过的，只用于进度展示；报告内容取 modeling 侧结果
     cases = [
-        {"question": str(c.get("question", "")), "groundTruth": ""}
+        {"question": str(c.get("question", "")), "groundTruth": "",
+         "question_truncated": len(str(c.get('question', ''))) == 120}
         for c in prior.get("cases") or []
     ]
     try:

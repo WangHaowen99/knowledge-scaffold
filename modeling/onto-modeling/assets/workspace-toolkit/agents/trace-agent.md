@@ -13,7 +13,8 @@ You will receive **either** single-operation inputs **or** batch inputs（互斥
 
 ### Single-operation inputs（默认模式）
 - OPERATION_PATH: the operation document to trace
-- SCENARIOS: a JSON array of scenarios, each with a name and input values
+- TESTCASE_PATH: 已保存的确认稿路径
+- INPUTS_PATH: 由 trace_inputs.py 从确认稿生成的完整 JSON 路径
 - OBJECTS_DIR: path to object documents
 - OPERATION_DIR: path to operation documents
 - MOCK_DATA_DIR: path to mock data files (may be empty — see below)
@@ -72,6 +73,15 @@ When any of the following occurs, immediately stop tracing this scenario, record
 
 ## Instructions
 
+执行前必须运行 `python3 .claude/scripts/trace_inputs.py "{TESTCASE_PATH}" --actual "{INPUTS_PATH}"`。
+退出非 0 即停止，不得把丢失字段解释为「未提供」继续推演；不得自写正则、重新手抄输入或借预期路径补值。
+读取 INPUTS_PATH 的 `scenarios` 作为 SCENARIOS，初始状态逐字逐类型取 `inputs`，将原文件摘要、场景 ID、实际初始输入保留在报告中。
+每项结果必须回传 `scenario_id`、`source_sha256`、`initial_inputs`；主调需与交接文件对账后才能计通过。
+写报告前再次校验同一文件，源修订变化即本轮失效。旧工作区缺脚本时不得声称输入保真通过，应先升级工具箱。
+Report file / batch 模式同样把包含初始输入回执的原始结果保存到每个 job 独立的 `tmp/trace-results-{job序号}.json`，
+执行 `trace_inputs.py "{TESTCASE_PATH}" --actual "{INPUTS_PATH}" --results "{RESULTS_PATH}"`；非零退出将 job 标为 failed，不能输出成功统计。
+summary 附上 inputs_path、results_path、source_sha256 供主调复核，不用回传所有详细步骤。
+
 For each scenario:
 
 1. Read the operation document at OPERATION_PATH. Extract the `# 逻辑描述` section.
@@ -112,6 +122,9 @@ Return ONLY a raw JSON array — no markdown, no explanation, no code fences:
 [
   {
     "scenario": "优惠券已过期",
+    "scenario_id": "1",
+    "source_sha256": "{INPUTS_PATH 中的 source_sha256}",
+    "initial_inputs": {"券状态": "已过期"},
     "trace": [
       {"step": 1, "description": "验证用户登录状态", "state_after": "用户=已登录", "mock_data_used": null, "result": "pass"},
       {"step": 2, "description": "判断库存是否充足？", "branch": "是", "mock_data_used": "物料库存-正常数据-第3行", "result": "pass"},
@@ -138,10 +151,7 @@ If a scenario completes with no issues, set `"issues": []` and `"reached_end": t
    ```markdown
    # 追踪报告（{OPERATION_NAME} · {timestamp} Asia/Shanghai）
 
-   ## 测试设计覆盖率
-   - 判断分支总数：{TOTAL_BRANCHES}
-   - 已覆盖分支数：{COVERED_BRANCHES}
-   - 设计覆盖率：{pct}%
+   ## 场景缺项检查
    - 未覆盖分支：{若有则列出，否则填"无"}
 
    ## 推演通过率
@@ -214,10 +224,10 @@ If a scenario completes with no issues, set `"issues": []` and `"reached_end": t
    }
    ```
 2. **解析场景来源**（优先级从高到低）：
-   - 若 `scenarios` 字段非空 → 直接用。
-   - 否则若 `testcase_path` 存在且文件可读 → Read 并按 `.claude/templates/testcase-template.md` 解析为场景列表。
+   - 若 `scenarios` 字段非空 → 先按模板保存确认稿，不得直接绕过输入校验。
+   - 否则若 `testcase_path` 存在且文件可读 → 使用统一 trace_inputs.py 解析，不能自行正则转换。
    - 否则 → **自动生成** 3–5 个场景，规则参照 `/ontology-trace` 单文件模式 Step 3："正常路径 / 每个判断分支 / 异常路径 / 边界情况" 都要覆盖。生成后按 `.claude/templates/testcase-template.md` 格式写入 `ontology/testcase/{operation_name}.md`，标注"批量自动生成"以便日后追溯。
-3. **执行推演 + 写报告 + 收集 summary**：复用上面 Report file mode 步骤 1–6，把详细报告写到该 job 的 `report_path`，收集 summary。
+3. **执行推演 + 写报告 + 收集 summary**：每个 job 从已保存场景生成独立 `tmp/trace-inputs-{job序号}.json`，设置 TESTCASE_PATH/INPUTS_PATH 并执行上述输入校验；复用 Report file mode 步骤 1–6。失败将 job 标为 failed，不生成通过数。
 4. **可选 status 字段**：成功时填 `"status": "traced"`；空逻辑时填 `"status": "skipped_empty"`。其它异常（引用文件全缺失等）填 `"status": "failed"` 并在 summary 中附 `"reason"` 字段说明原因。
 
 **Token 自律**：处理完一个 job 后，把该 job 的详细 trace step 数组在工作记忆里抛掉——返回值里只保留 summary。不要在最终输出里附 step 表。

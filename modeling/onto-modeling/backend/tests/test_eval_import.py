@@ -803,7 +803,7 @@ class GraphStub(StubModeling):
         if "/rounds/" in self.path:
             return self._send(200, {
                 "round": {"id": "r1", "status": "done", "progressDone": 1, "progressTotal": 1},
-                "results": [{"question": "Q1", "verdict": "pass", "reason": "一致"}],
+                "results": [{"question": "Q1", "verdict": "pass", "reason": "一致", "finalAnswer": "A1"}],
             })
         return StubModeling.do_GET(self)
 
