@@ -161,3 +161,19 @@
 .da-composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .da-composer-foot .muted { font-size: var(--font-size-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .da-composer-actions { display: flex; gap: 6px; flex: none; }
+.da-layout { display: flex; height: 100%; }
+.da-layout .da-app { flex: 1; min-width: 0; }
+.da-history {
+  width: 240px; flex-shrink: 0; overflow: auto; border-right: 1px solid var(--color-border-default);
+  padding: 16px 8px; display: flex; flex-direction: column; gap: 2px;
+}
+.da-history-head { font-weight: 600; padding: 0 8px 8px; }
+.da-history-empty { padding: 8px; font-size: var(--font-size-sm); }
+.da-history-item { position: relative; padding: 7px 30px 7px 8px; border-radius: var(--radius-md); cursor: pointer; }
+.da-history-item:hover { background: var(--color-surface-hover); }
+.da-history-on { background: var(--color-action-primary-subtle); }
+.da-history-on .da-history-title { color: var(--color-action-primary); font-weight: 600; }
+.da-history-title { font-size: var(--font-size-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.da-history-meta { display: flex; gap: 6px; align-items: center; font-size: var(--font-size-xs); color: var(--color-text-secondary); margin-top: 2px; }
+.da-history-del { position: absolute; right: 4px; top: 6px; visibility: hidden; }
+.da-history-item:hover .da-history-del { visibility: visible; }

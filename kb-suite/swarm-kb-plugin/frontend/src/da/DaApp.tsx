@@ -1,10 +1,11 @@
 import {
-  Bot, Check, ChevronDown, ChevronRight, Compass, GitCompare, GitFork, Layers, Library, ListChecks, MessageCircleQuestion,
-  Plus, Quote, ScanSearch, Search, Send, Sparkles, Square, TriangleAlert, Wrench,
+  Bot, Check, ChevronDown, ChevronRight, Compass, GitCompare, GitFork, History, Layers, Library, ListChecks,
+  MessageCircleQuestion, Plus, Quote, ScanSearch, Search, Send, Sparkles, Square, Trash2, TriangleAlert, Wrench,
 } from 'lucide-react';
 import { useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { formatTime } from '../format';
 import { ToastProvider, useToast } from '../toast';
 import { Badge, Button, Spinner } from '../ui';
 import { channel, type Wire } from './channel';
@@ -37,8 +38,18 @@ type Turn = {
   tokens?: number;
 };
 
+type HistoryItem = {
+  id: string;
+  engine: string;
+  title: string;
+  updated_at: number;
+  turns: number;
+  running: boolean;
+};
+
 type State = { turns: Turn[]; running: boolean };
 type Action =
+  | { type: 'replay'; events: Wire[]; live: boolean; running: boolean; engineLabel: string }
   | { type: 'local'; turn: Turn }
   | { type: 'accepted'; client_id: string; turn_id: string }
   | { type: 'rejected'; client_id: string; message: string }
@@ -49,8 +60,12 @@ type Action =
 
 const KB_KEY = 'da-analyst.kb-ids';
 const ENGINE_KEY = 'da-analyst.engine';
+const HISTORY_OPEN_KEY = 'da-analyst.history-open';
 const DEFAULT_ENGINES: Engine[] = [{ id: 'deepanalyze', label: 'DeepAnalyze', ready: false }];
-// each engine keeps its own conversation (a different provider and session)
+// labels for history entries of engines this server no longer offers
+const ENGINE_LABELS: Record<string, string> = { deepanalyze: 'DeepAnalyze', loopforest: 'Loop Forest' };
+// each engine keeps its own conversation (a different provider and session); the
+// server keeps it running across page reloads, so remember it beyond this tab
 const sessionKey = (engine: string) => `da-analyst.host-session.${engine}`;
 // beyond this many knowledge bases the scope row folds the rest behind "+N"
 const KB_FOLD = 6;
@@ -83,8 +98,47 @@ function patchTurn(turns: Turn[], turnId: unknown, fn: (t: Turn) => Turn): Turn[
   return turns.map((t, i) => (i === pending ? fn({ ...t, turn_id: String(turnId) }) : t));
 }
 
+// Rebuild a conversation from the server transcript: the page's own inputs
+// (user / steer / answered / rejected) plus the recorded wire messages.
+function replay(action: Extract<Action, { type: 'replay' }>): State {
+  let state: State = { turns: [], running: false };
+  for (const e of action.events) {
+    if (e.t === 'user') {
+      state = reducer(state, {
+        type: 'local',
+        turn: {
+          client_id: String(e.client_id || e.turn_id), turn_id: e.turn_id ? String(e.turn_id) : undefined,
+          engine: action.engineLabel, input: String(e.text ?? ''), steers: [], outputs: [], tools: [], asks: [],
+          status: 'queued',
+        },
+      });
+    } else if (e.t === 'rejected') {
+      state = reducer(state, { type: 'rejected', client_id: String(e.client_id), message: String(e.message ?? '') });
+    } else if (e.t === 'steer') {
+      state = reducer(state, { type: 'steer', text: String(e.text ?? '') });
+    } else if (e.t === 'answered') {
+      state = reducer(state, { type: 'answered', request_id: String(e.request_id), label: String(e.label || '已回答') });
+    } else {
+      state = reducer(state, { type: 'wire', msg: e });
+    }
+  }
+  state = { ...state, running: action.running };
+  if (action.live) return state; // the live event stream settles any open turn
+  // the harness behind this transcript is gone: a turn without its end event was cut off
+  return {
+    ...state,
+    turns: state.turns.map((t) =>
+      t.status === 'running' || t.status === 'queued'
+        ? { ...t, status: 'aborted', error: t.error ?? '分析已中断（会话在执行中被关闭）' }
+        : t,
+    ),
+  };
+}
+
 function reducer(state: State, action: Action): State {
   switch (action.type) {
+    case 'replay':
+      return replay(action);
     case 'clear':
       return { turns: [], running: false };
     case 'local':
@@ -330,10 +384,15 @@ function Shell() {
   const [selected, setSelected] = useState<string[]>(() => JSON.parse(localStorage.getItem(KB_KEY) || '[]'));
   const [connected, setConnected] = useState(channel.connected);
   const [engines, setEngines] = useState<Engine[]>(DEFAULT_ENGINES);
+  const enginesRef = useRef(engines);
+  enginesRef.current = engines;
   const [engine, setEngine] = useState<string>(() => localStorage.getItem(ENGINE_KEY) || 'deepanalyze');
   const engineRef = useRef(engine);
   engineRef.current = engine;
   const [started, setStarted] = useState(false);
+  const [sessionId, setSessionId] = useState('');
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(() => localStorage.getItem(HISTORY_OPEN_KEY) !== '0');
   const [text, setText] = useState('');
   const [showAllKbs, setShowAllKbs] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
@@ -362,12 +421,25 @@ function Shell() {
         if (!ids.length && list.length) ids = list.map((k) => k.id);
         setSelected(ids);
         channel.send({
-          type: 'start', engine: chosen, host_session_id: sessionStorage.getItem(sessionKey(chosen)) || '', kb_ids: ids,
+          type: 'start', engine: chosen, host_session_id: localStorage.getItem(sessionKey(chosen)) || '', kb_ids: ids,
         });
       } else if (msg.t === 'started') {
-        sessionStorage.setItem(sessionKey(String(msg.engine || engineRef.current)), String(msg.host_session_id));
+        const opened = String(msg.engine || engineRef.current);
+        localStorage.setItem(sessionKey(opened), String(msg.host_session_id));
+        localStorage.setItem(ENGINE_KEY, opened);
+        setEngine(opened);
+        setSessionId(String(msg.host_session_id));
+        const label = enginesRef.current.find((e) => e.id === opened)?.label ?? ENGINE_LABELS[opened] ?? opened;
+        dispatch({
+          type: 'replay', events: (msg.transcript as Wire[]) ?? [], live: Boolean(msg.live), running: Boolean(msg.running),
+          engineLabel: label,
+        });
+        const kbIds = (msg.kb_ids as string[] | undefined) ?? [];
+        if (kbIds.length) setSelected(kbIds);
         setStarted(true);
-        if (msg.resumed) notify('已接上之前的会话');
+        channel.send({ type: 'history' });
+      } else if (msg.t === 'history') {
+        setHistory((msg.items as HistoryItem[]) ?? []);
       } else if (msg.t === 'accepted') {
         if (msg.mode !== 'steer') dispatch({ type: 'accepted', client_id: String(msg.client_id), turn_id: String(msg.turn_id) });
       } else if (msg.t === 'error') {
@@ -375,6 +447,10 @@ function Shell() {
         if (msg.client_id) dispatch({ type: 'rejected', client_id: String(msg.client_id), message: String(msg.message) });
       } else {
         dispatch({ type: 'wire', msg });
+        // a finished turn changes the history entry (title, time, running mark)
+        if (msg.t === 'turn' && msg.kind !== 'started' && msg.kind !== 'paused' && msg.kind !== 'resumed') {
+          channel.send({ type: 'history' });
+        }
       }
     });
     return off;
@@ -388,6 +464,10 @@ function Shell() {
   useEffect(() => {
     localStorage.setItem(KB_KEY, JSON.stringify(selected));
   }, [selected]);
+
+  useEffect(() => {
+    localStorage.setItem(HISTORY_OPEN_KEY, historyOpen ? '1' : '0');
+  }, [historyOpen]);
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: 'end' });
@@ -416,20 +496,30 @@ function Shell() {
     setText('');
   };
 
-  const newConversation = () => {
-    sessionStorage.removeItem(sessionKey(engine));
-    dispatch({ type: 'clear' });
-    setStarted(false);
-    channel.send({ type: 'start', engine, host_session_id: '', kb_ids: selected });
-  };
-
-  const switchEngine = (next: string) => {
-    if (next === engine) return;
+  // Leaving a conversation does not stop it: a running analysis finishes on the
+  // server and stays in the history list.
+  const open = (next: string, hostSessionId: string) => {
+    if (started && next === engine && hostSessionId && hostSessionId === sessionId) return;
     setEngine(next);
     localStorage.setItem(ENGINE_KEY, next);
     dispatch({ type: 'clear' });
     setStarted(false);
-    channel.send({ type: 'start', engine: next, host_session_id: sessionStorage.getItem(sessionKey(next)) || '', kb_ids: selected });
+    channel.send({ type: 'start', engine: next, host_session_id: hostSessionId, kb_ids: selected });
+  };
+
+  const newConversation = () => {
+    localStorage.removeItem(sessionKey(engine));
+    open(engine, '');
+  };
+
+  const switchEngine = (next: string) => {
+    if (next !== engine) open(next, localStorage.getItem(sessionKey(next)) || '');
+  };
+
+  const removeHistory = (item: HistoryItem) => {
+    if (!window.confirm(`删除对话「${item.title || '未命名对话'}」？${item.running ? '正在进行的分析会被停止，' : ''}删除后不可恢复。`)) return;
+    channel.send({ type: 'delete', host_session_id: item.id });
+    if (item.id === sessionId) newConversation();
   };
 
   const toggleKb = (id: string) =>
@@ -453,156 +543,192 @@ function Shell() {
   const examples = engine === 'loopforest' ? LF_EXAMPLES : DA_EXAMPLES;
 
   return (
-    <div className="da-app">
-      <header className="da-header">
-        <div className="da-brand">
-          <div className="da-logo"><Compass size={20} /></div>
-          <div>
-            <div className="da-title">知识求索</div>
-            <div className="da-sub">
-              <span className={`da-status da-status-${status.tone}`}><i />{status.text}</span>
-              <span>在知识库上做多步检索、核对与归纳</span>
-            </div>
-          </div>
-        </div>
-        <div className="da-header-actions">
-          {engines.length > 1 ? (
-            <div className="da-seg" role="radiogroup" aria-label="分析引擎">
-              {engines.map((e) => (
+    <div className="da-layout">
+      {historyOpen ? (
+        <aside className="da-history">
+          <div className="da-history-head">历史对话</div>
+          {history.length === 0 ? (
+            <div className="da-history-empty muted">还没有对话</div>
+          ) : (
+            history.map((item) => (
+              <div
+                key={item.id}
+                className={`da-history-item ${item.id === sessionId ? 'da-history-on' : ''}`}
+                onClick={() => open(item.engine, item.id)}
+                title={item.title}
+              >
+                <div className="da-history-title">{item.title || '未命名对话'}</div>
+                <div className="da-history-meta">
+                  <span>{ENGINE_LABELS[item.engine] ?? item.engine}</span>
+                  <span>{formatTime(new Date(item.updated_at * 1000).toISOString())}</span>
+                  {item.running ? <Badge tone="info"><Spinner size={9} />分析中</Badge> : null}
+                </div>
                 <button
-                  key={e.id}
-                  role="radio"
-                  aria-checked={e.id === engine}
-                  className={e.id === engine ? 'da-seg-on' : ''}
-                  disabled={running}
-                  title={running ? '分析执行中，结束后才能切换引擎' : e.ready ? e.label : `${e.label} 未就绪`}
-                  onClick={() => switchEngine(e.id)}
+                  className="icon-btn da-history-del"
+                  title="删除"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeHistory(item);
+                  }}
                 >
-                  {e.id === 'loopforest' ? <GitFork size={14} /> : <ScanSearch size={14} />}
-                  {e.label}
-                  <span className={`da-seg-dot ${e.ready ? '' : 'da-seg-dot-off'}`} />
+                  <Trash2 size={13} />
                 </button>
-              ))}
-            </div>
-          ) : null}
-          <Button
-            icon={<Plus size={14} />}
-            onClick={newConversation}
-            disabled={running}
-            title={running ? '分析执行中，结束或停止后才能开始新对话' : undefined}
-          >
-            新对话
-          </Button>
-        </div>
-      </header>
-      <div className="da-scope">
-        <span className="da-scope-label">
-          <Library size={14} />
-          检索范围 <b>{scopeText}</b>
-        </span>
-        {kbs.length ? (
-          <button
-            className={`da-chip da-chip-all ${selected.length === 0 ? 'da-chip-on' : ''}`}
-            onClick={() => setSelected([])}
-          >
-            <span className="da-chip-check"><Layers size={11} /></span>
-            全部
-          </button>
-        ) : null}
-        {shownKbs.map((kb) => (
-          <button
-            key={kb.id}
-            className={`da-chip ${selected.includes(kb.id) ? 'da-chip-on' : ''}`}
-            onClick={() => toggleKb(kb.id)}
-            title={`${kb.documents} 个已入库文档`}
-          >
-            <span className="da-chip-check"><Check size={11} /></span>
-            {kb.name}
-            <span className="da-chip-count">{kb.documents}</span>
-          </button>
-        ))}
-        {kbs.length > KB_FOLD ? (
-          <button className="da-chip da-chip-more" onClick={() => setShowAllKbs(!showAllKbs)}>
-            {showAllKbs ? '收起' : `+${kbs.length - KB_FOLD}`}
-          </button>
-        ) : null}
-        <span className="da-scope-hint">不选 = 检索全部知识库</span>
-      </div>
-      <main className={`da-thread ${state.turns.length ? '' : 'da-thread-empty'}`}>
-        {state.turns.length === 0 ? (
-          <div className="da-hero">
-            <div className="da-hero-icon">
-              <div className="da-hero-ring" />
-              <div className="da-hero-core"><Bot size={34} /></div>
-              <div className="da-hero-spark"><Sparkles size={13} /></div>
-            </div>
-            <h2>向 {engineLabel} 提一个分析问题</h2>
-            <p>
-              {engine === 'loopforest'
-                ? 'Loop Forest 会检索知识库，必要时把问题拆成分支并行查证再汇总。'
-                : 'DA 会检索、展开、交叉核对知识库里的文档后作答，必要时会向你追问。'}
-              <br />
-              执行中可以继续输入补充指令，或随时停止。
-            </p>
-            <div className="da-caps">
-              {CAPS.map(({ icon, label }) => (
-                <span key={label} className="da-cap">{icon}{label}</span>
-              ))}
-            </div>
-            <div className="da-examples">
-              {examples.map((ex) => (
-                <button key={ex.title} className="da-example" onClick={() => setText(ex.text)}>
-                  <span className="da-example-title">{ex.icon}{ex.title}</span>
-                  {ex.text}
-                </button>
-              ))}
+              </div>
+            ))
+          )}
+        </aside>
+      ) : null}
+      <div className="da-app">
+        <header className="da-header">
+          <div className="da-brand">
+            <div className="da-logo"><Compass size={20} /></div>
+            <div>
+              <div className="da-title">知识求索</div>
+              <div className="da-sub">
+                <span className={`da-status da-status-${status.tone}`}><i />{status.text}</span>
+                <span>在知识库上做多步检索、核对与归纳</span>
+              </div>
             </div>
           </div>
-        ) : (
-          state.turns.map((turn) => (
-            <TurnView
-              key={turn.client_id}
-              turn={turn}
-              onAnswer={(ask, payload, label) => {
-                channel.send({ type: 'answer', request_id: ask.request_id, ...payload });
-                dispatch({ type: 'answered', request_id: ask.request_id, label });
-              }}
-            />
-          ))
-        )}
-        <div ref={bottom} />
-      </main>
-      <footer className="da-composer">
-        <textarea
-          className="textarea"
-          placeholder={running ? '输入补充指令，发送后注入到正在执行的分析' : '输入分析问题，Enter 发送，Shift+Enter 换行'}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-        />
-        <div className="da-composer-foot">
-          <span className="muted">
-            {running
-              ? '分析执行中，发送的内容会作为补充指令'
-              : kbNames.length
-                ? `将在「${kbNames.join('」「')}」中检索`
-                : '将在全部知识库中检索'}
-          </span>
-          <div className="da-composer-actions">
-            {running ? (
-              <Button variant="danger" icon={<Square size={13} />} onClick={() => channel.send({ type: 'abort' })}>停止</Button>
+          <div className="da-header-actions">
+            {engines.length > 1 ? (
+              <div className="da-seg" role="radiogroup" aria-label="分析引擎">
+                {engines.map((e) => (
+                  <button
+                    key={e.id}
+                    role="radio"
+                    aria-checked={e.id === engine}
+                    className={e.id === engine ? 'da-seg-on' : ''}
+                    title={e.ready ? e.label : `${e.label} 未就绪`}
+                    onClick={() => switchEngine(e.id)}
+                  >
+                    {e.id === 'loopforest' ? <GitFork size={14} /> : <ScanSearch size={14} />}
+                    {e.label}
+                    <span className={`da-seg-dot ${e.ready ? '' : 'da-seg-dot-off'}`} />
+                  </button>
+                ))}
+              </div>
             ) : null}
-            <Button variant="primary" icon={<Send size={13} />} disabled={!text.trim() || !started} onClick={submit}>
-              {running ? '补充指令' : '发送'}
+            <Button
+              icon={<History size={14} />}
+              variant={historyOpen ? 'secondary' : 'ghost'}
+              onClick={() => setHistoryOpen(!historyOpen)}
+              title={historyOpen ? '收起历史对话' : '展开历史对话'}
+            >
+              历史
             </Button>
+            <Button icon={<Plus size={14} />} onClick={newConversation}>新对话</Button>
           </div>
+        </header>
+        <div className="da-scope">
+          <span className="da-scope-label">
+            <Library size={14} />
+            检索范围 <b>{scopeText}</b>
+          </span>
+          {kbs.length ? (
+            <button
+              className={`da-chip da-chip-all ${selected.length === 0 ? 'da-chip-on' : ''}`}
+              onClick={() => setSelected([])}
+            >
+              <span className="da-chip-check"><Layers size={11} /></span>
+              全部
+            </button>
+          ) : null}
+          {shownKbs.map((kb) => (
+            <button
+              key={kb.id}
+              className={`da-chip ${selected.includes(kb.id) ? 'da-chip-on' : ''}`}
+              onClick={() => toggleKb(kb.id)}
+              title={`${kb.documents} 个已入库文档`}
+            >
+              <span className="da-chip-check"><Check size={11} /></span>
+              {kb.name}
+              <span className="da-chip-count">{kb.documents}</span>
+            </button>
+          ))}
+          {kbs.length > KB_FOLD ? (
+            <button className="da-chip da-chip-more" onClick={() => setShowAllKbs(!showAllKbs)}>
+              {showAllKbs ? '收起' : `+${kbs.length - KB_FOLD}`}
+            </button>
+          ) : null}
+          <span className="da-scope-hint">不选 = 检索全部知识库</span>
         </div>
-      </footer>
+        <main className={`da-thread ${state.turns.length ? '' : 'da-thread-empty'}`}>
+          {state.turns.length === 0 ? (
+            <div className="da-hero">
+              <div className="da-hero-icon">
+                <div className="da-hero-ring" />
+                <div className="da-hero-core"><Bot size={34} /></div>
+                <div className="da-hero-spark"><Sparkles size={13} /></div>
+              </div>
+              <h2>向 {engineLabel} 提一个分析问题</h2>
+              <p>
+                {engine === 'loopforest'
+                  ? 'Loop Forest 会检索知识库，必要时把问题拆成分支并行查证再汇总。'
+                  : 'DA 会检索、展开、交叉核对知识库里的文档后作答，必要时会向你追问。'}
+                <br />
+                执行中可以继续输入补充指令，或随时停止。
+              </p>
+              <div className="da-caps">
+                {CAPS.map(({ icon, label }) => (
+                  <span key={label} className="da-cap">{icon}{label}</span>
+                ))}
+              </div>
+              <div className="da-examples">
+                {examples.map((ex) => (
+                  <button key={ex.title} className="da-example" onClick={() => setText(ex.text)}>
+                    <span className="da-example-title">{ex.icon}{ex.title}</span>
+                    {ex.text}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            state.turns.map((turn) => (
+              <TurnView
+                key={turn.client_id}
+                turn={turn}
+                onAnswer={(ask, payload, label) => {
+                  channel.send({ type: 'answer', request_id: ask.request_id, label, ...payload });
+                  dispatch({ type: 'answered', request_id: ask.request_id, label });
+                }}
+              />
+            ))
+          )}
+          <div ref={bottom} />
+        </main>
+        <footer className="da-composer">
+          <textarea
+            className="textarea"
+            placeholder={running ? '输入补充指令，发送后注入到正在执行的分析' : '输入分析问题，Enter 发送，Shift+Enter 换行'}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                submit();
+              }
+            }}
+          />
+          <div className="da-composer-foot">
+            <span className="muted">
+              {running
+                ? '分析执行中，发送的内容会作为补充指令'
+                : kbNames.length
+                  ? `将在「${kbNames.join('」「')}」中检索`
+                  : '将在全部知识库中检索'}
+            </span>
+            <div className="da-composer-actions">
+              {running ? (
+                <Button variant="danger" icon={<Square size={13} />} onClick={() => channel.send({ type: 'abort' })}>停止</Button>
+              ) : null}
+              <Button variant="primary" icon={<Send size={13} />} disabled={!text.trim() || !started} onClick={submit}>
+                {running ? '补充指令' : '发送'}
+              </Button>
+            </div>
+          </div>
+        </footer>
+      </div>
     </div>
   );
 }

@@ -1,15 +1,23 @@
 """JiuwenSwarm application plugin hosting the DeepAnalyze harness provider.
 
 Swarm 0.2.7 (openjiuwen 0.1.19) only spawns its built-in harness providers,
-so this plugin is the host: each page connection owns one DeepAnalyzeHarness
+so this plugin is the host: each conversation owns one DeepAnalyzeHarness
 driven purely through HarnessProtocol (start / send / steer / abort / stop,
 the interaction handler and a checkpoint sink for resuming a conversation).
+
+A conversation outlives the page connection that started it: switching to
+another Swarm page reloads the iframe, and a running analysis keeps going
+until it ends and nobody has watched it for ``IDLE_STOP_S``. What the page
+needs to redraw a conversation is kept as a transcript under
+``DA_ANALYST_HISTORY_DIR`` (default ``~/.jiuwenswarm/da-analyst/history``),
+which is also the history list.
 
 Environment:
     DA_BASE_URL        e.g. http://da-engine:8192
     DA_ENGINE_SECRET   read by the provider (secret_env), never sent to the page
     DA_TENANT_ID       default "default"
     KB_SERVICE_URL / KBS_PLUGIN_KEY   to list knowledge bases for the scope picker
+    DA_ANALYST_HISTORY_DIR            where conversation transcripts are kept
 """
 
 from __future__ import annotations
@@ -19,8 +27,11 @@ import importlib
 import json
 import logging
 import os
+import re
+import time
 import uuid
-from typing import Any
+from pathlib import Path
+from typing import Any, Awaitable, Callable
 
 import httpx
 
@@ -45,6 +56,16 @@ DEFAULT_ENGINE = "deepanalyze"
 PLUGIN_ID = "da-analyst"
 WS_PATH = "/ws/plugins/da-analyst"
 MAX_TEXT = 20000
+# an output assembled from deltas is kept up to this size in the transcript
+MAX_TRANSCRIPT_OUTPUT = 200000
+IDLE_STOP_S = 600
+HISTORY_LIMIT = 50
+TITLE_CHARS = 60
+# wire messages the page's reducer uses to redraw a conversation
+RECORDED = frozenset({"output", "tool", "turn", "ask", "ask_cancelled", "state"})
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+Send = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class CheckpointStore:
@@ -182,24 +203,172 @@ class PageInteractions:
                           "reason": getattr(reason, "value", str(reason))})
 
 
-class Conversation:
-    """One page connection: a harness cycle plus its event pump."""
+def _history_dir() -> Path:
+    return Path(os.getenv("DA_ANALYST_HISTORY_DIR") or Path.home() / ".jiuwenswarm" / "da-analyst" / "history")
 
-    def __init__(self, send) -> None:  # noqa: ANN001
-        self.send = send
+
+class Transcript:
+    """What the page needs to redraw one conversation, kept as a JSON file.
+
+    Entries are the page's own inputs (``user``, ``steer``, ``answered``,
+    ``rejected``) plus the recorded wire messages, in arrival order; the page
+    replays them through the same reducer it uses live. Output deltas are
+    folded into the first message of their output so a long answer stays one
+    entry.
+    """
+
+    def __init__(self, host_session_id: str, engine: str, data: dict[str, Any] | None = None) -> None:
+        data = data or {}
+        now = time.time()
+        self.id = host_session_id
+        self.engine = str(data.get("engine") or engine)
+        self.title = str(data.get("title") or "")
+        self.kb_ids: list[str] = list(data.get("kb_ids") or [])
+        self.created_at = float(data.get("created_at") or now)
+        self.updated_at = float(data.get("updated_at") or now)
+        self.events: list[dict[str, Any]] = list(data.get("events") or [])
+        self._outputs = {e["output_id"]: e for e in self.events if e.get("t") == "output" and e.get("output_id")}
+        self._flush_handle: asyncio.TimerHandle | None = None
+
+    @staticmethod
+    def path_for(host_session_id: str) -> Path:
+        return _history_dir() / f"{host_session_id}.json"
+
+    @classmethod
+    def load(cls, host_session_id: str) -> Transcript | None:
+        try:
+            data = json.loads(cls.path_for(host_session_id).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return cls(host_session_id, str(data.get("engine") or DEFAULT_ENGINE), data)
+
+    def summary(self) -> dict[str, Any]:
+        return {"id": self.id, "engine": self.engine, "title": self.title, "kb_ids": self.kb_ids,
+                "created_at": self.created_at, "updated_at": self.updated_at,
+                "turns": sum(1 for e in self.events if e.get("t") == "user")}
+
+    def add_user(self, client_id: str, text: str, kb_ids: list[str]) -> dict[str, Any]:
+        entry = {"t": "user", "client_id": client_id, "text": text}
+        if not self.title:
+            self.title = " ".join(text.split())[:TITLE_CHARS]
+        self.kb_ids = list(kb_ids)
+        self.add(entry)
+        return entry
+
+    def add(self, entry: dict[str, Any]) -> None:
+        self.events.append(entry)
+        self.touch()
+
+    def record(self, wire: dict[str, Any]) -> None:
+        if wire.get("t") not in RECORDED:
+            return
+        entry = {k: v for k, v in wire.items() if k != "seq"}
+        if entry["t"] == "output":
+            text = str(entry.get("content") or "")
+            first = self._outputs.get(entry.get("output_id"))
+            if first is not None:
+                merged = first["content"] + text if entry.get("op") == "delta" else text
+                first["content"] = merged[:MAX_TRANSCRIPT_OUTPUT]
+                self.touch()
+                return
+            entry["content"] = text
+            self._outputs[entry.get("output_id")] = entry
+        self.add(entry)
+
+    def touch(self) -> None:
+        self.updated_at = time.time()
+        if self._flush_handle is None:
+            try:
+                self._flush_handle = asyncio.get_running_loop().call_later(1.0, self.flush)
+            except RuntimeError:  # no loop (tests, shutdown): write now
+                self.flush()
+
+    def flush(self) -> None:
+        if self._flush_handle is not None:
+            self._flush_handle.cancel()
+            self._flush_handle = None
+        if not any(e.get("t") == "user" for e in self.events):
+            return  # nothing asked yet: not worth a history entry
+        path = self.path_for(self.id)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({**self.summary(), "events": self.events}, ensure_ascii=False, default=str),
+                           encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            logger.warning("[da-analyst] saving transcript %s failed", self.id, exc_info=True)
+
+
+def list_history(limit: int = HISTORY_LIMIT) -> list[dict[str, Any]]:
+    items = []
+    for path in sorted(_history_dir().glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
+        transcript = Transcript.load(path.stem)
+        if transcript is not None:
+            live = LIVE.get(transcript.id)
+            items.append({**transcript.summary(), "live": live is not None, "running": bool(live and live.running)})
+    return items
+
+
+class Conversation:
+    """A harness cycle with its event pump; page connections attach and detach."""
+
+    def __init__(self, transcript: Transcript) -> None:
+        self.transcript = transcript
+        self.host_session_id = transcript.id
+        self.engine = transcript.engine
         self.harness: Any = None
         self.pump: asyncio.Task | None = None
-        self.interactions = PageInteractions(send)
-        self.host_session_id = ""
+        self.subscribers: set[Send] = set()
+        self.interactions = PageInteractions(self.emit)
+        self.running = False
+        self._idle_timer: asyncio.TimerHandle | None = None
 
-    async def start(self, host_session_id: str, kb_ids: list[str], engine: str = DEFAULT_ENGINE) -> dict[str, Any]:
+    async def broadcast(self, payload: dict[str, Any]) -> None:
+        for send in list(self.subscribers):
+            try:
+                await send(payload)
+            except Exception:  # noqa: BLE001 - that page is gone; its socket handler detaches it
+                logger.debug("[da-analyst] dropping a page event", exc_info=True)
+
+    async def emit(self, wire: dict[str, Any]) -> None:
+        if wire.get("t") == "state":
+            self.running = wire.get("state") == "running"
+            if not self.running and not self.subscribers:
+                self.schedule_idle_stop()
+        self.transcript.record(wire)
+        await self.broadcast(wire)
+
+    def attach(self, send: Send) -> None:
+        self.subscribers.add(send)
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+            self._idle_timer = None
+
+    def detach(self, send: Send) -> None:
+        self.subscribers.discard(send)
+        if not self.subscribers:
+            self.schedule_idle_stop()
+
+    def schedule_idle_stop(self) -> None:
+        # a running analysis keeps going; the `state` event that ends it schedules the stop
+        if self.running or self._idle_timer is not None:
+            return
+
+        def fire() -> None:
+            self._idle_timer = None
+            if not self.subscribers and not self.running:
+                asyncio.ensure_future(self.close())
+
+        self._idle_timer = asyncio.get_running_loop().call_later(IDLE_STOP_S, fire)
+
+    async def start(self, kb_ids: list[str]) -> None:
         from openjiuwen.harness_protocol import HarnessContext, HostCapability, ResumePolicy
 
+        engine = self.engine
         if engine not in ENGINES:
             raise ValueError(f"unknown engine: {engine}")
         provider = _provider_class(engine)
-        await self.stop()
-        self.host_session_id = host_session_id or uuid.uuid4().hex
         self.harness = provider.create({
             "base_url": _engine_url(engine),
             "tenant_id": _engine_env(engine, "TENANT_ID", "default"),
@@ -222,7 +391,11 @@ class Conversation:
             interactions=self.interactions,
             metadata={"kb_ids": list(kb_ids)},
         )
-        await self.harness.start(context)
+        try:
+            await self.harness.start(context)
+        except BaseException:
+            self.harness = None
+            raise
         cursor = self.harness.events()
 
         async def pump() -> None:
@@ -230,15 +403,43 @@ class Conversation:
                 async for envelope in cursor:
                     wire = event_to_wire(envelope)
                     if wire is not None:
-                        await self.send(wire)
-            except Exception:  # noqa: BLE001 - socket gone or harness stopped
+                        await self.emit(wire)
+            except Exception:  # noqa: BLE001 - harness stopped
                 logger.debug("[da-analyst] event pump ended", exc_info=True)
 
         self.pump = asyncio.create_task(pump())
-        return {"host_session_id": self.host_session_id, "resumed": checkpoint is not None,
-                "provider_session_id": self.harness.provider_session_id, "engine": engine}
 
-    async def stop(self) -> None:
+    async def send(self, text: str, kb_ids: list[str], client_id: str, steer: bool) -> Any:
+        from openjiuwen.harness_protocol import DeliveryMode, HarnessInput
+
+        if self.harness is None:
+            raise RuntimeError("会话尚未开始")
+        entry = None
+        if steer:
+            self.transcript.add({"t": "steer", "text": text})
+        else:
+            entry = self.transcript.add_user(client_id, text, kb_ids)
+        content = HarnessInput(content=text, metadata={"kb_ids": list(kb_ids)})
+        try:
+            receipt = await self.harness.send(content, mode=DeliveryMode.STEER if steer else DeliveryMode.AUTO)
+        except Exception as exc:
+            if entry is not None:
+                self.transcript.add({"t": "rejected", "client_id": client_id, "message": str(exc)[:500]})
+            raise
+        if entry is not None:
+            entry["turn_id"] = receipt.turn_id
+        return receipt
+
+    def answer(self, request_id: str, msg: dict[str, Any]) -> None:
+        if self.interactions.answer(request_id, msg):
+            self.transcript.add({"t": "answered", "request_id": request_id, "label": str(msg.get("label") or "")})
+
+    async def close(self) -> None:
+        if LIVE.get(self.host_session_id) is self:
+            del LIVE[self.host_session_id]
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+            self._idle_timer = None
         harness, self.harness = self.harness, None
         if harness is not None:
             try:
@@ -248,8 +449,44 @@ class Conversation:
         pump, self.pump = self.pump, None
         if pump is not None:
             pump.cancel()
+        self.running = False
+        self.transcript.flush()
 
 
+LIVE: dict[str, Conversation] = {}
+
+_OPENING: dict[str, asyncio.Lock] = {}
+
+
+async def open_conversation(host_session_id: str, engine: str, kb_ids: list[str]) -> tuple[Conversation, bool]:
+    """The live conversation for this id, or a new harness that continues its transcript.
+
+    Returns the conversation and whether it was already live (its open turns are
+    still going) rather than restarted from its transcript. The DA
+    session id is derived from the host session id, so a restarted harness
+    keeps DA's context as long as DA still has it.
+    """
+    if not SESSION_ID_RE.match(host_session_id or ""):
+        host_session_id = uuid.uuid4().hex
+    async with _OPENING.setdefault(host_session_id, asyncio.Lock()):
+        live = LIVE.get(host_session_id)
+        if live is not None and live.harness is not None:
+            return live, True
+        transcript = Transcript.load(host_session_id) or Transcript(host_session_id, engine)
+        conversation = Conversation(transcript)
+        await conversation.start(kb_ids)
+        LIVE[host_session_id] = conversation
+        conversation.schedule_idle_stop()  # unless a page attaches
+        return conversation, False
+
+
+async def delete_conversation(host_session_id: str) -> None:
+    if not SESSION_ID_RE.match(host_session_id or ""):
+        return
+    live = LIVE.get(host_session_id)
+    if live is not None:
+        await live.close()
+    Transcript.path_for(host_session_id).unlink(missing_ok=True)
 
 
 def _provider_class(engine: str) -> Any:
@@ -342,7 +579,7 @@ class DaAnalystPlugin(ApplicationPluginExtension):
             async with lock:
                 await websocket.send_text(json.dumps(payload, ensure_ascii=False, default=str))
 
-        convo = Conversation(send)
+        convo: Conversation | None = None
         tasks: set[asyncio.Task] = set()
         # Session-shaping messages run in arrival order (a `send` right behind a
         # `start` must see the new harness); abort/answer never wait behind them.
@@ -355,9 +592,13 @@ class DaAnalystPlugin(ApplicationPluginExtension):
                 async with ordered:
                     await dispatch(msg)
 
-        async def dispatch(msg: dict[str, Any]) -> None:
-            from openjiuwen.harness_protocol import DeliveryMode, HarnessInput
+        def current() -> Conversation:
+            if convo is None or convo.harness is None:
+                raise RuntimeError("会话尚未开始")
+            return convo
 
+        async def dispatch(msg: dict[str, Any]) -> None:
+            nonlocal convo
             kind = msg.get("type")
             try:
                 if kind == "hello":
@@ -365,25 +606,47 @@ class DaAnalystPlugin(ApplicationPluginExtension):
                     await send({"t": "hello", "kbs": await _list_kbs(), "engines": engines,
                                 "da_ready": any(e["ready"] for e in engines if e["id"] == DEFAULT_ENGINE)})
                 elif kind == "start":
-                    info = await convo.start(str(msg.get("host_session_id") or ""), list(msg.get("kb_ids") or []),
-                                             str(msg.get("engine") or DEFAULT_ENGINE))
-                    await send({"t": "started", **info})
+                    opened, was_live = await open_conversation(
+                        str(msg.get("host_session_id") or ""), str(msg.get("engine") or DEFAULT_ENGINE),
+                        list(msg.get("kb_ids") or []))
+                    if convo is not None and convo is not opened:
+                        convo.detach(send)
+                    convo = opened
+                    # attach and snapshot without yielding, so every later event follows `started`
+                    opened.attach(send)
+                    transcript = opened.transcript
+                    await send({"t": "started", "host_session_id": opened.host_session_id, "engine": opened.engine,
+                                "resumed": was_live or bool(transcript.events), "live": was_live,
+                                "provider_session_id": opened.harness.provider_session_id,
+                                "title": transcript.title, "kb_ids": transcript.kb_ids,
+                                "running": opened.running, "transcript": list(transcript.events)})
                 elif kind == "send":
-                    if convo.harness is None:
-                        raise RuntimeError("会话尚未开始")
-                    content = HarnessInput(content=str(msg.get("text") or ""),
-                                           metadata={"kb_ids": list(msg.get("kb_ids") or [])})
-                    mode = DeliveryMode.STEER if msg.get("steer") else DeliveryMode.AUTO
-                    receipt = await convo.harness.send(content, mode=mode)
+                    steer = bool(msg.get("steer"))
+                    kb_ids = list(msg.get("kb_ids") or [])
+                    if not kb_ids and not steer:
+                        # the page shows an empty selection as "all knowledge bases"
+                        kb_ids = [kb["id"] for kb in await _list_kbs()]
+                    receipt = await current().send(str(msg.get("text") or ""), kb_ids,
+                                                   str(msg.get("client_id") or ""), steer)
                     await send({"t": "accepted", "turn_id": receipt.turn_id, "mode": receipt.accepted_mode.value,
                                 "client_id": msg.get("client_id")})
                 elif kind == "abort":
-                    if convo.harness is not None:
-                        await convo.harness.abort()
+                    await current().harness.abort()
                 elif kind == "answer":
-                    convo.interactions.answer(str(msg.get("request_id") or ""), msg)
+                    current().answer(str(msg.get("request_id") or ""), msg)
+                elif kind == "history":
+                    await send({"t": "history", "items": list_history()})
+                elif kind == "delete":
+                    target = str(msg.get("host_session_id") or "")
+                    if convo is not None and convo.host_session_id == target:
+                        convo.detach(send)
+                        convo = None
+                    await delete_conversation(target)
+                    await send({"t": "history", "items": list_history()})
                 elif kind == "reset":
-                    await convo.stop()
+                    if convo is not None:
+                        await convo.close()
+                        convo = None
                     await send({"t": "reset"})
             except Exception as exc:  # noqa: BLE001 - report to the page, keep the socket
                 logger.warning("[da-analyst] %s failed", kind, exc_info=True)
@@ -405,7 +668,9 @@ class DaAnalystPlugin(ApplicationPluginExtension):
         finally:
             for task in tasks:
                 task.cancel()
-            await convo.stop()
+            # the conversation keeps running for whoever opens it next
+            if convo is not None:
+                convo.detach(send)
 
 
 async def register_extensions(registry: Any) -> list[DaAnalystPlugin]:

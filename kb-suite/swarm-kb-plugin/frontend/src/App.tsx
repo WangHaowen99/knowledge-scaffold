@@ -104,7 +104,12 @@ function Shell() {
   const [creating, setCreating] = useState(false);
   const [connected, setConnected] = useState(rpc.connected);
 
-  useEffect(() => rpc.onStatus(setConnected), []);
+  useEffect(() => {
+    const off = rpc.onStatus(setConnected);
+    // the socket opens on module load and may have connected before this effect ran
+    setConnected(rpc.connected);
+    return off;
+  }, []);
 
   const loadKbs = useCallback(async () => {
     try {
