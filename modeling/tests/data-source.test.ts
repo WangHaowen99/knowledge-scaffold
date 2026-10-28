@@ -701,10 +701,9 @@ test('evaluation：存量关系名称不符合命名规范时仍创建正式评�
   await waitForEvaluation(ready.project.id, round.roundId);
 });
 
-test('evaluation：自关联和不存在的关系目标在创建轮次前被拒绝', async () => {
+test('evaluation：不存在的关系目标在创建轮次前被拒绝', async () => {
   const { startEvaluation } = await import('../src/evaluation/engine.js');
   const cases: Array<{ relation: string; target: string; message: RegExp }> = [
-    { relation: '上级', target: 'application_item', message: /评测不允许自关联/u },
     { relation: '属于', target: 'missing_object', message: /不存在的对象 missing_object/u },
   ];
 
@@ -725,6 +724,34 @@ test('evaluation：自关联和不存在的关系目标在创建轮次前被拒�
       packageSnapshot: { ...ready.packageSnapshot, spec },
     }), invalid.message);
     assert.equal(ready.m3repo.listRounds(ready.project.id).length, 0);
+  }
+});
+
+test('evaluation：允许自关联及同名不同字段关系，仅拒绝完整字段对重复', async () => {
+  const { startEvaluation, waitForEvaluation } = await import('../src/evaluation/engine.js');
+  for (const explicit of [false, true]) {
+    const ready = await createReadyEvaluationProject({ name: `合成自关联字段-${explicit}` });
+    const spec: PackageSpec = {
+      ...ready.packageSnapshot.spec,
+      objects: [{
+        key: 'object_a', title: '合成对象 A', description: '人工构造的自关联测试',
+        fields: [{ key: 'id' }, { key: 'parent_id' }, { key: 'other_parent_id' }],
+        relations: explicit ? [
+          { relation: 'reports_to', target: 'object_a', sourceJoinProperty: 'parent_id', targetJoinProperty: 'id' },
+          { relation: 'reports_to', target: 'object_a', sourceJoinProperty: 'other_parent_id', targetJoinProperty: 'id' },
+        ] : [{ relation: 'reports_to', target: 'object_a' }],
+      }],
+    };
+    const round = startEvaluation({
+      projectId: ready.project.id, token: 'synthetic-token', packageSnapshot: { ...ready.packageSnapshot, spec },
+    }, { runRound: async () => {} });
+    assert.equal(ready.m3repo.listRounds(ready.project.id).length, 1);
+    await waitForEvaluation(ready.project.id, round.roundId);
+    spec.objects[0].relations!.push({ ...spec.objects[0].relations![0] });
+    assert.throws(() => startEvaluation({
+      projectId: ready.project.id, token: 'synthetic-token', packageSnapshot: { ...ready.packageSnapshot, spec },
+    }), /重复/u);
+    assert.equal(ready.m3repo.listRounds(ready.project.id).length, 1);
   }
 });
 

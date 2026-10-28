@@ -135,6 +135,14 @@ export function relationDraftFromKnown(relation) {
   };
 }
 
+export function graphRelationIdentity(mapping) {
+  return JSON.stringify([
+    mapping.sourceObject, mapping.relationName, mapping.targetObject,
+    mapping.matchMode === 'same_row' ? '' : mapping.sourceJoinProperty,
+    mapping.matchMode === 'same_row' ? '' : mapping.targetJoinProperty,
+  ].map((value) => String(value ?? '').normalize('NFC').trim()));
+}
+
 export function addRelationMapping(mappings, draft, preview) {
   const sourceObject = objectByKey(preview, draft?.sourceObject);
   const targetObject = objectByKey(preview, draft?.targetObject);
@@ -146,10 +154,6 @@ export function addRelationMapping(mappings, draft, preview) {
   if (!targetObject) throw new Error('请选择目标实体');
   const targetIssue = objectImportIssue(preview, targetObject);
   if (targetIssue) throw new Error(`目标实体「${targetObject.title || targetObject.key}」不可导入：${targetIssue}`);
-  if (mappings.some((item) => item.sourceObject === sourceObject.key
-    && item.relationName === relationName && item.targetObject === targetObject.key)) {
-    throw new Error('相同源实体、关系名称和目标实体的关系不能重复添加');
-  }
   const relation = {
     sourceObject: sourceObject.key,
     relationName,
@@ -160,23 +164,25 @@ export function addRelationMapping(mappings, draft, preview) {
   if (Boolean(relation.sourceJoinProperty) !== Boolean(relation.targetJoinProperty)) {
     throw new Error('关系必须同时配置源和目标关联字段');
   }
-  if (!relation.sourceJoinProperty && relationCanMatchSameRow(preview, relation)) {
-    return [...mappings, { ...relation, matchMode: 'same_row' }];
+  const mapping = !relation.sourceJoinProperty && relationCanMatchSameRow(preview, relation)
+    ? { ...relation, matchMode: 'same_row' }
+    : {
+      ...relation,
+      matchMode: 'field_match',
+      sourceJoinProperty: relation.sourceJoinProperty || defaultJoinProperty(preview, sourceObject),
+      targetJoinProperty: relation.targetJoinProperty || defaultJoinProperty(preview, targetObject),
+    };
+  if (mappings.some((item) => graphRelationIdentity(item) === graphRelationIdentity(mapping))) {
+    throw new Error('相同源实体、关系名称、目标实体和关联字段的关系不能重复添加');
   }
-  return [...mappings, {
-    ...relation,
-    matchMode: 'field_match',
-    sourceJoinProperty: relation.sourceJoinProperty || defaultJoinProperty(preview, sourceObject),
-    targetJoinProperty: relation.targetJoinProperty || defaultJoinProperty(preview, targetObject),
-  }];
+  return [...mappings, mapping];
 }
 
 export function addKnownRelationMappings(mappings, preview) {
   return (preview?.schema?.relations || []).reduce((current, relation) => {
     const draft = relationDraftFromKnown(relation);
-    const relationName = String(draft.relationName || '').trim();
-    const alreadyAdded = current.some((mapping) => mapping.sourceObject === draft.sourceObject
-      && mapping.relationName === relationName && mapping.targetObject === draft.targetObject);
+    const candidate = addRelationMapping([], draft, preview)[0];
+    const alreadyAdded = current.some((mapping) => graphRelationIdentity(mapping) === graphRelationIdentity(candidate));
     return alreadyAdded ? current : addRelationMapping(current, draft, preview);
   }, mappings);
 }

@@ -9,6 +9,7 @@ import { parseExcel } from '../src/documents/parser.js';
 import { workbookBuffer } from './helpers/graph-import-fixtures.js';
 import { addKnownRelationMappings, graphImportMappingPayload } from '../frontend/src/graph-import-form.js';
 import { toSpecObjectRelations } from '../src/workflow/ontology-model-validation.js';
+import { validateObjectBatch, validateSpecIntegrity } from '../src/workflow/spec-validation.js';
 
 // All records and schemas in this file are synthetic.
 function fixture(): PackageSpec {
@@ -44,6 +45,60 @@ test('explicit relation fields survive package render, import, and re-render', (
   assert.equal(schema.relations[0].targetJoinProperty, 'event_id');
   assert.equal(schema.relations[0].note, '按来源事件关联');
   assert.match(files['objects/Request.md'], /关系 \| 目标对象 \| 说明 \| 证据 \| 源关联字段 \| 目标关联字段/);
+});
+
+test('same-named relations with distinct join fields survive validation and graph mapping', () => {
+  const spec = fixture();
+  spec.objects[0].relations!.push({
+    relation: 'references', target: 'Event', sourceJoinProperty: 'group_id', targetJoinProperty: 'group_id',
+  });
+  assert.deepEqual(validateObjectBatch([], spec.objects), []);
+  assert.doesNotThrow(() => validateSpecIntegrity(spec));
+  const files = renderPackage(spec);
+  const restored = parseRenderedPackageFiles(files);
+  assert.equal(restored.objects.find((object) => object.key === 'Request')?.relations?.length, 2);
+  const schema = extractGraphImportSchema(restored, files);
+  const tables = parseExcel(workbookBuffer({
+    Requests: [['request_id', 'source_event_id', 'group_id'], ['R0', 'E0', 'G0']],
+    Events: [['event_id', 'group_id'], ['E0', 'G0']],
+  }));
+  const preview = { schema, sheets: tables.map((table) => ({
+    name: table.name, columns: table.fields.map((field) => field.name), rowCount: table.rows!.length,
+  })) };
+  const mappings = addKnownRelationMappings([], preview);
+  assert.equal(mappings.length, 2);
+  assert.equal(addKnownRelationMappings(mappings, preview).length, 2);
+  const mapping = graphImportMappingPayload(mappings);
+  assert.equal(validateGraphImportMapping(schema, tables, mapping).relationshipCount, 2);
+  assert.throws(() => validateGraphImportMapping(schema, tables, {
+    relations: [mapping.relations[0], mapping.relations[0]],
+  }), /不能重复添加/);
+  spec.objects[0].relations!.push({ ...spec.objects[0].relations![0] });
+  assert.throws(() => validateSpecIntegrity(spec), /重复/);
+});
+
+test('self relations survive graph schema and mapping with or without explicit join fields', () => {
+  for (const explicit of [false, true]) {
+    const spec = fixture();
+    spec.objects[0].relations = [{
+      relation: 'reports_to', target: 'Request',
+      ...(explicit ? { sourceJoinProperty: 'source_event_id', targetJoinProperty: 'request_id' } : {}),
+    }];
+    assert.doesNotThrow(() => validateSpecIntegrity(spec));
+    const schema = extractGraphImportSchema(spec, renderPackage(spec));
+    const tables = parseExcel(workbookBuffer({
+      Requests: [['request_id', 'source_event_id', 'group_id'], ['R0', 'R0', 'G0']],
+      Events: [['event_id', 'group_id'], ['E0', 'G0']],
+    }));
+    const preview = { schema, sheets: tables.map((table) => ({
+      name: table.name, columns: table.fields.map((field) => field.name), rowCount: table.rows!.length,
+    })) };
+    const mapping = graphImportMappingPayload(addKnownRelationMappings([], preview));
+    const validation = validateGraphImportMapping(schema, tables, mapping);
+    assert.equal(validation.relationshipCount, 1);
+    assert.equal(validation.relations[0].sourceObject, 'Request');
+    assert.equal(validation.relations[0].targetObject, 'Request');
+  }
 });
 
 test('old relation tables keep their notes and evidence', () => {
