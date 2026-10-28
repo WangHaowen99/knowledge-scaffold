@@ -1,5 +1,5 @@
 id: da-analyst
-name: DA 深度分析
+name: 知识求索
 version: 0.1.0
 description: 通过 HarnessProtocol（deepanalyze provider）驱动 DeepAnalyze-Java，在知识库上做长程分析
 author: kb-suite

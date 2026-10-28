@@ -1,12 +1,13 @@
 import { BookOpen, Network, Pencil, RefreshCw, Search, Trash2, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import DocDrawer from './DocDrawer';
 import { formatTime } from './format';
 import { rpc } from './rpc';
+import WikiGraphView from './WikiGraph';
 import { errorText, useToast } from './toast';
-import type { KnowledgeBase, WikiGraph, WikiPage, WikiPageItem, WikiPageType, WikiStatus } from './types';
+import type { KnowledgeBase, WikiPage, WikiPageItem, WikiPageType, WikiStatus } from './types';
 import { Badge, Button, Empty, Field, Spinner, Tabs } from './ui';
 
 const TYPE_LABEL: Record<WikiPageType, string> = { index: '索引', summary: '文档', entity: '实体', concept: '概念' };
@@ -249,131 +250,6 @@ export function WikiPageDrawer({ kbId, slug, onClose }: { kbId: string; slug: st
   );
 }
 
-const NODE_COLOR: Record<WikiPageType, string> = {
-  index: 'var(--color-text-secondary)',
-  summary: 'var(--color-feedback-warning)',
-  entity: 'var(--color-action-primary)',
-  concept: 'var(--color-feedback-success)',
-};
-
-function layout(graph: WikiGraph, width: number, height: number): Map<string, { x: number; y: number }> {
-  const nodes = graph.nodes.map((n, i) => {
-    const angle = (i / Math.max(1, graph.nodes.length)) * Math.PI * 2;
-    return { slug: n.slug, x: width / 2 + Math.cos(angle) * width * 0.35, y: height / 2 + Math.sin(angle) * height * 0.35, vx: 0, vy: 0 };
-  });
-  const index = new Map(nodes.map((n, i) => [n.slug, i]));
-  const edges = graph.edges.map((e) => [index.get(e.source), index.get(e.target)]).filter((e): e is [number, number] => e[0] !== undefined && e[1] !== undefined);
-  const k = Math.sqrt((width * height) / Math.max(1, nodes.length)) * 0.6;
-  for (let step = 0; step < 220; step += 1) {
-    const cool = 1 - step / 220;
-    for (let i = 0; i < nodes.length; i += 1) {
-      for (let j = i + 1; j < nodes.length; j += 1) {
-        const dx = nodes[i].x - nodes[j].x;
-        const dy = nodes[i].y - nodes[j].y;
-        const d2 = Math.max(dx * dx + dy * dy, 1);
-        const f = (k * k) / d2;
-        nodes[i].vx += dx * f * 0.05;
-        nodes[i].vy += dy * f * 0.05;
-        nodes[j].vx -= dx * f * 0.05;
-        nodes[j].vy -= dy * f * 0.05;
-      }
-    }
-    for (const [a, b] of edges) {
-      const dx = nodes[b].x - nodes[a].x;
-      const dy = nodes[b].y - nodes[a].y;
-      const d = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-      const f = ((d - k) / d) * 0.06;
-      nodes[a].vx += dx * f;
-      nodes[a].vy += dy * f;
-      nodes[b].vx -= dx * f;
-      nodes[b].vy -= dy * f;
-    }
-    for (const n of nodes) {
-      n.vx += (width / 2 - n.x) * 0.004;
-      n.vy += (height / 2 - n.y) * 0.004;
-      const v = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
-      const limit = 12 * cool + 0.5;
-      if (v > limit) {
-        n.vx = (n.vx / v) * limit;
-        n.vy = (n.vy / v) * limit;
-      }
-      n.x = Math.min(width - 20, Math.max(20, n.x + n.vx));
-      n.y = Math.min(height - 20, Math.max(20, n.y + n.vy));
-      n.vx *= 0.6;
-      n.vy *= 0.6;
-    }
-  }
-  return new Map(nodes.map((n) => [n.slug, { x: n.x, y: n.y }]));
-}
-
-function GraphView({ kbId, onOpen }: { kbId: string; onOpen: (slug: string) => void }) {
-  const notify = useToast();
-  const [graph, setGraph] = useState<WikiGraph | null>(null);
-  const [hover, setHover] = useState<string | null>(null);
-  const width = 900;
-  const height = 560;
-  useEffect(() => {
-    rpc
-      .call<WikiGraph>('wiki.graph', { kb_id: kbId, limit: 150 })
-      .then(setGraph)
-      .catch((err) => notify(errorText(err), true));
-  }, [kbId, notify]);
-  const pos = useMemo(() => (graph ? layout(graph, width, height) : null), [graph]);
-  if (!graph || !pos) {
-    return (
-      <div className="empty">
-        <Spinner size={18} />
-      </div>
-    );
-  }
-  if (!graph.nodes.length) return <Empty title="还没有页面" />;
-  const near = new Set(hover ? [hover, ...graph.edges.filter((e) => e.source === hover || e.target === hover).flatMap((e) => [e.source, e.target])] : []);
-  return (
-    <div className="wiki-graph">
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Wiki 链接图谱">
-        {graph.edges.map((e, i) => {
-          const a = pos.get(e.source);
-          const b = pos.get(e.target);
-          if (!a || !b) return null;
-          const lit = hover && (e.source === hover || e.target === hover);
-          return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} className={`wiki-edge ${lit ? 'wiki-edge-lit' : ''}`} />;
-        })}
-        {graph.nodes.map((n) => {
-          const p = pos.get(n.slug)!;
-          const r = 4 + Math.min(10, Math.sqrt(n.degree) * 2);
-          const dim = hover && !near.has(n.slug);
-          return (
-            <g
-              key={n.slug}
-              className="wiki-node"
-              opacity={dim ? 0.25 : 1}
-              onMouseEnter={() => setHover(n.slug)}
-              onMouseLeave={() => setHover(null)}
-              onClick={() => onOpen(n.slug)}
-            >
-              <circle cx={p.x} cy={p.y} r={r} fill={NODE_COLOR[n.page_type]} />
-              {r > 7 || near.has(n.slug) ? (
-                <text x={p.x + r + 3} y={p.y + 4}>
-                  {n.title.length > 14 ? `${n.title.slice(0, 14)}…` : n.title}
-                </text>
-              ) : null}
-            </g>
-          );
-        })}
-      </svg>
-      <div className="wiki-legend">
-        {(['summary', 'entity', 'concept'] as WikiPageType[]).map((t) => (
-          <span key={t}>
-            <i style={{ background: NODE_COLOR[t] }} />
-            {TYPE_LABEL[t]}
-          </span>
-        ))}
-        <span className="muted">节点越大链接越多；点节点打开页面</span>
-      </div>
-    </div>
-  );
-}
-
 type Filter = 'all' | WikiPageType;
 
 export default function WikiTab({ kb, onOpenSettings }: { kb: KnowledgeBase; onOpenSettings: () => void }) {
@@ -488,7 +364,7 @@ export default function WikiTab({ kb, onOpenSettings }: { kb: KnowledgeBase; onO
         </div>
       ) : null}
       {view === 'graph' ? (
-        <GraphView
+        <WikiGraphView
           kbId={kb.id}
           onOpen={(slug) => {
             setCurrent(slug);

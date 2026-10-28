@@ -342,11 +342,71 @@ mark.core { background: var(--color-feedback-warning-subtle); color: var(--color
 .wiki-ref { display: block; text-align: left; margin-top: 4px; font-size: var(--font-size-sm); }
 .wiki-revisions { margin-top: 12px; font-size: var(--font-size-sm); }
 .wiki-revisions summary { cursor: pointer; color: var(--color-text-secondary); margin-bottom: 6px; }
-.wiki-graph { border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-surface-page); }
-.wiki-graph svg { width: 100%; height: auto; display: block; }
-.wiki-edge { stroke: var(--color-border-strong); stroke-width: 1; }
-.wiki-edge-lit { stroke: var(--color-action-primary); stroke-width: 1.6; }
-.wiki-node { cursor: pointer; }
-.wiki-node text { font-size: 11px; fill: var(--color-text-tertiary); pointer-events: none; }
-.wiki-legend { display: flex; gap: 14px; padding: 8px 12px; font-size: var(--font-size-xs); border-top: 1px solid var(--color-border-default); align-items: center; }
-.wiki-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; }
+.wiki-graph {
+  position: relative; height: max(480px, calc(100vh - 300px)); overflow: hidden; user-select: none;
+  border: 1px solid var(--color-border-default); border-radius: 16px; background-color: var(--color-surface-page);
+  background-image: radial-gradient(var(--color-border-default) 1.2px, transparent 1.2px); background-size: 22px 22px;
+}
+.wiki-graph > svg { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+.wiki-graph > svg.graph-panning { cursor: grabbing; }
+.wiki-edge { fill: none; stroke: var(--color-border-strong); stroke-width: 1.1; opacity: 0.8; transition: opacity 0.2s; }
+.wiki-edge-lit { stroke: var(--color-action-primary); stroke-width: 1.8; opacity: 1; }
+.wiki-edge-dim { opacity: 0.08; }
+.wiki-node { cursor: pointer; transition: opacity 0.2s; }
+.wiki-node.wiki-node-dim { opacity: 0.14; }
+.wiki-node-halo { fill: currentColor; opacity: 0; transition: opacity 0.2s; }
+.wiki-node-focus .wiki-node-halo, .wiki-node-match .wiki-node-halo { opacity: 0.18; }
+.wiki-node-body { fill: currentColor; stroke: var(--color-surface-card); stroke-width: 2.5; filter: drop-shadow(0 2px 3px rgba(15, 23, 42, 0.2)); }
+.wiki-node-pinned .wiki-node-body { stroke: var(--color-text-primary); stroke-dasharray: 3 2; }
+.wiki-node-gloss { fill: #fff; opacity: 0.28; pointer-events: none; }
+.wiki-label { transition: opacity 0.2s; }
+.wiki-label text {
+  font-size: calc(12px * var(--label-scale, 1)); fill: var(--color-text-tertiary); pointer-events: none;
+  paint-order: stroke; stroke: var(--color-surface-page); stroke-width: calc(4px * var(--label-scale, 1)); stroke-linejoin: round;
+}
+.wiki-label.wiki-node-focus text { fill: var(--color-text-primary); font-weight: 600; }
+.wiki-label.wiki-node-minor { opacity: 0; }
+.graph-zoomed .wiki-label.wiki-node-minor { opacity: 1; }
+.graph-zoomed .wiki-label.wiki-node-minor.wiki-node-dim, .wiki-label.wiki-node-dim { opacity: 0.14; }
+
+.graph-panel {
+  position: absolute; background: var(--color-surface-card); border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg); box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+}
+.graph-search { left: 12px; top: 12px; width: 240px; height: 34px; display: flex; align-items: center; gap: 6px; padding: 0 10px; color: var(--color-text-secondary); }
+.graph-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--color-text-primary); font: inherit; font-size: var(--font-size-sm); }
+.graph-legend { left: 12px; bottom: 12px; display: flex; gap: 2px; padding: 4px; }
+.graph-legend-item {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 0; border-radius: var(--radius-md);
+  background: transparent; cursor: pointer; font-size: var(--font-size-xs); color: var(--color-text-tertiary);
+}
+.graph-legend-item:hover { background: var(--color-surface-hover); }
+.graph-legend-item i { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 0 2px var(--color-surface-card), 0 0 0 3px currentColor; }
+.graph-legend-item em { font-style: normal; color: var(--color-text-secondary); }
+.graph-legend-off { opacity: 0.4; text-decoration: line-through; }
+.graph-tools { right: 12px; top: 12px; display: flex; flex-direction: column; gap: 2px; padding: 4px; }
+.graph-tools .icon-btn { padding: 7px; }
+.graph-tools-sep { height: 1px; background: var(--color-border-default); margin: 2px 4px; }
+.graph-tip { right: 12px; bottom: 12px; display: flex; gap: 12px; padding: 6px 10px; font-size: var(--font-size-xs); color: var(--color-text-secondary); }
+.graph-tip kbd {
+  font-family: inherit; font-size: 11px; padding: 0 5px; margin-right: 4px; border-radius: 4px;
+  border: 1px solid var(--color-border-default); background: var(--color-surface-page);
+}
+.graph-card { right: 60px; top: 12px; width: 300px; max-height: calc(100% - 70px); overflow: auto; padding: 14px; }
+.graph-card-close { position: absolute; right: 8px; top: 8px; }
+.graph-card-type {
+  display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.graph-card-title { font-size: 16px; font-weight: 600; margin: 8px 24px 6px 0; }
+.graph-card-summary { font-size: var(--font-size-sm); line-height: 1.65; color: var(--color-text-tertiary); }
+.graph-card-meta { margin: 10px 0 8px; font-size: var(--font-size-xs); color: var(--color-text-secondary); }
+.graph-card-meta b { color: var(--color-text-primary); }
+.graph-card-neighbors { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.graph-card-neighbors button {
+  border: 1px solid var(--color-border-default); background: var(--color-surface-page); color: var(--color-text-tertiary);
+  border-radius: 999px; padding: 2px 9px; font-size: var(--font-size-xs); cursor: pointer;
+}
+.graph-card-neighbors button:hover { border-color: var(--color-action-primary); color: var(--color-action-primary); }
+.graph-card-actions { display: flex; gap: 8px; }
+.graph-card-actions .btn { flex: 1; justify-content: center; }

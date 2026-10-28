@@ -1,6 +1,6 @@
 # Docker Compose 部署（kb-suite）
 
-入口：`http://<部署机>:5199`。这是 JiuwenSwarm 的 Web 界面，默认用 develop 源码构建的开发版（`kb-suite/swarm:dev`，提交号见镜像标签 `kb-suite.swarm-commit`），没有改源码。左侧导航里有两个插件页面：「知识库」是 kb-manager，「DA 分析」是 da-analyst。DA 还以「三方 Agent」的身份接进了集群模式，可以当团队成员用。
+入口：`http://<部署机>:5199`。这是 JiuwenSwarm 的 Web 界面，默认用 develop 源码构建的开发版（`kb-suite/swarm:dev`，提交号见镜像标签 `kb-suite.swarm-commit`），没有改源码。左侧导航里有两个插件页面：「知识库」是 kb-manager，「知识求索」是 da-analyst。DA 还以「三方 Agent」的身份接进了集群模式，可以当团队成员用。
 
 回到 PyPI 发布版 0.2.7：`SWARM_TAG=0.2.7 SWARM_HOME_SUFFIX= ./kbsuite.sh up`。两个版本的工作区卷是分开的（`kb-suite_swarm-home` / `kb-suite_swarm-home-dev`），互不迁移。
 
@@ -126,7 +126,7 @@ WeKnora 发布的 docreader 镜像（09-24 版）不返回原文定位，main �
 - **推荐**：在输入框点「+ → 专家 → 知识库问答」，kb-service 会自动挂上，不用再开连接器。
 - **普通会话**：点「+ → 扩展 → 连接器」，手动打开 kb-service。
 
-## DA 分析页（DA 作为 harness provider）
+## 知识求索页（DA 作为 harness provider）
 
 `harness/da-harness/` 是一个 openJiuwen HarnessProtocol 1.0 的 provider 包（`deepanalyze-harness`），把远端 DA-java 包成标准 harness：
 
@@ -138,7 +138,7 @@ WeKnora 发布的 docreader 镜像（09-24 版）不返回原文定位，main �
 
 DA 有两种用法。
 
-**「DA 分析」页**（0.2.7 和开发版都有）：da-analyst 插件当宿主。
+**「知识求索」页**（0.2.7 和开发版都有）：da-analyst 插件当宿主。
 
 - 插件后端给每个页面连接起一个 `DeepAnalyzeHarness`，把 harness 事件转成简化的 JSON 推给页面；
 - DA 的提问和审批在页面上以卡片形式作答；
@@ -185,7 +185,7 @@ agent-solution 里的 `loop-forest` 是一个 Java 库：在 agent-core 的 ReAc
 - 可调项：`LF_MODEL_NAME`（qwen-plus）、`LF_TEMPERATURE`（0.7）、`LF_MAX_TOKENS`（8000）、`LF_MAX_ITERATIONS`（36）、`LF_FORK_ENABLED`（true）、`LF_FORK_MAX_ITERATIONS`（12）、`LF_CONTEXT_BUDGET`（true）、`LF_GOVERNOR_CAP_TOKENS`（200000）、`LF_HISTORY_TURNS`（6）、`LF_SYSTEM_PROMPT`。
 
 **在 Swarm 里怎么用**：
-- 「DA 分析」页右上角可以切换引擎（DeepAnalyze / Loop Forest），每个引擎各自保留会话。
+- 「知识求索」页右上角可以切换引擎（DeepAnalyze / Loop Forest），每个引擎各自保留会话。
 - 集群模式下让 leader 用 `spawn_teammate` 时把 `cli_agent` 填成 `loopforest`。Swarm 侧的变量是 `LF_BASE_URL`、`LF_ENGINE_SECRET`、`LF_TENANT_ID`、`LF_KB_CATALOG_URL`、`LF_KB_CATALOG_KEY_ENV`、`LF_MCP_BRIDGE_HOST`，compose 已经配好。
 
 ## 已知限制
@@ -195,7 +195,7 @@ agent-solution 里的 `loop-forest` 是一个 Java 库：在 agent-core 的 ReAc
 - WeKnora 的知识图谱（Neo4j）、FAQ 知识库、标签和自动打标签、数据源同步、共享，以及智能体（对话）设置都没有做；对话侧的设置在 Swarm 里。
 - Wiki 没有目录树（WeKnora 的 folders）、问题标记（issues）和 agent 写页面的工具；页面按类型分组浏览。
 - 只有一个租户：`default`。
-- 开发版 Swarm 的单 Agent 模式（主 agent）还不能挂第三方 provider，DA 只能当团队成员或在「DA 分析」页里用。专家模板的外部运行时也只认 codex 和 claudecode。
+- 开发版 Swarm 的单 Agent 模式（主 agent）还不能挂第三方 provider，DA 只能当团队成员或在「知识求索」页里用。专家模板的外部运行时也只认 codex 和 claudecode。
 - DA 写的文件留在 DA 容器里，团队工作区里看不到，结果只能通过消息传回来。
 - leader 不会自己把「deepanalyze」和 `cli_agent` 参数对上，没写明时会改用专家（实测第一次就是这样）。
 - 每次团队工具调用都多一轮 DA 的确认续跑（约 3 秒）；每个 DA 任务开始时重连一次团队 MCP（几十毫秒）。

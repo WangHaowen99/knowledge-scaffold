@@ -1,9 +1,12 @@
-import { Bot, ChevronDown, ChevronRight, Library, Plus, Send, Square, Wrench } from 'lucide-react';
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import {
+  Bot, Check, ChevronDown, ChevronRight, Compass, GitCompare, GitFork, Layers, Library, ListChecks, MessageCircleQuestion,
+  Plus, Quote, ScanSearch, Search, Send, Sparkles, Square, TriangleAlert, Wrench,
+} from 'lucide-react';
+import { useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ToastProvider, useToast } from '../toast';
-import { Badge, Button, Empty, Spinner } from '../ui';
+import { Badge, Button, Spinner } from '../ui';
 import { channel, type Wire } from './channel';
 
 type Kb = { id: string; name: string; documents: number };
@@ -49,6 +52,26 @@ const ENGINE_KEY = 'da-analyst.engine';
 const DEFAULT_ENGINES: Engine[] = [{ id: 'deepanalyze', label: 'DeepAnalyze', ready: false }];
 // each engine keeps its own conversation (a different provider and session)
 const sessionKey = (engine: string) => `da-analyst.host-session.${engine}`;
+// beyond this many knowledge bases the scope row folds the rest behind "+N"
+const KB_FOLD = 6;
+
+type Example = { icon: ReactNode; title: string; text: string };
+const CAPS: { icon: ReactNode; label: string }[] = [
+  { icon: <Search size={12} />, label: '多轮检索' },
+  { icon: <GitCompare size={12} />, label: '交叉核对' },
+  { icon: <MessageCircleQuestion size={12} />, label: '主动追问' },
+  { icon: <Quote size={12} />, label: '引用溯源' },
+];
+const DA_EXAMPLES: Example[] = [
+  { icon: <GitCompare size={14} />, title: '对比差异', text: '对比几份文档里对同一参数的规定，列出不一致的地方并注明出处' },
+  { icon: <ListChecks size={14} />, title: '梳理流程', text: '把某项操作的步骤整理成检查清单，每一步写明合格标准和依据' },
+  { icon: <TriangleAlert size={14} />, title: '故障归因', text: '某个异常现象可能由哪些原因引起？分别对应哪些处置措施？' },
+];
+const LF_EXAMPLES: Example[] = [
+  { icon: <GitFork size={14} />, title: '多角度查证', text: '从设计要求、操作规程和历史记录三个角度核对同一个结论是否成立' },
+  { icon: <ListChecks size={14} />, title: '汇总清单', text: '把知识库里所有提到的定期检查项汇总成一张表，按周期分组' },
+  { icon: <TriangleAlert size={14} />, title: '风险排查', text: '列出文档中提到的高风险操作，以及每项对应的防护要求' },
+];
 
 // Turn events can reach the page before the `accepted` reply that carries the
 // turn id; such events belong to the newest turn still waiting for its id.
@@ -312,11 +335,17 @@ function Shell() {
   engineRef.current = engine;
   const [started, setStarted] = useState(false);
   const [text, setText] = useState('');
+  const [showAllKbs, setShowAllKbs] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
 
-  useEffect(() => channel.onStatus(setConnected), []);
+  useEffect(() => {
+    const off = channel.onStatus(setConnected);
+    // the socket opens on module load and may have connected before this effect ran
+    setConnected(channel.connected);
+    return off;
+  }, []);
 
   useEffect(() => {
     const off = channel.on((msg) => {
@@ -411,59 +440,124 @@ function Shell() {
     return selected.length ? `${selected.length} 个知识库` : '全部知识库';
   }, [kbs, selected]);
 
+  const kbNames = kbs.filter((kb) => selected.includes(kb.id)).map((kb) => kb.name);
+  // selected knowledge bases stay visible when the list is folded
+  const shownKbs = showAllKbs || kbs.length <= KB_FOLD
+    ? kbs
+    : [...kbs.filter((kb) => selected.includes(kb.id)), ...kbs.filter((kb) => !selected.includes(kb.id))].slice(0, KB_FOLD);
+  const status = !connected
+    ? { tone: 'off', text: '正在连接…' }
+    : current?.ready
+      ? { tone: 'on', text: `${engineLabel} 已连接` }
+      : { tone: 'warn', text: `${engineLabel} 未就绪` };
+  const examples = engine === 'loopforest' ? LF_EXAMPLES : DA_EXAMPLES;
+
   return (
     <div className="da-app">
       <header className="da-header">
-        <div>
-          <div className="da-title">DA 深度分析</div>
-          <div className="da-sub">
-            通过 HarnessProtocol 驱动 {engineLabel}，在 kb-service 知识库上做多步分析 ·
-            <span className={`dot ${connected && current?.ready ? '' : 'dot-off'}`} style={{ display: 'inline-block', margin: '0 4px 0 8px' }} />
-            {connected ? (current?.ready ? `${engineLabel} 已连接` : `${engineLabel} 未就绪`) : '正在连接…'}
+        <div className="da-brand">
+          <div className="da-logo"><Compass size={20} /></div>
+          <div>
+            <div className="da-title">知识求索</div>
+            <div className="da-sub">
+              <span className={`da-status da-status-${status.tone}`}><i />{status.text}</span>
+              <span>在知识库上做多步检索、核对与归纳</span>
+            </div>
           </div>
         </div>
         <div className="da-header-actions">
           {engines.length > 1 ? (
-            <select
-              className="select da-engine"
-              value={engine}
-              disabled={running}
-              title="分析引擎"
-              onChange={(e) => switchEngine(e.target.value)}
-            >
+            <div className="da-seg" role="radiogroup" aria-label="分析引擎">
               {engines.map((e) => (
-                <option key={e.id} value={e.id}>{e.label}{e.ready ? '' : '（未就绪）'}</option>
+                <button
+                  key={e.id}
+                  role="radio"
+                  aria-checked={e.id === engine}
+                  className={e.id === engine ? 'da-seg-on' : ''}
+                  disabled={running}
+                  title={running ? '分析执行中，结束后才能切换引擎' : e.ready ? e.label : `${e.label} 未就绪`}
+                  onClick={() => switchEngine(e.id)}
+                >
+                  {e.id === 'loopforest' ? <GitFork size={14} /> : <ScanSearch size={14} />}
+                  {e.label}
+                  <span className={`da-seg-dot ${e.ready ? '' : 'da-seg-dot-off'}`} />
+                </button>
               ))}
-            </select>
+            </div>
           ) : null}
-          <Button icon={<Plus size={14} />} onClick={newConversation} disabled={running}>新对话</Button>
+          <Button
+            icon={<Plus size={14} />}
+            onClick={newConversation}
+            disabled={running}
+            title={running ? '分析执行中，结束或停止后才能开始新对话' : undefined}
+          >
+            新对话
+          </Button>
         </div>
       </header>
       <div className="da-scope">
-        <Library size={14} className="muted" />
-        <span className="muted">检索范围：{scopeText}</span>
-        {kbs.map((kb) => (
+        <span className="da-scope-label">
+          <Library size={14} />
+          检索范围 <b>{scopeText}</b>
+        </span>
+        {kbs.length ? (
+          <button
+            className={`da-chip da-chip-all ${selected.length === 0 ? 'da-chip-on' : ''}`}
+            onClick={() => setSelected([])}
+          >
+            <span className="da-chip-check"><Layers size={11} /></span>
+            全部
+          </button>
+        ) : null}
+        {shownKbs.map((kb) => (
           <button
             key={kb.id}
             className={`da-chip ${selected.includes(kb.id) ? 'da-chip-on' : ''}`}
             onClick={() => toggleKb(kb.id)}
             title={`${kb.documents} 个已入库文档`}
           >
+            <span className="da-chip-check"><Check size={11} /></span>
             {kb.name}
+            <span className="da-chip-count">{kb.documents}</span>
           </button>
         ))}
+        {kbs.length > KB_FOLD ? (
+          <button className="da-chip da-chip-more" onClick={() => setShowAllKbs(!showAllKbs)}>
+            {showAllKbs ? '收起' : `+${kbs.length - KB_FOLD}`}
+          </button>
+        ) : null}
+        <span className="da-scope-hint">不选 = 检索全部知识库</span>
       </div>
-      <main className="da-thread">
+      <main className={`da-thread ${state.turns.length ? '' : 'da-thread-empty'}`}>
         {state.turns.length === 0 ? (
-          <Empty
-            icon={<Bot size={36} />}
-            title={`向 ${engineLabel} 提一个分析问题`}
-            hint={
-              engine === 'loopforest'
-                ? 'Loop Forest 会检索知识库，必要时把问题拆成分支并行查证再汇总。执行中可以继续输入补充指令，或点停止。'
-                : 'DA 会检索、展开、交叉核对知识库里的文档后作答，必要时会向你追问。执行中可以继续输入补充指令，或点停止。'
-            }
-          />
+          <div className="da-hero">
+            <div className="da-hero-icon">
+              <div className="da-hero-ring" />
+              <div className="da-hero-core"><Bot size={34} /></div>
+              <div className="da-hero-spark"><Sparkles size={13} /></div>
+            </div>
+            <h2>向 {engineLabel} 提一个分析问题</h2>
+            <p>
+              {engine === 'loopforest'
+                ? 'Loop Forest 会检索知识库，必要时把问题拆成分支并行查证再汇总。'
+                : 'DA 会检索、展开、交叉核对知识库里的文档后作答，必要时会向你追问。'}
+              <br />
+              执行中可以继续输入补充指令，或随时停止。
+            </p>
+            <div className="da-caps">
+              {CAPS.map(({ icon, label }) => (
+                <span key={label} className="da-cap">{icon}{label}</span>
+              ))}
+            </div>
+            <div className="da-examples">
+              {examples.map((ex) => (
+                <button key={ex.title} className="da-example" onClick={() => setText(ex.text)}>
+                  <span className="da-example-title">{ex.icon}{ex.title}</span>
+                  {ex.text}
+                </button>
+              ))}
+            </div>
+          </div>
         ) : (
           state.turns.map((turn) => (
             <TurnView
@@ -481,7 +575,7 @@ function Shell() {
       <footer className="da-composer">
         <textarea
           className="textarea"
-          placeholder={running ? '输入补充指令，发送后注入到正在执行的分析' : '例如：对比几份手册里润滑油系统的报警值和联锁值，列出不一致的地方'}
+          placeholder={running ? '输入补充指令，发送后注入到正在执行的分析' : '输入分析问题，Enter 发送，Shift+Enter 换行'}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
@@ -491,13 +585,22 @@ function Shell() {
             }
           }}
         />
-        <div className="da-composer-actions">
-          {running ? (
-            <Button variant="danger" icon={<Square size={13} />} onClick={() => channel.send({ type: 'abort' })}>停止</Button>
-          ) : null}
-          <Button variant="primary" icon={<Send size={13} />} disabled={!text.trim() || !started} onClick={submit}>
-            {running ? '补充指令' : '发送'}
-          </Button>
+        <div className="da-composer-foot">
+          <span className="muted">
+            {running
+              ? '分析执行中，发送的内容会作为补充指令'
+              : kbNames.length
+                ? `将在「${kbNames.join('」「')}」中检索`
+                : '将在全部知识库中检索'}
+          </span>
+          <div className="da-composer-actions">
+            {running ? (
+              <Button variant="danger" icon={<Square size={13} />} onClick={() => channel.send({ type: 'abort' })}>停止</Button>
+            ) : null}
+            <Button variant="primary" icon={<Send size={13} />} disabled={!text.trim() || !started} onClick={submit}>
+              {running ? '补充指令' : '发送'}
+            </Button>
+          </div>
         </div>
       </footer>
     </div>

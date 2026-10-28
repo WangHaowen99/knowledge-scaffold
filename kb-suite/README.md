@@ -8,7 +8,7 @@
 - `harness/`：openJiuwen harness provider
   - `da-harness/`：把 DeepAnalyze-Java 包成 harness provider（入口点 `deepanalyze`）
   - `lf-harness/`：Loop Forest 的 harness provider（入口点 `loopforest`）
-- `swarm-kb-plugin/`：JiuwenSwarm 应用插件（「知识库」管理页、「DA 分析」页）
+- `swarm-kb-plugin/`：JiuwenSwarm 应用插件（「知识库」管理页、「知识求索」页）
 - `deploy/compose/`：Docker Compose 部署清单和构建脚本，说明见其中的 `README.md`
 
 设计文档见 `docs/`。第三方代码来源见 `NOTICE`。

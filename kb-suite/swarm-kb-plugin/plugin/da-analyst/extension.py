@@ -326,7 +326,7 @@ class DaAnalystPlugin(ApplicationPluginExtension):
     def frontend_contributions(self) -> tuple[FrontendContribution, ...]:
         return (
             FrontendContribution(
-                id="da-analyst-page", nav_key=f"app:{PLUGIN_ID}", title="DA 分析",
+                id="da-analyst-page", nav_key=f"app:{PLUGIN_ID}", title="知识求索",
                 render_mode="iframe", entrypoint="da.html", position=21,
             ),
         )

@@ -43,7 +43,7 @@ wait_healthy() {
 }
 
 build_plugin() {
-  # 一份前端工程出两个插件页面：kb-manager（知识库管理）和 da-analyst（DA 深度分析）。
+  # 一份前端工程出两个插件页面：kb-manager（知识库管理）和 da-analyst（知识求索）。
   docker run --rm -v "$ROOT/swarm-kb-plugin:/src" docker.1ms.run/library/node:22-slim sh -c "
     cp -r /src/frontend /work && cd /work &&
     npm ci --registry=https://registry.npmmirror.com --no-audit --no-fund --loglevel=error &&
