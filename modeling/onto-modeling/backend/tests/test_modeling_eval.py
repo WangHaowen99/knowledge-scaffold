@@ -518,6 +518,32 @@ def test_run_sync_rechecks_relation_structure_before_resume_or_import(tmp_path, 
     assert calls == []
 
 
+def test_run_sync_rejects_duplicates_before_resume_or_import(tmp_path, monkeypatch):
+    pid, root = _eval_workspace(tmp_path, "合成重复关系校验")
+    object_dir = root / "ontology" / "object"
+    (object_dir / "object_a.md").write_text(
+        "# 关联对象\n- 当前对象 → references → [[object_b]]\n"
+        "- 当前对象名 -> references -> [[object_b|合成别名]]\n",
+        encoding="utf-8",
+    )
+    (object_dir / "object_b.md").write_text("# 对象描述\n合成对象 B\n", encoding="utf-8")
+    monkeypatch.setattr(modeling_eval, "_try_resume", lambda *args, **kwargs: pytest.fail("duplicate input resumed"))
+    monkeypatch.setattr(modeling_eval, "_http", lambda *args, **kwargs: pytest.fail("duplicate input imported"))
+
+    modeling_eval._run_sync(
+        pid, root, "synthetic-token", [{"question": "synthetic question", "groundTruth": "synthetic answer"}],
+        allow_unbound=True,
+    )
+
+    state = modeling_eval.read_state(root)
+    assert state["status"] == "failed"
+    assert state["error_code"] == "EVALUATION_PACKAGE_INVALID"
+    problem = state["error_details"]["problems"][0]
+    assert "重复关系" in problem
+    assert "ontology/object/object_a.md 第 2 行" in problem
+    assert "ontology/object/object_a.md 第 3 行" in problem
+
+
 def test_changed_objects_do_not_resume_previous_round(tmp_path, monkeypatch):
     root = tmp_path
     modeling_eval._write_state(
