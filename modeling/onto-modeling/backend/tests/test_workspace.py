@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app.services.workspace import WorkspaceError, WorkspaceManager
+from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 
 
 @pytest.fixture()
@@ -319,6 +319,243 @@ def test_file_at_revision_and_revert(manager: WorkspaceManager):
     manager.revert_to(meta["id"], first)
     assert (root / "a.md").read_text(encoding="utf-8") == "v1"
     assert manager.versions(meta["id"])[0]["message"].startswith("revert")
+    assert manager.versions(meta["id"])[0]["message"] == (
+        f"revert: 回退到版本 2（{first[:8]}）"
+    )
+
+
+def _commit(root: Path, message: str) -> str:
+    _git(root, "add", "-A")
+    _git(root, "commit", "-m", message)
+    return _git(root, "rev-parse", "HEAD").strip()
+
+
+def test_revert_restores_complete_business_snapshot_and_keeps_metadata(
+    manager: WorkspaceManager,
+):
+    meta = manager.create_project("t")
+    root = manager.project_root(meta["id"])
+    _write(root, "ontology/object/kept.md", "old")
+    _write(root, "ontology/object/restored.md", "restore me")
+    target = _commit(root, "target")
+
+    _write(root, "ontology/object/kept.md", "new")
+    (root / "ontology/object/restored.md").unlink()
+    _write(root, "ontology/object/later.md", "remove me")
+    current_meta = {**manager.get_project(meta["id"]), "name": "current name", "members": {"editor_a": "editor"}}
+    (root / ".onto-web.json").write_text(json.dumps(current_meta), encoding="utf-8")
+    current_ignore = (root / ".gitignore").read_text(encoding="utf-8") + "custom-cache/\n"
+    (root / ".gitignore").write_text(current_ignore, encoding="utf-8")
+    _commit(root, "later")
+
+    preview = manager.preview_revert(meta["id"], target)
+    assert preview["changes"]["total"] == 3
+    result = manager.revert_to(meta["id"], target, preview["expected_head"])
+
+    assert result["changes"] == preview["changes"]
+    assert (root / "ontology/object/kept.md").read_text(encoding="utf-8") == "old"
+    assert (root / "ontology/object/restored.md").read_text(encoding="utf-8") == "restore me"
+    assert not (root / "ontology/object/later.md").exists()
+    assert manager.get_project(meta["id"])["name"] == "current name"
+    assert manager.get_project(meta["id"])["members"] == {"editor_a": "editor"}
+    assert (root / ".gitignore").read_text(encoding="utf-8") == current_ignore
+    tracked = _git(root, "ls-tree", "HEAD", "--", "ontology/object/kept.md")
+    assert tracked.startswith("100644 ")
+
+
+def test_revert_ignores_generated_index_only_difference(manager: WorkspaceManager):
+    meta = manager.create_project("t")
+    root = manager.project_root(meta["id"])
+    index = root / "reports" / "index.md"
+    index.parent.mkdir(parents=True, exist_ok=True)
+    index.write_text("# historical projection\n", encoding="utf-8")
+    target = _commit(root, "historical index")
+
+    manager._refresh_indexes(root)
+    _commit(root, "refresh generated index")
+
+    with pytest.raises(WorkspaceError, match="业务内容.*一致"):
+        manager.preview_revert(meta["id"], target)
+
+
+@pytest.mark.parametrize("dirty_kind", ["modified", "staged", "untracked"])
+def test_revert_rejects_dirty_workspace(manager: WorkspaceManager, dirty_kind: str):
+    meta = manager.create_project("t")
+    root = manager.project_root(meta["id"])
+    _write(root, "ontology/object/item.md", "v1")
+    target = _commit(root, "v1")
+    _write(root, "ontology/object/item.md", "v2")
+    _commit(root, "v2")
+
+    if dirty_kind == "untracked":
+        _write(root, "ontology/object/untracked.md", "draft")
+    else:
+        _write(root, "ontology/object/item.md", "draft")
+        if dirty_kind == "staged":
+            _git(root, "add", "ontology/object/item.md")
+    with pytest.raises(WorkspaceError, match="未提交或暂存"):
+        manager.revert_to(meta["id"], target)
+
+
+def test_revert_rejects_current_missing_and_non_ancestor(manager: WorkspaceManager):
+    meta = manager.create_project("t")
+    root = manager.project_root(meta["id"])
+    current = manager.versions(meta["id"])[0]["commit"]
+    with pytest.raises(WorkspaceError, match="当前已是"):
+        manager.preview_revert(meta["id"], current)
+    with pytest.raises(WorkspaceError, match="不存在"):
+        manager.preview_revert(meta["id"], "f" * 40)
+
+    _git(root, "checkout", "--orphan", "side")
+    _write(root, "side.md", "side")
+    side = _commit(root, "side")
+    _git(root, "checkout", "master")
+    with pytest.raises(WorkspaceError, match="当前版本历史"):
+        manager.preview_revert(meta["id"], side)
+
+
+def test_revert_rejects_stale_preview_and_busy_project(manager: WorkspaceManager):
+    meta = manager.create_project("t")
+    root = manager.project_root(meta["id"])
+    _write(root, "ontology/object/item.md", "v1")
+    target = _commit(root, "v1")
+    _write(root, "ontology/object/item.md", "v2")
+    _commit(root, "v2")
+    preview = manager.preview_revert(meta["id"], target)
+    _write(root, "ontology/object/item.md", "v3")
+    _commit(root, "v3")
+
+    with pytest.raises(WorkspaceError, match="重新预览"):
+        manager.revert_to(meta["id"], target, preview["expected_head"])
+    with pytest.raises(WorkspaceError, match="busy"):
+        manager.revert_to(
+            meta["id"],
+            target,
+            busy_check=lambda _root: (_ for _ in ()).throw(WorkspaceError("busy", 409)),
+        )
+
+
+def test_revert_invalidates_derived_state(manager: WorkspaceManager):
+    meta = manager.create_project("t")
+    root = manager.project_root(meta["id"])
+    _write(root, "ontology/object/item.md", "v1")
+    target = _commit(root, "v1")
+    _write(root, "ontology/object/item.md", "v2")
+    _commit(root, "v2")
+    for rel in (
+        ".ontology-state/research-review.json",
+        ".ontology-state/script-verifications.json",
+        ".ontology-state/solver-validations.json",
+        ".ontology-state/artifact-reviews/review.json",
+    ):
+        _write(root, rel, "{}")
+    _write(root, ".ontology-state/eval-sets.json", "keep")
+
+    manager.revert_to(meta["id"], target)
+    assert not (root / ".ontology-state/research-review.json").exists()
+    assert not (root / ".ontology-state/artifact-reviews").exists()
+    assert (root / ".ontology-state/eval-sets.json").read_text(encoding="utf-8") == "keep"
+
+
+def test_revert_failure_restores_business_files_without_overwriting_metadata(
+    manager: WorkspaceManager, monkeypatch
+):
+    from app.services import workspace
+
+    meta = manager.create_project("t")
+    root = manager.project_root(meta["id"])
+    _write(root, "ontology/object/item.md", "v1")
+    target = _commit(root, "v1")
+    _write(root, "ontology/object/item.md", "v2")
+    _write(root, "ontology/object/later.md", "later")
+    _commit(root, "v2")
+    current_meta = (root / ".onto-web.json").read_text(encoding="utf-8") + "\n"
+    (root / ".onto-web.json").write_text(current_meta, encoding="utf-8")
+
+    original_git = workspace._git
+
+    def fail_commit(cwd, *args):
+        if args and args[0] == "commit":
+            raise WorkspaceError("simulated commit failure", 500)
+        return original_git(cwd, *args)
+
+    monkeypatch.setattr(workspace, "_git", fail_commit)
+    with pytest.raises(WorkspaceError, match="simulated"):
+        manager.revert_to(meta["id"], target)
+
+    assert (root / "ontology/object/item.md").read_text(encoding="utf-8") == "v2"
+    assert (root / "ontology/object/later.md").read_text(encoding="utf-8") == "later"
+    assert (root / ".onto-web.json").read_text(encoding="utf-8") == current_meta
+    assert manager._managed_dirty_paths(root) == []
+
+
+def test_revert_removes_later_symlink_without_following_it(
+    manager: WorkspaceManager, tmp_path: Path
+):
+    meta = manager.create_project("t")
+    root = manager.project_root(meta["id"])
+    _write(root, "ontology/object/item.md", "v1")
+    target = _commit(root, "v1")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep", encoding="utf-8")
+    link = root / "ontology/object/later-link"
+    link.symlink_to(outside)
+    _commit(root, "symlink")
+
+    manager.revert_to(meta["id"], target)
+    assert not link.exists()
+    assert not link.is_symlink()
+    assert outside.read_text(encoding="utf-8") == "keep"
+
+
+def test_revert_handles_business_filename_with_newline(manager: WorkspaceManager):
+    meta = manager.create_project("t")
+    root = manager.project_root(meta["id"])
+    path = root / "ontology/object/line\nbreak.md"
+    path.write_text("v1", encoding="utf-8")
+    target = _commit(root, "v1")
+    path.write_text("v2", encoding="utf-8")
+    _commit(root, "v2")
+
+    manager.revert_to(meta["id"], target)
+    assert path.read_text(encoding="utf-8") == "v1"
+
+
+@pytest.mark.parametrize("target_is_directory", [True, False])
+def test_revert_handles_file_directory_type_changes(
+    manager: WorkspaceManager, target_is_directory: bool
+):
+    meta = manager.create_project("t")
+    root = manager.project_root(meta["id"])
+    path = root / "ontology" / "object" / "sample"
+    child = path / "item.md"
+
+    if target_is_directory:
+        child.parent.mkdir(parents=True, exist_ok=True)
+        child.write_text("target child", encoding="utf-8")
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("target file", encoding="utf-8")
+    target = _commit(root, "target")
+
+    if target_is_directory:
+        child.unlink()
+        path.rmdir()
+        path.write_text("current file", encoding="utf-8")
+    else:
+        path.unlink()
+        child.parent.mkdir(parents=True, exist_ok=True)
+        child.write_text("current child", encoding="utf-8")
+    _commit(root, "current")
+
+    manager.revert_to(meta["id"], target)
+    if target_is_directory:
+        assert path.is_dir()
+        assert child.read_text(encoding="utf-8") == "target child"
+    else:
+        assert path.is_file()
+        assert path.read_text(encoding="utf-8") == "target file"
+    assert manager._managed_dirty_paths(root) == []
 
 
 def test_delete_resource_scope(manager: WorkspaceManager):
@@ -345,3 +582,18 @@ def test_versions_numbering(manager: WorkspaceManager):
     assert len(versions) == 2
     assert versions[0]["version"] == 2  # 最新在前
     assert versions[-1]["version"] == 1
+    assert versions[0]["current"] is True
+    assert versions[-1]["current"] is False
+
+
+def test_versions_keep_absolute_numbers_when_limited(manager: WorkspaceManager):
+    meta = manager.create_project("t")
+    root = manager.project_root(meta["id"])
+    for index in range(55):
+        _write(root, "ontology/object/item.md", str(index))
+        _commit(root, f"v{index}")
+    versions = manager.versions(meta["id"], limit=50)
+    assert [versions[0]["version"], versions[-1]["version"]] == [56, 7]
+    older = manager.versions(meta["id"], limit=10, offset=50)
+    assert [older[0]["version"], older[-1]["version"]] == [6, 1]
+    assert all(entry["current"] is False for entry in older)

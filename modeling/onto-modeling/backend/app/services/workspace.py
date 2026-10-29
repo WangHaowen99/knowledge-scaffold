@@ -65,6 +65,21 @@ README.md
 tmp/
 """
 
+# Version rollback restores only project content. Repository plumbing, project
+# metadata and runtime state are intentionally kept at their current values.
+ROLLBACK_EXCLUDED_TOP = {
+    ".git",
+    ".gitignore",
+    ".gitattributes",
+    ".gitmodules",
+    ".claude",
+    ".ontology-state",
+    "tmp",
+    META_FILE,
+    "CLAUDE.md",
+    "README.md",
+}
+
 
 _PROJECT_LOCKS: dict[str, threading.RLock] = {}
 _PROJECT_LOCKS_GUARD = threading.Lock()
@@ -1906,21 +1921,274 @@ class WorkspaceManager:
         out = _git(root, "show", f"{rev}:{rel_path}")
         return {"path": rel_path, "rev": rev, "content": out}
 
-    def revert_to(self, project_id: str, commit: str) -> dict:
-        """把工作区恢复为指定版本的内容并生成新提交（历史保留，可再回退）。
+    @classmethod
+    def _rollback_path_allowed(cls, rel_path: str) -> bool:
+        path = Path(rel_path)
+        if not path.parts or path.parts[0] in ROLLBACK_EXCLUDED_TOP:
+            return False
+        # Directory indexes are deterministic projections of the files beside
+        # them. Roll back their source files and regenerate the indexes instead
+        # of treating an old projection as an independent business change.
+        return rel_path not in {f"{directory}/index.md" for directory, _title in cls.INDEX_DIRS}
 
-        已知限制：该版本之后新增的文件不会被删除。
-        """
+    @classmethod
+    def _rollback_manifest(cls, root: Path, revision: str) -> dict[str, str]:
+        """Return the rollback-managed files and their git modes at revision."""
+        manifest = {}
+        for line in _git(root, "ls-tree", "-r", "-z", "--full-tree", revision).split("\0"):
+            if not line:
+                continue
+            try:
+                meta, rel_path = line.split("\t", 1)
+                mode, kind, _object_id = meta.split(" ", 2)
+            except ValueError:
+                continue
+            if kind == "blob" and cls._rollback_path_allowed(rel_path):
+                manifest[rel_path] = f"{mode} {_object_id}"
+        return manifest
+
+    @classmethod
+    def _managed_dirty_paths(cls, root: Path) -> list[str]:
+        """List changed managed paths while ignoring metadata and runtime state."""
+        raw = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+        records = raw.split("\0")
+        paths = []
+        index = 0
+        while index < len(records):
+            record = records[index]
+            index += 1
+            if not record:
+                continue
+            if len(record) < 4:
+                continue
+            status, rel_path = record[:2], record[3:]
+            if cls._rollback_path_allowed(rel_path):
+                paths.append(rel_path)
+            if "R" in status or "C" in status:
+                if index < len(records):
+                    previous = records[index]
+                    index += 1
+                    if previous and cls._rollback_path_allowed(previous):
+                        paths.append(previous)
+        return sorted(set(paths))
+
+    @classmethod
+    def _rollback_changes(cls, root: Path, commit: str) -> dict:
+        current = cls._rollback_manifest(root, "HEAD")
+        target = cls._rollback_manifest(root, commit)
+        current_paths, target_paths = set(current), set(target)
+        added = sorted(target_paths - current_paths)
+        deleted = sorted(current_paths - target_paths)
+        modified = sorted(
+            path
+            for path in current_paths & target_paths
+            if current[path] != target[path]
+        )
+        return {
+            "added": added,
+            "modified": modified,
+            "deleted": deleted,
+            "total": len(added) + len(modified) + len(deleted),
+        }
+
+    @staticmethod
+    def _minimal_pathspecs(paths: list[str]) -> list[str]:
+        """Collapse descendants when an affected parent path already covers them."""
+        result = []
+        for path in sorted(set(paths), key=lambda item: (item.count("/"), item)):
+            if not any(path.startswith(f"{parent}/") for parent in result):
+                result.append(path)
+        return result
+
+    @staticmethod
+    def _validate_revert_target(root: Path, commit: str) -> str:
         if not re.fullmatch(r"[0-9a-fA-F]{6,40}", commit):
             raise WorkspaceError("无效的版本号")
-        root = self.project_root(project_id)
-        _git(root, "checkout", commit, "--", ".")
-        status = _git(root, "status", "--porcelain")
-        if not status.strip():
-            raise WorkspaceError("当前内容与该版本一致，无需回退")
-        _git(root, "add", "-A")
-        _git(root, "commit", "-m", f"revert: 回退到 {commit[:8]}")
-        return {"reverted_to": commit}
+        try:
+            resolved = _git(root, "rev-parse", "--verify", f"{commit}^{{commit}}").strip()
+        except WorkspaceError as exc:
+            raise WorkspaceError("版本不存在或已不可用", 404) from exc
+        head = _git(root, "rev-parse", "HEAD").strip()
+        if resolved == head:
+            raise WorkspaceError("当前已是该版本，无需回退")
+        try:
+            ancestry_count = int(
+                _git(
+                    root,
+                    "rev-list",
+                    "--ancestry-path",
+                    "--count",
+                    f"{resolved}..{head}",
+                ).strip()
+                or "0"
+            )
+        except WorkspaceError as exc:
+            raise WorkspaceError("无法校验目标版本", 500) from exc
+        if ancestry_count == 0:
+            raise WorkspaceError("只能回退到当前版本历史中的提交", 409)
+        return resolved
+
+    def preview_revert(self, project_id: str, commit: str) -> dict:
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            resolved = self._validate_revert_target(root, commit)
+            changes = self._rollback_changes(root, resolved)
+            if not changes["total"]:
+                raise WorkspaceError("当前业务内容与该版本一致，无需回退")
+            return {
+                "reverted_to": resolved,
+                "expected_head": _git(root, "rev-parse", "HEAD").strip(),
+                "changes": changes,
+            }
+
+    @staticmethod
+    def _invalidate_revert_state(root: Path) -> list[str]:
+        """Remove conclusions derived from content that has just been replaced."""
+        state = root / ".ontology-state"
+        failed = []
+        for name in (
+            "eval.json",
+            "progress.json",
+            "research-review.json",
+            "research-inventory.json",
+            "research-baseline.json",
+            "script-verifications.json",
+            "solver-validations.json",
+        ):
+            try:
+                (state / name).unlink(missing_ok=True)
+            except OSError:
+                failed.append(name)
+        for name in ("artifact-reviews", "studio-review"):
+            path = state / name
+            try:
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path)
+            except OSError:
+                failed.append(name)
+        return failed
+
+    def revert_to(
+        self,
+        project_id: str,
+        commit: str,
+        expected_head: str = "",
+        busy_check=None,
+    ) -> dict:
+        """Restore managed content as a complete snapshot and create a new version."""
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            if busy_check is not None:
+                busy_check(root)
+            head = _git(root, "rev-parse", "HEAD").strip()
+            if expected_head and expected_head != head:
+                raise WorkspaceError("项目已产生新版本，请重新预览后再回退", 409)
+            resolved = self._validate_revert_target(root, commit)
+            if self._managed_dirty_paths(root):
+                raise WorkspaceError("项目存在未提交或暂存的修改，请先完成当前编辑", 409)
+            try:
+                staged_paths = _git(root, "diff", "--cached", "--name-only", "--")
+            except WorkspaceError as exc:
+                raise WorkspaceError("无法检查项目暂存状态", 500) from exc
+            if staged_paths.strip():
+                # Managed staged files were handled above. A staged excluded file
+                # must not be swept into the rollback commit either.
+                raise WorkspaceError("项目存在已暂存的元数据修改，请先完成当前编辑", 409)
+            changes = self._rollback_changes(root, resolved)
+            if not changes["total"]:
+                raise WorkspaceError("当前业务内容与该版本一致，无需回退")
+            target_version = int(
+                _git(root, "rev-list", "--count", resolved).strip() or "0"
+            )
+
+            affected = changes["added"] + changes["modified"] + changes["deleted"]
+            try:
+                # Restore files present in the target and remove managed files that
+                # were introduced later. Excluded metadata/runtime paths are untouched.
+                root_resolved = root.resolve()
+                # Remove current-only paths before restoring the target snapshot.
+                # This order is required when a path changed between a file and a
+                # directory: checkout can otherwise create the target directory and
+                # the later delete pass would remove it again (or hit a pathspec error).
+                for rel_path in changes["deleted"]:
+                    target = root / rel_path
+                    # A later symlink may now point outside the project. Delete the
+                    # link itself; never resolve and follow it during snapshot restore.
+                    if not target.absolute().is_relative_to(root_resolved):
+                        raise WorkspaceError("路径越界", 403)
+                    if target.is_dir() and not target.is_symlink():
+                        shutil.rmtree(target)
+                    else:
+                        target.unlink(missing_ok=True)
+                restore = changes["added"] + changes["modified"]
+                if restore:
+                    _git(root, "checkout", resolved, "--", *restore)
+                # A historical snapshot may use legacy layout. Normalize it before
+                # committing so the first file-tree refresh cannot create a second,
+                # surprising migration version.
+                self._migrate_legacy_logic(root)
+                _script_descriptor.sync_workspace_descriptors(root / "ontology")
+                self._refresh_indexes(root)
+                affected = self._managed_dirty_paths(root)
+                if not affected:
+                    raise WorkspaceError("当前业务内容与该版本一致，无需回退")
+                pathspecs = self._minimal_pathspecs(affected)
+                _git(root, "add", "-A", "--", *pathspecs)
+                _git(
+                    root,
+                    "commit",
+                    "-m",
+                    f"revert: 回退到版本 {target_version}（{resolved[:8]}）",
+                )
+            except Exception:
+                # Restore only managed files. Project metadata is deliberately
+                # allowed to be dirty and must survive a failed rollback attempt.
+                dirty = self._managed_dirty_paths(root)
+                if dirty:
+                    pathspecs = self._minimal_pathspecs(dirty)
+                    try:
+                        _git(root, "reset", "HEAD", "--", *pathspecs)
+                    except WorkspaceError:
+                        pass
+                    original = self._rollback_manifest(root, "HEAD")
+                    tracked = [path for path in dirty if path in original]
+                    untracked = sorted(
+                        set(dirty) - set(tracked),
+                        key=lambda item: (item.count("/"), item),
+                        reverse=True,
+                    )
+                    for rel_path in untracked:
+                        target = root / rel_path
+                        if not target.absolute().is_relative_to(root.resolve()):
+                            continue
+                        try:
+                            if target.is_dir() and not target.is_symlink():
+                                shutil.rmtree(target)
+                            else:
+                                target.unlink(missing_ok=True)
+                        except (FileNotFoundError, NotADirectoryError):
+                            pass
+                    if tracked:
+                        try:
+                            _git(
+                                root,
+                                "checkout",
+                                "HEAD",
+                                "--",
+                                *self._minimal_pathspecs(tracked),
+                            )
+                        except WorkspaceError:
+                            pass
+                raise
+            invalidation_failed = self._invalidate_revert_state(root)
+            result = {
+                "reverted_to": resolved,
+                "commit": _git(root, "rev-parse", "HEAD").strip(),
+                "changes": changes,
+            }
+            if invalidation_failed:
+                result["warning"] = "部分派生状态未能清理，请重新运行相关检查"
+            return result
 
     def delete_resource(self, project_id: str, rel_path: str) -> dict:
         root = self.project_root(project_id)
@@ -2039,6 +2307,7 @@ class WorkspaceManager:
         # 「迭代 N」：N = 第几次提交，最早的提交是 1；不随分页和新保存变化
         for index, entry in enumerate(entries):
             entry["version"] = total - offset - index
+            entry["current"] = offset + index == 0
         return entries
 
     @staticmethod
@@ -2267,7 +2536,8 @@ def _git(cwd: Path, *args: str) -> str:
         ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=60
     )
     if result.returncode != 0:
-        raise WorkspaceError(f"git {args[0]} 失败: {result.stderr.strip()}", 500)
+        detail = result.stderr.strip() or result.stdout.strip() or f"退出码 {result.returncode}"
+        raise WorkspaceError(f"git {args[0]} 失败: {detail}", 500)
     return result.stdout
 
 

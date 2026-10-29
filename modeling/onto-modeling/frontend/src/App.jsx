@@ -42,6 +42,7 @@ import './components/home/modeling-home.css';
 import '../src/components/studio/legacy/studio-tokens.css';
 import SettingsPage from './components/SettingsPage.jsx';
 import { api, authStore } from './lib/api.js';
+import { clearWorkspaceDirty } from './lib/workspaceDirty.js';
 
 function parseHash() {
   const hash = window.location.hash || '#/';
@@ -67,6 +68,8 @@ export default function App() {
   const [projectsLoaded, setProjectsLoaded] = useState(false);
   const [tree, setTree] = useState([]);
   const [versions, setVersions] = useState([]);
+  const [versionTotal, setVersionTotal] = useState(0);
+  const [versionNextOffset, setVersionNextOffset] = useState(null);
   const [workspaceRevision, setWorkspaceRevision] = useState(0);
   const [usage, setUsage] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
@@ -164,9 +167,32 @@ export default function App() {
     if (!projectId) return;
     setWorkspaceRevision((value) => value + 1);
     api.fileTree(projectId).then((data) => setTree(data.tree)).catch(() => {});
-    api.versions(projectId).then((data) => setVersions(data.versions)).catch(() => {});
+    api.versions(projectId).then((data) => {
+      setVersions(data.versions);
+      setVersionTotal(data.total ?? data.versions.length);
+      setVersionNextOffset(data.next_offset);
+    }).catch(() => {});
     refreshUsage();
     refreshProjects(); // 项目 meta（资料更新时间/统计）同步刷新
+  }, [projectId, refreshProjects, refreshUsage]);
+
+  const refreshAfterRevert = useCallback(() => {
+    clearWorkspaceDirty();
+    setSelectedFile(null);
+    setFocusStack(['overview']);
+    setDiffRev(null);
+    setDiffFiles(null);
+    setQueryPreset(null);
+    setWorkspaceRevision((value) => value + 1);
+    if (!projectId) return;
+    api.fileTree(projectId).then((data) => setTree(data.tree)).catch(() => {});
+    api.versions(projectId).then((data) => {
+      setVersions(data.versions);
+      setVersionTotal(data.total ?? data.versions.length);
+      setVersionNextOffset(data.next_offset);
+    }).catch(() => {});
+    refreshUsage();
+    refreshProjects();
   }, [projectId, refreshProjects, refreshUsage]);
 
   useEffect(() => {
@@ -193,6 +219,8 @@ export default function App() {
   useEffect(() => {
     setTree([]);
     setVersions([]);
+    setVersionTotal(0);
+    setVersionNextOffset(null);
     setUsage(null);
     setSelectedFile(null);
     setFocusStack(['overview']);
@@ -934,8 +962,21 @@ export default function App() {
                 meta={project}
                 tree={tree}
                 versions={versions}
+                versionNextOffset={versionNextOffset}
+                onLoadMoreVersions={async () => {
+                  if (versionNextOffset == null) return;
+                  const data = await api.versions(project.id, versionNextOffset);
+                  setVersions((current) => [
+                    ...current,
+                    ...data.versions.filter(
+                      (entry) => !current.some((item) => item.commit === entry.commit),
+                    ),
+                  ]);
+                  setVersionNextOffset(data.next_offset);
+                }}
                 onSelectFile={openFile}
                 onRefresh={refreshWorkspace}
+                onReverted={refreshAfterRevert}
                 onCommand={(command) => chatSendRef.current?.(command)}
                 onDiff={(rev) => {
                   setDiffRev(rev);
@@ -957,6 +998,7 @@ export default function App() {
                 project={project}
                 tree={tree}
                 versions={versions}
+                versionTotal={versionTotal}
                 usage={usage}
                 file={selectedFile}
                 focus={focus}

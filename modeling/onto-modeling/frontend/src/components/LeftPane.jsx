@@ -33,6 +33,7 @@ import { api } from '../lib/api.js';
 import { openEvaluation, prefetchEvaluationEntry } from '../lib/evaluation.js';
 import { isResearchBlocking } from '../lib/researchGate.js';
 import { EMPTY_HISTORY, appendHistoryPage, historyEntryKey, versionTitle } from '../lib/versionHistory.js';
+import { hasWorkspaceDirty } from '../lib/workspaceDirty.js';
 import EvalRunDetail from './EvalRunDetail.jsx';
 import { usePackagePublish } from './PublishCheckDialog.jsx';
 
@@ -277,9 +278,12 @@ export default function LeftPane({
   meta,
   tree,
   versions = [],
+  versionNextOffset = null,
   activeStage = null,
   onSelectFile,
   onRefresh,
+  onReverted,
+  onLoadMoreVersions,
   onCommand,
   onKnowledge,
   onSolver,
@@ -289,6 +293,8 @@ export default function LeftPane({
   const [treeKeyword, setTreeKeyword] = useState('');
   const [uploadSubdir, setUploadSubdir] = useState('auto');
   const [tagging, setTagging] = useState(null); // {commit, label}
+  const [reverting, setReverting] = useState(null);
+  const [loadingVersions, setLoadingVersions] = useState(false);
 
   const paths = useMemo(() => flattenPaths(tree), [tree]);
   // 资料分析的验收状态由后端项目进度给出（回执不在产物树里）
@@ -598,13 +604,38 @@ export default function LeftPane({
     }
   };
 
-  const revertTo = async (commit) => {
+  const revertTo = async (version) => {
+    if (hasWorkspaceDirty()) {
+      message.warning('当前页面有未保存修改，请先保存或放弃后再回退');
+      return;
+    }
     try {
-      await api.revert(project.id, commit);
-      message.success('已回退并生成新的迭代');
-      onRefresh();
+      setReverting(version.commit);
+      const preview = await api.revertPreview(project.id, version.commit);
+      if (preview.ready === false) {
+        throw new Error(preview.blockers?.[0]?.message || '当前项目暂不能回退');
+      }
+      const { added, modified, deleted } = preview.changes;
+      await new Promise((resolve, reject) => {
+        Modal.confirm({
+          title: `回退到版本 ${version.version}？`,
+          content: `将新增 ${added.length}、修改 ${modified.length}、删除 ${deleted.length} 个业务文件；项目设置和运行状态不会回退。`,
+          okText: '确认回退',
+          okButtonProps: { danger: true },
+          cancelText: '取消',
+          onOk: () => resolve(),
+          onCancel: () => reject(new Error('cancelled')),
+        });
+      });
+      const result = await api.revert(project.id, version.commit, preview.expected_head);
+      message.success('已回退并生成新版本');
+      if (result.warning) message.warning(result.warning);
+      if (onReverted) onReverted();
+      else onRefresh();
     } catch (error) {
-      message.error(error.message);
+      if (error.message !== 'cancelled') message.error(error.message);
+    } finally {
+      setReverting(null);
     }
   };
 
@@ -1052,15 +1083,18 @@ export default function LeftPane({
                           >
                             标记
                           </Button>
-                          <Popconfirm
-                            title={`回退到${versionTitle(v.kind, v.version)}？`}
-                            description="回退会生成新的迭代，历史保留可再回退"
-                            onConfirm={() => revertTo(v.commit)}
-                          >
-                            <Button size="small" type="text" danger>
-                              回退
+                          {!v.current && v.can_revert !== false && (
+                            <Button
+                              size="small"
+                              type="text"
+                              danger
+                              loading={reverting === v.commit}
+                              disabled={!!reverting}
+                              onClick={() => revertTo(v)}
+                            >
+                              回退到此版本
                             </Button>
-                          </Popconfirm>
+                          )}
                         </Space>
                       </>
                     )}
