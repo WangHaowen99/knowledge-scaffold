@@ -2,6 +2,7 @@ import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { Alert, Button, Input, Modal, Space, Spin, Tag, Typography, message } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { setWorkspaceDirty } from '../lib/workspaceDirty.js';
 
 // ---- markdown 表格 ↔ 结构化行 双向转换 ----
 
@@ -115,6 +116,11 @@ export default function StudioEntryEditor({ project, entry, onExit, onCommitted,
   const [rejection, setRejection] = useState(null);
   const draftTimer = useRef(0);
   const baseRevisionRef = useRef(entry.revision);
+
+  useEffect(() => {
+    setWorkspaceDirty('studio-editor', draftState !== 'clean');
+    return () => setWorkspaceDirty('studio-editor', false);
+  }, [draftState]);
 
   // 初始化：schema 章节顺序为骨架，套上文档现有内容；文档多出的章节保留在末尾
   useEffect(() => {

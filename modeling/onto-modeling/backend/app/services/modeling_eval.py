@@ -49,6 +49,7 @@ EVOLUTION_SCORE_THRESHOLD = 90
 _running: set[str] = set()  # project_id 去重（单进程内防并发重复触发）
 _live_tokens: dict[str, str] = {}  # project_id → 前端轮询接力的最新 token
 _stop_requested: set[str] = set()  # 用户请求停止的 project_id（协作式取消）
+_scheduled: set[str] = set()  # 已由接口登记、等待事件循环启动的编排
 
 # 一轮编排从打包到收报告都占着一个线程（含每 6 秒一次的轮询等待，最长 30 分钟），
 # 放进评测专用线程池：不占事件循环的默认线程池——后者还承担上传、git、项目导入删除
@@ -59,6 +60,60 @@ _slots: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # 事件循环 
 _queue_lock = threading.Lock()
 # 等待评测槽位的 project_id → (入队时间, 所在事件循环, 编排任务)，按入队顺序
 _queued: dict[str, tuple[int, asyncio.AbstractEventLoop, asyncio.Task]] = {}
+
+
+def is_active(project_id: str) -> bool:
+    """Whether an evaluation is executing or waiting for an execution slot."""
+    with _queue_lock:
+        return project_id in _scheduled or project_id in _running or project_id in _queued
+
+
+def launch(
+    project_id: str,
+    root: Path,
+    token: str,
+    cases: list[dict],
+    data_source: dict | None = None,
+    eval_set_name: str = "",
+    allow_unbound: bool = False,
+    refresh_token: str = "",
+) -> asyncio.Task:
+    """Reserve the project synchronously, then launch evaluation in the event loop."""
+    with _queue_lock:
+        if project_id in _scheduled or project_id in _running or project_id in _queued:
+            raise ValueError("该项目已有评测正在运行或排队")
+        _scheduled.add(project_id)
+
+    async def scheduled_run() -> None:
+        try:
+            # The reservation only closes the gap between the synchronous API
+            # response path and this coroutine starting. From here on _running /
+            # _queued are the authoritative lifecycle states.
+            with _queue_lock:
+                _scheduled.discard(project_id)
+            if project_id in _stop_requested:
+                return
+            await run(
+                project_id,
+                root,
+                token,
+                cases,
+                data_source,
+                eval_set_name,
+                allow_unbound,
+                refresh_token,
+            )
+        finally:
+            _stop_requested.discard(project_id)
+            with _queue_lock:
+                _scheduled.discard(project_id)
+
+    try:
+        return asyncio.get_running_loop().create_task(scheduled_run())
+    except Exception:
+        with _queue_lock:
+            _scheduled.discard(project_id)
+        raise
 
 STOPPED_MESSAGE = "评测已停止（modeling 侧轮次已取消，已完成用例的结果仍保留在 modeling 侧）"
 INTERRUPTED_MESSAGE = (
@@ -1257,6 +1312,14 @@ def request_stop(project_id: str, root: Path, token: str) -> dict:
     """
     if _cancel_queued(project_id):
         # 还在排队：直接出队，不产生任何 modeling 侧开销，随即可重新运行
+        _write_state(root, status="stopped", message=QUEUED_STOP_MESSAGE)
+        return {"stopped": True, "cancelled": False, "message": QUEUED_STOP_MESSAGE}
+    with _queue_lock:
+        scheduled = project_id in _scheduled
+    if scheduled:
+        # launch 已预占、事件循环尚未来得及进入 run：留下取消标记，
+        # scheduled_run 启动时会直接退出。
+        _stop_requested.add(project_id)
         _write_state(root, status="stopped", message=QUEUED_STOP_MESSAGE)
         return {"stopped": True, "cancelled": False, "message": QUEUED_STOP_MESSAGE}
     state = read_state(root)

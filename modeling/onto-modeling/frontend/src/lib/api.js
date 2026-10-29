@@ -361,11 +361,16 @@ export const api = {
     request(`/api/projects/${pid}/resources?path=${encodeURIComponent(path)}`, {
       method: 'DELETE',
     }),
-  versions: (pid) => request(`/api/projects/${pid}/versions`),
-  revert: (pid, commit) =>
+  versions: (pid, offset = 0) =>
+    request(`/api/projects/${pid}/versions?offset=${encodeURIComponent(offset)}`),
+  revertPreview: (pid, commit) =>
+    request(
+      `/api/projects/${pid}/versions/revert-preview?commit=${encodeURIComponent(commit)}`,
+    ),
+  revert: (pid, commit, expectedHead) =>
     request(`/api/projects/${pid}/versions/revert`, {
       method: 'POST',
-      body: JSON.stringify({ commit }),
+      body: JSON.stringify({ commit, expected_head: expectedHead }),
     }),
   // conversationId 省略 = 引擎当前绑定的会话，没有在线引擎则取最近更新的一条
   sessionState: (pid, conversationId) =>

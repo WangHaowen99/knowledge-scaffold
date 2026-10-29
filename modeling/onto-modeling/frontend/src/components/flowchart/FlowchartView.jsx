@@ -3,6 +3,7 @@ import { Alert, Button, Segmented, Spin, Tooltip, message } from 'antd';
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import '@xyflow/react/dist/style.css';
 import { api } from '../../lib/api.js';
+import { setWorkspaceDirty } from '../../lib/workspaceDirty.js';
 import FlowchartEditor from './FlowchartEditor.jsx';
 import './flowchart-editor.css';
 import { parseDrawioToDocument, serializeDocumentToDrawio } from './drawioConvert.js';
@@ -41,6 +42,8 @@ export default function FlowchartView({ project, path, drawioAvailable, onWorksp
     setFullscreen(false);
     load();
   }, [load]);
+
+  useEffect(() => () => setWorkspaceDirty('flowchart-editor', false), []);
 
   useEffect(() => {
     if (!fullscreen) return undefined;
@@ -120,6 +123,12 @@ export default function FlowchartView({ project, path, drawioAvailable, onWorksp
           document={state.doc}
           savedRevision={state.revision}
           onSave={save}
+          onStateChange={(next) =>
+            setWorkspaceDirty(
+              'flowchart-editor',
+              next.dirty || next.saveStatus === 'saving',
+            )
+          }
           onRecommendDiagram={onCommand ? () => onCommand(RECOMMEND_FLOWCHART_COMMAND) : undefined}
         />
       )}
