@@ -87,6 +87,25 @@ MODELING_MCP_CLEANUP_TOKEN=<与 Onto 相同的值>
 - 空闲会话默认 10 分钟回收（`ONTO_WEB_SESSION_IDLE_TTL`），回收后靠 resume
   续接模型上下文，用户无感；会话 transcript 持久化在数据卷 `/data/home/.claude/`。
 
+## 子代理同步执行（CLI 后台任务开关）
+
+平台在每个 Claude 引擎会话的 CLI 子进程中注入环境变量
+`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`，子代理和 Shell 命令一律同步执行。原因：CLI
+默认把子代理放到后台运行，而平台以主轮结束判定会话空闲，后台运行的子代理会被误示为完成，
+还可能随空闲回收被静默终止。
+
+- 该变量由平台自动注入，无需手工配置。不要在容器内 `/data/home/.claude/settings.json`
+  的 `env` 中设置它：那里的值会覆盖平台注入的值。
+- 超过 Bash 默认超时（2 分钟）的命令会直接超时失败，不再转入后台。
+- 镜像内的 `claude-agent-sdk` 没有锁定版本，打包的 CLI 随构建时间变化。每次部署和升级后
+  都要验证开关仍然生效：先在任一 Claude 引擎项目里发一条消息让会话启动，再执行
+
+  ```bash
+  docker exec onto-modeling sh -c 'grep -a -l "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1" /proc/[0-9]*/environ 2>/dev/null'
+  ```
+
+  有输出即生效。没有输出时，先检查上面的 `settings.json`，再确认镜像版本包含该机制。
+
 ## AVX 指令集要求（x86_64）
 
 捆绑的 Claude Code CLI 是 Bun 编译的原生二进制，要求 CPU 暴露 AVX，否则子进程
@@ -97,7 +116,7 @@ SIGILL 崩溃。`preflight.sh` 会检查；未通过时按优先级整改：
 3. **降级兼容包（最后手段）**：在目标机准备 Node ≥18 运行时和旧版 JS 交付的
    CLI（2.0.76，纯 JS 无 Bun/AVX 依赖），将其挂载进容器并设
    `ONTO_WEB_CLI_PATH=/path/to/cli.js`。注意：降级组合功能落后且冻结维护，
-   必须在目标虚机实测关键路径（确认卡、hooks、子代理、会话恢复）后才能放行，
+   必须在目标虚机实测关键路径（确认卡、hooks、子代理（含同步执行）、会话恢复）后才能放行，
    界面无"兼容模式"标识前不建议长期使用。
 4. 以上均不可行则明确不支持该环境。
 
@@ -111,6 +130,7 @@ SIGILL 崩溃。`preflight.sh` 会检查；未通过时按优先级整改：
 
 - 升级：解包新版本交付包，重复部署步骤；`docker compose up -d` 滚动替换容器，
   数据卷保留。
+- 升级后按「子代理同步执行（CLI 后台任务开关）」一节验证开关仍然生效。
 - 回滚：用旧版本交付包重复部署步骤即可（镜像 tag 随版本走，互不覆盖）。
 
 ## 接入既有账号中心（单点账号）

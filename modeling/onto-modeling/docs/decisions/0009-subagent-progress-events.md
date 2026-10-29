@@ -66,3 +66,16 @@ Jiuwen 子代理的工件区从此按派发落在 `sub_agents/<subsession_id>/` 
 `lock_timeout` 也只能按调用传参，`LocalWorkConfig` 没有对应字段）。这里只消除了必然重复的路径；
 子代理若去写主 agent 刚写过的**项目文件**，同类停顿仍可能出现，识别特征是日志里
 `write_file` 失败且 `method_exec_time_ms` 接近 300000。
+
+## 补充：Claude 引擎子代理一律同步执行
+
+Claude Code CLI 2.x 默认把子代理放到后台运行，而平台以主轮 `result` 判定会话空闲、以派遣调用的
+`tool_result` 判定子任务完成。后台派遣时，子任务卡提前显示完成、会话提前置为空闲，后台子代理还可能
+随空闲回收被静默终止（Issue #377）。工作区规则 8.04 要求模型显式传 `run_in_background: false`，
+但只能靠模型自觉，实测仍会漏传。
+
+因此 Claude 引擎在会话环境中注入 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`：CLI 从工具定义中移除
+`run_in_background`，并关闭子代理、超时 Shell 命令与长时间 MCP 调用的自动转后台。规则 8.04 保留，
+作为降级 CLI 与未来 CLI 版本的第二道防线。
+
+代价：超过 Bash 默认超时的命令直接超时失败；子代理运行期间主轮持续占用会话，其间的新消息排队到本轮结束。

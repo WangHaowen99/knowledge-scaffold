@@ -175,6 +175,16 @@ def test_claude_session_env_owner_errors_are_not_swallowed(data_dir, auth_on):
         _session_env("employee_0001")
 
 
+def test_claude_session_env_disables_background_tasks_with_personal_key(data_dir, auth_on):
+    model_settings.save(ADMIN_URL, ADMIN_KEY, "")
+    personal_model_settings.save("employee_0001", "claude", "", USER_KEY, "")
+
+    env = _session_env("employee_0001")
+
+    assert env["ANTHROPIC_AUTH_TOKEN"] == USER_KEY
+    assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+
+
 def test_jiuwen_model_config_personal_overlay(data_dir, auth_on, monkeypatch):
     monkeypatch.setattr(config, "JIUWEN_BASE_URL", "https://env.example.org/v1")
     monkeypatch.setattr(config, "JIUWEN_API_KEY", "env-key-synthetic")

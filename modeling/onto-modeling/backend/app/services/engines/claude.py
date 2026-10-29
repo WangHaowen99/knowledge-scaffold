@@ -151,6 +151,9 @@ def _owner_env(owner: str) -> dict:
 def _session_env(owner: str = "") -> dict:
     """owner 为空 = 管理员配置（原行为）；非空 = 该用户的个人 Key。"""
     env = {}
+    # 子代理与 Shell 命令一律同步执行，为规则 8.04 提供机制保证：CLI 2.x 默认后台派遣子代理，
+    # 平台以主轮结束判定空闲，后台任务会被误示完成，还可能随空闲回收静默丢失
+    env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
     if config.MAX_THINKING_TOKENS:
         env["MAX_THINKING_TOKENS"] = config.MAX_THINKING_TOKENS
     from .. import model_settings
