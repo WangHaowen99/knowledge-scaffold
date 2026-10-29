@@ -232,6 +232,40 @@ test('尚无终态而会话已关闭或被打断：显示已中断，不再一�
   assert.equal(cardState(restarted, 'T1').interrupted, true);
 });
 
+test('有开始事件但终态缺失时，同步结果即算结束', () => {
+  const events = [started(1, 'T1'), dispatch(2, 'T1', '分析资料'), dispatch(3, 'T2', '核对指标')];
+  const results = new Map([
+    ['T1', { isError: false, excerpt: '报告正文' }],
+    ['T2', { isError: true, excerpt: '执行出错' }],
+  ]);
+
+  assert.deepEqual(cardState(events, 'T1', results), {
+    done: true, failed: false, stopped: false, interrupted: false, background: false,
+  });
+  assert.equal(cardState(events, 'T2', results).failed, true);
+});
+
+test('已有同步结果时会话随后关闭，仍显示完成而不是已中断', () => {
+  const events = [
+    started(1, 'T1'),
+    dispatch(2, 'T1', '分析资料'),
+    { seq: 3, type: 'session_state', state: 'closed' },
+  ];
+  const results = new Map([['T1', { isError: false, excerpt: '报告正文' }]]);
+
+  const state = cardState(events, 'T1', results);
+
+  assert.deepEqual({ done: state.done, interrupted: state.interrupted }, { done: true, interrupted: false });
+});
+
+test('终态为停止或被终止时按终态显示已停止', () => {
+  const events = [started(1, 'T1'), dispatch(2, 'T1', '分析资料'), finished(3, 'T1', 'killed')];
+
+  assert.deepEqual(cardState(events, 'T1'), {
+    done: true, failed: false, stopped: true, interrupted: false, background: false,
+  });
+});
+
 test('会话结束发生在派遣之前时不影响之后的派遣', () => {
   const events = [
     { seq: 1, type: 'session_state', state: 'closed' },

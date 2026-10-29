@@ -95,16 +95,25 @@ MODELING_MCP_CLEANUP_TOKEN=<与 Onto 相同的值>
 还可能随空闲回收被静默终止。
 
 - 该变量由平台自动注入，无需手工配置。不要在容器内 `/data/home/.claude/settings.json`
-  的 `env` 中设置它：那里的值会覆盖平台注入的值。
-- 超过 Bash 默认超时（2 分钟）的命令会直接超时失败，不再转入后台。
+  的 `env` 中设置它：CLI 启动后会读取那里的值，覆盖平台注入的值。
+- 命令超过本次调用的超时（默认 2 分钟，模型可以延长，最长 10 分钟）会直接失败，
+  不再转入后台。
 - 镜像内的 `claude-agent-sdk` 没有锁定版本，打包的 CLI 随构建时间变化。每次部署和升级后
-  都要验证开关仍然生效：先在任一 Claude 引擎项目里发一条消息让会话启动，再执行
+  执行以下两项检查：
 
-  ```bash
-  docker exec onto-modeling sh -c 'grep -a -l "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1" /proc/[0-9]*/environ 2>/dev/null'
-  ```
+  1. 打包的 CLI 仍识别该变量，输出大于 0 即正常：
 
-  有输出即生效。没有输出时，先检查上面的 `settings.json`，再确认镜像版本包含该机制。
+     ```bash
+     docker exec onto-modeling python3 -c "import claude_agent_sdk, pathlib; cli = pathlib.Path(claude_agent_sdk.__file__).parent / '_bundled' / 'claude'; print(cli.read_bytes().count(b'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'))"
+     ```
+
+     输出为 0 说明该版本 CLI 已不识别此变量，应暂停升级并反馈研发。使用降级兼容包
+     （`ONTO_WEB_CLI_PATH`）时本项不适用，按下文降级包的关键路径实测。
+  2. 用户级配置没有覆盖该变量，没有输出即正常：
+
+     ```bash
+     docker exec onto-modeling sh -c 'grep -n CLAUDE_CODE_DISABLE_BACKGROUND_TASKS /data/home/.claude/settings.json 2>/dev/null'
+     ```
 
 ## AVX 指令集要求（x86_64）
 
@@ -130,7 +139,7 @@ SIGILL 崩溃。`preflight.sh` 会检查；未通过时按优先级整改：
 
 - 升级：解包新版本交付包，重复部署步骤；`docker compose up -d` 滚动替换容器，
   数据卷保留。
-- 升级后按「子代理同步执行（CLI 后台任务开关）」一节验证开关仍然生效。
+- 升级后按「子代理同步执行（CLI 后台任务开关）」一节执行两项检查。
 - 回滚：用旧版本交付包重复部署步骤即可（镜像 tag 随版本走，互不覆盖）。
 
 ## 接入既有账号中心（单点账号）

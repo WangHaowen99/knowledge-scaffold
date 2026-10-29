@@ -73,28 +73,28 @@ export function lastSessionEndIndex(events) {
 }
 
 /**
- * 子任务卡状态，以生命周期终态为准：派遣回执不代表子代理已结束（后台派遣时它只是启动回执）。
+ * 子任务卡状态，以生命周期终态和子代理的真实结果为准：后台派遣时的回执只是启动回执，不代表子代理已结束。
  *
- * - 有终态 → 按终态；
- * - 尚无终态 → 运行中，回执是后台启动回执时标为后台运行；派遣之后会话已结束则为已中断；
- * - 没有任何生命周期事件（旧记录或不上报生命周期的运行时）→ 有回执即按回执判定，保持原有行为。
+ * - 有终态，或已有回执且不是后台启动回执（同步派遣返回的结果）→ 已结束，失败、停止按终态与回执判定；
+ * - 否则为运行中，回执是后台启动回执时标为后台运行；派遣之后会话已结束则为已中断。
+ *
+ * 同步结果不必等终态事件：生命周期事件可能缺失或匹配不上，卡片不能因此一直转圈。
  *
  * @param {{lifecycle?: object, result?: {isError: boolean, excerpt: string}, sessionEnded: boolean}} input
  * @returns {{done: boolean, failed: boolean, stopped: boolean, interrupted: boolean, background: boolean}}
  */
 export function resolveSubagentState({ lifecycle, result, sessionEnded }) {
   const background = isBackgroundReceipt(result);
-  if (lifecycle?.done) {
+  const finished = lifecycle?.done === true;
+  if (finished || (result !== undefined && !background)) {
+    const status = finished ? lifecycle.status : '';
     return {
       done: true,
-      failed: lifecycle.status === 'failed' || Boolean(result?.isError),
-      stopped: lifecycle.status === 'stopped' || lifecycle.status === 'killed',
+      failed: status === 'failed' || Boolean(result?.isError),
+      stopped: status === 'stopped' || status === 'killed',
       interrupted: false,
       background,
     };
-  }
-  if (!lifecycle && result !== undefined && !background) {
-    return { done: true, failed: Boolean(result.isError), stopped: false, interrupted: false, background };
   }
   if (sessionEnded) {
     return { done: true, failed: false, stopped: true, interrupted: true, background };
