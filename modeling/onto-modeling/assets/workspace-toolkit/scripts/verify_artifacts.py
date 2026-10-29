@@ -104,30 +104,12 @@ def _check(root: Path, mode: str, paths: list[Path]) -> list[dict]:
     # All docs remain available as reference context; only the requested stems are checked.
     # The existing duplicate-stem check prevents ambiguous path/stem identities passing.
     # A supplied but unreadable table is not the same as having no table.
-    # Load once and reuse in the checker instead of silently skipping field checks.
-    directives = check_eval_data.load_directives(root)
-    table_files = [rel for rel, value in directives.items()
-                   if isinstance(value, dict) and value.get('purpose') == 'schema']
-    tables = {}
-    for rel in dict.fromkeys(table_files + check_eval_data.uploaded_eval_files(root)):
-        table = _contained(root, root / rel)
-        if table.suffix.lower() not in check_eval_data.TABLE_SUFFIXES:
-            continue
-        if not table.is_file():
-            raise ValueError('已登记的数据表不存在，字段核验未完成')
-        directive = directives.get(rel)
-        headers = check_eval_data.read_tables(table, directive)
-        selection = directive.get('schema_selection') if isinstance(directive, dict) else None
-        explicitly_empty = (isinstance(selection, dict)
-                            and selection.get('mode') == 'manual'
-                            and selection.get('included_sheets') == [])
-        if not headers and not explicitly_empty:
-            raise ValueError('数据表无法解析或没有表头，字段核验未完成')
-        for name, columns in headers.items():
-            tables.setdefault(name, columns)
+    # Load once (headers and value profiles of the selected sheets) and reuse in the checker
+    # instead of silently skipping field checks.
+    tables, profiles = check_eval_data.load_registered_tables(root)
     issues = ontology_checker.run_checks(
         root / 'ontology', target_files=[p.stem for p in paths], include_mock=True,
-        tables=tables, strict_targets=True)
+        tables=tables, strict_targets=True, profiles=profiles)
     return [dataclasses.asdict(issue) for issue in issues]
 
 
@@ -208,7 +190,15 @@ def main() -> int:
         summary = {k: result.get(k) for k in ('status', 'reason', 'checked_files', 'cached', 'elapsed_ms', 'receipt')}
         summary['errors'] = sum(i['severity'] == '错误' for i in result['issues'])
         summary['warnings'] = sum(i['severity'] == '警告' for i in result['issues'])
-        summary['details'] = [f"{i.get('file', '')}: {i.get('message', '')}"[:200] for i in result['issues'][:12]]
+        by_category = {}
+        for issue in result['issues']:
+            if issue['severity'] in ('错误', '警告'):
+                counts = by_category.setdefault(issue.get('category', ''), {'errors': 0, 'warnings': 0})
+                counts['errors' if issue['severity'] == '错误' else 'warnings'] += 1
+        summary['by_category'] = by_category
+        # 错误排在前面：截断的 12 条定位里先看到会阻断的问题
+        ordered = sorted(result['issues'], key=lambda i: {'错误': 0, '警告': 1}.get(i['severity'], 2))
+        summary['details'] = [f"{i.get('file', '')}: {i.get('message', '')}"[:200] for i in ordered[:12]]
         output.info(json.dumps(summary, ensure_ascii=False))
     return {'passed': 0, 'failed': 1}.get(result['status'], 2)
 
