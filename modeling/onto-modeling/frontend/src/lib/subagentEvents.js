@@ -48,6 +48,60 @@ export function buildSubagentLifecycle(events) {
   return lifecycle;
 }
 
+// 后台派遣时 CLI 当即返回的启动回执：只说明子代理已开始，不是它的结果
+const BACKGROUND_RECEIPT_PREFIX = 'Async agent launched';
+// 引擎关闭（含空闲回收）或出错：此前没结束的子代理不会再有终态
+const SESSION_END_STATES = ['closed', 'error'];
+
+export function isBackgroundReceipt(result) {
+  return String(result?.excerpt || '').startsWith(BACKGROUND_RECEIPT_PREFIX);
+}
+
+/** 最后一个会话结束类事件（打断、引擎关闭或出错）在历史中的下标；没有则为 -1。 */
+export function lastSessionEndIndex(events) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (
+      event.type === 'session_interrupted' ||
+      event.type === 'session_error' ||
+      (event.type === 'session_state' && SESSION_END_STATES.includes(event.state))
+    ) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+/**
+ * 子任务卡状态，以生命周期终态为准：派遣回执不代表子代理已结束（后台派遣时它只是启动回执）。
+ *
+ * - 有终态 → 按终态；
+ * - 尚无终态 → 运行中，回执是后台启动回执时标为后台运行；派遣之后会话已结束则为已中断；
+ * - 没有任何生命周期事件（旧记录或不上报生命周期的运行时）→ 有回执即按回执判定，保持原有行为。
+ *
+ * @param {{lifecycle?: object, result?: {isError: boolean, excerpt: string}, sessionEnded: boolean}} input
+ * @returns {{done: boolean, failed: boolean, stopped: boolean, interrupted: boolean, background: boolean}}
+ */
+export function resolveSubagentState({ lifecycle, result, sessionEnded }) {
+  const background = isBackgroundReceipt(result);
+  if (lifecycle?.done) {
+    return {
+      done: true,
+      failed: lifecycle.status === 'failed' || Boolean(result?.isError),
+      stopped: lifecycle.status === 'stopped' || lifecycle.status === 'killed',
+      interrupted: false,
+      background,
+    };
+  }
+  if (!lifecycle && result !== undefined && !background) {
+    return { done: true, failed: Boolean(result.isError), stopped: false, interrupted: false, background };
+  }
+  if (sessionEnded) {
+    return { done: true, failed: false, stopped: true, interrupted: true, background };
+  }
+  return { done: false, failed: false, stopped: false, interrupted: false, background };
+}
+
 /**
  * @returns {{cards: Set<string>, steps: Map<string, object[]>}}
  *   cards = 本次历史里存在卡片的派遣调用 id（卡片被历史截断时，子代理消息要退回
