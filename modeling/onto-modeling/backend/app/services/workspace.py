@@ -607,8 +607,34 @@ class WorkspaceManager:
                 directive["purpose"] = "auto"
         return data
 
+    def preview_schema(self, project_id: str, rel_path: str, *, force: bool = False) -> dict:
+        """Inspect a proposed schema tag without changing project metadata."""
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            target = self._resolve_inside(root, rel_path)
+            rel = target.relative_to(root.resolve()).as_posix()
+            if not rel.startswith("resource/") or not target.is_file():
+                raise WorkspaceError("只能检查资料区中存在的文件", 400)
+            if target.suffix.lower() not in (".xlsx", ".xlsm", ".csv"):
+                raise WorkspaceError("数据 Schema 支持 xlsx、xlsm 和 UTF-8 CSV。请将文件另存为这些格式；说明文档可设为通用业务依据。", 400)
+            previous = self.resource_directives(project_id).get(rel, {})
+            try:
+                scope = material_detect.resolve_selection(target, previous, force=force)
+            except material_detect.SheetSelectionError as exc:
+                try:
+                    scope = material_detect.resolve_selection(target)
+                except material_detect.SheetSelectionError:
+                    raise WorkspaceError("文件无法解析为数据表：可能已损坏、加密或编码不正确。请用表格软件确认可打开，取消密码保护并另存为 xlsx/xlsm；CSV 请使用 UTF-8 编码后重新上传。", 400) from exc
+                scope["error"] = str(exc)
+            scope["included_sheets"] = [s["name"] for s in scope["sheets"]
+                if s["name"] in scope["included_sheets"] and s["schema_selectable"]]
+            scope["reference_sheets"] = [s["name"] for s in scope["sheets"]
+                if s["name"] not in scope["included_sheets"]]
+            return scope
+
     def set_resource_directive(
-        self, project_id: str, rel_path: str, purpose: str, reading_mode: str = "on_demand"
+        self, project_id: str, rel_path: str, purpose: str, reading_mode: str = "on_demand",
+        schema_selection: dict | None = None,
     ) -> dict:
         if purpose not in self.MATERIAL_PURPOSES:
             raise WorkspaceError(f"资料用途必须是 {list(self.MATERIAL_PURPOSES)} 之一")
@@ -624,7 +650,33 @@ class WorkspaceManager:
             snapshot = self._snapshot(directives_path)
             try:
                 directives = self.resource_directives(project_id)
-                directives[rel] = {"purpose": purpose, "reading_mode": reading_mode}
+                previous = directives.get(rel, {})
+                directive = {"purpose": purpose, "reading_mode": reading_mode}
+                if purpose == "schema" and target.suffix.lower() in package_mapping.TABLE_SUFFIXES:
+                    if schema_selection is not None:
+                        if schema_selection.get("file_sha256") != material_detect.resolve_selection(target)["file_sha256"]:
+                            raise WorkspaceError("文件已变化，请刷新 Sheet 范围后重试", 409)
+                        directive["schema_selection"] = {**schema_selection, "version": 1}
+                    elif previous.get("schema_selection") is not None:
+                        directive["schema_selection"] = previous["schema_selection"]
+                    scope = material_detect.resolve_selection(target, directive)
+                    if schema_selection is not None:
+                        problems = []
+                        included_sheets = set(scope["included_sheets"])
+                        for sheet in scope["sheets"]:
+                            if sheet["name"] not in included_sheets:
+                                continue
+                            for issue in sheet.get("issues", []):
+                                if issue["severity"] == "error":
+                                    problems.append(
+                                        f"Sheet「{sheet['name']}」：{issue['message']}"
+                                    )
+                        if problems:
+                            raise WorkspaceError("\n".join(problems), 400)
+                    directive["schema_selection"] = material_detect.selection_metadata(scope)
+                elif schema_selection is not None:
+                    raise WorkspaceError("仅数据 Schema 表格支持设置 Sheet 范围", 400)
+                directives[rel] = directive
                 self._write_resource_directives(root, directives)
                 # 用途变化会影响派生产物的口径，视同资料更新
                 self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
@@ -708,9 +760,40 @@ class WorkspaceManager:
         elif _is_auto_detected(directives.get(rel)):
             # 替换后不再像数据表或术语表：撤掉之前的自动标注
             directives.pop(rel)
+        directive = directives.get(rel, {})
+        if directive.get("purpose") == "schema" and Path(rel).suffix.lower() in package_mapping.TABLE_SUFFIXES:
+            previous_scope = (existing or {}).get("schema_selection")
+            if isinstance(previous_scope, dict) and previous_scope.get("mode") == "manual":
+                directive["schema_selection"] = previous_scope
+            stored = directive.get("schema_selection")
+            # Replacements invalidate manual scope; preserve it so readers demand confirmation.
+            if not isinstance(stored, dict) or stored.get("mode") != "manual":
+                scope = material_detect.resolve_selection(root / rel, directive)
+                directive["schema_selection"] = material_detect.selection_metadata(scope)
         if json.dumps(directives, sort_keys=True) != before:
             self._write_resource_directives(root, directives)
         return detected
+
+    def schema_scopes(self, project_id: str) -> dict:
+        root = self.project_root(project_id)
+        scopes = {}
+        for rel, directive in self.resource_directives(project_id).items():
+            if not isinstance(directive, dict) or directive.get("purpose") != "schema":
+                continue
+            if Path(rel).suffix.lower() not in package_mapping.TABLE_SUFFIXES:
+                continue
+            try:
+                target = self._resolve_inside(root, rel)
+                if not rel.startswith("resource/") or not target.is_file():
+                    continue
+                try:
+                    scopes[rel] = material_detect.resolve_selection(target, directive)
+                except material_detect.SheetSelectionError as exc:
+                    # Show fresh candidates but never silently apply them to manual selections.
+                    scopes[rel] = {**material_detect.resolve_selection(target), "error": str(exc)}
+            except (material_detect.SheetSelectionError, WorkspaceError) as exc:
+                scopes[rel] = {"error": str(exc), "sheets": [], "included_sheets": []}
+        return scopes
 
     def schema_candidates(self, project_id: str) -> dict:
         """资料区「疑似数据表」：用途仍为「由助手判断」、结构上判为数据表的表格资料。"""

@@ -115,8 +115,13 @@ def _check(root: Path, mode: str, paths: list[Path]) -> list[dict]:
             continue
         if not table.is_file():
             raise ValueError('已登记的数据表不存在，字段核验未完成')
-        headers = check_eval_data.read_tables(table)
-        if not headers:
+        directive = directives.get(rel)
+        headers = check_eval_data.read_tables(table, directive)
+        selection = directive.get('schema_selection') if isinstance(directive, dict) else None
+        explicitly_empty = (isinstance(selection, dict)
+                            and selection.get('mode') == 'manual'
+                            and selection.get('included_sheets') == [])
+        if not headers and not explicitly_empty:
             raise ValueError('数据表无法解析或没有表头，字段核验未完成')
         for name, columns in headers.items():
             tables.setdefault(name, columns)

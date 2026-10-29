@@ -1,6 +1,8 @@
 """Synthetic-only regression for lightweight checks, receipts and save hooks."""
 import importlib
 import asyncio
+import hashlib
+import io
 import json
 from pathlib import Path
 import shutil
@@ -8,6 +10,7 @@ import subprocess
 import sys
 
 import pytest
+import openpyxl
 from artifact_process_policy import child_environment, git_executable, validate_fixture_git_args
 
 SCRIPTS = Path(__file__).resolve().parents[2] / 'assets/workspace-toolkit/scripts'
@@ -68,6 +71,19 @@ def put(root, rel, text):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding='utf-8')
     return path
+
+
+def workbook_bytes() -> bytes:
+    workbook = openpyxl.Workbook()
+    first = workbook.active
+    first.title = 'table_a'
+    first.append(['id_a', 'name_a'])
+    second = workbook.create_sheet('table_b')
+    second.append(['id_b', 'name_b'])
+    output = io.BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
 
 
 def diagram_xml():
@@ -210,6 +226,80 @@ def test_schema_field_mismatch_and_nested_file(tmp_path, verifier):
     assert verifier.verify(tmp_path, 'objects', ['ontology/object/group/Entity A.md'])['status'] == 'passed'
     table.write_text('OTHER\nx1\n')
     assert verifier.verify(tmp_path, 'objects')['status'] == 'failed'
+
+
+def test_schema_sheet_selection_limits_lightweight_verification(tmp_path, verifier):
+    put(tmp_path, 'ontology/object/EntityA.md',
+        object_doc().replace('# 数据来源\n无', '# 数据来源\ntable_a'))
+    data = workbook_bytes()
+    table = tmp_path / 'resource/table.xlsx'
+    table.parent.mkdir(parents=True)
+    table.write_bytes(data)
+    put(tmp_path, 'resource/materials.json', json.dumps({
+        'resource/table.xlsx': {
+            'purpose': 'schema',
+            'schema_selection': {
+                'version': 1,
+                'mode': 'manual',
+                'included_sheets': ['table_b'],
+                'reference_sheets': ['table_a'],
+                'file_sha256': hashlib.sha256(data).hexdigest(),
+            },
+        },
+    }))
+
+    result = verifier.verify(tmp_path, 'objects')
+
+    assert result['status'] == 'failed'
+    assert any(issue['category'] == '列名对账' and 'table_a' in issue['message']
+               for issue in result['issues'])
+
+
+def test_stale_manual_sheet_selection_cannot_pass_lightweight_verification(tmp_path, verifier):
+    put(tmp_path, 'ontology/object/EntityA.md',
+        object_doc().replace('# 数据来源\n无', '# 数据来源\ntable_b'))
+    table = tmp_path / 'resource/table.xlsx'
+    table.parent.mkdir(parents=True)
+    table.write_bytes(workbook_bytes())
+    put(tmp_path, 'resource/materials.json', json.dumps({
+        'resource/table.xlsx': {
+            'purpose': 'schema',
+            'schema_selection': {
+                'version': 1,
+                'mode': 'manual',
+                'included_sheets': ['table_b'],
+                'reference_sheets': ['table_a'],
+                'file_sha256': '0' * 64,
+            },
+        },
+    }))
+
+    with pytest.raises(ValueError, match='重新确认'):
+        verifier.verify(tmp_path, 'objects')
+
+
+def test_explicit_empty_sheet_selection_can_pass_lightweight_verification(tmp_path, verifier):
+    put(tmp_path, 'ontology/object/EntityA.md', object_doc())
+    data = workbook_bytes()
+    table = tmp_path / 'resource/table.xlsx'
+    table.parent.mkdir(parents=True)
+    table.write_bytes(data)
+    put(tmp_path, 'resource/materials.json', json.dumps({
+        'resource/table.xlsx': {
+            'purpose': 'schema',
+            'schema_selection': {
+                'version': 1,
+                'mode': 'manual',
+                'included_sheets': [],
+                'reference_sheets': ['table_a', 'table_b'],
+                'file_sha256': hashlib.sha256(data).hexdigest(),
+            },
+        },
+    }))
+
+    result = verifier.verify(tmp_path, 'objects')
+
+    assert result['status'] == 'passed'
 
 
 def test_failed_receipt_and_corruption_fail_closed(tmp_path, verifier):
