@@ -377,6 +377,82 @@ function TurnView({ turn, onAnswer }: { turn: Turn; onAnswer: (ask: Ask, payload
   );
 }
 
+const engineIcon = (id: string) => (id === 'loopforest' ? <GitFork size={14} /> : <ScanSearch size={14} />);
+
+function EnginePicker({ engines, value, onChange }: { engines: Engine[]; value: string; onChange: (id: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const current = engines.find((e) => e.id === value) ?? engines[0];
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointer = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const pick = (id: string) => {
+    setOpen(false);
+    onChange(id);
+  };
+
+  return (
+    <div className="da-picker" ref={rootRef}>
+      <button
+        type="button"
+        className="da-picker-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label="分析引擎"
+        title={current.ready ? current.label : `${current.label} 未就绪`}
+        onClick={() => setOpen(!open)}
+      >
+        {engineIcon(current.id)}
+        <span className="da-picker-label">{current.label}</span>
+        <span className={`da-engine-dot ${current.ready ? '' : 'da-engine-dot-off'}`} />
+        <ChevronDown size={14} className={`da-picker-caret ${open ? 'da-picker-caret-open' : ''}`} />
+      </button>
+      {open ? (
+        <ul className="da-picker-menu" role="listbox" aria-label="分析引擎">
+          {engines.map((e) => (
+            <li
+              key={e.id}
+              role="option"
+              aria-selected={e.id === current.id}
+              tabIndex={0}
+              className={e.id === current.id ? 'da-picker-on' : ''}
+              onClick={() => pick(e.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  pick(e.id);
+                }
+              }}
+            >
+              {engineIcon(e.id)}
+              <span className="da-picker-label">{e.label}</span>
+              <span className="da-picker-state">
+                <span className={`da-engine-dot ${e.ready ? '' : 'da-engine-dot-off'}`} />
+                {e.ready ? '就绪' : '未就绪'}
+              </span>
+              {e.id === current.id ? <Check size={14} className="da-picker-check" /> : <span className="da-picker-check" />}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 function Shell() {
   const notify = useToast();
   const [state, dispatch] = useReducer(reducer, { turns: [], running: false });
@@ -591,24 +667,7 @@ function Shell() {
             </div>
           </div>
           <div className="da-header-actions">
-            {engines.length > 1 ? (
-              <div className="da-seg" role="radiogroup" aria-label="分析引擎">
-                {engines.map((e) => (
-                  <button
-                    key={e.id}
-                    role="radio"
-                    aria-checked={e.id === engine}
-                    className={e.id === engine ? 'da-seg-on' : ''}
-                    title={e.ready ? e.label : `${e.label} 未就绪`}
-                    onClick={() => switchEngine(e.id)}
-                  >
-                    {e.id === 'loopforest' ? <GitFork size={14} /> : <ScanSearch size={14} />}
-                    {e.label}
-                    <span className={`da-seg-dot ${e.ready ? '' : 'da-seg-dot-off'}`} />
-                  </button>
-                ))}
-              </div>
-            ) : null}
+            {engines.length > 1 ? <EnginePicker engines={engines} value={engine} onChange={switchEngine} /> : null}
             <Button
               icon={<History size={14} />}
               variant={historyOpen ? 'secondary' : 'ghost'}
