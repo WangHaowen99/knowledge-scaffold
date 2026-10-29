@@ -231,9 +231,12 @@ def installed_consumer_contract(config: dict, installed: dict, target: dict) -> 
     for endpoint_id, suffix, port, field in (("auth", "auth", 5056, "authApiVersion"),
                                              ("consumer-api", "backend", 5055, "consumerApiVersion")):
         item = by_id.get(endpoint_id, {})
-        if (item.get("serviceName") != f"{entry['releaseName']}-{suffix}" or
-                item.get("namespace") != entry["namespace"] or item.get("port") != port or
-                not isinstance(item.get("apiVersion"), str) or not item["apiVersion"]):
+        expected = {"serviceName": f"{entry['releaseName']}-{suffix}",
+                    "namespace": entry["namespace"], "port": port}
+        if any(item.get(key) != value for key, value in expected.items()):
+            raise CompatibilityError(f"installed Consumer {endpoint_id} endpoint contract is invalid")
+        api_version = item.get("apiVersion")
+        if not isinstance(api_version, str) or not api_version:
             raise CompatibilityError(f"installed Consumer {endpoint_id} endpoint contract is invalid")
         service = json.loads(kubectl(config, "-n", entry["namespace"], "get", "service",
                                      item["serviceName"], "-o", "json"))
@@ -241,7 +244,7 @@ def installed_consumer_contract(config: dict, installed: dict, target: dict) -> 
         if not isinstance(actual_ports, list) or port not in [part.get("port") for part in actual_ports
                                                                 if isinstance(part, dict)]:
             raise CompatibilityError(f"installed Consumer {endpoint_id} Service port differs from recorded contract")
-        versions[field] = item["apiVersion"]
+        versions[field] = api_version
     return {"consumerReleaseVersion": installed["consumer"]["releaseVersion"],
             "consumerChartVersion": installed["consumer"]["chartVersion"],
             "modelingReleaseVersion": installed["modeling"]["releaseVersion"],

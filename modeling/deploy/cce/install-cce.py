@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -471,17 +472,19 @@ def _pvc_bindings(args, merged: dict) -> dict:
 
 def _write_private_json(path: Path, document: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    temporary = None
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=f".{path.name}.", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
             json.dump(document, stream, ensure_ascii=False, sort_keys=True)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(path)
     finally:
-        temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _operation_state_path(args) -> Path:
@@ -561,16 +564,18 @@ def _require_upgrade_state_ready(args) -> None:
     state = _cluster_operation_state(args)
     if not state or state.get("stage") in ("complete", "old-service-restored"):
         return
-    if (getattr(args, "resume", None) == args.operation_id and
-            state.get("action") == "upgrade" and state.get("operationId") == args.operation_id and
-            state.get("stage") in ("preparing-backup", "backup-ready")):
+    matching_resume = (getattr(args, "resume", None), state.get("action"), state.get("operationId")) == (
+        args.operation_id, "upgrade", args.operation_id)
+    if matching_resume and state.get("stage") in ("preparing-backup", "backup-ready"):
         path = _operation_state_path(args)
         try:
             local = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError) as exc:
             raise ConfigError("local upgrade operation state is unavailable; inspect before resuming") from exc
-        if (not isinstance(local, dict) or local.get("action") != "upgrade" or
-                local.get("operationId") != args.operation_id or local.get("stage") != state["stage"]):
+        if not isinstance(local, dict):
+            raise ConfigError("cluster and local upgrade stages differ; inspect before resuming")
+        local_identity = (local.get("action"), local.get("operationId"), local.get("stage"))
+        if local_identity != ("upgrade", args.operation_id, state["stage"]):
             raise ConfigError("cluster and local upgrade stages differ; inspect before resuming")
         # A Helm revision created by this operation means its outcome needs
         # inspection, even when a state write left an older stage behind.

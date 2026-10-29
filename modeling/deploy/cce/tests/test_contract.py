@@ -306,7 +306,7 @@ class CceContractTests(unittest.TestCase):
         with mock.patch.object(JOINT, "safe_extract", side_effect=extracted), \
              mock.patch.object(JOINT, "validate_release", side_effect=lambda _root, side: releases[side]), \
              mock.patch.object(JOINT, "validate_cross_side"), \
-             mock.patch.object(JOINT, "installed_identity_without_manifest", side_effect=lambda _config, side: installed[side]), \
+             mock.patch.object(JOINT, "installed_identity_without_manifest", side_effect=lambda _config, side: installed.get(side)), \
              mock.patch.object(JOINT, "kubectl", side_effect=cluster_resource):
             preview = JOINT.prepare_compatibility(config, upgrade=True, confirmed=False,
                                                   no_migration_confirmed=False)
@@ -345,7 +345,7 @@ class CceContractTests(unittest.TestCase):
              mock.patch.object(JOINT, "candidate_combination", return_value=fields), \
              mock.patch.object(JOINT, "validate_cross_side"), \
              mock.patch.object(JOINT, "installed_identity_without_manifest",
-                               side_effect=lambda _config, side: installed[side]), \
+                               side_effect=lambda _config, side: installed.get(side)), \
              mock.patch.object(JOINT, "installed_consumer_contract", side_effect=CompatibilityError(
                  "old contract unavailable")) as contract:
             with self.assertRaisesRegex(CompatibilityError, "old contract unavailable"):
@@ -373,12 +373,12 @@ class CceContractTests(unittest.TestCase):
         with mock.patch.object(JOINT, "installed_identity", side_effect=CompatibilityError(
                 "installed consumer Chart version is absent in compatibility manifest")), \
              mock.patch.object(JOINT, "installed_identity_without_manifest",
-                               side_effect=lambda _config, side: installed[side]):
+                               side_effect=lambda _config, side: installed.get(side)):
             self.assertEqual(JOINT._installed_for_compatibility(config, True), installed)
         with mock.patch.object(JOINT, "installed_identity", side_effect=CompatibilityError(
                 "installed modeling Chart version is absent in compatibility manifest")), \
              mock.patch.object(JOINT, "installed_identity_without_manifest",
-                               side_effect=lambda _config, side: installed[side]):
+                               side_effect=lambda _config, side: installed.get(side)):
             self.assertEqual(JOINT._installed_for_compatibility(config, True), installed)
         with mock.patch.object(JOINT, "installed_identity", side_effect=CompatibilityError(
                 "installed modeling Chart version is ambiguous in compatibility manifest")), \
@@ -635,7 +635,7 @@ class CceContractTests(unittest.TestCase):
                  mock.patch.object(JOINT, "effective_images", return_value=self.base / "effective.yaml"), \
                  mock.patch.object(JOINT, "operation_fingerprint", return_value="synthetic"), \
                  mock.patch.object(JOINT, "checksum", return_value="synthetic"), \
-                 mock.patch.object(JOINT, "installed_identity", side_effect=lambda _config, side: installed[side]), \
+                 mock.patch.object(JOINT, "installed_identity", side_effect=lambda _config, side: installed.get(side)), \
                  mock.patch.object(JOINT, "verified_joint_transition") as verified, \
                  mock.patch.object(JOINT, "Lease", FakeLease), \
                  mock.patch.object(JOINT, "invoke", side_effect=fake_invoke):
@@ -1257,6 +1257,15 @@ class CceContractTests(unittest.TestCase):
             INSTALL._record_upgrade_stage(args, "target-verified")
         self.assertEqual(args.upgrade_stage, "target-verified")
         self.assertEqual(len(args.stage_warnings), 2)
+
+    def test_private_operation_json_is_written_and_temp_file_closed(self):
+        path = self.base / "state" / "operation.json"
+        INSTALL._write_private_json(path, {"stage": "prepared"})
+        self.assertEqual(json.loads(path.read_text()), {"stage": "prepared"})
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(list(path.parent.glob("*.tmp")), [])
+        INSTALL._write_private_json(path, {"stage": "complete"})
+        self.assertEqual(json.loads(path.read_text()), {"stage": "complete"})
 
     def test_resume_allows_only_same_operation_before_helm_change(self):
         args = SimpleNamespace(operation_id="upgrade-demo", resume="upgrade-demo",
