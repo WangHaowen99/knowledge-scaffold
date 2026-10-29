@@ -186,14 +186,94 @@ def matches_installed_combination(combination: dict, installed: dict) -> bool:
     )
 
 
+def installed_identity_without_manifest(config: dict, side: str) -> dict:
+    """Read the actual Helm identity without requiring a previous local manifest."""
+    entry = config[side]
+    status = json.loads(run("helm", "--kube-context", config["cluster"]["context"],
+                            "--namespace", entry["namespace"], "status", entry["releaseName"], "-o", "json"))
+    if status.get("info", {}).get("status") != "deployed":
+        raise ConfigError(f"installed {side} release is not deployed")
+    if side == "consumer":
+        return consumer_installed_metadata(config)
+    values = json.loads(run("helm", "--kube-context", config["cluster"]["context"],
+                            "--namespace", entry["namespace"], "get", "values", entry["releaseName"], "-o", "json"))
+    version = values.get("global", {}).get("releaseVersion")
+    chart = release_chart(config, side)
+    if not isinstance(version, str) or not version or not chart.startswith("modeling-"):
+        raise ConfigError("installed Modeling release identity is incomplete")
+    return {"releaseVersion": version, "chartVersion": chart.removeprefix("modeling-")}
+
+
+def installed_consumer_contract(config: dict, installed: dict, target: dict) -> dict:
+    """Reconstruct old API versions only from the installed Consumer's durable state."""
+    entry = config["consumer"]
+    raw = json.loads(kubectl(config, "-n", entry["namespace"], "get", "configmap",
+                             f"{entry['releaseName']}-cce-state", "-o", "json"))
+    try:
+        state = json.loads(raw["data"]["state.json"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CompatibilityError("installed Consumer endpoint contract is unavailable; restore the old release package or verified manifest") from exc
+    expected = {"releaseName": entry["releaseName"], "namespace": entry["namespace"],
+                "releaseVersion": installed["consumer"]["releaseVersion"],
+                "chartVersion": installed["consumer"]["chartVersion"], "phase": "ready",
+                "platform": target["platform"]}
+    if not isinstance(state, dict) or any(state.get(key) != value for key, value in expected.items()):
+        raise CompatibilityError("installed Consumer state differs from Helm or target platform")
+    endpoints = state.get("endpoints")
+    if not isinstance(endpoints, list):
+        raise CompatibilityError("installed Consumer endpoint contract is unavailable")
+    by_id = {}
+    for item in endpoints:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or item["id"] in by_id:
+            raise CompatibilityError("installed Consumer endpoint contract is invalid or ambiguous")
+        by_id[item["id"]] = item
+    versions = {}
+    for endpoint_id, suffix, port, field in (("auth", "auth", 5056, "authApiVersion"),
+                                             ("consumer-api", "backend", 5055, "consumerApiVersion")):
+        item = by_id.get(endpoint_id, {})
+        expected = {"serviceName": f"{entry['releaseName']}-{suffix}",
+                    "namespace": entry["namespace"], "port": port}
+        if any(item.get(key) != value for key, value in expected.items()):
+            raise CompatibilityError(f"installed Consumer {endpoint_id} endpoint contract is invalid")
+        api_version = item.get("apiVersion")
+        if not isinstance(api_version, str) or not api_version:
+            raise CompatibilityError(f"installed Consumer {endpoint_id} endpoint contract is invalid")
+        service = json.loads(kubectl(config, "-n", entry["namespace"], "get", "service",
+                                     item["serviceName"], "-o", "json"))
+        actual_ports = service.get("spec", {}).get("ports", [])
+        if not isinstance(actual_ports, list) or port not in [part.get("port") for part in actual_ports
+                                                                if isinstance(part, dict)]:
+            raise CompatibilityError(f"installed Consumer {endpoint_id} Service port differs from recorded contract")
+        versions[field] = api_version
+    return {"consumerReleaseVersion": installed["consumer"]["releaseVersion"],
+            "consumerChartVersion": installed["consumer"]["chartVersion"],
+            "modelingReleaseVersion": installed["modeling"]["releaseVersion"],
+            "modelingChartVersion": installed["modeling"]["chartVersion"],
+            "platform": target["platform"], "operationSchemaVersion": "cce-operation/v1",
+            "endpointSchemaVersion": "cce-endpoints/v1", **versions}
+
+
+def _installed_for_compatibility(config: dict, existing_manifest: bool) -> dict:
+    if not existing_manifest:
+        return {side: installed_identity_without_manifest(config, side) for side in JOINT_SIDE_ORDER}
+    try:
+        return {side: installed_identity(config, side) for side in JOINT_SIDE_ORDER}
+    except CompatibilityError as exc:
+        if not str(exc).endswith("Chart version is absent in compatibility manifest"):
+            raise
+        return {side: installed_identity_without_manifest(config, side) for side in JOINT_SIDE_ORDER}
+
+
 def prepare_compatibility(config: dict, *, upgrade: bool, confirmed: bool,
                           no_migration_confirmed: bool) -> dict:
     path = config["compatibilityFile"]
+    existing_manifest = path.is_file()
     if upgrade:
-        if not path.is_file():
-            raise ConfigError("existing verified compatibility manifest required for upgrade")
-        original_checksum = checksum(path)
-        manifest = validate_compatibility_manifest(read_yaml(path))
+        if path.exists() and not existing_manifest:
+            raise ConfigError("compatibilityFile exists but is not a regular file")
+        original_checksum = checksum(path) if existing_manifest else None
+        manifest = (validate_compatibility_manifest(read_yaml(path)) if existing_manifest else
+                    {"schemaVersion": "cce-compatibility/v1", "combinations": [], "transitions": []})
     elif path.exists():
         raise ConfigError("compatibilityFile already exists; keep the verified manifest")
     else:
@@ -208,14 +288,23 @@ def prepare_compatibility(config: dict, *, upgrade: bool, confirmed: bool,
         target = candidate_combination(packages)
         validate_cross_side(config, packages, read_yaml(config["consumer"]["values"]),
                             read_yaml(config["modeling"]["values"]), target)
+    verified_before_candidate = list(manifest["combinations"])
     target_id = include_combination(manifest, target)
     transition_id = None
     old_combination = None
     middle_combination = None
+    reconstructed_old = False
     if upgrade:
-        installed = {side: installed_identity(config, side) for side in JOINT_SIDE_ORDER}
-        old = [item for item in manifest["combinations"]
+        # Existing verified combinations keep their IDs and do not need a
+        # Consumer state lookup. Only a missing old combination is rebuilt.
+        installed = _installed_for_compatibility(config, existing_manifest)
+        old = [item for item in verified_before_candidate
                if matches_installed_combination(item, installed)]
+        if not old:
+            old_fields = installed_consumer_contract(config, installed, target)
+            old_id = include_combination(manifest, old_fields)
+            old = [item for item in manifest["combinations"] if item["id"] == old_id]
+            reconstructed_old = True
         if len(old) != 1:
             raise CompatibilityError("installed Consumer/Modeling combination is missing or ambiguous")
         old_combination = old[0]
@@ -242,7 +331,7 @@ def prepare_compatibility(config: dict, *, upgrade: bool, confirmed: bool,
     if confirmed:
         path.parent.mkdir(parents=True, exist_ok=True)
         output = yaml.safe_dump(manifest, allow_unicode=True, sort_keys=False)
-        if upgrade:
+        if upgrade and existing_manifest:
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
                                              prefix=".compatibility-", delete=False) as stream:
                 stream.write(output)
@@ -260,6 +349,8 @@ def prepare_compatibility(config: dict, *, upgrade: bool, confirmed: bool,
             "targetCombinationId": target_id, "targetCombination": {"id": target_id, **target},
             "oldCombination": old_combination, "intermediateCombination": middle_combination,
             "transitionId": transition_id,
+            "reconstructedOldCombination": reconstructed_old,
+            "oldCombinationSource": "installed Consumer state and Helm" if reconstructed_old else "verified manifest" if upgrade else None,
             "sameVersion": bool(old_combination and old_combination["id"] == target_id),
             "confirmationsRequired": (["joint-compatibility", "modeling-data-no-migration"] if upgrade
                                       else ["joint-compatibility"])}
@@ -448,8 +539,10 @@ def installed_identity(config, side):
                 if isinstance(item, dict) and item.get(f"{side}ChartVersion")}
     chart = release_chart(config, side)
     matches = [version for version in versions if chart.endswith(f"-{version}")]
+    if not matches:
+        raise CompatibilityError(f"installed {side} Chart version is absent in compatibility manifest")
     if len(matches) != 1:
-        raise CompatibilityError(f"installed {side} Chart version is absent or ambiguous in compatibility manifest")
+        raise CompatibilityError(f"installed {side} Chart version is ambiguous in compatibility manifest")
     return {"releaseVersion": values["global"]["releaseVersion"],
             "chartVersion": matches[0]}
 
