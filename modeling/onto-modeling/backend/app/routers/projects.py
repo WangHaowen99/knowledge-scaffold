@@ -4,6 +4,7 @@ import re
 import tempfile
 import urllib.error
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -678,20 +679,40 @@ def resource_meta(project_id: str, request: Request):
         "directives": workspaces.resource_directives(project_id),
         "purposes": list(workspaces.MATERIAL_PURPOSES),
         "schema_candidates": workspaces.schema_candidates(project_id),
+        "schema_scopes": workspaces.schema_scopes(project_id),
     }
+
+
+class SchemaPreviewBody(BaseModel):
+    path: str
+    force: bool = False
+
+
+@router.post("/{project_id}/resource-meta/schema-preview")
+def preview_resource_schema(project_id: str, body: SchemaPreviewBody, request: Request):
+    ensure_access(project_id, request, write=True)
+    return workspaces.preview_schema(project_id, body.path, force=body.force)
+
+
+class SchemaSelectionBody(BaseModel):
+    mode: Literal["auto", "manual"]
+    included_sheets: list[str]
+    file_sha256: str
 
 
 class ResourceDirectiveBody(BaseModel):
     path: str
     purpose: str
     reading_mode: str = "on_demand"
+    schema_selection: SchemaSelectionBody | None = None
 
 
 @router.patch("/{project_id}/resource-meta")
 def set_resource_meta(project_id: str, body: ResourceDirectiveBody, request: Request):
     ensure_access(project_id, request, write=True)
     return workspaces.set_resource_directive(
-        project_id, body.path, body.purpose, body.reading_mode
+        project_id, body.path, body.purpose, body.reading_mode,
+        body.schema_selection.model_dump() if body.schema_selection is not None else None,
     )
 
 

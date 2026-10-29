@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config
 from .routers import admin, auth_routes, projects, sessions, settings, onto_mcp
-from .services import auth
+from .services import auth, material_detect
 from .services.agent_sessions import SDK_AVAILABLE, SessionError
 from .services.auth import AuthError
 from .services.conversation_store import ConversationError
@@ -92,6 +92,11 @@ async def auth_middleware(request: Request, call_next):
 @app.exception_handler(AuthError)
 async def auth_error_handler(request: Request, exc: AuthError):
     return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+
+
+@app.exception_handler(material_detect.SheetSelectionError)
+async def sheet_selection_error_handler(request: Request, exc: material_detect.SheetSelectionError):
+    return JSONResponse(status_code=409, content={"error": str(exc), "code": "schema_selection_invalid"})
 
 
 @app.exception_handler(WorkspaceError)
