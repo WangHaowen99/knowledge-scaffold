@@ -651,10 +651,13 @@ export const api = {
     return xhrUpload(`/api/projects/${pid}/resources`, form, onProgress);
   },
   resourceDirectives: (pid) => request(`/api/projects/${pid}/resource-meta`),
-  setResourceDirective: (pid, path, purpose, readingMode = 'on_demand') =>
+  previewResourceSchema: (pid, path, force = false) => request(`/api/projects/${pid}/resource-meta/schema-preview`, {
+    method: 'POST', body: JSON.stringify({ path, force }),
+  }),
+  setResourceDirective: (pid, path, purpose, readingMode = 'on_demand', schemaSelection = undefined) =>
     request(`/api/projects/${pid}/resource-meta`, {
       method: 'PATCH',
-      body: JSON.stringify({ path, purpose, reading_mode: readingMode }),
+      body: JSON.stringify({ path, purpose, reading_mode: readingMode, schema_selection: schemaSelection }),
     }),
 };
 

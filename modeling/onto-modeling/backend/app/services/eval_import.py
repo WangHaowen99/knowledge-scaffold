@@ -27,7 +27,7 @@ import zipfile
 from pathlib import Path
 
 from .. import config
-from . import eval_data_files, package_mapping
+from . import eval_data_files, package_mapping, material_detect
 
 WORKBOOK_NAME = "eval-data.xlsx"
 MAX_FILES = 20
@@ -141,10 +141,16 @@ def _sheet_table(sheet_name: str, raw_rows: list[tuple], source: str) -> tuple[T
 def read_workbook(path: Path, source: str) -> tuple[list[Table], list[str]]:
     import openpyxl
 
+    scope = material_detect.evaluation_selection(path)
+    selected = set(scope["included_sheets"])
     workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
     tables, warnings = [], []
+    if scope["reference_sheets"]:
+        warnings.append("参考 Sheet 不导入实例数据：" + "、".join(scope["reference_sheets"]))
     try:
         for sheet in workbook.worksheets:
+            if sheet.title not in selected:
+                continue
             table, sheet_warnings = _sheet_table(
                 sheet.title, list(sheet.iter_rows(values_only=True)), source
             )

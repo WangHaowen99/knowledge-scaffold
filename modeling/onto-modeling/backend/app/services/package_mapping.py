@@ -24,12 +24,13 @@ Neo4j 图导入的包按 modeling 图模式契约导出（object_data_mappings(g
 
 from __future__ import annotations
 
-import csv
 import difflib
 import json
 import re
 import unicodedata
 from pathlib import Path
+
+from . import material_detect
 
 # modeling 契约：来源Sheet 为 "—" 表示该对象不绑定物理表（package-import 按此跳过）
 UNBOUND = "—"
@@ -204,35 +205,9 @@ def parse_object_doc(text: str) -> dict:
     }
 
 
-def read_table_headers(path: Path) -> dict[str, list[str]]:
-    """表格文件 → {Sheet 名: 表头列}。口径与工具箱 check_eval_data.py 一致：
-    一个 Sheet = 一张表，首行 = 字段名。"""
-    if path.suffix.lower() == ".csv":
-        try:
-            with open(path, encoding="utf-8-sig", newline="") as handle:
-                row = next(csv.reader(handle), [])
-        except (OSError, UnicodeDecodeError, csv.Error):
-            return {}
-        headers = [str(c).strip() for c in row if str(c).strip()]
-        return {path.stem: headers} if headers else {}
-    try:
-        import openpyxl
-    except ImportError:  # pragma: no cover - 部署环境自带
-        return {}
-    try:
-        workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    except Exception:
-        return {}
-    tables: dict[str, list[str]] = {}
-    try:
-        for sheet in workbook.worksheets:
-            row = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
-            headers = [str(c).strip() for c in row if c is not None and str(c).strip()]
-            if headers and sheet.title not in tables:
-                tables[sheet.title] = headers
-    finally:
-        workbook.close()
-    return tables
+def read_table_headers(path: Path, directive: dict | None = None) -> dict[str, list[str]]:
+    """Backend and project tools use the same sheet selection and first-row headers."""
+    return material_detect.read_selected_headers(path, directive or {"purpose": "schema"})
 
 
 def _uploaded_eval_tables(root: Path) -> list[Path]:
@@ -265,7 +240,7 @@ def read_source_tables(root: Path) -> dict[str, list[str]]:
         path = (root / str(rel)).resolve()
         if not str(path).startswith(str(root.resolve())) or not path.is_file():
             continue
-        for name, headers in read_table_headers(path).items():
+        for name, headers in read_table_headers(path, directive).items():
             tables.setdefault(name, headers)
     for path in _uploaded_eval_tables(root):
         for name, headers in read_table_headers(path).items():

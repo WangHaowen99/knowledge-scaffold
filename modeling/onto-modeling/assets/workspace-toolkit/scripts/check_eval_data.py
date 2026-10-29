@@ -23,7 +23,6 @@
 
 from __future__ import annotations
 
-import csv
 import importlib.util
 import json
 import re
@@ -61,32 +60,13 @@ def load_directives(root: Path) -> dict:
         return {}
 
 
-def read_tables(path: Path) -> dict[str, list[str]]:
-    """表格文件 → {表名: [表头列]}。csv 的表名取文件名（去扩展名）。"""
-    if path.suffix.lower() == ".csv":
-        try:
-            with open(path, encoding="utf-8-sig", newline="") as f:
-                row = next(csv.reader(f), [])
-        except (OSError, UnicodeDecodeError):
-            return {}
-        headers = [str(c).strip() for c in row if str(c).strip()]
-        return {path.stem: headers} if headers else {}
-    try:
-        import openpyxl  # 容器/后端环境自带；缺失时给出明确指引
-    except ImportError:
-        print("需要 openpyxl 解析 Excel（pip install openpyxl）", file=sys.stderr)
-        sys.exit(2)
-    try:
-        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    except Exception:
-        return {}
-    tables = {}
-    for ws in wb.worksheets:
-        row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
-        headers = [str(c).strip() for c in row if c is not None and str(c).strip()]
-        if headers:
-            tables[ws.title] = headers
-    return tables
+_spec = importlib.util.spec_from_file_location("onto_check_table_sources", Path(__file__).resolve().with_name("table_sources.py"))
+_table_sources = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_table_sources)
+
+
+def read_tables(path: Path, directive: dict | None = None) -> dict[str, list[str]]:
+    return _table_sources.read_selected_headers(path, directive or {"purpose": "schema"})
 
 
 def table_headers(root: Path) -> dict[str, list[str]]:
@@ -105,7 +85,7 @@ def table_headers(root: Path) -> dict[str, list[str]]:
             continue
         if path.suffix.lower() != ".csv" and not excel_ok:
             continue
-        for name, headers in read_tables(path).items():
+        for name, headers in read_tables(path, directives.get(rel)).items():
             tables.setdefault(name, headers)
     return tables
 
@@ -166,6 +146,7 @@ def load_registered_tables(root: Path) -> tuple[dict, dict]:
     表头同名以先读到的为准（与 table_headers 一致）。
     """
     base = root.resolve()
+    directives = load_directives(root)
     tables: dict[str, list[str]] = {}
     profiles: dict[str, dict] = {}
     for rel in registered_table_files(root):
@@ -176,12 +157,24 @@ def load_registered_tables(root: Path) -> tuple[dict, dict]:
             raise ValueError("已登记的数据表不存在，字段核验未完成")
         if path.suffix.lower() != ".csv" and importlib.util.find_spec("openpyxl") is None:
             raise ValueError(EXCEL_DEPENDENCY_MESSAGE)
-        headers = read_tables(path)
-        if not headers:
+        directive = directives.get(rel)
+        headers = read_tables(path, directive)
+        selection = directive.get("schema_selection") if isinstance(directive, dict) else None
+        explicitly_empty = (
+            isinstance(selection, dict)
+            and selection.get("mode") == "manual"
+            and selection.get("included_sheets") == []
+        )
+        if not headers and not explicitly_empty:
             raise ValueError("数据表无法解析或没有表头，字段核验未完成")
         for name, columns in headers.items():
             tables.setdefault(name, columns)
-        _merge_profiles(profiles, read_profiles(path))
+        selected_profiles = {
+            name: profile
+            for name, profile in read_profiles(path).items()
+            if name in headers
+        }
+        _merge_profiles(profiles, selected_profiles)
     return tables, profiles
 
 
@@ -312,7 +305,7 @@ def main() -> int:
 
     schema_columns: set[str] = set()
     for rel in schema_files:
-        for headers in read_tables(root / rel).values():
+        for headers in read_tables(root / rel, directives.get(rel)).values():
             schema_columns.update(headers)
     attr_names = object_attribute_names(root)
 
@@ -354,4 +347,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except _table_sources.SheetSelectionError as exc:
+        print(f"Sheet 范围需要确认：{exc}", file=sys.stderr)
+        sys.exit(2)

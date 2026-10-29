@@ -475,12 +475,21 @@ def test_import_transfer_zip_uses_default_engine(
 
 
 def test_resource_directives_roundtrip(manager: WorkspaceManager):
+    openpyxl = pytest.importorskip("openpyxl")
+    workbook = openpyxl.Workbook()
+    workbook.active.title = "table_a"
+    workbook.active.append(["id", "name"])
+    output = io.BytesIO()
+    workbook.save(output)
+    workbook.close()
     meta = manager.create_project("资料用途")
     saved = manager.save_resource(
-        meta["id"], "excel", "库表.xlsx", b"x", purpose="schema", reading_mode="full"
+        meta["id"], "excel", "库表.xlsx", output.getvalue(), purpose="schema", reading_mode="full"
     )
     directives = manager.resource_directives(meta["id"])
-    assert directives[saved["path"]] == {"purpose": "schema", "reading_mode": "full"}
+    assert directives[saved["path"]]["purpose"] == "schema"
+    assert directives[saved["path"]]["reading_mode"] == "full"
+    assert directives[saved["path"]]["schema_selection"]["included_sheets"] == ["table_a"]
     # 修改用途
     manager.set_resource_directive(meta["id"], saved["path"], "term")
     assert manager.resource_directives(meta["id"])[saved["path"]]["purpose"] == "term"

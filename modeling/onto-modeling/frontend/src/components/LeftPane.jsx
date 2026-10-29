@@ -8,6 +8,7 @@ import {
 import {
   Alert,
   Button,
+  Checkbox,
   Divider,
   Dropdown,
   Input,
@@ -309,14 +310,39 @@ export default function LeftPane({
   const [directives, setDirectives] = useState({});
   // 结构上像数据表、用途仍是「由助手判断」的表格资料：{路径: {tables}}，可一键标为 schema
   const [schemaCandidates, setSchemaCandidates] = useState({});
-  const loadDirectives = () =>
-    api
-      .resourceDirectives(project.id)
+  const [schemaScopes, setSchemaScopes] = useState({});
+  const [sheetEditor, setSheetEditor] = useState(null);
+  const [savingSheets, setSavingSheets] = useState(false);
+  const [checkingSheets, setCheckingSheets] = useState(false);
+  const schemaChecking = useRef(false);
+  const schemaRequest = useRef(0);
+  const invalidateSchemaRequest = () => {
+    schemaRequest.current += 1;
+    schemaChecking.current = false;
+    setCheckingSheets(false);
+  };
+  const currentProjectId = useRef(project.id);
+  currentProjectId.current = project.id;
+  const loadDirectives = () => {
+    const projectId = project.id;
+    return api
+      .resourceDirectives(projectId)
       .then((data) => {
+        if (currentProjectId.current !== projectId) return;
         setDirectives(data.directives || {});
         setSchemaCandidates(data.schema_candidates || {});
+        setSchemaScopes(data.schema_scopes || {});
       })
       .catch(() => {});
+  };
+
+  useEffect(() => {
+    invalidateSchemaRequest();
+    setDirectives({});
+    setSchemaCandidates({});
+    setSchemaScopes({});
+    setSheetEditor(null);
+  }, [project.id]);
 
   useEffect(() => {
     if (section !== 'resources') return;
@@ -450,16 +476,82 @@ export default function LeftPane({
   const runEvolution = () =>
     onCommand(`/ontology-evolution ${evolution.report.split('/').pop()}`);
 
-  const changeDirective = async (path, purpose, readingMode) => {
+  const openSheetScope = async (path, readingMode, saveIfValid = false, force = false) => {
+    if (savingSheets) return;
+    const projectId = project.id;
+    const version = ++schemaRequest.current;
+    schemaChecking.current = true;
+    setCheckingSheets(true);
     try {
-      await api.setResourceDirective(project.id, path, purpose, readingMode);
-      setDirectives((prev) => ({ ...prev, [path]: { purpose, reading_mode: readingMode } }));
+      const scope = await api.previewResourceSchema(projectId, path, force);
+      if (currentProjectId.current !== projectId || schemaRequest.current !== version) return;
+      if (saveIfValid && !scope.error && scope.sheets.length > 0 &&
+          scope.sheets.every((sheet) => !sheet.issues?.length)) {
+        await api.setResourceDirective(projectId, path, 'schema', readingMode, {
+          mode: 'manual', included_sheets: scope.included_sheets, file_sha256: scope.file_sha256,
+        });
+        if (currentProjectId.current !== projectId || schemaRequest.current !== version) return;
+        await loadDirectives();
+        onRefresh?.();
+        message.success(`已设为数据 Schema，选中 ${scope.included_sheets.length} 个数据 Sheet`);
+        return;
+      }
+      setSheetEditor({ projectId, path, readingMode, scope, selected: scope.included_sheets || [] });
+    } catch (error) {
+      if (currentProjectId.current !== projectId || schemaRequest.current !== version) return;
+      setSheetEditor({ projectId, path, readingMode, selected: [], scope: { sheets: [], error: error.message } });
+    } finally {
+      if (currentProjectId.current === projectId && schemaRequest.current === version) {
+        schemaChecking.current = false;
+        setCheckingSheets(false);
+      }
+    }
+  };
+
+  const changeDirective = async (path, purpose, readingMode) => {
+    if (purpose === 'schema') {
+      await openSheetScope(path, readingMode, true);
+      return;
+    }
+    invalidateSchemaRequest();
+    try {
+      const saved = await api.setResourceDirective(project.id, path, purpose, readingMode);
+      setDirectives((prev) => ({ ...prev, [path]: saved }));
+      await loadDirectives();
+      onRefresh?.();
       setSchemaCandidates((prev) => {
         const { [path]: _removed, ...rest } = prev;
         return rest;
       });
     } catch (error) {
       message.error(error.message);
+    }
+  };
+
+  const saveSheetScope = async () => {
+    if (!sheetEditor || savingSheets || schemaChecking.current ||
+        !sheetEditor.scope.file_sha256 || sheetEditor.projectId !== project.id) return;
+    invalidateSchemaRequest();
+    const version = schemaRequest.current;
+    setSavingSheets(true);
+    const projectId = project.id;
+    try {
+      await api.setResourceDirective(projectId, sheetEditor.path, 'schema',
+        sheetEditor.readingMode || directives[sheetEditor.path]?.reading_mode || 'on_demand', {
+          mode: 'manual', included_sheets: sheetEditor.selected,
+          file_sha256: sheetEditor.scope.file_sha256,
+        });
+      if (currentProjectId.current !== projectId || schemaRequest.current !== version) return;
+      setSheetEditor(null);
+      await loadDirectives();
+      if (currentProjectId.current !== projectId || schemaRequest.current !== version) return;
+      onRefresh?.();
+      message.success('Sheet 范围已保存；请重新执行受影响的资料分析和字段核验');
+    } catch (error) {
+      if (currentProjectId.current !== projectId || schemaRequest.current !== version) return;
+      setSheetEditor((prev) => prev && ({ ...prev, scope: { ...prev.scope, error: error.message, file_sha256: null } }));
+    } finally {
+      setSavingSheets(false);
     }
   };
 
@@ -790,6 +882,26 @@ export default function LeftPane({
                           <Tag className="resource-detect-tag">自动识别</Tag>
                         </Tooltip>
                       )}
+                      {schemaScopes[item.path] && (
+                        <Button size="small" type="link"
+                          danger={Boolean(schemaScopes[item.path].error)}
+                          onClick={() => {
+                            invalidateSchemaRequest();
+                            const scope = schemaScopes[item.path];
+                            const invalid = new Set((scope.sheets || [])
+                              .filter((sheet) => sheet.schema_selectable === false || sheet.selectable === false)
+                              .map((sheet) => sheet.name));
+                            setSheetEditor({
+                              projectId: project.id, path: item.path,
+                              readingMode: directives[item.path]?.reading_mode,
+                              scope,
+                              selected: (scope.included_sheets || []).filter((name) => !invalid.has(name)),
+                            });
+                          }}>
+                          {schemaScopes[item.path].error ? 'Sheet 范围待确认' :
+                            `数据表 ${schemaScopes[item.path].included_sheets?.length || 0} · 参考 ${schemaScopes[item.path].reference_sheets?.length || 0}`} · 查看范围
+                        </Button>
+                      )}
                       {schemaCandidates[item.path] && (
                         <Tooltip
                           title={`表头像数据库列名，识别出 ${schemaCandidates[item.path].tables.length} 张表：${schemaCandidates[item.path].tables.slice(0, 8).join('、')}`}
@@ -818,6 +930,41 @@ export default function LeftPane({
           />
         </>
       )}
+
+      <Modal title="数据 Schema 的 Sheet 范围"
+        open={Boolean(sheetEditor && sheetEditor.projectId === project.id)}
+        onCancel={() => { invalidateSchemaRequest(); setSheetEditor(null); }} onOk={saveSheetScope}
+        closable={!savingSheets} maskClosable={!savingSheets} keyboard={!savingSheets}
+        cancelButtonProps={{ disabled: savingSheets }}
+        confirmLoading={savingSheets} okText="确认用途与范围"
+        okButtonProps={{ disabled: checkingSheets || !sheetEditor?.scope.file_sha256 }}>
+        <Typography.Paragraph>
+          {sheetEditor?.path}
+        </Typography.Paragraph>
+        <Typography.Paragraph>
+          第一行应直接填写字段名，每列名称唯一且不合并。勾选的 Sheet 用于对象字段提取与数据映射，其余作为参考资料。确认后才保存用途，取消不改变原设置，原文件不会改写。
+        </Typography.Paragraph>
+        {sheetEditor?.scope.error && <Alert type="warning" showIcon message={sheetEditor.scope.error} />}
+        <Checkbox.Group value={sheetEditor?.selected || []}
+          onChange={(selected) => setSheetEditor((prev) => ({ ...prev, selected }))}>
+          <Space direction="vertical" style={{ marginTop: 12 }}>
+            {(sheetEditor?.scope.sheets || []).map((sheet) => (
+              <div key={sheet.name}>
+              <Checkbox value={sheet.name} disabled={checkingSheets || savingSheets || sheet.schema_selectable === false || sheet.selectable === false}>
+                {sheet.name} · {sheetEditor?.selected.includes(sheet.name) ? '数据结构' : '参考资料'}
+              </Checkbox>
+              {(sheet.issues || []).map((issue, index) => <Alert key={`${issue.code}-${index}`}
+                style={{ marginTop: 6 }} showIcon type={issue.severity === 'error' ? 'error' : 'warning'}
+                message={`Sheet「${sheet.name}」：${issue.message}`} />)}
+              </div>
+            ))}
+          </Space>
+        </Checkbox.Group>
+        {!sheetEditor?.selected.length && <Alert style={{ marginTop: 12 }} type="info"
+          message="未选择数据 Sheet：全部作为参考资料，不提供数据表字段。" />}
+        <Button style={{ marginTop: 12 }} loading={checkingSheets} disabled={checkingSheets || savingSheets}
+          onClick={() => openSheetScope(sheetEditor.path, sheetEditor.readingMode, false, true)}>重新检查文件</Button>
+      </Modal>
 
       {section === 'versions' && (
         <>
