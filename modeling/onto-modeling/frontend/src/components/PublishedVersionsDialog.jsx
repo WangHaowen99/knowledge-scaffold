@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Empty, Modal, Space, Table, Tag, Typography, message } from 'antd';
 import { api } from '../lib/api';
-import { openEvaluation } from '../lib/evaluation.js';
+import { openEvaluation, prefetchEvaluationEntry } from '../lib/evaluation.js';
 
 export default function PublishedVersionsDialog({ projectId, onClose }) {
   const [page, setPage] = useState(1);
@@ -13,6 +13,8 @@ export default function PublishedVersionsDialog({ projectId, onClose }) {
   const [resources, setResources] = useState(null);
 
   useEffect(() => { setPage(1); setData({ releases: [], total: 0 }); setResources(null); }, [projectId]);
+  // 失败不阻断：点击“评测”时会重新读取并给出原因
+  useEffect(() => { if (projectId) prefetchEvaluationEntry().catch(() => {}); }, [projectId]);
   useEffect(() => {
     if (!projectId) return undefined;
     let active = true;

@@ -1,7 +1,19 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { api, TOKEN, REFRESH, saveLogin, clearLogin, requestId } from './api.js';
+import { receiveHandoff } from './handoff.js';
+import { JudgeSettings } from './JudgeSettings.jsx';
 import './style.css';
+
+// A modeling page on another origin hands over its login after opening this window.
+async function acceptHandoff() {
+  if (!window.opener) return;
+  const response = await fetch('/evaluation/api/client-config').catch(() => null);
+  if (!response?.ok) return;
+  const { trusted_origins: trusted = [] } = await response.json();
+  const tokens = await receiveHandoff({ opener: window.opener, trusted, here: location.origin, target: window });
+  if (tokens) { clearLogin(); saveLogin(tokens); }
+}
 
 function App() {
   const query = new URLSearchParams(location.search);
@@ -15,16 +27,16 @@ function App() {
   const [connection, setConnection] = useState('{}'), [schema, setSchema] = useState('{}'), [inputIds, setInputIds] = useState([]), [importData, setImportData] = useState(false);
   const [receipt, setReceipt] = useState(null), [answer, setAnswer] = useState(null), [nextRuns, setNextRuns] = useState(null), [nextPackages, setNextPackages] = useState(null), [nextVersions, setNextVersions] = useState(null), [nextResults, setNextResults] = useState(null);
   const [trace, setTrace] = useState(null);
-  const [setEdit, setSetEdit] = useState(null), [sourceEdit, setSourceEdit] = useState(null);
+  const [setEdit, setSetEdit] = useState(null), [sourceEdit, setSourceEdit] = useState(null), [judgeOpen, setJudgeOpen] = useState(false);
   async function allDefinitions(path) { let items = [], offset = 0; do { const page = await api(`${path}?offset=${offset}`); items.push(...page.items); offset = page.next_offset; } while (offset != null); return { items }; }
   async function act(work) { setBusy(true); setError(''); try { await work(); } catch (e) { setError(e.message); } finally { setBusy(false); } }
   async function refresh() {
     const [p, s, d, r] = await Promise.all([api('/packages'), allDefinitions('/eval-sets'), allDefinitions('/data-sources'), api('/runs')]);
     setPackages(p.items); setNextPackages(p.next_offset); setSets(s.items); setSources(d.items); setRuns(r.items); setNextRuns(r.next_offset);
   }
-  function reset() { setSession(null); setPrep(null); setDetail(null); setResults([]); setAnswer(null); setTrace(null); setReceipt(null); setPackages([]); setVersions([]); setRuns([]); setSets([]); setSources([]); setInputIds([]); setConnection('{}'); setSchema('{}'); setCaseText(''); setSetName(''); setSourceName(''); setSetId(''); setSourceId(''); setSetEdit(null); setSourceEdit(null); sessionStorage.removeItem('evaluation-subject'); }
+  function reset() { setSession(null); setPrep(null); setDetail(null); setResults([]); setAnswer(null); setTrace(null); setReceipt(null); setPackages([]); setVersions([]); setRuns([]); setSets([]); setSources([]); setInputIds([]); setConnection('{}'); setSchema('{}'); setCaseText(''); setSetName(''); setSourceName(''); setSetId(''); setSourceId(''); setSetEdit(null); setSourceEdit(null); setJudgeOpen(false); sessionStorage.removeItem('evaluation-subject'); }
   useEffect(() => {
-    act(async () => { setSession(await api('/session')); await refresh(); });
+    act(async () => { await acceptHandoff(); setSession(await api('/session')); await refresh(); });
     const changed = (e) => { if (e.type !== 'storage' || e.key == null || [TOKEN, REFRESH].includes(e.key)) { reset(); act(async () => { setSession(await api('/session')); await refresh(); }); } };
     const required = () => reset();
     window.addEventListener('storage', changed); window.addEventListener('evaluation-auth-required', required);
@@ -56,8 +68,9 @@ function App() {
     setDetail(r); setResults(cases.items); setNextResults(cases.next_offset); setAnswer(null);
   }
   const release = versions.find((v) => v.release_id === releaseId);
-  return <main><header><div><small>KNOWLEDGE EVALUATION</small><h1>知识包评测</h1></div>{session && <button onClick={() => { clearLogin(); reset(); }}>退出登录</button>}</header>
+  return <main><header><div><small>KNOWLEDGE EVALUATION</small><h1>知识包评测</h1></div>{session && <div><button onClick={() => setJudgeOpen(!judgeOpen)}>评测判分模型配置</button><button onClick={() => { clearLogin(); reset(); }}>退出登录</button></div>}</header>
     {error && <p role="alert" className="error">{error}</p>}
+    {session && judgeOpen && <JudgeSettings onClose={() => setJudgeOpen(false)} onChanged={() => act(async () => setSession(await api('/session')))} />}
     {!session ? <section><h2>登录统一账号</h2><p>从建模页面进入时将自动复用有效登录。登录过期后请重新认证。</p><form onSubmit={(e) => { e.preventDefault(); const f = new FormData(e.currentTarget); act(async () => { saveLogin(await api('/auth/login', { username: f.get('username'), password: f.get('password') })); setSession(await api('/session')); await refresh(); }); }}><input name="username" aria-label="账号" autoComplete="username" required /><input name="password" type="password" aria-label="密码" autoComplete="current-password" required /><button disabled={busy}>登录</button></form></section> : <>
     <p className="notice">问答模型使用 consumer 当前配置；Judge：{session.judge.model || '未配置'}。临时配置方案，待统一整改（MODEL-CONFIG-01）。</p>
     <section><h2>1 · 选择 Hub 版本</h2><div className="row"><select aria-label="知识包" value={packageId} onChange={(e) => { setPackageId(e.target.value); setReleaseId(''); }}><option value="">选择知识包</option>{packages.map((p) => <option key={p.hub_package_id} value={p.hub_package_id}>{p.manifest_id}</option>)}</select><select aria-label="版本" value={releaseId} onChange={(e) => setReleaseId(e.target.value)}><option value="">选择版本</option>{versions.map((r) => <option key={r.release_id} value={r.release_id}>{r.version} · {r.source_service}</option>)}</select></div>

@@ -16,7 +16,7 @@
 | modeling-agent | `modeling/modeling-agent/` | 仅容器网 5110 | mw-modeling-agent | modeling core / LLM | 新 Workbench 的 openJiuwen Agent 运行时 |
 | auth-server | `auth-server/` | 不暴露宿主端口（容器网内 5056） | onto-agent-auth-server | — | 必备鉴权服务，consumer 与 modeling 共用 |
 | knowledge-hub | `knowledge-hub/` | 不暴露宿主端口（容器网内 8200） | knowledge-hub | auth-server / onto-modeling | 知识包 Hub，独立 compose 项目（`knowledge-hub/deploy/docker-compose.knowledge-hub.yml`） |
-| knowledge-evaluation | `eval-service/` | 127.0.0.1:8090 → 8090 | knowledge-evaluation | auth-server / knowledge-hub / consumer-backend | 独立评测服务，单实例，独立 compose 项目（`eval-service/deploy/docker-compose.eval-service.yml`） |
+| knowledge-evaluation | `eval-service/` | 8090 → 8090（供浏览器打开评测页面） | knowledge-evaluation | auth-server / knowledge-hub / consumer-backend | 独立评测服务，单实例，独立 compose 项目（`eval-service/deploy/docker-compose.eval-service.yml`） |
 | eval-mysql（可选） | — | 3306 → 3306 | mysql:8 | — | 建模评测库（Excel 数据自动落库供查询类用例） |
 
 服务间调用链：`浏览器 → frontend(8888) → backend(5055)`；`浏览器 → modeling(8100) → modeling-agent(5110)`；modeling 登录直连 auth-server，评测调用 consumer。consumer 与 modeling 容器共享 Docker 网络；独立评测服务同样加入 consumer 网络，按服务名访问账号服务、Hub 与 consumer。

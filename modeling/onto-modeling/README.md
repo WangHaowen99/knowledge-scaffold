@@ -171,12 +171,17 @@ Hub 不可用时发布失败；Hub 已提交、本地关联尚未写入时提示
 
 ## 独立评测入口（eval1）
 
-本地开发时，建模 Vite 将 `/evaluation/`（页面和 API）代理到 `http://127.0.0.1:8090`，可在启动 Vite 时通过 `EVAL_DEV_API_URL` 覆盖。需要先构建评测前端并独立启动评测服务，步骤见 [评测服务说明](../../eval-service/README.md)。修改代理环境变量后须重启 Vite。
+本地开发时，默认直接打开本机 8090 的评测服务。建模后端设置 `ONTO_WEB_EVAL_PUBLIC_URL=/evaluation/` 时改走同源路径，由建模 Vite 将 `/evaluation/`（页面和 API）代理到 `http://127.0.0.1:8090`，可在启动 Vite 时通过 `EVAL_DEV_API_URL` 覆盖。需要先构建评测前端并独立启动评测服务，步骤见 [评测服务说明](../../eval-service/README.md)。修改代理环境变量后须重启 Vite。
 
-部署环境需要在建模页面所在的同源独立网关接入 `/evaluation/`，保留完整路径并转发至评测服务，参考 [网关配置示例](../../eval-service/deploy/nginx.conf.example)。默认全栈 `bash deploy/deploy.sh` 包含评测；仅部署建模不会启动评测。也可从仓库根执行 `bash deploy/deploy.sh --eval-only` 独立部署评测，并按说明注入受保护的运行配置。健康检查返回 404 时检查路由，502/503 时检查评测上游，返回 HTML 时检查是否误入建模页面回退。正确响应应为 `{"status":"ok","service":"evaluation"}`。
+评测入口地址只由部署变量 `ONTO_WEB_EVAL_PUBLIC_URL`（写在 `.env`）决定，页面不提供修改入口。这个地址由用户浏览器访问，不是容器网络地址；修改后须重启建模服务。
 
-进度栏不再提供“数据评测（可选）”和数据源编辑。项目已发布版本及“我的 Hub 知识包”的版本列表新增“评测”，仅携带 Hub 包/版本引用跳转同源 `/evaluation/`，不自动执行、不传令牌或项目 ID。未配置独立评测时明确提示，不回退到 Core。
+- 直连（默认）：未设置时，浏览器打开与建模页面同主机的 `http://<主机>:8090/evaluation/`，整栈同机部署无需配置。评测在其他主机、端口或经 HTTPS 时设为完整地址（如 `http://eval.example.com:8090/evaluation/`），须为 http(s)、不含账号和查询参数，路径固定为 `/evaluation/`。点击评测时打开新窗口，登录经 `postMessage` 只交给该地址的来源；评测侧的来源限制见评测服务说明。
+- 同源网关：在建模页面所在的同源独立网关接入 `/evaluation/`，保留完整路径并转发至评测服务，参考 [网关配置示例](../../eval-service/deploy/nginx.conf.example)，并设置 `ONTO_WEB_EVAL_PUBLIC_URL=/evaluation/`。此时在当前窗口跳转并共享浏览器中的登录。
 
-评测服务自行管理用例、数据源、mapping 与运行结果，直接访问账号、Hub 和 consumer。有效登录通过同源浏览器存储复用，刷新协调使用共享锁；独立网关不依赖建模容器。部署见 `../../eval-service/README.md`，使用 `--eval-only`，不随 `--onto-modeling-only` 启动。
+默认全栈 `bash deploy/deploy.sh` 包含评测；仅部署建模不会启动评测。也可从仓库根执行 `bash deploy/deploy.sh --eval-only` 独立部署评测，并按说明注入受保护的运行配置。健康检查返回 404 时检查路由，502/503 时检查评测上游，返回 HTML 时检查是否误入建模页面回退。正确响应应为 `{"status":"ok","service":"evaluation"}`。
+
+进度栏不再提供“数据评测（可选）”和数据源编辑。项目已发布版本及“我的 Hub 知识包”的版本列表新增“评测”，仅携带 Hub 包/版本引用跳转生效的评测入口，不自动执行，URL 中不含令牌或项目 ID。未配置独立评测时明确提示，不回退到 Core。
+
+评测服务自行管理用例、数据源、mapping 与运行结果，直接访问账号、Hub 和 consumer。同源时登录通过浏览器存储复用、刷新协调使用共享锁，直连时由建模窗口交接；独立网关不依赖建模容器。部署见 `../../eval-service/README.md`，使用 `--eval-only`，不随 `--onto-modeling-only` 启动。
 
 旧版评测记录按明确的历史入口查看；旧任务停止和对账接口保留。新的旧评测创建、用例/数据源修改接口返回 410。旧工作台和 MCP 的 Core 调用仍保留，不能据此下线整个 Core。评测服务不接管历史项目成员关系，也不随建模项目删除独立记录。

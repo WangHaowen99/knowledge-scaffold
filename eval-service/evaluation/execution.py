@@ -18,19 +18,23 @@ pass=关键结论与数值一致；partial=方向正确但遗漏；fail=关键�
 
 
 class Judge:
-    def __init__(self,config,http): self.config,self.http=config,http
+    def __init__(self,settings,http): self.settings,self.http=settings,http
 
-    def profile(self):
-        c=self.config
-        if not all((c.judge_url,c.judge_key,c.judge_model,c.judge_revision)):
+    def profile(self,current=None):
+        c=current or self.settings.effective()
+        if not all((c['url'],c['key'],c['model'],c['revision'])):
             raise Failure('judge_unconfigured','Judge 配置缺失（MODEL-CONFIG-01）',503,'judging')
-        return dict(model=c.judge_model,revision=c.judge_revision,rule_version='1')
+        return dict(model=c['model'],revision=c['revision'],rule_version='1')
 
-    def score(self, question, reference, answer):
-        profile=self.profile()
+    def score(self, question, reference, answer, expected=None, current=None):
+        current=current or self.settings.effective()
+        profile=self.profile(current)
+        # One run is judged by one configuration; a change mid-run stops judging instead of mixing models.
+        if expected and profile!=expected:
+            raise Failure('configuration_changed','Judge 配置已变化，请创建新轮次',409,'judging')
         schema={'type':'object','properties':{'verdict':{'type':'string','enum':['pass','partial','fail']},
                  'reason':{'type':'string'}},'required':['verdict','reason'],'additionalProperties':False}
-        response=self.http.json('POST',self.config.judge_url,'/chat/completions',token=self.config.judge_key,
+        response=self.http.json('POST',current['url'],'/chat/completions',token=current['key'],
             json={'model':profile['model'],'messages':[{'role':'system','content':JUDGE_SYSTEM},
                   {'role':'user','content':json.dumps(dict(question=question,ground_truth=reference,answer=answer),ensure_ascii=False)}],
                   'tools':[{'type':'function','function':{'name':'submit_verdict','parameters':schema}}],
@@ -44,8 +48,8 @@ class Judge:
         except (KeyError,IndexError,ValueError,TypeError) as exc:
             raise Failure('judge_protocol','Judge 未返回有效结构化判分',422,'judging') from exc
 
-    def preflight(self):
-        self.score('合成协议检查：1 加 1 等于几？','2','2')
+    def preflight(self,current=None):
+        self.score('合成协议检查：1 加 1 等于几？','2','2',current=current)
 
 
 class Consumer:
@@ -252,7 +256,7 @@ class Engine:
                 case['status']='manual'
             else:
                 try:
-                    case['judgement']=self.judge.score(case['question'],case['reference'],case['answer'])
+                    case['judgement']=self.judge.score(case['question'],case['reference'],case['answer'],expected=run['judge'])
                     case['status']='settled'
                 except Failure as exc:
                     case['status']='judge_error'

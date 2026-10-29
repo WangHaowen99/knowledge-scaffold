@@ -1,11 +1,16 @@
 # Evaluation API
 
-前缀 `/evaluation/api`。除 health、账号登录/刷新及受 scene 凭据保护的 NL2SQL 外，均要求 `Authorization: Bearer <access-token>`。身份在线验证并按 issuer/subject 隔离；不接受建模项目归属或请求体 owner。
+前缀 `/evaluation/api`。除 health、client-config、账号登录/刷新及受 scene 凭据保护的 NL2SQL 外，均要求 `Authorization: Bearer <access-token>`。身份在线验证并按 issuer/subject 隔离；不接受建模项目归属或请求体 owner。
 
 | 接口 | 行为 |
 | --- | --- |
-| `GET /health` | 活性，不代表依赖就绪 |
+| `GET /health` | 活性，不代表依赖就绪；允许任意来源读取 |
+| `GET /client-config` | 可向评测页面交接登录的建模来源列表 |
 | `GET /session` | 当前主体键与非敏感 Judge 配置 |
+| `GET /judge-settings` | 生效的 Judge 来源（页面配置或部署配置）、模型和配置版本；管理员额外可见网关地址和是否已配置 Key，从不返回 Key |
+| `PUT /judge-settings` | 仅管理员；base_url、model、可选 api_key。保存后替换部署配置，Key 加密存储；网关不变时 api_key 留空沿用原 Key，更换网关须重填。值不变时保留配置版本，否则生成新版本，排队及进行中的轮次随之停止判分 |
+| `DELETE /judge-settings` | 仅管理员；删除页面配置，恢复部署配置 |
+| `POST /judge-settings/test` | 仅管理员；用提交的值执行与轮次预检相同的结构化判分检查，不保存 |
 | `POST /auth/login`、`/auth/refresh` | 直连统一账号，响应不缓存；不保存用户令牌 |
 | `GET /packages`、`/packages/{id}/releases` | 当前用户 Hub 包及正式版本列表 |
 | `GET /packages/{id}/releases/{rid}` | 精确版本回执，用于跳转到历史版本 |

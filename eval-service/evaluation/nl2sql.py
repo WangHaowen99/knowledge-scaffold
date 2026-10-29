@@ -39,7 +39,7 @@ def select_only(sql):
 
 
 class QueryService:
-    def __init__(self,config,http): self.config,self.http=config,http
+    def __init__(self,config,http,judge_settings): self.config,self.http,self.judge_settings=config,http,judge_settings
 
     def query(self,body,token,direct=False):
         scene=body.get('scene','')
@@ -74,10 +74,11 @@ class QueryService:
 
     def generate(self,question,schema):
         if not question or len(question)>10000: raise Failure('query_invalid','查询问题无效',422)
-        c=self.config
-        if not c.judge_model or not c.judge_key: raise Failure('model_unconfigured','NL2SQL 模型未配置',503)
-        response=self.http.json('POST',c.judge_url,'/chat/completions',token=c.judge_key,json={
-            'model':c.judge_model,'messages':[{'role':'system','content':'根据表字段生成单条 MySQL SELECT，只返回 SQL，不使用跨库查询。表结构：'+json.dumps(schema,ensure_ascii=False)},
+        # MODEL-CONFIG-01: NL2SQL reuses the effective Judge client configuration.
+        c=self.judge_settings.effective()
+        if not c['model'] or not c['key']: raise Failure('model_unconfigured','NL2SQL 模型未配置',503)
+        response=self.http.json('POST',c['url'],'/chat/completions',token=c['key'],json={
+            'model':c['model'],'messages':[{'role':'system','content':'根据表字段生成单条 MySQL SELECT，只返回 SQL，不使用跨库查询。表结构：'+json.dumps(schema,ensure_ascii=False)},
                                              {'role':'user','content':question}]})
         try: return response['choices'][0]['message']['content'].strip().removeprefix('```sql').removesuffix('```').strip()
         except (KeyError,IndexError,AttributeError) as exc: raise Failure('sql_generation_failed','SQL 生成响应无效',422) from exc

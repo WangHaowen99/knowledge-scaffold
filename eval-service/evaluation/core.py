@@ -50,6 +50,7 @@ class Config:
     judge_revision: str = ''
     sql_config: str = ''
     nl2sql_url: str = ''
+    trusted_origins: str = ''
 
     @classmethod
     def environment(cls):
@@ -58,7 +59,21 @@ class Config:
                        'EVAL_AUTH_URL', 'EVAL_AUTH_ISSUER', 'EVAL_HUB_URL', 'EVAL_HUB_SERVICE_TOKEN',
                        'EVAL_CONSUMER_API_URL', 'EVAL_CONSUMER_SERVICE_TOKEN', 'EVAL_ENCRYPTION_KEY',
                        'EVAL_JUDGE_BASE_URL', 'EVAL_JUDGE_API_KEY', 'EVAL_JUDGE_MODEL',
-                       'EVAL_JUDGE_CONFIG_REVISION', 'EVAL_SQL_CONFIG', 'EVAL_NL2SQL_URL')])
+                       'EVAL_JUDGE_CONFIG_REVISION', 'EVAL_SQL_CONFIG', 'EVAL_NL2SQL_URL', 'EVAL_TRUSTED_ORIGINS')])
+
+
+def trusted_origins(value):
+    """Origins allowed to hand over a login, in browser origin form; non-origin entries are ignored."""
+    result = []
+    for item in value.split(','):
+        url = urlsplit(item.strip())
+        if url.scheme not in ('http', 'https') or not url.hostname or url.path.strip('/') or url.query \
+                or url.fragment or url.username or url.password:
+            continue
+        host = f'[{url.hostname}]' if ':' in url.hostname else url.hostname
+        default = 80 if url.scheme == 'http' else 443
+        result.append(f'{url.scheme}://{host}' + (f':{url.port}' if url.port and url.port != default else ''))
+    return result
 
 
 class Transport:
@@ -97,7 +112,8 @@ class Identity:
     def __init__(self, config, transport):
         self.config, self.transport = config, transport
 
-    def verify(self, token):
+    def account(self, token):
+        """Owner digest and role; the role is read from the account service, never from token claims."""
         if not token:
             raise Failure('unauthenticated', '请登录', 401, 'authorization')
         value = self.transport.json('GET', self.config.auth_url, '/userinfo', token=token, limit=16384)
@@ -105,4 +121,7 @@ class Identity:
             raise Failure('invalid_identity', '身份验证失败', 401, 'authorization')
         if value.get('password_change_required'):
             raise Failure('account_action_required', '请先完成账号操作', 403, 'authorization')
-        return digest([self.config.issuer or self.config.auth_url.rstrip('/'), value['sub']])
+        return digest([self.config.issuer or self.config.auth_url.rstrip('/'), value['sub']]), value.get('role', '')
+
+    def verify(self, token):
+        return self.account(token)[0]

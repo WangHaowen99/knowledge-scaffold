@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Input, Modal, Space, Table, Typography, message } from 'antd';
 import { api } from '../lib/api.js';
-import { openEvaluation } from '../lib/evaluation.js';
+import { openEvaluation, prefetchEvaluationEntry } from '../lib/evaluation.js';
 
 export default function HubPackagesDialog({ open, onClose, onImported }) {
   const [packages, setPackages] = useState({ items: [], total: 0 });
@@ -16,6 +16,8 @@ export default function HubPackagesDialog({ open, onClose, onImported }) {
   const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0);
 
+  // 失败不阻断：点击“评测”时会重新读取并给出原因
+  useEffect(() => { if (open) prefetchEvaluationEntry().catch(() => {}); }, [open]);
   useEffect(() => {
     if (!open) return undefined;
     let active = true;

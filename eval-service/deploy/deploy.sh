@@ -5,7 +5,7 @@
 # 写在 compose 中；运行配置以 --env-file 传给 compose，其中的同名值优先于默认值。
 # 整栈 deploy.sh 注入 Hub 与 consumer 实际生效的评测凭据（HUB_EVALUATION_SERVICE_TOKEN、
 # EVALUATION_SERVICE_TOKEN）和 CONSUMER_NETWORK；网络必填，本地 .env 会记住它，供本目录手动执行 compose。
-# Judge 模型配置 EVAL_JUDGE_* 只能由部署方提供。
+# Judge 模型配置 EVAL_JUDGE_* 由部署方提供，也可由管理员在评测页面“评测判分模型配置”中保存（页面配置优先）。
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.eval-service.yml"
@@ -79,7 +79,7 @@ else
     for key in EVAL_ENCRYPTION_KEY EVAL_HUB_SERVICE_TOKEN EVAL_CONSUMER_SERVICE_TOKEN \
             EVAL_AUTH_URL EVAL_AUTH_ISSUER EVAL_HUB_URL EVAL_CONSUMER_API_URL \
             EVAL_JUDGE_BASE_URL EVAL_JUDGE_API_KEY EVAL_JUDGE_MODEL EVAL_JUDGE_CONFIG_REVISION \
-            EVAL_SQL_CONFIG EVAL_NL2SQL_URL CONSUMER_NETWORK; do
+            EVAL_SQL_CONFIG EVAL_NL2SQL_URL EVAL_TRUSTED_ORIGINS EVAL_BIND_ADDRESS EVAL_PORT CONSUMER_NETWORK; do
         settle "$key"
     done
     log "Runtime configuration is ready: $ENV_FILE (values are not printed)"
@@ -90,7 +90,7 @@ fi
 [ -n "$(env_get "$ENV_FILE" EVAL_CONSUMER_SERVICE_TOKEN)" ] \
     || warn 'EVAL_CONSUMER_SERVICE_TOKEN is empty: redeploy consumer so it generates EVALUATION_SERVICE_TOKEN, then redeploy evaluation'
 for key in EVAL_JUDGE_BASE_URL EVAL_JUDGE_API_KEY EVAL_JUDGE_MODEL EVAL_JUDGE_CONFIG_REVISION; do
-    [ -n "$(env_get "$ENV_FILE" "$key")" ] || warn "$key is not configured: judging will fail until it is set in $ENV_FILE"
+    [ -n "$(env_get "$ENV_FILE" "$key")" ] || warn "$key is not configured: judging will fail until it is set in $ENV_FILE or an administrator saves the Judge model on the evaluation page"
 done
 
 EVAL_ENV_FILE="$ENV_FILE"
