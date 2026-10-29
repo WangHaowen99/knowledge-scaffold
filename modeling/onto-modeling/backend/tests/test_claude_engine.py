@@ -13,6 +13,7 @@ from claude_agent_sdk import (
     TextBlock,
 )
 
+from app import config
 from app.services.agent_sessions import _is_visible_chat_event
 from app.services.engines import claude as claude_engine
 from app.services.engines.base import EngineContext, FRIENDLY_ERROR
@@ -522,3 +523,29 @@ def test_disconnect_cancels_pending_context_limits_task(tmp_path, monkeypatch):
 
     # 取消不能被兜底的 except Exception 吞成"取不到用量"
     assert task.cancelled()
+
+
+def test_session_env_disables_cli_background_tasks(tmp_path, monkeypatch):
+    """CLI 默认后台派遣子代理，平台以主轮结束判定空闲：子代理必须同步执行。"""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+
+    assert claude_engine._session_env()["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+
+
+def test_cli_options_carry_background_tasks_switch(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(claude_engine, "_mcp_servers", lambda project_id="": {})
+    monkeypatch.setattr(claude_engine, "_permission_mode", lambda: "default")
+    ctx = EngineContext(
+        project_id="p1",
+        cwd=tmp_path,
+        request_permission=None,
+        load_resume_token=lambda: None,
+        save_resume_token=lambda token: None,
+        clear_resume_token=lambda: None,
+        log_error=lambda kind, text: None,
+    )
+
+    options = ClaudeEngine(ctx)._build_options(None)
+
+    assert options.env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
