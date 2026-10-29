@@ -29,9 +29,12 @@ except ImportError:  # pragma: no cover - Windows development fallback
     fcntl = None
 
 from .. import config
-from . import material_detect, package_mapping, solver_contract, solver_validation
+from . import material_detect, package_mapping, package_operations, solver_contract, solver_validation
 from .document_metadata import report_name
 from .name_conflict import MAX_DISPLAY_NAME_LENGTH, detect_name_conflict
+from .toolkit import script_argument_shape as _script_argument_shape
+from .toolkit import script_contract as _script_contract
+from .toolkit import script_descriptor as _script_descriptor
 
 META_FILE = ".onto-web.json"  # 历史文件名保留：存量项目的识别键（ADR-0006）
 PURGE_MARKER = ".onto-web.purging"  # 原地清除兜底：顶替 META_FILE，重启清扫据此认领残留
@@ -245,7 +248,7 @@ class WorkspaceManager:
         # 的"已到达的最高阶段优先"同口径。否则旧项目升级后进度会整体归零，回执
         # 因打标签、换评测表而失效时也一样。
         research_blocking = (
-            review["status"] in (_research_review.PENDING, _research_review.FAILED)
+            review["status"] in (_research_review.PENDING, _research_review.FAILED, _research_review.UNVERIFIABLE)
             and not cls._dir_has_entries(root / "ontology" / "object")
         )
         done = 0
@@ -458,7 +461,7 @@ class WorkspaceManager:
     )
 
     def ensure_package_layout(self, project_id: str) -> bool:
-        """迁移旧 ontology/logic 目录并刷新各目录 index.md。
+        """迁移旧 ontology/logic 目录、按脚本同步描述符并刷新各目录 index.md。
 
         仅当工作区原本干净时才提交版本；agent 会话中途的改动留给
         agent 自己的提交收编，避免交叉提交打断其暂存状态。
@@ -466,10 +469,11 @@ class WorkspaceManager:
         root = self.project_root(project_id)
         was_clean = not _git(root, "status", "--porcelain").strip()
         changed = self._migrate_legacy_logic(root)
+        changed = bool(_script_descriptor.sync_workspace_descriptors(root / "ontology")) or changed
         changed = self._refresh_indexes(root) or changed
         if changed and was_clean:
             _git(root, "add", "-A")
-            _git(root, "commit", "-m", "chore: 知识包目录规范化（operation 目录与索引）")
+            _git(root, "commit", "-m", "chore: 知识包目录规范化（operation 目录、脚本描述符与索引）")
         return changed
 
     @staticmethod
@@ -1021,6 +1025,38 @@ class WorkspaceManager:
             item = solver_by_stem.get(stem)
             return item.solver_key if item else stem
 
+        operation_bodies = dict(operations)
+        relations, operation_parents = package_operations.relation_view(operations)
+        # 脚本契约与对外绑定（每个 operation 只对外一个脚本、子操作与主操作脚本的覆盖关系）
+        # 与规则检查 ontology_checker --include-scripts 同一实现；写包之前拦下，不留半成品
+        script_contracts = {}
+        for key, code in scripts:
+            try:
+                script_contracts[key] = _script_contract.parse_script(code)
+            except ScriptContractError as exc:
+                raise WorkspaceError(f"脚本 {key} 契约无效：{exc}") from exc
+        script_bindings = _script_descriptor.resolve_script_bindings(
+            script_contracts, relations, set(relations)
+        )
+        if script_bindings.errors:
+            raise WorkspaceError(
+                "脚本绑定不符合规则，无法发布：" + "；".join(script_bindings.messages()),
+                code="script_binding_conflict",
+            )
+        # 入参形态：会被 consumer 调用前的参数证据校验拒绝的脚本（一拒就可能终止整轮对话）不发布
+        object_documents = dict(objects)
+        shape_errors = _script_descriptor.argument_shape_errors(
+            script_contracts,
+            script_bindings.bindings,
+            _script_argument_shape.attributes_from_documents(object_documents),
+        )
+        object_enums = _script_argument_shape.enum_values_from_documents(object_documents)
+        if shape_errors:
+            raise WorkspaceError(
+                "脚本入参会被 consumer 拒绝，无法发布：" + "；".join(message for _name, message in shape_errors),
+                code="script_argument_shape",
+            )
+
         def q(s):
             return json.dumps(s, ensure_ascii=False)  # JSON 字符串是合法 YAML 标量
 
@@ -1103,12 +1139,15 @@ class WorkspaceManager:
                 def operation_row(k: str) -> str:
                     item = solver_by_stem.get(k)
                     execution = solver_contract.SOLVER_EXECUTION_MODE if item and item.enabled else ""
-                    return f"| {package_operation_key(k)} | {k} | {k} | {k} | {execution} |\n"
+                    return package_operations.index_row(
+                        k, operation_bodies[k], operation_parents.get(k, []),
+                        package_key=package_operation_key(k), execution=execution,
+                    )
 
                 operation_headers = ["operation key", "标题", "输入", "输出", "execution"]
             else:
                 def operation_row(k: str) -> str:
-                    return f"| {k} | {k} | {k} | {k} |\n"
+                    return package_operations.index_row(k, operation_bodies[k], operation_parents.get(k, []))
 
                 operation_headers = ["operation key", "标题", "输入", "输出"]
             zf.writestr(
@@ -1123,6 +1162,12 @@ class WorkspaceManager:
                 item = solver_by_stem.get(key)
                 if item is None:
                     extra = f"uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n"
+                    callees = [
+                        package_operation_key(callee) for callee in package_operations.uses_operations(key, relations)
+                    ]
+                    if callees:
+                        # 主操作按顺序调用的子操作：consumer 据此识别主/子操作并路由脚本
+                        extra += f"  operations: {json.dumps(callees, ensure_ascii=False)}\n"
                     zf.writestr(f"{pkg}/operations/{key}.md", front("operation", key, key, extra) + body)
                     continue
                 zf.writestr(
@@ -1160,56 +1205,39 @@ class WorkspaceManager:
                     used = sorted({m for m in _WIKILINK_RE.findall(body) if m in object_keys})
                     extra = f"uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n"
                     zf.writestr(f"{pkg}/metrics/{key}.md", front("metric", key, key, extra) + body)
-            operation_keys = {key for key, _ in operations}
-            executable = []
-            for key, code in scripts:
-                try:
-                    bound, params = _script_header_meta(code)
-                except ScriptContractError as exc:
-                    raise WorkspaceError(f"脚本 {key} 契约无效：{exc}") from exc
-                # 「关联operation」为「无」或不是现有操作：只是被复用的辅助模块，不单独执行，
-                # 只带源码、不写描述符——modeling 要求每个脚本描述符都绑定一个存在的操作。
-                # 没有描述符就没有 entrypoint 契约，保留原文件名，回导时才还原得了
-                if bound in operation_keys:
-                    filename = _package_script_filename(key)
-                    executable.append((key, filename, bound, params))
-                elif solver_contract.is_evaluator(code.encode("utf-8")):
-                    # 求解评估器同样只带源码；求解契约按包内路径引用它（见 _package_scripts），
-                    # 文件名须与之一致
-                    filename = _package_script_filename(key)
-                else:
-                    filename = f"{key}.py"
-                zf.writestr(f"{pkg}/scripts/{filename}", code)
-            if executable:
-                zf.writestr(
-                    f"{pkg}/scripts/index.md",
-                    index_md(
-                        "script_index", "scripts", "脚本目录", [(key, "") for key, *_ in executable],
-                        ["script key", "标题"],
-                        lambda k: f"| {k} | {k} |\n",
-                    ),
-                )
-                for key, filename, bound, params in executable:
-                    # 执行契约：描述符须声明 entrypoint；bound_operation 使脚本
-                    # 成为该 operation 的可执行实现；参数表驱动 CLI 参数组装。
-                    # entrypoint 是相对 scripts/ 的文件名：modeling 按 scripts/<entrypoint>
-                    # 取源码且只收 ASCII 文件名，consumer 缺 scripts/ 前缀时自动补齐。
-                    extra = (
-                        f"entrypoint: {filename}\n"
-                        f"bound_operation: {q(package_operation_key(bound))}\n"
+            if scripts:
+                exposed = [(key, code) for key, code in scripts if key in script_bindings.bindings]
+                if exposed:
+                    zf.writestr(
+                        f"{pkg}/scripts/index.md",
+                        index_md(
+                            "script_index", "scripts", "脚本目录", exposed,
+                            ["script key", "标题"],
+                            lambda k: f"| {k} | {(script_contracts[k].title or k).replace('|', '，')} |\n",
+                        ),
                     )
-                    body = f"由 /ontology-codegen 生成的确定性脚本，实现见 `{filename}`。\n"
-                    if params:
-                        rows = "".join(
-                            f"| {p['name']} | {p['flag']} | {p['type']} | {p['required']} | {p['default']} | {p['desc']} | {p['multiple']} | {p['action']} |\n"
-                            for p in params
+                for key, code in scripts:
+                    operation = script_bindings.bindings.get(key)
+                    # 执行契约：对外脚本的描述符与工作区 ontology/scripts/<脚本>.md 同一渲染器，
+                    # 只把 entrypoint 换成包内 ASCII 文件名（modeling 按 scripts/<entrypoint> 取源码
+                    # 且只收 ASCII 文件名），bound_operation 换成包内 operation key（求解 operation 为
+                    # solver_key）。求解评估器只带源码，求解契约按包内路径引用它（见 _package_scripts），
+                    # 文件名须与之一致。「关联operation」为「无」或不是现有操作的脚本只是被复用的
+                    # 库模块，不对外调用、没有描述符，保留原文件名，对外脚本按原名 import 它，回导时也还原得了。
+                    if operation or solver_contract.is_evaluator(code.encode("utf-8")):
+                        filename = _package_script_filename(key)
+                    else:
+                        filename = f"{key}.py"
+                    zf.writestr(f"{pkg}/scripts/{filename}", code)
+                    if operation:
+                        zf.writestr(
+                            f"{pkg}/scripts/{key}.md",
+                            _script_descriptor.render_descriptor(
+                                key, script_contracts[key], package_operation_key(operation), filename,
+                                operation_parents.get(operation, []),
+                                enums=object_enums,
+                            ),
                         )
-                        body += (
-                            "\n## 输入参数\n\n"
-                            "| 参数 key | CLI 参数 | 类型 | 必填 | 默认值 | 说明 | 是否多值 | Action |\n"
-                            "| --- | --- | --- | --- | --- | --- | --- | --- |\n" + rows
-                        )
-                    zf.writestr(f"{pkg}/scripts/{key}.md", front("script", key, key, extra) + body)
         return dest_path
 
     @staticmethod
@@ -1712,6 +1740,8 @@ class WorkspaceManager:
         if rel.as_posix().startswith(f"{solver_contract.SOLVER_DIR}/"):
             # 求解契约要求多文件一致（binding 与五份 sidecar），单文件编辑无法保证
             raise WorkspaceError("求解契约是受管目录，请在求解模型面板中维护", 403)
+        if _is_script_descriptor(rel):
+            raise WorkspaceError("脚本描述符由同名 .py 自动生成，不能直接编辑；请修改对应的 .py 脚本", 403)
         if target.is_symlink():
             raise WorkspaceError("该路径不允许编辑", 403)
         # 乐观并发（方案 7.4 双写合并）：Web 编辑与 agent 写同一文件不互相静默覆盖
@@ -1723,11 +1753,18 @@ class WorkspaceManager:
                 )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        # Web 端保存即成版本点：只提交本文件，与 agent 的阶段提交互不干扰
+        # Web 端保存即成版本点：只提交本文件，与 agent 的阶段提交互不干扰；
+        # 保存脚本时同名描述符随之刷新，并进同一个提交
         rel_posix = rel.as_posix()
+        paths = [rel_posix]
+        if _is_workspace_script(rel):
+            _script_descriptor.sync_workspace_descriptors(root / "ontology")
+            descriptor = rel.with_suffix(".md").as_posix()
+            if (root / descriptor).exists() or _git(root, "ls-files", "--", descriptor).strip():
+                paths.append(descriptor)
         commit = ""
-        if _git(root, "status", "--porcelain", "--", rel_posix).strip():
-            _git(root, "add", "--", rel_posix)
+        if _git(root, "status", "--porcelain", "--", *paths).strip():
+            _git(root, "add", "-A", "--", *paths)
             who = f" by {author}" if author else ""
             _git(root, "commit", "-m", f"web: 保存 {rel_posix}{who}")
             commit = _git(root, "rev-parse", "HEAD").strip()
@@ -1958,6 +1995,20 @@ class WorkspaceManager:
 _PACKAGE_SCRIPT_STEM_RE = re.compile(r"[A-Za-z0-9_.-]+")
 
 
+def _is_workspace_script(rel: Path) -> bool:
+    return len(rel.parts) == 3 and rel.parts[:2] == ("ontology", "scripts") and rel.suffix == ".py"
+
+
+def _is_script_descriptor(rel: Path) -> bool:
+    """ontology/scripts/<脚本>.md：由 .py 派生的 consumer 调用契约（script_descriptor.py）。"""
+    return (
+        len(rel.parts) == 3
+        and rel.parts[:2] == ("ontology", "scripts")
+        and rel.suffix.lower() == ".md"
+        and rel.name.lower() != "index.md"
+    )
+
+
 def _package_script_filename(key: str) -> str:
     """知识包内的脚本文件名，满足 modeling 的 entrypoint 契约 ^[A-Za-z0-9_.-]+\\.py$。
 
@@ -2018,21 +2069,7 @@ def _load_research_review():
     return module
 
 
-def _load_script_contract():
-    """脚本契约解析以 workspace-toolkit/scripts/script_contract.py 为单一事实源。
-
-    建模阶段的 ontology_checker.py --include-scripts 与导出时共用同一份实现，
-    避免两处规则漂移。
-    """
-    path = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts" / "script_contract.py"
-    spec = importlib.util.spec_from_file_location("onto_workspace_script_contract", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-_script_contract = _load_script_contract()
+# 脚本契约与描述符以工作区工具箱脚本为单一事实源（toolkit.py），规则检查与导出共用
 ScriptContractError = _script_contract.ScriptContractError
 _script_header_meta = _script_contract.parse_script_contract
 
@@ -2040,13 +2077,28 @@ _research_review = _load_research_review()
 
 
 def _first_heading(path: Path) -> str:
-    """markdown 首个一级标题作 index 清单的标题列；读不到则退回文件名。"""
+    """index 清单的标题列：frontmatter 的 title（脚本描述符），否则首个一级标题；读不到则为空。"""
     try:
         with open(path, encoding="utf-8") as fh:
-            for _ in range(20):
+            in_frontmatter = False
+            for index in range(40):
                 line = fh.readline()
                 if not line:
                     break
+                if index == 0 and line.strip() == "---":
+                    in_frontmatter = True
+                    continue
+                if in_frontmatter:
+                    if line.strip() == "---":
+                        in_frontmatter = False
+                    elif line.startswith("title:"):
+                        title = line[len("title:"):].strip()
+                        try:
+                            title = json.loads(title)
+                        except ValueError:
+                            pass
+                        return str(title)[:80]
+                    continue
                 if line.startswith("# "):
                     return line[2:].strip()[:80]
     except OSError:

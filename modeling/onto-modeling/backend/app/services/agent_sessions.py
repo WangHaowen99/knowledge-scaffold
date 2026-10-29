@@ -653,13 +653,17 @@ class SessionManager:
             session.resume_attempted = resumed
             session.engine = engine
             session.reader_task = asyncio.create_task(self._read_loop(session))
-            session.broadcast(
-                {
-                    "type": "session_started",
-                    "session_id": session.id,
-                    "resumed": resumed,
-                }
-            )
+            started = {
+                "type": "session_started",
+                "session_id": session.id,
+                "resumed": resumed,
+            }
+            # 连接时已知的窗口与触发点随之下发：切换引擎或改配置后，第一轮进行中
+            # 用量圈就按新值显示，不必等本轮结束的 context_usage
+            window, compact_at = engine.context_limits()
+            if window:
+                started.update(window=window, compact_at=compact_at)
+            session.broadcast(started)
             prompts, session.pending_prompts = session.pending_prompts, []
             if prompts and session.cwd:
                 session.round_base_commit = await asyncio.to_thread(
@@ -1012,7 +1016,8 @@ class SessionManager:
 def usage_summary(project_id: str) -> dict:
     """项目累计模型用量（从事件历史统计），会话接口与运维页共用。
 
-    汇总全部会话，加上已删除会话留存的 result 事件。不走 get_history：
+    汇总全部会话，加上已删除会话留存的用量事件。calls 是结束的轮数，token 含未结束轮里
+    已逐次记下的调用（口径见 conversation_store.counted_usage）。不走 get_history：
     运维总览每次请求都会调到这里，不该顺带触发幽灵态自愈写盘。
     """
     session = manager.get(project_id)
@@ -1031,11 +1036,12 @@ def usage_summary(project_id: str) -> dict:
         ts = event.get("ts")
         if ts and (last_activity is None or ts > last_activity):
             last_activity = ts
-        if event.get("type") != "result":
+        usage = conversation_store.counted_usage(event)
+        if usage is None:
             continue
-        calls += 1
-        total_cost += event.get("total_cost_usd") or 0
-        usage = event.get("usage") or {}
+        if event.get("type") == "result":
+            calls += 1
+            total_cost += event.get("total_cost_usd") or 0
         output_tokens += usage.get("output_tokens") or 0
         input_tokens += (usage.get("input_tokens") or 0) + (
             usage.get("cache_read_input_tokens") or 0

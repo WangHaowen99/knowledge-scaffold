@@ -1710,6 +1710,7 @@ _SOURCE_OPTIONS_PREFIX = "，须是评估器有修正系数的品种之一："
 _UNIT_CONFIRM_SUFFIX = "；用户给出的装置与可选值对应不上时，不要改用其他装置，先向用户确认"
 _SOURCE_CONFIRM_SUFFIX = "；用户给出的品种与这些品种对应不上时，不要改用其他品种，先向用户确认"
 _TEMPLATE_INPUT_SCHEMA = _dump_json(ORDERED_ROUTE_INPUT_SCHEMA)
+_PROJECTION_ID_PREFIX = "urn:onto-modeling:input-schema-projection:sha256:"
 
 
 def _crude_field(schema: Mapping) -> dict:
@@ -1728,6 +1729,9 @@ def _projected_input_schema(units: list[str], sources: list[str]) -> dict:
         _crude_field(schema)["description"] += (
             _SOURCE_OPTIONS_PREFIX + "、".join(sources) + _SOURCE_CONFIRM_SUFFIX
         )
+    # A projected schema can be edited into another plausible projection.  Bind
+    # its generated content to an ID so imports never erase such edits.
+    schema["$id"] = _PROJECTION_ID_PREFIX + hashlib.sha256(_dump_json(schema)).hexdigest()
     return schema
 
 
@@ -1735,8 +1739,12 @@ def project_input_schema(data: bytes, evaluator: Path | None) -> bytes:
     """导出用的输入 Schema：受管模板按评估器补可选值，手写的 Schema 原样返回。"""
     if data != _TEMPLATE_INPUT_SCHEMA:
         return data
+    units = evaluator_unit_options(evaluator)
+    sources = evaluator_source_options(evaluator)
+    if not units and not sources:
+        return data
     return _dump_json(_projected_input_schema(
-        evaluator_unit_options(evaluator), evaluator_source_options(evaluator),
+        units, sources,
     ))
 
 
@@ -1744,6 +1752,13 @@ def restore_template_input_schema(data: bytes) -> bytes:
     """导入时把 project_input_schema 的产物还原成模板字节，其他内容原样返回。"""
     try:
         schema = json.loads(data.decode("utf-8"))
+        projection_id = schema.get("$id")
+        if not isinstance(projection_id, str) or not projection_id.startswith(_PROJECTION_ID_PREFIX):
+            return data
+        unsigned = dict(schema)
+        unsigned.pop("$id")
+        if projection_id != _PROJECTION_ID_PREFIX + hashlib.sha256(_dump_json(unsigned)).hexdigest():
+            return data
         units = schema["properties"]["diesel_unit_no"].get("enum", [])
         description = _crude_field(schema)["description"]
         if not isinstance(units, list) or not all(isinstance(unit, str) for unit in units):

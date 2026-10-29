@@ -550,6 +550,9 @@ class ClaudeEngine:
             self._ctx.model_owner
         )
 
+    def context_limits(self) -> tuple[int | None, int | None]:
+        return self._context_window, self._compact_at
+
     # ---- 事件流 ----
 
     async def events(self):

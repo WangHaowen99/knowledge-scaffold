@@ -1467,7 +1467,7 @@ test('graph import form：固定知识包 Sheet 且关联字段只使用实体�
   }];
   const selectedAll = addKnownRelationMappings(existing, twoRelationPreview);
   assert.deepEqual(selectedAll[0], existing[0]);
-  assert.equal(selectedAll.length, 2);
+  assert.equal(selectedAll.length, 3);
   assert.deepEqual(addKnownRelationMappings(selectedAll, twoRelationPreview), selectedAll);
 
   const sameSheetPreview = {

@@ -9,13 +9,16 @@
 - resume = 框架 checkpoint 续接：会话状态（含工具调用/结果、思考的完整上下文）
   落 DATA_DIR 下的 SQLite，回收、重启后凭续接 token 由 Runner 恢复；无可用存档时
   （首次切到本引擎、显式关闭过会话、上一轮停在确认卡上）退回历史回放——
-  把事件历史里的问答文本注水 create_new_context_engine
+  把事件历史里的问答文本注水 create_new_context_engine，历史里有压缩摘要时从摘要接续
+- 上下文压缩：ContextProcessorRail 挂三个压缩器，窗口与触发比例按配置页 / .env
+  推算（model_settings.jiuwen_effective_context）；上下文用量与压缩以 context_usage /
+  context_compacted 事件呈现，与稳定引擎同一套前端展示
 - 目录分层：DeepAgentConfig.cwd = 项目 git 工作区（文件/Shell 工具的根），
   workspace = DATA_DIR/jiuwen/<pid>（框架私有工件区），互不污染；子代理工件区
   再下沉到 workspace/sub_agents（必须与主 agent 分开，见 _general_purpose_spec）
 
 同步 task_tool 的子代理执行步骤由 jiuwen_progress.py 通过 Rail 回调送回主事件队列；
-成本无单价来源，result 事件只报 tokens。
+成本无单价来源，只报 tokens：每次模型调用发 model_usage 逐次记账，result 只给单轮合计。
 """
 
 from __future__ import annotations
@@ -60,8 +63,16 @@ _TOOL_NAME_MAP = {
     "web_fetch": "WebFetch",
 }
 
-# 历史回放的上下文预算（字符）：从最近往前取，避免超长历史撑爆上下文
+# 历史回放的上下文预算（字符）：从最近往前取，避免超长历史撑爆上下文。
+# 连接时按模型窗口的四分之一折算（中文约一字一 token，取保守口径）；
+# 超过压缩触发点的部分在首次请求前会被压缩器压掉，预算只防极端长的历史
 _REPLAY_CHAR_BUDGET = 24_000
+_REPLAY_WINDOW_SHARE = 0.25
+
+# 摘要覆盖此前全部对话的压缩器：续接时用最近一次的摘要代替压缩前的历史。
+# CurrentRoundCompressor 只压当轮的工具往返，摘要不覆盖之前的对话，不用于续接
+_PREFIX_COMPRESSORS = frozenset({"DialogueCompressor", "RoundLevelCompressor"})
+_COMPRESSORS = _PREFIX_COMPRESSORS | {"CurrentRoundCompressor"}
 _RUNNER_STARTED = False
 _RUNNER_LOCK: asyncio.Lock | None = None
 
@@ -76,15 +87,19 @@ def model_config(owner: str = "") -> dict:
 
     owner 非空时 Key 换成该用户的个人 Key，网关地址 / 模型个人未填则沿用上述结果；
     个人配置读取失败直接抛错，不回落到管理员 Key。
+
+    context 为生效的上下文窗口、最大输出与压缩触发比例，一并计入配置指纹：
+    改了上下文参数，空闲会话同样按新配置重建。个人配置不含上下文参数，
+    与稳定引擎一样沿用管理员配置。
     """
+    from .. import model_settings
+
     cfg = {
         "base_url": config.JIUWEN_BASE_URL,
         "api_key": config.JIUWEN_API_KEY,
         "model": config.JIUWEN_MODEL,
     }
     try:
-        from .. import model_settings
-
         ui = model_settings.jiuwen_config()
         for key in cfg:
             if ui.get(key):
@@ -100,6 +115,7 @@ def model_config(owner: str = "") -> dict:
             "api_key": personal["api_key"],
             "model": personal["model"] or cfg["model"],
         }
+    cfg["context"] = model_settings.jiuwen_effective_context()
     return cfg
 
 
@@ -156,12 +172,16 @@ class _ChunkBridge:
 
     优先使用进度 Rail 携带的原生调用 id；旧 chunk 无 id 时保留 FIFO 配对
     （主引擎以 parallel_tool_calls=False 运行）。
+
+    子代理的 chunk 留在 task_tool 内部不进主流，这里的上下文用量与压缩都属于主 agent。
     """
 
     def __init__(self):
         self._text: list[str] = []
         self._thinking: list[str] = []
         self._open_calls: deque[str] = deque()
+        # 最近一次模型调用占用的上下文，随下一条 assistant_message 带出
+        self._context_tokens: int | None = None
 
     @staticmethod
     def _payload_text(payload: Any) -> str:
@@ -184,14 +204,53 @@ class _ChunkBridge:
         blocks.extend(extra or [])
         if not blocks:
             return []
-        return [
-            {
-                "type": "assistant_message",
-                "blocks": blocks,
-                "model": None,
-                "subagent": False,
-            }
-        ]
+        event = {
+            "type": "assistant_message",
+            "blocks": blocks,
+            "model": None,
+            "subagent": False,
+        }
+        if self._context_tokens:
+            event["context_tokens"] = self._context_tokens
+            self._context_tokens = None
+        return [event]
+
+    def _note_context_usage(self, ctype: str, payload: Any) -> None:
+        """context.usage 给出发给模型的上下文（服务端未报时为本地估算）；
+        llm_usage 随后给出服务端实报的输入与输出，口径与稳定引擎一致（输入 + 输出）。"""
+        if not isinstance(payload, dict):
+            return
+        if ctype == "context.usage":
+            window = payload.get("context_window") or {}
+            tokens = window.get("input_tokens") or window.get("local_estimated_input_tokens")
+        else:
+            usage = payload.get("usage_metadata") or {}
+            tokens = usage.get("input_tokens") or 0
+            if tokens:
+                tokens += usage.get("output_tokens") or 0
+        if isinstance(tokens, int) and tokens > 0:
+            self._context_tokens = tokens
+
+    def _compaction_events(self, payload: Any) -> list[dict]:
+        """压缩器完成一次压缩 → context_compacted；前缀压缩器的摘要随事件落盘，供续接回放。"""
+        if not isinstance(payload, dict) or payload.get("status") != "completed":
+            return []
+        processor = payload.get("processor") or ""
+        if processor not in _COMPRESSORS:
+            return []
+        before = payload.get("before") or {}
+        after = payload.get("after") or {}
+        event = {
+            "type": "context_compacted",
+            "trigger": "auto",
+            "pre_tokens": before.get("tokens") or None,
+            "post_tokens": after.get("tokens") or None,
+        }
+        if processor in _PREFIX_COMPRESSORS and payload.get("compact_summary"):
+            event["summary"] = payload["compact_summary"]
+        events = self._flush_blocks()
+        self._context_tokens = None  # 压缩前的用量已过时，以 post_tokens 为准
+        return events + [event]
 
     def feed(self, chunk: Any) -> tuple[list[dict], tuple[str, Any] | None]:
         """返回 (平台事件列表, 待回填 interaction 或 None)。"""
@@ -268,6 +327,13 @@ class _ChunkBridge:
                 request = getattr(payload, "value", payload)
             return self._flush_blocks(), (str(iid), request)
 
+        if ctype in ("context.usage", "llm_usage"):
+            self._note_context_usage(ctype, payload)
+            return [], None
+
+        if ctype == "context.compression_state":
+            return self._compaction_events(payload), None
+
         # answer 是 llm_output 的汇总（避免重复）；其余运行时噪音一律忽略
         return [], None
 
@@ -333,6 +399,57 @@ def _bind_subagent_workspace_rotation(agent: Any, spec: Any, root: Path) -> None
         return original(subagent_type, subsession_id, *args, **kwargs)
 
     agent.create_subagent = create_subagent
+
+
+def _context_processor_rail(trigger_ratio: float):
+    """上下文压缩 Rail：只挂三个压缩器，上下文达到「窗口 × trigger_ratio」时压缩。
+
+    不用 SDK 预设链：预设里的 MessageSummaryOffloader 会把大的工具结果换成摘要（模型要原文
+    只能重跑工具），SessionMemoryCompressor 默认关闭。Rail 在 init 时绑定所属 agent，
+    主 agent 与子代理各用一个实例，不能共用。
+    """
+    from openjiuwen.core.context_engine.processor import forked
+    from openjiuwen.harness.rails.context_engineer import ContextProcessorRail
+
+    # 用 forked 版压缩器顶替同名的旧实现；preset=False 时 Rail 不会替我们注册
+    forked.activate()
+    return ContextProcessorRail(
+        preset=False,
+        processors=[
+            (
+                "DialogueCompressor",
+                forked.DialogueCompressorConfig(trigger_context_ratio=trigger_ratio),
+            ),
+            (
+                "CurrentRoundCompressor",
+                forked.CurrentRoundCompressorConfig(trigger_context_ratio=trigger_ratio),
+            ),
+            (
+                "RoundLevelCompressor",
+                forked.RoundLevelCompressorConfig(trigger_context_ratio=trigger_ratio),
+            ),
+        ],
+    )
+
+
+def _call_usage_rail(on_call_usage: Callable[[int, int], None]):
+    """在 TokenTrackingRail 的累计之外，每次模型调用返回后把这次的（输入, 输出）交给回调。
+
+    项目用量按这些逐次增量记账：长命令跑的过程中数字就会增长，打断超时、会话回收、进程重启
+    也只丢在飞的那一次调用。子代理 spec 沿用同一个实例（没有 fork_for_agent），一并计入。
+    """
+    from openjiuwen.harness.cli.rails import TokenTrackingRail
+
+    class CallUsageRail(TokenTrackingRail):
+        async def after_model_call(self, ctx: Any) -> None:
+            input_before, output_before = self.total_input_tokens, self.total_output_tokens
+            await super().after_model_call(ctx)
+            input_tokens = self.total_input_tokens - input_before
+            output_tokens = self.total_output_tokens - output_before
+            if input_tokens or output_tokens:
+                on_call_usage(input_tokens, output_tokens)
+
+    return CallUsageRail()
 
 
 def _req_get(request: Any, key: str, default: Any = None) -> Any:
@@ -418,15 +535,28 @@ def _fill_interactive_input(ii: Any, iid: str, request: Any, decision: dict) -> 
     )
 
 
-def _history_to_messages(events: list[dict]):
-    """平台事件历史 → 模型消息（历史回放续接的注水材料）。"""
+def _history_to_messages(events: list[dict], char_budget: int = _REPLAY_CHAR_BUDGET):
+    """平台事件历史 → 模型消息（历史回放续接的注水材料）。
+
+    历史里有带摘要的压缩事件时从最近一次接续：摘要（压缩器生成的记忆块，原样作为用户消息）
+    在前，其后是压缩所在那一轮起的对话；更早的对话已在摘要里，不再回放。
+    """
     from openjiuwen.core.foundation.llm.schema.message import (
         AssistantMessage,
         UserMessage,
     )
 
+    summary = ""
+    start = 0
+    for index, event in enumerate(events):
+        if event.get("type") == "context_compacted" and event.get("summary"):
+            summary, start = event["summary"], index
+    # 压缩发生在该轮请求模型之前，该轮的用户消息在压缩器保留的尾部，从它开始回放
+    while start > 0 and events[start].get("type") != "user_message":
+        start -= 1
+
     pairs: list[tuple[str, str]] = []
-    for event in events:
+    for event in events[start:]:
         etype = event.get("type")
         if etype == "user_message":
             text = (event.get("text") or "").strip()
@@ -449,16 +579,18 @@ def _history_to_messages(events: list[dict]):
     # 注水会让模型看到两遍（也避免首轮被误标为"已续接"）
     while pairs and pairs[-1][0] == "user":
         pairs.pop()
-    # 从最近往前收进预算
+    # 从最近往前收进预算；摘要总是保留，占用的预算先扣掉
     kept: list[tuple[str, str]] = []
-    budget = _REPLAY_CHAR_BUDGET
+    budget = char_budget - len(summary)
     for role, text in reversed(pairs):
         cost = len(text)
         if budget - cost < 0 and kept:
             break
         budget -= cost
-        kept.append((role, text[: _REPLAY_CHAR_BUDGET]))
+        kept.append((role, text[:char_budget]))
     kept.reverse()
+    if summary:
+        kept.insert(0, ("user", summary))
     return [
         UserMessage(content=text) if role == "user" else AssistantMessage(content=text)
         for role, text in kept
@@ -491,6 +623,10 @@ class JiuwenEngine:
         self._tracker: Any = None
         self._closed = False
         self._progress_tracker: JiuwenProgressTracker | None = None
+        # 上下文用量：每轮结束前以 context_usage 下发（与稳定引擎同一事件）
+        self._context_used: int | None = None
+        self._context_window: int | None = None
+        self._compact_at: int | None = None
 
     @classmethod
     def available(cls) -> bool:
@@ -507,10 +643,14 @@ class JiuwenEngine:
         # openjiuwen 首次 import 较重（秒级），放线程避免卡住事件循环
         agent, tracker = await asyncio.to_thread(self._build_agent, cfg)
         await _ensure_runner_started(self._ctx.log_error)
+        context = cfg["context"]
+        # 存档里是压缩后的上下文（压缩摘要也在其中），能续接就不再看事件历史
         resumed = await self._resume_from_checkpoint()
         if not resumed:
             history = list(self._ctx.load_history()) if self._ctx.load_history else []
-            replayed = _history_to_messages(history)
+            replayed = _history_to_messages(
+                history, int(context["max_context_tokens"] * _REPLAY_WINDOW_SHARE)
+            )
             if replayed:
                 await agent.create_new_context_engine(
                     session_id=self._sid, messages=replayed
@@ -519,6 +659,8 @@ class JiuwenEngine:
         self.client = agent
         self._tracker = tracker
         self._fingerprint = _fingerprint(cfg)
+        self._context_window = context["max_context_tokens"]
+        self._compact_at = int(context["max_context_tokens"] * context["trigger_ratio"])
         self.resume_attempted = resumed
         return resumed
 
@@ -548,19 +690,21 @@ class JiuwenEngine:
             SysOperationCard,
         )
         from openjiuwen.harness import create_deep_agent
-        from openjiuwen.harness.cli.rails import TokenTrackingRail
         from openjiuwen.harness.rails import AskUserRail
         from openjiuwen.harness.rails.sys_operation_rail import SysOperationRail
         from openjiuwen.harness.workspace.workspace import Workspace
 
         from .jiuwen_assets import build_hooks_rail
 
+        context = cfg["context"]
         model = init_model(
             provider="OpenAI",
             model_name=cfg["model"],
             api_key=cfg["api_key"],
             api_base=cfg["base_url"],
-            max_tokens=config.JIUWEN_MAX_TOKENS,
+            max_tokens=context["max_output_tokens"],
+            # 只作上下文引擎的窗口元数据（压缩阈值按它算），不随请求发给网关
+            context_window=context["max_context_tokens"],
             timeout=300.0,
         )
         # 框架私有工件区与项目 git 工作区分离（官方 cwd/workspace 分层）
@@ -587,7 +731,7 @@ class JiuwenEngine:
                 )
             )
         sys_operation = Runner.resource_mgr.get_sys_operation(sysop_id)
-        tracker = TokenTrackingRail()
+        tracker = _call_usage_rail(self._record_call_usage)
         progress_rail = build_progress_rail(_TOOL_NAME_MAP)
         system_prompt = self._loader.system_prompt()
         subagent_root = shadow / "sub_agents"
@@ -601,7 +745,7 @@ class JiuwenEngine:
         gp_spec = _general_purpose_spec(
             model=model,
             system_prompt=system_prompt,
-            rails=rails,
+            rails=[*rails, _context_processor_rail(context["trigger_ratio"])],
             workspace_root=subagent_root,
             sys_operation=sys_operation,
         )
@@ -615,7 +759,7 @@ class JiuwenEngine:
                 description="DeepAgent instance",
             ),
             system_prompt=system_prompt,
-            rails=rails,
+            rails=[*rails, _context_processor_rail(context["trigger_ratio"])],
             workspace=Workspace(root_path=str(shadow), language="cn"),
             sys_operation=sys_operation,
             enable_task_loop=True,
@@ -652,9 +796,10 @@ class JiuwenEngine:
                 pass
         task = self._turn_task
         if task and not task.done():
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=5)
-            except Exception:  # 含 wait_for 的 TimeoutError
+            # abort 会取消轮任务，轮任务以 CancelledError 收尾；asyncio.wait 只等结束、不抛出任务的异常，
+            # 否则 CancelledError 冒到接口层，打断请求返回 500
+            await asyncio.wait({task}, timeout=5)
+            if not task.done():
                 task.cancel()
 
     async def disconnect(self) -> None:
@@ -667,7 +812,9 @@ class JiuwenEngine:
         self.client = None
         if agent is not None:
             try:
-                agent.cleanup_task_resources()
+                result = agent.cleanup_task_resources()
+                if asyncio.iscoroutine(result):  # openjiuwen 0.1.19 起是协程
+                    await result
             except Exception:
                 pass
 
@@ -679,6 +826,9 @@ class JiuwenEngine:
         return bool(self._fingerprint) and self._fingerprint != _fingerprint(
             model_config(self._ctx.model_owner)
         )
+
+    def context_limits(self) -> tuple[int | None, int | None]:
+        return self._context_window, self._compact_at
 
     # ---- 事件流 ----
 
@@ -695,6 +845,55 @@ class JiuwenEngine:
             "input_tokens": int(getattr(tracker, "total_input_tokens", 0) or 0),
             "output_tokens": int(getattr(tracker, "total_output_tokens", 0) or 0),
         }
+
+    def _record_call_usage(self, input_tokens: int, output_tokens: int) -> None:
+        """一次模型调用（含子代理）的用量即时下发，会话层落盘后就计入项目用量。"""
+        self._queue.put_nowait(
+            {
+                "type": "model_usage",
+                "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+            }
+        )
+
+    def _turn_result(
+        self, subtype: str, started: float, before: dict, is_error: bool = False
+    ) -> dict:
+        """一轮终态。usage 是本轮开始以来的增量（打断、出错也照实给），供单轮展示；
+        项目用量已由逐次的 model_usage 计入，usage_per_call 标明统计时不再累加。"""
+        after = self._usage_snapshot()
+        return {
+            "type": "result",
+            "subtype": subtype,
+            "is_error": is_error,
+            "duration_ms": int((time.time() - started) * 1000),
+            "total_cost_usd": None,  # 无单价来源，成本以 tokens 呈现
+            "num_turns": 1,
+            "usage": {key: after[key] - before[key] for key in after},
+            "usage_per_call": True,
+        }
+
+    def _track_context(self, event: dict) -> None:
+        kind = event.get("type")
+        if kind == "assistant_message" and event.get("context_tokens"):
+            self._context_used = event["context_tokens"]
+        elif kind == "context_compacted" and event.get("post_tokens"):
+            self._context_used = event["post_tokens"]
+
+    def _context_usage_event(self) -> dict | None:
+        """本轮结束（result 之前）的上下文用量事件，格式与稳定引擎一致；还没有用量时不发。"""
+        if not self._context_used:
+            return None
+        return {
+            "type": "context_usage",
+            "used": self._context_used,
+            "window": self._context_window,
+            "compact_at": self._compact_at,
+        }
+
+    async def _put_turn_events(self, events: list[dict]) -> None:
+        for event in events:
+            self._track_context(event)
+            await self._queue.put(event)
 
     async def _run_turn(self, text: str) -> None:
         from openjiuwen.core.runner import Runner
@@ -718,12 +917,10 @@ class JiuwenEngine:
                         )
                         async for chunk in stream:
                             events, interaction = bridge.feed(chunk)
-                            for event in events:
-                                await self._queue.put(event)
+                            await self._put_turn_events(events)
                             if interaction:
                                 pending.append(interaction)
-                    for event in bridge.finish():
-                        await self._queue.put(event)
+                    await self._put_turn_events(bridge.finish())
                     if not pending:
                         # 一轮真正走完：仍挂着的子任务卡收成"已停止"。
                         # 有待确认 interaction 时流只是被挂起，下一轮会接着跑，
@@ -742,40 +939,21 @@ class JiuwenEngine:
                     round_query = ii
                 # 本轮正常收尾，Runner 已把会话状态落盘
                 self._ctx.save_resume_token(self._resume_token)
-                after = self._usage_snapshot()
-                await self._queue.put(
-                    {
-                        "type": "result",
-                        "subtype": "success",
-                        "is_error": False,
-                        "duration_ms": int((time.time() - started) * 1000),
-                        "total_cost_usd": None,  # 无单价来源，成本以 tokens 呈现
-                        "num_turns": 1,
-                        "usage": {
-                            "input_tokens": after["input_tokens"] - before["input_tokens"],
-                            "output_tokens": after["output_tokens"]
-                            - before["output_tokens"],
-                        },
-                    }
-                )
+                context_usage = self._context_usage_event()
+                if context_usage:
+                    await self._queue.put(context_usage)
+                await self._queue.put(self._turn_result("success", started, before))
                 started = time.time()
-                before = after
+                before = self._usage_snapshot()
                 if self._buffered:
                     queries.append(self._buffered.pop(0))
         except asyncio.CancelledError:
             await self._progress_tracker.finish_all("stopped")
+            context_usage = self._context_usage_event()
+            if context_usage:
+                self._queue.put_nowait(context_usage)
             # 打断：以 interrupted 终态收轮，会话保持可用
-            self._queue.put_nowait(
-                {
-                    "type": "result",
-                    "subtype": "interrupted",
-                    "is_error": False,
-                    "duration_ms": int((time.time() - started) * 1000),
-                    "total_cost_usd": None,
-                    "num_turns": 1,
-                    "usage": {},
-                }
-            )
+            self._queue.put_nowait(self._turn_result("interrupted", started, before))
             raise
         except Exception as exc:
             await self._progress_tracker.finish_all("failed")
@@ -789,6 +967,10 @@ class JiuwenEngine:
                     for marker in ("401", "unauthorized", "api key", "authentication")
                 )
                 else FRIENDLY_ERROR
+            )
+            # 先以出错终态收轮，带上出错前已用的 token，再结束引擎
+            await self._queue.put(
+                self._turn_result("error_during_execution", started, before, is_error=True)
             )
             await self._queue.put(
                 {"type": "_engine_end", "reason": "error", "error": friendly}

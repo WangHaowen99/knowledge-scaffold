@@ -19,6 +19,15 @@ from app.services import package_archive, solver_contract
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 
 TOOLKIT_SCRIPTS = Path(__file__).resolve().parents[2] / "assets" / "workspace-toolkit" / "scripts"
+
+
+def _project_root():
+    source = Path(__file__).resolve()
+    for candidate in source.parents:
+        if (candidate / "consumer" / "backend").is_dir() and \
+                (candidate / "modeling" / "onto-modeling").is_dir():
+            return candidate
+    return source.parents[2]
 BASH = shutil.which("bash")
 
 MODEL_YAML = b"""id: route_plan
@@ -196,7 +205,7 @@ def test_ordinary_project_still_exports_v01_without_solver_projection(
     assert "solver_layout" not in manifest and "capabilities" not in manifest
     index = files[f"{pid}/operations/index.md"].decode()
     assert "| operation key | 标题 | 输入 | 输出 |\n" in index
-    assert "| 查询站点 | 查询站点 | 查询站点 | 查询站点 |\n" in index
+    assert "| 查询站点 | 查询站点 | 无 | 无 |\n" in index
     assert solver_contract.INDEX_BLOCK_START not in files[f"{pid}/index.md"].decode()
     assert not any(name.endswith((".schema.json", ".model.yaml")) for name in files)
 
@@ -378,8 +387,8 @@ def test_import_export_roundtrip_is_semantically_lossless(
     root_index = files[f"{pid}/index.md"].decode()
     assert "| plan_route | plan_route | solver_workflow |" in root_index
     operations_index = files[f"{pid}/operations/index.md"].decode()
-    assert "| plan_route | plan_route | plan_route | plan_route | solver_workflow |" in operations_index
-    assert "| 查询站点 | 查询站点 | 查询站点 | 查询站点 |  |" in operations_index
+    assert "| plan_route | plan_route | 无 | 无 | solver_workflow |" in operations_index
+    assert "| 查询站点 | 查询站点 | 无 | 无 |  |" in operations_index
 
     # 再导入一次得到同一份求解契约（第二轮往返）
     again = manager.import_package_zip("回导任务", tmp_path / "out.zip")
@@ -443,7 +452,7 @@ def test_chinese_operation_is_renamed_to_solver_key_on_export(
         "enabled": True, "mode": "solver_workflow", "decision_model": "route_plan"
     }
     assert front["uses"] == {"objects": ["站点"]}
-    assert "| plan_route | 规划路线 | 规划路线 | 规划路线 | solver_workflow |" in (
+    assert "| plan_route | 规划路线 | 无 | 无 | solver_workflow |" in (
         files[f"{pid}/operations/index.md"].decode()
     )
     assert 'bound_operation: "plan_route"' in files[f"{pid}/scripts/route_eval.md"].decode()
@@ -528,7 +537,7 @@ def test_disabled_solver_operation_is_left_out_of_solver_indexes(
     pid = meta["id"]
     files = _read_zip(manager.export_package_zip(pid, tmp_path / "out.zip"))
     assert solver_contract.INDEX_BLOCK_START not in files[f"{pid}/index.md"].decode()
-    assert "| plan_route | plan_route | plan_route | plan_route |  |" in (
+    assert "| plan_route | plan_route | 无 | 无 |  |" in (
         files[f"{pid}/operations/index.md"].decode()
     )
 
@@ -648,7 +657,9 @@ def test_workspace_rules_tell_agent_solver_directory_is_managed():
 
 
 def _consumer_validators(monkeypatch):
-    consumer = Path(__file__).resolve().parents[4] / "consumer" / "backend"
+    consumer = _project_root() / "consumer" / "backend"
+    if not consumer.is_dir():
+        pytest.skip("consumer backend is not included in standalone onto-modeling tests")
     monkeypatch.syspath_prepend(str(consumer))
     try:
         from ontology.package_import import validate_ontology_revision
