@@ -455,7 +455,7 @@ function SubagentCard({ item }) {
 
   let preview = '';
   if (item.done) {
-    preview = item.summary || (item.interrupted ? '会话已结束，没有收到子代理的结果' : '');
+    preview = item.summary || (item.interrupted ? '已中断，没有收到子代理的结果' : '');
   } else {
     const latest = steps[steps.length - 1];
     if (!latest)
