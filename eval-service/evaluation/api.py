@@ -6,17 +6,18 @@ from pathlib import Path
 import time
 import uuid
 
-from fastapi import FastAPI, Request, UploadFile, File, Query
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, Response, UploadFile, File, Query
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from .core import Config, Failure, Identity, Transport, digest
+from .core import Config, Failure, Identity, Transport, digest, trusted_origins
 from .store import Store
 from .packages import Packages, generate_mapping, MAPPING, unpack
 from .data_sources import DataSources, read_tables
 from .execution import Consumer, Judge, Engine, report
+from .judge_settings import JudgeSettings
 from .nl2sql import QueryService
 
 
@@ -47,6 +48,12 @@ class Publication(Body):
     preparation_id: str
 
 
+class JudgeConfig(Body):
+    base_url: str = Field(max_length=2048)
+    model: str = Field(max_length=200)
+    api_key: str = Field(default='',max_length=4096)  # Empty keeps the current key for the same gateway.
+
+
 def public(record):
     value={k:v for k,v in record.items() if k not in ('connection','tables_snapshot','content','source','cases','intent','mapping','preview','model','relations')}
     if 'mapping' in record:
@@ -70,7 +77,8 @@ def create_app(config=None,transport=None):
     packages=Packages(config,http,store)
     sources=DataSources(config,store)
     consumer=Consumer(config,http)
-    judge=Judge(config,http)
+    judge_settings=JudgeSettings(config,store)
+    judge=Judge(judge_settings,http)
     engine=Engine(store,identity,packages,sources,consumer,judge)
 
     @asynccontextmanager
@@ -139,19 +147,65 @@ def create_app(config=None,transport=None):
         token=header[7:] if header.startswith('Bearer ') else ''
         return identity.verify(token),token
 
+    def account(request):
+        header=request.headers.get('authorization','')
+        return identity.account(header[7:] if header.startswith('Bearer ') else '')
+
+    def administrator(request):
+        owner,role=account(request)
+        if role!='admin': raise Failure('forbidden','需要管理员权限',403,'authorization')
+        return owner
+
+    @app.get('/')
+    def root():
+        # Pages and API keep the /evaluation prefix so a same-origin gateway can route by path.
+        return RedirectResponse('/evaluation/',status_code=302)
+
     @app.get(prefix+'/health')
-    def health(): return {'status':'ok','service':'evaluation'}
+    def health(response:Response):
+        # Liveness only, so any origin may check it before opening the evaluation page.
+        response.headers['Access-Control-Allow-Origin']='*'
+        return {'status':'ok','service':'evaluation'}
+
+    @app.get(prefix+'/client-config')
+    def client_config():
+        # An empty list means only pages on this host name (loopback names count as one) may hand over a login.
+        return {'trusted_origins':trusted_origins(config.trusted_origins)}
 
     @app.post(prefix+'/nl2sql/api/v1/{operation}')
     def sql_query(operation:str,body:dict,request:Request):
         if operation not in ('query','sql'): raise Failure('not_found','操作不存在',404)
         header=request.headers.get('authorization','')
-        return QueryService(config,http).query(body,header[7:] if header.startswith('Bearer ') else '',operation=='sql')
+        return QueryService(config,http,judge_settings).query(body,header[7:] if header.startswith('Bearer ') else '',operation=='sql')
 
     @app.get(prefix+'/session')
     def session(request:Request):
         owner,_=actor(request)
-        return {'subject':owner,'judge':{'model':config.judge_model,'revision':config.judge_revision},'model_configuration':'MODEL-CONFIG-01'}
+        current=judge_settings.view(False)
+        return {'subject':owner,'judge':{'model':current['model'],'revision':current['revision']},'model_configuration':'MODEL-CONFIG-01'}
+
+    @app.get(prefix+'/judge-settings')
+    def judge_settings_view(request:Request):
+        _,role=account(request)
+        return judge_settings.view(role=='admin')
+
+    @app.put(prefix+'/judge-settings')
+    def judge_settings_save(body:JudgeConfig,request:Request):
+        judge_settings.save(body.base_url,body.model,body.api_key,administrator(request))
+        return judge_settings.view(True)
+
+    @app.delete(prefix+'/judge-settings')
+    def judge_settings_reset(request:Request):
+        administrator(request)
+        judge_settings.reset()
+        return judge_settings.view(True)
+
+    @app.post(prefix+'/judge-settings/test')
+    def judge_settings_test(body:JudgeConfig,request:Request):
+        # Runs the same structured-verdict check as run preflight, without saving.
+        administrator(request)
+        judge.preflight(dict(judge_settings.candidate(body.base_url,body.model,body.api_key),revision='test'))
+        return {'ok':True}
 
     @app.post(prefix+'/auth/{operation}')
     def auth(operation:str,body:dict):

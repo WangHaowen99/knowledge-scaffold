@@ -40,6 +40,8 @@ class Dependencies:
         self.cancelled=False
         self.fail_submit_response=False
         self.fail_commit_response=False
+        self.roles={}
+        self.judge_calls=[]
 
     def request(self,method,base,path,**kwargs):
         rid=path.split('/')[-2]
@@ -50,7 +52,7 @@ class Dependencies:
         if path=='/userinfo':
             if not self.auth_available: raise Failure('auth_unavailable','Unavailable',503)
             if token not in ('synthetic-user-a','synthetic-user-b'): raise Failure('unauthorized','Unauthorized',401)
-            return {'sub':token}
+            return {'sub':token,'role':self.roles.get(token,'user')}
         if path=='/token': return {'access_token':'synthetic-user-a','refresh_token':'synthetic-refresh'}
         if path.startswith('/api/packages'):
             if token!='synthetic-user-a': raise Failure('not_found','Not found',404)
@@ -90,6 +92,7 @@ class Dependencies:
                 return {'status':'cancelling'}
             return {'status':'cancelled' if self.cancelled else 'running' if self.running else 'completed','result':{'content':'2'}}
         if path=='/chat/completions':
+            self.judge_calls.append((base,token,kwargs['json']['model']))
             if self.judge_fail and '合成协议检查' not in kwargs['json']['messages'][1]['content']:
                 raise Failure('judge_unavailable','Unavailable',503)
             return {'choices':[{'message':{'tool_calls':[{'function':{'name':'submit_verdict','arguments':json.dumps({'verdict':'pass','reason':'Synthetic judgement'})}}]}}]}
@@ -326,3 +329,61 @@ def test_queue_rejection_does_not_retain_authorization(environment):
             assert ('owner_demo','rejected_demo') not in engine.tokens
         finally:
             engine.active.remove(('owner_demo','active_demo'))
+
+
+def test_health_allows_cross_origin_checks_and_client_config_lists_trusted_origins(environment):
+    client,_,_,cfg=environment
+    response=client.get('/evaluation/api/health')
+    assert response.json()=={'status':'ok','service':'evaluation'}
+    assert response.headers['access-control-allow-origin']=='*'
+    assert client.get('/evaluation/api/client-config').json()=={'trusted_origins':[]}
+    cfg.trusted_origins='https://Modeling.Example.com:443/, http://modeling.example.com:5100,https://bad.example.com/path,ftp://x'
+    assert client.get('/evaluation/api/client-config').json()=={
+        'trusted_origins':['https://modeling.example.com','http://modeling.example.com:5100']}
+    # Only the liveness check is readable from other origins.
+    assert 'access-control-allow-origin' not in client.get('/evaluation/api/client-config').headers
+
+
+def test_root_redirects_to_evaluation_page(environment):
+    client,_,_,_=environment
+    response=client.get('/',follow_redirects=False)
+    assert response.status_code==302 and response.headers['location']=='/evaluation/'
+
+
+def test_judge_settings_are_admin_only_encrypted_and_used_by_new_runs(environment):
+    client,app,deps,cfg=environment
+    deps.roles['synthetic-user-b']='admin'
+    admin={'Authorization':'Bearer synthetic-user-b'}
+    url='/evaluation/api/judge-settings'
+    assert client.get(url).json()=={'source':'deployment','model':'synthetic','revision':'1','editable':False,'configured':True}
+    body={'base_url':'https://judge-new.example.com/v1/','model':'synthetic-judge-2','api_key':'synthetic-new-key'}
+    assert client.put(url,json=body).status_code==403
+    assert client.post(url+'/test',json=body).status_code==403
+    assert client.delete(url).status_code==403
+    # The deployment key is never sent to a different gateway.
+    rejected=client.put(url,json={**body,'api_key':''},headers=admin)
+    assert rejected.status_code==422 and rejected.json()['code']=='judge_key_required'
+    assert client.post(url+'/test',json=body,headers=admin).json()=={'ok':True}
+    assert deps.judge_calls[-1]==('https://judge-new.example.com/v1','synthetic-new-key','synthetic-judge-2')
+    saved=client.put(url,json=body,headers=admin).json()
+    assert saved['source']=='settings' and saved['base_url']=='https://judge-new.example.com/v1' and saved['api_key_set'] is True
+    assert 'synthetic-new-key' not in json.dumps(saved)
+    raw=app.state.store.db.execute('SELECT body FROM settings').fetchone()[0]
+    assert 'synthetic-new-key' not in raw
+    # Re-saving with an empty key keeps the key and the revision for the same gateway.
+    again=client.put(url,json={**body,'api_key':''},headers=admin).json()
+    assert again['revision']==saved['revision']
+    assert client.get('/evaluation/api/session').json()['judge']=={'model':'synthetic-judge-2','revision':saved['revision']}
+    deps.judge_calls.clear()
+    result=wait(client,run(client,preparation(client))['id'])
+    assert result['status']=='completed',result
+    assert set(deps.judge_calls)=={('https://judge-new.example.com/v1','synthetic-new-key','synthetic-judge-2')}
+    reset=client.delete(url,headers=admin).json()
+    assert reset['source']=='deployment' and reset['revision']=='1' and reset['base_url']=='https://judge.example.com'
+
+
+def test_judge_refuses_a_configuration_changed_after_run_creation(environment):
+    _,app,_,_=environment
+    with pytest.raises(Failure) as exc:
+        app.state.engine.judge.score('Synthetic question','2','2',expected={'model':'synthetic','revision':'0','rule_version':'1'})
+    assert exc.value.code=='configuration_changed'

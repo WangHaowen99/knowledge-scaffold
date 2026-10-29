@@ -30,8 +30,22 @@ class Store:
           owner TEXT, operation TEXT, request_id TEXT, digest TEXT, record_id TEXT,
           PRIMARY KEY(owner,operation,request_id));
         CREATE TABLE IF NOT EXISTS tombstones(id TEXT PRIMARY KEY, deleted REAL);
+        CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, body TEXT NOT NULL, updated REAL NOT NULL);
         ''')
         self.db.commit()
+
+    def setting(self, key):
+        """Service-wide settings, not owned by any user."""
+        with self.lock:
+            row = self.db.execute('SELECT body FROM settings WHERE key=?', (key,)).fetchone()
+            return json.loads(row['body']) if row else None
+
+    def put_setting(self, key, body):
+        with self.transaction():
+            if body is None:
+                self.db.execute('DELETE FROM settings WHERE key=?', (key,))
+            else:
+                self.db.execute('INSERT OR REPLACE INTO settings VALUES(?,?,?)', (key, canonical(body), time.time()))
 
     @contextmanager
     def transaction(self):

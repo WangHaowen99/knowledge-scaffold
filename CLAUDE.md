@@ -242,7 +242,7 @@ Commands for the independent evaluation service (`eval-service/`):
 - Backend tests: `PYTHONPATH=eval-service eval-service/.venv/bin/python -m pytest eval-service/tests -q`
 - Frontend: `cd eval-service/frontend && npm ci && npm test && npm run build`
 - Run after injecting protected configuration: `cd eval-service && .venv/bin/python run.py`
-- Independent deployment: `bash deploy/deploy.sh --eval-only` (compose `eval-service/deploy/docker-compose.eval-service.yml`); included in default full-stack deployment; excluded from `--onto-modeling-only` and `--knowledge-hub-only`. Runtime configuration lives in `eval-service/deploy/.env` (generated, mode 600, never committed) and reuses the Hub and consumer evaluation credentials; `EVAL_ENV_FILE` optionally points to an external protected configuration instead. Judge model settings (`EVAL_JUDGE_*`) must still be provided.
+- Independent deployment: `bash deploy/deploy.sh --eval-only` (compose `eval-service/deploy/docker-compose.eval-service.yml`); included in default full-stack deployment; excluded from `--onto-modeling-only` and `--knowledge-hub-only`. Runtime configuration lives in `eval-service/deploy/.env` (generated, mode 600, never committed) and reuses the Hub and consumer evaluation credentials; `EVAL_ENV_FILE` optionally points to an external protected configuration instead. Judge model settings come from `EVAL_JUDGE_*` or, taking precedence, from an administrator's configuration saved on the evaluation page.
 - Offline package: `bash eval-service/build.sh <version> [amd|arm]`
 - Configuration, API, model configuration debt and recovery: `eval-service/README.md`, `eval-service/API.md`.
 

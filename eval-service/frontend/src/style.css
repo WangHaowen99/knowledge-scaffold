@@ -11,4 +11,5 @@ label, summary { display: block; margin: 12px 0; } summary { cursor: pointer; co
 .notice { background: #e7eff9; padding: 14px; border-radius: 8px; } .error { background: #fff0ec; color: #9a3521; padding: 14px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; background: #f6f8fb; padding: 14px; }
 code { overflow-wrap: anywhere; } table { border-collapse: collapse; width: 100%; } td, th { text-align: left; padding: 10px; border-bottom: 1px solid #e5ebf1; }
+.settings input { display: block; width: 100%; }
 @media(max-width: 760px) { .grid { grid-template-columns: 1fr; } main { padding: 20px 12px; } section { padding: 16px; } }
