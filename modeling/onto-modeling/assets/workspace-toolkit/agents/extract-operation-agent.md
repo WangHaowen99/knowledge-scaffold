@@ -19,6 +19,7 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
 - `FLOWCHART_SUPPLEMENTS` (optional): 报告没有收录的流程图，逗号分隔；每项是 `流程图名`，或用户决定改名时的 `文档名=流程图名`。写成 `无` 时没有。
 - `FLOWCHART_SKIPPED` (optional): 用户决定不单独成文的流程图，不要为它们生成操作文档。写成 `无` 时没有。
 - `OBJECTS_DIR`: path to confirmed object docs (e.g. `ontology/object/`)
+- `JOIN_KEYS` (optional): JSON from `python3 .claude/scripts/field_semantics.py joins --objects {涉及的对象}`：`joins` 是对象「# 关联对象」已声明的关联字段对（relation / source / source_field / target / target_field），`identity_fields` 是各对象的标识字段。跨对象关联、核对字段只能用这里的字段对，或两端同名 / 互为属性别名的字段。
 - `OPERATION_DIR`: target directory (e.g. `ontology/operation/`)
 - `TEMPLATES_DIR`: path to templates (e.g. `.claude/templates/`)
 - `DOCUMENT_NAMES`（报告模式）: 对账 plan 返回的原名、path、exists 与 frontmatter，包含报告操作和流程图补充项。缺失或用户改名后先运行 `python3 .claude/scripts/report_reconcile.py plan --json --reports {REPORT_PATHS} --summaries {SUMMARY_PATHS 中未跳过的路径}`，并为已决定改名的流程图附加 `--alias 文档名=流程图名`；naming_conflicts 非空时停止写入并返回冲突。
@@ -134,6 +135,7 @@ Rules:
 - 逻辑描述: translate flowchart flow into numbered steps at attribute-level granularity. **遵守 `.claude/reference/OPERATION_STYLE_GUIDE.md`**：先判断组织类型，再选择写法。端到端 SOP 流程型（有明确起点、输入准备、业务决策、结果校验、输出闭环）可参考指南 §九 的推荐骨架；判断密集型业务使用 `if X then Y else Z` + 符号（`==/>=/<=`）+ 嵌套 ≤ 3；"多维条件 → 离散结果"型业务（评级、分类、状态判定、推荐方案等）且改写成嵌套 if-else 会 ≥ 3 层时，优先用 markdown 决策表替代（格式见指南 §八；单元格内可写 `调用[[子流程]]逻辑文档`，rule-check 会正常识别）；规则多、有明确优先级且命中一条即停止时，可用指南 §十 的 `prior` 扁平化首匹配，并提供默认兜底；对同一集合逐项执行相同逻辑时，可用指南 §十一 的 `loop`，但集合来源、循环体产出和聚合方式必须来自源材料；顺序流程或调用脚本/外部服务为主时，可用编号步骤的 prose 描述。无论哪种写法，仍禁用口语化词（先看/够的话/比如/可能等）。不要把子规则、判定器、决策表、脚本/外部服务包装强行改写成 SOP 骨架（判定条款留在本
 operation 的 `逻辑描述` 里；需要独立成文档的规则属于 `ontology/rule/`，不要写进本目录）。
 - Data / Operation 口径：Operation 只写业务规则，不重复 Data 层已定义的层次关系推理、属性继承或纯查询。使用对象名、字段名、枚举值、单位、公式时优先对齐 OBJECTS_DIR 中已有 object 文档；源材料要求新增字段或新口径时，在注意事项中提示需要同步 Data 层定义，不要只在 Operation 中隐式改口径。
+- **不得臆造字段等价与拦截条件**：两个对象的字段只有在同名、互为属性别名，或出现在 `JOIN_KEYS.joins` 里时才能当作同一个值关联或核对。源材料没有写明的等价关系（例如把某个统一编码与某个客户编号当作同一个值，「无法交叉核对则报资料冲突」），不得写进逻辑描述，也不得作为前置检查、终止流程或报错条件；确需业务确认的，写进返回摘要的注意事项并标「待确认」。规则检查（类别「字段关联」）会把这类句子报为错误。
 - Mark `TODO: 待补充逻辑步骤` if detail insufficient
 
 ## Step 3: Return summary
@@ -152,6 +154,7 @@ operation 的 `逻辑描述` 里；需要独立成文档的规则属于 `ontolog
 
 注意事项：
 - {TODOs, external side effects that need business confirmation, etc.}
+- 待确认的字段等价：{操作名：字段A ↔ 字段B，资料依据或缺口}（没有则写「无」）
 ```
 
 「合并」一栏要写全：提取后会按名称对账，没有同名操作文档的流程图必须能在这里找到去处。
