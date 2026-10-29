@@ -1969,7 +1969,7 @@ export default function ChatPane({
         }}
       >
         <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-          入库后保存在项目 knowledge/ 目录并记录版本；可在中栏「知识」页管理。
+          入库后保存在项目 knowledge/ 目录并记录迭代；可在中栏「知识」页管理。
         </Typography.Paragraph>
         <Input
           placeholder="条目名称"

@@ -1526,6 +1526,19 @@ def versions(project_id: str, request: Request):
     return {"versions": workspaces.versions(project_id)}
 
 
+@router.get("/{project_id}/history")
+def history(project_id: str, request: Request, limit: int = 50, cursor: str = ""):
+    """历史时间线：迭代与发布版本按时间倒序合并分页，游标由后端生成。"""
+    from .hub_packages import identity
+    from ..services import auth, version_history
+    # 未启用统一账号时没有个人 Hub 包，时间线只含迭代
+    token, subject = identity(request)[:2] if auth.ENABLED else ("", "")
+    ensure_access(project_id, request)
+    if not 1 <= limit <= 50:
+        raise WorkspaceError("分页参数无效")
+    return version_history.page(workspaces, project_id, subject, token, limit, cursor)
+
+
 @router.post("/{project_id}/versions/revert")
 def revert(project_id: str, body: RevertBody, request: Request):
     ensure_access(project_id, request, write=True)

@@ -452,6 +452,7 @@ export function usePackagePublish(dialogExtras = {}) {
     if (receipt.local_record_pending) message.warning('知识包已发布，本地发布记录待恢复');
     else message.success(allowUnbound ? '已降级发布，未通过检查的对象不绑定数据表' : '知识包已发布');
     setProjectId('');
+    setVersionsProject(pid);
   };
 
   const publish = async (pid) => {
