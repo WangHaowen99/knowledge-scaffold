@@ -420,6 +420,11 @@ class SessionManager:
             "busy": _busy(session),
         }
 
+    def workspace_busy(self, project_id: str) -> bool:
+        """Whether rollback must wait for active or queued assistant work."""
+        session = self._sessions.get(project_id)
+        return bool(session and _busy_for_owner_switch(session))
+
     def get_history(
         self, project_id: str, conversation_id: str | None = None
     ) -> list[dict]:

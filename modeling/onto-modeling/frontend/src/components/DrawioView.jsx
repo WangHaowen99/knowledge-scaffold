@@ -5,6 +5,7 @@ import {
 import { Alert, Button, Modal, Space, Spin, Tag, Tooltip, message } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { setWorkspaceDirty } from '../lib/workspaceDirty.js';
 import DrawioPreview from './DrawioPreview.jsx';
 
 const EDITOR_URL = '/drawio/index.html?embed=1&proto=json&configure=1&lang=zh&ui=min&libraries=1&offline=1&local=1&noExitBtn=1&pv=0';
@@ -33,6 +34,11 @@ function DrawioDocument({ project, path, editorAvailable, onSaved, refreshKey })
   const iframeRef = useRef(null);
   const latestXmlRef = useRef('');
   const revisionRef = useRef('');
+
+  useEffect(() => {
+    setWorkspaceDirty('drawio-editor', saveState === 'dirty' || saveState === 'saving' || saveState === 'error');
+    return () => setWorkspaceDirty('drawio-editor', false);
+  }, [saveState]);
   const dirtyRef = useRef(false);
   const savingRef = useRef(false);
   const aliveRef = useRef(true);

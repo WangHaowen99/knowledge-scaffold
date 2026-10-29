@@ -1222,6 +1222,7 @@ def eval_pool(tmp_path, monkeypatch):
     monkeypatch.setattr(modeling_eval, "_queued", {})
     monkeypatch.setattr(modeling_eval, "_running", set())
     monkeypatch.setattr(modeling_eval, "_stop_requested", set())
+    monkeypatch.setattr(modeling_eval, "_scheduled", set())
     release = threading.Event()
     started: list[str] = []
 
@@ -1296,6 +1297,33 @@ def test_stop_while_queued_skips_orchestration(tmp_path, eval_pool):
         await _wait_for(lambda: third_pid not in modeling_eval._running)
         assert modeling_eval.queue_position(third_pid) is None
         assert modeling_eval.status_view(third_pid, third_root)["status"] == "stopped"
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10)
+
+    asyncio.run(scenario())
+    assert projects[2][0] not in started
+    assert modeling_eval.read_state(projects[2][1])["status"] == "stopped"
+
+
+def test_stop_launched_eval_while_queued_really_dequeues(tmp_path, eval_pool):
+    """launch 的预占标记在协程启动后释放，排队停止必须真正出队。"""
+    release, started = eval_pool
+    projects = [_eval_workspace(tmp_path, f"启动排队{i}") for i in range(3)]
+
+    async def scenario():
+        tasks = [
+            modeling_eval.launch(pid, root, "t", [{"question": "Q", "groundTruth": "G"}])
+            for pid, root in projects
+        ]
+        third_pid, third_root = projects[2]
+        await _wait_for(lambda: modeling_eval.queue_position(third_pid) == 1)
+        assert third_pid not in modeling_eval._scheduled
+
+        result = modeling_eval.request_stop(third_pid, third_root, "t")
+        assert result["stopped"] and not result["cancelled"]
+        assert modeling_eval.queue_position(third_pid) is None
+        await _wait_for(lambda: not modeling_eval.is_active(third_pid))
+
         release.set()
         await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10)
 

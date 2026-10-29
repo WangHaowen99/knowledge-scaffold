@@ -27,6 +27,7 @@ import {
 } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { setWorkspaceDirty } from '../lib/workspaceDirty.js';
 import {
   ADVANCED,
   BATCH_FIELDS,
@@ -1165,6 +1166,10 @@ export default function SolverModelPanel({
   // 工作区有新版本（助手改了绑定的 Operation / 评估器、导入了知识包）且没有草稿时跟随刷新
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty || items.some((item) => item.advancedError); // 未生效的高级字段文本也算草稿
+  useEffect(() => {
+    setWorkspaceDirty('solver-editor', dirtyRef.current);
+    return () => setWorkspaceDirty('solver-editor', false);
+  }, [dirty, items]);
   const head = `${versions.length}:${versions[0]?.commit || ''}`;
   useEffect(() => {
     if (!dirtyRef.current) load();
