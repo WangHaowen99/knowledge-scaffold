@@ -81,6 +81,18 @@ validate_package() {
     ' || die "${label}目录结构非法：${package}"
 }
 
+validate_evaluation_package() {
+    local package="$1" label="$2" relative
+    [ -d "${package}" ] || die "${label}目录不存在：${package}"
+    [ ! -L "${package}" ] || die "${label}不能是符号链接：${package}"
+    [ ! -L "${package}/deploy" ] || die "${label}的 deploy 不能是符号链接"
+    for relative in deploy/deploy.sh deploy/docker-compose.eval-service.yml evaluation-image.tar IMAGE; do
+        [ -f "${package}/${relative}" ] && [ ! -L "${package}/${relative}" ] \
+            || die "${label}缺少普通文件 ${relative}"
+    done
+    evaluation_package="$(cd "${package}" && pwd)"
+}
+
 check_command() { command -v "$1" >/dev/null 2>&1 || die "缺少命令：$1"; }
 
 write_env_value() {
@@ -221,17 +233,95 @@ deploy_knowledge_hub() {
     log "Knowledge Hub deployment finished: ${hub_dir}"
 }
 
+ensure_evaluation_service_token() {
+    local env_file="$1" secret modeling_token
+    secret="$(env_get "${env_file}" EVALUATION_SERVICE_TOKEN)"
+    [ -n "${secret}" ] || secret="$(od -An -N 32 -tx1 /dev/urandom | tr -d '[:space:]')"
+    [ "${#secret}" -ge 32 ] || die 'EVALUATION_SERVICE_TOKEN 至少需要 32 个字符'
+    modeling_token="$(env_get "${env_file}" MODELING_SERVICE_TOKEN)"
+    [ "${secret}" != "${modeling_token}" ] \
+        || die 'EVALUATION_SERVICE_TOKEN 不能与 MODELING_SERVICE_TOKEN 相同'
+    write_env_value "${env_file}" EVALUATION_SERVICE_TOKEN "${secret}"
+    unset secret modeling_token
+}
+
+stage_evaluation_package() {
+    [ -n "${evaluation_package}" ] || return 0
+    local dir="$(dirname "${old_install_dir}")/eval-service" relative
+    [ ! -L "${dir}" ] && [ ! -L "${dir}/deploy" ] || die '评测安装目录不能是符号链接'
+    mkdir -p "${dir}/deploy" || die '无法创建评测安装目录'
+    [ "${evaluation_package}" != "$(cd "${dir}" && pwd)" ] || return 0
+    # 仅覆盖交付物，保留 deploy/.env 中的数据加密密钥、端口和其他运行配置。
+    for relative in deploy/deploy.sh deploy/docker-compose.eval-service.yml evaluation-image.tar IMAGE; do
+        [ ! -L "${dir}/${relative}" ] || die "评测目标文件不能是符号链接：${relative}"
+        cp "${evaluation_package}/${relative}" "${dir}/${relative}" || die "无法复制评测交付物：${relative}"
+    done
+}
+
+precheck_evaluation() {
+    [ -n "${evaluation_package}" ] || return 0
+    local dir="$(dirname "${old_install_dir}")/eval-service" expected owner
+    [ ! -L "${dir}" ] && [ ! -L "${dir}/deploy" ] || die '评测安装目录不能是符号链接'
+    expected="$(cd "${dir}/deploy" 2>/dev/null && pwd || printf '%s' "${dir}/deploy")"
+    if docker container inspect knowledge-evaluation >/dev/null 2>&1; then
+        owner="$(docker container inspect knowledge-evaluation --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null || true)"
+        [ "${owner}" = "${expected}" ] \
+            || die "容器 knowledge-evaluation 属于 ${owner:-未知目录}，不是 ${expected}，拒绝接管"
+    fi
+    if [ -n "${EVAL_ENV_FILE:-}" ]; then
+        [ -f "${EVAL_ENV_FILE}" ] && [ -r "${EVAL_ENV_FILE}" ] || die 'EVAL_ENV_FILE 不存在或不可读'
+        EVAL_ENV_FILE="$(cd "$(dirname "${EVAL_ENV_FILE}")" && pwd)/$(basename "${EVAL_ENV_FILE}")"
+        export EVAL_ENV_FILE
+    elif [ -z "${hub_package}" ]; then
+        [ -n "$(env_get "${hub_dir}/.env" HUB_EVALUATION_SERVICE_TOKEN)" ] \
+            || die '独立评测服务需要知识包 Hub：请提供 Hub 发布包或先部署含评测凭据的 Hub'
+    fi
+}
+
+deploy_evaluation() {
+    [ -n "${evaluation_package}" ] || return 0
+    local dir="$(dirname "${old_install_dir}")/eval-service" network hub_token consumer_token
+    [ -f "${dir}/deploy/deploy.sh" ] || die "评测服务发布目录缺少 deploy/deploy.sh：${dir}"
+    network="$(docker container inspect onto-agent-backend \
+        --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' \
+        2>/dev/null | head -n 1)"
+    [ -n "${network}" ] || die '无法探测 Consumer 容器网络，请确认 onto-agent-backend 已在运行'
+    hub_token="$(env_get "${hub_dir}/.env" HUB_EVALUATION_SERVICE_TOKEN)"
+    consumer_token="$(env_get "${consumer_dir}/backend/.env" EVALUATION_SERVICE_TOKEN)"
+    [ -n "${hub_token}" ] || [ -n "${EVAL_ENV_FILE:-}" ] \
+        || die 'Hub 缺少评测凭据，请先更新知识包 Hub'
+    log "部署独立评测服务：${dir}（网络 ${network}）"
+    (cd "${dir}" \
+        && CONSUMER_NETWORK="${network}" \
+        HUB_EVALUATION_SERVICE_TOKEN="${hub_token}" \
+        EVALUATION_SERVICE_TOKEN="${consumer_token}" \
+        bash ./deploy/deploy.sh) \
+        || die "独立评测服务部署失败；修复后可单独执行 bash ${dir}/deploy/deploy.sh"
+    unset hub_token consumer_token
+    local elapsed=0
+    until docker exec knowledge-evaluation python -c \
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/evaluation/api/health', timeout=3)" \
+        >/dev/null 2>&1; do
+        [ "${elapsed}" -lt 60 ] || die '独立评测服务 60 秒内未就绪，请查看 docker logs knowledge-evaluation'
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    log '独立评测服务已就绪（默认访问 http://localhost:8090/evaluation/，端口以评测运行配置为准）'
+}
+
 old_install_dir="$(prompt_value '请输入旧的合并部署根目录，例如 /opt/onto-agent：')"
 consumer_package="$(prompt_value '请输入新的 Consumer 镜像 tar 包路径：')"
 modeling_package="$(prompt_value '请输入新的 Modeling 镜像 tar 包路径：')"
 onto_package="$(prompt_optional '请输入新的 Onto Modeling 发布包路径（留空跳过）：')"
 hub_package="$(prompt_optional '请输入新的知识包 Hub 发布包路径（留空跳过）：')"
+evaluation_package="$(prompt_optional '请输入新的独立评测服务发布目录（留空跳过）：')"
 
 case "${old_install_dir}" in /*) ;; *) old_install_dir="$(pwd)/${old_install_dir}" ;; esac
 case "${consumer_package}" in /*) ;; *) consumer_package="$(pwd)/${consumer_package}" ;; esac
 case "${modeling_package}" in /*) ;; *) modeling_package="$(pwd)/${modeling_package}" ;; esac
 case "${onto_package}" in ''|/*) ;; *) onto_package="$(pwd)/${onto_package}" ;; esac
 case "${hub_package}" in ''|/*) ;; *) hub_package="$(pwd)/${hub_package}" ;; esac
+case "${evaluation_package}" in ''|/*) ;; *) evaluation_package="$(pwd)/${evaluation_package}" ;; esac
 
 consumer_package="$(resolve_package_path "${consumer_package}" 'Consumer 发布包')"
 modeling_package="$(resolve_package_path "${modeling_package}" 'Modeling 发布包')"
@@ -244,7 +334,7 @@ hub_dir="$(dirname "${old_install_dir}")/knowledge-hub"
 [ -f "${old_install_dir}/VERSION" ] || die "旧目录缺少 VERSION：${old_install_dir}"
 [ -f "${old_install_dir}/backend/.env" ] || die "旧目录缺少 backend/.env"
 [ -f "${old_install_dir}/deploy/state/current.env" ] || die "旧目录缺少 deploy/state/current.env"
-for command_name in docker tar gzip sha256sum flock awk sed mktemp tee; do check_command "${command_name}"; done
+for command_name in docker tar gzip sha256sum flock awk sed mktemp tee od tr; do check_command "${command_name}"; done
 docker info >/dev/null 2>&1 || die "Docker daemon 不可用"
 validate_package "${consumer_package}" onto-agent 'Consumer 发布包'
 validate_package "${modeling_package}" modeling 'Modeling 发布包'
@@ -253,6 +343,7 @@ if [ -n "${onto_package}" ]; then
     check_command curl
 fi
 [ -z "${hub_package}" ] || validate_package "${hub_package}" knowledge-hub '知识包 Hub 发布包'
+[ -z "${evaluation_package}" ] || validate_evaluation_package "${evaluation_package}" '独立评测服务发布目录'
 
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/consumer-preflight.XXXXXX")" || die "无法创建预检暂存目录"
 tar -xzf "${consumer_package}" -C "${TMP_ROOT}"
@@ -263,6 +354,7 @@ manifest="${staged_root}/deploy/manifest.json"
 [ -f "${manifest}" ] || die "Consumer 发布包缺少 deploy/manifest.json"
 [ -z "${onto_package}" ] || precheck_onto_modeling
 [ -z "${hub_package}" ] || precheck_knowledge_hub
+[ -z "${evaluation_package}" ] || precheck_evaluation
 
 # opsctl preflight reads the staged bundle's backend/.env for published ports.
 # Reuse the old deployment's resolved configuration so custom ports are checked
@@ -390,6 +482,7 @@ upgrade_legacy_deployment() {
     tar -xzf "${consumer_package}" -C "${stage_dir}"
     tar -xzf "${modeling_package}" -C "${stage_dir}"
     cp "${consumer_dir}/backend/.env" "${backup_dir}/consumer.env"; chmod 600 "${backup_dir}/consumer.env"
+    [ -z "${evaluation_package}" ] || ensure_evaluation_service_token "${consumer_dir}/backend/.env"
 
     stop_owned_containers "${consumer_dir}" STOPPED_CONSUMER_CONTAINERS \
         'onto-agent-frontend onto-agent-mcp onto-agent-backend onto-agent-jiuwenbox onto-agent-auth-server'
@@ -427,6 +520,10 @@ upgrade_legacy_deployment() {
     [ "$(container_mount_volume mw-modeling-agent /data)" = "${agent_volume}" ] || die 'Agent 未复用原数据卷'
     [ -z "${hub_package}" ] || deploy_knowledge_hub
     [ -z "${onto_package}" ] || deploy_onto_modeling
+    if [ -n "${evaluation_package}" ]; then
+        stage_evaluation_package
+        deploy_evaluation
+    fi
     log "旧合并部署迁移完成，备份位于 ${backup_dir}"
 }
 
