@@ -71,6 +71,8 @@ def _read_tables(raw, name):
 class DataSources:
     def __init__(self, config, store):
         self.config,self.store=config,store
+        from .graph_import import GraphImports
+        self.graph = GraphImports(store)
 
     def freeze(self, owner, definition):
         source=dict(definition)
@@ -94,7 +96,7 @@ class DataSources:
                 identifier(name)
                 for col in columns: identifier(col)
                 tables.setdefault(name,dict(columns=columns,rows=[]))
-            if not tables:
+            if not tables and not (source.get('provider')=='neo4j' and not source.get('import_data')):
                 raise Failure('schema_required','请提供外部连接的表字段定义',422)
         # Runtime input bytes are frozen and encrypted separately from Hub packages.
         source['tables_snapshot']=self.store.encrypt(tables) if tables else None
@@ -103,13 +105,12 @@ class DataSources:
     def prepare(self, run_id, source, mapping, relations=None):
         mode=source['mode']
         if mode=='none': return None
-        tables=self.store.decrypt(source['tables_snapshot'])
+        tables=self.store.decrypt(source['tables_snapshot']) if source.get('tables_snapshot') else {}
         connection=self.store.decrypt(source['connection']) if source.get('connection') else {}
         if mode=='connection' and not source.get('import_data'):
             return dict(mode='direct_provider',provider=source['provider'],config=connection)
         if source.get('provider')=='neo4j':
-            connection={**connection,'workspace_property':connection.get('workspace_property') or 'evaluation_scope','workspace_value':'eval_'+run_id}
-            self.graph_import(run_id,connection,tables,mapping,relations or {})
+            self.graph.import_data(run_id,source,connection,tables,mapping,relations or {})
             return dict(mode='direct_provider',provider='neo4j',config=connection)
         if mode=='connection':
             # Never replace arbitrary external SQL tables. Read-only external connections are supported.
@@ -137,45 +138,6 @@ class DataSources:
             db.commit()
         return dict(mode='direct_provider',provider='nl2sql_http',config={
             'url':self.config.nl2sql_url,'scene':schema,'token':scene_token(self.config,schema)})
-
-    def graph_import(self, run_id, connection, tables, mapping, relations):
-        # Import only after explicit user selection; no graph deletion is performed.
-        from neo4j import GraphDatabase
-        uri=connection.get('uri','')
-        if not connection.get('workspace_property') or not connection.get('workspace_value'):
-            raise Failure('graph_scope_required','图导入需要明确 workspace 隔离属性和值',422,'data_import')
-        scope_key=identifier(connection['workspace_property'])
-        scope_value=connection['workspace_value']
-        driver=GraphDatabase.driver(uri,auth=(connection.get('username',''),connection.get('password','')))
-        try:
-            with driver.session(database=connection.get('database','neo4j')) as session:
-                for label,item in mapping['objects'].items():
-                    identifier(label)
-                    table=tables[item['sources'][0]['resource']]
-                    columns=table['columns']
-                    fields=item['sources'][0]['fields']
-                    rows=[{field:row[columns.index(rule['source_column'])] for field,rule in fields.items()} for row in table['rows']]
-                    if any(scope_key in row for row in rows):
-                        raise Failure('graph_scope_conflict','图隔离属性不能与业务字段重名',422,'data_import')
-                    keys=item['primary_key']
-                    if any(any(row.get(k) is None for k in keys) for row in rows):
-                        raise Failure('graph_key_missing','图数据缺少主键',422,'data_import')
-                    key_expr='`'+scope_key+'`: $scope,'+','.join('`'+identifier(k)+'`: row.`'+k+'`' for k in keys)
-                    for offset in range(0,len(rows),200):
-                        session.run('UNWIND $rows AS row MERGE (n:`'+label+'` {'+key_expr+'}) SET n += row',rows=rows[offset:offset+200],scope=scope_value).consume()
-                for source, edges in relations.items():
-                    for edge in edges:
-                        target=identifier(edge['target'])
-                        label=identifier(edge['relation'])
-                        left=edge.get('sourceJoinProperty') or mapping['objects'][source]['primary_key'][0]
-                        right=edge.get('targetJoinProperty') or mapping['objects'][target]['primary_key'][0]
-                        statement=('MATCH (a:`'+identifier(source)+'`), (b:`'+target+'`) '
-                                   'WHERE a.`'+scope_key+'`=$scope AND b.`'+scope_key+'`=$scope '
-                                   'AND a.`'+identifier(left)+'`=b.`'+identifier(right)+'` '
-                                   'MERGE (a)-[:`'+label+'`]->(b)')
-                        session.run(statement,scope=scope_value).consume()
-        finally:
-            driver.close()
 
     def cleanup(self, run_id, source):
         if source['mode'] != 'dataset' or source.get('provider') == 'neo4j':

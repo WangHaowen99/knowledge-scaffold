@@ -9,6 +9,9 @@ from .core import Failure, digest
 
 TERMINAL={'completed','failed','cancelled','awaiting_input'}
 SETTLED={'settled','execution_error','cancelled','manual'}
+# Questions of one run sent to consumer at the same time; chosen per run when it is created.
+DEFAULT_CONCURRENCY=4
+MAX_CONCURRENCY=8
 JUDGE_SYSTEM='''你是评测判分员，比较问题、参考答案和智能体回答。
 pass=关键结论与数值一致；partial=方向正确但遗漏；fail=关键结论错误。
 先对齐比较范围：整体、月度或汇总答案只和同层级汇总比较，不能拿单行局部值替代。
@@ -64,9 +67,55 @@ class Consumer:
         return self.call('POST','/internal/evaluation/workspaces/ensure',token,
                          headers={'X-Evaluation-Service-Token':self.config.consumer_token},json={'run_id':run_id})['workspace']['id']
 
-    def profile(self,token,ws):
+    def scope_workspace(self,token,workspace_id):
+        """Use the consumer workspace named by the graph Workspace value, so graph scope and workspace agree.
+
+        Only the user's own workspace permissions are used: create it when missing, otherwise reuse it only
+        when this user owns it and has not shared it, because the run imports and activates a package there.
+        """
+        path='/workspaces/'+quote(workspace_id,safe='')
+        taken=Failure('workspace_not_owned',f'consumer 工作空间 {workspace_id} 不是你独占的空间，评测不会在他人或共享的空间中导入知识包；请更换 Workspace 对应值',409,'workspace_prepare')
+        try:
+            current=self.call('GET',path,token)
+        except Failure as exc:
+            status=exc.upstream_status or exc.status
+            if status==403: raise taken from exc
+            if status!=404:
+                raise Failure('consumer_workspace_rejected','consumer 工作空间查询失败，请检查 consumer 服务后恢复',exc.status,'workspace_prepare',upstream_status=status) from exc
+            try:
+                self.call('POST','/workspaces',token,json={'id':workspace_id,'name':'评测 · '+workspace_id,
+                                                           'description':'知识包评测按图数据 Workspace 值创建'})
+                return workspace_id
+            except Failure as rejected:
+                try:
+                    current=self.call('GET',path,token)  # A concurrent request may have created it.
+                except Failure:
+                    raise Failure('workspace_create_failed',f'consumer 无法创建工作空间 {workspace_id}：ID 可能已被其他账号占用，或已达到工作空间数量上限',
+                                  409,'workspace_prepare') from rejected
+        # consumer reports the owner relationship as role "admin".
+        if not isinstance(current,dict) or current.get('role')!='admin' or current.get('members'):
+            raise taken
+        return workspace_id
+
+    def global_models(self,token):
+        """Enabled models of the consumer global pool, at most 100. Listing needs any workspace the user can open."""
+        listing=self.call('GET','/workspaces',token)
+        ids=[item.get('id') for item in listing.get('workspaces') or [] if isinstance(item,dict)]
+        workspace=listing.get('preferred_workspace_id') or (ids[0] if ids else '')
+        if not workspace:
+            raise Failure('workspace_missing','当前账号在 consumer 中没有可用的工作空间',409)
+        value=self.call('GET','/model-profiles',token,workspace)
+        return [{'id':item['id'],'name':str(item.get('name') or '')[:200],'model':str(item.get('model') or '')[:200],
+                 'provider':str(item.get('provider') or '')[:100],'is_default':bool(item.get('is_default'))}
+                for item in value.get('profiles') or []
+                if isinstance(item,dict) and item.get('scope')=='global' and isinstance(item.get('id'),str)][:100]
+
+    def profile(self,token,ws,requested=''):
         value=self.call('GET','/model-profiles',token,ws)
-        selected=value.get('default_profile_id')
+        if requested and not any(isinstance(item,dict) and item.get('id')==requested and item.get('scope')=='global'
+                                 for item in value.get('profiles') or []):
+            raise Failure('model_unavailable','所选问答模型已不在 consumer 全局模型池或已停用，请重新选择后创建新轮次',409,'preparing')
+        selected=requested or value.get('default_profile_id')
         if not selected:
             raise Failure('model_unconfigured','consumer 默认问答模型未配置',503,'preparing')
         return dict(id=selected,revision=digest(value),profiles=value)
@@ -76,7 +125,7 @@ class Consumer:
             self.call('POST','/ontologies/import-zip',token,ws,files={'file':('package.zip',raw,'application/zip')})
         except Failure as exc:
             if exc.status!=409: raise
-            # Only this run owns this space. Retry the exact immutable Hub bytes.
+            # Retry the exact immutable Hub bytes of this version, also in a reused graph workspace.
             self.call('POST','/ontologies/import-zip',token,ws,data={'action':'overwrite_version'},files={'file':('package.zip',raw,'application/zip')})
         result=self.call('PUT','/ontologies/'+quote(receipt['manifest_id'],safe='')+'/active-version',token,ws,
                          json={'version':receipt['version']})
@@ -144,7 +193,22 @@ class Engine:
         with self.guard:
             run=self.store.get(owner,rid,'runs')
             run.update(fields)
+            run['updated_at']=time.time()
+            if fields.get('status') in ('completed','cancelled','failed'): run['finished_at']=time.time()
             return self.store.save(owner,rid,run)
+
+    def save_case(self,owner,rid,index,case):
+        """Concurrent cases each persist only their own entry."""
+        with self.guard:
+            run=self.store.get(owner,rid,'runs')
+            run['cases'][index]=case
+            run['updated_at']=time.time()
+            self.store.save(owner,rid,run)
+
+    def graph_workspace(self,run):
+        source=run.get('source') or {}
+        if source.get('provider')!='neo4j' or not source.get('connection'): return ''
+        return self.store.decrypt(source['connection']).get('workspace_value','')
 
     def stop(self,owner,rid):
         with self.guard:
@@ -178,14 +242,19 @@ class Engine:
         if run.get('cancel_requested'):
             self._cancel(owner,rid,run)
             return
+        if not run.get('started_at'): run=self.update(owner,rid,started_at=time.time(),error=None)
         if run['judge']!=self.judge.profile():
             raise Failure('configuration_changed','Judge 配置已变化，请创建新轮次',409)
         self.judge.preflight()
         if not run.get('workspace'):
-            ws=self.consumer.ensure(token,rid)
-            run=self.update(owner,rid,workspace=ws,managed_workspace=True,status='preparing')
+            scope=self.graph_workspace(run)
+            if scope:
+                # The user's graph workspace outlives this run and is never deleted with it.
+                run=self.update(owner,rid,workspace=self.consumer.scope_workspace(token,scope),managed_workspace=False,status='preparing')
+            else:
+                run=self.update(owner,rid,workspace=self.consumer.ensure(token,rid),managed_workspace=True,status='preparing')
         ws=run['workspace']
-        profile=self.consumer.profile(token,ws)
+        profile=self.consumer.profile(token,ws,run.get('model_profile_id',''))
         if run.get('model') and run['model']!=profile:
             raise Failure('configuration_changed','问答模型配置已变化，请创建新轮次',409)
         run=self.update(owner,rid,model=profile)
@@ -196,75 +265,98 @@ class Engine:
             run=self.update(owner,rid,installed=True,package_ref=receipt)
         if not run.get('data_ready'):
             self.update(owner,rid,phase='data_import')
-            source=self.data.prepare(rid,run['source'],run.get('mapping'),run.get('relations'))
+            source_definition=dict(run['source'])
+            if source_definition.get('provider')=='neo4j' and source_definition.get('connection'):
+                graph_config=self.store.decrypt(source_definition['connection'])
+                if graph_config.get('ontology_property'): graph_config['ontology_value']=run['package_ref']['manifest_id']
+                source_definition['connection']=self.store.encrypt(graph_config)
+            source=self.data.prepare(rid,source_definition,run.get('mapping'),run.get('relations'))
             if source:
                 self.consumer.call('PUT','/ontologies/'+quote(run['package_ref']['manifest_id'],safe='')+'/data-source',token,ws,json=source)
                 probe=self.consumer.call('POST','/ontologies/'+quote(run['package_ref']['manifest_id'],safe='')+'/data-source/test',token,ws,json={})
                 if probe.get('success') is not True:
                     raise Failure('data_source_unavailable','消费数据源连接检查失败',503,'data_import')
             run=self.update(owner,rid,data_ready=True)
-        self.update(owner,rid,status='running',phase='cases')
-        for index in range(len(run['cases'])):
-            if self.stopping: return
-            run=self.store.get(owner,rid,'runs')
-            case=run['cases'][index]
-            token=self.token(owner,rid)
-            cancelling=run.get('cancel_requested',False)
-            if case['status'] in SETTLED: continue
-            if cancelling:
-                self._cancel(owner,rid,run)
-                return
-            if not case.get('answer'):
-                if not case.get('remote_id'):
-                    # Consumer /runs persists the session fingerprint and idempotency key.
-                    # Reconciliation resubmits the exact same request, never a new session.
-                    if self.consumer.profile(token,ws)!=run['model']:
-                        raise Failure('configuration_changed','问答模型发生变化',409)
-                    case['status']='unknown'
-                    self.update(owner,rid,cases=run['cases'])
-                    response=self.consumer.call('POST','/runs',token,ws,
-                        headers={'Idempotency-Key':rid+'-'+str(index)},json={
-                            'request':case['question'],'session_id':'eval-'+rid+'-'+str(index),
-                            'model_profile_id':run['model']['id'],'include_trace':True})
-                    case['remote_id']=response['run_id']
-                    case['status']='executing'
-                    self.update(owner,rid,cases=run['cases'])
-                deadline=time.monotonic()+900
-                while True:
-                    if self.stopping: return
-                    if time.monotonic()>deadline:
-                        raise Failure('remote_timeout','消费运行尚未结束，请对账恢复',504,'cases')
-                    token=self.token(owner,rid)
-                    cancelling=self.store.get(owner,rid,'runs').get('cancel_requested',False)
-                    remote_path='/runs/'+quote(case['remote_id'],safe='')
-                    if cancelling:
-                        self.consumer.call('POST',remote_path+'/cancel',token,ws,json={})
-                    response=self.consumer.call('GET',remote_path,token,ws)
-                    if response['status'] in TERMINAL: break
-                    time.sleep(1)
-                case['evidence']={'remote_run_id':case['remote_id'],'status':response['status'],
-                                  'trace_status':'not_collected'}
-                answer=final_answer(response)
-                if response['status']!='completed' or not answer:
-                    case['status']='cancelled' if response['status']=='cancelled' else 'execution_error'
-                    self.update(owner,rid,cases=run['cases'])
-                    continue
-                case['answer']=answer
-                case['status']='answer_ready'
-                self.update(owner,rid,cases=run['cases'])
-            if not case.get('reference'):
-                case['status']='manual'
-            else:
-                try:
-                    case['judgement']=self.judge.score(case['question'],case['reference'],case['answer'],expected=run['judge'])
-                    case['status']='settled'
-                except Failure as exc:
-                    case['status']='judge_error'
-                    case['error']=exc.payload()
-            self.update(owner,rid,cases=run['cases'])
+        if run['source'].get('provider')=='neo4j' and run['source'].get('import_data'):
+            self.data.graph.ensure_current(rid,run['source'],run['package_ref']['manifest_id'])
+        self.update(owner,rid,status='running',phase='cases',error=None)
+        halt=threading.Event()
+        def work(index):
+            if halt.is_set() or self.stopping: return
+            try:
+                self._case(owner,rid,ws,index,halt)
+            except BaseException:
+                halt.set()  # Queued cases are skipped; cases already in flight still settle.
+                raise
+        width=max(1,min(MAX_CONCURRENCY,int(run.get('concurrency') or DEFAULT_CONCURRENCY)))
+        with ThreadPoolExecutor(max_workers=width,thread_name_prefix='evaluation-case') as pool:
+            futures=[pool.submit(work,index) for index in range(len(run['cases']))]
+        for future in futures:
+            future.result()
+        if self.stopping: return
         run=self.store.get(owner,rid,'runs')
-        self.update(owner,rid,status='cancelled' if run.get('cancel_requested') else (
-            'interrupted' if any(c['status']=='judge_error' for c in run['cases']) else 'completed'),phase='finished')
+        if run.get('cancel_requested'):
+            self._cancel(owner,rid,run)
+            return
+        self.update(owner,rid,status='interrupted' if any(c['status']=='judge_error' for c in run['cases']) else 'completed',
+                    phase='finished')
+
+    def _case(self,owner,rid,ws,index,halt):
+        run=self.store.get(owner,rid,'runs')
+        case=run['cases'][index]
+        if case['status'] in SETTLED: return
+        if run.get('cancel_requested'):
+            halt.set()  # Unsettled cases are cancelled once, after every worker has stopped.
+            return
+        token=self.token(owner,rid)
+        if not case.get('answer'):
+            if not case.get('remote_id'):
+                # Consumer /runs persists the session fingerprint and idempotency key.
+                # Reconciliation resubmits the exact same request, never a new session.
+                if self.consumer.profile(token,ws,run.get('model_profile_id',''))!=run['model']:
+                    raise Failure('configuration_changed','问答模型发生变化',409)
+                case['status']='unknown'
+                self.save_case(owner,rid,index,case)
+                response=self.consumer.call('POST','/runs',token,ws,
+                    headers={'Idempotency-Key':rid+'-'+str(index)},json={
+                        'request':case['question'],'session_id':'eval-'+rid+'-'+str(index),
+                        'model_profile_id':run['model']['id'],'include_trace':True})
+                case['remote_id']=response['run_id']
+                case['status']='executing'
+                self.save_case(owner,rid,index,case)
+            deadline=time.monotonic()+900
+            while True:
+                if self.stopping: return
+                if time.monotonic()>deadline:
+                    raise Failure('remote_timeout','消费运行尚未结束，请对账恢复',504,'cases')
+                token=self.token(owner,rid)
+                cancelling=self.store.get(owner,rid,'runs').get('cancel_requested',False)
+                remote_path='/runs/'+quote(case['remote_id'],safe='')
+                if cancelling:
+                    self.consumer.call('POST',remote_path+'/cancel',token,ws,json={})
+                response=self.consumer.call('GET',remote_path,token,ws)
+                if response['status'] in TERMINAL: break
+                time.sleep(1)
+            case['evidence']={'remote_run_id':case['remote_id'],'status':response['status'],
+                              'trace_status':'not_collected'}
+            answer=final_answer(response)
+            if response['status']!='completed' or not answer:
+                case['status']='cancelled' if response['status']=='cancelled' else 'execution_error'
+                self.save_case(owner,rid,index,case)
+                return
+            case['answer']=answer
+            case['status']='answer_ready'
+            self.save_case(owner,rid,index,case)
+        if not case.get('reference'):
+            case['status']='manual'
+        else:
+            try:
+                case['judgement']=self.judge.score(case['question'],case['reference'],case['answer'],expected=run['judge'])
+                case['status']='settled'
+            except Failure as exc:
+                case['status']='judge_error'
+                case['error']=exc.payload()
+        self.save_case(owner,rid,index,case)
 
     def _cancel(self,owner,rid,run):
         """Cancellation does not require Judge, mapping, database or model readiness."""

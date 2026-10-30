@@ -1,6 +1,7 @@
 """All identities, data, package bytes and dependency responses are synthetic."""
 import io
 import json
+import threading
 import time
 import zipfile
 
@@ -42,6 +43,14 @@ class Dependencies:
         self.fail_commit_response=False
         self.roles={}
         self.judge_calls=[]
+        self.lock=threading.Lock()
+        self.workspaces={}
+        self.submitted_models=[]
+        self.profiles=[
+            {'id':'global:synthetic','scope':'global','name':'Synthetic','model':'synthetic','provider':'openai','enabled':True,'is_default':True},
+            {'id':'global:synthetic_alt','scope':'global','name':'Synthetic alternative','model':'synthetic-alt','provider':'openai','enabled':True,'is_default':False},
+            {'id':'workspace:private_demo','scope':'workspace','name':'Private','model':'private','provider':'openai','enabled':True,'is_default':False},
+        ]
 
     def request(self,method,base,path,**kwargs):
         rid=path.split('/')[-2]
@@ -76,15 +85,27 @@ class Dependencies:
                     raise Failure('network','Unknown result',503)
             return row
         if path=='/agentic/internal/evaluation/workspaces/ensure': return {'workspace':{'id':'eval-'+kwargs['json']['run_id']}}
-        if path=='/agentic/model-profiles': return {'default_profile_id':'global:synthetic','profiles':[{'id':'synthetic','model':'synthetic'}]}
+        if path=='/agentic/workspaces' and method=='GET':
+            return {'workspaces':[{'id':'workspace_personal_demo'}],'preferred_workspace_id':'workspace_personal_demo'}
+        if path=='/agentic/workspaces' and method=='POST':
+            body=kwargs['json']
+            self.workspaces[body['id']]={'id':body['id'],'role':'admin','members':[]}
+            return self.workspaces[body['id']]
+        if path.startswith('/agentic/workspaces/') and method=='GET':
+            found=self.workspaces.get(path.rsplit('/',1)[1])
+            if found is None: raise Failure('dependency_rejected','Not found',404,'dependency',upstream_status=404)
+            return found
+        if path=='/agentic/model-profiles': return {'default_profile_id':'global:synthetic','profiles':self.profiles}
         if path.endswith('/import-zip'): return {'success':True}
         if path.endswith('/active-version'): return {'active_version':kwargs['json']['version']}
         if path=='/agentic/runs':
             key=kwargs['headers']['Idempotency-Key']
-            self.submissions.setdefault(key,{'run_id':'remote_'+str(len(self.submissions)+1)})
-            if self.fail_submit_response:
-                self.fail_submit_response=False
-                raise Failure('network','Unknown result',503)
+            with self.lock:
+                self.submitted_models.append(kwargs['json']['model_profile_id'])
+                self.submissions.setdefault(key,{'run_id':'remote_'+str(len(self.submissions)+1)})
+                if self.fail_submit_response:
+                    self.fail_submit_response=False
+                    raise Failure('network','Unknown result',503)
             return self.submissions[key]
         if path.startswith('/agentic/runs/'):
             if path.endswith('/cancel'):

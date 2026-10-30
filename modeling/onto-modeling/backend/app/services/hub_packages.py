@@ -23,6 +23,34 @@ def association(pid, subject):
     return transport.load(directory(pid, subject) / 'association.json')
 
 
+LINKED_LOOKUP_PACKAGES = 20
+LINKED_PROJECT_NAMES = 5
+
+
+def linked_projects(manager, subject, username, is_admin, package_ids):
+    """Names of the caller's visible projects whose own association points at each Hub package.
+
+    Display-only reverse lookup for the evaluation task list. At most 20 packages with 5 names of
+    up to 128 characters each, so the response stays below 20 KiB; ``total`` keeps the full count.
+    """
+    wanted = list(dict.fromkeys(transport.identifier(value) for value in package_ids))
+    if not 1 <= len(wanted) <= LINKED_LOOKUP_PACKAGES:
+        raise WorkspaceError(f'每次查询 1 到 {LINKED_LOOKUP_PACKAGES} 个 Hub 包', 422)
+    names = {package_id: [] for package_id in wanted}
+    for meta in manager._project_metas():
+        pid = meta.get('id')
+        if not isinstance(pid, str) or not manager.can_access(meta, username, is_admin):
+            continue
+        try:
+            linked = association(pid, subject)
+        except (OSError, ValueError, WorkspaceError):
+            continue
+        if isinstance(linked, dict) and linked.get('hub_package_id') in names:
+            names[linked['hub_package_id']].append(str(meta.get('name') or pid))
+    return {'items': [dict(hub_package_id=package_id, projects=sorted(found)[:LINKED_PROJECT_NAMES], total=len(found))
+                      for package_id, found in names.items()]}
+
+
 def call(method, path, token, **kwargs):
     if not token:
         raise WorkspaceError('Hub 需要登录用户身份', 401)

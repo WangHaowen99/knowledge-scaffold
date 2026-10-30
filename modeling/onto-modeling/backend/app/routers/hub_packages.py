@@ -47,6 +47,14 @@ def releases(package_id: str, request: Request, offset: int = Query(0, ge=0), li
     return hub_packages.call('GET', hub_packages.reference_path(package_id) + f'?offset={offset}&limit={limit}', token)
 
 
+@router.get('/package-projects')
+def package_projects(request: Request, hub_package_id: list[str] = Query(...)):
+    """供独立评测展示：当前用户可访问、且由本人关联到这些 Hub 包的建模项目名称。"""
+    _, subject, username = identity(request)
+    is_admin = request.state.user.get('role') == 'admin'
+    return hub_packages.linked_projects(projects.workspaces, subject, username, is_admin, hub_package_id)
+
+
 @router.get('/packages/{package_id}/releases/{release_id}/download')
 def download(package_id: str, release_id: str, request: Request):
     token, _, _ = identity(request)
