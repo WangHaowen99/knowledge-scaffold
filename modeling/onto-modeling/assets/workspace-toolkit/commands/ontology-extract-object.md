@@ -148,6 +148,7 @@ Set `EXCEL_CONTEXT` = 脚本 stdout。若 stdout 为空，置为 `（无同名 E
 - 运行 `python3 .claude/scripts/check_eval_data.py --headers`，stdout（JSON：`{Sheet 名: [表头列]}`，来自 schema 资料与评测数据源上传的数据表）记为 `TABLE_HEADERS`；为空（`{}`）时记为 `（无）`。
   `TABLE_HEADERS` 非空时，它是表名与列名的**唯一依据**：对象「# 数据来源」取其中的 Sheet 名，对不上任何 Sheet 的对象填「无」；从库里读取的属性英文名称逐字取自该 Sheet 的表头；数据字典类文档、资料分析报告里的字段名与之冲突时以 `TABLE_HEADERS` 为准，冲突清单写进返回摘要的注意事项。提取后的规则检查会按对象逐列对账：声明的表不存在、一列都对不上、或属性别名里才是真实列名，均判为错误并阻止提交（发布时同样会被阻断）。
   `TABLE_HEADERS` 为 `（无）` 时，先看 `resource/` 下有没有像数据库表的表格资料（首行是英文列名）：有的话按 CLAUDE.md 8.1 请用户在资料列表把它标为「数据 Schema」，标好后重跑上面的命令；用户确认没有数据表时，所有对象的「# 数据来源」填「无」，不得臆造表名；规则检查会对声明了表名的对象给出警告。
+- `TABLE_HEADERS` 非空时再运行 `python3 .claude/scripts/check_eval_data.py --profile`，stdout 记为 `TABLE_PROFILE`（每列取值形态的计数与推断类型，不含单元格原值，每表最多读 2000 行）。`omitted_tables` 非空时用 `--profile --tables {这些表名}` 分批补读，合并后再传给 agent。`TABLE_HEADERS` 为 `（无）` 时 `TABLE_PROFILE` 也记为 `（无）`。它是属性「类型」的取值证据：类型与取值矛盾、数值列无依据地写成字符串，提取后的规则检查会报「类型冲突」「类型待确认」。
 
 ## Step 2: Determine object mode
 
@@ -194,6 +195,8 @@ EXCEL_CONTEXT:
 {EXCEL_CONTEXT}
 TABLE_HEADERS:
 {TABLE_HEADERS}
+TABLE_PROFILE:
+{TABLE_PROFILE}
 
 REPORT_PATHS: {资料分析报告路径，无则省略此行}
 OBJECTS_DIR: ontology/object/
@@ -236,11 +239,32 @@ Display coverage results. Handle gaps（全部补充 / 选择性补充 / 跳过�
 清单取本轮提取计划和已有覆盖结果，不仅罗列当前已落盘文件；缺失不算通过。仅退出码 0 可进入确认；
 1 为确定性错误，2 为产物缺失、执行失败或文件变化。此步骤不调用模型、不替代原覆盖检查，提交复用同修订回执。
 
-Ask: "对象产物已生成并通过轻量核验，共 {N} 个。如需修改请直接说明；确认无误请回复 **确认**。"
+**确认前验收（四项分开展示，不合并成一个「完成度」）：**
+运行 `python3 .claude/scripts/field_semantics.py types --files {本轮对象文件路径，逐项加引号}`
+（退出码 0 无冲突；1 有冲突或非法类型；2 无法核验），按下表展示：
 
-Handle modifications if any.
+| 验收项 | 依据 | 展示内容 |
+| --- | --- | --- |
+| 对象覆盖 | coverage-check-agent 的结果 | 只按对象名称比对来源，列出缺失对象；不代表字段或类型正确 |
+| 字段覆盖 | types 输出的 `field_coverage` | 各表已映射列数 / 总列数与未映射列、没有对应列的属性、未绑定数据表的对象 |
+| 类型验收 | types 输出的 `status`、`counts`、`items` | `passed` 通过；`pending` 待确认（列出待确认与标识混合字段）；`failed` 不通过（列出冲突与非法类型字段的声明类型、数据推断、依据）；`unverified` 未验证（列出未验证字段及原因）；`unverifiable` 无法核验（写明 reason） |
+| 导入验证 | types 输出的 `import_validation` | 本命令不执行导入，显示「未执行」 |
 
-用户修改产物后重新运行同一轻量核验，不复用旧修订结论。
+- 没有执行的检查不得显示为通过。types 退出码 2（登记的数据表缺失、无法解析或缺解析依赖）时，类型验收显示「无法核验：{reason}」，不得写成通过或省略。
+- 整列为空、只有表头、未绑定数据表的字段是「未验证」，既不是「通过」，也不能据此定为字符串。
+- 类型验收 `failed` 时不进入确认：按下方候选修订流程修正后重新核验。`pending` 时逐条列给用户，由用户决定修正或保留（保留时在属性规则写明 `文本保留：原因`、`混合标识：归一化规则` 或布尔取值含义），不得自行补零、去零、改大小写。
+- `items` 只列前 80 条；`omitted` 非零时注明「另有 N 条未列出」。
+
+Ask: "对象产物已生成，共 {N} 个，验收结果如上。如需修改请直接说明；确认无误请回复 **确认**。"
+
+**修改已生成或已确认的对象文档（候选修订，不直接覆盖）：**
+用户要求修改时，不直接编辑 `ontology/object/` 下的文件：
+1. `python3 .claude/scripts/candidate_revision.py start --plan {要改的文档路径，逐项加引号} --note "{修正说明}"`，只修改输出里的 `candidate` 路径（新文档在该路径新建）。
+2. `python3 .claude/scripts/candidate_revision.py diff`，把每个文件的增删行数与关键改动展示给用户。
+3. `python3 .claude/scripts/candidate_revision.py check`：在临时副本里叠加候选跑整计划规则检查。退出码 0 通过；1 候选引入新错误（展示 `new_errors`，继续改候选后重新 check）或确认版本已被改动（`stale`，reject 后重新 start）；2 无法核验（展示 reason，不得接受）。
+4. 用户同意后 `python3 .claude/scripts/candidate_revision.py accept` 写回；不同意时 `python3 .claude/scripts/candidate_revision.py reject --reason "{原因}"`，工作区文件不动。校验后候选又改过、确认版本被改动或资料与数据表有变化时 accept 会拒绝，按提示重新 check。
+5. accept 后重新运行上面的 `verify_artifacts.py` 与 `field_semantics.py types`，不复用旧回执与旧结论。
+6. 存量对象里的 `字符串`、`数字` 类型不自动改写；要改时同样走本流程，由用户确认差异后接受。
 
 When user confirms（回复 **确认** 或等价的肯定词，如"好的"、"可以"、"没问题"、"继续"、"是"）:
 
@@ -265,4 +289,4 @@ If user replies **完成**: `python3 .claude/scripts/state_helper.py release ext
 
 ## Note on mid-process edits
 
-If the user asks to modify a document at any point before committing, edit the file immediately. All changes are included in the final phase-end commit.
+If the user asks to modify a document at any point before committing, use the candidate revision flow above (start → 改候选 → diff → check → accept / reject) instead of editing the file in place. Accepted changes are included in the final phase-end commit; the base version of each revision stays under `.ontology-state/revisions/`.
