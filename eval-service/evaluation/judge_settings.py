@@ -1,8 +1,11 @@
 """Judge model configuration (MODEL-CONFIG-01).
 
-Settings saved by an administrator replace the deployment values as a whole. They apply to every
-user's runs and receive evaluation questions and answers, so only administrators may change them.
-The API key is stored encrypted and never returned.
+The shared default comes from an administrator's saved settings, otherwise from the deployment.
+It applies to every user's runs, so only administrators may change or disable it. Each user may save a
+personal configuration that overrides the default for their own runs only, and remove it to
+return to the default. API keys are stored encrypted and never returned.
+
+Disabling the default only withdraws it from users' judging; the built-in NL2SQL service still uses it.
 """
 import time
 import uuid
@@ -13,6 +16,12 @@ from cryptography.fernet import InvalidToken
 from .core import Failure
 
 KEY = 'judge'
+ENABLED_KEY = 'judge:default-enabled'
+DISABLED = dict(url='', key='', model='', revision='', source='disabled')
+
+
+def personal_key(owner):
+    return f'{KEY}:user:{owner}'
 
 
 def connection_test_failure(error):
@@ -55,57 +64,115 @@ class JudgeSettings:
     def __init__(self, config, store):
         self.config, self.store = config, store
 
-    def _stored(self):
-        """Current values; a saved key is still encrypted here."""
-        saved = self.store.setting(KEY)
-        if saved:
-            return dict(url=saved['base_url'], key=saved['api_key'], model=saved['model'], revision=saved['revision'],
-                        source='settings')
+    def _saved(self, key, source):
+        saved = self.store.setting(key)
+        if not saved:
+            return None
+        return dict(url=saved['base_url'], key=saved['api_key'], model=saved['model'], revision=saved['revision'],
+                    source=source)
+
+    def default_enabled(self):
+        saved = self.store.setting(ENABLED_KEY)
+        return saved is None or saved['enabled']
+
+    def set_default_enabled(self, enabled, owner):
+        # The default keeps its revision, so runs stopped while it was disabled can resume once re-enabled.
+        self.store.put_setting(ENABLED_KEY, dict(enabled=enabled, updated_by=owner, updated_at=time.time()))
+
+    def _stored(self, owner=None):
+        """Values in effect for the owner, or the shared default without one; saved keys are still encrypted."""
+        if owner:
+            personal = self._saved(personal_key(owner), 'personal')
+            if personal:
+                return personal
+            if not self.default_enabled():
+                return dict(DISABLED)
+        found = self._saved(KEY, 'settings')
+        if found:
+            return found
         c = self.config
         return dict(url=c.judge_url.rstrip('/'), key=c.judge_key, model=c.judge_model, revision=c.judge_revision,
                     source='deployment')
 
-    def effective(self):
-        current = self._stored()
-        if current['source'] == 'settings':
+    def _decrypt(self, current):
+        if current['source'] in ('settings', 'personal'):
             try:
                 current['key'] = self.store.decrypt(current['key'])
             except InvalidToken as exc:
-                raise Failure('judge_settings_unreadable', '判分模型配置无法解密，请管理员重新保存', 503, 'configuration') from exc
+                who = '请重新保存你的判分模型配置' if current['source'] == 'personal' else '请管理员重新保存'
+                raise Failure('judge_settings_unreadable', '判分模型配置无法解密，' + who, 503, 'configuration') from exc
         return current
 
-    def candidate(self, base_url, model, api_key):
-        """Submitted values; an empty key reuses the current key only for the same gateway."""
+    def effective(self, owner=None):
+        return self._decrypt(self._stored(owner))
+
+    def _personal(self, owner):
+        saved = self._saved(personal_key(owner), 'personal')
+        return self._decrypt(saved) if saved else None
+
+    def candidate(self, base_url, model, api_key, owner=None):
+        """Submitted values; an empty key reuses the key of the configuration being edited, for the same gateway.
+
+        A personal configuration never falls back to the shared key, so users cannot spend it on models they choose.
+        """
         url, model = gateway(base_url), (model or '').strip()
         if not 0 < len(model) <= 200:
             raise Failure('judge_settings_invalid', '请填写判分模型名称', 422)
         if not api_key:
-            current = self.effective()
-            if not current['key'] or current['url'] != url:
-                raise Failure('judge_key_required', '更换网关地址时须重新填写 API Key', 422)
+            current = self._personal(owner) if owner else self.effective()
+            if not current or not current['key'] or current['url'] != url:
+                raise Failure('judge_key_required', '请填写 API Key；仅在网关不变时可留空沿用当前配置的 Key', 422)
             api_key = current['key']
         return dict(url=url, key=api_key, model=model)
 
+    def _put(self, key, value, previous, prefix, owner):
+        # Re-saving the same configuration keeps its revision, so queued runs stay valid.
+        same = previous and all(previous[k] == value[k] for k in ('url', 'key', 'model'))
+        revision = previous['revision'] if same else prefix + uuid.uuid4().hex[:8]
+        self.store.put_setting(key, dict(base_url=value['url'], model=value['model'],
+                                         api_key=self.store.encrypt(value['key']), revision=revision,
+                                         updated_by=owner, updated_at=time.time()))
+
     def save(self, base_url, model, api_key, owner):
+        """Shared default, saved by an administrator."""
         value = self.candidate(base_url, model, api_key)
         try:
             current = self.effective()
         except Failure:
             current = None  # An unreadable saved key is simply replaced.
-        # Re-saving the same configuration keeps its revision, so queued runs stay valid.
-        same = current and current['source'] == 'settings' and all(current[k] == value[k] for k in ('url', 'key', 'model'))
-        revision = current['revision'] if same else 'ui-' + uuid.uuid4().hex[:8]
-        self.store.put_setting(KEY, dict(base_url=value['url'], model=value['model'],
-                                         api_key=self.store.encrypt(value['key']), revision=revision,
-                                         updated_by=owner, updated_at=time.time()))
+        self._put(KEY, value, current if current and current['source'] == 'settings' else None, 'ui-', owner)
 
     def reset(self):
         self.store.put_setting(KEY, None)
 
+    def save_personal(self, owner, base_url, model, api_key):
+        value = self.candidate(base_url, model, api_key, owner)
+        try:
+            previous = self._personal(owner)
+        except Failure:
+            previous = None
+        self._put(personal_key(owner), value, previous, 'me-', owner)
+
+    def reset_personal(self, owner):
+        self.store.put_setting(personal_key(owner), None)
+
     def view(self, admin):
+        """Shared default only; base URL and key state are visible to administrators."""
         c = self._stored()
         value = dict(source=c['source'], model=c['model'], revision=c['revision'], editable=admin,
-                     configured=all((c['url'], c['key'], c['model'], c['revision'])))
+                     configured=all((c['url'], c['key'], c['model'], c['revision'])), enabled=self.default_enabled())
         if admin:
             value.update(base_url=c['url'], api_key_set=bool(c['key']))
         return value
+
+    def active(self, owner):
+        """The configuration this user's new runs will use."""
+        c = self._stored(owner)
+        return dict(source=c['source'], model=c['model'], revision=c['revision'],
+                    configured=all((c['url'], c['key'], c['model'], c['revision'])))
+
+    def personal_view(self, owner):
+        saved = self._saved(personal_key(owner), 'personal')
+        personal = saved and dict(base_url=saved['url'], model=saved['model'], revision=saved['revision'],
+                                  api_key_set=bool(saved['key']))
+        return {'personal': personal, 'active': self.active(owner)}

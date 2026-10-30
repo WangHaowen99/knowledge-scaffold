@@ -377,7 +377,7 @@ export default function App() {
         )}
         {route.page === 'settings' && (
           <>
-            <Heading title="评测判分模型配置">查看当前生效的判分模型；管理员可修改共享配置。</Heading>
+            <Heading title="评测判分模型配置">默认使用管理员维护的默认配置；取消“使用默认配置”可保存你自己的判分模型，默认配置启用时随时可切回。</Heading>
             <JudgeSettings
               onChanged={async () => {
                 const value = await api('/session');
@@ -393,7 +393,7 @@ export default function App() {
             confirmation.type === 'logout'
               ? '退出并放弃未保存修改？'
               : confirmation.type === 'delete'
-                ? '删除已结束的评测任务？'
+                ? '删除评测记录？'
                 : confirmation.type === 'resume'
                   ? '确认恢复原评测任务？'
                   : '停止当前评测？'
@@ -402,7 +402,7 @@ export default function App() {
             confirmation.type === 'logout'
               ? '退出登录'
               : confirmation.type === 'delete'
-                ? '删除任务'
+                ? '删除评测记录'
                 : confirmation.type === 'resume'
                   ? '授权并继续'
                   : '停止评测'
@@ -419,7 +419,7 @@ export default function App() {
             {confirmation.type === 'logout'
               ? '尚未保存的编辑将丢失。已创建的任务仍可在重新登录后查看。'
               : confirmation.type === 'delete'
-                ? `任务 ${shortId(confirmation.run.id)} 的运行记录、自有消费空间及隔离评测数据会被清理，不删除外部图库或 SQL 数据。`
+                ? `任务 ${shortId(confirmation.run.id)} 的运行记录、自有消费空间及隔离评测数据会被清理，不删除外部图库或 SQL 数据。未结束的任务须确认 consumer 侧没有仍在执行的问题。`
                 : confirmation.type === 'resume'
                   ? '使用当前有效登录继续原任务，先核对远端状态；已完成的回答不会重复执行。'
                   : '保留已经完成的回答与判分。停止提交后等待远端确认与对账，再显示已停止。'}

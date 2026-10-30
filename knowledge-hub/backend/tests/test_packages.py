@@ -87,10 +87,26 @@ def test_mapping_updates_are_new_versions_and_snapshots_are_separate(store):
     data = archive(result['version'], mapping())
     store.upload(result['request_id'], actor, io.BytesIO(data), sha(data))
     receipt = store.commit(result['request_id'], actor)
-    assert receipt['version'] == '0.1.2' and receipt['base_digest'] == base['package_digest']
+    assert receipt['version'] == '0.1.1-eval.1' and receipt['base_digest'] == base['package_digest']
     assert store.listing(base['hub_package_id'], actor.subject)['total'] == 1
     assert store.listing(base['hub_package_id'], actor.subject, 'evaluation_snapshot')['total'] == 1
     assert store.release(base['hub_package_id'], base['release_id'], actor.subject)[0] == base
+
+
+def test_snapshots_are_named_after_their_base_and_leave_formal_versions_alone(store):
+    base = publish(store)
+    assert derived(store, base, 'snapshot_two', 'evaluation_snapshot')[1]['version'] == '0.1.1-eval.1'
+    assert derived(store, base, 'snapshot_three', 'evaluation_snapshot')[1]['version'] == '0.1.1-eval.2'
+    # Snapshots no longer take numbers from the formal 0.1.N sequence.
+    assert derived(store, base, 'formal_next')[1]['version'] == '0.1.2'
+
+
+def test_snapshot_version_rules():
+    from hub.package_store import snapshot_version
+    assert snapshot_version('0.1.10', {'0.1.10', '0.1.11'}) == '0.1.10-eval.1'
+    assert snapshot_version('0.1.10', {'0.1.10-eval.1', '0.1.10-eval.2', '0.1.7-eval.5'}) == '0.1.10-eval.3'
+    assert snapshot_version('0.1.10-eval.2', {'0.1.10-eval.2'}) == '0.1.10-eval.3'
+    assert snapshot_version('', set()) == '0.1.0-eval.1'
 
 
 @pytest.mark.parametrize('changes,manifest_changes', [

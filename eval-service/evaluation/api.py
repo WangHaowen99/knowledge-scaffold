@@ -63,6 +63,10 @@ class JudgeConfig(Body):
     api_key: str = Field(default='',max_length=4096)  # Empty keeps the current key for the same gateway.
 
 
+class JudgeSwitch(Body):
+    enabled: bool
+
+
 class SourceInspection(Body):
     provider: str = Field(pattern=r'^(nl2sql_http|nl2sql_template)$')
     connection: dict | None = None
@@ -76,6 +80,11 @@ class SourcePreview(Body):
 
 class GraphInspection(SourcePreview):
     preparation_id: str = Field(default='',max_length=128)
+
+
+def release_ref(receipt):
+    """Non-sensitive reference to the Hub release the user chose."""
+    return {k:receipt[k] for k in ('hub_package_id','release_id','manifest_id','version','package_digest') if k in receipt}
 
 
 def public(record):
@@ -208,9 +217,10 @@ def create_app(config=None,transport=None):
     def session(request:Request):
         header=request.headers.get('authorization','')
         profile=identity.profile(header[7:] if header.startswith('Bearer ') else '')
-        current=judge_settings.view(False)
+        current=judge_settings.active(profile['subject'])
         return {'subject':profile['subject'],'user':{'username':profile['username'],'role':profile['role']},
-                'judge':{'model':current['model'],'revision':current['revision']},'judge_configured':current['configured'],'model_configuration':'MODEL-CONFIG-01'}
+                'judge':{'model':current['model'],'revision':current['revision'],'source':current['source']},
+                'judge_configured':current['configured'],'model_configuration':'MODEL-CONFIG-01'}
 
     @app.get(prefix+'/judge-settings')
     def judge_settings_view(request:Request):
@@ -228,11 +238,44 @@ def create_app(config=None,transport=None):
         judge_settings.reset()
         return judge_settings.view(True)
 
+    @app.put(prefix+'/judge-settings/enabled')
+    def judge_settings_switch(body:JudgeSwitch,request:Request):
+        judge_settings.set_default_enabled(body.enabled,administrator(request))
+        return judge_settings.view(True)
+
     @app.post(prefix+'/judge-settings/test')
     def judge_settings_test(body:JudgeConfig,request:Request):
         # Runs the same structured-verdict check as run preflight, without saving.
         administrator(request)
         candidate=dict(judge_settings.candidate(body.base_url,body.model,body.api_key),revision='test')
+        try:
+            judge.preflight(candidate)
+        except Failure as exc:
+            raise connection_test_failure(exc) from exc
+        return {'ok':True}
+
+    # Personal configuration: overrides the shared default for the caller's own new runs only.
+    @app.get(prefix+'/judge-settings/me')
+    def judge_settings_mine(request:Request):
+        owner,_=actor(request)
+        return judge_settings.personal_view(owner)
+
+    @app.put(prefix+'/judge-settings/me')
+    def judge_settings_save_mine(body:JudgeConfig,request:Request):
+        owner,_=actor(request)
+        judge_settings.save_personal(owner,body.base_url,body.model,body.api_key)
+        return judge_settings.personal_view(owner)
+
+    @app.delete(prefix+'/judge-settings/me')
+    def judge_settings_reset_mine(request:Request):
+        owner,_=actor(request)
+        judge_settings.reset_personal(owner)
+        return judge_settings.personal_view(owner)
+
+    @app.post(prefix+'/judge-settings/me/test')
+    def judge_settings_test_mine(body:JudgeConfig,request:Request):
+        owner,_=actor(request)
+        candidate=dict(judge_settings.candidate(body.base_url,body.model,body.api_key,owner),revision='test')
         try:
             judge.preflight(candidate)
         except Failure as exc:
@@ -454,7 +497,7 @@ def create_app(config=None,transport=None):
             changed=mapping is not None and (MAPPING not in files or json.loads(files[MAPPING])!=mapping)
             prep=store.save(owner,prep['id'],dict(status='pending',intent=intent,base=base,source=source,
                 mapping=mapping,preview=preview,changed=changed))
-        ref=packages.publish(owner,prep,token,'snapshot-'+prep['id'],'evaluation_snapshot') if prep['changed'] else prep['base']
+        ref=packages.snapshot(owner,prep,token) if prep['changed'] else prep['base']
         prep.update(status='ready',package_ref=ref)
         return public(store.save(owner,prep['id'],prep))
 
@@ -506,7 +549,9 @@ def create_app(config=None,transport=None):
             elif body.graph_check_id or body.replace_existing_graph:
                 raise Failure('graph_import_required','当前评测未启用 Neo4j 图导入',422,'data_import')
             run=store.create(owner,'runs',dict(status='queued',phase='preparing',preparation_id=prep['id'],
-                package_ref=prep['package_ref'],source=source,mapping=prep['mapping'],relations=prep['preview'].get('relations',{}),judge=judge.profile(),
+                package_ref=prep['package_ref'],source=source,mapping=prep['mapping'],relations=prep['preview'].get('relations',{}),judge=judge.profile(owner=owner),
+                # The release the user chose; package_ref is what runs, an evaluation snapshot when the mapping changed.
+                base_ref=release_ref(prep['base']),
                 eval_set_id=cases['id'],eval_set_name=cases['name'],data_source_name=prep['source'].get('name','不使用数据源'),
                 concurrency=body.concurrency,model_profile_id=body.model_profile_id,
                 created_at=time.time(),case_revision=cases['revision'],cases=[dict(**c,status='pending') for c in cases['cases']]),
@@ -524,11 +569,23 @@ def create_app(config=None,transport=None):
             if other.get('provider')=='neo4j' and other.get('import_data') and target==scope_target(sources.graph.connection(store,other,active['package_ref']['manifest_id'])):
                 raise Failure('graph_scope_busy','此图数据范围已有活动评测，请等待结束或先停止该评测',409,'data_import')
 
+    def with_base(owner,run):
+        """Runs created before base_ref was recorded take it from their preparation, which kept the chosen release.
+
+        Display only: the stored run is not changed. One local lookup per run, at most 20 per page.
+        """
+        if run.get('base_ref') or not run.get('preparation_id'): return run
+        try:
+            base=store.get(owner,run['preparation_id'],'preparations').get('base')
+        except Failure:
+            return run
+        return dict(run,base_ref=release_ref(base)) if isinstance(base,dict) else run
+
     @app.get(prefix+'/runs')
     def runs(request:Request,offset:int=Query(0,ge=0)):
         owner,_=actor(request)
         page=store.list(owner,'runs',offset)
-        page['items']=[dict(**public(r),summary=report(r)) for r in page['items']]
+        page['items']=[dict(**public(with_base(owner,r)),summary=report(r)) for r in page['items']]
         return page
 
     @app.get(prefix+'/modeling-projects')
@@ -550,7 +607,7 @@ def create_app(config=None,transport=None):
     def run(rid:str,request:Request):
         owner,_=actor(request)
         item=store.get(owner,rid,'runs')
-        return dict(**public(item),summary=report(item))
+        return dict(**public(with_base(owner,item)),summary=report(item))
 
     @app.get(prefix+'/runs/{rid}/results')
     def results(rid:str,request:Request,offset:int=Query(0,ge=0)):
@@ -562,6 +619,7 @@ def create_app(config=None,transport=None):
             item['question']=c['question'][:256]
             for key in ('judgement','override'):
                 if c.get(key): item[key]={**c[key],'reason':c[key]['reason'][:256]}
+            if isinstance(c.get('error'),dict): item['error']={**c['error'],'message':str(c['error'].get('message',''))[:256]}
             items.append(item)
         return dict(items=items,total=len(cases),next_offset=offset+20 if offset+20<len(cases) else None)
 
@@ -646,8 +704,12 @@ def create_app(config=None,transport=None):
         owner,token=actor(request)
         with engine.guard:
             run=store.get(owner,rid,'runs')
-            if (owner,rid) in engine.active or run['status'] not in ('completed','cancelled','failed'):
-                raise Failure('run_active','请先停止并完成任务对账',409)
+            if (owner,rid) in engine.active:
+                raise Failure('run_active','评测仍在执行，请先停止评测',409)
+            # Interrupted runs are deletable once no question may still be running on consumer's side.
+            pending=any(c.get('status') in ('executing','unknown') for c in run['cases'])
+            if run['status'] not in ('completed','cancelled','failed') and (run['status'] not in ('interrupted','waiting_auth') or pending):
+                raise Failure('run_active','consumer 侧仍有未对账的提交，请先停止评测，完成对账后再删除',409)
             task=store.create(owner,'cleanup_tasks',{'run_id':rid,'workspace_done':False,'data_done':False},rid,identity={'run_id':rid})
             if run.get('managed_workspace') and not task['workspace_done']:
                 try:

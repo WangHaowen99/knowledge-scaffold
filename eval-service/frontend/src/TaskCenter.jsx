@@ -8,7 +8,9 @@ import {
   needsAttention,
   packageIds,
   packageName,
+  packageVersions,
   phaseName,
+  runStartTime,
   shortId,
 } from './domain.js';
 import { Badge, Button, Empty, Heading, Icon, Progress, Skeleton } from './ui.jsx';
@@ -50,6 +52,33 @@ function ModelingProjectCell({ label, title }) {
   return (
     <td data-label="建模项目" className="modeling-project" title={title}>
       {label}
+    </td>
+  );
+}
+
+function PackageVersionCell({ run }) {
+  const { base, baseId } = packageVersions(run);
+  return (
+    <td data-label="知识包版本">
+      <span className="version-tag" title={base ? undefined : `基础版本 ID：${baseId || '未知'}`}>
+        {base || '—'}
+      </span>
+    </td>
+  );
+}
+
+function StartTimeCell({ run }) {
+  const start = runStartTime(run);
+  return (
+    <td data-label="启动时间" className="start-time">
+      {start ? (
+        <>
+          <b className="tabular">{start.date}</b>
+          <small className="tabular">{start.time}</small>
+        </>
+      ) : (
+        '—'
+      )}
     </td>
   );
 }
@@ -116,7 +145,7 @@ export function TaskCenter({
               <span>·</span>
               {packageName(active)}
               <span>·</span>
-              {active.package_ref?.version}
+              {packageVersions(active).base || active.package_ref?.version}
             </p>
             <div className="active-progress">
               <Progress value={active.summary.judged / (active.summary.planned || 1)} />
@@ -215,7 +244,8 @@ export function TaskCenter({
                 <tr>
                   <th>任务 / 知识包</th>
                   <th>建模项目名称</th>
-                  <th>版本</th>
+                  <th>知识包版本</th>
+                  <th>启动时间</th>
                   <th>状态</th>
                   <th>判分进度</th>
                   <th>当前阶段</th>
@@ -232,9 +262,8 @@ export function TaskCenter({
                       <small>{packageName(run)}</small>
                     </td>
                     <ModelingProjectCell {...modelingProject(run)} />
-                    <td data-label="版本">
-                      <span className="version-tag">{run.package_ref?.version || '—'}</span>
-                    </td>
+                    <PackageVersionCell run={run} />
+                    <StartTimeCell run={run} />
                     <td data-label="状态">
                       <Badge tone={STATUS[run.status]?.[1]}>{STATUS[run.status]?.[0] || run.status}</Badge>
                     </td>
@@ -261,9 +290,9 @@ export function TaskCenter({
                             {!['completed', 'cancelled', 'failed', 'cancelling'].includes(run.status) && (
                               <button onClick={() => onAction('cancel', run)}>停止评测</button>
                             )}
-                            {['completed', 'cancelled', 'failed'].includes(run.status) && (
+                            {!ACTIVE.has(run.status) && (
                               <button className="danger" onClick={() => onAction('delete', run)}>
-                                删除任务
+                                删除评测记录
                               </button>
                             )}
                           </div>

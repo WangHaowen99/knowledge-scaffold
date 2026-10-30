@@ -53,6 +53,34 @@ export function canResume(run) {
 export function packageName(run) {
   return run.package_ref?.manifest_id || run.package_ref?.hub_package_id || '知识包';
 }
+// The release the user chose, and the evaluation snapshot that actually ran when the mapping changed.
+// Runs created before base_ref was recorded only know the base release ID.
+export function packageVersions(run) {
+  const ref = run?.package_ref || {};
+  const snapshot = ref.kind === 'evaluation_snapshot' ? ref.version || '' : '';
+  return {
+    base: run?.base_ref?.version || (snapshot ? '' : ref.version || ''),
+    baseId: run?.base_ref?.release_id || ref.base_release_id || ref.release_id || '',
+    snapshot,
+  };
+}
+// Runs still queued have no started_at yet, so they show when they were created.
+export function runStartTime(run) {
+  const seconds = run?.started_at || run?.created_at;
+  if (!seconds) return null;
+  const at = new Date(seconds * 1000),
+    pad = (value) => String(value).padStart(2, '0');
+  return {
+    date: `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`,
+    time: `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`,
+  };
+}
+// Why a run cannot be judged yet, shown when starting instead of silently disabling the button.
+export function judgeMissingReason(judge) {
+  if (judge?.source === 'disabled')
+    return '管理员已停用默认判分模型，你还没有配置自己的判分模型，评测回答将无法判分。请先在“评测判分模型配置”中填写你自己的判分模型，再开始评测。';
+  return '当前没有可用的评测判分模型，评测回答将无法判分。请先在“评测判分模型配置”中填写你自己的判分模型，或请管理员配置默认判分模型，再开始评测。';
+}
 export function packageIds(runs) {
   return [...new Set(runs.map((r) => r.package_ref?.hub_package_id).filter(Boolean))].sort();
 }

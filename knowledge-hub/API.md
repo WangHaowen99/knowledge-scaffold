@@ -23,6 +23,8 @@ Hub2 没有 Hub1 存量兼容：原项目级包 release-requests、releases 和 
 
 列表返回 `items,total,offset,limit,next_offset`，limit 默认 20、上限 100；响应有 64 KiB 边界，按 next_offset 继续。回执包含 `hub_package_id,release_id,manifest_id,version,kind,source_service,change_type,package_digest,size,created_at,committed_at`，派生包另含基础版本及摘要。响应不含 owner、项目、空间或磁盘路径。
 
+版本号由 Hub 分配（外部导入除外，自带版本）：正式版本 `release` 在包内按 `0.1.N` 递增；评测快照 `evaluation_snapshot` 命名为 `<基础版本>-eval.<n>`，如 `0.1.10-eval.2`，n 按同一基础版本计数，基础版本本身是快照时沿用其原始基础版本，没有基础版本时以 `0.1.0` 为基础。快照不占用正式版本号；本规则之前已提交的快照保留原版本号。
+
 新建包省略 hub_package_id，由 Hub 分配。建模/评测按包分配不可复用 `0.1.N`；外部导入保留其版本和原 ZIP 字节。同包版本（含快照）唯一。幂等键是用户、服务、request_id，改变输入返回 409；响应丢失先查状态，不换请求 ID。
 
 当前支持 `ontology-package` schema `0.1` / `0.2`（`operation-centric.v1`），单包根为 manifest ID。校验 ZIP、路径、大小、manifest、索引引用及 mapping。`mapping_update` 必须基于同包已提交版本，只允许增加/替换 `mappings/object-data-mappings.json` 和修改 manifest version；其他文件、manifest 字段、Markdown 索引保持不变。Hub 不生成 mapping，不连接评测数据源。未知格式或变更拒绝。
