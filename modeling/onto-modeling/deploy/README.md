@@ -96,6 +96,10 @@ MODELING_MCP_CLEANUP_TOKEN=<与 Onto 相同的值>
 
 - 该变量由平台自动注入，无需手工配置。不要在容器内 `/data/home/.claude/settings.json`
   的 `env` 中设置它：CLI 启动后会读取那里的值，覆盖平台注入的值。
+- 平台还会注入 `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1` 与
+  `CLAUDE_CODE_BG_TASKS_REPORT_RUNNING=1`，让 CLI 上报自身的会话状态：后台工作未结束时，
+  会话保持"运行中"，不会被误判为空闲、提前通知或被回收。这两个变量同样不要在上述
+  `settings.json` 中覆盖。
 - 命令超过本次调用的超时（默认 2 分钟，模型可以延长，最长 10 分钟）会直接失败，
   不再转入后台。
 - 镜像内的 `claude-agent-sdk` 没有锁定版本，打包的 CLI 随构建时间变化。每次部署和升级后

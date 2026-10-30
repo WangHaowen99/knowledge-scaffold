@@ -549,3 +549,31 @@ def test_cli_options_carry_background_tasks_switch(tmp_path, monkeypatch):
     options = ClaudeEngine(ctx)._build_options(None)
 
     assert options.env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+
+
+def test_session_env_asks_cli_to_report_session_state(tmp_path, monkeypatch):
+    """会话层以 CLI 自报的 idle 判定空闲；旧版 CLI 须显式要求后台工作期间保持 running。"""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+
+    env = claude_engine._session_env()
+
+    assert env["CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"] == "1"
+    assert env["CLAUDE_CODE_BG_TASKS_REPORT_RUNNING"] == "1"
+
+
+def test_cli_session_state_becomes_internal_event():
+    message = SystemMessage(subtype="session_state_changed", data={"state": "idle"})
+
+    assert normalize_message(message) == {"type": "_cli_state", "state": "idle"}
+
+
+def test_cli_state_before_failed_result_keeps_text_pending(tmp_path):
+    """状态事件可能先于 result 到达：待定文字仍要等 result 判定成败后再放出。"""
+    text = "The request stopped before the answer was complete."
+    state = SystemMessage(subtype="session_state_changed", data={"state": "idle"})
+    logged = []
+
+    events = collect(make_engine(tmp_path, [assistant(text), state, result(True)], logged))
+
+    assert [event["type"] for event in events] == ["_cli_state", "assistant_message", "result"]
+    assert events[1]["blocks"][0]["text"] == FRIENDLY_ERROR
