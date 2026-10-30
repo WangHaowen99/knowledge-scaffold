@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .. import config
 from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets, package_mapping
-from ..services import modeling_cleanup, modeling_mcp, package_archive, solver_contract
+from ..services import modeling_cleanup, modeling_mcp, package_archive, solver_contract, version_revert
 from ..services.workspace import WorkspaceError, WorkspaceManager, remove_tree
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -1517,50 +1517,17 @@ def versions(project_id: str, request: Request, offset: int = 0, limit: int = 50
 
 @router.post("/{project_id}/versions/revert")
 async def revert(project_id: str, body: RevertBody, request: Request):
-    from ..services import modeling_eval, solver_validation_run, studio
-    from ..services.agent_sessions import manager
-
     ensure_owner(project_id, request)
-    if manager.workspace_busy(project_id):
-        raise WorkspaceError("助手正在修改该项目，请等待当前任务结束", 409)
-
-    def ensure_idle(root: Path) -> None:
-        if manager.workspace_busy(project_id):
-            raise WorkspaceError("助手正在修改该项目，请等待当前任务结束", 409)
-        if studio.project_editing_status(project_id):
-            raise WorkspaceError("Studio 存在租约或未提交草稿，请先完成或放弃编辑", 409)
-        if modeling_eval.is_active(project_id):
-            raise WorkspaceError("数据评测正在运行或排队，请等待完成或先停止", 409)
-        if solver_validation_run.is_active(project_id, root):
-            raise WorkspaceError("求解验证正在运行，请等待完成", 409)
-
-    async with manager._lock:
-        if manager.workspace_busy(project_id):
-            raise WorkspaceError("助手正在修改该项目，请等待当前任务结束", 409)
-        result = await asyncio.to_thread(
-            workspaces.revert_to,
-            project_id,
-            body.commit,
-            body.expected_head,
-            ensure_idle,
-        )
-        # Drop the old engine before releasing the session lock, so a new send
-        # cannot start against the pre-rollback context during this handoff.
-        session = manager.get(project_id)
-        if session is not None:
-            session.pending_prompts.clear()
-            await manager._recycle(session)
-        from ..services import conversation_store
-
-        conversation_store.clear_all_resume_tokens(project_id)
-    await manager._drain_waiters()
+    result = await version_revert.apply_direct(
+        workspaces, project_id, body.commit, body.expected_head
+    )
     return result
 
 
 @router.get("/{project_id}/versions/revert-preview")
 def revert_preview(project_id: str, commit: str, request: Request):
     ensure_owner(project_id, request)
-    return workspaces.preview_revert(project_id, commit)
+    return version_revert.preview_by_commit(workspaces, project_id, commit)
 
 
 @router.post("/{project_id}/versions/tag")

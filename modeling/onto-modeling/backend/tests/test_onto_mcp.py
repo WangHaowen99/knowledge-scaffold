@@ -1,11 +1,12 @@
 """Synthetic project-local MCP contract, permission and persistence regressions."""
+import asyncio
 import json
 from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from app.services.workspace import WorkspaceManager, _git
+from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 from app.services.onto_mcp import tokens
 from app.services.onto_mcp import workspace as mcp
 from app.services.onto_mcp import documents as doc
@@ -134,6 +135,63 @@ def test_invalid_preview_and_write_do_not_mutate(env):
     assert mcp.revision(env[2]) == rev
     with pytest.raises(McpError):
         call(env, "create_ontology_rule", expected_revision=rev, key="../escape", title="synthetic", content="text")
+
+
+def test_version_tools_preview_apply_are_owner_bound_and_idempotent(env):
+    manager, meta, root = env
+    from app.services import version_revert
+
+    first = call(env, "list_project_versions", limit=1)
+    assert first["current_version"] >= 2
+    assert first["items"][0]["current"] is True
+    assert first["next_cursor"] is not None
+    second = call(env, "list_project_versions", limit=1, cursor=first["next_cursor"])
+    assert second["items"][0]["version"] == first["items"][0]["version"] - 1
+
+    target_version = second["items"][0]["version"]
+    preview = call(env, "preview_project_version_revert", target_version=target_version)
+    assert preview["ready"] and preview["preview_id"]
+    result = asyncio.run(version_revert.apply_preview(
+        manager, meta["id"], preview["preview_id"], "", "operator_a"
+    ))
+    assert result["reverted_to_version"] == target_version
+    replay = asyncio.run(version_revert.apply_preview(
+        manager, meta["id"], preview["preview_id"], "", "operator_a"
+    ))
+    assert replay["commit"] == result["commit"]
+    assert manager.versions(meta["id"], limit=1)[0]["version"] == result["created_version"]
+
+
+def test_version_preview_rejects_wrong_token_and_stale_head(env):
+    manager, meta, root = env
+    from app.services import version_revert
+
+    current = manager.versions(meta["id"], limit=1)[0]["version"]
+    preview = call(env, "preview_project_version_revert", target_version=current - 1)
+    with pytest.raises(WorkspaceError) as exc:
+        asyncio.run(version_revert.apply_preview(
+            manager, meta["id"], preview["preview_id"], "other-token", "operator_a"
+        ))
+    assert exc.value.code == "REVERT_PREVIEW_FORBIDDEN"
+    path = root / "ontology/object/synthetic_c.md"
+    path.write_text("synthetic change", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-m", "test: advance version")
+    with pytest.raises(WorkspaceError) as exc:
+        asyncio.run(version_revert.apply_preview(
+            manager, meta["id"], preview["preview_id"], "", "operator_a"
+        ))
+    assert exc.value.code == "REVISION_CONFLICT"
+
+
+def test_version_tools_require_dedicated_scopes(env):
+    manager, meta, _ = env
+    issued = tokens.issue(manager, meta, {"name": "read-only", "scopes": ["ontology.read"]}, {"sub": "operator_a"})
+    with pytest.raises(McpError) as exc:
+        tokens.verify(manager, meta["id"], issued["token"], "change")
+    assert exc.value.code == "MCP_SCOPE_FORBIDDEN"
+    issued = tokens.issue(manager, meta, {"name": "version-read", "scopes": ["project.version.revert"]}, {"sub": "operator_a"})
+    assert tokens.verify(manager, meta["id"], issued["token"], "read")["scopes"] == ["project.version.revert"]
 
 
 def test_management_status_is_onto_local_without_modeling(env, monkeypatch):
