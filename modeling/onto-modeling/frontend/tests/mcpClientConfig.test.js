@@ -50,6 +50,13 @@ test('change scopes expose only change config for either protocol', () => {
   }
 });
 
+test('version scope exposes both read and change endpoints', () => {
+  const runtimeValue = runtime(['streamable-http']);
+  const configs = buildClientConfigs(runtimeValue, '<MCP_TOKEN>', ['project.version.revert']);
+  assert.match(configs.read, /modeling-read/);
+  assert.match(configs.change, /modeling-change/);
+});
+
 test('missing endpoints or empty permissions do not generate unusable configs', () => {
   const empty = { read: '', change: '', combined: '' };
   assert.deepEqual(buildClientConfigs(null), empty);

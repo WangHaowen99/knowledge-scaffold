@@ -126,3 +126,11 @@ test('a save failure from an invalidated editor does not alter the new editor', 
   assert.equal(h.state.editor, replacement);
   assert.equal(h.state.editor.scope.file_sha256, 'synthetic_hash');
 });
+
+test('version rollback preview blockers are handled before reading change details', () => {
+  const start = source.indexOf('      const preview = await api.revertPreview');
+  const guard = source.slice(start, source.indexOf('      const { added, modified, deleted } = preview.changes;', start));
+  assert.match(guard, /if \(!preview\?\.ready\)/);
+  assert.match(guard, /preview\?\.blockers/);
+  assert.match(guard, /message\.warning/);
+});

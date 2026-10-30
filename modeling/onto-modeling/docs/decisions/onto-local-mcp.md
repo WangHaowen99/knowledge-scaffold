@@ -22,6 +22,12 @@
 
 - 原 Modeling Token 不能用于新端点，需重新签发本地 Token。
 - 读取基于当前工作区；传入过期 revision 会被拒绝，不提供任意历史快照读取。
+- 版本回退通过 `list_project_versions`、`preview_project_version_revert`、
+  `revert_project_version` 三个工具提供；预览凭据绑定项目、Token、用户、目标版本和
+  预览时 HEAD，默认十分钟过期，确认调用可幂等重放。
+- 版本列表、回退预览和回退执行统一使用 `project.version.revert` scope；预览与执行仅允许项目 Owner/Admin。
+- 预览凭据保存在当前服务进程内，服务重启后需要重新预览；这避免将待执行的破坏性操作
+  持久化到项目文件或知识包中。
 - 列表每页最多 200 项，请求体最大 1 MiB；详情返回结构化文档，大小随文档变化。
 - SSE 会话保存在单进程内存，服务重启后客户端需要重连。
 - `report_name` 用于业务名称展示和导出再导入，文件名与内部 ID 保持稳定。

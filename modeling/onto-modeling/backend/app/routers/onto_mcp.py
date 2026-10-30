@@ -129,7 +129,9 @@ async def dispatch(rpc, group, principal, protocol):
                 "_meta": {"io.modelcontextprotocol/serverInfo": tokens.SERVER}}
     if method == "tools/list":
         available = [{**{k: tool[k] for k in ("name", "title", "description", "inputSchema")},
-                      "annotations": {"readOnlyHint": tool["scope"] != "ontology.change.apply"}}
+                      "annotations": {"readOnlyHint": tool["scope"] not in {
+                          "ontology.change.apply", "project.version.revert"
+                      }}}
                      for tool in TOOLS.values() if tool["toolset"] == group and tool["scope"] in principal["scopes"]]
         return {"tools": available, **({"resultType": "complete", "ttlMs": 300000, "cacheScope": "private"}
                                       if protocol == "2026-07-28" else {})}
@@ -141,8 +143,8 @@ async def dispatch(rpc, group, principal, protocol):
     if tool["scope"] not in principal["scopes"]:
         raise McpError("MCP_SCOPE_FORBIDDEN", "Token 缺少工具所需 scope", 403)
     try:
-        result = await asyncio.to_thread(tools.execute, manager(), principal["project_id"], tool["name"],
-                                         params.get("arguments", {}), principal["username"])
+        result = await tools.execute_async(manager(), principal["project_id"], tool["name"],
+                                           params.get("arguments", {}), principal["username"], principal["token_id"])
         return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
                 "structuredContent": result, "isError": False}
     except (McpError, WorkspaceError) as exc:
