@@ -19,6 +19,8 @@ services:
       EVAL_AUTH_URL: ${EVAL_AUTH_URL:-http://auth-server:5056}
       EVAL_HUB_URL: ${EVAL_HUB_URL:-http://knowledge-hub:8200}
       EVAL_CONSUMER_API_URL: ${EVAL_CONSUMER_API_URL:-http://backend:5055}
+      # 仅供任务中心显示建模项目名称：按当前用户登录查询 onto-modeling，不可达时只隐藏名称，评测不受影响
+      EVAL_MODELING_URL: ${EVAL_MODELING_URL:-http://onto-modeling:8100}
       # Judge 判分模型，部署默认值：OpenAI 兼容 /chat/completions，需支持工具调用；管理员在评测页面保存的配置优先。
       # 值写在运行配置（deploy/.env 或 EVAL_ENV_FILE）中，本文件只声明不写值；两处都未配置时无法开始评测
       EVAL_JUDGE_BASE_URL: ${EVAL_JUDGE_BASE_URL:-}

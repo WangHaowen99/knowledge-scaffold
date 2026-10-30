@@ -96,7 +96,9 @@ def test_independent_deploy_dispatch(tmp_path):
     assert 'ARG PIP_INDEX_URL=' in dockerfile and '-i "${PIP_INDEX_URL}"' in dockerfile
     assert '- PIP_INDEX_URL' in compose and '- NPM_REGISTRY' in compose
     assert 'depends_on' not in compose
-    assert 'onto-modeling' not in compose
+    # Modeling is referenced only as the optional display lookup for project names.
+    assert [line.strip() for line in compose.splitlines() if 'onto-modeling' in line and not line.strip().startswith('#')] \
+        == ['EVAL_MODELING_URL: ${EVAL_MODELING_URL:-http://onto-modeling:8100}']
 
 
 def test_prune_preserves_frozen_references_and_backup_restore(tmp_path):
@@ -123,32 +125,34 @@ def test_prune_preserves_frozen_references_and_backup_restore(tmp_path):
     restored_store.db.close()
 
 
-def test_graph_import_uses_run_scope_and_builds_relations(tmp_path,monkeypatch):
+def test_graph_import_uses_both_configured_scope_values_and_builds_relations(tmp_path,monkeypatch):
     import neo4j
-    calls=[]
-    class Result:
-        def consume(self): pass
-    class Session:
-        def __enter__(self): return self
-        def __exit__(self,*args): pass
-        def run(self,sql,**params): calls.append((sql,params)); return Result()
-    class Driver:
-        def session(self,**kwargs): return Session()
-        def close(self): pass
-    monkeypatch.setattr(neo4j.GraphDatabase,'driver',lambda *args,**kwargs:Driver())
+    from evaluation.graph_import import GraphImports
+    from test_graph_replacement import Graph
+    graph=Graph()
+    monkeypatch.setattr(neo4j.GraphDatabase,'driver',graph.driver)
     config=Config(tmp_path,encryption_key=Fernet.generate_key().decode())
     store=Store(tmp_path,config.encryption_key)
     data=DataSources(config,store)
     tables={'items':{'columns':['id','value'],'rows':[['item_0001',2]]}}
     mapping,_=generate_mapping(synthetic_package(),{'items':['id','value']},graph=True)
+    connection={'uri':'bolt://localhost:7687','username':'operator_a','password':'synthetic-invalid',
+                'workspace_property':'evaluation_scope','workspace_value':'workspace_demo',
+                'ontology_property':'knowledge_package_id','ontology_value':'knowledge_package_demo'}
     source={'mode':'connection','provider':'neo4j','import_data':True,'tables_snapshot':store.encrypt(tables),
-        'connection':store.encrypt({'uri':'bolt://localhost:7687','username':'operator_a','password':'synthetic-invalid'})}
+        'connection':store.encrypt(connection)}
+    checked=GraphImports(store).inspect('synthetic-owner',source,'knowledge_package_demo','preparation_demo')
+    source['graph_confirmation']=GraphImports(store).authorize('synthetic-owner',
+        {'id':'preparation_demo','source':source,'package_ref':{'manifest_id':'knowledge_package_demo'}},checked['id'],True)
     relationships={'item':[{'relation':'related','target':'item','sourceJoinProperty':'id','targetJoinProperty':'id'}]}
     result=data.prepare('a'*32,source,mapping,relationships)
-    assert result['config']['workspace_value']=='eval_'+'a'*32
-    assert len(calls)==2
-    assert all(params['scope']=='eval_'+'a'*32 for sql,params in calls)
-    assert 'MERGE (a)-[:`related`]->(b)' in calls[1][0]
+    assert result['config']['workspace_value']=='workspace_demo'
+    assert result['config']['ontology_value']=='knowledge_package_demo'
+    assert graph.commits==1
+    assert any('MERGE (a)-[:`related`]->(b)' in sql for sql,params in graph.calls)
+    assert graph.edges['related_new_item_0001']==('new_item_0001','new_item_0001')
+    assert graph.nodes['new_item_0001']['knowledge_package_id']=='knowledge_package_demo'
+    assert 'other_workspace' in graph.nodes and 'other_ontology' in graph.nodes
     store.db.close()
 
 

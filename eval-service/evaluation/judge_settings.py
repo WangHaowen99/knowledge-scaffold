@@ -15,6 +15,33 @@ from .core import Failure
 KEY = 'judge'
 
 
+def connection_test_failure(error):
+    """Explain model gateway failures without returning provider bodies, URLs or keys."""
+    status = error.upstream_status or error.status
+    if error.code == 'dependency_timeout' or status == 504:
+        return Failure('judge_test_timeout', '模型服务响应超时，请稍后重试，或检查网关和模型服务的响应速度。', 504, 'judging')
+    if error.code == 'dependency_rejected':
+        diagnostics = {
+            401: ('judge_test_authentication', '模型认证失败：API Key 无效或已过期，请重新填写后重试。', 422),
+            403: ('judge_test_permission', '模型访问被拒绝：当前 API Key 无权调用该模型，请检查模型授权。', 422),
+            404: ('judge_test_not_found', '未找到模型或接口：请核对网关地址和模型名称，确认网关支持 /chat/completions。', 422),
+            400: ('judge_test_request', '模型拒绝测试请求：请核对模型名称，并确认模型支持工具调用和结构化判分。', 422),
+            422: ('judge_test_request', '模型拒绝测试请求：请核对模型名称，并确认模型支持工具调用和结构化判分。', 422),
+            429: ('judge_test_rate_limit', '模型服务请求受限：请检查调用额度或并发限制，稍后重试。', 429),
+        }
+        if status in diagnostics:
+            code, message, public_status = diagnostics[status]
+            # A model API Key failure must not be mistaken for an expired user login.
+            return Failure(code, message, public_status, 'judging')
+        if status >= 500:
+            return Failure('judge_test_service', '模型服务暂时不可用，请检查网关和模型服务状态，稍后重试。', 503, 'judging')
+    if error.code == 'dependency_unavailable':
+        return Failure('judge_test_connection', '无法连接模型服务，请检查网关地址、网络连通性与证书配置。', 503, 'judging')
+    if error.code in ('judge_protocol', 'invalid_response', 'response_limit'):
+        return Failure('judge_test_protocol', '模型返回内容不符合判分要求，请确认网关兼容 Chat Completions，且模型支持工具调用和结构化判分。', 422, 'judging')
+    return Failure('judge_test_failed', '测试连接失败：模型服务未能完成判分请求，请检查网关、模型和访问权限后重试。', 422, 'judging')
+
+
 def gateway(value):
     value = (value or '').strip().rstrip('/')
     url = urlsplit(value)

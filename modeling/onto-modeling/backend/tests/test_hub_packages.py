@@ -151,6 +151,40 @@ def test_modeling_routes_require_login_and_project_permissions(setup, monkeypatc
                            headers={'Authorization': 'Bearer synthetic-access'}).status_code == 403
 
 
+def test_package_project_lookup_lists_only_the_callers_visible_linked_projects(setup, monkeypatch):
+    manager, pid, _, _, _ = setup
+    claims = {'sub': 'operator_a', 'iss': 'https://example.com'}
+    # Same issuer/subject key the Hub routes derive from the login claims.
+    subject = json.dumps([claims['iss'], claims['sub']], ensure_ascii=False)
+    first = hub_packages.publish(manager, pid, 'request_demo', 'synthetic-actor', subject)
+    copy = manager.create_project('project_alpha_copy', owner='operator_a')
+    hidden = manager.create_project('project_hidden', owner='operator_b')
+    foreign = manager.create_project('project_foreign_scope', owner='operator_a')
+    for project, scope in ((copy, subject), (hidden, subject), (foreign, 'scope_other')):
+        hub_packages.record(manager, project['id'], scope, first)
+    package_id = first['hub_package_id']
+    result = hub_packages.linked_projects(manager, subject, 'operator_a', False, [package_id, 'package_unknown'])
+    assert result == {'items': [
+        {'hub_package_id': package_id, 'projects': ['project_alpha', 'project_alpha_copy'], 'total': 2},
+        {'hub_package_id': 'package_unknown', 'projects': [], 'total': 0}]}
+    assert hub_packages.linked_projects(manager, subject, 'operator_a', True, [package_id])['items'][0]['total'] == 3
+    with pytest.raises(WorkspaceError):
+        hub_packages.linked_projects(manager, subject, 'operator_a', False, [f'package_{i}' for i in range(21)])
+
+    monkeypatch.setattr(auth, 'ENABLED', True)
+    monkeypatch.setattr(auth, 'verify_access_token', lambda token: claims if token else None)
+    app = FastAPI()
+    app.include_router(routes.router)
+    @app.exception_handler(WorkspaceError)
+    async def error(request, exc):
+        return JSONResponse({'error': str(exc)}, status_code=exc.status)
+    with TestClient(app) as client:
+        url = f'/api/hub/package-projects?hub_package_id={package_id}'
+        assert client.get(url).status_code == 401
+        response = client.get(url, headers={'Authorization': 'Bearer synthetic-access'})
+        assert response.json()['items'][0]['projects'] == ['project_alpha', 'project_alpha_copy']
+
+
 def test_local_recovery_and_project_deletion_do_not_delete_hub_package(setup, monkeypatch):
     manager, pid, store, _, _ = setup
     with monkeypatch.context() as m:

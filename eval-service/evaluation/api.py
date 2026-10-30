@@ -10,15 +10,18 @@ from fastapi import FastAPI, Request, Response, UploadFile, File, Query
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from .core import Config, Failure, Identity, Transport, digest, trusted_origins
 from .store import Store
 from .packages import Packages, generate_mapping, MAPPING, unpack
 from .data_sources import DataSources, read_tables
-from .execution import Consumer, Judge, Engine, report
-from .judge_settings import JudgeSettings
+from .execution import Consumer, Judge, Engine, report, DEFAULT_CONCURRENCY, MAX_CONCURRENCY
+from .judge_settings import JudgeSettings, connection_test_failure
+from .modeling_projects import linked_projects
 from .nl2sql import QueryService
+from .source_config import SourceConfig
+from .graph_import import scope_target
 
 
 class Body(BaseModel):
@@ -41,6 +44,12 @@ class Start(Body):
     request_id: str = Field(min_length=1,max_length=100,pattern=r'^[a-zA-Z0-9_-]+$')
     preparation_id: str
     eval_set_id: str
+    eval_set_revision: int | None = Field(default=None,ge=1)
+    graph_check_id: str = Field(default='',max_length=128)
+    replace_existing_graph: StrictBool = False
+    concurrency: int = Field(default=DEFAULT_CONCURRENCY,ge=1,le=MAX_CONCURRENCY)
+    # Empty uses the consumer default; otherwise an enabled model of the consumer global pool.
+    model_profile_id: str = Field(default='',max_length=200,pattern=r'^(|global:\S{1,192})$')
 
 
 class Publication(Body):
@@ -54,8 +63,24 @@ class JudgeConfig(Body):
     api_key: str = Field(default='',max_length=4096)  # Empty keeps the current key for the same gateway.
 
 
+class SourceInspection(Body):
+    provider: str = Field(pattern=r'^(nl2sql_http|nl2sql_template)$')
+    connection: dict | None = None
+    data_source_id: str = Field(default='',max_length=128)
+
+
+class SourcePreview(Body):
+    data_source_id: str = Field(min_length=1,max_length=128)
+    package_ref: Ref
+
+
+class GraphInspection(SourcePreview):
+    preparation_id: str = Field(default='',max_length=128)
+
+
 def public(record):
-    value={k:v for k,v in record.items() if k not in ('connection','tables_snapshot','content','source','cases','intent','mapping','preview','model','relations')}
+    value={k:v for k,v in record.items() if k not in ('connection','tables_snapshot','content','source','cases','intent','mapping','preview','model','relations','schema_fingerprint','graph_confirmation')}
+    if 'cases' in record: value['case_count']=len(record['cases'])
     if 'mapping' in record:
         value['mapping']=bool(record['mapping'])
     if 'preview' in record:
@@ -76,6 +101,7 @@ def create_app(config=None,transport=None):
     identity=Identity(config,http)
     packages=Packages(config,http,store)
     sources=DataSources(config,store)
+    source_config=SourceConfig(store,http)
     consumer=Consumer(config,http)
     judge_settings=JudgeSettings(config,store)
     judge=Judge(judge_settings,http)
@@ -180,9 +206,11 @@ def create_app(config=None,transport=None):
 
     @app.get(prefix+'/session')
     def session(request:Request):
-        owner,_=actor(request)
+        header=request.headers.get('authorization','')
+        profile=identity.profile(header[7:] if header.startswith('Bearer ') else '')
         current=judge_settings.view(False)
-        return {'subject':owner,'judge':{'model':current['model'],'revision':current['revision']},'model_configuration':'MODEL-CONFIG-01'}
+        return {'subject':profile['subject'],'user':{'username':profile['username'],'role':profile['role']},
+                'judge':{'model':current['model'],'revision':current['revision']},'judge_configured':current['configured'],'model_configuration':'MODEL-CONFIG-01'}
 
     @app.get(prefix+'/judge-settings')
     def judge_settings_view(request:Request):
@@ -204,7 +232,11 @@ def create_app(config=None,transport=None):
     def judge_settings_test(body:JudgeConfig,request:Request):
         # Runs the same structured-verdict check as run preflight, without saving.
         administrator(request)
-        judge.preflight(dict(judge_settings.candidate(body.base_url,body.model,body.api_key),revision='test'))
+        candidate=dict(judge_settings.candidate(body.base_url,body.model,body.api_key),revision='test')
+        try:
+            judge.preflight(candidate)
+        except Failure as exc:
+            raise connection_test_failure(exc) from exc
         return {'ok':True}
 
     @app.post(prefix+'/auth/{operation}')
@@ -250,13 +282,14 @@ def create_app(config=None,transport=None):
                     raise Failure('case_invalid','参考答案格式无效',422)
                 normalized.append(dict(id=str(i),question=case['question'],reference=reference))
             return dict(name=body['name'],cases=normalized)
-        if set(body)-{'name','mode','provider','input_ids','connection','tables','import_data','revision'}:
+        if set(body)-{'name','mode','provider','input_ids','connection','tables','import_data','revision','inspection_id'}:
             raise Failure('definition_invalid','未知数据源字段',422)
         if 'import_data' in body and not isinstance(body['import_data'],bool):
             raise Failure('import_flag_invalid','导入选项必须是布尔值',422)
         mode=body.get('mode','none')
         if mode not in ('none','dataset','connection'): raise Failure('mode_invalid','数据源模式无效',422)
         provider=body.get('provider','nl2sql_http')
+        if 'connection' in body and not isinstance(body['connection'],dict): raise Failure('connection_invalid','连接配置需要对象',422)
         if mode=='dataset' and provider=='neo4j':
             raise Failure('graph_connection_required','图模式请选择 connection 并显式允许数据导入',422)
         if provider not in ('neo4j','nl2sql_http','nl2sql_template'): raise Failure('provider_invalid','不支持的数据源',422)
@@ -270,12 +303,99 @@ def create_app(config=None,transport=None):
         if any(not isinstance(cols,list) or len(cols)>256 or any(not isinstance(col,str) or len(col)>64 for col in cols) for cols in tables.values()):
             raise Failure('table_invalid','表字段定义无效',422)
         value=dict(name=body['name'],mode=mode,provider=provider,input_ids=ids,tables=body.get('tables',{}),import_data=bool(body.get('import_data')))
-        if 'connection' in body:
+        # Form payloads use a narrow connection schema; old API clients may still submit
+        # their existing connection/tables contract without the new inspection handle.
+        if mode=='connection' and ('inspection_id' in body or 'evaluation_workspace_id' in body.get('connection',{}) or provider=='neo4j' and 'workspace_value' in body.get('connection',{})):
+            connection=source_config.connection(owner,provider,body.get('connection'),existing)
+            value['connection']=store.encrypt(connection)
+            if provider!='neo4j':
+                inspection_id=body.get('inspection_id')
+                if not inspection_id: raise Failure('schema_required','请先读取对应数据库的表与字段',422,'schema')
+                value.update(source_config.apply_inspection(owner,provider,connection,inspection_id))
+            elif value['import_data'] and not connection.get('ontology_property'):
+                raise Failure('graph_scope_required','导入图数据需要 Ontology 隔离字段',422)
+        elif 'connection' in body:
             if not isinstance(body['connection'],dict): raise Failure('connection_invalid','连接配置需要对象',422)
             value['connection']=store.encrypt(body['connection'])
         elif existing and existing.get('connection'): value['connection']=existing['connection']
         if mode=='connection' and not value.get('connection'): raise Failure('connection_missing','需要连接配置',422)
         return value
+
+    @app.post(prefix+'/data-source-inspections')
+    def inspect_source(body:SourceInspection,request:Request):
+        owner,_=actor(request)
+        existing=store.get(owner,body.data_source_id,'data-sources') if body.data_source_id else None
+        connection=source_config.connection(owner,body.provider,body.connection,existing)
+        return source_config.inspect(owner,body.provider,connection)
+
+    @app.post(prefix+'/graph-import-checks')
+    def inspect_graph(body:GraphInspection,request:Request):
+        owner,token=actor(request)
+        prep=store.get(owner,body.preparation_id,'preparations') if body.preparation_id else None
+        source=prep['source'] if prep else store.get(owner,body.data_source_id,'data-sources')
+        if prep and (prep['status']!='ready' or source.get('id')!=body.data_source_id or
+                     any(body.package_ref.model_dump()[key]!=prep['base'][key] for key in ('hub_package_id','release_id'))):
+            raise Failure('graph_check_stale','准备结果与当前数据源或知识包不一致，请重新准备',409,'data_import')
+        _,receipt=packages.fetch(body.package_ref.model_dump(),token)
+        return sources.graph.inspect(owner,source,receipt['manifest_id'],body.preparation_id)
+
+    @app.get(prefix+'/inputs/{rid}')
+    def input_metadata(rid:str,request:Request):
+        owner,_=actor(request)
+        return public(store.get(owner,rid,'inputs'))
+
+    @app.post(prefix+'/data-source-previews')
+    def source_preview(body:SourcePreview,request:Request):
+        owner,token=actor(request)
+        source=store.get(owner,body.data_source_id,'data-sources')
+        _,tables=sources.freeze(owner,source)
+        raw,_=packages.fetch(body.package_ref.model_dump(),token)
+        graph=source.get('provider')=='neo4j'
+        mapping,preview=generate_mapping(raw,{k:v['columns'] for k,v in tables.items()},graph) if tables else (None,{'objects':{},'warnings':[]})
+        objects=[]
+        for name,item in preview['objects'].items():
+            table=tables.get(item.get('table'),{})
+            count=len(table.get('rows',[]))
+            if graph and mapping and name in mapping['objects']:
+                keys=mapping['objects'][name].get('primary_key',[])
+                fields=mapping['objects'][name]['sources'][0]['fields']
+                columns=table.get('columns',[])
+                indices=[columns.index(fields[k]['source_column']) for k in keys if k in fields and fields[k]['source_column'] in columns]
+                if indices:
+                    if any(any(row[i] is None or row[i]=='' for i in indices) for row in table.get('rows',[])):
+                        raise Failure('graph_key_missing','图数据缺少主键，请补齐后重新预览',422,'data_import')
+                    count=len({tuple(row[i] for i in indices) for row in table.get('rows',[])})
+            objects.append({'name':name,'table':item.get('table'),'matched_columns':item.get('matched_columns',[]),'missing_columns':item.get('missing_columns',[]),'instances':count})
+        relations=[]
+        for left,edges in preview.get('relations',{}).items():
+            for edge in edges:
+                right=edge['target']
+                try:
+                    l,r=mapping['objects'][left],mapping['objects'][right]
+                    lt,rt=tables[l['sources'][0]['resource']],tables[r['sources'][0]['resource']]
+                    lk=edge.get('sourceJoinProperty') or l['primary_key'][0]
+                    rk=edge.get('targetJoinProperty') or r['primary_key'][0]
+                    li=lt['columns'].index(l['sources'][0]['fields'][lk]['source_column'])
+                    ri=rt['columns'].index(r['sources'][0]['fields'][rk]['source_column'])
+                    # Count distinct primary-key pairs without materializing a potentially
+                    # quadratic join; matching MERGE semantics, nulls never join.
+                    def keyed(obj,table):
+                        indices=[table['columns'].index(obj['sources'][0]['fields'][k]['source_column']) for k in obj['primary_key']]
+                        return [(row,tuple(row[i] for i in indices)) for row in table['rows']]
+                    targets={}
+                    for row,key in keyed(r,rt):
+                        if row[ri] is not None: targets.setdefault(row[ri],set()).add(key)
+                    origins={}
+                    for row,key in keyed(l,lt):
+                        if row[li] is not None: origins.setdefault(row[li],set()).add(key)
+                    count=sum(len(keys)*len(targets.get(value,set())) for value,keys in origins.items())
+                except (KeyError,IndexError,ValueError):
+                    count=None
+                relations.append({'source':left,'target':right,'relation':edge['relation'],'instances':count})
+        return {'objects':objects[:100],'relations':relations[:100],'warnings':preview.get('warnings',[])[:20],
+                'skipped':preview.get('skipped',[])[:20],'truncated':len(objects)>100 or len(relations)>100,
+                'entity_count':len(objects),'instances':sum(o['instances'] for o in objects),
+                'relationship_count':sum(r['instances'] or 0 for r in relations),'graph':graph}
 
     # Register fixed paths: never let callers read internal record kinds.
     def register_definitions(kind):
@@ -287,7 +407,7 @@ def create_app(config=None,transport=None):
         def get(rid:str,request:Request):
             owner,_=actor(request)
             item=store.get(owner,rid,kind)
-            return {k:v for k,v in item.items() if k!='connection'}
+            return source_config.view(owner,item) if kind=='data-sources' else item
         def create(body:dict,request:Request):
             owner,_=actor(request)
             if store.list(owner,kind)['total']>=50: raise Failure('definition_limit','最多 50 个定义',409)
@@ -365,18 +485,44 @@ def create_app(config=None,transport=None):
     @app.post(prefix+'/runs',status_code=202)
     def start(body:Start,request:Request):
         owner,token=actor(request)
-        previous=store.lookup_request(owner,'runs',body.request_id,body.model_dump())
+        intent=body.model_dump(exclude={'graph_check_id','replace_existing_graph'})
+        if body.graph_check_id or body.replace_existing_graph:
+            intent.update(graph_check_id=body.graph_check_id,replace_existing_graph=body.replace_existing_graph)
+        previous=store.lookup_request(owner,'runs',body.request_id,intent)
         if previous:
             return public(previous)
         prep=store.get(owner,body.preparation_id,'preparations')
         cases=store.get(owner,body.eval_set_id,'eval-sets')
+        if body.eval_set_revision is not None and cases['revision']!=body.eval_set_revision:
+            raise Failure('revision_conflict','评测集已变更，请返回上一步重新加载并确认',409)
         if prep['status']!='ready': raise Failure('not_ready','包准备尚未完成',409)
-        run=store.create(owner,'runs',dict(status='queued',phase='preparing',preparation_id=prep['id'],
-            package_ref=prep['package_ref'],source=prep['source'],mapping=prep['mapping'],relations=prep['preview'].get('relations',{}),judge=judge.profile(),
-            case_revision=cases['revision'],cases=[dict(**c,status='pending') for c in cases['cases']]),
-            body.request_id,identity=body.model_dump())
-        engine.start(owner,run['id'],token)
+        with engine.guard:
+            if any(key[0]==owner for key in engine.active): raise Failure('evaluation_busy','已有活动评测，请先查看或停止当前任务',409)
+            if len(engine.active)>=16: raise Failure('evaluation_busy','服务队列已满，请稍后再试',409)
+            source=dict(prep['source'])
+            if source.get('provider')=='neo4j' and source.get('import_data'):
+                graph_available(source,prep['package_ref']['manifest_id'])
+                source['graph_confirmation']=sources.graph.authorize(owner,prep,body.graph_check_id,body.replace_existing_graph)
+            elif body.graph_check_id or body.replace_existing_graph:
+                raise Failure('graph_import_required','当前评测未启用 Neo4j 图导入',422,'data_import')
+            run=store.create(owner,'runs',dict(status='queued',phase='preparing',preparation_id=prep['id'],
+                package_ref=prep['package_ref'],source=source,mapping=prep['mapping'],relations=prep['preview'].get('relations',{}),judge=judge.profile(),
+                eval_set_id=cases['id'],eval_set_name=cases['name'],data_source_name=prep['source'].get('name','不使用数据源'),
+                concurrency=body.concurrency,model_profile_id=body.model_profile_id,
+                created_at=time.time(),case_revision=cases['revision'],cases=[dict(**c,status='pending') for c in cases['cases']]),
+                body.request_id,identity=intent)
+            engine.start(owner,run['id'],token)
         return public(run)
+
+    def graph_available(source, manifest_id, current_run=''):
+        if source.get('provider')!='neo4j' or not source.get('import_data'): return
+        target=scope_target(sources.graph.connection(store,source,manifest_id))
+        for active_owner,active_id in engine.active:
+            if active_id==current_run: continue
+            active=store.get(active_owner,active_id,'runs')
+            other=active.get('source',{})
+            if other.get('provider')=='neo4j' and other.get('import_data') and target==scope_target(sources.graph.connection(store,other,active['package_ref']['manifest_id'])):
+                raise Failure('graph_scope_busy','此图数据范围已有活动评测，请等待结束或先停止该评测',409,'data_import')
 
     @app.get(prefix+'/runs')
     def runs(request:Request,offset:int=Query(0,ge=0)):
@@ -384,6 +530,21 @@ def create_app(config=None,transport=None):
         page=store.list(owner,'runs',offset)
         page['items']=[dict(**public(r),summary=report(r)) for r in page['items']]
         return page
+
+    @app.get(prefix+'/modeling-projects')
+    def modeling_projects(request:Request,hub_package_id:list[str]=Query(...)):
+        # Display only: names come from onto-modeling with the user's own login and are never stored.
+        _,token=actor(request)
+        return linked_projects(config,http,token,hub_package_id)
+
+    @app.get(prefix+'/consumer-models')
+    def consumer_models(request:Request):
+        # Choices for a new run's answering model; when unavailable the run uses the consumer default.
+        _,token=actor(request)
+        try:
+            return {'available':True,'items':consumer.global_models(token)}
+        except Failure:
+            return {'available':False,'items':[]}
 
     @app.get(prefix+'/runs/{rid}')
     def run(rid:str,request:Request):
@@ -455,7 +616,13 @@ def create_app(config=None,transport=None):
     def resume(rid:str,request:Request):
         owner,token=actor(request)
         run=store.get(owner,rid,'runs')
-        engine.start(owner,rid,token)
+        if (run.get('error') or {}).get('code')=='configuration_changed' and not run.get('cancel_requested'): raise Failure('configuration_changed','配置已变化，请创建新评测',409)
+        if (run.get('error') or {}).get('code') in ('graph_scope_changed','graph_check_required','graph_confirmation_required') and not run.get('cancel_requested'):
+            raise Failure('graph_confirmation_required','请重新创建评测并确认当前图数据范围',409,'data_import')
+        if run['status'] in ('completed','cancelled','failed'): raise Failure('run_state','此任务当前无需恢复',409)
+        with engine.guard:
+            if not run.get('cancel_requested'): graph_available(run['source'],run['package_ref']['manifest_id'],rid)
+            engine.start(owner,rid,token)
         return public(run)
 
     @app.post(prefix+'/runs/{rid}/results/{cid}/override')

@@ -10,9 +10,11 @@ import httpx
 
 
 class Failure(Exception):
-    def __init__(self, code, message, status=400, phase='input'):
+    def __init__(self, code, message, status=400, phase='input', *, upstream_status=None):
         super().__init__(message)
         self.code, self.message, self.status, self.phase = code, message, status, phase
+        # Available for contextual diagnostics, never included in the public payload.
+        self.upstream_status = upstream_status
 
     def payload(self):
         return dict(code=self.code, message=self.message, phase=self.phase,
@@ -51,6 +53,7 @@ class Config:
     sql_config: str = ''
     nl2sql_url: str = ''
     trusted_origins: str = ''
+    modeling_url: str = ''
 
     @classmethod
     def environment(cls):
@@ -59,7 +62,8 @@ class Config:
                        'EVAL_AUTH_URL', 'EVAL_AUTH_ISSUER', 'EVAL_HUB_URL', 'EVAL_HUB_SERVICE_TOKEN',
                        'EVAL_CONSUMER_API_URL', 'EVAL_CONSUMER_SERVICE_TOKEN', 'EVAL_ENCRYPTION_KEY',
                        'EVAL_JUDGE_BASE_URL', 'EVAL_JUDGE_API_KEY', 'EVAL_JUDGE_MODEL',
-                       'EVAL_JUDGE_CONFIG_REVISION', 'EVAL_SQL_CONFIG', 'EVAL_NL2SQL_URL', 'EVAL_TRUSTED_ORIGINS')])
+                       'EVAL_JUDGE_CONFIG_REVISION', 'EVAL_SQL_CONFIG', 'EVAL_NL2SQL_URL', 'EVAL_TRUSTED_ORIGINS',
+                       'EVAL_MODELING_URL')])
 
 
 def trusted_origins(value):
@@ -96,8 +100,11 @@ class Transport:
                     if not 200 <= response.status_code < 300:
                         # Do not relay provider errors, URLs, headers or secret-bearing bodies.
                         raise Failure('dependency_rejected', '依赖服务拒绝请求', response.status_code
-                                      if response.status_code in (401,403,404,409,410,413,422,429) else 503, 'dependency')
+                                      if response.status_code in (401,403,404,409,410,413,422,429) else 503, 'dependency',
+                                      upstream_status=response.status_code)
                     return bytes(raw)
+        except httpx.TimeoutException as exc:
+            raise Failure('dependency_timeout', '依赖服务响应超时，请稍后重试', 504, 'dependency') from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise Failure('dependency_unavailable', '依赖服务不可用，请重试或恢复任务', 503, 'dependency') from exc
 
@@ -112,8 +119,8 @@ class Identity:
     def __init__(self, config, transport):
         self.config, self.transport = config, transport
 
-    def account(self, token):
-        """Owner digest and role; the role is read from the account service, never from token claims."""
+    def profile(self, token):
+        """Display name and role come from validated userinfo, never unverified token claims."""
         if not token:
             raise Failure('unauthenticated', '请登录', 401, 'authorization')
         value = self.transport.json('GET', self.config.auth_url, '/userinfo', token=token, limit=16384)
@@ -121,7 +128,13 @@ class Identity:
             raise Failure('invalid_identity', '身份验证失败', 401, 'authorization')
         if value.get('password_change_required'):
             raise Failure('account_action_required', '请先完成账号操作', 403, 'authorization')
-        return digest([self.config.issuer or self.config.auth_url.rstrip('/'), value['sub']]), value.get('role', '')
+        return {'subject': digest([self.config.issuer or self.config.auth_url.rstrip('/'), value['sub']]),
+                'username': value['sub'], 'role': value.get('role', '')}
+
+    def account(self, token):
+        """Owner digest and role; stable ownership is independent of display data."""
+        profile = self.profile(token)
+        return profile['subject'], profile['role']
 
     def verify(self, token):
         return self.account(token)[0]
