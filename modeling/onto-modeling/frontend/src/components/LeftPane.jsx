@@ -612,8 +612,12 @@ export default function LeftPane({
     try {
       setReverting(version.commit);
       const preview = await api.revertPreview(project.id, version.commit);
-      if (preview.ready === false) {
-        throw new Error(preview.blockers?.[0]?.message || '当前项目暂不能回退');
+      if (!preview?.ready) {
+        const blockers = Array.isArray(preview?.blockers)
+          ? preview.blockers.map((item) => item?.message).filter(Boolean)
+          : [];
+        message.warning(blockers.join('；') || '当前项目暂不能回退');
+        return;
       }
       const { added, modified, deleted } = preview.changes;
       await new Promise((resolve, reject) => {

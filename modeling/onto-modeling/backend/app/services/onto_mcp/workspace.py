@@ -1,4 +1,5 @@
 """Local MCP tool execution with content revisions and isolated file commits."""
+import asyncio
 import base64
 import copy
 import json
@@ -197,10 +198,20 @@ def list_resources(records, kind, args, current):
             "display": {"text": f"已返回 {len(page)}/{len(values)} 个本体元素"}}
 
 
-def execute(manager, project_id, name, args, username):
+def execute(manager, project_id, name, args, username, token_id=""):
     if name not in TOOLS:
         raise McpError("MCP_TOOL_NOT_FOUND", "未知工具", 404)
     validate_input(args, TOOLS[name]["inputSchema"])
+    if name == "list_project_versions":
+        from .. import version_revert
+        return version_revert.list_versions(manager, project_id, args.get("limit", 50), args.get("cursor", ""))
+    if name == "preview_project_version_revert":
+        from .. import version_revert
+        return version_revert.preview_by_version(
+            manager, project_id, args["target_version"], token_id, username
+        )
+    if name == "revert_project_version":
+        raise McpError("ASYNC_TOOL_REQUIRED", "版本回退必须通过异步 MCP 调用")
     # Shared with web writes, protects the revision check and persistence as one operation.
     with manager._project_lock(project_id):
         root = manager.project_root(project_id)
@@ -233,3 +244,15 @@ def execute(manager, project_id, name, args, username):
                 "changed_paths": analysis["changed_paths"], "affected_resources": analysis["affected_resources"],
                 "warnings": [], "historical_problem_count": analysis["historical_problem_count"],
                 "display": {"text": "修改已保存到 Onto 工作区"}}
+
+
+async def execute_async(manager, project_id, name, args, username, token_id=""):
+    if name != "revert_project_version":
+        return await asyncio.to_thread(execute, manager, project_id, name, args, username, token_id)
+    validate_input(args, TOOLS[name]["inputSchema"])
+    if not args.get("confirm"):
+        raise McpError("CONFIRMATION_REQUIRED", "必须明确确认执行版本回退")
+    from .. import version_revert
+    return await version_revert.apply_preview(
+        manager, project_id, args["preview_id"], token_id, username
+    )
