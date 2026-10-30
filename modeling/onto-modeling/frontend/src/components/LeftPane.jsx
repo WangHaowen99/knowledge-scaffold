@@ -615,7 +615,7 @@ export default function LeftPane({
             发布知识包
           </Button>
           <Button block style={{ marginBottom: 8 }} onClick={() => packagePublish.showVersions(project.id)}>
-            已发布版本
+            已发布版本（知识包评测）
           </Button>
           <Button block style={{ marginBottom: 8 }} onClick={() => setEvalDetailOpen(true)}>
             旧版评测记录（历史链路）
