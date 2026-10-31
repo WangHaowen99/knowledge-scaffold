@@ -51,7 +51,7 @@ export function canResume(run) {
   ].includes(run.error?.code);
 }
 export function packageName(run) {
-  return run.package_ref?.manifest_id || run.package_ref?.hub_package_id || '知识包';
+  return run.package_ref?.ontology_id || run.package_ref?.hub_package_id || '知识包';
 }
 // The release the user chose, and the evaluation snapshot that actually ran when the mapping changed.
 // Runs created before base_ref was recorded only know the base release ID.

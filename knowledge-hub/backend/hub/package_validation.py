@@ -90,11 +90,11 @@ def validate_mapping(raw, files):
     portable(value)
 
 
-def inspect_package(store, path, manifest_id, version):
+def inspect_package(store, path, ontology_id, version):
     infos = store.inspect_zip(path)
     try:
         roots = {PurePosixPath(i.filename).parts[0] for i in infos}
-        if roots != {manifest_id}:
+        if roots != {ontology_id}:
             raise ValueError('Package root mismatch')
         files = {}
         with zipfile.ZipFile(path) as archive:
@@ -103,15 +103,15 @@ def inspect_package(store, path, manifest_id, version):
                     continue
                 if info.file_size > max(info.compress_size, 1) * 1000:
                     raise ValueError('Excessive compression ratio')
-                relative = info.filename[len(manifest_id) + 1:]
+                relative = info.filename[len(ontology_id) + 1:]
                 with archive.open(info) as stream:
                     files[relative] = hashlib.file_digest(stream, 'sha256').hexdigest()
-            manifest_path = manifest_id + '/manifest.yaml'
+            manifest_path = ontology_id + '/manifest.yaml'
             if archive.getinfo(manifest_path).file_size > 65536:
                 raise ValueError('Oversized manifest')
             manifest = parse_yaml(archive.read(manifest_path))
             if not isinstance(manifest, dict) or any(manifest.get(k) != v for k, v in {
-                    'id': manifest_id, 'version': version, 'kind': 'ontology-package'}.items()) or manifest.get('schema_version') not in ('0.1', '0.2'):
+                    'id': ontology_id, 'version': version, 'kind': 'ontology-package'}.items()) or manifest.get('schema_version') not in ('0.1', '0.2'):
                 raise ValueError('Unsupported manifest or identity mismatch')
             if manifest['schema_version'] == '0.2' and manifest.get('solver_layout') != 'operation-centric.v1':
                 raise ValueError('Unsupported solver layout')
@@ -123,9 +123,9 @@ def inspect_package(store, path, manifest_id, version):
             import re
             for name in files:
                 if name.endswith('/index.md'):
-                    if archive.getinfo(manifest_id + '/' + name).file_size > 1024**2:
+                    if archive.getinfo(ontology_id + '/' + name).file_size > 1024**2:
                         raise ValueError('Oversized index')
-                    text = archive.read(manifest_id + '/' + name).decode('utf-8')
+                    text = archive.read(ontology_id + '/' + name).decode('utf-8')
                     for target in re.findall(r'\]\(([^)]+)\)', text):
                         if '://' in target or target.startswith('#'):
                             continue
@@ -134,19 +134,19 @@ def inspect_package(store, path, manifest_id, version):
                         if relative not in files:
                             raise ValueError('Invalid index reference')
             if MAPPING in files:
-                if archive.getinfo(manifest_id + '/' + MAPPING).file_size > 4 * 1024**2:
+                if archive.getinfo(ontology_id + '/' + MAPPING).file_size > 4 * 1024**2:
                     raise ValueError('Oversized mapping')
-                validate_mapping(archive.read(manifest_id + '/' + MAPPING), files)
+                validate_mapping(archive.read(ontology_id + '/' + MAPPING), files)
         return manifest, files
     except (ValueError, TypeError, KeyError, UnicodeError, yaml.YAMLError, RecursionError) as exc:
         raise PackageError('invalid_package', 'Invalid or unsupported package structure') from exc
 
 
 def validate_derivation(store, new_path, receipt, base_path=None, base_receipt=None):
-    manifest, files = inspect_package(store, new_path, receipt['manifest_id'], receipt['version'])
+    manifest, files = inspect_package(store, new_path, receipt['ontology_id'], receipt['version'])
     if receipt['change_type'] != 'mapping_update':
         return
-    before, previous = inspect_package(store, base_path, receipt['manifest_id'], base_receipt['version'])
+    before, previous = inspect_package(store, base_path, receipt['ontology_id'], base_receipt['version'])
     manifest.pop('version')
     before.pop('version')
     # Current 0.1 export has no derived checksum index. All other manifest fields

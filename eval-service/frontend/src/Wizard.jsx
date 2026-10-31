@@ -189,7 +189,7 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
         hub_package_id: packageId,
         release_id: releaseId,
         package_digest: release.package_digest,
-        manifest_id: release.manifest_id,
+        ontology_id: release.ontology_id,
       }
     : null;
   async function editSource(id = '') {
@@ -375,7 +375,7 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
                       <option value="">选择知识包</option>
                       {packages.map((p) => (
                         <option key={p.hub_package_id} value={p.hub_package_id}>
-                          {p.manifest_id || p.name || p.hub_package_id}
+                          {p.ontology_id || p.name || p.hub_package_id}
                         </option>
                       ))}
                     </select>
@@ -409,8 +409,8 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
                     <dl>
                       <dt>知识包</dt>
                       <dd>
-                        {release.manifest_id ||
-                          packages.find((p) => p.hub_package_id === packageId)?.manifest_id}
+                        {release.ontology_id ||
+                          packages.find((p) => p.hub_package_id === packageId)?.ontology_id}
                       </dd>
                       <dt>版本标识</dt>
                       <dd>{release.release_id}</dd>
@@ -654,8 +654,8 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
             <dl>
               <dt>知识包</dt>
               <dd>
-                {release?.manifest_id ||
-                  packages.find((p) => p.hub_package_id === packageId)?.manifest_id ||
+                {release?.ontology_id ||
+                  packages.find((p) => p.hub_package_id === packageId)?.ontology_id ||
                   '尚未选择'}
               </dd>
               <dt>固定版本</dt>

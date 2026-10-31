@@ -50,7 +50,7 @@ cleanup/<project_id>.json
 .lock
 ```
 
-发布先保存预留请求，再上传校验。只有重新授权并持久化的 committing 意图能在恢复时完成归档；Git 成功后才公开 committed。仅 uploaded 的内容不会自动发布。ZIP 不变，下载校验原摘要；mapping 派生必须保留基础版本引用。当前支持 schema 0.1 / 0.2（operation-centric.v1），包根与 manifest ID 一致。
+发布先保存预留请求，再上传校验。只有重新授权并持久化的 committing 意图能在恢复时完成归档；Git 成功后才公开 committed。仅 uploaded 的内容不会自动发布。ZIP 不变，下载校验原摘要；mapping 派生必须保留基础版本引用。当前支持 schema 0.1 / 0.2（operation-centric.v1），包根与 ontology_id（manifest.yaml.id） 一致。
 
 用户私有包不随项目或消费空间删除。项目清理只影响最新资料及建模本地关联。项目资料按 generation 全量替换并可靠重试，不保留历史资料版本。
 

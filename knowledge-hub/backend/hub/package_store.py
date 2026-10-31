@@ -25,7 +25,7 @@ def request_key(subject, service, request_id):
     return hashlib.sha256(json.dumps([subject, service, request_id]).encode()).hexdigest()
 
 
-PUBLIC = ('request_id', 'hub_package_id', 'release_id', 'manifest_id', 'version', 'kind',
+PUBLIC = ('request_id', 'hub_package_id', 'release_id', 'ontology_id', 'version', 'kind',
           'source_service', 'change_type', 'base_release_id', 'base_digest', 'status',
           'package_digest', 'size', 'created_at', 'expires_at', 'committed_at')
 SNAPSHOT = re.compile(r'^(?P<root>.+)-eval\.(?P<number>[0-9]{1,9})$')
@@ -78,7 +78,7 @@ class PackageStore:
     def ensure_metadata(self, row):
         root = self.root_of(row['hub_package_id'])
         meta = read_json(root / 'metadata.json')
-        identity = {k: row[k] for k in ('hub_package_id', 'owner_subject', 'manifest_id')}
+        identity = {k: row[k] for k in ('hub_package_id', 'owner_subject', 'ontology_id')}
         if meta and any(meta.get(k) != v for k, v in identity.items()):
             raise PackageError('archive_integrity', 'Package identity mismatch', 503, 'recovery')
         if not meta:
@@ -120,8 +120,8 @@ class PackageStore:
         package_id = payload['hub_package_id']
         if package_id:
             meta = self.owned(package_id, identity.subject)
-            if meta['manifest_id'] != payload['manifest_id']:
-                raise PackageError('identity_conflict', 'Manifest identity changed', 409)
+            if meta['ontology_id'] != payload['ontology_id']:
+                raise PackageError('identity_conflict', 'Ontology identity changed', 409)
         else:
             package_id = uuid.uuid4().hex
         base = None
@@ -260,7 +260,7 @@ class PackageStore:
         for row in self.requests():
             if row['owner_subject'] == subject and row['status'] == 'committed':
                 meta = self.owned(row['hub_package_id'], subject)
-                visible[row['hub_package_id']] = {k: meta[k] for k in ('hub_package_id', 'manifest_id', 'created_at')}
+                visible[row['hub_package_id']] = {k: meta[k] for k in ('hub_package_id', 'ontology_id', 'created_at')}
         rows = sorted(visible.values(), key=lambda r: (r['created_at'], r['hub_package_id']), reverse=True)
         return self.page(rows, offset, limit)
 

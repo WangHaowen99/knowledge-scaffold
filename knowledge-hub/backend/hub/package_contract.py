@@ -23,7 +23,7 @@ class PublishBody(BaseModel):
     model_config = ConfigDict(extra='forbid')
     request_id: Identifier
     hub_package_id: Identifier | None = None
-    manifest_id: Identifier
+    ontology_id: Identifier
     change_type: Literal['modeling_content', 'external_import', 'mapping_update']
     kind: Kind = 'release'
     input_digest: Digest

@@ -58,7 +58,7 @@ def setup(tmp_path, monkeypatch):
 def test_actual_modeling_export_uses_independent_identity_and_retains_parent(setup):
     manager, pid, store, captured, _ = setup
     first = hub_packages.publish(manager, pid, 'request_demo', 'synthetic-actor', 'synthetic-scope')
-    assert first['manifest_id'] != pid and first['hub_package_id'] != pid
+    assert first['ontology_id'] != pid and first['hub_package_id'] != pid
     assert first == hub_packages.publish(manager, pid, 'request_demo', 'synthetic-actor', 'synthetic-scope')
     second = hub_packages.publish(manager, pid, 'request_next', 'synthetic-actor', 'synthetic-scope')
     assert second['base_release_id'] == first['release_id']
@@ -112,10 +112,10 @@ def test_hub_committed_local_receipt_failure_is_recoverable(setup, monkeypatch):
 def test_import_external_then_publish_preserves_manifest_and_package_identity(setup, tmp_path):
     manager, pid, store, _, _ = setup
     original = tmp_path / 'synthetic.zip'
-    manager.export_package_zip(pid, original, version='0.1.8', manifest_id='ontology_demo')
+    manager.export_package_zip(pid, original, version='0.1.8', ontology_id='ontology_demo')
     data = original.read_bytes()
     actor = Identity('actor_a', 'consumer')
-    payload = dict(request_id='external_demo', manifest_id='ontology_demo', change_type='external_import',
+    payload = dict(request_id='external_demo', ontology_id='ontology_demo', change_type='external_import',
                    input_digest=hashlib.sha256(data).hexdigest(), version='0.1.8')
     store.reserve(payload, actor)
     store.upload('external_demo', actor, io.BytesIO(data), payload['input_digest'])
@@ -126,7 +126,7 @@ def test_import_external_then_publish_preserves_manifest_and_package_identity(se
     assert hub_packages.import_package(manager, body, 'actor_a', 'scope_a', 'operator_a')['id'] == imported['id']
     result = hub_packages.publish(manager, imported['id'], 'next_demo', 'actor_a', 'scope_a', True)
     assert result['hub_package_id'] == receipt['hub_package_id']
-    assert result['manifest_id'] == 'ontology_demo' and result['version'] == '0.1.9'
+    assert result['ontology_id'] == 'ontology_demo' and result['version'] == '0.1.9'
     assert result['base_digest'] == receipt['package_digest']
 
 

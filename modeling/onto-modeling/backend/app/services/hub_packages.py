@@ -80,7 +80,7 @@ def record(manager, pid, subject, receipt, options=None):
     if previous.get('committed_at', '') > receipt.get('committed_at', ''):
         return
     manager.project_root(pid)
-    value = {k: receipt[k] for k in ('hub_package_id', 'manifest_id', 'release_id', 'package_digest', 'version')}
+    value = {k: receipt[k] for k in ('hub_package_id', 'ontology_id', 'release_id', 'package_digest', 'version')}
     value['committed_at'] = receipt.get('committed_at', '')
     transport.save(path, value)
 
@@ -127,7 +127,7 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
                 manager._ensure_solver_publishable(pid)
             base = association(pid, subject)
             wire_id = hashlib.sha256(json.dumps([pid, subject, request_id]).encode()).hexdigest()
-            payload = dict(request_id=wire_id, manifest_id=base['manifest_id'] if base else uuid.uuid4().hex,
+            payload = dict(request_id=wire_id, ontology_id=base['ontology_id'] if base else uuid.uuid4().hex,
                            change_type='modeling_content', kind=kind, input_digest=input_digest)
             if base:
                 payload.update(hub_package_id=base['hub_package_id'], base_release_id=base['release_id'],
@@ -147,7 +147,7 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
                         raise WorkspaceError('发布快照不可用', 503)
                 temporary = folder / 'package.tmp'
                 snapshot.export_package_zip(pid, temporary, binding=task['binding'], allow_unbound=allow_unbound,
-                                            version=receipt['version'], manifest_id=payload['manifest_id'],
+                                            version=receipt['version'], ontology_id=payload['ontology_id'],
                                             graph=task['graph'], relation_report=relation_report)
                 with temporary.open('rb') as handle:
                     os.fsync(handle.fileno())
@@ -237,7 +237,7 @@ def maintain(manager):
                 for receipt_path in (user_scope / 'requests').glob('*/receipt.json'):
                     receipt = transport.load(receipt_path)
                     if receipt['committed_at'] >= current.get('committed_at', ''):
-                        current = {k: receipt[k] for k in ('hub_package_id', 'manifest_id', 'release_id',
+                        current = {k: receipt[k] for k in ('hub_package_id', 'ontology_id', 'release_id',
                                                           'package_digest', 'version', 'committed_at')}
                         transport.save(association_path, current)
                 for task_path in user_scope.glob('*/*/task.json'):

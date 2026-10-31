@@ -53,7 +53,7 @@ def store(tmp_path):
 def publish(store, data=None, request_id='request_demo', identity=None, **extra):
     identity = identity or Identity('synthetic-owner', 'consumer')
     data = archive() if data is None else data
-    payload = dict(request_id=request_id, manifest_id='ontology_demo', change_type='external_import',
+    payload = dict(request_id=request_id, ontology_id='ontology_demo', change_type='external_import',
                    input_digest=sha(data), version='0.1.1', **extra)
     result, _ = store.reserve(payload, identity)
     store.upload(request_id, identity, io.BytesIO(data), sha(data))
@@ -62,7 +62,7 @@ def publish(store, data=None, request_id='request_demo', identity=None, **extra)
 
 def derived(store, base, request_id='derived_demo', kind='release'):
     actor = Identity('synthetic-owner', 'evaluation')
-    payload = dict(request_id=request_id, manifest_id='ontology_demo', hub_package_id=base['hub_package_id'],
+    payload = dict(request_id=request_id, ontology_id='ontology_demo', hub_package_id=base['hub_package_id'],
                    change_type='mapping_update', input_digest='a' * 64, kind=kind,
                    base_release_id=base['release_id'], base_digest=base['package_digest'])
     result, _ = store.reserve(payload, actor)
@@ -73,6 +73,8 @@ def test_external_without_project_and_cross_service_owner_access(store):
     original = archive()
     result = publish(store, original)
     assert store.release(result['hub_package_id'], result['release_id'], 'synthetic-owner')[1].read_bytes() == original
+    assert result['ontology_id'] == 'ontology_demo'
+    assert store.packages('synthetic-owner')['items'][0]['ontology_id'] == 'ontology_demo'
     assert not (store.root / 'projects').exists()
     assert 'project_id' not in json.dumps(result) and 'owner_subject' not in result
     assert store.packages('synthetic-owner')['total'] == 1
@@ -150,7 +152,7 @@ def test_idempotency_and_version_collision(store):
 
 def test_durable_reservation_recovers_metadata_without_new_package(store, monkeypatch):
     actor = Identity('synthetic-owner', 'consumer')
-    body = dict(request_id='request_demo', change_type='external_import', manifest_id='ontology_demo',
+    body = dict(request_id='request_demo', change_type='external_import', ontology_id='ontology_demo',
                 version='0.1.8', input_digest='a' * 64)
     with monkeypatch.context() as m:
         m.setattr(store, 'ensure_metadata', lambda row: (_ for _ in ()).throw(OSError('synthetic outage')))
@@ -165,7 +167,7 @@ def test_durable_reservation_recovers_metadata_without_new_package(store, monkey
 def test_git_failure_never_exposes_version_and_recovery_completes_only_commit(store, monkeypatch):
     actor = Identity('synthetic-owner', 'consumer')
     data = archive()
-    body = dict(request_id='request_demo', change_type='external_import', manifest_id='ontology_demo',
+    body = dict(request_id='request_demo', change_type='external_import', ontology_id='ontology_demo',
                 version='0.1.1', input_digest=sha(data))
     result, _ = store.reserve(body, actor)
     store.upload(body['request_id'], actor, io.BytesIO(data), sha(data))
@@ -249,7 +251,7 @@ def test_service_identity_separation_with_shared_modeling_credential(api, monkey
 def test_http_contract_with_real_authorization_boundary(api):
     client, headers = api
     data = archive()
-    payload = dict(request_id='request_demo', manifest_id='ontology_demo', change_type='external_import',
+    payload = dict(request_id='request_demo', ontology_id='ontology_demo', change_type='external_import',
                    version='0.1.1', input_digest=sha(data))
     with patch('hub.user_auth.urllib.request.OpenerDirector.open', side_effect=lambda *a, **k: userinfo()):
         result = client.post('/api/package-publish-requests', headers=headers['consumer'], json=payload)

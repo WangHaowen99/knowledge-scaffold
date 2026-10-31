@@ -25,7 +25,7 @@ def test_real_hub_accepts_snapshot_and_release_with_exact_mapping_scope(tmp_path
     owner='synthetic-owner'
     actor=Identity(owner,'consumer')
     raw=synthetic_package()
-    payload=dict(request_id='base_demo',manifest_id='knowledge_package_demo',change_type='external_import',input_digest=digest(raw),version='0.1.1',kind='release')
+    payload=dict(request_id='base_demo',ontology_id='knowledge_package_demo',change_type='external_import',input_digest=digest(raw),version='0.1.1',kind='release')
     reserved,_=hub.reserve(PublishBody(**payload).model_dump(),actor)
     hub.upload('base_demo',actor,io.BytesIO(raw),digest(raw))
     base=hub.commit('base_demo',actor)

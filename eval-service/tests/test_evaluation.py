@@ -31,7 +31,7 @@ def synthetic_package():
 class Dependencies:
     def __init__(self):
         self.raw=synthetic_package()
-        self.receipt=dict(hub_package_id='package_demo',release_id='release_demo',manifest_id='knowledge_package_demo',version='0.1.1',kind='release',package_digest=digest(self.raw),status='committed')
+        self.receipt=dict(hub_package_id='package_demo',release_id='release_demo',ontology_id='knowledge_package_demo',version='0.1.1',kind='release',package_digest=digest(self.raw),status='committed')
         self.releases={'release_demo':(self.raw,self.receipt)}
         self.requests={}
         self.submissions={}

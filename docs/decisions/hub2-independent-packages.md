@@ -10,8 +10,8 @@ Hub1 以建模项目授权并归档。外部包没有项目，后续评测只更
 - Hub2 通过固定账号服务 `/userinfo` 在线验证访问令牌和撤销状态；账号服务负责签名、issuer、audience、类型和用户状态检查。Hub 使用稳定 issuer 命名空间与 subject 绑定所有权，不查询建模项目，不缓存正向用户授权。禁止认证重定向。
 - 按调用服务区分身份，沿用 `ONTO_HUB_SERVICE_TOKEN` ↔ `HUB_SERVICE_TOKEN` 标识建模，包与项目资料共用；评测和消费另设各自凭据，不以开发阶段命名配置或运行目录。三种服务凭据分别允许建模正文发布、消费外部包导入、评测 mapping 派生发布；服务身份不能替代用户身份。消费与评测真实接入后续实施，本期使用合成协议测试。
 - 文件系统 JSON 请求日志先持久化 ID/版本分配，`committing` 意图明确授权提交边界。恢复只完成已有提交意图，不自动公开 uploaded；归档 Git 完成后公开版本。备份继续使用全局跨进程锁，包含新目录。
-- 初期支持现有建模导出的 `ontology-package` schema `0.1` / `0.2`（`operation-centric.v1`），包根等于 manifest ID。mapping 派生只允许修改 mapping 和 manifest version；该 schema 不生成摘要索引，其余 manifest 字段和 Markdown 索引均保持不变。新 schema 须另加精确比较规则，不能宽泛放行。
-- 建模发布统一进入个人 Hub 包，不提供发布目标选择。主体关联与恢复任务仅留在建模受控存储。新包 manifest ID 独立生成；导入已有包后保留其身份及基础版本。
+- 初期支持现有建模导出的 `ontology-package` schema `0.1` / `0.2`（`operation-centric.v1`），包根等于 ontology_id（manifest.yaml.id）。mapping 派生只允许修改 mapping 和 manifest version；该 schema 不生成摘要索引，其余 manifest 字段和 Markdown 索引均保持不变。新 schema 须另加精确比较规则，不能宽泛放行。
+- 建模发布统一进入个人 Hub 包，不提供发布目标选择。主体关联与恢复任务仅留在建模受控存储。新包 ontology_id（manifest.yaml.id） 独立生成；导入已有包后保留其身份及基础版本。
 - 已确认没有存量包，不提供历史复制、迁移或旧包接口兼容。现有建模内评测改用 Hub2 快照，不修改消费执行端。
 
 ## 备选方案

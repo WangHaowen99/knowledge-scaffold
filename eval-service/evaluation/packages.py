@@ -107,7 +107,7 @@ class Packages:
         if digest(raw)!=receipt['package_digest']:
             raise Failure('digest_mismatch','知识包校验失败',409,'package_fetch')
         _,manifest=unpack(raw)
-        if manifest['id']!=receipt['manifest_id'] or manifest['version']!=receipt['version']:
+        if manifest['id']!=receipt['ontology_id'] or manifest['version']!=receipt['version']:
             raise Failure('manifest_mismatch','包版本与回执不一致',409,'package_fetch')
         return raw, receipt
 
@@ -116,7 +116,7 @@ class Packages:
         mapping=preparation['mapping']
         if mapping is None:
             raise Failure('mapping_required','没有新的 mapping 可发布',422)
-        intent=dict(hub_package_id=base['hub_package_id'],manifest_id=base['manifest_id'],
+        intent=dict(hub_package_id=base['hub_package_id'],ontology_id=base['ontology_id'],
                     base_release_id=base['release_id'],base_digest=base['package_digest'],
                     change_type='mapping_update',kind=kind,input_digest=digest([base['package_digest'],mapping]),
                     request_id=request_id)

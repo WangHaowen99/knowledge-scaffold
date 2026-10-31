@@ -146,7 +146,7 @@ class Consumer:
             if exc.status!=409: raise
             # Retry the exact immutable Hub bytes of this version, also in a reused graph workspace.
             self.call('POST','/ontologies/import-zip',token,ws,data={'action':'overwrite_version'},files={'file':('package.zip',raw,'application/zip')})
-        result=self.call('PUT','/ontologies/'+quote(receipt['manifest_id'],safe='')+'/active-version',token,ws,
+        result=self.call('PUT','/ontologies/'+quote(receipt['ontology_id'],safe='')+'/active-version',token,ws,
                          json={'version':receipt['version']})
         if result.get('active_version')!=receipt['version']:
             raise Failure('activation_mismatch','消费激活版本不一致',409,'package_activate')
@@ -312,17 +312,17 @@ class Engine:
             source_definition=dict(run['source'])
             if source_definition.get('provider')=='neo4j' and source_definition.get('connection'):
                 graph_config=self.store.decrypt(source_definition['connection'])
-                if graph_config.get('ontology_property'): graph_config['ontology_value']=run['package_ref']['manifest_id']
+                if graph_config.get('ontology_property'): graph_config['ontology_value']=run['package_ref']['ontology_id']
                 source_definition['connection']=self.store.encrypt(graph_config)
             source=self.data.prepare(rid,source_definition,run.get('mapping'),run.get('relations'))
             if source:
-                self.consumer.call('PUT','/ontologies/'+quote(run['package_ref']['manifest_id'],safe='')+'/data-source',token,ws,json=source)
-                probe=self.consumer.call('POST','/ontologies/'+quote(run['package_ref']['manifest_id'],safe='')+'/data-source/test',token,ws,json={})
+                self.consumer.call('PUT','/ontologies/'+quote(run['package_ref']['ontology_id'],safe='')+'/data-source',token,ws,json=source)
+                probe=self.consumer.call('POST','/ontologies/'+quote(run['package_ref']['ontology_id'],safe='')+'/data-source/test',token,ws,json={})
                 if probe.get('success') is not True:
                     raise Failure('data_source_unavailable','消费数据源连接检查失败',503,'data_import')
             run=self.update(owner,rid,data_ready=True)
         if run['source'].get('provider')=='neo4j' and run['source'].get('import_data'):
-            self.data.graph.ensure_current(rid,run['source'],run['package_ref']['manifest_id'])
+            self.data.graph.ensure_current(rid,run['source'],run['package_ref']['ontology_id'])
         self.update(owner,rid,status='running',phase='cases',error=None)
         halt=threading.Event()
         def work(index):

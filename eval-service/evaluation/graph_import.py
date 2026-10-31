@@ -73,10 +73,10 @@ class GraphImports:
         self.guard = threading.RLock()
 
     @staticmethod
-    def connection(store, source, manifest_id):
+    def connection(store, source, ontology_id):
         if source.get('mode') != 'connection' or source.get('provider') != 'neo4j' or not source.get('import_data'):
             raise Failure('graph_import_required', '请选择 Neo4j 连接并开启图数据导入', 422, 'data_import')
-        connection = {**store.decrypt(source['connection']), 'ontology_value': manifest_id}
+        connection = {**store.decrypt(source['connection']), 'ontology_value': ontology_id}
         graph_scope(connection)
         return connection
 
@@ -85,10 +85,10 @@ class GraphImports:
         return digest([source.get('id'), source.get('revision'), source.get('input_ids', []),
                        source.get('tables_snapshot'), connection])
 
-    def inspect(self, owner, source, manifest_id, preparation_id=''):
+    def inspect(self, owner, source, ontology_id, preparation_id=''):
         from neo4j import GraphDatabase, READ_ACCESS
         from neo4j.exceptions import DriverError, Neo4jError
-        connection = self.connection(self.store, source, manifest_id)
+        connection = self.connection(self.store, source, ontology_id)
         scope = graph_scope(connection)
         try:
             with GraphDatabase.driver(connection['uri'], auth=(connection.get('username', ''), connection.get('password', '')),
@@ -109,7 +109,7 @@ class GraphImports:
         if not check_id:
             raise Failure('graph_check_required', '启动前请检查当前 Workspace 与 Ontology 范围的旧图数据', 409, 'data_import')
         record = self.store.get(owner, check_id, 'graph_checks')
-        connection = self.connection(self.store, prep['source'], prep['package_ref']['manifest_id'])
+        connection = self.connection(self.store, prep['source'], prep['package_ref']['ontology_id'])
         if record['preparation_id'] != prep['id'] or record['fingerprint'] != self.fingerprint(prep['source'], connection):
             raise Failure('graph_check_stale', '数据源或知识包范围已变化，请重新检查旧图数据', 409, 'data_import')
         if record['expires_at'] < time.time():
@@ -121,10 +121,10 @@ class GraphImports:
         return {'snapshot': record['snapshot'], 'fingerprint': record['fingerprint'],
                 'replace_existing': replace_existing, 'check_id': check_id}
 
-    def ensure_current(self, run_id, source, manifest_id):
+    def ensure_current(self, run_id, source, ontology_id):
         from neo4j import GraphDatabase, READ_ACCESS
         from neo4j.exceptions import DriverError, Neo4jError
-        connection = self.connection(self.store, source, manifest_id)
+        connection = self.connection(self.store, source, ontology_id)
         try:
             with GraphDatabase.driver(connection['uri'], auth=(connection.get('username', ''), connection.get('password', '')),
                                       connection_timeout=10) as driver:
