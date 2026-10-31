@@ -347,7 +347,9 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
                       placeholder: form.secret_configured ? '已配置；留空沿用' : '请输入访问凭据',
                     },
                   })}
-                  {configField('evaluation_workspace_id', '评测工作空间 ID *')}
+                  {configField('evaluation_workspace_id', '评测工作空间 ID *', {
+                    hint: '评测在同名 consumer 工作空间中执行，空间名称与 ID 一致',
+                  })}
                 </>
               )}
             </div>

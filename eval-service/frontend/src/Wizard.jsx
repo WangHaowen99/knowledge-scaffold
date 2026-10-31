@@ -1,6 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { allPages, api, requestId } from './api.js';
-import { ACTIVE, DEFAULT_CONCURRENCY, MAX_CONCURRENCY, modelOptionLabel, packageReference, sourceSummary } from './domain.js';
+import {
+  ACTIVE,
+  DEFAULT_CONCURRENCY,
+  MAX_CONCURRENCY,
+  judgeMissingReason,
+  modelOptionLabel,
+  packageReference,
+  sourceSummary,
+} from './domain.js';
 import { Alert, Badge, Button, Confirm, Empty, Field, Heading, Icon, Skeleton, useAction } from './ui.jsx';
 import { CaseEditor } from './CaseEditor.jsx';
 import { GraphScopeStatus, MappingPreview, SourceEditor } from './SourceEditor.jsx';
@@ -34,7 +42,8 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
     [preview, setPreview] = useState(null);
   const [concurrency, setConcurrency] = useState(DEFAULT_CONCURRENCY),
     [modelId, setModelId] = useState(''),
-    [models, setModels] = useState(null);
+    [models, setModels] = useState(null),
+    [judgeMissing, setJudgeMissing] = useState(false);
   const { busy, error, setError, act } = useAction(),
     generation = useRef(0),
     sourceGeneration = useRef(0),
@@ -593,8 +602,10 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
                       <li>
                         <Icon name={session.judge?.configured ? 'check' : 'info'} />
                         {session.judge?.configured
-                          ? `评测判分模型已配置：${session.judge.model}`
-                          : '评测判分模型尚未配置，请先前往评测判分模型配置'}
+                          ? `评测判分模型已配置：${session.judge.model}（${session.judge.source === 'personal' ? '我的配置' : '默认配置'}）`
+                          : session.judge?.source === 'disabled'
+                            ? '管理员已停用默认判分模型，请先在评测判分模型配置中填写你自己的判分模型'
+                            : '评测判分模型尚未配置，请先前往评测判分模型配置'}
                       </li>
                     </ul>
                   </>
@@ -630,9 +641,9 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
                 {models && !models.available && (
                   <Alert tone="amber">未能读取 consumer 模型池，本轮将使用 consumer 默认模型。</Alert>
                 )}
-                {source?.provider === 'neo4j' && (
+                {source?.mode === 'connection' && (
                   <p className="help-text">
-                    Neo4j 数据源在与 Workspace 对应值同名的 consumer 工作空间中执行：不存在时以你的账号创建；已存在时仅复用你独有、未共享的空间，并在其中导入、激活本轮知识包版本。
+                    外部连接数据源在同名的 consumer 工作空间中执行（Neo4j 取 Workspace 对应值，NL2SQL 取评测工作空间 ID，空间名称与 ID 一致）：不存在时以你的账号创建；已存在时仅复用你独有、未共享的空间，并在其中导入、激活本轮知识包版本。
                   </p>
                 )}
               </section>
@@ -712,14 +723,25 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
             <Button
               variant="primary"
               busy={busy}
-              disabled={!prep || !evalSet?.id || !!currentRun || !session.judge?.configured}
-              onClick={() => act(start)}
+              disabled={!prep || !evalSet?.id || !!currentRun}
+              onClick={() => (session.judge?.configured ? act(start) : setJudgeMissing(true))}
             >
               开始评测 · {evalSet?.cases.length || 0} 条
             </Button>
           )}
         </div>
       </footer>
+      {judgeMissing && (
+        <Confirm
+          title="评测判分模型未配置"
+          label="前往配置"
+          onClose={() => setJudgeMissing(false)}
+          onConfirm={() => navigate('/settings')}
+        >
+          <p>{judgeMissingReason(session.judge)}</p>
+          <p>前往配置会离开当前向导，配置完成后需重新发起评测。</p>
+        </Confirm>
+      )}
       {changeSet !== null && (
         <Confirm
           title="放弃未保存的用例修改？"

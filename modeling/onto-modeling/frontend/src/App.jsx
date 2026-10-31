@@ -349,7 +349,7 @@ export default function App() {
       { type: 'divider' },
       { key: 'export-onto', label: '导出知识包（原始产物）' },
       { key: 'export-pkg', label: '发布为知识包（供消费端导入）' },
-      { key: 'published-versions', label: '已发布版本' },
+      { key: 'published-versions', label: '已发布版本（知识包评测）' },
       { key: 'export-ws', label: '导出迁移包（完整工作区）' },
       { type: 'divider' },
       { key: 'delete', label: '删除', danger: true },

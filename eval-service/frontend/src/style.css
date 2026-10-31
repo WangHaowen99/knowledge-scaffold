@@ -943,22 +943,28 @@ caption {
   color: #607c9f;
 }
 .task-table th:first-child {
-  width: 22%;
+  width: 20%;
 }
 .task-table th:nth-child(2) {
-  width: 16%;
+  width: 14%;
 }
 .task-table th:nth-child(3) {
   width: 9%;
 }
 .task-table th:nth-child(4) {
-  width: 11%;
+  width: 10%;
 }
 .task-table th:nth-child(5) {
-  width: 13%;
+  width: 10%;
 }
 .task-table th:nth-child(6) {
-  width: 13%;
+  width: 11%;
+}
+.task-table th:nth-child(7) {
+  width: 11%;
+}
+.start-time b {
+  font-weight: 500;
 }
 .modeling-project {
   color: #4b678e;
@@ -1719,11 +1725,64 @@ code {
   font-size: 17px;
   margin: 0;
 }
+.settings label.use-default {
+  flex-direction: row;
+  align-items: center;
+  font-size: 13px;
+  color: #3b506c;
+}
+.settings label.use-default > input {
+  width: auto;
+  min-height: 0;
+}
+.settings + .settings {
+  margin-top: 18px;
+}
 .settings .row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 20px;
+}
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 12px;
+  color: #3b506c;
+  cursor: pointer;
+}
+.switch > span {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 9px;
+  background: #c9d3e1;
+  transition: background 0.15s;
+}
+.switch > span::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s;
+}
+.switch[aria-checked='true'] > span {
+  background: var(--primary);
+}
+.switch[aria-checked='true'] > span::after {
+  transform: translateX(16px);
+}
+.switch:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 .settings p {
   font-size: 12px;
@@ -2496,19 +2555,29 @@ code {
     top: 18px;
   }
   .task-table td:nth-child(4) {
+    grid-column: 2;
+    grid-row: 3;
+    justify-self: end;
+    align-self: center;
+  }
+  .task-table td:nth-child(4) > small {
+    display: inline;
+    margin-left: 5px;
+  }
+  .task-table td:nth-child(5) {
     grid-column: 1;
     grid-row: 3;
   }
-  .task-table td:nth-child(5) {
+  .task-table td:nth-child(6) {
     grid-row: 4;
     align-self: center;
   }
-  .task-table td:nth-child(5) > small {
+  .task-table td:nth-child(6) > small {
     display: inline;
     margin-left: 7px;
     font-size: 9px;
   }
-  .task-table td:nth-child(6) {
+  .task-table td:nth-child(7) {
     display: none;
   }
   .task-table td:last-child {

@@ -9,6 +9,7 @@ import {
   canResume,
   caseState,
   packageName,
+  packageVersions,
   percent,
   shortId,
 } from './domain.js';
@@ -155,6 +156,7 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
     );
   const phaseIndex = run.phase === 'finished' ? 4 : PHASES.findIndex(([key]) => key === run.phase);
   const current = cases.find((c) => ['executing', 'unknown', 'answer_ready'].includes(c.status));
+  const versions = packageVersions(run);
   return (
     <>
       {breadcrumb}
@@ -182,7 +184,9 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
           </>
         }
       >
-        {packageName(run)} / {run.package_ref?.version} · {run.data_source_name || '数据源配置快照'} ·{' '}
+        {packageName(run)} / {versions.base || '—'}
+        {versions.snapshot && `（评测快照 ${versions.snapshot}）`} ·{' '}
+        {run.data_source_name || '数据源配置快照'} ·{' '}
         {run.eval_set_name || '评测集快照'}
       </Heading>
       {copyMessage && <Alert>{copyMessage}</Alert>}
@@ -236,7 +240,7 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
       )}
       {run.status === 'cancelling' && (
         <Alert tone="amber" title="正在停止并核对远端状态">
-          已经完成的回答与判分会保留。完成对账后才允许删除本轮任务。
+          已经完成的回答与判分会保留。完成对账后才允许删除评测记录。
         </Alert>
       )}
       <section className="panel phase-track">
@@ -375,6 +379,11 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
                             <b>{view[2]}</b>
                             {view[0]}
                           </span>
+                          {['execution_error', 'judge_error'].includes(state) && c.error?.message && (
+                            <small className="danger" title={c.error.message}>
+                              {c.error.message}
+                            </small>
+                          )}
                         </td>
                         <td>
                           <Button variant="text" onClick={() => setSelected(c.id)}>
@@ -467,9 +476,9 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
               </Button>
             )}
           </div>
-          {ENDED.has(run.status) && (
+          {!ACTIVE.has(run.status) && (
             <Button variant="text danger" onClick={() => onAction('delete', run, refresh)}>
-              删除本轮任务
+              删除评测记录
             </Button>
           )}
         </aside>
@@ -499,8 +508,10 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
             <dd>{id}</dd>
             <dt>知识包</dt>
             <dd>{packageName(run)}</dd>
-            <dt>版本</dt>
-            <dd>{run.package_ref?.version}</dd>
+            <dt>知识包版本</dt>
+            <dd>{versions.base || `—（基础版本 ID：${versions.baseId || '未知'}）`}</dd>
+            <dt>评测快照版本</dt>
+            <dd>{versions.snapshot || '未生成（直接使用发布版本）'}</dd>
             <dt>内容摘要</dt>
             <dd>
               <code>{run.package_ref?.package_digest}</code>
@@ -616,7 +627,12 @@ function AnswerDrawer({ run, caseId, cases, onChange, onClose, onSaved }) {
           <div className="answer-block">
             <label>完整回答</label>
             <div className="answer-content">
-              {answer.answer || '尚未获得答案'}
+              {answer.answer ||
+                (answer.error?.message ? (
+                  <span className="danger">未获得答案：{answer.error.message}</span>
+                ) : (
+                  '尚未获得答案'
+                ))}
               {!answer.answer && ACTIVE.has(run.status) && (
                 <Button variant="text" busy={busy} onClick={() => act(load)}>
                   刷新答案
@@ -698,7 +714,9 @@ function AnswerDrawer({ run, caseId, cases, onChange, onClose, onSaved }) {
 
 function Publication({ run, onClose }) {
   const { busy, error, act } = useAction(),
-    [receipt, setReceipt] = useState(null);
+    [receipt, setReceipt] = useState(null),
+    // A derived release is built on the release the user chose, not on the evaluation snapshot.
+    { base, baseId } = packageVersions(run);
   async function publish() {
     const key = requestId('publish', run.preparation_id);
     const result = await api('/package-publications', {
@@ -733,7 +751,7 @@ function Publication({ run, onClose }) {
         <dt>知识包</dt>
         <dd>{packageName(run)}</dd>
         <dt>来源版本</dt>
-        <dd>{run.package_ref.version}</dd>
+        <dd>{base || baseId || '—'}</dd>
         <dt>准备结果</dt>
         <dd>{run.preparation_id}</dd>
       </dl>

@@ -134,3 +134,20 @@ class Packages:
             raise Failure('publish_pending','Hub 尚未确认发布完成',409,'publication')
         self.store.save(owner,task['id'],dict(status='committed',intent=intent,receipt=reservation))
         return reservation
+
+    def snapshot(self, owner, preparation, token):
+        """Reuse the committed evaluation snapshot for the same base release and mapping.
+
+        Every snapshot takes a version number from the package's shared sequence, so repeated runs must not
+        publish identical ones. Only committed snapshots are reused: an expired Hub reservation cannot be
+        retried under its request ID, so a new publication keeps the per-preparation request ID.
+        """
+        base_digest=preparation['base']['package_digest']
+        key=digest([base_digest,preparation['mapping']])
+        identity={'base_digest':base_digest,'mapping_digest':key}
+        found=self.store.lookup_request(owner,'snapshot-reuse',key,identity)
+        if found:
+            return found['receipt']
+        receipt=self.publish(owner,preparation,token,'snapshot-'+preparation['id'],'evaluation_snapshot')
+        self.store.create(owner,'snapshot-reuse',{'receipt':receipt},key,identity=identity)
+        return receipt

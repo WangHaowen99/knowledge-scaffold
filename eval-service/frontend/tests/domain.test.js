@@ -9,10 +9,13 @@ import {
   sourceFromRecord,
   sourcePayload,
   packageIds,
+  runStartTime,
+  judgeMissingReason,
   modelingProjectQueries,
   modelingProjectLabel,
   DEFAULT_CONCURRENCY,
   modelOptionLabel,
+  packageVersions,
 } from '../src/domain.js';
 
 // Package identifiers and project names are synthetic.
@@ -118,4 +121,30 @@ test('model choices show name, model and the consumer default', () => {
     'Synthetic · synthetic-model（默认）',
   );
   assert.equal(modelOptionLabel({ id: 'global:synthetic_alt', name: '', model: '' }), 'global:synthetic_alt');
+});
+
+test('version column shows the chosen release and the snapshot that ran', () => {
+  const snapshot = { kind: 'evaluation_snapshot', version: '0.1.13', release_id: 'release_snapshot', base_release_id: 'release_demo' };
+  assert.deepEqual(packageVersions({ base_ref: { version: '0.1.7', release_id: 'release_demo' }, package_ref: snapshot }), {
+    base: '0.1.7', baseId: 'release_demo', snapshot: '0.1.13',
+  });
+  assert.deepEqual(packageVersions({ package_ref: { kind: 'release', version: '0.1.7', release_id: 'release_demo' } }), {
+    base: '0.1.7', baseId: 'release_demo', snapshot: '',
+  });
+  // Older runs only kept the snapshot, so the base version is unknown but its release ID remains.
+  assert.deepEqual(packageVersions({ package_ref: snapshot }), { base: '', baseId: 'release_demo', snapshot: '0.1.13' });
+});
+
+test('start time prefers when execution began and falls back to creation for queued runs', () => {
+  const created = new Date(2026, 0, 2, 3, 4, 5).getTime() / 1000,
+    started = new Date(2026, 9, 30, 14, 5, 9).getTime() / 1000;
+  assert.deepEqual(runStartTime({ created_at: created, started_at: started }), { date: '2026-10-30', time: '14:05:09' });
+  assert.deepEqual(runStartTime({ created_at: created }), { date: '2026-01-02', time: '03:04:05' });
+  assert.equal(runStartTime({}), null);
+});
+
+test('starting without a judge explains why instead of only disabling the button', () => {
+  assert.match(judgeMissingReason({ source: 'disabled', configured: false }), /管理员已停用默认判分模型/);
+  assert.match(judgeMissingReason({ source: 'deployment', configured: false }), /没有可用的评测判分模型/);
+  assert.match(judgeMissingReason(undefined), /没有可用的评测判分模型/);
 });

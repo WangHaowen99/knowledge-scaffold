@@ -28,6 +28,20 @@ def request_key(subject, service, request_id):
 PUBLIC = ('request_id', 'hub_package_id', 'release_id', 'manifest_id', 'version', 'kind',
           'source_service', 'change_type', 'base_release_id', 'base_digest', 'status',
           'package_digest', 'size', 'created_at', 'expires_at', 'committed_at')
+SNAPSHOT = re.compile(r'^(?P<root>.+)-eval\.(?P<number>[0-9]{1,9})$')
+
+
+def snapshot_version(base_version, occupied):
+    """Evaluation snapshots are named <base version>-eval.<n>, outside the formal 0.1.N sequence.
+
+    n counts the snapshots of that base version. A snapshot of a snapshot keeps the original base,
+    and a snapshot without a base release is numbered against 0.1.0, before the first release.
+    """
+    match = SNAPSHOT.match(base_version or '')
+    root = match.group('root') if match else (base_version or '0.1.0')
+    numbers = [int(found.group('number')) for found in map(SNAPSHOT.match, occupied)
+               if found and found.group('root') == root]
+    return f'{root}-eval.{max(numbers, default=0) + 1}'
 
 
 def public(row):
@@ -110,6 +124,7 @@ class PackageStore:
                 raise PackageError('identity_conflict', 'Manifest identity changed', 409)
         else:
             package_id = uuid.uuid4().hex
+        base = None
         if payload['base_release_id']:
             base, _ = self.release(package_id, payload['base_release_id'], identity.subject)
             if base['package_digest'] != payload['base_digest']:
@@ -119,6 +134,8 @@ class PackageStore:
         if version:
             if version in occupied:
                 raise PackageError('version_conflict', 'Package version already reserved', 409)
+        elif payload['kind'] == 'evaluation_snapshot':
+            version = snapshot_version(base['version'] if base else '', occupied)
         else:
             numbers = [int(v.split('.')[2]) for v in occupied if re.fullmatch(r'0\.1\.[0-9]{1,12}', v)]
             version = f'0.1.{max(numbers, default=0) + 1}'

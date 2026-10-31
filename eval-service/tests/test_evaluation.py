@@ -84,12 +84,12 @@ class Dependencies:
                     self.fail_commit_response=False
                     raise Failure('network','Unknown result',503)
             return row
-        if path=='/agentic/internal/evaluation/workspaces/ensure': return {'workspace':{'id':'eval-'+kwargs['json']['run_id']}}
+        if path=='/agentic/internal/evaluation/workspaces': return {'workspace':{'id':'eval-'+kwargs['json']['run_id']}}
         if path=='/agentic/workspaces' and method=='GET':
             return {'workspaces':[{'id':'workspace_personal_demo'}],'preferred_workspace_id':'workspace_personal_demo'}
         if path=='/agentic/workspaces' and method=='POST':
             body=kwargs['json']
-            self.workspaces[body['id']]={'id':body['id'],'role':'admin','members':[]}
+            self.workspaces[body['id']]={'id':body['id'],'name':body['name'],'role':'admin','members':[]}
             return self.workspaces[body['id']]
         if path.startswith('/agentic/workspaces/') and method=='GET':
             found=self.workspaces.get(path.rsplit('/',1)[1])
@@ -376,7 +376,7 @@ def test_judge_settings_are_admin_only_encrypted_and_used_by_new_runs(environmen
     deps.roles['synthetic-user-b']='admin'
     admin={'Authorization':'Bearer synthetic-user-b'}
     url='/evaluation/api/judge-settings'
-    assert client.get(url).json()=={'source':'deployment','model':'synthetic','revision':'1','editable':False,'configured':True}
+    assert client.get(url).json()=={'source':'deployment','model':'synthetic','revision':'1','editable':False,'configured':True,'enabled':True}
     body={'base_url':'https://judge-new.example.com/v1/','model':'synthetic-judge-2','api_key':'synthetic-new-key'}
     assert client.put(url,json=body).status_code==403
     assert client.post(url+'/test',json=body).status_code==403
@@ -394,7 +394,7 @@ def test_judge_settings_are_admin_only_encrypted_and_used_by_new_runs(environmen
     # Re-saving with an empty key keeps the key and the revision for the same gateway.
     again=client.put(url,json={**body,'api_key':''},headers=admin).json()
     assert again['revision']==saved['revision']
-    assert client.get('/evaluation/api/session').json()['judge']=={'model':'synthetic-judge-2','revision':saved['revision']}
+    assert client.get('/evaluation/api/session').json()['judge']=={'model':'synthetic-judge-2','revision':saved['revision'],'source':'settings'}
     deps.judge_calls.clear()
     result=wait(client,run(client,preparation(client))['id'])
     assert result['status']=='completed',result

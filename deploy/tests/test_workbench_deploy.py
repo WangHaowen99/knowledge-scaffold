@@ -1256,7 +1256,7 @@ def _drive_tty(
 
 
 def _interactive_upgrade_answers(
-    setup: dict, *extra: tuple[str, str], hub: str = ""
+    setup: dict, *extra: tuple[str, str], hub: str = "", evaluation: str = ""
 ) -> list[tuple[str, str]]:
     consumer_package, modeling_package, onto_package = setup["packages"]
     return [
@@ -1267,6 +1267,7 @@ def _interactive_upgrade_answers(
         ("请输入 Modeling 发布包路径", str(modeling_package)),
         ("请输入 Onto Modeling 发布包路径", str(onto_package.parent / "onto-modeling-*.tar.gz")),
         ("请输入知识包 Hub 发布包路径", hub),
+        ("请输入独立评测服务发布目录", evaluation),
         *extra,
     ]
 
@@ -1362,6 +1363,7 @@ def test_interactive_install_rejects_custom_onto_port_equal_to_modeling(tmp_path
             ("请输入 Modeling 发布包路径", str(modeling_package)),
             ("请输入 Onto Modeling 发布包路径", str(onto_package)),
             ("请输入知识包 Hub 发布包路径", ""),
+            ("请输入独立评测服务发布目录", ""),
             ("请输入 Onto Modeling 宿主端口", "55110"),
         ],
         setup["env"],
@@ -1404,7 +1406,10 @@ def _prepare_legacy_upgrade(tmp_path: Path) -> dict:
     return setup
 
 
-def _legacy_answers(setup: dict, onto_answer: str, *extra: tuple[str, str], hub_answer: str = "") -> list:
+def _legacy_answers(
+    setup: dict, onto_answer: str, *extra: tuple[str, str],
+    hub_answer: str = "", evaluation: str = ""
+) -> list:
     consumer_package, modeling_package, _ = setup["packages"]
     return [
         ("旧的合并部署根目录", str(setup["legacy"])),
@@ -1412,6 +1417,7 @@ def _legacy_answers(setup: dict, onto_answer: str, *extra: tuple[str, str], hub_
         ("Modeling 镜像 tar 包路径", str(modeling_package)),
         ("Onto Modeling 发布包路径", onto_answer),
         ("知识包 Hub 发布包路径", hub_answer),
+        ("独立评测服务发布目录", evaluation),
         *extra,
     ]
 

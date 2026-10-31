@@ -23,14 +23,17 @@ pass=关键结论与数值一致；partial=方向正确但遗漏；fail=关键�
 class Judge:
     def __init__(self,settings,http): self.settings,self.http=settings,http
 
-    def profile(self,current=None):
-        c=current or self.settings.effective()
+    def profile(self,current=None,owner=None):
+        c=current or self.settings.effective(owner)
+        if c.get('source')=='disabled':
+            raise Failure('judge_default_disabled','管理员已停用默认判分模型，请在“评测判分模型配置”中填写你自己的判分模型',409,'judging')
         if not all((c['url'],c['key'],c['model'],c['revision'])):
             raise Failure('judge_unconfigured','Judge 配置缺失（MODEL-CONFIG-01）',503,'judging')
         return dict(model=c['model'],revision=c['revision'],rule_version='1')
 
-    def score(self, question, reference, answer, expected=None, current=None):
-        current=current or self.settings.effective()
+    def score(self, question, reference, answer, expected=None, current=None, owner=None):
+        # owner selects that user's personal configuration, falling back to the shared default.
+        current=current or self.settings.effective(owner)
         profile=self.profile(current)
         # One run is judged by one configuration; a change mid-run stops judging instead of mixing models.
         if expected and profile!=expected:
@@ -51,8 +54,8 @@ class Judge:
         except (KeyError,IndexError,ValueError,TypeError) as exc:
             raise Failure('judge_protocol','Judge 未返回有效结构化判分',422,'judging') from exc
 
-    def preflight(self,current=None):
-        self.score('合成协议检查：1 加 1 等于几？','2','2',current=current)
+    def preflight(self,current=None,owner=None):
+        self.score('合成协议检查：1 加 1 等于几？','2','2',current=current,owner=owner)
 
 
 class Consumer:
@@ -64,17 +67,33 @@ class Consumer:
     def ensure(self,token,run_id):
         if not self.config.consumer_token:
             raise Failure('consumer_unconfigured','请配置受限 evaluation 消费凭据',503)
-        return self.call('POST','/internal/evaluation/workspaces/ensure',token,
-                         headers={'X-Evaluation-Service-Token':self.config.consumer_token},json={'run_id':run_id})['workspace']['id']
+        try:
+            result=self.call('POST','/internal/evaluation/workspaces',token,
+                             headers={'X-Evaluation-Service-Token':self.config.consumer_token},json={'run_id':run_id})
+        except Failure as exc:
+            status=exc.upstream_status or exc.status
+            messages={
+                401:'consumer 未接受用户登录，请重新登录后恢复评测',
+                403:'consumer 拒绝创建评测空间，请检查用户授权和评测服务凭据是否匹配',
+                404:'consumer 评测空间创建接口不可用，请更新并重新部署 consumer',
+                409:'consumer 评测空间创建冲突，请检查空间归属和用户状态',
+            }
+            raise Failure('consumer_workspace_rejected',messages.get(status,'consumer 评测空间创建失败，请检查 consumer 服务后恢复'),
+                          exc.status, 'workspace_prepare',upstream_status=status) from exc
+        workspace=result.get('workspace') if isinstance(result,dict) else None
+        workspace_id=workspace.get('id') if isinstance(workspace,dict) else None
+        if not isinstance(workspace_id,str) or not workspace_id.startswith('eval-') or len(workspace_id)!=37 or any(c not in '0123456789abcdef' for c in workspace_id[5:]):
+            raise Failure('consumer_workspace_protocol','consumer 未返回有效的评测空间标识，请检查服务版本',502,'workspace_prepare')
+        return workspace_id
 
     def scope_workspace(self,token,workspace_id):
-        """Use the consumer workspace named by the graph Workspace value, so graph scope and workspace agree.
+        """Use the consumer workspace whose ID the data source names, with a name equal to that ID.
 
         Only the user's own workspace permissions are used: create it when missing, otherwise reuse it only
         when this user owns it and has not shared it, because the run imports and activates a package there.
         """
         path='/workspaces/'+quote(workspace_id,safe='')
-        taken=Failure('workspace_not_owned',f'consumer 工作空间 {workspace_id} 不是你独占的空间，评测不会在他人或共享的空间中导入知识包；请更换 Workspace 对应值',409,'workspace_prepare')
+        taken=Failure('workspace_not_owned',f'consumer 工作空间 {workspace_id} 不是你独占的空间，评测不会在他人或共享的空间中导入知识包；请更换数据源中的工作空间 ID',409,'workspace_prepare')
         try:
             current=self.call('GET',path,token)
         except Failure as exc:
@@ -83,8 +102,8 @@ class Consumer:
             if status!=404:
                 raise Failure('consumer_workspace_rejected','consumer 工作空间查询失败，请检查 consumer 服务后恢复',exc.status,'workspace_prepare',upstream_status=status) from exc
             try:
-                self.call('POST','/workspaces',token,json={'id':workspace_id,'name':'评测 · '+workspace_id,
-                                                           'description':'知识包评测按图数据 Workspace 值创建'})
+                self.call('POST','/workspaces',token,json={'id':workspace_id,'name':workspace_id,
+                                                           'description':'知识包评测按数据源配置的工作空间 ID 创建'})
                 return workspace_id
             except Failure as rejected:
                 try:
@@ -138,6 +157,24 @@ def final_answer(remote):
     if isinstance(value,dict):
         value=value.get('content') or value.get('text') or value.get('final_answer') or value.get('output')
     return value.strip() if isinstance(value,str) else ''
+
+
+def consumer_failure(remote):
+    """Why a consumer run produced no answer, from its public status and error fields (message <= 1000 chars)."""
+    status=remote.get('status')
+    if status=='cancelled':
+        return {'code':'consumer_cancelled','message':'consumer 运行已取消','phase':'cases'}
+    if status=='awaiting_input':
+        return {'code':'consumer_awaiting_input','message':'consumer 运行在等待用户补充信息，评测无法交互作答','phase':'cases'}
+    if status=='completed':
+        return {'code':'consumer_empty_answer','message':'consumer 运行已完成，但未返回可判分的回答','phase':'cases'}
+    error=remote.get('error') if isinstance(remote.get('error'),dict) else {}
+    code=str(error.get('error_code') or '').strip()[:100] or 'UNKNOWN'
+    detail=str(error.get('message') or '').strip()[:1000]
+    # consumer reports "Execution failed" when it has no more specific detail.
+    suffix=f'：{detail}' if detail and detail!='Execution failed' else ''
+    return {'code':'consumer_run_failed','consumer_error_code':code,
+            'message':f'consumer 执行失败（{code}）{suffix}','phase':'cases'}
 
 
 def report(run):
@@ -205,10 +242,17 @@ class Engine:
             run['updated_at']=time.time()
             self.store.save(owner,rid,run)
 
-    def graph_workspace(self,run):
+    def configured_workspace(self,run):
+        """Consumer workspace named by a connection source: the graph Workspace value or the NL2SQL evaluation workspace ID.
+
+        Graph queries fall back to the workspace ID and the NL2SQL scene is bound to that workspace, so both
+        must run there. Legacy connections without the field keep the per-run workspace.
+        """
         source=run.get('source') or {}
-        if source.get('provider')!='neo4j' or not source.get('connection'): return ''
-        return self.store.decrypt(source['connection']).get('workspace_value','')
+        if source.get('mode')!='connection' or not source.get('connection'): return ''
+        config=self.store.decrypt(source['connection'])
+        if not isinstance(config,dict): return ''
+        return str(config.get('workspace_value' if source.get('provider')=='neo4j' else 'evaluation_workspace_id') or '')
 
     def stop(self,owner,rid):
         with self.guard:
@@ -243,13 +287,13 @@ class Engine:
             self._cancel(owner,rid,run)
             return
         if not run.get('started_at'): run=self.update(owner,rid,started_at=time.time(),error=None)
-        if run['judge']!=self.judge.profile():
+        if run['judge']!=self.judge.profile(owner=owner):
             raise Failure('configuration_changed','Judge 配置已变化，请创建新轮次',409)
-        self.judge.preflight()
+        self.judge.preflight(owner=owner)
         if not run.get('workspace'):
-            scope=self.graph_workspace(run)
+            scope=self.configured_workspace(run)
             if scope:
-                # The user's graph workspace outlives this run and is never deleted with it.
+                # The configured workspace outlives this run and is never deleted with it.
                 run=self.update(owner,rid,workspace=self.consumer.scope_workspace(token,scope),managed_workspace=False,status='preparing')
             else:
                 run=self.update(owner,rid,workspace=self.consumer.ensure(token,rid),managed_workspace=True,status='preparing')
@@ -342,6 +386,7 @@ class Engine:
             answer=final_answer(response)
             if response['status']!='completed' or not answer:
                 case['status']='cancelled' if response['status']=='cancelled' else 'execution_error'
+                case['error']=consumer_failure(response)
                 self.save_case(owner,rid,index,case)
                 return
             case['answer']=answer
@@ -351,7 +396,7 @@ class Engine:
             case['status']='manual'
         else:
             try:
-                case['judgement']=self.judge.score(case['question'],case['reference'],case['answer'],expected=run['judge'])
+                case['judgement']=self.judge.score(case['question'],case['reference'],case['answer'],expected=run['judge'],owner=owner)
                 case['status']='settled'
             except Failure as exc:
                 case['status']='judge_error'
@@ -388,6 +433,7 @@ class Engine:
                     case['status']='manual'
                 else:
                     case['status']='cancelled' if remote['status']=='cancelled' else 'execution_error'
+                    case['error']=consumer_failure(remote)
             else:
                 case['status']='cancelled'
             self.update(owner,rid,cases=run['cases'])

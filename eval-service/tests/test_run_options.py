@@ -128,6 +128,7 @@ def test_graph_runs_use_the_workspace_value_as_the_consumer_workspace(environmen
     created = graph_run(client, deps, 'run_graph_created')
     assert created['status'] == 'completed', created
     assert ('POST', '/agentic/workspaces', '') in calls
+    assert deps.workspaces['workspace_demo']['name'] == 'workspace_demo'
     assert not any(path.startswith('/agentic/internal/evaluation/workspaces') for _, path, _ in calls)
     assert {ws for _, path, ws in calls if path.endswith('/import-zip') or path == '/agentic/runs'} == {'workspace_demo'}
     calls.clear()
@@ -156,3 +157,32 @@ def test_graph_runs_refuse_foreign_or_shared_workspaces(environment):
         result = graph_run(client, deps, 'run_' + value, value)
         assert result['status'] == 'interrupted' and result['error']['code'] == 'workspace_not_owned', result
     assert not any(path.endswith('/import-zip') for path in calls)
+
+
+def test_nl2sql_runs_use_the_evaluation_workspace_id_as_the_consumer_workspace(environment):
+    client, app, deps, cfg = environment
+    calls = []
+
+    def consumer(method, path, kwargs):
+        calls.append((method, path, kwargs.get('workspace', '')))
+        if path == '/api/v1/sql':
+            return {'success': True, 'data': [{'table_name': 'items', 'column_name': 'id', 'data_type': 'varchar(64)', 'is_nullable': 'NO'}]}
+        if path.endswith('/data-source') or path.endswith('/data-source/test'):
+            return {'success': True}
+
+    wrap(deps, consumer)
+    connection = {'url': 'https://service.example.net', 'scene': 'scene_demo',
+                  'evaluation_workspace_id': 'workspace_sql_demo', 'token': 'synthetic-invalid-token'}
+    inspected = client.post('/evaluation/api/data-source-inspections', json={'provider': 'nl2sql_http', 'connection': connection}).json()
+    source = client.post('/evaluation/api/data-sources', json={'name': 'sql_demo', 'mode': 'connection', 'provider': 'nl2sql_http',
+                                                              'connection': connection, 'inspection_id': inspected['inspection_id']}).json()
+    prep = client.post('/evaluation/api/package-preparations', json={
+        'request_id': 'prepare_sql_demo', 'package_ref': {'hub_package_id': 'package_demo', 'release_id': 'release_demo'},
+        'data_source_id': source['id']}).json()
+    result = wait(client, start(client, prep, eval_set(client, 2, 'Synthetic sql'), 'run_sql_demo').json()['id'])
+    assert result['status'] == 'completed', result
+    assert deps.workspaces['workspace_sql_demo'] == {'id': 'workspace_sql_demo', 'name': 'workspace_sql_demo', 'role': 'admin', 'members': []}
+    assert not any(path.startswith('/agentic/internal/evaluation/workspaces') for _, path, _ in calls)
+    assert {ws for _, path, ws in calls if path.endswith('/import-zip') or path == '/agentic/runs'} == {'workspace_sql_demo'}
+    assert client.delete('/evaluation/api/runs/' + result['id']).json() == {'deleted': True}
+    assert not any(method == 'DELETE' for method, _, _ in calls)
