@@ -459,6 +459,48 @@ def test_usage_counts_all_conversations_including_deleted(conv_env):
     assert sum(day["calls"] for day in admin._usage_daily(days=10_000)) == 3
 
 
+def _model_usage(input_tokens: int, output_tokens: int, ts: float) -> dict:
+    return {
+        "type": "model_usage",
+        "ts": ts,
+        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+    }
+
+
+def test_usage_counts_per_call_events_once(conv_env):
+    """逐次记账的轮：token 按 model_usage 计，带 usage_per_call 的 result 只算一轮；
+    没等到 result 的轮（打断超时、回收、重启）也记上已完成的调用。"""
+    cid = conversation_store.create("p1")["id"]
+    other = conversation_store.create("p1")["id"]
+    finished = [
+        _model_usage(1000, 40, 1_700_000_000.0),
+        _model_usage(1200, 60, 1_700_000_010.0),
+        {
+            "type": "result",
+            "ts": 1_700_000_020.0,
+            "total_cost_usd": None,
+            "usage": {"input_tokens": 2200, "output_tokens": 100},
+            "usage_per_call": True,
+        },
+    ]
+    cut_off = [
+        _model_usage(3000, 200, 1_700_000_100.0),
+        {"type": "session_interrupted", "reason": "stale", "ts": 1_700_000_200.0},
+    ]
+    _write_history(conv_env.sessions_dir / "p1.jsonl", [_result(0.5, 1_700_000_000.0)])
+    _write_history(conv_env.sessions_dir / "p1" / f"{cid}.jsonl", finished)
+    _write_history(conv_env.sessions_dir / "p1" / f"{other}.jsonl", cut_off)
+
+    asyncio.run(conv_env.manager.delete_conversation("p1", cid))
+    summary = usage_summary("p1")
+
+    assert summary["calls"] == 2
+    assert summary["input_tokens"] == 5 + 2200 + 3000
+    assert summary["output_tokens"] == 10 + 100 + 200
+    assert sum(day["output_tokens"] for day in admin._usage_daily(days=10_000)) == 310
+    assert sum(day["calls"] for day in admin._usage_daily(days=10_000)) == 2
+
+
 # ---- 路由 ----
 
 

@@ -46,10 +46,13 @@ def _seed_project(manager: WorkspaceManager, name: str = "外卖订单") -> dict
     (root / "ontology" / "metric" / "客单价.md").write_text(
         "# 客单价\n\n基于[[订单]]金额\n", encoding="utf-8"
     )
-    for key in ("calc_price", "计算折扣"):
-        (root / "ontology" / "scripts" / f"{key}.py").write_text(
-            '"""\n关联operation：创建订单\n"""\ndef run():\n    return {}\n', encoding="utf-8"
-        )
+    for key, code in {
+        # 库模块：不对外调用，包内保留原文件名
+        "calc_price": "def run():\n    return {}\n",
+        # 对外脚本：包内按 ASCII 文件名打包，导入时按描述符还原原名
+        "计算折扣": '"""\n关联operation：创建订单\n"""\ndef run():\n    return {}\n',
+    }.items():
+        (root / "ontology" / "scripts" / f"{key}.py").write_text(code, encoding="utf-8")
     return meta
 
 
@@ -170,6 +173,9 @@ def test_script_filename_restored_from_descriptor(
     assert (scripts / "计算折扣.py").is_file()
     assert (scripts / "calc_price.py").is_file()
     assert not list(scripts.glob("script_*.py"))
+    # 描述符按工作区规则重建：对外脚本有，库模块没有
+    assert (scripts / "计算折扣.md").is_file()
+    assert not (scripts / "calc_price.md").exists()
 
 
 def test_helper_script_name_survives_round_trip(manager: WorkspaceManager, tmp_path: Path):

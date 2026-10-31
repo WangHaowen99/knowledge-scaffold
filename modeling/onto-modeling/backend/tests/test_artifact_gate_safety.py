@@ -10,6 +10,7 @@ import sys
 import pytest
 
 from test_artifact_verification import diagram_xml, git_workspace, hook, object_doc, put, SCRIPTS
+from test_review_integrity import scenario_file
 import benchmark_artifact_verification as benchmark
 from artifact_process_policy import child_environment, system_search_path, validate_fixture_git_args
 
@@ -90,7 +91,7 @@ def test_benchmark_git_rejects_non_read_contract(monkeypatch, args):
     monkeypatch.setattr(benchmark.subprocess, 'check_output',
                         lambda *a, **k: pytest.fail('Must reject before spawn'))
     with pytest.raises(ValueError, match='allowlist'):
-        benchmark.git_output(Path(benchmark.__file__).resolve().parents[4], *args)
+        benchmark.git_output(benchmark.PROJECT_ROOT, *args)
 
 
 def test_benchmark_git_rejects_other_checkout(tmp_path):
@@ -156,7 +157,9 @@ def test_real_git_and_hooks_ignore_host_config_and_command_text(tmp_path, monkey
 
 
 def test_benchmark_real_current_and_baseline_cli(tmp_path):
-    repo = Path(benchmark.__file__).resolve().parents[4]
+    repo = benchmark.PROJECT_ROOT
+    if not (repo / '.git').exists():
+        pytest.skip('standalone onto-modeling source has no Git checkout for baseline comparison')
     commit = benchmark.git_output(repo, 'rev-parse', '--verify', '--end-of-options',
                                   'HEAD^{commit}').decode('ascii').strip()
     baseline = benchmark.baseline_scripts(tmp_path, repo, commit)
@@ -199,6 +202,31 @@ def test_verifier_error_is_not_json_stdout(tmp_path, monkeypatch, capsys, caplog
     assert verifier.main() == 2
     assert capsys.readouterr().out == ''
     assert '轻量核验未完成' in caplog.text
+
+
+@pytest.mark.parametrize('module_name', ['source_extract', 'trace_inputs'])
+@pytest.mark.parametrize('missing', [False, True])
+def test_json_cli_isolated_from_root_handlers_and_repeated_calls(
+        tmp_path, monkeypatch, capsys, module_name, missing):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    module = importlib.import_module(module_name)
+    source = scenario_file(tmp_path) if module_name == 'trace_inputs' else put(tmp_path, 'source.md', '中文来源')
+    if missing:
+        source = tmp_path / 'missing.md'
+    # Host applications may use restrictive, prefixed root loggers. CLI JSON must
+    # still be emitted exactly once per call without inheriting those handlers.
+    monkeypatch.setattr(logging.getLogger(), 'level', logging.CRITICAL)
+    monkeypatch.setattr(sys, 'argv', [module_name + '.py', str(source)])
+    expected_code = {'trace_inputs': 1, 'source_extract': 2}[module_name] if missing else 0
+    expected_status = ({'trace_inputs': 'failed', 'source_extract': 'unverifiable'}[module_name]
+                       if missing else {'trace_inputs': 'passed', 'source_extract': 'ok'}[module_name])
+    for _ in range(2):
+        assert module.main() == expected_code
+        captured = capsys.readouterr()
+        assert captured.out.endswith('\n')
+        payload = json.loads(captured.out)
+        assert payload['status'] == expected_status
+        assert captured.err == ''
 
 
 @pytest.mark.parametrize('invalid', [False, True])

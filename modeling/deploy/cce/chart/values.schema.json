@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["global", "externalAuth", "externalConsumer", "modeling"],
+  "properties": {
+    "global": {
+      "type": "object", "additionalProperties": false,
+      "required": ["clusterFlavor", "targetArch", "imageDelivery", "resolvedImages", "auth", "integration", "access"],
+      "properties": {
+        "releaseVersion": {"type": "string"},
+        "operationId": {"type": "string"},
+        "clusterFlavor": {"enum": ["standard", "turbo"]},
+        "targetArch": {"enum": ["amd64", "arm64"]},
+        "imageDelivery": {"type": "object", "additionalProperties": false, "required": ["pullSecretNames"], "properties": {"pullSecretNames": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}}},
+        "resolvedImages": {"type": "object", "additionalProperties": false, "required": ["modeling", "modelingAgent", "ontoModeling", "jiuwenbox"], "properties": {
+          "modeling": {"$ref": "#/definitions/image"}, "modelingAgent": {"$ref": "#/definitions/image"},
+          "ontoModeling": {"$ref": "#/definitions/image"}, "jiuwenbox": {"$ref": "#/definitions/image"}
+        }},
+        "auth": {"type": "object", "additionalProperties": false, "required": ["issuer", "audience"], "properties": {"issuer": {"type": "string", "minLength": 1}, "audience": {"type": "string", "minLength": 1}}},
+        "integration": {"type": "object", "additionalProperties": false, "required": ["serviceTokenSecret"], "properties": {"serviceTokenSecret": {"$ref": "#/definitions/secretRef"}}},
+        "access": {"type": "object", "additionalProperties": false, "required": ["mode", "elb", "protocol", "listenerPort", "tlsSecretName", "ingressClassName", "routes", "listeners"], "properties": {
+          "mode": {"enum": ["host", "port"]},
+          "elb": {"type": "object", "additionalProperties": false, "required": ["id"], "properties": {"id": {"type": "string", "minLength": 1}, "class": {"type": "string"}}},
+          "protocol": {"enum": ["HTTP", "HTTPS"]}, "listenerPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+          "tlsSecretName": {"type": "string"}, "ingressClassName": {"type": "string"},
+          "routes": {"type": "array", "minItems": 0, "items": {"type": "object", "additionalProperties": false,
+            "required": ["id", "host", "path", "pathType", "endpointId"],
+            "properties": {"id": {"type": "string", "minLength": 1}, "host": {"type": "string"}, "path": {"type": "string", "pattern": "^/"}, "pathType": {"const": "Prefix"}, "endpointId": {"enum": ["modeling-core", "modeling-mcp", "onto-modeling"]}}
+          }},
+          "listeners": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+            "required": ["id", "protocol", "listenerPort", "tlsSecretName", "host", "path", "pathType", "endpointId"],
+            "properties": {"id": {"type": "string", "minLength": 1}, "protocol": {"enum": ["HTTP", "HTTPS"]},
+              "listenerPort": {"type": "integer", "minimum": 1, "maximum": 65535}, "tlsSecretName": {"type": "string"},
+              "host": {"type": "string"}, "path": {"type": "string", "pattern": "^/"}, "pathType": {"const": "Prefix"},
+              "endpointId": {"enum": ["modeling-core", "modeling-mcp", "onto-modeling"]}}
+          }}
+        }}
+      }
+    },
+    "externalAuth": {"$ref": "#/definitions/externalService"},
+    "externalConsumer": {"$ref": "#/definitions/externalService"},
+    "modeling": {"type": "object", "additionalProperties": false, "required": ["config", "workloads", "secrets"], "properties": {
+      "config": {"type": "object", "additionalProperties": false, "required": ["llmBaseUrl", "llmModel", "taskLlmBaseUrl", "taskLlmModel", "mcpPublicBaseUrl", "ontoJiuwenBaseUrl", "ontoJiuwenModel", "ontoAnthropicBaseUrl"], "properties": {
+        "llmBaseUrl": {"type": "string"}, "llmModel": {"type": "string"}, "taskLlmBaseUrl": {"type": "string"}, "taskLlmModel": {"type": "string"},
+        "mcpPublicBaseUrl": {"type": "string"}, "ontoJiuwenBaseUrl": {"type": "string"}, "ontoJiuwenModel": {"type": "string"}, "ontoAnthropicBaseUrl": {"type": "string"}
+      }},
+      "workloads": {"type": "object", "additionalProperties": false, "required": ["core", "agent", "onto", "jiuwenbox"], "properties": {
+        "core": {"$ref": "#/definitions/statefulWorkload"}, "agent": {"$ref": "#/definitions/statefulWorkload"}, "onto": {"$ref": "#/definitions/statefulWorkload"},
+        "jiuwenbox": {"type": "object", "additionalProperties": false, "required": ["nodeSelector", "runtimeClassName", "resources"], "properties": {
+          "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}}, "runtimeClassName": {"type": "string"}, "resources": {"type": "object"}
+        }},
+        "sandboxGateway": {"type": "object", "additionalProperties": false, "required": ["resources"], "properties": {
+          "resources": {"type": "object"}
+        }}
+      }},
+      "secrets": {"type": "object", "additionalProperties": false, "required": ["llmApiKey", "evalDbUrl", "cleanupToken", "anthropicAuthToken"], "properties": {
+        "llmApiKey": {"$ref": "#/definitions/optionalSecretRef"}, "evalDbUrl": {"$ref": "#/definitions/optionalSecretRef"},
+        "cleanupToken": {"$ref": "#/definitions/optionalSecretRef"}, "anthropicAuthToken": {"$ref": "#/definitions/optionalSecretRef"}
+      }},
+      "nl2sql": {"type": "object", "additionalProperties": false, "required": ["enabled", "resources"], "properties": {"enabled": {"type": "boolean"}, "resources": {"type": "object"}}}
+    }}
+  },
+  "definitions": {
+    "image": {"type": "string", "pattern": "^.+@sha256:[0-9a-f]{64}$"},
+    "secretRef": {"type": "object", "additionalProperties": false, "required": ["name", "key"], "properties": {"name": {"type": "string", "minLength": 1}, "key": {"type": "string", "minLength": 1}}},
+    "optionalSecretRef": {"type": "object", "additionalProperties": false, "required": ["name", "key"], "properties": {"name": {"type": "string"}, "key": {"type": "string"}}},
+    "externalService": {"type": "object", "additionalProperties": false, "required": ["serviceName", "namespace", "servicePort"], "properties": {
+      "serviceName": {"type": "string", "minLength": 1}, "namespace": {"type": "string", "minLength": 1}, "servicePort": {"type": "integer", "minimum": 1, "maximum": 65535}
+    }},
+    "statefulWorkload": {"type": "object", "additionalProperties": false, "required": ["replicas", "nodeSelector", "persistence", "resources"], "properties": {
+      "replicas": {"type": "integer", "minimum": 0, "maximum": 1},
+      "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+      "persistence": {"type": "object", "additionalProperties": false, "required": ["existingClaim"], "properties": {"existingClaim": {"type": "string", "minLength": 1}}},
+      "resources": {"type": "object"}
+    }}
+  }
+}

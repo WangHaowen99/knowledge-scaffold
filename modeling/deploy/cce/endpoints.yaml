@@ -1,0 +1,6 @@
+schemaVersion: cce-endpoints/v1
+endpoints:
+  - {id: modeling-core, serviceNameSuffix: core, port: 5100, protocol: HTTP, visibility: external, apiVersion: v1, healthPath: /health}
+  - {id: modeling-mcp, serviceNameSuffix: core, port: 5188, protocol: HTTP, visibility: external, apiVersion: v1, healthPath: /health}
+  - {id: modeling-agent, serviceNameSuffix: agent, port: 5110, protocol: HTTP, visibility: internal, apiVersion: v1, healthPath: /health}
+  - {id: onto-modeling, serviceNameSuffix: onto, port: 8100, protocol: HTTP, visibility: external, apiVersion: v1, healthPath: /api/health}

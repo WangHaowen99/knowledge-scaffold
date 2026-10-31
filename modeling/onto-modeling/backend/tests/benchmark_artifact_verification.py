@@ -22,7 +22,26 @@ from test_artifact_verification import diagram_xml, object_doc, operation_doc, r
 from artifact_process_policy import child_environment, git_executable
 
 SCRIPTS = Path(__file__).resolve().parents[2] / 'assets/workspace-toolkit/scripts'
-PREFIX = SCRIPTS.relative_to(Path(__file__).resolve().parents[4]).as_posix()
+
+
+def project_root():
+    """Return the checkout root, or the standalone onto-modeling root.
+
+    The backend tests run both from the monorepo and from the standalone
+    source tree copied into the test image.  The latter has no four-level
+    parent checkout (and intentionally has no Git metadata), so fixed
+    ``parents[4]`` lookups make collection fail before any test can run.
+    """
+    source = Path(__file__).resolve()
+    for candidate in source.parents:
+        if (candidate / 'consumer' / 'backend').is_dir() and \
+                (candidate / 'modeling' / 'onto-modeling').is_dir():
+            return candidate
+    return source.parents[2]
+
+
+PROJECT_ROOT = project_root()
+PREFIX = SCRIPTS.relative_to(PROJECT_ROOT).as_posix()
 MAX_BASELINE_FILES = 500
 MAX_BASELINE_BYTES = 16 * 1024 * 1024
 CHECKER_NAMES = {'verify_artifacts.py', 'ontology_checker.py', 'check_diagrams.py'}
@@ -57,7 +76,7 @@ def cli(script, args, root, *, baseline=None):
 
 
 def git_output(repo, *args):
-    if repo.resolve() != Path(__file__).resolve().parents[4]:
+    if repo.resolve() != PROJECT_ROOT:
         raise ValueError('Baseline Git reads must target this checkout')
     valid = (
         len(args) == 4 and args[:3] == ('rev-parse', '--verify', '--end-of-options')
@@ -128,7 +147,7 @@ def run():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--baseline-ref', required=True, help='Explicit baseline branch or commit')
     args = parser.parse_args()
-    repo = Path(__file__).resolve().parents[4]
+    repo = PROJECT_ROOT
     commit = git_output(repo, 'rev-parse', '--verify', '--end-of-options',
                         args.baseline_ref + '^{commit}').decode('ascii').strip()
     result = {'python': sys.version.split()[0], 'platform': sys.platform,

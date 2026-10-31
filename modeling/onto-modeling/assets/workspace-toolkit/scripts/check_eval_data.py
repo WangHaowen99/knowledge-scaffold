@@ -13,6 +13,9 @@
 用法（工作区根目录执行）：
   python3 .claude/scripts/check_eval_data.py [--json] [path/to/xx.xlsx ...]
   python3 .claude/scripts/check_eval_data.py --headers   # 输出 {Sheet 名: [表头列]} JSON，供对象抽取取表名与列名
+  python3 .claude/scripts/check_eval_data.py --profile [--tables 表名 ...]
+      # 输出各列取值画像 JSON（每表最多读 2000 行；只有类别计数与推断类型，不含任何单元格原值），
+      # 供对象抽取按取值证据定类型；最多 400 列（约 50KB），其余表名列入 omitted_tables
 
 退出码：0=全部通过（或无可对账项）；1=存在差异；2=数据/依赖错误。
 """
@@ -26,9 +29,14 @@ import re
 import sys
 from pathlib import Path
 
+import field_semantics
+
 TABLE_SUFFIXES = (".xlsx", ".xlsm", ".xls", ".csv")
 # 评测数据源上传的业务数据表：每个文件一个目录，目录名为文件 ID
 EVAL_DATA_DIR = Path(".ontology-state") / "eval-data"
+PROFILE_ROW_LIMIT = field_semantics.PROFILE_ROW_LIMIT
+PROFILE_COLUMN_LIMIT = 400
+EXCEL_DEPENDENCY_MESSAGE = "需要 openpyxl 解析 Excel（pip install openpyxl），字段核验未完成"
 
 
 def uploaded_eval_files(root: Path) -> list[str]:
@@ -101,6 +109,124 @@ def table_headers(root: Path) -> dict[str, list[str]]:
     return tables
 
 
+def read_profiles(path: Path) -> dict[str, dict]:
+    """表格文件 → {表名: 取值画像}。每表最多读 PROFILE_ROW_LIMIT 行，画像只含计数、不含原值。
+
+    缺 openpyxl 时抛 ValueError：读不了的表不能当作没有取值证据而放过。
+    """
+    if path.suffix.lower() == ".csv":
+        try:
+            with open(path, encoding="utf-8-sig", newline="") as f:
+                profile = field_semantics.profile_table(csv.reader(f))
+        except (OSError, UnicodeDecodeError, csv.Error):
+            return {}
+        return {path.stem: profile} if profile else {}
+    try:
+        import openpyxl
+    except ImportError as error:
+        raise ValueError(EXCEL_DEPENDENCY_MESSAGE) from error
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    except Exception:
+        return {}
+    profiles = {}
+    try:
+        for ws in wb.worksheets:
+            profile = field_semantics.profile_table(ws.iter_rows(values_only=True))
+            if profile:
+                profiles[ws.title] = profile
+    except Exception:
+        return {}
+    finally:
+        wb.close()
+    return profiles
+
+
+def registered_table_files(root: Path) -> list[str]:
+    """schema 资料与评测数据源上传的表格文件（工作区相对路径，去重保序）。"""
+    directives = load_directives(root)
+    schema_files = [p for p, d in directives.items() if isinstance(d, dict) and d.get("purpose") == "schema"]
+    return [rel for rel in dict.fromkeys(schema_files + uploaded_eval_files(root))
+            if str(rel).lower().endswith(TABLE_SUFFIXES)]
+
+
+def _merge_profiles(profiles: dict, found: dict) -> None:
+    # 同名表先读到的是只有表头的 schema 资料时，用后读到的带数据的表作取值证据
+    for name, profile in found.items():
+        current = profiles.get(name)
+        if current is None or (not current["rows"] and profile["rows"]):
+            profiles[name] = profile
+
+
+def load_registered_tables(root: Path) -> tuple[dict, dict]:
+    """严格读取全部登记表 → ({表名: 表头列}, {表名: 取值画像})。
+
+    登记了却缺失、无法解析、缺解析依赖都抛 ValueError，字段核验不能按「没有表」通过。
+    表头同名以先读到的为准（与 table_headers 一致）。
+    """
+    base = root.resolve()
+    tables: dict[str, list[str]] = {}
+    profiles: dict[str, dict] = {}
+    for rel in registered_table_files(root):
+        path = root / rel
+        if not path.resolve().is_relative_to(base):
+            raise ValueError("核验路径越出工作区")
+        if not path.is_file():
+            raise ValueError("已登记的数据表不存在，字段核验未完成")
+        if path.suffix.lower() != ".csv" and importlib.util.find_spec("openpyxl") is None:
+            raise ValueError(EXCEL_DEPENDENCY_MESSAGE)
+        headers = read_tables(path)
+        if not headers:
+            raise ValueError("数据表无法解析或没有表头，字段核验未完成")
+        for name, columns in headers.items():
+            tables.setdefault(name, columns)
+        _merge_profiles(profiles, read_profiles(path))
+    return tables, profiles
+
+
+def table_profiles(root: Path) -> dict[str, dict]:
+    """非严格读取取值画像：与 table_headers 同口径，缺 openpyxl 跳过 Excel，读不了的表跳过。"""
+    excel_ok = importlib.util.find_spec("openpyxl") is not None
+    profiles: dict[str, dict] = {}
+    for rel in registered_table_files(root):
+        path = root / rel
+        if not path.is_file() or (path.suffix.lower() != ".csv" and not excel_ok):
+            continue
+        try:
+            _merge_profiles(profiles, read_profiles(path))
+        except ValueError:
+            continue
+    return profiles
+
+
+def _compact_column(column: dict) -> dict:
+    return {key: value for key, value in column.items() if value not in (0, "", [], {}, False)}
+
+
+def profile_summary(profiles: dict, names: list[str]) -> dict:
+    """--profile 输出：每列只留非零项；总列数超过 PROFILE_COLUMN_LIMIT 的表名列入 omitted_tables。"""
+    selected = sorted(name for name in profiles if not names or name in names)
+    result, omitted, budget = {}, [], PROFILE_COLUMN_LIMIT
+    for name in selected:
+        profile = profiles[name]
+        if len(profile["columns"]) > budget:
+            omitted.append(name)
+            continue
+        budget -= len(profile["columns"])
+        result[name] = {
+            "rows": profile["rows"],
+            "truncated": profile["truncated"],
+            "skipped_rows": profile["skipped_rows"],
+            "columns": {column: _compact_column(stats) for column, stats in profile["columns"].items()},
+        }
+    return {
+        "tables": result,
+        "omitted_tables": omitted[:50],
+        "missing_tables": [name for name in names if name not in profiles][:50],
+        "row_limit": PROFILE_ROW_LIMIT,
+    }
+
+
 def object_attribute_names(root: Path) -> set[str]:
     """全部对象文档「对象属性清单」表格的英文名称集合。"""
     names: set[str] = set()
@@ -156,12 +282,27 @@ def check_file(root: Path, rel: str, schema_columns: set[str], attr_names: set[s
     return {"path": rel, "status": status, "sheets": sheets}
 
 
+def _option_values(argv: list[str], option: str) -> list[str]:
+    if option not in argv:
+        return []
+    values = []
+    for arg in argv[argv.index(option) + 1:]:
+        if arg.startswith("--"):
+            break
+        values.append(arg)
+    return values
+
+
 def main() -> int:
     args = [a for a in sys.argv[1:] if a not in ("--json", "--headers")]
     as_json = "--json" in sys.argv
     root = Path.cwd()
     if "--headers" in sys.argv:
         print(json.dumps(table_headers(root), ensure_ascii=False))
+        return 0
+    if "--profile" in sys.argv:
+        names = _option_values(sys.argv, "--tables")
+        print(json.dumps(profile_summary(table_profiles(root), names), ensure_ascii=False))
         return 0
 
     directives = load_directives(root)

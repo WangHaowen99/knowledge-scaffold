@@ -28,6 +28,7 @@ import csv
 import difflib
 import json
 import re
+import unicodedata
 from pathlib import Path
 
 # modeling 契约：来源Sheet 为 "—" 表示该对象不绑定物理表（package-import 按此跳过）
@@ -807,55 +808,98 @@ def parse_relation_definitions(text: str, diagnostics: list[str] | None = None) 
     return sorted(out + _parse_relation_table(text, diagnostics), key=lambda item: item["line"])
 
 
+def _relation_identity(value: str) -> str:
+    return unicodedata.normalize("NFC", value).strip()
+
+
+def _relation_object_context(object_texts: dict[str, str]) -> tuple[dict, dict]:
+    fields, names = {}, {}
+    for key, text in object_texts.items():
+        doc = parse_object_doc(text)
+        fields[key] = {_relation_identity(field["key"]) for field in doc["fields"]}
+        names[key] = _relation_prefixes(key, doc)
+    return fields, names
+
+
+def _resolved_relation_fields(item: dict, source: str, target: str, fields: dict, names: dict) -> tuple:
+    source_join, target_join = item.get("sourceJoinProperty"), item.get("targetJoinProperty")
+    if source_join or target_join:
+        if not (source_join and target_join):
+            raise ValueError("关联字段必须同时声明源字段和目标字段")
+        source_join = _join_side(_relation_identity(source_join), names.get(source, set()), names.get(target, set()))
+        target_join = _join_side(_relation_identity(target_join), names.get(target, set()), names.get(source, set()))
+        if _missing_field(source_join, fields.get(source, set())) or _missing_field(target_join, fields.get(target, set())):
+            raise ValueError(f"关联字段 {source_join} → {target_join} 不在两端对象的属性清单里")
+    else:
+        source_join, target_join = _relation_join(
+            _relation_identity(item.get("note") or ""), fields.get(source, set()), fields.get(target, set()),
+            names.get(source, set()), names.get(target, set()),
+        )
+    return source_join, target_join
+
+
 def package_relations(
     object_texts: dict[str, str], *, allow_self_relations: bool = True,
+    reject_duplicate_relations: bool = False,
 ) -> tuple[dict[str, list], list[str]]:
-    """按包内对象检查关系结构，与物理表是否绑定无关。双端声明按有向三元组归并。"""
+    """检查包内关系结构；评测拒绝规范化后的重复声明，其他调用方可归并双端声明。"""
     relations: dict[str, list] = {}
     problems: list[str] = []
     seen: dict[tuple, dict] = {}
+    first_declarations: dict[tuple, str] = {}
+    objects_by_identity = {_relation_identity(key): key for key in object_texts}
+    fields, names = _relation_object_context(object_texts)
     for key, text in object_texts.items():
         diagnostics: list[str] = []
         items = parse_relation_definitions(text, diagnostics)
         path = f"ontology/object/{key}.md"
         problems.extend(f"{path} {problem}" for problem in diagnostics)
         for item in items:
-            source = key if item["source"] == CURRENT_OBJECT else item["source"]
-            target = key if item["target"] == CURRENT_OBJECT else item["target"]
+            source_id = _relation_identity(key if item["source"] == CURRENT_OBJECT else item["source"])
+            target_id = _relation_identity(key if item["target"] == CURRENT_OBJECT else item["target"])
             label = f"{path} 第 {item['line']} 行"
-            missing = sorted({source, target} - object_texts.keys())
+            missing = sorted({source_id, target_id} - objects_by_identity.keys())
             if missing:
                 problems.append(f"{label}：关系端点「{'、'.join(missing)}」不存在")
                 continue
-            if key not in (source, target):
+            if _relation_identity(key) not in (source_id, target_id):
                 problems.append(f"{label}：关系两端不包含当前对象")
                 continue
-            if not allow_self_relations and source == target:
+            if not allow_self_relations and source_id == target_id:
                 problems.append(f"{label}：评测不允许自关联「{item['relation']}」")
                 continue
+            source, target = objects_by_identity[source_id], objects_by_identity[target_id]
             relation = {field: value for field, value in item.items() if field not in ("line", "source")}
             relation["target"] = target
-            triple = (source, item["relation"], target)
+            try:
+                source_join, target_join = _resolved_relation_fields(item, source, target, fields, names)
+            except ValueError as exc:
+                problems.append(f"{label}：{exc}")
+                continue
+            if source_join and target_join:
+                relation.update(sourceJoinProperty=source_join, targetJoinProperty=target_join)
+            triple = (source_id, _relation_identity(item["relation"]), target_id, source_join, target_join)
             if triple in seen:
-                previous = seen[triple]
-                if any(previous.get(field) and relation.get(field) and previous[field] != relation[field]
-                       for field in ("sourceJoinProperty", "targetJoinProperty")):
-                    problems.append(f"{label}：同一关系的关联字段声明不一致")
+                if reject_duplicate_relations:
+                    problems.append(
+                        f"{label}：重复关系「{source} -{item['relation']}→ {target}」；"
+                        f"关联字段：{_join_text(relation)}；"
+                        f"首次声明于 {first_declarations[triple]}"
+                    )
                     continue
-                for field in ("note", "evidence", "sourceJoinProperty", "targetJoinProperty"):
+                previous = seen[triple]
+                for field in ("note", "evidence"):
                     if not previous.get(field) and relation.get(field):
                         previous[field] = relation[field]
                 continue
             seen[triple] = relation
+            first_declarations[triple] = label
             relations.setdefault(source, []).append(relation)
     return relations, problems
 
 
-JOIN_FIELDS = ("sourceJoinProperty", "targetJoinProperty")
-
-
 def _join_text(relation: dict) -> str:
-    source, target = relation["sourceJoinProperty"], relation["targetJoinProperty"]
+    source, target = relation.get("sourceJoinProperty"), relation.get("targetJoinProperty")
     return f"{source} → {target}" if source and target else "未声明关联字段"
 
 
@@ -873,23 +917,17 @@ def graph_relations(
     关联字段取自关系括注，判据是两端对象的属性清单（见 _relation_join）：写法不固定，但字段
     名必须在清单里，所以不靠措辞也能认出来。
 
-    同一条关系通常在两端对象里各写一次（`当前对象 → 关系名 → [[对象A]]` /
-    `[[对象B]] → 关系名 → 当前对象`）。只有一端写出关联字段时按该端补齐——少写不等于冲突；
-    两端都写出且不是同一对字段时整条不导出，这种情况无从判断该连哪一对，错连比不连更难发现。
-    同理，一端的声明有问题时整条都不导出，否则另一端那条会把问题盖掉、退回按主键猜。
+    同源、同名、同目标且字段对相同的声明合并；字段对不同则保留为不同关系。
+    未声明字段视为空字段对，不与显式字段对混同，也不从其他声明猜字段。
 
     每条关系只影响自己：写错或端点没绑数据表（概念对象数据来源写「无」是正常结论）时只跳过
     这一条并记原因，评测与发布照常进行，原因进 report["notes"] 给用户看。
     """
-    fields: dict[str, set[str]] = {}
-    # 括注里 `表名.字段` 的前缀可以是对象名或「# 数据来源」声明的表名
-    names: dict[str, set[str]] = {}
+    fields, names = _relation_object_context(object_texts)
     # 概念对象（数据来源写「无」）：端点未绑定时提示里点明原因，免得被当成绑定出错
     concepts: set[str] = set()
     for key, text in object_texts.items():
         doc = parse_object_doc(text)
-        fields[key] = {field["key"] for field in doc["fields"]}
-        names[key] = _relation_prefixes(key, doc)
         if doc["declared_none"]:
             concepts.add(key)
     relations: dict[str, list] = {}
@@ -898,19 +936,6 @@ def graph_relations(
     seen: dict[tuple, dict] = {}
     triples: set[tuple] = set()
     declared = parsed = duplicates = 0
-
-    def reject(triple: tuple, source: str, label: str) -> None:
-        """整条关系不导出：撤回已导出的那一条，并让后续的镜像声明也不照用。"""
-        entry = seen.setdefault(triple, {"edge": None, "label": label})
-        edge = entry["edge"]
-        entry["edge"] = None
-        if edge is None:
-            return
-        kept = [current for current in relations.get(source, []) if current is not edge]
-        if kept:
-            relations[source] = kept
-        else:
-            relations.pop(source, None)
 
     for key, text in object_texts.items():
         problems: list[str] = []
@@ -925,12 +950,13 @@ def graph_relations(
             source = key if source == CURRENT_OBJECT else source
             target = key if target == CURRENT_OBJECT else target
             triple = (source, name, target)
-            triples.add(triple)
             label = f"对象「{key}」第 {item['line']} 行"
             if key not in (source, target):
+                triples.add(triple)
                 skipped.append(f"{label}：关系两端不包含当前对象")
                 continue
             if not {source, target} <= mapped:
+                triples.add(triple)
                 missing = sorted({source, target} - mapped)
                 absent = [item for item in missing if item not in object_texts]
                 if absent:
@@ -946,29 +972,17 @@ def graph_relations(
                     skipped.append(f"{label}：关系端点「{'、'.join(missing)}」未绑定数据表，本条关系不导入")
                 continue
             if not GRAPH_IDENTIFIER.fullmatch(name):
+                triples.add(triple)
                 skipped.append(f"{label}：关系名「{name}」不是合法的图关系名，请确认名称")
                 continue
             try:
-                source_join, target_join = item.get("sourceJoinProperty"), item.get("targetJoinProperty")
-                if source_join or target_join:
-                    if not (source_join and target_join):
-                        raise ValueError("关联字段必须同时声明源字段和目标字段")
-                    if _missing_field(source_join, fields.get(source, set())) or _missing_field(target_join, fields.get(target, set())):
-                        raise ValueError(f"关联字段 {source_join} → {target_join} 不在两端对象的属性清单里")
-                else:
-                    source_join, target_join = _relation_join(
-                        item["note"], fields.get(source, set()), fields.get(target, set()),
-                        names.get(source, {source.lower()}), names.get(target, {target.lower()}),
-                    )
+                source_join, target_join = _resolved_relation_fields(item, source, target, fields, names)
             except ValueError as exc:
+                triples.add(triple)
                 skipped.append(f"{label}：{exc}")
-                reject(triple, source, label)
                 continue
-            if source == target and not (source_join and target_join):
-                # 自关联两端是同一张表，不写关联字段就会按同一行把每个节点连到它自己
-                skipped.append(f"{label}：自关联「{name}」要写明关联字段（源对象字段 → 目标对象字段）")
-                reject(triple, source, label)
-                continue
+            triple = tuple(map(_relation_identity, (source, name, target))) + (source_join, target_join)
+            triples.add(triple)
             relation = {
                 "relation": name,
                 "target": target,
@@ -980,23 +994,6 @@ def graph_relations(
             if item.get("evidence"):
                 relation["evidence"] = item["evidence"]
             if triple in seen:
-                previous = seen[triple]
-                edge = previous["edge"]
-                if edge is None:
-                    continue  # 整条关系已判为不可导出
-                pairs = [(edge.get(field), relation.get(field)) for field in JOIN_FIELDS]
-                both = all(current and incoming for current, incoming in pairs)
-                if both and any(current != incoming for current, incoming in pairs):
-                    skipped.append(
-                        f"{label}：关系「{source} -{name}→ {target}」的关联字段与"
-                        f"{previous['label']}不一致（{_join_text(edge)} / {_join_text(relation)}）；"
-                        "两处都要按箭头方向写成「源对象字段 → 目标对象字段」，并保持同一对字段"
-                    )
-                    reject(triple, source, label)
-                    continue
-                # 一端只写了关系名：按另一端已声明的关联字段补齐（edge 即导出的那一条）
-                for field, (current, incoming) in zip(JOIN_FIELDS, pairs):
-                    edge[field] = current or incoming
                 duplicates += 1
                 continue
             seen[triple] = {"edge": relation, "label": label}

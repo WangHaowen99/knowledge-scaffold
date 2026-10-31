@@ -227,7 +227,9 @@ Tell user: "**逻辑提取**\n正在从{source_label}中识别和提取业务逻
 
 > `{source_label}` 取值：`SUMMARY_PATHS` 非空且 `PAIRED_EXCEL_PATHS` 非空且 `REPORT_PATHS` 非空 → "流程图、Excel 补充表和资料分析报告"；`SUMMARY_PATHS` 非空且 `PAIRED_EXCEL_PATHS` 非空 → "流程图和 Excel 补充表"；`SUMMARY_PATHS` 非空且 `REPORT_PATHS` 非空 → "流程图和资料分析报告"；仅 `SUMMARY_PATHS` → "流程图摘要"；仅 `REPORT_PATHS` → "资料分析报告"。
 
-Read `.claude/agents/extract-operation-agent.md`. Dispatch it with:
+Read `.claude/agents/extract-operation-agent.md`. 派发前运行 `python3 .claude/scripts/field_semantics.py joins`，
+stdout 记为 `JOIN_KEYS`（已声明的关联字段对与各对象的标识字段）；输出里 `truncated` 为 true 时，改用
+`--objects {本轮来源涉及的对象名}` 收窄后重跑。Dispatch it with:
 
 ```
 {若 KNOWLEDGE_BLOCK 非空：原样粘贴 KNOWLEDGE_BLOCK 在此处，紧跟一行分隔符 ---}
@@ -236,6 +238,8 @@ SUMMARY_PATHS: {摘要文件路径}
 PAIRED_EXCEL_PATHS: {逗号分隔的同名 Excel 路径；无则写 (无同名 Excel 补充表)}
 EXCEL_CONTEXT:
 {EXCEL_CONTEXT}
+JOIN_KEYS:
+{JOIN_KEYS}
 
 REPORT_PATHS: {资料分析报告路径，无则省略}
 DOCUMENT_NAMES: {最新 plan 的 document_names.operation，包含报告操作及流程图补充项，保留 JSON 结构；无报告时省略}
@@ -333,12 +337,24 @@ python3 .claude/scripts/report_reconcile.py check --reports {REPORT_PATHS，空�
 清单取提取计划和已有对账/覆盖结果，不仅罗列已落盘文件；退出码 0 才能进入确认，
 1 为确定性错误，2 为产物缺失、执行失败或核验期间文件变化。修改后重验，提交复用同修订回执。
 只做本批产物和引用的确定性检查，不重复发起语义 Agent；上方对账/覆盖检查仍保留。
+核验结果的 `by_category` 里「字段关联」类分开展示：错误是把不同名、非别名、未声明关联的两个字段当作同一个值
+核对或关联（如「无法交叉核对则报资料冲突」），资料没有依据时删掉这句或改为注意事项里的「待确认」，
+不得为了通过核验改写对象的关联声明；警告是已标「待确认」的等价关系，逐条列给用户确认。
+覆盖检查只按名称比对来源，展示时写明「覆盖（按名称）」，不代表逻辑条件与字段关联正确；没有运行的检查不得写成通过，
+脚本退出码 2 时写「无法核验：{原因}」。
 
-Ask: "逻辑产物已生成并通过轻量核验：操作 {N} 个、规则 {R} 条、指标 {M} 个。
+Ask: "逻辑产物已生成：操作 {N} 个、规则 {R} 条、指标 {M} 个。
+覆盖（按名称）：{结果}；轻量核验：{status}；字段关联：错误 {E} 条、待确认 {W} 条。
 {REPORT_PATHS 非空时附上对账结果；有流程图补充或合并时逐条列出}
 如需修改请直接说明；确认无误请回复 **确认**。"
 
-Handle modifications if any.
+**修改已生成或已确认的逻辑文档（候选修订，不直接覆盖）：**
+用户要求修改 operation / rule / metric 文档时，不直接编辑 `ontology/` 下的文件：
+1. `python3 .claude/scripts/candidate_revision.py start --plan {要改的文档路径，逐项加引号} --note "{修正说明}"`，只修改输出里的 `candidate` 路径。
+2. `python3 .claude/scripts/candidate_revision.py diff`，把每个文件的增删行数与关键改动展示给用户。
+3. `python3 .claude/scripts/candidate_revision.py check`：叠加候选后跑整计划规则检查（含字段关联）。退出码 0 通过；1 候选引入新错误（展示 `new_errors`，继续改候选后重新 check）或确认版本已被改动（`stale`，reject 后重新 start）；2 无法核验（展示 reason，不得接受）。
+4. 用户同意后 `python3 .claude/scripts/candidate_revision.py accept` 写回；不同意时 `python3 .claude/scripts/candidate_revision.py reject --reason "{原因}"`，工作区文件不动。
+5. accept 后重新运行上面的 `verify_artifacts.py`，不复用旧回执。
 
 When user confirms（回复 **确认** 或等价的肯定词，如"好的"、"可以"、"没问题"、"继续"、"是"）:
 
@@ -368,4 +384,4 @@ If user replies **完成**: `python3 .claude/scripts/state_helper.py release ext
 
 ## Note on mid-process edits
 
-If the user asks to modify a document at any point before committing, edit the file immediately. All changes are included in the final phase-end commit.
+If the user asks to modify a document at any point before committing, use the candidate revision flow above (start → 改候选 → diff → check → accept / reject) instead of editing the file in place. Accepted changes are included in the final phase-end commit; the base version of each revision stays under `.ontology-state/revisions/`.

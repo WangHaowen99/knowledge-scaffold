@@ -845,7 +845,11 @@ def test_save_replaces_managed_directory(manager: WorkspaceManager):
 
 
 def test_view_exposes_template_and_profiles(manager: WorkspaceManager):
-    pid, _root = _project(manager)
+    pid, root = _project(manager)
+    # 不是评估器的脚本（Operation 脚本、辅助模块）不进可选评估器
+    (root / "ontology" / "scripts" / "query_station.py").write_text(
+        "def run(params):\n    return {}\n", encoding="utf-8"
+    )
     view = manager.solver_contract_view(pid)
     assert view["supported_profiles"] == ["ordered_binary_route.v1"]
     assert view["problem_families"] == [{
@@ -1103,6 +1107,7 @@ def test_input_schema_projection_only_touches_the_template(tmp_path: Path):
     evaluator.write_text(declarative_source(), encoding="utf-8")
     projected = solver_contract.project_input_schema(template, evaluator)
     assert projected != template
+    assert solver_contract._check_ordered_route_input(json.loads(projected), "input.schema.json") == []
     assert solver_contract.restore_template_input_schema(projected) == template
 
     # 手写 Schema、取不到评估器时原样保留
@@ -1114,6 +1119,10 @@ def test_input_schema_projection_only_touches_the_template(tmp_path: Path):
     # 改过的投影不再是模板产物，回导时原样保留
     edited = projected.replace(b"UNIT_2", b"UNIT_9")
     assert solver_contract.restore_template_input_schema(edited) == edited
+    unsigned = json.loads(projected)
+    unsigned.pop("$id")
+    legacy_projection = solver_contract._dump_json(unsigned)
+    assert solver_contract.restore_template_input_schema(legacy_projection) == legacy_projection
     assert solver_contract.restore_template_input_schema(b"\xff") == b"\xff"
 
 

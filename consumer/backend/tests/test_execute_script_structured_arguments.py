@@ -310,6 +310,77 @@ def test_structured_collection_rejects_request_item_reordering():
     assert "order" in errors[0]
 
 
+def test_structured_collection_accepts_a_value_shared_by_all_items_stated_once():
+    # The common category is written once, next to the first item's status only.
+    request = "Two batches are both category red and the old one is closed;\nthe new batch is open."
+    arguments = {
+        "batches": [
+            {"category": "red", "status": "closed"},
+            {"category": "red", "status": "open"},
+        ],
+    }
+
+    assert _validate_structured_arguments_against_request(arguments, request) == []
+
+
+def test_structured_collection_rejects_pairing_beside_a_shared_value():
+    # A value shared by all items no longer hides the item that pairs another item's status.
+    request = (
+        "All batches are category red.\n"
+        "Batch alpha is closed;\n"
+        "Batch beta is open;\n"
+        "Batch gamma is pending."
+    )
+    arguments = {
+        "batches": [
+            {"batch": "alpha", "category": "red", "status": "closed"},
+            {"batch": "beta", "category": "red", "status": "open"},
+            {"batch": "gamma", "category": "red", "status": "closed"},
+        ],
+    }
+    issues = []
+
+    errors = _validate_structured_arguments_against_request(arguments, request, issues=issues)
+
+    assert len(errors) == 1 and "item 3" in errors[0]
+    assert issues == [{"code": "request_record_mismatch", "path": "arguments.batches"}]
+
+
+def test_structured_collection_does_not_locate_items_by_a_value_stated_once_for_all():
+    # The shared category sits in the first item's segment; the second item is located by
+    # its own status and amount and must not be blamed for the category stated earlier.
+    request = (
+        "Two batches are both category red, and the old one is closed;\n"
+        "the new batch is open with amount 8000."
+    )
+    arguments = {
+        "batches": [
+            {"category": "red", "status": "closed"},
+            {"category": "red", "status": "open", "amount": 8000},
+        ],
+    }
+
+    assert _validate_structured_arguments_against_request(arguments, request) == []
+
+
+def test_structured_collection_still_rejects_one_value_copied_to_every_item():
+    request = (
+        "Record 1: sample-a, quantity 12.5, category red;\n"
+        "Record 2: sample-b, quantity 7.25, category blue."
+    )
+    arguments = {
+        "batches": [
+            {"name": "sample-a", "quantity": 12.5, "category": "red"},
+            {"name": "sample-b", "quantity": 7.25, "category": "red"},
+        ],
+    }
+    issues = []
+
+    _validate_structured_arguments_against_request(arguments, request, issues=issues)
+
+    assert issues == [{"code": "request_field_mismatch", "path": "arguments.batches[1].category"}]
+
+
 def test_structured_collection_does_not_reject_derived_items_without_request_evidence():
     arguments = {
         "batches": [

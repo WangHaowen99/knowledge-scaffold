@@ -1,0 +1,50 @@
+global:
+  clusterFlavor: standard
+  targetArch: amd64
+  imageDelivery:
+    pullSecretNames: [modeling-registry]
+  auth:
+    issuer: http://consumer-auth:5056
+    audience: knowledge-scaffold
+  integration:
+    serviceTokenSecret:
+      name: modeling-integration
+      key: service-token
+  access:
+    mode: port
+    elb:
+      id: example-elb-id
+      class: performance
+    protocol: HTTP
+    listenerPort: 80
+    listeners:
+      - {id: core, protocol: HTTP, listenerPort: 8100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-core}
+      - {id: onto, protocol: HTTP, listenerPort: 5100, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: onto-modeling}
+      - {id: mcp, protocol: HTTP, listenerPort: 5188, tlsSecretName: "", host: "", path: /, pathType: Prefix, endpointId: modeling-mcp}
+externalAuth:
+  serviceName: consumer-auth
+  namespace: onto-consumer
+  servicePort: 5056
+externalConsumer:
+  serviceName: consumer-backend
+  namespace: onto-consumer
+  servicePort: 5055
+modeling:
+  config:
+    llmBaseUrl: https://llm.example.com
+    llmModel: demo-model
+    mcpPublicBaseUrl: http://<ELB_IP>:5188
+  workloads:
+    core:
+      persistence: {existingClaim: modeling-core-data}
+      resources: {requests: {cpu: 500m, memory: 1Gi}}
+    agent:
+      persistence: {existingClaim: modeling-agent-data}
+      resources: {requests: {cpu: 500m, memory: 1Gi}}
+    onto:
+      persistence: {existingClaim: modeling-onto-data}
+      resources: {requests: {cpu: 500m, memory: 2Gi}}
+    jiuwenbox:
+      resources: {requests: {cpu: 500m, memory: 1Gi}}
+    sandboxGateway:
+      resources: {requests: {cpu: 100m, memory: 256Mi}}

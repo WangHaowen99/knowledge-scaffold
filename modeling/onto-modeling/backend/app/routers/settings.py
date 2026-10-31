@@ -37,6 +37,10 @@ class ClaudeModelBody(ModelBody):
     context: ContextBody | None = None  # 不传表示不修改上下文参数
 
 
+class JiuwenModelBody(ModelBody):
+    context: ContextBody | None = None  # 不传表示不修改上下文参数
+
+
 @router.get("/model")
 def get_model_settings(request: Request):
     _require_admin(request)
@@ -55,11 +59,12 @@ def put_model_settings(body: ClaudeModelBody, request: Request):
 
 
 @router.put("/model/jiuwen")
-def put_jiuwen_model_settings(body: ModelBody, request: Request):
-    """Jiuwen 引擎的 OpenAI 兼容模型配置（网关地址 / API Key / 模型名）。"""
+def put_jiuwen_model_settings(body: JiuwenModelBody, request: Request):
+    """Jiuwen 引擎的 OpenAI 兼容模型配置（网关地址 / API Key / 模型名），可带上下文参数一起保存。"""
     _require_admin(request)
+    context = body.context.model_dump() if body.context is not None else None
     try:
-        return model_settings.save_jiuwen(body.base_url, body.api_key, body.model)
+        return model_settings.save_jiuwen(body.base_url, body.api_key, body.model, context)
     except model_settings.ModelConfigError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
 

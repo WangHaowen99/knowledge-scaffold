@@ -1,6 +1,6 @@
 # 测试命令执行安全复核
 
-本说明对应 PR #491 / #492 的 CodeCheck 命令执行提示。安全加固不等于检查平台已批准：以下调用仍保留扫描，未增加 `NOSONAR`、规则排除或忽略设置。最终由仓库安全审核与 PR 审查确认。
+本说明覆盖 PR #491 / #492 的轻量核验及 PR #493 / #494 的来源与场景输入核验命令执行提示。安全加固不等于检查平台已批准：以下调用仍保留扫描，未增加 `NOSONAR`、规则排除或忽略设置。最终由仓库安全审核与 PR 审查确认。
 
 ## 调用范围与依据
 
@@ -12,6 +12,8 @@
 | `test_artifact_verification.py::test_diagram_import_without_timezone_database` | 模拟缺失时区数据库，避免污染后续用例 | 不再启动进程；局部替换时区构造器，独立加载实际检查器，断言 UTC+8 降级及补丁恢复、原模块缓存不变。 |
 | `test_artifact_verification.py::git_workspace` | 为保存 hook 创建真实、独立 Git 测试工作区 | 强制限制初始化、两项合成身份配置、两类固定提交和两个产物路径的 add 操作；其他命令/参数拒绝。Git 绝对路径、临时工作区、隔离环境、`shell=False`、30 秒超时。不访问远端仓库。 |
 | `test_artifact_verification.py::hook` | 验证真实 pre/post hook 的阻断与回执行为 | 仅允许两个既定 hook 名称；解析后必须处于临时工作区，文件与仓库 hook 逐字节相同；直接执行受核验脚本入口；消息走 JSON stdin，不作为 shell 源码；`shell=False`；60 秒超时。 |
+| `test_review_integrity.py::test_source_cli_long_segment_continuation_is_lossless` | 验证实际 CLI 分页的中文输出及摘要一致性 | 当前 Python 解释器，`-I` 和隔离环境；仓库脚本路径与临时合成文件路径独立传参；分页偏移来自合成测试数据；`shell=False`、30 秒超时。 |
+| `test_review_integrity.py::test_utf8_cli_in_isolated_ascii_environment` | 验证实际 CLI 在 ASCII 环境设置下仍输出 UTF-8 | 使用 `-s` 禁用用户 site，环境变量白名单剔除 `PYTHONPATH`/`PYTHONHOME`；保留 `PYTHONIOENCODING=ascii` 的实际作用。不能使用会忽略此变量的 `-I` 冒充 ASCII 条件。仍运行两个真实 CLI，`shell=False`、30 秒超时。 |
 
 ## 执行环境加固与回归
 
@@ -21,7 +23,7 @@
 - PATH 仅由当前可信 Python 安装目录和系统默认路径组成；HOME、临时目录和配置目录均在临时工作区内。系统默认路径找不到 Git 时明确失败，不回退到用户 PATH。
 - 禁止系统/全局 Git 配置，显式关闭 Git 自动 hooks、模板注入、文件监测、签名及传输协议。产品 pre/post hook 仍由测试显式调用，并执行原有字节一致性校验，不因此跳过覆盖。
 - 拒绝测试覆盖目录外/非白名单/符号链接脚本、不允许的 Git 命令/参数和仓库。真实集成用例在污染的宿主 Git/PATH/`BASH_ENV` 环境下完成合成提交及 pre/post 检查，并证明命令消息里的替换语法不会执行。
-- 当前及提取基线的真实 CLI、回执复用和核验器 JSON 输出继续测试；不以进程内模拟代替这些契约。本分支不包含后续来源抽取/场景输入工具的分页与编码用例。
+- 当前及提取基线的真实 CLI、回执复用、核验器 JSON 输出、中文分页与 UTF-8 输出继续测试；不以进程内模拟代替这些契约。核验器和来源抽取/场景输入工具各自保留根日志配置隔离及重复调用的输出协议回归。
 
 ## 前提与剩余边界
 

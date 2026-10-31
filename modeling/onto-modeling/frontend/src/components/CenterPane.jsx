@@ -35,6 +35,7 @@ import 'highlight.js/styles/atom-one-light.css';
 import mermaid from 'mermaid';
 import { Suspense, lazy, memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { hideCoverageMetrics } from '../lib/coveragePresentation.js';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
 import { api } from '../lib/api.js';
@@ -212,7 +213,7 @@ export const Markdown = memo(function Markdown({ content, onWikiLink, onOpenFile
   return (
     <div className="markdown-body">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, hideCoverageMetrics]}
         rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]}
         components={{
           a({ href, children }) {
@@ -542,7 +543,7 @@ function CodegenReview({ data, checked, onChecked, onGenerate }) {
             <div className="codegen-head">
               <span className="codegen-id">#{c.id}</span>
               <Typography.Text strong>{c.operation}</Typography.Text>
-              {c.fragment && c.fragment !== '整段' && <Tag>{c.fragment}</Tag>}
+              {c.covers && c.covers !== '—' && <Tag>覆盖：{c.covers}</Tag>}
               <Tag color={c.verdict === '适合' ? 'success' : 'warning'}>{c.verdict}</Tag>
               {c.type && <Tag color="blue">{c.type}</Tag>}
             </div>
@@ -1030,6 +1031,7 @@ export default function CenterPane({
                 key={project.id}
                 project={project}
                 versions={versions}
+                active={focus === 'solver'}
                 onOpenFile={onOpenFile}
                 onWorkspaceChanged={onWorkspaceChanged}
                 onCommand={onCommand}
@@ -1073,14 +1075,8 @@ export default function CenterPane({
                   <div className="stat-label">迭代数</div>
                 </div>
               </div>
-              {coverage && (coverage.design_coverage != null || coverage.pass_rate != null) && (
+              {coverage && coverage.pass_rate != null && (
                 <div className="stat-grid">
-                  <div className="stat-tile tone-green">
-                    <div className="stat-num">
-                      {coverage.design_coverage != null ? `${coverage.design_coverage}%` : '—'}
-                    </div>
-                    <div className="stat-label">设计覆盖率</div>
-                  </div>
                   <div className="stat-tile tone-blue">
                     <div className="stat-num">
                       {coverage.pass_rate != null ? `${coverage.pass_rate}%` : '—'}
@@ -1101,10 +1097,10 @@ export default function CenterPane({
                   </div>
                 </div>
               )}
-              {usage && usage.calls > 0 && (
+              {usage && (usage.calls > 0 || usage.output_tokens > 0) && (
                 <Card size="small" title="模型用量">
                   <Space size={24} wrap>
-                    <span>调用 {usage.calls} 次</span>
+                    {usage.calls > 0 && <span>调用 {usage.calls} 次</span>}
                     <span>输出 {usage.output_tokens.toLocaleString()} tokens</span>
                   </Space>
                 </Card>
@@ -1383,16 +1379,8 @@ export default function CenterPane({
                           checked={checkedItems}
                           onChecked={setCheckedItems}
                           onGenerate={(selected) =>
-                            onCommand?.(
-                              '/ontology-codegen ' +
-                                selected
-                                  .map((c) =>
-                                    c.fragment && c.fragment !== '整段'
-                                      ? `${c.operation}:${c.fragment}`
-                                      : c.operation,
-                                  )
-                                  .join(' '),
-                            )
+                            // 一个 operation 一个脚本：子操作由 codegen 按流程并入主操作脚本
+                            onCommand?.('/ontology-codegen ' + selected.map((c) => c.operation).join(' '))
                           }
                         />
                       )}

@@ -483,6 +483,21 @@ async function cancelActiveGraphImport(task: ActiveGraphImportTask, reason: stri
   return run;
 }
 
+// 只读统计项目数据源隔离范围（Workspace + Ontology）内已有的图数据，不写图、不建导入任务
+export async function inspectProjectGraphIsolation(input: {
+  projectId: string;
+  password: string;
+}, dependencies: GraphImportExecutionDependencies = {}): Promise<GraphIsolationCounts> {
+  const password = String(input.password ?? '');
+  const connection = loadConnection(input.projectId, password);
+  const inspectIsolation = dependencies.inspectIsolation ?? inspectGraphIsolation;
+  try {
+    return await inspectIsolation(connection);
+  } catch (error) {
+    throw new GraphImportUpstreamError(undefined, new Error(safeError(error, password)));
+  }
+}
+
 export async function executeGraphImport(input: {
   projectId: string;
   owner: string;

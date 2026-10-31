@@ -319,7 +319,10 @@ def test_cli_uses_env_window_only_for_models_cli_does_not_know(model, expected):
 
 
 def test_cli_context_limits_match_cli_report():
-    """实测：窗口 200000、压缩窗口 180000、最大输出 32000 时 CLI 报告 180000 / 147000。"""
+    """实测：窗口 200000、压缩窗口 180000、最大输出 32000 时 CLI 报告触发点 147000。
+
+    CLI 报告的 rawMaxTokens 是 180000（受压缩窗口限制），用量环的分母取模型窗口 200000。
+    """
     from app.services import model_settings
 
     env = {
@@ -327,7 +330,7 @@ def test_cli_context_limits_match_cli_report():
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "180000",
         "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "32000",
     }
-    assert model_settings.cli_context_limits(env) == (180000, 147000)
+    assert model_settings.cli_context_limits(env) == (200000, 147000)
     # 没有压缩窗口：按模型窗口；最大输出未给按 CLI 默认 32000（预留封顶 20000）
     assert model_settings.cli_context_limits({"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000"}) == (200000, 167000)
     # 触发百分比只会让压缩提前：(128000 − 20000) × 45% = 48600
@@ -521,6 +524,88 @@ def test_model_context_route_requires_admin(tmp_path, monkeypatch):
     admin = SimpleNamespace(state=SimpleNamespace(user={"role": "admin"}))
     saved = settings_router.put_model_context_settings(body, admin)
     assert saved["context"]["max_context_tokens"] == 128000
+
+
+def test_jiuwen_context_settings_saved_separately(tmp_path, monkeypatch):
+    """内测引擎的窗口与最大输出单独一组；留空时最大输出按 ONTO_WEB_JIUWEN_MAX_TOKENS。"""
+    from app import config
+    from app.services import model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "JIUWEN_MAX_TOKENS", 8192)
+
+    jiuwen = model_settings.masked()["jiuwen"]
+    assert jiuwen["context"] == {"max_context_tokens": None, "max_output_tokens": None}
+    assert jiuwen["context_defaults"]["max_context_tokens"]["value"] == 200000
+    assert jiuwen["context_defaults"]["max_output_tokens"] == {
+        "value": 8192,
+        "source": "default",
+        "env": "ONTO_WEB_CONTEXT_MAX_OUTPUT_TOKENS",
+    }
+    assert model_settings.jiuwen_effective_context() == {
+        "max_context_tokens": 200000,
+        "max_output_tokens": 8192,
+        "trigger_ratio": 0.8,
+    }
+
+    saved = model_settings.save_jiuwen(
+        "https://api.example.com/v1",
+        "test-key-value",
+        "some-model",
+        {"max_context_tokens": 128000, "max_output_tokens": 16384},
+    )
+    assert saved["jiuwen"]["context"] == {"max_context_tokens": 128000, "max_output_tokens": 16384}
+    assert model_settings.jiuwen_effective_context()["trigger_ratio"] == 0.77
+    # 稳定引擎的上下文参数不受影响
+    assert saved["context"] == {"max_context_tokens": None, "max_output_tokens": None}
+
+    # 不带 context 只改网关配置，已存的上下文参数保留
+    saved = model_settings.save_jiuwen("https://api.example.com/v1", "", "other-model")
+    assert saved["jiuwen"]["context"]["max_context_tokens"] == 128000
+
+    # .env 的最大输出优先于内测引擎的内置默认
+    monkeypatch.setenv("ONTO_WEB_CONTEXT_MAX_OUTPUT_TOKENS", "16000")
+    assert model_settings.jiuwen_context_defaults()["max_output_tokens"]["value"] == 16000
+
+
+@pytest.mark.parametrize(
+    ("window", "max_output", "ratio"),
+    [
+        (200000, 8192, 0.8),  # 推算 0.86 晚于 SDK 默认，取 0.8
+        (128000, 16384, 0.77),
+        (32000, 16000, 0.4),
+        (32000, 24000, 0.3),  # 留不出 10% 余量时不早于 0.3
+    ],
+)
+def test_jiuwen_trigger_ratio_keeps_margin(window, max_output, ratio):
+    from app.services import model_settings
+
+    assert model_settings.jiuwen_trigger_ratio(window, max_output) == ratio
+
+
+def test_jiuwen_route_rejects_invalid_context_and_saves_nothing(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app import config
+    from app.routers import settings as settings_router
+    from app.services import model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "JIUWEN_MAX_TOKENS", 8192)
+    request = SimpleNamespace(state=SimpleNamespace(user={"role": "admin"}))
+    body = settings_router.JiuwenModelBody(
+        base_url="https://api.example.com/v1",
+        model="some-model",
+        context=settings_router.ContextBody(max_context_tokens=8000),
+    )
+    response = settings_router.put_jiuwen_model_settings(body, request)
+    assert response.status_code == 400
+    assert "8192" in response.body.decode("utf-8")  # 留空的最大输出按内测引擎默认校验
+    assert model_settings.load() == {}
+
+    body.context.max_output_tokens = 4000
+    saved = settings_router.put_jiuwen_model_settings(body, request)
+    assert saved["jiuwen"]["context"] == {"max_context_tokens": 8000, "max_output_tokens": 4000}
 
 
 def test_expire_orphan_permissions_broadcasts_expired():

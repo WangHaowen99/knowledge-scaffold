@@ -50,8 +50,9 @@ STAGED_TOOLS=$(git diff --cached --name-only -z 2>/dev/null | tr '\0' '\n' \
     | grep -E '^\.claude/(scripts|agents|commands)/' || true)
 
 # Generated executable scripts are part of the package contract, not ordinary docs.
+# 脚本描述符（同名 .md）由 script_descriptor.py 生成，与 .py 一起受契约检查。
 STAGED_SCRIPTS=$(git diff --cached --name-only -z 2>/dev/null | tr '\0' '\n' \
-    | grep -E '^ontology/scripts/.*\.py$' || true)
+    | grep -E '^ontology/scripts/.*\.(py|md)$' || true)
 
 TOOL_ERRORS=""
 if [ -n "$STAGED_TOOLS" ]; then
@@ -95,7 +96,7 @@ except Exception:
     print(1)
 ' 2>/dev/null || echo 1)
     if [ "$SCRIPT_ERRORS" -gt 0 ]; then
-        REASON='ontology/scripts 中存在脚本契约、安全或绑定错误：请运行 python3 .claude/scripts/ontology_checker.py ontology --include-scripts 修复后再提交。'
+        REASON='ontology/scripts 中存在脚本契约、安全或绑定错误：请运行 python3 .claude/scripts/ontology_checker.py ontology --include-scripts 查看；描述符缺失或过期时运行 python3 .claude/scripts/script_descriptor.py render ontology 重新生成并 git add，修复后再提交。'
         python3 -c '
 import json, sys
 print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))

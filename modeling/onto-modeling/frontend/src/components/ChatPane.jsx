@@ -29,6 +29,11 @@ import {
 } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, openEventStream } from '../lib/api.js';
+import {
+  createBuildAlertTracker,
+  notifyBuild,
+  requestPermissionOnFirstBuild,
+} from '../lib/buildNotifier.js';
 import { orderResearchActions } from '../lib/researchGate.js';
 import { STATUS_LABELS, changeHeadline, groupChanges } from '../lib/changeSummary.js';
 import {
@@ -62,6 +67,7 @@ const ALL_COMMANDS = [
 ];
 
 const HISTORY_TAIL = 400;
+const USAGE_REFRESH_MS = 3000;
 // 上传时平台按结构识别出的资料用途（见后端 material_detect）
 const DETECTED_PURPOSE_LABELS = { schema: '数据 Schema', term: '术语表' };
 
@@ -763,6 +769,7 @@ export default function ChatPane({
   versions,
   usage,
   onWorkspaceChanged,
+  onUsageChanged,
   onPendingChange,
   onOpenFile,
   onOpenDiff,
@@ -925,8 +932,18 @@ export default function ChatPane({
     let cancelled = false;
     let retryTimer = 0;
     let retryDelay = 2000;
+    let usageTimer = 0;
+    // 轮内每次模型调用都有一条 model_usage，合并成几秒刷新一次项目用量
+    const scheduleUsageRefresh = () => {
+      if (usageTimer) return;
+      usageTimer = setTimeout(() => {
+        usageTimer = 0;
+        if (!cancelled) onUsageChanged?.();
+      }, USAGE_REFRESH_MS);
+    };
     const lastMsgTsRef = { current: Date.now() };
     const nextAfterRef = { current: 0 };
+    const alertTracker = createBuildAlertTracker();
     const handleEvent = (event) => {
       if (cancelled) return;
       lastMsgTsRef.current = Date.now();
@@ -960,7 +977,14 @@ export default function ChatPane({
         event.seq !== undefined &&
         historyEndRef.current !== null &&
         event.seq < historyEndRef.current;
+      const alert = alertTracker.next(event, { history: isHistoryEvent });
+      if (alert) notifyBuild(alert, { projectName: project.name, tag: resolved || project.id });
       if (event.type === 'system') return;
+      if (event.type === 'model_usage') {
+        // 只用来刷新项目用量，不是对话行；回放的历史不触发刷新
+        if (!isHistoryEvent) scheduleUsageRefresh();
+        return;
+      }
       setCtx((prev) => nextContext(prev, event));
       if (event.type === 'user_message') {
         setPending(null);
@@ -1045,6 +1069,7 @@ export default function ChatPane({
         conversationIdRef.current = resolved;
         setConversationId(resolved);
         setState(info.state || 'idle');
+        alertTracker.seed(info.state);
         const total = info.events || 0;
         historyEndRef.current = total;
         const historyStart = Number.isInteger(info.history_start)
@@ -1073,6 +1098,7 @@ export default function ChatPane({
     return () => {
       cancelled = true;
       clearTimeout(retryTimer);
+      clearTimeout(usageTimer);
       clearInterval(watchdog);
       source?.close();
     };
@@ -1120,6 +1146,7 @@ export default function ChatPane({
     if (uploading) return;
     const toUpload = explicitAttachments ?? attachments;
     if (!trimmed && toUpload.length === 0) return;
+    requestPermissionOnFirstBuild(); // 须在用户发送这一操作中申请，浏览器才弹申请框
     // 上传可能持续数秒：消息发往点发送时所在的会话
     const targetConversation = conversationIdRef.current;
     setInput('');
@@ -1429,7 +1456,6 @@ export default function ChatPane({
         : state === 'error'
           ? { cls: 'error', text: '出错了' }
           : { cls: 'idle', text: '空闲' };
-  const ctxInfo = describeContext(ctx);
   // 运行、排队、上传或消息未落定时不能换会话：引擎同一时刻只绑定一条会话
   const conversationBusy = state === 'running' || state === 'queued' || uploading || Boolean(pending);
 
@@ -1438,6 +1464,11 @@ export default function ChatPane({
     () => items.filter((i) => i.role === 'user').map((i) => i.content),
     [items],
   );
+  const ctxInfo = describeContext(ctx, {
+    fresh: !userMessages.length && !pending && !skippedEvents,
+  });
+  // 首轮还没结束时 calls 为 0，但逐次记下的 token 已经有了
+  const hasUsage = Boolean(usage && (usage.calls > 0 || usage.output_tokens > 0));
   const onRecallKey = (event) => {
     if (state === 'running' || state === 'queued') return;
     if (event.key === 'Escape' && recallIndexRef.current !== -1) {
@@ -1509,12 +1540,13 @@ export default function ChatPane({
           onSwitch={(id) => setSelection({ projectId: project.id, id })}
         />
         <span style={{ flex: 1 }} />
-        {usage && usage.calls > 0 && (
+        {hasUsage && (
           <Popover
             placement="bottomRight"
             content={
               <div className="usage-pop">
-                <div>调用 {usage.calls} 次</div>
+                <div>项目累计（含全部会话）</div>
+                {usage.calls > 0 && <div>调用 {usage.calls} 次</div>}
                 <div>输入 {(usage.input_tokens / 1000).toFixed(1)}k tokens</div>
                 <div>输出 {(usage.output_tokens / 1000).toFixed(1)}k tokens</div>
                 {metrics?.done && metrics.cacheRate != null && (
@@ -1532,14 +1564,16 @@ export default function ChatPane({
           <Tooltip title={ctxInfo.text}>
             <svg className={`ctx-ring${ctxInfo.level ? ` ${ctxInfo.level}` : ''}`} viewBox="0 0 20 20">
               <circle className="ctx-ring-bg" cx="10" cy="10" r="8" />
-              <circle
-                className="ctx-ring-fg"
-                cx="10"
-                cy="10"
-                r="8"
-                strokeDasharray={`${(ctxInfo.pct / 100) * 50.27} 50.27`}
-                transform="rotate(-90 10 10)"
-              />
+              {ctxInfo.pct > 0 && (
+                <circle
+                  className="ctx-ring-fg"
+                  cx="10"
+                  cy="10"
+                  r="8"
+                  strokeDasharray={`${(ctxInfo.pct / 100) * 50.27} 50.27`}
+                  transform="rotate(-90 10 10)"
+                />
+              )}
             </svg>
           </Tooltip>
         )}

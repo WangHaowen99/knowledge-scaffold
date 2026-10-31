@@ -36,7 +36,7 @@ CLI_PATH = os.environ.get("ONTO_WEB_CLI_PATH", "")
 JIUWEN_BASE_URL = os.environ.get("ONTO_WEB_JIUWEN_BASE_URL", "")
 JIUWEN_API_KEY = os.environ.get("ONTO_WEB_JIUWEN_API_KEY", "")
 JIUWEN_MODEL = os.environ.get("ONTO_WEB_JIUWEN_MODEL", "")
-JIUWEN_MAX_TOKENS = int(os.environ.get("ONTO_WEB_JIUWEN_MAX_TOKENS", "8192"))
+JIUWEN_MAX_TOKENS = int(os.environ.get("ONTO_WEB_JIUWEN_MAX_TOKENS", "32000"))
 JIUWEN_MAX_ITERATIONS = int(os.environ.get("ONTO_WEB_JIUWEN_MAX_ITERATIONS", "60"))
 
 # modeling 评测服务（数据评测阶段，方案 docs/eval-optimization-integration.md）：

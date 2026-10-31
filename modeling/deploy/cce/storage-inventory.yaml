@@ -1,0 +1,29 @@
+schemaVersion: cce-storage/v1
+volumes:
+  - owner: modeling
+    workload: core
+    backend: pvc
+    mountPath: /data
+    valuesKey: modeling.workloads.core.persistence.existingClaim
+    dataVersion: application-managed
+    backupProcedure: stop-core-and-snapshot-pvc
+    restoreProcedure: restore-snapshot-to-new-pvc-before-start
+    requirements: {accessModes: [ReadWriteOnce], volumeMode: Filesystem, minimumCapacity: 10Gi}
+  - owner: modeling
+    workload: agent
+    backend: pvc
+    mountPath: /data
+    valuesKey: modeling.workloads.agent.persistence.existingClaim
+    dataVersion: application-managed
+    backupProcedure: stop-agent-and-snapshot-pvc
+    restoreProcedure: restore-snapshot-to-new-pvc-before-start
+    requirements: {accessModes: [ReadWriteOnce], volumeMode: Filesystem, minimumCapacity: 10Gi}
+  - owner: modeling
+    workload: onto
+    backend: pvc
+    mountPath: /data
+    valuesKey: modeling.workloads.onto.persistence.existingClaim
+    dataVersion: application-managed
+    backupProcedure: stop-onto-and-snapshot-pvc
+    restoreProcedure: restore-snapshot-to-new-pvc-before-start
+    requirements: {accessModes: [ReadWriteOnce], volumeMode: Filesystem, minimumCapacity: 10Gi}

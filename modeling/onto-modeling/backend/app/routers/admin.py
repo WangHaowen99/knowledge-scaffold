@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .. import config
-from ..services import audit, auth, error_log, modeling_cleanup
+from ..services import audit, auth, conversation_store, error_log, modeling_cleanup
 from ..services.agent_sessions import manager, usage_summary
 from ..services.auth import AuthError
 from .projects import workspaces
@@ -135,23 +135,23 @@ def _usage_daily(days: int = 14) -> list[dict]:
             except OSError:
                 continue
             for line in lines:
-                if '"result"' not in line:
+                if '"result"' not in line and '"model_usage"' not in line:
                     continue
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if event.get("type") != "result" or not event.get("ts"):
+                usage = conversation_store.counted_usage(event)
+                if usage is None or not event.get("ts"):
                     continue
                 day = datetime.fromtimestamp(event["ts"]).strftime("%Y-%m-%d")
                 bucket = buckets.setdefault(
                     day, {"date": day, "cost": 0.0, "output_tokens": 0, "calls": 0}
                 )
-                bucket["cost"] += event.get("total_cost_usd") or 0
-                bucket["output_tokens"] += (event.get("usage") or {}).get(
-                    "output_tokens"
-                ) or 0
-                bucket["calls"] += 1
+                if event.get("type") == "result":
+                    bucket["cost"] += event.get("total_cost_usd") or 0
+                    bucket["calls"] += 1
+                bucket["output_tokens"] += usage.get("output_tokens") or 0
     series = sorted(buckets.values(), key=lambda b: b["date"], reverse=True)[:days]
     for bucket in series:
         bucket["cost"] = round(bucket["cost"], 4)

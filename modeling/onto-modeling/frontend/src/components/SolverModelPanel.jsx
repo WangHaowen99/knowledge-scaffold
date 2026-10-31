@@ -51,8 +51,7 @@ import {
   draftFromView,
   draftKey,
   engineCapabilities,
-  evaluatorCommand,
-  evaluatorCommandBlocker,
+  evaluatorCommandPlan,
   findProblemFamily,
   findingSource,
   isEnabled,
@@ -392,7 +391,7 @@ function CaseCard({ item, operations, onChange, onRemove }) {
 
 // 端到端验证（DEV-FE-003）：用例与数据源在这里选，执行在后台经 modeling → Consumer；
 // 只有 Consumer 返回的权威结果才算通过，记录随修订失效
-function ValidationCard({ projectId, view, dirty, innerRef, onRecord, onReload }) {
+function ValidationCard({ projectId, view, dirty, active, reloadKey, innerRef, onRecord, onReload }) {
   const state = validationState(view);
   const record = view.validation;
   const operations = useMemo(() => view.contract?.operations || [], [view]);
@@ -410,25 +409,41 @@ function ValidationCard({ projectId, view, dirty, innerRef, onRecord, onReload }
     setEditorKey((value) => value + 1);
   };
 
+  // 面板保持挂载：数据源在评测页增删，切回求解页或点刷新时重读；已选的数据源被删除则回到不使用
   useEffect(() => {
+    if (!active) return undefined;
     let alive = true;
-    Promise.all([
-      api.solverValidationCases(projectId),
-      api.evalDataSources(projectId).catch(() => ({ sources: [] })),
-    ])
-      .then(([body, sourceBody]) => {
+    api
+      .evalDataSources(projectId)
+      .catch(() => ({ sources: [] }))
+      .then((body) => {
         if (!alive) return;
-        reset(body.cases || []);
-        setSources(sourceBody.sources || []);
-      })
+        const next = body.sources || [];
+        setSources(next);
+        setSourceId((prev) => (next.some((source) => source.id === prev) ? prev : ''));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [projectId, active, reloadKey]);
+
+  // 挂载与点刷新时读用例；有未保存的用例修改时保留编辑内容
+  const casesDirtyRef = useRef(false);
+  useEffect(() => {
+    if (casesDirtyRef.current) return undefined;
+    let alive = true;
+    api
+      .solverValidationCases(projectId)
+      .then((body) => alive && reset(body.cases || []))
       .catch((error) => alive && message.error(error.message));
     return () => {
       alive = false;
     };
-  }, [projectId]);
+  }, [projectId, reloadKey]);
 
   const parsed = useMemo(() => parseCasesText(text, operations), [text, operations]);
   const casesDirty = saved != null && text.trim() !== casesText(saved).trim();
+  casesDirtyRef.current = casesDirty;
   const blocker = saved == null ? '正在读取验证用例' : startBlocker(view, { dirty, casesDirty, cases: saved });
   const rows = validationCaseRows(record);
   const sourceOptions = useMemo(() => validationSourceOptions(sources), [sources]);
@@ -685,8 +700,8 @@ function ContractEditor({
   onChange,
   onRemove,
   onOpenFile,
-  commandBlocker,
-  onCommand,
+  evaluatorPlan,
+  onEvaluator,
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const status = (field, label, extra) => {
@@ -719,26 +734,30 @@ function ContractEditor({
   const evaluatorPath = item.params.evaluator_path || '';
   const evaluatorChoices = evaluatorOptions.map((option) => ({ value: option.path, label: option.file }));
   if (evaluatorPath && !evaluatorOptions.some((option) => option.path === evaluatorPath)) {
-    evaluatorChoices.push({ value: evaluatorPath, label: `${evaluatorPath}（不存在）` });
+    evaluatorChoices.push({ value: evaluatorPath, label: `${evaluatorPath}（不存在或不是评估器）` });
   }
   const advancedHit = ADVANCED_FIELDS.some((field) => marks.fields.has(field) || highlight === field);
   const showAdvanced = !managed || advancedOpen || advancedHit;
   const evaluatorLink = item.evaluator && (
     <Typography.Link onClick={() => onOpenFile?.(item.evaluator)}>{item.evaluator}</Typography.Link>
   );
-  // 评估器由助手生成（只含取数映射与参数的声明式评估器），用户不必手写
-  const evaluatorAction = onCommand && (
+  // 评估器由助手生成（只含取数映射与参数的声明式评估器），用户不必手写；有未保存的修改时先保存
+  const evaluatorAction = onEvaluator && evaluatorPlan && (
     <Space wrap size={8}>
       <Button
         size="small"
-        disabled={Boolean(commandBlocker)}
-        title={commandBlocker || undefined}
-        onClick={() => onCommand(evaluatorCommand(item))}
+        type="primary"
+        disabled={Boolean(evaluatorPlan.blocker)}
+        title={evaluatorPlan.blocker || undefined}
+        onClick={onEvaluator}
       >
         让助手生成评估器
       </Button>
       <span className="solver-meta">
-        {commandBlocker || '助手按已保存的契约生成或修正声明式评估器并自检，完成后需重新验证'}
+        {evaluatorPlan.blocker
+          || (evaluatorPlan.needsSave
+            ? '有未保存的修改：点击后先保存求解契约，助手再按保存后的契约生成或修正声明式评估器并自检，完成后需重新验证'
+            : '助手按已保存的契约生成或修正声明式评估器并自检，完成后需重新验证')}
       </span>
     </Space>
   );
@@ -1041,9 +1060,17 @@ function ContractEditor({
 
 const EMPTY_MARKS = { fields: new Map(), roles: new Map(), count: 0 };
 
-export default function SolverModelPanel({ project, versions = [], onOpenFile, onWorkspaceChanged, onCommand }) {
+export default function SolverModelPanel({
+  project,
+  versions = [],
+  active = true,
+  onOpenFile,
+  onWorkspaceChanged,
+  onCommand,
+}) {
   const [view, setView] = useState(null);
   const [loadError, setLoadError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0); // 刷新按钮：验证区据此重读数据源与用例
   const [items, setItems] = useState([]);
   const [selected, setSelected] = useState(null);
   const [role, setRole] = useState('entry');
@@ -1054,6 +1081,7 @@ export default function SolverModelPanel({ project, versions = [], onOpenFile, o
   const [summary, setSummary] = useState('');
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(null); // 冲突时服务端的最新 view
+  const [afterSave, setAfterSave] = useState(''); // 保存成功后发给会话的命令（让助手生成评估器）
   const [live, setLive] = useState(null); // 草稿的即时检查结果 { key, rejected, findings, rendered }
   const [liveError, setLiveError] = useState('');
   const validationRef = useRef(null);
@@ -1097,6 +1125,7 @@ export default function SolverModelPanel({ project, versions = [], onOpenFile, o
   );
   const saveBlocker = liveSaveBlocker(live, payloadKey);
   const canSave = (dirty || unloaded.length > 0) && errors.length === 0 && !saveBlocker;
+  const saveTitle = errors.length ? `还有 ${errors.length} 个问题需要先修正` : saveBlocker;
   const shownCount = shown.rejected.length + shown.findings.length;
   const pending = shown.draft
     ? [...marks.values()].reduce((sum, entry) => sum + entry.count, 0)
@@ -1228,6 +1257,7 @@ export default function SolverModelPanel({ project, versions = [], onOpenFile, o
 
   const save = async (baseRevision) => {
     const keepKey = String(items.find((item) => item.uid === selected)?.binding.solver_key || '').trim();
+    const command = afterSave;
     setSaving(true);
     try {
       const saved = await api.saveSolverContract(project.id, toPayload(items), baseRevision, summary);
@@ -1237,6 +1267,8 @@ export default function SolverModelPanel({ project, versions = [], onOpenFile, o
       setSummary('');
       message.success(saved.commit ? '求解契约已保存并记录迭代' : '求解契约没有变化');
       if (saved.commit) onWorkspaceChanged?.();
+      // 保存失败（被拒、冲突、出错）不发命令，处理后需重新点击
+      if (command) onCommand?.(command);
     } catch (error) {
       setConfirming(false);
       if (error.status === 409) {
@@ -1254,6 +1286,7 @@ export default function SolverModelPanel({ project, versions = [], onOpenFile, o
       }
     } finally {
       setSaving(false);
+      setAfterSave('');
     }
   };
 
@@ -1271,6 +1304,17 @@ export default function SolverModelPanel({ project, versions = [], onOpenFile, o
 
   const current = items.find((item) => item.uid === selected);
   const currentIndex = items.findIndex((item) => item.uid === selected);
+  const evaluatorPlan = current ? evaluatorCommandPlan(current, { dirty, saveBlocker: saveTitle }) : null;
+  // 先保存再发命令：走同一个保存确认框，保存成功后由 save 发出
+  const generateEvaluator = () => {
+    if (!evaluatorPlan || evaluatorPlan.blocker) return;
+    if (!evaluatorPlan.needsSave) {
+      onCommand?.(evaluatorPlan.command);
+      return;
+    }
+    setAfterSave(evaluatorPlan.command);
+    setConfirming(true);
+  };
   // 模板条目的附属文件预览：用与当前草稿对应的即时检查生成结果，参数没改过时用已保存的文件
   const preview = current?.managed
     ? renderedSidecars(current, liveFresh ? live.rendered?.[currentIndex] : null)
@@ -1306,12 +1350,21 @@ export default function SolverModelPanel({ project, versions = [], onOpenFile, o
           <Button size="small" disabled={!dirty} onClick={discard}>
             放弃修改
           </Button>
-          <Button size="small" icon={<ReloadOutlined />} title="重新读取" disabled={dirty} onClick={load} />
+          <Button
+            size="small"
+            icon={<ReloadOutlined />}
+            title="重新读取"
+            disabled={dirty}
+            onClick={() => {
+              load();
+              setReloadKey((value) => value + 1);
+            }}
+          />
           <Button
             size="small"
             type="primary"
             disabled={!canSave}
-            title={errors.length ? `还有 ${errors.length} 个问题需要先修正` : saveBlocker || undefined}
+            title={saveTitle || undefined}
             onClick={() => setConfirming(true)}
           >
             保存
@@ -1386,6 +1439,8 @@ export default function SolverModelPanel({ project, versions = [], onOpenFile, o
               projectId={project.id}
               view={view}
               dirty={dirty}
+              active={active}
+              reloadKey={reloadKey}
               innerRef={validationRef}
               onRecord={recordStarted}
               onReload={() => !dirtyRef.current && load()}
@@ -1436,8 +1491,8 @@ export default function SolverModelPanel({ project, versions = [], onOpenFile, o
                 onChange={(change) => update(current.uid, change)}
                 onRemove={() => remove(current.uid)}
                 onOpenFile={onOpenFile}
-                commandBlocker={evaluatorCommandBlocker(current, { dirty })}
-                onCommand={onCommand}
+                evaluatorPlan={evaluatorPlan}
+                onEvaluator={onCommand ? generateEvaluator : undefined}
               />
             ) : (
               <div className="solver-detail" />
@@ -1449,13 +1504,17 @@ export default function SolverModelPanel({ project, versions = [], onOpenFile, o
       <Modal
         title="保存求解契约"
         open={confirming}
-        onCancel={() => setConfirming(false)}
+        onCancel={() => {
+          setConfirming(false);
+          setAfterSave('');
+        }}
         okText="保存"
         confirmLoading={saving}
         onOk={() => save(view.revision)}
         destroyOnHidden
       >
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          {afterSave && <Alert type="info" showIcon message="保存成功后自动让助手生成评估器。" />}
           <DiffList diff={diff} unloaded={unloaded} />
           {lost.length > 0 && (
             <Alert

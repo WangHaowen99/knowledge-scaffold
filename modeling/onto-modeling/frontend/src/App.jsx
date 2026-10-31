@@ -155,14 +155,19 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  const refreshUsage = useCallback(() => {
+    if (!projectId) return;
+    api.usage(projectId).then(setUsage).catch(() => {});
+  }, [projectId]);
+
   const refreshWorkspace = useCallback(() => {
     if (!projectId) return;
     setWorkspaceRevision((value) => value + 1);
     api.fileTree(projectId).then((data) => setTree(data.tree)).catch(() => {});
     api.versions(projectId).then((data) => setVersions(data.versions)).catch(() => {});
-    api.usage(projectId).then(setUsage).catch(() => {});
+    refreshUsage();
     refreshProjects(); // 项目 meta（资料更新时间/统计）同步刷新
-  }, [projectId, refreshProjects]);
+  }, [projectId, refreshProjects, refreshUsage]);
 
   useEffect(() => {
     api
@@ -971,6 +976,7 @@ export default function App() {
                 versions={versions}
                 usage={usage}
                 onWorkspaceChanged={refreshWorkspace}
+                onUsageChanged={refreshUsage}
                 onPendingChange={setPendingCount}
                 onOpenFile={openFile}
                 onOpenDiff={(rev, files) => {

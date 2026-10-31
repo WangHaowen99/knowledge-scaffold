@@ -169,7 +169,7 @@ export function stageStatuses(paths, review = null) {
   return STAGES.map((stage, i) => {
     if (hits[i]) return 'finish';
     // 报告已生成但检查出确定性错误：显示未通过，而不是"进行中"
-    if (i === RESEARCH_STAGE_INDEX && review?.status === 'failed') return 'error';
+    if (i === RESEARCH_STAGE_INDEX && ['failed', 'unverifiable'].includes(review?.status)) return 'error';
     if (i === firstPending) return 'process';
     return 'wait';
   });
@@ -178,6 +178,7 @@ export function stageStatuses(paths, review = null) {
 // 资料分析阶段标题后的状态角标；无需提示时为空
 export function researchBadge(review) {
   if (!review) return '';
+  if (review.status === 'unverifiable') return '来源无法核验（需修正读取或来源位置）';
   if (review.status === 'failed') return `未通过（${review.errors || 0} 项错误）`;
   if (review.status !== 'pending') return '';
   return review.manual_pending

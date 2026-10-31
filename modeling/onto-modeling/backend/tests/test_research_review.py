@@ -17,7 +17,7 @@ from app.services.workspace import WorkspaceManager
 SCRIPTS = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts"
 
 NO_CHANGE_ROW = "| 无 | 无 | 无 | 无 |"
-SOURCE = "resource/others/说明.md#1"
+SOURCE = "resource/others/说明.md"
 
 
 @pytest.fixture
@@ -304,7 +304,8 @@ def test_silent_id_rename_fails_until_declared(workspace, toolkit):
 
     write_report(workspace, make_report(
         renamed, changes=f"| RULE-02 | RULE-02-NEW | 改名 | {SOURCE} |"))
-    assert checker.run_check(workspace)["status"] == review.PASSED
+    assert checker.run_check(workspace)['manual_pending']
+    assert not review.accepted(workspace)
 
 
 def test_first_round_id_rename_fails_without_baseline(workspace, toolkit):
@@ -358,8 +359,8 @@ def test_accepted_baseline_survives_later_failure(workspace, toolkit):
     assert snapshot["captured_from"] == ["research/报告.md"]
 
 
-def test_new_id_passes_when_declared_as_added(workspace, toolkit):
-    """首轮里确实新造的 ID，按「ID变更对照」声明新增 + 依据后放行。"""
+def test_new_id_requires_verifiable_source_and_manual_confirmation(workspace, toolkit):
+    """声明只解释变更，不能充当来源及人工确认。"""
     checker, review = toolkit
     rows = [row("ITEM-01", "RULE-01"), row("ITEM-99", "RULE-99", "订单表.AMOUNT")]
     write_report(workspace, make_report(rows))
@@ -367,7 +368,16 @@ def test_new_id_passes_when_declared_as_added(workspace, toolkit):
 
     write_report(workspace, make_report(rows, changes=(
         f"| 无 | ITEM-99 | 新增 | {SOURCE} |\n| 无 | RULE-99 | 新增 | {SOURCE} |")))
-    assert checker.run_check(workspace)["status"] == review.PASSED
+    result = checker.run_check(workspace)
+    assert len(result['manual_pending']) == 2
+    assert not review.accepted(workspace)
+    assert checker.capture(workspace)['rule_ids'] == []
+    write_report(workspace, make_report(rows, changes=(
+        f"| 无 | ITEM-99 | 新增 | {SOURCE} |\n| 无 | RULE-99 | 新增 | {SOURCE} |"),
+        gaps='- [x] 新增ID确认：ITEM-99、RULE-99'))
+    assert checker.check_exit_code(checker.run_check(workspace)) == 0
+    evidence = review.load_review(workspace)['source_evidence'][SOURCE]['ids']
+    assert {e['id'] for e in evidence if e['kind'] == 'manual_new_id'} == {'ITEM-99', 'RULE-99'}
 
 
 def test_manual_pending_blocks_acceptance(workspace, toolkit):
@@ -385,6 +395,105 @@ def test_manual_pending_blocks_acceptance(workspace, toolkit):
     assert status["reason"] == review.REASON_MANUAL_PENDING
     # 人工待决未确认就不算完整验收，ID 不进下一轮基线
     assert checker.capture(workspace)["rule_ids"] == []
+
+
+@pytest.mark.parametrize('suffix', ['md', 'docx', 'xlsx'])
+def test_same_source_ids_across_formats(workspace, toolkit, suffix):
+    checker, review = toolkit
+    path = workspace / 'resource' / 'others' / f'规范.{suffix}'
+    if suffix == 'docx':
+        from test_review_integrity import docx
+        docx(path)
+    elif suffix == 'xlsx':
+        import openpyxl
+        book = openpyxl.Workbook()
+        book.active.title = '规则'
+        book.active.append(['ITEM-01', 'RULE-01'])
+        book.save(path)
+    else:
+        path.write_text('合成规范 ITEM-01 RULE-01', encoding='utf-8')
+    location = path.relative_to(workspace).as_posix()
+    write_report(workspace, make_report([row('ITEM-01', 'RULE-01', location=location)]))
+    assert checker.check_exit_code(checker.run_check(workspace)) == 0
+    evidence = review.load_review(workspace)['source_evidence'][location]
+    assert len(evidence['source_sha256']) == 64
+    assert evidence['extractor_version'] == 1
+    assert evidence['anchors']
+
+
+@pytest.mark.parametrize('mode', ['corrupt', 'unsupported', 'wrong_anchor', 'wrong_id_anchor'])
+def test_source_failure_cannot_be_exempted_by_new_id_or_baseline(workspace, toolkit, mode):
+    checker, review = toolkit
+    path = workspace / 'resource' / 'others' / ('source.pdf' if mode == 'unsupported' else 'source.docx')
+    from test_review_integrity import docx
+    docx(path)
+    if mode in {'corrupt', 'unsupported'}:
+        path.write_bytes(b'not supported')
+    location = path.relative_to(workspace).as_posix()
+    if mode == 'wrong_anchor':
+        location += '#p:99'
+    if mode == 'wrong_id_anchor':
+        location += '#p:1'  # RULE-01 exists here, ITEM-01 is in a table, not here.
+    review.write_inventory(workspace, {'item_ids': ['ITEM-01'], 'rule_ids': ['RULE-01']})
+    write_report(workspace, make_report([row('ITEM-01', 'RULE-01', location=location)],
+        changes=f'| 无 | ITEM-01、RULE-01 | 新增 | {location} |',
+        gaps='- [x] 新增ID确认：ITEM-01、RULE-01'))
+    result = checker.run_check(workspace)
+    assert checker.check_exit_code(result) != 0
+    assert not review.accepted(workspace)
+    assert review.load_baseline(workspace) == {}
+    if mode != 'wrong_id_anchor':
+        assert result['status'] == review.UNVERIFIABLE
+        assert WorkspaceManager._project_progress(workspace)['research_review']['blocking']
+
+
+def test_source_existing_id_cannot_be_registered_as_invented(workspace, toolkit):
+    checker, _ = toolkit
+    write_report(workspace, make_report(GOOD_ROWS,
+        changes=f'| 无 | RULE-01 | 新增 | {SOURCE} |'))
+    assert 'ID变更类型' in categories(checker.run_check(workspace))
+
+
+def test_arbitrary_declaration_does_not_bypass_source(workspace, toolkit):
+    checker, review = toolkit
+    write_report(workspace, make_report([row('ITEM-99', 'RULE-99')],
+        changes='| 无 | ITEM-99、RULE-99 | 新增 | 已确认正确 |'))
+    result = checker.run_check(workspace)
+    assert result['status'] == review.FAILED
+    assert 'ID变更依据' in categories(result)
+
+
+def test_ambiguous_basename_requires_full_path(workspace, toolkit):
+    checker, _ = toolkit
+    other = workspace / 'resource' / 'second'
+    other.mkdir()
+    (other / '说明.md').write_text('ITEM-01 RULE-01', encoding='utf-8')
+    write_report(workspace, make_report([row('ITEM-01', 'RULE-01', location='说明.md')]))
+    assert '来源缺失' in categories(checker.run_check(workspace))
+
+
+def test_same_size_source_change_invalidates_receipt(workspace, toolkit, monkeypatch):
+    checker, review = toolkit
+    monkeypatch.setattr(review, 'MAX_HASH_BYTES', 1)
+    write_report(workspace, make_report(GOOD_ROWS))
+    checker.run_check(workspace)
+    path = workspace / SOURCE
+    path.write_text(path.read_text(encoding='utf-8').replace('RULE-01', 'RULE-99'), encoding='utf-8')
+    assert review.review_status(workspace)['reason'] == review.REASON_INPUTS_CHANGED
+
+
+def test_source_changed_during_check_cannot_get_valid_receipt(workspace, toolkit, monkeypatch):
+    checker, review = toolkit
+    write_report(workspace, make_report(GOOD_ROWS))
+    original = checker.source_extract.extract
+    def changing_source(path):
+        result = original(path)
+        if path.name == '说明.md':
+            path.write_text(path.read_text(encoding='utf-8').replace('RULE-01', 'RULE-99'), encoding='utf-8')
+        return result
+    monkeypatch.setattr(checker.source_extract, 'extract', changing_source)
+    assert checker.run_check(workspace)['status'] == review.UNVERIFIABLE
+    assert not review.accepted(workspace)
 
 
 def test_no_report_cannot_be_verified(workspace, toolkit):

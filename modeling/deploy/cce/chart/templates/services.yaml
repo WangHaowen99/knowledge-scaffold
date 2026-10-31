@@ -1,0 +1,39 @@
+{{- $nl2sql := .Values.modeling.nl2sql | default dict }}
+{{- range $component, $ports := dict "core" (list (dict "name" "http" "port" 5100) (dict "name" "mcp" "port" 5188)) "agent" (list (dict "name" "http" "port" 5110)) "onto" (list (dict "name" "http" "port" 8100)) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $.Release.Name }}-{{ $component }}
+spec:
+  {{- if or (eq $component "core") (eq $component "onto") }}
+  # CCE ELB Ingress 通过节点端口接入对外 Modeling 服务。
+  type: NodePort
+  {{- else }}
+  type: ClusterIP
+  {{- end }}
+  selector: {app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/component: {{ $component }}}
+  ports:
+    {{- range $ports }}
+    - {name: {{ .name }}, port: {{ .port }}, targetPort: {{ .port }}}
+    {{- end }}
+---
+{{- end }}
+{{- if $nl2sql.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-nl2sql
+spec:
+  type: ClusterIP
+  selector: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: nl2sql}
+  ports: [{name: http, port: 5600, targetPort: 5600}]
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-sandbox-gateway
+spec:
+  type: ClusterIP
+  selector: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: sandbox-gateway}
+  ports: [{name: http, port: 8110, targetPort: http}]
