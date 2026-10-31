@@ -46,6 +46,6 @@ Hub2 没有 Hub1 存量兼容：原项目级包 release-requests、releases 和 
 
 ## 建模业务入口
 
-建模本地 `POST /api/projects/{pid}/package/releases` 直接使用 Hub2，输入 request_id、allow_unbound；项目只用于本地权限及编辑内容，不传给 Hub。发布入口继续提示调研、对象、操作、校验阶段；成功只刷新版本状态，不自动下载。对应 GET 列表与指定版本下载按当前用户的本地包关联读取。
+建模本地 `POST /api/projects/{pid}/package/releases` 直接使用 Hub2，输入 request_id、allow_unbound；项目只用于本地权限及编辑内容，不传给 Hub。发布入口继续提示调研、对象、操作、校验阶段；成功后打开「已发布版本」列表，不自动下载。对应 GET 列表与指定版本下载按当前用户的本地包关联读取。
 
 `GET /api/hub/packages`、包版本列表和下载用于个人包浏览；`POST /api/hub/imports` 接收 request_id、name、hub_package_id、release_id、package_digest，创建本地建模项目并保留包身份与基础版本。GET `export?scope=package` 不再隐式发布。没有旧版本复制接口或发布目标开关。

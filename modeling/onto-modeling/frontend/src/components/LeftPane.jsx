@@ -29,7 +29,7 @@ import {
 } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
-import { openEvaluation } from '../lib/evaluation.js';
+import { openEvaluation, prefetchEvaluationEntry } from '../lib/evaluation.js';
 import { isResearchBlocking } from '../lib/researchGate.js';
 import { EMPTY_HISTORY, appendHistoryPage, historyEntryKey, versionTitle } from '../lib/versionHistory.js';
 import EvalRunDetail from './EvalRunDetail.jsx';
@@ -339,6 +339,8 @@ export default function LeftPane({
   const [historyRevision, setHistoryRevision] = useState(0);
   const [downloading, setDownloading] = useState('');
   useEffect(() => setHistory(EMPTY_HISTORY), [project.id]);
+  // 失败不阻断：点击“评测”时会重新读取并给出原因
+  useEffect(() => { if (section === 'versions') prefetchEvaluationEntry().catch(() => {}); }, [section]);
   useEffect(() => {
     if (section !== 'versions') return undefined;
     let active = true;
