@@ -66,19 +66,28 @@ async function proxyPost(url: string, body: unknown, clientIp: string): Promise<
   return { status: res.status, body: payload };
 }
 
+// 产品由 meta-wise 改名为 knowledge-scaffold：Consumer 升级会把 auth-server 签发的 audience
+// 迁到新名（只迁仍等于旧默认值的部署），Modeling 的 AUTH_JWT_AUDIENCE 却可能仍是旧名，两边一错开
+// 登录后所有请求都 401。两个名字是同一产品的新旧称呼，配置为其中之一时都接受；其他自定义取值仍严格匹配。
+const PRODUCT_AUDIENCES = ['knowledge-scaffold', 'meta-wise'];
+
+export function acceptedAudiences(configured: string): string[] {
+  return PRODUCT_AUDIENCES.includes(configured) ? PRODUCT_AUDIENCES : [configured];
+}
+
 // 直连 auth-server：/token 签发、JWKS 本地 RS256 验签。
 // 构造函数注入配置使类零全局依赖（可测），getAuthClient 负责从 config 装配。
 export class AuthServerJwksClient implements AuthClient {
   private issuerUrl: string;
   private jwtIssuer: string;
-  private audience: string;
+  private audience: string[];
   // createRemoteJWKSet 自带缓存 / 未知 kid 重取 / 冷却，不另做缓存层
   private jwks: ReturnType<typeof createRemoteJWKSet>;
 
   constructor(opts: { issuerUrl: string; jwtIssuer: string; audience: string }) {
     this.issuerUrl = opts.issuerUrl.replace(/\/+$/, '');
     this.jwtIssuer = opts.jwtIssuer;
-    this.audience = opts.audience;
+    this.audience = acceptedAudiences(opts.audience);
     this.jwks = createRemoteJWKSet(new URL(`${this.issuerUrl}/jwks.json`));
   }
 
