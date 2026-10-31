@@ -112,7 +112,6 @@ def test_runtime_settings_permission_mode(tmp_path: Path, monkeypatch):
 
 @pytest.mark.parametrize("value, expected", [
     ("", ""),
-    ("/evaluation", "/evaluation/"),
     ("http://eval.example.com:8090", "http://eval.example.com:8090/evaluation/"),
     ("https://eval.example.com/evaluation", "https://eval.example.com/evaluation/"),
     ("https://eval.example.com/evaluation/", "https://eval.example.com/evaluation/"),
@@ -124,7 +123,7 @@ def test_evaluation_url_is_normalized(value, expected):
 
 
 @pytest.mark.parametrize("value", [
-    "/other/", "ftp://eval.example.com/evaluation/", "https://eval.example.com/other/",
+    "/evaluation", "/evaluation/", "/other/", "ftp://eval.example.com/evaluation/", "https://eval.example.com/other/",
     "https://user:secret@eval.example.com/evaluation/", "https://eval.example.com/evaluation/?token=x",
     "https://eval.example.com/evaluation/#token",
 ])

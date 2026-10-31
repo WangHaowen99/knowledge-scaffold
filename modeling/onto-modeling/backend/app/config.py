@@ -44,7 +44,7 @@ JIUWEN_MAX_ITERATIONS = int(os.environ.get("ONTO_WEB_JIUWEN_MAX_ITERATIONS", "60
 # （共享账号中心/方案 A 下透传当前用户 token，无需配置）
 ONTO_MCP_PUBLIC_BASE_URL = os.environ.get("ONTO_WEB_MCP_PUBLIC_BASE_URL", "").rstrip("/")
 # 评测服务在浏览器中的入口地址，由用户浏览器访问（不是容器网络地址）。留空时浏览器按建模页面同主机的 8090 端口打开；
-# 评测在其他主机、端口或经 HTTPS 时填写完整地址；经同源网关时填 /evaluation/
+# 评测在其他主机、端口或经 HTTPS 时填写完整地址；不接受相对路径
 EVAL_PUBLIC_URL = os.environ.get("ONTO_WEB_EVAL_PUBLIC_URL", "").strip()
 MODELING_URL = os.environ.get("ONTO_WEB_MODELING_URL", "").rstrip("/")
 MODELING_TOKEN = os.environ.get("ONTO_WEB_MODELING_TOKEN", "")

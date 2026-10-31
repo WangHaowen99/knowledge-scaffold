@@ -256,4 +256,4 @@ Hub 不再写在 onto-modeling 的 compose 里，而是独立 compose 项目 `kn
 - 设置 `EVAL_ENV_FILE` 时改用仓库外受保护的配置文件，脚本不改写该文件。
 - 在本次改动之前已部署的整栈，Hub 和 consumer 还没有评测凭据：需要完整执行一次 `bash deploy/deploy.sh`，单独 `--eval-only` 会告警缺少凭据。
 
-独立镜像、离线包及同源网关配置见 [评测部署说明](../eval-service/README.md)。
+独立镜像、离线包及独立入口配置见 [评测部署说明](../eval-service/README.md)。

@@ -162,7 +162,7 @@ def check_evaluation_build_embeds_offline_service_in_full_bundle(deployment):
     root, _, env = deployment
     service = root / 'eval-service'
     shutil.copy2(ROOT / 'eval-service/build.sh', service / 'build.sh')
-    for name in [EVAL_COMPOSE, 'nginx.conf.example']:
+    for name in [EVAL_COMPOSE]:
         shutil.copy2(EVAL_DEPLOY_DIR / name, service / 'deploy' / name)
     for name in ['README.md', '.env.example']:
         (service / name).write_text('# Synthetic build fixture\n')
@@ -182,7 +182,7 @@ def check_evaluation_build_embeds_offline_service_in_full_bundle(deployment):
     bundle = root / 'bundle/eval-service'
     assert (bundle / 'evaluation-image.tar').is_file()
     assert (bundle / 'IMAGE').read_text().strip() == 'knowledge-evaluation:v-test'
-    for name in ['deploy.sh', EVAL_COMPOSE, 'nginx.conf.example']:
+    for name in ['deploy.sh', EVAL_COMPOSE]:
         assert (bundle / 'deploy' / name).is_file(), name
 
 

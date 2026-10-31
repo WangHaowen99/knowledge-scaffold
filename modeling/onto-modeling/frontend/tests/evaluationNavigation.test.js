@@ -4,49 +4,13 @@ import { HANDOFF, READY, evaluationUrl, openEvaluation } from '../src/lib/evalua
 const release = { hub_package_id: 'package_demo', release_id: 'release_demo', package_digest: 'a'.repeat(64), project_id: 'project_alpha', token: 'synthetic-invalid' };
 // All references, origins and login material in these tests are synthetic.
 const here = new URL('http://modeling.example.com:5100/');
-const sameOrigin = { entry: { url: '/evaluation/' }, here, messages: {} };
 const healthy = async () => ({ ok: true, json: async () => ({ service: 'evaluation', status: 'ok' }) });
 
 test('evaluation navigation carries only Hub references', () => {
-  const url = new URL(evaluationUrl(release), 'https://example.com');
+  const url = new URL(evaluationUrl(release, 'https://eval.example.com/evaluation/'));
   assert.deepEqual([...url.searchParams.keys()], ['hub_package_id', 'release_id', 'package_digest']);
   assert.equal(url.pathname, '/evaluation/');
 });
-test('unconfigured evaluation cannot fall back to modeling', async () => {
-  let navigated = false;
-  await assert.rejects(openEvaluation(release, { ...sameOrigin, fetchImpl: async () => ({ ok: true, json: async () => ({}) }), navigate: () => { navigated = true; } }), /未配置/);
-  assert.equal(navigated, false);
-});
-
-test('healthy evaluation navigates using the same-origin proxy', async () => {
-  let destination;
-  await openEvaluation(release, {
-    ...sameOrigin,
-    fetchImpl: async (url, options) => {
-      assert.equal(url, '/evaluation/api/health');
-      assert.equal(options.cache, 'no-store');
-      return healthy();
-    },
-    navigate: (url) => { destination = url; },
-  });
-  assert.equal(destination, evaluationUrl(release));
-});
-
-for (const [name, fetchImpl, expected] of [
-  ['missing route', async () => ({ ok: false, status: 404 }), /路由未配置/],
-  ['unavailable upstream', async () => ({ ok: false, status: 502 }), /HTTP 502/],
-  ['network failure', async () => { throw new Error('synthetic network failure'); }, /无法连接/],
-  ['SPA fallback', async () => ({ ok: true, json: async () => { throw new SyntaxError('synthetic HTML response'); } }), /响应不匹配/],
-]) {
-  test(`${name} prevents navigation and explains the failure`, async () => {
-    let navigated = false;
-    await assert.rejects(openEvaluation(release, {
-      ...sameOrigin, fetchImpl, navigate: () => { navigated = true; },
-    }), expected);
-    assert.equal(navigated, false);
-  });
-}
-
 function crossOriginHarness() {
   const listeners = new Set();
   const messages = { addEventListener: (type, fn) => listeners.add(fn), removeEventListener: (type, fn) => listeners.delete(fn) };
@@ -97,18 +61,38 @@ test('a blocked popup is reported instead of navigating', async () => {
   }), /拦截/);
 });
 
-test('an absolute entry on the modeling origin keeps same-origin navigation', async () => {
-  let destination;
-  await openEvaluation(release, {
-    entry: { url: 'http://modeling.example.com:5100/evaluation/' }, here, messages: {}, fetchImpl: healthy,
-    openWindow: () => assert.fail('no window for same-origin evaluation'),
-    navigate: (url) => { destination = url; },
+for (const url of ['/evaluation/', 'http://modeling.example.com:5100/evaluation/', 'javascript:alert(1)']) {
+  test(`reject unsupported entry ${url} before opening a window`, async () => {
+    await assert.rejects(openEvaluation(release, {
+      entry: { url }, here, messages: {}, openWindow: () => assert.fail('must not open'),
+    }), /独立|http/);
   });
-  assert.equal(new URL(destination).pathname, '/evaluation/');
+}
+
+test('HTTPS modeling rejects HTTP evaluation', async () => {
+  await assert.rejects(openEvaluation(release, {
+    entry: crossEntry, here: new URL('https://modeling.example.com'), messages: {},
+    openWindow: () => assert.fail('must not open'),
+  }), /HTTPS/);
 });
 
+for (const [name, fetchImpl, expected] of [
+  ['missing route', async () => ({ ok: false, status: 404 }), /HTTP 404/],
+  ['unavailable upstream', async () => ({ ok: false, status: 502 }), /HTTP 502/],
+  ['SPA fallback', async () => ({ ok: true, json: async () => { throw new SyntaxError('synthetic HTML'); } }), /响应不匹配/],
+]) {
+  test(`${name} closes evaluation window`, async () => {
+    const { messages, popup, listeners } = crossOriginHarness();
+    await assert.rejects(openEvaluation(release, {
+      entry: crossEntry, here, messages, openWindow: () => popup, fetchImpl,
+    }), expected);
+    assert.equal(popup.closed, true);
+    assert.equal(listeners.size, 0);
+  });
+}
+
 test('without a deployed entry evaluation opens on the modeling host at the default port', async () => {
-  const { messages, popup } = crossOriginHarness();
+  const { messages, popup, dispatch } = crossOriginHarness();
   let checked;
   await openEvaluation(release, {
     entry: { url: '' }, here, messages, tokens, openWindow: () => popup,
@@ -116,4 +100,5 @@ test('without a deployed entry evaluation opens on the modeling host at the defa
   });
   assert.equal(checked, 'http://modeling.example.com:8090/evaluation/api/health');
   assert.equal(new URL(popup.location.href).origin, 'http://modeling.example.com:8090');
+  dispatch({ source: popup, origin: 'http://modeling.example.com:8090', data: { type: READY } });
 });

@@ -16,7 +16,7 @@ NPM_MIRROR="${EVAL_NPM_REGISTRY:-${NPM_REGISTRY:-}}"
 [ -z "$NPM_MIRROR" ] || BUILD_ARGS+=(--build-arg "NPM_REGISTRY=$NPM_MIRROR")
 docker build --platform "linux/$ARCH" ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"} -t "knowledge-evaluation:$VERSION" "$ROOT"
 docker save -o "$OUT/evaluation-image.tar" "knowledge-evaluation:$VERSION"
-cp "$ROOT/deploy/deploy.sh" "$ROOT/deploy/docker-compose.eval-service.yml" "$ROOT/deploy/nginx.conf.example" "$OUT/deploy/"
+cp "$ROOT/deploy/deploy.sh" "$ROOT/deploy/docker-compose.eval-service.yml" "$OUT/deploy/"
 printf 'knowledge-evaluation:%s\n' "$VERSION" > "$OUT/IMAGE"
 cp "$ROOT/README.md" "$ROOT/.env.example" "$OUT/"
 printf 'Export EVAL_IMAGE=knowledge-evaluation:%s before deployment.\n' "$VERSION" > "$OUT/VERSION"
