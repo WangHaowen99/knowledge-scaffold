@@ -100,6 +100,23 @@ async function responseError(response) {
   return error;
 }
 
+// 评测轮在 modeling 侧后台执行，常超 access token 有效期：带上 refresh token，
+// 由 modeling 为本轮续期凭据。未登录（无鉴权部署）时不带该字段。
+export function evalRunPayload(
+  { cases, dataSource, dataSourceId = '', evalSetId = '', allowUnbound = false },
+  refreshToken = authStore.refreshToken,
+) {
+  const payload = {
+    cases,
+    data_source: dataSource || { mode: 'none' },
+    data_source_id: dataSourceId,
+    eval_set_id: evalSetId,
+    allow_unbound: allowUnbound,
+  };
+  if (refreshToken) payload.refresh_token = refreshToken;
+  return payload;
+}
+
 function conversationQuery(conversationId) {
   return conversationId ? `?conversation=${encodeURIComponent(conversationId)}` : '';
 }
@@ -167,6 +184,39 @@ export const api = {
     `/api/projects/${pid}/export?scope=${scope}&token=${encodeURIComponent(authStore.token)}`,
   // 发布前体检：阻断项、无从核对项与修复所需的表清单、文档版本号
   packageCheck: (pid) => request(`/api/projects/${pid}/package/check`),
+  // 求解模型面板：读取当前修订下的全部契约；保存为受管目录整体替换，修订不一致 409
+  solverContract: (pid) => request(`/api/projects/${pid}/package/solver-contract`),
+  saveSolverContract: (pid, operations, baseRevision = '', summary = '') =>
+    request(`/api/projects/${pid}/package/solver-contract`, {
+      method: 'PUT',
+      body: JSON.stringify({ baseRevision, contract: { operations }, summary }),
+    }),
+  // 即时检查未保存的草稿（不落盘）：{ rejected: 保存会被拒的问题, findings: 发布会被拦截的问题 }
+  checkSolverContract: (pid, operations, { signal } = {}) =>
+    request(`/api/projects/${pid}/package/solver-contract/check`, {
+      method: 'POST',
+      body: JSON.stringify({ contract: { operations } }),
+      signal,
+    }),
+  // 求解端到端验证：用例存于工作区状态（不进知识包）；发起后由后台经 modeling → Consumer 执行，
+  // 按 latest 轮询当前修订的记录。revision 不一致 409，allowUnbound 即数据绑定降级
+  solverValidationCases: (pid) => request(`/api/projects/${pid}/package/solver-validations/cases`),
+  saveSolverValidationCases: (pid, cases) =>
+    request(`/api/projects/${pid}/package/solver-validations/cases`, {
+      method: 'PUT',
+      body: JSON.stringify({ cases }),
+    }),
+  startSolverValidation: (pid, { revision, caseIds = [], dataSourceId = '', allowUnbound = false }) =>
+    request(`/api/projects/${pid}/package/solver-validations`, {
+      method: 'POST',
+      body: JSON.stringify({
+        revision,
+        case_ids: caseIds,
+        data_source_id: dataSourceId,
+        allow_unbound: allowUnbound,
+      }),
+    }),
+  solverValidationLatest: (pid) => request(`/api/projects/${pid}/package/solver-validations/latest`),
   // 修复入口：对象「# 数据来源」改成现有表；table 为空表示不落库（「无」）
   setObjectDataSource: (pid, key, table, baseRevision = '') =>
     request(`/api/projects/${pid}/objects/${encodeURIComponent(key)}/data-source`, {
@@ -352,6 +402,16 @@ export const api = {
     request('/api/settings/model/context-presets/custom/disable', { method: 'POST' }),
   matchModelContextPreset: (model) =>
     request(`/api/settings/model/context-presets/match?model=${encodeURIComponent(model)}`),
+  saveModelPersonalPolicy: (allow) =>
+    request('/api/settings/model/personal-policy', {
+      method: 'PUT',
+      body: JSON.stringify({ allow }),
+    }),
+  getMyModelSettings: () => request('/api/settings/model/me'),
+  saveMyModelSettings: (engine, payload) =>
+    request(`/api/settings/model/me/${engine}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  clearMyModelSettings: (engine) =>
+    request(`/api/settings/model/me/${engine}`, { method: 'DELETE' }),
   saveDefaultEngine: (engine) =>
     request('/api/settings/model/default-engine', {
       method: 'PUT',
@@ -378,13 +438,7 @@ export const api = {
   evalRun: (pid, { cases, dataSource, dataSourceId = '', evalSetId = '', allowUnbound = false }) =>
     request(`/api/projects/${pid}/eval/run`, {
       method: 'POST',
-      body: JSON.stringify({
-        cases,
-        data_source: dataSource || { mode: 'none' },
-        data_source_id: dataSourceId,
-        eval_set_id: evalSetId,
-        allow_unbound: allowUnbound,
-      }),
+      body: JSON.stringify(evalRunPayload({ cases, dataSource, dataSourceId, evalSetId, allowUnbound })),
     }),
   evalDataSources: (pid) => request(`/api/projects/${pid}/eval/data-sources`),
   // 数据源表单上传业务数据表（Excel）→ { file: { id, name, size } }
@@ -448,6 +502,7 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ permission_mode }),
     }),
+  getSandboxStatus: () => request('/api/settings/sandbox'),
   getAssets: () => request('/api/settings/assets'),
   uploadAssets: (file) => {
     const form = new FormData();

@@ -19,9 +19,8 @@ You are a rule-and-metric extraction agent for the ontology project. 你把规�
 - `REPORT_PATHS`（report 模式）— 资料分析报告路径
 - `RULE_CANDIDATES` / `METRIC_CANDIDATES`（report 模式）— 要生成的规则名与指标名，逗号
   分隔，值为 `无` 时该类不产出。候选即全集：不要自行增删，拿不准的在 `skipped` 里说明
-- `EXISTING_FILES`（report 模式，可选）— 增量提取时已存在的规则/指标文件名。名字在其中的
-  候选**不要重新生成、也不要改写**（它可能已在校验阶段被人工或修复流程改过），在
-  `skipped` 里记一条「已存在，增量跳过」
+- `DOCUMENT_NAMES`（report 模式）— 对账 plan 给出的原名、实际路径、exists 与 frontmatter；缺失时返回主调命令，要求按本轮报告、未跳过的流程图和 ALIASES 重跑 plan 后提供完整计划；不得省略流程图补充项单独规划。发现 naming_conflicts 时停止写入并返回冲突
+- report 模式的已有项判断：按分类与业务原名 `name` 查找最新 `DOCUMENT_NAMES`，仅 `exists=true` 时不重新生成、不改写，并在 `skipped` 里记「已存在，增量跳过」；`exists=false` 必须生成。忽略历史调用传入的 `EXISTING_FILES`，不得将候选业务名与文件 stem 比较。对应项缺失或计划过期时返回主调命令刷新计划，不能按旧列表跳过。
 
 ## report 模式的取材
 
@@ -53,9 +52,9 @@ You are a rule-and-metric extraction agent for the ontology project. 你把规�
 
 ## 硬性要求
 
-- 文档命名：report 模式**逐字使用候选名**（它要与报告清单和下游检查对账）；workspace
-  模式用业务语义名（如 `退款时限规则.md`、`客单价.md`）。与既有 object/operation 同名
-  时加「规则」/「指标」后缀。
+- 文档命名：report 模式保留候选业务原名，严格使用 `DOCUMENT_NAMES` 的 `path`；将非空 `frontmatter` 原样置于文档开头，然后按模板写正文。路径中的 `%2F` 等转义不可解码，不以 `/` 建子目录。正文及摘要保留原名，Wiki 链接目标使用实际文件 stem，后续修改保留 `report_name`。
+  `exists=true` 的候选增量跳过，不能因原名与文件名不同重复生成；禁止覆盖其他候选的文件。普通名称路径不变。文件名就是知识包 key：不超过 80 字符，不含 `/ \ # ? & |` 与 `..`。
+  workspace 模式仍用业务语义名（如 `退款时限规则.md`、`客单价.md`）；与既有 object/operation 同名时加「规则」/「指标」后缀。
 - 「来源」/「数据来源」章节必须可回溯：workspace 模式用 `[[链接]]` 指向抽取处的文档；
   report 模式写报告的相对路径（可加 `#小节`）与清单里的 `规则ID`。
 - **回链**：workspace 模式在来源 operation 的相应步骤后追加 `（规则：[[名称]]）`，在来源

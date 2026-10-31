@@ -18,8 +18,19 @@ REPORT_TZ = ZoneInfo("Asia/Shanghai")
 # `python3 .claude/scripts/ontology_checker.py` (sys.path[0] is the script dir).
 sys.path.append(str(Path(__file__).resolve().parent))
 from knowledge_helper import parse_frontmatter as _hk_parse_frontmatter
-from script_contract import ScriptContractError, parse_script_contract
-from check_eval_data import table_headers as _read_table_headers
+from script_contract import ScriptContractError, parse_script_contract, script_bound_operation
+from script_descriptor import descriptor_issues
+from operation_relations import (
+    called_operation_stems as _called_operation_stems,
+    caller_operation_stems as _caller_operation_stems,
+    link_stems as _stems_in_section,
+    parse_relation,
+    standalone_flag,
+    stops_before_call,
+    sub_operation_call_sites as _extract_sub_operation_refs,
+)
+from check_eval_data import table_headers as _read_table_headers, table_profiles as _read_table_profiles
+import field_semantics
 
 # =============================================================================
 # DATA MODELS
@@ -211,11 +222,13 @@ def check_knowledge(ontology_dir):
 
 
 # CLAUDE.md 规则 3：ontology/ 下允许放 .md 文件的子目录白名单。
-# scripts/ 仅放 .py（codegen 输出），diagrams/ 仅放 .drawio，因此都不在 .md 白名单内。
+# diagrams/ 仅放 .drawio，不在 .md 白名单内；scripts/ 下只允许与 .py 同名的脚本描述符
+# （script_descriptor.py 生成，--include-scripts 校验它与 .py 是否同步），见 check_file_locations。
 ALLOWED_MD_SUBDIRS = (
     'object', 'operation', 'logic', 'rule', 'metric', 'action', 'data-mock',
     'diagrams-summary', 'testcase', 'knowledge',
 )
+SCRIPT_DESCRIPTOR_SUBDIR = 'scripts'
 
 # 知识包导出范围（与 backend export_package_zip 一致）：只有这些目录的内容
 # 会送达 consumer。logic 为 operation 的旧目录兼容（ADR-0004），不再推荐新建。
@@ -224,6 +237,9 @@ RECOMMENDED_PACKAGED_SUBDIRS = ('object', 'operation', 'rule', 'metric')
 
 # 按设计就不该进知识包的过程产物目录——不提示。
 WORKING_ARTIFACT_SUBDIRS = ('data-mock', 'diagrams-summary', 'testcase')
+
+# 求解契约受管目录：只由后端接口写入（守卫拒绝直接写），检查器只读取、提示断链。
+SOLVER_SUBDIR = 'solver'
 
 
 def check_file_locations(ontology_dir: Path) -> list:
@@ -241,10 +257,18 @@ def check_file_locations(ontology_dir: Path) -> list:
         # index.md 是平台维护的目录索引，允许出现在任意子目录
         if f.name.lower() == 'index.md':
             continue
+        if len(parts) == 2 and parts[0] == SCRIPT_DESCRIPTOR_SUBDIR and f.with_suffix('.py').is_file():
+            continue  # 脚本描述符
         if len(parts) == 1:
             issues.append(Issue(
                 file=str(rel), severity='错误', category='文件位置',
                 message=f'ontology/ 根目录不允许直接放 .md 文件；请移至白名单子目录之一：{allowed_str}',
+                source='规则检查',
+            ))
+        elif parts[0] == SOLVER_SUBDIR:
+            issues.append(Issue(
+                file=str(rel), severity='错误', category='文件位置',
+                message=f'ontology/solver/ 是平台受管的求解契约目录，不放知识文档；允许的子目录：{allowed_str}',
                 source='规则检查',
             ))
         elif parts[0] not in ALLOWED_MD_SUBDIRS:
@@ -283,6 +307,43 @@ def check_unpackaged_knowledge(ontology_dir: Path) -> list:
                 f'consumer 检索不到；若这些内容需要被问答使用，请建模为 {packaged_str} '
                 f'中的条目（案例/方案类知识 → ontology/rule/ 的场景规则）。'
             ),
+            source='规则检查',
+        ))
+    return issues
+
+
+def _solver_bound_operation(binding: Path) -> str:
+    """binding.yaml 顶层 `operation:` 标量；后端用 yaml.safe_dump 写出，逐行即可取到。"""
+    for line in binding.read_text(encoding='utf-8').splitlines():
+        m = re.match(r'^operation:\s*(.+?)\s*$', line)
+        if m:
+            return m.group(1).strip('\'"')
+    return ''
+
+
+def check_solver_bindings(ontology_dir: Path) -> list:
+    """求解契约绑定的 Operation 被删除或改名后，发布会被求解门禁阻断。
+
+    只提示断链（警告，不阻断提交）：契约由求解模型面板维护，模型不能改
+    ontology/solver/，修复方式是恢复 Operation 原名，或请用户在面板里改绑定。
+    """
+    solver_dir = ontology_dir / SOLVER_SUBDIR
+    if not solver_dir.is_dir():
+        return []
+    stems = set()
+    for subdir in ('operation', 'logic'):
+        directory = ontology_dir / subdir
+        if directory.is_dir():
+            stems.update(f.stem for f in directory.glob('*.md'))
+    issues = []
+    for binding in sorted(solver_dir.glob('*/binding.yaml')):
+        operation = _solver_bound_operation(binding)
+        if not operation or operation in stems:
+            continue
+        issues.append(Issue(
+            file=str(binding.relative_to(ontology_dir)), severity='警告', category='求解契约',
+            message=(f'求解契约「{binding.parent.name}」绑定的 Operation「{operation}」不存在，发布会被求解门禁阻断；'
+                     '已绑定求解契约的 Operation 不要删除或改名，确需调整请恢复原名，或提示用户在求解模型面板中修改绑定。'),
             source='规则检查',
         ))
     return issues
@@ -619,6 +680,11 @@ def load_table_headers(ontology_dir: Path) -> dict:
     return _read_table_headers(ontology_dir.resolve().parent)
 
 
+def load_table_profiles(ontology_dir: Path) -> dict:
+    """与 load_table_headers 同口径的各列取值画像 {表名: 画像}；读不到的表没有画像，类型核验记为未验证。"""
+    return _read_table_profiles(ontology_dir.resolve().parent)
+
+
 def _needs_column(row: dict, columns: dict) -> bool:
     """该属性应在表里有同名列：填了英文名、还没对上，且不是派生属性或非库字段。"""
     key = row.get('英文名称', '').strip()
@@ -678,9 +744,12 @@ def check_object_columns(doc: OntologyDoc, tables: dict) -> list:
             source='规则检查',
         ))
     for row in doc.attribute_rows:
-        if not _needs_column(row, columns):
-            continue
         key = row.get('英文名称', '').strip()
+        # 图导入按主键建节点：主键不论是否标了派生/非库字段，都必须是表里的真实列
+        primary = (row.get('主键', '').strip() == '是' and key not in ('', '无', '-')
+                   and key.lower() not in columns)
+        if not primary and not _needs_column(row, columns):
+            continue
         aliases = [a.strip() for a in re.split(r'[,，、]', row.get('属性别名', '')) if a.strip()]
         real = next((columns[a.lower()] for a in aliases if a.lower() in columns), '')
         if real:
@@ -689,6 +758,14 @@ def check_object_columns(doc: OntologyDoc, tables: dict) -> list:
                 message=f'属性「{row.get("中文名称") or key}」的英文名称 {key} 不是表「{table}」的列名，'
                         f'属性别名里的 {real} 才是：英文名称改为 {real}（旧名可留作别名）；'
                         f'若 {real} 其实不是同一字段，从属性别名里删掉它',
+                source='规则检查',
+            ))
+        elif primary:
+            issues.append(Issue(
+                file=_rel(doc), severity='错误', category='列名对账',
+                message=f'主键属性「{row.get("中文名称") or key}」的英文名称 {key} 不是表「{table}」的列名：'
+                        '图模式数据评测按主键建节点，主键对不上列该对象就建不出节点。对象粒度应与所绑表的'
+                        '主键一致——把「主键=是」标在表里能唯一标识一行的真实列上，或把英文名称改为真实列名',
                 source='规则检查',
             ))
         else:
@@ -701,6 +778,81 @@ def check_object_columns(doc: OntologyDoc, tables: dict) -> list:
                     '计算得到的按「派生：由 [[operation名]] 写入」标注；取自文档的常量在属性规则里注明「非库字段」',
             source='规则检查',
         ))
+    return issues
+
+
+# --- 属性类型：写法合法、与所绑数据表的取值一致（口径见 field_semantics）---
+
+TYPE_ISSUE_CATEGORIES = {'非法类型': '类型非法', '冲突': '类型冲突', '待确认': '类型待确认'}
+
+
+def object_table(doc: OntologyDoc, tables: dict) -> str:
+    """对象「# 数据来源」绑定到的现有表名；未声明或对不上现有表时为空。"""
+    return _source_declaration(doc, {name.lower(): name for name in tables})[1]
+
+
+def assess_object_types(doc: OntologyDoc, tables: dict, profiles: dict) -> list:
+    """逐属性的类型验收结论。先判类型写法，再用所绑表该列的取值画像核对；
+    没有取值可核对时是「未验证」，并写明原因——不能当作通过。
+    column 按表头对应，与类型结论无关：类型写错的属性仍算已映射到该列。"""
+    table = object_table(doc, tables)
+    headers = {name.lower(): name for name in tables.get(table, [])} if table else {}
+    profile = profiles.get(table) if table else None
+    columns = {name.lower(): stats for name, stats in (profile or {}).get('columns', {}).items()}
+    items = []
+    for row in doc.attribute_rows:
+        key = row.get('英文名称', '').strip()
+        if key in ('', '无', '-') or '类型' not in row:
+            continue  # 缺「类型」列由表格格式检查报
+        rule = row.get('属性规则', '')
+        identity = field_semantics.is_identity_field(row)
+        derived = any(marker in rule for marker in _NON_STORED_MARKERS)
+        column = headers.get(key.lower(), '')
+        _, verdict, reason = field_semantics.assess_type(row.get('类型'), rule, identity, None)
+        item = {'object': doc.path.stem, 'field': key, 'name': row.get('中文名称', '').strip(),
+                'table': table, 'column': column, 'declared': row.get('类型', '').strip()[:30],
+                'inferred': '', 'verdict': verdict, 'reason': reason, 'mixing': '',
+                'column_missing': bool(table) and not column and not derived}
+        if verdict == '未验证':
+            stats = columns.get(key.lower())
+            if derived:
+                item.update(verdict='不适用', reason='派生或非库字段，不在数据表里')
+            elif not table:
+                item['reason'] = '对象未绑定现有数据表，取值无从核对'
+            elif not column:
+                item['reason'] = f'表「{table}」没有 {key} 列'
+            elif profile is None:
+                item['reason'] = f'表「{table}」的取值未读取（缺解析依赖或文件读不了）'
+            elif not profile.get('rows'):
+                item['reason'] = f'表「{table}」只有表头、没有数据行，取值无从核对'
+            elif stats is None:
+                item['reason'] = f'表「{table}」带数据的文件里没有 {key} 列，取值无从核对'
+            else:
+                _, verdict, reason = field_semantics.assess_type(row.get('类型'), rule, identity, stats)
+                item.update(inferred=stats.get('inferred', ''), verdict=verdict, reason=reason,
+                            mixing=field_semantics.identity_mixing(stats, rule) if identity else '')
+        items.append(item)
+    return items
+
+
+def check_object_types(doc: OntologyDoc, tables: dict, profiles: dict) -> list:
+    """类型非法、与取值冲突是错误；无依据的「字符串」、需写明取值含义的布尔等待确认；
+    标识列里数字与文本混用等归一化口径需业务确认。逐字段结论用 field_semantics.py types 查看。"""
+    issues = []
+    for item in assess_object_types(doc, tables, profiles):
+        label = f'属性「{item["name"] or item["field"]}」（{item["field"]}'
+        label += f'，表「{item["table"]}」列 {item["column"]}）' if item['column'] else '）'
+        severity = field_semantics.VERDICT_SEVERITY.get(item['verdict'])
+        if severity:
+            issues.append(Issue(file=_rel(doc), severity=severity,
+                                category=TYPE_ISSUE_CATEGORIES[item['verdict']],
+                                message=f'{label}：{item["reason"]}', source='规则检查'))
+        if item['mixing']:
+            issues.append(Issue(
+                file=_rel(doc), severity='警告', category='标识混合',
+                message=f'{label}是标识字段，{item["mixing"]}：导入与关联时按哪种口径归一化需要业务确认，'
+                        f'不要自行补零、去零或改大小写；确认后在属性规则注明「{field_semantics.MIXED_ID_MARKER}：归一化规则」',
+                source='规则检查'))
     return issues
 
 
@@ -738,6 +890,11 @@ def check_object_links(doc: OntologyDoc, all_docs: dict) -> list:
 # 图关系名与属性英文名的字符集：从括注里取字段候选，再拿两端属性清单裁决
 _REL_IDENTIFIER_RE = re.compile(r'[A-Za-z_一-鿿][A-Za-z0-9_一-鿿]*')
 _REL_NOTE_RE = re.compile(r'[（(]([^()（）]*)[）)]')
+# 括注一侧写成 `表名.字段`（表名、字段可各带反引号）
+_REL_PREFIXED_RE = re.compile(
+    rf'`?({_REL_IDENTIFIER_RE.pattern})`?\s*\.\s*`?({_REL_IDENTIFIER_RE.pattern})`?')
+# 关系端点里指代"本文档对象"的写法；「当前对象名」是旧版抽取模板的字面占位，已写进文档的照认
+_CURRENT_OBJECT_ALIASES = ('当前对象', '当前对象名')
 
 
 def _relation_parts(value: str):
@@ -769,6 +926,38 @@ def _relation_node(value: str) -> str:
     return (link.group(1) if link else value).strip()
 
 
+_RELATIONS_HEADING_RE = re.compile(r'^#{1,3}\s+关联对象\s*[:：]?\s*$')
+
+
+def _is_relation_placeholder(value: str) -> bool:
+    """「关联对象」段里不是关系声明的行：空行、说明、表格、模板占位、「无」。"""
+    return not value or value.startswith(('>', '|', '{')) or value in ('无', '-', '—')
+
+
+def _object_relations(doc: OntologyDoc) -> list:
+    """「# 关联对象」的关系行 → [(行号, 源, 关系名, 目标, 括注)]，「当前对象」已换成文件名 stem。
+
+    行号按整个文件计，便于在问题里指出位置。格式解析不出的行（由发布与评测侧报）与模板占位行不返回。
+    """
+    stem = doc.path.stem
+    relations, active = [], False
+    for lineno, line in enumerate(doc.raw.split('\n'), start=1):
+        if re.match(r'^#{1,3}\s+', line):
+            active = bool(_RELATIONS_HEADING_RE.match(line))
+            continue
+        value = line.strip().lstrip('-*').strip()
+        if not active or _is_relation_placeholder(value):
+            continue
+        parsed = _relation_parts(value)
+        if not parsed or any(part.startswith('{') for part in parsed[:3]):
+            continue
+        source, name, target, note = parsed
+        source = stem if source in (*_CURRENT_OBJECT_ALIASES, stem) else source
+        target = stem if target in (*_CURRENT_OBJECT_ALIASES, stem) else target
+        relations.append((lineno, source, name, target, note))
+    return relations
+
+
 def _field_keys(doc: OntologyDoc) -> set:
     """属性英文名清单：关联字段的判据（与发布包 mapping 的 field key 同一列）。"""
     keys = {row.get('英文名称', '').strip() for row in doc.attribute_rows}
@@ -782,18 +971,43 @@ def _single_primary_key(doc: OntologyDoc) -> str:
     return keys[0] if len(keys) == 1 and keys[0] not in ('', '无', '-') else ''
 
 
-def _parse_join_note(note: str, source_fields: set, target_fields: set) -> tuple:
-    """括注 → (源对象字段, 目标对象字段, 错误说明)。判据是两端属性清单，不是括注的措辞。"""
+def _relation_names(doc: OntologyDoc, by_lower: dict) -> set:
+    """括注里 `表名.字段` 的前缀可以是对象名或「# 数据来源」声明的表名（小写比较）。"""
+    return {name.lower() for name in (doc.path.stem, *_source_declaration(doc, by_lower)) if name}
+
+
+def _join_side(side: str, own: set, other: set) -> str:
+    """括注箭头一侧 → 字段名；`表名.字段` 去掉前缀，前缀只认得是另一端的表（方向写反）时不认。"""
+    names = _REL_IDENTIFIER_RE.findall(side)
+    if len(names) == 1:
+        return names[0]
+    prefixed = _REL_PREFIXED_RE.fullmatch(side.strip())
+    if not prefixed:
+        return ''
+    prefix = prefixed.group(1).lower()
+    if prefix in own or prefix not in other:
+        return prefixed.group(2)
+    return ''
+
+
+def _parse_join_note(note: str, source_fields: set, target_fields: set,
+                     source_names: set = frozenset(), target_names: set = frozenset()) -> tuple:
+    """括注 → (源对象字段, 目标对象字段, 错误说明)。判据是两端属性清单，不是括注的措辞。
+
+    箭头两侧可写成 `表名.字段`；*_names 是两端的对象名与声明表名（小写），用来核对前缀。
+    """
     if not note:
         return '', '', ''
     if '→' in note or '->' in note:
         sides = re.split(r'→|->', note)
-        names = [_REL_IDENTIFIER_RE.findall(side) for side in sides]
-        if len(sides) != 2 or any(len(found) != 1 for found in names):
+        if len(sides) != 2:
             return '', '', '的关联字段括注不明确，应写成「关系名（源对象字段 → 目标对象字段）」'
-        source_join, target_join = names[0][0], names[1][0]
+        source_join = _join_side(sides[0], source_names, target_names)
+        target_join = _join_side(sides[1], target_names, source_names)
+        if not source_join or not target_join:
+            return '', '', '的关联字段括注不明确，应写成「关系名（源对象字段 → 目标对象字段）」'
         absent = [name for name, fields in ((source_join, source_fields), (target_join, target_fields))
-                  if fields and name not in fields]
+                  if name not in fields]
         if absent:
             return '', '', (f'声明的关联字段 {source_join} → {target_join} 里，'
                             f'「{"、".join(absent)}」不在对应对象属性清单的「英文名称」列里')
@@ -823,25 +1037,13 @@ def check_object_relation_joins(doc: OntologyDoc, all_docs: dict, tables: dict) 
     """「# 关联对象」的关联字段：跨表关系必须声明，声明的字段必须真实存在。
 
     两端落在同一张数据表时按同一数据行关联，不需要关联字段。跨表时后端只会去找两端同名的
-    单字段主键，找不到就整条关系丢弃——图模式的数据评测据此报「找不到关联字段」并拦下本轮
-    评测。这里按同一规则预判，把问题停在建模阶段，而不是等评测跑到一半。
+    单字段主键，找不到就整条关系丢弃——图模式的数据评测据此报「找不到关联字段」并跳过这条
+    关系。这里按同一规则预判，把问题停在建模阶段，而不是等评测结果里才发现关系没连上。
     """
-    section = doc.sections.get('关联对象', '')
-    if not section:
-        return []
     by_lower = {name.lower(): name for name in tables}
     stem = doc.path.stem
     issues = []
-    for line in section.split('\n'):
-        value = line.strip().lstrip('-*').strip()
-        if not value or value.startswith(('>', '|', '{')) or value in ('无', '-', '—'):
-            continue
-        parsed = _relation_parts(value)
-        if not parsed:
-            continue  # 关系行格式问题由发布与评测侧报，这里只管关联字段
-        source, name, target, note = parsed
-        source = stem if source in ('当前对象', stem) else source
-        target = stem if target in ('当前对象', stem) else target
+    for _, source, name, target, note in _object_relations(doc):
         other = target if source == stem else source if target == stem else ''
         other_doc = all_docs.get(other)
         if not other or other_doc is None or other_doc.doc_type != 'object':
@@ -850,11 +1052,39 @@ def check_object_relation_joins(doc: OntologyDoc, all_docs: dict, tables: dict) 
         target_doc = doc if target == stem else other_doc
         label = f'关系「{source} -{name}→ {target}」'
         source_join, target_join, error = _parse_join_note(
-            note, _field_keys(source_doc), _field_keys(target_doc))
+            note, _field_keys(source_doc), _field_keys(target_doc),
+            _relation_names(source_doc, by_lower), _relation_names(target_doc, by_lower))
         if error:
-            issues.append(Issue(file=_rel(doc), severity='警告', category='关联字段',
+            issues.append(Issue(file=_rel(doc), severity='错误', category='关联字段',
                                 message=label + error, source='规则检查'))
             continue
+        # 发布支持只在关系的一端声明 join；轻量门禁必须遵守同一契约。
+        opposite_joins = set()
+        opposite_errors = []
+        for opposite_line in other_doc.sections.get('关联对象', '').splitlines():
+            opposite = _relation_parts(opposite_line.strip().lstrip('-*').strip())
+            if not opposite:
+                continue
+            left, rel_name, right, rel_note = opposite
+            left = other if left == '当前对象' else left
+            right = other if right == '当前对象' else right
+            if (left, rel_name, right) != (source, name, target):
+                continue
+            a, b, err = _parse_join_note(rel_note, _field_keys(source_doc), _field_keys(target_doc))
+            if err:
+                opposite_errors.append(err)
+            if a and b and not err:
+                opposite_joins.add((a, b))
+        if opposite_errors:
+            issues.append(Issue(file=_rel(doc), severity='错误', category='关联字段',
+                                message=label + '对端声明无效：' + opposite_errors[0], source='规则检查'))
+            continue
+        if len(opposite_joins | ({(source_join, target_join)} if source_join else set())) > 1:
+            issues.append(Issue(file=_rel(doc), severity='错误', category='关联字段',
+                                message=label + '两端声明的关联字段不一致', source='规则检查'))
+            continue
+        if not source_join and opposite_joins:
+            source_join, target_join = next(iter(opposite_joins))
         if source_join and target_join:
             continue
         source_table = _source_declaration(source_doc, by_lower)[0]
@@ -864,11 +1094,328 @@ def check_object_relation_joins(doc: OntologyDoc, all_docs: dict, tables: dict) 
         if _joinable_by_same_name(source_doc, target_doc):
             continue
         issues.append(Issue(
-            file=_rel(doc), severity='警告', category='关联字段',
+            file=_rel(doc), severity='错误', category='关联字段',
             message=f'{label}跨表（{source_table} / {target_table}）且未声明关联字段，'
                     f'两端也没有同名的单字段主键可依据：图模式的数据评测会报「找不到关联字段」'
-                    f'并拦下评测，发布包里这条关系也连不上。请补成「{name}（源对象字段 → '
+                    f'并跳过这条关系，发布包里这条关系也连不上。请补成「{name}（源对象字段 → '
                     f'目标对象字段）」，字段用两端属性清单的「英文名称」',
+            source='规则检查'))
+    return issues
+
+
+def check_object_self_relations(doc: OntologyDoc, tables: dict) -> list:
+    """自关联（源对象 = 目标对象）必须用括注写出关联字段。
+
+    两端是同一张表，按「同表按同一数据行关联」会把每个节点连到它自己，所以后端跳过未写括注的
+    自关联。括注写错由 check_object_relation_joins 报，这里只管没写。
+    """
+    stem = doc.path.stem
+    by_lower = {name.lower(): name for name in tables}
+    fields, names = _field_keys(doc), _relation_names(doc, by_lower)
+    issues = []
+    for _, source, name, target, note in _object_relations(doc):
+        if source != stem or target != stem:
+            continue
+        source_join, target_join, error = _parse_join_note(note, fields, fields, names, names)
+        if error or (source_join and target_join):
+            continue
+        issues.append(Issue(
+            file=_rel(doc), severity='警告', category='关联字段',
+            message=f'自关联「{stem} -{name}→ {stem}」没有写关联字段括注：两端是同一张表，不写会把每个节点'
+                    f'连到它自己，发布包与图模式数据评测都会跳过这条关系。请写成「{name}（指向方字段 → '
+                    '被指向方字段）」，如「直属上级（manager_id → employee_id）」',
+            source='规则检查'))
+    return issues
+
+
+def check_relation_join_conflicts(all_docs: dict, tables: dict, check_docs: dict) -> list:
+    """同一条关系（源对象, 关系名, 目标对象）在多处声明了不同的关联字段对。
+
+    与后端 package_mapping.graph_relations 同一口径：关系按三元组归并，镜像声明只有一端写括注时
+    按该端补齐，不算冲突；两处都写出且不是同一对字段，发布包与图评测把各处都跳过（不拦整轮）。
+    常见成因是同一对对象之间有两种关联方式却共用了一个关系名。check_docs 之外的文件只作参照，不报。
+    """
+    by_lower = {name.lower(): name for name in tables}
+    declared: dict = {}
+    for doc in all_docs.values():
+        if doc.doc_type != 'object':
+            continue
+        stem = doc.path.stem
+        for lineno, source, name, target, note in _object_relations(doc):
+            source_doc, target_doc = all_docs.get(source), all_docs.get(target)
+            if not note or stem not in (source, target) or any(
+                    end is None or end.doc_type != 'object' for end in (source_doc, target_doc)):
+                continue
+            source_join, target_join, error = _parse_join_note(
+                note, _field_keys(source_doc), _field_keys(target_doc),
+                _relation_names(source_doc, by_lower), _relation_names(target_doc, by_lower))
+            if error or not (source_join and target_join):
+                continue  # 括注写错由 check_object_relation_joins 报
+            declared.setdefault((source, name, target), []).append(
+                (doc, lineno, f'{source_join} → {target_join}'))
+    issues = []
+    for (source, name, target), places in declared.items():
+        if len({pair for _, _, pair in places}) <= 1:
+            continue
+        where = '；'.join(f'{doc.path.name} 第 {lineno} 行为 {pair}' for doc, lineno, pair in places)
+        message = (f'关系「{source} -{name}→ {target}」在多处声明了不同的关联字段（{where}），'
+                   '发布包与图模式数据评测会跳过这条关系的全部声明。若是两种不同的关联方式（如订单的买方 / '
+                   '卖方），每种改用不同的关系名（如「买方」「卖方」）；'
+                   '若是同一种，各处改成同一对字段')
+        for path in dict.fromkeys(doc.path for doc, _, _ in places):
+            if path.stem in check_docs:
+                issues.append(Issue(file=_rel(check_docs[path.stem]), severity='警告', category='关联字段',
+                                    message=message, source='规则检查'))
+    return issues
+
+
+# --- 跨对象字段等价：操作 / 规则里把两个不同名的标识字段当作同一个值 ---
+
+def declared_join_list(all_docs: dict, tables: dict) -> list:
+    """「# 关联对象」括注写出的有效关联字段对（去重），供操作抽取引用与等价检查。"""
+    by_lower = {name.lower(): name for name in tables}
+    found = set()
+    for doc in all_docs.values():
+        if doc.doc_type != 'object':
+            continue
+        for _, source, name, target, note in _object_relations(doc):
+            source_doc, target_doc = all_docs.get(source), all_docs.get(target)
+            if not note or any(end is None or end.doc_type != 'object' for end in (source_doc, target_doc)):
+                continue
+            source_join, target_join, error = _parse_join_note(
+                note, _field_keys(source_doc), _field_keys(target_doc),
+                _relation_names(source_doc, by_lower), _relation_names(target_doc, by_lower))
+            if source_join and target_join and not error:
+                found.add((source, name, target, source_join, target_join))
+    return [{'relation': name, 'source': source, 'source_field': source_join,
+             'target': target, 'target_field': target_join}
+            for source, name, target, source_join, target_join in sorted(found)]
+
+
+def declared_joins(all_docs: dict, tables: dict) -> set:
+    """{(对象, 字段小写, 对象, 字段小写)}，两个方向都在内。"""
+    joins = set()
+    for join in declared_join_list(all_docs, tables):
+        source_field, target_field = join['source_field'].lower(), join['target_field'].lower()
+        joins.add((join['source'], source_field, join['target'], target_field))
+        joins.add((join['target'], target_field, join['source'], source_field))
+    return joins
+
+
+def _field_index(all_docs: dict, tables: dict):
+    """字段引用索引：对象名、对象英文名与所绑表名都可作限定词。"""
+    by_lower = {name.lower(): name for name in tables}
+    objects = {}
+    for stem, doc in all_docs.items():
+        if doc.doc_type != 'object':
+            continue
+        english = doc.sections.get('英文名称', '').strip().split('\n')[0].strip()
+        qualifiers = [english] if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', english) else []
+        qualifiers += [_declared_table(doc), _source_declaration(doc, by_lower)[1]]
+        objects[stem] = {'qualifiers': [q for q in qualifiers if q], 'rows': doc.attribute_rows}
+    return field_semantics.build_field_index(objects)
+
+
+def _body_lines(doc: OntologyDoc):
+    """(文件行号, 文本)：跳过开头的 frontmatter 与标题行。"""
+    lines = doc.raw.split('\n')
+    start = 0
+    if lines and lines[0].strip() == '---':
+        start = next((i + 1 for i in range(1, len(lines)) if lines[i].strip() == '---'), 0)
+    for lineno in range(start, len(lines)):
+        if lines[lineno].strip() and not re.match(r'^#{1,6}\s', lines[lineno]):
+            yield lineno + 1, lines[lineno]
+
+
+def check_field_equivalence(doc: OntologyDoc, index, joins: set) -> list:
+    """把两个对象里不同名的标识字段当作同一个值核对、关联或据此拦截，必须有关联声明支撑。
+
+    对象之间按什么字段关联只看「# 关联对象」的括注（源字段 → 目标字段）和同名 / 别名字段；
+    资料没写的等价关系不能由抽取补出来，更不能写成「对不上就报错 / 拦截」的条件。
+    """
+    issues = []
+    for finding in field_semantics.find_unproven_equivalences(_body_lines(doc), index, joins):
+        pair = f'{finding["left"]} 与 {finding["right"]}'
+        if finding['pending']:
+            issues.append(Issue(
+                file=_rel(doc), severity='警告', category='字段关联',
+                message=f'第 {finding["line"]} 行把 {pair} 当作同一个值，已标待确认：「{finding["text"]}」。'
+                        '确认前不得作为拦截或报错条件；业务确认后在对象的「# 关联对象」声明关联字段（源字段 → 目标字段）',
+                source='规则检查'))
+            continue
+        issues.append(Issue(
+            file=_rel(doc), severity='错误', category='字段关联',
+            message=f'第 {finding["line"]} 行把 {pair} 当作同一个值核对或关联：「{finding["text"]}」，'
+                    '两者不同名、不是别名，也没有声明过关联字段。资料确有此关联时，先在对象的「# 关联对象」'
+                    '写明「关系名（源字段 → 目标字段）」；资料没有依据时删掉这句，或移到注意事项并标「待确认」，'
+                    '不得作为拦截或报错条件',
+            source='规则检查'))
+    return issues
+
+
+def check_graph_identifiers(doc: OntologyDoc, tables: dict) -> list:
+    """图导入的标识符口径（与后端 package_mapping.GRAPH_IDENTIFIER、consumer 图查询同一字符集）。
+
+    声明了数据表的对象，属性英文名称会成为图节点的属性名，不合规时图模式数据评测在导入阶段拦下
+    整轮 → 错误；关系名成为图关系类型，不合规的那条关系被跳过 → 警告。
+    """
+    rule = '只能由字母、数字、下划线、汉字组成，且不能以数字开头'
+    issues = []
+    if _source_declaration(doc, {name.lower(): name for name in tables})[0]:
+        bad = [key for key in sorted(_field_keys(doc)) if not _REL_IDENTIFIER_RE.fullmatch(key)]
+        if bad:
+            issues.append(Issue(
+                file=_rel(doc), severity='错误', category='图标识符',
+                message=f'属性英文名称 {"、".join(bad[:8])}{"…" if len(bad) > 8 else ""} 不是合法的图属性名'
+                        f'（{rule}）：该对象声明了数据表，图模式数据评测导入时会拦下整轮。'
+                        '从库里读取的属性按真实列名改写；列名本身不合规时请先在数据表侧改名',
+                source='规则检查'))
+    for _, source, name, target, _ in _object_relations(doc):
+        if _REL_IDENTIFIER_RE.fullmatch(name):
+            continue
+        hint = ('；括注必须紧跟在关系名后面、写在关系名末尾，否则整串都会被当成关系名'
+                if re.search(r'[（()）]', name) else '')
+        issues.append(Issue(
+            file=_rel(doc), severity='警告', category='图标识符',
+            message=f'关系「{source} -{name}→ {target}」的关系名「{name}」不是合法的图关系名（{rule}）'
+                    f'{hint}：发布包与图模式数据评测会跳过这条关系',
+            source='规则检查'))
+    return issues
+
+
+# 知识包 key 约束（与 modeling/src/workflow/keys.ts 同一口径）：对象/操作/规则/指标/脚本的 key
+# 取自文件名 stem，对象字段的 key 取自属性英文名称；不合规时整包渲染被拒
+KEY_MAX_LENGTH = 80
+_KEY_FORBIDDEN_RE = re.compile(r'[/\\#?&|]')
+_KEY_CONTROL_RE = re.compile(r'[\x00-\x1f\x7f]')
+KEY_RULE_HINT = f'不超过 {KEY_MAX_LENGTH} 字符，不含 / \\ # ? & |、.. 与换行、制表符等控制字符'
+PACKAGE_KEY_LABELS = {'object': '对象', 'operation': '操作', 'rule': '规则', 'metric': '指标'}
+
+
+def _key_problem(raw: str) -> str:
+    """不合规的原因；合规时为空。与 keys.ts validateKey 相同：先做 NFC 规范化并去首尾空白。"""
+    key = unicodedata.normalize('NFC', raw or '').strip()
+    if len(key) > KEY_MAX_LENGTH:
+        return f'超过 {KEY_MAX_LENGTH} 字符'
+    if '..' in key:
+        return '包含 ..'
+    if _KEY_FORBIDDEN_RE.search(key):
+        return '包含 / \\ # ? & | 之一'
+    if _KEY_CONTROL_RE.search(key):
+        return '包含换行、制表符等控制字符'
+    return ''
+
+
+def check_entity_keys(doc: OntologyDoc) -> list:
+    """文件名与属性英文名称是知识包里的 key，不合规时发布被拒。动作不进知识包，不查。"""
+    label = PACKAGE_KEY_LABELS.get(doc.doc_type)
+    if label is None:
+        return []
+    issues = []
+    problem = _key_problem(doc.path.stem)
+    if problem:
+        issues.append(Issue(
+            file=_rel(doc), severity='错误', category='命名约束',
+            message=f'{label}文件名「{doc.path.stem[:40]}」{problem}：文件名是知识包的 {label} key，'
+                    f'发布时会被拒绝。请改名（{KEY_RULE_HINT}），并同步改掉引用它的 [[链接]]',
+            source='规则检查'))
+    field_keys = sorted(_field_keys(doc)) if doc.doc_type == 'object' else []
+    for key in field_keys:
+        problem = _key_problem(key)
+        if problem:
+            issues.append(Issue(
+                file=_rel(doc), severity='错误', category='命名约束',
+                message=f'属性英文名称「{key[:40]}」{problem}：它是知识包的字段 key，发布时会被拒绝'
+                        f'（{KEY_RULE_HINT}）',
+                source='规则检查'))
+    return issues
+
+
+# consumer 导入知识包时的容量上限（consumer 后端 LimitsConfig 默认值，部署可通过环境变量调整）
+CONSUMER_OBJECT_MAX = 200
+CONSUMER_OPERATION_MAX = 100
+CONSUMER_ATTRIBUTE_MAX = 100
+CONSUMER_OPERATION_MAX_CHARS = 15000
+
+
+def check_package_limits(all_docs: dict, check_docs: dict) -> list:
+    """超出 consumer 容量上限的知识包导入时会被拒。数量按全量统计，单文件上限只查 check_docs。"""
+    objects = [doc for doc in all_docs.values() if doc.doc_type == 'object']
+    operations = [doc for doc in all_docs.values() if doc.doc_type == 'operation']
+    issues = []
+    for subdir, label, docs, limit in (('object/', '对象', objects, CONSUMER_OBJECT_MAX),
+                                       ('operation/', '操作', operations, CONSUMER_OPERATION_MAX)):
+        if len(docs) > limit:
+            issues.append(Issue(
+                file=subdir, severity='警告', category='容量上限',
+                message=f'共有 {len(docs)} 个{label}，超过 consumer 单个知识包 {limit} 个的上限，'
+                        f'导入 consumer 时会被拒：合并重复或过细的{label}',
+                source='规则检查'))
+    for doc in check_docs.values():
+        if doc.doc_type == 'object' and len(doc.attribute_rows) > CONSUMER_ATTRIBUTE_MAX:
+            issues.append(Issue(
+                file=_rel(doc), severity='警告', category='容量上限',
+                message=f'对象有 {len(doc.attribute_rows)} 个属性，超过 consumer 单个对象 '
+                        f'{CONSUMER_ATTRIBUTE_MAX} 个的上限，导入 consumer 时会被拒：按业务拆分对象或去掉用不到的属性',
+                source='规则检查'))
+        elif doc.doc_type == 'operation' and len(doc.raw) > CONSUMER_OPERATION_MAX_CHARS:
+            issues.append(Issue(
+                file=_rel(doc), severity='警告', category='容量上限',
+                message=f'操作文档 {len(doc.raw)} 字符，超过 consumer 单个操作 {CONSUMER_OPERATION_MAX_CHARS} '
+                        '字符的上限，导入 consumer 时会被拒：拆成子操作，或把实现细节下沉到脚本',
+                source='规则检查'))
+    return issues
+
+
+# --- 关联对象的关系名称（与建模工作台 modeling/src/workflow/relation-name.ts 同一口径）---
+
+_CARDINALITY_WORDS = {'一对一', '一对多', '多对一', '多对多',
+                      'onetoone', 'onetomany', 'manytoone', 'manytomany'}
+_CARDINALITY_END = r'(?:0|1|n|m|x|\*|0\.\.1|0\.\.\*|1\.\.\*)'
+_CARDINALITY_PAIR_RE = re.compile(rf'{_CARDINALITY_END}(?::|-|~|to|对){_CARDINALITY_END}', re.IGNORECASE)
+_CARDINALITY_RANGE_RE = re.compile(r'(?:0|1)\.\.(?:1|n|m|x|\*)', re.IGNORECASE)
+
+
+def _relation_token(value: str) -> str:
+    """NFKC、小写、去掉空白与标点符号后的语义串：判断关系名是否重复了端点名称。"""
+    text = unicodedata.normalize('NFKC', value).strip().lower()
+    return ''.join(ch for ch in text
+                   if not ch.isspace() and unicodedata.category(ch)[0] not in 'PS')
+
+
+def _relation_name_problem(name: str, source: str, target: str) -> str:
+    compact = re.sub(r'\s+', '', name).lower()
+    if (compact.replace('-', '').replace('_', '') in _CARDINALITY_WORDS
+            or _CARDINALITY_PAIR_RE.fullmatch(compact) or _CARDINALITY_RANGE_RE.fullmatch(compact)):
+        return f'只写了关系基数「{name}」，基数不是关系谓词'
+    token = _relation_token(name)
+    for side, endpoint in (('目标', target), ('源', source)):
+        endpoint_token = _relation_token(endpoint)
+        if len(endpoint_token) >= 2 and endpoint_token in token:
+            return f'包含{side}对象名称「{endpoint}」'
+    return ''
+
+
+def check_object_relation_names(doc: OntologyDoc) -> list:
+    """「# 关联对象」的关系名只写谓词：不含两端对象名称，也不只写基数。
+
+    建模工作台生成、编辑、优化、融合知识包时按同一规则校验，不合规会被拦下（数据评测启动时不查）。
+    发布包里对象的 key 与标题都取文件名、不带别名，所以端点名称就是两端的文件名。
+    """
+    issues = []
+    for _, source, name, target, _ in _object_relations(doc):
+        name = unicodedata.normalize('NFKC', name).strip()
+        if not name:
+            continue
+        problem = _relation_name_problem(name, source, target)
+        if not problem:
+            continue
+        issues.append(Issue(
+            file=_rel(doc), severity='警告', category='关系名称',
+            message=f'关系「{source} -{name}→ {target}」的关系名{problem}：建模工作台按同一规则校验，'
+                    f'在工作台里编辑、优化这个知识包时会被拦下。请只写关系谓词（如「属于」「包含」「适用于」），'
+                    f'使「源对象 → 关系名 → 目标对象」连读通顺；两端对象里的这条关系要一起改，'
+                    f'同一对对象之间的多条关系用不同谓词区分',
             source='规则检查'))
     return issues
 
@@ -933,12 +1480,7 @@ def check_derived_attribute_markers(doc: OntologyDoc, all_docs: dict) -> list:
 
 
 # --- Operation checks ---
-
-def _extract_sub_operation_refs(operation_text: str) -> list:
-    """Extract sub-operation references from operation description."""
-    refs = re.findall(r'调用\[\[([^\]]+)\]\]逻辑文档', operation_text)
-    refs += re.findall(r'调用\s*"([^"]+)"\s*逻辑文档', operation_text)
-    return refs
+# 子 operation 调用点与「与operation的关联」行的解析见 operation_relations.py（脚本绑定与导出共用）
 
 
 def check_operation_structure(doc: OntologyDoc) -> list:
@@ -994,34 +1536,49 @@ def check_operation_links(doc: OntologyDoc, all_docs: dict) -> list:
     ]
 
 
-def _stems_in_section(section_text: str) -> set:
-    """Return the set of [[stem]] targets in a section, alias- and path-aware."""
-    stems = set()
-    for m in re.finditer(r'\[\[([^\]]+)\]\]', section_text):
-        target = m.group(1).split('|')[0].strip()      # drop alias
-        stem = target.split('/')[-1].strip()            # drop path prefix
-        stem = re.sub(r'\.md$', '', stem, flags=re.IGNORECASE)
-        if stem and stem != '无':
-            stems.add(stem)
-    return stems
+def _operations_calling(stem: str, all_docs: dict) -> set:
+    """在「与operation的关联 → 调用operation」里写了 stem 的 operation。"""
+    callers = set()
+    for key, other in all_docs.items():
+        if other.doc_type != 'operation':
+            continue
+        if stem in _called_operation_stems(other.sections.get('与operation的关联', '')):
+            callers.add(key)
+    return callers
 
 
-def _called_operation_stems(flow_section: str) -> set:
-    """Extract sub-operation stems declared on the '调用operation' line(s) of 与operation的关联."""
-    stems = set()
-    for line in flow_section.split('\n'):
-        if re.match(r'^\s*[-•]?\s*调用\s*operation\b', line, re.IGNORECASE):
-            stems |= _stems_in_section(line)
-    return stems
+def check_operation_standalone(doc: OntologyDoc, all_docs: dict) -> list:
+    """「可单独调用」只能填 是 / 否，且只对子操作有意义（决定 consumer 能否单独执行它）。
 
-
-def _caller_operation_stems(flow_section: str) -> set:
-    """Extract parent-operation stems declared on the '被operation调用' line(s) of 与operation的关联."""
-    stems = set()
-    for line in flow_section.split('\n'):
-        if re.match(r'^\s*[-•]?\s*被\s*operation\s*调用\b', line, re.IGNORECASE):
-            stems |= _stems_in_section(line)
-    return stems
+    标「是」的子操作会有自己的脚本被 consumer 直接选中执行；父 operation 在调用它之前有停止条件
+    （输入检查、前置判断等）时，单独执行会跳过这些检查。
+    """
+    relation = parse_relation(doc.raw)
+    if not relation.standalone:
+        return []
+    if standalone_flag(relation) is None:
+        return [Issue(file=_rel(doc), severity='错误', category='流程关联不完整',
+                      message=f'与operation的关联 → 可单独调用 只能填「是」或「否」，现在是「{relation.standalone}」',
+                      source='规则检查')]
+    stem = doc.path.stem
+    parents = set(relation.callers) | _operations_calling(stem, all_docs)
+    if standalone_flag(relation) and not parents:
+        return [Issue(file=_rel(doc), severity='建议', category='流程关联不完整',
+                      message='本operation没有父operation（被operation调用 为无），「可单独调用」只对子操作有意义，可以删掉这一行',
+                      source='规则检查')]
+    issues = []
+    for parent in sorted(parents):
+        parent_doc = all_docs.get(parent)
+        if standalone_flag(relation) and parent_doc is not None and stops_before_call(parent_doc.raw, stem):
+            issues.append(Issue(
+                file=_rel(doc), severity='警告', category='流程关联不完整',
+                message=(
+                    f'本operation标了「可单独调用 > 是」，但「{parent}」在调用它之前有停止条件（输入检查、前置判断等）：'
+                    f'consumer 直接执行本operation的脚本时会跳过这些检查，结论可能与走完整流程不一致。'
+                    f'除非本operation的脚本也执行这些检查，请改为「可单独调用 > 否」，由「{parent}」的脚本统一执行'
+                ),
+                source='规则检查'))
+    return issues
 
 
 def check_operation_sub_refs(doc: OntologyDoc, all_docs: dict) -> list:
@@ -1324,6 +1881,16 @@ def _find_primary_key(obj_doc: OntologyDoc) -> str:
     return ''
 
 
+def _find_primary_keys(obj_doc: OntologyDoc) -> list:
+    """All 主键=是 columns in declaration order; several columns form a composite key."""
+    keys = []
+    for row in obj_doc.attribute_rows:
+        name = row.get('中文名称', '').strip()
+        if row.get('主键', '').strip() == '是' and name:
+            keys.append(name)
+    return keys
+
+
 def check_mock_data(all_docs: dict, mock_dir: Path) -> list:
     """Rule-level mock data checks: primary-key uniqueness + foreign-key integrity.
 
@@ -1343,22 +1910,23 @@ def check_mock_data(all_docs: dict, mock_dir: Path) -> list:
         obj_doc = all_docs.get(stem)
         if obj_doc is None or obj_doc.doc_type != 'object':
             continue
-        pk = _find_primary_key(obj_doc)
-        if not pk:
+        pk_cols = _find_primary_keys(obj_doc)
+        if not pk_cols:
             continue
+        pk = ', '.join(pk_cols)
         seen = {}
         for label, rows in tables.items():
             for row in rows:
-                val = row.get(pk, '').strip()
-                if not val:
+                key = tuple(row.get(col, '').strip() for col in pk_cols)
+                if not all(key):
                     continue
-                if val in seen:
+                if key in seen:
                     issues.append(Issue(
                         file=f'data-mock/{stem}.md', severity='错误', category='主键重复',
-                        message=f'主键 "{pk}" 的值 "{val}" 在 {seen[val]} 与 {label}数据 中同时出现',
+                        message=f'主键 "{pk}" 的值 "{", ".join(key)}" 在 {seen[key]} 与 {label}数据 中同时出现',
                         source='规则检查'))
                 else:
-                    seen[val] = f'{label}数据'
+                    seen[key] = f'{label}数据'
 
     # Foreign-key integrity: for each object ref attribute, check normal rows point to valid target pk values
     for stem, (path, tables) in mocks.items():
@@ -1474,8 +2042,142 @@ def check_scripts(ontology_dir: Path) -> list:
             parse_script_contract(source)
         except ScriptContractError as exc:
             issues.append(Issue(str(rel), "错误", "脚本契约", str(exc), "规则检查"))
+    # 同样与导出同一实现：每个 operation 只对外一个脚本、子操作与主操作脚本的覆盖关系、描述符与 .py 同步
+    for file, severity, message in descriptor_issues(ontology_dir):
+        issues.append(Issue(file, severity, "脚本契约", message, "规则检查"))
     return issues
 
+
+
+# 脚本安全（与 modeling/src/workflow/script-safety.ts validateGeneratedScriptSecurity 同一组规则）：
+# 知识包渲染与评测打包前逐字匹配整份源码（含注释与字符串），命中即拒绝该脚本。
+# re.ASCII 让 \b 与 JS 正则一样只按 ASCII 判单词边界。
+SCRIPT_MAX_CHARS = 100_000
+_SCRIPT_FORBIDDEN_RULES = (
+    (r'\b(?:import|from)\s+subprocess\b|\bsubprocess\s*\.', 'subprocess'),
+    (r'\b(?:import|from)\s+(?:ctypes|multiprocessing|pickle|marshal)\b', '高风险模块（ctypes / multiprocessing / pickle / marshal）'),
+    (r'\b(?:import|from)\s+(?:requests|httpx|aiohttp|socket)\b|\bfrom\s+urllib\.request\b|\burlopen\s*\(',
+     '网络访问（requests / httpx / aiohttp / socket / urllib.request）'),
+    (r'\bos\s*\.\s*(?:system|popen|spawn\w*)\s*\(', '系统命令（os.system / os.popen / os.spawn*）'),
+    (r'\bshutil\s*\.\s*rmtree\s*\(', '递归删除（shutil.rmtree）'),
+)
+_SCRIPT_FORBIDDEN = tuple(
+    (re.compile(pattern, re.ASCII), label) for pattern, label in _SCRIPT_FORBIDDEN_RULES
+)
+# script-safety.ts 判文件写入的正则：同一行 open( 之后任一以 w/a/x/+ 开头的字符串都会命中，
+# 会把 encoding="ascii" 之类误判成写模式。这里用语法树判真实的写模式，正则只用来提示误判
+_SCRIPT_WRITE_RE = re.compile(r'\bopen\s*\([^\n]*,[^\n]*["\'][wax+][^"\']*["\']', re.ASCII)
+_DYNAMIC_EXECUTION = {'eval', 'exec', 'compile', '__import__'}
+
+
+def _write_mode_open(node: ast.Call) -> bool:
+    """open / io.open / codecs.open 的第 2 个位置参数、Path.open 的第 1 个位置参数或 mode= 是写模式。"""
+    func = node.func
+    if isinstance(func, ast.Name) and func.id == 'open':
+        index = 1
+    elif isinstance(func, ast.Attribute) and func.attr == 'open':
+        module = func.value.id if isinstance(func.value, ast.Name) else ''
+        index = 1 if module in ('io', 'codecs', 'builtins') else 0
+    else:
+        return False
+    mode = next((kw.value for kw in node.keywords if kw.arg == 'mode'),
+                node.args[index] if len(node.args) > index else None)
+    return (isinstance(mode, ast.Constant) and isinstance(mode.value, str)
+            and any(flag in mode.value for flag in 'wax+'))
+
+
+def _dynamic_execution(node: ast.Call) -> bool:
+    """eval/exec/compile/__import__ 及 builtins.xxx 写法；re.compile 这类模块方法不算。"""
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id in _DYNAMIC_EXECUTION
+    return (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
+            and func.value.id in ('builtins', '__builtins__') and func.attr in _DYNAMIC_EXECUTION)
+
+
+def check_script_safety(ontology_dir: Path) -> list:
+    """ontology/scripts/*.py 不得出现评测打包前会被拒绝的写法，文件名须是合规的知识包 key。
+
+    含 _ 开头的辅助模块：它们同样进知识包、同样被校验。
+    """
+    scripts_dir = ontology_dir / 'scripts'
+    if not scripts_dir.is_dir():
+        return []
+    issues = []
+    for path in sorted(scripts_dir.glob('*.py')):
+        rel = path.relative_to(ontology_dir).as_posix()
+        problem = _key_problem(path.stem)
+        if problem:
+            issues.append(Issue(
+                rel, '错误', '命名约束',
+                f'脚本文件名「{path.stem[:40]}」{problem}：文件名是知识包的脚本 key，发布时会被拒绝（{KEY_RULE_HINT}）',
+                '规则检查'))
+        try:
+            source = path.read_text(encoding='utf-8')
+        except (OSError, UnicodeDecodeError):
+            continue  # 读不了由 check_scripts 报
+        labels = [label for pattern, label in _SCRIPT_FORBIDDEN if pattern.search(source)]
+        if len(source) > SCRIPT_MAX_CHARS:
+            labels.insert(0, f'超长源码（{len(source)} 字符，上限 {SCRIPT_MAX_CHARS}）')
+        calls = []
+        try:
+            calls = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)]
+        except SyntaxError:
+            pass  # 语法错误由 check_scripts 报
+        writes = any(_write_mode_open(call) for call in calls)
+        if writes:
+            labels.append('文件写入（写模式 open）')
+        if any(_dynamic_execution(call) for call in calls):
+            labels.append('动态执行（eval / exec / compile / __import__）')
+        for label in labels:
+            issues.append(Issue(
+                rel, '错误', '脚本安全',
+                f'使用了「{label}」，评测打包前会被拒绝。脚本只做纯计算：数据由调用方经 CLI 参数传入，'
+                '结果以单个 JSON 写到 stdout，不起子进程、不联网、不写文件、不动态执行代码',
+                '规则检查'))
+        if not writes and _SCRIPT_WRITE_RE.search(source):
+            line = next(text.strip() for text in source.splitlines() if _SCRIPT_WRITE_RE.search(text))
+            issues.append(Issue(
+                rel, '警告', '脚本安全',
+                f'「{line[:60]}」不是写文件，但评测侧的安全正则会把同一行 open( 之后以 w/a/x/+ 开头的'
+                '字符串（如 encoding="ascii"）当成写模式而拒绝脚本：把这类参数挪到 open 调用之外的行，'
+                '或改用其他写法',
+                '规则检查'))
+    return issues
+
+
+def check_script_bindings(ontology_dir: Path, all_docs: dict) -> list:
+    """头部「关联operation」决定脚本能否作为独立脚本导出（与后端知识包导出同一口径）。
+
+    写了名字但对应 operation 不存在：脚本只剩源码文件，评测与 consumer 都执行不到它 → 错误。
+    写「无」：只能作为被其他脚本 import 的辅助模块 → 建议，确认不是漏绑。_ 开头的辅助模块不查。
+    """
+    scripts_dir = ontology_dir / 'scripts'
+    if not scripts_dir.is_dir():
+        return []
+    operations = {doc.path.stem for doc in all_docs.values() if doc.doc_type == 'operation'}
+    issues = []
+    for path in sorted(scripts_dir.glob('*.py')):
+        if path.name.startswith('_'):
+            continue
+        rel = path.relative_to(ontology_dir).as_posix()
+        try:
+            bound = script_bound_operation(path.read_text(encoding='utf-8'))
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not bound:
+            issues.append(Issue(
+                rel, '建议', '脚本绑定',
+                '头部「关联operation」为「无」：该脚本不会作为独立脚本导出，评测与 consumer 都不会单独执行它，'
+                '只能被其他脚本 import 复用。若它需要被执行，填上调用它的 operation 名',
+                '规则检查'))
+        elif bound not in operations:
+            issues.append(Issue(
+                rel, '错误', '脚本绑定',
+                f'头部「关联operation」写的「{bound}」在 ontology/operation/ 下没有对应文档：该脚本不会作为'
+                '独立脚本导出，评测与 consumer 都执行不到它。改成已存在的 operation 文件名（不带 .md）',
+                '规则检查'))
+    return issues
 
 
 
@@ -1531,7 +2233,10 @@ def generate_report(issues: list, ontology_dir: str) -> str:
 # =============================================================================
 
 def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool = False,
-               include_knowledge: bool = False, include_scripts: bool = False) -> list:
+               include_knowledge: bool = False, include_scripts: bool = False,
+               tables: dict = None, strict_targets: bool = False, profiles: dict = None) -> list:
+    """profiles：{表名: 取值画像}，属性类型按它核对。tables 与 profiles 都不传时从工作区读取；
+    只传 tables 时没有取值证据，类型只查写法、取值核对记为未验证。"""
     print(f"Loading ontology from {ontology_dir}...", file=sys.stderr)
     all_docs = load_ontology(ontology_dir)
     print(f"  {len(all_docs)} documents loaded", file=sys.stderr)
@@ -1541,6 +2246,8 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
         check_docs = {k: v for k, v in all_docs.items() if k in target_files}
         skipped = [f for f in target_files if f not in all_docs]
         if skipped:
+            if strict_targets:
+                raise ValueError('指定产物未被检查器加载，不能按通过处理')
             print(f"  WARNING: stems not found: {skipped}", file=sys.stderr)
         print(f"  Incremental mode: checking {len(check_docs)} of {len(all_docs)} docs", file=sys.stderr)
     else:
@@ -1549,13 +2256,24 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
     issues = list(check_duplicate_stems(ontology_dir))
     issues += check_file_locations(ontology_dir)
     issues += check_unpackaged_knowledge(ontology_dir)
+    issues += check_solver_bindings(ontology_dir)
     term_map = build_term_map(all_docs)
-    tables = load_table_headers(ontology_dir)
+    if tables is None:
+        tables = load_table_headers(ontology_dir)
+        profiles = load_table_profiles(ontology_dir) if profiles is None else profiles
+    elif profiles is None:
+        profiles = {}
     report_categories = load_report_categories(ontology_dir)
+    field_index = joins = None  # 只有操作 / 规则用到，按需建一次
 
     print("Running rule checks...", file=sys.stderr)
     for doc in check_docs.values():
         issues += check_todo_placeholders(doc)
+        issues += check_entity_keys(doc)
+        if doc.doc_type in ('operation', 'rule'):
+            if field_index is None:
+                field_index, joins = _field_index(all_docs, tables), declared_joins(all_docs, tables)
+            issues += check_field_equivalence(doc, field_index, joins)
         if doc.doc_type == 'object':
             issues += check_object_structure(doc)
             issues += check_object_data_source(doc)
@@ -1565,7 +2283,11 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
             issues += check_object_primary_key(doc)
             issues += check_object_links(doc, all_docs)
             issues += check_object_relation_joins(doc, all_docs, tables)
+            issues += check_object_relation_names(doc)
+            issues += check_object_self_relations(doc, tables)
+            issues += check_graph_identifiers(doc, tables)
             issues += check_derived_attribute_markers(doc, all_docs)
+            issues += check_object_types(doc, tables, profiles)
         elif doc.doc_type == 'operation':
             issues += check_entity_placement(doc, report_categories)
             issues += check_operation_structure(doc)
@@ -1573,6 +2295,7 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
             issues += check_operation_links(doc, all_docs)
             issues += check_operation_sub_refs(doc, all_docs)
             issues += check_operation_caller_refs(doc, all_docs)
+            issues += check_operation_standalone(doc, all_docs)
             issues += check_operation_flow_refs(doc, all_docs)
             issues += check_terminology(doc, term_map)
             issues += check_branch_completeness(doc)
@@ -1587,6 +2310,9 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
             issues += check_action_structure(doc)
             issues += check_action_orphan(doc, all_docs)
 
+    issues += check_relation_join_conflicts(all_docs, tables, check_docs)
+    issues += check_package_limits(all_docs, check_docs)
+
     if include_mock:
         mock_dir = ontology_dir / 'data-mock'
         mock_issues = check_mock_data(all_docs, mock_dir)
@@ -1600,6 +2326,8 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
 
     if include_scripts:
         issues += check_scripts(ontology_dir)
+        issues += check_script_safety(ontology_dir)
+        issues += check_script_bindings(ontology_dir, all_docs)
 
     print(f"  Rule checks done: {len(issues)} issues", file=sys.stderr)
 

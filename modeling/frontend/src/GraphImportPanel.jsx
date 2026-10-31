@@ -14,6 +14,7 @@ import {
   addRelationMapping,
   graphImportContextKey,
   graphImportMappingPayload,
+  graphRelationIdentity,
   graphRelationLabel,
   hasRunningGraphImport,
   joinPropertyOptions,
@@ -502,7 +503,7 @@ export default function GraphImportPanel({ projectId, dataSource }) {
           </div>
 
           {mappings.map((mapping, index) => (
-            <RelationCard key={`${mapping.sourceObject}|${mapping.relationName}|${mapping.targetObject}`} index={index} mapping={mapping} preview={preview}
+            <RelationCard key={graphRelationIdentity(mapping)} index={index} mapping={mapping} preview={preview}
               disabled={controlsDisabled} onChange={changeMapping} onRemove={removeMapping} />
           ))}
 

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .. import config
 from . import package_mapping
+from .document_metadata import name_frontmatter, report_name
 
 WIKILINK = re.compile(r"\[\[([^\]|#]+)")
 SECTION = re.compile(r"^(#{1,2})\s+(.+)$", re.MULTILINE)
@@ -73,10 +74,15 @@ def _is_relation_edge(edge: dict, source: str, target: str) -> bool:
     )
 
 
-def _skip_reference_edge(doc: dict, target_doc: dict, section: str) -> bool:
+def _skip_reference_edge(
+    doc: dict, target_doc: dict, section: str, raw_section: str = ""
+) -> bool:
     source_kind = doc["kind"]
     target_kind = target_doc["kind"]
-    if source_kind == "object" and target_kind in {"operation", "metric", "rule"}:
+    if source_kind == "object" and target_kind == "operation":
+        # Legacy object documents used 「与logic的关联」 for operation links.
+        return raw_section != "与logic的关联"
+    if source_kind == "object" and target_kind in {"metric", "rule"}:
         return True
     if source_kind == "rule" and target_kind == "operation":
         return True
@@ -86,7 +92,8 @@ def _skip_reference_edge(doc: dict, target_doc: dict, section: str) -> bool:
         return False
     if target_kind != "object":
         return False
-    return section != "与object的关联"
+    # Legacy operation documents commonly put object links in 「逻辑描述」.
+    return section != "与object的关联" and raw_section != "逻辑描述"
 
 
 def graph(root: Path) -> dict:
@@ -108,6 +115,20 @@ def graph(root: Path) -> dict:
         key = (source, target, kind, label)
         if not _is_known_edge(source, target, key, by_name, seen_edges):
             return
+        # Compare endpoints without direction: input/support edges point back
+        # toward the operation. Apply the same rule whichever edge arrives first.
+        if kind == "references":
+            if any({edge["source"], edge["target"]} == {source, target}
+                   and edge["kind"] != "references" for edge in edges):
+                return
+        else:
+            for edge in list(edges):
+                if ({edge["source"], edge["target"]} == {source, target}
+                        and edge["kind"] == "references"):
+                    seen_edges.discard((edge["source"], edge["target"], edge["kind"], edge["label"]))
+                    edges.remove(edge)
+                    out_degree[edge["source"]] -= 1
+                    in_degree[edge["target"]] -= 1
         if kind == "object_relation":
             existing = [edge for edge in edges if _is_relation_edge(edge, source, target)]
             if label == "关联对象" and any(edge["label"] != "关联对象" for edge in existing):
@@ -138,10 +159,12 @@ def graph(root: Path) -> dict:
     for doc in docs:
         text = texts[doc["name"]]
         section = ""
+        raw_section = ""
         for line in text.splitlines():
             heading = SECTION.match(line)
             if heading:
-                section = SECTION_ALIASES.get(heading.group(2).strip(), heading.group(2).strip())
+                raw_section = heading.group(2).strip()
+                section = SECTION_ALIASES.get(raw_section, raw_section)
                 continue
             for raw_target in WIKILINK.findall(line):
                 target = raw_target.strip()
@@ -152,7 +175,7 @@ def graph(root: Path) -> dict:
                 # 对象文档里的指标/规则回链、规则文档里的操作来源回链只用于追溯，
                 # 不投影为「引用指标」「引用规则」或「适用于操作」边；
                 # 其他章节里的对象引用是正文语义，不直接投影为关系边。
-                if _skip_reference_edge(doc, target_doc, section):
+                if _skip_reference_edge(doc, target_doc, section, raw_section):
                     continue
                 source, destination, kind, label = _relation_projection(
                     doc, target_doc, section, line
@@ -239,7 +262,14 @@ def _node_summary(doc: dict, text: str) -> dict:
     else:
         description = _plain_summary(sections.get(description_section or "", ""))
     fields = _object_fields(sections.get("对象属性清单", "")) if doc["kind"] == "object" else []
-    return {"title": doc["name"], "description": description, "fields": fields}
+    return {"title": _display_name(text, doc["name"]), "description": description, "fields": fields}
+
+
+def _display_name(text: str, fallback: str) -> str:
+    try:
+        return report_name(text) or fallback
+    except ValueError:
+        return fallback
 
 
 def _plain_summary(text: str) -> str:
@@ -313,6 +343,11 @@ def _relation_projection(
             return source_name, target_name, "operation_output_object", "输出对象"
         if role == "support":
             return target_name, source_name, "operation_support_object", "支撑对象"
+        # Legacy operation documents put free-form object links in 「逻辑描述」.
+        # Keep those links visible as generic references; the newer association
+        # section still requires an explicit input/output/support role.
+        if section == "逻辑描述":
+            return source_name, target_name, "references", "引用对象"
         return None, None, None, None
     if source_kind == "operation" and target_kind == "rule":
         return source_name, target_name, "uses_rule", "使用规则"
@@ -341,14 +376,17 @@ def _operation_object_role(line: str) -> str | None:
 
 def _object_relation_label(line: str, source: str, target: str) -> str:
     for relation in package_mapping.parse_relation_definitions("# 关联对象\n" + line, []):
-        endpoints = {source if relation[key] == "当前对象" else relation[key] for key in ("source", "target")}
+        endpoints = {
+            source if relation[key] == package_mapping.CURRENT_OBJECT else relation[key]
+            for key in ("source", "target")
+        }
         if endpoints == {source, target}:
             return relation["relation"]
     escaped_source = re.escape(source)
     escaped_target = re.escape(target)
     patterns = (
-        rf"(?:当前对象|{escaped_source})\s*(?:→|->|>)\s*([^→>]+?)\s*(?:→|->|>)\s*\[\[{escaped_target}",
-        rf"\[\[{escaped_target}[^\]]*\]\]\s*(?:→|->|>)\s*([^→>]+?)\s*(?:→|->|>)\s*(?:当前对象|{escaped_source})",
+        rf"(?:当前对象名?|{escaped_source})\s*(?:→|->|>)\s*([^→>]+?)\s*(?:→|->|>)\s*\[\[{escaped_target}",
+        rf"\[\[{escaped_target}[^\]]*\]\]\s*(?:→|->|>)\s*([^→>]+?)\s*(?:→|->|>)\s*(?:当前对象名?|{escaped_source})",
     )
     for pattern in patterns:
         match = re.search(pattern, line)
@@ -362,7 +400,7 @@ def _object_relation_label(line: str, source: str, target: str) -> str:
 def _target_points_to_current(line: str, source: str, target: str) -> bool:
     return bool(
         re.search(
-            rf"\[\[{re.escape(target)}[^\]]*\]\]\s*(?:→|->|>).*?(?:→|->|>)\s*(?:当前对象|{re.escape(source)})",
+            rf"\[\[{re.escape(target)}[^\]]*\]\]\s*(?:→|->|>).*?(?:→|->|>)\s*(?:当前对象名?|{re.escape(source)})",
             line,
         )
     )
@@ -404,8 +442,16 @@ def element(root: Path, rel_path: str) -> dict:
     text = target.read_text(encoding="utf-8")
     name = target.stem
 
-    sections = parse_sections(text)
-    intro = _intro_of(text)
+    prefix = ""
+    try:
+        prefix = name_frontmatter(report_name(text))
+    except ValueError:
+        pass
+    body = text
+    if prefix:
+        body = text[4:].partition("\n---\n")[2].lstrip("\n")
+    sections = parse_sections(body)
+    intro = _intro_of(body)
 
     all_docs = _docs(root)
     links = {t.strip() for t in WIKILINK.findall(text) if t.strip() != name}
@@ -425,12 +471,19 @@ def element(root: Path, rel_path: str) -> dict:
             continue
         hit = f"[[{name}" in other or (is_script and f"{name}.py" in other)
         if hit:
-            backlinks.append({"name": doc["name"], "kind": doc["kind"], "path": doc["path"]})
+            backlinks.append({
+                "name": doc["name"],
+                "label": _display_name(other, doc["name"]),
+                "kind": doc["kind"],
+                "path": doc["path"],
+            })
 
     return {
         "name": name,
+        "label": _display_name(text, name),
         "path": rel_path,
         "intro": intro,
+        "name_frontmatter": prefix,
         "sections": sections,
         "links": links,
         "backlinks": backlinks,

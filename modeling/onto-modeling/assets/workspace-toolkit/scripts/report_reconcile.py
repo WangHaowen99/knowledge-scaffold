@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
-"""调研报告与提取产物的对账：按「名称 + 分类」比对报告清单与 ontology 下的实际文档。
+"""资料分析报告与提取产物的对账：按「名称 + 分类」比对报告清单与 ontology 下的实际文档。
 
 资料分析的检查只保证报告自己前后一致；报告里的操作、规则、指标最终有没有生成、生成的
-东西是不是都有来源，要在提取前后各对一次账，差异才不会被埋掉。只比名称与分类（文件名
-就是「业务项名称」），不判断内容。
+东西是不是都有来源，要在提取前后各对一次账，差异才不会被埋掉。只比名称与分类，
+特殊名称通过文档开头的 report_name 元数据映射到安全文件名；旧文档仍按文件名，不判断内容。
 
 用法（工作区根目录执行）：
-  python3 .claude/scripts/report_reconcile.py plan [--reports P ...] [--summaries P ...] [--json]
+  python3 .claude/scripts/report_reconcile.py plan [--reports P ...] [--summaries P ...]
+                                                   [--alias 文档名=流程图名 ...] [--json]
       提取之前：按「业务项清单」的分类列拆出操作 / 规则 / 指标候选，并与流程图摘要比对——
       同名的流程图就是报告里的操作（合成一份文档）；报告没收录的流程图是补充；与报告里的
       规则、指标、对象重名的流程图，要先由用户决定怎么处理。
   python3 .claude/scripts/report_reconcile.py check [--reports P ...] [--summaries P ...]
                                                     [--alias 文档名=流程图名 ...] [--json]
       提取之后：报告里有、没生成的；生成了、报告里没有的（标明来源）；放错目录的。
-      --alias 声明"按用户决定改了名的流程图操作"，它们按流程图来源计。
+      --alias 声明"按用户决定改了名的流程图操作"，它们按流程图来源计；plan 也据此检查新名冲突。
 
---reports / --summaries 不给时取工作区里全部的调研报告与流程图摘要；给了但不带值表示本轮
+--reports / --summaries 不给时取工作区里全部的资料分析报告与流程图摘要；给了但不带值表示本轮
 没用这一类来源。
 
 退出码：0 = 一致，或差异都有来源；1 = 有需要处理的差异；2 = 无法对账（没有报告，或报告
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -126,9 +128,55 @@ def names_of_type(inventory: Inventory, doc_type: str) -> list[str]:
     return sorted(name for name, found in inventory.by_name.items() if found == doc_type)
 
 
-def entity_docs(root: Path) -> dict[str, dict[str, str]]:
-    """{实体类型: {文件名: 相对路径}}；目录索引 index.md 不算文档。"""
+def safe_document_stem(name: str) -> str:
+    """仅转义文件系统保留字符；同时转义 %，避免 A/B 与字面 A%2FB 重名。"""
+    escaped = ''.join(
+        f'%{ord(char):02X}' if char in '%/\\<>:"|?*' or ord(char) < 32 else char
+        for char in name
+    )
+    escaped = escaped.rstrip(' .') + ''.join(
+        f'%{ord(char):02X}' for char in escaped[len(escaped.rstrip(' .')):]
+    )
+    if escaped.lower() == 'index' or re.fullmatch(
+            r'(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?', escaped):
+        escaped = f'%{ord(escaped[0]):02X}' + escaped[1:]
+    return escaped
+
+
+def _document_name(path: Path) -> str:
+    """只读取显式 report_name，不从正文标题或替换后的标点推断别名。"""
+    raw = path.read_text(encoding='utf-8')
+    if not raw.startswith('---\n'):
+        return path.stem
+    header, separator, _ = raw[4:].partition('\n---\n')
+    fields = [line.partition(':')[2].strip() for line in header.splitlines()
+              if line.startswith('report_name:')]
+    if not fields:
+        return path.stem
+    if not separator or len(fields) != 1:
+        raise ValueError('report_name 必须在完整的文档头中且只能声明一次')
+    # JSON 字符串是 YAML 字符串的子集，可准确保留反斜杠与引号，无需引入 YAML 依赖。
+    name = json.loads(fields[0])
+    if not isinstance(name, str) or not name.strip() or name != name.strip():
+        raise ValueError('report_name 必须是非空 JSON 字符串，且不能包含首尾空白')
+    return name
+
+
+def _reserve_document(name: str, rel: str, occupied: dict, conflicts: list) -> None:
+    """下游以 stem 为实体键；跨目录也不能重名，同一文档的增量规划可以复用。"""
+    key = Path(rel).stem.casefold()
+    identity = (name, rel)
+    previous = occupied.get(key)
+    if previous is not None and previous != identity:
+        conflicts.append(f'实体文件名冲突：「{previous[0]}」({previous[1]}) 与「{name}」({rel})')
+    occupied.setdefault(key, identity)
+
+
+def entity_docs(root: Path, conflicts: list | None = None) -> dict[str, dict[str, str]]:
+    """{实体类型: {报告原名或文件名: 相对路径}}；索引不算文档，旧文档保持原行为。"""
     docs: dict[str, dict[str, str]] = {doc_type: {} for doc_type in ENTITY_DIRS}
+    conflicts = conflicts if conflicts is not None else []
+    occupied = {}
     for doc_type, subdirs in ENTITY_DIRS.items():
         for subdir in subdirs:
             directory = root / 'ontology' / subdir
@@ -136,9 +184,51 @@ def entity_docs(root: Path) -> dict[str, dict[str, str]]:
                 continue
             files = directory.rglob('*.md') if subdir in NESTED_DIRS else directory.glob('*.md')
             for path in sorted(files):
-                if path.name.lower() != 'index.md':
-                    docs[doc_type].setdefault(path.stem, path.relative_to(root).as_posix())
+                if path.name.lower() == 'index.md':
+                    continue
+                rel = path.relative_to(root).as_posix()
+                try:
+                    name = _document_name(path) if doc_type in EXTRACTED_TYPES else path.stem
+                except (OSError, ValueError) as exc:
+                    conflicts.append(f'{rel}：无法读取名称映射（{exc}）')
+                    continue
+                _reserve_document(name, rel, occupied, conflicts)
+                previous = docs[doc_type].get(name)
+                if previous and (name != path.stem or name != Path(previous).stem):
+                    conflicts.append(f'「{name}」对应多个文档：{previous}、{rel}')
+                docs[doc_type].setdefault(name, rel)
     return docs
+
+
+def document_names(inventory: Inventory, docs: dict, supplements: list[str]) -> tuple[dict, list]:
+    """提取前给出确定的路径及原名元数据；碰撞只报告，不重命名或覆盖文件。"""
+    result, conflicts = {}, []
+    occupied = {}
+    for group in docs.values():
+        for name, rel in group.items():
+            _reserve_document(name, rel, occupied, conflicts)
+    for kind in EXTRACTED_TYPES:
+        result[kind] = []
+        for name in names_of_type(inventory, kind):
+            existing = docs.get(kind, {}).get(name)
+            rel = existing or f'ontology/{kind}/{safe_document_stem(name)}.md'
+            _reserve_document(name, rel, occupied, conflicts)
+            metadata = ('---\nreport_name: ' + json.dumps(name, ensure_ascii=False) + '\n---\n'
+                        if Path(rel).stem != name else '')
+            result[kind].append({'name': name, 'path': rel, 'exists': bool(existing),
+                                 'frontmatter': metadata})
+    # 流程图补充沿用原文件名（包括字面的 %），但与报告产物共用实体键空间。
+    for name in supplements:
+        if name in inventory.by_name:
+            conflicts.append(f'流程图补充「{name}」与报告候选同名，请明确合并或改名后重新规划')
+        existing = docs.get('operation', {}).get(name)
+        rel = existing or f'ontology/operation/{name}.md'
+        if not existing and safe_document_stem(name).replace('%25', '%') != name:
+            conflicts.append(f'流程图补充「{name}」不能直接作为文件名，请通过 --alias 指定安全名称')
+        _reserve_document(name, rel, occupied, conflicts)
+        result['operation'].append({'name': name, 'path': rel, 'exists': bool(existing),
+                                    'frontmatter': '', 'source': 'flowchart'})
+    return result, conflicts
 
 
 def default_summaries(root: Path) -> list[str]:
@@ -201,12 +291,17 @@ def changed_paths(root: Path) -> set[str] | None:
 # 提取之前：拆候选，比对流程图
 # ---------------------------------------------------------------------------
 
-def build_plan(inventory: Inventory, summary_names: list[str]) -> dict:
+def build_plan(inventory: Inventory, summary_names: list[str], docs: dict | None = None,
+               aliases: dict | None = None) -> dict:
     candidates = {doc_type: names_of_type(inventory, doc_type) for doc_type in ENTITY_DIRS}
     matches, supplements, conflicts = [], [], []
+    aliases = aliases or {}
     for name in summary_names:
         doc_type = inventory.by_name.get(name)
-        if name in inventory.conflicting:
+        renamed = [target for target, source in aliases.items() if source == name]
+        if renamed:
+            supplements.extend(renamed)
+        elif name in inventory.conflicting:
             conflicts.append({'name': name, 'report_type': None})
         elif doc_type == 'operation':
             matches.append(name)
@@ -214,7 +309,10 @@ def build_plan(inventory: Inventory, summary_names: list[str]) -> dict:
             supplements.append(name)
         else:
             conflicts.append({'name': name, 'report_type': doc_type})
+    filenames, naming_conflicts = document_names(inventory, docs or {}, supplements)
     return {
+        'document_names': filenames,
+        'naming_conflicts': naming_conflicts,
         'candidates': candidates,
         'flowchart_matches': matches,
         'flowchart_supplements': supplements,
@@ -224,7 +322,8 @@ def build_plan(inventory: Inventory, summary_names: list[str]) -> dict:
 
 
 def plan_exit_code(plan: dict) -> int:
-    return DIFF if plan['flowchart_conflicts'] or plan['category_conflicts'] else OK
+    conflict_keys = ('flowchart_conflicts', 'category_conflicts', 'naming_conflicts')
+    return DIFF if any(plan[key] for key in conflict_keys) else OK
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +437,12 @@ def render_plan(plan: dict) -> list[str]:
                      '不能直接按操作生成')
     for name in plan['category_conflicts']:
         lines.append(f'[需决定] 「{name}」在多份报告里分类不一致')
+    for conflict in plan.get('naming_conflicts', []):
+        lines.append(f'[需处理] 名称映射冲突：{conflict}')
+    for group in plan.get('document_names', {}).values():
+        for item in group:
+            if item['frontmatter']:
+                lines.append(f'安全文件名：「{item["name"]}」→ {item["path"]}（保留 report_name 原名）')
     return lines
 
 
@@ -377,9 +482,9 @@ def render_check(result: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _parse_args(argv):
-    parser = argparse.ArgumentParser(description='调研报告与提取产物的对账')
+    parser = argparse.ArgumentParser(description='资料分析报告与提取产物的对账')
     parser.add_argument('command', choices=('plan', 'check'))
-    parser.add_argument('--reports', nargs='*', default=None, help='本轮使用的调研报告')
+    parser.add_argument('--reports', nargs='*', default=None, help='本轮使用的资料分析报告')
     parser.add_argument('--summaries', nargs='*', default=None, help='本轮使用的流程图摘要')
     parser.add_argument('--alias', action='append', default=[],
                         help='改了名的流程图操作：文档名=流程图名，可重复')
@@ -389,7 +494,7 @@ def _parse_args(argv):
 
 def _unavailable(inventory: Inventory, reports: list[str]) -> str:
     if not reports:
-        return '本轮没有使用调研报告，无从对账'
+        return '本轮没有使用资料分析报告，无从对账'
     if inventory.uncategorized:
         return (f'报告的「{REPORT_INVENTORY_SECTION}」没有分类列或分类取值非法：'
                 f'{"、".join(inventory.uncategorized)}。'
@@ -411,14 +516,20 @@ def main(argv=None) -> int:
                if args.json else reason)
         return UNAVAILABLE
 
+    naming_conflicts = []
+    docs = entity_docs(root, naming_conflicts)
+    aliases = dict(item.split('=', 1) for item in args.alias if '=' in item)
     if args.command == 'plan':
-        result = build_plan(inventory, summary_names)
+        result = build_plan(inventory, summary_names, docs, aliases)
         code, lines = plan_exit_code(result), render_plan(result)
     else:
-        aliases = dict(item.split('=', 1) for item in args.alias if '=' in item)
-        result = build_check(inventory, entity_docs(root), summary_names, aliases,
+        result = build_check(inventory, docs, summary_names, aliases,
                              changed_paths(root))
         code, lines = check_exit_code(result), render_check(result)
+    if naming_conflicts:
+        result.setdefault('naming_conflicts', []).extend(naming_conflicts)
+        lines.extend(f'[需处理] 名称映射冲突：{item}' for item in naming_conflicts)
+        code = DIFF
     result['status'] = 'ok' if code == OK else 'diff'
     _write(json.dumps(result, ensure_ascii=False) if args.json else '\n'.join(lines))
     return code

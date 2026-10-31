@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import config
-from . import conversation_store, error_log
+from . import conversation_store, error_log, personal_model_settings
 from .conversation_store import DEFAULT_ID as DEFAULT_CONVERSATION
 from .engines import EngineContext, get_engine_class
 from .engines.base import CONFIG_ERROR, FRIENDLY_ERROR, safe_json as _safe_json
@@ -141,23 +141,37 @@ def _meta_path(project_id: str, conversation_id: str = DEFAULT_CONVERSATION) -> 
     return conversation_store.meta_path(project_id, conversation_id)
 
 
-def load_resume_id(project_id: str, conversation_id: str = DEFAULT_CONVERSATION) -> str | None:
-    """该会话上次的引擎续接 token；重连时恢复模型上下文。"""
+def load_resume_id(
+    project_id: str, conversation_id: str = DEFAULT_CONVERSATION, *, engine: str = "claude"
+) -> str | None:
+    """该会话上次的引擎续接 token；重连时恢复模型上下文。
+
+    token 只对写下它的引擎有效（切换引擎后旧 token 不可用）；
+    旧格式无 engine 字段，均由 Claude 引擎写入。
+    """
     path = _meta_path(project_id, conversation_id)
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8")).get("sdk_session_id") or None
+        meta = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    if (meta.get("engine") or "claude") != engine:
+        return None
+    return meta.get("sdk_session_id") or None
 
 
 def save_resume_id(
-    project_id: str, session_id: str, conversation_id: str = DEFAULT_CONVERSATION
+    project_id: str,
+    session_id: str,
+    conversation_id: str = DEFAULT_CONVERSATION,
+    *,
+    engine: str = "claude",
 ) -> None:
     try:
         _meta_path(project_id, conversation_id).write_text(
-            json.dumps({"sdk_session_id": session_id}), encoding="utf-8"
+            json.dumps({"sdk_session_id": session_id, "engine": engine}),
+            encoding="utf-8",
         )
     except OSError:
         pass  # 落盘失败只影响下次续接，不阻断会话
@@ -218,6 +232,8 @@ class Session:
     # 引擎绑定的会话：决定事件历史写到哪份文件、续接哪个 token
     conversation_id: str = DEFAULT_CONVERSATION
     sending: int = 0  # 处理中的 send() 数；期间不可回收或换绑，否则消息会落到已丢弃的会话上
+    # 引擎使用谁的模型配置：用户名 = 该用户的个人 Key；"" = 管理员配置（原行为）
+    model_owner: str = ""
 
     @property
     def client(self) -> Any:
@@ -263,6 +279,11 @@ def _recyclable(session: "Session") -> bool:
     )
 
 
+def _bound_to(session: "Session | None", conversation_id: str) -> bool:
+    """引擎当前是否绑定着这条会话。"""
+    return session is not None and session.conversation_id == conversation_id
+
+
 def _busy(session: "Session") -> bool:
     """在跑、排队、连接中、有待确认卡或有处理中的发送：此时不能把引擎换绑到别的会话。
 
@@ -274,6 +295,11 @@ def _busy(session: "Session") -> bool:
         or bool(session.pending_permissions)
         or session.sending > 0
     )
+
+
+def _busy_for_owner_switch(session: "Session") -> bool:
+    """本轮未结束（含积压待发的消息）：不能换模型配置，否则别人的消息会用你的 Key 发出。"""
+    return _busy(session) or bool(session.pending_prompts)
 
 
 def _expire_orphan_permissions(session: "Session") -> None:
@@ -326,11 +352,44 @@ class SessionManager:
         self._lock = asyncio.Lock()
         self._reaper_task: asyncio.Task | None = None
         self._tasks: set[asyncio.Task] = set()  # 后台收尾任务的强引用，免得执行中被回收
+        # 各（项目, 会话）打开着的事件流队列：会话新建时直接挂上（首条消息、
+        # 空闲回收后再发、切换会话后再发）
+        self._watchers: dict[tuple[str, str], set[asyncio.Queue]] = {}
 
     def _spawn(self, coro) -> None:
         task = asyncio.create_task(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    # ---- 事件流订阅 ----
+
+    def watch(
+        self,
+        project_id: str,
+        queue: asyncio.Queue,
+        conversation_id: str = DEFAULT_CONVERSATION,
+    ) -> None:
+        """登记事件流队列；引擎正绑定这条会话时立即挂上，之后新建的会话由 _bind_session 挂上。"""
+        self._watchers.setdefault((project_id, conversation_id), set()).add(queue)
+        session = self._sessions.get(project_id)
+        if _bound_to(session, conversation_id) and queue not in session.subscribers:
+            session.subscribers.append(queue)
+
+    def unwatch(
+        self,
+        project_id: str,
+        queue: asyncio.Queue,
+        conversation_id: str = DEFAULT_CONVERSATION,
+    ) -> None:
+        key = (project_id, conversation_id)
+        watchers = self._watchers.get(key)
+        if watchers is not None:
+            watchers.discard(queue)
+            if not watchers:
+                self._watchers.pop(key, None)
+        session = self._sessions.get(project_id)
+        if session and queue in session.subscribers:
+            session.subscribers.remove(queue)
 
     # ---- 查询 ----
 
@@ -404,6 +463,7 @@ class SessionManager:
         cwd: Path,
         text: str,
         conversation_id: str | None = None,
+        username: str = "",
     ) -> Session:
         text = (text or "").strip()
         if not text:
@@ -419,8 +479,10 @@ class SessionManager:
             )
         # 换绑要回收旧引擎（await 断开，且第一步就把旧 Session 移出字典）：不加锁时
         # 并发的 send 会各建一个 Session，被覆盖的那个带着引擎却不在字典里，无人回收
+        owner = personal_model_settings.model_owner(username, engine_cls.name)
         async with self._lock:
             session = await self._bind_session(project_id, conversation_id)
+            await self._bind_model_owner(session, owner, engine_cls.name)
             session.sending += 1
         try:
             await self._deliver(session, cwd, text)
@@ -447,9 +509,34 @@ class SessionManager:
             )
             # 续接历史，seq 连续
             session.events = load_history(project_id, conversation_id)
+            # 这条会话已打开的事件流在广播任何事件之前挂上，本轮过程即时推送
+            session.subscribers.extend(self._watchers.get((project_id, conversation_id), ()))
             self._sessions[project_id] = session
             _expire_orphan_permissions(session)
         return session
+
+    async def _bind_model_owner(self, session: Session, owner: str, engine: str) -> None:
+        """让引擎使用发送人的模型配置（调用方持有 _lock）。
+
+        项目会话由成员共用：谁发消息就用谁的配置。换人且配置来源不同时断开重连
+        （resume 续接）；本轮没结束就拒绝，免得别人的消息花掉你的 Key。
+        """
+        if owner != session.model_owner:
+            if _busy_for_owner_switch(session):
+                raise SessionError(
+                    "本项目会话正在使用其他成员的模型配置运行，请等本轮结束后再发送", 409
+                )
+            if session.engine is not None:
+                if session.reader_task:
+                    session.reader_task.cancel()
+                await session.engine.disconnect()
+                session.engine = None
+            session.model_owner = owner
+        if owner:
+            try:
+                personal_model_settings.resolve(owner, engine)
+            except personal_model_settings.PersonalConfigError as exc:
+                raise SessionError(str(exc), exc.status) from exc
 
     async def _deliver(self, session: Session, cwd: Path, text: str) -> None:
         session.cwd = cwd
@@ -521,12 +608,14 @@ class SessionManager:
         project_id = session.project_id
         # 构造时定住会话 id：续接 token 的存取必须跟着这个引擎实例绑定的会话走
         conversation_id = session.conversation_id
+        engine_cls = self._engine_class_for(project_id)
+        engine_name = engine_cls.name
 
         def save_token(token: str) -> None:
             if session.discarded:  # 续接点文件已随项目清除
                 return
             session.sdk_session_id = token
-            save_resume_id(project_id, token, conversation_id)
+            save_resume_id(project_id, token, conversation_id, engine=engine_name)
 
         async def request_permission(
             tool_name: str, tool_input: dict, title: str | None, description: str | None
@@ -539,14 +628,17 @@ class SessionManager:
             project_id=project_id,
             cwd=session.cwd,
             request_permission=request_permission,
-            load_resume_token=lambda: load_resume_id(project_id, conversation_id),
+            load_resume_token=lambda: load_resume_id(
+                project_id, conversation_id, engine=engine_name
+            ),
             save_resume_token=save_token,
             clear_resume_token=lambda: clear_resume_id(project_id, conversation_id),
             log_error=lambda kind, text: error_log.log(project_id, kind, text),
             load_history=lambda: list(session.events),
             conversation_id=conversation_id,
+            model_owner=session.model_owner,
         )
-        return self._engine_class_for(project_id)(ctx)
+        return engine_cls(ctx)
 
     async def _connect(self, session: Session) -> None:
         project_id = session.project_id
@@ -561,13 +653,17 @@ class SessionManager:
             session.resume_attempted = resumed
             session.engine = engine
             session.reader_task = asyncio.create_task(self._read_loop(session))
-            session.broadcast(
-                {
-                    "type": "session_started",
-                    "session_id": session.id,
-                    "resumed": resumed,
-                }
-            )
+            started = {
+                "type": "session_started",
+                "session_id": session.id,
+                "resumed": resumed,
+            }
+            # 连接时已知的窗口与触发点随之下发：切换引擎或改配置后，第一轮进行中
+            # 用量圈就按新值显示，不必等本轮结束的 context_usage
+            window, compact_at = engine.context_limits()
+            if window:
+                started.update(window=window, compact_at=compact_at)
+            session.broadcast(started)
             prompts, session.pending_prompts = session.pending_prompts, []
             if prompts and session.cwd:
                 session.round_base_commit = await asyncio.to_thread(
@@ -920,7 +1016,8 @@ class SessionManager:
 def usage_summary(project_id: str) -> dict:
     """项目累计模型用量（从事件历史统计），会话接口与运维页共用。
 
-    汇总全部会话，加上已删除会话留存的 result 事件。不走 get_history：
+    汇总全部会话，加上已删除会话留存的用量事件。calls 是结束的轮数，token 含未结束轮里
+    已逐次记下的调用（口径见 conversation_store.counted_usage）。不走 get_history：
     运维总览每次请求都会调到这里，不该顺带触发幽灵态自愈写盘。
     """
     session = manager.get(project_id)
@@ -939,11 +1036,12 @@ def usage_summary(project_id: str) -> dict:
         ts = event.get("ts")
         if ts and (last_activity is None or ts > last_activity):
             last_activity = ts
-        if event.get("type") != "result":
+        usage = conversation_store.counted_usage(event)
+        if usage is None:
             continue
-        calls += 1
-        total_cost += event.get("total_cost_usd") or 0
-        usage = event.get("usage") or {}
+        if event.get("type") == "result":
+            calls += 1
+            total_cost += event.get("total_cost_usd") or 0
         output_tokens += usage.get("output_tokens") or 0
         input_tokens += (usage.get("input_tokens") or 0) + (
             usage.get("cache_read_input_tokens") or 0

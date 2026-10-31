@@ -399,9 +399,9 @@ function relationPlan(
   }
   const sourceJoinIndex = joinColumn(sourceObject, source, mapping.sourceJoinProperty).index;
   const targetJoinIndex = joinColumn(targetObject, target, mapping.targetJoinProperty).index;
-  const declared = schema.relations.find((item) => item.sourceObject === mapping.sourceObject
-    && item.targetObject === mapping.targetObject && item.relationName === mapping.relationName);
-  const explicit = Boolean(declared?.sourceJoinProperty && declared?.targetJoinProperty);
+  const explicit = schema.relations.some((item) => item.sourceObject === mapping.sourceObject
+    && item.targetObject === mapping.targetObject && item.relationName === mapping.relationName
+    && item.sourceJoinProperty === mapping.sourceJoinProperty && item.targetJoinProperty === mapping.targetJoinProperty);
   if (explicit) {
     const sourceType = sourceBuilt.plan.propertyTypes[mapping.sourceJoinProperty];
     const targetType = targetBuilt.plan.propertyTypes[mapping.targetJoinProperty];
@@ -478,10 +478,14 @@ export function validateGraphImportMapping(
     const name = String(item.relationName ?? '').trim();
     if (!name) throw new Error('关系名称不能为空');
     assertGraphIdentifier(name, '关系名称');
-    return `${item.sourceObject}\u0000${name}\u0000${item.targetObject}`;
+    return JSON.stringify([
+      item.sourceObject, name, item.targetObject,
+      item.matchMode === 'field_match' ? item.sourceJoinProperty : '',
+      item.matchMode === 'field_match' ? item.targetJoinProperty : '',
+    ].map((value) => value.normalize('NFC').trim()));
   });
   const duplicate = relationKeys.find((key, index, all) => all.indexOf(key) !== index);
-  if (duplicate) throw new Error('相同源实体、关系名称和目标实体的关系不能重复添加');
+  if (duplicate) throw new Error('相同源实体、关系名称、目标实体和关联字段的关系不能重复添加');
 
   for (const item of normalizedMapping.relations) {
     objectByKey(schema, item.sourceObject);

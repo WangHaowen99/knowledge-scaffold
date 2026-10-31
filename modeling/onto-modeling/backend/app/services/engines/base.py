@@ -11,7 +11,10 @@
   step_id 的后续事件只更新 status；参数只留摘要键，步骤数有上限
 - ``subagent_finished``   子代理终态（completed / failed / stopped，usage.duration_ms）
 - ``system``              运行时系统事件（已过滤，不进入会话历史）
-- ``result``              一轮终态（成本 / usage / 时长）
+- ``model_usage``         一次模型调用的用量（usage: input_tokens / output_tokens），
+  逐次计入项目用量；不是对话行
+- ``result``              一轮终态（成本 / usage / 时长）；``usage_per_call`` 为真表示
+  本轮用量已由 model_usage 逐次计入，usage 只供单轮展示，统计时不再累加
 - ``_engine_end``         引擎内部终止信号（reason: closed | error），由
   SessionManager 消化为 session_error / 状态迁移，不落历史、不发给前端
 
@@ -34,6 +37,15 @@ CONFIG_ERROR = (
     "模型网关未配置或凭据无效。请管理员在「配置中心 → 模型接入」填写网关地址与 API Key，"
     "保存后重新发送消息即可生效（无需重启）。"
 )
+PERSONAL_CONFIG_ERROR = (
+    "你的个人 API Key 无效或网关不可用。请在「设置 → 我的模型配置」更新或清除个人 Key"
+    "（清除后改用管理员配置），保存后重新发送消息即可生效。"
+)
+
+
+def config_error_for(model_owner: str) -> str:
+    """凭据类错误的提示：个人 Key 引导用户自己改，管理员配置维持原提示。"""
+    return PERSONAL_CONFIG_ERROR if model_owner else CONFIG_ERROR
 
 
 def safe_json(value: Any) -> Any:
@@ -69,10 +81,12 @@ class EngineContext:
     clear_resume_token: Callable[[], None]
     # 运维错误留档（kind, 原始文本）
     log_error: Callable[[str, str], None]
-    # 事件历史（平台事件 dict 列表）：历史回放型引擎（Jiuwen）用它重建模型上下文
+    # 事件历史（平台事件 dict 列表）：Jiuwen 引擎无可用 checkpoint 时用它回放重建模型上下文
     load_history: Callable[[], list[dict]] | None = None
     # 引擎绑定的会话；同一项目的多条会话各有独立的模型上下文
     conversation_id: str = "default"
+    # 本引擎实例使用谁的模型配置：用户名 = 该用户的个人 Key；"" = 管理员配置
+    model_owner: str = ""
 
 
 class AgentEngine(Protocol):
@@ -109,4 +123,8 @@ class AgentEngine(Protocol):
 
     def config_stale(self) -> bool:
         """模型配置是否已变更（会话层据此断开重连使新配置生效）。"""
+        ...
+
+    def context_limits(self) -> tuple[int | None, int | None]:
+        """连接后已知的（模型窗口, 自动压缩触发点）；未知为 None，等每轮结束的 context_usage 再给。"""
         ...

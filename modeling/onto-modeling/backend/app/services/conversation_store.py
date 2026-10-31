@@ -244,8 +244,25 @@ def delete(project_id: str, conversation_id: str) -> list[dict]:
         return _sorted_views(project_id, conversations)
 
 
+def counted_usage(event: dict) -> dict | None:
+    """事件计入用量统计的 token 数；不是用量事件时为 None。
+
+    逐次记账的引擎每次模型调用发一条 model_usage；它的 result 带 usage_per_call，只算一轮、
+    不再累加 token。其余引擎的 token 全在 result 里。
+    """
+    kind = event.get("type")
+    if kind == "model_usage":
+        return event.get("usage") or {}
+    if kind == "result":
+        return {} if event.get("usage_per_call") else event.get("usage") or {}
+    return None
+
+
+_KEPT_USAGE_FIELDS = ("type", "ts", "total_cost_usd", "usage", "usage_per_call")
+
+
 def _keep_usage(project_id: str, conversation_id: str) -> None:
-    """删除前留存 result 事件：只含成本与 token、不含对话内容，
+    """删除前留存用量事件（result 与 model_usage）：只含成本与 token、不含对话内容，
 
     用量统计（项目累计与运维按日聚合）不因删除会话而减少。
     """
@@ -253,21 +270,14 @@ def _keep_usage(project_id: str, conversation_id: str) -> None:
     try:
         with open(history_path(project_id, conversation_id), encoding="utf-8") as f:
             for line in f:
-                if '"result"' not in line:
+                if '"result"' not in line and '"model_usage"' not in line:
                     continue
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if event.get("type") == "result":
-                    kept.append(
-                        {
-                            "type": "result",
-                            "ts": event.get("ts"),
-                            "total_cost_usd": event.get("total_cost_usd"),
-                            "usage": event.get("usage"),
-                        }
-                    )
+                if counted_usage(event) is not None:
+                    kept.append({key: event[key] for key in _KEPT_USAGE_FIELDS if key in event})
         if kept:
             with open(_deleted_usage_path(project_id), "a", encoding="utf-8") as f:
                 for event in kept:

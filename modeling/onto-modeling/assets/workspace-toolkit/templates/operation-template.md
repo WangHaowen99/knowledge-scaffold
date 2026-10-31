@@ -4,6 +4,7 @@
 # 与operation的关联
 - 被operation调用 > [[{待填写：父operation}]]，调用本operation的父operation；如果没有，填"无"
 - 调用operation > [[{待填写：子operation}]]，本operation调用的子operation；如果没有，填"无"
+- 可单独调用 > {待填写：是 / 否}，只有子operation（被operation调用 不为"无"）填写：用户会单独问到这一步（或它被单独触发），且父operation 在调用它之前没有它依赖的输入检查、评分、前置判断等停止条件时才填"是"，否则填"否"。为"否"时它的脚本逻辑并入父operation的脚本，consumer 选中它时执行父operation的完整流程；本operation没有父operation时删除本行
 
 # 与object的关联
 - 输入数据的对象：[[{待填写：对象1}]]、[[{待填写：对象2}]]；如果没有，填"无"

@@ -74,6 +74,11 @@ export default function StudioView({
     return map;
   }, [graph]);
 
+  const labelByName = useMemo(
+    () => new Map(graph.nodes.map((node) => [node.id, node.label || node.id])),
+    [graph],
+  );
+
   if (!loading && graph.nodes.length === 0) {
     return (
       <Empty
@@ -208,7 +213,7 @@ export default function StudioView({
         <div className="center-anim studio-entry">
           <div className="studio-entry-head">
             <Typography.Title level={5} style={{ margin: 0 }}>
-              {entry.name}
+              {entry.label || entry.name}
             </Typography.Title>
             {entry.draft && <Tag color="warning">有未提交草稿（{entry.draft.author}）</Tag>}
             {entry.lease && <Tag color="processing">{entry.lease.owner} 编辑中</Tag>}
@@ -236,7 +241,7 @@ export default function StudioView({
                     if (path) openEntry(path);
                   }}
                 >
-                  {name}
+                  {labelByName.get(name) || name}
                 </Tag>
               ))}
             </div>
@@ -250,7 +255,7 @@ export default function StudioView({
                   style={{ cursor: 'pointer' }}
                   onClick={() => openEntry(back.path)}
                 >
-                  {back.name}
+                  {back.label || back.name}
                 </Tag>
               ))}
             </div>

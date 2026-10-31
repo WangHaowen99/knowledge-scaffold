@@ -62,7 +62,7 @@ def migrate_package(package_dir: Path, root: Path) -> int:
             continue
         if top == "scripts":
             if entry.suffix != ".py":
-                continue  # 伴生 .md 描述符是 consumer 执行契约，工作区不需要
+                continue  # 伴生 .md 描述符不搬：迁移后 ensure_package_layout 按 .py 重新生成
             dest = root / "ontology/scripts" / entry.name
         elif top in PACKAGE_DIR_MAP:
             dest = root / PACKAGE_DIR_MAP[top] / entry.name
@@ -84,15 +84,22 @@ def render_excel_tables(tables_json: str) -> str:
         tables = json.loads(tables_json or "[]")
     except json.JSONDecodeError:
         return ""
+    if not isinstance(tables, list):
+        return ""
     lines = []
+    # modeling 解析产物里存在空表、空字段占位（null），跳过而不是中断整批迁移
     for table in tables:
-        lines.append(f"## {table.get('name', '未命名表')}\n")
+        if not isinstance(table, dict):
+            continue
+        lines.append(f"## {table.get('name') or '未命名表'}\n")
         lines.append("| 字段 | 推断类型 | 样例值 |")
         lines.append("| --- | --- | --- |")
-        for field in table.get("fields", []):
+        for field in table.get("fields") or []:
+            if not isinstance(field, dict):
+                continue
             samples = "、".join(str(v) for v in (field.get("sampleValues") or [])[:3])
             lines.append(
-                f"| {field.get('name', '')} | {field.get('inferredType', '')} | {samples} |"
+                f"| {field.get('name') or ''} | {field.get('inferredType') or ''} | {samples} |"
             )
         lines.append("")
     return "\n".join(lines)
@@ -158,6 +165,7 @@ def main() -> int:
     ).fetchall()
 
     done = skipped = 0
+    failed: list[str] = []
     for pid, owner, name, domain, background in projects:
         if args.project and pid != args.project:
             continue
@@ -169,23 +177,32 @@ def main() -> int:
         meta = mgr.create_project(
             name, owner=args.owner or owner or "", background=bg
         )
-        mgr._update_meta(meta["id"], migrated_from=pid)
         root = mgr.project_root(meta["id"])
+        try:
+            docs = migrate_documents(db, pid, mgr, meta["id"], root)
+            package_dir = source / "artifacts" / pid / "package"
+            files = migrate_package(package_dir, root) if package_dir.is_dir() else 0
 
-        docs = migrate_documents(db, pid, mgr, meta["id"], root)
-        package_dir = source / "artifacts" / pid / "package"
-        files = migrate_package(package_dir, root) if package_dir.is_dir() else 0
-
-        mgr.ensure_package_layout(meta["id"])  # 生成各目录 index 清单
-        _git(root, "add", "-A")
-        _git(root, "commit", "-m", "import: 从 modeling 迁移项目数据", "--allow-empty")
+            mgr.ensure_package_layout(meta["id"])  # 生成各目录 index 清单
+            _git(root, "add", "-A")
+            _git(root, "commit", "-m", "import: 从 modeling 迁移项目数据", "--allow-empty")
+            # 迁移完整后才打标记：中途失败的项目重跑时会重新迁移，而不是被当成已迁移跳过
+            mgr._update_meta(meta["id"], migrated_from=pid)
+        except Exception as exc:  # noqa: BLE001 单个项目失败不阻断其余项目
+            mgr.delete_project(meta["id"])
+            print(f"失败 {pid}（{name}）：{type(exc).__name__}: {exc}", file=sys.stderr)
+            failed.append(pid)
+            continue
         print(f"已迁移 {pid} → {meta['id']}（{name}）：资料 {docs} 份，知识包文件 {files} 个")
         done += 1
 
-    print(f"\n完成：迁移 {done} 个项目，跳过 {skipped} 个。")
+    print(f"\n完成：迁移 {done} 个项目，跳过 {skipped} 个，失败 {len(failed)} 个。")
     if done:
         print("提示：迁移文档保留 modeling 原结构，建议在各项目里跑一次 /ontology-validate，")
         print("     由助手按本工具集的模板规范化章节。")
+    if failed:
+        print(f"失败项目可修复后单独重跑：--project <id>，失败列表：{', '.join(failed)}", file=sys.stderr)
+        return 1
     return 0
 
 

@@ -1,19 +1,145 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Claude 引擎事件归一化测试（子代理开始/终态与归卡、上下文用量与压缩提示）。"""
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
-from claude_agent_sdk import AssistantMessage, ResultMessage, SystemMessage, TextBlock
+from claude_agent_sdk import (
+    AssistantMessage,
+    ResultMessage,
+    StreamEvent,
+    SystemMessage,
+    TextBlock,
+)
 
 from app.services.agent_sessions import _is_visible_chat_event
 from app.services.engines import claude as claude_engine
-from app.services.engines.base import EngineContext
+from app.services.engines.base import EngineContext, FRIENDLY_ERROR
 from app.services.engines.claude import (
     ClaudeEngine,
     _normalize_task_event,
     context_limits,
     normalize_message,
 )
+
+
+class FakeClient:
+    def __init__(self, messages):
+        self.messages = messages
+
+    async def receive_messages(self):
+        for message in self.messages:
+            yield message
+
+
+def make_engine(tmp_path: Path, messages, logged):
+    ctx = EngineContext(
+        project_id="synthetic",
+        cwd=tmp_path,
+        request_permission=lambda *args: None,
+        load_resume_token=lambda: None,
+        save_resume_token=lambda token: None,
+        clear_resume_token=lambda: None,
+        log_error=lambda *args: logged.append(args),
+    )
+    engine = ClaudeEngine(ctx)
+    engine.client = FakeClient(messages)
+    return engine
+
+
+def result(is_error=False, errors=None, subtype="success"):
+    return ResultMessage(
+        subtype=subtype,
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=is_error,
+        num_turns=1,
+        session_id="synthetic-session",
+        errors=errors,
+    )
+
+
+def assistant(text):
+    return AssistantMessage(
+        content=[TextBlock(text=text)],
+        model="synthetic-model",
+        session_id="synthetic-session",
+    )
+
+
+def collect(engine):
+    async def run():
+        return [event async for event in engine.events()]
+
+    return asyncio.run(run())
+
+
+def test_keyword_in_successful_answer_is_preserved(tmp_path):
+    text = "The platform uses OAuth and Claude Code; exit code 0 means success."
+    logged = []
+    events = collect(make_engine(tmp_path, [assistant(text), result()], logged))
+
+    assert events[0]["blocks"][0]["text"] == text
+    assert events[1]["is_error"] is False
+    assert logged == []
+
+
+def test_failed_result_classifies_legacy_error_text(tmp_path):
+    text = "API Error: authentication_error"
+    logged = []
+    events = collect(
+        make_engine(
+            tmp_path,
+            [assistant(text), result(True, ["authentication_error"])],
+            logged,
+        )
+    )
+
+    assert "模型网关未配置" in events[0]["blocks"][0]["text"]
+    assert logged == [("assistant_text", text)]
+
+
+def test_stream_is_not_changed_before_success_result(tmp_path):
+    text = "Normal answer mentioning API Error as an example."
+    stream = StreamEvent(
+        uuid="synthetic-event",
+        session_id="synthetic-session",
+        event={
+            "type": "content_block_delta",
+            "delta": {"type": "text_delta", "text": text},
+        },
+    )
+    events = collect(make_engine(tmp_path, [stream, assistant(text), result()], []))
+
+    assert events[0]["text"] == text
+    assert events[1]["blocks"][0]["text"] == text
+
+
+def test_assistant_structured_error_is_classified(tmp_path):
+    text = "The request could not be completed."
+    logged = []
+    message = AssistantMessage(
+        content=[TextBlock(text=text)],
+        model="synthetic-model",
+        error="authentication_failed",
+        session_id="synthetic-session",
+    )
+    events = collect(make_engine(tmp_path, [message], logged))
+
+    assert "模型网关未配置" in events[0]["blocks"][0]["text"]
+    assert logged == [("assistant_error", text)]
+
+
+def test_failed_result_replaces_even_without_keyword(tmp_path):
+    text = "The request stopped before the answer was complete."
+    logged = []
+    events = collect(make_engine(tmp_path, [assistant(text), result(True)], logged))
+
+    assert events[0]["blocks"][0]["text"] == FRIENDLY_ERROR
+    assert logged == [("result_error", text)]
+
+
 
 
 def test_task_started_exposes_parent_tool_identity():
@@ -225,6 +351,7 @@ class _ScriptedClient:
     def __init__(self, messages, context_usage=None):
         self._messages = messages
         self._context_usage = context_usage
+        self.usage_queries = 0
 
     async def connect(self):
         pass
@@ -233,6 +360,7 @@ class _ScriptedClient:
         pass
 
     async def get_context_usage(self):
+        self.usage_queries += 1
         if self._context_usage is None:
             raise RuntimeError("unsupported")
         return self._context_usage
@@ -240,10 +368,21 @@ class _ScriptedClient:
     async def receive_messages(self):
         for message in self._messages:
             yield message
+            # 让首轮结束后发起的后台查询在下一条消息前跑完
+            await asyncio.sleep(0)
 
 
-def _engine(tmp_path, client, monkeypatch):
-    monkeypatch.setattr(claude_engine, "_session_env", lambda: {})
+# 网关后接非 Claude 模型：CLI 按环境变量定窗口（实测触发点 147000；用量环的窗口取模型窗口 200000）
+_CUSTOM_MODEL_ENV = {
+    "ANTHROPIC_MODEL": "gateway-model-x",
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "180000",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "32000",
+}
+
+
+def _engine(tmp_path, client, monkeypatch, env=None):
+    monkeypatch.setattr(claude_engine, "_session_env", lambda: dict(env or {}))
     monkeypatch.setattr(claude_engine, "_mcp_servers", lambda project_id="": {})
     monkeypatch.setattr(claude_engine, "_permission_mode", lambda: "default")
     monkeypatch.setattr(claude_engine, "_mark_workspace_trusted", lambda cwd: None)
@@ -262,8 +401,10 @@ def _engine(tmp_path, client, monkeypatch):
 
 async def _collect(engine):
     await engine.connect()
-    await engine._limits_task
-    return [event async for event in engine.events()]
+    events = [event async for event in engine.events()]
+    if engine._limits_task is not None:
+        await engine._limits_task
+    return events
 
 
 def test_turn_end_reports_last_call_usage_not_cumulative_result(tmp_path, monkeypatch):
@@ -274,13 +415,8 @@ def test_turn_end_reports_last_call_usage_not_cumulative_result(tmp_path, monkey
             _assistant({"input_tokens": 999999}, parent_tool_use_id="tool-1"),
             _result({"input_tokens": 75000, "output_tokens": 900}),
         ],
-        context_usage={
-            "rawMaxTokens": 200000,
-            "isAutoCompactEnabled": True,
-            "autoCompactThreshold": 167000,
-        },
     )
-    engine = _engine(tmp_path, client, monkeypatch)
+    engine = _engine(tmp_path, client, monkeypatch, env=_CUSTOM_MODEL_ENV)
 
     events = asyncio.run(_collect(engine))
 
@@ -289,8 +425,56 @@ def test_turn_end_reports_last_call_usage_not_cumulative_result(tmp_path, monkey
         "type": "context_usage",
         "used": 45800,
         "window": 200000,
-        "compact_at": 167000,
+        "compact_at": 147000,
     }
+
+
+def test_custom_model_limits_come_from_env_without_querying_cli(tmp_path, monkeypatch):
+    """向 CLI 查用量会让它先对网关逐类计数 token，网关不支持时首条消息要空等几分钟。"""
+    client = _ScriptedClient([_assistant({"input_tokens": 1000}), _result({})])
+    engine = _engine(tmp_path, client, monkeypatch, env=_CUSTOM_MODEL_ENV)
+
+    asyncio.run(_collect(engine))
+
+    assert client.usage_queries == 0
+    assert (engine._context_window, engine._compact_at) == (200000, 147000)
+
+
+def test_claude_model_queries_limits_only_after_first_turn(tmp_path, monkeypatch):
+    """Claude 官方模型名按 CLI 内置窗口，本地不知道：首轮不挡，结束后再查。"""
+    client = _ScriptedClient(
+        [
+            _assistant({"input_tokens": 1000}),
+            _result({}),
+            _assistant({"input_tokens": 2000}),
+            _result({}),
+        ],
+        context_usage={
+            "rawMaxTokens": 200000,
+            "isAutoCompactEnabled": True,
+            "autoCompactThreshold": 167000,
+        },
+    )
+    engine = _engine(tmp_path, client, monkeypatch, env={"ANTHROPIC_MODEL": "claude-sonnet-4-5"})
+
+    async def scenario():
+        await engine.connect()
+        assert engine._limits_task is None
+        events = []
+        async for event in engine.events():
+            events.append(event)
+            if event["type"] == "context_usage" and engine._limits_task is not None:
+                # The production lookup runs in the background. Wait for the
+                # scripted lookup before expecting its value in a later turn.
+                await engine._limits_task
+        return events
+
+    events = asyncio.run(scenario())
+
+    usage_events = [e for e in events if e["type"] == "context_usage"]
+    assert usage_events[0]["window"] is None
+    assert usage_events[1]["window"] == 200000
+    assert client.usage_queries == 1
 
 
 def test_compaction_resets_used_and_unsupported_cli_omits_limits(tmp_path, monkeypatch):
@@ -327,6 +511,7 @@ def test_disconnect_cancels_pending_context_limits_task(tmp_path, monkeypatch):
 
     async def scenario():
         await engine.connect()
+        engine._load_limits_after_turn()  # 首轮结束后发起的查询
         task = engine._limits_task
         await asyncio.sleep(0)  # 让后台任务先跑到 get_context_usage
         await engine.disconnect()

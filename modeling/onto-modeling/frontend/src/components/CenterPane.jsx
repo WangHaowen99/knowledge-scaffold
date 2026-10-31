@@ -10,6 +10,7 @@ import {
   FileSearchOutlined,
   FileTextOutlined,
   HistoryOutlined,
+  NodeIndexOutlined,
 } from '@ant-design/icons';
 import {
   Alert,
@@ -34,15 +35,18 @@ import 'highlight.js/styles/atom-one-light.css';
 import mermaid from 'mermaid';
 import { Suspense, lazy, memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { hideCoverageMetrics } from '../lib/coveragePresentation.js';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
 import { api } from '../lib/api.js';
+import { SOLVER_DIR, isManagedSolverPath } from '../lib/solver-contract-model.js';
 import CodeEditor from './cm/CodeEditor.jsx';
 import MergeDiff from './cm/MergeDiff.jsx';
 import ExcelView from './ExcelView.jsx';
 import HtmlPreview from './HtmlPreview.jsx';
 
 const StudioView = lazy(() => import('./StudioView.jsx'));
+const SolverModelPanel = lazy(() => import('./SolverModelPanel.jsx'));
 // modeling 同款流程图编辑器（ReactFlow）；drawio iframe 只在高级编辑时加载
 const FlowchartView = lazy(() => import('./flowchart/FlowchartView.jsx'));
 
@@ -208,7 +212,7 @@ export const Markdown = memo(function Markdown({ content, onWikiLink, onOpenFile
   return (
     <div className="markdown-body">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, hideCoverageMetrics]}
         rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]}
         components={{
           a({ href, children }) {
@@ -538,7 +542,7 @@ function CodegenReview({ data, checked, onChecked, onGenerate }) {
             <div className="codegen-head">
               <span className="codegen-id">#{c.id}</span>
               <Typography.Text strong>{c.operation}</Typography.Text>
-              {c.fragment && c.fragment !== '整段' && <Tag>{c.fragment}</Tag>}
+              {c.covers && c.covers !== '—' && <Tag>覆盖：{c.covers}</Tag>}
               <Tag color={c.verdict === '适合' ? 'success' : 'warning'}>{c.verdict}</Tag>
               {c.type && <Tag color="blue">{c.type}</Tag>}
             </div>
@@ -702,11 +706,14 @@ export default function CenterPane({
   const [queryResult, setQueryResult] = useState(null);
   const [queryLoading, setQueryLoading] = useState(false);
   const [studioVisited, setStudioVisited] = useState(false); // Studio 保持挂载不丢状态
+  const [solverVisited, setSolverVisited] = useState(false); // 求解模型同样保持挂载，草稿不随切页丢失
   const [restoredDraft, setRestoredDraft] = useState(false); // 恢复了未保存草稿的提示
   const draftsRef = useRef(new Map()); // path -> 未保存草稿（跨文件切换保留，防丢稿）
 
   const paths = useMemo(() => flattenPaths(tree), [tree]);
   const knownPaths = useMemo(() => new Set(paths), [paths]);
+  // 求解契约是可选能力：已有契约、或用户从进度/发布检查进入过时才露出页签
+  const hasSolver = useMemo(() => paths.some((p) => p.startsWith(SOLVER_DIR)), [paths]);
   const reportPaths = useMemo(
     () => paths.filter((p) => p.startsWith('reports/') && p.endsWith('.md')).sort().reverse(),
     [paths],
@@ -720,7 +727,10 @@ export default function CenterPane({
 
   useEffect(() => {
     if (focus === 'studio') setStudioVisited(true);
+    if (focus === 'solver') setSolverVisited(true);
   }, [focus]);
+
+  useEffect(() => setSolverVisited(false), [project.id]);
 
   // 报告页默认选中最新一份（不再进门先见空态）
   useEffect(() => {
@@ -950,608 +960,627 @@ export default function CenterPane({
   };
 
   return (
-    <div>
-      <Space style={{ marginBottom: 12 }} align="center">
-        {canBack && (
-          <Button
-            size="small"
-            icon={<ArrowLeftOutlined />}
-            onClick={onBack}
-            title="返回上一个视图"
-          />
-        )}
-        <CenterTabs
-          value={focus}
-          // 页签是平级切换（重置返回栈）；只有下钻动作（打开文件/对比/评审）才入栈
-          // 对比/报告/反查暂不露出（保留内部路由，入口后续再开）
-          onChange={(next) => (onFocusPlain || onFocus)(next)}
-          items={[
-            { label: '概览', value: 'overview', icon: <AppstoreOutlined /> },
-            { label: 'Studio', value: 'studio', icon: <DeploymentUnitOutlined /> },
-            {
-              label: file
-                ? (() => {
-                    const name = file.split('/').pop();
-                    return name.length > 12 ? `${name.slice(0, 11)}…` : name;
-                  })()
-                : '文件',
-              value: 'file',
-              icon: <FileTextOutlined />,
-            },
-            { label: '知识', value: 'knowledge', icon: <BookOutlined /> },
-          ]}
-        />
-      </Space>
-
-      {studioVisited && (
-        // 保持挂载：从条目跳文件再返回时不丢 Studio 的视图/选中状态
-        <div
-          className="center-anim"
-          key="studio"
-          style={{ display: focus === 'studio' ? undefined : 'none' }}
-        >
-          <Suspense fallback={<Spin style={{ marginTop: 48 }} />}>
-            <StudioView
-              project={project}
-              onOpenFile={onOpenFile}
-              onCommand={onCommand}
-              onWorkspaceChanged={onWorkspaceChanged}
-              active={focus === 'studio'}
-              workspaceRevision={workspaceRevision}
+    <div className="center-root">
+      <div className="center-topbar">
+        <Space align="center">
+          {canBack && (
+            <Button
+              size="small"
+              icon={<ArrowLeftOutlined />}
+              onClick={onBack}
+              title="返回上一个视图"
             />
-          </Suspense>
-        </div>
-      )}
-
-      {focus === 'overview' && (
-        <div className="center-anim center-narrow" key="overview">
-          <Space direction="vertical" size={12} style={{ width: '100%' }}>
-            <div className="stat-grid">
-              <div className="stat-tile tone-blue">
-                <DatabaseOutlined className="stat-icon" />
-                <div className="stat-num">{countByPrefix(paths, 'ontology/object/')}</div>
-                <div className="stat-label">业务对象</div>
-              </div>
-              <div className="stat-tile tone-violet">
-                <ApartmentOutlined className="stat-icon" />
-                <div className="stat-num">
-                  {countByPrefix(paths, 'ontology/operation/') + countByPrefix(paths, 'ontology/logic/')}
-                </div>
-                <div className="stat-label">业务操作</div>
-              </div>
-              <div className="stat-tile tone-green">
-                <div className="stat-num">{countByPrefix(paths, 'ontology/rule/')}</div>
-                <div className="stat-label">规则</div>
-              </div>
-              <div className="stat-tile tone-amber">
-                <div className="stat-num">{countByPrefix(paths, 'ontology/metric/')}</div>
-                <div className="stat-label">指标</div>
-              </div>
-              <div className="stat-tile tone-teal">
-                <FileSearchOutlined className="stat-icon" />
-                <div className="stat-num">{countByPrefix(paths, 'research/')}</div>
-                <div className="stat-label">资料分析报告</div>
-              </div>
-              <div className="stat-tile tone-amber">
-                <HistoryOutlined className="stat-icon" />
-                <div className="stat-num">{versions.length}</div>
-                <div className="stat-label">版本数</div>
-              </div>
-            </div>
-            {coverage && (coverage.design_coverage != null || coverage.pass_rate != null) && (
-              <div className="stat-grid">
-                <div className="stat-tile tone-green">
-                  <div className="stat-num">
-                    {coverage.design_coverage != null ? `${coverage.design_coverage}%` : '—'}
-                  </div>
-                  <div className="stat-label">设计覆盖率</div>
-                </div>
-                <div className="stat-tile tone-blue">
-                  <div className="stat-num">
-                    {coverage.pass_rate != null ? `${coverage.pass_rate}%` : '—'}
-                  </div>
-                  <div className="stat-label">推演通过率</div>
-                </div>
-                <div
-                  className="stat-tile tone-neutral"
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => {
-                    setReportPath(coverage.source);
-                    onFocus('reports');
-                  }}
-                >
-                  <div className="stat-label" style={{ marginTop: 14 }}>
-                    来源：{coverage.source?.replace('reports/', '')}
-                  </div>
-                </div>
-              </div>
-            )}
-            {usage && usage.calls > 0 && (
-              <Card size="small" title="模型用量">
-                <Space size={24} wrap>
-                  <span>调用 {usage.calls} 次</span>
-                  <span>输出 {usage.output_tokens.toLocaleString()} tokens</span>
-                </Space>
-              </Card>
-            )}
-            <Card size="small" title="最近版本">
-              {versions.slice(0, 3).map((v) => (
-                <div
-                  key={v.commit}
-                  className="version-row"
-                  role="button"
-                  tabIndex={0}
-                  title="点击进入对比视图"
-                  onClick={() => {
-                    setPickRev(v.commit);
-                    onFocus('diff');
-                  }}
-                >
-                  <Typography.Text type="secondary">版本 {v.version}</Typography.Text>{' '}
-                  {v.message}
-                </div>
-              ))}
-              {versions.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} />}
-            </Card>
-            <Typography.Paragraph type="secondary">
-              从左栏「进度」开始建模；知识包文件点击后在「文件」中预览与编辑。
-            </Typography.Paragraph>
-          </Space>
-        </div>
-      )}
-
-      {focus === 'file' && (
-        <div className="center-anim" key="file">
-        <Spin spinning={loading}>
-          {!file && (
-            <Empty description="从左栏「知识包」选择文件">
-              {recentFiles?.length > 0 && (
-                <div className="recent-files">
-                  <div className="recent-files-label">最近打开</div>
-                  {recentFiles.map((path) => (
-                    <FileChip
-                      key={path}
-                      path={path}
-                      exists={knownPaths.has(path)}
-                      onOpen={onOpenFile}
-                    />
-                  ))}
-                </div>
-              )}
-            </Empty>
           )}
-          {isHtml && <HtmlPreview project={project} path={file} />}
-          {isDrawio && (
+          <CenterTabs
+            value={focus}
+            // 页签是平级切换（重置返回栈）；只有下钻动作（打开文件/对比/评审）才入栈
+            // 对比/报告/反查暂不露出（保留内部路由，入口后续再开）
+            onChange={(next) => (onFocusPlain || onFocus)(next)}
+            items={[
+              { label: '概览', value: 'overview', icon: <AppstoreOutlined /> },
+              { label: 'Studio', value: 'studio', icon: <DeploymentUnitOutlined /> },
+              {
+                label: file
+                  ? (() => {
+                      const name = file.split('/').pop();
+                      return name.length > 12 ? `${name.slice(0, 11)}…` : name;
+                    })()
+                  : '文件',
+                value: 'file',
+                icon: <FileTextOutlined />,
+              },
+              { label: '知识', value: 'knowledge', icon: <BookOutlined /> },
+              ...(hasSolver || solverVisited || focus === 'solver'
+                ? [{ label: '求解', value: 'solver', icon: <NodeIndexOutlined /> }]
+                : []),
+            ]}
+          />
+        </Space>
+      </div>
+
+      <div className="center-body">
+        {studioVisited && (
+          // 保持挂载：从条目跳文件再返回时不丢 Studio 的视图/选中状态
+          <div
+            className="center-anim"
+            key="studio"
+            style={{ display: focus === 'studio' ? undefined : 'none' }}
+          >
             <Suspense fallback={<Spin style={{ marginTop: 48 }} />}>
-              <FlowchartView
+              <StudioView
                 project={project}
-                path={file}
-                drawioAvailable={drawioAvailable}
+                onOpenFile={onOpenFile}
+                onCommand={onCommand}
                 onWorkspaceChanged={onWorkspaceChanged}
+                active={focus === 'studio'}
+                workspaceRevision={workspaceRevision}
               />
             </Suspense>
-          )}
-          {isExcel && <ExcelView project={project} path={file} />}
-          {file && content?.unsupported && !isHtml && !isDrawio && !isExcel && (
-            <Empty description={`${file} 暂不支持预览（当前仅支持文本类文件）`} />
-          )}
-          {file && content?.error && <Empty description={content.error} />}
-          {file && content?.content != null && (
-            <>
-              <Space style={{ marginBottom: 8 }} align="center" wrap>
-                <span className="file-crumb" title={file}>
-                  {file.split('/').map((seg, i, arr) =>
-                    i < arr.length - 1 ? (
-                      // eslint-disable-next-line react/no-array-index-key
-                      <span key={i} className="fc-dir">
-                        {seg}
-                        <span className="fc-sep">/</span>
-                      </span>
-                    ) : (
-                      // eslint-disable-next-line react/no-array-index-key
-                      <span key={i} className="fc-name">
-                        {seg}
-                      </span>
-                    ),
-                  )}
-                </span>
-                {content.truncated && <Tag color="warning">仅显示前 512KB</Tag>}
-                {dirty && <Tag color="warning">未保存</Tag>}
-                {!editing ? (
-                  <Button size="small" onClick={() => setEditing(true)}>
-                    编辑
-                  </Button>
-                ) : (
-                  <>
-                    <Button
-                      size="small"
-                      type="primary"
-                      disabled={!dirty}
-                      onClick={() =>
-                        saveDraft(draft, () => {
-                          draftsRef.current.delete(file);
-                          setContent({ ...content, content: draft });
-                          setEditing(false);
-                          setRestoredDraft(false);
-                        })
-                      }
-                    >
-                      保存
-                    </Button>
-                    <Button size="small" onClick={cancelEditing}>
-                      取消
-                    </Button>
-                  </>
-                )}
-              </Space>
-              {restoredDraft && (
-                <Alert
-                  type="info"
-                  showIcon
-                  closable
-                  style={{ marginBottom: 8 }}
-                  message="已恢复上次未保存的草稿"
-                  action={
-                    <Button size="small" onClick={cancelEditing}>
-                      放弃草稿
-                    </Button>
-                  }
-                />
-              )}
-              {editing ? (
-                <CodeEditor key={file} value={draft} onChange={changeDraft} />
-              ) : (
-                <FilePreviewBody
-                  file={file}
-                  content={content.content}
-                  onWikiLink={openWikiLink}
-                  onOpenFile={onOpenFile}
-                  onOpenAnswer={openReportAnswer}
-                  knownPaths={knownPaths}
-                />
-              )}
-            </>
-          )}
-        </Spin>
-        </div>
-      )}
+          </div>
+        )}
 
-      {focus === 'diff' && (
-        <div className="center-anim" key="diff">
-          {diffFiles?.length > 0 && (
-            <div className="diff-files">
-              <span className="diff-files-label">该轮变更：</span>
-              {diffFiles.map((path) => (
-                <FileChip
-                  key={path}
-                  path={path}
-                  status={file === path ? 'modified' : undefined}
-                  exists={knownPaths.has(path)}
-                  onOpen={(p) => onPickFile?.(p)}
+        {solverVisited && (
+          <div
+            className="center-anim"
+            key="solver"
+            style={{ display: focus === 'solver' ? undefined : 'none' }}
+          >
+            <Suspense fallback={<Spin style={{ marginTop: 48 }} />}>
+              <SolverModelPanel
+                key={project.id}
+                project={project}
+                versions={versions}
+                active={focus === 'solver'}
+                onOpenFile={onOpenFile}
+                onWorkspaceChanged={onWorkspaceChanged}
+                onCommand={onCommand}
+              />
+            </Suspense>
+          </div>
+        )}
+
+        {focus === 'overview' && (
+          <div className="center-anim center-narrow" key="overview">
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <div className="stat-grid">
+                <div className="stat-tile tone-blue">
+                  <DatabaseOutlined className="stat-icon" />
+                  <div className="stat-num">{countByPrefix(paths, 'ontology/object/')}</div>
+                  <div className="stat-label">业务对象</div>
+                </div>
+                <div className="stat-tile tone-violet">
+                  <ApartmentOutlined className="stat-icon" />
+                  <div className="stat-num">
+                    {countByPrefix(paths, 'ontology/operation/') + countByPrefix(paths, 'ontology/logic/')}
+                  </div>
+                  <div className="stat-label">业务操作</div>
+                </div>
+                <div className="stat-tile tone-green">
+                  <div className="stat-num">{countByPrefix(paths, 'ontology/rule/')}</div>
+                  <div className="stat-label">规则</div>
+                </div>
+                <div className="stat-tile tone-amber">
+                  <div className="stat-num">{countByPrefix(paths, 'ontology/metric/')}</div>
+                  <div className="stat-label">指标</div>
+                </div>
+                <div className="stat-tile tone-teal">
+                  <FileSearchOutlined className="stat-icon" />
+                  <div className="stat-num">{countByPrefix(paths, 'research/')}</div>
+                  <div className="stat-label">资料分析报告</div>
+                </div>
+                <div className="stat-tile tone-amber">
+                  <HistoryOutlined className="stat-icon" />
+                  <div className="stat-num">{versions.length}</div>
+                  <div className="stat-label">版本数</div>
+                </div>
+              </div>
+              {coverage && coverage.pass_rate != null && (
+                <div className="stat-grid">
+                  <div className="stat-tile tone-blue">
+                    <div className="stat-num">
+                      {coverage.pass_rate != null ? `${coverage.pass_rate}%` : '—'}
+                    </div>
+                    <div className="stat-label">推演通过率</div>
+                  </div>
+                  <div
+                    className="stat-tile tone-neutral"
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => {
+                      setReportPath(coverage.source);
+                      onFocus('reports');
+                    }}
+                  >
+                    <div className="stat-label" style={{ marginTop: 14 }}>
+                      来源：{coverage.source?.replace('reports/', '')}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {usage && (usage.calls > 0 || usage.output_tokens > 0) && (
+                <Card size="small" title="模型用量">
+                  <Space size={24} wrap>
+                    {usage.calls > 0 && <span>调用 {usage.calls} 次</span>}
+                    <span>输出 {usage.output_tokens.toLocaleString()} tokens</span>
+                  </Space>
+                </Card>
+              )}
+              <Card size="small" title="最近版本">
+                {versions.slice(0, 3).map((v) => (
+                  <div
+                    key={v.commit}
+                    className="version-row"
+                    role="button"
+                    tabIndex={0}
+                    title="点击进入对比视图"
+                    onClick={() => {
+                      setPickRev(v.commit);
+                      onFocus('diff');
+                    }}
+                  >
+                    <Typography.Text type="secondary">版本 {v.version}</Typography.Text>{' '}
+                    {v.message}
+                  </div>
+                ))}
+                {versions.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} />}
+              </Card>
+              <Typography.Paragraph type="secondary">
+                从左栏「进度」开始建模；知识包文件点击后在「文件」中预览与编辑。
+              </Typography.Paragraph>
+            </Space>
+          </div>
+        )}
+
+        {focus === 'file' && (
+          <div className="center-anim" key="file">
+          <Spin spinning={loading}>
+            {!file && (
+              <Empty description="从左栏「知识包」选择文件">
+                {recentFiles?.length > 0 && (
+                  <div className="recent-files">
+                    <div className="recent-files-label">最近打开</div>
+                    {recentFiles.map((path) => (
+                      <FileChip
+                        key={path}
+                        path={path}
+                        exists={knownPaths.has(path)}
+                        onOpen={onOpenFile}
+                      />
+                    ))}
+                  </div>
+                )}
+              </Empty>
+            )}
+            {isHtml && <HtmlPreview project={project} path={file} />}
+            {isDrawio && (
+              <Suspense fallback={<Spin style={{ marginTop: 48 }} />}>
+                <FlowchartView
+                  project={project}
+                  path={file}
+                  drawioAvailable={drawioAvailable}
+                  onWorkspaceChanged={onWorkspaceChanged}
+                  onCommand={onCommand}
                 />
-              ))}
-            </div>
-          )}
-          <Space style={{ marginBottom: 8 }} wrap>
-            <Typography.Text>{file || '先从「知识包」或上方变更清单选择文件'}</Typography.Text>
-            <Select
-              size="small"
-              style={{ minWidth: 220 }}
-              placeholder="选择历史版本"
-              value={rev}
-              onChange={setPickRev}
-              options={versions.map((v) => ({
-                value: v.commit,
-                label: `版本 ${v.version} · ${v.message.slice(0, 24)}`,
-              }))}
-            />
-            {diffState && (
+              </Suspense>
+            )}
+            {isExcel && <ExcelView project={project} path={file} />}
+            {file && content?.unsupported && !isHtml && !isDrawio && !isExcel && (
+              <Empty description={`${file} 暂不支持预览（当前仅支持文本类文件）`} />
+            )}
+            {file && content?.error && <Empty description={content.error} />}
+            {file && content?.content != null && (
+              <>
+                <Space style={{ marginBottom: 8 }} align="center" wrap>
+                  <span className="file-crumb" title={file}>
+                    {file.split('/').map((seg, i, arr) =>
+                      i < arr.length - 1 ? (
+                        // eslint-disable-next-line react/no-array-index-key
+                        <span key={i} className="fc-dir">
+                          {seg}
+                          <span className="fc-sep">/</span>
+                        </span>
+                      ) : (
+                        // eslint-disable-next-line react/no-array-index-key
+                        <span key={i} className="fc-name">
+                          {seg}
+                        </span>
+                      ),
+                    )}
+                  </span>
+                  {content.truncated && <Tag color="warning">仅显示前 512KB</Tag>}
+                  {dirty && <Tag color="warning">未保存</Tag>}
+                  {isManagedSolverPath(file) ? (
+                    // 求解契约整目录受管（文件写接口拒绝），只能在面板里整体编辑与校验
+                    <Button size="small" onClick={() => onFocus('solver')}>
+                      在求解模型中编辑
+                    </Button>
+                  ) : !editing ? (
+                    <Button size="small" onClick={() => setEditing(true)}>
+                      编辑
+                    </Button>
+                  ) : (
+                    <>
+                      <Button
+                        size="small"
+                        type="primary"
+                        disabled={!dirty}
+                        onClick={() =>
+                          saveDraft(draft, () => {
+                            draftsRef.current.delete(file);
+                            setContent({ ...content, content: draft });
+                            setEditing(false);
+                            setRestoredDraft(false);
+                          })
+                        }
+                      >
+                        保存
+                      </Button>
+                      <Button size="small" onClick={cancelEditing}>
+                        取消
+                      </Button>
+                    </>
+                  )}
+                </Space>
+                {restoredDraft && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    closable
+                    style={{ marginBottom: 8 }}
+                    message="已恢复上次未保存的草稿"
+                    action={
+                      <Button size="small" onClick={cancelEditing}>
+                        放弃草稿
+                      </Button>
+                    }
+                  />
+                )}
+                {editing ? (
+                  <CodeEditor key={file} value={draft} onChange={changeDraft} />
+                ) : (
+                  <FilePreviewBody
+                    file={file}
+                    content={content.content}
+                    onWikiLink={openWikiLink}
+                    onOpenFile={onOpenFile}
+                    onOpenAnswer={openReportAnswer}
+                    knownPaths={knownPaths}
+                  />
+                )}
+              </>
+            )}
+          </Spin>
+          </div>
+        )}
+
+        {focus === 'diff' && (
+          <div className="center-anim" key="diff">
+            {diffFiles?.length > 0 && (
+              <div className="diff-files">
+                <span className="diff-files-label">该轮变更：</span>
+                {diffFiles.map((path) => (
+                  <FileChip
+                    key={path}
+                    path={path}
+                    status={file === path ? 'modified' : undefined}
+                    exists={knownPaths.has(path)}
+                    onOpen={(p) => onPickFile?.(p)}
+                  />
+                ))}
+              </div>
+            )}
+            <Space style={{ marginBottom: 8 }} wrap>
+              <Typography.Text>{file || '先从「知识包」或上方变更清单选择文件'}</Typography.Text>
+              <Select
+                size="small"
+                style={{ minWidth: 220 }}
+                placeholder="选择历史版本"
+                value={rev}
+                onChange={setPickRev}
+                options={versions.map((v) => ({
+                  value: v.commit,
+                  label: `版本 ${v.version} · ${v.message.slice(0, 24)}`,
+                }))}
+              />
+              {diffState && !isManagedSolverPath(file) && (
+                <Button
+                  size="small"
+                  type="primary"
+                  onClick={() =>
+                    saveDraft(diffDraft, () =>
+                      setDiffState({ ...diffState, modified: diffDraft }),
+                    )
+                  }
+                >
+                  保存右侧内容
+                </Button>
+              )}
+            </Space>
+            {diffState ? (
+              <MergeDiff
+                key={`${file}-${diffState.rev}`}
+                original={diffState.original}
+                modified={diffState.modified}
+                onModifiedChange={setDiffDraft}
+              />
+            ) : (
+              <Empty description="选择文件与历史版本后展示对比（左：历史，右：当前可编辑）" />
+            )}
+          </div>
+        )}
+
+        {focus === 'reports' && (
+          <div className="center-anim" key="reports">
+            {reportPaths.length === 0 ? (
+              <Empty description="还没有报告——运行校验或追踪后在这里评审" />
+            ) : (
+              <div className="report-layout">
+                <div className="report-list">
+                  {reportPaths.map((path) => {
+                    const meta = reportMeta(path);
+                    return (
+                      <div
+                        key={path}
+                        className={`report-item${reportPath === path ? ' active' : ''}`}
+                        onClick={() => setReportPath(path)}
+                        title={path}
+                      >
+                        <div className="report-item-head">
+                          <Tag color={meta.type.color} style={{ margin: 0 }}>
+                            {meta.type.label}
+                          </Tag>
+                          <span className="report-item-time">{meta.time}</span>
+                        </div>
+                        <div className="report-item-name">{meta.title}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="report-body">
+                  {!reportPath && <Empty description="选择左侧报告查看" />}
+                  {reportPath && reportContent?.error && <Empty description={reportContent.error} />}
+                  {reportPath && reportContent?.content != null && (
+                    <>
+                      <Space style={{ marginBottom: 8 }} wrap>
+                        <Segmented
+                          size="small"
+                          value={reportMode}
+                          onChange={setReportMode}
+                          options={[
+                            {
+                              label:
+                                reportItems?.type === 'codegen'
+                                  ? `候选评审（${reportItems.candidates.length}）`
+                                  : `逐条评审（${reportItems?.items?.length ?? 0}）`,
+                              value: 'review',
+                            },
+                            { label: '报告原文', value: 'raw' },
+                          ]}
+                        />
+                        <Button size="small" onClick={() => onCommand?.('/ontology-validate')}>
+                          重新校验
+                        </Button>
+                        <Button size="small" onClick={() => onOpenFile(reportPath)}>
+                          在编辑器中打开
+                        </Button>
+                      </Space>
+                      {reportMode === 'raw' && (
+                        <Markdown
+                          content={reportContent.content}
+                          onWikiLink={openWikiLink}
+                          onOpenFile={onOpenFile}
+                          onOpenAnswer={openReportAnswer}
+                          knownPaths={knownPaths}
+                        />
+                      )}
+                      {reportMode === 'review' && reportItems?.type === 'codegen' && (
+                        <CodegenReview
+                          data={reportItems}
+                          checked={checkedItems}
+                          onChecked={setCheckedItems}
+                          onGenerate={(selected) =>
+                            // 一个 operation 一个脚本：子操作由 codegen 按流程并入主操作脚本
+                            onCommand?.('/ontology-codegen ' + selected.map((c) => c.operation).join(' '))
+                          }
+                        />
+                      )}
+                      {reportMode === 'review' && reportItems?.type !== 'codegen' && (
+                        <ReportReview
+                          data={reportItems}
+                          checked={checkedItems}
+                          onChecked={setCheckedItems}
+                          onFixSelected={(items) =>
+                            onCommand?.(
+                              `请修复报告 ${reportPath} 中的以下条目（引用原文）：\n` +
+                                items.map((i) => `${i.id}. [${i.group}] ${i.text}`).join('\n') +
+                                '\n逐条修复，完成后重新运行对应校验并汇报每条的处理结果。',
+                            )
+                          }
+                        />
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {focus === 'knowledge' && (
+          <div className="center-anim center-narrow" key="knowledge">
+            <Space style={{ marginBottom: 8 }} wrap>
+              <Typography.Title level={5} style={{ margin: 0 }}>
+                业务知识库
+              </Typography.Title>
               <Button
                 size="small"
                 type="primary"
-                onClick={() =>
-                  saveDraft(diffDraft, () =>
-                    setDiffState({ ...diffState, modified: diffDraft }),
-                  )
-                }
+                onClick={() => setKnowledgeDraft({ name: '', content: '## 背景\n\n## 规则\n\n' })}
               >
-                保存右侧内容
+                新增知识条目
               </Button>
+            </Space>
+            {!knowledge && <Spin />}
+            {knowledge && knowledge.length === 0 && (
+              <Empty description="还没有沉淀的业务知识——对话中点助手消息旁的「沉淀知识」，或在此新增" />
             )}
-          </Space>
-          {diffState ? (
-            <MergeDiff
-              key={`${file}-${diffState.rev}`}
-              original={diffState.original}
-              modified={diffState.modified}
-              onModifiedChange={setDiffDraft}
-            />
-          ) : (
-            <Empty description="选择文件与历史版本后展示对比（左：历史，右：当前可编辑）" />
-          )}
-        </div>
-      )}
-
-      {focus === 'reports' && (
-        <div className="center-anim" key="reports">
-          {reportPaths.length === 0 ? (
-            <Empty description="还没有报告——运行校验或追踪后在这里评审" />
-          ) : (
-            <div className="report-layout">
-              <div className="report-list">
-                {reportPaths.map((path) => {
-                  const meta = reportMeta(path);
-                  return (
-                    <div
-                      key={path}
-                      className={`report-item${reportPath === path ? ' active' : ''}`}
-                      onClick={() => setReportPath(path)}
-                      title={path}
-                    >
-                      <div className="report-item-head">
-                        <Tag color={meta.type.color} style={{ margin: 0 }}>
-                          {meta.type.label}
-                        </Tag>
-                        <span className="report-item-time">{meta.time}</span>
-                      </div>
-                      <div className="report-item-name">{meta.title}</div>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="report-body">
-                {!reportPath && <Empty description="选择左侧报告查看" />}
-                {reportPath && reportContent?.error && <Empty description={reportContent.error} />}
-                {reportPath && reportContent?.content != null && (
-                  <>
-                    <Space style={{ marginBottom: 8 }} wrap>
-                      <Segmented
-                        size="small"
-                        value={reportMode}
-                        onChange={setReportMode}
-                        options={[
-                          {
-                            label:
-                              reportItems?.type === 'codegen'
-                                ? `候选评审（${reportItems.candidates.length}）`
-                                : `逐条评审（${reportItems?.items?.length ?? 0}）`,
-                            value: 'review',
-                          },
-                          { label: '报告原文', value: 'raw' },
-                        ]}
-                      />
-                      <Button size="small" onClick={() => onCommand?.('/ontology-validate')}>
-                        重新校验
-                      </Button>
-                      <Button size="small" onClick={() => onOpenFile(reportPath)}>
-                        在编辑器中打开
-                      </Button>
-                    </Space>
-                    {reportMode === 'raw' && (
-                      <Markdown
-                        content={reportContent.content}
-                        onWikiLink={openWikiLink}
-                        onOpenFile={onOpenFile}
-                        onOpenAnswer={openReportAnswer}
-                        knownPaths={knownPaths}
-                      />
-                    )}
-                    {reportMode === 'review' && reportItems?.type === 'codegen' && (
-                      <CodegenReview
-                        data={reportItems}
-                        checked={checkedItems}
-                        onChecked={setCheckedItems}
-                        onGenerate={(selected) =>
-                          onCommand?.(
-                            '/ontology-codegen ' +
-                              selected
-                                .map((c) =>
-                                  c.fragment && c.fragment !== '整段'
-                                    ? `${c.operation}:${c.fragment}`
-                                    : c.operation,
-                                )
-                                .join(' '),
-                          )
-                        }
-                      />
-                    )}
-                    {reportMode === 'review' && reportItems?.type !== 'codegen' && (
-                      <ReportReview
-                        data={reportItems}
-                        checked={checkedItems}
-                        onChecked={setCheckedItems}
-                        onFixSelected={(items) =>
-                          onCommand?.(
-                            `请修复报告 ${reportPath} 中的以下条目（引用原文）：\n` +
-                              items.map((i) => `${i.id}. [${i.group}] ${i.text}`).join('\n') +
-                              '\n逐条修复，完成后重新运行对应校验并汇报每条的处理结果。',
-                          )
-                        }
-                      />
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {focus === 'knowledge' && (
-        <div className="center-anim center-narrow" key="knowledge">
-          <Space style={{ marginBottom: 8 }} wrap>
-            <Typography.Title level={5} style={{ margin: 0 }}>
-              业务知识库
-            </Typography.Title>
-            <Button
-              size="small"
-              type="primary"
-              onClick={() => setKnowledgeDraft({ name: '', content: '## 背景\n\n## 规则\n\n' })}
-            >
-              新增知识条目
-            </Button>
-          </Space>
-          {!knowledge && <Spin />}
-          {knowledge && knowledge.length === 0 && (
-            <Empty description="还没有沉淀的业务知识——对话中点助手消息旁的「沉淀知识」，或在此新增" />
-          )}
-          {knowledge?.map((entry) => (
-            <div key={entry.path} className="knowledge-item msg-soft">
-              <div className="knowledge-head">
-                <Typography.Text strong style={{ cursor: 'pointer' }} onClick={() => onOpenFile(entry.path)}>
-                  {entry.name}
-                </Typography.Text>
-                <span className="knowledge-time">
-                  {new Date(entry.updated_at * 1000).toLocaleDateString()}
-                </span>
-                <Button size="small" type="text" onClick={() => onOpenFile(entry.path)}>
-                  编辑
-                </Button>
-                <Popconfirm
-                  title="删除该知识条目？"
-                  onConfirm={async () => {
-                    await api.deleteKnowledge(project.id, entry.path).catch((e) => message.error(e.message));
-                    setKnowledge(knowledge.filter((k) => k.path !== entry.path));
-                    onWorkspaceChanged?.();
-                  }}
-                >
-                  <Button size="small" type="text" danger>
-                    删除
+            {knowledge?.map((entry) => (
+              <div key={entry.path} className="knowledge-item msg-soft">
+                <div className="knowledge-head">
+                  <Typography.Text strong style={{ cursor: 'pointer' }} onClick={() => onOpenFile(entry.path)}>
+                    {entry.name}
+                  </Typography.Text>
+                  <span className="knowledge-time">
+                    {new Date(entry.updated_at * 1000).toLocaleDateString()}
+                  </span>
+                  <Button size="small" type="text" onClick={() => onOpenFile(entry.path)}>
+                    编辑
                   </Button>
-                </Popconfirm>
+                  <Popconfirm
+                    title="删除该知识条目？"
+                    onConfirm={async () => {
+                      await api.deleteKnowledge(project.id, entry.path).catch((e) => message.error(e.message));
+                      setKnowledge(knowledge.filter((k) => k.path !== entry.path));
+                      onWorkspaceChanged?.();
+                    }}
+                  >
+                    <Button size="small" type="text" danger>
+                      删除
+                    </Button>
+                  </Popconfirm>
+                </div>
+                {entry.excerpt && <div className="knowledge-excerpt">{entry.excerpt}</div>}
               </div>
-              {entry.excerpt && <div className="knowledge-excerpt">{entry.excerpt}</div>}
-            </div>
-          ))}
-          <Modal
-            title="新增业务知识"
-            open={!!knowledgeDraft}
-            onCancel={() => setKnowledgeDraft(null)}
-            okText="确认入库"
-            onOk={async () => {
-              if (!knowledgeDraft.name.trim()) {
-                message.warning('请填写条目名称');
-                return;
-              }
-              try {
-                await api.createKnowledge(project.id, knowledgeDraft.name, knowledgeDraft.content);
-                setKnowledgeDraft(null);
-                api.listKnowledge(project.id).then((d) => setKnowledge(d.entries));
-                onWorkspaceChanged?.();
-                message.success('已入库并记录版本，后续建模会自动应用');
-              } catch (error) {
-                message.error(error.message);
-              }
-            }}
-          >
-            <Input
-              placeholder="条目名称，如：退款只允许在支付后 24 小时内发起"
-              value={knowledgeDraft?.name}
-              onChange={(e) => setKnowledgeDraft({ ...knowledgeDraft, name: e.target.value })}
-              style={{ marginBottom: 8 }}
-            />
-            <Input.TextArea
-              autoSize={{ minRows: 6 }}
-              value={knowledgeDraft?.content}
-              onChange={(e) => setKnowledgeDraft({ ...knowledgeDraft, content: e.target.value })}
-            />
-          </Modal>
-        </div>
-      )}
-
-      {focus === 'query' && (
-        <div className="center-anim center-narrow" key="query">
-          <Typography.Title level={5} style={{ marginTop: 0 }}>
-            反查（确定性检索，不经模型）
-          </Typography.Title>
-          <Space style={{ marginBottom: 12 }} wrap>
-            <Segmented
-              size="small"
-              value={queryKind}
-              onChange={(kind) => {
-                setQueryKind(kind);
-                setQueryResult(null);
+            ))}
+            <Modal
+              title="新增业务知识"
+              open={!!knowledgeDraft}
+              onCancel={() => setKnowledgeDraft(null)}
+              okText="确认入库"
+              onOk={async () => {
+                if (!knowledgeDraft.name.trim()) {
+                  message.warning('请填写条目名称');
+                  return;
+                }
+                try {
+                  await api.createKnowledge(project.id, knowledgeDraft.name, knowledgeDraft.content);
+                  setKnowledgeDraft(null);
+                  api.listKnowledge(project.id).then((d) => setKnowledge(d.entries));
+                  onWorkspaceChanged?.();
+                  message.success('已入库并记录版本，后续建模会自动应用');
+                } catch (error) {
+                  message.error(error.message);
+                }
               }}
-              options={[
-                { label: '引用', value: 'used_by' },
-                { label: '搜索', value: 'search' },
-                { label: '孤立', value: 'orphans' },
-                { label: '未用', value: 'unused' },
-                { label: '失效链接', value: 'dangling' },
-                { label: '知识', value: 'knowledge' },
-              ]}
-            />
-            {['used_by', 'search', 'knowledge'].includes(queryKind) && (
+            >
               <Input
-                size="small"
-                style={{ width: 220 }}
-                placeholder={queryKind === 'used_by' ? '元素名，如：订单' : '关键词'}
-                value={queryTerm}
-                onChange={(e) => setQueryTerm(e.target.value)}
-                onPressEnter={() => runQuery()}
+                placeholder="条目名称，如：退款只允许在支付后 24 小时内发起"
+                value={knowledgeDraft?.name}
+                onChange={(e) => setKnowledgeDraft({ ...knowledgeDraft, name: e.target.value })}
+                style={{ marginBottom: 8 }}
               />
+              <Input.TextArea
+                autoSize={{ minRows: 6 }}
+                value={knowledgeDraft?.content}
+                onChange={(e) => setKnowledgeDraft({ ...knowledgeDraft, content: e.target.value })}
+              />
+            </Modal>
+          </div>
+        )}
+
+        {focus === 'query' && (
+          <div className="center-anim center-narrow" key="query">
+            <Typography.Title level={5} style={{ marginTop: 0 }}>
+              反查（确定性检索，不经模型）
+            </Typography.Title>
+            <Space style={{ marginBottom: 12 }} wrap>
+              <Segmented
+                size="small"
+                value={queryKind}
+                onChange={(kind) => {
+                  setQueryKind(kind);
+                  setQueryResult(null);
+                }}
+                options={[
+                  { label: '引用', value: 'used_by' },
+                  { label: '搜索', value: 'search' },
+                  { label: '孤立', value: 'orphans' },
+                  { label: '未用', value: 'unused' },
+                  { label: '失效链接', value: 'dangling' },
+                  { label: '知识', value: 'knowledge' },
+                ]}
+              />
+              {['used_by', 'search', 'knowledge'].includes(queryKind) && (
+                <Input
+                  size="small"
+                  style={{ width: 220 }}
+                  placeholder={queryKind === 'used_by' ? '元素名，如：订单' : '关键词'}
+                  value={queryTerm}
+                  onChange={(e) => setQueryTerm(e.target.value)}
+                  onPressEnter={() => runQuery()}
+                />
+              )}
+              <Button size="small" type="primary" loading={queryLoading} onClick={() => runQuery()}>
+                查询
+              </Button>
+            </Space>
+            {queryResult && (
+              <div className="query-result msg-soft">
+                <Markdown content={queryResult} onWikiLink={openWikiLink} onOpenFile={onOpenFile} knownPaths={knownPaths} />
+              </div>
             )}
-            <Button size="small" type="primary" loading={queryLoading} onClick={() => runQuery()}>
-              查询
-            </Button>
-          </Space>
-          {queryResult && (
-            <div className="query-result msg-soft">
-              <Markdown content={queryResult} onWikiLink={openWikiLink} onOpenFile={onOpenFile} knownPaths={knownPaths} />
-            </div>
-          )}
-          {!queryResult && !queryLoading && (
-            <Empty description="选择反查类型后点击查询；产物树右键也可直达" />
-          )}
-        </div>
-      )}
-
-      <Modal
-        title="原始最终答复"
-        open={!!reportFullAnswer}
-        footer={null}
-        onCancel={() => setReportFullAnswer(null)}
-        width={860}
-      >
-        {reportFullAnswer && (
-          <>
-            <div className="erd-full-answer-meta">
-              {reportFullAnswer.originalLength} 字符
-            </div>
-            <div className="erd-full-answer">
-              <Markdown content={reportFullAnswer.fullAnswer} />
-            </div>
-          </>
+            {!queryResult && !queryLoading && (
+              <Empty description="选择反查类型后点击查询；产物树右键也可直达" />
+            )}
+          </div>
         )}
-      </Modal>
 
-      <Modal
-        title="文件已被他人或助手修改"
-        open={!!conflict}
-        width={860}
-        onCancel={() => setConflict(null)}
-        footer={
-          conflict && [
-            <Button key="theirs" onClick={() => resolveConflictSave(conflict.theirs.content)}>
-              采用对方版本
-            </Button>,
-            <Button key="mine" type="primary" onClick={() => resolveConflictSave(conflict.mine)}>
-              以我的内容保存
-            </Button>,
-          ]
-        }
-      >
-        <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-          左侧是对方的最新版本，右侧是你的修改（可继续编辑后保存）；两个版本都会留在时间线里。
-        </Typography.Paragraph>
-        {conflict && (
-          <MergeDiff
-            original={conflict.theirs.content}
-            modified={conflict.mine}
-            onModifiedChange={(text) => setConflict({ ...conflict, mine: text })}
-          />
-        )}
-      </Modal>
+        <Modal
+          title="原始最终答复"
+          open={!!reportFullAnswer}
+          footer={null}
+          onCancel={() => setReportFullAnswer(null)}
+          width={860}
+        >
+          {reportFullAnswer && (
+            <>
+              <div className="erd-full-answer-meta">
+                {reportFullAnswer.originalLength} 字符
+              </div>
+              <div className="erd-full-answer">
+                <Markdown content={reportFullAnswer.fullAnswer} />
+              </div>
+            </>
+          )}
+        </Modal>
+
+        <Modal
+          title="文件已被他人或助手修改"
+          open={!!conflict}
+          width={860}
+          onCancel={() => setConflict(null)}
+          footer={
+            conflict && [
+              <Button key="theirs" onClick={() => resolveConflictSave(conflict.theirs.content)}>
+                采用对方版本
+              </Button>,
+              <Button key="mine" type="primary" onClick={() => resolveConflictSave(conflict.mine)}>
+                以我的内容保存
+              </Button>,
+            ]
+          }
+        >
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+            左侧是对方的最新版本，右侧是你的修改（可继续编辑后保存）；两个版本都会留在时间线里。
+          </Typography.Paragraph>
+          {conflict && (
+            <MergeDiff
+              original={conflict.theirs.content}
+              modified={conflict.mine}
+              onModifiedChange={(text) => setConflict({ ...conflict, mine: text })}
+            />
+          )}
+        </Modal>
+      </div>
     </div>
   );
 }

@@ -200,7 +200,7 @@ def test_import_summary_reports_contents(manager: WorkspaceManager, tmp_path: Pa
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("ontology/object/订单.md", "# 订单")
         zf.writestr("ontology/logic/创建订单.md", "# 创建订单")
-        zf.writestr("research/summary.md", "调研")
+        zf.writestr("research/summary.md", "资料分析")
         zf.writestr(".git/config", "skip me")
     summary = manager.import_summary(archive)
     assert summary["objects"] == 1
@@ -314,6 +314,8 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         assert "entrypoint: calc_price.py\n" in script_doc
         # 执行契约：绑定 operation + 参数表（consumer execute_script 按此组装 CLI）
         assert 'bound_operation: "创建订单"' in script_doc
+        # 一级标题与 modeling scriptMd 一致：modeling 只认 `# 输入参数`
+        assert "\n# 输入参数\n" in script_doc and "## 输入参数" not in script_doc
         assert "| 参数 key | CLI 参数 | 类型 | 必填 | 默认值 | 说明 |" in script_doc
         assert "| orders | --orders | json | 是 |  | 订单列表，必填 | 否 |  |" in script_doc
         assert "| factor | --factor | number | 否 | 1.0 | 加权因子，默认 1.0 | 否 |  |" in script_doc
@@ -325,12 +327,17 @@ def test_export_package_zip_script_entrypoint_is_ascii_filename(manager: Workspa
     """modeling 要求 entrypoint 满足 ^[A-Za-z0-9_.-]+\\.py$，并按 scripts/<entrypoint> 取源码。"""
     meta = manager.create_project("脚本入口")
     root = manager.project_root(meta["id"])
+    for operation in ("计价", "折扣"):
+        (root / "ontology" / "operation" / f"{operation}.md").write_text(f"# 业务描述\n{operation}\n", encoding="utf-8")
     sources = {
-        "calc_price": "def run():\n    return {'price': 1}\n",
-        "计算折扣": "def run():\n    return {'discount': 2}\n",
+        "calc_price": '"""\n关联operation：计价\n"""\ndef run():\n    return {\'price\': 1}\n',
+        "计算折扣": '"""\n关联operation：折扣\n"""\ndef run():\n    return {\'discount\': 2}\n',
     }
     for key, code in sources.items():
         (root / "ontology" / "scripts" / f"{key}.py").write_text(code, encoding="utf-8")
+    # 「关联operation：无」的库模块随包发布供 import，但不对外调用、没有描述符
+    library = "def helper():\n    return 1\n"
+    (root / "ontology" / "scripts" / "shared_math.py").write_text(library, encoding="utf-8")
     dest = tmp_path / "pkg.zip"
     manager.export_package_zip(meta["id"], dest)
     pid = meta["id"]
@@ -342,12 +349,42 @@ def test_export_package_zip_script_entrypoint_is_ascii_filename(manager: Workspa
             assert re.fullmatch(r"[A-Za-z0-9_.-]+\.py", entrypoint), entrypoint
             assert zf.read(f"{pid}/scripts/{entrypoint}").decode("utf-8") == code
         assert f"{pid}/scripts/计算折扣.py" not in zf.namelist()
+        assert zf.read(f"{pid}/scripts/shared_math.py").decode("utf-8") == library
+        assert f"{pid}/scripts/shared_math.md" not in zf.namelist()
     # 同一脚本多次导出文件名不变，版本间 diff 与 consumer 升级不会把它当成新脚本
     again = tmp_path / "again.zip"
     manager.export_package_zip(meta["id"], again)
     with zipfile.ZipFile(dest) as first, zipfile.ZipFile(again) as second:
         doc = f"{pid}/scripts/计算折扣.md"
         assert first.read(doc) == second.read(doc)
+
+
+def test_export_package_zip_keeps_helper_scripts_as_source_only(manager: WorkspaceManager, tmp_path: Path):
+    """「关联operation」为「无」或不是现有操作的脚本是辅助模块：只带源码，不写描述符、不进脚本目录。"""
+    meta = manager.create_project("辅助脚本")
+    root = manager.project_root(meta["id"])
+    (root / "ontology" / "operation" / "定价.md").write_text("# 定价\n", encoding="utf-8")
+    scripts = {
+        "calc_price": "定价",
+        "shared_utils": "无",
+        "orphan_calc": "不存在的操作",
+    }
+    for key, bound in scripts.items():
+        (root / "ontology" / "scripts" / f"{key}.py").write_text(
+            f'"""\n关联operation：{bound}\n"""\ndef run():\n    return 1\n', encoding="utf-8",
+        )
+    dest = tmp_path / "pkg.zip"
+    manager.export_package_zip(meta["id"], dest)
+    pid = meta["id"]
+    with zipfile.ZipFile(dest) as zf:
+        names = set(zf.namelist())
+        index = zf.read(f"{pid}/scripts/index.md").decode("utf-8")
+    for key in scripts:
+        assert f"{pid}/scripts/{key}.py" in names
+    assert f"{pid}/scripts/calc_price.md" in names and "| calc_price |" in index
+    for helper in ("shared_utils", "orphan_calc"):
+        assert f"{pid}/scripts/{helper}.md" not in names
+        assert f"| {helper} |" not in index
 
 
 def test_excel_preview_roundtrip(tmp_path: Path):
@@ -389,9 +426,9 @@ def test_ensure_package_layout_migrates_logic_and_indexes(
     assert "| 创建订单.md | 创建订单 |" in index
     # 幂等：第二次无变化，也不产生新提交
     assert manager.ensure_package_layout(meta["id"]) is False
-    # index.md 不计入进度探针与实体计数
+    # index.md 不计入进度探针与实体计数：只有迁移来的 operation 阶段算完成
     progress = manager._project_progress(root)
-    assert progress["stages_done"] == 0  # 各目录只有 index.md 时不算阶段完成
+    assert progress["stages_done"] == 1
     assert progress["operations"] == 1
 
 
@@ -521,7 +558,7 @@ def test_migrate_from_modeling_end_to_end(manager: WorkspaceManager, tmp_path: P
     body = (root / "ontology/object/customer.md").read_text(encoding="utf-8")
     assert body.startswith("# 业务定义")  # 发布 frontmatter 已剥离
     assert (root / "ontology/scripts/calc.py").is_file()
-    assert not (root / "ontology/scripts/calc.md").exists()  # 描述符不迁
+    assert not (root / "ontology/scripts/calc.md").exists()  # 描述符不迁；calc.py 没有关联operation，是库模块
     assert "解析文本" in (root / "resource/others/手册.md").read_text(encoding="utf-8")
     excel = (root / "resource/excel/数据表.md").read_text(encoding="utf-8")
     assert "| ID | string | a |" in excel
@@ -529,3 +566,66 @@ def test_migrate_from_modeling_end_to_end(manager: WorkspaceManager, tmp_path: P
     # 幂等：再跑一次跳过
     assert mig.main() == 0
     assert sum(1 for p in manager.list_projects() if p.get("migrated_from") == "pj_test1") == 1
+
+
+def test_migrate_render_excel_tables_skips_null_entries():
+    import sys
+
+    sys.path.append(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import migrate_from_modeling as mig
+
+    body = mig.render_excel_tables(
+        '[null, {"name": null, "fields": null},'
+        ' {"name": "T1", "fields": [null, {"name": "ID", "inferredType": "string",'
+        ' "sampleValues": ["a"]}]}]'
+    )
+    assert "## 未命名表" in body
+    assert "| ID | string | a |" in body
+    assert mig.render_excel_tables('{"name": "T1"}') == ""
+
+
+def test_migrate_from_modeling_failed_project_is_retried(
+    manager: WorkspaceManager, tmp_path: Path, monkeypatch
+):
+    import sqlite3
+    import sys
+
+    sys.path.append(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import migrate_from_modeling as mig
+
+    source = tmp_path / "modeling-data"
+    source.mkdir()
+    db = sqlite3.connect(source / "modeling.db")
+    db.execute("CREATE TABLE projects (id TEXT, owner TEXT, name TEXT, domain TEXT, background TEXT)")
+    db.execute(
+        "CREATE TABLE documents (project_id TEXT, filename TEXT, kind TEXT,"
+        " text_content TEXT, tables_json TEXT, lifecycle_status TEXT)"
+    )
+    db.execute("INSERT INTO projects VALUES ('pj_bad', 'alice', '坏项目', '', '')")
+    db.execute("INSERT INTO projects VALUES ('pj_ok', 'bob', '好项目', '', '')")
+    db.execute("INSERT INTO documents VALUES ('pj_bad', '说明.docx', 'word', '正文', NULL, 'active')")
+    db.commit()
+    db.close()
+
+    from app import config as app_config
+
+    monkeypatch.setattr(app_config, "DATA_DIR", manager.workspaces_dir.parent)
+    monkeypatch.setattr(app_config, "ASSETS_DIR", manager.assets_dir)
+    monkeypatch.setattr(sys, "argv", ["mig", "--source", str(source)])
+
+    real_migrate_documents = mig.migrate_documents
+
+    def broken_for_bad(db, project_id, *args):
+        if project_id == "pj_bad":
+            raise AttributeError("boom")
+        return real_migrate_documents(db, project_id, *args)
+
+    monkeypatch.setattr(mig, "migrate_documents", broken_for_bad)
+    assert mig.main() == 1
+    projects = manager.list_projects()
+    assert [p["name"] for p in projects] == ["好项目"]  # 失败项目不留半成品，也不阻断后续项目
+
+    monkeypatch.setattr(mig, "migrate_documents", real_migrate_documents)
+    assert mig.main() == 0
+    sources = sorted(p.get("migrated_from") for p in manager.list_projects())
+    assert sources == ["pj_bad", "pj_ok"]

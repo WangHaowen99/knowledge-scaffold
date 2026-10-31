@@ -46,10 +46,13 @@ def _seed_project(manager: WorkspaceManager, name: str = "外卖订单") -> dict
     (root / "ontology" / "metric" / "客单价.md").write_text(
         "# 客单价\n\n基于[[订单]]金额\n", encoding="utf-8"
     )
-    for key in ("calc_price", "计算折扣"):
-        (root / "ontology" / "scripts" / f"{key}.py").write_text(
-            "def run():\n    return {}\n", encoding="utf-8"
-        )
+    for key, code in {
+        # 库模块：不对外调用，包内保留原文件名
+        "calc_price": "def run():\n    return {}\n",
+        # 对外脚本：包内按 ASCII 文件名打包，导入时按描述符还原原名
+        "计算折扣": '"""\n关联operation：创建订单\n"""\ndef run():\n    return {}\n',
+    }.items():
+        (root / "ontology" / "scripts" / f"{key}.py").write_text(code, encoding="utf-8")
     return meta
 
 
@@ -95,9 +98,10 @@ def test_published_package_import_restores_entities(
     overview = _overview(manager, imported["id"])
     assert overview["objects"] == 2
     assert overview["operations"] == 1
-    # 已发布知识包只有交付物、没有过程资产，第一个必选阶段探针（research/）仍不命中，
-    # 阶段进度因此仍为 0。阶段链按 ADR-0004 不动；固定该行为，避免被当成新缺陷。
-    assert overview["stages_done"] == 0
+    # 已发布知识包只有交付物、没有过程资产：research/ 等必选阶段不命中，但不截断后续，
+    # 对象、操作、规则与指标、代码生成四个阶段各自计入（与前端 stageStatuses 一致）
+    assert overview["stages_done"] == 4
+    assert overview["stages_total"] == len(WorkspaceManager.STAGES)
 
     # 工作区文档不带包契约 frontmatter，正文原样
     body = (root / "ontology" / "operation" / "创建订单.md").read_text(encoding="utf-8")
@@ -169,6 +173,23 @@ def test_script_filename_restored_from_descriptor(
     assert (scripts / "计算折扣.py").is_file()
     assert (scripts / "calc_price.py").is_file()
     assert not list(scripts.glob("script_*.py"))
+    # 描述符按工作区规则重建：对外脚本有，库模块没有
+    assert (scripts / "计算折扣.md").is_file()
+    assert not (scripts / "calc_price.md").exists()
+
+
+def test_helper_script_name_survives_round_trip(manager: WorkspaceManager, tmp_path: Path):
+    """不绑定操作的辅助脚本没有描述符可还原，包内直接用原文件名。"""
+    source = _seed_project(manager)
+    root = manager.project_root(source["id"])
+    (root / "ontology" / "scripts" / "公共工具.py").write_text(
+        '"""\n关联operation：无\n"""\ndef helper():\n    return 1\n', encoding="utf-8"
+    )
+    archive = _export_package(manager, source["id"], tmp_path / "pkg.zip")
+    imported = manager.import_package_zip("辅助脚本回导", archive)
+    scripts = manager.project_root(imported["id"]) / "ontology" / "scripts"
+    assert (scripts / "公共工具.py").is_file()
+    assert (scripts / "计算折扣.py").is_file()
 
 
 def test_original_package_is_preserved_for_fidelity(
@@ -338,10 +359,73 @@ def test_import_summary_counts_unchanged_for_workspace_layout(
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("ontology/object/订单.md", "# 订单")
         zf.writestr("ontology/logic/创建订单.md", "# 创建订单")
-        zf.writestr("research/summary.md", "调研")
+        zf.writestr("research/summary.md", "资料分析")
         zf.writestr(".git/config", "skip me")
 
     summary = manager.import_summary(archive)
     assert (summary["objects"], summary["operations"], summary["files"]) == (1, 1, 4)
     assert ".git" in summary["skipped"]
     assert [d["name"] for d in summary["top_dirs"]] == ["ontology", "research"]
+
+
+@pytest.mark.parametrize("business_name", ["synthetic_a/b", 'synthetic_甲/乙\\"丙', "synthetic_a%2Fb"])
+def test_business_name_survives_repeated_package_roundtrip(manager, tmp_path, business_name):
+    """Synthetic entities keep safe IDs and original names across publication/import."""
+    from urllib.parse import quote
+    from app.services import studio
+    from app.services.document_metadata import report_name
+
+    source = manager.create_project("workspace_demo")
+    root = manager.project_root(source["id"])
+    body = "# 业务描述\n\nsynthetic description\n"
+    identities = {}
+    for kind in ("object", "operation", "rule", "metric"):
+        original = f"{kind}_{business_name}"
+        stem = quote(original, safe="")
+        identities[kind] = (stem, original)
+        (root / "ontology" / kind / f"{stem}.md").write_text(
+            "---\nreport_name: " + json.dumps(original, ensure_ascii=False)
+            + "\n---\n" + body, encoding="utf-8",
+        )
+    (root / "ontology/metric/synthetic_plain.md").write_text(body, encoding="utf-8")
+    (root / "ontology/scripts/synthetic_script.py").write_text("def run():\n    return {}\n", encoding="utf-8")
+
+    for cycle in range(2):
+        archive = tmp_path / f"synthetic_{cycle}.zip"
+        manager.export_package_zip(source["id"], archive, allow_unbound=True)
+        with zipfile.ZipFile(archive) as zf:
+            for kind, (stem, original) in identities.items():
+                text = zf.read(f"{source['id']}/{kind}s/{stem}.md").decode("utf-8")
+                assert report_name(text) == original
+                assert f"key: {json.dumps(stem)}" in text
+                assert text.count("report_name:") == 1
+        source = manager.import_package_zip("workspace_demo_import", archive)
+        root = manager.project_root(source["id"])
+        nodes = {node["id"]: node for node in studio.graph(root)["nodes"]}
+        for kind, (stem, original) in identities.items():
+            path = f"ontology/{kind}/{stem}.md"
+            text = (root / path).read_text(encoding="utf-8")
+            assert report_name(text) == original
+            assert text.endswith(body)
+            assert "resource:" not in text and "uses:" not in text
+            assert nodes[stem]["label"] == original
+            assert studio.element(root, path)["label"] == original
+        assert (root / "ontology/metric/synthetic_plain.md").read_text() == body
+        assert (root / "ontology/scripts/synthetic_script.py").exists()
+
+
+@pytest.mark.parametrize("metadata", [
+    'report_name: "synthetic_a/b"\nreport_name: "synthetic_other"',
+    'report_name: invalid',
+    'report_name: 123',
+])
+def test_invalid_business_name_blocks_export_and_import(manager, tmp_path, metadata):
+    """Do not silently discard an explicit but invalid business-name mapping."""
+    raw = f"---\n{metadata}\n---\n# synthetic document\n"
+    with pytest.raises(WorkspaceError):
+        package_archive._workspace_document(raw)
+    source = manager.create_project("workspace_demo")
+    path = manager.project_root(source["id"]) / "ontology/operation/synthetic_plain.md"
+    path.write_text(raw, encoding="utf-8")
+    with pytest.raises(WorkspaceError):
+        manager.export_package_zip(source["id"], tmp_path / "synthetic_invalid.zip", allow_unbound=True)

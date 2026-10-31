@@ -34,6 +34,10 @@ ACCEPTED_AUDIENCES = accepted_audiences(AUDIENCE)
 ENABLED = bool(AUTH_URL)
 _jwks_client = PyJWKClient(f"{AUTH_URL}/jwks.json") if ENABLED else None
 
+# 签发方（auth-server）与本服务的时钟可能有偏差：分机部署、虚拟机校时回拨。
+# iat/nbf/exp 不留容差时，刚签发的令牌会被判"尚未生效"，表现为刚登录就提示登录过期
+CLOCK_SKEW_LEEWAY_SECONDS = 60
+
 # 用户最近活跃时间（内存态，重启清零），供运维页"在线用户"用
 LAST_SEEN: dict[str, float] = {}
 
@@ -58,7 +62,12 @@ def verify_access_token(token: str) -> dict | None:
     try:
         key = _jwks_client.get_signing_key_from_jwt(token).key
         claims = jwt.decode(
-            token, key, algorithms=["RS256"], audience=ACCEPTED_AUDIENCES, issuer=ISSUER
+            token,
+            key,
+            algorithms=["RS256"],
+            audience=ACCEPTED_AUDIENCES,
+            issuer=ISSUER,
+            leeway=CLOCK_SKEW_LEEWAY_SECONDS,
         )
     except Exception:
         return None

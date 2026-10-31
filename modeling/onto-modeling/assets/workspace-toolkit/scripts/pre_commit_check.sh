@@ -50,8 +50,9 @@ STAGED_TOOLS=$(git diff --cached --name-only -z 2>/dev/null | tr '\0' '\n' \
     | grep -E '^\.claude/(scripts|agents|commands)/' || true)
 
 # Generated executable scripts are part of the package contract, not ordinary docs.
+# 脚本描述符（同名 .md）由 script_descriptor.py 生成，与 .py 一起受契约检查。
 STAGED_SCRIPTS=$(git diff --cached --name-only -z 2>/dev/null | tr '\0' '\n' \
-    | grep -E '^ontology/scripts/.*\.py$' || true)
+    | grep -E '^ontology/scripts/.*\.(py|md)$' || true)
 
 TOOL_ERRORS=""
 if [ -n "$STAGED_TOOLS" ]; then
@@ -90,12 +91,29 @@ if [ -n "$STAGED_SCRIPTS" ]; then
     SCRIPT_ERRORS=$(printf '%s' "$SCRIPT_OUTPUT" | python3 -c '
 import json, sys
 try:
-    print(sum(1 for item in json.loads(sys.stdin.read() or "[]") if item.get("severity") == "错误" and item.get("category") == "脚本契约"))
+    print(sum(1 for item in json.loads(sys.stdin.read() or "[]") if item.get("severity") == "错误" and item.get("category") in ("脚本契约", "脚本安全", "脚本绑定")))
 except Exception:
     print(1)
 ' 2>/dev/null || echo 1)
     if [ "$SCRIPT_ERRORS" -gt 0 ]; then
-        REASON='ontology/scripts 中存在脚本契约错误：请运行 python3 .claude/scripts/ontology_checker.py ontology --include-scripts 修复后再提交。'
+        REASON='ontology/scripts 中存在脚本契约、安全或绑定错误：请运行 python3 .claude/scripts/ontology_checker.py ontology --include-scripts 查看；描述符缺失或过期时运行 python3 .claude/scripts/script_descriptor.py render ontology 重新生成并 git add，修复后再提交。'
+        python3 -c '
+import json, sys
+print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))
+' "$REASON"
+        exit 0
+    fi
+fi
+
+# --- Script run verification -------------------------------------------------
+# 新增或修改的脚本必须用 script_verify.py 跑通（jiuwenbox 沙箱优先，不可用时在容器内），
+# 有与当前源码一致的通过记录才能提交。
+VERIFY_TARGETS=$(git diff --cached --name-only --diff-filter=ACMR -z 2>/dev/null | tr '\0' '\n' \
+    | grep -E '^ontology/scripts/[^/]+\.py$' || true)
+if [ -n "$VERIFY_TARGETS" ]; then
+    mapfile -t VERIFY_FILES <<< "$VERIFY_TARGETS"
+    if ! VERIFY_OUTPUT=$(python3 .claude/scripts/script_verify.py check "${VERIFY_FILES[@]}" 2>&1); then
+        REASON=$(printf '以下脚本还没有通过当前版本的运行验证，已阻止提交：\n%s\n\n按 /ontology-codegen Step 4.6 编写用例，运行 python3 .claude/scripts/script_verify.py run <脚本> --cases <用例文件>，全部通过后再提交。' "$VERIFY_OUTPUT")
         python3 -c '
 import json, sys
 print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))
@@ -105,7 +123,7 @@ print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=Fals
 fi
 
 # --- Research report check ---------------------------------------------------
-# 调研报告的内容验收。"报告已保存"不等于内容已通过：只要暂存了 research/ 下的
+# 资料分析报告的内容验收。"报告已保存"不等于内容已通过：只要暂存了 research/ 下的
 # 报告，就必须过 research_checker 的确定性检查（计数、ID、字段、来源），
 # 否则错误报告会被下游的对象提取直接当成事实来源。
 RESEARCH_STAGED=$(git diff --cached --name-only -z 2>/dev/null | tr '\0' '\n' \
@@ -116,7 +134,7 @@ if [ -n "$RESEARCH_STAGED" ]; then
     RESEARCH_OUTPUT=$(printf '%s' "$RESEARCH_OUTPUT" | head -40)
     # 1=有确定性错误或人工待决未完成 → 阻止；2=已无报告可核验（如删除报告）→ 放过
     if [ "$RESEARCH_CODE" -eq 1 ]; then
-        REASON=$(printf '调研报告未通过内容验收，已阻止提交：\n\n%s\n\n修正报告后重新 git add 并提交；需人工判断的条目请先确认再在报告中勾选。' "$RESEARCH_OUTPUT")
+        REASON=$(printf '资料分析报告未通过内容验收，已阻止提交：\n\n%s\n\n修正报告后重新 git add 并提交；需人工判断的条目请先确认再在报告中勾选。' "$RESEARCH_OUTPUT")
         python3 -c '
 import json, sys
 print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))
@@ -126,6 +144,23 @@ print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=Fals
 fi
 
 # --- Ontology rule check（原逻辑） -------------------------------------------
+# 流程图生成收尾和提交复用同一修订回执；不调用语义 Agent。
+declare -a DIAGRAMS=()
+while IFS= read -r path; do
+    [ -f "$path" ] && DIAGRAMS+=("$path")
+done < <(git diff --cached --name-only --diff-filter=ACMR -- 'ontology/diagrams/*.drawio')
+if [ "${#DIAGRAMS[@]}" -gt 0 ]; then
+    if [ -n "$(git diff --name-only -- "${DIAGRAMS[@]}")" ]; then
+        echo '{"decision":"block","reason":"流程图暂存版本与当前文件不同，请先将核验版本完整暂存。"}'
+        exit 0
+    fi
+    DIAGRAM_OUTPUT=$(python3 .claude/scripts/verify_artifacts.py diagrams --files "${DIAGRAMS[@]}" 2>&1)
+    if [ "$?" -ne 0 ]; then
+        python3 -c 'import json,sys; print(json.dumps({"decision":"block","reason":"流程图轻量核验未通过："+sys.argv[1]},ensure_ascii=False))' "${DIAGRAM_OUTPUT:0:4000}"
+        exit 0
+    fi
+fi
+
 # Only relevant when staged files include ontology docs. Use -z for NUL-safe parsing.
 # rule / metric 有意不在范围内：从知识包导入的规则、指标是知识包契约的格式（规则内容 /
 # 判断条件 / 知识证据 …），与工具箱模板不同，结构检查会把它们整篇判为缺章节。两套
@@ -166,20 +201,45 @@ if [ "${#STEMS[@]}" -eq 0 ]; then
     exit 0
 fi
 
-# ontology_checker emits progress to stderr; stdout is pure JSON.
-OUTPUT=$(python3 .claude/scripts/ontology_checker.py ontology --json --include-mock --files "${STEMS[@]}" 2>/dev/null || echo '[]')
+# 数据样例/知识由各自检查器处理，不作为本体产物的存在证明。
+declare -a VERIFY_FILES=()
+while IFS= read -r path; do
+    [ -f "$path" ] && VERIFY_FILES+=("$path")
+done < <(printf '%s\n' "$STAGED" | grep -E '^ontology/(object|operation|action)/' | grep -vi '/index\.md$' || true)
+if [ "${#VERIFY_FILES[@]}" -gt 0 ]; then
+    if [ -n "$(git diff --name-only -- "${VERIFY_FILES[@]}")" ]; then
+        echo '{"decision":"block","reason":"本体暂存版本与当前文件不同，请先将核验版本完整暂存。"}'
+        exit 0
+    fi
+    OUTPUT=$(python3 .claude/scripts/verify_artifacts.py ontology --issues-json --files "${VERIFY_FILES[@]}" 2>/dev/null)
+    CHECK_CODE=$?
+else
+    OUTPUT=$(python3 .claude/scripts/ontology_checker.py ontology --json --include-mock --files "${STEMS[@]}" 2>/dev/null)
+    CHECK_CODE=$?
+fi
+if [ "$CHECK_CODE" -gt 1 ]; then
+    echo '{"decision":"block","reason":"轻量核验执行失败，不能按通过处理。请运行 verify_artifacts.py 查看错误。"}'
+    exit 0
+fi
 
 COUNTS=$(echo "$OUTPUT" | python3 -c '
 import json, sys
 try:
-    issues = json.loads(sys.stdin.read() or "[]")
+    issues = json.loads(sys.stdin.read())
+    if not isinstance(issues, list) or not all(isinstance(i, dict) and i.get("severity") in ("错误", "警告", "建议") for i in issues):
+        raise ValueError("invalid result")
 except Exception:
-    issues = []
+    print("1 0 0")
+    sys.exit(0)
 def c(s): return sum(1 for i in issues if i.get("severity") == s)
 print(c("错误"), c("警告"), c("建议"))
-' 2>/dev/null || echo '0 0 0')
+' 2>/dev/null || echo '1 0 0')
 
 ERRORS=$(echo "$COUNTS" | awk '{print $1+0}')
+if [ "$CHECK_CODE" -ne 0 ] && [ "$ERRORS" -eq 0 ]; then
+    echo '{"decision":"block","reason":"核验退出状态与结果不一致，不能按通过处理。"}'
+    exit 0
+fi
 WARNINGS=$(echo "$COUNTS" | awk '{print $2+0}')
 SUGGESTIONS=$(echo "$COUNTS" | awk '{print $3+0}')
 

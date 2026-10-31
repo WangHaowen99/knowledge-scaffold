@@ -13,7 +13,7 @@
     manual_pending  需人工确认的条目
 
 对外状态由 `review_status()` 给出，共四种：
-    none     还没有调研报告
+    none     还没有资料分析报告
     pending  有报告但没有有效回执（无回执 / 回执失效 / 有人工待决项）
     failed   回执判定存在确定性错误
     passed   回执有效且通过
@@ -42,7 +42,9 @@ RESEARCH_DIR = Path('research')
 
 # 检查项有增减时 +1：旧回执随即失效，退回待核验而不是继续沿用旧结论。
 # 2：业务项清单新增「分类」列、候选段拆成四段（ADR-0012）。
-CHECKER_VERSION = 2
+# 3：原始文档抽取、锚点核验与新增 ID 人工确认；旧基线不再免检。
+CHECKER_VERSION = 3
+UNVERIFIABLE = 'unverifiable'
 
 NONE = 'none'
 PENDING = 'pending'
@@ -64,8 +66,7 @@ def content_revision(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()[:16]
 
 
-# 回执每次核验都要逐个输入重算指纹（后端刷新项目列表时也会算），超过这个大小的
-# 源表格改用大小做指纹，避免把一次刷新变成几十 MB 的哈希。
+# 大文件流式计算指纹；不能以大小代替修订，否则等长修改不会失效。
 MAX_HASH_BYTES = 8 * 1024 * 1024
 
 
@@ -74,14 +75,18 @@ def file_revision(path: Path) -> str:
     try:
         size = path.stat().st_size
         if size > MAX_HASH_BYTES:
-            return f'size:{size}'
+            digest = hashlib.sha256()
+            with path.open('rb') as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                    digest.update(chunk)
+            return digest.hexdigest()[:16]
         return content_revision(path.read_bytes())
     except OSError:
         return ''
 
 
 def report_paths(root: Path) -> list[str]:
-    """工作区内的调研报告相对路径（排序去重），目录索引 index.md 不算报告。
+    """工作区内的资料分析报告相对路径（排序去重），目录索引 index.md 不算报告。
 
     相对 `research/` 拼路径而不是 relative_to(root)：root 可能是 `Path('.')`
     （工作区 CLI 的用法），那时 relative_to 会抛 ValueError。
@@ -116,7 +121,7 @@ def load_review(root: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def write_review(root: Path, status: str, inputs: dict, errors: list, manual_pending: list) -> dict:
+def write_review(root: Path, status: str, inputs: dict, errors: list, manual_pending: list, evidence=None) -> dict:
     data = {
         'status': status,
         'checker_version': CHECKER_VERSION,
@@ -124,6 +129,7 @@ def write_review(root: Path, status: str, inputs: dict, errors: list, manual_pen
         'inputs': inputs,
         'errors': errors,
         'manual_pending': manual_pending,
+        'source_evidence': evidence or {},
     }
     path = root / REVIEW_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -197,8 +203,8 @@ def review_status(root: Path) -> dict:
     if any(file_revision(root / rel) != revision for rel, revision in inputs.items()):
         return _result(PENDING, REASON_INPUTS_CHANGED, reports, review)
 
-    if review.get('status') == FAILED:
-        return _result(FAILED, REASON_OK, reports, review)
+    if review.get('status') in {FAILED, UNVERIFIABLE}:
+        return _result(review['status'], REASON_OK, reports, review)
     if review.get('status') != PASSED:
         return _result(PENDING, REASON_NO_RECEIPT, reports, review)
     if review.get('manual_pending'):
@@ -222,6 +228,8 @@ HINTS = {
 
 def hint(result: dict) -> str:
     """给用户的下一步提示；无需提示时为空串。"""
+    if result['status'] == UNVERIFIABLE:
+        return '来源无法核验，请修正读取或来源位置；不得以新增ID声明代替来源证据'
     if result['status'] == FAILED:
         return '报告存在确定性错误，修正后重新运行 python3 .claude/scripts/research_checker.py'
     return HINTS.get(result['reason'], '')

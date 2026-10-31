@@ -1203,6 +1203,37 @@ test('graph import service：同步隔离预检错误不泄露一次性密码', 
   });
 });
 
+test('graph import service：只读统计数据源隔离范围且不泄露一次性密码', async () => {
+  const { inspectProjectGraphIsolation } = await import('../src/graph-import/service.js');
+  const project = await createGraphImportProject('图数据隔离统计测试');
+  let received: any;
+  const counts = await inspectProjectGraphIsolation({ projectId: project.id, password: 'secret' }, {
+    inspectIsolation: async (connection) => {
+      received = connection;
+      return { nodeCount: 3, relationshipCount: 1 };
+    },
+    writer: async () => { throw new Error('统计时不应写图'); },
+  });
+  assert.deepEqual(counts, { nodeCount: 3, relationshipCount: 1 });
+  assert.deepEqual(
+    [received.password, received.workspaceValue, received.ontologyValue],
+    ['secret', 'workspace-001', 'ontology-001'],
+  );
+  await assert.rejects(
+    () => inspectProjectGraphIsolation({ projectId: project.id, password: '' }),
+    /Password 不能为空/,
+  );
+  const password = 'isolation-password-secret';
+  await assert.rejects(inspectProjectGraphIsolation({ projectId: project.id, password }, {
+    inspectIsolation: async () => { throw new Error(`认证失败 ${password}`); },
+  }), (error: any) => {
+    assert.equal(error.code, 'GRAPH_IMPORT_UPSTREAM_UNAVAILABLE');
+    assert.match(String(error.cause?.message), /\[REDACTED\]/);
+    assert.doesNotMatch(`${error.message} ${error.cause?.message}`, new RegExp(password));
+    return true;
+  });
+});
+
 test('graph import service：失败审计脱敏并保留临时文件供重试', async () => {
   const { uploadGraphImportExcel, executeGraphImport, getGraphImportHistory } = await import('../src/graph-import/service.js');
   const { getGraphImportUpload } = await import('../src/graph-import/upload-store.js');
@@ -1436,7 +1467,7 @@ test('graph import form：固定知识包 Sheet 且关联字段只使用实体�
   }];
   const selectedAll = addKnownRelationMappings(existing, twoRelationPreview);
   assert.deepEqual(selectedAll[0], existing[0]);
-  assert.equal(selectedAll.length, 2);
+  assert.equal(selectedAll.length, 3);
   assert.deepEqual(addKnownRelationMappings(selectedAll, twoRelationPreview), selectedAll);
 
   const sameSheetPreview = {

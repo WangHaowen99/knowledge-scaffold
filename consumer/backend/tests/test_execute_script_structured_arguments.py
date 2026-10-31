@@ -1,7 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
+import argparse
 import json
+
+import pytest
 
 from agent.direct_execution.arguments import build_direct_cli_args
 from agent.direct_execution.models import RuntimeContext
@@ -307,6 +310,77 @@ def test_structured_collection_rejects_request_item_reordering():
     assert "order" in errors[0]
 
 
+def test_structured_collection_accepts_a_value_shared_by_all_items_stated_once():
+    # The common category is written once, next to the first item's status only.
+    request = "Two batches are both category red and the old one is closed;\nthe new batch is open."
+    arguments = {
+        "batches": [
+            {"category": "red", "status": "closed"},
+            {"category": "red", "status": "open"},
+        ],
+    }
+
+    assert _validate_structured_arguments_against_request(arguments, request) == []
+
+
+def test_structured_collection_rejects_pairing_beside_a_shared_value():
+    # A value shared by all items no longer hides the item that pairs another item's status.
+    request = (
+        "All batches are category red.\n"
+        "Batch alpha is closed;\n"
+        "Batch beta is open;\n"
+        "Batch gamma is pending."
+    )
+    arguments = {
+        "batches": [
+            {"batch": "alpha", "category": "red", "status": "closed"},
+            {"batch": "beta", "category": "red", "status": "open"},
+            {"batch": "gamma", "category": "red", "status": "closed"},
+        ],
+    }
+    issues = []
+
+    errors = _validate_structured_arguments_against_request(arguments, request, issues=issues)
+
+    assert len(errors) == 1 and "item 3" in errors[0]
+    assert issues == [{"code": "request_record_mismatch", "path": "arguments.batches"}]
+
+
+def test_structured_collection_does_not_locate_items_by_a_value_stated_once_for_all():
+    # The shared category sits in the first item's segment; the second item is located by
+    # its own status and amount and must not be blamed for the category stated earlier.
+    request = (
+        "Two batches are both category red, and the old one is closed;\n"
+        "the new batch is open with amount 8000."
+    )
+    arguments = {
+        "batches": [
+            {"category": "red", "status": "closed"},
+            {"category": "red", "status": "open", "amount": 8000},
+        ],
+    }
+
+    assert _validate_structured_arguments_against_request(arguments, request) == []
+
+
+def test_structured_collection_still_rejects_one_value_copied_to_every_item():
+    request = (
+        "Record 1: sample-a, quantity 12.5, category red;\n"
+        "Record 2: sample-b, quantity 7.25, category blue."
+    )
+    arguments = {
+        "batches": [
+            {"name": "sample-a", "quantity": 12.5, "category": "red"},
+            {"name": "sample-b", "quantity": 7.25, "category": "red"},
+        ],
+    }
+    issues = []
+
+    _validate_structured_arguments_against_request(arguments, request, issues=issues)
+
+    assert issues == [{"code": "request_field_mismatch", "path": "arguments.batches[1].category"}]
+
+
 def test_structured_collection_does_not_reject_derived_items_without_request_evidence():
     arguments = {
         "batches": [
@@ -322,3 +396,41 @@ def test_structured_collection_does_not_reject_derived_items_without_request_evi
         )
         == []
     )
+
+
+NUMBER_PARAMETER = [{"name": "year", "flag": "--year", "type": "number", "required": True, "multiple": False}]
+
+
+@pytest.mark.parametrize("value, expected", [
+    (2026, "2026"), (2026.0, "2026"), ("2026", "2026"), ("2026.0", "2026"), (-3.0, "-3"),
+    (0.035, "0.035"), ("2.5", "2.5"),
+])
+def test_integral_number_arguments_keep_integer_text_for_both_execution_paths(value, expected):
+    args, missing, invalid = _build_cli_args(
+        script_args=[], script_parameters=NUMBER_PARAMETER, arguments={"year": value},
+    )
+    assert (missing, invalid) == ([], [])
+    assert args == ["--year", expected]
+
+    direct_args, direct_missing, error = build_direct_cli_args(
+        script_parameters=NUMBER_PARAMETER,
+        business_arguments={"year": value},
+        runtime_context=RuntimeContext(
+            session_id="session-1", run_id="run-1", turn_id=1, user_id="user-1",
+            workspace_id="workspace-1", selected_ontology_id="demo",
+        ),
+    )
+    assert (direct_missing, error) == ([], None)
+    assert direct_args == ["--year", expected]
+
+
+def test_integral_number_text_is_accepted_by_int_and_float_argparse():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--year", type=int)
+    parser.add_argument("--ratio", type=float)
+    args, _missing, _invalid = _build_cli_args(
+        script_args=[],
+        script_parameters=[*NUMBER_PARAMETER, {"name": "ratio", "flag": "--ratio", "type": "number"}],
+        arguments={"year": 2026.0, "ratio": 2},
+    )
+    assert vars(parser.parse_args(args)) == {"year": 2026, "ratio": 2.0}

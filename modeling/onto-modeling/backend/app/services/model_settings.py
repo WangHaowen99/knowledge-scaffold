@@ -56,12 +56,16 @@ def masked() -> dict:
         # 新建/导入项目使用的默认引擎，以及各引擎在本部署的可用性
         "default_engine": default_engine(),
         "engines": available_engines(),
+        # 是否允许用户用个人 Key 覆盖本页配置（默认允许；未配个人 Key 的用户不受影响）
+        "allow_personal": personal_override_allowed(),
         # Jiuwen 引擎（OpenAI 兼容）配置：与 Anthropic 网关配置并列的第二组
         "jiuwen": {
             "base_url": jiuwen.get("base_url", ""),
             "model": jiuwen.get("model", ""),
             "api_key_masked": _mask(jiuwen.get("api_key", "")),
             "configured": bool(jiuwen.get("api_key") or jiuwen.get("base_url")),
+            "context": jiuwen_context_config(),
+            "context_defaults": jiuwen_context_defaults(),
         },
     }
 
@@ -96,19 +100,27 @@ def clear_key() -> dict:
     return masked()
 
 
-def save_jiuwen(base_url: str, api_key: str, model: str) -> dict:
-    """Jiuwen 引擎的 OpenAI 兼容模型配置（与 Anthropic 网关配置同文件存储）。"""
+def save_jiuwen(base_url: str, api_key: str, model: str, context: dict | None = None) -> dict:
+    """Jiuwen 引擎的 OpenAI 兼容模型配置（与 Anthropic 网关配置同文件存储）。
+
+    带 context 时上下文参数一并保存，先全部校验再写。
+    """
     base_url = (base_url or "").strip()
     model = (model or "").strip()
     api_key = (api_key or "").strip()
     if base_url and not base_url.startswith(("http://", "https://")):
         raise ModelConfigError("网关地址必须以 http(s):// 开头")
+    context_section = (
+        _context_section(context, jiuwen_context_defaults()) if context is not None else None
+    )
     data = load()
     section = data.setdefault("jiuwen", {})
     section["base_url"] = base_url
     section["model"] = model
     if api_key:  # 留空表示不修改既有 Key
         section["api_key"] = api_key
+    if context_section is not None:
+        section["context"] = context_section
     path = _file()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -288,8 +300,57 @@ def derived_compaction(real_window: int, max_output: int | None) -> dict:
     return result
 
 
-def _context_section(values: dict) -> dict:
-    """校验配置页的模型真实窗口与最大输出，返回要存的 context 段；None 表示留空，按 .env 或默认值生效。"""
+# CLI 按内置窗口处理的模型名：Claude 官方模型名及其别名
+_CLI_MODEL_ALIASES = {"sonnet", "opus", "haiku", "default", "best", "opusplan"}
+
+
+def cli_uses_env_window(model: str) -> bool:
+    """CLI 是否按环境变量定该模型的窗口：只有它不认识的模型名才读 CLAUDE_CODE_MAX_CONTEXT_TOKENS。
+
+    模型名为空时 CLI 用自己的默认模型，同样按内置窗口。
+    """
+    name = model.strip().lower().split("[", 1)[0]
+    if not name or name in _CLI_MODEL_ALIASES:
+        return False
+    return "claude" not in name
+
+
+def _env_number(env: dict, name: str) -> float | None:
+    try:
+        return float(str(env.get(name, "")).strip())
+    except ValueError:
+        return None
+
+
+def cli_context_limits(env: dict) -> tuple[int | None, int | None]:
+    """按 CLI 的规则从会话环境变量推算（模型窗口, 自动压缩触发点），触发点与 CLI 查询结果一致。
+
+    窗口取模型窗口本身，与 Jiuwen 引擎同口径；CLI 报告的 rawMaxTokens 是 min(压缩窗口, 模型窗口)，
+    只是算触发点的中间量，不代表模型能装多少。有效窗口 = rawMaxTokens − min(最大输出, 20000)，
+    触发点 = 有效窗口 − 13000；设了触发百分比时取 min(有效窗口 × 百分比, 上式)。
+    只适用于 cli_uses_env_window 为真的模型。
+    """
+    window = _env_number(env, "CLAUDE_CODE_MAX_CONTEXT_TOKENS")
+    if not window or window <= 0:
+        return None, None
+    window = int(window)
+    if any(env.get(name) for name in ("DISABLE_AUTO_COMPACT", "DISABLE_COMPACT")):
+        return window, None
+    compact_window = min(window, int(_env_number(env, "CLAUDE_CODE_AUTO_COMPACT_WINDOW") or window))
+    max_output = int(_env_number(env, "CLAUDE_CODE_MAX_OUTPUT_TOKENS") or DEFAULT_MAX_OUTPUT_TOKENS)
+    effective = compact_window - min(max_output, _CLI_OUTPUT_RESERVE_CAP)
+    threshold = effective - _CLI_AUTOCOMPACT_BUFFER
+    pct = _env_number(env, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")
+    if pct is not None and 0 < pct <= 100:
+        threshold = min(threshold, int(effective * pct / 100))
+    return window, threshold if threshold > 0 else None
+
+
+def _context_section(values: dict, defaults: dict | None = None) -> dict:
+    """校验配置页的模型真实窗口与最大输出，返回要存的 context 段；None 表示留空，按 .env 或默认值生效。
+
+    defaults 为留空时生效的值（见 context_defaults），默认按稳定引擎。
+    """
     section = {}
     for name in PAGE_CONTEXT_FIELDS:
         _, low, high = CONTEXT_FIELDS[name]
@@ -300,7 +361,8 @@ def _context_section(values: dict) -> dict:
             raise ModelConfigError(f"{name} 须为 {low}–{high} 之间的整数")
         section[name] = value
     # 留空项会取 .env 或默认值，校验按合并后的实际生效值
-    merged = {name: item["value"] for name, item in context_defaults().items()} | section
+    defaults = defaults if defaults is not None else context_defaults()
+    merged = {name: item["value"] for name, item in defaults.items()} | section
     output = merged["max_output_tokens"]
     if (output or 0) >= merged["max_context_tokens"]:
         if "max_output_tokens" in section:
@@ -322,6 +384,20 @@ def save_context(values: dict) -> dict:
     return masked()
 
 
+def personal_override_allowed() -> bool:
+    return load().get("allow_personal", True) is not False
+
+
+def save_personal_policy(allow: bool) -> dict:
+    data = load()
+    data["allow_personal"] = bool(allow)
+    path = _file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.chmod(0o600)
+    return masked()
+
+
 def jiuwen_config() -> dict:
     """Jiuwen 引擎读取用的明文配置（仅服务端内部使用，不经接口外发）。"""
     section = load().get("jiuwen") or {}
@@ -332,14 +408,76 @@ def jiuwen_config() -> dict:
     }
 
 
-def session_env() -> dict:
+# 内测引擎的压缩器在上下文达到「窗口 × 触发比例」时压缩（openjiuwen 默认 0.8）。按与稳定引擎
+# 相同的目标推算比例：压缩前的请求（上下文 + 最大输出）仍给窗口留 10% 余量；不晚于 SDK 默认，
+# 也不早于 0.3，窗口小到留不出余量时配置页会提示调小最大输出
+_JIUWEN_TRIGGER_RATIO_MAX = 0.8
+_JIUWEN_TRIGGER_RATIO_MIN = 0.3
+
+
+def jiuwen_context_config() -> dict:
+    """内测引擎配置页保存的上下文参数；None 表示留空。两个引擎接的往往不是同一个模型，各存一组。"""
+    section = (load().get("jiuwen") or {}).get("context") or {}
+    return {name: section.get(name) for name in PAGE_CONTEXT_FIELDS}
+
+
+def jiuwen_context_defaults() -> dict:
+    """内测引擎配置页留空时生效的值与来源，格式同 context_defaults。
+
+    与稳定引擎共用 .env 的窗口与最大输出变量；都没配时最大输出按 ONTO_WEB_JIUWEN_MAX_TOKENS
+    （默认 32000，与稳定引擎的内置默认一致）。输出上限更小的模型须在配置页或 .env 填写，
+    否则 max_tokens 超过上限，请求会被网关拒绝。
+    """
+    defaults = context_defaults()
+    result = {name: defaults[name] for name in PAGE_CONTEXT_FIELDS}
+    if result["max_output_tokens"]["source"] == "default":
+        result["max_output_tokens"] = {
+            **result["max_output_tokens"],
+            "value": config.JIUWEN_MAX_TOKENS,
+        }
+    return result
+
+
+def jiuwen_trigger_ratio(window: int, max_output: int) -> float:
+    """压缩触发比例，向下取到 0.01；触发点 = int(窗口 × 比例)，与 openjiuwen 的取整一致。"""
+    ratio = (window * (1 - _COMPACT_MARGIN_RATIO) - max_output) / window
+    ratio = min(max(ratio, _JIUWEN_TRIGGER_RATIO_MIN), _JIUWEN_TRIGGER_RATIO_MAX)
+    return int(ratio * 100) / 100
+
+
+def jiuwen_effective_context() -> dict:
+    """内测引擎实际生效的窗口、最大输出与压缩触发比例：配置页 > .env > 内置默认。"""
+    saved = jiuwen_context_config()
+    result = {
+        name: saved[name] if saved[name] is not None else item["value"]
+        for name, item in jiuwen_context_defaults().items()
+    }
+    result["trigger_ratio"] = jiuwen_trigger_ratio(
+        result["max_context_tokens"], result["max_output_tokens"]
+    )
+    return result
+
+
+def session_env(owner: str = "") -> dict:
     """转成稳定引擎会话子进程的环境变量；空值不注入，模型真实窗口与最大输出总有值（见 effective_context）。
 
     key 同时覆盖 ANTHROPIC_API_KEY 与 ANTHROPIC_AUTH_TOKEN：CLI 优先用
     AUTH_TOKEN 做 Bearer 鉴权，若只覆盖 API_KEY，部署机 .env 里残留的
     旧令牌会继续生效，导致新网关 401（实测踩坑）。
+
+    owner 非空时用该用户的个人 Key，网关地址 / 模型个人未填则沿用管理员配置；
+    个人配置读取失败直接抛错，不能悄悄回落到管理员 Key。
     """
     data = load()
+    if owner:
+        from . import personal_model_settings
+
+        personal = personal_model_settings.resolve(owner, "claude")
+        data = {
+            "base_url": personal["base_url"] or data.get("base_url", ""),
+            "api_key": personal["api_key"],
+            "model": personal["model"] or data.get("model", ""),
+        }
     env = {}
     if data.get("base_url"):
         env["ANTHROPIC_BASE_URL"] = data["base_url"]

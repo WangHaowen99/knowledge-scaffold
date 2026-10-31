@@ -459,6 +459,48 @@ def test_usage_counts_all_conversations_including_deleted(conv_env):
     assert sum(day["calls"] for day in admin._usage_daily(days=10_000)) == 3
 
 
+def _model_usage(input_tokens: int, output_tokens: int, ts: float) -> dict:
+    return {
+        "type": "model_usage",
+        "ts": ts,
+        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+    }
+
+
+def test_usage_counts_per_call_events_once(conv_env):
+    """逐次记账的轮：token 按 model_usage 计，带 usage_per_call 的 result 只算一轮；
+    没等到 result 的轮（打断超时、回收、重启）也记上已完成的调用。"""
+    cid = conversation_store.create("p1")["id"]
+    other = conversation_store.create("p1")["id"]
+    finished = [
+        _model_usage(1000, 40, 1_700_000_000.0),
+        _model_usage(1200, 60, 1_700_000_010.0),
+        {
+            "type": "result",
+            "ts": 1_700_000_020.0,
+            "total_cost_usd": None,
+            "usage": {"input_tokens": 2200, "output_tokens": 100},
+            "usage_per_call": True,
+        },
+    ]
+    cut_off = [
+        _model_usage(3000, 200, 1_700_000_100.0),
+        {"type": "session_interrupted", "reason": "stale", "ts": 1_700_000_200.0},
+    ]
+    _write_history(conv_env.sessions_dir / "p1.jsonl", [_result(0.5, 1_700_000_000.0)])
+    _write_history(conv_env.sessions_dir / "p1" / f"{cid}.jsonl", finished)
+    _write_history(conv_env.sessions_dir / "p1" / f"{other}.jsonl", cut_off)
+
+    asyncio.run(conv_env.manager.delete_conversation("p1", cid))
+    summary = usage_summary("p1")
+
+    assert summary["calls"] == 2
+    assert summary["input_tokens"] == 5 + 2200 + 3000
+    assert summary["output_tokens"] == 10 + 100 + 200
+    assert sum(day["output_tokens"] for day in admin._usage_daily(days=10_000)) == 310
+    assert sum(day["calls"] for day in admin._usage_daily(days=10_000)) == 2
+
+
 # ---- 路由 ----
 
 
@@ -507,3 +549,36 @@ def test_jiuwen_session_id_is_per_conversation(tmp_path):
 
     assert make("default")._sid == "onto-p1"  # 存量会话沿用单会话时期的 id
     assert make("0123456789ab")._sid == "onto-p1-0123456789ab"
+
+
+# ---- 事件流按会话挂接 ----
+
+
+def _drain(queue: asyncio.Queue) -> list[dict]:
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    return events
+
+
+def test_open_stream_attaches_only_to_its_own_conversation(conv_env):
+    """事件流登记在某条会话上：引擎绑着别的会话时不挂，切到这条会话新建 Session 时即时挂上。"""
+
+    async def scenario():
+        await _send_and_idle(conv_env, "默认会话的消息")
+        cid = conversation_store.create("p1")["id"]
+        queue: asyncio.Queue = asyncio.Queue()
+        conv_env.manager.watch("p1", queue, cid)
+        assert queue not in conv_env.manager.get("p1").subscribers
+
+        session = await _send_and_idle(conv_env, "新会话的消息", cid)
+        assert queue in session.subscribers
+        events = _drain(queue)
+        assert events[0]["type"] == "user_message" and events[0]["text"] == "新会话的消息"
+
+        conv_env.manager.unwatch("p1", queue, cid)
+        assert queue not in session.subscribers
+        assert ("p1", cid) not in conv_env.manager._watchers
+        await conv_env.manager.shutdown()
+
+    asyncio.run(scenario())

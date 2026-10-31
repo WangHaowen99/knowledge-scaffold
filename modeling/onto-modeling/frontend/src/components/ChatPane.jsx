@@ -29,7 +29,13 @@ import {
 } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, openEventStream } from '../lib/api.js';
+import {
+  createBuildAlertTracker,
+  notifyBuild,
+  requestPermissionOnFirstBuild,
+} from '../lib/buildNotifier.js';
 import { orderResearchActions } from '../lib/researchGate.js';
+import { STATUS_LABELS, changeHeadline, groupChanges } from '../lib/changeSummary.js';
 import {
   EMPTY_CONTEXT,
   compactionNotice,
@@ -61,6 +67,9 @@ const ALL_COMMANDS = [
 ];
 
 const HISTORY_TAIL = 400;
+const USAGE_REFRESH_MS = 3000;
+// 上传时平台按结构识别出的资料用途（见后端 material_detect）
+const DETECTED_PURPOSE_LABELS = { schema: '数据 Schema', term: '术语表' };
 
 function isVisibleChatEvent(event) {
   if (
@@ -145,7 +154,7 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
       command: `/ontology-evolution ${evolution.report.split('/').pop()}`,
     });
   }
-  // 下一步 = 第一个未完成阶段；用户已越过的可选阶段不再主推。
+  // 下一步 = 第一个未完成阶段；用户已越过的可选阶段、只有面板入口的可选阶段不再主推。
   // 资料分析未验收且对象尚未提取时不算完成，不会主推对象提取（issue #362）
   const researchReview = meta?.research_review || null;
   const hits = stageHits(paths, researchReview);
@@ -153,7 +162,7 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
   let nextIndex = -1;
   for (let i = 0; i < STAGES.length; i += 1) {
     if (hits[i]) continue;
-    if (STAGES[i].optional && i < lastHit) continue;
+    if (STAGES[i].optional && (i < lastHit || STAGES[i].panel)) continue;
     nextIndex = i;
     break;
   }
@@ -168,7 +177,7 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
   }
   if (nextIndex >= 0) {
     const next = STAGES[nextIndex];
-    // 报告已生成但没通过验收时先核验，而不是先推重新调研
+    // 报告已生成但没通过验收时先核验，而不是先推重新做资料分析
     const actions =
       next.key === 'research' ? orderResearchActions(next.actions, researchReview) : next.actions;
     for (const action of actions) {
@@ -664,49 +673,70 @@ function decodeGitPath(path) {
   }
 }
 
-// 每轮产物变更卡：让"助手改了什么"零成本可见（设计稿 §3）
-function ChangesCard({ added, modified, deleted, total, knownPaths, onOpenFile, onOpenDiff }) {
-  const [expanded, setExpanded] = useState(false);
+// 每轮文件改动卡：让"助手这一轮改了什么"零成本可见（设计稿 §3）。
+// 按业务类别分组、纯文字排版：少于 7 个文件直接列出，多了先给各类数量，展开看明细
+const CHANGES_INLINE_LIMIT = 6;
+
+function ChangesCard({ added, modified, deleted, knownPaths, onOpenFile, onOpenDiff }) {
   const entries = [
     ...added.map((p) => ({ path: decodeGitPath(p), status: 'added' })),
     ...modified.map((p) => ({ path: decodeGitPath(p), status: 'modified' })),
     ...deleted.map((p) => ({ path: decodeGitPath(p), status: 'deleted' })),
   ];
-  const shown = expanded ? entries : entries.slice(0, 3);
+  const [expanded, setExpanded] = useState(entries.length <= CHANGES_INLINE_LIMIT);
+  const groups = groupChanges(entries);
+  const mixed = new Set(entries.map((entry) => entry.status)).size > 1;
+  const headline = changeHeadline({
+    added: added.length,
+    modified: modified.length,
+    deleted: deleted.length,
+  });
   return (
-    <div className="changes-card msg-soft">
-      <div className="changes-head">
-        <span className="changes-title">
-          本轮产物变更
-          {added.length > 0 && ` · 新增 ${added.length}`}
-          {modified.length > 0 && ` · 修改 ${modified.length}`}
-          {deleted.length > 0 && ` · 删除 ${deleted.length}`}
-        </span>
-        <button type="button" className="changes-diff" onClick={onOpenDiff}>
-          查看对比
+    <section className="changes-card msg-soft" aria-label={headline}>
+      <header className="changes-head">
+        <span className="changes-title">{headline}</span>
+        <button type="button" className="changes-link" onClick={onOpenDiff}>
+          查看改动
         </button>
-      </div>
-      <div className="changes-files">
-        {shown.map((entry) => (
-          <FileChip
-            key={entry.path}
-            path={entry.path}
-            status={entry.status}
-            exists={entry.status !== 'deleted' && (!knownPaths || knownPaths.has(entry.path))}
-            onOpen={onOpenFile}
-          />
-        ))}
-        {entries.length > 3 && (
-          <button
-            type="button"
-            className="changes-more"
-            onClick={() => setExpanded(!expanded)}
-          >
-            {expanded ? '收起' : `展开全部（${total}）`}
-          </button>
-        )}
-      </div>
-    </div>
+      </header>
+      {expanded ? (
+        <dl className="changes-groups">
+          {groups.map((group) => (
+            <div className="changes-group" key={group.label}>
+              <dt>{group.label}</dt>
+              <dd>
+                {group.items.map((item) => {
+                  const exists =
+                    item.status !== 'deleted' && (!knownPaths || knownPaths.has(item.path));
+                  return (
+                    <button
+                      type="button"
+                      key={item.path}
+                      className={`changes-file ${item.status}`}
+                      title={item.path}
+                      disabled={!exists}
+                      onClick={() => onOpenFile?.(item.path)}
+                    >
+                      {item.name}
+                      {mixed && <small>{STATUS_LABELS[item.status]}</small>}
+                    </button>
+                  );
+                })}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p className="changes-summary">
+          {groups.map((group) => `${group.label} ${group.items.length}`).join(' · ')}
+        </p>
+      )}
+      {entries.length > CHANGES_INLINE_LIMIT && (
+        <button type="button" className="changes-toggle" onClick={() => setExpanded(!expanded)}>
+          {expanded ? '收起明细' : '展开明细'}
+        </button>
+      )}
+    </section>
   );
 }
 
@@ -739,6 +769,7 @@ export default function ChatPane({
   versions,
   usage,
   onWorkspaceChanged,
+  onUsageChanged,
   onPendingChange,
   onOpenFile,
   onOpenDiff,
@@ -901,8 +932,18 @@ export default function ChatPane({
     let cancelled = false;
     let retryTimer = 0;
     let retryDelay = 2000;
+    let usageTimer = 0;
+    // 轮内每次模型调用都有一条 model_usage，合并成几秒刷新一次项目用量
+    const scheduleUsageRefresh = () => {
+      if (usageTimer) return;
+      usageTimer = setTimeout(() => {
+        usageTimer = 0;
+        if (!cancelled) onUsageChanged?.();
+      }, USAGE_REFRESH_MS);
+    };
     const lastMsgTsRef = { current: Date.now() };
     const nextAfterRef = { current: 0 };
+    const alertTracker = createBuildAlertTracker();
     const handleEvent = (event) => {
       if (cancelled) return;
       lastMsgTsRef.current = Date.now();
@@ -936,7 +977,14 @@ export default function ChatPane({
         event.seq !== undefined &&
         historyEndRef.current !== null &&
         event.seq < historyEndRef.current;
+      const alert = alertTracker.next(event, { history: isHistoryEvent });
+      if (alert) notifyBuild(alert, { projectName: project.name, tag: resolved || project.id });
       if (event.type === 'system') return;
+      if (event.type === 'model_usage') {
+        // 只用来刷新项目用量，不是对话行；回放的历史不触发刷新
+        if (!isHistoryEvent) scheduleUsageRefresh();
+        return;
+      }
       setCtx((prev) => nextContext(prev, event));
       if (event.type === 'user_message') {
         setPending(null);
@@ -1021,6 +1069,7 @@ export default function ChatPane({
         conversationIdRef.current = resolved;
         setConversationId(resolved);
         setState(info.state || 'idle');
+        alertTracker.seed(info.state);
         const total = info.events || 0;
         historyEndRef.current = total;
         const historyStart = Number.isInteger(info.history_start)
@@ -1049,6 +1098,7 @@ export default function ChatPane({
     return () => {
       cancelled = true;
       clearTimeout(retryTimer);
+      clearTimeout(usageTimer);
       clearInterval(watchdog);
       source?.close();
     };
@@ -1096,6 +1146,7 @@ export default function ChatPane({
     if (uploading) return;
     const toUpload = explicitAttachments ?? attachments;
     if (!trimmed && toUpload.length === 0) return;
+    requestPermissionOnFirstBuild(); // 须在用户发送这一操作中申请，浏览器才弹申请框
     // 上传可能持续数秒：消息发往点发送时所在的会话
     const targetConversation = conversationIdRef.current;
     setInput('');
@@ -1127,11 +1178,12 @@ export default function ChatPane({
               resourceSubdir(att.name),
               att.file,
               (ratio) => patchUpload(att.uid, { percent: Math.round(ratio * 100) }),
-              att.purpose,
-              att.readingMode,
             );
             patchUpload(att.uid, { percent: 100, status: 'done' });
-            return { att, path: saved.path };
+            // 平台按结构识别并预填了用途：告诉助手，免得它再按「无 schema / 无术语表」处理
+            const detectedLabel = DETECTED_PURPOSE_LABELS[saved.detected?.purpose];
+            const label = detectedLabel ? `${saved.path}（已自动标为${detectedLabel}）` : saved.path;
+            return { att, path: saved.path, label };
           } catch (error) {
             patchUpload(att.uid, { status: 'error', error: error.message });
             return { att, error };
@@ -1148,7 +1200,7 @@ export default function ChatPane({
         message.error(`${failed.length} 个文件上传失败：${failed[0].error.message}`);
         return;
       }
-      const uploaded = results.map((r) => r.path);
+      const uploaded = results.map((r) => r.label);
       const prefix = uploaded.length
         ? `（我通过界面上传了资料，已存入工作区：${uploaded.join('、')}）\n`
         : '';
@@ -1178,8 +1230,6 @@ export default function ChatPane({
       name: f.name,
       file: f.file,
       preview: null,
-      purpose: f.purpose,
-      readingMode: f.readingMode,
     }));
     onInitialFilesConsumed?.();
     void send('这是本项目的初始领域资料，请接收并简要浏览，等待我的下一步指令。', atts);
@@ -1406,7 +1456,6 @@ export default function ChatPane({
         : state === 'error'
           ? { cls: 'error', text: '出错了' }
           : { cls: 'idle', text: '空闲' };
-  const ctxInfo = describeContext(ctx);
   // 运行、排队、上传或消息未落定时不能换会话：引擎同一时刻只绑定一条会话
   const conversationBusy = state === 'running' || state === 'queued' || uploading || Boolean(pending);
 
@@ -1415,6 +1464,11 @@ export default function ChatPane({
     () => items.filter((i) => i.role === 'user').map((i) => i.content),
     [items],
   );
+  const ctxInfo = describeContext(ctx, {
+    fresh: !userMessages.length && !pending && !skippedEvents,
+  });
+  // 首轮还没结束时 calls 为 0，但逐次记下的 token 已经有了
+  const hasUsage = Boolean(usage && (usage.calls > 0 || usage.output_tokens > 0));
   const onRecallKey = (event) => {
     if (state === 'running' || state === 'queued') return;
     if (event.key === 'Escape' && recallIndexRef.current !== -1) {
@@ -1486,12 +1540,13 @@ export default function ChatPane({
           onSwitch={(id) => setSelection({ projectId: project.id, id })}
         />
         <span style={{ flex: 1 }} />
-        {usage && usage.calls > 0 && (
+        {hasUsage && (
           <Popover
             placement="bottomRight"
             content={
               <div className="usage-pop">
-                <div>调用 {usage.calls} 次</div>
+                <div>项目累计（含全部会话）</div>
+                {usage.calls > 0 && <div>调用 {usage.calls} 次</div>}
                 <div>输入 {(usage.input_tokens / 1000).toFixed(1)}k tokens</div>
                 <div>输出 {(usage.output_tokens / 1000).toFixed(1)}k tokens</div>
                 {metrics?.done && metrics.cacheRate != null && (
@@ -1509,14 +1564,16 @@ export default function ChatPane({
           <Tooltip title={ctxInfo.text}>
             <svg className={`ctx-ring${ctxInfo.level ? ` ${ctxInfo.level}` : ''}`} viewBox="0 0 20 20">
               <circle className="ctx-ring-bg" cx="10" cy="10" r="8" />
-              <circle
-                className="ctx-ring-fg"
-                cx="10"
-                cy="10"
-                r="8"
-                strokeDasharray={`${(ctxInfo.pct / 100) * 50.27} 50.27`}
-                transform="rotate(-90 10 10)"
-              />
+              {ctxInfo.pct > 0 && (
+                <circle
+                  className="ctx-ring-fg"
+                  cx="10"
+                  cy="10"
+                  r="8"
+                  strokeDasharray={`${(ctxInfo.pct / 100) * 50.27} 50.27`}
+                  transform="rotate(-90 10 10)"
+                />
+              )}
             </svg>
           </Tooltip>
         )}
@@ -1626,14 +1683,12 @@ export default function ChatPane({
             }
             if (item.role === 'changes') {
               const { added = [], modified = [], deleted = [] } = item.content;
-              const total = added.length + modified.length + deleted.length;
               return (
                 <ChangesCard
                   key={item.key}
                   added={added}
                   modified={modified}
                   deleted={deleted}
-                  total={total}
                   knownPaths={knownPaths}
                   onOpenFile={onOpenFile}
                   onOpenDiff={() =>

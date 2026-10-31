@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ... import config
-from .base import CONFIG_ERROR, FRIENDLY_ERROR, EngineContext, safe_json
+from .base import FRIENDLY_ERROR, EngineContext, config_error_for, safe_json
 
 _RAW_ERROR_PATTERN = None  # 延迟编译
 _CONFIG_ERROR_PATTERN = None
@@ -29,7 +29,7 @@ def _looks_like_config_error(text: str) -> bool:
         import re
 
         _CONFIG_ERROR_PATTERN = re.compile(
-            r"Not logged in|/login|Invalid API key|authentication_error|"
+            r"Not logged in|/login|Invalid API key|authentication_error|authentication_failed|"
             r"invalid x-api-key|401 Unauthorized|status.?401",
             re.IGNORECASE,
         )
@@ -48,6 +48,28 @@ def _looks_like_raw_error(text: str) -> bool:
             re.IGNORECASE,
         )
     return bool(_RAW_ERROR_PATTERN.search(text or ""))
+
+
+def _result_failed(message: Any) -> bool:
+    """Return whether an SDK result explicitly reports a failed turn."""
+    if bool(getattr(message, "is_error", False)):
+        return True
+    subtype = str(getattr(message, "subtype", "") or "")
+    return subtype.startswith("error")
+
+
+def _result_error_text(message: Any) -> str:
+    """Collect structured failure details for a legacy error body."""
+    parts: list[str] = []
+    for value in (
+        getattr(message, "error", None),
+        getattr(message, "errors", None),
+        getattr(message, "result", None),
+        getattr(message, "stop_reason", None),
+    ):
+        if value:
+            parts.append(str(value))
+    return "\n".join(parts)
 
 
 def _mark_workspace_trusted(cwd: Path) -> None:
@@ -113,21 +135,31 @@ def _permission_mode() -> str:
         return config.PERMISSION_MODE
 
 
-def _env_fingerprint() -> str:
+def _env_fingerprint(owner: str = "") -> str:
     import hashlib
 
     return hashlib.sha256(
-        json.dumps(_session_env(), sort_keys=True).encode("utf-8")
+        json.dumps(_owner_env(owner), sort_keys=True).encode("utf-8")
     ).hexdigest()[:16]
 
 
-def _session_env() -> dict:
+def _owner_env(owner: str) -> dict:
+    # 管理员配置仍按原样无参调用 _session_env
+    return _session_env(owner) if owner else _session_env()
+
+
+def _session_env(owner: str = "") -> dict:
+    """owner 为空 = 管理员配置（原行为）；非空 = 该用户的个人 Key。"""
     env = {}
     if config.MAX_THINKING_TOKENS:
         env["MAX_THINKING_TOKENS"] = config.MAX_THINKING_TOKENS
-    try:
-        from .. import model_settings
+    from .. import model_settings
 
+    if owner:
+        # 个人配置出错要让本次连接失败，吞掉会悄悄改用部署机的 Key
+        env.update(model_settings.session_env(owner))
+        return env
+    try:
         env.update(model_settings.session_env())
     except Exception:
         pass
@@ -398,11 +430,15 @@ class ClaudeEngine:
         self._received_any = False
         self._sdk_session_id: str | None = None
         self._fingerprint = ""
-        # 上下文用量：已用取最近一次主代理调用，窗口与触发点连接后后台取一次
+        # 上下文用量：已用取最近一次主代理调用；窗口与触发点见 _init_context_limits
         self._context_used: int | None = None
         self._context_window: int | None = None
         self._compact_at: int | None = None
         self._limits_task: asyncio.Task | None = None
+        self._limits_after_turn = False
+        # Hold text-only assistant messages until the same turn's structured
+        # result confirms success or failure of a legacy CLI envelope.
+        self._pending_assistant: dict | None = None
 
     # ---- 连接生命周期 ----
 
@@ -427,20 +463,46 @@ class ClaudeEngine:
         self.resume_attempted = bool(resume_id)
         self._received_any = False
         self.client = client
-        self._fingerprint = _env_fingerprint()
+        self._fingerprint = _env_fingerprint(self._ctx.model_owner)
         self._context_used = None
         self._cancel_limits_task()
-        self._limits_task = asyncio.create_task(self._load_context_limits(client))
+        self._init_context_limits()
         return bool(resume_id)
 
+    def _init_context_limits(self) -> None:
+        """连接后定窗口与触发点，不能挡住首条消息。
+
+        向 CLI 查用量时，它会先对网关逐类计数 token（一次十几个请求）再处理后续消息；
+        网关不支持计数时每个请求要等到失败，首条消息因此空等几十秒到几分钟。
+        CLI 按环境变量定窗口的模型（非 Claude 官方模型名）本地按同一规则算出；
+        Claude 官方模型名按 CLI 内置窗口，本地不知道，等首轮结束再查。
+        """
+        from .. import model_settings
+
+        env = _owner_env(self._ctx.model_owner)
+        if model_settings.cli_uses_env_window(env.get("ANTHROPIC_MODEL", "")):
+            self._context_window, self._compact_at = model_settings.cli_context_limits(env)
+            self._limits_after_turn = False
+        else:
+            self._context_window = self._compact_at = None
+            self._limits_after_turn = True
+
+    def _load_limits_after_turn(self) -> None:
+        if not self._limits_after_turn or self.client is None:
+            return
+        self._limits_after_turn = False
+        self._limits_task = asyncio.create_task(self._load_context_limits(self.client))
+
     async def _load_context_limits(self, client: Any) -> None:
-        """get_context_usage 一次约 5 秒，放后台只取一次；旧版 CLI 不支持时只显示已用量。"""
+        """向 CLI 查窗口与触发点（Claude 官方模型名用），首轮结束后在后台取一次；旧版 CLI 不支持时只显示已用量。"""
         try:
             usage = await asyncio.wait_for(client.get_context_usage(), timeout=60)
         except Exception:
             # 旧版 CLI 不支持或超时：按取不到处理。CancelledError 是 BaseException，不会落到这里
             usage = None
-        self._context_window, self._compact_at = context_limits(usage, _session_env())
+        self._context_window, self._compact_at = context_limits(
+            usage, _owner_env(self._ctx.model_owner)
+        )
 
     def _cancel_limits_task(self) -> None:
         if self._limits_task is not None and not self._limits_task.done():
@@ -481,7 +543,12 @@ class ClaudeEngine:
             pass
 
     def config_stale(self) -> bool:
-        return bool(self._fingerprint) and self._fingerprint != _env_fingerprint()
+        return bool(self._fingerprint) and self._fingerprint != _env_fingerprint(
+            self._ctx.model_owner
+        )
+
+    def context_limits(self) -> tuple[int | None, int | None]:
+        return self._context_window, self._compact_at
 
     # ---- 事件流 ----
 
@@ -495,24 +562,60 @@ class ClaudeEngine:
                 if token and token != self._sdk_session_id:
                     self._sdk_session_id = token
                     self._ctx.save_resume_token(token)
+                if self._pending_assistant is not None:
+                    if isinstance(message, ResultMessage):
+                        pending = self._pending_assistant
+                        self._pending_assistant = None
+                        if _result_failed(message):
+                            failure_text = _result_error_text(message)
+                            for block in pending["blocks"]:
+                                if block.get("kind") != "text":
+                                    continue
+                                original = block["text"]
+                                combined = original + "\n" + failure_text
+                                source = (
+                                    "assistant_text"
+                                    if _looks_like_raw_error(original)
+                                    else "result_error"
+                                )
+                                self._ctx.log_error(source, original)
+                                block["text"] = (
+                                    config_error_for(self._ctx.model_owner)
+                                    if _looks_like_config_error(combined)
+                                    else FRIENDLY_ERROR
+                                )
+                        yield pending
+                    else:
+                        yield self._pending_assistant
+                        self._pending_assistant = None
+
                 event = normalize_message(message)
+                assistant_error = getattr(message, "error", None)
+                usage_event = self._track_context(event) if event else None
                 if event and event.get("type") == "assistant_message":
-                    # CLI 把 API 错误当正文回流时，替换为友好提示并留档原文
-                    for block in event["blocks"]:
-                        if block.get("kind") == "text" and _looks_like_raw_error(
-                            block["text"]
-                        ):
-                            self._ctx.log_error("assistant_text", block["text"])
-                            block["text"] = (
-                                CONFIG_ERROR
-                                if _looks_like_config_error(block["text"])
-                                else FRIENDLY_ERROR
-                            )
+                    if assistant_error:
+                        evidence = str(assistant_error)
+                        for block in event["blocks"]:
+                            if block.get("kind") == "text":
+                                self._ctx.log_error("assistant_error", block["text"])
+                                combined = block["text"] + "\n" + evidence
+                                block["text"] = (
+                                    config_error_for(self._ctx.model_owner)
+                                    if _looks_like_config_error(combined)
+                                    else FRIENDLY_ERROR
+                                )
+                        yield event
+                        continue
+                    if not any(b.get("kind") == "tool_use" for b in event["blocks"]):
+                        self._pending_assistant = event
+                        continue
                 if event:
-                    usage_event = self._track_context(event)
                     if usage_event:
                         yield usage_event
                     yield event
+            if self._pending_assistant is not None:
+                yield self._pending_assistant
+                self._pending_assistant = None
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -520,13 +623,30 @@ class ClaudeEngine:
             if self.resume_attempted and not self._received_any:
                 self._ctx.clear_resume_token()
             await self.disconnect()
+            if self._pending_assistant is not None:
+                pending = self._pending_assistant
+                self._pending_assistant = None
+                failure_text = str(exc)
+                for block in pending["blocks"]:
+                    if block.get("kind") != "text":
+                        continue
+                    self._ctx.log_error("session_error", block["text"])
+                    combined = block["text"] + "\n" + failure_text
+                    block["text"] = (
+                        config_error_for(self._ctx.model_owner)
+                        if _looks_like_config_error(combined)
+                        else FRIENDLY_ERROR
+                    )
+                yield pending
             # SIGTERM（服务重启/会话终止）不是错误，不给用户留红色横幅
             if getattr(exc, "exit_code", None) == 143 or "exit code 143" in str(exc):
                 yield {"type": "_engine_end", "reason": "closed"}
             else:
                 self._ctx.log_error("session", str(exc))
                 friendly = (
-                    CONFIG_ERROR if _looks_like_config_error(str(exc)) else FRIENDLY_ERROR
+                    config_error_for(self._ctx.model_owner)
+                    if _looks_like_config_error(str(exc))
+                    else FRIENDLY_ERROR
                 )
                 yield {"type": "_engine_end", "reason": "error", "error": friendly}
 
@@ -537,13 +657,15 @@ class ClaudeEngine:
             self._context_used = event["context_tokens"]
         elif kind == "context_compacted":
             self._context_used = event.get("post_tokens")
-        elif kind == "result" and self._context_used:
-            return {
-                "type": "context_usage",
-                "used": self._context_used,
-                "window": self._context_window,
-                "compact_at": self._compact_at,
-            }
+        elif kind == "result":
+            self._load_limits_after_turn()
+            if self._context_used:
+                return {
+                    "type": "context_usage",
+                    "used": self._context_used,
+                    "window": self._context_window,
+                    "compact_at": self._compact_at,
+                }
         return None
 
     # ---- 权限回调（SDK 契约 → 中立决策 dict）----
@@ -574,8 +696,19 @@ class ClaudeEngine:
             can_use_tool=can_use_tool,
             include_partial_messages=True,
             mcp_servers=_mcp_servers(self._ctx.project_id),
-            env=_session_env(),
+            env=_owner_env(self._ctx.model_owner),
         )
+        if self._ctx.model_owner:
+            # 部署机 ~/.claude/settings.json 的 env 会盖过上面的 env 参数（实测），
+            # 个人 Key 若被它覆盖就会悄悄改用部署机的 Key；--settings 优先级更高。
+            # 只覆盖网关 / Key / 模型，其余变量仍与管理员配置下的会话一致。
+            # 管理员配置（model_owner 为空）不走这里，保持原行为
+            gateway_env = {
+                name: value
+                for name, value in kwargs["env"].items()
+                if name.startswith("ANTHROPIC_")
+            }
+            kwargs["settings"] = json.dumps({"env": gateway_env})
         if resume_id:
             kwargs["resume"] = resume_id
         if config.CLI_PATH:

@@ -57,7 +57,7 @@ Derive `OPERATION_NAME` from `OPERATION_PATH`（取 basename 去掉 `.md`）。�
 
 **If `TESTCASE_PATH` exists:**
 
-Read and parse the file. 解析规则（与 `.claude/templates/testcase-template.md` 对齐）：
+使用 `python3 .claude/scripts/trace_inputs.py "{TESTCASE_PATH}" --output "tmp/trace-inputs.json"` 解析，禁止另写临时正则转换器。非零退出立即记录输入错误，不进入推演。解析规则（与 `.claude/templates/testcase-template.md` 对齐）：
 - H1 首行 `# 测试场景：{OPERATION_NAME}` 验证逻辑名一致（不一致时提示用户并让其确认是否继续）。
 - 每个 `## 场景 N：{name}` 段落提取 `输入`、`预期路径`、`数据来源` 三项，构造 `SAVED_SCENARIOS` 列表。
 
@@ -108,12 +108,12 @@ Aim for 3–6 scenarios depending on operation complexity.
 
 ## Step 4: 设计阶段确认（设计与执行的硬隔离）
 
-> 设计阶段的产出是「测试场景」，它的成色用 **设计覆盖率** 衡量；执行阶段的产出才是「推演结果」，用 **推演通过率** 衡量。两者必须分开汇报，不可混为一谈。本步是设计阶段的硬门——未确认不进入执行。
+> 设计阶段核对具体缺失分支，不展示覆盖率数字或百分比；执行阶段才汇报推演结果。本步是设计阶段的硬门——未确认不进入执行。
 
 Step 1 已解析逻辑中所有判断节点的分支列表，记总分支数为 `TOTAL_BRANCHES`；从 `SCENARIOS` 的「预期路径」字段汇总每个场景命中的分支，记去重后的覆盖分支数为 `COVERED_BRANCHES`。
 
 计算：
-- 设计覆盖率 = `COVERED_BRANCHES / TOTAL_BRANCHES`
+- 内部保留分支集合用于缺项检查，不展示覆盖率统计。
 - 未覆盖分支清单 = `TOTAL_BRANCHES - COVERED_BRANCHES` 中具体未被命中的 (判断节点, 分支) 对
 
 **Operation 范式 / 断言驱动测试参考提醒（可选）**：在展示场景并请求确认前，按 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §七「校验完成或 trace 场景确认前」与 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §十一「trace 场景确认前」输出提示；若用户本会话已表达"不需要 / 知道了 / 已判别 / 已按断言型补充"，本次不再提示。本命令本次执行只触发一次。
@@ -125,13 +125,13 @@ Show all generated scenarios and ask:
 💡 可选参考：现有校验/追踪默认更适合 SOP 流程型；若本次 Operation 包含规则引擎、红线拦截、连续阈值、多判定器组合或审计链，可先对照 Operation 范式。
 可参阅 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §三 / §四核对范式；若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §三 / §八，补充规则覆盖、约束边界、退化逻辑和跳过审计的负面 Case。无需中断当前流程。
 
-**设计覆盖率：{COVERED_BRANCHES}/{TOTAL_BRANCHES}（{pct}%）**
-{若 < 100%，列出未覆盖分支：}
+**待补场景：**
+{有缺项时列出具体未覆盖分支，否则说明本次检查未发现缺项：}
 未覆盖：
 - {判断节点 A} 的「{分支 X}」
 - {判断节点 B} 的「{分支 Y}」
 
-⚠️ 设计覆盖率只衡量「场景覆盖了哪些分支」，不代表逻辑正确。真正的对错由下一阶段「逐步骤推演」给出。
+⚠️ 未发现缺项不代表逻辑正确，仍需逐步骤推演。
 
 - 回复 **确认** → 进入执行阶段（推演）
 - 回复 **添加 {场景描述}** → 补充场景（建议优先补未覆盖分支）
@@ -178,12 +178,17 @@ User 确认后（无论是 复用、补充 还是 重新生成 路径汇合到�
 
 ## Step 5: Dispatch trace-agent
 
+保存确认稿后重新运行统一转换器生成 `tmp/trace-inputs.json`，随后执行：
+`python3 .claude/scripts/trace_inputs.py "{TESTCASE_PATH}" --actual tmp/trace-inputs.json`。
+只有退出 0 才能派遣。交接传路径，不重新手抄/筛选 JSON 字段；记录 source_sha256。
+
 Read `.claude/agents/trace-agent.md`. Dispatch it as a subagent with:
 
 {若 KNOWLEDGE_BLOCK 非空：原样粘贴 KNOWLEDGE_BLOCK 在此处，紧跟一行分隔符 ---}
 
 - OPERATION_PATH = the operation file path
-- SCENARIOS = confirmed scenarios as JSON array
+- TESTCASE_PATH = confirmed testcase file
+- INPUTS_PATH = `tmp/trace-inputs.json`（包含修订与完整 scenarios，不得转抄）
 - OBJECTS_DIR = `ontology/object/`
 - OPERATION_DIR = `ontology/operation/`
 - MOCK_DATA_DIR = `ontology/data-mock/` (or empty if skipped)
@@ -192,14 +197,16 @@ Read `.claude/agents/trace-agent.md`. Dispatch it as a subagent with:
 
 请阅读并遵循 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md` 的「业务知识识别守则」。
 
-Wait for it to return a JSON array of trace results.
+Wait for it to return a JSON array of trace results. 原样保存到 `tmp/trace-results.json`，报告前执行
+`python3 .claude/scripts/trace_inputs.py "{TESTCASE_PATH}" --actual tmp/trace-inputs.json --results tmp/trace-results.json`。
+对场景 ID、实际初始输入、类型和修订全部核对，失败不得提交通过报告。
 
 ## Step 6: Save report
 
 Generate filename: `reports/{YYYYMMDD}-{HHMMSS}-trace.md` using `Asia/Shanghai` time.
 
 汇总指标：
-- **设计覆盖率** = `COVERED_BRANCHES / TOTAL_BRANCHES`（来自 Step 4，描述场景对判断分支的覆盖程度）
+- 保留 Step 4 的具体缺失分支列表，不显示覆盖率数字或统计。
 - **推演通过率** = `PASS_COUNT / TOTAL_SCENARIOS`，其中 `PASS_COUNT` 仅统计 `reached_end == true` 且 `issues == []` 的场景
 
 Write the full trace results to the report file。报告**必须**包含以下两个独立小节，不可只写一个综合数字：
@@ -207,10 +214,7 @@ Write the full trace results to the report file。报告**必须**包含以下�
 ```markdown
 # 追踪报告（{timestamp} Asia/Shanghai）
 
-## 测试设计覆盖率
-- 判断分支总数：{TOTAL_BRANCHES}
-- 已覆盖分支数：{COVERED_BRANCHES}
-- 设计覆盖率：{pct}%
+## 场景缺项检查
 - 未覆盖分支：{若有则列出，否则填"无"}
 
 ## 推演通过率
@@ -232,10 +236,10 @@ Show only the summary in terminal:
 
 "**追踪总结：**
 
-设计覆盖率：{COVERED_BRANCHES}/{TOTAL_BRANCHES}（{pct}%）— 衡量场景对分支的覆盖
+待补场景：{具体缺失分支或本次未发现缺项}
 推演通过率：{PASS_COUNT}/{TOTAL_SCENARIOS}（{pct}%）— 衡量场景实际推演是否通过
 
-⚠️ 两者意义不同：设计覆盖率高 ≠ 逻辑没问题；推演通过率低意味着逻辑或数据有缺陷。
+⚠️ 未发现缺项不代表逻辑正确；推演通过率低意味着逻辑或数据有缺陷。
 
 - 发现问题：{issue_count}
   - 分支缺失：{n}
@@ -255,10 +259,10 @@ If issues were found, ask:
 "**下一步建议：**
 - 回复 **修复** → 逐个处理（与 validate 流程类似，逐条提出修改方案）
 - 回复 **再追踪** → 修改场景后重新执行
-- 回复 **补充调研**（/ontology-research）→ 定向补充调研后增量提取并重新追踪
+- 回复 **补充资料分析**（/ontology-research）→ 定向补充资料分析后增量提取并重新追踪
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
 
-**If user replies 补充调研:** Ask: "请描述要补充的调研方向（例如：「XX子流程的详细逻辑」「YY业务规则的边界条件」）：". Then `python3 .claude/scripts/state_helper.py release trace`，再 read `.claude/commands/ontology-research.md` and follow it using **追加调研（append）mode** with the user's direction as FOCUS_DIRECTIONS; **skip research's Step 5 next-step prompt**. After research completes, ask: "调研完成。要增量提取哪一类？回复 **对象**、**逻辑** 或 **否**。" — if object, read `.claude/commands/ontology-extract-object.md` and follow it using **incremental mode**; if operation, read `.claude/commands/ontology-extract-operation.md` and follow it using **incremental mode**. After extract summary, ask: "是否重新追踪？回复 **是** 或 **否**。" — if yes, restart this command from Step 1（restart 时新一轮 Step 0 会重新 acquire）.
+**If user replies 补充资料分析:** Ask: "请描述要补充的分析方向（例如：「XX子流程的详细逻辑」「YY业务规则的边界条件」）：". Then `python3 .claude/scripts/state_helper.py release trace`，再 read `.claude/commands/ontology-research.md` and follow it using **追加资料分析（append）mode** with the user's direction as FOCUS_DIRECTIONS; **skip research's Step 5 next-step prompt**. After research completes, ask: "资料分析完成。要增量提取哪一类？回复 **对象**、**逻辑** 或 **否**。" — if object, read `.claude/commands/ontology-extract-object.md` and follow it using **incremental mode**; if operation, read `.claude/commands/ontology-extract-operation.md` and follow it using **incremental mode**. After extract summary, ask: "是否重新追踪？回复 **是** 或 **否**。" — if yes, restart this command from Step 1（restart 时新一轮 Step 0 会重新 acquire）.
 
 **If user replies 完成:** `python3 .claude/scripts/state_helper.py release trace`，Stop.
 

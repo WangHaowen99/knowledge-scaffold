@@ -1,6 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
+if [ "${1:-}" = "cce" ]; then
+    shift
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "${script_dir}/joint-cce.py" ]; then
+        exec python3 -B "${script_dir}/joint-cce.py" "$@"
+    fi
+    exec python3 -B "${script_dir}/../modeling/deploy/cce/joint-cce.py" "$@"
+fi
+
 CONSUMER_PACKAGE=""
 MODELING_PACKAGE=""
 ONTO_MODELING_PACKAGE=""
@@ -481,6 +490,10 @@ deploy_onto_modeling() {
     chmod 600 "${env_file}"
     write_env_value "${env_file}" ONTO_WEB_PORT "${ONTO_WEB_PORT}"
     write_env_value "${env_file}" ONTO_MODELING_EXTERNAL_AUTH_NETWORK "${network}"
+    # consumer 的 jiuwenbox socket 卷：onto-modeling 只读挂载后，脚本运行验证在沙箱中执行；
+    # 现场探测为准，探测不到写空值，验证改在 onto-modeling 容器内执行
+    write_env_value "${env_file}" ONTO_MODELING_JIUWENBOX_SOCKET_VOLUME \
+        "$(container_mount_volume onto-agent-backend /run/jiuwenbox || true)"
     # 评测调用 Modeling Workbench 走容器网络，与宿主端口无关
     [ -n "$(env_get "${env_file}" ONTO_WEB_MODELING_URL)" ] \
         || write_env_value "${env_file}" ONTO_WEB_MODELING_URL 'http://mw-modeling:5100'

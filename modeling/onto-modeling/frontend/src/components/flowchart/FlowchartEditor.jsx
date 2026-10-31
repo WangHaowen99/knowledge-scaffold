@@ -352,7 +352,6 @@ export default function FlowchartEditor({
   onSave,
   onStateChange,
   onRecommendDiagram,
-  onImportMermaid,
   onCreateBlankDiagram,
   disabled = false,
 }) {
@@ -630,7 +629,7 @@ export default function FlowchartEditor({
             disabledReason={(() => { if (session.dirty) return '请先保存当前流程图修改，再继续添加'; return session.saveStatus === 'saving'
                 ? '草稿保存完成后可继续添加'
                 : (() => { if (disabled) return '当前流程图正在处理，请稍后再试'; return ''; })(); })()}
-            onRecommend={onRecommendDiagram} onImportMermaid={onImportMermaid}
+            onRecommend={onRecommendDiagram}
             onCreateBlank={createBlank} />
         </div>
       </nav>

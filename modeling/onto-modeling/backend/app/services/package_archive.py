@@ -13,8 +13,11 @@ ontology/operation 两个**单数**目录数数，正式导入（import_zip）�
 from __future__ import annotations
 
 import zipfile
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 
+from . import solver_contract
+from .document_metadata import name_frontmatter, report_name
 from .workspace import (
     IMPORTED_PACKAGE_DIR,
     META_FILE,
@@ -147,6 +150,31 @@ def _front_field(raw: bytes, field: str) -> str:
     return ""
 
 
+class _PackageFiles(Mapping[str, bytes]):
+    """包根相对路径 → 成员字节的惰性视图：求解契约只读它引用到的文件，不整包读入内存。"""
+
+    def __init__(self, zf: zipfile.ZipFile, root: str):
+        self._zf = zf
+        self._members = {
+            info.filename[len(root) :]: info.filename
+            for info in zf.infolist()
+            if _is_importable(info) and info.filename.startswith(root)
+        }
+
+    def __getitem__(self, rel: str) -> bytes:
+        return self._zf.read(self._members[rel])
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._members)
+
+    def __len__(self) -> int:
+        return len(self._members)
+
+
+def _package_solver(zf: zipfile.ZipFile, root: str) -> solver_contract.PackageSolver:
+    return solver_contract.extract_package_solver(_PackageFiles(zf, root))
+
+
 def _blockers(kind: str, root: str, counts: dict[str, int], tops: list[str]) -> list[str]:
     """阻断项：有阻断项就不建项目。
 
@@ -181,6 +209,7 @@ def inspect_archive(archive_path: Path) -> dict:
     skipped: list[str] = []
     names: set[str] = set()
     manifest = b""
+    solver = solver_contract.PackageSolver()
     files = 0
     total_size = 0
     try:
@@ -204,6 +233,7 @@ def inspect_archive(archive_path: Path) -> dict:
             root = _package_root(names) if kind == KIND_KNOWLEDGE_PACKAGE else None
             if root is not None:
                 manifest = zf.read(f"{root}{MANIFEST_NAME}")
+                solver = _package_solver(zf, root)
     except zipfile.BadZipFile as exc:
         raise WorkspaceError(f"压缩包无法解析：{exc}") from exc
 
@@ -225,6 +255,9 @@ def inspect_archive(archive_path: Path) -> dict:
         counts = {key: 0 for key in ENTITY_KEYS}
 
     tops = sorted(top_dirs)
+    blockers = _blockers(kind, root, counts, tops)
+    # 求解契约导入后要能原样再发布；带病导入只会把问题推迟到发布时、且丢了定位
+    blockers += [f"求解契约：{problem}（{problem.path}）" for problem in solver.problems]
     return {
         "kind": kind,
         "kind_label": KIND_LABELS[kind],
@@ -236,7 +269,9 @@ def inspect_archive(archive_path: Path) -> dict:
         "package_name": _front_field(manifest, "name"),
         "package_version": _front_field(manifest, "version"),
         **counts,
-        "blockers": _blockers(kind, root, counts, tops),
+        "solver_operations": len(solver.operation_keys),
+        "solver_problems": [problem.as_dict() for problem in solver.problems],
+        "blockers": blockers,
     }
 
 
@@ -272,6 +307,15 @@ def _workspace_target(rel: str, script_keys: dict[str, str]) -> tuple[str, str] 
     return None
 
 
+def _workspace_document(text: str) -> str:
+    """Keep business-name metadata when removing the package contract frontmatter."""
+    try:
+        prefix = name_frontmatter(report_name(text))
+    except ValueError as exc:
+        raise WorkspaceError(str(exc)) from exc
+    return prefix + _strip_frontmatter(text)
+
+
 def _write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
@@ -284,10 +328,19 @@ def materialize(workspace_root: Path, archive_path: Path, package_root: str) -> 
     frontmatter 与 mappings/*.json 里，而新工作区没有数据源文件、推导不出这份绑定
     （package_mapping.resolve_object_tables 依赖已上传的表格），工作区文档剥掉
     frontmatter 后只有留底区还留着它。只搬目录就会在这里丢掉引用。
+
+    求解 Operation 的 frontmatter 与 sidecar 由 solver_contract 展开到受管的
+    ontology/solver/<key>/，发布时据此原样还原。
     """
     stats = {key: 0 for key in ENTITY_KEYS}
     stats["preserved"] = 0
     with zipfile.ZipFile(archive_path) as zf:
+        solver = _package_solver(zf, package_root)
+        if solver.problems:
+            raise WorkspaceError("；".join(f"求解契约：{problem}" for problem in solver.problems))
+        for workspace_rel, data in solver.workspace_files.items():
+            _write(workspace_root / workspace_rel, data)
+        stats["solver_operations"] = len(solver.operation_keys)
         paths = [info.filename for info in zf.infolist() if _is_importable(info)]
         script_keys = _script_keys(zf, paths, package_root)
         for path in paths:
@@ -301,9 +354,9 @@ def materialize(workspace_root: Path, archive_path: Path, package_root: str) -> 
                 continue
             key, workspace_rel = target
             if workspace_rel.endswith(".md"):
-                # 工作区文档不带包契约 frontmatter；发布时由 export_package_zip 重新注入
+                # 去掉包契约字段，保留业务原名；发布时重新注入包契约
                 try:
-                    data = _strip_frontmatter(data.decode("utf-8")).encode("utf-8")
+                    data = _workspace_document(data.decode("utf-8")).encode("utf-8")
                 except UnicodeDecodeError:
                     pass
             _write(workspace_root / workspace_rel, data)

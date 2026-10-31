@@ -496,6 +496,7 @@ export class PackageArtifactStore {
       const packageVersion = requiredText(input.spec.version, '包版本', 100);
       const note = optionalText(input.note, '版本备注', 1000);
       const current = await this.repository.snapshot(projectId);
+      await input.beforeCommit?.();
       const target = importedPackageFiles(input.spec, input.coverage, input.files);
       const changes = changesForManagedFiles(current.files, target);
       const id = `pv_${randomUUID().slice(0, 12)}`;

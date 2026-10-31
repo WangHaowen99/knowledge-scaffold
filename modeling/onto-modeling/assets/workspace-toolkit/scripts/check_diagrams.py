@@ -18,12 +18,16 @@ import os
 import re
 import sys
 import xml.etree.ElementTree as ET
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 DEFAULT_DIR = "ontology/diagrams"
 DEFAULT_LEGEND = "resource/diagrams/图示说明定义.drawio"
-REPORT_TZ = ZoneInfo("Asia/Shanghai")
+try:
+    REPORT_TZ = ZoneInfo("Asia/Shanghai")
+except ZoneInfoNotFoundError:
+    # Windows may not ship an IANA timezone database. Report time stays UTC+8.
+    REPORT_TZ = timezone(timedelta(hours=8))
 
 FIX_SUGGESTIONS = [
     (r"缺少开始节点",              "添加 terminator 节点，连接到流程第一个节点"),
@@ -51,19 +55,32 @@ def parse_diagram(filepath):
     tree = ET.parse(filepath)
     cells = {}
     parents = {}
+    wrappers = {child: parent for parent in tree.iter() for child in parent}
+    pages = list(tree.getroot().iter("mxGraphModel"))
+    page_prefixes = {cell: f"page{index}:" for index, page in enumerate(pages)
+                     for cell in page.iter("mxCell")} if len(pages) > 1 else {}
     for cell in tree.getroot().iter("mxCell"):
-        cid = cell.get("id")
+        wrapper = wrappers.get(cell)
+        cid = cell.get("id") or (
+            wrapper.get("id") if wrapper is not None and wrapper.tag in ("object", "UserObject") else None
+        )
         if not cid:
+            if cell.get("edge") == "1" or cell.get("vertex") == "1":
+                raise ValueError("节点或连线缺少 id，无法可靠核验结构")
             continue
+        prefix = page_prefixes.get(cell, "")
+        cid = prefix + cid
+        if cid in cells:
+            raise ValueError(f"节点或连线 id 重复：{cid}")
         cells[cid] = {
-            "value":  cell.get("value", ""),
+            "value":  cell.get("value", wrapper.get("label", "") if wrapper is not None else ""),
             "style":  cell.get("style", "") or "",
             "edge":   cell.get("edge") == "1",
             "vertex": cell.get("vertex") == "1",
-            "source": cell.get("source"),
-            "target": cell.get("target"),
+            "source": prefix + cell.get("source") if cell.get("source") else None,
+            "target": prefix + cell.get("target") if cell.get("target") else None,
         }
-        parents[cid] = cell.get("parent")
+        parents[cid] = prefix + cell.get("parent") if cell.get("parent") else None
     return cells, parents
 
 
@@ -155,9 +172,13 @@ def is_annotation_target(cid, cells):
 
 # ── 结构检查（共享引擎） ─────────────────────────────────────────────────────
 
-def check_diagram(filepath):
-    cells, _ = parse_diagram(filepath)
-    virtual_signatures = virtual_style_signatures()
+def check_diagram(filepath, legend_path=DEFAULT_LEGEND):
+    try:
+        cells, _ = parse_diagram(filepath)
+    except (ET.ParseError, ValueError, OSError) as exc:
+        return {"nodes": 0, "edges": 0, "start": 0, "end": 0,
+                "issues": [f"流程图无法解析：{exc}"], "dangling_count": 0}
+    virtual_signatures = virtual_style_signatures(legend_path)
 
     edges = {k: v for k, v in cells.items() if v["edge"]}
     nodes = {}
@@ -220,6 +241,10 @@ def check_diagram(filepath):
 
     dangling = []
     for eid, e in edges.items():
+        absent = [key for key in ("source", "target") if e[key] and e[key] not in cells]
+        if absent:
+            issues.append("连线 %s 引用了不存在的端点：%s" % (eid, "、".join(e[key] for key in absent)))
+            dangling.append(eid)
         if not e["source"] or not e["target"]:
             label = re.sub(r"<[^>]+>", "", e["value"] or "").strip()
             if not e["source"] and e["target"]:

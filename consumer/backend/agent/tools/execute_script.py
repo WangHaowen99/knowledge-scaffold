@@ -32,6 +32,7 @@ from agent.tools.business_data.script_env import (
 )
 from agent.tools.script_parameters import (
     append_script_parameter_cli_argument,
+    format_number_cli_value,
     is_runtime_parameter,
     runtime_parameter_field,
     script_parameter_argument_keys,
@@ -915,7 +916,10 @@ def _spawn_with_args_file(
                 "with open({!r}) as _f:\n"
                 "  sys.argv = [{!r}] + json.load(_f)\n"
                 "os.unlink({!r})\n"
-                'runpy.run_path({!r}, run_name="__main__")\n'.format(args_path, target, args_path, target)
+                # Like `python script.py`: the script directory comes first on
+                # sys.path, so the script can import its sibling modules.
+                "sys.path.insert(0, os.path.dirname({!r}))\n"
+                'runpy.run_path({!r}, run_name="__main__")\n'.format(args_path, target, args_path, target, target)
             )
 
         # Strip oversized env vars — the loader doesn't need them and they
@@ -1654,7 +1658,9 @@ def _validate_structured_arguments_against_request(
     The check is deliberately conservative: it activates only when multiple scalar
     values from most items locate a unique request segment. It then verifies fields
     shared by the collection against each located segment. Collections built from
-    internal data, or requests without item-level evidence, are ignored.
+    internal data, or requests without item-level evidence, are ignored. Values every
+    item shares do not locate segments, since a request usually states them once for all
+    items; located items still verify those values against their own segments.
     """
     full_request = _normalize_argument_evidence(request_text)
     normalized_tool_evidence = _normalize_argument_evidence(trusted_tool_evidence)
@@ -1694,14 +1700,7 @@ def _validate_structured_arguments_against_request(
             field: value for field, value in record.items()
             if any(evidence.get(field) == value for evidence in evidence_records)
         }
-        if (
-            len(supported) >= 2
-            and any(_is_identity_field(field) for field in supported)
-            and not any(
-                all(evidence.get(field) == value for field, value in supported.items())
-                for evidence in evidence_records
-            )
-        ):
+        if _mixes_evidence_records(supported, evidence_records):
             reject("evidence_record_mismatch", path,
                    "{} combines fields from different tool-result records".format(path))
     raw_segments = [
@@ -1720,9 +1719,15 @@ def _validate_structured_arguments_against_request(
         ):
             continue
         item_fields = [_flatten_item_field_evidence(item) for item in items]
+        # A value every item shares (such as a common category) is often stated once for the
+        # whole collection, so it cannot show which request item a record was taken from.
+        # It is left out when locating segments but still verified field by field below.
+        shared_values = set.intersection(*(set(value for _field, value in fields) for fields in item_fields))
         anchored: List[tuple[int, int, List[tuple[str, str]]]] = []
         for index, fields in enumerate(item_fields):
-            grounded_values = list(dict.fromkeys(value for _field, value in fields if value in full_request))
+            grounded_values = list(dict.fromkeys(
+                value for _field, value in fields if value in full_request and value not in shared_values
+            ))
             if len(grounded_values) < 2:
                 continue
             scores = [sum(1 for value in grounded_values if value in segment) for segment in segments]
@@ -1810,9 +1815,13 @@ def _validate_structured_arguments_against_request(
                 reject("request_item_order", path, "{} item order conflicts with the current request".format(path))
                 continue
 
+        item_values = [
+            [value for value in _flatten_item_evidence(item) if value in full_request]
+            for item in items
+        ]
         evidenced: List[tuple[int, List[int]]] = []
-        for index, item in enumerate(items):
-            values = [value for value in _flatten_item_evidence(item) if value in full_request]
+        for index, values in enumerate(item_values):
+            values = [value for value in values if value not in shared_values]
             if len(values) < 2:
                 continue
             candidates = [
@@ -1898,6 +1907,39 @@ def _argument_records(value: Any, path: str = "arguments") -> List[tuple[str, Di
         for index, nested in enumerate(value):
             records.extend(_argument_records(nested, "{}[{}]".format(path, index)))
     return records
+
+
+def _has_consistent_evidence_source(
+    field: str,
+    value: str,
+    supported: Mapping[str, str],
+    evidence_records: Sequence[Mapping[str, str]],
+) -> bool:
+    """Whether one source row backs ``field`` without contradicting the other supported fields.
+
+    Rows lacking those fields come from independent lookups (other tables); a row
+    holding a different value for them means fields were taken from different
+    rows of the same collection.
+    """
+    for evidence in evidence_records:
+        if evidence.get(field) != value:
+            continue
+        if all(evidence.get(other, expected) == expected for other, expected in supported.items()):
+            return True
+    return False
+
+
+def _mixes_evidence_records(
+    supported: Mapping[str, str],
+    evidence_records: Sequence[Mapping[str, str]],
+) -> bool:
+    """Whether identity-bearing record fields cannot all be traced to consistent source rows."""
+    if len(supported) < 2 or not any(_is_identity_field(field) for field in supported):
+        return False
+    return not all(
+        _has_consistent_evidence_source(field, value, supported, evidence_records)
+        for field, value in supported.items()
+    )
 
 
 def _tool_evidence_records(evidence: str) -> List[Dict[str, str]]:
@@ -2488,7 +2530,63 @@ def handle_execute_script(
         include_stderr_on_success=False,
     )
     consistency_error = _validate_structured_result_consistency(result)
-    return consistency_error or result
+    if consistency_error:
+        return consistency_error
+    return _with_stage_execution_note(result, script_entry=script_entry, operation_key=operation_key)
+
+
+def _with_stage_execution_note(
+    result: str,
+    *,
+    script_entry: Mapping[str, Any],
+    operation_key: str,
+) -> str:
+    """Tell the Agent how a stage script result relates to its parent flow.
+
+    Only a JSON object result is annotated; any other output is returned
+    unchanged so error handling and evidence parsing keep working.
+    """
+    note = _stage_execution_note(script_entry, operation_key)
+    if not note:
+        return result
+    try:
+        payload = json.loads(str(result or "").strip())
+    except ValueError:
+        return result
+    if not isinstance(payload, dict):
+        return result
+    payload["_execution_note"] = note
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _stage_execution_note(script_entry: Mapping[str, Any], operation_key: str) -> str:
+    stage = str(operation_key or "").strip()
+    owner = str(script_entry.get("_borrowed_from") or "").strip()
+    if owner:
+        return (
+            "Operation '{stage}' is a stage of '{owner}'; the full '{owner}' script ran. Use steps['{stage}'] for "
+            "this stage, or the whole result when the full flow was requested."
+        ).format(stage=stage, owner=owner)
+    parents = _quoted_stage_keys(script_entry.get("_stage_of"), " or ")
+    if not parents:
+        return ""
+    owners = _quoted_stage_keys(script_entry.get("_stage_owners"), " or ")
+    if owners:
+        return (
+            "This result covers only the '{stage}' stage of {parents}. If the user asked for the complete result "
+            "of that flow, execute {owners} instead."
+        ).format(stage=stage, parents=parents, owners=owners)
+    return (
+        "This result covers only the '{stage}' stage of {parents}. When the complete {parents} result is "
+        "requested, continue with the remaining documented stages of {parents}."
+    ).format(stage=stage, parents=parents)
+
+
+def _quoted_stage_keys(value: Any, separator: str) -> str:
+    if not isinstance(value, (list, tuple)):
+        return ""
+    keys = [text for text in (str(item or "").strip() for item in value) if text]
+    return separator.join("'{}'".format(key) for key in keys)
 
 
 def _build_cli_args(
@@ -2845,7 +2943,7 @@ def _convert_parameter_value(
             return None, "expected integer"
     if param_type in ("float", "number"):
         try:
-            return str(float(value)), None
+            return format_number_cli_value(value), None
         except (TypeError, ValueError):
             return None, "expected number"
     if param_type in {"bool", "boolean"}:

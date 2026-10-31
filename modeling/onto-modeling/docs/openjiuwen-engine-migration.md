@@ -108,11 +108,19 @@ class EngineContext:
   改写为 Python rails（`before_tool_call` 判定 block/pass，判定逻辑从 shell 直译，
   脚本本体保留供 Claude 引擎继续用）；`settings.json` 的 permissions 白名单映射到
   security engine 配置；
-- **resume**（按 PoC 实测修订）：openjiuwen 的续接形态是**历史回放**——新实例调
-  `agent.create_new_context_engine(session_id, messages=历史消息)` 注水上下文引擎
-  （UserMessage/AssistantMessage 列表）。历史直接来自我们已有的事件 JSONL，引擎适配层
-  做一次事件→消息的映射即可；天然跨进程，且**彻底摆脱容器 HOME 卷上 CLI transcript
-  的依赖**（Dockerfile 里为此做的 HOME 重定向可退役）。`meta.json` 扩展为 `{engine, token}`；
+- **resume**（按 PoC 实测修订，后经续接丢工具调用问题再修订）：首选**框架 checkpoint**——
+  Runner 装配持久化 checkpointer（`DATA_DIR/jiuwen/checkpoints.db`，SQLite），每轮收尾落盘
+  完整会话状态（含工具调用/结果、思考、卸载原文）；DeepAgent 的 agent id 按项目固定
+  （checkpoint 按会话 id + agent id 存取，默认随机 id 会让重建实例读不到存档）。
+  每轮正常收尾后写续接 token，出现待确认交互时先清 token（挂起中断的存档遇到普通消息
+  会被当成卡片答复）。无可用存档时退回**历史回放**——新实例调
+  `agent.create_new_context_engine(session_id, messages=历史消息)` 注水事件 JSONL 里的
+  问答文本（UserMessage/AssistantMessage 列表，不含工具过程：事件日志只存 400 字结果摘录、
+  调用 id 为桥接层自造）。两种方式都跨进程，且**摆脱容器 HOME 卷上 CLI transcript
+  的依赖**。`meta.json` 扩展为 `{engine, token}`，token 只对写下它的引擎有效。
+  启用压缩后，checkpoint 存的是压缩后的上下文（压缩摘要就在其中），续接直接接着摘要；
+  退回历史回放时，压缩摘要随 `context_compacted` 事件写进 JSONL，回放从最近一次摘要接续
+  （摘要 + 该次压缩所在轮次起的对话），不再只靠按预算截断的原始历史；
 - **成本指标**：现取自 Claude result 消息的 usage；Jiuwen 侧挂 token_tracker rail 采集，
   归一化到同一 `result` 事件字段（单轮成本/输入输出 tokens/缓存命中，缓存命中率取决于所接模型
   服务是否回报，取不到则该项显示"—"）；
@@ -168,14 +176,14 @@ class EngineContext:
 ### Phase 0：PoC（1 人周）——先行，Go/No-Go 门
 
 独立脚本（不动产品代码）：`create_deep_agent` + OpenAI 兼容模型跑通 `/ontology-research` 全链
-（读资料 → 联网检索 → ask_user 目标确认 → 产出调研报告 → git 提交）。
+（读资料 → 联网检索 → ask_user 目标确认 → 产出资料分析报告 → git 提交）。
 
 验收清单：
 1. ask_user 挂起/回填闭环可编程对接（不依赖它的 CLI REPL）；
 2. rail 能拦截一次违规写（等价 lock_file_guard 场景）；
 3. 中断后从 checkpoint 恢复继续；
 4. 单会话峰值内存 <80MB（RSS 增量），10 会话并发曲线线性；
-5. 调研报告质量人工评：与 Claude 产出对照可接受。
+5. 资料分析报告质量人工评：与 Claude 产出对照可接受。
 
 **No-Go 条件**：质量不可接受、子代理/ask_user 不稳、或 API 形态与文档严重不符
 → 停止本方案，回落「LiteLLM + 即用即弃」路线（该路线独立有效，不受本方案影响）。
@@ -209,7 +217,9 @@ meta.json 的 engine 字段留到 Phase 2 引擎开关一起做（现仍为单�
   审批 interaction → 通用确认卡；答案经 InteractiveInput 回填续跑；
   历史回放续接（`create_new_context_engine` 注水，24k 字符预算从最近取）；
   cwd（项目 git 区）/ workspace（DATA_DIR/jiuwen/<pid> 私有工件区）分层不污染；
-  result 事件带 TokenTrackingRail 的轮内 tokens 增量（无单价来源，cost 为 None）；
+  result 事件带 TokenTrackingRail 的轮内 tokens 增量（无单价来源，cost 为 None，打断与出错
+  也照实给）；项目用量改为逐次记账：每次模型调用（含子代理）返回后发一条 `model_usage`
+  落盘，result 带 `usage_per_call` 不再重复累加，打断超时、会话回收、进程重启只丢在飞的调用；
 - 引擎路由：项目 meta `engine` 字段（`_engine_class_for`，无字段回落 claude）；
   `PUT /api/projects/{id}/engine` 切换（写权限，切换即关会话）；
   前端项目卡「更多 → 会话引擎」切换弹窗；
@@ -219,6 +229,9 @@ meta.json 的 engine 字段留到 Phase 2 引擎开关一起做（现仍为单�
 - 依赖：requirements 增 openjiuwen（`python_version>=3.11` 标记，本地 venv 已重建为
   3.11 并顺带清理改名遗留软链）；Onto Modeling 不再内置独立 MCP 暴露服务，MCP
   服务统一复用 Modeling 侧 5188 端口；镜像仅保留实际使用的双引擎依赖。
+  filelock 限定 `<4`：openjiuwen 0.1.19 的文件读写锁在两个不同的 task 里加锁、放锁，
+  filelock 4.x 只允许加锁的 task 放锁，放锁失败导致锁泄漏，之后每次读写同一路径都要等满
+  300 秒超时。openjiuwen 修复前不要放开这个上限。
 
 验证状态（2026-09-21 冒烟通过，Phase 2 完成）：69 后端测试全绿；线上端到端
 （v0.9.0 @5100，真实 glm-5.2）——发消息/回复/result 带 tokens；ask_user 弹出
@@ -333,11 +346,11 @@ Jiuwen 还按前置自动补齐了 flowchart 阶段）；差距全部来自 Jiuw
 
 | # | 验收项 | 结果 | 实测数据 |
 |---|---|---|---|
-| 1 | ask_user 程序化闭环 | **通过** | 调研链中 agent 弹出结构化提问（问题 + 3 个带标签选项，与确认卡 schema 同形），`InteractiveInput.update(iid, {"answers": ...})` 回填后续跑 |
+| 1 | ask_user 程序化闭环 | **通过** | 资料分析链中 agent 弹出结构化提问（问题 + 3 个带标签选项，与确认卡 schema 同形），`InteractiveInput.update(iid, {"answers": ...})` 回填后续跑 |
 | 2 | 守卫 rail 拦截 | **通过** | 自定义 `BaseSecurityRail` 子类拦下 locked/ 写入，文件未创建，agent 如实转述被拒原因（lock_file_guard 同语义） |
 | 3 | 跨实例续接 | **通过** | 历史回放注水新实例后暗号找回；会话隔离正常；跨进程按构造成立（历史来自我们的 JSONL） |
 | 4 | 内存 | **通过（远超目标）** | 运行时基线 220MB 一次性；**空闲会话 ≈3MB、活跃轮次 ≈12MB**（目标 <80MB；对比 Claude CLI ~400MB/会话差两个数量级） |
-| 5 | 产出质量 | **通过（待专家复核）** | 调研链 99.7s 收敛：读资料→确认目标→报告 5830 字，16 个字段全映射、规则完整提取、按确认目标组织 |
+| 5 | 产出质量 | **通过（待专家复核）** | 资料分析链 99.7s 收敛：读资料→确认目标→报告 5830 字，16 个字段全映射、规则完整提取、按确认目标组织 |
 | 6 | 子代理派遣（风险 #1 首验） | **通过** | `task_tool` 派遣专职提取子代理→产物落盘→协调者回读汇报，52s，一层委派与现有模式同构 |
 
 ### 实测发现（迁移时要用）
@@ -352,7 +365,8 @@ Jiuwen 还按前置自动补齐了 flowchart 阶段）；差距全部来自 Jiuw
 
 ### PoC 未覆盖（进入 Phase 2/3 验证）
 
-- Web 检索工具（`create_web_tools` 需搜索服务配置，调研链本次仅用本地资料）；
-- 长会话上下文增长下的内存曲线与压缩（ContextProcessorRail 未启用）；
+- Web 检索工具（`create_web_tools` 需搜索服务配置，资料分析链本次仅用本地资料）；
+- 长会话上下文增长下的内存曲线与压缩质量（压缩已由 ContextProcessorRail 启用，触发比例按配置页
+  的窗口与最大输出推算，见 README；未在真实模型下长跑验证）；
 - `enable_subagent_runtime` 常驻子代理模式（本次只验了 task_tool 一层派遣）；
 - 20 条真实命令资产在 glm-5.2 下的产出质量（Phase 3 评测基线双跑）。

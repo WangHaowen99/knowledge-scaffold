@@ -255,7 +255,8 @@ def test_export_matches_import_workbook_nl2sql_and_graph(tmp_path, monkeypatch):
             assert "# 关系" in order_doc and "| 属于 | 客户 |" in order_doc
         else:
             assert order["resource"] == "订单表"
-            assert "# 关系" not in order_doc
+            assert "# 关系" in order_doc and "| 属于 | 客户 |" in order_doc
+            assert "# 关联对象" not in order_doc
 
 
 def test_mock_headers_translated_and_bound_by_object(tmp_path):
@@ -278,10 +279,109 @@ def test_mock_headers_translated_and_bound_by_object(tmp_path):
     assert any("备注" in w for w in plan["warnings"])
 
 
+def test_non_graph_export_preserves_checked_relations_without_table_bindings(tmp_path, monkeypatch):
+    manager, pid, root = _export(tmp_path, monkeypatch, {}, False)
+    snapshot = {
+        "object_a": "# 对象描述\n合成对象 A\n",
+        "object_b": "# 关联对象\n- [[object_a]] → references → 当前对象\n",
+    }
+    # 检查后工作区被修改；打包必须继续使用已检查的对象内容。
+    object_dir = root / "ontology" / "object"
+    object_dir.mkdir(parents=True, exist_ok=True)
+    (object_dir / "object_a.md").write_text(
+        "# 关联对象\n- 当前对象 → references → [[missing_object]]\n", encoding="utf-8",
+    )
+    destination = io.BytesIO()
+
+    manager.export_package_zip(
+        pid, destination, binding={"objects": {}, "problems": []}, object_texts=snapshot,
+    )
+
+    with zipfile.ZipFile(destination) as archive:
+        object_a = archive.read(f"{pid}/objects/object_a.md").decode("utf-8")
+        object_b = archive.read(f"{pid}/objects/object_b.md").decode("utf-8")
+    assert "| references | object_b |" in object_a
+    assert "missing_object" not in object_a
+    assert "# 关系" not in object_b
+    assert "# 关联对象" not in object_b
+
+
+def test_export_rewrites_standard_relation_table_once_without_losing_metadata(tmp_path, monkeypatch):
+    manager, pid, root = _export(tmp_path, monkeypatch, {}, False)
+    snapshot = {
+        "object_a": package_mapping.render_relations_section([{
+            "relation": "references", "target": "object_b", "note": "synthetic note",
+            "evidence": "synthetic evidence", "sourceJoinProperty": "fk", "targetJoinProperty": "id",
+        }]),
+        "object_b": "# 对象描述\n合成对象 B\n",
+    }
+    destination = io.BytesIO()
+
+    manager.export_package_zip(
+        pid, destination, binding={"objects": {}, "problems": []}, object_texts=snapshot,
+    )
+
+    with zipfile.ZipFile(destination) as archive:
+        doc = archive.read(f"{pid}/objects/object_a.md").decode("utf-8")
+    assert doc.count("# 关系") == 1
+    assert "| references | object_b | synthetic note | synthetic evidence | fk | id |" in doc
+
+
 def test_mock_without_data_mock_dir_is_a_problem(tmp_path):
     _objects(tmp_path)
     plan = eval_import.collect(tmp_path, {"include_mock": True})
     assert any("示例数据种子生成失败" in p and "data-mock" in p for p in plan["problems"])
+
+
+def test_export_preserves_checked_object_name_metadata(tmp_path, monkeypatch):
+    from app.services.document_metadata import report_name
+
+    manager, pid, root = _export(tmp_path, monkeypatch, {}, False)
+    snapshot = {
+        "object_a": '---\nreport_name: "synthetic_a/b"\n---\n'
+        "# 关联对象\n- 当前对象 → references → [[object_b]]\n",
+        "object_b": "# 对象描述\n合成对象 B\n",
+    }
+    destination = io.BytesIO()
+
+    manager.export_package_zip(
+        pid, destination, binding={"objects": {}, "problems": []}, object_texts=snapshot,
+    )
+
+    with zipfile.ZipFile(destination) as archive:
+        doc = archive.read(f"{pid}/objects/object_a.md").decode("utf-8")
+    assert report_name(doc) == "synthetic_a/b"
+    assert doc.count("report_name:") == 1
+    assert "| references | object_b |" in doc
+
+
+@pytest.mark.parametrize("graph", [False, True])
+def test_export_keeps_same_named_join_variants_and_self_relation(tmp_path, monkeypatch, graph):
+    manager, pid, root = _export(tmp_path, monkeypatch, {}, graph)
+    source = "# 字段\n| 字段 key | 中文名 | 类型 | 必填 | 业务说明 |\n| --- | --- | --- | --- | --- |\n"
+    source += "| id | id | string | 是 | synthetic |\n| fk | fk | string | 否 | synthetic |\n"
+    source += "| other_fk | other_fk | string | 否 | synthetic |\n"
+    snapshot = {"object_a": source + "# 关联对象\n"
+                "- 当前对象 → references（fk → id） → [[object_b]]\n"
+                "- 当前对象 → references（other_fk → id） → [[object_b]]\n"
+                "- 当前对象 → reports_to（fk → id） → 当前对象\n",
+                "object_b": source}
+    binding = {"objects": {}, "problems": []}
+    for key in snapshot:
+        binding["objects"][key] = {"table": "table_" + key, "primary_key": ["id"], "fields": [
+            {"key": field, "column": field, "type": "string", "primary": field == "id"}
+            for field in ("id", "fk", "other_fk")
+        ]}
+    destination = io.BytesIO()
+
+    manager.export_package_zip(pid, destination, binding=binding, graph=graph, object_texts=snapshot)
+
+    with zipfile.ZipFile(destination) as archive:
+        doc = archive.read(f"{pid}/objects/object_a.md").decode("utf-8")
+    assert "| references | object_b | fk → id |" in doc
+    assert "| references | object_b | other_fk → id |" in doc
+    assert "| reports_to | object_a | fk → id |" in doc
+    assert len(package_mapping.parse_relation_definitions(doc)) == 3
 
 
 def test_mock_table_without_object_doc_keeps_headers(tmp_path):
@@ -429,7 +529,7 @@ def test_preview_counts_mirrored_declarations_once(tmp_path):
     _objects(tmp_path)
     customer = tmp_path / "ontology" / "object" / "客户.md"
     customer.write_text(
-        CUSTOMER_DOC + "\n# 关联对象\n- [[订单]] → 属于（CUSTOMER_ID → CUSTOMER_ID） → 当前对象\n",
+        CUSTOMER_DOC + "\n# 关联对象\n- [[订单]] → 属于 → 当前对象\n",
         encoding="utf-8",
     )
     file_id = _business_data(tmp_path)
@@ -462,15 +562,16 @@ def test_preview_separates_no_relations_from_no_matching_data(tmp_path):
     assert not any("匹配不出任何关系" in w for w in silent["warnings"])
 
 
-def test_preview_blocks_on_relation_that_cannot_be_imported(tmp_path):
-    """未绑定数据表的关系端点会让导包失败，预览就得报出来，而不是只显示实体数。"""
+def test_preview_skips_relation_that_cannot_be_imported(tmp_path):
+    """关系端点没绑数据表只影响这一条关系：预览照常可导入，并提示这条关系不导入。"""
     _objects(tmp_path)
     file_id = _upload(tmp_path, "订单.xlsx", {
         "订单表": [["ORDER_ID", "CUSTOMER_ID"], ["O1", "C1"]],
     })
     result = eval_import.preview(tmp_path, {"files": [file_id]}, graph=True)
     assert result["relations"] == {"count": 0, "instances": 0, "items": []}
-    assert any("未绑定数据表" in p for p in result["problems"])
+    assert not any("未绑定数据表" in p for p in result["problems"])
+    assert any("未绑定数据表" in w for w in result["warnings"])
 
 
 # ---- 图导入关系关联 ----
@@ -560,25 +661,43 @@ def test_graph_relation_mapping_uses_explicit_different_join_fields():
     assert mapped == [] and "只声明了一个关联字段" in skipped[0]
 
 
-def test_invalid_relation_blocks_export_and_retains_full_diagnostics(tmp_path, monkeypatch):
+def test_invalid_relation_is_skipped_with_full_diagnostics(tmp_path, monkeypatch):
+    """写错的关系只跳过那一条：评测与导包照常进行，诊断留在提示和 relation_report 里。"""
     manager, pid, root = _export(tmp_path, monkeypatch, {}, True)
     _objects(root)
     path = root / "ontology" / "object" / "订单.md"
     path.write_text(ORDER_DOC + "- 当前对象 → 关联/包含 → [[客户]]\n", encoding="utf-8")
     file_id = _business_data(root)
-    # 同一条诊断在发起前就拦下，不用等到导包
-    with pytest.raises(eval_import.EvalImportError, match="关联/包含"):
-        eval_import.prepare(root, {"files": [file_id]}, graph=True)
-    plan = eval_import.collect(root, {"files": [file_id]})
+    plan = eval_import.prepare(root, {"files": [file_id]}, graph=True)
+    assert any("关联/包含" in w for w in plan["warnings"])
     report = {}
-    dest = tmp_path / "blocked.zip"
-    with pytest.raises(WorkspaceError, match="图关系转换未完成"):
-        manager.export_package_zip(pid, dest, plan["binding"], graph=True, relation_report=report)
-    assert not dest.exists()
+    dest = tmp_path / "skipped.zip"
+    manager.export_package_zip(pid, dest, plan["binding"], graph=True, relation_report=report)
+    assert dest.exists()
+    with zipfile.ZipFile(dest) as archive:
+        doc = archive.read(f"{pid}/objects/订单.md").decode("utf-8")
+    assert "关联/包含" not in doc.split("# 关系", 1)[-1]
     notes = report.get("notes") or []
     assert report.get("relations_declared") == 2
     assert report.get("relations_exported") == report.get("relations_skipped") == 1
     assert notes and "第 " in notes[0] and "关联/包含" in notes[0]
+
+
+def test_relations_to_concept_objects_do_not_block_graph_import(tmp_path, monkeypatch):
+    manager, pid, root = _export(tmp_path, monkeypatch, {}, True)
+    _objects(root)
+    (root / "ontology" / "object" / "合成概念.md").write_text(
+        "# 数据来源\n无\n> 合成概念对象，不落库\n\n# 关联对象\n- 当前对象 → 涉及 → [[客户]]\n",
+        encoding="utf-8",
+    )
+    plan = eval_import.prepare(root, {"files": [_business_data(root)]}, graph=True)
+    assert any("合成概念" in note and "概念对象" in note for note in plan["warnings"])
+    report = {}
+    manager.export_package_zip(pid, tmp_path / "concept.zip", plan["binding"], graph=True,
+                               relation_report=report)
+    assert report.get("relations_exported") == 1 and report.get("relations_unbound") == 1
+    notes = report.get("notes") or []
+    assert notes and "概念对象" in notes[0]
 
 
 def test_export_preserves_explicit_join_fields(tmp_path, monkeypatch):
@@ -595,24 +714,57 @@ def test_export_preserves_explicit_join_fields(tmp_path, monkeypatch):
     assert "| 属于 | 客户 | CUSTOMER_ID → CUSTOMER_ID |   | CUSTOMER_ID | CUSTOMER_ID |" in doc
 
 
-def test_relation_mapping_failure_stops_before_database_write(tmp_path, monkeypatch):
-    calls = []
+class _StopAtValidate(Exception):
+    pass
 
+
+def _upload_then_stop(calls: list[str]):
     def http(method, path, token, **kwargs):
         calls.append(path)
-        assert path.endswith("/uploads")
-        return {"upload": {"schema": {"objects": [], "relations": [
+        if path.endswith("/validate"):
+            raise _StopAtValidate()
+        return {"upload": {"id": "upload_alpha", "schema": {"objects": [], "relations": [
             {"sourceObject": "object_a", "relationName": "references", "targetObject": "object_b"},
         ]}}}
+    return http
 
-    monkeypatch.setattr(modeling_eval, "_http", http)
-    with pytest.raises(RuntimeError, match="图关系映射未完成"):
+
+def test_unmappable_relation_is_skipped_and_import_continues(tmp_path, monkeypatch):
+    """映射不出的关系只跳过那一条并留诊断，导入继续往下走（这里在预检处截停）。"""
+    calls: list[str] = []
+    monkeypatch.setattr(modeling_eval, "_http", _upload_then_stop(calls))
+    with pytest.raises(_StopAtValidate):
         modeling_eval._graph_import("project_alpha", tmp_path, lambda: "", "project_alpha", {},
                                     {"tables": [], "workbook": b""})
-    assert len(calls) == 1
+    assert calls[-1].endswith("/validate")
     state = modeling_eval.read_state(tmp_path)
     assert state["graph_import"]["relations_skipped"] == 1
     assert "端点不存在" in state["graph_import"]["notes"][0]
+
+
+def test_relations_skipped_at_export_stay_in_graph_import_notes(tmp_path, monkeypatch):
+    """导出时跳过的关系与图导入时跳过的一并留诊断，导出侧的排在前面。"""
+    calls: list[str] = []
+    monkeypatch.setattr(modeling_eval, "_http", _upload_then_stop(calls))
+    plan = {"tables": [], "workbook": b"", "relation_report": {
+        "relations_exported": 1, "relations_skipped": 1, "notes": ["合成提示：概念对象关系未导入"],
+    }}
+    with pytest.raises(_StopAtValidate):
+        modeling_eval._graph_import("project_alpha", tmp_path, lambda: "", "project_alpha", {}, plan)
+    graph_state = modeling_eval.read_state(tmp_path)["graph_import"]
+    assert graph_state["relations_skipped"] == 2
+    assert graph_state["notes"][0] == "合成提示：概念对象关系未导入"
+    assert "端点不存在" in graph_state["notes"][1]
+
+
+def test_relation_count_mismatch_stops_before_database_write(tmp_path, monkeypatch):
+    """导出与图导入读到的关系数对不上是转换缺陷，在写库前停下。"""
+    calls: list[str] = []
+    monkeypatch.setattr(modeling_eval, "_http", _upload_then_stop(calls))
+    plan = {"tables": [], "workbook": b"", "relation_report": {"relations_exported": 0, "notes": []}}
+    with pytest.raises(RuntimeError, match="关系定义数不一致"):
+        modeling_eval._graph_import("project_alpha", tmp_path, lambda: "", "project_alpha", {}, plan)
+    assert len(calls) == 1
 
 
 def _plan_with_one_object(tmp_path) -> dict:
@@ -680,7 +832,7 @@ class GraphStub(StubModeling):
         if "/rounds/" in self.path:
             return self._send(200, {
                 "round": {"id": "r1", "status": "done", "progressDone": 1, "progressTotal": 1},
-                "results": [{"question": "Q1", "verdict": "pass", "reason": "一致"}],
+                "results": [{"question": "Q1", "verdict": "pass", "reason": "一致", "finalAnswer": "A1"}],
             })
         return StubModeling.do_GET(self)
 

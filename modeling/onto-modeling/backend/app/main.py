@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config
-from .routers import admin, auth_routes, projects, sessions, settings
+from .routers import admin, auth_routes, projects, sessions, settings, onto_mcp
 from .services import auth
 from .services.agent_sessions import SDK_AVAILABLE, SessionError
 from .services.auth import AuthError
@@ -23,11 +23,13 @@ async def _lifespan(app: FastAPI):
     from .services.model_context_presets import write_example
     from .services.modeling_eval import sweep_interrupted
     from .services.modeling_cleanup import retry_due, scheduler_loop
+    from .services.solver_validation_run import sweep_interrupted as sweep_solver_validations
 
     manager.start_background()  # 空闲会话回收（方案 4.1.1）
     write_example()  # 内置推荐表副本，供管理员复制成自定义表
     # 评测编排只活在进程内：重启后仍标 running 的工作区改判中断，否则前端永久锁死
     sweep_interrupted()
+    sweep_solver_validations()
     backup_task = asyncio.create_task(backup_scheduler_loop())  # workspace 定期备份
     modeling_cleanup_task = asyncio.create_task(scheduler_loop())
     # 上次删除项目时没删净的目录（文件被占用、删到一半停机）在后台清扫掉
@@ -46,6 +48,8 @@ async def _lifespan(app: FastAPI):
 
 app = FastAPI(title="Onto Modeling", version="0.1.0", lifespan=_lifespan)
 app.include_router(auth_routes.router)
+app.include_router(onto_mcp.router)
+app.include_router(onto_mcp.transport_router)
 app.include_router(projects.router)
 app.include_router(sessions.router)
 app.include_router(settings.router)
@@ -53,7 +57,7 @@ app.include_router(admin.router)
 
 # 白名单外的 /api 路由要求有效 access token；token 可来自
 # Authorization 头或 ?token=（EventSource / 导出下载链接无法带头）
-AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health")
+AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/onto-mcp/")
 
 
 @app.middleware("http")

@@ -76,9 +76,10 @@ Check these locations to determine mode:
 `ontology/diagrams-summary/` is a derived artifact. Do not treat a newer summary as source truth, and do not regenerate `.drawio` files from edited summaries.
 
 **Mode detection:**
-1. `ontology/diagrams/` has .drawio files → Mode C (already exists)
-2. `ontology/diagrams/` empty BUT `resource/diagrams/` has .drawio files → Mode B (init from source)
-3. Both empty → Mode A (create from scratch)
+1. `$ARGUMENTS` 含「补充」「新增」「追加」，且 `ontology/diagrams/` 已有 .drawio 文件 → Mode D (add missing processes)
+2. `ontology/diagrams/` has .drawio files → Mode C (already exists)
+3. `ontology/diagrams/` empty BUT `resource/diagrams/` has .drawio files → Mode B (init from source)
+4. Both empty → Mode A (create from scratch)
 
 Display detected mode to user.
 
@@ -87,9 +88,9 @@ Display detected mode to user.
 ### Mode A — Create from scratch
 
 1. Check for research reports in `research/`. If found, read them to identify key business processes.
-2. If no research reports, ask user: "未找到调研报告或现有流程图。请选择：
+2. If no research reports, ask user: "未找到资料分析报告或现有流程图。请选择：
    - 描述你的业务流程，我来生成流程图
-   - 先运行 `/ontology-research <领域>` 进行调研"
+   - 先运行 `/ontology-research <领域>` 进行资料分析"
 3. Once business processes are identified (from research or user description), list them and ask user to confirm which ones to create flowcharts for.
 4. For each confirmed process, generate a .drawio XML file:
    - Read `resource/diagrams/图示说明定义.drawio` (if exists) to understand node type conventions
@@ -104,7 +105,7 @@ Display detected mode to user.
 6. Read summaries from `ontology/diagrams-summary/` and present to user.
 7. Proceed to Step 3 (commit).
 
-> **说明**：本命令不做结构/语义校验，深度校验统一由 `/ontology-validate-diagrams` 负责。生成后会在 Step 4 建议运行它。
+> 生成后复用确定性结构检查；深度语义校验仍由 `/ontology-validate-diagrams` 负责，不新增模型复核。
 
 ### Mode B — Initialize from source
 
@@ -118,6 +119,15 @@ Display detected mode to user.
 2. Read summaries and present to user.
 3. Proceed to Step 3 (commit).
 
+### Mode D — 补充新流程
+
+用户在流程图编辑器里点「AI 推荐新流程」时进入本分支：在已有流程图之外补画还没有覆盖的业务流程，已有流程图一律不动。
+
+1. 读 `research/` 下的资料分析报告与 `ontology/diagrams-summary/` 下已有流程图的摘要，找出报告里有、但还没有流程图的业务流程。
+2. 用业务语言列出候选（每条一句话说明它是什么流程、为什么值得单独画），请用户确认要补画哪些；没有候选时说明「资料分析报告里的业务流程都已有流程图」，并询问用户是否要描述新的流程。
+3. 对确认的流程按 Mode A 第 4～6 步生成 `.drawio` 与摘要，只写新文件。
+4. Proceed to Step 3 (commit).
+
 ### Mode C — Already exists
 
 1. Count .drawio files in `ontology/diagrams/`.
@@ -125,6 +135,11 @@ Display detected mode to user.
 3. Skip to Step 4 (suggest next step), without committing.
 
 ## Step 3: Commit
+
+保存前运行 `python3 .claude/scripts/verify_artifacts.py diagrams --files {本轮应生成的文件路径，逐项加引号}`，
+清单取已确认流程计划，不能只统计已落盘文件。退出码 0 才可报告结构核验通过并提交；
+1 为结构错误，2 为缺少产物、执行失败或检查期间文件变化，均不能宣布完成。只修本批问题，不改源资料；
+有派生子任务时先等实际终态，不以主 Agent 回答结束或子任务摘要代替完成。提交 hook 会复用同修订回执。
 
 Determine TOPIC:
 - If $ARGUMENTS was provided: use $ARGUMENTS

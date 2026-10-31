@@ -7,11 +7,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from .. import config
 from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets, package_mapping
-from ..services import modeling_cleanup, modeling_mcp, package_archive
+from ..services import modeling_cleanup, modeling_mcp, package_archive, solver_contract
 from ..services.workspace import WorkspaceError, WorkspaceManager, remove_tree
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -61,6 +61,17 @@ class MembersBody(BaseModel):
 
 class ArchiveBody(BaseModel):
     archived: bool
+
+
+class SolverContractBody(BaseModel):
+    """字段名沿用需求规格的接口定义：{ baseRevision, contract, summary }。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    base_revision: str = Field("", alias="baseRevision")  # 读取时拿到的修订；不一致则 409
+    # {operations: [{binding, sidecars: {role: 原文}} 或 {binding, template: 模板参数}]}
+    contract: dict = Field(default_factory=dict)
+    summary: str = ""  # 写进版本点说明
 
 
 def _request_user(request: Request) -> str:
@@ -140,6 +151,51 @@ def provision_modeling_project(meta: dict, request: Request) -> dict:
         raise
 
 
+def associate_imported_project(meta: dict, request: Request) -> dict:
+    """Best-effort association for imports; a Modeling outage must not undo import."""
+    try:
+        result = modeling_mcp.ensure_project_association(
+            meta, request, workspaces._update_meta
+        )
+        updated = workspaces.get_project(meta["id"])
+        updated["modeling_association"] = result
+        return updated
+    except modeling_mcp.ModelingMcpError as exc:
+        updated = workspaces.get_project(meta["id"])
+        project_id = str(updated.get("modeling_project_id") or "").strip()
+        updated["modeling_association"] = {
+            "linked": bool(project_id),
+            "configured": modeling_mcp.configured() or modeling_mcp.association_configured(),
+            "synced": False if project_id else None,
+            "detail": str(exc),
+        }
+        return updated
+
+
+def _may_auto_associate(meta: dict, request: Request) -> bool:
+    user = getattr(request.state, "user", None)
+    if user is None:
+        return True
+    role = workspaces.role_of(
+        meta, user.get("sub", ""), user.get("role") == "admin"
+    )
+    return role in ("owner", "admin")
+
+
+def ensure_mcp_association(
+    meta: dict, request: Request, *, require_association: bool = False
+) -> dict:
+    """Lazy repair for owner/admin requests; never create a remote project for a reader."""
+    if not _may_auto_associate(meta, request):
+        if require_association and not modeling_mcp._modeling_project_id(meta):
+            raise modeling_mcp.ModelingMcpError(
+                "当前用户无权自动关联 Modeling 项目，请联系项目所有者或管理员", 403
+            )
+        return meta
+    modeling_mcp.ensure_project_association(meta, request, workspaces._update_meta)
+    return workspaces.get_project(meta["id"])
+
+
 @router.get("")
 def list_projects(request: Request):
     projects = workspaces.list_projects()
@@ -159,64 +215,7 @@ def create_project(body: CreateProjectBody, request: Request):
         )
     if body.template == "example":
         workspaces.seed_example(meta["id"])
-    try:
-        meta = provision_modeling_project(meta, request)
-    except modeling_mcp.ModelingMcpError as exc:
-        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
     return meta
-
-
-@router.get("/{project_id}/modeling-mcp")
-def get_modeling_mcp(project_id: str, request: Request):
-    ensure_access(project_id, request)
-    meta = workspaces.get_project(project_id)
-    try:
-        runtime = modeling_mcp.status(meta, request)
-        return {"runtime": runtime}
-    except modeling_mcp.ModelingMcpError as exc:
-        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
-
-
-@router.get("/{project_id}/modeling-mcp/tokens")
-def list_modeling_mcp_tokens(project_id: str, request: Request):
-    ensure_access(project_id, request, write=True)
-    meta = workspaces.get_project(project_id)
-    try:
-        return modeling_mcp.tokens(meta, request)
-    except modeling_mcp.ModelingMcpError as exc:
-        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
-
-
-class ModelingMcpTokenBody(BaseModel):
-    name: str
-    scopes: list[str] | None = None
-    expires_in_seconds: int | None = None
-
-
-@router.post("/{project_id}/modeling-mcp/tokens")
-def create_modeling_mcp_token(
-    project_id: str, body: ModelingMcpTokenBody, request: Request
-):
-    ensure_access(project_id, request, write=True)
-    meta = workspaces.get_project(project_id)
-    try:
-        payload = body.model_dump(exclude_none=True)
-        # Modeling API distinguishes omitted expiry (use default) from null (never expires).
-        if "expires_in_seconds" in body.model_fields_set:
-            payload["expires_in_seconds"] = body.expires_in_seconds
-        return modeling_mcp.issue_token(meta, request, payload)
-    except modeling_mcp.ModelingMcpError as exc:
-        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
-
-
-@router.delete("/{project_id}/modeling-mcp/tokens/{token_id}")
-def revoke_modeling_mcp_token(project_id: str, token_id: str, request: Request):
-    ensure_access(project_id, request, write=True)
-    meta = workspaces.get_project(project_id)
-    try:
-        return modeling_mcp.revoke_token(meta, request, token_id)
-    except modeling_mcp.ModelingMcpError as exc:
-        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
 
 
 @router.post("/import")
@@ -257,10 +256,7 @@ async def import_project(
                 return workspaces.import_zip(name, tmp_path, owner=owner)
 
         meta = await asyncio.to_thread(claim_and_import)
-        try:
-            return provision_modeling_project(meta, request)
-        except modeling_mcp.ModelingMcpError as exc:
-            return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+        return meta
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -295,10 +291,7 @@ async def transfer_import(
                 return workspaces.import_transfer_zip(tmp_path, owner=owner, name=requested)
 
         meta = await asyncio.to_thread(claim_and_import)
-        try:
-            return provision_modeling_project(meta, request)
-        except modeling_mcp.ModelingMcpError as exc:
-            return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+        return meta
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -404,10 +397,7 @@ def clone_project(project_id: str, request: Request, body: CloneBody | None = No
     name = (body.name.strip() if body else "") or default_name
     with workspaces.name_claim(name, _name_viewer(request), original_name=default_name):
         meta = workspaces.clone_project(project_id, owner=_request_user(request), name=name)
-    try:
-        return provision_modeling_project(meta, request)
-    except modeling_mcp.ModelingMcpError as exc:
-        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+    return meta
 
 
 @router.get("/{project_id}/members")
@@ -453,6 +443,107 @@ def package_check(project_id: str, request: Request):
     """发布前数据绑定体检：阻断项、无从核对项、提示，以及修复所需的表清单与文档版本。"""
     ensure_access(project_id, request)
     return workspaces.package_binding_check(project_id)
+
+
+@router.get("/{project_id}/package/solver-contract")
+def get_solver_contract(project_id: str, request: Request):
+    """求解模型面板：当前修订、契约原文、静态检查与验证门禁。"""
+    ensure_access(project_id, request)
+    return workspaces.solver_contract_view(project_id)
+
+
+@router.put("/{project_id}/package/solver-contract")
+def save_solver_contract(project_id: str, body: SolverContractBody, request: Request):
+    """整体保存求解契约；结构问题 400 并逐条返回 findings，修订冲突 409。"""
+    ensure_access(project_id, request, write=True)
+    try:
+        operations = body.contract.get("operations")
+        if not isinstance(operations, list):
+            raise WorkspaceError("contract.operations 必须是列表", code=solver_contract.CODE_INVALID)
+        return workspaces.save_solver_contract(
+            project_id, operations, body.base_revision,
+            author=_request_user(request), summary=body.summary,
+        )
+    except solver_contract.SolverContractRejected as exc:
+        findings = [solver_contract.finding(problem) for problem in exc.problems]
+        return JSONResponse(
+            status_code=400,
+            content={"error": str(exc), "code": findings[0]["code"], "findings": findings},
+        )
+
+
+@router.post("/{project_id}/package/solver-contract/check")
+def check_solver_contract(project_id: str, body: SolverContractBody, request: Request):
+    """即时检查面板草稿（不保存）：rejected 为保存会被拒的问题，findings 为发布会被拦截的问题，
+    rendered 为模板契约将生成的 sidecar 原文。"""
+    ensure_access(project_id, request)
+    operations = body.contract.get("operations")
+    if not isinstance(operations, list):
+        raise WorkspaceError("contract.operations 必须是列表", code=solver_contract.CODE_INVALID)
+    return workspaces.check_solver_contract_draft(project_id, operations)
+
+
+class SolverValidationCasesBody(BaseModel):
+    cases: list  # [{id, name, solver_key, arguments, expected_candidate_count?}]
+
+
+class SolverValidationStartBody(BaseModel):
+    revision: str  # 面板读取到的求解契约修订；与当前不一致返回 409
+    case_ids: list[str] = Field(default_factory=list)  # 空表示全部已保存用例
+    data_source_id: str = ""  # 已保存的评测数据源；空表示不使用数据源
+    allow_unbound: bool = False  # 与发布一致：用户确认后数据绑定对不上的对象按未绑定处理
+
+
+@router.get("/{project_id}/package/solver-validations/cases")
+def get_solver_validation_cases(project_id: str, request: Request):
+    from ..services import solver_validation_run
+
+    root = ensure_access(project_id, request)
+    return {"cases": solver_validation_run.list_cases(root)}
+
+
+@router.put("/{project_id}/package/solver-validations/cases")
+def save_solver_validation_cases(project_id: str, body: SolverValidationCasesBody, request: Request):
+    from ..services import solver_validation_run
+
+    root = ensure_access(project_id, request, write=True)
+    return {"cases": solver_validation_run.save_cases(root, body.cases)}
+
+
+@router.post("/{project_id}/package/solver-validations")
+async def start_solver_validation(
+    project_id: str, body: SolverValidationStartBody, request: Request
+):
+    """对当前修订启动 Consumer 端到端验证（后台执行，经 latest 轮询）。
+
+    请求只含修订、用例与已保存的数据源 ID：Solver 地址与凭据只存在于 Consumer 侧。
+    """
+    from ..services import solver_validation_run
+
+    ensure_access(project_id, request, write=True)
+    record, plan = await asyncio.to_thread(
+        solver_validation_run.start,
+        workspaces, project_id,
+        revision=body.revision,
+        case_ids=body.case_ids,
+        token=_modeling_token(request),
+        data_source_id=body.data_source_id,
+        allow_unbound=body.allow_unbound,
+        by=_request_user(request),
+    )
+    solver_validation_run.launch(plan)
+    return {"validation": record}
+
+
+@router.get("/{project_id}/package/solver-validations/latest")
+def latest_solver_validation(project_id: str, request: Request):
+    """当前修订最后一次验证：状态、断言、候选数、权威结果摘要、错误码与诊断引用。"""
+    from ..services import solver_validation
+
+    root = ensure_access(project_id, request)
+    revision = workspaces.solver_check(project_id).revision
+    validation = solver_validation.latest(root, revision) if revision else None
+    return {"revision": revision, "validation": validation}
 
 
 @router.post("/{project_id}/objects/{key}/data-source")
@@ -586,6 +677,7 @@ def resource_meta(project_id: str, request: Request):
     return {
         "directives": workspaces.resource_directives(project_id),
         "purposes": list(workspaces.MATERIAL_PURPOSES),
+        "schema_candidates": workspaces.schema_candidates(project_id),
     }
 
 
@@ -933,6 +1025,9 @@ class EvalRunBody(BaseModel):
     eval_set_id: str = ""
     # 用户已确认降级：数据绑定对不上的对象不阻断评测，按未绑定处理
     allow_unbound: bool = False
+    # 当前登录的 refresh token：转交 modeling 侧为本轮评测续期 access token（轮次常超
+    # access token 有效期）。只在内存里透传一次，不落状态、不进日志（repr=False）
+    refresh_token: str = Field(default="", repr=False)
 
 
 @router.post("/{project_id}/eval/run")
@@ -941,6 +1036,15 @@ async def eval_run(project_id: str, body: EvalRunBody, request: Request):
     from ..services import modeling_eval
 
     root = ensure_access(project_id, request, write=True)
+    try:
+        modeling_eval.evaluation_object_snapshot(root)
+    except modeling_eval.EvaluationPackageInvalid as exc:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": str(exc), "code": exc.error_code, **exc.error_details,
+            },
+        )
     if not modeling_eval.enabled():
         return JSONResponse(status_code=400, content={"error": "未配置 modeling 评测服务（ONTO_WEB_MODELING_URL）"})
     if not modeling_eval.reachable():
@@ -1007,10 +1111,12 @@ async def eval_run(project_id: str, body: EvalRunBody, request: Request):
     if body.data_source_id:
         eval_data_sources.mark_used(project_id, body.data_source_id)
 
+    # 部署级兜底令牌不属于当前用户：此时不转交用户的 refresh token，避免身份错配
+    refresh_token = "" if config.MODELING_TOKEN else body.refresh_token.strip()
     _asyncio.create_task(
         modeling_eval.run(
             project_id, root, token, cases, data_source, eval_set_name,
-            allow_unbound=body.allow_unbound,
+            allow_unbound=body.allow_unbound, refresh_token=refresh_token,
         )
     )
     return {"started": True, "cases": len(cases)}

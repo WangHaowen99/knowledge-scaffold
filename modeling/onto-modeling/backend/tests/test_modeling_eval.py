@@ -2,15 +2,29 @@
 状态与报告落盘、端点门控。
 """
 
+import asyncio
 import json
+import secrets
 import threading
+import weakref
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from app import config
 from app.services import modeling_eval
+
+
+@pytest.fixture(autouse=True)
+def without_interactive_asset_links(monkeypatch):
+    from app.services.workspace import WorkspaceManager
+
+    # 本模块验证评测编排，不依赖交互式资产挂载或系统符号链接权限。
+    monkeypatch.setattr(WorkspaceManager, "_mount_assets", lambda self, root: None)
+
 
 TC_DOC = """# 产品匹配 — 测试用例
 
@@ -71,6 +85,39 @@ def test_trace_cases_conversion(tmp_path):
     assert "企业：合成企业A" in cases[0]["question"]
     assert "产品：[产品甲, 产品乙]" in cases[0]["groundTruth"]
     assert cases[1]["groundTruth"] == "结论：不推荐任何产品"
+
+
+SCENE_DOC = """# 测试场景：订单审核
+
+> 由 /ontology-trace 生成。
+> 对应逻辑：[[订单审核]]
+
+## 场景 1：金额超限
+
+- **输入**：
+  - `订单号` = `ORD-001`
+  - `金额` = `50000`
+- **预期路径**：异常终止于步骤2，提示金额超限
+- **数据来源**：正常数据第1行
+
+## 场景 2：缺少预期
+
+- **输入**：
+  - `订单号` = `ORD-002`
+- **数据来源**：自定义
+"""
+
+
+def test_trace_cases_accepts_trace_scene_format(tmp_path):
+    """/ontology-trace 按 testcase-template.md 写的场景段也要能转成用例，缺预期的场景跳过。"""
+    tc = tmp_path / "ontology" / "testcase"
+    tc.mkdir(parents=True)
+    (tc / "订单审核.md").write_text(SCENE_DOC, encoding="utf-8")
+    cases = modeling_eval.trace_cases(tmp_path)
+    assert len(cases) == 1
+    assert "订单审核" in cases[0]["question"] and "场景 1：金额超限" in cases[0]["question"]
+    assert "订单号：ORD-001" in cases[0]["question"] and "金额：50000" in cases[0]["question"]
+    assert cases[0]["groundTruth"] == "预期路径：异常终止于步骤2，提示金额超限"
 
 
 def test_report_keeps_long_answer_in_sidecar_and_marks_summary(tmp_path):
@@ -434,6 +481,9 @@ def test_resume_attaches_to_existing_round(tmp_path, monkeypatch):
             root, status="failed", message="HTTP Error 401: Unauthorized",
             modeling_project="mp-1", round_id="r9",
             cases=[{"question": "Q1", "verdict": "running"}],
+            object_fingerprint=modeling_eval.object_snapshot_fingerprint(
+                modeling_eval.evaluation_object_snapshot(root),
+            ),
         )
         modeling_eval._run_sync(meta["id"], root, "t", [{"question": "Q1", "groundTruth": "G1"}])
         state = modeling_eval.read_state(root)
@@ -442,6 +492,114 @@ def test_resume_attaches_to_existing_round(tmp_path, monkeypatch):
         assert not [c for c in ResumeStub.calls if c[0] == "POST"], ResumeStub.calls
     finally:
         server.shutdown()
+
+
+def test_run_sync_rechecks_relation_structure_before_resume_or_import(tmp_path, monkeypatch):
+    pid, root = _eval_workspace(tmp_path, "合成关系校验")
+    object_dir = root / "ontology" / "object"
+    object_dir.mkdir(parents=True, exist_ok=True)
+    (object_dir / "object_a.md").write_text(
+        "# 关联对象\n- 当前对象 → references → [[missing_object]]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(modeling_eval, "_try_resume", lambda *args, **kwargs: pytest.fail("invalid package resumed"))
+    calls = []
+    monkeypatch.setattr(modeling_eval, "_http", lambda *args, **kwargs: calls.append(args))
+
+    modeling_eval._run_sync(
+        pid, root, "synthetic-token", [{"question": "synthetic question", "groundTruth": "synthetic answer"}],
+        allow_unbound=True,
+    )
+
+    state = modeling_eval.read_state(root)
+    assert state["status"] == "failed"
+    assert state["error_code"] == "EVALUATION_PACKAGE_INVALID"
+    assert "missing_object" in state["message"]
+    assert calls == []
+
+
+def test_run_sync_rejects_duplicates_before_resume_or_import(tmp_path, monkeypatch):
+    pid, root = _eval_workspace(tmp_path, "合成重复关系校验")
+    object_dir = root / "ontology" / "object"
+    (object_dir / "object_a.md").write_text(
+        "# 关联对象\n- 当前对象 → references → [[object_b]]\n"
+        "- 当前对象名 -> references -> [[object_b|合成别名]]\n",
+        encoding="utf-8",
+    )
+    (object_dir / "object_b.md").write_text("# 对象描述\n合成对象 B\n", encoding="utf-8")
+    monkeypatch.setattr(modeling_eval, "_try_resume", lambda *args, **kwargs: pytest.fail("duplicate input resumed"))
+    monkeypatch.setattr(modeling_eval, "_http", lambda *args, **kwargs: pytest.fail("duplicate input imported"))
+
+    modeling_eval._run_sync(
+        pid, root, "synthetic-token", [{"question": "synthetic question", "groundTruth": "synthetic answer"}],
+        allow_unbound=True,
+    )
+
+    state = modeling_eval.read_state(root)
+    assert state["status"] == "failed"
+    assert state["error_code"] == "EVALUATION_PACKAGE_INVALID"
+    problem = state["error_details"]["problems"][0]
+    assert "重复关系" in problem
+    assert "ontology/object/object_a.md 第 2 行" in problem
+    assert "ontology/object/object_a.md 第 3 行" in problem
+
+
+def test_changed_objects_do_not_resume_previous_round(tmp_path, monkeypatch):
+    root = tmp_path
+    modeling_eval._write_state(
+        root, status="failed", modeling_project="project_alpha", round_id="round_demo",
+        object_fingerprint=modeling_eval.object_snapshot_fingerprint({"object_a": "old synthetic document"}),
+    )
+    monkeypatch.setattr(modeling_eval, "_http", lambda *args, **kwargs: pytest.fail("changed objects resumed"))
+
+    assert not modeling_eval._try_resume(
+        "project_alpha", root, "synthetic-token", [],
+        object_fingerprint=modeling_eval.object_snapshot_fingerprint({"object_a": "new synthetic document"}),
+    )
+
+
+@pytest.mark.parametrize("collected", [False, True])
+@pytest.mark.parametrize("changed", [False, True])
+def test_resume_requires_unchanged_objects_and_uncollected_round(tmp_path, monkeypatch, collected, changed):
+    fingerprint = modeling_eval.object_snapshot_fingerprint({"object_a": "synthetic document"})
+    modeling_eval._write_state(
+        tmp_path, status="failed", modeling_project="project_alpha", round_id="round_demo",
+        report_round="round_demo" if collected else None, object_fingerprint=fingerprint,
+    )
+    prior = modeling_eval.read_state(tmp_path)
+    requests, polls = [], []
+
+    def round_status(*args, **kwargs):
+        requests.append(args)
+        return {"round": {"id": "round_demo", "status": "running"}}
+
+    monkeypatch.setattr(modeling_eval, "_http", round_status)
+    monkeypatch.setattr(modeling_eval, "_poll_round", lambda *args: polls.append(args))
+    current = modeling_eval.object_snapshot_fingerprint({"object_a": "changed synthetic document"}) if changed else fingerprint
+    resumed = modeling_eval._try_resume(
+        "project_alpha", tmp_path, "synthetic-token", [], object_fingerprint=current,
+    )
+
+    assert resumed is (not collected and not changed)
+    assert len(requests) == len(polls) == int(resumed)
+    if resumed:
+        assert modeling_eval.read_state(tmp_path)["status"] == "running"
+        assert polls[0][3:5] == ("project_alpha", "round_demo")
+    else:
+        assert modeling_eval.read_state(tmp_path) == prior
+
+
+def test_unreadable_object_is_not_silently_skipped_by_evaluation(tmp_path):
+    from app.services import package_mapping
+
+    object_dir = tmp_path / "ontology" / "object"
+    object_dir.mkdir(parents=True)
+    (object_dir / "object_a.md").write_bytes(b"\xff")
+
+    with pytest.raises(modeling_eval.EvaluationPackageInvalid, match="object_a.md"):
+        modeling_eval.evaluation_object_snapshot(tmp_path)
+    with pytest.raises(UnicodeDecodeError):
+        package_mapping.read_object_texts(tmp_path)
 
 
 def test_dataset_mode_runs_quick_import(tmp_path, monkeypatch):
@@ -829,3 +987,340 @@ def test_write_report_does_not_recreate_deleted_workspace(tmp_path):
     with pytest.raises(FileNotFoundError):
         modeling_eval._write_report(root, {"id": "r1"}, [])
     assert not root.exists()
+
+
+# ---- 评测凭据续期：refresh token 透传给 modeling 的 /evaluate ----
+
+SYNTHETIC_REFRESH = "synthetic-refresh-value"
+
+
+def _fake_modeling_http(calls: list, traces: dict | None = None):
+    """替身 _http：记录每次调用（方法、路径、请求体），按路径回协议响应。"""
+
+    def fake_http(method, path, token, body=None, data=None, content_type="", timeout=60.0):
+        calls.append((method, path, body))
+        if path == "/api/package-workspaces/import":
+            return {"project": {"id": "mp-1"}, "version": 1}
+        if path.endswith("/evaluate"):
+            return {"roundId": "r1"}
+        if "/rounds/" in path:
+            return {
+                "round": {"id": "r1", "status": "done", "progressDone": 1, "progressTotal": 1},
+                "results": [{"id": "er-1", "question": "Q1", "groundTruth": "G1",
+                             "finalAnswer": "", "verdict": "error",
+                             "reason": "运行失败：Tool execution stopped after a repeated failure."}],
+                "traces": traces or {},
+            }
+        return {}
+
+    return fake_http
+
+
+@pytest.mark.parametrize("refresh_token", [SYNTHETIC_REFRESH, ""])
+def test_evaluate_start_passes_refresh_token_only_in_request(tmp_path, monkeypatch, refresh_token):
+    """评测轮常超 access token 有效期：/evaluate 请求体带上 refresh token 让 modeling 续期。
+
+    无鉴权部署没有 refresh token 时仍发空 body。refresh token 不得落进工作区任何文件。
+    """
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.01)
+    calls: list = []
+    monkeypatch.setattr(modeling_eval, "_http", _fake_modeling_http(calls))
+    pid, root = _eval_workspace(tmp_path, "凭据续期")
+
+    modeling_eval._run_sync(
+        pid, root, "access", [{"question": "Q1", "groundTruth": "G1"}],
+        allow_unbound=True, refresh_token=refresh_token,
+    )
+
+    evaluate = [body for method, path, body in calls if path.endswith("/evaluate")]
+    assert evaluate == [{"refresh_token": refresh_token} if refresh_token else {}]
+    # 其余调用都不携带 refresh token
+    assert all(
+        SYNTHETIC_REFRESH not in json.dumps(body or {})
+        for method, path, body in calls if not path.endswith("/evaluate")
+    )
+    # 凭据透传成功不代表业务评测成功；替身返回的是技术异常。
+    state = modeling_eval.read_state(root)
+    assert state["status"] == "failed"
+    assert state["summary"]["valid"] == 0
+    assert state["summary"]["score"] is None
+    assert state["summary"]["result_status"] == "unavailable"
+    for path in root.rglob("*"):
+        if path.is_file() and ".git" not in path.parts:
+            assert SYNTHETIC_REFRESH not in path.read_text(encoding="utf-8", errors="ignore"), path
+
+
+def test_eval_router_forwards_refresh_token_only_for_user_token(tmp_path, monkeypatch):
+    from app.routers import projects
+    from app.services.workspace import WorkspaceManager
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
+    monkeypatch.setattr(projects, "workspaces", manager)
+    monkeypatch.setattr(modeling_eval, "enabled", lambda: True)
+    monkeypatch.setattr(modeling_eval, "reachable", lambda: True)
+    pid = manager.create_project("凭据转交")["id"]
+    request = SimpleNamespace(state=SimpleNamespace(user=None), headers={"authorization": "Bearer t"})
+    captured: list = []
+
+    async def fake_run(project_id, root_, token, cases, data_source, eval_set_name="",
+                       allow_unbound=False, refresh_token=""):
+        captured.append((token, refresh_token))
+
+    monkeypatch.setattr(modeling_eval, "run", fake_run)
+    body = projects.EvalRunBody(
+        cases=[{"question": "Q1", "groundTruth": "G1"}], allow_unbound=True,
+        refresh_token=SYNTHETIC_REFRESH,
+    )
+    assert SYNTHETIC_REFRESH not in repr(body)  # 请求体模型的 repr 不暴露 refresh token
+
+    async def call():
+        result = await projects.eval_run(pid, body, request)
+        await asyncio.sleep(0)
+        return result
+
+    monkeypatch.setattr(config, "MODELING_TOKEN", "")
+    assert asyncio.run(call())["started"] is True
+    # 部署级兜底令牌不属于当前用户：不转交用户的 refresh token
+    monkeypatch.setattr(config, "MODELING_TOKEN", "deploy-token")
+    assert asyncio.run(call())["started"] is True
+    assert captured == [("t", SYNTHETIC_REFRESH), ("deploy-token", "")]
+
+
+# ---- 报告「工具失败」小节：供 /ontology-evolution 判断运行异常根因 ----
+
+VALIDATION_ERROR = json.dumps({
+    "ok": False,
+    "error": {
+        "code": "SCRIPT_ARGUMENT_VALIDATION_FAILED",
+        "message": "Script arguments failed validation; the script did not run.",
+        "correctable": True,
+        "issues": [{"code": "ungrounded_identity", "path": "arguments.customer_code"}],
+    },
+})
+
+
+def test_report_lists_tool_failures_from_round_traces(tmp_path, monkeypatch):
+    """异常用例报告只有「运行失败」一句话不够归因：从轮次详情 traces 附上工具失败摘要。"""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.01)
+    calls: list = []
+    traces = {"er-1": {
+        "status": "complete",
+        "toolCalls": ["business_data_search", "execute_script", "execute_script"],
+        "toolFailures": [
+            {"toolName": "execute_script", "error": VALIDATION_ERROR},
+            {"toolName": "execute_script", "error": VALIDATION_ERROR},
+        ],
+    }}
+    monkeypatch.setattr(modeling_eval, "_http", _fake_modeling_http(calls, traces))
+    pid, root = _eval_workspace(tmp_path, "工具失败")
+
+    modeling_eval._run_sync(pid, root, "t", [{"question": "Q1", "groundTruth": "G1"}],
+                            allow_unbound=True)
+
+    report = (root / modeling_eval.read_state(root)["report"]).read_text(encoding="utf-8")
+    assert "- **工具失败**：" in report
+    assert (
+        "  - `execute_script` · `SCRIPT_ARGUMENT_VALIDATION_FAILED` · "
+        "问题：`ungrounded_identity arguments.customer_code` · "
+        "详情：Script arguments failed validation; the script did not run.（×2）"
+    ) in report
+    assert "  - 本用例共调用工具 3 次，失败 2 次" in report
+
+
+def test_tool_failure_section_handles_text_errors_and_caps(tmp_path):
+    root = tmp_path
+    (root / ".ontology-state").mkdir(parents=True)
+    truncated_json = VALIDATION_ERROR[:-3]  # consumer 端把 error 截到 1KB，JSON 可能不完整
+    many = [{"toolName": f"tool_{i}", "error": f"失败 {i}"} for i in range(8)]
+    # 测试密钥运行时生成，代码里不写凭据样式的字面量
+    leaked = secrets.token_hex(8)
+    rel = modeling_eval._write_report(root, {"id": "r1"}, [
+        {"id": "er-script", "question": "Q1", "verdict": "error", "reason": "运行失败"},
+        {"id": "er-many", "question": "Q2", "verdict": "fail", "finalAnswer": "错误的合成回答", "reason": "错"},
+        {"id": "er-pass", "question": "Q3", "verdict": "pass", "finalAnswer": "正确的合成回答", "reason": "对"},
+        {"id": "er-none", "question": "Q4", "verdict": "error", "reason": "运行失败"},
+        {"id": "er-lost", "question": "Q5", "verdict": "error", "reason": "运行失败"},
+    ], traces={
+        "er-script": {"status": "complete", "toolCalls": [], "toolFailures": [
+            {"toolName": "execute_script",
+             "error": f"Error: Script exited with code 2. KeyError: CUSTOMER_CODE token={leaked} "
+                      + "x" * 400},
+            {"toolName": "execute_script", "error": truncated_json},
+        ]},
+        "er-many": {"status": "complete", "toolCalls": [], "toolFailures": many},
+        "er-pass": {"status": "complete", "toolCalls": [], "toolFailures": many},
+        "er-lost": {"status": "unavailable", "error": "Consumer 未返回 run_id", "toolCalls": []},
+    })
+    report = (root / rel).read_text(encoding="utf-8")
+    sections = report.split("### ")
+    script, many_case, pass_case, none_case, lost_case = sections[1:]
+
+    assert "`execute_script` · 退出码 2 · 详情：Error: Script exited with code 2." in script
+    assert "CUSTOMER_CODE" in script and "`CUSTOMER_CODE`" not in script  # 列名不当错误码
+    assert leaked not in script and "token=***" in script
+    assert "x" * (modeling_eval.TOOL_FAILURE_DETAIL_CHARS + 1) not in script
+    # 截断的 JSON 仍能抽出错误码与问题路径
+    assert "`SCRIPT_ARGUMENT_VALIDATION_FAILED`" in script
+    assert "`ungrounded_identity arguments.customer_code`" in script
+    assert "详情：Script arguments failed validation; the script did not run." in script
+
+    assert many_case.count("  - `tool_") == modeling_eval.TOOL_FAILURES_PER_CASE
+    assert "另有 3 类失败未列出" in many_case
+    assert "工具失败" not in pass_case  # 通过用例不附失败摘要
+    assert "工具失败" not in none_case  # 没有轨迹的用例不出空小节
+    assert "执行轨迹未取到（Consumer 未返回 run_id）" in lost_case
+
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_done_round_preserves_missing_case_detection_and_tool_traces(tmp_path, monkeypatch, resume):
+    """目标分支轨迹能力与本轮缺结果核验同时保留，覆盖轮询和续接入口。"""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.01)
+    traces = {"er-1": {"status": "complete", "toolFailures": [
+        {"toolName": "synthetic_tool", "error": "SYNTHETIC_TOOL_FAILED"}
+    ]}}
+    calls = []
+    monkeypatch.setattr(modeling_eval, "_http", _fake_modeling_http(calls, traces))
+    pid, root = _eval_workspace(tmp_path, "结果与轨迹兼容")
+    cases = [{"question": "Q1", "groundTruth": "G1"}, {"question": "Q2", "groundTruth": "G2"}]
+    if resume:
+        modeling_eval._write_state(root, status="interrupted", modeling_project="mp-1", round_id="r1")
+        assert modeling_eval._try_resume(pid, root, "t", cases, False)
+    else:
+        modeling_eval._poll_round(pid, root, "t", "mp-1", "r1", cases)
+    state = modeling_eval.read_state(root)
+    assert state["status"] == "failed"
+    assert state["summary"]["total"] == 2
+    assert state["summary"]["error"] == 2
+    assert state["summary"]["valid"] == 0 and state["summary"]["score"] is None
+    report = (root / state["report"]).read_text(encoding="utf-8")
+    assert "Q2" in report and "未取得可核验结果" in report
+    assert "synthetic_tool" in report and "SYNTHETIC_TOOL_FAILED" in report
+
+
+def test_evolution_command_reads_tool_failure_section():
+    """报告小节名与 /ontology-evolution 的归因指引必须对得上，否则命令读不到工具失败证据。"""
+    command = (
+        Path(config.ASSETS_DIR) / "workspace-toolkit" / "commands" / "ontology-evolution.md"
+    ).read_text(encoding="utf-8")
+    assert "「工具失败」" in command
+    assert "SCRIPT_ARGUMENT_VALIDATION_FAILED" in command
+    assert "执行轨迹未取到" in command
+
+
+@pytest.fixture()
+def eval_pool(tmp_path, monkeypatch):
+    """评测专用线程池：容量 2，编排主体换成可控阻塞的假实现。"""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(config, "EVAL_MAX_CONCURRENT_ROUNDS", 2)
+    monkeypatch.setattr(modeling_eval, "_executor", None)
+    monkeypatch.setattr(modeling_eval, "_slots", weakref.WeakKeyDictionary())
+    monkeypatch.setattr(modeling_eval, "_queued", {})
+    monkeypatch.setattr(modeling_eval, "_running", set())
+    monkeypatch.setattr(modeling_eval, "_stop_requested", set())
+    release = threading.Event()
+    started: list[str] = []
+
+    def fake_run_sync(project_id, root, token, cases, *rest):
+        started.append(project_id)
+        release.wait(timeout=10)
+        modeling_eval._write_state(root, status="done", message="完成")
+
+    monkeypatch.setattr(modeling_eval, "_run_sync", fake_run_sync)
+    yield release, started
+    release.set()
+    if modeling_eval._executor is not None:
+        modeling_eval._executor.shutdown(wait=True)
+
+
+async def _wait_for(predicate, timeout=5.0):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("条件未在时限内满足")
+        await asyncio.sleep(0.01)
+
+
+def test_eval_rounds_do_not_starve_default_executor(tmp_path, eval_pool):
+    """评测占满专用池时，默认线程池上的短任务（上传、git）照常即时完成。"""
+    release, started = eval_pool
+    projects = [_eval_workspace(tmp_path, f"评测{i}") for i in range(3)]
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        tasks = [
+            asyncio.create_task(modeling_eval.run(pid, root, "t", [{"question": "Q", "groundTruth": "G"}]))
+            for pid, root in projects
+        ]
+        await _wait_for(lambda: len(started) == 2)
+        # 第 3 轮排队，状态视图显示位次，而状态文件不被改写
+        third_pid, third_root = projects[2]
+        await _wait_for(lambda: modeling_eval.queue_position(third_pid) == 1)
+        view = modeling_eval.status_view(third_pid, third_root)
+        assert view["status"] == "running" and view["phase"] == "queued", view
+        assert view["queue_position"] == 1
+        assert modeling_eval.read_state(third_root) == {}
+        # 评测线程全占着，默认线程池仍可立即执行短任务
+        assert await asyncio.wait_for(asyncio.to_thread(lambda: "ok"), timeout=1) == "ok"
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=10)
+
+    asyncio.run(scenario())
+    assert sorted(started) == sorted(pid for pid, _ in projects)
+    assert modeling_eval._queued == {}
+    for _pid, root in projects:
+        assert modeling_eval.read_state(root)["status"] == "done"
+
+
+def test_stop_while_queued_skips_orchestration(tmp_path, eval_pool):
+    """排队中停止：立即落 stopped，轮到时不再执行编排（不产生 modeling 侧开销）。"""
+    release, started = eval_pool
+    projects = [_eval_workspace(tmp_path, f"排队{i}") for i in range(3)]
+
+    async def scenario():
+        tasks = [
+            asyncio.create_task(modeling_eval.run(pid, root, "t", [{"question": "Q", "groundTruth": "G"}]))
+            for pid, root in projects
+        ]
+        third_pid, third_root = projects[2]
+        await _wait_for(lambda: modeling_eval.queue_position(third_pid) == 1)
+        result = modeling_eval.request_stop(third_pid, third_root, "t")
+        assert result["stopped"] and not result["cancelled"]
+        assert modeling_eval.read_state(third_root)["status"] == "stopped"
+        # 停止后立即出队、释放项目锁：状态视图不再显示排队，可马上重新运行
+        await _wait_for(lambda: third_pid not in modeling_eval._running)
+        assert modeling_eval.queue_position(third_pid) is None
+        assert modeling_eval.status_view(third_pid, third_root)["status"] == "stopped"
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10)
+
+    asyncio.run(scenario())
+    assert projects[2][0] not in started
+    assert modeling_eval.read_state(projects[2][1])["status"] == "stopped"
+
+
+def test_delete_while_queued_dequeues_round(tmp_path, eval_pool):
+    """项目在评测排队期间被删除：排队的轮次立即出队，不再等槽位也不执行编排。"""
+    release, started = eval_pool
+    projects = [_eval_workspace(tmp_path, f"删除{i}") for i in range(3)]
+
+    async def scenario():
+        tasks = [
+            asyncio.create_task(modeling_eval.run(pid, root, "t", [{"question": "Q", "groundTruth": "G"}]))
+            for pid, root in projects
+        ]
+        third_pid, third_root = projects[2]
+        await _wait_for(lambda: modeling_eval.queue_position(third_pid) == 1)
+        assert modeling_eval.abort_for_delete(third_pid, third_root, "t") is None
+        assert modeling_eval.queue_position(third_pid) is None
+        await _wait_for(lambda: third_pid not in modeling_eval._running)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10)
+
+    asyncio.run(scenario())
+    assert projects[2][0] not in started

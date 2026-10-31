@@ -521,8 +521,8 @@ def graph_plan(root: Path, tables: list[Table], binding: dict) -> dict:
     上传预览，两处只有一份推断实现。实例与边数在写库前由 modeling_eval 与 modeling 的导入
     预检逐项核对，复刻的规则一旦漂移会让评测停下，不会只在预览里留一个对不上的数字。
 
-    「有节点没关系」分三种，只有第三种该拦：没声明关系、声明没问题但本轮数据匹配不出、
-    声明转换不出来。前两种不影响这轮评测能不能跑，只作提示。
+    关系转换不出来（声明写错、端点没绑数据表、找不到关联字段）只跳过那一条并提示，
+    不影响这轮评测能不能跑；实体与主键的问题会让图导入失败，才是阻断项。
     """
     mapping = package_mapping.object_data_mappings(binding, graph=True)
     declared, relation_notes = package_mapping.graph_relations(
@@ -532,8 +532,8 @@ def graph_plan(root: Path, tables: list[Table], binding: dict) -> dict:
     nodes, node_problems, node_warnings = _node_rows(tables, mapping)
     edges, edge_problems, edge_warnings = _edge_counts(tables, mapping, relations, nodes)
     instances = {key: len(rows) for key, rows in nodes.items()}
-    problems = relation_notes + unusable + node_problems + edge_problems
-    warnings = node_warnings + edge_warnings
+    problems = node_problems + edge_problems
+    warnings = relation_notes + unusable + node_warnings + edge_warnings
     if mapping["objects"] and not sum(instances.values()):
         problems.append("导入数据里没有一行主键完整，图里不会有任何实例")
     if edges and not sum(item["instances"] for item in edges):

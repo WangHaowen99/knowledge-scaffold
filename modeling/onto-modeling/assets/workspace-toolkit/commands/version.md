@@ -30,7 +30,7 @@ Parse each line and display as:
 Where:
 - {N} = total commit count (compute with `git rev-list --count {hash}` for each commit)
 - {描述} = commit message with prefix translated:
-  - `research:` → "调研："
+  - `research:` → "资料分析："
   - `flowchart:` → "流程图："
   - `extract:` → "提取："
   - `fix:` → "修复："

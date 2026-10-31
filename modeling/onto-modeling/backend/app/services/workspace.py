@@ -29,8 +29,12 @@ except ImportError:  # pragma: no cover - Windows development fallback
     fcntl = None
 
 from .. import config
-from . import package_mapping
+from . import material_detect, package_mapping, package_operations, solver_contract, solver_validation
+from .document_metadata import report_name
 from .name_conflict import MAX_DISPLAY_NAME_LENGTH, detect_name_conflict
+from .toolkit import script_argument_shape as _script_argument_shape
+from .toolkit import script_contract as _script_contract
+from .toolkit import script_descriptor as _script_descriptor
 
 META_FILE = ".onto-web.json"  # 历史文件名保留：存量项目的识别键（ADR-0006）
 PURGE_MARKER = ".onto-web.purging"  # 原地清除兜底：顶替 META_FILE，重启清扫据此认领残留
@@ -70,6 +74,10 @@ class NameConflictError(WorkspaceError):
     def __init__(self, message: str, conflict: dict):
         super().__init__(message, 409, "project_name_conflict")
         self.conflict = conflict
+
+
+def _is_auto_detected(directive) -> bool:
+    return isinstance(directive, dict) and bool(directive.get("auto_detected"))
 
 
 class WorkspaceManager:
@@ -198,8 +206,10 @@ class WorkspaceManager:
         _git(root, "commit", "-m", "init: 任务工作区基线", "--allow-empty")
         return meta
 
-    # 与前端阶段定义保持一致的目录探针：可选阶段未完成时跳过继续，
-    # 必选阶段未完成即停。index.md 是目录索引，不算产物。
+    # 与前端 LeftPane STAGES 一一对应的目录探针；完成数与前端 stageStatuses 的
+    # finish 数一致：逐阶段独立计数，必选阶段缺失不截断后续（导入包、空 research/
+    # 等后续阶段已有产物的项目不再显示 0）。optional 只决定前端展示，不影响计数。
+    # index.md 是目录索引，不算产物。
     # ontology/logic 是旧目录别名（范式升级 ADR-0004），探针两者取或。
     STAGES = (
         (("research",), False),
@@ -211,6 +221,8 @@ class WorkspaceManager:
         (("ontology/data-mock",), False),
         (("ontology/testcase",), False),
         (("ontology/scripts",), True),
+        # 求解适配（可选）：受管目录 ontology/solver/<key>/
+        (("ontology/solver",), True),
         # 数据评测（可选，方案 eval-optimization-integration）：探针为报告文件 glob
         (("reports/eval-*.md",), True),
     )
@@ -236,27 +248,23 @@ class WorkspaceManager:
         # 的"已到达的最高阶段优先"同口径。否则旧项目升级后进度会整体归零，回执
         # 因打标签、换评测表而失效时也一样。
         research_blocking = (
-            review["status"] in (_research_review.PENDING, _research_review.FAILED)
+            review["status"] in (_research_review.PENDING, _research_review.FAILED, _research_review.UNVERIFIABLE)
             and not cls._dir_has_entries(root / "ontology" / "object")
         )
         done = 0
-        for index, (dirs, optional) in enumerate(cls.STAGES):
+        for index, (dirs, _optional) in enumerate(cls.STAGES):
             hit = any(
                 (next(root.glob(rel), None) is not None)
                 if "*" in rel
                 else cls._dir_has_entries(root / rel)
                 for rel in dirs
             )
-            # 资料分析：报告落盘不等于内容已验收，挡着的时候停在这一阶段，
-            # 后续阶段不会被标记为当前阶段。有没有报告以回执状态为准，不看目录探针。
+            # 资料分析：报告落盘不等于内容已验收，挡着的时候不计完成（与前端 stageHits 同口径）。
+            # 有没有报告以回执状态为准，不看目录探针。
             if index == cls.RESEARCH_STAGE_INDEX:
                 hit = review["status"] != _research_review.NONE and not research_blocking
             if hit:
                 done += 1
-            elif optional:
-                continue
-            else:
-                break
 
         def count_md(rel: str) -> int:
             directory = root / rel
@@ -453,7 +461,7 @@ class WorkspaceManager:
     )
 
     def ensure_package_layout(self, project_id: str) -> bool:
-        """迁移旧 ontology/logic 目录并刷新各目录 index.md。
+        """迁移旧 ontology/logic 目录、按脚本同步描述符并刷新各目录 index.md。
 
         仅当工作区原本干净时才提交版本；agent 会话中途的改动留给
         agent 自己的提交收编，避免交叉提交打断其暂存状态。
@@ -461,10 +469,11 @@ class WorkspaceManager:
         root = self.project_root(project_id)
         was_clean = not _git(root, "status", "--porcelain").strip()
         changed = self._migrate_legacy_logic(root)
+        changed = bool(_script_descriptor.sync_workspace_descriptors(root / "ontology")) or changed
         changed = self._refresh_indexes(root) or changed
         if changed and was_clean:
             _git(root, "add", "-A")
-            _git(root, "commit", "-m", "chore: 知识包目录规范化（operation 目录与索引）")
+            _git(root, "commit", "-m", "chore: 知识包目录规范化（operation 目录、脚本描述符与索引）")
         return changed
 
     @staticmethod
@@ -656,22 +665,66 @@ class WorkspaceManager:
             try:
                 self._atomic_write(dest, data)
                 rel = f"resource/{subdir}/{safe_name}"
-                if purpose != "auto" or reading_mode != "on_demand":
-                    directives = self.resource_directives(project_id)
-                    directives[rel] = {
-                        "purpose": purpose if purpose in self.MATERIAL_PURPOSES else "auto",
-                        "reading_mode": reading_mode
-                        if reading_mode in self.MATERIAL_READING_MODES
-                        else "on_demand",
-                    }
-                    self._write_resource_directives(root, directives)
+                detected = self._update_upload_directive(project_id, rel, purpose, reading_mode)
                 # 变更提醒依据：前端对比该时间与派生产物版本，提示"资料已更新，可让助手增量刷新"
                 self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
             except Exception:
                 self._restore_snapshot(dest, file_snapshot)
                 self._restore_snapshot(directives_path, directives_snapshot)
                 raise
-            return {"path": rel, "size": len(data), "replaced": replaced}
+            result = {"path": rel, "size": len(data), "replaced": replaced}
+            if detected:
+                result["detected"] = detected
+            return result
+
+    def _update_upload_directive(
+        self, project_id: str, rel: str, purpose: str, reading_mode: str
+    ) -> dict | None:
+        """写入上传时指定的用途；未指定（auto）时按结构识别预填。
+
+        判为数据表或术语表就标 schema / term 并记 auto_detected，用户之后在资料区改用途即覆盖。
+        替换文件时只重判没有条目或此前自动标注的，不动人工标注。返回识别结果（未预填为 None）。
+        """
+        root = self.project_root(project_id)
+        directives = self.resource_directives(project_id)
+        before = json.dumps(directives, sort_keys=True)
+        existing = directives.get(rel)
+        reading_mode = reading_mode if reading_mode in self.MATERIAL_READING_MODES else "on_demand"
+        if purpose != "auto" or reading_mode != "on_demand":
+            directives[rel] = {
+                "purpose": purpose if purpose in self.MATERIAL_PURPOSES else "auto",
+                "reading_mode": reading_mode,
+            }
+        detected = None
+        redetectable = existing is None or _is_auto_detected(existing)
+        if purpose == "auto" and redetectable:
+            detected = material_detect.detect_material(root / rel)
+        if detected:
+            directives[rel] = {
+                "purpose": detected["purpose"],
+                "reading_mode": reading_mode,
+                "auto_detected": True,
+            }
+        elif _is_auto_detected(directives.get(rel)):
+            # 替换后不再像数据表或术语表：撤掉之前的自动标注
+            directives.pop(rel)
+        if json.dumps(directives, sort_keys=True) != before:
+            self._write_resource_directives(root, directives)
+        return detected
+
+    def schema_candidates(self, project_id: str) -> dict:
+        """资料区「疑似数据表」：用途仍为「由助手判断」、结构上判为数据表的表格资料。"""
+        root = self.project_root(project_id)
+        directives = self.resource_directives(project_id)
+        candidates = {}
+        for rel in self._unmarked_table_resources(project_id, root):
+            directive = directives.get(rel)
+            if isinstance(directive, dict) and directive.get("purpose") != "auto":
+                continue
+            detected = material_detect.detect_data_table(root / rel)
+            if detected:
+                candidates[rel] = detected
+        return candidates
 
     # ---- 生命周期扩展 ----
 
@@ -868,6 +921,7 @@ class WorkspaceManager:
         graph: bool = False,
         relation_report: dict | None = None,
         allow_unbound: bool = False,
+        object_texts: dict[str, str] | None = None,
     ) -> Path:
         """发布为知识包（consumer 可导入的 ontology-package v0.1）。
 
@@ -876,16 +930,23 @@ class WorkspaceManager:
         operation 必须声明 uses.objects、index 首列与详情 key 逐字相等。
 
         binding：评测导入时传入按本轮导入工作簿算出的绑定，mapping 与导入库同源；
-        graph：Neo4j 图导入用的包——mapping 按图模式导出，「关联对象」转为 `# 关系` 表；
-        allow_unbound：降级发布——声明对不上的对象不阻断，来源Sheet 写 UNBOUND、不进 mapping；
-        图模式下，端点因此未绑定的关系也只记原因不阻断（图里本来就没有该类节点）。
-        """
-        import zipfile
+        所有模式均将「关联对象」转为 `# 关系` 表，graph 模式额外补齐物理关联字段；
+        转不出来的关系只跳过那一条，原因记进 relation_report["notes"]，不阻断导出；
+        allow_unbound：降级发布——声明对不上的对象不阻断，来源Sheet 写 UNBOUND、不进 mapping。
 
+        工作区有求解契约（ontology/solver/）时升级为 v0.2 operation-centric.v1：求解
+        Operation 改名为 solver_key 并补 execution 声明，sidecar 原字节写到 operations/
+        （受管模板的输入 Schema 例外：按评估器补装置与原油品种的可选值），
+        manifest 与两级 index 带上求解声明。没有求解契约的包内容保持 v0.1。
+
+        ZIP 按 _ReproducibleZip 确定性写出：同一工作区内容重复导出逐字节相同。
+        """
         root = self.project_root(project_id)
         meta = self.get_project(project_id)
         version = f"0.1.{len(self.versions(project_id))}"
         pkg = meta["id"]
+
+        report_names: dict[tuple[str, str], str] = {}
 
         def entry_items(*rel_dirs: str, pattern: str = "*.md") -> list[tuple[str, str]]:
             items = []
@@ -898,10 +959,28 @@ class WorkspaceManager:
                     if path.name == "index.md" or path.stem in seen:
                         continue
                     seen.add(path.stem)
-                    items.append((path.stem, _strip_frontmatter(path.read_text(encoding="utf-8"))))
+                    raw = path.read_text(encoding="utf-8")
+                    if path.suffix == ".md":
+                        try:
+                            original_name = report_name(raw)
+                        except ValueError as exc:
+                            raise WorkspaceError(f"{rel_dir}/{path.name}: {exc}") from exc
+                        if original_name is not None:
+                            resource = "operation" if directory.name == "logic" else directory.name
+                            report_names[(resource, path.stem)] = original_name
+                    items.append((path.stem, _strip_frontmatter(raw)))
             return items
 
-        objects = entry_items("ontology/object")
+        object_texts = object_texts if object_texts is not None else package_mapping.read_object_texts(root, strict=True)
+        objects = []
+        for key, raw in sorted(object_texts.items()):
+            try:
+                original_name = report_name(raw)
+            except ValueError as exc:
+                raise WorkspaceError(f"ontology/object/{key}.md: {exc}") from exc
+            if original_name is not None:
+                report_names[("object", key)] = original_name
+            objects.append((key, _strip_frontmatter(raw)))
         # ontology/logic 为旧目录兼容（范式升级 ADR-0004）
         operations = entry_items("ontology/operation", "ontology/logic")
         # 对象 ↔ 真实数据表：来源Sheet、`# 字段` 段与 mappings 三处同一份绑定结果
@@ -916,20 +995,68 @@ class WorkspaceManager:
         bound = binding["objects"]
         mappings = package_mapping.object_data_mappings(binding, graph=graph)
         graph_edges: dict[str, list] = {}
-        graph_relation_skips: list[str] = []
         if graph:
-            graph_edges, graph_relation_skips = package_mapping.graph_relations(
-                package_mapping.read_object_texts(root),
-                set(mappings["objects"]), relation_report, allow_unbound=allow_unbound,
+            graph_edges, _ = package_mapping.graph_relations(
+                object_texts, set(mappings["objects"]), relation_report,
             )
-            if graph_relation_skips:
-                raise WorkspaceError(
-                    "图关系转换未完成，请修正关联对象后重试：" + "；".join(graph_relation_skips)
-                )
+        else:
+            graph_edges, relation_notes = package_mapping.package_relations(object_texts)
+            if relation_report is not None:
+                relation_report.update(notes=relation_notes)
         rules = entry_items("ontology/rule")
         metrics = entry_items("ontology/metric")
         scripts = entry_items("ontology/scripts", pattern="*.py")
         object_keys = {key for key, _ in objects}
+        solver_contracts, solver_problems = solver_contract.load_workspace_solver(
+            root, [key for key, _ in operations]
+        )
+        if solver_problems:
+            raise WorkspaceError(
+                "求解契约无法发布：" + "；".join(f"{p}（{p.path}）" for p in solver_problems),
+                code=solver_problems[0].code,
+            )
+        solver_evaluators = self.solver_check(project_id).evaluators if solver_contracts else {}
+        solver = solver_contract.render_package_solver(
+            solver_contracts, {key: root / rel for key, rel in solver_evaluators.items()}
+        )
+        solver_by_stem = {item.operation: item for item in solver.contracts}
+
+        def package_operation_key(stem: str) -> str:
+            item = solver_by_stem.get(stem)
+            return item.solver_key if item else stem
+
+        operation_bodies = dict(operations)
+        relations, operation_parents = package_operations.relation_view(operations)
+        # 脚本契约与对外绑定（每个 operation 只对外一个脚本、子操作与主操作脚本的覆盖关系）
+        # 与规则检查 ontology_checker --include-scripts 同一实现；写包之前拦下，不留半成品
+        script_contracts = {}
+        for key, code in scripts:
+            try:
+                script_contracts[key] = _script_contract.parse_script(code)
+            except ScriptContractError as exc:
+                raise WorkspaceError(f"脚本 {key} 契约无效：{exc}") from exc
+        script_bindings = _script_descriptor.resolve_script_bindings(
+            script_contracts, relations, set(relations)
+        )
+        if script_bindings.errors:
+            raise WorkspaceError(
+                "脚本绑定不符合规则，无法发布：" + "；".join(script_bindings.messages()),
+                code="script_binding_conflict",
+            )
+        # 入参形态：会被 consumer 调用前的参数证据校验拒绝的脚本（一拒就可能终止整轮对话）不发布
+        object_documents = dict(objects)
+        shape_errors = _script_descriptor.argument_shape_errors(
+            script_contracts,
+            script_bindings.bindings,
+            _script_argument_shape.attributes_from_documents(object_documents),
+        )
+        object_enums = _script_argument_shape.enum_values_from_documents(object_documents)
+        if shape_errors:
+            raise WorkspaceError(
+                "脚本入参会被 consumer 拒绝，无法发布：" + "；".join(message for _name, message in shape_errors),
+                code="script_argument_shape",
+            )
+
         def q(s):
             return json.dumps(s, ensure_ascii=False)  # JSON 字符串是合法 YAML 标量
 
@@ -945,8 +1072,15 @@ class WorkspaceManager:
             f"status: released\n"
             f"language: zh-CN\n"
         )
+        if solver.contracts:
+            manifest = manifest.replace(
+                "schema_version: '0.1'\n", "schema_version: '0.2'\n"
+            ) + solver_contract.manifest_solver_section(solver)
 
         def front(resource: str, key: str, title: str, extra: str = "") -> str:
+            original_name = report_names.get((resource, key))
+            if original_name is not None:
+                extra += f"report_name: {q(original_name)}\n"
             return f"---\nresource: {resource}\nkey: {q(key)}\ntitle: {q(title)}\n{extra}---\n\n"
 
         def index_md(
@@ -963,9 +1097,13 @@ class WorkspaceManager:
             rows = "".join(row(k) for k, _ in items)
             return front(resource, key, title) + head + rows
 
-        with zipfile.ZipFile(dest_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        with _ReproducibleZip(dest_path) as zf:
             zf.writestr(f"{pkg}/manifest.yaml", manifest)
-            zf.writestr(f"{pkg}/index.md", front("root", "root", meta["name"]) + f"# {meta['name']}\n")
+            zf.writestr(
+                f"{pkg}/index.md",
+                front("root", "root", meta["name"]) + f"# {meta['name']}\n"
+                + solver_contract.index_block(solver),
+            )
             zf.writestr(
                 f"{pkg}/objects/index.md",
                 index_md(
@@ -986,10 +1124,7 @@ class WorkspaceManager:
                     if table else ""
                 )
                 body = package_mapping.rewrite_object_body(body, item.get("fields") or [])
-                if graph_edges.get(key):
-                    body = body.rstrip("\n") + "\n\n" + package_mapping.render_relations_section(
-                        graph_edges[key]
-                    )
+                body = package_mapping.rewrite_relations_section(body, graph_edges.get(key, []))
                 zf.writestr(
                     f"{pkg}/objects/{key}.md",
                     front("object", key, key, extra) + self._sanitize_placeholder_aliases(body),
@@ -999,18 +1134,50 @@ class WorkspaceManager:
                     f"{pkg}/mappings/object-data-mappings.json",
                     json.dumps(mappings, ensure_ascii=False, indent=2) + "\n",
                 )
+            if solver.contracts:
+                # execution 列让 consumer 认出求解行；停用的求解 operation 不进求解索引
+                def operation_row(k: str) -> str:
+                    item = solver_by_stem.get(k)
+                    execution = solver_contract.SOLVER_EXECUTION_MODE if item and item.enabled else ""
+                    return package_operations.index_row(
+                        k, operation_bodies[k], operation_parents.get(k, []),
+                        package_key=package_operation_key(k), execution=execution,
+                    )
+
+                operation_headers = ["operation key", "标题", "输入", "输出", "execution"]
+            else:
+                def operation_row(k: str) -> str:
+                    return package_operations.index_row(k, operation_bodies[k], operation_parents.get(k, []))
+
+                operation_headers = ["operation key", "标题", "输入", "输出"]
             zf.writestr(
                 f"{pkg}/operations/index.md",
                 index_md(
                     "operation_index", "operations", "操作目录", operations,
-                    ["operation key", "标题", "输入", "输出"],
-                    lambda k: f"| {k} | {k} | {k} | {k} |\n",
+                    operation_headers, operation_row,
                 ),
             )
             for key, body in operations:
                 used = sorted({m for m in _WIKILINK_RE.findall(body) if m in object_keys})
-                extra = f"uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n"
-                zf.writestr(f"{pkg}/operations/{key}.md", front("operation", key, key, extra) + body)
+                item = solver_by_stem.get(key)
+                if item is None:
+                    extra = f"uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n"
+                    callees = [
+                        package_operation_key(callee) for callee in package_operations.uses_operations(key, relations)
+                    ]
+                    if callees:
+                        # 主操作按顺序调用的子操作：consumer 据此识别主/子操作并路由脚本
+                        extra += f"  operations: {json.dumps(callees, ensure_ascii=False)}\n"
+                    zf.writestr(f"{pkg}/operations/{key}.md", front("operation", key, key, extra) + body)
+                    continue
+                zf.writestr(
+                    f"{pkg}/operations/{item.solver_key}.md",
+                    solver_contract.operation_frontmatter(
+                        item, key, used, object_keys, report_names.get(("operation", key))
+                    ) + body,
+                )
+            for path, data in solver.files.items():
+                zf.writestr(f"{pkg}/{path}", data)
             # 规则/指标/脚本：五元组一等实体（范式升级 ADR-0004），可选目录
             if rules:
                 zf.writestr(
@@ -1039,41 +1206,38 @@ class WorkspaceManager:
                     extra = f"uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n"
                     zf.writestr(f"{pkg}/metrics/{key}.md", front("metric", key, key, extra) + body)
             if scripts:
-                zf.writestr(
-                    f"{pkg}/scripts/index.md",
-                    index_md(
-                        "script_index", "scripts", "脚本目录", scripts,
-                        ["script key", "标题"],
-                        lambda k: f"| {k} | {k} |\n",
-                    ),
-                )
-                operation_keys = {key for key, _ in operations}
+                exposed = [(key, code) for key, code in scripts if key in script_bindings.bindings]
+                if exposed:
+                    zf.writestr(
+                        f"{pkg}/scripts/index.md",
+                        index_md(
+                            "script_index", "scripts", "脚本目录", exposed,
+                            ["script key", "标题"],
+                            lambda k: f"| {k} | {(script_contracts[k].title or k).replace('|', '，')} |\n",
+                        ),
+                    )
                 for key, code in scripts:
-                    filename = _package_script_filename(key)
+                    operation = script_bindings.bindings.get(key)
+                    # 执行契约：对外脚本的描述符与工作区 ontology/scripts/<脚本>.md 同一渲染器，
+                    # 只把 entrypoint 换成包内 ASCII 文件名（modeling 按 scripts/<entrypoint> 取源码
+                    # 且只收 ASCII 文件名），bound_operation 换成包内 operation key（求解 operation 为
+                    # solver_key）。求解评估器只带源码，求解契约按包内路径引用它（见 _package_scripts），
+                    # 文件名须与之一致。「关联operation」为「无」或不是现有操作的脚本只是被复用的
+                    # 库模块，不对外调用、没有描述符，保留原文件名，对外脚本按原名 import 它，回导时也还原得了。
+                    if operation or solver_contract.is_evaluator(code.encode("utf-8")):
+                        filename = _package_script_filename(key)
+                    else:
+                        filename = f"{key}.py"
                     zf.writestr(f"{pkg}/scripts/{filename}", code)
-                    # 执行契约：描述符须声明 entrypoint；bound_operation 使脚本
-                    # 成为该 operation 的可执行实现；参数表驱动 CLI 参数组装。
-                    # entrypoint 是相对 scripts/ 的文件名：modeling 按 scripts/<entrypoint>
-                    # 取源码且只收 ASCII 文件名，consumer 缺 scripts/ 前缀时自动补齐。
-                    try:
-                        bound, params = _script_header_meta(code)
-                    except ScriptContractError as exc:
-                        raise WorkspaceError(f"脚本 {key} 契约无效：{exc}") from exc
-                    extra = f"entrypoint: {filename}\n"
-                    if bound and bound in operation_keys:
-                        extra += f"bound_operation: {q(bound)}\n"
-                    body = f"由 /ontology-codegen 生成的确定性脚本，实现见 `{filename}`。\n"
-                    if params:
-                        rows = "".join(
-                            f"| {p['name']} | {p['flag']} | {p['type']} | {p['required']} | {p['default']} | {p['desc']} | {p['multiple']} | {p['action']} |\n"
-                            for p in params
+                    if operation:
+                        zf.writestr(
+                            f"{pkg}/scripts/{key}.md",
+                            _script_descriptor.render_descriptor(
+                                key, script_contracts[key], package_operation_key(operation), filename,
+                                operation_parents.get(operation, []),
+                                enums=object_enums,
+                            ),
                         )
-                        body += (
-                            "\n## 输入参数\n\n"
-                            "| 参数 key | CLI 参数 | 类型 | 必填 | 默认值 | 说明 | 是否多值 | Action |\n"
-                            "| --- | --- | --- | --- | --- | --- | --- | --- |\n" + rows
-                        )
-                    zf.writestr(f"{pkg}/scripts/{key}.md", front("script", key, key, extra) + body)
         return dest_path
 
     @staticmethod
@@ -1290,7 +1454,188 @@ class WorkspaceManager:
             or len(tables) > self.PACKAGE_CHECK_TABLE_LIMIT,
             "last_publish": self.get_project(project_id).get("last_package_publish"),
             "table_resources": self._unmarked_table_resources(project_id, root),
+            # 求解契约体检单列：blocking 仍只计数据绑定，普通包这里只有 enabled=False
+            "solver": self.solver_release_status(project_id),
         }
+
+    # ---- 求解契约静态检查与发布门禁 ----
+
+    @staticmethod
+    def _operation_stems(root: Path) -> list[str]:
+        stems: list[str] = []
+        for rel_dir in ("ontology/operation", "ontology/logic"):
+            directory = root / rel_dir
+            if directory.is_dir():
+                stems.extend(
+                    path.stem for path in sorted(directory.glob("*.md"))
+                    if path.name != "index.md" and path.stem not in stems
+                )
+        return stems
+
+    @staticmethod
+    def _package_scripts(root: Path) -> dict[str, Path]:
+        """包内脚本路径 → 工作区脚本：与 export_package_zip 的脚本文件名规则一致。"""
+        directory = root / "ontology" / "scripts"
+        if not directory.is_dir():
+            return {}
+        return {
+            f"scripts/{_package_script_filename(path.stem)}": path
+            for path in sorted(directory.glob("*.py"))
+            if path.is_file() and not path.is_symlink()
+        }
+
+    def solver_check(self, project_id: str) -> solver_contract.SolverCheck:
+        root = self.project_root(project_id)
+        return solver_contract.check_workspace_solver(
+            root, self._operation_stems(root), self._package_scripts(root)
+        )
+
+    def solver_release_status(self, project_id: str) -> dict:
+        """求解契约的静态检查结论与当前修订的验证门禁；普通包返回 enabled=False。"""
+        root = self.project_root(project_id)
+        check = self.solver_check(project_id)
+        if not check.enabled:
+            return {"enabled": False}
+        gate = solver_validation.gate(root, check.revision) if check.needs_validation else []
+        limit = self.PACKAGE_CHECK_LIMIT
+        return {
+            "enabled": True,
+            "revision": check.revision,
+            "digests": check.digests,
+            "operations": [
+                {
+                    "solver_key": item.solver_key,
+                    "operation": item.operation,
+                    "decision_model": item.decision_model,
+                    "enabled": item.enabled,
+                    "evaluator": check.evaluators.get(item.solver_key, ""),
+                }
+                for item in check.contracts
+            ],
+            "findings": check.findings[:limit],
+            "gate": gate,
+            "blocking": len(check.findings) + len(gate),
+            "validation": solver_validation.latest(root, check.revision),
+            "truncated": len(check.findings) > limit,
+        }
+
+    def solver_contract_view(self, project_id: str) -> dict:
+        """求解模型面板读取：当前修订、全部契约（binding 全量 + sidecar 原文）与检查结论。"""
+        root = self.project_root(project_id)
+        check = self.solver_check(project_id)
+        status = self.solver_release_status(project_id)
+        # 可选评估器与自动查找同一规则（旧式或声明式），辅助模块、Operation 脚本不列出
+        scripts = {
+            package_path: path
+            for package_path, path in self._package_scripts(root).items()
+            if solver_contract.is_evaluator_file(path)
+        }
+        return {
+            "revision": check.revision,
+            "digests": check.digests,
+            "enabled": check.enabled,
+            "contract": {
+                "operations": [
+                    {
+                        **solver_contract.contract_view(item),
+                        "evaluator": check.evaluators.get(item.solver_key, ""),
+                        "unit_options": solver_contract.evaluator_unit_options(
+                            root / check.evaluators[item.solver_key]
+                            if item.solver_key in check.evaluators else None
+                        ),
+                    }
+                    for item in check.contracts
+                ],
+            },
+            "findings": check.findings,
+            "gate": status.get("gate") or [],
+            "validation": status.get("validation"),
+            "available_operations": self._operation_stems(root),
+            "evaluators": sorted(str(path.relative_to(root)) for path in scripts.values()),
+            # 模板参数 evaluator_path 填包内路径（scripts/…），面板按工作区文件名展示
+            "evaluator_options": [
+                {"path": package_path, "file": str(path.relative_to(root))}
+                for package_path, path in sorted(scripts.items())
+            ],
+            "supported_profiles": list(solver_contract.SUPPORTED_PROFILES),
+            "problem_families": solver_contract.problem_family_catalog(),
+            "template": solver_contract.NEW_CONTRACT_TEMPLATE,
+        }
+
+    def check_solver_contract_draft(self, project_id: str, operations: list) -> dict:
+        """求解模型面板的即时检查：未保存的草稿按保存与发布体检的同一套规则检查，不落盘。
+
+        rejected 是保存会被拒的结构问题，findings 是保存后发布检查仍会拦截的问题，
+        rendered 按提交顺序给出模板契约将生成的 sidecar 原文（供预览）；
+        验证门禁跟修订走，草稿保存后修订必然改变，这里不给出。
+        """
+        root = self.project_root(project_id)
+        rejected, findings, rendered = solver_contract.check_draft(
+            operations, self._operation_stems(root), root, self._package_scripts(root)
+        )
+        return {"rejected": rejected, "findings": findings, "rendered": rendered}
+
+    def save_solver_contract(
+        self, project_id: str, operations: list, base_revision: str,
+        author: str = "", summary: str = "",
+    ) -> dict:
+        """整体保存求解契约（受管目录全量替换），基线修订不一致返回 409。
+
+        结构不合法抛 SolverContractRejected；语义问题（Profile、评估器等）不阻止保存，
+        随返回的 findings 给出，发布时再由门禁拦截。
+        """
+        root = self.project_root(project_id)
+        with self._project_lock(project_id):
+            current = self.solver_check(project_id).revision
+            if (base_revision or "") != current:
+                raise WorkspaceError(
+                    "求解契约已被他人或助手修改，请刷新对比后再保存", 409,
+                    code="solver_contract_revision_conflict",
+                )
+            staged = solver_contract.stage_contracts(operations, self._operation_stems(root))
+            base = root / solver_contract.SOLVER_DIR
+            if base.is_dir():
+                for directory in base.iterdir():
+                    if directory.name not in staged:
+                        if directory.is_dir() and not directory.is_symlink():
+                            shutil.rmtree(directory)
+                        else:
+                            directory.unlink()
+            for solver_key, files in staged.items():
+                directory = base / solver_key
+                if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+                    directory.unlink()
+                directory.mkdir(parents=True, exist_ok=True)
+                for path in directory.iterdir():
+                    if path.name not in files:
+                        shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink()
+                for filename, data in files.items():
+                    target = directory / filename
+                    existing = target.read_bytes() if target.is_file() else None
+                    if existing is not None and solver_contract.same_content(filename, existing, data):
+                        # 导入时原样保存的 binding 不因一次无改动的保存被重排格式
+                        continue
+                    self._atomic_write(target, data)
+            if base.is_dir() and not any(base.iterdir()):
+                base.rmdir()
+            rel = solver_contract.SOLVER_DIR
+            commit = ""
+            if _git(root, "status", "--porcelain", "--", rel).strip():
+                _git(root, "add", "-A", "--", rel)
+                who = f" by {author}" if author else ""
+                note = f"：{' '.join(summary.split())[:80]}" if summary.strip() else ""
+                _git(root, "commit", "-m", f"web: 保存求解契约{note}{who}", "--", rel)
+                commit = _git(root, "rev-parse", "HEAD").strip()
+        return {**self.solver_contract_view(project_id), "commit": commit}
+
+    def _ensure_solver_publishable(self, project_id: str) -> None:
+        status = self.solver_release_status(project_id)
+        blocking = (status.get("findings") or []) + (status.get("gate") or [])
+        if blocking:
+            raise WorkspaceError(
+                "求解契约未通过发布检查：" + "；".join(item["message"] for item in blocking[:3]),
+                code=blocking[0]["code"],
+            )
 
     def _unmarked_table_resources(self, project_id: str, root: Path) -> list[str]:
         """已上传但未标 schema 的表格资料：改标用途即可让其中的表参与核对，不必重新上传。"""
@@ -1347,8 +1692,13 @@ class WorkspaceManager:
         allow_unbound: bool = False,
         author: str = "",
     ) -> Path:
-        """用户发布知识包。降级发布须可追溯：记录谁、何时发布，以及哪些对象因此未绑定数据表。"""
+        """用户发布知识包。降级发布须可追溯：记录谁、何时发布，以及哪些对象因此未绑定数据表。
+
+        求解知识包另有门禁：静态检查无错误，且当前求解契约修订有通过的权威端到端验证。
+        allow_unbound 只放宽数据绑定，不放宽求解门禁。
+        """
         root = self.project_root(project_id)
+        self._ensure_solver_publishable(project_id)
         binding = package_mapping.resolve_object_tables(root, strict_declared=not allow_unbound)
         path = self.export_package_zip(
             project_id, dest_path, binding=binding, allow_unbound=allow_unbound
@@ -1378,11 +1728,20 @@ class WorkspaceManager:
         base_revision: str = "",
         author: str = "",
     ) -> dict:
+        with self._project_lock(project_id):
+            return self._write_file_unlocked(project_id, rel_path, content, base_revision, author)
+
+    def _write_file_unlocked(self, project_id, rel_path, content, base_revision, author):
         root = self.project_root(project_id)
         target = self._resolve_inside(root, rel_path)
         rel = target.relative_to(root.resolve())
         if not rel.parts or rel.parts[0] in self.WRITE_FORBIDDEN_TOP:
             raise WorkspaceError("该路径不允许编辑", 403)
+        if rel.as_posix().startswith(f"{solver_contract.SOLVER_DIR}/"):
+            # 求解契约要求多文件一致（binding 与五份 sidecar），单文件编辑无法保证
+            raise WorkspaceError("求解契约是受管目录，请在求解模型面板中维护", 403)
+        if _is_script_descriptor(rel):
+            raise WorkspaceError("脚本描述符由同名 .py 自动生成，不能直接编辑；请修改对应的 .py 脚本", 403)
         if target.is_symlink():
             raise WorkspaceError("该路径不允许编辑", 403)
         # 乐观并发（方案 7.4 双写合并）：Web 编辑与 agent 写同一文件不互相静默覆盖
@@ -1394,11 +1753,18 @@ class WorkspaceManager:
                 )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        # Web 端保存即成版本点：只提交本文件，与 agent 的阶段提交互不干扰
+        # Web 端保存即成版本点：只提交本文件，与 agent 的阶段提交互不干扰；
+        # 保存脚本时同名描述符随之刷新，并进同一个提交
         rel_posix = rel.as_posix()
+        paths = [rel_posix]
+        if _is_workspace_script(rel):
+            _script_descriptor.sync_workspace_descriptors(root / "ontology")
+            descriptor = rel.with_suffix(".md").as_posix()
+            if (root / descriptor).exists() or _git(root, "ls-files", "--", descriptor).strip():
+                paths.append(descriptor)
         commit = ""
-        if _git(root, "status", "--porcelain", "--", rel_posix).strip():
-            _git(root, "add", "--", rel_posix)
+        if _git(root, "status", "--porcelain", "--", *paths).strip():
+            _git(root, "add", "-A", "--", *paths)
             who = f" by {author}" if author else ""
             _git(root, "commit", "-m", f"web: 保存 {rel_posix}{who}")
             commit = _git(root, "rev-parse", "HEAD").strip()
@@ -1629,6 +1995,20 @@ class WorkspaceManager:
 _PACKAGE_SCRIPT_STEM_RE = re.compile(r"[A-Za-z0-9_.-]+")
 
 
+def _is_workspace_script(rel: Path) -> bool:
+    return len(rel.parts) == 3 and rel.parts[:2] == ("ontology", "scripts") and rel.suffix == ".py"
+
+
+def _is_script_descriptor(rel: Path) -> bool:
+    """ontology/scripts/<脚本>.md：由 .py 派生的 consumer 调用契约（script_descriptor.py）。"""
+    return (
+        len(rel.parts) == 3
+        and rel.parts[:2] == ("ontology", "scripts")
+        and rel.suffix.lower() == ".md"
+        and rel.name.lower() != "index.md"
+    )
+
+
 def _package_script_filename(key: str) -> str:
     """知识包内的脚本文件名，满足 modeling 的 entrypoint 契约 ^[A-Za-z0-9_.-]+\\.py$。
 
@@ -1638,6 +2018,41 @@ def _package_script_filename(key: str) -> str:
     if _PACKAGE_SCRIPT_STEM_RE.fullmatch(key) and ".." not in key:
         return f"{key}.py"
     return f"script_{hashlib.sha1(key.encode('utf-8')).hexdigest()[:10]}.py"
+
+
+class _ReproducibleZip:
+    """知识包 ZIP 的确定性写出（REQ-BLD-010）：先收集成员，正常退出时按路径排序写入。
+
+    成员统一 UTF-8 编码，时间戳固定为 ZIP 纪元、权限固定为 0644，同一内容重复导出逐字节相同；
+    同一路径写两次说明导出规则冲突，直接报错而不是让后写的静默覆盖。
+    """
+
+    EPOCH = (1980, 1, 1, 0, 0, 0)
+
+    def __init__(self, dest_path: Path):
+        self.dest_path = dest_path
+        self.entries: dict[str, bytes] = {}
+
+    def __enter__(self) -> "_ReproducibleZip":
+        return self
+
+    def writestr(self, name: str, data: str | bytes) -> None:
+        if name in self.entries:
+            raise WorkspaceError(f"知识包内路径重复：{name}")
+        self.entries[name] = data.encode("utf-8") if isinstance(data, str) else bytes(data)
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        if exc_type is not None:
+            return
+        import zipfile
+
+        with zipfile.ZipFile(self.dest_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name in sorted(self.entries):
+                info = zipfile.ZipInfo(name, date_time=self.EPOCH)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.create_system = 3
+                info.external_attr = 0o644 << 16
+                zf.writestr(info, self.entries[name])
 
 
 def _load_research_review():
@@ -1654,21 +2069,7 @@ def _load_research_review():
     return module
 
 
-def _load_script_contract():
-    """脚本契约解析以 workspace-toolkit/scripts/script_contract.py 为单一事实源。
-
-    建模阶段的 ontology_checker.py --include-scripts 与导出时共用同一份实现，
-    避免两处规则漂移。
-    """
-    path = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts" / "script_contract.py"
-    spec = importlib.util.spec_from_file_location("onto_workspace_script_contract", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-_script_contract = _load_script_contract()
+# 脚本契约与描述符以工作区工具箱脚本为单一事实源（toolkit.py），规则检查与导出共用
 ScriptContractError = _script_contract.ScriptContractError
 _script_header_meta = _script_contract.parse_script_contract
 
@@ -1676,13 +2077,28 @@ _research_review = _load_research_review()
 
 
 def _first_heading(path: Path) -> str:
-    """markdown 首个一级标题作 index 清单的标题列；读不到则退回文件名。"""
+    """index 清单的标题列：frontmatter 的 title（脚本描述符），否则首个一级标题；读不到则为空。"""
     try:
         with open(path, encoding="utf-8") as fh:
-            for _ in range(20):
+            in_frontmatter = False
+            for index in range(40):
                 line = fh.readline()
                 if not line:
                     break
+                if index == 0 and line.strip() == "---":
+                    in_frontmatter = True
+                    continue
+                if in_frontmatter:
+                    if line.strip() == "---":
+                        in_frontmatter = False
+                    elif line.startswith("title:"):
+                        title = line[len("title:"):].strip()
+                        try:
+                            title = json.loads(title)
+                        except ValueError:
+                            pass
+                        return str(title)[:80]
+                    continue
                 if line.startswith("# "):
                     return line[2:].strip()[:80]
     except OSError:

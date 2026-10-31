@@ -563,6 +563,7 @@ Operation 详情必须有：
 | frontmatter `intent_examples` | 推荐 | 用户问题示例，辅助意图路由 |
 | frontmatter `uses.objects` | 必需 | 声明 Operation 直接依赖的业务对象，必须是数组 |
 | frontmatter `uses.rules` / `uses.metrics` | 按需必需 | 涉及可复用规则或指标时必须声明 |
+| frontmatter `uses.operations` | 按需 | 本 Operation 按顺序调用的子 Operation，必须是数组 |
 | frontmatter `script` | 按需必需 | 绑定受控脚本时必须声明 |
 | 业务目标 | 必需 | 说明 Operation 要解决的业务问题 |
 | 输入 | 必需 | 定义输入参数和必填约束；无输入时应显式说明 |
@@ -579,6 +580,26 @@ uses:
 `uses.objects` 中的引用必须使用对象的稳定 `key`，不得使用 `title` 或 `aliases` 代替。包导入或校验时，应报告 `uses.objects` 缺失、类型错误、重复引用或引用不存在对象；对于正文或查询流程明确使用、但未进入 `uses.objects` 的对象，应给出依赖不完整警告。
 
 Operation 可以引用 rule 和 metric，但不应把可复用规则和指标口径长期埋在 operation 正文里。
+
+`uses.operations` 声明主 Operation 按顺序调用的子 Operation，子 Operation 用稳定 `key` 引用：
+
+```yaml
+uses:
+  objects:
+    - order
+  operations:
+    - inventory_check
+    - discount_calculation
+```
+
+Consumer 按声明推导执行角色：
+
+- 声明了子 Operation 的行在 `operations_catalog` 中标为 coordinator；子 Operation 的行标为 `stage of '<主 Operation>'`。
+- 子 Operation 没有自己的脚本、且向上只有一个最近的有脚本的主 Operation 时，Consumer 为它登记一个借用条目：选中该子 Operation 会执行主 Operation 的完整脚本，结果里 `steps['<子 Operation key>']` 是这一步的结论，返回结果附带 `_execution_note` 说明。
+- 子 Operation 有自己的脚本（允许单独调用，或主 Operation 不能脚本化）时，执行的仍是它自己的脚本，这个脚本只覆盖这一步；返回结果附带 `_execution_note`，提示需要完整结论时改为执行有脚本的主 Operation，主 Operation 没有脚本时继续执行它的其余步骤。
+- 同时属于多个有脚本的主 Operation 的子 Operation 不登记借用条目。
+
+没有声明 `uses.operations` 的包保持原有行为：仅按 operation 正文里引用其他 operation 的情况推导 coordinator。
 
 ## 11. Rule 目录
 

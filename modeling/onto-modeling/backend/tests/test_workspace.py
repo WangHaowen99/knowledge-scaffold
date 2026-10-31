@@ -62,6 +62,66 @@ def test_list_and_get_project(manager: WorkspaceManager):
     assert manager.get_project(created["id"])["name"] == "测试"
 
 
+def _write(root: Path, rel: str, text: str = "x") -> None:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_project_progress_counts_stages_after_missing_required(manager: WorkspaceManager):
+    """research/ 只有 index.md 时，后续已有产物的阶段仍逐个计入（与前端 stageStatuses 一致）。"""
+    meta = manager.create_project("进度")
+    root = manager.project_root(meta["id"])
+    _write(root, "ontology/object/订单.md", "# 订单")
+    _write(root, "ontology/operation/创建订单.md", "# 创建订单")
+    _write(root, "reports/quality.md", "# 质量检查")
+    _write(root, "ontology/testcase/下单.md", "# 下单")
+
+    overview = next(p for p in manager.list_projects() if p["id"] == meta["id"])
+    assert overview["stages_done"] == 4
+    assert overview["stages_total"] == 11
+
+
+def test_project_progress_counts_solver_stage(manager: WorkspaceManager):
+    meta = manager.create_project("求解")
+    root = manager.project_root(meta["id"])
+    before = manager._project_progress(root)["stages_done"]
+    _write(root, "ontology/solver/route_choice/contract.json", "{}")
+
+    assert manager._project_progress(root)["stages_done"] == before + 1
+
+
+def test_project_progress_full_chain_reaches_total(manager: WorkspaceManager):
+    meta = manager.create_project("全链")
+    root = manager.project_root(meta["id"])
+    for rel in (
+        "research/资料.md",
+        "ontology/diagrams/流程.md",
+        "ontology/object/订单.md",
+        "ontology/logic/创建订单.md",  # 旧目录别名同样命中操作阶段
+        "ontology/metric/客单价.md",
+        "reports/quality.md",
+        "ontology/data-mock/订单.json",
+        "ontology/testcase/下单.md",
+        "ontology/scripts/calc.py",
+        "ontology/solver/route_choice/contract.json",
+        "reports/eval-001.md",
+    ):
+        _write(root, rel)
+
+    progress = manager._project_progress(root)
+    assert progress["stages_done"] == progress["stages_total"] == 11
+
+
+def test_project_progress_ignores_index_only_directories(manager: WorkspaceManager):
+    meta = manager.create_project("空项目")
+    root = manager.project_root(meta["id"])
+    _write(root, "ontology/solver/index.md", "# 索引")
+
+    progress = manager._project_progress(root)
+    assert progress["stages_done"] == 0
+    assert progress["stages_total"] == 11
+
 def test_file_tree_skips_git_and_symlinks(manager: WorkspaceManager):
     meta = manager.create_project("t")
     root = manager.project_root(meta["id"])
@@ -200,7 +260,7 @@ def test_export_and_import_roundtrip(manager: WorkspaceManager, tmp_path: Path):
     (root / "ontology" / "object").mkdir(parents=True, exist_ok=True)
     (root / "ontology" / "object" / "订单.md").write_text("# 订单", encoding="utf-8")
     (root / "research").mkdir(exist_ok=True)
-    (root / "research" / "调研.md").write_text("调研", encoding="utf-8")
+    (root / "research" / "资料分析.md").write_text("资料分析", encoding="utf-8")
 
     dest = tmp_path / "out.zip"
     manager.export_zip(meta["id"], "ontology", dest)

@@ -39,11 +39,43 @@ services:
       # 容器内固定监听 8100（environment 覆盖 env_file），
       # .env 的 ONTO_WEB_PORT 只控制上面 ports 的宿主发布端口
       - ONTO_WEB_PORT=8100
+      # 代码生成脚本的运行验证经网关进 jiuwenbox 沙箱；本容器不挂 jiuwenbox socket
+      - ONTO_WEB_SANDBOX_GATEWAY_URL=http://sandbox-gateway:8110
     volumes:
       - onto-web-data:/data
     depends_on:
       auth-server:
         condition: service_healthy
+
+  # 脚本验证网关：唯一挂载 jiuwenbox 管理 socket 的容器（deploy.sh 生成的 docker-compose.jiuwenbox.yml
+  # 加挂），按写死的策略在沙箱里运行脚本。与 onto-modeling 同一镜像，不读 .env、不挂数据卷、
+  # 不发布端口，以非 root、只读根文件系统、无 capability 运行
+  sandbox-gateway:
+    image: ${ONTO_WEB_IMAGE:-onto-modeling:latest}
+    container_name: onto-modeling-sandbox-gateway
+    restart: unless-stopped
+    command: ["python", "-m", "app.sandbox_gateway"]
+    user: "65534:65534"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 64
+    expose:
+      - "8110"
+    environment:
+      - ONTO_WEB_SANDBOX_GATEWAY_PORT=8110
+      - PYTHONDONTWRITEBYTECODE=1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8110/health', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 
 volumes:
   onto-web-data:

@@ -19,6 +19,21 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
 - Also read RELATED_FILES for context (cross-reference resolution)
 - Only report issues found in TARGET_FILES, not in RELATED_FILES
 
+**If REGRESSION_ISSUES is provided in your dispatch prompt (regression mode, after semantic fixes):**
+本轮只确认刚做的修复，不是再做一次语义检查。输入是 CHANGE_DIFF（本轮修复的原始 diff）与 REGRESSION_ISSUES（刚修复的问题）。
+- 不要 Read 整份文档。对 CHANGE_DIFF 的每处改动，用 `grep -n` 定位、`sed -n` 读取改动行前后约 30 行；核对关联文档时同样只读描述同一条件或口径的那一小节。
+- 只做两件事：(1) 每个已修复的问题是否确实解决；(2) 修改行是否与同一文档或直接关联文档里描述同一条件、边界、口径的表述冲突（典型：逻辑改了边界，规则没有同步）。
+- 不要套用下面的检查清单，不要穷举输入组合，不要重新审查整张判定表或改动以外的段落。
+- 只报告 confidence 为 high 或 medium 的问题，最多 3 条，`origin` 一律为 `change`；修复没有生效的，以 category「逻辑缺陷」上报并在 message 里写明对应的 issue 编号。没有问题返回 `[]`。
+
+**If CHANGE_DIFF is provided in your dispatch prompt (change-only mode, used after /ontology-update):**
+本轮检查的对象是「这次改动」，不是整份文档。改动前的内容已经校验过，不要重新审一遍。
+- 先读 CHANGE_DIFF，再读 TARGET_FILES 全文作为上下文；RELATED_FILES 只在改动涉及它时读取。
+- 只对改动段落适用的检查项做判断：新增或改写的分支查分支完整性与输入使用；改动的输出、记录口径查输出可推导与下游衔接；改动的关联查关联分类。未改动的段落不要逐项重跑下面的检查清单。
+- 改动若改变了文档的输入、输出、记录口径或调用方式，按需读取直接依赖它的文档（改动行里的 `[[链接]]`，或引用本文档的文档），检查衔接是否断开。这类问题算本次改动引起。
+- 每条问题必填 `origin`：`change` = 问题位于新增或修改的行，或由改动导致与其他文档不衔接；`existing` = 问题只涉及未改动的内容，改动前就存在。
+- 不主动搜寻原有问题。阅读中顺带发现的原有问题，只有 severity 为「错误」时才上报，标 `origin: "existing"`。
+
 **Otherwise (full mode):**
 Read all markdown files in:
 - `ontology/object/` recursively — business object definitions
@@ -184,6 +199,8 @@ Valid category values: "逻辑缺陷" | "参数未使用" | "输出不可达" | 
 - `low` — 存在歧义，需要人工判断。例：命名风格不一致（可能只是约定不同）；描述可能过于宽泛（但并非错误）；可能的业务优化建议。
 
 **evidence 字段可选但强烈推荐**：简述支持该结论的具体文本依据（让用户快速判断是否接受）。
+
+**origin 字段仅在 change-only 模式（提供了 CHANGE_DIFF）下必填**，取值 `change` | `existing`，含义见上文；其他模式不输出该字段。
 
 **输出顺序建议**：同一文件内按 `high → medium → low` 排序，便于下游按置信度分组呈现。
 

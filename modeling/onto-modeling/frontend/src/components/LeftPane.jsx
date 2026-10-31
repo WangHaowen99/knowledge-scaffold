@@ -129,6 +129,14 @@ export const STAGES = [
     ],
   },
   {
+    key: 'solver',
+    title: '求解适配（可选）',
+    optional: true,
+    panel: true, // 入口是中栏「求解模型」面板，不走聊天命令
+    probe: (paths) => hasEntry(paths, 'ontology/solver/'),
+    actions: [],
+  },
+  {
     key: 'eval',
     title: '数据评测（可选）',
     optional: true,
@@ -165,7 +173,7 @@ export function stageStatuses(paths, review = null) {
   return STAGES.map((stage, i) => {
     if (hits[i]) return 'finish';
     // 报告已生成但检查出确定性错误：显示未通过，而不是"进行中"
-    if (i === RESEARCH_STAGE_INDEX && review?.status === 'failed') return 'error';
+    if (i === RESEARCH_STAGE_INDEX && ['failed', 'unverifiable'].includes(review?.status)) return 'error';
     if (i === firstPending) return 'process';
     return 'wait';
   });
@@ -174,6 +182,7 @@ export function stageStatuses(paths, review = null) {
 // 资料分析阶段标题后的状态角标；无需提示时为空
 export function researchBadge(review) {
   if (!review) return '';
+  if (review.status === 'unverifiable') return '来源无法核验（需修正读取或来源位置）';
   if (review.status === 'failed') return `未通过（${review.errors || 0} 项错误）`;
   if (review.status !== 'pending') return '';
   return review.manual_pending
@@ -276,6 +285,7 @@ export default function LeftPane({
   onRefresh,
   onCommand,
   onKnowledge,
+  onSolver,
 }) {
   const [section, setSection] = useState('progress');
   const [expandedStage, setExpandedStage] = useState(null);
@@ -301,21 +311,34 @@ export default function LeftPane({
   const resources = useMemo(() => collectResources(tree), [tree]);
   const [deleting, setDeleting] = useState(null);
   const [directives, setDirectives] = useState({});
+  // 结构上像数据表、用途仍是「由助手判断」的表格资料：{路径: {tables}}，可一键标为 schema
+  const [schemaCandidates, setSchemaCandidates] = useState({});
+  const loadDirectives = () =>
+    api
+      .resourceDirectives(project.id)
+      .then((data) => {
+        setDirectives(data.directives || {});
+        setSchemaCandidates(data.schema_candidates || {});
+      })
+      .catch(() => {});
 
   useEffect(() => {
     if (section !== 'resources') return;
-    api
-      .resourceDirectives(project.id)
-      .then((data) => setDirectives(data.directives || {}))
-      .catch(() => {});
-  }, [section, project.id]);
+    loadDirectives();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section, project.id, tree]);
 
   // ---- 数据评测（方案 P2）：状态轮询 + 评测向导 ----
   const [evalInfo, setEvalInfo] = useState(null); // {enabled, reachable, state, evolution}
   const [evalDetailOpen, setEvalDetailOpen] = useState(false);
   const [evalWizardOpen, setEvalWizardOpen] = useState(false);
   const [evalBindingRetry, setEvalBindingRetry] = useState(null); // 数据绑定未过检时的续跑函数
-  const packagePublish = usePackagePublish({ onCommand, onOpenFile: onSelectFile, onChanged: onRefresh });
+  const packagePublish = usePackagePublish({
+    onCommand,
+    onOpenFile: onSelectFile,
+    onChanged: onRefresh,
+    onOpenSolver: onSolver,
+  });
   useEffect(() => {
     if (section !== 'progress') return undefined;
     let stop = false;
@@ -398,6 +421,10 @@ export default function LeftPane({
     try {
       await api.setResourceDirective(project.id, path, purpose, readingMode);
       setDirectives((prev) => ({ ...prev, [path]: { purpose, reading_mode: readingMode } }));
+      setSchemaCandidates((prev) => {
+        const { [path]: _removed, ...rest } = prev;
+        return rest;
+      });
     } catch (error) {
       message.error(error.message);
     }
@@ -420,7 +447,12 @@ export default function LeftPane({
       const subdir =
         forcedSubdir || (uploadSubdir === 'auto' ? autoSubdir(file.name) : uploadSubdir);
       const saved = await api.uploadResource(project.id, subdir, file);
-      message.success(saved.replaced ? `已替换 ${file.name}` : `已上传 ${file.name}`);
+      const done = saved.replaced ? `已替换 ${file.name}` : `已上传 ${file.name}`;
+      message.success(
+        saved.detected
+          ? `${done}，识别为数据表（${saved.detected.tables.length} 张），用途已设为「数据 Schema」，可在资料列表修改`
+          : done,
+      );
       onRefresh();
     } catch (error) {
       message.error(error.message);
@@ -510,7 +542,11 @@ export default function LeftPane({
               description:
                 expandedStage === stage.key ? (
                   <Space wrap size={4} style={{ marginTop: 4 }}>
-                    {stage.key === 'eval' ? (
+                    {stage.key === 'solver' ? (
+                      <Button size="small" onClick={() => onSolver?.()}>
+                        {statuses[index] === 'finish' ? '打开求解模型' : '启用求解契约'}
+                      </Button>
+                    ) : stage.key === 'eval' ? (
                       !evalInfo?.enabled ? (
                         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                           未配置 modeling 评测服务
@@ -576,7 +612,7 @@ export default function LeftPane({
                                 onClick={() => evalInfo.state.cases?.length && setEvalDetailOpen(true)}
                               >
                                 {evolution?.round_failed
-                                  ? `上次评测异常终止（${evolution.errors} 条异常）`
+                                  ? `上次评测存在技术异常（${evolution.errors} 条）`
                                   : '上次评测失败'}
                               </Tag>
                             </Tooltip>
@@ -808,20 +844,31 @@ export default function LeftPane({
                           disabled: opt.tableOnly && !isTableFile(item.path),
                         }))}
                       />
-                      <label className="resource-reading">
-                        <input
-                          type="checkbox"
-                          checked={directives[item.path]?.reading_mode === 'full'}
-                          onChange={(e) =>
-                            changeDirective(
-                              item.path,
-                              directives[item.path]?.purpose || 'auto',
-                              e.target.checked ? 'full' : 'on_demand',
-                            )
-                          }
-                        />
-                        全文精读
-                      </label>
+                      {directives[item.path]?.auto_detected && (
+                        <Tooltip title="上传时按表格结构自动识别（数据表或术语表）；改用途即覆盖">
+                          <Tag className="resource-detect-tag">自动识别</Tag>
+                        </Tooltip>
+                      )}
+                      {schemaCandidates[item.path] && (
+                        <Tooltip
+                          title={`表头像数据库列名，识别出 ${schemaCandidates[item.path].tables.length} 张表：${schemaCandidates[item.path].tables.slice(0, 8).join('、')}`}
+                        >
+                          <Button
+                            size="small"
+                            type="link"
+                            className="resource-detect-action"
+                            onClick={() =>
+                              changeDirective(
+                                item.path,
+                                'schema',
+                                directives[item.path]?.reading_mode || 'on_demand',
+                              )
+                            }
+                          >
+                            疑似数据表 · 设为 Schema
+                          </Button>
+                        </Tooltip>
+                      )}
                     </div>
                   </div>
                 </List.Item>

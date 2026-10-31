@@ -13,9 +13,8 @@
    分类一一对应——提取阶段按这一列把操作/规则/指标写进各自目录，分类错就落错目录；
 3. 计数自洽：`合计` = 业务项清单的唯一业务项数；分类小计逐类条数 = 清单里该分类行数；
 4. ID 唯一：同一报告内业务项 ID、规则 ID 均不重复；
-5. ID 溯源：每个 ID 必须逐字出现在它声明的来源文件里（找不到则退而在 resource/
-   与既有报告里找）；哪里都找不到就是改名或臆造，除非在「ID变更对照」声明为新增。
-   首轮调研没有报告基线，这条是捉 ID 静默改名的唯一确定性信号；
+5. ID 溯源：每个源 ID 必须出现在声明的原始资料/锚点中。文本、DOCX/XLSX 共享抽取器；
+   读不到明确为无法核验。新造编号需要真实来源依据及人工确认，不以新增声明或旧基线自证；
 6. ID 稳定：派遣前固化的既有清单里的 ID 必须仍在报告中，新增 ID 必须在
    「ID变更对照」给出依据——不允许静默改名；
 7. 字段保真：「引用字段」列的每个字段必须是真实表头里的列（表名.列名 或列名）；
@@ -24,7 +23,7 @@
 
 用法（工作区根目录执行）：
   python3 .claude/scripts/research_checker.py capture [--json]
-      派遣调研子代理**之前**执行：把真实表头与既有规范清单固化成只读快照
+      派遣资料分析子代理**之前**执行：把真实表头与既有规范清单固化成只读快照
       （.ontology-state/research-inventory.json），并打印可直接注入 prompt 的区块。
   python3 .claude/scripts/research_checker.py [check] [--json]
       报告落盘后执行：核验内容并写验收回执；通过才允许进入对象提取。
@@ -43,6 +42,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent))
 import research_review
+import source_extract
 from check_eval_data import load_directives, table_headers, uploaded_eval_files
 from ontology_checker import extract_sections, parse_markdown_table
 
@@ -91,9 +91,6 @@ BOLD_NAME = re.compile(r'^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\*\*([^*\n]+)\*\*', re.MU
 PATH_LIKE = re.compile(r'[^\s|，。；、]+\.[A-Za-z0-9]{1,6}')
 # 来源位置可定位的查找范围：用户资料、设计文档与既有报告。
 LOCATE_DIRS = ('resource', 'docs', 'research')
-# ID 溯源时可直接读的文本资料后缀；二进制资料（Excel 等）不参与溯源。
-TEXT_SUFFIXES = ('.md', '.txt', '.csv', '.json', '.yaml', '.yml')
-MAX_SOURCE_TEXT_BYTES = 4 * 1024 * 1024
 
 
 def _issue(path: str, severity: str, category: str, message: str) -> dict:
@@ -154,8 +151,7 @@ def report_items(root: Path, rels) -> list[dict]:
 def capture(root: Path) -> dict:
     """固化派遣用的只读快照。既有清单取上一次完整验收通过时的 ID，表头取真实表格。
 
-    不读当前报告：报告可能没通过验收，把它的 ID 当基线会让编造的 ID 在下一轮
-    凭基线放行（`_trace_ids` 认基线为合法出处）。
+    不读当前报告：报告可能没通过验收。基线只用于稳定性对比，不能免除当前来源核验。
     """
     baseline = research_review.load_baseline(root)
     snapshot = {
@@ -190,7 +186,7 @@ def inventory_block(snapshot: dict) -> str:
         lines.append('- 这些 ID 只能沿用。新增、删除、归并或改名必须在「ID变更对照」段'
                      '逐条写出原 ID、新 ID、变更类型与依据。')
     else:
-        lines.append('- 首次调研，暂无既有清单。本轮产出的 ID 将成为后续轮次的基线。')
+        lines.append('- 首次资料分析，暂无既有清单。本轮产出的 ID 将成为后续轮次的基线。')
     return '\n'.join(lines)
 
 
@@ -380,18 +376,14 @@ def _locatable_index(root: Path) -> dict:
                 continue
             rel = f'{base}/{path.relative_to(directory).as_posix()}'
             index[rel] = rel
-            index.setdefault(path.name, rel)  # 同名文件以先读到的为准
+            # Ambiguous basenames must not silently select the first material.
+            index[path.name] = rel if path.name not in index else ''
     return index
 
 
 def _read_text(path: Path) -> str:
-    """文本资料内容；读不到、过大或二进制时为空串。"""
-    try:
-        if path.stat().st_size > MAX_SOURCE_TEXT_BYTES:
-            return ''
-        return path.read_text(encoding='utf-8', errors='ignore')
-    except OSError:
-        return ''
+    """与 Agent 共用确定性抽取；读取失败不能伪装成来源为空。"""
+    return source_extract.located_text(source_extract.extract(path))
 
 
 class CheckContext:
@@ -406,18 +398,22 @@ class CheckContext:
         self.snapshot = snapshot
         self.tables = table_headers(root)
         self.locatable = _locatable_index(root)
-        # 上一轮已验收的 ID 也是合法出处。用快照里的 ID 集合而不是去读既有报告正文：
-        # 报告文件会被本轮覆盖，读它等于让报告自证。
-        self.baseline_ids = set(snapshot.get('item_ids') or []) | set(snapshot.get('rule_ids') or [])
+        # 旧基线只保留作 ID 稳定性对比，不作为当前资料核验的白名单。
         self.declared_old: set[str] = set()
         self.declared_new: set[str] = set()
-        self._text: dict[str, str] = {}
+        self.manual_pending: list[dict] = []
+        self.confirmed_new: set[str] = set()
+        self.id_evidence: dict[str, list] = {}
+        self._sources: dict[str, dict] = {}
         self._corpus = None
 
-    def source_text(self, rel: str) -> str:
-        if rel not in self._text:
-            self._text[rel] = _read_text(self.root / rel)
-        return self._text[rel]
+    def source_text(self, rel: str, anchor: str = '') -> str:
+        if rel not in self._sources:
+            path = self.root / rel
+            if not path.resolve().is_relative_to(self.root.resolve()):
+                raise ValueError('来源必须位于当前工作区内')
+            self._sources[rel] = source_extract.extract(path)
+        return source_extract.located_text(self._sources[rel], anchor)
 
     def sources_read(self) -> list[str]:
         """ID 溯源时实际读过的来源文档。
@@ -425,7 +421,7 @@ class CheckContext:
         回执要把它们记进输入指纹：规范 ID 就取自这些文档，文档里的 ID 改了而回执
         不失效的话，报告会带着已经对不上的 ID 继续算作已验收。
         """
-        return sorted(self._text)
+        return sorted(self._sources)
 
     def corpus(self) -> str:
         """resource/ 下的全部文本资料。不含任何报告，避免报告自证。"""
@@ -434,8 +430,13 @@ class CheckContext:
             resource = self.root / 'resource'
             if resource.is_dir():
                 for path in sorted(resource.rglob('*')):
-                    if path.is_file() and path.suffix.lower() in TEXT_SUFFIXES:
-                        parts.append(_read_text(path))
+                    if path.is_file() and path.suffix.lower() in source_extract.SUPPORTED:
+                        try:
+                            parts.append(self.source_text(path.relative_to(self.root).as_posix()))
+                        except ValueError:
+                            # Only cited/declared evidence can block the row. An unrelated
+                            # unsupported material cannot prove absence or exempt an ID.
+                            continue
             self._corpus = '\n'.join(parts)
         return self._corpus
 
@@ -450,25 +451,32 @@ def _resolve_source(location: str, locatable: dict) -> tuple[list[str], str]:
     return hits, ''
 
 
-def _trace_ids(item_id: str, rule_id: str, source_rel: str,
-               ctx: CheckContext) -> list[tuple[str, str, str]]:
-    """ID 溯源：返回 (严重度, 标签, ID)。
+def _contains_id(text: str, value: str) -> bool:
+    return bool(re.search(r'(?<![A-Za-z0-9_-])' + re.escape(value) + r'(?![A-Za-z0-9_-])', text))
 
-    规范 ID 来自用户上传的资料或上一轮已验收的报告。首轮调研没有报告基线，
-    `check_id_stability` 无从比对，此时"ID 在任何来源里都找不到"就是改名或臆造的
-    唯一确定性信号（issue #362 的现场正是首轮）。
-    合法出处依次是：自己声明的来源文件 → resource/ 下的文本资料 → 快照里已验收的
-    ID → 「ID变更对照」声明的新增 ID。
-    """
+
+def _trace_ids(item_id: str, rule_id: str, source_rel: str,
+               ctx: CheckContext, source_text: str | None = None, anchor: str = '') -> list[tuple[str, str, str]]:
+    """返回来源不符的 ID；新增声明仅允许转人工确认，基线不能免检。"""
     found = []
     for label, value in (('业务项 ID', item_id), ('规则 ID', rule_id)):
         if _is_empty(value):
             continue
-        if source_rel and value in ctx.source_text(source_rel):
+        text = source_text if source_text is not None else ctx.source_text(source_rel)
+        if source_rel and _contains_id(text, value):
+            ctx.id_evidence.setdefault(source_rel, []).append(
+                {'id': value, 'kind': 'source_id', 'anchor': anchor or 'whole_file'})
             continue
-        if value in ctx.corpus():
-            found.append((WARNING, label, value))
-        elif value not in ctx.baseline_ids and value not in ctx.declared_new:
+        if _contains_id(ctx.corpus(), value):
+            # A wrong anchor/source is a defect, not a successful provenance check.
+            found.append((ERROR, label, value))
+        elif value in ctx.declared_new:
+            ctx.id_evidence.setdefault(source_rel, []).append(
+                {'id': value, 'kind': 'manual_new_id' if value in ctx.confirmed_new else 'new_id_pending',
+                 'anchor': anchor or 'whole_file'})
+            if value not in ctx.confirmed_new:
+                ctx.manual_pending.append({'path': source_rel, 'item': f'新增ID确认：{value}（来源不含此编号，需人工确认；不得以新增声明自证）'})
+        else:
             found.append((ERROR, label, value))
     return found
 
@@ -506,11 +514,18 @@ def _check_rows(rel: str, rows: list[dict], ctx: CheckContext) -> list[dict]:
             issues.append(_issue(rel, ERROR, '来源缺失', f'业务项 {item_id} 没有填来源位置'))
             continue
         hits, source_rel = _resolve_source(location, ctx.locatable)
-        if hits and not source_rel:
+        if not source_rel or source_rel.startswith('research/'):
             unlocatable.append(f'{item_id}:{location[:40]}')
+            continue
+        anchor = location.partition('#')[2].strip().strip('`')
+        try:
+            source_text = ctx.source_text(source_rel, anchor)
+        except ValueError as exc:
+            issues.append(_issue(rel, ERROR, '来源无法核验', f'{item_id}：{exc}'))
+            continue
 
         rule_id = (row.get('规则ID') or '').strip()
-        for severity, label, value in _trace_ids(item_id, rule_id, source_rel, ctx):
+        for severity, label, value in _trace_ids(item_id, rule_id, source_rel, ctx, source_text, anchor):
             entry = f'{item_id}:{label} {value}'
             (misplaced if severity == WARNING else untraceable).append(entry)
 
@@ -529,9 +544,9 @@ def _check_rows(rel: str, rows: list[dict], ctx: CheckContext) -> list[dict]:
                              f'{_clip(unlocatable, 5)}'))
     if untraceable:
         issues.append(_issue(rel, ERROR, 'ID溯源',
-                             f'{len(untraceable)} 个 ID 在资料与既有报告里都找不到：'
+                             f'{len(untraceable)} 个 ID 无法在所声明的来源位置核实：'
                              f'{_clip(untraceable, 5)}。规范 ID 必须逐字沿用资料里的写法；'
-                             '确实是本轮新造的，在「ID变更对照」写一行「无 → 新ID / 新增 / 依据」'))
+                             '核对来源锚点。确需新建编号，需可读取的来源依据及人工确认，不能用新增声明绕过核验'))
     if misplaced:
         issues.append(_issue(rel, WARNING, 'ID溯源',
                              f'{len(misplaced)} 个 ID 不在它自己声明的来源文件里'
@@ -582,24 +597,45 @@ def check_report(root: Path, rel: str, ctx: CheckContext) -> tuple[list, list]:
 # 跨报告：ID 相对既有清单的稳定性
 # ---------------------------------------------------------------------------
 
-def _declared_changes(root: Path, reports) -> tuple[set[str], set[str]]:
+def _declared_changes(root: Path, reports, ctx: CheckContext) -> tuple[set[str], set[str], list]:
     """「ID变更对照」里给过依据的 (原ID, 新ID)；依据为空不算声明。"""
     old_ids, new_ids = set(), set()
+    issues = []
     for rel in reports:
         try:
             raw = (root / rel).read_text(encoding='utf-8')
         except OSError:
             continue
-        for row in parse_markdown_table(extract_sections(raw).get(ID_CHANGE_SECTION, '')):
+        sections = extract_sections(raw)
+        for line in sections.get(GAP_SECTION, '').splitlines():
+            match = re.match(r'^\s*- \[x\] 新增ID确认[：:]\s*(.+)$', line)
+            if match:
+                ctx.confirmed_new.update(_cells(match[1]))
+        for row in parse_markdown_table(sections.get(ID_CHANGE_SECTION, '')):
             if _is_empty(row.get('依据')):
+                continue
+            evidence = row.get('依据', '').strip()
+            _, source_rel = _resolve_source(evidence, ctx.locatable)
+            kind = row.get('变更类型', '').strip()
+            if kind not in {'新增', '删除', '改名', '归并', '沿用来源ID'} or not source_rel or source_rel.startswith('research/'):
+                issues.append(_issue(rel, ERROR, 'ID变更依据', 'ID变更必须指定合法类型及原始资料路径，报告不能自证'))
+                continue
+            try:
+                ctx.source_text(source_rel, evidence.partition('#')[2].strip().strip('`'))
+            except ValueError as exc:
+                issues.append(_issue(rel, ERROR, '来源无法核验', f'ID变更依据：{exc}'))
+                continue
+            new_values = [v for v in _cells(row.get('新ID', '')) if v not in EMPTY_MARKERS]
+            if kind == '新增' and any(_contains_id(ctx.corpus(), value) for value in new_values):
+                issues.append(_issue(rel, ERROR, 'ID变更类型', '来源中已存在的 ID 不能登记为新造，使用「沿用来源ID」并核对原始位置'))
                 continue
             old_ids.update(v for v in _cells(row.get('原ID', '')) if v not in EMPTY_MARKERS)
             new_ids.update(v for v in _cells(row.get('新ID', '')) if v not in EMPTY_MARKERS)
-    return old_ids, new_ids
+    return old_ids, new_ids, issues
 
 
 def check_id_stability(items: list[dict], ctx: CheckContext) -> list[dict]:
-    """既有 ID 不得静默消失，新 ID 不得静默出现。首次调研无基线时跳过。
+    """既有 ID 不得静默消失，新 ID 不得静默出现。首次资料分析无基线时跳过。
 
     首轮没有基线时由 `_trace_ids` 的 ID 溯源兜住——那条检查不依赖既有报告。
     """
@@ -643,10 +679,8 @@ def run_check(root: Path) -> dict:
 
     snapshot = research_review.load_inventory(root)
     ctx = CheckContext(root, snapshot)
-    # 「ID变更对照」要先全量扫出来：逐行的 ID 溯源要用它放行本轮新造的 ID
-    ctx.declared_old, ctx.declared_new = _declared_changes(root, reports)
-
-    issues: list[dict] = []
+    # 先验证变更依据；声明自身不构成来源证据。
+    ctx.declared_old, ctx.declared_new, issues = _declared_changes(root, reports, ctx)
     manual_pending: list[dict] = []
     for rel in reports:
         report_issues, pending = check_report(root, rel, ctx)
@@ -654,14 +688,23 @@ def run_check(root: Path) -> dict:
         manual_pending += pending
     items = report_items(root, reports)
     issues += check_id_stability(items, ctx)
+    manual_pending += ctx.manual_pending
 
-    errors = [issue for issue in issues if issue['severity'] == ERROR]
-    status = research_review.FAILED if errors else research_review.PASSED
     tracked = list(reports) + source_files(root) + ctx.sources_read()
     if snapshot:
         tracked.append(research_review.INVENTORY_FILE.as_posix())
     inputs = research_review.file_revisions(root, tracked)
-    research_review.write_review(root, status, inputs, errors, manual_pending)
+    for rel, data in ctx._sources.items():
+        if data['source_sha256'] and inputs.get(rel) != data['source_sha256'][:16]:
+            issues.append(_issue(rel, ERROR, '来源无法核验', '抽取后原文件修订发生变化，请重新核验'))
+    errors = [issue for issue in issues if issue['severity'] == ERROR]
+    status = (research_review.UNVERIFIABLE if any(i['category'] == '来源无法核验' for i in errors)
+              else research_review.FAILED if errors else research_review.PASSED)
+    evidence = {rel: {'source_sha256': data['source_sha256'], 'extractor_version': data['extractor_version'],
+                      'status': data['status'], 'anchors': [s['anchor'] for s in data['segments']],
+                      'ids': ctx.id_evidence.get(rel, [])}
+                for rel, data in ctx._sources.items()}
+    research_review.write_review(root, status, inputs, errors, manual_pending, evidence)
     # 只有完整验收通过的 ID 才能成为下一轮的基线；失败时保留上一份，不清空也不覆盖
     if status == research_review.PASSED and not manual_pending:
         research_review.write_baseline(root, {
@@ -673,7 +716,7 @@ def run_check(root: Path) -> dict:
 
 
 def check_exit_code(result: dict) -> int:
-    if result['status'] == NO_REPORT:
+    if result['status'] in {NO_REPORT, research_review.UNVERIFIABLE}:
         return 2
     if result['status'] == research_review.FAILED or result['manual_pending']:
         return 1
@@ -693,7 +736,7 @@ def _emit(text: str, stream=None) -> None:
 
 def _print_check(result: dict) -> None:
     if result['status'] == NO_REPORT:
-        _emit('research/ 下没有调研报告，无法核验（请先运行 /ontology-research）')
+        _emit('research/ 下没有资料分析报告，无法核验（请先运行 /ontology-research）')
         return
     errors = [i for i in result['issues'] if i['severity'] == ERROR]
     warnings = [i for i in result['issues'] if i['severity'] == WARNING]
@@ -703,7 +746,9 @@ def _print_check(result: dict) -> None:
         _emit(f'[{issue["severity"]}][{issue["category"]}] {issue["path"]}：{issue["message"]}')
     for item in result['manual_pending']:
         _emit(f'[待人工确认] {item["path"]}：{item["item"]}')
-    if errors:
+    if result['status'] == research_review.UNVERIFIABLE:
+        _emit('\n来源无法核验：先修正读取或锚点，不得登记新增 ID 绕过；本轮不放行。')
+    elif errors:
         _emit(f'\n未通过：{len(errors)} 个确定性错误，{len(warnings)} 条警告。'
               '修正报告后重新运行本检查；验收未通过时不进入对象提取。')
     elif result['manual_pending']:
@@ -715,6 +760,8 @@ def _print_check(result: dict) -> None:
 
 
 def main() -> int:
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
     argv = [arg for arg in sys.argv[1:] if not arg.startswith('--')]
     as_json = '--json' in sys.argv
     command = argv[0] if argv else 'check'

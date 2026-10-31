@@ -56,7 +56,9 @@ Wait for the agent to return a JSON summary:
 ## Step 3: 校验并提交
 
 ```bash
-python3 .claude/scripts/ontology_checker.py ontology --json --files ontology/rule ontology/metric || true
+# --files 只认文件名（不带 .md），不认目录；没有规则/指标文档时跳过
+STEMS=$(find ontology/rule ontology/metric -maxdepth 1 -name '*.md' ! -iname 'index.md' -exec basename {} .md \; 2>/dev/null)
+[ -n "$STEMS" ] && { python3 .claude/scripts/ontology_checker.py ontology --json --files $STEMS || true; }
 git add ontology/rule/ ontology/metric/ ontology/object/ ontology/operation/
 git commit -m "rule-metric: 抽取规则与指标实体"
 python3 .claude/scripts/state_helper.py release extract-rule-metric

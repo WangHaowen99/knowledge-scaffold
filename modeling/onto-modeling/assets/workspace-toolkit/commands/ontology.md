@@ -10,7 +10,7 @@ Then compute the authoritative current stage:
 python3 .claude/scripts/state_helper.py detect-stage
 ```
 
-Output is one of: `未开始 / 调研待核验 / 调研完成 / 流程图就绪 / 对象已提取 / 逻辑已提取 / 校验待审阅 / 完成`。
+Output is one of: `未开始 / 资料分析待核验 / 资料分析完成 / 流程图就绪 / 对象已提取 / 逻辑已提取 / 校验待审阅 / 完成`。
 
 Also run `python3 .claude/scripts/state_helper.py check-lock <command>`（替换 `<command>` 为待诊断的具体命令名，如 `extract-object` / `extract-operation` / `validate` / `codegen`）for any command you suspect is stuck (optional; only when diagnosing "is there a stuck task?") — skipped on happy path.
 
@@ -27,17 +27,17 @@ If the user passed a domain name (e.g. `/ontology 电商`), treat it as starting
 欢迎使用 Ontology Toolset。
 
 **开始方式：**
-- 回复 **调研**（/ontology-research）→ 先做领域调研
+- 回复 **资料分析**（/ontology-research）→ 先做资料分析
 - 回复 **流程图**（/ontology-flowchart）→ 直接创建流程图
 - 或输入 `/ontology <领域名称>` 一键启动（如 `/ontology 电商`）
 ```
 
 After showing, listen for the user's next reply:
-- **调研** → read `.claude/commands/ontology-research.md` and follow it (ask for TOPIC if not given)
+- **资料分析** → read `.claude/commands/ontology-research.md` and follow it (ask for TOPIC if not given)
 - **流程图** → read `.claude/commands/ontology-flowchart.md` and follow it
 - other → treat as normal input
 
-**调研待核验:**
+**资料分析待核验:**
 
 `research/` 下有报告，但没有通过内容验收的回执（新报告未核验、报告或源资料改动后
 回执失效、或旧项目本来就没有回执）。先跑检查拿到具体结论，再决定怎么说：
@@ -47,42 +47,42 @@ python3 .claude/scripts/research_checker.py check
 ```
 
 ```
-当前状态：调研待核验 ⏳
+当前状态：资料分析待核验 ⏳
 报告：research/{latest_filename}
-{退出码 0：确定性检查已通过，阶段随即变为「调研完成」}
+{退出码 0：确定性检查已通过，阶段随即变为「资料分析完成」}
 {退出码 1：逐条列出错误项与待人工确认条目}
 
 **下一步建议：**
 - 回复 **修正** → 按错误项修改报告后重新核验
 - 回复 **人工确认** → 你逐条给出结论，我据此补充报告再核验
-- 回复 **重新调研**（/ontology-research）→ 重做本轮资料分析
+- 回复 **重新做资料分析**（/ontology-research）→ 重做本轮资料分析
 验收通过前不建议提取对象：错误的字段或 ID 会被后续映射、规则与追溯继续沿用。
 ```
 
 Handle reply:
 - **修正** / **人工确认** → 按 `.claude/commands/ontology-research.md` 的 Step 4.5 处理
-- **重新调研** → read `.claude/commands/ontology-research.md` and follow it
+- **重新做资料分析** → read `.claude/commands/ontology-research.md` and follow it
 - **提取对象** → 用户坚持时按 `.claude/STEP0_TEMPLATE.md` 的 **跳步守卫** 先提示后果，
   再由用户决定；不要主动推荐这条路。
 
-**调研完成:**
+**资料分析完成:**
 
 Find the latest file in `research/`. Show:
 ```
-当前状态：调研完成 ✅
+当前状态：资料分析完成 ✅
 报告：research/{latest_filename}
 
 **下一步建议：**
 - 回复 **流程图**（/ontology-flowchart）→ 创建业务流程图（流程复杂或多子流程交叉时推荐）
-- 回复 **提取对象**（/ontology-extract-object）→ 跳过流程图，直接从调研报告提取对象（概念清晰、流程线性时推荐）
-- 回复 **追加调研**（/ontology-research）→ 补充调研方向
+- 回复 **提取对象**（/ontology-extract-object）→ 跳过流程图，直接从资料分析报告提取对象（概念清晰、流程线性时推荐）
+- 回复 **追加资料分析**（/ontology-research）→ 补充分析方向
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
 ```
 
 Handle reply:
 - **流程图** → read `.claude/commands/ontology-flowchart.md` and follow it
 - **提取对象** → read `.claude/commands/ontology-extract-object.md` and follow it（Step 1 会识别到只有研究报告，进入模式 C）
-- **追加调研** → read `.claude/commands/ontology-research.md` (it will detect existing report and prompt for append mode)
+- **追加资料分析** → read `.claude/commands/ontology-research.md` (it will detect existing report and prompt for append mode)
 - **完成** → stop
 
 **流程图就绪:**
@@ -128,7 +128,7 @@ Count .md files in `ontology/object/`、`ontology/operation/`、`ontology/rule/`
 
 **下一步建议：**
 - 回复 **校验**（/ontology-validate）→ 开始校验
-- 回复 **规则与指标**（/ontology-extract-rule-metric）→ 补抽规则/指标：有调研报告的项目在逻辑提取阶段已按分类分流，这里用于从存量 operation 文档与 object 属性规则列补抽遗漏（可选）
+- 回复 **规则与指标**（/ontology-extract-rule-metric）→ 补抽规则/指标：有资料分析报告的项目在逻辑提取阶段已按分类分流，这里用于从存量 operation 文档与 object 属性规则列补抽遗漏（可选）
 - 回复 **整体视图**（/ontology-overview）→ 先看全局关系
 - 回复 **更新**（/ontology-update）→ 按新的参考内容增量更新已有 ontology
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
@@ -179,7 +179,7 @@ Count all docs. Get last git log line. Show:
 - 回复 **更新**（/ontology-update）→ 按新的参考内容更新已有 ontology
 - 回复 **补充对象**（/ontology-extract-object）→ 增量补充对象
 - 回复 **补充逻辑**（/ontology-extract-operation）→ 增量补充逻辑
-- 回复 **追加调研**（/ontology-research）→ 追加调研
+- 回复 **追加资料分析**（/ontology-research）→ 追加资料分析
 - 回复 **版本历史**（/version）→ 查看历史
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
 ```
@@ -192,7 +192,7 @@ Handle reply by reading the corresponding command file and following it.
 
 当 $ARGUMENTS 等于 `示例` / `例子` / `demo` 时进入本步骤。
 
-目标：让从未用过本工具的新用户，**零投入** 看到完整流程：调研 → 流程图 → 对象提取 → 逻辑提取 → 校验 → 追踪 → 代码生成。
+目标：让从未用过本工具的新用户，**零投入** 看到完整流程：资料分析 → 流程图 → 对象提取 → 逻辑提取 → 校验 → 追踪 → 代码生成。
 
 ### 准备环境
 
@@ -210,7 +210,7 @@ python3 .claude/scripts/seed_example.py {DEMO_ROOT}
 ```
 
 该脚本会创建：
-- `{DEMO_ROOT}research/20260417-外卖订单.md` — 一份 500 字左右的迷你调研报告
+- `{DEMO_ROOT}research/20260417-外卖订单.md` — 一份 500 字左右的迷你资料分析报告
 - `{DEMO_ROOT}ontology/diagrams/下单流程.drawio` — 一张简化的下单流程图
 - `{DEMO_ROOT}ontology/diagrams/配送流程.drawio` — 一张配送流程图
 - `{DEMO_ROOT}ontology/diagrams-summary/下单流程.md`、`配送流程.md` — 自动生成的摘要

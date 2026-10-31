@@ -1,22 +1,31 @@
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import {
+  Alert,
   Button,
   Descriptions,
   Form,
   Input,
   Menu,
   Segmented,
+  Switch,
   Tooltip,
   Typography,
   message,
 } from 'antd';
 import { useContext, useEffect, useState } from 'react';
 import { api, authStore } from '../lib/api.js';
+import {
+  currentAvailability,
+  isDesktopNotifyEnabled,
+  requestNotificationPermission,
+  setDesktopNotifyEnabled,
+} from '../lib/buildNotifier.js';
 import { ThemeCtx } from '../lib/theme-context.js';
 import { ACCENTS } from '../theme.js';
 import McpSettings from './McpSettings.jsx';
 import ModelSettings from './ModelSettings.jsx';
-import { AssetsSettings, RuntimeSettings } from './SystemSettings.jsx';
+import PersonalModelSettings from './PersonalModelSettings.jsx';
+import { AssetsSettings, RuntimeSettings, SandboxStatus } from './SystemSettings.jsx';
 
 const ACCENT_LABELS = {
   blue: '默认蓝',
@@ -129,11 +138,51 @@ function AppearanceSection() {
   );
 }
 
+// 构建进度提醒的系统通知开关；开关只存在本浏览器，标题闪烁不受开关影响
+function NotificationSection() {
+  const [enabled, setEnabled] = useState(isDesktopNotifyEnabled);
+  const [availability, setAvailability] = useState(currentAvailability);
+  const requestPermission = async () => setAvailability(await requestNotificationPermission());
+  const toggle = (checked) => {
+    setDesktopNotifyEnabled(checked);
+    setEnabled(checked);
+    if (checked) requestPermission(); // 借这次点击申请权限，已决定过的不会再弹框
+  };
+  return (
+    <div style={{ maxWidth: 420 }}>
+      <Typography.Paragraph strong style={{ marginBottom: 8 }}>
+        桌面通知 <Switch checked={enabled} onChange={toggle} style={{ marginLeft: 8 }} />
+      </Typography.Paragraph>
+      <Typography.Paragraph type="secondary">
+        {'本体构建跑完一步、需要你回答问题或确认操作、构建出错时，如果你不在工作台页面，' +
+          '会弹出系统通知，并让标签页的标题和图标闪烁。关闭后不再弹系统通知，标题和图标仍会闪烁。'}
+      </Typography.Paragraph>
+      {enabled && availability.text && (
+        <Alert
+          showIcon
+          type={availability.code === 'default' ? 'info' : 'warning'}
+          message={availability.text}
+          action={
+            availability.code === 'default' ? (
+              <Button size="small" onClick={requestPermission}>
+                现在授权
+              </Button>
+            ) : null
+          }
+        />
+      )}
+    </div>
+  );
+}
+
 const SECTION_TITLES = {
   account: '账号',
   appearance: '外观',
+  notify: '通知',
   model: '模型接入',
+  myModel: '我的模型配置',
   runtime: '会话',
+  sandbox: '沙箱',
   assets: '提示词资产',
   mcp: 'MCP 服务器',
 };
@@ -160,6 +209,8 @@ export default function SettingsPage({
       children: [
         { key: 'account', label: '账号' },
         { key: 'appearance', label: '外观' },
+        { key: 'notify', label: '通知' },
+        ...(authEnabled ? [{ key: 'myModel', label: '我的模型配置' }] : []),
       ],
     },
     ...(isAdmin
@@ -170,6 +221,7 @@ export default function SettingsPage({
             children: [
               { key: 'model', label: '模型接入' },
               { key: 'runtime', label: '会话' },
+              { key: 'sandbox', label: '沙箱' },
               { key: 'assets', label: '提示词资产' },
             ],
           },
@@ -206,8 +258,11 @@ export default function SettingsPage({
         </Typography.Title>
         {section === 'account' && <AccountSection authEnabled={authEnabled} />}
         {section === 'appearance' && <AppearanceSection />}
+        {section === 'notify' && <NotificationSection />}
+        {section === 'myModel' && authEnabled && <PersonalModelSettings />}
         {section === 'model' && isAdmin && <ModelSettings project={project} />}
         {section === 'runtime' && isAdmin && <RuntimeSettings project={project} />}
+        {section === 'sandbox' && isAdmin && <SandboxStatus />}
         {section === 'assets' && isAdmin && <AssetsSettings />}
         {section === 'mcp' && project && <McpSettings project={project} />}
       </div>

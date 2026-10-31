@@ -168,7 +168,7 @@ def test_run_uses_saved_source_and_syncs_eval_set(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "MODELING_TOKEN", "")
     captured = {}
 
-    async def fake_run(project_id, root_, token, cases, data_source, eval_set_name="", allow_unbound=False):
+    async def fake_run(project_id, root_, token, cases, data_source, eval_set_name="", allow_unbound=False, refresh_token=""):
         captured.update(cases=cases, data_source=data_source, eval_set_name=eval_set_name)
 
     monkeypatch.setattr(modeling_eval, "run", fake_run)
@@ -252,8 +252,8 @@ def test_connection_mode_puts_provider_config(tmp_path, monkeypatch):
     ConnectionStub.round_payload = {
         "round": {"id": "r1", "status": "done", "progressDone": 2, "progressTotal": 2},
         "results": [
-            {"question": "Q1", "verdict": "pass", "reason": "一致"},
-            {"question": "Q2", "verdict": "pass", "reason": "一致"},
+            {"question": "Q1", "verdict": "pass", "reason": "一致", "finalAnswer": "A1"},
+            {"question": "Q2", "verdict": "pass", "reason": "一致", "finalAnswer": "A2"},
         ],
     }
     server, pid, root = _serve(tmp_path, monkeypatch)
@@ -306,12 +306,12 @@ def test_failed_round_with_error_cases_writes_report_and_hints_evolution(tmp_pat
         modeling_eval._run_sync(pid, root, "t", CASES)
         state = modeling_eval.read_state(root)
         assert state["status"] == "failed"
-        assert state["summary"]["error"] == 2 and state["summary"]["score"] == 0
+        assert state["summary"]["error"] == 2 and state["summary"]["score"] is None
         report = (root / state["report"]).read_text(encoding="utf-8")
-        assert "轮次异常终止" in report and "本用例未执行" in report
+        assert "轮次异常终止" in report and "本用例未取得可核验结果" in report
         hint = modeling_eval.evolution_hint(state)
         assert hint == {
-            "report": state["report"], "score": 0, "errors": 2, "fails": 0, "round_failed": True,
+            "report": state["report"], "score": None, "errors": 2, "fails": 0, "round_failed": True,
         }
         # 项目 meta 同步带出提示（聊天区「评测优化」建议据此出现）
         from app.services.workspace import WorkspaceManager

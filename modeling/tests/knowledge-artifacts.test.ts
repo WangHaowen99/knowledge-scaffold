@@ -318,10 +318,15 @@ test('对象关系名称拒绝纯基数和重复端点名称并保留模型生�
   )));
   assert.throws(() => validateSpecIntegrity(invalid), /relations\[0\]\.relation.*关系基数/);
 
+  // 自关联（如「员工 -上级→ 员工」）是正常业务关系，图导入按关联字段值连边
   const selfRelation = baseSpec();
-  selfRelation.objects[0].relations = [{ relation: '属于', target: selfRelation.objects[0].key }];
-  assert.ok(validateObjectBatch([], selfRelation.objects).some((issue) => issue.includes('不允许自关联')));
-  assert.throws(() => validateSpecIntegrity(selfRelation), /不允许自关联/);
+  selfRelation.objects[0].relations = [{ relation: '上级', target: selfRelation.objects[0].key }];
+  assert.deepEqual(validateObjectBatch([], selfRelation.objects), []);
+  assert.doesNotThrow(() => validateSpecIntegrity(selfRelation));
+  assert.throws(
+    () => validateSpecIntegrity(selfRelation, [], undefined, { allowSelfRelations: false }),
+    /评测不允许自关联/u,
+  );
 
   const duplicateRelation = baseSpec();
   duplicateRelation.objects[0].relations = [
@@ -359,10 +364,6 @@ test('评测前校验可跳过存量关系命名规范但保留关系结构校�
   });
   assert.throws(() => validateSpecIntegrity(legacy), /目标对象名称.*申请/);
   assert.doesNotThrow(() => validateSpecIntegrity(legacy, [], undefined, lenient));
-
-  const selfRelation = baseSpec();
-  selfRelation.objects[0].relations = [{ relation: '属于', target: selfRelation.objects[0].key }];
-  assert.throws(() => validateSpecIntegrity(selfRelation, [], undefined, lenient), /不允许自关联/);
 
   const dangling = baseSpec();
   dangling.objects[0].relations = [{ relation: '属于', target: 'missing_object' }];

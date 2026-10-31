@@ -77,12 +77,16 @@ PACKAGED_ONTOLOGY_DIRS = {"object", "operation", "logic", "rule", "metric", "scr
 # 评测演进期额外放行：D 类改用例、C 类对账素材。
 EVOLUTION_EXTRA_DIRS = {"testcase", "data-mock"}
 
+# 求解契约受管目录：binding 与 sidecar 须成组一致，只能经求解模型面板/后端接口写入。
+MANAGED_ONTOLOGY_DIRS = {"solver"}
+
 EVOLUTION_LOCK = project_root / ".ontology-state" / "lock-evolution.json"
 EVOLUTION_ACTIVE = EVOLUTION_LOCK.exists()
 
 
 def classify(path: Path) -> str | None:
-    """返回 None（放行）/ "unknown"（自创目录）/ "unpackaged"（演进期越出打包范围）。"""
+    """返回 None（放行）/ "managed"（受管目录）/ "unknown"（自创目录）/
+    "unpackaged"（演进期越出打包范围）。"""
     if not under_project(path):
         return None
     try:
@@ -92,6 +96,8 @@ def classify(path: Path) -> str | None:
     if len(parts) < 3 or parts[0] != "ontology":
         return None  # ontology 根文件（如 index.md）不拦
     sub = parts[1]
+    if sub in MANAGED_ONTOLOGY_DIRS:
+        return "managed"
     if sub not in ALLOWED_ONTOLOGY_DIRS:
         return "unknown"
     if EVOLUTION_ACTIVE and sub not in (PACKAGED_ONTOLOGY_DIRS | EVOLUTION_EXTRA_DIRS):
@@ -205,7 +211,12 @@ packaged_hint = (
     "案例/方案类知识请建模为 ontology/rule/ 下的场景规则（触发特征 → 方案要点），"
     "并 wikilink 关联涉事对象。"
 )
-if any(kind == "unpackaged" for _, _, kind in unique):
+if any(kind == "managed" for _, _, kind in unique):
+    reason = (
+        f"ontology/solver/ 是求解契约受管目录，不允许直接写入：{reasons}。"
+        "Decision Model、Schema 与 Presentation 须成组一致，请提示用户在求解模型面板中维护。"
+    )
+elif any(kind == "unpackaged" for _, _, kind in unique):
     reason = (
         f"评测演进进行中，知识修订只能落在会打包的目录，此次写入越界：{reasons}。"
         f"{packaged_hint}写进不打包的目录（如 ontology/knowledge/）对评测分数不会有任何影响。"
