@@ -1,6 +1,6 @@
 // mock 服务端：按契约路径响应，状态放在内存里；SSE 由 StreamHub 推送。
 // 只在 VITE_API_MOCK=1 的开发 / 测试构建里加载。
-// 演示状态用地址参数切换：?mock=login:fail,projects:empty,auth:local,maint:readonly,engine:missing,import:conflict,role:user
+// 演示状态用地址参数切换：?mock=login:fail,projects:empty,auth:local,maint:readonly,engine:missing,import:conflict,role:user,scope:running|pending
 // 项目所处阶段（工作台显示什么）：?mock=stage:materials 等，见 stageOf；各阶段的对话、流程由 routes-*.js 的 stages 提供。
 // F2 各页的接口按分组放在 routes-*.js，每个文件导出 register(ctx)、可选的 stages 与 projectStages。
 import * as F from './fixtures.js';
@@ -161,6 +161,10 @@ export function createMockServer() {
     entries: [F.REFS.op, F.REFS.r09, F.REFS.safety, F.REFS.display], artifacts: [{ type: 'diagram.flowchart', key: 'overage-flow', title: '超量处理流程' }],
     paths: ['ext/trace/scenarios/**'], reason_text: '助手正在改「超量与审批提示」这一片', since: new Date().toISOString(),
   });
+  // ?mock=scope:running / scope:pending：主示例项目一打开就处在写入范围锁的两态之一（Studio、流程图弹窗、插件页的只读对照用）
+  if (sc.scope === 'running' || sc.scope === 'pending') {
+    db.scope.set(F.MAIN_PID, scopeLock(sc.scope === 'running' ? 'assistant_running' : 'pending_confirm', F.conversations()[0].id));
+  }
 
   function later(pid, cid, ms, fn) {
     const t = setTimeout(() => { db.running.delete(`${pid}:${cid}`); fn(); }, ms);
