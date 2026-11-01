@@ -339,7 +339,8 @@ def test_clone_keeps_locked_versions(manager: WorkspaceManager, tmp_path: Path):
     lock = lockfile.read(source)
     lock.upsert(manager.packs.entry_for("core", "0.2.0", follow=False))
     lockfile.write(source, lock)
-    service.commit_lock(source, "chore: 锁定 core 0.2.0")
+    with manager._project_lock(source.name):
+        service.commit_lock(manager, source.name, "chore: 锁定 core 0.2.0")
     manager.packs.apply(source)
     clone = manager.project_root(manager.clone_project(source.name, name="副本")["id"])
     assert lockfile.read(clone).get("core").version == "0.2.0"

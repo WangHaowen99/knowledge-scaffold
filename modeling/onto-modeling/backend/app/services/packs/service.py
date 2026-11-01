@@ -1,15 +1,14 @@
 """插件运行时里要动工作区 git 的操作：持项目锁，只按路径提交锁文件（不带 agent 的其他改动）。
 
-锁文件的改动作为一次提交合入主线，带 `Onto-Source: plugin`（契约 PL-06；变更集在 P2，
-那时改成自动合入的变更集，可撤回）。
+锁文件的改动经统一变更事务（ChangeTx，方案 C1）作为一次提交合入主线，带 `Onto-Source: plugin`
+（契约 PL-06；变更集在 P2，那时换成变更集目标，自动合入、可撤回）。
 """
 
 from __future__ import annotations
 
 import logging
-from pathlib import Path
+from typing import Callable
 
-from ..workspace.gitops import _commit_paths
 from . import lockfile
 from . import manifest as mf
 from .assembler import AssemblyError
@@ -17,13 +16,26 @@ from .lockfile import PackLock
 
 _log = logging.getLogger(__name__)
 
-PLUGIN_TRAILER = "Onto-Source: plugin"
 
+def commit_lock(manager, project_id: str, message: str, actor: str = "",
+                write: Callable[[], object] | None = None) -> str:
+    """经写入事务提交锁文件，只提交这一个路径；没有改动返回空串。调用方持项目锁（可重入）。
 
-def commit_lock(root: Path, message: str, actor: str = "") -> str:
-    """提交锁文件（调用方持项目锁）；没有改动返回空串。"""
-    trailer = f"\n\n{PLUGIN_TRAILER}" + (f"\nOnto-Author: {actor}" if actor else "")
-    return _commit_paths(Path(root), [lockfile.LOCK_REL], message + trailer)
+    write 给定时在事务里写锁文件，提交失败恢复原内容；不给定时提交已经写好的锁文件（启动核对、
+    跟随通道这类先写后提交的路径，中途停机由写入意图在下次启动补提交）。项目没有 git 时只写不提交。
+    """
+    from ...kernel.writepath import ChangeTx, Origin
+
+    root = manager.project_root(project_id)
+    if not (root / ".git").is_dir():
+        if write is not None:
+            write()
+        return ""
+    with ChangeTx(manager, project_id, Origin("plugin", actor), summary=message) as tx:
+        tx.touch(lockfile.LOCK_REL, snapshot=write is not None)
+        if write is not None:
+            write()
+        return tx.commit(message).commit
 
 
 def reconcile_all(manager) -> dict:
@@ -46,7 +58,7 @@ def reconcile_all(manager) -> dict:
             with manager._project_lock(project_id):
                 before = runtime.assembler.active(root)
                 _, wrote = runtime.ensure_lock(root)
-                if wrote and (root / ".git").is_dir() and commit_lock(root, "chore: 写入能力包锁文件"):
+                if wrote and commit_lock(manager, project_id, "chore: 写入能力包锁文件"):
                     report["locked"].append(project_id)
                 status = runtime.reconcile(root, verified)
                 if status and (before or {}).get("assembly_hash") != status.get("active_hash"):
@@ -74,8 +86,8 @@ def prepare_for_message(manager, project_id: str, *, follow: bool = True) -> dic
             return {}
         _, wrote = runtime.ensure_lock(root)
         changed = runtime.follow(root) if follow else False
-        if (wrote or changed) and (root / ".git").is_dir():
-            commit_lock(root, "chore: 跟随通道升级能力包" if changed else "chore: 写入能力包锁文件")
+        if wrote or changed:
+            commit_lock(manager, project_id, "chore: 跟随通道升级能力包" if changed else "chore: 写入能力包锁文件")
         try:
             return runtime.apply(root)
         except AssemblyError as exc:
@@ -225,10 +237,9 @@ def _switch(manager, project_id: str, mutate, message: str, actor: str) -> dict:
         result = mutate(new_lock)
         plan = _plan_or_raise(runtime, new_lock)
         runtime.assembler.build(plan)
-        lockfile.write(root, new_lock)
-        commit = commit_lock(root, message, actor) if (root / ".git").is_dir() else ""
-        if wrote and not commit and (root / ".git").is_dir():
-            commit = commit_lock(root, "chore: 写入能力包锁文件", actor)
+        commit = commit_lock(manager, project_id, message, actor, write=lambda: lockfile.write(root, new_lock))
+        if wrote and not commit:
+            commit = commit_lock(manager, project_id, "chore: 写入能力包锁文件", actor)
         try:
             status = runtime.apply(root, h0_only=True)
         except AssemblyError:

@@ -266,3 +266,50 @@ def test_times_are_rfc3339(env):
     assert all(item["enabled_at"] is None or rfc.match(item["enabled_at"]) for item in items)
     detail = client.get("/api/v1/packs/trace").json()
     assert rfc.match(detail["released_at"]) and rfc.match(detail["changelog"][0]["date"])
+
+
+# ---- 锁文件经写入事务提交（方案 C1）----
+
+
+def _trailer_values(root: Path, key: str) -> list[str]:
+    out = subprocess.run(["git", "log", "-1", f"--format=%(trailers:key={key},valueonly)"], cwd=root,
+                         capture_output=True, text=True).stdout
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def test_lock_commit_goes_through_change_transaction(env):
+    """启用包：只提交锁文件，来源 trailer 只有一份（plugin），作者是操作者；agent 的其他改动不带进来。"""
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    publish_pack(client, tmp_path, "trace", "0.9.0")
+    (root / "research").mkdir(exist_ok=True)
+    (root / "research" / "agent-draft.md").write_text("助手还没提交的草稿\n", encoding="utf-8")
+
+    assert client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "trace"}).status_code == 201
+    assert _trailer_values(root, "Onto-Source") == ["plugin"]
+    assert _trailer_values(root, "Onto-Author") == ["local"]
+    changed = subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"], cwd=root,
+                             capture_output=True, text=True).stdout.split()
+    assert changed == [lockfile.LOCK_REL]
+    assert "research/agent-draft.md" in subprocess.run(["git", "status", "--porcelain"], cwd=root,
+                                                       capture_output=True, text=True).stdout
+
+
+def test_lock_file_restored_when_commit_fails(env, monkeypatch):
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    publish_pack(client, tmp_path, "trace", "0.9.0")
+    before = (root / lockfile.LOCK_REL).read_bytes()
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout
+
+    from app.kernel.writepath import tx as writepath
+    from app.services.workspace.errors import WorkspaceError
+
+    def broken(*_args, **_kwargs):
+        raise WorkspaceError("git 索引正被其他 git 操作占用（index.lock），请稍后重试", 500)
+
+    monkeypatch.setattr(writepath, "commit_paths", broken)
+    response = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "trace"})
+    assert response.status_code == 500
+    assert (root / lockfile.LOCK_REL).read_bytes() == before
+    assert subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout == head
