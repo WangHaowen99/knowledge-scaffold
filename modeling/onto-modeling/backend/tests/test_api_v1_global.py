@@ -854,39 +854,48 @@ def test_legacy_trash_restore_moves_name_into_path(client, manager):
     _assert_legacy(listing, "/api/v1/ops/trash")
 
 
-def test_core_default_rollback_and_pack_repo_backups(client, monkeypatch, tmp_path):
-    assets = tmp_path / "core-assets"
-    (assets / "workspace-toolkit" / "commands").mkdir(parents=True)
-    (assets / "workspace-toolkit" / "commands" / "a.md").write_text("synthetic", encoding="utf-8")
-    monkeypatch.setattr(config, "ASSETS_DIR", assets)
-    backup_dir = Path(config.DATA_DIR) / "asset-backups" / "dotclaude-1700000000"
-    (backup_dir / "commands").mkdir(parents=True)
-    (backup_dir / "commands" / "b.md").write_text("synthetic-old", encoding="utf-8")
+def test_core_default_rollback_and_pack_repo_backups(client, manager, tmp_path):
+    """O-30～O-34 由包仓库承接原资产包（方案 2.3 第 4、5 步）：默认版本是 stable 指针，回滚先备份包仓库。"""
+    from tests.pack_helpers import make_pack
+
+    repo = manager.packs.repository
+    for version in ("0.1.0", "0.2.0"):
+        repo.install(make_pack(tmp_path / version, "core", version, required=True,
+                               files={"commands/ontology.md": f"core {version}\n"}), origin="upload")
+    repo.set_channel("core", "stable", "0.2.0")
 
     view = client.get("/api/v1/ops/core-default", headers=_h("ops-token")).json()
-    assert view["stable"] == "current" and [v["channel"] for v in view["versions"]] == ["stable", "retired"]
-    backups = client.get("/api/v1/ops/pack-repo/backups", headers=_h("ops-token")).json()
-    assert backups["items"][0]["name"] == "dotclaude-1700000000" and backups["items"][0]["size"] > 0
-    assert RFC3339.match(backups["items"][0]["created_at"])
+    assert view["stable"] == "0.2.0" and view["beta"] is None
+    assert [(v["version"], v["channel"], v["is_default"]) for v in view["versions"]] == [
+        ("0.2.0", "stable", True), ("0.1.0", "retired", False)]
+    assert RFC3339.match(view["versions"][0]["released_at"])
 
     _assert_error(client.post("/api/v1/ops/core-default/rollback", headers=_h("ops-token"), json={"version": "../x"}), 400, "invalid_argument")
-    _assert_error(client.post("/api/v1/ops/core-default/rollback", headers=_h("ops-token"), json={"version": "dotclaude-1"}), 404, "not_found")
-    rolled = client.post("/api/v1/ops/core-default/rollback", headers=_h("ops-token"), json={"version": "dotclaude-1700000000"})
-    # 回滚前当前资产先移入备份，所以多出一个 retired 版本
-    assert rolled.status_code == 200 and [v["channel"] for v in rolled.json()["versions"]] == ["stable", "retired", "retired"]
-    assert (assets / "workspace-toolkit" / "commands" / "b.md").is_file()
+    _assert_error(client.post("/api/v1/ops/core-default/rollback", headers=_h("ops-token"), json={"version": "9.9.9"}), 404, "not_found")
+    rolled = client.post("/api/v1/ops/core-default/rollback", headers=_h("ops-token"), json={"version": "0.1.0"})
+    assert rolled.status_code == 200 and rolled.json()["stable"] == "0.1.0"
+    assert repo.has("core", "0.2.0")  # 旧版本一直在包仓库里
+
+    backups = client.get("/api/v1/ops/pack-repo/backups", headers=_h("ops-token")).json()
+    assert backups["keep"] == 3 and len(backups["items"]) == 1  # 回滚前自动备份
+    assert backups["items"][0]["size"] > 0 and RFC3339.match(backups["items"][0]["created_at"])
+    made = client.post("/api/v1/ops/pack-repo/backups", headers=_h("ops-token"))
+    assert made.status_code == 202 and made.json()["name"].startswith("packs-")
+    promoted = client.post("/api/v1/ops/core-default/promote", headers=_h("ops-token"), json={"version": "0.2.0"})
+    assert promoted.json()["stable"] == "0.2.0"
 
     legacy = client.get("/api/settings/assets/backups", headers=_h("admin-token"))
     _assert_legacy(legacy, "/api/v1/ops/pack-repo/backups")
 
 
-def test_assets_upload_stays_on_legacy_path_without_deprecation(client):
+def test_assets_upload_moves_to_pack_uploads(client):
+    """旧资产包上传改写到 PL-13（上传的资产包当作 core 新版本，走静态检查）。"""
     response = client.post(
         "/api/settings/assets/upload", headers=_h("user-token"),
         files={"file": ("assets.zip", b"not-a-zip", "application/zip")},
     )
     _assert_error(response, 403, "forbidden")
-    assert "Deprecation" not in response.headers
+    _assert_legacy(response, "/api/v1/admin/packs/uploads")
 
 
 # ---- 本地模式 ----

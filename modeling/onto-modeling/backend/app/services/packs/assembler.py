@@ -163,6 +163,18 @@ class Assembler:
                 shutil.rmtree(staging, ignore_errors=True)
         return target
 
+    def check(self, plan: Plan) -> None:
+        """试装配一遍、不留目录（兼容检查用）：名字冲突、流程组装不过时抛 AssemblyError。"""
+        if (self.dir_for(plan.hash) / MANIFEST_JSON).is_file():
+            return
+        self.root.mkdir(parents=True, exist_ok=True)
+        staging = self.root / f".tmp-check-{uuid.uuid4().hex[:8]}"
+        staging.mkdir()
+        try:
+            self._fill(plan, staging)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
     def _fill(self, plan: Plan, staging: Path) -> None:
         owners: dict[str, str] = {}
         flows: list[tuple[str, str, dict]] = []

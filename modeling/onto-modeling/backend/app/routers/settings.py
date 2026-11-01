@@ -11,7 +11,7 @@ import re
 import time
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, File, Request, UploadFile
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from ..api import deps
@@ -547,26 +547,3 @@ def test_mcp_server(body: McpTestBody, request: Request):
         "detail": result.get("detail"),
         "error": None if ok else result.get("detail"),
     }
-
-
-# ---- 过渡：资产包上传（旧路径，PL-13 在 B3） ----
-
-
-@router.post("/api/settings/assets/upload")
-async def upload_assets(request: Request, file: UploadFile = File(...)):
-    """上传提示词资产包替换 core 资产，旧资产备份到数据目录。B3 包仓库落地后改走 PL-13。"""
-    _admin(request)
-    import tempfile
-    from pathlib import Path
-
-    from ..services import assets_admin
-
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-        tmp.write(await file.read())
-        tmp_path = Path(tmp.name)
-    try:
-        return assets_admin.upload(tmp_path)
-    except assets_admin.AssetError as exc:
-        raise ApiError("invalid_argument", str(exc), exc.status) from exc
-    finally:
-        tmp_path.unlink(missing_ok=True)

@@ -248,6 +248,8 @@ RULES: tuple[Rule, ...] = (
     _gone("GET", "/api/settings/assets", "/api/v1/ops/core-default"),
     _r("GET", "/api/settings/assets/backups", _same("GET", "/api/v1/ops/pack-repo/backups")),
     _r("POST", "/api/settings/assets/rollback", _same("POST", "/api/v1/ops/core-default/rollback")),
+    # 资产包上传当作 core 新版本走包仓库的静态检查，通过后发布到 stable（契约第 6 章、方案 2.3 第 4 步）
+    _r("POST", "/api/settings/assets/upload", _same("POST", "/api/v1/admin/packs/uploads")),
     _r("GET", "/api/settings/mcp", _same("GET", "/api/v1/admin/settings/mcp-servers")),
     _r("PUT", "/api/settings/mcp", _same("PUT", "/api/v1/admin/settings/mcp-servers")),
     _r("POST", "/api/settings/mcp/test", _same("POST", "/api/v1/admin/settings/mcp-servers/test")),

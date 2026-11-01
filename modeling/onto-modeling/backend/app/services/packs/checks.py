@@ -38,8 +38,12 @@ PROMPT_HARD_BYTES = 4 * 1024 * 1024
 _KERNEL_SCRIPT_PREFIXES = ("_guard_common",)
 
 
-def _check(check_id: str, label: str, result: str, detail: str = "") -> dict:
+def item(check_id: str, label: str, result: str, detail: str = "") -> dict:
+    """一项检查结果（契约 7.11 StaticCheck）。"""
     return {"id": check_id, "label": label, "result": result, "detail": detail}
+
+
+_check = item
 
 
 def _names(directory: Path, sub: str, suffix: str) -> set[str]:

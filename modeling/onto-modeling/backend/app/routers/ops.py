@@ -619,82 +619,76 @@ async def run_backup(request: Request):
     return JSONResponse(status_code=202, content={"task_id": f"backup-{uuid.uuid4().hex[:12]}", "name": name})
 
 
-# ---- O-30、O-32、O-33 core 默认版本（过渡：现有提示词资产包） ----
-
-CURRENT_ASSETS_VERSION = "current"
+# ---- O-30～O-34 core 默认版本与包仓库备份（包仓库承接原资产包，services/packs/channels.py） ----
 
 
-def core_default_view() -> dict:
-    """O-30 形状。包仓库（B3）之前 core 只有一份资产：当前版本叫 current，资产备份按备份名列为 retired。"""
-    from ..services import assets_admin
+def _core_view() -> dict:
+    from ..services.packs import channels
 
-    info = assets_admin.info()
-    versions = [{
-        "version": CURRENT_ASSETS_VERSION, "channel": "stable",
-        "released_at": deps.iso(info.get("updated_at")), "is_default": True,
-    }] if info.get("present") else []
-    versions += [
-        {"version": entry["name"], "channel": "retired", "released_at": deps.iso(entry["time"]), "is_default": False}
-        for entry in assets_admin.list_backups()
-    ]
-    return {"stable": CURRENT_ASSETS_VERSION if info.get("present") else None, "beta": None, "versions": versions}
-
-
-def _asset_error(exc) -> ApiError:
-    if exc.status == 404:
-        return ApiError("not_found", str(exc), 404)
-    return ApiError("invalid_argument", str(exc), exc.status if 400 <= exc.status < 500 else 400)
+    deps.workspaces.packs.core_version()
+    view = channels.core_default_view(deps.workspaces.packs.repository)
+    view["versions"] = [{**item, "released_at": deps.iso(item["released_at"])} for item in view["versions"]]
+    return view
 
 
 @router.get("/core-default")
 def core_default(request: Request):
-    """O-30：core 默认版本（过渡实现，见 core_default_view）。"""
+    """O-30：core 默认版本（stable 通道指向的版本）与包仓库里的全部 core 版本。"""
     _read(request)
-    return core_default_view()
+    return _core_view()
 
 
 class RollbackBody(BaseModel):
     version: str
 
 
+def _set_core_default(version: str, request: Request, *, backup_first: bool) -> dict:
+    from ..services.packs import channels
+    from ..services.packs.repository import RepositoryError
+
+    if not version or "/" in version or ".." in version:
+        raise ApiError("invalid_argument", "版本号不合法", 400, {"fields": {"version": "format"}})
+    try:
+        channels.set_core_default(deps.workspaces.packs.repository, version, by=deps.actor(request),
+                                  backup_first=backup_first)
+    except RepositoryError as exc:
+        raise ApiError("not_found" if exc.status == 404 else exc.code, str(exc), exc.status) from exc
+    return _core_view()
+
+
+@router.post("/core-default/promote")
+def core_default_promote(body: RollbackBody, request: Request):
+    """O-31：推广到 stable。各项目仍按自己锁定的版本运行，跟随默认的项目下一条消息生效。"""
+    _write(request)
+    return _set_core_default(body.version, request, backup_first=False)
+
+
 @router.post("/core-default/rollback")
 def core_default_rollback(body: RollbackBody, request: Request):
-    """O-32：回滚到某份资产备份；当前资产先移入备份，再恢复所选版本。"""
+    """O-32：回滚默认版本：先自动备份包仓库，再把 stable 指回旧版本（旧版本一直在包仓库里）。"""
     _write(request)
-    from ..services import assets_admin
-
-    try:
-        assets_admin.rollback(body.version)
-    except assets_admin.AssetError as exc:
-        raise _asset_error(exc) from exc
-    return core_default_view()
-
-
-def _dir_size(path: Path) -> int:
-    total = 0
-    for item in path.rglob("*"):
-        try:
-            if item.is_file():
-                total += item.stat().st_size
-        except OSError:
-            continue
-    return total
+    return _set_core_default(body.version, request, backup_first=True)
 
 
 @router.get("/pack-repo/backups")
 def pack_repo_backups(request: Request):
-    """O-33：包仓库备份（过渡：资产包备份目录，现在不自动清理，keep 为 null）。"""
+    """O-33：包仓库备份。"""
     _read(request)
-    from ..services import assets_admin
+    from ..services.packs import channels
 
-    directory = Path(config.DATA_DIR) / "asset-backups"
-    return {
-        "items": [
-            {"name": entry["name"], "size": _dir_size(directory / entry["name"]), "created_at": deps.iso(entry["time"])}
-            for entry in assets_admin.list_backups()
-        ],
-        "keep": None,
-    }
+    items = channels.list_backups(deps.workspaces.packs.repository)
+    return {"items": [{**item, "created_at": deps.iso(item["created_at"])} for item in items],
+            "keep": channels.BACKUP_KEEP}
+
+
+@router.post("/pack-repo/backups")
+def pack_repo_backup_now(request: Request):
+    """O-34：立即备份包仓库（同步打完再回 202，任务中心 O-40 以后做）。"""
+    _write(request)
+    from ..services.packs import channels
+
+    name = channels.backup(deps.workspaces.packs.repository)
+    return JSONResponse(status_code=202, content={"task_id": f"pack-backup-{uuid.uuid4().hex[:12]}", "name": name})
 
 
 # ---- 追加写日志的游标分页（审计、错误留档） ----
