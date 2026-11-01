@@ -16,6 +16,9 @@
 - 目录分层：DeepAgentConfig.cwd = 项目 git 工作区（文件/Shell 工具的根），
   workspace = DATA_DIR/jiuwen/<pid>（框架私有工件区），互不污染；子代理工件区
   再下沉到 workspace/sub_agents（必须与主 agent 分开，见 _general_purpose_spec）
+- hook：只执行 PreToolUse 守卫（jiuwen_assets.ClaudeHooksRail）；SessionStart 的阶段提示与
+  UserPromptSubmit 的业务知识信号改由宿主注入（session_host/injection.py），每条消息
+  送达模型时拼在 query 前面
 
 同步 task_tool 的子代理执行步骤由 jiuwen_progress.py 通过 Rail 回调送回主事件队列；
 成本无单价来源，只报 tokens：每次模型调用发 model_usage 逐次记账，result 只给单轮合计。
@@ -35,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from ... import config
+from ..session_host import injection
 from .base import FRIENDLY_ERROR, EngineContext, config_error_for, safe_json
 from .jiuwen_progress import JiuwenProgressTracker, build_progress_rail, progress_scope
 
@@ -609,7 +613,10 @@ class JiuwenEngine:
         self.resume_attempted = False
         self._queue: asyncio.Queue = asyncio.Queue()
         self._turn_task: asyncio.Task | None = None
-        self._buffered: list[str] = []  # 轮内追加的消息，本轮结束后接续
+        self._buffered: list[str] = []  # 轮内追加的消息（用户原文），本轮结束后接续
+        # 宿主注入（session_host.injection）：本实例是否已送出过消息、模型已看到的阶段提示摘要
+        self._session_started = False
+        self._stage_digest: str | None = None
         # 上下文引擎与流式运行都按这个 id 寻址：每条会话一个，default 沿用单会话时期的值
         self._sid = f"onto-{ctx.project_id}"
         if ctx.conversation_id != "default":
@@ -779,11 +786,33 @@ class JiuwenEngine:
         return agent, tracker
 
     async def send(self, text: str) -> None:
-        text = self._loader.expand_command(text)
+        # 存用户原文：命令展开与注入等真正送达模型时再做，积压的消息拿到的是那时的阶段
         if self._turn_task and not self._turn_task.done():
             self._buffered.append(text)
             return
         self._turn_task = asyncio.create_task(self._run_turn(text))
+
+    async def _model_query(self, text: str) -> str:
+        """发给模型的 query：斜杠命令展开后，前面附上宿主注入的阶段提示与业务知识信号。
+
+        Jiuwen 不执行 SessionStart / UserPromptSubmit hook，由这里补上（ADR-0022）。
+        会话历史里的用户消息由会话层按原文记录，不受影响；注入出错只留档，照常发送。
+        """
+        expanded = self._loader.expand_command(text)
+        try:
+            result = await asyncio.to_thread(
+                injection.build_context,
+                self._ctx.cwd,
+                user_text=text,
+                session_start=not self._session_started,
+                last_injected=self._stage_digest,
+            )
+        except Exception as exc:
+            self._ctx.log_error("injection", str(exc))
+            return expanded
+        self._session_started = True
+        self._stage_digest = result.digest
+        return injection.compose_query(expanded, result.text)
 
     async def interrupt(self) -> None:
         agent = self.client
@@ -904,10 +933,9 @@ class JiuwenEngine:
         if self._progress_tracker is None:
             self._progress_tracker = JiuwenProgressTracker(self._queue.put)
         try:
-            queries: list[Any] = [text]
+            queries: list[str] = [text]
             while queries:
-                query = queries.pop(0)
-                round_query: Any = query
+                round_query: Any = await self._model_query(queries.pop(0))
                 while True:
                     bridge = _ChunkBridge()
                     pending: list[tuple[str, Any]] = []
@@ -948,6 +976,8 @@ class JiuwenEngine:
                 if self._buffered:
                     queries.append(self._buffered.pop(0))
         except asyncio.CancelledError:
+            # 被打断的这轮未必进了存档，模型不一定看到了这次的阶段提示：下一条重新带上
+            self._stage_digest = None
             await self._progress_tracker.finish_all("stopped")
             context_usage = self._context_usage_event()
             if context_usage:
