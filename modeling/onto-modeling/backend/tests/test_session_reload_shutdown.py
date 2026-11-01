@@ -99,6 +99,15 @@ async def _drain(times: int = 20):
         await asyncio.sleep(0)
 
 
+async def _until(condition, timeout: float = 3.0):
+    """一轮收尾里有线程往返（执行记录、工作区变更），固定次数的让出等不到，按条件等。"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not condition():
+        assert loop.time() < deadline, "等待超时"
+        await asyncio.sleep(0.01)
+
+
 def test_config_change_while_running_waits_for_result(env):
     manager, tmp_path = env
 
@@ -116,13 +125,13 @@ def test_config_change_while_running_waits_for_result(env):
         assert session.reload_pending
 
         first.queue.put_nowait({"type": "result"})
+        await _until(lambda: session.turns_in_flight == 1)
         await _drain()
         # 引擎里还积压着第二条消息，不能断
         assert session.engine is first and not first.disconnected
 
         first.queue.put_nowait({"type": "result"})
-        await _drain()
-        assert first.disconnected
+        await _until(lambda: first.disconnected)
         assert session.engine is None and not session.reload_pending
         assert session.state == "idle"
 
@@ -145,8 +154,7 @@ def test_config_change_while_idle_reconnects_immediately(env):
         session = await _settle(manager, "p1")
         first = session.engine
         first.queue.put_nowait({"type": "result"})
-        await _drain()
-        assert session.state == "idle"
+        await _until(lambda: session.state == "idle")
 
         first.stale = True
         await manager.send("p1", tmp_path, "第二条")
@@ -169,8 +177,7 @@ def test_shutdown_marks_running_rounds_and_recycles_concurrently(env):
         await manager.send("p2", tmp_path, "已结束")
         idle = await _settle(manager, "p2")
         idle.engine.queue.put_nowait({"type": "result"})
-        await _drain()
-        assert idle.state == "idle"
+        await _until(lambda: idle.state == "idle")
 
         started = time.monotonic()
         await manager.shutdown()
