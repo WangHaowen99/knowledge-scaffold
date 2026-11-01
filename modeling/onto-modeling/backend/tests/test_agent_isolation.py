@@ -220,6 +220,9 @@ def agent_env(monkeypatch):
     base = Path(tempfile.mkdtemp(prefix="onto-agent-", dir="/tmp"))
     base.chmod(0o755)
     data, home = base / "data", base / "home"
+    gitconfig = base / "agent-gitconfig"
+    gitconfig.write_text("[safe]\n\tdirectory = *\n", encoding="utf-8")
+    gitconfig.chmod(0o644)
     monkeypatch.setattr(config, "DATA_DIR", data)
     monkeypatch.setattr(config, "SECRETS_DIR", "")
     monkeypatch.setattr(config, "AGENT_USER", AGENT_TEST_USER)
@@ -233,8 +236,9 @@ def agent_env(monkeypatch):
 
 
 def _as_agent(command: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
-    # 镜像里用 `git config --system safe.directory '*'` 放过「仓库归 root」的检查，这里用 git 的环境变量模拟
-    git_safe = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": "*"}
+    # 镜像里用 `git config --system safe.directory '*'` 放过「仓库归 root」的检查；这里指一份 agent 读得到的
+    # 全局配置（GIT_CONFIG_GLOBAL）模拟
+    git_safe = {"GIT_CONFIG_GLOBAL": str(Path(config.DATA_DIR).parent / "agent-gitconfig")}
     env = {**os.environ, **SECRET_ENV, **agent_identity.jiuwen_env(os.environ), **git_safe}
     return subprocess.run([str(agent_identity.SHELL_SHIM), command], capture_output=True, text=True, timeout=30,
                           env=env, cwd=cwd)

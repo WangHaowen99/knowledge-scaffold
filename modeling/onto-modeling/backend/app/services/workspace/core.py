@@ -137,8 +137,8 @@ class WorkspaceCore:
         try:
             with os.fdopen(fd, "wb") as stream:
                 fd = None
-                if old_mode is not None:
-                    os.fchmod(stream.fileno(), old_mode)
+                # mkstemp 建的是 0600：新文件按进程 umask 给权限，agent 用户（同组）才能接着改（方案 E10）
+                os.fchmod(stream.fileno(), old_mode if old_mode is not None else 0o666 & ~_current_umask())
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
@@ -732,6 +732,19 @@ class WorkspaceCore:
 
 class WorkspaceManager(FilesMixin, VersionsMixin, TransferMixin, WorkspaceCore):
     """工作区管理器：核心 + 文件与资料 + 版本 + 导入导出。"""
+
+
+def _current_umask() -> int:
+    """进程 umask：Linux 从 /proc 读（不用先改再改回，多线程下没有窗口），其他平台退回 os.umask。"""
+    try:
+        for line in Path("/proc/self/status").read_text(encoding="ascii").splitlines():
+            if line.startswith("Umask:"):
+                return int(line.split()[1], 8)
+    except (OSError, ValueError):
+        pass
+    mask = os.umask(0o022)
+    os.umask(mask)
+    return mask
 
 
 def remove_tree(path: Path) -> bool:
