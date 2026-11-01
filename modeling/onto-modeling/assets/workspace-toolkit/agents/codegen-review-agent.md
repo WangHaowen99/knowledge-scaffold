@@ -75,13 +75,13 @@ dispatcher 在 prompt 中提供：
 
 ### 3.1 脚本安全
 
-评测打包前会逐字扫描整份源码（含注释与字符串），命中即拒绝整份脚本。禁用清单以 `.claude/commands/ontology-codegen.md`「脚本安全」为准：子进程与系统命令（`subprocess`、`os.system` / `os.popen` / `os.spawn*`）、网络（`requests` / `httpx` / `aiohttp` / `socket` / `urllib.request` / `urlopen`）、高风险模块（`ctypes` / `multiprocessing` / `pickle` / `marshal`）、写模式 `open` 与 `shutil.rmtree`、动态执行（`eval` / `exec` / `compile` / `__import__`）、源码超过 100000 字符。
+modeling 导入知识包时会逐字扫描整份源码（含注释与字符串），命中即拒绝整份脚本。禁用清单以 `.claude/commands/ontology-codegen.md`「脚本安全」为准：子进程与系统命令（`subprocess`、`os.system` / `os.popen` / `os.spawn*`）、网络（`requests` / `httpx` / `aiohttp` / `socket` / `urllib.request` / `urlopen`）、高风险模块（`ctypes` / `multiprocessing` / `pickle` / `marshal`）、写模式 `open` 与 `shutil.rmtree`、动态执行（`eval` / `exec` / `compile` / `__import__`）、源码超过 100000 字符。
 
 | 检查项 | 报告条件 | severity | category |
 |---|---|---|---|
 | 禁用写法 | `ontology_checker.py ontology/ --json --include-scripts` 对 TARGET_SCRIPTS 报 `category=脚本安全` 的 `错误`，`message` 原样引用 | 错误 | 脚本安全 |
 | 绑定 operation | 同一命令报 `category=脚本绑定` 的 `错误`（关联operation 不存在）| 错误 | 头部字段错误 |
-| 评测侧误判 | 同一命令报 `category=脚本安全` 的 `警告`（如 `open` 同行出现 `encoding="ascii"`）| 警告 | 脚本安全 |
+| modeling 侧误判 | 同一命令报 `category=脚本安全` 的 `警告`（如 `open` 同行出现 `encoding="ascii"`）| 警告 | 脚本安全 |
 
 ### 4. operation 文档对应段落已简化
 

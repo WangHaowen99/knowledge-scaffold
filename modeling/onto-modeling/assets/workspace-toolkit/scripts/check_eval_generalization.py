@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
-"""评测演进的泛化性校验：检测知识文档里的"应试"痕迹。
+"""反馈演进的泛化性校验：检测知识文档里的"应试"痕迹。
 
-评测演进容易走偏成"把标准答案抄进知识库"——分数看着涨，知识却没有普适价值，
+按失分反馈修订知识包容易走偏成"把标准答案抄进知识库"——分数看着涨，知识却没有普适价值，
 换一批用例立刻失效。本脚本在修订落盘后机械核对：
 
-1. **原文雷同**：知识文档与评测用例的问题/标准答案存在 >= N 个连续字符完全相同；
+1. **原文雷同**：知识文档与反馈用例的问题/标准答案存在 >= N 个连续字符完全相同；
 2. **应试措辞**：知识文档里出现"标准答案""评测用例""判分"等面向考核的表述；
    "得分""评分标准"这类在业务里也正当的词，只有与考核语境同行时才判定。
+
+用例语料默认取最新一批反馈（反馈入口写入的 feedback/*.json，格式 onto-feedback/v1）；
+没有反馈时回退到旧版评测报告 reports/eval-*.md（评测移出前留在工作区里的）。
+本脚本随反馈演进包迁出 core（待包机制落地，见 _plan/gaps.md）。
 
 用法（工作区根目录执行）：
 
     python3 .claude/scripts/check_eval_generalization.py                 # 校验 git 未提交的本体改动
     python3 .claude/scripts/check_eval_generalization.py --files a.md b.md
     python3 .claude/scripts/check_eval_generalization.py --base HEAD~1   # 指定比对基线
+    python3 .claude/scripts/check_eval_generalization.py --feedback feedback/<批次>.json
     python3 .claude/scripts/check_eval_generalization.py --json
 
 发现问题时 exit 1。
@@ -36,6 +41,8 @@ CONTEXTUAL_EXAM_MARKERS = ('得分', '考点', '评分标准')
 EXAM_CONTEXT_WORDS = ('评测', '用例', '判分', '标准答案', '考核', '本题', '该题', '这道题')
 
 CASE_FIELD_PATTERN = re.compile(r'^\s*-\s*\*\*(问题|标准答案)\*\*[：:]\s*(.+)$')
+FEEDBACK_DIR = 'feedback'
+FEEDBACK_TEXT_FIELDS = ('question', 'expected')
 
 # 知识包打包范围（与 ontology_checker.PACKAGED_SUBDIRS 一致）。
 PACKAGED_SUBDIRS = ('object', 'operation', 'logic', 'rule', 'metric')
@@ -49,38 +56,49 @@ def normalize(text: str) -> str:
     return text
 
 
-def read_cases(workspace: Path, report: Path | None) -> list[str]:
-    """收集评测用例语料：优先指定报告，否则取最新 eval 报告 + eval.json。"""
-    texts: list[str] = []
-
-    report_path = report
-    if report_path is None:
-        candidates = sorted(
-            (workspace / 'reports').glob('eval-*.md'),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        report_path = candidates[0] if candidates else None
-
-    if report_path and report_path.is_file():
-        for line in report_path.read_text(encoding='utf-8').splitlines():
-            m = CASE_FIELD_PATTERN.match(line)
-            if m:
-                texts.append(m.group(2).strip())
-
-    state = workspace / '.ontology-state' / 'eval.json'
-    if state.is_file():
-        try:
-            data = json.loads(state.read_text(encoding='utf-8'))
-        except Exception:
-            data = {}
-        for case in data.get('cases') or []:
-            for key in ('question', 'groundTruth', 'ground_truth'):
-                value = case.get(key)
-                if isinstance(value, str) and value.strip():
-                    texts.append(value.strip())
-
+def _feedback_texts(path: Path) -> list[str]:
+    """反馈批次（onto-feedback/v1）里每条反馈的问题与标准答案。"""
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return []
+    texts = []
+    for item in (data.get('items') if isinstance(data, dict) else None) or []:
+        if not isinstance(item, dict):
+            continue
+        for key in FEEDBACK_TEXT_FIELDS:
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                texts.append(value.strip())
     return texts
+
+
+def _report_texts(path: Path) -> list[str]:
+    """旧版评测报告（markdown）里的「问题」「标准答案」行。"""
+    if not path.is_file():
+        return []
+    texts = []
+    for line in path.read_text(encoding='utf-8').splitlines():
+        m = CASE_FIELD_PATTERN.match(line)
+        if m:
+            texts.append(m.group(2).strip())
+    return texts
+
+
+def read_cases(workspace: Path, report: Path | None = None, feedback: Path | None = None) -> list[str]:
+    """收集用例语料：指定的反馈批次或报告优先；都不指定时取最新一批反馈，没有反馈再取最新的旧版报告。"""
+    if feedback is not None:
+        return _feedback_texts(feedback)
+    if report is not None:
+        return _report_texts(report)
+    folder = workspace / FEEDBACK_DIR
+    batches = sorted(folder.glob('*.json')) if folder.is_dir() else []
+    if batches:
+        return _feedback_texts(batches[-1])  # 文件名以接收时间开头，按名排序即按时间
+    reports = sorted(
+        (workspace / 'reports').glob('eval-*.md'), key=lambda p: p.stat().st_mtime, reverse=True,
+    )
+    return _report_texts(reports[0]) if reports else []
 
 
 def changed_docs(workspace: Path, base: str | None) -> list[Path]:
@@ -168,7 +186,7 @@ def check(workspace: Path, docs: list[Path], cases: list[str], threshold: int) -
                     'file': rel,
                     'category': '应试痕迹',
                     'message': (
-                        f'与评测用例存在 {len(run)} 字连续雷同："{run[:60]}"…… '
+                        f'与反馈用例存在 {len(run)} 字连续雷同："{run[:60]}"…… '
                         f'（用例片段："{original[:40]}"……）——请改写为普适业务知识表达，'
                         f'不要照抄用例问题或标准答案。'
                     ),
@@ -183,7 +201,7 @@ def check(workspace: Path, docs: list[Path], cases: list[str], threshold: int) -
                 'category': '应试措辞',
                 'message': (
                     f'知识文档中出现面向考核的表述：{"、".join(hits)}——'
-                    f'知识文档只描述业务本身，不引用评测语境。'
+                    f'知识文档只描述业务本身，不引用考核语境。'
                 ),
             })
     return findings
@@ -191,11 +209,12 @@ def check(workspace: Path, docs: list[Path], cases: list[str], threshold: int) -
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description='检查评测演进的知识修订是否泛化（无应试痕迹）。')
+        description='检查反馈演进的知识修订是否泛化（无应试痕迹）。')
     parser.add_argument('--workspace', default='.', help='工作区根目录（默认当前目录）')
     parser.add_argument('--files', nargs='*', help='只检查这些文档（默认取 git 改动）')
     parser.add_argument('--base', help='git 比对基线（默认工作区未提交改动）')
-    parser.add_argument('--report', help='评测报告路径（默认取最新 reports/eval-*.md）')
+    parser.add_argument('--feedback', help='反馈批次路径（默认取最新 feedback/*.json）')
+    parser.add_argument('--report', help='旧版评测报告路径（没有反馈批次时默认取最新 reports/eval-*.md）')
     parser.add_argument('--threshold', type=int, default=DEFAULT_THRESHOLD,
                         help=f'判定雷同的连续字符数（默认 {DEFAULT_THRESHOLD}）')
     parser.add_argument('--json', action='store_true', help='以 JSON 输出')
@@ -210,10 +229,11 @@ def main() -> int:
         docs = changed_docs(workspace, args.base)
 
     report = Path(args.report).resolve() if args.report else None
-    cases = read_cases(workspace, report)
+    feedback = Path(args.feedback).resolve() if args.feedback else None
+    cases = read_cases(workspace, report, feedback)
 
     if not cases:
-        msg = '未找到评测用例语料（无 reports/eval-*.md 也无 .ontology-state/eval.json），跳过校验。'
+        msg = '未找到用例语料（没有 feedback/*.json 反馈批次，也没有旧版 reports/eval-*.md），跳过校验。'
         print(json.dumps({'skipped': msg}, ensure_ascii=False) if args.json else f'⚠️  {msg}')
         return 0
     if not docs:

@@ -14,8 +14,8 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
 - `SUMMARY_PATHS`: paths to flowchart summary files in `ontology/diagrams-summary/`，**may be empty or absent** when the caller chose to extract from research reports alone.
 - `PAIRED_EXCEL_PATHS` (optional): same-name Excel supplements in `ontology/excel/`; these are provenance paths for `EXCEL_CONTEXT`.
 - `EXCEL_CONTEXT` (optional): markdown exported from the paired Excel 补充表. Treat it as detail for the same-name flowchart, not as a standalone global source.
-- `TABLE_HEADERS` (optional): JSON `{Sheet 名: [表头列]}` from schema materials and uploaded evaluation data tables. When present, it is the only source of table names and column names — do not take them from data-dictionary documents or reports.
-- `TABLE_PROFILE` (optional): JSON from `check_eval_data.py --profile`, giving each column's value-kind counts (`kinds`: integer / decimal / zero_padded / boolean / boolean_short / date / text), `empty`, `long_integers`, `short_booleans`, `binary01`, `source_type` (the table's own type-description row, if any) and `inferred`. It contains counts only, never cell values. When present, it is the evidence for the 类型 column (see the type rules in Step 2).
+- `TABLE_HEADERS` (optional): JSON `{Sheet 名: [表头列]}` from schema materials. When present, it is the only source of table names and column names — do not take them from data-dictionary documents or reports.
+- `TABLE_PROFILE` (optional): JSON from `table_profile.py --profile`, giving each column's value-kind counts (`kinds`: integer / decimal / zero_padded / boolean / boolean_short / date / text), `empty`, `long_integers`, `short_booleans`, `binary01`, `source_type` (the table's own type-description row, if any) and `inferred`. It contains counts only, never cell values. When present, it is the evidence for the 类型 column (see the type rules in Step 2).
 - `REPORT_PATHS` (optional): paths to research report files. When `SUMMARY_PATHS` is empty, these become the **primary source** instead of supplementary context.
 - `OBJECTS_DIR`: target directory for object docs (e.g. `ontology/object/`)
 - `TEMPLATES_DIR`: path to templates directory (e.g. `.claude/templates/`)
@@ -60,7 +60,7 @@ Write `OBJECTS_DIR/{名称}.md`:
 {English name}
 
 # 数据来源
-{该对象对应的真实数据表名（schema 表格资料或评测数据源上传的数据表（`.ontology-state/eval-data/`）里的 Sheet 名，逐字相同）；纯概念对象填'无'}
+{该对象对应的真实数据表名（schema 表格资料里的 Sheet 名，逐字相同）；纯概念对象填'无'}
 
 # 对象属性清单
 | 中文名称 | 英文名称 | 描述 | 主键 | 类型 | 属性别名 | 属性规则 |
@@ -74,7 +74,7 @@ Write `OBJECTS_DIR/{名称}.md`:
 
 Rules:
 - File name = object name in Chinese（文件名就是知识包里的对象 key：不超过 80 字符，不含 `/ \ # ? & |` 与 `..`）
-- Always include a primary key (主键=是)；**对象粒度与所绑表的主键一致**：声明了「数据来源」表时，主键标在该表能唯一标识一行的真实列上——图评测按主键建节点，主键不在表里该对象建不出节点
+- Always include a primary key (主键=是)；**对象粒度与所绑表的主键一致**：声明了「数据来源」表时，主键标在该表能唯一标识一行的真实列上——图模式导入按主键建节点，主键不在表里该对象建不出节点
 - 单个对象属性不超过 100 个、全项目对象不超过 200 个（consumer 导入上限），超出时按业务拆分或合并
 - 「数据来源」写真实表名（逐字相同）：它是发布包「来源Sheet」列与 object-data-mappings.json
   的唯一声明口径，写错或留空该对象在数据问答里就查不到。`TABLE_HEADERS` 非空时只能取其中的
@@ -85,7 +85,7 @@ Rules:
   首行只写表名本身（如 `T_ORDER` 就写 T_ORDER，不写"数据库表 `T_ORDER` 的…列"这种句子，
   否则整句会被当成表名），说明另起一行以 `> ` 开头；一个对象只声明一张表。
 - **英文名称 = 真实列名**（`TABLE_HEADERS` 非空时为硬约束）：对象声明了「数据来源」表时，从库里直接读取的属性，英文名称必须逐字等于该表在 `TABLE_HEADERS` 里的某一列；不得另起一个英文名、再把真实列名放进「属性别名」。表里没有的属性只允许两种：operation 计算得到的按下方派生标记写；取自规程、文档的常量在「属性规则」里注明 `非库字段`。数据字典类文档与 `TABLE_HEADERS` 冲突时以 `TABLE_HEADERS` 为准，并在返回摘要的注意事项里列出冲突。
-- **英文名称的字符集**：只用字母、数字、下划线、汉字，不以数字开头（不含空格、短横线、点号等），不超过 80 字符——它是图节点的属性名与知识包的字段 key，已声明数据表的对象不合规会拦下整轮图评测。真实列名本身不合规时照写，并在返回摘要的注意事项里列出。
+- **英文名称的字符集**：只用字母、数字、下划线、汉字，不以数字开头（不含空格、短横线、点号等），不超过 80 字符——它是图节点的属性名与知识包的字段 key，已声明数据表的对象不合规会在图模式导入时拦下整轮。真实列名本身不合规时照写，并在返回摘要的注意事项里列出。
 - **类型**：每个属性只填一个，取自 `字符串 / 整数 / 小数 / 布尔 / 日期 / 枚举 / 对象引用`；不要把候选列表
   （如 `字符串/整型/布尔`）原样抄进单元格，也不要留空或填占位——规则检查报「类型非法」，整份对象不通过。
   类型要有依据，**不能因为拿不准就填字符串**：
@@ -110,7 +110,7 @@ Rules:
   1. 两端对象的「数据来源」是**同一张表**时不写括注（图导入按同一数据行关联，写了括注反而会
      改成按字段值匹配）；
   2. **跨表关系必须写括注**：少了它只有在两端恰好存在同名的单字段主键时才能靠猜连上，否则整条
-     关系被丢弃——发布包的关系表与数据评测的图导入都会报「找不到关联字段」，这条关系不导入，涉及它的评测问题查不到关联数据；
+     关系被丢弃——发布包的关系表与图模式导入都会报「找不到关联字段」，这条关系不导入，涉及它的问答查不到关联数据；
   3. 同一条关系在两端对象里各写一次时，有一端写出括注即可，另一端会按它补齐；两端都写则必须是
      同一对字段、同一方向，不一致整条不导出；
   4. 关联字段通常是一端的主键 + 另一端指向它的外键列：先在 `TABLE_HEADERS` 两张表的列里找这

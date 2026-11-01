@@ -119,7 +119,7 @@ def test_hooks_deny_self_invented_ontology_dir(tmp_path):
 
 
 def test_hooks_restrict_evolution_writes_to_packaged_dirs(tmp_path):
-    """评测演进期：写入必须落在会进知识包的目录，否则 consumer 看不到。"""
+    """反馈演进期：写入必须落在会进知识包的目录，否则 consumer 看不到。"""
     loader = make_loader()
     entries = loader.pre_tool_use_hooks()
     ws = _git_workspace(tmp_path)

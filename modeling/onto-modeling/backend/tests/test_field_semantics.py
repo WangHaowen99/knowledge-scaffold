@@ -31,9 +31,9 @@ def verifier(monkeypatch):
 
 
 @pytest.fixture
-def eval_data(monkeypatch):
+def table_profile(monkeypatch):
     monkeypatch.syspath_prepend(str(SCRIPTS))
-    return importlib.import_module('check_eval_data')
+    return importlib.import_module('table_profile')
 
 
 OBJECT_DOC = '''# 对象描述
@@ -333,17 +333,17 @@ def test_types_report_named_object_must_exist(semantics, tmp_path):
     assert (report['status'], code) == ('unverifiable', 2)
 
 
-def test_profile_cli_outputs_counts_without_cell_values(eval_data, tmp_path, monkeypatch, capsys):
+def test_profile_cli_outputs_counts_without_cell_values(table_profile, tmp_path, monkeypatch, capsys):
     item_workspace(tmp_path, 'ITEM_ID,NOTE\n1001,SYNTH-VALUE-7731\n1002,x\n', [])
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr('sys.argv', ['check_eval_data.py', '--profile'])
-    assert eval_data.main() == 0
+    monkeypatch.setattr('sys.argv', ['table_profile.py', '--profile'])
+    assert table_profile.main() == 0
     out = capsys.readouterr().out
     assert 'SYNTH-VALUE-7731' not in out
     table = json.loads(out)['tables']['items']
     assert table['rows'] == 2 and table['columns']['ITEM_ID']['inferred'] == '整数'
-    monkeypatch.setattr('sys.argv', ['check_eval_data.py', '--headers'])
-    assert eval_data.main() == 0
+    monkeypatch.setattr('sys.argv', ['table_profile.py', '--headers'])
+    assert table_profile.main() == 0
     assert json.loads(capsys.readouterr().out) == {'items': ['ITEM_ID', 'NOTE']}
 
 

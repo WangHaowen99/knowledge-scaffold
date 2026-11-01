@@ -112,7 +112,7 @@ For each operation doc in scope（主操作还要读它调用的每个子操作�
 > 文件名就是知识包里的脚本 key：不超过 80 字符，不含 `/ \ # ? & |` 与 `..`。
 
 **头部注释**：严格按 `.claude/templates/script-template.py` 模板填写，须包含：
-- `关联operation`：本脚本对应的 operation 名称（一个 operation 只对应一个脚本，不写 ` / 步骤X` 后缀）。**要被评测或 consumer 执行的脚本必须绑定一个已存在的 operation**（`ontology/operation/` 下的文件名，不带 `.md`）：写了不存在的名字或填"无"，导出时都不会成为独立脚本，只留源码文件。"无"只用于被其他脚本 import 复用的库模块
+- `关联operation`：本脚本对应的 operation 名称（一个 operation 只对应一个脚本，不写 ` / 步骤X` 后缀）。**要被 modeling 或 consumer 执行的脚本必须绑定一个已存在的 operation**（`ontology/operation/` 下的文件名，不带 `.md`）：写了不存在的名字或填"无"，导出时都不会成为独立脚本，只留源码文件。"无"只用于被其他脚本 import 复用的库模块
 - `功能描述`：一句话说明脚本做什么，主脚本写明覆盖了哪些子操作。它会成为描述符的标题，consumer 选脚本时看得到
 - `详细逻辑`：对应 operation 的逻辑展开描述；主脚本按子操作逐段写
 - `用法`：CLI（`python3 ... --参数 值`）+ import 两种调用范例
@@ -165,7 +165,7 @@ For each operation doc in scope（主操作还要读它调用的每个子操作�
 - 脚本自身异常：`_cli` 捕获其余异常，在 stderr 输出 `ONTO_PUBLIC_ERROR`（code `SCRIPT_FAILED`，message 写出错的步骤与异常类型）后非 0 退出，不要让未处理的异常直接退出。
 - 退出方式：`_invalid_input`、`_public_error` 只输出并返回退出码，由 `_cli` 返回，只在 `if __name__ == "__main__": sys.exit(_cli())` 入口退出进程；函数里不要调用 `sys.exit` 或 `raise SystemExit`，stdout / stderr 用模板的 `_emit` 写（CodeCheck G.ERR.11、G.LOG.02）。
 
-**脚本安全**：评测打包前会逐字扫描整份源码（**含注释与字符串**），命中下列写法整份脚本被拒，所以注释里也不要出现这些模块名或调用：
+**脚本安全**：modeling 导入知识包时会逐字扫描整份源码（**含注释与字符串**），命中下列写法整份脚本被拒，所以注释里也不要出现这些模块名或调用：
 
 - 起子进程或执行系统命令：`subprocess`、`os.system` / `os.popen` / `os.spawn*`
 - 网络访问：`requests`、`httpx`、`aiohttp`、`socket`、`urllib.request` / `urlopen`
@@ -174,7 +174,7 @@ For each operation doc in scope（主操作还要读它调用的每个子操作�
 - 动态执行：`eval`、`exec`、`compile`、`__import__`（`re.compile` 这类模块方法不算）
 - 源码超过 100000 字符
 
-结果一律作为 JSON 写到 stdout，交给调用方落库或展示。另外，评测侧判写文件的正则会把 `open(` 同一行里以 w / a / x / + 开头的任何字符串（如 `encoding="ascii"`）当成写模式，`open` 调用里只用 `encoding="utf-8"` 这类写法。
+结果一律作为 JSON 写到 stdout，交给调用方落库或展示。另外，modeling 侧判写文件的正则会把 `open(` 同一行里以 w / a / x / + 开头的任何字符串（如 `encoding="ascii"`）当成写模式，`open` 调用里只用 `encoding="utf-8"` 这类写法。
 
 **主体结构**：
 ```python
@@ -313,7 +313,7 @@ python3 .claude/scripts/ontology_checker.py ontology/ --json --include-scripts
 ```
 
 - `render` 按每个 `.py` 的头部注释与 argparse 生成同名 `ontology/scripts/<脚本>.md`（consumer 调用这个脚本的契约，知识包里原样发布），删掉没有对外脚本的描述符。描述符**不要手改**：要改参数、类型、说明或输出，改 `.py` 后重新 render。
-- 过滤 `file` 在 `scripts/` 下、`category` 为 `脚本契约` / `脚本安全` / `脚本绑定` / `命名约束` 的 issue，`错误` 必须在这里清零：头部与 argparse 不一致、consumer 传不进去的参数写法、会被 consumer 参数证据校验拒绝的入参形态（一条记录混入不同对象的字段、顶层多个参数与对象属性同名）、一个 operation 多个脚本、子操作与主操作脚本重复覆盖、描述符缺失或过期，在导出/评测打包时都会被同一实现拦截；安全写法与脚本绑定的口径见上方「脚本安全」与头部「关联operation」。按上方「CLI 契约」「脚本安全」与 Step 2「按流程生成」修正头部、argparse 声明、源码写法或文件名后，重跑这两条命令直到这些错误清零。`脚本绑定` 的「建议」（关联operation 为「无」）只需确认该脚本确实是库模块。`警告`（`json` 类型没写明 object/array、结构化参数缺示例、「输出」没逐行列字段等）也应在这里改掉——它们决定 consumer 的智能体能不能传对参数、读懂结果。其他类别的 issue 不在本步处理。
+- 过滤 `file` 在 `scripts/` 下、`category` 为 `脚本契约` / `脚本安全` / `脚本绑定` / `命名约束` 的 issue，`错误` 必须在这里清零：头部与 argparse 不一致、consumer 传不进去的参数写法、会被 consumer 参数证据校验拒绝的入参形态（一条记录混入不同对象的字段、顶层多个参数与对象属性同名）、一个 operation 多个脚本、子操作与主操作脚本重复覆盖、描述符缺失或过期，在导出与下游导入时都会被同一实现拦截；安全写法与脚本绑定的口径见上方「脚本安全」与头部「关联operation」。按上方「CLI 契约」「脚本安全」与 Step 2「按流程生成」修正头部、argparse 声明、源码写法或文件名后，重跑这两条命令直到这些错误清零。`脚本绑定` 的「建议」（关联operation 为「无」）只需确认该脚本确实是库模块。`警告`（`json` 类型没写明 object/array、结构化参数缺示例、「输出」没逐行列字段等）也应在这里改掉——它们决定 consumer 的智能体能不能传对参数、读懂结果。其他类别的 issue 不在本步处理。
 
 ---
 

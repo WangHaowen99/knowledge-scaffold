@@ -96,7 +96,7 @@ Otherwise TOPIC = $ARGUMENTS.
 INVENTORY_BLOCK=$(python3 .claude/scripts/research_checker.py capture)
 ```
 
-它会把**真实表头**（schema 资料与评测数据表的 Sheet 名与列名）和**既有规范清单**
+它会把**真实表头**（schema 资料的 Sheet 名与列名）和**既有规范清单**
 （上一次完整验收通过时的业务项 ID、规则 ID 及来源报告；从未通过过则为空）写入
 `.ontology-state/research-inventory.json`，并输出可直接注入 prompt 的区块。
 没通过验收的报告不进清单：它里面的 ID 尚未核实，当成基线会让编造的 ID 在本轮放行。

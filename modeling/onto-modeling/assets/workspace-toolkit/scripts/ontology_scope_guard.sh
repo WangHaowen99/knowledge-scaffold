@@ -3,7 +3,7 @@
 #
 # 两层判定：
 #   1) 任何时候：ontology/ 下自创目录（白名单之外）一律拦截；
-#   2) 评测演进期（存在 .ontology-state/lock-evolution.json）：写入必须落在
+#   2) 反馈演进期（存在 .ontology-state/lock-evolution.json）：写入必须落在
 #      会进入知识包的目录（object/operation/logic/rule/metric/scripts，另放行
 #      testcase/data-mock），否则内容送不到 consumer，演进做的是无用功。
 
@@ -74,7 +74,7 @@ ALLOWED_ONTOLOGY_DIRS = {
 # 知识包导出范围（与 backend export_package_zip 一致）——只有这些目录送达 consumer。
 PACKAGED_ONTOLOGY_DIRS = {"object", "operation", "logic", "rule", "metric", "scripts"}
 
-# 评测演进期额外放行：D 类改用例、C 类对账素材。
+# 反馈演进期额外放行：D 类改用例、C 类对账素材。
 EVOLUTION_EXTRA_DIRS = {"testcase", "data-mock"}
 
 # 求解契约受管目录：binding 与 sidecar 须成组一致，只能经求解模型面板/后端接口写入。
@@ -218,8 +218,8 @@ if any(kind == "managed" for _, _, kind in unique):
     )
 elif any(kind == "unpackaged" for _, _, kind in unique):
     reason = (
-        f"评测演进进行中，知识修订只能落在会打包的目录，此次写入越界：{reasons}。"
-        f"{packaged_hint}写进不打包的目录（如 ontology/knowledge/）对评测分数不会有任何影响。"
+        f"反馈演进进行中，知识修订只能落在会打包的目录，此次写入越界：{reasons}。"
+        f"{packaged_hint}写进不打包的目录（如 ontology/knowledge/）对反馈里的失分不会有任何改善。"
     )
 else:
     reason = (

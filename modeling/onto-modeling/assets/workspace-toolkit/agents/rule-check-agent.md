@@ -24,7 +24,7 @@ Otherwise (full mode), run:
 python3 .claude/scripts/ontology_checker.py ontology/ --json --include-mock --include-knowledge --include-scripts
 ```
 
-`--include-mock` 与 `--include-knowledge` 与 pre-commit hook 对齐，避免出现「validate 通过但 commit 被 hook 拦截」的循环。两个 flag 在 `ontology/data-mock/` / `ontology/knowledge/` 不存在时自动 no-op。`--include-scripts` 校验 `ontology/scripts/*.py` 的 CLI 契约，与知识包导出同一实现，避免「validate 通过但评测打包失败」；`ontology/scripts/` 不存在时同样 no-op，且不受 `--files` 过滤。
+`--include-mock` 与 `--include-knowledge` 与 pre-commit hook 对齐，避免出现「validate 通过但 commit 被 hook 拦截」的循环。两个 flag 在 `ontology/data-mock/` / `ontology/knowledge/` 不存在时自动 no-op。`--include-scripts` 校验 `ontology/scripts/*.py` 的 CLI 契约，与知识包导出同一实现，避免「validate 通过但导出或下游导入失败」；`ontology/scripts/` 不存在时同样 no-op，且不受 `--files` 过滤。
 
 Parse the JSON array from stdout.
 

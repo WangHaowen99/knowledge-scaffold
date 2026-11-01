@@ -19,7 +19,7 @@ import tempfile
 import time
 
 import check_diagrams
-import check_eval_data
+import table_profile
 import ontology_checker
 
 VERSION = 1
@@ -74,7 +74,6 @@ def input_digest(root: Path, mode: str) -> str:
                 raise ValueError('资料用途配置不可解析')
             paths += [root / rel for rel, value in directives.items()
                       if isinstance(value, dict) and value.get('purpose') == 'schema']
-        paths += [root / rel for rel in check_eval_data.uploaded_eval_files(root)]
     digest = hashlib.sha256(f'{VERSION}:{mode}'.encode())
     for path in sorted(set(paths)):
         _contained(root, path)
@@ -105,7 +104,7 @@ def _check(root: Path, mode: str, paths: list[Path]) -> list[dict]:
     # The existing duplicate-stem check prevents ambiguous path/stem identities passing.
     # A supplied but unreadable table is not the same as having no table.
     # Load once (headers and value profiles) and reuse in the checker instead of silently skipping field checks.
-    tables, profiles = check_eval_data.load_registered_tables(root)
+    tables, profiles = table_profile.load_registered_tables(root)
     issues = ontology_checker.run_checks(
         root / 'ontology', target_files=[p.stem for p in paths], include_mock=True,
         tables=tables, strict_targets=True, profiles=profiles)

@@ -2,7 +2,7 @@
 """字段语义核验：属性类型的合法性与取值证据、标识混合、跨对象字段等价关联。
 
 纯规则、只用标准库，不调用模型，不执行导入。ontology_checker（规则检查）、
-check_eval_data（--profile 取值画像）和抽取命令（确认前展示）共用这里的口径。
+table_profile（--profile 取值画像）和抽取命令（确认前展示）共用这里的口径。
 
 用法（工作区根目录执行）：
   python3 .claude/scripts/field_semantics.py types [--files 对象名 ...]
@@ -97,7 +97,7 @@ _DECIMAL = re.compile(r'^-?\d+\.\d+$|^-?\d+(?:\.\d+)?[eE][+-]?\d+$')
 _BOOLEAN_WORDS = {'true': 'true', 'false': 'false', '是': 'true', '否': 'false', 'yes': 'true', 'no': 'false'}
 _BOOLEAN_SHORT = frozenset({'t', 'f', 'y', 'n'})
 _DATE_TEXT = re.compile(r'^\d{4}\s*[-/.年]\s*\d{1,2}(?!\d)|^\d{1,2}[:：]\d{2}(?:[:：]\d{2})?$')
-# 与评测导入（eval_import._is_note_row / modeling parseExcel）同一口径
+# 与 modeling parseExcel 的注释行判定同一口径
 _NOTE_NUMERIC = re.compile(r'^-?\d+(\.\d+)?$')
 _NOTE_CJK = re.compile(r'[一-龥]')
 
@@ -231,7 +231,7 @@ def _raw_length(row) -> int:
 
 
 def is_note_row(header: list, second, third) -> bool:
-    """表头下一行是否注释行：与评测导入、modeling parseExcel 同一判定，命中的行不算数据。"""
+    """表头下一行是否注释行：与 modeling parseExcel 同一判定，命中的行不算数据。"""
     if _raw_length(second) != len(header):
         return False
     texts = ['' if v is None else str(v).strip() for v in list(second)[:len(header)]]
@@ -719,7 +719,7 @@ JOIN_LIMIT = 300
 LIST_LIMIT = 30
 IDENTITY_OBJECT_LIMIT = 100
 IMPORT_NOT_RUN = {'status': 'not_run',
-                  'note': '本脚本不执行导入；导入验证以评测数据源的导入结果为准，没有导入记录时显示「未执行」'}
+                  'note': '本脚本不执行导入；导入验证以下游（modeling）的导入结果为准，没有导入记录时显示「未执行」'}
 
 
 def _item_rank(item: dict) -> int:
@@ -755,11 +755,11 @@ def _field_coverage(items: list, tables: dict) -> dict:
 
 def types_report(root: Path, files: list | None = None) -> tuple[dict, int]:
     """逐字段类型验收报告与退出码。登记的数据表读不了时整体「无法核验」，不给通过。"""
-    import check_eval_data
+    import table_profile
     import ontology_checker
 
     try:
-        tables, profiles = check_eval_data.load_registered_tables(root)
+        tables, profiles = table_profile.load_registered_tables(root)
     except ValueError as error:
         return {'status': 'unverifiable', 'reason': str(error), 'import_validation': IMPORT_NOT_RUN}, 2
     docs = ontology_checker.load_ontology(root / 'ontology')
@@ -800,10 +800,10 @@ def types_report(root: Path, files: list | None = None) -> tuple[dict, int]:
 
 def joins_report(root: Path, objects: list | None = None) -> dict:
     """已声明的关联字段对与各对象的标识字段；objects 只保留涉及这些对象的部分。"""
-    import check_eval_data
+    import table_profile
     import ontology_checker
 
-    tables = check_eval_data.table_headers(root)
+    tables = table_profile.table_headers(root)
     docs = ontology_checker.load_ontology(root / 'ontology')
     wanted = {Path(name).stem for name in objects or ()}
     joins = [join for join in ontology_checker.declared_join_list(docs, tables)

@@ -29,7 +29,7 @@ from operation_relations import (
     stops_before_call,
     sub_operation_call_sites as _extract_sub_operation_refs,
 )
-from check_eval_data import table_headers as _read_table_headers, table_profiles as _read_table_profiles
+from table_profile import table_headers as _read_table_headers, table_profiles as _read_table_profiles
 import field_semantics
 
 # =============================================================================
@@ -464,7 +464,7 @@ def check_object_field_name_conflicts(doc: OntologyDoc) -> list:
     """检查对象内 key、中文名、别名是否指向多个不同字段。
 
     该规则与 modeling 的 findFieldNameConflicts 保持同一归一化口径，
-    供质量检查提前发现评测启动时会阻断的问题。
+    供质量检查提前发现下游导入时会阻断的问题。
     """
     if doc.doc_type != 'object' or not doc.attribute_rows:
         return []
@@ -676,7 +676,7 @@ def check_object_data_source(doc: OntologyDoc) -> list:
 
 
 def load_table_headers(ontology_dir: Path) -> dict:
-    """工作区的 schema 资料与评测数据表表头 {表名: [列]}；读不到（如缺 openpyxl）时为空，不做列名对账。"""
+    """工作区的 schema 资料表头 {表名: [列]}；读不到（如缺 openpyxl）时为空，不做列名对账。"""
     return _read_table_headers(ontology_dir.resolve().parent)
 
 
@@ -708,7 +708,7 @@ def _source_declaration(doc: OntologyDoc, by_lower: dict) -> tuple:
 
 
 def check_object_columns(doc: OntologyDoc, tables: dict) -> list:
-    """存储属性的英文名称必须是所声明数据表的真实列名（与评测导入、发布包 mapping 同一口径）。
+    """存储属性的英文名称必须是所声明数据表的真实列名（与发布包 mapping 同一口径）。
 
     声明的表不在现有数据表里是错误（发布时该对象会被阻断）；项目里还没有任何数据表时，
     声明无从核对，只提示——多半是凭空写的表名，发布包不会绑定它。
@@ -720,14 +720,14 @@ def check_object_columns(doc: OntologyDoc, tables: dict) -> list:
         return [Issue(
             file=_rel(doc), severity='警告', category='列名对账',
             message=f'「# 数据来源」声明了表「{declared[:40]}」，但项目里还没有可核对的数据表'
-                    '（schema 表格资料或评测数据源的上传表），发布包不会绑定该对象。'
+                    '（schema 表格资料），发布包不会绑定该对象。'
                     '表名来自数据表资料时，把该资料的用途标为 schema；不确定时首行填「无」，不要编造表名',
             source='规则检查',
         )]
     if not table:
         return [Issue(
             file=_rel(doc), severity='错误', category='列名对账',
-            message=f'「# 数据来源」声明的表「{declared[:40]}」不在 schema 资料或评测数据表里'
+            message=f'「# 数据来源」声明的表「{declared[:40]}」不在 schema 资料里'
                     f'（现有表：{"、".join(sorted(tables)[:10])}{"…" if len(tables) > 10 else ""}），'
                     '发布时会被阻断：首行改为现有表名（逐字相同），不落库的对象填「无」',
             source='规则检查',
@@ -764,7 +764,7 @@ def check_object_columns(doc: OntologyDoc, tables: dict) -> list:
             issues.append(Issue(
                 file=_rel(doc), severity='错误', category='列名对账',
                 message=f'主键属性「{row.get("中文名称") or key}」的英文名称 {key} 不是表「{table}」的列名：'
-                        '图模式数据评测按主键建节点，主键对不上列该对象就建不出节点。对象粒度应与所绑表的'
+                        '图模式导入按主键建节点，主键对不上列该对象就建不出节点。对象粒度应与所绑表的'
                         '主键一致——把「主键=是」标在表里能唯一标识一行的真实列上，或把英文名称改为真实列名',
                 source='规则检查',
             ))
@@ -885,7 +885,7 @@ def check_object_links(doc: OntologyDoc, all_docs: dict) -> list:
     ]
 
 
-# --- 关联对象的关联字段（与后端 package_mapping._relation_join、评测图导入同一口径）---
+# --- 关联对象的关联字段（与后端 package_mapping._relation_join、图模式导入同一口径）---
 
 # 图关系名与属性英文名的字符集：从括注里取字段候选，再拿两端属性清单裁决
 _REL_IDENTIFIER_RE = re.compile(r'[A-Za-z_一-鿿][A-Za-z0-9_一-鿿]*')
@@ -937,7 +937,7 @@ def _is_relation_placeholder(value: str) -> bool:
 def _object_relations(doc: OntologyDoc) -> list:
     """「# 关联对象」的关系行 → [(行号, 源, 关系名, 目标, 括注)]，「当前对象」已换成文件名 stem。
 
-    行号按整个文件计，便于在问题里指出位置。格式解析不出的行（由发布与评测侧报）与模板占位行不返回。
+    行号按整个文件计，便于在问题里指出位置。格式解析不出的行（由发布与下游导入报）与模板占位行不返回。
     """
     stem = doc.path.stem
     relations, active = [], False
@@ -1037,8 +1037,8 @@ def check_object_relation_joins(doc: OntologyDoc, all_docs: dict, tables: dict) 
     """「# 关联对象」的关联字段：跨表关系必须声明，声明的字段必须真实存在。
 
     两端落在同一张数据表时按同一数据行关联，不需要关联字段。跨表时后端只会去找两端同名的
-    单字段主键，找不到就整条关系丢弃——图模式的数据评测据此报「找不到关联字段」并跳过这条
-    关系。这里按同一规则预判，把问题停在建模阶段，而不是等评测结果里才发现关系没连上。
+    单字段主键，找不到就整条关系丢弃——图模式导入据此报「找不到关联字段」并跳过这条
+    关系。这里按同一规则预判，把问题停在建模阶段，而不是等下游导入后才发现关系没连上。
     """
     by_lower = {name.lower(): name for name in tables}
     stem = doc.path.stem
@@ -1096,7 +1096,7 @@ def check_object_relation_joins(doc: OntologyDoc, all_docs: dict, tables: dict) 
         issues.append(Issue(
             file=_rel(doc), severity='错误', category='关联字段',
             message=f'{label}跨表（{source_table} / {target_table}）且未声明关联字段，'
-                    f'两端也没有同名的单字段主键可依据：图模式的数据评测会报「找不到关联字段」'
+                    f'两端也没有同名的单字段主键可依据：图模式导入会报「找不到关联字段」'
                     f'并跳过这条关系，发布包里这条关系也连不上。请补成「{name}（源对象字段 → '
                     f'目标对象字段）」，字段用两端属性清单的「英文名称」',
             source='规则检查'))
@@ -1122,7 +1122,7 @@ def check_object_self_relations(doc: OntologyDoc, tables: dict) -> list:
         issues.append(Issue(
             file=_rel(doc), severity='警告', category='关联字段',
             message=f'自关联「{stem} -{name}→ {stem}」没有写关联字段括注：两端是同一张表，不写会把每个节点'
-                    f'连到它自己，发布包与图模式数据评测都会跳过这条关系。请写成「{name}（指向方字段 → '
+                    f'连到它自己，发布包与图模式导入都会跳过这条关系。请写成「{name}（指向方字段 → '
                     '被指向方字段）」，如「直属上级（manager_id → employee_id）」',
             source='规则检查'))
     return issues
@@ -1132,7 +1132,7 @@ def check_relation_join_conflicts(all_docs: dict, tables: dict, check_docs: dict
     """同一条关系（源对象, 关系名, 目标对象）在多处声明了不同的关联字段对。
 
     与后端 package_mapping.graph_relations 同一口径：关系按三元组归并，镜像声明只有一端写括注时
-    按该端补齐，不算冲突；两处都写出且不是同一对字段，发布包与图评测把各处都跳过（不拦整轮）。
+    按该端补齐，不算冲突；两处都写出且不是同一对字段，发布包与图模式导入把各处都跳过（不拦整轮）。
     常见成因是同一对对象之间有两种关联方式却共用了一个关系名。check_docs 之外的文件只作参照，不报。
     """
     by_lower = {name.lower(): name for name in tables}
@@ -1159,7 +1159,7 @@ def check_relation_join_conflicts(all_docs: dict, tables: dict, check_docs: dict
             continue
         where = '；'.join(f'{doc.path.name} 第 {lineno} 行为 {pair}' for doc, lineno, pair in places)
         message = (f'关系「{source} -{name}→ {target}」在多处声明了不同的关联字段（{where}），'
-                   '发布包与图模式数据评测会跳过这条关系的全部声明。若是两种不同的关联方式（如订单的买方 / '
+                   '发布包与图模式导入会跳过这条关系的全部声明。若是两种不同的关联方式（如订单的买方 / '
                    '卖方），每种改用不同的关系名（如「买方」「卖方」）；'
                    '若是同一种，各处改成同一对字段')
         for path in dict.fromkeys(doc.path for doc, _, _ in places):
@@ -1256,7 +1256,7 @@ def check_field_equivalence(doc: OntologyDoc, index, joins: set) -> list:
 def check_graph_identifiers(doc: OntologyDoc, tables: dict) -> list:
     """图导入的标识符口径（与后端 package_mapping.GRAPH_IDENTIFIER、consumer 图查询同一字符集）。
 
-    声明了数据表的对象，属性英文名称会成为图节点的属性名，不合规时图模式数据评测在导入阶段拦下
+    声明了数据表的对象，属性英文名称会成为图节点的属性名，不合规时图模式导入在导入阶段拦下
     整轮 → 错误；关系名成为图关系类型，不合规的那条关系被跳过 → 警告。
     """
     rule = '只能由字母、数字、下划线、汉字组成，且不能以数字开头'
@@ -1267,7 +1267,7 @@ def check_graph_identifiers(doc: OntologyDoc, tables: dict) -> list:
             issues.append(Issue(
                 file=_rel(doc), severity='错误', category='图标识符',
                 message=f'属性英文名称 {"、".join(bad[:8])}{"…" if len(bad) > 8 else ""} 不是合法的图属性名'
-                        f'（{rule}）：该对象声明了数据表，图模式数据评测导入时会拦下整轮。'
+                        f'（{rule}）：该对象声明了数据表，图模式导入时会拦下整轮。'
                         '从库里读取的属性按真实列名改写；列名本身不合规时请先在数据表侧改名',
                 source='规则检查'))
     for _, source, name, target, _ in _object_relations(doc):
@@ -1278,7 +1278,7 @@ def check_graph_identifiers(doc: OntologyDoc, tables: dict) -> list:
         issues.append(Issue(
             file=_rel(doc), severity='警告', category='图标识符',
             message=f'关系「{source} -{name}→ {target}」的关系名「{name}」不是合法的图关系名（{rule}）'
-                    f'{hint}：发布包与图模式数据评测会跳过这条关系',
+                    f'{hint}：发布包与图模式导入会跳过这条关系',
             source='规则检查'))
     return issues
 
@@ -1399,7 +1399,7 @@ def _relation_name_problem(name: str, source: str, target: str) -> str:
 def check_object_relation_names(doc: OntologyDoc) -> list:
     """「# 关联对象」的关系名只写谓词：不含两端对象名称，也不只写基数。
 
-    建模工作台生成、编辑、优化、融合知识包时按同一规则校验，不合规会被拦下（数据评测启动时不查）。
+    建模工作台生成、编辑、优化、融合知识包时按同一规则校验，不合规会被拦下。
     发布包里对象的 key 与标题都取文件名、不带别名，所以端点名称就是两端的文件名。
     """
     issues = []
@@ -2050,7 +2050,7 @@ def check_scripts(ontology_dir: Path) -> list:
 
 
 # 脚本安全（与 modeling/src/workflow/script-safety.ts validateGeneratedScriptSecurity 同一组规则）：
-# 知识包渲染与评测打包前逐字匹配整份源码（含注释与字符串），命中即拒绝该脚本。
+# 知识包渲染与 modeling 导入时逐字匹配整份源码（含注释与字符串），命中即拒绝该脚本。
 # re.ASCII 让 \b 与 JS 正则一样只按 ASCII 判单词边界。
 SCRIPT_MAX_CHARS = 100_000
 _SCRIPT_FORBIDDEN_RULES = (
@@ -2096,7 +2096,7 @@ def _dynamic_execution(node: ast.Call) -> bool:
 
 
 def check_script_safety(ontology_dir: Path) -> list:
-    """ontology/scripts/*.py 不得出现评测打包前会被拒绝的写法，文件名须是合规的知识包 key。
+    """ontology/scripts/*.py 不得出现 modeling 导入时会被拒绝的写法，文件名须是合规的知识包 key。
 
     含 _ 开头的辅助模块：它们同样进知识包、同样被校验。
     """
@@ -2132,14 +2132,14 @@ def check_script_safety(ontology_dir: Path) -> list:
         for label in labels:
             issues.append(Issue(
                 rel, '错误', '脚本安全',
-                f'使用了「{label}」，评测打包前会被拒绝。脚本只做纯计算：数据由调用方经 CLI 参数传入，'
+                f'使用了「{label}」，modeling 导入知识包时会被拒绝。脚本只做纯计算：数据由调用方经 CLI 参数传入，'
                 '结果以单个 JSON 写到 stdout，不起子进程、不联网、不写文件、不动态执行代码',
                 '规则检查'))
         if not writes and _SCRIPT_WRITE_RE.search(source):
             line = next(text.strip() for text in source.splitlines() if _SCRIPT_WRITE_RE.search(text))
             issues.append(Issue(
                 rel, '警告', '脚本安全',
-                f'「{line[:60]}」不是写文件，但评测侧的安全正则会把同一行 open( 之后以 w/a/x/+ 开头的'
+                f'「{line[:60]}」不是写文件，但 modeling 侧的安全正则会把同一行 open( 之后以 w/a/x/+ 开头的'
                 '字符串（如 encoding="ascii"）当成写模式而拒绝脚本：把这类参数挪到 open 调用之外的行，'
                 '或改用其他写法',
                 '规则检查'))
@@ -2149,7 +2149,7 @@ def check_script_safety(ontology_dir: Path) -> list:
 def check_script_bindings(ontology_dir: Path, all_docs: dict) -> list:
     """头部「关联operation」决定脚本能否作为独立脚本导出（与后端知识包导出同一口径）。
 
-    写了名字但对应 operation 不存在：脚本只剩源码文件，评测与 consumer 都执行不到它 → 错误。
+    写了名字但对应 operation 不存在：脚本只剩源码文件，modeling 与 consumer 都执行不到它 → 错误。
     写「无」：只能作为被其他脚本 import 的辅助模块 → 建议，确认不是漏绑。_ 开头的辅助模块不查。
     """
     scripts_dir = ontology_dir / 'scripts'
@@ -2168,14 +2168,14 @@ def check_script_bindings(ontology_dir: Path, all_docs: dict) -> list:
         if not bound:
             issues.append(Issue(
                 rel, '建议', '脚本绑定',
-                '头部「关联operation」为「无」：该脚本不会作为独立脚本导出，评测与 consumer 都不会单独执行它，'
+                '头部「关联operation」为「无」：该脚本不会作为独立脚本导出，modeling 与 consumer 都不会单独执行它，'
                 '只能被其他脚本 import 复用。若它需要被执行，填上调用它的 operation 名',
                 '规则检查'))
         elif bound not in operations:
             issues.append(Issue(
                 rel, '错误', '脚本绑定',
                 f'头部「关联operation」写的「{bound}」在 ontology/operation/ 下没有对应文档：该脚本不会作为'
-                '独立脚本导出，评测与 consumer 都执行不到它。改成已存在的 operation 文件名（不带 .md）',
+                '独立脚本导出，modeling 与 consumer 都执行不到它。改成已存在的 operation 文件名（不带 .md）',
                 '规则检查'))
     return issues
 

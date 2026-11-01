@@ -43,7 +43,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent))
 import research_review
 import source_extract
-from check_eval_data import load_directives, table_headers, uploaded_eval_files
+from table_profile import load_directives, table_headers
 from ontology_checker import extract_sections, parse_markdown_table
 
 ERROR = '错误'
@@ -115,7 +115,7 @@ def _clip(values, limit: int = 8) -> str:
 # ---------------------------------------------------------------------------
 
 def source_files(root: Path) -> list[str]:
-    """验收依赖的源材料：资料用途清单、schema/term 表格、评测数据表。"""
+    """验收依赖的源材料：资料用途清单、schema/term 表格。"""
     rels = []
     if (root / 'resource' / 'materials.json').is_file():
         rels.append('resource/materials.json')
@@ -124,7 +124,6 @@ def source_files(root: Path) -> list[str]:
             posix = str(rel).replace('\\', '/')
             if (root / posix).is_file():
                 rels.append(posix)
-    rels.extend(uploaded_eval_files(root))
     return sorted(set(rels))
 
 
@@ -174,7 +173,7 @@ def inventory_block(snapshot: dict) -> str:
         lines.append('- 「引用字段」列只能写成 `表名.列名`，且逐字取自上面的表头；'
                      '核对不上的字段写进「缺口与待决」，不要改写或编造。')
     else:
-        lines.append('- 本项目暂无可核对的数据表（既没有 schema 资料也没有评测数据表）。'
+        lines.append('- 本项目暂无可核对的数据表（没有 schema 资料）。'
                      '「引用字段」列一律填「无」，不要编造表名或列名。')
     lines += ['', '## 既有规范清单（ID 必须沿用）']
     item_ids = snapshot.get('item_ids') or []
@@ -531,7 +530,7 @@ def _check_rows(rel: str, rows: list[dict], ctx: CheckContext) -> list[dict]:
 
     if rows and not tables:
         issues.append(_issue(rel, WARNING, '字段对账',
-                             '项目里还没有可核对的数据表（schema 资料或评测数据源的上传表），'
+                             '项目里还没有可核对的数据表（schema 资料），'
                              '报告中的字段名无从核对——给结构表打 schema 标签后重新核验'))
     if unknown_fields:
         issues.append(_issue(rel, ERROR, '字段对账',

@@ -1,6 +1,6 @@
-"""ontology_checker 对评测/发布阶段硬约束的提前检查。
+"""ontology_checker 对下游导入/发布阶段硬约束的提前检查。
 
-每项都与评测或发布侧的同一口径对齐：同名关系的关联字段冲突（package_mapping.graph_relations）、
+每项都与下游导入或发布侧的同一口径对齐：同名关系的关联字段冲突（package_mapping.graph_relations）、
 自关联括注、图标识符（GRAPH_IDENTIFIER）、脚本安全（script-safety.ts）、脚本绑定 operation、
 知识包 key（keys.ts）、consumer 容量上限、主键必须是真实列。
 """
@@ -280,7 +280,7 @@ def test_safe_script_passes(checker, tmp_path: Path):
 
 
 def test_ascii_encoding_is_not_write_but_warns_about_eval_regex(checker, tmp_path: Path):
-    """encoding="ascii" 不是写模式：不报错误，只提示评测侧正则会误判。"""
+    """encoding="ascii" 不是写模式：不报错误，只提示 modeling 侧正则会误判。"""
     ontology = tmp_path / "ontology"
     write_operation(ontology, "计算金额")
     write_script(ontology, "compute_amount", script(body="    open('in.txt', encoding=\"ascii\")\n"))
