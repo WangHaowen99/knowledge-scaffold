@@ -5,6 +5,7 @@
 //   blueprint        资料分析完成、建模蓝图草案 v2（设计稿 wb-blueprint）
 //   estate-empty     「物业报修工单处理」的落地页：和 materials-empty 同一屏，换成它自己的名称和目标
 import { ANCHORS, ANCHOR_RESOLUTIONS, MAIN_PID, projectCards } from './fixtures.js';
+import { catalogFor, materialView, previewBlocks, previewCoverage, webCommit } from './resources-data.js';
 import { DB_SOURCE, ENTRIES, MATERIALS, SLICES } from './scenario.js';
 
 const MIN = 60 * 1000;
@@ -496,47 +497,9 @@ export const projectStages = { [ESTATE_PID]: 'estate-empty' };
 // 给测试用：阶段的初始数据
 export const mockData = { makeMap, blueprintOf, blueprintCard, materialMapCard, candidatePool, verificationItems, CID };
 
-// ---------- 原文预览（R-06） ----------
-const blk = (anchor, kind, text, extra = {}) => ({ anchor, kind, text, ...extra });
-const PREVIEW_DOCS = {
-  'resource/others/02-门店补货规则.docx': [
-    blk('h:8', 'heading', '8 到货与陈列', { level: 2 }),
-    blk('p:8.1', 'paragraph', '8.1 到货后按品类上架，冷链商品优先。'),
-    blk('p:8.2', 'paragraph', '8.2 到货周期为每日的商品，陈列量按日均销量核定。'),
-    blk('p:8.4', 'paragraph', '8.4 到货周期为每周时，陈列量按周峰值核定，不得超过品类标准上限。', { mark: '陈列量按周峰值核定' }),
-    blk('h:9', 'heading', '9 超量处理', { level: 2 }),
-    blk('p:9.1', 'paragraph', '9.1 申请量超过品类标准上限的，记为超量项。'),
-    blk('p:9.2', 'paragraph', '9.2 门店申请与标准不一致时，应在补货单中逐条列出超量项，注明标准值与申请值；门店申请严于标准的按门店执行，超出标准的须经区域审批。', { mark: '注明标准值与申请值' }),
-    blk('p:9.3', 'paragraph', '9.3 超量项汇总进超量清单，随补货单一起提交。'),
-  ],
-  'resource/others/03-样例补货单-B.docx': [
-    blk('h:3', 'heading', '第 3 节 门店信息', { level: 2 }),
-    blk('p:3', 'paragraph', '门店 B，日均销量 60 箱，到货周期隔日。'),
-    blk('h:4', 'heading', '第 4 节 补货标准', { level: 2 }),
-    blk('p:4', 'paragraph', '牛奶按区域统一配额 ≤100 箱 执行。', { mark: '区域统一配额 ≤100 箱' }),
-    blk('p:4.2', 'paragraph', '酸奶按品类标准上限执行。'),
-    blk('h:5', 'heading', '第 5 节 超量说明', { level: 2 }),
-    blk('p:5', 'paragraph', '本单无超量项。'),
-  ],
-  'resource/others/01-场景说明.docx': [
-    blk('h:1', 'heading', '§1 背景', { level: 2 }),
-    blk('p:1', 'paragraph', '店长只需说明门店、品类、库存与到货周期，系统自动生成补货单初稿。', { mark: '店长只需说明门店、品类、库存与到货周期' }),
-    blk('h:2', 'heading', '§2 业务目标', { level: 2 }),
-    blk('p:2', 'paragraph', '由店长根据门店需求起草补货单，经区域审批后下单。'),
-  ],
-};
-function previewOf(path, around) {
-  const blocks = PREVIEW_DOCS[path] || [blk('p:1', 'paragraph', '（合成示例）这份资料的正文。'), blk('p:2', 'paragraph', '（合成示例）第二段。')];
-  return blocks.map(({ mark, ...b }) => {
-    if (b.anchor !== around || !mark) return b;
-    const start = b.text.indexOf(mark);
-    return start >= 0 ? { ...b, highlights: [{ start, end: start + mark.length }] } : b;
-  });
-}
-
 // ---------- 路由 ----------
 export function register(ctx) {
-  const { on, json, err, db, uid, convsOf, flowOf, stageOf, emitConv, emitProj, runReply } = ctx;
+  const { on, json, err, uid, convsOf, flowOf, stageOf, emitConv, emitProj, runReply } = ctx;
   Object.assign(ANCHOR_RESOLUTIONS, Object.fromEntries(MORE_RESOLUTIONS.map((r) => [r.anchor, r])));
   const store = new Map();
 
@@ -546,8 +509,11 @@ export function register(ctx) {
       const reading = stage === 'materials';
       const empty = !stage || /empty$/.test(stage);
       const pool = candidatePool();
+      const map = makeMap(reading ? 'reading' : empty ? 'empty' : 'done');
       store.set(pid, {
-        map: makeMap(reading ? 'reading' : empty ? 'empty' : 'done'),
+        map,
+        // 资料区的文件清单（resources-data.js）：资料地图里的几份用途、进度以资料地图为准，增删改两边同步
+        files: catalogFor(stage, { cid: convsOf(pid)[0]?.id || null, map }),
         candidates: empty ? [] : reading ? pool.now : [...pool.now, ...pool.queue],
         queue: reading ? pool.queue : [],
         timer: null,
@@ -571,11 +537,16 @@ export function register(ctx) {
     task_id: `task-${uid()}`, origin, title, state: 'running', percent: null, step_label: null,
     conversation_id: cidOf(pid), message_id: `m-${uid()}`, exec_id: null, started_at: nowIso(), finished_at: null, result: null,
   });
-  // 页面发来的命令：对话里出现一条带来源的用户消息，助手接着做
-  const command = (pid, origin, text) => {
+  // 页面发来的命令：对话里出现一条带来源的用户消息，助手接着做。
+  // track：资料区按 task_id 跟进度条，经项目流 command.progress 推送开始与结束（契约 EP-10）
+  const command = (pid, origin, text, { track = false } = {}) => {
     const t = task(pid, origin, text);
     emitConv(pid, t.conversation_id, 'message.user', { message_id: t.message_id, text, attachments: [], references: [], origin: { kind: 'page', ...origin, task_id: t.task_id }, delivery: 'immediate' });
     runReply(pid, t.conversation_id, text);
+    if (track && ctx.putTask) {
+      ctx.putTask(pid, t);
+      setTimeout(() => ctx.putTask(pid, { ...t, state: 'done', percent: 100, finished_at: nowIso(), result: { summary: '已重读受影响的部分', refs: [] } }), 2600);
+    }
     return t;
   };
   const setResearch = (pid, patch) => {
@@ -605,48 +576,12 @@ export function register(ctx) {
     setResearch(pid, { state: 'running', display_state: 'running', progress: { done: 0, total: n, label: `读资料 0/${n}` } });
   }
 
-  // R-01 资料列表
-  on('GET', '/projects/([^/]+)/resources', ({ m }) => {
-    const s = st(m[1]);
-    const group = (x) => (x.kind === 'xls' || x.kind === 'csv' ? 'excel' : x.kind === 'drawio' ? 'diagrams' : 'others');
-    const mat = (x) => ({
-      path: x.path, name: x.name, group: group(x), kind: x.kind, size: 200000, uploaded_at: atDaysAgo(0, 9, 13),
-      purpose: x.purpose, purpose_auto: x.purpose_auto, reading_mode: 'on_demand', is_revision: false, revision_task: null, is_template: false,
-      referenced: x.read_pct >= 100 ? 3 : 0, coverage: { read_pct: x.read_pct, label: x.position || (x.read_pct >= 100 ? '全文' : `${x.read_pct}%`) },
-      preview: x.kind === 'xls' ? 'xls' : x.kind === 'drawio' ? 'drawio' : 'doc', revision: `r-${x.read_pct}`,
-    });
-    const labels = { diagrams: '图示', excel: '表格', others: '文档' };
-    return json(200, {
-      groups: ['diagrams', 'excel', 'others'].map((k) => ({ key: k, label: labels[k], items: s.map.items.filter((x) => group(x) === k).map(mat) })),
-      feedback_group: { enabled: false, count: 0 },
-      purposes: [
-        { value: 'goal', label: '建模目标依据', description: '说明要建什么、为什么建' },
-        { value: 'schema', label: '数据 Schema', description: '表结构，发布时核对对象和数据表的绑定' },
-        { value: 'term', label: '术语表', description: '只用来对齐叫法' },
-        { value: 'evidence', label: '通用业务依据', description: '规则、样例、说明' },
-        { value: 'auto', label: '由助手判断', description: '读完后按内容判断' },
-      ],
-    });
-  });
-
-  // R-02 上传资料
-  on('POST', '/projects/([^/]+)/resources', ({ m, body, form }) => {
-    const pid = m[1];
-    let name;
-    let size = 0;
-    if (form) { const f = form.get('file'); name = f?.name; size = f?.size || 0; } else {
-      const u = db.uploads.get(body.upload_id);
-      if (!u) return err(410, 'upload_expired', '暂存文件已过期');
-      name = u.filename; size = u.size;
-    }
-    if (!name) return err(400, 'invalid_argument', '缺少文件', { fields: { file: 'required' } });
+  // 资料区（routes-resources.js 的 R-01、R-02、R-04、R-05）与资料分析共用这份状态：
+  // state(pid).files 是资料区的文件清单，state(pid).map 是资料地图；上传、删除时由资料区调 added / removed 同步资料地图
+  function materialAdded(pid, { path, name, purpose, purpose_auto }) {
     const s = st(pid);
-    const kind = kindOf(name);
-    const dir = kind === 'xls' || kind === 'csv' ? 'schema' : kind === 'drawio' ? 'diagrams' : 'others';
-    const purpose = PURPOSE_VALUES.includes(body.purpose) && body.purpose !== 'auto' ? body.purpose : (dir === 'schema' ? 'schema' : 'auto');
-    const path = `resource/${dir}/${name}`;
     const existing = s.map.items.find((x) => x.path === path);
-    const item = mapItem({ path, name, purpose }, { purpose_auto: purpose !== body.purpose, queue_reason: s.map.items.length ? '读完前面的资料后开始' : null });
+    const item = mapItem({ path, name, purpose }, { purpose_auto, queue_reason: s.map.items.length ? '读完前面的资料后开始' : null });
     if (existing) Object.assign(existing, item); else s.map.items.push(item);
     s.map.total = s.map.items.length;
     s.map.read_pct = avgPct(s.map.items);
@@ -661,58 +596,52 @@ export function register(ctx) {
       clearTimeout(s.startTimer);
       s.startTimer = setTimeout(() => startReading(pid), 1200);
     }
-    const material = {
-      path, name, group: dir === 'schema' ? 'excel' : dir, kind, size, uploaded_at: nowIso(), purpose, purpose_auto: item.purpose_auto,
-      reading_mode: body.reading_mode || 'on_demand', is_revision: !!body.is_revision, revision_task: null, is_template: false, referenced: 0,
-      coverage: null, preview: dir === 'schema' ? 'xls' : 'doc', revision: `r-${uid()}`,
-    };
-    return json(201, { material, replaced: !!existing, commit: `m${uid()}`, version_label: 'v0.1', detected: { purpose, tables: [] }, command_task: null });
-  });
+    return item;
+  }
+  function materialRemoved(pid, path) {
+    const s = st(pid);
+    if (!s.map.items.some((x) => x.path === path)) return;
+    s.map.items = s.map.items.filter((x) => x.path !== path);
+    s.map.total = s.map.items.length;
+    s.map.read_pct = avgPct(s.map.items);
+    mapChanged(pid, []);
+  }
+  ctx.materials = { state: st, added: materialAdded, removed: materialRemoved };
 
-  // R-03 改资料用途
+  // R-03 改资料用途（资料地图弹窗、资料区都用）：清单和资料地图一起改；分析开始过就重读受影响的部分
   on('PATCH', '/projects/([^/]+)/resources/purpose', ({ m, body }) => {
     const pid = m[1];
     const s = st(pid);
+    const f = s.files.find((x) => x.path === body.path);
     const it = s.map.items.find((x) => x.path === body.path);
-    if (!it) return err(404, 'file_not_found', '资料不存在');
+    if (!f && !it) return err(404, 'file_not_found', '资料不存在');
     if (!PURPOSE_VALUES.includes(body.purpose)) return err(400, 'invalid_argument', '用途不对', { fields: { purpose: 'invalid' } });
-    it.purpose = body.purpose;
-    it.purpose_auto = false;
-    mapChanged(pid, [it]);
+    if (f) Object.assign(f, { purpose: body.purpose, purpose_auto: false, revision: `r-${uid()}`, ...(body.reading_mode ? { reading_mode: body.reading_mode } : {}) });
+    if (it) {
+      it.purpose = body.purpose;
+      it.purpose_auto = false;
+      mapChanged(pid, [it]);
+    }
+    const name = (f || it).name;
     const started = s.map.items.some((x) => x.read_pct > 0);
-    const reread = started ? command(pid, { page: 'wb-materials', label: '资料地图' }, `「${it.name}」改了用途，重读受影响的部分`) : null;
-    return json(200, { material: { path: it.path, name: it.name, purpose: it.purpose, purpose_auto: false, kind: it.kind }, commit: `p${uid()}`, version_label: 'v0.1', reread_task: reread });
+    const reread = started ? command(pid, { page: 'wb-materials', label: '资料地图' }, `「${name}」改了用途，重读受影响的部分`, { track: true }) : null;
+    const { commit, version_label } = webCommit(ctx, pid, [body.path]);
+    const material = f ? materialView(f, it) : { path: it.path, name: it.name, purpose: it.purpose, purpose_auto: false, kind: it.kind };
+    return json(200, { material, commit, version_label, reread_task: reread });
   });
 
-  // R-04 删除资料
-  on('DELETE', '/projects/([^/]+)/resources', ({ m, query }) => {
-    const pid = m[1];
-    const s = st(pid);
-    const path = query.get('path');
-    if (!s.map.items.some((x) => x.path === path)) return err(404, 'file_not_found', '资料不存在');
-    s.map.items = s.map.items.filter((x) => x.path !== path);
-    s.map.total = s.map.items.length;
-    mapChanged(pid, []);
-    return json(200, { deleted: path, commit: `d${uid()}`, version_label: 'v0.1', broken_references: 2 });
-  });
-
-  // R-05 资料被谁引用
-  on('GET', '/projects/([^/]+)/resources/references', ({ query }) => {
-    const path = query.get('path') || '';
-    const items = ENTRIES.filter((x) => x.slice === 's5').slice(0, 3).map((x) => ({ target: { kind: x.kind, id: x.id, key: x.key, name: x.name }, location: '依据', anchors: ['p:9.2'] }));
-    return json(200, { path, total: items.length, items });
-  });
-
-  // R-06 资料原文预览
+  // R-06 资料原文预览：块与出处高亮见 resources-data.js；表格、drawio 走 F-05、F-04
   on('GET', '/projects/([^/]+)/resources/preview', ({ m, query }) => {
     const path = query.get('path') || '';
     const around = query.get('around') || null;
     const s = st(m[1]);
+    const f = s.files.find((x) => x.path === path);
     const it = s.map.items.find((x) => x.path === path);
+    if (!f && !it) return err(404, 'file_not_found', '资料不存在', { path });
     return json(200, {
       path, format: (path.split('.').pop() || '').toLowerCase(),
-      coverage: { read_sections: it?.position || '全文', read_pct: it?.read_pct ?? 100, complete: (it?.read_pct ?? 100) >= 100 },
-      blocks: previewOf(path, around), next_cursor: null,
+      coverage: previewCoverage(f, it),
+      blocks: previewBlocks(path, around, f), next_cursor: null,
     });
   });
 
