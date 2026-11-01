@@ -236,6 +236,9 @@ def test_create_project_with_capabilities_and_industry(env):
     names = _lock_names(root)
     assert set(names) == {"core", "codegen", "diagram", "knowledge", "evo", "industry-retail"}
     assert (root / ".claude" / "industry" / "industry-retail" / "concepts.json").is_file()
+    # 工作区规则告诉助手怎么用行业包的规范清单、写法提示与参考库
+    rules = (root / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
+    assert ".claude/industry/<包名>/" in rules and "只作候选提示" in rules
     missing = client.post("/api/v1/projects", json={**body, "name": "没有的行业", "industry_packs": [{"name": "industry-none"}]})
     assert missing.status_code == 404 and missing.json()["code"] == "pack_not_found"
     wrong_kind = client.post("/api/v1/projects", json={**body, "name": "类别不对", "system_packs": ["industry-retail"]})

@@ -31,6 +31,16 @@ These rules apply to all work in this repository.
 - 命令文档、下一步建议、菜单里提到这些命令时，先看 `.claude/commands/<命令名>.md`（技能看 `.claude/skills/<名>/SKILL.md`）在不在：在才提供这个选项、才去读它；不在就不要列出，用户问起时说明本项目没有启用对应能力，可以在项目设置里启用。
 - 下一步建议统一用 `python3 .claude/scripts/state_helper.py next-step` 取，它只列出本项目已启用的命令。
 
+## Industry Packs（行业包）
+
+项目启用的行业包在 `.claude/industry/<包名>/`（只读；`pack.json` 里有显示名与版本）。目录不存在就跳过本节：
+
+- 资料分析：对照 `standards.json` 的规范类型找资料里对应的内容，缺的记进待确认问题；用 `concepts.json` 的概念与别名辅助识别资料用途和术语。
+- 抽取对象、操作、规则与指标：先看 `reference/` 里 `decision_point` 对应本步骤的写法提示；`library/` 是参考对象与操作，**只作候选提示**，按项目资料写、经专家确认，不直接复制。
+- 行业知识由 `knowledge_helper.py load` 自动分层加载（项目里同名条目优先），不用另读 `knowledge/`。
+- 产物用到了行业知识或参考库时，在「数据来源」或提交说明里注明来源，如 `industry-retail@1.0.0 / 安全库存测算`。
+- `ontology_checker` 会按行业包的声明式规则给警告（分类「行业规则」）；项目口径确实不同就保留，并沉淀一条项目知识说明原因。
+
 ## Subagent Dispatch（子任务派发）
 
 命令里写「Read `.claude/agents/X.md`. Dispatch it …」时，agent 文件就是子任务的完整指令：
