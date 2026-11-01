@@ -107,10 +107,12 @@ def check_solver_contract_draft(manager, project_id: str, operations: list) -> d
     验证门禁跟修订走，草稿保存后修订必然改变，这里不给出。
     """
     root = manager.project_root(project_id)
-    rejected, findings, rendered = solver_contract.check_draft(
-        operations, operation_stems(root), root, package_scripts(root)
-    )
-    return {"rejected": rejected, "findings": findings, "rendered": rendered}
+    stems, scripts = operation_stems(root), package_scripts(root)
+    rejected, findings, rendered = solver_contract.check_draft(operations, stems, root, scripts)
+    evaluators = solver_contract.draft_evaluators(operations, stems, root, scripts)
+    first = next(iter(evaluators.values()), "")
+    return {"rejected": rejected, "findings": findings, "rendered": rendered,
+            "evaluator": solver_contract.evaluator_summary(root / first) if first else None}
 
 def save_solver_contract(
     manager, project_id: str, operations: list, base_revision: str,
