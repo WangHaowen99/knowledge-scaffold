@@ -692,7 +692,8 @@ export function createMockServer() {
     const open = ['/api/v1/client-config', '/api/v1/auth/login', '/api/v1/auth/local', '/api/v1/auth/register', '/api/v1/auth/refresh'];
     const user = userOf(init);
     if (!open.includes(path) && !user) return err(401, 'unauthenticated', '未登录');
-    if (maintenance?.mode === 'read_only' && method !== 'GET' && !path.startsWith('/api/v1/auth/')) {
+    // 只读维护不拦运维面（B3b 第 12 条）：运维要能推进、退出维护
+    if (maintenance?.mode === 'read_only' && method !== 'GET' && !path.startsWith('/api/v1/auth/') && !path.startsWith('/api/v1/ops/')) {
       return err(503, 'maintenance_read_only', maintenance.message, { message: maintenance.message, until: null });
     }
     // 同一路径可以有几个处理者：返回 undefined 表示「不归我管」，交给后面登记的（如插件产物按类型分到各页的 mock）
