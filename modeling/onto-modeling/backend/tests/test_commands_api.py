@@ -72,13 +72,13 @@ def test_page_command_returns_task_and_tracks_exec_until_done(api):
                            {"type": "assistant_message", "blocks": [{"kind": "text", "text": "开始校验"}]},
                            release("validate"), result()]]
     response = client.post(f"/api/v1/projects/{project_id}/commands", json={
-        "command": "/ontology-validate", "args": {"scope": "全部"}, "text": "只看规则",
+        "command": "/ontology-validate", "args": {"scope": "全部", "keys": ["s-01", "s-02"]}, "text": "只看规则",
         "origin": {"page": "reports", "label": "报告"}})
     assert response.status_code == 202, response.text
     body = response.json()
     assert set(body) == {"task", "conversation_id", "message_id"} and set(body["task"]) == TASK
     task_id = body["task"]["task_id"]
-    assert wait(lambda: FakeEngine.sent)[0] == "/ontology-validate scope=全部\n\n只看规则"
+    assert wait(lambda: FakeEngine.sent)[0] == '/ontology-validate scope=全部 keys=["s-01", "s-02"]\n\n只看规则'
     done = wait(lambda: next((task for task in command_tasks.query(project_id, states=["done"])
                               if task["task_id"] == task_id), None))
     assert done["exec_id"] and done["result"]["summary"].startswith("「质量检查」做完了")
@@ -90,6 +90,7 @@ def test_page_command_returns_task_and_tracks_exec_until_done(api):
     messages = client.get(f"/api/v1/projects/{project_id}/conversations/{body['conversation_id']}/messages").json()
     user = next(item for item in messages["items"] if item["type"] == "message.user")
     assert user["data"]["origin"] == {"kind": "page", "page": "reports", "label": "报告", "task_id": task_id}
+    assert user["data"]["command"] == "/ontology-validate"
     assert user["data"]["message_id"] == body["message_id"]
 
 

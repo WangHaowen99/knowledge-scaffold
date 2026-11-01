@@ -444,6 +444,7 @@ def payload(record: dict) -> tuple[str | None, dict | None]:
             "message_id": message_id(record), "text": record.get("text") or "",
             "attachments": record.get("attachments") or [], "references": record.get("references") or [],
             "origin": record.get("origin"), "delivery": record.get("delivery") or "immediate",
+            "command": record.get("command") or _leading_command(record.get("prompt") or record.get("text")),
         }
     if kind == "stream_delta":
         return "message.delta", {"message_id": record.get("message_id") or "", "kind": record.get("kind") or "text",
@@ -545,6 +546,12 @@ def payload(record: dict) -> tuple[str | None, dict | None]:
     if kind == "workspace_changes":
         return "card", round_changes_card(record)
     return None, None
+
+
+def _leading_command(text) -> str | None:
+    """消息开头的斜杠命令名（契约 F3 补充：前端据此认出对话正在跑哪个节点的命令）。"""
+    head = str(text or "").strip().split(maxsplit=1)
+    return head[0] if head and head[0].startswith("/") and len(head[0]) > 1 else None
 
 
 def project(record: dict, project_id: str, conversation_id: str) -> dict | None:

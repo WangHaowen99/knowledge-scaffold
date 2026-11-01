@@ -35,7 +35,8 @@ CONTRACT = {
     "session.interrupted": {"by", "at", "exec_id", "position_label", "saved"},
     "session.config_pending": {"changes", "effective", "detail_link"},
     "session.reconnected": {"reason", "changes", "context_kept", "duration_ms"},
-    "message.user": {"message_id", "text", "attachments", "references", "origin", "delivery"},
+    # F3 补充：message.user 带命令名（contract-changes F3 第 1 条）
+    "message.user": {"message_id", "text", "attachments", "references", "origin", "delivery", "command"},
     "message.delta": {"message_id", "kind", "text"},
     "message.assistant": {"message_id", "text_md", "anchors", "entry_links", "continued"},
     "notice": {"kind", "text", "version_label", "changeset_id", "align"},
@@ -265,6 +266,7 @@ def test_command_turns_produce_contract_payloads_and_exec_lifecycle(host):
         assert expected in kinds, expected
     user = next(item for item in envelopes if item["type"] == "message.user")
     assert user["data"]["message_id"] == f"m-{user['id']}" and user["data"]["delivery"] == "immediate"
+    assert user["data"]["command"] == "/ontology-extract-object"
     group = [item for item in envelopes if item["type"] == "progress.updated"][-1]["data"]
     assert group["title"] == "对象提取" and group["state"] == "done" and group["collapsed"] is True
     texts = [step["text"] for step in group["steps"]]

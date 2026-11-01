@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -626,8 +627,10 @@ def register_action_resolver(resolver) -> None:
 
 
 def _render_command(command: str, args: dict, text: str) -> str:
+    """命令文本：`/命令 键=值 …`，非字符串的值写成 JSON；附带的说明另起一段。"""
     parts = [command.strip()]
-    parts += [f"{key}={value}" for key, value in (args or {}).items() if value not in (None, "")]
+    parts += [f"{key}={value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)}"
+              for key, value in (args or {}).items() if value not in (None, "", [], {})]
     message = " ".join(part for part in parts if part)
     return f"{message}\n\n{text.strip()}" if text and text.strip() else message
 
@@ -673,7 +676,7 @@ async def send_command(project_id: str, request: Request):
                                 conversation_id=conversation_id, command=name)
     meta = {"display_text": text, "origin": {"kind": "page", "page": str(origin.get("page")),
                                              "label": str(origin.get("label") or ""), "task_id": task["task_id"]},
-            "task_id": task["task_id"]}
+            "task_id": task["task_id"], "command": name}
     try:
         result = await _send(project_id, root, conversation_id, request, text, meta)
     except ApiError:

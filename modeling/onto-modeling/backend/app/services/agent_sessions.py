@@ -760,6 +760,8 @@ class SessionManager:
             "origin": meta.get("origin"),
             "delivery": "deferred" if deferred else "immediate",
         }
+        if meta.get("command"):
+            record["command"] = meta["command"]
         if display != text:
             record["prompt"] = text
         session.broadcast(record)
