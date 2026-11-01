@@ -64,8 +64,9 @@ def test_issue_returns_plaintext_once_and_stores_only_digest(data_dir):
 
 def test_store_is_separate_from_mcp_tokens(data_dir):
     service_tokens.issue({"name": "合成服务", "scopes": ["releases.read"]})
-    assert service_tokens.store_path() == data_dir / "service-tokens.json"
-    assert not (data_dir / "onto-mcp.sqlite").exists()
+    # 两个库都在密钥目录里（方案 E10），但是分开存放
+    assert service_tokens.store_path() == data_dir / "secrets" / "service-tokens.json"
+    assert not (data_dir / "secrets" / "onto-mcp.sqlite").exists()
 
 
 @pytest.mark.parametrize("body", [

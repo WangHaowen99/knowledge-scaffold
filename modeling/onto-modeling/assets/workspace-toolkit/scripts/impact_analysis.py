@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from ontology_checker import load_ontology, _parse_mock_tables, _extract_object_refs
+import onto_metamodel as mm
 
 
 def resolve_target(input_arg: str, ontology_dir: Path) -> tuple:
@@ -66,23 +67,23 @@ def analyze_impact(stem: str, category: str, all_docs: dict, mock_dir: Path, tes
         if other_stem == stem:
             continue
 
-        linked = stem in other_doc.wiki_links
+        linked = any(mm.resolve(link, all_docs) == stem for link in other_doc.wiki_links)
 
         if other_doc.doc_type == 'operation':
             if linked:
                 result['operation_refs'].append(other_stem)
             # sub-operation: invoked via 调用[[X]]逻辑文档
             operation_text = other_doc.sections.get('逻辑描述', '')
-            sub_refs = re.findall(r'调用\[\[([^\]]+)\]\]逻辑文档', operation_text)
+            sub_refs = [mm.resolve(raw, all_docs) or raw for raw in re.findall(r'调用\[\[([^\]]+)\]\]逻辑文档', operation_text)]
             if category == 'operation' and stem in sub_refs:
                 result['called_by'].append(other_stem)
             # action invocation: action_rows
             if category == 'action':
                 for row in other_doc.action_rows:
                     action_name = row.get('动作名称', '').strip()
-                    m = re.match(r'\[\[([^\]]+)\]\]', action_name)
-                    if m:
-                        action_name = m.group(1)
+                    link = mm.parse_link(action_name)
+                    if link:
+                        action_name = mm.resolve(link, all_docs) or link.full_name
                     if action_name == stem:
                         result['invokes_action'].append(other_stem)
                         break

@@ -734,4 +734,8 @@ class ClaudeEngine(ObservableEngine):
         if config.CLI_PATH:
             # 降级兼容包（无 AVX 环境）：指向外部 JS 版 CLI，见部署文档
             kwargs["cli_path"] = config.CLI_PATH
+        # 方案 E10：CLI 经包装启动，只给最小环境、以 agent 用户运行，bash 里没有凭据变量
+        from ...governance import agent_identity
+
+        kwargs.update(agent_identity.claude_options(kwargs["env"]))
         return ClaudeAgentOptions(**kwargs)

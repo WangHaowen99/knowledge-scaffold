@@ -54,6 +54,8 @@ _DELETE_RETRY_SECONDS = 0.2
 
 _PROJECT_LOCKS: dict[str, threading.RLock] = {}
 _PROJECT_LOCKS_GUARD = threading.Lock()
+# 本线程已持有的项目锁（键同 _PROJECT_LOCKS）与嵌套深度
+_HELD_LOCKS = threading.local()
 # 同名校验到项目落盘之间不能被另一个同名请求插队
 _NAME_CLAIM_LOCK = threading.Lock()
 
@@ -87,24 +89,35 @@ class WorkspaceCore:
 
     @contextmanager
     def _project_lock(self, project_id: str):
-        """Serialize project mutations and metadata reads across managers/processes."""
+        """Serialize project mutations and metadata reads across managers/processes.
+
+        同一线程可以嵌套持锁（写入事务 ChangeTx 在已持锁的调用方里开启）：文件锁只在最外层加，
+        内层再对同一文件 flock 会和外层的打开文件描述冲突，自己等自己。
+        """
         lock_path = self._lock_path(project_id)
         key = str(lock_path.resolve())
         with _PROJECT_LOCKS_GUARD:
             lock = _PROJECT_LOCKS.setdefault(key, threading.RLock())
         lock.acquire()
+        held = _HELD_LOCKS.__dict__.setdefault("depth", {})
+        nested = held.get(key, 0) > 0
+        held[key] = held.get(key, 0) + 1
         fd = None
         try:
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-            if fcntl is not None:
-                fcntl.flock(fd, fcntl.LOCK_EX)
+            if not nested:
+                lock_path.parent.mkdir(parents=True, exist_ok=True)
+                fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+                if fcntl is not None:
+                    fcntl.flock(fd, fcntl.LOCK_EX)
             yield
         finally:
             if fd is not None:
                 if fcntl is not None:
                     fcntl.flock(fd, fcntl.LOCK_UN)
                 os.close(fd)
+            held[key] -= 1
+            if not held[key]:
+                del held[key]
             lock.release()
 
     @staticmethod
@@ -119,8 +132,8 @@ class WorkspaceCore:
         try:
             with os.fdopen(fd, "wb") as stream:
                 fd = None
-                if old_mode is not None:
-                    os.fchmod(stream.fileno(), old_mode)
+                # mkstemp 建的是 0600：新文件按进程 umask 给权限，agent 用户（同组）才能接着改（方案 E10）
+                os.fchmod(stream.fileno(), old_mode if old_mode is not None else 0o666 & ~_current_umask())
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
@@ -199,8 +212,10 @@ class WorkspaceCore:
         _git(root, "init")
         _git(root, "config", "user.name", "Onto Modeling")
         _git(root, "config", "user.email", "onto-modeling@example.invalid")
+        from ...kernel.writepath import Origin, stamped
+
         _git(root, "add", "-A")
-        _git(root, "commit", "-m", "init: 任务工作区基线", "--allow-empty")
+        _git(root, "commit", "-m", stamped("init: 任务工作区基线", Origin("plugin", owner), root), "--allow-empty")
         return meta
 
     @staticmethod
@@ -442,8 +457,11 @@ class WorkspaceCore:
         _ensure_gitignore_entries(dest_root)
         # 锁文件随克隆带过来：按源项目锁定的能力包版本重新装配
         self._mount_assets(dest_root)
+        from ...kernel.writepath import Origin, stamped
+
         _git(dest_root, "add", "-A")
-        _git(dest_root, "commit", "-q", "-m", f"clone: 自 {project_id} 克隆", "--allow-empty")
+        _git(dest_root, "commit", "-q", "-m", stamped(f"clone: 自 {project_id} 克隆", Origin("import", owner), dest_root),
+             "--allow-empty")
         return self.get_project(meta["id"])
 
     def delete_project(self, project_id: str) -> None:
@@ -680,6 +698,19 @@ class WorkspaceCore:
 
 class WorkspaceManager(FilesMixin, VersionsMixin, TransferMixin, WorkspaceCore):
     """工作区管理器：核心 + 文件与资料 + 版本 + 导入导出。"""
+
+
+def _current_umask() -> int:
+    """进程 umask：Linux 从 /proc 读（不用先改再改回，多线程下没有窗口），其他平台退回 os.umask。"""
+    try:
+        for line in Path("/proc/self/status").read_text(encoding="ascii").splitlines():
+            if line.startswith("Umask:"):
+                return int(line.split()[1], 8)
+    except (OSError, ValueError):
+        pass
+    mask = os.umask(0o022)
+    os.umask(mask)
+    return mask
 
 
 def remove_tree(path: Path) -> bool:

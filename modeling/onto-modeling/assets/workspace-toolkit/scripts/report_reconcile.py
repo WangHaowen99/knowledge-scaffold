@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent))
+import onto_metamodel as mm
 import research_review
 from ontology_checker import (
     ENTITY_TYPE_LABELS,
@@ -129,18 +130,9 @@ def names_of_type(inventory: Inventory, doc_type: str) -> list[str]:
 
 
 def safe_document_stem(name: str) -> str:
-    """仅转义文件系统保留字符；同时转义 %，避免 A/B 与字面 A%2FB 重名。"""
-    escaped = ''.join(
-        f'%{ord(char):02X}' if char in '%/\\<>:"|?*' or ord(char) < 32 else char
-        for char in name
-    )
-    escaped = escaped.rstrip(' .') + ''.join(
-        f'%{ord(char):02X}' for char in escaped[len(escaped.rstrip(' .')):]
-    )
-    if escaped.lower() == 'index' or re.fullmatch(
-            r'(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?', escaped):
-        escaped = f'%{ord(escaped[0]):02X}' + escaped[1:]
-    return escaped
+    """业务名 → 文件名：编码规则在元模型（onto_metamodel.encode_filename，方案 C5），
+    文件系统保留字符、与链接语法冲突的 `# | [ ] &` 和 `%` 本身都百分号编码。"""
+    return mm.encode_filename(name)
 
 
 def _document_name(path: Path) -> str:

@@ -123,9 +123,60 @@ Jiuwen 引擎只执行工具箱的守卫钩子，会话开始和用户发消息�
 
 ## 启动自检
 
-服务启动时、任何会话开始之前做一次自检：清掉各项目 `.git` 下残留的锁，列出各项目没提交的改动
-（保留原样，等所有者处理），结果写进服务日志并留存到数据目录 `startup-report.json`，运维接口
-`GET /api/v1/ops/startup-report` 可以取到（运维总览的「启动自检」摘要也读它）。
+服务启动时、任何会话开始之前做一次自检：清掉各项目 `.git` 下残留的锁，补提交上次停机时写了
+一半的写入（写入事务留下的意图，提交说明以 `recover:` 开头），列出各项目剩下没提交的改动（保留
+原样，等所有者处理），并记下上次是否正常退出；结果写进服务日志并留存到数据目录
+`startup-report.json`，运维接口 `GET /api/v1/ops/startup-report` 可以取到。启动恢复做完之前
+`/api/health/ready` 返回 503。
+
+## 元模型与写入事务
+
+实体类型、目录、章节结构、`[[链接]]` 语法与文件名编码只在工具箱的 `onto_metamodel.py` 里定义一份，
+后端与工具箱脚本共用，`GET /api/v1/metamodel` 给前端（ADR-0030）。链接里的 `#` 是锚点，解析时先按
+「名称#锚点」全名找文件，兼容文件名里带 `#` 的存量条目。
+
+网页保存、Studio 提交、MCP 写入、资料与知识条目、求解契约保存、整树回退、示例注入都经同一个写入
+事务（`app/kernel/writepath`，ADR-0031）：拿项目锁、校验版本号、原子写入、刷新派生的 `index.md`，
+只提交本次路径，提交说明末尾带 `Onto-Source`、`Onto-Author` 等 trailer；agent 还没提交的改动不会被
+带进去。
+
+## 治理平面
+
+- **配置**：每个环境变量在配置注册表里声明来源优先级、校验与生效时机（`app/governance/config_registry.py`），
+  不合法的值告警后回落；管理员可在 `GET /api/v1/admin/config-registry` 查看（密钥只显示引用）。
+- **日志、指标、链路**：日志是 JSON（带项目、会话、执行、变更集、包版本、节点、trace id 等公共标签，
+  令牌与口令脱敏），另写数据目录 `logs/`，按日轮转保留 14 天；指标与链路在进程内，运维面
+  `/api/v1/ops/metrics`、`/traces`、`/logs` 查看，Prometheus 抓运维监听上的 `/metrics`。
+- **审计**：每个写请求在响应之后记一条（操作者、类型、状态码、trace id、来源 IP），另有 agent 提交、
+  登录、设置、运维操作等专项记录；不记文件正文与对话内容。按日轮转在数据目录 `audit/`。
+- **健康检查**：`/api/health/live` 只看进程（容器 HEALTHCHECK 用它）；`/api/health/ready` 探测模型网关、
+  auth-server（JWKS）、沙箱网关、磁盘、git 等，关键依赖失败返回 503；`/api/health` 不变。
+- **角色**：`user`、`admin`、`ops` 三种（auth-server 签发 `role` claim）。admin 管系统设置、用户、
+  指定所有者、服务令牌；ops 管运维面的写操作；运维面只读接口 admin 也能看。admin、ops 都只能看
+  别人项目的元数据。
+
+## 运维管理面
+
+运维接口 `/api/v1/ops/*` 在同一进程的第二个监听上（`ONTO_WEB_OPS_HOST`、`ONTO_WEB_OPS_PORT`，默认
+`127.0.0.1:8101`，端口 0 关闭），由 `python run.py` 起；业务面上默认返回 404。独立端口挡不住同容器的
+agent，所以运维面照样校验登录令牌。单端口部署（没有反代）时设 `ONTO_WEB_OPS_ON_MAIN=true` 让业务面也
+处理运维接口；有反代时把 `/api/v1/ops/` 转到运维监听，或者设 `ONTO_WEB_OPS_BASE_URL` 让前端直接访问。
+
+维护模式（`POST /api/v1/ops/maintenance`）分四步：限制（拒绝新会话，或只读：一切写请求返回 503，
+运维面与登录除外）→ 排空（在线会话跑完当前这一轮后回收，超时强制断开并标中断）→ 升级 → 恢复。
+另有会话池在线调整、强制断开、排空、熔断、诊断包（脱敏）、版本清单、审计导出等。
+
+## 密钥与 agent 身份
+
+- 管理员模型 Key、个人 Key 密文与自动生成的主密钥、MCP token 库、服务令牌库都在密钥目录
+  （`ONTO_WEB_SECRETS_DIR`，默认数据目录下的 `secrets/`，0700，文件 0600）；老位置的文件在启动时搬过来。
+- agent 及其工具子进程以独立的非 root 用户运行（镜像里是 `onto-agent`，`ONTO_WEB_AGENT_USER`）：
+  后端仍是 root，起 Claude CLI、执行 Jiuwen 的命令时切到这个用户，只保留它自己的组。工作区、CLI 的
+  `HOME`、Jiuwen 工件区归这个组可写；密钥目录与数据目录其余部分它读不到。
+- 两个引擎里 agent 执行的 bash 只给最小环境：后端的 `ONTO_WEB_*`、JWT、管理令牌、模型 Key 都不在里面
+  （Claude CLI 自己仍拿着当前会话用的模型网关配置）。开发机不配 `ONTO_WEB_AGENT_USER` 时只做环境最小化。
+- 必须配置 `ONTO_WEB_MODEL_SECRET_KEY`（至少 32 字节），没配时启动告警。备份只带密文；自动生成的主密钥
+  不进备份，配置 `ONTO_WEB_KEY_BACKUP_DIR` 时每次备份单独拷一份到那里（与密文分开放）。
 
 ## 能力包、装配目录与主流程
 
@@ -206,15 +257,16 @@ n 从 1 开始（建项目的基线提交是 v0.1），界面显示 `v0.{n}`；�
 
 一份备份是一个 `onto-modeling-backup-<时间>.tar.gz`，`data/` 与数据目录一一对应、`home/` 对应
 `HOME`：各项目工作区（含 git 历史，按项目持锁打包）、会话历史与会话索引、Jiuwen 存档、Studio
-草稿、MCP token 库、服务令牌库（只有摘要）、发布留存的知识包、各类设置、审计与错误留档，以及存在时的 CLI transcript
+草稿、密钥目录里的密文（管理员模型配置、个人 Key 密文、MCP token 库、服务令牌库）、包仓库
+`packs/`、发布留存的知识包、各类设置、审计与错误留档，以及存在时的 CLI transcript
 （`~/.claude/projects`）。SQLite 库（Jiuwen 存档、MCP token 库）用 SQLite 的 backup API 拷贝，
 不直接打包正在使用的库文件。恢复时停服务，把 `data/` 解到 `ONTO_WEB_DATA_DIR`、`home/` 解到
 `HOME`。
 
-个人 Key 的主密钥不在备份里：未设 `ONTO_WEB_MODEL_SECRET_KEY` 时它是数据目录下自动生成的
-`.model-secret-key`。主密钥与加密后的个人 Key 放在同一个包里等于没加密，所以要单独保管该文件，
-或改用环境变量提供；异机恢复时缺了同一把主密钥，已保存的个人 Key 解不开，用户需重新填写。
-每次备份都会在服务日志里提醒这一点。
+个人 Key 的主密钥不在备份里：未设 `ONTO_WEB_MODEL_SECRET_KEY` 时它是密钥目录下自动生成的
+`.model-secret-key`。主密钥与加密后的个人 Key 放在同一个包里等于没加密，所以要单独保管该文件
+（配置 `ONTO_WEB_KEY_BACKUP_DIR` 时每次备份自动单独拷一份），或改用环境变量提供；异机恢复时缺了
+同一把主密钥，已保存的个人 Key 解不开，用户需重新填写。
 
 ## 场景与来源核验
 

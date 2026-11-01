@@ -50,7 +50,7 @@ meta-wise 解耦鉴权系统的**预置 auth server v1**。设计依据见
 | 端点 | 说明 |
 | --- | --- |
 | `GET /admin/users` | `{"users": [{username, role, password_change_required[, email]}]}`（email 仅注册用户有，存量用户形状不变） |
-| `POST /admin/users` | `{username, password[, role]}` → 201 `{"user": {...}}`；策略违规 400 `{error, code: "PASSWORD_POLICY_FAILED", violations}` |
+| `POST /admin/users` | `{username, password[, role]}` → 201 `{"user": {...}}`；`role` 取 `user`（默认）、`admin`、`ops`（运维，供 onto-modeling 运维管理面；consumer 只认 admin，其余按普通用户）；策略违规 400 `{error, code: "PASSWORD_POLICY_FAILED", violations}` |
 | `PUT /admin/users/<username>` | `{password}` 管理员重置：写 `password_changed_at`，`password_version+1` 且 `token_version+1`（可选 `{role}` 改角色） |
 | `DELETE /admin/users/<username>` | `{"success": true}`；用户不存在 400 中文错误 |
 | `PUT /admin/change-password` | `{username, old_password, new_password}` 本人改密语义：写 `password_changed_at`、双 version+1 → `{"success": true}` |

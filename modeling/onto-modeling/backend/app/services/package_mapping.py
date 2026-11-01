@@ -27,6 +27,8 @@ import re
 import unicodedata
 from pathlib import Path
 
+from ..kernel.metamodel import mm
+
 # modeling 契约：来源Sheet 为 "—" 表示该对象不绑定物理表（package-import 按此跳过）
 UNBOUND = "—"
 # 包内部逻辑数据源别名，不是外部数据源的 provider；取 modeling 草稿同款默认值
@@ -567,10 +569,18 @@ def rewrite_object_body(body: str, fields: list[dict]) -> str:
 
 
 def _relation_node(value: str) -> str:
-    """关系端点：`[[对象]]`（可带别名/锚点）取对象名，「当前对象名」归一为「当前对象」，其余原样。"""
-    link = re.fullmatch(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]", value)
-    name = link.group(1).strip() if link else value
+    """关系端点：`[[对象]]`（可带别名）取对象全名，「当前对象名」归一为「当前对象」，其余原样。
+
+    按元模型解析；端点带 `#` 时保留全名，存量文件名里带 `#` 的对象（如 `1#油泵`）才连得上。
+    """
+    link = mm.parse_link(value)
+    name = link.full_name if link else value
     return CURRENT_OBJECT if name in _CURRENT_OBJECT_ALIASES else name
+
+
+def _endpoint(name: str, object_texts) -> str:
+    """关系端点全名 → 对象 key：先按全名，再去掉 `#锚点` 按名称（元模型 resolve）；都对不上时原样。"""
+    return mm.resolve(name, object_texts) or name
 
 
 def _split_relation_arrows(value: str) -> list[str]:
@@ -831,8 +841,8 @@ def package_relations(
         path = f"ontology/object/{key}.md"
         problems.extend(f"{path} {problem}" for problem in diagnostics)
         for item in items:
-            source_id = _relation_identity(key if item["source"] == CURRENT_OBJECT else item["source"])
-            target_id = _relation_identity(key if item["target"] == CURRENT_OBJECT else item["target"])
+            source_id = _relation_identity(key if item["source"] == CURRENT_OBJECT else _endpoint(item["source"], object_texts))
+            target_id = _relation_identity(key if item["target"] == CURRENT_OBJECT else _endpoint(item["target"], object_texts))
             label = f"{path} 第 {item['line']} 行"
             missing = sorted({source_id, target_id} - objects_by_identity.keys())
             if missing:
@@ -923,8 +933,8 @@ def graph_relations(
             source = item["source"] or ""
             name = item["relation"] or ""
             target = item["target"] or ""
-            source = key if source == CURRENT_OBJECT else source
-            target = key if target == CURRENT_OBJECT else target
+            source = key if source == CURRENT_OBJECT else _endpoint(source, object_texts)
+            target = key if target == CURRENT_OBJECT else _endpoint(target, object_texts)
             triple = (source, name, target)
             label = f"对象「{key}」第 {item['line']} 行"
             if key not in (source, target):

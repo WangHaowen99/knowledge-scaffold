@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Any
 
 from .. import config
-from . import conversation_store, error_log, personal_model_settings
+from ..governance import context, telemetry
+from . import audit, conversation_store, error_log, personal_model_settings
 from .conversation_store import DEFAULT_ID as DEFAULT_CONVERSATION
 from .engines import EngineContext, get_engine_class
 from .engines.base import CONFIG_ERROR, FRIENDLY_ERROR, safe_json as _safe_json
@@ -579,6 +580,7 @@ class SessionManager:
                 _fingerprint.changes, session.engine, session.project_id, session.model_owner, session.fingerprint
             )
             if changes:
+                telemetry.count("onto_reconnects_total", project=session.project_id)
                 session.pending_changes = changes
                 if session.state == "running":
                     if not session.reload_pending:
@@ -614,7 +616,8 @@ class SessionManager:
             if self.active_count() < config.MAX_ACTIVE_SESSIONS:
                 self._start_connect(session)
                 return
-            victim = self._pick_idle_victim()
+            # 池满：先驱逐空闲会话再排队；运维把策略改成只排队（O-16）时不驱逐
+            victim = self._pick_idle_victim() if config.SESSION_OVERFLOW_POLICY != "queue_only" else None
             if victim is not None:
                 await self._recycle(victim)
                 if not session.discarded:  # 驱逐期间项目被删除：不再为它连接
@@ -1072,6 +1075,9 @@ class SessionManager:
             changes = await asyncio.to_thread(
                 _git_changes, session.cwd, session.round_base_commit, head
             )
+            # 审计：agent 这一轮的提交（不经 HTTP 的专项审计，方案 E4）
+            await asyncio.to_thread(audit.record_agent_commits, session.project_id, session.cwd,
+                                    session.round_base_commit, head, changes)
             if any(changes.values()):
                 session.broadcast(
                     {
@@ -1087,6 +1093,9 @@ class SessionManager:
 
     async def _read_loop(self, session: Session) -> None:
         engine = session.engine
+        # 公共标签（详设 4.10.2）：读循环是独立任务，这里设的标签只作用于这一个会话的日志与指标
+        context.set_label("project", session.project_id)
+        context.set_label("session", session.conversation_id)
         # 不加 try：本任务只被 cancel 结束，引擎侧的错误走 _engine_end 事件
         async for event in engine.events():
             session.last_activity = time.time()
@@ -1110,6 +1119,7 @@ class SessionManager:
                 event, transient=event.get("type") == "stream_delta"
             )
             if event.get("type") == "result":
+                telemetry.record_turn(session.project_id, event, getattr(engine, "name", ""))
                 session.turns_in_flight = max(0, session.turns_in_flight - 1)
                 await self._emit_workspace_changes(session)
                 session.set_state("idle")

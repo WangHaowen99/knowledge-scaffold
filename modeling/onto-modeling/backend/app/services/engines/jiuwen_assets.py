@@ -225,6 +225,9 @@ def run_hooks_sync(
                 return _DENY_ON_ERROR
             specific = decision.get("hookSpecificOutput") or {}
             if specific.get("permissionDecision") == "deny":
+                from ...governance import telemetry
+
+                telemetry.count("onto_guard_denies_total", engine="jiuwen")
                 return str(specific.get("permissionDecisionReason") or "操作被工作区守卫规则拒绝")
             if decision.get("decision") == "block":
                 return str(decision.get("reason") or "操作被工作区守卫规则拒绝")

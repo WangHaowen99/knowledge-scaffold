@@ -48,7 +48,7 @@ def test_without_personal_config_admin_env_is_unchanged(data_dir, auth_on):
     assert personal_model_settings.model_owner("employee_0001", "claude") == ""
     assert model_settings.session_env("") == before
     assert before["ANTHROPIC_AUTH_TOKEN"] == ADMIN_KEY
-    assert not (data_dir / "user-model-settings.json").exists()
+    assert not (data_dir / "secrets" / "user-model-settings.json").exists()
 
 
 def test_other_users_personal_key_does_not_change_admin_env(data_dir, auth_on):
@@ -125,11 +125,11 @@ def test_personal_config_requires_own_key(data_dir, auth_on):
 
 def test_personal_key_encrypted_at_rest_and_bound_to_user(data_dir, auth_on):
     personal_model_settings.save("employee_0001", "claude", "", USER_KEY, "")
-    path = data_dir / "user-model-settings.json"
+    path = data_dir / "secrets" / "user-model-settings.json"
     raw = path.read_text(encoding="utf-8")
     assert USER_KEY not in raw
     assert path.stat().st_mode & 0o777 == 0o600
-    assert (data_dir / ".model-secret-key").stat().st_mode & 0o777 == 0o600
+    assert (data_dir / "secrets" / ".model-secret-key").stat().st_mode & 0o777 == 0o600
 
     masked = personal_model_settings.masked("employee_0001")
     assert USER_KEY not in json.dumps(masked)
@@ -147,7 +147,7 @@ def test_personal_key_encrypted_at_rest_and_bound_to_user(data_dir, auth_on):
 def test_explicit_master_key_is_used(data_dir, auth_on, monkeypatch):
     monkeypatch.setenv("ONTO_WEB_MODEL_SECRET_KEY", "x" * 40)
     personal_model_settings.save("employee_0001", "claude", "", USER_KEY, "")
-    assert not (data_dir / ".model-secret-key").exists()
+    assert not (data_dir / "secrets" / ".model-secret-key").exists()
     assert personal_model_settings.resolve("employee_0001", "claude")["api_key"] == USER_KEY
 
     monkeypatch.setenv("ONTO_WEB_MODEL_SECRET_KEY", "y" * 40)

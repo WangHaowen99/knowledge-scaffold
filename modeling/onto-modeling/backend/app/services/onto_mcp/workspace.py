@@ -44,7 +44,7 @@ def integrity(records):
     issues = {}
     by_key = {r["key"]: r for r in records.values()}
     for identity, record in records.items():
-        for target in doc.links(record["text"]):
+        for target in doc.links(record["text"], by_key):
             if target not in by_key:
                 key = (identity, "REFERENCE_NOT_FOUND", target)
                 issues[key] = issue("REFERENCE_NOT_FOUND", "引用的本体元素不存在", record["path"], resource_id=target)
@@ -100,7 +100,7 @@ def analyze(project_id, records, current, name, args):
             text = patch_resource(seed, payload)
             next_records[identity] = {**seed, "text": text}
         elif action == "delete":
-            references = [r for rid, r in records.items() if rid != identity and key in doc.links(r["text"])]
+            references = [r for rid, r in records.items() if rid != identity and key in doc.links(r["text"], {key})]
             if references:
                 raise McpError("RESOURCE_REFERENCED", "资源仍被其他文档引用", 422,
                                references=[r["path"] for r in references])
@@ -147,19 +147,15 @@ def persist(manager, project_id, root, before, after, identity, expected, userna
     # Do not include staged edits belonging to the user/agent in this commit.
     if _git(root, "diff", "--cached", "--name-only").strip():
         raise McpError("PROJECT_EDITING_BUSY", "项目有正在暂存的修改，请稍后重试", 409)
-    previous = manager._snapshot(path)
-    try:
+    # 经写入事务：原子写入、只提交这一个文件并带来源 trailer，失败时恢复写入前的内容（方案 C1）
+    from ...kernel.writepath import ChangeTx, Origin
+
+    with ChangeTx(manager, project_id, Origin("mcp", username), summary=f"更新 {identity}") as tx:
         if identity in after:
-            manager._atomic_write_text(path, after[identity]["text"])
+            tx.write(record["path"], after[identity]["text"])
         else:
-            path.unlink()
-        _git(root, "add", "--", record["path"])
-        _git(root, "commit", "--only", "-m", f"mcp: 更新 {identity}", "--", record["path"])
-    except Exception:
-        manager._restore_snapshot(path, previous)
-        # Reset only our index entry; leave unrelated staged/worktree changes intact.
-        _git(root, "reset", "HEAD", "--", record["path"])
-        raise
+            tx.remove(record["path"])
+        tx.commit(f"mcp: 更新 {identity}")
     from .. import audit
     audit.log(username, "MCP", f"/projects/{project_id}/ontology/{identity}")
 

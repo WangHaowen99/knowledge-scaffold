@@ -383,3 +383,15 @@ def set_project_owner(project_id: str, body: OwnerBody, request: Request):
         detail={"action": "project.set_owner", "project": project_id, "from": previous, "to": owner},
     )
     return project_meta_view(meta, deps.workspaces.project_root(project_id))
+
+
+@router.get("/config-registry")
+def config_registry_view(request: Request, effect: str = "", q: str = ""):
+    """SY-14：配置注册表（admin；ops 只读可看）。只读，配置项在各自的设置页修改；密钥只给引用。"""
+    from ..governance import config_registry
+
+    deps.require_role(request, "admin", "ops")
+    if effect and effect not in config_registry.EFFECTS:
+        raise ApiError("invalid_argument", "effect 取值不合法", 400, {"fields": {"effect": "enum"}})
+    return {"precedence": list(config_registry.DEFAULT_PRECEDENCE),
+            "items": config_registry.items(effect or None, q or None)}

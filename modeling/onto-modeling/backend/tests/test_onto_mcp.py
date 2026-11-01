@@ -358,12 +358,15 @@ def test_persist_failure_rolls_back_and_keeps_unrelated_changes(env, monkeypatch
     target = root / "ontology/object/synthetic_a.md"
     before = target.read_bytes()
     rev = mcp.revision(root)
-    original = mcp._git
-    def fail_commit(root, *args):
-        if args[0] == "commit":
+    # 提交经写入事务（kernel/writepath）在临时索引上生成：让生成提交那一步失败
+    from app.kernel.writepath import tx as writepath_tx
+
+    original = writepath_tx._git
+    def fail_commit(root, *args, **kwargs):
+        if args[0] == "commit-tree":
             raise RuntimeError("synthetic commit failure")
-        return original(root, *args)
-    monkeypatch.setattr(mcp, "_git", fail_commit)
+        return original(root, *args, **kwargs)
+    monkeypatch.setattr(writepath_tx, "_git", fail_commit)
     with pytest.raises(RuntimeError):
         call(env, "update_ontology_object", object_id="object:synthetic_a", expected_revision=rev,
              metadata={"description": "synthetic changed description"})

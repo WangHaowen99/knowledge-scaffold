@@ -26,6 +26,9 @@ from typing import Any, Dict, Optional
 
 from .policy import validate_password_policy
 
+# 角色：admin、user 沿用；ops（运维）给 onto-modeling 的运维管理面用。consumer 只认 admin，
+# 其余角色在 consumer 里都按普通用户处理，加 ops 不影响它
+ROLES = ("admin", "user", "ops")
 PASSWORD_HASH_ITERATIONS = 600_000
 
 
@@ -325,8 +328,8 @@ class UserStore:
         username = username.strip()
         if not username or not password:
             raise ValueError("用户名和密码不能为空")
-        if role not in ("admin", "user"):
-            raise ValueError("角色必须是 admin 或 user")
+        if role not in ROLES:
+            raise ValueError("角色必须是 admin、user 或 ops")
         validate_password_policy(username, password)
         users = self._load_users()
         if username in users:
@@ -393,8 +396,8 @@ class UserStore:
             record["password_version"] = self._password_version(record) + 1
             record["token_version"] = self._token_version(record) + 1
         if role is not None:
-            if role not in ("admin", "user"):
-                raise ValueError("角色必须是 admin 或 user")
+            if role not in ROLES:
+                raise ValueError("角色必须是 admin、user 或 ops")
             record["role"] = role
         users[username] = record
         self._save_users(users)

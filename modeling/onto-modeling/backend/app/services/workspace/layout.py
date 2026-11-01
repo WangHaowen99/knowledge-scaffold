@@ -109,9 +109,6 @@ def _default_engine() -> str:
     return model_settings.default_engine()
 
 
-_WIKILINK_RE = re.compile(r"\[\[([^\]|#\n]+)")
-
-
 def _strip_frontmatter(text: str) -> str:
     """去掉源文件自带的 frontmatter，避免与导出注入的 frontmatter 叠加。"""
     if text.startswith("---\n"):

@@ -80,8 +80,8 @@ class FakeAuthServer:
             return 400, {"error": f"用户 {name} 不存在"}
         if method == "PUT":
             if "role" in payload:
-                if payload["role"] not in ("admin", "user"):
-                    return 400, {"error": "角色必须是 admin 或 user"}
+                if payload["role"] not in ("admin", "user", "ops"):
+                    return 400, {"error": "角色必须是 admin、user 或 ops"}
                 self.users[name]["role"] = payload["role"]
             if "password" in payload:
                 failed = self._policy(name, payload["password"])
@@ -101,6 +101,8 @@ def manager(tmp_path: Path, monkeypatch) -> WorkspaceManager:
     monkeypatch.setattr(config, "DATA_DIR", data)
     monkeypatch.setattr(config, "BACKUP_DIR", "")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # 这些用例经业务面调运维接口：打开 ONTO_WEB_OPS_ON_MAIN（默认运维面只在独立监听上，见 test_governance）
+    monkeypatch.setattr(config, "OPS_ON_MAIN", True)
     assets = tmp_path / "assets"
     (assets / "resource-template").mkdir(parents=True)
     (assets / "workspace-rules.md").write_text("# rules", encoding="utf-8")
@@ -256,7 +258,7 @@ def test_refresh_and_logout(client, monkeypatch):
     response = client.post("/api/v1/auth/logout", headers=_h("user-token"), json={"refresh_token": "r2"})
     assert response.status_code == 204 and revoked == ["r2"]
     logout = [entry for entry in audit.read(10) if (entry.get("detail") or {}).get("action") == "auth.logout"]
-    assert logout and logout[0]["user"] == USER
+    assert logout and logout[0]["actor"] == USER
 
 
 def test_expired_token_is_distinguished(client, monkeypatch):
@@ -564,10 +566,13 @@ def test_change_role_and_last_admin_guard(client, fake_auth):
     assert last["details"]["reason"] == "last_admin"
     _assert_error(client.patch("/api/v1/admin/users/nobody", headers=_h("admin-token"), json={"role": "user"}), 404, "user_not_found")
     _assert_error(client.patch(f"/api/v1/admin/users/{USER}", headers=_h("admin-token"), json={"role": "root"}), 400, "invalid_argument")
-    # auth-server 还没有 ops 角色：由它拒绝
-    _assert_error(client.patch(f"/api/v1/admin/users/{USER}", headers=_h("admin-token"), json={"role": "ops"}), 400, "invalid_argument")
+    # auth-server 已有 ops 角色（方案第 6 章第 2 项）：可以设成运维，再改回
+    to_ops = client.patch(f"/api/v1/admin/users/{USER}", headers=_h("admin-token"), json={"role": "ops"})
+    assert to_ops.status_code == 200 and to_ops.json()["role"] == "ops"
+    client.patch(f"/api/v1/admin/users/{USER}", headers=_h("admin-token"), json={"role": "user"})
     roles = [entry["detail"] for entry in audit.read(50) if (entry.get("detail") or {}).get("action") == "user.role"]
-    assert roles[0] == {"action": "user.role", "username": USER, "from": "admin", "to": "user"}
+    assert roles[0] == {"action": "user.role", "username": USER, "from": "ops", "to": "user"}
+    assert roles[1] == {"action": "user.role", "username": USER, "from": "user", "to": "ops"}
 
     # 旧接口 PUT 不带 password 改写到 PATCH
     legacy = client.put(f"/api/admin/users/{USER}", headers=_h("admin-token"), json={"role": "admin"})
@@ -712,11 +717,14 @@ def test_usage_report_compares_with_previous_window(manager, monkeypatch):
 
 
 def test_ops_health_shape(client, monkeypatch):
-    monkeypatch.setattr(ops, "_probe_cache", None)
-    monkeypatch.setattr(ops, "DEPENDENCY_PROBES", (
-        ("disk", "数据目录可用空间", lambda: ("ready", None)),
-        ("auth_server", "GET /health", lambda: ("fail", "不可达")),
-    ))
+    # 依赖探测与就绪检查共用 governance/health 的探测项
+    from app.governance import health
+
+    monkeypatch.setattr(health, "_cache", None)
+    monkeypatch.setattr(health, "_checks", {
+        "disk": ("数据目录可用空间", lambda: ("ok", None), True),
+        "auth_server": ("GET /jwks.json", lambda: ("fail", "不可达"), True),
+    })
     body = client.get("/api/v1/ops/health", headers=_h("admin-token")).json()
     assert body["live"]["status"] == "ok" and RFC3339.match(body["live"]["started_at"])
     assert body["ready"] == {**body["ready"], "status": "not_ready", "passed": 1, "total": 2}
@@ -731,7 +739,9 @@ def test_ops_sessions_and_recycle(client):
     assert body["config"]["overflow_policy"] == "evict_idle_then_queue" and body["items"] == []
     _assert_error(client.post("/api/v1/ops/sessions/no-such-project/recycle", headers=_h("ops-token")), 404, "session_not_found")
     _assert_error(client.post("/api/v1/ops/sessions/no-such-project/recycle", headers=_h("user-token")), 403, "forbidden")
-    legacy = client.post("/api/admin/sessions/no-such-project/recycle", headers=_h("admin-token"))
+    # 运维写操作只给 ops（契约 3.25；auth-server 已有 ops 角色，过渡期放行 admin 的做法已收紧）
+    _assert_error(client.post("/api/v1/ops/sessions/no-such-project/recycle", headers=_h("admin-token")), 403, "forbidden")
+    legacy = client.post("/api/admin/sessions/no-such-project/recycle", headers=_h("ops-token"))
     assert legacy.status_code == 404 and legacy.json()["error"]
     _assert_legacy(legacy, "/api/v1/ops/sessions/no-such-project/recycle")
 
@@ -743,7 +753,9 @@ def test_startup_report(client, manager):
 
     startup_report.run(manager)
     body = client.get("/api/v1/ops/startup-report", headers=_h("ops-token")).json()
-    assert RFC3339.match(body["at"]) and [item["id"] for item in body["items"]] == ["index_lock", "uncommitted"]
+    assert RFC3339.match(body["at"]) and [item["id"] for item in body["items"]] == [
+        "index_lock", "write_intents", "uncommitted",
+    ]
 
 
 def test_backups_list_and_run(client, manager):

@@ -14,6 +14,7 @@ from pathlib import Path
 from fastapi import Request
 
 from .. import config
+from ..governance import roles as roles_module
 from ..services import auth, ownership
 from ..services.workspace import WorkspaceManager
 from .errors import ApiError
@@ -21,7 +22,7 @@ from .errors import ApiError
 workspaces = WorkspaceManager(config.DATA_DIR, config.ASSETS_DIR)
 
 LOCAL_USER = "local"
-ROLE_LABELS = {"user": "建模者", "admin": "管理员", "ops": "运维"}
+ROLE_LABELS = roles_module.ROLE_LABELS
 PAGE_DEFAULT, PAGE_MAX = 50, 200
 
 
@@ -40,17 +41,12 @@ def actor(request: Request) -> str:
 
 
 def roles(request: Request) -> set[str]:
-    """本地模式同时拥有 user、admin、ops 三种角色（契约 1.3）。"""
-    claims = user(request)
-    if claims is None:
-        return {"user", "admin", "ops"}
-    role = claims.get("role") or "user"
-    return {"user", role}
+    """本地模式同时拥有 user、admin、ops 三种角色（契约 1.3，governance/roles）。"""
+    return roles_module.roles_of(user(request))
 
 
 def require_role(request: Request, *allowed: str) -> None:
-    if not roles(request) & set(allowed):
-        raise ApiError("forbidden", "当前账号没有该操作的权限", 403, {"required_role": allowed[0]})
+    roles_module.require(request, *allowed)
 
 
 def require_owner(project_id: str, request: Request) -> Path:

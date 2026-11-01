@@ -9,7 +9,7 @@ from pathlib import Path
 from .. import material_detect, package_mapping, solver_contract
 from ..toolkit import script_descriptor as _script_descriptor
 from .errors import WorkspaceError
-from .gitops import _by, _commit_paths, _git
+from .gitops import _by, _git
 from .layout import (
     IMPORTED_PACKAGE_DIR,
     META_FILE,
@@ -19,7 +19,6 @@ from .layout import (
     _content_revision,
     _first_heading,
     _is_script_descriptor,
-    _is_workspace_script,
     is_auto_detected as _is_auto_detected,
 )
 
@@ -56,8 +55,11 @@ class FilesMixin:
         changed = bool(_script_descriptor.sync_workspace_descriptors(root / "ontology")) or changed
         changed = self._refresh_indexes(root) or changed
         if changed and was_clean:
+            from ...kernel.writepath import Origin, stamped
+
             _git(root, "add", "-A")
-            _git(root, "commit", "-m", "chore: 知识包目录规范化（operation 目录、脚本描述符与索引）")
+            _git(root, "commit", "-m", stamped("chore: 知识包目录规范化（operation 目录、脚本描述符与索引）",
+                                               Origin("plugin"), root))
         return changed
 
     @staticmethod
@@ -86,32 +88,46 @@ class FilesMixin:
     def _refresh_indexes(self, root: Path) -> bool:
         changed = False
         for rel, title in self.INDEX_DIRS:
-            directory = root / rel
-            if not directory.is_dir():
-                continue
-            rows = []
-            for entry in sorted(directory.iterdir()):
-                if (
-                    entry.name.startswith(".")
-                    or entry.is_dir()
-                    or entry.name.lower() == "index.md"
-                ):
-                    continue
-                label = (
-                    _first_heading(entry) or entry.stem
-                    if entry.suffix.lower() == ".md"
-                    else entry.stem
-                )
-                rows.append(f"| {entry.name} | {label} |\n")
-            content = f"# {title}\n\n| 文件 | 标题 |\n| --- | --- |\n" + "".join(rows)
-            index_path = directory / "index.md"
-            existing = (
-                index_path.read_text(encoding="utf-8") if index_path.is_file() else None
-            )
-            if existing != content:
-                index_path.write_text(content, encoding="utf-8")
-                changed = True
+            changed = self._refresh_index_dir(root, rel, title) or changed
         return changed
+
+    def refresh_indexes_for(self, root: Path, paths: list[str]) -> list[str]:
+        """写入事务的派生文件（方案 C6）：本次改动落在哪些目录，就刷新那几个目录的 index.md。
+
+        返回内容有变化的 index.md 路径，由事务并进同一个提交。
+        """
+        touched = {path.rpartition("/")[0] for path in paths} | set(paths)
+        changed = []
+        for rel, title in self.INDEX_DIRS:
+            if rel in touched and self._refresh_index_dir(root, rel, title):
+                changed.append(f"{rel}/index.md")
+        return changed
+
+    def _refresh_index_dir(self, root: Path, rel: str, title: str) -> bool:
+        directory = root / rel
+        if not directory.is_dir() or directory.is_symlink():
+            return False
+        rows = []
+        for entry in sorted(directory.iterdir()):
+            if (
+                entry.name.startswith(".")
+                or entry.is_dir()
+                or entry.name.lower() == "index.md"
+            ):
+                continue
+            label = (
+                _first_heading(entry) or entry.stem
+                if entry.suffix.lower() == ".md"
+                else entry.stem
+            )
+            rows.append(f"| {entry.name} | {label} |\n")
+        content = f"# {title}\n\n| 文件 | 标题 |\n| --- | --- |\n" + "".join(rows)
+        index_path = directory / "index.md"
+        existing = index_path.read_text(encoding="utf-8") if index_path.is_file() else None
+        if existing == content:
+            return False
+        index_path.write_text(content, encoding="utf-8")
+        return True
 
     # ---- 文件 ----
 
@@ -207,27 +223,23 @@ class FilesMixin:
             raise WorkspaceError(f"资料用途必须是 {list(self.MATERIAL_PURPOSES)} 之一")
         if reading_mode not in self.MATERIAL_READING_MODES:
             raise WorkspaceError(f"读取模式必须是 {list(self.MATERIAL_READING_MODES)} 之一")
-        with self._project_lock(project_id):
-            root = self.project_root(project_id)
+        from ...kernel.writepath import ChangeTx, Origin
+
+        with ChangeTx(self, project_id, Origin("web", author), summary="设置资料用途") as tx:
+            root = tx.root
             target = self._resolve_inside(root, rel_path)
             rel = target.relative_to(root.resolve()).as_posix()
             if not rel.startswith("resource/") or not target.is_file():
                 raise WorkspaceError("只能为 resource/ 下的资料设置用途", 400)
-            directives_path = root / "resource" / "materials.json"
-            snapshot = self._snapshot(directives_path)
-            try:
-                directives = self.resource_directives(project_id)
-                directives[rel] = {"purpose": purpose, "reading_mode": reading_mode}
-                self._write_resource_directives(root, directives)
-                # 用途变化会影响派生产物的口径，视同资料更新
-                self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
-            except Exception:
-                self._restore_snapshot(directives_path, snapshot)
-                raise
+            tx.touch(RESOURCE_DIRECTIVES)
+            directives = self.resource_directives(project_id)
+            directives[rel] = {"purpose": purpose, "reading_mode": reading_mode}
+            self._write_resource_directives(root, directives)
+            # 用途变化会影响派生产物的口径，视同资料更新
+            self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
             # 资料本身一并提交：旧版上传未进 git 的表格，标成 schema 后发布才读得到
-            _commit_paths(
-                root, [RESOURCE_DIRECTIVES, rel], f"web: 设置资料用途 {rel}{_by(author)}"
-            )
+            tx.touch(rel, snapshot=False)
+            tx.commit(f"web: 设置资料用途 {rel}{_by(author)}")
             return {"path": rel, **directives[rel]}
 
     def _write_resource_directives(self, root: Path, directives: dict) -> None:
@@ -257,29 +269,22 @@ class FilesMixin:
         safe_name = Path(filename).name
         if not safe_name or safe_name.startswith(".") or safe_name != filename:
             raise WorkspaceError("无效的文件名")
-        with self._project_lock(project_id):
-            root = self.project_root(project_id)
-            dest_dir = root / "resource" / subdir
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            dest = dest_dir / safe_name
-            replaced = dest.exists()
-            file_snapshot = self._snapshot(dest)
-            directives_path = root / "resource" / "materials.json"
-            directives_snapshot = self._snapshot(directives_path)
-            try:
-                self._atomic_write(dest, data)
-                rel = f"resource/{subdir}/{safe_name}"
-                detected = self._update_upload_directive(project_id, rel, purpose, reading_mode)
-                # 变更提醒依据：前端对比该时间与派生产物版本，提示"资料已更新，可让助手增量刷新"
-                self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
-            except Exception:
-                self._restore_snapshot(dest, file_snapshot)
-                self._restore_snapshot(directives_path, directives_snapshot)
-                raise
+        from ...kernel.writepath import ChangeTx, Origin
+
+        rel = f"resource/{subdir}/{safe_name}"
+        with ChangeTx(self, project_id, Origin("web", author), summary=f"上传资料 {rel}") as tx:
+            root = tx.root
+            (root / "resource" / subdir).mkdir(parents=True, exist_ok=True)
+            replaced = (root / rel).exists()
+            tx.write(rel, data)
+            tx.touch(RESOURCE_DIRECTIVES)
+            detected = self._update_upload_directive(project_id, rel, purpose, reading_mode)
+            # 变更提醒依据：前端对比该时间与派生产物版本，提示"资料已更新，可让助手增量刷新"
+            self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
             action = "替换资料" if replaced else "上传资料"
-            commit_id = _commit_paths(
-                root, [rel, RESOURCE_DIRECTIVES], f"web: {action} {rel}{_by(author)}"
-            ) if commit else ""
+            commit_id = tx.commit(f"web: {action} {rel}{_by(author)}").commit if commit else ""
+            if not commit:
+                tx.keep()  # 一批资料由调用方合成一个提交
             result = {"path": rel, "size": len(data), "replaced": replaced, "commit": commit_id}
             if detected:
                 result["detected"] = detected
@@ -297,9 +302,13 @@ class FilesMixin:
             )
             for item in items
         ]
-        with self._project_lock(project_id):
-            root = self.project_root(project_id)
-            commit = _commit_paths(root, ["resource"], f"{message}{_by(author)}") if saved else ""
+        from ...kernel.writepath import ChangeTx, Origin
+
+        commit = ""
+        if saved:
+            with ChangeTx(self, project_id, Origin("import", author), summary="导入资料") as tx:
+                tx.touch(*[item["path"] for item in saved], RESOURCE_DIRECTIVES, snapshot=False)
+                commit = tx.commit(f"{message}{_by(author)}").commit
         return {"saved": saved, "commit": commit}
 
     def _update_upload_directive(
@@ -363,9 +372,10 @@ class FilesMixin:
         base_revision: str = "",
         author: str = "",
         summary: str = "",
+        source: str = "web",
     ) -> dict:
-        with self._project_lock(project_id):
-            return self._write_file_unlocked(project_id, rel_path, content, base_revision, author, summary)
+        """网页保存与 Studio 提交的写入：经写入事务（ChangeTx）校验版本、原子写入、只提交本文件。"""
+        return self._write_file_unlocked(project_id, rel_path, content, base_revision, author, summary, source)
 
     @staticmethod
     def _changed_by(root: Path, rel: str) -> dict:
@@ -390,7 +400,9 @@ class FilesMixin:
         return {"changed_by": version_source(subject), "changed_at": rfc3339(int(ts)) if ts.isdigit() else None,
                 "version_label": mainline.label(mainline.count(root, commit))}
 
-    def _write_file_unlocked(self, project_id, rel_path, content, base_revision, author, summary=""):
+    def _write_file_unlocked(self, project_id, rel_path, content, base_revision, author, summary="", source="web"):
+        from ...kernel.writepath import ChangeTx, Origin
+
         root = self.project_root(project_id)
         target = self._resolve_inside(root, rel_path)
         rel = target.relative_to(root.resolve())
@@ -415,26 +427,15 @@ class FilesMixin:
             )
         if target.is_symlink():
             raise WorkspaceError("该路径不允许编辑", 403, "path_forbidden", {"path": rel_path})
-        # 乐观并发（方案 7.4 双写合并）：Web 编辑与 agent 写同一文件不互相静默覆盖
-        if base_revision and target.is_file():
-            current = _content_revision(target.read_bytes())
-            if current != base_revision:
-                raise WorkspaceError(
-                    "文件已被他人或助手修改，请刷新对比后再保存", 409, "revision_conflict",
-                    {"target": rel.as_posix(), "expected": base_revision, "actual": current,
-                     **self._changed_by(root, rel.as_posix())},
-                )
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        # Web 端保存即成版本点：只提交本文件，与 agent 的阶段提交互不干扰；
-        # 保存脚本时同名描述符随之刷新，并进同一个提交
         rel_posix = rel.as_posix()
-        paths = [rel_posix]
-        if _is_workspace_script(rel):
-            _script_descriptor.sync_workspace_descriptors(root / "ontology")
-            paths.append(rel.with_suffix(".md").as_posix())
+        prefix = "studio" if source == "studio" else "web"
         note = f"：{' '.join(summary.split())[:80]}" if summary and summary.strip() else ""
-        commit = _commit_paths(root, paths, f"web: 保存 {rel_posix}{note}{_by(author)}")
+        with ChangeTx(self, project_id, Origin(source, author), summary=f"保存 {rel_posix}") as tx:
+            # 乐观并发（方案 7.4 双写合并）：Web 编辑与 agent 写同一文件不互相静默覆盖
+            tx.check_revision(rel_posix, base_revision, lambda: self._changed_by(root, rel_posix))
+            # 保存脚本时同名描述符由事务的派生步骤刷新，并进同一个提交
+            tx.write(rel_posix, content)
+            commit = tx.commit(f"{prefix}: 保存 {rel_posix}{note}{_by(author)}").commit
         return {
             "path": rel_path,
             "size": len(content.encode("utf-8")),
@@ -451,26 +452,19 @@ class FilesMixin:
             raise WorkspaceError("只允许删除 resource/ 下的资料", 403)
         if rel.name == "materials.json" and len(rel.parts) == 2:
             raise WorkspaceError("资料用途清单不可直接删除", 403)
-        with self._project_lock(project_id):
+        from ...kernel.writepath import ChangeTx, Origin
+
+        rel_posix = rel.as_posix()
+        with ChangeTx(self, project_id, Origin("web", author), summary=f"删除资料 {rel_posix}") as tx:
             if not target.is_file():
                 raise WorkspaceError("文件不存在", 404, "file_not_found", {"path": rel_path})
-            file_snapshot = self._snapshot(target)
-            directives_path = root / "resource" / "materials.json"
-            directives_snapshot = self._snapshot(directives_path)
-            try:
-                target.unlink()
-                directives = self.resource_directives(project_id)
-                if directives.pop(rel.as_posix(), None) is not None:
-                    self._write_resource_directives(root, directives)
-                self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
-            except Exception:
-                self._restore_snapshot(target, file_snapshot)
-                self._restore_snapshot(directives_path, directives_snapshot)
-                raise
-            rel_posix = rel.as_posix()
-            commit = _commit_paths(
-                root, [rel_posix, RESOURCE_DIRECTIVES], f"web: 删除资料 {rel_posix}{_by(author)}"
-            )
+            tx.remove(rel_posix)
+            tx.touch(RESOURCE_DIRECTIVES)
+            directives = self.resource_directives(project_id)
+            if directives.pop(rel_posix, None) is not None:
+                self._write_resource_directives(root, directives)
+            self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
+            commit = tx.commit(f"web: 删除资料 {rel_posix}{_by(author)}").commit
             return {"deleted": rel_path, "commit": commit}
 
     def delete_file(self, project_id: str, rel_path: str, author: str = "") -> dict:
@@ -480,12 +474,14 @@ class FilesMixin:
         rel = target.relative_to(root.resolve())
         if rel.parts[0] != "knowledge":
             raise WorkspaceError("只允许删除 knowledge/ 下的条目", 403)
-        with self._project_lock(project_id):
+        from ...kernel.writepath import ChangeTx, Origin
+
+        rel_posix = rel.as_posix()
+        with ChangeTx(self, project_id, Origin("web", author), summary=f"删除 {rel_posix}") as tx:
             if not target.is_file():
                 raise WorkspaceError("文件不存在", 404)
-            target.unlink()
-            rel_posix = rel.as_posix()
-            commit = _commit_paths(root, [rel_posix], f"knowledge: 删除 {rel_posix}{_by(author)}")
+            tx.remove(rel_posix)
+            commit = tx.commit(f"knowledge: 删除 {rel_posix}{_by(author)}").commit
         return {"deleted": rel_path, "commit": commit}
 
 

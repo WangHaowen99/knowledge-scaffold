@@ -23,7 +23,10 @@ class ModelConfigError(Exception):
 
 
 def _file() -> Path:
-    return Path(config.DATA_DIR) / "model-settings.json"
+    """管理员模型 Key 明文（0600）放在密钥目录，agent 读不到（方案 E10）。"""
+    from ..governance import secrets
+
+    return secrets.path(secrets.MODEL_SETTINGS)
 
 
 def load() -> dict:

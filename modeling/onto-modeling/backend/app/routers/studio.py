@@ -12,22 +12,25 @@ from fastapi import APIRouter, Request, Response
 
 from ..api import deps
 from ..api.errors import ApiError
+from ..governance import telemetry
+from ..kernel.metamodel import mm
 from ..services import mainline
 from ..services import studio as studio_service
 from ..services.workspace.layout import _content_revision
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/studio", tags=["studio"])
 
-KINDS = ("object", "operation", "rule", "metric", "script")
-KIND_LABELS = {"object": "对象", "operation": "操作", "rule": "规则", "metric": "指标", "script": "脚本"}
-KIND_PATHS = {
-    "object": ("ontology/object", ".md"),
-    "operation": ("ontology/operation", ".md"),
-    "rule": ("ontology/rule", ".md"),
-    "metric": ("ontology/metric", ".md"),
-    "script": ("ontology/scripts", ".py"),
-}
+# 条目类型、中文名与目录取元模型（新条目写到主目录）
+KINDS = mm.ENTITY_KINDS
+KIND_LABELS = {entity.kind: entity.label for entity in mm.ENTITY_TYPES}
+KIND_PATHS = {entity.kind: (entity.directory, entity.suffix) for entity in mm.ENTITY_TYPES}
 _DATA_SOURCE_RE = re.compile(r"^#\s*数据来源\s*\n+([^\n#]*)", re.M)
+
+
+def _count_check_failure(check: str, result: str) -> str:
+    """确定性检查拒绝保存：计入「检查失败」指标（O-02），原样返回结果值。"""
+    telemetry.count("onto_check_failures_total", check=check)
+    return result
 
 
 def entry_path(root: Path, entry_id: str) -> tuple[str, str, str]:
@@ -290,7 +293,7 @@ async def submit(project_id: str, entry_id: str, request: Request):
     checks = studio_service.deterministic_check(root, rel, draft["content"])
     if checks["errors"]:
         return {
-            "result": "rejected",
+            "result": _count_check_failure("studio", "rejected"),
             "errors": [{"code": "check_rejected", "level": "error", "message": text, "path": rel} for text in checks["errors"]],
             "warnings": [{"code": "needs_review", "level": "warning", "message": text, "path": rel} for text in checks["review"]],
         }
@@ -315,7 +318,7 @@ async def submit(project_id: str, entry_id: str, request: Request):
         }
     saved = deps.workspaces.write_file(
         project_id, rel, draft["content"], base_revision=draft.get("base_revision", ""),
-        author=deps.username(request), summary=str(body.get("summary") or "")[:80],
+        author=deps.username(request), summary=str(body.get("summary") or "")[:80], source="studio",
     )
     studio_service.discard_draft(project_id, rel, user)
     state = mainline.state(root)

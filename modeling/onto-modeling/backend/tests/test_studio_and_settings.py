@@ -117,8 +117,9 @@ def test_audit_log_roundtrip(tmp_path: Path, monkeypatch):
     audit.log("alice", "POST", "/api/projects")
     audit.log("bob", "DELETE", "/api/projects/x")
     entries = audit.read()
-    assert entries[0]["user"] == "bob"  # 最新在前
+    assert entries[0]["actor"] == "bob"  # 最新在前
     assert entries[1]["method"] == "POST"
+    assert entries[0]["type"] == "write" and entries[0]["action"] == "http.delete"
 
 
 def test_model_settings_roundtrip(tmp_path: Path, monkeypatch):
@@ -359,7 +360,8 @@ def test_model_context_ignores_legacy_saved_compaction(tmp_path, monkeypatch):
     from app.services import model_settings
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    (tmp_path / "model-settings.json").write_text(
+    (tmp_path / "secrets").mkdir()  # 管理员模型配置在密钥目录（方案 E10）
+    (tmp_path / "secrets" / "model-settings.json").write_text(
         json.dumps(
             {
                 "context": {
@@ -403,7 +405,8 @@ def test_model_context_reads_legacy_section_and_migrates_on_save(tmp_path, monke
     from app.services import model_settings
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    path = tmp_path / "model-settings.json"
+    path = tmp_path / "secrets" / "model-settings.json"
+    path.parent.mkdir()
     path.write_text(json.dumps({"claude_context": {"max_context_tokens": 128000}}), encoding="utf-8")
 
     assert model_settings.context_config()["max_context_tokens"] == 128000

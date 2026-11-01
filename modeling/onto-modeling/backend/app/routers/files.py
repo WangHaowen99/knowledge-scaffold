@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 
 from ..api import deps
 from ..api.errors import ApiError
+from ..kernel.metamodel import mm
 from ..services import mainline
 from ..services.workspace.versions import version_source
 
@@ -24,7 +25,7 @@ SUMMARY_MAX = 80
 PROTECTED_TOP = {".git", ".claude", ".onto", ".ontology-state", ".onto-web.json", ".imported-package"}
 SEARCH_SUFFIXES = (".md", ".txt", ".py", ".mmd", ".yaml", ".yml", ".csv")
 SEARCH_GROUPS = ("entries", "materials", "reports", "knowledge", "artifacts")
-ENTRY_DIRS = ("ontology/object", "ontology/operation", "ontology/logic", "ontology/rule", "ontology/metric", "ontology/scripts")
+ENTRY_DIRS = tuple(directory for _kind, directory, _glob in mm.kind_dirs())
 HTML_HEADERS = {
     "Content-Security-Policy": "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'",
     "X-Content-Type-Options": "nosniff",

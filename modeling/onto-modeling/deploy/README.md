@@ -84,8 +84,14 @@ SIGILL 崩溃。`preflight.sh` 会检查；未通过时按优先级整改：
   `/data/onto-web/backups`，与数据同卷，卷坏了一起丢。建议在 compose 的 override 里给
   onto-modeling 另挂一个卷（例如挂到 `/backups`），并在 `.env` 设 `ONTO_WEB_BACKUP_DIR=/backups`。
   范围与恢复方法见上级目录 `README.md`「数据备份」。
-- 个人 Key 主密钥不进备份：未设 `ONTO_WEB_MODEL_SECRET_KEY` 时，它是数据卷里的
-  `/data/onto-web/.model-secret-key`，需单独保管；异机恢复缺了它，已保存的个人 Key 无法解密。
+- 个人 Key 主密钥不进备份：请在 `.env` 设 `ONTO_WEB_MODEL_SECRET_KEY`（至少 32 字节，没设时启动告警）。
+  没设时它是数据卷里自动生成的 `/data/onto-web/secrets/.model-secret-key`，需单独保管，或设
+  `ONTO_WEB_KEY_BACKUP_DIR` 指到另一个卷，每次备份自动单独拷一份；异机恢复缺了它，已保存的个人 Key 无法解密。
+- 密钥目录 `/data/onto-web/secrets/`（0700）放管理员模型 Key、个人 Key 密文、MCP token 库与服务令牌库；
+  升级后第一次启动会把数据卷根目录下的老文件搬进去。agent 以镜像里的 `onto-agent` 用户运行，读不到它。
+- 运维管理面在容器内 `127.0.0.1:8101`。compose 只发布业务端口，没有反代时在 `.env` 设
+  `ONTO_WEB_OPS_ON_MAIN=true`，运维中心经业务端口访问；有反代时设 `ONTO_WEB_OPS_HOST=0.0.0.0`、只在内部网络
+  暴露 8101，由反代把 `/api/v1/ops/` 转过去。
 - 用户账号在 `onto-web-auth-data`，不在应用备份里；建议在主机侧对两个卷做定期快照。
 
 ## 升级与回滚

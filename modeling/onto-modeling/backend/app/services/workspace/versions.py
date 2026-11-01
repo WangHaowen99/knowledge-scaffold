@@ -77,38 +77,45 @@ class VersionsMixin:
         commit = _git(root, "rev-parse", f"{rev}^{{commit}}").strip()
         return {"path": rel, "rev": rev, "commit": commit, "content": content, "truncated": truncated}
 
-    def revert_to(self, project_id: str, commit: str) -> dict:
+    def revert_to(self, project_id: str, commit: str, author: str = "") -> dict:
         """把工作区整树恢复为指定版本并生成新提交（历史保留，可再回退；契约 V-06、方案 C1）。
 
-        该版本之后新增的文件一并删除。元数据与工具状态不随回退恢复：存量历史里它们还在 git 中，
-        取旧版会把所有者、项目名一起回滚。返回新提交与回退目标。
+        经写入事务：只动、只提交该版本与 HEAD 之间不同的路径（该版本之后新增的文件一并删除），
+        agent 还没提交的其他改动不带进回退提交。元数据与工具状态不随回退恢复：存量历史里它们还在
+        git 中，取旧版会把所有者、项目名一起回滚。返回新提交与回退目标。
         """
+        from ...kernel.writepath import ChangeTx, Origin
+
         if not re.fullmatch(r"[0-9a-fA-F]{6,40}", commit):
             raise WorkspaceError("无效的版本号", 400, "invalid_commit")
-        root = self.project_root(project_id)
-        with self._project_lock(project_id):
+        with ChangeTx(self, project_id, Origin("revert", author), summary=f"回退到 {commit[:8]}") as tx:
+            root = tx.root
             if _run_git(root, ("cat-file", "-e", f"{commit}^{{commit}}")).returncode != 0:
                 raise WorkspaceError("版本不存在", 400, "invalid_commit")
             target = _git(root, "rev-parse", f"{commit}^{{commit}}").strip()
-            _git(root, "checkout", target, "--", ".", *_EXCLUDE_STATE_PATHSPECS)
-            # 目标版本之后新增的已跟踪文件：checkout 不会删，整树恢复要删掉
-            added = _git(
-                root, "-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", "-z",
-                "--diff-filter=A", target, "HEAD", "--", ".", *_EXCLUDE_STATE_PATHSPECS,
+            records = _git(
+                root, "-c", "core.quotePath=false", "diff", "--name-status", "--no-renames", "-z",
+                target, "HEAD", "--", ".", *_EXCLUDE_STATE_PATHSPECS,
             ).split("\0")
-            for rel in filter(None, added):
+            restore, added = [], []
+            for status, rel in zip(records[0::2], records[1::2]):
+                (added if status == "A" else restore).append(rel)
+            if not restore and not added:
+                raise WorkspaceError("当前内容与该版本一致，无需回退", 400, "nothing_to_revert")
+            tx.touch(*restore, *added)
+            if restore:
+                _git(root, "--literal-pathspecs", "checkout", target, "--", *restore)
+            for rel in added:  # 目标版本之后新增的文件：整树恢复要删掉
                 path = root / rel
                 if path.is_file() or path.is_symlink():
                     path.unlink()
-            # 旧版本的 .gitignore 可能没有这几项：补齐，否则下面的 add -A 会重新跟踪元数据
-            _untrack_state_in_index(root)
-            status = _git(root, "status", "--porcelain")
-            if not status.strip():
+            if ".gitignore" in restore:
+                # 旧版本的 .gitignore 可能没有元数据与工具状态的排除项：补齐，否则之后会被重新跟踪
+                _untrack_state_in_index(root)
+            result = tx.commit(f"revert: 回退到 {target[:8]}")
+            if not result.commit:
                 raise WorkspaceError("当前内容与该版本一致，无需回退", 400, "nothing_to_revert")
-            _git(root, "add", "-A")
-            _git(root, "commit", "-m", f"revert: 回退到 {target[:8]}")
-            head = _git(root, "rev-parse", "HEAD").strip()
-        return {"commit": head, "reverted_to": target}
+        return {"commit": result.commit, "reverted_to": target}
 
     # ---- 版本 ----
 
@@ -175,7 +182,8 @@ class VersionsMixin:
             raise WorkspaceError("版本不存在", 400, "invalid_commit")
         commit = _git(root, "rev-parse", f"{commit}^{{commit}}").strip()
         tag_name = f"mark-{int(time.time())}-{uuid.uuid4().hex[:4]}"
-        _git(root, "tag", "-a", tag_name, "-m", label[:120], commit)
+        with self._project_lock(project_id):  # 方案 C1：打标签也拿项目锁
+            _git(root, "tag", "-a", tag_name, "-m", label[:120], commit)
         return {"name": tag_name, "label": label, "commit": commit}
 
     def delete_tag(self, project_id: str, tag_name: str) -> dict:
@@ -184,5 +192,6 @@ class VersionsMixin:
         root = self.project_root(project_id)
         if _run_git(root, ("rev-parse", "-q", "--verify", f"refs/tags/{tag_name}")).returncode != 0:
             raise WorkspaceError("标记不存在，或不是用户标记", 404, "tag_not_found")
-        _git(root, "tag", "-d", tag_name)
+        with self._project_lock(project_id):
+            _git(root, "tag", "-d", tag_name)
         return {"deleted": tag_name}

@@ -20,6 +20,8 @@ from app.services.workspace import WorkspaceManager, _git
 def manager(tmp_path: Path, monkeypatch) -> WorkspaceManager:
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "BACKUP_INTERVAL_HOURS", 0)
+    # 这些用例经业务面调运维接口：打开 ONTO_WEB_OPS_ON_MAIN（默认运维面只在独立监听上，见 test_governance）
+    monkeypatch.setattr(config, "OPS_ON_MAIN", True)
     assets = tmp_path / "assets"
     (assets / "resource-template").mkdir(parents=True)
     instance = WorkspaceManager(tmp_path / "data", assets)
@@ -58,7 +60,9 @@ def test_report_lists_locks_and_uncommitted_changes(manager, caplog):
 def test_clean_start_reports_ok(manager):
     manager.create_project("干净项目")
     report = startup_report.run(manager)
-    assert [(item["id"], item["result"]) for item in report["items"]] == [("index_lock", "ok"), ("uncommitted", "ok")]
+    assert [(item["id"], item["result"]) for item in report["items"]] == [
+        ("index_lock", "ok"), ("write_intents", "ok"), ("uncommitted", "ok"),
+    ]
 
 
 def test_startup_runs_self_check_and_ops_endpoint_returns_it(manager, monkeypatch):
@@ -72,4 +76,4 @@ def test_startup_runs_self_check_and_ops_endpoint_returns_it(manager, monkeypatc
 
     assert body["at"].endswith("Z")
     results = {item["id"]: item["result"] for item in body["items"]}
-    assert results == {"index_lock": "cleared", "uncommitted": "awaiting_user"}
+    assert results == {"index_lock": "cleared", "write_intents": "ok", "uncommitted": "awaiting_user"}

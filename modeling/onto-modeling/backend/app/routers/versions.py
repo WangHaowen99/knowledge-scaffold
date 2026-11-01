@@ -71,7 +71,7 @@ async def revert(project_id: str, request: Request):
     """整树恢复到目标版本，之后新增的文件一并删除；生成新版本，历史保留。"""
     root = deps.require_writable(project_id, request)
     body = await deps.json_body(request)
-    result = deps.workspaces.revert_to(project_id, str(body.get("commit") or ""))
+    result = deps.workspaces.revert_to(project_id, str(body.get("commit") or ""), author=deps.actor(request))
     target = result["reverted_to"]
     return {
         "commit": result["commit"],

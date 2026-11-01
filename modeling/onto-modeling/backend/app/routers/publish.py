@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from ..api import deps, views
 from ..api.errors import ApiError
+from ..governance import telemetry
 from ..services import audit, feedback_inbox, mainline, ownership, publish, release_store, service_tokens
 from ..services.service_tokens import SCOPE_RELEASES_READ
 from ..services.workspace import WorkspaceError
@@ -206,6 +207,7 @@ async def create_release(project_id: str, request: Request):
     check = check_view(project_id, commit)
     failing = [gate for gate in check["gates"] if gate["blocking"] and not (degrade and gate["degradable"])]
     if failing:
+        telemetry.count("onto_check_failures_total", check="publish_gate")
         raise ApiError("gate_blocked", "门禁链有未通过项，不能发布", 422, {"gates": failing})
     try:
         record = publish.publish_package(

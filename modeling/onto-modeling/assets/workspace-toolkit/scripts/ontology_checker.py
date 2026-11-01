@@ -8,6 +8,7 @@ import re
 import sys
 import unicodedata
 from dataclasses import dataclass, field
+from typing import Optional
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -31,6 +32,7 @@ from operation_relations import (
 )
 from table_profile import table_headers as _read_table_headers, table_profiles as _read_table_profiles
 import field_semantics
+import onto_metamodel as mm
 
 # =============================================================================
 # DATA MODELS
@@ -82,15 +84,20 @@ def extract_sections(raw: str) -> dict:
 
 
 def extract_wiki_links(raw: str) -> list:
-    """Extract [[link]] targets as filename stems (no path, no alias, no extension)."""
+    """[[链接]] 的全名（去掉路径前缀、别名与扩展名，保留 `#锚点`），按元模型解析。
+
+    比对条目时用 `_resolve_link`：先按全名、再按去掉锚点的名称找文件（onto_metamodel.resolve）。
+    """
     links = []
-    for m in re.finditer(r'\[\[([^\]]+)\]\]', raw):
-        target = m.group(1).split('|')[0].strip()   # drop alias
-        stem = target.split('/')[-1].strip()          # drop path prefix
-        stem = re.sub(r'\.md$', '', stem, flags=re.IGNORECASE)
-        if stem and stem not in links:
-            links.append(stem)
+    for link in mm.parse_links(raw):
+        if link.name and link.full_name not in links:
+            links.append(link.full_name)
     return links
+
+
+def _resolve_link(link: str, all_docs) -> Optional[str]:
+    """链接全名 → 已有条目名；指不到时 None（`#` 是锚点，存量文件名带 `#` 的按全名先匹配）。"""
+    return mm.resolve(link, all_docs)
 
 
 def parse_markdown_table(text: str) -> list:
@@ -538,8 +545,8 @@ def check_entity_links(doc: OntologyDoc, all_docs: dict, cn: str) -> list:
     issues = []
     known = set(all_docs.keys())
     for link in doc.wiki_links:
-        target = link.split('|')[0].split('#')[0].strip()
-        if target and target not in known:
+        target = mm.parse_link_text(link).name
+        if target and _resolve_link(link, known) is None:
             issues.append(Issue(
                 file=_rel(doc), severity='警告', category='链接失效',
                 message=f'{cn}引用了不存在的文档 [[{target}]]',
@@ -881,7 +888,7 @@ def check_object_links(doc: OntologyDoc, all_docs: dict) -> list:
     return [
         Issue(file=_rel(doc), severity='错误', category='链接失效',
               message=f'Wiki 链接 [[{link}]] 无对应文件', source='规则检查')
-        for link in doc.wiki_links if link not in all_docs
+        for link in doc.wiki_links if _resolve_link(link, all_docs) is None
     ]
 
 
@@ -922,8 +929,9 @@ def _relation_parts(value: str):
 
 
 def _relation_node(value: str) -> str:
-    link = re.fullmatch(r'\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]', value.strip())
-    return (link.group(1) if link else value).strip()
+    """关系端点：`[[对象]]` 取全名（与后端 package_mapping._relation_node 同一份元模型解析）。"""
+    link = mm.parse_link(value)
+    return (link.full_name if link else value).strip()
 
 
 _RELATIONS_HEADING_RE = re.compile(r'^#{1,3}\s+关联对象\s*[:：]?\s*$')
@@ -934,7 +942,7 @@ def _is_relation_placeholder(value: str) -> bool:
     return not value or value.startswith(('>', '|', '{')) or value in ('无', '-', '—')
 
 
-def _object_relations(doc: OntologyDoc) -> list:
+def _object_relations(doc: OntologyDoc, all_docs: Optional[dict] = None) -> list:
     """「# 关联对象」的关系行 → [(行号, 源, 关系名, 目标, 括注)]，「当前对象」已换成文件名 stem。
 
     行号按整个文件计，便于在问题里指出位置。格式解析不出的行（由发布与下游导入报）与模板占位行不返回。
@@ -954,6 +962,9 @@ def _object_relations(doc: OntologyDoc) -> list:
         source, name, target, note = parsed
         source = stem if source in (*_CURRENT_OBJECT_ALIASES, stem) else source
         target = stem if target in (*_CURRENT_OBJECT_ALIASES, stem) else target
+        if all_docs is not None:
+            # 端点按元模型解析：`[[对象#锚点]]` 指向对象本身，存量文件名带 `#` 的按全名先匹配
+            source, target = (mm.resolve(end, all_docs) or end for end in (source, target))
         relations.append((lineno, source, name, target, note))
     return relations
 
@@ -1043,7 +1054,7 @@ def check_object_relation_joins(doc: OntologyDoc, all_docs: dict, tables: dict) 
     by_lower = {name.lower(): name for name in tables}
     stem = doc.path.stem
     issues = []
-    for _, source, name, target, note in _object_relations(doc):
+    for _, source, name, target, note in _object_relations(doc, all_docs):
         other = target if source == stem else source if target == stem else ''
         other_doc = all_docs.get(other)
         if not other or other_doc is None or other_doc.doc_type != 'object':
@@ -1141,7 +1152,7 @@ def check_relation_join_conflicts(all_docs: dict, tables: dict, check_docs: dict
         if doc.doc_type != 'object':
             continue
         stem = doc.path.stem
-        for lineno, source, name, target, note in _object_relations(doc):
+        for lineno, source, name, target, note in _object_relations(doc, all_docs):
             source_doc, target_doc = all_docs.get(source), all_docs.get(target)
             if not note or stem not in (source, target) or any(
                     end is None or end.doc_type != 'object' for end in (source_doc, target_doc)):
@@ -1178,7 +1189,7 @@ def declared_join_list(all_docs: dict, tables: dict) -> list:
     for doc in all_docs.values():
         if doc.doc_type != 'object':
             continue
-        for _, source, name, target, note in _object_relations(doc):
+        for _, source, name, target, note in _object_relations(doc, all_docs):
             source_doc, target_doc = all_docs.get(source), all_docs.get(target)
             if not note or any(end is None or end.doc_type != 'object' for end in (source_doc, target_doc)):
                 continue
@@ -1462,10 +1473,8 @@ def check_derived_attribute_markers(doc: OntologyDoc, all_docs: dict) -> list:
             ))
             continue
         # 规范命中 → 校验每个 [[stem]] 指向 operation
-        for link_match in re.finditer(r'\[\[([^\]]+)\]\]', m.group(1)):
-            target = link_match.group(1).split('|')[0].strip()
-            stem = target.split('/')[-1].strip()
-            stem = re.sub(r'\.md$', '', stem, flags=re.IGNORECASE)
+        for link in mm.parse_links(m.group(1)):
+            stem = _resolve_link(link.full_name, all_docs) or link.full_name
             target_doc = all_docs.get(stem)
             if target_doc is None:
                 continue  # link integrity 已由 check_object_links 处理
@@ -1532,7 +1541,7 @@ def check_operation_links(doc: OntologyDoc, all_docs: dict) -> list:
     return [
         Issue(file=_rel(doc), severity='错误', category='链接失效',
               message=f'Wiki 链接 [[{link}]] 无对应文件', source='规则检查')
-        for link in doc.wiki_links if link not in all_docs
+        for link in doc.wiki_links if _resolve_link(link, all_docs) is None
     ]
 
 
@@ -1659,11 +1668,11 @@ def check_operation_flow_refs(doc: OntologyDoc, all_docs: dict) -> list:
     """Check that flow references in the flow association section have corresponding files."""
     issues = []
     flow_section = doc.sections.get('与operation的关联', '')
-    for link in re.findall(r'\[\[([^\]]+)\]\]', flow_section):
-        stem = link.split('|')[0].strip()
-        if stem == '无' or not stem:
+    for link in mm.parse_links(flow_section):
+        stem = link.full_name
+        if link.name in mm.EMPTY_TARGETS or not stem:
             continue
-        if stem not in all_docs:
+        if _resolve_link(stem, all_docs) is None:
             issues.append(Issue(file=_rel(doc), severity='警告', category='链接失效',
                                 message=f'流程关联中引用的流程 [[{stem}]] 无对应文件',
                                 source='规则检查'))
@@ -1776,7 +1785,8 @@ def check_action_orphan(doc: OntologyDoc, all_docs: dict) -> list:
     """Warn if an action file is not referenced by any operation document."""
     action_stem = doc.path.stem
     for other_doc in all_docs.values():
-        if other_doc.doc_type == 'operation' and action_stem in other_doc.wiki_links:
+        if other_doc.doc_type == 'operation' and any(
+                _resolve_link(link, all_docs) == action_stem for link in other_doc.wiki_links):
             return []
     return [Issue(file=_rel(doc), severity='建议', category='孤立动作',
                   message=f'动作 "{action_stem}" 未被任何逻辑文档引用', source='规则检查')]
@@ -1830,13 +1840,14 @@ def _extract_object_refs(doc: OntologyDoc) -> list:
         name = row.get('中文名称', '').strip()
         desc = row.get('描述', '')
         # Extract target stems from description or type column
-        candidates = re.findall(r'\[\[([^\]|/]+?)(?:\|[^\]]+)?\]\]', desc + ' ' + type_cell)
+        candidates = [link.full_name for link in mm.parse_links(desc + ' ' + type_cell) if '/' not in link.target]
         if name and candidates:
             refs.append((name, [c.strip() for c in candidates]))
     # Also infer from 关联对象 lines when available — only when attribute name exactly
     # equals a linked stem (substring match caused "顾客" to wrongly match "顾客服务").
     relation_section = doc.sections.get('关联对象', '')
-    linked_stems = set(re.findall(r'\[\[([^\]|/]+?)(?:\|[^\]]+)?\]\]', relation_section))
+    linked_stems = {name for link in mm.parse_links(relation_section) if '/' not in link.target
+                    for name in (link.full_name, link.name)}
     for row in doc.attribute_rows:
         name = row.get('中文名称', '').strip()
         if not name or name not in linked_stems:
@@ -1975,9 +1986,8 @@ def check_terminology(operation_doc: OntologyDoc, term_map: dict) -> list:
     issues = []
     operation = operation_doc.sections.get('逻辑描述', '')
     for line in operation.split('\n'):
-        obj_refs = re.findall(r'\[\[([^\]|/]+?)(?:\|[^\]]+)?\]\]', line)
-        obj_refs += re.findall(r'\[\[[^\]]+/([^\]|/]+?)(?:\|[^\]]+)?\]\]', line)
-        obj_refs = [r.strip() for r in obj_refs if r.strip() in term_map]
+        obj_refs = [mm.resolve(link, term_map) for link in mm.parse_links(line)]
+        obj_refs = [ref for ref in obj_refs if ref]
 
         for obj_name in obj_refs:
             known = term_map[obj_name]

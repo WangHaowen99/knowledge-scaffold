@@ -27,6 +27,8 @@ def env(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", data)
     monkeypatch.setattr(config, "BACKUP_DIR", "")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # 这些用例经业务面调运维接口：打开 ONTO_WEB_OPS_ON_MAIN（默认运维面只在独立监听上，见 test_governance）
+    monkeypatch.setattr(config, "OPS_ON_MAIN", True)
     assets = tmp_path / "assets"
     (assets / "resource-template").mkdir(parents=True)
     (assets / "workspace-rules.md").write_text("# rules", encoding="utf-8")
@@ -63,14 +65,14 @@ def seed(manager: WorkspaceManager, home: Path) -> dict:
             (meta["id"],),
         )
 
-    for name in (
-        "model-settings.json", "user-model-settings.json", "runtime-settings.json",
-        "mcp-servers.json", "model-context-presets.json", "service-tokens.json",
-    ):
+    for name in ("runtime-settings.json", "mcp-servers.json", "model-context-presets.json"):
         (data / name).write_text('{"synthetic": true}')
+    # 密文在密钥目录（方案 E10）；主密钥也在那里，但不进备份
+    for name in ("model-settings.json", "user-model-settings.json", "service-tokens.json"):
+        (data / "secrets" / name).write_text('{"synthetic": true}')
     (data / "audit.jsonl").write_text('{"user": "operator_a"}\n')
     (data / "errors.jsonl").write_text('{"kind": "synthetic"}\n')
-    (data / ".model-secret-key").write_text("synthetic-master-key-not-for-backup")
+    (data / "secrets" / ".model-secret-key").write_text("synthetic-master-key-not-for-backup")
     (data / "releases" / meta["id"]).mkdir(parents=True)
     (data / "releases" / meta["id"] / "0.1.2.zip").write_bytes(b"synthetic-package")
 
@@ -103,13 +105,13 @@ def test_backup_covers_state_and_excludes_master_key(env, tmp_path):
         f"data/studio/{project}.drafts.json",
         "data/jiuwen/checkpoints.db",
         f"data/jiuwen/{project}/todo.md",
-        "data/onto-mcp.sqlite",
-        "data/model-settings.json",
-        "data/user-model-settings.json",
+        "data/secrets/onto-mcp.sqlite",
+        "data/secrets/model-settings.json",
+        "data/secrets/user-model-settings.json",
         "data/runtime-settings.json",
         "data/mcp-servers.json",
         "data/model-context-presets.json",
-        "data/service-tokens.json",
+        "data/secrets/service-tokens.json",
         "data/audit.jsonl",
         "data/errors.jsonl",
         f"data/releases/{project}/0.1.2.zip",
@@ -127,7 +129,7 @@ def test_backup_covers_state_and_excludes_master_key(env, tmp_path):
     rows = sqlite3.connect(extracted / "data/jiuwen/checkpoints.db").execute(
         "SELECT id FROM checkpoint").fetchall()
     assert rows == [("synthetic-checkpoint",)]
-    tokens_rows = sqlite3.connect(extracted / "data/onto-mcp.sqlite").execute(
+    tokens_rows = sqlite3.connect(extracted / "data/secrets/onto-mcp.sqlite").execute(
         "SELECT project_id FROM tokens").fetchall()
     assert tokens_rows == [(project,)]
     # 工作区里指向资产的软链按链接本身保存，不跟进去

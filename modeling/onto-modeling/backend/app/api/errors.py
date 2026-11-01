@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import contextvars
 import logging
 import uuid
 
@@ -15,10 +14,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from ..governance import context as _context
+
 _log = logging.getLogger(__name__)
 
-# 本次请求的链路 ID：trace 中间件写入，错误体与审计读取
-trace_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("onto_trace_id", default="")
+# 本次请求的链路 ID：trace 中间件写入，错误体、审计与日志读取（公共标签之一，见 governance.context）
+trace_id_var = _context.trace_id_var
 
 
 class ApiError(Exception):
@@ -32,7 +33,7 @@ class ApiError(Exception):
 
 
 def new_trace_id() -> str:
-    return uuid.uuid4().hex[:16]
+    return _context.new_trace_id()
 
 
 def body(code: str, message: str, details: dict | None = None) -> dict:
