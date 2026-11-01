@@ -235,6 +235,28 @@ def extensions(manager, project_id: str) -> dict:
     }
 
 
+def resolve_action(manager, project_id: str, action: dict) -> dict | None:
+    """S-20 的 `action: {pack, page, action_id}` 换成命令：{command, pack, page, label}；认不出返回 None。
+
+    只按锁文件里启用的包查（和左栏同一口径）；命令在不在生效中的装配里由 S-20 自己判断
+    （待生效时回 `pack_not_enabled`、`effective=next_message`）。会话宿主把它登记成 S-20 的解析函数。
+    """
+    if not isinstance(action, dict):
+        return None
+    pack, page_id, action_id = (str(action.get(key) or "") for key in ("pack", "page", "action_id"))
+    root = manager.project_root(project_id)
+    for view in desired_packs(manager, root):
+        if view.name != pack:
+            continue
+        for page in view.manifest.pages():
+            if page.get("id") != page_id or not _page_ok(page, view.manifest):
+                continue
+            for item in page_view(view, page, pending=False)["actions"]:
+                if item["id"] == action_id:
+                    return {"command": item["command"], "pack": pack, "page": page_id, "label": item["label"]}
+    return None
+
+
 def digest(view: dict) -> dict:
     """extensions.updated 的比较基准：各部分的内容（不含哈希）。"""
     return {key: view.get(key) for key in ("nav", "pages", "subpages", "entries", "artifact_types", "views", "gates")}

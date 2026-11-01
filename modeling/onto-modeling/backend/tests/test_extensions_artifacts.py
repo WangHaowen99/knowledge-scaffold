@@ -177,6 +177,23 @@ def test_disabling_page_pack_hides_page_and_keeps_artifacts(env):
     assert [item["key"] for item in rows["items"]] == ["shelf-limit"]
 
 
+def test_page_action_resolves_to_command_while_pack_enabled(env):
+    """S-20 的 action {pack, page, action_id} 由注册表换成命令；停用后认不出。"""
+    client, manager, project_id = env
+    from app.services.packs import registry
+
+    action = {"pack": "checklist", "page": "scenarios", "action_id": "run"}
+    assert registry.resolve_action(manager, project_id, action) is None
+    _enable(client, project_id)
+    assert registry.resolve_action(manager, project_id, action) == {
+        "command": "/checklist-run", "pack": "checklist", "page": "scenarios", "label": "跑一遍"}
+    assert registry.resolve_action(manager, project_id, {**action, "action_id": "nope"}) is None
+    assert registry.resolve_action(manager, project_id, {**action, "pack": "trace"}) is None
+    assert registry.resolve_action(manager, project_id, "run") is None
+    assert client.post(f"/api/v1/projects/{project_id}/packs/checklist/disable").status_code == 200
+    assert registry.resolve_action(manager, project_id, action) is None
+
+
 # ---- 通用视图：新类型不改前端就能列表、看详情 ----
 
 
@@ -318,6 +335,34 @@ def test_stale_when_referenced_entry_changes_or_disappears(env):
     summary = client.get(f"{base}/summary").json()
     assert summary["total"] == 2 and summary["stale"] == 1
     assert summary["by"] == [{"value": "low", "label": "低", "count": 2}]
+
+
+def test_after_commit_reports_artifacts_and_stale_transitions(env):
+    """会话宿主每轮结束调用：给 workspace.changed 的 artifacts，并发 artifacts.updated（updated / stale / fresh）。"""
+    from app.kernel.artifacts import service as artifact_service
+
+    client, manager, project_id = env
+    _enable(client, project_id)
+    root = manager.project_root(project_id)
+    _write(root, "ontology/operation/安全库存测算.md", "# 业务描述\n测算安全库存\n")
+    _write(root, "ext/checklist/items/expiry.md", "---\ntitle: 临期\nlevel: low\noperation: 安全库存测算\n---\n")
+    _commit_all(root)
+    project_events.clear()
+    refs = artifact_service.after_commit(manager, project_id, ["ext/checklist/items/expiry.md", "ontology/x.md"])
+    assert refs == [{"type": "checklist.item", "key": "expiry", "title": "临期"}]
+    assert [event["data"] for event in project_events.recent(project_id, "artifacts.updated")] == [
+        {"type": "checklist.item", "change": "updated", "keys": ["expiry"]}]
+
+    project_events.clear()
+    _write(root, "ontology/operation/安全库存测算.md", "# 业务描述\n测算安全库存（改过口径）\n")
+    assert artifact_service.after_commit(manager, project_id, ["ontology/operation/安全库存测算.md"]) == []
+    assert [event["data"] for event in project_events.recent(project_id, "artifacts.updated")] == [
+        {"type": "checklist.item", "change": "stale", "keys": ["expiry"]}]
+
+    project_events.clear()
+    _write(root, "ontology/operation/安全库存测算.md", "# 业务描述\n测算安全库存\n")
+    artifact_service.after_commit(manager, project_id, ["ontology/operation/安全库存测算.md"])
+    assert [event["data"]["change"] for event in project_events.recent(project_id, "artifacts.updated")] == ["fresh"]
 
 
 def test_pack_script_index_fills_computed_fields_and_flags_outdated(env):

@@ -828,3 +828,43 @@ def mcp_get(manager, project_id: str, args: dict, *, iso) -> dict:
     return {"type": view["type"], "key": view["key"], "artifact": {**view, "sections": sections, "content": content,
                                                                    "lock": None},
             "truncated": truncated, "display": {"text": f"已读取插件产物「{view['title']}」"}}
+
+
+# ---- 提交之后（会话宿主每轮结束、写入事务提交后调用）----
+
+ARTIFACT_REFS_MAX = 200
+# 进程内记着各产物上次看到的「过期」状态，用来发 stale / fresh（第一次看到不发）
+_STALE_SEEN: dict[tuple[str, str], dict[str, bool]] = {}
+
+
+def after_commit(manager, project_id: str, paths: list[str]) -> list[dict]:
+    """一次提交之后：返回改到的插件产物（项目流 workspace.changed 的 `artifacts`，ArtifactRef，最多 200 个），
+    并发 artifacts.updated——文件改了的类型发 updated，引用的条目变了导致过期状态翻转的发 stale / fresh。
+
+    只看已启用包登记的类型；出错的类型跳过（推送不能影响提交）。
+    """
+    root = manager.project_root(project_id)
+    changed = {str(path).lstrip("./") for path in paths or []}
+    refs: list[dict] = []
+    for atype in types_for_project(manager, root):
+        try:
+            rows = index.refresh(atype, root)
+        except Exception:  # noqa: BLE001 - 单个类型索引失败不影响其余
+            continue
+        touched = [row for row in rows if row["rel"] in changed]
+        refs += [{"type": atype.type, "key": row["key"], "title": row["title"]} for row in touched]
+        if touched:
+            project_events.emit(project_id, "artifacts.updated",
+                                {"type": atype.type, "change": "updated", "keys": [row["key"] for row in touched]})
+        seen_key = (str(root), atype.type)
+        previous = _STALE_SEEN.get(seen_key)
+        current = {row["key"]: bool(row.get("stale")) for row in rows}
+        _STALE_SEEN[seen_key] = current
+        if previous is None:
+            continue
+        for change, flag in (("stale", True), ("fresh", False)):
+            keys = [key for key, stale in current.items()
+                    if stale is flag and previous.get(key, False) is not flag and key not in {row["key"] for row in touched}]
+            if keys:
+                project_events.emit(project_id, "artifacts.updated", {"type": atype.type, "change": change, "keys": keys})
+    return refs[:ARTIFACT_REFS_MAX]
