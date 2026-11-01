@@ -138,12 +138,13 @@ MCP Token、改名/归档/删除）只对所有者开放，没有成员与只读
 指标、脚本、求解契约目录，以及资料区的 `materials.json` 和表格文件）导出成只读树，发布检查与
 渲染都只读这棵树，工作区里没提交的改动不进包；发布前体检（`GET /package/check`）同样基于 HEAD，
 并列出这些路径里未提交的改动（资料区的 PDF、图片等发布不读，不算在内）。
-评测上传的数据表与求解验证回执在 `.ontology-state/`，不进 git，仍从工作区读取。版本号为
+求解验证回执在 `.ontology-state/`，不进 git，仍从工作区读取。版本号为
 `0.1.N`：该提交已发布过就沿用原版本（同一提交重复发布，包逐字节相同）；否则 N 取提交数与已有
 最大发布号 + 1 的较大者，并打注释标签 `release/0.1.N`（注明发布人与是否降级发布）。发布标签
 在版本列表里标出、不能从界面删除；包清单写入 `source_commit`，发布响应头 `X-Package-Version`、
-`X-Package-Commit`、`X-Package-Uncommitted` 带回版本号、来源提交与没进包的改动数。评测、求解
-验证等内部导出仍读工作区，版本号按 HEAD 的提交数编号。
+`X-Package-Commit`、`X-Package-Uncommitted` 带回版本号、来源提交与没进包的改动数。每次发布
+还把包原样留存在数据目录 `releases/<项目>/<版本>.zip`，按版本下载读的就是这一份（见下文「对接评测
+服务：三份契约」）。
 
 ## 数据备份
 
@@ -153,7 +154,7 @@ MCP Token、改名/归档/删除）只对所有者开放，没有成员与只读
 
 一份备份是一个 `onto-modeling-backup-<时间>.tar.gz`，`data/` 与数据目录一一对应、`home/` 对应
 `HOME`：各项目工作区（含 git 历史，按项目持锁打包）、会话历史与会话索引、Jiuwen 存档、Studio
-草稿、MCP token 库、各类设置、审计与错误留档、评测数据源配置，以及存在时的 CLI transcript
+草稿、MCP token 库、服务令牌库（只有摘要）、发布留存的知识包、各类设置、审计与错误留档，以及存在时的 CLI transcript
 （`~/.claude/projects`）。SQLite 库（Jiuwen 存档、MCP token 库）用 SQLite 的 backup API 拷贝，
 不直接打包正在使用的库文件。恢复时停服务，把 `data/` 解到 `ONTO_WEB_DATA_DIR`、`home/` 解到
 `HOME`。
@@ -163,33 +164,79 @@ MCP Token、改名/归档/删除）只对所有者开放，没有成员与只读
 或改用环境变量提供；异机恢复时缺了同一把主密钥，已保存的个人 Key 解不开，用户需重新填写。
 每次备份都会在服务日志里提醒这一点。
 
-## 场景、来源与评测结果核验
+## 场景与来源核验
 
 - 场景走查由 `trace_inputs.py` 统一读取已保存确认稿，保留字段类型与尾注，派遣前及报告前核对源文件修订和初始输入回执。解析或对账失败不计通过。
 - 来源核验使用 `source_extract.py` 抽取 UTF-8 文本、DOCX 正文/表格和 XLSX 单元格，返回原文件摘要与定位锚点；无法读取或定位时明确标记“无法核验”，不以新增 ID 声明或历史基线免检。
-- 页面及新报告不再展示覆盖率统计，仍展示具体缺项、推演通过率与数据评测分数；旧报告原文保留。
-- 数据评测区分有效判分与技术异常：无有效结果显示“未形成有效评测”，混合结果标明仅为有效子集得分，不把技术异常当业务零分。
+- 页面及新报告不再展示覆盖率统计，仍展示具体缺项与推演通过率；旧报告原文保留。
 
 升级时需匹配工作区工具箱版本；旧回执保留但须重新核验。实现与兼容边界见
 [`modeling-review-integrity.md`](../../docs/decisions/modeling-review-integrity.md)。
 
-## 数据评测前的对象关系检查
+## 对接评测服务：三份契约
 
-启动数据评测前，服务检查包内关系的源对象、目标对象和重复声明。结构错误会返回 HTTP 422
-和 `EVALUATION_PACKAGE_INVALID`，并给出对象文件及行号，不创建后台评测任务或新轮次。
-检查适用于所有数据源模式，允许对象未绑定数据表也不能跳过关系结构检查。
+评测已移出 onto-modeling（[ADR-0020](docs/decisions/0020-eval-removal-and-contracts.md)）：
+「数据评测」阶段、评测数据源、评测集、评测编排、求解端到端验证编排和 Modeling 项目关联都已删除，
+阶段从 11 个变为 10 个。onto 不主动调用评测服务，评测服务持**服务令牌**调用下面三份契约的接口。
 
-关系声明按规范化后的“源对象、关系名、目标对象、源关联字段、目标关联字段”检查重复；
-这些字段全部相同才阻止启动，并同时提示首次声明和重复声明的源文件及行号。同一对对象
-允许存在同名但关联字段不同的关系。箭头括注和标准表会解析为相同的字段对；未写字段按
-空字段对比较，不从其他声明补猜。普通导出仅归并完整身份相同的双端声明。
+**服务令牌**（API 契约 1.3、X-06）：管理员在 `/api/v1/admin/service-tokens` 签发（`POST`，请求
+`{name, scopes, project_ids?, expires_in_s?}`，明文只在响应里出现一次）、列出（`GET`）、吊销（`DELETE /{id}`）。
+令牌形如 `onto_svc_…`，只存 SHA-256 摘要（数据目录 `service-tokens.json`，0600），和项目的 MCP token 分开签发、
+分开存储。权限范围 `releases.read`、`receipts.write`、`feedback.write`；`project_ids` 限定项目（不传为全部），
+`expires_in_s` 设有效期（不传为不过期）。服务令牌只能调用下面的接口，用在别处一律 401。
 
-评测允许自关联；自关联的重复声明同样按上述完整身份检查。图模式有明确字段时按字段值
-建立关联，未写字段时沿用同表同一行的关联语义。
+1. **包出**（`releases.read`）
+   - `GET /api/v1/contract/releases?since=&project_id=&cursor=&limit=`（X-01）：令牌授权范围内全部项目的发布，
+     按发布时间从新到旧，游标分页（默认 100、上限 200）；
+   - `GET /api/v1/projects/{id}/releases/{version}`（PB-05）：发布记录（版本、标签、提交、格式、发布时间、
+     发布人、是否降级、包摘要、拉取次数）；
+   - `GET /api/v1/projects/{id}/releases/{version}/manifest`（PB-06）：包清单（`manifest.yaml` 内容、包摘要、
+     文件清单）；
+   - `GET /api/v1/projects/{id}/releases/{version}/download?variant=standard|graph`（PB-07）：按版本下载。读发布时
+     留存的包，同一版本同一变体永远是同一份字节；响应头 `X-Package-Version`、`X-Package-Commit`、
+     `X-Package-Format`、`X-Package-Variant`、`X-Package-Sha256`。`graph` 是图模式变体（给评测服务导入图库），
+     第一次下载时按同一标签提交渲染并留存。标准包留存缺失（数据目录丢失、留存功能之前的旧标签）时按标签提交
+     重新渲染一次并补存。服务令牌下载时在发布记录上记「已拉取」。
+   - 以上三个接口也接受项目所有者的登录 token（下载可用 `?token=`）；`GET /api/v1/projects/{id}/releases`
+     （PB-04，发布记录列表）只给所有者。
+2. **验证回执入**（`receipts.write`）
+   - `GET /api/v1/projects/{id}/solver/candidate[?allow_unbound=true]`：求解验证候选包（API 契约之外的补充，
+     见 ADR）。按 HEAD 提交渲染、manifest 标 `status: draft`，不打标签；响应头带 `X-Solver-Revision`
+     （求解契约修订号）、`X-Solver-Contract-Digest` 与发布时会得到的 `X-Package-Version`；
+   - `POST /api/v1/projects/{id}/solver/receipts`（X-04）：必填 `revision`、`solver_keys`（必须正好是该修订启用的
+     求解操作）、`status`（`passed` / `failed`）、`authoritative`、`contract_digest`、`request_digest`、
+     `result_digest`、`completed_at`、`receipt_id`（幂等键），可选 `release_version`、`candidate_count`、
+     `evidence`（不超过 64 KB，只放引用）、`error_code`、`message`。修订号必须是当前修订（HEAD 提交或工作区的），
+     否则 `422 receipt_revision_unknown`；同一 `receipt_id` 只生效一次。发布门禁照旧只认当前修订的「权威通过」
+     回执，求解模型面板照旧经 `GET /api/projects/{id}/package/solver-validations/latest` 读取。
+3. **反馈入**（`feedback.write`）
+   - `POST /api/v1/projects/{id}/feedback`（X-05）：一批反馈，请求 `{feedback_id（幂等键）, source: {service, run},
+     release_version?, items: [{case_id, question, expected, actual, loss_reason?, suspected_artifacts?}], received_at?}`，
+     最多 200 条、2 MB；另收两项补充字段：`summary`（score、total、pass、partial、fail、error）与条目的
+     `verdict`（fail / partial / error，缺省 fail）、`tool_failures`（工具失败行）。不合法返回
+     `422 feedback_invalid`（`details.errors`）。
+   - 落到工作区 `feedback/<接收时间>-<feedback_id>.json` 并单独提交（只提交这个文件，不进知识包），文件加
+     `format: onto-feedback/v1`、`received_at`、`received_by`，评测侧给的 `received_at` 记为 `reported_at`。
+   - `/ontology-evolution` 与 `check_eval_generalization.py` 默认读最新一批反馈。
 
-正常关系会在导出、导入后保留；存量关系名称包含端点名称或基数时仍允许评测。
-后台导出使用已检查的对象内容快照；对象内容变化后不会自动续接旧轮次。
-实现和验证范围见 [issue #367 修复记录](../../docs/issue-367-regression-review.md)。
+**升级迁移**（启动时一次性、幂等）：各项目 `.ontology-state/eval-data/` 里评测上传的数据表，凡有 Sheet
+被对象的数据绑定用到（声明或推断），复制进 `resource/excel/` 并在 `materials.json` 标为 `schema`，
+单独提交（只提交这些路径）；随后删除 `.ontology-state/` 下的评测数据（上传表、`eval.json`、求解验证用例）
+与项目元数据里的 Modeling 关联字段，最后删除数据目录下的评测数据源配置（`eval-data-sources/`，含连接密码）
+与 Modeling 清理队列。单个项目迁移失败只记运维错误日志，下次启动重试；数据源配置不等它，照删。
+
+升级后注意：
+
+- **资料分析验收回执会整体失效一次**：验收指纹含评测上传的数据表（以及 `materials.json`），上传过
+  这类表的项目迁移后指纹对不上，验收状态回到「待核验」（原因：源资料已改动），需要重新跑一次资料分析
+  验收（`research_checker.py`）。对象已提取的项目只显示待核验提醒，不挡后续阶段；没上传过评测数据表的
+  项目不受影响。
+- 工具箱的表登记脚本更名为 `table_profile.py`（`--headers`、`--profile`、三方对账），旧名
+  `check_eval_data.py` 保留一个版本转发；`mock_to_eval_seed.py` 已删除。
+- 不再读取的环境变量：`ONTO_WEB_MODELING_URL`、`ONTO_WEB_MODELING_TOKEN`、
+  `ONTO_WEB_MODELING_ASSOCIATION_URL`、`ONTO_WEB_MODELING_ASSOCIATION_TOKEN`、
+  `ONTO_WEB_MODELING_CLEANUP_TOKEN`、`ONTO_WEB_MODELING_CLEANUP_INTERVAL`、
+  `ONTO_WEB_EVAL_MAX_CONCURRENT_ROUNDS`。
 
 ## 测试
 
@@ -239,7 +286,6 @@ Onto 工作区，新建、导入和克隆项目无需创建 Modeling 关联。�
 - 写操作必须提供最新 `expected_revision`；修改保存到本项目的 Git 工作区。
 - 默认按访问工作台的地址生成 MCP 地址。反向代理部署可选用
   `ONTO_WEB_MCP_PUBLIC_BASE_URL` 指定公开地址，例如 `https://example.com`。
-- 本次独立化仅针对 MCP；原有 Modeling 评测配置仍按原流程使用。
 
 设计与兼容边界见 [本地 MCP 设计说明](docs/decisions/onto-local-mcp.md)。
 
@@ -264,4 +310,4 @@ Studio 三视图（图/表/条目 + **结构化编辑：schema 表单、草稿�
 consumer 同源色系。
 
 未做（后续切片）：pixi.js 大图渲染完整路径（现为 xyflow + 大图降级模式）、
-代码生成链评审页的专属候选格式、评测体系 API 化。
+代码生成链评审页的专属候选格式。
