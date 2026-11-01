@@ -288,3 +288,30 @@ def test_agent_cannot_read_secrets_but_can_write_workspace(agent_env, monkeypatc
     manager.write_file(meta["id"], "research/web-note.md", "web\n", author="operator_a")
     assert _as_agent("echo more >> research/web-note.md", cwd=root).returncode == 0
     assert _as_agent(f"touch '{home}/agent-home-ok'").returncode == 0
+
+
+@linux_root
+def test_assembly_built_after_startup_is_readable_by_agent(agent_env):
+    """启动之后才装配的目录（建项目、切换能力包）也要 agent 只读：后端 umask 007 建出来的默认谁都读不到，
+    CLI 以 agent 用户从项目 `.claude` 加载命令、执行守卫。"""
+    data, _home = agent_env
+    assert not (data / "assembled").exists()
+    assert agent_identity.prepare_filesystem()["switching"]  # 此后后端 umask 是 007
+
+    manager = WorkspaceManager(data, Path(config.ASSETS_DIR))
+    meta = manager.create_project("装配演示", owner="operator_a")
+    root = manager.project_root(meta["id"])
+    dotclaude = root / ".claude"
+    assert Path(os.path.realpath(dotclaude)).parent == (data / "assembled").resolve()
+
+    command = dotclaude / "commands" / "ontology.md"
+    read = _as_agent(f"cat '{command}'")
+    assert read.returncode == 0 and read.stdout.strip(), read.stderr
+    assert _as_agent(f"cat '{dotclaude / 'settings.json'}'").returncode == 0
+    assert _as_agent(f"ls '{dotclaude / 'scripts'}'").returncode == 0
+    # 守卫以 agent 用户跑得起来（读得到 .sh 与 _guard_common.py）：读操作放行、没有输出
+    guard = _as_agent("echo '{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"ls\"}}' "
+                      "| bash .claude/scripts/lock_file_guard.sh", cwd=root)
+    assert guard.returncode == 0 and not guard.stdout.strip(), guard.stdout + guard.stderr
+    assert _as_agent(f"echo x >> '{command}'").returncode != 0  # 不能改
+    assert _as_agent(f"touch '{dotclaude / 'scripts' / 'planted.sh'}'").returncode != 0

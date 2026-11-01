@@ -152,6 +152,7 @@ class Assembler:
         staging.mkdir()
         try:
             self._fill(plan, staging)
+            self._share_with_agent(staging)
             try:
                 os.rename(staging, target)
             except OSError:
@@ -162,6 +163,17 @@ class Assembler:
             if staging.exists():
                 shutil.rmtree(staging, ignore_errors=True)
         return target
+
+    def _share_with_agent(self, directory: Path) -> None:
+        """装配目录对 agent 只读（方案 E10）：项目的 `.claude` 链到这里，CLI 以 agent 用户从里面加载命令与守卫。
+
+        启动时的目录权限（agent_identity.prepare_filesystem）只管已有的装配目录；运行中新建的按后端
+        umask 007 建出来 agent 读不到，`assembled/` 本身是运行中才建的也一样，所以每装好一个都放开一次。
+        """
+        from ...governance import agent_identity
+
+        agent_identity.share_read_only(directory)
+        os.chmod(self.root, 0o755)
 
     def check(self, plan: Plan) -> None:
         """试装配一遍、不留目录（兼容检查用）：名字冲突、流程组装不过时抛 AssemblyError。"""
