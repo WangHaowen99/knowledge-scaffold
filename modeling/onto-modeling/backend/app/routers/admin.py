@@ -1,7 +1,6 @@
 import json
 import os
 import shutil
-import tarfile
 import time
 import urllib.error
 import urllib.request
@@ -14,6 +13,7 @@ from pydantic import BaseModel
 
 from .. import config
 from ..services import audit, auth, conversation_store, error_log, modeling_cleanup
+from ..services import backup as backup_service
 from ..services.agent_sessions import manager, usage_summary
 from ..services.auth import AuthError
 from .projects import workspaces
@@ -118,7 +118,7 @@ def overview(request: Request):
         "total_cost_usd": round(total_cost, 4),
         "errors": error_log.read(100),
         "usage_daily": _usage_daily(),
-        "backups": _list_backups(),
+        "backups": backup_service.list_backups(),
         "user_admin_available": bool(config.AUTH_ADMIN_TOKEN and auth.ENABLED),
     }
 
@@ -158,54 +158,10 @@ def _usage_daily(days: int = 14) -> list[dict]:
     return series
 
 
-BACKUP_KEEP = 3
-
-
-def _backups_dir() -> Path:
-    return Path(config.DATA_DIR) / "backups"
-
-
-def _list_backups() -> list[dict]:
-    directory = _backups_dir()
-    if not directory.is_dir():
-        return []
-    return [
-        {"name": p.name, "size": p.stat().st_size, "ts": p.stat().st_mtime}
-        for p in sorted(directory.glob("*.tar.gz"), reverse=True)
-    ]
-
-
-def run_backup() -> str:
-    """打包全部 workspace（保留最近 BACKUP_KEEP 份）；手动按钮与定时调度共用。"""
-    directory = _backups_dir()
-    directory.mkdir(parents=True, exist_ok=True)
-    dest = directory / f"workspaces-{time.strftime('%Y%m%d-%H%M%S')}.tar.gz"
-    with tarfile.open(dest, "w:gz") as tar:
-        tar.add(workspaces.workspaces_dir, arcname="workspaces")
-    for old in sorted(directory.glob("*.tar.gz"), reverse=True)[BACKUP_KEEP:]:
-        old.unlink(missing_ok=True)
-    return dest.name
-
-
-async def backup_scheduler_loop():
-    """定期备份（ONTO_WEB_BACKUP_INTERVAL_HOURS，0 关闭）；打包放线程避免卡事件循环。"""
-    import asyncio
-
-    interval = config.BACKUP_INTERVAL_HOURS
-    if interval <= 0:
-        return
-    while True:
-        await asyncio.sleep(interval * 3600)
-        try:
-            await asyncio.to_thread(run_backup)
-        except Exception:
-            pass  # 单次失败不终止调度
-
-
 @router.post("/backup")
 def backup(request: Request):
     _require_admin(request)
-    return {"created": run_backup(), "backups": _list_backups()}
+    return {"created": backup_service.run_backup(workspaces), "backups": backup_service.list_backups()}
 
 
 @router.post("/sessions/{project_id}/recycle")
@@ -263,7 +219,7 @@ def health_detail(request: Request):
         sdk_version = pkg_version("claude-agent-sdk")
     except Exception:
         sdk_version = ""
-    backups = _list_backups()
+    backup_list = backup_service.list_backups()
     return {
         "sdk_version": sdk_version,
         "cli_version": _cli_version(),
@@ -278,7 +234,7 @@ def health_detail(request: Request):
         "pool": manager.pool_status(),
         "backup": {
             "interval_hours": config.BACKUP_INTERVAL_HOURS,
-            "last": backups[0] if backups else None,
+            "last": backup_list[0] if backup_list else None,
         },
     }
 

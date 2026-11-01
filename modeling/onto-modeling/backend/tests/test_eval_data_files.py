@@ -56,11 +56,22 @@ def test_saved_source_keeps_file_details(tmp_path, monkeypatch):
 
 
 def test_uploaded_files_stay_out_of_workspace_git(tmp_path, monkeypatch):
-    """评测结束会 git add -A 提交 .ontology-state；上传的业务数据不能跟着进历史。"""
+    """评测结束会 git add -A；上传的业务数据不能跟着进历史。
+
+    工作区模板已排除整个 .ontology-state；还没迁移的存量项目根 .gitignore 不排除它，
+    这时靠数据目录自带的 .gitignore 兜底。
+    """
     pid, root = _project(tmp_path, monkeypatch)
     eval_data_files.save(root, "业务数据.xlsx", _xlsx())
     (root / ".ontology-state" / "eval.json").write_text("{}", encoding="utf-8")
     # 复用工作区服务的 git 入口（workspace._git），测试里不另起子进程
+    _git(root, "add", "-A")
+    assert ".ontology-state" not in _git(root, "diff", "--cached", "--name-only")
+
+    gitignore = root / ".gitignore"
+    legacy = [line for line in gitignore.read_text(encoding="utf-8").splitlines()
+              if line.strip() != ".ontology-state/"]
+    gitignore.write_text("\n".join(legacy) + "\n", encoding="utf-8")
     _git(root, "add", "-A")
     staged = _git(root, "diff", "--cached", "--name-only")
     assert ".ontology-state/eval.json" in staged

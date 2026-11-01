@@ -26,6 +26,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from ..script_env import minimal_env
+
 _HOOK_TIMEOUT_SECONDS = 15
 
 # jiuwen 工具名 → Claude hook 协议里的工具名（matcher 与 tool_input 键两边同形）
@@ -174,6 +176,8 @@ def run_hooks_sync(
                     capture_output=True,
                     text=True,
                     timeout=_HOOK_TIMEOUT_SECONDS,
+                    # 守卫脚本在工作区 .claude/ 下：不带后端进程的 Key 与凭据
+                    env=minimal_env(),
                 )
             except (subprocess.TimeoutExpired, OSError):
                 continue

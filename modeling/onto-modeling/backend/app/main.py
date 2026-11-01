@@ -18,19 +18,24 @@ from .services.workspace import WorkspaceError
 async def _lifespan(app: FastAPI):
     import asyncio
 
-    from .routers.admin import backup_scheduler_loop
+    from .services import backup
     from .services.agent_sessions import manager
     from .services.model_context_presets import write_example
     from .services.modeling_eval import sweep_interrupted
     from .services.modeling_cleanup import retry_due, scheduler_loop
     from .services.solver_validation_run import sweep_interrupted as sweep_solver_validations
 
+    # 最先做、且在任何会话开始之前：此刻本进程没有 git 子进程，各项目 .git 下的锁都是
+    # 上次停机留下的残留；元数据迁移要改各项目的真实索引，也不能和 agent 的 git 并发
+    await asyncio.to_thread(projects.workspaces.clear_git_locks)
+    await asyncio.to_thread(projects.workspaces.migrate_state_tracking)
     manager.start_background()  # 空闲会话回收（方案 4.1.1）
     write_example()  # 内置推荐表副本，供管理员复制成自定义表
     # 评测编排只活在进程内：重启后仍标 running 的工作区改判中断，否则前端永久锁死
     sweep_interrupted()
     sweep_solver_validations()
-    backup_task = asyncio.create_task(backup_scheduler_loop())  # workspace 定期备份
+    # 定期备份：距上次已超过间隔时启动即补跑
+    backup_task = asyncio.create_task(backup.scheduler_loop(projects.workspaces))
     modeling_cleanup_task = asyncio.create_task(scheduler_loop())
     # 上次删除项目时没删净的目录（文件被占用、删到一半停机）在后台清扫掉
     purge_task = asyncio.create_task(asyncio.to_thread(projects.workspaces.purge_leftovers))

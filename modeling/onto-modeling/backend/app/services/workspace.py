@@ -10,6 +10,7 @@ import errno
 import hashlib
 import importlib.util
 import json
+import logging
 import os
 import re
 import shutil
@@ -32,9 +33,12 @@ from .. import config
 from . import material_detect, package_mapping, package_operations, solver_contract, solver_validation
 from .document_metadata import report_name
 from .name_conflict import MAX_DISPLAY_NAME_LENGTH, detect_name_conflict
+from .script_env import minimal_env
 from .toolkit import script_argument_shape as _script_argument_shape
 from .toolkit import script_contract as _script_contract
 from .toolkit import script_descriptor as _script_descriptor
+
+_log = logging.getLogger(__name__)
 
 META_FILE = ".onto-web.json"  # 历史文件名保留：存量项目的识别键（ADR-0006）
 PURGE_MARKER = ".onto-web.purging"  # 原地清除兜底：顶替 META_FILE，重启清扫据此认领残留
@@ -47,12 +51,25 @@ RESOURCE_SUBDIRS = {"diagrams", "excel", "others"}
 # 但不是用户可编辑内容（隐藏目录，不进文件树）。
 IMPORTED_PACKAGE_DIR = ".imported-package"
 
-DEFAULT_GITIGNORE = """.ontology-state/
+DEFAULT_GITIGNORE = """.onto-web.json
+.ontology-state/
+.onto/run/
 .claude
 CLAUDE.md
 README.md
 tmp/
 """
+
+# 项目元数据（所有者、成员、项目名）与工具状态（锁、回执、运行期文件）不进 git：
+# 进了 git，回退版本会把所有者一起回滚，回到所有者为空的版本时项目对所有人可写
+UNTRACKED_STATE_PATHS = (META_FILE, ".ontology-state", ".onto/run")
+UNTRACKED_GITIGNORE_ENTRIES = (META_FILE, ".ontology-state/", ".onto/run/")
+UNTRACK_COMMIT_MESSAGE = "chore: 停止跟踪项目元数据与工具状态"
+_GITIGNORE_STATE_HEADER = "\n# 项目元数据与工具状态：不随版本回退\n"
+
+# 启动时清理的 git 锁残留；运行期遇锁时，锁超过该时长才视为残留
+GIT_LOCK_FILES = ("index.lock", "HEAD.lock", "packed-refs.lock")
+STALE_GIT_LOCK_SECONDS = 120
 
 
 _PROJECT_LOCKS: dict[str, threading.RLock] = {}
@@ -775,11 +792,13 @@ class WorkspaceManager:
             if path.is_symlink() or not path.is_file():
                 continue
             rel = path.relative_to(source_root)
-            if rel.parts[0] in self.CLONE_SKIP_TOP:
+            if rel.parts[0] in self.CLONE_SKIP_TOP or _is_run_state(rel):
                 continue
             dest = dest_root / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, dest)
+        # 源项目的 .gitignore 会盖掉新建时的模板，补齐后再 add，元数据才不会被跟踪
+        _ensure_gitignore_entries(dest_root)
         _git(dest_root, "add", "-A")
         _git(dest_root, "commit", "-m", f"clone: 自 {project_id} 克隆", "--allow-empty")
         return meta
@@ -869,7 +888,7 @@ class WorkspaceManager:
                     if top not in self.EXPORT_ONTOLOGY_DIRS:
                         continue
                 else:  # workspace：全量含 .git，便于另一环境恢复历史
-                    if top == ".ontology-state":
+                    if top == ".ontology-state" or _is_run_state(rel):
                         continue
                 zf.write(path, str(rel))
         return dest_path
@@ -1317,6 +1336,8 @@ class WorkspaceManager:
         _git(root, "config", "user.email", "onto-modeling@example.invalid")
         # 保险：禁用可能随包携带的 hooks 路径配置
         _git(root, "config", "core.hooksPath", ".git/hooks-disabled")
+        # 存量迁移包的索引仍跟踪着元数据：gitignore 管不到已跟踪的文件，导入提交里一并摘除
+        _untrack_state_in_index(root)
         _git(root, "add", "-A")
         _git(root, "commit", "-m", "import: 迁移导入", "--allow-empty")
         return meta
@@ -1358,6 +1379,7 @@ class WorkspaceManager:
         except zipfile.BadZipFile as exc:
             self.delete_project(meta["id"])
             raise WorkspaceError(f"压缩包无法解析：{exc}") from exc
+        _ensure_gitignore_entries(root)  # 包里的 .gitignore 会盖掉模板
         _git(root, "add", "-A")
         _git(root, "commit", "-m", "import: 导入既有工作区内容", "--allow-empty")
         return meta
@@ -1408,7 +1430,8 @@ class WorkspaceManager:
         if not script.exists():
             raise WorkspaceError("示例脚本不存在（资产未挂载）", 500)
         result = subprocess.run(
-            ["python3", str(script)], cwd=root, capture_output=True, text=True, timeout=120
+            ["python3", str(script)], cwd=root, capture_output=True, text=True, timeout=120,
+            env=minimal_env(),
         )
         if result.returncode != 0:
             raise WorkspaceError(f"示例注入失败: {result.stderr.strip()[:300]}", 500)
@@ -1787,11 +1810,15 @@ class WorkspaceManager:
         """把工作区恢复为指定版本的内容并生成新提交（历史保留，可再回退）。
 
         已知限制：该版本之后新增的文件不会被删除。
+        元数据与工具状态不随回退恢复：存量历史里它们还在 git 中，取旧版会把所有者、
+        成员、项目名一起回滚。
         """
         if not re.fullmatch(r"[0-9a-fA-F]{6,40}", commit):
             raise WorkspaceError("无效的版本号")
         root = self.project_root(project_id)
-        _git(root, "checkout", commit, "--", ".")
+        _git(root, "checkout", commit, "--", ".", *_EXCLUDE_STATE_PATHSPECS)
+        # 旧版本的 .gitignore 可能没有这几项：补齐，否则下面的 add -A 会重新跟踪元数据
+        _untrack_state_in_index(root)
         status = _git(root, "status", "--porcelain")
         if not status.strip():
             raise WorkspaceError("当前内容与该版本一致，无需回退")
@@ -1890,6 +1917,10 @@ class WorkspaceManager:
         self._atomic_write_text(
             dest / META_FILE, json.dumps(meta, ensure_ascii=False, indent=2)
         )
+        try:
+            self.untrack_project_state(project_id)
+        except WorkspaceError:
+            pass  # 迁移失败不挡恢复，下次启动重试
         return meta
 
     # ---- 版本 ----
@@ -1982,6 +2013,57 @@ class WorkspaceManager:
             shutil.copy(template, root / ".gitignore")
         else:
             (root / ".gitignore").write_text(DEFAULT_GITIGNORE, encoding="utf-8")
+
+    # ---- 启动维护 ----
+
+    def _project_dirs(self) -> list[Path]:
+        return [
+            entry
+            for entry in sorted(self.workspaces_dir.iterdir())
+            if entry.is_dir() and (entry / META_FILE).is_file()
+        ]
+
+    def untrack_project_state(self, project_id: str) -> bool:
+        """存量项目迁移：元数据与工具状态停止跟踪，单独成一个提交；已迁移过时什么都不做。"""
+        with self._project_lock(project_id):
+            return _untrack_state_commit(self.project_root(project_id))
+
+    def migrate_state_tracking(self) -> list[str]:
+        """启动迁移：逐个项目停止跟踪元数据与工具状态，返回本次迁移了的项目。
+
+        放在会话开始之前做：迁移要动真实索引，此时没有 agent 在同一个工作区里跑 git。
+        """
+        migrated = []
+        for root in self._project_dirs():
+            try:
+                if self.untrack_project_state(root.name):
+                    migrated.append(root.name)
+            except Exception as exc:  # 单个项目失败（含 git 超时）不能挡住服务启动
+                _log.warning("项目 %s 停止跟踪元数据失败，下次启动重试：%s", root.name, exc)
+        if migrated:
+            _log.warning("已停止跟踪项目元数据与工具状态：%s", ", ".join(migrated))
+        return migrated
+
+    def clear_git_locks(self) -> list[Path]:
+        """启动清理：删除各项目 .git 下残留的锁文件，返回删掉的路径。
+
+        只能在启动时、会话开始之前调用：此时本进程没有 git 子进程，锁都是上次强杀或
+        超时留下的；运行期间删锁会破坏正在进行的 git 操作。
+        """
+        removed: list[Path] = []
+        try:
+            entries = sorted(self.workspaces_dir.iterdir())
+        except OSError:
+            return removed
+        for entry in entries:
+            if entry.is_dir():
+                removed.extend(remove_git_locks(entry))
+        if removed:
+            _log.warning(
+                "启动时清理了残留的 git 锁：%s",
+                ", ".join(str(path.relative_to(self.workspaces_dir)) for path in removed),
+            )
+        return removed
 
     @staticmethod
     def _resolve_inside(root: Path, rel_path: str) -> Path:
@@ -2137,13 +2219,170 @@ def _strip_frontmatter(text: str) -> str:
     return text
 
 
-def _git(cwd: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=60
+def _run_git(
+    cwd: Path, args: tuple, env: dict | None = None, input: str | None = None
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=60,
+        env=env, input=input,
     )
+
+
+def _git(cwd: Path, *args: str, env: dict | None = None, input: str | None = None) -> str:
+    result = _run_git(cwd, args, env, input)
+    # git 被超时杀掉、引擎被硬终止时会留下锁；锁够旧才当残留删掉重试一次，
+    # 新锁可能属于正在进行的 git 操作，照原样报错
+    if result.returncode != 0 and _remove_stale_lock(cwd, result.stderr):
+        result = _run_git(cwd, args, env, input)
     if result.returncode != 0:
         raise WorkspaceError(f"git {args[0]} 失败: {result.stderr.strip()}", 500)
     return result.stdout
+
+
+# git 报锁冲突时把锁文件路径放在引号里；不按提示原文匹配，界面语言不同也认得出
+_GIT_LOCK_PATH_RE = re.compile(r"['‘\"]([^'’\"\n]+\.lock)['’\"]")
+
+
+def _remove_stale_lock(cwd: Path, stderr: str) -> bool:
+    match = _GIT_LOCK_PATH_RE.search(stderr or "")
+    if not match:
+        return False
+    lock = Path(match.group(1))
+    if not lock.is_absolute():
+        lock = Path(cwd) / lock
+    try:
+        git_dir = (Path(cwd) / ".git").resolve()
+        if not lock.resolve().is_relative_to(git_dir) or lock.is_symlink():
+            return False
+        age = time.time() - lock.stat().st_mtime
+        if age <= STALE_GIT_LOCK_SECONDS:
+            return False
+        lock.unlink()
+    except OSError:
+        return False
+    _log.warning("删除残留的 git 锁（已存在 %d 秒）后重试：%s", int(age), lock)
+    return True
+
+
+def remove_git_locks(root: Path) -> list[Path]:
+    """删除 root/.git 下的锁文件（index、HEAD、packed-refs 与 refs 下的 *.lock）。"""
+    git_dir = Path(root) / ".git"
+    if git_dir.is_symlink() or not git_dir.is_dir():
+        return []
+    candidates = [git_dir / name for name in GIT_LOCK_FILES]
+    refs = git_dir / "refs"
+    if refs.is_dir():
+        candidates.extend(sorted(refs.rglob("*.lock")))
+    removed = []
+    for path in candidates:
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        removed.append(path)
+    return removed
+
+
+_EXCLUDE_STATE_PATHSPECS = tuple(f":(exclude){path}" for path in UNTRACKED_STATE_PATHS)
+
+
+def _is_run_state(rel: Path) -> bool:
+    return rel.parts[:2] == (".onto", "run")
+
+
+def _gitignore_missing(text: str) -> list[str]:
+    present = {line.strip().strip("/") for line in text.splitlines()}
+    return [entry for entry in UNTRACKED_GITIGNORE_ENTRIES if entry.strip("/") not in present]
+
+
+def _with_gitignore_entries(text: str) -> str:
+    missing = _gitignore_missing(text)
+    if not missing:
+        return text
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return text + _GITIGNORE_STATE_HEADER + "".join(f"{entry}\n" for entry in missing)
+
+
+def _ensure_gitignore_entries(root: Path) -> bool:
+    """工作区 .gitignore 补齐元数据与工具状态的排除项（不动已有内容）。"""
+    path = Path(root) / ".gitignore"
+    current = path.read_text(encoding="utf-8") if path.is_file() else ""
+    updated = _with_gitignore_entries(current)
+    if updated == current:
+        return False
+    path.write_text(updated, encoding="utf-8")
+    return True
+
+
+def _untrack_state_in_index(root: Path) -> None:
+    """只从索引摘除元数据与工具状态，工作区文件保留。"""
+    _ensure_gitignore_entries(root)
+    _git(
+        root, "rm", "-r", "-q", "-f", "--cached", "--ignore-unmatch", "--",
+        *UNTRACKED_STATE_PATHS,
+    )
+
+
+def _untrack_state_commit(root: Path) -> bool:
+    """在 HEAD 上提交「停止跟踪元数据与工具状态」，只含这几个路径与 .gitignore；幂等。
+
+    提交树由临时索引从 HEAD 构造，不经过真实索引：工作区里已暂存、未暂存的其他改动
+    都不会被带进这个提交。HEAD 在构造期间被移动时 update-ref 校验失败，什么都不改。
+    """
+    root = Path(root)
+    if not (root / ".git").is_dir():
+        return False
+    head = _run_git(root, ("rev-parse", "--verify", "-q", "HEAD")).stdout.strip()
+    if not head:
+        return False
+    tracked = _git(root, "ls-tree", "-r", "--name-only", "HEAD", "--", *UNTRACKED_STATE_PATHS)
+    shown = _run_git(root, ("show", "HEAD:.gitignore"))
+    head_gitignore = shown.stdout if shown.returncode == 0 else ""
+    new_gitignore = _with_gitignore_entries(head_gitignore)
+    if not tracked.strip() and new_gitignore == head_gitignore:
+        # HEAD 已迁移；agent 若又把元数据暂存进索引，只从索引摘掉
+        if _git(root, "ls-files", "--", *UNTRACKED_STATE_PATHS).strip():
+            _untrack_state_in_index(root)
+        else:
+            _ensure_gitignore_entries(root)
+        return False
+
+    blob = ""
+    if new_gitignore != head_gitignore:
+        blob = _git(root, "hash-object", "-w", "--stdin", input=new_gitignore).strip()
+    with tempfile.TemporaryDirectory(prefix="onto-untrack-") as scratch:
+        env = {**os.environ, "GIT_INDEX_FILE": str(Path(scratch) / "index")}
+        _git(root, "read-tree", head, env=env)
+        _git(
+            root, "rm", "-r", "-q", "--cached", "--ignore-unmatch", "--",
+            *UNTRACKED_STATE_PATHS, env=env,
+        )
+        if blob:
+            _git(root, "update-index", "--add", "--cacheinfo", f"100644,{blob},.gitignore", env=env)
+        tree = _git(root, "write-tree", env=env).strip()
+    commit = _git(root, "commit-tree", tree, "-p", head, "-m", UNTRACK_COMMIT_MESSAGE).strip()
+    _git(root, "update-ref", "-m", UNTRACK_COMMIT_MESSAGE, "HEAD", commit, head)
+
+    # 真实索引跟上新 HEAD：摘掉这几个路径；.gitignore 被单独暂存过时不覆盖暂存内容
+    _git(
+        root, "rm", "-r", "-q", "-f", "--cached", "--ignore-unmatch", "--",
+        *UNTRACKED_STATE_PATHS,
+    )
+    if blob:
+        staged = _run_git(root, ("rev-parse", "-q", "--verify", ":.gitignore")).stdout.strip()
+        old_blob = _run_git(root, ("rev-parse", "-q", "--verify", f"{head}:.gitignore")).stdout.strip()
+        if staged == old_blob:
+            _git(root, "update-index", "--add", "--cacheinfo", f"100644,{blob},.gitignore")
+        path = root / ".gitignore"
+        current = path.read_text(encoding="utf-8") if path.is_file() else ""
+        path.write_text(
+            new_gitignore if current == head_gitignore else _with_gitignore_entries(current),
+            encoding="utf-8",
+        )
+    return True
 
 
 def remove_tree(path: Path) -> bool:

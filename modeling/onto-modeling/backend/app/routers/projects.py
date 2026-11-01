@@ -1372,6 +1372,8 @@ def reverse_query(project_id: str, kind: str, request: Request, term: str = ""):
     """六种反查：直接跑工作区内的确定性脚本（不经 LLM），返回 markdown 结果。"""
     import subprocess
 
+    from ..services.script_env import minimal_env
+
     root = ensure_access(project_id, request)
     if kind not in QUERY_KIND_ARGS:
         raise WorkspaceError(f"kind 必须是 {sorted(QUERY_KIND_ARGS)} 之一")
@@ -1388,6 +1390,7 @@ def reverse_query(project_id: str, kind: str, request: Request, term: str = ""):
             capture_output=True,
             text=True,
             timeout=30,
+            env=minimal_env(),
         )
         outputs.append(
             result.stdout if result.returncode == 0 else f"查询失败：{result.stderr[:200]}"

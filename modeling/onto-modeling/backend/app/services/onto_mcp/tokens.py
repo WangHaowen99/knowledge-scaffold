@@ -14,9 +14,13 @@ SERVER = {"name": "knowledge-scaffold-onto-mcp", "version": "0.1.0"}
 VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18"]
 
 
+def database_path(manager):
+    return manager.workspaces_dir.parent / "onto-mcp.sqlite"
+
+
 @contextmanager
 def database(manager):
-    path = manager.workspaces_dir.parent / "onto-mcp.sqlite"
+    path = database_path(manager)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=15)
     conn.row_factory = sqlite3.Row
