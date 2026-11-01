@@ -20,6 +20,14 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git procps ca-certificates tini \
     && rm -rf /var/lib/apt/lists/*
 
+# agent 及其工具子进程用独立的非 root 用户（方案 E10）：后端仍以 root 运行，起 CLI / 执行 agent 的命令时
+# 切到它，只保留它自己的组；工作区、CLI 的 HOME 归这个组可写，密钥目录 0700 归后端用户，agent 读不到。
+# 工作区仓库归 root，agent 跑 git 要放过「所有者不同」的检查
+RUN groupadd --system --gid 10010 onto-agent \
+    && useradd --system --uid 10010 --gid onto-agent --home-dir /data/home --no-create-home \
+       --shell /usr/sbin/nologin onto-agent \
+    && git config --system --add safe.directory '*'
+
 COPY backend/requirements.txt ./
 # 索引源默认华为云 PyPI 镜像，可经 --build-arg PIP_INDEX_URL 覆盖；ARG 放在 apt 层之后，改源不失效 apt 缓存
 ARG PIP_INDEX_URL=https://repo.huaweicloud.com/repository/pypi/simple
@@ -59,7 +67,8 @@ ENV ONTO_WEB_HOST=0.0.0.0 \
     HOME=/data/home \
     DISABLE_AUTOUPDATER=1 \
     PYTHONUNBUFFERED=1 \
-    IS_SANDBOX=1
+    IS_SANDBOX=1 \
+    ONTO_WEB_AGENT_USER=onto-agent
 
 VOLUME /data
 EXPOSE 8100

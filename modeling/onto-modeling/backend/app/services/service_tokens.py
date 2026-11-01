@@ -20,7 +20,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .. import config
 from .credential_store import SecretStore
 
 TOKEN_PREFIX = "onto_svc_"
@@ -56,7 +55,9 @@ class ServiceTokenError(Exception):
 
 
 def _store() -> SecretStore:
-    return SecretStore(lambda: Path(config.DATA_DIR) / "service-tokens.json")
+    from ..governance import secrets
+
+    return SecretStore(lambda: secrets.path(secrets.SERVICE_TOKENS))
 
 
 def store_path() -> Path:

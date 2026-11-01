@@ -7,14 +7,14 @@
 - data/jiuwen/              Jiuwen 存档（SQLite 用 backup API 拷贝）与框架工件区
 - data/studio/              Studio 草稿与租约
 - data/releases/            发布留存的知识包（按版本下载读这里）
-- data/onto-mcp.sqlite      MCP token 库（backup API 拷贝）
-- data/service-tokens.json  服务令牌（只有摘要）
+- data/secrets/             密钥目录里的密文：管理员模型配置、个人 Key 密文、MCP token 库
+                            （backup API 拷贝）、服务令牌（只有摘要）
 - data/*.json、*.jsonl      各类设置与错误留档；data/audit/ 审计
 - home/.claude/projects/    CLI transcript（存在才备）
 
-个人 Key 的主密钥（数据目录下的 .model-secret-key）不进备份：它与加密后的个人 Key 放在
-一起等于没加密。异机恢复前要单独拷贝该文件，或用 ONTO_WEB_MODEL_SECRET_KEY 提供同一
-主密钥，否则恢复出来的个人 Key 解不开。
+个人 Key 的主密钥（密钥目录下的 .model-secret-key）不进备份：它与加密后的个人 Key 放在
+一起等于没加密（方案第 6 章第 5 项）。配置 ONTO_WEB_KEY_BACKUP_DIR 时每次备份把它单独拷到
+那里；推荐直接用 ONTO_WEB_MODEL_SECRET_KEY 提供主密钥，否则异机恢复后个人 Key 解不开。
 """
 
 from __future__ import annotations
@@ -196,7 +196,7 @@ def run_backup(manager) -> str:
                         _add_path(tar, root, f"data/workspaces/{root.name}", staging)
             for path in _data_entries(manager):
                 if path.exists():
-                    _add_path(tar, path, f"data/{path.relative_to(data_dir).as_posix()}", staging)
+                    _add_path(tar, path, _arcname(path, data_dir), staging)
             transcripts = Path.home() / ".claude" / "projects"
             if transcripts.is_dir():
                 _add_path(tar, transcripts, "home/.claude/projects", staging)
@@ -206,13 +206,25 @@ def run_backup(manager) -> str:
         raise
     for old in list_backups()[BACKUP_KEEP:]:
         (directory / old["name"]).unlink(missing_ok=True)
-    _log.warning(
-        "已备份到 %s。个人 Key 主密钥（数据目录下的 .model-secret-key）不在备份里："
-        "异机恢复前须单独拷贝该文件，或用 ONTO_WEB_MODEL_SECRET_KEY 提供同一主密钥，"
-        "否则恢复后的个人 Key 无法解密",
-        dest,
-    )
+    from ..governance import secrets
+
+    key_copy = secrets.backup_master_key()
+    if key_copy is None and not secrets.master_key_configured():
+        _log.warning(
+            "已备份到 %s。个人 Key 主密钥（密钥目录下的 .model-secret-key）不在备份里："
+            "异机恢复前须单独拷贝该文件，或用 ONTO_WEB_MODEL_SECRET_KEY 提供同一主密钥，"
+            "否则恢复后的个人 Key 无法解密；配置 ONTO_WEB_KEY_BACKUP_DIR 可自动单独备份",
+            dest,
+        )
     return dest.name
+
+
+def _arcname(path: Path, data_dir: Path) -> str:
+    """包内路径：数据目录下的条目按原相对路径；密钥目录指到数据目录之外时放在 data/secrets/ 下。"""
+    try:
+        return f"data/{path.relative_to(data_dir).as_posix()}"
+    except ValueError:
+        return f"data/secrets/{path.name}"
 
 
 async def scheduler_loop(manager, *, sleep=asyncio.sleep) -> None:

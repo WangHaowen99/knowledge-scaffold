@@ -16,7 +16,10 @@ VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18"]
 
 
 def database_path(manager):
-    return manager.workspaces_dir.parent / "onto-mcp.sqlite"
+    """MCP token 库放密钥目录（方案 E10），跟随管理器的数据目录。"""
+    from ...governance import secrets
+
+    return secrets.path(secrets.MCP_TOKENS, manager.workspaces_dir.parent)
 
 
 @contextmanager
