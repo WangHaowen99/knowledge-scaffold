@@ -93,6 +93,8 @@ export function composerState({ sessionState, archived, maintenance, autobuildRu
   if (maintenance?.active && maintenance.mode === 'reject_new_sessions' && sessionState !== 'running') {
     return { disabled: false, placeholder: maintenance.message || '平台正在维护，暂停新会话', warn: true };
   }
+  // researching：'blueprint' 蓝图待确认（切片规划）；其余真值是读资料
+  if (researching === 'blueprint') return { disabled: false, placeholder: '对蓝图有意见直接说，比如「把陈列量和临期合成一片」…' };
   if (researching) return { disabled: false, placeholder: '给助手补充说明，或者继续拖入资料…' };
   return { disabled: false, placeholder: '给助手补充说明，可拖入文件或粘贴截图…' };
 }

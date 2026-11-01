@@ -57,7 +57,7 @@ export function createApi(client) {
     resources: (id, query) => client.get(`${P(id)}/resources`, { query }), // R-01
     addResources: (id, body) => client.post(`${P(id)}/resources`, body), // R-02
     setResourcePurpose: (id, body) => client.patch(`${P(id)}/resources/purpose`, body), // R-03
-    resourcePreview: (id, path) => client.get(`${P(id)}/resources/preview`, { query: { path } }), // R-06
+    resourcePreview: (id, path, around) => client.get(`${P(id)}/resources/preview`, { query: { path, around } }), // R-06
     materialMap: (id) => client.get(`${P(id)}/materials/map`), // R-07
     materialCandidates: (id, query) => client.get(`${P(id)}/materials/candidates`, { query }), // R-08
     materialVerification: (id) => client.get(`${P(id)}/materials/verification`), // R-09

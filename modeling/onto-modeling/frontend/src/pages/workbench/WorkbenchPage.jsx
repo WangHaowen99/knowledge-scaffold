@@ -17,9 +17,11 @@ import { ActionsCtx, ContextPanel, QueueCard } from './cards.jsx';
 import { WbCtx } from './parts.jsx';
 import { Timeline } from './Timeline.jsx';
 import { useConversation } from './useConversation.js';
+import { MATERIAL_DIALOGS } from './materials/model.js';
 import '../../styles/workbench-extra.css';
 
 const FlowchartDialog = lazy(() => import('../flowchart/FlowchartDialog.jsx'));
+const MaterialsDialogs = lazy(() => import('./materials/MaterialsDialogs.jsx'));
 
 const TRACK_CLASS = { confirmed: 'ok', running: 'running', pending: 'pending', blocked: 'blocked' };
 
@@ -82,7 +84,7 @@ function StepsDrawer({ open, onClose, flow, meta }) {
   const SEC = [['required', 'flow', '必经步骤'], ['pre_publish', 'lock', '发布前检查'], ['optional', 'branch', '可选步骤'], ['on_demand', 'zap', '有需要时']];
   return (
     <Drawer open={open} onClose={onClose} icon="branch" title="建模步骤" sub={`${meta?.name || ''} · 步骤由已启用的能力决定`} w={440}>
-      <div className="sec-t"><Icon name="layers" size={14} />业务切片 {flow.slices.length}<span className="sp" /><Button size="xs" kind="ghost" icon="layers" onClick={() => navigate(pagePath('wb-blueprint', pid))}>调整切片</Button></div>
+      <div className="sec-t"><Icon name="layers" size={14} />业务切片 {flow.slices.length}<span className="sp" /><Button size="xs" kind="ghost" icon="layers" onClick={() => { onClose(); navigate(pagePath('wb-blueprint', pid), { dialog: 'blueprint' }); }}>调整切片</Button></div>
       <div className="xs muted" style={{ margin: '-4px 0 4px' }}>每条小进度条依次是：{flow.slice_stages.map((s) => s.label).join('、')}</div>
       <div className="xs muted" style={{ margin: '0 0 6px', padding: '7px 9px', borderRadius: 8, background: 'var(--panel2)', lineHeight: 1.65 }}>
         <Icon name="info" size={12} /> 「规则」按资料出现，资料里没有规则就跳过，不挡这一片确认{hasScenario ? '；「场景」来自场景走查插件，未启用时不出现' : '；启用场景走查插件后，每片多出「场景」一步'}
@@ -399,6 +401,7 @@ export default function WorkbenchPage({ route }) {
   const [drag, setDrag] = useState(false);
   const [suggestions, setSuggestions] = useState(null);
   const [flowchart, setFlowchart] = useState(null);
+  const [mDialog, setMDialog] = useState(null);
   const ab = useAutobuild({ pid, cid, list });
   const mainRef = useRef(null);
   const headRef = useRef(null);
@@ -423,6 +426,15 @@ export default function WorkbenchPage({ route }) {
     fcPicked.current = '*';
     setFlowchart(latestFlowchartArtifact(state) || { type: 'diagram.flowchart', key: null });
   }, [route.page, route.query?.key, state]);
+  // 资料分析 / 建模蓝图的弹窗：地址带 ?dialog=material_map|verification|blueprint|build 时打开（建议条、建模步骤抽屉跳过来）
+  useEffect(() => {
+    const d = route.query?.dialog;
+    if (MATERIAL_DIALOGS.includes(d)) setMDialog({ kind: d, next: route.query?.next });
+  }, [route.page, route.query?.dialog, route.query?.next]);
+  const closeMDialog = useCallback(() => {
+    setMDialog(null);
+    if (route.query?.dialog) navigate(pagePath(route.page, pid));
+  }, [route.page, route.query?.dialog, pid]);
 
   // 新内容到达时，停在底部附近就跟着滚到底
   const stick = useRef(true);
@@ -471,6 +483,7 @@ export default function WorkbenchPage({ route }) {
     canSaveKnowledge: hasPlugin('knowledge'),
     saveKnowledge: (item) => setKnItem({ ...item, conversation_id: cid }),
     openFlowchart: (artifact) => setFlowchart(artifact),
+    openMaterials: (d) => setMDialog(typeof d === 'string' ? { kind: d } : d),
   }), [api, pid, cid, hasPlugin]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onSuggestion = async (a) => {
@@ -488,6 +501,13 @@ export default function WorkbenchPage({ route }) {
         case 'navigate': navigate(pagePath(a.page, pid), a.params); break;
         case 'autobuild': await ab.act(a.op); break;
         case 'clear_input': comp.current.clear?.(); break;
+        // 资料分析中「打断」（S-08）、建模蓝图「确认蓝图」（BP-03）
+        case 'interrupt': {
+          const r = await api.interrupt(pid, cid);
+          if (!r?.interrupted) toast('现在没有正在跑的步骤', 'info');
+          break;
+        }
+        case 'confirm_blueprint': setMDialog({ kind: 'build', next: a.next || 'L2' }); break;
         default: break;
       }
     } catch (e) {
@@ -515,7 +535,9 @@ export default function WorkbenchPage({ route }) {
   const ctxPct = Math.round(ctx?.pct ?? 0);
   const notice = (flow?.notices || []).find((n) => n.kind === 'new_materials');
   const convTitle = list?.items?.find((c) => c.id === cid)?.title || '对话';
-  const researching = (flow?.nodes || []).some((n) => n.id === 'core.research' && ['running', 'ready', 'not_ready'].includes(n.display_state));
+  // 资料分析节点没确认：蓝图待确认时是切片规划，其余是读资料（含还没传资料）
+  const research = (flow?.nodes || []).find((n) => n.id === 'core.research');
+  const researching = !research || ['confirmed', 'skipped'].includes(research.state) ? false : research.state === 'pending_confirm' ? 'blueprint' : 'materials';
   const st = composerState({ sessionState: state.session.state, archived: meta?.archived, maintenance, autobuildRunning: !!state.session.autobuild || ab.running, researching });
   const wbCtx = useMemo(() => {
     const entries = {};
@@ -612,6 +634,7 @@ export default function WorkbenchPage({ route }) {
               <FlowchartDialog artifact={flowchart} onClose={() => { setFlowchart(null); if (route.page === 'flowchart') navigate(pagePath('wb-l2', pid)); }} />
             </Suspense>
           ) : null}
+          {mDialog ? <Suspense fallback={null}><MaterialsDialogs dialog={mDialog} onClose={closeMDialog} /></Suspense> : null}
         </WbCtx.Provider>
         </AutobuildCtx.Provider>
       </ActionsCtx.Provider>
