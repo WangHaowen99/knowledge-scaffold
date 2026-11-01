@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import config
-from ..governance import telemetry
+from ..governance import context, telemetry
 from . import audit, conversation_store, error_log, personal_model_settings
 from .conversation_store import DEFAULT_ID as DEFAULT_CONVERSATION
 from .engines import EngineContext, get_engine_class
@@ -1057,6 +1057,9 @@ class SessionManager:
 
     async def _read_loop(self, session: Session) -> None:
         engine = session.engine
+        # 公共标签（详设 4.10.2）：读循环是独立任务，这里设的标签只作用于这一个会话的日志与指标
+        context.set_label("project", session.project_id)
+        context.set_label("session", session.conversation_id)
         # 不加 try：本任务只被 cancel 结束，引擎侧的错误走 _engine_end 事件
         async for event in engine.events():
             session.last_activity = time.time()

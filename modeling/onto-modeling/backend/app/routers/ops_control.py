@@ -308,8 +308,9 @@ async def logs_stream(request: Request, level: str = "", q: str = "", labels: st
 
 @router.post("/health/probe")
 def probe(request: Request):
+    """O-14：立即重新探测，响应同 O-13 的 dependencies（数组）。"""
     _write(request)
-    return {"dependencies": ops.dependencies(force=True)}
+    return ops.dependencies(force=True)
 
 
 # ---- O-16～O-19 会话池 ----

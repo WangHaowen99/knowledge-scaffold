@@ -233,7 +233,9 @@ def agent_env(monkeypatch):
 
 
 def _as_agent(command: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
-    env = {**os.environ, **SECRET_ENV, **agent_identity.jiuwen_env(os.environ)}
+    # 镜像里用 `git config --system safe.directory '*'` 放过「仓库归 root」的检查，这里用 git 的环境变量模拟
+    git_safe = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": "*"}
+    env = {**os.environ, **SECRET_ENV, **agent_identity.jiuwen_env(os.environ), **git_safe}
     return subprocess.run([str(agent_identity.SHELL_SHIM), command], capture_output=True, text=True, timeout=30,
                           env=env, cwd=cwd)
 

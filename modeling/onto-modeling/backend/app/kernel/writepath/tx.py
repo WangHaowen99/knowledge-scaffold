@@ -450,13 +450,15 @@ class ChangeTx:
     def commit(self, message: str) -> TxResult:
         if self.result is not None:
             return self.result
+        from ...governance import telemetry
+
         self._derive()
         values = trailers(self.origin, self.root)
-        commit, previous, changed = self.target.commit(self._paths, message, values, self.expected_head)
+        with telemetry.span("commit", "commit", source=self.origin.source, target=self.target.kind,
+                            paths=len(self._paths)):
+            commit, previous, changed = self.target.commit(self._paths, message, values, self.expected_head)
         self.result = TxResult(commit, previous, changed)
         if commit:
-            from ...governance import telemetry
-
             telemetry.count("onto_commits_total", source=self.origin.source, target=self.target.kind)
             events.publish(events.WorkspaceChanged(
                 project_id=self.project_id, commit=commit, previous=previous, source=self.origin.source,
