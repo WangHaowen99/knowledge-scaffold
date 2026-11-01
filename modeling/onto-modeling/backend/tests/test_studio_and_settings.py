@@ -117,8 +117,9 @@ def test_audit_log_roundtrip(tmp_path: Path, monkeypatch):
     audit.log("alice", "POST", "/api/projects")
     audit.log("bob", "DELETE", "/api/projects/x")
     entries = audit.read()
-    assert entries[0]["user"] == "bob"  # 最新在前
+    assert entries[0]["actor"] == "bob"  # 最新在前
     assert entries[1]["method"] == "POST"
+    assert entries[0]["type"] == "write" and entries[0]["action"] == "http.delete"
 
 
 def test_model_settings_roundtrip(tmp_path: Path, monkeypatch):

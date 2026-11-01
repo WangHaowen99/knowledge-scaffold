@@ -9,7 +9,7 @@
 - data/releases/            发布留存的知识包（按版本下载读这里）
 - data/onto-mcp.sqlite      MCP token 库（backup API 拷贝）
 - data/service-tokens.json  服务令牌（只有摘要）
-- data/*.json、*.jsonl      各类设置、审计与错误留档
+- data/*.json、*.jsonl      各类设置与错误留档；data/audit/ 审计
 - home/.claude/projects/    CLI transcript（存在才备）
 
 个人 Key 的主密钥（数据目录下的 .model-secret-key）不进备份：它与加密后的个人 Key 放在
@@ -103,7 +103,10 @@ def _data_entries(manager) -> list[Path]:
         runtime_settings._file(),
         mcp_settings._file(),
         model_context_presets._custom_file(),
-        audit._file(),
+        audit.audit_dir(),
+        audit._legacy_file(),
+        # 包仓库（插件运行时的 data/packs/）：包版本不可修改，项目按 packs.lock 锁定其中的版本
+        Path(config.DATA_DIR) / "packs",
         error_log._file(),
     ]
 

@@ -64,8 +64,10 @@ ENV ONTO_WEB_HOST=0.0.0.0 \
 VOLUME /data
 EXPOSE 8100
 
+# 存活检查（方案 E7）：只看进程能否响应；就绪检查 /api/health/ready 探依赖，不接 HEALTHCHECK，
+# 否则依赖抖动会让容器被反复重启
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/api/health', timeout=3).status == 200 else 1)"]
+    CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/api/health/live', timeout=3).status == 200 else 1)"]
 
 # tini 兜底当 1 号进程：回收 CLI、git 留下的孤儿进程并转发 SIGTERM。compose 已配 init: true，
 # 但 redeploy-app.sh 沿用旧部署目录的 compose、docker run 也可能不带 --init，镜像自带才可靠；

@@ -27,6 +27,8 @@ def env(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", data)
     monkeypatch.setattr(config, "BACKUP_DIR", "")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # 这些用例经业务面调运维接口：打开 ONTO_WEB_OPS_ON_MAIN（默认运维面只在独立监听上，见 test_governance）
+    monkeypatch.setattr(config, "OPS_ON_MAIN", True)
     assets = tmp_path / "assets"
     (assets / "resource-template").mkdir(parents=True)
     (assets / "workspace-rules.md").write_text("# rules", encoding="utf-8")

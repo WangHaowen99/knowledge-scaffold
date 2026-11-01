@@ -1,5 +1,4 @@
 import os
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -9,16 +8,19 @@ from fastapi.staticfiles import StaticFiles
 from . import config
 from .api import deps, v1
 from .routers import auth_routes
-from .services.agent_sessions import SDK_AVAILABLE
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     import asyncio
 
+    from .governance import startup as governance_startup
     from .services import background_jobs, backup, eval_retirement, ownership, solver_validation, startup_report
     from .services.agent_sessions import manager
     from .services.model_context_presets import write_example
+
+    # 治理平面（方案 E5、E6、E10）：结构化日志、配置校验、会话池覆盖、密钥目录与告警，最先做
+    await asyncio.to_thread(governance_startup.before_recovery)
 
     # 最先做、且在任何会话开始之前：此刻本进程没有 git 子进程，各项目 .git 下的锁都是
     # 上次停机留下的残留；元数据迁移要改各项目的真实索引，也不能和 agent 的 git 并发。
@@ -44,34 +46,22 @@ async def _lifespan(app: FastAPI):
     backup_task = asyncio.create_task(backup.scheduler_loop(deps.workspaces))
     # 上次删除项目时没删净的目录（文件被占用、删到一半停机）在后台清扫掉
     purge_task = asyncio.create_task(asyncio.to_thread(deps.workspaces.purge_leftovers))
+    # 启动恢复做完才就绪（C-04）；运维管理面在同一事件循环起第二个监听（E8）
+    ops_listener = await governance_startup.after_recovery()
     try:
         yield
     finally:
+        await governance_startup.shutdown(ops_listener)
         backup_task.cancel()
         purge_task.cancel()
         await asyncio.gather(backup_task, purge_task, return_exceptions=True)
         await manager.shutdown()
+        governance_startup.stopped()
 
 
 app = FastAPI(title="Onto Modeling", version="0.1.0", lifespan=_lifespan)
+# 健康检查（/api/health、/live、/ready）由 governance/health 的路由提供，两个监听都挂
 v1.install(app)
-_started_at = time.time()
-
-
-@app.get("/api/health")
-def health():
-    """C-02：永久保留的旧健康检查，响应不变。"""
-    return {"ok": True, "agent_sdk": SDK_AVAILABLE, "drawio": _drawio_available}
-
-
-@app.get("/api/health/live")
-def health_live():
-    """C-03 存活：只要进程能响应就是 ok，不探测依赖（容器 HEALTHCHECK 用它）。"""
-    return {
-        "status": "ok",
-        "uptime_ms": int((time.time() - _started_at) * 1000),
-        "started_at": deps.iso(_started_at),
-    }
 
 
 # drawio 编辑器（官方 webapp 静态部署，iframe embed 协议接入；缺席时前端只读降级）

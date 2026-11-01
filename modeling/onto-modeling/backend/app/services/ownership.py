@@ -52,10 +52,12 @@ def meta_view(meta: dict) -> dict:
 
 
 def list_view(projects: list[dict], user: dict | None) -> list[dict]:
-    """项目列表：本人项目给完整信息，管理员看到的非本人项目只给白名单元数据。"""
+    """项目列表：本人项目给完整信息，管理员与运维看到的非本人项目只给白名单元数据（契约 1.4）。"""
     if user is None:
         return projects
-    username, admin = user.get("sub", ""), is_admin(user)
+    from ..governance.roles import sees_all_meta
+
+    username, admin = user.get("sub", ""), sees_all_meta(user)
     return [
         project if owns(project, username) else meta_view(project)
         for project in projects
@@ -82,12 +84,14 @@ def require_owner(manager, project_id: str, request) -> Path:
 
 
 def require_meta_view(manager, project_id: str, request) -> dict:
-    """项目元数据：所有者拿完整元数据，管理员拿白名单字段，其余与 require_owner 同样拒绝。"""
+    """项目元数据：所有者拿完整元数据，管理员与运维拿白名单字段，其余与 require_owner 同样拒绝。"""
+    from ..governance.roles import sees_all_meta
+
     meta = manager.get_project(project_id)
     user = current_user(request)
     if user is None or owns(meta, user.get("sub", "")):
         return meta
-    if is_admin(user):
+    if sees_all_meta(user):
         return meta_view(meta)
     raise denied(meta)
 

@@ -51,6 +51,16 @@ def drawio_available() -> bool:
     return (drawio_dir() / "index.html").is_file()
 
 
+def _maintenance_state() -> dict | None:
+    """C-01 的维护状态（MaintenanceState，时间转 RFC 3339），供前端横幅。"""
+    from ..governance import ops_state
+
+    state = ops_state.maintenance_view()
+    if not state:
+        return None
+    return {**state, "started_at": deps.iso(state.get("started_at")), "until": deps.iso(state.get("until"))}
+
+
 def user_profile(claims: dict | None) -> dict:
     """UserProfile（契约 7.2）。本地模式是 local，同时拥有三种角色，role 取 admin。"""
     if claims is None:
@@ -128,8 +138,9 @@ def client_config(request: Request):
             "registration_enabled": registration_enabled() if auth.ENABLED else False,
             "local_user": None if auth.ENABLED else deps.LOCAL_USER,
         },
-        "ops_base_url": "",
-        "maintenance": None,
+        # 运维管理面地址（契约 1.1）：空串表示同源，由反代把 /api/v1/ops/ 转到运维监听
+        "ops_base_url": config.OPS_BASE_URL,
+        "maintenance": _maintenance_state(),
         "limits": dict(LIMITS),
         "material_types": list(MATERIAL_TYPES),
         "features": {"drawio": drawio_available()},

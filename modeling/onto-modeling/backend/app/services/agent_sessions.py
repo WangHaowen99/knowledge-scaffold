@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Any
 
 from .. import config
-from . import conversation_store, error_log, personal_model_settings
+from ..governance import telemetry
+from . import audit, conversation_store, error_log, personal_model_settings
 from .conversation_store import DEFAULT_ID as DEFAULT_CONVERSATION
 from .engines import EngineContext, get_engine_class
 from .engines.base import CONFIG_ERROR, FRIENDLY_ERROR, safe_json as _safe_json
@@ -568,6 +569,7 @@ class SessionManager:
         # 断开重连（resume 续接上下文），让新网关/Key 生效。正在跑的一轮不能切断：
         # 只记待重载，这条消息仍交给旧引擎，等手头的轮次都出 result 再断开（_read_loop）
         if session.engine is not None and session.engine.config_stale():
+            telemetry.count("onto_reconnects_total", project=session.project_id)
             if session.state == "running":
                 session.reload_pending = True
             else:
@@ -595,7 +597,8 @@ class SessionManager:
             if self.active_count() < config.MAX_ACTIVE_SESSIONS:
                 self._start_connect(session)
                 return
-            victim = self._pick_idle_victim()
+            # 池满：先驱逐空闲会话再排队；运维把策略改成只排队（O-16）时不驱逐
+            victim = self._pick_idle_victim() if config.SESSION_OVERFLOW_POLICY != "queue_only" else None
             if victim is not None:
                 await self._recycle(victim)
                 if not session.discarded:  # 驱逐期间项目被删除：不再为它连接
@@ -1036,6 +1039,9 @@ class SessionManager:
             changes = await asyncio.to_thread(
                 _git_changes, session.cwd, session.round_base_commit, head
             )
+            # 审计：agent 这一轮的提交（不经 HTTP 的专项审计，方案 E4）
+            await asyncio.to_thread(audit.record_agent_commits, session.project_id, session.cwd,
+                                    session.round_base_commit, head, changes)
             if any(changes.values()):
                 session.broadcast(
                     {
@@ -1074,6 +1080,7 @@ class SessionManager:
                 event, transient=event.get("type") == "stream_delta"
             )
             if event.get("type") == "result":
+                telemetry.record_turn(session.project_id, event, getattr(engine, "name", ""))
                 session.turns_in_flight = max(0, session.turns_in_flight - 1)
                 await self._emit_workspace_changes(session)
                 session.set_state("idle")

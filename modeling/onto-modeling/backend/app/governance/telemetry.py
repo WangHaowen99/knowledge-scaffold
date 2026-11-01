@@ -113,9 +113,10 @@ def configure_logging(level: int = logging.INFO) -> None:
     formatter = JsonFormatter()
     root = logging.getLogger()
     root.setLevel(min(root.level or level, level) if root.handlers else level)
-    console = logging.StreamHandler()
-    console.setFormatter(formatter)
-    root.addHandler(console)
+    if not any(type(handler) is logging.StreamHandler for handler in root.handlers):
+        console = logging.StreamHandler()
+        console.setFormatter(formatter)
+        root.addHandler(console)
     try:
         log_dir().mkdir(parents=True, exist_ok=True)
         _file_handler = logging.handlers.TimedRotatingFileHandler(
@@ -319,6 +320,21 @@ def get_trace(trace_id: str) -> dict | None:
 def list_traces() -> list[dict]:
     with _traces_lock:
         return [json.loads(json.dumps(trace)) for trace in reversed(_traces.values())]
+
+
+def record_turn(project_id: str, event: dict, engine: str = "") -> None:
+    """一轮结束（result 事件）：轮次时长、模型耗时、输出 token、失败次数（O-02）。"""
+    labels = {"project": project_id, "engine": engine}
+    count("onto_turns_total", **labels)
+    if event.get("duration_ms"):
+        observe("onto_turn_seconds", float(event["duration_ms"]) / 1000, **labels)
+    if event.get("duration_api_ms"):
+        observe("onto_model_call_seconds", float(event["duration_api_ms"]) / 1000, **labels)
+    usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
+    if usage.get("output_tokens"):
+        count("onto_output_tokens_total", float(usage["output_tokens"]), **labels)
+    if event.get("is_error") or event.get("subtype") not in (None, "success"):
+        count("onto_model_failures_total", **labels)
 
 
 def new_request_id() -> str:

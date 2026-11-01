@@ -12,6 +12,7 @@ from fastapi import APIRouter, Request, Response
 
 from ..api import deps
 from ..api.errors import ApiError
+from ..governance import telemetry
 from ..kernel.metamodel import mm
 from ..services import mainline
 from ..services import studio as studio_service
@@ -24,6 +25,12 @@ KINDS = mm.ENTITY_KINDS
 KIND_LABELS = {entity.kind: entity.label for entity in mm.ENTITY_TYPES}
 KIND_PATHS = {entity.kind: (entity.directory, entity.suffix) for entity in mm.ENTITY_TYPES}
 _DATA_SOURCE_RE = re.compile(r"^#\s*数据来源\s*\n+([^\n#]*)", re.M)
+
+
+def _count_check_failure(check: str, result: str) -> str:
+    """确定性检查拒绝保存：计入「检查失败」指标（O-02），原样返回结果值。"""
+    telemetry.count("onto_check_failures_total", check=check)
+    return result
 
 
 def entry_path(root: Path, entry_id: str) -> tuple[str, str, str]:
@@ -286,7 +293,7 @@ async def submit(project_id: str, entry_id: str, request: Request):
     checks = studio_service.deterministic_check(root, rel, draft["content"])
     if checks["errors"]:
         return {
-            "result": "rejected",
+            "result": _count_check_failure("studio", "rejected"),
             "errors": [{"code": "check_rejected", "level": "error", "message": text, "path": rel} for text in checks["errors"]],
             "warnings": [{"code": "needs_review", "level": "warning", "message": text, "path": rel} for text in checks["review"]],
         }

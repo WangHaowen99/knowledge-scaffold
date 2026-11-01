@@ -13,12 +13,9 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -31,6 +28,8 @@ from .. import config
 from ..api import deps
 from ..api.errors import ApiError
 from ..api.views import engine_label, project_meta_view
+from ..governance import health as health_checks
+from ..governance import lifecycle, roles
 from ..services import audit, auth, conversation_store, error_log
 from ..services import backup as backup_service
 from ..services.agent_sessions import SDK_AVAILABLE, manager
@@ -40,26 +39,23 @@ from .auth_routes import BILLING_CURRENCY
 
 router = APIRouter(prefix="/api/v1/ops", tags=["ops"])
 
-_STARTED_AT = time.time()
-DISK_WARN_PCT = 15
-DISK_WARN_BYTES = 10 * 1024**3
-DEPENDENCY_PROBE_TTL_SECONDS = 30
+DISK_WARN_PCT = health_checks.DISK_WARN_PCT
 USAGE_RANGES = {"today": 1, "7d": 7, "14d": 14}
 # 备份范围（O-36 scope）：与 services/backup.py 打进包里的条目一一对应
 BACKUP_SCOPE = (
     "workspaces", "session_history", "session_index", "config", "mcp_tokens", "service_tokens",
-    "jiuwen_archives", "studio_drafts", "releases", "audit", "cli_transcripts",
+    "jiuwen_archives", "studio_drafts", "releases", "packs", "audit", "cli_transcripts",
 )
 
 
 def _read(request: Request) -> None:
     """运维面只读接口：ops、admin（契约 3.25）。"""
-    deps.require_role(request, "ops", "admin")
+    roles.require_ops_read(request)
 
 
-def _write(request: Request) -> None:
-    """运维面写接口：契约只给 ops。auth-server 的 ops 角色属于 E3（P1），过渡期 admin 也放行。"""
-    deps.require_role(request, "ops", "admin")
+def _write(request: Request, admin_too: bool = False) -> None:
+    """运维面写接口：只有 ops（契约 3.25）；契约另说明 admin 也可的接口传 admin_too。"""
+    roles.require_ops_write(request, admin_too=admin_too)
 
 
 def money(amount: float | None) -> dict:
@@ -187,15 +183,7 @@ def month_usage(project_ids: set[str] | None = None, now: float | None = None) -
 
 
 def _disk() -> dict:
-    disk = shutil.disk_usage(config.DATA_DIR)
-    free_pct = disk.free / disk.total * 100 if disk.total else 0
-    return {
-        "total": disk.total,
-        "free": disk.free,
-        "free_pct": round(free_pct, 1),
-        # 磁盘水位告警：可用低于 15% 或 10G
-        "warn": free_pct < DISK_WARN_PCT or disk.free < DISK_WARN_BYTES,
-    }
+    return health_checks.disk_usage()
 
 
 def pool_view() -> dict:
@@ -370,8 +358,8 @@ def overview(request: Request, range: str = "14d"):  # noqa: A002  契约查询�
 # ---- O-13 健康详情 ----
 
 _cli_version_cache: str | None = None
-_probe_cache: tuple[float, list[dict]] | None = None
-_probe_lock = threading.Lock()
+# 就绪探测的状态 → O-13 依赖的状态（契约 O-13 用 ready 表示正常）
+_DEPENDENCY_STATUS = {"ok": "ready", "slow": "slow", "warn": "warn", "fail": "fail"}
 
 
 def _package_version(name: str) -> str:
@@ -409,73 +397,20 @@ def _cli_version() -> str:
     return _cli_version_cache
 
 
-def _timed(probe) -> tuple[str, str | None, int]:
-    started = time.monotonic()
-    try:
-        status, issue = probe()
-    except Exception as exc:  # 探测本身出错算失败，不让健康页 500
-        status, issue = "fail", f"探测出错：{type(exc).__name__}"
-    return status, issue, int((time.monotonic() - started) * 1000)
-
-
-def _probe_auth_server() -> tuple[str, str | None]:
-    if not auth.ENABLED:
-        return "ready", "本地模式，未启用"
-    try:
-        with urllib.request.urlopen(f"{auth.AUTH_URL}/health", timeout=3) as response:
-            return ("ready", None) if response.status == 200 else ("fail", f"返回 {response.status}")
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return "fail", f"不可达：{type(exc).__name__}"
-
-
-def _probe_sandbox() -> tuple[str, str | None]:
-    from ..services import sandbox_status
-
-    status = sandbox_status.status()
-    if status.get("connected"):
-        return "ready", None
-    # 连不上沙箱时脚本运行验证回退到主容器内执行，不算不可用
-    return "warn", str(status.get("detail") or "未连接")
-
-
-def _probe_model_gateway() -> tuple[str, str | None]:
-    from ..services import model_settings
-
-    admin = model_settings.masked()
-    configured = admin.get("configured") or os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("ANTHROPIC_API_KEY")
-    return ("ready", None) if configured else ("warn", "未配置模型接入，使用部署机默认配置")
-
-
-def _probe_disk() -> tuple[str, str | None]:
-    disk = _disk()
-    return ("warn", f"可用 {disk['free_pct']}%") if disk["warn"] else ("ready", None)
-
-
-def _probe_git() -> tuple[str, str | None]:
-    return ("ready", None) if shutil.which("git") else ("fail", "找不到 git")
-
-
-DEPENDENCY_PROBES = (
-    ("model_gateway", "配置检查", _probe_model_gateway),
-    ("auth_server", "GET /health", _probe_auth_server),
-    ("sandbox_gateway", "GET /v1/status", _probe_sandbox),
-    ("disk", "数据目录可用空间", _probe_disk),
-    ("git", "git 可执行", _probe_git),
-)
-
-
 def dependencies(force: bool = False) -> list[dict]:
-    """依赖探测结果，缓存 30 秒（契约 O-13「每 30 秒探测一次」，按需刷新）。"""
-    global _probe_cache
-    with _probe_lock:
-        if not force and _probe_cache and time.time() - _probe_cache[0] < DEPENDENCY_PROBE_TTL_SECONDS:
-            return _probe_cache[1]
-        results = []
-        for name, probe_label, probe in DEPENDENCY_PROBES:
-            status, issue, latency = _timed(probe)
-            results.append({"name": name, "probe": probe_label, "latency_ms": latency, "status": status, "last_issue": issue})
-        _probe_cache = (time.time(), results)
-        return results
+    """依赖探测结果（与就绪检查同一份探测，缓存 30 秒；O-14 强制重测）。"""
+    return [
+        {"name": item["name"], "probe": item["probe"], "latency_ms": item["latency_ms"],
+         "status": _DEPENDENCY_STATUS.get(item["status"], item["status"]), "last_issue": item["detail"]}
+        for item in health_checks.probe(force)
+    ]
+
+
+def last_exit_view() -> dict | None:
+    last = lifecycle.last_exit()
+    if not last:
+        return None
+    return {"at": deps.iso(last.get("at")), "reason": last.get("reason"), "code": last.get("code")}
 
 
 def _memory() -> dict | None:
@@ -500,11 +435,11 @@ def health(request: Request):
     """O-13：存活、就绪、依赖探测与运行环境。"""
     _read(request)
     started = time.monotonic()
+    ready_status, _checks = health_checks.readiness()
     deps_status = dependencies()
     passed = sum(1 for item in deps_status if item["status"] == "ready")
     failed = [item["name"] for item in deps_status if item["status"] == "fail"]
     warned = [item["name"] for item in deps_status if item["status"] in ("warn", "slow")]
-    ready_status = "not_ready" if failed else "degraded" if warned else "ready"
     summary = (
         f"{'、'.join(failed)} 不可用" if failed
         else f"{'、'.join(warned)} 降级" if warned
@@ -534,8 +469,8 @@ def health(request: Request):
         "live": {
             "status": "ok", "path": "/api/health/live",
             "latency_ms": int((time.monotonic() - started) * 1000),
-            "uptime_ms": int((time.time() - _STARTED_AT) * 1000),
-            "started_at": deps.iso(_STARTED_AT),
+            "uptime_ms": health_checks.uptime_ms(),
+            "started_at": deps.iso(health_checks.started_at()),
         },
         "ready": {
             "status": ready_status, "path": "/api/health/ready",
@@ -549,7 +484,8 @@ def health(request: Request):
             "cpu_cores": os.cpu_count(),
             "memory": _memory(),
             "process": {"cmd": os.path.basename(sys.argv[0] or "python"), "pid": os.getpid(), "init_managed": os.getpid() != 1},
-            "last_exit": None,
+            "last_exit": last_exit_view(),
+            "restarts": lifecycle.restarts(),
         },
     }
 
@@ -566,7 +502,7 @@ def startup_report_view(request: Request):
     report = startup_report.latest() or {}
     return {
         "at": deps.iso(report.get("at")),
-        "last_exit": report.get("last_exit"),
+        "last_exit": last_exit_view() if report else None,
         "items": report.get("items") or [],
     }
 
@@ -608,8 +544,8 @@ def backups(request: Request):
 
 @router.post("/backups")
 async def run_backup(request: Request):
-    """O-37：立即备份。备份同步打完再回 202（任务中心 O-40 属于以后阶段）。"""
-    _write(request)
+    """O-37：立即备份（ops，admin 也可）。备份同步打完再回 202（任务中心 O-40 属于以后阶段）。"""
+    _write(request, admin_too=True)
     if not _backup_lock.acquire(blocking=False):
         raise ApiError("backup_in_progress", "已有备份在进行", 409)
     try:
@@ -747,17 +683,6 @@ AUDIT_TYPES = (
     "autobuild", "user", "contract",
 )
 _PROJECT_IN_PATH = re.compile(r"^/api(?:/v1)?/(?:projects|onto-mcp)/([a-z0-9][a-z0-9-]*)(?:/|$)|^/projects/([a-z0-9][a-z0-9-]*)/")
-_TYPE_BY_PATH = (
-    (re.compile(r"^/api/v1/ops/|^/api/admin/(?:backup|sessions|trash)"), "ops"),
-    (re.compile(r"^/api(?:/v1)?/auth/|^/api/v1/me/password"), "auth"),
-    (re.compile(r"^/api(?:/v1)?/admin/users|^/api/v1/admin/projects/[^/]+/owner|^/api/admin/projects/[^/]+/owner"), "user"),
-    (re.compile(r"/(?:releases|publish)(?:/|$)"), "publish"),
-    (re.compile(r"/changesets(?:/|$)"), "changeset"),
-    (re.compile(r"/autobuild(?:/|$)"), "autobuild"),
-    (re.compile(r"/(?:packs|plugins)(?:/|$)"), "plugin"),
-    (re.compile(r"/evidence(?:/|$)"), "evidence"),
-    (re.compile(r"^/api(?:/v1)?/onto-mcp/|/mcp(?:/|$)"), "mcp"),
-)
 # 旧审计记录里的动作名 → 契约动作名
 _LEGACY_ACTIONS = {"set_owner": "project.set_owner", "remove_members": "project.remove_members"}
 
@@ -783,7 +708,19 @@ def _audit_summary(detail: dict) -> str:
 
 
 def audit_entry(index: int, raw: dict) -> dict:
-    """audit.jsonl 的一行 → AuditEntry（契约 7.16）。"""
+    """审计记录 → AuditEntry（契约 7.16）。新记录（services/audit.record）已是这个形状；
+    旧版记录（user、method、path、detail）按动作名与路径推断类型。"""
+    if "actor" in raw:
+        ts = raw.get("ts")
+        return {
+            "id": "aud-" + hashlib.sha256(f"{index}:{ts}".encode()).hexdigest()[:12],
+            "ts": deps.iso(ts),
+            **{key: raw.get(key) for key in (
+                "actor", "actor_kind", "type", "action", "method", "path", "status", "project_id",
+                "summary", "trailer", "ip", "trace_id",
+            )},
+            "summary": raw.get("summary") or "",
+        }
     actor = str(raw.get("user") or "anonymous")
     method = str(raw.get("method") or "") or None
     path = str(raw.get("path") or "") or None
@@ -803,11 +740,10 @@ def audit_entry(index: int, raw: dict) -> dict:
     elif prefix == "project" and action == "project.set_owner":
         kind = "user"
     elif kind == "write" and path:
-        kind = next((name for pattern, name in _TYPE_BY_PATH if pattern.search(path)), "write")
+        kind = classify_path(path)
     project_id = detail.get("project") if isinstance(detail.get("project"), str) else None
     if not project_id and path:
-        found = _PROJECT_IN_PATH.search(path)
-        project_id = (found.group(1) or found.group(2)) if found else None
+        project_id = project_of_path(path)
     ts = raw.get("ts")
     return {
         "id": "aud-" + hashlib.sha256(f"{index}:{ts}".encode()).hexdigest()[:12],
@@ -827,17 +763,23 @@ def audit_entry(index: int, raw: dict) -> dict:
     }
 
 
+classify_path = audit.classify_path
+
+
+def project_of_path(path: str) -> str | None:
+    found = _PROJECT_IN_PATH.search(path or "")
+    return (found.group(1) or found.group(2)) if found else None
+
+
 def _split(value: str) -> list[str]:
     return [item.strip() for item in (value or "").split(",") if item.strip()]
 
 
-@router.get("/audit")
-def audit_entries(request: Request, type: str = "", q: str = "", cursor: str = "", limit: int = 0):  # noqa: A002
-    """O-48：审计日志，按 type（多值）、q（操作者、项目、路径、摘要）、from/to 过滤，默认每页 100 条。
+def filtered_audit(request: Request, type: str = "", q: str = "") -> list[tuple[int, dict]]:  # noqa: A002
+    """按 type（多值）、q（操作者、项目、路径、摘要、动作）、from/to 筛审计，新的在前（O-48、O-49 共用）。
 
     from 是 Python 关键字，from/to 直接从查询串取。
     """
-    _read(request)
     params = request.query_params
     types = _split(type)
     unknown = [item for item in types if item not in AUDIT_TYPES]
@@ -847,7 +789,7 @@ def audit_entries(request: Request, type: str = "", q: str = "", cursor: str = "
     until = deps.parse_time(params["to"], "to") if params.get("to") else None
     needle = q.strip().lower()
     matched = []
-    for index, raw in _read_log(audit._file()):
+    for index, raw in audit.read_all():
         ts = raw.get("ts") or 0
         if (since is not None and ts < since) or (until is not None and ts > until):
             continue
@@ -859,7 +801,17 @@ def audit_entries(request: Request, type: str = "", q: str = "", cursor: str = "
         ):
             continue
         matched.append((index, entry))
-    binding = {"type": sorted(types), "q": needle, "from": params.get("from", ""), "to": params.get("to", "")}
+    return matched
+
+
+@router.get("/audit")
+def audit_entries(request: Request, type: str = "", q: str = "", cursor: str = "", limit: int = 0):  # noqa: A002
+    """O-48：审计日志，默认每页 100 条。"""
+    _read(request)
+    matched = filtered_audit(request, type, q)
+    params = request.query_params
+    binding = {"type": sorted(_split(type)), "q": q.strip().lower(), "from": params.get("from", ""),
+               "to": params.get("to", "")}
     page, next_cursor = log_page(matched, cursor, limit, binding, default=100)
     return {"items": [entry for _index, entry in page], "next_cursor": next_cursor, "total": len(matched)}
 
@@ -962,8 +914,8 @@ def trash(request: Request):
 
 @router.post("/trash/{entry}/restore")
 def restore_trash(entry: str, request: Request):
-    """O-53：恢复到所有者的项目列表；原 ID 被占用时换新 ID。"""
-    _write(request)
+    """O-53：恢复到所有者的项目列表（ops、admin）；原 ID 被占用时换新 ID。"""
+    _write(request, admin_too=True)
     try:
         meta = deps.workspaces.restore_trash(entry)
     except WorkspaceError as exc:

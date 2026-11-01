@@ -20,6 +20,8 @@ from app.services.workspace import WorkspaceManager, _git
 def manager(tmp_path: Path, monkeypatch) -> WorkspaceManager:
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "BACKUP_INTERVAL_HOURS", 0)
+    # 这些用例经业务面调运维接口：打开 ONTO_WEB_OPS_ON_MAIN（默认运维面只在独立监听上，见 test_governance）
+    monkeypatch.setattr(config, "OPS_ON_MAIN", True)
     assets = tmp_path / "assets"
     (assets / "resource-template").mkdir(parents=True)
     instance = WorkspaceManager(tmp_path / "data", assets)

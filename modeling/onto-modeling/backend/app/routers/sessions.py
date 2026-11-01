@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from ..api import deps
 from ..api.compat import CURRENT_CONVERSATION
 from ..api.errors import ApiError
+from ..governance.http import reject_new_session
 from ..services import conversation_store, uploads
 from ..services.agent_sessions import manager
 
@@ -282,6 +283,8 @@ async def send_message(project_id: str, cid: str, request: Request):
     if saved:
         text = f"（我通过界面上传了资料：{'、'.join(saved)}）\n{text}"
     text += _reference_text(references)
+    # 维护模式或排空期间不起新会话（契约 1.13）；已有会话跑完当前这一轮
+    reject_new_session(project_id)
     live = manager.get(project_id)
     was_running = bool(live and live.conversation_id == conversation_id and live.state == "running")
     session = await manager.send(project_id, root, text, conversation_id, username=deps.username(request))

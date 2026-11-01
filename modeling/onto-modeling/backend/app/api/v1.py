@@ -1,7 +1,8 @@
 """API v1 汇总（方案 A14、第 3 章目标代码布局）：挂全部 v1 路由与中间件。
 
-中间件从外到内：链路 ID → 旧路径兼容（compat）→ 鉴权 → 路由。兼容中间件必须在鉴权之前，
-旧路径改写成 v1 后才按 v1 的免鉴权前缀判断（契约 1.2）。
+中间件从外到内：链路 ID → 治理（标签、链路、维护只读、响应后审计）→ 旧路径兼容（compat）
+→ 运维面守卫 → 鉴权 → 路由。兼容中间件必须在鉴权之前，旧路径改写成 v1 后才按 v1 的免鉴权前缀判断
+（契约 1.2）；运维面守卫在改写之后，旧的运维路径也一样 404。
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ WRITE_METHODS = ("POST", "PUT", "DELETE", "PATCH")
 
 
 def _routers():
+    from ..governance import health
     from ..routers import (
         admin,
         auth_routes,
@@ -54,6 +56,7 @@ def _routers():
         metamodel,
         onto_mcp,
         ops,
+        ops_control,
         project_settings,
         projects,
         publish,
@@ -90,6 +93,8 @@ def _routers():
         admin.router,
         service_token_routes.router,
         ops.router,
+        ops_control.router,
+        health.router,
     )
 
 
@@ -130,10 +135,7 @@ async def auth_middleware(request: Request, call_next):
         return errors.response("unauthenticated", "未登录或登录已过期", 401)
     request.state.user = claims
     auth.touch(claims.get("sub", ""))
-    if request.method in WRITE_METHODS:
-        from ..services import audit
-
-        audit.log(claims.get("sub", ""), request.method, path)
+    # 写请求的审计在响应之后由治理中间件记（带状态码，方案 E4）
     return await call_next(request)
 
 
@@ -163,9 +165,13 @@ class TraceMiddleware:
 
 
 def install(app: FastAPI) -> None:
+    from ..governance.http import GovernanceMiddleware, OpsOnMainGuard
+
     for router in _routers():
         app.include_router(router)
     errors.install(app)
     app.middleware("http")(auth_middleware)
+    app.add_middleware(OpsOnMainGuard)
     app.add_middleware(compat.LegacyPathMiddleware)
+    app.add_middleware(GovernanceMiddleware, plane="business")
     app.add_middleware(TraceMiddleware)

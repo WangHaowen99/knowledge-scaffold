@@ -29,6 +29,8 @@ META_VIEW_KEYS = {"id", "name", "owner", "stage_label", "build_mode", "archived"
 @pytest.fixture()
 def manager(tmp_path: Path, monkeypatch) -> WorkspaceManager:
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    # 这些用例经业务面调运维接口：打开 ONTO_WEB_OPS_ON_MAIN（默认运维面只在独立监听上，见 test_governance）
+    monkeypatch.setattr(config, "OPS_ON_MAIN", True)
     assets = tmp_path / "assets"
     (assets / "workspace-toolkit" / "templates").mkdir(parents=True)
     (assets / "workspace-rules.md").write_text("# rules", encoding="utf-8")
@@ -242,7 +244,7 @@ def test_admin_assigns_owner_with_audit(client, ids):
         {"action": "project.set_owner", "project": unowned, "from": OTHER, "to": ADMIN},
         {"action": "project.set_owner", "project": unowned, "from": "", "to": OTHER},
     ]
-    operators = [entry["user"] for entry in audit.read(200) if entry.get("detail")]
+    operators = [entry["actor"] for entry in audit.read(200) if entry.get("detail")]
     assert operators == [ADMIN, ADMIN]
 
 
@@ -290,7 +292,7 @@ def test_startup_migration_drops_members_once_and_reports_unowned(manager, ids, 
     assert "members" not in manager.get_project(ids["owned"])
     assert manager.get_project(ids["owned"])["owner"] == OWNER
     [entry] = [e for e in audit.read(200) if e.get("detail", {}).get("action") == "remove_members"]
-    assert entry["user"] == "system"
+    assert entry["actor"] == "system"
     assert entry["detail"]["members"] == {OTHER: "editor", "operator_c": "viewer"}
     assert "无主项目 1 个" in caplog.text and ids["unowned"] in caplog.text
 
