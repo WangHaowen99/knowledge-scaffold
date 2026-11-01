@@ -1,4 +1,4 @@
-// 保留的预览 / 编辑组件（drawio、Excel、HTML、旧 Studio 组件）用的文件接口。
+// 保留的 drawio 预览与编辑组件用的文件接口。
 // 应用启动时由 services 绑定到应用的传输层与客户端（bindFileTransport），这样 mock、令牌刷新、
 // 统一错误体都和其他接口一致；没绑定时（单测、独立页面）退回浏览器 fetch。
 import { API_PREFIX, buildQuery, createTokenStore } from './client.js';

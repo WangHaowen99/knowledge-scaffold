@@ -18,7 +18,7 @@ export async function createServices({ onAuthRequired, onMaintenance }) {
     onMaintenance,
   });
   const api = createApi(client);
-  // 保留的预览 / 编辑组件（drawio、Excel、HTML）经 src/api/files.js 读写文件，也走这套传输层
+  // 保留的预览 / 编辑组件（drawio）经 src/api/files.js 读写文件，也走这套传输层
   bindFileTransport({ client, fetch: transport.fetch, tokens });
 
   return {
