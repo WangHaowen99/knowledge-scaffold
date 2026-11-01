@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from .. import config
+from ..kernel import metamodel
 from ..kernel.metamodel import mm
 from . import package_mapping
 from .document_metadata import name_frontmatter, report_name
@@ -149,6 +150,8 @@ def graph(root: Path) -> dict:
         in_degree[target] += 1
 
     script_names = [d["name"] for d in docs if d["kind"] == "script"]
+    # 链接解析按本项目锁定版本的元模型（和 agent 在工作区里用的同一份）
+    meta = metamodel.for_project(root)
     for doc in docs:
         text = texts[doc["name"]]
         section = ""
@@ -159,8 +162,8 @@ def graph(root: Path) -> dict:
                 raw_section = heading.group(2).strip()
                 section = SECTION_ALIASES.get(raw_section, raw_section)
                 continue
-            for link in mm.parse_links(line):
-                target = mm.resolve(link, by_name)
+            for link in meta.parse_links(line):
+                target = meta.resolve(link, by_name)
                 if target is None:
                     continue
                 target_doc = by_name[target]
@@ -448,7 +451,8 @@ def element(root: Path, rel_path: str) -> dict:
 
     all_docs = _docs(root)
     names = {doc["name"] for doc in all_docs}
-    links = {target for target in mm.link_names(text, names) if target != name}
+    meta = metamodel.for_project(root)
+    links = {target for target in meta.link_names(text, names) if target != name}
     if target.suffix.lower() == ".md":
         for doc in all_docs:
             if doc["kind"] == "script" and f"{doc['name']}.py" in text:
@@ -463,7 +467,7 @@ def element(root: Path, rel_path: str) -> dict:
             other = doc["file"].read_text(encoding="utf-8")
         except OSError:
             continue
-        hit = mm.references(other, name, names) or (is_script and f"{name}.py" in other)
+        hit = meta.references(other, name, names) or (is_script and f"{name}.py" in other)
         if hit:
             backlinks.append({
                 "name": doc["name"],
@@ -699,7 +703,7 @@ def deterministic_check(root: Path, rel_path: str, content: str) -> dict:
     # 链接目标存在性：指向不存在的文档 → 可能是要新建对象，转复核
     names = {d["name"] for d in _docs(root)}
     stem = Path(rel_path).stem
-    for link in mm.unresolved(content, names | {stem}):
+    for link in metamodel.for_project(root).unresolved(content, names | {stem}):
         review.append(f"[[{link.full_name}]] 指向不存在的文档")
 
     return {"errors": errors, "review": review}

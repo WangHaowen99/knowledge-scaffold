@@ -19,16 +19,11 @@ from __future__ import annotations
 import ast
 import json
 import re
-import sys
 from pathlib import Path
 
+# 同目录的兄弟脚本；后端经共享契约库加载时，由契约库解析到同一版本
+import onto_metamodel as mm
 from operation_relations import sections
-
-try:
-    import onto_metamodel as mm
-except ModuleNotFoundError:  # 后端按文件加载本脚本时，同目录不在 sys.path 上
-    sys.path.append(str(Path(__file__).resolve().parent))
-    import onto_metamodel as mm
 
 ATTRIBUTE_SECTION = "对象属性清单"
 # 从已发布知识包导入的对象沿用包契约格式：`# 字段` 表的「字段 key」列

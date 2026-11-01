@@ -449,8 +449,9 @@ async def breaker(name: str, version: str, request: Request):
 @router.get("/versions")
 def versions(request: Request):
     _read(request)
-    from ..kernel.metamodel import mm
+    from ..kernel import metamodel
 
+    mm = metamodel.stable()
     items = [
         {"category": "kernel", "component": "onto-modeling", "version": _app_version(), "note": None},
         {"category": "kernel", "component": "kernel_api", "version": "1", "note": "API v1"},

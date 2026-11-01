@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from app import config
+from app.kernel import metamodel
 from app.services.packs import builtin, contracts, lockfile
 from app.services.publish.ontology_package import _contract_modules
 from app.services.publish.spi import ReleaseSource
@@ -142,3 +143,79 @@ def test_write_path_syncs_descriptors_with_locked_version(two_versions, monkeypa
     # 目录规范化（存量项目补描述符）也用同一份
     manager.ensure_package_layout(project_id)
     assert calls == [root / "ontology"] * 2
+
+
+# ---- 元模型由契约库按版本加载（方案 C3 与 A16 合流）----
+
+METAMODEL_MARK = "\n# 测试用：标记这是第二个版本\nMETAMODEL_TEST_MARK = 'v2'\n"
+
+
+@pytest.fixture()
+def metamodel_versions(tmp_path: Path, monkeypatch):
+    """同一个数据目录里两个 core 版本：镜像原样的，和 onto_metamodel.py 改过的。"""
+    monkeypatch.setattr(contracts, "_LIBRARIES", {})
+    data = tmp_path / "data"
+    monkeypatch.setattr(config, "DATA_DIR", data)
+    real = WorkspaceManager(data, Path(config.ASSETS_DIR))
+    v1 = real.packs.core_version()
+    modified = tmp_path / "assets2"
+    shutil.copytree(config.ASSETS_DIR, modified, ignore=shutil.ignore_patterns("__pycache__"))
+    target = modified / "workspace-toolkit" / "scripts" / "onto_metamodel.py"
+    target.write_text(target.read_text(encoding="utf-8") + METAMODEL_MARK, encoding="utf-8")
+    v2 = WorkspaceManager(data, modified).packs.core_version()
+    builtin.clear_cache()
+    assert v1 != v2
+    return real, v1, v2
+
+
+def test_core_manifest_declares_metamodel_script():
+    from app.services.packs import checks
+
+    with_extras = Path(config.ASSETS_DIR) / "workspace-toolkit"
+    _manifest, items = checks.run(with_extras)
+    declared = next(item for item in items if item["id"] == "declared")
+    assert declared["result"] == "pass", declared
+
+
+def test_contract_scripts_share_their_versions_metamodel():
+    lib = contracts.default()
+    assert lib.onto_metamodel.__name__ == f"{lib.prefix}.onto_metamodel"
+    # 兄弟脚本 `import onto_metamodel` 解析到同一版本，不再往 sys.path 里塞镜像目录
+    assert lib.operation_relations.mm is lib.onto_metamodel
+    assert lib.script_argument_shape.mm is lib.onto_metamodel
+    assert metamodel.mm.__name__.startswith("onto_contracts.image_")  # 导入期常量用镜像版本
+
+
+def test_metamodel_follows_project_lock_and_stable_channel(metamodel_versions):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.services import auth
+
+    manager, v1, v2 = metamodel_versions
+    old = manager.project_root(manager.create_project("锁定旧版")["id"])
+    new = manager.project_root(manager.create_project("锁定新版")["id"])
+    lock = lockfile.read(new)
+    lock.upsert(manager.packs.entry_for("core", v2, follow=False))
+    lockfile.write(new, lock)
+    manager.packs.apply(new)
+    assert not hasattr(metamodel.for_project(old), "METAMODEL_TEST_MARK")
+    assert metamodel.for_project(new).METAMODEL_TEST_MARK == "v2"
+    # 项目里的解析（Studio 的图谱、条目详情）用的是项目锁定的那一份
+    assert metamodel.for_project(new) is contracts.for_project(new).script_argument_shape.mm
+
+    # 没有项目上下文：跟 stable 通道走（运维推广 v2、再回滚到 v1）
+    manager.packs.repository.set_channel("core", "stable", v2)
+    assert metamodel.stable().METAMODEL_TEST_MARK == "v2"
+    manager.packs.repository.set_channel("core", "stable", v1)
+    assert not hasattr(metamodel.stable(), "METAMODEL_TEST_MARK")
+    assert metamodel.stable() is not metamodel.mm  # 包仓库里的 v1，不是镜像目录那份
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(auth, "ENABLED", False)
+        body = TestClient(app).get("/api/v1/metamodel").json()
+    assert body["version"] == metamodel.stable().METAMODEL_VERSION
+
+
+def test_stable_metamodel_falls_back_to_image_without_repository(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "empty")
+    assert metamodel.stable() is contracts.default().onto_metamodel

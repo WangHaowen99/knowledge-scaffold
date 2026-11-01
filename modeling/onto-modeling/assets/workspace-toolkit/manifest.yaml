@@ -78,6 +78,7 @@ contributes:
     - init_flowchart_resources.py
     - jiuwenbox_client.py
     - knowledge_helper.py
+    - onto_metamodel.py
     - ontology_checker.py
     - operation_relations.py
     - query.py

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from ..kernel.metamodel import mm
+from ..kernel import metamodel as _metamodel
 
 router = APIRouter(prefix="/api/v1", tags=["metamodel"])
 
 
 @router.get("/metamodel")
 def metamodel():
-    return mm.as_dict()
+    """全局接口没有项目上下文：给 stable 通道当前的 core 版本里的元模型。"""
+    return _metamodel.stable().as_dict()

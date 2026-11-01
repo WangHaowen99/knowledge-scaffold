@@ -29,14 +29,15 @@ from pathlib import Path
 from types import ModuleType
 
 from ... import config
-from .repository import file_sha256
+from .manifest import CHECKSUMS_FILE
+from .repository import file_sha256, parse_checksums
 
 _log = logging.getLogger(__name__)
 
 # 契约库里的脚本（P2 拆包后就是 contracts 包的内容）
 NAMES = (
     "operation_relations", "script_argument_shape", "script_contract", "script_descriptor",
-    "solver_evaluator_contract", "research_review", "jiuwenbox_client", "flow_state",
+    "solver_evaluator_contract", "research_review", "jiuwenbox_client", "flow_state", "onto_metamodel",
 )
 _LOCK = threading.RLock()
 _LIBRARIES: dict[str, "ContractLibrary"] = {}
@@ -160,6 +161,31 @@ def for_project(root: Path) -> ContractLibrary:
         if library is None or not library.scripts_dir.is_dir():
             library = ContractLibrary(real / "scripts", f"core-{core.get('version')}-{str(core.get('sha256'))[:8]}",
                                       files=manifest.get("files") or {})
+            _LIBRARIES[key] = library
+        return library
+
+
+def for_stable(repository) -> ContractLibrary:
+    """stable 通道指向的 core 版本：不在项目上下文里、又要跟平台当前默认版本走的地方用它
+    （如全局的元模型接口）。直接从包仓库的版本目录加载，按校验和清单核对；包仓库里还没有 core
+    （没跑过启动核对）时用镜像版本。
+    """
+    version = repository.latest("core", "stable")
+    if not version:
+        return default()
+    directory = repository.version_dir("core", version)
+    try:
+        checksums = (directory / CHECKSUMS_FILE).read_bytes()
+    except OSError:
+        return default()
+    digest = hashlib.sha256(checksums).hexdigest()
+    # 与项目用的同版本库分开缓存：项目那份从它的装配目录加载、按装配清单核对
+    key = f"stable:{repository.root.resolve()}:{version}:{digest[:16]}"
+    with _LOCK:
+        library = _LIBRARIES.get(key)
+        if library is None or not library.scripts_dir.is_dir():
+            library = ContractLibrary(directory / "scripts", f"stable-core-{version}-{digest[:8]}",
+                                      files=parse_checksums(checksums.decode("utf-8")))
             _LIBRARIES[key] = library
         return library
 

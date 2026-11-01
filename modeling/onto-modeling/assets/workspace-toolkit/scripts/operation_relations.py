@@ -13,15 +13,11 @@
 from __future__ import annotations
 
 import re
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-try:
-    import onto_metamodel as mm
-except ModuleNotFoundError:  # 后端按文件加载本脚本时，同目录不在 sys.path 上
-    sys.path.append(str(Path(__file__).resolve().parent))
-    import onto_metamodel as mm
+# 同目录的兄弟脚本；后端经共享契约库加载时，由契约库解析到同一版本
+import onto_metamodel as mm
 
 RELATION_SECTION = "与operation的关联"
 LEGACY_RELATION_SECTION = "与logic的关联"
