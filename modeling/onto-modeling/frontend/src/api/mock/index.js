@@ -644,7 +644,6 @@ export function createMockServer() {
     const items = F.packs().filter((p) => !cats.length || cats.includes(p.category));
     return json(200, { items, counts: { all: items.length }, recommendations: [] });
   });
-  on('GET', '/evidence/sources', () => json(200, F.evidenceSources()));
   on('POST', '/projects/([^/]+)/anchors/resolve', ({ body }) => json(200, {
     items: (body.anchors || []).map((a) => F.ANCHOR_RESOLUTIONS[a] || { anchor: a, scheme: a.split(':')[0], resolved: false, reason: 'not_in_snapshot', source_label: a, location_label: '', text: '', highlights: [], confidence: null, snapshot_id: null, page: null }),
   }));
