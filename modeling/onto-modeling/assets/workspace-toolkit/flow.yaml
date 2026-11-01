@@ -1,0 +1,237 @@
+# 主流程定义（详设 6.1、6.8；方案 D12）：阶段、完成判定、命令前置、下一步建议的唯一来源。
+#
+# 读它的地方（原来散在 5 处，各写一份）：
+# - 后端项目进度（项目列表上的 x/N，原 workspace.STAGES）；
+# - state_helper.py 的 detect-stage / check-prereq / next-step（原 STAGE_ORDER、COMMAND_PREREQS）；
+# - 会话开始的阶段提示（session_start_hook 与宿主注入都经 detect-stage 取阶段）；
+# - /ontology 命令里各阶段的「下一步建议」（经 state_helper.py next-step）；
+# - GET /api/v1/projects/{id}/flow（前端进度条、建模步骤与建议条改读它，原 LeftPane / ChatPane）。
+# 探针怎么算在 scripts/flow_state.py（只用标准库），后端与 state_helper 共用同一份实现。
+# 装配时组装成装配目录里的 flow.yaml（JSON 写法，也是合法 YAML）。
+#
+# P1 保持现有行为：节点就是现有的 10 个阶段加按需的增量更新。按切片的建模节点、全局一致性、
+# 发布节点、节点状态的完整计算在 P2 按详设 6.6、6.8 重排。
+flow_api: 1
+title: 主流程
+
+# 命名探针：节点的完成判定与旧版线性阶段都由它们组合（`!名字` 表示取反）
+probes:
+  research_report: {files: [research], glob: "*.md", recursive: true}
+  research_accepted: {research: accepted}
+  # 资料分析算完成：有报告且验收通过；对象已经提取时验收没过只留提醒、不再挡（issue #362）
+  research_done: {research: done, objects: object}
+  flowchart: {files: [ontology/diagrams], glob: "*.drawio"}
+  object: {files: [ontology/object], glob: "*.md", recursive: true}
+  # ontology/logic 是 operation 的旧目录（ADR-0004）
+  operation: {files: [ontology/operation, ontology/logic], glob: "*.md", recursive: true}
+  rule_metric: {files: [ontology/rule, ontology/metric], glob: "*.md", recursive: true}
+  # 「质量检查完成」统一口径：有校验报告（规则或语义检查，示例数据与流程图的检查报告不算），
+  # 且 reports/ 下没有未处理的 `[ ]` 条目。原来后端与前端看 reports/ 有没有文件，
+  # state_helper 看 validate_last_run，三处各算各的。
+  validation_report:
+    files: [reports]
+    glob: ["*-rule.md", "*-semantic.md"]
+    exclude: ["*-mock-rule.md", "*-diagrams-*.md"]
+  reports_pending: {pending: [reports], glob: "*.md"}
+  mock: {files: [ontology/data-mock]}
+  testcase: {files: [ontology/testcase]}
+  scripts: {files: [ontology/scripts]}
+  solver: {files: [ontology/solver]}
+
+nodes:
+  - id: core.research
+    title: 资料分析
+    kind: agent
+    placement: spine
+    section: required
+    done: [research_done]
+    entry: {command: /ontology-research}
+    actions:
+      - {label: 联网资料分析, command: "/ontology-research "}
+      - {label: 仅本地资料, command: "/ontology-research 仅基于本地文档 "}
+      - {label: 追加分析, command: "/ontology-research 追加"}
+      # 报告挡着后续阶段时，这个入口排到最前
+      - {label: 核验报告, verify: true, command: "运行 python3 .claude/scripts/research_checker.py 核验资料分析报告，逐条列出错误项与来源位置"}
+  - id: core.flowchart
+    title: 流程图
+    kind: agent
+    placement: branch
+    section: optional
+    optional: true
+    after: core.research
+    done: [flowchart]
+    entry: {command: /ontology-flowchart}
+    actions:
+      - {label: 创建/打磨流程图, command: /ontology-flowchart}
+      - {label: 全量刷新, command: /ontology-flowchart 全量刷新}
+      - {label: 校验流程图, command: /ontology-validate-diagrams}
+  - id: core.object
+    title: 对象提取
+    kind: agent
+    placement: spine
+    section: required
+    after: core.research
+    done: [object]
+    entry: {command: /ontology-extract-object}
+    actions:
+      - {label: 提取对象, command: /ontology-extract-object}
+      - {label: 迁移提取, command: "迁移提取业务对象 "}
+  - id: core.operation
+    title: 操作提取
+    kind: agent
+    placement: spine
+    section: required
+    after: core.object
+    done: [operation]
+    entry: {command: /ontology-extract-operation}
+    actions:
+      - {label: 提取操作, command: /ontology-extract-operation}
+  - id: core.rule_metric
+    title: 规则与指标
+    kind: agent
+    placement: branch
+    section: optional
+    optional: true
+    after: core.operation
+    done: [rule_metric]
+    entry: {command: /ontology-extract-rule-metric}
+    actions:
+      - {label: 提取规则与指标, command: /ontology-extract-rule-metric}
+  - id: core.validate
+    title: 质量检查
+    kind: agent
+    placement: spine
+    section: required
+    after: core.operation
+    done: [validation_report, "!reports_pending"]
+    entry: {command: /ontology-validate}
+    actions:
+      - {label: 运行质量检查, command: /ontology-validate}
+  - id: core.mock
+    title: 示例数据
+    kind: agent
+    placement: spine
+    section: required
+    after: core.validate
+    done: [mock]
+    entry: {command: /ontology-mock}
+    actions:
+      - {label: 生成示例数据, command: /ontology-mock}
+  - id: core.trace
+    title: 场景验证
+    kind: agent
+    placement: spine
+    section: required
+    after: core.mock
+    done: [testcase]
+    entry: {command: /ontology-trace}
+    actions:
+      - {label: 批量验证, command: /ontology-trace 全部}
+      - {label: 交互走查, command: /ontology-trace 交互}
+  - id: core.codegen
+    title: 代码生成
+    kind: agent
+    placement: branch
+    section: optional
+    optional: true
+    after: core.trace
+    done: [scripts]
+    entry: {command: /ontology-codegen-scan}
+    actions:
+      - {label: 扫描候选, command: /ontology-codegen-scan}
+      - {label: 生成脚本, command: "/ontology-codegen "}
+  - id: core.solver
+    title: 求解适配
+    kind: agent
+    placement: branch
+    section: optional
+    optional: true
+    after: core.operation
+    done: [solver]
+    # 入口是「求解模型」面板，不走对话命令
+    panel: true
+    actions: []
+  - id: core.update
+    title: 增量更新
+    kind: agent
+    placement: on_demand
+    section: on_demand
+    progress: false
+    after: core.operation
+    done: []
+    entry: {command: /ontology-update}
+    actions:
+      - {label: 增量更新, command: "/ontology-update "}
+
+# state_helper 的 8 级线性阶段（detect-stage 的输出）：命令模板按这些字面量分支，名字不能改。
+# 从低到高排列；判定时从高往低找第一个 when 全部满足的。
+stages:
+  - {name: 未开始, when: []}
+  - {name: 资料分析待核验, when: [research_report]}
+  - {name: 资料分析完成, when: [research_report, research_accepted]}
+  - {name: 流程图就绪, when: [flowchart]}
+  - {name: 对象已提取, when: [object]}
+  - {name: 逻辑已提取, when: [operation]}
+  - {name: 校验待审阅, when: [operation, reports_pending]}
+  - {name: 完成, when: [operation, validation_report, "!reports_pending"]}
+
+# 命令 → 所属节点与前置阶段（check-prereq：每个前置阶段都要已到达，输出 ok 或 missing:…）
+commands:
+  research: {node: core.research, requires: []}
+  flowchart: {node: core.flowchart, requires: []}
+  validate-diagrams: {node: core.flowchart, requires: []}
+  extract-object: {node: core.object, requires: [资料分析完成]}
+  extract-operation: {node: core.operation, requires: [对象已提取]}
+  extract-rule-metric: {node: core.rule_metric, requires: []}
+  validate: {node: core.validate, requires: [逻辑已提取, 对象已提取]}
+  mock: {node: core.mock, requires: [对象已提取]}
+  trace: {node: core.trace, requires: [逻辑已提取]}
+  codegen: {node: core.codegen, requires: [逻辑已提取]}
+  codegen-scan: {node: core.codegen, requires: [逻辑已提取]}
+  solver-evaluator: {node: core.solver, requires: [对象已提取]}
+  update: {node: core.update, requires: [逻辑已提取, 对象已提取]}
+  overview: {requires: [对象已提取]}
+  impact: {requires: [对象已提取]}
+  query: {requires: [对象已提取]}
+  evolution: {requires: [对象已提取]}
+
+# /ontology 各阶段「下一步建议」的条目（state_helper.py next-step 原样输出，命令文档不再各写一份）
+next_steps:
+  未开始:
+    - {reply: 资料分析, command: /ontology-research, text: 先做资料分析}
+    - {reply: 流程图, command: /ontology-flowchart, text: 直接创建流程图}
+    - {line: "或输入 `/ontology <领域名称>` 一键启动（如 `/ontology 电商`）"}
+  资料分析待核验:
+    - {reply: 修正, text: 按错误项修改报告后重新核验}
+    - {reply: 人工确认, text: 你逐条给出结论，我据此补充报告再核验}
+    - {reply: 重新做资料分析, command: /ontology-research, text: 重做本轮资料分析}
+    - {after: 验收通过前不建议提取对象：错误的字段或 ID 会被后续映射、规则与追溯继续沿用。}
+  资料分析完成:
+    - {reply: 流程图, command: /ontology-flowchart, text: 创建业务流程图（流程复杂或多子流程交叉时推荐）}
+    - {reply: 提取对象, command: /ontology-extract-object, text: 跳过流程图，直接从资料分析报告提取对象（概念清晰、流程线性时推荐）}
+    - {reply: 追加资料分析, command: /ontology-research, text: 补充分析方向}
+  流程图就绪:
+    - {reply: 提取对象, command: /ontology-extract-object, text: 开始提取业务对象}
+    - {reply: 校验流程图, command: /ontology-validate-diagrams, text: 先打磨流程图}
+  对象已提取:
+    - {reply: 提取逻辑, command: /ontology-extract-operation, text: 提取业务逻辑}
+  逻辑已提取:
+    - {reply: 校验, command: /ontology-validate, text: 开始校验}
+    - {reply: 规则与指标, command: /ontology-extract-rule-metric, text: 补抽规则/指标：有资料分析报告的项目在逻辑提取阶段已按分类分流，这里用于从存量 operation 文档与 object 属性规则列补抽遗漏（可选）}
+    - {reply: 整体视图, command: /ontology-overview, text: 先看全局关系}
+    - {reply: 更新, command: /ontology-update, text: 按新的参考内容增量更新已有 ontology}
+  校验待审阅:
+    - {reply: 继续校验, command: /ontology-validate, text: 继续处理问题清单}
+  完成:
+    - {reply: 测试数据, command: /ontology-mock, text: 生成测试数据}
+    - {reply: 追踪, command: /ontology-trace, text: 场景追踪验证}
+    - {reply: 交互走查, command: /ontology-trace 交互, text: 逐个分支由你选方向，AI 辅助构造 testcase 和正常 mock 数据}
+    - {reply: 扫描候选, command: /ontology-codegen-scan, text: 看哪些逻辑适合转脚本（推荐先扫一遍）}
+    - {reply: 代码生成, command: /ontology-codegen, text: 生成 Python 代码}
+    - {reply: 整体视图, command: /ontology-overview, text: 查看对象/逻辑全局关系}
+    - {reply: 再校验, command: /ontology-validate, text: 重新校验}
+    - {reply: 更新, command: /ontology-update, text: 按新的参考内容更新已有 ontology}
+    - {reply: 补充对象, command: /ontology-extract-object, text: 增量补充对象}
+    - {reply: 补充逻辑, command: /ontology-extract-operation, text: 增量补充逻辑}
+    - {reply: 追加资料分析, command: /ontology-research, text: 追加资料分析}
+    - {reply: 版本历史, command: /version, text: 查看历史}

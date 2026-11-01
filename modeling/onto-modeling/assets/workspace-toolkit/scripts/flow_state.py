@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""
+流程探针 —— 按主流程定义（flow.yaml）计算各节点是否完成、旧版线性阶段、命令前置与下一步建议条目。
+
+主流程只有一份定义：`.claude/flow.yaml`。state_helper.py（detect-stage / check-prereq /
+next-step）与 Web 后端（项目进度、GET /flow）共用本文件的实现，不再各写一份阶段表。
+
+装配目录里的 flow.yaml 是组装后的 JSON 写法（也是合法 YAML），这里只用标准库 json 读；
+直接指向工具箱源目录时是 YAML 源文件，退回 PyYAML 读。
+
+只用标准库（PyYAML 仅作源文件的退路），不调用模型。
+"""
+
+from __future__ import annotations
+
+import fnmatch
+import json
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parent))
+import research_review  # noqa: E402
+
+FLOW_FILE = Path(__file__).resolve().parent.parent / 'flow.yaml'
+
+
+def load_flow(path: Path | None = None) -> dict:
+    """读主流程定义；装配后的 JSON 写法优先，YAML 源文件用 PyYAML。"""
+    text = Path(path or FLOW_FILE).read_text(encoding='utf-8')
+    try:
+        return json.loads(text)
+    except ValueError:
+        import yaml  # 只有直接指向工具箱源目录时才会走到这里
+
+        return yaml.safe_load(text) or {}
+
+
+# ---- 探针 ----
+
+
+def _as_list(value) -> list:
+    if value is None:
+        return []
+    return list(value) if isinstance(value, (list, tuple)) else [value]
+
+
+def _visible(path: Path) -> bool:
+    return not path.name.startswith('.') and path.name.lower() != 'index.md'
+
+
+def _has_files(root: Path, spec: dict) -> bool:
+    """目录里有没有符合 glob 的条目：隐藏文件与 index.md 不算；recursive 时只认文件。"""
+    globs = _as_list(spec.get('glob')) or ['*']
+    exclude = _as_list(spec.get('exclude'))
+    recursive = bool(spec.get('recursive'))
+    for rel in _as_list(spec.get('files')):
+        base = root / rel
+        if not base.is_dir():
+            continue
+        entries = base.rglob('*') if recursive else base.iterdir()
+        for path in entries:
+            if not _visible(path) or (recursive and not path.is_file()):
+                continue
+            if recursive and any(part.startswith('.') for part in path.relative_to(base).parts):
+                continue
+            name = path.name
+            if any(fnmatch.fnmatch(name, pattern) for pattern in globs) and not any(
+                fnmatch.fnmatch(name, pattern) for pattern in exclude
+            ):
+                return True
+    return False
+
+
+def _has_pending(root: Path, spec: dict) -> bool:
+    """报告里有没有未处理的 `[ ]` 条目（只看目录第一层）。"""
+    globs = _as_list(spec.get('glob')) or ['*.md']
+    for rel in _as_list(spec.get('pending')):
+        base = root / rel
+        if not base.is_dir():
+            continue
+        for path in sorted(base.iterdir()):
+            if not path.is_file() or not any(fnmatch.fnmatch(path.name, g) for g in globs):
+                continue
+            try:
+                if '[ ]' in path.read_text(encoding='utf-8', errors='ignore'):
+                    return True
+            except OSError:
+                continue
+    return False
+
+
+def evaluate(flow: dict, root: Path) -> dict:
+    """全部命名探针 → bool。"""
+    root = Path(root)
+    probes = flow.get('probes') or {}
+    results: dict = {}
+    review = None
+
+    def research_status():
+        nonlocal review
+        if review is None:
+            review = research_review.review_status(root)
+        return review['status']
+
+    def value(name: str) -> bool:
+        if name in results:
+            return results[name]
+        spec = probes.get(name) or {}
+        if 'files' in spec:
+            result = _has_files(root, spec)
+        elif 'pending' in spec:
+            result = _has_pending(root, spec)
+        elif spec.get('research') == 'accepted':
+            result = research_review.accepted(root)
+        elif spec.get('research') == 'done':
+            status = research_status()
+            blocking = status in (research_review.PENDING, research_review.FAILED, research_review.UNVERIFIABLE)
+            objects = value(spec['objects']) if spec.get('objects') else False
+            result = status != research_review.NONE and not (blocking and not objects)
+        else:
+            result = False
+        results[name] = result
+        return result
+
+    for name in probes:
+        value(name)
+    return results
+
+
+def _holds(conditions, probes: dict) -> bool:
+    for condition in _as_list(conditions):
+        name = str(condition)
+        negate = name.startswith('!')
+        if bool(probes.get(name.lstrip('!'))) == negate:
+            return False
+    return True
+
+
+def node_hits(flow: dict, root: Path, probes: dict | None = None) -> dict:
+    """节点 ID → 完成判定是否满足（done 为空的按需节点恒为 False）。"""
+    probes = probes if probes is not None else evaluate(flow, root)
+    return {
+        node['id']: bool(_as_list(node.get('done'))) and _holds(node.get('done'), probes)
+        for node in flow.get('nodes') or []
+    }
+
+
+def progress_nodes(flow: dict) -> list:
+    """计入进度（x/N）的节点：按需节点（progress: false）不算。"""
+    return [node for node in flow.get('nodes') or [] if node.get('progress', True)]
+
+
+def progress(flow: dict, root: Path, probes: dict | None = None) -> dict:
+    hits = node_hits(flow, root, probes)
+    nodes = progress_nodes(flow)
+    return {'done': sum(1 for node in nodes if hits[node['id']]), 'total': len(nodes), 'hits': hits}
+
+
+# ---- 旧版线性阶段（state_helper 兼容层）----
+
+
+def stage_names(flow: dict) -> list:
+    return [stage['name'] for stage in flow.get('stages') or []]
+
+
+def stage_level(flow: dict, name: str) -> int:
+    names = stage_names(flow)
+    return names.index(name) if name in names else 0
+
+
+def legacy_stage(flow: dict, root: Path, probes: dict | None = None) -> str:
+    """从高往低找第一个条件全满足的阶段（已到达的最高阶段优先）。"""
+    probes = probes if probes is not None else evaluate(flow, root)
+    stages = flow.get('stages') or []
+    for stage in reversed(stages):
+        if _holds(stage.get('when'), probes):
+            return stage['name']
+    return stages[0]['name'] if stages else ''
+
+
+def missing_prereqs(flow: dict, command: str, stage: str) -> list:
+    """命令前置：每个要求的阶段都要已到达；返回没到达的阶段。"""
+    spec = (flow.get('commands') or {}).get(command) or {}
+    level = stage_level(flow, stage)
+    return [req for req in _as_list(spec.get('requires')) if level < stage_level(flow, req)]
+
+
+def command_node(flow: dict, command: str) -> str | None:
+    """命令（不带斜杠与 ontology- 前缀）所属的节点。"""
+    spec = (flow.get('commands') or {}).get(command) or {}
+    return spec.get('node')
+
+
+def next_step_lines(flow: dict, stage: str) -> list:
+    """/ontology 在某个阶段给出的「下一步建议」条目，逐行原样输出。"""
+    lines = []
+    for item in (flow.get('next_steps') or {}).get(stage) or []:
+        if 'line' in item:
+            lines.append(f"- {item['line']}")
+        elif 'after' in item:
+            lines.append(str(item['after']))
+        elif item.get('command'):
+            lines.append(f"- 回复 **{item['reply']}**（{item['command']}）→ {item['text']}")
+        else:
+            lines.append(f"- 回复 **{item['reply']}** → {item['text']}")
+    return lines
+
+
+def main(argv: list) -> int:
+    """调试入口：python3 flow_state.py [项目目录] → 打印阶段、进度与各节点完成情况。"""
+    root = Path(argv[1]) if len(argv) > 1 else Path('.')
+    flow = load_flow()
+    probes = evaluate(flow, root)
+    info = progress(flow, root, probes)
+    print(json.dumps({'stage': legacy_stage(flow, root, probes), 'done': info['done'],
+                      'total': info['total'], 'nodes': info['hits']}, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

@@ -203,28 +203,6 @@ class WorkspaceCore:
         _git(root, "commit", "-m", "init: 任务工作区基线", "--allow-empty")
         return meta
 
-    # 与前端 LeftPane STAGES 一一对应的目录探针；完成数与前端 stageStatuses 的
-    # finish 数一致：逐阶段独立计数，必选阶段缺失不截断后续（导入包、空 research/
-    # 等后续阶段已有产物的项目不再显示 0）。optional 只决定前端展示，不影响计数。
-    # index.md 是目录索引，不算产物。
-    # ontology/logic 是旧目录别名（范式升级 ADR-0004），探针两者取或。
-    STAGES = (
-        (("research",), False),
-        (("ontology/diagrams",), True),
-        (("ontology/object",), False),
-        (("ontology/operation", "ontology/logic"), False),
-        (("ontology/rule", "ontology/metric"), True),
-        (("reports",), False),
-        (("ontology/data-mock",), False),
-        (("ontology/testcase",), False),
-        (("ontology/scripts",), True),
-        # 求解适配（可选）：受管目录 ontology/solver/<key>/
-        (("ontology/solver",), True),
-    )
-    STAGE_TOTAL = len(STAGES)
-    # 资料分析在 STAGES 中的位置：它不按目录探针判完成，改读验收回执（issue #362）
-    RESEARCH_STAGE_INDEX = 0
-
     @staticmethod
     def _dir_has_entries(directory: Path) -> bool:
         if not directory.is_dir():
@@ -237,25 +215,20 @@ class WorkspaceCore:
 
     @classmethod
     def _project_progress(cls, root: Path) -> dict:
+        """项目列表上的阶段进度：节点与完成判定都来自主流程定义 flow.yaml（方案 D12），
+        与 state_helper、GET /flow 同一份。"""
+        from ..flow import model as flow_model
+
         _research_review = _research_review_for(root)
         review = _research_review.review_status(root)
         # 验收只管"进入对象提取之前"：报告没通过、对象也还没提取时才挡住后续阶段。
         # 对象一旦提取，资料分析按已越过处理，只留待核验的提醒——与 state_helper
-        # 的"已到达的最高阶段优先"同口径。否则旧项目升级后进度会整体归零，回执
-        # 因打标签、换数据表而失效时也一样。
+        # 的"已到达的最高阶段优先"同口径（flow.yaml 的 research_done 探针）。
+        progress = flow_model.progress(root)
         research_blocking = (
             review["status"] in (_research_review.PENDING, _research_review.FAILED, _research_review.UNVERIFIABLE)
-            and not cls._dir_has_entries(root / "ontology" / "object")
+            and not progress["probes"].get("object")
         )
-        done = 0
-        for index, (dirs, _optional) in enumerate(cls.STAGES):
-            hit = any(cls._dir_has_entries(root / rel) for rel in dirs)
-            # 资料分析：报告落盘不等于内容已验收，挡着的时候不计完成（与前端 stageHits 同口径）。
-            # 有没有报告以回执状态为准，不看目录探针。
-            if index == cls.RESEARCH_STAGE_INDEX:
-                hit = review["status"] != _research_review.NONE and not research_blocking
-            if hit:
-                done += 1
 
         def count_md(rel: str) -> int:
             directory = root / rel
@@ -266,8 +239,8 @@ class WorkspaceCore:
             )
 
         return {
-            "stages_done": done,
-            "stages_total": cls.STAGE_TOTAL,
+            "stages_done": progress["done"],
+            "stages_total": progress["total"],
             # 资料分析的验收状态（none/pending/failed/passed）+ 计数与下一步提示。
             # 只给结论和条数，错误明细由 research_checker 在工作区内输出。
             # blocking：未验收是否还挡着后续阶段；前端据此决定阶段完成态，不自行推断。

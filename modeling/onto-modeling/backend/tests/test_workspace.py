@@ -74,7 +74,8 @@ def test_project_progress_counts_stages_after_missing_required(manager: Workspac
     root = manager.project_root(meta["id"])
     _write(root, "ontology/object/订单.md", "# 订单")
     _write(root, "ontology/operation/创建订单.md", "# 创建订单")
-    _write(root, "reports/quality.md", "# 质量检查")
+    # 质量检查完成的统一口径（flow.yaml）：有校验报告且没有未处理的 [ ]
+    _write(root, "reports/20260101-120000-all-rule.md", "# 质量检查")
     _write(root, "ontology/testcase/下单.md", "# 下单")
 
     overview = next(p for p in manager.list_projects() if p["id"] == meta["id"])
@@ -96,11 +97,11 @@ def test_project_progress_full_chain_reaches_total(manager: WorkspaceManager):
     root = manager.project_root(meta["id"])
     for rel in (
         "research/资料.md",
-        "ontology/diagrams/流程.md",
+        "ontology/diagrams/流程.drawio",
         "ontology/object/订单.md",
         "ontology/logic/创建订单.md",  # 旧目录别名同样命中操作阶段
         "ontology/metric/客单价.md",
-        "reports/quality.md",
+        "reports/20260101-120000-all-semantic.md",
         "ontology/data-mock/订单.json",
         "ontology/testcase/下单.md",
         "ontology/scripts/calc.py",

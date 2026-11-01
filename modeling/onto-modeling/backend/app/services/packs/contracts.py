@@ -108,8 +108,12 @@ class ContractLibrary:
         return namespace
 
 
+# 镜像目录在进程启动时定下（镜像不可变；与原来模块导入时加载的行为一致，测试改 ASSETS_DIR 不影响它）
+_IMAGE_SCRIPTS = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts"
+
+
 def _image_scripts() -> Path:
-    return Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts"
+    return _IMAGE_SCRIPTS
 
 
 def _image_tag(scripts_dir: Path) -> str:

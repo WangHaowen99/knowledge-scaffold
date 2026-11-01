@@ -22,7 +22,12 @@ State helper — 单一文件管理所有命令的执行锁与进度快照。
     release <command>                   正常结束时释放锁
     update-progress <key> <value> …     键值对更新 progress.json
     show-progress                       打印 progress.json
-    detect-stage                        扫描 ontology/ 目录，推断当前建模阶段
+    detect-stage                        按主流程定义推断当前建模阶段
+    check-prereq <command>              命令前置：ok 或 missing:{阶段},{阶段}
+    next-step [阶段]                    /ontology 的「下一步建议」条目（缺省取当前阶段）
+
+阶段、命令前置与下一步建议都来自主流程定义 `.claude/flow.yaml`（flow_state.py 解释），
+本文件不再自带阶段表（方案 D12；命令模板按 detect-stage 的 8 个阶段名分支，名字不变）。
 """
 
 import json
@@ -34,7 +39,7 @@ import time
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent))
-import research_review
+import flow_state
 
 STATE_DIR = Path('.ontology-state')
 PROGRESS_FILE = STATE_DIR / 'progress.json'
@@ -366,121 +371,39 @@ def show_progress() -> int:
     return 0
 
 
-# 阶段推断
-# 资料分析（research）保持启用，是常规建模起点之一。提取已拆为 object / operation
-# 两个命令，阶段终点以 operation 文档存在为准。
+# 阶段推断：全部按主流程定义（flow.yaml）计算，见 flow_state.py。
 # `资料分析待核验`：报告已落盘但没通过 research_checker 的内容验收。报告存在不等于
 # 内容可用，所以它独立成一个阶段，不并入 `资料分析完成`（见 research_review.py）。
-STAGE_ORDER = [
-    ('未开始', '未开始'),
-    ('资料分析待核验', '资料分析待核验'),
-    ('资料分析完成', '资料分析完成'),
-    ('流程图就绪', '流程图就绪'),
-    ('对象已提取', '对象已提取'),
-    ('逻辑已提取', '逻辑已提取'),
-    ('校验待审阅', '校验待审阅'),
-    ('完成', '完成'),
-]
+_FLOW = None
 
 
-def _has_md_files(path: Path) -> bool:
-    return path.exists() and any(f for f in path.rglob('*.md') if f.name.lower() != 'index.md')
-
-
-def _has_drawio_files(path: Path) -> bool:
-    return path.exists() and any(path.glob('*.drawio'))
-
-
-# 每个命令的前置阶段要求。
-# 注意：
-# - extract-object 只要求"有资料分析报告或流程图之一"。`未开始` 状态会触发
-#   跳步守卫，提示用户先画流程图或显式做资料分析（/ontology-research）。
-# - extract-operation 要求对象已提取；逻辑提取完成即可校验、生成代码。
-COMMAND_PREREQS = {
-    'research': [],
-    'flowchart': [],
-    'extract-object': ['资料分析完成'],
-    'extract-operation': ['对象已提取'],
-    'validate': ['逻辑已提取', '对象已提取'],
-    'mock': ['对象已提取'],
-    'trace': ['逻辑已提取'],
-    'codegen': ['逻辑已提取'],
-    'codegen-scan': ['逻辑已提取'],
-    'solver-evaluator': ['对象已提取'],
-    'overview': ['对象已提取'],
-    'impact': ['对象已提取'],
-    'query': ['对象已提取'],
-    'update': ['逻辑已提取', '对象已提取'],
-    'evolution': ['对象已提取'],
-}
-
-STAGE_SORT = {
-    '未开始': 0,
-    '资料分析待核验': 1,
-    '资料分析完成': 2,
-    '流程图就绪': 3,
-    '对象已提取': 4,
-    '逻辑已提取': 5,
-    '校验待审阅': 6,
-    '完成': 7,
-}
-
-STAGE_NEXT_COMMAND = {
-    '未开始': ('/ontology-research 或 /ontology-flowchart', '资料分析或直接画流程图'),
-    '资料分析待核验': ('python3 .claude/scripts/research_checker.py', '核验资料分析报告内容后才能提取对象'),
-    '资料分析完成': ('/ontology-flowchart 或 /ontology-extract-object', '可选画流程图或直接提取对象'),
-    '流程图就绪': ('/ontology-extract-object', '提取业务对象'),
-    '对象已提取': ('/ontology-extract-operation', '继续提取业务逻辑'),
-    '逻辑已提取': ('/ontology-validate', '进入校验'),
-}
+def _flow() -> dict:
+    global _FLOW
+    if _FLOW is None:
+        _FLOW = flow_state.load_flow()
+    return _FLOW
 
 
 def _compute_stage() -> str:
-    research_has = _has_md_files(Path('research'))
-    diagrams_has = _has_drawio_files(Path('ontology/diagrams'))
-    objects_has = _has_md_files(Path('ontology/object'))
-    operation_has = _has_md_files(Path('ontology/operation')) or _has_md_files(Path('ontology/logic'))
-    reports_path = Path('reports')
-    reports_has_pending = False
-    if reports_path.exists():
-        for f in reports_path.glob('*.md'):
-            if '[ ]' in f.read_text(encoding='utf-8', errors='ignore'):
-                reports_has_pending = True
-                break
-    progress = _load_progress()
-    validate_done = bool(progress.get('validate_last_run'))
     # 高阶段优先：即便上游产物被删（/ontology-update 中断、用户手动清理），
     # 已抵达的最高阶段仍可见，状态机不再误退回 '未开始'。
-    if operation_has and reports_has_pending:
-        return '校验待审阅'
-    if operation_has and validate_done:
-        return '完成'
-    if operation_has:
-        return '逻辑已提取'
-    if objects_has:
-        return '对象已提取'
-    if diagrams_has:
-        return '流程图就绪'
-    if research_has:
-        # 报告以内容验收为准：没有有效回执时只到 `资料分析待核验`，不放行对象提取。
-        return '资料分析完成' if research_review.accepted(Path('.')) else '资料分析待核验'
-    return '未开始'
+    return flow_state.legacy_stage(_flow(), Path('.'))
 
 
 def check_prereq(command: str) -> int:
     """输出 ok 或 missing:{阶段},{阶段}"""
-    reqs = COMMAND_PREREQS.get(command, [])
-    stage = _compute_stage()
-    current_level = STAGE_SORT.get(stage, 0)
-    missing = []
-    for req in reqs:
-        req_level = STAGE_SORT.get(req, 0)
-        if current_level < req_level:
-            missing.append(req)
+    missing = flow_state.missing_prereqs(_flow(), command, _compute_stage())
     if missing:
         print(f'missing:{",".join(missing)}')
         return 0
     print('ok')
+    return 0
+
+
+def next_step(stage: str | None = None) -> int:
+    """逐行打印某阶段的「下一步建议」条目（/ontology 原样展示）。"""
+    for line in flow_state.next_step_lines(_flow(), stage or _compute_stage()):
+        print(line)
     return 0
 
 
@@ -523,6 +446,8 @@ def main():
     if cmd == 'check-prereq':
         name = need('check-prereq <command>')
         return 1 if name is None else check_prereq(name)
+    if cmd == 'next-step':
+        return next_step(args[0] if args else None)
     print(f'unknown subcommand: {cmd}', file=sys.stderr)
     return 1
 
