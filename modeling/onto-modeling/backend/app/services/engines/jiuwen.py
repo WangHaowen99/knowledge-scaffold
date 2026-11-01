@@ -16,8 +16,8 @@
 - 目录分层：DeepAgentConfig.cwd = 项目 git 工作区（文件/Shell 工具的根），
   workspace = DATA_DIR/jiuwen/<pid>（框架私有工件区），互不污染；子代理工件区
   再下沉到 workspace/sub_agents（必须与主 agent 分开，见 _general_purpose_spec）
-- hook：只执行 PreToolUse 守卫（jiuwen_assets.ClaudeHooksRail）；SessionStart 的阶段提示与
-  UserPromptSubmit 的业务知识信号改由宿主注入（session_host/injection.py），每条消息
+- hook：只执行 PreToolUse 守卫（jiuwen_assets.ClaudeHooksRail）；阶段提示、统一下一步与
+  业务知识信号由宿主注入（session_host/injection.Injector，两个引擎同一份），每条消息
   送达模型时拼在 query 前面
 
 同步 task_tool 的子代理执行步骤由 jiuwen_progress.py 通过 Rail 回调送回主事件队列；
@@ -563,7 +563,8 @@ def _history_to_messages(events: list[dict], char_budget: int = _REPLAY_CHAR_BUD
     for event in events[start:]:
         etype = event.get("type")
         if etype == "user_message":
-            text = (event.get("text") or "").strip()
+            # 宿主记下的发给模型的原文（附件说明、引用条目）优先，没有时用界面显示的原文
+            text = (event.get("prompt") or event.get("text") or "").strip()
             if text:
                 pairs.append(("user", text))
         elif etype == "assistant_message":
@@ -614,9 +615,8 @@ class JiuwenEngine(ObservableEngine):
         self._queue: asyncio.Queue = asyncio.Queue()
         self._turn_task: asyncio.Task | None = None
         self._buffered: list[str] = []  # 轮内追加的消息（用户原文），本轮结束后接续
-        # 宿主注入（session_host.injection）：本实例是否已送出过消息、模型已看到的阶段提示摘要
-        self._session_started = False
-        self._stage_digest: str | None = None
+        # 宿主注入（session_host.injection.Injector，方案 B4）：宿主经 ctx 给，单测直接构造时自建
+        self._injector = ctx.injector or injection.Injector(ctx.cwd)
         # 上下文引擎与流式运行都按这个 id 寻址：每条会话一个，default 沿用单会话时期的值
         self._sid = f"onto-{ctx.project_id}"
         if ctx.conversation_id != "default":
@@ -811,19 +811,11 @@ class JiuwenEngine(ObservableEngine):
         """
         expanded = self._loader.expand_command(text)
         try:
-            result = await asyncio.to_thread(
-                injection.build_context,
-                self._ctx.cwd,
-                user_text=text,
-                session_start=not self._session_started,
-                last_injected=self._stage_digest,
-            )
+            context = await asyncio.to_thread(self._injector.context_for, text)
         except Exception as exc:
             self._ctx.log_error("injection", str(exc))
             return expanded
-        self._session_started = True
-        self._stage_digest = result.digest
-        return injection.compose_query(expanded, result.text)
+        return injection.compose_query(expanded, context)
 
     async def interrupt(self) -> None:
         agent = self.client
@@ -990,7 +982,7 @@ class JiuwenEngine(ObservableEngine):
                     queries.append(self._buffered.pop(0))
         except asyncio.CancelledError:
             # 被打断的这轮未必进了存档，模型不一定看到了这次的阶段提示：下一条重新带上
-            self._stage_digest = None
+            self._injector.forget()
             await self._progress_tracker.finish_all("stopped")
             context_usage = self._context_usage_event()
             if context_usage:

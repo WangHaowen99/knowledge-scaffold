@@ -30,9 +30,9 @@ CLI_KEEP = frozenset({
     "DISABLE_AUTOUPDATER", "IS_SANDBOX", "MAX_THINKING_TOKENS", "TRACEPARENT", "TRACESTATE",
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
 })
-CLI_PREFIXES = ("ANTHROPIC_", "CLAUDE_", "CLAUDECODE")
-# agent 的 bash 能看到的：项目目录等 CLI 设的非密钥变量、git 的非密钥变量
-SHELL_PREFIXES = ("CLAUDE_", "GIT_")
+CLI_PREFIXES = ("ANTHROPIC_", "CLAUDE_", "CLAUDECODE", "ONTO_RUN_")
+# agent 的 bash 能看到的：项目目录等 CLI 设的非密钥变量、git 的非密钥变量、会话身份（ONTO_RUN_*，方案 B7）
+SHELL_PREFIXES = ("CLAUDE_", "GIT_", "ONTO_RUN_")
 # 凭据类变量名：bash 环境里一律不带（模型 Key、令牌、口令、cookie……）
 SECRET_NAME = re.compile(r"(?i)(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE|AUTH|SESSION_ID)")
 _USERINFO_URL = re.compile(r"://[^/@\s]+@")

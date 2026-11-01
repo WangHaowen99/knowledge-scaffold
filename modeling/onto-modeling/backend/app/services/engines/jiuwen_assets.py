@@ -195,7 +195,10 @@ def run_hooks_sync(
         {"tool_name": mapped, "tool_input": tool_input, "cwd": str(cwd)}, ensure_ascii=False
     )
     # 守卫脚本在工作区 .claude/ 下：不带后端进程的 Key 与凭据；项目根与 Claude CLI 一样经 CLAUDE_PROJECT_DIR 给
-    env = {**minimal_env(), "CLAUDE_PROJECT_DIR": str(cwd)}
+    from ...governance import agent_identity
+
+    # 会话身份（方案 B7）：提交检查据此认出 agent 的提交、交给 git 提交钩子去查（方案 C11）
+    env = {**minimal_env(), **agent_identity.identity_for_cwd(cwd), "CLAUDE_PROJECT_DIR": str(cwd)}
     for pattern, commands in entries:
         if not pattern.match(mapped):
             continue

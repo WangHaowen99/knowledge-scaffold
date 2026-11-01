@@ -268,12 +268,21 @@ def test_members_without_personal_key_share_one_engine(pool, tmp_path):
     asyncio.run(scenario())
 
 
-def test_sender_personal_key_used_and_switch_back(pool, tmp_path):
+def _own(data_dir: Path, project_id: str, owner: str) -> None:
+    """项目元数据里的所有者（会话的模型配置归属看它，方案 B3）。"""
+    meta = data_dir / "workspaces" / project_id / ".onto-web.json"
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text(json.dumps({"id": project_id, "owner": owner}), encoding="utf-8")
+
+
+def test_owner_personal_key_used_whoever_sends(pool, data_dir, tmp_path):
+    """模型配置固定用项目所有者的（方案 B3）：别人（或后端内部）发消息也用所有者的 Key，不换人、不 409。"""
     manager, created = pool
+    _own(data_dir, "p1", "employee_0001")
     personal_model_settings.save("employee_0001", "claude", "", USER_KEY, "")
 
     async def scenario():
-        await manager.send("p1", tmp_path, "一", username="employee_0001")
+        await manager.send("p1", tmp_path, "一", username="employee_0002")
         session = await _settle(manager, "p1")
         assert session.model_owner == "employee_0001"
         assert created[0].options.env["ANTHROPIC_AUTH_TOKEN"] == USER_KEY
@@ -282,14 +291,28 @@ def test_sender_personal_key_used_and_switch_back(pool, tmp_path):
         assert flag_env["ANTHROPIC_AUTH_TOKEN"] == USER_KEY
         assert all(name.startswith("ANTHROPIC_") for name in flag_env)
 
-        # 本轮没结束，另一成员发消息：拒绝，不能让他的消息花 employee_0001 的 Key
-        with pytest.raises(SessionError) as exc:
-            await manager.send("p1", tmp_path, "插话", username="employee_0002")
-        assert exc.value.status == 409
-        assert created[0].queries == ["一"]
+        # 本轮没结束时再发：仍是所有者的配置，消息排在这一步后面送达，不重连
+        await manager.send("p1", tmp_path, "补充", username="")
+        assert len(created) == 1
+        assert created[0].queries == ["一", "补充"]
+        await manager.shutdown()
 
+    asyncio.run(scenario())
+
+
+def test_owner_clearing_personal_key_reconnects_with_admin_config(pool, data_dir, tmp_path):
+    """所有者清掉个人 Key：归属计入会话指纹，下一条消息前按管理员配置重连。"""
+    manager, created = pool
+    _own(data_dir, "p1", "employee_0001")
+    personal_model_settings.save("employee_0001", "claude", "", USER_KEY, "")
+
+    async def scenario():
+        await manager.send("p1", tmp_path, "一", username="employee_0001")
+        session = await _settle(manager, "p1")
+        assert created[0].options.env["ANTHROPIC_AUTH_TOKEN"] == USER_KEY
         session.state = "idle"
-        await manager.send("p1", tmp_path, "二", username="employee_0002")
+        personal_model_settings.clear("employee_0001", "claude")
+        await manager.send("p1", tmp_path, "二", username="employee_0001")
         session = await _settle(manager, "p1")
         assert session.model_owner == ""
         assert len(created) == 2
@@ -301,15 +324,16 @@ def test_sender_personal_key_used_and_switch_back(pool, tmp_path):
     asyncio.run(scenario())
 
 
-def test_send_with_undecryptable_personal_key_fails_fast(pool, tmp_path, monkeypatch):
+def test_send_with_undecryptable_personal_key_fails_fast(pool, data_dir, tmp_path, monkeypatch):
     manager, created = pool
+    _own(data_dir, "p1", "employee_0001")
     monkeypatch.setenv("ONTO_WEB_MODEL_SECRET_KEY", "x" * 40)
     personal_model_settings.save("employee_0001", "claude", "", USER_KEY, "")
     monkeypatch.setenv("ONTO_WEB_MODEL_SECRET_KEY", "y" * 40)
 
     async def scenario():
         with pytest.raises(SessionError) as exc:
-            await manager.send("p1", tmp_path, "一", username="employee_0001")
+            await manager.send("p1", tmp_path, "一", username="employee_0002")
         assert exc.value.status == 409
         assert created == []
         await manager.shutdown()

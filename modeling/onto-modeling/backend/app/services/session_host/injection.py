@@ -1,21 +1,25 @@
-"""两轮对话之间由宿主注入给模型的上下文（后端改造方案 B4，ADR-0022）。
+"""两轮对话之间由宿主注入给模型的上下文（详设 4.2 目标 4、6.10；方案 B4；ADR-0022、ADR-0034）。
 
-Claude 引擎靠工具箱的两个 hook 拿到这些内容：SessionStart 的 `session_start_hook.sh`
-（阶段、进行中的命令、最近报告）和 UserPromptSubmit 的 `knowledge_signal_probe.sh`
-（业务知识信号词）。Jiuwen 引擎只执行 PreToolUse hook，两者都收不到。这里把它们移植成
-与引擎无关的同一个入口 `build_context`：现在由 Jiuwen 引擎在每条消息送达模型前调用，
-P2 两个引擎都改走它（引擎协议 `send(text, context)`），届时两个 hook 退役。
+两个引擎都由宿主注入，不再靠 SessionStart、UserPromptSubmit 两个 hook（Jiuwen 只执行 PreToolUse，
+原来收不到；Claude 的两个 hook 已退役）。注入三样东西：
 
-- 阶段提示：引擎实例的第一条消息必带；之后内容不变不重复，会话常驻期间阶段变了就再带；
-- 业务知识信号：每条消息单独判断，探测的是用户原文，不是斜杠命令展开后的全文。
+- 阶段提示：当前阶段、进行中的命令、最近报告（原 `session_start_hook.sh` 的内容，逐字一致）；
+- 统一「下一步」：与界面建议条（FL-02）同一份结果，助手回复末尾的「下一步建议」按它给。计算由
+  登记的提供方给（`register_next_step_provider`，B4b 的 `state_helper suggest` 接上之前用 FL-02）；
+- 业务知识信号：用户原话里的纠错、规范信号词（原 `knowledge_signal_probe.sh`），每条消息单独判断，
+  探测的是用户原文，不是斜杠命令展开后的全文。
 
-注入内容只进发给模型的消息，不进用户可见的会话历史。
+宿主给每个引擎实例建一个 `Injector`（经 EngineContext 交给引擎）：引擎在消息真正送到模型的那一刻
+调 `context_for(原文)`——Claude 在 send() 时，Jiuwen 在轮内积压的消息开始跑时——阶段与下一步按
+那一刻算。实例的第一条消息必带阶段与下一步，之后内容不变不重复；这一轮被打断（模型不一定看到了）
+时 `forget()`，下一条重新带上。注入内容只进发给模型的消息，不进用户可见的会话历史。
 """
 
 from __future__ import annotations
 
 import hashlib
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,9 +29,49 @@ from ..script_env import minimal_env
 # 与 Jiuwen 守卫 hook 的超时一致；超时按 hook 超时处理，本条不带阶段提示
 _STAGE_TIMEOUT_SECONDS = 15
 
-# 两类信号词与 knowledge_signal_probe.sh（即 BUSINESS_KNOWLEDGE_SNIPPET.md）保持一致
+# 两类信号词与 BUSINESS_KNOWLEDGE_SNIPPET.md 保持一致（原 knowledge_signal_probe.sh）
 CORRECTION_SIGNALS = ("不对", "你弄错了", "应该是", "其实", "实际上")
 CONVENTION_SIGNALS = ("我们公司", "我们这边", "规则是", "通常", "必须", "行业里", "标准做法")
+
+
+_next_step_provider: "Callable[[Path], dict | None] | None" = None
+
+
+def register_next_step_provider(provider: "Callable[[Path], dict | None] | None") -> None:
+    """统一下一步的数据源（详设 6.10）：项目根目录 → Suggestions（契约 7.8）。B4b 的 suggest 接这里。"""
+    global _next_step_provider
+    _next_step_provider = provider
+
+
+def _default_next_steps(project_root: Path) -> dict | None:
+    from ..flow import view
+
+    return view.build(project_root).get("suggestions")
+
+
+def next_step_hint(project_root: Path) -> str:
+    """把 Suggestions 写成给模型看的一行；不是本体项目工作区、没有建议时返回空串。"""
+    root = Path(project_root)
+    if not (root / ".claude" / "scripts").is_dir():
+        return ""
+    provider = _next_step_provider or _default_next_steps
+    try:
+        suggestions = provider(root) or {}
+    except Exception:  # noqa: BLE001 - 算不出下一步不挡消息，本条不带
+        return ""
+    items = [item for item in [suggestions.get("primary"), *(suggestions.get("secondary") or [])] if item]
+    if not items:
+        return ""
+    parts = []
+    for item in items[:3]:
+        action = item.get("action") or {}
+        command = str(action.get("text") or action.get("command") or "").strip()
+        target = f"（{command}）" if command.startswith("/") else ""
+        parts.append(f"{item.get('label')}{target}")
+    return (
+        "下一步建议（与界面上的建议按钮同一份；回复末尾给「下一步建议」时按这个顺序，最多 3 条）："
+        + "；".join(parts) + "。"
+    )
 
 
 @dataclass(frozen=True)
@@ -57,12 +101,36 @@ def build_context(
     digest = last_injected
     stage_part = ""
     if hint is not None:
+        next_steps = next_step_hint(project_root)
+        if next_steps:
+            hint = f"{hint}\n{next_steps}"
         digest = _digest(hint)
         if session_start or digest != last_injected:
             stage_part = hint
     knowledge = knowledge_signal_hint(user_text)
     text = "\n\n".join(part for part in (stage_part, knowledge) if part)
     return InjectionResult(text=text, digest=digest, stage_hint=stage_part, knowledge_hint=knowledge)
+
+
+class Injector:
+    """一个引擎实例的注入状态（宿主建、交给引擎）：第一条必带，之后内容不变不重复。"""
+
+    def __init__(self, project_root: Path):
+        self.project_root = Path(project_root)
+        self.started = False
+        self.digest: str | None = None
+
+    def context_for(self, user_text: str) -> str:
+        """消息送到模型前调一次（同步，会起子进程）；返回要放在消息前面的注入文本。"""
+        result = build_context(self.project_root, user_text=user_text, session_start=not self.started,
+                               last_injected=self.digest)
+        self.started = True
+        self.digest = result.digest
+        return result.text
+
+    def forget(self) -> None:
+        """这一轮被打断，模型不一定看到了这次的注入：下一条重新带上。"""
+        self.digest = None
 
 
 def compose_query(user_text: str, context: str) -> str:
@@ -75,11 +143,11 @@ def compose_query(user_text: str, context: str) -> str:
     )
 
 
-# ---- 阶段提示（session_start_hook.sh）----
+# ---- 阶段提示（原 session_start_hook.sh）----
 
 
 def stage_hint(project_root: Path) -> str | None:
-    """与 session_start_hook.sh 的 additionalContext 逐字一致。
+    """阶段提示，与已退役的 session_start_hook.sh 的 additionalContext 逐字一致。
 
     工作区没有 `.claude/scripts`（不是本体项目工作区）或阶段读不出来时返回 None。
     """
@@ -164,11 +232,11 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-# ---- 业务知识信号（knowledge_signal_probe.sh）----
+# ---- 业务知识信号（原 knowledge_signal_probe.sh）----
 
 
 def knowledge_signal_hint(user_text: str) -> str:
-    """用户消息命中信号词时给模型的提示，与 knowledge_signal_probe.sh 的
+    """用户消息命中信号词时给模型的提示，与已退役的 knowledge_signal_probe.sh 的
     additionalContext 逐字一致；没命中返回空串。"""
     prompt = (user_text or "").strip()
     if not prompt:

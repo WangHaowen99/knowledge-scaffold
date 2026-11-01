@@ -1,8 +1,8 @@
-"""宿主注入（session_host/injection.py）与 Jiuwen 接入的测试。
+"""宿主注入（session_host/injection.py）与两个引擎接入的测试。
 
-对照用例直接跑资产里的两个 hook 脚本本体（Claude 引擎仍靠它们），保证移植后的
-阶段提示与业务知识信号逐字一致；bash、python3、git 不可用时跳过对照用例。
-测试数据全部为合成内容。
+两个提示 hook（session_start_hook.sh、knowledge_signal_probe.sh）已退役（ADR-0034），阶段提示与
+业务知识信号只剩 injection.py 一份实现。下面的期望文本是退役前用 hook 脚本本体对同一组场景跑出的
+输出，保证移植后逐字一致；bash、python3、git 不可用时跳过要起工作区的用例。测试数据全部为合成内容。
 """
 
 import asyncio
@@ -23,12 +23,9 @@ from app.services.session_host import injection
 
 ASSETS_DIR = Path(config.ASSETS_DIR)
 SCRIPTS_DIR = ASSETS_DIR / "workspace-toolkit" / "scripts"
-# 会话开始与业务知识信号两个 hook 随内核守卫发布（方案 D8）
-HOOKS_DIR = Path(__file__).resolve().parents[1] / "app" / "kernel_guards"
-
 needs_shell = pytest.mark.skipif(
     not (shutil.which("bash") and shutil.which("python3") and shutil.which("git")),
-    reason="对照用例需要 bash、python3 与 git",
+    reason="要起 git 工作区并跑 state_helper",
 )
 
 
@@ -47,36 +44,26 @@ def write(path: Path, text: str, mtime: int | None = None) -> None:
         os.utime(path, (mtime, mtime))
 
 
-def run_hook(script: str, cwd: Path, stdin: str = "") -> str:
-    """跑 hook 脚本本体，返回 additionalContext（没有输出为空串）。"""
-    proc = subprocess.run(
-        ["bash", str(HOOKS_DIR / script)],
-        cwd=cwd,
-        input=stdin,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=60,
-        env=minimal_env(),
-    )
-    out = proc.stdout.strip()
-    if not out:
-        return ""
-    return json.loads(out.splitlines()[-1])["hookSpecificOutput"]["additionalContext"]
-
-
 # ---- 业务知识信号 ----
 
 
+PROBE_TAIL = (
+    "请对照 .claude/BUSINESS_KNOWLEDGE_SNIPPET.md 评估是否需要沉淀为业务知识："
+    "若是，按 .claude/INTERACTION_CONVENTIONS.md 的「业务知识确认类」模板向用户确认；"
+    "若用户已用「记一下：…」「记下这条规则」等明确指令，则直接调用 knowledge_helper.py add 落盘。"
+)
+# 用户原话 → 退役前 knowledge_signal_probe.sh 输出的第一行（空串表示没有输出）
 PROBE_CASES = [
-    "帮我看看订单对象的属性",
-    "不对，配送时长应该是从接单开始算",
-    "我们公司规则是满 100 元免配送费",
-    "其实通常由站长审核，行业里也是这样，必须留痕",
-    "实际上你弄错了，标准做法是先校验再派单",
-    "   ",
-    "",
-    "/ontology-research 示例领域",
+    ("帮我看看订单对象的属性", ""),
+    ("不对，配送时长应该是从接单开始算", "【业务知识信号词探针】检测到 — 纠错信号：不对、应该是。"),
+    ("我们公司规则是满 100 元免配送费", "【业务知识信号词探针】检测到 — 业务常识/规范信号：我们公司、规则是。"),
+    ("其实通常由站长审核，行业里也是这样，必须留痕",
+     "【业务知识信号词探针】检测到 — 纠错信号：其实；业务常识/规范信号：通常、必须、行业里。"),
+    ("实际上你弄错了，标准做法是先校验再派单",
+     "【业务知识信号词探针】检测到 — 纠错信号：你弄错了、实际上；业务常识/规范信号：标准做法。"),
+    ("   ", ""),
+    ("", ""),
+    ("/ontology-research 示例领域", ""),
 ]
 
 
@@ -95,14 +82,9 @@ def test_knowledge_hint_empty_without_signal():
     assert injection.knowledge_signal_hint("") == ""
 
 
-@needs_shell
-@pytest.mark.parametrize("prompt", PROBE_CASES)
-def test_knowledge_hint_matches_probe_script(tmp_path, prompt):
-    expected = run_hook(
-        "knowledge_signal_probe.sh",
-        tmp_path,
-        json.dumps({"prompt": prompt}, ensure_ascii=False),
-    )
+@pytest.mark.parametrize("prompt,header", PROBE_CASES)
+def test_knowledge_hint_matches_retired_probe_script(prompt, header):
+    expected = f"{header}\n{PROBE_TAIL}" if header else ""
     assert injection.knowledge_signal_hint(prompt) == expected
 
 
@@ -156,9 +138,18 @@ def test_stage_hint_skipped_when_stage_detection_times_out(tmp_path, monkeypatch
     assert result.text == "" and result.digest == "abc"
 
 
+# 场景 → 退役前 session_start_hook.sh 的 additionalContext
+STAGE_CASES = {
+    "empty": "本体项目当前阶段：未开始。",
+    "full": "本体项目当前阶段：校验待审阅。 进行中的命令：mock validate。 最近报告：校验报告-示例-2.md（2 个 [ ] 待处理）",
+    "clean-report": "本体项目当前阶段：流程图就绪。 最近报告：overview.md",
+    "research-pending": "本体项目当前阶段：资料分析待核验。",
+}
+
+
 @needs_shell
-@pytest.mark.parametrize("scenario", ["empty", "full", "clean-report", "research-pending"])
-def test_stage_hint_matches_session_start_hook(tmp_path, scenario):
+@pytest.mark.parametrize("scenario", list(STAGE_CASES))
+def test_stage_hint_matches_retired_session_start_hook(tmp_path, scenario):
     ws = make_workspace(tmp_path / "ws")
     if scenario == "full":
         write(ws / "ontology" / "object" / "示例订单.md", "# 示例订单\n")
@@ -172,9 +163,17 @@ def test_stage_hint_matches_session_start_hook(tmp_path, scenario):
         write(ws / "reports" / "overview.md", "- [x] 已处理\n")
     elif scenario == "research-pending":
         write(ws / "research" / "示例资料分析.md", "# 示例资料分析\n")
-    expected = run_hook("session_start_hook.sh", ws)
-    assert expected, "hook 应有输出"
-    assert injection.stage_hint(ws) == expected
+    assert injection.stage_hint(ws) == STAGE_CASES[scenario]
+
+
+def test_retired_prompt_hooks_are_not_in_kernel_guards():
+    """两个提示 hook 退役（ADR-0034）：不再随内核守卫发布，hooks 基线里也没有对应的事件。"""
+    from app import kernel_guards
+
+    names = {path.name for path in kernel_guards.scripts()}
+    assert not names & {"session_start_hook.sh", "knowledge_signal_probe.sh"}
+    hooks = kernel_guards.settings_base()["hooks"]
+    assert "SessionStart" not in hooks and "UserPromptSubmit" not in hooks
 
 
 # ---- 入口：去重与拼接 ----
@@ -276,9 +275,12 @@ def test_jiuwen_first_message_carries_stage_and_later_only_on_change(tmp_path, m
         await engine._run_turn("其实订单还要拆出明细")
         return drain(engine)
 
+    next_steps = injection.next_step_hint(ws)
     events = asyncio.run(scenario())
     first, second, third = queries
-    assert first == injection.compose_query("开始建模", "本体项目当前阶段：未开始。")
+    # 第一条带阶段与统一下一步（与界面建议条同一份，方案 B4）
+    assert next_steps.startswith("下一步建议") and "（/ontology-research" in next_steps
+    assert first == injection.compose_query("开始建模", "本体项目当前阶段：未开始。\n" + next_steps)
     assert second == "好的，继续"
     assert third.startswith("<system-reminder>\n")
     assert "本体项目当前阶段：对象已提取。" in third

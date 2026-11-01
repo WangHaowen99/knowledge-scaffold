@@ -90,6 +90,12 @@ class EngineContext:
     # 本项目生效中的装配目录（项目 .claude 指向的 <数据目录>/assembled/<哈希>，方案 B15、D6）：
     # 规则、命令、守卫都从这里读；None = 旧工作区，没有装配目录
     assembly_dir: Path | None = None
+    # 宿主注入（session_host/injection.Injector，方案 B4）：消息送到模型那一刻调 context_for(原文)；
+    # None 时引擎自己按工作区建一个（单测直接构造引擎时）
+    injector: Any = None
+    # 引擎实例 ID（宿主生成，写进工作区的 .onto/run/engine.json）：agent 的命令、git 钩子据此认出
+    # 「这是哪个会话的 agent」（方案 B7 会话身份注入）
+    engine_instance: str = ""
 
 
 EventObserver = Callable[[dict], None]

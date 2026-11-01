@@ -110,8 +110,44 @@ def jiuwen_command(command: str) -> str:
     return f"exec {shlex.quote(str(SHELL_SHIM))} {shlex.quote(command)}"
 
 
-def jiuwen_env(env: dict[str, str] | None) -> dict[str, str]:
-    return {**agent_exec.shell_env(dict(env or os.environ)), **_control_env()}
+# 会话身份（方案 B7）：agent 的命令与 git 钩子据此认出自己属于哪个项目、哪条对话、哪个引擎实例
+RUN_PROJECT_ENV = "ONTO_RUN_PROJECT"
+RUN_CONVERSATION_ENV = "ONTO_RUN_CONVERSATION"
+RUN_ENGINE_ENV = "ONTO_RUN_ENGINE"
+ENGINE_MARKER_REL = (".onto", "run", "engine.json")
+
+
+def run_identity(project_id: str, conversation_id: str, engine_instance: str) -> dict[str, str]:
+    if not engine_instance:
+        return {}
+    return {RUN_PROJECT_ENV: project_id, RUN_CONVERSATION_ENV: conversation_id, RUN_ENGINE_ENV: engine_instance}
+
+
+def identity_for_cwd(cwd) -> dict[str, str]:
+    """Jiuwen 在进程内、共用后端的环境变量：按命令所在的工作区读宿主写的引擎标记取会话身份。"""
+    import json
+
+    try:
+        current = Path(cwd).resolve()
+    except (OSError, TypeError):
+        return {}
+    for candidate in (current, *current.parents):
+        marker = candidate.joinpath(*ENGINE_MARKER_REL)
+        if marker.is_file():
+            try:
+                data = json.loads(marker.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return {}
+            return run_identity(candidate.name, str(data.get("conversation_id") or ""),
+                                str(data.get("engine_id") or ""))
+        if (candidate / ".git").exists():
+            return {}
+    return {}
+
+
+def jiuwen_env(env: dict[str, str] | None, cwd=None) -> dict[str, str]:
+    identity = identity_for_cwd(cwd) if cwd is not None else {}
+    return {**agent_exec.shell_env(dict(env or os.environ)), **identity, **_control_env()}
 
 
 def install_jiuwen_shell_isolation() -> bool:
@@ -126,7 +162,7 @@ def install_jiuwen_shell_isolation() -> bool:
     original = shell_operation.ShellOperation._create_subprocess
 
     async def isolated(self, command, cwd, env, **kwargs):
-        return await original(self, jiuwen_command(command), cwd, jiuwen_env(env), **kwargs)
+        return await original(self, jiuwen_command(command), cwd, jiuwen_env(env, cwd), **kwargs)
 
     isolated.__wrapped__ = original  # type: ignore[attr-defined]
     shell_operation.ShellOperation._create_subprocess = isolated
