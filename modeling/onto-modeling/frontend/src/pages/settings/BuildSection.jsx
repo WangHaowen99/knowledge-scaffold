@@ -1,0 +1,436 @@
+// 项目设置 · 构建方式（P-13）与自主构建策略（AB-01、AB-02，范围取 BP-01 + FL-01，生产库授权行取 EV-01），
+// 「保存并开始自主构建」= 保存 → AB-03 预览（范围、预算、token）→ 确认 → AB-04 → 去 l4-run（契约 8.1 #41）
+import { Fragment, useEffect, useRef, useState } from 'react';
+import { useApp, useProject } from '../../app/context.js';
+import { navigate, pagePath } from '../../app/router.js';
+import { toast } from '../../app/toast.jsx';
+import { errorText } from '../../api/errors.js';
+import {
+  Button, Card, Check, Chip, Field, Icon, Inp, KV, Modal, Note, Prog, Radio, Seg, St, Toggle, cx, useOutside,
+} from '../../ui/index.jsx';
+import { budgetText } from '../workbench/materials/model.js';
+import {
+  advancedSummary, budgetOptions, budgetPct, finalizePolicy, fmtDuration, fmtMoney, fmtTokens, isRecommended, lastRunText,
+  moveItem, pendingSliceIds, policyBody, policyDirty, policyForm, runStateText, scopeText, sliceRows, startBlocker,
+  thresholdAt, thresholdPos, windowText,
+} from './settingsModel.js';
+
+const ENV_LABEL = { production: '生产环境', staging: '预发环境', test: '测试环境', dev: '开发环境' };
+
+function BudgetSelect({ value, options, fmt, onChange, error, disabled }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useOutside(ref, () => setOpen(false), open);
+  return (
+    <div className="ps-bsel" ref={ref}>
+      <div className={cx('inp', error && 'err')} onClick={() => !disabled && setOpen((o) => !o)} role="button" style={disabled ? { opacity: 0.6, cursor: 'not-allowed' } : undefined}>
+        <span className="grow ell">{fmt(value)}</span>
+        <span className="xs faint"><Icon name="chevd" size={12} /></span>
+      </div>
+      {open ? (
+        <div className="menu">
+          {options.map((o) => (
+            <div key={o} className="mi" onClick={() => { setOpen(false); onChange(o); }}>
+              <span>{fmt(o)}</span>
+              {o === value ? <span className="k"><Icon name="check" size={12} /></span> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ThresholdSlider({ value, onChange, disabled }) {
+  const ref = useRef(null);
+  const at = (e) => {
+    const r = ref.current.getBoundingClientRect();
+    onChange(thresholdAt(((e.clientX - r.left) / r.width) * 100));
+  };
+  const down = (e) => {
+    if (disabled) return;
+    ref.current.setPointerCapture?.(e.pointerId);
+    at(e);
+  };
+  const move = (e) => { if (!disabled && e.buttons) at(e); };
+  const key = (e) => {
+    if (disabled) return;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') { e.preventDefault(); onChange(Math.max(0.5, Math.round((value - 0.05) * 20) / 20)); }
+    if (e.key === 'ArrowRight' || e.key === 'ArrowUp') { e.preventDefault(); onChange(Math.min(1, Math.round((value + 0.05) * 20) / 20)); }
+  };
+  const pos = thresholdPos(value);
+  return (
+    <div
+      className="g2-slider" ref={ref} tabIndex={0} role="slider" aria-valuemin={0.5} aria-valuemax={1} aria-valuenow={value}
+      onPointerDown={down} onPointerMove={move} onKeyDown={key}
+    >
+      <div className="tr" /><div className="fi" style={{ width: `${pos}%` }} /><span className="kn" style={{ left: `${pos}%` }} />
+      {[0.5, 0.6, 0.7, 0.8, 0.9, 1].map((t) => <span key={t} className="tk" style={{ left: `${thresholdPos(t)}%` }}>{t.toFixed(1)}</span>)}
+    </div>
+  );
+}
+
+function Sec({ no, title, desc, children }) {
+  return (
+    <div className="g2-sec">
+      <h4><span className="no">{no}</span>{title}</h4>
+      {desc ? <div className="d">{desc}</div> : null}
+      <div className="bd">{children}</div>
+    </div>
+  );
+}
+
+// 资料与证据冲突时的取值顺序：拖动调整
+function PriorityChain({ items, onChange, disabled }) {
+  const [drag, setDrag] = useState(null);
+  const [over, setOver] = useState(null);
+  return (
+    <div className="g2-chain">
+      {items.map((t, i) => (
+        <Fragment key={t}>
+          {i ? <span className="faint"><Icon name="chev" size={12} /></span> : null}
+          <span
+            className={cx('chip line', drag === i && 'drag', over === i && drag !== i && 'over')}
+            draggable={!disabled}
+            onDragStart={(e) => { setDrag(i); e.dataTransfer.effectAllowed = 'move'; }}
+            onDragOver={(e) => { e.preventDefault(); setOver(i); }}
+            onDragLeave={() => setOver((o) => (o === i ? null : o))}
+            onDrop={(e) => { e.preventDefault(); if (drag != null) onChange(moveItem(items, drag, i)); setDrag(null); setOver(null); }}
+            onDragEnd={() => { setDrag(null); setOver(null); }}
+          >{t}</span>
+        </Fragment>
+      ))}
+      <span className="xs muted">拖动调整顺序</span>
+    </div>
+  );
+}
+
+function sliceChip(r) {
+  if (r.group === 'done') return <St k="confirmed" sm />;
+  if (r.group === 'wait') return <Chip tone="amber" sm>{r.note || '待确认'}</Chip>;
+  if (r.group === 'now') return <St k="pending" sm label={r.note || '进行中'} />;
+  return <St k="ready" sm />;
+}
+
+// 开始前预览（AB-03 的结果）：样子同建模蓝图「一路建完」的预览弹窗
+export function StartDialog({ preview: initial, onClose }) {
+  const { api } = useApp();
+  const { pid } = useProject();
+  const [preview, setPreview] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  const all = preview.slices || [];
+  const included = all.filter((s) => s.included);
+  const start = async () => {
+    setBusy(true);
+    try {
+      const run = await api.startAutobuild(pid, { preview_token: preview.preview_token });
+      toast(run.state === 'queued' ? `运行 #${run.run_no} 已排队，轮到时自动开始` : '自主构建已开始', 'rocket');
+      onClose(true);
+      navigate(pagePath('l4-run', pid), run.conversation_id ? { c: run.conversation_id } : undefined);
+    } catch (e) {
+      if (e.code === 'preview_expired') {
+        try { setPreview(await api.previewAutobuild(pid, {})); toast('预览过期了，已按最新状态刷新，再确认一次', 'refresh'); } catch (e2) { toast(errorText(e2), 'alert'); }
+      } else toast(errorText(e), 'alert');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      open onClose={() => onClose(false)} icon="rocket" title="开始自主构建" w={580}
+      sub="开始前确认这次的范围和预算；运行中随时可以暂停，或转为陪伴继续"
+      foot={(
+        <>
+          <span className="xs faint grow row g4"><Icon name="clock" size={12} />这份预览 10 分钟内有效</span>
+          <Button onClick={() => onClose(false)}>取消</Button>
+          <Button kind="l4" icon="rocket" disabled={busy} onClick={start}>{preview.queued ? '开始（排队）' : '开始自主构建'}</Button>
+        </>
+      )}
+    >
+      <KV
+        w="72px"
+        pairs={[
+          ['范围', (
+            <div>
+              <div>{included.length} 片{included.length < all.length ? `（另有 ${all.length - included.length} 片不在范围）` : ''}</div>
+              <div className="row wrap mt4" style={{ gap: 6 }}>
+                {all.map((s) => <Chip key={s.id} tone={s.included ? 'line' : 'gray'} sm>{s.name}{s.current ? ` · ${s.current}` : ''}</Chip>)}
+              </div>
+            </div>
+          )],
+          ['预算', budgetText(preview.budget)],
+          ['生产库', preview.production || '—'],
+          ['拿不准时', preview.below_threshold_text || '—'],
+        ]}
+      />
+      {(preview.warnings || []).map((w) => <Note key={w} tone="amber" className="mt12">{w}</Note>)}
+      {preview.queued ? <Note tone="gray" className="mt12">平台同时运行的自主构建已满，开始后排队{preview.queue_position ? `（第 ${preview.queue_position} 位）` : ''}，轮到时自动开始。</Note> : null}
+    </Modal>
+  );
+}
+
+export function BuildSection({ d, put, reload, archived, active, autoStart, onAutoStarted }) {
+  const { api } = useApp();
+  const { pid, meta, setMeta, flow, hasPlugin } = useProject();
+  const bm = d.buildMode || { build_mode: meta.build_mode };
+  const policy = d.policy;
+  const [mode, setMode] = useState(bm.build_mode);
+  const [form, setForm] = useState(() => policyForm(policy));
+  const [drafts, setDrafts] = useState({});
+  const [adv, setAdv] = useState(false);
+  const [busy, setBusy] = useState(null);
+  const [errors, setErrors] = useState({});
+  const [preview, setPreview] = useState(null);
+
+  useEffect(() => { setMode(bm.build_mode); }, [bm.build_mode]);
+  useEffect(() => { setForm(policyForm(policy)); setDrafts({}); setErrors({}); }, [policy]);
+
+  const rows = sliceRows(d.blueprint?.slices, flow?.slices);
+  const pendingIds = pendingSliceIds(rows);
+  const final = finalizePolicy(form, drafts);
+  const modeDirty = mode !== bm.build_mode;
+  const pDirty = !!policy && policyDirty(policy, final.form);
+  const locked = archived;
+  const modeLocked = archived || !!active;
+  const blocker = startBlocker({ archived, active, rows });
+  const limits = policy?.platform_limits || {};
+  const sources = d.sources?.items || [];
+
+  const setF = (k, fn) => setForm((f) => ({ ...f, [k]: fn(f[k]) }));
+  const setScope = (patch) => setF('scope', (s) => ({ ...s, ...patch }));
+  const setBudget = (patch) => setF('budget', (b) => ({ ...b, ...patch }));
+  const setAdvanced = (patch) => setF('advanced', (a) => ({ ...a, ...patch }));
+  const setProd = (sid, patch) => setF('production_collection', (list) => list.map((x) => (x.source_id === sid ? { ...x, ...patch } : x)));
+  const setDraft = (sid, patch) => setDrafts((x) => ({ ...x, [sid]: { ...x[sid], ...patch } }));
+
+  const saveMode = async () => {
+    const r = await api.setBuildMode(pid, mode);
+    put('buildMode', r);
+    setMeta({ ...meta, build_mode: r.build_mode });
+    return r;
+  };
+  const savePolicy = async () => {
+    if (Object.keys(final.problems).length) {
+      setErrors(final.problems);
+      throw Object.assign(new Error(Object.values(final.problems)[0]), { local: true });
+    }
+    try {
+      const r = await api.saveAutobuildPolicy(pid, policyBody(final.form, policy.revision));
+      put('policy', r);
+      setErrors({});
+      return r;
+    } catch (e) {
+      if (e.code === 'budget_exceeds_quota') setErrors({ [`budget:${e.details?.dimension || 'cost'}`]: errorText(e) });
+      if (e.code === 'revision_conflict') reload('policy');
+      throw e;
+    }
+  };
+
+  const onSaveMode = async () => {
+    setBusy('mode');
+    try { await saveMode(); toast('已保存，下一条消息生效'); } catch (e) { toast(errorText(e), 'alert'); } finally { setBusy(null); }
+  };
+  const onSavePolicy = async () => {
+    setBusy('policy');
+    try { await savePolicy(); toast('已保存，下一次自主构建按这个策略跑'); } catch (e) { toast(e.local ? e.message : errorText(e), 'alert'); } finally { setBusy(null); }
+  };
+  // 保存（有改动的话）→ AB-03 预览 → 弹窗确认
+  const start = async ({ save = true } = {}) => {
+    if (blocker) { toast(blocker, 'alert'); return; }
+    setBusy('start');
+    try {
+      if (save && modeDirty) await saveMode();
+      if (save && pDirty) await savePolicy();
+      setPreview(await api.previewAutobuild(pid, {}));
+    } catch (e) {
+      toast(e.local ? e.message : errorText(e), 'alert');
+    } finally {
+      setBusy(null);
+    }
+  };
+  // ⌘K「开始自主构建」：不改策略，直接按已保存的策略预览
+  const startRef = useRef(start);
+  startRef.current = start;
+  useEffect(() => {
+    if (!autoStart) return;
+    onAutoStarted();
+    startRef.current({ save: false });
+  }, [autoStart, onAutoStarted]);
+
+  const closePreview = (started) => {
+    setPreview(null);
+    if (started) reload('runs', 'buildMode', 'policy');
+  };
+
+  const scope = form.scope || {};
+  const all = scope.mode !== 'selected';
+  const picked = (id) => (all ? true : (scope.slice_ids || []).includes(id));
+  const toggleSlice = (id) => setScope({ slice_ids: picked(id) ? scope.slice_ids.filter((x) => x !== id) : [...(scope.slice_ids || []), id] });
+  const budget = form.budget || {};
+  const a = form.advanced || {};
+  const last = policy?.last_run;
+
+  return (
+    <div>
+      <div className="card" data-sec="build-mode">
+        <div className="card-h">
+          <h3>构建方式</h3><span className="sub">助手默认怎么推进建模</span><span className="sp" />
+          <Button size="sm" kind="primary" disabled={!modeDirty || modeLocked || !!busy} onClick={onSaveMode}>保存</Button>
+        </div>
+        <div className="card-b">
+          <div className="grid2">
+            {[
+              ['L2', 'users', '陪伴建模', '每个决定等你确认；每一步你点「确认生效」才算完成'],
+              ['L4', 'rocket', '自主构建', '在下面的范围和预算内一路建完，不停下来问；产出标「需复核」，结束后集中复核'],
+            ].map(([k, icon, title, desc]) => (
+              <div key={k} className={cx('evd-eng evd-bm', mode === k && 'on', modeLocked && mode !== k && 'lock')} onClick={() => { if (!modeLocked) setMode(k); else if (active) toast('自主构建运行中，构建方式等这次运行结束后再改', 'lock'); }}>
+                <span className="ic"><Icon name={icon} size={18} /></span>
+                <div className="grow"><div className="row"><b>{title}</b><span className="lv">{k}</span></div><div className="sm muted mt4">{desc}</div></div>
+                <span className={cx('rad', mode === k && 'on')} />
+              </div>
+            ))}
+          </div>
+          {active ? (
+            <div className="mt12">
+              <Note tone="amber" icon="lock">
+                {runStateText(active) || '自主构建运行中'}：构建方式等这次运行结束后再改；运行中可以在工作台顶部暂停、停在安全点或转回陪伴。
+                <a className="link" style={{ marginLeft: 6 }} onClick={() => navigate(pagePath('l4-run', pid))}>查看运行</a>
+              </Note>
+            </div>
+          ) : null}
+          <div className="mt12">
+            <Note tone="gray" icon="info">选自主构建后，确认建模蓝图时助手直接开始；陪伴建模下也可以在对话里说「剩下的你自己做完」，或在 ⌘K 里开始一次自主构建。运行中可以在工作台顶部暂停、停在安全点或转回陪伴。</Note>
+          </div>
+          <div className="row mt12">
+            <span className="sp" />
+            <Button size="sm" kind="l4" icon="rocket" disabled={!!busy || !policy || !!blocker} title={blocker || undefined} onClick={() => start()}>保存并开始自主构建</Button>
+          </div>
+        </div>
+      </div>
+
+      <div className="evd-l4w" data-sec="autobuild">
+        {!policy ? <Note tone="red">自主构建策略没有读出来，刷新页面再试。</Note> : (
+          <div className="g2s">
+            <Card title="范围" icon="layers" sub="自主构建时跑哪些切片">
+              <div className="row g16 mb12">
+                <span className="g2s-r"><Radio on={all} label={`全部未完成的切片（${pendingIds.length} 片）`} onChange={() => !locked && setScope({ mode: 'all_pending', slice_ids: pendingIds })} /></span>
+                <span className="g2s-r"><Radio on={!all} label="只跑选中的切片" onChange={() => !locked && setScope({ mode: 'selected', slice_ids: all ? pendingIds : scope.slice_ids })} /></span>
+              </div>
+              {rows.length ? (
+                <div className={cx('g2s-sl', (all || locked) && 'g2-off')}>
+                  {rows.map((r) => (
+                    <div key={r.id} className="row" style={{ padding: '7px 10px', border: '1px solid var(--line)', borderRadius: 10, ...(r.done ? { opacity: 0.55 } : null) }}>
+                      <Check on={!r.done && picked(r.id)} disabled={r.done} onChange={() => toggleSlice(r.id)} />
+                      <span className="grow">{r.name}</span>
+                      {sliceChip(r)}
+                    </div>
+                  ))}
+                </div>
+              ) : <div className="sm muted">切片还没规划：确认建模蓝图后才能选范围。</div>}
+              {errors.scope ? <div className="xs mt8" style={{ color: 'var(--red)' }}>{errors.scope}</div> : null}
+              <div className="row wrap mt12" style={{ gap: 18 }}>
+                <span className="row sm"><Toggle on={scope.refresh_stale_first} disabled={locked} onChange={(v) => setScope({ refresh_stale_first: v })} />先处理过期的内容</span>
+                {hasPlugin('scenarios') ? <span className="row sm"><Toggle on={scope.generate_scenarios} disabled={locked} onChange={(v) => setScope({ generate_scenarios: v })} />生成场景并推演</span> : null}
+                <span className="row sm"><Toggle on={scope.include_optional} disabled={locked} onChange={(v) => setScope({ include_optional: v })} />包括可选步骤：规则与指标、流程图</span>
+              </div>
+            </Card>
+
+            <Card title="预算" icon="gauge" sub="到上限时在安全点停下，不会半途中断">
+              <div className="grid3" style={{ gap: 12 }}>
+                {[
+                  ['最长时长', 'duration', budget.max_duration_min, limits.max_duration_min, fmtDuration, (v) => setBudget({ max_duration_min: v }), `平台上限 ${fmtDuration(limits.max_duration_min)}`],
+                  ['token 上限', 'tokens', budget.max_tokens, limits.max_tokens, fmtTokens, (v) => setBudget({ max_tokens: v }), `平台上限 ${fmtTokens(limits.max_tokens)}`],
+                  ['费用上限', 'cost', budget.max_cost?.amount, limits.max_cost?.amount, (v) => fmtMoney({ amount: v, currency: budget.max_cost?.currency || 'CNY' }), (v) => setBudget({ max_cost: { ...budget.max_cost, amount: v } }), `平台上限 ${fmtMoney(limits.max_cost)}`],
+                ].map(([label, kind, value, limit, fmt, set, cap]) => (
+                  <Field
+                    key={kind} label={label}
+                    hint={<><div className="row" style={errors[`budget:${kind}`] ? { color: 'var(--red)' } : undefined}>{errors[`budget:${kind}`] || cap}</div><Prog p={budgetPct(value, limit)} thin /></>}
+                  >
+                    <BudgetSelect value={value} options={budgetOptions(kind, limits, value)} fmt={fmt} onChange={set} error={!!errors[`budget:${kind}`]} disabled={locked} />
+                  </Field>
+                ))}
+              </div>
+            </Card>
+
+            <Card title="生产库采集授权" icon="db" sub="没授权的数据源，需要采集时会挂起该项，不会自己去连">
+              {(form.production_collection || []).length ? (form.production_collection || []).map((row) => {
+                const src = sources.find((s) => s.id === row.source_id);
+                const dr = drafts[row.source_id] || {};
+                const werr = errors[`window:${row.source_id}`];
+                const allowedByPlatform = limits.allow_production_collection !== false;
+                return (
+                  <div key={row.source_id} className={cx('g2-guard g2s-prod', !row.allowed && 'g2-off')} style={{ background: '#fff', flexWrap: 'wrap' }}>
+                    <Icon name="db" size={14} />
+                    <b style={{ fontWeight: 600 }}>{src?.display_name || row.source_id}</b>
+                    <span className="xs muted">业务系统 · {ENV_LABEL[src?.environment] || '生产环境'}</span>
+                    <span className="sp" />
+                    <span className="row sm" title={allowedByPlatform ? undefined : '平台不允许自主构建采集生产库'}>
+                      <Toggle on={row.allowed} disabled={locked || !allowedByPlatform} onChange={(v) => setProd(row.source_id, { allowed: v })} />允许自主构建时采集
+                    </span>
+                    <div className="g2s-mf">
+                      <Field label="时间窗口" hint={werr ? <span style={{ color: 'var(--red)' }}>{werr}</span> : null}>
+                        <Inp icon="clock" placeholder="22:00 – 06:00" error={!!werr} disabled={locked} value={dr.window ?? windowText(row.window)} onChange={(e) => setDraft(row.source_id, { window: e.target.value })} />
+                      </Field>
+                      <Field label="采集范围">
+                        <Inp icon="filter" placeholder="补货标准表、商品品类表" disabled={locked} value={dr.scope ?? scopeText(row.scope)} onChange={(e) => setDraft(row.source_id, { scope: e.target.value })} />
+                      </Field>
+                    </div>
+                  </div>
+                );
+              }) : <div className="sm muted">本项目还没有授权的生产库数据源；在「资料 › 业务系统数据源」里登记并授权后会出现在这里。</div>}
+            </Card>
+
+            <div className="card">
+              <div className="g2-advh" onClick={() => setAdv((v) => !v)}>
+                <Icon name="sliders" size={14} /><b>高级设置</b>
+                <span className="chip gray sm">{isRecommended(a) ? '已按推荐值设置' : '已调整'}</span>
+                <span className="xs muted grow ell">{advancedSummary(a)}</span>
+                <span><Icon name={adv ? 'chevu' : 'chevd'} size={14} /></span>
+              </div>
+              {adv ? (
+                <div style={{ borderTop: '1px solid var(--line)' }}>
+                  <Sec no="A" title="置信度阈值" desc="达到阈值直接采用推荐选项">
+                    <div className="row"><span className="sp" /><span className="chip blue num">≥ {Number(a.confidence_threshold).toFixed(2)} 直接采用推荐</span></div>
+                    <ThresholdSlider value={a.confidence_threshold} disabled={locked} onChange={(v) => setAdvanced({ confidence_threshold: v })} />
+                  </Sec>
+                  <Sec no="B" title="低于阈值时">
+                    <div className="grid2" style={{ gap: 8 }}>
+                      {[
+                        ['conservative_assumption', 'A', '采用保守选项，记为假设', '不新增对象、不放宽规则的那个选项；继续往下跑'],
+                        ['suspend', 'B', '挂起这一项，跳到下一片', '这一片停在当前步骤，跑完后在待处理里等你'],
+                      ].map(([k, key, t, c]) => (
+                        <div key={k} className={cx('opt', a.below_threshold === k && 'on')} onClick={() => !locked && setAdvanced({ below_threshold: k })}>
+                          <span className="k">{key}</span><div><div className="t">{t}</div><div className="c">{c}</div></div>
+                        </div>
+                      ))}
+                    </div>
+                  </Sec>
+                  <Sec no="C" title="资料优先级" desc="资料和证据说法冲突时，按这个顺序取值，同时记一条冲突待复核">
+                    <PriorityChain items={a.source_priority || []} disabled={locked} onChange={(v) => setAdvanced({ source_priority: v })} />
+                  </Sec>
+                  <Sec no="D" title="修复轮次上限" desc="检查没通过时自动修几轮">
+                    <div className="row">
+                      <Seg items={[['1', '1 轮'], ['2', '2 轮'], ['3', '3 轮']]} value={String(a.max_fix_rounds)} onChange={(v) => !locked && setAdvanced({ max_fix_rounds: Number(v) })} />
+                      <span className="xs muted" style={{ marginLeft: 8 }}>还没修好的记为挂起</span>
+                    </div>
+                  </Sec>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="row xs muted" style={{ padding: '9px 12px', borderRadius: 10, background: 'var(--panel2)' }}>
+              <Icon name="lock" size={12} />{policy.boundary_text || '自主构建不会发布、不会删除已确认内容、不会改资料区、不会在未授权时采集生产库'}
+            </div>
+            <div className="g2s-foot">
+              <span className="xs muted">{active ? runStateText(active) : lastRunText(last)}</span>
+              <span className="sp" />
+              <Button size="sm" icon="rocket" disabled={!!busy || !!blocker} title={blocker || undefined} onClick={() => start()}>保存并开始自主构建</Button>
+              <Button size="sm" kind="primary" icon="check" disabled={!pDirty || locked || !!busy} onClick={onSavePolicy}>保存</Button>
+            </div>
+          </div>
+        )}
+      </div>
+      {preview ? <StartDialog preview={preview} onClose={closePreview} /> : null}
+    </div>
+  );
+}

@@ -31,13 +31,14 @@ function staticItems({ projectId, inboxCount, hasPlugin, hasSubpage, role }) {
     ['跳转', '打开 Studio 图谱', 'graph', 'studio'], ['跳转', `待处理（${inboxCount ?? 0}）`, 'inbox', 'inbox'],
     ...(hasSubpage('schema') ? [['跳转', '证据浏览器', 'db', 'schema']] : []), ['跳转', 'Studio 报告', 'filetext', 'reports'],
     ['建模', '发起增量更新…', 'refresh', 'incremental'], ['建模', '调整业务切片…', 'layers', 'wb-blueprint', { dialog: 'blueprint' }],
-    ['建模', '开始自主构建（L4，一路建完）…', 'rocket', 'l4-run'], ['建模', '自主构建设置', 'gear', 'proj-settings'],
+    // 开始自主构建走项目设置的开始入口（AB-03 预览 → 确认 → AB-04，契约 5.0）
+    ['建模', '开始自主构建（L4，一路建完）…', 'rocket', 'proj-settings', { section: 'autobuild', dialog: 'start' }], ['建模', '自主构建设置', 'gear', 'proj-settings', { section: 'autobuild' }],
     ...(hasPlugin('scenarios') ? [['建模', '补齐过期场景', 'flask', 'scenarios']] : []),
     ['资料', '上传资料…', 'upload', 'resources'],
     ...(hasSubpage('sources') ? [['资料', '连接业务系统…', 'plug', 'sources'], ['资料', '采集一次快照', 'scan', 'snapshots']] : []),
     ['发布', '发布检查与发布…', 'upload', 'publish'], ['发布', '标记一个版本…', 'tag', 'versions'],
-    ['插件', '安装插件 / 能力包…', 'puzzle', 'plugins'], ['插件', '本项目已启用的能力', 'layers', 'proj-settings'],
-    ['设置', '我的模型配置', 'key', 'me'], ['设置', '对外 MCP 与 Token', 'link', 'proj-settings'],
+    ['插件', '安装插件 / 能力包…', 'puzzle', 'plugins'], ['插件', '本项目已启用的能力', 'layers', 'proj-settings', { section: 'plugins' }],
+    ['设置', '我的模型配置', 'key', 'me'], ['设置', '对外 MCP 与 Token', 'link', 'proj-settings', { section: 'mcp' }],
     ...(canOps ? [['运维', '查看运行状态', 'activity', 'ops']] : []),
   ];
 }

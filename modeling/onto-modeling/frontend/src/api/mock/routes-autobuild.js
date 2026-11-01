@@ -3,6 +3,7 @@
 // 共享单车故障诊断默认就在这一阶段。主示例项目在其他阶段时，运行 #3 已经跑完（待处理里的复核来自它）。
 import { RIDER_PID, riderReport, riderSummary } from './inbox-data.js';
 import * as R from './run3.js';
+import * as S from './settings-data.js';
 
 let SC = {};
 const stageRunState = () => (SC.run === 'ended' ? 'completed' : 'running');
@@ -126,36 +127,99 @@ export function register(ctx) {
     emitInbox(pid);
   }
 
+  // 策略按项目存（项目设置页保存后，预览、开始、l4-run 的策略说明都按它）；AB-04 起的新运行停在排队中
+  db.abPolicy = new Map();
+  db.abStarted = new Map();
+  const policyOf = (pid) => {
+    if (!db.abPolicy.has(pid)) db.abPolicy.set(pid, { ...R.policy(), revision: 'p3' });
+    return db.abPolicy.get(pid);
+  };
+  const lastRunOf = (pid) => {
+    const st = storeOf(pid);
+    if (!st || RUNNING.has(st.state)) return null;
+    const run = st.run();
+    return { run_id: run.run_id, run_no: run.run_no, ended_at: run.ended_at, duration_ms: run.elapsed_ms, reviewed: run.needs_review === 0 };
+  };
+  db.autobuildActiveOf = (pid) => {
+    const st = storeOf(pid);
+    if (st && RUNNING.has(st.state)) return summaryOf(st.run());
+    return db.abStarted.get(pid) || null;
+  };
+  const sourceIds = () => F.evidenceSources().items.map((x) => x.id);
+  const sourceName = (id) => F.evidenceSources().items.find((x) => x.id === id)?.display_name || id;
+
   on('GET', '/projects/([^/]+)/autobuild/policy', ({ m }) => json(200, {
-    ...R.policy(),
-    platform_limits: { max_duration_min: 240, max_tokens: 10000000, max_cost: { amount: 300, currency: 'CNY' }, allow_production_collection: true },
-    quota_remaining: { tokens: 42000000, cost: { amount: 1240, currency: 'CNY' } },
-    last_run: storeOf(m[1]) ? { run_id: R.RUN_ID, run_no: R.RUN_NO, ended_at: storeOf(m[1]).run().ended_at, duration_ms: storeOf(m[1]).run().elapsed_ms, reviewed: false } : null,
-    revision: 'p3',
+    ...policyOf(m[1]),
+    platform_limits: S.PLATFORM_LIMITS,
+    quota_remaining: S.QUOTA_REMAINING,
+    last_run: lastRunOf(m[1]),
   })); // AB-01
-  on('PUT', '/projects/([^/]+)/autobuild/policy', ({ body }) => {
-    if (body.budget?.max_cost?.amount > 300) return err(422, 'budget_exceeds_quota', '预算超出平台上限', { dimension: 'cost', max: 300 });
-    return json(200, { ...R.policy(), ...body, revision: `p${uid()}` });
+  on('PUT', '/projects/([^/]+)/autobuild/policy', ({ m, body }) => {
+    const cur = policyOf(m[1]);
+    if (body.base_revision && body.base_revision !== cur.revision) return err(409, 'revision_conflict', '策略已被修改', { current_revision: cur.revision });
+    const next = S.mergePolicy(cur, body);
+    const bad = S.checkPolicy(next, sourceIds());
+    if (bad) return err(...bad);
+    next.revision = `p${uid()}`;
+    db.abPolicy.set(m[1], next);
+    return json(200, { ...next, platform_limits: S.PLATFORM_LIMITS, quota_remaining: S.QUOTA_REMAINING, last_run: lastRunOf(m[1]) });
   }); // AB-02
-  on('POST', '/projects/([^/]+)/autobuild/runs/preview', ({ m }) => {
-    const st = storeOf(m[1]);
-    if (st && RUNNING.has(st.state)) return err(409, 'autobuild_running', '自主构建运行中', { run_id: R.RUN_ID });
-    const p = R.policy();
-    return json(200, {
-      preview_token: `pv-${uid()}`, expires_at: new Date(Date.now() + 10 * 60000).toISOString(),
-      slices: Object.values(R.RUN_SLICES).filter((s) => s.id.startsWith('s')).map((s) => ({ id: s.id, name: s.name, current: s.id === 's1' ? '已确认' : '未完成', included: s.id !== 's1' })),
-      budget: p.budget, production: '不采集', below_threshold_text: '采用保守选项并记为假设', warnings: ['有 1 个未决决策会被按策略决定'], queued: false, queue_position: null,
-    });
+  on('POST', '/projects/([^/]+)/autobuild/runs/preview', ({ m, body }) => {
+    const pid = m[1];
+    const active = db.autobuildActiveOf(pid);
+    if (active) return err(409, 'autobuild_running', '自主构建运行中', { run_id: active.run_id });
+    const policy = S.mergePolicy(policyOf(pid), body.policy_overrides);
+    const bad = S.checkPolicy(policy, sourceIds());
+    if (bad) return err(...bad);
+    const pv = S.previewOf(policy, ctx.flowOf(pid).slices, sourceName);
+    if (!pv.slices.some((s) => s.included)) return err(422, 'invalid_argument', '范围里没有要跑的切片', { fields: { scope: 'empty' } });
+    const token = `pv-${uid()}`;
+    db.abPreview = { token, pid, policy };
+    return json(200, { preview_token: token, expires_at: new Date(Date.now() + 10 * 60000).toISOString(), ...pv });
   }); // AB-03
   on('POST', '/projects/([^/]+)/autobuild/runs', ({ m, body }) => {
-    const st = storeOf(m[1]);
-    if (st && RUNNING.has(st.state)) return err(409, 'autobuild_running', '自主构建运行中', { run_id: R.RUN_ID });
+    const pid = m[1];
+    const active = db.autobuildActiveOf(pid);
+    if (active) return err(409, 'autobuild_running', '自主构建运行中', { run_id: active.run_id });
     if (!body.preview_token) return err(410, 'preview_expired', '预览已过期');
-    return json(201, { ...R.runOf('running'), run_id: 'run-4', run_no: 4, state: 'queued', decisions: 0, suspended: 0, needs_review: 0, elapsed_ms: 0 });
+    const policy = db.abPreview?.token === body.preview_token ? db.abPreview.policy : policyOf(pid);
+    const pv = S.previewOf(policy, ctx.flowOf(pid).slices, sourceName);
+    const included = pv.slices.filter((s) => s.included);
+    const n = (storeOf(pid)?.run().run_no || 0) + 1;
+    const run = S.queuedRun(n, policy, included.length);
+    // 运行在自己的对话里进行（契约 3.22）：开一条「自主构建 · 运行 #n」，先放开始卡和排队提示
+    const list = ctx.convsOf(pid);
+    const now = new Date().toISOString();
+    const conv = { id: uid().padStart(12, '0').slice(-12), title: `自主构建 · 运行 #${n}`, title_manual: false, created_at: now, updated_at: now, live: true, state: 'idle', kind: 'autobuild', run_id: run.run_id };
+    list.forEach((c) => { c.live = false; });
+    list.unshift(conv);
+    const b = policy.budget;
+    const ev = (id, type, data) => ({ id: String(id), type, ts: now, project_id: pid, conversation_id: conv.id, data });
+    ctx.hub.seed(ctx.convKey(pid, conv.id), 'conversation', [
+      ev(1, 'day.marker', { label: '今天' }),
+      ev(2, 'card', {
+        ...R.startCard(), card_id: `ab${n}-start`, title: `自主构建 · 运行 #${n}`, run_id: run.run_id, run_no: n,
+        chips: [
+          { label: '范围', value: `${policy.scope.mode === 'selected' ? '选中的' : '未完成的'} ${included.length} 片` },
+          { label: '预算', value: `¥${b.max_cost.amount} · ${b.max_duration_min % 60 ? `${b.max_duration_min} 分钟` : `${b.max_duration_min / 60} 小时`}` },
+          { label: '生产库', value: pv.production }, { label: '拿不准时', value: pv.below_threshold_text },
+        ],
+      }),
+      ev(3, 'notice', { kind: 'info', text: `运行 #${n} 已排队，轮到时自动开始`, version_label: null, changeset_id: null, align: 'center' }),
+    ]);
+    db.abStarted.set(pid, run);
+    db.abPreview = null;
+    emitProj(pid, 'conversation.updated', { conversation: conv, deleted: false });
+    emitProj(pid, 'autobuild.run.updated', run);
+    return json(201, {
+      ...run, conversation_id: conv.id, policy, checks: { errors: 0, warnings: 0 }, scenarios: { passed: 0, total: 0 }, fix_rounds: { used: 0, limit: policy.advanced.max_fix_rounds },
+      matrix: [], tail_text: '', scope_lock_text: '', recovered_from_checkpoint: 0, report_available: false, base_version_label: cardOf(pid)?.version_label || null,
+    });
   }); // AB-04
   on('GET', '/projects/([^/]+)/autobuild/runs', ({ m, query }) => {
     const pid = m[1];
     const items = [];
+    if (db.abStarted.has(pid)) items.push(db.abStarted.get(pid));
     const st = storeOf(pid);
     if (st) items.push(summaryOf(st.run()));
     if (pid === RIDER_PID) {
