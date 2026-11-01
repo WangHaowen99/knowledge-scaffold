@@ -2,7 +2,7 @@
 // 加项目流（P-15）实时更新；断档时按 stream.reset 的 resync 重拉快照。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { errorText } from '../api/errors.js';
-import { mergeFlow } from '../state/flow.js';
+import { mergeFlow, normalizeFlow } from '../state/flow.js';
 import { Button, Empty, KV, Note } from '../ui/index.jsx';
 import { ShellG } from '../shell/Shell.jsx';
 import { ProjectCtx, useApp } from './context.js';
@@ -22,7 +22,7 @@ export function ProjectArea({ pid, children }) {
   const loadMeta = useCallback(() => api.project(pid).then(setMeta), [api, pid]);
   const loadExt = useCallback(() => api.extensions(pid).then(setExtensions).catch(() => {}), [api, pid]);
   const loadInbox = useCallback(() => api.inbox(pid, { limit: 1 }).then((r) => setInboxCount(r.counts?.total || 0)).catch(() => {}), [api, pid]);
-  const loadFlow = useCallback(() => api.flow(pid).then(setFlow).catch(() => {}), [api, pid]);
+  const loadFlow = useCallback(() => api.flow(pid).then((f) => setFlow(normalizeFlow(f))).catch(() => {}), [api, pid]);
   const loadScope = useCallback(() => api.scope(pid).then(setScope).catch(() => {}), [api, pid]);
 
   useEffect(() => {
@@ -76,6 +76,7 @@ export function ProjectArea({ pid, children }) {
     pid, meta, extensions, inboxCount, flow, scope, recentProjects, subscribe, setMeta,
     reloadFlow: loadFlow, reloadScope: loadScope,
     hasPlugin: (id) => (extensions?.nav || []).some((n) => n.id === id),
+    hasSubpage: (id) => (extensions?.subpages || []).some((s) => s.id === id),
     hasArtifactType: (t) => (extensions?.artifact_types || []).includes(t),
   }), [pid, meta, extensions, inboxCount, flow, scope, recentProjects, subscribe, loadFlow, loadScope]);
 

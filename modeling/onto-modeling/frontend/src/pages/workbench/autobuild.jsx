@@ -159,7 +159,6 @@ export function AutobuildBar({ ab }) {
   );
 }
 
-const STAGE_LABEL = [['object', '对象'], ['operation', '操作'], ['rule', '规则'], ['check', '写入即查'], ['scenario', '场景']];
 const REVIEW_CHIP = { accepted: ['已接受', 'gray'], rejudged: ['已改判', 'indigo'] };
 
 function Cell({ k }) {
@@ -193,7 +192,9 @@ export function RunDrawer({ ab }) {
     api.autobuildSuspensions(pid, runId).then((r) => setSus((r.items || []).filter((x) => x.state === 'open'))).catch(() => setSus([]));
   }, [api, pid, runId, drawer]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!run) return null;
-  const keys = (flow?.slice_stages || STAGE_LABEL.map(([id, label]) => ({ id, label }))).map((s) => [s.id, s.label]);
+  // 切片步骤的列由 FL-01 的 slice_stages 决定（场景走查未启用时没有「场景」列）；流程还没给切片步骤时按矩阵里出现的步骤排
+  const stageDefs = flow?.slice_stages?.length ? flow.slice_stages : Object.keys(run.matrix?.[0]?.cells || {}).map((id) => ({ id, label: id }));
+  const keys = stageDefs.map((s) => [s.id, s.label]);
   const [tail1, tail2] = (run.tail_text || '').split(' → ');
   const toInbox = (q) => { ab.closeDetails(); navigate(pagePath('inbox', pid), q); };
   return (

@@ -312,6 +312,61 @@ export function flow({ trace = true } = {}) {
     ],
     suggestions: null,
     notices: [{ kind: 'new_materials', count: 1, files: ['resource/others/09-修订通知.docx'], text: '资料区有 1 个新文件（09 修订通知），建议走增量更新', action: { type: 'navigate', page: 'incremental' } }],
+    // 以下按 P1 的 /flow 补齐（contract-changes B3a 第 1 条）：抽屉分组、命令归属、项目进度、旧版阶段名
+    sections: [['required', '必经步骤'], ['pre_publish', '发布前检查'], ['optional', '可选步骤'], ['on_demand', '有需要时']]
+      .map(([id, title]) => ({ id, title, nodes: nodes.filter((n) => n.section === id).map((n) => n.id) })),
+    commands: {
+      research: 'core.research', 'extract-object': 'core.model', 'extract-operation': 'core.model', 'extract-rule-metric': 'core.rules',
+      validate: 'core.validate', 'validate-diagrams': 'diagram.flowchart', flowchart: 'diagram.flowchart', update: 'core.incremental',
+      codegen: 'solver.codegen', 'codegen-scan': 'solver.codegen', 'solver-evaluator': 'solver.adapt', ...(trace ? { trace: 'trace.regression' } : {}),
+    },
+    progress: { done: 2, total: 6 },
+    stage: '逻辑已提取',
+  };
+}
+
+// P1 后端（B3a）的 /flow 原样形状：flow.yaml 的 10 个阶段加按需的增量更新，状态只有 4 种，
+// actions 带命令文本，分组在顶层 sections。?mock=flow:p1 用它核对前端的归一处理。
+export function flowP1() {
+  const n = (id, title, placement, section, state, actions, extra = {}) => ({
+    id, title, kind: 'agent', placement, section, state, flags: { needs_review: false, disabled: false, backfill: false },
+    display_state: state, progress: null, version: '', per_slice: false, note: null, blocks: [],
+    actions: actions.map(([label, target]) => ({ kind: 'start', label, target })), plugin: null,
+    optional: section === 'optional', panel: false, counts_in_progress: true, ...extra,
+  });
+  const nodes = [
+    n('core.research', '资料分析', 'spine', 'required', 'confirmed', [['联网资料分析', '/ontology-research '], ['仅本地资料', '/ontology-research 仅基于本地文档 '], ['追加分析', '/ontology-research 追加']]),
+    n('core.flowchart', '流程图', 'branch', 'optional', 'confirmed', [['创建/打磨流程图', '/ontology-flowchart'], ['全量刷新', '/ontology-flowchart 全量刷新'], ['校验流程图', '/ontology-validate-diagrams']]),
+    n('core.object', '对象提取', 'spine', 'required', 'confirmed', [['提取对象', '/ontology-extract-object']]),
+    n('core.operation', '操作提取', 'spine', 'required', 'confirmed', [['提取操作', '/ontology-extract-operation']]),
+    n('core.rule_metric', '规则与指标', 'branch', 'optional', 'ready', [['提取规则与指标', '/ontology-extract-rule-metric']]),
+    n('core.validate', '质量检查', 'spine', 'required', 'ready', [['运行质量检查', '/ontology-validate']]),
+    n('core.mock', '示例数据', 'spine', 'required', 'not_ready', [['生成示例数据', '/ontology-mock']]),
+    n('core.trace', '场景验证', 'spine', 'required', 'not_ready', [['批量验证', '/ontology-trace 全部'], ['交互走查', '/ontology-trace 交互']]),
+    n('core.codegen', '代码生成', 'branch', 'optional', 'not_ready', [['扫描候选', '/ontology-codegen-scan'], ['生成脚本', '/ontology-codegen ']]),
+    n('core.solver', '求解适配', 'branch', 'optional', 'ready', [], { panel: true }),
+    n('core.update', '增量更新', 'on_demand', 'on_demand', 'ready', [['增量更新', '/ontology-update ']], { counts_in_progress: false }),
+  ];
+  const after = [['core.research', 'core.flowchart'], ['core.research', 'core.object'], ['core.object', 'core.operation'], ['core.operation', 'core.rule_metric'],
+    ['core.operation', 'core.validate'], ['core.validate', 'core.mock'], ['core.mock', 'core.trace'], ['core.trace', 'core.codegen'], ['core.operation', 'core.solver'], ['core.operation', 'core.update']];
+  const send = (id, label, text, primary) => ({ id, label, primary, disabled: false, reason: '主线下一步', priority: 4, action: { type: 'send', text, command: text.split(' ')[0] } });
+  return {
+    flow_hash: 'p1e07a3c',
+    nodes,
+    edges: after.map(([from, to]) => ({ from, to })),
+    sections: [['required', '必经步骤'], ['pre_publish', '发布前检查'], ['optional', '可选步骤'], ['on_demand', '有需要时']]
+      .map(([id, title]) => ({ id, title, nodes: nodes.filter((x) => x.section === id).map((x) => x.id) })),
+    slice_stages: [],
+    slices: [],
+    suggestions: { mode: 'normal', primary: send('core.validate#0', '运行质量检查', '/ontology-validate', true), secondary: [], all_commands: true },
+    notices: [],
+    stage: '逻辑已提取',
+    progress: { done: 4, total: 10 },
+    commands: {
+      research: 'core.research', flowchart: 'core.flowchart', 'validate-diagrams': 'core.flowchart', 'extract-object': 'core.object',
+      'extract-operation': 'core.operation', 'extract-rule-metric': 'core.rule_metric', validate: 'core.validate', mock: 'core.mock',
+      trace: 'core.trace', codegen: 'core.codegen', 'codegen-scan': 'core.codegen', 'solver-evaluator': 'core.solver', update: 'core.update',
+    },
   };
 }
 
