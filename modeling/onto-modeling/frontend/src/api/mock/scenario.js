@@ -71,6 +71,9 @@ export const ENTRIES = [
   e('metric', 'm01_overage_rate', 'M-01 超量率', 's5'),
   e('metric', 'm02_first_pass', 'M-02 一次通过率', null),
   e('script', 'build_replenish_order', 'build_replenish_order.py', null),
+  // 链接检查报告用：孤立对象、没被任何操作引用的规则
+  e('object', 'history_order', '历史补货单', null, { orphan: true }),
+  e('rule', 'r03_required_hint', 'R-03 必填项提示', 's1', { unused: true }),
 ];
 export const entry = (key) => ENTRIES.find((x) => x.key === key);
 export const entryRef = (key) => {
