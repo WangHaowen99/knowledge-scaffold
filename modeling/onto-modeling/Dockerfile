@@ -15,9 +15,9 @@ RUN npm run build
 FROM python:3.11-slim
 WORKDIR /app
 
-# git：每个项目 workspace 是独立 git 仓库；procps：运维排查用
+# git：每个项目 workspace 是独立 git 仓库；procps：运维排查用；tini：见文件末尾 ENTRYPOINT
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git procps ca-certificates \
+    && apt-get install -y --no-install-recommends git procps ca-certificates tini \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt ./
@@ -67,4 +67,8 @@ EXPOSE 8100
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/api/health', timeout=3).status == 200 else 1)"]
 
+# tini 兜底当 1 号进程：回收 CLI、git 留下的孤儿进程并转发 SIGTERM。compose 已配 init: true，
+# 但 redeploy-app.sh 沿用旧部署目录的 compose、docker run 也可能不带 --init，镜像自带才可靠；
+# 两者叠加时 -s 让这一层以子进程收割者身份工作
+ENTRYPOINT ["/usr/bin/tini", "-s", "--"]
 CMD ["python", "run.py"]

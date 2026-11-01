@@ -26,6 +26,9 @@ services:
     # 固定开销 + 会话上限 × 单进程峰值 规划（方案 4.1.1），默认对应 8G 主机
     mem_limit: ${ONTO_WEB_MEM_LIMIT:-6500m}
     stop_grace_period: 30s
+    # 后端不当 1 号进程：孤儿进程有人回收、信号正常转发。执行锁按引擎实例认持有者
+    # （state_helper），不依赖后端是不是 1 号进程
+    init: true
     ports:
       - "${ONTO_WEB_PORT:-5100}:8100"
     env_file:

@@ -3,13 +3,19 @@
 State helper — 单一文件管理所有命令的执行锁与进度快照。
 
 所有状态保存在 `.ontology-state/` 下：
-    lock-{command}.json     每个正在执行的命令的锁（含开始时间、阶段、PID、owner_pid）
+    lock-{command}.json     每个正在执行的命令的锁（含开始时间、阶段、PID，
+                            持有者为 owner（Web 后端托管的引擎实例）或 owner_pid）
     progress.json           各阶段完整进度快照（全体命令共用）
+
+锁的持有者：Web 后端每次连接引擎时把实例标识写进 `.onto/run/engine.json`，本进程是
+该后端的子孙时，持有者就是这个引擎实例——同一实例的多次 Bash 调用可续写锁，实例换了
+（回收、重启、改配置、切引擎）旧锁即过期，与后端是不是 1 号进程、引擎是 CLI 子进程
+还是进程内运行都无关。不在后端托管下（终端里直接跑 CLI）时退回按长寿祖先进程号判断。
 
 子命令：
     check-lock <command>                查询锁状态；输出 ok / locked:{ts}:{phase} /
-                                        stale:{ts}:{phase}（owner 进程已死或锁超 24h）
-    acquire <command> <phase>           写入锁；同会话（owner_pid 相同）覆盖以支持
+                                        stale:{ts}:{phase}（持有者已不在或锁超 24h）
+    acquire <command> <phase>           写入锁；同会话（持有者相同）覆盖以支持
                                         阶段切换；若另一活跃会话已持有则输出
                                         conflict:{ts}:{phase} 并退出码 2
     force-release <command>             强制删除锁（用户"清理重来"时使用）
@@ -32,6 +38,9 @@ import research_review
 
 STATE_DIR = Path('.ontology-state')
 PROGRESS_FILE = STATE_DIR / 'progress.json'
+# Web 后端写入的在线引擎实例标识（见模块说明）
+ENGINE_MARKER = Path('.onto') / 'run' / 'engine.json'
+ANCESTOR_SCAN_LIMIT = 32
 
 # Any lock older than this many hours is assumed to come from a crashed run.
 STALE_LOCK_HOURS = 24
@@ -122,6 +131,96 @@ def _get_session_pid() -> int:
     return shell_pid
 
 
+def _parent_pid(pid: int):
+    """父进程号；取不到返回 None。Linux 读 /proc（不起子进程），其余平台用 ps。"""
+    try:
+        stat = Path(f'/proc/{pid}/stat').read_text(encoding='utf-8')
+        # 第 2 列进程名可能含空格和括号：从最后一个 ')' 之后取
+        return int(stat.rsplit(')', 1)[1].split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        result = subprocess.run(
+            [shutil.which('ps') or '/bin/ps', '-o', 'ppid=', '-p', str(pid)],
+            capture_output=True, text=True, timeout=2
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return int(result.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+
+def _ancestor_pids() -> list:
+    pids = []
+    pid = os.getpid()
+    for _ in range(ANCESTOR_SCAN_LIMIT):
+        parent = _parent_pid(pid)
+        if not parent or parent in pids:
+            break
+        pids.append(parent)
+        if parent <= 1:
+            break
+        pid = parent
+    return pids
+
+
+def _read_engine_marker():
+    try:
+        data = json.loads(ENGINE_MARKER.read_text(encoding='utf-8'))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not data.get('engine_id'):
+        return None
+    return data
+
+
+def _live_engine_owner():
+    """工作区当前在线引擎实例的持有者标识；没有返回 None。"""
+    data = _read_engine_marker()
+    return f"engine:{data['engine_id']}" if data else None
+
+
+def _session_owner():
+    """本次调用所属会话：返回 (owner, owner_pid)，二者只有一个非空。
+
+    本进程是写下 ENGINE_MARKER 的后端的子孙时，持有者是该引擎实例；在同一工作区里
+    人工跑的脚本不是后端子孙，不会冒用引擎的锁，退回按长寿祖先进程号判断。
+    """
+    data = _read_engine_marker()
+    if data:
+        try:
+            host = int(data.get('host_pid'))
+        except (TypeError, ValueError):
+            host = None
+        if host and host in _ancestor_pids():
+            return f"engine:{data['engine_id']}", None
+    return None, _get_session_pid()
+
+
+def _owner_alive(data: dict):
+    """锁的持有者是否还在：True / False；不带持有者信息的旧锁返回 None。"""
+    owner = data.get('owner')
+    if owner:
+        return owner == _live_engine_owner()
+    owner_pid = data.get('owner_pid')
+    if owner_pid is None:
+        return None
+    try:
+        owner_pid = int(owner_pid)
+    except (TypeError, ValueError):
+        return False
+    # 1 号进程从来不是会话：要么是 init/tini，要么是没加 init 的容器里的后端自己
+    # （那时 Jiuwen 引擎写下的锁持有者就是 1，按孤儿锁处理）
+    if owner_pid <= 1:
+        return False
+    return _is_pid_alive(owner_pid)
+
+
+def _owner_label(data: dict) -> str:
+    return data.get('owner') or f"owner_pid={data.get('owner_pid')}"
+
+
 def _read_lock(path: Path):
     """Return parsed lock dict or None if missing/corrupt."""
     if not path.exists():
@@ -145,10 +244,9 @@ def check_lock(command: str) -> int:
         return 0
     ts = data.get('started_at', 'unknown')
     phase = data.get('phase', 'unknown')
-    owner_pid = data.get('owner_pid')
     age = _lock_age_hours(ts)
-    # Owner process gone → lock is orphaned regardless of age.
-    if owner_pid is not None and not _is_pid_alive(owner_pid):
+    # Owner gone → lock is orphaned regardless of age.
+    if _owner_alive(data) is False:
         print(f'stale:{ts}:{phase}')
         return 0
     if age is not None and age > STALE_LOCK_HOURS:
@@ -163,11 +261,12 @@ def acquire(command: str, phase: str) -> int:
 
     Behavior:
     - No existing lock → create one.
-    - Same session (owner_pid matches the long-lived ancestor returned by
+    - Same session (same engine instance under the Web backend, otherwise
+      owner_pid matches the long-lived ancestor returned by
       `_get_session_pid()`, typically the Claude process) → overwrite to
       update the phase in place (supports phase transitions across the
       multiple Bash calls that make up a single command run).
-    - Existing lock from a dead owner / no owner_pid (legacy lock) / corrupt
+    - Existing lock from a dead owner / no owner info (legacy lock) / corrupt
       JSON → treat as stale and overwrite (auto-recover from crashes).
     - Existing lock from a different LIVE session → refuse with
       `conflict:{ts}:{phase}` on stdout, recovery hint on stderr, exit code 2.
@@ -176,12 +275,15 @@ def acquire(command: str, phase: str) -> int:
     """
     _ensure_dir()
     path = _lock_path(command)
-    ppid = _get_session_pid()
+    owner, ppid = _session_owner()
     existing = _read_lock(path)
     if existing is not None:
-        existing_owner = existing.get('owner_pid')
+        same_session = (
+            existing.get('owner') == owner if owner
+            else not existing.get('owner') and existing.get('owner_pid') == ppid
+        )
         # Same-session re-acquire (phase transition) is always permitted.
-        if existing_owner is None or existing_owner == ppid or not _is_pid_alive(existing_owner):
+        if same_session or _owner_alive(existing) is not True:
             pass  # fall through to overwrite
         else:
             ts = existing.get('started_at', 'unknown')
@@ -189,7 +291,7 @@ def acquire(command: str, phase: str) -> int:
             print(f'conflict:{ts}:{existing_phase}')
             print(
                 f'另一活跃会话正在持有 {command} 锁'
-                f'（owner_pid={existing_owner}, phase={existing_phase}, started={ts}）。\n'
+                f'（{_owner_label(existing)}, phase={existing_phase}, started={ts}）。\n'
                 f'若确认无其他会话在跑，执行：'
                 f'python3 .claude/scripts/state_helper.py force-release {command}',
                 file=sys.stderr,
@@ -200,8 +302,11 @@ def acquire(command: str, phase: str) -> int:
         'phase': phase,
         'started_at': time.strftime('%Y-%m-%d %H:%M:%S'),
         'pid': os.getpid(),
-        'owner_pid': ppid,
     }
+    if owner:
+        payload['owner'] = owner
+    else:
+        payload['owner_pid'] = ppid
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
     print('ok')
     return 0

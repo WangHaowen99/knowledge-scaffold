@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -103,6 +104,15 @@ def visible_history_start(events: list[dict], limit: int = VISIBLE_HISTORY_TAIL)
     return oldest_visible
 
 
+def _interrupt_events(reason: str, message: str) -> list[dict]:
+    """中断标记：中断事件 + idle 终态（重启自愈与停机共用同一格式）。"""
+    now = time.time()
+    return [
+        {"type": "session_interrupted", "reason": reason, "message": message, "ts": now},
+        {"type": "session_state", "state": "idle", "ts": now},
+    ]
+
+
 def _reconcile_stale_history(
     project_id: str, conversation_id: str = DEFAULT_CONVERSATION
 ) -> list[dict] | None:
@@ -117,17 +127,9 @@ def _reconcile_stale_history(
             break
     if state not in ("running", "queued", "connecting"):
         return None
-    now = time.time()
-    patch = [
-        {
-            "type": "session_interrupted",
-            "reason": "stale",
-            "message": "会话进程已重启，上一轮未正常结束，已标记为中断",
-            "ts": now,
-            "seq": len(events),
-        },
-        {"type": "session_state", "state": "idle", "ts": now, "seq": len(events) + 1},
-    ]
+    patch = _interrupt_events("stale", "会话进程已重启，上一轮未正常结束，已标记为中断")
+    for offset, event in enumerate(patch):
+        event["seq"] = len(events) + offset
     try:
         with open(_history_path(project_id, conversation_id), "a", encoding="utf-8") as f:
             for event in patch:
@@ -193,6 +195,10 @@ def purge_history(project_id: str) -> None:
 # 超时即硬终止引擎（续接点保留，下一条消息 resume）——保证"停止"按钮总能停
 INTERRUPT_TIMEOUT_SECONDS = 10
 KILL_TIMEOUT_SECONDS = 5
+# 停机时回收全部引擎的总时长上限。docker 停机宽限期 30 秒，uvicorn 先等连接关闭最多
+# 3 秒（run.py），这里再留 20 秒，合计控制在 25 秒内，不被宽限期后的 SIGKILL 截断
+SHUTDOWN_BUDGET_SECONDS = 20
+SHUTDOWN_INTERRUPT_MESSAGE = "服务停机，本轮未正常结束，已标记为中断"
 
 
 class SessionError(Exception):
@@ -234,6 +240,10 @@ class Session:
     sending: int = 0  # 处理中的 send() 数；期间不可回收或换绑，否则消息会落到已丢弃的会话上
     # 引擎使用谁的模型配置：用户名 = 该用户的个人 Key；"" = 管理员配置（原行为）
     model_owner: str = ""
+    # 已交给引擎、还没等到 result 的消息数（引擎内积压的也算）
+    turns_in_flight: int = 0
+    # 运行中模型配置变了：等手头的轮次都出 result 再断开，下一条消息按新配置重连
+    reload_pending: bool = False
 
     @property
     def client(self) -> Any:
@@ -277,6 +287,17 @@ def _recyclable(session: "Session") -> bool:
         and not session.pending_prompts
         and not session.sending
     )
+
+
+def _unfinished(session: "Session") -> bool:
+    """有没跑完的轮：在跑、排队，或消息已收下但引擎还没接走。"""
+    return session.state in ("running", "queued") or bool(session.pending_prompts)
+
+
+def _mark_interrupted(session: "Session", reason: str, message: str) -> None:
+    for event in _interrupt_events(reason, message):
+        session.broadcast(event)
+    session.state = "idle"
 
 
 def _bound_to(session: "Session | None", conversation_id: str) -> bool:
@@ -544,19 +565,23 @@ class SessionManager:
         if session.state != "running":
             session.round_base_commit = await asyncio.to_thread(_git_head, cwd)
         # 管理员更新模型配置后，旧引擎实例仍带着旧环境：配置指纹不一致时
-        # 断开重连（resume 续接上下文），让新网关/Key 立即生效
+        # 断开重连（resume 续接上下文），让新网关/Key 生效。正在跑的一轮不能切断：
+        # 只记待重载，这条消息仍交给旧引擎，等手头的轮次都出 result 再断开（_read_loop）
         if session.engine is not None and session.engine.config_stale():
-            if session.reader_task:
-                session.reader_task.cancel()
-            await session.engine.disconnect()
-            session.engine = None
+            if session.state == "running":
+                session.reload_pending = True
+            else:
+                if session.reader_task:
+                    session.reader_task.cancel()
+                await session.engine.disconnect()
+                session.engine = None
         session.broadcast({"type": "user_message", "text": text})
         if not session.discarded:  # 已删除项目再写标题会重建出会话索引
             conversation_store.note_message(
                 session.project_id, session.conversation_id, text
             )
         if session.engine is not None:
-            await session.engine.send(text)
+            await self._send_turn(session, session.engine, text)
             session.set_state("running")
             return
         session.pending_prompts.append(text)
@@ -580,6 +605,16 @@ class SessionManager:
                 self._waiters.append(session.project_id)
             session.set_state("queued")
             self._broadcast_queue_positions()
+
+    @staticmethod
+    async def _send_turn(session: Session, engine: Any, text: str) -> None:
+        # 先计数再发送：发送期间读循环可能收到上一轮的 result，计数为零就会触发待重载断开
+        session.turns_in_flight += 1
+        try:
+            await engine.send(text)
+        except BaseException:
+            session.turns_in_flight -= 1
+            raise
 
     def _pick_idle_victim(self) -> Session | None:
         candidates = [s for s in self._sessions.values() if _recyclable(s)]
@@ -644,6 +679,10 @@ class SessionManager:
         project_id = session.project_id
         try:
             engine = self._make_engine(session)
+            # 连接前写：连接时的 SessionStart 等钩子就要按新实例认锁
+            _write_engine_marker(
+                session.cwd, getattr(engine, "name", ""), session.conversation_id
+            )
             resumed = await engine.connect()
             if self._sessions.get(project_id) is not session:
                 # 连接期间会话已被关闭、换绑或删除项目：晚到的引擎没人认领，不当场断开就成了
@@ -652,6 +691,8 @@ class SessionManager:
                 return
             session.resume_attempted = resumed
             session.engine = engine
+            session.turns_in_flight = 0
+            session.reload_pending = False
             session.reader_task = asyncio.create_task(self._read_loop(session))
             started = {
                 "type": "session_started",
@@ -670,7 +711,7 @@ class SessionManager:
                     _git_head, session.cwd
                 )
             for prompt in prompts:
-                await engine.send(prompt)
+                await self._send_turn(session, engine, prompt)
             session.set_state("running" if prompts else "idle")
         except Exception as exc:
             if session.discarded:  # 项目已删除，工作区没了连接失败是预期内的，不报错
@@ -762,16 +803,40 @@ class SessionManager:
             self._reaper_task = asyncio.create_task(self._reaper_loop())
 
     async def shutdown(self) -> None:
-        """服务停机：停后台回收并断开全部引擎（resume 点已落盘）。"""
+        """服务停机：先给没跑完的轮写中断标记，再并发断开全部引擎（resume 点已落盘）。
+
+        中断标记先写：断开可能超时，进程随时会被宽限期后的 SIGKILL 打断。
+        不排 _lock：持锁的操作若卡在悬死的 CLI 上，排锁会吃掉停机预算；
+        摘除会话是同步代码，事件循环不会在中途切走。
+        """
         if self._reaper_task:
             self._reaper_task.cancel()
             self._reaper_task = None
         for task in list(self._tasks):
             task.cancel()
         self._waiters.clear()
-        for session in list(self._sessions.values()):
-            async with self._lock:
-                await self._recycle(session)
+        sessions = list(self._sessions.values())
+        for session in sessions:
+            if _unfinished(session):
+                _mark_interrupted(session, "shutdown", SHUTDOWN_INTERRUPT_MESSAGE)
+        engines = []
+        for session in sessions:
+            self._sessions.pop(session.project_id, None)
+            session.set_state("closed")
+            if session.reader_task:
+                session.reader_task.cancel()
+            engine, session.engine = session.engine, None
+            if engine is not None:
+                engines.append(engine)
+        if not engines:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(_stop_engine(e) for e in engines), return_exceptions=True),
+                timeout=SHUTDOWN_BUDGET_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            pass  # 单个引擎的断开另有超时硬杀，这里只兜总时长
 
     async def close(
         self,
@@ -1009,8 +1074,28 @@ class SessionManager:
                 event, transient=event.get("type") == "stream_delta"
             )
             if event.get("type") == "result":
+                session.turns_in_flight = max(0, session.turns_in_flight - 1)
                 await self._emit_workspace_changes(session)
                 session.set_state("idle")
+                if session.reload_pending and session.turns_in_flight == 0:
+                    await self._reload_after_turn(session)
+                    return
+
+    async def _reload_after_turn(self, session: Session) -> None:
+        """待重载的会话在本轮收尾后断开旧引擎；下一条消息按新配置 resume 重连。
+
+        在读循环自己里调用，不能 cancel reader_task（那是当前任务），断开后由调用方返回。
+        引擎内若还积压着没出 result 的消息，计数不为零，不会走到这里。
+        """
+        session.reload_pending = False
+        engine, session.engine = session.engine, None
+        if engine is not None:
+            # 断开期间读循环可能被回收（close 等）取消：断开放进独立任务，不被一起打断
+            stop = asyncio.ensure_future(_stop_engine(engine))
+            self._tasks.add(stop)
+            stop.add_done_callback(self._tasks.discard)
+            await asyncio.shield(stop)
+        await self._drain_waiters()
 
 
 def usage_summary(project_id: str) -> dict:
@@ -1053,6 +1138,34 @@ def usage_summary(project_id: str) -> dict:
         "input_tokens": input_tokens,
         "last_activity": last_activity,
     }
+
+
+# 工作区里当前在线引擎实例的标识。工具箱 state_helper 据此把执行锁绑定到引擎实例，
+# 而不是进程号：后端是不是 1 号进程（容器加不加 init）、引擎是 CLI 子进程还是进程内
+# 运行，都不影响「同一会话可续写锁、换了实例旧锁即过期」的判断
+ENGINE_MARKER = Path(".onto") / "run" / "engine.json"
+
+
+def _write_engine_marker(cwd: Path | None, engine: str, conversation_id: str) -> None:
+    # 工作区已不在（项目刚被删除）时不写：mkdir 会在原处重建出残留目录
+    if cwd is None or not Path(cwd).is_dir():
+        return
+    path = Path(cwd) / ENGINE_MARKER
+    payload = {
+        "engine_id": uuid.uuid4().hex,
+        # state_helper 只认这个进程的子孙：工作区里人工跑的脚本不会冒用引擎的锁
+        "host_pid": os.getpid(),
+        "engine": engine,
+        "conversation_id": conversation_id,
+        "started_at": time.time(),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+        temporary.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError:
+        pass  # 写不了时 state_helper 退回按进程号判断，不阻断会话
 
 
 def _git_head(cwd: Path) -> str:

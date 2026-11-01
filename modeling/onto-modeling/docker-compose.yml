@@ -17,6 +17,9 @@ services:
     # 显式镜像名：脚本验证网关复用同一镜像
     image: onto-modeling-dev:latest
     container_name: onto-modeling-dev
+    # 后端不当 1 号进程：孤儿进程有人回收、信号正常转发。执行锁按引擎实例认持有者
+    # （state_helper），不依赖后端是不是 1 号进程
+    init: true
     ports:
       - "${ONTO_WEB_PORT:-5100}:8100"
     env_file:
