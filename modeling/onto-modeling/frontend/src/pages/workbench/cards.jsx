@@ -271,7 +271,11 @@ export function CardItem({ card, scope }) {
   switch (card.card_type) {
     case 'step_output': return <StepOutputCard card={card} />;
     case 'flowchart': return <FlowchartCard card={card} locked={!!scope && scope.state !== 'none' && (scope.artifacts || []).some((a) => a.type === card.artifact?.type && a.key === card.artifact?.key)} />;
-    case 'round_changes': return <RoundChangesCard card={card} scope={scope} />;
+    case 'round_changes': {
+      // 增量更新执行后的那一轮（带 change_list_id）按设计稿 incremental 的样子画
+      const Inc = card.change_list_id ? EXTRA_CARDS['round_changes.incremental'] : null;
+      return Inc ? <Inc card={card} scope={scope} /> : <RoundChangesCard card={card} scope={scope} />;
+    }
     case 'resume': return <ResumeCard card={card} />;
     case 'pack_recommendation': return <PackRecommendationCard card={card} />;
     case 'knowledge_saved': return <div className="row mt8"><Chip tone="teal" icon="check">已入库，后续建模会自动应用</Chip></div>;

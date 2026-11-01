@@ -19,6 +19,7 @@ import { ScopePicker } from '../knowledge/ScopePicker.jsx';
 import { Timeline } from './Timeline.jsx';
 import { useConversation } from './useConversation.js';
 import { MATERIAL_DIALOGS } from './materials/model.js';
+import { useIncremental, useIncrementalTarget } from './incremental/useIncremental.jsx';
 import '../../styles/workbench-extra.css';
 
 const FlowchartDialog = lazy(() => import('../flowchart/FlowchartDialog.jsx'));
@@ -429,7 +430,9 @@ export default function WorkbenchPage({ route }) {
   const { api, maintenance } = useApp();
   const project = useProject();
   const { pid, meta, flow, scope, inboxCount, hasPlugin } = project;
-  const conv = useConversation(route.query?.c);
+  // 增量更新（incremental）落到进行中的变更清单所在的对话
+  const incTarget = useIncrementalTarget(route);
+  const conv = useConversation(route.query?.c || incTarget.cid);
   const convOps = useConversationOps(conv);
   const { cid, state, list } = conv;
   const [drawer, setDrawer] = useState(false);
@@ -444,6 +447,7 @@ export default function WorkbenchPage({ route }) {
   const [mDialog, setMDialog] = useState(null);
   const ab = useAutobuild({ pid, cid, list });
   const mainRef = useRef(null);
+  const inc = useIncremental({ route, target: incTarget, conv, state, flow, mainRef });
   const headRef = useRef(null);
   const comp = useRef({});
   const rounds = useRef(new Map());
@@ -536,6 +540,10 @@ export default function WorkbenchPage({ route }) {
     saveKnowledge: (item) => setKnItem({ ...item, conversation_id: cid }),
     openFlowchart: (artifact) => setFlowchart(artifact),
     openMaterials: (d) => setMDialog(typeof d === 'string' ? { kind: d } : d),
+    // 增量更新的卡片：清单弹窗、确认清单并执行、页面命令发到这条对话
+    openChangeList: inc.openChangeList,
+    executeChangeList: inc.execute,
+    conversationId: cid,
   }), [api, pid, cid, hasPlugin]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onSuggestion = async (a) => {
@@ -560,6 +568,9 @@ export default function WorkbenchPage({ route }) {
           break;
         }
         case 'confirm_blueprint': setMDialog({ kind: 'build', next: a.next || 'L2' }); break;
+        // 增量更新：确认清单并执行（INC-04）、开始增量更新
+        case 'execute_change_list':
+        case 'start_incremental': await inc.onAction(a); break;
         default: break;
       }
     } catch (e) {
@@ -578,7 +589,7 @@ export default function WorkbenchPage({ route }) {
     }
   };
 
-  const sug = state.suggestions || suggestions;
+  const sug = inc.decorate(state.suggestions || suggestions);
   // 对话正在跑的命令属于哪个节点（FL-01 commands）；服务端标出进行中之前，进度条先按它显示
   const runningCmd = ['running', 'connecting'].includes(state.session.state) ? lastUserText(state) : null;
   const viewFlow = useMemo(() => overlayRunning(flow, commandNode(flow, runningCmd)), [flow, runningCmd]);
@@ -664,7 +675,7 @@ export default function WorkbenchPage({ route }) {
             <div className="wbc-main" ref={mainRef} onScroll={onScroll}>
               <div className="wbc-col">
                 {conv.loadError ? <div className="note red mt16"><Icon name="alert" /><div className="grow">{errorText(conv.loadError)}</div></div> : null}
-                <Timeline state={state} scope={scope} onInterrupt={interrupt} />
+                {inc.hideTimeline ? null : <Timeline state={state} scope={scope} onInterrupt={interrupt} />}
                 {state.session.state === 'queued' && state.queue ? <QueueCard queue={state.queue} onCancel={() => api.cancelQueue(pid, cid).catch(fail)} /> : null}
               </div>
             </div>
@@ -690,6 +701,7 @@ export default function WorkbenchPage({ route }) {
             </Suspense>
           ) : null}
           {mDialog ? <Suspense fallback={null}><MaterialsDialogs dialog={mDialog} onClose={closeMDialog} /></Suspense> : null}
+          {inc.element}
         </WbCtx.Provider>
         </AutobuildCtx.Provider>
       </ActionsCtx.Provider>
