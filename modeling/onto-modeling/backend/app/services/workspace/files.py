@@ -9,7 +9,7 @@ from pathlib import Path
 from .. import material_detect, package_mapping, solver_contract
 from ..toolkit import script_descriptor as _script_descriptor
 from .errors import WorkspaceError
-from .gitops import _by, _commit_paths, _git
+from .gitops import _by, _git
 from .layout import (
     IMPORTED_PACKAGE_DIR,
     META_FILE,
@@ -19,7 +19,6 @@ from .layout import (
     _content_revision,
     _first_heading,
     _is_script_descriptor,
-    _is_workspace_script,
     is_auto_detected as _is_auto_detected,
 )
 
@@ -434,11 +433,8 @@ class FilesMixin:
         with ChangeTx(self, project_id, Origin(source, author), summary=f"保存 {rel_posix}") as tx:
             # 乐观并发（方案 7.4 双写合并）：Web 编辑与 agent 写同一文件不互相静默覆盖
             tx.check_revision(rel_posix, base_revision, lambda: self._changed_by(root, rel_posix))
+            # 保存脚本时同名描述符由事务的派生步骤刷新，并进同一个提交
             tx.write(rel_posix, content)
-            # 保存脚本时同名描述符随之刷新，并进同一个提交
-            if _is_workspace_script(rel):
-                tx.touch(rel.with_suffix(".md").as_posix())
-                _script_descriptor.sync_workspace_descriptors(root / "ontology")
             commit = tx.commit(f"{prefix}: 保存 {rel_posix}{note}{_by(author)}").commit
         return {
             "path": rel_path,

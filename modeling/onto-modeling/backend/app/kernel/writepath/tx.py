@@ -30,7 +30,7 @@ from ... import config
 from ...governance import context as _context
 from ...services.workspace.errors import WorkspaceError
 from ...services.workspace.gitops import STALE_GIT_LOCK_SECONDS, _changed_paths, _git, _run_git
-from ...services.workspace.layout import _content_revision
+from ...services.workspace.layout import _content_revision, _is_workspace_script
 from . import events
 
 _log = logging.getLogger(__name__)
@@ -423,13 +423,29 @@ class ChangeTx:
     # ---- 派生文件与提交 ----
 
     def _derive(self) -> None:
-        """派生文件跟着改动刷新并进同一个提交（C6）：被改动目录的 index.md。"""
+        """派生文件跟着改动刷新并进同一个提交（C6）：脚本描述符、被改动目录的 index.md。"""
+        self._sync_script_descriptors()
         refresh = getattr(self.manager, "refresh_indexes_for", None)
         if refresh is None:
             return
         for rel in refresh(self.root, self._paths):
             if rel not in self._paths:
                 self._paths.append(rel)
+
+    def _sync_script_descriptors(self) -> None:
+        """改了 ontology/scripts/*.py 时同名描述符跟着刷新、进同一个提交。
+
+        描述符同步只在这一处调用：插件运行时按项目锁定契约库版本后，改成
+        `contracts.for_project(root).script_descriptor`（主控合并时替换）。
+        """
+        scripts = [Path(rel) for rel in self._paths if _is_workspace_script(Path(rel))]
+        if not scripts:
+            return
+        from ...services.toolkit import script_descriptor
+
+        for script in scripts:
+            self.touch(script.with_suffix(".md").as_posix())
+        script_descriptor.sync_workspace_descriptors(self.root / "ontology")
 
     def commit(self, message: str) -> TxResult:
         if self.result is not None:
