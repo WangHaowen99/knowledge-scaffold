@@ -35,6 +35,18 @@ const SourcesPage = lazy(() => import('../pages/evidence/SourcesPage.jsx'));
 const SnapshotsPage = lazy(() => import('../pages/evidence/SnapshotsPage.jsx'));
 const SchemaPage = lazy(() => import('../pages/evidence/SchemaPage.jsx'));
 const ProjectSettingsPage = lazy(() => import('../pages/settings/ProjectSettingsPage.jsx'));
+// F4：运维中心、插件中心、个人与系统设置（全局页，都按路由拆包）
+const GLOBAL_PAGE_COMPONENTS = {
+  ops: lazy(() => import('../pages/ops/OpsOverviewPage.jsx')),
+  'ops-obs': lazy(() => import('../pages/ops/OpsObsPage.jsx')),
+  'ops-ctl': lazy(() => import('../pages/ops/OpsCtlPage.jsx')),
+  'ops-users': lazy(() => import('../pages/ops/OpsUsersPage.jsx')),
+  plugins: lazy(() => import('../pages/plugins/PluginsPage.jsx')),
+  'plugin-detail': lazy(() => import('../pages/plugins/PluginDetailPage.jsx')),
+  'plugin-upload': lazy(() => import('../pages/plugins/PluginUploadPage.jsx')),
+  me: lazy(() => import('../pages/me/MePage.jsx')),
+  sys: lazy(() => import('../pages/sys/SysPage.jsx')),
+};
 // 工作台的几个阶段（资料分析、切片规划、陪伴、流程图弹窗、自主构建、增量更新）是同一个对话页，显示什么由对话和流程数据决定
 const PROJECT_PAGES = {
   'wb-l2': WorkbenchPage,
@@ -159,7 +171,10 @@ export default function App() {
         {P ? <Suspense fallback={<Splash />}><P route={route} /></Suspense> : <Pending project projectId={route.projectId} page={route.page} />}
       </ProjectArea>
     );
-  } else if (GLOBAL_PAGES.includes(route.name)) page = <Pending page={route.name} />;
+  } else if (GLOBAL_PAGES.includes(route.name)) {
+    const G = GLOBAL_PAGE_COMPONENTS[route.name];
+    page = G ? <Suspense fallback={<Splash />}><G route={route} /></Suspense> : <Pending page={route.name} />;
+  }
   else {
     const E = ENTRY_PAGES[route.name] || ENTRY_PAGES.projects;
     page = E ? <E /> : <Pending page={route.name} />;

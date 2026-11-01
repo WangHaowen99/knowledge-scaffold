@@ -3,6 +3,7 @@ import { useRef, useState } from 'react';
 import { useApp, useProject } from '../app/context.js';
 import { navigate, pagePath } from '../app/router.js';
 import { Avatar, Icon, Kbd, Menu, cx, useOutside } from '../ui/index.jsx';
+import { can } from '../state/roles.js';
 import { openPalette } from './CommandPalette.jsx';
 
 function UserButton() {
@@ -24,6 +25,9 @@ function UserButton() {
             <div className="xs muted">{user?.username} · {user?.role_label}{user?.auth_source === 'local' ? ' · 本地模式' : ''}</div>
           </div>
           <div className="mi" onClick={() => { setOpen(false); navigate('/me'); }}><Icon name="user" size={14} /><span>个人设置</span></div>
+          {can(user, 'admin') ? (
+            <div className="mi" onClick={() => { setOpen(false); navigate('/sys'); }}><Icon name="gear" size={14} /><span>系统设置</span></div>
+          ) : null}
           {user?.auth_source === 'local' ? null : (
             <div className="mi" onClick={() => { setOpen(false); logout(); }}><Icon name="logout" size={14} /><span>退出登录</span></div>
           )}
@@ -47,7 +51,7 @@ export function GlobalTopbar({ active, unread, onBell }) {
   const { user } = useApp();
   const items = [['projects', '我的项目', 'grid'], ['plugins', '插件中心', 'puzzle']];
   // 运维中心只对管理员（只读）和运维开放（契约 1.3）
-  if (user && (user.role === 'admin' || user.role === 'ops')) items.push(['ops', '运维中心', 'activity']);
+  if (can(user, 'ops.read')) items.push(['ops', '运维中心', 'activity']);
   return (
     <header className="topbar">
       <div className="brand"><div className="logo">本</div><span>本体建模工作台</span></div>

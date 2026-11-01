@@ -36,7 +36,8 @@ export function clientConfig({ authEnabled = true, registration = true, maintena
     server_version: '2.0.0',
     page_api: '1.0',
     auth: { enabled: authEnabled, registration_enabled: registration, local_user: authEnabled ? null : 'local' },
-    ops_base_url: '',
+    // 运维管理面独立监听（契约 1.1）；mock 里也走这个地址，验证运维接口按 ops_base_url 拼
+    ops_base_url: 'http://127.0.0.1:8101',
     maintenance,
     limits: {
       json_body_bytes: 1048576, file_write_bytes: 4194304, material_upload_bytes: 20971520, attachment_bytes: 20971520,

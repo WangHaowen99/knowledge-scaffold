@@ -21,11 +21,20 @@ import * as scenarioRoutes from './routes-scenarios.js';
 import * as scriptRoutes from './routes-scripts.js';
 import * as settingsRoutes from './routes-settings.js';
 import * as versionRoutes from './routes-versions.js';
+import * as opsObsRoutes from './routes-ops-obs.js';
+import * as opsCtlRoutes from './routes-ops-ctl.js';
+import * as adminRoutes from './routes-admin.js';
+import * as pluginRoutes from './routes-plugins.js';
+import * as packUploadRoutes from './routes-pack-uploads.js';
+import * as meRoutes from './routes-me.js';
+import * as systemRoutes from './routes-system.js';
 
 // F3 的分组在后面：同一路径先登记的先匹配，F3 文件只补新接口
+// F4：运维（可观测、管控、用户与审计）、插件目录与上传、个人设置、系统设置；/me、/packs 已从本文件移到 routes-me、routes-plugins
 const MODULES = [
   studioRoutes, reportRoutes, artifactRoutes, inboxRoutes, autobuildRoutes, materialRoutes,
   knowledgeRoutes, scenarioRoutes, scriptRoutes, incrementalRoutes, versionRoutes, publishRoutes, resourceRoutes, evidenceRoutes, settingsRoutes,
+  opsObsRoutes, opsCtlRoutes, adminRoutes, pluginRoutes, packUploadRoutes, meRoutes, systemRoutes,
 ];
 // 写入范围锁额外覆盖的条目、产物、路径（routes-*.js 导出 lockScope）
 const LOCK_EXTRAS = { entries: [], artifacts: [], paths: [] };
@@ -81,13 +90,14 @@ export function createMockServer() {
   const uid = () => (++db.seq).toString(16);
 
   function userOf(init) {
-    if (!authEnabled) return F.USERS.local;
+    if (!authEnabled) return { ...F.USERS.local, roles: ['user', 'admin', 'ops'] };
     const h = init?.headers?.Authorization || '';
     const name = h.startsWith('Bearer mock.') ? h.slice('Bearer mock.'.length).split('.')[0] : null;
     if (!name) return null;
     const role = sc.role && name === 'zhangsan' ? sc.role : null;
     const base = F.USERS[name] || { username: name, display_name: name, role: 'user', role_label: '建模者', auth_source: 'auth-server' };
-    return role ? { ...base, role, role_label: { user: '建模者', admin: '管理员', ops: '运维' }[role] } : base;
+    const u = role ? { ...base, role, role_label: { user: '建模者', admin: '管理员', ops: '运维' }[role] } : base;
+    return { ...u, roles: [...new Set(['user', u.role])] };
   }
   const tokensFor = (user) => ({
     access_token: `mock.${user.username}.${Date.now()}`,
@@ -269,8 +279,6 @@ export function createMockServer() {
     return json(200, tokensFor(F.USERS[name] || { username: name, display_name: name, role: 'user', role_label: '建模者', auth_source: 'auth-server' }));
   });
   on('POST', '/auth/logout', () => new Response(null, { status: 204 }));
-  on('GET', '/me', ({ user }) => json(200, { ...user, last_login: { at: new Date().toISOString(), ip: '192.0.2.10' }, project_count: db.cards.length, usage_this_month: { output_tokens: 410000, input_tokens: 3200000, cost: { amount: 126, currency: 'CNY' } } }));
-  on('GET', '/me/model-settings', () => json(200, F.modelSettings()));
   on('GET', '/me/notifications', () => json(200, { items: db.notifications, next_cursor: null, unread_count: db.notifications.filter((n) => !n.read).length }));
   on('POST', '/me/notifications/read', ({ body }) => {
     db.notifications.forEach((n) => { if (body.all || (body.ids || []).includes(n.id)) n.read = true; });
@@ -649,20 +657,19 @@ export function createMockServer() {
     const items = q ? [hit('entries', `「${q}」`, '知识包 3 处、资料 2 处、报告 1 处', 'studio')] : [];
     return json(200, { q, groups: [{ group: 'entries', total: items.length, items }], term_summary: q ? [{ term: q, by_group: { entries: 3, materials: 2, reports: 1, knowledge: 0, artifacts: 0 }, referenced_by: 4 }] : [] });
   });
-  on('GET', '/packs', ({ query }) => {
-    const cats = (query.get('category') || '').split(',').filter(Boolean);
-    const items = F.packs().filter((p) => !cats.length || cats.includes(p.category));
-    return json(200, { items, counts: { all: items.length }, recommendations: [] });
-  });
   on('POST', '/projects/([^/]+)/anchors/resolve', ({ body }) => json(200, {
     items: (body.anchors || []).map((a) => F.ANCHOR_RESOLUTIONS[a] || { anchor: a, scheme: a.split(':')[0], resolved: false, reason: 'not_in_snapshot', source_label: a, location_label: '', text: '', highlights: [], confidence: null, snapshot_id: null, page: null }),
   }));
 
-  // ---------- F2、F3 各分组（routes-*.js） ----------
+  // 角色把关（契约 1.3）：roles 里没有任何一个所需角色时返回 403，否则返回 undefined 继续处理。
+  // 用法：on('PUT', '/ops/...', ({ user }) => forbid(user, ['ops']) || json(200, …))
+  const forbid = (user, roles) => (roles.some((r) => (user?.roles || [user?.role]).includes(r)) ? undefined : err(403, 'forbidden', '没有权限', { required_roles: roles }));
+
+  // ---------- F2、F3、F4 各分组（routes-*.js） ----------
   const ctx = {
     on, json, err, wait, db, hub, sc, uid, F, cardOf, convKey, projKey, convsOf, flowOf, stageOf,
     emitConv, emitConvTransient, emitProj, emitUser, setSession, scopeOf, setScope, scopeLock, later, runReply,
-    commandHooks, putTask, seedTask, tasksOf, artifactTypeDefs,
+    commandHooks, putTask, seedTask, tasksOf, artifactTypeDefs, forbid, authEnabled, maintenance,
     // 本服务端自己的入口：分组之间转调（如版本对比读 Studio 分组的 F-02）。不要用 window.__ontoMock，StrictMode 下会建两个服务端
     self: (url, init) => handle(url, init),
   };

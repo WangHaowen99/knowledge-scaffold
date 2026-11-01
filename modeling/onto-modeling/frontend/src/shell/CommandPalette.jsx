@@ -4,6 +4,7 @@ import { useApp } from '../app/context.js';
 import { navigate, pagePath } from '../app/router.js';
 import { toast } from '../app/toast.jsx';
 import { errorText } from '../api/errors.js';
+import { can } from '../state/roles.js';
 import { Icon, Kbd } from '../ui/index.jsx';
 
 const listeners = new Set();
@@ -18,12 +19,13 @@ export const PAGE_TITLES = {
   create: '新建项目', import: '导入项目', 'chat-states': '对话卡片与状态',
 };
 
-function staticItems({ projectId, inboxCount, hasPlugin, hasSubpage, role }) {
-  const canOps = role === 'admin' || role === 'ops';
+function staticItems({ projectId, inboxCount, hasPlugin, hasSubpage, user }) {
+  const canOps = can(user, 'ops.read');
   if (!projectId) {
     return [
       ['跳转', '我的项目', 'grid', 'projects'], ['跳转', '新建项目…', 'plus', 'create'], ['跳转', '导入项目…', 'download', 'import'],
-      ['插件', '安装插件 / 能力包…', 'puzzle', 'plugins'], ['设置', '我的模型配置', 'key', 'me'],
+      ['插件', '安装插件 / 能力包…', 'puzzle', 'plugins'], ['设置', '我的模型配置', 'key', 'me', { section: 'model' }],
+      ...(can(user, 'admin') ? [['设置', '系统设置', 'gear', 'sys']] : []),
       ...(canOps ? [['运维', '查看运行状态', 'activity', 'ops']] : []),
     ];
   }
@@ -38,7 +40,7 @@ function staticItems({ projectId, inboxCount, hasPlugin, hasSubpage, role }) {
     ...(hasSubpage('sources') ? [['资料', '连接业务系统…', 'plug', 'sources'], ['资料', '采集一次快照', 'scan', 'snapshots']] : []),
     ['发布', '发布检查与发布…', 'upload', 'publish'], ['发布', '标记一个版本…', 'tag', 'versions'],
     ['插件', '安装插件 / 能力包…', 'puzzle', 'plugins'], ['插件', '本项目已启用的能力', 'layers', 'proj-settings', { section: 'plugins' }],
-    ['设置', '我的模型配置', 'key', 'me'], ['设置', '对外 MCP 与 Token', 'link', 'proj-settings', { section: 'mcp' }],
+    ['设置', '我的模型配置', 'key', 'me', { section: 'model' }], ['设置', '对外 MCP 与 Token', 'link', 'proj-settings', { section: 'mcp' }],
     ...(canOps ? [['运维', '查看运行状态', 'activity', 'ops']] : []),
   ];
 }
@@ -93,7 +95,7 @@ export function CommandPalette({ projectId, inboxCount, extensions, conversation
     const items = [];
     remote.hits.forEach((h) => items.push({ group: '内容', label: h.label, icon: h.icon, page: h.page }));
     remote.commands.forEach((c) => items.push({ group: '命令', label: c.label, icon: 'cmd', command: c, desc: c.description }));
-    staticItems({ projectId, inboxCount, hasPlugin, hasSubpage, role: user?.role })
+    staticItems({ projectId, inboxCount, hasPlugin, hasSubpage, user })
       .filter(([g, t]) => !q || t.includes(q) || g.includes(q))
       .forEach(([g, t, i, page, params]) => items.push({ group: g, label: t, icon: i, page, params }));
     return items;

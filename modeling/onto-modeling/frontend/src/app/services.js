@@ -40,18 +40,29 @@ export async function createServices({ onAuthRequired, onMaintenance }) {
       return res.json();
     },
 
-    // 下载：生产用带 token 的直链（大文件不进内存），mock 下走 fetch 取 blob
-    async download(path, fallbackName) {
+    // PL-13 插件包上传（≤ 200 MiB，带进度）
+    async uploadPack(file, { onProgress } = {}) {
+      const form = new FormData();
+      form.append('file', file);
+      const headers = tokens.access ? { Authorization: `Bearer ${tokens.access}` } : {};
+      const res = await transport.upload(`${API_PREFIX}/admin/packs/uploads`, form, headers, onProgress);
+      if (!res.ok) throw await errorFromResponse(res);
+      return res.json();
+    },
+
+    // 下载：生产用带 token 的直链（大文件不进内存），mock 下走 fetch 取 blob。
+    // path 不带 /api/v1 前缀；运维管理面的下载（O-47、O-49）传 { ops: true, query }
+    async download(path, fallbackName, { ops = false, query } = {}) {
       if (!transport.isMock) {
         const a = document.createElement('a');
-        a.href = client.withToken(`${API_PREFIX}${path}`);
+        a.href = client.withToken(client.url(path, query, { ops }));
         a.rel = 'noopener';
         document.body.appendChild(a);
         a.click();
         a.remove();
         return;
       }
-      const res = await client.request('GET', path, { raw: true });
+      const res = await client.request('GET', path, { raw: true, ops, query });
       const blob = await res.blob();
       const cd = res.headers.get('Content-Disposition') || '';
       const m = cd.match(/filename="([^"]+)"/);

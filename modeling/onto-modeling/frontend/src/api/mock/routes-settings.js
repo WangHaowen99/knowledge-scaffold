@@ -109,7 +109,7 @@ export function register(ctx) {
   on('GET', '/projects/([^/]+)/engine', ({ m }) => {
     const c = cardOf(m[1]);
     if (!c) return err(404, 'project_not_found', '项目不存在');
-    return json(200, { engine: c.engine, model_source: F.modelSettings().engines[c.engine]?.source || 'deployment' });
+    return json(200, { engine: c.engine, model_source: (ctx.db.me?.modelSettings || F.modelSettings()).engines[c.engine]?.source || 'deployment' });
   });
   on('PUT', '/projects/([^/]+)/engine', ({ m, body }) => {
     const pid = m[1];

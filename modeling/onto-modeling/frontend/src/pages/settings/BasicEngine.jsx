@@ -136,7 +136,7 @@ export function EngineSection({ d, put, archived, active }) {
               </div>
             </Field>
           </div>
-          <div style={{ alignSelf: 'flex-end' }}><Button size="sm" onClick={() => navigate(pagePath('me'))}>改我的模型配置</Button></div>
+          <div style={{ alignSelf: 'flex-end' }}><Button size="sm" onClick={() => navigate(pagePath('me'), { section: 'model' })}>改我的模型配置</Button></div>
         </div>
         <div className="mt12">
           <Note tone="amber">切换引擎会关闭本项目的全部会话：当前会话会重启，下一条消息用新引擎启动。稳定引擎从空白上下文开始；内测引擎回放历史续上上下文。部署里没装的引擎会标「当前部署未安装」。</Note>

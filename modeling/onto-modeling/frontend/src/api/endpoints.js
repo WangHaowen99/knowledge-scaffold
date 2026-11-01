@@ -1,7 +1,9 @@
-// 按契约编号组织的接口函数（F1～F3 用到的分组，后续阶段按同样写法补）
+// 按契约编号组织的接口函数（F1～F4 用到的分组，后续阶段按同样写法补）
 const enc = encodeURIComponent;
 const P = (id) => `/projects/${enc(id)}`;
 const C = (id, cid) => `${P(id)}/conversations/${enc(cid)}`;
+// 运维管理面（契约 1.1）：请求 {ops_base_url}/api/v1/ops/...
+const OPS = { ops: true };
 
 export function createApi(client) {
   return {
@@ -15,7 +17,12 @@ export function createApi(client) {
     register: (username, password) => client.post('/auth/register', { username, password }), // A-03
     logout: (refresh_token) => client.post('/auth/logout', refresh_token ? { refresh_token } : {}), // A-05
     me: () => client.get('/me'), // A-07
+    changePassword: (old_password, new_password) => client.put('/me/password', { old_password, new_password }), // A-06
+    preferences: () => client.get('/me/preferences'), // A-08
+    savePreferences: (body) => client.put('/me/preferences', body), // A-08
     modelSettings: () => client.get('/me/model-settings'), // A-09
+    saveModelSettings: (engine, body) => client.put(`/me/model-settings/${enc(engine)}`, body), // A-10
+    clearModelSettings: (engine) => client.del(`/me/model-settings/${enc(engine)}`), // A-11
     notifications: (query) => client.get('/me/notifications', { query }), // A-13
     markNotificationsRead: (body) => client.post('/me/notifications/read', body), // A-14
     userEventsUrl: (q) => client.url('/me/events', q), // A-12
@@ -174,6 +181,7 @@ export function createApi(client) {
     packs: (query) => client.get('/packs', { query }), // PL-01
     pack: (name) => client.get(`/packs/${enc(name)}`), // PL-02
     packCompatibility: (name, version, query) => client.get(`/packs/${enc(name)}/versions/${enc(version)}/compatibility`, { query }), // PL-03
+    requestPackInstall: (name, body) => client.post(`/packs/${enc(name)}/install-requests`, body || {}), // PL-04
     projectPacks: (id) => client.get(`${P(id)}/packs`), // PL-05
     enablePack: (id, body) => client.post(`${P(id)}/packs`, body), // PL-06
     upgradePack: (id, name, body) => client.post(`${P(id)}/packs/${enc(name)}/upgrade`, body), // PL-07
@@ -182,6 +190,18 @@ export function createApi(client) {
     cancelPackPending: (id, name) => client.post(`${P(id)}/packs/${enc(name)}/cancel-pending`, {}), // PL-10
     assembly: (id) => client.get(`${P(id)}/assembly`), // PL-11
     extensions: (id) => client.get(`${P(id)}/extensions`), // PL-12
+    // PL-13 上传插件包走 services.uploadPack（带进度）；这里是不带进度的版本
+    uploadPack(file) { // PL-13
+      const fd = new FormData();
+      fd.append('file', file);
+      return client.post('/admin/packs/uploads', fd);
+    },
+    packUploads: (query) => client.get('/admin/packs/uploads', { query }), // PL-14
+    packUpload: (uploadId) => client.get(`/admin/packs/uploads/${enc(uploadId)}`), // PL-15
+    packUploadReportUrl: (uploadId) => client.withToken(client.url(`/admin/packs/uploads/${enc(uploadId)}/report`)), // PL-16
+    publishPackUpload: (uploadId, body) => client.post(`/admin/packs/uploads/${enc(uploadId)}/publish`, body), // PL-17
+    rejectPackUpload: (uploadId, body) => client.post(`/admin/packs/uploads/${enc(uploadId)}/reject`, body || {}), // PL-18
+    installPack: (name, body) => client.post(`/admin/packs/${enc(name)}/install`, body || {}), // PL-19
 
     // 3.17 插件产物
     artifactTypes: (id) => client.get(`${P(id)}/artifact-types`), // AR-01
@@ -245,6 +265,11 @@ export function createApi(client) {
     releaseManifest: (id, version) => client.get(`${P(id)}/releases/${enc(version)}/manifest`), // PB-06
     releaseDownloadUrl: (id, version, variant) => client.withToken(client.url(`${P(id)}/releases/${enc(version)}/download`, variant ? { variant } : undefined)), // PB-07
 
+    // 3.21 三份契约：服务令牌（X-06，设计稿没画入口，见 gaps F4）
+    serviceTokens: () => client.get('/admin/service-tokens'), // X-06
+    createServiceToken: (body) => client.post('/admin/service-tokens', body), // X-06
+    revokeServiceToken: (tokenId) => client.del(`/admin/service-tokens/${enc(tokenId)}`), // X-06
+
     // 3.22 自主构建
     autobuildPolicy: (id) => client.get(`${P(id)}/autobuild/policy`), // AB-01
     saveAutobuildPolicy: (id, body) => client.put(`${P(id)}/autobuild/policy`, body), // AB-02
@@ -270,5 +295,102 @@ export function createApi(client) {
     mcpTokens: (id) => client.get(`${P(id)}/mcp/tokens`), // M-02
     createMcpToken: (id, body) => client.post(`${P(id)}/mcp/tokens`, body), // M-03
     revokeMcpToken: (id, tokenId) => client.del(`${P(id)}/mcp/tokens/${enc(tokenId)}`), // M-04
+
+    // 3.24 系统设置（admin）
+    adminModelSettings: () => client.get('/admin/settings/model'), // SY-01
+    saveAdminModelSettings: (engine, body) => client.put(`/admin/settings/model/${enc(engine)}`, body), // SY-02
+    setDefaultEngine: (engine) => client.put('/admin/settings/default-engine', { engine }), // SY-03
+    setPersonalKeyPolicy: (body) => client.put('/admin/settings/personal-key-policy', body), // SY-04
+    contextPresets: () => client.get('/admin/settings/context-presets'), // SY-05
+    saveCustomContextPresets: (body) => client.put('/admin/settings/context-presets/custom', body), // SY-06
+    disableCustomContextPresets: () => client.post('/admin/settings/context-presets/custom/disable', {}), // SY-07
+    matchContextPreset: (query) => client.get('/admin/settings/context-presets/match', { query }), // SY-08
+    sessionSettings: () => client.get('/admin/settings/session'), // SY-09
+    saveSessionSettings: (body) => client.put('/admin/settings/session', body), // SY-09
+    sandboxSettings: () => client.get('/admin/settings/sandbox'), // SY-10
+    probeSandbox: () => client.post('/admin/settings/sandbox/probe', {}), // SY-11
+    globalMcpServers: () => client.get('/admin/settings/mcp-servers'), // SY-12
+    saveGlobalMcpServers: (body) => client.put('/admin/settings/mcp-servers', body), // SY-12
+    testMcpServer: (body) => client.post('/admin/settings/mcp-servers/test', body), // SY-13
+    configRegistry: (query) => client.get('/admin/config-registry', { query }), // SY-14
+    quotas: () => client.get('/admin/quotas'), // SY-15
+    saveQuotas: (body) => client.put('/admin/quotas', body), // SY-15
+    addQuotaOverride: (body) => client.post('/admin/quotas/overrides', body), // SY-16
+    deleteQuotaOverride: (overrideId) => client.del(`/admin/quotas/overrides/${enc(overrideId)}`), // SY-16
+    autobuildLimits: () => client.get('/admin/autobuild-limits'), // SY-17
+    saveAutobuildLimits: (body) => client.put('/admin/autobuild-limits', body), // SY-17
+    pricing: () => client.get('/admin/settings/pricing'), // SY-18（设计稿没画入口）
+    savePricing: (body) => client.put('/admin/settings/pricing', body), // SY-18
+
+    // 3.24 管理员：用户、项目所有者、申请审核
+    adminUsers: (query) => client.get('/admin/users', { query }), // AD-01
+    setUserRole: (username, role) => client.patch(`/admin/users/${enc(username)}`, { role }), // AD-02
+    resetUserPassword: (username, body) => client.post(`/admin/users/${enc(username)}/reset-password`, body || {}), // AD-03
+    deleteUser: (username, body) => client.del(`/admin/users/${enc(username)}`, body), // AD-04
+    userProjects: (username) => client.get(`/admin/users/${enc(username)}/projects`), // AD-05
+    unownedProjects: (query) => client.get('/admin/projects/unowned', { query }), // AD-06（设计稿没画入口）
+    setProjectOwner: (id, body) => client.put(`/admin/projects/${enc(id)}/owner`, body), // AD-07（设计稿没画入口）
+    adminRequests: (query) => client.get('/admin/requests', { query }), // AD-08（设计稿没画入口）
+    approveRequest: (requestId, body) => client.post(`/admin/requests/${enc(requestId)}/approve`, body || {}), // AD-09
+    rejectRequest: (requestId, body) => client.post(`/admin/requests/${enc(requestId)}/reject`, body || {}), // AD-10
+
+    // 3.25 运维管理面（ops 读写，admin 只读；见 src/state/roles.js）
+    ops: {
+      overview: (query) => client.get('/overview', { ...OPS, query }), // O-01
+      metrics: (query) => client.get('/metrics', { ...OPS, query }), // O-02
+      attribution: (query) => client.get('/attribution', { ...OPS, query }), // O-03
+      trace: (traceId) => client.get(`/traces/${enc(traceId)}`, OPS), // O-04
+      traces: (query) => client.get('/traces', { ...OPS, query }), // O-05（设计稿没画入口）
+      logs: (query) => client.get('/logs', { ...OPS, query }), // O-06
+      logStreamUrl: (q) => client.url('/logs/stream', q, OPS), // O-07（EO-01）
+      alertRules: (query) => client.get('/alerts/rules', { ...OPS, query }), // O-08
+      createAlertRule: (body) => client.post('/alerts/rules', body, OPS), // O-09
+      updateAlertRule: (ruleId, body) => client.put(`/alerts/rules/${enc(ruleId)}`, body, OPS), // O-10
+      deleteAlertRule: (ruleId) => client.del(`/alerts/rules/${enc(ruleId)}`, undefined, OPS), // O-10
+      exporters: () => client.get('/exporters', OPS), // O-11
+      saveExporters: (body) => client.put('/exporters', body, OPS), // O-12
+      health: () => client.get('/health', OPS), // O-13
+      probeHealth: () => client.post('/health/probe', {}, OPS), // O-14
+      sessions: (query) => client.get('/sessions', { ...OPS, query }), // O-15
+      saveSessionConfig: (body) => client.put('/sessions/config', body, OPS), // O-16
+      recycleSession: (pid, body) => client.post(`/sessions/${enc(pid)}/recycle`, body || {}, OPS), // O-17
+      disconnectSession: (pid, body) => client.post(`/sessions/${enc(pid)}/disconnect`, body, OPS), // O-18
+      drainSessions: (body) => client.post('/sessions/drain', body || {}, OPS), // O-19
+      maintenance: () => client.get('/maintenance', OPS), // O-20
+      enterMaintenance: (body) => client.post('/maintenance', body, OPS), // O-21
+      advanceMaintenance: (body) => client.post('/maintenance/advance', body || {}, OPS), // O-22
+      forceDisconnectMaintenance: (body) => client.post('/maintenance/force-disconnect', body || {}, OPS), // O-23
+      exitMaintenance: () => client.del('/maintenance', undefined, OPS), // O-24
+      packs: (query) => client.get('/packs', { ...OPS, query }), // O-25
+      setPackRollout: (name, version, body) => client.put(`/packs/${enc(name)}/${enc(version)}/rollout`, body, OPS), // O-26
+      rollbackPackChannel: (name, body) => client.post(`/packs/${enc(name)}/rollback`, body, OPS), // O-27
+      disablePackVersion: (name, version, body) => client.post(`/packs/${enc(name)}/${enc(version)}/disable`, body || {}, OPS), // O-28
+      packBreaker: (name, version, body) => client.post(`/packs/${enc(name)}/${enc(version)}/breaker`, body, OPS), // O-29
+      coreDefault: () => client.get('/core-default', OPS), // O-30
+      promoteCore: (body) => client.post('/core-default/promote', body, OPS), // O-31
+      rollbackCore: (body) => client.post('/core-default/rollback', body, OPS), // O-32
+      packRepoBackups: () => client.get('/pack-repo/backups', OPS), // O-33
+      backupPackRepo: () => client.post('/pack-repo/backups', {}, OPS), // O-34
+      startupReport: () => client.get('/startup-report', OPS), // O-35
+      backups: () => client.get('/backups', OPS), // O-36
+      backupNow: (body) => client.post('/backups', body || {}, OPS), // O-37
+      startDrill: (body) => client.post('/backups/drills', body || {}, OPS), // O-38
+      drills: () => client.get('/backups/drills', OPS), // O-39
+      tasks: (query) => client.get('/tasks', { ...OPS, query }), // O-40
+      taskAction: (taskId, op) => client.post(`/tasks/${enc(taskId)}/${op}`, {}, OPS), // O-41：op = cancel | retry | resume
+      versions: () => client.get('/versions', OPS), // O-42
+      retention: () => client.get('/retention', OPS), // O-43
+      saveRetention: (body) => client.put('/retention', body, OPS), // O-44
+      createDiagnostics: (body) => client.post('/diagnostics', body || {}, OPS), // O-45
+      diagnostics: () => client.get('/diagnostics', OPS), // O-46
+      diagnosticsDownloadUrl: (id) => client.withToken(client.url(`/diagnostics/${enc(id)}/download`, undefined, OPS)), // O-47
+      audit: (query) => client.get('/audit', { ...OPS, query }), // O-48
+      auditExportUrl: (query) => client.withToken(client.url('/audit/export', query, OPS)), // O-49
+      errors: (query) => client.get('/errors', { ...OPS, query }), // O-50
+      error: (errorId) => client.get(`/errors/${enc(errorId)}`, OPS), // O-51
+      trash: (query) => client.get('/trash', { ...OPS, query }), // O-52
+      restoreTrash: (entry, body) => client.post(`/trash/${enc(entry)}/restore`, body || {}, OPS), // O-53
+      purgeTrash: (entry) => client.del(`/trash/${enc(entry)}`, undefined, OPS), // O-54
+    },
   };
 }
