@@ -262,6 +262,9 @@ def _switch(manager, project_id: str, mutate, message: str, actor: str) -> dict:
     if manager.get_project(project_id).get("archived"):
         raise PackError("project_archived", "项目已归档，只能查看", 409)
     before = _extensions_or_none(manager, project_id)
+    from . import registry
+
+    registry.remember_baseline(project_id, before)
     with manager._project_lock(project_id):
         lock, wrote = runtime.ensure_lock(root)
         if lock is None:

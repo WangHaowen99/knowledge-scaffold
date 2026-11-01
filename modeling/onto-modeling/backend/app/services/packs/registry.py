@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -233,6 +234,44 @@ def extensions(manager, project_id: str) -> dict:
         "config": config,
         "disabled_pages": disabled,
     }
+
+
+# 每个项目上一次比较时的注册表：项目流 extensions.updated 的 changed 拿它和新算的比
+_LAST_VIEWS: dict[str, dict] = {}
+_LAST_LOCK = threading.Lock()
+
+
+def remember_baseline(project_id: str, view: dict | None) -> None:
+    """改锁文件之前的注册表（packs.service 切换前调）：这个进程里还没有比较基准时记下它。"""
+    if view is not None:
+        with _LAST_LOCK:
+            _LAST_VIEWS.setdefault(project_id, view)
+
+
+def extension_differ(manager=None) -> Callable[[str, str | None, str | None], list[str] | None]:
+    """给项目流登记的比较函数 `differ(项目, 旧装配哈希, 新装配哈希) -> 变了的类别`。
+
+    哈希只说明装配变了；内容和上一次比较时（或改锁文件之前记下）的注册表比，比完换成新的。
+    这个进程里还没有基准的项目返回 None（前端整份重拉）。manager 缺省取接口层的工作区管理器。
+    """
+
+    def differ(project_id: str, before: str | None, after: str | None) -> list[str] | None:
+        target = manager
+        if target is None:
+            from ...api import deps
+
+            target = deps.workspaces
+        try:
+            current = extensions(target, project_id)
+        except Exception:  # noqa: BLE001 - 算不出来就整份重拉
+            _log.warning("项目 %s 的扩展项比较失败", project_id, exc_info=True)
+            return None
+        with _LAST_LOCK:
+            previous = _LAST_VIEWS.get(project_id)
+            _LAST_VIEWS[project_id] = current
+        return None if previous is None else changed_parts(previous, current)
+
+    return differ
 
 
 def resolve_action(manager, project_id: str, action: dict) -> dict | None:

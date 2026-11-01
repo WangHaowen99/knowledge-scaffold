@@ -194,6 +194,26 @@ def test_page_action_resolves_to_command_while_pack_enabled(env):
     assert registry.resolve_action(manager, project_id, action) is None
 
 
+def test_extension_differ_compares_with_last_computed_registry(env):
+    """项目流 extensions.updated 的比较函数（会话宿主登记）：和本项目上一次算出的注册表比。"""
+    client, manager, project_id = env
+    from app.services.packs import registry
+
+    differ = registry.extension_differ(manager)
+    registry._LAST_VIEWS.pop(project_id, None)
+    assert differ(project_id, None, "h1") is None  # 这个进程里还没有基准：整份重拉
+    assert differ(project_id, "h1", "h1") == []
+    _enable(client, project_id)
+    changed = differ(project_id, "h1", "h2")
+    assert {"nav", "pages", "artifact_types", "views", "gates"} <= set(changed)
+    client.get(f"/api/v1/projects/{project_id}/extensions")  # PL-12 读不动比较基准
+    assert differ(project_id, "h2", "h2") == []
+    # 进程里没有基准时，改锁文件之前的注册表就是基准
+    registry._LAST_VIEWS.pop(project_id, None)
+    assert client.post(f"/api/v1/projects/{project_id}/packs/checklist/disable").status_code == 200
+    assert "nav" in differ(project_id, "h2", "h3")
+
+
 # ---- 通用视图：新类型不改前端就能列表、看详情 ----
 
 
