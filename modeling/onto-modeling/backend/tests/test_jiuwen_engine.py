@@ -696,7 +696,12 @@ def test_engine_routing_by_project_meta(tmp_path, monkeypatch):
     (meta_dir / ".onto-web.json").write_text(
         json.dumps({"engine": "jiuwen"}), encoding="utf-8"
     )
+    monkeypatch.setattr(config, "JIUWEN_WORKER", False)  # 进程内运行
     assert manager._engine_class_for("p9") is JiuwenEngine
+    monkeypatch.setattr(config, "JIUWEN_WORKER", True)  # 默认：独立 worker（方案 B11）
+    from app.services.engines.jiuwen_remote import RemoteJiuwenEngine
+
+    assert manager._engine_class_for("p9") is RemoteJiuwenEngine
     (meta_dir / ".onto-web.json").write_text(
         json.dumps({"engine": "claude"}), encoding="utf-8"
     )
