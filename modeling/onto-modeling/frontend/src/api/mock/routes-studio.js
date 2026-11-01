@@ -415,7 +415,7 @@ export function register(ctx) {
       objects: n('object'), operations: n('operation'), rules: n('rule'), metrics: n('metric'), scripts: n('script'),
       relations: isMain(pid) ? DECL.length : 0,
       flowcharts: diagramOn() ? n('flowchart') : null,
-      scenarios: trace && isMain(pid) ? { total: 23, passed: 21, pass_rate_pct: 91 } : null,
+      scenarios: trace && isMain(pid) ? { total: 23, passed: 19, pass_rate_pct: 83 } : null,
       version_label: c?.version_label || 'v0.1', head: c?.head || 'a71e03c9',
     });
   });

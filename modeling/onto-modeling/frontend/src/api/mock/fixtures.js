@@ -275,7 +275,7 @@ export function flow({ trace = true } = {}) {
     node({ id: 'rev.evidence', title: '系统取证', placement: 'step', state: 'confirmed', display_state: 'confirmed', version: 'rev@0.3.0', note: '登记了业务系统数据源才有这一步', plugin: { name: 'reverse', label: '系统逆向建模' } }),
     node({ id: 'core.model', title: '建模', state: 'running', display_state: 'running', progress: { done: 3, total: 5, label: '3/5 片' }, per_slice: true }),
     node({ id: 'core.validate', title: trace ? '校验与走查' : '校验', note: trace ? '场景走查插件把全量回归串在这一步里' : null }),
-    ...(trace ? [node({ id: 'trace.regression', title: '全量回归', placement: 'branch', state: 'stale', display_state: 'stale', version: 'trace@0.9.1', note: '场景走查 · 09 修订通知改了陈列量标准，2 个场景过期', actions: [{ kind: 'refresh', label: '刷新', target: 'scenarios' }], plugin: { name: 'trace', label: '场景走查' } })] : []),
+    ...(trace ? [node({ id: 'trace.regression', title: '全量回归', placement: 'branch', state: 'stale', display_state: 'stale', version: 'trace@0.9.1', note: '场景走查 · 09 修订通知改了陈列量标准，3 个场景过期', actions: [{ kind: 'refresh', label: '刷新', target: 'scenarios' }], plugin: { name: 'trace', label: '场景走查' } })] : []),
     node({ id: 'core.consistency', title: '全局一致性' }),
     node({ id: 'core.publish', title: '发布' }),
     node({ id: 'retail.compliance', title: '合规检查', placement: 'gate', section: 'pre_publish', state: 'blocked', display_state: 'blocked', version: 'industry-retail@1.0.3', note: `零售行业包带来；${trace ? '校验与走查' : '校验'}确认后才能运行` }),
