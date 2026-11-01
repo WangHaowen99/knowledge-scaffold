@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services import publish as publish_service
 from app.services.workspace import WorkspaceError, WorkspaceManager
 from app.services.workspace import ScriptContractError, _script_header_meta
 
@@ -129,7 +130,7 @@ def test_clone_copies_content_but_not_history(manager: WorkspaceManager):
 
     clone = manager.clone_project(meta["id"], owner="alice")
     clone_root = manager.project_root(clone["id"])
-    assert clone["name"] == "原始项目-副本"
+    assert clone["name"] == "原始项目（副本）"  # 契约 P-08 的缺省名
     assert clone["owner"] == "alice"
     assert (clone_root / "ontology" / "object" / "订单.md").read_text(encoding="utf-8") == "# 订单\n"
     assert not (clone_root / ".onto-web.json").read_text(encoding="utf-8").count(meta["id"])
@@ -237,7 +238,7 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         encoding="utf-8",
     )
     dest = tmp_path / "pkg.zip"
-    manager.export_package_zip(meta["id"], dest)
+    publish_service.export_package_zip(manager, meta["id"], dest)
     with zipfile.ZipFile(dest) as zf:
         names = set(zf.namelist())
         pid = meta["id"]
@@ -318,7 +319,7 @@ def test_export_package_zip_script_entrypoint_is_ascii_filename(manager: Workspa
     library = "def helper():\n    return 1\n"
     (root / "ontology" / "scripts" / "shared_math.py").write_text(library, encoding="utf-8")
     dest = tmp_path / "pkg.zip"
-    manager.export_package_zip(meta["id"], dest)
+    publish_service.export_package_zip(manager, meta["id"], dest)
     pid = meta["id"]
     with zipfile.ZipFile(dest) as zf:
         for key, code in sources.items():
@@ -332,7 +333,7 @@ def test_export_package_zip_script_entrypoint_is_ascii_filename(manager: Workspa
         assert f"{pid}/scripts/shared_math.md" not in zf.namelist()
     # 同一脚本多次导出文件名不变，版本间 diff 与 consumer 升级不会把它当成新脚本
     again = tmp_path / "again.zip"
-    manager.export_package_zip(meta["id"], again)
+    publish_service.export_package_zip(manager, meta["id"], again)
     with zipfile.ZipFile(dest) as first, zipfile.ZipFile(again) as second:
         doc = f"{pid}/scripts/计算折扣.md"
         assert first.read(doc) == second.read(doc)
@@ -353,7 +354,7 @@ def test_export_package_zip_keeps_helper_scripts_as_source_only(manager: Workspa
             f'"""\n关联operation：{bound}\n"""\ndef run():\n    return 1\n', encoding="utf-8",
         )
     dest = tmp_path / "pkg.zip"
-    manager.export_package_zip(meta["id"], dest)
+    publish_service.export_package_zip(manager, meta["id"], dest)
     pid = meta["id"]
     with zipfile.ZipFile(dest) as zf:
         names = set(zf.namelist())

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services import publish as publish_service
 from app.services.toolkit import operation_relations, script_contract, script_descriptor
 from app.services.workspace import WorkspaceError, WorkspaceManager
 
@@ -370,10 +371,10 @@ def _flow_project(manager: WorkspaceManager, *, discount_standalone: str = "") -
     return meta["id"], root
 
 
-def test_file_tree_refresh_writes_descriptors(manager: WorkspaceManager):
+def test_package_layout_refresh_writes_descriptors(manager: WorkspaceManager):
     pid, root = _flow_project(manager)
     (root / "ontology" / "scripts" / "order_review.py").write_text(REVIEW_SCRIPT, encoding="utf-8")
-    manager.file_tree(pid)
+    manager.ensure_package_layout(pid)  # 文件树只读（契约 F-01），描述符由目录规范化刷新
     assert (root / "ontology" / "scripts" / "order_review.md").is_file()
     index = (root / "ontology" / "scripts" / "index.md").read_text(encoding="utf-8")
     assert "| order_review.md | 校验库存并计算折扣，给出订单审核结论 |" in index
@@ -400,7 +401,7 @@ def test_export_declares_sub_operations_and_real_operation_index(manager: Worksp
     pid, root = _flow_project(manager)
     (root / "ontology" / "scripts" / "order_review.py").write_text(REVIEW_SCRIPT, encoding="utf-8")
     dest = tmp_path / "pkg.zip"
-    manager.export_package_zip(pid, dest)
+    publish_service.export_package_zip(manager, pid, dest)
     with zipfile.ZipFile(dest) as zf:
         main = zf.read(f"{pid}/operations/订单审核.md").decode("utf-8")
         assert 'operations: ["库存校验", "折扣计算"]' in main
@@ -411,7 +412,7 @@ def test_export_declares_sub_operations_and_real_operation_index(manager: Worksp
         assert "| 库存校验 | 库存校验 | orders | conclusion（「订单审核」流程中的一步） |" in index
         descriptor = zf.read(f"{pid}/scripts/order_review.md").decode("utf-8")
         workspace_copy = (root / "ontology" / "scripts" / "order_review.md")
-        manager.file_tree(pid)
+        manager.ensure_package_layout(pid)  # 文件树只读（契约 F-01），描述符由目录规范化刷新
         assert descriptor == workspace_copy.read_text(encoding="utf-8")  # 工作区看到的就是导出的
         assert f"{pid}/scripts/stock_check.md" not in zf.namelist()
 
@@ -421,6 +422,6 @@ def test_export_rejects_stage_only_sub_operation_script(manager: WorkspaceManage
     (root / "ontology" / "scripts" / "order_review.py").write_text(REVIEW_SCRIPT, encoding="utf-8")
     (root / "ontology" / "scripts" / "stock_check.py").write_text(_script("库存校验"), encoding="utf-8")
     with pytest.raises(WorkspaceError) as exc:
-        manager.export_package_zip(pid, tmp_path / "pkg.zip")
+        publish_service.export_package_zip(manager, pid, tmp_path / "pkg.zip")
     assert exc.value.code == "script_binding_conflict"
     assert not (tmp_path / "pkg.zip").exists()  # 写包之前拦下，不留半成品

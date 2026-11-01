@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services import publish as publish_service
 from app.services import package_mapping
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 
@@ -145,7 +146,7 @@ def gated_project(manager: WorkspaceManager) -> tuple[str, Path]:
 
 def test_binding_check_returns_fix_handles(manager):
     pid, root = gated_project(manager)
-    check = manager.package_binding_check(pid)
+    check = publish_service.package_binding_check(manager, pid)
     assert check["blocking"] == 1 and check["objects"] == 2 and check["bound_objects"] == 1
     [issue] = check["issues"]
     assert issue["object"] == "客户" and issue["path"] == "ontology/object/客户.md"
@@ -158,12 +159,12 @@ def test_binding_check_returns_fix_handles(manager):
 def test_strict_publish_blocks_and_degraded_publish_is_audited(manager, tmp_path):
     pid, _ = gated_project(manager)
     with pytest.raises(WorkspaceError) as blocked:
-        manager.publish_package(pid, tmp_path / "strict.zip", author="alice")
+        publish_service.publish_package(manager, pid, tmp_path / "strict.zip", author="alice")
     assert blocked.value.code == "binding_problems" and "T_CLIENT" in str(blocked.value)
     assert manager.get_project(pid).get("last_package_publish") is None
 
     dest = tmp_path / "degraded.zip"
-    manager.publish_package(pid, dest, allow_unbound=True, author="alice")
+    publish_service.publish_package(manager, pid, dest, allow_unbound=True, author="alice")
     with zipfile.ZipFile(dest) as zf:
         mapping_name = next(n for n in zf.namelist() if n.endswith("object-data-mappings.json"))
         mappings = json.loads(zf.read(mapping_name))
@@ -171,7 +172,7 @@ def test_strict_publish_blocks_and_degraded_publish_is_audited(manager, tmp_path
     audit = manager.get_project(pid)["last_package_publish"]
     assert audit["by"] == "alice" and audit["degraded"] is True
     assert audit["unbound_count"] == 1 and audit["unbound_objects"] == ["客户"]
-    assert manager.package_binding_check(pid)["last_publish"]["degraded"] is True
+    assert publish_service.package_binding_check(manager, pid)["last_publish"]["degraded"] is True
 
 
 def test_degraded_publish_still_enforces_script_contract(manager, tmp_path):
@@ -187,7 +188,7 @@ def test_degraded_publish_still_enforces_script_contract(manager, tmp_path):
     )
     commit_all(root)
     with pytest.raises(WorkspaceError, match="契约无效"):
-        manager.publish_package(pid, tmp_path / "pkg.zip", allow_unbound=True)
+        publish_service.publish_package(manager, pid, tmp_path / "pkg.zip", allow_unbound=True)
     assert manager.get_project(pid).get("last_package_publish") is None
 
 
@@ -195,31 +196,31 @@ def test_publish_without_any_table_is_not_degraded(manager, tmp_path):
     pid = manager.create_project("纯概念")["id"]
     write_object(manager.project_root(pid), "订单", "T_ORDER", ["ORDER_ID"])
     commit_all(manager.project_root(pid))
-    manager.publish_package(pid, tmp_path / "pkg.zip")
+    publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
     audit = manager.get_project(pid)["last_package_publish"]
     assert audit["degraded"] is False and audit["unbound_count"] == 0
 
 
 def test_set_object_data_source_fixes_the_gate(manager, tmp_path):
     pid, root = gated_project(manager)
-    issue = manager.package_binding_check(pid)["issues"][0]
-    manager.set_object_data_source(pid, "客户", "t_customer", base_revision=issue["revision"], author="alice")
+    issue = publish_service.package_binding_check(manager, pid)["issues"][0]
+    publish_service.set_object_data_source(manager, pid, "客户", "t_customer", base_revision=issue["revision"], author="alice")
     assert "# 数据来源\nT_CUSTOMER\n" in (root / "ontology" / "object" / "客户.md").read_text(encoding="utf-8")
-    assert manager.package_binding_check(pid)["blocking"] == 0
-    manager.publish_package(pid, tmp_path / "pkg.zip")
+    assert publish_service.package_binding_check(manager, pid)["blocking"] == 0
+    publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
     assert manager.get_project(pid)["last_package_publish"]["degraded"] is False
 
 
 def test_set_object_data_source_guards(manager):
     pid, root = gated_project(manager)
     with pytest.raises(WorkspaceError) as stale:
-        manager.set_object_data_source(pid, "客户", "", base_revision="stale")
+        publish_service.set_object_data_source(manager, pid, "客户", "", base_revision="stale")
     assert stale.value.status == 409
     with pytest.raises(WorkspaceError, match="不在 schema 资料里"):
-        manager.set_object_data_source(pid, "客户", "T_UNKNOWN")
+        publish_service.set_object_data_source(manager, pid, "客户", "T_UNKNOWN")
     for key in ("不存在", "../客户", ""):
         with pytest.raises(WorkspaceError) as missing:
-            manager.set_object_data_source(pid, key, "")
+            publish_service.set_object_data_source(manager, pid, key, "")
         assert missing.value.status == 404
-    manager.set_object_data_source(pid, "客户", "")
+    publish_service.set_object_data_source(manager, pid, "客户", "")
     assert "# 数据来源\n无\n" in (root / "ontology" / "object" / "客户.md").read_text(encoding="utf-8")

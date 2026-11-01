@@ -342,5 +342,6 @@ def test_versions_numbering(manager: WorkspaceManager):
 
     versions = manager.versions(meta["id"])
     assert len(versions) == 2
-    assert versions[0]["version"] == 2  # 最新在前
-    assert versions[-1]["version"] == 1
+    # 主线版本号（--first-parent，契约 3.9）：最新在前，基线提交是 v0.1
+    assert versions[0]["n"] == 2 and versions[0]["source"] == "assistant"
+    assert versions[-1]["n"] == 1 and versions[-1]["source"] == "plugin"

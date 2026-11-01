@@ -20,6 +20,9 @@ import pytest
 import yaml
 
 from app.services import solver_contract
+from app.services.publish.ontology_package import ADAPTER
+from app.services.publish.spi import ReleaseSource
+from app.services.publish.tree import release_tree
 from app.services.workspace import WorkspaceManager, _git
 
 openpyxl = pytest.importorskip("openpyxl")
@@ -154,19 +157,17 @@ def manager(tmp_path: Path) -> WorkspaceManager:
 
 
 def render(manager: WorkspaceManager, root: Path, dest: Path, options: dict) -> bytes:
-    """按提交渲染：先提交，再从提交导出的只读树渲染（与发布同一路径）。"""
-    from app.services import workspace as workspace_module
-
+    """按提交渲染：先提交，再从提交导出的只读树经发布适配器渲染（与发布同一路径）。"""
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "--allow-empty", "-m", "test: 渲染基准")
     head = _git(root, "rev-parse", "HEAD").strip()
-    with workspace_module._release_tree(root, head) as tree:
-        manager.export_package_zip(
-            PROJECT_ID, dest, graph=options.get("graph", False),
-            allow_unbound=options.get("allow_unbound", False),
-            source_root=tree, version=VERSION, source_commit=SOURCE_COMMIT,
-            draft=options.get("draft", False),
+    with release_tree(root, head) as tree:
+        src = ReleaseSource(
+            project_id=PROJECT_ID, commit=SOURCE_COMMIT, tree=tree, meta=manager.get_project(PROJECT_ID),
+            version=VERSION, state_root=root, variant="graph" if options.get("graph") else "standard",
+            allow_unbound=options.get("allow_unbound", False), draft=options.get("draft", False),
         )
+        ADAPTER.render(src, dest)
     return dest.read_bytes()
 
 

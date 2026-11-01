@@ -8,11 +8,15 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from pathlib import Path
 
-from . import auth
-from .workspace import WorkspaceError
+from . import audit, auth
+from .workspace.errors import WorkspaceError
+
+_log = logging.getLogger(__name__)
 
 # 指定所有者时的用户名格式：认证服务的用户名字符集，长度沿用原成员校验的上限
 OWNER_NAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
@@ -110,3 +114,61 @@ def token_subject_allowed(meta: dict, subject: str) -> bool:
     if not auth.ENABLED:
         return True
     return owns(meta, subject)
+
+
+# ---- 存量迁移（从 workspace.py 移入，方案 2.1「项目所有权」） ----
+
+
+def drop_members(project_id: str, meta: dict) -> bool:
+    """从元数据里摘掉成员表（原值先记进审计与服务日志），返回 meta 是否有改动。"""
+    if "members" not in meta:
+        return False
+    members = meta.pop("members")
+    audit.log(
+        "system", "MIGRATE", f"/api/projects/{project_id}/members",
+        detail={"action": "remove_members", "project": project_id, "members": members},
+    )
+    _log.warning(
+        "项目 %s 改为单人所有权，移除成员表：%s",
+        project_id, json.dumps(members, ensure_ascii=False),
+    )
+    return True
+
+
+def unowned_projects(manager) -> list[dict]:
+    """无主项目的元数据（管理员指定所有者后才可用，契约 AD-06）。"""
+    found = []
+    for root in manager._project_dirs():
+        try:
+            meta = manager._read_meta(root)
+        except WorkspaceError:
+            continue
+        if not str(meta.get("owner") or ""):
+            found.append(meta)
+    return found
+
+
+def migrate_single_owner(manager) -> list[str]:
+    """启动迁移（单人所有权）：删掉各项目元数据里的成员表，返回无主项目的 id。
+
+    幂等：迁移过的项目不再有成员表，再跑只报告无主项目。无主项目普通用户看不到，
+    管理员指定所有者后才可用；启动日志报告它们的数量与 id。
+    """
+    unowned = []
+    for root in manager._project_dirs():
+        project_id = root.name
+        try:
+            with manager._project_lock(project_id):
+                meta = manager._read_meta(root)
+                if drop_members(project_id, meta):
+                    manager._write_meta(root, meta)
+        except Exception as exc:  # 单个项目失败不能挡住服务启动
+            _log.warning("项目 %s 迁移单人所有权失败，下次启动重试：%s", project_id, exc)
+            continue
+        if not str(meta.get("owner") or ""):
+            unowned.append(project_id)
+    if unowned:
+        _log.warning(
+            "无主项目 %d 个，管理员指定所有者后才可用：%s", len(unowned), ", ".join(unowned)
+        )
+    return unowned

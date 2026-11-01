@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services import publish as publish_service
 from app.services import package_archive
 from app.services.workspace import (
     IMPORTED_PACKAGE_DIR,
@@ -57,7 +58,7 @@ def _seed_project(manager: WorkspaceManager, name: str = "外卖订单") -> dict
 
 
 def _export_package(manager: WorkspaceManager, project_id: str, dest: Path) -> Path:
-    manager.export_package_zip(project_id, dest)
+    publish_service.export_package_zip(manager, project_id, dest)
     return dest
 
 
@@ -392,7 +393,7 @@ def test_business_name_survives_repeated_package_roundtrip(manager, tmp_path, bu
 
     for cycle in range(2):
         archive = tmp_path / f"synthetic_{cycle}.zip"
-        manager.export_package_zip(source["id"], archive, allow_unbound=True)
+        publish_service.export_package_zip(manager, source["id"], archive, allow_unbound=True)
         with zipfile.ZipFile(archive) as zf:
             for kind, (stem, original) in identities.items():
                 text = zf.read(f"{source['id']}/{kind}s/{stem}.md").decode("utf-8")
@@ -428,4 +429,4 @@ def test_invalid_business_name_blocks_export_and_import(manager, tmp_path, metad
     path = manager.project_root(source["id"]) / "ontology/operation/synthetic_plain.md"
     path.write_text(raw, encoding="utf-8")
     with pytest.raises(WorkspaceError):
-        manager.export_package_zip(source["id"], tmp_path / "synthetic_invalid.zip", allow_unbound=True)
+        publish_service.export_package_zip(manager, source["id"], tmp_path / "synthetic_invalid.zip", allow_unbound=True)

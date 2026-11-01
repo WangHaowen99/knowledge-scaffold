@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from app import config
+from app.services import publish as publish_service
 from app.services.toolkit import script_argument_shape as shape
 from app.services.toolkit import script_contract, script_descriptor
 from app.services.workspace import WorkspaceError, WorkspaceManager
@@ -362,13 +363,13 @@ def test_export_rejects_scripts_consumer_would_refuse(manager: WorkspaceManager,
         for path in (source / sub).glob("*.*"):
             (root / "ontology" / sub / path.name).write_bytes(path.read_bytes())
     with pytest.raises(WorkspaceError) as exc:
-        manager.export_package_zip(meta["id"], tmp_path / "pkg.zip", allow_unbound=True)
+        publish_service.export_package_zip(manager, meta["id"], tmp_path / "pkg.zip", allow_unbound=True)
     assert exc.value.code == "script_argument_shape"
     assert not (tmp_path / "pkg.zip").exists()
 
     fixed = MIXED_SCRIPT.replace('"DEVICE_NAME":"设备A"', '"EVENT_DATE":"2026-01-01"')
     (root / "ontology" / "scripts" / "event_summary.py").write_text(fixed, encoding="utf-8")
-    manager.export_package_zip(meta["id"], tmp_path / "pkg.zip", allow_unbound=True)
+    publish_service.export_package_zip(manager, meta["id"], tmp_path / "pkg.zip", allow_unbound=True)
     with zipfile.ZipFile(tmp_path / "pkg.zip") as zf:
         descriptor = zf.read(f"{meta['id']}/scripts/event_summary.md").decode("utf-8")
     assert shape.COPY_RULE in descriptor

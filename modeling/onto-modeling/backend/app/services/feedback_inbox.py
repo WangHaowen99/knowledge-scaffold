@@ -172,11 +172,12 @@ def latest_batch(root: Path) -> str | None:
 
 def receive(manager, project_id: str, payload, received_by: str) -> tuple[dict, bool]:
     """写入一批反馈并提交；返回 (Feedback 视图, 是否新建)。同一 feedback_id 只生效一次。"""
+    from . import publish
     from .workspace import _commit_paths
 
     document = normalize(payload)
     if document["release_version"] and not any(
-        item["version"] == document["release_version"] for item in manager.releases(project_id)
+        item["version"] == document["release_version"] for item in publish.releases(manager, project_id)
     ):
         raise FeedbackRejected(
             f"发布版本 {document['release_version']} 不存在",

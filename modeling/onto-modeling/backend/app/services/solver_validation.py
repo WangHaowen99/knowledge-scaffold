@@ -257,7 +257,9 @@ def receive_receipt(manager, project_id: str, payload, by: str) -> tuple[dict, b
         )
         if existing is not None:
             return existing, False
-        check = manager.solver_receipt_targets(project_id).get(fields["revision"])
+        from . import publish, solver  # 发布与求解都依赖本模块（门禁读回执），在函数里导入避免循环
+
+        check = solver.solver_receipt_targets(manager, project_id).get(fields["revision"])
         if check is None:
             raise ReceiptRejected(
                 "回执里的求解契约修订不是本项目的当前修订，请对当前修订重新验证",
@@ -270,7 +272,7 @@ def receive_receipt(manager, project_id: str, payload, by: str) -> tuple[dict, b
         if fields["solver_keys"] != enabled:
             raise _invalid("solver_keys", f"必须正好是该修订启用的求解操作：{'、'.join(enabled)}")
         if fields["release_version"] and not any(
-            item["version"] == fields["release_version"] for item in manager.releases(project_id)
+            item["version"] == fields["release_version"] for item in publish.releases(manager, project_id)
         ):
             raise _invalid("release_version", "不是本项目已有的发布版本")
         revision = fields.pop("revision")
