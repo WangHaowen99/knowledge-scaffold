@@ -266,7 +266,12 @@ function Composer({ pid, cid, apiRef, st, buildMode, autobuild, modeLabel, onSen
   }, [services, pid]);
 
   useEffect(() => {
-    apiRef.current = { addFiles, clear: () => { setText(''); taRef.current?.focus(); }, setText: (t) => { setText(t); if (t === '/') setPop('cmd'); taRef.current?.focus(); } };
+    apiRef.current = {
+      addFiles,
+      clear: () => { setText(''); taRef.current?.focus(); },
+      setText: (t) => { setText(t); if (t === '/') setPop('cmd'); taRef.current?.focus(); },
+      addRef: (r) => { setRefs((x) => (x.some((y) => y.id === r.id) ? x : [...x, r])); taRef.current?.focus(); },
+    };
   }, [addFiles, apiRef]);
 
   useEffect(() => {
@@ -431,6 +436,18 @@ export default function WorkbenchPage({ route }) {
     const d = route.query?.dialog;
     if (MATERIAL_DIALOGS.includes(d)) setMDialog({ kind: d, next: route.query?.next });
   }, [route.page, route.query?.dialog, route.query?.next]);
+  // Studio 的「问助手」：?ref=<条目 id> 或 ?ref=<产物类型>/<key>，取到名称后放进输入框的引用，再把参数去掉
+  useEffect(() => {
+    const ref = route.query?.ref;
+    if (!ref) return undefined;
+    let alive = true;
+    const slash = ref.indexOf('/');
+    const load = slash > 0 && !ref.includes(':')
+      ? api.artifact(pid, ref.slice(0, slash), ref.slice(slash + 1)).then((a) => ({ kind: 'artifact', id: ref, key: ref.slice(slash + 1), name: a.title || a.key }))
+      : api.studioEntry(pid, ref).then((e) => ({ kind: e.kind, id: e.id || ref, key: e.key, name: e.name }));
+    load.then((r) => { if (alive) comp.current.addRef?.(r); }).catch(() => {}).finally(() => { if (alive) navigate(pagePath(route.page, pid)); });
+    return () => { alive = false; };
+  }, [api, pid, route.page, route.query?.ref]);
   const closeMDialog = useCallback(() => {
     setMDialog(null);
     if (route.query?.dialog) navigate(pagePath(route.page, pid));

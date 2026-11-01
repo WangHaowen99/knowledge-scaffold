@@ -30,7 +30,7 @@ function staticItems({ projectId, inboxCount, hasPlugin, hasSubpage, role }) {
   return [
     ['跳转', '打开 Studio 图谱', 'graph', 'studio'], ['跳转', `待处理（${inboxCount ?? 0}）`, 'inbox', 'inbox'],
     ...(hasSubpage('schema') ? [['跳转', '证据浏览器', 'db', 'schema']] : []), ['跳转', 'Studio 报告', 'filetext', 'reports'],
-    ['建模', '发起增量更新…', 'refresh', 'incremental'], ['建模', '调整业务切片…', 'layers', 'wb-blueprint'],
+    ['建模', '发起增量更新…', 'refresh', 'incremental'], ['建模', '调整业务切片…', 'layers', 'wb-blueprint', { dialog: 'blueprint' }],
     ['建模', '开始自主构建（L4，一路建完）…', 'rocket', 'l4-run'], ['建模', '自主构建设置', 'gear', 'proj-settings'],
     ...(hasPlugin('scenarios') ? [['建模', '补齐过期场景', 'flask', 'scenarios']] : []),
     ['资料', '上传资料…', 'upload', 'resources'],
@@ -94,7 +94,7 @@ export function CommandPalette({ projectId, inboxCount, extensions, conversation
     remote.commands.forEach((c) => items.push({ group: '命令', label: c.label, icon: 'cmd', command: c, desc: c.description }));
     staticItems({ projectId, inboxCount, hasPlugin, hasSubpage, role: user?.role })
       .filter(([g, t]) => !q || t.includes(q) || g.includes(q))
-      .forEach(([g, t, i, page]) => items.push({ group: g, label: t, icon: i, page }));
+      .forEach(([g, t, i, page, params]) => items.push({ group: g, label: t, icon: i, page, params }));
     return items;
   }, [remote, projectId, inboxCount, hasPlugin, hasSubpage, user, q]);
 
@@ -109,7 +109,7 @@ export function CommandPalette({ projectId, inboxCount, extensions, conversation
       }
       return;
     }
-    navigate(pagePath(it.page, projectId));
+    navigate(pagePath(it.page, projectId), it.params);
   };
 
   if (!open) return <div id="palette" />;

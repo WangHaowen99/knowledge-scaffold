@@ -262,7 +262,7 @@ export default function ReportsPage({ route }) {
     const actions = isResearch ? (
       <>
         {verification || current.extras?.verification ? <Chip tone="blue" icon="check" sm>已核验</Chip> : null}
-        <Button size="sm" icon="map" onClick={() => navigate(pagePath('wb-materials', pid))}>看资料地图</Button>
+        <Button size="sm" icon="map" onClick={() => navigate(pagePath('wb-materials', pid), { dialog: 'material_map' })}>看资料地图</Button>
       </>
     ) : (
       <>

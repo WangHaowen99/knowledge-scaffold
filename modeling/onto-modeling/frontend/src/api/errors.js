@@ -187,7 +187,11 @@ export const ERROR_MESSAGES = {
   // 2.10 自主构建
   autobuild_running: '自主构建正在运行，先暂停或等它结束',
   autobuild_not_running: '自主构建不在可以控制的状态',
+  run_not_found: '这次自主构建运行不存在',
   budget_exceeds_quota: '预算超出平台上限或剩余配额',
+  ledger_entry_not_found: '这条自动决定不存在',
+  suspension_not_found: '这个挂起的问题不存在或已回答',
+  slice_not_revertible: '这一片不能回退（还没合入、已经回退过，或后面的切片依赖它的改动）',
   preview_expired: '预览已过期，请重新预览',
 };
 
