@@ -672,7 +672,7 @@ export function commandCatalog() {
         item('operations', '提取操作', '抽出业务流程和步骤', '/ontology-operations'),
         item('rules', '规则与指标', '抽出判断规则和统计口径', '/ontology-rules'),
         item('check', '质量检查', '规则检查 + 语义检查', '/ontology-check'),
-        item('incremental', '增量更新', '资料变了，只改受影响的部分', '/ontology-incremental'),
+        item('incremental', '增量更新', '资料变了，只改受影响的部分', '/ontology-update'),
       ] },
       { id: 'optional', label: '可选能力', items: [
         { ...item('trace', '场景验证', '用样例推演，看结论对不对', '/ontology-trace-batch'), pack: 'trace' },

@@ -352,7 +352,7 @@ export default function ResourcesPage({ route }) {
       setFbBusy(false);
     }
   };
-  const handleFb = (fb) => tasks.send({ command: '/ontology-incremental', args: { feedback_id: fb.id }, text: `处理外部反馈：${feedbackView(fb).title}` });
+  const handleFb = (fb) => tasks.send({ command: '/ontology-evolution', args: { feedback_id: fb.id }, text: `处理外部反馈：${feedbackView(fb).title}` });
 
   // ---------- 右侧 ----------
   let right;

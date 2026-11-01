@@ -72,7 +72,7 @@ export function register(ctx) {
       conversation_id: cid, message_id: `m-${uid()}`, exec_id: null, started_at: nowIso(), finished_at: null, result: null,
     };
     if (batchId) revisionTasks.set(batchId, t);
-    emitConv(pid, cid, 'message.user', { message_id: t.message_id, text, command: '/ontology-incremental', attachments: [], references: [], origin: { kind: 'page', ...ORIGIN, task_id: t.task_id }, delivery: 'immediate' });
+    emitConv(pid, cid, 'message.user', { message_id: t.message_id, text, command: '/ontology-update', attachments: [], references: [], origin: { kind: 'page', ...ORIGIN, task_id: t.task_id }, delivery: 'immediate' });
     putTask?.(pid, t);
     setTimeout(() => putTask?.(pid, { ...t, percent: 50, step_label: '列出变更点' }, { transient: true }), 900);
     setTimeout(() => {
