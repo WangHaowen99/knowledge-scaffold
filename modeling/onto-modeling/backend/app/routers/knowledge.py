@@ -1,9 +1,10 @@
-"""业务知识（API 契约 3.8）：K-01 列表、K-02 详情、K-03 新增、K-04 修改、K-05 删除。
+"""业务知识（API 契约 3.8）：K-01～K-08。
 
 知识条目存放在 core：工作区 `ontology/knowledge/<type>-<slug>.md`，由工具箱 knowledge_helper
 管理（助手加载的也是这一份）；写入经同一个脚本（内核资产里的副本），保存即成版本。
 旧版网页写在 `knowledge/<名称>.md` 的条目只读列出（layer 仍为 project），可以删除。
-冲突检查、提名（K-06～K-08）随知识沉淀包（B3/B4）。
+启用了行业包时多一个只读的行业层（services/knowledge_layers）；项目里同 slug 的条目覆盖行业条目。
+冲突检查（K-06）读接口照常可用；提名（K-07、K-08）要启用知识沉淀包和对应的行业包。
 """
 
 from __future__ import annotations
@@ -17,8 +18,9 @@ from fastapi.responses import JSONResponse
 
 from ..api import deps
 from ..api.errors import ApiError
+from ..kernel import project_events
 from ..kernel.writepath import ChangeTx, Origin
-from ..services import mainline
+from ..services import audit, knowledge_layers, mainline
 from ..services.workspace.layout import _content_revision
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/knowledge", tags=["knowledge"])
@@ -95,6 +97,12 @@ def _entry(path: Path, legacy: bool = False) -> dict:
         fm, body = _toolkit().parse_frontmatter(text)
     background, rule = _split_body(body)
     source = str(fm.get("source") or "")
+    if source.startswith("conversation"):
+        source_view = {"kind": "conversation", "label": "对话"}
+    elif source in ("", "web", "manual"):
+        source_view = {"kind": "manual", "label": "手动新增"}
+    else:
+        source_view = {"kind": "material", "label": source}
     return {
         "id": path.stem,
         "title": str(fm.get("name") or path.stem),
@@ -103,8 +111,7 @@ def _entry(path: Path, legacy: bool = False) -> dict:
         "type": TYPES_BACK.get(str(fm.get("type")), "convention"),
         "scope": _scope_view(list(fm.get("scopes") or [])),
         "confidence": fm.get("confidence") if fm.get("confidence") in CONFIDENCE else "medium",
-        "source": {"kind": "conversation" if source.startswith("conversation") else "material", "label": source or "网页",
-                   "at": deps.iso(stat.st_mtime)},
+        "source": {**source_view, "at": deps.iso(stat.st_mtime)},
         "overrides_industry": False,
         "readonly": False,
         "revision": _content_revision(path.read_bytes()),
@@ -112,6 +119,8 @@ def _entry(path: Path, legacy: bool = False) -> dict:
         "_background": background,
         "_rule": rule,
         "_path": path,
+        "_slug": str(fm.get("slug") or path.stem),
+        "_source": source,
     }
 
 
@@ -134,22 +143,52 @@ def _entries(root: Path) -> list[dict]:
     return found
 
 
-def _find(root: Path, knowledge_id: str) -> dict:
+def _find(root: Path, knowledge_id: str, industry: list[dict] | None = None) -> dict:
     for entry in _entries(root):
         if entry["id"] == knowledge_id:
             return entry
+    for entry in industry or []:
+        if entry["id"] == knowledge_id:
+            return entry
     raise ApiError("not_found", "知识条目不存在", 404)
+
+
+def _layers(root: Path) -> tuple[list[dict], list[dict], dict, list]:
+    """（项目条目, 行业条目, 项目条目 id → 被它覆盖的行业条目, 启用的行业包）。"""
+    project = _entries(root)
+    packs = knowledge_layers.industry_packs(deps.workspaces, root)
+    industry = knowledge_layers.industry_entries(deps.workspaces, root)
+    overrides = knowledge_layers.mark_overrides(project, industry)
+    return project, industry, overrides, packs
+
+
+def _pack_enabled(root: Path, name: str) -> bool:
+    from ..services.packs import lockfile
+
+    try:
+        lock = lockfile.read(root)
+    except (ValueError, OSError):
+        return False
+    entry = lock.get(name) if lock else None
+    return bool(entry and entry.enabled)
+
+
+def _emit(project_id: str, ids: list[str], change: str) -> None:
+    project_events.emit(project_id, "knowledge.updated", {"ids": ids, "change": change})
 
 
 @router.get("")
 def list_knowledge(project_id: str, request: Request, layer: str = "all", type: str = "", q: str = "",
                    cursor: str = "", limit: int = 0):
     root = deps.require_owner(project_id, request)
-    entries = [_public(entry) for entry in _entries(root)]
+    if layer not in ("all", "project", "industry"):
+        raise ApiError("invalid_argument", "layer 只能是 all、project、industry", 400, {"fields": {"layer": "enum"}})
+    project, industry, _, packs = _layers(root)
+    entries = [_public(entry) for entry in project] + [_public(entry) for entry in industry]
     needle = q.strip().lower()
     items = [
         entry for entry in entries
-        if layer in ("all", "project")
+        if layer in ("all", entry["layer"])
         and (not type or entry["type"] in type.split(","))
         and (not needle or needle in entry["title"].lower())
     ]
@@ -157,20 +196,48 @@ def list_knowledge(project_id: str, request: Request, layer: str = "all", type: 
     return {
         "items": page["items"],
         "next_cursor": page["next_cursor"],
-        "counts": {"all": len(entries), "project": len(entries), "industry": 0},
-        "layers": [{"layer": "project", "label": "项目知识", "count": len(entries), "overridden": 0}],
-        "loading_rule": "助手按条目的适用范围加载项目知识；没有启用行业包时只有项目层。",
+        "counts": {"all": len(entries), "project": len(project), "industry": len(industry)},
+        "layers": knowledge_layers.layers_view(project, industry, packs),
+        "loading_rule": knowledge_layers.loading_rule(packs),
     }
+
+
+@router.get("/conflicts")
+def get_conflicts(project_id: str, request: Request):
+    """K-06 GET：最近一次冲突检查的结果（没检查过 checked_at 为 null）。"""
+    root = deps.require_owner(project_id, request)
+    return knowledge_layers.last_conflicts(root)
+
+
+@router.post("/conflicts")
+def run_conflicts(project_id: str, request: Request):
+    """K-06 POST：立即跑一次确定性检查（重复、覆盖了口径不同的行业条目、失效引用）。"""
+    root = deps.require_owner(project_id, request)
+    project, industry, _, _ = _layers(root)
+    result = knowledge_layers.check_conflicts(root, project, industry)
+    knowledge_layers.save_conflicts(root, result)
+    audit.log(deps.actor(request), request.method, request.url.path,
+              {"action": "knowledge.conflict_check", "project_id": project_id, "conflicts": len(result["conflicts"])})
+    return result
 
 
 @router.get("/{knowledge_id}")
 def get_knowledge(project_id: str, knowledge_id: str, request: Request):
     root = deps.require_owner(project_id, request)
-    entry = _find(root, knowledge_id)
+    project, industry, overrides, _ = _layers(root)
+    entry = _find(root, knowledge_id, industry)
+    overridden = overrides.get(entry["id"])
+    source_quote = None
+    if entry.get("_source", "").startswith("conversation:"):
+        source_quote = {"text": entry["_rule"][:200], "conversation_id": entry["_source"].split(":", 1)[1] or None,
+                        "message_id": None, "at": entry["updated_at"], "by": None}
     return {
         **_public(entry),
         "background_md": entry["_background"], "rule_md": entry["_rule"],
-        "source_quote": None, "overrides": None, "used_by": [],
+        "source_quote": source_quote,
+        "overrides": {"pack": overridden["pack"], "entry_id": overridden["id"], "entry_title": overridden["title"],
+                      "note": None} if overridden else None,
+        "used_by": [],
     }
 
 
@@ -194,7 +261,7 @@ def _validated(body: dict) -> dict:
     if confidence not in CONFIDENCE:
         raise ApiError("invalid_argument", "confidence 取值不合法", 400, {"fields": {"confidence": "enum"}})
     source = body.get("source") or {}
-    source_text = f"conversation:{source.get('conversation_id')}" if source.get("conversation_id") else "web"
+    source_text = f"conversation:{source.get('conversation_id')}" if source.get("conversation_id") else "manual"
     return {
         "title": title, "type": TYPES[body["type"]], "scopes": scopes, "confidence": confidence,
         "source": source_text, "body": _compose_body(str(body.get("background_md") or ""), rule),
@@ -203,10 +270,17 @@ def _validated(body: dict) -> dict:
 
 def _saved(root: Path, project_id: str, request: Request, entry_id: str, status: int) -> JSONResponse:
     state = mainline.state(root)
+    project, industry, _, _ = _layers(root)
     entry = _find(root, entry_id)
+    entry["overrides_industry"] = any(item["_slug"] == entry["_slug"] for item in industry)
+    # 入库后的确定性查重（同名、覆盖了口径不同的行业条目、失效引用）；需要语义判断的冲突在对话里复核
+    found = knowledge_layers.check_conflicts(root, project, industry)["conflicts"]
+    conflicts = [{"kind": item["kind"], "with": (item.get("industry_entry") or {}).get("title") or item["note"],
+                  "note": item["note"]} for item in found if item["project_entry"]["id"] == entry_id]
+    _emit(project_id, [entry_id], "created" if status == 201 else "updated")
     return JSONResponse(status_code=status, content={
         "entry": _public(entry), "commit": state["head"], "version_label": state["version_label"],
-        "conflicts": [], "review_task": None,
+        "conflicts": conflicts, "review_task": None,
     })
 
 
@@ -237,7 +311,10 @@ async def update_knowledge(project_id: str, knowledge_id: str, request: Request)
     root = deps.require_writable(project_id, request)
     body = await deps.json_body(request)
     fields = _validated(body)
-    entry = _find(root, knowledge_id)
+    entry = _find(root, knowledge_id, knowledge_layers.industry_entries(deps.workspaces, root))
+    if entry["layer"] == "industry":
+        raise ApiError("artifact_readonly", "行业知识只读；要改口径就在项目里写一条同名条目覆盖它", 403,
+                       {"reason": "industry"})
     path: Path = entry["_path"]
     if path.parent.name != "knowledge" or path.parent.parent.name != "ontology":
         raise ApiError("artifact_readonly", "旧版知识条目只读，请新增一条后删除它", 403, {"reason": "legacy"})
@@ -265,7 +342,10 @@ async def update_knowledge(project_id: str, knowledge_id: str, request: Request)
 async def delete_knowledge(project_id: str, knowledge_id: str, request: Request):
     root = deps.require_writable(project_id, request)
     body = await deps.json_body(request)
-    entry = _find(root, knowledge_id)
+    industry = knowledge_layers.industry_entries(deps.workspaces, root)
+    entry = _find(root, knowledge_id, industry)
+    if entry["layer"] == "industry":
+        raise ApiError("artifact_readonly", "行业知识只读，不能删除", 403, {"reason": "industry"})
     base = str(body.get("base_revision") or "")
     if base and base != entry["revision"]:
         raise ApiError("revision_conflict", "知识条目已被修改，请刷新后再删除", 409,
@@ -279,5 +359,53 @@ async def delete_knowledge(project_id: str, knowledge_id: str, request: Request)
             _run_helper(root, "sync-index")
         tx.commit(f"knowledge: 删除 {rel} by {deps.actor(request)}")
     state = mainline.state(root)
+    restored = next((item["id"] for item in industry if item["_slug"] == entry.get("_slug")), None)
+    _emit(project_id, [knowledge_id], "deleted")
     return {"commit": state["head"], "version_label": state["version_label"], "affected_artifacts": 0,
-            "restored_industry_entry": None}
+            "restored_industry_entry": restored}
+
+
+# ---- K-07、K-08 提名进行业包（知识沉淀包）----
+
+
+def _nomination_target(root: Path, knowledge_id: str, industry_pack: str) -> tuple[dict, object]:
+    if not _pack_enabled(root, "knowledge"):
+        raise ApiError("pack_not_enabled", "本项目没有启用知识沉淀能力", 409, {"pack": "knowledge"})
+    packs = {view.name: view for view in knowledge_layers.industry_packs(deps.workspaces, root)}
+    if industry_pack not in packs:
+        raise ApiError("pack_not_enabled", "本项目没有启用这个行业包", 409, {"pack": industry_pack or None})
+    entry = _find(root, knowledge_id)
+    if entry["layer"] != "project":
+        raise ApiError("invalid_argument", "只能提名项目里的知识条目", 400, {"fields": {"knowledge_id": "layer"}})
+    return entry, packs[industry_pack]
+
+
+@router.post("/{knowledge_id}/nomination-preview")
+async def nomination_preview(project_id: str, knowledge_id: str, request: Request):
+    """K-07：脱敏检查（客户名、内部编号、金额、联系方式与证件），给出替换后的文字。"""
+    root = deps.require_owner(project_id, request)
+    body = await deps.json_body(request)
+    entry, pack = _nomination_target(root, knowledge_id, str(body.get("industry_pack") or ""))
+    text = f"{entry['title']}\n\n{entry['_rule']}"
+    if entry["_background"]:
+        text += f"\n\n背景：{entry['_background']}"
+    return {**knowledge_layers.sanitize(text), "pack": {"name": pack.name, "label": pack.manifest.label}}
+
+
+@router.post("/{knowledge_id}/nominations")
+async def submit_nomination(project_id: str, knowledge_id: str, request: Request):
+    """K-08：提交提名，进管理员审核（审核接口 AD-09、AD-10）。"""
+    root = deps.require_writable(project_id, request)
+    body = await deps.json_body(request)
+    if body.get("confirm_general") is not True:
+        raise ApiError("invalid_argument", "要确认这条知识是通用的、不含单位与个人信息", 400,
+                       {"fields": {"confirm_general": "required"}})
+    text = str(body.get("sanitized_text") or "").strip()
+    if not 1 <= len(text) <= 4000:
+        raise ApiError("invalid_argument", "提名内容须为 1–4000 个字符", 400, {"fields": {"sanitized_text": "length"}})
+    _, pack = _nomination_target(root, knowledge_id, str(body.get("industry_pack") or ""))
+    record = knowledge_layers.submit_nomination(project_id, knowledge_id, pack.name, text, deps.actor(request))
+    audit.log(deps.actor(request), request.method, request.url.path,
+              {"action": "knowledge.nominate", "project_id": project_id, "knowledge_id": knowledge_id,
+               "industry_pack": pack.name, "nomination_id": record["nomination_id"]})
+    return JSONResponse(status_code=201, content={"nomination_id": record["nomination_id"], "state": record["state"]})

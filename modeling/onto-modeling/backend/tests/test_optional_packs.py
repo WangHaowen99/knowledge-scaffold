@@ -291,6 +291,51 @@ def _industry_project(manager, *, knowledge: bool = True) -> tuple[str, Path]:
     return project_id, manager.project_root(project_id)
 
 
+def test_industry_layer_lists_and_overrides(env):
+    manager, client = env
+    project_id, root = _industry_project(manager)
+    base = f"/api/v1/projects/{project_id}/knowledge"
+    body = client.get(base, params={"limit": 200}).json()
+    assert body["counts"]["project"] == 0 and body["counts"]["industry"] >= 10
+    industry = next(layer for layer in body["layers"] if layer["layer"] == "industry")
+    assert industry["label"] == "零售连锁" and industry["packs"] == ["industry-retail"]
+    assert "零售连锁" in body["loading_rule"]
+    entry = next(item for item in body["items"] if item["id"].endswith("safety-stock-formula"))
+    assert entry["layer"] == "industry" and entry["readonly"] is True and entry["pack"] == "industry-retail"
+    detail = client.get(f"{base}/{entry['id']}").json()
+    assert detail["rule_md"] and detail["source"]["kind"] == "pack"
+    readonly = client.put(f"{base}/{entry['id']}", json={"title": "改", "type": "domain_rule", "rule_md": "x",
+                                                         "base_revision": detail["revision"]})
+    assert readonly.status_code == 403 and readonly.json()["code"] == "artifact_readonly"
+
+    # 项目里写一条同 slug 的条目覆盖行业条目；删掉后行业条目重新生效
+    created = client.post(base, json={"title": "安全库存测算", "type": "domain_rule", "rule_md": "本项目按 5 天缓冲测算"})
+    assert created.status_code == 201, created.text
+    project_entry = created.json()["entry"]
+    assert project_entry["id"] == "domain-rule-安全库存测算"
+    slug = json.loads(json.dumps(project_entry))["id"]
+    # 改成与行业条目相同的 slug 才算覆盖：直接按行业条目的文件名写一条
+    helper = root / ".claude" / "scripts" / "knowledge_helper.py"
+    subprocess.run([sys.executable, str(helper), "add", "--type", "domain-rule", "--slug", "safety-stock-formula",
+                    "--name", "安全库存（本项目口径）", "--scope", "global", "--source", "web", "--body", "## 规则\n\n按 5 天缓冲\n",
+                    "--after-conflict-check", "none-found"], cwd=root, check=True, capture_output=True)
+    listed = client.get(base, params={"layer": "project"}).json()
+    override = next(item for item in listed["items"] if item["id"] == "domain-rule-safety-stock-formula")
+    assert override["overrides_industry"] is True
+    assert next(layer for layer in listed["layers"] if layer["layer"] == "project")["overridden"] == 1
+    detail = client.get(f"{base}/domain-rule-safety-stock-formula").json()
+    assert detail["overrides"]["pack"] == "industry-retail" and detail["overrides"]["entry_id"] == entry["id"]
+    conflicts = client.post(f"{base}/conflicts").json()
+    kinds = {item["kind"] for item in conflicts["conflicts"]}
+    assert "scope_conflict" in kinds and client.get(f"{base}/conflicts").json()["checked_at"]
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "agent: 覆盖"], cwd=root, check=True)
+    deleted = client.request("DELETE", f"{base}/domain-rule-safety-stock-formula", json={})
+    assert deleted.status_code == 200 and deleted.json()["restored_industry_entry"] == entry["id"]
+    assert [event["data"]["change"] for event in project_events.recent(project_id, "knowledge.updated")] == ["created", "deleted"]
+    assert slug
+
+
 def test_knowledge_helper_loads_industry_layer_by_concept(env):
     manager, _ = env
     _, root = _industry_project(manager)
@@ -338,6 +383,30 @@ def test_checker_applies_enabled_industry_rules_as_warnings(env):
     plain = manager.project_root(manager.create_project("无行业")["id"])
     shutil.copytree(objects, plain / "ontology" / "object", dirs_exist_ok=True)
     assert not [item for item in _checker_issues(plain) if item["category"] == "行业规则"]
+
+
+def test_nomination_needs_knowledge_pack_and_sanitizes(env):
+    manager, client = env
+    project_id, _ = _industry_project(manager, knowledge=False)
+    base = f"/api/v1/projects/{project_id}/knowledge"
+    entry = client.post(base, json={"title": "大单要审批", "type": "domain_rule",
+                                    "rule_md": "单店单次补货超过 150 箱转区域审批，联系 13800000000，¥5000 以上另批"}).json()["entry"]
+    blocked = client.post(f"{base}/{entry['id']}/nomination-preview", json={"industry_pack": "industry-retail"})
+    assert blocked.status_code == 409 and blocked.json()["code"] == "pack_not_enabled"
+    assert client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "knowledge"}).status_code == 201
+    preview = client.post(f"{base}/{entry['id']}/nomination-preview", json={"industry_pack": "industry-retail"}).json()
+    assert "13800000000" not in preview["sanitized_text"] and "5000" not in preview["sanitized_text"]
+    found = {item["item"]: item["found"] for item in preview["checks"]}
+    assert found["secret_or_pii"] == 1 and found["amount"] == 1 and preview["highlights"]
+    assert preview["pack"] == {"name": "industry-retail", "label": "零售连锁"}
+    unknown = client.post(f"{base}/{entry['id']}/nomination-preview", json={"industry_pack": "industry-none"})
+    assert unknown.status_code == 409
+    submitted = client.post(f"{base}/{entry['id']}/nominations", json={
+        "industry_pack": "industry-retail", "sanitized_text": preview["sanitized_text"], "confirm_general": True})
+    assert submitted.status_code == 201 and submitted.json()["state"] == "pending_review"
+    unconfirmed = client.post(f"{base}/{entry['id']}/nominations", json={
+        "industry_pack": "industry-retail", "sanitized_text": "x", "confirm_general": False})
+    assert unconfirmed.status_code == 400
 
 
 def test_knowledge_signal_probe_is_silent_without_knowledge_pack(env):
