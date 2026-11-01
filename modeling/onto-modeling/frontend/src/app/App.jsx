@@ -1,11 +1,5 @@
 // 应用入口：启动（C-01、A-07、无感刷新）、登录态与角色、路由
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
-import ChatStatesPage from '../pages/chat-states/ChatStatesPage.jsx';
-import CreatePage from '../pages/create/CreatePage.jsx';
-import ImportPage from '../pages/import/ImportPage.jsx';
-import LoginPage from '../pages/login/LoginPage.jsx';
-import ProjectsPage from '../pages/projects/ProjectsPage.jsx';
-import WorkbenchPage from '../pages/workbench/WorkbenchPage.jsx';
 import { PAGE_TITLES } from '../shell/CommandPalette.jsx';
 import { ShellG, ShellP } from '../shell/Shell.jsx';
 import { Button, Empty } from '../ui/index.jsx';
@@ -15,8 +9,22 @@ import { ProjectArea } from './ProjectArea.jsx';
 import { navigate, pagePath, useRoute } from './router.js';
 import { createServices } from './services.js';
 import { ToastHost } from './toast.jsx';
+// 这几份样式原来随工作台一起进主入口；工作台拆包后仍留在主入口，先后不变（层叠顺序不变，别的页面也用到其中的类）
+import '../styles/autobuild.css';
+import '../styles/more.css';
+import '../styles/incremental.css';
+import '../styles/materials.css';
+import '../styles/knowledge.css';
+import '../styles/workbench-extra.css';
 
 const GLOBAL_PAGES = ['plugins', 'plugin-detail', 'plugin-upload', 'me', 'sys', 'ops', 'ops-obs', 'ops-ctl', 'ops-users'];
+// 登录、入口页、工作台（含 Markdown 渲染）也按路由拆包，主入口只留外壳、数据层与组件库
+const LoginPage = lazy(() => import('../pages/login/LoginPage.jsx'));
+const ProjectsPage = lazy(() => import('../pages/projects/ProjectsPage.jsx'));
+const CreatePage = lazy(() => import('../pages/create/CreatePage.jsx'));
+const ImportPage = lazy(() => import('../pages/import/ImportPage.jsx'));
+const WorkbenchPage = lazy(() => import('../pages/workbench/WorkbenchPage.jsx'));
+const ChatStatesPage = lazy(() => import('../pages/chat-states/ChatStatesPage.jsx'));
 // 已实现的页面；其余页面先显示「后续版本接入」
 const ENTRY_PAGES = { projects: ProjectsPage, create: CreatePage, import: ImportPage };
 // Studio（含 WebGL 图谱）、报告、待处理按路由拆包
@@ -163,7 +171,7 @@ export default function App() {
 
   let page;
   if (!user || route.name === 'login') {
-    page = user ? <Splash /> : <LoginPage />;
+    page = user ? <Splash /> : <Suspense fallback={<Splash />}><LoginPage /></Suspense>;
   } else if (route.name === 'project') {
     const P = PROJECT_PAGES[route.page];
     page = (
@@ -177,7 +185,7 @@ export default function App() {
   }
   else {
     const E = ENTRY_PAGES[route.name] || ENTRY_PAGES.projects;
-    page = E ? <E /> : <Pending page={route.name} />;
+    page = E ? <Suspense fallback={<Splash />}><E /></Suspense> : <Pending page={route.name} />;
   }
 
   return (
