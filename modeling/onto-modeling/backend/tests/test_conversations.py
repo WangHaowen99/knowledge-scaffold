@@ -11,7 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 from app import config
-from app.routers import admin, projects
+from app.api import deps
+from app.routers import ops
 from app.routers import sessions as sessions_router
 from app.services import agent_sessions, conversation_store
 from app.services.agent_sessions import (
@@ -49,7 +50,7 @@ def conv_env(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(agent_sessions, "manager", manager)
     monkeypatch.setattr(sessions_router, "manager", manager)
     monkeypatch.setattr(
-        projects, "workspaces", SimpleNamespace(project_root=lambda pid: tmp_path / pid)
+        deps, "workspaces", SimpleNamespace(project_root=lambda pid: tmp_path / pid)
     )
     return SimpleNamespace(
         manager=manager,
@@ -456,7 +457,7 @@ def test_usage_counts_all_conversations_including_deleted(conv_env):
     assert summary["total_cost_usd"] == 0.875
     assert summary["output_tokens"] == 30
     assert summary["last_activity"] == 1_700_000_200.0
-    assert sum(day["calls"] for day in admin._usage_daily(days=10_000)) == 3
+    assert sum(day["calls"] for day in ops._usage_daily(days=10_000)) == 3
 
 
 def _model_usage(input_tokens: int, output_tokens: int, ts: float) -> dict:
@@ -497,8 +498,8 @@ def test_usage_counts_per_call_events_once(conv_env):
     assert summary["calls"] == 2
     assert summary["input_tokens"] == 5 + 2200 + 3000
     assert summary["output_tokens"] == 10 + 100 + 200
-    assert sum(day["output_tokens"] for day in admin._usage_daily(days=10_000)) == 310
-    assert sum(day["calls"] for day in admin._usage_daily(days=10_000)) == 2
+    assert sum(day["output_tokens"] for day in ops._usage_daily(days=10_000)) == 310
+    assert sum(day["calls"] for day in ops._usage_daily(days=10_000)) == 2
 
 
 # ---- 路由 ----
@@ -510,15 +511,17 @@ def test_session_state_for_conversation_not_bound_to_engine(conv_env):
         await _settle(conv_env.manager, "p1")
         cid = conversation_store.create("p1")["id"]
 
-        state = sessions_router.session_state("p1", conv_env.request, cid)
+        state = sessions_router.conversation_state("p1", cid, conv_env.request)  # S-05
         assert state["conversation_id"] == cid
-        assert state["live_conversation_id"] == "default"
-        assert state["active"] is False and state["state"] == "idle"
-        assert state["events"] == 0
+        assert state["live"] is False and state["state"] == "idle"
+        assert state["history_count"] == 0 and state["pool"]["max"] == 1
 
-        listed = sessions_router.list_conversations("p1", conv_env.request)
+        listed = sessions_router.list_conversations("p1", conv_env.request)  # S-01
         assert listed["live"] == {"conversation_id": "default", "state": "running", "busy": True}
-        assert {c["id"] for c in listed["conversations"]} == {"default", cid}
+        assert {c["id"] for c in listed["items"]} == {"default", cid}
+        default = next(c for c in listed["items"] if c["id"] == "default")
+        assert default["live"] is True and default["state"] == "running" and default["kind"] == "chat"
+        assert default["created_at"].endswith("Z")
         await conv_env.manager.shutdown()
 
     asyncio.run(scenario())

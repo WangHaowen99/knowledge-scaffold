@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from app import config
 from app.main import app
-from app.routers import projects
+from app.api import deps
 from app.services import auth
 from app.services.engines.jiuwen_assets import run_hooks_sync
 from app.services.script_env import minimal_env
@@ -62,7 +62,7 @@ def manager(tmp_path: Path, monkeypatch) -> WorkspaceManager:
     (scripts / "seed_example.py").write_text(DUMP_ENV.format(name="seed"), encoding="utf-8")
     (assets / "resource-template").mkdir()
     workspaces = WorkspaceManager(tmp_path / "data", assets)
-    monkeypatch.setattr(projects, "workspaces", workspaces)
+    monkeypatch.setattr(deps, "workspaces", workspaces)
     return workspaces
 
 

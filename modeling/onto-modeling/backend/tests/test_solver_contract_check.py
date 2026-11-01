@@ -16,6 +16,8 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from app.services import publish as publish_service
+from app.services import solver as solver_service
 from app.services import solver_contract, solver_validation
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 from tests.test_solver_evaluator_contract import (
@@ -171,7 +173,7 @@ def _project(manager: WorkspaceManager, *, evaluator: str | None = EVALUATOR_PY)
 
 def _with_contract(manager: WorkspaceManager, **kwargs) -> tuple[str, Path]:
     pid, root = _project(manager, **kwargs)
-    manager.save_solver_contract(pid, [_item()], "")
+    solver_service.save_solver_contract(manager, pid, [_item()], "")
     return pid, root
 
 
@@ -191,12 +193,12 @@ def _accept(root: Path, revision: str, **fields) -> dict:
 
 def test_ordinary_package_has_no_solver_gate(manager: WorkspaceManager, tmp_path: Path):
     pid, _root = _project(manager, evaluator=None)
-    check = manager.package_binding_check(pid)
+    check = publish_service.package_binding_check(manager, pid)
     assert check["solver"] == {"enabled": False}
-    view = manager.solver_contract_view(pid)
+    view = solver_service.solver_contract_view(manager, pid)
     assert view["enabled"] is False and view["revision"] == ""
     assert view["available_operations"] == ["查询站点", "规划路线"]
-    manager.publish_package(pid, tmp_path / "plain.zip")
+    publish_service.publish_package(manager, pid, tmp_path / "plain.zip")
 
 
 # ---- 静态检查：五个稳定错误码 ----
@@ -204,7 +206,7 @@ def test_ordinary_package_has_no_solver_gate(manager: WorkspaceManager, tmp_path
 
 def test_valid_contract_only_waits_for_validation(manager: WorkspaceManager):
     pid, _root = _with_contract(manager)
-    status = manager.solver_release_status(pid)
+    status = solver_service.solver_release_status(manager, pid)
     assert status["findings"] == []
     assert status["revision"].startswith("sha256:")
     assert status["operations"] == [{
@@ -212,7 +214,7 @@ def test_valid_contract_only_waits_for_validation(manager: WorkspaceManager):
         "enabled": True, "evaluator": "ontology/scripts/route_eval.py",
     }]
     assert _codes(status) == {solver_contract.CODE_VALIDATION_REQUIRED}
-    assert manager.package_binding_check(pid)["solver"]["blocking"] == 1
+    assert publish_service.package_binding_check(manager, pid)["solver"]["blocking"] == 1
 
 
 def test_unsupported_profile_is_version_incompatible(manager: WorkspaceManager):
@@ -220,7 +222,7 @@ def test_unsupported_profile_is_version_incompatible(manager: WorkspaceManager):
     (root / solver_contract.SOLVER_DIR / "plan_route" / "model.yaml").write_text(
         MODEL_YAML.replace("ordered_binary_route.v1", "ordered_binary_route.v9"), encoding="utf-8"
     )
-    [finding] = manager.solver_release_status(pid)["findings"]
+    [finding] = solver_service.solver_release_status(manager, pid)["findings"]
     assert finding["code"] == solver_contract.CODE_VERSION_INCOMPATIBLE
     assert finding["field"] == "profile_id" and finding["solver_key"] == "plan_route"
     assert finding["hint"] == solver_contract.FINDING_HINTS[solver_contract.CODE_VERSION_INCOMPATIBLE]
@@ -228,7 +230,7 @@ def test_unsupported_profile_is_version_incompatible(manager: WorkspaceManager):
 
 def test_missing_evaluator_is_reference_missing(manager: WorkspaceManager):
     pid, _root = _with_contract(manager, evaluator=None)
-    [finding] = manager.solver_release_status(pid)["findings"]
+    [finding] = solver_service.solver_release_status(manager, pid)["findings"]
     assert finding["code"] == solver_contract.CODE_REFERENCE_MISSING
     assert finding["path"] == "ontology/solver/plan_route/model.yaml"
     assert finding["hint"] == solver_contract.EVALUATOR_INTERFACE_HINT
@@ -237,14 +239,14 @@ def test_missing_evaluator_is_reference_missing(manager: WorkspaceManager):
 def test_missing_sidecar_is_reference_missing(manager: WorkspaceManager):
     pid, root = _with_contract(manager)
     (root / solver_contract.SOLVER_DIR / "plan_route" / "presentation.yaml").unlink()
-    [finding] = manager.solver_release_status(pid)["findings"]
+    [finding] = solver_service.solver_release_status(manager, pid)["findings"]
     assert finding["code"] == solver_contract.CODE_REFERENCE_MISSING
     assert finding["path"].endswith("plan_route/presentation.yaml")
 
 
 def test_evaluator_without_solver_context_is_context_missing(manager: WorkspaceManager):
     pid, _root = _with_contract(manager, evaluator=EVALUATOR_PY.replace(CONTEXT_PY, ""))
-    [finding] = manager.solver_release_status(pid)["findings"]
+    [finding] = solver_service.solver_release_status(manager, pid)["findings"]
     assert finding["code"] == solver_contract.CODE_CONTEXT_MISSING
     assert finding["path"] == "ontology/scripts/route_eval.py"
 
@@ -258,7 +260,7 @@ def _evaluator_findings(manager: WorkspaceManager, source: str) -> list[dict]:
     (root / solver_contract.SOLVER_DIR / "plan_route" / "model.yaml").write_text(
         MODEL_YAML + "  evaluator_path: scripts/route_eval.py\n", encoding="utf-8"
     )
-    return manager.solver_release_status(pid)["findings"]
+    return solver_service.solver_release_status(manager, pid)["findings"]
 
 
 def test_decision_script_is_not_a_compatible_evaluator(manager: WorkspaceManager):
@@ -360,7 +362,7 @@ def test_runtime_binding_in_contract_is_forbidden(
     pid, root = _with_contract(manager)
     path = root / solver_contract.SOLVER_DIR / "plan_route" / "model.yaml"
     path.write_text(MODEL_YAML + extra, encoding="utf-8")
-    [finding] = _runtime_binding_findings(manager.solver_release_status(pid)["findings"])
+    [finding] = _runtime_binding_findings(solver_service.solver_release_status(manager, pid)["findings"])
     assert finding["field"] == field
     assert finding["path"].endswith("plan_route/model.yaml")
     assert value not in finding["message"]
@@ -375,7 +377,7 @@ def test_business_terms_and_schema_dialect_are_not_runtime_binding(manager: Work
     )
     schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", **INPUT_SCHEMA_DOC}
     (directory / "input.schema.json").write_text(json.dumps(schema, ensure_ascii=False), encoding="utf-8")
-    assert _runtime_binding_findings(manager.solver_release_status(pid)["findings"]) == []
+    assert _runtime_binding_findings(solver_service.solver_release_status(manager, pid)["findings"]) == []
 
 
 @pytest.mark.parametrize(
@@ -399,16 +401,16 @@ def test_runtime_binding_in_evaluator_is_forbidden(
 def test_contract_digests_follow_semantics_not_formatting(manager: WorkspaceManager):
     pid, root = _with_contract(manager)
     model = root / solver_contract.SOLVER_DIR / "plan_route" / "model.yaml"
-    before = manager.solver_release_status(pid)["digests"]
+    before = solver_service.solver_release_status(manager, pid)["digests"]
     assert before["algorithm"] == "sha256:canonical-json"
     assert set(before["operations"]) == {"plan_route"}
     model.write_text(
         yaml.safe_dump(yaml.safe_load(MODEL_YAML), allow_unicode=True, sort_keys=True, indent=4),
         encoding="utf-8",
     )
-    assert manager.solver_release_status(pid)["digests"] == before, "只改键序与缩进不改变摘要"
+    assert solver_service.solver_release_status(manager, pid)["digests"] == before, "只改键序与缩进不改变摘要"
     model.write_text(MODEL_YAML.replace("OPTION_0: 路线甲", "OPTION_0: 路线丙"), encoding="utf-8")
-    after = manager.solver_release_status(pid)["digests"]
+    after = solver_service.solver_release_status(manager, pid)["digests"]
     old, new = before["operations"]["plan_route"], after["operations"]["plan_route"]
     assert {key for key in new if new[key] != old[key]} == {"decision_model", "total"}
     assert after["total"] != before["total"] and after["package"] == before["package"]
@@ -416,8 +418,8 @@ def test_contract_digests_follow_semantics_not_formatting(manager: WorkspaceMana
 
 def test_missing_problem_family_is_reported(manager: WorkspaceManager):
     pid, _root = _project(manager)
-    manager.save_solver_contract(pid, [_item(declaration={})], "")
-    [finding] = manager.solver_release_status(pid)["findings"]
+    solver_service.save_solver_contract(manager, pid, [_item(declaration={})], "")
+    [finding] = solver_service.solver_release_status(manager, pid)["findings"]
     assert finding["code"] == solver_contract.CODE_INVALID
     assert finding["field"] == "declaration.engine_requirements.problem_family"
 
@@ -439,13 +441,13 @@ def _requirements(**requirements) -> dict:
 )
 def test_registered_family_and_capabilities_pass(manager: WorkspaceManager, requirements: dict):
     pid, _root = _project(manager)
-    saved = manager.save_solver_contract(pid, [_item(**_requirements(**requirements))], "")
+    saved = solver_service.save_solver_contract(manager, pid, [_item(**_requirements(**requirements))], "")
     assert saved["findings"] == []
 
 
 def test_unregistered_family_lists_supported_range(manager: WorkspaceManager):
     pid, _root = _project(manager)
-    saved = manager.save_solver_contract(pid, [_item(**_requirements(problem_family="vehicle_routing.v1"))], "")
+    saved = solver_service.save_solver_contract(manager, pid, [_item(**_requirements(problem_family="vehicle_routing.v1"))], "")
     [finding] = saved["findings"]
     assert finding["code"] == solver_contract.CODE_VERSION_INCOMPATIBLE
     assert finding["field"] == "declaration.engine_requirements.problem_family"
@@ -458,18 +460,18 @@ def test_unsupported_capabilities_are_listed(manager: WorkspaceManager):
         problem_family="candidate_selection.v1",
         capabilities=["lexicographic_objective", "time_windows", "column_generation"],
     )
-    saved = manager.save_solver_contract(pid, [_item(**requirements)], "")
+    saved = solver_service.save_solver_contract(manager, pid, [_item(**requirements)], "")
     [finding] = saved["findings"]
     assert finding["code"] == solver_contract.CODE_VERSION_INCOMPATIBLE
     assert finding["field"] == "declaration.engine_requirements.capabilities"
     assert "缺少能力：column_generation、time_windows" in finding["message"]
-    assert manager.solver_release_status(pid)["blocking"] == 2  # 能力缺失与待验证同时阻断发布
+    assert solver_service.solver_release_status(manager, pid)["blocking"] == 2  # 能力缺失与待验证同时阻断发布
 
 
 def test_malformed_capabilities_are_invalid(manager: WorkspaceManager):
     pid, _root = _project(manager)
     requirements = _requirements(problem_family="candidate_selection.v1", capabilities="lexicographic_objective")
-    [finding] = manager.save_solver_contract(pid, [_item(**requirements)], "")["findings"]
+    [finding] = solver_service.save_solver_contract(manager, pid, [_item(**requirements)], "")["findings"]
     assert finding["code"] == solver_contract.CODE_INVALID
     assert finding["field"] == "declaration.engine_requirements.capabilities"
 
@@ -479,7 +481,7 @@ def _model_findings(manager: WorkspaceManager, old: str, new: str) -> list[dict]
     path = root / solver_contract.SOLVER_DIR / "plan_route" / "model.yaml"
     assert old in MODEL_YAML
     path.write_text(MODEL_YAML.replace(old, new), encoding="utf-8")
-    findings = manager.solver_release_status(pid)["findings"]
+    findings = solver_service.solver_release_status(manager, pid)["findings"]
     assert all(item["path"] == "ontology/solver/plan_route/model.yaml" for item in findings)
     return findings
 
@@ -538,7 +540,7 @@ def _input_findings(manager: WorkspaceManager, schema: dict) -> list[dict]:
     pid, root = _with_contract(manager)
     path = root / solver_contract.SOLVER_DIR / "plan_route" / "input.schema.json"
     path.write_text(json.dumps(schema, ensure_ascii=False), encoding="utf-8")
-    findings = manager.solver_release_status(pid)["findings"]
+    findings = solver_service.solver_release_status(manager, pid)["findings"]
     assert all(
         item["path"] == "ontology/solver/plan_route/input.schema.json"
         and item["code"] == solver_contract.CODE_INVALID
@@ -592,18 +594,18 @@ def test_input_schema_accepts_adapter_aliases(manager: WorkspaceManager):
 def test_ambiguous_evaluator_requires_explicit_path(manager: WorkspaceManager):
     pid, root = _with_contract(manager)
     (root / "ontology" / "scripts" / "route_eval_copy.py").write_text(EVALUATOR_PY, encoding="utf-8")
-    [finding] = manager.solver_release_status(pid)["findings"]
+    [finding] = solver_service.solver_release_status(manager, pid)["findings"]
     assert finding["code"] == solver_contract.CODE_INVALID and "不唯一" in finding["message"]
 
     explicit = MODEL_YAML + "  evaluator_path: scripts/route_eval.py\n"
-    view = manager.solver_contract_view(pid)
+    view = solver_service.solver_contract_view(manager, pid)
     item = view["contract"]["operations"][0]
     assert item["evaluator"] == ""  # 不唯一时面板不显示评估器链接
     item["sidecars"]["entry"] = explicit
-    saved = manager.save_solver_contract(pid, [item], view["revision"])  # 回传只读字段不影响保存
+    saved = solver_service.save_solver_contract(manager, pid, [item], view["revision"])  # 回传只读字段不影响保存
     assert saved["findings"] == []
     assert saved["contract"]["operations"][0]["evaluator"] == "ontology/scripts/route_eval.py"
-    assert manager.solver_release_status(pid)["operations"][0]["evaluator"] == "ontology/scripts/route_eval.py"
+    assert solver_service.solver_release_status(manager, pid)["operations"][0]["evaluator"] == "ontology/scripts/route_eval.py"
 
 
 # ---- 声明式评估器（/ontology-solver-evaluator 生成）----
@@ -616,7 +618,7 @@ def _declarative_contract(
     pid, root = _project(manager, evaluator=declarative_source() if source is None else source)
     for name, text in object_docs(**objects).items():
         (root / "ontology" / "object" / f"{name}.md").write_text(text, encoding="utf-8")
-    manager.save_solver_contract(pid, [_item()], "")
+    solver_service.save_solver_contract(manager, pid, [_item()], "")
     return pid, root
 
 
@@ -624,7 +626,7 @@ def test_declarative_evaluator_only_waits_for_validation(manager: WorkspaceManag
     pid, root = _declarative_contract(manager)
     scripts = root / "ontology" / "scripts"
     (scripts / "helper.py").write_text('"""辅助脚本（合成示例）"""\nVALUE = 1\n', encoding="utf-8")
-    status = manager.solver_release_status(pid)
+    status = solver_service.solver_release_status(manager, pid)
     assert status["findings"] == []  # 非评估器脚本不参与发现
     assert status["operations"][0]["evaluator"] == "ontology/scripts/route_eval.py"
     assert _codes(status) == {solver_contract.CODE_VALIDATION_REQUIRED}
@@ -633,7 +635,7 @@ def test_declarative_evaluator_only_waits_for_validation(manager: WorkspaceManag
 
 def test_declarative_placeholder_blocks_release(manager: WorkspaceManager):
     pid, _root = _declarative_contract(manager, declarative_source(VGO_UNIT_ID="<待填写：二次加工单元 ID>"))
-    [finding] = manager.solver_release_status(pid)["findings"]
+    [finding] = solver_service.solver_release_status(manager, pid)["findings"]
     assert finding["code"] == solver_contract.CODE_INVALID
     assert finding["path"] == "ontology/scripts/route_eval.py" and finding["field"] == "VGO_UNIT_ID"
     assert "未填写的模板占位符" in finding["message"]
@@ -646,17 +648,17 @@ def test_declarative_problem_kinds_map_to_stable_codes(manager: WorkspaceManager
         "energy_consume": {**TABLE_SOURCES["energy_consume"], "object": "MissingObject"},
     })
     pid, _root = _declarative_contract(manager, source)
-    findings = manager.solver_release_status(pid)["findings"]
+    findings = solver_service.solver_release_status(manager, pid)["findings"]
     assert [f["code"] for f in findings] == [solver_contract.CODE_REFERENCE_MISSING] * 2
 
     pid, _root = _declarative_contract(manager, declarative_source(SOLVER_CONTEXT=OMIT))
-    [finding] = manager.solver_release_status(pid)["findings"]
+    [finding] = solver_service.solver_release_status(manager, pid)["findings"]
     assert finding["code"] == solver_contract.CODE_CONTEXT_MISSING and finding["field"] == "SOLVER_CONTEXT"
 
 
 def test_declarative_numeric_id_attribute_blocks_release(manager: WorkspaceManager):
     pid, _root = _declarative_contract(manager, StorageTank={**OBJECTS["StorageTank"], "tank_id": "整数"})
-    [finding] = manager.solver_release_status(pid)["findings"]
+    [finding] = solver_service.solver_release_status(manager, pid)["findings"]
     assert finding["code"] == solver_contract.CODE_INVALID
     assert finding["field"] == "TABLE_SOURCES.logic_tank.fields['LogicTankID']" and "前导零" in finding["message"]
 
@@ -664,7 +666,7 @@ def test_declarative_numeric_id_attribute_blocks_release(manager: WorkspaceManag
 def test_legacy_and_declarative_evaluators_are_ambiguous(manager: WorkspaceManager):
     pid, root = _with_contract(manager)
     (root / "ontology" / "scripts" / "plan_route_evaluator.py").write_text(declarative_source(), encoding="utf-8")
-    [finding] = manager.solver_release_status(pid)["findings"]
+    [finding] = solver_service.solver_release_status(manager, pid)["findings"]
     assert finding["code"] == solver_contract.CODE_INVALID and "不唯一" in finding["message"]
 
 
@@ -676,13 +678,13 @@ def test_referenced_object_edit_makes_declarative_validation_stale(
 ):
     # StreamLink 只经 lookup 引用，同样计入修订
     pid, root = _declarative_contract(manager, lookup_source(), StreamLink=LOOKUP_OBJECT)
-    _accept(root, manager.solver_release_status(pid)["revision"])
-    assert manager.solver_release_status(pid)["blocking"] == 0
+    _accept(root, solver_service.solver_release_status(manager, pid)["revision"])
+    assert solver_service.solver_release_status(manager, pid)["blocking"] == 0
     doc = root / "ontology" / "object" / f"{name}.md"
     text = doc.read_text(encoding="utf-8") if doc.exists() else f"# {name}\n"
     doc.write_text(text + "\n", encoding="utf-8")
     expected = {solver_contract.CODE_VALIDATION_STALE} if stale else set()
-    assert _codes(manager.solver_release_status(pid)) == expected
+    assert _codes(solver_service.solver_release_status(manager, pid)) == expected
 
 
 # ---- 验证门禁与发布 ----
@@ -691,61 +693,61 @@ def test_referenced_object_edit_makes_declarative_validation_stale(
 def test_publish_is_blocked_until_authoritative_validation(manager: WorkspaceManager, tmp_path: Path):
     pid, root = _with_contract(manager)
     with pytest.raises(WorkspaceError) as exc:
-        manager.publish_package(pid, tmp_path / "blocked.zip", allow_unbound=True)
+        publish_service.publish_package(manager, pid, tmp_path / "blocked.zip", allow_unbound=True)
     assert exc.value.code == solver_contract.CODE_VALIDATION_REQUIRED
     assert not (tmp_path / "blocked.zip").exists()
 
-    revision = manager.solver_release_status(pid)["revision"]
+    revision = solver_service.solver_release_status(manager, pid)["revision"]
     _accept(root, revision, authoritative=False)
-    assert _codes(manager.solver_release_status(pid)) == {solver_contract.CODE_VALIDATION_FAILED}
+    assert _codes(solver_service.solver_release_status(manager, pid)) == {solver_contract.CODE_VALIDATION_FAILED}
 
     _accept(root, revision, candidate_count=0)  # 全不可行也是有效的权威结果
-    status = manager.solver_release_status(pid)
+    status = solver_service.solver_release_status(manager, pid)
     assert status["blocking"] == 0 and status["validation"]["status"] == "passed"
-    manager.publish_package(pid, tmp_path / "ok.zip")
+    publish_service.publish_package(manager, pid, tmp_path / "ok.zip")
     assert (tmp_path / "ok.zip").is_file()
 
 
 def test_failed_validation_blocks_with_reason(manager: WorkspaceManager):
     pid, root = _with_contract(manager)
-    revision = manager.solver_release_status(pid)["revision"]
+    revision = solver_service.solver_release_status(manager, pid)["revision"]
     record = solver_validation.create(root, revision, ["plan_route"])
-    assert _codes(manager.solver_release_status(pid)) == {solver_contract.CODE_VALIDATION_REQUIRED}
+    assert _codes(solver_service.solver_release_status(manager, pid)) == {solver_contract.CODE_VALIDATION_REQUIRED}
     solver_validation.update(
         root, record["id"], status=solver_validation.STATUS_FAILED, message="Consumer 不可用"
     )
-    [gate] = manager.solver_release_status(pid)["gate"]
+    [gate] = solver_service.solver_release_status(manager, pid)["gate"]
     assert gate["code"] == solver_contract.CODE_VALIDATION_FAILED and "Consumer 不可用" in gate["message"]
 
 
 @pytest.mark.parametrize("edit", ["model", "operation", "evaluator"])
 def test_contract_edit_makes_validation_stale(manager: WorkspaceManager, edit: str):
     pid, root = _with_contract(manager)
-    _accept(root, manager.solver_release_status(pid)["revision"])
-    assert manager.solver_release_status(pid)["blocking"] == 0
+    _accept(root, solver_service.solver_release_status(manager, pid)["revision"])
+    assert solver_service.solver_release_status(manager, pid)["blocking"] == 0
     target = {
         "model": root / solver_contract.SOLVER_DIR / "plan_route" / "input.schema.json",
         "operation": root / "ontology" / "operation" / "规划路线.md",
         "evaluator": root / "ontology" / "scripts" / "route_eval.py",
     }[edit]
     target.write_text(target.read_text(encoding="utf-8") + "\n", encoding="utf-8")
-    assert _codes(manager.solver_release_status(pid)) == {solver_contract.CODE_VALIDATION_STALE}
+    assert _codes(solver_service.solver_release_status(manager, pid)) == {solver_contract.CODE_VALIDATION_STALE}
 
 
 def test_unrelated_edit_keeps_validation(manager: WorkspaceManager):
     pid, root = _with_contract(manager)
-    _accept(root, manager.solver_release_status(pid)["revision"])
+    _accept(root, solver_service.solver_release_status(manager, pid)["revision"])
     (root / "ontology" / "operation" / "查询站点.md").write_text("# 查询站点\n改了\n", encoding="utf-8")
     (root / "ontology" / "object" / "站点.md").write_text("# 站点\n", encoding="utf-8")
-    assert manager.solver_release_status(pid)["blocking"] == 0
+    assert solver_service.solver_release_status(manager, pid)["blocking"] == 0
 
 
 def test_disabled_contract_needs_no_validation(manager: WorkspaceManager):
     pid, _root = _project(manager)
-    manager.save_solver_contract(
+    solver_service.save_solver_contract(manager, 
         pid, [_item(operation_frontmatter={"execution": {"enabled": False}})], ""
     )
-    status = manager.solver_release_status(pid)
+    status = solver_service.solver_release_status(manager, pid)
     assert status["enabled"] is True and status["gate"] == [] and status["blocking"] == 0
 
 
@@ -754,7 +756,7 @@ def test_disabled_contract_needs_no_validation(manager: WorkspaceManager):
 
 def test_save_writes_managed_directory_and_commits(manager: WorkspaceManager):
     pid, root = _project(manager)
-    saved = manager.save_solver_contract(pid, [_item()], "", author="alice")
+    saved = solver_service.save_solver_contract(manager, pid, [_item()], "", author="alice")
     directory = root / solver_contract.SOLVER_DIR / "plan_route"
     assert sorted(path.name for path in directory.iterdir()) == sorted(
         ["binding.yaml", *(sidecar.filename for sidecar in solver_contract.SIDECARS)]
@@ -773,22 +775,22 @@ def test_unchanged_save_keeps_bytes_and_revision(manager: WorkspaceManager):
     binding_path = root / solver_contract.SOLVER_DIR / "plan_route" / "binding.yaml"
     original = "# 手写注释保留\n" + binding_path.read_text(encoding="utf-8")
     binding_path.write_text(original, encoding="utf-8")
-    view = manager.solver_contract_view(pid)
-    saved = manager.save_solver_contract(pid, view["contract"]["operations"], view["revision"])
+    view = solver_service.solver_contract_view(manager, pid)
+    saved = solver_service.save_solver_contract(manager, pid, view["contract"]["operations"], view["revision"])
     assert binding_path.read_text(encoding="utf-8") == original
     assert saved["revision"] == view["revision"]
-    again = manager.save_solver_contract(pid, saved["contract"]["operations"], saved["revision"])
+    again = solver_service.save_solver_contract(manager, pid, saved["contract"]["operations"], saved["revision"])
     assert again["commit"] == ""  # 无改动不产生空版本点
 
 
 def test_stale_base_revision_is_rejected_with_409(manager: WorkspaceManager):
     pid, root = _with_contract(manager)
-    view = manager.solver_contract_view(pid)
+    view = solver_service.solver_contract_view(manager, pid)
     (root / solver_contract.SOLVER_DIR / "plan_route" / "presentation.yaml").write_text(
         "columns: [site]\n", encoding="utf-8"
     )
     with pytest.raises(WorkspaceError) as exc:
-        manager.save_solver_contract(pid, view["contract"]["operations"], view["revision"])
+        solver_service.save_solver_contract(manager, pid, view["contract"]["operations"], view["revision"])
     assert exc.value.status == 409
     assert (root / solver_contract.SOLVER_DIR / "plan_route" / "presentation.yaml").read_text(
         encoding="utf-8"
@@ -811,7 +813,7 @@ def test_stale_base_revision_is_rejected_with_409(manager: WorkspaceManager):
 def test_structurally_invalid_save_is_rejected(manager: WorkspaceManager, item: dict, code: str):
     pid, root = _project(manager)
     with pytest.raises(solver_contract.SolverContractRejected) as exc:
-        manager.save_solver_contract(pid, [item], "")
+        solver_service.save_solver_contract(manager, pid, [item], "")
     assert exc.value.problems[0].code == code
     assert not (root / solver_contract.SOLVER_DIR).exists()
 
@@ -821,30 +823,30 @@ def test_save_rejects_remote_schema_reference(manager: WorkspaceManager):
     item = _item()
     item["sidecars"]["input_schema"] = '{"$ref": "https://schemas.example.com/input.json"}'
     with pytest.raises(solver_contract.SolverContractRejected) as exc:
-        manager.save_solver_contract(pid, [item], "")
+        solver_service.save_solver_contract(manager, pid, [item], "")
     assert exc.value.problems[0].path.endswith("plan_route/input.schema.json")
 
 
 def test_save_rejects_duplicate_operation_binding(manager: WorkspaceManager):
     pid, _root = _project(manager)
     with pytest.raises(solver_contract.SolverContractRejected):
-        manager.save_solver_contract(pid, [_item(), _item(solver_key="plan_route_b")], "")
+        solver_service.save_solver_contract(manager, pid, [_item(), _item(solver_key="plan_route_b")], "")
 
 
 def test_save_replaces_managed_directory(manager: WorkspaceManager):
     pid, root = _with_contract(manager)
     base = root / solver_contract.SOLVER_DIR
     (base / "plan_route" / "notes.txt").write_text("stray", encoding="utf-8")
-    view = manager.solver_contract_view(pid)
+    view = solver_service.solver_contract_view(manager, pid)
     renamed = _item(solver_key="route_plan_v2")
-    saved = manager.save_solver_contract(pid, [renamed], view["revision"])
+    saved = solver_service.save_solver_contract(manager, pid, [renamed], view["revision"])
     assert [path.name for path in base.iterdir()] == ["route_plan_v2"]
     assert not (base / "route_plan_v2" / "notes.txt").exists()
 
-    cleared = manager.save_solver_contract(pid, [], saved["revision"])
+    cleared = solver_service.save_solver_contract(manager, pid, [], saved["revision"])
     assert cleared["enabled"] is False and not base.exists()
     assert cleared["commit"]
-    assert manager.package_binding_check(pid)["solver"] == {"enabled": False}
+    assert publish_service.package_binding_check(manager, pid)["solver"] == {"enabled": False}
 
 
 def test_view_exposes_template_and_profiles(manager: WorkspaceManager):
@@ -853,7 +855,7 @@ def test_view_exposes_template_and_profiles(manager: WorkspaceManager):
     (root / "ontology" / "scripts" / "query_station.py").write_text(
         "def run(params):\n    return {}\n", encoding="utf-8"
     )
-    view = manager.solver_contract_view(pid)
+    view = solver_service.solver_contract_view(manager, pid)
     assert view["supported_profiles"] == ["ordered_binary_route.v1"]
     assert view["problem_families"] == [{
         "id": "candidate_selection.v1",
@@ -871,13 +873,13 @@ def test_view_exposes_template_and_profiles(manager: WorkspaceManager):
         },
         "template": template["params"],
     }
-    saved = manager.save_solver_contract(pid, [item], "")
+    saved = solver_service.save_solver_contract(manager, pid, [item], "")
     # 模板只缺业务填写的选项显示名称
     assert [(f["field"], f["message"]) for f in saved["findings"]] == [
         ("display_mapping", "display_mapping 的显示名称不能为空"),
     ]
     item["template"] = {**template["params"], "display_mapping": {"OPTION_0": "路线甲", "OPTION_1": "路线乙"}}
-    assert manager.save_solver_contract(pid, [item], saved["revision"])["findings"] == []
+    assert solver_service.save_solver_contract(manager, pid, [item], saved["revision"])["findings"] == []
 
 
 # ---- 模板化契约：业务用户只填参数，服务端生成全部 sidecar ----
@@ -969,7 +971,7 @@ def test_saved_template_contract_is_managed(manager: WorkspaceManager):
     pid, root = _project(manager)
     item = _template_item(title="  路线方案 ")
     item["sidecars"] = {"entry": "ignored: true\n"}  # 模板条目以参数为准，忽略同时提交的原文
-    saved = manager.save_solver_contract(pid, [item], "")
+    saved = solver_service.save_solver_contract(manager, pid, [item], "")
     assert saved["findings"] == []
     directory = root / solver_contract.SOLVER_DIR / "plan_route"
     params = {"display_mapping": {"OPTION_0": "路线甲", "OPTION_1": "路线乙"}, "title": "路线方案",
@@ -980,29 +982,29 @@ def test_saved_template_contract_is_managed(manager: WorkspaceManager):
     assert operation["managed"] is True and operation["template_params"] == params
 
     # 原样回传视图（含 template_params）按原文保存，不触发重新生成
-    again = manager.save_solver_contract(pid, saved["contract"]["operations"], saved["revision"])
+    again = solver_service.save_solver_contract(manager, pid, saved["contract"]["operations"], saved["revision"])
     assert again["commit"] == "" and again["revision"] == saved["revision"]
 
 
 def test_manual_edit_falls_back_to_raw_mode_and_regenerates(manager: WorkspaceManager):
     pid, root = _project(manager)
-    saved = manager.save_solver_contract(pid, [_template_item()], "")
+    saved = solver_service.save_solver_contract(manager, pid, [_template_item()], "")
     model = root / solver_contract.SOLVER_DIR / "plan_route" / "model.yaml"
     model.write_text("# 手写注释\n" + model.read_text(encoding="utf-8"), encoding="utf-8")
-    view = manager.solver_contract_view(pid)
+    view = solver_service.solver_contract_view(manager, pid)
     [operation] = view["contract"]["operations"]
     assert operation["managed"] is False
     # 尽量还原的参数供「按模板重新生成」沿用
     assert operation["template_params"]["display_mapping"] == {"OPTION_0": "路线甲", "OPTION_1": "路线乙"}
     regenerated = {"binding": operation["binding"], "template": operation["template_params"]}
-    again = manager.save_solver_contract(pid, [regenerated], view["revision"])
+    again = solver_service.save_solver_contract(manager, pid, [regenerated], view["revision"])
     assert again["contract"]["operations"][0]["managed"] is True
     assert again["revision"] == saved["revision"]
 
 
 def test_hand_written_contract_is_not_managed(manager: WorkspaceManager):
     pid, _root = _with_contract(manager)
-    [operation] = manager.solver_contract_view(pid)["contract"]["operations"]
+    [operation] = solver_service.solver_contract_view(manager, pid)["contract"]["operations"]
     assert operation["managed"] is False
     assert operation["template_params"] == {
         "display_mapping": {"OPTION_0": "路线甲", "OPTION_1": "路线乙"}, "title": "", "evaluator_path": "",
@@ -1029,7 +1031,7 @@ def test_invalid_template_params_are_rejected(manager: WorkspaceManager, templat
     item = _template_item()
     item["template"] = template
     with pytest.raises(solver_contract.SolverContractRejected) as exc:
-        manager.save_solver_contract(pid, [item], "")
+        solver_service.save_solver_contract(manager, pid, [item], "")
     [problem] = exc.value.problems
     assert problem.code == solver_contract.CODE_INVALID and problem.field == field
     assert problem.path.startswith("ontology/solver/plan_route/")
@@ -1041,7 +1043,7 @@ def test_view_lists_evaluator_unit_options(manager: WorkspaceManager):
     (root / "ontology" / "scripts" / "route_eval.py").write_text(
         EVALUATOR_PY + '\nDIESEL_UNIT_IDS = {"U1": "unit-a", "U2": "unit-b", 3: "skipped"}\n', encoding="utf-8"
     )
-    saved = manager.save_solver_contract(pid, [_template_item()], "")
+    saved = solver_service.save_solver_contract(manager, pid, [_template_item()], "")
     assert saved["contract"]["operations"][0]["unit_options"] == ["U1", "U2"]
 
 
@@ -1073,12 +1075,12 @@ def test_export_projects_evaluator_options_into_managed_input_schema(
     pid, root = _project(manager, evaluator=declarative_source())
     for name, text in object_docs().items():
         (root / "ontology" / "object" / f"{name}.md").write_text(text, encoding="utf-8")
-    manager.save_solver_contract(pid, [_template_item()], "")
+    solver_service.save_solver_contract(manager, pid, [_template_item()], "")
     workspace_schema = root / solver_contract.SOLVER_DIR / "plan_route" / "input.schema.json"
     template = workspace_schema.read_bytes()
     member = f"{pid}/operations/plan_route.input.schema.json"
 
-    package = manager.export_package_zip(pid, tmp_path / "out.zip")
+    package = publish_service.export_package_zip(manager, pid, tmp_path / "out.zip")
     with zipfile.ZipFile(package) as archive:
         exported = archive.read(member)
     schema = json.loads(exported)
@@ -1098,9 +1100,9 @@ def test_export_projects_evaluator_options_into_managed_input_schema(
     again = manager.import_package_zip("回导任务", package)
     restored = manager.project_root(again["id"]) / solver_contract.SOLVER_DIR / "plan_route"
     assert (restored / "input.schema.json").read_bytes() == template
-    [operation] = manager.solver_contract_view(again["id"])["contract"]["operations"]
+    [operation] = solver_service.solver_contract_view(manager, again["id"])["contract"]["operations"]
     assert operation["managed"] is True
-    with zipfile.ZipFile(manager.export_package_zip(again["id"], tmp_path / "again.zip")) as archive:
+    with zipfile.ZipFile(publish_service.export_package_zip(manager, again["id"], tmp_path / "again.zip")) as archive:
         assert archive.read(f"{again['id']}/operations/plan_route.input.schema.json") == exported
 
 
@@ -1158,7 +1160,7 @@ def test_draft_check_reports_model_findings_without_writing(manager: WorkspaceMa
         ("  - {metric: candidate_rank, sense: minimize}\n", ""),
         ("  OPTION_1: 路线乙\n", "  OPTION_1: 路线甲\n"),
     )
-    checked = manager.check_solver_contract_draft(pid, [item])
+    checked = solver_service.check_solver_contract_draft(manager, pid, [item])
     assert checked["rejected"] == []
     assert sorted(entry["field"] for entry in checked["findings"]) == [
         "display_mapping", "objectives", "required_facts",
@@ -1173,8 +1175,8 @@ def test_draft_check_matches_saved_release_findings(manager: WorkspaceManager):
     pid, _root = _project(manager)
     item = _item()
     item["sidecars"]["entry"] = _draft_entry(("  OPTION_1: 路线乙\n", ""))
-    checked = manager.check_solver_contract_draft(pid, [item])
-    saved = manager.save_solver_contract(pid, [item], "")
+    checked = solver_service.check_solver_contract_draft(manager, pid, [item])
+    saved = solver_service.save_solver_contract(manager, pid, [item], "")
     assert checked == {"rejected": [], "findings": saved["findings"], "rendered": [None]}
 
 
@@ -1183,7 +1185,7 @@ def test_draft_check_previews_template_sidecars(manager: WorkspaceManager):
     unnamed = _template_item(solver_key="route_b", operation="查询站点")
     unnamed["template"]["display_mapping"] = {"OPTION_0": "路线甲", "OPTION_1": " "}
     broken = _template_item(solver_key="route_c", title=3)
-    checked = manager.check_solver_contract_draft(pid, [_template_item(), unnamed, broken])
+    checked = solver_service.check_solver_contract_draft(manager, pid, [_template_item(), unnamed, broken])
     params = {"display_mapping": {"OPTION_0": "路线甲", "OPTION_1": "路线乙"}, "title": "", "evaluator_path": ""}
     assert checked["rendered"][0] == {
         role: data.decode("utf-8") for role, data in solver_contract.render_template(params).items()
@@ -1202,10 +1204,10 @@ def test_draft_check_previews_template_sidecars(manager: WorkspaceManager):
 
 def test_draft_check_separates_save_rejections(manager: WorkspaceManager):
     pid, root = _with_contract(manager)
-    revision = manager.solver_contract_view(pid)["revision"]
+    revision = solver_service.solver_contract_view(manager, pid)["revision"]
     valid = _item(solver_key="route_b")
     valid["sidecars"]["entry"] = _draft_entry(("  OPTION_1: 路线乙\n", ""))
-    checked = manager.check_solver_contract_draft(
+    checked = solver_service.check_solver_contract_draft(manager, 
         pid, [_item(solver_key="Plan-Route"), _item(solver_key="route_a", operation="不存在"), valid]
     )
     assert [(entry["code"], entry["field"]) for entry in checked["rejected"]] == [
@@ -1217,68 +1219,69 @@ def test_draft_check_separates_save_rejections(manager: WorkspaceManager):
         ("route_b", "display_mapping"),
     ]
     assert [path.name for path in (root / solver_contract.SOLVER_DIR).iterdir()] == ["plan_route"]
-    assert manager.solver_contract_view(pid)["revision"] == revision
+    assert solver_service.solver_contract_view(manager, pid)["revision"] == revision
 
 
 # ---- 路由 ----
 
 
+def _v1_client(manager: WorkspaceManager, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.api import deps
+    from app.main import app
+    from app.services import auth
+
+    monkeypatch.setattr(deps, "workspaces", manager)
+    monkeypatch.setattr(auth, "ENABLED", False)  # 本地模式：所有权检查放开
+    return TestClient(app)
+
+
 def test_routes_return_findings_and_conflict(manager: WorkspaceManager, monkeypatch):
-    from app.main import workspace_error_handler
-    from app.routers import projects
-
-    monkeypatch.setattr(projects, "workspaces", manager)
-    monkeypatch.setattr(projects, "require_owner", lambda *args, **kwargs: None)
+    client = _v1_client(manager, monkeypatch)
     pid, root = _project(manager)
-    request = SimpleNamespace(state=SimpleNamespace(user=None), headers={})
+    url = f"/api/v1/projects/{pid}/solver/contract"
 
-    assert projects.get_solver_contract(pid, request)["enabled"] is False
-    body = projects.SolverContractBody.model_validate(
-        {"baseRevision": "", "contract": {"operations": [_item(operation="不存在")]}}
-    )
-    response = projects.save_solver_contract(pid, body, request)
-    payload = json.loads(response.body)
-    assert response.status_code == 400
-    assert payload["code"] == solver_contract.CODE_REFERENCE_MISSING
-    assert payload["findings"][0]["field"] == "operation"
+    assert client.get(url).json()["enabled"] is False
+    response = client.put(url, json={"base_revision": "", "contract": {"operations": [_item(operation="不存在")]}})
+    assert response.status_code == 422
+    payload = response.json()
+    assert payload["code"] == "solver_contract_rejected"
+    assert payload["details"]["findings"][0]["code"] == solver_contract.CODE_REFERENCE_MISSING
+    assert payload["details"]["findings"][0]["field"] == "operation"
 
-    body = projects.SolverContractBody.model_validate(
-        {"contract": {"operations": [_item()]}, "summary": "启用路线求解"}
-    )
-    saved = projects.save_solver_contract(pid, body, request)
-    assert saved["revision"].startswith("sha256:")
+    saved = client.put(url, json={"contract": {"operations": [_item()]}, "summary": "启用路线求解"})
+    assert saved.status_code == 200
+    assert saved.json()["revision"].startswith("sha256:")
+    assert saved.json()["commit"] == _git(root, "rev-parse", "HEAD").strip()
     message = _git(root, "log", "-1", "--format=%s").strip()
     assert message == "web: 保存求解契约：启用路线求解"
-    with pytest.raises(WorkspaceError) as exc:
-        projects.save_solver_contract(
-            pid,
-            projects.SolverContractBody(base_revision="sha256:old", contract={"operations": [_item()]}),
-            request,
-        )
-    conflict = asyncio.run(workspace_error_handler(request, exc.value))
+
+    conflict = client.put(url, json={"base_revision": "sha256:old", "contract": {"operations": [_item()]}})
     assert conflict.status_code == 409
-    assert json.loads(conflict.body)["code"] == "solver_contract_revision_conflict"
-    assert projects.package_check(pid, request)["solver"]["enabled"] is True
+    assert conflict.json()["code"] == "revision_conflict"
+    assert conflict.json()["details"]["kind"] == "solver_contract"
+    # 旧路径经兼容中间件到同一个处理器，错误体额外带 error
+    legacy = client.put(f"/api/projects/{pid}/package/solver-contract",
+                        json={"base_revision": "sha256:old", "contract": {"operations": [_item()]}})
+    assert legacy.status_code == 409 and legacy.json()["error"] == legacy.json()["message"]
+    check = client.get(f"/api/v1/projects/{pid}/publish/check").json()
+    assert check["format"] == "solver"
+    assert [gate["id"] for gate in check["gates"]][:2] == ["data_binding", "solver_receipt"]
 
 
 def test_check_route_reports_draft_without_saving(manager: WorkspaceManager, monkeypatch):
-    from app.routers import projects
-
-    monkeypatch.setattr(projects, "workspaces", manager)
-    monkeypatch.setattr(projects, "require_owner", lambda *args, **kwargs: None)
+    client = _v1_client(manager, monkeypatch)
     pid, root = _project(manager)
-    request = SimpleNamespace(state=SimpleNamespace(user=None), headers={})
     item = _item()
     item["sidecars"]["entry"] = _draft_entry(("  - refinery_route_context\n", ""))
 
-    body = projects.SolverContractBody.model_validate({"contract": {"operations": [item]}})
-    checked = projects.check_solver_contract(pid, body, request)
-    assert checked["rejected"] == []
-    assert [entry["field"] for entry in checked["findings"]] == ["required_facts"]
+    checked = client.post(f"/api/v1/projects/{pid}/solver/contract/check", json={"contract": {"operations": [item]}})
+    assert checked.status_code == 200
+    assert checked.json()["rejected"] == []
+    assert [entry["field"] for entry in checked.json()["findings"]] == ["required_facts"]
     assert not (root / solver_contract.SOLVER_DIR).exists()
 
-    with pytest.raises(WorkspaceError) as exc:
-        projects.check_solver_contract(
-            pid, projects.SolverContractBody.model_validate({"contract": {"operations": {}}}), request
-        )
-    assert exc.value.code == solver_contract.CODE_INVALID
+    invalid = client.post(f"/api/v1/projects/{pid}/solver/contract/check", json={"contract": {"operations": {}}})
+    assert invalid.status_code == 400
+    assert invalid.json()["code"] == solver_contract.CODE_INVALID

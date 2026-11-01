@@ -16,8 +16,10 @@ import yaml
 from fastapi.testclient import TestClient
 
 from app import config
+from app.services import publish as publish_service
+from app.services import solver as solver_service
 from app.main import app
-from app.routers import projects
+from app.api import deps
 from app.services import auth, feedback_inbox, release_store, service_tokens, solver_validation
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 from tests.test_release_publish import commit_all, rich_project
@@ -36,7 +38,7 @@ def manager(tmp_path: Path, monkeypatch) -> WorkspaceManager:
     (assets / "workspace-rules.md").write_text("# rules", encoding="utf-8")
     (assets / "resource-template" / "others").mkdir(parents=True)
     instance = WorkspaceManager(tmp_path / "data", assets)
-    monkeypatch.setattr(projects, "workspaces", instance)
+    monkeypatch.setattr(deps, "workspaces", instance)
     return instance
 
 
@@ -104,19 +106,22 @@ def test_unknown_project_is_404(client):
 
 def test_release_records_and_download_read_stored_package(client, manager, tmp_path):
     pid, root = owned_project(manager)
-    first = manager.publish_package(pid, tmp_path / "first.zip", author=OWNER)
+    first = publish_service.publish_package(manager, pid, tmp_path / "first.zip", author=OWNER)
     (root / "ontology" / "rule" / "新规则.md").write_text("# 新规则\n", encoding="utf-8")
     commit_all(root, "test: second release")
-    second = manager.publish_package(pid, tmp_path / "second.zip", author=OWNER)
+    second = publish_service.publish_package(manager, pid, tmp_path / "second.zip", author=OWNER)
 
     listed = client.get(f"/api/v1/projects/{pid}/releases", headers=OWNER_HEADERS).json()
     assert [item["version"] for item in listed["items"]] == [second["version"], first["version"]]
-    assert listed["next_cursor"] is None and listed["total"] == 2
+    assert listed["next_cursor"] is None
     headers = token("releases.read")
     record = client.get(release_url(pid, first["version"]), headers=headers).json()
-    assert record["commit"] == first["commit"] and record["released_by"] == OWNER
-    assert record["format"] == "ontology" and record["degraded"] is False
-    assert record["released_at"].endswith("Z") and len(record["package"]["sha256"]) == 64
+    # ReleaseRecord（契约 7.14）
+    assert record["commit"] == first["commit"] and record["by"] == OWNER
+    assert record["format"] == "ontology" and record["format_label"] == "普通知识包"
+    assert record["gates"] == {"all_passed": True, "degraded": False, "unbound_objects": []}
+    assert record["at"].endswith("Z") and len(record["sha256"]) == 64 and record["manifest_attached"] is True
+    assert record["version_label"] == "v0." + first["version"].split(".")[1]
     assert record["download_url"] == release_url(pid, first["version"], "/download")
 
     response = client.get(record["download_url"], headers=headers)
@@ -129,7 +134,8 @@ def test_release_records_and_download_read_stored_package(client, manager, tmp_p
     assert manifest["version"] == first["version"] and manifest["status"] == "released"
 
     pulled = client.get(release_url(pid, first["version"]), headers=headers).json()
-    assert pulled["pulls"]["count"] == 1 and pulled["pulls"]["last_at"].endswith("Z")  # 服务令牌拉取记一次
+    [pull] = pulled["pulls"]  # 服务令牌拉取记一次
+    assert pull["at"].endswith("Z") and pull["by_token"].startswith("service:") and pull["variant"] == "standard"
 
     missing = client.get(release_url(pid, "0.1.999", "/download"), headers=headers)
     assert missing.status_code == 404 and missing.json()["code"] == "release_not_found"
@@ -138,7 +144,7 @@ def test_release_records_and_download_read_stored_package(client, manager, tmp_p
 
 def test_manifest_lists_package_contents(client, manager, tmp_path):
     pid, _ = owned_project(manager)
-    record = manager.publish_package(pid, tmp_path / "pkg.zip")
+    record = publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
     body = client.get(release_url(pid, record["version"], "/manifest"), headers=token("releases.read")).json()
     assert body["manifest"]["version"] == record["version"] and body["manifest"]["id"] == pid
     assert body["sha256"] == hashlib.sha256((tmp_path / "pkg.zip").read_bytes()).hexdigest()
@@ -147,7 +153,7 @@ def test_manifest_lists_package_contents(client, manager, tmp_path):
 
 def test_graph_variant_is_rendered_once_from_the_tag(client, manager, tmp_path):
     pid, root = owned_project(manager)
-    record = manager.publish_package(pid, tmp_path / "pkg.zip")
+    record = publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
     (root / "ontology" / "rule" / "之后.md").write_text("# 之后\n", encoding="utf-8")
     commit_all(root, "test: after release")  # 变体按标签提交渲染，不读之后的提交
 
@@ -165,11 +171,11 @@ def test_graph_variant_is_rendered_once_from_the_tag(client, manager, tmp_path):
 
 def test_owner_can_read_releases_with_login_token(client, manager, tmp_path):
     pid, _ = owned_project(manager)
-    record = manager.publish_package(pid, tmp_path / "pkg.zip")
+    record = publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
     assert client.get(release_url(pid, record["version"]), headers=OWNER_HEADERS).status_code == 200
     download = client.get(release_url(pid, record["version"], "/download"), params={"token": "owner-token"})
     assert download.status_code == 200  # 下载链接可用 ?token=
-    assert client.get(release_url(pid, record["version"]), headers=OWNER_HEADERS).json()["pulls"]["count"] == 0
+    assert client.get(release_url(pid, record["version"]), headers=OWNER_HEADERS).json()["pulls"] == []
     other = client.get(release_url(pid, record["version"]), headers={"Authorization": "Bearer other-token"})
     assert other.status_code == 403
     assert client.get(release_url(pid, record["version"])).status_code == 401
@@ -177,7 +183,7 @@ def test_owner_can_read_releases_with_login_token(client, manager, tmp_path):
 
 def test_same_version_keeps_first_stored_bytes(manager, tmp_path):
     pid, _ = owned_project(manager)
-    record = manager.publish_package(pid, tmp_path / "a.zip")
+    record = publish_service.publish_package(manager, pid, tmp_path / "a.zip")
     stored, _ = release_store.get(manager.data_dir, pid, record["version"], record["commit"])
     stored.write_bytes(b"synthetic-first-bytes")  # 模拟渲染器升级前留存的字节
     meta = stored.with_suffix(".json")
@@ -185,19 +191,19 @@ def test_same_version_keeps_first_stored_bytes(manager, tmp_path):
     data["sha256"] = hashlib.sha256(b"synthetic-first-bytes").hexdigest()
     meta.write_text(json.dumps(data), encoding="utf-8")
 
-    again = manager.publish_package(pid, tmp_path / "b.zip")
+    again = publish_service.publish_package(manager, pid, tmp_path / "b.zip")
     assert again["version"] == record["version"]
     assert (tmp_path / "b.zip").read_bytes() == b"synthetic-first-bytes"  # 同一版本只认第一次的字节
-    path, _ = manager.release_package(pid, record["version"])
+    path, _ = publish_service.release_package(manager, pid, record["version"])
     assert path.read_bytes() == b"synthetic-first-bytes"
 
 
 def test_missing_stored_package_is_rerendered_once(client, manager, tmp_path):
     pid, _ = owned_project(manager)
-    record = manager.publish_package(pid, tmp_path / "pkg.zip")
+    record = publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
     shutil.rmtree(release_store.root_dir(manager.data_dir))
 
-    assert client.get(release_url(pid, record["version"]), headers=token("releases.read")).json()["package"] is None
+    assert client.get(release_url(pid, record["version"]), headers=token("releases.read")).json()["manifest_attached"] is False
     response = client.get(release_url(pid, record["version"], "/download"), headers=token("releases.read"))
     assert response.status_code == 200
     assert response.content == (tmp_path / "pkg.zip").read_bytes()  # 同一提交、同一渲染器：字节一致
@@ -208,11 +214,11 @@ def test_missing_stored_package_is_rerendered_once(client, manager, tmp_path):
 def test_contract_release_list_filters_and_pages(client, manager, tmp_path):
     first, _ = owned_project(manager)
     second, second_root = rich_project(manager, "另一个项目")
-    manager.publish_package(first, tmp_path / "a.zip")
-    manager.publish_package(second, tmp_path / "b.zip")
+    publish_service.publish_package(manager, first, tmp_path / "a.zip")
+    publish_service.publish_package(manager, second, tmp_path / "b.zip")
     (second_root / "ontology" / "rule" / "新规则.md").write_text("# 新规则\n", encoding="utf-8")
     commit_all(second_root, "test: second release")
-    manager.publish_package(second, tmp_path / "c.zip")
+    publish_service.publish_package(manager, second, tmp_path / "c.zip")
 
     everything = client.get("/api/v1/contract/releases", headers=token("releases.read")).json()
     assert {item["project_id"] for item in everything["items"]} == {first, second}
@@ -246,7 +252,7 @@ def test_contract_release_list_filters_and_pages(client, manager, tmp_path):
 
 
 def receipt_body(manager, pid: str, revision: str | None = None, **fields) -> dict:
-    status = manager.solver_release_status(pid)
+    status = solver_service.solver_release_status(manager, pid)
     return {
         "revision": revision or status["revision"],
         "solver_keys": ["plan_route"],
@@ -265,13 +271,13 @@ def test_receipt_unlocks_solver_publish(client, manager, tmp_path):
     pid, _ = _with_contract(manager)
     headers = token("receipts.write")
     with pytest.raises(WorkspaceError):
-        manager.publish_package(pid, tmp_path / "blocked.zip", allow_unbound=True)
+        publish_service.publish_package(manager, pid, tmp_path / "blocked.zip", allow_unbound=True)
 
     candidate = client.get(f"/api/v1/projects/{pid}/solver/candidate", params={"allow_unbound": True}, headers=headers)
     assert candidate.status_code == 200, candidate.text
     revision = candidate.headers["X-Solver-Revision"]
-    assert revision == manager.solver_release_status(pid)["revision"]
-    assert candidate.headers["X-Solver-Contract-Digest"] == manager.solver_release_status(pid)["digests"]["total"]
+    assert revision == solver_service.solver_release_status(manager, pid)["revision"]
+    assert candidate.headers["X-Solver-Contract-Digest"] == solver_service.solver_release_status(manager, pid)["digests"]["total"]
     manifest = yaml.safe_load(zip_files(candidate.content)[f"{pid}/manifest.yaml"])
     assert manifest["status"] == "draft" and manifest["version"] == candidate.headers["X-Package-Version"]
     assert _git(manager.project_root(pid), "tag", "--list", "release/*").strip() == ""  # 候选不是发布
@@ -286,16 +292,20 @@ def test_receipt_unlocks_solver_publish(client, manager, tmp_path):
     assert receipt["by"] == "service:合成服务" and receipt["receipt_id"] == "run-1"
     assert receipt["completed_at"] == "2026-11-01T08:00:00.000Z" and receipt["created_at"].endswith("Z")
     assert "example.invalid" not in receipt["message"]
-    assert manager.solver_release_status(pid)["gate"] == []
+    assert solver_service.solver_release_status(manager, pid)["gate"] == []
 
-    record = manager.publish_package(pid, tmp_path / "release.zip", allow_unbound=True)
+    record = publish_service.publish_package(manager, pid, tmp_path / "release.zip", allow_unbound=True)
     assert manifest["version"] == record["version"]
     stored = release_store.get(manager.data_dir, pid, record["version"], record["commit"])[1]
     assert stored["format"] == "solver"
 
     manager.set_owner(pid, OWNER)
-    latest = client.get(f"/api/projects/{pid}/package/solver-validations/latest", headers=OWNER_HEADERS).json()
-    assert latest["validation"]["id"] == receipt["id"]  # 面板照旧经 latest 读回执
+    receipts = client.get(f"/api/v1/projects/{pid}/solver/receipts", headers=OWNER_HEADERS).json()
+    assert receipts["latest"]["id"] == receipt["id"] and receipts["gate"] == {"status": "pass", "finding": None}  # SV-04
+    assert receipts["latest"]["completed_at"].endswith("Z")
+    # 旧面板路径经兼容中间件改写到 SV-04
+    legacy = client.get(f"/api/projects/{pid}/package/solver-validations/latest", headers=OWNER_HEADERS)
+    assert legacy.json()["latest"]["id"] == receipt["id"] and legacy.headers["deprecation"] == "true"
 
 
 def test_receipt_id_takes_effect_once(client, manager):
@@ -326,11 +336,11 @@ def test_failed_or_non_authoritative_receipt_keeps_gate_closed(client, manager):
     pid, _ = _with_contract(manager)
     url = f"/api/v1/projects/{pid}/solver/receipts"
     client.post(url, headers=token("receipts.write"), json=receipt_body(manager, pid, receipt_id="r1", authoritative=False))
-    assert manager.solver_release_status(pid)["gate"]
+    assert solver_service.solver_release_status(manager, pid)["gate"]
     client.post(url, headers=token("receipts.write"), json=receipt_body(
         manager, pid, receipt_id="r2", status="failed", error_code="solver_tool_not_called",
     ))
-    gate = manager.solver_release_status(pid)["gate"]
+    gate = solver_service.solver_release_status(manager, pid)["gate"]
     assert gate and "未通过" in gate[0]["message"]
 
 
@@ -376,7 +386,7 @@ def test_receipt_accepts_head_revision_when_workspace_differs(client, manager):
     body = receipt_body(manager, pid)
     evaluator = root / "ontology" / "scripts" / "route_eval.py"
     evaluator.write_text(evaluator.read_text(encoding="utf-8") + "\n# 合成改动\n", encoding="utf-8")
-    assert manager.solver_check(pid).revision != body["revision"]
+    assert solver_service.solver_check(manager, pid).revision != body["revision"]
     response = client.post(f"/api/v1/projects/{pid}/solver/receipts", headers=token("receipts.write"), json=body)
     assert response.status_code == 201
 
@@ -435,7 +445,7 @@ def test_feedback_release_version_must_exist(client, manager, tmp_path):
     url = f"/api/v1/projects/{pid}/feedback"
     missing = client.post(url, headers=token("feedback.write"), json=feedback_body(release_version="0.1.99"))
     assert missing.status_code == 422 and missing.json()["code"] == "feedback_invalid"
-    record = manager.publish_package(pid, tmp_path / "pkg.zip")
+    record = publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
     ok = client.post(url, headers=token("feedback.write"), json=feedback_body(release_version=record["version"]))
     assert ok.status_code == 201 and ok.json()["release_version"] == record["version"]
 

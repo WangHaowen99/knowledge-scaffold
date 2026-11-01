@@ -13,8 +13,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import config
+from app.api import deps
 from app.main import app
-from app.routers import admin, projects
 from app.services import auth, backup, conversation_store
 from app.services.engines import jiuwen
 from app.services.onto_mcp import tokens
@@ -31,8 +31,7 @@ def env(tmp_path: Path, monkeypatch):
     (assets / "resource-template").mkdir(parents=True)
     (assets / "workspace-rules.md").write_text("# rules", encoding="utf-8")
     manager = WorkspaceManager(data, assets)
-    monkeypatch.setattr(projects, "workspaces", manager)
-    monkeypatch.setattr(admin, "workspaces", manager)
+    monkeypatch.setattr(deps, "workspaces", manager)
     return manager, tmp_path
 
 
@@ -264,21 +263,27 @@ def _auth(token):
 def test_admin_backup_route_creates_and_lists(client, env):
     manager, _ = env
     manager.create_project("project_alpha")
-    response = client.post("/api/admin/backup", headers=_auth("admin-token"))
-    assert response.status_code == 200
+    response = client.post("/api/v1/ops/backups", headers=_auth("admin-token"))
+    assert response.status_code == 202
     body = response.json()
-    assert body["created"].startswith(backup.BACKUP_PREFIX)
-    assert [entry["name"] for entry in body["backups"]] == [body["created"]]
+    assert body["name"].startswith(backup.BACKUP_PREFIX) and body["task_id"]
 
-    health = client.get("/api/admin/health", headers=_auth("admin-token")).json()
-    assert health["backup"]["last"]["name"] == body["created"]
-    assert health["backup"]["interval_hours"] == config.BACKUP_INTERVAL_HOURS
+    listed = client.get("/api/v1/ops/backups", headers=_auth("admin-token")).json()
+    assert [entry["name"] for entry in listed["items"]] == [body["name"]]
+    assert listed["schedule"]["interval_hours"] == config.BACKUP_INTERVAL_HOURS
+    assert listed["schedule"]["keep"] == backup.BACKUP_KEEP
 
-    overview = client.get("/api/admin/overview", headers=_auth("admin-token")).json()
-    assert [entry["name"] for entry in overview["backups"]] == [body["created"]]
+    # 旧路径经兼容中间件改写到运维管理面
+    legacy = client.post("/api/admin/backup", headers=_auth("admin-token"))
+    assert legacy.status_code == 202 and legacy.headers["Deprecation"] == "true"
+    assert len(client.get("/api/v1/ops/backups", headers=_auth("admin-token")).json()["items"]) == 2
 
 
 @pytest.mark.parametrize("method, path", [
+    ("post", "/api/v1/ops/backups"),
+    ("get", "/api/v1/ops/health"),
+    ("get", "/api/v1/ops/overview"),
+    ("get", "/api/v1/ops/audit"),
     ("post", "/api/admin/backup"),
     ("get", "/api/admin/health"),
     ("get", "/api/admin/overview"),
@@ -287,8 +292,11 @@ def test_admin_backup_route_creates_and_lists(client, env):
 def test_admin_routes_reject_non_admin(client, method, path):
     response = getattr(client, method)(path, headers=_auth("user-token"))
     assert response.status_code == 403
+    assert response.json()["code"] == "forbidden"
     assert not backup.list_backups()
 
 
 def test_admin_routes_require_login(client):
+    response = client.post("/api/v1/ops/backups")
+    assert response.status_code == 401 and response.json()["code"] == "unauthenticated"
     assert client.post("/api/admin/backup").status_code == 401

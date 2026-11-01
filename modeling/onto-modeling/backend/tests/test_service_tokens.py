@@ -13,8 +13,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import config
+from app.api import deps
 from app.main import app
-from app.routers import projects
 from app.services import auth, service_tokens
 from app.services.service_tokens import ServiceTokenError
 from app.services.workspace import WorkspaceManager
@@ -33,7 +33,7 @@ def data_dir(tmp_path: Path, monkeypatch) -> Path:
 def client(data_dir, tmp_path, monkeypatch) -> TestClient:
     assets = tmp_path / "assets"
     (assets / "resource-template").mkdir(parents=True)
-    monkeypatch.setattr(projects, "workspaces", WorkspaceManager(data_dir, assets))
+    monkeypatch.setattr(deps, "workspaces", WorkspaceManager(data_dir, assets))
     monkeypatch.setattr(auth, "ENABLED", True)
     monkeypatch.setattr(auth, "verify_access_token", lambda token: TOKENS.get(token))
     return TestClient(app)
@@ -158,7 +158,9 @@ def test_admin_routes_issue_list_revoke(client):
 
 def test_admin_routes_require_admin(client):
     assert client.get("/api/v1/admin/service-tokens").status_code == 401
-    assert client.get("/api/v1/admin/service-tokens", headers=_h("user-token")).status_code == 403
+    denied = client.get("/api/v1/admin/service-tokens", headers=_h("user-token"))
+    assert denied.status_code == 403 and denied.json()["code"] == "forbidden"
+    assert denied.json()["details"] == {"required_role": "admin"}
     denied = client.post(
         "/api/v1/admin/service-tokens", headers=_h("user-token"),
         json={"name": "合成服务", "scopes": ["releases.read"]},
@@ -178,7 +180,7 @@ def test_invalid_admin_body(client):
         "/api/v1/admin/service-tokens", headers={**_h("admin-token"), "Content-Type": "application/json"},
         content=b"[1, 2]",
     )
-    assert response.status_code == 400
+    assert response.status_code == 400 and response.json()["code"] == "invalid_argument"
     bad_scope = client.post(
         "/api/v1/admin/service-tokens", headers=_h("admin-token"), json={"name": "x", "scopes": ["nope"]},
     )

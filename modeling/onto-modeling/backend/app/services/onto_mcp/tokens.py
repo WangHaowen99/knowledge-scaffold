@@ -123,3 +123,10 @@ def status(project_id, base):
                           "accepted_scopes": list(SCOPES[:1] if group == "read" else SCOPES[1:]),
                           "required_scopes": list(SCOPES[:1] if group == "read" else SCOPES[1:]),
                           "tools": [name for name, tool in TOOLS.items() if tool["toolset"] == group]} for group in ("read", "change")]}
+
+
+def revoke_project(manager, project_id):
+    """删除项目时吊销该项目的全部 MCP token（契约 P-06），返回吊销条数。"""
+    with database(manager) as conn:
+        return conn.execute("UPDATE tokens SET revoked=? WHERE project_id=? AND revoked IS NULL",
+                            (time.time(), project_id)).rowcount

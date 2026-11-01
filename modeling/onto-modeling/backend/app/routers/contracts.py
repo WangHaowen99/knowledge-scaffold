@@ -2,8 +2,8 @@
 
 外部服务（评测服务）持服务令牌调用，不经登录；onto 不主动调用评测服务。
 
-- 包出：X-01 跨项目发布列表；PB-05 发布记录、PB-06 包清单、PB-07 下载（也接受项目所有者）；
-  PB-04 发布记录列表只给所有者；求解验证候选包（契约补充，见 _plan/contract-changes.md）；
+- 包出：X-01 跨项目发布列表；求解验证候选包（契约补充，见 _plan/contract-changes.md）；
+  PB-05 发布记录、PB-06 包清单、PB-07 下载也接受服务令牌，在 routers/publish.py；
 - 验证回执入：X-04；
 - 反馈入：X-05。
 """
@@ -22,7 +22,7 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import FileResponse, JSONResponse
 
-from ..services import audit, feedback_inbox, ownership, release_store, service_tokens, solver_validation
+from ..services import audit, feedback_inbox, publish, service_tokens, solver_validation
 from ..services.service_tokens import (
     SCOPE_FEEDBACK_WRITE,
     SCOPE_RECEIPTS_WRITE,
@@ -30,7 +30,7 @@ from ..services.service_tokens import (
     rfc3339,
 )
 from ..services.workspace import WorkspaceError
-from . import projects
+from ..api import deps
 
 router = APIRouter(prefix="/api/v1", tags=["contracts"])
 
@@ -75,16 +75,6 @@ def _actor(token: dict) -> str:
     return f"service:{token['name']}"
 
 
-def _reader(request: Request, project_id: str) -> dict | None:
-    """所有者或服务令牌（releases.read）；返回服务令牌摘要，所有者时为 None。"""
-    if service_tokens.looks_like_service_token(bearer(request)):
-        token = _service(request, SCOPE_RELEASES_READ, project_id)
-        projects.workspaces.project_root(project_id)
-        return token
-    ownership.require_owner(projects.workspaces, project_id, request)
-    return None
-
-
 async def _json_body(request: Request, limit: int) -> object:
     raw = await request.body()
     if len(raw) > limit:
@@ -121,31 +111,6 @@ def _urls(project_id: str, version: str) -> dict:
     return {"manifest_url": f"{base}/manifest", "download_url": f"{base}/download"}
 
 
-def _record_view(project_id: str, entry: dict) -> dict:
-    """ReleaseRecord：发布记录（标签 + 留存记录），时间按 RFC 3339。"""
-    pulls = entry["pulls"]
-    return {
-        "project_id": project_id,
-        "version": entry["version"],
-        "tag": entry["tag"],
-        "commit": entry["commit"],
-        "format": entry["format"],
-        "released_at": rfc3339(entry["released_at"]),
-        "released_by": entry["released_by"],
-        "degraded": entry["degraded"],
-        "package": entry["package"],
-        "pulls": {"count": pulls["count"], "last_at": rfc3339(pulls["last_at"])},
-        **_urls(project_id, entry["version"]),
-    }
-
-
-def _find_release(project_id: str, version: str) -> dict:
-    for entry in projects.workspaces.releases(project_id):
-        if entry["version"] == version:
-            return entry
-    raise WorkspaceError(f"版本 {version} 不存在", 404, "release_not_found")
-
-
 # ---- 包出 ----
 
 
@@ -161,14 +126,14 @@ def list_contract_releases(
             threshold = datetime.fromisoformat(since.replace("Z", "+00:00")).timestamp()
         except ValueError:
             raise WorkspaceError("since 必须是 RFC 3339 时间", 400, "invalid_argument") from None
-    manager = projects.workspaces
+    manager = deps.workspaces
     items = []
     # 只读元数据，不算项目进度：项目多时 list_projects 要逐个核对资料分析验收
     for root in manager._project_dirs():
         if not service_tokens.allows_project(token, root.name) or (project_id and root.name != project_id):
             continue
         name = manager._read_meta(root).get("name", "")
-        for entry in manager.releases(root.name):
+        for entry in publish.releases(manager, root.name):
             if threshold is not None and (entry["released_at"] or 0) <= threshold:
                 continue
             items.append({
@@ -190,65 +155,6 @@ def list_contract_releases(
     return {"items": page["items"], "next_cursor": page["next_cursor"]}
 
 
-@router.get("/projects/{project_id}/releases")
-def list_project_releases(project_id: str, request: Request, cursor: str = "", limit: int = 0):
-    """PB-04：发布记录（只给所有者）。"""
-    ownership.require_owner(projects.workspaces, project_id, request)
-    items = [_record_view(project_id, entry) for entry in projects.workspaces.releases(project_id)]
-    return _page(items, cursor, limit, OWNER_PAGE_DEFAULT, OWNER_PAGE_MAX, {"project_id": project_id})
-
-
-@router.get("/projects/{project_id}/releases/{version}")
-def get_release(project_id: str, version: str, request: Request):
-    """PB-05：发布记录详情。"""
-    _reader(request, project_id)
-    return _record_view(project_id, _find_release(project_id, version))
-
-
-@router.get("/projects/{project_id}/releases/{version}/manifest")
-def get_release_manifest(project_id: str, version: str, request: Request):
-    """PB-06：包清单——manifest.yaml 的内容、包摘要与文件清单。"""
-    _reader(request, project_id)
-    path, record = projects.workspaces.release_package(project_id, version)
-    files, truncated = release_store.list_files(path)
-    return {
-        "project_id": project_id,
-        "version": version,
-        "commit": record.get("commit", ""),
-        "format": record.get("format"),
-        "sha256": record.get("sha256", ""),
-        "size": record.get("size"),
-        "manifest": release_store.read_manifest(path) or {},
-        "files": files,
-        "truncated": truncated,
-    }
-
-
-@router.get("/projects/{project_id}/releases/{version}/download")
-def download_release(project_id: str, version: str, request: Request, variant: str = "standard"):
-    """PB-07：按版本下载。读发布时留存的包，同一版本同一变体永远是同一份字节。"""
-    token = _reader(request, project_id)
-    path, record = projects.workspaces.release_package(project_id, version, variant)
-    if token:
-        actor = _actor(token)
-        release_store.record_pull(projects.workspaces.data_dir, project_id, version, actor, variant)
-    else:
-        actor = (ownership.current_user(request) or {}).get("sub", "")
-    audit.log(actor, "GET", request.url.path, {"publish.download": version, "variant": variant})
-    meta = projects.workspaces.get_project(project_id)
-    suffix = "" if variant == "standard" else f"-{variant}"
-    headers = {
-        "X-Package-Version": version,
-        "X-Package-Commit": record.get("commit", ""),
-        "X-Package-Format": record.get("format") or "",
-        "X-Package-Variant": variant,
-        "X-Package-Sha256": record.get("sha256", ""),
-    }
-    return FileResponse(
-        path, filename=f"{meta['name']}-{version}{suffix}.zip", media_type="application/zip", headers=headers,
-    )
-
-
 @router.get("/projects/{project_id}/solver/candidate")
 def download_solver_candidate(
     project_id: str, request: Request, background: BackgroundTasks, allow_unbound: bool = False,
@@ -259,7 +165,7 @@ def download_solver_candidate(
     background.add_task(shutil.rmtree, workdir, True)
     dest = workdir / "candidate.zip"
     try:
-        info = projects.workspaces.solver_candidate_package(project_id, dest, allow_unbound=allow_unbound)
+        info = publish.solver_candidate_package(deps.workspaces, project_id, dest, allow_unbound=allow_unbound)
     except Exception:
         shutil.rmtree(workdir, ignore_errors=True)
         raise
@@ -282,9 +188,9 @@ def download_solver_candidate(
 async def post_solver_receipt(project_id: str, request: Request):
     """X-04：写入求解契约端到端验证回执，绑定求解契约修订号，供发布门禁检查。"""
     token = _service(request, SCOPE_RECEIPTS_WRITE, project_id)
-    projects.workspaces.project_root(project_id)
+    deps.workspaces.project_root(project_id)
     payload = await _json_body(request, RECEIPT_MAX_BYTES)
-    record, created = solver_validation.receive_receipt(projects.workspaces, project_id, payload, _actor(token))
+    record, created = solver_validation.receive_receipt(deps.workspaces, project_id, payload, _actor(token))
     if created:
         audit.log(_actor(token), "POST", request.url.path, {"contract.receipt": record["receipt_id"]})
     return JSONResponse(status_code=201 if created else 200, content=solver_validation.receipt_view(record))
@@ -297,9 +203,9 @@ async def post_solver_receipt(project_id: str, request: Request):
 async def post_feedback(project_id: str, request: Request):
     """X-05：接收一批外部反馈，落到工作区 feedback/ 并单独提交，供反馈演进读取。"""
     token = _service(request, SCOPE_FEEDBACK_WRITE, project_id)
-    projects.workspaces.project_root(project_id)
+    deps.workspaces.project_root(project_id)
     payload = await _json_body(request, feedback_inbox.MAX_BODY_BYTES)
-    result, created = feedback_inbox.receive(projects.workspaces, project_id, payload, _actor(token))
+    result, created = feedback_inbox.receive(deps.workspaces, project_id, payload, _actor(token))
     if created:
         audit.log(_actor(token), "POST", request.url.path, {"contract.feedback": result["feedback_id"]})
     return JSONResponse(status_code=201 if created else 200, content=result)

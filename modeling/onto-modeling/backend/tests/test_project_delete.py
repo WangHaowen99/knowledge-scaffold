@@ -13,8 +13,10 @@ import pytest
 from fastapi import BackgroundTasks
 
 from app import config
+from app.api import deps
 from app.routers import projects
-from app.services import agent_sessions, error_log, release_store, studio, workspace
+from app.services import agent_sessions, error_log, release_store, studio
+from app.services.workspace import core as workspace_core
 from app.services.agent_sessions import Session, SessionManager
 from app.services.engines import jiuwen
 from app.services.workspace import META_FILE, PURGE_MARKER, WorkspaceManager
@@ -38,7 +40,7 @@ def env(tmp_path, monkeypatch):
     data = tmp_path / "data"
     monkeypatch.setattr(config, "DATA_DIR", data)
     workspaces = WorkspaceManager(data, tmp_path / "assets")
-    monkeypatch.setattr(projects, "workspaces", workspaces)
+    monkeypatch.setattr(deps, "workspaces", workspaces)
     # 全局 manager 的锁会绑定首次使用的事件循环，逐用例换新实例
     manager = SessionManager()
     monkeypatch.setattr(agent_sessions, "manager", manager)
@@ -63,7 +65,9 @@ def _delete(env, before_cleanup=None) -> dict:
 
     async def call():
         background = BackgroundTasks()
-        result = await projects.delete_project(PID, env.request, background)
+        response = await projects.delete_project(PID, env.request, background, {"confirm_name": "示例任务"})
+        assert response.status_code == 202
+        result = json.loads(response.body)
         if before_cleanup:
             before_cleanup()
         await background()
@@ -174,7 +178,7 @@ def test_cleanup_failure_is_logged_without_blocking_others(env, monkeypatch, out
 
 def test_delete_falls_back_to_in_place_purge_when_move_fails(env, monkeypatch):
     """目录移不走（Windows 上仍有进程开着其中的文件）：原地换上清除标记，对外同样立即消失。"""
-    monkeypatch.setattr(workspace, "_DELETE_RETRY_SECONDS", 0)
+    monkeypatch.setattr(workspace_core, "_DELETE_RETRY_SECONDS", 0)
     real_replace = os.replace
 
     def replace(src, dst, *args, **kwargs):
@@ -182,7 +186,7 @@ def test_delete_falls_back_to_in_place_purge_when_move_fails(env, monkeypatch):
             raise PermissionError(13, "目录被占用")
         return real_replace(src, dst, *args, **kwargs)
 
-    monkeypatch.setattr(workspace.os, "replace", replace)
+    monkeypatch.setattr(workspace_core.os, "replace", replace)
     at_response = []
 
     _delete(

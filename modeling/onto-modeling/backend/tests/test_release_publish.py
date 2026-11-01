@@ -11,10 +11,11 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from app.services import publish as publish_service
+from app.services import solver as solver_service
 from app.main import app
-from app.routers import projects
 from app.services import auth
-from app.services import workspace as workspace_module
+from app.services.publish.tree import release_tree
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 from tests.test_publish_binding_gate import object_doc, write_object, write_schema
 
@@ -88,11 +89,11 @@ def release_tags(root: Path) -> list[str]:
 def test_publish_packs_head_and_tags_release(manager, tmp_path):
     pid, root = rich_project(manager)
     head = _git(root, "rev-parse", "HEAD").strip()
-    count = int(_git(root, "rev-list", "--count", "HEAD"))
+    count = int(_git(root, "rev-list", "--count", "--first-parent", "HEAD"))
 
-    record = manager.publish_package(pid, tmp_path / "pkg.zip", author="operator_a")
+    record = publish_service.publish_package(manager, pid, tmp_path / "pkg.zip", author="operator_a")
 
-    version = f"0.1.{count}"
+    version = f"0.{count}.0"  # 契约 3.20：0.{n}.0，n 是主线版本号
     assert (record["version"], record["commit"], record["tag"]) == (version, head, f"release/{version}")
     assert record["uncommitted"] == [] and record["uncommitted_count"] == 0
     data = manifest(tmp_path / "pkg.zip", pid)
@@ -102,14 +103,14 @@ def test_publish_packs_head_and_tags_release(manager, tmp_path):
     message = _git(root, "tag", "--list", "--format=%(contents)", f"release/{version}")
     assert f"发布 {version}" in message and "发布人：operator_a" in message and "降级发布：否" in message
     assert manager.get_project(pid)["last_package_publish"] == record
-    assert manager.package_binding_check(pid)["last_publish"]["version"] == version
+    assert publish_service.package_binding_check(manager, pid)["last_publish"]["version"] == version
 
 
 def test_degraded_publish_is_marked_in_tag(manager, tmp_path):
     pid, root = rich_project(manager)
     write_object(root, "客户", "T_CLIENT", ["CUSTOMER_ID"])
     commit_all(root)
-    record = manager.publish_package(pid, tmp_path / "pkg.zip", allow_unbound=True, author="operator_a")
+    record = publish_service.publish_package(manager, pid, tmp_path / "pkg.zip", allow_unbound=True, author="operator_a")
     assert record["degraded"] is True
     message = _git(root, "tag", "--list", "--format=%(contents)", record["tag"])
     assert "降级发布：是（1 个对象未绑定数据表）" in message
@@ -117,8 +118,8 @@ def test_degraded_publish_is_marked_in_tag(manager, tmp_path):
 
 def test_same_commit_republish_keeps_version_and_bytes(manager, tmp_path):
     pid, root = rich_project(manager)
-    first = manager.publish_package(pid, tmp_path / "a.zip")
-    second = manager.publish_package(pid, tmp_path / "b.zip")
+    first = publish_service.publish_package(manager, pid, tmp_path / "a.zip")
+    second = publish_service.publish_package(manager, pid, tmp_path / "b.zip")
     assert second["version"] == first["version"] and second["tag"] == first["tag"]
     assert (tmp_path / "a.zip").read_bytes() == (tmp_path / "b.zip").read_bytes()
     assert release_tags(root) == [first["tag"]]
@@ -128,36 +129,43 @@ def test_version_keeps_growing_past_fifty_commits(manager, tmp_path):
     pid, root = rich_project(manager)
     for index in range(60):
         commit_all(root, f"test: 第 {index} 次保存")
-    count = int(_git(root, "rev-list", "--count", "HEAD"))
+    count = int(_git(root, "rev-list", "--count", "--first-parent", "HEAD"))
     assert count > 60
 
-    first = manager.publish_package(pid, tmp_path / "a.zip")
-    assert first["version"] == f"0.1.{count}"
+    first = publish_service.publish_package(manager, pid, tmp_path / "a.zip")
+    assert first["version"] == f"0.{count}.0"
 
     versions = manager.versions(pid)
-    assert len(versions) == 50  # 列表仍只给最近 50 条
-    assert versions[0]["version"] == count and versions[-1]["version"] == count - 49
+    assert len(versions) == count  # 不再截断为 50 条，分页在接口层（V-01）
+    assert versions[0]["n"] == count and versions[-1]["n"] == 1
     assert versions[0]["release"] == first["version"]
-    assert all("release" not in entry for entry in versions[1:])
+    assert all(entry["release"] is None for entry in versions[1:])
 
     manager.write_file(pid, "knowledge/note.md", "合成说明")
-    second = manager.publish_package(pid, tmp_path / "b.zip")
-    assert second["version"] == f"0.1.{count + 1}"
-    assert manager.versions(pid)[0]["version"] == count + 1
+    second = publish_service.publish_package(manager, pid, tmp_path / "b.zip")
+    assert second["version"] == f"0.{count + 1}.0"
+    assert manager.versions(pid)[0]["n"] == count + 1
 
 
 def test_version_never_falls_below_existing_releases(manager, tmp_path):
-    """历史里已有更大的发布号（如迁移来的项目）：新版本取最大补丁号 + 1，不倒退。"""
+    """历史里已有更大的发布号（旧版的 0.1.N，或迁移来的项目）：0.{n}.0 不够大时取最大版本的补丁号 + 1，
+    不倒退（contract-changes 2026-11-01 主控条）。"""
     pid, root = rich_project(manager)
     base = _git(root, "rev-list", "--max-parents=0", "HEAD").strip()
     _git(root, "tag", "-a", "release/0.1.90", "-m", "发布 0.1.90", base)
-    record = manager.publish_package(pid, tmp_path / "pkg.zip")
-    assert record["version"] == "0.1.91"
+    record = publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
+    count = int(_git(root, "rev-list", "--count", "--first-parent", "HEAD"))
+    assert record["version"] == f"0.{count}.0"  # 0.{n}.0 已经大于 0.1.90
+
+    _git(root, "tag", "-a", "release/0.40.3", "-m", "发布 0.40.3", base)
+    commit_all(root, "test: 再保存一次")
+    again = publish_service.publish_package(manager, pid, tmp_path / "again.zip")
+    assert again["version"] == "0.40.4"  # n 远小于已有最大 minor：沿用最大版本，补丁号 + 1
 
 
 def test_release_tags_cannot_be_deleted(manager, tmp_path):
     pid, root = rich_project(manager)
-    record = manager.publish_package(pid, tmp_path / "pkg.zip")
+    record = publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
     with pytest.raises(WorkspaceError):
         manager.delete_tag(pid, record["tag"])
     assert release_tags(root) == [record["tag"]]
@@ -176,12 +184,12 @@ def test_uncommitted_changes_stay_out_and_are_listed(manager, tmp_path):
     (root / "ontology" / "rule" / "index.md").write_text("# 规则目录\n", encoding="utf-8")
     (root / "research" / "草稿.md").write_text("不是包相关目录\n", encoding="utf-8")
 
-    check = manager.package_binding_check(pid)
+    check = publish_service.package_binding_check(manager, pid)
     assert check["commit"] == head and check["blocking"] == 0 and check["objects"] == 1
     expected = ["ontology/object/客户.md", "ontology/object/订单.md"]
     assert check["uncommitted"] == expected and check["uncommitted_count"] == 2
 
-    record = manager.publish_package(pid, tmp_path / "pkg.zip")
+    record = publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
     files = package_files(tmp_path / "pkg.zip")
     assert f"{pid}/objects/客户.md" not in files
     assert "未提交的合成说明" not in files[f"{pid}/objects/订单.md"].decode("utf-8")
@@ -198,9 +206,9 @@ def test_check_and_publish_agree_on_head_tree(manager, tmp_path):
     commit_all(root)
     write_object(root, "客户", "T_ORDER", ["ORDER_ID"])  # 工作区修好但没提交
 
-    assert manager.package_binding_check(pid)["blocking"] == 1
+    assert publish_service.package_binding_check(manager, pid)["blocking"] == 1
     with pytest.raises(WorkspaceError) as blocked:
-        manager.publish_package(pid, tmp_path / "pkg.zip")
+        publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
     assert blocked.value.code == "binding_problems"
     assert release_tags(root) == [] and manager.get_project(pid).get("last_package_publish") is None
 
@@ -210,8 +218,8 @@ def test_check_and_publish_agree_on_head_tree(manager, tmp_path):
 
 def test_archive_export_matches_clean_workspace_export(manager, tmp_path):
     pid, root = rich_project(manager)
-    record = manager.publish_package(pid, tmp_path / "release.zip")
-    manager.export_package_zip(
+    record = publish_service.publish_package(manager, pid, tmp_path / "release.zip")
+    publish_service.export_package_zip(manager, 
         pid, tmp_path / "workspace.zip", version=record["version"], source_commit=record["commit"]
     )
     assert (tmp_path / "release.zip").read_bytes() == (tmp_path / "workspace.zip").read_bytes()
@@ -221,9 +229,9 @@ def test_solver_archive_export_matches_clean_workspace_export(manager, tmp_path)
     from tests.test_solver_contract_check import _accept, _with_contract
 
     pid, root = _with_contract(manager)
-    _accept(root, manager.solver_release_status(pid)["revision"])  # 回执在工作区状态目录，按树的修订号找
-    record = manager.publish_package(pid, tmp_path / "release.zip", allow_unbound=True)
-    manager.export_package_zip(
+    _accept(root, solver_service.solver_release_status(manager, pid)["revision"])  # 回执在工作区状态目录，按树的修订号找
+    record = publish_service.publish_package(manager, pid, tmp_path / "release.zip", allow_unbound=True)
+    publish_service.export_package_zip(manager, 
         pid, tmp_path / "workspace.zip", allow_unbound=True,
         version=record["version"], source_commit=record["commit"],
     )
@@ -231,21 +239,22 @@ def test_solver_archive_export_matches_clean_workspace_export(manager, tmp_path)
     assert (tmp_path / "release.zip").read_bytes() == (tmp_path / "workspace.zip").read_bytes()
 
 
-def test_old_export_path_numbers_by_commit_count(manager, tmp_path):
+def test_preview_export_numbers_by_mainline(manager, tmp_path):
+    """不经发布直接渲染（预览、测试）：版本号按主线版本号取 0.{n}.0，不写来源提交。"""
     pid, root = rich_project(manager)
     for index in range(55):
         commit_all(root, f"test: {index}")
-    manager.export_package_zip(pid, tmp_path / "legacy.zip")
+    publish_service.export_package_zip(manager, pid, tmp_path / "legacy.zip")
     data = manifest(tmp_path / "legacy.zip", pid)
-    assert data["version"] == f"0.1.{_git(root, 'rev-list', '--count', 'HEAD').strip()}"
+    assert data["version"] == f"0.{_git(root, 'rev-list', '--count', '--first-parent', 'HEAD').strip()}.0"
     assert "source_commit" not in data
 
 
 def test_graph_variant_maps_objects_by_key(manager, tmp_path):
     """图模式留作发布适配器的变体（方案第 6 章第 1 项）：resource 为对象 key，Sheet 与列在 sources 里。"""
     pid, _root = rich_project(manager)
-    manager.export_package_zip(pid, tmp_path / "plain.zip")
-    manager.export_package_zip(pid, tmp_path / "graph.zip", graph=True)
+    publish_service.export_package_zip(manager, pid, tmp_path / "plain.zip")
+    publish_service.export_package_zip(manager, pid, tmp_path / "graph.zip", graph=True)
     plain = json.loads(package_files(tmp_path / "plain.zip")[f"{pid}/mappings/object-data-mappings.json"])
     graph = json.loads(package_files(tmp_path / "graph.zip")[f"{pid}/mappings/object-data-mappings.json"])
     assert plain["objects"]["订单"]["resource"] == "T_ORDER"
@@ -261,7 +270,7 @@ def test_symlink_escaping_the_tree_blocks_release(manager, tmp_path):
     (root / "ontology" / "object" / "外部.md").symlink_to("/etc/hosts")
     commit_all(root)
     with pytest.raises(WorkspaceError) as blocked:
-        manager.publish_package(pid, tmp_path / "pkg.zip")
+        publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
     assert blocked.value.code == "release_tree_unsafe"
     assert release_tags(root) == []
 
@@ -271,7 +280,7 @@ def test_export_ignore_attribute_cannot_drop_package_files(manager, tmp_path):
     (root / ".gitattributes").write_text("ontology/rule/** export-ignore\n", encoding="utf-8")
     commit_all(root)
     with pytest.raises(WorkspaceError) as blocked:
-        manager.publish_package(pid, tmp_path / "pkg.zip")
+        publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
     assert blocked.value.code == "release_tree_mismatch"
 
 
@@ -311,7 +320,7 @@ def test_upload_commits_only_its_own_paths(manager, tmp_path):
 
     # 刚上传的表立刻能被发布读到：对象绑上它
     manager.write_file(pid, "ontology/object/客户.md", object_doc("T_CUSTOMER", ["CUSTOMER_ID", "NAME"]))
-    manager.publish_package(pid, tmp_path / "pkg.zip")
+    publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
     mappings = json.loads(package_files(tmp_path / "pkg.zip")[f"{pid}/mappings/object-data-mappings.json"])
     assert "客户" in mappings["objects"]
 
@@ -344,20 +353,50 @@ def test_unchanged_upload_does_not_create_empty_commit(manager):
 # ---- 路由：响应头带回版本号与来源提交 ----
 
 
-def test_publish_route_returns_version_headers(manager, monkeypatch):
-    monkeypatch.setattr(projects, "workspaces", manager)
+def test_publish_route_creates_release_record(manager, monkeypatch):
+    """PB-03：POST 发布，响应是发布记录；GET 不再有发布副作用（旧导出包路径 410）。"""
+    from app.api import deps
+
+    monkeypatch.setattr(deps, "workspaces", manager)
     monkeypatch.setattr(auth, "ENABLED", False)
     pid, root = rich_project(manager)
     (root / "ontology" / "rule" / "新规则.md").write_text("# 新规则\n", encoding="utf-8")
     client = TestClient(app)
-    response = client.get(f"/api/projects/{pid}/export", params={"scope": "package"})
-    assert response.status_code == 200
+    assert client.get(f"/api/projects/{pid}/export", params={"scope": "package"}).status_code == 410
+    response = client.post(f"/api/v1/projects/{pid}/releases", json={})
+    assert response.status_code == 201
     record = manager.get_project(pid)["last_package_publish"]
-    assert response.headers["X-Package-Version"] == record["version"]
-    assert response.headers["X-Package-Commit"] == record["commit"]
-    assert response.headers["X-Package-Uncommitted"] == "1"
-    check = client.get(f"/api/projects/{pid}/package/check").json()
-    assert check["uncommitted"] == ["ontology/rule/新规则.md"]
+    body = response.json()
+    assert body["version"] == record["version"] and body["commit"] == record["commit"]
+    assert body["tag"] == f"release/{record['version']}" and body["format"] == "ontology"
+    assert body["version_label"] == f"v0.{record['version'].split('.')[1]}"
+    assert record["uncommitted"] == ["ontology/rule/新规则.md"]
+    check = client.get(f"/api/v1/projects/{pid}/publish/check").json()
+    assert check["uncommitted"] == {"count": 1, "paths": ["ontology/rule/新规则.md"]}
+    assert check["last_release"]["version"] == record["version"]
+    # 同一提交再发布：沿用原版本，记录不变
+    again = client.post(f"/api/v1/projects/{pid}/releases", json={})
+    assert again.status_code == 201 and again.json()["version"] == record["version"]
+
+
+def test_publish_route_blocks_on_gates_and_allows_degrade(manager, monkeypatch):
+    from app.api import deps
+
+    monkeypatch.setattr(deps, "workspaces", manager)
+    monkeypatch.setattr(auth, "ENABLED", False)
+    pid, root = rich_project(manager)
+    write_object(root, "客户", "T_CLIENT", ["CUSTOMER_ID"])
+    commit_all(root)
+    client = TestClient(app)
+    check = client.get(f"/api/v1/projects/{pid}/publish/check").json()
+    assert check["blocking_count"] == 1 and check["degradable"] is True
+    assert check["binding"]["issues"][0]["object"]["id"] == "object:客户"
+    blocked = client.post(f"/api/v1/projects/{pid}/releases", json={})
+    assert blocked.status_code == 422 and blocked.json()["code"] == "gate_blocked"
+    assert [gate["id"] for gate in blocked.json()["details"]["gates"]] == ["data_binding"]
+    degraded = client.post(f"/api/v1/projects/{pid}/releases", json={"degrade": True})
+    assert degraded.status_code == 201
+    assert degraded.json()["gates"] == {"all_passed": False, "degraded": True, "unbound_objects": ["客户"]}
 
 
 def test_release_tree_helper_is_read_only_copy(manager):
@@ -365,7 +404,7 @@ def test_release_tree_helper_is_read_only_copy(manager):
     pid, root = rich_project(manager)
     head = _git(root, "rev-parse", "HEAD").strip()
     (root / "ontology" / "object" / "临时.md").write_text("# 临时\n", encoding="utf-8")
-    with workspace_module._release_tree(root, head) as tree:
+    with release_tree(root, head) as tree:
         assert (tree / "ontology" / "object" / "订单.md").is_file()
         assert not (tree / "ontology" / "object" / "临时.md").exists()
         assert not (tree / "research").exists()  # 只导出包相关目录
@@ -378,7 +417,7 @@ def test_release_reads_only_tables_from_resource(manager):
     (root / "resource" / "others").mkdir(parents=True, exist_ok=True)
     (root / "resource" / "others" / "说明.pdf").write_bytes(b"%PDF-1.4 synthetic\n")
     head = commit_all(root)
-    with workspace_module._release_tree(root, head) as tree:
+    with release_tree(root, head) as tree:
         assert (tree / "resource" / "materials.json").is_file()
         assert any((tree / "resource").rglob("*.xlsx"))
         assert not (tree / "resource" / "others" / "说明.pdf").exists()
@@ -386,7 +425,7 @@ def test_release_reads_only_tables_from_resource(manager):
     (root / "resource" / "others" / "说明.pdf").write_bytes(b"%PDF-1.4 changed\n")
     (root / "resource" / "others" / "新图.png").write_bytes(b"synthetic")
     (root / "resource" / "excel" / "新表.csv").write_text("ID\n1\n", encoding="utf-8")
-    check = manager.package_binding_check(pid)
+    check = publish_service.package_binding_check(manager, pid)
     assert check["uncommitted"] == ["resource/excel/新表.csv"]
 
 

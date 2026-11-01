@@ -292,7 +292,7 @@ def test_startup_clears_locks_then_migrates_before_serving(tmp_path, monkeypatch
     from fastapi.testclient import TestClient
 
     from app.main import app
-    from app.routers import projects
+    from app.api import deps
 
     data = tmp_path / "data"
     monkeypatch.setattr(config, "DATA_DIR", data)
@@ -303,7 +303,7 @@ def test_startup_clears_locks_then_migrates_before_serving(tmp_path, monkeypatch
     meta, root = make_legacy(manager, owner="operator_a")
     lock = root / ".git" / "index.lock"
     lock.write_text("")  # 上次强杀留下的锁：不先清掉，迁移的 git 操作会失败
-    monkeypatch.setattr(projects, "workspaces", manager)
+    monkeypatch.setattr(deps, "workspaces", manager)
 
     with TestClient(app):
         assert not lock.exists()

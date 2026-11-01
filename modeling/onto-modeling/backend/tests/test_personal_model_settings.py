@@ -341,35 +341,43 @@ def _h(token):
 
 def test_personal_routes(client):
     # 普通用户仍然不能读写管理员配置
-    assert client.get("/api/settings/model", headers=_h("user-token")).status_code == 403
+    denied = client.get("/api/v1/admin/settings/model", headers=_h("user-token"))
+    assert denied.status_code == 403 and denied.json()["code"] == "forbidden"
     assert (
         client.put(
-            "/api/settings/model/personal-policy", json={"allow": False}, headers=_h("user-token")
+            "/api/v1/admin/settings/personal-key-policy", json={"allow": False}, headers=_h("user-token")
         ).status_code
         == 403
     )
 
     res = client.put(
-        "/api/settings/model/me/claude",
-        json={"base_url": "", "api_key": USER_KEY, "model": ""},
+        "/api/v1/me/model-settings/claude",
+        json={"source": "personal", "base_url": "", "api_key": USER_KEY, "model": ""},
         headers=_h("user-token"),
     )
     assert res.status_code == 200
-    assert res.json()["claude"]["active"] is True
+    assert res.json()["source"] == "personal"
     assert USER_KEY not in res.text
 
-    mine = client.get("/api/settings/model/me", headers=_h("user-token")).json()
-    assert mine["claude"]["api_key_masked"] == "已设置"
+    mine = client.get("/api/v1/me/model-settings", headers=_h("user-token")).json()
+    assert mine["engines"]["claude"]["api_key_set"] is True
     # 管理员看自己的个人配置：互不可见
-    theirs = client.get("/api/settings/model/me", headers=_h("admin-token")).json()
-    assert theirs["claude"]["active"] is False
+    theirs = client.get("/api/v1/me/model-settings", headers=_h("admin-token")).json()
+    assert theirs["engines"]["claude"]["source"] != "personal"
 
     res = client.put(
-        "/api/settings/model/me/claude",
-        json={"base_url": USER_URL, "api_key": "", "model": ""},
+        "/api/v1/me/model-settings/claude",
+        json={"source": "personal", "base_url": USER_URL, "model": ""},
         headers=_h("admin-token"),
     )
     assert res.status_code == 400  # 没有自己的 Key 不能只改地址
+    assert res.json()["code"] == "invalid_argument"
 
-    res = client.delete("/api/settings/model/me/claude", headers=_h("user-token"))
-    assert res.json()["claude"]["active"] is False
+    res = client.delete("/api/v1/me/model-settings/claude", headers=_h("user-token"))
+    assert res.json()["source"] != "personal"
+    assert personal_model_settings.model_owner("employee_0001", "claude") == ""
+
+    # 旧路径经兼容中间件改写到 v1，响应即 v1 形状
+    legacy = client.get("/api/settings/model/me", headers=_h("user-token"))
+    assert legacy.status_code == 200 and legacy.headers["Deprecation"] == "true"
+    assert legacy.json()["engines"]["claude"]["api_key_set"] is False

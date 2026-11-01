@@ -111,12 +111,28 @@ Jiuwen 引擎只执行工具箱的守卫钩子，会话开始和用户发消息�
 才再带；阶段用资产目录里的 `state_helper.py` 读取，同样只给最小环境。稳定引擎仍靠这两个钩子。
 见 `docs/decisions/0022-host-side-session-injection.md`。
 
+## 接口版本与旧路径兼容
+
+后端接口统一在 `/api/v1` 下（契约见 `docs/api-v1.md`），错误体统一为
+`{code, message, details, trace_id}`，`code` 取契约第 2 章的错误码，`trace_id` 也在响应头
+`X-Trace-Id` 里。旧路径 `/api/...` 在兼容期（到 2027-05-01）经兼容中间件改写到对应的 v1 接口：
+请求和响应都是 v1 的形状，响应多带 `Deprecation`、`Sunset`、`Link` 头，错误体额外带 `error`
+（值同 `message`）；已删除的旧接口（评测、Studio 租约、成员、发布用的 `GET .../export?scope=package`
+等）返回 `410 endpoint_removed`，`details.successor` 给出替代接口。`/api/health` 与 MCP 旧地址
+永久保留。见 `docs/decisions/0021-api-v1-and-legacy-compat.md`。
+
+## 启动自检
+
+服务启动时、任何会话开始之前做一次自检：清掉各项目 `.git` 下残留的锁，列出各项目没提交的改动
+（保留原样，等所有者处理），结果写进服务日志并留存到数据目录 `startup-report.json`，运维接口
+`GET /api/v1/ops/startup-report` 可以取到（运维总览的「启动自检」摘要也读它）。
+
 ## 项目所有权
 
 一个项目只归一个人。启用登录鉴权后，项目内容（文件、资料、会话、Studio、版本、导出发布、
 MCP Token、改名/归档/删除）只对所有者开放，没有成员与只读评审。管理员不是所有者时只在项目
 列表和运维中心看到元数据（名称、所有者、阶段、归档状态、创建时间、占用），可以用
-`PUT /api/admin/projects/{id}/owner` 指定所有者（列表卡片上的「指定所有者」）；改成自己即可
+`PUT /api/v1/admin/projects/{id}/owner` 指定所有者（列表卡片上的「指定所有者」）；改成自己即可
 打开项目，每次指定都记入审计日志（原所有者、新所有者、操作人）。所有者为空的历史项目普通
 用户看不到、谁都打不开，管理员指定所有者后才可用；服务启动时日志报告这类项目的数量与 id，
 并删除各项目元数据里旧的成员表（原值先记入审计）。MCP Token 只能由所有者为自己签发，使用时
@@ -138,19 +154,25 @@ MCP Token、改名/归档/删除）只对所有者开放，没有成员与只读
 网页上传、替换、删除资料和改资料用途，与 Web 保存文件一样当即提交，提交里只含本次涉及的文件
 和 `resource/materials.json`，agent 已暂存或未暂存的其他改动不会被带进去；删除知识条目同样只
 提交该文件。旧版上传不提交，服务启动时会把资料区里还没进 git 的上传补提交一次（资料区只有网页
-能写，不会带进 agent 的改动）。版本列表里的「版本 N」按全部提交数编号（列表只显示最近 50 条）。
+能写，不会带进 agent 的改动）。主线版本只计合入主线的提交（`git rev-list --first-parent`），版本号
+n 从 1 开始（建项目的基线提交是 v0.1），界面显示 `v0.{n}`；版本列表分页返回全部主线版本，来源
+（助手、网页、MCP、导入、回退等）优先取提交 trailer `Onto-Source`，存量提交按提交说明的前缀推断。
+回退是整树恢复：目标版本之后新增的文件一并删除，生成一个新版本，历史保留。
 
-发布知识包按提交打包：在项目锁内取 HEAD 提交，用 `git archive` 把发布要读的内容（对象、操作、规则、
-指标、脚本、求解契约目录，以及资料区的 `materials.json` 和表格文件）导出成只读树，发布检查与
-渲染都只读这棵树，工作区里没提交的改动不进包；发布前体检（`GET /package/check`）同样基于 HEAD，
-并列出这些路径里未提交的改动（资料区的 PDF、图片等发布不读，不算在内）。
-求解验证回执在 `.ontology-state/`，不进 git，仍从工作区读取。版本号为
-`0.1.N`：该提交已发布过就沿用原版本（同一提交重复发布，包逐字节相同）；否则 N 取提交数与已有
-最大发布号 + 1 的较大者，并打注释标签 `release/0.1.N`（注明发布人与是否降级发布）。发布标签
-在版本列表里标出、不能从界面删除；包清单写入 `source_commit`，发布响应头 `X-Package-Version`、
-`X-Package-Commit`、`X-Package-Uncommitted` 带回版本号、来源提交与没进包的改动数。每次发布
-还把包原样留存在数据目录 `releases/<项目>/<版本>.zip`，按版本下载读的就是这一份（见下文「对接评测
-服务：三份契约」）。
+发布用 `POST /api/v1/projects/{id}/releases`（`{commit?, degrade?}`，缺省主线最新），按提交打包：
+在项目锁内确定提交，用 `git archive` 把发布要读的内容（对象、操作、规则、指标、脚本、求解契约目录，
+以及资料区的 `materials.json` 和表格文件）导出成只读树，门禁与渲染都只读这棵树，工作区里没提交的
+改动不进包。发布检查 `GET /api/v1/projects/{id}/publish/check` 同口径，给出门禁链（数据绑定、求解
+契约回执、知识包结构；降级发布只放宽数据绑定）并列出这些路径里未提交的改动（资料区的 PDF、图片等
+发布不读，不算在内）。求解验证回执在 `.ontology-state/`，不进 git，仍从工作区读取。
+
+版本号为 `0.{n}.0`，n 是发布提交的主线版本号（与界面上的 v0.{n} 对应）；该提交已发布过就沿用原
+版本（同一提交重复发布，包逐字节相同）；`0.{n}.0` 不大于项目已有的全部发布标签（含旧版的 `0.1.N`）
+时，取已有最大版本的补丁号 + 1，保证单调递增。每次发布打注释标签 `release/<版本>`（注明发布人与
+是否降级发布），在版本列表里标出、不能删除；包清单写入 `source_commit`；包原样留存在数据目录
+`releases/<项目>/<版本>.zip`，按版本下载读的就是这一份（见下文「对接评测服务：三份契约」）。
+渲染由发布适配器完成（`backend/app/services/publish/`，见 ADR-0023），重构前后同一提交、同一版本
+参数渲染出的包逐字节相同，由 `tests/test_publish_render_regression.py` 守住。
 
 ## 数据备份
 
@@ -214,7 +236,7 @@ MCP Token、改名/归档/删除）只对所有者开放，没有成员与只读
      `result_digest`、`completed_at`、`receipt_id`（幂等键），可选 `release_version`、`candidate_count`、
      `evidence`（不超过 64 KB，只放引用）、`error_code`、`message`。修订号必须是当前修订（HEAD 提交或工作区的），
      否则 `422 receipt_revision_unknown`；同一 `receipt_id` 只生效一次。发布门禁照旧只认当前修订的「权威通过」
-     回执，求解模型面板照旧经 `GET /api/projects/{id}/package/solver-validations/latest` 读取。
+     回执，求解模型面板经 `GET /api/v1/projects/{id}/solver/receipts`（SV-04）读取。
 3. **反馈入**（`feedback.write`）
    - `POST /api/v1/projects/{id}/feedback`（X-05）：一批反馈，请求 `{feedback_id（幂等键）, source: {service, run},
      release_version?, items: [{case_id, question, expected, actual, loss_reason?, suspected_artifacts?}], received_at?}`，
@@ -285,8 +307,9 @@ docker compose up --build          # 本地从源码起全栈（onto-modeling + 
 Onto 工作区，新建、导入和克隆项目无需创建 Modeling 关联。旧 Modeling MCP
 地址及 Token 不会自动迁移，请为本地端点重新创建 Token。
 
-- HTTP：`/api/onto-mcp/{project_id}/{read|change}/mcp`。
-- SSE：`/api/onto-mcp/{project_id}/{read|change}/sse`。
+- HTTP：`/api/v1/onto-mcp/{project_id}/{read|change}/mcp`。
+- SSE：`/api/v1/onto-mcp/{project_id}/{read|change}/sse`。
+- 已经配好的旧地址 `/api/onto-mcp/...` 永久保留，行为相同。
 - Token 通过 `Authorization: Bearer <token>` 传递，按项目隔离；读、校验、保存
   分别要求 `ontology.read`、`ontology.change.validate`、`ontology.change.apply`。
 - 写操作必须提供最新 `expected_revision`；修改保存到本项目的 Git 工作区。

@@ -57,8 +57,13 @@ class AuthError(Exception):
 
 def verify_access_token(token: str) -> dict | None:
     """验签通过返回 claims，否则 None。"""
+    return check_access_token(token)[0]
+
+
+def check_access_token(token: str) -> tuple[dict | None, str]:
+    """验签：(claims, "") 或 (None, 原因)；原因 expired 表示过期（契约 token_expired），其余为 invalid。"""
     if not ENABLED:
-        return {}
+        return {}, ""
     try:
         key = _jwks_client.get_signing_key_from_jwt(token).key
         claims = jwt.decode(
@@ -69,11 +74,13 @@ def verify_access_token(token: str) -> dict | None:
             issuer=ISSUER,
             leeway=CLOCK_SKEW_LEEWAY_SECONDS,
         )
+    except jwt.ExpiredSignatureError:
+        return None, "expired"
     except Exception:
-        return None
+        return None, "invalid"
     if claims.get("typ") != "access":
-        return None
-    return claims
+        return None, "invalid"
+    return claims, ""
 
 
 def register_request(payload: dict) -> tuple[int, dict]:

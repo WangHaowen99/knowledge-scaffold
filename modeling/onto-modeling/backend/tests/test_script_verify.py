@@ -412,9 +412,9 @@ def test_status_command_reports_gateway(workspace, capsys):
 
 def test_sandbox_status_route_is_admin_only(monkeypatch):
     pytest.importorskip("fastapi")
+    from app.api.errors import ApiError
     from app.routers import settings as settings_router
     from app.services import auth, sandbox_status
-    from app.services.auth import AuthError
 
     monkeypatch.setattr(sandbox_status.client, "gateway_url", lambda: "")
     monkeypatch.setattr(auth, "ENABLED", True)
@@ -422,9 +422,11 @@ def test_sandbox_status_route_is_admin_only(monkeypatch):
     admin = SimpleNamespace(state=SimpleNamespace(user={"sub": "admin", "role": "admin"}))
     status = settings_router.get_sandbox_status(admin)
     assert status["connected"] is False and status["packages"] == [] and status["checked_at"]
+    assert status["isolation"]["network"] == "denied" and status["isolation"]["non_root"] is True
+    assert settings_router.probe_sandbox(admin)["connected"] is False
 
     user = SimpleNamespace(state=SimpleNamespace(user={"sub": "alice", "role": "user"}))
-    with pytest.raises(AuthError) as exc:
+    with pytest.raises(ApiError) as exc:
         settings_router.get_sandbox_status(user)
     assert exc.value.status == 403
 

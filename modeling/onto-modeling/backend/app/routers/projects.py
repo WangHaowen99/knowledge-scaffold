@@ -1,220 +1,385 @@
+"""项目（API 契约 3.4）：P-01～P-11、P-16。引擎、构建方式、MCP 服务器见 project_settings。"""
+
+from __future__ import annotations
+
 import asyncio
-import re
 import tempfile
+import unicodedata
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Body, Request
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
 
-from .. import config
-from ..services import ownership, package_archive, solver_contract
-from ..services.workspace import WorkspaceError, WorkspaceManager, remove_tree
+from ..api import deps, views
+from ..api.errors import ApiError
+from ..services import audit, ownership, package_archive, uploads
+from ..services.name_conflict import MAX_DISPLAY_NAME_LENGTH
+from ..services.workspace import NameConflictError, WorkspaceError, remove_tree
+from ..services.workspace.layout import _slugify
 
-router = APIRouter(prefix="/api/projects", tags=["projects"])
-workspaces = WorkspaceManager(config.DATA_DIR, config.ASSETS_DIR)
+router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
 
-SEARCHABLE_SUFFIXES = (".md", ".txt", ".py", ".mmd", ".yaml", ".yml", ".csv")
-MAX_SEARCH_HITS = 80
-
-
-class CreateProjectBody(BaseModel):
-    name: str
-    template: str = "blank"  # blank | example
-    background: str = ""  # 一句话目标说明（项目卡片展示）
-
-
-class RenameBody(BaseModel):
-    name: str
-
-
-class CloneBody(BaseModel):
-    name: str = ""  # 留空用默认的「原名-副本」；同名冲突后带选定的名称重新提交
+GOAL_MAX = 500
+STATUSES = ("all", "active", "autobuild", "publishable", "archived")
+SORTS = ("recent", "name", "created")
+BUILD_MODES = ("L2", "L4")
+# 导入包格式（package_archive 的判别结果）→ 契约 P-10 的 kind
+_KINDS = {
+    package_archive.KIND_WORKSPACE_TRANSFER: ("transfer", "项目迁移包"),
+    package_archive.KIND_KNOWLEDGE_PACKAGE: ("published_package", "已发布知识包"),
+    package_archive.KIND_WORKSPACE_ONTOLOGY: ("workspace_archive", "工作区压缩包"),
+    package_archive.KIND_UNKNOWN: ("unknown", "无法识别"),
+}
 
 
-class WriteFileBody(BaseModel):
-    path: str
-    content: str
-    base_revision: str = ""  # 读取时拿到的 revision；不一致则 409 拒绝覆盖
-
-
-class ObjectDataSourceBody(BaseModel):
-    table: str = ""  # 现有数据表名；空串表示该对象不落库（「无」）
-    base_revision: str = ""
-
-
-class RevertBody(BaseModel):
-    commit: str
-
-
-class TagBody(BaseModel):
-    commit: str
-    label: str
-
-
-class ArchiveBody(BaseModel):
-    archived: bool
-
-
-class SolverContractBody(BaseModel):
-    """字段名沿用需求规格的接口定义：{ baseRevision, contract, summary }。"""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    base_revision: str = Field("", alias="baseRevision")  # 读取时拿到的修订；不一致则 409
-    # {operations: [{binding, sidecars: {role: 原文}} 或 {binding, template: 模板参数}]}
-    contract: dict = Field(default_factory=dict)
-    summary: str = ""  # 写进版本点说明
-
-
-def _request_user(request: Request) -> str:
-    user = getattr(request.state, "user", None)
-    return (user or {}).get("sub", "")
-
-
-def _name_viewer(request: Request) -> tuple[str, bool] | None:
-    """同名校验的查重范围：当前用户在列表里看得到的任务；鉴权关闭时为 None（全部任务）。"""
-    user = ownership.current_user(request)
+def _viewer(request: Request) -> tuple[str, bool] | None:
+    """同名校验的查重范围：同一用户下（含已归档）；鉴权关闭时为 None（全部项目）。"""
+    user = deps.user(request)
     if user is None:
         return None
-    return user.get("sub", ""), ownership.is_admin(user)
+    return user.get("sub", ""), False
 
 
-def require_owner(project_id: str, request: Request) -> Path:
-    """项目内容守卫：读写、会话、导出发布与改名/归档/删除一律只归所有者（鉴权关闭时放开）。"""
-    return ownership.require_owner(workspaces, project_id, request)
+def _check_name(name: str) -> str:
+    name = (name or "").strip()
+    if not name:
+        raise ApiError("project_name_required", "项目名称不能为空", 400)
+    if len(name) > MAX_DISPLAY_NAME_LENGTH:
+        raise ApiError("project_name_too_long", f"项目名称不能超过 {MAX_DISPLAY_NAME_LENGTH} 个字符", 400,
+                       {"max": MAX_DISPLAY_NAME_LENGTH})
+    return name
+
+
+def _meta(project_id: str) -> dict:
+    root = deps.workspaces.project_root(project_id)
+    return views.project_meta(deps.workspaces.get_project(project_id), root)
+
+
+def _card(meta: dict) -> dict:
+    root = deps.workspaces.workspaces_dir / meta["id"]
+    card = views.project_meta(meta, root)
+    archived = bool(meta.get("archived"))
+    card.update({
+        "industry_label": None,
+        "slices": None,  # 切片待规划：流程运行时（P2）之前没有切片
+        "inbox_count": 0,
+        "status": ["archived"] if archived else ["active"],
+        "autobuild": None,
+        "publishable": None,
+        "landing_page": "wb-l2",
+    })
+    return card
+
+
+# ---- P-01 列出项目 ----
 
 
 @router.get("")
-def list_projects(request: Request):
-    """本人项目给完整信息；管理员另外看到其他项目的元数据（含无主项目），不含项目内容。"""
-    projects = workspaces.list_projects()
-    return {"projects": ownership.list_view(projects, ownership.current_user(request))}
+def list_projects(
+    request: Request, status: str = "all", q: str = "", sort: str = "recent", cursor: str = "", limit: int = 0,
+):
+    """只列自己的项目（admin、ops 看别人的项目用 O-01）；本地模式列全部。"""
+    if status not in STATUSES:
+        raise ApiError("invalid_argument", "status 取值不合法", 400, {"fields": {"status": "enum"}})
+    if sort not in SORTS:
+        raise ApiError("invalid_argument", "sort 取值不合法", 400, {"fields": {"sort": "enum"}})
+    claims = deps.user(request)
+    metas = deps.workspaces._project_metas()
+    if claims is not None:
+        metas = [meta for meta in metas if ownership.owns(meta, claims.get("sub", ""))]
+    cards = [_card(meta) for meta in metas]
+    counts = {key: 0 for key in STATUSES}
+    for card in cards:
+        counts["archived" if card["archived"] else "all"] += 1
+        if not card["archived"]:
+            counts["active"] += 1
+    needle = q.strip().lower()
+
+    def wanted(card: dict) -> bool:
+        if status == "archived":
+            hit = card["archived"]
+        elif status in ("all", "active"):
+            hit = not card["archived"]
+        else:
+            hit = status in card["status"]
+        if needle:
+            hit = hit and (needle in (card["name"] or "").lower() or needle in (card["goal"] or "").lower())
+        return hit
+
+    items = [card for card in cards if wanted(card)]
+    if sort == "name":
+        items.sort(key=lambda card: card["name"] or "")
+    elif sort == "created":
+        items.sort(key=lambda card: card["created_at"] or "", reverse=True)
+    else:
+        items.sort(key=lambda card: card["last_activity_at"] or "", reverse=True)
+    page = deps.page(items, cursor, limit, {"status": status, "q": needle, "sort": sort})
+    return {"items": page["items"], "next_cursor": page["next_cursor"], "counts": counts}
+
+
+# ---- P-02 新建项目、P-03 名称检查 ----
+
+
+def _engine_or_default(engine: str | None) -> str | None:
+    if not engine:
+        return None
+    from ..services.engines import ENGINE_NAMES, get_engine_class
+
+    if engine not in ENGINE_NAMES or not get_engine_class(engine).available():
+        raise ApiError("engine_unavailable", "所选引擎在当前部署不可用", 409, {"engine": engine})
+    return engine
+
+
+def _reject_packs(body: dict) -> None:
+    """行业包、系统知识包要包仓库（方案 D1～D6，B3）；现在一个都没有。"""
+    for field in ("industry_packs", "system_packs"):
+        for item in body.get(field) or []:
+            name = item.get("name") if isinstance(item, dict) else item
+            raise ApiError("pack_not_found", f"包「{name}」不存在", 404, {"pack": name})
+
+
+def _materials(body: dict, owner: str) -> list[dict]:
+    items = []
+    for item in body.get("materials") or []:
+        if not isinstance(item, dict) or not item.get("upload_id"):
+            raise ApiError("invalid_argument", "materials 每项要有 upload_id", 400, {"fields": {"materials": "upload_id"}})
+        meta = uploads.get(item["upload_id"], owner, "material")
+        purpose = item.get("purpose") or "auto"
+        if purpose not in ("auto", "goal", "schema", "term", "evidence"):
+            raise ApiError("invalid_argument", "资料用途不合法", 400, {"fields": {"materials.purpose": "enum"}})
+        items.append({
+            "upload_id": meta["upload_id"],
+            "subdir": uploads.resource_subdir(meta["filename"]),
+            "filename": meta["filename"],
+            "data": uploads.read(meta["upload_id"]),
+            "purpose": purpose,
+        })
+    return items
 
 
 @router.post("")
-def create_project(body: CreateProjectBody, request: Request):
-    with workspaces.name_claim(body.name, _name_viewer(request)):
-        meta = workspaces.create_project(
-            body.name, owner=_request_user(request), background=body.background
-        )
-    if body.template == "example":
-        workspaces.seed_example(meta["id"])
-    return meta
+def create_project(request: Request, body: dict = Body(...)):
+    name = _check_name(body.get("name", ""))
+    goal = str(body.get("goal") or "").strip()
+    if not 1 <= len(goal) <= GOAL_MAX:
+        raise ApiError("invalid_argument", f"目标须为 1–{GOAL_MAX} 个字符", 400, {"fields": {"goal": "length"}})
+    build_mode = body.get("build_mode") or "L2"
+    if build_mode not in BUILD_MODES:
+        raise ApiError("invalid_argument", "build_mode 取值不合法", 400, {"fields": {"build_mode": "enum"}})
+    _reject_packs(body)
+    engine = _engine_or_default(body.get("engine"))
+    owner = deps.actor(request) if deps.user(request) is not None else ""
+    materials = _materials(body, deps.actor(request))
+    example = body.get("example")
+    extra = {"goal": goal, "build_mode": build_mode, "created_from": "example" if example else "wizard"}
+    if engine:
+        extra["engine"] = engine
+    with deps.workspaces.name_claim(name, _viewer(request)):
+        meta = deps.workspaces.create_project(name, owner=owner, background=goal[:200], **extra)
+    if example:
+        deps.workspaces.seed_example(meta["id"])
+    if materials:
+        deps.workspaces.import_resources(meta["id"], materials, "import: 新建项目资料", deps.username(request))
+        for item in materials:
+            uploads.consume(item["upload_id"])
+    return JSONResponse(status_code=201, content={**_meta(meta["id"]), "landing_page": "wb-materials"})
+
+
+def name_check(name: str, request: Request, exclude_project_id: str = "") -> dict:
+    normalized = unicodedata.normalize("NFKC", (name or "").strip())
+    result = {"available": True, "normalized": normalized, "package_name": _slugify(normalized), "conflict": None, "reason": None}
+    if not normalized:
+        return {**result, "available": False, "reason": "empty"}
+    if len(normalized) > MAX_DISPLAY_NAME_LENGTH:
+        return {**result, "available": False, "reason": "too_long"}
+    try:
+        deps.workspaces.check_name_available(name, _viewer(request), exclude_id=exclude_project_id)
+    except NameConflictError as exc:
+        return {**result, "available": False, "conflict": exc.conflict, "reason": "conflict"}
+    return result
+
+
+@router.get("/name-check")
+def check_project_name(request: Request, name: str = "", exclude_project_id: str = ""):
+    return name_check(name, request, exclude_project_id)
+
+
+# ---- P-10 检查导入包、P-11 导入项目 ----
+
+
+def _suggested_name(summary: dict, archive: Path, filename: str) -> str:
+    if summary["kind"] == package_archive.KIND_WORKSPACE_TRANSFER:
+        try:
+            return deps.workspaces.transfer_archive_name(archive)
+        except WorkspaceError:
+            pass
+    if summary.get("package_name"):
+        return summary["package_name"]
+    return Path(filename).stem or "导入项目"
+
+
+def _inspection(archive: Path, filename: str) -> dict:
+    summary = package_archive.inspect_archive(archive)
+    kind, label = _KINDS[summary["kind"]]
+    # 迁移包在 v1 里由导入接口自动识别（P-11），旧导入向导的"请走另一个入口"不再是阻断项
+    blockers = [] if kind == "transfer" else [
+        {"code": "unknown_format" if kind == "unknown" else ("no_objects" if "objects" in text else "solver_contract_invalid"),
+         "message": text}
+        for text in summary["blockers"]
+    ]
+    package = None
+    if kind == "published_package":
+        package = {"name": summary.get("package_name") or "", "version": summary.get("package_version") or "",
+                   "schema_version": "0.2" if summary.get("solver_operations") else "0.1"}
+    return {
+        "summary": summary,
+        "kind": kind,
+        "kind_label": label,
+        "root_dir": (summary.get("package_root") or "").rstrip("/"),
+        "files": summary["files"],
+        "total_size": summary["total_size"],
+        "counts": {key: summary.get(key, 0) for key in ("objects", "operations", "rules", "metrics", "scripts", "solver_operations")},
+        "package": package,
+        "blockers": blockers,
+        "warnings": [{"code": "skipped_entries", "message": f"这些顶层条目不会导入：{'、'.join(summary['skipped'])}"}]
+        if summary.get("skipped") else [],
+        "suggested_name": _suggested_name(summary, archive, filename),
+    }
+
+
+def _staged_archive(upload_id: str, owner: str) -> tuple[dict, Path]:
+    meta = uploads.get(upload_id, owner, "project_import")
+    return meta, uploads.path(upload_id)
+
+
+@router.post("/import/inspect")
+def inspect_import(request: Request, body: dict = Body(...)):
+    meta, archive = _staged_archive(str(body.get("upload_id") or ""), deps.actor(request))
+    result = _inspection(archive, meta["filename"])
+    name = (body.get("name") or "").strip() or result["suggested_name"]
+    result.pop("summary")
+    result["name_check"] = name_check(name, request)
+    result["after_import"] = {
+        "capabilities": [],
+        "start_node": "core.research",
+        "mark_needs_review": result["kind"] == "published_package",
+    }
+    result["evidence_sources"] = []
+    return result
 
 
 @router.post("/import")
-async def import_project(
-    request: Request,
-    name: str = Form(...),
-    file: UploadFile = File(...),
-    dry_run: bool = Form(False),
-):
-    """dry_run=true 时只返回压缩包摘要（导入向导的确认步骤），不落盘。
+async def import_project(request: Request, body: dict = Body(...)):
+    """格式自动识别：迁移包原样恢复（含版本历史），已发布知识包反向转换，工作区压缩包原样导入。"""
+    upload_id = str(body.get("upload_id") or "")
+    meta, archive = _staged_archive(upload_id, deps.actor(request))
+    name = _check_name(body.get("name", ""))
+    strategy = body.get("name_strategy") or "exact"
+    if strategy not in ("exact", "suggested"):
+        raise ApiError("invalid_argument", "name_strategy 取值不合法", 400, {"fields": {"name_strategy": "enum"}})
+    inspected = _inspection(archive, meta["filename"])
+    if inspected["kind"] == "unknown" or inspected["blockers"]:
+        raise ApiError("unsupported_archive_kind", "这个压缩包不能导入", 400, {"blockers": inspected["blockers"]})
+    viewer = _viewer(request)
+    if strategy == "suggested":
+        check = name_check(name, request)
+        if check["conflict"]:
+            name = check["conflict"]["candidates"][0]
+    owner = deps.username(request)
+    kind = inspected["summary"]["kind"]
+    build_mode = body.get("build_mode") or None
+    if build_mode is not None and build_mode not in BUILD_MODES:
+        raise ApiError("invalid_argument", "build_mode 取值不合法", 400, {"fields": {"build_mode": "enum"}})
 
-    预览与正式导入共用 inspect_archive 的同一份判别结果：已发布知识包按工作区布局
-    转换，工作区内容原样铺开，不支持的格式在建项目之前就拒掉，不留空任务。
-    任务名称与已有任务重名时返回 409 与候选名；预览阶段就校验，不等用户确认完内容。
-    """
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-        tmp.write(await file.read())
-        tmp_path = Path(tmp.name)
-    try:
-        summary = package_archive.inspect_archive(tmp_path)
-        viewer = _name_viewer(request)
-        if dry_run:
-            # 有阻断项时导入本就不可用，先让用户看到阻断原因
-            if not summary["blockers"]:
-                workspaces.check_name_available(name, viewer, importing=True)
-            return summary
-        if summary["blockers"]:
-            raise WorkspaceError(
-                "；".join(summary["blockers"]), 400, "unsupported_archive_kind"
-            )
-        owner = _request_user(request)
+    # 迁移包重名时候选名以包里记录的原名为基础编号
+    original = inspected["suggested_name"] if kind == package_archive.KIND_WORKSPACE_TRANSFER else ""
 
-        def claim_and_import() -> dict:
-            # 查重与落盘在名称锁内串行；放进线程，等锁时不卡住事件循环
-            with workspaces.name_claim(name, viewer, importing=True):
-                if summary["kind"] == package_archive.KIND_KNOWLEDGE_PACKAGE:
-                    return workspaces.import_package_zip(name, tmp_path, owner=owner)
-                return workspaces.import_zip(name, tmp_path, owner=owner)
+    def claim_and_import() -> dict:
+        # 查重与落盘在名称锁内串行；放进线程，等锁时不卡住事件循环
+        with deps.workspaces.name_claim(name, viewer, importing=True, original_name=original):
+            if kind == package_archive.KIND_WORKSPACE_TRANSFER:
+                created = deps.workspaces.import_transfer_zip(archive, owner=owner, name=name)
+            elif kind == package_archive.KIND_KNOWLEDGE_PACKAGE:
+                created = deps.workspaces.import_package_zip(name, archive, owner=owner)
+            else:
+                created = deps.workspaces.import_zip(name, archive, owner=owner)
+        deps.workspaces._update_meta(created["id"], created_from="import", **({"build_mode": build_mode} if build_mode else {}))
+        return created
 
-        meta = await asyncio.to_thread(claim_and_import)
-        return meta
-    finally:
-        tmp_path.unlink(missing_ok=True)
+    created = await asyncio.to_thread(claim_and_import)
+    uploads.consume(upload_id)
+    return JSONResponse(status_code=201, content={**_meta(created["id"]), "landing_page": "wb-l2"})
 
 
-@router.post("/transfer-import")
-async def transfer_import(
-    request: Request,
-    file: UploadFile = File(...),
-    project_name: str = Form(""),
-):
-    """导入项目迁移包（导出的完整工作区 zip，含版本历史）。
-
-    project_name 为空时沿用迁移包里的任务名；与已有任务重名时返回 409 与候选名，
-    前端改名后带 project_name 重新提交。
-    """
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-        tmp.write(await file.read())
-        tmp_path = Path(tmp.name)
-    try:
-        original = workspaces.transfer_archive_name(tmp_path)
-        requested = project_name.strip()
-        viewer, owner = _name_viewer(request), _request_user(request)
-
-        def claim_and_import() -> dict:
-            with workspaces.name_claim(
-                requested or original,
-                viewer,
-                original_name=original,
-                importing=True,
-                check_length=bool(requested),  # 包里的原名不受长度上限约束（历史行为）
-            ):
-                return workspaces.import_transfer_zip(tmp_path, owner=owner, name=requested)
-
-        meta = await asyncio.to_thread(claim_and_import)
-        return meta
-    finally:
-        tmp_path.unlink(missing_ok=True)
+# ---- P-04～P-09 ----
 
 
 @router.get("/{project_id}")
 def get_project(project_id: str, request: Request):
-    """项目元数据：所有者拿完整元数据，管理员只拿元数据白名单。"""
-    return ownership.require_meta_view(workspaces, project_id, request)
+    """所有者拿 ProjectMeta；admin、ops 看别人的项目只拿 ProjectMetaView（契约 1.4）。"""
+    root = deps.workspaces.project_root(project_id)
+    meta = deps.workspaces.get_project(project_id)
+    claims = deps.user(request)
+    if claims is None or ownership.owns(meta, claims.get("sub", "")):
+        return views.project_meta(meta, root)
+    if deps.roles(request) & {"admin", "ops"}:
+        return views.project_meta_view(meta, root)
+    raise ownership.denied(meta)
 
 
 @router.patch("/{project_id}")
-def rename_project(project_id: str, body: RenameBody, request: Request):
-    """重命名任务。新名称与其他任务重名时返回 409 与候选名；名称没变则不校验。"""
-    require_owner(project_id, request)
-    meta = workspaces.get_project(project_id)
-    if body.name.strip() == meta.get("name"):
-        return meta
-    with workspaces.name_claim(body.name, _name_viewer(request), exclude_id=project_id):
-        return workspaces.rename_project(project_id, body.name)
+def update_project(project_id: str, request: Request, body: dict = Body(...)):
+    """改名、改目标、调研范围；元数据不进工作区 git，不产生版本。"""
+    deps.require_writable(project_id, request)
+    meta = deps.workspaces.get_project(project_id)
+    fields = {}
+    if "goal" in body:
+        goal = str(body.get("goal") or "").strip()
+        if not 1 <= len(goal) <= GOAL_MAX:
+            raise ApiError("invalid_argument", f"目标须为 1–{GOAL_MAX} 个字符", 400, {"fields": {"goal": "length"}})
+        fields["goal"] = goal
+    if "research_mode" in body:
+        mode = body.get("research_mode")
+        if mode not in ("web", "local"):
+            raise ApiError("invalid_argument", "research_mode 取值不合法", 400, {"fields": {"research_mode": "enum"}})
+        if mode == "web":
+            # 联网调研是可选包（websearch），包运行时（B3）之前没有可启用的包
+            raise ApiError("pack_not_enabled", "联网调研能力没有启用", 409, {"pack": "websearch"})
+        fields["research_mode"] = mode
+    if fields:
+        deps.workspaces._update_meta(project_id, **fields)
+    if "name" in body:
+        name = _check_name(body.get("name", ""))
+        if name != meta.get("name"):
+            with deps.workspaces.name_claim(name, _viewer(request), exclude_id=project_id):
+                deps.workspaces.rename_project(project_id, name)
+    return _meta(project_id)
 
 
-@router.delete("/{project_id}")
-async def delete_project(project_id: str, request: Request, background: BackgroundTasks):
-    """永久删除项目（不进回收站）。不看项目状态，二次确认由前端弹窗完成。
+@router.delete("/{project_id}", status_code=202)
+async def delete_project(
+    project_id: str, request: Request, background: BackgroundTasks, body: dict | None = Body(None),
+):
+    """永久删除（不进回收站）：名称逐字确认；会话、排队消息立即硬杀，MCP token 全部吊销。
 
-    响应前只做快的：硬杀会话（含排队）、把工作区移出列表、清掉 Studio 草稿。
-    目录递归删除与发布留存的删除要等磁盘，放到响应之后（_finish_delete）。
+    响应前只做快的：硬杀会话、把工作区移出列表、清掉 Studio 草稿、吊销 token；
+    目录递归删除与发布留存的删除放到响应之后（_finish_delete）。
     """
     from ..services import studio
     from ..services.agent_sessions import manager
+    from ..services.onto_mcp import tokens
 
-    require_owner(project_id, request)
+    deps.require_owner(project_id, request)
+    meta = deps.workspaces.get_project(project_id)
+    if (body or {}).get("confirm_name") != meta.get("name"):
+        raise ApiError("confirm_name_mismatch", "输入的名称与项目名不一致", 400)
     await manager.discard(project_id)
-    staged = await asyncio.to_thread(workspaces.stage_delete, project_id)
+    staged = await asyncio.to_thread(deps.workspaces.stage_delete, project_id)
     await manager.discard(project_id)  # 移走期间并发发消息新建的会话一并清掉
     studio.purge_project(project_id)
+    await asyncio.to_thread(tokens.revoke_project, deps.workspaces, project_id)
     background.add_task(_finish_delete, project_id, staged)
-    return {"deleted": project_id}
+    return JSONResponse(status_code=202, content={"deleted": project_id})
 
 
 async def _finish_delete(project_id: str, staged: Path) -> None:
@@ -223,10 +388,11 @@ async def _finish_delete(project_id: str, staged: Path) -> None:
     from ..services import error_log, release_store
     from ..services.engines import jiuwen
 
+    manager = deps.workspaces
     jobs = {
-        "工作区目录": asyncio.to_thread(workspaces.purge_staged, staged),
+        "工作区目录": asyncio.to_thread(manager.purge_staged, staged),
         "引擎工件区": asyncio.to_thread(remove_tree, jiuwen.shadow_dir(project_id)),
-        "发布留存": asyncio.to_thread(release_store.purge_project, workspaces.data_dir, project_id),
+        "发布留存": asyncio.to_thread(release_store.purge_project, manager.data_dir, project_id),
     }
     results = await asyncio.gather(*jobs.values(), return_exceptions=True)
     for label, result in zip(jobs, results):
@@ -243,599 +409,80 @@ def _cleanup_problem(result) -> str:
 
 
 @router.post("/{project_id}/archive")
-def archive_project(project_id: str, body: ArchiveBody, request: Request):
-    require_owner(project_id, request)
-    return workspaces.set_archived(project_id, body.archived)
+async def archive_project(project_id: str, request: Request, body: dict = Body(...)):
+    """归档后只读：在线会话关闭，MCP change 工具集拒绝写入；取消归档不受只读限制。"""
+    import time
+
+    from ..services.agent_sessions import manager
+
+    deps.require_owner(project_id, request)
+    archived = bool(body.get("archived"))
+    deps.workspaces._update_meta(project_id, archived=archived, archived_at=time.time() if archived else None)
+    if archived:
+        await manager.close(project_id, all_conversations=True)
+    return _meta(project_id)
 
 
 @router.post("/{project_id}/clone")
-def clone_project(project_id: str, request: Request, body: CloneBody | None = None):
-    """克隆任务，默认命名「原名-副本」；与已有任务重名时返回 409 与候选名，
-    前端改名后带 name 重新提交。"""
-    require_owner(project_id, request)
-    default_name = workspaces.clone_name(project_id)
-    name = (body.name.strip() if body else "") or default_name
-    with workspaces.name_claim(name, _name_viewer(request), original_name=default_name):
-        meta = workspaces.clone_project(project_id, owner=_request_user(request), name=name)
-    return meta
+async def clone_project(project_id: str, request: Request, body: dict | None = Body(None)):
+    """克隆项目：新项目只归调用者；缺省名「原名（副本）」，重名返回 409 与候选名。"""
+    deps.require_owner(project_id, request)
+    body = body or {}
+    default_name = deps.workspaces.clone_name(project_id)
+    name = _check_name(body.get("name") or default_name)
+    owner = deps.username(request)
+    include_history = body.get("include_history", True) is not False
+    include_conversations = bool(body.get("include_conversations", False))
+
+    def claim_and_clone() -> dict:
+        with deps.workspaces.name_claim(name, _viewer(request), original_name=default_name):
+            return deps.workspaces.clone_project(project_id, owner=owner, name=name, include_history=include_history)
+
+    meta = await asyncio.to_thread(claim_and_clone)
+    if include_conversations:
+        _copy_conversations(project_id, meta["id"])
+    return JSONResponse(status_code=201, content=_meta(meta["id"]))
 
 
-@router.get("/{project_id}/export")
-def export_project(
-    project_id: str, request: Request, scope: str = "ontology", allow_unbound: bool = False
-):
-    """scope=package 是用户发布：按 HEAD 提交打包，版本号与来源提交放在响应头里带回
-    （同源部署，前端 fetch 直接读得到，不需要 CORS expose）。"""
-    require_owner(project_id, request)
-    if scope not in ("ontology", "workspace", "package"):
-        raise WorkspaceError("scope 必须是 ontology、workspace 或 package")
-    meta = workspaces.get_project(project_id)
-    dest = Path(tempfile.mkdtemp()) / f"{meta['name']}-{scope}.zip"
-    headers = {}
-    if scope == "package":
-        record = workspaces.publish_package(
-            project_id, dest, allow_unbound=allow_unbound, author=_request_user(request)
-        )
-        headers = {
-            "X-Package-Version": record["version"],
-            "X-Package-Commit": record["commit"],
-            "X-Package-Uncommitted": str(record["uncommitted_count"]),
-        }
-    else:
-        workspaces.export_zip(project_id, scope, dest)
-    return FileResponse(dest, filename=dest.name, media_type="application/zip", headers=headers)
+def _copy_conversations(source: str, dest: str) -> None:
+    """对话记录随克隆复制（续接点不复制：新项目的引擎从历史回放续上）。"""
+    import shutil
+
+    from ..services import conversation_store
+
+    source_dir = conversation_store.history_path(source).parent
+    if source_dir.is_dir():
+        target = conversation_store.history_path(dest).parent
+        shutil.copytree(source_dir, target, dirs_exist_ok=True)
+        conversation_store.clear_all_resume_tokens(dest)
 
 
-@router.get("/{project_id}/package/check")
-def package_check(project_id: str, request: Request):
-    """发布前体检（基于 HEAD 提交，与发布同口径）：阻断项、无从核对项、提示、修复所需的
-    表清单与文档版本，以及包相关目录里不会进包的未提交改动。"""
-    require_owner(project_id, request)
-    return workspaces.package_binding_check(project_id)
+@router.get("/{project_id}/transfer-package")
+def export_transfer_package(project_id: str, request: Request):
+    """P-09：完整工作区（含版本历史）与项目元数据；不含工具状态、运行期文件与对话记录。"""
+    deps.require_owner(project_id, request)
+    meta = deps.workspaces.get_project(project_id)
+    dest = Path(tempfile.mkdtemp(prefix="onto-transfer-")) / f"{meta['name']}-transfer.zip"
+    deps.workspaces.export_zip(project_id, "workspace", dest)
+    audit.log(deps.actor(request), "GET", request.url.path, {"project.export": project_id})
+    return FileResponse(dest, filename=dest.name, media_type="application/zip")
 
 
-@router.get("/{project_id}/package/solver-contract")
-def get_solver_contract(project_id: str, request: Request):
-    """求解模型面板：当前修订、契约原文、静态检查与验证门禁。"""
-    require_owner(project_id, request)
-    return workspaces.solver_contract_view(project_id)
+# ---- P-16 项目用量 ----
 
 
-@router.put("/{project_id}/package/solver-contract")
-def save_solver_contract(project_id: str, body: SolverContractBody, request: Request):
-    """整体保存求解契约；结构问题 400 并逐条返回 findings，修订冲突 409。"""
-    require_owner(project_id, request)
-    try:
-        operations = body.contract.get("operations")
-        if not isinstance(operations, list):
-            raise WorkspaceError("contract.operations 必须是列表", code=solver_contract.CODE_INVALID)
-        return workspaces.save_solver_contract(
-            project_id, operations, body.base_revision,
-            author=_request_user(request), summary=body.summary,
-        )
-    except solver_contract.SolverContractRejected as exc:
-        findings = [solver_contract.finding(problem) for problem in exc.problems]
-        return JSONResponse(
-            status_code=400,
-            content={"error": str(exc), "code": findings[0]["code"], "findings": findings},
-        )
+@router.get("/{project_id}/usage")
+def project_usage(project_id: str, request: Request):
+    """全部对话（含已删除对话留存的用量）的累计；费用来自引擎回报的美元金额，单价表（B14）之后换算。"""
+    from ..services.agent_sessions import usage_summary
 
-
-@router.post("/{project_id}/package/solver-contract/check")
-def check_solver_contract(project_id: str, body: SolverContractBody, request: Request):
-    """即时检查面板草稿（不保存）：rejected 为保存会被拒的问题，findings 为发布会被拦截的问题，
-    rendered 为模板契约将生成的 sidecar 原文。"""
-    require_owner(project_id, request)
-    operations = body.contract.get("operations")
-    if not isinstance(operations, list):
-        raise WorkspaceError("contract.operations 必须是列表", code=solver_contract.CODE_INVALID)
-    return workspaces.check_solver_contract_draft(project_id, operations)
-
-
-@router.get("/{project_id}/package/solver-validations/latest")
-def latest_solver_validation(project_id: str, request: Request):
-    """当前修订最后一次验证回执：状态、断言、候选数、权威结果摘要、错误码与诊断引用。
-
-    回执由外部验证方经 POST /api/v1/projects/{id}/solver/receipts 写入（ADR-0020）。"""
-    from ..services import solver_validation
-
-    root = require_owner(project_id, request)
-    revision = workspaces.solver_check(project_id).revision
-    validation = solver_validation.latest(root, revision) if revision else None
-    return {"revision": revision, "validation": validation}
-
-
-@router.post("/{project_id}/objects/{key}/data-source")
-def set_object_data_source(project_id: str, key: str, body: ObjectDataSourceBody, request: Request):
-    """发布前修复：把对象「# 数据来源」改成现有数据表之一或「无」（Web 保存同款版本点）。"""
-    require_owner(project_id, request)
-    return workspaces.set_object_data_source(
-        project_id, key, body.table,
-        base_revision=body.base_revision, author=_request_user(request),
-    )
-
-
-@router.get("/{project_id}/files")
-def file_tree(project_id: str, request: Request):
-    require_owner(project_id, request)
-    return {"tree": workspaces.file_tree(project_id)}
-
-
-@router.get("/{project_id}/file")
-def read_file(project_id: str, path: str, request: Request):
-    require_owner(project_id, request)
-    return workspaces.read_file(project_id, path, config.MAX_FILE_PREVIEW_BYTES)
-
-
-@router.put("/{project_id}/file")
-def write_file(project_id: str, body: WriteFileBody, request: Request):
-    require_owner(project_id, request)
-    return workspaces.write_file(
-        project_id,
-        body.path,
-        body.content,
-        base_revision=body.base_revision,
-        author=_request_user(request),
-    )
-
-
-@router.get("/{project_id}/excel")
-def excel_preview(project_id: str, path: str, request: Request):
-    from ..services import excel_preview as excel_service
-
-    root = require_owner(project_id, request)
-    target = workspaces._resolve_inside(root, path)
-    if not target.is_file():
-        raise WorkspaceError("文件不存在", 404)
-    if target.suffix.lower() not in (".xlsx", ".xlsm"):
-        raise WorkspaceError("仅支持 xlsx/xlsm 预览；xls 请转存后上传", 415)
-    try:
-        return excel_service.preview(target)
-    except excel_service.ExcelPreviewError as exc:
-        raise WorkspaceError(str(exc), exc.status)
-
-
-@router.get("/{project_id}/file-at")
-def file_at_revision(project_id: str, rev: str, path: str, request: Request):
-    require_owner(project_id, request)
-    return workspaces.file_at_revision(project_id, rev, path)
-
-
-@router.get("/{project_id}/raw")
-def raw_file(project_id: str, path: str, request: Request):
-    """原样返回文件（HTML 报告 iframe 预览等）。"""
-    root = require_owner(project_id, request)
-    target = workspaces._resolve_inside(root, path)
-    if not target.is_file():
-        raise WorkspaceError("文件不存在", 404)
-    return FileResponse(target)
-
-
-@router.get("/{project_id}/search")
-def search(project_id: str, q: str, request: Request):
-    """产物全文检索（命中行，上限 80 条）。"""
-    root = require_owner(project_id, request)
-    query = (q or "").strip()
-    if not query:
-        return {"hits": []}
-    hits = []
-    for path in sorted(root.rglob("*")):
-        if path.is_symlink() or not path.is_file():
-            continue
-        rel = path.relative_to(root)
-        if rel.parts[0].startswith(".") or path.suffix.lower() not in SEARCHABLE_SUFFIXES:
-            continue
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeDecodeError):
-            continue
-        for line_no, line in enumerate(lines, 1):
-            if query in line:
-                hits.append(
-                    {"path": str(rel), "line": line_no, "text": line.strip()[:160]}
-                )
-                if len(hits) >= MAX_SEARCH_HITS:
-                    return {"hits": hits, "truncated": True}
-    return {"hits": hits, "truncated": False}
-
-
-@router.get("/{project_id}/metrics")
-def metrics(project_id: str, request: Request):
-    from ..services import metrics as metrics_service
-
-    root = require_owner(project_id, request)
-    return metrics_service.coverage(root)
-
-
-@router.post("/{project_id}/resources")
-async def upload_resource(
-    project_id: str,
-    request: Request,
-    subdir: str = Form(...),
-    file: UploadFile = File(...),
-    purpose: str = Form("auto"),
-    reading_mode: str = Form("on_demand"),
-):
-    require_owner(project_id, request)
-    data = await file.read()
-    # 大文件同步写盘会卡住事件循环（SSE 全体停摆），挪到线程执行
-    return await asyncio.to_thread(
-        workspaces.save_resource,
-        project_id,
-        subdir,
-        file.filename or "",
-        data,
-        purpose,
-        reading_mode,
-        _request_user(request),
-    )
-
-
-@router.get("/{project_id}/resource-meta")
-def resource_meta(project_id: str, request: Request):
-    require_owner(project_id, request)
+    deps.require_owner(project_id, request)
+    usage = usage_summary(project_id)
+    cost = usage.get("total_cost_usd")
     return {
-        "directives": workspaces.resource_directives(project_id),
-        "purposes": list(workspaces.MATERIAL_PURPOSES),
-        "schema_candidates": workspaces.schema_candidates(project_id),
+        "calls": usage.get("calls", 0),
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+        "cost": {"amount": round(cost, 2) if cost else (0.0 if cost == 0 else None), "currency": "USD"},
+        "last_activity_at": deps.iso(usage.get("last_activity")),
     }
-
-
-class ResourceDirectiveBody(BaseModel):
-    path: str
-    purpose: str
-    reading_mode: str = "on_demand"
-
-
-@router.patch("/{project_id}/resource-meta")
-def set_resource_meta(project_id: str, body: ResourceDirectiveBody, request: Request):
-    require_owner(project_id, request)
-    return workspaces.set_resource_directive(
-        project_id, body.path, body.purpose, body.reading_mode, author=_request_user(request)
-    )
-
-
-@router.delete("/{project_id}/resources")
-def delete_resource(project_id: str, path: str, request: Request):
-    require_owner(project_id, request)
-    return workspaces.delete_resource(project_id, path, author=_request_user(request))
-
-
-class ProjectMcpBody(BaseModel):
-    disabled: list[str]  # 本项目停用的全局 MCP 服务器名
-
-
-@router.get("/{project_id}/mcp")
-def get_project_mcp(project_id: str, request: Request):
-    from ..services import mcp_settings
-
-    require_owner(project_id, request)
-    meta = workspaces.get_project(project_id)
-    disabled = set(meta.get("mcp_disabled") or [])
-    servers = [
-        {
-            "name": s["name"],
-            "transport": s["transport"],
-            "enabled_globally": bool(s.get("enabled", True)),
-            "enabled": s.get("enabled", True) and s["name"] not in disabled,
-        }
-        for s in mcp_settings.load()
-    ]
-    return {"servers": servers, "disabled": sorted(disabled)}
-
-
-@router.put("/{project_id}/mcp")
-def put_project_mcp(project_id: str, body: ProjectMcpBody, request: Request):
-    require_owner(project_id, request)
-    names = [str(n)[:32] for n in body.disabled][:64]
-    workspaces._update_meta(project_id, mcp_disabled=names)
-    return {"disabled": names}
-
-
-class ProjectEngineBody(BaseModel):
-    engine: str  # claude | jiuwen
-
-
-@router.get("/{project_id}/engine")
-def get_project_engine(project_id: str, request: Request):
-    from ..services.engines import available_engines, get_engine_class
-
-    require_owner(project_id, request)
-    meta = workspaces.get_project(project_id)
-    current = meta.get("engine") or "claude"
-    return {
-        "engine": get_engine_class(current).name,
-        "available": available_engines(),
-    }
-
-
-@router.put("/{project_id}/engine")
-async def put_project_engine(project_id: str, body: ProjectEngineBody, request: Request):
-    """切换会话引擎（灰度开关）。切换即终止当前会话：界面历史保留可回放，
-    下一条消息用新引擎启动（Jiuwen 经历史回放续接上下文，Claude 全新会话）。"""
-    from ..services.agent_sessions import manager
-    from ..services.engines import ENGINE_NAMES, get_engine_class
-
-    require_owner(project_id, request)
-    name = (body.engine or "").strip()
-    if name not in ENGINE_NAMES:
-        return JSONResponse(status_code=400, content={"error": "未知引擎"})
-    engine_cls = get_engine_class(name)
-    if not engine_cls.available():
-        return JSONResponse(
-            status_code=400,
-            content={"error": getattr(engine_cls, "UNAVAILABLE_MESSAGE", "引擎不可用")},
-        )
-    workspaces._update_meta(project_id, engine=name)
-    # 全部会话的续接点一并作废：换引擎期间产生的轮次不在旧引擎的 transcript 里
-    await manager.close(project_id, all_conversations=True)
-    return {"engine": name}
-
-
-@router.get("/{project_id}/studio/graph")
-def studio_graph(project_id: str, request: Request):
-    from ..services import studio
-
-    root = require_owner(project_id, request)
-    return studio.graph(root)
-
-
-@router.get("/{project_id}/studio/elements/{element_id}/flow")
-def studio_operation_flow(project_id: str, element_id: str, request: Request):
-    from ..services import studio
-
-    root = require_owner(project_id, request)
-    try:
-        return studio.operation_flow(root, element_id)
-    except studio.StudioError as exc:
-        raise WorkspaceError(str(exc), exc.status)
-
-
-@router.get("/{project_id}/studio/element")
-def studio_element(project_id: str, path: str, request: Request):
-    from ..services import studio
-    from ..services.workspace import _content_revision
-
-    root = require_owner(project_id, request)
-    target = workspaces._resolve_inside(root, path)
-    try:
-        data = studio.element(root, path)
-    except FileNotFoundError:
-        raise WorkspaceError("条目不存在", 404)
-    data["revision"] = _content_revision(target.read_bytes())
-    data["lease"] = studio.lease_status(project_id, path)
-    draft = studio.get_draft(project_id, path)
-    data["draft"] = (
-        {"updated_at": draft["updated_at"], "author": draft["author"]} if draft else None
-    )
-    return data
-
-
-class StudioLeaseBody(BaseModel):
-    path: str
-
-
-class StudioDraftBody(BaseModel):
-    path: str
-    content: str
-    base_revision: str = ""
-
-
-@router.post("/{project_id}/studio/lease")
-def studio_acquire_lease(project_id: str, body: StudioLeaseBody, request: Request):
-    from ..services import studio
-
-    require_owner(project_id, request)
-    try:
-        return studio.acquire_lease(project_id, body.path, _request_user(request) or "本机用户")
-    except studio.StudioError as exc:
-        raise WorkspaceError(str(exc), exc.status)
-
-
-@router.delete("/{project_id}/studio/lease")
-def studio_release_lease(project_id: str, path: str, request: Request):
-    from ..services import studio
-
-    require_owner(project_id, request)
-    studio.release_lease(project_id, path, _request_user(request) or "本机用户")
-    return {"ok": True}
-
-
-@router.get("/{project_id}/studio/draft")
-def studio_get_draft(project_id: str, path: str, request: Request):
-    from ..services import studio
-
-    require_owner(project_id, request)
-    return {"draft": studio.get_draft(project_id, path)}
-
-
-@router.put("/{project_id}/studio/draft")
-def studio_save_draft(project_id: str, body: StudioDraftBody, request: Request):
-    from ..services import studio
-
-    require_owner(project_id, request)
-    try:
-        return studio.save_draft(
-            project_id,
-            body.path,
-            body.content,
-            body.base_revision,
-            _request_user(request) or "本机用户",
-        )
-    except studio.StudioError as exc:
-        raise WorkspaceError(str(exc), exc.status)
-
-
-@router.delete("/{project_id}/studio/draft")
-def studio_discard_draft(project_id: str, path: str, request: Request):
-    from ..services import studio
-
-    require_owner(project_id, request)
-    studio.discard_draft(project_id, path, _request_user(request) or "本机用户")
-    return {"ok": True}
-
-
-@router.post("/{project_id}/studio/submit")
-async def studio_submit(project_id: str, body: StudioLeaseBody, request: Request):
-    """草稿提交分流：确定性检查通过直接落版本；超范围转 agent 复核；硬伤拒绝。"""
-    from ..services import studio
-    from ..services.agent_sessions import manager
-
-    root = require_owner(project_id, request)
-    user = _request_user(request) or "本机用户"
-    draft = studio.get_draft(project_id, body.path)
-    if not draft:
-        raise WorkspaceError("没有待提交的草稿", 404)
-    lease = studio.lease_status(project_id, body.path)
-    if lease and lease["owner"] != user:
-        raise WorkspaceError(f"该条目正由 {lease['owner']} 编辑", 409)
-
-    checks = studio.deterministic_check(root, body.path, draft["content"])
-    if checks["errors"]:
-        return {"result": "rejected", "errors": checks["errors"], "review": checks["review"]}
-    if checks["review"]:
-        staged = studio.stage_for_review(root, body.path, draft["content"])
-        points = "；".join(checks["review"])
-        await manager.send(
-            project_id,
-            root,
-            f"用户在 Studio 修改了 {body.path}，改动超出确定性检查范围，需要你复核。"
-            f"草稿全文在 {staged}。检查发现的疑点：{points}。"
-            f"请对照现有文档评估草稿：合理则把草稿内容合并进正式文档并保存版本，"
-            f"有问题则说明原因；缺失的关联文档如确有必要可一并创建。",
-        )
-        return {"result": "needs_review", "review": checks["review"], "staged": staged}
-    saved = workspaces.write_file(
-        project_id,
-        body.path,
-        draft["content"],
-        base_revision=draft.get("base_revision", ""),
-        author=user,
-    )
-    studio.discard_draft(project_id, body.path, user)
-    return {"result": "committed", **saved}
-
-
-@router.get("/{project_id}/report-items")
-def report_items(project_id: str, path: str, request: Request):
-    """报告条目化：供评审视图做编号勾选。"""
-    from ..services import report_items as parser
-
-    require_owner(project_id, request)
-    data = workspaces.read_file(project_id, path, config.MAX_FILE_PREVIEW_BYTES)
-    return parser.parse(data["content"])
-
-
-QUERY_KIND_ARGS = {
-    "used_by": lambda term: [["--used-by", term]],
-    "orphans": lambda term: [["--orphans"]],
-    "search": lambda term: [["--search", term]],
-    "unused": lambda term: [["--unused-objects"], ["--unused-actions"]],
-    "dangling": lambda term: [["--dangling"]],
-    "knowledge": lambda term: [["--knowledge", term]],
-}
-
-
-@router.get("/{project_id}/query")
-def reverse_query(project_id: str, kind: str, request: Request, term: str = ""):
-    """六种反查：直接跑工作区内的确定性脚本（不经 LLM），返回 markdown 结果。"""
-    import subprocess
-
-    from ..services.script_env import minimal_env
-
-    root = require_owner(project_id, request)
-    if kind not in QUERY_KIND_ARGS:
-        raise WorkspaceError(f"kind 必须是 {sorted(QUERY_KIND_ARGS)} 之一")
-    if kind in ("used_by", "search", "knowledge") and not term.strip():
-        raise WorkspaceError("该反查类型需要提供 term 参数")
-    script = root / ".claude" / "scripts" / "query.py"
-    if not script.exists():
-        raise WorkspaceError("查询脚本不存在（资产未挂载）", 500)
-    outputs = []
-    for args in QUERY_KIND_ARGS[kind](term.strip()):
-        result = subprocess.run(
-            ["python3", str(script), *args],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env=minimal_env(),
-        )
-        outputs.append(
-            result.stdout if result.returncode == 0 else f"查询失败：{result.stderr[:200]}"
-        )
-    return {"markdown": "\n\n".join(outputs)}
-
-
-class KnowledgeBody(BaseModel):
-    name: str
-    content: str
-
-
-@router.get("/{project_id}/knowledge")
-def list_knowledge(project_id: str, request: Request):
-    """知识库列表（knowledge/*.md + 首段摘要）。"""
-    root = require_owner(project_id, request)
-    directory = root / "knowledge"
-    entries = []
-    if directory.is_dir():
-        for path in sorted(directory.glob("*.md")):
-            try:
-                text = path.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            body_lines = [l.strip() for l in text.splitlines() if l.strip() and not l.startswith("#")]
-            entries.append(
-                {
-                    "path": f"knowledge/{path.name}",
-                    "name": path.stem,
-                    "excerpt": (body_lines[0] if body_lines else "")[:120],
-                    "updated_at": int(path.stat().st_mtime),
-                }
-            )
-    return {"entries": entries}
-
-
-@router.post("/{project_id}/knowledge")
-def create_knowledge(project_id: str, body: KnowledgeBody, request: Request):
-    """业务知识确认入库：写 knowledge/<name>.md 并记录版本。"""
-    require_owner(project_id, request)
-    safe = re.sub(r"[\\/:*?\"<>|.]+", "-", body.name.strip())[:60].strip("-")
-    if not safe:
-        raise WorkspaceError("知识条目名称不能为空")
-    return workspaces.write_file(
-        project_id,
-        f"knowledge/{safe}.md",
-        body.content,
-        author=_request_user(request),
-    )
-
-
-@router.delete("/{project_id}/knowledge")
-def delete_knowledge(project_id: str, path: str, request: Request):
-    require_owner(project_id, request)
-    return workspaces.delete_file(project_id, path, author=_request_user(request))
-
-
-@router.get("/{project_id}/versions")
-def versions(project_id: str, request: Request):
-    require_owner(project_id, request)
-    return {"versions": workspaces.versions(project_id)}
-
-
-@router.post("/{project_id}/versions/revert")
-def revert(project_id: str, body: RevertBody, request: Request):
-    require_owner(project_id, request)
-    return workspaces.revert_to(project_id, body.commit)
-
-
-@router.post("/{project_id}/versions/tag")
-def tag_version(project_id: str, body: TagBody, request: Request):
-    require_owner(project_id, request)
-    return workspaces.tag_version(project_id, body.commit, body.label)
-
-
-@router.delete("/{project_id}/versions/tag/{tag_name}")
-def delete_tag(project_id: str, tag_name: str, request: Request):
-    require_owner(project_id, request)
-    return workspaces.delete_tag(project_id, tag_name)
