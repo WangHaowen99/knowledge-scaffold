@@ -16,13 +16,14 @@ from .services.agent_sessions import SDK_AVAILABLE
 async def _lifespan(app: FastAPI):
     import asyncio
 
-    from .services import background_jobs, backup, eval_retirement, ownership, solver_validation
+    from .services import background_jobs, backup, eval_retirement, ownership, solver_validation, startup_report
     from .services.agent_sessions import manager
     from .services.model_context_presets import write_example
 
     # 最先做、且在任何会话开始之前：此刻本进程没有 git 子进程，各项目 .git 下的锁都是
-    # 上次停机留下的残留；元数据迁移要改各项目的真实索引，也不能和 agent 的 git 并发
-    await asyncio.to_thread(deps.workspaces.clear_git_locks)
+    # 上次停机留下的残留；元数据迁移要改各项目的真实索引，也不能和 agent 的 git 并发。
+    # 启动自检同时列出各项目没提交的改动，写日志并留存（O-35）
+    await asyncio.to_thread(startup_report.run, deps.workspaces)
     await asyncio.to_thread(deps.workspaces.migrate_state_tracking)
     # 单人所有权：删掉存量项目的成员表（原值记审计），日志报告待管理员指定所有者的无主项目
     await asyncio.to_thread(ownership.migrate_single_owner, deps.workspaces)
