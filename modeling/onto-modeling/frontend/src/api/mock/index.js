@@ -1,8 +1,9 @@
 // mock 服务端：按契约路径响应，状态放在内存里；SSE 由 StreamHub 推送。
 // 只在 VITE_API_MOCK=1 的开发 / 测试构建里加载。
 // 演示状态用地址参数切换：?mock=login:fail,projects:empty,auth:local,maint:readonly,engine:missing,import:conflict,role:user,scope:running|pending
+// ?mock=flow:p1：/flow 按 P1 后端（B3a）的形状返回（4 种状态、命令文本 actions、没有切片），核对前端归一处理
 // 项目所处阶段（工作台显示什么）：?mock=stage:materials 等，见 stageOf；各阶段的对话、流程由 routes-*.js 的 stages 提供。
-// F2 各页的接口按分组放在 routes-*.js，每个文件导出 register(ctx)、可选的 stages 与 projectStages。
+// F2、F3 各页的接口按分组放在 routes-*.js，每个文件导出 register(ctx)、可选的 stages、projectStages、lockScope、taskSeeds。
 import * as F from './fixtures.js';
 import { StreamHub } from './hub.js';
 import * as artifactRoutes from './routes-artifacts.js';
@@ -11,8 +12,26 @@ import * as inboxRoutes from './routes-inbox.js';
 import * as materialRoutes from './routes-materials.js';
 import * as reportRoutes from './routes-reports.js';
 import * as studioRoutes from './routes-studio.js';
+import * as evidenceRoutes from './routes-evidence.js';
+import * as incrementalRoutes from './routes-incremental.js';
+import * as knowledgeRoutes from './routes-knowledge.js';
+import * as publishRoutes from './routes-publish.js';
+import * as resourceRoutes from './routes-resources.js';
+import * as scenarioRoutes from './routes-scenarios.js';
+import * as scriptRoutes from './routes-scripts.js';
+import * as settingsRoutes from './routes-settings.js';
+import * as versionRoutes from './routes-versions.js';
 
-const MODULES = [studioRoutes, reportRoutes, artifactRoutes, inboxRoutes, autobuildRoutes, materialRoutes];
+// F3 的分组在后面：同一路径先登记的先匹配，F3 文件只补新接口
+const MODULES = [
+  studioRoutes, reportRoutes, artifactRoutes, inboxRoutes, autobuildRoutes, materialRoutes,
+  knowledgeRoutes, scenarioRoutes, scriptRoutes, incrementalRoutes, versionRoutes, publishRoutes, resourceRoutes, evidenceRoutes, settingsRoutes,
+];
+// 写入范围锁额外覆盖的条目、产物、路径（routes-*.js 导出 lockScope）
+const LOCK_EXTRAS = { entries: [], artifacts: [], paths: [] };
+MODULES.forEach((mod) => ['entries', 'artifacts', 'paths'].forEach((k) => LOCK_EXTRAS[k].push(...(mod.lockScope?.[k] || []))));
+// ?mock=task:<页面 id> 时该页一打开就有的进行中任务（routes-*.js 导出 taskSeeds = { <页面 id>: () => CommandTask 部分字段 }）
+const TASK_SEEDS = Object.assign({}, ...MODULES.map((mod) => mod.taskSeeds || {}));
 
 function readScenario() {
   const out = {};
@@ -55,6 +74,8 @@ export function createMockServer() {
     scope: new Map(),
     flows: new Map(),
     running: new Map(),
+    tasks: new Map(),
+    seeded: new Set(),
     seq: 2000,
   };
   const uid = () => (++db.seq).toString(16);
@@ -134,6 +155,7 @@ export function createMockServer() {
     return db.convs.get(pid);
   }
   function flowOf(pid) {
+    if (!db.flows.has(pid) && sc.flow === 'p1') db.flows.set(pid, F.flowP1());
     if (!db.flows.has(pid)) {
       const base = F.flow({ trace: true });
       const stage = STAGES[stageOf(pid)];
@@ -158,8 +180,10 @@ export function createMockServer() {
   const setScope = (pid, lock) => { db.scope.set(pid, lock); emitProj(pid, 'scope.updated', lock); };
   const scopeLock = (state, cid) => ({
     state, changeset_id: F.CHANGESET_ID, conversation_id: cid, run_id: null, slice: { id: 's5', name: '超量与审批提示' }, node: { id: 'core.model', version: 'core@1.4.2' },
-    entries: [F.REFS.op, F.REFS.r09, F.REFS.safety, F.REFS.display], artifacts: [{ type: 'diagram.flowchart', key: 'overage-flow', title: '超量处理流程' }],
-    paths: ['ext/trace/scenarios/**'], reason_text: '助手正在改「超量与审批提示」这一片', since: new Date().toISOString(),
+    // 各页 mock 导出的 lockScope（场景、求解契约等插件产物）一起并进来
+    entries: [F.REFS.op, F.REFS.r09, F.REFS.safety, F.REFS.display, ...LOCK_EXTRAS.entries],
+    artifacts: [{ type: 'diagram.flowchart', key: 'overage-flow', title: '超量处理流程' }, ...LOCK_EXTRAS.artifacts],
+    paths: ['ext/trace/scenarios/**', ...LOCK_EXTRAS.paths], reason_text: '助手正在改「超量与审批提示」这一片', since: new Date().toISOString(),
   });
   // ?mock=scope:running / scope:pending：主示例项目一打开就处在写入范围锁的两态之一（Studio、流程图弹窗、插件页的只读对照用）
   if (sc.scope === 'running' || sc.scope === 'pending') {
@@ -216,6 +240,7 @@ export function createMockServer() {
   }
 
   const routes = [];
+  const commandHooks = [];
   const on = (method, pattern, handler) => routes.push({ method, re: new RegExp(`^/api/v1${pattern}$`), handler });
 
   // ---------- 3.1 / 3.2 ----------
@@ -540,20 +565,69 @@ export function createMockServer() {
   on('POST', '/projects/([^/]+)/conversations/([^/]+)/retry', () => err(409, 'nothing_to_retry', '没有可重试的一轮'));
   on('POST', '/projects/([^/]+)/execs/([^/]+)/(resume|abandon)', ({ m }) => json(m[3] === 'resume' ? 202 : 200, { exec: { id: m[2], state: m[3] === 'resume' ? 'running' : 'abandoned' }, message_id: `m-${uid()}`, conversation_id: convsOf(m[1])[0].id }));
   on('GET', '/projects/([^/]+)/commands/catalog', () => json(200, F.commandCatalog()));
+  // ---------- 页面命令（S-19 / S-20，契约 5.9.3：页面只发命令，进度经项目流 command.progress） ----------
+  // routes-*.js 往 ctx.commandHooks 里放 { match(body) → bool, title?(body), steps?: string[], finish?(pid, body, task) }：
+  // 命中的命令按 steps 推进进度，跑完调 finish（改 mock 数据、发 artifacts.updated 等）。
+  // ?mock=task:<页面 id> 让该页一打开就有一个进行中的任务（routes-*.js 导出的 taskSeeds）。
+  const tasksOf = (pid) => {
+    if (!db.tasks.has(pid)) db.tasks.set(pid, []);
+    return db.tasks.get(pid);
+  };
+  const putTask = (pid, task, { transient = false } = {}) => {
+    const list = tasksOf(pid);
+    const i = list.findIndex((t) => t.task_id === task.task_id);
+    if (i >= 0) list[i] = task; else list.push(task);
+    hub.emit(projKey(pid), 'project', { type: 'command.progress', project_id: pid, data: task }, { transient });
+    return task;
+  };
+  const seedTask = (pid, partial) => {
+    const cid = convsOf(pid)[0].id;
+    const task = {
+      task_id: `task-${uid()}`, origin: { page: 'wb-l2', label: '工作台' }, title: '', state: 'running', percent: null, step_label: null,
+      conversation_id: cid, message_id: `m-${uid()}`, exec_id: null, started_at: new Date(Date.now() - 95000).toISOString(), finished_at: null, result: null, ...partial,
+    };
+    tasksOf(pid).push(task);
+    return task;
+  };
+  on('GET', '/projects/([^/]+)/commands/tasks', ({ m, query }) => {
+    const pid = m[1];
+    const page = query.get('origin_page');
+    if (pid === F.MAIN_PID && sc.task && page === sc.task && !db.seeded.has(page) && TASK_SEEDS[page]) {
+      db.seeded.add(page);
+      seedTask(pid, TASK_SEEDS[page]());
+    }
+    const states = (query.get('state') || 'queued,running,waiting_user').split(',');
+    return json(200, { items: tasksOf(pid).filter((t) => (!page || t.origin?.page === page) && states.includes(t.state)).slice(-50) });
+  });
   on('POST', '/projects/([^/]+)/commands', ({ m, body }) => {
     const pid = m[1];
+    if (!body.origin) return err(400, 'invalid_argument', '缺少 origin', { fields: { origin: 'required' } });
     const cid = body.conversation_id || convsOf(pid)[0].id;
     const msgId = `m-${uid()}`;
-    emitConv(pid, cid, 'message.user', { message_id: msgId, text: body.text || body.command || '', attachments: [], references: [], origin: body.origin ? { kind: 'page', ...body.origin, task_id: null } : null, delivery: 'immediate' });
-    runReply(pid, cid, body.text || '命令');
-    return json(202, { task: { task_id: `task-${uid()}`, origin: body.origin, title: body.text || '', state: 'running', percent: null, step_label: null, conversation_id: cid, message_id: msgId, exec_id: null, started_at: new Date().toISOString(), finished_at: null, result: null }, conversation_id: cid, message_id: msgId });
-  });
-
-  // ---------- 知识（消息旁「沉淀为业务知识」） ----------
-  on('GET', '/projects/([^/]+)/knowledge/conflicts', () => json(200, { checked_at: new Date().toISOString(), duration_ms: 120, total_entries: 12, conflicts: [], consistent_with_materials: 10, unsourced: 1, duplicates: 0, broken_refs: 0 }));
-  on('POST', '/projects/([^/]+)/knowledge', ({ body }) => {
-    if (!body.title || !body.rule_md) return err(400, 'invalid_argument', '缺少内容', { fields: { title: 'required' } });
-    return json(201, { entry: { id: `kn-${uid()}`, title: body.title, layer: 'project', pack: null, type: body.type, scope: body.scope, confidence: body.confidence || 'medium', source: { kind: 'conversation', label: '对话' }, overrides_industry: false, readonly: false, revision: 'r1', updated_at: new Date().toISOString() }, commit: 'k1', version_label: 'v0.13', conflicts: [], review_task: null });
+    const text = body.text || body.command || '';
+    emitConv(pid, cid, 'message.user', { message_id: msgId, text, command: body.command || null, attachments: [], references: [], origin: { kind: 'page', ...body.origin, task_id: null }, delivery: 'immediate' });
+    const hook = commandHooks.find((h) => h.match(body));
+    const task = putTask(pid, {
+      task_id: `task-${uid()}`, origin: body.origin, title: hook?.title ? hook.title(body) : `助手正在${text.replace(/^\//, '')}`, state: 'running', percent: 0,
+      step_label: hook?.steps?.[0] || null, conversation_id: cid, message_id: msgId, exec_id: null, started_at: new Date().toISOString(), finished_at: null, result: null,
+    });
+    if (!hook) {
+      runReply(pid, cid, text);
+      later(pid, cid, 1300, () => putTask(pid, { ...task, state: 'done', percent: 100, finished_at: new Date().toISOString(), result: { summary: '已完成', refs: [] } }));
+    } else {
+      setSession(pid, cid, 'running');
+      const steps = hook.steps || ['进行中'];
+      steps.forEach((label, i) => {
+        if (i) later(pid, cid, 900 * i, () => putTask(pid, { ...task, percent: Math.round((i / steps.length) * 100), step_label: label }, { transient: true }));
+      });
+      later(pid, cid, 900 * steps.length, () => {
+        const done = putTask(pid, { ...task, state: 'done', percent: 100, step_label: steps.at(-1), finished_at: new Date().toISOString(), result: { summary: '已完成', refs: [] } });
+        emitConv(pid, cid, 'message.assistant', { message_id: `m-${uid()}`, text_md: `「${text.replace(/^\//, '')}」做完了，结果已经回到「${body.origin.label}」页。`, anchors: [], entry_links: [], continued: false });
+        setSession(pid, cid, 'idle');
+        hook.finish?.(pid, body, done);
+      });
+    }
+    return json(202, { task, conversation_id: cid, message_id: msgId });
   });
 
   // ---------- 检索、插件、证据 ----------
@@ -573,10 +647,11 @@ export function createMockServer() {
     items: (body.anchors || []).map((a) => F.ANCHOR_RESOLUTIONS[a] || { anchor: a, scheme: a.split(':')[0], resolved: false, reason: 'not_in_snapshot', source_label: a, location_label: '', text: '', highlights: [], confidence: null, snapshot_id: null, page: null }),
   }));
 
-  // ---------- F2 各分组（routes-*.js） ----------
+  // ---------- F2、F3 各分组（routes-*.js） ----------
   const ctx = {
     on, json, err, wait, db, hub, sc, uid, F, cardOf, convKey, projKey, convsOf, flowOf, stageOf,
     emitConv, emitConvTransient, emitProj, emitUser, setSession, scopeOf, setScope, scopeLock, later, runReply,
+    commandHooks, putTask, seedTask, tasksOf,
   };
   MODULES.forEach((mod) => mod.register?.(ctx));
 

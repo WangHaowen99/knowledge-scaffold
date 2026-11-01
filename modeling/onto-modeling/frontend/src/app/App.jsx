@@ -24,18 +24,40 @@ const StudioPage = lazy(() => import('../pages/studio/StudioPage.jsx'));
 const StudioTablePage = lazy(() => import('../pages/studio/StudioTablePage.jsx'));
 const ReportsPage = lazy(() => import('../pages/reports/ReportsPage.jsx'));
 const InboxPage = lazy(() => import('../pages/inbox/InboxPage.jsx'));
-// 工作台的几个阶段（资料分析、切片规划、陪伴、流程图弹窗、自主构建）是同一个对话页，显示什么由对话和流程数据决定
+// F3：插件页（知识沉淀、场景走查、代码生成）与项目页（版本、发布、资料与证据源、项目设置）
+const KnowledgePage = lazy(() => import('../pages/knowledge/KnowledgePage.jsx'));
+const ScenariosPage = lazy(() => import('../pages/scenarios/ScenariosPage.jsx'));
+const ScriptsPage = lazy(() => import('../pages/scripts/ScriptsPage.jsx'));
+const VersionsPage = lazy(() => import('../pages/versions/VersionsPage.jsx'));
+const PublishPage = lazy(() => import('../pages/publish/PublishPage.jsx'));
+const ResourcesPage = lazy(() => import('../pages/resources/ResourcesPage.jsx'));
+const SourcesPage = lazy(() => import('../pages/evidence/SourcesPage.jsx'));
+const SnapshotsPage = lazy(() => import('../pages/evidence/SnapshotsPage.jsx'));
+const SchemaPage = lazy(() => import('../pages/evidence/SchemaPage.jsx'));
+const ProjectSettingsPage = lazy(() => import('../pages/settings/ProjectSettingsPage.jsx'));
+// 工作台的几个阶段（资料分析、切片规划、陪伴、流程图弹窗、自主构建、增量更新）是同一个对话页，显示什么由对话和流程数据决定
 const PROJECT_PAGES = {
   'wb-l2': WorkbenchPage,
   'wb-materials': WorkbenchPage,
   'wb-blueprint': WorkbenchPage,
   'l4-run': WorkbenchPage,
   flowchart: WorkbenchPage,
+  incremental: WorkbenchPage,
   'chat-states': ChatStatesPage,
   inbox: InboxPage,
   studio: StudioPage,
   'studio-table': StudioTablePage,
   reports: ReportsPage,
+  knowledge: KnowledgePage,
+  scenarios: ScenariosPage,
+  scripts: ScriptsPage,
+  versions: VersionsPage,
+  publish: PublishPage,
+  resources: ResourcesPage,
+  sources: SourcesPage,
+  snapshots: SnapshotsPage,
+  schema: SchemaPage,
+  'proj-settings': ProjectSettingsPage,
 };
 
 function Pending({ project, page, projectId }) {
