@@ -67,6 +67,7 @@ def seed(manager: WorkspaceManager, home: Path) -> dict:
     for name in (
         "model-settings.json", "user-model-settings.json", "runtime-settings.json",
         "mcp-servers.json", "model-context-presets.json", "modeling-cleanup-tasks.json",
+        "service-tokens.json",
     ):
         (data / name).write_text('{"synthetic": true}')
     (data / "audit.jsonl").write_text('{"user": "operator_a"}\n')
@@ -74,6 +75,8 @@ def seed(manager: WorkspaceManager, home: Path) -> dict:
     (data / ".model-secret-key").write_text("synthetic-master-key-not-for-backup")
     (data / "eval-data-sources").mkdir()
     (data / "eval-data-sources" / f"{meta['id']}.json").write_text("{}")
+    (data / "releases" / meta["id"]).mkdir(parents=True)
+    (data / "releases" / meta["id"] / "0.1.2.zip").write_bytes(b"synthetic-package")
 
     transcripts = home / ".claude" / "projects" / "workspace_demo"
     transcripts.mkdir(parents=True)
@@ -114,6 +117,8 @@ def test_backup_covers_state_and_excludes_master_key(env, tmp_path):
         "data/audit.jsonl",
         "data/errors.jsonl",
         f"data/eval-data-sources/{project}.json",
+        "data/service-tokens.json",
+        f"data/releases/{project}/0.1.2.zip",
         "home/.claude/projects/workspace_demo/session.jsonl",
     }
     assert expected <= names

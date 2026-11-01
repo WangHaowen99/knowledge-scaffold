@@ -303,12 +303,13 @@ async def _finish_delete(
 ) -> None:
     """删除收尾（响应之后执行）。各项互不依赖，并发进行，一项失败不拖累其余；
     没清干净的记入运维错误日志（工作区目录的残留由下次启动清扫兜底）。"""
-    from ..services import error_log, modeling_eval
+    from ..services import error_log, modeling_eval, release_store
     from ..services.engines import jiuwen
 
     jobs = {
         "工作区目录": asyncio.to_thread(workspaces.purge_staged, staged),
         "引擎工件区": asyncio.to_thread(remove_tree, jiuwen.shadow_dir(project_id)),
+        "发布留存": asyncio.to_thread(release_store.purge_project, workspaces.data_dir, project_id),
     }
     if eval_round:
         jobs["评测轮次取消"] = asyncio.to_thread(modeling_eval.cancel_round, *eval_round)

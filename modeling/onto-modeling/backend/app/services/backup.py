@@ -7,7 +7,9 @@
 - data/jiuwen/              Jiuwen 存档（SQLite 用 backup API 拷贝）与框架工件区
 - data/studio/              Studio 草稿与租约
 - data/eval-data-sources/   评测数据源配置
+- data/releases/            发布留存的知识包（按版本下载读这里）
 - data/onto-mcp.sqlite      MCP token 库（backup API 拷贝）
+- data/service-tokens.json  服务令牌（只有摘要）
 - data/*.json、*.jsonl      各类设置、审计与错误留档
 - home/.claude/projects/    CLI transcript（存在才备）
 
@@ -84,7 +86,9 @@ def _data_entries(manager) -> list[Path]:
         model_settings,
         modeling_cleanup,
         personal_model_settings,
+        release_store,
         runtime_settings,
+        service_tokens,
         studio,
     )
     from .engines import jiuwen
@@ -95,7 +99,9 @@ def _data_entries(manager) -> list[Path]:
         jiuwen._checkpoint_db_path().parent,
         studio._state_file("backup", "probe").parent,
         eval_data_sources._file("backup").parent,
+        release_store.root_dir(manager.data_dir),
         tokens.database_path(manager),
+        service_tokens.store_path(),
         model_settings._file(),
         personal_model_settings._file(),
         runtime_settings._file(),

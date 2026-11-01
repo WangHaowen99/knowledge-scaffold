@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - Windows development fallback
     fcntl = None
 
 from .. import config
-from . import audit, material_detect, package_mapping, package_operations, solver_contract, solver_validation
+from . import audit, material_detect, package_mapping, package_operations, release_store, solver_contract, solver_validation
 from .document_metadata import report_name
 from .name_conflict import MAX_DISPLAY_NAME_LENGTH, detect_name_conflict
 from .script_env import minimal_env
@@ -114,7 +114,8 @@ def _is_auto_detected(directive) -> bool:
 
 class WorkspaceManager:
     def __init__(self, data_dir: Path, assets_dir: Path):
-        self.workspaces_dir = Path(data_dir) / "workspaces"
+        self.data_dir = Path(data_dir)
+        self.workspaces_dir = self.data_dir / "workspaces"
         self.assets_dir = Path(assets_dir)
         self.workspaces_dir.mkdir(parents=True, exist_ok=True)
 
@@ -951,6 +952,7 @@ class WorkspaceManager:
         source_root: Path | None = None,
         version: str = "",
         source_commit: str = "",
+        draft: bool = False,
     ) -> Path:
         """发布为知识包（consumer 可导入的 ontology-package v0.1）。
 
@@ -973,6 +975,7 @@ class WorkspaceManager:
         source_root：用户发布传入按提交导出的只读树（publish_package），内容只从这棵树读；
         评测等其他调用方不传，读工作区当前文件。version 缺省按 HEAD 的提交数编号；
         source_commit 非空时写进 manifest，标明包出自哪个提交。
+        draft：求解验证候选包（solver_candidate_package），manifest 标 status: draft，不是发布。
         """
         project_root = self.project_root(project_id)
         root = source_root or project_root
@@ -1106,7 +1109,7 @@ class WorkspaceManager:
             f"version: {version}\n"
             # modeling 包契约（package-contract MANIFEST_REQUIRED_FIELDS）必选；
             # consumer 按已知键读取，多余字段无害
-            f"status: released\n"
+            f"status: {'draft' if draft else 'released'}\n"
             f"language: zh-CN\n"
         )
         if source_commit:
@@ -1788,6 +1791,14 @@ class WorkspaceManager:
                 if item["kind"] != "declared_unverifiable"
             })
             tag = f"{RELEASE_TAG_PREFIX}{version}"
+            # 留存发布包，供按版本下载（ADR-0020）：先留存再打标签，留存失败就不算发布。
+            # 同一版本已有留存时以留存为准，这次下载拿到的也是那份字节
+            stored = release_store.save(self.data_dir, project_id, version, dest_path, {
+                "commit": commit, "tag": tag, "released_at": int(time.time()), "released_by": author,
+                "degraded": bool(degraded), "unbound_count": len(degraded),
+            })
+            if stored["sha256"] != hashlib.sha256(dest_path.read_bytes()).hexdigest():
+                shutil.copyfile(release_store.get(self.data_dir, project_id, version, commit)[0], dest_path)
             if not existing:
                 _git(root, "tag", "-a", tag, "-m", _release_message(version, author, degraded), commit)
             uncommitted = _uncommitted_package_changes(root)
@@ -1805,6 +1816,140 @@ class WorkspaceManager:
             }
             self._update_meta_unlocked(root, last_package_publish=record)
         return record
+
+    # ---- 三份契约：发布列表与按版本下载、求解验证候选与回执（ADR-0020） ----
+
+    def releases(self, project_id: str) -> list[dict]:
+        """发布记录：release/* 标签，版本号从新到旧。
+
+        标签给出版本、提交、发布时间、发布人与是否降级；留存记录补上格式、包摘要与拉取记录
+        （本功能之前打的标签没有留存，格式与摘要为 None，第一次下载补存后才有）。
+        """
+        root = self.project_root(project_id)
+        out = _git(
+            root, "for-each-ref", f"refs/tags/{RELEASE_TAG_PREFIX}",
+            "--format=%(refname:short)%1f%(*objectname)%(objectname)%1f%(taggerdate:unix)%1f%(contents)%1e",
+        )
+        stored = release_store.records(self.data_dir, project_id)
+        entries = []
+        for record in out.split("\x1e"):
+            parts = record.strip("\n").split("\x1f")
+            if len(parts) != 4 or not (match := _RELEASE_TAG_RE.fullmatch(parts[0])):
+                continue
+            version = f"{RELEASE_VERSION_PREFIX}{match.group(1)}"
+            commit = parts[1][:40]
+            by, degraded = _parse_release_message(parts[3])
+            package = stored.get(version)
+            if package and package.get("commit") != commit:
+                package = None
+            pulls = (package or {}).get("pulls") or []
+            entries.append({
+                "number": int(match.group(1)),
+                "version": version,
+                "tag": parts[0],
+                "commit": commit,
+                "released_at": int(parts[2]) if parts[2].isdigit() else None,
+                "released_by": by,
+                "degraded": degraded,
+                "format": package.get("format") if package else None,
+                "package": {"sha256": package["sha256"], "size": package["size"]} if package else None,
+                "pulls": {"count": len(pulls), "last_at": pulls[-1]["at"] if pulls else None},
+            })
+        entries.sort(key=lambda item: item.pop("number"), reverse=True)
+        return entries
+
+    def release_package(self, project_id: str, version: str, variant: str = "standard") -> tuple[Path, dict]:
+        """按版本取发布包：读发布时留存的包。
+
+        标准包留存缺失（数据目录丢失、留存功能之前的旧标签）时，按标签提交重新渲染一次并补存，记录标
+        backfilled；图模式变体第一次下载时按同一提交渲染并留存。之后同一版本同一变体都读这一份。
+        """
+        if not release_store.VERSION_RE.match(version or ""):
+            raise WorkspaceError("版本号不合法", 400, "invalid_argument")
+        if variant not in release_store.VARIANTS:
+            raise WorkspaceError(f"变体只支持 {'、'.join(release_store.VARIANTS)}", 400, "invalid_argument")
+        root = self.project_root(project_id)
+        tag = f"{RELEASE_TAG_PREFIX}{version}"
+        found = _run_git(root, ("rev-parse", "-q", "--verify", f"refs/tags/{tag}^{{commit}}"))
+        commit = found.stdout.strip()
+        if found.returncode != 0 or not commit:
+            raise WorkspaceError(f"版本 {version} 不存在", 404, "release_not_found")
+        stored = release_store.get(self.data_dir, project_id, version, commit, variant)
+        if stored is not None:
+            return stored
+        with self._project_lock(project_id):
+            stored = release_store.get(self.data_dir, project_id, version, commit, variant)
+            if stored is not None:
+                return stored
+            message = _git(root, "for-each-ref", f"refs/tags/{tag}", "--format=%(contents)")
+            by, degraded = _parse_release_message(message)
+            with tempfile.TemporaryDirectory(prefix="onto-release-render-") as scratch:
+                dest = Path(scratch) / "package.zip"
+                try:
+                    with _release_tree(root, commit) as tree:
+                        binding = package_mapping.resolve_object_tables(
+                            tree, tables=package_mapping.read_source_tables(tree, state_root=root),
+                            strict_declared=not degraded,
+                        )
+                        self.export_package_zip(
+                            project_id, dest, binding=binding, graph=variant == "graph",
+                            allow_unbound=degraded, source_root=tree, version=version, source_commit=commit,
+                        )
+                except WorkspaceError as exc:
+                    raise WorkspaceError(
+                        f"版本 {version} 没有留存的包，按标签提交渲染失败：{exc}",
+                        409, "release_package_unavailable",
+                    ) from exc
+                release_store.save(self.data_dir, project_id, version, dest, {
+                    "commit": commit, "tag": tag, "released_by": by, "degraded": degraded,
+                    "backfilled": variant == "standard",
+                }, variant)
+        return release_store.get(self.data_dir, project_id, version, commit, variant)
+
+    def solver_candidate_package(self, project_id: str, dest_path: Path, allow_unbound: bool = False) -> dict:
+        """求解验证候选包：按 HEAD 提交渲染，manifest 标 draft，不打标签、不算发布。
+
+        只跳过验证门禁本身（验证就是为了它），静态检查与数据绑定照发布同口径拦截。
+        返回提交、发布时会得到的版本号与求解契约修订号，验证方据此回写回执。
+        """
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            commit = _head_commit(root)
+            version, _ = _release_version(root, commit)
+            with _release_tree(root, commit) as tree:
+                check = self._solver_check_at(tree)
+                if not check.needs_validation:
+                    raise WorkspaceError(
+                        "当前提交没有启用的求解契约，无需端到端验证", 400, "solver_validation_not_required"
+                    )
+                if check.findings:
+                    raise WorkspaceError(
+                        "求解契约静态检查未通过：" + "；".join(item["message"] for item in check.findings[:3]),
+                        400, solver_contract.CODE_INVALID,
+                    )
+                binding = package_mapping.resolve_object_tables(
+                    tree, tables=package_mapping.read_source_tables(tree, state_root=root),
+                    strict_declared=not allow_unbound,
+                )
+                self.export_package_zip(
+                    project_id, dest_path, binding=binding, allow_unbound=allow_unbound,
+                    source_root=tree, version=version, source_commit=commit, draft=True,
+                )
+        return {
+            "commit": commit,
+            "version": version,
+            "revision": check.revision,
+            "contract_digest": str(check.digests.get("total") or ""),
+        }
+
+    def solver_receipt_targets(self, project_id: str) -> dict[str, solver_contract.SolverCheck]:
+        """回执可以绑定的求解契约修订：HEAD 提交的（发布读它）与工作区当前的（面板读它），
+        只收需要端到端验证的；两者通常相同，工作区有未提交的契约改动时才不同。"""
+        root = self.project_root(project_id)
+        checks = [self._solver_check_at(root)]
+        with _release_tree(root, _head_commit(root)) as tree:
+            checks.append(self._solver_check_at(tree))
+        return {check.revision: check for check in checks if check.needs_validation and check.revision}
 
     # ---- 文件写入与历史版本 ----
 
@@ -2497,6 +2642,17 @@ def _release_message(version: str, author: str, degraded: list[str]) -> str:
     else:
         lines.append("降级发布：否")
     return "\n".join(lines) + "\n"
+
+
+_RELEASE_BY_RE = re.compile(r"^发布人：(.*)$", re.M)
+_RELEASE_DEGRADED_RE = re.compile(r"^降级发布：是", re.M)
+
+
+def _parse_release_message(message: str) -> tuple[str, bool]:
+    """发布标签说明（_release_message 写的）→ (发布人, 是否降级发布)。"""
+    by = _RELEASE_BY_RE.search(message or "")
+    author = by.group(1).strip() if by else ""
+    return ("" if author == "未登录用户" else author), bool(_RELEASE_DEGRADED_RE.search(message or ""))
 
 
 def _is_package_source(path: str) -> bool:

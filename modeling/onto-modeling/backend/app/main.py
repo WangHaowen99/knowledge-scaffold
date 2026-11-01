@@ -7,11 +7,15 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config
-from .routers import admin, auth_routes, projects, sessions, settings, onto_mcp
+from .routers import admin, auth_routes, contracts, projects, sessions, settings, onto_mcp
+from .routers import service_tokens as service_token_routes
 from .services import auth
 from .services.agent_sessions import SDK_AVAILABLE, SessionError
 from .services.auth import AuthError
 from .services.conversation_store import ConversationError
+from .services.feedback_inbox import FeedbackRejected
+from .services.service_tokens import ServiceTokenError
+from .services.solver_validation import ReceiptRejected
 from .services.workspace import WorkspaceError
 
 @asynccontextmanager
@@ -63,9 +67,12 @@ app.include_router(projects.router)
 app.include_router(sessions.router)
 app.include_router(settings.router)
 app.include_router(admin.router)
+app.include_router(service_token_routes.router)
+app.include_router(contracts.router)
 
 # 白名单外的 /api 路由要求有效 access token；token 可来自
-# Authorization 头或 ?token=（EventSource / 导出下载链接无法带头）
+# Authorization 头或 ?token=（EventSource / 导出下载链接无法带头）。
+# 三份契约接口由接口自己验服务令牌（contracts.skips_login），不走登录校验
 AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/onto-mcp/")
 
 
@@ -74,16 +81,14 @@ async def auth_middleware(request: Request, call_next):
     path = request.url.path
     is_non_api = not path.startswith("/api")
     is_exempt = path.startswith(AUTH_EXEMPT_PREFIXES) or path == "/api/health"
+    token = contracts.bearer(request)
     if (
         not auth.ENABLED
         or is_non_api
         or is_exempt
+        or contracts.skips_login(request.method, path, token)
     ):
         return await call_next(request)
-    token = ""
-    header = request.headers.get("authorization", "")
-    if header.lower().startswith("bearer "):
-        token = header[7:]
     if not token:
         token = request.query_params.get("token", "")
     claims = auth.verify_access_token(token) if token else None
@@ -110,6 +115,19 @@ async def workspace_error_handler(request: Request, exc: WorkspaceError):
     if conflict:
         content["conflict"] = conflict
     return JSONResponse(status_code=exc.status, content=content)
+
+
+@app.exception_handler(ServiceTokenError)
+@app.exception_handler(ReceiptRejected)
+@app.exception_handler(FeedbackRejected)
+async def contract_error_handler(
+    request: Request, exc: ServiceTokenError | ReceiptRejected | FeedbackRejected
+):
+    # 契约接口按 API 契约 1.5 的错误体（code、message、details），error 字段兼容现有调用方
+    return JSONResponse(
+        status_code=exc.status,
+        content={"code": exc.code, "message": str(exc), "details": exc.details, "error": str(exc)},
+    )
 
 
 @app.exception_handler(SessionError)
