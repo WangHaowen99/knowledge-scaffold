@@ -90,7 +90,7 @@ class Client:
 
 def login(base: str, username: str, password: str) -> str:
     req = urllib.request.Request(
-        base + "/api/auth/login",
+        base + "/api/v1/auth/login",
         method="POST",
         headers={"Content-Type": "application/json"},
         data=json.dumps({"username": username, "password": password}).encode(),
@@ -107,7 +107,7 @@ def upload(base: str, token: str, project: str, subdir: str, name: str, text: st
         f"Content-Type: text/plain\r\n\r\n{text}\r\n--{boundary}--\r\n"
     ).encode()
     req = urllib.request.Request(
-        f"{base}/api/projects/{project}/resources",
+        f"{base}/api/v1/projects/{project}/resources",
         method="POST",
         headers={
             "Authorization": f"Bearer {token}",
@@ -151,7 +151,7 @@ def drive_command(client: Client, project: str, container: str, text: str,
     拆成多轮（中途 idle），idle 仅作为"可继续推进"的信号。"""
     stats = {"cards_answered": 0, "inline_questions": 0, "errors": 0}
     seq_before = len(read_events(project, container))
-    client.call("POST", f"/api/projects/{project}/session/messages", {"text": text})
+    client.call("POST", f"/api/v1/projects/{project}/conversations/-/messages", {"text": text})
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         time.sleep(12)
@@ -163,19 +163,25 @@ def drive_command(client: Client, project: str, container: str, text: str,
         if pending:
             e = pending[0]
             questions = (e.get("tool_input") or {}).get("questions") or []
-            answers = {}
-            for q in questions:
+            # 选项 ID 为「问题序号.选项序号」（API 契约 S-11）；每题选带「推荐」的项，没有就选第一项
+            option_ids = []
+            for q_index, q in enumerate(questions):
                 opts = [o.get("label", "") for o in (q.get("options") or [])]
-                pick = next((o for o in opts if "推荐" in o), opts[0] if opts else "确认")
-                answers[q.get("question", "")] = pick
+                pick = next((i for i, o in enumerate(opts) if "推荐" in o), 0)
+                if opts:
+                    option_ids.append(f"{q_index}.{pick}")
             try:
-                client.call("POST", f"/api/projects/{project}/session/permissions/{e['request_id']}",
-                            {"behavior": "allow", "answers": answers})
+                if option_ids:
+                    client.call("POST", f"/api/v1/projects/{project}/conversations/-/questions/{e['request_id']}/answer",
+                                {"option_ids": option_ids})
+                else:
+                    client.call("POST", f"/api/v1/projects/{project}/conversations/-/permissions/{e['request_id']}",
+                                {"behavior": "allow"})
                 stats["cards_answered"] += 1
             except Exception:
                 pass
             continue
-        state = client.call("GET", f"/api/projects/{project}/session").get("state", "")
+        state = client.call("GET", f"/api/v1/projects/{project}/conversations/-").get("state", "")
         if state == "error":
             stats["errors"] += 1
             break
@@ -199,7 +205,7 @@ def drive_command(client: Client, project: str, container: str, text: str,
                         nudge = ("命令尚未执行完毕（产物或收尾缺失）。请继续按命令文档完成"
                                  "全部剩余步骤：产物写入、检查、state_helper release、"
                                  "update-progress 与 git 提交。")
-                    client.call("POST", f"/api/projects/{project}/session/messages",
+                    client.call("POST", f"/api/v1/projects/{project}/conversations/-/messages",
                                 {"text": nudge})
                     continue
                 break
@@ -207,7 +213,7 @@ def drive_command(client: Client, project: str, container: str, text: str,
                 stats["inline_questions"] += 1
                 nudges -= 1
                 seq_before = len(events)
-                client.call("POST", f"/api/projects/{project}/session/messages",
+                client.call("POST", f"/api/v1/projects/{project}/conversations/-/messages",
                             {"text": "按你的推荐选项继续，不要等待；后续问题请用 ask_user 工具提出。"})
                 continue
             break
@@ -406,13 +412,12 @@ def main() -> int:
     token = login(args.base, args.username, password)
     client = Client(args.base, token,
                     relogin=lambda: login(args.base, args.username, password))
-    project = client.call(
-        "POST", "/api/projects",
-        {"name": f"评测-{args.engine}-{time.strftime('%m%d%H%M')}"})["id"]
+    name = f"评测-{args.engine}-{time.strftime('%m%d%H%M')}"
+    project = client.call("POST", "/api/v1/projects", {"name": name, "goal": "合成外卖领域的评测基线"})["id"]
     print(f"# eval project: {project} (engine={args.engine})", file=sys.stderr)
     upload(args.base, token, project, "others", "外卖平台业务说明.md", MATERIAL_MD)
     upload(args.base, token, project, "excel", "订单字段表.csv", MATERIAL_CSV)
-    client.call("PUT", f"/api/projects/{project}/engine", {"engine": args.engine})
+    client.call("PUT", f"/api/v1/projects/{project}/engine", {"engine": args.engine})
 
     started = time.time()
     card = score_chain(client, project, args.container)
@@ -422,7 +427,7 @@ def main() -> int:
     print(json.dumps(card, ensure_ascii=False, indent=2))
 
     if not args.keep:
-        client.call("DELETE", f"/api/projects/{project}")
+        client.call("DELETE", f"/api/v1/projects/{project}", {"confirm_name": name})
     return 0
 
 
