@@ -46,6 +46,9 @@ async def _lifespan(app: FastAPI):
         recovery_task.cancel()
         await asyncio.gather(backup_task, recovery_task, return_exceptions=True)
         await manager.shutdown()
+        from .services.engines import jiuwen_remote
+
+        await jiuwen_remote.stop()  # Jiuwen worker（方案 B11）：会话都断开之后再停
         governance_startup.stopped()
 
 

@@ -342,6 +342,8 @@ declare(
       description="内测引擎单次输出上限"),
     C("ONTO_WEB_JIUWEN_MAX_ITERATIONS", "60", "int", minimum=1, maximum=1000, effect="new_session",
       description="内测引擎单轮最大迭代"),
+    C("ONTO_WEB_JIUWEN_WORKER", "true", "bool", effect="restart",
+      description="内测引擎会话放在独立 worker 进程（出错不拖垮内核，方案 B11）；false 退回进程内"),
     # 上下文参数（配置页 > .env > 内置默认）
     C("ONTO_WEB_CONTEXT_WINDOW", "", "int", minimum=1_000, maximum=10_000_000, effect="next_message", edit_page="sys",
       precedence=UI_FIRST, data_dir=_context_value("max_context_tokens"), description="上下文窗口"),

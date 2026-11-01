@@ -49,6 +49,8 @@ JIUWEN_API_KEY = _env("ONTO_WEB_JIUWEN_API_KEY")
 JIUWEN_MODEL = _env("ONTO_WEB_JIUWEN_MODEL")
 JIUWEN_MAX_TOKENS = _env("ONTO_WEB_JIUWEN_MAX_TOKENS")
 JIUWEN_MAX_ITERATIONS = _env("ONTO_WEB_JIUWEN_MAX_ITERATIONS")
+# Jiuwen 会话放在独立 worker 子进程里（方案 B11）：出错不拖垮内核；false 退回进程内运行
+JIUWEN_WORKER = _env("ONTO_WEB_JIUWEN_WORKER")
 
 # 项目级本地 MCP 的公开地址（反向代理部署时用）；空 = 按访问工作台的地址生成
 ONTO_MCP_PUBLIC_BASE_URL = _env("ONTO_WEB_MCP_PUBLIC_BASE_URL").rstrip("/")
