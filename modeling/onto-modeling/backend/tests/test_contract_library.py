@@ -106,3 +106,39 @@ def test_tampered_script_falls_back_to_image_version(two_versions):
 def test_workspace_without_assembly_uses_image_version(tmp_path: Path):
     (tmp_path / "ws").mkdir()
     assert contracts.for_project(tmp_path / "ws") is contracts.default()
+
+
+def test_write_path_syncs_descriptors_with_locked_version(two_versions, monkeypatch):
+    """写入事务的派生步骤（脚本描述符）用项目锁定版本的契约库，和 agent 在工作区里跑的同一份。"""
+    from tests.test_script_descriptor import REVIEW_SCRIPT
+
+    manager, _v1, v2 = two_versions
+    # 契约库按版本缓存：别的用例在它自己的数据目录里装过（并篡改过）同一个版本，这里从空缓存开始
+    monkeypatch.setattr(contracts, "_LIBRARIES", {})
+    project_id = manager.create_project("描述符")["id"]
+    root = manager.project_root(project_id)
+    lock = lockfile.read(root)
+    lock.upsert(manager.packs.entry_for("core", v2, follow=False))
+    lockfile.write(root, lock)
+    manager.packs.apply(root)
+    locked = contracts.for_project(root).script_descriptor
+    image = contracts.default().script_descriptor
+    assert locked is not image
+
+    calls = []
+    original = locked.sync_workspace_descriptors
+
+    def recording(ontology):
+        calls.append(Path(ontology))
+        return original(ontology)
+
+    def image_used(_ontology):
+        raise AssertionError("写入路径不该用镜像版本的描述符实现")
+
+    monkeypatch.setattr(locked, "sync_workspace_descriptors", recording)
+    monkeypatch.setattr(image, "sync_workspace_descriptors", image_used)
+    result = manager.write_file(project_id, "ontology/scripts/order_review.py", REVIEW_SCRIPT, author="operator_a")
+    assert result["commit"] and calls == [root / "ontology"]
+    # 目录规范化（存量项目补描述符）也用同一份
+    manager.ensure_package_layout(project_id)
+    assert calls == [root / "ontology"] * 2

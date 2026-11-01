@@ -435,14 +435,14 @@ class ChangeTx:
     def _sync_script_descriptors(self) -> None:
         """改了 ontology/scripts/*.py 时同名描述符跟着刷新、进同一个提交。
 
-        描述符同步只在这一处调用：插件运行时按项目锁定契约库版本后，改成
-        `contracts.for_project(root).script_descriptor`（主控合并时替换）。
+        描述符实现取本项目锁定版本的契约库（方案 A16）：和 agent 在工作区里跑的是同一份。
         """
         scripts = [Path(rel) for rel in self._paths if _is_workspace_script(Path(rel))]
         if not scripts:
             return
-        from ...services.toolkit import script_descriptor
+        from ...services.packs import contracts
 
+        script_descriptor = contracts.module_for(self.root, "script_descriptor")
         for script in scripts:
             self.touch(script.with_suffix(".md").as_posix())
         script_descriptor.sync_workspace_descriptors(self.root / "ontology")

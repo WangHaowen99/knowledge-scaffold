@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from .. import material_detect, package_mapping, solver_contract
-from ..toolkit import script_descriptor as _script_descriptor
+from ..packs import contracts as _contracts
 from .errors import WorkspaceError
 from .gitops import _by, _git
 from .layout import (
@@ -52,7 +52,9 @@ class FilesMixin:
         root = self.project_root(project_id)
         was_clean = not _git(root, "status", "--porcelain").strip()
         changed = self._migrate_legacy_logic(root)
-        changed = bool(_script_descriptor.sync_workspace_descriptors(root / "ontology")) or changed
+        # 描述符按本项目锁定版本的契约库生成（方案 A16）
+        descriptors = _contracts.module_for(root, "script_descriptor")
+        changed = bool(descriptors.sync_workspace_descriptors(root / "ontology")) or changed
         changed = self._refresh_indexes(root) or changed
         if changed and was_clean:
             from ...kernel.writepath import Origin, stamped
