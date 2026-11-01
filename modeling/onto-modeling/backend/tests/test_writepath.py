@@ -59,6 +59,13 @@ def _trailers(root: Path, rev: str = "HEAD") -> dict:
     return dict(line.split(": ", 1) for line in body.splitlines() if line.startswith("Onto-"))
 
 
+def _packs(root: Path) -> dict:
+    """提交 trailer 的 Onto-Packs：本项目生效中的装配里的包与版本（插件运行时登记的提供方）。"""
+    from app.services.packs import governance
+
+    return governance.packs_trailer(root)
+
+
 def _files(root: Path, rev: str = "HEAD") -> list[str]:
     return sorted(filter(None, _git(root, "-c", "core.quotePath=false", "show", "--name-only", "--format=", rev).splitlines()))
 
@@ -82,7 +89,7 @@ def test_web_save_commits_only_its_path_with_trailer(manager, project, events):
                                base_revision="", author="operator_a")
     assert saved["commit"] == _git(root, "rev-parse", "HEAD").strip()
     assert _files(root) == ["ontology/object/item_a.md"]
-    assert _trailers(root) == {"Onto-Source": "web", "Onto-Author": "operator_a"}
+    assert _trailers(root) == _packs(root) | {"Onto-Source": "web", "Onto-Author": "operator_a"}
     # agent 的暂存改动原样留在索引里，没被带进提交
     assert _git(root, "diff", "--cached", "--name-only").split() == ["research/agent-note.md"]
     assert events[-1].source == "web" and events[-1].paths == ("ontology/object/item_a.md",)
@@ -108,7 +115,7 @@ def test_mcp_write_goes_through_tx(manager, project, monkeypatch, events):
                 {"object_id": "object:item_a", "expected_revision": revision,
                  "metadata": {"description": "合成描述已改"}}, "operator_a")
     assert _files(root) == ["ontology/object/item_a.md"]
-    assert _trailers(root) == {"Onto-Source": "mcp", "Onto-Author": "operator_a"}
+    assert _trailers(root) == _packs(root) | {"Onto-Source": "mcp", "Onto-Author": "operator_a"}
     assert "research/agent-note.md" in _git(root, "status", "--porcelain")
     assert events[-1].source == "mcp"
 
@@ -119,7 +126,7 @@ def test_import_commits_carry_import_source(manager, tmp_path):
         zf.writestr("ontology/object/item_b.md", OBJECT)
     meta = manager.import_zip("导入演示", archive, owner="operator_a")
     root = manager.project_root(meta["id"])
-    assert _trailers(root) == {"Onto-Source": "import", "Onto-Author": "operator_a"}
+    assert _trailers(root) == _packs(root) | {"Onto-Source": "import", "Onto-Author": "operator_a"}
     assert "ontology/object/item_b.md" in _files(root)
 
 
@@ -209,6 +216,16 @@ def test_trailer_provider_adds_pack_versions(manager, project, monkeypatch):
                                "Onto-Packs": "core@1.0.0, trace@0.9.1"}
 
 
+def test_packs_trailer_names_the_active_assembly(manager, project):
+    """接上插件运行时之后，提交都带 Onto-Packs（B3 合并留下的登记点）。"""
+    project_id, root = project
+    manager.write_file(project_id, "ontology/object/item_a.md", OBJECT + "\n包\n", author="operator_a")
+    packs = _trailers(root).get("Onto-Packs", "")
+    active = json.loads((root / ".claude" / "MANIFEST.json").read_text(encoding="utf-8"))["packs"]
+    assert packs == ", ".join(sorted(f"{item['name']}@{item['version']}" for item in active))
+    assert packs.startswith("core@")
+
+
 def test_change_target_is_pluggable(manager, project):
     """P2 变更集副本实现同一接口：事务把提交交给 target，不直接写主线。"""
     project_id, root = project
@@ -236,7 +253,7 @@ def test_change_target_is_pluggable(manager, project):
     assert result.commit == "c0ffee" and _git(root, "rev-parse", "HEAD").strip() == head
     paths, message, values = target.calls[0]
     assert "ontology/object/item_c.md" in paths and "ontology/object/index.md" in paths  # 派生的索引一起
-    assert values == {"Onto-Source": "agent", "Onto-Author": "operator_a",
+    assert values == _packs(root) | {"Onto-Source": "agent", "Onto-Author": "operator_a",
                       "Onto-Changeset": "cs-1", "Onto-Node": "core.object@1.0.0"}
 
 
@@ -251,7 +268,7 @@ def test_compat_commit_paths_infers_source_from_message(manager, project):
     (root / "feedback" / "batch.json").write_text("{}", encoding="utf-8")
     with manager._project_lock(project_id):
         commit = _commit_paths(root, ["feedback"], "feedback: 接收外部反馈 by service")
-    assert commit and _trailers(root) == {"Onto-Source": "plugin", "Onto-Author": "service"}
+    assert commit and _trailers(root) == _packs(root) | {"Onto-Source": "plugin", "Onto-Author": "service"}
 
 
 # ---- 派生文件（C6） ----
@@ -282,7 +299,7 @@ def test_revert_only_touches_paths_that_differ(manager, project):
     assert _files(root) == ["ontology/object/index.md", "ontology/object/item_a.md", "ontology/object/item_e.md"]
     assert not (root / "ontology/object/item_e.md").exists()  # 目标版本之后新增的文件删掉
     assert (root / "ontology/object/item_a.md").read_text(encoding="utf-8") == OBJECT
-    assert _trailers(root) == {"Onto-Source": "revert", "Onto-Author": "operator_a"}
+    assert _trailers(root) == _packs(root) | {"Onto-Source": "revert", "Onto-Author": "operator_a"}
     assert agent_file.exists() and staged.exists()
     assert "research/agent-note.md" in _git(root, "diff", "--cached", "--name-only")
     with pytest.raises(WorkspaceError) as caught:
@@ -324,6 +341,6 @@ def test_interrupted_write_is_committed_on_startup(manager, project):
     assert item["id"] == "write_intents" and item["result"] == "committed"
     assert _files(root) == ["ontology/object/item_a.md"]
     assert _git(root, "log", "-1", "--format=%s").startswith("recover: 补提交中断的写入")
-    assert _trailers(root) == {"Onto-Source": "web", "Onto-Author": "operator_a"}
+    assert _trailers(root) == _packs(root) | {"Onto-Source": "web", "Onto-Author": "operator_a"}
     assert not list((Path(config.DATA_DIR) / "writepath" / "intents").glob("*.json"))
     assert writepath.recover_intents(manager)["result"] == "ok"

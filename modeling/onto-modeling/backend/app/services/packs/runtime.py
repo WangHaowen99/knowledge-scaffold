@@ -33,6 +33,11 @@ class PackRuntime:
         self.assets_dir = Path(assets_dir)
         self.repository = PackRepository(self.data_dir)
         self.assembler = Assembler(self.data_dir, self.repository)
+        # 提交 trailer 的 Onto-Packs：有插件运行时就登记（同一个函数只登记一次）
+        from ...kernel.writepath import register_trailer_provider
+        from .governance import packs_trailer
+
+        register_trailer_provider(packs_trailer)
 
     # ---- 官方包与默认锁 ----
 

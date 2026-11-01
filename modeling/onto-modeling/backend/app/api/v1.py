@@ -175,8 +175,13 @@ class TraceMiddleware:
 def install(app: FastAPI) -> None:
     from ..governance.http import GovernanceMiddleware, OpsOnMainGuard
 
+    from . import deps
+    from ..services.packs import governance as packs_governance
+
     for router in _routers():
         app.include_router(router)
+    # 插件运行时接到治理平面：就绪检查的装配项、O-29 包查询、O-42 版本清单、提交 trailer 的 Onto-Packs
+    packs_governance.install(deps.workspaces)
     from ..governance.quota import QuotaGate
 
     errors.install(app)

@@ -71,6 +71,9 @@ def reconcile_all(manager) -> dict:
             _log.warning("项目 %s 启动核对装配目录失败：%s", project_id, exc)
     if report["repaired"]:
         _log.warning("启动时重新装配了项目：%s", ", ".join(report["repaired"]))
+    from . import governance
+
+    governance.record_reconcile(report)
     return report
 
 
