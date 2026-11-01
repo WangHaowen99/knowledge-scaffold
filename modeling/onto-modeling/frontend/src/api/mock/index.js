@@ -241,6 +241,8 @@ export function createMockServer() {
 
   const routes = [];
   const commandHooks = [];
+  // AR-01 的产物类型：图示包的流程图之外，F3 各页的 mock 往这里登记（如场景走查的 trace.scenario、trace.mock）
+  const artifactTypeDefs = [];
   const on = (method, pattern, handler) => routes.push({ method, re: new RegExp(`^/api/v1${pattern}$`), handler });
 
   // ---------- 3.1 / 3.2 ----------
@@ -651,7 +653,7 @@ export function createMockServer() {
   const ctx = {
     on, json, err, wait, db, hub, sc, uid, F, cardOf, convKey, projKey, convsOf, flowOf, stageOf,
     emitConv, emitConvTransient, emitProj, emitUser, setSession, scopeOf, setScope, scopeLock, later, runReply,
-    commandHooks, putTask, seedTask, tasksOf,
+    commandHooks, putTask, seedTask, tasksOf, artifactTypeDefs,
   };
   MODULES.forEach((mod) => mod.register?.(ctx));
 
@@ -675,7 +677,12 @@ export function createMockServer() {
     if (maintenance?.mode === 'read_only' && method !== 'GET' && !path.startsWith('/api/v1/auth/')) {
       return err(503, 'maintenance_read_only', maintenance.message, { message: maintenance.message, until: null });
     }
-    return route.handler({ m: path.match(route.re), query: u.searchParams, body, form, user, init });
+    // 同一路径可以有几个处理者：返回 undefined 表示「不归我管」，交给后面登记的（如插件产物按类型分到各页的 mock）
+    for (const r of routes.filter((x) => x.method === method && x.re.test(path))) {
+      const res = await r.handler({ m: path.match(r.re), query: u.searchParams, body, form, user, init });
+      if (res !== undefined) return res;
+    }
+    return err(404, 'not_found', `mock 没有处理这个请求：${method} ${path}`);
   }
 
   return { fetch: handle, hub, db, scenario: sc, emitConv, emitProj, emitUser };

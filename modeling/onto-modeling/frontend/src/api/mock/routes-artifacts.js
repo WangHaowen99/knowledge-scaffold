@@ -209,16 +209,21 @@ const bump = (label) => {
 };
 
 export function register(ctx) {
-  const { on, json, err, db, sc, cardOf, scopeOf, emitProj, uid, hub, convKey, convsOf, emitConv } = ctx;
-  const unknownType = (t) => (t !== TYPE ? err(404, 'artifact_type_unknown', '没有这种产物类型', { type: t }) : null);
+  const { on, json, err, db, sc, cardOf, scopeOf, emitProj, uid, hub, convKey, convsOf, emitConv, artifactTypeDefs = [] } = ctx;
+  // 别的分组登记过的产物类型（artifactTypeDefs）不归这里管：返回 undefined，交给后面登记的路由（index.js 按顺序试）；
+  // 谁都没登记的类型照常 404
+  const unknownType = (t) => {
+    if (t === TYPE) return null;
+    return artifactTypeDefs.some((d) => d.type === t) ? undefined : err(404, 'artifact_type_unknown', '没有这种产物类型', { type: t });
+  };
   const enabled = () => true;
 
-  on('GET', '/projects/([^/]+)/artifact-types', () => json(200, { items: enabled() ? [FLOWCHART_TYPE] : [] }));
+  on('GET', '/projects/([^/]+)/artifact-types', () => json(200, { items: [...(enabled() ? [FLOWCHART_TYPE] : []), ...artifactTypeDefs] }));
 
   on('GET', '/projects/([^/]+)/artifacts/([^/]+)/summary', ({ m }) => {
     const t = decodeURIComponent(m[2]);
     const bad = unknownType(t);
-    if (bad) return bad;
+    if (bad !== null) return bad;
     const list = [...flowState(db, m[1], sc).values()];
     const by = Object.values(STATUS).map((s) => ({ value: s.value, label: s.label, count: list.filter((r) => r.state === s.value).length }));
     return json(200, { total: list.length, by, stale: 0, trend: null, delta_vs_previous_pct: null });
@@ -227,7 +232,7 @@ export function register(ctx) {
   on('GET', '/projects/([^/]+)/artifacts/([^/]+)', ({ m, query }) => {
     const t = decodeURIComponent(m[2]);
     const bad = unknownType(t);
-    if (bad) return bad;
+    if (bad !== null) return bad;
     const lock = scopeOf(m[1]);
     let list = [...flowState(db, m[1], sc).values()].map((r) => row(r, lock));
     const st = query.get('filter[state]');
@@ -241,6 +246,8 @@ export function register(ctx) {
   });
 
   on('GET', '/projects/([^/]+)/artifacts/([^/]+)/([^/]+)/history', ({ m }) => {
+    const bad = unknownType(decodeURIComponent(m[2]));
+    if (bad !== null) return bad;
     const rec = flowState(db, m[1], sc).get(decodeURIComponent(m[3]));
     if (!rec) return err(404, 'artifact_not_found', '流程图不存在');
     return json(200, { items: [...rec.history].reverse(), next_cursor: null });
@@ -248,7 +255,7 @@ export function register(ctx) {
 
   on('GET', '/projects/([^/]+)/artifacts/([^/]+)/([^/]+)', ({ m }) => {
     const bad = unknownType(decodeURIComponent(m[2]));
-    if (bad) return bad;
+    if (bad !== null) return bad;
     const rec = flowState(db, m[1], sc).get(decodeURIComponent(m[3]));
     if (!rec) return err(404, 'artifact_not_found', '流程图不存在');
     return json(200, detail(rec, scopeOf(m[1]), m[1]));
@@ -283,7 +290,7 @@ export function register(ctx) {
   on('PUT', '/projects/([^/]+)/artifacts/([^/]+)/([^/]+)', async ({ m, body }) => {
     const pid = m[1];
     const bad = unknownType(decodeURIComponent(m[2]));
-    if (bad) return bad;
+    if (bad !== null) return bad;
     const rec = flowState(db, pid, sc).get(decodeURIComponent(m[3]));
     if (!rec) return err(404, 'artifact_not_found', '流程图不存在');
     const lock = scopeOf(pid);
@@ -319,7 +326,7 @@ export function register(ctx) {
   on('POST', '/projects/([^/]+)/artifacts/([^/]+)', ({ m, body }) => {
     const pid = m[1];
     const bad = unknownType(decodeURIComponent(m[2]));
-    if (bad) return bad;
+    if (bad !== null) return bad;
     const map = flowState(db, pid, sc);
     const title = body.fields?.title || body.content?.process?.name || '未命名流程';
     const key = body.key || `flow-${uid()}`;
@@ -339,7 +346,7 @@ export function register(ctx) {
   on('DELETE', '/projects/([^/]+)/artifacts/([^/]+)/([^/]+)', ({ m, body }) => {
     const pid = m[1];
     const bad = unknownType(decodeURIComponent(m[2]));
-    if (bad) return bad;
+    if (bad !== null) return bad;
     const map = flowState(db, pid, sc);
     const rec = map.get(decodeURIComponent(m[3]));
     if (!rec) return err(404, 'artifact_not_found', '流程图不存在');
@@ -352,7 +359,7 @@ export function register(ctx) {
 
   on('POST', '/projects/([^/]+)/artifacts/([^/]+)/([^/]+)/validate', ({ m, body }) => {
     const bad = unknownType(decodeURIComponent(m[2]));
-    if (bad) return bad;
+    if (bad !== null) return bad;
     const rec = flowState(db, m[1], sc).get(decodeURIComponent(m[3]));
     if (!rec) return err(404, 'artifact_not_found', '流程图不存在');
     return json(200, checkFlowchart(body.content || rec.content));
