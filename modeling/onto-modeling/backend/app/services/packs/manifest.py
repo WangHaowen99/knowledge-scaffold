@@ -33,10 +33,15 @@ ENGINES = ("claude", "jiuwen")
 HOT_LEVELS = {"knowledge": "H0", "capability": "H1", "node": "H1", "provider": "H2", "exporter": "H2"}
 EFFECTIVE = {"H0": "immediate", "H1": "next_message", "H2": "restart"}
 
-# 平台内置的插件页面（详设 5.9.8）：包只能从这里选
-BUILTIN_PAGES = ("scenarios", "knowledge", "codegen")
-# 内核页面（可以挂子页的父页面）
-KERNEL_PAGES = ("workbench", "studio", "resources", "publish")
+# 平台内置的插件页面（详设 5.9.8；前端页面 ID）：包只能从这里选。代码生成与求解页的 ID 是 scripts
+BUILTIN_PAGES = ("scenarios", "knowledge", "scripts")
+# 平台内置的子页（详设 5.9.1「给内核页面加子页」，资料页的数据源、采集与快照、证据浏览器）
+BUILTIN_SUBPAGES = ("sources", "snapshots", "schema")
+# 内核页面（左栏固定的 4 项，也是可以挂子页的父页面）
+KERNEL_PAGES = ("wb-l2", "studio", "resources", "publish")
+# 左栏图标只能从平台图标集里选（详设 5.9.7）
+NAV_ICONS = ("layout", "graph", "folder", "upload", "flask", "book", "code", "database", "chart", "check",
+             "layers", "search", "spark", "tool")
 # 五元组实体类型：插件产物不能用这些名字（详设 4.4「插件不能新增实体类型」）
 CORE_ENTITY_TYPES = ("object", "operation", "rule", "metric", "script")
 # 包声明的写入范围不能碰的目录（详设 6.9 静态检查、契约 PL-15）
@@ -44,7 +49,8 @@ PROTECTED_DIRS = ("resource", ".claude", ".onto", ".git", ".ontology-state", "CL
 
 # 清单 contributes 里按名字列出的组成；skills 是目录，其余是文件
 LIST_FIELDS = ("commands", "agents", "skills", "scripts", "templates", "reference",
-               "nodes", "entries", "artifacts", "views", "reports", "gates", "config", "metrics", "rules")
+               "nodes", "entries", "artifacts", "views", "reports", "gates", "config", "metrics", "rules",
+               "prompts", "docs")
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,39}$")
 _ITEM_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*$")
@@ -214,6 +220,13 @@ class Manifest:
         for item in self.contributes.get("pages") or []:
             pages.append(dict(item) if isinstance(item, dict) else {"id": str(item)})
         return pages
+
+    def subpages(self) -> list[dict]:
+        return [dict(item) for item in self.contributes.get("subpages") or [] if isinstance(item, dict)]
+
+    def declared(self, kind: str) -> list[dict]:
+        """entries、gates、config、metrics、prompts 这类按映射声明的扩展项（字符串项当作 id）。"""
+        return [dict(item) if isinstance(item, dict) else {"id": str(item)} for item in self.contributes.get(kind) or []]
 
     def summary(self, *, checksums_ok: bool = True, size: int = 0, files: int = 0) -> dict:
         """契约 7.11 ManifestSummary。"""

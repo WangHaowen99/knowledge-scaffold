@@ -130,12 +130,48 @@ def _engine_or_default(engine: str | None) -> str | None:
     return engine
 
 
-def _reject_packs(body: dict) -> None:
-    """行业包、系统知识包要包仓库（方案 D1～D6，B3）；现在一个都没有。"""
-    for field in ("industry_packs", "system_packs"):
-        for item in body.get(field) or []:
-            name = item.get("name") if isinstance(item, dict) else item
-            raise ApiError("pack_not_found", f"包「{name}」不存在", 404, {"pack": name})
+def _selected_packs(body: dict) -> list[str] | None:
+    """新建向导选的包（契约 P-02）：行业包、系统知识包按名字启用（不存在 404 pack_not_found）；
+    能力包 `capabilities: {包名: bool}` 没写到的取推荐值（清单 default_on），包仓库里没有的能力名忽略
+    （前端目录可能比本部署多）。都没传时返回 None：锁文件按缺省能力包写。"""
+    runtime = deps.workspaces.packs
+    if runtime.core_version() is None:
+        return None
+    repository = runtime.repository
+    selected: list[str] = []
+    for field, category in (("industry_packs", "industry"), ("system_packs", "system")):
+        items = body.get(field) or []
+        if not isinstance(items, list):
+            raise ApiError("invalid_argument", f"{field} 必须是列表", 400, {"fields": {field: "list"}})
+        for item in items:
+            name = str(item.get("name") if isinstance(item, dict) else item or "")
+            version = repository.latest(name, "stable") if repository.versions(name) else None
+            if not version or repository.manifest(name, version).category != category:
+                raise ApiError("pack_not_found", f"包「{name}」不存在", 404, {"pack": name})
+            selected.append(name)
+    capabilities = body.get("capabilities")
+    if capabilities is not None and not isinstance(capabilities, dict):
+        raise ApiError("invalid_argument", "capabilities 必须是「包名: 是否启用」", 400, {"fields": {"capabilities": "object"}})
+    if capabilities is None and not selected:
+        return None
+    chosen = set(runtime.default_capabilities())
+    for name, on in (capabilities or {}).items():
+        version = repository.latest(str(name), "stable") if repository.versions(str(name)) else None
+        if not version or repository.manifest(str(name), version).category != "capability":
+            continue
+        (chosen.add if on else chosen.discard)(str(name))
+    return sorted(chosen - {"core"}) + selected
+
+
+def _pack_enabled(project_id: str, name: str) -> bool:
+    from ..services.packs import lockfile
+
+    try:
+        lock = lockfile.read(deps.workspaces.project_root(project_id))
+    except (ValueError, OSError):
+        return False
+    entry = lock.get(name) if lock else None
+    return bool(entry and entry.enabled)
 
 
 def _materials(body: dict, owner: str) -> list[dict]:
@@ -166,7 +202,7 @@ def create_project(request: Request, body: dict = Body(...)):
     build_mode = body.get("build_mode") or "L2"
     if build_mode not in BUILD_MODES:
         raise ApiError("invalid_argument", "build_mode 取值不合法", 400, {"fields": {"build_mode": "enum"}})
-    _reject_packs(body)
+    packs = _selected_packs(body)
     engine = _engine_or_default(body.get("engine"))
     owner = deps.actor(request) if deps.user(request) is not None else ""
     materials = _materials(body, deps.actor(request))
@@ -175,7 +211,7 @@ def create_project(request: Request, body: dict = Body(...)):
     if engine:
         extra["engine"] = engine
     with deps.workspaces.name_claim(name, _viewer(request)):
-        meta = deps.workspaces.create_project(name, owner=owner, background=goal[:200], **extra)
+        meta = deps.workspaces.create_project(name, owner=owner, background=goal[:200], packs=packs, **extra)
     if example:
         deps.workspaces.seed_example(meta["id"], author=deps.actor(request))
     if materials:
@@ -342,8 +378,8 @@ def update_project(project_id: str, request: Request, body: dict = Body(...)):
         mode = body.get("research_mode")
         if mode not in ("web", "local"):
             raise ApiError("invalid_argument", "research_mode 取值不合法", 400, {"fields": {"research_mode": "enum"}})
-        if mode == "web":
-            # 联网调研是可选包（websearch），包运行时（B3）之前没有可启用的包
+        if mode == "web" and not _pack_enabled(project_id, "websearch"):
+            # 联网调研是可选包（websearch）：没启用时不能切到联网模式
             raise ApiError("pack_not_enabled", "联网调研能力没有启用", 409, {"pack": "websearch"})
         fields["research_mode"] = mode
     if fields:

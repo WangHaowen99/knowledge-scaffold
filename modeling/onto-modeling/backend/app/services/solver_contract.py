@@ -83,6 +83,8 @@ FACT_SOURCE_KEYS = frozenset({"kind", "fail_closed", "evaluator_path"})
 # 公开问题类型，导入的旧包可保留），能力即 OR-Tools 服务能力里该问题类型的 features
 PROBLEM_FAMILY_CATALOG = {
     "candidate_selection.v1": {
+        # 界面上的名字（契约 SV-01 problem_families[].label）
+        "label": "候选方案二选一",
         "capabilities": ("domain_candidate_evaluation", "lexicographic_objective"),
         "aliases": ("binary_ordered_route.v1",),
     },
@@ -1025,7 +1027,8 @@ def registered_problem_family(name: str) -> str:
 def problem_family_catalog() -> list[dict]:
     """注册目录的对外视图：求解模型面板据此提供可选项与即时提示。"""
     return [
-        {"id": family, "capabilities": list(entry["capabilities"]), "aliases": list(entry["aliases"])}
+        {"id": family, "label": entry.get("label") or family, "capabilities": list(entry["capabilities"]),
+         "aliases": list(entry["aliases"])}
         for family, entry in PROBLEM_FAMILY_CATALOG.items()
     ]
 
@@ -1879,6 +1882,31 @@ def stage_contracts(items: Iterable[Mapping], operation_stems: Iterable[str]) ->
     if problems:
         raise SolverContractRejected(problems)
     return staged
+
+
+def evaluator_summary(path: Path | None) -> dict | None:
+    """评估器的种类与约束数（契约 SV-01 evaluator.kind、SV-03 evaluator）：只解析不执行。
+
+    声明式评估器给 declarative，旧式（自带计算的脚本）给 script；约束数是声明的日处理能力上限
+    （RULE_DAILY_CAPACITIES）条数。读不到或不是评估器返回 None。
+    """
+    source = _read_evaluator(path) if path is not None else None
+    kind = _evaluator_contract.evaluator_kind(source)
+    if kind is None:
+        return None
+    return {
+        "kind": "declarative" if kind == _evaluator_contract.DECLARATIVE_KIND else "script",
+        "constraints": len(_evaluator_dict_keys(path, "RULE_DAILY_CAPACITIES")),
+    }
+
+
+def draft_evaluators(
+    items: Iterable[Mapping], operation_stems: Iterable[str], root: Path, scripts: Mapping[str, Path]
+) -> dict[str, str]:
+    """面板草稿里各求解契约按发现规则找到的评估器（solver_key → 工作区路径），不落盘。"""
+    staged, _problems, _rendered = _stage_files(items)
+    contracts, _load_problems = _load_staged(staged, operation_stems)
+    return _check_contracts(Path(root), contracts, scripts)[1]
 
 
 def check_draft(

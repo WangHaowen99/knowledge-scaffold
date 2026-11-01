@@ -1,0 +1,4 @@
+artifact: trace.scenario
+list: {columns: [title, slice, source, input_kind, last_run_at, result], filters: [result, slice, input_kind], group_by: operation}
+detail: {layout: sections, side: [result, slice, operation, source, input_kind, last_run_at]}
+card: {title: title, chips: [result]}

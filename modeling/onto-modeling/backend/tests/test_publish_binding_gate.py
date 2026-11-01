@@ -121,7 +121,7 @@ def manager(tmp_path: Path, monkeypatch) -> WorkspaceManager:
     (assets / "resource-template" / "others").mkdir(parents=True)
     instance = WorkspaceManager(tmp_path / "data", assets)
     # 绑定门禁不依赖交互式资产链接，也能在无符号链接权限的环境验证。
-    monkeypatch.setattr(instance, "_mount_assets", lambda root: None)
+    monkeypatch.setattr(instance, "_mount_assets", lambda root, packs=None: None)
     return instance
 
 

@@ -124,18 +124,43 @@ def _touches_protected(pattern: str) -> bool:
                                for protected in mf.PROTECTED_DIRS)
 
 
-def _node_problems(directory: Path, manifest: Manifest) -> tuple[list[str], list[str]]:
-    """节点声明：写入范围不碰受保护目录；入口命令确实存在（详设 6.9）。"""
+def _declared_nodes(directory: Path, manifest: Manifest) -> tuple[list[tuple[str, dict]], list[str]]:
+    """包声明的流程节点：`contributes.flow` 文件里的 nodes，加上 `contributes.nodes` 里列的节点文件；
+    nodes 里写节点编号（不是 .yaml 文件）时指 flow 文件里的同名节点。"""
     import yaml
 
-    protected, missing_commands = [], []
-    commands = {f"/{name}" for name in declared_names(manifest, directory)["commands"]}
+    found: list[tuple[str, dict]] = []
+    broken: list[str] = []
+    flow_rel = manifest.contributes.get("flow")
+    flow_nodes: dict[str, dict] = {}
+    if isinstance(flow_rel, str) and (directory / flow_rel).is_file():
+        try:
+            data = yaml.safe_load((directory / flow_rel).read_text(encoding="utf-8")) or {}
+            flow_nodes = {str(node.get("id")): node for node in data.get("nodes") or [] if isinstance(node, dict)}
+        except (OSError, yaml.YAMLError):
+            broken.append(f"{flow_rel} 无法解析")
+    found += [(f"{flow_rel}#{node_id}", node) for node_id, node in flow_nodes.items()]
     for rel in manifest.items("nodes"):
+        if not rel.endswith((".yaml", ".yml")):
+            if rel not in flow_nodes:
+                broken.append(f"节点 {rel} 不在 {flow_rel or 'flow.yaml'} 里")
+            continue
         try:
             node = yaml.safe_load((directory / rel).read_text(encoding="utf-8")) or {}
         except (OSError, yaml.YAMLError):
-            missing_commands.append(f"{rel} 无法解析")
+            broken.append(f"{rel} 无法解析")
             continue
+        found.append((rel, node))
+    return found, broken
+
+
+def _node_problems(directory: Path, manifest: Manifest) -> tuple[list[str], list[str]]:
+    """节点声明：写入范围不碰受保护目录；入口命令确实存在（详设 6.9）。"""
+    protected, missing_commands = [], []
+    commands = {f"/{name}" for name in declared_names(manifest, directory)["commands"]}
+    nodes, broken = _declared_nodes(directory, manifest)
+    missing_commands += broken
+    for rel, node in nodes:
         for item in node.get("produces") or []:
             if isinstance(item, dict) and _touches_protected(str(item.get("path") or "")):
                 protected.append(f"{rel}: {item.get('path')}")
@@ -210,21 +235,12 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
         conflicts.append(f"{manifest.name} {manifest.version} 已在包仓库里")
     checks.append(_check("names", "名字不冲突", "fail" if conflicts else "pass", "；".join(conflicts[:10])))
 
-    # 没有新增实体类型（插件产物只能带包名前缀，不能和五元组重名）
+    # 没有新增实体类型：插件产物只能带包名前缀、不能和五元组重名，放在 ext/<包名>/ 下（详设 5.9.4）
+    from ...kernel.artifacts import registry as artifact_registry
+
     entity = []
     for rel in manifest.items("artifacts"):
-        try:
-            import yaml
-
-            data = yaml.safe_load((directory / rel).read_text(encoding="utf-8")) or {}
-        except Exception:  # noqa: BLE001 - 解析失败同样算登记不合法
-            entity.append(f"{rel} 无法解析")
-            continue
-        art_type = str(data.get("type") or "")
-        if art_type in mf.CORE_ENTITY_TYPES or not art_type.startswith(f"{manifest.name}."):
-            entity.append(f"{rel}: 产物类型 {art_type or '（空）'} 必须带包名前缀且不能是五元组")
-        if not str(data.get("path") or "").startswith(f"ext/{manifest.name}/"):
-            entity.append(f"{rel}: 产物只能放在 ext/{manifest.name}/ 下")
+        entity += artifact_registry.check_registration(directory, rel, manifest)
     checks.append(_check("entity_types", "没有新增实体类型", "fail" if entity else "pass", "；".join(entity[:10])))
 
     protected, missing_entry = _node_problems(directory, manifest)
@@ -242,8 +258,12 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
     # 页面只选平台内置的，不带前端代码
     pages = [f"页面 {page.get('id')} 不是平台内置页面" for page in manifest.pages()
              if page.get("id") not in mf.BUILTIN_PAGES]
-    pages += [f"子页挂在非内核页面 {sub.get('parent')}" for sub in manifest.contributes.get("subpages") or []
-              if isinstance(sub, dict) and sub.get("parent") not in mf.KERNEL_PAGES]
+    pages += [f"子页挂在非内核页面 {sub.get('parent')}" for sub in manifest.subpages()
+              if sub.get("parent") not in mf.KERNEL_PAGES]
+    pages += [f"子页 {sub.get('id')} 不是平台内置子页" for sub in manifest.subpages()
+              if sub.get("id") not in mf.BUILTIN_SUBPAGES]
+    pages += [f"页面 {page.get('id')} 的图标 {(page.get('nav') or {}).get('icon')} 不在平台图标集里"
+              for page in manifest.pages() if (page.get("nav") or {}).get("icon") not in (None, *mf.NAV_ICONS)]
     frontend, frontend_soft = _frontend_files(directory, files, tenant)
     if frontend:
         pages.append("包含前端代码：" + "、".join(frontend[:10]))

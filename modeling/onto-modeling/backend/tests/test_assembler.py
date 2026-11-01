@@ -171,7 +171,9 @@ def test_h0_change_applies_immediately_h1_waits(manager: WorkspaceManager, tmp_p
     status = manager.packs.status(root)
     assert status["state"] == "pending" and status["effective"] == "immediate"
     manager.packs.apply(root, h0_only=True)
-    assert (root / ".claude" / "reference" / "零售术语.md").is_file()
+    # 行业包这类纯数据包在装配目录里各占一个子目录（不和能力包的文件混在一起）
+    assert (root / ".claude" / "industry" / "retail-kb" / "reference" / "零售术语.md").is_file()
+    assert json.loads((root / ".claude" / "industry" / "retail-kb" / "pack.json").read_text())["name"] == "retail-kb"
 
     install_core(manager, tmp_path, "0.2.0")
     lock = lockfile.read(root)

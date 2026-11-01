@@ -1,8 +1,8 @@
-"""插件：目录、按项目启用、装配状态、上传与审核（契约 3.16 PL-01～PL-03、PL-05～PL-11、PL-13～PL-18）。
+"""插件：目录、按项目启用、装配状态、上传与审核（契约 3.16 PL-01～PL-03、PL-05～PL-18）。
 
-依据详设 4.6、5.2、8.1，方案 D1～D4。切换从下一条消息开始生效，正在进行的一轮按旧版本跑完；
-只有纯数据包（H0）立即生效。PL-04（申请平台安装）、PL-12（扩展项注册表，方案 D17）、PL-19
-（平台安装提供方，H2）属于以后阶段。
+依据详设 4.6、5.2、5.6、5.9、8.1，方案 D1～D4、D17。切换从下一条消息开始生效，正在进行的一轮按
+旧版本跑完；只有纯数据包（H0）立即生效。左栏页面跟锁文件走：启用马上出现、停用马上消失（产物保留）。
+PL-19（平台安装提供方，H2）属于以后阶段。
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse, Response
 from ..api import deps
 from ..api.errors import ApiError
 from ..services import audit
-from ..services.packs import catalog, service
+from ..services.packs import catalog, registry, service
 from ..services.packs.assembler import AssemblyError
 from ..services.packs.repository import RepositoryError
 from ..services.packs.uploads import MAX_UPLOAD_BYTES, UploadError, UploadStore
@@ -172,6 +172,14 @@ async def cancel_pending(project_id: str, name: str, request: Request):
     with _errors():
         result = await asyncio.to_thread(service.cancel_pending, deps.workspaces, project_id, name, deps.actor(request))
     return _iso_result(result)
+
+
+@router.get("/api/v1/projects/{project_id}/extensions")
+async def extensions(project_id: str, request: Request):
+    """PL-12：扩展项注册表（左栏、子页、页面声明、界面入口、产物类型、视图、门禁、配置项）。"""
+    deps.require_owner(project_id, request)
+    with _errors():
+        return await asyncio.to_thread(registry.extensions, deps.workspaces, project_id)
 
 
 @router.get("/api/v1/projects/{project_id}/assembly")

@@ -14,7 +14,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 LOCK_REL = ".onto/packs.lock"
-LOCK_VERSION = 1
+# 2：core 拆出可选包之后的锁（方案 D7 后半）。1 的锁在 core 升到拆分后的版本时，补上从 core 拆出去的包
+LOCK_VERSION = 2
 
 
 @dataclass
@@ -35,6 +36,7 @@ class LockEntry:
 @dataclass
 class PackLock:
     packs: list[LockEntry] = field(default_factory=list)
+    lock_version: int = LOCK_VERSION
 
     def get(self, name: str) -> LockEntry | None:
         return next((entry for entry in self.packs if entry.name == name), None)
@@ -50,12 +52,12 @@ class PackLock:
         self.packs.append(entry)
 
     def copy(self) -> "PackLock":
-        return PackLock([LockEntry(**asdict(entry)) for entry in self.packs])
+        return PackLock([LockEntry(**asdict(entry)) for entry in self.packs], self.lock_version)
 
     def to_dict(self) -> dict:
         # core 永远排第一，其余按名字：装配顺序与锁文件字节都不依赖启用先后
         ordered = sorted(self.packs, key=lambda entry: (entry.name != "core", entry.name))
-        return {"lock_version": LOCK_VERSION, "packs": [asdict(entry) for entry in ordered]}
+        return {"lock_version": self.lock_version, "packs": [asdict(entry) for entry in ordered]}
 
     def render(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -73,7 +75,7 @@ class PackLock:
                 channel=str(item.get("channel") or "stable"), follow=bool(item.get("follow", True)),
                 enabled=bool(item.get("enabled", True)), enabled_at=float(item.get("enabled_at") or 0),
             ))
-        return cls(entries)
+        return cls(entries, int(data.get("lock_version") or 1))
 
     def hash(self) -> str:
         """锁哈希：只看启用的包与版本、摘要（跟随标记、启用时间不影响装配）。"""

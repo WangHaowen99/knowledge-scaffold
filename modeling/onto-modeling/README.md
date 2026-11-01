@@ -9,7 +9,8 @@
 onto-modeling/
   backend/    FastAPI 服务：项目/工作区管理、Agent 会话编排（会话池 + SSE）、文件与版本 API
   frontend/   React 19 + Vite 7 + antd + @ant-design/x 三栏工作台
-  assets/     官方能力包：workspace-toolkit 即 core 包（manifest.yaml、flow.yaml），启动时导入包仓库
+  assets/     官方包：workspace-toolkit 即 core 包（manifest.yaml、flow.yaml），packs/ 下是可选能力包与行业包，
+              启动时导入包仓库
   deploy/     离线交付包构建、预检与部署脚本
   docs/       架构决策记录
 ```
@@ -170,6 +171,10 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
   `/api/v1/ops/metrics`、`/traces`、`/logs` 查看，Prometheus 抓运维监听上的 `/metrics`。
 - **审计**：每个写请求在响应之后记一条（操作者、类型、状态码、trace id、来源 IP），另有 agent 提交、
   登录、设置、运维操作等专项记录；不记文件正文与对话内容。按日轮转在数据目录 `audit/`。
+- **配额**（`app/governance/quota.py`，ADR-0043）：按用户限并发会话、每日 token、每数据源每小时采集次数，按项目限每月
+  token；发消息、发命令前检查，超限返回 `429 quota_exceeded`。用量从会话历史记账（数据目录
+  `governance/quota.sqlite`），记在项目所有者名下；限额与单独设置经 `GET/PUT /api/v1/admin/quotas`、
+  `POST /api/v1/admin/quotas/overrides` 管理（数据目录 `governance/quotas.json`，0 表示不限）。配额自身出错一律放行。
 - **健康检查**：`/api/health/live` 只看进程（容器 HEALTHCHECK 用它）；`/api/health/ready` 探测模型网关、
   auth-server（JWKS）、沙箱网关、磁盘、git 等，关键依赖失败返回 503；`/api/health` 不变。
 - **角色**：`user`、`admin`、`ops` 三种（auth-server 签发 `role` claim）。admin 管系统设置、用户、
@@ -220,6 +225,18 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
   一致不一致，不对就重新装配；没有锁文件的存量项目写一份并提交一次。
 - **守卫基线**：写保护守卫与 hooks 基线在 `backend/app/kernel_guards/`，随镜像发布、装配时注入，包删不掉；
   守卫出错一律拒绝。
+- **可选能力包**（ADR-0042）：场景走查 `trace`、知识沉淀 `knowledge`、代码生成与求解 `codegen`、图示 `diagram`、
+  反馈演进 `evo`、联网调研 `websearch`、迁移复用 `migrate` 从 core 拆出，放在 `assets/packs/`，命令名不变。新建项目缺省启用
+  前四个（清单 `default_on`），向导里可以改；项目设置里按项目启用、停用，停用后已有产物保留。可选包用自己的 `flow.yaml`
+  往主流程上挂节点，`/ontology` 只推荐本项目启用了的命令。锁文件格式升到 2：存量项目在 core 升到 0.2.0 时一次性补上
+  拆出去的全部包（能力不变）。联网调研没启用时，项目不能切到联网调研模式。
+- **行业包**（ADR-0044）：`assets/packs/industry-retail/`（零售连锁，合成内容）是第一个行业包，新建项目时在向导里选。
+  它的知识条目作为只读的行业层加载（项目里同名条目覆盖），`ontology_checker` 按它的声明式规则给警告；在装配目录的
+  `industry/<包名>/` 下。知识沉淀包启用时，项目知识可以提名进行业包（自动脱敏后等管理员审核）。
+- **扩展项与插件产物**（ADR-0040、0041）：`GET /api/v1/projects/{id}/extensions` 给左栏（内核 4 项 + 已启用包声明的页面）、
+  资料子页、入口、产物类型与门禁；左栏跟锁文件走（启用马上出现、停用马上消失），页面按钮等新装配生效。包登记的
+  产物（场景、示例数据、流程图、扫描报告、求解契约、业务知识）经 `/api/v1/projects/{id}/artifacts/...` 通用接口读写，
+  内核按登记的格式解析、在工作区 `.onto/run/artifacts.sqlite` 建索引，不跑包的代码，也不进知识包。
 - **主流程**：阶段、完成判定、命令前置与 `/ontology` 的下一步建议只在 core 包的 `flow.yaml` 里定义一次，
   后端进度、`state_helper.py`、`GET /api/v1/projects/{id}/flow` 都读它。「质量检查完成」= 有校验报告且
   `reports/` 下没有未处理的 `[ ]`。
@@ -343,7 +360,7 @@ n 从 1 开始（建项目的基线提交是 v0.1），界面显示 `v0.{n}`；�
      `422 feedback_invalid`（`details.errors`）。
    - 落到工作区 `feedback/<接收时间>-<feedback_id>.json` 并单独提交（只提交这个文件，不进知识包），文件加
      `format: onto-feedback/v1`、`received_at`、`received_by`，评测侧给的 `received_at` 记为 `reported_at`。
-   - `/ontology-evolution` 与 `check_eval_generalization.py` 默认读最新一批反馈。
+   - `/ontology-evolution` 与 `check_eval_generalization.py`（反馈演进包，项目启用后才有）默认读最新一批反馈。
 
 **升级迁移**（启动时一次性、幂等）：各项目 `.ontology-state/eval-data/` 里评测上传的数据表，凡有 Sheet
 被对象的数据绑定用到（声明或推断），复制进 `resource/excel/` 并在 `materials.json` 标为 `schema`，

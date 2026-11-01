@@ -40,6 +40,8 @@ If `Local document paths` is not specified: proceed normally.
 
 ## Step 2: Read the research methodology
 
+If `.claude/skills/deep-research/SKILL.md` does not exist, the project has not enabled the 联网调研 capability: treat Web research mode as `skip` and work from local documents only (say so in 信息来源).
+
 Read `.claude/skills/deep-research/SKILL.md` for the full research methodology. Follow its 4-phase approach:
 - Phase 1: Broad Exploration
 - Phase 2: Deep Dive

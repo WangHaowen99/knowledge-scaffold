@@ -1,8 +1,14 @@
 """流程组装（详设 6.7 第 1 项；方案 D12）：各包的流程声明 → 一张有向无环图。
 
 组装时检查：锚点存在、没有环、节点编号唯一且带包前缀、同一路径不被两个节点同时声明为输出、
-和主流程版本兼容。任何一项不通过就拒绝（装配失败，项目保持原版本）。P1 只有 core 包声明流程；
-其他包往主流程上挂节点（四种挂法）是 P3 的事，这里先把检查做全。
+和主流程版本兼容。任何一项不通过就拒绝（装配失败，项目保持原版本）。
+
+可选包（方案 D7 后半）用自己的 flow.yaml 往主流程上挂节点：
+- `after` 可以写成列表，取第一个存在的锚点（如代码生成挂在场景验证之后，没启用场景走查就挂在质量检查之后）；
+- `display_after` 只管显示顺序（缺省同 after）：节点排在锚点后面，同一锚点的按包顺序排；
+- 包可以补命令前置（`commands`）与探针（`probes`），和已有的重名就拒绝；
+- 主流程的下一步建议（`next_steps`）里指向没启用的包的命令去掉，只列本项目能用的命令。
+节点包的四种挂法与节点钩子（详设 6.4）在 P3。
 """
 
 from __future__ import annotations
@@ -72,9 +78,52 @@ def _overlaps(a: str, b: str) -> bool:
     return a == b or fnmatch.fnmatch(a, b) or fnmatch.fnmatch(b, a)
 
 
-def assemble(contributions: list[tuple[str, str, dict]]) -> dict:
+def _anchors(value) -> list[str]:
+    if not value:
+        return []
+    return [str(item) for item in value] if isinstance(value, list) else [str(value)]
+
+
+def _ordered(nodes: list[dict], problems: list[str]) -> list[dict]:
+    """core 节点保持原顺序；包的节点按 display_after（缺省 after）插到锚点后面。"""
+    placed = [node for node in nodes if node["pack"] == "core"]
+    pending = [node for node in nodes if node["pack"] != "core"]
+    while pending:
+        progressed = False
+        for node in list(pending):
+            ids = [item["id"] for item in placed]
+            wanted = _anchors(node.get("display_after")) or _anchors(node.get("after")) or _anchors(node.get("before"))
+            anchor = next((item for item in wanted if item in ids), None)
+            if anchor is None and any(item in {other["id"] for other in pending} for item in wanted):
+                continue  # 锚点还没放上去，下一轮再放
+            if anchor is None:
+                placed.append(node)
+            else:
+                position = ids.index(anchor) + 1
+                # 已经挂在同一锚点后面的节点排在前面（按包顺序）
+                while position < len(placed) and placed[position].get("_display_anchor") == anchor:
+                    position += 1
+                node["_display_anchor"] = anchor
+                placed.insert(position, node)
+            pending.remove(node)
+            progressed = True
+        if not progressed:
+            problems.append("节点的显示锚点互相依赖：" + "、".join(node["id"] for node in pending))
+            placed += pending
+            break
+    for node in placed:
+        node.pop("_display_anchor", None)
+    return placed
+
+
+def _command_name(text: str) -> str:
+    return str(text or "").split()[0].lstrip("/") if str(text or "").startswith("/") else ""
+
+
+def assemble(contributions: list[tuple[str, str, dict]], available_commands: set[str] | None = None) -> dict:
     """contributions：[(包名, 版本, 流程声明)]，core 必须在第一个并带主流程。
 
+    available_commands：本次装配里所有包提供的命令名（不带 /）；给出时下一步建议只留这些命令。
     返回组装后的流程（含 edges 与 flow_hash）；不通过抛 FlowAssemblyError。
     """
     if not contributions or contributions[0][0] != "core":
@@ -87,12 +136,20 @@ def assemble(contributions: list[tuple[str, str, dict]]) -> dict:
     flow["flow_api"] = FLOW_API
     nodes: list[dict] = []
     sources: dict[str, str] = {}
+    flow["commands"] = dict(flow.get("commands") or {})
+    flow["probes"] = dict(flow.get("probes") or {})
     for pack, version, declared in contributions:
         sources[pack] = version
         if pack != "core":
             requires = str(declared.get("requires_flow") or "")
             if requires and not requires.startswith("core"):
                 problems.append(f"{pack} 的 requires_flow 只能约束 core")
+            for key in ("commands", "probes"):
+                for name, spec in (declared.get(key) or {}).items():
+                    if name in flow[key]:
+                        problems.append(f"{pack} 声明的{'命令前置' if key == 'commands' else '探针'} {name} 已经存在")
+                    else:
+                        flow[key][name] = spec
         for node in declared.get("nodes") or []:
             if not isinstance(node, dict):
                 problems.append(f"{pack} 的流程节点必须是映射")
@@ -106,13 +163,17 @@ def assemble(contributions: list[tuple[str, str, dict]]) -> dict:
     edges: list[tuple[str, str]] = []
     for node in nodes:
         for key in ("after", "before"):
-            anchor = node.get(key)
-            if not anchor:
+            candidates = _anchors(node.get(key))
+            if not candidates:
                 continue
-            if anchor not in known:
-                problems.append(f"节点 {node['id']} 的锚点 {anchor} 不存在")
+            anchor = next((item for item in candidates if item in known), None)
+            if anchor is None:
+                problems.append(f"节点 {node['id']} 的锚点 {'、'.join(candidates)} 不存在")
                 continue
+            node[key] = anchor
             edges.append((anchor, node["id"]) if key == "after" else (node["id"], anchor))
+    nodes = _ordered(nodes, problems)
+    ids = [node["id"] for node in nodes]
     cycle = _cycle(ids, edges)
     if cycle:
         problems.append("流程有环：" + " → ".join(cycle))
@@ -131,6 +192,13 @@ def assemble(contributions: list[tuple[str, str, dict]]) -> dict:
             problems.append(f"命令 {command} 指向的节点 {target} 不存在")
     if problems:
         raise FlowAssemblyError(problems)
+    if available_commands is not None:
+        flow["next_steps"] = {
+            stage: [item for item in items if not _command_name(item.get("command"))
+                    or _command_name(item.get("command")) in available_commands]
+            for stage, items in (flow.get("next_steps") or {}).items()
+        }
+        flow["available_commands"] = sorted(available_commands)
     flow["nodes"] = nodes
     flow["edges"] = [{"from": source, "to": target} for source, target in edges]
     flow["sources"] = sources

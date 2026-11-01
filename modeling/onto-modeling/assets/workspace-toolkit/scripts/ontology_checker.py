@@ -32,6 +32,7 @@ from operation_relations import (
 )
 from table_profile import table_headers as _read_table_headers, table_profiles as _read_table_profiles
 import field_semantics
+import industry_rules
 import onto_metamodel as mm
 
 # =============================================================================
@@ -2242,6 +2243,26 @@ def generate_report(issues: list, ontology_dir: str) -> str:
 # CLI
 # =============================================================================
 
+def check_industry_rules(ontology_dir: Path, all_docs: dict, check_docs: dict) -> list:
+    """已启用行业包的声明式规则（详设 5.5；规则文件由装配器放在 .claude/industry/<包>/），只给警告或建议。"""
+    rules = industry_rules.load(Path(ontology_dir).parent)
+    if not rules:
+        return []
+    issues = []
+    for doc in check_docs.values():
+        fields = {str(row.get(column, '')).strip() for row in doc.attribute_rows for column in ('中文名称', '英文名称')}
+        targets = {target for *_, target, _note in _object_relations(doc, all_docs)} if doc.doc_type == 'object' else set()
+        for info, concepts, rule in rules:
+            problems = industry_rules.violations(doc.doc_type, doc.path.stem, doc.sections, fields - {''}, targets,
+                                                 doc.raw, concepts, rule)
+            if problems:
+                source = f"{info.get('label') or info.get('name')} {rule.get('id') or ''}".strip()
+                issues.append(Issue(_rel(doc), industry_rules.level(rule), '行业规则',
+                                    f"{rule.get('title') or rule.get('id')}（{source}）：{'；'.join(problems)}。"
+                                    f"{rule.get('message') or ''}", '规则检查'))
+    return issues
+
+
 def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool = False,
                include_knowledge: bool = False, include_scripts: bool = False,
                tables: dict = None, strict_targets: bool = False, profiles: dict = None) -> list:
@@ -2322,6 +2343,7 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
 
     issues += check_relation_join_conflicts(all_docs, tables, check_docs)
     issues += check_package_limits(all_docs, check_docs)
+    issues += check_industry_rules(ontology_dir, all_docs, check_docs)
 
     if include_mock:
         mock_dir = ontology_dir / 'data-mock'

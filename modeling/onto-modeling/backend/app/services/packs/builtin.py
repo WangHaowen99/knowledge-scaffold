@@ -9,6 +9,9 @@ core 包的内容就是 `assets/workspace-toolkit`（原样迁过来，命令名
 下一条消息前升级；同一镜像重启不动通道指针，运维回滚过的通道不会被改回去。
 
 没有清单的资产目录（旧版资产包、测试里的最小资产）按「core 新版本」合成一份清单。
+
+镜像自带的其他官方包（方案 D7 后半拆出的可选包、第一个行业包）放在 `assets/packs/<名>/`，按同样的
+规则入库：版本号是清单版本加内容摘要，镜像换了内容才动 stable 指针。
 """
 
 from __future__ import annotations
@@ -26,9 +29,11 @@ from .repository import PackRepository, pack_files, write_checksums
 
 CORE = "core"
 TOOLKIT_DIR = "workspace-toolkit"
+PACKS_DIR = "packs"
 # 不在工具箱目录里、但属于 core 包的文件（详设 8.1：装配目录的 CLAUDE.md 来自 core 的工作区规则）
 EXTRA_FILES = {"workspace-rules.md": "rules", "workspace-readme.md": "readme"}
 _CACHE: dict[tuple[str, str], str] = {}
+_PACKS_CACHE: dict[tuple[str, str], dict[str, str]] = {}
 _CACHE_LOCK = threading.Lock()
 
 
@@ -105,18 +110,48 @@ def import_core(repository: PackRepository, assets_dir: Path) -> str | None:
         cached = _CACHE.get(key)
         if cached and repository.has(CORE, cached):
             return cached
-        with tempfile.TemporaryDirectory(prefix="onto-core-") as scratch:
-            manifest = stage(toolkit, Path(scratch) / "core", extras_from=assets_dir)
-            repository.install(Path(scratch) / "core", origin="builtin", note=str(toolkit))
-        version = manifest.version
-        entry = repository.channel_entry(CORE)
-        if entry.get("builtin") != version or not repository.channel(CORE, "stable"):
-            repository.set_channel(CORE, "stable", version, by="builtin")
-            repository.set_field(CORE, "builtin", version)
+        version = _install_builtin(repository, toolkit, extras_from=assets_dir)
         _CACHE[key] = version
         return version
+
+
+def _install_builtin(repository: PackRepository, source: Path, *, extras_from: Path | None = None) -> str:
+    """把镜像里的一个官方包目录入库；镜像版本变了就把 stable 指向它（同一镜像重启不动指针）。"""
+    with tempfile.TemporaryDirectory(prefix="onto-pack-") as scratch:
+        staged = Path(scratch) / source.name
+        manifest = stage(source, staged, extras_from=extras_from)
+        repository.install(staged, origin="builtin", note=str(source))
+    version = manifest.version
+    entry = repository.channel_entry(manifest.name)
+    if entry.get("builtin") != version or not repository.channel(manifest.name, "stable"):
+        repository.set_channel(manifest.name, "stable", version, by="builtin")
+        repository.set_field(manifest.name, "builtin", version)
+    return version
+
+
+def import_packs(repository: PackRepository, assets_dir: Path) -> dict[str, str]:
+    """把 `assets/packs/<名>/` 下带清单的官方包逐个入库，返回 {包名: 版本}。"""
+    base = Path(assets_dir) / PACKS_DIR
+    if not base.is_dir():
+        return {}
+    key = (str(repository.root.resolve()), str(base.resolve()))
+    with _CACHE_LOCK:
+        cached = _PACKS_CACHE.get(key)
+        if cached and all(repository.has(name, version) for name, version in cached.items()):
+            return dict(cached)
+        versions = {}
+        for directory in sorted(base.iterdir()):
+            if not directory.is_dir() or not (directory / mf.MANIFEST_FILE).is_file():
+                continue
+            data = yaml.safe_load((directory / mf.MANIFEST_FILE).read_text(encoding="utf-8")) or {}
+            if data.get("name") != directory.name or data.get("name") == CORE:
+                continue
+            versions[directory.name] = _install_builtin(repository, directory)
+        _PACKS_CACHE[key] = versions
+        return dict(versions)
 
 
 def clear_cache() -> None:
     with _CACHE_LOCK:
         _CACHE.clear()
+        _PACKS_CACHE.clear()

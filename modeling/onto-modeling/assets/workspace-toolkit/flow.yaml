@@ -52,19 +52,6 @@ nodes:
       - {label: 追加分析, command: "/ontology-research 追加"}
       # 报告挡着后续阶段时，这个入口排到最前
       - {label: 核验报告, verify: true, command: "运行 python3 .claude/scripts/research_checker.py 核验资料分析报告，逐条列出错误项与来源位置"}
-  - id: core.flowchart
-    title: 流程图
-    kind: agent
-    placement: branch
-    section: optional
-    optional: true
-    after: core.research
-    done: [flowchart]
-    entry: {command: /ontology-flowchart}
-    actions:
-      - {label: 创建/打磨流程图, command: /ontology-flowchart}
-      - {label: 全量刷新, command: /ontology-flowchart 全量刷新}
-      - {label: 校验流程图, command: /ontology-validate-diagrams}
   - id: core.object
     title: 对象提取
     kind: agent
@@ -75,7 +62,6 @@ nodes:
     entry: {command: /ontology-extract-object}
     actions:
       - {label: 提取对象, command: /ontology-extract-object}
-      - {label: 迁移提取, command: "迁移提取业务对象 "}
   - id: core.operation
     title: 操作提取
     kind: agent
@@ -107,50 +93,6 @@ nodes:
     entry: {command: /ontology-validate}
     actions:
       - {label: 运行质量检查, command: /ontology-validate}
-  - id: core.mock
-    title: 示例数据
-    kind: agent
-    placement: spine
-    section: required
-    after: core.validate
-    done: [mock]
-    entry: {command: /ontology-mock}
-    actions:
-      - {label: 生成示例数据, command: /ontology-mock}
-  - id: core.trace
-    title: 场景验证
-    kind: agent
-    placement: spine
-    section: required
-    after: core.mock
-    done: [testcase]
-    entry: {command: /ontology-trace}
-    actions:
-      - {label: 批量验证, command: /ontology-trace 全部}
-      - {label: 交互走查, command: /ontology-trace 交互}
-  - id: core.codegen
-    title: 代码生成
-    kind: agent
-    placement: branch
-    section: optional
-    optional: true
-    after: core.trace
-    done: [scripts]
-    entry: {command: /ontology-codegen-scan}
-    actions:
-      - {label: 扫描候选, command: /ontology-codegen-scan}
-      - {label: 生成脚本, command: "/ontology-codegen "}
-  - id: core.solver
-    title: 求解适配
-    kind: agent
-    placement: branch
-    section: optional
-    optional: true
-    after: core.operation
-    done: [solver]
-    # 入口是「求解模型」面板，不走对话命令
-    panel: true
-    actions: []
   - id: core.update
     title: 增量更新
     kind: agent
@@ -178,22 +120,14 @@ stages:
 # 命令 → 所属节点与前置阶段（check-prereq：每个前置阶段都要已到达，输出 ok 或 missing:…）
 commands:
   research: {node: core.research, requires: []}
-  flowchart: {node: core.flowchart, requires: []}
-  validate-diagrams: {node: core.flowchart, requires: []}
   extract-object: {node: core.object, requires: [资料分析完成]}
   extract-operation: {node: core.operation, requires: [对象已提取]}
   extract-rule-metric: {node: core.rule_metric, requires: []}
   validate: {node: core.validate, requires: [逻辑已提取, 对象已提取]}
-  mock: {node: core.mock, requires: [对象已提取]}
-  trace: {node: core.trace, requires: [逻辑已提取]}
-  codegen: {node: core.codegen, requires: [逻辑已提取]}
-  codegen-scan: {node: core.codegen, requires: [逻辑已提取]}
-  solver-evaluator: {node: core.solver, requires: [对象已提取]}
   update: {node: core.update, requires: [逻辑已提取, 对象已提取]}
   overview: {requires: [对象已提取]}
   impact: {requires: [对象已提取]}
   query: {requires: [对象已提取]}
-  evolution: {requires: [对象已提取]}
 
 # /ontology 各阶段「下一步建议」的条目（state_helper.py next-step 原样输出，命令文档不再各写一份）
 next_steps:

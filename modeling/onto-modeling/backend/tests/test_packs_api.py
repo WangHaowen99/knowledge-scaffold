@@ -217,7 +217,8 @@ def test_knowledge_pack_takes_effect_immediately(env):
     enabled = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "retail-kb"}).json()
     assert enabled["effective"] == "immediate" and enabled["pack"]["status"] == "enabled"
     root = deps.workspaces.project_root(project_id)
-    assert (root / ".claude" / "reference" / "零售术语.md").is_file()
+    # 行业包这类纯数据包在装配目录里各占一个子目录
+    assert (root / ".claude" / "industry" / "retail-kb" / "reference" / "零售术语.md").is_file()
 
 
 def test_incompatible_pack_leaves_lock_untouched(env):

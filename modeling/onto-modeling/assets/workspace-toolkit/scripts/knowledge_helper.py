@@ -304,14 +304,79 @@ def show_entry(slug: str) -> str:
     return e.path.read_text(encoding='utf-8')
 
 
+# 行业包（详设 5.5「分层加载」）：装配目录 .claude/industry/<包名>/ 下的知识条目与概念别名表。
+# 优先级从低到高：行业知识 < 项目知识；slug 相同时以项目知识为准。行业条目按「概念」划范围
+# （scopes 写 concept:<概念名>），加载时用请求范围里的条目名去匹配概念名与别名。
+INDUSTRY_DIR = Path('.claude/industry')
+
+
+@dataclass
+class IndustryPack:
+    name: str
+    label: str
+    knowledge_dir: Path
+    concepts: list = field(default_factory=list)
+
+
+def industry_packs() -> list:
+    out = []
+    if not INDUSTRY_DIR.is_dir():
+        return out
+    for info_path in sorted(INDUSTRY_DIR.glob('*/pack.json')):
+        try:
+            info = json.loads(info_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        concepts = []
+        if info.get('concepts'):
+            try:
+                data = json.loads((info_path.parent / info['concepts']).read_text(encoding='utf-8'))
+                concepts = [item for item in data.get('concepts') or [] if isinstance(item, dict)]
+            except (OSError, ValueError, AttributeError):
+                concepts = []
+        out.append(IndustryPack(str(info.get('name') or info_path.parent.name), str(info.get('label') or ''),
+                                info_path.parent / str(info.get('knowledge_dir') or 'knowledge'), concepts))
+    return out
+
+
+def iter_industry_entries() -> list:
+    """已启用行业包的知识条目：[(包, KnowledgeEntry)]，按 slug 排。"""
+    out = []
+    for pack in industry_packs():
+        if not pack.knowledge_dir.is_dir():
+            continue
+        for f in sorted(pack.knowledge_dir.glob('*.md')):
+            try:
+                fm, body = parse_frontmatter(f.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                continue
+            out.append((pack, KnowledgeEntry(path=f, frontmatter=fm, body=body)))
+    return out
+
+
+def concepts_for(scopes, packs) -> set:
+    """请求范围（object:补货单 这类）命中的概念名：条目名等于概念名或别名，或包含概念名。"""
+    names = {str(scope).split(':', 1)[-1] for scope in scopes if scope and scope != 'global'}
+    hit = set()
+    for pack in packs:
+        for concept in pack.concepts:
+            label = str(concept.get('name') or '')
+            aliases = {label, *[str(alias) for alias in concept.get('aliases') or []]}
+            if any(name in aliases or (label and label in name) for name in names):
+                hit.add(label)
+    return hit
+
+
 def load_for_scope(scopes, budget=10) -> str:
     """Return a markdown block compact enough to inject into a subagent prompt.
 
     Always includes all `global` entries; for non-global scopes, includes up to
-    `budget` matched entries (most recently modified first).
+    `budget` matched entries (most recently modified first). Enabled industry packs
+    add a lower-priority layer (project entries with the same slug win).
     """
     all_entries = _iter_entries()
-    if not all_entries:
+    industry = _industry_layer(scopes, {e.slug for e in all_entries}, budget)
+    if not all_entries and not industry:
         return '（暂无相关业务知识）\n'
 
     global_entries = [e for e in all_entries if 'global' in e.frontmatter.get('scopes', [])]
@@ -325,22 +390,51 @@ def load_for_scope(scopes, budget=10) -> str:
     targeted.sort(key=lambda e: e.path.stat().st_mtime, reverse=True)
     targeted = targeted[:budget]
 
-    if not global_entries and not targeted:
+    if not global_entries and not targeted and not industry:
         return '（暂无相关业务知识）\n'
 
-    confidence_label = {'high': '高', 'medium': '中', 'low': '低'}
     lines = ['# 已沉淀业务知识（自动加载）', '']
     for e in global_entries + targeted:
-        lines.append(f'## {e.frontmatter["name"]} ({e.frontmatter["type"]})')
-        scopes_str = ', '.join(e.frontmatter.get('scopes', []))
-        conf = e.frontmatter.get('confidence', 'medium')
-        lines.append(f'_scopes: {scopes_str} · 置信度: {confidence_label.get(conf, conf)}_')
-        lines.append('')
-        # Strip the <details> historical block when loading — historical noise.
-        body = re.split(r'\n<details>', e.body, maxsplit=1)[0].strip()
-        lines.append(body)
-        lines.append('')
+        _append_entry(lines, e, '')
+    for pack, e in industry:
+        _append_entry(lines, e, f' · 来源：{pack.label or pack.name}（行业包，项目里同名条目优先）')
     return '\n'.join(lines) + '\n'
+
+
+_CONFIDENCE_LABEL = {'high': '高', 'medium': '中', 'low': '低'}
+
+
+def _append_entry(lines: list, e, note: str) -> None:
+    lines.append(f'## {e.frontmatter["name"]} ({e.frontmatter["type"]})')
+    scopes_str = ', '.join(e.frontmatter.get('scopes', []))
+    conf = e.frontmatter.get('confidence', 'medium')
+    lines.append(f'_scopes: {scopes_str} · 置信度: {_CONFIDENCE_LABEL.get(conf, conf)}{note}_')
+    lines.append('')
+    # Strip the <details> historical block when loading — historical noise.
+    body = re.split(r'\n<details>', e.body, maxsplit=1)[0].strip()
+    lines.append(body)
+    lines.append('')
+
+
+def _industry_layer(scopes, project_slugs: set, budget: int) -> list:
+    """行业层：全局条目全部加载，按概念划范围的条目取命中的（最多 budget 条）；被项目条目覆盖的不加载。"""
+    try:
+        entries = iter_industry_entries()
+    except OSError:
+        return []
+    if not entries:
+        return []
+    concepts = concepts_for(scopes, industry_packs())
+    chosen, targeted = [], []
+    for pack, e in entries:
+        if e.frontmatter.get('slug') in project_slugs:
+            continue
+        entry_scopes = e.frontmatter.get('scopes', []) or []
+        if 'global' in entry_scopes:
+            chosen.append((pack, e))
+        elif any(scope.startswith('concept:') and scope.split(':', 1)[1] in concepts for scope in entry_scopes):
+            targeted.append((pack, e))
+    return chosen + targeted[:budget]
 
 
 def main():

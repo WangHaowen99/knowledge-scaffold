@@ -14,6 +14,33 @@ These rules apply to all work in this repository.
 
 每个 `.claude/commands/*.md` 与 `.claude/agents/*.md` 都假设上述四份约定在 context 中；若你正在新增/修改 prompt 而需要明确引用条目，**优先 cite 文件路径而不是把约定原文复制进 prompt**，以避免漂移。
 
+## Optional Capabilities（可选能力）
+
+基础建模能力之外的命令、子代理、技能由项目启用的能力包提供（项目设置 → 能力与插件）：
+
+| 能力 | 命令 / 技能 |
+|---|---|
+| 场景走查 | `/ontology-trace`、`/ontology-trace-single`、`/ontology-trace-batch`、`/ontology-trace-interactive`、`/ontology-mock` |
+| 代码生成与求解 | `/ontology-codegen-scan`、`/ontology-codegen`、`/ontology-solver-evaluator` |
+| 图示 | `/ontology-flowchart`、`/ontology-validate-diagrams`、mermaid-flowchart 技能 |
+| 知识沉淀 | `/knowledge-record`、`/knowledge-review`、`/knowledge-nominate`，`.claude/KNOWLEDGE_SEDIMENTATION.md` |
+| 反馈演进 | `/ontology-evolution` |
+| 联网调研 | deep-research 技能 |
+| 迁移复用 | extract-migrated-objects 技能 |
+
+- 命令文档、下一步建议、菜单里提到这些命令时，先看 `.claude/commands/<命令名>.md`（技能看 `.claude/skills/<名>/SKILL.md`）在不在：在才提供这个选项、才去读它；不在就不要列出，用户问起时说明本项目没有启用对应能力，可以在项目设置里启用。
+- 下一步建议统一用 `python3 .claude/scripts/state_helper.py next-step` 取，它只列出本项目已启用的命令。
+
+## Industry Packs（行业包）
+
+项目启用的行业包在 `.claude/industry/<包名>/`（只读；`pack.json` 里有显示名与版本）。目录不存在就跳过本节：
+
+- 资料分析：对照 `standards.json` 的规范类型找资料里对应的内容，缺的记进待确认问题；用 `concepts.json` 的概念与别名辅助识别资料用途和术语。
+- 抽取对象、操作、规则与指标：先看 `reference/` 里 `decision_point` 对应本步骤的写法提示；`library/` 是参考对象与操作，**只作候选提示**，按项目资料写、经专家确认，不直接复制。
+- 行业知识由 `knowledge_helper.py load` 自动分层加载（项目里同名条目优先），不用另读 `knowledge/`。
+- 产物用到了行业知识或参考库时，在「数据来源」或提交说明里注明来源，如 `industry-retail@1.0.0 / 安全库存测算`。
+- `ontology_checker` 会按行业包的声明式规则给警告（分类「行业规则」）；项目口径确实不同就保留，并沉淀一条项目知识说明原因。
+
 ## Subagent Dispatch（子任务派发）
 
 命令里写「Read `.claude/agents/X.md`. Dispatch it …」时，agent 文件就是子任务的完整指令：
@@ -121,13 +148,11 @@ These rules apply to all work in this repository.
 
 ## Business Knowledge
 
-9. **业务知识识别守则** —
-   建模过程中专家若说出以下信号词，须考虑沉淀为业务知识：
-   `应该是 / 其实 / 我们这边 / 我们公司 / 规则是 / 通常 / 必须 / 不对 / 你弄错了 / 实际上 / 行业里 / 标准做法`
-
-   发现候选时按 `.claude/INTERACTION_CONVENTIONS.md` 的「业务知识确认对话」模板询问用户是否记入。
-   用户主动说「记一下：…」「记下这条规则」时直接保存，不再二次确认。
-   落盘脚本：`python3 .claude/scripts/knowledge_helper.py add ...`。
+9. **业务知识** —
+   已沉淀的业务知识（项目知识与已启用行业包的知识）由 `python3 .claude/scripts/knowledge_helper.py load` 加载，各命令照常应用。
+   把对话里的纠错与惯例沉淀成新条目属于「知识沉淀」能力：`.claude/KNOWLEDGE_SEDIMENTATION.md` 存在时，
+   专家说出 `应该是 / 其实 / 我们这边 / 我们公司 / 规则是 / 通常 / 必须 / 不对 / 你弄错了 / 实际上 / 行业里 / 标准做法` 这类信号词，
+   按它的守则询问是否记入（用户主动说「记一下：…」时直接保存）；不存在时只应用、不新增。
    所有规则细节见 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md`。
 
 ## Git Commit Conventions

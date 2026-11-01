@@ -1,0 +1,44 @@
+# 场景：存量的场景文件一个逻辑一份、每个「## 场景 N：…」一项（md-sections）；推演结论在标准索引里
+type: trace.scenario
+title: 场景
+path: ontology/testcase/*.md
+format: md-sections
+key: filename
+schema:
+  version: "1"
+  fields:
+    - {name: title, type: text, label: 场景, required: true}
+    - {name: slice, type: text, label: 切片, required: false}
+    - {name: operation, type: ref, label: 推演的操作, required: false}
+    - {name: source, type: anchor, label: 来源, required: false}
+    - {name: source_label, type: text, label: 来源名称, required: false}
+    - name: input_kind
+      type: enum
+      label: 输入
+      required: false
+      enum:
+        - {value: custom, label: 自定义输入, tone: indigo}
+        - {value: mock, label: 来自示例数据, tone: line}
+    - {name: last_run_at, type: date, label: 上次推演, required: false}
+    - name: result
+      type: enum
+      label: 状态
+      required: false
+      enum:
+        - {value: pass, label: 通过, tone: teal}
+        - {value: fail, label: 失败, tone: red}
+        - {value: stale, label: 过期, tone: dash}
+        - {value: not_run, label: 未推演, tone: gray}
+    - {name: expected, type: text, label: 预期, required: false}
+    - {name: actual, type: text, label: 实得, required: false}
+    - {name: fail_reason, type: text, label: 没通过的原因, required: false}
+    - {name: stale_source, type: text, label: 过期来源, required: false}
+sections: [输入, 预期结论, 推演记录]
+section_labels: {预期结论: 预期路径}
+field_labels: {expected: 预期路径, source_label: 数据来源}
+derive: {operation: h1_suffix, input_kind: "match:source_label:自定义=custom|mock"}
+defaults: {result: not_run}
+refs:
+  - {field: operation, kind: operation}
+status: {field: result, map: {pass: 通过, fail: 失败, stale: 过期, not_run: 未推演}, positive: pass}
+index: ext/trace/index/scenarios.jsonl

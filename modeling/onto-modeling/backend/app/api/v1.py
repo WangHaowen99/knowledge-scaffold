@@ -1,7 +1,7 @@
 """API v1 汇总（方案 A14、第 3 章目标代码布局）：挂全部 v1 路由与中间件。
 
 中间件从外到内：链路 ID → 治理（标签、链路、维护只读、响应后审计）→ 旧路径兼容（compat）
-→ 运维面守卫 → 鉴权 → 路由。兼容中间件必须在鉴权之前，旧路径改写成 v1 后才按 v1 的免鉴权前缀判断
+→ 运维面守卫 → 鉴权 → 配额闸门 → 路由。兼容中间件必须在鉴权之前，旧路径改写成 v1 后才按 v1 的免鉴权前缀判断
 （契约 1.2）；运维面守卫在改写之后，旧的运维路径也一样 404。
 """
 
@@ -48,6 +48,7 @@ def _routers():
     from ..governance import health
     from ..routers import (
         admin,
+        artifacts,
         auth_routes,
         contracts,
         events,
@@ -63,7 +64,9 @@ def _routers():
         project_settings,
         projects,
         publish,
+        quotas,
         resources,
+        scripts,
         service_tokens as service_token_routes,
         sessions,
         settings,
@@ -87,9 +90,11 @@ def _routers():
         versions.router,
         flow.router,
         packs.router,
+        artifacts.router,
         sessions.router,
         events.router,
         solver.router,
+        scripts.router,
         publish.router,
         contracts.router,
         onto_mcp.router,
@@ -97,6 +102,7 @@ def _routers():
         onto_mcp.legacy_transport_router,
         settings.router,
         admin.router,
+        quotas.router,
         service_token_routes.router,
         ops.router,
         ops_control.router,
@@ -173,9 +179,18 @@ class TraceMiddleware:
 def install(app: FastAPI) -> None:
     from ..governance.http import GovernanceMiddleware, OpsOnMainGuard
 
+    from . import deps
+    from ..services.packs import governance as packs_governance
+
     for router in _routers():
         app.include_router(router)
+    # 插件运行时接到治理平面：就绪检查的装配项、O-29 包查询、O-42 版本清单、提交 trailer 的 Onto-Packs
+    packs_governance.install(deps.workspaces)
+    from ..governance.quota import QuotaGate
+
     errors.install(app)
+    # 配额闸门在鉴权之内（最内层）：发消息、发命令前查并发、当日与当月 token（方案 E9）
+    app.add_middleware(QuotaGate)
     app.middleware("http")(auth_middleware)
     app.add_middleware(OpsOnMainGuard)
     app.add_middleware(compat.LegacyPathMiddleware)

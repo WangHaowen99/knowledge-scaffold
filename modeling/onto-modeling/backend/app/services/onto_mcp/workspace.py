@@ -190,10 +190,27 @@ def list_resources(records, kind, args, current):
             "display": {"text": f"已返回 {len(page)}/{len(values)} 个本体元素"}}
 
 
+def _artifact_tool(manager, project_id, name, args):
+    """插件产物只读工具：不碰本体 revision，按产物索引读（结果上限见 kernel.artifacts.service）。"""
+    from ...api import deps
+    from ...kernel.artifacts import service as artifacts
+
+    try:
+        if name == "artifact_list":
+            return artifacts.mcp_list(manager, project_id, args, page=deps.page, iso=deps.iso)
+        return artifacts.mcp_get(manager, project_id, args, iso=deps.iso)
+    except artifacts.ArtifactError as exc:
+        code = {"artifact_type_unknown": "ARTIFACT_TYPE_UNKNOWN", "artifact_not_found": "RESOURCE_NOT_FOUND"}.get(
+            exc.code, "INVALID_INPUT")
+        raise McpError(code, str(exc), exc.status) from exc
+
+
 def execute(manager, project_id, name, args, username):
     if name not in TOOLS:
         raise McpError("MCP_TOOL_NOT_FOUND", "未知工具", 404)
     validate_input(args, TOOLS[name]["inputSchema"])
+    if name in ("artifact_list", "artifact_get"):
+        return _artifact_tool(manager, project_id, name, args)
     # Shared with web writes, protects the revision check and persistence as one operation.
     with manager._project_lock(project_id):
         root = manager.project_root(project_id)

@@ -53,6 +53,13 @@ def definitions():
             result.append(definition(f"update_ontology_{kind}", f"修改{label}",
                                      {**props, "changes": {"type": "object", "minProperties": 1}},
                                      [*props, "changes"], "apply"))
+    # 插件产物只读工具（契约 M-08；详设 5.9.4）：结果有上限，要正文按键再取
+    artifact_type = {"type": "string", "pattern": r"^[a-z][a-z0-9-]{1,39}\.[a-z0-9_.-]{1,40}$"}
+    result.append(definition("artifact_list", "列出插件产物", {
+        "type": artifact_type, "filters": {"type": "object"}, "query": TEXT, "stale": {"type": "boolean"},
+        "cursor": TEXT, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, ["type"]))
+    result.append(definition("artifact_get", "读取插件产物", {
+        "type": artifact_type, "key": TEXT}, ["type", "key"]))
     result.append(definition("validate_ontology_operation_rule_change", "校验操作或规则修改", {
         "expected_revision": TEXT, "resource_type": {"enum": ["operation", "rule"]},
         "action": {"enum": ["create", "update", "delete"]}, "resource_id": TEXT, "payload": {"type": "object"}},
@@ -74,7 +81,7 @@ def validate_input(value, schema, path="arguments"):
             except McpError:
                 pass
         raise McpError("INVALID_INPUT", f"{path} 类型不符合要求")
-    types = {"object": dict, "array": list, "string": str, "integer": int}
+    types = {"object": dict, "array": list, "string": str, "integer": int, "boolean": bool}
     kind = schema.get("type")
     if kind in types and not isinstance(value, types[kind]):
         raise McpError("INVALID_INPUT", f"{path} 必须是 {kind}")

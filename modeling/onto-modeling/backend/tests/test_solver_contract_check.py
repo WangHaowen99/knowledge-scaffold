@@ -859,6 +859,7 @@ def test_view_exposes_template_and_profiles(manager: WorkspaceManager):
     assert view["supported_profiles"] == ["ordered_binary_route.v1"]
     assert view["problem_families"] == [{
         "id": "candidate_selection.v1",
+        "label": "候选方案二选一",
         "capabilities": ["domain_candidate_evaluation", "lexicographic_objective"],
         "aliases": ["binary_ordered_route.v1"],
     }]
@@ -1177,7 +1178,9 @@ def test_draft_check_matches_saved_release_findings(manager: WorkspaceManager):
     item["sidecars"]["entry"] = _draft_entry(("  OPTION_1: 路线乙\n", ""))
     checked = solver_service.check_solver_contract_draft(manager, pid, [item])
     saved = solver_service.save_solver_contract(manager, pid, [item], "")
-    assert checked == {"rejected": [], "findings": saved["findings"], "rendered": [None]}
+    # 草稿检查另给评估器的种类与约束数（契约 SV-03 evaluator）：这里找到的是旧式（自带计算的）评估器
+    assert checked == {"rejected": [], "findings": saved["findings"], "rendered": [None],
+                       "evaluator": {"kind": "script", "constraints": 0}}
 
 
 def test_draft_check_previews_template_sidecars(manager: WorkspaceManager):
@@ -1285,3 +1288,57 @@ def test_check_route_reports_draft_without_saving(manager: WorkspaceManager, mon
     invalid = client.post(f"/api/v1/projects/{pid}/solver/contract/check", json={"contract": {"operations": {}}})
     assert invalid.status_code == 400
     assert invalid.json()["code"] == solver_contract.CODE_INVALID
+
+
+# ---- 契约 SV-01、SV-03 的显示字段（前端 F3-B 报告的后端问题）----
+
+
+def test_contract_api_fills_template_texts_evaluator_kind_and_family_label(manager: WorkspaceManager, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.api import deps
+    from app.main import app
+    from app.services import auth
+
+    pid, root = _project(manager, evaluator=declarative_source())
+    for name, text in object_docs().items():
+        (root / "ontology" / "object" / f"{name}.md").write_text(text, encoding="utf-8")
+    item = _template_item(title="路线方案", process_name="月度规划", stream_name="去向")
+    solver_service.save_solver_contract(manager, pid, [item], "")
+    monkeypatch.setattr(deps, "workspaces", manager)
+    monkeypatch.setattr(auth, "ENABLED", False)
+    client = TestClient(app)
+
+    view = client.get(f"/api/v1/projects/{pid}/solver/contract").json()
+    operation = view["operations"][0]
+    assert operation["option_labels"] == ["路线甲", "路线乙"]
+    assert operation["result_title"] == "路线方案"
+    assert operation["result_texts"] == ["月度规划", "去向"]
+    assert operation["evaluator"] == {"path": "ontology/scripts/route_eval.py", "kind": "declarative"}
+    family = view["problem_families"][0]
+    assert family["label"] != family["id"] and family["label"] == "候选方案二选一"
+    assert family["aliases"] == ["binary_ordered_route.v1"]
+
+    checked = client.post(f"/api/v1/projects/{pid}/solver/contract/check",
+                          json={"contract": {"operations": [item]}}).json()
+    assert checked["evaluator"]["kind"] == "declarative"
+    assert checked["evaluator"]["constraints"] == len(
+        solver_contract._evaluator_dict_keys(root / "ontology/scripts/route_eval.py", "RULE_DAILY_CAPACITIES"))
+
+
+def test_contract_api_leaves_empty_template_texts_null(manager: WorkspaceManager, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.api import deps
+    from app.main import app
+    from app.services import auth
+
+    pid, _root = _project(manager)
+    item = _template_item()
+    item["template"] = {"display_mapping": {"OPTION_0": "", "OPTION_1": ""}}
+    solver_service.save_solver_contract(manager, pid, [item], "")
+    monkeypatch.setattr(deps, "workspaces", manager)
+    monkeypatch.setattr(auth, "ENABLED", False)
+    operation = TestClient(app).get(f"/api/v1/projects/{pid}/solver/contract").json()["operations"][0]
+    assert operation["option_labels"] is None and operation["result_title"] is None and operation["result_texts"] is None
+    assert operation["evaluator"] == {"path": "ontology/scripts/route_eval.py", "kind": "script"}

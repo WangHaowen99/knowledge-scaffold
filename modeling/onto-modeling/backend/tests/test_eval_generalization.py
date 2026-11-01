@@ -9,7 +9,8 @@ from pathlib import Path
 
 from app import config
 
-SCRIPTS = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts"
+# 泛化检查随反馈演进包拆出了 core（方案 D7 后半）
+SCRIPTS = Path(config.ASSETS_DIR) / "packs" / "evo" / "scripts"
 
 GROUND_TRUTH = (
     "冷链配送场景下，温控超标的判定依据是车厢温度连续超出阈值十五分钟以上，"

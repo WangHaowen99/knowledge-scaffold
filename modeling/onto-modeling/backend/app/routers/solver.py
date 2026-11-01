@@ -49,11 +49,26 @@ def receipt(record: dict | None, root) -> dict | None:
     return view
 
 
-def _operation(item: dict, catalog: dict) -> dict:
+def _pair(values) -> list[str] | None:
+    """两项文字（选项显示名称、结果文字）：都空时为 null，否则按顺序给两项（空的给空串）。"""
+    items = [str(value or "").strip() for value in values]
+    return items if any(items) else None
+
+
+def _evaluator(root, evaluator: str) -> dict | None:
+    """契约 7.12 evaluator：{path, kind}；kind 按评估器源码判断（声明式 declarative，旧式 script）。"""
+    if not evaluator:
+        return None
+    summary = solver_contract.evaluator_summary(root / evaluator)
+    return {"path": evaluator, "kind": (summary or {}).get("kind") or "script"}
+
+
+def _operation(item: dict, catalog: dict, root) -> dict:
     binding = item.get("binding") or {}
     declaration = binding.get("declaration") or {}
     family = str((declaration.get("engine_requirements") or {}).get("problem_family") or "")
     params = item.get("template_params") or {}
+    mapping = params.get("display_mapping") or {}
     evaluator = item.get("evaluator") or ""
     return {
         "solver_key": item["solver_key"],
@@ -66,10 +81,11 @@ def _operation(item: dict, catalog: dict) -> dict:
             {"field": str(unit.get("field", "")), "unit": str(unit.get("unit", "")), "note": str(unit.get("note", ""))}
             for unit in binding.get("units") or [] if isinstance(unit, dict)
         ],
-        "evaluator": {"path": evaluator, "kind": "script"} if evaluator else None,
-        "option_labels": params.get("option_labels"),
-        "result_title": params.get("result_title"),
-        "result_texts": params.get("result_texts"),
+        "evaluator": _evaluator(root, evaluator),
+        # 模板参数还原出来的显示文字（契约 7.12）：选项显示名称、结果标题、结果文字
+        "option_labels": _pair(mapping.get(option) for option in solver_contract.ORDERED_ROUTE_OPTIONS),
+        "result_title": str(params.get("title") or "").strip() or None,
+        "result_texts": _pair(params.get(name) for name in solver_contract.TEXT_PRESENTATION_FIELDS),
         "sidecars": {SIDECAR_ROLES.get(name, name): text for name, text in (item.get("sidecars") or {}).items()},
         "managed": sorted(SIDECAR_ROLES.values()) if item.get("managed") else [],
         # 面板编辑要原样回传：binding 全量与还原的模板参数（契约补充，见 contract-changes）
@@ -88,7 +104,7 @@ def contract_view(project_id: str) -> dict:
         "revision": revision,
         "revision_no": revision_no(root),
         "enabled": data["enabled"],
-        "operations": [_operation(item, catalog) for item in data["contract"]["operations"]],
+        "operations": [_operation(item, catalog, root) for item in data["contract"]["operations"]],
         "findings": [views.finding(item) for item in data["findings"]],
         "gate": [views.finding(item) for item in data["gate"]],
         "receipt": {"status": gate["status"], "latest": receipt(data.get("validation"), root)},
@@ -98,7 +114,9 @@ def contract_view(project_id: str) -> dict:
         ],
         "evaluators": data["evaluator_options"],
         "problem_families": [
-            {"id": item["id"], "label": item["id"], "capabilities": item["capabilities"]} for item in data["problem_families"]
+            {"id": item["id"], "label": item.get("label") or item["id"], "capabilities": item["capabilities"],
+             "aliases": item.get("aliases") or []}
+            for item in data["problem_families"]
         ],
         "supported_profiles": data["supported_profiles"],
         "template": data["template"],
@@ -147,7 +165,7 @@ async def check_contract(project_id: str, request: Request):
         "rejected": [views.finding(item) for item in result["rejected"]],
         "findings": [views.finding(item) for item in result["findings"]],
         "rendered": result["rendered"],
-        "evaluator": None,
+        "evaluator": result["evaluator"],
     }
 
 

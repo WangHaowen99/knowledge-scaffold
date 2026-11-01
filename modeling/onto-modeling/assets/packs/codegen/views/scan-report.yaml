@@ -1,0 +1,4 @@
+artifact: codegen.scan_report
+list: {columns: [title, updated_at], filters: []}
+detail: {layout: sections, side: []}
+card: {title: title, chips: []}

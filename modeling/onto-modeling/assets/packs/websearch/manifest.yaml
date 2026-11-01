@@ -1,0 +1,20 @@
+# 联网调研（详设 5.3：deep-research 技能；离线部署时禁用）。没有页面。
+# 没启用时资料分析只基于本地资料（research-agent 看 deep-research 技能在不在）。
+name: websearch
+version: 0.2.0
+kind: capability
+category: capability
+label: 联网调研
+description: 资料分析时联网检索，补充本地资料没覆盖的内容（多角度检索方法论）。
+publisher: {kind: official, label: 平台}
+split_from_core: true
+default_on: false
+requires_network: true
+batch: second
+kernel_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {core: ">=0.1"}
+changelog: 从基础建模能力拆出。
+contributes:
+  skills: [deep-research]
+checksums: checksums.sha256

@@ -71,6 +71,9 @@ def reconcile_all(manager) -> dict:
             _log.warning("项目 %s 启动核对装配目录失败：%s", project_id, exc)
     if report["repaired"]:
         _log.warning("启动时重新装配了项目：%s", ", ".join(report["repaired"]))
+    from . import governance
+
+    governance.record_reconcile(report)
     return report
 
 
@@ -223,12 +226,45 @@ def _plan_or_raise(runtime, lock: PackLock):
                         {"error_id": None, "reason": str(exc)}) from exc
 
 
+def _extensions_or_none(manager, project_id: str) -> dict | None:
+    from . import registry
+
+    try:
+        return registry.extensions(manager, project_id)
+    except Exception:  # noqa: BLE001 - 事件的比较基准取不到只影响 changed 列表
+        return None
+
+
+def emit_switch_events(manager, project_id: str, before: dict | None, status: dict) -> None:
+    """锁文件改了之后：项目流发 assembly.updated（EP-08）与 extensions.updated（EP-07）。"""
+    from ...kernel import project_events
+    from . import registry
+
+    project_events.emit(project_id, "assembly.updated", {
+        "state": status.get("state"), "pending_changes": status.get("pending_changes") or [],
+        "effective": "next_message" if status.get("effective") == "next_message" else "immediate",
+        "error_id": (status.get("last_error") or {}).get("error_id"),
+    })
+    after = _extensions_or_none(manager, project_id)
+    if after is None:
+        return
+    changed = registry.changed_parts(before, after)
+    if changed or (before or {}).get("pending_hash") != after.get("pending_hash"):
+        project_events.emit(project_id, "extensions.updated", {
+            "active_hash": after["active_hash"], "pending_hash": after["pending_hash"], "changed": changed,
+        })
+
+
 def _switch(manager, project_id: str, mutate, message: str, actor: str) -> dict:
     """改锁文件的公共流程：先装配新版本（失败就不改锁文件），再提交锁文件；只动纯数据包时立即生效。"""
     runtime = manager.packs
     root = manager.project_root(project_id)
     if manager.get_project(project_id).get("archived"):
         raise PackError("project_archived", "项目已归档，只能查看", 409)
+    before = _extensions_or_none(manager, project_id)
+    from . import registry
+
+    registry.remember_baseline(project_id, before)
     with manager._project_lock(project_id):
         lock, wrote = runtime.ensure_lock(root)
         if lock is None:
@@ -246,6 +282,7 @@ def _switch(manager, project_id: str, mutate, message: str, actor: str) -> dict:
             status = runtime.status(root)
     from .. import mainline
 
+    emit_switch_events(manager, project_id, before, status)
     return {"result": result, "commit": commit or None, "version_label": mainline.state(root)["version_label"],
             "status": status}
 
