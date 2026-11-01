@@ -105,12 +105,24 @@ SIGILL 崩溃。`preflight.sh` 会检查；未通过时按优先级整改：
 
 - 业务数据全部在 docker 卷 `onto-web-data`（项目 workspace、会话历史、设置）
   与 `onto-web-auth-data`（用户账号）。
-- 运维中心提供手动备份（保留最近 3 份）；建议在主机侧对两个卷做定期快照。
+- 应用备份：运维中心可手动备份，另按 `ONTO_WEB_BACKUP_INTERVAL_HOURS`（默认 24 小时）定时备份，
+  服务启动时距上次备份已超过间隔会先补一份；保留最近 3 份。备份默认写在数据卷内的
+  `/data/onto-web/backups`，与数据同卷，卷坏了一起丢。建议在 compose 的 override 里给
+  onto-modeling 另挂一个卷（例如挂到 `/backups`），并在 `.env` 设 `ONTO_WEB_BACKUP_DIR=/backups`。
+  范围与恢复方法见上级目录 `README.md`「数据备份」。
+- 个人 Key 主密钥不进备份：未设 `ONTO_WEB_MODEL_SECRET_KEY` 时，它是数据卷里的
+  `/data/onto-web/.model-secret-key`，需单独保管；异机恢复缺了它，已保存的个人 Key 无法解密。
+- 用户账号在 `onto-web-auth-data`，不在应用备份里；建议在主机侧对两个卷做定期快照。
 
 ## 升级与回滚
 
 - 升级：解包新版本交付包，重复部署步骤；`docker compose up -d` 滚动替换容器，
   数据卷保留。
+- 首次启动新版本时，存量项目会各自多出一个提交「chore: 停止跟踪项目元数据与工具状态」
+  （元数据与工具状态不再进项目 git，回退版本不再回滚所有者），已迁移的项目不重复提交。
+- 容器以 `init: true` 运行（镜像入口也是 tini）：应用不是 1 号进程，孤儿进程有人回收。
+  `redeploy-app.sh` 沿用部署目录里的旧 compose，`init: true` 要等下一次完整部署才写进去，
+  这期间由镜像里的 tini 兜底。
 - 回滚：用旧版本交付包重复部署步骤即可（镜像 tag 随版本走，互不覆盖）。
 
 ## 接入既有账号中心（单点账号）
