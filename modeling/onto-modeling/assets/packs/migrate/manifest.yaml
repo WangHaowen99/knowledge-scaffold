@@ -1,0 +1,20 @@
+# 迁移复用（详设 5.3：extract-migrated-objects 技能）。没有页面：发现可复用的对象时在对话里推荐。
+name: migrate
+version: 0.2.0
+kind: capability
+category: capability
+label: 迁移复用
+description: 从已有的业务系统文档或旧模型里迁移、复用业务对象。
+publisher: {kind: official, label: 平台}
+split_from_core: true
+default_on: false
+batch: second
+kernel_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {core: ">=0.1"}
+changelog: 从基础建模能力拆出。
+contributes:
+  skills: [extract-migrated-objects]
+  flow: flow.yaml
+  nodes: [migrate.reuse]
+checksums: checksums.sha256

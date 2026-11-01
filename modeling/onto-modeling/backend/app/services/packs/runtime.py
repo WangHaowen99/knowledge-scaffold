@@ -37,18 +37,74 @@ class PackRuntime:
     # ---- 官方包与默认锁 ----
 
     def core_version(self) -> str | None:
-        """镜像自带的 core 版本（第一次调用时入库）；资产目录里没有工具箱返回 None。"""
-        return builtin.import_core(self.repository, self.assets_dir)
+        """镜像自带的 core 版本（第一次调用时入库，连同 assets/packs 下的官方包）；没有工具箱返回 None。"""
+        version = builtin.import_core(self.repository, self.assets_dir)
+        if version is not None:
+            builtin.import_packs(self.repository, self.assets_dir)
+        return version
+
+    # ---- 拆包（方案 D7 后半）----
+
+    def _stable_manifest(self, name: str):
+        version = self.repository.latest(name, "stable")
+        return (version, self.repository.manifest(name, version)) if version else (None, None)
+
+    def split_packs(self) -> list[tuple[str, str]]:
+        """从 core 拆出去的官方包（清单 split_from_core）的 stable 版本。"""
+        out = []
+        for name in self.repository.names():
+            if name == CORE:
+                continue
+            version, manifest = self._stable_manifest(name)
+            if manifest is not None and manifest.raw.get("split_from_core") and manifest.official:
+                out.append((name, version))
+        return out
+
+    def default_capabilities(self) -> list[str]:
+        """新建项目缺省启用的能力包：清单 default_on 的官方能力包（行业包按项目选，不在这里）。"""
+        out = []
+        for name in self.repository.names():
+            if name == CORE:
+                continue
+            version, manifest = self._stable_manifest(name)
+            if manifest is not None and manifest.category == "capability" and manifest.raw.get("default_on") \
+                    and manifest.hot_level != "H2":
+                out.append(name)
+        return out
+
+    def _core_is_split(self, version: str) -> bool:
+        from .manifest import satisfies
+
+        return satisfies(version, ">=0.2.0")
+
+    def _migrate_split(self, lock: PackLock) -> bool:
+        """锁文件版本 1、core 已经是拆分后的版本：补上从 core 拆出去的包（存量项目的能力不变）。"""
+        core = lock.get(CORE)
+        if lock.lock_version >= lockfile.LOCK_VERSION or core is None or not self._core_is_split(core.version):
+            return False
+        for name, version in self.split_packs():
+            if lock.get(name) is None:
+                lock.upsert(self.entry_for(name, version))
+        lock.lock_version = lockfile.LOCK_VERSION
+        return True
 
     def entry_for(self, name: str, version: str, *, channel: str = "stable", follow: bool = True) -> LockEntry:
         return LockEntry(name=name, version=version, sha256=self.repository.digest(name, version),
                          channel=channel, follow=follow, enabled=True, enabled_at=time.time())
 
-    def default_lock(self) -> PackLock | None:
+    def default_lock(self, selection: list[str] | None = None) -> PackLock | None:
+        """新锁：core + 选中的包（缺省是 default_on 的能力包）；选中的包不在仓库里的跳过。"""
         if self.core_version() is None:
             return None
         stable = self.repository.latest(CORE, "stable")
-        return PackLock([self.entry_for(CORE, stable)]) if stable else None
+        if not stable:
+            return None
+        lock = PackLock([self.entry_for(CORE, stable)])
+        for name in (self.default_capabilities() if selection is None else selection):
+            version = self.repository.latest(name, "stable")
+            if name != CORE and version and lock.get(name) is None:
+                lock.upsert(self.entry_for(name, version))
+        return lock
 
     def normalize(self, lock: PackLock) -> tuple[PackLock, bool]:
         """锁里的版本在本仓库不存在（别的部署导出来的项目）或摘要不符：换成通道版本并跟随。"""
@@ -74,10 +130,11 @@ class PackRuntime:
             if stable:
                 lock.upsert(self.entry_for(CORE, core.version if core and self.repository.has(CORE, core.version) else stable))
                 changed = True
+        changed = self._migrate_split(lock) or changed
         return lock, changed
 
-    def ensure_lock(self, root: Path) -> tuple[PackLock | None, bool]:
-        """读出并补齐项目锁文件（没有就按 stable 写一份），返回（锁, 是否写过文件）。不提交。"""
+    def ensure_lock(self, root: Path, selection: list[str] | None = None) -> tuple[PackLock | None, bool]:
+        """读出并补齐项目锁文件（没有就按 stable 写一份，selection 是新建时选的包），返回（锁, 是否写过文件）。不提交。"""
         if self.core_version() is None:
             return None, False
         try:
@@ -86,7 +143,7 @@ class PackRuntime:
             _log.warning("项目 %s 的锁文件坏了，按 stable 重写：%s", Path(root).name, exc)
             lock = None
         if lock is None:
-            lock = self.default_lock()
+            lock = self.default_lock(selection)
             if lock is None:
                 return None, False
             return lock, lockfile.write(root, lock)
@@ -110,6 +167,7 @@ class PackRuntime:
                 entry.version = latest
                 entry.sha256 = self.repository.digest(entry.name, latest)
                 changed = True
+        changed = self._migrate_split(lock) or changed
         return lockfile.write(root, lock) if changed else False
 
     # ---- 装配与切换 ----
@@ -143,9 +201,9 @@ class PackRuntime:
         self._record_error(root, None)
         return self.status(root)
 
-    def mount(self, root: Path) -> dict | None:
+    def mount(self, root: Path, selection: list[str] | None = None) -> dict | None:
         """建项目、导入、克隆：补齐锁文件并立即装配切换（没有会话在跑）。工具箱缺席时返回 None。"""
-        lock, _ = self.ensure_lock(root)
+        lock, _ = self.ensure_lock(root, selection)
         if lock is None:
             return None
         return self.apply(root)

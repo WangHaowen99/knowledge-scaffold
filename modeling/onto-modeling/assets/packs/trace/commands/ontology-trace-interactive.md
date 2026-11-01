@@ -1,5 +1,7 @@
 Trace interactive walkthrough mode. Loaded by `.claude/commands/ontology-trace.md` after Step 0.
 
+页面「交互走查」发来的消息带参数 `scenario`（场景编号，形如 `<逻辑名>--<场景序号>`）：直接对这个场景所在的逻辑、从这个场景开始走查。推演核对通过后同样执行 `python3 .claude/scripts/trace_index.py record` 更新场景索引。
+
 ## Mode Inputs
 
 - `TRACE_MODE=interactive`

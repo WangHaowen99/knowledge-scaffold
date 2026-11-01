@@ -1,0 +1,24 @@
+# 流程图：drawio 文件，内核内置解析器转成流程图模型（契约 7.11 FlowchartModel）
+type: diagram.flowchart
+title: 流程图
+path: ontology/diagrams/*.drawio
+format: drawio
+key: filename
+studio: true
+schema:
+  version: "1"
+  fields:
+    - {name: title, type: text, label: 流程名称, required: true}
+    - {name: operation, type: text, label: 关联操作, required: false}
+    - name: state
+      type: enum
+      label: 状态
+      required: false
+      enum:
+        - {value: draft, label: 草稿, tone: gray}
+        - {value: confirmed, label: 已确认, tone: blue}
+    - {name: summary, type: text, label: 规模, required: false}
+    - {name: source_label, type: text, label: 最近修改, required: false}
+    - {name: updated_by, type: text, label: 修改人, required: false}
+derive: {source_label: last_source_label, updated_by: last_author}
+status: {field: state, map: {draft: 草稿, confirmed: 已确认}}

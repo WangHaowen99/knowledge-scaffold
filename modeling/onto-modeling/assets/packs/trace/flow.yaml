@@ -1,0 +1,27 @@
+# 场景走查包往主流程上挂的节点（详设 6.8：示例数据、场景验证；全量回归 trace.trace 串在质量检查之后）。
+# 完成判定用 core 的探针（mock、testcase）。
+nodes:
+  - id: trace.mock
+    title: 示例数据
+    kind: agent
+    placement: spine
+    section: required
+    after: core.validate
+    done: [mock]
+    entry: {command: /ontology-mock}
+    actions:
+      - {label: 生成示例数据, command: /ontology-mock}
+  - id: trace.trace
+    title: 场景验证
+    kind: agent
+    placement: spine
+    section: required
+    after: trace.mock
+    done: [testcase]
+    entry: {command: /ontology-trace}
+    actions:
+      - {label: 批量验证, command: /ontology-trace 全部}
+      - {label: 交互走查, command: /ontology-trace 交互}
+commands:
+  mock: {node: trace.mock, requires: [对象已提取]}
+  trace: {node: trace.trace, requires: [逻辑已提取]}

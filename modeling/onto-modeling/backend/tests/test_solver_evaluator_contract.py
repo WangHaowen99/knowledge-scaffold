@@ -20,7 +20,8 @@ from tests.test_script_contract_checker import run_checker
 TOOLKIT = Path(config.ASSETS_DIR) / "workspace-toolkit"
 CLI = TOOLKIT / "scripts" / "solver_evaluator_contract.py"
 PYTHON3 = shutil.which("python3")
-TEMPLATE = TOOLKIT / "templates" / "solver-evaluator-template.py"
+# 评估器模板随代码生成与求解包拆出了 core（方案 D7 后半）
+TEMPLATE = Path(config.ASSETS_DIR) / "packs" / "codegen" / "templates" / "solver-evaluator-template.py"
 contract = solver_contract._evaluator_contract
 
 OMIT = object()  # declarative_source / with_fields 的覆盖值：省略该项

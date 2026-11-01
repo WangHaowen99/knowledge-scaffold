@@ -1,0 +1,31 @@
+# 知识条目的格式由 core 登记（详设 5.9.8：存放和加载本来就在 core，知识沉淀页只是使用）。
+# 读写走知识接口（K-*，要经 knowledge_helper 维护索引与修订历史），通用产物接口只读。
+type: core.knowledge
+title: 业务知识
+path: ontology/knowledge/*.md
+format: md-frontmatter
+key: filename
+readonly: knowledge_api
+schema:
+  version: "1"
+  fields:
+    - {name: name, type: text, label: 标题, required: true}
+    - name: type
+      type: enum
+      label: 类型
+      required: true
+      enum:
+        - {value: correction, label: 纠错}
+        - {value: convention, label: 惯例}
+        - {value: terminology, label: 术语}
+        - {value: domain-rule, label: 领域规则}
+    - {name: scopes, type: list, label: 适用范围, required: false}
+    - name: confidence
+      type: enum
+      label: 置信度
+      required: false
+      enum:
+        - {value: high, label: 高}
+        - {value: medium, label: 中}
+        - {value: low, label: 低}
+    - {name: source, type: text, label: 来源, required: false}

@@ -30,7 +30,7 @@ Generate or update the declarative solver evaluator for a solver contract. Solve
 `ontology/solver/` 是平台受管目录（规则 8.06），本命令**只读不写**；需要改契约时提示用户到「求解模型」面板修改。
 
 1. **确定 solver_key**：
-   - `$ARGUMENTS` 非空 → 取第一个词作为 solver_key，读 `ontology/solver/{solver_key}/binding.yaml`；不存在则提示"未找到求解契约 {solver_key}，请先在「求解模型」面板保存契约。"并停止。
+   - `$ARGUMENTS` 非空 → 取第一个词作为 solver_key，页面发来的 `solver_key=<键>` 同样取等号后的值；带 `mode=template` 时按模板重新生成评估器（覆盖前先向用户确认），读 `ontology/solver/{solver_key}/binding.yaml`；不存在则提示"未找到求解契约 {solver_key}，请先在「求解模型」面板保存契约。"并停止。
    - `$ARGUMENTS` 为空 → 列出 `ontology/solver/*/binding.yaml`：没有则提示"还没有求解契约，请先在「求解模型」面板保存契约后再运行。"并停止；只有一个直接使用；多个时用编号列表请用户选择。
 2. 从 `binding.yaml` 读出 `operation`（记为 OPERATION），从同目录 `model.yaml` 读出 `fact_source.evaluator_path`（可能没有）。
 3. **确定目标文件 TARGET**：

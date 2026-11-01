@@ -1,0 +1,16 @@
+# 求解契约：受管目录 ontology/solver/<求解键>/，在「代码生成与求解」页的求解模型页签经求解接口编辑（加硬锁）
+type: codegen.solver_contract
+title: 求解契约
+path: ontology/solver/*/binding.yaml
+format: yaml
+key: filename
+readonly: managed
+schema:
+  version: "1"
+  fields:
+    - {name: solver_key, type: text, label: 求解键, required: false}
+    - {name: operation, type: ref, label: 操作, required: false}
+    - {name: decision_model, type: text, label: 决策模型, required: false}
+    - {name: enabled, type: text, label: 启用, required: false}
+refs:
+  - {field: operation, kind: operation}

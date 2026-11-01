@@ -200,6 +200,8 @@ Read `.claude/agents/trace-agent.md`. Dispatch it as a subagent with:
 Wait for it to return a JSON array of trace results. 原样保存到 `tmp/trace-results.json`，报告前执行
 `python3 .claude/scripts/trace_inputs.py "{TESTCASE_PATH}" --actual tmp/trace-inputs.json --results tmp/trace-results.json`。
 对场景 ID、实际初始输入、类型和修订全部核对，失败不得提交通过报告。
+核对通过后执行 `python3 .claude/scripts/trace_index.py record "{TESTCASE_PATH}" --results tmp/trace-results.json`，
+把每个场景的推演结论写进场景索引（`ext/trace/index/scenarios.jsonl`，「场景走查」页读它），与报告一起提交。
 
 ## Step 6: Save report
 

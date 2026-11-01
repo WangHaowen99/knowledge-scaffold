@@ -41,7 +41,7 @@ python3 .claude/scripts/state_helper.py next-step <阶段名>
 
 After showing, listen for the user's next reply:
 - **资料分析** → read `.claude/commands/ontology-research.md` and follow it (ask for TOPIC if not given)
-- **流程图** → read `.claude/commands/ontology-flowchart.md` and follow it
+- **流程图** → read `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it
 - other → treat as normal input
 
 **资料分析待核验:**
@@ -82,7 +82,7 @@ Find the latest file in `research/`. Show:
 ```
 
 Handle reply:
-- **流程图** → read `.claude/commands/ontology-flowchart.md` and follow it
+- **流程图** → read `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it
 - **提取对象** → read `.claude/commands/ontology-extract-object.md` and follow it（Step 1 会识别到只有研究报告，进入模式 C）
 - **追加资料分析** → read `.claude/commands/ontology-research.md` (it will detect existing report and prompt for append mode)
 - **完成** → stop
@@ -101,7 +101,7 @@ Count .drawio files in `ontology/diagrams/`. Show:
 
 Handle reply:
 - **提取对象** → read `.claude/commands/ontology-extract-object.md` and follow it
-- **校验流程图** → read `.claude/commands/ontology-validate-diagrams.md` and follow it
+- **校验流程图** → read `.claude/commands/ontology-validate-diagrams.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it
 - **完成** → stop
 
 **对象已提取:**

@@ -14,6 +14,23 @@ These rules apply to all work in this repository.
 
 每个 `.claude/commands/*.md` 与 `.claude/agents/*.md` 都假设上述四份约定在 context 中；若你正在新增/修改 prompt 而需要明确引用条目，**优先 cite 文件路径而不是把约定原文复制进 prompt**，以避免漂移。
 
+## Optional Capabilities（可选能力）
+
+基础建模能力之外的命令、子代理、技能由项目启用的能力包提供（项目设置 → 能力与插件）：
+
+| 能力 | 命令 / 技能 |
+|---|---|
+| 场景走查 | `/ontology-trace`、`/ontology-trace-single`、`/ontology-trace-batch`、`/ontology-trace-interactive`、`/ontology-mock` |
+| 代码生成与求解 | `/ontology-codegen-scan`、`/ontology-codegen`、`/ontology-solver-evaluator` |
+| 图示 | `/ontology-flowchart`、`/ontology-validate-diagrams`、mermaid-flowchart 技能 |
+| 知识沉淀 | `/knowledge-record`、`/knowledge-review`、`/knowledge-nominate`，`.claude/KNOWLEDGE_SEDIMENTATION.md` |
+| 反馈演进 | `/ontology-evolution` |
+| 联网调研 | deep-research 技能 |
+| 迁移复用 | extract-migrated-objects 技能 |
+
+- 命令文档、下一步建议、菜单里提到这些命令时，先看 `.claude/commands/<命令名>.md`（技能看 `.claude/skills/<名>/SKILL.md`）在不在：在才提供这个选项、才去读它；不在就不要列出，用户问起时说明本项目没有启用对应能力，可以在项目设置里启用。
+- 下一步建议统一用 `python3 .claude/scripts/state_helper.py next-step` 取，它只列出本项目已启用的命令。
+
 ## Subagent Dispatch（子任务派发）
 
 命令里写「Read `.claude/agents/X.md`. Dispatch it …」时，agent 文件就是子任务的完整指令：
@@ -121,13 +138,11 @@ These rules apply to all work in this repository.
 
 ## Business Knowledge
 
-9. **业务知识识别守则** —
-   建模过程中专家若说出以下信号词，须考虑沉淀为业务知识：
-   `应该是 / 其实 / 我们这边 / 我们公司 / 规则是 / 通常 / 必须 / 不对 / 你弄错了 / 实际上 / 行业里 / 标准做法`
-
-   发现候选时按 `.claude/INTERACTION_CONVENTIONS.md` 的「业务知识确认对话」模板询问用户是否记入。
-   用户主动说「记一下：…」「记下这条规则」时直接保存，不再二次确认。
-   落盘脚本：`python3 .claude/scripts/knowledge_helper.py add ...`。
+9. **业务知识** —
+   已沉淀的业务知识（项目知识与已启用行业包的知识）由 `python3 .claude/scripts/knowledge_helper.py load` 加载，各命令照常应用。
+   把对话里的纠错与惯例沉淀成新条目属于「知识沉淀」能力：`.claude/KNOWLEDGE_SEDIMENTATION.md` 存在时，
+   专家说出 `应该是 / 其实 / 我们这边 / 我们公司 / 规则是 / 通常 / 必须 / 不对 / 你弄错了 / 实际上 / 行业里 / 标准做法` 这类信号词，
+   按它的守则询问是否记入（用户主动说「记一下：…」时直接保存）；不存在时只应用、不新增。
    所有规则细节见 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md`。
 
 ## Git Commit Conventions

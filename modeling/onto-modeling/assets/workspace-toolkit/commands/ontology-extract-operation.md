@@ -88,7 +88,7 @@ Tell user:
 - 回复 **先做流程图** → 转入 /ontology-flowchart 创建流程图后再回来
 "
 - **继续**: set `SUMMARY_PATHS = empty`, `REPORT_PATHS = REPORTS`，进入 Step 2。
-- **先做流程图**: 先 `python3 .claude/scripts/state_helper.py release extract-operation`；再读取 `.claude/commands/ontology-flowchart.md` 并执行；完成后 Claude 重新运行本命令。
+- **先做流程图**: 先 `python3 .claude/scripts/state_helper.py release extract-operation`；再读取 `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） 并执行；完成后 Claude 重新运行本命令。
 - **取消**: `python3 .claude/scripts/state_helper.py release extract-operation`，stop。
 
 **模式 D — 两者都有：**
@@ -128,8 +128,8 @@ Set `EXCEL_CONTEXT` = 脚本 stdout。若 stdout 为空，置为 `（无同名 E
 "
 
 - **继续**（或默认）: 忽略 `ORPHAN_EXCEL_PATHS`，继续 Step 2。
-- **校验流程图**: `python3 .claude/scripts/state_helper.py release extract-operation`；read `.claude/commands/ontology-validate-diagrams.md` and follow it；Stop this command。
-- **刷新**: `python3 .claude/scripts/state_helper.py release extract-operation`；read `.claude/commands/ontology-flowchart.md` and follow refresh branch；Stop this command。
+- **校验流程图**: `python3 .claude/scripts/state_helper.py release extract-operation`；read `.claude/commands/ontology-validate-diagrams.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it；Stop this command。
+- **刷新**: `python3 .claude/scripts/state_helper.py release extract-operation`；read `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow refresh branch；Stop this command。
 
 若 `SUMMARY_PATHS` 为空：`PAIRED_EXCEL_PATHS = empty`，`ORPHAN_EXCEL_PATHS = empty`，`EXCEL_CONTEXT = （无流程图摘要，Excel 不参与本次提取）`。
 

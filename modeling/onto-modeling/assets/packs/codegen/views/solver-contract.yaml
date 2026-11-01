@@ -1,0 +1,4 @@
+artifact: codegen.solver_contract
+list: {columns: [solver_key, operation, decision_model, enabled], filters: []}
+detail: {layout: custom, side: [operation], component: solver_contract}
+card: {title: solver_key, chips: []}

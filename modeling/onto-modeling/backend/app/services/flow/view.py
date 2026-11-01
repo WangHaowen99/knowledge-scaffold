@@ -80,8 +80,11 @@ def suggestions(flow: dict, nodes: list[dict], stage: str) -> dict:
     else:
         primary = _suggestion("overview", "整体视图", "/ontology-overview", primary=True,
                               reason="必经步骤都已完成", priority=5)
-        secondary.append(_suggestion("codegen-scan", "扫描脚本候选", "/ontology-codegen-scan",
-                                     primary=False, reason="可选步骤", priority=5))
+        # 扫描脚本候选属于代码生成与求解包：没启用就不推荐（装配时记下了本项目能用的命令）
+        available = flow.get("available_commands")
+        if available is None or "ontology-codegen-scan" in available:
+            secondary.append(_suggestion("codegen-scan", "扫描脚本候选", "/ontology-codegen-scan",
+                                         primary=False, reason="可选步骤", priority=5))
     return {"mode": "normal", "primary": primary, "secondary": secondary[:2], "all_commands": True}
 
 

@@ -73,6 +73,7 @@ Wait for response.
 
 **If user provides paths:**
 - Set LOCAL_DOCS_PATHS = list of provided paths
+- 本项目没启用联网调研能力（`.claude/skills/deep-research/SKILL.md` 不存在）时不问，直接 set WEB_RESEARCH_MODE = skip。
 - Ask: "是否同时联网检索资料以补充本地文档未覆盖的内容？[是] [否，仅基于本地文档]"
   - **是**: set WEB_RESEARCH_MODE = supplement
   - **否**: set WEB_RESEARCH_MODE = skip
@@ -87,6 +88,8 @@ Wait for response.
 
 If $ARGUMENTS is empty, ask: "请输入要分析的领域名称：" and wait for response. Use it as TOPIC.
 Otherwise TOPIC = $ARGUMENTS.
+
+资料区「把资料读完」发来的是 `path=<资料路径> reading_mode=full`：沿用已有资料分析的 TOPIC，只把这份资料按全文读取补进分析（Step 1.5 的全文规则），不重做其他资料。
 
 ## Step 2.5: 固化只读来源快照
 
@@ -185,7 +188,7 @@ Show the user a brief summary of the report (5-10 bullet points covering key obj
 - 回复 **人工确认** → 你逐条给出结论，我据此补充报告再核验
 验收通过前不要进入对象提取：错误的字段或 ID 会被后续映射、规则与追溯继续沿用。"
 
-If user replies **流程图** (or any affirmative like 好/开始/继续/是): read `.claude/commands/ontology-flowchart.md` and follow its instructions immediately.
+If user replies **流程图** (or any affirmative like 好/开始/继续/是): read `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions immediately.
 If user replies **提取对象**: read `.claude/commands/ontology-extract-object.md` and follow it（由于没有流程图摘要，Step 1 会进入"仅基于资料分析报告"模式）。
 If user replies **修正** or **人工确认**: 回到 Step 4.5 按对应分支处理，通过后再问一次本节的下一步。
 If user replies **追加资料分析**: restart this command from Step 1.

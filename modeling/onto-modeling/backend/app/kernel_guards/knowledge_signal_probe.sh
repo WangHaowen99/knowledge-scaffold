@@ -11,6 +11,12 @@
 
 set -u
 
+# 纠错与惯例的沉淀属于知识沉淀包（详设 5.3）：项目的装配目录里没有它的守则片段，说明没启用，不提示
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
+if [ -e "$PROJECT_DIR/.claude" ] && [ ! -f "$PROJECT_DIR/.claude/KNOWLEDGE_SEDIMENTATION.md" ]; then
+  exit 0
+fi
+
 HOOK_INPUT=$(cat 2>/dev/null || true)
 [ -z "$HOOK_INPUT" ] && exit 0
 

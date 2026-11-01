@@ -22,13 +22,30 @@ _LOCK = threading.Lock()
 _IMAGE_FLOW_FILE = Path(config.ASSETS_DIR) / "workspace-toolkit" / "flow.yaml"
 
 
+def _image_pack_flows() -> list[tuple[str, str, dict]]:
+    """镜像里从 core 拆出去的官方包的流程声明：没有装配目录的旧工作区原来用的是整个工具箱，
+    拆包后仍按「全部能力都在」组装，进度口径不变。"""
+    out = []
+    base = Path(config.ASSETS_DIR) / "packs"
+    for directory in sorted(base.iterdir()) if base.is_dir() else []:
+        try:
+            manifest = yaml.safe_load((directory / "manifest.yaml").read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        flow_rel = (manifest.get("contributes") or {}).get("flow")
+        if not manifest.get("split_from_core") or not flow_rel or not (directory / flow_rel).is_file():
+            continue
+        out.append((directory.name, "image", yaml.safe_load((directory / flow_rel).read_text(encoding="utf-8")) or {}))
+    return out
+
+
 def image_flow() -> dict:
-    """镜像自带的主流程（core 源目录的 flow.yaml 组装结果）。"""
+    """镜像自带的主流程（core 源目录的 flow.yaml 加上拆出去的官方包的节点）。"""
     global _IMAGE_FLOW
     with _LOCK:
         if _IMAGE_FLOW is None:
             data = yaml.safe_load(_IMAGE_FLOW_FILE.read_text(encoding="utf-8")) or {}
-            _IMAGE_FLOW = assemble.assemble([("core", "image", data)])
+            _IMAGE_FLOW = assemble.assemble([("core", "image", data), *_image_pack_flows()])
         return _IMAGE_FLOW
 
 

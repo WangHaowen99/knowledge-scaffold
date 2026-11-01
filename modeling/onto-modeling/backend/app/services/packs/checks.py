@@ -124,18 +124,43 @@ def _touches_protected(pattern: str) -> bool:
                                for protected in mf.PROTECTED_DIRS)
 
 
-def _node_problems(directory: Path, manifest: Manifest) -> tuple[list[str], list[str]]:
-    """节点声明：写入范围不碰受保护目录；入口命令确实存在（详设 6.9）。"""
+def _declared_nodes(directory: Path, manifest: Manifest) -> tuple[list[tuple[str, dict]], list[str]]:
+    """包声明的流程节点：`contributes.flow` 文件里的 nodes，加上 `contributes.nodes` 里列的节点文件；
+    nodes 里写节点编号（不是 .yaml 文件）时指 flow 文件里的同名节点。"""
     import yaml
 
-    protected, missing_commands = [], []
-    commands = {f"/{name}" for name in declared_names(manifest, directory)["commands"]}
+    found: list[tuple[str, dict]] = []
+    broken: list[str] = []
+    flow_rel = manifest.contributes.get("flow")
+    flow_nodes: dict[str, dict] = {}
+    if isinstance(flow_rel, str) and (directory / flow_rel).is_file():
+        try:
+            data = yaml.safe_load((directory / flow_rel).read_text(encoding="utf-8")) or {}
+            flow_nodes = {str(node.get("id")): node for node in data.get("nodes") or [] if isinstance(node, dict)}
+        except (OSError, yaml.YAMLError):
+            broken.append(f"{flow_rel} 无法解析")
+    found += [(f"{flow_rel}#{node_id}", node) for node_id, node in flow_nodes.items()]
     for rel in manifest.items("nodes"):
+        if not rel.endswith((".yaml", ".yml")):
+            if rel not in flow_nodes:
+                broken.append(f"节点 {rel} 不在 {flow_rel or 'flow.yaml'} 里")
+            continue
         try:
             node = yaml.safe_load((directory / rel).read_text(encoding="utf-8")) or {}
         except (OSError, yaml.YAMLError):
-            missing_commands.append(f"{rel} 无法解析")
+            broken.append(f"{rel} 无法解析")
             continue
+        found.append((rel, node))
+    return found, broken
+
+
+def _node_problems(directory: Path, manifest: Manifest) -> tuple[list[str], list[str]]:
+    """节点声明：写入范围不碰受保护目录；入口命令确实存在（详设 6.9）。"""
+    protected, missing_commands = [], []
+    commands = {f"/{name}" for name in declared_names(manifest, directory)["commands"]}
+    nodes, broken = _declared_nodes(directory, manifest)
+    missing_commands += broken
+    for rel, node in nodes:
         for item in node.get("produces") or []:
             if isinstance(item, dict) and _touches_protected(str(item.get("path") or "")):
                 protected.append(f"{rel}: {item.get('path')}")

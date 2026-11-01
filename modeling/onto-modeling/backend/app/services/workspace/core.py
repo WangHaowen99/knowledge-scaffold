@@ -171,9 +171,11 @@ class WorkspaceCore:
 
     # ---- 项目 CRUD ----
 
-    def create_project(self, name: str, owner: str = "", background: str = "", **extra) -> dict:
+    def create_project(self, name: str, owner: str = "", background: str = "", *,
+                       packs: list[str] | None = None, **extra) -> dict:
         """建项目：目录、资产挂载、gitignore、知识包目录与基线提交。extra 是额外写进元数据的字段
-        （goal、build_mode、created_from 等，契约 P-02）。"""
+        （goal、build_mode、created_from 等，契约 P-02）；packs 是新建向导选的能力包与行业包
+        （None = 缺省启用的能力包，写进锁文件）。"""
         name = (name or "").strip()
         if not name:
             raise WorkspaceError("项目名称不能为空", 400, "project_name_required")
@@ -181,7 +183,7 @@ class WorkspaceCore:
         root = self.workspaces_dir / project_id
         root.mkdir(parents=True)
 
-        self._mount_assets(root)
+        self._mount_assets(root, packs)
         self._copy_resource_template(root)
         self._write_gitignore(root)
         # 初始化知识包目录，并写入占位 index，便于前端直接浏览完整结构。
@@ -591,10 +593,10 @@ class WorkspaceCore:
 
     # ---- 内部 ----
 
-    def _mount_assets(self, root: Path) -> None:
+    def _mount_assets(self, root: Path, packs: list[str] | None = None) -> None:
         """补齐能力包锁文件，装配并原子切换 `.claude`（方案 D2）；CLAUDE.md、README.md 是指向
         `.claude/` 里的相对链接。镜像里没有工具箱时什么都不挂（同原行为）。"""
-        self.packs.mount(root)
+        self.packs.mount(root, packs)
 
     def _copy_resource_template(self, root: Path) -> None:
         template = self.assets_dir / "resource-template"

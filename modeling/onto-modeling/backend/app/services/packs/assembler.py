@@ -227,8 +227,9 @@ class Assembler:
             _fsync_write(staging / "README.md", readme)
         flow = None
         if flows:
+            available = {name for _, manifest, _ in plan.packs for name in manifest.items("commands")}
             try:
-                flow = flow_assemble.assemble(flows)
+                flow = flow_assemble.assemble(flows, available_commands=available)
             except flow_assemble.FlowAssemblyError as exc:
                 raise AssemblyError("flow", exc.problems) from exc
             _fsync_write(staging / "flow.yaml", flow_assemble.render(flow))

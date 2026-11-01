@@ -13,7 +13,9 @@ sections: [输入, 期望, 推演过程]    # Markdown 正文按标题切段
 refs: [{field: operation, kind: operation}]
 status: {field: result, map: {pass: 通过, fail: 失败}}
 index: ext/trace/index/scenarios.jsonl   # 可选：包脚本生成的标准索引（内置解析器算不出来的字段）
-derive: {rows: table_rows}        # 可选：内核从文件算出的字段（stem、h1、table_rows、heading）
+derive: {rows: table_rows}        # 可选：内核从文件算出的字段（stem、h1、table_rows、heading；
+                                  #   match:<字段>:<正则>=<值>|<否则> 按另一个字段取值）
+defaults: {result: not_run}       # 可选：解析与并入索引之后仍为空的字段取默认值
 readonly: managed                 # 可选：只读产物的原因（求解契约在求解页编辑、知识条目走知识接口）
 ```
 
@@ -73,6 +75,7 @@ class ArtifactType:
     field_labels: dict
     table: bool
     extras: dict
+    defaults: dict
     directory: Path | None = None
     raw: dict = field(default_factory=dict)
 
@@ -269,7 +272,8 @@ def parse_registration(data: dict, *, pack: str, pack_version: str, official: bo
         if spec is not None and spec["type"] == "ref":
             spec.setdefault("kind", ref["kind"])
     derive = {str(k): str(v) for k, v in (data.get("derive") or {}).items()}
-    bad = [value for value in derive.values() if value not in DERIVATIONS and not value.startswith("field:")]
+    bad = [value for value in derive.values()
+           if value not in DERIVATIONS and not value.startswith(("field:", "match:"))]
     if bad:
         raise RegistrationError(f"{art_type} 的 derive 不认识：{'、'.join(bad)}")
     index = data.get("index")
@@ -293,7 +297,8 @@ def parse_registration(data: dict, *, pack: str, pack_version: str, official: bo
         section_labels={str(k): str(v) for k, v in (data.get("section_labels") or {}).items()},
         field_labels={str(k): str(v) for k, v in (data.get("field_labels") or {}).items()},
         table=bool(data.get("table")) or fmt in ("csv", "jsonl") or "table_rows" in derive.values(),
-        extras=extras, directory=directory, raw=dict(data),
+        extras=extras, defaults={str(k): v for k, v in (data.get("defaults") or {}).items()},
+        directory=directory, raw=dict(data),
     )
 
 

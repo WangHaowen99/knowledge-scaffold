@@ -176,6 +176,17 @@ def _derive(atype: ArtifactType, fields: dict, *, stem: str, text: str, table: d
             fields[name] = mtime
         elif how.startswith("field:"):
             fields[name] = fields.get(how[len("field:"):])
+        elif how.startswith("match:"):
+            # match:<字段>:<正则>=<命中时的值>|<否则的值>
+            source, _, rule = how[len("match:"):].partition(":")
+            pattern, _, values = rule.rpartition("=")
+            hit, _, miss = values.partition("|")
+            text = str(fields.get(source) or "")
+            try:
+                matched = bool(re.search(pattern, text))
+            except re.error:
+                matched = False
+            fields[name] = hit if matched else (miss if text or miss else None)
 
 
 def _key(atype: ArtifactType, fields: dict, stem: str) -> str:

@@ -1,0 +1,22 @@
+# 反馈演进（详设 5.3、第 14 章第 3 项：留在 onto，输入改为外部反馈契约）。没有页面：
+# 反馈进资料区「外部反馈」分组，在对话里用 /ontology-evolution 处理。
+name: evo
+version: 0.3.0
+kind: capability
+category: capability
+label: 反馈演进
+description: 按外部评测反馈归因失分用例，修订本体，并检查修订是否只是迎合了反馈。
+publisher: {kind: official, label: 平台}
+split_from_core: true
+default_on: false
+batch: second
+kernel_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {core: ">=0.1"}
+changelog: 从基础建模能力拆出，泛化检查改读外部反馈（feedback/*.json）。
+contributes:
+  commands: [ontology-evolution]
+  scripts: [check_eval_generalization.py]
+  flow: flow.yaml
+  nodes: [evo.evolution]
+checksums: checksums.sha256

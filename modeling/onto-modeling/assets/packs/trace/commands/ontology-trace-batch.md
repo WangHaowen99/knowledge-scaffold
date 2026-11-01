@@ -3,6 +3,7 @@ Trace all operation files in batch mode. Loaded by `.claude/commands/ontology-tr
 ## Mode Inputs
 
 - `TRACE_MODE=batch`
+- 页面「批量验证」发来的 `scope=all` 就是全量批量推演（同不带参数）。
 
 ## <a id="batch-mode"></a>Batch Mode
 
@@ -133,12 +134,16 @@ agent 返回后，按 `JOB_SUMMARIES` 顺序打印一次性进度块（每行对
 
 ### Step B4: Save combined summary
 
+每个 job 的结果核对通过后（`tmp/trace-results-{job序号}.json`），执行 `python3 .claude/scripts/trace_index.py record "{该 job 的 TESTCASE_PATH}" --results tmp/trace-results-{job序号}.json` 更新场景索引；核对失败的 job 不写索引。
+
+页面「补齐过期场景」发来的消息带参数 `keys`（场景编号，形如 `<逻辑名>--<场景序号>`）：只推演这些场景所在的逻辑。
+
 每个 per-operation 详细报告已由 trace-agent 在 Step B3 写入 `reports/{BATCH_TS}-trace-{OPERATION_NAME}.md`，本步**不再**由主命令 Write 这些详细报告——只用各 operation 的 summary JSON 写一份 batch 汇总。
 
 B3 中由 agent 新写入 `ontology/testcase/*.md` 的文件集中 commit 一次（来源：`JOB_SUMMARIES` 中 `generated_testcase: true` 的条目）：
 
 ```bash
-git add ontology/testcase/
+git add ontology/testcase/ ext/trace/index/
 git commit -m "trace: batch testcases ({N} operations)"
 ```
 

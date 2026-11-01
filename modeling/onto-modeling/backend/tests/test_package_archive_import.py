@@ -103,7 +103,8 @@ def test_published_package_import_restores_entities(
     # 已发布知识包只有交付物、没有过程资产：research/ 等必选阶段不命中，但不截断后续，
     # 对象、操作、规则与指标、代码生成四个阶段各自计入（与前端 stageStatuses 一致）
     assert overview["stages_done"] == 4
-    assert overview["stages_total"] == len(flow_model.image_flow()["nodes"]) - 1  # 增量更新是按需节点，不计进度
+    # 按需节点（增量更新、反馈演进、迁移复用）不计进度
+    assert overview["stages_total"] == sum(1 for node in flow_model.image_flow()["nodes"] if node.get("progress", True))
 
     # 工作区文档不带包契约 frontmatter，正文原样
     body = (root / "ontology" / "operation" / "创建订单.md").read_text(encoding="utf-8")

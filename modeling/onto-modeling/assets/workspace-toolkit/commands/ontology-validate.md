@@ -582,17 +582,17 @@ Tell user:
 
 > 锁释放说明：除 **再校验**（在本命令内重启 Step 1，锁可继续持有）外，任一选项都会离开本命令。在 read 下游命令文件或 Stop 之前，先 `python3 .claude/scripts/state_helper.py release validate`。
 
-**If user replies 测试数据:** release validate，然后 read `.claude/commands/ontology-mock.md` and follow its instructions.
+**If user replies 测试数据:** release validate，然后 read `.claude/commands/ontology-mock.md`（场景走查能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions.
 
-**If user replies 追踪:** ask "请输入要追踪的逻辑文件路径（如 ontology/operation/创建订单.md），或回复 **全部** 追踪所有逻辑：". Then release validate 并 read `.claude/commands/ontology-trace.md` and follow its instructions with the user's chosen path.
+**If user replies 追踪:** ask "请输入要追踪的逻辑文件路径（如 ontology/operation/创建订单.md），或回复 **全部** 追踪所有逻辑：". Then release validate 并 read `.claude/commands/ontology-trace.md`（场景走查能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions with the user's chosen path.
 
-**If user replies 交互走查:** ask "请输入要交互走查的逻辑文件路径（如 ontology/operation/创建订单.md），或直接回复 **选择** 让我列出逻辑文件：". Then release validate 并 read `.claude/commands/ontology-trace.md` and follow it with `交互 {用户选择}`（如果用户回复 **选择**，传 `交互`）。
+**If user replies 交互走查:** ask "请输入要交互走查的逻辑文件路径（如 ontology/operation/创建订单.md），或直接回复 **选择** 让我列出逻辑文件：". Then release validate 并 read `.claude/commands/ontology-trace.md`（场景走查能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it with `交互 {用户选择}`（如果用户回复 **选择**，传 `交互`）。
 
 **If user replies 整体视图:** release validate，然后 read `.claude/commands/ontology-overview.md` and follow its instructions.
 
-**If user replies 扫描候选:** release validate，然后 read `.claude/commands/ontology-codegen-scan.md` and follow its instructions.
+**If user replies 扫描候选:** release validate，然后 read `.claude/commands/ontology-codegen-scan.md`（代码生成与求解能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions.
 
-**If user replies 代码生成:** release validate，然后 read `.claude/commands/ontology-codegen.md` and follow its instructions.
+**If user replies 代码生成:** release validate，然后 read `.claude/commands/ontology-codegen.md`（代码生成与求解能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions.
 
 **If user replies 增量对象:** release validate，然后 Read `.claude/commands/ontology-extract-object.md` and follow its instructions with these overrides: MODE = incremental; collect EXISTING_FILES from current `ontology/object/` contents before dispatching the agent. After the agent returns its summary, ask: "增量对象完成。是否重新校验？回复 **是** 或 **否**。" — if yes, restart from Step 1 of this command.
 

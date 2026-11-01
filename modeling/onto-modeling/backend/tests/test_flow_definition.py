@@ -30,7 +30,25 @@ FLOW = yaml.safe_load((TOOLKIT / "flow.yaml").read_text(encoding="utf-8"))
 sys.path.insert(0, str(TOOLKIT / "scripts"))
 import flow_state  # noqa: E402
 
-COMMANDS = {path.stem for path in (TOOLKIT / "commands").glob("*.md")}
+PACKS = Path(config.ASSETS_DIR) / "packs"
+# 拆包后（方案 D7 后半）命令分在 core 与各可选包里
+COMMANDS = {path.stem for path in (TOOLKIT / "commands").glob("*.md")} | {
+    path.stem for path in PACKS.glob("*/commands/*.md")}
+# 新建项目缺省启用的能力包里带流程节点的（知识沉淀包没有节点）
+DEFAULT_FLOW_PACKS = ("codegen", "diagram", "trace")
+
+
+def _default_flow() -> dict:
+    contributions = [("core", "test", FLOW)]
+    available = {path.stem for path in (TOOLKIT / "commands").glob("*.md")}
+    for name in ("codegen", "diagram", "knowledge", "trace"):
+        available |= {path.stem for path in (PACKS / name / "commands").glob("*.md")}
+        if name in DEFAULT_FLOW_PACKS:
+            contributions.append((name, "test", yaml.safe_load((PACKS / name / "flow.yaml").read_text(encoding="utf-8"))))
+    return assemble.assemble(contributions, available_commands=available)
+
+
+DEFAULT_FLOW = _default_flow()
 
 # 场景：要建的文件 → 期望的旧版阶段、计入进度的完成数
 SCENARIOS = {
@@ -110,7 +128,7 @@ def test_assembled_flow_is_json_readable_by_stdlib(manager: WorkspaceManager):
     text = (root / ".claude" / "flow.yaml").read_text(encoding="utf-8")
     assembled = json.loads(text)
     assert yaml.safe_load(text) == assembled  # 也是合法 YAML
-    assert [node["id"] for node in assembled["nodes"]] == [node["id"] for node in FLOW["nodes"]]
+    assert [node["id"] for node in assembled["nodes"]] == [node["id"] for node in DEFAULT_FLOW["nodes"]]
     assert assembled["flow_hash"] == json.loads((root / ".claude" / "MANIFEST.json").read_text())["flow_hash"]
 
 
@@ -123,22 +141,22 @@ def test_backend_state_helper_and_api_agree(manager: WorkspaceManager, scenario:
     root = make_project(manager, files)
     # ① 后端项目进度
     progress = manager._project_progress(root)
-    assert (progress["stages_done"], progress["stages_total"]) == (done, len(flow_state.progress_nodes(FLOW)))
+    assert (progress["stages_done"], progress["stages_total"]) == (done, len(flow_state.progress_nodes(DEFAULT_FLOW)))
     # ② state_helper（工作区里实际跑的那份）
     assert state_helper(root, "detect-stage") == stage
     # ③ 会话开始的阶段提示（宿主注入与 session_start_hook 都经 detect-stage）
     assert injection.stage_hint(root).startswith(f"本体项目当前阶段：{stage}。")
     # ④ /ontology 的下一步建议条目
-    assert state_helper(root, "next-step").splitlines() == flow_state.next_step_lines(FLOW, stage)
+    assert state_helper(root, "next-step").splitlines() == flow_state.next_step_lines(DEFAULT_FLOW, stage)
     # ⑤ GET /flow（前端进度条与建议条改读它）
     monkeypatch.setattr(deps, "workspaces", manager)
     monkeypatch.setattr(auth, "ENABLED", False)
     body = TestClient(app).get(f"/api/v1/projects/{root.name}/flow").json()
     assert body["stage"] == stage
     assert body["progress"] == {"done": done, "total": progress["stages_total"]}
-    assert [node["id"] for node in body["nodes"]] == [node["id"] for node in FLOW["nodes"]]
+    assert [node["id"] for node in body["nodes"]] == [node["id"] for node in DEFAULT_FLOW["nodes"]]
     confirmed = {node["id"] for node in body["nodes"] if node["state"] == "confirmed"}
-    hits = flow_state.node_hits(FLOW, root)
+    hits = flow_state.node_hits(DEFAULT_FLOW, root)
     assert confirmed == {node_id for node_id, hit in hits.items() if hit}
 
 
@@ -185,7 +203,7 @@ def test_flow_api_suggests_mainline_next_step(manager: WorkspaceManager, monkeyp
     assert len(body["suggestions"]["secondary"]) <= 2 and body["suggestions"]["all_commands"] is True
     assert client.get(f"/api/v1/projects/{root.name}/flow/suggestions").json() == body["suggestions"]
     sections = {section["id"]: section["nodes"] for section in body["sections"]}
-    assert "core.update" in sections["on_demand"] and "core.flowchart" in sections["optional"]
+    assert "core.update" in sections["on_demand"] and "diagram.flowchart" in sections["optional"]
     assert body["commands"]["extract-object"] == "core.object"
 
 

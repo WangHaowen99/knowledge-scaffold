@@ -212,6 +212,10 @@ def refresh(atype: ArtifactType, root: Path) -> list[dict]:
             with conn:
                 rows = _refresh_rows(conn, atype, root)
                 rows = _merge_index(atype, root, rows)
+                for row in rows:
+                    for name, value in atype.defaults.items():
+                        if row["fields"].get(name) in (None, ""):
+                            row["fields"][name] = value
                 _mark_stale(conn, atype, root, rows)
             return rows
         finally:

@@ -1,0 +1,37 @@
+# 代码生成与求解（详设 5.3、5.9.8；方案第 3 章 codegen 包）：扫描可代码化的操作、生成并在沙箱里验证脚本、
+# 生成求解评估器。脚本属于五元组（内核能读、在 Studio 编辑）；求解契约在受管目录，由内核的求解模块读写，
+# 这里只把它登记成只读产物。脚本契约与验证（script_verify、jiuwenbox_client 等）随共享契约库留在 core。
+name: codegen
+version: 0.9.0
+kind: capability
+category: capability
+label: 代码生成与求解
+description: 扫描可以写成脚本的操作，生成脚本并在沙箱里跑通；为求解契约生成评估器。
+publisher: {kind: official, label: 平台}
+split_from_core: true
+default_on: true
+batch: first
+kernel_api: ">=1.0 <2.0"
+page_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {core: ">=0.1"}
+changelog: 从基础建模能力拆出；扫描报告与求解契约登记成插件产物，「代码生成与求解」页读它们。
+contributes:
+  commands: [ontology-codegen-scan, ontology-codegen, ontology-solver-evaluator]
+  agents: [codegen-review-agent, script-candidate-agent]
+  templates: [solver-evaluator-template.py]
+  flow: flow.yaml
+  nodes: [codegen.codegen, codegen.solver]
+  artifacts: [artifacts/scan-report.yaml, artifacts/solver-contract.yaml]
+  views: [views/scan-report.yaml, views/solver-contract.yaml]
+  pages:
+    - id: scripts
+      page_api: ">=1.0 <2.0"
+      nav: {title: 代码生成, icon: code, order: 3}
+      badge: inbox
+      data: {artifacts: [codegen.scan_report, codegen.solver_contract], reports: [], nodes: [codegen.codegen, codegen.solver]}
+      actions:
+        - {id: scan, label: 扫描可代码化的操作, command: /ontology-codegen-scan}
+        - {id: generate, label: 生成脚本, command: /ontology-codegen}
+        - {id: evaluator, label: 生成评估器, command: /ontology-solver-evaluator}
+checksums: checksums.sha256

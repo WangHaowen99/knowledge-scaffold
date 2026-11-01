@@ -1,0 +1,25 @@
+# 示例数据：存量的示例数据一个对象一份 Markdown 表格；跳过生成的对象记在 ext/trace/index/mock-skipped.jsonl
+type: trace.mock
+title: 示例数据
+path: ontology/data-mock/*.md
+format: md-frontmatter
+key: filename
+table: true
+schema:
+  version: "1"
+  fields:
+    - {name: object, type: ref, label: 示例数据, required: false}
+    - {name: scenarios, type: text, label: 用于场景, required: false}
+    - {name: rows, type: number, label: 行数, required: false}
+    - name: mode
+      type: enum
+      label: 生成方式
+      required: false
+      enum:
+        - {value: by_scenario, label: 按场景生成}
+        - {value: manual, label: 手工维护}
+derive: {object: stem, rows: table_rows}
+defaults: {mode: manual}
+refs:
+  - {field: object, kind: object}
+extras: {skipped: ext/trace/index/mock-skipped.jsonl}

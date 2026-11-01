@@ -1,0 +1,4 @@
+artifact: diagram.flowchart
+list: {columns: [title, operation, summary, state], filters: [state]}
+detail: {layout: custom, side: [], component: flowchart}
+card: {title: title, chips: [state]}

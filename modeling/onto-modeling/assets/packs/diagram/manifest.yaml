@@ -1,0 +1,26 @@
+# 图示（详设 5.3：没有页面；启用后对话里出现流程图卡，Studio 多出「流程图」条目类型）。
+# 流程图登记成插件产物 diagram.flowchart，内核内置 drawio 解析器读写（详设 5.9.5「专用组件」）；
+# 存量流程图还在 ontology/diagrams/。流程图格式检查 check_diagrams 随提交检查留在 core。
+name: diagram
+version: 0.5.0
+kind: capability
+category: capability
+label: 图示
+description: 创建、打磨与校验业务流程图（drawio），流程图在 Studio 里查看和编辑。
+publisher: {kind: official, label: 平台}
+split_from_core: true
+default_on: true
+batch: first
+kernel_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {core: ">=0.1"}
+changelog: 从基础建模能力拆出；流程图登记成插件产物，Studio 与流程图编辑弹窗经通用产物接口读写。
+contributes:
+  commands: [ontology-flowchart, ontology-validate-diagrams]
+  skills: [mermaid-flowchart]
+  scripts: [summarize_diagram.py, batch_summarize.py, init_flowchart_resources.py, check_diagram_excel_alignment.py]
+  flow: flow.yaml
+  nodes: [diagram.flowchart]
+  artifacts: [artifacts/flowchart.yaml]
+  views: [views/flowchart.yaml]
+checksums: checksums.sha256

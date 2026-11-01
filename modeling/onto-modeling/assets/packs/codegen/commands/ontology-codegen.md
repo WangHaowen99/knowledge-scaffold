@@ -63,6 +63,8 @@ consumer 只按 operation 调用脚本：选中哪个 operation，就执行绑�
 `python3 .claude/scripts/ontology_checker.py ontology --json --include-scripts` 会按同一规则检查，违反时报 `脚本契约` 错误并给出改法，知识包导出同样拦截。
 
 **If $ARGUMENTS provided:**
+页面「代码生成与求解」发来的参数是 `键=值` 形式（值是 JSON）：`operations=["逻辑1", …]` 等同按空格列出这些 operation；`script=<脚本名> mode=fix` 按这个脚本最近的契约检查与沙箱验证结果修复它，`mode=descriptor` 只重新生成描述符（`python3 .claude/scripts/script_descriptor.py render ontology`），`mode=regenerate` 按它绑定的 operation 重新生成。
+
 按空格切分，每段是一个 operation 名；逐项 resolve 到 `ontology/operation/{operation}.md`，缺失文件给警告并跳过。旧的 `operation名:步骤区间` 片段写法不再支持：提示"片段不再单独生成脚本，请把这几步拆成子操作后再生成"，并跳过该项。
 
 再把每个目标换算成实际要写的脚本：
