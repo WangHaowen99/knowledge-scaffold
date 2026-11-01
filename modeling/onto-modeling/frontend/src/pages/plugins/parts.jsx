@@ -4,37 +4,31 @@ import { useApp } from '../../app/context.js';
 import { SNav } from '../../shell/SideNav.jsx';
 import { can } from '../../state/roles.js';
 import { Chip } from '../../ui/index.jsx';
+import { PACK_CATEGORIES } from './catalogModel.js';
 import '../../styles/plugins.css';
 
-// 分类：名称、图标、说明（设计稿 PL_CAT）；node、exporter 契约里有、设计稿没画，有包时才在左栏出现
-export const PACK_CATEGORIES = {
-  capability: ['能力包', 'cube', '决定怎么建模'],
-  industry: ['行业包', 'book', '行业知识资产，只有数据'],
-  system: ['系统知识包', 'server', '商用系统的表字段字典'],
-  provider: ['证据源提供方', 'db', '连接器网关里运行，管理员安装'],
-  node: ['节点包', 'branch', '往流程里加节点'],
-  exporter: ['导出器', 'download', '把知识包导出成其他格式'],
-};
-// 卡片图标底色（设计稿 .pl-ico.cap / .node / .ind / .sys / .prov / .exp）
-export const PACK_ICON_CLASS = { capability: 'cap', node: 'node', industry: 'ind', system: 'sys', provider: 'prov', exporter: 'exp' };
+// 分类与图标底色的定义在 catalogModel.js（纯逻辑，单测用），这里照旧导出
+export { PACK_CATEGORIES, PACK_ICON_CLASS } from './catalogModel.js';
 
 const PROJECT_KEY = 'onto.plugins.project';
 
 /**
  * 「启用到」哪个项目：地址参数 ?project= 优先，其次上次选的，最后取最近的一个未归档项目。
- * 返回 { projectId, setProjectId, projects }；projects 为 P-01 的卡片（未归档）。
+ * 返回 { projectId, setProjectId, projects, ready }；projects 为 P-01 的卡片（未归档），ready 表示项目列表已取到。
+ * enabled=false 时不取项目列表（左栏已经拿到项目时用）。
  */
-export function usePluginProject(route) {
+export function usePluginProject(route, { enabled = true } = {}) {
   const { api } = useApp();
   const [projects, setProjects] = useState(null);
   const [chosen, setChosen] = useState(() => {
     try { return route?.query?.project || window.localStorage.getItem(PROJECT_KEY) || ''; } catch { return route?.query?.project || ''; }
   });
   useEffect(() => {
+    if (!enabled) return undefined;
     let alive = true;
     api.projects({ limit: 200 }).then((r) => alive && setProjects((r.items || []).filter((p) => !p.archived))).catch(() => alive && setProjects([]));
     return () => { alive = false; };
-  }, [api]);
+  }, [api, enabled]);
   const projectId = useMemo(() => {
     if (!projects) return chosen || null;
     if (chosen && projects.some((p) => p.id === chosen)) return chosen;
@@ -44,23 +38,26 @@ export function usePluginProject(route) {
     setChosen(id);
     try { window.localStorage.setItem(PROJECT_KEY, id); } catch { /* 存储不可用时只在本页生效 */ }
   };
-  return { projectId, setProjectId, projects: projects || [] };
+  return { projectId, setProjectId, projects: projects || [], ready: !enabled || projects !== null };
 }
 
 /**
  * 左栏。active 是分类键（all、capability…、inst、upd）或 'up'（上传与审核）。
- * counts 为 PL-01 的 counts；没传时自己按 projectId 取一次。
+ * counts 为 PL-01 的 counts；没传时自己取一次：projectId 没传时按「启用到」上次选的项目算（「已启用」「可更新」和插件中心一致）。
  * onCat 没传时点分类跳到插件中心（?cat=）。
  */
 export function PluginsNav({ active, counts: given, onCat, projectId }) {
   const { api, user } = useApp();
   const [fetched, setFetched] = useState(null);
+  const fallback = usePluginProject(undefined, { enabled: !given && projectId === undefined });
+  const pid = projectId !== undefined ? projectId : fallback.projectId;
+  const waiting = projectId === undefined && !fallback.ready;
   useEffect(() => {
-    if (given) return undefined;
+    if (given || waiting) return undefined;
     let alive = true;
-    api.packs(projectId ? { project_id: projectId } : undefined).then((r) => alive && setFetched(r.counts || null)).catch(() => {});
+    api.packs(pid ? { project_id: pid } : undefined).then((r) => alive && setFetched(r.counts || null)).catch(() => {});
     return () => { alive = false; };
-  }, [api, given, projectId]);
+  }, [api, given, pid, waiting]);
   const counts = given || fetched || {};
   const n = (k) => <span className="xs faint num">{counts[k] ?? ''}</span>;
   const item = (key, title, icon, extra) => (onCat ? { key, title, icon, extra } : { key, title, icon, extra, go: 'plugins', query: key === 'all' ? undefined : { cat: key } });

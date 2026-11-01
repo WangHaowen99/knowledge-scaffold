@@ -46,6 +46,7 @@ export function register(ctx) {
       // ?mock=off:<包名>[+<包名>]：一开始就停用这些能力（插件页的「本项目没有启用」空状态用）
       const off = (sc.off || '').split(/[+\s]+/).filter(Boolean); // 地址里的 + 会解码成空格
       const packs = projectPacks().map((p) => (off.includes(p.name) && p.status !== 'required' ? { ...p, status: 'disabled', locked_version: p.locked_version } : p));
+      db.seedProjectPacks?.(pid, packs); // 插件中心的 mock 状态（routes-plugins.js 的 ?mock=plugins:…）在这里改初始能力表
       db.settings.set(pid, { packs, servers: mcpServers(), tokens: mcpTokens(), rev: 1 });
     }
     return db.settings.get(pid);
@@ -151,7 +152,7 @@ export function register(ctx) {
     const s = stOf(pid);
     let p = s.packs.find((x) => x.name === body.name);
     if (p && p.status !== 'disabled') return err(409, 'pack_already_enabled', '已经启用了');
-    const card = F.packs().find((x) => x.name === body.name);
+    const card = (db.packCatalog?.() || F.packs()).find((x) => x.name === body.name); // 插件目录（routes-plugins.js）比 packs() 多租户包
     if (!p && !card) return err(404, 'pack_not_found', '找不到这个能力包');
     if (OFFLINE_PACKS.includes(body.name)) return err(409, 'pack_unavailable', '离线部署不可用', { reason: 'offline' });
     const version = body.version || p?.locked_version || card.latest;

@@ -179,7 +179,7 @@ export function createApi(client) {
 
     // 3.16 插件
     packs: (query) => client.get('/packs', { query }), // PL-01
-    pack: (name) => client.get(`/packs/${enc(name)}`), // PL-02
+    pack: (name, query) => client.get(`/packs/${enc(name)}`, { query }), // PL-02（project_id、version）
     packCompatibility: (name, version, query) => client.get(`/packs/${enc(name)}/versions/${enc(version)}/compatibility`, { query }), // PL-03
     requestPackInstall: (name, body) => client.post(`/packs/${enc(name)}/install-requests`, body || {}), // PL-04
     projectPacks: (id) => client.get(`${P(id)}/packs`), // PL-05
