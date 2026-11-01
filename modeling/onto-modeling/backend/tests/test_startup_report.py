@@ -58,7 +58,9 @@ def test_report_lists_locks_and_uncommitted_changes(manager, caplog):
 def test_clean_start_reports_ok(manager):
     manager.create_project("干净项目")
     report = startup_report.run(manager)
-    assert [(item["id"], item["result"]) for item in report["items"]] == [("index_lock", "ok"), ("uncommitted", "ok")]
+    assert [(item["id"], item["result"]) for item in report["items"]] == [
+        ("index_lock", "ok"), ("write_intents", "ok"), ("uncommitted", "ok"),
+    ]
 
 
 def test_startup_runs_self_check_and_ops_endpoint_returns_it(manager, monkeypatch):
@@ -72,4 +74,4 @@ def test_startup_runs_self_check_and_ops_endpoint_returns_it(manager, monkeypatc
 
     assert body["at"].endswith("Z")
     results = {item["id"]: item["result"] for item in body["items"]}
-    assert results == {"index_lock": "cleared", "uncommitted": "awaiting_user"}
+    assert results == {"index_lock": "cleared", "write_intents": "ok", "uncommitted": "awaiting_user"}

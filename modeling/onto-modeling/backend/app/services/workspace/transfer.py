@@ -11,8 +11,15 @@ from pathlib import Path
 
 from ..script_env import minimal_env
 from .errors import WorkspaceError
-from .gitops import _ensure_gitignore_entries, _git, _untrack_state_in_index
+from .gitops import _changed_paths, _ensure_gitignore_entries, _git, _untrack_state_in_index
 from .layout import EXPORT_ONTOLOGY_DIRS, IMPORT_SKIP_TOP, META_FILE, _default_engine, _is_run_state, _slugify
+
+
+def _import_message(message: str, root: Path, owner: str) -> str:
+    """导入建出的新仓库整仓提交：提交说明带来源 trailer（Onto-Source: import）。"""
+    from ...kernel.writepath import Origin, stamped
+
+    return stamped(message, Origin("import", owner), root)
 
 
 class TransferMixin:
@@ -119,7 +126,7 @@ class TransferMixin:
         # 存量迁移包的索引仍跟踪着元数据：gitignore 管不到已跟踪的文件，导入提交里一并摘除
         _untrack_state_in_index(root)
         _git(root, "add", "-A")
-        _git(root, "commit", "-m", "import: 迁移导入", "--allow-empty")
+        _git(root, "commit", "-m", _import_message("import: 迁移导入", root, owner), "--allow-empty")
         return meta
 
 
@@ -159,7 +166,7 @@ class TransferMixin:
             raise WorkspaceError(f"压缩包无法解析：{exc}") from exc
         _ensure_gitignore_entries(root)  # 包里的 .gitignore 会盖掉模板
         _git(root, "add", "-A")
-        _git(root, "commit", "-m", "import: 导入既有工作区内容", "--allow-empty")
+        _git(root, "commit", "-m", _import_message("import: 导入既有工作区内容", root, owner), "--allow-empty")
         return meta
 
     def import_summary(self, archive_path: Path) -> dict:
@@ -198,15 +205,18 @@ class TransferMixin:
             # 此时工作区已有未跟踪改动，ensure_package_layout 不会另起一个提交。
             self.ensure_package_layout(meta["id"])
             _git(root, "add", "-A")
-            _git(root, "commit", "-m", "import: 导入已发布知识包", "--allow-empty")
+            _git(root, "commit", "-m", _import_message("import: 导入已发布知识包", root, owner), "--allow-empty")
         except Exception:
             self.delete_project(meta["id"])
             raise
         return meta
 
-    def seed_example(self, project_id: str) -> None:
+    def seed_example(self, project_id: str, author: str = "") -> None:
         """注入外卖订单示例领域（对应 CLI 版 /ontology 示例）。"""
+        from ...kernel.writepath import ChangeTx, Origin
+
         root = self.project_root(project_id)
+        before = set(_changed_paths(root, ["."]))
         script = root / ".claude" / "scripts" / "seed_example.py"
         if not script.exists():
             raise WorkspaceError("示例脚本不存在（资产未挂载）", 500)
@@ -216,7 +226,8 @@ class TransferMixin:
         )
         if result.returncode != 0:
             raise WorkspaceError(f"示例注入失败: {result.stderr.strip()[:300]}", 500)
-        status = _git(root, "status", "--porcelain")
-        if status.strip():
-            _git(root, "add", "-A")
-            _git(root, "commit", "-m", "research: 注入外卖订单示例领域")
+        # 只提交示例脚本这次新改动的路径，项目里别的未提交改动不带进来（方案 C1）
+        after = set(_changed_paths(root, ["."]))
+        with ChangeTx(self, project_id, Origin("plugin", author), summary="注入示例领域") as tx:
+            tx.touch(*sorted(after - before), snapshot=False)
+            tx.commit("research: 注入外卖订单示例领域")

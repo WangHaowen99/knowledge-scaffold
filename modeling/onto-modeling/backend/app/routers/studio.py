@@ -311,7 +311,7 @@ async def submit(project_id: str, entry_id: str, request: Request):
         }
     saved = deps.workspaces.write_file(
         project_id, rel, draft["content"], base_revision=draft.get("base_revision", ""),
-        author=deps.username(request), summary=str(body.get("summary") or "")[:80],
+        author=deps.username(request), summary=str(body.get("summary") or "")[:80], source="studio",
     )
     studio_service.discard_draft(project_id, rel, user)
     state = mainline.state(root)

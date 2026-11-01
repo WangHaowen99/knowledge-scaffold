@@ -17,8 +17,8 @@ from fastapi.responses import JSONResponse
 
 from ..api import deps
 from ..api.errors import ApiError
+from ..kernel.writepath import ChangeTx, Origin
 from ..services import mainline
-from ..services.workspace.gitops import _commit_paths
 from ..services.workspace.layout import _content_revision
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/knowledge", tags=["knowledge"])
@@ -217,14 +217,15 @@ async def create_knowledge(project_id: str, request: Request):
     entry_id = f"{fields['type']}-{slug}"
     if (root / KNOWLEDGE_DIR / f"{entry_id}.md").exists():
         raise ApiError("knowledge_duplicate", "已有同名的知识条目", 409, {"conflicts": [entry_id]})
-    with deps.workspaces._project_lock(project_id):
+    with ChangeTx(deps.workspaces, project_id, Origin("web", deps.actor(request)), summary="新增知识条目") as tx:
+        tx.touch(KNOWLEDGE_DIR, snapshot=False)
         args = ["add", "--type", fields["type"], "--slug", slug, "--name", fields["title"],
                 "--confidence", fields["confidence"], "--source", fields["source"], "--body", fields["body"],
                 "--after-conflict-check", "none-found"]
         for scope in fields["scopes"]:
             args += ["--scope", scope]
         _run_helper(root, *args)
-        _commit_paths(root, [KNOWLEDGE_DIR], f"knowledge: 新增 {fields['title']} by {deps.actor(request)}")
+        tx.commit(f"knowledge: 新增 {fields['title']} by {deps.actor(request)}")
     return _saved(root, project_id, request, entry_id, 201)
 
 
@@ -245,14 +246,16 @@ async def update_knowledge(project_id: str, knowledge_id: str, request: Request)
     fm, _old = toolkit.parse_frontmatter(path.read_text(encoding="utf-8"))
     if fm.get("type") != fields["type"]:
         raise ApiError("invalid_argument", "知识条目的类型不能修改", 400, {"fields": {"type": "immutable"}})
-    with deps.workspaces._project_lock(project_id):
+    with ChangeTx(deps.workspaces, project_id, Origin("web", deps.actor(request)), summary="修改知识条目") as tx:
+        tx.touch(path.relative_to(root).as_posix())
+        tx.touch(KNOWLEDGE_DIR, snapshot=False)
         _run_helper(root, "revise", "--slug", str(fm["slug"]), "--summary", "网页修改", "--source", fields["source"],
                     "--body", fields["body"])
         fm, text = toolkit.parse_frontmatter(path.read_text(encoding="utf-8"))
         fm.update({"name": fields["title"], "scopes": fields["scopes"], "confidence": fields["confidence"]})
         path.write_text(toolkit.dump_frontmatter(fm, text), encoding="utf-8")
         _run_helper(root, "sync-index")
-        _commit_paths(root, [KNOWLEDGE_DIR], f"knowledge: 修改 {fields['title']} by {deps.actor(request)}")
+        tx.commit(f"knowledge: 修改 {fields['title']} by {deps.actor(request)}")
     return _saved(root, project_id, request, knowledge_id, 200)
 
 
@@ -267,13 +270,12 @@ async def delete_knowledge(project_id: str, knowledge_id: str, request: Request)
                        {"target": knowledge_id, "expected": base, "actual": entry["revision"]})
     path: Path = entry["_path"]
     rel = path.relative_to(root).as_posix()
-    with deps.workspaces._project_lock(project_id):
-        path.unlink()
-        paths = [rel]
+    with ChangeTx(deps.workspaces, project_id, Origin("web", deps.actor(request)), summary=f"删除 {rel}") as tx:
+        tx.remove(rel)
         if rel.startswith(f"{KNOWLEDGE_DIR}/"):
+            tx.touch(f"{KNOWLEDGE_DIR}/INDEX.md")
             _run_helper(root, "sync-index")
-            paths.append(f"{KNOWLEDGE_DIR}/INDEX.md")
-        _commit_paths(root, paths, f"knowledge: 删除 {rel} by {deps.actor(request)}")
+        tx.commit(f"knowledge: 删除 {rel} by {deps.actor(request)}")
     state = mainline.state(root)
     return {"commit": state["head"], "version_label": state["version_label"], "affected_artifacts": 0,
             "restored_industry_entry": None}

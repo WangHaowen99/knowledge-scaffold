@@ -743,7 +743,9 @@ def test_startup_report(client, manager):
 
     startup_report.run(manager)
     body = client.get("/api/v1/ops/startup-report", headers=_h("ops-token")).json()
-    assert RFC3339.match(body["at"]) and [item["id"] for item in body["items"]] == ["index_lock", "uncommitted"]
+    assert RFC3339.match(body["at"]) and [item["id"] for item in body["items"]] == [
+        "index_lock", "write_intents", "uncommitted",
+    ]
 
 
 def test_backups_list_and_run(client, manager):

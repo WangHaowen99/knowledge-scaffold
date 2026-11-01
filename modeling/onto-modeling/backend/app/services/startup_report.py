@@ -82,9 +82,14 @@ def _uncommitted_item(manager) -> dict:
 
 def run(manager) -> dict:
     """清残留锁、列未提交改动，写日志并留存；返回报告。只在启动时、会话开始之前调用。"""
+    from ..governance import lifecycle
+    from ..kernel.writepath import recover_intents
+
+    last_exit = lifecycle.mark_started()
     removed = manager.clear_git_locks()
-    items = [_lock_item(manager, removed), _uncommitted_item(manager)]
-    report = {"at": time.time(), "last_exit": None, "items": items}
+    # 写入事务留下的意图：锁清掉之后补提交，再列剩下的未提交改动（详设 8.3 措施 2）
+    items = [_lock_item(manager, removed), recover_intents(manager), _uncommitted_item(manager)]
+    report = {"at": time.time(), "last_exit": last_exit, "items": items}
     for item in items:
         level = logging.WARNING if item["tone"] != "ok" else logging.INFO
         _log.log(level, "启动自检 · %s：%s", item["title"], item["detail"])

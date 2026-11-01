@@ -10,7 +10,7 @@ from pathlib import Path
 from .. import solver_contract, solver_validation
 from ..publish.layout import operation_stems, package_scripts
 from ..workspace.errors import WorkspaceError
-from ..workspace.gitops import _git, _head_commit
+from ..workspace.gitops import _head_commit
 
 CHECK_LIMIT = 50
 
@@ -121,8 +121,10 @@ def save_solver_contract(
     结构不合法抛 SolverContractRejected；语义问题（Profile、评估器等）不阻止保存，
     随返回的 findings 给出，发布时再由门禁拦截。
     """
+    from ...kernel.writepath import ChangeTx, Origin
+
     root = manager.project_root(project_id)
-    with manager._project_lock(project_id):
+    with ChangeTx(manager, project_id, Origin("web", author), summary="保存求解契约") as tx:
         current = solver_check_at(root).revision
         if (base_revision or "") != current:
             raise WorkspaceError(
@@ -155,14 +157,11 @@ def save_solver_contract(
                 manager._atomic_write(target, data)
         if base.is_dir() and not any(base.iterdir()):
             base.rmdir()
-        rel = solver_contract.SOLVER_DIR
-        commit = ""
-        if _git(root, "status", "--porcelain", "--", rel).strip():
-            _git(root, "add", "-A", "--", rel)
-            who = f" by {author}" if author else ""
-            note = f"：{' '.join(summary.split())[:80]}" if summary.strip() else ""
-            _git(root, "commit", "-m", f"web: 保存求解契约{note}{who}", "--", rel)
-            commit = _git(root, "rev-parse", "HEAD").strip()
+        # 受管目录整体提交，只含求解契约目录（方案 A10：保存的写盘和提交交给写入路径）
+        tx.touch(solver_contract.SOLVER_DIR, snapshot=False)
+        who = f" by {author}" if author else ""
+        note = f"：{' '.join(summary.split())[:80]}" if summary.strip() else ""
+        commit = tx.commit(f"web: 保存求解契约{note}{who}").commit
     return {**solver_contract_view(manager, project_id), "commit": commit}
 
 def ensure_publishable(source_root: Path, state_root: Path) -> None:

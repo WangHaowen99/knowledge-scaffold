@@ -112,16 +112,14 @@ def _changed_paths(root: Path, paths) -> list[str]:
 
 
 def _commit_paths(root: Path, paths: list[str], message: str) -> str:
-    """只提交 paths 涉及的改动（git commit -- paths），索引里 agent 已暂存的其他改动不带进来。
+    """只提交 paths 涉及的改动，索引里 agent 已暂存的其他改动不带进来。
 
-    没有改动时不提交、返回空串，否则返回新提交。调用方持项目锁。
+    兼容入口：实现收进写入事务（kernel/writepath，方案 C1），按提交说明前缀补来源 trailer。
+    新代码用 ChangeTx。没有改动时不提交、返回空串，否则返回新提交。调用方持项目锁。
     """
-    changed = _changed_paths(root, paths)
-    if not changed:
-        return ""
-    _git(root, "--literal-pathspecs", "add", "-A", "--", *changed)
-    _git(root, "--literal-pathspecs", "commit", "-q", "-m", message, "--", *changed)
-    return _head_commit(root)
+    from ...kernel.writepath.tx import commit_compat
+
+    return commit_compat(Path(root), list(paths), message)
 
 
 def _head_commit(root: Path) -> str:

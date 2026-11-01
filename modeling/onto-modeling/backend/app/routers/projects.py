@@ -177,7 +177,7 @@ def create_project(request: Request, body: dict = Body(...)):
     with deps.workspaces.name_claim(name, _viewer(request)):
         meta = deps.workspaces.create_project(name, owner=owner, background=goal[:200], **extra)
     if example:
-        deps.workspaces.seed_example(meta["id"])
+        deps.workspaces.seed_example(meta["id"], author=deps.actor(request))
     if materials:
         deps.workspaces.import_resources(meta["id"], materials, "import: 新建项目资料", deps.username(request))
         for item in materials:
