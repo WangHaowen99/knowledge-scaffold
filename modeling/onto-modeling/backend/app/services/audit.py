@@ -15,13 +15,16 @@ def _file() -> Path:
     return Path(config.DATA_DIR) / "audit.jsonl"
 
 
-def log(user: str, method: str, path: str) -> None:
+def log(user: str, method: str, path: str, detail: dict | None = None) -> None:
+    """detail：请求路径说明不了的操作要点（如指定所有者的原值与新值），管理页原样展示。"""
     entry = {
         "ts": time.time(),
         "user": user or "anonymous",
         "method": method,
         "path": path[:MAX_PATH_LENGTH],
     }
+    if detail:
+        entry["detail"] = detail
     try:
         target = _file()
         target.parent.mkdir(parents=True, exist_ok=True)

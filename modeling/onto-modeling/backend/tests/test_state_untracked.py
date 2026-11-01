@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from app import config
+from app.services import ownership
 from app.services import workspace as workspace_module
 from app.services.workspace import (
     META_FILE,
@@ -147,10 +148,10 @@ def test_migration_unstages_meta_added_after_migration(manager):
     assert META_FILE not in tracked(root)
 
 
-def test_revert_keeps_owner_name_and_members(manager):
+def test_revert_keeps_owner_and_name(manager):
     meta, root = make_legacy(manager, owner="")
     old = git(root, "rev-parse", "HEAD").strip()
-    manager._update_meta(meta["id"], owner="operator_a", name="project_alpha_v2", members={"user_b": "viewer"})
+    manager._update_meta(meta["id"], owner="operator_a", name="project_alpha_v2")
     (root / "research" / "note.md").write_text("v2\n", encoding="utf-8")
     git(root, "add", "-A")
     git(root, "commit", "-q", "-m", "legacy: 改了所有者")
@@ -160,9 +161,9 @@ def test_revert_keeps_owner_name_and_members(manager):
     restored = json.loads((root / META_FILE).read_text(encoding="utf-8"))
     assert restored["owner"] == "operator_a"
     assert restored["name"] == "project_alpha_v2"
-    assert restored["members"] == {"user_b": "viewer"}
     assert (root / "research" / "note.md").read_text(encoding="utf-8") == "v1\n"
-    assert manager.can_write(restored, "user_c", False) is False
+    # 回到所有者为空的旧版本也不会让项目变成无主
+    assert ownership.owns(restored, "operator_a") and not ownership.owns(restored, "user_c")
 
 
 def test_revert_to_pre_migration_version_keeps_state_untracked(manager):

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from app.services import auth
 from app.services.workspace import WorkspaceManager, _git
 from app.services.onto_mcp import tokens
 from app.services.onto_mcp import workspace as mcp
@@ -139,7 +140,7 @@ def test_invalid_preview_and_write_do_not_mutate(env):
 def test_management_status_is_onto_local_without_modeling(env, monkeypatch):
     manager, meta, _ = env
     monkeypatch.setattr(routes, "manager", lambda: manager)
-    monkeypatch.setattr(routes, "access", lambda project_id, request, write=False: manager.get_project(project_id))
+    monkeypatch.setattr(routes, "access", lambda project_id, request: manager.get_project(project_id))
     monkeypatch.setattr(routes.config, "MODELING_URL", "https://example.invalid")
     app = FastAPI()
     app.include_router(routes.router)
@@ -238,8 +239,9 @@ def test_cursor_error_codes_are_preserved(cursor, code):
     assert exc.value.code == code
 
 
-def test_tokens_scope_revocation_acl_and_project_isolation(env):
+def test_tokens_scope_revocation_acl_and_project_isolation(env, monkeypatch):
     manager, meta, root = env
+    monkeypatch.setattr(auth, "ENABLED", True)
     issued = tokens.issue(manager, meta, {"name": "synthetic", "scopes": ["ontology.change.validate"], "expires_in_seconds": None}, {"sub": "operator_a"})
     assert tokens.verify(manager, meta["id"], issued["token"], "change")["scopes"] == ["ontology.change.validate"]
     assert issued["token"] not in json.dumps(tokens.listing(manager, meta["id"]))
@@ -249,7 +251,7 @@ def test_tokens_scope_revocation_acl_and_project_isolation(env):
     with pytest.raises(McpError):
         tokens.verify(manager, meta["id"], issued["token"], "change")
     issued = tokens.issue(manager, meta, {"name": "synthetic"}, {"sub": "operator_a"})
-    manager._update_meta(meta["id"], owner="operator_b", members={})
+    manager._update_meta(meta["id"], owner="operator_b")
     with pytest.raises(McpError) as exc:
         tokens.verify(manager, meta["id"], issued["token"], "read")
     assert exc.value.status == 403

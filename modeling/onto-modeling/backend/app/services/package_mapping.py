@@ -247,8 +247,12 @@ def _uploaded_eval_tables(root: Path) -> list[Path]:
     return [p for p in paths if p is not None]
 
 
-def read_source_tables(root: Path) -> dict[str, list[str]]:
-    """schema 标签的表格资料 + 评测数据源上传的数据表 → {表名: 列头}。"""
+def read_source_tables(root: Path, state_root: Path | None = None) -> dict[str, list[str]]:
+    """schema 标签的表格资料 + 评测数据源上传的数据表 → {表名: 列头}。
+
+    state_root 是评测上传表所在的项目工作区（在 .ontology-state 里，不进 git）：发布按提交
+    导出的只读树里没有这些表，仍从工作区读，缺省与 root 相同。
+    """
     tables: dict[str, list[str]] = {}
     directives_path = root / "resource" / "materials.json"
     try:
@@ -267,7 +271,7 @@ def read_source_tables(root: Path) -> dict[str, list[str]]:
             continue
         for name, headers in read_table_headers(path).items():
             tables.setdefault(name, headers)
-    for path in _uploaded_eval_tables(root):
+    for path in _uploaded_eval_tables(state_root or root):
         for name, headers in read_table_headers(path).items():
             tables.setdefault(name, headers)
     return tables

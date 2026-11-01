@@ -17,6 +17,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -30,7 +31,7 @@ except ImportError:  # pragma: no cover - Windows development fallback
     fcntl = None
 
 from .. import config
-from . import material_detect, package_mapping, package_operations, solver_contract, solver_validation
+from . import audit, material_detect, package_mapping, package_operations, solver_contract, solver_validation
 from .document_metadata import report_name
 from .name_conflict import MAX_DISPLAY_NAME_LENGTH, detect_name_conflict
 from .script_env import minimal_env
@@ -47,6 +48,7 @@ _DELETE_RETRIES = 5
 _DELETE_RETRY_SECONDS = 0.2
 SKIP_DIRS = {".git", ".ontology-state", ".obsidian"}
 RESOURCE_SUBDIRS = {"diagrams", "excel", "others"}
+RESOURCE_DIRECTIVES = "resource/materials.json"
 # 已发布知识包导入时的原包留底区：随 git 版本化（跨环境迁移要带走），
 # 但不是用户可编辑内容（隐藏目录，不进文件树）。
 IMPORTED_PACKAGE_DIR = ".imported-package"
@@ -60,7 +62,7 @@ README.md
 tmp/
 """
 
-# 项目元数据（所有者、成员、项目名）与工具状态（锁、回执、运行期文件）不进 git：
+# 项目元数据（所有者、项目名）与工具状态（锁、回执、运行期文件）不进 git：
 # 进了 git，回退版本会把所有者一起回滚，回到所有者为空的版本时项目对所有人可写
 UNTRACKED_STATE_PATHS = (META_FILE, ".ontology-state", ".onto/run")
 UNTRACKED_GITIGNORE_ENTRIES = (META_FILE, ".ontology-state/", ".onto/run/")
@@ -70,6 +72,19 @@ _GITIGNORE_STATE_HEADER = "\n# 项目元数据与工具状态：不随版本回�
 # 启动时清理的 git 锁残留；运行期遇锁时，锁超过该时长才视为残留
 GIT_LOCK_FILES = ("index.lock", "HEAD.lock", "packed-refs.lock")
 STALE_GIT_LOCK_SECONDS = 120
+
+# 发布读取的全部来源：export_package_zip 与数据绑定实际读的对象/操作/规则/指标/脚本/求解契约目录，
+# 以及资料区的用途清单和表格文件（数据绑定只读标了 schema 的表格，PDF、图片等既不读也不进包）。
+# 发布按提交从这些路径取只读树；预检与发布结果据此列出不会进包的未提交改动
+PACKAGE_SOURCE_DIRS = (
+    "ontology/object", "ontology/operation", "ontology/logic", "ontology/rule",
+    "ontology/metric", "ontology/scripts", solver_contract.SOLVER_DIR,
+)
+PACKAGE_SOURCE_PATHS = (*PACKAGE_SOURCE_DIRS, "resource")
+# 发布标签 release/<版本>：版本号按提交数与已有发布标签单调递增，同一提交重复发布沿用原标签
+RELEASE_TAG_PREFIX = "release/"
+RELEASE_VERSION_PREFIX = "0.1."
+_RELEASE_TAG_RE = re.compile(r"release/0\.1\.(\d+)")
 
 
 _PROJECT_LOCKS: dict[str, threading.RLock] = {}
@@ -336,36 +351,6 @@ class WorkspaceManager:
         projects.sort(key=lambda p: p.get("created_at", 0), reverse=True)
         return projects
 
-    @staticmethod
-    def role_of(meta: dict, username: str, is_admin: bool) -> str | None:
-        """项目内角色：admin/owner/editor（建模者）/viewer（只读评审）/None（无权）。
-
-        无主的历史项目对所有人开放为 editor（沿袭多用户上线前的行为）。
-        """
-        if is_admin:
-            return "admin"
-        owner = meta.get("owner", "")
-        if owner == "":
-            return "editor"
-        if owner == username:
-            return "owner"
-        return (meta.get("members") or {}).get(username)
-
-    @classmethod
-    def visible_to(cls, projects: list[dict], username: str, is_admin: bool) -> list[dict]:
-        """项目可见性：管理员看全部；其余按角色（owner/成员/无主历史项目）。"""
-        return [p for p in projects if cls.role_of(p, username, is_admin) is not None]
-
-    @classmethod
-    def can_access(cls, meta: dict, username: str, is_admin: bool) -> bool:
-        return cls.role_of(meta, username, is_admin) is not None
-
-    WRITE_ROLES = ("admin", "owner", "editor")
-
-    @classmethod
-    def can_write(cls, meta: dict, username: str, is_admin: bool) -> bool:
-        return cls.role_of(meta, username, is_admin) in cls.WRITE_ROLES
-
     # ---- 任务名称同名校验 ----
 
     def _project_metas(self, exclude_id: str = "") -> list[dict]:
@@ -394,10 +379,12 @@ class WorkspaceManager:
     ) -> None:
         """新建/导入/重命名/克隆前的同名校验：去首尾空白、全角半角与大小写差异都算同名。
 
-        查重范围是当前用户可见的任务：viewer 为（用户名, 是否管理员），鉴权关闭时
-        传 None，全部任务都算。重名抛 NameConflictError（409），附候选名。
-        exclude_id 是重命名时的任务自身：只改自己名称的大小写或全半角不算重名。
+        查重范围是当前用户在列表里看得到的任务（自己的；管理员是全部）：viewer 为
+        （用户名, 是否管理员），鉴权关闭时传 None，全部任务都算。重名抛 NameConflictError（409），
+        附候选名。exclude_id 是重命名时的任务自身：只改自己名称的大小写或全半角不算重名。
         """
+        from . import ownership  # ownership 依赖本模块的 WorkspaceError，在函数里导入避免循环
+
         name = (name or "").strip()
         if not name:
             return  # 空名由 create_project 统一报错
@@ -409,7 +396,7 @@ class WorkspaceManager:
             )
         metas = self._project_metas(exclude_id)
         if viewer is not None:
-            metas = self.visible_to(metas, *viewer)
+            metas = [meta for meta in metas if ownership.visible(meta, *viewer)]
         conflict = detect_name_conflict(
             (meta.get("name") for meta in metas), name, original_name or name
         )
@@ -430,25 +417,32 @@ class WorkspaceManager:
             self.check_name_available(name, viewer, **options)
             yield
 
-    def set_members(self, project_id: str, members: dict[str, str]) -> dict:
-        for username, role in members.items():
-            if role not in ("editor", "viewer"):
-                raise WorkspaceError(f"成员 {username} 的角色必须是 editor 或 viewer")
-            if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", username):
-                raise WorkspaceError(f"无效的成员用户名：{username}")
-        return self._update_meta(project_id, members=members)
+    def set_owner(self, project_id: str, owner: str) -> tuple[str, dict]:
+        """改项目所有者（用户名由调用方校验），返回（原所有者, 新元数据）；读写在同一把项目锁内。"""
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            previous = str(self._read_meta(root).get("owner") or "")
+            return previous, self._update_meta_unlocked(root, owner=owner)
 
     def get_project(self, project_id: str) -> dict:
         with self._project_lock(project_id):
-            root = self.project_root(project_id)
-            try:
-                return json.loads((root / META_FILE).read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise WorkspaceError(
-                    "项目元数据暂时不可用，请稍后重试",
-                    503,
-                    "project_metadata_unavailable",
-                ) from exc
+            return self._read_meta(self.project_root(project_id))
+
+    @staticmethod
+    def _read_meta(root: Path) -> dict:
+        """不加锁读元数据：元数据只经原子替换写入，读不到半截文件；已持项目锁的调用方用它。"""
+        try:
+            return json.loads((root / META_FILE).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise WorkspaceError(
+                "项目元数据暂时不可用，请稍后重试",
+                503,
+                "project_metadata_unavailable",
+            ) from exc
+
+    @classmethod
+    def _write_meta(cls, root: Path, meta: dict) -> None:
+        cls._atomic_write_text(root / META_FILE, json.dumps(meta, ensure_ascii=False, indent=2))
 
     def project_root(self, project_id: str) -> Path:
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", project_id):
@@ -605,7 +599,10 @@ class WorkspaceManager:
 
     def resource_directives(self, project_id: str) -> dict:
         """resource/materials.json：资料路径 → {purpose, reading_mode}。无文件视为空。"""
-        root = self.project_root(project_id)
+        return self._resource_directives_at(self.project_root(project_id))
+
+    @classmethod
+    def _resource_directives_at(cls, root: Path) -> dict:
         path = root / "resource" / "materials.json"
         if not path.is_file():
             return {}
@@ -620,12 +617,17 @@ class WorkspaceManager:
         if not isinstance(data, dict):
             return {}
         for directive in data.values():
-            if isinstance(directive, dict) and directive.get("purpose") not in self.MATERIAL_PURPOSES:
+            if isinstance(directive, dict) and directive.get("purpose") not in cls.MATERIAL_PURPOSES:
                 directive["purpose"] = "auto"
         return data
 
     def set_resource_directive(
-        self, project_id: str, rel_path: str, purpose: str, reading_mode: str = "on_demand"
+        self,
+        project_id: str,
+        rel_path: str,
+        purpose: str,
+        reading_mode: str = "on_demand",
+        author: str = "",
     ) -> dict:
         if purpose not in self.MATERIAL_PURPOSES:
             raise WorkspaceError(f"资料用途必须是 {list(self.MATERIAL_PURPOSES)} 之一")
@@ -648,6 +650,10 @@ class WorkspaceManager:
             except Exception:
                 self._restore_snapshot(directives_path, snapshot)
                 raise
+            # 资料本身一并提交：旧版上传未进 git 的表格，标成 schema 后发布才读得到
+            _commit_paths(
+                root, [RESOURCE_DIRECTIVES, rel], f"web: 设置资料用途 {rel}{_by(author)}"
+            )
             return {"path": rel, **directives[rel]}
 
     def _write_resource_directives(self, root: Path, directives: dict) -> None:
@@ -664,7 +670,12 @@ class WorkspaceManager:
         data: bytes,
         purpose: str = "auto",
         reading_mode: str = "on_demand",
+        author: str = "",
     ) -> dict:
+        """上传即提交（与 Web 保存同口径）：发布按提交打包，没提交的资料进不了包。
+
+        只提交本次的文件与用途清单，agent 别的未提交改动不带进这个提交。
+        """
         if subdir not in RESOURCE_SUBDIRS:
             raise WorkspaceError(f"资料分类必须是 {sorted(RESOURCE_SUBDIRS)} 之一")
         safe_name = Path(filename).name
@@ -689,7 +700,11 @@ class WorkspaceManager:
                 self._restore_snapshot(dest, file_snapshot)
                 self._restore_snapshot(directives_path, directives_snapshot)
                 raise
-            result = {"path": rel, "size": len(data), "replaced": replaced}
+            action = "替换资料" if replaced else "上传资料"
+            commit = _commit_paths(
+                root, [rel, RESOURCE_DIRECTIVES], f"web: {action} {rel}{_by(author)}"
+            )
+            result = {"path": rel, "size": len(data), "replaced": replaced, "commit": commit}
             if detected:
                 result["detected"] = detected
             return result
@@ -734,7 +749,7 @@ class WorkspaceManager:
         root = self.project_root(project_id)
         directives = self.resource_directives(project_id)
         candidates = {}
-        for rel in self._unmarked_table_resources(project_id, root):
+        for rel in self._unmarked_table_resources(root):
             directive = directives.get(rel)
             if isinstance(directive, dict) and directive.get("purpose") != "auto":
                 continue
@@ -751,18 +766,9 @@ class WorkspaceManager:
             return self._update_meta_unlocked(root, **fields)
 
     def _update_meta_unlocked(self, root: Path, **fields) -> dict:
-        try:
-            meta = json.loads((root / META_FILE).read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise WorkspaceError(
-                "项目元数据暂时不可用，请稍后重试",
-                503,
-                "project_metadata_unavailable",
-            ) from exc
+        meta = self._read_meta(root)
         meta.update(fields)
-        self._atomic_write_text(
-            root / META_FILE, json.dumps(meta, ensure_ascii=False, indent=2)
-        )
+        self._write_meta(root, meta)
         return meta
 
     def rename_project(self, project_id: str, name: str) -> dict:
@@ -941,6 +947,10 @@ class WorkspaceManager:
         relation_report: dict | None = None,
         allow_unbound: bool = False,
         object_texts: dict[str, str] | None = None,
+        *,
+        source_root: Path | None = None,
+        version: str = "",
+        source_commit: str = "",
     ) -> Path:
         """发布为知识包（consumer 可导入的 ontology-package v0.1）。
 
@@ -959,10 +969,16 @@ class WorkspaceManager:
         manifest 与两级 index 带上求解声明。没有求解契约的包内容保持 v0.1。
 
         ZIP 按 _ReproducibleZip 确定性写出：同一工作区内容重复导出逐字节相同。
+
+        source_root：用户发布传入按提交导出的只读树（publish_package），内容只从这棵树读；
+        评测等其他调用方不传，读工作区当前文件。version 缺省按 HEAD 的提交数编号；
+        source_commit 非空时写进 manifest，标明包出自哪个提交。
         """
-        root = self.project_root(project_id)
-        meta = self.get_project(project_id)
-        version = f"0.1.{len(self.versions(project_id))}"
+        project_root = self.project_root(project_id)
+        root = source_root or project_root
+        # 不经 get_project：发布在项目锁内调用本函数，再取一次锁会和自己的文件锁互斥
+        meta = self._read_meta(project_root)
+        version = version or f"{RELEASE_VERSION_PREFIX}{_commit_count(project_root)}"
         pkg = meta["id"]
 
         report_names: dict[tuple[str, str], str] = {}
@@ -1004,7 +1020,9 @@ class WorkspaceManager:
         operations = entry_items("ontology/operation", "ontology/logic")
         # 对象 ↔ 真实数据表：来源Sheet、`# 字段` 段与 mappings 三处同一份绑定结果
         binding = binding or package_mapping.resolve_object_tables(
-            root, strict_declared=not allow_unbound
+            root,
+            tables=package_mapping.read_source_tables(root, state_root=project_root),
+            strict_declared=not allow_unbound,
         )
         if binding["problems"]:
             raise WorkspaceError(
@@ -1034,7 +1052,7 @@ class WorkspaceManager:
                 "求解契约无法发布：" + "；".join(f"{p}（{p.path}）" for p in solver_problems),
                 code=solver_problems[0].code,
             )
-        solver_evaluators = self.solver_check(project_id).evaluators if solver_contracts else {}
+        solver_evaluators = self._solver_check_at(root).evaluators if solver_contracts else {}
         solver = solver_contract.render_package_solver(
             solver_contracts, {key: root / rel for key, rel in solver_evaluators.items()}
         )
@@ -1091,6 +1109,9 @@ class WorkspaceManager:
             f"status: released\n"
             f"language: zh-CN\n"
         )
+        if source_commit:
+            # 来源提交：consumer 与 modeling 的导入都只取已知键，多出的这一项被忽略
+            manifest += f"source_commit: {q(source_commit)}\n"
         if solver.contracts:
             manifest = manifest.replace(
                 "schema_version: '0.1'\n", "schema_version: '0.2'\n"
@@ -1318,6 +1339,7 @@ class WorkspaceManager:
             **{
                 k: v
                 for k, v in old_meta.items()
+                # members 是单人所有权之前的成员表，旧迁移包里可能还带着
                 if k not in ("members", "modeling_project_id")
             },
             "id": project_id,
@@ -1448,10 +1470,18 @@ class WorkspaceManager:
     def package_binding_check(self, project_id: str) -> dict:
         """发布前体检：阻断项在前，附修复用的表清单、对象文档版本号与最近一次发布记录。
 
+        与发布同口径：绑定与求解门禁都基于 HEAD 提交导出的只读树，另列出包相关目录里
+        不会进包的未提交改动。修复句柄里的文档版本号取工作区文件（修复写的是工作区）。
         只返回结论与修复句柄（对象、候选表、文档路径与版本），条目数有上限，超出时 truncated=True。
         """
         root = self.project_root(project_id)
-        binding = package_mapping.resolve_object_tables(root)
+        commit = _head_commit(root)
+        with _release_tree(root, commit) as tree:
+            binding = package_mapping.resolve_object_tables(
+                tree, tables=package_mapping.read_source_tables(tree, state_root=root)
+            )
+            table_resources = self._unmarked_table_resources(tree)
+            solver = self._solver_release_status_at(tree, root)
         issues = sorted(binding["issues"], key=lambda item: not item["blocking"])
         issue_messages = {item["message"] for item in issues}
         warnings = [w for w in binding["warnings"] if w not in issue_messages]
@@ -1464,6 +1494,7 @@ class WorkspaceManager:
             revision = _content_revision(doc.read_bytes()) if doc.is_file() else ""
             shown.append({**item, "path": rel, "revision": revision})
         objects = binding["objects"]
+        uncommitted = _uncommitted_package_changes(root)
         return {
             "blocking": sum(1 for item in issues if item["blocking"]),
             "issues": shown,
@@ -1476,9 +1507,12 @@ class WorkspaceManager:
             or len(warnings) > limit
             or len(tables) > self.PACKAGE_CHECK_TABLE_LIMIT,
             "last_publish": self.get_project(project_id).get("last_package_publish"),
-            "table_resources": self._unmarked_table_resources(project_id, root),
+            "table_resources": table_resources,
             # 求解契约体检单列：blocking 仍只计数据绑定，普通包这里只有 enabled=False
-            "solver": self.solver_release_status(project_id),
+            "solver": solver,
+            "commit": commit,
+            "uncommitted": uncommitted[:limit],
+            "uncommitted_count": len(uncommitted),
         }
 
     # ---- 求解契约静态检查与发布门禁 ----
@@ -1508,17 +1542,26 @@ class WorkspaceManager:
         }
 
     def solver_check(self, project_id: str) -> solver_contract.SolverCheck:
-        root = self.project_root(project_id)
+        return self._solver_check_at(self.project_root(project_id))
+
+    @classmethod
+    def _solver_check_at(cls, root: Path) -> solver_contract.SolverCheck:
         return solver_contract.check_workspace_solver(
-            root, self._operation_stems(root), self._package_scripts(root)
+            root, cls._operation_stems(root), cls._package_scripts(root)
         )
 
     def solver_release_status(self, project_id: str) -> dict:
         """求解契约的静态检查结论与当前修订的验证门禁；普通包返回 enabled=False。"""
         root = self.project_root(project_id)
-        check = self.solver_check(project_id)
+        return self._solver_release_status_at(root, root)
+
+    def _solver_release_status_at(self, source_root: Path, state_root: Path) -> dict:
+        """source_root 是契约所在的树（发布时为提交导出的只读树），修订号从它算；
+        验证回执在项目工作区的 .ontology-state（不进 git），按这个修订号到 state_root 里找。"""
+        check = self._solver_check_at(source_root)
         if not check.enabled:
             return {"enabled": False}
+        root = state_root
         gate = solver_validation.gate(root, check.revision) if check.needs_validation else []
         limit = self.PACKAGE_CHECK_LIMIT
         return {
@@ -1651,8 +1694,8 @@ class WorkspaceManager:
                 commit = _git(root, "rev-parse", "HEAD").strip()
         return {**self.solver_contract_view(project_id), "commit": commit}
 
-    def _ensure_solver_publishable(self, project_id: str) -> None:
-        status = self.solver_release_status(project_id)
+    def _ensure_solver_publishable(self, source_root: Path, state_root: Path) -> None:
+        status = self._solver_release_status_at(source_root, state_root)
         blocking = (status.get("findings") or []) + (status.get("gate") or [])
         if blocking:
             raise WorkspaceError(
@@ -1660,10 +1703,10 @@ class WorkspaceManager:
                 code=blocking[0]["code"],
             )
 
-    def _unmarked_table_resources(self, project_id: str, root: Path) -> list[str]:
+    def _unmarked_table_resources(self, root: Path) -> list[str]:
         """已上传但未标 schema 的表格资料：改标用途即可让其中的表参与核对，不必重新上传。"""
         try:
-            directives = self.resource_directives(project_id)
+            directives = self._resource_directives_at(root)
         except WorkspaceError:
             directives = {}
         found = []
@@ -1714,30 +1757,54 @@ class WorkspaceManager:
         dest_path: Path,
         allow_unbound: bool = False,
         author: str = "",
-    ) -> Path:
-        """用户发布知识包。降级发布须可追溯：记录谁、何时发布，以及哪些对象因此未绑定数据表。
+    ) -> dict:
+        """用户发布知识包：按 HEAD 提交打包并打发布标签，返回发布记录（同时写进元数据）。
 
+        项目锁内取 HEAD 提交，用 git archive 导出只读树；门禁（求解契约、数据绑定）与渲染只读
+        这棵树，工作区里没提交的改动不进包，记录里列出包相关目录下的这些改动。版本号：该提交
+        已有发布标签就沿用（同一提交重复发布，版本号与包字节都相同）；否则取提交数与已有发布
+        最大补丁号 + 1 的较大者，打注释标签 release/<版本>。
+        降级发布须可追溯：记录谁、何时发布，以及哪些对象因此未绑定数据表。
         求解知识包另有门禁：静态检查无错误，且当前求解契约修订有通过的权威端到端验证。
         allow_unbound 只放宽数据绑定，不放宽求解门禁。
         """
-        root = self.project_root(project_id)
-        self._ensure_solver_publishable(project_id)
-        binding = package_mapping.resolve_object_tables(root, strict_declared=not allow_unbound)
-        path = self.export_package_zip(
-            project_id, dest_path, binding=binding, allow_unbound=allow_unbound
-        )
-        degraded = sorted({
-            item["object"] for item in binding["issues"]
-            if item["kind"] != "declared_unverifiable"
-        })
-        self._update_meta(project_id, last_package_publish={
-            "at": int(time.time()),
-            "by": author,
-            "degraded": bool(degraded),
-            "unbound_count": len(degraded),
-            "unbound_objects": degraded[: self.PACKAGE_CHECK_LIMIT],
-        })
-        return path
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            commit = _head_commit(root)
+            version, existing = _release_version(root, commit)
+            with _release_tree(root, commit) as tree:
+                self._ensure_solver_publishable(tree, root)
+                binding = package_mapping.resolve_object_tables(
+                    tree,
+                    tables=package_mapping.read_source_tables(tree, state_root=root),
+                    strict_declared=not allow_unbound,
+                )
+                self.export_package_zip(
+                    project_id, dest_path, binding=binding, allow_unbound=allow_unbound,
+                    source_root=tree, version=version, source_commit=commit,
+                )
+            degraded = sorted({
+                item["object"] for item in binding["issues"]
+                if item["kind"] != "declared_unverifiable"
+            })
+            tag = f"{RELEASE_TAG_PREFIX}{version}"
+            if not existing:
+                _git(root, "tag", "-a", tag, "-m", _release_message(version, author, degraded), commit)
+            uncommitted = _uncommitted_package_changes(root)
+            record = {
+                "at": int(time.time()),
+                "by": author,
+                "degraded": bool(degraded),
+                "unbound_count": len(degraded),
+                "unbound_objects": degraded[: self.PACKAGE_CHECK_LIMIT],
+                "version": version,
+                "commit": commit,
+                "tag": tag,
+                "uncommitted": uncommitted[: self.PACKAGE_CHECK_LIMIT],
+                "uncommitted_count": len(uncommitted),
+            }
+            self._update_meta_unlocked(root, last_package_publish=record)
+        return record
 
     # ---- 文件写入与历史版本 ----
 
@@ -1782,15 +1849,8 @@ class WorkspaceManager:
         paths = [rel_posix]
         if _is_workspace_script(rel):
             _script_descriptor.sync_workspace_descriptors(root / "ontology")
-            descriptor = rel.with_suffix(".md").as_posix()
-            if (root / descriptor).exists() or _git(root, "ls-files", "--", descriptor).strip():
-                paths.append(descriptor)
-        commit = ""
-        if _git(root, "status", "--porcelain", "--", *paths).strip():
-            _git(root, "add", "-A", "--", *paths)
-            who = f" by {author}" if author else ""
-            _git(root, "commit", "-m", f"web: 保存 {rel_posix}{who}")
-            commit = _git(root, "rev-parse", "HEAD").strip()
+            paths.append(rel.with_suffix(".md").as_posix())
+        commit = _commit_paths(root, paths, f"web: 保存 {rel_posix}{_by(author)}")
         return {
             "path": rel_path,
             "size": len(content.encode("utf-8")),
@@ -1811,7 +1871,7 @@ class WorkspaceManager:
 
         已知限制：该版本之后新增的文件不会被删除。
         元数据与工具状态不随回退恢复：存量历史里它们还在 git 中，取旧版会把所有者、
-        成员、项目名一起回滚。
+        项目名一起回滚。
         """
         if not re.fullmatch(r"[0-9a-fA-F]{6,40}", commit):
             raise WorkspaceError("无效的版本号")
@@ -1826,7 +1886,8 @@ class WorkspaceManager:
         _git(root, "commit", "-m", f"revert: 回退到 {commit[:8]}")
         return {"reverted_to": commit}
 
-    def delete_resource(self, project_id: str, rel_path: str) -> dict:
+    def delete_resource(self, project_id: str, rel_path: str, author: str = "") -> dict:
+        """删除资料并提交（只含该文件与用途清单），与上传同口径。"""
         root = self.project_root(project_id)
         target = self._resolve_inside(root, rel_path)
         rel = target.relative_to(root.resolve())
@@ -1850,23 +1911,26 @@ class WorkspaceManager:
                 self._restore_snapshot(target, file_snapshot)
                 self._restore_snapshot(directives_path, directives_snapshot)
                 raise
-            return {"deleted": rel_path}
+            rel_posix = rel.as_posix()
+            commit = _commit_paths(
+                root, [rel_posix, RESOURCE_DIRECTIVES], f"web: 删除资料 {rel_posix}{_by(author)}"
+            )
+            return {"deleted": rel_path, "commit": commit}
 
     def delete_file(self, project_id: str, rel_path: str, author: str = "") -> dict:
-        """删除知识条目（限 knowledge/ 下）并记录版本。"""
+        """删除知识条目（限 knowledge/ 下）并提交，只含该文件，agent 别的未提交改动不带进来。"""
         root = self.project_root(project_id)
         target = self._resolve_inside(root, rel_path)
         rel = target.relative_to(root.resolve())
         if rel.parts[0] != "knowledge":
             raise WorkspaceError("只允许删除 knowledge/ 下的条目", 403)
-        if not target.is_file():
-            raise WorkspaceError("文件不存在", 404)
-        target.unlink()
-        rel_posix = rel.as_posix()
-        who = f" by {author}" if author else ""
-        _git(root, "add", "-A", "--", rel_posix)
-        _git(root, "commit", "-m", f"knowledge: 删除 {rel_posix}{who}", "--allow-empty")
-        return {"deleted": rel_path}
+        with self._project_lock(project_id):
+            if not target.is_file():
+                raise WorkspaceError("文件不存在", 404)
+            target.unlink()
+            rel_posix = rel.as_posix()
+            commit = _commit_paths(root, [rel_posix], f"knowledge: 删除 {rel_posix}{_by(author)}")
+        return {"deleted": rel_path, "commit": commit}
 
     # ---- 回收站（仅存量：删除已改为永久删除，这里只管旧版软删除留下的条目） ----
 
@@ -1914,9 +1978,8 @@ class WorkspaceManager:
             meta["id"] = project_id
         dest = self.workspaces_dir / project_id
         shutil.move(str(source), str(dest))
-        self._atomic_write_text(
-            dest / META_FILE, json.dumps(meta, ensure_ascii=False, indent=2)
-        )
+        self._drop_members(project_id, meta)
+        self._write_meta(dest, meta)
         try:
             self.untrack_project_state(project_id)
         except WorkspaceError:
@@ -1941,10 +2004,18 @@ class WorkspaceManager:
                         "tags": tags.get(parts[0], []),
                     }
                 )
-        # "已保存版本 N"：N = 距基线的序号，最早的提交是版本 1
-        total = len(entries)
+        # "已保存版本 N"：N = 距基线的序号，最早的提交是版本 1；按全部提交数编号，不受 limit 截断
+        total = _commit_count(root) if entries else 0
         for index, entry in enumerate(entries):
             entry["version"] = total - index
+            # 发布过的提交标出知识包版本号（release/* 标签，不能从界面删除）
+            numbers = [
+                int(match.group(1))
+                for tag in entry["tags"]
+                if (match := _RELEASE_TAG_RE.fullmatch(tag["name"]))
+            ]
+            if numbers:
+                entry["release"] = f"{RELEASE_VERSION_PREFIX}{max(numbers)}"
         return entries
 
     @staticmethod
@@ -2043,6 +2114,66 @@ class WorkspaceManager:
         if migrated:
             _log.warning("已停止跟踪项目元数据与工具状态：%s", ", ".join(migrated))
         return migrated
+
+    def migrate_single_owner(self) -> list[str]:
+        """启动迁移（单人所有权）：删掉各项目元数据里的成员表，返回无主项目的 id。
+
+        幂等：迁移过的项目不再有成员表，再跑只报告无主项目。无主项目普通用户看不到，
+        管理员指定所有者后才可用；启动日志报告它们的数量与 id。
+        """
+        unowned = []
+        for root in self._project_dirs():
+            project_id = root.name
+            try:
+                with self._project_lock(project_id):
+                    meta = self._read_meta(root)
+                    if self._drop_members(project_id, meta):
+                        self._write_meta(root, meta)
+            except Exception as exc:  # 单个项目失败不能挡住服务启动
+                _log.warning("项目 %s 迁移单人所有权失败，下次启动重试：%s", project_id, exc)
+                continue
+            if not str(meta.get("owner") or ""):
+                unowned.append(project_id)
+        if unowned:
+            _log.warning(
+                "无主项目 %d 个，管理员指定所有者后才可用：%s", len(unowned), ", ".join(unowned)
+            )
+        return unowned
+
+    def commit_pending_uploads(self) -> list[str]:
+        """启动补提交：资料区里还没进 git 的上传（旧版上传不提交，或写盘后提交前进程退出）。
+
+        resource/ 只有网页能写（agent 写资料区被守卫拦下），这里的改动都是用户上传，只提交
+        资料区本身，不带 agent 的其他改动。返回补提交过的项目 id；单个项目失败只记日志。
+        """
+        committed = []
+        for root in self._project_dirs():
+            project_id = root.name
+            try:
+                with self._project_lock(project_id):
+                    if _commit_paths(root, ["resource"], "web: 补提交未入版本的资料"):
+                        committed.append(project_id)
+            except Exception as exc:  # 单个项目失败不能挡住服务启动
+                _log.warning("项目 %s 补提交资料失败，下次启动重试：%s", project_id, exc)
+        if committed:
+            _log.info("补提交未入版本的资料：%s", ", ".join(committed))
+        return committed
+
+    @staticmethod
+    def _drop_members(project_id: str, meta: dict) -> bool:
+        """从元数据里摘掉成员表（原值先记进审计与服务日志），返回 meta 是否有改动。"""
+        if "members" not in meta:
+            return False
+        members = meta.pop("members")
+        audit.log(
+            "system", "MIGRATE", f"/api/projects/{project_id}/members",
+            detail={"action": "remove_members", "project": project_id, "members": members},
+        )
+        _log.warning(
+            "项目 %s 改为单人所有权，移除成员表：%s",
+            project_id, json.dumps(members, ensure_ascii=False),
+        )
+        return True
 
     def clear_git_locks(self) -> list[Path]:
         """启动清理：删除各项目 .git 下残留的锁文件，返回删掉的路径。
@@ -2283,6 +2414,167 @@ def remove_git_locks(root: Path) -> list[Path]:
             continue
         removed.append(path)
     return removed
+
+
+def _by(author: str) -> str:
+    return f" by {author}" if author else ""
+
+
+def _changed_paths(root: Path, paths) -> list[str]:
+    """paths 范围内有改动（含未跟踪、已删除）的文件，仓库相对路径。
+
+    不加可选锁：只读 status 不刷新索引，不和 agent 正在进行的 git 操作抢 index.lock；
+    路径按字面匹配，资料文件名里的 [ ] * 不当通配符。
+    """
+    out = _git(
+        root, "--no-optional-locks", "--literal-pathspecs", "status", "--porcelain", "-z",
+        "--untracked-files=all", "--", *paths,
+    )
+    changed = []
+    records = iter(out.split("\0"))
+    for record in records:
+        if len(record) < 4:
+            continue
+        changed.append(record[3:])
+        if record[0] in "RC":
+            next(records, None)  # 改名/复制条目后面跟着原路径
+    return changed
+
+
+def _commit_paths(root: Path, paths: list[str], message: str) -> str:
+    """只提交 paths 涉及的改动（git commit -- paths），索引里 agent 已暂存的其他改动不带进来。
+
+    没有改动时不提交、返回空串，否则返回新提交。调用方持项目锁。
+    """
+    changed = _changed_paths(root, paths)
+    if not changed:
+        return ""
+    _git(root, "--literal-pathspecs", "add", "-A", "--", *changed)
+    _git(root, "--literal-pathspecs", "commit", "-q", "-m", message, "--", *changed)
+    return _head_commit(root)
+
+
+def _head_commit(root: Path) -> str:
+    return _git(root, "rev-parse", "--verify", "HEAD").strip()
+
+
+def _commit_count(root: Path, rev: str = "HEAD") -> int:
+    return int(_git(root, "rev-list", "--count", rev).strip())
+
+
+def _release_numbers(root: Path, commit: str = "") -> list[int]:
+    """release/0.1.N 标签的补丁号（升序）；给了 commit 只看指向它的标签。"""
+    args = ["tag", "--list", f"{RELEASE_TAG_PREFIX}*"]
+    if commit:
+        args += ["--points-at", commit]
+    return sorted(
+        int(match.group(1))
+        for name in _git(root, *args).split()
+        if (match := _RELEASE_TAG_RE.fullmatch(name))
+    )
+
+
+def _release_version(root: Path, commit: str) -> tuple[str, bool]:
+    """发布版本号与该提交是否已发布过。
+
+    已有发布标签就沿用；否则 N = max(提交数, 已有最大补丁号 + 1)：老项目旧算法最多到 0.1.50，
+    升级后第一次发布也不会倒退。
+    """
+    existing = _release_numbers(root, commit)
+    if existing:
+        return f"{RELEASE_VERSION_PREFIX}{existing[-1]}", True
+    number = _commit_count(root, commit)
+    released = _release_numbers(root)
+    if released:
+        number = max(number, released[-1] + 1)
+    return f"{RELEASE_VERSION_PREFIX}{number}", False
+
+
+def _release_message(version: str, author: str, degraded: list[str]) -> str:
+    lines = [f"发布 {version}", "", f"发布人：{author or '未登录用户'}"]
+    if degraded:
+        lines.append(f"降级发布：是（{len(degraded)} 个对象未绑定数据表）")
+    else:
+        lines.append("降级发布：否")
+    return "\n".join(lines) + "\n"
+
+
+def _is_package_source(path: str) -> bool:
+    """仓库相对路径是否会被发布读取：PACKAGE_SOURCE_DIRS 下的文件，资料区只算用途清单和表格。"""
+    if path == RESOURCE_DIRECTIVES:
+        return True
+    if path.startswith("resource/"):
+        return Path(path).suffix.lower() in package_mapping.TABLE_SUFFIXES
+    return any(path.startswith(f"{directory}/") for directory in PACKAGE_SOURCE_DIRS)
+
+
+@contextmanager
+def _release_tree(root: Path, commit: str):
+    """把提交里发布要读的路径（_is_package_source）导出成临时只读树，退出时删除。
+
+    git archive 打成 tar 再解包：tarfile 的 data 过滤器拒绝绝对路径、..、指向树外的链接
+    与设备文件；解包后核对文件与提交逐一对得上（.gitattributes 的 export-ignore /
+    export-subst 会让 git archive 漏文件或改内容）。
+    """
+    with tempfile.TemporaryDirectory(prefix="onto-release-") as scratch:
+        tree = Path(scratch) / "tree"
+        tree.mkdir()
+        # 本体各目录整棵导出；资料区只取用途清单和表格，大体积的 PDF、图片不复制
+        present = [
+            path for path in _git(
+                root, "--literal-pathspecs", "ls-tree", "--name-only", "-z", commit, "--",
+                *PACKAGE_SOURCE_DIRS,
+            ).split("\0") if path
+        ]
+        present += [
+            path for path in _git(
+                root, "--literal-pathspecs", "ls-tree", "-r", "--name-only", "-z", commit, "--",
+                "resource",
+            ).split("\0") if path and _is_package_source(path)
+        ]
+        if present:
+            archive = Path(scratch) / "release.tar"
+            _git(
+                root, "--literal-pathspecs", "archive", "--format=tar", "-o", str(archive),
+                commit, "--", *present,
+            )
+            try:
+                with tarfile.open(archive) as tar:
+                    tar.extractall(tree, filter="data")
+            except tarfile.TarError as exc:  # FilterError 是 TarError 的子类
+                raise WorkspaceError(
+                    f"提交里有不安全的路径，无法发布：{exc}", code="release_tree_unsafe"
+                ) from exc
+            _verify_release_tree(root, commit, present, tree)
+        yield tree
+
+
+def _verify_release_tree(root: Path, commit: str, paths: list[str], tree: Path) -> None:
+    listing = _git(root, "--literal-pathspecs", "ls-tree", "-r", "-l", "-z", commit, "--", *paths)
+    for record in listing.split("\0"):
+        if not record:
+            continue
+        info, path = record.split("\t", 1)
+        mode, kind, _object, size = info.split()
+        if kind != "blob" or mode == "120000":
+            continue  # 符号链接由 data 过滤器把关
+        target = tree / path
+        if not target.is_file() or target.stat().st_size != int(size):
+            raise WorkspaceError(
+                f"{path} 导出后与提交内容不一致（请去掉 .gitattributes 里的 export-ignore / export-subst）",
+                code="release_tree_mismatch",
+            )
+
+
+def _uncommitted_package_changes(root: Path) -> list[str]:
+    """发布要读的路径里没提交的改动：发布只用 HEAD，这些改动不会进包。
+
+    各目录的 index.md 是派生的清单，导出不读，不算；资料区的 PDF、图片发布不读，也不算。
+    """
+    return sorted(
+        path for path in _changed_paths(root, PACKAGE_SOURCE_PATHS)
+        if _is_package_source(path) and Path(path).name.lower() != "index.md"
+    )
 
 
 _EXCLUDE_STATE_PATHSPECS = tuple(f":(exclude){path}" for path in UNTRACKED_STATE_PATHS)

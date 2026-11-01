@@ -10,7 +10,7 @@ import pytest
 
 from app import config
 from app.services import modeling_eval, package_mapping
-from app.services.workspace import WorkspaceError, WorkspaceManager
+from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 
 openpyxl = pytest.importorskip("openpyxl")
 
@@ -127,6 +127,12 @@ def manager(tmp_path: Path, monkeypatch) -> WorkspaceManager:
     return instance
 
 
+def commit_all(root: Path) -> None:
+    """发布与体检都基于 HEAD 提交：测试里直接写盘的内容先提交（相当于 agent 的阶段提交）。"""
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "test: synthetic fixture")
+
+
 def gated_project(manager: WorkspaceManager) -> tuple[str, Path]:
     """T_ORDER 可绑；「客户」声明了不存在的表；另有一份未标 schema 的表格资料。"""
     pid = manager.create_project("发布门禁")["id"]
@@ -136,6 +142,7 @@ def gated_project(manager: WorkspaceManager) -> tuple[str, Path]:
     (root / "resource" / "others" / "附表.csv").write_text("A,B\n", encoding="utf-8")
     write_object(root, "订单", "T_ORDER", ["ORDER_ID", "AMOUNT"])
     write_object(root, "客户", "T_CLIENT", ["CUSTOMER_ID", "NAME"])
+    commit_all(root)
     return pid, root
 
 
@@ -158,7 +165,8 @@ def test_strict_publish_blocks_and_degraded_publish_is_audited(manager, tmp_path
     assert blocked.value.code == "binding_problems" and "T_CLIENT" in str(blocked.value)
     assert manager.get_project(pid).get("last_package_publish") is None
 
-    dest = manager.publish_package(pid, tmp_path / "degraded.zip", allow_unbound=True, author="alice")
+    dest = tmp_path / "degraded.zip"
+    manager.publish_package(pid, dest, allow_unbound=True, author="alice")
     with zipfile.ZipFile(dest) as zf:
         mapping_name = next(n for n in zf.namelist() if n.endswith("object-data-mappings.json"))
         mappings = json.loads(zf.read(mapping_name))
@@ -180,6 +188,7 @@ def test_degraded_publish_still_enforces_script_contract(manager, tmp_path):
         "parser.add_argument('--other-id', required=True)\n",
         encoding="utf-8",
     )
+    commit_all(root)
     with pytest.raises(WorkspaceError, match="契约无效"):
         manager.publish_package(pid, tmp_path / "pkg.zip", allow_unbound=True)
     assert manager.get_project(pid).get("last_package_publish") is None
@@ -188,6 +197,7 @@ def test_degraded_publish_still_enforces_script_contract(manager, tmp_path):
 def test_publish_without_any_table_is_not_degraded(manager, tmp_path):
     pid = manager.create_project("纯概念")["id"]
     write_object(manager.project_root(pid), "订单", "T_ORDER", ["ORDER_ID"])
+    commit_all(manager.project_root(pid))
     manager.publish_package(pid, tmp_path / "pkg.zip")
     audit = manager.get_project(pid)["last_package_publish"]
     assert audit["degraded"] is False and audit["unbound_count"] == 0

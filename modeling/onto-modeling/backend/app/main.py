@@ -29,6 +29,10 @@ async def _lifespan(app: FastAPI):
     # 上次停机留下的残留；元数据迁移要改各项目的真实索引，也不能和 agent 的 git 并发
     await asyncio.to_thread(projects.workspaces.clear_git_locks)
     await asyncio.to_thread(projects.workspaces.migrate_state_tracking)
+    # 单人所有权：删掉存量项目的成员表（原值记审计），日志报告待管理员指定所有者的无主项目
+    await asyncio.to_thread(projects.workspaces.migrate_single_owner)
+    # 发布按提交打包：旧版上传没进 git 的资料补提交一次，否则进不了包
+    await asyncio.to_thread(projects.workspaces.commit_pending_uploads)
     manager.start_background()  # 空闲会话回收（方案 4.1.1）
     write_example()  # 内置推荐表副本，供管理员复制成自定义表
     # 评测编排只活在进程内：重启后仍标 running 的工作区改判中断，否则前端永久锁死

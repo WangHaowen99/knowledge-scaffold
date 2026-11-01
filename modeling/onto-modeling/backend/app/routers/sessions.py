@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from ..services import conversation_store
 from ..services.agent_sessions import VISIBLE_HISTORY_TAIL, manager, visible_history_start
-from .projects import ensure_access
+from .projects import require_owner
 
 router = APIRouter(prefix="/api/projects/{project_id}/session", tags=["session"])
 
@@ -32,7 +32,7 @@ class PermissionBody(BaseModel):
 @router.get("/usage")
 def session_usage(project_id: str, request: Request):
     """汇总该项目全部模型调用的成本与 token 用量（从事件历史统计）。"""
-    ensure_access(project_id, request)
+    require_owner(project_id, request)
     from ..services.agent_sessions import usage_summary
 
     return usage_summary(project_id)
@@ -40,7 +40,7 @@ def session_usage(project_id: str, request: Request):
 
 @router.get("")
 def session_state(project_id: str, request: Request, conversation: str | None = None):
-    ensure_access(project_id, request)
+    require_owner(project_id, request)
     conversation_id = manager.resolve_conversation(project_id, conversation)
     live = manager.get(project_id)
     # 引擎绑着别的会话时，这条会话自己没有在线状态
@@ -62,7 +62,7 @@ def session_state(project_id: str, request: Request, conversation: str | None = 
 @router.get("/conversations")
 def list_conversations(project_id: str, request: Request):
     """项目的全部会话（最近更新的在前），以及引擎当前绑定的是哪一条。"""
-    ensure_access(project_id, request)
+    require_owner(project_id, request)
     return {
         "conversations": conversation_store.list_conversations(project_id),
         "live": manager.live_status(project_id),
@@ -72,7 +72,7 @@ def list_conversations(project_id: str, request: Request):
 @router.post("/conversations")
 def create_conversation(project_id: str, request: Request):
     """新建一条空会话；发第一条消息时引擎才换绑过来。"""
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     return conversation_store.create(project_id)
 
 
@@ -80,20 +80,20 @@ def create_conversation(project_id: str, request: Request):
 def rename_conversation(
     project_id: str, conversation_id: str, body: ConversationTitleBody, request: Request
 ):
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     return conversation_store.rename(project_id, conversation_id, body.title)
 
 
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(project_id: str, conversation_id: str, request: Request):
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     remaining = await manager.delete_conversation(project_id, conversation_id)
     return {"conversations": remaining}
 
 
 @router.post("/messages")
 async def send_message(project_id: str, body: MessageBody, request: Request):
-    cwd = ensure_access(project_id, request, write=True)
+    cwd = require_owner(project_id, request)
     user = getattr(request.state, "user", None) or {}
     session = await manager.send(
         project_id, cwd, body.text, body.conversation_id, username=user.get("sub", "")
@@ -109,7 +109,7 @@ async def send_message(project_id: str, body: MessageBody, request: Request):
 async def respond_permission(
     project_id: str, request_id: str, body: PermissionBody, request: Request
 ):
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     await manager.respond_permission(
         project_id, request_id, body.behavior, body.message, body.answers
     )
@@ -119,14 +119,14 @@ async def respond_permission(
 @router.post("/close")
 async def close_session(project_id: str, request: Request, conversation: str | None = None):
     """丢弃会话的模型上下文（历史保留）；下次发消息按最新配置新建会话。"""
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     await manager.close(project_id, conversation)
     return {"ok": True}
 
 
 @router.post("/interrupt")
 async def interrupt(project_id: str, request: Request, conversation: str | None = None):
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     reconciled = await manager.interrupt(project_id, conversation)
     return {"ok": True, "reconciled": bool(reconciled)}
 
@@ -136,7 +136,7 @@ async def stream(
     project_id: str, request: Request, after: int = 0, conversation: str | None = None
 ):
     """SSE 事件流：先补发 after 之后的历史，再持续推送新事件。"""
-    ensure_access(project_id, request)
+    require_owner(project_id, request)
     conversation_id = manager.resolve_conversation(project_id, conversation)
 
     async def generate():

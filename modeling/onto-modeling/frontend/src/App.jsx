@@ -77,7 +77,7 @@ export default function App() {
   const [pendingCount, setPendingCount] = useState(0);
   const [drawioAvailable, setDrawioAvailable] = useState(false);
   const [importWiz, setImportWiz] = useState(null); // {step,file,name,summary,importing}
-  const [memberWiz, setMemberWiz] = useState(null); // {project, members, newUser, newRole}
+  const [ownerWiz, setOwnerWiz] = useState(null); // 管理员指定所有者：{project, owner, saving}
   const [engineWiz, setEngineWiz] = useState(null); // {project, engine, available}
   const [initialFiles, setInitialFiles] = useState(null); // {projectId, files} 新建项目待发送的初始资料
   const homePublish = usePackagePublish(); // 首页卡片菜单发布：无聊天区，只给表级修复与降级
@@ -124,6 +124,22 @@ export default function App() {
     [projects, projectId],
   );
 
+  // 单人所有权（鉴权开启时）：项目内容只归所有者；管理员在列表里看得到别人的项目和无主项目，
+  // 但只能看元数据、指定所有者，打不开
+  const ownershipUi = auth === 'ok';
+  const adminView = ownershipUi && authStore.role === 'admin';
+  const ownsProject = (item) => !ownershipUi || (!!item.owner && item.owner === authStore.username);
+  const lockedHint = (item) =>
+    item.owner
+      ? `项目内容只归所有者 ${item.owner}，管理员只能查看元数据`
+      : '该项目尚未指定所有者，指定后由所有者打开';
+
+  // 打不开的项目（被删、无权、换了所有者）统一提示后回首页；同一 key 只留一条提示
+  const leaveProject = (text) => {
+    message.warning({ content: text, key: 'project-denied' });
+    nav('#/');
+  };
+
   const focus = focusStack[focusStack.length - 1];
   const pushFocus = useCallback((next) => {
     setFocusStack((stack) =>
@@ -161,10 +177,16 @@ export default function App() {
   const refreshWorkspace = useCallback(() => {
     if (!projectId) return;
     setWorkspaceRevision((value) => value + 1);
-    api.fileTree(projectId).then((data) => setTree(data.tree)).catch(() => {});
+    api
+      .fileTree(projectId)
+      .then((data) => setTree(data.tree))
+      .catch((error) => {
+        if (error.status === 403) leaveProject(error.message);
+      });
     api.versions(projectId).then((data) => setVersions(data.versions)).catch(() => {});
     refreshUsage();
     refreshProjects(); // 项目 meta（资料更新时间/统计）同步刷新
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, refreshProjects, refreshUsage]);
 
   useEffect(() => {
@@ -200,13 +222,13 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
-  // 深链的项目不存在（被删/无权限）时回首页
+  // 深链的项目不存在（被删/无权限）或不归当前用户时回首页
   useEffect(() => {
-    if (projectId && projectsLoaded && !project) {
-      message.warning('任务不存在或无权访问');
-      nav('#/');
-    }
-  }, [projectId, projectsLoaded, project]);
+    if (!projectId || !projectsLoaded) return;
+    if (!project) leaveProject('任务不存在或无权访问');
+    else if (!ownsProject(project)) leaveProject(lockedHint(project));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, projectsLoaded, project, auth]);
 
   // ---- 导入向导：选文件 → 内容确认（dry-run 摘要）→ 导入 ----
   const startImport = (file) => {
@@ -346,7 +368,6 @@ export default function App() {
       { key: 'open', label: '打开' },
       { key: 'rename', label: '重命名' },
       { key: 'clone', label: '克隆' },
-      { key: 'members', label: '成员共享' },
       { key: 'engine', label: '会话引擎' },
       { key: 'archive', label: item.archived ? '恢复' : '归档' },
       { type: 'divider' },
@@ -369,14 +390,6 @@ export default function App() {
           message.error(error.message);
         }
       }
-      if (key === 'members') {
-        try {
-          const data = await api.getMembers(item.id);
-          setMemberWiz({ project: item, members: data.members, newUser: '', newRole: 'editor' });
-        } catch (error) {
-          message.error(error.message);
-        }
-      }
       if (key === 'archive') {
         await api.archiveProject(item.id, !item.archived).catch((e) => message.error(e.message));
         refreshProjects();
@@ -389,6 +402,24 @@ export default function App() {
   });
 
   const isAdmin = auth === 'disabled' || authStore.role === 'admin';
+
+  const submitOwner = async () => {
+    const owner = ownerWiz.owner.trim();
+    if (!owner) {
+      messageApi.warning('请输入所有者用户名');
+      return;
+    }
+    setOwnerWiz((wiz) => wiz && { ...wiz, saving: true });
+    try {
+      await api.setProjectOwner(ownerWiz.project.id, owner);
+      messageApi.success(`「${ownerWiz.project.name}」的所有者已设为 ${owner}`);
+      setOwnerWiz(null);
+      refreshProjects();
+    } catch (error) {
+      messageApi.error(error.message);
+      setOwnerWiz((wiz) => wiz && { ...wiz, saving: false });
+    }
+  };
 
   const logout = () => {
     authStore.clear();
@@ -453,7 +484,7 @@ export default function App() {
   // 深链项目：列表未加载完成前不闪首页
   if (projectId && !projectsLoaded) return null;
 
-  if (route.name === 'home' || !project) {
+  if (route.name === 'home' || !project || !ownsProject(project)) {
     const activeProjects = projects.filter((p) => !p.archived);
     const archivedProjects = projects.filter((p) => p.archived);
     const stageLabel = (item) => {
@@ -463,8 +494,52 @@ export default function App() {
           : `阶段 ${item.stages_done ?? 0}/${item.stages_total ?? 9}`;
       return item.eval_score != null ? `${base} · 评测 ${item.eval_score}` : base;
     };
+    // 管理员视角下别人的项目与无主项目：只显示元数据与所有者，不能打开，只能指定所有者
+    const renderLockedCard = (item) => (
+      <div
+        key={item.id}
+        className="pj-card pj-locked"
+        role="button"
+        tabIndex={0}
+        aria-label={`项目：${item.name}（${item.owner ? `所有者 ${item.owner}` : '无主'}）`}
+        title={lockedHint(item)}
+        onClick={() => messageApi.info(lockedHint(item))}
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget || !['Enter', ' '].includes(event.key)) return;
+          event.preventDefault();
+          messageApi.info(lockedHint(item));
+        }}
+      >
+        <button
+          type="button"
+          className="pj-share pj-owner-btn"
+          aria-label={`${item.owner ? '更改' : '指定'}所有者：${item.name}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            setOwnerWiz({ project: item, owner: item.owner || '', saving: false });
+          }}
+        >
+          {item.owner ? '更改所有者' : '指定所有者'}
+        </button>
+        <h3 title={item.name}>{item.name}</h3>
+        <div className={`pd ${item.owner ? '' : 'pd-empty'}`}>
+          {item.owner ? `所有者：${item.owner}` : '尚未指定所有者'}
+        </div>
+        <div className="pj-prog" title={stageLabel(item)}>
+          <div
+            className="pj-prog-in"
+            style={{ width: `${((item.stages_done || 0) / (item.stages_total || 9)) * 100}%` }}
+          />
+        </div>
+        <div className="pm">
+          <span className="tag tag-lang">{stageLabel(item)}</span>
+          {!item.owner && <span className="tag tag-draft">无主</span>}
+          <span className="pj-date">{new Date(item.created_at * 1000).toLocaleDateString()}</span>
+        </div>
+      </div>
+    );
     // 卡片结构逐节点复刻 modeling ProjectList.ProjectCard
-    const renderCard = (item) => (
+    const renderCard = (item) => (adminView && !ownsProject(item) ? renderLockedCard(item) : (
       <div
         key={item.id}
         className="pj-card"
@@ -478,23 +553,6 @@ export default function App() {
           nav(`#/p/${item.id}`);
         }}
       >
-        <button
-          type="button"
-          className="pj-share"
-          aria-label={`共享项目：${item.name}`}
-          title="管理项目成员"
-          onClick={async (event) => {
-            event.stopPropagation();
-            try {
-              const data = await api.getMembers(item.id);
-              setMemberWiz({ project: item, members: data.members, newUser: '', newRole: 'editor' });
-            } catch (error) {
-              message.error(error.message);
-            }
-          }}
-        >
-          成员
-        </button>
         <Dropdown menu={projectMenu(item)} trigger={['click']}>
           <button
             type="button"
@@ -534,7 +592,7 @@ export default function App() {
           <span className="pj-date">{new Date(item.created_at * 1000).toLocaleDateString()}</span>
         </div>
       </div>
-    );
+    ));
 
     return (
       <div className="mwr shell">
@@ -720,74 +778,28 @@ export default function App() {
           )}
         </Modal>
         <Modal
-          title={memberWiz ? `成员共享 · ${memberWiz.project.name}` : ''}
-          open={!!memberWiz}
-          onCancel={() => setMemberWiz(null)}
+          title={ownerWiz ? `指定所有者 · ${ownerWiz.project.name}` : ''}
+          open={!!ownerWiz}
           okText="保存"
-          onOk={async () => {
-            try {
-              await api.saveMembers(memberWiz.project.id, memberWiz.members);
-              setMemberWiz(null);
-              message.success('成员已更新');
-            } catch (error) {
-              message.error(error.message);
-            }
-          }}
+          confirmLoading={!!ownerWiz?.saving}
+          onCancel={() => setOwnerWiz(null)}
+          onOk={() => submitOwner()}
+          width={460}
         >
-          {memberWiz && (
+          {ownerWiz && (
             <>
-              {Object.keys(memberWiz.members).length === 0 && (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未共享给其他成员" />
-              )}
-              {Object.entries(memberWiz.members).map(([user, role]) => (
-                <div key={user} className="member-row">
-                  <span className="member-name">{user}</span>
-                  <Tag color={role === 'editor' ? 'processing' : 'default'}>
-                    {role === 'editor' ? '建模者（可编辑）' : '只读评审'}
-                  </Tag>
-                  <Button
-                    size="small"
-                    type="text"
-                    danger
-                    onClick={() => {
-                      const next = { ...memberWiz.members };
-                      delete next[user];
-                      setMemberWiz({ ...memberWiz, members: next });
-                    }}
-                  >
-                    移除
-                  </Button>
-                </div>
-              ))}
-              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                <Input
-                  placeholder="用户名"
-                  value={memberWiz.newUser}
-                  onChange={(e) => setMemberWiz({ ...memberWiz, newUser: e.target.value })}
-                  style={{ flex: 1 }}
-                />
-                <select
-                  className="member-role-select"
-                  value={memberWiz.newRole}
-                  onChange={(e) => setMemberWiz({ ...memberWiz, newRole: e.target.value })}
-                >
-                  <option value="editor">建模者（可编辑）</option>
-                  <option value="viewer">只读评审</option>
-                </select>
-                <Button
-                  onClick={() => {
-                    const user = memberWiz.newUser.trim();
-                    if (!user) return;
-                    setMemberWiz({
-                      ...memberWiz,
-                      members: { ...memberWiz.members, [user]: memberWiz.newRole },
-                      newUser: '',
-                    });
-                  }}
-                >
-                  添加
-                </Button>
-              </div>
+              <Input
+                placeholder="所有者用户名"
+                value={ownerWiz.owner}
+                maxLength={64}
+                autoFocus
+                onChange={(e) => setOwnerWiz({ ...ownerWiz, owner: e.target.value })}
+                onPressEnter={() => submitOwner()}
+              />
+              <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12, marginBottom: 0 }}>
+                项目内容只归所有者：指定后由该用户打开和编辑，原所有者签发的 MCP Token 随之失效。
+                改成你自己即可打开项目；每次指定都会记入审计日志。
+              </Typography.Paragraph>
             </>
           )}
         </Modal>

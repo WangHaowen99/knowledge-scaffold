@@ -170,11 +170,31 @@ function CheckSummary({ check, mode }) {
       {last && (
         <span className="pcd-last">
           上次发布：{formatTime(last.at)}
+          {last.version ? ` · ${last.version}` : ''}
           {last.by ? ` · ${last.by}` : ''}
           {last.degraded ? ` · 降级发布（${last.unbound_count} 个对象未绑定）` : ''}
         </span>
       )}
     </div>
+  );
+}
+
+// 发布只打包 HEAD 提交：包相关目录里没提交的改动列出来，提醒用户这些不会进包
+const UNCOMMITTED_SHOWN = 8;
+
+function uncommittedText(count) {
+  return `${count} 处改动未提交，不会进包`;
+}
+
+function UncommittedList({ paths, count }) {
+  return (
+    <>
+      <div>发布只打包最近一次提交的内容。需要带上这些改动，请先让助手提交，或在编辑器里保存。</div>
+      {paths.slice(0, UNCOMMITTED_SHOWN).map((path) => (
+        <div key={path} className="pcd-resource-name">{path}</div>
+      ))}
+      {count > Math.min(paths.length, UNCOMMITTED_SHOWN) && <div>……</div>}
+    </>
   );
 }
 
@@ -415,6 +435,14 @@ export default function PublishCheckDialog({
       ) : (
         <div className="pcd-body">
           <CheckSummary check={check} mode={mode} />
+          {mode === 'publish' && check.uncommitted_count > 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              message={uncommittedText(check.uncommitted_count)}
+              description={<UncommittedList paths={check.uncommitted || []} count={check.uncommitted_count} />}
+            />
+          )}
           {check.truncated && (
             <Alert type="info" showIcon message="条目较多，只列出前一部分；修复后会重新检查。" />
           )}
@@ -446,21 +474,48 @@ export function usePackagePublish(dialogExtras = {}) {
   const [publishing, setPublishing] = useState(false);
 
   const download = async (pid, allowUnbound) => {
-    await api.downloadPackage(pid, { allowUnbound });
-    message.success(allowUnbound ? '已降级发布，未通过检查的对象不绑定数据表' : '知识包已导出');
+    const result = await api.downloadPackage(pid, { allowUnbound });
+    const version = result.version ? ` ${result.version}` : '';
+    const pending = result.uncommitted ? `；${uncommittedText(result.uncommitted)}` : '';
+    message.success(
+      allowUnbound
+        ? `已降级发布知识包${version}，未通过检查的对象不绑定数据表${pending}`
+        : `知识包${version} 已发布${pending}`,
+    );
     setProjectId('');
   };
+
+  // 检查后才出现的问题（并发修改）：回到弹窗看最新结论
+  const failed = (pid, error) => {
+    if (error.code === 'binding_problems' || error.code?.startsWith('solver_')) setProjectId(pid);
+    else message.error(error.message);
+  };
+
+  // 检查都通过、只是有未提交改动：发布前确认一次，用户知道这些改动不会进包
+  const confirmUncommitted = (pid, check) =>
+    Modal.confirm({
+      title: uncommittedText(check.uncommitted_count),
+      content: <UncommittedList paths={check.uncommitted || []} count={check.uncommitted_count} />,
+      okText: '仍然发布',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await download(pid, false);
+        } catch (error) {
+          failed(pid, error);
+        }
+      },
+    });
 
   const publish = async (pid) => {
     setPublishing(true);
     try {
       const check = await api.packageCheck(pid);
       if (check.issues.length || check.solver?.blocking) setProjectId(pid);
+      else if (check.uncommitted_count > 0) confirmUncommitted(pid, check);
       else await download(pid, false);
     } catch (error) {
-      // 检查后才出现的问题（并发修改）：回到弹窗看最新结论
-      if (error.code === 'binding_problems' || error.code?.startsWith('solver_')) setProjectId(pid);
-      else message.error(error.message);
+      failed(pid, error);
     } finally {
       setPublishing(false);
     }

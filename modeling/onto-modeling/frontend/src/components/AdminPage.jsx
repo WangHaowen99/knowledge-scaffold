@@ -323,6 +323,16 @@ function UsersTab({ available }) {
   );
 }
 
+// 路径说明不了的操作要点：指定所有者的原值与新值、迁移时移除的成员表
+function auditDetail(detail) {
+  if (!detail) return '';
+  if (detail.action === 'set_owner') return `所有者：${detail.from || '无主'} → ${detail.to}`;
+  if (detail.action === 'remove_members') {
+    return `单人所有权迁移，移除成员：${Object.keys(detail.members || {}).join('、') || '无'}`;
+  }
+  return JSON.stringify(detail);
+}
+
 function AuditTab() {
   const [entries, setEntries] = useState([]);
 
@@ -347,6 +357,7 @@ function AuditTab() {
         { title: '用户', dataIndex: 'user', width: 140 },
         { title: '操作', dataIndex: 'method', width: 90 },
         { title: '路径', dataIndex: 'path' },
+        { title: '说明', dataIndex: 'detail', render: auditDetail },
       ]}
     />
   );

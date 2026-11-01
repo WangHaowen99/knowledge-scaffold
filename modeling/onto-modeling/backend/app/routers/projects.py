@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .. import config
 from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets, package_mapping
-from ..services import modeling_cleanup, modeling_mcp, package_archive, solver_contract
+from ..services import modeling_cleanup, modeling_mcp, ownership, package_archive, solver_contract
 from ..services.workspace import WorkspaceError, WorkspaceManager, remove_tree
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -55,10 +55,6 @@ class TagBody(BaseModel):
     label: str
 
 
-class MembersBody(BaseModel):
-    members: dict[str, str]  # username -> editor(建模者) | viewer(只读评审)
-
-
 class ArchiveBody(BaseModel):
     archived: bool
 
@@ -80,44 +76,16 @@ def _request_user(request: Request) -> str:
 
 
 def _name_viewer(request: Request) -> tuple[str, bool] | None:
-    """同名校验的查重范围：当前用户可见的任务；鉴权关闭时为 None（全部任务）。"""
-    user = getattr(request.state, "user", None)
+    """同名校验的查重范围：当前用户在列表里看得到的任务；鉴权关闭时为 None（全部任务）。"""
+    user = ownership.current_user(request)
     if user is None:
         return None
-    return user.get("sub", ""), user.get("role") == "admin"
+    return user.get("sub", ""), ownership.is_admin(user)
 
 
-def ensure_access(project_id: str, request: Request, write: bool = False):
-    """项目级访问守卫：校验存在性 + 角色（鉴权关闭时放开）。
-
-    write=True 时只读评审（viewer）被拒绝，覆盖文件写入与会话操作。
-    """
-    root = workspaces.project_root(project_id)
-    user = getattr(request.state, "user", None)
-    if user is None:
-        return root
-    meta = workspaces.get_project(project_id)
-    username, is_admin = user.get("sub", ""), user.get("role") == "admin"
-    if not workspaces.can_access(meta, username, is_admin):
-        raise WorkspaceError("无权访问该任务", 403)
-    if write and not workspaces.can_write(meta, username, is_admin):
-        raise WorkspaceError("只读评审角色不能修改内容", 403)
-    return root
-
-
-def ensure_owner(project_id: str, request: Request):
-    """项目管理操作（重命名/删除/归档/成员）：仅 owner 或管理员。"""
-    root = workspaces.project_root(project_id)
-    user = getattr(request.state, "user", None)
-    if user is None:
-        return root
-    meta = workspaces.get_project(project_id)
-    role = workspaces.role_of(meta, user.get("sub", ""), user.get("role") == "admin")
-    if role not in ("admin", "owner") and meta.get("owner", ""):
-        raise WorkspaceError("仅项目所有者或管理员可执行该操作", 403)
-    if role is None:
-        raise WorkspaceError("无权访问该任务", 403)
-    return root
+def require_owner(project_id: str, request: Request) -> Path:
+    """项目内容守卫：读写、会话、导出发布与改名/归档/删除一律只归所有者（鉴权关闭时放开）。"""
+    return ownership.require_owner(workspaces, project_id, request)
 
 
 def provision_modeling_project(meta: dict, request: Request) -> dict:
@@ -130,7 +98,7 @@ def provision_modeling_project(meta: dict, request: Request) -> dict:
         if project_id:
             updated = workspaces._update_meta(meta["id"], modeling_project_id=project_id)
             if modeling_mcp.configured():
-                modeling_mcp.sync_members(updated, request)
+                modeling_mcp.sync_owner(updated, request)
             return updated
         return updated
     except Exception:
@@ -173,23 +141,17 @@ def associate_imported_project(meta: dict, request: Request) -> dict:
 
 
 def _may_auto_associate(meta: dict, request: Request) -> bool:
-    user = getattr(request.state, "user", None)
-    if user is None:
-        return True
-    role = workspaces.role_of(
-        meta, user.get("sub", ""), user.get("role") == "admin"
-    )
-    return role in ("owner", "admin")
+    return ownership.acts_as_owner(meta, request)
 
 
 def ensure_mcp_association(
     meta: dict, request: Request, *, require_association: bool = False
 ) -> dict:
-    """Lazy repair for owner/admin requests; never create a remote project for a reader."""
+    """Lazy repair for owner requests; never create a remote project for anyone else."""
     if not _may_auto_associate(meta, request):
         if require_association and not modeling_mcp._modeling_project_id(meta):
             raise modeling_mcp.ModelingMcpError(
-                "当前用户无权自动关联 Modeling 项目，请联系项目所有者或管理员", 403
+                "只有项目所有者可以自动关联 Modeling 项目", 403
             )
         return meta
     modeling_mcp.ensure_project_association(meta, request, workspaces._update_meta)
@@ -198,13 +160,9 @@ def ensure_mcp_association(
 
 @router.get("")
 def list_projects(request: Request):
+    """本人项目给完整信息；管理员另外看到其他项目的元数据（含无主项目），不含项目内容。"""
     projects = workspaces.list_projects()
-    user = getattr(request.state, "user", None)
-    if user is not None:
-        projects = workspaces.visible_to(
-            projects, user.get("sub", ""), user.get("role") == "admin"
-        )
-    return {"projects": projects}
+    return {"projects": ownership.list_view(projects, ownership.current_user(request))}
 
 
 @router.post("")
@@ -298,14 +256,14 @@ async def transfer_import(
 
 @router.get("/{project_id}")
 def get_project(project_id: str, request: Request):
-    ensure_access(project_id, request)
-    return workspaces.get_project(project_id)
+    """项目元数据：所有者拿完整元数据，管理员只拿元数据白名单。"""
+    return ownership.require_meta_view(workspaces, project_id, request)
 
 
 @router.patch("/{project_id}")
 def rename_project(project_id: str, body: RenameBody, request: Request):
     """重命名任务。新名称与其他任务重名时返回 409 与候选名；名称没变则不校验。"""
-    ensure_owner(project_id, request)
+    require_owner(project_id, request)
     meta = workspaces.get_project(project_id)
     if body.name.strip() == meta.get("name"):
         return meta
@@ -324,7 +282,7 @@ async def delete_project(project_id: str, request: Request, background: Backgrou
     from ..services import modeling_eval, studio
     from ..services.agent_sessions import manager
 
-    root = ensure_owner(project_id, request)
+    root = require_owner(project_id, request)
     meta = workspaces.get_project(project_id)  # 删除后读不到，级联清理要用，先取
     eval_round = modeling_eval.abort_for_delete(project_id, root, _modeling_token(request))
     await manager.discard(project_id)
@@ -384,7 +342,7 @@ def _cascade_modeling_delete(meta: dict, request: Request) -> None:
 
 @router.post("/{project_id}/archive")
 def archive_project(project_id: str, body: ArchiveBody, request: Request):
-    ensure_owner(project_id, request)
+    require_owner(project_id, request)
     return workspaces.set_archived(project_id, body.archived)
 
 
@@ -392,7 +350,7 @@ def archive_project(project_id: str, body: ArchiveBody, request: Request):
 def clone_project(project_id: str, request: Request, body: CloneBody | None = None):
     """克隆任务，默认命名「原名-副本」；与已有任务重名时返回 409 与候选名，
     前端改名后带 name 重新提交。"""
-    ensure_access(project_id, request)
+    require_owner(project_id, request)
     default_name = workspaces.clone_name(project_id)
     name = (body.name.strip() if body else "") or default_name
     with workspaces.name_claim(name, _name_viewer(request), original_name=default_name):
@@ -400,62 +358,51 @@ def clone_project(project_id: str, request: Request, body: CloneBody | None = No
     return meta
 
 
-@router.get("/{project_id}/members")
-def get_members(project_id: str, request: Request):
-    ensure_access(project_id, request)
-    meta = workspaces.get_project(project_id)
-    return {"owner": meta.get("owner", ""), "members": meta.get("members") or {}}
-
-
-@router.put("/{project_id}/members")
-def put_members(project_id: str, body: MembersBody, request: Request):
-    ensure_owner(project_id, request)
-    previous = workspaces.get_project(project_id)
-    meta = workspaces.set_members(project_id, body.members)
-    try:
-        modeling_mcp.sync_members(meta, request)
-    except modeling_mcp.ModelingMcpError as exc:
-        workspaces._update_meta(project_id, members=previous.get("members") or {})
-        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
-    return {"owner": meta.get("owner", ""), "members": meta.get("members") or {}}
-
-
 @router.get("/{project_id}/export")
 def export_project(
     project_id: str, request: Request, scope: str = "ontology", allow_unbound: bool = False
 ):
-    ensure_access(project_id, request)
+    """scope=package 是用户发布：按 HEAD 提交打包，版本号与来源提交放在响应头里带回
+    （同源部署，前端 fetch 直接读得到，不需要 CORS expose）。"""
+    require_owner(project_id, request)
     if scope not in ("ontology", "workspace", "package"):
         raise WorkspaceError("scope 必须是 ontology、workspace 或 package")
     meta = workspaces.get_project(project_id)
     dest = Path(tempfile.mkdtemp()) / f"{meta['name']}-{scope}.zip"
+    headers = {}
     if scope == "package":
-        workspaces.publish_package(
+        record = workspaces.publish_package(
             project_id, dest, allow_unbound=allow_unbound, author=_request_user(request)
         )
+        headers = {
+            "X-Package-Version": record["version"],
+            "X-Package-Commit": record["commit"],
+            "X-Package-Uncommitted": str(record["uncommitted_count"]),
+        }
     else:
         workspaces.export_zip(project_id, scope, dest)
-    return FileResponse(dest, filename=dest.name, media_type="application/zip")
+    return FileResponse(dest, filename=dest.name, media_type="application/zip", headers=headers)
 
 
 @router.get("/{project_id}/package/check")
 def package_check(project_id: str, request: Request):
-    """发布前数据绑定体检：阻断项、无从核对项、提示，以及修复所需的表清单与文档版本。"""
-    ensure_access(project_id, request)
+    """发布前体检（基于 HEAD 提交，与发布同口径）：阻断项、无从核对项、提示、修复所需的
+    表清单与文档版本，以及包相关目录里不会进包的未提交改动。"""
+    require_owner(project_id, request)
     return workspaces.package_binding_check(project_id)
 
 
 @router.get("/{project_id}/package/solver-contract")
 def get_solver_contract(project_id: str, request: Request):
     """求解模型面板：当前修订、契约原文、静态检查与验证门禁。"""
-    ensure_access(project_id, request)
+    require_owner(project_id, request)
     return workspaces.solver_contract_view(project_id)
 
 
 @router.put("/{project_id}/package/solver-contract")
 def save_solver_contract(project_id: str, body: SolverContractBody, request: Request):
     """整体保存求解契约；结构问题 400 并逐条返回 findings，修订冲突 409。"""
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     try:
         operations = body.contract.get("operations")
         if not isinstance(operations, list):
@@ -476,7 +423,7 @@ def save_solver_contract(project_id: str, body: SolverContractBody, request: Req
 def check_solver_contract(project_id: str, body: SolverContractBody, request: Request):
     """即时检查面板草稿（不保存）：rejected 为保存会被拒的问题，findings 为发布会被拦截的问题，
     rendered 为模板契约将生成的 sidecar 原文。"""
-    ensure_access(project_id, request)
+    require_owner(project_id, request)
     operations = body.contract.get("operations")
     if not isinstance(operations, list):
         raise WorkspaceError("contract.operations 必须是列表", code=solver_contract.CODE_INVALID)
@@ -498,7 +445,7 @@ class SolverValidationStartBody(BaseModel):
 def get_solver_validation_cases(project_id: str, request: Request):
     from ..services import solver_validation_run
 
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     return {"cases": solver_validation_run.list_cases(root)}
 
 
@@ -506,7 +453,7 @@ def get_solver_validation_cases(project_id: str, request: Request):
 def save_solver_validation_cases(project_id: str, body: SolverValidationCasesBody, request: Request):
     from ..services import solver_validation_run
 
-    root = ensure_access(project_id, request, write=True)
+    root = require_owner(project_id, request)
     return {"cases": solver_validation_run.save_cases(root, body.cases)}
 
 
@@ -520,7 +467,7 @@ async def start_solver_validation(
     """
     from ..services import solver_validation_run
 
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     record, plan = await asyncio.to_thread(
         solver_validation_run.start,
         workspaces, project_id,
@@ -540,7 +487,7 @@ def latest_solver_validation(project_id: str, request: Request):
     """当前修订最后一次验证：状态、断言、候选数、权威结果摘要、错误码与诊断引用。"""
     from ..services import solver_validation
 
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     revision = workspaces.solver_check(project_id).revision
     validation = solver_validation.latest(root, revision) if revision else None
     return {"revision": revision, "validation": validation}
@@ -549,7 +496,7 @@ def latest_solver_validation(project_id: str, request: Request):
 @router.post("/{project_id}/objects/{key}/data-source")
 def set_object_data_source(project_id: str, key: str, body: ObjectDataSourceBody, request: Request):
     """发布前修复：把对象「# 数据来源」改成现有数据表之一或「无」（Web 保存同款版本点）。"""
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     return workspaces.set_object_data_source(
         project_id, key, body.table,
         base_revision=body.base_revision, author=_request_user(request),
@@ -558,19 +505,19 @@ def set_object_data_source(project_id: str, key: str, body: ObjectDataSourceBody
 
 @router.get("/{project_id}/files")
 def file_tree(project_id: str, request: Request):
-    ensure_access(project_id, request)
+    require_owner(project_id, request)
     return {"tree": workspaces.file_tree(project_id)}
 
 
 @router.get("/{project_id}/file")
 def read_file(project_id: str, path: str, request: Request):
-    ensure_access(project_id, request)
+    require_owner(project_id, request)
     return workspaces.read_file(project_id, path, config.MAX_FILE_PREVIEW_BYTES)
 
 
 @router.put("/{project_id}/file")
 def write_file(project_id: str, body: WriteFileBody, request: Request):
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     return workspaces.write_file(
         project_id,
         body.path,
@@ -584,7 +531,7 @@ def write_file(project_id: str, body: WriteFileBody, request: Request):
 def excel_preview(project_id: str, path: str, request: Request):
     from ..services import excel_preview as excel_service
 
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     target = workspaces._resolve_inside(root, path)
     if not target.is_file():
         raise WorkspaceError("文件不存在", 404)
@@ -598,14 +545,14 @@ def excel_preview(project_id: str, path: str, request: Request):
 
 @router.get("/{project_id}/file-at")
 def file_at_revision(project_id: str, rev: str, path: str, request: Request):
-    ensure_access(project_id, request)
+    require_owner(project_id, request)
     return workspaces.file_at_revision(project_id, rev, path)
 
 
 @router.get("/{project_id}/raw")
 def raw_file(project_id: str, path: str, request: Request):
     """原样返回文件（HTML 报告 iframe 预览等）。"""
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     target = workspaces._resolve_inside(root, path)
     if not target.is_file():
         raise WorkspaceError("文件不存在", 404)
@@ -615,7 +562,7 @@ def raw_file(project_id: str, path: str, request: Request):
 @router.get("/{project_id}/search")
 def search(project_id: str, q: str, request: Request):
     """产物全文检索（命中行，上限 80 条）。"""
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     query = (q or "").strip()
     if not query:
         return {"hits": []}
@@ -644,7 +591,7 @@ def search(project_id: str, q: str, request: Request):
 def metrics(project_id: str, request: Request):
     from ..services import metrics as metrics_service
 
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     return metrics_service.coverage(root)
 
 
@@ -657,7 +604,7 @@ async def upload_resource(
     purpose: str = Form("auto"),
     reading_mode: str = Form("on_demand"),
 ):
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     data = await file.read()
     # 大文件同步写盘会卡住事件循环（SSE 全体停摆），挪到线程执行
     return await asyncio.to_thread(
@@ -668,12 +615,13 @@ async def upload_resource(
         data,
         purpose,
         reading_mode,
+        _request_user(request),
     )
 
 
 @router.get("/{project_id}/resource-meta")
 def resource_meta(project_id: str, request: Request):
-    ensure_access(project_id, request)
+    require_owner(project_id, request)
     return {
         "directives": workspaces.resource_directives(project_id),
         "purposes": list(workspaces.MATERIAL_PURPOSES),
@@ -689,16 +637,16 @@ class ResourceDirectiveBody(BaseModel):
 
 @router.patch("/{project_id}/resource-meta")
 def set_resource_meta(project_id: str, body: ResourceDirectiveBody, request: Request):
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     return workspaces.set_resource_directive(
-        project_id, body.path, body.purpose, body.reading_mode
+        project_id, body.path, body.purpose, body.reading_mode, author=_request_user(request)
     )
 
 
 @router.delete("/{project_id}/resources")
 def delete_resource(project_id: str, path: str, request: Request):
-    ensure_access(project_id, request, write=True)
-    return workspaces.delete_resource(project_id, path)
+    require_owner(project_id, request)
+    return workspaces.delete_resource(project_id, path, author=_request_user(request))
 
 
 class ProjectMcpBody(BaseModel):
@@ -709,7 +657,7 @@ class ProjectMcpBody(BaseModel):
 def get_project_mcp(project_id: str, request: Request):
     from ..services import mcp_settings
 
-    ensure_access(project_id, request)
+    require_owner(project_id, request)
     meta = workspaces.get_project(project_id)
     disabled = set(meta.get("mcp_disabled") or [])
     servers = [
@@ -726,7 +674,7 @@ def get_project_mcp(project_id: str, request: Request):
 
 @router.put("/{project_id}/mcp")
 def put_project_mcp(project_id: str, body: ProjectMcpBody, request: Request):
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     names = [str(n)[:32] for n in body.disabled][:64]
     workspaces._update_meta(project_id, mcp_disabled=names)
     return {"disabled": names}
@@ -735,7 +683,7 @@ def put_project_mcp(project_id: str, body: ProjectMcpBody, request: Request):
 @router.get("/{project_id}/eval/data-source")
 def eval_data_source_options(project_id: str, request: Request):
     """评测向导·数据源选项：mock 产物可用性（业务数据表在数据源表单里上传）。"""
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     return _eval_data_options(root)
 
 
@@ -751,7 +699,7 @@ def _eval_data_options(root: Path) -> dict:
 @router.post("/{project_id}/eval/data-files")
 async def upload_eval_data_file(project_id: str, request: Request, file: UploadFile = File(...)):
     """数据源表单上传业务数据表（Excel）：返回 {id, name, size}，保存配置时引用 ID。"""
-    root = ensure_access(project_id, request, write=True)
+    root = require_owner(project_id, request)
     data = await file.read()
     try:
         # 大文件写盘挪到线程，避免卡住事件循环
@@ -781,7 +729,7 @@ def _default_eval_workspace_id(project_id: str) -> str:
 @router.get("/{project_id}/eval/data-sources")
 def list_eval_data_sources(project_id: str, request: Request):
     """已保存的数据源配置 + 新建配置所需的选项与默认值。"""
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     return {
         "sources": [
             eval_data_sources.public_view(s)
@@ -798,7 +746,7 @@ def list_eval_data_sources(project_id: str, request: Request):
 
 @router.post("/{project_id}/eval/data-sources")
 def create_eval_data_source(project_id: str, body: EvalDataSourceBody, request: Request):
-    root = ensure_access(project_id, request, write=True)
+    root = require_owner(project_id, request)
     try:
         source = eval_data_sources.create_source(project_id, body.model_dump(), root)
     except eval_data_sources.DataSourceError as exc:
@@ -811,7 +759,7 @@ def update_eval_data_source(
     project_id: str, source_id: str, body: EvalDataSourceBody, request: Request
 ):
     """更新配置；Token / Password 留空表示沿用已保存的值。"""
-    root = ensure_access(project_id, request, write=True)
+    root = require_owner(project_id, request)
     try:
         source = eval_data_sources.update_source(project_id, source_id, body.model_dump(), root)
     except eval_data_sources.DataSourceError as exc:
@@ -823,7 +771,7 @@ def update_eval_data_source(
 
 @router.delete("/{project_id}/eval/data-sources/{source_id}")
 def delete_eval_data_source(project_id: str, source_id: str, request: Request):
-    root = ensure_access(project_id, request, write=True)
+    root = require_owner(project_id, request)
     try:
         eval_data_sources.delete_source(project_id, source_id, root)
     except KeyError:
@@ -843,7 +791,7 @@ def eval_import_preview(project_id: str, body: EvalImportPreviewBody, request: R
     """一键导入预览：导入哪些表、日期列如何规范化、对象绑到哪张表哪些列（即 mapping）。"""
     from ..services import modeling_eval
 
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     if body.data_source_id:
         source = eval_data_sources.get_source(project_id, body.data_source_id, root)
         if not source:
@@ -875,13 +823,13 @@ class EvalSetPatchBody(BaseModel):
 
 @router.get("/{project_id}/eval/sets")
 def list_eval_sets(project_id: str, request: Request):
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     return {"sets": eval_sets.list_sets(root)}
 
 
 @router.get("/{project_id}/eval/sets/{set_id}")
 def get_eval_set(project_id: str, set_id: str, request: Request):
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     item = eval_sets.get_set(root, set_id)
     if not item:
         return JSONResponse(status_code=404, content={"error": "评测集不存在或已删除"})
@@ -890,7 +838,7 @@ def get_eval_set(project_id: str, set_id: str, request: Request):
 
 @router.post("/{project_id}/eval/sets")
 def create_eval_set(project_id: str, body: EvalSetBody, request: Request):
-    root = ensure_access(project_id, request, write=True)
+    root = require_owner(project_id, request)
     try:
         item = eval_sets.create_set(root, body.name, body.cases, body.source)
     except eval_sets.EvalSetError as exc:
@@ -900,7 +848,7 @@ def create_eval_set(project_id: str, body: EvalSetBody, request: Request):
 
 @router.patch("/{project_id}/eval/sets/{set_id}")
 def update_eval_set(project_id: str, set_id: str, body: EvalSetPatchBody, request: Request):
-    root = ensure_access(project_id, request, write=True)
+    root = require_owner(project_id, request)
     try:
         item = eval_sets.update_set(root, set_id, name=body.name, cases=body.cases)
     except eval_sets.EvalSetError as exc:
@@ -912,7 +860,7 @@ def update_eval_set(project_id: str, set_id: str, body: EvalSetPatchBody, reques
 
 @router.delete("/{project_id}/eval/sets/{set_id}")
 def delete_eval_set(project_id: str, set_id: str, request: Request):
-    root = ensure_access(project_id, request, write=True)
+    root = require_owner(project_id, request)
     try:
         eval_sets.delete_set(root, set_id)
     except KeyError:
@@ -925,7 +873,7 @@ def eval_status(project_id: str, request: Request):
     """数据评测状态：modeling 可达性 + 最近一轮进度/结果（前端阶段按钮轮询）。"""
     from ..services import modeling_eval
 
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     # 前端轮询自带自动刷新的 token：接力给运行中的编排（评测轮常超 token 有效期）
     auth = request.headers.get("Authorization") or ""
     if auth.startswith("Bearer "):
@@ -945,7 +893,7 @@ def eval_full_answer(project_id: str, result_id: str, request: Request):
     """按需读取评测结果的完整 finalAnswer；列表状态中的 answer 仅是摘要。"""
     from ..services import modeling_eval
 
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     auth = request.headers.get("Authorization") or ""
     token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
     try:
@@ -961,7 +909,7 @@ def eval_cases_preview(project_id: str, request: Request):
     """trace 场景 → 评测用例的转换预览（运行前供用户复核修订）。"""
     from ..services import modeling_eval
 
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     return {"cases": modeling_eval.trace_cases(root)}
 
 
@@ -979,7 +927,7 @@ async def eval_cases_import(
     """
     from ..services import modeling_eval
 
-    root = ensure_access(project_id, request, write=save)
+    root = require_owner(project_id, request)
     if not (file.filename or "").lower().endswith(".json"):
         return JSONResponse(status_code=400, content={"error": "仅支持 JSON 用例文件（可先下载模板）"})
     content = await file.read()
@@ -1007,7 +955,7 @@ def eval_cases_template(project_id: str, request: Request):
 
     from ..services import modeling_eval
 
-    ensure_access(project_id, request)
+    require_owner(project_id, request)
     return Response(
         content=modeling_eval.case_template_json(),
         media_type="application/json",
@@ -1035,7 +983,7 @@ async def eval_run(project_id: str, body: EvalRunBody, request: Request):
     """启动数据评测（后台编排，状态经 /eval/status 轮询）。"""
     from ..services import modeling_eval
 
-    root = ensure_access(project_id, request, write=True)
+    root = require_owner(project_id, request)
     try:
         modeling_eval.evaluation_object_snapshot(root)
     except modeling_eval.EvaluationPackageInvalid as exc:
@@ -1133,7 +1081,7 @@ def eval_stop(project_id: str, request: Request):
     """停止评测：取消 modeling 侧轮次并把状态收敛到可重跑的终态。"""
     from ..services import modeling_eval
 
-    root = ensure_access(project_id, request, write=True)
+    root = require_owner(project_id, request)
     if not modeling_eval.enabled():
         return JSONResponse(status_code=400, content={"error": "未配置 modeling 评测服务（ONTO_WEB_MODELING_URL）"})
     try:
@@ -1147,7 +1095,7 @@ async def eval_resume(project_id: str, request: Request):
     """续接上一轮：只收取 modeling 侧已有轮次的结果，不重新发起评测。"""
     from ..services import modeling_eval
 
-    root = ensure_access(project_id, request, write=True)
+    root = require_owner(project_id, request)
     if not modeling_eval.enabled():
         return JSONResponse(status_code=400, content={"error": "未配置 modeling 评测服务（ONTO_WEB_MODELING_URL）"})
     if not modeling_eval.reachable():
@@ -1171,7 +1119,7 @@ class ProjectEngineBody(BaseModel):
 def get_project_engine(project_id: str, request: Request):
     from ..services.engines import available_engines, get_engine_class
 
-    ensure_access(project_id, request)
+    require_owner(project_id, request)
     meta = workspaces.get_project(project_id)
     current = meta.get("engine") or "claude"
     return {
@@ -1187,7 +1135,7 @@ async def put_project_engine(project_id: str, body: ProjectEngineBody, request: 
     from ..services.agent_sessions import manager
     from ..services.engines import ENGINE_NAMES, get_engine_class
 
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     name = (body.engine or "").strip()
     if name not in ENGINE_NAMES:
         return JSONResponse(status_code=400, content={"error": "未知引擎"})
@@ -1207,7 +1155,7 @@ async def put_project_engine(project_id: str, body: ProjectEngineBody, request: 
 def studio_graph(project_id: str, request: Request):
     from ..services import studio
 
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     return studio.graph(root)
 
 
@@ -1215,7 +1163,7 @@ def studio_graph(project_id: str, request: Request):
 def studio_operation_flow(project_id: str, element_id: str, request: Request):
     from ..services import studio
 
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     try:
         return studio.operation_flow(root, element_id)
     except studio.StudioError as exc:
@@ -1227,7 +1175,7 @@ def studio_element(project_id: str, path: str, request: Request):
     from ..services import studio
     from ..services.workspace import _content_revision
 
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     target = workspaces._resolve_inside(root, path)
     try:
         data = studio.element(root, path)
@@ -1256,7 +1204,7 @@ class StudioDraftBody(BaseModel):
 def studio_acquire_lease(project_id: str, body: StudioLeaseBody, request: Request):
     from ..services import studio
 
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     try:
         return studio.acquire_lease(project_id, body.path, _request_user(request) or "本机用户")
     except studio.StudioError as exc:
@@ -1267,7 +1215,7 @@ def studio_acquire_lease(project_id: str, body: StudioLeaseBody, request: Reques
 def studio_release_lease(project_id: str, path: str, request: Request):
     from ..services import studio
 
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     studio.release_lease(project_id, path, _request_user(request) or "本机用户")
     return {"ok": True}
 
@@ -1276,7 +1224,7 @@ def studio_release_lease(project_id: str, path: str, request: Request):
 def studio_get_draft(project_id: str, path: str, request: Request):
     from ..services import studio
 
-    ensure_access(project_id, request)
+    require_owner(project_id, request)
     return {"draft": studio.get_draft(project_id, path)}
 
 
@@ -1284,7 +1232,7 @@ def studio_get_draft(project_id: str, path: str, request: Request):
 def studio_save_draft(project_id: str, body: StudioDraftBody, request: Request):
     from ..services import studio
 
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     try:
         return studio.save_draft(
             project_id,
@@ -1301,7 +1249,7 @@ def studio_save_draft(project_id: str, body: StudioDraftBody, request: Request):
 def studio_discard_draft(project_id: str, path: str, request: Request):
     from ..services import studio
 
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     studio.discard_draft(project_id, path, _request_user(request) or "本机用户")
     return {"ok": True}
 
@@ -1312,7 +1260,7 @@ async def studio_submit(project_id: str, body: StudioLeaseBody, request: Request
     from ..services import studio
     from ..services.agent_sessions import manager
 
-    root = ensure_access(project_id, request, write=True)
+    root = require_owner(project_id, request)
     user = _request_user(request) or "本机用户"
     draft = studio.get_draft(project_id, body.path)
     if not draft:
@@ -1352,7 +1300,7 @@ def report_items(project_id: str, path: str, request: Request):
     """报告条目化：供评审视图做编号勾选。"""
     from ..services import report_items as parser
 
-    ensure_access(project_id, request)
+    require_owner(project_id, request)
     data = workspaces.read_file(project_id, path, config.MAX_FILE_PREVIEW_BYTES)
     return parser.parse(data["content"])
 
@@ -1374,7 +1322,7 @@ def reverse_query(project_id: str, kind: str, request: Request, term: str = ""):
 
     from ..services.script_env import minimal_env
 
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     if kind not in QUERY_KIND_ARGS:
         raise WorkspaceError(f"kind 必须是 {sorted(QUERY_KIND_ARGS)} 之一")
     if kind in ("used_by", "search", "knowledge") and not term.strip():
@@ -1406,7 +1354,7 @@ class KnowledgeBody(BaseModel):
 @router.get("/{project_id}/knowledge")
 def list_knowledge(project_id: str, request: Request):
     """知识库列表（knowledge/*.md + 首段摘要）。"""
-    root = ensure_access(project_id, request)
+    root = require_owner(project_id, request)
     directory = root / "knowledge"
     entries = []
     if directory.is_dir():
@@ -1430,7 +1378,7 @@ def list_knowledge(project_id: str, request: Request):
 @router.post("/{project_id}/knowledge")
 def create_knowledge(project_id: str, body: KnowledgeBody, request: Request):
     """业务知识确认入库：写 knowledge/<name>.md 并记录版本。"""
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     safe = re.sub(r"[\\/:*?\"<>|.]+", "-", body.name.strip())[:60].strip("-")
     if not safe:
         raise WorkspaceError("知识条目名称不能为空")
@@ -1444,29 +1392,29 @@ def create_knowledge(project_id: str, body: KnowledgeBody, request: Request):
 
 @router.delete("/{project_id}/knowledge")
 def delete_knowledge(project_id: str, path: str, request: Request):
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     return workspaces.delete_file(project_id, path, author=_request_user(request))
 
 
 @router.get("/{project_id}/versions")
 def versions(project_id: str, request: Request):
-    ensure_access(project_id, request)
+    require_owner(project_id, request)
     return {"versions": workspaces.versions(project_id)}
 
 
 @router.post("/{project_id}/versions/revert")
 def revert(project_id: str, body: RevertBody, request: Request):
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     return workspaces.revert_to(project_id, body.commit)
 
 
 @router.post("/{project_id}/versions/tag")
 def tag_version(project_id: str, body: TagBody, request: Request):
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     return workspaces.tag_version(project_id, body.commit, body.label)
 
 
 @router.delete("/{project_id}/versions/tag/{tag_name}")
 def delete_tag(project_id: str, tag_name: str, request: Request):
-    ensure_access(project_id, request, write=True)
+    require_owner(project_id, request)
     return workspaces.delete_tag(project_id, tag_name)

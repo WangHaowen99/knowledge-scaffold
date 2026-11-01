@@ -896,11 +896,12 @@ export default function LeftPane({
                       </Typography.Text>
                     </div>
                     <div className="version-msg">{v.message}</div>
+                    {/* 发布标签 release/* 是知识包版本的出处，只能看不能删 */}
                     {v.tags?.map((t) => (
                       <Tag
                         key={t.name}
-                        color="green"
-                        closable
+                        color={t.name.startsWith('release/') ? 'gold' : 'green'}
+                        closable={!t.name.startsWith('release/')}
                         onClose={(e) => {
                           e.preventDefault();
                           api.deleteTag(project.id, t.name).then(onRefresh).catch((err) =>

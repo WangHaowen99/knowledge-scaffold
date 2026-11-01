@@ -1,7 +1,8 @@
 """任务名称同名校验：新建任务、导入已有知识包、导入项目（迁移包）、重命名、克隆五个入口。
 
 与知识包建模工具同一口径：去首尾空白、全角半角与大小写差异都算同名；查重范围是
-当前用户可见的任务；冲突返回 409 与至多 3 个候选名，前端选名后重新提交。
+当前用户在列表里看得到的任务（自己的；管理员是全部）；冲突返回 409 与至多 3 个候选名，
+前端选名后重新提交。
 """
 
 import io
@@ -46,11 +47,11 @@ def client(manager, monkeypatch) -> TestClient:
     return TestClient(app)
 
 
-def _seed(manager, project_id, name, owner="", members=None) -> None:
+def _seed(manager, project_id, name, owner="") -> None:
     """手写元数据代替建项目流程：查重只看名称与归属。"""
     root = manager.workspaces_dir / project_id
     root.mkdir()
-    meta = {"id": project_id, "name": name, "owner": owner, "members": members or {}}
+    meta = {"id": project_id, "name": name, "owner": owner}
     (root / META_FILE).write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
 
@@ -131,17 +132,16 @@ def test_candidates_respect_name_length_limit():
     "viewer, name, taken",
     [
         (("alice", False), "订单建模", True),  # 自己的任务
-        (("alice", False), "共享任务", True),  # 作为成员可见
-        (("alice", False), "历史任务", True),  # 无主历史任务对所有人可见
-        (("alice", False), "库存建模", False),  # 别人的私有任务看不到，不算重名
-        (("alice", True), "库存建模", True),  # 管理员看全部
+        (("alice", False), "库存建模", False),  # 别人的任务看不到，不算重名
+        (("alice", False), "历史任务", False),  # 无主任务普通用户看不到
+        (("alice", True), "库存建模", True),  # 管理员在列表里看得到全部任务
+        (("alice", True), "历史任务", True),
         (None, "库存建模", True),  # 鉴权关闭：全部任务都算
     ],
 )
 def test_scope_is_tasks_visible_to_current_user(manager, viewer, name, taken):
     _seed(manager, "p-alice", "订单建模", owner="alice")
     _seed(manager, "p-bob", "库存建模", owner="bob")
-    _seed(manager, "p-shared", "共享任务", owner="carol", members={"alice": "viewer"})
     _seed(manager, "p-legacy", "历史任务")
 
     assert _taken(manager, name, viewer) is taken
@@ -356,16 +356,14 @@ def test_rename_does_not_conflict_with_the_task_itself(client, manager):
 def test_rename_checks_only_tasks_visible_to_user(manager):
     _seed(manager, "p-alice", "订单建模", owner="alice")
     _seed(manager, "p-bob", "库存建模", owner="bob")
-    _seed(manager, "p-shared", "共享任务", owner="carol", members={"alice": "viewer"})
+    _seed(manager, "p-root", "运维任务", owner="root")
 
-    def rename(name, user):
-        return projects.rename_project("p-alice", projects.RenameBody(name=name), _request(user))
+    def rename(project_id, name, user):
+        return projects.rename_project(project_id, projects.RenameBody(name=name), _request(user))
 
     with pytest.raises(NameConflictError):
-        rename("共享任务", {"sub": "alice"})  # 作为成员可见
-    with pytest.raises(NameConflictError):
-        rename("库存建模", {"sub": "root", "role": "admin"})  # 管理员看全部
-    renamed = rename("库存建模", {"sub": "alice"})  # 别人的私有任务看不到，不算重名
+        rename("p-root", "库存建模", {"sub": "root", "role": "admin"})  # 管理员看全部
+    renamed = rename("p-alice", "库存建模", {"sub": "alice"})  # 别人的任务看不到，不算重名
 
     assert renamed["name"] == "库存建模"
 
@@ -418,14 +416,13 @@ def test_clone_conflict_then_clone_with_new_name(client, manager):
 
 
 def test_clone_checks_only_tasks_visible_to_user(manager):
-    _seed(manager, "p-legacy", "历史任务")
-    _seed(manager, "p-alice", "历史任务-副本", owner="alice")
+    _seed(manager, "p-alice", "订单建模", owner="alice")
+    _seed(manager, "p-bob", "订单建模-副本", owner="bob")
 
+    cloned = projects.clone_project("p-alice", _request({"sub": "alice"}))  # 看不到 bob 的同名任务
+    assert (cloned["name"], cloned["owner"]) == ("订单建模-副本", "alice")
     with pytest.raises(NameConflictError):
-        projects.clone_project("p-legacy", _request({"sub": "alice"}))
-    cloned = projects.clone_project("p-legacy", _request({"sub": "bob"}))
-
-    assert (cloned["name"], cloned["owner"]) == ("历史任务-副本", "bob")
+        projects.clone_project("p-alice", _request({"sub": "alice"}))  # 与自己的副本重名
 
 
 def test_clone_default_name_respects_length_limit(manager):

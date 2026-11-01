@@ -53,7 +53,7 @@ function toolsetScopes(toolset) {
 }
 
 // 管理 Onto 本地服务的项目级 MCP 地址、Token 和权限。
-function ExposedService({ project }) {
+function ExposedService({ project, authEnabled }) {
   const [status, setStatus] = useState(null);
   const [tokens, setTokens] = useState([]);
   const [tokenName, setTokenName] = useState('');
@@ -68,9 +68,8 @@ function ExposedService({ project }) {
   const [tokenError, setTokenError] = useState('');
   const requestVersion = useRef(0);
 
-  const username = authStore.username;
-  const isOwner = project?.owner === username || authStore.role === 'admin';
-  const canManage = isOwner || project?.members?.[username] === 'editor';
+  // 项目只归所有者：Token 由所有者本人签发与吊销；未开启登录鉴权时不区分用户
+  const canManage = !authEnabled || (!!project?.owner && project.owner === authStore.username);
 
   const load = async (mode = 'refresh') => {
     const version = ++requestVersion.current;
@@ -95,7 +94,7 @@ function ExposedService({ project }) {
         }
       } else {
         setTokens([]);
-        setTokenError('当前角色仅可查看 MCP 运行状态');
+        setTokenError('只有项目所有者可以管理 MCP Token');
       }
     } catch (error) {
       if (version !== requestVersion.current) return;
@@ -263,7 +262,7 @@ function ExposedService({ project }) {
   );
 }
 
-export default function McpSettings({ project }) {
+export default function McpSettings({ project, authEnabled }) {
   return (
     <div>
       <Typography.Title level={5} style={{ marginTop: 0 }}>
@@ -272,7 +271,7 @@ export default function McpSettings({ project }) {
       <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
         当前项目的 MCP 服务由 Onto 本地提供，可在此查看 Read 和 Change 地址并管理 Token 及访问权限。
       </Typography.Paragraph>
-      <ExposedService project={project} />
+      <ExposedService project={project} authEnabled={authEnabled} />
     </div>
   );
 }

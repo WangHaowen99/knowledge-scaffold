@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .. import config
-from ..services import audit, auth, conversation_store, error_log, modeling_cleanup
+from ..services import audit, auth, conversation_store, error_log, modeling_cleanup, ownership
 from ..services import backup as backup_service
 from ..services.agent_sessions import manager, usage_summary
 from ..services.auth import AuthError
@@ -88,9 +88,10 @@ def overview(request: Request):
         usage = usage_summary(meta["id"])
         total_cost += usage["total_cost_usd"]
         root = workspaces.project_root(meta["id"])
+        # 运维只看元数据（名称、所有者、阶段、占用与用量），不带背景说明等项目内容
         projects.append(
             {
-                **meta,
+                **ownership.meta_view(meta),
                 "usage": usage,
                 "size_bytes": _workspace_size(root),
             }
@@ -259,6 +260,24 @@ def restore_trash(request: Request, body: RestoreBody):
 def audit_log(request: Request):
     _require_admin(request)
     return {"entries": audit.read(200)}
+
+
+class OwnerBody(BaseModel):
+    owner: str
+
+
+@router.put("/projects/{project_id}/owner")
+def set_project_owner(project_id: str, body: OwnerBody, request: Request):
+    """指定项目所有者：无主项目指定后才可用。改成自己即可读项目内容，所以每次都记审计。"""
+    _require_admin(request)
+    owner = ownership.validate_owner_name(body.owner)
+    previous, meta = workspaces.set_owner(project_id, owner)
+    operator = (getattr(request.state, "user", None) or {}).get("sub", "")
+    audit.log(
+        operator, "PUT", f"/api/admin/projects/{project_id}/owner",
+        detail={"action": "set_owner", "project": project_id, "from": previous, "to": owner},
+    )
+    return ownership.meta_view(meta)
 
 
 # ---- 用户管理（代理 auth-server Admin API）----

@@ -808,14 +808,6 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .version-item { font-size: 13px; }
 .version-msg { color: var(--text-secondary); font-size: 12px; margin: 2px 0; word-break: break-all; }
 
-/* ---- 成员共享 ---- */
-.member-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border-subtle); }
-.member-name { flex: 1; color: var(--text-primary); }
-.member-role-select {
-  border: 1px solid var(--border-default); border-radius: 6px; background: var(--surface-card);
-  color: var(--text-primary); padding: 4px 8px; font-size: 13px;
-}
-
 /* ---- 聊天气泡内恢复原紧凑样式：markdown 精致化只作用于中栏文档区 ---- */
 .chat-history .markdown-body h1,
 .chat-history .markdown-body h2 { border-bottom: none; padding-bottom: 0; }

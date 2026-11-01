@@ -17,7 +17,7 @@ import pytest
 
 from app import config
 from app.services import eval_data_sources, solver_contract, solver_validation, solver_validation_run
-from app.services.workspace import WorkspaceError, WorkspaceManager
+from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 
 TOKEN = "synthetic-access-token"
 # RFC 5737 文档保留地址（TEST-NET-1），运行时拼出，避免在源码里出现 IP 字面量
@@ -123,6 +123,9 @@ def _project(manager: WorkspaceManager, items: list[dict] | None = None) -> tupl
     (root / "ontology" / "operation" / "规划路线.md").write_text("# 规划路线\n", encoding="utf-8")
     (root / "ontology" / "operation" / "查询站点.md").write_text("# 查询站点\n", encoding="utf-8")
     (root / "ontology" / "scripts" / "route_eval.py").write_text(EVALUATOR_PY, encoding="utf-8")
+    # 发布基于 HEAD 提交：Operation 文档与评估器先提交（相当于 agent 的阶段提交）
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "test: synthetic operations")
     saved = manager.save_solver_contract(pid, items or [_item()], "")
     return pid, root, saved["revision"]
 
@@ -753,7 +756,7 @@ def test_routes_store_cases_start_and_report_latest(manager: WorkspaceManager, s
 
     stub()
     monkeypatch.setattr(projects, "workspaces", manager)
-    monkeypatch.setattr(projects, "ensure_access", lambda pid, *args, **kwargs: manager.project_root(pid))
+    monkeypatch.setattr(projects, "require_owner", lambda pid, *args, **kwargs: manager.project_root(pid))
     launched = []
     monkeypatch.setattr(solver_validation_run, "launch", launched.append)
     pid, _root, revision = _project(manager)

@@ -223,7 +223,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ table, base_revision: baseRevision }),
     }),
-  // 发布知识包：走 fetch 才能拿到阻断错误（window.open 只会打开一页 JSON）；allowUnbound 即降级发布
+  // 发布知识包：走 fetch 才能拿到阻断错误（window.open 只会打开一页 JSON）；allowUnbound 即降级发布。
+  // 发布按 HEAD 提交打包，返回响应头里的版本号、来源提交与没进包的未提交改动数
   downloadPackage: async (pid, { allowUnbound = false } = {}) => {
     const query = allowUnbound ? '&allow_unbound=true' : '';
     const send = () =>
@@ -239,6 +240,11 @@ export const api = {
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return {
+      version: response.headers.get('X-Package-Version') || '',
+      commit: response.headers.get('X-Package-Commit') || '',
+      uncommitted: Number(response.headers.get('X-Package-Uncommitted') || 0),
+    };
   },
   importProject: (name, file, dryRun = false) => {
     const form = new FormData();
@@ -255,12 +261,6 @@ export const api = {
   // name 为空时用默认的「原名-副本」；同名冲突（409）改名后带上新名称重新提交
   cloneProject: (pid, name = '') =>
     request(`/api/projects/${pid}/clone`, { method: 'POST', body: JSON.stringify({ name }) }),
-  getMembers: (pid) => request(`/api/projects/${pid}/members`),
-  saveMembers: (pid, members) =>
-    request(`/api/projects/${pid}/members`, {
-      method: 'PUT',
-      body: JSON.stringify({ members }),
-    }),
   excelPreview: (pid, path) =>
     request(`/api/projects/${pid}/excel?path=${encodeURIComponent(path)}`),
   tagVersion: (pid, commit, label) =>
@@ -519,6 +519,12 @@ export const api = {
   },
   adminOverview: () => request('/api/admin/overview'),
   adminAudit: () => request('/api/admin/audit'),
+  // 管理员指定项目所有者（项目只归所有者；改成自己即可打开，服务端记审计）
+  setProjectOwner: (pid, owner) =>
+    request(`/api/admin/projects/${encodeURIComponent(pid)}/owner`, {
+      method: 'PUT',
+      body: JSON.stringify({ owner }),
+    }),
   adminBackup: () => request('/api/admin/backup', { method: 'POST' }),
   adminUsers: () => request('/api/admin/users'),
   adminUpdateUser: (username, payload) =>

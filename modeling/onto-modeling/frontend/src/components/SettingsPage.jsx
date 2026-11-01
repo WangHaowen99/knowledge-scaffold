@@ -264,7 +264,7 @@ export default function SettingsPage({
         {section === 'runtime' && isAdmin && <RuntimeSettings project={project} />}
         {section === 'sandbox' && isAdmin && <SandboxStatus />}
         {section === 'assets' && isAdmin && <AssetsSettings />}
-        {section === 'mcp' && project && <McpSettings project={project} />}
+        {section === 'mcp' && project && <McpSettings project={project} authEnabled={authEnabled} />}
       </div>
     </div>
   );

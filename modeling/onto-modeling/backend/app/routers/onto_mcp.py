@@ -23,9 +23,10 @@ def manager():
     return workspaces
 
 
-def access(project_id, request, write=False):
-    from .projects import ensure_access
-    ensure_access(project_id, request, write=write)
+def access(project_id, request):
+    """项目级 MCP 管理（状态、Token 签发与吊销）只归项目所有者。"""
+    from .projects import require_owner
+    require_owner(project_id, request)
     return manager().get_project(project_id)
 
 
@@ -48,7 +49,7 @@ def status(project_id: str, request: Request):
 @router.get("/{project_id}/modeling-mcp/tokens")
 def list_tokens(project_id: str, request: Request):
     try:
-        access(project_id, request, write=True)
+        access(project_id, request)
         return tokens.listing(manager(), project_id)
     except (McpError, WorkspaceError) as exc:
         return management_error(exc)
@@ -57,10 +58,11 @@ def list_tokens(project_id: str, request: Request):
 @router.post("/{project_id}/modeling-mcp/tokens")
 async def create_token(project_id: str, request: Request):
     try:
-        meta = access(project_id, request, write=True)
+        meta = access(project_id, request)
         body = await request.json()
         if not isinstance(body, dict):
             raise McpError("INVALID_INPUT", "请求必须是对象")
+        # 鉴权关闭时没有登录用户，以项目所有者的名义签发
         user = getattr(request.state, "user", None) or {"sub": meta.get("owner", "")}
         return JSONResponse(status_code=201, content=tokens.issue(manager(), meta, body, user))
     except (McpError, WorkspaceError) as exc:
@@ -70,7 +72,7 @@ async def create_token(project_id: str, request: Request):
 @router.delete("/{project_id}/modeling-mcp/tokens/{token_id}")
 def delete_token(project_id: str, token_id: str, request: Request):
     try:
-        access(project_id, request, write=True)
+        access(project_id, request)
         return tokens.revoke(manager(), project_id, token_id)
     except (McpError, WorkspaceError) as exc:
         return management_error(exc)

@@ -163,6 +163,9 @@ def _project(manager: WorkspaceManager, *, evaluator: str | None = EVALUATOR_PY)
     (root / "ontology" / "operation" / "查询站点.md").write_text("# 查询站点\n", encoding="utf-8")
     if evaluator is not None:
         (root / "ontology" / "scripts" / "route_eval.py").write_text(evaluator, encoding="utf-8")
+    # 发布与发布体检都基于 HEAD 提交：Operation 文档与评估器先提交（相当于 agent 的阶段提交）
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "test: synthetic operations")
     return pid, root
 
 
@@ -1225,7 +1228,7 @@ def test_routes_return_findings_and_conflict(manager: WorkspaceManager, monkeypa
     from app.routers import projects
 
     monkeypatch.setattr(projects, "workspaces", manager)
-    monkeypatch.setattr(projects, "ensure_access", lambda *args, **kwargs: None)
+    monkeypatch.setattr(projects, "require_owner", lambda *args, **kwargs: None)
     pid, root = _project(manager)
     request = SimpleNamespace(state=SimpleNamespace(user=None), headers={})
 
@@ -1262,7 +1265,7 @@ def test_check_route_reports_draft_without_saving(manager: WorkspaceManager, mon
     from app.routers import projects
 
     monkeypatch.setattr(projects, "workspaces", manager)
-    monkeypatch.setattr(projects, "ensure_access", lambda *args, **kwargs: None)
+    monkeypatch.setattr(projects, "require_owner", lambda *args, **kwargs: None)
     pid, root = _project(manager)
     request = SimpleNamespace(state=SimpleNamespace(user=None), headers={})
     item = _item()

@@ -1,4 +1,4 @@
-"""项目生命周期扩展、成员角色、乐观并发写入、版本标记与知识包导出的测试。"""
+"""项目生命周期扩展、乐观并发写入、版本标记与知识包导出的测试。"""
 
 import io
 import json
@@ -133,27 +133,6 @@ def test_clone_copies_content_but_not_history(manager: WorkspaceManager):
     assert clone["owner"] == "alice"
     assert (clone_root / "ontology" / "object" / "订单.md").read_text(encoding="utf-8") == "# 订单\n"
     assert not (clone_root / ".onto-web.json").read_text(encoding="utf-8").count(meta["id"])
-
-
-def test_role_of_and_write_permission():
-    meta = {"owner": "alice", "members": {"bob": "editor", "carol": "viewer"}}
-    assert WorkspaceManager.role_of(meta, "alice", False) == "owner"
-    assert WorkspaceManager.role_of(meta, "bob", False) == "editor"
-    assert WorkspaceManager.role_of(meta, "carol", False) == "viewer"
-    assert WorkspaceManager.role_of(meta, "dave", False) is None
-    assert WorkspaceManager.role_of(meta, "dave", True) == "admin"
-    assert WorkspaceManager.can_write(meta, "carol", False) is False
-    assert WorkspaceManager.can_write(meta, "bob", False) is True
-    # 无主历史项目对所有人开放为 editor
-    assert WorkspaceManager.role_of({"owner": ""}, "anyone", False) == "editor"
-
-
-def test_set_members_validates_roles(manager: WorkspaceManager):
-    meta = manager.create_project("成员")
-    updated = manager.set_members(meta["id"], {"bob": "viewer"})
-    assert updated["members"] == {"bob": "viewer"}
-    with pytest.raises(WorkspaceError):
-        manager.set_members(meta["id"], {"bob": "boss"})
 
 
 def test_write_file_creates_commit_and_returns_revision(manager: WorkspaceManager):

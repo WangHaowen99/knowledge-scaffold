@@ -161,24 +161,18 @@ def delete_project(
     return _request("DELETE", f"/api/projects/{project_id}", token, body, headers)
 
 
-def sync_members(meta: dict, request) -> dict:
-    """Mirror Onto project roles into the linked Modeling project."""
+def sync_owner(meta: dict, request) -> dict:
+    """Onto 项目只归所有者：清空关联 Modeling 项目的成员表，只留它的负责人。"""
     project_id = _modeling_project_id(meta)
     if not project_id:
         return {"members": []}
     if association_configured() and not configured():
-        return _association_sync_members(meta)
-    role_map = {"editor": "modeler", "viewer": "viewer"}
-    members = [
-        {"username": username, "role": role_map.get(role)}
-        for username, role in (meta.get("members") or {}).items()
-        if role_map.get(role) is not None
-    ]
+        return _association_sync_owner(meta)
     return _request(
         "PUT",
         f"/api/projects/{project_id}/members/sync",
         _request_user_token(request),
-        {"members": members},
+        {"members": []},
     )
 
 
@@ -300,18 +294,12 @@ def _association_provision(meta: dict) -> ProvisionResult:
     return ProvisionResult(meta, project_id, bool(response.get("created", True)))
 
 
-def _association_sync_members(meta: dict) -> dict:
+def _association_sync_owner(meta: dict) -> dict:
     project_id = _modeling_project_id(meta)
     if not project_id:
         return {"members": []}
-    role_map = {"editor": "modeler", "viewer": "viewer"}
-    members = [
-        {"username": username, "role": role_map.get(role)}
-        for username, role in (meta.get("members") or {}).items()
-        if role_map.get(role) is not None
-    ]
     return _association_request(
-        "PUT", f"/api/projects/{project_id}/members/sync", {"members": members},
+        "PUT", f"/api/projects/{project_id}/members/sync", {"members": []},
         str(meta.get("owner") or "").strip(), external_id=f"onto:{meta['id']}",
     )
 
@@ -338,9 +326,9 @@ def ensure_project_association(meta: dict, request, persist) -> dict:
 
     updated = persist(meta["id"], modeling_project_id=provision.modeling_project_id)
     if association_configured() and not configured():
-        _association_sync_members(updated)
+        _association_sync_owner(updated)
     else:
-        sync_members(updated, request)
+        sync_owner(updated, request)
     return {
         "linked": True,
         "configured": True,

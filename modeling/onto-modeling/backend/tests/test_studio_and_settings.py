@@ -66,19 +66,18 @@ def test_raw_error_detection():
 
 
 def test_project_visibility_rules():
-    from app.services.workspace import WorkspaceManager
+    from app.services import ownership
 
     projects = [
         {"id": "a", "owner": "alice"},
         {"id": "b", "owner": "bob"},
         {"id": "c", "owner": ""},  # 历史无主项目
     ]
-    visible = WorkspaceManager.visible_to(projects, "alice", is_admin=False)
-    assert {p["id"] for p in visible} == {"a", "c"}
-    assert len(WorkspaceManager.visible_to(projects, "alice", is_admin=True)) == 3
-    assert WorkspaceManager.can_access({"owner": "bob"}, "alice", False) is False
-    assert WorkspaceManager.can_access({"owner": "bob"}, "alice", True) is True
-    assert WorkspaceManager.can_access({"owner": ""}, "alice", False) is True
+    alice = {"sub": "alice", "role": "user"}
+    assert [p["id"] for p in ownership.list_view(projects, alice)] == ["a"]
+    assert len(ownership.list_view(projects, {"sub": "root", "role": "admin"})) == 3
+    assert ownership.owns({"owner": "bob"}, "alice") is False
+    assert ownership.owns({"owner": ""}, "") is False  # 无主项目谁都不是所有者
 
 
 def test_coverage_metrics_parse(tmp_path: Path):

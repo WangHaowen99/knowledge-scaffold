@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from app.services import modeling_mcp
 
 
-def test_sync_members_maps_onto_roles_and_forwards_bearer(monkeypatch):
+def test_sync_owner_clears_modeling_members_and_forwards_bearer(monkeypatch):
     calls = []
 
     def fake_request(method, path, token, body=None, extra_headers=None):
@@ -14,74 +14,33 @@ def test_sync_members_maps_onto_roles_and_forwards_bearer(monkeypatch):
 
     monkeypatch.setattr(modeling_mcp, "_request", fake_request)
     monkeypatch.setattr(modeling_mcp.config, "MODELING_URL", "https://modeling")
-    request = SimpleNamespace(headers={"authorization": "Bearer admin-token"})
-    result = modeling_mcp.sync_members(
+    request = SimpleNamespace(headers={"authorization": "Bearer owner-token"})
+    # 存量元数据里残留的成员表不再同步：Onto 项目只归所有者，Modeling 侧只留负责人
+    result = modeling_mcp.sync_owner(
         {
             "id": "onto-1",
+            "owner": "alice",
             "modeling_project_id": "modeling-1",
-            "members": {"alice": "editor", "bob": "viewer"},
+            "members": {"bob": "editor"},
         },
         request,
     )
 
-    assert result["members"] == [
-        {"username": "alice", "role": "modeler"},
-        {"username": "bob", "role": "viewer"},
-    ]
+    assert result["members"] == []
     assert calls == [
         (
             "PUT",
             "/api/projects/modeling-1/members/sync",
-            "Bearer admin-token",
-            {"members": result["members"]},
+            "Bearer owner-token",
+            {"members": []},
             None,
         )
     ]
 
 
-def test_admin_member_sync_failure_rolls_back_local_members(monkeypatch):
-    pytest.importorskip('fastapi')
-    from fastapi.responses import JSONResponse
-    from app.routers import projects
-    previous = {
-        "id": "onto-1",
-        "owner": "owner",
-        "members": {"old": "viewer"},
-        "modeling_project_id": "modeling-1",
-    }
-    updated = {**previous, "members": {"new": "editor"}}
-    rollbacks = []
-
-    monkeypatch.setattr(projects, "ensure_owner", lambda project_id, request: None)
-    monkeypatch.setattr(projects.workspaces, "get_project", lambda project_id: previous)
-    monkeypatch.setattr(projects.workspaces, "set_members", lambda project_id, members: updated)
-    monkeypatch.setattr(
-        projects.workspaces,
-        "_update_meta",
-        lambda project_id, **fields: rollbacks.append((project_id, fields)),
-    )
-
-    def fail_sync(meta, request):
-        raise modeling_mcp.ModelingMcpError("同步失败", 502)
-
-    monkeypatch.setattr(modeling_mcp, "sync_members", fail_sync)
-    request = SimpleNamespace(state=SimpleNamespace(user={"sub": "admin", "role": "admin"}))
-
-    response = projects.put_members(
-        "onto-1",
-        projects.MembersBody(members={"new": "editor"}),
-        request,
-    )
-
-    assert isinstance(response, JSONResponse)
-    assert response.status_code == 502
-    assert rollbacks == [("onto-1", {"members": {"old": "viewer"}})]
-
-
-
 def test_ensure_project_association_persists_before_sync_and_retries_sync(monkeypatch):
     request = SimpleNamespace(headers={})
-    meta = {"id": "onto-1", "name": "Synthetic project", "members": {}}
+    meta = {"id": "onto-1", "name": "Synthetic project"}
     persisted = []
     monkeypatch.setattr(modeling_mcp, "configured", lambda: True)
     monkeypatch.setattr(
@@ -104,7 +63,7 @@ def test_ensure_project_association_persists_before_sync_and_retries_sync(monkey
             raise modeling_mcp.ModelingMcpError("暂时不可达", 502)
         return {"members": []}
 
-    monkeypatch.setattr(modeling_mcp, "sync_members", sync)
+    monkeypatch.setattr(modeling_mcp, "sync_owner", sync)
     with pytest.raises(modeling_mcp.ModelingMcpError):
         modeling_mcp.ensure_project_association(meta, request, persist)
 
@@ -117,7 +76,7 @@ def test_ensure_project_association_persists_before_sync_and_retries_sync(monkey
     assert calls == ["modeling-1", "modeling-1"]
 
 
-def test_mcp_lazy_association_is_limited_to_owner_and_admin(monkeypatch):
+def test_mcp_lazy_association_is_limited_to_owner(monkeypatch):
     pytest.importorskip("fastapi")
     from app.routers import projects
 
@@ -134,9 +93,11 @@ def test_mcp_lazy_association_is_limited_to_owner_and_admin(monkeypatch):
     )
     meta = {"id": "onto-1", "owner": "owner"}
     reader = SimpleNamespace(state=SimpleNamespace(user={"sub": "reader", "role": "user"}))
+    admin = SimpleNamespace(state=SimpleNamespace(user={"sub": "root", "role": "admin"}))
     owner = SimpleNamespace(state=SimpleNamespace(user={"sub": "owner", "role": "user"}))
 
     assert projects.ensure_mcp_association(meta, reader) is meta
+    assert projects.ensure_mcp_association(meta, admin) is meta  # 管理员不是所有者，不替人关联
     projects.ensure_mcp_association(meta, owner)
     assert calls == ["onto-1"]
 
@@ -154,12 +115,11 @@ def test_import_association_uses_dedicated_service_header(monkeypatch):
     monkeypatch.setattr(modeling_mcp.config, "MODELING_ASSOCIATION_TOKEN", "service-token")
     persisted = []
     result = modeling_mcp.ensure_project_association(
-        {"id": "onto-1", "name": "Synthetic project", "members": {}},
+        {"id": "onto-1", "name": "Synthetic project"},
         SimpleNamespace(headers={"authorization": "Bearer user-token"}),
         lambda project_id, **fields: persisted.append((project_id, fields)) or {
             "id": project_id,
             "modeling_project_id": fields["modeling_project_id"],
-            "members": {},
         },
     )
 
@@ -173,7 +133,7 @@ def test_import_association_uses_dedicated_service_header(monkeypatch):
     assert calls[0][5] == "https://modeling"
 
 
-def test_dedicated_members_and_cleanup_use_same_service_and_scope(monkeypatch):
+def test_dedicated_owner_sync_and_cleanup_use_same_service_and_scope(monkeypatch):
     calls = []
     monkeypatch.setattr(modeling_mcp.config, "MODELING_URL", "")
     monkeypatch.setattr(modeling_mcp.config, "MODELING_ASSOCIATION_URL", "https://service.example.com")
@@ -186,9 +146,9 @@ def test_dedicated_members_and_cleanup_use_same_service_and_scope(monkeypatch):
 
     monkeypatch.setattr(modeling_mcp, "_request", capture)
     meta = {"id": "synthetic-project", "modeling_project_id": "synthetic-modeling",
-            "owner": "operator_a", "members": {"operator_b": "viewer"}}
+            "owner": "operator_a"}
     request = SimpleNamespace(headers={})
-    modeling_mcp.sync_members(meta, request)
+    modeling_mcp.sync_owner(meta, request)
     modeling_mcp.delete_project(meta, request, operation="project_delete")
     # Persisted retries have no user session or owner metadata.
     modeling_mcp.delete_project({"id": meta["id"], "modeling_project_id": meta["modeling_project_id"]},
@@ -198,7 +158,8 @@ def test_dedicated_members_and_cleanup_use_same_service_and_scope(monkeypatch):
         assert args[2] == ""
         assert kwargs["base_url"] == "https://service.example.com"
         assert kwargs["extra_headers"]["X-Onto-Project-Id"] == "onto:synthetic-project"
-    assert calls[0][0][3] == {"members": [{"username": "operator_b", "role": "viewer"}]}
+    assert calls[0][0][3] == {"members": []}
+    assert calls[0][1]["extra_headers"]["X-Onto-Username"] == "operator_a"
     assert calls[2][0][3]["external_id"] == "onto:synthetic-project"
     assert calls[2][0][3]["cleanup_operation"] == "project_delete"
     assert "X-Onto-Username" not in calls[2][1]["extra_headers"]
@@ -212,7 +173,7 @@ def test_global_configuration_keeps_legacy_user_auth(monkeypatch):
     monkeypatch.setattr(modeling_mcp, "_request", lambda *a, **k: calls.append((a, k)) or {})
     meta = {"id": "synthetic-project", "modeling_project_id": "synthetic-modeling"}
     request = SimpleNamespace(headers={"authorization": "Bearer synthetic-user-token"})
-    modeling_mcp.sync_members(meta, request)
+    modeling_mcp.sync_owner(meta, request)
     modeling_mcp.status(meta, request)
     modeling_mcp.delete_project(meta, request)
     for args, kwargs in calls:
@@ -262,7 +223,7 @@ def test_global_admin_association_preserves_owner_and_project_scope(monkeypatch,
     monkeypatch.setattr(modeling_mcp.config, "MODELING_URL", "https://modeling.example.com")
     calls = []
     meta = {"id": "synthetic-project", "name": "Synthetic project",
-            "owner": "operator_a", "members": {}}
+            "owner": "operator_a"}
     request = SimpleNamespace(
         headers={"authorization": "Bearer synthetic-admin-token"},
         state=SimpleNamespace(user={"sub": "operator_admin", "role": "admin"}),
