@@ -10,6 +10,7 @@ import { ShellP } from '../../shell/Shell.jsx';
 import {
   Button, Drawer, Field, Icon, Modal, Ring, Seg, SegBar, St, cx, useOutside,
 } from '../../ui/index.jsx';
+import { latestFlowchartArtifact } from '../flowchart/flowchartDialog.js';
 import { cellClass } from '../projects/projectCard.js';
 import { AutobuildBar, useAutobuild } from './autobuild.jsx';
 import { ActionsCtx, ContextPanel, QueueCard } from './cards.jsx';
@@ -408,10 +409,20 @@ export default function WorkbenchPage({ route }) {
   useEffect(() => { api.commandCatalog(pid).then(setCatalog).catch(() => {}); }, [api, pid]);
   useEffect(() => { if (cid) api.suggestions(pid, cid).then(setSuggestions).catch(() => {}); }, [api, pid, cid]);
   useEffect(() => { if (menu === 'ctx') api.projectUsage(pid).then(setUsage).catch(() => {}); }, [api, pid, menu]);
-  // flowchart 页（设计稿）= 工作台 + 打开的流程图弹窗；地址带 key 时打开那一张
+  // flowchart 页（设计稿）= 工作台 + 打开的流程图弹窗；地址带 key 时打开那一张，
+  // 不带时等对话历史到了，打开最近一张流程图卡的那张图；对话里没有就交给弹窗取 AR-02 的第一张
+  const fcPicked = useRef(null);
   useEffect(() => {
-    if (route.page === 'flowchart') setFlowchart(route.query?.key ? { type: 'diagram.flowchart', key: route.query.key } : null);
-  }, [route.page, route.query?.key]);
+    if (route.page !== 'flowchart') { fcPicked.current = null; return; }
+    const want = route.query?.key || null;
+    if (want) {
+      if (fcPicked.current !== want) { fcPicked.current = want; setFlowchart({ type: 'diagram.flowchart', key: want }); }
+      return;
+    }
+    if (fcPicked.current || !state.lastSeq) return;
+    fcPicked.current = '*';
+    setFlowchart(latestFlowchartArtifact(state) || { type: 'diagram.flowchart', key: null });
+  }, [route.page, route.query?.key, state]);
 
   // 新内容到达时，停在底部附近就跟着滚到底
   const stick = useRef(true);

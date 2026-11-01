@@ -71,10 +71,28 @@ export function FlowchartCard({ card, locked }) {
   // 工作台里双击就地打开弹窗；说明页等没有弹窗宿主的地方跳到 flowchart 页
   const open = () => (openFlowchart ? openFlowchart(card.artifact) : navigate(pagePath('flowchart', pid), card.artifact ? { key: card.artifact.key } : undefined));
   const isLocked = locked || card.locked;
+  const actLabel = isLocked ? '打开查看' : '打开编辑';
+  // 不带 eyebrow 的卡（设计稿 flowchart 页）：标题后跟状态，缩略图下面一行说明和按钮
+  if (!card.eyebrow) {
+    return (
+      <CC
+        icon="branch" tone="indigo" title={card.title} chip={<St k={card.state === 'confirmed' ? 'confirmed' : 'draft'} sm />} sub={card.subtitle}
+        dbl onDoubleClick={open}
+        foot={(
+          <>
+            <span className="xs muted grow">{isLocked ? '在助手写入范围内，确认生效或撤回前只读' : '双击在弹窗里编辑；保存后和 Studio 里是同一份'}</span>
+            <Button size="xs" icon={isLocked ? 'lock' : 'edit'} onClick={open}>{actLabel}</Button>
+          </>
+        )}
+      >
+        <FlowThumb thumbnail={card.thumbnail} height={150} />
+      </CC>
+    );
+  }
   return (
     <CC
       icon="branch" tone="indigo" eyebrow={card.eyebrow} title={card.title} sub={card.subtitle} dbl hint={false} onDoubleClick={open}
-      acts={<Button size="sm" kind="ghost" icon={isLocked ? 'lock' : 'edit'} onClick={open}>{isLocked ? '打开查看' : '打开编辑'}</Button>}
+      acts={<Button size="sm" kind="ghost" icon={isLocked ? 'lock' : 'edit'} onClick={open}>{actLabel}</Button>}
     >
       <div className="wx-cv">
         <FlowThumb thumbnail={card.thumbnail} height={140} />
