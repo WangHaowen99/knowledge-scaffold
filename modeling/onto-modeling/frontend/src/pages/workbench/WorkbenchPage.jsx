@@ -12,7 +12,7 @@ import {
 } from '../../ui/index.jsx';
 import { latestFlowchartArtifact } from '../flowchart/flowchartDialog.js';
 import { cellClass } from '../projects/projectCard.js';
-import { AutobuildBar, useAutobuild } from './autobuild.jsx';
+import { AutobuildBar, AutobuildCtx, useAutobuild } from './autobuild.jsx';
 import { ActionsCtx, ContextPanel, QueueCard } from './cards.jsx';
 import { WbCtx } from './parts.jsx';
 import { Timeline } from './Timeline.jsx';
@@ -240,7 +240,7 @@ function KnowledgeDialog({ item, onClose }) {
   );
 }
 
-function Composer({ pid, cid, apiRef, st, buildMode, autobuild, onSend, catalog }) {
+function Composer({ pid, cid, apiRef, st, buildMode, autobuild, modeLabel, onSend, catalog }) {
   const { api, services } = useApp();
   const [text, setText] = useState('');
   const [atts, setAtts] = useState([]);
@@ -327,7 +327,7 @@ function Composer({ pid, cid, apiRef, st, buildMode, autobuild, onSend, catalog 
         <span className="wx-tb" title="命令" onClick={() => setPop(pop === 'cmd' ? null : 'cmd')}><Icon name="cmd" size={16} /></span>
         <span className="sp" />
         <span className={cx('wx-mode', buildMode === 'L4' && 'l4')} onClick={() => navigate(pagePath('proj-settings', pid), { section: 'build-mode' })} data-pop="构建方式在「项目设置 › 构建方式」里改">
-          <i />{buildMode === 'L4' ? (autobuild ? '自主构建中' : '自主构建') : '陪伴建模'}
+          <i />{modeLabel || (buildMode === 'L4' ? (autobuild ? '自主构建中' : '自主构建') : '陪伴建模')}
         </span>
         <span className="wx-send" title="发送" onClick={send} style={st.disabled || uploading ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}><Icon name="arrow" size={16} /></span>
       </div>
@@ -399,7 +399,7 @@ export default function WorkbenchPage({ route }) {
   const [drag, setDrag] = useState(false);
   const [suggestions, setSuggestions] = useState(null);
   const [flowchart, setFlowchart] = useState(null);
-  const ab = useAutobuild({ pid, meta, cid, state });
+  const ab = useAutobuild({ pid, cid, list });
   const mainRef = useRef(null);
   const headRef = useRef(null);
   const comp = useRef({});
@@ -441,10 +441,11 @@ export default function WorkbenchPage({ route }) {
   }, [api, pid, cid]);
 
   useEffect(() => {
-    const h = (e) => { if (e.key === 'Escape' && running && !document.querySelector('.overlay,.drawer')) interrupt(); };
+    // 自主构建运行中用运行条上的暂停、停在安全点控制，Esc 不打断
+    const h = (e) => { if (e.key === 'Escape' && running && !ab.running && !document.querySelector('.overlay,.drawer')) interrupt(); };
     document.addEventListener('keydown', h);
     return () => document.removeEventListener('keydown', h);
-  }, [running, interrupt]);
+  }, [running, ab.running, interrupt]);
 
   const fail = (e) => toast(errorText(e), 'alert');
   const actions = useMemo(() => ({
@@ -485,7 +486,7 @@ export default function WorkbenchPage({ route }) {
         case 'show_changes': rounds.current.get(a.changeset_id)?.(); break;
         case 'start_node': await api.startNode(pid, a.node_id, { slice_id: a.slice_id, origin: { page: 'wb-l2', label: '下一步建议' } }); break;
         case 'navigate': navigate(pagePath(a.page, pid), a.params); break;
-        case 'autobuild': navigate(pagePath('l4-run', pid)); break;
+        case 'autobuild': await ab.act(a.op); break;
         case 'clear_input': comp.current.clear?.(); break;
         default: break;
       }
@@ -506,9 +507,10 @@ export default function WorkbenchPage({ route }) {
   };
 
   const sug = state.suggestions || suggestions;
-  const lockInfo = scope && scope.state !== 'none' ? readonlyInfo(scope) : null;
-  // 运行中、排队时顶栏多了状态，「新资料」先收起，避免挤出顶栏
-  const busyHead = ['running', 'connecting', 'queued', 'error'].includes(state.session.state);
+  // 自主构建正在做的那一片由运行条和运行详情说明，顶栏不再放锁标记
+  const lockInfo = scope && scope.state !== 'none' && !(ab.active && scope.state === 'autobuild_slice') ? readonlyInfo(scope) : null;
+  // 运行中、排队时顶栏多了状态，「新资料」先收起，避免挤出顶栏；自主构建的状态在运行条上
+  const busyHead = !ab.active && ['running', 'connecting', 'queued', 'error'].includes(state.session.state);
   const ctx = state.context;
   const ctxPct = Math.round(ctx?.pct ?? 0);
   const notice = (flow?.notices || []).find((n) => n.kind === 'new_materials');
@@ -532,7 +534,7 @@ export default function WorkbenchPage({ route }) {
       </div>
       {flow ? <Track flow={flow} onOpen={() => setDrawer(true)} /> : <span />}
       <div className="wx-acts">
-        <StateChip session={state.session} queue={state.queue} />
+        {ab.active ? null : <StateChip session={state.session} queue={state.queue} />}
         {lockInfo ? (
           <span
             className="wx-ib nt"
@@ -571,6 +573,7 @@ export default function WorkbenchPage({ route }) {
   return (
     <ShellP active="wb-l2" flush nosub>
       <ActionsCtx.Provider value={actions}>
+        <AutobuildCtx.Provider value={ab}>
         <WbCtx.Provider value={wbCtx}>
           <div
             className="wbc"
@@ -591,7 +594,7 @@ export default function WorkbenchPage({ route }) {
             <div className="wbc-foot">
               <div className="in">
                 <SuggestionBar sug={sug} onAction={onSuggestion} onAll={() => comp.current.setText?.('/')} />
-                <Composer pid={pid} cid={cid} apiRef={comp} st={st} buildMode={meta?.build_mode} autobuild={ab.running} onSend={send} catalog={catalog} />
+                <Composer pid={pid} cid={cid} apiRef={comp} st={st} buildMode={ab.active ? 'L4' : meta?.build_mode} autobuild={ab.running} modeLabel={ab.active ? (ab.ended ? '自主构建 · 已结束' : ab.paused ? '自主构建 · 已暂停' : '自主构建中') : null} onSend={send} catalog={catalog} />
               </div>
             </div>
             {drag ? <div className="wb-dropmask"><Icon name="upload" size={24} /><b>松开以添加附件</b><span className="xs muted">Markdown、Word、Excel、PDF、Drawio、TXT · 单个不超过 20 MB</span></div> : null}
@@ -610,6 +613,7 @@ export default function WorkbenchPage({ route }) {
             </Suspense>
           ) : null}
         </WbCtx.Provider>
+        </AutobuildCtx.Provider>
       </ActionsCtx.Provider>
     </ShellP>
   );

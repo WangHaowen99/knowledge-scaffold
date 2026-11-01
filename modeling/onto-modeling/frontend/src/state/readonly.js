@@ -64,7 +64,7 @@ export function readonlyInfo(lock, target) {
   return {
     state: st,
     label: LOCK_LABEL[st],
-    text: lock.slice ? `自主构建正在做「${lock.slice.name}」，这一片自动合入后才能编辑` : '自主构建正在改这部分内容，这一片自动合入后才能编辑',
+    text: lock.slice ? `自主构建正在做「${lock.slice.name}」，到这一片自动合入为止只读；范围外的条目照常编辑` : '自主构建正在改这部分内容，到这一片自动合入为止只读',
     actions: [{ kind: 'run', label: '查看运行' }],
   };
 }
@@ -85,7 +85,7 @@ export function composerState({ sessionState, archived, maintenance, autobuildRu
   if (maintenance?.active && maintenance.mode === 'read_only') {
     return { disabled: true, placeholder: maintenance.message || '平台正在维护，暂时只能查看' };
   }
-  if (autobuildRunning) return { disabled: false, placeholder: '补充说明不打断运行，会在下一个安全点送达', delivery: 'deferred' };
+  if (autobuildRunning) return { disabled: false, placeholder: '补充说明，不打断运行；下一步开始前读取', delivery: 'deferred' };
   if (sessionState === 'running' || sessionState === 'connecting') {
     return { disabled: false, placeholder: '运行中也能补充说明，这一步结束后送达', delivery: 'deferred' };
   }
