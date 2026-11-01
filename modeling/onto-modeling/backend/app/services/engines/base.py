@@ -87,25 +87,56 @@ class EngineContext:
     conversation_id: str = "default"
     # 本引擎实例使用谁的模型配置：用户名 = 该用户的个人 Key；"" = 管理员配置
     model_owner: str = ""
+    # 本项目生效中的装配目录（项目 .claude 指向的 <数据目录>/assembled/<哈希>，方案 B15、D6）：
+    # 规则、命令、守卫都从这里读；None = 旧工作区，没有装配目录
+    assembly_dir: Path | None = None
+
+
+EventObserver = Callable[[dict], None]
+
+
+class ObservableEngine:
+    """引擎事件的观察入口（方案 B15 add_observer）：插件观察会话、可观测采集用。
+
+    观察者在引擎产出每个平台事件时同步调用，出错只吞掉，不影响会话。
+    """
+
+    def add_observer(self, observer: EventObserver) -> None:
+        observers = self.__dict__.setdefault("_observers", [])
+        if observer not in observers:
+            observers.append(observer)
+
+    def _notify(self, event: dict) -> None:
+        for observer in list(self.__dict__.get("_observers") or []):
+            try:
+                observer(event)
+            except Exception:  # noqa: BLE001 - 观察者出错不影响会话
+                pass
 
 
 class AgentEngine(Protocol):
-    """引擎实现协议。
+    """引擎实现协议（两个引擎共用，方案 B15）。
 
     实例与一次子进程/运行时生命周期一一对应，回收后重建实例
-    （resume token 负责上下文续接）。
+    （resume token 负责上下文续接）。配置来自装配结果（ctx.assembly_dir）；
+    会话配置指纹由宿主统一算（session_host/fingerprint.py），引擎只提供自己的模型部分。
     """
 
     name: str
     client: Any  # 底层原始客户端；None = 未连接（admin 连接态与测试观察点）
     resume_attempted: bool
 
+    @classmethod
+    def available(cls) -> bool:
+        """当前部署里这个引擎能不能用（运行时装没装）。"""
+        ...
+
     async def connect(self) -> bool:
         """建立运行时连接；返回是否带 resume 续接。失败抛异常。"""
         ...
 
-    async def send(self, text: str) -> None:
-        """向运行中的会话投递一条用户消息。"""
+    async def send(self, text: str, context: str | None = None) -> None:
+        """向运行中的会话投递一条用户消息；context 是宿主在两轮之间注入的上下文（不进会话历史）。"""
         ...
 
     def events(self) -> AsyncIterator[dict]:
@@ -121,8 +152,20 @@ class AgentEngine(Protocol):
         """断开运行时（保留续接点）。幂等。"""
         ...
 
+    async def kill(self) -> None:
+        """硬终止：运行时悬死时不等它应答，直接结束（续接点保留）。"""
+        ...
+
+    def model_fingerprint(self) -> str:
+        """当前模型配置（网关、Key、模型名、上下文参数）的摘要，计入宿主的会话指纹。"""
+        ...
+
     def config_stale(self) -> bool:
-        """模型配置是否已变更（会话层据此断开重连使新配置生效）。"""
+        """模型配置是否已在连接后变更（兼容旧调用；宿主改用会话指纹判断）。"""
+        ...
+
+    def add_observer(self, observer: EventObserver) -> None:
+        """登记事件观察者（见 ObservableEngine）。"""
         ...
 
     def context_limits(self) -> tuple[int | None, int | None]:

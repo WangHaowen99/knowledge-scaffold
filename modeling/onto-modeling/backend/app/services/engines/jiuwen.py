@@ -39,7 +39,7 @@ from typing import Any
 
 from ... import config
 from ..session_host import injection
-from .base import FRIENDLY_ERROR, EngineContext, config_error_for, safe_json
+from .base import FRIENDLY_ERROR, EngineContext, ObservableEngine, config_error_for, safe_json
 from .jiuwen_progress import JiuwenProgressTracker, build_progress_rail, progress_scope
 
 JIUWEN_AVAILABLE = importlib.util.find_spec("openjiuwen") is not None
@@ -601,7 +601,7 @@ def _history_to_messages(events: list[dict], char_budget: int = _REPLAY_CHAR_BUD
     ]
 
 
-class JiuwenEngine:
+class JiuwenEngine(ObservableEngine):
     """openjiuwen DeepAgent 引擎实现（AgentEngine 协议）。"""
 
     name = "jiuwen"
@@ -626,7 +626,10 @@ class JiuwenEngine:
         from .jiuwen_assets import JiuwenAssetLoader
 
         # 读项目 .claude 指向的装配目录（方案 D6）：命令、规则、守卫都按本项目锁定的版本
-        self._loader = JiuwenAssetLoader.for_workspace(ctx.cwd)
+        self._loader = (
+            JiuwenAssetLoader(dotclaude=ctx.assembly_dir) if ctx.assembly_dir is not None
+            else JiuwenAssetLoader.for_workspace(ctx.cwd)
+        )
         self._fingerprint = ""
         self._tracker: Any = None
         self._closed = False
@@ -787,8 +790,11 @@ class JiuwenEngine:
         _bind_subagent_workspace_rotation(agent, gp_spec, subagent_root)
         return agent, tracker
 
-    async def send(self, text: str) -> None:
-        # 存用户原文：命令展开与注入等真正送达模型时再做，积压的消息拿到的是那时的阶段
+    async def send(self, text: str, context: str | None = None) -> None:
+        # 存用户原文：命令展开与注入等真正送达模型时再做，积压的消息拿到的是那时的阶段。
+        # 宿主显式给的上下文（P2 两引擎统一注入）放在原文前，同样不进会话历史
+        if context:
+            text = injection.compose_query(text, context)
         if self._turn_task and not self._turn_task.done():
             self._buffered.append(text)
             return
@@ -853,10 +859,11 @@ class JiuwenEngine:
         """硬终止：取消轮任务并释放实例（阻塞在 interaction 等待中的轮也能停）。"""
         await self.disconnect()
 
+    def model_fingerprint(self) -> str:
+        return _fingerprint(model_config(self._ctx.model_owner))
+
     def config_stale(self) -> bool:
-        return bool(self._fingerprint) and self._fingerprint != _fingerprint(
-            model_config(self._ctx.model_owner)
-        )
+        return bool(self._fingerprint) and self._fingerprint != self.model_fingerprint()
 
     def context_limits(self) -> tuple[int | None, int | None]:
         return self._context_window, self._compact_at
@@ -866,6 +873,7 @@ class JiuwenEngine:
     async def events(self):
         while True:
             event = await self._queue.get()
+            self._notify(event)
             yield event
             if event.get("type") == "_engine_end":
                 return

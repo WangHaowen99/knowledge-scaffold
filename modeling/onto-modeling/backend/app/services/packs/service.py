@@ -65,8 +65,8 @@ def prepare_for_message(manager, project_id: str, *, follow: bool = True) -> dic
     装配失败不挡消息：保持原装配目录，错误记进 `.onto/run/assembly.json`，PL-11 能看到。
     """
     runtime = manager.packs
+    root = manager.project_root(project_id)  # 项目不存在直接抛错，不为它建锁文件
     with manager._project_lock(project_id):
-        root = manager.project_root(project_id)
         if runtime.core_version() is None:
             return {}
         _, wrote = runtime.ensure_lock(root)

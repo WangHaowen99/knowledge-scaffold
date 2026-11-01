@@ -43,6 +43,8 @@ EVENT_TYPES = {
     "session_started": "session.started",
     "session_error": "session.error",
     "session_interrupted": "session.interrupted",
+    "session_config_pending": "session.config_pending",
+    "session_reconnected": "session.reconnected",
     "queue_position": "session.queued",
     "context_usage": "context.usage",
     "context_compacted": "context.compacted",

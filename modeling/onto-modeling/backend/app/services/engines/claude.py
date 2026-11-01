@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ... import config
-from .base import FRIENDLY_ERROR, EngineContext, config_error_for, safe_json
+from .base import FRIENDLY_ERROR, EngineContext, ObservableEngine, config_error_for, safe_json
 
 _RAW_ERROR_PATTERN = None  # 延迟编译
 _CONFIG_ERROR_PATTERN = None
@@ -133,6 +133,16 @@ def _permission_mode() -> str:
         return runtime_settings.permission_mode()
     except Exception:
         return config.PERMISSION_MODE
+
+
+def mcp_fingerprint_source(project_id: str) -> dict:
+    """会话指纹的 MCP 部分（只取摘要，不落盘、不外传）。"""
+    return _mcp_servers(project_id)
+
+
+def current_permission_mode() -> str:
+    """会话指纹的权限模式部分。"""
+    return _permission_mode()
 
 
 def _env_fingerprint(owner: str = "") -> str:
@@ -413,7 +423,7 @@ def _tool_result_excerpt(content: Any, limit: int = 400) -> str:
     return text[:limit] + ("…" if len(text) > limit else "")
 
 
-class ClaudeEngine:
+class ClaudeEngine(ObservableEngine):
     """Claude Agent SDK 引擎实现（AgentEngine 协议）。"""
 
     name = "claude"
@@ -509,7 +519,11 @@ class ClaudeEngine:
             self._limits_task.cancel()
         self._limits_task = None
 
-    async def send(self, text: str) -> None:
+    async def send(self, text: str, context: str | None = None) -> None:
+        if context:
+            from ..session_host import injection
+
+            text = injection.compose_query(text, context)
         await self.client.query(text)
 
     async def interrupt(self) -> None:
@@ -542,10 +556,11 @@ class ClaudeEngine:
         except Exception:
             pass
 
+    def model_fingerprint(self) -> str:
+        return _env_fingerprint(self._ctx.model_owner)
+
     def config_stale(self) -> bool:
-        return bool(self._fingerprint) and self._fingerprint != _env_fingerprint(
-            self._ctx.model_owner
-        )
+        return bool(self._fingerprint) and self._fingerprint != self.model_fingerprint()
 
     def context_limits(self) -> tuple[int | None, int | None]:
         return self._context_window, self._compact_at
@@ -553,6 +568,11 @@ class ClaudeEngine:
     # ---- 事件流 ----
 
     async def events(self):
+        async for event in self._events():
+            self._notify(event)
+            yield event
+
+    async def _events(self):
         try:
             async for message in self.client.receive_messages():
                 self._received_any = True

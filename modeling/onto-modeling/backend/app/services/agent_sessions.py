@@ -26,6 +26,7 @@ from . import conversation_store, error_log, personal_model_settings
 from .conversation_store import DEFAULT_ID as DEFAULT_CONVERSATION
 from .engines import EngineContext, get_engine_class
 from .engines.base import CONFIG_ERROR, FRIENDLY_ERROR, safe_json as _safe_json
+from .session_host import fingerprint as _fingerprint
 
 # 兼容重导出：既有测试与调用方从本模块取这些符号（引擎实现已移至 engines/claude.py）
 from .engines.claude import (  # noqa: F401
@@ -244,6 +245,9 @@ class Session:
     turns_in_flight: int = 0
     # 运行中模型配置变了：等手头的轮次都出 result 再断开，下一条消息按新配置重连
     reload_pending: bool = False
+    # 引擎连上时的会话配置指纹（session_host/fingerprint.py）与等待生效的变化项
+    fingerprint: Any = None
+    pending_changes: list = field(default_factory=list)
 
     @property
     def client(self) -> Any:
@@ -564,17 +568,32 @@ class SessionManager:
         session.last_activity = time.time()
         if session.state != "running":
             session.round_base_commit = await asyncio.to_thread(_git_head, cwd)
-        # 管理员更新模型配置后，旧引擎实例仍带着旧环境：配置指纹不一致时
-        # 断开重连（resume 续接上下文），让新网关/Key 生效。正在跑的一轮不能切断：
+        # 会话配置指纹（模型、归属、装配、流程、MCP、权限模式）变了：断开重连（resume 续接上下文），
+        # 让新配置、新装配目录在这条消息生效（方案 B2、详设 8.1 第 4 步）。正在跑的一轮不能切断：
         # 只记待重载，这条消息仍交给旧引擎，等手头的轮次都出 result 再断开（_read_loop）
-        if session.engine is not None and session.engine.config_stale():
-            if session.state == "running":
-                session.reload_pending = True
-            else:
-                if session.reader_task:
-                    session.reader_task.cancel()
-                await session.engine.disconnect()
-                session.engine = None
+        if session.engine is not None:
+            if session.state != "running":
+                # 没有正在跑的一轮：先跟随通道、按锁文件装配并切换 .claude（只动纯数据包时不必重连）
+                await asyncio.to_thread(_fingerprint.prepare, session.project_id)
+            changes = await asyncio.to_thread(
+                _fingerprint.changes, session.engine, session.project_id, session.model_owner, session.fingerprint
+            )
+            if changes:
+                session.pending_changes = changes
+                if session.state == "running":
+                    if not session.reload_pending:
+                        session.broadcast({
+                            "type": "session_config_pending",
+                            "changes": _fingerprint.describe(changes),
+                            "effective": "next_message",
+                            "detail_link": None,
+                        })
+                    session.reload_pending = True
+                else:
+                    if session.reader_task:
+                        session.reader_task.cancel()
+                    await session.engine.disconnect()
+                    session.engine = None
         session.broadcast({"type": "user_message", "text": text})
         if not session.discarded:  # 已删除项目再写标题会重建出会话索引
             conversation_store.note_message(
@@ -672,12 +691,16 @@ class SessionManager:
             load_history=lambda: list(session.events),
             conversation_id=conversation_id,
             model_owner=session.model_owner,
+            assembly_dir=_assembly_dir(session.cwd),
         )
         return engine_cls(ctx)
 
     async def _connect(self, session: Session) -> None:
         project_id = session.project_id
+        started_at = time.monotonic()
         try:
+            # 连接前（没有正在跑的一轮）按锁文件装配并原子切换 .claude，新实例读到的就是新版本
+            await asyncio.to_thread(_fingerprint.prepare, project_id)
             engine = self._make_engine(session)
             # 连接前写：连接时的 SessionStart 等钩子就要按新实例认锁
             _write_engine_marker(
@@ -693,7 +716,20 @@ class SessionManager:
             session.engine = engine
             session.turns_in_flight = 0
             session.reload_pending = False
+            session.fingerprint = await asyncio.to_thread(
+                _fingerprint.compute, engine, project_id, session.model_owner
+            )
             session.reader_task = asyncio.create_task(self._read_loop(session))
+            if session.pending_changes:
+                # 配置变化后的这次重连：告诉前端已切到新版本（契约 EC-07）
+                session.broadcast({
+                    "type": "session_reconnected",
+                    "reason": "config_changed",
+                    "changes": list(session.pending_changes),
+                    "context_kept": bool(resumed),
+                    "duration_ms": int((time.monotonic() - started_at) * 1000),
+                })
+                session.pending_changes = []
             started = {
                 "type": "session_started",
                 "session_id": session.id,
@@ -1144,6 +1180,17 @@ def usage_summary(project_id: str) -> dict:
 # 而不是进程号：后端是不是 1 号进程（容器加不加 init）、引擎是 CLI 子进程还是进程内
 # 运行，都不影响「同一会话可续写锁、换了实例旧锁即过期」的判断
 ENGINE_MARKER = Path(".onto") / "run" / "engine.json"
+
+
+def _assembly_dir(cwd: Path | None) -> Path | None:
+    """项目 .claude 指向的装配目录（<数据目录>/assembled/<哈希>）；不是装配目录返回 None。"""
+    if cwd is None:
+        return None
+    link = Path(cwd) / ".claude"
+    if not os.path.lexists(link):
+        return None
+    real = Path(os.path.realpath(link))
+    return real if real.parent.name == "assembled" and (real / "MANIFEST.json").is_file() else None
 
 
 def _write_engine_marker(cwd: Path | None, engine: str, conversation_id: str) -> None:

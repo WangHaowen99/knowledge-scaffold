@@ -8,7 +8,7 @@
 设计见 docs/openjiuwen-engine-migration.md §3.1。
 """
 
-from .base import CONFIG_ERROR, FRIENDLY_ERROR, AgentEngine, EngineContext
+from .base import CONFIG_ERROR, FRIENDLY_ERROR, AgentEngine, EngineContext, ObservableEngine
 
 DEFAULT_ENGINE = "claude"
 # 可选引擎名的唯一来源：接口校验、默认引擎设置与可用性探测都以此为准
@@ -40,6 +40,7 @@ def get_engine_class(name: str = DEFAULT_ENGINE):
 __all__ = [
     "AgentEngine",
     "EngineContext",
+    "ObservableEngine",
     "FRIENDLY_ERROR",
     "CONFIG_ERROR",
     "DEFAULT_ENGINE",
