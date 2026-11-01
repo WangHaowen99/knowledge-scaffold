@@ -19,7 +19,7 @@ import uuid
 from pathlib import Path
 
 from . import manifest as mf
-from .manifest import CHECKSUMS_FILE, MANIFEST_FILE, Manifest, ManifestError
+from .manifest import CHECKSUMS_FILE, MANIFEST_FILE, Manifest
 
 CHANNELS = ("stable", "beta")
 _IGNORED_NAMES = {"__pycache__", ".DS_Store"}

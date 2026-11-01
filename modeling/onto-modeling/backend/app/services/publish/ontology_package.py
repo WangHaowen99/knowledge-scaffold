@@ -15,9 +15,6 @@ from pathlib import Path
 from .. import package_mapping, package_operations, solver_contract
 from ..document_metadata import report_name
 from ..solver.service import solver_check_at
-from ..toolkit import script_argument_shape as _script_argument_shape
-from ..toolkit import script_contract as _script_contract
-from ..toolkit import script_descriptor as _script_descriptor
 from ..workspace.errors import WorkspaceError
 from ..workspace.layout import _WIKILINK_RE, _strip_frontmatter
 from .layout import package_script_filename
@@ -120,6 +117,18 @@ def _manifest(path: Path, contracts, binding: dict, allow_unbound: bool) -> Mani
     )
 
 
+def _contract_modules(src: ReleaseSource):
+    """本项目锁定版本的脚本契约、描述符与入参形态实现；项目没有装配目录时用镜像版本。"""
+    from ..packs import contracts
+
+    project_root = Path(src.state_root).parent
+    return (
+        contracts.module_for(project_root, "script_contract"),
+        contracts.module_for(project_root, "script_descriptor"),
+        contracts.module_for(project_root, "script_argument_shape"),
+    )
+
+
 def resolve_binding(src: ReleaseSource) -> dict:
     """对象 ↔ 真实数据表的绑定（来源Sheet、`# 字段` 段与 mappings 三处同一份结果）。"""
     return src.binding or package_mapping.resolve_object_tables(
@@ -180,6 +189,8 @@ class OntologyPackageAdapter:
         meta = src.meta
         version = src.version
         source_commit = src.commit
+        # 契约实现按本项目锁定的版本（方案 A16、详设 8.1 第 5 步）：和 agent 在工作区里跑的是同一份
+        _script_contract, _script_descriptor, _script_argument_shape = _contract_modules(src)
         graph = src.variant == VARIANT_GRAPH
         allow_unbound = src.allow_unbound
         draft = src.draft

@@ -30,10 +30,8 @@ from __future__ import annotations
 import ast
 import copy
 import hashlib
-import importlib.util
 import json
 import re
-import sys
 import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -43,7 +41,6 @@ from typing import Any
 import yaml
 from jsonschema import Draft202012Validator
 
-from .. import config
 from . import package_mapping
 
 SOLVER_DIR = "ontology/solver"
@@ -125,16 +122,13 @@ _BINDER_SCHEMA_TYPES = frozenset({"string", "integer", "number", "boolean", "obj
 
 
 def _load_evaluator_contract():
-    """评估器规则以 workspace-toolkit/scripts/solver_evaluator_contract.py 为单一事实源。
+    """评估器规则以工具箱的 solver_evaluator_contract.py 为单一事实源，经共享契约库加载（方案 A16）。
 
     /ontology-solver-evaluator 的自检与这里的契约检查共用同一份实现，避免两处规则漂移。
     """
-    path = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts" / "solver_evaluator_contract.py"
-    spec = importlib.util.spec_from_file_location("onto_workspace_solver_evaluator_contract", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    from .packs import contracts
+
+    return contracts.default().load("solver_evaluator_contract")
 
 
 _evaluator_contract = _load_evaluator_contract()

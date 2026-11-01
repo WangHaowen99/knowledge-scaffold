@@ -7,21 +7,14 @@ onto-modeling 主容器不挂 jiuwenbox socket，连接、检测都由脚本验�
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from datetime import datetime
-from pathlib import Path
-
-from .. import config
 
 
 def _load_client():
-    path = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts" / "jiuwenbox_client.py"
-    spec = importlib.util.spec_from_file_location("onto_workspace_jiuwenbox_client", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    # 经共享契约库加载（方案 A16）：与脚本运行验证 script_verify.py 用同一份实现
+    from .packs import contracts
+
+    return contracts.default().load("jiuwenbox_client")
 
 
 client = _load_client()

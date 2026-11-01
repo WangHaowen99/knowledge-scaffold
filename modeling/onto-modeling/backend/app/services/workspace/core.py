@@ -7,14 +7,12 @@ from __future__ import annotations
 
 import errno
 import hashlib
-import importlib.util
 import json
 import logging
 import os
 import re
 import shutil
 import stat
-import sys
 import tempfile
 import threading
 import time
@@ -27,7 +25,6 @@ try:
 except ImportError:  # pragma: no cover - Windows development fallback
     fcntl = None
 
-from ... import config
 from ..name_conflict import MAX_DISPLAY_NAME_LENGTH, detect_name_conflict
 from .errors import NameConflictError, WorkspaceError
 from .files import FilesMixin
@@ -61,21 +58,15 @@ _PROJECT_LOCKS_GUARD = threading.Lock()
 _NAME_CLAIM_LOCK = threading.Lock()
 
 
-def _load_research_review():
-    """资料分析验收状态以 workspace-toolkit/scripts/research_review.py 为单一事实源。
+def _research_review_for(root: Path):
+    """资料分析验收状态以工具箱的 research_review.py 为单一事实源，按项目锁定的版本加载（方案 A16）。
 
     项目进度（本文件）、CLI 阶段前置（state_helper）与报告检查器（research_checker）
     共用同一份失效判定，避免"目录里有报告就算完成"在多处各自实现（issue #362）。
     """
-    path = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts" / "research_review.py"
-    spec = importlib.util.spec_from_file_location("onto_workspace_research_review", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    from ..packs import contracts
 
-
-_research_review = _load_research_review()
+    return contracts.module_for(root, "research_review")
 
 
 class WorkspaceCore:
@@ -246,6 +237,7 @@ class WorkspaceCore:
 
     @classmethod
     def _project_progress(cls, root: Path) -> dict:
+        _research_review = _research_review_for(root)
         review = _research_review.review_status(root)
         # 验收只管"进入对象提取之前"：报告没通过、对象也还没提取时才挡住后续阶段。
         # 对象一旦提取，资料分析按已越过处理，只留待核验的提醒——与 state_helper
