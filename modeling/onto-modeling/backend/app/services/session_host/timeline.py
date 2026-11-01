@@ -390,6 +390,7 @@ def round_changes_card(record: dict) -> dict:
         "plugin": None,
         "open": None,
         "changeset_id": record.get("changeset_id"),
+        "change_list_id": record.get("change_list_id"),  # 契约 F3 补充：增量更新的清单
         "checks": {"errors": 0, "warnings": 0},
         "groups": [{"kind": kind, "label": _GROUP_LABELS[kind], "items": groups[kind]}
                    for kind in sorted(groups, key=order.index)],
