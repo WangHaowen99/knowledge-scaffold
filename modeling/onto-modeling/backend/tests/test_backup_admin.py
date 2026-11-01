@@ -30,6 +30,7 @@ def env(tmp_path: Path, monkeypatch):
     assets = tmp_path / "assets"
     (assets / "resource-template").mkdir(parents=True)
     (assets / "workspace-rules.md").write_text("# rules", encoding="utf-8")
+    (assets / "workspace-toolkit").mkdir()  # 最小工具箱：建项目时装配出 .claude 与 CLAUDE.md 链接
     manager = WorkspaceManager(data, assets)
     monkeypatch.setattr(deps, "workspaces", manager)
     return manager, tmp_path

@@ -1,19 +1,20 @@
-"""Jiuwen 引擎的资产装载层（Phase 3，方案 §3.4）。
+"""Jiuwen 引擎的资产装载层（Phase 3，方案 §3.4；P1 起读项目的装配目录，方案 D6）。
 
-原则：**提示词资产单一事实源**——不把 `assets/workspace-toolkit` 转存成第二套格式，
-而是按 Claude Code 的约定就地装载：
+原则：**提示词资产单一事实源**——不把能力包转存成第二套格式，而是按 Claude Code 的约定
+就地装载项目 `.claude` 指向的装配目录（详设 8.1）：
 
-- 工作区规则（workspace-rules.md，即挂载给 Claude 的 CLAUDE.md）→ system prompt；
-- 20 条命令（commands/*.md，`$ARGUMENTS` 占位）→ 斜杠命令展开：用户消息以
+- 装配出来的 CLAUDE.md（core 的工作区规则 + 各包规则片段）→ system prompt；
+- 命令（commands/*.md，`$ARGUMENTS` 占位）→ 斜杠命令展开：用户消息以
   `/名称` 开头时后端展开为完整指令再交给模型（与 Claude CLI 的行为等价）；
-- 18 个子代理 prompt（agents/*.md）不需要预注册：命令的既有写法就是
+- 子代理 prompt（agents/*.md）不需要预注册：命令的既有写法就是
   "Read .claude/agents/x.md 后把内容作为 Task 派遣的 prompt"，jiuwen 侧由
   general-purpose 子代理承接同一模式；
-- settings.json 的 PreToolUse 守卫 hooks → ClaudeHooksRail 原样执行 shell
-  脚本本体（同一 matcher、同一 stdin JSON 协议），deny 输出转 rail 拒绝。
+- 装配目录 settings.json 的 PreToolUse 守卫（内核注入 + 包追加的拒绝型）→ ClaudeHooksRail
+  原样执行 shell 脚本本体（同一 matcher、同一 stdin JSON 协议），deny 输出转 rail 拒绝。
 
-工作区 `.claude/`、`CLAUDE.md` 是指向资产目录的符号链接；jiuwen 文件沙箱
-（sandbox_root）须包含资产目录才能读穿链接——写保护由 toolset_write_guard
+守卫出错即拒（方案 D9）：超时、非零退出、输出不是 JSON 一律拒绝；会写文件的未知工具默认拒绝。
+工作区 `.claude/`、`CLAUDE.md` 是指向装配目录的符号链接；jiuwen 文件沙箱
+（sandbox_root）须包含装配目录才能读穿链接——写保护由 toolset_write_guard
 （经 ClaudeHooksRail 执行）承担。
 """
 
@@ -21,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -37,17 +39,43 @@ _HOOK_TOOL_NAME = {
     "write_file": "Write",
     "edit_file": "Edit",
 }
+# 只读或不碰文件的工具：不过守卫
+_READ_ONLY_TOOLS = {
+    "read_file", "list_files", "glob", "grep", "task_tool", "todo", "web_search", "web_fetch",
+    "ask_user", "list_skill", "load_skill", "read_memory", "search_memory",
+}
+# 名字像写文件的未知工具：默认拒绝（方案 D9）
+_WRITE_LIKE_TOOL = re.compile(r"write|edit|patch|delete|remove|move|rename|create|mkdir|save|upload|append", re.I)
+_DENY_ON_ERROR = "工作区守卫执行失败，按拒绝处理。请换一种写法；持续出现请反馈给维护者。"
 
 
 class JiuwenAssetLoader:
-    """按 Claude Code 目录约定装载 workspace-toolkit 资产。"""
+    """按 Claude Code 目录约定装载能力包资产。
 
-    def __init__(self, assets_dir: Path):
-        self.assets_dir = Path(assets_dir)
-        self.toolkit = self.assets_dir / "workspace-toolkit"
-        self.rules_file = self.assets_dir / "workspace-rules.md"
+    `JiuwenAssetLoader.for_workspace(cwd)` 读项目 `.claude` 指向的装配目录；直接传资产根目录
+    的旧写法只读镜像里的工具箱（没有内核守卫），只给没有装配目录的旧工作区兜底。
+    """
+
+    def __init__(self, assets_dir: Path | None = None, *, dotclaude: Path | None = None):
+        if dotclaude is not None:
+            self.toolkit = Path(dotclaude)
+            self.rules_file = self.toolkit / "CLAUDE.md"
+        else:
+            self.toolkit = Path(assets_dir) / "workspace-toolkit"
+            self.rules_file = Path(assets_dir) / "workspace-rules.md"
+        # 文件沙箱要放行的资产根（.claude 链接解析后的真实目录）
+        self.assets_dir = Path(os.path.realpath(self.toolkit)) if dotclaude is not None else Path(assets_dir)
         self.commands_dir = self.toolkit / "commands"
         self.settings_file = self.toolkit / "settings.json"
+
+    @classmethod
+    def for_workspace(cls, cwd: Path, fallback_assets: Path | None = None) -> "JiuwenAssetLoader":
+        dotclaude = Path(cwd) / ".claude"
+        if (dotclaude / "settings.json").is_file() or (dotclaude / "commands").is_dir():
+            return cls(dotclaude=Path(os.path.realpath(dotclaude)))
+        from ... import config
+
+        return cls(Path(fallback_assets or config.ASSETS_DIR))
 
     # ---- system prompt ----
 
@@ -153,17 +181,21 @@ def run_hooks_sync(
 ) -> str | None:
     """按 Claude hook 协议执行匹配的守卫脚本；返回 deny 理由（None = 放行）。
 
-    协议：stdin 收 `{"tool_name", "tool_input"}` JSON；deny 时 stdout 输出
+    协议：stdin 收 `{"tool_name", "tool_input", "cwd"}` JSON；deny 时 stdout 输出
     `hookSpecificOutput.permissionDecision == "deny"`（或旧式 `decision: block`）。
-    脚本静默退出（无输出）即放行；脚本异常/超时按放行处理（守卫失效不阻断建模，
-    与 Claude CLI 的 hook 失败语义一致）。
+    脚本静默正常退出（无输出）即放行。出错即拒（方案 D9）：超时、起不来、非零退出、
+    输出不是 JSON 一律拒绝；不认识但名字像写文件的工具也拒绝。
     """
     mapped = _HOOK_TOOL_NAME.get(tool_name)
     if mapped is None:
-        return None
+        if tool_name in _READ_ONLY_TOOLS or not _WRITE_LIKE_TOOL.search(tool_name or ""):
+            return None
+        return f"未知的写文件工具 {tool_name}，工作区守卫无法检查，按拒绝处理。请改用 write_file / edit_file / bash。"
     payload = json.dumps(
-        {"tool_name": mapped, "tool_input": tool_input}, ensure_ascii=False
+        {"tool_name": mapped, "tool_input": tool_input, "cwd": str(cwd)}, ensure_ascii=False
     )
+    # 守卫脚本在工作区 .claude/ 下：不带后端进程的 Key 与凭据；项目根与 Claude CLI 一样经 CLAUDE_PROJECT_DIR 给
+    env = {**minimal_env(), "CLAUDE_PROJECT_DIR": str(cwd)}
     for pattern, commands in entries:
         if not pattern.match(mapped):
             continue
@@ -176,18 +208,21 @@ def run_hooks_sync(
                     capture_output=True,
                     text=True,
                     timeout=_HOOK_TIMEOUT_SECONDS,
-                    # 守卫脚本在工作区 .claude/ 下：不带后端进程的 Key 与凭据
-                    env=minimal_env(),
+                    env=env,
                 )
             except (subprocess.TimeoutExpired, OSError):
-                continue
+                return _DENY_ON_ERROR
+            if proc.returncode != 0:
+                return _DENY_ON_ERROR
             out = (proc.stdout or "").strip()
             if not out:
                 continue
             try:
                 decision = json.loads(out.splitlines()[-1])
             except (json.JSONDecodeError, IndexError):
-                continue
+                return _DENY_ON_ERROR
+            if not isinstance(decision, dict):
+                return _DENY_ON_ERROR
             specific = decision.get("hookSpecificOutput") or {}
             if specific.get("permissionDecision") == "deny":
                 return str(specific.get("permissionDecisionReason") or "操作被工作区守卫规则拒绝")

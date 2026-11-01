@@ -80,10 +80,14 @@ _research_review = _load_research_review()
 
 class WorkspaceCore:
     def __init__(self, data_dir: Path, assets_dir: Path):
+        from ..packs.runtime import PackRuntime
+
         self.data_dir = Path(data_dir)
         self.workspaces_dir = self.data_dir / "workspaces"
         self.assets_dir = Path(assets_dir)
         self.workspaces_dir.mkdir(parents=True, exist_ok=True)
+        # 插件运行时：包仓库、装配目录都在同一个数据目录下（方案 D1、D2）
+        self.packs = PackRuntime(self.data_dir, self.assets_dir)
 
     def _lock_path(self, project_id: str) -> Path:
         """Return a lock outside the project so it is never included in exports/git."""
@@ -471,6 +475,8 @@ class WorkspaceCore:
             shutil.copy2(path, dest)
         # 源项目的 .gitignore 会盖掉新建时的模板，补齐后再 add，元数据才不会被跟踪
         _ensure_gitignore_entries(dest_root)
+        # 锁文件随克隆带过来：按源项目锁定的能力包版本重新装配
+        self._mount_assets(dest_root)
         _git(dest_root, "add", "-A")
         _git(dest_root, "commit", "-q", "-m", f"clone: 自 {project_id} 克隆", "--allow-empty")
         return self.get_project(meta["id"])
@@ -603,14 +609,9 @@ class WorkspaceCore:
     # ---- 内部 ----
 
     def _mount_assets(self, root: Path) -> None:
-        links = {
-            ".claude": self.assets_dir / "workspace-toolkit",
-            "CLAUDE.md": self.assets_dir / "workspace-rules.md",
-            "README.md": self.assets_dir / "workspace-readme.md",
-        }
-        for link_name, target in links.items():
-            if target.exists():
-                (root / link_name).symlink_to(target)
+        """补齐能力包锁文件，装配并原子切换 `.claude`（方案 D2）；CLAUDE.md、README.md 是指向
+        `.claude/` 里的相对链接。镜像里没有工具箱时什么都不挂（同原行为）。"""
+        self.packs.mount(root)
 
     def _copy_resource_template(self, root: Path) -> None:
         template = self.assets_dir / "resource-template"

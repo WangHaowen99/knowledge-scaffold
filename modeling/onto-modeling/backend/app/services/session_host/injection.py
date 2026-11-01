@@ -100,9 +100,11 @@ def stage_hint(project_root: Path) -> str | None:
     return " ".join(parts)
 
 
-def _state_helper() -> Path:
-    # 跑资产目录里的脚本，不跑工作区 .claude/ 下可被改写的那份
-    return Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts" / "state_helper.py"
+def _state_helper(project_root: Path) -> Path:
+    # 跑装配目录里哈希核对过的那份（本项目锁定的 core 版本），否则跑镜像里的；不跑工作区 .claude/ 下可被改写的副本
+    from ..packs.assembler import trusted_script
+
+    return trusted_script(project_root, "state_helper.py", Path(config.ASSETS_DIR))
 
 
 def detect_stage(project_root: Path) -> str | None:
@@ -112,7 +114,7 @@ def detect_stage(project_root: Path) -> str | None:
     """
     try:
         proc = subprocess.run(
-            ["python3", str(_state_helper()), "detect-stage"],
+            ["python3", str(_state_helper(project_root)), "detect-stage"],
             cwd=project_root,
             capture_output=True,
             text=True,

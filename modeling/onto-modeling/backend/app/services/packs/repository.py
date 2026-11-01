@@ -307,6 +307,15 @@ class PackRepository:
             _atomic_write_json(self._channels_path(), data)
             return entry
 
+    def set_field(self, name: str, key: str, value) -> None:
+        """通道记录上的附加字段（如 builtin：镜像自带的版本，用来判断是不是换了镜像）。"""
+        with _LOCK:
+            data = self.channels()
+            entry = dict(data.get(name) or {})
+            entry[key] = value
+            data[name] = entry
+            _atomic_write_json(self._channels_path(), data)
+
     def disabled(self, name: str) -> dict:
         return dict((self.channels().get(name) or {}).get("disabled") or {})
 

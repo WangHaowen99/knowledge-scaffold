@@ -23,6 +23,8 @@ from app.services.session_host import injection
 
 ASSETS_DIR = Path(config.ASSETS_DIR)
 SCRIPTS_DIR = ASSETS_DIR / "workspace-toolkit" / "scripts"
+# 会话开始与业务知识信号两个 hook 随内核守卫发布（方案 D8）
+HOOKS_DIR = Path(__file__).resolve().parents[1] / "app" / "kernel_guards"
 
 needs_shell = pytest.mark.skipif(
     not (shutil.which("bash") and shutil.which("python3") and shutil.which("git")),
@@ -48,7 +50,7 @@ def write(path: Path, text: str, mtime: int | None = None) -> None:
 def run_hook(script: str, cwd: Path, stdin: str = "") -> str:
     """跑 hook 脚本本体，返回 additionalContext（没有输出为空串）。"""
     proc = subprocess.run(
-        ["bash", str(SCRIPTS_DIR / script)],
+        ["bash", str(HOOKS_DIR / script)],
         cwd=cwd,
         input=stdin,
         capture_output=True,

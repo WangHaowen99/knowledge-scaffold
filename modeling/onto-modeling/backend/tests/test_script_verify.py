@@ -460,10 +460,13 @@ def _git(root: Path, *args: str) -> None:
 def test_pre_commit_blocks_unverified_scripts(workspace, capsys):
     from app.services.engines.jiuwen_assets import JiuwenAssetLoader, run_hooks_sync
 
+    from tests.pack_helpers import link_assembled
+
     _git(workspace, "init", "-q")
-    (workspace / ".claude").symlink_to(SCRIPTS.parent)
+    # 与真实项目同构：.claude 指向装配目录（core 包 + 内核守卫）
+    link_assembled(workspace, workspace.parent / "data")
     _git(workspace, "add", "ontology")
-    entries = JiuwenAssetLoader(Path(config.ASSETS_DIR)).pre_tool_use_hooks()
+    entries = JiuwenAssetLoader.for_workspace(workspace).pre_tool_use_hooks()
     commit = {"command": "git commit -m codegen"}
 
     reason = run_hooks_sync(entries, "bash", commit, workspace)

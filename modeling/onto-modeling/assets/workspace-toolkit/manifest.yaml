@@ -1,0 +1,115 @@
+# 基础建模能力（core 包，详设 5.3；方案 D7 前半）。
+# 工作区工具箱原样迁成的官方包，命令名不变（方案第 6 章第 7 项）。守卫与 hooks 基线不在包里，
+# 由内核注入（backend/app/kernel_guards）。镜像启动时把本目录导入包仓库，版本号加内容摘要后缀
+# （如 0.1.0+3f9a1c2d）：内容变了就是新版本，包仓库里的版本目录永不改写。
+# 新增命令、子代理、脚本时同步下面的清单（静态检查核对「声明的都存在、存在的都声明」）。
+name: core
+version: 0.1.0
+kind: capability
+category: capability
+label: 基础建模能力
+description: 资料分析、对象与操作抽取、规则与指标、质量检查、示例数据与场景验证、代码生成与求解适配、增量更新、业务知识的存放与加载。
+publisher:
+  kind: official
+  label: 平台
+required: true
+kernel_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {}
+contributes:
+  commands:
+    - ontology
+    - ontology-research
+    - ontology-flowchart
+    - ontology-validate-diagrams
+    - ontology-extract-object
+    - ontology-extract-operation
+    - ontology-extract-rule-metric
+    - ontology-validate
+    - ontology-mock
+    - ontology-trace
+    - ontology-trace-single
+    - ontology-trace-batch
+    - ontology-trace-interactive
+    - ontology-codegen-scan
+    - ontology-codegen
+    - ontology-solver-evaluator
+    - ontology-update
+    - ontology-impact
+    - ontology-query
+    - ontology-overview
+    - ontology-evolution
+    - version
+  agents:
+    - research-agent
+    - composition-analysis-agent
+    - question-extraction-agent
+    - extract-objects-agent
+    - extract-operation-agent
+    - rule-metric-extraction-agent
+    - coverage-check-agent
+    - rule-check-agent
+    - rule-fix-agent
+    - semantic-check-agent
+    - semantic-fix-agent
+    - knowledge-conflict-agent
+    - update-impact-agent
+    - update-apply-agent
+    - mock-data-agent
+    - trace-agent
+    - script-candidate-agent
+    - codegen-review-agent
+  skills:
+    - deep-research
+    - extract-migrated-objects
+    - mermaid-flowchart
+  scripts:
+    - batch_summarize.py
+    - candidate_revision.py
+    - check_diagram_excel_alignment.py
+    - check_diagrams.py
+    - check_eval_data.py
+    - check_eval_generalization.py
+    - excel_context.py
+    - field_semantics.py
+    - generate_overview.py
+    - impact_analysis.py
+    - init_flowchart_resources.py
+    - jiuwenbox_client.py
+    - knowledge_helper.py
+    - ontology_checker.py
+    - operation_relations.py
+    - query.py
+    - report_reconcile.py
+    - research_checker.py
+    - research_review.py
+    - script_argument_shape.py
+    - script_contract.py
+    - script_descriptor.py
+    - script_verify.py
+    - seed_example.py
+    - solver_evaluator_contract.py
+    - source_extract.py
+    - split_drawio.py
+    - state_helper.py
+    - summarize_diagram.py
+    - summary_to_drawio.py
+    - table_profile.py
+    - trace_inputs.py
+    - verify_artifacts.py
+  # 工作区规则（装配成 CLAUDE.md）与说明（装配成 README.md），镜像里放在资产目录根上
+  rules: [workspace-rules.md]
+  readme: workspace-readme.md
+  # 主流程定义（详设 6.1、6.8；方案 D12）
+  flow: flow.yaml
+  hooks: {}
+  nodes: []
+  entries: []
+  pages: []
+  artifacts: []
+  views: []
+  reports: []
+  gates: []
+  config: []
+  metrics: []
+checksums: checksums.sha256

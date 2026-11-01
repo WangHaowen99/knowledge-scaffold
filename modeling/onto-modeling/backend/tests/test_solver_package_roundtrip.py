@@ -610,7 +610,7 @@ def test_solver_directory_is_not_writable_through_file_editor(
 
 
 def test_scope_guard_denies_agent_writes_to_solver_directory(tmp_path: Path):
-    guard = TOOLKIT_SCRIPTS / "ontology_scope_guard.sh"
+    guard = Path(__file__).resolve().parents[1] / "app" / "kernel_guards" / "ontology_scope_guard.sh"
     _git(tmp_path, "init", "-q")
 
     def decide(rel: str) -> str:

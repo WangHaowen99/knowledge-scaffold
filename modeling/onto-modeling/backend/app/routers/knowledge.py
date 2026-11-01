@@ -34,8 +34,10 @@ _SECTION_RE = re.compile(r"^##\s*(背景|规则)\s*$", re.M)
 _SLUG_UNSAFE = re.compile(r"[\\/:*?\"<>|.\s]+")
 
 
-def _helper() -> Path:
-    return deps.workspaces.assets_dir / "workspace-toolkit" / "scripts" / "knowledge_helper.py"
+def _helper(root: Path) -> Path:
+    from ..services.packs.assembler import trusted_script
+
+    return trusted_script(root, "knowledge_helper.py", deps.workspaces.assets_dir)
 
 
 def _toolkit():
@@ -48,7 +50,7 @@ def _run_helper(root: Path, *args: str) -> None:
     from ..services.script_env import minimal_env
 
     result = subprocess.run(
-        ["python3", str(_helper()), *args], cwd=root, capture_output=True, text=True, timeout=30, env=minimal_env(),
+        ["python3", str(_helper(root)), *args], cwd=root, capture_output=True, text=True, timeout=30, env=minimal_env(),
     )
     if result.returncode != 0:
         message = (result.stderr or result.stdout).strip().splitlines()

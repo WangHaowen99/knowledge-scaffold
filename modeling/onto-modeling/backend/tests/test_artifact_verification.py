@@ -11,6 +11,8 @@ import pytest
 from artifact_process_policy import child_environment, git_executable, validate_fixture_git_args
 
 SCRIPTS = Path(__file__).resolve().parents[2] / 'assets/workspace-toolkit/scripts'
+KERNEL_GUARDS = Path(__file__).resolve().parents[1] / 'app/kernel_guards'
+HOOKS = ('pre_commit_check.sh', 'post_commit_hook.sh')
 
 
 @pytest.fixture
@@ -338,6 +340,9 @@ def test_external_symlink_rejected(tmp_path, verifier):
 @pytest.fixture
 def git_workspace(tmp_path):
     shutil.copytree(SCRIPTS, tmp_path / '.claude/scripts', ignore=shutil.ignore_patterns('__pycache__'))
+    # 提交检查与提交后提示属于内核守卫（方案 D8），装配时注入同一个 scripts/ 目录
+    for name in HOOKS:
+        shutil.copy2(KERNEL_GUARDS / name, tmp_path / '.claude/scripts' / name)
     executable = git_executable()
     env = child_environment(tmp_path)
     def git(*args):
@@ -352,10 +357,10 @@ def git_workspace(tmp_path):
 
 
 def hook(root, name, command='git commit -m "extract: synthetic objects"'):
-    if name not in ('pre_commit_check.sh', 'post_commit_hook.sh'):
+    if name not in HOOKS:
         raise ValueError('Only the checked-in save hooks may run')
     script = (root / '.claude/scripts' / name).resolve()
-    if not script.is_relative_to(root.resolve()) or script.read_bytes() != (SCRIPTS / name).read_bytes():
+    if not script.is_relative_to(root.resolve()) or script.read_bytes() != (KERNEL_GUARDS / name).read_bytes():
         raise ValueError('Hook must be an unchanged copy inside the synthetic workspace')
     script.chmod(script.stat().st_mode | 0o100)
     env = child_environment(root)

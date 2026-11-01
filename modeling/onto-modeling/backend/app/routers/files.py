@@ -285,7 +285,9 @@ def reverse_query(project_id: str, request: Request, kind: str = "", term: str =
         raise ApiError("invalid_argument", f"kind 必须是 {sorted(QUERY_KIND_ARGS)} 之一", 400, {"fields": {"kind": "enum"}})
     if kind in ("used_by", "search", "knowledge") and not term.strip():
         raise ApiError("invalid_argument", "该反查类型需要提供 term 参数", 400, {"fields": {"term": "required"}})
-    script = deps.workspaces.assets_dir / "workspace-toolkit" / "scripts" / "query.py"
+    from ..services.packs.assembler import trusted_script
+
+    script = trusted_script(root, "query.py", deps.workspaces.assets_dir)
     if not script.is_file():
         raise ApiError("service_unavailable", "查询脚本不存在（资产未挂载）", 503, {"dependency": "assets"})
     outputs = []

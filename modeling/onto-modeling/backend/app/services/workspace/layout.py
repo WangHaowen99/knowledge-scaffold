@@ -37,8 +37,9 @@ _GITIGNORE_STATE_HEADER = "\n# 项目元数据与工具状态：不随版本回�
 
 # 导出知识包原始产物、判别工作区压缩包时认的顶层目录
 EXPORT_ONTOLOGY_DIRS = ("ontology", "research", "reports", "knowledge")
-# 导入时跳过的顶层条目：资产由本服务重新挂载；.git 不合并（v1 不保留导入方历史）
-IMPORT_SKIP_TOP = {".claude", "CLAUDE.md", "README.md", ".git", META_FILE}
+# 导入时跳过的顶层条目：资产由本服务重新挂载；.git 不合并（v1 不保留导入方历史）；
+# .onto（能力包锁文件）按本部署的 stable 重新写（迁移包导入另行处理，保留锁定版本）
+IMPORT_SKIP_TOP = {".claude", "CLAUDE.md", "README.md", ".git", ".onto", META_FILE}
 
 
 def is_auto_detected(directive) -> bool:

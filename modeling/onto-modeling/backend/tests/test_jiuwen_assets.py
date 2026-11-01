@@ -13,8 +13,18 @@ from app.services.engines.jiuwen_assets import JiuwenAssetLoader, run_hooks_sync
 ASSETS_DIR = Path(config.ASSETS_DIR)
 
 
+_ASSEMBLED: dict[str, Path] = {}
+
+
 def make_loader() -> JiuwenAssetLoader:
-    return JiuwenAssetLoader(ASSETS_DIR)
+    """读真实的装配目录（core 包 + 内核守卫），与项目工作区 .claude 指向的同构。"""
+    import tempfile
+
+    from tests.pack_helpers import assemble_real
+
+    if "dir" not in _ASSEMBLED:
+        _ASSEMBLED["dir"] = assemble_real(Path(tempfile.mkdtemp(prefix="onto-jiuwen-assets-")))
+    return JiuwenAssetLoader(dotclaude=_ASSEMBLED["dir"])
 
 
 def test_expand_command_substitutes_arguments():
@@ -41,8 +51,8 @@ def _git_workspace(tmp_path: Path) -> Path:
     ws = tmp_path / "ws"
     ws.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
-    # 守卫脚本经 .claude 相对路径自定位（与真实工作区同构：符号链接到资产）
-    (ws / ".claude").symlink_to(ASSETS_DIR / "workspace-toolkit")
+    # 守卫脚本经 .claude 相对路径自定位（与真实工作区同构：符号链接到装配目录）
+    (ws / ".claude").symlink_to(make_loader().toolkit)
     (ws / "resource").mkdir()
     (ws / "resource" / "材料.md").write_text("源材料", encoding="utf-8")
     return ws

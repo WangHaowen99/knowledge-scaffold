@@ -625,7 +625,8 @@ class JiuwenEngine:
         self._resume_token = f"jiuwen:{self._sid}"
         from .jiuwen_assets import JiuwenAssetLoader
 
-        self._loader = JiuwenAssetLoader(Path(config.ASSETS_DIR))
+        # 读项目 .claude 指向的装配目录（方案 D6）：命令、规则、守卫都按本项目锁定的版本
+        self._loader = JiuwenAssetLoader.for_workspace(ctx.cwd)
         self._fingerprint = ""
         self._tracker: Any = None
         self._closed = False
@@ -717,10 +718,11 @@ class JiuwenEngine:
         # 框架私有工件区与项目 git 工作区分离（官方 cwd/workspace 分层）
         shadow = shadow_dir(self._ctx.project_id)
         shadow.mkdir(parents=True, exist_ok=True)
-        # 文件沙箱三根：项目区 + 私有工件区 + 资产目录（工作区 .claude/CLAUDE.md
-        # 是指向资产的符号链接，沙箱按 resolve 后路径判定，不加资产根则读不穿；
-        # 资产写保护由 toolset_write_guard 经 ClaudeHooksRail 承担）
-        sysop_id = f"onto-jiuwen-{self._ctx.project_id}"
+        # 文件沙箱三根：项目区 + 私有工件区 + 装配目录（工作区 .claude/CLAUDE.md
+        # 是指向装配目录的符号链接，沙箱按 resolve 后路径判定，不加它则读不穿；
+        # 写保护由 toolset_write_guard 经 ClaudeHooksRail 承担）
+        # 按装配目录注册：切换到新装配目录后重新注册，沙箱根跟着换（方案 D6）
+        sysop_id = f"onto-jiuwen-{self._ctx.project_id}-{self._loader.assets_dir.name[:16]}"
         if Runner.resource_mgr.get_sys_operation(sysop_id) is None:
             Runner.resource_mgr.add_sys_operation(
                 SysOperationCard(

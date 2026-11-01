@@ -32,6 +32,10 @@ async def _lifespan(app: FastAPI):
     # 评测移出（ADR-0020）：被对象引用的评测上传表迁进资料区并提交，再删掉评测状态与
     # 数据源配置（含连接密码）。幂等，迁过的项目什么都不做
     await asyncio.to_thread(eval_retirement.migrate, deps.workspaces)
+    # 插件运行时启动核对（方案 D4）：镜像自带的 core 入库，逐个项目按锁文件核对、修复装配目录
+    from .services.packs import service as packs_service
+
+    await asyncio.to_thread(packs_service.reconcile_all, deps.workspaces)
     manager.start_background()  # 空闲会话回收（方案 4.1.1）
     write_example()  # 内置推荐表副本，供管理员复制成自定义表
     # 后台任务只活在进程内：重启后仍标 running 的记录改判中断，否则前端永久锁死

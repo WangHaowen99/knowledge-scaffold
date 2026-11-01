@@ -7,27 +7,42 @@
 # Claude Code's PreToolUse hook for Bash fires on EVERY Bash tool call;
 # settings.json's `if` field is silently ignored by the current hook engine,
 # so we gate here by reading the tool input JSON from stdin and matching
-# `git commit`. Manual TTY invocations bypass this gate (so devs can still
-# run the script by hand for debugging).
+# `git commit`（含 `git -C 目录 commit`、`git -c 键=值 commit`、绝对路径调用，方案 D10）。
+# 读不出命令按拒绝处理（出错即拒，方案 D9）。Manual TTY invocations bypass this gate
+# (so devs can still run the script by hand for debugging).
 if [ ! -t 0 ]; then
     HOOK_INPUT=$(cat 2>/dev/null || true)
-    BASH_CMD=$(printf '%s' "${HOOK_INPUT:-}" | python3 -c '
-import json, sys
+    IS_COMMIT=$(printf '%s' "${HOOK_INPUT:-}" | python3 -c '
+import json, re, sys
 try:
-    data = json.loads(sys.stdin.read() or "{}")
-    print(data.get("tool_input", {}).get("command", ""))
+    data = json.loads(sys.stdin.read())
+    command = (data.get("tool_input") or {}).get("command") or ""
 except Exception:
-    pass
-' 2>/dev/null || true)
-    if ! printf '%s' "${BASH_CMD:-}" | grep -qE '(^|[;&|]|[[:space:]])git[[:space:]]+commit($|[[:space:]])'; then
-        exit 0
-    fi
+    print("error")
+    sys.exit(0)
+option = r"(?:-C\s+\S+|-c\s+\S+|--git-dir(?:=|\s+)\S+|--work-tree(?:=|\s+)\S+|--no-pager|-P|--no-optional-locks)"
+pattern = re.compile(r"(^|[;&|(`$\s])(?:\S*/)?git(?:\s+" + option + r")*\s+commit($|[\s;&|)])")
+print("yes" if pattern.search(str(command)) else "no")
+' 2>/dev/null || echo error)
+    case "$IS_COMMIT" in
+        no) exit 0 ;;
+        yes) ;;
+        *)
+            echo '{"decision":"block","reason":"提交检查读不出这次调用的命令，按拒绝处理。请重试；持续出现请反馈给维护者。"}'
+            exit 0
+            ;;
+    esac
 fi
 # -----------------------------------------------------------------------------
 
 set -u
-ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-cd "$ROOT" || exit 0
+block_error() {
+    python3 -c 'import json,sys; print(json.dumps({"decision":"block","reason":sys.argv[1]},ensure_ascii=False))' "$1" \
+        || echo '{"decision":"block","reason":"提交检查执行出错，按拒绝处理。"}'
+    exit 0
+}
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || block_error "提交检查找不到项目根目录，按拒绝处理。"
+cd "$ROOT" || block_error "提交检查进不了项目根目录，按拒绝处理。"
 
 # --- Resource guard ----------------------------------------------------------
 # resource/ is user-managed source material. Agent commits must never include
@@ -41,6 +56,15 @@ import json, sys
 print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))
 ' "$REASON"
     exit 0
+fi
+
+# --- Protected paths（受保护目录第 3 层：提交时拦，改动进不了版本）-------------
+# .claude、CLAUDE.md、README.md 是装配出来的能力包，.onto 是能力包锁文件，只能由平台改。
+PROTECTED_STAGED=$(git diff --cached --name-only -z 2>/dev/null | tr '\0' '\n' \
+    | grep -E '^(\.claude|\.onto)(/|$)|^(CLAUDE|README)\.md$' || true)
+if [ -n "$PROTECTED_STAGED" ]; then
+    REASON=$(printf '能力包与锁文件只能由平台修改，模型禁止提交这些路径的改动：\n%s\n\n请取消暂存这些文件（git restore --staged <文件>）。' "$PROTECTED_STAGED")
+    block_error "$REASON"
 fi
 
 # --- Toolchain check：lint .claude/scripts/*.py and *.sh ----------------------
