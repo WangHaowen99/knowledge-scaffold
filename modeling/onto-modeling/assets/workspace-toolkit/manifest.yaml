@@ -55,6 +55,7 @@ contributes:
     - field_semantics.py
     - flow_state.py
     - impact_analysis.py
+    - industry_rules.py
     - jiuwenbox_client.py
     - knowledge_helper.py
     - onto_metamodel.py

@@ -1,0 +1,58 @@
+# 零售连锁声明式校验规则（合成内容）。只使用四类规则：
+# require_relations_to / require_fields / prefer_terms / require_sections
+rules_api: 1
+rules:
+  - id: RETAIL-R01
+    title: 补货单要关联门店与商品
+    applies_to: object
+    match: {concept: 补货单}
+    require_relations_to: [门店, 商品]
+    level: warning
+    message: 补货单通常要能追溯到门店和商品，缺少关联时下游问答查不到明细。
+
+  - id: RETAIL-R02
+    title: 库存要有数量和单位字段
+    applies_to: object
+    match: {concept: 库存}
+    require_fields: [数量, 单位]
+    level: warning
+    message: 库存要写明数量字段和计量单位，否则件和箱混算时无法发现错误。
+
+  - id: RETAIL-R03
+    title: 使用行业标准称谓
+    applies_to: any
+    prefer_terms: {要货单: 补货单, 店铺: 门店, 保险库存: 安全库存, 近效期商品: 临期商品}
+    level: warning
+    message: 正文里出现了非标准称谓，建议改用标准称谓，非标准称谓放进对象别名。
+
+  - id: RETAIL-R04
+    title: 安全库存测算要写明输入和输出
+    applies_to: operation
+    match: {concept: 安全库存}
+    require_sections: [输入, 输出]
+    level: warning
+    message: 安全库存测算依赖日均销量、到货周期和缓冲天数，输入输出不写清楚时无法核对公式。
+
+  - id: RETAIL-R05
+    title: 陈列量标准要有门店等级和陈列量上限
+    applies_to: object
+    match: {concept: 陈列量标准}
+    require_fields: [门店等级, 上限]
+    level: warning
+    message: 陈列量标准按门店等级区分，补货截断依赖陈列量上限，缺任一字段都无法参与补货测算。
+
+  - id: RETAIL-R06
+    title: 商品要有箱规
+    applies_to: object
+    match: {concept: 商品}
+    require_fields: [箱规]
+    level: warning
+    message: 补货按件测算、按整箱下单，商品缺箱规时无法换算下单箱数。
+
+  - id: RETAIL-R07
+    title: 区域配额规则要写明约束和处置
+    applies_to: rule
+    match: {concept: 区域配额}
+    require_sections: [约束表达, 违反处置]
+    level: warning
+    message: 配额规则要写清超量的判断条件和超量后的审批处置，否则无法落到流程门禁。

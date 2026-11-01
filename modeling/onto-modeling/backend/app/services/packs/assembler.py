@@ -8,6 +8,8 @@
       scripts/*_guard.sh、_guard_common.py …   内核守卫，包不能同名覆盖
       settings.json      内核权限与 hooks 基线 + 各包追加的拒绝型 PreToolUse
       flow.yaml          组装后的流程
+      industry/<包名>/   行业包、系统知识包（纯数据，H0）各占一个子目录，不和能力包的文件混在一起；
+                         concepts / checks / standards 另存一份 JSON（工作区脚本只用标准库）
       MANIFEST.json      包与版本、各文件哈希（最后写入）
 
 - 原子：先在 assembled/.tmp-* 里装好、写完 MANIFEST.json，再 rename 成哈希目录；中途停机只留下
@@ -38,6 +40,8 @@ from .manifest import Manifest
 from .repository import PackRepository, file_sha256, pack_files, verify_checksums
 
 MANIFEST_JSON = "MANIFEST.json"
+# 纯数据包（行业包、系统知识包）在装配目录里的子目录
+DATA_PACK_DIR = "industry"
 ASSEMBLY_FORMAT = 1
 CORE = "core"
 
@@ -200,13 +204,17 @@ class Assembler:
             flow_rel = manifest.contributes.get("flow") or ""
             readme_rel = manifest.contributes.get("readme") or ""
             special = {mf.MANIFEST_FILE, flow_rel, readme_rel, *manifest.items("rules")}
+            prefix = f"{DATA_PACK_DIR}/{entry.name}/" if manifest.kind == "knowledge" else ""
             for rel in pack_files(source):
                 if rel in special:
                     continue
-                if rel in owners:
-                    raise AssemblyError("conflict", [f"{rel} 同时来自 {owners[rel]} 和 {entry.name}"])
-                owners[rel] = entry.name
-                _copy_file(source / rel, staging / rel)
+                target = prefix + rel
+                if target in owners:
+                    raise AssemblyError("conflict", [f"{target} 同时来自 {owners[target]} 和 {entry.name}"])
+                owners[target] = entry.name
+                _copy_file(source / rel, staging / target)
+            if prefix:
+                self._data_pack_json(entry, manifest, source, staging / prefix)
             for rel in manifest.items("rules"):
                 if (source / rel).is_file():
                     rules.append((source / rel).read_text(encoding="utf-8").rstrip() + "\n")
@@ -254,6 +262,23 @@ class Assembler:
             "built_at": time.time(),
         }
         _fsync_write(staging / MANIFEST_JSON, json.dumps(manifest_json, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+
+    @staticmethod
+    def _data_pack_json(entry: LockEntry, manifest: Manifest, source: Path, target: Path) -> None:
+        """行业包的 YAML 另存 JSON：knowledge_helper、ontology_checker 只用标准库读。"""
+        info = {"name": entry.name, "version": entry.version, "label": manifest.label, "category": manifest.category,
+                "knowledge_dir": manifest.contributes.get("knowledge_dir") or "knowledge"}
+        for key in ("concepts", "checks", "standards"):
+            rel = manifest.contributes.get(key)
+            if not isinstance(rel, str) or not (source / rel).is_file():
+                continue
+            try:
+                data = yaml.safe_load((source / rel).read_text(encoding="utf-8")) or {}
+            except (OSError, yaml.YAMLError) as exc:
+                raise AssemblyError("data_pack", [f"{entry.name} 的 {rel} 无法解析：{exc}"]) from exc
+            _fsync_write(target / f"{key}.json", json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+            info[key] = f"{key}.json"
+        _fsync_write(target / "pack.json", json.dumps(info, ensure_ascii=False, indent=2) + "\n")
 
     @staticmethod
     def _settings(extra_hooks: list[dict]) -> dict:

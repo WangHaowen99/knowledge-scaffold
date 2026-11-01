@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -74,15 +76,15 @@ def test_builtin_optional_packs_are_imported_and_pass_static_checks(env, tmp_pat
     manager, _ = env
     manager.packs.core_version()
     repository = manager.packs.repository
-    assert set(OPTIONAL) | {"core"} <= set(repository.names())
+    assert set(OPTIONAL) | {"core", "industry-retail"} <= set(repository.names())
     core_names = checks.declared_names(repository.manifest("core", repository.latest("core")),
                                        repository.version_dir("core", repository.latest("core")))
-    for name in OPTIONAL:
+    for name in (*OPTIONAL, "industry-retail"):
         version = repository.latest(name, "stable")
         manifest, items = checks.run(repository.version_dir(name, version), core_names=core_names)
         failed = [item for item in items if item["result"] == "fail" and item["id"] != "names"]
         assert manifest is not None and not failed, (name, failed)
-        assert repository.manifest(name, version).raw.get("split_from_core")
+        assert repository.manifest(name, version).raw.get("split_from_core") or name == "industry-retail"
 
 
 def test_core_no_longer_carries_split_out_commands_and_keeps_knowledge_loading():
@@ -220,6 +222,35 @@ def test_legacy_lock_gets_split_packs_when_core_is_split(env):
     assert again.get("evo").enabled is False
 
 
+# ---- 新建项目选能力与行业 ----
+
+
+def test_create_project_with_capabilities_and_industry(env):
+    manager, client = env
+    body = {"name": "选能力", "goal": "合成场景：门店补货单编制",
+            "capabilities": {"trace": False, "evo": True, "reverse": True},
+            "industry_packs": [{"name": "industry-retail"}], "system_packs": []}
+    created = client.post("/api/v1/projects", json=body)
+    assert created.status_code == 201, created.text
+    root = manager.project_root(created.json()["id"])
+    names = _lock_names(root)
+    assert set(names) == {"core", "codegen", "diagram", "knowledge", "evo", "industry-retail"}
+    assert (root / ".claude" / "industry" / "industry-retail" / "concepts.json").is_file()
+    missing = client.post("/api/v1/projects", json={**body, "name": "没有的行业", "industry_packs": [{"name": "industry-none"}]})
+    assert missing.status_code == 404 and missing.json()["code"] == "pack_not_found"
+    wrong_kind = client.post("/api/v1/projects", json={**body, "name": "类别不对", "system_packs": ["industry-retail"]})
+    assert wrong_kind.status_code == 404
+
+
+def test_catalog_marks_default_on_and_categories(env):
+    manager, client = env
+    items = {item["name"]: item for item in client.get("/api/v1/packs", params={"category": "capability,industry"}).json()["items"]}
+    assert items["industry-retail"]["category"] == "industry" and items["industry-retail"]["default_on"] is True
+    assert items["industry-retail"]["label"] == "零售连锁"
+    assert {name for name, item in items.items() if item["category"] == "capability" and item["default_on"]} == {
+        "core", *DEFAULT_ON}
+    assert items["trace"]["ui"]["kind"] == "page" and items["trace"]["ui"]["pages"] == [{"id": "scenarios", "title": "场景走查"}]
+    assert items["evo"]["ui"]["kind"] == "none" and items["trace"]["badges"] == ["recommended"]
 
 
 def test_research_mode_web_requires_websearch(env):
@@ -251,7 +282,62 @@ def test_page_actions_declared_by_packs_exist():
                 assert action["command"].lstrip("/") in commands, (name, action)
 
 
-# ---- 知识沉淀、提示规则与官方产物 ----
+# ---- 第一个行业包与分层的业务知识 ----
+
+
+def _industry_project(manager, *, knowledge: bool = True) -> tuple[str, Path]:
+    packs = ["industry-retail"] + (["knowledge"] if knowledge else [])
+    project_id = manager.create_project("零售", packs=packs)["id"]
+    return project_id, manager.project_root(project_id)
+
+
+def test_knowledge_helper_loads_industry_layer_by_concept(env):
+    manager, _ = env
+    _, root = _industry_project(manager)
+    helper = root / ".claude" / "scripts" / "knowledge_helper.py"
+    out = subprocess.run([sys.executable, str(helper), "load", "--scope", "object:补货单"], cwd=root,
+                         capture_output=True, text=True, check=True).stdout
+    assert "来源：零售连锁（行业包" in out and "补货" in out
+    unrelated = subprocess.run([sys.executable, str(helper), "load", "--scope", "object:无关对象"], cwd=root,
+                               capture_output=True, text=True, check=True).stdout
+    assert len(unrelated) < len(out)
+
+
+def _checker_issues(root: Path) -> list[dict]:
+    checker = root / ".claude" / "scripts" / "ontology_checker.py"
+    run = subprocess.run([sys.executable, str(checker), "ontology", "--json"], cwd=root,
+                         capture_output=True, text=True, check=True)
+    return json.loads(run.stdout)
+
+
+def test_checker_applies_enabled_industry_rules_as_warnings(env):
+    """详设 5.5「校验」：ontology_checker 额外加载已启用行业包的声明式规则，只给警告。"""
+    manager, _ = env
+    _, root = _industry_project(manager, knowledge=False)
+    objects = root / "ontology" / "object"
+    objects.mkdir(parents=True, exist_ok=True)
+    (objects / "补货单.md").write_text(
+        "# 对象描述\n门店的要货单据。\n\n# 对象别名\n要货单\n\n# 对象属性清单\n"
+        "| 中文名称 | 英文名称 | 描述 | 主键 | 类型 | 属性别名 | 属性规则 |\n|---|---|---|---|---|---|---|\n"
+        "| 单号 | order_no | 单据编号 | 是 | 字符串 | - | 必填 |\n\n# 关联对象\n- 当前对象 → 收货 → [[门店]]\n",
+        encoding="utf-8")
+    (objects / "门店.md").write_text("# 对象描述\n经营单元。\n\n# 对象属性清单\n"
+                                     "| 中文名称 | 英文名称 | 描述 | 主键 | 类型 | 属性别名 | 属性规则 |\n"
+                                     "|---|---|---|---|---|---|---|\n| 门店编码 | store_code | 编码 | 是 | 字符串 | - | 必填 |\n",
+                                     encoding="utf-8")
+    issues = [item for item in _checker_issues(root) if item["category"] == "行业规则"]
+    by_rule = {item["message"].split("（")[0]: item for item in issues}
+    relation = by_rule["补货单要关联门店与商品"]
+    assert relation["severity"] == "警告" and "零售连锁 RETAIL-R01" in relation["message"]
+    assert "「商品」" in relation["message"] and "「门店」" not in relation["message"].split("：")[1].split("。")[0]
+    # 别名段里的非标准称谓不算；正文里的算
+    assert "「要货单」建议改称「补货单」" in by_rule["使用行业标准称谓"]["message"]
+    assert all(item["severity"] in ("警告", "建议") for item in issues)
+
+    # 没启用行业包的项目不加载这些规则
+    plain = manager.project_root(manager.create_project("无行业")["id"])
+    shutil.copytree(objects, plain / "ontology" / "object", dirs_exist_ok=True)
+    assert not [item for item in _checker_issues(plain) if item["category"] == "行业规则"]
 
 
 def test_knowledge_signal_probe_is_silent_without_knowledge_pack(env):
