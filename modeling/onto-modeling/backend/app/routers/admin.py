@@ -333,9 +333,13 @@ def delete_user(username: str, request: Request, body: DeleteUserBody | None = N
         raise ApiError("transfer_target_invalid", "移交对象不存在或不合法", 400)
     _call("DELETE", f"/admin/users/{username}")
     transferred = 0
+    from ..services import project_events
+
     for meta in owned:
         deps.workspaces.set_owner(meta["id"], target)
         transferred += 1
+        project_events.project_removed(username, meta["id"], "transferred")
+        project_events.card_changed(meta["id"])
     revoked = revoke_mcp_tokens_of(username)
     from ..services import personal_model_settings
 

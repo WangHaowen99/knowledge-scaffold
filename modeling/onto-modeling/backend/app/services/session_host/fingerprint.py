@@ -69,13 +69,19 @@ def prepare(project_id: str) -> dict:
 
     出错只记日志：装配不了就保持原装配目录，不挡消息。
     """
+    from .. import project_events
     from ..packs import service as packs_service
 
+    manager = _workspaces()
     try:
-        return packs_service.prepare_for_message(_workspaces(), project_id)
+        active = manager.packs.assembler.active(manager.project_root(project_id)) or {}
+        result = packs_service.prepare_for_message(manager, project_id)
     except Exception as exc:  # noqa: BLE001 - 项目已删除、git 失败等：沿用当前装配
         _log.warning("项目 %s 消息前装配切换失败，沿用当前装配：%s", project_id, exc)
         return {}
+    # 切到了新的装配目录：项目流发已生效与扩展项变化（契约 EP-07、EP-08）
+    project_events.assembly_switched(project_id, active.get("assembly_hash"), (result or {}).get("active_hash"))
+    return result
 
 
 def compute(engine: Any, project_id: str, owner: str) -> Fingerprint:

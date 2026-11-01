@@ -260,6 +260,16 @@ def maintenance_view() -> dict | None:
     }
 
 
+def _notify_maintenance() -> None:
+    """维护状态变了：推给已打开的项目流与用户流（契约 EP-24、EU-04）。"""
+    try:
+        from ..services import project_events
+
+        project_events.maintenance_changed()
+    except Exception:  # noqa: BLE001 - 推送失败不影响维护操作本身
+        _log.exception("推送维护状态失败")
+
+
 def enter_maintenance(mode: str, message: str, by: str, target: dict | None = None) -> dict:
     if mode not in MAINTENANCE_MODES:
         raise MaintenanceError("invalid_argument", "维护模式只能是 reject_new_sessions 或 read_only", 400,
@@ -271,6 +281,7 @@ def enter_maintenance(mode: str, message: str, by: str, target: dict | None = No
             "active": True, "mode": mode, "message": (message or "")[:500], "started_at": time.time(),
             "started_by": by, "target": target, "step": "restrict",
         })
+    _notify_maintenance()
     return maintenance_view()
 
 
@@ -298,6 +309,7 @@ def advance_maintenance(by: str) -> dict:
         else:
             raise MaintenanceError("maintenance_step_blocked", "已到最后一步，请退出维护模式", 409,
                                    {"step": step, "remaining": 0})
+    _notify_maintenance()
     return maintenance_view()
 
 
@@ -315,6 +327,7 @@ def exit_maintenance(by: str) -> None:
             raise MaintenanceError("maintenance_not_active", "不在维护模式")
         _save("maintenance.json", None)
     stop_drain()
+    _notify_maintenance()
 
 
 def rejects_new_sessions() -> bool:

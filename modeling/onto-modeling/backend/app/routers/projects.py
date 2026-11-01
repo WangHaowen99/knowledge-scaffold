@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from ..api import deps, views
 from ..api.errors import ApiError
-from ..services import audit, ownership, package_archive, uploads
+from ..services import audit, ownership, package_archive, project_events, uploads
 from ..services.name_conflict import MAX_DISPLAY_NAME_LENGTH
 from ..services.workspace import NameConflictError, WorkspaceError, remove_tree
 from ..services.workspace.layout import _slugify
@@ -353,6 +353,7 @@ def update_project(project_id: str, request: Request, body: dict = Body(...)):
         if name != meta.get("name"):
             with deps.workspaces.name_claim(name, _viewer(request), exclude_id=project_id):
                 deps.workspaces.rename_project(project_id, name)
+    project_events.project_changed(project_id, sorted(key for key in ("name", "goal", "research_mode") if key in body))
     return _meta(project_id)
 
 
@@ -379,6 +380,7 @@ async def delete_project(
     studio.purge_project(project_id)
     await asyncio.to_thread(tokens.revoke_project, deps.workspaces, project_id)
     background.add_task(_finish_delete, project_id, staged)
+    project_events.project_removed(meta.get("owner") or "", project_id, "deleted")
     return JSONResponse(status_code=202, content={"deleted": project_id})
 
 
@@ -420,6 +422,7 @@ async def archive_project(project_id: str, request: Request, body: dict = Body(.
     deps.workspaces._update_meta(project_id, archived=archived, archived_at=time.time() if archived else None)
     if archived:
         await manager.close(project_id, all_conversations=True)
+    project_events.project_changed(project_id, ["archived"])
     return _meta(project_id)
 
 
