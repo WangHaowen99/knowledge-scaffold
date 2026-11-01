@@ -326,7 +326,7 @@ export default function CreatePage() {
                   })}
                 </div>
                 <div className="grid2 mt12" style={{ gap: 10 }}>
-                  <Field label="模型" hint={<>想用自己的 Key？在 <a className="link" href="#/me">个人设置 › 我的模型配置</a> 里填写</>}>
+                  <Field label="模型" hint={<>想用自己的 Key？在 <a className="link" href="#/me?section=model">个人设置 › 我的模型配置</a> 里填写</>}>
                     <div className="inp sel"><Icon name="sparkle" size={14} /><span className="grow ell">{model?.engines?.[engine]?.source === 'personal' ? '使用我的模型配置（个人 Key）' : '使用我的模型配置'}</span></div>
                   </Field>
                   <Field label="上下文窗口" hint="按模型上下文推荐表自动带出">

@@ -59,7 +59,7 @@ function NotificationDrawer({ open, onClose, items, onReadAll }) {
         );
       }) : <div className="muted sm">暂时没有通知</div>}
       <div className="xs muted mt8 row g4">
-        <Icon name="info" size={12} />离开页面时也会弹系统通知，可在<a className="link" href="#/me">个人设置</a>里调整
+        <Icon name="info" size={12} />离开页面时也会弹系统通知，可在<a className="link" href="#/me?section=noti">个人设置</a>里调整
       </div>
     </Drawer>
   );
