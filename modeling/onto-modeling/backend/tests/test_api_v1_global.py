@@ -80,8 +80,8 @@ class FakeAuthServer:
             return 400, {"error": f"用户 {name} 不存在"}
         if method == "PUT":
             if "role" in payload:
-                if payload["role"] not in ("admin", "user"):
-                    return 400, {"error": "角色必须是 admin 或 user"}
+                if payload["role"] not in ("admin", "user", "ops"):
+                    return 400, {"error": "角色必须是 admin、user 或 ops"}
                 self.users[name]["role"] = payload["role"]
             if "password" in payload:
                 failed = self._policy(name, payload["password"])
@@ -566,10 +566,13 @@ def test_change_role_and_last_admin_guard(client, fake_auth):
     assert last["details"]["reason"] == "last_admin"
     _assert_error(client.patch("/api/v1/admin/users/nobody", headers=_h("admin-token"), json={"role": "user"}), 404, "user_not_found")
     _assert_error(client.patch(f"/api/v1/admin/users/{USER}", headers=_h("admin-token"), json={"role": "root"}), 400, "invalid_argument")
-    # auth-server 还没有 ops 角色：由它拒绝
-    _assert_error(client.patch(f"/api/v1/admin/users/{USER}", headers=_h("admin-token"), json={"role": "ops"}), 400, "invalid_argument")
+    # auth-server 已有 ops 角色（方案第 6 章第 2 项）：可以设成运维，再改回
+    to_ops = client.patch(f"/api/v1/admin/users/{USER}", headers=_h("admin-token"), json={"role": "ops"})
+    assert to_ops.status_code == 200 and to_ops.json()["role"] == "ops"
+    client.patch(f"/api/v1/admin/users/{USER}", headers=_h("admin-token"), json={"role": "user"})
     roles = [entry["detail"] for entry in audit.read(50) if (entry.get("detail") or {}).get("action") == "user.role"]
-    assert roles[0] == {"action": "user.role", "username": USER, "from": "admin", "to": "user"}
+    assert roles[0] == {"action": "user.role", "username": USER, "from": "ops", "to": "user"}
+    assert roles[1] == {"action": "user.role", "username": USER, "from": "user", "to": "ops"}
 
     # 旧接口 PUT 不带 password 改写到 PATCH
     legacy = client.put(f"/api/admin/users/{USER}", headers=_h("admin-token"), json={"role": "admin"})

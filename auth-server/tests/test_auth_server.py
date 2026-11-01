@@ -327,7 +327,25 @@ def test_create_user_value_errors_chinese(client):
 
     resp = create_user(client, "carol", role="superuser")
     assert resp.status_code == 400
-    assert resp.get_json() == {"error": "角色必须是 admin 或 user"}
+    assert resp.get_json() == {"error": "角色必须是 admin、user 或 ops"}
+
+
+def test_ops_role_is_issued_in_claims_and_can_be_assigned(client):
+    """ops 角色（onto-modeling 运维管理面）：可创建、可改，access token 的 role claim 照实签发。"""
+    resp = create_user(client, "operator_ops", role="ops")
+    assert resp.status_code == 201 and resp.get_json()["user"]["role"] == "ops"
+    claims = decode_with_jwks(client, login(client, "operator_ops", STRONG_PASSWORD).get_json()["access_token"])
+    assert claims["role"] == "ops"
+    assert client.get("/userinfo", headers={"Authorization": "Bearer " + login(
+        client, "operator_ops", STRONG_PASSWORD).get_json()["access_token"]}).get_json()["role"] == "ops"
+
+    assert create_user(client, "operator_user").status_code == 201
+    changed = client.put("/admin/users/operator_user", json={"role": "ops"}, headers=admin_headers())
+    assert changed.status_code == 200 and changed.get_json()["user"]["role"] == "ops"
+    back = client.put("/admin/users/operator_user", json={"role": "user"}, headers=admin_headers())
+    assert back.get_json()["user"]["role"] == "user"
+    rejected = client.put("/admin/users/operator_user", json={"role": "root"}, headers=admin_headers())
+    assert rejected.status_code == 400
 
 
 # -------------------------------------------------------------------- JWKS
