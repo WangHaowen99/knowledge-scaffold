@@ -26,6 +26,8 @@ from app.services.workspace import WorkspaceManager
 ASSETS = Path(config.ASSETS_DIR)
 OPTIONAL = ("trace", "knowledge", "codegen", "diagram", "evo", "websearch", "migrate")
 DEFAULT_ON = ("codegen", "diagram", "knowledge", "trace")
+# 探针里调 python3：带上跑测试的解释器所在目录（Linux 镜像的 python3 在 /usr/local/bin）
+PROBE_PATH = f"{Path(sys.executable).parent}:/usr/local/bin:/usr/bin:/bin"
 
 # 前端插件页发的命令（_plan/contract-changes.md F3「页面命令的命令名与参数」）→ 后端实际的命令。
 # 名字不同的以后端现有命令为准；表里有、后端没有的在对应包里补了（knowledge-review）。
@@ -417,12 +419,12 @@ def test_knowledge_signal_probe_is_silent_without_knowledge_pack(env):
     root = manager.project_root(manager.create_project("没有沉淀", packs=[])["id"])
     probe = root / ".claude" / "scripts" / "knowledge_signal_probe.sh"
     run = subprocess.run(["bash", str(probe)], cwd=root, input=json.dumps({"prompt": "不对，应该是按箱"}),
-                         capture_output=True, text=True, env={"PATH": "/usr/bin:/bin", "CLAUDE_PROJECT_DIR": str(root)})
+                         capture_output=True, text=True, env={"PATH": PROBE_PATH, "CLAUDE_PROJECT_DIR": str(root)})
     assert run.returncode == 0 and run.stdout.strip() == ""
     with_pack = manager.project_root(manager.create_project("有沉淀")["id"])
     run = subprocess.run(["bash", str(with_pack / ".claude" / "scripts" / "knowledge_signal_probe.sh")], cwd=with_pack,
                          input=json.dumps({"prompt": "不对，应该是按箱"}), capture_output=True, text=True,
-                         env={"PATH": "/usr/bin:/bin", "CLAUDE_PROJECT_DIR": str(with_pack)})
+                         env={"PATH": PROBE_PATH, "CLAUDE_PROJECT_DIR": str(with_pack)})
     assert "纠错信号" in run.stdout
 
 
