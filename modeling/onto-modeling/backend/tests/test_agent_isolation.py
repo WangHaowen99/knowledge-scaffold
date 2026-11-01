@@ -254,6 +254,9 @@ def test_agent_cannot_read_secrets_but_can_write_workspace(agent_env, monkeypatc
     service_tokens.issue({"name": "合成服务", "scopes": ["releases.read"]})
     with mcp_tokens.database(manager):
         pass
+    assembled = data / "assembled" / "h1" / "commands"  # 插件运行时的装配目录：agent 只读
+    assembled.mkdir(parents=True)
+    (assembled / "ontology.md").write_text("synthetic command\n", encoding="utf-8")
     sessions = data / "sessions"
     sessions.mkdir(parents=True, exist_ok=True)
     (sessions / "other.jsonl").write_text("synthetic conversation\n", encoding="utf-8")
@@ -272,6 +275,10 @@ def test_agent_cannot_read_secrets_but_can_write_workspace(agent_env, monkeypatc
         assert denied.returncode != 0 and "synthetic-admin-model-key" not in denied.stdout, name
     assert _as_agent(f"ls '{secrets_root}'").returncode != 0
     assert _as_agent(f"cat '{sessions / 'other.jsonl'}'").returncode != 0  # 数据目录其余部分也读不到
+    command = assembled / "ontology.md"
+    assert _as_agent(f"cat '{command}'").stdout.strip() == "synthetic command"
+    assert _as_agent(f"echo x >> '{command}'").returncode != 0
+    assert _as_agent(f"ls '{data}'").returncode != 0
 
     root = manager.project_root(meta["id"])
     written = _as_agent("echo agent-edit >> research/agent-note.md && git status --porcelain", cwd=root)

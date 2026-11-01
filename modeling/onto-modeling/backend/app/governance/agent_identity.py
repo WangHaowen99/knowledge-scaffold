@@ -159,6 +159,28 @@ def _group_tree(path: Path, gid: int) -> None:
     os.chmod(path, 0o2770)
 
 
+def share_read_only(path: Path) -> None:
+    """agent 要读、不能改的目录（装配目录：项目的 `.claude` 链到这里，里面有内核守卫）：
+    目录 0755、文件 0644（可执行的 0755），去掉组写与 setgid。装配器每建好一个装配目录调一次。"""
+    path = Path(path)
+    if not path.exists() or path.is_symlink():
+        return
+    for root, dirs, files in os.walk(path):
+        for name in dirs:
+            item = Path(root) / name
+            if not item.is_symlink():
+                os.chmod(item, 0o755)
+        for name in files:
+            item = Path(root) / name
+            if not item.is_symlink():
+                os.chmod(item, 0o755 if stat.S_IMODE(item.stat().st_mode) & stat.S_IXUSR else 0o644)
+    os.chmod(path, 0o755)
+
+
+# agent 只读的目录：装配目录（插件运行时，见 services/packs/assembler）
+READ_ONLY_DIRS = ("assembled",)
+
+
 def _shared_dirs() -> list[Path]:
     """agent 要读写的目录：项目工作区、Jiuwen 工件区、CLI 的 HOME。"""
     data = Path(config.DATA_DIR).resolve()
@@ -191,15 +213,18 @@ def prepare_filesystem() -> dict:
     data.mkdir(parents=True, exist_ok=True)
     marker = data / "run" / PERMS_MARKER
     first = not marker.exists()
-    # 数据目录：agent 只能穿过（去工作区、工件区），不能列目录；其余条目对它不可读
+    # 数据目录：agent 只能穿过（去工作区、工件区、装配目录），不能列目录；其余条目对它不可读
     os.chown(data, -1, gid)
-    os.chmod(data, 0o710)
+    os.chmod(data, 0o711)
     from . import secrets
 
     secrets_root = secrets.ensure_dir(secrets.secrets_dir())
     shared = _shared_dirs()
+    read_only = [data / name for name in READ_ONLY_DIRS]
+    for directory in read_only:
+        share_read_only(directory)
     for child in data.iterdir():
-        if child in shared or child == secrets_root or child.is_symlink():
+        if child in shared or child in read_only or child == secrets_root or child.is_symlink():
             continue
         if first:
             for root, dirs, files in os.walk(child):

@@ -23,9 +23,11 @@ Jiuwen 在进程内，命令执行直接拿 `os.environ`。agent 一条 `env` �
      环境换成同一份最小环境。
 4. **独立用户**：镜像建 `onto-agent`（非 root），`ONTO_WEB_AGENT_USER` 指向它。后端仍以 root 运行（要能切
    用户），两个包装在 exec 前 `setgroups([agent 组])`、`setgid`、`setuid`、umask 007——不用 SDK 的 `user`
-   参数，它只 setuid、保留 root 组。启动时（root 且配置了用户）：数据目录 0710 归 agent 组（只能穿过），
-   工作区、Jiuwen 工件区、CLI 的 HOME 归 agent 组可写并 setgid，数据目录其余条目去掉其他用户权限，后端进程
-   umask 改 007；镜像里给 git 配 `safe.directory`，agent 才能在归 root 的仓库里跑 git。
+   参数，它只 setuid、保留 root 组。启动时（root 且配置了用户）：数据目录 0711（agent 只能穿过、不能列），
+   工作区、Jiuwen 工件区、CLI 的 HOME 归 agent 组可写并 setgid；装配目录（项目 `.claude` 链到这里，含内核
+   守卫）对 agent 只读（`share_read_only`，装配器每建一个装配目录也要调它）；数据目录其余条目去掉其他用户
+   权限，后端进程 umask 改 007，原子写的新文件按 umask 给权限；镜像里给 git 配 `safe.directory`，agent 才能
+   在归 root 的仓库里跑 git。
 5. 引擎文件只做最小接入：Claude 拼选项时调 `agent_identity.claude_options`，Jiuwen 建 agent 时调
    `install_jiuwen_shell_isolation`。
 
