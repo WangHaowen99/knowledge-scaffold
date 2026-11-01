@@ -7,6 +7,7 @@ import { Button, Chip, Field, Icon, KV, Note, Ring, Seg, St, cx } from '../../ui
 import {
   CC, DiffBlock, FlowThumb, Inline, Md, SrcRow, Tli, WbCtx, Wl, fmtDuration, hhmm,
 } from './parts.jsx';
+import { EXTRA_CARDS } from './extraCards.js';
 
 // 卡片按钮要调的动作，由工作台页注入
 export const ActionsCtx = createContext({});
@@ -66,7 +67,9 @@ export function StepOutputCard({ card }) {
 // ---------- 流程图卡 ----------
 export function FlowchartCard({ card, locked }) {
   const { pid } = useContext(WbCtx);
-  const open = () => navigate(pagePath('flowchart', pid), card.artifact ? { key: card.artifact.key } : undefined);
+  const { openFlowchart } = useActions();
+  // 工作台里双击就地打开弹窗；说明页等没有弹窗宿主的地方跳到 flowchart 页
+  const open = () => (openFlowchart ? openFlowchart(card.artifact) : navigate(pagePath('flowchart', pid), card.artifact ? { key: card.artifact.key } : undefined));
   const isLocked = locked || card.locked;
   return (
     <CC
@@ -254,7 +257,10 @@ export function CardItem({ card, scope }) {
     case 'resume': return <ResumeCard card={card} />;
     case 'pack_recommendation': return <PackRecommendationCard card={card} />;
     case 'knowledge_saved': return <div className="row mt8"><Chip tone="teal" icon="check">已入库，后续建模会自动应用</Chip></div>;
-    default: return <GenericCard card={card} />;
+    default: {
+      const Extra = EXTRA_CARDS[card.card_type];
+      return Extra ? <Extra card={card} scope={scope} /> : <GenericCard card={card} />;
+    }
   }
 }
 

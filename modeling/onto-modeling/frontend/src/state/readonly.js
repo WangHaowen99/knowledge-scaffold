@@ -80,7 +80,7 @@ export function roundLockNote(lock) {
 /**
  * 输入框状态：运行中也能补充说明（deferred），归档、只读维护模式、自主构建运行中另有限制
  */
-export function composerState({ sessionState, archived, maintenance, autobuildRunning }) {
+export function composerState({ sessionState, archived, maintenance, autobuildRunning, researching }) {
   if (archived) return { disabled: true, placeholder: '项目已归档，只能查看' };
   if (maintenance?.active && maintenance.mode === 'read_only') {
     return { disabled: true, placeholder: maintenance.message || '平台正在维护，暂时只能查看' };
@@ -93,5 +93,6 @@ export function composerState({ sessionState, archived, maintenance, autobuildRu
   if (maintenance?.active && maintenance.mode === 'reject_new_sessions' && sessionState !== 'running') {
     return { disabled: false, placeholder: maintenance.message || '平台正在维护，暂停新会话', warn: true };
   }
+  if (researching) return { disabled: false, placeholder: '给助手补充说明，或者继续拖入资料…' };
   return { disabled: false, placeholder: '给助手补充说明，可拖入文件或粘贴截图…' };
 }

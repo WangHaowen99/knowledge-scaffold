@@ -139,7 +139,7 @@ export function projectCards() {
 export function notifications() {
   return [
     { id: 'n1', kind: 'autobuild_finished', title: '自主构建完成，需复核 4 项', body: '外卖骑手排班求解 · 1 小时 52 分 · 5/6 片完成，挂起 2 个问题', project_id: 'rider-shifts-52c9d0f3', project_name: '外卖骑手排班求解', action: { label: '去复核', page: 'inbox' }, created_at: ago(HOUR), read: false },
-    { id: 'n2', kind: 'evidence_conflict', title: '需要你处理：证据冲突', body: '门店补货单编制 · 牛奶上限：文档写 120 箱，数据库快照是 110', project_id: MAIN_PID, project_name: '门店补货单编制', action: { label: '去处理', page: 'inbox' }, created_at: ago(26 * MIN), read: false },
+    { id: 'n2', kind: 'evidence_conflict', title: '需要你处理：证据冲突', body: '门店补货单编制 · 牛奶陈列上限：文档写 150 箱，数据库快照是 140', project_id: MAIN_PID, project_name: '门店补货单编制', action: { label: '去处理', page: 'inbox' }, created_at: ago(26 * MIN), read: false },
     { id: 'n3', kind: 'autobuild_progress', title: '自主构建中', body: '共享单车故障诊断 · 第 3/5 片 · 预计 25 分钟后完成', project_id: 'bike-fleet-7b20e4a1', project_name: '共享单车故障诊断', action: { label: '查看', page: 'l4-run' }, created_at: ago(10 * MIN), read: true },
     { id: 'n4', kind: 'publish_done', title: '发布完成', body: '图书借阅管理 v1.3 已发布，包清单已交给评测服务', project_id: 'library-desk-1e8f6a07', project_name: '图书借阅管理', action: { label: '查看', page: 'publish' }, created_at: yesterdayAt(18, 20), read: true },
   ];

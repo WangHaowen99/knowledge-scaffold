@@ -1,5 +1,5 @@
 // 工作台 · 对话（设计稿 wb-l2）：一条顶栏、无气泡正文、产物卡、决策卡、悬浮输入框，全部由对话流事件驱动
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
@@ -11,11 +11,14 @@ import {
   Button, Drawer, Field, Icon, Modal, Ring, Seg, SegBar, St, cx, useOutside,
 } from '../../ui/index.jsx';
 import { cellClass } from '../projects/projectCard.js';
+import { AutobuildBar, useAutobuild } from './autobuild.jsx';
 import { ActionsCtx, ContextPanel, QueueCard } from './cards.jsx';
 import { WbCtx } from './parts.jsx';
 import { Timeline } from './Timeline.jsx';
 import { useConversation } from './useConversation.js';
 import '../../styles/workbench-extra.css';
+
+const FlowchartDialog = lazy(() => import('../flowchart/FlowchartDialog.jsx'));
 
 const TRACK_CLASS = { confirmed: 'ok', running: 'running', pending: 'pending', blocked: 'blocked' };
 
@@ -356,11 +359,13 @@ function Composer({ pid, cid, apiRef, st, buildMode, autobuild, onSend, catalog 
   );
 }
 
+const INLINE_ALL = ['waiting_decision', 'pending_confirm'];
 function SuggestionBar({ sug, onAction, onAll }) {
   if (!sug) return null;
   const items = [];
   if (sug.primary) items.push({ ...sug.primary, isPrimary: true });
   (sug.secondary || []).slice(0, 2).forEach((s) => items.push(s));
+  const inline = INLINE_ALL.includes(sug.mode);
   return (
     <div className="wb-sug">
       {items.map((s) => {
@@ -371,7 +376,8 @@ function SuggestionBar({ sug, onAction, onAll }) {
           </span>
         );
       })}
-      {sug.all_commands !== false ? <span className="s" onClick={onAll}><Icon name="cmd" size={12} />全部命令</span> : null}
+      {sug.all_commands !== false && inline ? <span className="s" onClick={onAll}><Icon name="cmd" size={12} />全部命令</span> : null}
+      {sug.all_commands !== false && !inline ? <><span className="sp" /><span className="s" style={{ border: 0 }} onClick={onAll}><Icon name="cmd" size={12} />全部命令<Icon name="chevd" size={12} /></span></> : null}
     </div>
   );
 }
@@ -391,6 +397,8 @@ export default function WorkbenchPage({ route }) {
   const [usage, setUsage] = useState(null);
   const [drag, setDrag] = useState(false);
   const [suggestions, setSuggestions] = useState(null);
+  const [flowchart, setFlowchart] = useState(null);
+  const ab = useAutobuild({ pid, meta, cid, state });
   const mainRef = useRef(null);
   const headRef = useRef(null);
   const comp = useRef({});
@@ -400,6 +408,10 @@ export default function WorkbenchPage({ route }) {
   useEffect(() => { api.commandCatalog(pid).then(setCatalog).catch(() => {}); }, [api, pid]);
   useEffect(() => { if (cid) api.suggestions(pid, cid).then(setSuggestions).catch(() => {}); }, [api, pid, cid]);
   useEffect(() => { if (menu === 'ctx') api.projectUsage(pid).then(setUsage).catch(() => {}); }, [api, pid, menu]);
+  // flowchart 页（设计稿）= 工作台 + 打开的流程图弹窗；地址带 key 时打开那一张
+  useEffect(() => {
+    if (route.page === 'flowchart') setFlowchart(route.query?.key ? { type: 'diagram.flowchart', key: route.query.key } : null);
+  }, [route.page, route.query?.key]);
 
   // 新内容到达时，停在底部附近就跟着滚到底
   const stick = useRef(true);
@@ -446,6 +458,7 @@ export default function WorkbenchPage({ route }) {
     registerRound: (cs, fn) => { rounds.current.set(cs, fn); },
     canSaveKnowledge: hasPlugin('knowledge'),
     saveKnowledge: (item) => setKnItem({ ...item, conversation_id: cid }),
+    openFlowchart: (artifact) => setFlowchart(artifact),
   }), [api, pid, cid, hasPlugin]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onSuggestion = async (a) => {
@@ -489,7 +502,8 @@ export default function WorkbenchPage({ route }) {
   const ctxPct = Math.round(ctx?.pct ?? 0);
   const notice = (flow?.notices || []).find((n) => n.kind === 'new_materials');
   const convTitle = list?.items?.find((c) => c.id === cid)?.title || '对话';
-  const st = composerState({ sessionState: state.session.state, archived: meta?.archived, maintenance, autobuildRunning: !!state.session.autobuild });
+  const researching = (flow?.nodes || []).some((n) => n.id === 'core.research' && ['running', 'ready', 'not_ready'].includes(n.display_state));
+  const st = composerState({ sessionState: state.session.state, archived: meta?.archived, maintenance, autobuildRunning: !!state.session.autobuild || ab.running, researching });
   const wbCtx = useMemo(() => {
     const entries = {};
     state.order.forEach((k) => {
@@ -555,6 +569,7 @@ export default function WorkbenchPage({ route }) {
             onDrop={(e) => { e.preventDefault(); setDrag(false); comp.current.addFiles?.(e.dataTransfer.files); }}
           >
             {head}
+            <AutobuildBar ab={ab} />
             <div className="wbc-main" ref={mainRef} onScroll={onScroll}>
               <div className="wbc-col">
                 {conv.loadError ? <div className="note red mt16"><Icon name="alert" /><div className="grow">{errorText(conv.loadError)}</div></div> : null}
@@ -565,7 +580,7 @@ export default function WorkbenchPage({ route }) {
             <div className="wbc-foot">
               <div className="in">
                 <SuggestionBar sug={sug} onAction={onSuggestion} onAll={() => comp.current.setText?.('/')} />
-                <Composer pid={pid} cid={cid} apiRef={comp} st={st} buildMode={meta?.build_mode} autobuild={false} onSend={send} catalog={catalog} />
+                <Composer pid={pid} cid={cid} apiRef={comp} st={st} buildMode={meta?.build_mode} autobuild={ab.running} onSend={send} catalog={catalog} />
               </div>
             </div>
             {drag ? <div className="wb-dropmask"><Icon name="upload" size={24} /><b>松开以添加附件</b><span className="xs muted">Markdown、Word、Excel、PDF、Drawio、TXT · 单个不超过 20 MB</span></div> : null}
@@ -578,6 +593,11 @@ export default function WorkbenchPage({ route }) {
             <div className="sm muted">对话记录保留，按最新配置重连模型；稳定引擎会清空模型上下文。要从空白上下文开始，请新建会话。</div>
           </Modal>
           <KnowledgeDialog item={knItem} onClose={() => setKnItem(null)} />
+          {flowchart ? (
+            <Suspense fallback={null}>
+              <FlowchartDialog artifact={flowchart} onClose={() => { setFlowchart(null); if (route.page === 'flowchart') navigate(pagePath('wb-l2', pid)); }} />
+            </Suspense>
+          ) : null}
         </WbCtx.Provider>
       </ActionsCtx.Provider>
     </ShellP>

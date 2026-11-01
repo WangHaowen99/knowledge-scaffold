@@ -1,8 +1,18 @@
 // mock 服务端：按契约路径响应，状态放在内存里；SSE 由 StreamHub 推送。
 // 只在 VITE_API_MOCK=1 的开发 / 测试构建里加载。
 // 演示状态用地址参数切换：?mock=login:fail,projects:empty,auth:local,maint:readonly,engine:missing,import:conflict,role:user
+// 项目所处阶段（工作台显示什么）：?mock=stage:materials 等，见 stageOf；各阶段的对话、流程由 routes-*.js 的 stages 提供。
+// F2 各页的接口按分组放在 routes-*.js，每个文件导出 register(ctx)、可选的 stages 与 projectStages。
 import * as F from './fixtures.js';
 import { StreamHub } from './hub.js';
+import * as artifactRoutes from './routes-artifacts.js';
+import * as autobuildRoutes from './routes-autobuild.js';
+import * as inboxRoutes from './routes-inbox.js';
+import * as materialRoutes from './routes-materials.js';
+import * as reportRoutes from './routes-reports.js';
+import * as studioRoutes from './routes-studio.js';
+
+const MODULES = [studioRoutes, reportRoutes, artifactRoutes, inboxRoutes, autobuildRoutes, materialRoutes];
 
 function readScenario() {
   const out = {};
@@ -99,12 +109,19 @@ export function createMockServer() {
   // ---------- 项目内状态 ----------
   const convKey = (pid, cid) => `conv:${pid}:${cid}`;
   const projKey = (pid) => `proj:${pid}`;
+  // 阶段：l2（陪伴建模中，wb-l2 那一屏）是主示例项目的默认；其余阶段由 routes-*.js 登记
+  // 每个阶段：{ conversations?: () => Conversation[], history?: () => Event[]（第一条对话的历史）, flow?: (base) => Flow }
+  const STAGES = { l2: { conversations: F.conversations, history: F.wbHistory } };
+  const PROJECT_STAGES = { [F.MAIN_PID]: 'l2' };
+  MODULES.forEach((mod) => { Object.assign(STAGES, mod.stages || {}); Object.assign(PROJECT_STAGES, mod.projectStages || {}); });
+  const stageOf = (pid) => (pid === F.MAIN_PID && sc.stage && STAGES[sc.stage] ? sc.stage : PROJECT_STAGES[pid] || null);
   function convsOf(pid) {
     if (!db.convs.has(pid)) {
-      const list = pid === F.MAIN_PID ? F.conversations() : [{ ...F.conversations()[3], id: `c${pid.slice(0, 11)}`, title: '默认会话', live: true, state: 'idle' }];
+      const stage = STAGES[stageOf(pid)];
+      const list = stage?.conversations ? stage.conversations() : [{ ...F.conversations()[3], id: `c${pid.slice(0, 11)}`, title: '默认会话', live: true, state: 'idle' }];
       db.convs.set(pid, list);
       list.forEach((c, i) => {
-        if (pid === F.MAIN_PID && i === 0) hub.seed(convKey(pid, c.id), 'conversation', F.wbHistory());
+        if (stage?.history && i === 0) hub.seed(convKey(pid, c.id), 'conversation', stage.history());
         else {
           const card = cardOf(pid);
           hub.seed(convKey(pid, c.id), 'conversation', [
@@ -117,7 +134,11 @@ export function createMockServer() {
     return db.convs.get(pid);
   }
   function flowOf(pid) {
-    if (!db.flows.has(pid)) db.flows.set(pid, F.flow({ trace: true }));
+    if (!db.flows.has(pid)) {
+      const base = F.flow({ trace: true });
+      const stage = STAGES[stageOf(pid)];
+      db.flows.set(pid, stage?.flow ? stage.flow(base) : base);
+    }
     return db.flows.get(pid);
   }
   const emitConv = (pid, cid, type, data) => {
@@ -344,7 +365,6 @@ export function createMockServer() {
   on('GET', '/projects/([^/]+)/events', ({ m, query }) => hub.open(projKey(m[1]), 'project', query));
   on('GET', '/projects/([^/]+)/usage', () => json(200, { calls: 214, input_tokens: 3200000, output_tokens: 410000, cost: { amount: 126, currency: 'CNY' }, last_activity_at: new Date().toISOString() }));
   on('GET', '/projects/([^/]+)/extensions', () => json(200, F.extensions()));
-  on('GET', '/projects/([^/]+)/inbox', () => json(200, F.inboxCounts()));
   on('GET', '/projects/([^/]+)/flow', ({ m }) => json(200, flowOf(m[1])));
   on('GET', '/projects/([^/]+)/flow/suggestions', () => json(200, F.suggestionsWaiting()));
   on('POST', '/projects/([^/]+)/flow/nodes/([^/]+)/(skip|restore)', ({ m }) => {
@@ -548,6 +568,13 @@ export function createMockServer() {
   on('POST', '/projects/([^/]+)/anchors/resolve', ({ body }) => json(200, {
     items: (body.anchors || []).map((a) => F.ANCHOR_RESOLUTIONS[a] || { anchor: a, scheme: a.split(':')[0], resolved: false, reason: 'not_in_snapshot', source_label: a, location_label: '', text: '', highlights: [], confidence: null, snapshot_id: null, page: null }),
   }));
+
+  // ---------- F2 各分组（routes-*.js） ----------
+  const ctx = {
+    on, json, err, wait, db, hub, sc, uid, F, cardOf, convKey, projKey, convsOf, flowOf, stageOf,
+    emitConv, emitConvTransient, emitProj, emitUser, setSession, scopeOf, setScope, scopeLock, later, runReply,
+  };
+  MODULES.forEach((mod) => mod.register?.(ctx));
 
   // ---------- 入口 ----------
   async function handle(input, init = {}) {

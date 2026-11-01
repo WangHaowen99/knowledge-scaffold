@@ -1,5 +1,5 @@
 // 应用入口：启动（C-01、A-07、无感刷新）、登录态与角色、路由
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import ChatStatesPage from '../pages/chat-states/ChatStatesPage.jsx';
 import CreatePage from '../pages/create/CreatePage.jsx';
 import ImportPage from '../pages/import/ImportPage.jsx';
@@ -19,7 +19,24 @@ import { ToastHost } from './toast.jsx';
 const GLOBAL_PAGES = ['plugins', 'plugin-detail', 'plugin-upload', 'me', 'sys', 'ops', 'ops-obs', 'ops-ctl', 'ops-users'];
 // 已实现的页面；其余页面先显示「后续版本接入」
 const ENTRY_PAGES = { projects: ProjectsPage, create: CreatePage, import: ImportPage };
-const PROJECT_PAGES = { 'wb-l2': WorkbenchPage, 'chat-states': ChatStatesPage };
+// Studio（含 WebGL 图谱）、报告、待处理按路由拆包
+const StudioPage = lazy(() => import('../pages/studio/StudioPage.jsx'));
+const StudioTablePage = lazy(() => import('../pages/studio/StudioTablePage.jsx'));
+const ReportsPage = lazy(() => import('../pages/reports/ReportsPage.jsx'));
+const InboxPage = lazy(() => import('../pages/inbox/InboxPage.jsx'));
+// 工作台的几个阶段（资料分析、切片规划、陪伴、流程图弹窗、自主构建）是同一个对话页，显示什么由对话和流程数据决定
+const PROJECT_PAGES = {
+  'wb-l2': WorkbenchPage,
+  'wb-materials': WorkbenchPage,
+  'wb-blueprint': WorkbenchPage,
+  'l4-run': WorkbenchPage,
+  flowchart: WorkbenchPage,
+  'chat-states': ChatStatesPage,
+  inbox: InboxPage,
+  studio: StudioPage,
+  'studio-table': StudioTablePage,
+  reports: ReportsPage,
+};
 
 function Pending({ project, page, projectId }) {
   const body = (
@@ -117,7 +134,7 @@ export default function App() {
     const P = PROJECT_PAGES[route.page];
     page = (
       <ProjectArea key={route.projectId} pid={route.projectId}>
-        {P ? <P route={route} /> : <Pending project projectId={route.projectId} page={route.page} />}
+        {P ? <Suspense fallback={<Splash />}><P route={route} /></Suspense> : <Pending project projectId={route.projectId} page={route.page} />}
       </ProjectArea>
     );
   } else if (GLOBAL_PAGES.includes(route.name)) page = <Pending page={route.name} />;
