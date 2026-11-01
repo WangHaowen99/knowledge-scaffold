@@ -19,9 +19,16 @@ from __future__ import annotations
 import ast
 import json
 import re
+import sys
 from pathlib import Path
 
 from operation_relations import sections
+
+try:
+    import onto_metamodel as mm
+except ModuleNotFoundError:  # 后端按文件加载本脚本时，同目录不在 sys.path 上
+    sys.path.append(str(Path(__file__).resolve().parent))
+    import onto_metamodel as mm
 
 ATTRIBUTE_SECTION = "对象属性清单"
 # 从已发布知识包导入的对象沿用包契约格式：`# 字段` 表的「字段 key」列
@@ -33,7 +40,6 @@ _IDENTITY_SUFFIXES = ("_id", "_no", "_code", "_name")
 _IDENTITY_NAMES = frozenset({"id", "code", "identifier", "device", "equipment", "unit"})
 _IDENTITY_MARKERS = ("编号", "名称")
 _IDENTITY_EXCLUSIONS = frozenset({"batch_id", "batch_no", "record_id", "row_id"})
-_WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)")
 _YES_NO_LITERALS = {"是", "否"}
 _ENUM_VALUES_RE = re.compile(r"取值[：:]\s*([^；;。\n]+)")
 _BOOL_NORMALIZATION_RE = re.compile(r"_yes_no\b|isinstance\([^)]*\bbool\b")
@@ -130,7 +136,7 @@ def enum_note(param: dict, enums: dict[str, dict[str, list[str]]]) -> str:
     """记录参数说明里点到的枚举字段及允许取值（来源对象取说明里的 [[对象名]]）；没有时返回空串。
     智能体在假设场景里常不读对象文档，按字面意思自造取值，脚本就会把它当成条件不满足。"""
     desc = param.get("desc", "")
-    declared = [obj.strip() for obj in _WIKILINK_RE.findall(desc) if obj.strip() in enums]
+    declared = [obj for obj in mm.link_names(desc, enums) if obj in enums]
     if not declared:
         return ""
     named = [
@@ -186,7 +192,7 @@ def argument_shape_issues(params: list[dict], attributes: dict[str, set[str]]) -
                 f"参数 {param['name']} 的说明写了不传时的处理（「{absence.group(0)}」）：用户只说记录已提供、没给取值时，"
                 "智能体会据此整条不传，脚本只能判记录缺失。描述符已自动写明「记录存在就照传，没取值传 {}」，请删掉这句"
             )))
-        declared = [obj for obj in _WIKILINK_RE.findall(param.get("desc", "")) if obj.strip() in attributes]
+        declared = [obj for obj in mm.link_names(param.get("desc", ""), attributes) if obj in attributes]
         attribute_keys = [key for key in keys if key in owners]
         if not declared:
             issues.append(("警告", (

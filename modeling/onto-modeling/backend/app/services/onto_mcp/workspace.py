@@ -44,7 +44,7 @@ def integrity(records):
     issues = {}
     by_key = {r["key"]: r for r in records.values()}
     for identity, record in records.items():
-        for target in doc.links(record["text"]):
+        for target in doc.links(record["text"], by_key):
             if target not in by_key:
                 key = (identity, "REFERENCE_NOT_FOUND", target)
                 issues[key] = issue("REFERENCE_NOT_FOUND", "引用的本体元素不存在", record["path"], resource_id=target)
@@ -100,7 +100,7 @@ def analyze(project_id, records, current, name, args):
             text = patch_resource(seed, payload)
             next_records[identity] = {**seed, "text": text}
         elif action == "delete":
-            references = [r for rid, r in records.items() if rid != identity and key in doc.links(r["text"])]
+            references = [r for rid, r in records.items() if rid != identity and key in doc.links(r["text"], {key})]
             if references:
                 raise McpError("RESOURCE_REFERENCED", "资源仍被其他文档引用", 422,
                                references=[r["path"] for r in references])

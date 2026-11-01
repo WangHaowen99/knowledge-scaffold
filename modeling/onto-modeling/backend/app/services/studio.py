@@ -14,22 +14,15 @@ import time
 from pathlib import Path
 
 from .. import config
+from ..kernel.metamodel import mm
 from . import package_mapping
 from .document_metadata import name_frontmatter, report_name
 
-WIKILINK = re.compile(r"\[\[([^\]|#]+)")
 SECTION = re.compile(r"^(#{1,2})\s+(.+)$", re.MULTILINE)
 NUMBERED_STEP = re.compile(r"^\s*\d+[.)、．]\s*(.+)$")
 
-# 五元组元模型（对齐 modeling 知识包，ADR-0004）；ontology/logic 为旧目录兼容
-KIND_DIRS = (
-    ("object", "ontology/object", "*.md"),
-    ("operation", "ontology/operation", "*.md"),
-    ("operation", "ontology/logic", "*.md"),
-    ("rule", "ontology/rule", "*.md"),
-    ("metric", "ontology/metric", "*.md"),
-    ("script", "ontology/scripts", "*.py"),
-)
+# 实体类型与目录取元模型（含 ontology/logic 只读别名，ADR-0004）
+KIND_DIRS = mm.kind_dirs()
 
 
 def _docs(root: Path) -> list[dict]:
@@ -39,7 +32,7 @@ def _docs(root: Path) -> list[dict]:
         if not directory.is_dir():
             continue
         for path in sorted(directory.glob(pattern)):
-            if path.name == "index.md":  # 工作区占位 index 不是本体元素
+            if path.name == mm.INDEX_FILE:  # 工作区占位 index 不是本体元素
                 continue
             docs.append(
                 {
@@ -166,9 +159,9 @@ def graph(root: Path) -> dict:
                 raw_section = heading.group(2).strip()
                 section = SECTION_ALIASES.get(raw_section, raw_section)
                 continue
-            for raw_target in WIKILINK.findall(line):
-                target = raw_target.strip()
-                if target not in by_name:
+            for link in mm.parse_links(line):
+                target = mm.resolve(link, by_name)
+                if target is None:
                     continue
                 target_doc = by_name[target]
                 # 操作与对象的关系只认操作条目的「与object的关联」章节；
@@ -278,7 +271,7 @@ def _plain_summary(text: str) -> str:
         if not line or line.startswith(("|", "```", "{待填写", ">")):
             continue
         line = re.sub(r"^[-*+]\s+", "", line)
-        line = re.sub(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]", r"\1", line)
+        line = mm.strip_links(line, use_alias=False)
         line = re.sub(r"[`*_]", "", line).strip()
         if line:
             return line[:500]
@@ -454,7 +447,8 @@ def element(root: Path, rel_path: str) -> dict:
     intro = _intro_of(body)
 
     all_docs = _docs(root)
-    links = {t.strip() for t in WIKILINK.findall(text) if t.strip() != name}
+    names = {doc["name"] for doc in all_docs}
+    links = {target for target in mm.link_names(text, names) if target != name}
     if target.suffix.lower() == ".md":
         for doc in all_docs:
             if doc["kind"] == "script" and f"{doc['name']}.py" in text:
@@ -469,7 +463,7 @@ def element(root: Path, rel_path: str) -> dict:
             other = doc["file"].read_text(encoding="utf-8")
         except OSError:
             continue
-        hit = f"[[{name}" in other or (is_script and f"{name}.py" in other)
+        hit = mm.references(other, name, names) or (is_script and f"{name}.py" in other)
         if hit:
             backlinks.append({
                 "name": doc["name"],
@@ -536,69 +530,23 @@ def serialize_sections(sections: list[dict]) -> str:
 # ---- schema：对准工具集五元组模板（assets templates，ADR-0004） ----
 
 # 章节名随范式升级迁移；旧文档章节读取时归一为新名
-SECTION_ALIASES = {"与logic的关联": "与operation的关联"}
-
-OBJECT_SCHEMA = [
-    {"title": "对象描述", "kind": "text", "required": True},
-    {"title": "对象别名", "kind": "text", "required": False},
-    {"title": "英文名称", "kind": "text", "required": False},
-    {
-        "title": "对象属性清单",
-        "kind": "table",
-        "required": True,
-        "columns": ["中文名称", "英文名称", "描述", "主键", "类型", "属性别名", "属性规则"],
-    },
-    {"title": "关联对象", "kind": "text", "required": True},
-]
-
-OPERATION_SCHEMA = [
-    {"title": "业务描述", "kind": "text", "required": True},
-    {"title": "与operation的关联", "kind": "text", "required": True},
-    {"title": "与object的关联", "kind": "text", "required": True},
-    {
-        "title": "与object的语义关联",
-        "kind": "table",
-        "required": False,
-        "columns": ["业务对象", "语义关联关系"],
-    },
-    {"title": "触发条件", "kind": "text", "required": False},
-    {"title": "输入", "kind": "table", "required": True, "columns": ["参数名称", "描述", "输入源"]},
-    {"title": "输出", "kind": "table", "required": True, "columns": ["参数名称", "描述"]},
-    {"title": "逻辑描述", "kind": "text", "required": True},
-]
+SECTION_ALIASES = mm.SECTION_ALIASES
 
 
-RULE_SCHEMA = [
-    {"title": "规则描述", "kind": "text", "required": True},
-    {"title": "规则类型", "kind": "text", "required": False},
-    {"title": "适用对象", "kind": "text", "required": True},
-    {"title": "触发条件", "kind": "text", "required": False},
-    {"title": "约束表达", "kind": "text", "required": True},
-    {"title": "违反处置", "kind": "text", "required": False},
-    {"title": "来源", "kind": "text", "required": False},
-    {"title": "例外情况", "kind": "text", "required": False},
-]
+def _schema(kind: str) -> list[dict]:
+    return [section.as_dict() for section in mm.sections_of(kind)]
 
-METRIC_SCHEMA = [
-    {"title": "指标描述", "kind": "text", "required": True},
-    {"title": "计算公式", "kind": "text", "required": True},
-    {"title": "数据来源", "kind": "text", "required": True},
-    {"title": "维度与粒度", "kind": "text", "required": False},
-    {"title": "单位", "kind": "text", "required": False},
-    {"title": "更新频率", "kind": "text", "required": False},
-]
+
+# 各类条目的章节结构取元模型
+OBJECT_SCHEMA = _schema("object")
+OPERATION_SCHEMA = _schema("operation")
+RULE_SCHEMA = _schema("rule")
+METRIC_SCHEMA = _schema("metric")
 
 
 def schema_for(rel_path: str) -> list[dict] | None:
-    if rel_path.startswith("ontology/object/"):
-        return OBJECT_SCHEMA
-    if rel_path.startswith(("ontology/operation/", "ontology/logic/")):
-        return OPERATION_SCHEMA
-    if rel_path.startswith("ontology/rule/"):
-        return RULE_SCHEMA
-    if rel_path.startswith("ontology/metric/"):
-        return METRIC_SCHEMA
-    return None
+    kind = mm.kind_of_path(rel_path)
+    return _schema(kind) if kind in ("object", "operation", "rule", "metric") else None
 
 
 # ---- 草稿区与租约 ----
@@ -751,9 +699,8 @@ def deterministic_check(root: Path, rel_path: str, content: str) -> dict:
     # 链接目标存在性：指向不存在的文档 → 可能是要新建对象，转复核
     names = {d["name"] for d in _docs(root)}
     stem = Path(rel_path).stem
-    for target in {t.strip() for t in WIKILINK.findall(content)}:
-        if target and target != stem and target not in names:
-            review.append(f"[[{target}]] 指向不存在的文档")
+    for link in mm.unresolved(content, names | {stem}):
+        review.append(f"[[{link.full_name}]] 指向不存在的文档")
 
     return {"errors": errors, "review": review}
 

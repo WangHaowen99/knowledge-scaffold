@@ -19,13 +19,14 @@ import sys
 from pathlib import Path
 
 from ontology_checker import load_ontology
+import onto_metamodel as mm
 
 
 def query_used_by(stem: str, all_docs: dict) -> list:
     """Return list of stems whose document contains [[stem]]."""
     return sorted(
         other_stem for other_stem, doc in all_docs.items()
-        if other_stem != stem and stem in doc.wiki_links
+        if other_stem != stem and any(mm.resolve(link, all_docs) == stem for link in doc.wiki_links)
     )
 
 
@@ -33,7 +34,7 @@ def query_orphans(all_docs: dict) -> dict:
     """Return {doc_type: [stems not referenced by anyone]}."""
     referenced = set()
     for doc in all_docs.values():
-        referenced.update(doc.wiki_links)
+        referenced.update(mm.resolve(link, all_docs) or link for link in doc.wiki_links)
     orphans = {'object': [], 'operation': [], 'action': []}
     for stem, doc in all_docs.items():
         if stem not in referenced:
@@ -62,13 +63,12 @@ def query_unused(all_docs: dict, target_type: str) -> list:
     referenced = set()
     for doc in all_docs.values():
         if doc.doc_type == 'operation':
-            referenced.update(doc.wiki_links)
+            referenced.update(mm.resolve(link, all_docs) or link for link in doc.wiki_links)
             # action invocations
             for row in doc.action_rows:
-                action_name = row.get('动作名称', '').strip()
-                m = re.match(r'\[\[([^\]]+)\]\]', action_name)
-                if m:
-                    referenced.add(m.group(1))
+                link = mm.parse_link(row.get('动作名称', ''))
+                if link:
+                    referenced.add(mm.resolve(link, all_docs) or link.full_name)
     return sorted(
         stem for stem, doc in all_docs.items()
         if doc.doc_type == target_type and stem not in referenced
@@ -80,7 +80,7 @@ def query_dangling(all_docs: dict) -> list:
     dangling = []
     for stem, doc in sorted(all_docs.items()):
         for link in doc.wiki_links:
-            if link not in all_docs:
+            if mm.resolve(link, all_docs) is None:
                 dangling.append((stem, link))
     return dangling
 

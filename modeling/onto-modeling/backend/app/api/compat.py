@@ -15,19 +15,12 @@ from dataclasses import dataclass
 from typing import Callable
 from urllib.parse import parse_qs, quote
 
+from ..kernel.metamodel import mm
+
 SUNSET = "Sat, 01 May 2027 00:00:00 GMT"
 _P = r"(?P<id>[^/]+)"
 _BODY_LIMIT = 4 * 1024 * 1024  # 需要看请求体才能改写的几个旧接口，请求体都很小
 
-# 本体条目目录 → 条目类型（与 Studio 的 entry_id 一致，ontology/logic 是 operation 旧目录）
-_ENTRY_DIRS = {
-    "ontology/object": "object",
-    "ontology/operation": "operation",
-    "ontology/logic": "operation",
-    "ontology/rule": "rule",
-    "ontology/metric": "metric",
-    "ontology/scripts": "script",
-}
 # 没指定对话时的占位：v1 会话接口把它解析成引擎当前绑定的对话（没有就取最近更新的一条）
 CURRENT_CONVERSATION = "-"
 
@@ -35,11 +28,7 @@ CURRENT_CONVERSATION = "-"
 def entry_id_for_path(path: str) -> str:
     """旧接口按文件路径定位的条目 → v1 的 entry_id（<kind>:<key>）；认不出时原样返回路径。"""
     path = (path or "").strip().lstrip("/")
-    directory, _, name = path.rpartition("/")
-    kind = _ENTRY_DIRS.get(directory)
-    if kind and "." in name:
-        return f"{kind}:{name.rsplit('.', 1)[0]}"
-    return path
+    return mm.entry_key(path) or path
 
 
 @dataclass(frozen=True)

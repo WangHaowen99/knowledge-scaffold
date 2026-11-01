@@ -13,8 +13,15 @@
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+try:
+    import onto_metamodel as mm
+except ModuleNotFoundError:  # 后端按文件加载本脚本时，同目录不在 sys.path 上
+    sys.path.append(str(Path(__file__).resolve().parent))
+    import onto_metamodel as mm
 
 RELATION_SECTION = "与operation的关联"
 LEGACY_RELATION_SECTION = "与logic的关联"
@@ -24,7 +31,6 @@ STANDALONE_NO = "否"
 OPERATION_DIRS = ("operation", "logic")  # logic 为旧目录兼容（ADR-0004）
 
 _HEADING_RE = re.compile(r"^#{1,3}\s+(.+)")
-_LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 _CALLEE_LINE_RE = re.compile(r"^\s*[-•]?\s*调用\s*operation\b", re.IGNORECASE)
 _CALLER_LINE_RE = re.compile(r"^\s*[-•]?\s*被\s*operation\s*调用\b", re.IGNORECASE)
 _STANDALONE_LINE_RE = re.compile(r"^\s*[-•]?\s*可单独调用\s*[>＞:：]\s*(.*)$")
@@ -62,16 +68,18 @@ def sections(markdown: str) -> dict[str, str]:
     return result
 
 
-def _link_stem(target: str) -> str:
-    stem = target.split("|")[0].strip().split("/")[-1].strip()
-    stem = re.sub(r"\.md$", "", stem, flags=re.IGNORECASE)
-    return "" if stem == "无" else stem
+def _link_stem(link) -> str:
+    """链接（或链接内文）按元模型解析（onto_metamodel）；保留 `名称#锚点` 全名，由调用方按条目名解析。"""
+    if isinstance(link, str):
+        link = mm.parse_link_text(link)
+    stem = link.full_name
+    return "" if link.name in mm.EMPTY_TARGETS else stem
 
 
 def _ordered_link_stems(text: str) -> list[str]:
     stems: list[str] = []
-    for match in _LINK_RE.finditer(text):
-        stem = _link_stem(match.group(1))
+    for link in mm.parse_links(text):
+        stem = _link_stem(link)
         if stem and stem not in stems:
             stems.append(stem)
     return stems
@@ -146,7 +154,7 @@ def stops_before_call(parent_markdown: str, child: str) -> bool:
     按 `[[子operation]]` 第一次出现的位置算，「依次调用[[A]]、[[B]]逻辑文档」这类写法也能定位。
     """
     logic = sections(parent_markdown).get(LOGIC_SECTION, "")
-    first = next((match.start() for match in _LINK_RE.finditer(logic) if _link_stem(match.group(1)) == child), None)
+    first = next((link.span[0] for link in mm.parse_links(logic) if child in (link.full_name, link.name)), None)
     return first is not None and bool(_STOP_CONDITION_RE.search(logic[:first]))
 
 

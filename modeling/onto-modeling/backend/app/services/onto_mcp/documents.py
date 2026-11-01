@@ -3,13 +3,13 @@ import copy
 import hashlib
 import json
 import re
+from ...kernel.metamodel import mm
 from ..document_metadata import report_name, name_frontmatter
 from ..package_mapping import parse_relation_definitions
 from .errors import McpError
 
-KINDS = {"object": ("ontology/object",), "operation": ("ontology/operation", "ontology/logic"),
-         "rule": ("ontology/rule",), "metric": ("ontology/metric",), "script": ("ontology/scripts",)}
-LINK = re.compile(r"\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]")
+# 实体类型与目录（含只读别名）、链接语法都取元模型
+KINDS = {entity.kind: entity.directories for entity in mm.ENTITY_TYPES}
 HEADING = re.compile(r"^(#{1,2})[ \t]+([^\n]+)$", re.M)
 ALIASES = {"属性": "对象属性清单", "字段": "对象属性清单", "描述": "对象描述", "与logic的关联": "与operation的关联"}
 
@@ -21,9 +21,7 @@ def key(value, kind=None):
         if not value.startswith(kind + ":"):
             raise McpError("INVALID_INPUT", f"资源 ID 必须以 {kind}: 开头")
         value = value[len(kind) + 1:]
-    if not value or value != value.strip() or len(value) > 80:
-        raise McpError("INVALID_INPUT", "资源 key 格式无效")
-    if ".." in value or re.search(r'[/\\#?&|\x00-\x1f\x7f]', value):
+    if mm.key_problem(value):  # key 规则取元模型（方案 C5）
         raise McpError("INVALID_INPUT", "资源 key 格式无效")
     return value
 
@@ -118,8 +116,9 @@ def title(record):
     return record["key"]
 
 
-def links(text):
-    return list(dict.fromkeys(match.strip() for match in LINK.findall(text)))
+def links(text, names=None):
+    """正文链接到的条目名（按首次出现去重）；给了 names 时按元模型解析（`#` 是锚点，全名优先）。"""
+    return mm.link_names(text, names)
 
 
 def cells(line):
@@ -153,6 +152,11 @@ def array_section(value):
 def public(record, records):
     kind, stem = record["kind"], record["key"]
     s = sections(record["text"])
+    names = {item["key"] for item in records.values()}
+
+    def links(text):
+        return mm.link_names(text, names)
+
     result = {"key": stem, "title": title(record),
               "description": s.get({"object": "对象描述", "operation": "业务描述", "rule": "规则描述"}.get(kind, ""), "")}
     if kind == "object":

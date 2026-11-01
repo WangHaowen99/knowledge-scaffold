@@ -51,6 +51,7 @@ def _routers():
         files,
         knowledge,
         me,
+        metamodel,
         onto_mcp,
         ops,
         project_settings,
@@ -69,6 +70,7 @@ def _routers():
     return (
         auth_routes.router,
         me.router,
+        metamodel.router,
         uploads.router,
         projects.router,
         project_settings.router,

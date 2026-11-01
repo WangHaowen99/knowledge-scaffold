@@ -12,6 +12,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from ...kernel.metamodel import mm
 from .. import package_mapping, package_operations, solver_contract
 from ..document_metadata import report_name
 from ..solver.service import solver_check_at
@@ -19,9 +20,15 @@ from ..toolkit import script_argument_shape as _script_argument_shape
 from ..toolkit import script_contract as _script_contract
 from ..toolkit import script_descriptor as _script_descriptor
 from ..workspace.errors import WorkspaceError
-from ..workspace.layout import _WIKILINK_RE, _strip_frontmatter
+from ..workspace.layout import _strip_frontmatter
 from .layout import package_script_filename
 from .spi import Manifest, ReleaseSource
+
+
+def _used_objects(body: str, object_keys) -> list[str]:
+    """条目正文链接到的对象 key（frontmatter uses.objects），按元模型解析链接。"""
+    return sorted(set(mm.link_names(body, object_keys)) & set(object_keys))
+
 
 ADAPTER_ID = "ontology-package"
 FORMAT_ONTOLOGY = "ontology"
@@ -399,7 +406,7 @@ class OntologyPackageAdapter:
                 ),
             )
             for key, body in operations:
-                used = sorted({m for m in _WIKILINK_RE.findall(body) if m in object_keys})
+                used = _used_objects(body, object_keys)
                 item = solver_by_stem.get(key)
                 if item is None:
                     extra = f"uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n"
@@ -430,7 +437,7 @@ class OntologyPackageAdapter:
                     ),
                 )
                 for key, body in rules:
-                    used = sorted({m for m in _WIKILINK_RE.findall(body) if m in object_keys})
+                    used = _used_objects(body, object_keys)
                     extra = f"uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n"
                     zf.writestr(f"{pkg}/rules/{key}.md", front("rule", key, key, extra) + body)
             if metrics:
@@ -443,7 +450,7 @@ class OntologyPackageAdapter:
                     ),
                 )
                 for key, body in metrics:
-                    used = sorted({m for m in _WIKILINK_RE.findall(body) if m in object_keys})
+                    used = _used_objects(body, object_keys)
                     extra = f"uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n"
                     zf.writestr(f"{pkg}/metrics/{key}.md", front("metric", key, key, extra) + body)
             if scripts:

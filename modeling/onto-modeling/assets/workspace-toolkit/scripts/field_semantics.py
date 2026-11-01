@@ -32,6 +32,12 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    import onto_metamodel as mm
+except ModuleNotFoundError:  # 后端按文件加载本脚本时，同目录不在 sys.path 上
+    sys.path.append(str(Path(__file__).resolve().parent))
+    import onto_metamodel as mm
+
 # ---------------------------------------------------------------------------
 # 类型词表
 # ---------------------------------------------------------------------------
@@ -473,7 +479,6 @@ def identity_mixing(column: dict | None, rule: str = '') -> str:
 # ---------------------------------------------------------------------------
 
 _ASCII_IDENT_RE = re.compile(r'(?<![A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*(?![A-Za-z0-9_])')
-_LINK_RE = re.compile(r'\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]')
 _ACCESSOR_RE = re.compile(r'\s*(?:\.|(?:中|里)?的)\s*`?')
 _CLAUSE_SEPARATOR_RE = re.compile(r'[，,。；;！!？?]')
 _EQUAL_MID_RE = re.compile(
@@ -593,12 +598,11 @@ def _find_refs(line: str, index: FieldIndex) -> list:
         masked.append((start, end))
         return ref
 
-    for link in _LINK_RE.finditer(line):
-        masked.append(link.span())
-        target = re.sub(r'\.md$', '', link.group(1).strip().split('/')[-1], flags=re.I)
-        stem = index.qualifiers.get(_norm(target))
+    for link in mm.parse_links(line):
+        masked.append(link.span)
+        stem = index.qualifiers.get(_norm(link.full_name)) or index.qualifiers.get(_norm(link.name))
         if stem:
-            qualified(link.start(), link.end(), stem)
+            qualified(link.span[0], link.span[1], stem)
     if index.qualifier_re:
         for match in index.qualifier_re.finditer(line):
             stem = index.qualifiers.get(_norm(match.group(0)))
