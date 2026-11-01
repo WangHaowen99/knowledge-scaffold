@@ -311,26 +311,35 @@ def observe_phase(project_id: str, exec_id: str, root: Path) -> tuple[dict | Non
 
 
 def finish_turn(project_id: str, exec_id: str, root: Path, *, waiting_user: bool = False) -> dict | None:
-    """一轮结束：命令锁还在（或在等你回答）记为等待，否则记为完成。"""
-    record, _ = observe_phase(project_id, exec_id, root)
-    if record is None or record.get("state") not in OPEN_STATES:
-        return None
-    still_open = waiting_user or lock_phase(root, record.get("command_name") or "") is not None
-    now = time.time()
-    fields = {"heartbeat_at": now, "saved": saved(root, record.get("base_commit") or "")}
-    if still_open:
-        fields["state"] = "waiting"
-    else:
-        fields.update(state="done", ended_at=now)
-    return update(project_id, exec_id, **fields)
+    """一轮结束：命令锁还在（或在等你回答）记为等待，否则记为完成。
+
+    整个判断持锁做：打断（interrupt）可能在别的线程同时改这份记录，已经中断的不能被改回等待。
+    """
+    with _lock:
+        record, _ = observe_phase(project_id, exec_id, root)
+        if record is None or record.get("state") not in OPEN_STATES:
+            return None
+        still_open = waiting_user or lock_phase(root, record.get("command_name") or "") is not None
+        now = time.time()
+        record["heartbeat_at"] = now
+        record["saved"] = saved(root, record.get("base_commit") or "")
+        if still_open:
+            record["state"] = "waiting"
+        else:
+            record.update(state="done", ended_at=now)
+        _write(record)
+        return record
 
 
 def continue_running(project_id: str, exec_id: str) -> dict | None:
     """等待中的执行收到下一条消息：接着跑。"""
-    record = get(project_id, exec_id)
-    if record is None or record.get("state") != "waiting":
-        return None
-    return update(project_id, exec_id, state="running", heartbeat_at=time.time())
+    with _lock:
+        record = get(project_id, exec_id)
+        if record is None or record.get("state") != "waiting":
+            return None
+        record.update(state="running", heartbeat_at=time.time())
+        _write(record)
+        return record
 
 
 def interrupt(project_id: str, exec_id: str, reason: str, *, root: Path | None = None, flow: dict | None = None,

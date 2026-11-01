@@ -172,7 +172,7 @@ def observe(session) -> dict | None:
 def end_turn(session, *, failed: bool, waiting_user: bool = False) -> list[dict]:
     """一轮出 result 之后：执行记录记为等待或完成，任务收尾，项目流重算流程；返回要广播的下一步建议。"""
     bound: set[str] = set()
-    if session.exec_id:
+    if session.exec_id and not session.interrupting:  # 打断中先出的 result：执行记录由打断记为中断
         record = _safe("执行记录收尾", exec_records.finish_turn, session.project_id, session.exec_id, session.cwd,
                        waiting_user=waiting_user)
         if record is not None:

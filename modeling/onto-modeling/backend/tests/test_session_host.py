@@ -336,6 +336,43 @@ def test_interrupt_marks_exec_and_offers_resume_then_resume_and_abandon(host):
                                              model.load_for(root)) == "inputs_changed"
 
 
+def test_result_arriving_while_interrupting_does_not_finish_the_turn(host, monkeypatch):
+    """引擎停下前先出 result（命令锁也已放掉）：工作过程仍记为打断，执行记录记为中断而不是完成。"""
+    manager, project_id, root = host
+    FakeEngine.scripts = [
+        [lock("extract-operation", "source"),
+         {"type": "assistant_message", "blocks": [{"kind": "tool_use", "tool": "Bash", "tool_use_id": "tu-1",
+                                                   "input": {"command": "python3 x.py", "description": "抽取操作"}}]},
+         release("extract-operation")],
+    ]
+    (root / "ontology" / "object").mkdir(parents=True, exist_ok=True)
+
+    async def slow_interrupt(self) -> None:
+        await self.queue.put({"type": "result", "subtype": "interrupted", "is_error": False, "duration_ms": 1})
+        for _ in range(50):  # 等读循环把这条 result 收完再返回
+            await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(FakeEngine, "interrupt", slow_interrupt)
+
+    async def scenario():
+        await manager.send(project_id, root, "/ontology-extract-operation")
+        await settle(manager, project_id, until=lambda s: s.state == "running" and s.turn and s.turn.steps)
+        await manager.interrupt(project_id)
+        session = await settle(manager, project_id)
+        flag = session.interrupting
+        interrupted = manager.interrupted_execs.get((project_id, "default"))
+        await manager.shutdown()
+        return interrupted, flag
+
+    interrupted, flag = asyncio.run(scenario())
+    assert interrupted is not None and interrupted["state"] == "interrupted" and flag is False
+    envelopes = project_history(manager, project_id)
+    groups = [item["data"] for item in envelopes if item["type"].startswith("progress")]
+    assert groups[-1]["state"] == "interrupted" and all(group["state"] != "done" for group in groups)
+    suggestions = [item for item in envelopes if item["type"] == "suggestions.updated"][-1]["data"]
+    assert suggestions["mode"] == "interrupted"
+
+
 def test_startup_sweep_interrupts_open_execs_with_resume_card(host):
     manager, project_id, root = host
     from app.services.flow import model

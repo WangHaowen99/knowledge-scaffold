@@ -293,6 +293,8 @@ class Session:
     turns_in_flight: int = 0
     # 运行中模型配置变了：等手头的轮次都出 result 再断开，下一条消息按新配置重连
     reload_pending: bool = False
+    # 你正在打断：等引擎停下期间这一轮可能先出 result，收尾时工作过程记为打断、执行记录留给打断处理
+    interrupting: bool = False
     # 引擎连上时的会话配置指纹（session_host/fingerprint.py）与等待生效的变化项
     fingerprint: Any = None
     pending_changes: list = field(default_factory=list)
@@ -1190,6 +1192,7 @@ class SessionManager:
                 session.set_state("idle")
             return False
         engine = session.engine
+        session.interrupting = True
         try:
             await asyncio.wait_for(engine.interrupt(), timeout=INTERRUPT_TIMEOUT_SECONDS)
         except Exception:  # 含 wait_for 的 TimeoutError
@@ -1210,6 +1213,7 @@ class SessionManager:
         """你打断了这一步（EC-05）：执行记为中断（不放续跑卡，建议条给「从打断处继续」），工作过程收起。"""
         from .session_host import command_tasks
 
+        session.interrupting = False
         if session.turn is not None and session.turn.steps:
             session.turn.finish("interrupted")
             session.broadcast(session.turn.progress_record())
@@ -1440,7 +1444,7 @@ class SessionManager:
         failed = bool(event.get("is_error")) or str(event.get("subtype") or "").startswith("error")
         turn = session.turn
         if turn is not None and turn.steps and turn.state == "running":
-            turn.finish("failed" if failed else "done")
+            turn.finish("interrupted" if session.interrupting else "failed" if failed else "done")
             session.broadcast(turn.progress_record())
         session.broadcast({**event, "turn_id": turn.turn_id if turn is not None else f"t-{uuid.uuid4().hex[:10]}"})
         session.turn = None
@@ -1449,22 +1453,30 @@ class SessionManager:
         await self._emit_workspace_changes(session)
         session.retries = 0 if not failed else session.retries
         session.set_state("idle")
-        for record in await asyncio.to_thread(turns.end_turn, session, failed=failed,
-                                              waiting_user=bool(session.pending_permissions)):
+        # 待重载的会话先断开旧引擎（手头的轮次都出了 result），收尾的记账放在后面
+        reload = session.reload_pending and session.turns_in_flight == 0
+        if reload:
+            await self._reload_after_turn(session)
+        # 运行中收下的下一条消息：引擎接着跑它，这里开它的执行记录与这一轮（与收尾同一次线程往返）
+        deferred = session.deferred.pop(0) if session.deferred else None
+        for record in await asyncio.to_thread(self._after_turn, session, failed, deferred):
             if record.get("type") == "suggestions" and session.keep_suggestions:
                 continue
             session.broadcast(record)
         session.keep_suggestions = False
-        if session.deferred:
-            # 运行中收下的下一条消息：引擎接着跑它，这里开它的执行记录与这一轮
-            text, task_id = session.deferred.pop(0)
-            await asyncio.to_thread(turns.begin, session, text, task_id=task_id)
+        if deferred is not None:
             session.turn = timeline.Turn.new(session.turn_title)
-            session.last_prompt = text
-        if session.reload_pending and session.turns_in_flight == 0:
-            await self._reload_after_turn(session)
-            return True
-        return False
+            session.last_prompt = deferred[0]
+        return reload
+
+    @staticmethod
+    def _after_turn(session: Session, failed: bool, deferred: tuple | None) -> list[dict]:
+        """线程里做的收尾：执行记录、任务、下一步建议；接着开下一条（运行中收下的）消息。"""
+        records = turns.end_turn(session, failed=failed, waiting_user=bool(session.pending_permissions))
+        if deferred is not None:
+            text, task_id = deferred
+            turns.begin(session, text, task_id=task_id)
+        return records
 
     def _turn_failed(self, session: Session, error_id: str, message: str) -> None:
         """这一轮出错（引擎异常结束、连不上）：工作过程收成出错，执行记为中断并放续跑卡，出错卡带错误编号。"""
