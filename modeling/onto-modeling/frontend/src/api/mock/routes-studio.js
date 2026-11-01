@@ -658,7 +658,8 @@ export function register(ctx) {
       if (!f) return err(404, 'file_not_found', '文件不存在', { path });
       return json(200, { path, content: f.content, truncated: false, size: new TextEncoder().encode(f.content).length, revision: f.revision || 'r1', last_change: f.last_change || null, lock: null });
     }
-    const content = e.raw ?? renderMd(e);
+    // 脚本条目的原文是 Python，由代码生成页的 mock 放进 db.files
+    const content = e.raw ?? (e.kind === 'script' ? db.files?.get(path)?.content : null) ?? renderMd(e);
     const big = sc.raw === 'big' && e.key === S.FOCUS_ENTRY;
     const changed = st.rawChanged && e.key === S.FOCUS_ENTRY;
     return json(200, {
