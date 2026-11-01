@@ -4,34 +4,71 @@
 # suggestions are surfaced via stderr so the user still sees them.
 
 # --- Hook self-guard ---------------------------------------------------------
-# Claude Code's PreToolUse hook for Bash fires on EVERY Bash tool call;
-# settings.json's `if` field is silently ignored by the current hook engine,
-# so we gate here by reading the tool input JSON from stdin and matching
-# `git commit`（含 `git -C 目录 commit`、`git -c 键=值 commit`、绝对路径调用，方案 D10）。
-# 读不出命令按拒绝处理（出错即拒，方案 D9）。Manual TTY invocations bypass this gate
-# (so devs can still run the script by hand for debugging).
-if [ ! -t 0 ]; then
+# 两种调用方式：
+# 1. git 的 pre-commit 钩子（内核钩子 <数据目录>/githooks/pre-commit，设 ONTO_COMMIT_HOOK=1，方案 C11）：
+#    在提交那一刻跑，看到的是真实暂存区，直接往下做检查；
+# 2. PreToolUse hook（stdin 是工具调用 JSON）：Claude Code 对每条 Bash 都触发，这里先认出是不是
+#    `git commit`（含 `git -C 目录 commit`、`git -c 键=值 commit`、绝对路径调用，方案 D10）：
+#    - 带 `--no-verify` / `-n`，或改提交钩子路径（core.hooksPath）的一律拒绝——那是绕过提交检查；
+#    - 提交钩子已就绪（有会话身份，项目的 hooksPath 指向内核钩子）时放行，检查交给 git 钩子
+#      （PreToolUse 在整条命令执行之前，`git add -A && git commit` 写在一行时看到的是旧暂存区）；
+#    - 钩子没就绪时退回在这里检查（看到的是执行前的暂存区）。
+#    读不出命令按拒绝处理（出错即拒，方案 D9）。手工在终端里跑（TTY）时直接做检查。
+if [ -z "${ONTO_COMMIT_HOOK:-}" ] && [ ! -t 0 ]; then
     HOOK_INPUT=$(cat 2>/dev/null || true)
     IS_COMMIT=$(printf '%s' "${HOOK_INPUT:-}" | python3 -c '
-import json, re, sys
+import json, re, shlex, sys
 try:
     data = json.loads(sys.stdin.read())
-    command = (data.get("tool_input") or {}).get("command") or ""
+    command = str((data.get("tool_input") or {}).get("command") or "")
 except Exception:
     print("error")
     sys.exit(0)
+if re.search(r"(?i)git\b.*hookspath|GIT_CONFIG_(?:COUNT|KEY|VALUE|PARAMETERS)", command):
+    print("bypass")
+    sys.exit(0)
 option = r"(?:-C\s+\S+|-c\s+\S+|--git-dir(?:=|\s+)\S+|--work-tree(?:=|\s+)\S+|--no-pager|-P|--no-optional-locks)"
 pattern = re.compile(r"(^|[;&|(`$\s])(?:\S*/)?git(?:\s+" + option + r")*\s+commit($|[\s;&|)])")
-print("yes" if pattern.search(str(command)) else "no")
+match = pattern.search(command)
+if not match:
+    print("no")
+    sys.exit(0)
+try:
+    words = shlex.split(command[match.end() - 1:], posix=True)
+except ValueError:
+    words = command[match.end() - 1:].split()
+for word in words:
+    if word in (";", "&&", "||", "|", "&"):
+        break
+    if word == "--no-verify" or word == "-n":
+        print("bypass")
+        sys.exit(0)
+    if word.startswith("-") and not word.startswith("--"):
+        flags = word[1:]
+        cut = flags.find("m")
+        if "n" in (flags[:cut] if cut >= 0 else flags):
+            print("bypass")
+            sys.exit(0)
+print("yes")
 ' 2>/dev/null || echo error)
     case "$IS_COMMIT" in
         no) exit 0 ;;
         yes) ;;
+        bypass)
+            echo '{"decision":"block","reason":"不能跳过提交检查（--no-verify / -n）或改提交钩子（core.hooksPath）。请去掉这些参数后重新提交；检查没通过就按提示修改。"}'
+            exit 0
+            ;;
         *)
             echo '{"decision":"block","reason":"提交检查读不出这次调用的命令，按拒绝处理。请重试；持续出现请反馈给维护者。"}'
             exit 0
             ;;
     esac
+    # 提交钩子就绪：检查在 git 提交那一刻做（看得到同一行里刚 add 的内容）
+    HOOKS_PATH=$(git config --local --get core.hooksPath 2>/dev/null || true)
+    if [ -n "${ONTO_RUN_ENGINE:-}" ] && [ -n "$HOOKS_PATH" ] \
+        && [ -x "$HOOKS_PATH/pre-commit" ] && [ -x "$HOOKS_PATH/commit-msg" ]; then
+        exit 0
+    fi
 fi
 # -----------------------------------------------------------------------------
 

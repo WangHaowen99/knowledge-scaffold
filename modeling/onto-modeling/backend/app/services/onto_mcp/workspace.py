@@ -6,7 +6,6 @@ import re
 from pathlib import Path
 
 from .. import studio
-from ..workspace import _git
 from . import documents as doc
 from .definitions import TOOLS, OPERATION, RULE, validate_input
 from .errors import McpError
@@ -144,10 +143,8 @@ def persist(manager, project_id, root, before, after, identity, expected, userna
     busy = editing_issue(project_id, record["path"])
     if busy:
         raise McpError("PROJECT_EDITING_BUSY", busy["message"], 409)
-    # Do not include staged edits belonging to the user/agent in this commit.
-    if _git(root, "diff", "--cached", "--name-only").strip():
-        raise McpError("PROJECT_EDITING_BUSY", "项目有正在暂存的修改，请稍后重试", 409)
-    # 经写入事务：原子写入、只提交这一个文件并带来源 trailer，失败时恢复写入前的内容（方案 C1）
+    # 经写入事务：原子写入、只提交这一个文件并带来源 trailer，失败时恢复写入前的内容（方案 C1）。
+    # agent 已暂存的其他改动不会被带进这次提交（临时索引），所以不再因为有暂存改动就回「项目忙」（方案 C10）
     from ...kernel.writepath import ChangeTx, Origin
 
     with ChangeTx(manager, project_id, Origin("mcp", username), summary=f"更新 {identity}") as tx:

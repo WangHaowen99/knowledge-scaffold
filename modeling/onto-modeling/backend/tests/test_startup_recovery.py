@@ -37,7 +37,7 @@ def extra_steps():
 def test_kernel_steps_are_registered_in_order():
     ids = [step.id for step in startup_recovery.steps()]
     expected = ["index_lock", "write_intents", "uncommitted", "state_tracking", "single_owner", "pending_uploads",
-                "eval_retirement", "assembly", "history_repair", "interrupted_execs",
+                "eval_retirement", "assembly", "agent_commit_hooks", "history_repair", "interrupted_execs",
                 "dependencies", "purge"]
     assert [step_id for step_id in ids if step_id in expected] == expected
     background = {step.id for step in startup_recovery.steps() if step.background}

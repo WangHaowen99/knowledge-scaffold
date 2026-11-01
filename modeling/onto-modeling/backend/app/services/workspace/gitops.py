@@ -20,11 +20,16 @@ GIT_LOCK_FILES = ("index.lock", "HEAD.lock", "packed-refs.lock")
 STALE_GIT_LOCK_SECONDS = 120
 
 
+# 后端自己的 git 命令不跑工作区的钩子：项目的 core.hooksPath 指向 agent 提交收口的内核钩子
+# （kernel/writepath/agent_commits），那是给 agent 的提交用的
+_NO_HOOKS = ("-c", "core.hooksPath=/dev/null")
+
+
 def _run_git(
     cwd: Path, args: tuple, env: dict | None = None, input: str | None = None
 ) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=60,
+        ["git", *_NO_HOOKS, *args], cwd=cwd, capture_output=True, text=True, timeout=60,
         env=env, input=input,
     )
 

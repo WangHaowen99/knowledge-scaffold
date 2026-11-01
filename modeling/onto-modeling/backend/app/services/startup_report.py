@@ -151,6 +151,10 @@ def register_steps(register) -> None:
     # 评测移出（ADR-0020）：幂等，迁过的项目什么都不做
     register("eval_retirement", "评测数据迁移", _quiet(eval_retirement.migrate), order=70)
     register("assembly", "装配目录", _assembly_item, order=80)
+    # agent 提交收口（方案 C11）：各项目的 git 指向内核发布的提交钩子
+    from ..kernel.writepath import agent_commits
+
+    register("agent_commit_hooks", "agent 提交钩子", agent_commits.install_all, order=85)
     # 耗时、不挡就绪的放后台
     register("dependencies", "外部依赖", _dependencies_item, order=300, background=True)
     register("purge", "删到一半的项目", _purge_item, order=310, background=True)
