@@ -252,3 +252,17 @@ def test_pack_detail_and_errors(env):
     assert client.get("/api/v1/packs/nope").json()["code"] == "pack_not_found"
     assert client.get("/api/v1/packs/trace?version=9.9.9").json()["code"] == "pack_version_not_found"
     assert client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "nope"}).json()["code"] == "pack_not_found"
+
+
+def test_times_are_rfc3339(env):
+    import re
+
+    client, _, project_id, tmp_path = env
+    publish_pack(client, tmp_path, "trace", "0.9.0")
+    rfc = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+    enabled = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "trace"}).json()
+    assert rfc.match(enabled["pack"]["enabled_at"])
+    items = client.get(f"/api/v1/projects/{project_id}/packs").json()["items"]
+    assert all(item["enabled_at"] is None or rfc.match(item["enabled_at"]) for item in items)
+    detail = client.get("/api/v1/packs/trace").json()
+    assert rfc.match(detail["released_at"]) and rfc.match(detail["changelog"][0]["date"])

@@ -41,6 +41,17 @@ def _uploads() -> UploadStore:
     return UploadStore(deps.workspaces.packs.repository, deps.workspaces.assets_dir)
 
 
+def _iso_pack(item: dict | None) -> dict | None:
+    """ProjectPack 的时间转 RFC 3339（契约 1.9）。"""
+    if item is not None and "enabled_at" in item:
+        item = {**item, "enabled_at": deps.iso(item.get("enabled_at"))}
+    return item
+
+
+def _iso_result(result: dict) -> dict:
+    return {**result, "pack": _iso_pack(result.get("pack"))}
+
+
 def _audit(request: Request, action: str, detail: dict) -> None:
     audit.log(deps.actor(request), request.method, request.url.path, {action: detail.pop("name", ""), **detail})
 
@@ -67,7 +78,11 @@ async def get_pack(name: str, request: Request, project_id: str = "", version: s
     if project_id:
         deps.require_owner(project_id, request)
     with _errors():
-        return await asyncio.to_thread(catalog.detail, deps.workspaces, name, project_id=project_id, version=version)
+        detail = await asyncio.to_thread(catalog.detail, deps.workspaces, name, project_id=project_id, version=version)
+    detail["released_at"] = deps.iso(detail.get("released_at"))
+    detail["enabled_at"] = deps.iso(detail.get("enabled_at"))
+    detail["changelog"] = [{**item, "date": deps.iso(item.get("date"))} for item in detail["changelog"]]
+    return detail
 
 
 @router.get("/api/v1/packs/{name}/versions/{version}/compatibility")
@@ -90,6 +105,7 @@ async def project_packs(project_id: str, request: Request):
     with _errors():
         body = await asyncio.to_thread(service.project_packs, deps.workspaces, project_id)
     body.pop("status", None)
+    body["items"] = [_iso_pack(item) for item in body["items"]]
     return body
 
 
@@ -106,7 +122,7 @@ async def enable_pack(project_id: str, request: Request):
                                          body.get("version") or None, deps.actor(request))
     _audit(request, "pack.enable", {"name": name, "version": (result["pack"] or {}).get("locked_version"),
                                     "project_id": project_id})
-    return JSONResponse(status_code=201, content=result)
+    return JSONResponse(status_code=201, content=_iso_result(result))
 
 
 @router.post("/api/v1/projects/{project_id}/packs/{name}/upgrade")
@@ -121,7 +137,7 @@ async def upgrade_pack(project_id: str, name: str, request: Request):
         result = await asyncio.to_thread(service.change_version, deps.workspaces, project_id, name, to_version,
                                          kind="upgrade", actor=deps.actor(request))
     _audit(request, "pack.upgrade", {"name": name, "version": to_version, "project_id": project_id})
-    return result
+    return _iso_result(result)
 
 
 @router.post("/api/v1/projects/{project_id}/packs/{name}/rollback")
@@ -136,7 +152,7 @@ async def rollback_pack(project_id: str, name: str, request: Request):
         result = await asyncio.to_thread(service.change_version, deps.workspaces, project_id, name, to_version,
                                          kind="rollback", actor=deps.actor(request))
     _audit(request, "pack.rollback", {"name": name, "version": to_version, "project_id": project_id})
-    return result
+    return _iso_result(result)
 
 
 @router.post("/api/v1/projects/{project_id}/packs/{name}/disable")
@@ -146,7 +162,7 @@ async def disable_pack(project_id: str, name: str, request: Request):
     with _errors():
         result = await asyncio.to_thread(service.disable, deps.workspaces, project_id, name, deps.actor(request))
     _audit(request, "pack.disable", {"name": name, "project_id": project_id})
-    return result
+    return _iso_result(result)
 
 
 @router.post("/api/v1/projects/{project_id}/packs/{name}/cancel-pending")
@@ -154,7 +170,8 @@ async def cancel_pending(project_id: str, name: str, request: Request):
     """PL-10：撤销待生效的切换。"""
     deps.require_writable(project_id, request)
     with _errors():
-        return await asyncio.to_thread(service.cancel_pending, deps.workspaces, project_id, name, deps.actor(request))
+        result = await asyncio.to_thread(service.cancel_pending, deps.workspaces, project_id, name, deps.actor(request))
+    return _iso_result(result)
 
 
 @router.get("/api/v1/projects/{project_id}/assembly")
@@ -162,7 +179,10 @@ async def assembly(project_id: str, request: Request):
     """PL-11：装配状态。"""
     deps.require_owner(project_id, request)
     with _errors():
-        return await asyncio.to_thread(service.assembly_view, deps.workspaces, project_id)
+        view = await asyncio.to_thread(service.assembly_view, deps.workspaces, project_id)
+    if view["last_error"]:
+        view["last_error"] = {**view["last_error"], "at": deps.iso(view["last_error"].get("at"))}
+    return view
 
 
 # ---- 上传与审核（管理员） ----
