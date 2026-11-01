@@ -118,6 +118,11 @@ def test_backup_covers_state_and_excludes_master_key(env, tmp_path):
         "home/.claude/projects/workspace_demo/session.jsonl",
     }
     assert expected <= names
+    # 包仓库进备份（异机恢复后锁定了上传版本的项目不会退回 stable）；装配目录可按锁文件重建，不进备份
+    core = manager.packs.core_version()
+    assert {"data/packs/channels.json", f"data/packs/core/{core}/manifest.yaml",
+            f"data/packs/core/{core}/checksums.sha256"} <= names
+    assert (Path(config.DATA_DIR) / "assembled").is_dir() and not any(n.startswith("data/assembled") for n in names)
     assert not any(".model-secret-key" in n for n in names)
     assert not any(n.startswith("data/backups") for n in names)
     assert not any(n.endswith(("-wal", "-shm")) for n in names)
