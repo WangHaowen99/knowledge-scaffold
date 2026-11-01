@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 
 from .. import config
 from . import auth
+from .credential_store import write_private_json
 
 ENGINES = ("claude", "jiuwen")
 _GATEWAY_SCHEMES = ("http", "https")
@@ -110,10 +111,7 @@ def _load() -> dict:
 
 
 def _write(data: dict) -> None:
-    path = _file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    path.chmod(0o600)
+    write_private_json(_file(), data)
 
 
 def _section(username: str, engine: str) -> dict:

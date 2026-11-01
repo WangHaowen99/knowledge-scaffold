@@ -13,6 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from .. import config
+from .credential_store import write_private_json
 
 _log = logging.getLogger(__name__)
 
@@ -86,17 +87,14 @@ def save(base_url: str, api_key: str, model: str, context: dict | None = None) -
     if context_section is not None:
         data.pop("claude_context", None)
         data["context"] = context_section
-    path = _file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    path.chmod(0o600)
+    write_private_json(_file(), data)
     return masked()
 
 
 def clear_key() -> dict:
     data = load()
     data.pop("api_key", None)
-    _file().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_private_json(_file(), data)
     return masked()
 
 
@@ -121,10 +119,7 @@ def save_jiuwen(base_url: str, api_key: str, model: str, context: dict | None = 
         section["api_key"] = api_key
     if context_section is not None:
         section["context"] = context_section
-    path = _file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    path.chmod(0o600)
+    write_private_json(_file(), data)
     return masked()
 
 
@@ -153,10 +148,7 @@ def save_default_engine(name: str) -> dict:
         raise ModelConfigError("该引擎在当前部署不可用")
     data = load()
     data["default_engine"] = name
-    path = _file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    path.chmod(0o600)
+    write_private_json(_file(), data)
     return masked()
 
 
@@ -377,10 +369,7 @@ def save_context(values: dict) -> dict:
     data = load()
     data.pop("claude_context", None)
     data["context"] = section
-    path = _file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    path.chmod(0o600)
+    write_private_json(_file(), data)
     return masked()
 
 
@@ -391,10 +380,7 @@ def personal_override_allowed() -> bool:
 def save_personal_policy(allow: bool) -> dict:
     data = load()
     data["allow_personal"] = bool(allow)
-    path = _file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    path.chmod(0o600)
+    write_private_json(_file(), data)
     return masked()
 
 

@@ -4,19 +4,15 @@
 上一修订的通过记录不能用于当前修订，模型、Schema、绑定或评估器一改，门禁立即
 要求重新验证。记录放在 .ontology-state/（不进 git、不进导出包、文件编辑器不可写），
 只存状态、摘要与诊断引用，不存 Endpoint、Token 或连接信息。
+
+记录的读写走后台任务公共件 JobStore（同一份 {"runs": [...]} 格式）。
 """
 
 from __future__ import annotations
 
-import json
-import os
-import tempfile
-import threading
-import time
-import uuid
 from pathlib import Path
 
-from . import solver_contract
+from . import background_jobs, solver_contract
 
 VALIDATIONS_FILE = ".ontology-state/solver-validations.json"
 MAX_RECORDS = 50
@@ -25,45 +21,29 @@ STATUS_RUNNING = "running"
 STATUS_PASSED = "passed"
 STATUS_FAILED = "failed"
 ACTIVE_STATUSES = (STATUS_QUEUED, STATUS_RUNNING)
+CODE_INTERRUPTED = "solver_validation_interrupted"
+INTERRUPTED_MESSAGE = "上一次验证被服务重启中断，请对当前修订重新验证"
 
-_lock = threading.Lock()
-
-
-def _path(root: Path) -> Path:
-    return Path(root) / VALIDATIONS_FILE
+def _store(root: Path) -> background_jobs.JobStore:
+    return background_jobs.JobStore(
+        Path(root) / VALIDATIONS_FILE,
+        list_key="runs",
+        max_records=MAX_RECORDS,
+        terminal_statuses=(STATUS_PASSED, STATUS_FAILED),
+    )
 
 
 def list_records(root: Path) -> list[dict]:
     """最新的在前。"""
-    try:
-        data = json.loads(_path(root).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    records = data.get("runs") if isinstance(data, dict) else None
-    return [item for item in records or [] if isinstance(item, dict)]
-
-
-def _save(root: Path, records: list[dict]) -> None:
-    path = _path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".solver-validations-")
-    temporary_path = Path(temporary)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            fd = None
-            json.dump({"runs": records[:MAX_RECORDS]}, handle, ensure_ascii=False, indent=2)
-        os.replace(temporary_path, path)
-    finally:
-        if fd is not None:
-            os.close(fd)
-        temporary_path.unlink(missing_ok=True)
+    return _store(root).list()
 
 
 def create(
-    root: Path, revision: str, solver_keys: list[str], by: str = "", contract_digest: str = ""
+    root: Path, revision: str, solver_keys: list[str], by: str = "", contract_digest: str = "",
+    **fields,
 ) -> dict:
+    """登记一条验证记录；fields 覆盖默认值（回执直接带终态与结论）。"""
     record = {
-        "id": uuid.uuid4().hex,
         "revision": revision,
         "solver_keys": sorted(solver_keys),
         "status": STATUS_QUEUED,
@@ -77,25 +57,21 @@ def create(
         "message": "",
         "evidence": {},
         "by": by,
-        "created_at": int(time.time()),
-        "completed_at": None,
+        **fields,
     }
-    with _lock:
-        _save(root, [record, *list_records(root)])
-    return record
+    return _store(root).create(**record)
 
 
 def update(root: Path, run_id: str, **fields) -> dict | None:
-    with _lock:
-        records = list_records(root)
-        for item in records:
-            if item.get("id") == run_id:
-                item.update(fields)
-                if fields.get("status") in (STATUS_PASSED, STATUS_FAILED):
-                    item["completed_at"] = int(time.time())
-                _save(root, records)
-                return item
-    return None
+    return _store(root).update(run_id, **fields)
+
+
+def sweep_interrupted(workspaces_dir: Path) -> list[str]:
+    """进程启动时收敛孤儿记录：仍是 queued / running 的改判失败，返回有改动的项目 ID。"""
+    return background_jobs.sweep_workspace_stores(
+        workspaces_dir, VALIDATIONS_FILE, _store,
+        status=STATUS_FAILED, error_code=CODE_INTERRUPTED, message=INTERRUPTED_MESSAGE,
+    )
 
 
 def latest(root: Path, revision: str | None = None) -> dict | None:
