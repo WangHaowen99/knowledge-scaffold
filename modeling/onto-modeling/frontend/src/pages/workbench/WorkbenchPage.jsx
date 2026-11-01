@@ -15,6 +15,7 @@ import { cellClass } from '../projects/projectCard.js';
 import { AutobuildBar, AutobuildCtx, useAutobuild } from './autobuild.jsx';
 import { ActionsCtx, ContextPanel, QueueCard } from './cards.jsx';
 import { WbCtx } from './parts.jsx';
+import { ScopePicker } from '../knowledge/ScopePicker.jsx';
 import { Timeline } from './Timeline.jsx';
 import { useConversation } from './useConversation.js';
 import { MATERIAL_DIALOGS } from './materials/model.js';
@@ -241,19 +242,21 @@ function KnowledgeDialog({ item, onClose }) {
   const [title, setTitle] = useState('');
   const [type, setType] = useState('domain_rule');
   const [body, setBody] = useState('');
+  const [scope, setScope] = useState({ kind: 'global' });
   const [total, setTotal] = useState(null);
   useEffect(() => {
     if (!item) return;
     const plain = item.text_md.replace(/\[\[|\]\]/g, '').replace(/\[\^\d+\]/g, '');
     setTitle(plain.split(/[。；\n]/)[0].slice(0, 60));
     setBody(`## 规则\n${plain}`);
+    setScope({ kind: 'global' });
     services.client.get(`/projects/${encodeURIComponent(pid)}/knowledge/conflicts`).then((r) => setTotal(r.total_entries)).catch(() => setTotal(null));
   }, [item, pid, services]);
   if (!item) return null;
   const save = async () => {
     try {
       await services.client.post(`/projects/${encodeURIComponent(pid)}/knowledge`, {
-        title: title.trim(), type, scope: { kind: 'global' }, rule_md: body, source: { conversation_id: item.conversation_id, message_id: item.message_id },
+        title: title.trim(), type, scope, rule_md: body, source: { conversation_id: item.conversation_id, message_id: item.message_id },
       });
       toast('已入库，后续建模会自动应用', 'book');
       onClose();
@@ -266,7 +269,7 @@ function KnowledgeDialog({ item, onClose }) {
       <div className="col" style={{ gap: 10 }}>
         <Field label="条目名称"><div className="inp"><input value={title} maxLength={60} onChange={(e) => setTitle(e.target.value)} /></div></Field>
         <Field label="类型"><Seg items={KN_TYPES} value={type} onChange={setType} /></Field>
-        <Field label="作用范围"><div className="inp sel"><span className="grow ell">全局（所有对象）</span></div></Field>
+        <Field label="作用范围"><ScopePicker value={scope} onChange={setScope} /></Field>
         <Field label="内容"><div className="inp area" style={{ minHeight: 90 }}><textarea style={{ height: 72 }} value={body} onChange={(e) => setBody(e.target.value)} /></div></Field>
       </div>
       <div className="xs faint mt8">入库前先和已有的{total != null ? ` ${total} 条` : ''}知识查重、查冲突</div>
