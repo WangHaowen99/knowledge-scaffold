@@ -1,14 +1,16 @@
-"""启动自检报告（详设 4.9 目标 4、8.3，P0 验收；API 契约 O-35）。
+"""启动自检报告（详设 4.9 目标 4、8.3，P0 验收；API 契约 O-35）与内核这一侧的启动恢复步骤。
 
-启动时、任何会话开始之前：清掉各项目 .git 下残留的锁，列出各项目没提交的改动（不替用户提交，
-等所有者决定），写进服务日志，并留存到数据目录供运维接口读取。只记路径与计数，不读文件内容。
-启动恢复注册表（方案 B8）落地后，这里的步骤并进注册表。
+步骤登记在启动恢复注册表（governance/startup_recovery，方案 B8），这里给出工作区、写入路径、插件运行时
+与外部依赖几步的实现：清残留 git 锁、补提交写入意图、列未提交改动（不替用户提交，等所有者决定）、
+存量数据迁移、核对装配目录、探测外部依赖、清扫删到一半的目录。只记路径与计数，不读文件内容。
+报告写进服务日志，并留存到数据目录供运维接口读取。
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -80,21 +82,91 @@ def _uncommitted_item(manager) -> dict:
     }
 
 
-def run(manager) -> dict:
-    """清残留锁、列未提交改动，写日志并留存；返回报告。只在启动时、会话开始之前调用。"""
-    from ..governance import lifecycle
-    from ..kernel.writepath import recover_intents
+def _assembly_item(manager) -> dict:
+    """插件运行时启动核对（方案 D4）：镜像自带的 core 入库，逐个项目按锁文件核对、修复装配目录。"""
+    from .packs import service as packs_service
 
-    last_exit = lifecycle.mark_started()
-    removed = manager.clear_git_locks()
+    result = packs_service.reconcile_all(manager)
+    repaired, failed, locked = result.get("repaired") or [], result.get("failed") or {}, result.get("locked") or []
+    if failed:
+        return {"id": "assembly", "title": "装配目录", "result": "failed", "tone": "warn",
+                "detail": f"{len(failed)} 个项目装配不了，保持原装配" + (f"；重新装配了 {len(repaired)} 个" if repaired else ""),
+                "projects": [{"project_id": pid, "count": 1, "paths": [str(reason)[:200]]} for pid, reason in
+                             sorted(failed.items())][:MAX_PROJECTS_LISTED]}
+    if repaired or locked:
+        return {"id": "assembly", "title": "装配目录", "result": "reassembled", "tone": "fix",
+                "detail": f"重新装配了 {len(repaired)} 个项目" + (f"，为 {len(locked)} 个存量项目写了锁文件" if locked else ""),
+                "projects": [{"project_id": pid, "count": 1, "paths": []} for pid in sorted(set(repaired) | set(locked))]}
+    return {"id": "assembly", "title": "装配目录", "result": "ok", "tone": "ok", "detail": "各项目的装配目录与锁文件一致"}
+
+
+def _dependencies_item(_manager) -> dict:
+    """外部依赖（模型网关、认证、沙箱、磁盘、git）启动时探测一次；结果同 O-13，缓存 30 秒。"""
+    from ..governance import health
+
+    checks = health.probe(force=True)
+    failed = [item for item in checks if item["status"] == "fail"]
+    warned = [item for item in checks if item["status"] in ("warn", "slow")]
+    if failed:
+        names = "、".join(item["name"] for item in failed)
+        return {"id": "dependencies", "title": "外部依赖", "result": "failed", "tone": "warn",
+                "detail": f"{len(failed)} 项不可达：{names}", "checks": checks}
+    detail = f"{len(checks)} 项可达" + (f"，{len(warned)} 项有提醒" if warned else "")
+    return {"id": "dependencies", "title": "外部依赖", "result": "ok", "tone": "ok", "detail": detail, "checks": checks}
+
+
+def _purge_item(manager) -> dict:
+    """上次删除项目时没删净的目录（文件被占用、删到一半停机）。"""
+    count = manager.purge_leftovers()
+    if count:
+        return {"id": "purge", "title": "删到一半的项目", "result": "cleared", "tone": "fix",
+                "detail": f"清掉了 {count} 个残留目录"}
+    return {"id": "purge", "title": "删到一半的项目", "result": "ok", "tone": "ok", "detail": "没有残留目录"}
+
+
+def _quiet(func):
+    """只做事、不进报告的步骤（存量数据迁移）。"""
+    def step(manager):
+        func(manager)
+        return None
+
+    return step
+
+
+def register_steps(register) -> None:
+    """内核这一侧的启动恢复步骤（顺序：先清锁再动 git；迁移在会话开始之前；核对装配最后）。"""
+    from ..kernel.writepath import recover_intents
+    from . import eval_retirement, ownership
+
+    register("index_lock", "残留的 git 锁", lambda manager: _lock_item(manager, manager.clear_git_locks()), order=10)
     # 写入事务留下的意图：锁清掉之后补提交，再列剩下的未提交改动（详设 8.3 措施 2）
-    items = [_lock_item(manager, removed), recover_intents(manager), _uncommitted_item(manager)]
-    report = {"at": time.time(), "last_exit": last_exit, "items": items}
-    for item in items:
-        level = logging.WARNING if item["tone"] != "ok" else logging.INFO
-        _log.log(level, "启动自检 · %s：%s", item["title"], item["detail"])
-        for project in item.get("projects") or []:
-            _log.log(level, "  %s：%d 处，例如 %s", project["project_id"], project["count"], "、".join(project["paths"][:3]))
+    register("write_intents", "写入意图", recover_intents, order=20)
+    register("uncommitted", "未提交的改动", _uncommitted_item, order=30)
+    # 元数据迁移要改各项目的真实索引，不能和 agent 的 git 并发
+    register("state_tracking", "工具状态停止跟踪", _quiet(lambda manager: manager.migrate_state_tracking()), order=40)
+    # 单人所有权：删掉存量项目的成员表（原值记审计），日志报告待管理员指定所有者的无主项目
+    register("single_owner", "单人所有权迁移", _quiet(ownership.migrate_single_owner), order=50)
+    # 发布按提交打包：旧版上传没进 git 的资料补提交一次
+    register("pending_uploads", "补提交旧版上传", _quiet(lambda manager: manager.commit_pending_uploads()), order=60)
+    # 评测移出（ADR-0020）：幂等，迁过的项目什么都不做
+    register("eval_retirement", "评测数据迁移", _quiet(eval_retirement.migrate), order=70)
+    register("assembly", "装配目录", _assembly_item, order=80)
+    # 耗时、不挡就绪的放后台
+    register("dependencies", "外部依赖", _dependencies_item, order=300, background=True)
+    register("purge", "删到一半的项目", _purge_item, order=310, background=True)
+
+
+def run(manager) -> dict:
+    """跑全部启动恢复步骤（含后台的，按顺序同步跑完）并留存报告；返回报告。"""
+    from ..governance import startup_recovery
+
+    return startup_recovery.run(manager)
+
+
+_report_lock = threading.Lock()
+
+
+def save(report: dict) -> None:
     try:
         target = _path()
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -103,7 +175,15 @@ def run(manager) -> dict:
         tmp.replace(target)
     except OSError as exc:
         _log.warning("启动自检报告写盘失败：%s", exc)
-    return report
+
+
+def add_item(item: dict) -> None:
+    """后台步骤做完后补进报告（同 ID 的替换）。"""
+    with _report_lock:
+        report = latest() or {"at": time.time(), "last_exit": None, "items": []}
+        report["items"] = [existing for existing in report.get("items") or [] if existing.get("id") != item.get("id")]
+        report["items"].append(item)
+        save(report)
 
 
 def latest() -> dict | None:

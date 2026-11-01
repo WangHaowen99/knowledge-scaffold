@@ -15,41 +15,27 @@ async def _lifespan(app: FastAPI):
     import asyncio
 
     from .governance import startup as governance_startup
-    from .services import background_jobs, backup, eval_retirement, ownership, solver_validation, startup_report
+    from .governance import startup_recovery
+    from .services import background_jobs, backup, solver_validation
     from .services.agent_sessions import manager
     from .services.model_context_presets import write_example
 
     # 治理平面（方案 E5、E6、E10）：结构化日志、配置校验、会话池覆盖、密钥目录与告警，最先做
     await asyncio.to_thread(governance_startup.before_recovery)
-
-    # 最先做、且在任何会话开始之前：此刻本进程没有 git 子进程，各项目 .git 下的锁都是
-    # 上次停机留下的残留；元数据迁移要改各项目的真实索引，也不能和 agent 的 git 并发。
-    # 启动自检同时列出各项目没提交的改动，写日志并留存（O-35）
-    await asyncio.to_thread(startup_report.run, deps.workspaces)
-    await asyncio.to_thread(deps.workspaces.migrate_state_tracking)
-    # 单人所有权：删掉存量项目的成员表（原值记审计），日志报告待管理员指定所有者的无主项目
-    await asyncio.to_thread(ownership.migrate_single_owner, deps.workspaces)
-    # 发布按提交打包：旧版上传没进 git 的资料补提交一次，否则进不了包
-    await asyncio.to_thread(deps.workspaces.commit_pending_uploads)
-    # 评测移出（ADR-0020）：被对象引用的评测上传表迁进资料区并提交，再删掉评测状态与
-    # 数据源配置（含连接密码）。幂等，迁过的项目什么都不做
-    await asyncio.to_thread(eval_retirement.migrate, deps.workspaces)
-    # 插件运行时启动核对（方案 D4）：镜像自带的 core 入库，逐个项目按锁文件核对、修复装配目录
-    from .services.packs import service as packs_service
-
-    await asyncio.to_thread(packs_service.reconcile_all, deps.workspaces)
-    manager.start_background()  # 空闲会话回收（方案 4.1.1）
-    write_example()  # 内置推荐表副本，供管理员复制成自定义表
-    # 后台任务只活在进程内：重启后仍标 running 的记录改判中断，否则前端永久锁死
+    # 后台任务只活在进程内：重启后仍标 running 的记录改判中断（启动恢复的「中断的执行」一步统一跑）
     background_jobs.register_startup_sweep(
         "solver_validation",
         lambda: solver_validation.sweep_interrupted(deps.workspaces.workspaces_dir),
     )
-    background_jobs.run_startup_sweeps()
+    # 启动恢复（详设 8.3、方案 B8）：任何会话开始之前，按登记顺序跑完各模块的恢复步骤——清残留锁、
+    # 补提交写入意图、存量迁移、核对装配目录、修对话历史、把没结束的执行改判中断——并留存报告（O-35）
+    await asyncio.to_thread(startup_recovery.run, deps.workspaces, include_background=False)
+    manager.start_background()  # 空闲会话回收（方案 4.1.1）
+    write_example()  # 内置推荐表副本，供管理员复制成自定义表
     # 定期备份：距上次已超过间隔时启动即补跑
     backup_task = asyncio.create_task(backup.scheduler_loop(deps.workspaces))
-    # 上次删除项目时没删净的目录（文件被占用、删到一半停机）在后台清扫掉
-    purge_task = asyncio.create_task(asyncio.to_thread(deps.workspaces.purge_leftovers))
+    # 耗时、不挡就绪的恢复步骤（清扫删到一半的目录、探测外部依赖）放后台，做完补进报告
+    recovery_task = asyncio.create_task(startup_recovery.run_background(deps.workspaces))
     # 启动恢复做完才就绪（C-04）；运维管理面在同一事件循环起第二个监听（E8）
     ops_listener = await governance_startup.after_recovery()
     try:
@@ -57,8 +43,8 @@ async def _lifespan(app: FastAPI):
     finally:
         await governance_startup.shutdown(ops_listener)
         backup_task.cancel()
-        purge_task.cancel()
-        await asyncio.gather(backup_task, purge_task, return_exceptions=True)
+        recovery_task.cancel()
+        await asyncio.gather(backup_task, recovery_task, return_exceptions=True)
         await manager.shutdown()
         governance_startup.stopped()
 

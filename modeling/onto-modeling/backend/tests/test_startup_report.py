@@ -60,9 +60,13 @@ def test_report_lists_locks_and_uncommitted_changes(manager, caplog):
 def test_clean_start_reports_ok(manager):
     manager.create_project("干净项目")
     report = startup_report.run(manager)
-    assert [(item["id"], item["result"]) for item in report["items"]] == [
-        ("index_lock", "ok"), ("write_intents", "ok"), ("uncommitted", "ok"),
+    # 启动恢复注册表（方案 B8）登记的全部步骤；外部依赖的结论取决于运行环境（认证服务、沙箱可不可达）
+    results = [(item["id"], item["result"]) for item in report["items"]]
+    assert [item_id for item_id, _ in results] == [
+        "index_lock", "write_intents", "uncommitted", "assembly", "history_repair", "interrupted_execs",
+        "dependencies", "purge",
     ]
+    assert [result for item_id, result in results if item_id != "dependencies"] == ["ok"] * 7
 
 
 def test_startup_runs_self_check_and_ops_endpoint_returns_it(manager, monkeypatch):
@@ -76,4 +80,8 @@ def test_startup_runs_self_check_and_ops_endpoint_returns_it(manager, monkeypatc
 
     assert body["at"].endswith("Z")
     results = {item["id"]: item["result"] for item in body["items"]}
-    assert results == {"index_lock": "cleared", "write_intents": "ok", "uncommitted": "awaiting_user"}
+    # 前台步骤在就绪之前做完；外部依赖、清扫残留目录在后台，做完才补进报告
+    assert {key: results[key] for key in ("index_lock", "write_intents", "uncommitted", "assembly",
+                                          "history_repair", "interrupted_execs")} == {
+        "index_lock": "cleared", "write_intents": "ok", "uncommitted": "awaiting_user", "assembly": "ok",
+        "history_repair": "ok", "interrupted_execs": "ok"}
