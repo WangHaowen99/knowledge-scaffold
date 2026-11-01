@@ -35,6 +35,7 @@ def reconcile_all(manager) -> dict:
     """
     runtime = manager.packs
     report = {"repaired": [], "locked": [], "failed": {}}
+    verified: set = set()
     runtime.repository.cleanup_staging()
     runtime.assembler.cleanup_staging()
     if runtime.core_version() is None:
@@ -47,7 +48,7 @@ def reconcile_all(manager) -> dict:
                 _, wrote = runtime.ensure_lock(root)
                 if wrote and (root / ".git").is_dir() and commit_lock(root, "chore: 写入能力包锁文件"):
                     report["locked"].append(project_id)
-                status = runtime.reconcile(root)
+                status = runtime.reconcile(root, verified)
                 if status and (before or {}).get("assembly_hash") != status.get("active_hash"):
                     report["repaired"].append(project_id)
         except (AssemblyError, OSError, ValueError, RuntimeError) as exc:

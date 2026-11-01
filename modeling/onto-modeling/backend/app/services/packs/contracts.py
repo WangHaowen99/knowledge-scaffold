@@ -156,7 +156,8 @@ def for_project(root: Path) -> ContractLibrary:
     key = f"core:{core.get('version')}:{str(core.get('sha256'))[:16]}"
     with _LOCK:
         library = _LIBRARIES.get(key)
-        if library is None:
+        # 同一版本的装配目录可能被清掉重建（内容被改过、换了数据目录）：目录不在了就按当前的重建
+        if library is None or not library.scripts_dir.is_dir():
             library = ContractLibrary(real / "scripts", f"core-{core.get('version')}-{str(core.get('sha256'))[:8]}",
                                       files=manifest.get("files") or {})
             _LIBRARIES[key] = library

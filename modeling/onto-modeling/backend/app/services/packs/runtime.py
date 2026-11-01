@@ -150,23 +150,31 @@ class PackRuntime:
             return None
         return self.apply(root)
 
-    def reconcile(self, root: Path) -> dict | None:
+    def reconcile(self, root: Path, verified: set | None = None) -> dict | None:
         """启动核对（方案 D4）：`.claude` 指向的装配目录在不在、内容对不对、和锁文件一致不一致。
 
         装配目录被改过就删掉重装；`.claude` 还是旧版绝对链接、指错或缺失都按锁文件重新切。
+        verified：本轮已核对过的装配哈希（锁文件相同的项目共用一个装配目录，不必逐个项目重算）。
         """
         root = Path(root)
+        verified = verified if verified is not None else set()
         lock, _ = self.ensure_lock(root)
         if lock is None:
             return None
         active = self.assembler.active(root)
-        if active and self.assembler.verify(Path(active["dir"])):
-            _log.warning("项目 %s 的装配目录内容被改过，重新装配：%s", root.name, active.get("assembly_hash"))
-            self.assembler.discard(active["assembly_hash"])
+        if active and active.get("assembly_hash") not in verified:
+            if self.assembler.verify(Path(active["dir"])):
+                _log.warning("项目 %s 的装配目录内容被改过，重新装配：%s", root.name, active.get("assembly_hash"))
+                self.assembler.discard(active["assembly_hash"])
+            else:
+                verified.add(active.get("assembly_hash"))
         plan = self.plan(root, lock)
         built = self.assembler.dir_for(plan.hash)
-        if built.is_dir() and self.assembler.verify(built):
-            self.assembler.discard(plan.hash)
+        if plan.hash not in verified and built.is_dir():
+            if self.assembler.verify(built):
+                self.assembler.discard(plan.hash)
+            else:
+                verified.add(plan.hash)
         return self.apply(root)
 
     # ---- 状态 ----
