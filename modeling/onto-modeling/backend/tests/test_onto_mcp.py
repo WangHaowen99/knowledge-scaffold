@@ -162,7 +162,9 @@ def test_management_status_is_onto_local_without_modeling(env, monkeypatch):
     }
     assert body["token_policy"] == {"min_ttl_s": 300, "default_ttl_s": 86400, "max_ttl_s": 2592000, "supports_non_expiring": True}
     assert [toolset["name"] for toolset in body["toolsets"]] == ["read", "change"]
-    assert len(body["toolsets"][0]["tools"]) == 6
+    # 读工具集：6 个本体读工具 + 插件产物的 artifact_list、artifact_get（契约 M-08）
+    assert len(body["toolsets"][0]["tools"]) == 8
+    assert {"artifact_list", "artifact_get"} <= set(body["toolsets"][0]["tools"])
     templates = body["client_config_templates"]
     assert "<READ_TOKEN>" in templates["read"] and "<CHANGE_TOKEN>" in templates["change"]
     assert json.loads(templates["full"])["mcpServers"].keys() == {"modeling-read", "modeling-change"}
@@ -326,7 +328,7 @@ def test_http_protocol_and_scope_enforcement(env, monkeypatch):
             return client.post(url, headers=headers, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}, **kwargs)
         assert rpc("initialize").json()["result"]["serverInfo"]["name"] == tokens.SERVER["name"]
         assert rpc("server/discover").status_code == 200
-        assert len(rpc("tools/list").json()["result"]["tools"]) == 6
+        assert len(rpc("tools/list").json()["result"]["tools"]) == 8
         result = rpc("tools/call", {"name": "list_ontology_objects"}).json()["result"]
         assert result["structuredContent"]["total"] == 2 and not result["isError"]
         missing = rpc("tools/call", {"name": "delete_ontology_rule"})

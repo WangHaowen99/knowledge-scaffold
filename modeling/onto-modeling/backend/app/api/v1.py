@@ -48,6 +48,7 @@ def _routers():
     from ..governance import health
     from ..routers import (
         admin,
+        artifacts,
         auth_routes,
         contracts,
         files,
@@ -86,6 +87,7 @@ def _routers():
         versions.router,
         flow.router,
         packs.router,
+        artifacts.router,
         sessions.router,
         solver.router,
         publish.router,

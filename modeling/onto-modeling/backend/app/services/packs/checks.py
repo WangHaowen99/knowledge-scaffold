@@ -210,21 +210,12 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
         conflicts.append(f"{manifest.name} {manifest.version} 已在包仓库里")
     checks.append(_check("names", "名字不冲突", "fail" if conflicts else "pass", "；".join(conflicts[:10])))
 
-    # 没有新增实体类型（插件产物只能带包名前缀，不能和五元组重名）
+    # 没有新增实体类型：插件产物只能带包名前缀、不能和五元组重名，放在 ext/<包名>/ 下（详设 5.9.4）
+    from ...kernel.artifacts import registry as artifact_registry
+
     entity = []
     for rel in manifest.items("artifacts"):
-        try:
-            import yaml
-
-            data = yaml.safe_load((directory / rel).read_text(encoding="utf-8")) or {}
-        except Exception:  # noqa: BLE001 - 解析失败同样算登记不合法
-            entity.append(f"{rel} 无法解析")
-            continue
-        art_type = str(data.get("type") or "")
-        if art_type in mf.CORE_ENTITY_TYPES or not art_type.startswith(f"{manifest.name}."):
-            entity.append(f"{rel}: 产物类型 {art_type or '（空）'} 必须带包名前缀且不能是五元组")
-        if not str(data.get("path") or "").startswith(f"ext/{manifest.name}/"):
-            entity.append(f"{rel}: 产物只能放在 ext/{manifest.name}/ 下")
+        entity += artifact_registry.check_registration(directory, rel, manifest)
     checks.append(_check("entity_types", "没有新增实体类型", "fail" if entity else "pass", "；".join(entity[:10])))
 
     protected, missing_entry = _node_problems(directory, manifest)
@@ -242,8 +233,12 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
     # 页面只选平台内置的，不带前端代码
     pages = [f"页面 {page.get('id')} 不是平台内置页面" for page in manifest.pages()
              if page.get("id") not in mf.BUILTIN_PAGES]
-    pages += [f"子页挂在非内核页面 {sub.get('parent')}" for sub in manifest.contributes.get("subpages") or []
-              if isinstance(sub, dict) and sub.get("parent") not in mf.KERNEL_PAGES]
+    pages += [f"子页挂在非内核页面 {sub.get('parent')}" for sub in manifest.subpages()
+              if sub.get("parent") not in mf.KERNEL_PAGES]
+    pages += [f"子页 {sub.get('id')} 不是平台内置子页" for sub in manifest.subpages()
+              if sub.get("id") not in mf.BUILTIN_SUBPAGES]
+    pages += [f"页面 {page.get('id')} 的图标 {(page.get('nav') or {}).get('icon')} 不在平台图标集里"
+              for page in manifest.pages() if (page.get("nav") or {}).get("icon") not in (None, *mf.NAV_ICONS)]
     frontend, frontend_soft = _frontend_files(directory, files, tenant)
     if frontend:
         pages.append("包含前端代码：" + "、".join(frontend[:10]))
