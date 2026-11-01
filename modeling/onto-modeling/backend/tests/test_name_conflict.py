@@ -37,7 +37,6 @@ from app.services.workspace import (
 def manager(tmp_path, monkeypatch) -> WorkspaceManager:
     workspaces = WorkspaceManager(tmp_path / "data", tmp_path / "assets")
     monkeypatch.setattr(projects, "workspaces", workspaces)
-    monkeypatch.setattr(config, "MODELING_URL", "")  # 不开通 modeling 侧项目
     return workspaces
 
 

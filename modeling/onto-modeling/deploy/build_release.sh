@@ -137,12 +137,10 @@ AUTH_SERVER_SRC="${REPOSITORY_ROOT}/auth-server"
 
 cp "${SCRIPT_DIR}/docker-compose.release.yml" "${BUNDLE_DIR}/"
 cp "${SCRIPT_DIR}/deploy.sh" "${SCRIPT_DIR}/preflight.sh" \
-   "${SCRIPT_DIR}/configure-modeling-association.sh" \
    "${SCRIPT_DIR}/migrate-from-modeling.sh" "${BUNDLE_DIR}/"
 cp "${SCRIPT_DIR}/README.md" "${BUNDLE_DIR}/README.md"
 cp "${PROJECT_ROOT}/.env.example" "${BUNDLE_DIR}/.env.example"
 chmod +x "${BUNDLE_DIR}/deploy.sh" "${BUNDLE_DIR}/preflight.sh" \
-    "${BUNDLE_DIR}/configure-modeling-association.sh" \
     "${BUNDLE_DIR}/migrate-from-modeling.sh"
 
 # 镜像清单：deploy.sh / compose 从这里取镜像 tag，目标机不需要再传参数

@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .. import config
-from ..services import audit, auth, conversation_store, error_log, modeling_cleanup, ownership
+from ..services import audit, auth, conversation_store, error_log, ownership
 from ..services import backup as backup_service
 from ..services.agent_sessions import manager, usage_summary
 from ..services.auth import AuthError
@@ -339,17 +339,3 @@ def delete_user(username: str, request: Request):
 
         personal_model_settings.delete_user(username)
     return JSONResponse(status_code=status_code, content=data)
-
-
-@router.get("/modeling-cleanups")
-def list_modeling_cleanups(request: Request):
-    _require_admin(request)
-    return {"tasks": modeling_cleanup.list_tasks()}
-
-
-@router.post("/modeling-cleanups/{task_id}/retry")
-def retry_modeling_cleanup(task_id: str, request: Request):
-    _require_admin(request)
-    if not modeling_cleanup.retry_task(task_id):
-        return JSONResponse(status_code=404, content={"error": "清理任务不存在"})
-    return {"queued": True, "id": task_id}

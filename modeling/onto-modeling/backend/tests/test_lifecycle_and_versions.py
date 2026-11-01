@@ -89,7 +89,7 @@ parser.add_argument("--has-jet-fuel", action="store_true")
     assert params[0]["required"] == "否"
 
 
-def _write_eval_table(root: Path, sheet: str, columns: list[str]) -> None:
+def _write_schema_table(root: Path, sheet: str, columns: list[str]) -> None:
     """写一张 schema 数据表：对象靠它拿到真实表名与列名。"""
     openpyxl = pytest.importorskip("openpyxl")
 
@@ -99,9 +99,9 @@ def _write_eval_table(root: Path, sheet: str, columns: list[str]) -> None:
     worksheet = workbook.active
     worksheet.title = sheet
     worksheet.append(columns)
-    workbook.save(excel / "评测数据.xlsx")
+    workbook.save(excel / "业务数据.xlsx")
     (root / "resource" / "materials.json").write_text(
-        json.dumps({"resource/excel/评测数据.xlsx": {"purpose": "schema"}}, ensure_ascii=False),
+        json.dumps({"resource/excel/业务数据.xlsx": {"purpose": "schema"}}, ensure_ascii=False),
         encoding="utf-8",
     )
 
@@ -201,7 +201,7 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         "| 加急标识 | URGENT_FLAG | 标识 | 否 | 布尔 | 无 | 取值：0 / 1 |\n",
         encoding="utf-8",
     )
-    _write_eval_table(root, "ORDER_TABLE", ["ORDER_ID", "DELIVERY_FLAG"])
+    _write_schema_table(root, "ORDER_TABLE", ["ORDER_ID", "DELIVERY_FLAG"])
     (root / "ontology" / "logic").mkdir(exist_ok=True)  # 旧目录：验证兼容读取
     (root / "ontology" / "logic" / "创建订单.md").write_text(
         "---\nold: front\n---\n\n生成[[订单]]\n", encoding="utf-8"

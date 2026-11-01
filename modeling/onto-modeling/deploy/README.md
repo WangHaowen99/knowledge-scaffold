@@ -10,7 +10,6 @@ onto-modeling/
   images.env                  # 镜像 tag 清单（deploy.sh 自动读取）
   docker-compose.release.yml
   deploy.sh                   # 预检 → 加载镜像 → 拉起
-  configure-modeling-association.sh  # 自动配置导入项目的 MCP 关联
   preflight.sh                # 可单独运行的部署预检
   .env.example                # 环境变量说明（复制为 .env 后填写）
   README.md
@@ -28,49 +27,22 @@ vi .env              # 填 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN
 
 访问 `http://<部署机地址>:5100`（端口可用 `ONTO_WEB_PORT` 覆盖）。
 
-### Modeling MCP 关联与远端清理
+### 对接评测服务
 
-整栈部署继续使用原有共用认证和全局 Modeling 地址。独立部署 Onto 发布包时，
-若同机 Modeling 已通过项目部署脚本生成服务令牌，Onto 部署脚本自动读取该令牌及通信地址，
-将 `ONTO_WEB_MODELING_ASSOCIATION_URL/TOKEN` 写入本机 `.env`，无需手工填写。
-重复部署原样保留完整的关联地址和令牌；只有一项时停止并提示配置不完整。
-已有全局 Modeling 地址时继续使用原用户鉴权，不注入本机服务令牌。
-不会改变登录鉴权、网络连接或全局评测地址。
-`.env` 含运行凭据，不可提交到 Git 或打入发布包。
+评测已移出 onto-modeling（ADR-0020），onto 不主动调用评测服务，也不再关联 Modeling 项目；
+旧版的 `ONTO_WEB_MODELING_*` 与评测并发上限变量已不再读取（清单见项目 README），`.env` 里留着
+也无影响，可以删掉。评测服务改为调用 onto 的三个契约入口，凭据是管理员签发的服务令牌：
 
-独立部署 Onto 时，若同机已有运行中的 Modeling，脚本自动使用其已发布 HTTP 端口；
-Docker Desktop 使用宿主网关域名，Linux Docker 使用宿主 bridge 网关，无需添加 `extra_hosts`。
-只有 Onto、没有 Modeling 服务的部署无法提供 Modeling MCP；脚本会提示并保留独立部署能力。
-自定义跨机部署仍需由运维提供关联地址和令牌，无法从本机自动发现远端服务。
+1. 管理员 `POST /api/v1/admin/service-tokens` 签发令牌（形如 `onto_svc_…`，只在响应里出现一次），按需选范围：
+   `releases.read`（发布列表、发布记录、包清单与按版本下载）、`receipts.write`（求解验证候选包与验证回执）、
+   `feedback.write`（外部反馈）；可用 `project_ids` 限定项目、`expires_in_s` 设有效期，用完 `DELETE` 吊销。
+2. 评测服务带 `Authorization: Bearer <服务令牌>` 调用 `/api/v1/contract/releases`、
+   `/api/v1/projects/{id}/releases/{version}`（及 `/manifest`、`/download`）、`/api/v1/projects/{id}/solver/candidate`、
+   `/api/v1/projects/{id}/solver/receipts`、`/api/v1/projects/{id}/feedback`。
 
-专用关联通道只接受服务凭据和匹配的 Onto 项目归属。管理员授权仅限当前项目的
-MCP 管理接口，不授予 Modeling 全局管理员权限、不修改成员列表。管理员代项目签发
-Token 时使用项目所有者作为访问主体，签发及吊销记录保留实际管理员身份；运行时
-继续校验原有项目成员权限、Token scope 和吊销状态。
-
-如果 Onto Modeling 与核心 Modeling 共用认证中心，配置：
-
-```env
-ONTO_WEB_MODELING_URL=http://mw-modeling:8100
-```
-
-建议同时配置远端项目清理凭证，保证 Onto 项目创建失败或删除后，核心 Modeling
-中的关联项目可以自动清理：
-
-```env
-ONTO_WEB_MODELING_CLEANUP_TOKEN=<随机高强度值>
-ONTO_WEB_MODELING_CLEANUP_INTERVAL=30
-```
-
-核心 Modeling 侧配置同一个值：
-
-```env
-MODELING_MCP_CLEANUP_TOKEN=<与 Onto 相同的值>
-```
-
-该凭证只允许 Onto 后端与 Modeling 后端使用，不能写入前端、日志或普通用户请求。
-未配置时不影响正常项目创建和 MCP 使用，但远端清理失败会进入 Onto 的持久化补偿
-任务，可在管理员接口中查看和重试。清理任务不保存用户 Bearer Token。
+令牌只存摘要（数据目录 `service-tokens.json`，0600），和项目的 MCP token 分开签发、分开存储。
+升级到这一版首次启动时会做一次性迁移：被对象引用的评测上传表迁进各项目 `resource/excel/` 并提交，
+随后删除评测状态与数据目录下的评测数据源配置（含连接密码），详见项目 README。
 
 ## 容量规划（方案 4.1.1）
 
@@ -80,10 +52,6 @@ MODELING_MCP_CLEANUP_TOKEN=<与 Onto 相同的值>
 - 几十用户同时建模为目标时建议 16G 主机，并按比例调高 `ONTO_WEB_MAX_SESSIONS`
   与 compose 里的 `ONTO_WEB_MEM_LIMIT`。
 - 建议主机配置 2–4G swap 或 zram 吸收峰值。
-- 数据评测每轮在评测专用线程池里执行，`ONTO_WEB_EVAL_MAX_CONCURRENT_ROUNDS`
-  （默认 16）限制同时执行的轮数，超出的轮次排队并在状态里显示位次；评测不占用
-  上传、git、建模发消息共用的默认线程池。每轮在 modeling 侧按用例并发调用
-  consumer，调高上限前先确认 consumer 与模型网关的承载。
 - 空闲会话默认 10 分钟回收（`ONTO_WEB_SESSION_IDLE_TTL`），回收后靠 resume
   续接模型上下文，用户无感；会话 transcript 持久化在数据卷 `/data/home/.claude/`。
 

@@ -235,10 +235,22 @@ def test_old_export_path_numbers_by_commit_count(manager, tmp_path):
     pid, root = rich_project(manager)
     for index in range(55):
         commit_all(root, f"test: {index}")
-    manager.export_package_zip(pid, tmp_path / "eval.zip")
-    data = manifest(tmp_path / "eval.zip", pid)
+    manager.export_package_zip(pid, tmp_path / "legacy.zip")
+    data = manifest(tmp_path / "legacy.zip", pid)
     assert data["version"] == f"0.1.{_git(root, 'rev-list', '--count', 'HEAD').strip()}"
     assert "source_commit" not in data
+
+
+def test_graph_variant_maps_objects_by_key(manager, tmp_path):
+    """图模式留作发布适配器的变体（方案第 6 章第 1 项）：resource 为对象 key，Sheet 与列在 sources 里。"""
+    pid, _root = rich_project(manager)
+    manager.export_package_zip(pid, tmp_path / "plain.zip")
+    manager.export_package_zip(pid, tmp_path / "graph.zip", graph=True)
+    plain = json.loads(package_files(tmp_path / "plain.zip")[f"{pid}/mappings/object-data-mappings.json"])
+    graph = json.loads(package_files(tmp_path / "graph.zip")[f"{pid}/mappings/object-data-mappings.json"])
+    assert plain["objects"]["订单"]["resource"] == "T_ORDER"
+    assert graph["objects"]["订单"]["resource"] == "订单"
+    assert graph["objects"]["订单"]["sources"][0]["resource"] == "T_ORDER"
 
 
 # ---- 只读树的安全与完整性 ----

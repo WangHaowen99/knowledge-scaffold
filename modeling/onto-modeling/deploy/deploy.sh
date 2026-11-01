@@ -43,12 +43,6 @@ fi
 COMPOSE="docker compose"
 docker compose version >/dev/null 2>&1 || COMPOSE="docker-compose"
 
-if [ -f "${SCRIPT_DIR}/configure-modeling-association.sh" ]; then
-    bash "${SCRIPT_DIR}/configure-modeling-association.sh" "${SCRIPT_DIR}"
-else
-    echo "Warning: Modeling association helper not present; preserving legacy deployment"
-fi
-
 # 外接账号中心：.env 声明外部 auth 网络时，停用自带 auth-server 并加入该网络
 # （consumer 栈的服务名同为 auth-server，容器网络内地址无需变化）
 COMPOSE_FILES=(-f docker-compose.release.yml)

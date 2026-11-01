@@ -63,7 +63,6 @@ def manager(tmp_path: Path, monkeypatch) -> WorkspaceManager:
     (assets / "resource-template").mkdir()
     workspaces = WorkspaceManager(tmp_path / "data", assets)
     monkeypatch.setattr(projects, "workspaces", workspaces)
-    monkeypatch.setattr(config, "MODELING_URL", "")
     return workspaces
 
 

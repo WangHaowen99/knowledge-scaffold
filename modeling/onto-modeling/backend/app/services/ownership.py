@@ -18,7 +18,7 @@ from .workspace import WorkspaceError
 OWNER_NAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 
 # 管理员看非本人项目时的元数据白名单：名称、所有者、阶段、归档状态与创建时间。
-# 背景说明、对象/操作计数、评测结果、资料分析验收、发布记录、引擎与 MCP 配置都算项目内容
+# 背景说明、对象/操作计数、资料分析验收、发布记录、引擎与 MCP 配置都算项目内容
 META_VIEW_FIELDS = ("id", "name", "owner", "archived", "created_at", "stages_done", "stages_total")
 
 CODE_OWNER_ONLY = "project_owner_only"

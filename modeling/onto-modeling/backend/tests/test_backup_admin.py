@@ -26,7 +26,6 @@ def env(tmp_path: Path, monkeypatch):
     data = tmp_path / "data"
     monkeypatch.setattr(config, "DATA_DIR", data)
     monkeypatch.setattr(config, "BACKUP_DIR", "")
-    monkeypatch.setattr(config, "MODELING_URL", "")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     assets = tmp_path / "assets"
     (assets / "resource-template").mkdir(parents=True)
@@ -66,15 +65,12 @@ def seed(manager: WorkspaceManager, home: Path) -> dict:
 
     for name in (
         "model-settings.json", "user-model-settings.json", "runtime-settings.json",
-        "mcp-servers.json", "model-context-presets.json", "modeling-cleanup-tasks.json",
-        "service-tokens.json",
+        "mcp-servers.json", "model-context-presets.json", "service-tokens.json",
     ):
         (data / name).write_text('{"synthetic": true}')
     (data / "audit.jsonl").write_text('{"user": "operator_a"}\n')
     (data / "errors.jsonl").write_text('{"kind": "synthetic"}\n')
     (data / ".model-secret-key").write_text("synthetic-master-key-not-for-backup")
-    (data / "eval-data-sources").mkdir()
-    (data / "eval-data-sources" / f"{meta['id']}.json").write_text("{}")
     (data / "releases" / meta["id"]).mkdir(parents=True)
     (data / "releases" / meta["id"] / "0.1.2.zip").write_bytes(b"synthetic-package")
 
@@ -113,11 +109,9 @@ def test_backup_covers_state_and_excludes_master_key(env, tmp_path):
         "data/runtime-settings.json",
         "data/mcp-servers.json",
         "data/model-context-presets.json",
-        "data/modeling-cleanup-tasks.json",
+        "data/service-tokens.json",
         "data/audit.jsonl",
         "data/errors.jsonl",
-        f"data/eval-data-sources/{project}.json",
-        "data/service-tokens.json",
         f"data/releases/{project}/0.1.2.zip",
         "home/.claude/projects/workspace_demo/session.jsonl",
     }

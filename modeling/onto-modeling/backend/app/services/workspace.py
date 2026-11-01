@@ -256,8 +256,6 @@ class WorkspaceManager:
         (("ontology/scripts",), True),
         # 求解适配（可选）：受管目录 ontology/solver/<key>/
         (("ontology/solver",), True),
-        # 数据评测（可选，方案 eval-optimization-integration）：探针为报告文件 glob
-        (("reports/eval-*.md",), True),
     )
     STAGE_TOTAL = len(STAGES)
     # 资料分析在 STAGES 中的位置：它不按目录探针判完成，改读验收回执（issue #362）
@@ -279,19 +277,14 @@ class WorkspaceManager:
         # 验收只管"进入对象提取之前"：报告没通过、对象也还没提取时才挡住后续阶段。
         # 对象一旦提取，资料分析按已越过处理，只留待核验的提醒——与 state_helper
         # 的"已到达的最高阶段优先"同口径。否则旧项目升级后进度会整体归零，回执
-        # 因打标签、换评测表而失效时也一样。
+        # 因打标签、换数据表而失效时也一样。
         research_blocking = (
             review["status"] in (_research_review.PENDING, _research_review.FAILED, _research_review.UNVERIFIABLE)
             and not cls._dir_has_entries(root / "ontology" / "object")
         )
         done = 0
         for index, (dirs, _optional) in enumerate(cls.STAGES):
-            hit = any(
-                (next(root.glob(rel), None) is not None)
-                if "*" in rel
-                else cls._dir_has_entries(root / rel)
-                for rel in dirs
-            )
+            hit = any(cls._dir_has_entries(root / rel) for rel in dirs)
             # 资料分析：报告落盘不等于内容已验收，挡着的时候不计完成（与前端 stageHits 同口径）。
             # 有没有报告以回执状态为准，不看目录探针。
             if index == cls.RESEARCH_STAGE_INDEX:
@@ -307,20 +300,7 @@ class WorkspaceManager:
                 1 for f in directory.glob("*.md") if f.name.lower() != "index.md"
             )
 
-        eval_summary = {}
-        try:
-            eval_summary = json.loads(
-                (root / ".ontology-state" / "eval.json").read_text(encoding="utf-8")
-            )
-        except (OSError, json.JSONDecodeError):
-            pass
-        from .modeling_eval import evolution_hint
-
         return {
-            "eval_score": (eval_summary.get("summary") or {}).get("score"),
-            "eval_status": eval_summary.get("status"),
-            # 最近一轮有失分/异常用例时的 /ontology-evolution 提示（无则为 None）
-            "eval_evolution": evolution_hint(eval_summary),
             "stages_done": done,
             "stages_total": cls.STAGE_TOTAL,
             # 资料分析的验收状态（none/pending/failed/passed）+ 计数与下一步提示。
@@ -593,8 +573,7 @@ class WorkspaceManager:
             "revision": _content_revision(target.read_bytes()),
         }
 
-    # 资料用途标签（对齐 modeling 的 material purpose 体系）。评测数据不再走资料区打标，
-    # 改在评测数据源里上传（eval_data_files）；存量 eval_data 标签读取时按 auto 处理
+    # 资料用途标签（对齐 modeling 的 material purpose 体系）；存量的旧用途标签读取时按 auto 处理
     MATERIAL_PURPOSES = ("auto", "goal", "schema", "term", "evidence")
     MATERIAL_READING_MODES = ("on_demand", "full")
 
@@ -945,9 +924,7 @@ class WorkspaceManager:
         dest_path: Path,
         binding: dict | None = None,
         graph: bool = False,
-        relation_report: dict | None = None,
         allow_unbound: bool = False,
-        object_texts: dict[str, str] | None = None,
         *,
         source_root: Path | None = None,
         version: str = "",
@@ -960,9 +937,10 @@ class WorkspaceManager:
         manifest.yaml 六必填字段、objects/operations 目录 + frontmatter、
         operation 必须声明 uses.objects、index 首列与详情 key 逐字相等。
 
-        binding：评测导入时传入按本轮导入工作簿算出的绑定，mapping 与导入库同源；
-        所有模式均将「关联对象」转为 `# 关系` 表，graph 模式额外补齐物理关联字段；
-        转不出来的关系只跳过那一条，原因记进 relation_report["notes"]，不阻断导出；
+        binding：调用方已算好的绑定（发布按提交导出的只读树算），缺省按 root 现算；
+        所有模式均将「关联对象」转为 `# 关系` 表，转不出来的关系只跳过那一条，不阻断导出。
+        graph：图模式变体（mappings 与关系按 modeling 图导入契约，补齐物理关联字段），
+        留作发布适配器的一个变体（方案第 6 章第 1 项），由下游按需选用；
         allow_unbound：降级发布——声明对不上的对象不阻断，来源Sheet 写 UNBOUND、不进 mapping。
 
         工作区有求解契约（ontology/solver/）时升级为 v0.2 operation-centric.v1：求解
@@ -972,8 +950,8 @@ class WorkspaceManager:
 
         ZIP 按 _ReproducibleZip 确定性写出：同一工作区内容重复导出逐字节相同。
 
-        source_root：用户发布传入按提交导出的只读树（publish_package），内容只从这棵树读；
-        评测等其他调用方不传，读工作区当前文件。version 缺省按 HEAD 的提交数编号；
+        source_root：发布传入按提交导出的只读树（publish_package），内容只从这棵树读；
+        不传时读工作区当前文件。version 缺省按 HEAD 的提交数编号；
         source_commit 非空时写进 manifest，标明包出自哪个提交。
         draft：求解验证候选包（solver_candidate_package），manifest 标 status: draft，不是发布。
         """
@@ -1009,7 +987,7 @@ class WorkspaceManager:
                     items.append((path.stem, _strip_frontmatter(raw)))
             return items
 
-        object_texts = object_texts if object_texts is not None else package_mapping.read_object_texts(root, strict=True)
+        object_texts = package_mapping.read_object_texts(root, strict=True)
         objects = []
         for key, raw in sorted(object_texts.items()):
             try:
@@ -1024,7 +1002,7 @@ class WorkspaceManager:
         # 对象 ↔ 真实数据表：来源Sheet、`# 字段` 段与 mappings 三处同一份绑定结果
         binding = binding or package_mapping.resolve_object_tables(
             root,
-            tables=package_mapping.read_source_tables(root, state_root=project_root),
+            tables=package_mapping.read_source_tables(root),
             strict_declared=not allow_unbound,
         )
         if binding["problems"]:
@@ -1034,15 +1012,10 @@ class WorkspaceManager:
             )
         bound = binding["objects"]
         mappings = package_mapping.object_data_mappings(binding, graph=graph)
-        graph_edges: dict[str, list] = {}
         if graph:
-            graph_edges, _ = package_mapping.graph_relations(
-                object_texts, set(mappings["objects"]), relation_report,
-            )
+            graph_edges, _ = package_mapping.graph_relations(object_texts, set(mappings["objects"]))
         else:
-            graph_edges, relation_notes = package_mapping.package_relations(object_texts)
-            if relation_report is not None:
-                relation_report.update(notes=relation_notes)
+            graph_edges, _ = package_mapping.package_relations(object_texts)
         rules = entry_items("ontology/rule")
         metrics = entry_items("ontology/metric")
         scripts = entry_items("ontology/scripts", pattern="*.py")
@@ -1481,7 +1454,7 @@ class WorkspaceManager:
         commit = _head_commit(root)
         with _release_tree(root, commit) as tree:
             binding = package_mapping.resolve_object_tables(
-                tree, tables=package_mapping.read_source_tables(tree, state_root=root)
+                tree, tables=package_mapping.read_source_tables(tree)
             )
             table_resources = self._unmarked_table_resources(tree)
             solver = self._solver_release_status_at(tree, root)
@@ -1749,7 +1722,7 @@ class WorkspaceManager:
         if table:
             by_lower = {name.lower(): name for name in package_mapping.read_source_tables(root)}
             if table.lower() not in by_lower:
-                raise WorkspaceError(f"数据表「{table}」不在 schema 资料或评测数据源里")
+                raise WorkspaceError(f"数据表「{table}」不在 schema 资料里")
             table = by_lower[table.lower()]
         content = package_mapping.set_declared_source(doc.read_text(encoding="utf-8"), table)
         return self.write_file(project_id, rel, content, base_revision=base_revision, author=author)
@@ -1779,7 +1752,7 @@ class WorkspaceManager:
                 self._ensure_solver_publishable(tree, root)
                 binding = package_mapping.resolve_object_tables(
                     tree,
-                    tables=package_mapping.read_source_tables(tree, state_root=root),
+                    tables=package_mapping.read_source_tables(tree),
                     strict_declared=not allow_unbound,
                 )
                 self.export_package_zip(
@@ -1888,7 +1861,7 @@ class WorkspaceManager:
                 try:
                     with _release_tree(root, commit) as tree:
                         binding = package_mapping.resolve_object_tables(
-                            tree, tables=package_mapping.read_source_tables(tree, state_root=root),
+                            tree, tables=package_mapping.read_source_tables(tree),
                             strict_declared=not degraded,
                         )
                         self.export_package_zip(
@@ -1928,7 +1901,7 @@ class WorkspaceManager:
                         400, solver_contract.CODE_INVALID,
                     )
                 binding = package_mapping.resolve_object_tables(
-                    tree, tables=package_mapping.read_source_tables(tree, state_root=root),
+                    tree, tables=package_mapping.read_source_tables(tree),
                     strict_declared=not allow_unbound,
                 )
                 self.export_package_zip(

@@ -22,12 +22,9 @@ from .services.workspace import WorkspaceError
 async def _lifespan(app: FastAPI):
     import asyncio
 
-    from .services import backup
+    from .services import background_jobs, backup, eval_retirement, solver_validation
     from .services.agent_sessions import manager
     from .services.model_context_presets import write_example
-    from .services.modeling_eval import sweep_interrupted
-    from .services.modeling_cleanup import retry_due, scheduler_loop
-    from .services.solver_validation_run import sweep_interrupted as sweep_solver_validations
 
     # 最先做、且在任何会话开始之前：此刻本进程没有 git 子进程，各项目 .git 下的锁都是
     # 上次停机留下的残留；元数据迁移要改各项目的真实索引，也不能和 agent 的 git 并发
@@ -37,25 +34,27 @@ async def _lifespan(app: FastAPI):
     await asyncio.to_thread(projects.workspaces.migrate_single_owner)
     # 发布按提交打包：旧版上传没进 git 的资料补提交一次，否则进不了包
     await asyncio.to_thread(projects.workspaces.commit_pending_uploads)
+    # 评测移出（ADR-0020）：被对象引用的评测上传表迁进资料区并提交，再删掉评测状态与
+    # 数据源配置（含连接密码）。幂等，迁过的项目什么都不做
+    await asyncio.to_thread(eval_retirement.migrate, projects.workspaces)
     manager.start_background()  # 空闲会话回收（方案 4.1.1）
     write_example()  # 内置推荐表副本，供管理员复制成自定义表
-    # 评测编排只活在进程内：重启后仍标 running 的工作区改判中断，否则前端永久锁死
-    sweep_interrupted()
-    sweep_solver_validations()
+    # 后台任务只活在进程内：重启后仍标 running 的记录改判中断，否则前端永久锁死
+    background_jobs.register_startup_sweep(
+        "solver_validation",
+        lambda: solver_validation.sweep_interrupted(projects.workspaces.workspaces_dir),
+    )
+    background_jobs.run_startup_sweeps()
     # 定期备份：距上次已超过间隔时启动即补跑
     backup_task = asyncio.create_task(backup.scheduler_loop(projects.workspaces))
-    modeling_cleanup_task = asyncio.create_task(scheduler_loop())
     # 上次删除项目时没删净的目录（文件被占用、删到一半停机）在后台清扫掉
     purge_task = asyncio.create_task(asyncio.to_thread(projects.workspaces.purge_leftovers))
     try:
         yield
     finally:
         backup_task.cancel()
-        modeling_cleanup_task.cancel()
         purge_task.cancel()
-        await asyncio.gather(
-            backup_task, modeling_cleanup_task, purge_task, return_exceptions=True
-        )
+        await asyncio.gather(backup_task, purge_task, return_exceptions=True)
         await manager.shutdown()
 
 

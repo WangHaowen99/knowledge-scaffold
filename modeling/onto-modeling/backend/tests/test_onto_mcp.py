@@ -141,7 +141,6 @@ def test_management_status_is_onto_local_without_modeling(env, monkeypatch):
     manager, meta, _ = env
     monkeypatch.setattr(routes, "manager", lambda: manager)
     monkeypatch.setattr(routes, "access", lambda project_id, request: manager.get_project(project_id))
-    monkeypatch.setattr(routes.config, "MODELING_URL", "https://example.invalid")
     app = FastAPI()
     app.include_router(routes.router)
     request = TestClient(app, base_url="https://testserver")

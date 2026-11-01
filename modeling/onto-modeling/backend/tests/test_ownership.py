@@ -27,7 +27,6 @@ TOKENS = {
 @pytest.fixture()
 def manager(tmp_path: Path, monkeypatch) -> WorkspaceManager:
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
-    monkeypatch.setattr(config, "MODELING_URL", "")
     assets = tmp_path / "assets"
     (assets / "workspace-toolkit" / "templates").mkdir(parents=True)
     (assets / "workspace-rules.md").write_text("# rules", encoding="utf-8")

@@ -6,7 +6,6 @@
 - data/sessions/            会话历史、会话索引与续接点
 - data/jiuwen/              Jiuwen 存档（SQLite 用 backup API 拷贝）与框架工件区
 - data/studio/              Studio 草稿与租约
-- data/eval-data-sources/   评测数据源配置
 - data/releases/            发布留存的知识包（按版本下载读这里）
 - data/onto-mcp.sqlite      MCP token 库（backup API 拷贝）
 - data/service-tokens.json  服务令牌（只有摘要）
@@ -80,11 +79,9 @@ def _data_entries(manager) -> list[Path]:
         audit,
         conversation_store,
         error_log,
-        eval_data_sources,
         mcp_settings,
         model_context_presets,
         model_settings,
-        modeling_cleanup,
         personal_model_settings,
         release_store,
         runtime_settings,
@@ -98,7 +95,6 @@ def _data_entries(manager) -> list[Path]:
         conversation_store._sessions_dir(),
         jiuwen._checkpoint_db_path().parent,
         studio._state_file("backup", "probe").parent,
-        eval_data_sources._file("backup").parent,
         release_store.root_dir(manager.data_dir),
         tokens.database_path(manager),
         service_tokens.store_path(),
@@ -107,7 +103,6 @@ def _data_entries(manager) -> list[Path]:
         runtime_settings._file(),
         mcp_settings._file(),
         model_context_presets._custom_file(),
-        modeling_cleanup._path(),
         audit._file(),
         error_log._file(),
     ]
