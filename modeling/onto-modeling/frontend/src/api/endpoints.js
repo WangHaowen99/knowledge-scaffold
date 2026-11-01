@@ -192,7 +192,7 @@ export function createApi(client) {
     createArtifact: (id, type, body) => client.post(`${P(id)}/artifacts/${enc(type)}`, body), // AR-06
     deleteArtifact: (id, type, key, base_revision) => client.del(`${P(id)}/artifacts/${enc(type)}/${enc(key)}`, { base_revision }), // AR-07
     validateArtifact: (id, type, key, body) => client.post(`${P(id)}/artifacts/${enc(type)}/${enc(key)}/validate`, body || {}), // AR-08
-    artifactSummary: (id, type) => client.get(`${P(id)}/artifacts/${enc(type)}/summary`), // AR-09
+    artifactSummary: (id, type, query) => client.get(`${P(id)}/artifacts/${enc(type)}/summary`, { query }), // AR-09
 
     // 3.18 脚本与求解契约
     scripts: (id) => client.get(`${P(id)}/scripts`), // SC-01
@@ -221,7 +221,7 @@ export function createApi(client) {
     startEvidenceJob: (id, body) => client.post(`${P(id)}/evidence/jobs`, body), // EV-14
     evidenceJobs: (id, query) => client.get(`${P(id)}/evidence/jobs`, { query }), // EV-15
     evidenceJob: (id, jobId) => client.get(`${P(id)}/evidence/jobs/${enc(jobId)}`), // EV-16
-    evidenceJobAction: (id, jobId, op) => client.post(`${P(id)}/evidence/jobs/${enc(jobId)}/${op}`, {}), // EV-17：op = cancel | resume | retry
+    evidenceJobAction: (id, jobId, op, body) => client.post(`${P(id)}/evidence/jobs/${enc(jobId)}/${op}`, body || {}), // EV-17：op = cancel | resume | retry；生产库 retry 带 confirmation_token
     evidenceSnapshots: (id, query) => client.get(`${P(id)}/evidence/snapshots`, { query }), // EV-18
     evidenceSnapshot: (id, snapId) => client.get(`${P(id)}/evidence/snapshots/${enc(snapId)}`), // EV-19
     deleteEvidenceSnapshot: (id, snapId) => client.del(`${P(id)}/evidence/snapshots/${enc(snapId)}`), // EV-20
@@ -230,7 +230,7 @@ export function createApi(client) {
     evidenceSummaryTree: (id, query) => client.get(`${P(id)}/evidence/summary-tree`, { query }), // EV-23
     evidenceSearch: (id, query) => client.get(`${P(id)}/evidence/search`, { query }), // EV-24
     evidenceRecord: (id, anchor, snapshot) => client.get(`${P(id)}/evidence/record`, { query: { anchor, snapshot } }), // EV-25
-    evidenceWhereUsed: (id, anchor) => client.get(`${P(id)}/evidence/where-used`, { query: { anchor } }), // EV-26
+    evidenceWhereUsed: (id, anchor, prefix) => client.get(`${P(id)}/evidence/where-used`, { query: { anchor, prefix: prefix ? 'true' : undefined } }), // EV-26：prefix 匹配整张表
     evidenceLineage: (id, anchor, snapshot) => client.get(`${P(id)}/evidence/lineage`, { query: { anchor, snapshot } }), // EV-27
     evidenceEr: (id, query) => client.get(`${P(id)}/evidence/er`, { query }), // EV-28
     resolveAnchors: (id, anchors) => client.post(`${P(id)}/anchors/resolve`, { anchors }), // EV-29

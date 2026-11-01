@@ -357,6 +357,7 @@ export function createMockServer() {
       if (chk.reason === 'conflict') return err(409, 'project_name_conflict', '同名项目已存在', { conflict: chk.conflict });
       c.name = chk.normalized;
     }
+    if (typeof body.goal === 'string') c.goal = body.goal.trim();
     emitUser('project.card.updated', { project_id: c.id, card: c });
     return json(200, F.projectMeta(c));
   });
@@ -395,7 +396,8 @@ export function createMockServer() {
   on('PUT', '/projects/([^/]+)/build-mode', ({ m, body }) => { const c = cardOf(m[1]); if (c) c.build_mode = body.build_mode; return json(200, { build_mode: body.build_mode, autobuild_running: false, run_id: null }); });
   on('GET', '/projects/([^/]+)/events', ({ m, query }) => hub.open(projKey(m[1]), 'project', query));
   on('GET', '/projects/([^/]+)/usage', () => json(200, { calls: 214, input_tokens: 3200000, output_tokens: 410000, cost: { amount: 126, currency: 'CNY' }, last_activity_at: new Date().toISOString() }));
-  on('GET', '/projects/([^/]+)/extensions', () => json(200, F.extensions()));
+  // 扩展项随本项目启用的能力变（routes-settings.js 登记 db.extensionsOf，启用、停用后左栏跟着变）
+  on('GET', '/projects/([^/]+)/extensions', ({ m }) => json(200, db.extensionsOf ? db.extensionsOf(m[1]) : F.extensions()));
   on('GET', '/projects/([^/]+)/flow', ({ m }) => json(200, flowOf(m[1])));
   on('GET', '/projects/([^/]+)/flow/suggestions', () => json(200, F.suggestionsWaiting()));
   on('POST', '/projects/([^/]+)/flow/nodes/([^/]+)/(skip|restore)', ({ m }) => {
@@ -420,20 +422,24 @@ export function createMockServer() {
   });
 
   // ---------- 3.10 变更集 ----------
+  // 带 owner 的变更集（如增量更新那一轮）由登记它的 routes-*.js 处理，这里让过去
   on('GET', '/projects/([^/]+)/scope', ({ m }) => json(200, scopeOf(m[1])));
   on('GET', '/projects/([^/]+)/changesets/([^/]+)/diff', ({ m }) => {
     const cs = db.changesets.get(m[2]);
+    if (cs?.owner) return undefined;
     const lines = F.OPTION_PREVIEWS[cs?.opt || 'A'];
     return json(200, { items: [{ target: F.REFS.op, change: 'mod', sections: [{ title: '', lines }] }] });
   });
   on('GET', '/projects/([^/]+)/changesets/([^/]+)', ({ m }) => {
     const cs = db.changesets.get(m[2]);
+    if (cs?.owner) return undefined;
     if (!cs) return err(404, 'changeset_not_found', '变更集不存在');
     return json(200, { id: m[2], source: 'assistant', build_mode: 'L2', purpose: '超量与审批提示', state: cs.state, base: 'a71e03c9', conversation_id: cs.cid, run_id: null, slice_id: 's5', created_at: new Date().toISOString(), updated_at: new Date().toISOString(), merged: null, entity_count: 3, groups: [], checks: { errors: 0, warnings: 0, findings: [] }, next_version_label: 'v0.13' });
   });
   on('POST', '/projects/([^/]+)/changesets/([^/]+)/merge', async ({ m }) => {
     const pid = m[1];
     const cs = db.changesets.get(m[2]);
+    if (cs?.owner) return undefined;
     if (!cs) return err(404, 'changeset_not_found', '变更集不存在');
     if (cs.state !== 'pending_confirm') return err(409, 'changeset_closed', '已关闭', { state: cs.state });
     if (db.running.has(`${pid}:${cs.cid}`)) return err(409, 'changeset_in_progress', '助手还在跑', { conversation_id: cs.cid });
@@ -455,6 +461,7 @@ export function createMockServer() {
   on('POST', '/projects/([^/]+)/changesets/([^/]+)/discard', ({ m }) => {
     const pid = m[1];
     const cs = db.changesets.get(m[2]);
+    if (cs?.owner) return undefined;
     if (!cs) return err(404, 'changeset_not_found', '变更集不存在');
     if (cs.state !== 'pending_confirm') return err(409, 'changeset_closed', '已关闭', { state: cs.state });
     cs.state = 'discarded';
@@ -568,8 +575,9 @@ export function createMockServer() {
   on('POST', '/projects/([^/]+)/execs/([^/]+)/(resume|abandon)', ({ m }) => json(m[3] === 'resume' ? 202 : 200, { exec: { id: m[2], state: m[3] === 'resume' ? 'running' : 'abandoned' }, message_id: `m-${uid()}`, conversation_id: convsOf(m[1])[0].id }));
   on('GET', '/projects/([^/]+)/commands/catalog', () => json(200, F.commandCatalog()));
   // ---------- 页面命令（S-19 / S-20，契约 5.9.3：页面只发命令，进度经项目流 command.progress） ----------
-  // routes-*.js 往 ctx.commandHooks 里放 { match(body) → bool, title?(body), steps?: string[], finish?(pid, body, task) }：
-  // 命中的命令按 steps 推进进度，跑完调 finish（改 mock 数据、发 artifacts.updated 等）。
+  // routes-*.js 往 ctx.commandHooks 里放 { match(body) → bool, title?(body), steps?: string[], start?(pid, body, task), doneText?(body, task), finish?(pid, body, task) }：
+  // 命中的命令按 steps 推进进度，开始时调 start（如改写入范围锁），跑完调 finish（改 mock 数据、发 artifacts.updated 等）；
+  // doneText 换掉跑完时助手那句「做完了，结果已经回到…页」（返回空串就不发）。
   // ?mock=task:<页面 id> 让该页一打开就有一个进行中的任务（routes-*.js 导出的 taskSeeds）。
   const tasksOf = (pid) => {
     if (!db.tasks.has(pid)) db.tasks.set(pid, []);
@@ -618,13 +626,15 @@ export function createMockServer() {
       later(pid, cid, 1300, () => putTask(pid, { ...task, state: 'done', percent: 100, finished_at: new Date().toISOString(), result: { summary: '已完成', refs: [] } }));
     } else {
       setSession(pid, cid, 'running');
+      hook.start?.(pid, body, task);
       const steps = hook.steps || ['进行中'];
       steps.forEach((label, i) => {
         if (i) later(pid, cid, 900 * i, () => putTask(pid, { ...task, percent: Math.round((i / steps.length) * 100), step_label: label }, { transient: true }));
       });
       later(pid, cid, 900 * steps.length, () => {
         const done = putTask(pid, { ...task, state: 'done', percent: 100, step_label: steps.at(-1), finished_at: new Date().toISOString(), result: { summary: '已完成', refs: [] } });
-        emitConv(pid, cid, 'message.assistant', { message_id: `m-${uid()}`, text_md: `「${text.replace(/^\//, '')}」做完了，结果已经回到「${body.origin.label}」页。`, anchors: [], entry_links: [], continued: false });
+        const doneText = hook.doneText ? hook.doneText(body, done) : `「${text.replace(/^\//, '')}」做完了，结果已经回到「${body.origin.label}」页。`;
+        if (doneText) emitConv(pid, cid, 'message.assistant', { message_id: `m-${uid()}`, text_md: doneText, anchors: [], entry_links: [], continued: false });
         setSession(pid, cid, 'idle');
         hook.finish?.(pid, body, done);
       });
@@ -653,6 +663,8 @@ export function createMockServer() {
     on, json, err, wait, db, hub, sc, uid, F, cardOf, convKey, projKey, convsOf, flowOf, stageOf,
     emitConv, emitConvTransient, emitProj, emitUser, setSession, scopeOf, setScope, scopeLock, later, runReply,
     commandHooks, putTask, seedTask, tasksOf, artifactTypeDefs,
+    // 本服务端自己的入口：分组之间转调（如版本对比读 Studio 分组的 F-02）。不要用 window.__ontoMock，StrictMode 下会建两个服务端
+    self: (url, init) => handle(url, init),
   };
   MODULES.forEach((mod) => mod.register?.(ctx));
 
