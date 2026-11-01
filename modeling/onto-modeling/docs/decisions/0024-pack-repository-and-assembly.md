@@ -22,12 +22,12 @@
    节点入口命令存在、hooks 只追加拒绝型、页面只选内置且不带前端代码（JS/TS/Vue/CSS、package.json；租户包
    的 HTML 带脚本也算）、凭据、脚本语法、提示词体积。只读不执行。
 4. **锁文件** `.onto/packs.lock`（进工作区 git，详设 14#1）：排序 JSON；停用的包留 `enabled=false`；
-   `follow=true` 表示跟随通道（方案 2.3 第 4 步）。改锁文件是一次带 `Onto-Source: plugin` 的提交
-   （变更集在 P2）。
+   `follow=true` 表示跟随通道（方案 2.3 第 4 步）。改锁文件经写入事务（ChangeTx，ADR-0031）作为一次带
+   `Onto-Source: plugin` 的提交合入主线，只提交锁文件这一个路径，提交失败恢复原内容（变更集在 P2）。
 5. **装配器**（`assembler.py`）：内核守卫 + 已启用的包**复制**进 `<数据目录>/assembled/<哈希>/`（不用逐文件
    软链：有脚本按 `__file__` 找同目录模块），合并 `settings.json`（内核基线 + 包追加的守卫）、`CLAUDE.md`
-   （各包规则片段）、`flow.yaml`（组装后的流程），最后写 `MANIFEST.json`（包与版本、每个文件的哈希）再
-   rename。哈希 = 内核守卫摘要 + 启用的包；另算只含 H1 内容的哈希给会话指纹用。`.claude` 用临时软链 +
+   （各包规则片段）、`flow.yaml`（组装后的流程），最后写 `MANIFEST.json`（包与版本、每个文件的哈希），
+   放开成 agent 只读（ADR-0033：CLI 以 agent 用户从 `.claude` 加载命令与守卫）再 rename。哈希 = 内核守卫摘要 + 启用的包；另算只含 H1 内容的哈希给会话指纹用。`.claude` 用临时软链 +
    `os.replace` 原子切换，`CLAUDE.md`、`README.md` 是指向 `.claude/` 的相对链接。装配失败不改锁文件。
 6. **core 包**：`assets/workspace-toolkit` 原样迁成 core（加 `manifest.yaml`，命令名不变），工作区规则与
    说明作为它的规则片段与说明。镜像启动时入库，版本号是清单版本加内容摘要（`0.1.0+3f9a1c2d`），新镜像
