@@ -11,7 +11,7 @@ import '../../styles/evidence-pages.css';
 
 export function EvdPlg() {
   return (
-    <span className="evd-plg" data-pop={`由「${PACK_LABEL}」插件提供；未启用时不显示这个页面`} onClick={() => navigate(pagePath('plugin-detail'), { name: PACK })}>
+    <span className="evd-plg" data-pop={`由「${PACK_LABEL}」插件提供；未启用时不显示这个页面`} onClick={() => navigate(pagePath('plugin-detail'), { pack: PACK })}>
       <Icon name="puzzle" size={12} />插件 · {PACK_LABEL}
     </span>
   );

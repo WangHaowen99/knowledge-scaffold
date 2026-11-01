@@ -438,7 +438,7 @@ export default function ResourcesPage({ route }) {
             <div className="evd-grp rs-fbgrp">
               <h4>
                 <Icon name="msg" size={14} />外部反馈<span className="faint" style={{ fontWeight: 500 }}>{feedback.length}</span><span className="sp" />
-                <span className="evd-plg" data-pop="由「反馈演进」插件提供；未启用时不显示这个分组" onClick={() => navigate(pagePath('plugin-detail'), { name: 'evolution' })}>
+                <span className="evd-plg" data-pop="由「反馈演进」插件提供；未启用时不显示这个分组" onClick={() => navigate(pagePath('plugin-detail'), { pack: 'evolution' })}>
                   <Icon name="puzzle" size={12} />插件 · 反馈演进
                 </span>
               </h4>

@@ -84,7 +84,7 @@ export function PacksSection({ d, reload, archived }) {
           <MoreMenu
             items={[
               ...acts.more.map((b) => ({ label: b.label, icon: b.op === 'disable' ? 'ban' : undefined, onClick: () => run(b.op, p) })),
-              { label: '插件详情', icon: 'info', onClick: () => navigate(pagePath('plugin-detail'), { name: p.name }) },
+              { label: '插件详情', icon: 'info', onClick: () => navigate(pagePath('plugin-detail'), { pack: p.name }) },
             ]}
           />
         ) : null}

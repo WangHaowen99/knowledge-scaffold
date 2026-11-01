@@ -77,10 +77,10 @@ export function useCommandTasks(page, { onFinish } = {}) {
   return { tasks, active: pageTask(tasks, page), send, sending };
 }
 
-// 页头 eyebrow：插件标识，点了看插件详情
+// 页头 eyebrow：插件标识，点了看插件详情（plugin-detail?pack=<包名>，与 F1、F2 的入口同一个参数）
 export function PluginEyebrow({ pack, label }) {
   return (
-    <span className="mr-plg" title={`查看「${label}」插件详情`} onClick={() => navigate(pagePath('plugin-detail'), { name: pack })}>
+    <span className="mr-plg" title={`查看「${label}」插件详情`} onClick={() => navigate(pagePath('plugin-detail'), { pack })}>
       <Icon name="puzzle" size={12} />插件 · {label}
     </span>
   );
