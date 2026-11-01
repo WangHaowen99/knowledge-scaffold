@@ -89,9 +89,10 @@ SIGILL 崩溃。`preflight.sh` 会检查；未通过时按优先级整改：
   `ONTO_WEB_KEY_BACKUP_DIR` 指到另一个卷，每次备份自动单独拷一份；异机恢复缺了它，已保存的个人 Key 无法解密。
 - 密钥目录 `/data/onto-web/secrets/`（0700）放管理员模型 Key、个人 Key 密文、MCP token 库与服务令牌库；
   升级后第一次启动会把数据卷根目录下的老文件搬进去。agent 以镜像里的 `onto-agent` 用户运行，读不到它。
-- 运维管理面在容器内 `127.0.0.1:8101`。compose 只发布业务端口，没有反代时在 `.env` 设
-  `ONTO_WEB_OPS_ON_MAIN=true`，运维中心经业务端口访问；有反代时设 `ONTO_WEB_OPS_HOST=0.0.0.0`、只在内部网络
-  暴露 8101，由反代把 `/api/v1/ops/` 转过去。
+- 运维管理面在容器内 `127.0.0.1:8101`，compose 只发布业务端口。compose 默认设 `ONTO_WEB_OPS_ON_MAIN=true`：
+  没有反代的单端口部署，运维中心经业务端口访问（运维接口仍要登录令牌与 ops 角色）。有反代时在 `.env` 设
+  `ONTO_WEB_OPS_ON_MAIN=false`、`ONTO_WEB_OPS_HOST=0.0.0.0`，只在内部网络暴露 8101，由反代把
+  `/api/v1/ops/` 转过去，业务端口上的运维接口返回 404。
 - 用户账号在 `onto-web-auth-data`，不在应用备份里；建议在主机侧对两个卷做定期快照。
 
 ## 升级与回滚

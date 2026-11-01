@@ -678,6 +678,20 @@ def test_onto_modeling_compose_keeps_jiuwenbox_socket_out_of_the_agent_container
     assert "8110/health" in gateway
 
 
+@pytest.mark.parametrize(
+    "compose_path",
+    [
+        MODELING_ROOT / "onto-modeling" / "docker-compose.yml",
+        MODELING_ROOT / "onto-modeling" / "deploy" / "docker-compose.release.yml",
+    ],
+)
+def test_onto_modeling_compose_serves_ops_on_business_port_by_default(compose_path: Path) -> None:
+    """没有反代的单端口部署：运维中心默认经业务端口访问，.env 可关；运维监听端口不发布到宿主。"""
+    onto_modeling = _compose_service_block(compose_path.read_text(encoding="utf-8"), "onto-modeling")
+    assert "- ONTO_WEB_OPS_ON_MAIN=${ONTO_WEB_OPS_ON_MAIN:-true}" in onto_modeling
+    assert ":8101" not in onto_modeling
+
+
 def test_redeploy_app_replaces_gateway_and_keeps_socket_override(tmp_path: Path) -> None:
     """快速重部署要连同网关一起替换，并沿用 deploy.sh 生成的 socket 挂载，否则挂载随容器重建丢失。"""
     deploy_dir = tmp_path / "deploy-dir"

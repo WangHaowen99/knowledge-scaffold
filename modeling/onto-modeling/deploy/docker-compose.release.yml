@@ -44,6 +44,9 @@ services:
       - ONTO_WEB_PORT=8100
       # 代码生成脚本的运行验证经网关进 jiuwenbox 沙箱；本容器不挂 jiuwenbox socket
       - ONTO_WEB_SANDBOX_GATEWAY_URL=http://sandbox-gateway:8110
+      # 运维中心（/api/v1/ops）默认经业务端口访问：没有反代的单端口部署不打开就用不了，运维接口仍要
+      # 登录令牌与 ops 角色。有反代时在 .env 设 false，由反代把 /api/v1/ops/ 转到容器内 8101（见 deploy/README）
+      - ONTO_WEB_OPS_ON_MAIN=${ONTO_WEB_OPS_ON_MAIN:-true}
     volumes:
       - onto-web-data:/data
     depends_on:
