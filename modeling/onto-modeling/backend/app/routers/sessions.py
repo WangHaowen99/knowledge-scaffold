@@ -529,7 +529,14 @@ async def abandon_exec(project_id: str, exec_id: str, request: Request):
     updated = exec_records.abandon(project_id, exec_id) or record
     flow = turns._flow(root)
     turns.publish_exec(project_id, updated, root, flow)
-    _update_resume_card(project_id, updated.get("conversation_id") or "", updated, root, flow)
+    conversation_id = updated.get("conversation_id") or ""
+    _update_resume_card(project_id, conversation_id, updated, root, flow)
+    if conversation_id and conversation_store.exists(project_id, conversation_id):
+        # 对话里的系统提示行（EC-13）：已放弃，已经保存的版本不回退
+        saved = updated.get("saved") or {}
+        manager.append_record(project_id, conversation_id, {"type": "notice", "payload": {
+            "kind": "info", "text": f"已放弃「{updated.get('command_label') or '命令'}」，已经保存的版本不回退",
+            "version_label": saved.get("version_label"), "changeset_id": None, "align": "center"}})
     return {"exec": exec_records.view(updated, root=root, flow=flow)}
 
 

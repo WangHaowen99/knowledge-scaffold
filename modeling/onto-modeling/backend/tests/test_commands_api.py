@@ -151,8 +151,10 @@ def test_abandon_interrupted_exec_updates_resume_card(api):
     assert response.status_code == 200 and response.json()["exec"]["state"] == "abandoned"
     items = client.get(f"/api/v1/projects/{project_id}/conversations/default/messages").json()["items"]
     card = next(item for item in items if item["type"] == "card" and item["data"]["card_type"] == "resume")
-    # S-06 给卡片的最新状态：已放弃、不能再续跑
+    # S-06 给卡片的最新状态：已放弃、不能再续跑；对话里有一行系统提示
     assert card["data"]["status"]["label"] == "已放弃" and card["data"]["resumable"] is False
+    notice = [item for item in items if item["type"] == "notice"][-1]["data"]
+    assert notice["kind"] == "info" and "已放弃「资料分析」" in notice["text"] and notice["align"] == "center"
 
 
 def test_conversation_changes_reach_project_stream(api):

@@ -950,14 +950,16 @@ class SessionManager:
             self._broadcast_queue_positions()
 
     def _broadcast_queue_positions(self) -> None:
+        """排队位次（EC-02，持久）：排队卡显示前面还有几个、池子占用。"""
         total = len(self._waiters)
+        pool = {"active": self.active_count(), "max": config.MAX_ACTIVE_SESSIONS}
         for index, project_id in enumerate(self._waiters):
             session = self._sessions.get(project_id)
             if session:
-                session.broadcast(
-                    {"type": "queue_position", "position": index + 1, "waiting": total},
-                    transient=True,
-                )
+                session.broadcast({
+                    "type": "queue_position", "position": index + 1, "waiting": total, "pool": pool,
+                    "progress_pct": round(100 * (1 - index / total)) if total else 0,
+                })
 
     # ---- 回收与关闭 ----
 
