@@ -80,6 +80,24 @@ def test_platform_limits_and_config_item(env):
     assert config_registry.resolve("ONTO_WEB_AUTOBUILD_MAX_RUNS") == (5, "data_dir")
     bad = client.put("/api/v1/admin/autobuild-limits", json={"max_concurrent_runs": 17, "night_priority": {}})
     assert bad.status_code == 400 and set(bad.json()["details"]["fields"]) == {"max_concurrent_runs", "night_priority"}
+    # 不允许 0（主控定）：SY-17 回 422；环境变量里的 0 报配置错误、回落到下一个来源
+    zero = client.put("/api/v1/admin/autobuild-limits", json={"max_concurrent_runs": 0})
+    assert zero.status_code == 422 and zero.json()["code"] == "invalid_argument"
+    assert zero.json()["details"] == {"fields": {"max_concurrent_runs": "min"}, "min": 1}
+    assert client.get("/api/v1/admin/autobuild-limits").json()["max_concurrent_runs"] == 5
+
+
+def test_zero_concurrent_runs_in_env_is_a_config_error(monkeypatch, tmp_path):
+    from app import config
+    from app.services.autobuild import limits
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setenv("ONTO_WEB_AUTOBUILD_MAX_RUNS", "0")
+    assert config_registry.resolve("ONTO_WEB_AUTOBUILD_MAX_RUNS") == ("2", "default")
+    assert "ONTO_WEB_AUTOBUILD_MAX_RUNS" in config_registry.problems()
+    assert limits.max_runs() == 2
+    monkeypatch.setenv("ONTO_WEB_AUTOBUILD_MAX_RUNS", "3")
+    assert config_registry.resolve("ONTO_WEB_AUTOBUILD_MAX_RUNS") == (3, "env") and limits.max_runs() == 3
 
 
 def test_pricing_table_and_cost(env):

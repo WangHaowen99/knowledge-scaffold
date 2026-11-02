@@ -121,7 +121,7 @@ class AutobuildRunner:
         self._previews[token] = {"project_id": project_id, "policy": policy_doc, "expires": now + PREVIEW_TTL_S}
         slots = limits.max_runs()
         busy = len(store.all_runs(store.RUNNING))
-        queued = not slots or busy >= slots
+        queued = busy >= slots
         from . import policy as policy_module
 
         return {
@@ -207,7 +207,7 @@ class AutobuildRunner:
             busy = len(store.all_runs(store.RUNNING))
             queued = sorted(store.all_runs(("queued",)), key=lambda run: float(run.get("created_at") or 0))
             for run in queued:
-                if not slots or busy >= slots:
+                if busy >= slots:
                     break
                 task = self._tasks.get(run["project_id"])
                 if task is not None and not task.done() and task is not asyncio.current_task():

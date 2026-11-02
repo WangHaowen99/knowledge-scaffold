@@ -16,16 +16,17 @@ from .. import model_pricing
 from . import store
 
 MAX_RUNS_KEY = "ONTO_WEB_AUTOBUILD_MAX_RUNS"
-MAX_RUNS_CAP = 16
+MAX_RUNS_MIN, MAX_RUNS_CAP = 1, 16
 DEFAULTS = {"max_duration_min": 240, "max_tokens": 10_000_000, "max_cost": 100.0}
 NOT_ENFORCED = ("allow_production_collection", "night_priority")
 _TIME = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
 class LimitsError(ValueError):
-    def __init__(self, message: str, fields: dict):
+    def __init__(self, message: str, fields: dict, status: int = 400):
         super().__init__(message)
         self.fields = fields
+        self.status = status
 
 
 def _file() -> Path:
@@ -37,14 +38,15 @@ def stored() -> dict:
 
 
 def max_runs() -> int:
-    """同时运行数上限（配置注册表：设置页保存的 > 环境变量 > 默认 2）；0 表示暂停开新运行（都排队）。"""
+    """同时运行数上限 1–16（配置注册表：设置页保存的 > 环境变量 > 默认 2）。0 不合法：环境变量里的 0 启动时报配置
+    错误并回落，设置页不让存；万一读到也按 1。"""
     from ...governance import config_registry
 
     try:
         value = int(config_registry.value(MAX_RUNS_KEY))
     except (TypeError, ValueError):
         value = 2
-    return max(0, min(MAX_RUNS_CAP, value))
+    return max(MAX_RUNS_MIN, min(MAX_RUNS_CAP, value))
 
 
 def _number(value, default):
@@ -79,8 +81,12 @@ def save(body: dict) -> dict:
     data = stored()
     fields: dict[str, str] = {}
     if "max_concurrent_runs" in body:
-        if _int(body["max_concurrent_runs"], 0, MAX_RUNS_CAP):
-            data["max_concurrent_runs"] = body["max_concurrent_runs"]
+        value = body["max_concurrent_runs"]
+        if isinstance(value, int) and not isinstance(value, bool) and value <= 0:
+            # 主控定（2026-11-02）：不允许 0（「关掉自主构建」不靠它），收到 0 或负数回 422
+            raise LimitsError("同时运行上限至少为 1", {"max_concurrent_runs": "min"}, 422)
+        if _int(value, MAX_RUNS_MIN, MAX_RUNS_CAP):
+            data["max_concurrent_runs"] = value
         else:
             fields["max_concurrent_runs"] = "range"
     for key, high in (("max_duration_min", 24 * 60), ("max_tokens", 10**10)):

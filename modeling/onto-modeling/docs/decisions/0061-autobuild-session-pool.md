@@ -33,9 +33,11 @@
    - 建议条（FL-02、对话里的 EC-53）：在跑时换成运行控制（`mode=autobuild_controls`，core 的 `flow_state.suggest` 已有）；
      暂停、中断时只留「运行详情」；结束后主推「去复核」。
    - 写入范围锁：自主构建这一片的变更集没生效之前是 `autobuild_slice`（`run_id`、这一片），到这一片自动生效为止。
-5. **同时运行数**：配置项 `ONTO_WEB_AUTOBUILD_MAX_RUNS`（配置注册表，默认 2，0～16；系统设置 SY-17 保存的值优先），
+5. **同时运行数**：配置项 `ONTO_WEB_AUTOBUILD_MAX_RUNS`（配置注册表，默认 2，1～16；系统设置 SY-17 保存的值优先），
    只算在跑与正在去安全点的；超出的排队（AB-03 `queued`、`queue_position`，AB-04 返回 `queued`），前一个结束、暂停后按
-   先来后到开始。0 表示新运行都排队。维护模式期间不开新运行；进入维护时在跑的做完这一片就暂停（O-21
+   先来后到开始。**不允许 0**（主控 2026-11-02 定）：SY-17 收到 0（或负数）回 `422 invalid_argument`
+   （`fields.max_concurrent_runs=min`、`min: 1`）；环境变量写 0 时配置注册表报配置错误（启动日志告警、SY-14 的问题清单），
+   回落到下一个来源或默认值；万一读到 0 也按 1。维护模式期间不开新运行；进入维护时在跑的做完这一片就暂停（O-21
    `autobuild=pause_at_safe_point`），退出维护后排队的接着开始，暂停的等用户续跑。
 
 ## Alternatives considered

@@ -87,7 +87,8 @@ async def put_limits(request: Request):
     try:
         return limits.save(body)
     except limits.LimitsError as exc:
-        raise ApiError("invalid_argument", str(exc), 400, {"fields": exc.fields}) from exc
+        details = {"fields": exc.fields, **({"min": limits.MAX_RUNS_MIN} if exc.status == 422 else {})}
+        raise ApiError("invalid_argument", str(exc), exc.status, details) from exc
 
 
 @admin_router.get("/settings/pricing")
