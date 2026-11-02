@@ -35,6 +35,21 @@ npm install
 npm run dev
 ```
 
+不连后端时可以用前端自带的 mock 服务端（按契约路径响应，状态在内存里）：
+
+```bash
+cd frontend
+VITE_API_MOCK=1 npm run dev     # 或把 VITE_API_MOCK=1 写进 frontend/.env.local
+```
+
+- 只在开发、测试构建里生效；`npm run build`（生产模式）恒为关，`src/api/mock/` 不进产物（ADR-0069）。
+- 演示状态用查询串 `mock` 切换（写在 `#` 之前），如 `http://127.0.0.1:5180/?mock=projects:empty#/projects`、
+  `?mock=stage:materials,evidence:off`；可用的键见 `src/api/mock/index.js` 文件头。也可以存在浏览器 `localStorage`
+  的 `onto.mock` 里。
+- 「对话卡片与状态」说明页（项目内页面 `chat-states`）只在开发与 mock 构建里有。
+
+前端的路由、事件流读法与 mock 的打包约定见 ADR-0069。
+
 模型接入通过环境变量注入（见 `.env.example`），不落盘、不进仓库。
 
 模型上下文约束按 配置中心「模型接入 → 上下文与自动压缩」> `.env` 中的 `ONTO_WEB_CONTEXT_*`
