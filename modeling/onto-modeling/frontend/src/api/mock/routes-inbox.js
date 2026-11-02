@@ -19,7 +19,7 @@ const RESOLVED_TEXT = {
 };
 
 export function register(ctx) {
-  const { on, json, err, db, F, emitProj, emitUser, emitConv, cardOf, convsOf, uid } = ctx;
+  const { on, json, err, db, F, emitProj, emitUser, emitConv, cardOf, convsOf, uid, sc = {} } = ctx;
   db.inbox = new Map();
   const stateOf = (pid) => {
     if (!db.inbox.has(pid)) {
@@ -27,6 +27,7 @@ export function register(ctx) {
       let tail = [];
       let handled = 0;
       if (pid === F.MAIN_PID) ({ head, tail } = D.mainItems());
+      if (pid === F.MAIN_PID && sc.inbox === 'human') head = [D.humanNodeItem(), ...head];
       if (pid === F.MAIN_PID) handled = 5;
       else if (pid === D.RIDER_PID) head = D.riderItems();
       else if (pid === D.ESTATE_PID) head = D.estateItems();
@@ -114,6 +115,8 @@ export function register(ctx) {
       case 'decision':
       case 'evidence_conflict': {
         if (a !== 'dismiss') { const bad = need(); if (bad) return bad; }
+        // 人工节点的决策卡只收选项（B5c 合并：后端回 400 answer_invalid）
+        if (it.source === 'plugin' && a === 'answer' && !body.option_id) return err(400, 'answer_invalid', '人工节点要选一个选项');
         if (it.id === `decision:${F.QUESTION_ID}` && a === 'answer') {
           // 同一个决策卡在 wb-l2 对话里也收起（等价于 S-11）
           const cid = convsOf(pid)[0]?.id;

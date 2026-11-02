@@ -200,6 +200,19 @@ export function runItems(store) {
   return out;
 }
 
+// 人工节点（B5c，FL-05 出的决策卡）：source=plugin、pack 为节点所属包、只能选选项（没有「其他，我来说」）
+// ?mock=inbox:human 时放在主示例项目最前面
+export function humanNodeItem() {
+  return [item('decision:hn-signoff', 'decision', '门店签收口径：到货差异由谁确认？', {
+    source: 'plugin', pack: 'trace', meta: '3 个选项', batchable: false, actions: ['answer', 'dismiss'], created_at: ago(6 * MIN),
+    impact: imp(['操作', '门店签收']),
+  }), question('hn-signoff', '到货差异由谁确认？', '人工节点「门店签收」要一个结论，写进签收口径记录。', [], [
+    opt('A', '门店店长确认', '差异在门店当场处理'),
+    opt('B', '区域督导确认', '差异汇总到区域再处理'),
+    opt('C', '两级都要确认', '店长先确认，督导复核'),
+  ], { inbox_item_id: 'decision:hn-signoff' })];
+}
+
 export function mainItems(store) {
   const { head, tail } = mainStatic();
   return { head, tail, run: () => (store ? runItems(store) : []) };

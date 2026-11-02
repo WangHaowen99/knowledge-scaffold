@@ -6,9 +6,17 @@ export const FILTERS = [
   ['change_list', '变更清单'], ['stale', '过期'], ['resumable', '续跑'], ['feedback', '外部反馈'],
 ];
 
-// 证据冲突来自证据源（三方对账），证据源本期只留接口（ADR-0056）：没有这类事项时筛选带上不出这一格
-export const visibleFilters = (counts, current) => FILTERS
-  .filter(([k]) => k !== 'evidence_conflict' || k === current || (counts?.by_filter?.[k] ?? 0) > 0);
+// 证据冲突来自证据源（三方对账），证据源本期只留接口（ADR-0056）：证据源不可用、或没有这类事项时筛选带上不出这一格
+export const visibleFilters = (counts, current, evidenceOn = true) => FILTERS
+  .filter(([k]) => k !== 'evidence_conflict' || (evidenceOn && (k === current || (counts?.by_filter?.[k] ?? 0) > 0)));
+
+// 证据源不可用时不列证据冲突，计数也不算它（不依赖后端碰巧不下发）
+export const withoutEvidence = (items, evidenceOn) => (evidenceOn ? items : (items || []).filter((x) => x.kind !== 'evidence_conflict'));
+export function countsWithoutEvidence(counts, evidenceOn) {
+  const n = counts?.by_filter?.evidence_conflict || 0;
+  if (evidenceOn || !counts || !n) return counts;
+  return { ...counts, total: counts.total - n, by_filter: { ...counts.by_filter, evidence_conflict: 0 } };
+}
 
 // 类型 → 设计稿的样式类（k-*）与图标
 export const KIND_STYLE = {
@@ -110,6 +118,28 @@ export function optionsOf(item, detail) {
   return [];
 }
 
+// 有选项的事项（决策、证据冲突、需复核、挂起）底栏才提示「1–4 选择」；有自定义回答才提示「E 改写」
+export function keyHints(opts) {
+  if (!opts?.length) return null;
+  return { rewrite: opts.some((o) => o.custom) };
+}
+
+// 没选时的提示：没有自定义回答的事项（人工节点的决策卡）不提 E
+export const pickHint = (opts, base = '先选一个选项') => ((opts || []).some((o) => o.custom) ? `${base}，或按 E 写下你的方向` : base);
+
+// 底栏主按钮：按类型写清楚会做什么
+export function confirmLabel(item, detail) {
+  switch (item?.kind) {
+    case 'change_list': return '执行清单并下一条';
+    case 'review': return detail?.group ? '全部接受并下一条' : '确认并下一条';
+    case 'stale': return '刷新并下一条';
+    case 'resumable': return '续跑并下一条';
+    case 'feedback': return '交给反馈演进并下一条';
+    case 'decision': case 'evidence_conflict': case 'suspension': case undefined: return '确认并下一条';
+    default: return item.actions?.includes('dismiss') ? '忽略并下一条' : '确认并下一条';
+  }
+}
+
 /**
  * 「确认并下一条」（↵）要发的动作。sel：选中的选项下标；text：改写的内容（null 表示没在改写）。
  * 返回 {action, body} 交给 IN-03，或 {error} 提示用户。
@@ -122,7 +152,7 @@ export function confirmPlan(item, detail, sel, text) {
   const answer = (action) => {
     if (custom) return { action, body: custom };
     if (picked) return { action, body: picked };
-    return { error: sel != null && opts[sel]?.custom ? '先写下你的方向' : '先选一个选项，或按 E 写下你的方向' };
+    return { error: sel != null && opts[sel]?.custom ? '先写下你的方向' : pickHint(opts) };
   };
   switch (item.kind) {
     case 'decision': return answer('answer');
@@ -176,8 +206,8 @@ export function todayRows(today) {
   const r = today?.remaining_by_filter || {};
   return [
     ['决策', r.decision, (n) => `${n} 剩余`],
-    ['自主构建复核', r.autobuild_review, (n) => `${n} 剩余，高置信可一键接受`],
-    ['过期', r.stale, (n) => `${n} 剩余，可一次刷新`],
+    ['自主构建复核', r.autobuild_review, (n) => `${n} 剩余`],
+    ['过期', r.stale, (n) => `${n} 剩余`],
   ].filter(([, n]) => n > 0).map(([a, n, fn]) => [a, fn(n)]);
 }
 
