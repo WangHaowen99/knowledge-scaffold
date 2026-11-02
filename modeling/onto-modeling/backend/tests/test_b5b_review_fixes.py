@@ -45,6 +45,8 @@ def test_A_internal_entry_points_cannot_send_during_a_run(ab):
     release = gate("/ontology-extract-object:s1")
     run = start(client, project_id, **ONE)
     wait_until(lambda: store.get(project_id, run["run_id"])["cursor"].get("exec_id"))
+    # 执行记录先于步骤消息落下（一轮开始前还要准备副本）：等步骤消息真的交给引擎，再记下发了几条
+    wait_until(lambda: "/ontology-extract-object slice=s1" in AutoEngine.sent)
     sent = len(AutoEngine.sent)
     base = f"/api/v1/projects/{project_id}/studio/entries/object:门店"
     edited = obj("门店", "用户在 Studio 改的描述") + "\n## 备注\n\n用户补充\n"

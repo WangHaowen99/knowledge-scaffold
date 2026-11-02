@@ -74,16 +74,27 @@ def pool_env(tmp_path: Path, monkeypatch):
     return manager, created, tmp_path
 
 
-async def _settle(manager: SessionManager, project_id: str):
-    """等连接后台任务跑完。"""
+async def _settle(manager: SessionManager, project_id: str, timeout: float = 10.0):
+    """等连接后台任务跑完：按条件等（负载高时固定几次让步不够），最多 timeout 秒。"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
     session = manager.get(project_id)
-    for _ in range(20):
+    while loop.time() < deadline:
+        session = manager.get(project_id) or session
         if session and session.connect_task:
             await session.connect_task
-        await asyncio.sleep(0)
         if session and (session.client is not None or session.state in ("queued", "error")):
             return session
+        await asyncio.sleep(0.01)
     return session
+
+
+async def _until(predicate, timeout: float = 10.0) -> None:
+    """按条件等（驱逐、关闭是另起的任务），等不到就让后面的断言去失败。"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate() and loop.time() < deadline:
+        await asyncio.sleep(0.01)
 
 
 def test_send_connects_and_flushes_prompt(pool_env, tmp_path):
@@ -111,6 +122,7 @@ def test_pool_evicts_oldest_idle_session(pool_env, tmp_path):
 
         await manager.send("p2", tmp_path / "w2", "开始")
         second = await _settle(manager, "p2")
+        await _until(lambda: manager.get("p1") is None and first.client is None)
 
         assert manager.get("p1") is None  # 空闲会话被驱逐让位
         assert first.client is None
