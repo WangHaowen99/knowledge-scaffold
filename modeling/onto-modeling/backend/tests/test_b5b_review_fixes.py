@@ -332,3 +332,31 @@ def test_F_concurrent_session_quota_does_not_end_the_run(ab):
                        json={"text": "你好"}).status_code == 202
     run = start(client, project_id, **ONE)
     assert wait_state(client, project_id, run["run_id"], "completed", "budget_exhausted", "failed")["state"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# D：置信度解析与「推荐」「保守」标记
+# ---------------------------------------------------------------------------
+
+
+def test_D_confidence_parsing_and_tags():
+    from app.services.autobuild import decide
+    from app.services.session_host import timeline
+
+    cases = {"置信度 0.85": 0.85, "置信度 12%": 0.12, "置信度 85%": 0.85, "置信度 100%": 1.0, "置信度：.7": 0.7,
+             "置信度 15": None, "置信度：1/3": None, "置信度 0.9x": 0.9, "confidence 0.6": 0.6, "置信度 120%": None}
+    assert {text: decide.confidence(text) for text in cases} == cases
+
+    def outcome(header: str, labels: list[str], below: str = "suspend") -> dict:
+        tool_input = {"questions": [{"question": "临期分级", "header": header,
+                                     "options": [{"label": label} for label in labels]}]}
+        question = timeline.build_questions("r1", tool_input, conversation_id="c")[0]
+        return decide.decide(question, tool_input["questions"][0],
+                             {"confidence_threshold": 0.8, "below_threshold": below, "must_suspend_kinds": []})
+
+    assert outcome("置信度 12%", ["四级（推荐）", "三级（保守）"])["kind"] == "suspension"
+    chosen = outcome("置信度 0.9", ["拆成两张表（不推荐）", "合成一张表（推荐）"])["option"]["label"]
+    assert chosen == "合成一张表（推荐）"
+    # 「保守」只认结尾的标记
+    low = outcome("置信度 0.6", ["不保守的做法", "按通用做法（保守）"], below="conservative_assumption")
+    assert low["option"]["label"] == "按通用做法（保守）" and low["assumption"] is True

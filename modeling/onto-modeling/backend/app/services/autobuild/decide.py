@@ -28,7 +28,9 @@ _FORBIDDEN_BASH = re.compile(
 FORBIDDEN_MESSAGE = "自主构建不能删除内容，也不能打发布标签"
 UNSTATED_CONFIDENCE = 0.5
 SUSPEND_ANSWER = "挂起：这个问题先不定，等用户回答。跳过和它相关的部分，继续做别的。"
-_CONFIDENCE = re.compile(r"(?:置信度|confidence)\s*[:：=]?\s*(0(?:\.\d+)?|1(?:\.0+)?|\.\d+)", re.IGNORECASE)
+# 数字后面不能再接数字、小数点、百分号、斜杠（「12%」「15」「1/3」不能读成 1.0，审查 D）；百分数单独处理
+_CONFIDENCE = re.compile(r"(?:置信度|confidence)\s*[:：=]?\s*(\d+(?:\.\d+)?|\.\d+)(?:\s*(%))?(?![\d./%])", re.IGNORECASE)
+_TAG = re.compile(r"\s*[（(](推荐|保守)[)）]\s*$")
 _ANCHOR = re.compile(r"((?:file|ev|snap|db|url):[^\s，。；、,;)）\]】]+)")
 
 
@@ -42,11 +44,20 @@ def forbidden(tool_name: str, tool_input) -> bool:
 
 
 def confidence(text: str) -> float | None:
+    """「置信度 0.85」「置信度 85%」→ 0.85；超出 0～1（或 0%～100%）、写成分数的都不认。"""
     found = _CONFIDENCE.search(text or "")
     if not found:
         return None
     value = float(found.group(1))
+    if found.group(2):
+        value /= 100
     return value if 0 <= value <= 1 else None
+
+
+def tag(option: dict) -> str | None:
+    """选项 label 结尾的「（推荐）」「（保守）」；「不推荐」这类写在句子里的不算。"""
+    found = _TAG.search(option.get("label") or "")
+    return found.group(1) if found else None
 
 
 def anchors(text: str) -> list[dict]:
@@ -70,7 +81,7 @@ def _options(question: dict) -> list[dict]:
 
 
 def _label(option: dict) -> str:
-    return re.sub(r"[（(](推荐|保守)[)）]", "", option.get("label") or "").strip()
+    return _TAG.sub("", option.get("label") or "").strip()
 
 
 def decide(question: dict, raw: dict, advanced: dict) -> dict:
@@ -87,8 +98,8 @@ def decide(question: dict, raw: dict, advanced: dict) -> dict:
     below = value < threshold
     if must or not options or (below and advanced.get("below_threshold") == "suspend"):
         return {"kind": "suspension", "confidence": value, "text": text}
-    recommended = next((option for option in options if option.get("recommended")), None)
-    conservative = next((option for option in options if "保守" in (option.get("label") or "")), None)
+    recommended = next((option for option in options if tag(option) == "推荐"), None)
+    conservative = next((option for option in options if tag(option) == "保守"), None)
     chosen = (conservative or recommended or options[0]) if below else (recommended or options[0])
     return {"kind": "decision", "option": chosen, "confidence": value, "assumption": below, "text": text}
 
