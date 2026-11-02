@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { errorText } from '../api/errors.js';
 import { mergeFlow, normalizeFlow } from '../state/flow.js';
+import { isOwnedMeta } from '../state/roles.js';
 import { Button, Empty, KV } from '../ui/index.jsx';
 import { ShellG } from '../shell/Shell.jsx';
 import { ProjectCtx, useApp } from './context.js';
@@ -19,7 +20,7 @@ export function ProjectArea({ pid, children }) {
   const [recentProjects, setRecent] = useState([]);
   const subs = useRef(new Set());
 
-  const loadMeta = useCallback(() => api.project(pid).then(setMeta), [api, pid]);
+  const loadMeta = useCallback(() => api.project(pid).then((m) => { setMeta(m); return m; }), [api, pid]);
   const loadExt = useCallback(() => api.extensions(pid).then(setExtensions).catch(() => {}), [api, pid]);
   const loadInbox = useCallback(() => api.inbox(pid, { limit: 1 }).then((r) => setInboxCount(r.counts?.total || 0)).catch(() => {}), [api, pid]);
   const loadFlow = useCallback(() => api.flow(pid).then((f) => setFlow(normalizeFlow(f))).catch(() => {}), [api, pid]);
@@ -28,7 +29,8 @@ export function ProjectArea({ pid, children }) {
   useEffect(() => {
     setMeta(null);
     setError(null);
-    loadMeta().then(() => {
+    loadMeta().then((m) => {
+      if (!isOwnedMeta(m)) return;
       loadExt();
       loadInbox();
       loadFlow();
@@ -42,7 +44,7 @@ export function ProjectArea({ pid, children }) {
     return () => { anchorResolver.current = null; };
   }, [api, pid, loadMeta, loadExt, loadInbox, loadFlow, loadScope]);
 
-  const owned = !!meta && meta.package_name !== undefined;
+  const owned = isOwnedMeta(meta);
   useEffect(() => {
     if (!owned) return undefined;
     const resync = { 'FL-01': loadFlow, 'IN-01': loadInbox, 'CS-06': loadScope, 'PL-12': loadExt };

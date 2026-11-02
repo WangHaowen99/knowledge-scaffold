@@ -51,3 +51,10 @@ test('运维监听端口：同源时为空', () => {
   assert.equal(opsListenLabel('https://ops.example.com'), 'ops.example.com');
   assert.equal(opsListenLabel('not a url'), null);
 });
+
+test('isOwnedMeta：admin、ops 拿到的 ProjectMetaView 没有 package_name，不是自己的项目（V 阶段：外壳照样拉 PL-12、IN-01、FL-01、CS-06，控制台 4 个 403）', async () => {
+  const { isOwnedMeta } = await import('../src/state/roles.js');
+  assert.equal(isOwnedMeta(null), false);
+  assert.equal(isOwnedMeta({ id: 'p1', name: 'x', owner: 'a', stage_label: '建模中', build_mode: 'L2' }), false);
+  assert.equal(isOwnedMeta({ id: 'p1', name: 'x', package_name: 'p1', goal: 'g' }), true);
+});
