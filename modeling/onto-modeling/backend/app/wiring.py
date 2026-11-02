@@ -110,6 +110,13 @@ def _next_steps(root: Path) -> dict | None:
     return next_steps.suggest(root)
 
 
+def _badge(project_id: str, pack: str) -> int:
+    """左栏插件页角标（B4c 的登记点）：待处理里属于这个包的事项数。"""
+    from .services.flow import inbox
+
+    return inbox.badge(_workspaces(), project_id, pack)
+
+
 def _scope_lock(project_id: str) -> dict:
     from .kernel.changesets import service as changesets
 
@@ -150,6 +157,7 @@ def install() -> None:
     changesets.register_activity_provider(_session_activity)
     injection.register_next_step_provider(_next_steps)
     write_scope.register_checker(changesets.paths_in_scope)
+    registry.register_badge_provider(_badge)
     changesets.subscribe(_changeset_event)
     project_events.register_scope_provider(_scope_lock)
     artifact_service.register_lock_provider(_artifact_lock)

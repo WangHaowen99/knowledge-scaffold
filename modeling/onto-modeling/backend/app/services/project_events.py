@@ -6,7 +6,8 @@
   消息前切换，或只动纯数据包时插件运行时当场切换）；
 - `artifacts.updated`（EP-06）：内核产物索引经 `kernel/event_port` 发出，启动时（`app/wiring.py`）接到这里；
 - `knowledge.updated`（EP-23）：知识接口写入后；
-- `scope.updated`（EP-03）：写入范围锁由变更集（B4b）计算，这里只留数据源登记点，默认「没有锁」；
+- `scope.updated`（EP-03）：写入范围锁由变更集一侧算（ADR-0047），这里只留数据源登记点，默认「没有锁」；
+- `inbox.updated`（EP-02）：每次重算流程时顺带重算待处理，变了才发（ADR-0049）；
 - `conversation.updated`（EP-21）、`project.updated`（EP-20）、`maintenance.updated`（EP-24 / EU-04）、
   `project.card.updated`（EU-02）、`project.removed`（EU-03）。
 
@@ -241,13 +242,23 @@ def refresh_flow(project_id: str) -> dict | None:
     suggestions_changed = previous is None or previous.get("suggestions") != flow.get("suggestions")
     hash_changed = previous is not None and previous.get("flow_hash") != flow.get("flow_hash")
     if not (nodes or slices or suggestions_changed or hash_changed):
+        # 流程没变，待处理的来源（决策卡、续跑、报告……）可能变了
+        _guard("inbox.updated", _refresh_inbox, project_id)
         return None
     data = {"flow_hash": flow.get("flow_hash") or "", "nodes": nodes, "slices": slices,
             "suggestions_changed": suggestions_changed}
     envelope = streams.publish_project(project_id, "flow.updated", data)
+    _guard("inbox.updated", _refresh_inbox, project_id)
     if previous is None or previous.get("progress") != flow.get("progress"):
         card_changed(project_id)
     return envelope
+
+
+def _refresh_inbox(project_id: str) -> None:
+    """EP-02：待处理汇总重算，变了才发（详设 4.7）。"""
+    from .flow import inbox
+
+    inbox.refresh(_manager(), project_id)
 
 
 def schedule_flow_refresh(project_id: str, delay: float | None = None) -> None:
@@ -270,6 +281,9 @@ def schedule_flow_refresh(project_id: str, delay: float | None = None) -> None:
 
 
 def forget(project_id: str) -> None:
+    from .flow import inbox
+
+    inbox.forget(project_id)
     with _flow_lock:
         _flow_cache.pop(project_id, None)
         timer = _flow_timers.pop(project_id, None)

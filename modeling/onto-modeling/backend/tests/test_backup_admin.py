@@ -75,6 +75,12 @@ def seed(manager: WorkspaceManager, home: Path) -> dict:
     (data / "secrets" / ".model-secret-key").write_text("synthetic-master-key-not-for-backup")
     (data / "releases" / meta["id"]).mkdir(parents=True)
     (data / "releases" / meta["id"] / "0.1.2.zip").write_bytes(b"synthetic-package")
+    # 变更集记录、节点状态的依据、变更点清单（B4b）；助手副本按分支重建，不进备份
+    for directory in ("changeset-state", "flow-state", "change-lists"):
+        (data / directory).mkdir(parents=True, exist_ok=True)
+        (data / directory / f"{meta['id']}.json").write_text('{"synthetic": true}')
+    (data / "changesets" / meta["id"] / "assistant").mkdir(parents=True)
+    (data / "changesets" / meta["id"] / "assistant" / "draft.md").write_text("synthetic")
 
     transcripts = home / ".claude" / "projects" / "workspace_demo"
     transcripts.mkdir(parents=True)
@@ -115,9 +121,13 @@ def test_backup_covers_state_and_excludes_master_key(env, tmp_path):
         "data/audit.jsonl",
         "data/errors.jsonl",
         f"data/releases/{project}/0.1.2.zip",
+        f"data/changeset-state/{project}.json",
+        f"data/flow-state/{project}.json",
+        f"data/change-lists/{project}.json",
         "home/.claude/projects/workspace_demo/session.jsonl",
     }
     assert expected <= names
+    assert not any(n.startswith("data/changesets") for n in names)
     # 包仓库进备份（异机恢复后锁定了上传版本的项目不会退回 stable）；装配目录可按锁文件重建，不进备份
     core = manager.packs.core_version()
     assert {"data/packs/channels.json", f"data/packs/core/{core}/manifest.yaml",

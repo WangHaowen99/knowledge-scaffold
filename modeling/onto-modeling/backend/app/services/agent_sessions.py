@@ -1289,6 +1289,7 @@ class SessionManager:
             )
             for question in request.questions:
                 session.broadcast({"type": "question_asked", "payload": question})
+                project_events.schedule_flow_refresh(session.project_id)  # 待处理里多一项决策
         else:
             session.broadcast(
                 {
@@ -1373,6 +1374,7 @@ class SessionManager:
             "question_id": question_id, "answer": record["answer"], "by": "user", "summary": summary,
             "answered_at": views_iso(now),
         }})
+        project_events.schedule_flow_refresh(project_id)
         if len(request.answers) == len(request.questions):
             raw = (request.tool_input or {}).get("questions") or []
             texts = {}
@@ -1452,6 +1454,8 @@ class SessionManager:
             )
             if not running:
                 session.round_base_commit = head
+                if record is not None:
+                    record = await asyncio.to_thread(_capture_change_list, session, record) or record
             if running or record is None or record.get("card_tree") == record.get("tree"):
                 return
             records = await asyncio.to_thread(changesets.card_records, deps.workspaces, session.project_id,
@@ -1686,6 +1690,20 @@ def _install_commit_hooks(cwd: Path | None) -> None:
         pass
 
 
+def _capture_change_list(session: Session, record: dict) -> dict | None:
+    """增量更新的影响分析（副本里的 update-plan.json）收成变更清单，记下所在对话与变更集（契约 3.14、F3 补充）。"""
+    from ..api import deps
+    from ..kernel.changesets import store
+    from .flow import change_lists
+
+    root = deps.workspaces.project_root(session.project_id)
+    captured = change_lists.capture(root, session.cwd, conversation_id=session.conversation_id,
+                                    changeset_id=record["id"])
+    if captured is None:
+        return None
+    return store.update(root, record["id"], change_list_id=captured["id"])
+
+
 def _purge_changesets(project_id: str) -> None:
     """删除项目：变更集记录与助手副本目录一起清掉。"""
     from ..kernel.changesets import service as changesets
@@ -1695,9 +1713,12 @@ def _purge_changesets(project_id: str) -> None:
 
         from .flow import state as node_state
 
+        from .flow import change_lists
+
         root = Path(deps.workspaces.workspaces_dir) / project_id
         changesets.purge(root)
         node_state.purge(root)
+        change_lists.purge(root)
     except Exception:  # noqa: BLE001 - 清不干净的由启动核对兜底
         _log.warning("清除项目 %s 的变更集失败", project_id, exc_info=True)
 

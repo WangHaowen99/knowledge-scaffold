@@ -7,6 +7,8 @@
 - data/jiuwen/              Jiuwen 存档（SQLite 用 backup API 拷贝）与框架工件区
 - data/studio/              Studio 草稿与租约
 - data/releases/            发布留存的知识包（按版本下载读这里）
+- data/changeset-state/、flow-state/、change-lists/
+                            变更集记录、节点状态的依据、变更点清单（助手副本按副本分支重建，不备）
 - data/secrets/             密钥目录里的密文：管理员模型配置、个人 Key 密文、MCP token 库
                             （backup API 拷贝）、服务令牌（只有摘要）
 - data/*.json、*.jsonl      各类设置与错误留档；data/audit/ 审计
@@ -107,6 +109,11 @@ def _data_entries(manager) -> list[Path]:
         audit._legacy_file(),
         # 包仓库（插件运行时的 data/packs/）：包版本不可修改，项目按 packs.lock 锁定其中的版本
         Path(config.DATA_DIR) / "packs",
+        # 变更集记录、节点状态的依据、变更点清单（B4b）。助手副本（data/changesets/）不备：副本分支在工作区的
+        # .git 里，恢复后启动核对按分支重建副本，没提交的改动会丢
+        Path(config.DATA_DIR) / "changeset-state",
+        Path(config.DATA_DIR) / "flow-state",
+        Path(config.DATA_DIR) / "change-lists",
         error_log._file(),
     ]
 

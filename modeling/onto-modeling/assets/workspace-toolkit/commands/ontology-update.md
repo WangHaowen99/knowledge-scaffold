@@ -38,6 +38,18 @@ update-impact-agent / update-apply-agent 的 prompt 都需 transclude 该文件�
 
 ---
 
+## 按已确认的变更清单执行（页面发来的 `change_list_id=…`）
+
+`$ARGUMENTS` 里带 `change_list_id=<清单>` 时，是用户在页面上逐条确认过的变更点清单（平台写在
+`.onto/run/change-lists/<清单>.json`，字段：`points[]` 的 `scope`（要改的文件）、`value`（变更说明）、`condition`
+（依据）、`state`（`accepted` 照原说明改，`rewritten` 按 `rewritten_text` 改）、`impact`（会连带影响的条目））：
+
+1. 读这份清单，**跳过 Step 1～3**（影响分析与确认已经在页面上做完），把每个变更点当成 Step 4 的一个直接变更条目；
+   `acquire update apply` 后进入 Step 4，`UPDATE_BASE=$(git rev-parse HEAD)`；
+2. 同时带了 `fix_scenarios=[…]`（回归结果卡上「交给助手修」）：清单已经执行过，只针对这些场景的回归失败修改相关条目，
+   改完对这些场景重新推演（若启用了场景走查能力），然后进入 Step 5 只校验本次改动；
+3. 收尾同 Step 6。清单文件由平台管理，不要修改它。
+
 ## Step 1: 解析参考内容 $ARGUMENTS
 
 `$ARGUMENTS` 的几种情况：
