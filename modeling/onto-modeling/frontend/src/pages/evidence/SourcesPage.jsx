@@ -45,7 +45,7 @@ function AuditModal({ source, onClose }) {
     api.evidenceAccessLog(source.id, { project_id: pid }).then((r) => setRows(r.items || [])).catch((e) => { toast(errorText(e), 'alert'); setRows([]); });
   }, [api, pid, source]);
   return (
-    <Modal open={!!source} onClose={onClose} icon="list" title={`访问审计 · ${source?.display_name || ''}`} sub="每次访问业务系统都留一条记录：语句摘要、行数、字节数、耗时" w={760} foot={<Button onClick={onClose}>关闭</Button>}>
+    <Modal open={!!source} onClose={onClose} icon="list" title={`访问审计 · ${source?.display_name || ''}`} w={760} foot={<Button onClick={onClose}>关闭</Button>}>
       {rows === null ? <div className="sm muted">正在读取…</div> : rows.length ? (
         <Table
           compact
@@ -95,7 +95,7 @@ function SourcesBody() {
   const grant = async (s, on) => {
     try {
       await api.setEvidenceGrant(pid, s.id, { authorized: on });
-      toast(on ? `已授权「${s.display_name}」给本项目使用` : `已取消「${s.display_name}」对本项目的授权；已有快照保留`, on ? 'check' : 'ban');
+      toast(on ? `已授权「${s.display_name}」给本项目使用` : `已取消「${s.display_name}」的授权`, on ? 'check' : 'ban');
       load();
     } catch (e) { toast(errorText(e), 'alert'); }
   };
@@ -103,7 +103,7 @@ function SourcesBody() {
     try {
       const r = await api.testEvidenceSource(s.id, { project_id: pid });
       const bad = r.checks.find((c) => !c.ok);
-      toast(r.ok ? `「${s.display_name}」连接正常，账号只读自检通过` : `「${s.display_name}」测试没通过：${bad?.detail || '请联系管理员'}`, r.ok ? 'check' : 'alert');
+      toast(r.ok ? `「${s.display_name}」连接正常` : `「${s.display_name}」测试没通过：${bad?.detail || '请联系管理员'}`, r.ok ? 'check' : 'alert');
     } catch (e) { toast(errorText(e), 'alert'); }
   };
   const testAuthorized = async () => {
@@ -111,7 +111,7 @@ function SourcesBody() {
     try {
       const res = await Promise.all(authorizedList.map((s) => api.testEvidenceSource(s.id, { project_id: pid }).then((r) => [s, r]).catch(() => [s, null])));
       const bad = res.filter(([, r]) => !r?.ok);
-      toast(bad.length ? `${bad.map(([s]) => s.display_name).join('、')} 的连接没通过，到「⋯」里单独测试看原因` : `已授权的 ${res.length} 个数据源连接正常`, bad.length ? 'alert' : 'activity');
+      toast(bad.length ? `${bad.map(([s]) => s.display_name).join('、')} 连接没通过` : `已授权的 ${res.length} 个数据源连接正常`, bad.length ? 'alert' : 'activity');
     } finally {
       setTesting(false);
     }
@@ -119,7 +119,7 @@ function SourcesBody() {
   const remove = async () => {
     try {
       await api.deleteEvidenceSource(del.id);
-      toast(`已删除登记 ${del.id}；已有快照保留，锚点照常解析`, 'trash');
+      toast(`已删除登记 ${del.id}`, 'trash');
       setDel(null);
       load();
     } catch (e) { toast(errorText(e), 'alert'); }
@@ -157,10 +157,7 @@ function SourcesBody() {
       <CredCell s={s} />,
       <span className="sm">{scopeWindowText(s)}</span>,
       <LastJob job={s.last_job} />,
-      <div className="row g4">
-        <Toggle on={on} onChange={(v) => grant(s, v)} title={on ? '取消本项目的授权' : '授权本项目使用'} />
-        <span className={cx('xs', !on && 'muted')}>{on ? '已授权' : '未授权'}</span>
-      </div>,
+      <Toggle on={on} onChange={(v) => grant(s, v)} title={on ? '取消本项目的授权' : '授权本项目使用'} />,
       <RowMenu items={menu(s)} />,
     ];
   });
@@ -168,7 +165,7 @@ function SourcesBody() {
   const used = summary?.authorized_sources || [];
   const usedName = used.length === 1 ? used[0].display_name : used.length ? `${used.length} 个数据源` : '—';
   const usedNote = used.length === 1
-    ? (used[0].environment === 'production' ? '生产环境 · 每次采集需你确认' : '测试环境 · 采集不用确认')
+    ? (used[0].environment === 'production' ? '生产环境' : '测试环境')
     : used.length ? used.map((s) => s.display_name).join('、') : '还没有授权的数据源';
   const month = summary?.jobs_this_month;
 
@@ -176,7 +173,6 @@ function SourcesBody() {
     <>
       <PageHead
         title={<>业务系统数据源 <EvdPlg /></>}
-        desc="从正在运行的业务系统取证据。助手碰不到业务系统，也拿不到凭据；采集由内核下发票据，经连接器网关只读执行，全程审计。"
         actions={(
           <>
             <Button icon="activity" disabled={testing || !authorizedList.length} title={authorizedList.length ? undefined : '本项目还没有授权的数据源'} onClick={testAuthorized}>测试已授权的连接</Button>
@@ -186,23 +182,17 @@ function SourcesBody() {
       />
       <Card
         title="已登记的数据源"
-        sub={`数据源在租户级登记，项目按需授权 · 共 ${all?.total ?? '…'} 个，本项目授权 ${all?.authorized_count ?? '…'} 个`}
+        sub={`共 ${all?.total ?? '…'} 个 · 本项目授权 ${all?.authorized_count ?? '…'} 个`}
         icon="db"
         extra={<Seg items={FILTERS} value={filter} onChange={setFilter} />}
       >
         {rows === null ? <div className="sm muted">正在读取…</div> : rows.length ? (
-          <Table compact cols={['数据源', '提供方', '环境', '连接参数（不含密钥）', '凭据引用', '范围与访问窗口', '最近采集', '授权本项目使用', '']} rows={tableRows} />
+          <Table compact cols={['数据源', '提供方', '环境', '连接参数', '凭据引用', '范围与访问窗口', '最近采集', '授权本项目使用', '']} rows={tableRows} />
         ) : <div className="sm muted" style={{ padding: '18px 4px' }}>{filter === 'all' ? '还没有登记的数据源。' : '没有符合筛选的数据源。'}</div>}
-        <div className="row wrap mt12" style={{ gap: 6 }}>
-          <span className="xs muted">每行「⋯」的操作：</span>
-          {[['授权本项目使用', 'check'], ['取消授权', 'ban'], ['测试连接', 'activity'], ['查看访问审计', 'list']].map(([t, i]) => <Chip key={t} tone="line" icon={i}>{t}</Chip>)}
-          <span className="xs muted">· 轮换凭据、编辑登记、删除登记由管理员操作</span>
-        </div>
       </Card>
       <div className="mt16">
         <Card
           title="本项目在用"
-          sub={`已授权 ${used.length} 个数据源`}
           icon="check"
           extra={(
             <>
@@ -214,14 +204,14 @@ function SourcesBody() {
           <div className="evd-useb">
             <div><span className="xs muted">数据源</span><b style={{ fontSize: 15 }}>{usedName}</b><span className="xs muted">{usedNote}</span></div>
             <div><span className="xs muted">快照</span><b>{summary?.snapshots?.count ?? '—'}</b><span className="xs muted">{summary?.snapshots?.last_at ? `最近 ${fmtWhen(summary.snapshots.last_at)}` : '还没有快照'}</span></div>
-            <div><span className="xs muted">被产物引用</span><b>{summary?.referenced_anchors ?? '—'}</b><span className="xs muted">处出处指向这个数据源</span></div>
+            <div><span className="xs muted">被引用出处</span><b>{summary?.referenced_anchors ?? '—'}</b></div>
             <div><span className="xs muted">本月采集</span><b>{month?.total ?? '—'}</b><span className="xs muted">{monthText(month) || '本月还没有采集'}</span></div>
           </div>
         </Card>
       </div>
       <div className="row mt16 g4">
-        <Icon name="puzzle" size={14} /><span className="muted">还缺数据源类型？</span>
-        <a className="link" onClick={() => navigate(pagePath('plugins'), { category: 'capability' })}>去插件中心安装提供方</a>
+        <Icon name="puzzle" size={14} />
+        <a className="link" onClick={() => navigate(pagePath('plugins'), { category: 'capability' })}>安装更多数据源类型</a>
       </div>
 
       <SourceWizard
@@ -244,7 +234,7 @@ function SourcesBody() {
         sub="删除后所有项目都不能再从它采集。"
         foot={<><Button onClick={() => setDel(null)}>取消</Button><Button kind="danger" className="fill" icon="trash" onClick={remove}>删除登记</Button></>}
       >
-        <Note tone="amber">已有快照保留，产物里指向它的出处照常解析；凭据由网关一并删除。有正在运行的采集任务时不能删除。</Note>
+        <Note tone="amber">已有快照保留，出处照常解析。</Note>
       </Modal>
     </>
   );

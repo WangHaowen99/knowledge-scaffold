@@ -11,8 +11,8 @@ import '../../styles/evidence-pages.css';
 
 export function EvdPlg() {
   return (
-    <span className="evd-plg" data-pop={`由「${PACK_LABEL}」插件提供；未启用时不显示这个页面`} onClick={() => navigate(pagePath('plugin-detail'), { pack: PACK })}>
-      <Icon name="puzzle" size={12} />插件 · {PACK_LABEL}
+    <span className="evd-plg" data-pop={`由「${PACK_LABEL}」插件提供`} onClick={() => navigate(pagePath('plugin-detail'), { pack: PACK })}>
+      <Icon name="puzzle" size={12} />
     </span>
   );
 }
@@ -57,7 +57,7 @@ export function JobChip({ state }) {
 
 export function ConfChip({ k }) {
   if (!k) return null;
-  return <Chip tone={CONF_TONE[k] || 'line'} sm data-pop={CONF_TEXT[k]}>{k}</Chip>;
+  return <Chip tone={CONF_TONE[k] || 'line'} sm>{CONF_TEXT[k] || k}</Chip>;
 }
 
 // 行尾「⋯」：点开一列操作，点别处收起。菜单挂到 body、按按钮位置固定定位，不被表格的滚动容器裁掉
