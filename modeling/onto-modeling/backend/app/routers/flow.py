@@ -12,7 +12,7 @@ from fastapi import APIRouter, Request
 
 from ..api import deps
 from ..api.errors import ApiError
-from ..services.flow import model, view
+from ..services.flow import model, node_kinds, overlay, view
 from ..services.flow import state as node_state
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/flow", tags=["flow"])
@@ -78,12 +78,18 @@ async def restore_node(project_id: str, node_id: str, request: Request):
 
 @router.post("/nodes/{node_id}/start")
 async def start_node(project_id: str, node_id: str, request: Request):
-    """FL-05：开始节点（含补做、刷新）：用节点声明的入口命令发到对话，等价于 S-20。"""
+    """FL-05：开始节点（含补做、刷新）。agent 节点用入口命令发到对话，等价于 S-20；脚本、人工、外部节点
+    由内核执行（详设 6.5，见 services/flow/node_kinds）。"""
     from . import sessions
 
     root = deps.require_writable(project_id, request)
     body = await deps.json_body(request)
     node = _node(root, node_id)
+    if node_id in overlay.broken_nodes(model.load_for(root)):
+        raise ApiError("pack_unavailable", "这个节点所属的插件版本已被运维熔断", 409, {"reason": "breaker"})
+    kind = node_kinds.kind_of(node)
+    if kind != "agent":
+        return await _start_kernel_node(project_id, root, node, kind, body, request)
     command = str((node.get("entry") or {}).get("command") or "").strip() or next(
         (str(action["command"]).strip() for action in node.get("actions") or []
          if str(action.get("command") or "").startswith("/")), "")
@@ -97,3 +103,43 @@ async def start_node(project_id: str, node_id: str, request: Request):
     if body.get("slice_id"):
         payload["args"] = {**payload["args"], "slice": body["slice_id"]}
     return await sessions.dispatch_command(project_id, root, request, payload)
+
+
+async def _start_kernel_node(project_id: str, root, node: dict, kind: str, body: dict, request: Request) -> dict:
+    """脚本节点在沙箱里跑完再返回；人工节点出一张决策卡；外部节点要的提供方本期都不可用。"""
+    from ..services.agent_sessions import manager
+    from . import sessions
+
+    try:
+        if kind == "external":
+            missing = node_kinds.missing_providers([node])
+            raise node_kinds.NodeRunError("pack_unavailable", "需要的证据源提供方不可用", 409,
+                                          {"reason": "not_installed", "providers": missing})
+        if kind == "script":
+            run = await asyncio.to_thread(node_kinds.run_script, deps.workspaces, project_id, node,
+                                          actor=deps.actor(request))
+            _after_change(project_id)
+            return {**await asyncio.to_thread(_node_view, root, node["id"]), "run": run}
+        conversation_id = sessions._resolve(project_id, str(body.get("conversation_id") or "-"))
+        question = node_kinds.ask(project_id, root, node, conversation_id,
+                                  lambda cid, record: manager.append_record(project_id, cid, record))
+        return {**await asyncio.to_thread(_node_view, root, node["id"]), "question": question}
+    except node_kinds.NodeRunError as exc:
+        raise ApiError(exc.code, str(exc), exc.status, exc.details) from exc
+
+
+async def answer_human_node(project_id: str, question_id: str, body: dict, actor: str) -> dict | None:
+    """S-11 的退路：会话里没有这个问题时，看是不是人工节点的决策卡（routers/sessions 调）。"""
+    from ..services.agent_sessions import manager
+
+    try:
+        found = await asyncio.to_thread(node_kinds.answer, deps.workspaces, project_id, question_id, body,
+                                        actor=actor)
+    except node_kinds.NodeRunError as exc:
+        raise ApiError(exc.code, str(exc), exc.status, exc.details) from exc
+    if found is None:
+        return None
+    question, record = found
+    manager.append_record(project_id, question["conversation_id"], record)
+    _after_change(project_id)
+    return question

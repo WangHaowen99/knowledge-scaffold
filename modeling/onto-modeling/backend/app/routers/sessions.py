@@ -373,6 +373,12 @@ async def answer_question(project_id: str, cid: str, question_id: str, request: 
         question = manager.answer_question(project_id, question_id, answer)
     except SessionError as exc:
         if exc.status == 410:
+            # 不是助手提的问题：人工节点（详设 6.5）的决策卡由流程运行时回答
+            from .flow import answer_human_node
+
+            question = await answer_human_node(project_id, question_id, answer, deps.actor(request))
+            if question is not None:
+                return {"question": question}
             raise ApiError("question_gone", "问题已回答、撤回或失效", 410, {"state": "gone"}) from exc
         raise ApiError("answer_invalid", str(exc), 400) from exc
     return {"question": question}

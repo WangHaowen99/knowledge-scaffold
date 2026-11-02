@@ -16,3 +16,8 @@ RECORD_TYPES = ("entity", "field", "relation", "constraint", "operation", "rule"
 ANCHOR_SCHEMES = ("file", "db", "code", "bin", "ui", "api", "cli", "log")
 # 记录的置信度（5.8.4）
 CONFIDENCE = ("declared", "observed", "inferred")
+
+
+def available_providers() -> set[str]:
+    """平台已安装、可用的证据源提供方类型（外部节点启用前查，详设 6.5）。本期证据源只留接口，没有提供方。"""
+    return set()

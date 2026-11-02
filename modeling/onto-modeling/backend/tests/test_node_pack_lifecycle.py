@@ -244,3 +244,129 @@ def test_breaker_skips_nodes_and_releases_gates(env):
     finally:
         ops_state.set_breaker("naming", "0.1.0", "close", "ops")
         ops_state.set_breaker("naming", "0.1.0", "close", "ops")
+
+
+# ---- 四类节点：脚本在沙箱里跑、人工只出决策卡、外部要提供方 ----
+
+LINT_SCRIPT = '''import os, sys
+names = sorted(os.path.splitext(name)[0] for _, _, files in os.walk(sys.argv[1]) for name in files)
+print("# 命名格式检查")
+print()
+for name in names:
+    print(f"- {name}：通过")
+if "--fail" in sys.argv:
+    sys.exit(3)
+'''
+
+
+def kinds_flow(*extra_nodes: dict, probes: dict | None = None) -> dict:
+    flow = copy.deepcopy(NODE_PACK_FLOW)
+    flow["probes"].update(probes or {})
+    flow["nodes"] += list(extra_nodes)
+    return flow
+
+
+SCRIPT_NODE = {"id": "naming.lint", "title": "命名格式检查", "kind": "script", "placement": "branch",
+               "after": "core.object", "done": ["naming_lint"], "produces": ["reports/lint-naming.md"],
+               "script": {"name": "naming_lint.py", "inputs": ["ontology/object/*.md"], "output": "reports/lint-naming.md"}}
+HUMAN_NODE = {"id": "naming.signoff", "title": "命名会签", "kind": "human", "placement": "gate", "after": "core.object",
+              "blocks": ["core.operation"], "done": ["naming_signoff"], "produces": ["reports/signoff-naming.md"],
+              "decision": {"title": "线下会签结果", "options": [{"id": "pass", "label": "已签署"}, {"id": "fail", "label": "未通过"}],
+                           "record": "reports/signoff-naming.md"}}
+EXTERNAL_NODE = {"id": "naming.fetch", "title": "取系统命名表", "kind": "external", "placement": "on_demand",
+                 "done": [], "provider": {"kind": "db-generic"}}
+
+
+@pytest.fixture()
+def fake_sandbox(monkeypatch):
+    """假的脚本验证网关：在本机用同一个执行器跑打好的包（真实环境里在 jiuwenbox 沙箱里）。"""
+    import sys
+
+    from app.services.flow import node_kinds
+
+    client = node_kinds._client()
+    calls = []
+
+    def gateway_call(_url, method, path, payload=None, timeout=10.0):
+        calls.append((method, path, payload["entry"]))
+        done = subprocess.run([sys.executable, "-I", "-c", client.RUNNER, payload["bundle"], payload["entry"],
+                               payload["cases"], "1500", "20"], capture_output=True, text=True, timeout=60)
+        return {"results": client._parse_results(done.stdout, payload["case_count"])}
+
+    monkeypatch.setattr(client, "_gateway_call", gateway_call)
+    monkeypatch.setattr(client, "gateway_url", lambda: "http://sandbox.example.invalid")
+    return client, calls
+
+
+def test_script_node_runs_in_sandbox_and_writes_its_output(env, fake_sandbox):
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
+    install(manager, tmp_path, flow=kinds_flow(SCRIPT_NODE, probes={"naming_lint": {"files": ["reports"], "glob": "lint-naming.md"}}),
+            files={"commands/naming-check.md": "检查 $ARGUMENTS\n", "scripts/naming_lint.py": LINT_SCRIPT})
+    enable_and_apply(client, manager, project_id)
+
+    started = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.lint/start", json={})
+    assert started.status_code == 200, started.text
+    body = started.json()
+    assert body["run"]["state"] == "passed" and body["run"]["runtime"] == "jiuwenbox"
+    assert fake_sandbox[1] == [("POST", "/v1/verify", "naming_lint.py")]
+    assert "- 读者：通过" in (root / "reports" / "lint-naming.md").read_text(encoding="utf-8")
+    assert trailer(root, "Onto-Node") == "naming.lint@0.1.0" and trailer(root, "Onto-Source") == "plugin"
+    assert body["node"]["state"] == "confirmed"
+
+
+def test_script_node_never_falls_back_to_the_main_container(env, fake_sandbox, monkeypatch):
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    install(manager, tmp_path, flow=kinds_flow({**SCRIPT_NODE, "script": {**SCRIPT_NODE["script"], "args": ["--fail"]}},
+                                               probes={"naming_lint": {"files": ["reports"], "glob": "lint-naming.md"}}),
+            files={"commands/naming-check.md": "检查 $ARGUMENTS\n", "scripts/naming_lint.py": LINT_SCRIPT})
+    enable_and_apply(client, manager, project_id)
+    failed = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.lint/start", json={})
+    assert failed.status_code == 422 and failed.json()["code"] == "node_run_failed"
+    monkeypatch.setattr(fake_sandbox[0], "gateway_url", lambda: "")
+    unavailable = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.lint/start", json={})
+    assert unavailable.status_code == 503 and unavailable.json()["code"] == "service_unavailable"
+    assert not (root / "reports" / "lint-naming.md").exists()
+
+
+def test_human_node_only_asks_one_decision_card(env):
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
+    install(manager, tmp_path, flow=kinds_flow(HUMAN_NODE, probes={"naming_signoff": {"files": ["reports"], "glob": "signoff-naming.md"}}))
+    enable_and_apply(client, manager, project_id)
+    assert nodes_of(root)["core.operation"]["state"] == "blocked"
+
+    started = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.signoff/start", json={})
+    assert started.status_code == 200, started.text
+    question = started.json()["question"]
+    assert question["kind"] == "decision" and [option["id"] for option in question["options"]] == ["pass", "fail"]
+    again = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.signoff/start", json={}).json()["question"]
+    assert again["question_id"] == question["question_id"]  # 只出一张
+    cid = question["conversation_id"]
+    from app.services.agent_sessions import manager as sessions
+
+    asked = [event for event in sessions.get_history(project_id, cid) if event.get("type") == "question_asked"]
+    assert len(asked) == 1
+
+    url = f"/api/v1/projects/{project_id}/conversations/{cid}/questions/{question['question_id']}/answer"
+    assert client.post(url, json={"option_id": "nope"}).json()["code"] == "answer_invalid"
+    answered = client.post(url, json={"option_id": "pass"})
+    assert answered.status_code == 200 and answered.json()["question"]["state"] == "answered"
+    assert "结论：已签署" in (root / "reports" / "signoff-naming.md").read_text(encoding="utf-8")
+    assert client.post(url, json={"option_id": "pass"}).status_code == 410
+    nodes = nodes_of(root)
+    assert nodes["naming.signoff"]["state"] == "confirmed" and nodes["core.operation"]["state"] == "ready"
+
+
+def test_external_node_reports_missing_provider(env):
+    client, manager, project_id, tmp_path = env
+    install(manager, tmp_path, flow=kinds_flow(EXTERNAL_NODE))
+    compat = client.get(f"/api/v1/packs/naming/versions/0.1.0/compatibility?project_id={project_id}").json()
+    depends = next(check for check in compat["checks"] if check["id"] == "depends")
+    assert not compat["ok"] and not depends["ok"] and "db-generic" in depends["detail"]
+    enabled = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "naming"})
+    assert enabled.status_code == 409 and enabled.json()["code"] == "pack_unavailable"
+    assert enabled.json()["details"] == {"reason": "not_installed", "providers": ["db-generic"]}

@@ -342,6 +342,15 @@ def _response(manager, project_id: str, name: str, outcome: dict) -> dict:
     }
 
 
+def _missing_providers(repository, name: str, version: str) -> list[str]:
+    from ..flow import node_kinds
+
+    try:
+        return node_kinds.missing_providers(node_kinds.pack_nodes(repository, name, version))
+    except Exception:  # noqa: BLE001 - 节点声明坏了由装配检查报
+        return []
+
+
 def _require_version(repository, name: str, version: str | None) -> str:
     if not repository.versions(name):
         raise PackError("pack_not_found", f"包 {name} 不存在", 404)
@@ -353,6 +362,11 @@ def _require_version(repository, name: str, version: str | None) -> str:
     manifest = repository.manifest(name, version)
     if manifest.hot_level == "H2":
         raise PackError("pack_unavailable", "可替换实现要由管理员安装到平台，不能按项目启用", 409, {"reason": "not_installed"})
+    missing = _missing_providers(repository, name, version)
+    if missing:
+        # 外部节点要经连接器网关调外部系统（详设 6.5）；本期证据源只留接口，没有提供方
+        raise PackError("pack_unavailable", f"需要的证据源提供方不可用：{'、'.join(missing)}", 409,
+                        {"reason": "not_installed", "providers": missing})
     if manifest.page_api and not mf.satisfies(mf.PAGE_API, manifest.page_api):
         raise PackError("page_api_unsupported", f"需要平台页面接口 {manifest.page_api}", 409,
                         {"required": manifest.page_api, "platform": mf.PAGE_API})
@@ -551,6 +565,8 @@ def compatibility(manager, name: str, version: str, project_id: str) -> dict:
         spec = other.depends.get(name)
         if spec and not mf.satisfies(version, spec):
             bad.append(f"{entry.name} 需要 {name} {spec}")
+    missing = _missing_providers(repository, name, version)
+    bad += [f"需要的证据源提供方不可用：{'、'.join(missing)}"] if missing else []
     add("depends", "依赖", not bad, "；".join(bad))
     names_ok, flow_ok, detail_names, detail_flow = True, True, "", ""
     trial_flow = None
