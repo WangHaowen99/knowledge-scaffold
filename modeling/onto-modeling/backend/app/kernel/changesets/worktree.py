@@ -376,7 +376,8 @@ def snapshot(copy: Path) -> str:
     with tempfile.TemporaryDirectory(prefix="onto-cs-") as scratch:
         index = Path(scratch) / "index"
         if (gitdir / "index").is_file():
-            shutil.copyfile(gitdir / "index", index)
+            # 带着时间戳拷：git 靠索引的修改时间认出「同一秒里检出又改过」的文件，拷成新时间会把同样长度的改动当成没改
+            shutil.copy2(gitdir / "index", index)
         env = {**os.environ, "GIT_INDEX_FILE": str(index)}
         git(copy, "add", "-A", env=env)
         _keep_protected(copy, env)

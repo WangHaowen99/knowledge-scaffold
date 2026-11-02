@@ -360,3 +360,32 @@ def test_D_confidence_parsing_and_tags():
     # 「保守」只认结尾的标记
     low = outcome("置信度 0.6", ["不保守的做法", "按通用做法（保守）"], below="conservative_assumption")
     assert low["option"]["label"] == "按通用做法（保守）" and low["assumption"] is True
+
+
+def test_snapshot_sees_a_same_size_edit_made_in_the_same_second_as_the_checkout(tmp_path):
+    """附带（排查 K 的偶发失败时发现）：快照拷索引时没保留时间戳，git 的同秒防护失效；
+    同一秒里刚检出又被改成同样长度的文件被当成没改，变更集被悄悄关掉。"""
+    import os
+    import time
+
+    from app.kernel.changesets import worktree
+
+    repo = tmp_path / "copy"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "config", "core.trustctime", "false")
+    target = repo / "ontology/object/对象1.md"
+    target.parent.mkdir(parents=True)
+    target.write_text(obj("对象1", "用户改过"), encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "base")
+    head_tree = git(repo, "rev-parse", "HEAD^{tree}").strip()
+    second = int(time.time()) - 30
+    os.utime(target, (second, second))
+    git(repo, "update-index", "--refresh")
+    # 检出与写索引在同一秒（一轮开始时跟上主线），助手随后在这一秒里写了同样长度的内容
+    os.utime(repo / ".git" / "index", (second, second))
+    target.write_text(obj("对象1", "合成对象"), encoding="utf-8")
+    os.utime(target, (second, second))
+    assert git(repo, "--no-optional-locks", "status", "--porcelain").strip()
+    assert worktree.snapshot(repo) != head_tree
