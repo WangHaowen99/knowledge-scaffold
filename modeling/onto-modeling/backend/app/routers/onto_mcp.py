@@ -224,6 +224,13 @@ def version(rpc, request):
     return (body if body in tokens.VERSIONS else header) or "2025-11-25"
 
 
+def _pack_tools(project_id: str) -> list[dict]:
+    """本项目生效中的包声明的只读工具（详设 5.6；ADR-0068），跟着装配走。"""
+    from ..services.packs import extensions
+
+    return extensions.mcp_tools(manager(), project_id)
+
+
 async def dispatch(rpc, group, principal, protocol):
     method, params = rpc["method"], rpc.get("params", {})
     if method.startswith("notifications/"):
@@ -237,21 +244,29 @@ async def dispatch(rpc, group, principal, protocol):
                 "capabilities": {"tools": {"listChanged": False}}, "ttlMs": 300000, "cacheScope": "private",
                 "_meta": {"io.modelcontextprotocol/serverInfo": tokens.SERVER}}
     if method == "tools/list":
+        listed = [*TOOLS.values(), *(await asyncio.to_thread(_pack_tools, principal["project_id"]))]
         available = [{**{k: tool[k] for k in ("name", "title", "description", "inputSchema")},
                       "annotations": {"readOnlyHint": tool["scope"] != "ontology.change.apply"}}
-                     for tool in TOOLS.values() if tool["toolset"] == group and tool["scope"] in principal["scopes"]]
+                     for tool in listed if tool["toolset"] == group and tool["scope"] in principal["scopes"]]
         return {"tools": available, **({"resultType": "complete", "ttlMs": 300000, "cacheScope": "private"}
                                       if protocol == "2026-07-28" else {})}
     if method != "tools/call":
         raise McpError("METHOD_NOT_FOUND", "不支持的 MCP 方法", 404)
     tool = TOOLS.get(params.get("name")) if isinstance(params.get("name"), str) else None
+    if tool is None and isinstance(params.get("name"), str):
+        tool = next((item for item in await asyncio.to_thread(_pack_tools, principal["project_id"])
+                     if item["name"] == params["name"]), None)
     if tool is None or tool["toolset"] != group:
         raise McpError("MCP_TOOL_NOT_FOUND", "当前工具集不支持该工具", 404)
     if tool["scope"] not in principal["scopes"]:
         raise McpError("MCP_SCOPE_FORBIDDEN", "Token 缺少工具所需 scope", 403)
     try:
-        result = await asyncio.to_thread(tools.execute, manager(), principal["project_id"], tool["name"],
-                                         params.get("arguments", {}), principal["username"])
+        if tool.get("pack"):
+            result = await asyncio.to_thread(tools.execute_pack_tool, manager(), principal["project_id"], tool,
+                                             params.get("arguments", {}))
+        else:
+            result = await asyncio.to_thread(tools.execute, manager(), principal["project_id"], tool["name"],
+                                             params.get("arguments", {}), principal["username"])
         return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
                 "structuredContent": result, "isError": False}
     except (McpError, WorkspaceError) as exc:

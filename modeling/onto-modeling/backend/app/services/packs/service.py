@@ -84,9 +84,10 @@ def reconcile_all(manager) -> dict:
             _log.warning("项目 %s 启动核对装配目录失败：%s", project_id, exc)
     if report["repaired"]:
         _log.warning("启动时重新装配了项目：%s", ", ".join(report["repaired"]))
-    from . import governance
+    from . import extensions, governance
 
     governance.record_reconcile(report)
+    extensions.sync_config(manager)  # 各包声明的配置项进配置注册表（ADR-0068）
     return report
 
 

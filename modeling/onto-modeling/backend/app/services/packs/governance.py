@@ -278,8 +278,25 @@ def install(manager) -> None:
     ops_control.register_pack_lookup(lambda name, version: pack_item(_current(manager), name, version))
     if first:
         ops_control.register_version_provider(lambda: versions(_current(manager)))
+    # 包声明的指标与告警规则进可观测（B5c，ADR-0068）
+    from ...governance import telemetry
+
+    ops_control.register_alert_provider(_declared_alerts)
+    telemetry.register_declarations(_declared_metrics)
     # 插件运行时建出来时已经登记过（PackRuntime），这里再登记一次也只算一个
     register_trailer_provider(packs_trailer)
+
+
+def _declared_alerts() -> list[dict]:
+    from . import extensions
+
+    return extensions.declared_alerts(_current(None))
+
+
+def _declared_metrics() -> list[dict]:
+    from . import extensions
+
+    return extensions.declared_metrics(_current(None))
 
 
 def _current(fallback):

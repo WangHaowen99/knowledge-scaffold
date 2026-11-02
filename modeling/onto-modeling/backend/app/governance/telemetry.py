@@ -190,6 +190,26 @@ def register_gauge(name: str, read: callable) -> None:
     _gauges[name] = read
 
 
+# 包声明的指标（详设 5.6，ADR-0068）：插件运行时登记 provider() → [{name, help, type}]，
+# /metrics 给出 HELP 与 TYPE；取值经 count / observe 按同名记录
+_declarations: list[callable] = []
+
+
+def register_declarations(provider: callable) -> None:
+    if provider not in _declarations:
+        _declarations.append(provider)
+
+
+def declared_metrics() -> list[dict]:
+    out = []
+    for provider in list(_declarations):
+        try:
+            out += list(provider() or [])
+        except Exception:  # noqa: BLE001 - 声明取不到不影响内核指标
+            continue
+    return out
+
+
 def _common_labels() -> dict:
     # 指标只带低基数的标签：项目、包、节点；会话与 trace 进日志和链路，不进指标
     current = context.labels()
@@ -222,6 +242,11 @@ def _prom_labels(labels: tuple) -> str:
 
 def prometheus_text() -> str:
     lines: list[str] = []
+    for item in declared_metrics():
+        name = _prom_name(str(item.get("name") or ""))
+        if name:
+            lines.append(f"# HELP {name} {str(item.get('help') or '').replace(chr(10), ' ')}")
+            lines.append(f"# TYPE {name} {item.get('type') or 'gauge'}")
     with _metrics_lock:
         counters = dict(_counters)
         histograms = {key: list(values) for key, values in _histograms.items()}

@@ -211,6 +211,13 @@ def _artifact_tool(manager, project_id, name, args):
         raise McpError(code, str(exc), exc.status) from exc
 
 
+def execute_pack_tool(manager, project_id, tool, args):
+    """包声明的只读工具：固定在本包的一种产物类型上，list 列表、get 取一项（同 artifact_list / artifact_get 的上限）。"""
+    validate_input(args, tool["inputSchema"])
+    name = "artifact_list" if tool["mode"] == "list" else "artifact_get"
+    return _artifact_tool(manager, project_id, name, {**args, "type": tool["artifact"]})
+
+
 def execute(manager, project_id, name, args, username):
     if name not in TOOLS:
         raise McpError("MCP_TOOL_NOT_FOUND", "未知工具", 404)

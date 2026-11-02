@@ -255,6 +255,11 @@ def _node_problems(directory: Path, manifest: Manifest) -> tuple[list[str], list
         entry = (node.get("entry") or {}).get("command")
         if entry and entry.split()[0] not in commands:
             missing_commands.append(f"{rel}: {entry}")
+    # 节点钩子（详设 6.4）的命令也要是本包的
+    for hook in (_flow_data(directory, manifest) or {}).get("hooks") or []:
+        command = str((hook or {}).get("command") or "") if isinstance(hook, dict) else ""
+        if not command or command.split()[0] not in commands:
+            missing_commands.append(f"节点钩子 {(hook or {}).get('id') if isinstance(hook, dict) else hook}: {command or '（没有命令）'}")
     return protected, missing_commands
 
 
@@ -493,6 +498,12 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
         "fail" if ui_hard else ("warn" if ui_soft else "pass"),
         "；".join(ui_hard[:10]) if ui_hard else "；".join(ui_soft),
     ))
+
+    from . import extensions
+
+    if extensions.declares_any(manifest):
+        declared = extensions.problems(manifest)
+        checks.append(_check("extensions", "扩展项声明格式正确", "fail" if declared else "pass", "；".join(declared[:10])))
 
     secrets = _secrets(directory, files)
     checks.append(_check("secrets", "不含凭据", "fail" if secrets else "pass",

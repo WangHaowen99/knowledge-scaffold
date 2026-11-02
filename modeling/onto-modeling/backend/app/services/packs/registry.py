@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from . import extensions as extension_items
 from . import lockfile
 from . import manifest as mf
 from .manifest import Manifest
@@ -43,7 +44,6 @@ PAGE_DEFAULTS = {
 }
 NAV_VISIBLE = 5
 PLUGIN_ORDER_BASE = 10
-ENTRY_KINDS = ("quick_action", "extra_action", "source_wizard")
 
 # 左栏角标的数据来源（待处理里属于本包的事项数）：待处理汇总落地后由它登记
 _badge_provider: Callable[[str, str], int] | None = None
@@ -183,6 +183,7 @@ def extensions(manager, project_id: str) -> dict:
     entries: list[dict] = []
     gates: list[dict] = []
     config: list[dict] = []
+    view_choices: list[dict] = []
     seen_pages: set[str] = set()
     for view in desired:
         pending = (view.name, view.version) not in active
@@ -199,17 +200,12 @@ def extensions(manager, project_id: str) -> dict:
             if sub.get("parent") in mf.KERNEL_PAGES and sub.get("id") in mf.BUILTIN_SUBPAGES:
                 subpages.append({"parent": sub["parent"], "id": sub["id"], "title": str(sub.get("title") or sub["id"]),
                                  "pack": view.name, "pack_label": view.manifest.label})
-        for index, entry in enumerate(view.manifest.declared("entries")):
-            kind = entry.get("kind") if entry.get("kind") in ENTRY_KINDS else "quick_action"
-            entries.append({"id": str(entry.get("id") or f"{view.name}-{index + 1}"), "kind": kind,
-                            "label": str(entry.get("label") or entry.get("id") or ""),
-                            "where": str(entry.get("where") or "wb-l2"), "pack": view.name,
-                            **({"command": str(entry["command"])} if entry.get("command") else {})})
-        for gate in view.manifest.declared("gates"):
-            gates.append({"id": str(gate.get("id") or ""), "label": str(gate.get("label") or gate.get("id") or ""),
-                          "pack": view.name})
+        entries += extension_items.entries(view)
+        gates += [extension_items.gate_view(view, gate) for gate in view.manifest.declared("gates")]
+        view_choices += extension_items.view_choices(view)
         for item in view.manifest.declared("config"):
-            config.append({"key": str(item.get("key") or item.get("id") or ""), "pack": view.name})
+            key = str(item.get("key") or item.get("id") or "")
+            config.append({"key": extension_items.config_key(view.name, key), "pack": view.name})
     plugin_nav.sort(key=lambda item: (item["order"], item["pack"], item["id"]))
     for index, item in enumerate(plugin_nav):
         item["order"] = PLUGIN_ORDER_BASE + index
@@ -234,6 +230,7 @@ def extensions(manager, project_id: str) -> dict:
         "views": [item.type for item in types if item.view_declared],
         "gates": gates,
         "config": config,
+        "view_choices": view_choices,
         "disabled_pages": disabled,
     }
 
@@ -300,13 +297,15 @@ def resolve_action(manager, project_id: str, action: dict) -> dict | None:
 
 def digest(view: dict) -> dict:
     """extensions.updated 的比较基准：各部分的内容（不含哈希）。"""
-    return {key: view.get(key) for key in ("nav", "pages", "subpages", "entries", "artifact_types", "views", "gates")}
+    return {key: view.get(key) for key in ("nav", "pages", "subpages", "entries", "artifact_types", "views", "gates",
+                                           "view_choices")}
 
 
 def changed_parts(before: dict | None, after: dict) -> list[str]:
     old = digest(before or {})
     new = digest(after)
-    return [key for key in ("nav", "pages", "subpages", "entries", "artifact_types", "views", "gates") if old.get(key) != new.get(key)]
+    return [key for key in ("nav", "pages", "subpages", "entries", "artifact_types", "views", "gates", "view_choices")
+            if old.get(key) != new.get(key)]
 
 
 # ---- 提示规则（详设 5.6「提示规则」：两轮对话之间由会话宿主注入）----
@@ -337,9 +336,46 @@ def prompt_rules(manager, root: Path) -> list[dict]:
 
 
 def prompt_hints(manager, root: Path, user_text: str) -> list[str]:
-    """用户这条消息命中的提示规则文本（去重，按包顺序）。"""
+    """用户这条消息命中的提示规则文本（去重，按包顺序），加上这条命令所在节点上挂的节点钩子。"""
     hints = []
     for rule in prompt_rules(manager, root):
         if any(pattern.search(user_text or "") for pattern in rule["match"]) and rule["text"] not in hints:
             hints.append(rule["text"])
+    for text in hook_hints(root, user_text):
+        if text not in hints:
+            hints.append(text)
     return hints
+
+
+def hook_hints(root: Path, user_text: str) -> list[str]:
+    """节点钩子（详设 6.4）：这条消息是某个节点的命令、节点上挂了钩子时，提示助手在之前或之后做那一步。
+    宿主在两轮之间注入（两个引擎都能拿到），不改命令文档。"""
+    command = str(user_text or "").strip().split(" ")[0].split("\n")[0]
+    if not command.startswith("/"):
+        return []
+    from ..flow import model
+
+    try:
+        flow = model.load_for(root)
+    except Exception:  # noqa: BLE001 - 流程读不出来就不提示
+        return []
+    if not flow.get("hooks"):
+        return []
+    nodes = {}
+    for node in flow.get("nodes") or []:
+        entry = str((node.get("entry") or {}).get("command") or "").split(" ")[0]
+        for text in [entry, *(str(action.get("command") or "").split(" ")[0] for action in node.get("actions") or [])]:
+            if text.startswith("/"):
+                nodes.setdefault(text, node)
+    node = nodes.get(command)
+    if node is None:
+        return []
+    out = []
+    for hook in flow["hooks"]:
+        if hook.get("node") != node["id"]:
+            continue
+        if hook.get("when") == "before":
+            out.append(f"插件 {hook['pack']} 在「{node['title']}」之前加了一步：先执行 {hook['command']}（{hook['title']}），再做这一步。")
+        else:
+            out.append(f"插件 {hook['pack']} 在「{node['title']}」之后加了一步：这一步做完，接着执行 {hook['command']}（{hook['title']}）。")
+    return out

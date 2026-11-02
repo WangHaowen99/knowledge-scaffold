@@ -368,3 +368,41 @@ def set_breaker(pack: str, version: str, action: str, by: str, reason: str = "")
         data[key] = {"state": new, "at": time.time(), "by": by, "reason": (reason or "")[:300]}
         _save("breakers.json", data)
     return new
+
+
+# ---- 告警规则（O-08～O-10）：运维新建的规则与对包声明规则的停用记录 ----
+
+ALERT_LEVELS = ("critical", "warning", "info")
+
+
+def alert_rules() -> dict:
+    """{"rules": {编号: 运维新建的规则}, "disabled": [停用的包规则编号]}。"""
+    data = _load("alert-rules.json")
+    return {"rules": dict(data.get("rules") or {}), "disabled": list(data.get("disabled") or [])}
+
+
+def save_alert_rule(rule: dict) -> dict:
+    with _lock:
+        data = alert_rules()
+        data["rules"][rule["id"]] = rule
+        _save("alert-rules.json", data)
+    return rule
+
+
+def delete_alert_rule(rule_id: str) -> bool:
+    with _lock:
+        data = alert_rules()
+        found = data["rules"].pop(rule_id, None) is not None
+        if found:
+            _save("alert-rules.json", data)
+    return found
+
+
+def set_pack_rule_enabled(rule_id: str, enabled: bool) -> None:
+    with _lock:
+        data = alert_rules()
+        disabled = [item for item in data["disabled"] if item != rule_id]
+        if not enabled:
+            disabled.append(rule_id)
+        data["disabled"] = disabled
+        _save("alert-rules.json", data)

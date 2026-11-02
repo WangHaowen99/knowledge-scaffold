@@ -115,6 +115,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     overlay.mark_broken(states, broken)
     overlay.mark_backfill(flow, states, hits)
     passed = overlay.backfill_ids(flow, hits)
+    hooks = _hooks_by_node(flow)
     nodes = []
     for node in flow.get("nodes") or []:
         item = states[node["id"]]
@@ -132,7 +133,9 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
             "per_slice": bool(node.get("per_slice")),
             "note": node.get("note"),
             "blocks": list(node.get("blocks") or []),
-            "actions": [] if item.get("broken") else _actions(node, item["state"]),
+            "actions": [] if item.get("broken") else _actions(node, item["state"], hooks.get(node["id"], [])),
+            "hooks": [{key: hook[key] for key in ("id", "title", "when", "command", "pack")}
+                      for hook in hooks.get(node["id"], [])],
             "plugin": None if node.get("pack", "core") == "core" else {"name": node["pack"], "label": node["pack"]},
             "optional": bool(node.get("optional")),
             "panel": bool(node.get("panel")),
@@ -201,12 +204,25 @@ def _disabled_view(node: dict) -> dict:
     }
 
 
-def _actions(node: dict, state: str) -> list[dict]:
+def _hooks_by_node(flow: dict) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for hook in flow.get("hooks") or []:
+        out.setdefault(hook["node"], []).append(hook)
+    return out
+
+
+def _actions(node: dict, state: str, hooks: list[dict] | None = None) -> list[dict]:
     actions = [
         {"kind": "start", "label": action["label"], "target": action["command"],
          **({"verify": True} if action.get("verify") else {})}
         for action in node.get("actions") or [] if action.get("command")
     ]
+    # 节点钩子（详设 6.4）：之前的排在节点自己的动作前面，之后的排在后面
+    before = [{"kind": "start", "label": hook["title"], "target": hook["command"], "hook": hook["id"]}
+              for hook in hooks or [] if hook.get("when") == "before"]
+    after = [{"kind": "start", "label": hook["title"], "target": hook["command"], "hook": hook["id"]}
+             for hook in hooks or [] if hook.get("when") != "before"]
+    actions = before + actions + after
     if state == "stale" and actions:
         actions = [{**actions[0], "kind": "refresh", "label": f"刷新「{node['title']}」"}, *actions]
     if node.get("optional"):

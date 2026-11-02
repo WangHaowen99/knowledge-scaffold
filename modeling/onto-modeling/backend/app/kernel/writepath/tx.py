@@ -72,6 +72,28 @@ def register_trailer_provider(provider: Callable[[Path], dict]) -> None:
         _trailer_providers.append(provider)
 
 
+# 门禁链里包声明的规则（详设 4.3 第 3 步、㉖）：插件运行时登记，checker(manager, 项目, 根目录, 路径, Origin)
+# → Finding[]，有 level=error 的就不提交（422 gate_failed）。检查本身出错只记日志，不挡写入
+_gate_checkers: list[Callable] = []
+
+
+def register_gate_checker(checker: Callable) -> None:
+    if checker not in _gate_checkers:
+        _gate_checkers.append(checker)
+
+
+def _gate_errors(manager, project_id: str, root: Path, paths: list[str], origin: Origin) -> list[dict]:
+    errors = []
+    for checker in list(_gate_checkers):
+        try:
+            findings = checker(manager, project_id, root, paths, origin) or []
+        except Exception:  # noqa: BLE001
+            _log.warning("项目 %s 的门禁检查没跑起来", project_id, exc_info=True)
+            continue
+        errors += [item for item in findings if item.get("level", "error") == "error"]
+    return errors
+
+
 def trailers(origin: Origin, root: Path) -> dict[str, str]:
     values = {"Onto-Source": origin.source, "Onto-Author": origin.author or "system"}
     if origin.changeset:
@@ -464,6 +486,10 @@ class ChangeTx:
         from ...governance import telemetry
 
         self._derive()
+        errors = _gate_errors(self.manager, self.project_id, self.root, list(self._paths), self.origin)
+        if errors:
+            raise WorkspaceError(f"没有通过插件声明的门禁：{errors[0]['message']}", 422, "gate_failed",
+                                 {"findings": errors[:50]})
         values = trailers(self.origin, self.root)
         with telemetry.span("commit", "commit", source=self.origin.source, target=self.target.kind,
                             paths=len(self._paths)):

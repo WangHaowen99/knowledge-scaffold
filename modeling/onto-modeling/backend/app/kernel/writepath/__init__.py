@@ -10,6 +10,7 @@ from .tx import (  # noqa: F401
     TxResult,
     commit_paths,
     recover_intents,
+    register_gate_checker,
     register_trailer_provider,
     stamped,
     trailers,
