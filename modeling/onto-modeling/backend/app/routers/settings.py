@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from urllib.parse import urlsplit
@@ -14,6 +15,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
+from .. import config
 from ..api import deps
 from ..api.errors import ApiError
 from ..api.views import ENGINE_CHANNELS, ENGINE_LABELS
@@ -88,6 +90,13 @@ def _context_defaults(engine: str, defaults: dict) -> dict:
     }
 
 
+def _deploy_view(engine: str) -> dict:
+    if engine == "claude":
+        configured = any(os.environ.get(name) for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"))
+        return {"configured": bool(configured), "model": os.environ.get("ANTHROPIC_MODEL", "")}
+    return {"configured": bool(config.JIUWEN_BASE_URL or config.JIUWEN_API_KEY), "model": config.JIUWEN_MODEL or ""}
+
+
 def engine_view(engine: str, masked: dict | None = None) -> dict:
     """SY-01 里一个引擎的配置；Key 只给掩码。"""
     from ..services.engines import available_engines
@@ -105,6 +114,8 @@ def engine_view(engine: str, masked: dict | None = None) -> dict:
         "api_key_set": bool(section.get("api_key_masked")),
         "model": section.get("model", ""),
         "configured": bool(section.get("configured")),
+        # 界面没配时实际在用的部署环境变量：只给有没有、模型名，网关地址与 Key 不出接口
+        "deploy": _deploy_view(engine),
         "context": {
             "window": saved.get("max_context_tokens"),
             "max_output": saved.get("max_output_tokens"),
