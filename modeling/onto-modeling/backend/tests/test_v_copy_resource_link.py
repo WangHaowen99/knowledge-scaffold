@@ -94,3 +94,42 @@ def test_withdrawn_reason_does_not_repeat_the_prefix(tmp_path, monkeypatch):
     agent_sessions.repair_history("p-v", "default")
     withdrawn = [e for e in agent_sessions.load_history("p-v", "default") if e.get("type") == "question_withdrawn"]
     assert withdrawn and "失效" not in withdrawn[-1]["payload"]["reason"]
+
+
+def test_newer_build_of_bundled_core_is_not_offered_as_rollback(tmp_path, monkeypatch):
+    """V 阶段真实环境发现：镜像更新后 core 换了内容摘要（同一基础版本），项目锁着旧的一版时，
+    PL-05 把新的一版当成「回滚到」给出来。同一基础版本只回滚到更早入库的那一版。"""
+    import shutil
+
+    from fastapi.testclient import TestClient
+
+    from app.api import deps
+    from app.main import app
+    from app.services import auth
+    from app.services.packs import builtin, lockfile
+
+    assets = Path(config.ASSETS_DIR)
+    builtin.clear_cache()
+    from app.services.workspace import WorkspaceManager
+
+    manager = WorkspaceManager(tmp_path / "data", assets)
+    monkeypatch.setattr(deps, "workspaces", manager)
+    monkeypatch.setattr(auth, "ENABLED", False)
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    client = TestClient(app)
+    project_id = manager.create_project("新版本不算回滚")["id"]
+    root = manager.project_root(project_id)
+    locked = lockfile.read(root).get("core").version
+    base = locked.split("+")[0]
+    source = tmp_path / "toolkit-next"
+    shutil.copytree(assets / "workspace-toolkit", source, ignore=shutil.ignore_patterns("__pycache__"))
+    (source / "scripts" / "v_synthetic_note.py").write_text("# 合成改动\n", encoding="utf-8")
+    staged = tmp_path / "core-next"
+    builtin.stage(source, staged, extras_from=assets, base_version=base)
+    manager.packs.repository.install(staged, origin="builtin")
+    newer = builtin.mf.load(staged).version
+    assert newer != locked and newer.startswith(base + "+")
+
+    items = {item["name"]: item for item in client.get(f"/api/v1/projects/{project_id}/packs").json()["items"]}
+    assert items["core"]["rollback_to"] is None and "rollback" not in items["core"]["actions"]
+    builtin.clear_cache()
