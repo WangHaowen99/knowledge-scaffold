@@ -1,16 +1,12 @@
 """Knowledge package Hub HTTP API."""
 from pathlib import Path
 from contextlib import asynccontextmanager
-import hmac
 import os
-import urllib.error
-import urllib.request
-import json
 
-from fastapi import FastAPI, File, Header, Query, Request, UploadFile
+from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 
-from .storage import HubError, Store, digest
+from .storage import HubError, Store
 from .limits import UploadLimit
 from .package_contract import PackageError
 
@@ -40,47 +36,6 @@ def error_response(exc):
     return JSONResponse(status_code=exc.status, content={'error': str(exc)})
 
 
-def actor(request: Request):
-    auth = request.headers.get('authorization', '')
-    return auth[7:] if auth.lower().startswith('bearer ') else ''
-
-
-def authorize(request: Request, project_id: str, operation: str):
-    token = actor(request)
-    callback = os.environ.get('ONTO_AUTHZ_URL', '').strip()
-    if not callback:
-        raise HubError('Authorization service unavailable', 503)
-    body = json.dumps({'project_id': project_id, 'operation': operation}).encode()
-    headers = {'Content-Type': 'application/json'}
-    headers['X-Hub-Service-Token'] = os.environ.get('HUB_SERVICE_TOKEN', '')
-    if token:
-        headers['Authorization'] = f'Bearer {token}'
-    try:
-        req = urllib.request.Request(callback, data=body, headers=headers, method='POST')
-        with urllib.request.urlopen(req, timeout=8) as response:
-            payload = json.loads(response.read())
-    except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403, 404):
-            raise HubError('Project access denied', exc.code) from exc
-        raise HubError('Authorization service unavailable', 503) from exc
-    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
-        raise HubError('Authorization service unavailable', 503) from exc
-    if payload.get('project_id') != project_id or not payload.get('subject'):
-        raise HubError('Invalid authorization response', 503)
-    if payload.get('development') and os.environ.get('HUB_DEV_ALLOW_UNAUTH') != '1':
-        raise HubError('Development authentication mismatch', 503)
-    if not payload.get('allowed'):
-        raise HubError('Project access denied', 403)
-    return payload['subject']
-
-
-def internal(request: Request):
-    expected = os.environ.get('HUB_SERVICE_TOKEN', '').strip()
-    supplied = request.headers.get('x-hub-service-token', '')
-    if not expected or not hmac.compare_digest(supplied.encode(), expected.encode()):
-        raise HubError('Internal service authentication failed', 401)
-
-
 @app.exception_handler(HubError)
 async def hub_error_handler(request: Request, exc: HubError):
     return error_response(exc)
@@ -91,54 +46,6 @@ def health():
     import shutil
     free = shutil.disk_usage(DATA_DIR).free
     return {'ok': True, 'service': 'knowledge-hub', 'free_bytes': free}
-
-
-@app.put('/api/projects/{project_id}/resources/current')
-def resources(project_id: str, request: Request, generation: int = Header(..., alias='X-Resource-Generation'),
-             resource_digest: str = Header(..., alias='X-Resource-Digest'), file: UploadFile = File(...)):
-    internal(request)
-    authorize(request, project_id, 'sync_resources')
-    with store.lock():
-        return store.resources(project_id, generation, file.file, resource_digest)
-
-
-@app.get('/api/projects/{project_id}/resources/current')
-def current_resources(project_id: str, request: Request, offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=100)):
-    authorize(request, project_id, 'read')
-    with store.lock():
-        root = store.project(project_id)
-        store.recover(root)
-        receipt = root / 'resources-current' / 'receipt.json'
-        value = json.loads(receipt.read_text()) if receipt.exists() else {'generation': 0, 'files': []}
-        return {**value, 'total': len(value['files']), 'files': value['files'][offset:offset + limit]}
-
-
-@app.get('/api/projects/{project_id}/resources/current/{file_id}')
-def resource_download(project_id: str, file_id: str, request: Request):
-    authorize(request, project_id, 'read')
-    with store.lock():
-        project = store.project(project_id)
-        store.recover(project)
-        root = project / 'resources-current'
-        receipt = json.loads((root / 'receipt.json').read_text()) if (root / 'receipt.json').exists() else {'files': []}
-        row = next((x for x in receipt['files'] if x['id'] == file_id), None)
-        if not row:
-            raise HubError('Resource not found', 404)
-        path = root / row['path']
-        if not path.is_file():
-            raise HubError('Resource not found', 404)
-        if digest(path) != row['digest']:
-            raise HubError('Resource integrity failure', 503)
-        return stream_file(path, Path(row['path']).name, row['digest'])
-
-
-@app.delete('/api/internal/projects/{project_id}/artifacts')
-def delete_artifacts(project_id: str, request: Request):
-    internal(request)
-    authorize(request, project_id, 'cleanup')
-    with store.lock():
-        store.delete(project_id)
-    return {'deleted': project_id}
 
 
 def stream_file(path, filename, digest, media_type='application/octet-stream'):

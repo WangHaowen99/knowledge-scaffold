@@ -21,7 +21,7 @@ def linked_projects(config, http, token, package_ids):
         raise Failure('invalid_input', f'每次查询 1 到 {PACKAGES} 个有效的 Hub 包标识', 422)
     if not config.modeling_url:
         return UNAVAILABLE
-    query = urlencode([('hub_package_id', value) for value in wanted])
+    query = urlencode([('ontology_id', value) for value in wanted])
     try:
         value = http.json('GET', config.modeling_url, '/api/hub/package-projects?' + query, token=token, limit=65536)
     except Failure:
@@ -30,9 +30,9 @@ def linked_projects(config, http, token, package_ids):
         return UNAVAILABLE
     items = []
     for item in value['items']:
-        if not isinstance(item, dict) or item.get('hub_package_id') not in wanted:
+        if not isinstance(item, dict) or item.get('ontology_id') not in wanted:
             continue
         names = [name[:128] for name in item.get('projects') or [] if isinstance(name, str)][:NAMES]
         total = item.get('total') if isinstance(item.get('total'), int) else len(names)
-        items.append(dict(hub_package_id=item['hub_package_id'], projects=names, total=max(total, len(names))))
+        items.append(dict(ontology_id=item['ontology_id'], projects=names, total=max(total, len(names))))
     return {'available': True, 'items': items}

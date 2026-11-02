@@ -21,9 +21,9 @@ import {
 // Package identifiers and project names are synthetic.
 test('modeling project lookup asks once per package in bounded batches', () => {
   const runs = [
-    { package_ref: { hub_package_id: 'package_b' } },
-    { package_ref: { hub_package_id: 'package_a' } },
-    { package_ref: { hub_package_id: 'package_b' } },
+    { package_ref: { ontology_id: 'package_b' } },
+    { package_ref: { ontology_id: 'package_a' } },
+    { package_ref: { ontology_id: 'package_b' } },
     { package_ref: {} },
   ];
   assert.deepEqual(packageIds(runs), ['package_a', 'package_b']);
@@ -31,7 +31,7 @@ test('modeling project lookup asks once per package in bounded batches', () => {
   const queries = modelingProjectQueries(ids);
   assert.equal(queries.length, 2);
   assert.equal(queries[0].split('&').length, 20);
-  assert.equal(queries[1], 'hub_package_id=package_20');
+  assert.equal(queries[1], 'ontology_id=package_20');
 });
 
 test('modeling project label shows one name and the total count', () => {

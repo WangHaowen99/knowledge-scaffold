@@ -30,7 +30,7 @@ def setup(tmp_path, monkeypatch):
     store = PackageStore(Store(tmp_path / 'hub'))
     captured = []
 
-    def call(method, path, token, body=None, upload=None, headers=None, download=None):
+    def call(method, path, token, body=None, upload=None, headers=None, download=None, upload_name=None):
         actor = Identity(token, 'modeling')
         captured.append((method, path, body))
         with store.io.lock():
@@ -58,11 +58,11 @@ def setup(tmp_path, monkeypatch):
 def test_actual_modeling_export_uses_independent_identity_and_retains_parent(setup):
     manager, pid, store, captured, _ = setup
     first = hub_packages.publish(manager, pid, 'request_demo', 'synthetic-actor', 'synthetic-scope')
-    assert first['manifest_id'] != pid and first['hub_package_id'] != pid
+    assert first['ontology_id'] != pid and first['ontology_id'] != pid
     assert first == hub_packages.publish(manager, pid, 'request_demo', 'synthetic-actor', 'synthetic-scope')
     second = hub_packages.publish(manager, pid, 'request_next', 'synthetic-actor', 'synthetic-scope')
     assert second['base_release_id'] == first['release_id']
-    assert second['hub_package_id'] == first['hub_package_id']
+    assert second['ontology_id'] == first['ontology_id']
     assert second['version'] == '0.1.2'
     assert all('project_id' not in (body or {}) and 'workspace_id' not in (body or {}) for _, _, body in captured)
     assert not (store.root / 'projects').exists()
@@ -71,12 +71,20 @@ def test_actual_modeling_export_uses_independent_identity_and_retains_parent(set
     assert hub_packages.association(pid, 'synthetic-scope')['release_id'] == second['release_id']
 
 
-def test_members_cannot_inherit_another_users_package(setup):
+def test_members_share_identity_but_require_explicit_hub_authorization(setup):
+    from hub.package_contract import PackageError
+    from hub.user_auth import subject_id
     manager, pid, store, _, _ = setup
     first = hub_packages.publish(manager, pid, 'request_demo', 'actor_a', 'scope_a')
-    second = hub_packages.publish(manager, pid, 'request_demo', 'actor_b', 'scope_b')
-    assert first['hub_package_id'] != second['hub_package_id']
-    assert store.packages('actor_a')['total'] == store.packages('actor_b')['total'] == 1
+    with pytest.raises(PackageError):
+        hub_packages.publish(manager, pid, 'request_demo', 'actor_b', 'scope_b')
+    target = dict(issuer='https://example.com', sub='operator_b')
+    actor_b = subject_id(**target)
+    store.grant(first['ontology_id'], 'actor_a', [target])
+    second = hub_packages.publish(manager, pid, 'request_allowed', actor_b, 'scope_b')
+    assert first['ontology_id'] == second['ontology_id'] == hub_packages.ontology_id(pid)
+    assert second['base_release_id'] == first['release_id']
+    assert store.packages('actor_a')['total'] == store.packages(actor_b)['total'] == 1
 
 
 def test_lost_upload_reuses_frozen_source_after_edits(setup, monkeypatch):
@@ -112,22 +120,22 @@ def test_hub_committed_local_receipt_failure_is_recoverable(setup, monkeypatch):
 def test_import_external_then_publish_preserves_manifest_and_package_identity(setup, tmp_path):
     manager, pid, store, _, _ = setup
     original = tmp_path / 'synthetic.zip'
-    manager.export_package_zip(pid, original, version='0.1.8', manifest_id='ontology_demo')
+    manager.export_package_zip(pid, original, version='0.1.8', ontology_id='ontology_demo')
     data = original.read_bytes()
     actor = Identity('actor_a', 'consumer')
-    payload = dict(request_id='external_demo', manifest_id='ontology_demo', change_type='external_import',
+    payload = dict(request_id='external_demo', ontology_id='ontology_demo', change_type='external_import',
                    input_digest=hashlib.sha256(data).hexdigest(), version='0.1.8')
     store.reserve(payload, actor)
     store.upload('external_demo', actor, io.BytesIO(data), payload['input_digest'])
     receipt = store.commit('external_demo', actor)
-    body = dict(request_id='import_demo', hub_package_id=receipt['hub_package_id'], release_id=receipt['release_id'],
+    body = dict(request_id='import_demo', ontology_id=receipt['ontology_id'], release_id=receipt['release_id'],
                 package_digest=receipt['package_digest'], name='project_beta')
     imported = hub_packages.import_package(manager, body, 'actor_a', 'scope_a', 'operator_a')
     assert hub_packages.import_package(manager, body, 'actor_a', 'scope_a', 'operator_a')['id'] == imported['id']
     result = hub_packages.publish(manager, imported['id'], 'next_demo', 'actor_a', 'scope_a', True)
-    assert result['hub_package_id'] == receipt['hub_package_id']
-    assert result['manifest_id'] == 'ontology_demo' and result['version'] == '0.1.9'
-    assert result['base_digest'] == receipt['package_digest']
+    assert result['ontology_id'] == hub_packages.ontology_id(imported['id'])
+    assert result['ontology_id'] != receipt['ontology_id'] and result['version'] == '0.1.1'
+    assert 'base_digest' not in result
 
 
 def test_modeling_routes_require_login_and_project_permissions(setup, monkeypatch):
@@ -162,12 +170,12 @@ def test_package_project_lookup_lists_only_the_callers_visible_linked_projects(s
     foreign = manager.create_project('project_foreign_scope', owner='operator_a')
     for project, scope in ((copy, subject), (hidden, subject), (foreign, 'scope_other')):
         hub_packages.record(manager, project['id'], scope, first)
-    package_id = first['hub_package_id']
+    package_id = first['ontology_id']
     result = hub_packages.linked_projects(manager, subject, 'operator_a', False, [package_id, 'package_unknown'])
     assert result == {'items': [
-        {'hub_package_id': package_id, 'projects': ['project_alpha', 'project_alpha_copy'], 'total': 2},
-        {'hub_package_id': 'package_unknown', 'projects': [], 'total': 0}]}
-    assert hub_packages.linked_projects(manager, subject, 'operator_a', True, [package_id])['items'][0]['total'] == 3
+        {'ontology_id': package_id, 'projects': ['project_alpha', 'project_alpha_copy', 'project_foreign_scope'], 'total': 3},
+        {'ontology_id': 'package_unknown', 'projects': [], 'total': 0}]}
+    assert hub_packages.linked_projects(manager, subject, 'operator_a', True, [package_id])['items'][0]['total'] == 4
     with pytest.raises(WorkspaceError):
         hub_packages.linked_projects(manager, subject, 'operator_a', False, [f'package_{i}' for i in range(21)])
 
@@ -179,10 +187,10 @@ def test_package_project_lookup_lists_only_the_callers_visible_linked_projects(s
     async def error(request, exc):
         return JSONResponse({'error': str(exc)}, status_code=exc.status)
     with TestClient(app) as client:
-        url = f'/api/hub/package-projects?hub_package_id={package_id}'
+        url = f'/api/hub/package-projects?ontology_id={package_id}'
         assert client.get(url).status_code == 401
         response = client.get(url, headers={'Authorization': 'Bearer synthetic-access'})
-        assert response.json()['items'][0]['projects'] == ['project_alpha', 'project_alpha_copy']
+        assert response.json()['items'][0]['projects'] == ['project_alpha', 'project_alpha_copy', 'project_foreign_scope']
 
 
 def test_local_recovery_and_project_deletion_do_not_delete_hub_package(setup, monkeypatch):
@@ -195,7 +203,7 @@ def test_local_recovery_and_project_deletion_do_not_delete_hub_package(setup, mo
     manager.delete_project(pid)
     hub_packages.maintain(manager)
     assert not hub_packages.directory(pid, 'scope_a').exists()
-    assert store.release(receipt['hub_package_id'], receipt['release_id'], 'actor_a')[0]['status'] == 'committed'
+    assert store.release(receipt['ontology_id'], receipt['release_id'], 'actor_a')[0]['status'] == 'committed'
 
 
 def test_solver_publish_gate_precedes_hub_reservation(setup, monkeypatch):
@@ -214,3 +222,32 @@ def test_evaluation_rejects_changed_validated_objects_before_hub_reservation(set
         hub_packages.publish(manager, pid, 'snapshot_changed', 'actor_a', 'scope_a',
                              kind='evaluation_snapshot', object_texts={'object_demo': '# Earlier synthetic object'})
     assert calls == []
+
+
+def test_fixed_namespace_and_project_association(setup):
+    import uuid
+    manager, pid, _, _, _ = setup
+    assert hub_packages.ontology_id('project_alpha-00000001') == 'dd15af86-473f-562d-a47e-5f0677437380'
+    assert hub_packages.ontology_id(pid) != hub_packages.ontology_id(pid + '-copy')
+
+
+def test_viewer_cannot_publish_or_resume_evaluation(setup, monkeypatch):
+    manager, pid, _, calls, _ = setup
+    manager._update_meta(pid, members={'operator_b': 'viewer'})
+    monkeypatch.setattr(auth, 'ENABLED', True)
+    monkeypatch.setattr(auth, 'verify_access_token', lambda token: {'sub': 'operator_b', 'iss': 'https://example.com'})
+    app = FastAPI()
+    @app.middleware('http')
+    async def identity_middleware(request, call_next):
+        request.state.user = {'sub': 'operator_b', 'iss': 'https://example.com'}
+        return await call_next(request)
+    app.include_router(projects.router)
+    @app.exception_handler(WorkspaceError)
+    async def error(request, exc):
+        return JSONResponse({'error': str(exc)}, status_code=exc.status)
+    with TestClient(app) as client:
+        headers = {'Authorization': 'Bearer synthetic-access'}
+        assert client.post(f'/api/projects/{pid}/package/releases', headers=headers,
+                           json={'request_id': 'viewer_demo'}).status_code == 403
+        assert client.post(f'/api/projects/{pid}/eval/resume', headers=headers).status_code == 403
+    assert not calls

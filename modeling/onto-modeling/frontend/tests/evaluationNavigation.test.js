@@ -1,14 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HANDOFF, READY, evaluationUrl, openEvaluation } from '../src/lib/evaluation.js';
-const release = { hub_package_id: 'package_demo', release_id: 'release_demo', package_digest: 'a'.repeat(64), project_id: 'project_alpha', token: 'synthetic-invalid' };
+const release = { ontology_id: 'package_demo', release_id: 'release_demo', package_digest: 'a'.repeat(64), project_id: 'project_alpha', token: 'synthetic-invalid' };
 // All references, origins and login material in these tests are synthetic.
 const here = new URL('http://modeling.example.com:5100/');
 const healthy = async () => ({ ok: true, json: async () => ({ service: 'evaluation', status: 'ok' }) });
 
 test('evaluation navigation carries only Hub references', () => {
   const url = new URL(evaluationUrl(release, 'https://eval.example.com/evaluation/'));
-  assert.deepEqual([...url.searchParams.keys()], ['hub_package_id', 'release_id', 'package_digest']);
+  assert.deepEqual([...url.searchParams.keys()], ['ontology_id', 'release_id', 'package_digest']);
   assert.equal(url.pathname, '/evaluation/');
 });
 function crossOriginHarness() {
@@ -32,7 +32,7 @@ test('cross-origin evaluation opens a window and hands over the login only to it
   assert.equal(checked, `${evaluationOrigin}/evaluation/api/health`);
   const destination = new URL(popup.location.href);
   assert.equal(destination.origin, evaluationOrigin);
-  assert.deepEqual([...destination.searchParams.keys()], ['hub_package_id', 'release_id', 'package_digest']);
+  assert.deepEqual([...destination.searchParams.keys()], ['ontology_id', 'release_id', 'package_digest']);
   assert.equal(popup.location.href.includes('synthetic-access'), false);
 
   dispatch({ source: {}, origin: evaluationOrigin, data: { type: READY } });

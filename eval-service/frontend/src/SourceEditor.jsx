@@ -371,7 +371,7 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
                   <Field label="Ontology 对应值（自动带入）">
                     <input
                       readOnly
-                      value={packageRef?.manifest_id || ''}
+                      value={packageRef?.ontology_id || ''}
                       placeholder="由评测时选择的知识包自动带入"
                     />
                   </Field>
@@ -403,7 +403,7 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
                     {form.connection.workspace_property || GRAPH_SCOPE_DEFAULTS.workspace_property} =
                     {form.connection.workspace_value || '请填写 Workspace 对应值'}；
                     {form.connection.ontology_property || GRAPH_SCOPE_DEFAULTS.ontology_property} ={' '}
-                    {packageRef?.manifest_id || '评测时选择的知识包'}。
+                    {packageRef?.ontology_id || '评测时选择的知识包'}。
                     导入使用以上两个条件同时匹配的范围。发现旧数据时，开始评测前需要确认删除后再导入。
                   </Alert>
                 )}

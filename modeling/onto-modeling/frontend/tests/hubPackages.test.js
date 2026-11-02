@@ -15,7 +15,7 @@ const response = (body) => ({ ok: true, status: 200, json: async () => body });
 
 test('Hub import fixes release and digest and recovers original request after lost response', async () => {
   const calls = [];
-  const body = { name: 'project_alpha', hub_package_id: 'package_demo', release_id: 'release_demo', package_digest: 'a'.repeat(64) };
+  const body = { name: 'project_alpha', ontology_id: 'package_demo', release_id: 'release_demo', package_digest: 'a'.repeat(64) };
   globalThis.fetch = async (path, options) => {
     calls.push({ path, body: JSON.parse(options.body) });
     if (calls.length === 1) throw new Error('Synthetic timeout');

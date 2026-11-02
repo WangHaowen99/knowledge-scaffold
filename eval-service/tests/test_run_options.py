@@ -110,7 +110,7 @@ def graph_run(client, deps, request_id, workspace_value='workspace_demo'):
                                                               'provider': 'neo4j', 'connection': connection,
                                                               'import_data': False}).json()
     prep = client.post('/evaluation/api/package-preparations', json={
-        'request_id': 'prepare_' + request_id, 'package_ref': {'hub_package_id': 'package_demo', 'release_id': 'release_demo'},
+        'request_id': 'prepare_' + request_id, 'package_ref': {'ontology_id': 'knowledge_package_demo', 'release_id': 'release_demo'},
         'data_source_id': source['id']}).json()
     return wait(client, start(client, prep, eval_set(client, 2, 'Synthetic ' + request_id), request_id).json()['id'])
 
@@ -177,7 +177,7 @@ def test_nl2sql_runs_use_the_evaluation_workspace_id_as_the_consumer_workspace(e
     source = client.post('/evaluation/api/data-sources', json={'name': 'sql_demo', 'mode': 'connection', 'provider': 'nl2sql_http',
                                                               'connection': connection, 'inspection_id': inspected['inspection_id']}).json()
     prep = client.post('/evaluation/api/package-preparations', json={
-        'request_id': 'prepare_sql_demo', 'package_ref': {'hub_package_id': 'package_demo', 'release_id': 'release_demo'},
+        'request_id': 'prepare_sql_demo', 'package_ref': {'ontology_id': 'knowledge_package_demo', 'release_id': 'release_demo'},
         'data_source_id': source['id']}).json()
     result = wait(client, start(client, prep, eval_set(client, 2, 'Synthetic sql'), 'run_sql_demo').json()['id'])
     assert result['status'] == 'completed', result

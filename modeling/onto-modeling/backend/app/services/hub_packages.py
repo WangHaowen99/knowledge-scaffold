@@ -1,4 +1,4 @@
-"""User-scoped Hub modeling adapter. No consumer/workspace integration."""
+"""Project-shared Hub modeling adapter. No consumer/workspace integration."""
 import hashlib
 import json
 import os
@@ -19,8 +19,16 @@ def directory(pid, subject):
     return transport.state_dir() / 'packages' / transport.identifier(pid) / scope(subject)
 
 
-def association(pid, subject):
-    return transport.load(directory(pid, subject) / 'association.json')
+# Fixed protocol namespace; never regenerate per deployment or user.
+ONTOLOGY_NAMESPACE = uuid.UUID('787d64cc-2e75-5dab-8e72-56dcfa9029a3')
+
+
+def ontology_id(pid):
+    return str(uuid.uuid5(ONTOLOGY_NAMESPACE, pid))
+
+
+def association(pid, subject=None):
+    return transport.load(transport.state_dir() / 'packages' / transport.identifier(pid) / 'association.json')
 
 
 LINKED_LOOKUP_PACKAGES = 20
@@ -45,9 +53,9 @@ def linked_projects(manager, subject, username, is_admin, package_ids):
             linked = association(pid, subject)
         except (OSError, ValueError, WorkspaceError):
             continue
-        if isinstance(linked, dict) and linked.get('hub_package_id') in names:
-            names[linked['hub_package_id']].append(str(meta.get('name') or pid))
-    return {'items': [dict(hub_package_id=package_id, projects=sorted(found)[:LINKED_PROJECT_NAMES], total=len(found))
+        if isinstance(linked, dict) and linked.get('ontology_id') in names:
+            names[linked['ontology_id']].append(str(meta.get('name') or pid))
+    return {'items': [dict(ontology_id=package_id, projects=sorted(found)[:LINKED_PROJECT_NAMES], total=len(found))
                       for package_id, found in names.items()]}
 
 
@@ -66,7 +74,7 @@ def download(package_id, release_id, token, dest):
     base = reference_path(package_id, release_id)
     receipt = call('GET', base, token)
     call('GET', base + '/package', token, download=dest)
-    if receipt.get('hub_package_id') != package_id or receipt.get('release_id') != release_id or (
+    if receipt.get('ontology_id') != package_id or receipt.get('release_id') != release_id or (
             transport.file_digest(dest) != receipt.get('package_digest')):
         Path(dest).unlink(missing_ok=True)
         raise WorkspaceError('Hub 包引用或摘要不一致', 502)
@@ -74,13 +82,13 @@ def download(package_id, release_id, token, dest):
 
 
 def record(manager, pid, subject, receipt, options=None):
-    path = directory(pid, subject) / 'association.json'
+    path = directory(pid, subject).parent / 'association.json'
     previous = transport.load(path, {})
     # A replay of an earlier publication must not rewind a newer base reference.
     if previous.get('committed_at', '') > receipt.get('committed_at', ''):
         return
     manager.project_root(pid)
-    value = {k: receipt[k] for k in ('hub_package_id', 'manifest_id', 'release_id', 'package_digest', 'version')}
+    value = {k: receipt[k] for k in ('ontology_id', 'release_id', 'package_digest', 'version')}
     value['committed_at'] = receipt.get('committed_at', '')
     transport.save(path, value)
 
@@ -127,12 +135,12 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
                 manager._ensure_solver_publishable(pid)
             base = association(pid, subject)
             wire_id = hashlib.sha256(json.dumps([pid, subject, request_id]).encode()).hexdigest()
-            payload = dict(request_id=wire_id, manifest_id=base['manifest_id'] if base else uuid.uuid4().hex,
+            payload = dict(request_id=wire_id, ontology_id=ontology_id(pid),
                            change_type='modeling_content', kind=kind, input_digest=input_digest)
             if base:
-                payload.update(hub_package_id=base['hub_package_id'], base_release_id=base['release_id'],
+                payload.update(base_release_id=base['release_id'],
                                base_digest=base['package_digest'])
-            task = dict(allow_unbound=allow_unbound, payload=payload, binding=value['binding'], files=value['files'], graph=graph)
+            task = dict(name=value['name'], allow_unbound=allow_unbound, payload=payload, binding=value['binding'], files=value['files'], graph=graph)
             transport.save(task_file, task)
         payload = task['payload']
         receipt = call('POST', '/api/package-publish-requests', token, body=payload)
@@ -147,13 +155,14 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
                         raise WorkspaceError('发布快照不可用', 503)
                 temporary = folder / 'package.tmp'
                 snapshot.export_package_zip(pid, temporary, binding=task['binding'], allow_unbound=allow_unbound,
-                                            version=receipt['version'], manifest_id=payload['manifest_id'],
+                                            version=receipt['version'], ontology_id=payload['ontology_id'],
                                             graph=task['graph'], relation_report=relation_report)
                 with temporary.open('rb') as handle:
                     os.fsync(handle.fileno())
                 os.replace(temporary, archive)
             call('PUT', base_path + '/content', token, upload=archive,
-                 headers={'X-Package-Digest': transport.file_digest(archive)})
+                 headers={'X-Package-Digest': transport.file_digest(archive)},
+                 upload_name=transport.package_filename(payload['ontology_id'], task['name'], receipt['version']))
         if receipt['status'] != 'committed':
             receipt = call('POST', base_path + '/commit', token)
         transport.save(folder / 'receipt.json', receipt)
@@ -170,7 +179,7 @@ def releases(pid, subject, token, offset=0, limit=20):
     base = association(pid, subject)
     if not base:
         return {'releases': [], 'total': 0}
-    value = call('GET', reference_path(base['hub_package_id']) + f'?offset={offset}&limit={limit}', token)
+    value = call('GET', reference_path(base['ontology_id']) + f'?offset={offset}&limit={limit}', token)
     return {**value, 'releases': value['items']}
 
 
@@ -184,7 +193,7 @@ def import_package(manager, body, token, subject, username):
         task = transport.load(task_path)
         if task and task['input'] != body:
             raise WorkspaceError('导入请求参数发生变化', 409)
-        path = reference_path(body['hub_package_id'], body['release_id'])
+        path = reference_path(body['ontology_id'], body['release_id'])
         # Recheck Hub access even when a prior request completed locally.
         receipt = call('GET', path, token)
         if receipt['package_digest'] != body['package_digest']:
@@ -196,20 +205,18 @@ def import_package(manager, body, token, subject, username):
             if not target.exists() and staged.exists():
                 os.replace(staged, target)
             meta = manager.get_project(pid)
-            record(manager, pid, subject, receipt)
             shutil.rmtree(folder / 'stage', ignore_errors=True)
             return meta
         transport.save(task_path, {'input': body})
         archive = folder / 'package.zip'
         try:
-            download(body['hub_package_id'], body['release_id'], token, archive)
+            download(body['ontology_id'], body['release_id'], token, archive)
             shutil.rmtree(folder / 'stage', ignore_errors=True)
             staging = WorkspaceManager(folder / 'stage', manager.assets_dir)
             with manager.name_claim(body['name'], (username, False), importing=True):
                 meta = staging.import_package_zip(body['name'], archive, owner=username)
                 transport.save(task_path, {'input': body, 'project_id': meta['id']})
                 os.replace(staging.project_root(meta['id']), manager.workspaces_dir / meta['id'])
-            record(manager, meta['id'], subject, receipt)
             shutil.rmtree(folder / 'stage', ignore_errors=True)
             return meta
         finally:
@@ -232,12 +239,12 @@ def maintain(manager):
             for user_scope in project.iterdir():
                 if not user_scope.is_dir():
                     continue
-                association_path = user_scope / 'association.json'
+                association_path = project / 'association.json'
                 current = transport.load(association_path, {})
                 for receipt_path in (user_scope / 'requests').glob('*/receipt.json'):
                     receipt = transport.load(receipt_path)
                     if receipt['committed_at'] >= current.get('committed_at', ''):
-                        current = {k: receipt[k] for k in ('hub_package_id', 'manifest_id', 'release_id',
+                        current = {k: receipt[k] for k in ('ontology_id', 'release_id',
                                                           'package_digest', 'version', 'committed_at')}
                         transport.save(association_path, current)
                 for task_path in user_scope.glob('*/*/task.json'):

@@ -9,7 +9,7 @@ def dataset(client, content, name):
 
 def prepare(client, source, request_id):
     response = client.post('/evaluation/api/package-preparations', json={
-        'request_id': request_id, 'package_ref': {'hub_package_id': 'package_demo', 'release_id': 'release_demo'},
+        'request_id': request_id, 'package_ref': {'ontology_id': 'knowledge_package_demo', 'release_id': 'release_demo'},
         'data_source_id': source['id']})
     assert response.status_code == 200, response.text
     return response.json()

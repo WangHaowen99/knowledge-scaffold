@@ -23,7 +23,7 @@ def evaluation_hub_archive(request, tmp_path, monkeypatch):
     monkeypatch.setattr(auth, 'ENABLED', True)
     monkeypatch.setattr(auth, 'verify_access_token', lambda token: {'sub': 'operator_a', 'iss': 'https://example.com'})
 
-    def call(method, path, token='', body=None, upload=None, headers=None, download=None):
+    def call(method, path, token='', body=None, upload=None, headers=None, download=None, upload_name=None):
         import shutil
         actor = Identity('synthetic-owner', 'modeling')
         parts = path.strip('/').split('/')

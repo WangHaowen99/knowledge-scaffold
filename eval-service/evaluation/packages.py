@@ -98,7 +98,7 @@ class Packages:
 
     def fetch(self, ref, token):
         from urllib.parse import quote
-        path='/api/packages/'+quote(ref['hub_package_id'],safe='')+'/releases/'+quote(ref['release_id'],safe='')
+        path='/api/packages/'+quote(ref['ontology_id'],safe='')+'/releases/'+quote(ref['release_id'],safe='')
         receipt=self.call('GET',path,token)
         if ref.get('package_digest') and ref['package_digest'] != receipt['package_digest']:
             raise Failure('package_changed','知识包摘要不一致',409,'package_fetch')
@@ -107,7 +107,8 @@ class Packages:
         if digest(raw)!=receipt['package_digest']:
             raise Failure('digest_mismatch','知识包校验失败',409,'package_fetch')
         _,manifest=unpack(raw)
-        if manifest['id']!=receipt['manifest_id'] or manifest['version']!=receipt['version']:
+        if (receipt['ontology_id'] != ref['ontology_id'] or receipt['release_id'] != ref['release_id']
+                or manifest['id']!=receipt['ontology_id'] or manifest['version']!=receipt['version']):
             raise Failure('manifest_mismatch','包版本与回执不一致',409,'package_fetch')
         return raw, receipt
 
@@ -116,7 +117,7 @@ class Packages:
         mapping=preparation['mapping']
         if mapping is None:
             raise Failure('mapping_required','没有新的 mapping 可发布',422)
-        intent=dict(hub_package_id=base['hub_package_id'],manifest_id=base['manifest_id'],
+        intent=dict(ontology_id=base['ontology_id'],
                     base_release_id=base['release_id'],base_digest=base['package_digest'],
                     change_type='mapping_update',kind=kind,input_digest=digest([base['package_digest'],mapping]),
                     request_id=request_id)
@@ -128,7 +129,7 @@ class Packages:
         if reservation.get('status')!='committed':
             package=derive(raw,mapping,reservation['version'])
             self.call('PUT',path+'/content',token,headers={'X-Package-Digest':digest(package)},
-                      files={'file':('package.zip',package,'application/zip')})
+                      files={'file':(package_filename(base['ontology_id'], unpack(raw)[1]['name'], reservation['version']),package,'application/zip')})
             reservation=self.call('POST',path+'/commit',token)
         if reservation.get('status')!='committed':
             raise Failure('publish_pending','Hub 尚未确认发布完成',409,'publication')
@@ -151,3 +152,11 @@ class Packages:
         receipt=self.publish(owner,preparation,token,'snapshot-'+preparation['id'],'evaluation_snapshot')
         self.store.create(owner,'snapshot-reuse',{'receipt':receipt},key,identity=identity)
         return receipt
+
+
+def package_filename(ontology_id, name, version):
+    import re
+    safe = re.sub(r'[^\w. -]', '_', name).strip(' .')[:80].strip(' .') or 'knowledge_package'
+    while len(safe.encode('utf-8')) > 120:
+        safe = safe[:-1]
+    return f'{ontology_id.replace("-", "")[:12]}-{safe}-{version}.zip'

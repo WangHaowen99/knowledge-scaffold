@@ -1,6 +1,6 @@
 # 知识包 Hub 容器编排：独立 compose 项目，与 onto-modeling 解耦部署，各自重建、升级互不影响。
 # 加入与账号中心、onto-modeling 共享的 Docker 网络（整栈即 consumer 网络）：onto-modeling 经
-# http://knowledge-hub:8200 访问 Hub；Hub 经 auth-server 校验用户令牌，经 onto-modeling 回调项目资料授权。
+# http://knowledge-hub:8200 访问 Hub；Hub 经 auth-server 校验用户令牌；包和共享资料统一使用本体授权。
 # 推荐通过仓库 deploy/deploy.sh（--knowledge-hub-only 或整栈）、本目录 deploy.sh 或离线包内 deploy.sh 调用：
 # 由脚本注入网络、生成并同步服务凭据，源码模式先构建镜像。不发布宿主端口。
 #
@@ -21,9 +21,9 @@ services:
     restart: unless-stopped
     environment:
       - HUB_DATA_DIR=/data/knowledge-hub
-      - ONTO_AUTHZ_URL=http://onto-modeling:8100/api/internal/hub/authorize
       - HUB_SERVICE_TOKEN=${HUB_SERVICE_TOKEN:?Set HUB_SERVICE_TOKEN to the onto-modeling ONTO_HUB_SERVICE_TOKEN}
       - HUB_AUTH_URL=${HUB_AUTH_URL:-http://auth-server:5056}
+      - HUB_AUTH_DIRECTORY_TOKEN=${HUB_AUTH_DIRECTORY_TOKEN:-}
       - HUB_AUTH_ISSUER=${HUB_AUTH_ISSUER:-}
       - HUB_EVALUATION_SERVICE_TOKEN=${HUB_EVALUATION_SERVICE_TOKEN:-}
       - HUB_CONSUMER_SERVICE_TOKEN=${HUB_CONSUMER_SERVICE_TOKEN:-}

@@ -12,7 +12,7 @@ from .workspace import WorkspaceError
 
 # "<iteration offset>:<release offset>"; "off" once Hub failed during this traversal.
 _CURSOR = re.compile(r'(\d{1,9}):(\d{1,9}|off)')
-_RELEASE_FIELDS = ('release_id', 'hub_package_id', 'version', 'package_digest', 'source_service', 'created_at')
+_RELEASE_FIELDS = ('release_id', 'ontology_id', 'version', 'package_digest', 'source_service', 'created_at')
 
 
 def parse_cursor(cursor):

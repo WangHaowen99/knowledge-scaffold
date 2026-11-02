@@ -143,7 +143,7 @@ def test_graph_import_uses_both_configured_scope_values_and_builds_relations(tmp
         'connection':store.encrypt(connection)}
     checked=GraphImports(store).inspect('synthetic-owner',source,'knowledge_package_demo','preparation_demo')
     source['graph_confirmation']=GraphImports(store).authorize('synthetic-owner',
-        {'id':'preparation_demo','source':source,'package_ref':{'manifest_id':'knowledge_package_demo'}},checked['id'],True)
+        {'id':'preparation_demo','source':source,'package_ref':{'ontology_id':'knowledge_package_demo'}},checked['id'],True)
     relationships={'item':[{'relation':'related','target':'item','sourceJoinProperty':'id','targetJoinProperty':'id'}]}
     result=data.prepare('a'*32,source,mapping,relationships)
     assert result['config']['workspace_value']=='workspace_demo'

@@ -29,7 +29,7 @@ class Body(BaseModel):
 
 
 class Ref(Body):
-    hub_package_id: str = Field(min_length=1,max_length=128,pattern=r'^[A-Za-z0-9_-]+$')
+    ontology_id: str = Field(min_length=1,max_length=128,pattern=r'^[A-Za-z0-9_-]+$')
     release_id: str = Field(min_length=1,max_length=128,pattern=r'^[A-Za-z0-9_-]+$')
     package_digest: str = Field(default='',max_length=64,pattern=r'^(|[a-f0-9]{64})$')
 
@@ -84,7 +84,7 @@ class GraphInspection(SourcePreview):
 
 def release_ref(receipt):
     """Non-sensitive reference to the Hub release the user chose."""
-    return {k:receipt[k] for k in ('hub_package_id','release_id','manifest_id','version','package_digest') if k in receipt}
+    return {k:receipt[k] for k in ('ontology_id','release_id','name','version','package_digest') if k in receipt}
 
 
 def public(record):
@@ -377,10 +377,10 @@ def create_app(config=None,transport=None):
         prep=store.get(owner,body.preparation_id,'preparations') if body.preparation_id else None
         source=prep['source'] if prep else store.get(owner,body.data_source_id,'data-sources')
         if prep and (prep['status']!='ready' or source.get('id')!=body.data_source_id or
-                     any(body.package_ref.model_dump()[key]!=prep['base'][key] for key in ('hub_package_id','release_id'))):
+                     any(body.package_ref.model_dump()[key]!=prep['base'][key] for key in ('ontology_id','release_id'))):
             raise Failure('graph_check_stale','准备结果与当前数据源或知识包不一致，请重新准备',409,'data_import')
         _,receipt=packages.fetch(body.package_ref.model_dump(),token)
-        return sources.graph.inspect(owner,source,receipt['manifest_id'],body.preparation_id)
+        return sources.graph.inspect(owner,source,receipt['ontology_id'],body.preparation_id)
 
     @app.get(prefix+'/inputs/{rid}')
     def input_metadata(rid:str,request:Request):
@@ -544,7 +544,7 @@ def create_app(config=None,transport=None):
             if len(engine.active)>=16: raise Failure('evaluation_busy','服务队列已满，请稍后再试',409)
             source=dict(prep['source'])
             if source.get('provider')=='neo4j' and source.get('import_data'):
-                graph_available(source,prep['package_ref']['manifest_id'])
+                graph_available(source,prep['package_ref']['ontology_id'])
                 source['graph_confirmation']=sources.graph.authorize(owner,prep,body.graph_check_id,body.replace_existing_graph)
             elif body.graph_check_id or body.replace_existing_graph:
                 raise Failure('graph_import_required','当前评测未启用 Neo4j 图导入',422,'data_import')
@@ -559,14 +559,14 @@ def create_app(config=None,transport=None):
             engine.start(owner,run['id'],token)
         return public(run)
 
-    def graph_available(source, manifest_id, current_run=''):
+    def graph_available(source, ontology_id, current_run=''):
         if source.get('provider')!='neo4j' or not source.get('import_data'): return
-        target=scope_target(sources.graph.connection(store,source,manifest_id))
+        target=scope_target(sources.graph.connection(store,source,ontology_id))
         for active_owner,active_id in engine.active:
             if active_id==current_run: continue
             active=store.get(active_owner,active_id,'runs')
             other=active.get('source',{})
-            if other.get('provider')=='neo4j' and other.get('import_data') and target==scope_target(sources.graph.connection(store,other,active['package_ref']['manifest_id'])):
+            if other.get('provider')=='neo4j' and other.get('import_data') and target==scope_target(sources.graph.connection(store,other,active['package_ref']['ontology_id'])):
                 raise Failure('graph_scope_busy','此图数据范围已有活动评测，请等待结束或先停止该评测',409,'data_import')
 
     def with_base(owner,run):
@@ -589,10 +589,10 @@ def create_app(config=None,transport=None):
         return page
 
     @app.get(prefix+'/modeling-projects')
-    def modeling_projects(request:Request,hub_package_id:list[str]=Query(...)):
+    def modeling_projects(request:Request,ontology_id:list[str]=Query(...)):
         # Display only: names come from onto-modeling with the user's own login and are never stored.
         _,token=actor(request)
-        return linked_projects(config,http,token,hub_package_id)
+        return linked_projects(config,http,token,ontology_id)
 
     @app.get(prefix+'/consumer-models')
     def consumer_models(request:Request):
@@ -679,7 +679,7 @@ def create_app(config=None,transport=None):
             raise Failure('graph_confirmation_required','请重新创建评测并确认当前图数据范围',409,'data_import')
         if run['status'] in ('completed','cancelled','failed'): raise Failure('run_state','此任务当前无需恢复',409)
         with engine.guard:
-            if not run.get('cancel_requested'): graph_available(run['source'],run['package_ref']['manifest_id'],rid)
+            if not run.get('cancel_requested'): graph_available(run['source'],run['package_ref']['ontology_id'],rid)
             engine.start(owner,rid,token)
         return public(run)
 

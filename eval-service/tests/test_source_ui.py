@@ -64,7 +64,7 @@ def test_neo4j_no_import_needs_no_handwritten_schema_and_binds_ontology(environm
                 'workspace_property':'evaluation_scope','workspace_value':'workspace_demo','ontology_property':'knowledge_package_id'}
     saved=client.post('/evaluation/api/data-sources',json={'name':'graph_source_demo','mode':'connection','provider':'neo4j','connection':connection,'import_data':False})
     assert saved.status_code==200,saved.text
-    response=client.post('/evaluation/api/package-preparations',json={'request_id':'prepare_graph','package_ref':{'hub_package_id':'package_demo','release_id':'release_demo'},'data_source_id':saved.json()['id']})
+    response=client.post('/evaluation/api/package-preparations',json={'request_id':'prepare_graph','package_ref':{'ontology_id':'knowledge_package_demo','release_id':'release_demo'},'data_source_id':saved.json()['id']})
     assert response.status_code==200,response.text
     assert response.json()['mapping'] is False
     captured=[]
@@ -90,7 +90,7 @@ def test_preview_upload_and_active_task_creation_guard(environment):
     source=client.post('/evaluation/api/data-sources',json={'name':'Synthetic data','mode':'dataset','input_ids':[uploaded['id']]}).json()
     detail=client.get('/evaluation/api/data-sources/'+source['id']).json()
     assert detail['inputs'][0]['name']=='items.csv'
-    preview=client.post('/evaluation/api/data-source-previews',json={'data_source_id':source['id'],'package_ref':{'hub_package_id':'package_demo','release_id':'release_demo'}})
+    preview=client.post('/evaluation/api/data-source-previews',json={'data_source_id':source['id'],'package_ref':{'ontology_id':'knowledge_package_demo','release_id':'release_demo'}})
     assert preview.status_code==200,preview.text
     assert preview.json()['objects'][0]['table']=='items'
     assert preview.json()['instances']==1
@@ -114,7 +114,7 @@ def test_graph_preview_uses_uploaded_rows_and_rejects_missing_primary_keys(envir
     item=client.post('/evaluation/api/inputs',files={'file':('items.csv',b'id,value\nitem_0001,2\nitem_0001,2\n','text/csv')}).json()
     payload={'name':'graph_source_demo','mode':'connection','provider':'neo4j','connection':connection,'input_ids':[item['id']],'import_data':True}
     source=client.post('/evaluation/api/data-sources',json=payload).json()
-    query={'data_source_id':source['id'],'package_ref':{'hub_package_id':'package_demo','release_id':'release_demo'}}
+    query={'data_source_id':source['id'],'package_ref':{'ontology_id':'knowledge_package_demo','release_id':'release_demo'}}
     preview=client.post('/evaluation/api/data-source-previews',json=query)
     assert preview.status_code==200,preview.text
     assert preview.json()['graph'] is True
