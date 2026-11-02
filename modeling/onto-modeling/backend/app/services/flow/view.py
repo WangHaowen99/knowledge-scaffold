@@ -18,7 +18,7 @@ import os
 import uuid
 from pathlib import Path
 
-from . import model
+from . import model, overlay
 from . import state as node_state
 
 _log = logging.getLogger(__name__)
@@ -106,11 +106,15 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     from ...kernel.changesets import worktree
 
     copy = worktree.copy_path(root)
-    states = node_state.compute(root, flow, hits)
+    broken = overlay.broken_nodes(flow)
+    states = node_state.compute(root, overlay.released(flow, broken), hits)
     for node_id in _lock_running(flow, [root, copy], state):
         if node_id in states and states[node_id]["state"] not in ("running", "pending_confirm"):
             states[node_id]["state"] = "running"
             states[node_id]["display_state"] = node_state.display("running", states[node_id]["flags"])
+    overlay.mark_broken(states, broken)
+    overlay.mark_backfill(flow, states, hits)
+    passed = overlay.backfill_ids(flow, hits)
     nodes = []
     for node in flow.get("nodes") or []:
         item = states[node["id"]]
@@ -128,12 +132,14 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
             "per_slice": bool(node.get("per_slice")),
             "note": node.get("note"),
             "blocks": list(node.get("blocks") or []),
-            "actions": _actions(node, item["state"]),
+            "actions": [] if item.get("broken") else _actions(node, item["state"]),
             "plugin": None if node.get("pack", "core") == "core" else {"name": node["pack"], "label": node["pack"]},
             "optional": bool(node.get("optional")),
             "panel": bool(node.get("panel")),
-            "counts_in_progress": bool(node.get("progress", True)),
+            # 可补做的节点做完之前不计入进度：越过插入位置的项目，主线进度不往回退（详设 6.9 第 4 步）
+            "counts_in_progress": bool(node.get("progress", True)) and node["id"] not in passed,
         })
+    nodes += [_disabled_view(node) for node in overlay.disabled_nodes(root, flow)]
     sections = [
         {"id": key, "title": title, "nodes": [node["id"] for node in nodes if node["section"] == key]}
         for key, title in SECTION_TITLES.items()
@@ -151,6 +157,8 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
         suggest_stage = state.legacy_stage(flow, copy, copy_probes)
         suggester.overlay_pending(flow, simple_states, state.node_hits(flow, copy, copy_probes))
         for node in nodes:
+            if node["id"] not in simple_states:
+                continue
             changed = simple_states[node["id"]]["state"]
             if changed != node["state"]:
                 node["state"] = changed
@@ -178,6 +186,19 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     }
     _write_flow_state(root, copy, flow, simple_states, suggest_context, suggestions)
     return result
+
+
+def _disabled_view(node: dict) -> dict:
+    """停用了的包的节点：产物保留，列出来标「已停用」，不进进度、没有动作（详设 6.9 第 5 步）。"""
+    flags = {"needs_review": False, "disabled": True, "backfill": False}
+    return {
+        "id": node["id"], "title": str(node.get("title") or node["id"]), "kind": node.get("kind", "agent"),
+        "placement": node.get("placement", "step"), "section": node.get("section", "optional"),
+        "state": "skipped", "flags": flags, "display_state": node_state.display("skipped", flags),
+        "progress": None, "version": node.get("version") or "", "per_slice": False, "note": None, "blocks": [],
+        "actions": [], "plugin": {"name": node["pack"], "label": node["pack"]}, "optional": True, "panel": False,
+        "counts_in_progress": False,
+    }
 
 
 def _actions(node: dict, state: str) -> list[dict]:

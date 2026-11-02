@@ -28,7 +28,7 @@ from app.services.packs import builtin, lockfile
 from app.services.packs import service as pack_service
 from app.services.workspace import WorkspaceManager
 from tests.pack_helpers import NODE_PACK_FLOW, make_node_pack
-from tests.test_changesets import agent_write, obj
+from tests.test_changesets import agent_write, main_write, obj
 
 
 @pytest.fixture()
@@ -130,3 +130,117 @@ def test_unconfirmed_assistant_changes_block_flow_changes_only(env):
     assert plain.status_code == 201, plain.text
     assert plain.json()["changeset_id"] is None
     assert changesets.current(manager, project_id)["state"] == "pending_confirm"
+
+
+# ---- 可补做、停用解除关卡、升级标需复核、熔断 ----
+
+def flow_after_object(**fields) -> dict:
+    """节点挂在对象提取之后（操作提取之前）：主线做到操作提取的项目已经越过它。"""
+    flow = copy.deepcopy(NODE_PACK_FLOW)
+    flow["nodes"][0].update({"after": "core.object", "before": "core.operation", **fields})
+    return flow
+
+
+def enable_and_apply(client, manager, project_id: str, name: str = "naming") -> None:
+    response = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": name})
+    assert response.status_code == 201, response.text
+    pack_service.prepare_for_message(manager, project_id)  # 下一条消息前的切换
+
+
+def nodes_of(root: Path) -> dict[str, dict]:
+    return {node["id"]: node for node in view.build(root)["nodes"]}
+
+
+def test_backfill_when_project_already_passed_the_insertion_point(env):
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
+    main_write(root, "ontology/operation/借书.md", "# 借书\n\n合成操作\n")
+    before = view.build(root)
+    assert before["nodes"][[n["id"] for n in before["nodes"]].index("core.operation")]["state"] == "confirmed"
+    install(manager, tmp_path, flow=flow_after_object())
+    enable_and_apply(client, manager, project_id)
+
+    built = view.build(root)
+    node = next(item for item in built["nodes"] if item["id"] == "naming.check")
+    assert node["flags"]["backfill"] is True and node["display_state"] == "backfill"
+    assert node["counts_in_progress"] is False and node["plugin"]["name"] == "naming"
+    # 主线状态不往回退：做过的照旧已确认，进度分母不变
+    assert next(item for item in built["nodes"] if item["id"] == "core.operation")["state"] == "confirmed"
+    assert built["progress"] == before["progress"]
+    from app.services.flow import model as flow_model
+
+    assert flow_model.progress(root)["total"] == before["progress"]["total"]
+    # 补做不抢主线下一步
+    assert not built["suggestions"]["primary"]["id"].startswith("backfill:")
+
+
+def test_new_step_without_progress_beyond_is_plainly_ready(env):
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
+    install(manager, tmp_path, flow=flow_after_object())
+    enable_and_apply(client, manager, project_id)
+    node = nodes_of(root)["naming.check"]
+    assert node["state"] == "ready" and node["flags"]["backfill"] is False
+
+
+def test_disable_keeps_artifacts_marks_disabled_and_releases_gate(env):
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
+    install(manager, tmp_path, flow=flow_after_object(placement="gate", blocks=["core.operation"], before=None))
+    enable_and_apply(client, manager, project_id)
+    assert nodes_of(root)["core.operation"]["state"] == "blocked"
+    main_write(root, "reports/naming-1.md", "# 命名检查\n\n合成报告\n")
+
+    assert client.post(f"/api/v1/projects/{project_id}/packs/naming/disable").status_code == 200
+    pack_service.prepare_for_message(manager, project_id)
+    nodes = nodes_of(root)
+    assert nodes["core.operation"]["state"] == "ready"  # 关卡解除
+    gate = nodes["naming.check"]
+    assert gate["flags"]["disabled"] is True and gate["display_state"] == "disabled"
+    assert gate["actions"] == [] and gate["counts_in_progress"] is False
+    assert (root / "reports" / "naming-1.md").is_file()  # 产物保留
+    assert "naming.check" not in node_ids(root)
+
+
+def test_upgrade_with_changed_done_marks_needs_review(env):
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    install(manager, tmp_path)
+    enable_and_apply(client, manager, project_id)
+    main_write(root, "reports/naming-1.md", "# 命名检查\n\n合成报告\n")
+    assert nodes_of(root)["naming.check"]["state"] == "confirmed"
+
+    newer = copy.deepcopy(NODE_PACK_FLOW)
+    newer["probes"]["naming_clean"] = {"pending": ["reports"], "glob": "naming-*.md"}
+    newer["nodes"][0]["done"] = ["naming_report", "!naming_clean"]
+    install(manager, tmp_path, "0.2.0", flow=newer)
+    compat = client.get(f"/api/v1/packs/naming/versions/0.2.0/compatibility?project_id={project_id}").json()
+    assert compat["ok"] and compat["impact"]["needs_review_after_upgrade"] == 1
+    upgraded = client.post(f"/api/v1/projects/{project_id}/packs/naming/upgrade", json={"to_version": "0.2.0"})
+    assert upgraded.status_code == 200 and upgraded.json()["changeset_id"]
+    pack_service.prepare_for_message(manager, project_id)
+    node = nodes_of(root)["naming.check"]
+    assert node["flags"]["needs_review"] is True and node["flags"]["review_source"] == "upgrade"
+    assert node["display_state"] == "needs_review"
+
+
+def test_breaker_skips_nodes_and_releases_gates(env):
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
+    install(manager, tmp_path, flow=flow_after_object(placement="gate", blocks=["core.operation"], before=None))
+    enable_and_apply(client, manager, project_id)
+    assert nodes_of(root)["core.operation"]["state"] == "blocked"
+    from app.governance import ops_state
+
+    ops_state.set_breaker("naming", "0.1.0", "open", "ops")
+    try:
+        nodes = nodes_of(root)
+        assert nodes["naming.check"]["state"] == "skipped" and nodes["naming.check"]["actions"] == []
+        assert nodes["core.operation"]["state"] == "ready"
+    finally:
+        ops_state.set_breaker("naming", "0.1.0", "close", "ops")
+        ops_state.set_breaker("naming", "0.1.0", "close", "ops")

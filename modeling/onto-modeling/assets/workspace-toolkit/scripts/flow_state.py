@@ -257,9 +257,12 @@ def _candidates(flow: dict, states: dict, context: dict) -> list:
             for index, action in enumerate(_node_actions(node)[:1]):
                 out.append(_item(f"gate:{node['id']}", action['label'], _send(action['command']),
                                  reason='挡住发布的关卡还没通过', priority=3))
-    # 4. 主线下一步：第一个没完成的必经步骤
+    # 4. 主线下一步：第一个没完成的必经步骤；已经越过插入位置的插件节点（可补做）不抢主线，放到第 5 级
+    flags_of = {node_id: (item or {}).get('flags') or {} for node_id, item in states.items()}
+    backfill = [node for node in nodes if flags_of.get(node['id'], {}).get('backfill')]
     required = [node for node in nodes if node.get('section', 'required') == 'required'
-                and state_of.get(node['id']) not in ('confirmed', 'stale', 'skipped')]
+                and state_of.get(node['id']) not in ('confirmed', 'stale', 'skipped')
+                and not flags_of.get(node['id'], {}).get('backfill')]
     if required:
         current = required[0]
         if state_of.get(current['id']) not in ('running', 'pending_confirm'):
@@ -273,6 +276,10 @@ def _candidates(flow: dict, states: dict, context: dict) -> list:
         if available is None or 'ontology-codegen-scan' in available:
             out.append(_item('codegen-scan', '扫描脚本候选', _send('/ontology-codegen-scan'),
                              reason='可选步骤', priority=5))
+    for node in backfill:
+        for action in _node_actions(node)[:1]:
+            out.append(_item(f"backfill:{node['id']}", f"补做「{node['title']}」", _send(action['command']),
+                             reason='可补做', priority=5))
     return out
 
 

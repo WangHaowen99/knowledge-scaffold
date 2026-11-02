@@ -223,7 +223,7 @@ class Assembler:
                     rules.append((source / rel).read_text(encoding="utf-8").rstrip() + "\n")
             if entry.name == CORE and readme_rel and (source / readme_rel).is_file():
                 readme = (source / readme_rel).read_text(encoding="utf-8")
-            declared = self._flow_declaration(entry, manifest, source, flow_rel)
+            declared = flow_declaration(entry.name, manifest, source)
             if declared is not None:
                 flows.append((entry.name, entry.version, declared))
             extra_hooks += manifest.hooks()
@@ -266,26 +266,6 @@ class Assembler:
             "built_at": time.time(),
         }
         _fsync_write(staging / MANIFEST_JSON, json.dumps(manifest_json, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-
-    @staticmethod
-    def _flow_declaration(entry: LockEntry, manifest: Manifest, source: Path, flow_rel: str) -> dict | None:
-        """包的流程声明：`contributes.flow` 文件，加上 `contributes.nodes` 里列出的节点文件（详设 5.2、6.3：
-        节点包常把每个节点写成 nodes/*.yaml）；都没有时返回 None。"""
-        declared = None
-        if flow_rel and (source / flow_rel).is_file():
-            declared = yaml.safe_load((source / flow_rel).read_text(encoding="utf-8")) or {}
-        files = [rel for rel in manifest.items("nodes") if rel.endswith((".yaml", ".yml"))]
-        if files:
-            declared = dict(declared or {})
-            nodes = list(declared.get("nodes") or [])
-            for rel in files:
-                try:
-                    node = yaml.safe_load((source / rel).read_text(encoding="utf-8")) or {}
-                except (OSError, yaml.YAMLError) as exc:
-                    raise AssemblyError("flow", [f"{entry.name} 的节点声明 {rel} 无法解析：{exc}"]) from exc
-                nodes.append(node)
-            declared["nodes"] = nodes
-        return declared
 
     @staticmethod
     def _data_pack_json(entry: LockEntry, manifest: Manifest, source: Path, target: Path) -> None:
@@ -378,6 +358,27 @@ class Assembler:
             shutil.rmtree(entry, ignore_errors=True)
             removed.append(entry)
         return removed
+
+
+def flow_declaration(name: str, manifest: Manifest, source: Path) -> dict | None:
+    """包的流程声明：`contributes.flow` 文件，加上 `contributes.nodes` 里列出的节点文件（详设 5.2、6.3：
+    节点包常把每个节点写成 nodes/*.yaml）；都没有时返回 None。"""
+    flow_rel = manifest.contributes.get("flow") or ""
+    declared = None
+    if flow_rel and (source / flow_rel).is_file():
+        declared = yaml.safe_load((source / flow_rel).read_text(encoding="utf-8")) or {}
+    files = [rel for rel in manifest.items("nodes") if rel.endswith((".yaml", ".yml"))]
+    if files:
+        declared = dict(declared or {})
+        nodes = list(declared.get("nodes") or [])
+        for rel in files:
+            try:
+                node = yaml.safe_load((source / rel).read_text(encoding="utf-8")) or {}
+            except (OSError, yaml.YAMLError) as exc:
+                raise AssemblyError("flow", [f"{name} 的节点声明 {rel} 无法解析：{exc}"]) from exc
+            nodes.append(node)
+        declared["nodes"] = nodes
+    return declared
 
 
 def verified_file(project_root: Path, rel: str) -> Path | None:

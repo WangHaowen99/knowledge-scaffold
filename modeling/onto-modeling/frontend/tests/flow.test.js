@@ -13,6 +13,16 @@ test('P1 形状：主线按 after 连线排出 6 个必经步骤，分支与按�
   assert.deepEqual(flow.slice_stages, []);
 });
 
+test('已停用的包的节点不进进度条，只在抽屉分组里', () => {
+  const raw = F.flowP1();
+  raw.nodes.push({ id: 'naming.check', title: '命名检查', placement: 'step', section: 'required', state: 'skipped',
+    display_state: 'disabled', flags: { needs_review: false, disabled: true, backfill: false } });
+  raw.sections.find((x) => x.id === 'required').nodes.push('naming.check');
+  const flow = normalizeFlow(raw);
+  assert.ok(!trackNodes(flow).some((n) => n.id === 'naming.check'));
+  assert.ok(sectionGroups(flow).find((g) => g.id === 'required').nodes.some((n) => n.id === 'naming.check'));
+});
+
 test('P1 形状：没有 section 的节点按顶层 sections 归组，空组不出', () => {
   const raw = F.flowP1();
   raw.nodes = raw.nodes.map(({ section, ...n }) => n);

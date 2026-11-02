@@ -503,6 +503,21 @@ def assembly_view(manager, project_id: str) -> dict:
     }
 
 
+def _review_after(root, flow: dict | None) -> list[str]:
+    """换成这一版以后会标「需复核」的节点：已确认过、而完成判定签名变了的（详设 6.9 第 6 步，与节点状态同一判据）。"""
+    from ..flow import state as node_state
+
+    if not flow:
+        return []
+    stored = node_state.load(root)["nodes"]
+    out = []
+    for node in flow.get("nodes") or []:
+        record = stored.get(node["id"]) or {}
+        if record.get("sig") and not record.get("needs_review") and record["sig"] != node_state.done_signature(flow, node):
+            out.append(node["id"])
+    return out
+
+
 def compatibility(manager, name: str, version: str, project_id: str) -> dict:
     """PL-03：把这个版本放进本项目试装配一遍，逐项给出兼容结论（不改锁文件、不留装配目录）。"""
     runtime = manager.packs
@@ -538,10 +553,12 @@ def compatibility(manager, name: str, version: str, project_id: str) -> dict:
             bad.append(f"{entry.name} 需要 {name} {spec}")
     add("depends", "依赖", not bad, "；".join(bad))
     names_ok, flow_ok, detail_names, detail_flow = True, True, "", ""
+    trial_flow = None
     if not bad:
         try:
             plan = runtime.assembler.plan(trial)
             runtime.assembler.check(plan)
+            trial_flow = runtime.flow_of(plan)
         except AssemblyError as exc:
             if exc.reason == "flow":
                 flow_ok, detail_flow = False, "；".join(exc.problems)
@@ -564,8 +581,8 @@ def compatibility(manager, name: str, version: str, project_id: str) -> dict:
     return {
         "ok": ok, "checks": checks, "brings": brings, "ui_effect": ui_effect,
         "effective": manifest.effective if manifest.effective != "restart" else "next_message",
-        # 节点完成判定变化导致的「需复核」在节点状态计算（P2）落地后给出
-        "impact": {"needs_review_after_upgrade": 0, "affected_artifacts": 0, "note": None},
+        "impact": {"needs_review_after_upgrade": len(_review_after(root, trial_flow)), "affected_artifacts": 0,
+                   "note": None},
         "blocked_reason": None if ok else next(check["detail"] or check["label"] for check in checks if not check["ok"]),
     }
 

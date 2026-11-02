@@ -73,10 +73,10 @@ export function mergeFlow(flow, patch) {
   return { ...flow, flow_hash: patch.flow_hash || flow.flow_hash, nodes, slices };
 }
 
-// 主线节点按边的顺序排（只放 spine / step / gate）
+// 主线节点按边的顺序排（只放 spine / step / gate；已停用的包的节点只在建模步骤抽屉里列出）
 export function trackNodes(flow) {
   if (!flow) return [];
-  const spine = flow.nodes.filter((n) => ['spine', 'step', 'gate'].includes(n.placement));
+  const spine = flow.nodes.filter((n) => ['spine', 'step', 'gate'].includes(n.placement) && !n.flags?.disabled);
   const ids = new Set(spine.map((n) => n.id));
   const next = new Map();
   const hasIn = new Set();
