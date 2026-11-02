@@ -2,7 +2,10 @@
 
 - `workspace.changed`（EP-05）：订阅写入事务的变更事件；agent 自己的提交由会话宿主在每轮结束时补发；
 - `flow.updated`（EP-01）：工作区变了、一轮结束、装配切换、执行记录变化之后重算流程，只发变了的节点；
-- `assembly.updated`（EP-08）、`extensions.updated`（EP-07）：锁文件提交后（待生效）与消息前切换装配后（已生效）；
+- `assembly.updated`（EP-08）、`extensions.updated`（EP-07）：锁文件提交后（待生效）与切换装配后（已生效：
+  消息前切换，或只动纯数据包时插件运行时当场切换）；
+- `artifacts.updated`（EP-06）：内核产物索引经 `kernel/event_port` 发出，启动时（`app/wiring.py`）接到这里；
+- `knowledge.updated`（EP-23）：知识接口写入后；
 - `scope.updated`（EP-03）：写入范围锁由变更集（B4b）计算，这里只留数据源登记点，默认「没有锁」；
 - `conversation.updated`（EP-21）、`project.updated`（EP-20）、`maintenance.updated`（EP-24 / EU-04）、
   `project.card.updated`（EU-02）、`project.removed`（EU-03）。
@@ -319,6 +322,12 @@ def assembly_switched(project_id: str, before: str | None, after: str | None) ->
         return
     _guard("assembly.updated", assembly_changed, project_id)
     schedule_flow_refresh(project_id, delay=0)
+
+
+def knowledge_changed(project_id: str, ids: list[str], change: str) -> None:
+    """EP-23：知识条目新增、修改、删除（知识沉淀页刷新列表）。"""
+    _guard("knowledge.updated", streams.publish_project, project_id, "knowledge.updated",
+           {"ids": list(ids), "change": change})
 
 
 # ---------------------------------------------------------------------------

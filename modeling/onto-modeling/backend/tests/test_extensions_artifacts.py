@@ -15,15 +15,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import deps
-from app.kernel import project_events
+from app.kernel import event_port
 from app.kernel.artifacts import index as artifact_index
 from app.kernel.artifacts import parsers, registry as artifact_registry
 from app.main import app
 from app.services import auth
+from app.services import project_events as project_stream
 from app.services.onto_mcp import workspace as mcp_workspace
 from app.services.packs import builtin
 from app.services.workspace import WorkspaceManager
 from tests.pack_helpers import make_assets, make_pack
+from tests.test_event_streams import buffered
 from tests.test_packs_api import upload, zipped
 
 ITEM_TYPE = {
@@ -76,7 +78,7 @@ CHECKLIST_CONTRIBUTES = {
 @pytest.fixture()
 def env(tmp_path: Path, monkeypatch):
     builtin.clear_cache()
-    project_events.clear()
+    event_port.clear()
     manager = WorkspaceManager(tmp_path / "data", make_assets(tmp_path))
     monkeypatch.setattr(deps, "workspaces", manager)
     monkeypatch.setattr(auth, "ENABLED", False)
@@ -132,9 +134,9 @@ def test_extensions_nav_lists_kernel_pages_then_enabled_plugin_pages(env):
     assert page["pending"] is True and view["pending_hash"]
     assert view["artifact_types"] == ["checklist.item"] and view["views"] == ["checklist.item"]
     assert view["gates"] == [{"id": "title-short", "label": "检查项标题不超过 20 字", "pack": "checklist"}]
-    events = project_events.recent(project_id, "extensions.updated")
+    events = buffered(project_id, "extensions.updated")
     assert events and {"nav", "pages", "artifact_types"} <= set(events[-1]["data"]["changed"])
-    assert project_events.recent(project_id, "assembly.updated")[-1]["data"]["state"] == "pending"
+    assert buffered(project_id, "assembly.updated")[-1]["data"]["state"] == "pending"
 
 
 def test_page_not_in_builtin_pages_never_reaches_nav(env, tmp_path):
@@ -169,7 +171,7 @@ def test_disabling_page_pack_hides_page_and_keeps_artifacts(env):
     assert (root / "ext/checklist/items/shelf-limit.md").is_file()
     gone = client.get(f"/api/v1/projects/{project_id}/artifacts/checklist.item")
     assert gone.status_code == 404 and gone.json()["code"] == "artifact_type_unknown"
-    assert "nav" in project_events.recent(project_id, "extensions.updated")[-1]["data"]["changed"]
+    assert "nav" in buffered(project_id, "extensions.updated")[-1]["data"]["changed"]
 
     # 重新启用：页面回来，已有产物照常列出
     assert client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "checklist"}).status_code == 201
@@ -194,11 +196,13 @@ def test_page_action_resolves_to_command_while_pack_enabled(env):
     assert registry.resolve_action(manager, project_id, action) is None
 
 
-def test_extension_differ_compares_with_last_computed_registry(env):
+def test_extension_differ_compares_with_last_computed_registry(env, monkeypatch):
     """项目流 extensions.updated 的比较函数（会话宿主登记）：和本项目上一次算出的注册表比。"""
     client, manager, project_id = env
     from app.services.packs import registry
 
+    # 只看这一个比较函数：启动时登记的那份在锁文件提交时也会换掉比较基准
+    monkeypatch.setattr(project_stream, "_extension_differs", [])
     differ = registry.extension_differ(manager)
     registry._LAST_VIEWS.pop(project_id, None)
     assert differ(project_id, None, "h1") is None  # 这个进程里还没有基准：整份重拉
@@ -296,7 +300,7 @@ def test_save_versions_history_schema_and_gates(env):
 
     deleted = client.request("DELETE", f"{base}/shelf-limit", json={"base_revision": current})
     assert deleted.status_code == 200 and not (root / "ext/checklist/items/shelf-limit.md").exists()
-    assert [event["data"]["change"] for event in project_events.recent(project_id, "artifacts.updated")] == [
+    assert [event["data"]["change"] for event in event_port.recent(project_id, "artifacts.updated")] == [
         "created", "updated", "deleted"]
 
 
@@ -367,22 +371,22 @@ def test_after_commit_reports_artifacts_and_stale_transitions(env):
     _write(root, "ontology/operation/安全库存测算.md", "# 业务描述\n测算安全库存\n")
     _write(root, "ext/checklist/items/expiry.md", "---\ntitle: 临期\nlevel: low\noperation: 安全库存测算\n---\n")
     _commit_all(root)
-    project_events.clear()
+    event_port.clear()
     refs = artifact_service.after_commit(manager, project_id, ["ext/checklist/items/expiry.md", "ontology/x.md"])
     assert refs == [{"type": "checklist.item", "key": "expiry", "title": "临期"}]
-    assert [event["data"] for event in project_events.recent(project_id, "artifacts.updated")] == [
+    assert [event["data"] for event in event_port.recent(project_id, "artifacts.updated")] == [
         {"type": "checklist.item", "change": "updated", "keys": ["expiry"]}]
 
-    project_events.clear()
+    event_port.clear()
     _write(root, "ontology/operation/安全库存测算.md", "# 业务描述\n测算安全库存（改过口径）\n")
     assert artifact_service.after_commit(manager, project_id, ["ontology/operation/安全库存测算.md"]) == []
-    assert [event["data"] for event in project_events.recent(project_id, "artifacts.updated")] == [
+    assert [event["data"] for event in event_port.recent(project_id, "artifacts.updated")] == [
         {"type": "checklist.item", "change": "stale", "keys": ["expiry"]}]
 
-    project_events.clear()
+    event_port.clear()
     _write(root, "ontology/operation/安全库存测算.md", "# 业务描述\n测算安全库存\n")
     artifact_service.after_commit(manager, project_id, ["ontology/operation/安全库存测算.md"])
-    assert [event["data"]["change"] for event in project_events.recent(project_id, "artifacts.updated")] == ["fresh"]
+    assert [event["data"]["change"] for event in event_port.recent(project_id, "artifacts.updated")] == ["fresh"]
 
 
 def test_pack_script_index_fills_computed_fields_and_flags_outdated(env):

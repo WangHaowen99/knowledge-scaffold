@@ -18,9 +18,8 @@ from fastapi.responses import JSONResponse
 
 from ..api import deps
 from ..api.errors import ApiError
-from ..kernel import project_events
 from ..kernel.writepath import ChangeTx, Origin
-from ..services import audit, knowledge_layers, mainline
+from ..services import audit, knowledge_layers, mainline, project_events
 from ..services.workspace.layout import _content_revision
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/knowledge", tags=["knowledge"])
@@ -174,7 +173,7 @@ def _pack_enabled(root: Path, name: str) -> bool:
 
 
 def _emit(project_id: str, ids: list[str], change: str) -> None:
-    project_events.emit(project_id, "knowledge.updated", {"ids": ids, "change": change})
+    project_events.knowledge_changed(project_id, ids, change)
 
 
 @router.get("")

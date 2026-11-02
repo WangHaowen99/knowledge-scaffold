@@ -16,12 +16,12 @@ from fastapi.testclient import TestClient
 
 from app import config
 from app.api import deps
-from app.kernel import project_events
 from app.main import app
 from app.services import auth
 from app.services.packs import builtin, checks, lockfile
 from app.services.packs.lockfile import PackLock
 from app.services.workspace import WorkspaceManager
+from tests.test_event_streams import buffered
 
 ASSETS = Path(config.ASSETS_DIR)
 OPTIONAL = ("trace", "knowledge", "codegen", "diagram", "evo", "websearch", "migrate")
@@ -47,7 +47,6 @@ COMMAND_MAP = {
 @pytest.fixture(autouse=True)
 def _fresh():
     builtin.clear_cache()
-    project_events.clear()
     yield
     builtin.clear_cache()
 
@@ -335,7 +334,7 @@ def test_industry_layer_lists_and_overrides(env):
     subprocess.run(["git", "commit", "-qm", "agent: 覆盖"], cwd=root, check=True)
     deleted = client.request("DELETE", f"{base}/domain-rule-safety-stock-formula", json={})
     assert deleted.status_code == 200 and deleted.json()["restored_industry_entry"] == entry["id"]
-    assert [event["data"]["change"] for event in project_events.recent(project_id, "knowledge.updated")] == ["created", "deleted"]
+    assert [event["data"]["change"] for event in buffered(project_id, "knowledge.updated")] == ["created", "deleted"]
     assert slug
 
 

@@ -283,8 +283,10 @@ def test_flow_refresh_sends_only_changed_nodes(env):
     assert len(data["nodes"]) < len(project_events._flow_cache[project_id]["nodes"])
 
 
-def test_lock_file_commit_publishes_assembly_and_extensions(env):
+def test_lock_file_commit_publishes_assembly_and_extensions(env, monkeypatch):
     _, manager, project_id = env
+    # 没登记比较函数时给全部七类（启动时登记的扩展项注册表那份另有用例）
+    monkeypatch.setattr(project_events, "_extension_differs", [])
     project_events.assembly_changed(project_id)
     assembly = buffered(project_id, "assembly.updated")[-1]["data"]
     assert set(assembly) == {"state", "pending_changes", "effective", "error_id"}
@@ -294,15 +296,16 @@ def test_lock_file_commit_publishes_assembly_and_extensions(env):
     assert extensions["changed"] == list(project_events.EXTENSION_KINDS)
 
 
-def test_registered_extension_differ_and_scope_provider(env):
+def test_registered_extension_differ_and_scope_provider(env, monkeypatch):
     _, _, project_id = env
+    # 换一张空的登记表：不清掉启动时登记的那份（别的用例还要用）
+    monkeypatch.setattr(project_events, "_extension_differs", [])
     project_events.register_extension_differ(lambda pid, before, after: ["nav"])
     project_events.register_scope_provider(lambda pid: {**project_events.empty_scope(), "state": "assistant_running"})
     try:
         project_events.extensions_changed(project_id, "a", "b")
         project_events.scope_changed(project_id)
     finally:
-        project_events._extension_differs.clear()
         project_events.register_scope_provider(None)
     assert buffered(project_id, "extensions.updated")[-1]["data"]["changed"] == ["nav"]
     scope = buffered(project_id, "scope.updated")[-1]["data"]

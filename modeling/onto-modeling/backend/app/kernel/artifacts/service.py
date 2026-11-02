@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 import re
 import subprocess
@@ -17,7 +18,7 @@ from typing import Callable
 
 import jsonschema
 
-from ...kernel import project_events
+from .. import event_port
 from . import index, parsers
 from .registry import ArtifactType, get_type, types_for_project
 
@@ -509,12 +510,18 @@ def _commit(manager, project_id: str, rel: str, text: str | None, message: str, 
     from ...kernel.writepath import ChangeTx, Origin
     from ...services import mainline
 
-    with ChangeTx(manager, project_id, Origin("web", actor), summary=message) as tx:
-        if text is None:
-            tx.remove(rel)
-        else:
-            tx.write(rel, text)
-        result = tx.commit(message)
+    # 这次提交的 artifacts.updated 由调用方（AR-05/06/07）按 created / updated / deleted 发，
+    # 提交事件同步触发的 after_commit 不再重复发 updated
+    marker = _SELF_REPORTED.set(frozenset({rel}))
+    try:
+        with ChangeTx(manager, project_id, Origin("web", actor), summary=message) as tx:
+            if text is None:
+                tx.remove(rel)
+            else:
+                tx.write(rel, text)
+            result = tx.commit(message)
+    finally:
+        _SELF_REPORTED.reset(marker)
     state = mainline.state(manager.project_root(project_id))
     return {"commit": result.commit or state["head"], "version_label": state["version_label"]}
 
@@ -552,7 +559,7 @@ def save(manager, project_id: str, art_type: str, key: str, body: dict, *, actor
     summary = str(body.get("summary") or "").strip()[:80]
     note = f"：{summary}" if summary else ""
     outcome = _commit(manager, project_id, row["rel"], text, f"web: 保存{atype.title}「{row['title']}」{note} by {actor}", actor)
-    project_events.emit(project_id, "artifacts.updated", {"type": art_type, "change": "updated", "keys": [key]})
+    event_port.emit(project_id, "artifacts.updated", {"type": art_type, "change": "updated", "keys": [key]})
     saved = _find(manager, root, atype, key) if atype.format != "md-sections" else _find_by_file(manager, root, atype, row["rel"], key)
     return {"artifact": _detail_view(atype, root, saved, rows_limit=0, iso=iso), **outcome}
 
@@ -601,7 +608,7 @@ def create(manager, project_id: str, art_type: str, body: dict, *, actor: str, i
             fields.setdefault("format_version", atype.schema_version)
     _check(manager, root, atype, fields)
     outcome = _commit(manager, project_id, rel, text, f"web: 新建{atype.title}「{key}」 by {actor}", actor)
-    project_events.emit(project_id, "artifacts.updated", {"type": art_type, "change": "created", "keys": [key]})
+    event_port.emit(project_id, "artifacts.updated", {"type": art_type, "change": "created", "keys": [key]})
     row = _find(manager, root, atype, key)
     return {"artifact": _detail_view(atype, root, row, rows_limit=0, iso=iso), **outcome}
 
@@ -622,7 +629,7 @@ def delete(manager, project_id: str, art_type: str, key: str, body: dict, *, act
         previous = (root / row["rel"]).read_text(encoding="utf-8")
         text = _remove_section(atype, previous, row["rel"], key)
     outcome = _commit(manager, project_id, row["rel"], text, f"web: 删除{atype.title}「{row['title']}」 by {actor}", actor)
-    project_events.emit(project_id, "artifacts.updated", {"type": art_type, "change": "deleted", "keys": [key]})
+    event_port.emit(project_id, "artifacts.updated", {"type": art_type, "change": "deleted", "keys": [key]})
     return outcome
 
 
@@ -835,6 +842,8 @@ def mcp_get(manager, project_id: str, args: dict, *, iso) -> dict:
 ARTIFACT_REFS_MAX = 200
 # 进程内记着各产物上次看到的「过期」状态，用来发 stale / fresh（第一次看到不发）
 _STALE_SEEN: dict[tuple[str, str], dict[str, bool]] = {}
+# 当前线程正在提交、由提交方自己发 artifacts.updated 的路径（写入事务同步发提交事件，after_commit 在同一线程里跑）
+_SELF_REPORTED: contextvars.ContextVar[frozenset] = contextvars.ContextVar("artifact_self_reported", default=frozenset())
 
 
 def after_commit(manager, project_id: str, paths: list[str]) -> list[dict]:
@@ -845,6 +854,7 @@ def after_commit(manager, project_id: str, paths: list[str]) -> list[dict]:
     """
     root = manager.project_root(project_id)
     changed = {str(path).lstrip("./") for path in paths or []}
+    self_reported = _SELF_REPORTED.get()
     refs: list[dict] = []
     for atype in types_for_project(manager, root):
         try:
@@ -853,9 +863,9 @@ def after_commit(manager, project_id: str, paths: list[str]) -> list[dict]:
             continue
         touched = [row for row in rows if row["rel"] in changed]
         refs += [{"type": atype.type, "key": row["key"], "title": row["title"]} for row in touched]
-        if touched:
-            project_events.emit(project_id, "artifacts.updated",
-                                {"type": atype.type, "change": "updated", "keys": [row["key"] for row in touched]})
+        updated = [row["key"] for row in touched if row["rel"] not in self_reported]
+        if updated:
+            event_port.emit(project_id, "artifacts.updated", {"type": atype.type, "change": "updated", "keys": updated})
         seen_key = (str(root), atype.type)
         previous = _STALE_SEEN.get(seen_key)
         current = {row["key"]: bool(row.get("stale")) for row in rows}
@@ -866,5 +876,5 @@ def after_commit(manager, project_id: str, paths: list[str]) -> list[dict]:
             keys = [key for key, stale in current.items()
                     if stale is flag and previous.get(key, False) is not flag and key not in {row["key"] for row in touched}]
             if keys:
-                project_events.emit(project_id, "artifacts.updated", {"type": atype.type, "change": change, "keys": keys})
+                event_port.emit(project_id, "artifacts.updated", {"type": atype.type, "change": change, "keys": keys})
     return refs[:ARTIFACT_REFS_MAX]

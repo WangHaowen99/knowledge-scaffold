@@ -235,24 +235,16 @@ def _extensions_or_none(manager, project_id: str) -> dict | None:
         return None
 
 
-def emit_switch_events(manager, project_id: str, before: dict | None, status: dict) -> None:
-    """锁文件改了之后：项目流发 assembly.updated（EP-08）与 extensions.updated（EP-07）。"""
-    from ...kernel import project_events
-    from . import registry
+def announce_immediate_switch(project_id: str, active_before: str | None, status: dict) -> None:
+    """改锁文件之后的项目流事件（ADR-0045）。
 
-    project_events.emit(project_id, "assembly.updated", {
-        "state": status.get("state"), "pending_changes": status.get("pending_changes") or [],
-        "effective": "next_message" if status.get("effective") == "next_message" else "immediate",
-        "error_id": (status.get("last_error") or {}).get("error_id"),
-    })
-    after = _extensions_or_none(manager, project_id)
-    if after is None:
-        return
-    changed = registry.changed_parts(before, after)
-    if changed or (before or {}).get("pending_hash") != after.get("pending_hash"):
-        project_events.emit(project_id, "extensions.updated", {
-            "active_hash": after["active_hash"], "pending_hash": after["pending_hash"], "changed": changed,
-        })
+    待生效的 assembly.updated（EP-08）与 extensions.updated（EP-07）由项目流在锁文件的提交事件里发
+    （`services/project_events.workspace_changed`），这里不重复。只动纯数据包（H0）时装配目录当场就切了，
+    之后不会再有「消息前切换」，已生效的这一次在这里补发（与 `fingerprint.prepare` 同一个出口）。
+    """
+    from .. import project_events
+
+    project_events.assembly_switched(project_id, active_before, status.get("active_hash"))
 
 
 def _switch(manager, project_id: str, mutate, message: str, actor: str) -> dict:
@@ -276,13 +268,14 @@ def _switch(manager, project_id: str, mutate, message: str, actor: str) -> dict:
         commit = commit_lock(manager, project_id, message, actor, write=lambda: lockfile.write(root, new_lock))
         if wrote and not commit:
             commit = commit_lock(manager, project_id, "chore: 写入能力包锁文件", actor)
+        active_before = (runtime.assembler.active(root) or {}).get("assembly_hash")
         try:
             status = runtime.apply(root, h0_only=True)
         except AssemblyError:
             status = runtime.status(root)
     from .. import mainline
 
-    emit_switch_events(manager, project_id, before, status)
+    announce_immediate_switch(project_id, active_before, status)
     return {"result": result, "commit": commit or None, "version_label": mainline.state(root)["version_label"],
             "status": status}
 
