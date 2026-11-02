@@ -101,6 +101,11 @@ def test_five_slice_project_runs_to_the_end_with_policy_answers(ab):
     assert report["metrics"]["produced"] == {"objects": 5, "operations": 5, "rules": 0}
     listing = client.get(f"/api/v1/projects/{project_id}/autobuild/runs").json()["items"]
     assert [item["run_id"] for item in listing] == [run["run_id"]]
+    # 版本列表：自主构建合入的每片带运行与片（V-01 Version.run）
+    versions = client.get(f"/api/v1/projects/{project_id}/versions", params={"source": "autobuild"}).json()["items"]
+    runs = [item["run"] for item in versions if item["run"]]
+    assert [item["slice_id"] for item in runs] == ["s5", "s4", "s3", "s2", "s1"]
+    assert next(item for item in versions if (item["run"] or {}).get("slice_id") == "s2")["needs_review"] == 2
 
 
 def test_messages_during_a_run_are_409_elsewhere_and_a_note_in_the_run_conversation(ab):
