@@ -4,7 +4,7 @@ import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, relativeTime } from '../../api/errors.js';
-import { commandFromTarget, commandNode, nodeActionKind, planSlicesCommand, overlayRunning, scriptRunView, sectionGroups, sliceStageTitle, trackNodes, withoutEvidence } from '../../state/flow.js';
+import { commandFromTarget, commandNode, nodeActionKind, planSlicesCommand, suggestionCommand, overlayRunning, scriptRunView, sectionGroups, sliceStageTitle, trackNodes, withoutEvidence } from '../../state/flow.js';
 import { evidenceInProject, withoutEvidenceSuggestions } from '../../state/evidence.js';
 import { composerState, readonlyInfo } from '../../state/readonly.js';
 import { ShellP } from '../../shell/Shell.jsx';
@@ -600,7 +600,7 @@ export default function WorkbenchPage({ route }) {
     try {
       switch (a.type) {
         case 'send':
-          if (a.command) await api.sendCommand(pid, { command: a.command, args: a.args, text: a.text, origin: { page: 'wb-l2', label: '下一步建议' }, conversation_id: cid });
+          if (a.command) await api.sendCommand(pid, { ...suggestionCommand(a), origin: { page: 'wb-l2', label: '下一步建议' }, conversation_id: cid });
           else await api.sendMessage(pid, cid, { text: a.text, client_message_id: `cm-${Date.now()}` });
           break;
         case 'resume_exec': await actions.resume(a.exec_id); break;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
 import {
-  commandFromTarget, commandName, commandNode, mergeFlow, nodeActionKind, normalizeFlow, planSlicesCommand, overlayRunning, scriptRunView, sectionGroups, sliceStageTitle,
+  commandFromTarget, commandName, commandNode, mergeFlow, nodeActionKind, normalizeFlow, planSlicesCommand, suggestionCommand, overlayRunning, scriptRunView, sectionGroups, sliceStageTitle,
   trackNodes, withoutEvidence,
 } from '../src/state/flow.js';
 
@@ -148,4 +148,11 @@ test('没有蓝图时「调整切片」改发切片规划；有蓝图时打开�
 test('B4d 新流程的页面动作：发布去发布页、资料分析「去确认」去蓝图页', () => {
   assert.equal(nodeActionKind({ kind: 'start', label: '去发布', target: 'publish' }), 'navigate');
   assert.equal(nodeActionKind({ kind: 'confirm', label: '去确认', target: 'wb-blueprint' }), 'navigate');
+});
+
+test('建议条 send 动作：text 为空串时只发 command + args；整段命令文本拆成 args；普通消息不走 S-20', () => {
+  assert.deepEqual(suggestionCommand({ type: 'send', text: '', command: '/ontology-extract-rule-metric', args: { slice: 's2' } }), { command: '/ontology-extract-rule-metric', args: { slice: 's2' }, text: '' });
+  assert.deepEqual(suggestionCommand({ type: 'send', text: '/ontology-research phase=blueprint', command: '/ontology-research' }), { command: '/ontology-research', args: { phase: 'blueprint' }, text: '' });
+  assert.deepEqual(suggestionCommand({ type: 'send', text: '提取本切片的规则', command: '/ontology-extract-rule-metric' }), { command: '/ontology-extract-rule-metric', text: '提取本切片的规则' });
+  assert.equal(suggestionCommand({ type: 'send', text: '继续刚才的任务' }), null);
 });

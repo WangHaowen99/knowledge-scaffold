@@ -137,6 +137,15 @@ export function commandFromTarget(target) {
   return { command: parts[0], ...(Object.keys(args).length ? { args } : {}), text: words.join(' ') };
 }
 
+// 建议条的 send 动作 → S-20 请求体：建模的下一步给 command + args、text 为空串（contract-changes B4d 第 14 条），
+// 不把空 text 当正文；core 的 _send 给的是整段命令文本（如「/ontology-research phase=blueprint」），拆成 command / args / text
+export function suggestionCommand(action) {
+  if (!action?.command) return null;
+  const text = String(action.text || '').trim();
+  if (!action.args && text.split(/\s+/)[0] === action.command) return commandFromTarget(text);
+  return { command: action.command, ...(action.args ? { args: action.args } : {}), text };
+}
+
 // 没有蓝图时（FL-01 blueprint.state = none）「调整切片」改为发切片规划（contract-changes B4d 合并第 2 条）
 export const planSlicesCommand = (flow) => (flow?.blueprint?.state === 'none'
   ? { command: '/ontology-research', args: { phase: 'blueprint' }, text: '' }
