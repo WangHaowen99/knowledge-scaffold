@@ -106,10 +106,10 @@ test('柱状图几何：最高的顶到 h-14、最矮 2、柱宽占 62% 且不�
   assert.deepEqual(barRects([]), []);
 });
 
-test('统计卡：B2 口径下 accounts、autobuild.limit 为 null、费用是美元也不出错', () => {
+test('统计卡：B2 口径下 accounts、autobuild.limit 为 null 时不出说明行，费用是美元也不出错', () => {
   const s = statCards(D.overview({ p1: true }).stats);
-  assert.equal(s.online.desc, '共 — 个账号');
-  assert.equal(s.autobuild.desc, '平台上限 — 个');
+  assert.equal(s.online.desc, null);
+  assert.equal(s.autobuild.desc, null);
   assert.equal(s.cost.value, '$ 1,784');
   assert.match(s.cost.desc, /^本月 \$ /);
   assert.equal(s.disk.value, '18%');
@@ -118,7 +118,7 @@ test('统计卡：B2 口径下 accounts、autobuild.limit 为 null、费用是�
   const d = statCards(D.overview().stats);
   assert.equal(d.online.desc, '共 23 个账号');
   assert.equal(d.sessions.pct, 58);
-  assert.equal(d.sessions.desc, '排队 1 · 空闲回收 600 秒');
+  assert.equal(d.sessions.desc, '排队 1');
   assert.equal(d.autobuild.desc, '平台上限 4 个');
   assert.equal(d.cost.value, '¥ 12,846');
   const none = statCards({});

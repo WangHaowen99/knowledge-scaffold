@@ -33,11 +33,10 @@ function OpsNav({ active }) {
       top={card ? (
         <div className="op-role">
           <div className="row"><Avatar text={initial} i={2} size="sm" /><b>{user?.display_name || user?.username}</b><Chip tone="indigo" sm>{card.label}</Chip></div>
-          <div className="mt4">{card.text}</div>
+          {card.text ? <div className="mt4">{card.text}</div> : null}
         </div>
       ) : null}
       groups={[{
-        title: '运维',
         items: [
           { key: 'ops', title: '总览', icon: 'gauge', go: 'ops' },
           { key: 'ops-obs', title: '可观测', icon: 'activity', go: 'ops-obs', extra: firing ? <Chip tone="red" sm>{firing}</Chip> : null },
@@ -49,7 +48,6 @@ function OpsNav({ active }) {
         <div className="op-foot">
           <Icon name="lock" size={12} /> <b>运维管理面</b>
           {port ? <> · 内网端口 <span className="mono">{port}</span></> : ' · 独立监听'}
-          <br />与业务接口分离，这里的每个操作都写审计。
         </div>
       )}
     />
@@ -68,7 +66,7 @@ export function OpsShell({ active, children, bodyStyle }) {
       <ShellG active="ops">
         <div className="card" style={{ padding: 30, maxWidth: 640, margin: '40px auto' }}>
           <Empty icon="lock" title="运维中心只对运维和管理员开放" actions={<Button icon="arrowl" onClick={() => navigate('/projects')}>回到我的项目</Button>}>
-            你的账号是建模者，看不到平台运行状态。需要时请联系管理员。
+            需要时请联系管理员
           </Empty>
         </div>
       </ShellG>

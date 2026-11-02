@@ -164,15 +164,16 @@ export function statCards(stats) {
   const disk = s.disk || {};
   const cost = s.cost || {};
   return {
-    online: { value: fmtNum(s.online_users), desc: `共 ${s.accounts == null ? DASH : fmtNum(s.accounts)} 个账号` },
+    // 值为空时不出说明行（不出「共 — 个账号」这种半句）
+    online: { value: fmtNum(s.online_users), desc: s.accounts == null ? null : `共 ${fmtNum(s.accounts)} 个账号` },
     sessions: {
       value: fmtNum(sessions.active),
       max: sessions.max == null ? DASH : fmtNum(sessions.max),
       pct: sessions.max ? Math.round(((sessions.active || 0) / sessions.max) * 100) : 0,
-      desc: `排队 ${fmtNum(sessions.queued ?? 0)} · 空闲回收 ${sessions.idle_ttl_s == null ? DASH : fmtNum(sessions.idle_ttl_s)} 秒`,
+      desc: `排队 ${fmtNum(sessions.queued ?? 0)}`,
     },
     projects: { value: fmtNum(projects.total), desc: `进行中 ${fmtNum(projects.active)} · 已归档 ${fmtNum(projects.archived)}` },
-    autobuild: { value: fmtNum(ab.running ?? 0), desc: `平台上限 ${ab.limit == null ? DASH : fmtNum(ab.limit)} 个` },
+    autobuild: { value: fmtNum(ab.running ?? 0), desc: ab.limit == null ? null : `平台上限 ${fmtNum(ab.limit)} 个` },
     cost: { value: fmtMoney(cost.total), desc: `本月 ${fmtMoney(cost.this_month)}` },
     disk: {
       warn: !!disk.warn,

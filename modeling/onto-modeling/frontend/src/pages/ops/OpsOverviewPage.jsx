@@ -1,4 +1,4 @@
-// 运维总览（运维中心，设计稿 ops）：O-01 一次取全——统计卡、建议条、按日用量、告警、运行中的 L4、启动自检摘要、用户活跃、项目占用。
+// 运维总览（运维中心，设计稿 ops）：O-01 一次取全——统计卡、建议条、按日用量、告警、自主构建中、启动自检摘要、用户活跃、项目占用。
 // 项目只给元数据视图（名称、所有者、阶段、占用），不能点进去看内容。
 import { useEffect, useState } from 'react';
 import { useApp } from '../../app/context.js';
@@ -9,7 +9,7 @@ import { Avatar, Card, Chip, Icon, Note, Prog, Seg, St, Stat, Table, cx } from '
 import { Bars } from './charts.jsx';
 import {
   RANGES, USAGE_KEYS, adviceView, alertView, autobuildTodayView, avatarIndex, callsText, fmtBytes, firingCount, nameMap,
-  rangeSub, relTime, runRow, startupAt, startupItemView, statCards, usageSummary,
+  relTime, runRow, startupAt, startupItemView, statCards, usageSummary,
 } from './overviewModel.js';
 import { OpsShell } from './parts.jsx';
 
@@ -26,9 +26,9 @@ function StatRow({ stats }) {
       </div>
       <Stat label="项目" value={s.projects.value} icon="grid" desc={s.projects.desc} />
       <div className="stat l4-border">
-        <div className="lb"><Icon name="rocket" size={14} />运行中的 L4</div>
+        <div className="lb"><Icon name="rocket" size={14} />自主构建中</div>
         <div className="v">{s.autobuild.value}</div>
-        <div className="d">{s.autobuild.desc}</div>
+        {s.autobuild.desc ? <div className="d">{s.autobuild.desc}</div> : null}
       </div>
       <Stat label="累计成本" value={s.cost.value} icon="pie" desc={s.cost.desc} />
       <div className="stat" style={s.disk.warn ? { borderColor: 'var(--a100)', background: 'linear-gradient(180deg,#FFFBF2,#fff)' } : undefined}>
@@ -46,7 +46,7 @@ function UsageCard({ usage, range }) {
   const u = usageSummary(usage, key, range);
   const n = u.values.length;
   return (
-    <Card title="按日用量" sub={rangeSub(range)} icon="bars" extra={<Seg items={USAGE_KEYS} value={key} onChange={setKey} />}>
+    <Card title="按日用量" icon="bars" extra={<Seg items={USAGE_KEYS} value={key} onChange={setKey} />}>
       <div className="op-us">
         <div><span>{u.totalLabel}（{u.unit}）</span><b>{u.total}</b></div>
         <div><span>日均</span><b>{u.avg}</b></div>
@@ -66,7 +66,7 @@ function AlertsCard({ alerts }) {
   const now = Date.now();
   return (
     <Card
-      title="告警" icon="bell" sub={firing ? `${firing} 条触发中` : '没有触发中的告警'}
+      title="告警" icon="bell" sub={firing ? `${firing} 条触发中` : null}
       extra={<a className="link sm" onClick={() => navigate('/ops-obs', { section: 'rules' })}>全部规则</a>}
     >
       {alerts?.length ? alerts.map((a, i) => {
@@ -86,7 +86,7 @@ function AlertsCard({ alerts }) {
 function RunsCard({ runs, today, ownerName }) {
   const rows = (runs || []).map(runRow);
   return (
-    <Card title="运行中的 L4" icon="rocket" sub="只显示进度与预算">
+    <Card title="自主构建中" icon="rocket">
       {rows.length ? (
         <Table
           compact
@@ -105,8 +105,6 @@ function RunsCard({ runs, today, ownerName }) {
         {autobuildTodayView(today).map(([label, value, unit]) => (
           <span key={label}>{label} <b className="num" style={{ color: 'var(--ink)' }}>{value}</b>{unit ? ` ${unit}` : ''}</span>
         ))}
-        <span className="sp" />
-        <span className="xs">维护模式下会在安全点暂停</span>
       </div>
     </Card>
   );
@@ -135,7 +133,7 @@ function StartupCard({ startup }) {
 function UsersCard({ users, authEnabled }) {
   const now = Date.now();
   return (
-    <Card title="用户活跃" icon="users" sub={authEnabled ? '登录已开启' : '本地模式，没有开启登录'}>
+    <Card title="用户活跃" icon="users" sub={authEnabled ? null : '本地模式'}>
       <Table
         compact
         cols={['用户', '状态', '最近活跃', '今日调用']}
@@ -156,7 +154,7 @@ function UsersCard({ users, authEnabled }) {
 function ProjectsCard({ projects, ownerName }) {
   const now = Date.now();
   return (
-    <Card title="项目占用" icon="hdd" sub="按磁盘占用排序">
+    <Card title="项目占用" icon="hdd">
       <Table
         compact
         cols={['项目', '所有者', '阶段', '模式', '磁盘', '最近活动']}
@@ -164,7 +162,7 @@ function ProjectsCard({ projects, ownerName }) {
           <div key="n" className="row g4" title="只能看元数据，内容只归所有者"><Icon name="lock" size={12} /><b>{p.name}</b></div>,
           ownerName(p.owner),
           <span key="s" className="muted">{p.stage_label || '—'}</span>,
-          p.build_mode === 'L4' ? <Chip key="m" tone="indigo" sm>L4</Chip> : <Chip key="m" tone="blue" sm>L2</Chip>,
+          p.build_mode === 'L4' ? <Chip key="m" tone="indigo" sm>自主</Chip> : <Chip key="m" tone="blue" sm>陪伴</Chip>,
           <span key="d" className="num">{fmtBytes(p.disk_bytes)}</span>,
           <span key="a" className="muted">{relTime(p.last_activity_at, now, { short: true })}</span>,
         ])}
@@ -191,9 +189,7 @@ function Overview() {
   return (
     <>
       <PageHead
-        eyebrow="运维中心"
         title="运维总览"
-        desc="平台运行状态一屏看全。项目只显示元数据，内容只归所有者。"
         actions={<Seg items={RANGES} value={range} onChange={setRange} />}
       />
       {error ? <Note tone="red" className="mb12">总览没取到：{error}</Note> : null}
