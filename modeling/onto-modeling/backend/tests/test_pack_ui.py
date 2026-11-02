@@ -282,7 +282,7 @@ def test_round_cards_follow_card_declaration(env):
     assert card["open"] == {"kind": "dialog", "target": "artifact", "ref": card["artifact"]}
     assert card["plugin"] == {"name": "sticky-notes", "label": "便签"}
     assert card["chips"] == [{"field": "color", "label": "颜色", "value": "blue", "text": "蓝色", "tone": "blue"}]
-    assert card["fields"] == [] and card["component"] is None and card["locked"] is False and card["change"] == "add"
+    assert card["fields"] == [] and card["component"] is None and "locked" not in card and card["change"] == "add"
     assert card["detail"]["kind"] == "editor" and card["detail"]["editor"]["mode"] == "iframe"
     # 同一轮同一项产物的卡片 ID 稳定（卡片更新按 ID 整体替换）
     again = cards.round_cards(manager, project_id, {"modified": ["ext/sticky-notes/notes/n1.md"]}, seed=head)

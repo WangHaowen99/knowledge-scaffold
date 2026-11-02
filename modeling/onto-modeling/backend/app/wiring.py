@@ -42,13 +42,10 @@ def _artifact_refs(root: Path, paths: list[str]) -> list[dict]:
 
 
 def _round_artifact_cards(project_id: str, changes: dict, base: str, head: str) -> list[dict]:
-    """一轮结束：改到的插件产物按包的 card 声明出卡；写入范围锁按当前的算（卡上的「只读」）。"""
+    """一轮结束：改到的插件产物按包的 card 声明出卡（只读与否由前端按实时的写入范围判断，卡上不存）。"""
     from .kernel.artifacts import cards
-    from .kernel.artifacts import service as artifact_service
 
-    manager = _workspaces()
-    lock = artifact_service._scope_lock(manager.project_root(project_id))
-    return cards.round_cards(manager, project_id, changes, base=base, seed=head, lock=lock)
+    return cards.round_cards(_workspaces(), project_id, changes, base=base, seed=head)
 
 
 def _publish_kernel_event(project_id: str, event_type: str, data: dict) -> None:

@@ -39,7 +39,7 @@ const clean = (list) => (Array.isArray(list) ? list : [])
 
 /**
  * 卡片要画的内容：{icon, eyebrow, title, sub, status, chips: [{key, text, tone}], fields: [[标签, 值]], plugin, locked}。
- * locked：写入范围锁里有这份产物（调用方按 CS-06 算出来的），或卡片自己带的 locked。
+ * locked：写入范围锁里有这份产物（调用方按 CS-06 实时算出来的）。卡片在对话历史里，旧卡上存的 locked 不看，锁解除后马上恢复。
  */
 export function declaredCardView(card, { locked = false } = {}) {
   const chips = clean(card?.chips).map((c) => ({ key: c.field || c.text, text: c.text, tone: c.tone || 'gray' }));
@@ -53,7 +53,7 @@ export function declaredCardView(card, { locked = false } = {}) {
     chips,
     fields,
     plugin: card?.plugin?.label || null,
-    locked: !!(locked || card?.locked),
+    locked: !!locked,
   };
 }
 

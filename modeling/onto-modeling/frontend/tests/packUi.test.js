@@ -209,3 +209,8 @@ test('证据源入口：待处理的「证据冲突」没有事项时不出，�
   assert.equal(visibleFilters({ by_filter: { evidence_conflict: 1 } }, 'all').length, FILTERS.length);
   assert.ok(OPTIONAL_CATEGORIES.includes('provider'));
 });
+
+test('审查第 7 条：卡片只读只看实时的写入范围，不看卡片里存的 locked', () => {
+  assert.equal(declaredCardView({ ...noteCard, locked: true }, { locked: false }).locked, false);
+  assert.equal(declaredCardView({ ...noteCard, locked: false }, { locked: true }).locked, true);
+});

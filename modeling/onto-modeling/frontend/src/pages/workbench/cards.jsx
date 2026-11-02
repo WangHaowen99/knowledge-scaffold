@@ -71,7 +71,8 @@ export function FlowchartCard({ card, locked }) {
   const { openArtifact } = useActions();
   // 工作台里双击就地打开（图示包自带的编辑器）；说明页等没有弹窗宿主的地方跳到 flowchart 页
   const open = () => (openArtifact && card.artifact ? openArtifact(card.artifact) : navigate(pagePath('flowchart', pid), card.artifact ? { key: card.artifact.key } : undefined));
-  const isLocked = locked || card.locked;
+  // 只看实时的写入范围锁：卡片在对话历史里，存在卡上的 locked 会过时
+  const isLocked = !!locked;
   const actLabel = isLocked ? '打开查看' : '打开编辑';
   // 不带 eyebrow 的卡（设计稿 flowchart 页）：标题后跟状态，缩略图下面一行说明和按钮
   if (!card.eyebrow) {

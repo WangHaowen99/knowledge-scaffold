@@ -3,6 +3,7 @@
 插件产物在一轮里新增或修改时，对话里出现它的卡片。卡片保持声明式：形状按包的 `views.<类型>.card` 画，
 平台不跑包的代码。`card.component` 选平台的专用卡片组件（如 `flowchart`），专用组件要的数据一并带上；
 平台不认识的组件按通用卡画。双击按 `views.<类型>.detail` 打开（`detail.kind`：generic / component / editor）。
+卡片会写进对话历史，所以不带「只读」这类会变的状态：前端按实时的写入范围锁（CS-06）判断。
 
 一轮最多出 ROUND_CARDS_MAX 张卡；删除的产物不出卡（「这一轮改了什么」里有）。
 """
@@ -86,7 +87,7 @@ def _flowchart_extras(atype: ArtifactType, root: Path, row: dict) -> dict:
 
 
 def card_for(atype: ArtifactType, root: Path, row: dict, *, change: str, pack_label: str = "",
-             locked: bool = False, seed: str = "") -> dict:
+             seed: str = "") -> dict:
     """一项产物 → 对话卡片（契约 4.7 artifact）。row 是产物索引的一行（key、title、fields、rel）。"""
     spec = atype.view.get("card") or {}
     fields = row.get("fields") or {}
@@ -113,7 +114,6 @@ def card_for(atype: ArtifactType, root: Path, row: dict, *, change: str, pack_la
         "chips": chips,
         "fields": shown,
         "detail": _detail(atype),
-        "locked": bool(locked),
     }
     if spec.get("component") == "flowchart" and atype.format == "drawio":
         card.update(_flowchart_extras(atype, root, row))
@@ -137,12 +137,10 @@ def _previous_items(atype: ArtifactType, root: Path, base: str, rel: str) -> dic
                                            sort_keys=True).encode()) for item in items}
 
 
-def round_cards(manager, project_id: str, changes: dict, *, base: str = "", seed: str = "",
-                lock: dict | None = None) -> list[dict]:
+def round_cards(manager, project_id: str, changes: dict, *, base: str = "", seed: str = "") -> list[dict]:
     """一轮结束时改到的插件产物 → 卡片（新增在前）。changes 是 {added, modified, deleted} 路径列表；
     base 是这一轮开始时的提交：一个文件多项的格式按项比较，只出真的变了的那几项。"""
     from ...services.packs import registry
-    from .service import _locked
 
     root = manager.project_root(project_id)
     added = {str(path).lstrip("./") for path in changes.get("added") or []}
@@ -170,7 +168,6 @@ def round_cards(manager, project_id: str, changes: dict, *, base: str = "", seed
                         change = "add"
                     elif before[row["key"]] == row.get("revision"):
                         continue
-            cards.append(card_for(atype, root, row, change=change, pack_label=labels.get(atype.pack, ""),
-                                  locked=_locked(lock, atype.type, row["key"], row["rel"]), seed=seed))
+            cards.append(card_for(atype, root, row, change=change, pack_label=labels.get(atype.pack, ""), seed=seed))
     cards.sort(key=lambda card: card["change"] != "add")
     return cards[:ROUND_CARDS_MAX]
