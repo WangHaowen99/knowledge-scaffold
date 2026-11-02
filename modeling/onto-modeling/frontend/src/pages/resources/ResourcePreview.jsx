@@ -64,7 +64,7 @@ function DocPane({ m, fragment, onCoverage, onUploadText, tasks }) {
   if (!blocks.length) {
     return m.kind === 'pdf' ? (
       <Note tone="amber">
-        读不出文字（可能是扫描件）。上传文本版后助手会接着读。
+        这种格式读不了，请上传文本版
         <div className="row mt8"><Button size="xs" kind="primary" icon="upload" onClick={onUploadText}>上传文本版</Button></div>
       </Note>
     ) : <Note tone="gray">这份资料还没有可预览的文字。</Note>;
