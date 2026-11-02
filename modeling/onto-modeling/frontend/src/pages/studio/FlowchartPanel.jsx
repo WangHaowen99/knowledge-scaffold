@@ -72,7 +72,7 @@ export default function FlowchartPanel({ row, onDeleted, onChanged }) {
         <St k={statusKey} sm />
         <LockMark info={lock} />
         <span className="sp" />
-        <Button size="sm" icon="sparkle" data-pop="回到工作台，把这张流程图作为引用带进对话" onClick={() => askAssistant(pid, `${TYPE}/${row.key}`)}>问助手</Button>
+        <Button size="sm" icon="sparkle" onClick={() => askAssistant(pid, `${TYPE}/${row.key}`)}>问助手</Button>
         {/* 写入范围锁住时不能删；按钮禁用后收不到悬停，说明挂在外层 */}
         <span data-pop={lock ? lock.pop : undefined} style={{ display: 'inline-flex' }}>
           <Button size="sm" kind="ghost" icon="trash" title={lock ? undefined : '删除这张流程图'} disabled={!!lock} onClick={() => setDelOpen(true)} />
@@ -84,7 +84,6 @@ export default function FlowchartPanel({ row, onDeleted, onChanged }) {
         </div>
         <div className="row mt12">
           <Button kind="primary" icon="edit" onClick={() => setEditing(true)}>打开编辑</Button>
-          <span className="xs muted grow">流程图在弹窗里编辑。工作台对话里的流程图卡双击，打开的也是这个编辑器，改的是同一份。</span>
         </div>
         <div className="sec-t mt16">概况</div>
         <KV
@@ -107,7 +106,6 @@ export default function FlowchartPanel({ row, onDeleted, onChanged }) {
         </div>
       </div>
       <div className="stt-ft">
-        <span className="xs muted">每次保存都会生成一个版本，可以在「发布 › 版本历史」里对比和回退</span>
         <span className="sp" />
         <Button size="sm" icon="shieldok" onClick={validate}>校验流程图</Button>
       </div>
@@ -117,7 +115,7 @@ export default function FlowchartPanel({ row, onDeleted, onChanged }) {
         icon="trash"
         danger
         title="删除这张流程图？"
-        sub="删除也会保存为一个版本，可以回退。引用它的操作会提示「流程图缺失」。"
+        sub="可在版本历史里回退；引用它的操作会提示「流程图缺失」"
         w={440}
         foot={<><Button onClick={() => setDelOpen(false)}>取消</Button><Button kind="danger" onClick={remove}>删除</Button></>}
       />

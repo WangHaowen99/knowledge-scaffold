@@ -51,7 +51,7 @@ export function LockBar({ info, lock }) {
       <Icon name="lock" size={14} />
       <div className="grow">
         <b>{info.title}</b>
-        <div className="xs" style={{ marginTop: 3, color: '#92400E' }}>{info.sub}</div>
+        {info.sub ? <div className="xs" style={{ marginTop: 3, color: '#92400E' }}>{info.sub}</div> : null}
       </div>
       {info.action?.kind === 'confirm'
         ? <Button size="xs" kind="primary" icon="merge" onClick={go}>{info.action.label}</Button>

@@ -41,17 +41,24 @@ test('写入范围锁：不在范围里没有说法；运行中「回到对话�
   assert.equal(lockCopy({ state: 'none', entries: [DISPLAY] }, DISPLAY, '陈列量标准'), null);
   const run = lockCopy(lock('assistant_running'), DISPLAY, '陈列量标准');
   assert.equal(run.chip, '运行中');
-  assert.match(run.title, /^助手正在改「超量与审批提示」这一片，「陈列量标准」在写入范围里，确认生效或撤回后才能编辑$/);
+  assert.equal(run.title, '助手正在改这一片，确认生效或撤回前只读');
   assert.equal(run.action.kind, 'conversation');
-  assert.match(run.pop, /^这个条目在「超量与审批提示」这一片的写入范围里/);
+  assert.equal(run.pop, '在「超量与审批提示」的写入范围里，确认生效或撤回前只读');
   const wait = lockCopy(lock('pending_confirm'), DISPLAY, '陈列量标准');
   assert.equal(wait.chip, '待确认');
   assert.equal(wait.action.label, '去确认');
-  assert.match(wait.sub, /助手已经停下来等你确认/);
-  // 决策卡改动预览里列了它：更具体的说法
+  assert.equal(wait.title, '这一片的修改待确认，确认生效或撤回前只读');
+  // 自主构建：这一片完成前只读，按钮去运行页；项目内不说「合入」
+  const auto = lockCopy(lock('autobuild_slice'), DISPLAY, '陈列量标准');
+  assert.equal(auto.title, '自主构建正在做这一片，完成前只读');
+  assert.equal(auto.pop, '在「超量与审批提示」的写入范围里，这一片完成前只读');
+  assert.equal(auto.action.kind, 'run');
+  [run, wait, auto].forEach((c) => assert.doesNotMatch(`${c.title}${c.pop}${c.sub}`, /合入|主线/));
+  // 决策卡改动预览里列了它：悬停换成更具体的说法，锁定条不变
   const hl = lockCopy(lock('assistant_running'), DISPLAY, '陈列量标准', { affected: [DISPLAY.id] });
-  assert.match(hl.pop, /^「陈列量标准」在这一片的写入范围里：等你决定的口径会改到它/);
-  assert.match(hl.title, /等你决定的口径会改到它（决策卡的改动预览里列了它）/);
+  assert.equal(hl.pop, '等你决定的口径会改到它，决定前只读');
+  assert.notEqual(hl.pop, run.pop);
+  assert.equal(hl.title, run.title);
   // 流程图按产物判断
   assert.ok(lockCopy(lock('pending_confirm'), { type: 'diagram.flowchart', key: 'overage-flow' }, '超量处理流程'));
   assert.deepEqual(lockActionTarget({ kind: 'confirm' }, lock('pending_confirm')), { page: 'wb-l2', query: { c: 'c1' } });

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
-import { errorText, relativeTime } from '../../api/errors.js';
+import { errorText } from '../../api/errors.js';
 import CodeEditor from '../../components/cm/CodeEditor.jsx';
 import { Button, Chip, Icon, Modal, Note } from '../../ui/index.jsx';
 import { LockBar, copyText } from './parts.jsx';
@@ -87,7 +87,7 @@ export default function RawEditor({ entry, lockInfo, lock, onBack, onSaved }) {
       await api.discardStudioDraft(pid, entry.id);
       await load(false);
       setSaved(false);
-      toast('已放弃你的修改，换成文件当前内容', 'undo');
+      toast('已换成文件当前内容', 'undo');
     } catch (e) {
       toast(errorText(e), 'alert');
     }
@@ -127,18 +127,18 @@ export default function RawEditor({ entry, lockInfo, lock, onBack, onSaved }) {
       {notes.big ? (
         <div style={{ padding: '12px 16px 0' }}>
           <Note tone="gray" icon="info">
-            仅显示前 {fmtBytes(notes.big.shown)}（文件共 {fmtBytes(notes.big.size)}），超出部分只读；完整内容请<a className="link" style={{ cursor: 'pointer' }} onClick={download}>下载原文件</a>。
+            只显示前 {fmtBytes(notes.big.shown)}，完整内容请<a className="link" style={{ cursor: 'pointer' }} onClick={download}>下载原文件</a>
           </Note>
         </div>
       ) : (
         <div style={{ padding: '12px 16px 0' }} className="col">
           {lockInfo ? <LockBar info={lockInfo} lock={lock} /> : null}
-          {notes.restored ? <Note icon="history">已恢复上次未保存的草稿（{hhmm(notes.restored.at)}）。你可以继续编辑，或先保存。</Note> : null}
+          {notes.restored ? <Note icon="history">已恢复上次未保存的草稿（{hhmm(notes.restored.at)}）</Note> : null}
           {changed ? (
             <div className="note amber">
               <Icon name="alert" />
               <div className="grow">
-                <b>文件已被{WHO[changed.by] || '其他人'}修改</b>（{[relativeTime(changed.at), changed.version_label ? `版本 ${changed.version_label}` : ''].filter(Boolean).join('，')}）。你的修改还在，刷新后对比再决定保留哪边。
+                <b>文件已被{WHO[changed.by] || '其他人'}修改</b>{changed.version_label ? `（版本 ${changed.version_label}）` : ''}，你的修改还在
               </div>
               <Button size="xs" kind="primary" onClick={() => navigate(pagePath('versions', pid), { path: file.path, from: file.last_change?.commit || '', to: 'WORKTREE' })}>刷新后对比</Button>
               <Button size="xs" kind="ghost" onClick={dropMine}>放弃我的修改</Button>
@@ -160,7 +160,7 @@ export default function RawEditor({ entry, lockInfo, lock, onBack, onSaved }) {
         onClose={() => setCancelOpen(false)}
         icon="alert"
         title="放弃未保存的修改？"
-        sub="取消编辑将丢弃本次改动（也可以先保存，或切去别处稍后回来继续）。"
+        sub="本次改动会丢掉。"
         w={440}
         foot={<><Button onClick={() => setCancelOpen(false)}>继续编辑</Button><Button kind="danger" onClick={cancel}>放弃修改</Button></>}
       />

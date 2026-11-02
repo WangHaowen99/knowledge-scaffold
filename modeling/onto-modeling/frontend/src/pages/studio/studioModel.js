@@ -57,39 +57,17 @@ const SHORT = { assistant_running: '运行中', pending_confirm: '待确认', au
 export function lockCopy(lock, target, name, { affected = [] } = {}) {
   if (!target || !isLocked(lock, target)) return null;
   const state = lockState(lock);
-  const slice = lock.slice?.name ? `「${lock.slice.name}」这一片` : '这一片';
+  const scope = lock.slice?.name ? `「${lock.slice.name}」` : '这一片';
   const decided = !!target.id && affected.includes(target.id);
-  const pop = decided
-    ? `「${name}」在这一片的写入范围里：等你决定的口径会改到它（决策卡的改动预览里列了它），确认生效或撤回前只读；范围外的条目照常编辑，保存即生效`
-    : `这个条目在${slice}的写入范围里：这一片的修改确认生效或撤回前只读（助手停下来等你确认时也一样）；范围外的条目照常编辑，保存即生效`;
+  const until = state === 'assistant_running' || state === 'pending_confirm' ? '确认生效或撤回前只读' : '这一片完成前只读';
+  const pop = decided ? '等你决定的口径会改到它，决定前只读' : `在${scope}的写入范围里，${until}`;
   if (state === 'assistant_running') {
-    return {
-      state,
-      chip: SHORT[state],
-      pop,
-      title: `助手正在改${slice}，「${name}」在写入范围里${decided ? '：等你决定的口径会改到它（决策卡的改动预览里列了它），' : '，'}确认生效或撤回后才能编辑`,
-      sub: '范围外的条目照常编辑，保存即生效；表格里带锁的是这一片的写入范围。你的草稿会保留。',
-      action: { kind: 'conversation', label: '回到对话' },
-    };
+    return { state, chip: SHORT[state], pop, title: '助手正在改这一片，确认生效或撤回前只读', sub: '', action: { kind: 'conversation', label: '回到对话' } };
   }
   if (state === 'pending_confirm') {
-    return {
-      state,
-      chip: SHORT[state],
-      pop,
-      title: `${slice}的修改还没确认，「${name}」在写入范围里，确认生效或撤回后才能编辑`,
-      sub: '助手已经停下来等你确认；范围外的条目照常编辑，保存即生效。你的草稿会保留。',
-      action: { kind: 'confirm', label: '去确认' },
-    };
+    return { state, chip: SHORT[state], pop, title: '这一片的修改待确认，确认生效或撤回前只读', sub: '', action: { kind: 'confirm', label: '去确认' } };
   }
-  return {
-    state,
-    chip: SHORT[state] || '只读',
-    pop,
-    title: `自主构建正在做${slice}，「${name}」在写入范围里，这一片自动合入后才能编辑`,
-    sub: '范围外的条目照常编辑，保存即生效。你的草稿会保留。',
-    action: { kind: 'run', label: '查看运行' },
-  };
+  return { state, chip: SHORT[state] || '只读', pop, title: '自主构建正在做这一片，完成前只读', sub: '', action: { kind: 'run', label: '查看运行' } };
 }
 
 // 锁定条按钮去哪：运行中回到对话；待确认去工作台对话里的本轮卡（wb-l2）；自主构建去运行页
