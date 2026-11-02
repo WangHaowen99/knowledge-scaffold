@@ -34,13 +34,18 @@ export function useAutobuild({ pid, cid, list }) {
   const [busy, setBusy] = useState(null);
 
   const listReady = !!list;
+  const [runsTick, setRunsTick] = useState(0);
   useEffect(() => {
     setProjectRun(null);
     if (convRun || !pid || !listReady) return undefined;
     let alive = true;
     api.autobuildRuns(pid, { state: 'running' }).then((r) => { if (alive) setProjectRun(r.items?.[0]?.run_id || null); }).catch(() => {});
     return () => { alive = false; };
-  }, [api, pid, convRun, listReady]);
+  }, [api, pid, convRun, listReady, runsTick]);
+  // 别的对话、别的页面开始了运行：重新找一次在跑的运行
+  useEffect(() => subscribe((env) => {
+    if (!convRun && !projectRun && env.type === 'autobuild.run.updated') setRunsTick((n) => n + 1);
+  }), [subscribe, convRun, projectRun]);
 
   const load = useCallback(async () => {
     if (!runId) { setRun(null); return; }

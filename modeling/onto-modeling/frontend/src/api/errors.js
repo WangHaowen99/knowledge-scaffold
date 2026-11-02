@@ -186,6 +186,7 @@ export const ERROR_MESSAGES = {
   anchor_not_found: '找不到这个出处',
   // 2.10 自主构建
   autobuild_running: '自主构建正在运行，先暂停或等它结束',
+  slice_reverted: '这一片已经撤回',
   autobuild_not_running: '自主构建不在可以控制的状态',
   run_not_found: '这次自主构建运行不存在',
   budget_exceeds_quota: '预算超出平台上限或剩余配额',

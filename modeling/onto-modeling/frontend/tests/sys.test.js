@@ -345,7 +345,9 @@ test('L4 平台限制：时长按小时填、按分钟存；校验 0–16 与正
   assert.deepEqual([f.hours, f.max_tokens, f.cost, f.currency], ['4', '10,000,000', '300', 'CNY']);
   assert.equal(limitsDirty(l, f), false);
   assert.deepEqual(limitsProblems(f), {});
-  assert.equal(limitsProblems({ ...f, max_concurrent_runs: '17' }).max_concurrent_runs, '整数 0–16');
+  assert.equal(limitsProblems({ ...f, max_concurrent_runs: '17' }).max_concurrent_runs, '整数 1–16');
+  // 最小值 1（主控定：0 不合法）
+  assert.equal(limitsProblems({ ...f, max_concurrent_runs: '0' }).max_concurrent_runs, '整数 1–16');
   assert.equal(limitsProblems({ ...f, hours: '0' }).hours, '0–72 小时');
   assert.equal(limitsProblems({ ...f, cost: '' }).cost, '填大于 0 的金额');
   const body = limitsBody({ ...f, hours: '1.5', night: false }, l);
@@ -542,6 +544,9 @@ test('mock SY-15～SY-17：保存配额与平台限制；单独设置的增删�
   assert.equal((await call('GET', `${A}/quotas`)).body.overrides.length, 2);
   const l = (await call('GET', `${A}/autobuild-limits`)).body;
   assert.equal((await call('PUT', `${A}/autobuild-limits`, { ...limitsBody(limitsForm(l), l), max_concurrent_runs: 17 })).status, 400);
+  const zero = await call('PUT', `${A}/autobuild-limits`, { ...limitsBody(limitsForm(l), l), max_concurrent_runs: 0 });
+  assert.deepEqual([zero.status, zero.body.details.fields.max_concurrent_runs], [422, 'min']);
+  assert.deepEqual(l.not_enforced, ['allow_production_collection', 'night_priority']);
   const lp = await call('PUT', `${A}/autobuild-limits`, limitsBody({ ...limitsForm(l), max_concurrent_runs: '6' }, l));
   assert.deepEqual([lp.body.max_concurrent_runs, lp.body.running], [6, 2]);
   const p1 = harness({ sys: 'p1' });
@@ -573,4 +578,11 @@ test('mock X-06：明文只在创建响应里出现一次（占位串），列�
   assert.ok(!JSON.stringify(list).includes(r.body.token));
   assert.equal((await call('DELETE', `${A}/service-tokens/${r.body.summary.id}`)).status, 204);
   assert.equal((await call('DELETE', `${A}/service-tokens/${r.body.summary.id}`)).status, 404);
+});
+
+test('开始自主构建被没确认的修改挡住时说清是哪件事（AB-04 changeset_in_progress）', async () => {
+  const { startErrorText } = await import('../src/pages/workbench/autobuildModel.js');
+  const { errorText } = await import('../src/api/errors.js');
+  assert.equal(startErrorText({ code: 'changeset_in_progress' }, errorText), '这一轮的修改还没确认生效或撤回');
+  assert.equal(startErrorText({ code: 'slice_reverted' }, errorText), errorText({ code: 'slice_reverted' }));
 });

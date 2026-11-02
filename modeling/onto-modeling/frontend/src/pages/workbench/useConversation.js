@@ -13,7 +13,7 @@ function reducer(state, action) {
   }
 }
 
-export function useConversation(preferredId) {
+export function useConversation(preferredId, { preferAutobuild = false } = {}) {
   const { api, services } = useApp();
   const { pid, subscribe } = useProject();
   const [list, setList] = useState(null);
@@ -36,11 +36,13 @@ export function useConversation(preferredId) {
     loadList().then((r) => {
       if (!alive) return;
       const items = r.items || [];
-      const pick = items.find((c) => c.id === preferredId) || items.find((c) => c.id === r.live?.conversation_id) || items[0];
+      // l4-run 页没指定对话时，取最近的运行对话
+      const runConv = preferAutobuild ? items.find((c) => c.kind === 'autobuild') : null;
+      const pick = items.find((c) => c.id === preferredId) || runConv || items.find((c) => c.id === r.live?.conversation_id) || items[0];
       setCid(pick?.id || null);
     }).catch((e) => alive && setLoadError(e));
     return () => { alive = false; };
-  }, [loadList, preferredId]);
+  }, [loadList, preferredId, preferAutobuild]);
 
   useEffect(() => {
     if (!cid) return undefined;

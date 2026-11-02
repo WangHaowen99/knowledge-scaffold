@@ -9,6 +9,7 @@ import {
   Button, Card, Check, Chip, Field, Icon, Inp, KV, Modal, Note, Prog, Radio, Seg, St, Toggle, cx, useOutside,
 } from '../../ui/index.jsx';
 import { evidenceFromSources } from '../../state/evidence.js';
+import { startErrorText } from '../workbench/autobuildModel.js';
 import { budgetText } from '../workbench/materials/model.js';
 import {
   advancedSummary, budgetOptions, budgetPct, finalizePolicy, fmtDuration, fmtMoney, fmtTokens, isRecommended, lastRunText,
@@ -131,7 +132,7 @@ export function StartDialog({ preview: initial, evidenceOn, onClose }) {
     } catch (e) {
       if (e.code === 'preview_expired') {
         try { setPreview(await api.previewAutobuild(pid, {})); toast('预览已刷新，请再确认', 'refresh'); } catch (e2) { toast(errorText(e2), 'alert'); }
-      } else toast(errorText(e), 'alert');
+      } else toast(startErrorText(e, errorText), 'alert');
     } finally {
       setBusy(false);
     }

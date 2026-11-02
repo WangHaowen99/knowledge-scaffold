@@ -621,7 +621,7 @@ export function limitsForm(l) {
 export function limitsProblems(f) {
   const out = {};
   const r = parseIntText(f.max_concurrent_runs);
-  if (r === null || Number.isNaN(r) || r < 0 || r > 16) out.max_concurrent_runs = '整数 0–16';
+  if (r === null || Number.isNaN(r) || r < 1 || r > 16) out.max_concurrent_runs = '整数 1–16';
   const h = parseNumText(f.hours);
   if (h === null || Number.isNaN(h) || h <= 0 || h > 72) out.hours = '0–72 小时';
   const t = parseIntText(f.max_tokens);

@@ -94,10 +94,14 @@ export function QuotaSection() {
   const lForm = lf || (limits.data ? limitsForm(limits.data) : null);
   const qDirty = !!(quota.data && qf && quotaDirty(quota.data, qf));
   const lDirty = !!(limits.data && lf && limitsDirty(limits.data, lf));
+  // SY-17 not_enforced：本期不生效的项（夜间优先、采集生产库）不显示，字段照常存
+  const limitsOff = new Set(limits.data?.not_enforced || []);
   const qp = tried && qForm ? quotaProblems(qForm) : {};
-  const lp = tried && lForm ? limitsProblems(lForm) : {};
+  // 服务端判的字段错误（SY-17 回 422 fields.max_concurrent_runs=min 等）与本地校验一起显示
+  const [srvLp, setSrvLp] = useState({});
+  const lp = { ...srvLp, ...(tried && lForm ? limitsProblems(lForm) : {}) };
   const setQ = (k) => (e) => setQf({ ...qForm, [k]: e.target.value });
-  const setL = (k) => (v) => setLf({ ...lForm, [k]: v && v.target ? v.target.value : v });
+  const setL = (k) => (v) => { setSrvLp({}); setLf({ ...lForm, [k]: v && v.target ? v.target.value : v }); };
   const err = (p, k, text) => (p[k] ? <FieldErr>{p[k]}</FieldErr> : text);
 
   const save = async () => {
@@ -110,7 +114,8 @@ export function QuotaSection() {
       setTried(false);
       toast('配额已保存，立即生效', 'check');
     } catch (e) {
-      toast(errorText(e), 'alert');
+      if (e.details?.fields?.max_concurrent_runs) setSrvLp({ max_concurrent_runs: '整数 1–16' });
+      else toast(errorText(e), 'alert');
     } finally {
       setBusy(false);
     }
@@ -215,19 +220,21 @@ export function QuotaSection() {
                 </div>
               </Field>
             </div>
-            {evidenceOn ? (
+            {evidenceOn && !limitsOff.has('allow_production_collection') ? (
               <div className="pl-sw mt8">
                 <div className="sm b">允许自主构建采集生产环境数据源</div>
                 <Toggle on={lForm.allow_production_collection} onChange={setL('allow_production_collection')} />
               </div>
             ) : null}
-            <div className={cx('pl-sw', !evidenceOn && 'mt8')}>
-              <div>
-                <div className="sm b">夜间优先</div>
-                <div className="xs muted">{nightText(limits.data.night_priority)}</div>
+            {limitsOff.has('night_priority') ? null : (
+              <div className={cx('pl-sw', !evidenceOn && 'mt8')}>
+                <div>
+                  <div className="sm b">夜间优先</div>
+                  <div className="xs muted">{nightText(limits.data.night_priority)}</div>
+                </div>
+                <Toggle on={lForm.night} onChange={setL('night')} />
               </div>
-              <Toggle on={lForm.night} onChange={setL('night')} />
-            </div>
+            )}
           </div>
         </div>
       )}

@@ -168,3 +168,9 @@ export function reportSub(r) {
 }
 
 export const REPORT_CHIP = { completed: ['全部切片完成', 'blue'], stopped: ['在安全点停下', 'amber'], converted: ['已转为陪伴', 'indigo'], budget_exhausted: ['预算用完', 'amber'], failed: ['出错停下', 'red'] };
+
+// AB-04 开始自主构建失败的说法：有没确认的助手修改（changeset_in_progress）时说清是哪件事，其余按通用错误文案
+export function startErrorText(e, fallback) {
+  if (e?.code === 'changeset_in_progress') return '这一轮的修改还没确认生效或撤回';
+  return fallback(e);
+}

@@ -157,6 +157,8 @@ export function autobuildLimits() {
     allow_production_collection: PLATFORM_LIMITS.allow_production_collection,
     night_priority: { enabled: true, start: '20:00', end: '08:00' },
     running: 2,
+    // 与后端（B5b）一致：生产库采集授权、夜间优先本期只存不用
+    not_enforced: ['allow_production_collection', 'night_priority'],
   };
 }
 

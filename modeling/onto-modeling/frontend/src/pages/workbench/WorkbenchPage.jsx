@@ -472,7 +472,7 @@ export default function WorkbenchPage({ route }) {
   const { pid, meta, flow, scope, inboxCount, hasPlugin, extensions } = project;
   // 增量更新（incremental）落到进行中的变更清单所在的对话
   const incTarget = useIncrementalTarget(route);
-  const conv = useConversation(route.query?.c || incTarget.cid);
+  const conv = useConversation(route.query?.c || incTarget.cid, { preferAutobuild: route.page === 'l4-run' });
   const convOps = useConversationOps(conv);
   const { cid, state, list } = conv;
   const [drawer, setDrawer] = useState(false);

@@ -8,6 +8,7 @@ import {
   Button, Chip, KV, Modal, Note,
 } from '../../../ui/index.jsx';
 import { evidenceInProject } from '../../../state/evidence.js';
+import { startErrorText } from '../autobuildModel.js';
 import { budgetText } from './model.js';
 
 async function currentBlueprint(api, pid) {
@@ -29,14 +30,15 @@ export function AutobuildPreviewDialog({ preview: initial, onClose }) {
   const start = async () => {
     setBusy(true);
     try {
-      await api.startAutobuild(pid, { preview_token: preview.preview_token });
-      toast('自主构建已开始', 'rocket');
+      const run = await api.startAutobuild(pid, { preview_token: preview.preview_token });
+      toast(run?.state === 'queued' ? `运行 #${run.run_no} 已排队，轮到时自动开始` : '自主构建已开始', 'rocket');
       onClose();
-      navigate(pagePath('l4-run', pid));
+      // 运行在新开的运行对话里（AB-04 带 conversation_id）：直接切过去，运行条、进展都在那里
+      navigate(pagePath('l4-run', pid), run?.conversation_id ? { c: run.conversation_id } : undefined);
     } catch (e) {
       if (e.code === 'preview_expired') {
         try { setPreview(await api.previewAutobuild(pid, {})); toast('预览已刷新，请再确认', 'refresh'); } catch (e2) { toast(errorText(e2), 'alert'); }
-      } else toast(errorText(e), 'alert');
+      } else toast(startErrorText(e, errorText), 'alert');
     } finally {
       setBusy(false);
     }
