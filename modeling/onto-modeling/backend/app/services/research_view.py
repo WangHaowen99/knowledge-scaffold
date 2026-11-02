@@ -88,10 +88,14 @@ def _script(root: Path, name: str):
 
 
 def report_paths(where: Path) -> list[str]:
+    """资料分析报告（core 的列法），去掉路径上有符号链接的（助手在副本里建的链接可以指到任意文件）。"""
+    from ..kernel.artifacts import index
+
     try:
-        return _script(where, "research_review").report_paths(where)
+        rels = _script(where, "research_review").report_paths(where)
     except Exception:  # noqa: BLE001 - 契约库加载不了时当没有报告
         return []
+    return [rel for rel in rels if index.inside_no_links(where, rel) is not None]
 
 
 def _gap_lines(body: str) -> list[tuple[bool, str]]:
@@ -119,7 +123,7 @@ def _parse(where: Path) -> dict:
     for rel in report_paths(where):
         try:
             raw = (where / rel).read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             continue
         texts[rel] = raw
         sections = checker.extract_sections(raw)

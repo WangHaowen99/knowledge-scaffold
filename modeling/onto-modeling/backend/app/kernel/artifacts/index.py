@@ -129,6 +129,23 @@ def inside(root: Path, rel: str) -> Path | None:
     return path
 
 
+def inside_no_links(root: Path, rel: str) -> Path | None:
+    """比 `inside` 更严：路径上任何一段（含目录）是符号链接都不认。助手能在工作区、副本里随手建链接，
+    报告、资料分析这类按文件名列出来再读的入口用它，不读链接指向的任何东西。"""
+    parts = [part for part in str(rel or "").replace("\\", "/").split("/") if part]
+    if not parts or any(part in (".", "..") or "\x00" in part for part in parts):
+        return None
+    current = Path(root)
+    try:
+        for part in parts:
+            current = current / part
+            if current.is_symlink():
+                return None
+    except (OSError, ValueError):
+        return None
+    return inside(root, "/".join(parts))
+
+
 def _files(atype: ArtifactType, root: Path) -> list[str]:
     base = Path(root) / atype.glob_root() if atype.glob_root() else Path(root)
     if not base.is_dir():

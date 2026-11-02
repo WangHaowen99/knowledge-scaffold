@@ -92,7 +92,7 @@ def locate(manager, project_id: str, report_id: str) -> tuple[Path, str]:
     if copy is not None and copy not in places:
         places.append(copy)
     for where in places:
-        if (where / rel).is_file():
+        if _file(where, rel) is not None:
             return where, rel
     raise ReportError("报告不存在", 404, "not_found", {"report_id": report_id})
 
@@ -104,8 +104,19 @@ def report_type(rel: str) -> str:
     return next((kind for kind, pattern in _TYPE_PATTERNS if pattern.search(name)), "other")
 
 
+def _file(where: Path, rel: str) -> Path | None:
+    """报告文件：路径上没有符号链接、仍在这个目录里（助手能在副本里建链接指到任意文件）。"""
+    from ..kernel.artifacts import index
+
+    path = index.inside_no_links(where, rel)
+    return path if path is not None and path.is_file() else None
+
+
 def _read(where: Path, rel: str) -> tuple[str, bool]:
-    data = (where / rel).read_bytes()
+    path = _file(where, rel)
+    if path is None:
+        raise ReportError("报告不存在", 404, "not_found")
+    data = path.read_bytes()
     return data[:TEXT_BYTES].decode("utf-8", errors="replace"), len(data) > TEXT_BYTES
 
 
@@ -187,15 +198,16 @@ def _paths(manager, project_id: str) -> list[tuple[Path, str]]:
     root = manager.project_root(project_id)
     found: dict[str, Path] = {}
     folder = root / "reports"
-    for path in sorted(folder.rglob("*.md")) if folder.is_dir() else []:
+    for path in sorted(folder.rglob("*.md")) if folder.is_dir() and not folder.is_symlink() else []:
         if path.is_file() and not path.is_symlink():
             found.setdefault(path.relative_to(root).as_posix(), root)
     where = research_view.base(manager, project_id)
     for rel in research_view.report_paths(where):
-        found.setdefault(rel, where)
+        if _file(where, rel) is not None:
+            found.setdefault(rel, where)
     copy = _copy(manager, project_id)
     copy_reports = copy / "reports" if copy is not None else None
-    if copy_reports is not None and copy_reports.is_dir():
+    if copy_reports is not None and copy_reports.is_dir() and not copy_reports.is_symlink():
         for path in sorted(copy_reports.rglob("*.md")):
             if path.is_file() and not path.is_symlink():
                 found.setdefault(path.relative_to(copy).as_posix(), copy)

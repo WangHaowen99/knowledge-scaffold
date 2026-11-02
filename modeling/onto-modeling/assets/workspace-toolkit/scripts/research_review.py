@@ -92,13 +92,14 @@ def report_paths(root: Path) -> list[str]:
     （工作区 CLI 的用法），那时 relative_to 会抛 ValueError。
     """
     directory = root / RESEARCH_DIR
-    if not directory.is_dir():
+    # 符号链接（目录本身或报告文件）不算报告：链接可以指到工作区外
+    if not directory.is_dir() or directory.is_symlink():
         return []
     prefix = RESEARCH_DIR.as_posix()
     return sorted(
         f'{prefix}/{path.relative_to(directory).as_posix()}'
         for path in directory.rglob('*.md')
-        if path.is_file() and path.name.lower() != 'index.md'
+        if path.is_file() and not path.is_symlink() and path.name.lower() != 'index.md'
     )
 
 
