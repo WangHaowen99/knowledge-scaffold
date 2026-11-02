@@ -96,6 +96,16 @@ export function openModeFor(type, { bundled = new Set() } = {}) {
   return { kind: 'generic', layout: detail.layout || 'sections' };
 }
 
+/**
+ * 打开器的状态：AR-01 还没回来 → loading；读取出错 → error（给错误与重试，不能当成「插件已停用」）；
+ * 读到了但没有这个类型 → disabled；其余按 openModeFor。
+ */
+export function openerState({ types, error, type, bundled = new Set() }) {
+  if (error) return { kind: 'error', error };
+  if (!types) return { kind: 'loading' };
+  return openModeFor(types.find((t) => t.type === type) || null, { bundled });
+}
+
 // 产物类型前缀就是包名（AR-01 type 规则）
 export const packOfType = (type) => String(type || '').split('.')[0] || '';
 

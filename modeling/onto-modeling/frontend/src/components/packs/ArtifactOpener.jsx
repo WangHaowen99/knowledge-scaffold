@@ -5,7 +5,8 @@ import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { BUNDLED, bundledEditor } from '../../app/packEditors.js';
-import { openModeFor, packOfType } from '../../app/packUi.js';
+import { openerState, packOfType } from '../../app/packUi.js';
+import { errorText } from '../../api/errors.js';
 import { isLocked } from '../../state/readonly.js';
 import { Button, Icon, Modal } from '../../ui/index.jsx';
 import ArtifactDetail from './ArtifactDetail.jsx';
@@ -41,18 +42,29 @@ function FrameDialog({ type, mode, artifact, types, onClose }) {
   );
 }
 
+function LoadError({ error, onRetry, onClose }) {
+  return (
+    <Modal open onClose={onClose} icon="alert" danger title="没打开" w={420} foot={<Button kind="primary" icon="refresh" onClick={onRetry}>重试</Button>}>
+      <div className="sm muted">{errorText(error)}</div>
+    </Modal>
+  );
+}
+
 export default function ArtifactOpener({ artifact, onClose }) {
   const { api } = useApp();
   const { pid } = useProject();
   const [types, setTypes] = useState(null);
+  const [error, setError] = useState(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let live = true;
-    api.artifactTypes(pid).then((r) => { if (live) setTypes(r.items || []); }).catch(() => { if (live) setTypes([]); });
+    setError(null);
+    api.artifactTypes(pid).then((r) => { if (live) setTypes(r.items || []); }).catch((e) => { if (live) setError(e); });
     return () => { live = false; };
-  }, [api, pid]);
+  }, [api, pid, attempt]);
 
   const type = types ? types.find((t) => t.type === artifact.type) || null : undefined;
-  const mode = useMemo(() => (type === undefined ? null : openModeFor(type, { bundled: BUNDLED })), [type]);
+  const mode = useMemo(() => openerState({ types, error, type: artifact.type, bundled: BUNDLED }), [types, error, artifact.type]);
   // 平台专用组件在自己的页面里（如求解契约在代码生成页）：关掉弹窗、过去
   const page = mode?.kind === 'page' ? mode : null;
   useEffect(() => {
@@ -61,7 +73,8 @@ export default function ArtifactOpener({ artifact, onClose }) {
     navigate(pagePath(page.page, pid), page.query);
   }, [page, pid, onClose]);
 
-  if (!mode || mode.kind === 'page') return null;
+  if (mode.kind === 'error') return <LoadError error={mode.error} onRetry={() => setAttempt((n) => n + 1)} onClose={onClose} />;
+  if (mode.kind === 'loading' || mode.kind === 'page') return null;
   if (mode.kind === 'disabled') return <PluginOff type={artifact.type} onClose={onClose} />;
   if (mode.kind === 'bundled') {
     const Editor = bundledEditor(mode.key);

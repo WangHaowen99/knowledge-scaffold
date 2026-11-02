@@ -221,3 +221,12 @@ test('审查第 4 条：ui_api 范围写法和后端同一套（^、~、省略�
   const wrong = data.cases.filter((c) => uiApiSatisfies(c.range, c.version) !== c.satisfies);
   assert.deepEqual(wrong, []);
 });
+
+test('审查第 6 条：读不到产物类型（AR-01 出错）和包没启用分开——出错给错误与重试，不说「插件已停用」', async () => {
+  const { openerState } = await import('../src/app/packUi.js');
+  const flow = { type: 'diagram.flowchart', pack: 'diagram', view: { detail: { layout: 'custom', editor: { id: 'flowchart', pack: 'diagram', mode: 'bundled', ui_api: '' } } } };
+  assert.deepEqual(openerState({ types: null, error: null, type: 'diagram.flowchart' }), { kind: 'loading' });
+  assert.equal(openerState({ types: null, error: { code: 'internal_error' }, type: 'diagram.flowchart' }).kind, 'error');
+  assert.equal(openerState({ types: [], error: null, type: 'diagram.flowchart' }).kind, 'disabled');
+  assert.equal(openerState({ types: [flow], error: null, type: 'diagram.flowchart', bundled }).kind, 'bundled');
+});
