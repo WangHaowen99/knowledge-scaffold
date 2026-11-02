@@ -485,9 +485,18 @@ def cancel_pending(manager, project_id: str, name: str, actor: str = "") -> dict
         elif lock.get(name):
             lock.get(name).enabled = False
 
-    if not _revert_pending(manager, project_id, name, actor):
+    if not _revert_pending(manager, project_id, name, actor) or not _matches_active(root, name, before):
+        # 撤回的只是最近一次（同一条消息前切换了两次时，前一次还在）：再按生效中的版本改回（审查第 7 条）
         _switch(manager, project_id, mutate, f"plugin: 撤销待生效的切换 {name}", actor, pack=name, kind="cancel")
     return {"pack": _pack_view(manager, project_id, name) or _unlocked_view(manager, name, current)}
+
+
+def _matches_active(root, name: str, before: dict | None) -> bool:
+    """锁文件里这个包和生效中的装配一致：生效中有它就版本相同且启用，没有它就不在锁里或已停用。"""
+    entry = (lockfile.read(root) or PackLock()).get(name)
+    if before:
+        return bool(entry and entry.enabled and entry.version == before["version"])
+    return entry is None or not entry.enabled
 
 
 def _unlocked_view(manager, name: str, entry) -> dict | None:

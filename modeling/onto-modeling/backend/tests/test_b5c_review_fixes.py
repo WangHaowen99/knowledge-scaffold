@@ -385,3 +385,26 @@ def test_review_6_runner_reports_truncation(fake_sandbox):
     big = client.run_in_gateway(bundle, "big.py", [[]])[0]
     ok = client.run_in_gateway(bundle, "ok.py", [[]])[0]
     assert big["stdout_truncated"] is True and ok["stdout_truncated"] is False
+
+
+# ---- 审查第 7 条：同一条消息前切换了两次，PL-10 撤销要回到生效中的版本 ----
+
+def test_review_7_cancel_pending_undoes_stacked_switches(env):
+    from app.services.packs import lockfile
+    from tests.test_node_pack_lifecycle import node_ids
+
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    install(manager, tmp_path, "0.1.0")
+    install(manager, tmp_path, "0.2.0")
+    manager.packs.repository.set_channel("naming", "stable", "0.1.0", by="admin")
+    assert client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "naming"}).status_code == 201
+    upgraded = client.post(f"/api/v1/projects/{project_id}/packs/naming/upgrade", json={"to_version": "0.2.0"})
+    assert upgraded.status_code == 200, upgraded.text
+    cancelled = client.post(f"/api/v1/projects/{project_id}/packs/naming/cancel-pending")
+    assert cancelled.status_code == 200
+    entry = lockfile.read(root).get("naming")
+    assert entry is None or not entry.enabled
+    assert client.get(f"/api/v1/projects/{project_id}/assembly").json()["state"] == "applied"
+    assert "naming.check" not in node_ids(root)
+    assert cancelled.json()["pack"]["status"] == "disabled"
