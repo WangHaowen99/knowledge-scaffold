@@ -11,10 +11,9 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from .. import config
 from ..api import deps
 from ..api.errors import ApiError
-from ..services import mainline, material_refs, material_text, uploads
+from ..services import mainline, material_refs, material_text, research_view, uploads
 from ..services.workspace.layout import RESOURCE_DIRECTIVES, RESOURCE_SUBDIRS, _content_revision, is_auto_detected
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/resources", tags=["resources"])
@@ -28,24 +27,12 @@ PURPOSES = (
     {"value": "evidence", "label": "通用业务依据"},
     {"value": "auto", "label": "由助手判断"},
 )
-_KINDS = {
-    ".doc": ("doc", "doc"), ".docx": ("doc", "doc"), ".pdf": ("pdf", "doc"),
-    ".xls": ("xls", "xls"), ".xlsx": ("xls", "xls"), ".xlsm": ("xls", "xls"), ".csv": ("csv", "csv"),
-    ".drawio": ("drawio", "drawio"), ".html": ("html", "html"), ".htm": ("html", "html"),
-    ".png": ("image", None), ".jpg": ("image", None), ".jpeg": ("image", None),
-    ".md": ("text", "text"), ".markdown": ("text", "text"), ".txt": ("text", "text"),
-}
 MAX_MATERIALS = 500
 
 
-def _is_template(rel: str) -> bool:
-    """资源模板（建项目时从 assets/resource-template 复制来的，如图示说明定义）。"""
-    return (Path(config.ASSETS_DIR) / "resource-template" / rel.removeprefix("resource/")).is_file()
-
-
-def _material(root: Path, rel: str, directives: dict, referenced: int = 0) -> dict:
+def _material(root: Path, rel: str, directives: dict, referenced: int = 0, coverage: dict | None = None) -> dict:
     path = root / rel
-    kind, preview = _KINDS.get(path.suffix.lower(), ("text", None))
+    kind, preview = research_view.kind_of(rel)
     directive = directives.get(rel)
     purpose = directive.get("purpose", "auto") if isinstance(directive, dict) else "auto"
     data = path.read_bytes()
@@ -61,24 +48,16 @@ def _material(root: Path, rel: str, directives: dict, referenced: int = 0) -> di
         "reading_mode": (directive or {}).get("reading_mode", "on_demand") if isinstance(directive, dict) else "on_demand",
         "is_revision": False,
         "revision_task": None,
-        "is_template": _is_template(rel),
+        "is_template": research_view.is_template(rel),
         "referenced": referenced,
-        "coverage": None,
+        "coverage": coverage,
         "preview": preview,
         "revision": _content_revision(data),
     }
 
 
 def _material_paths(root: Path) -> list[str]:
-    found = []
-    for subdir in sorted(RESOURCE_SUBDIRS):
-        folder = root / "resource" / subdir
-        if not folder.is_dir():
-            continue
-        for path in sorted(folder.rglob("*")):
-            if path.is_file() and not path.is_symlink() and not path.name.startswith("."):
-                found.append(path.relative_to(root).as_posix())
-    return found[:MAX_MATERIALS]
+    return research_view.material_paths(root)[:MAX_MATERIALS]
 
 
 @router.get("")
@@ -87,7 +66,8 @@ def list_resources(project_id: str, request: Request):
     directives = deps.workspaces.resource_directives(project_id)
     paths = _material_paths(root)
     referenced = material_refs.counts(root, paths)
-    items = [_material(root, rel, directives, referenced.get(rel, 0)) for rel in paths]
+    coverage = research_view.material_coverage(deps.workspaces, project_id)
+    items = [_material(root, rel, directives, referenced.get(rel, 0), coverage.get(rel)) for rel in paths]
     groups = [
         {"key": key, "label": label, "items": [item for item in items if item["group"] == key]}
         for key, label in GROUP_LABELS
@@ -208,7 +188,7 @@ def preview(project_id: str, request: Request, path: str = "", around: str = "",
     return {
         "path": rel,
         "format": Path(rel).suffix.lower().lstrip("."),
-        "coverage": None,
+        "coverage": research_view.coverage(deps.workspaces, project_id, rel),
         "blocks": data["blocks"],
         "next_cursor": data["next_cursor"],
     }

@@ -221,6 +221,25 @@ def answer(manager, project_id: str, question_id: str, reply: dict, *, actor: st
     return view(manager, project_id)
 
 
+def add_question(manager, project_id: str, title: str, *, actor: str, background: str = "") -> str:
+    """资料问题记为待答问题（R-10）：加进蓝图的「待你回答」（同时进待处理的决策），返回问题编号。"""
+    import copy
+
+    loaded = read(manager, project_id)
+    if loaded is None:
+        raise WorkspaceError("还没有建模蓝图", 404, "blueprint_not_found")
+    module = script(loaded["root"])
+    doc = copy.deepcopy(loaded["doc"])
+    question_id = f"q{module._next(doc, 'question')}"
+    doc.setdefault("questions", []).append({"id": question_id, "title": module._text(title, 200),
+                                            "background": module._text(background, 400), "options": [], "answer": None})
+    problems = module.validate(doc)
+    if problems:
+        raise _invalid(problems[0])
+    _write(manager, project_id, loaded, doc, actor=actor, summary="资料问题记为待答问题")
+    return question_id
+
+
 def prepare_confirm(manager, project_id: str, body: dict) -> dict:
     """BP-03 第一步（不改任何东西）：核对版本号、构建方式；蓝图在没确认的变更集里时返回要先确认生效的变更集。"""
     next_mode = body.get("next") or (manager.get_project(project_id) or {}).get("build_mode") or "L2"
