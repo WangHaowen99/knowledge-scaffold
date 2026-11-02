@@ -492,16 +492,13 @@ def round_card(manager, project_id: str, record: dict, card_id: str) -> dict:
     title = f"改了 {total} 处，" + ("检查全部通过" if not errors and not warnings else
                                    f"检查有 {errors} 个新错误" if errors else f"检查有 {warnings} 个新警告")
     merged = record.get("merged") or {}
-    lock = scope_lock(manager, project_id) if card_state == "pending_confirm" else None
-    lock_note = ""
-    if lock and lock["state"] != "none":
-        lock_note = f"确认生效或撤回之前，这 {len(lock['entries']) + len(lock['artifacts'])} 项在编辑器里只读"
+    # 说明槽位不下发（UI 文案口径 ⑤）：只读说明由前端按写入范围算；增量更新那一轮不带副标题
     return {
         "card_id": card_id,
         "card_type": "round_changes",
         "eyebrow": "这一轮改了什么",
         "title": title,
-        "subtitle": record.get("purpose") or "",
+        "subtitle": "" if record.get("change_list_id") else record.get("purpose") or "",
         "status": {"key": {"merged": "confirmed", "discarded": "skipped"}.get(card_state, "pending"),
                    "label": {"merged": "已确认生效", "discarded": "已撤回"}.get(card_state, "待确认")},
         "plugin": None,
@@ -511,7 +508,6 @@ def round_card(manager, project_id: str, record: dict, card_id: str) -> dict:
         "checks": {"errors": errors, "warnings": warnings},
         "groups": [{"kind": kind, "label": GROUP_LABELS[kind], "items": groups[kind]}
                    for kind in GROUP_ORDER if kind in groups],
-        "lock_note": lock_note,
         "next_version_label": merged.get("version_label") or _next_label(root),
         "state": card_state,
         "merged_version_label": merged.get("version_label"),

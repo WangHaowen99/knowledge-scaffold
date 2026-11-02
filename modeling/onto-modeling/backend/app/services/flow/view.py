@@ -166,6 +166,9 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     overlay.mark_backfill(flow, states, hits)
     passed = overlay.backfill_ids(flow, hits)
     hooks = _hooks_by_node(flow)
+    from . import node_kinds
+
+    script_runs = node_kinds.last_runs(root)
     research = states.get("core.research")
     if research and blueprint_context["state"] == "draft" and research["state"] in ("confirmed", "stale"):
         # 资料分析含切片规划：蓝图草案没确认之前，这一步等你确认（详设 6.8）
@@ -186,7 +189,6 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
             "progress": sliced["progress"] if sliced and sliced["sliced"] and node["id"] == sliced["node_id"] else None,
             "version": node.get("version") or "",
             "per_slice": bool(node.get("per_slice")),
-            "note": node.get("note"),
             "blocks": list(node.get("blocks") or []),
             "actions": [] if item.get("broken") else _actions(node, item["state"], hooks.get(node["id"], []),
                                                               blueprint_draft=blueprint_context["state"] == "draft"),
@@ -197,6 +199,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
             "panel": bool(node.get("panel")),
             # 可补做的节点做完之前不计入进度：越过插入位置的项目，主线进度不往回退（详设 6.9 第 4 步）
             "counts_in_progress": bool(node.get("progress", True)) and node["id"] not in passed,
+            **({"last_run": script_runs.get(node["id"])} if node.get("kind") == "script" else {}),
         })
     nodes += [_disabled_view(node) for node in overlay.disabled_nodes(root, flow)]
     sections = [
@@ -257,7 +260,7 @@ def _disabled_view(node: dict) -> dict:
         "id": node["id"], "title": str(node.get("title") or node["id"]), "kind": node.get("kind", "agent"),
         "placement": node.get("placement", "step"), "section": node.get("section", "optional"),
         "state": "skipped", "flags": flags, "display_state": node_state.display("skipped", flags),
-        "progress": None, "version": node.get("version") or "", "per_slice": False, "note": None, "blocks": [],
+        "progress": None, "version": node.get("version") or "", "per_slice": False, "blocks": [],
         "actions": [], "plugin": {"name": node["pack"], "label": node["pack"]}, "optional": True, "panel": False,
         "counts_in_progress": False,
     }

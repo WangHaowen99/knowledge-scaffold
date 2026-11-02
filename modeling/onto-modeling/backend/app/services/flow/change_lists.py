@@ -318,5 +318,4 @@ def impact(record: dict) -> dict:
                    {"label": "挑回归场景", "duration_ms": 0}],
         "stale": stale,
         "regression": {"affected": [], "guard": []},
-        "semantic_scope_text": f"只对这 {len(stale)} 个产物做语义判断，其余不动",
     }

@@ -394,7 +394,6 @@ def round_changes_card(record: dict) -> dict:
         "checks": {"errors": 0, "warnings": 0},
         "groups": [{"kind": kind, "label": _GROUP_LABELS[kind], "items": groups[kind]}
                    for kind in sorted(groups, key=order.index)],
-        "lock_note": "",
         "next_version_label": version_label,
         "state": "merged",
         "merged_version_label": version_label,

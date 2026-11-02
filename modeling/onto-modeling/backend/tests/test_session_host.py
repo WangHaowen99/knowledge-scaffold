@@ -61,7 +61,7 @@ QUESTION = {"question_id", "kind", "conversation_id", "exec_id", "step_label", "
 OPTION = {"id", "key", "label", "consequence", "recommended", "preview", "custom"}
 CARD = {"card_id", "card_type", "eyebrow", "title", "subtitle", "status", "plugin", "open"}
 CARD_TYPES = {
-    "round_changes": {"changeset_id", "title", "checks", "groups", "lock_note", "next_version_label", "state",
+    "round_changes": {"changeset_id", "title", "checks", "groups", "next_version_label", "state",
                       "merged_version_label", "remaining_failures"},
     "resume": {"exec_id", "title", "reason", "position", "saved", "resumable", "not_resumable_reason"},
 }

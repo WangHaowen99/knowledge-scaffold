@@ -103,13 +103,15 @@ def test_sources_counts_and_detail_shapes(env):
     assert found["feedback:fb1"]["source"] == "external"
     assert found[f"resumable:{record['id']}"]["actions"] == ["resume", "abandon", "dismiss"]
     assert found["pending_changeset:cs-1"]["actions"] == ["merge", "discard", "dismiss"]
-    item_keys = {"id", "kind", "kind_label", "title", "meta", "slice", "run", "source", "confidence",
+    # 说明槽位 meta 不再下发（UI 文案口径 ⑤）
+    item_keys = {"id", "kind", "kind_label", "title", "slice", "run", "source", "confidence",
                  "high_confidence", "pack", "impact", "created_at", "actions", "batchable"}
     assert all(set(item) == item_keys for item in body["items"])
     counts = body["counts"]
     assert counts["total"] == len(body["items"]) and counts["by_filter"]["stale"] >= 1
     assert counts["by_filter"]["resumable"] == 1 and counts["by_filter"]["feedback"] == 1
     assert counts["by_pack"]["trace"] >= 1
+    assert "evidence_conflict" not in counts["by_filter"]  # 证据源本期不开放
     assert set(body["today"]) == {"handled", "total", "eta_minutes", "remaining_by_filter"}
     assert body["autobuild_summary"] is None
     assert set(kinds(client, project_id, filter="stale")) == {key for key in found if key.startswith("stale:")}
@@ -185,7 +187,7 @@ def test_decision_items_come_from_the_live_session(env):
 
     future = asyncio.run(make())
     items = kinds(client, project_id, filter="decision")
-    assert list(items) == ["decision:q-1"] and items["decision:q-1"]["meta"] == "2 个选项 · 推荐 A"
+    assert list(items) == ["decision:q-1"] and "meta" not in items["decision:q-1"]
     assert items["decision:q-1"]["batchable"] is False
     detail = client.get(f"/api/v1/projects/{project_id}/inbox/decision:q-1").json()["detail"]
     assert detail["question_id"] == "q-1"

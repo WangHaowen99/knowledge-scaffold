@@ -140,7 +140,7 @@ def test_human_node_card_is_a_decision_in_the_inbox_until_answered(env):
     listed = client.get(f"/api/v1/projects/{project_id}/inbox", params={"filter": "decision"}).json()
     item = next(entry for entry in listed["items"] if entry["id"] == item_id)
     assert item["kind_label"] == "决策" and item["source"] == "plugin" and item["pack"] == "naming"
-    assert item["title"] == "线下会签结果" and item["meta"] == "2 个选项" and item["batchable"] is False
+    assert item["title"] == "线下会签结果" and "meta" not in item and item["batchable"] is False
     assert item["actions"] == ["answer", "dismiss"]
     assert listed["counts"]["by_filter"]["decision"] == 1 and listed["counts"]["by_pack"]["naming"] >= 1
     detail = client.get(f"/api/v1/projects/{project_id}/inbox/{item_id}").json()["detail"]

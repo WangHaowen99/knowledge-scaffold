@@ -47,6 +47,8 @@ FILTERS = {
     "evidence_conflict": ("evidence_conflict",), "change_list": ("change_list",), "stale": ("stale",),
     "resumable": ("resumable",), "feedback": ("feedback",),
 }
+# 证据源本期不开放（ADR-0056）：筛选照样认，计数里不出这一项
+COUNTED_FILTERS = [name for name in FILTERS if name != "evidence_conflict"]
 DISMISSED_REL = Path(".onto") / "run" / "inbox-dismissed.json"
 HANDLED_REL = Path(".onto") / "run" / "inbox-handled.jsonl"
 MINUTES_PER_ITEM = 2
@@ -118,12 +120,12 @@ def _iso(value) -> str | None:
     return iso(value)
 
 
-def _item(kind: str, source_id: str, title: str, *, meta: str = "", source: str = "assistant",
+def _item(kind: str, source_id: str, title: str, *, source: str = "assistant",
           created_at=None, pack: str | None = None, impact: list | None = None, slice_=None, run=None,
           confidence=None, batchable: bool = True, extra: dict | None = None, fingerprint: str = "",
           actions: list[str] | None = None) -> dict:
     item = {
-        "id": f"{kind}:{source_id}", "kind": kind, "kind_label": KIND_LABELS[kind], "title": title, "meta": meta,
+        "id": f"{kind}:{source_id}", "kind": kind, "kind_label": KIND_LABELS[kind], "title": title,
         "slice": slice_, "run": run, "source": source, "confidence": confidence,
         "high_confidence": bool(confidence is not None and confidence >= 0.8), "pack": pack,
         "impact": impact or [], "created_at": _iso(created_at or time.time()),
@@ -150,12 +152,8 @@ def _decisions(project_id: str) -> list[dict]:
         for question in request.questions or []:
             if question["question_id"] in request.answers:
                 continue
-            recommended = next((option for option in question.get("options") or [] if option.get("recommended")), None)
-            meta = f"{len([o for o in question.get('options') or [] if not o.get('custom')])} 个选项"
-            if recommended:
-                meta += f" · 推荐 {recommended.get('key') or recommended.get('label')}"
             items.append(_item("decision", question["question_id"], question.get("title") or "需要你决定",
-                               meta=meta, source="assistant", batchable=False,
+                               source="assistant", batchable=False,
                                impact=[{"label": "改动预览", "items": [ref.get("name") or ref.get("title") or ""
                                                                     for ref in question.get("affected") or []]}]
                                if question.get("affected") else [],
@@ -176,7 +174,7 @@ def _human_nodes(root: Path, flow: dict) -> list[dict]:
         question = entry["question"]
         pack = node.get("pack") if node.get("pack") not in (None, "core") else None
         items.append(_item("decision", question_id, question.get("title") or "需要你决定",
-                           meta=f"{len(question.get('options') or [])} 个选项", source="plugin", pack=pack,
+                           source="plugin", pack=pack,
                            created_at=entry.get("asked_at"), batchable=False,
                            extra={"question": question, "conversation_id": question.get("conversation_id"),
                                   "human_node": node["id"]}))
@@ -205,7 +203,7 @@ def _blueprint_questions(manager, project_id: str) -> list[dict]:
                   "multi": False, "allow_custom": True, "custom_placeholder": "", "state": "open", "answer": None,
                   "inbox_item_id": f"decision:{source_id}", "affected": []}
         items.append(_item("decision", source_id, question.get("title") or "建模蓝图的问题",
-                           meta=f"{len(options)} 个选项", source="assistant", batchable=False,
+                           source="assistant", batchable=False,
                            created_at=updated, extra={"question": detail, "blueprint_question": question["id"]},
                            fingerprint=f"{source_id}:{doc.get('version_no')}"))
     return items
@@ -219,9 +217,7 @@ def _resumables(project_id: str, root: Path, flow: dict) -> list[dict]:
         view = exec_records.view(record, root=root, flow=flow)
         if not view["resumable"]:
             continue
-        phase = view["phase"]["label"]
         items.append(_item("resumable", record["id"], f"「{view['command_label']}」没做完",
-                           meta=(f"停在「{phase}」 · " if phase else "") + ((record.get("interrupted") or {}).get("reason_text") or ""),
                            source="restart" if (record.get("interrupted") or {}).get("reason") == "restart" else "assistant",
                            created_at=(record.get("interrupted") or {}).get("at") or record.get("ended_at"),
                            extra={"exec": view},
@@ -240,12 +236,12 @@ def _changesets(root: Path) -> list[dict]:
     impact = [{"label": "涉及", "items": names[:20]}] if names else []
     if record["state"] == "conflict":
         conflict = record.get("conflict") or {}
-        return [_item("changeset_conflict", record["id"], "合入时有冲突，选好保留哪一边",
-                      meta=f"{len(conflict.get('entities') or [])} 处冲突", created_at=conflict.get("at"),
+        return [_item("changeset_conflict", record["id"], "确认生效时有冲突，选好保留哪一边",
+                      created_at=conflict.get("at"),
                       impact=impact, batchable=False, extra={"changeset": record},
                       fingerprint=f"{record['id']}:{conflict.get('at')}")]
     return [_item("pending_changeset", record["id"], record.get("purpose") or "助手的修改等你确认",
-                  meta=f"改了 {int(record.get('entity_count') or 0)} 项", created_at=record.get("updated_at"),
+                  created_at=record.get("updated_at"),
                   impact=impact, batchable=False, extra={"changeset": record},
                   fingerprint=f"{record['id']}:{record.get('tree')}")]
 
@@ -270,7 +266,7 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
         pack = node.get("pack") if node.get("pack") not in (None, "core") else None
         if info["state"] == "stale":
             items.append(_item("stale", node_id, f"「{node.get('title') or node_id}」过期了",
-                               meta=f"上游（{'、'.join(node.get('stale_on') or [])}）改过", source="assistant",
+                               source="assistant",
                                pack=pack, extra={"node": node},
                                fingerprint=(sliced or {}).get("stale_key") if node.get("per_slice") and sliced
                                else node_state.fingerprint(root, list(node.get("stale_on") or []))))
@@ -280,7 +276,7 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
             title = {"upgrade": "这一步的方法升级了，旧结论要你看一眼", "import": "导入带进来的内容要你看一眼",
                      "autobuild": "自主构建完成的内容要你复核"}.get(source, "需要复核")
             items.append(_item("review", node_id, f"「{node.get('title') or node_id}」：{title}",
-                               meta=review.get("note") or "", source=source, pack=pack, created_at=review.get("at"),
+                               source=source, pack=pack, created_at=review.get("at"),
                                run={"run_id": review["run_id"], "run_no": 0, "at": _iso(review.get("at"))}
                                if review.get("run_id") else None, extra={"node": node, "review": review},
                                fingerprint=f"{source}:{review.get('at')}",
@@ -290,8 +286,6 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
 
 
 def _reports(root: Path) -> list[dict]:
-    from ..report_items import parse
-
     folder = Path(root) / "reports"
     items = []
     for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
@@ -306,7 +300,7 @@ def _reports(root: Path) -> list[dict]:
         import hashlib
 
         items.append(_item("report", report_id, f"报告「{path.name}」还有 {pending} 条待处理",
-                           meta=parse(text).get("summary", "")[:80], source="assistant",
+                           source="assistant",
                            created_at=path.stat().st_mtime, extra={"path": f"reports/{path.name}", "pending": pending},
                            fingerprint=hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]))
     return items
@@ -329,7 +323,7 @@ def _feedback(root: Path) -> list[dict]:
         if not failed:
             continue  # 全部通过的批次没有要处理的（审查第 22 条）
         items.append(_item("feedback", document["feedback_id"], f"外部反馈：{view['item_count']} 条",
-                           meta=f"{failed} 条没通过" if failed else "", source="external", pack="evo",
+                           source="external", pack="evo",
                            created_at=path.stat().st_mtime, extra={"feedback": view}))
     return items
 
@@ -370,9 +364,7 @@ def _change_lists(root: Path) -> list[dict]:
     for item in change_lists.all_lists(root):
         if item.get("state") == "executed":
             continue
-        low = sum(1 for point in item.get("points") or [] if point.get("confidence") == "low")
         items.append(_item("change_list", item["id"], f"变更清单：{item.get('source', {}).get('label') or item['id']}",
-                           meta=f"{len(item.get('points') or [])} 个变更点" + (f" · {low} 个把握低" if low else ""),
                            source="materials", created_at=item.get("updated_at"), batchable=False,
                            extra={"change_list": item}, fingerprint=str(item.get("revision") or "")))
     return items
@@ -419,8 +411,8 @@ def public(item: dict) -> dict:
 
 def counts(items: list[dict]) -> dict:
     active = [item for item in items if not item.get("_dismissed")]
-    by_filter = {name: sum(1 for item in active if kinds is None or item["kind"] in kinds)
-                 for name, kinds in FILTERS.items()}
+    by_filter = {name: sum(1 for item in active if FILTERS[name] is None or item["kind"] in FILTERS[name])
+                 for name in COUNTED_FILTERS}
     by_pack: dict[str, int] = {}
     for item in active:
         if item.get("pack"):

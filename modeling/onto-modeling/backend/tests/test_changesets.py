@@ -414,7 +414,8 @@ def test_round_card_open_changeset_and_merge_notice(api, monkeypatch):
     card = cards[0]
     assert card["state"] == "pending_confirm" and card["changeset_id"] == "cs-1"
     assert card["groups"][0]["items"][0]["target"]["id"] == "object:门店"
-    assert card["checks"] == {"errors": 0, "warnings": 0} and card["lock_note"]
+    # 只读说明不再下发（UI 文案口径 ⑤，前端按写入范围算）
+    assert card["checks"] == {"errors": 0, "warnings": 0} and "lock_note" not in card
     assert not (root / "ontology/object/门店.md").exists()
     state = client.get(f"/api/v1/projects/{project_id}/conversations/default").json()
     assert state["open_changeset"]["id"] == "cs-1" and state["open_changeset"]["state"] == "pending_confirm"
