@@ -388,7 +388,7 @@ export function exporters() {
   return [
     { id: 'otel', label: 'OpenTelemetry（OTLP）', implementation: 'exporter-otel@0.2.0', target: 'grpc://otel-collector.example.invalid:4317', signals: ['logs', 'metrics', 'traces'], enabled: true, configured: true },
     { id: 'prometheus', label: 'Prometheus', implementation: 'builtin', target: '/metrics · 抓取间隔 15 秒', signals: ['metrics'], enabled: true, configured: true },
-    { id: 'file', label: '本地文件', implementation: 'builtin', target: '/data/telemetry · 按天滚动，保留 7 天', signals: ['logs', 'traces'], enabled: true, configured: true },
+    { id: 'file', label: '本地文件', implementation: 'builtin', target: '/data/telemetry · 按天滚动，保留 7 天', signals: ['logs', 'traces'], enabled: true, configured: true, required: true },
     { id: 'custom', label: '外部监控平台', implementation: 'exporter-custom', target: null, signals: [], enabled: false, configured: false },
   ];
 }

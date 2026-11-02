@@ -188,7 +188,7 @@ export function RevertModal({ version, onClose, onDone }) {
               启用的能力也回到 {label} 时的状态
               {preview.packs_lock_changes.length ? (
                 <div className="xs mt4">
-                  {preview.packs_lock_changes.map((p) => `${PACK_LABEL[p.pack] || p.pack} ${p.from} → ${p.to || '停用'}`).join('；')}
+                  {preview.packs_lock_changes.map((p) => `${PACK_LABEL[p.pack] || p.pack} ${p.from || '未启用'} → ${p.to || '停用'}`).join('；')}
                 </div>
               ) : null}
             </Note>

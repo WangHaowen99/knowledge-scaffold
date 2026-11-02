@@ -184,7 +184,6 @@ export function RejectModal({ upload, busy, onClose, onSubmit }) {
       <Field label="退回原因" req>
         <Area value={reason} onChange={(e) => setReason(e.target.value)} minHeight={96} />
       </Field>
-      <Note tone="gray" className="mt12">不会自动通知上传者</Note>
     </Modal>
   );
 }
