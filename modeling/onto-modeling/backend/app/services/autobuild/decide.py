@@ -7,7 +7,7 @@
   挂起的问题（进待处理），答案交回给助手；
 - 工具确认卡（权限模式不是全放行时才有）：放行。发布、删除已确认内容、改资料区由守卫与写入路径挡，不靠这里。
 
-置信度、依据怎么来：自主构建注入里要求助手把置信度写在问题的 header 里（「置信度 0.85」），依据写出处锚点；
+置信度、依据怎么来：自主构建注入里要求助手把置信度写在问题的 header 里（「置信度 0.85」），问题里写出处锚点；
 推荐项、保守项在选项 label 里标「（推荐）」「（保守）」。没写置信度按 0.5 算（总是低于阈值）。
 """
 
@@ -31,7 +31,8 @@ SUSPEND_ANSWER = "挂起：这个问题先不定，等用户回答。跳过和�
 # 数字后面不能再接数字、小数点、百分号、斜杠（「12%」「15」「1/3」不能读成 1.0，审查 D）；百分数单独处理
 _CONFIDENCE = re.compile(r"(?:置信度|confidence)\s*[:：=]?\s*(\d+(?:\.\d+)?|\.\d+)(?:\s*(%))?(?![\d./%])", re.IGNORECASE)
 _TAG = re.compile(r"\s*[（(](推荐|保守)[)）]\s*$")
-_ANCHOR = re.compile(r"((?:file|ev|snap|db|url):[^\s，。；、,;)）\]】]+)")
+# 资料区路径不带 scheme 的也认（真实模型按对话里的出处写法写 `resource/资料.docx#p:3`），记成 `file:` 锚点
+_ANCHOR = re.compile(r"((?:file|ev|snap|db|url):[^\s，。；、,;)）\]】]+|(?<![\w/:.])resource/[^\s，。；、,;)）\]】]+)")
 
 
 def forbidden(tool_name: str, tool_input) -> bool:
@@ -64,6 +65,8 @@ def anchors(text: str) -> list[dict]:
     out = []
     for match in _ANCHOR.finditer(text or ""):
         anchor = match.group(1)
+        if anchor.startswith("resource/"):
+            anchor = f"file:{anchor}"
         if any(item["anchor"] == anchor for item in out):
             continue
         path, _, fragment = anchor.partition("#")
