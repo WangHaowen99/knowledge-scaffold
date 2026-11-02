@@ -413,6 +413,102 @@ def test_I_defer_to_next_run_keeps_the_answer_and_the_next_run_uses_it(ab):
     assert f"suspension:{item['id']}" not in [entry["id"] for entry in inbox["items"]]
 
 
+def test_K_revert_restores_a_stale_slice_as_stale(ab):
+    client, _workspaces, project_id, root = ab
+    first = start(client, project_id, **ONE)
+    wait_state(client, project_id, first["run_id"], "completed")
+    client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{first['run_id']}/ledger/accept-high-confidence")
+    main_write(root, "research/补充资料.md", "# 补充资料\n\n合成\n", "research: 补充")
+    main_write(root, "ontology/object/对象1.md", obj("对象1", "用户改过"), "web: 改对象1")
+
+    def stages():
+        flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
+        return {item["id"]: item["stages"] for item in flow["slices"]}["s1"]
+
+    before = stages()
+    assert before["object"] == "stale"
+    second = start(client, project_id, **ONE)
+    wait_state(client, project_id, second["run_id"], "completed")
+    reverted = client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{second['run_id']}/slices/s1/revert")
+    assert reverted.status_code == 200, reverted.text
+    assert "用户改过" in (root / "ontology/object/对象1.md").read_text(encoding="utf-8")
+    assert stages()["object"] == "stale"
+
+
+def test_L_revert_drops_the_blueprint_members_this_slice_added(ab):
+    import json
+
+    client, _workspaces, project_id, root = ab
+
+    def extra(ctx):
+        (Path(ctx.cwd) / "ontology/object/额外对象.md").write_text(obj("额外对象", "这一片顺手建的"), encoding="utf-8")
+
+    AutoEngine.hooks["/ontology-extract-object:s1"] = [extra]
+    run = start(client, project_id, **ONE)
+    wait_state(client, project_id, run["run_id"], "completed")
+    doc = json.loads((root / "research/blueprint.json").read_text(encoding="utf-8"))
+    assert "额外对象" in next(item for item in doc["slices"] if item["id"] == "s1")["objects"]
+    versions = int(git(root, "rev-list", "--first-parent", "--count", "HEAD").strip())
+    reverted = client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/s1/revert")
+    assert reverted.status_code == 200, reverted.text
+    assert int(git(root, "rev-list", "--first-parent", "--count", "HEAD").strip()) == versions + 1
+    doc = json.loads((root / "research/blueprint.json").read_text(encoding="utf-8"))
+    s1 = next(item for item in doc["slices"] if item["id"] == "s1")
+    assert "额外对象" not in s1["objects"] and "对象1" in s1["objects"]
+    assert not (root / "ontology/object/额外对象.md").exists()
+
+
+def test_revert_interrupted_after_the_commit_is_finished_on_retry(ab, monkeypatch):
+    """推断：反向提交已经写进主线、记录还没标撤回时出错；再撤一次把记录补上，不撞 later_changes，也不再写一次。"""
+    from app.services.autobuild import review
+
+    client, _workspaces, project_id, root = ab
+    run = start(client, project_id, **ONE)
+    wait_state(client, project_id, run["run_id"], "completed")
+    real = review._after_revert
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("合成故障")
+
+    monkeypatch.setattr(review, "_after_revert", broken)
+    url = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/s1/revert"
+    with pytest.raises(RuntimeError):
+        client.post(url)
+    assert git(root, "log", "-1", "--format=%s").startswith("revert: 撤回")
+    monkeypatch.setattr(review, "_after_revert", real)
+    again = client.post(url)
+    assert again.status_code == 200, again.text
+    assert sum(1 for line in git(root, "log", "--format=%s").splitlines() if line.startswith("revert: 撤回")) == 1
+    assert store.get(project_id, run["run_id"])["slices"]["s1"]["reverted"]
+
+
+
+def test_revert_interrupted_before_the_changeset_is_marked_is_finished_on_retry(ab, monkeypatch):
+    """推断：反向提交写完、变更集还没记「已撤回」就出错；再撤一次认出主线上那个反向提交，不撞 later_changes。"""
+    from app.kernel.changesets import store as changeset_store
+
+    client, _workspaces, project_id, root = ab
+    run = start(client, project_id, **ONE)
+    wait_state(client, project_id, run["run_id"], "completed")
+    real = changeset_store.update
+
+    def broken(root_, changeset_id, **fields):
+        if "reverted" in fields:
+            raise RuntimeError("合成故障")
+        return real(root_, changeset_id, **fields)
+
+    monkeypatch.setattr(changeset_store, "update", broken)
+    url = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/s1/revert"
+    with pytest.raises(RuntimeError):
+        client.post(url)
+    monkeypatch.setattr(changeset_store, "update", real)
+    again = client.post(url)
+    assert again.status_code == 200, again.text
+    reverts = [line.split(" ", 1)[0] for line in git(root, "log", "--format=%H %s").splitlines()
+               if line.split(" ", 1)[1].startswith("revert: 撤回")]
+    assert reverts == [again.json()["commit"]]
+    assert store.get(project_id, run["run_id"])["slices"]["s1"]["reverted"]
+
 def test_snapshot_sees_a_same_size_edit_made_in_the_same_second_as_the_checkout(tmp_path):
     """附带（排查 K 的偶发失败时发现）：快照拷索引时没保留时间戳，git 的同秒防护失效；
     同一秒里刚检出又被改成同样长度的文件被当成没改，变更集被悄悄关掉。"""

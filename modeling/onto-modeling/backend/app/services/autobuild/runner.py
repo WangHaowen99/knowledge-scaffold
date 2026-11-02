@@ -325,11 +325,18 @@ class AutobuildRunner:
         run = store.get(project_id, run_id)
         fresh = (run.get("slices") or {}).get(unit["id"], {}).get("state") in (None, "queued")
         if fresh:
+            from ..flow import slices
+
+            # 这一片各步运行前的确认记录：按片撤回时放回去（原来过期的仍是过期，审查 K）
+            before = (await asyncio.to_thread(slices.records_of, _ws().project_root(project_id), unit["id"])
+                      if unit["kind"] == "slice" else {})
+
             def begin(record: dict) -> None:
                 info = record.setdefault("slices", {}).setdefault(unit["id"], {})
                 info.update(state="running", started_at=time.time(), steps={step["id"]: "queued" for step in unit["steps"]},
                             decisions=info.get("decisions") or [], suspensions=info.get("suspensions") or [],
-                            timeline=info.get("timeline") or [], fix_rounds=0, produced={}, checks={})
+                            timeline=info.get("timeline") or [], fix_rounds=0, produced={}, checks={},
+                            state_before=before)
                 record["cursor"] = {"unit": unit["id"], "step": None, "exec_id": None, "continues": 0}
 
             run = store.update(project_id, run_id, begin)

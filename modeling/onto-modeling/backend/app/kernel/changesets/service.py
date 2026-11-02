@@ -779,11 +779,13 @@ def discard(manager, project_id: str, changeset_id: str, *, actor: str) -> dict:
 
 
 def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, source: str = "revert",
-                  keep: tuple[str, ...] = ()) -> dict:
+                  keep: tuple[str, ...] = (), rewrite: dict | None = None) -> dict:
     """撤回一个已经合入的变更集（P3 自主构建「按片撤回」）：在主线上写它的反向提交。
 
     合入之后别的提交又改到了同一实体时不撤（`merge_conflict`，details 列出实体），免得把后来的修改一起撤掉。
-    keep 里的路径不撤（自主构建撤回一片时的建模蓝图：后面的片合入时也会改它）。返回 {commit, version_label}。
+    keep 里的路径不整个撤（自主构建撤回一片时的建模蓝图：后面的片合入时也会改它）；rewrite 给这类路径算撤回后的内容
+    （`{路径: f(合入前, 合入后, 现在) -> bytes | None}`，None 表示不动），写在同一个反向提交里。
+    反向提交已经在主线上、记录还没标撤回（写完提交就出错）时补标，不再写一次。返回 {commit, version_label}。
     """
     from ..writepath import ChangeTx, Origin
 
@@ -795,6 +797,13 @@ def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, so
         raise WorkspaceError("只有已合入的变更集能撤回", 409, "changeset_closed", {"state": record["state"]})
     if record.get("reverted"):
         raise WorkspaceError("这个变更集已经撤回过", 409, "changeset_closed", {"state": "reverted"})
+    subject = f"revert: 撤回 {record['id']}（"
+    done = next((sha for sha, body in _commits_since(root, commit) if body.startswith(subject)), None)
+    if done is not None:
+        label = _label(root, done)
+        store.update(root, record["id"], reverted={"commit": done, "version_label": label, "at": time.time()})
+        _notify(project_id, "changeset", store.get(root, record["id"]))
+        return {"commit": done, "version_label": label}
     parent = f"{commit}^"
     paths = [(status, rel) for status, rel in worktree.diff(root, parent, commit) if not _derived(rel) and rel not in keep]
     with ChangeTx(manager, project_id, Origin(source, actor), summary=f"撤回 {record['id']}",
@@ -816,6 +825,11 @@ def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, so
             if data is None:
                 tx.remove(rel)
             else:
+                tx.write(rel, data)
+        for rel, compute in (rewrite or {}).items():
+            data = compute(worktree.read_blob(root, parent, rel), worktree.read_blob(root, commit, rel),
+                           worktree.read_blob(root, tx.base_head, rel))
+            if data is not None:
                 tx.write(rel, data)
         # 派生文件（index.md、脚本描述符）不按旧版本恢复：写入事务按撤回后的条目重新生成
         result = tx.commit(f"revert: 撤回 {record['id']}（{record.get('purpose') or '助手的修改'}）")
@@ -886,6 +900,17 @@ def _recent_commits(root: Path) -> list[tuple[str, str]]:
         commit, _, body = chunk.strip("\n").partition("\x1f")
         if commit:
             pairs.append((commit, body))
+    return pairs
+
+
+def _commits_since(root: Path, commit: str) -> list[tuple[str, str]]:
+    """主线上 commit 之后的提交（--first-parent）：[(提交, 说明)]。"""
+    out = _run_git(root, ("log", "--first-parent", "--format=%H%x1f%B%x1e", f"{commit}..HEAD")).stdout
+    pairs = []
+    for chunk in out.split("\x1e"):
+        sha, _, body = chunk.strip("\n").partition("\x1f")
+        if sha:
+            pairs.append((sha, body))
     return pairs
 
 

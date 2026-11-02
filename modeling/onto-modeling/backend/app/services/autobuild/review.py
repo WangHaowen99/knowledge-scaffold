@@ -271,10 +271,15 @@ async def send_answer(project_id: str, run_id: str, suspension_id: str, *, task_
 
 
 def revert_slice(project_id: str, run_id: str, slice_id: str, *, actor: str) -> dict:
-    """AB-17：只动这一片——反向提交，恢复成运行开始前的样子，另存为新版本，其他切片不受影响。"""
+    """AB-17：只动这一片——反向提交，恢复成运行开始前的样子，另存为新版本，其他切片不受影响。
+
+    蓝图里这一片在这次合入时新记进去的条目一起去掉（审查 L），别的片合入时对蓝图的修改不动；这一片各步的确认记录
+    恢复成运行开始前的（原来过期的仍是过期，审查 K）。反向提交已经写进主线、后面几步没做完时，再撤一次把它们补上，
+    不再写一次（审查推断）。"""
     from ...kernel.changesets import service as changesets
+    from ...kernel.changesets import store as changeset_store
     from ...services.workspace.errors import WorkspaceError
-    from ..flow import blueprint, slices
+    from ..flow import blueprint
 
     run = _run(project_id, run_id)
     active = store.active(project_id)
@@ -290,30 +295,54 @@ def revert_slice(project_id: str, run_id: str, slice_id: str, *, actor: str) -> 
     if not info.get("commit") or not info.get("changeset_id"):
         raise ApiError("slice_not_revertible", "这一片没有生效过", 409, {"reason": "not_merged"})
     ws = _ws()
-    try:
-        # 蓝图里这一片记下的条目名不跟着撤（别的片合入时也会改蓝图，跟着撤就撤不动了）
-        result = changesets.revert_merged(ws, project_id, info["changeset_id"], actor=actor, source="revert",
-                                          keep=(blueprint.BLUEPRINT_REL,))
-    except WorkspaceError as exc:
-        if exc.code == "merge_conflict":
-            raise ApiError("slice_not_revertible", "后面的修改改到了这一片的条目，不能单独撤回", 409,
-                           {"reason": "later_changes", "entities": (exc.details or {}).get("entities") or []}) from exc
-        if exc.code == "changeset_closed":
-            raise ApiError("slice_not_revertible", "这一片不能撤回", 409, {"reason": "not_merged"}) from exc
-        raise
     root = ws.project_root(project_id)
-    slices.forget(root, slice_id, [step["id"] for step in unit["steps"]] + ["check"])
+    done = (changeset_store.get(root, info["changeset_id"]) or {}).get("reverted")
+    if done:
+        result = {"commit": done.get("commit"), "version_label": done.get("version_label")}
+    else:
+        def members(parent: bytes | None, merged: bytes | None, current: bytes | None) -> bytes | None:
+            return blueprint.drop_added_members(root, slice_id, parent, merged, current)
+
+        try:
+            result = changesets.revert_merged(ws, project_id, info["changeset_id"], actor=actor, source="revert",
+                                              keep=(blueprint.BLUEPRINT_REL,),
+                                              rewrite={blueprint.BLUEPRINT_REL: members})
+        except WorkspaceError as exc:
+            if exc.code == "merge_conflict":
+                raise ApiError("slice_not_revertible", "后面的修改改到了这一片的条目，不能单独撤回", 409,
+                               {"reason": "later_changes",
+                                "entities": (exc.details or {}).get("entities") or []}) from exc
+            if exc.code == "changeset_closed":
+                raise ApiError("slice_not_revertible", "这一片不能撤回", 409, {"reason": "not_merged"}) from exc
+            raise
+    run = _after_revert(project_id, run_id, unit, result, actor)
+    return {"commit": result["commit"], "version_label": result["version_label"],
+            "reverted_to_version_label": run.get("base_version_label")}
+
+
+def _after_revert(project_id: str, run_id: str, unit: dict, result: dict, actor: str) -> dict:
+    """反向提交之后：这一片的确认记录恢复成运行开始前的、运行里记下撤回、去掉这一片的「需复核」。"""
+    from ..flow import slices
+
+    root = _ws().project_root(project_id)
+    run = _run(project_id, run_id)
+    info = run["slices"][unit["id"]]
+    steps = [step["id"] for step in unit["steps"]] + ["check"]
+    if "state_before" in info:
+        slices.put_back(root, unit["id"], steps, info.get("state_before") or {})
+    else:
+        slices.forget(root, unit["id"], steps)  # 修复之前开始的运行没记运行前的样子
 
     def change(record: dict) -> None:
-        record["slices"][slice_id]["reverted"] = {"commit": result["commit"], "version_label": result["version_label"],
-                                                  "at": time.time(), "by": actor}
+        record["slices"][unit["id"]]["reverted"] = {"commit": result["commit"],
+                                                    "version_label": result["version_label"],
+                                                    "at": time.time(), "by": actor}
         if record.get("report"):
             record["report"] = views.report(record)
 
     run = store.update(project_id, run_id, change)
     clear_reviews(project_id, run)
-    return {"commit": result["commit"], "version_label": result["version_label"],
-            "reverted_to_version_label": run.get("base_version_label")}
+    return run
 
 
 # ---------------------------------------------------------------------------

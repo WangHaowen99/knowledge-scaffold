@@ -281,6 +281,33 @@ def run_slices(manager, project_id: str) -> list[dict]:
     return out
 
 
+def drop_added_members(root: Path, slice_id: str, parent: bytes | None, merged: bytes | None,
+                       current: bytes | None) -> bytes | None:
+    """按片撤回（审查 L）：这一片合入时新记进蓝图的条目（合入提交比它的上一版多出来的）从现在的蓝图里去掉，
+    别的不动。没有要去掉的、蓝图读不出时返回 None（蓝图不动）。"""
+    if not merged or not current:
+        return None
+    module = script(root)
+    try:
+        before = module.find_slice(module.parse(parent.decode("utf-8")), slice_id) if parent else None
+        after = module.find_slice(module.parse(merged.decode("utf-8")), slice_id)
+        doc = module.parse(current.decode("utf-8"))
+    except (AttributeError, UnicodeDecodeError, module.BlueprintError):
+        _log.warning("撤回切片 %s 时蓝图读不出，蓝图不动", slice_id, exc_info=True)
+        return None
+    target = module.find_slice(doc, slice_id)
+    if after is None or target is None:
+        return None
+    changed = False
+    for field in module.MEMBER_FIELDS.values():
+        added = set(after.get(field) or []) - set((before or {}).get(field) or [])
+        kept = [name for name in target.get(field) or [] if name not in added]
+        if added and kept != list(target.get(field) or []):
+            target[field] = kept
+            changed = True
+    return module.dumps(doc).encode("utf-8") if changed else None
+
+
 def autobuild_preview(manager, project_id: str, blueprint_view: dict, *, actor: str) -> dict:
     if _autobuild_preview is None:
         raise WorkspaceError("自主构建还不能用", 409, "autobuild_not_available")

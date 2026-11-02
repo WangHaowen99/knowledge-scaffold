@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import time
@@ -391,6 +392,25 @@ def forget(root: Path, slice_id: str, step_ids: list[str]) -> None:
         records = (stored.get("slices") or {}).get(slice_id) or {}
         for step_id in step_ids:
             records.pop(step_id, None)
+        node_state.save(root, stored)
+
+
+def records_of(root: Path, slice_id: str) -> dict:
+    """这一片各步的确认记录（自主构建开始做这一片前记下，按片撤回时放回去）。"""
+    return copy.deepcopy((node_state.load(root).get("slices") or {}).get(slice_id) or {})
+
+
+def put_back(root: Path, slice_id: str, step_ids: list[str], before: dict) -> None:
+    """这一片这几步的确认记录放回成 before 里的（按片撤回，审查 K）：原来过期的仍按原来的指纹算过期，
+    原来没有的去掉（按主线现状重算）。"""
+    with node_state._lock:
+        stored = node_state.load(root)
+        records = stored.setdefault("slices", {}).setdefault(slice_id, {})
+        for step_id in step_ids:
+            if step_id in before:
+                records[step_id] = before[step_id]
+            else:
+                records.pop(step_id, None)
         node_state.save(root, stored)
 
 
