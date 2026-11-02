@@ -153,3 +153,42 @@ def test_editor_reference_carries_pack_label(env):
     flowchart = next(item for item in types if item["type"] == "diagram.flowchart")
     editor = flowchart["view"]["detail"]["editor"]
     assert editor["pack"] == "diagram" and editor["pack_label"] == "图示"
+
+
+# ---- 证据源本期不下发 ----
+
+
+def test_external_nodes_are_not_listed_in_flow(env):
+    from tests.test_node_pack_lifecycle import EXTERNAL_NODE
+
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    # 没写提供方的外部节点能装进流程（启用检查只认声明了的提供方），FL-01 照样不列
+    install(manager, tmp_path, flow=kinds_flow({key: value for key, value in EXTERNAL_NODE.items() if key != "provider"}))
+    enable_and_apply(client, manager, project_id)
+    from app.services.flow import model
+
+    assert "naming.fetch" in {node["id"] for node in model.load_for(root)["nodes"]}  # 确实装进了流程
+    flow = view.build(root)
+    assert "naming.fetch" not in {node["id"] for node in flow["nodes"]}
+    assert all("naming.fetch" not in (edge["from"], edge["to"]) for edge in flow["edges"])
+    assert all("naming.fetch" not in section["nodes"] for section in flow["sections"])
+
+
+def test_provider_packs_are_not_listed_anywhere(env, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.ops_app import ops_app
+    from app.services import auth
+    from tests.pack_helpers import make_pack
+
+    client, manager, project_id, tmp_path = env
+    source = make_pack(tmp_path / "src", "db-generic", "0.1.0", kind="provider")
+    manager.packs.repository.install(source, origin="upload", by="admin")
+    manager.packs.repository.set_channel("db-generic", "stable", "0.1.0", by="admin")
+    assert manager.packs.repository.manifest("db-generic", "0.1.0").category == "provider"
+    assert "db-generic" not in {item["name"] for item in client.get("/api/v1/packs").json()["items"]}
+    monkeypatch.setattr(auth, "ENABLED", False)
+    ops = TestClient(ops_app)
+    assert "db-generic" not in {item.get("name") for item in ops.get("/api/v1/ops/packs").json()["items"]}
+    assert "db-generic" not in {item["component"] for item in ops.get("/api/v1/ops/versions").json()["items"]}
