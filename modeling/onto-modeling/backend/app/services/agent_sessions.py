@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 import uuid
@@ -39,6 +40,8 @@ from .engines.claude import (  # noqa: F401
     _tool_result_excerpt,
     normalize_message,
 )
+
+_log = logging.getLogger(__name__)
 
 
 def _history_path(project_id: str, conversation_id: str = DEFAULT_CONVERSATION) -> Path:
@@ -233,7 +236,17 @@ def clear_resume_id(project_id: str, conversation_id: str = DEFAULT_CONVERSATION
 
 
 def purge_history(project_id: str) -> None:
-    """删除项目时清除全部会话的事件历史与续接点：永久删除不留可回放的对话。"""
+    """删除项目时清除全部会话的事件历史与续接点：永久删除不留可回放的对话。
+
+    删之前先把历史里还没入账的用量记进配额台账（台账在数据目录 governance/ 下，不随项目删除），
+    否则最后一轮的用量随历史一起没了，删项目就能绕开 token 上限。
+    """
+    from ..governance import quota
+
+    try:
+        quota.service().sync()
+    except Exception:  # noqa: BLE001 - 入账失败不挡删除
+        _log.warning("删除项目 %s 前用量入账失败", project_id, exc_info=True)
     conversation_store.purge(project_id)
 
 
@@ -631,7 +644,13 @@ class SessionManager:
         # 换绑要回收旧引擎（await 断开，且第一步就把旧 Session 移出字典）：不加锁时
         # 并发的 send 会各建一个 Session，被覆盖的那个带着引擎却不在字典里，无人回收
         owner = personal_model_settings.model_owner(project_owner(project_id), engine_cls.name)
+        # 配额（ADR-0043）：发起一轮的入口都经这里（S-07、S-20、重试、续跑、Studio 转复核）。token 先查；
+        # 并发会话和绑定会话在同一把锁里，两个同时发起的发送不会都过（sending 计入占用）
+        from ..governance import quota
+
+        await asyncio.to_thread(quota.check_before_turn, project_id, username, "tokens")
         async with self._lock:
+            await asyncio.to_thread(quota.check_before_turn, project_id, username, "concurrency", self._sessions)
             session = await self._bind_session(project_id, conversation_id)
             self._bind_model_owner(session, owner, engine_cls.name)
             session.sending += 1

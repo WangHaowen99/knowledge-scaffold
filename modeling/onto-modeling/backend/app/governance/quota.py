@@ -180,7 +180,8 @@ def _fingerprint(project_id: str, event: dict) -> str:
 
 
 def _holds_engine(session) -> bool:
-    """占着（或马上要占）引擎的会话：引擎已连上、正在连接、在跑或排队。"""
+    """占着（或马上要占）引擎的会话：引擎已连上、正在连接、在跑或排队，或者有一次发送已过了配额检查、
+    还没连上（会话池里 sending > 0）。"""
     state = getattr(session, "state", "")
     if state == "closed":
         return False
@@ -189,6 +190,7 @@ def _holds_engine(session) -> bool:
         getattr(session, "engine", None) is not None
         or (callable(connecting) and bool(connecting()))
         or state in ("running", "queued")
+        or bool(getattr(session, "sending", 0))
     )
 
 
@@ -513,11 +515,13 @@ class QuotaService:
 
     # ---- 检查 ----
 
-    def live_sessions(self, owner: str, exclude: str = "") -> list[str]:
-        """用户名下占着引擎的项目（不含 exclude）。只读会话池，不加它的锁。"""
-        from ..services import agent_sessions
+    def live_sessions(self, owner: str, exclude: str = "", sessions: dict | None = None) -> list[str]:
+        """用户名下占着引擎的项目（不含 exclude）。只读会话池，不加它的锁；sessions 缺省取全局会话池。"""
+        if sessions is None:
+            from ..services import agent_sessions
 
-        sessions = dict(agent_sessions.manager._sessions)
+            sessions = agent_sessions.manager._sessions
+        sessions = dict(sessions)
         result = []
         for project_id, session in sessions.items():
             if project_id == exclude or not _holds_engine(session):
@@ -528,18 +532,32 @@ class QuotaService:
 
     def check_send(self, project_id: str, username: str) -> None:
         """发消息、跑命令前：用户并发会话 → 用户当日 token → 项目当月 token，超了抛 QuotaExceeded。"""
+        self.check_concurrency(project_id, username)
+        self.check_tokens(project_id, username)
+
+    def check_concurrency(self, project_id: str, username: str, sessions: dict | None = None) -> None:
+        """用户同时在线的建模会话。会话池在绑定会话的同一把锁里调（sessions 是它的会话表），
+        两个同时发起的发送不会都过。"""
+        owner = self.project_owner(project_id) or username or LOCAL_USER
+        concurrent = self.limit("concurrent_sessions", "user", owner)
+        if not concurrent:
+            return
+        if sessions is None:
+            from ..services import agent_sessions
+
+            sessions = agent_sessions.manager._sessions
+        # 发给已在线的项目不起新引擎，不算并发
+        if _holds_engine(sessions.get(project_id)):
+            return
+        used = len(self.live_sessions(owner, exclude=project_id, sessions=sessions))
+        if used >= concurrent:
+            raise QuotaExceeded("concurrent_sessions", concurrent, used, {"kind": "user", "id": owner})
+
+    def check_tokens(self, project_id: str, username: str) -> None:
+        """用户当日、项目当月的 token。"""
         owner = self.project_owner(project_id) or username or LOCAL_USER
         limits = self.limits()
         user = {"kind": "user", "id": owner}
-        concurrent = self._effective(limits, "concurrent_sessions", "user", owner)
-        if concurrent:
-            from ..services import agent_sessions
-
-            # 发给已在线的项目不起新引擎，不算并发
-            if not _holds_engine(agent_sessions.manager._sessions.get(project_id)):
-                used = len(self.live_sessions(owner, exclude=project_id))
-                if used >= concurrent:
-                    raise QuotaExceeded("concurrent_sessions", concurrent, used, user)
         daily = self._effective(limits, "daily_tokens", "user", owner)
         monthly = self._effective(limits, "monthly_tokens", "project", project_id)
         if not (daily or monthly):
@@ -643,8 +661,26 @@ def _check_request(project_id: str, username: str) -> None:
     quotas.check_send(project_id, username)
 
 
+def check_before_turn(project_id: str, username: str, part: str, sessions: dict | None = None) -> None:
+    """会话池发起一轮之前调（`agent_sessions.SessionManager.send`，所有入口都经它）：part 取 tokens 或
+    concurrency。超限抛 QuotaExceeded；配额自身出错放行并记日志。"""
+    try:
+        quotas = service()
+        if part == "tokens":
+            quotas.check_tokens(project_id, username)
+        else:
+            quotas.check_concurrency(project_id, username, sessions)
+    except QuotaExceeded:
+        raise
+    except Exception:  # noqa: BLE001 - 配额自身出错一律放行
+        _log.warning("配额检查出错，已放行（项目 %s）", project_id, exc_info=True)
+
+
 class QuotaGate:
     """发消息（S-07）、跑命令前查配额：超限回 429 quota_exceeded，其余放行。
+
+    这是提前拦：请求还没建任务、没写历史就回 429。真正的关口在会话池（`check_before_turn`），
+    重试、续跑、Studio 转助手复核这些不经这两条路径的入口也在那里查。
 
     纯 ASGI，挂在鉴权之内（读 scope["state"]["user"]）。检查碰磁盘，放到线程里跑；配额自身出错放行并记日志。
     """

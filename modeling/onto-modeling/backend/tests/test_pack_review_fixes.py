@@ -179,6 +179,88 @@ def test_new_scenario_file_follows_testcase_template(env):
                                     "expected_path": "正常完成", "data_source": "自定义"}]
 
 
+# ---- 4、5、12. 配额：删项目前先入账；所有发起一轮的入口都查；并发上限的检查和占位在同一把锁里 ----
+
+
+@pytest.fixture()
+def quotas(env, monkeypatch):
+    from app.governance import quota
+    from app.services import agent_sessions
+    from app.services.agent_sessions import SessionManager
+    from tests.test_session_host import FakeEngine
+
+    monkeypatch.setattr(quota, "_service", None)
+    service = quota.service()
+    service.sync_interval = 0
+    pool = SessionManager()
+    monkeypatch.setattr(pool, "_engine_class_for", lambda project_id: FakeEngine)
+    monkeypatch.setattr(agent_sessions, "manager", pool)
+    FakeEngine.scripts, FakeEngine.sent = [], []
+    return service, pool
+
+
+def test_deleting_project_books_unsynced_usage_first(env, quotas):
+    from app.services import agent_sessions, conversation_store
+
+    manager, _ = env
+    service, _ = quotas
+    project_id = manager.create_project("用量")["id"]
+    service.sync()  # 发消息前闸门同步过一次（当时用量 0）
+    with open(conversation_store.history_path(project_id, conversation_store.DEFAULT_ID), "a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"type": "model_usage", "ts": time.time(),
+                                 "usage": {"input_tokens": 1_500_000, "output_tokens": 0}}) + "\n")
+    agent_sessions.purge_history(project_id)  # 删项目（SessionManager.discard）时清历史
+    service.sync()
+    assert service.used_today("local") == 1_500_000
+
+
+def test_studio_review_handoff_is_quota_gated(env, quotas, monkeypatch):
+    from app.routers import studio as studio_routes
+
+    manager, client = env
+    service, _ = quotas
+    project_id = manager.create_project("复核")["id"]
+    service.set_limits({"daily_tokens": 1000}, {})
+    service.record(project_id, "local", 5000)
+    monkeypatch.setattr(studio_routes.studio_service, "get_draft", lambda pid, rel: {"content": "# 订单\n", "base_revision": ""})
+    monkeypatch.setattr(studio_routes.studio_service, "deterministic_check",
+                        lambda root, rel, content: {"errors": [], "review": ["改了对象的主键"]})
+    monkeypatch.setattr(studio_routes.studio_service, "stage_for_review", lambda root, rel, content: ".onto/run/review.md")
+    response = client.post(f"/api/v1/projects/{project_id}/studio/entries/object:订单/submit", json={})
+    assert response.status_code == 429 and response.json()["code"] == "quota_exceeded"
+    assert response.json()["details"]["quota"] == "daily_tokens"
+
+
+def test_concurrent_session_limit_holds_under_simultaneous_sends(env, quotas, monkeypatch):
+    from app.governance import quota
+    from tests.test_session_host import FakeEngine
+
+    manager, _ = env
+    service, pool = quotas
+    service.set_limits({"concurrent_sessions": 1}, {})
+    first, second = (manager.create_project(name)["id"] for name in ("并发一", "并发二"))
+
+    class SlowEngine(FakeEngine):
+        async def connect(self) -> bool:
+            await asyncio.sleep(0.3)  # 连上之前另一条发送已经开始
+            return False
+
+    monkeypatch.setattr(pool, "_engine_class_for", lambda project_id: SlowEngine)
+
+    async def scenario():
+        results = await asyncio.gather(
+            pool.send(first, manager.project_root(first), "开始建模"),
+            pool.send(second, manager.project_root(second), "开始建模"),
+            return_exceptions=True)
+        await pool.shutdown()
+        return results
+
+    results = asyncio.run(scenario())
+    refused = [item for item in results if isinstance(item, quota.QuotaExceeded)]
+    assert len(refused) == 1 and refused[0].details["quota"] == "concurrent_sessions"
+    assert len([item for item in results if not isinstance(item, BaseException)]) == 1
+
+
 # ---- 8. 目录符号链接读不到工作区外 ----
 
 

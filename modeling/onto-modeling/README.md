@@ -173,7 +173,7 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
 - **审计**：每个写请求在响应之后记一条（操作者、类型、状态码、trace id、来源 IP），另有 agent 提交、
   登录、设置、运维操作等专项记录；不记文件正文与对话内容。按日轮转在数据目录 `audit/`。
 - **配额**（`app/governance/quota.py`，ADR-0043）：按用户限并发会话、每日 token、每数据源每小时采集次数，按项目限每月
-  token；发消息、发命令前检查，超限返回 `429 quota_exceeded`。用量从会话历史记账（数据目录
+  token；发起一轮之前检查（发消息、页面命令、重试、续跑、Studio 转助手复核都经会话池），超限返回 `429 quota_exceeded`。用量从会话历史记账（数据目录
   `governance/quota.sqlite`），记在项目所有者名下；限额与单独设置经 `GET/PUT /api/v1/admin/quotas`、
   `POST /api/v1/admin/quotas/overrides` 管理（数据目录 `governance/quotas.json`，0 表示不限）。配额自身出错一律放行。
 - **健康检查**：`/api/health/live` 只看进程（容器 HEALTHCHECK 用它）；`/api/health/ready` 探测模型网关、
