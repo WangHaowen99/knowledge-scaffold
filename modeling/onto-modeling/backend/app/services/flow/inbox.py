@@ -69,11 +69,12 @@ def dismissed(root: Path) -> dict:
     return _read_json(Path(root) / DISMISSED_REL)
 
 
-def dismiss(root: Path, item_id: str, *, by: str = "") -> None:
+def dismiss(root: Path, item_id: str, *, by: str = "", fingerprint: str | None = None) -> None:
+    """忽略一项：记下它当时的来源指纹，来源变了（又一次过期、复核标记重打、报告改过）就重新出现（审查第 15 条）。"""
     path = Path(root) / DISMISSED_REL
     with _lock:
         data = dismissed(root)
-        data[item_id] = {"at": time.time(), "by": by}
+        data[item_id] = {"at": time.time(), "by": by, "fp": fingerprint}
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -118,16 +119,18 @@ def _iso(value) -> str | None:
 
 def _item(kind: str, source_id: str, title: str, *, meta: str = "", source: str = "assistant",
           created_at=None, pack: str | None = None, impact: list | None = None, slice_=None, run=None,
-          confidence=None, batchable: bool = True, extra: dict | None = None) -> dict:
+          confidence=None, batchable: bool = True, extra: dict | None = None, fingerprint: str = "",
+          actions: list[str] | None = None) -> dict:
     item = {
         "id": f"{kind}:{source_id}", "kind": kind, "kind_label": KIND_LABELS[kind], "title": title, "meta": meta,
         "slice": slice_, "run": run, "source": source, "confidence": confidence,
         "high_confidence": bool(confidence is not None and confidence >= 0.8), "pack": pack,
         "impact": impact or [], "created_at": _iso(created_at or time.time()),
-        "actions": [*ACTIONS[kind], "dismiss"], "batchable": batchable,
+        "actions": [*(ACTIONS[kind] if actions is None else actions), "dismiss"], "batchable": batchable,
     }
     if extra:
         item["_extra"] = extra
+    item["_fp"] = fingerprint or source_id
     return item
 
 
@@ -172,7 +175,8 @@ def _resumables(project_id: str, root: Path, flow: dict) -> list[dict]:
                            meta=(f"停在「{phase}」 · " if phase else "") + ((record.get("interrupted") or {}).get("reason_text") or ""),
                            source="restart" if (record.get("interrupted") or {}).get("reason") == "restart" else "assistant",
                            created_at=(record.get("interrupted") or {}).get("at") or record.get("ended_at"),
-                           extra={"exec": view}))
+                           extra={"exec": view},
+                           fingerprint=f"{record['id']}:{(record.get('interrupted') or {}).get('at')}"))
     return items
 
 
@@ -189,10 +193,12 @@ def _changesets(root: Path) -> list[dict]:
         conflict = record.get("conflict") or {}
         return [_item("changeset_conflict", record["id"], "合入时有冲突，选好保留哪一边",
                       meta=f"{len(conflict.get('entities') or [])} 处冲突", created_at=conflict.get("at"),
-                      impact=impact, batchable=False, extra={"changeset": record})]
+                      impact=impact, batchable=False, extra={"changeset": record},
+                      fingerprint=f"{record['id']}:{conflict.get('at')}")]
     return [_item("pending_changeset", record["id"], record.get("purpose") or "助手的修改等你确认",
                   meta=f"改了 {int(record.get('entity_count') or 0)} 项", created_at=record.get("updated_at"),
-                  impact=impact, batchable=False, extra={"changeset": record})]
+                  impact=impact, batchable=False, extra={"changeset": record},
+                  fingerprint=f"{record['id']}:{record.get('tree')}")]
 
 
 def _node_items(root: Path, flow: dict) -> list[dict]:
@@ -210,7 +216,8 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
         if info["state"] == "stale":
             items.append(_item("stale", node_id, f"「{node.get('title') or node_id}」过期了",
                                meta=f"上游（{'、'.join(node.get('stale_on') or [])}）改过", source="assistant",
-                               pack=pack, extra={"node": node}))
+                               pack=pack, extra={"node": node},
+                               fingerprint=node_state.fingerprint(root, list(node.get("stale_on") or []))))
         review = reviews.get(node_id)
         if review and info["state"] in ("confirmed", "stale"):
             source = review.get("source") or "upgrade"
@@ -219,7 +226,10 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
             items.append(_item("review", node_id, f"「{node.get('title') or node_id}」：{title}",
                                meta=review.get("note") or "", source=source, pack=pack, created_at=review.get("at"),
                                run={"run_id": review["run_id"], "run_no": 0, "at": _iso(review.get("at"))}
-                               if review.get("run_id") else None, extra={"node": node, "review": review}))
+                               if review.get("run_id") else None, extra={"node": node, "review": review},
+                               fingerprint=f"{source}:{review.get('at')}",
+                               # 「撤回这一片」只对自主构建合入的片
+                               actions=ACTIONS["review"] if source == "autobuild" else ["accept", "rejudge"]))
     return items
 
 
@@ -237,9 +247,12 @@ def _reports(root: Path) -> list[dict]:
         if not pending:
             continue
         report_id = path.stem
+        import hashlib
+
         items.append(_item("report", report_id, f"报告「{path.name}」还有 {pending} 条待处理",
                            meta=parse(text).get("summary", "")[:80], source="assistant",
-                           created_at=path.stat().st_mtime, extra={"path": f"reports/{path.name}", "pending": pending}))
+                           created_at=path.stat().st_mtime, extra={"path": f"reports/{path.name}", "pending": pending},
+                           fingerprint=hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]))
     return items
 
 
@@ -257,6 +270,8 @@ def _feedback(root: Path) -> list[dict]:
             continue
         view = feedback_inbox.view(f"{feedback_inbox.FEEDBACK_DIR}/{path.name}", document, "")
         failed = view["verdicts"].get("fail", 0)
+        if not failed:
+            continue  # 全部通过的批次没有要处理的（审查第 22 条）
         items.append(_item("feedback", document["feedback_id"], f"外部反馈：{view['item_count']} 条",
                            meta=f"{failed} 条没通过" if failed else "", source="external", pack="evo",
                            created_at=path.stat().st_mtime, extra={"feedback": view}))
@@ -287,7 +302,8 @@ def _format_migrations(manager, root: Path) -> list[dict]:
                                f"「{row['title']}」还是旧格式（{current} → {atype.schema_version}）",
                                source="plugin", pack=atype.pack,
                                extra={"type": atype.type, "key": row["key"], "from": str(current),
-                                      "to": atype.schema_version}))
+                                      "to": atype.schema_version},
+                               fingerprint=f"{current}->{atype.schema_version}"))
     return items
 
 
@@ -302,7 +318,7 @@ def _change_lists(root: Path) -> list[dict]:
         items.append(_item("change_list", item["id"], f"变更清单：{item.get('source', {}).get('label') or item['id']}",
                            meta=f"{len(item.get('points') or [])} 个变更点" + (f" · {low} 个把握低" if low else ""),
                            source="materials", created_at=item.get("updated_at"), batchable=False,
-                           extra={"change_list": item}))
+                           extra={"change_list": item}, fingerprint=str(item.get("revision") or "")))
     return items
 
 
@@ -332,7 +348,9 @@ def collect(manager, project_id: str) -> list[dict]:
             logging.getLogger(__name__).exception("待处理来源出错（项目 %s）", project_id)
     ignored = dismissed(root)
     for item in items:
-        item["_dismissed"] = item["id"] in ignored
+        record = ignored.get(item["id"])
+        # 来源变了（指纹不同）就不再算忽略；旧版没记指纹的忽略照旧生效
+        item["_dismissed"] = record is not None and (not record.get("fp") or record.get("fp") == item.get("_fp"))
     items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
     return items
 

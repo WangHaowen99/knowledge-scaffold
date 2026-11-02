@@ -107,7 +107,7 @@ async def _run_action(project_id: str, item: dict, action: str, request: Request
     root = deps.workspaces.project_root(project_id)
     actor = deps.actor(request)
     if action == "dismiss" or action == "keep_stale":
-        inbox.dismiss(root, item["id"], by=actor)
+        inbox.dismiss(root, item["id"], by=actor, fingerprint=item.get("_fp"))
         return {}
     if action == "answer" and item["kind"] == "decision":
         answer = {key: body.get(key) for key in ("option_id", "custom_text") if body.get(key)}
@@ -146,6 +146,8 @@ async def _run_action(project_id: str, item: dict, action: str, request: Request
         payload = {"command": "/ontology-evolution", "args": {"feedback_id": source_id},
                    "origin": {"page": "inbox", "label": "交给反馈演进"}, "conversation_id": "-"}
         response = await session_routes.dispatch_command(project_id, root, request, payload)
+        # 交出去就算处理了：这批反馈没有「已处理」状态（R-11、R-12 未做），按处理记下（审查第 22 条）
+        inbox.dismiss(root, item["id"], by=actor, fingerprint=item.get("_fp"))
         return {"command_task": _json(response).get("task")}
     if action == "migrate":
         raise ApiError("pack_not_enabled", "登记这个产物的包没有提供迁移命令", 409,
@@ -223,10 +225,13 @@ async def batch(project_id: str, request: Request):
              and (not body.get("item_ids") or item["id"] in body["item_ids"])]
     if not stale:
         return {"accepted": 0, "skipped": [], "command_task": None}
-    # 一次只能跑一条命令：刷新最上游的那一个，其余等它确认生效后再刷新
+    # 一次只能跑一条命令：刷新最上游的那一个（按流程里的节点顺序，审查第 18 条），其余等它确认生效后再刷新
+    from ..services.flow import model as flow_model
     from . import flow as flow_routes
 
-    first, rest = stale[-1], stale[:-1]
+    order = {node["id"]: index for index, node in enumerate(flow_model.load_for(root).get("nodes") or [])}
+    stale.sort(key=lambda item: order.get(item["id"].split(":", 1)[1], len(order)))
+    first, rest = stale[0], stale[1:]
     response = await flow_routes.start_node(project_id, first["id"].split(":", 1)[1], request)
     return {"accepted": 1, "skipped": [{"id": item["id"], "reason": "一次只跑一条命令，等前一个确认生效后再刷新"}
                                        for item in rest],
@@ -284,6 +289,9 @@ async def execute_change_list(project_id: str, list_id: str, request: Request, b
 
     root = deps.workspaces.project_root(project_id)
     record = _list_or_404(project_id, list_id)
+    if record.get("state") in ("confirmed", "executed"):
+        # 已经发出执行、或已经执行完：同一份清单不再执行一次（审查第 12 条）
+        raise ApiError("changeset_closed", "清单已执行", 409, {"state": record["state"]})
     if str(body.get("base_revision") or "") != record.get("revision"):
         raise ApiError("revision_conflict", "清单已被修改，请刷新", 409,
                        {"expected": body.get("base_revision"), "actual": record.get("revision")})

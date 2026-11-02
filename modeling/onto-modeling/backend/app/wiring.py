@@ -90,8 +90,11 @@ def _changeset_event(project_id: str, event: str, data: dict) -> None:
     from .services import project_events, streams
 
     if event == "changeset" and data and data.get("state") == "merged":
-        # 确认生效：变更集里执行过的节点按主线现状重记基线（不再过期；完成判定满足即已确认）
-        _confirm_nodes(project_id, data.get("nodes") or [])
+        # 确认生效：变更集里执行过的节点按主线现状重记基线（不再过期；完成判定满足即已确认），人确认过的
+        # 需复核标记去掉；自主构建自动合入的片改标「需复核（自主构建）」
+        _confirm_nodes(project_id, data.get("nodes") or [], data)
+    if event == "changeset" and data:
+        _sync_change_lists(project_id, data)
     if event == "changeset" and data:
         merged = data.get("merged") or {}
         streams.publish_project(project_id, "changeset.updated", {
@@ -102,7 +105,7 @@ def _changeset_event(project_id: str, event: str, data: dict) -> None:
     project_events.schedule_flow_refresh(project_id)
 
 
-def _confirm_nodes(project_id: str, node_ids: list[str]) -> None:
+def _confirm_nodes(project_id: str, node_ids: list[str], record: dict | None = None) -> None:
     from .services.flow import model as flow_model
     from .services.flow import state as node_state
 
@@ -110,6 +113,23 @@ def _confirm_nodes(project_id: str, node_ids: list[str]) -> None:
         return
     root = _workspaces().project_root(project_id)
     node_state.confirm(root, flow_model.load_for(root), node_ids)
+    if record and record.get("needs_review"):
+        node_state.mark_needs_review(root, node_ids, "autobuild", run_id=record.get("run_id"),
+                                     slice_id=record.get("slice_id"), note=record.get("purpose") or "")
+
+
+def _sync_change_lists(project_id: str, record: dict) -> None:
+    """变更点清单跟着变更集走（审查第 8、12 条）：开了变更集挂上编号，确认生效记已执行，撤回回到编辑中。"""
+    from .kernel.changesets import store
+    from .services.flow import change_lists
+
+    root = _workspaces().project_root(project_id)
+    if record["state"] in ("merged", "discarded"):
+        change_lists.on_changeset_closed(root, record["id"], record["state"])
+        return
+    linked = change_lists.link(root, record.get("conversation_id"), record["id"])
+    if linked and record.get("change_list_id") != linked:
+        store.update(root, record["id"], change_list_id=linked)
 
 
 def _next_steps(root: Path) -> dict | None:

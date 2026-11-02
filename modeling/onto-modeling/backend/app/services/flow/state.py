@@ -182,9 +182,13 @@ def compute(root: Path, flow: dict, hits: dict[str, bool], *, project_id: str | 
                 state = "running"
             elif node_id in pending and changeset is not None:
                 state = "pending_confirm"
-            elif node_id in stored["skipped"] and node.get("optional"):
+            elif node_id in stored["skipped"] and node.get("optional") and not hits.get(node_id):
                 state = "skipped"
             elif hits.get(node_id):
+                if node_id in stored["skipped"]:
+                    # 跳过之后又补做完成：不再算跳过（审查第 14 条）
+                    stored["skipped"].pop(node_id)
+                    changed = True
                 signature = done_signature(flow, node)
                 if record is None:
                     record = {"fp": fp(node), "sig": signature, "at": time.time()}
@@ -250,11 +254,10 @@ def confirm(root: Path, flow: dict, node_ids: list[str]) -> None:
             node = by_id.get(node_id)
             if node is None:
                 continue
-            previous = stored["nodes"].get(node_id) or {}
+            # 人确认过（重做后确认生效）：需复核标记去掉（审查第 21 条）；补做完的可选节点不再算跳过
             stored["nodes"][node_id] = {"fp": fingerprint(root, list(node.get("stale_on") or [])),
-                                        "sig": done_signature(flow, node), "at": time.time(),
-                                        **({"needs_review": previous["needs_review"]}
-                                           if previous.get("needs_review") else {})}
+                                        "sig": done_signature(flow, node), "at": time.time()}
+            stored["skipped"].pop(node_id, None)
         save(root, stored)
 
 

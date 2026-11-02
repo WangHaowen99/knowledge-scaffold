@@ -97,25 +97,25 @@ def _plan_entries(data) -> tuple[list, str]:
     return [], ""
 
 
-def _entry_ref(rel: str) -> dict | None:
+def _entry_ref(rel: str, model=None) -> dict | None:
     from ...kernel import metamodel
 
-    entry = metamodel.mm.entry_key(rel or "")
+    entry = (model or metamodel.mm).entry_key(rel or "")
     if not entry:
         return None
     kind, _, key = entry.partition(":")
     return {"kind": kind, "id": entry, "key": key, "name": key}
 
 
-def _points(entries: list) -> list[dict]:
+def _points(entries: list, model=None) -> list[dict]:
     points = []
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict) or not entry.get("file"):
             continue
-        impact = [ref for ref in [_entry_ref(entry["file"])] if ref]
+        impact = [ref for ref in [_entry_ref(entry["file"], model)] if ref]
         for item in entry.get("cascading") or []:
             if isinstance(item, dict) and item.get("needs_change"):
-                ref = _entry_ref(str(item.get("file") or ""))
+                ref = _entry_ref(str(item.get("file") or ""), model)
                 if ref and ref not in impact:
                     impact.append(ref)
         operation = str(entry.get("operation") or "modify")
@@ -146,6 +146,9 @@ def capture(root: Path, copy: Path, *, conversation_id: str | None, changeset_id
         return None
     if not entries:
         return None
+    from ...kernel import metamodel
+
+    model = metamodel.for_project(Path(root))  # 条目目录按本项目锁定版本的元模型认
     with _lock:
         existing = next((item for item in all_lists(root) if item.get("plan_digest") == digest), None)
         if existing is not None:
@@ -154,7 +157,7 @@ def capture(root: Path, copy: Path, *, conversation_id: str | None, changeset_id
         record = {
             "id": f"cl-{uuid.uuid4().hex[:8]}", "source": {"path": reference, "label": Path(reference).name if reference
                                                            else "这一轮的参考内容"},
-            "points": _points(entries), "state": "editing", "changeset_id": changeset_id,
+            "points": _points(entries, model), "state": "editing", "changeset_id": changeset_id,
             "conversation_id": conversation_id, "plan_digest": digest, "created_at": now,
         }
         return _write(root, record)
@@ -238,6 +241,41 @@ def export(root: Path, copy: Path, record: dict) -> str:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(view(record), ensure_ascii=False, indent=2), encoding="utf-8")
     return rel.as_posix()
+
+
+def link(root: Path, conversation_id: str | None, changeset_id: str) -> str | None:
+    """这条对话里还没挂变更集的清单（编辑中、已确认待执行）挂上变更集编号；返回最新那份清单的编号。"""
+    if not conversation_id:
+        return None
+    latest = None
+    with _lock:
+        for record in all_lists(root):
+            if record.get("conversation_id") != conversation_id or record.get("state") == "executed":
+                continue
+            if not record.get("changeset_id"):
+                record["changeset_id"] = changeset_id
+                _write(root, record)
+            if record.get("changeset_id") == changeset_id and latest is None:
+                latest = record["id"]
+    return latest
+
+
+def on_changeset_closed(root: Path, changeset_id: str, state: str) -> list[str]:
+    """变更集确认生效：挂在它上面的清单记为已执行（审查第 12 条）；撤回：清单回到编辑中、摘掉编号。"""
+    touched = []
+    with _lock:
+        for record in all_lists(root):
+            if record.get("changeset_id") != changeset_id or record.get("state") == "executed":
+                continue
+            if state == "merged":
+                record["state"] = "executed"
+            elif state == "discarded":
+                record.update(state="editing", changeset_id=None)
+            else:
+                continue
+            _write(root, record)
+            touched.append(record["id"])
+    return touched
 
 
 def mark(root: Path, list_id: str, **fields) -> dict | None:
