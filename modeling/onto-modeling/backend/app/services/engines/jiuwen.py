@@ -783,6 +783,9 @@ class JiuwenEngine(ObservableEngine):
             # 子代理工件区与主 agent 分开，否则子代理会挂死（见 _general_purpose_spec）
             subagents=[gp_spec],
             max_iterations=config.JIUWEN_MAX_ITERATIONS,
+            # 框架默认一轮最多等 600 秒，到点取消却按正常结束上报（做了一半的修改照样出卡、命令锁不放）；
+            # 真实模型下资料分析、对象提取常超过 10 分钟。一轮的长短由最大迭代数与用户打断兜底
+            completion_timeout=None,
             language="cn",
             # tool_call chunk 无调用 id，串行执行保证桥接层 FIFO 配对正确
             parallel_tool_calls=False,
