@@ -14,6 +14,8 @@ from artifact_process_policy import child_environment
 @pytest.fixture
 def scripts(monkeypatch):
     monkeypatch.syspath_prepend(str(Path(config.ASSETS_DIR) / 'workspace-toolkit/scripts'))
+    # trace_inputs 随场景走查拆进了 trace 包（B4c）：单独跑这个文件时也要找得到，不靠别的用例先导入过
+    monkeypatch.syspath_prepend(str(Path(config.ASSETS_DIR) / 'packs/trace/scripts'))
     return importlib.import_module('trace_inputs'), importlib.import_module('source_extract')
 
 
