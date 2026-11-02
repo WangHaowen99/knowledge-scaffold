@@ -81,3 +81,10 @@
 - 项目流、用户流重启即丢，前端按 `stream.reset` 重拉快照；`flow.updated` 的流程哈希变了（装配换了节点）
   前端要整份重拉 FL-01。
 - 下一步的计算、写入范围锁、变更集确认（`open_changeset`、round_changes 卡的待确认态）在 B4b 接上。
+
+## 合并后的衔接（B4c，2026-11-02）
+
+见 ADR-0045。第 2 节的业务知识信号不再写死在 `injection.py`：改按登记的数据源取生效中的装配里各包声明的提示规则
+（`register_prompt_hint_provider`），只有启用了知识沉淀包的项目会提示；Jiuwen worker 进程自己登记一份。第 3 节留给
+B4c 的两个登记点（产物映射、扩展项比较）与 S-20 的 `action` 解析都在 `app/wiring.py` 接上；插件运行时只动纯数据包时
+当场切换装配，已生效的 `assembly.updated` 也从 `assembly_switched` 发。

@@ -106,11 +106,12 @@ resume 续接模型上下文，界面无感。
 引擎的守卫钩子）时只给最小环境（`PATH`、`HOME`、语言区域与 Python 编码相关变量），不带
 模型 Key、JWT 与各类 `ONTO_WEB_*` 凭据。
 
-阶段提示、统一下一步与业务知识信号由后端在两轮之间注入，两个引擎同一份：每条消息送到模型前，把当前
-阶段、进行中的命令、最近报告的待处理数、与界面建议条同一份的下一步建议和命中的信号词附上，只发给模型，
-会话历史里仍是用户原话。稳定引擎经 SDK 的 UserPromptSubmit 回调，内测引擎拼在发给模型的消息前面；
-原来的两个提示钩子（`session_start_hook.sh`、`knowledge_signal_probe.sh`）已退役。阶段与下一步在会话
-开始时必带，之后内容变了才再带。见 `docs/decisions/0034-session-host-and-injection.md`。
+阶段提示、统一下一步与包的提示规则由后端在两轮之间注入，两个引擎同一份：每条消息送到模型前，把当前
+阶段、进行中的命令、最近报告的待处理数、与界面建议条同一份的下一步建议，以及用户原话命中的包提示规则附上，
+只发给模型，会话历史里仍是用户原话。业务知识信号（纠错、惯例）就是知识沉淀包的一条提示规则，没启用这个包的
+项目不提示。稳定引擎经 SDK 的 UserPromptSubmit 回调，内测引擎拼在发给模型的消息前面；原来的两个提示钩子
+（`session_start_hook.sh`、`knowledge_signal_probe.sh`）已退役。阶段与下一步在会话开始时必带，之后内容变了
+才再带。见 `docs/decisions/0034-session-host-and-injection.md`、`0045-pack-runtime-host-wiring.md`。
 
 每条命令（`/ontology-*`）有一份执行记录（数据目录 `exec/<项目>/`）：一轮结束命令还没做完记为等待，
 打断、引擎异常结束、会话回收、停机或重启时记为在某阶段中断，对话里出现续跑卡（从打断处继续、或放弃）；
@@ -236,7 +237,9 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
 - **扩展项与插件产物**（ADR-0040、0041）：`GET /api/v1/projects/{id}/extensions` 给左栏（内核 4 项 + 已启用包声明的页面）、
   资料子页、入口、产物类型与门禁；左栏跟锁文件走（启用马上出现、停用马上消失），页面按钮等新装配生效。包登记的
   产物（场景、示例数据、流程图、扫描报告、求解契约、业务知识）经 `/api/v1/projects/{id}/artifacts/...` 通用接口读写，
-  内核按登记的格式解析、在工作区 `.onto/run/artifacts.sqlite` 建索引，不跑包的代码，也不进知识包。
+  内核按登记的格式解析、在工作区 `.onto/run/artifacts.sqlite` 建索引，不跑包的代码，也不进知识包。页面按钮经
+  `POST /api/v1/projects/{id}/commands` 的 `action` 换成包里的命令；产物变化、左栏变化经项目流
+  （`artifacts.updated`、`workspace.changed.artifacts`、`extensions.updated`）推给前端（ADR-0045，接线在 `backend/app/wiring.py`）。
 - **主流程**：阶段、完成判定、命令前置与 `/ontology` 的下一步建议只在 core 包的 `flow.yaml` 里定义一次，
   后端进度、`state_helper.py`、`GET /api/v1/projects/{id}/flow` 都读它。「质量检查完成」= 有校验报告且
   `reports/` 下没有未处理的 `[ ]`。

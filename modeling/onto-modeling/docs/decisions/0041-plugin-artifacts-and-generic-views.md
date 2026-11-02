@@ -41,3 +41,9 @@
 - 过期判断依赖进程能看到的条目指纹，agent 改了条目、还没人读列表时，stale 事件要等 `after_commit` 被调用才发——
   会话宿主（B4a）合并时要在每轮结束调用它。
 - 写入范围锁（`register_lock_provider`）由变更集一侧（B4b）登记，之前产物都不显示锁定。
+
+## 合并后的衔接（2026-11-02）
+
+见 ADR-0045。`after_commit` 登记成项目流的产物映射，挂在全部主线提交上（网页、agent、插件），不只是每轮结束；
+AR-05/06/07 自己发 created / updated / deleted，提交时标出这些路径，`after_commit` 不再为它们补发 updated。
+`artifacts.updated` 经 `kernel/event_port` 发到项目流。

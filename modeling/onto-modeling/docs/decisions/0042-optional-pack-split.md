@@ -63,3 +63,8 @@ O-42 版本清单里的包与锁文件格式、提交 trailer 的 `Onto-Packs`�
 - 只启用 core 的项目里，`/ontology` 不会推荐没启用的命令；用户点到时 S-20 返回 `pack_not_enabled`。
 - 测试里引用 `workspace-toolkit/scripts/...` 的路径改到各包目录；Onto-Packs 进 trailer 后，按整份 trailer 断言的用例
   一并改了。
+
+## 合并后的衔接（2026-11-02）
+
+第 4 条的 `knowledge_signal_probe` hook 已随 B4a 退役（ADR-0034），合并时接受删除；纠错信号只剩知识沉淀包的
+提示规则一份，由宿主注入，两个引擎一致（ADR-0045）。

@@ -45,3 +45,10 @@
 - S-20 的 `action` 解析、`prompt_hints` 注入、事件接收方都要会话宿主（B4a）在合并时接上：解析函数登记为
   `registry.resolve_action`，接收方 `project_events.register_sink`。合并前事件只在进程内。
 - 角标数据（`register_badge_provider`）等待处理汇总（B4b）登记，之前恒为 0。
+
+## 合并后的衔接（2026-11-02）
+
+见 ADR-0045。第 6 条的发送口改名 `kernel/event_port.py`，只给内核的产物索引用，接收方在 `app/wiring.py` 登记到项目流；
+`extensions.updated`、`assembly.updated` 改由项目流在锁文件提交与装配切换时发（`registry.extension_differ` 登记成比较函数），
+`packs/service.emit_switch_events` 删掉，只在纯数据包当场切换时补发已生效；`knowledge.updated` 由知识接口直接调
+`services/project_events.knowledge_changed`。S-20 的 `action` 解析与提示规则注入也在 `app/wiring.py` 接上。
