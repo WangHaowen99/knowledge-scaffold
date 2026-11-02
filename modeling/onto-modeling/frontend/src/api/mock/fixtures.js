@@ -239,9 +239,15 @@ export function extensions(enabled = ['trace', 'knowledge', 'solver', 'reverse',
       { parent: 'resources', id: 'schema', title: '证据浏览器', pack: 'reverse' },
     ] : [],
     pages: plug.map(([p, id]) => ({ id, pack: p, page_api: '>=1.0 <2.0', data: { artifacts: [], reports: [], nodes: [] }, actions: [], pending: false })),
-    entries: [],
+    // 包声明的界面入口（B5c）：快捷项放输入框「全部命令」旁，附加操作放对应插件页的操作区（R22）
+    entries: [
+      ...(enabled.includes('trace') ? [{ id: 'trace.walk', kind: 'quick_action', label: '交互走查', where: 'composer', command: '/ontology-trace-walk', pack: 'trace' }] : []),
+      ...(enabled.includes('knowledge') ? [{ id: 'knowledge.export', kind: 'extra_action', label: '导出知识清单', where: 'knowledge', command: '/ontology-knowledge-export', pack: 'knowledge' }] : []),
+    ],
     artifact_types: enabled.includes('diagram') ? ['diagram.flowchart'] : [],
     views: [],
+    // 包选用的内核视图（B5c）：ER 视图放进 Studio 的视图切换（R23）；依赖证据源的两种本期不下发
+    view_choices: enabled.includes('diagram') ? [{ id: 'er_view', pack: 'diagram' }] : [],
     gates: [],
     config: [],
     disabled_pages: [],
