@@ -133,3 +133,26 @@ def test_newer_build_of_bundled_core_is_not_offered_as_rollback(tmp_path, monkey
     items = {item["name"]: item for item in client.get(f"/api/v1/projects/{project_id}/packs").json()["items"]}
     assert items["core"]["rollback_to"] is None and "rollback" not in items["core"]["actions"]
     builtin.clear_cache()
+
+
+def test_research_report_title_is_the_topic_not_the_template_heading(tmp_path, monkeypatch):
+    """资料分析报告按模板第一节是「# 分析主题」，报告列表、小结卡打开的报告页都显示成「分析主题」（V 阶段截图）。"""
+    from fastapi.testclient import TestClient
+
+    from app.api import deps
+    from app.main import app
+    from app.services import auth
+    from app.services.workspace import WorkspaceManager
+    from tests.test_changesets import main_write
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(auth, "ENABLED", False)
+    workspaces = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
+    monkeypatch.setattr(deps, "workspaces", workspaces)
+    project_id = workspaces.create_project("报告标题", owner="employee_0001")["id"]
+    main_write(workspaces.project_root(project_id), "research/合成门店运营.md",
+               "# 分析主题\n合成门店运营。\n\n# 领域概述\n合成。\n", "research: 合成门店运营")
+    with TestClient(app) as client:
+        items = client.get(f"/api/v1/projects/{project_id}/reports").json()["items"]
+    names = {item["id"]: item["name"] for item in items}
+    assert names.get("research:合成门店运营") == "合成门店运营"
