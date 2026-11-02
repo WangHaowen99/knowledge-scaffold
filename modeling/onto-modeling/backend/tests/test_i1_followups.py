@@ -67,3 +67,13 @@ def test_release_updated_on_publish(manager, monkeypatch):
     assert response.status_code == 201
     events = buffered(pid, "release.updated")
     assert events and events[-1]["data"]["release"]["version"] == response.json()["version"]
+
+
+def test_client_config_says_evidence_unavailable():
+    """C-01 features.evidence=false：前端据此不再调 EV-01 探测（本期 501，探测会在控制台留错误）。"""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    features = TestClient(app).get("/api/v1/client-config").json()["features"]
+    assert features["evidence"] is False and "drawio" in features

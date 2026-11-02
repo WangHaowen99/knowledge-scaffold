@@ -1,3 +1,5 @@
+import { ApiError } from './errors.js';
+
 // 按契约编号组织的接口函数（F1～F4 用到的分组，后续阶段按同样写法补）
 const enc = encodeURIComponent;
 const P = (id) => `/projects/${enc(id)}`;
@@ -8,7 +10,8 @@ const OPS = { ops: true };
 export function createApi(client) {
   return {
     // 3.1 客户端配置、引擎
-    clientConfig: () => client.get('/client-config'), // C-01
+    // C-01；features.evidence === false 时证据源接口不再探测（EV-01 直接按 501 返回，调用处照旧走失败分支）
+    clientConfig: () => client.get('/client-config').then((cfg) => { client.features = cfg?.features || {}; return cfg; }),
     engines: () => client.get('/engines'), // C-06
 
     // 3.2 认证与个人
@@ -226,7 +229,9 @@ export function createApi(client) {
     solverReceipts: (id, query) => client.get(`${P(id)}/solver/receipts`, { query }), // SV-04
 
     // 3.19 证据源
-    evidenceSources: (query) => client.get('/evidence/sources', { query }), // EV-01
+    evidenceSources: (query) => (client.features?.evidence === false
+      ? Promise.reject(new ApiError({ status: 501, code: 'evidence_not_available', message: '证据源本期未开放' }))
+      : client.get('/evidence/sources', { query })), // EV-01
     registerEvidenceSource: (body) => client.post('/admin/evidence/sources', body), // EV-02
     requestEvidenceSource: (body) => client.post('/evidence/source-requests', body), // EV-03
     updateEvidenceSource: (sid, body) => client.patch(`/admin/evidence/sources/${enc(sid)}`, body), // EV-04

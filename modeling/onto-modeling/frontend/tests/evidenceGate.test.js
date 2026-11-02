@@ -44,3 +44,20 @@ test('建议条：证据源不可用时去掉跳到证据源页面的建议，�
   assert.equal(withoutEvidenceSuggestions(sug, true), sug);
   assert.equal(withoutEvidenceSuggestions(null, false), null);
 });
+
+test('C-01 features.evidence === false 之后：EV-01 不再发请求，直接按 501 evidence_not_available 失败', async () => {
+  const { createApi } = await import('../src/api/endpoints.js');
+  const calls = [];
+  const client = {
+    get: async (path) => { calls.push(path); return path === '/client-config' ? { features: { evidence: false } } : { items: [] }; },
+  };
+  const api = createApi(client);
+  await api.clientConfig();
+  await assert.rejects(api.evidenceSources(), (e) => e.status === 501 && e.code === 'evidence_not_available');
+  await assert.rejects(api.evidenceSources({ project_id: 'p1' }), (e) => e.code === 'evidence_not_available');
+  assert.deepEqual(calls, ['/client-config']);
+  // 后端没给这个开关（旧版本、mock）时照常请求
+  const plain = createApi({ get: async (path) => { calls.push(path); return path === '/client-config' ? { features: {} } : { items: [] }; } });
+  await plain.clientConfig();
+  assert.deepEqual(await plain.evidenceSources(), { items: [] });
+});
