@@ -970,7 +970,12 @@ class AutobuildRunner:
         store.update(project_id, run_id, lambda record: record.update(pending_rejudges=[]))
         for item in queued:
             try:
-                await review.send_rejudge(project_id, run_id, item["entry_id"], task_id=item.get("task_id"))
+                if item.get("suspension_id"):
+                    await review.send_answer(project_id, item.get("run_id") or run_id, item["suspension_id"],
+                                             task_id=item.get("task_id"))
+                else:
+                    await review.send_rejudge(project_id, item.get("run_id") or run_id, item["entry_id"],
+                                              task_id=item.get("task_id"))
             except Exception:  # noqa: BLE001 - 一条改判发不出去不挡别的
                 _log.exception("改判发不出去（%s %s）", project_id, item.get("entry_id"))
 

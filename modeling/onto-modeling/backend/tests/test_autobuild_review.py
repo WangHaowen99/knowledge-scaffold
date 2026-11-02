@@ -93,7 +93,8 @@ def test_rejudge_during_a_run_is_queued_until_it_ends(ab):
     from tests.autobuild_helpers import gate
 
     AutoEngine.hooks["/ontology-extract-object:s1"] = [ask([
-        {"question": "门店编号几位", "header": "置信度 0.7", "options": [{"label": "四位（推荐）"}, {"label": "六位"}]}])]
+        {"question": "门店编号几位", "header": "置信度 0.7", "options": [{"label": "四位（推荐）"}, {"label": "六位"}]},
+        {"question": "要不要新增门店分组", "header": "新增对象", "options": [{"label": "要"}, {"label": "不要"}]}])]
     release = gate("/ontology-extract-operation:s1")
     run = start(client, project_id, **THREE)
     entry = wait_until(lambda: client.get(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/ledger")
@@ -102,9 +103,17 @@ def test_rejudge_during_a_run_is_queued_until_it_ends(ab):
                          json={"option_id": entry["options"][1]["id"]})
     assert queued.status_code == 202
     assert queued.json()["command_task"]["state"] == "queued" and queued.json()["entry"]["rejudged_to"] == "六位"
+    # 运行中回答挂起的问题：同样排到运行结束后补上
+    suspended = client.get(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/suspensions").json()["items"][0]
+    answered = client.post(f"/api/v1/projects/{project_id}/autobuild/suspensions/{suspended['id']}/answer",
+                           json={"custom_text": "先不分组"}).json()
+    assert answered["suspension"]["state"] == "answered" and answered["command_task"]["state"] == "queued"
+    assert client.post(f"/api/v1/projects/{project_id}/autobuild/suspensions/{suspended['id']}/answer",
+                       json={"custom_text": "再答一次"}).json()["code"] == "suspension_not_found"
     release.set()
     wait_state(client, project_id, run["run_id"], "completed")
     wait_until(lambda: any(text.startswith("/ontology-extract-object slice=s1\n\n改判：「门店编号几位」") for text in AutoEngine.sent))
+    wait_until(lambda: any("「要不要新增门店分组」的回答：先不分组" in text for text in AutoEngine.sent))
     bad = client.post(f"/api/v1/projects/{project_id}/autobuild/ledger/led-missing/accept")
     assert bad.status_code == 404 and bad.json()["code"] == "ledger_entry_not_found"
 

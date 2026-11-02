@@ -168,12 +168,14 @@ async def rejudge(project_id: str, entry_id: str, body: dict) -> dict:
     _count("rejudged", project_id)
     entry = next(item for item in run["ledger"] if item["id"] == entry_id)
     title = f"改判：{entry.get('summary') or entry.get('question')}"
-    if run["state"] in store.ACTIVE:
+    active = store.active(project_id)
+    if active is not None:
+        # 这次（或之后又开的一次）运行还没结束：排到它结束之后再发
         task = command_tasks.create(project_id, origin=REVIEW_PAGE, title=title,
                                     conversation_id=run["conversation_id"], command=_command_for(run, entry["slice"],
                                                                                                   entry.get("step")).split()[0])
-        store.update(project_id, run["run_id"], lambda record: record.setdefault("pending_rejudges", []).append(
-            {"entry_id": entry_id, "task_id": task["task_id"]}))
+        store.update(project_id, active["run_id"], lambda record: record.setdefault("pending_rejudges", []).append(
+            {"entry_id": entry_id, "task_id": task["task_id"], "run_id": run["run_id"]}))
         return {"entry": views.ledger_entry(entry), "command_task": command_tasks.view(task)}
     task = await send_rejudge(project_id, run["run_id"], entry_id)
     return {"entry": views.ledger_entry(entry), "command_task": task}
@@ -201,7 +203,10 @@ def suspensions(project_id: str, run_id: str) -> dict:
 
 
 async def answer(project_id: str, suspension_id: str, body: dict) -> dict:
-    """AB-15：回答挂起的问题。陪伴模式下马上补上（往运行对话发这一片这一步的命令）；`defer_to_next_run` 留到下一次。"""
+    """AB-15：回答挂起的问题。陪伴模式下马上补上（往运行对话发这一片这一步的命令；有运行没结束时排到它结束后）；
+    `defer_to_next_run` 留到下一次。"""
+    from ..session_host import command_tasks
+
     found = store.find_suspension(project_id, suspension_id)
     if found is None or found[1].get("state") != "open":
         raise ApiError("suspension_not_found", "挂起问题不存在或已回答", 404)
@@ -220,12 +225,29 @@ async def answer(project_id: str, suspension_id: str, body: dict) -> dict:
     run = store.update(project_id, run["run_id"], change)
     item = next(entry for entry in run["suspensions"] if entry["id"] == suspension_id)
     task = None
-    if state == "answered" and run["state"] not in store.ACTIVE:
-        line = _command_for(run, item["slice"], item.get("step"))
-        reply = f"按通用做法处理「{item.get('title')}」。" if action == "use_generic" else \
-            f"「{item.get('title')}」的回答：{label}。把之前跳过的部分补上。"
-        task = await send_command(project_id, run, line, reply, ANSWER_PAGE, f"补上：{item.get('title')}")
+    if state == "answered":
+        active = store.active(project_id)
+        if active is not None:
+            # 运行还没结束：补做排到它结束之后（同改判），这一片的写入范围这时归运行器
+            queued = command_tasks.create(project_id, origin=ANSWER_PAGE, title=f"补上：{item.get('title')}",
+                                          conversation_id=run["conversation_id"],
+                                          command=_command_for(run, item["slice"], item.get("step")).split()[0])
+            store.update(project_id, active["run_id"], lambda record: record.setdefault("pending_rejudges", []).append(
+                {"suspension_id": suspension_id, "task_id": queued["task_id"], "run_id": run["run_id"]}))
+            task = command_tasks.view(queued)
+        else:
+            task = await send_answer(project_id, run["run_id"], suspension_id)
     return {"suspension": views.suspension(item), "command_task": task}
+
+
+async def send_answer(project_id: str, run_id: str, suspension_id: str, *, task_id: str | None = None) -> dict:
+    """挂起的问题回答之后（陪伴模式）：往运行对话发这一片这一步的命令，把跳过的部分补上。"""
+    run = _run(project_id, run_id)
+    item = next(entry for entry in run["suspensions"] if entry["id"] == suspension_id)
+    line = _command_for(run, item["slice"], item.get("step"))
+    reply = f"按通用做法处理「{item.get('title')}」。" if item.get("answer") == "use_generic" else \
+        f"「{item.get('title')}」的回答：{item.get('answer')}。把之前跳过的部分补上。"
+    return await send_command(project_id, run, line, reply, ANSWER_PAGE, f"补上：{item.get('title')}", task_id=task_id)
 
 
 # ---------------------------------------------------------------------------
