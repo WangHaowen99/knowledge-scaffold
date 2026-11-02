@@ -4,7 +4,7 @@ import {
   ENDED, createRunStore, history, reportOf, runOf,
 } from '../src/api/mock/run3.js';
 import {
-  fmtDur, fmtEst, fmtTok, matrixTone, miniMetrics, money, reportMetrics, reportSub, runFlags, sliceSegments, stripMetrics, stripTitle,
+  canInterrupt, fmtDur, fmtEst, fmtTok, matrixTone, miniMetrics, money, reportMetrics, reportSub, runFlags, sliceSegments, stripMetrics, stripTitle,
 } from '../src/pages/workbench/autobuildModel.js';
 import { composerState, readonlyInfo } from '../src/state/readonly.js';
 
@@ -109,4 +109,11 @@ test('mock 运行对话：开始卡、按切片的进展块、结束后的报告
   assert.equal(sug.type, 'suggestions.updated');
   assert.equal(sug.data.mode, 'autobuild_controls');
   assert.deepEqual(sug.data.secondary.map((x) => x.label), ['运行详情', '挂起的问题 2']);
+});
+
+test('运行对话在自主构建运行中不给「打断」（S-08 回 409 autobuild_running，用运行条暂停）', () => {
+  assert.equal(canInterrupt(true, { running: true }), false);
+  assert.equal(canInterrupt(true, { running: false }), true);
+  assert.equal(canInterrupt(true, null), true);
+  assert.equal(canInterrupt(false, { running: false }), false);
 });

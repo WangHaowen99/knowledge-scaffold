@@ -15,6 +15,9 @@ export function runFlags(run) {
   };
 }
 
+// 这一轮能不能打断：运行对话里自主构建在跑时由运行条暂停、停在安全点控制（S-08 回 409 autobuild_running）
+export const canInterrupt = (sessionRunning, ab) => !!sessionRunning && !ab?.running;
+
 const pad2 = (n) => String(n).padStart(2, '0');
 export function hhmm(iso) {
   if (!iso) return '';
