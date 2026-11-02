@@ -95,3 +95,12 @@ def test_web_research_action_needs_websearch_pack():
 
     assert "联网资料分析" not in labels() and labels()[0] == "仅本地资料"
     assert labels("websearch")[0] == "联网资料分析"
+
+
+def test_template_object_sections_are_not_out_of_template(tmp_path: Path):
+    """条目模板里的「数据来源」「查询边界」登记在元模型里：按模板新建的对象在 Studio 保存时不因这两节转助手复核。"""
+    from app.services import studio as studio_service
+
+    template = (Path(config.ASSETS_DIR) / "workspace-toolkit" / "templates" / "object-template.md").read_text(encoding="utf-8")
+    review = studio_service.deterministic_check(tmp_path, "ontology/object/借阅证.md", template)["review"]
+    assert not any("数据来源" in item or "查询边界" in item for item in review), review
