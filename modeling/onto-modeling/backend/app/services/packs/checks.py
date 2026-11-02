@@ -40,6 +40,9 @@ PROMPT_SOFT_BYTES = 1536 * 1024
 PROMPT_HARD_BYTES = 4 * 1024 * 1024
 # 内核占用的脚本名：包不能覆盖内核守卫（详设 4.8：包删不掉内核守卫）
 _KERNEL_SCRIPT_PREFIXES = ("_guard_common",)
+# 保留的包名：官方命令都是 /ontology-…，叫 ontology 的上传包能冒用整套命令前缀（审查第 1 条）。
+# core 只有管理员以旧资产包方式上传 core 新版本时可用（租户不行，见下面的 names 检查）
+RESERVED_PACK_NAMES = ("ontology", "onto", "kernel", "platform", "core")
 
 
 def item(check_id: str, label: str, result: str, detail: str = "") -> dict:
@@ -69,6 +72,22 @@ def declared_names(manifest: Manifest, directory: Path) -> dict[str, set[str]]:
         if (directory / "scripts").is_dir() else set(),
     }
     return {key: actual[key] | set(manifest.items(key)) for key in actual}
+
+
+def _installed_commands(repository: PackRepository, own: str) -> dict[str, str]:
+    """包仓库里别的包（各个版本）声明的命令 → 包名；同名包的其他版本不算（升级沿用原来的命令）。"""
+    taken: dict[str, str] = {}
+    for name in repository.names():
+        if name == own:
+            continue
+        for version in repository.versions(name):
+            try:
+                commands = repository.manifest(name, version).items("commands")
+            except Exception:  # noqa: BLE001 - 坏掉的旧版本不影响检查别的包
+                continue
+            for command in commands:
+                taken.setdefault(command, name)
+    return taken
 
 
 def _frontend_files(directory: Path, files: list[str], tenant: bool) -> tuple[list[str], list[str]]:
@@ -287,6 +306,11 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
             conflicts += [f"{key} 与基础建模能力重名：{name}" for name in sorted(names.get(key, set()) & existing)]
     if tenant and manifest.name == "core":
         conflicts.append("租户包不能使用 core 这个名字")
+    elif not official and manifest.name in RESERVED_PACK_NAMES and manifest.name != "core":
+        conflicts.append(f"{manifest.name} 是保留的包名")
+    if repository is not None:
+        taken = _installed_commands(repository, manifest.name)
+        conflicts += [f"命令 {name} 和已入库的 {taken[name]} 重名" for name in sorted(names["commands"]) if name in taken]
     conflicts += [f"脚本 {name} 是内核保留名" for name in sorted(names["scripts"])
                   if name.startswith(_KERNEL_SCRIPT_PREFIXES) or name.endswith("_guard.sh")]
     if repository is not None and repository.has(manifest.name, manifest.version):

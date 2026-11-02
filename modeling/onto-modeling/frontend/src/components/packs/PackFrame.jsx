@@ -15,9 +15,11 @@ export default function PackFrame({ editor, artifact, types, readonly }) {
   const [session, setSession] = useState(null);
   const [error, setError] = useState(null);
   const ctx = useRef(null);
+  const limits = useRef({});
   ctx.current = {
     pack: editor.pack, version: session?.pack?.version || editor.version, label: session?.pack?.label || editor.pack,
     editor: { id: editor.id, title: editor.title }, artifact, types, readonly: !!readonly,
+    commands: session?.commands || [], state: limits.current,
   };
 
   useEffect(() => {
@@ -32,7 +34,8 @@ export default function PackFrame({ editor, artifact, types, readonly }) {
     const deps = {
       readArtifact: (type, key) => api.artifact(pid, type, key),
       saveArtifact: (type, key, body) => api.saveArtifact(pid, type, key, body),
-      sendCommand: ({ command, args, text }) => api.sendCommand(pid, { command, args, text, origin: { page: 'artifact', label: editor.title } }),
+      // origin.pack：服务端据此按包再校验一次（只认本包的命令、参数短、限频）
+      sendCommand: ({ command, args, text }) => api.sendCommand(pid, { command, args, text, origin: { page: 'artifact', label: editor.title, pack: editor.pack } }),
       theme: () => {
         const style = getComputedStyle(document.documentElement);
         return readTheme((name) => style.getPropertyValue(name));
@@ -57,7 +60,7 @@ export default function PackFrame({ editor, artifact, types, readonly }) {
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [api, pid, editor.title]);
+  }, [api, pid, editor.title, editor.pack]);
 
   // 助手或别处改了这份产物：告诉编辑器，由它自己决定要不要重读
   useEffect(() => subscribe?.((env) => {

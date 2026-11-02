@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import mimetypes
+import re
 import secrets
 import threading
 import time
@@ -116,7 +117,50 @@ def open_session(manager, project_id: str, pack: str, editor_id: str, *, user: s
         "url": f"{URL_PREFIX}/{token}/{entry}", "expires_at": expires, "ui_api": mf.UI_API,
         "pack": {"name": pack, "version": view.version, "label": view.manifest.label},
         "editor": {"id": editor["id"], "title": editor["title"]},
+        # 窄接口 chat.command 只能发这几条（本包清单声明的命令）
+        "commands": [f"/{name}" for name in view.manifest.items("commands")],
     }
+
+
+# 来自包界面的命令（S-20 带 origin.pack）在服务端再按包校验一次：只认本包声明的命令，参数是短的单行值，限频
+COMMAND_ARGS_MAX = 10
+COMMAND_ARG_CHARS = 200
+COMMAND_TEXT_CHARS = 500
+COMMAND_INTERVAL_S = 3.0
+_ARG_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,39}$")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+_last_command: dict[tuple[str, str], float] = {}
+
+
+def check_command(manager, project_id: str, pack: str, command: str, args: dict, text: str) -> None:
+    """S-20 收到来自包界面的命令：包要启用中，命令要是本包清单里的，参数与说明要短、不带换行；同一项目同一包限频。"""
+    view = _enabled_view(manager, project_id, pack)
+    if view is None:
+        raise PackUiError("pack_not_enabled", "本项目没启用这个插件", 409, {"pack": pack})
+    allowed = {f"/{name}" for name in view.manifest.items("commands")}
+    if command.strip() not in allowed:
+        raise PackUiError("forbidden", "插件界面只能发它自己的命令", 403, {"pack": pack, "reason": "not_pack_command"})
+    fields = {}
+    if len(args) > COMMAND_ARGS_MAX:
+        fields["args"] = "too_many"
+    for key, value in args.items():
+        if not isinstance(key, str) or not _ARG_KEY_RE.match(key):
+            fields["args"] = "key"
+        elif isinstance(value, bool) or (isinstance(value, (int, float)) and value == value and abs(value) < 1e15):
+            continue
+        elif not isinstance(value, str) or len(value) > COMMAND_ARG_CHARS or _CONTROL_RE.search(value):
+            fields[f"args.{key}"] = "short_single_line"
+    if len(text or "") > COMMAND_TEXT_CHARS or _CONTROL_RE.search((text or "").replace("\n", "")):
+        fields["text"] = "too_long"
+    if fields:
+        raise PackUiError("invalid_argument", "插件界面发的命令参数要是短的单行值", 400, {"fields": fields})
+    now = time.time()
+    with _lock:
+        last = _last_command.get((project_id, pack), 0.0)
+        if now - last < COMMAND_INTERVAL_S:
+            raise PackUiError("rate_limited", "插件发命令太频繁，稍后再试", 429,
+                              {"retry_after_s": round(COMMAND_INTERVAL_S - (now - last), 1)})
+        _last_command[(project_id, pack)] = now
 
 
 def _clean(rel: str) -> str | None:
@@ -157,6 +201,7 @@ def resolve(manager, token: str, rel: str) -> tuple[Path, str]:
 
 
 def revoke_all() -> None:
-    """测试与停机用：清掉全部票据。"""
+    """测试与停机用：清掉全部票据与命令限频记录。"""
     with _lock:
         _tickets.clear()
+        _last_command.clear()

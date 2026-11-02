@@ -14,7 +14,13 @@ export const THEME_VARS = ['--ink', '--sub', '--muted', '--faint', '--line', '--
 
 const ID_MAX = 64;
 const KEY_RE = /^[^/\\\u0000-\u001f]{1,120}$/;
-const TEXT_MAX = 2000;
+// 发命令的限制和服务端（services/packs/ui.check_command）一致：短的单行参数值，说明不超过 500 字
+const TEXT_MAX = 500;
+const ARGS_MAX = 10;
+const ARG_CHARS = 200;
+const ARG_KEY_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,39}$/;
+const CONTROL_RE = /[\u0000-\u001f\u007f]/;
+export const COMMAND_INTERVAL_MS = 5000;
 const SUMMARY_MAX = 200;
 const SAVE_KEYS = ['base_revision', 'fields', 'sections', 'content', 'summary'];
 
@@ -71,17 +77,32 @@ function saveBody(params) {
 
 function commandOf(params, ctx) {
   const command = params.command;
-  // 只能发本包的命令（上传包的命令都带包名前缀，静态检查保证）
-  if (typeof command !== 'string' || !new RegExp(`^/${ctx.pack}-[a-z0-9-]{1,60}$`).test(command)) fail('forbidden', '只能发本插件的命令');
+  // 只能发本包清单里声明的命令（PL-20 给的列表），不按「/包名-」前缀猜：包名可能撞上别的包或官方命令
+  if (typeof command !== 'string' || !(ctx.commands || []).includes(command)) fail('forbidden', '只能发本插件的命令');
   const args = params.args === undefined ? {} : params.args;
-  if (!isObject(args) || Object.values(args).some((v) => !['string', 'number', 'boolean'].includes(typeof v))) fail('invalid_argument', 'args 只能是简单的键值');
-  if (params.text !== undefined && (typeof params.text !== 'string' || params.text.length > TEXT_MAX)) fail('invalid_argument', 'text 太长');
+  if (!isObject(args) || Object.keys(args).length > ARGS_MAX) fail('invalid_argument', 'args 只能是少量简单键值');
+  for (const [k, v] of Object.entries(args)) {
+    const ok = ARG_KEY_RE.test(k) && (typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v))
+      || (typeof v === 'string' && v.length <= ARG_CHARS && !CONTROL_RE.test(v)));
+    if (!ok) fail('invalid_argument', 'args 的值要是不超过 200 字的单行文字、数字或布尔');
+  }
+  if (params.text !== undefined && (typeof params.text !== 'string' || params.text.length > TEXT_MAX
+    || CONTROL_RE.test(params.text.replace(/\n/g, '')))) fail('invalid_argument', 'text 太长');
   return { command, args, text: params.text };
 }
 
+// 发命令限频：同一个编辑器（ctx.state）两条之间至少隔 COMMAND_INTERVAL_MS
+function throttle(ctx, deps) {
+  const state = ctx.state || (ctx.state = {});
+  const now = deps.now ? deps.now() : Date.now();
+  if (state.lastCommandAt != null && now - state.lastCommandAt < COMMAND_INTERVAL_MS) fail('rate_limited', '发命令太频繁，稍后再试');
+  state.lastCommandAt = now;
+}
+
 /**
- * 校验并执行一次调用。ctx：{pack, version, label, editor: {id, title}, artifact: {type, key, title}, types: string[], readonly}；
- * deps：{readArtifact(type, key), saveArtifact(type, key, body), sendCommand({command, args, text}), theme()}。
+ * 校验并执行一次调用。ctx：{pack, version, label, editor: {id, title}, artifact: {type, key, title}, types: string[],
+ * commands: string[]（本包声明的命令）, readonly, state（限频用，可变）}；
+ * deps：{readArtifact(type, key), saveArtifact(type, key, body), sendCommand({command, args, text}), theme(), now?()}。
  * 接口出错原样带回（code、message、status、details），比如写入范围锁的 423。
  */
 export async function handle(call, ctx, deps) {
@@ -100,8 +121,11 @@ export async function handle(call, ctx, deps) {
         const { type, key } = targetOf(call.params, ctx);
         return await deps.saveArtifact(type, key, saveBody(call.params));
       }
-      case 'chat.command':
-        return await deps.sendCommand(commandOf(call.params, ctx));
+      case 'chat.command': {
+        const body = commandOf(call.params, ctx);
+        throttle(ctx, deps);
+        return await deps.sendCommand(body);
+      }
       case 'theme.get':
         return deps.theme();
       default:
