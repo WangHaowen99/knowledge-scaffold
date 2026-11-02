@@ -1,0 +1,14 @@
+/* 外壳里设计稿没画、产品需要的几处：维护横幅、头像菜单、左栏「更多」、只读元数据页。沿用设计系统变量 */
+.mnt-bar{flex:none;display:flex;align-items:center;gap:10px;padding:7px 16px;background:var(--a50);border-bottom:1px solid var(--a100);color:var(--ink2);font-size:12.5px;position:relative;z-index:15}
+.mnt-bar>svg.i{color:var(--amber2)}
+.mnt-bar b{color:var(--amber);font-weight:650}
+.mnt-bar.ro{background:var(--r50);border-color:var(--r100)}
+.mnt-bar.ro>svg.i,.mnt-bar.ro b{color:var(--red)}
+.tb-user{position:relative}
+.tb-user .menu{position:absolute;right:0;top:40px;z-index:40;min-width:220px}
+.tb-user .who{padding:8px 10px 6px;border-bottom:1px solid var(--line);margin-bottom:4px}
+.tb-crumb-menu{position:absolute;top:44px;left:96px;z-index:40;min-width:260px}
+.prail .pr-more{position:fixed;z-index:40;min-width:180px}
+.meta-only{max-width:680px;margin:40px auto}
+/* 设计稿这两行右侧放着演示状态切换（高 42px），产品里没有那个控件，行高保持一致，下面的内容不跟着上移 */
+.en-im>.row:first-child,.en-pjbar{min-height:42px}

@@ -2,7 +2,7 @@ import { FullscreenExitOutlined, FullscreenOutlined } from '@ant-design/icons';
 import { Alert, Button, Segmented, Spin, Tooltip, message } from 'antd';
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import '@xyflow/react/dist/style.css';
-import { api } from '../../lib/api.js';
+import { api } from '../../api/files.js';
 import FlowchartEditor from './FlowchartEditor.jsx';
 import './flowchart-editor.css';
 import { parseDrawioToDocument, serializeDocumentToDrawio } from './drawioConvert.js';

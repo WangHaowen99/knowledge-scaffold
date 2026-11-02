@@ -5,7 +5,7 @@ import {
 } from '@ant-design/icons';
 import { Button, Space, Tooltip, Typography } from 'antd';
 import { useState } from 'react';
-import { api } from '../lib/api.js';
+import { api } from '../api/files.js';
 
 /** HTML 报告预览：沙箱 iframe + 工具条（刷新 / 新窗口 / 底色切换）。 */
 export default function HtmlPreview({ project, path }) {

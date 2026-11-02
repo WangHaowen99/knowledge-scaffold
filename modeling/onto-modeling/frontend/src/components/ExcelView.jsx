@@ -1,7 +1,7 @@
 import { DownloadOutlined } from '@ant-design/icons';
 import { Alert, Button, Empty, Space, Spin, Tabs, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
-import { api } from '../lib/api.js';
+import { api } from '../api/files.js';
 
 function columnLetter(index) {
   let label = '';
