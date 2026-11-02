@@ -21,3 +21,18 @@ export const isEvidenceMcp = (item) => {
   const id = String(item?.id || item?.name || '');
   return id === 'evidence' || /^evidence[._]/.test(id);
 };
+
+// 证据源的三个页面：建议条、跳转动作指向它们的，证据源不可用时不出现
+const EVIDENCE_PAGES = new Set(['sources', 'snapshots', 'schema']);
+export const isEvidencePage = (page) => EVIDENCE_PAGES.has(page);
+
+// 建议条（FL-02 Suggestions）去掉指向证据源页面的建议
+export function withoutEvidenceSuggestions(sug, evidenceOn) {
+  if (!sug || evidenceOn) return sug;
+  const keep = (s) => !(s?.action?.type === 'navigate' && isEvidencePage(s.action.page));
+  return {
+    ...sug,
+    primary: sug.primary && keep(sug.primary) ? sug.primary : null,
+    secondary: (sug.secondary || []).filter(keep),
+  };
+}

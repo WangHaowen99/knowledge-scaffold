@@ -67,6 +67,7 @@ const PROJECT_PAGES = {
   incremental: WorkbenchPage,
   inbox: InboxPage,
   studio: StudioPage,
+  'studio-er': StudioPage,
   'studio-table': StudioTablePage,
   reports: ReportsPage,
   knowledge: KnowledgePage,

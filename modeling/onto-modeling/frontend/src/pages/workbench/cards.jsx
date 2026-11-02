@@ -167,7 +167,7 @@ export function RoundChangesCard({ card, scope }) {
           })}
         </div>
         {!merged && !discarded ? (
-          <div className="xs row g4" style={{ color: 'var(--faint)', marginTop: 8 }}><Icon name="lock" size={12} />{card.lock_note || roundLockNote(scope)}</div>
+          <div className="xs row g4" style={{ color: 'var(--faint)', marginTop: 8 }}><Icon name="lock" size={12} />{roundLockNote(scope)}</div>
         ) : null}
         {card.remaining_failures ? <Note tone="amber" className="mt8">还有 {card.remaining_failures} 项检查没通过</Note> : null}
         {showDiff && diff ? <DiffBlock lines={diff} style={{ marginTop: 10 }} /> : null}

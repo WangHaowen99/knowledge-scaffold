@@ -5,7 +5,7 @@ import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, relativeTime } from '../../api/errors.js';
 import { commandNode, nodeActionKind, overlayRunning, scriptRunView, sectionGroups, sliceStageTitle, trackNodes, withoutEvidence } from '../../state/flow.js';
-import { evidenceInProject } from '../../state/evidence.js';
+import { evidenceInProject, withoutEvidenceSuggestions } from '../../state/evidence.js';
 import { composerState, readonlyInfo } from '../../state/readonly.js';
 import { ShellP } from '../../shell/Shell.jsx';
 import {
@@ -630,10 +630,10 @@ export default function WorkbenchPage({ route }) {
     }
   };
 
-  const sug = inc.decorate(state.suggestions || suggestions);
+  const evidenceOn = evidenceInProject(project);
+  const sug = withoutEvidenceSuggestions(inc.decorate(state.suggestions || suggestions), evidenceOn);
   // 对话正在跑的命令属于哪个节点（FL-01 commands）；服务端标出进行中之前，进度条先按它显示
   const runningCmd = ['running', 'connecting'].includes(state.session.state) ? lastUserText(state) : null;
-  const evidenceOn = evidenceInProject(project);
   const viewFlow = useMemo(() => {
     const f = withoutEvidence(flow, evidenceOn);
     return overlayRunning(f, commandNode(f, runningCmd));

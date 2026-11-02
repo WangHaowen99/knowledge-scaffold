@@ -116,7 +116,7 @@ const KERNEL_RAIL = [['wb-l2', '工作台', 'layout'], ['studio', 'Studio', 'gra
 // 子页面归到哪个导航项（同设计稿 RAIL_OF）
 export const RAIL_OF = {
   inbox: 'wb-l2', 'wb-materials': 'wb-l2', 'wb-blueprint': 'wb-l2', 'l4-run': 'wb-l2', incremental: 'wb-l2', flowchart: 'wb-l2', 'chat-states': 'wb-l2',
-  'studio-table': 'studio', reports: 'studio', sources: 'resources', snapshots: 'resources', schema: 'resources', versions: 'publish',
+  'studio-table': 'studio', 'studio-er': 'studio', reports: 'studio', sources: 'resources', snapshots: 'resources', schema: 'resources', versions: 'publish',
 };
 const MAX_PLUGIN_RAIL = 5;
 
@@ -178,7 +178,11 @@ function SubNav({ active }) {
   );
   let items = null;
   if (grp === 'wb-l2') items = [['wb-l2', '对话'], ['inbox', <>待处理{inboxCount ? <span className="sn-n">{inboxCount}</span> : null}</>]];
-  if (grp === 'studio') items = [['studio', '图谱'], ['studio-table', '表格与条目'], ['reports', '报告']];
+  if (grp === 'studio') {
+    // 包选用了 ER 视图（PL-12 view_choices）时，Studio 的视图切换多一项（R23）
+    const er = (extensions?.view_choices || []).some((v) => v.id === 'er_view');
+    items = [['studio', '图谱'], ...(er ? [['studio-er', 'ER 视图']] : []), ['studio-table', '表格与条目'], ['reports', '报告']];
+  }
   if (grp === 'publish') items = [['publish', '发布'], ['versions', '版本历史']];
   if (grp === 'resources') {
     items = [['resources', '资料区'], ...(extensions?.subpages || []).filter((s) => s.parent === 'resources').map((s) => [s.id, <>{s.title}{plugMark(s.pack_label || '系统逆向建模')}</>])];

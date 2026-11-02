@@ -324,7 +324,7 @@ function IncrementalRoundCard({ card, scope }) {
         <ul className="mr-done">
           {M.roundLines(card).map((l, i) => <li key={i}><Icon name={l.icon} size={14} /><Inline text={`${l.verb} ${l.text}`} /></li>)}
         </ul>
-        {pending ? <div className="xs row g4 inc-lock"><Icon name="lock" size={12} />{mine ? roundLockNote(scope) : card.lock_note || roundLockNote(null)}</div> : null}
+        {pending ? <div className="xs row g4 inc-lock"><Icon name="lock" size={12} />{roundLockNote(mine ? scope : null)}</div> : null}
         {showDiff && diff ? <DiffBlock lines={diff} style={{ marginTop: 10 }} /> : null}
       </CC>
     </div>

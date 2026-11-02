@@ -423,7 +423,16 @@ export function createMockServer() {
     emitProj(m[1], 'flow.updated', { flow_hash: f.flow_hash, nodes: [{ id: n.id, state: n.state, flags: n.flags, progress: n.progress }], slices: [], suggestions_changed: false });
     return json(200, { node: n, flow_hash: f.flow_hash });
   });
-  on('POST', '/projects/([^/]+)/flow/nodes/([^/]+)/start', ({ m, body }) => {
+  on('POST', '/projects/([^/]+)/flow/nodes/([^/]+)/start', async ({ m, body }) => {
+    // 脚本节点（B5c）：同步跑完回 run，不发对话（契约 B5c 第 10 条）；建模步骤抽屉里展开看结果（R24）
+    const f = flowOf(m[1]);
+    const sn = f.nodes.find((x) => x.id === m[2] && x.kind === 'script');
+    if (sn) {
+      await wait(600);
+      const at = new Date().toISOString();
+      sn.last_run = { state: 'passed', summary: sn.last_run?.summary || '检查通过', at };
+      return json(200, { node: sn, flow_hash: f.flow_hash, run: { state: 'passed', output: sn.last_run.summary, commit: null, version_label: null, duration_ms: 600, runtime: 'jiuwenbox' } });
+    }
     const cid = convsOf(m[1])[0].id;
     const msgId = `m-${uid()}`;
     emitConv(m[1], cid, 'message.user', { message_id: msgId, text: `开始「${flowOf(m[1]).nodes.find((x) => x.id === m[2])?.title || m[2]}」`, attachments: [], references: [], origin: body.origin ? { kind: 'page', ...body.origin, task_id: null } : null, delivery: 'immediate' });
