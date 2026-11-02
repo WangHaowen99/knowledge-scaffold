@@ -43,7 +43,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent))
 import research_review
 import source_extract
-from table_profile import load_directives, table_headers
+from table_profile import load_directives, table_headers, within_workspace
 from ontology_checker import extract_sections, parse_markdown_table
 
 ERROR = '错误'
@@ -409,7 +409,7 @@ class CheckContext:
     def source_text(self, rel: str, anchor: str = '') -> str:
         if rel not in self._sources:
             path = self.root / rel
-            if not path.resolve().is_relative_to(self.root.resolve()):
+            if not within_workspace(self.root, path):
                 raise ValueError('来源必须位于当前工作区内')
             self._sources[rel] = source_extract.extract(path)
         return source_extract.located_text(self._sources[rel], anchor)

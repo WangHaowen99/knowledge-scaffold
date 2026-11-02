@@ -130,6 +130,16 @@ def read_profiles(path: Path) -> dict[str, dict]:
     return profiles
 
 
+def within_workspace(root: Path, path: Path) -> bool:
+    """path 解析后在工作区内。助手副本里 `resource` 是平台挂的链接（指向主线工作区的资料区），
+    资料区下的路径按链接目标判断，其余照旧不许跟着链接出去。"""
+    if path.resolve().is_relative_to(root.resolve()):
+        return True
+    link = root / "resource"
+    return (link.is_symlink() and path.absolute().is_relative_to(link.absolute())
+            and path.resolve().is_relative_to(link.resolve()))
+
+
 def registered_table_files(root: Path) -> list[str]:
     """登记的表格文件：schema 资料里的表格（工作区相对路径，去重保序）。"""
     return [rel for rel in dict.fromkeys(schema_files(root)) if str(rel).lower().endswith(TABLE_SUFFIXES)]
@@ -149,12 +159,11 @@ def load_registered_tables(root: Path) -> tuple[dict, dict]:
     登记了却缺失、无法解析、缺解析依赖都抛 ValueError，字段核验不能按「没有表」通过。
     表头同名以先读到的为准（与 table_headers 一致）。
     """
-    base = root.resolve()
     tables: dict[str, list[str]] = {}
     profiles: dict[str, dict] = {}
     for rel in registered_table_files(root):
         path = root / rel
-        if not path.resolve().is_relative_to(base):
+        if not within_workspace(root, path):
             raise ValueError("核验路径越出工作区")
         if not path.is_file():
             raise ValueError("已登记的数据表不存在，字段核验未完成")
