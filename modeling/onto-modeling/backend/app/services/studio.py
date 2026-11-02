@@ -594,12 +594,15 @@ def purge_project(project_id: str) -> None:
 
 
 def save_draft(
-    project_id: str, rel_path: str, content: str, base_revision: str, user: str
+    project_id: str, rel_path: str, content: str, base_revision: str, user: str, form: dict | None = None
 ) -> dict:
-    """自动暂存草稿。不再占租约：助手在改的条目由写入范围锁挡（提交时 ChangeTx 统一检查，423）。"""
+    """自动暂存草稿。不再占租约：助手在改的条目由写入范围锁挡（提交时 ChangeTx 统一检查，423）。
+
+    结构化编辑器存的草稿另带表单原样（form），重新打开时编辑器按它还原；content 是按表单渲染好的原文。"""
     drafts = _load(project_id, "drafts")
     drafts[rel_path] = {
         "content": content,
+        "form": form,
         "base_revision": base_revision,
         "author": user,
         "updated_at": int(time.time()),

@@ -180,7 +180,7 @@ def _draft_view(draft: dict | None) -> dict | None:
         return None
     return {
         "author": draft.get("author", ""), "updated_at": deps.iso(draft.get("updated_at")),
-        "base_revision": draft.get("base_revision", ""), "form": None, "content": draft.get("content", ""),
+        "base_revision": draft.get("base_revision", ""), "form": draft.get("form"), "content": draft.get("content", ""),
     }
 
 
@@ -301,15 +301,28 @@ def get_draft(project_id: str, entry_id: str, request: Request):
 
 @router.put("/entries/{entry_id}/draft")
 async def save_draft(project_id: str, entry_id: str, request: Request):
-    """自动暂存：结构化编辑（form）由元模型渲染（C3，P1），现在只收原文 content。"""
+    """自动暂存：原文 content，或结构化编辑器的表单 form（以当前原文为底只改表单里变了的部分，services/studio_form）。"""
+    from ..services import studio_form
+
     root = deps.require_owner(project_id, request)
-    rel, _, _ = entry_path(root, entry_id)
+    rel, kind, key = entry_path(root, entry_id)
     body = await deps.json_body(request)
-    content = body.get("content")
-    if not isinstance(content, str):
-        raise ApiError("invalid_argument", "要提供草稿原文 content（结构化表单 form 还不支持）", 400,
+    content, form = body.get("content"), body.get("form")
+    if form is not None:
+        target = deps.workspaces._resolve_inside(root, rel)
+        if not target.is_file():
+            raise ApiError("not_found", "条目不存在", 404)
+        try:
+            base = studio_form.form_from_entry(entry_detail(project_id, entry_id, request))
+            form = studio_form.normalize(form, base)
+            content = studio_form.render(target.read_text(encoding="utf-8"), kind, key, base, form)
+        except studio_form.FormError as exc:
+            raise ApiError("invalid_argument", str(exc), 400, {"fields": {exc.field: exc.code}}) from exc
+    elif not isinstance(content, str):
+        raise ApiError("invalid_argument", "要提供草稿原文 content 或表单 form", 400,
                        {"fields": {"content": "required"}})
-    studio_service.save_draft(project_id, rel, content, str(body.get("base_revision") or ""), deps.actor(request))
+    studio_service.save_draft(project_id, rel, content, str(body.get("base_revision") or ""), deps.actor(request),
+                              form=form if isinstance(form, dict) else None)
     draft = studio_service.get_draft(project_id, rel)
     return {"saved_at": deps.iso(draft["updated_at"]), "draft": _draft_view(draft)}
 
