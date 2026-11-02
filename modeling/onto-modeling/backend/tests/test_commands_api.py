@@ -178,3 +178,17 @@ def test_conversation_changes_reach_project_stream(api):
     assert renamed.status_code == 200 and updates()[-1]["conversation"]["title"] == "改名"
     client.delete(f"/api/v1/projects/{project_id}/conversations/{created['id']}")
     assert updates()[-1] == {"conversation": {**updates()[-2]["conversation"]}, "deleted": True}
+
+
+def test_catalog_maps_node_pack_entry_command_to_its_node(tmp_path, monkeypatch):
+    """节点包只在节点上写 entry.command、没有 commands 映射（V 阶段：/naming-check 落在「其他」，pack 记成 core）。"""
+    (tmp_path / ".claude" / "commands").mkdir(parents=True)
+    (tmp_path / ".claude" / "commands" / "naming-check.md").write_text("检查 $ARGUMENTS\n", encoding="utf-8")
+    flow = {"nodes": [{"id": "naming.check", "title": "命名一致性检查", "pack": "naming", "section": "required",
+                       "entry": {"command": "/naming-check"}, "actions": [{"label": "运行命名检查", "command": "/naming-check"}]}],
+            "commands": {}}
+    monkeypatch.setattr(session_routes.turns, "_flow", lambda root: flow)
+    catalog = session_routes.command_catalog(tmp_path)
+    item = catalog["groups"][0]["items"][0]
+    assert catalog["groups"][0]["id"] == "required"
+    assert (item["command"], item["node_id"], item["pack"], item["label"]) == ("/naming-check", "naming.check", "naming", "运行命名检查")
