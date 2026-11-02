@@ -346,3 +346,42 @@ def test_review_5_cancel_pending_respects_unconfirmed_assistant_changes(env):
     cancelled = client.post(f"/api/v1/projects/{project_id}/packs/naming/cancel-pending")
     assert cancelled.status_code == 423 and cancelled.json()["code"] == "write_scope_locked"
     assert lockfile.read(root).get("naming").enabled
+
+
+# ---- 审查第 6 条：脚本输出超过执行器上限时不能静默截断后判通过 ----
+
+BIG_SCRIPT = '''print("# 命名格式检查")
+for i in range(400):
+    print(f"- 对象{i:03d}：通过")
+print("（完）")
+'''
+
+
+def test_review_6_truncated_script_output_is_refused(env, fake_sandbox):
+    client, manager, project_id, _tmp = env
+    root = manager.project_root(project_id)
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
+    install(manager, _tmp, flow=kinds_flow(SCRIPT_NODE, probes={"naming_lint": {"files": ["reports"], "glob": "lint-naming.md"}}),
+            files={"commands/naming-check.md": "检查 $ARGUMENTS\n", "scripts/naming_lint.py": BIG_SCRIPT})
+    enable_and_apply(client, manager, project_id)
+    started = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.lint/start", json={})
+    assert started.status_code == 422 and started.json()["code"] == "node_run_failed", started.text
+    assert started.json()["details"]["truncated"] is True
+    assert not (root / "reports" / "lint-naming.md").exists()
+    assert nodes_of(root)["naming.lint"]["state"] != "confirmed"
+
+
+def test_review_6_runner_reports_truncation(fake_sandbox):
+    client, _calls = fake_sandbox
+    import base64
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("big.py", "print('x' * 5000)\n")
+        archive.writestr("ok.py", "print('ok')\n")
+    bundle = base64.b64encode(buffer.getvalue()).decode("ascii")
+    big = client.run_in_gateway(bundle, "big.py", [[]])[0]
+    ok = client.run_in_gateway(bundle, "ok.py", [[]])[0]
+    assert big["stdout_truncated"] is True and ok["stdout_truncated"] is False

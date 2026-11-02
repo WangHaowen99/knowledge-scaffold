@@ -104,6 +104,7 @@ try:
             "timed_out": timed_out,
             "stdout_is_json": single_json(stdout),
             "stdout": stdout[:limit],
+            "stdout_truncated": len(stdout) > limit,
             "stderr": stderr[-limit:],
             "duration_ms": int((time.monotonic() - started) * 1000),
         })

@@ -160,6 +160,11 @@ def run_script(manager, project_id: str, node: dict, *, actor: str) -> dict:
             "exit_code": result.get("exit_code"), "timed_out": bool(result.get("timed_out")),
             "stderr": str(result.get("stderr") or "")[-500:]})
     text = str(result.get("stdout") or "")
+    # 执行器只回传前 OUTPUT_LIMIT 个字符：截断了就不写产出（审查第 6 条）；旧网关不带标记时按长度到顶判
+    truncated = result.get("stdout_truncated")
+    if truncated or (truncated is None and len(text) >= client.OUTPUT_LIMIT):
+        raise NodeRunError("node_run_failed", "脚本输出超过上限", 422,
+                           {"truncated": True, "limit_chars": client.OUTPUT_LIMIT})
     with ChangeTx(manager, project_id, Origin("plugin", actor, node=node_trailer(node)),
                   summary=f"运行 {node['title']}") as tx:
         tx.write(output, text if text.endswith("\n") else text + "\n")
