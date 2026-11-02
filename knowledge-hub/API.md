@@ -32,7 +32,10 @@ mapping 仅允许修改 mapping 和清单 version。
 | GET /api/packages/{ontology_id}/releases/{release_id}/package | 原 ZIP、Content-Length、X-Package-Digest |
 
 回执包含 ontology_id、name、version、release_id、kind、source_service、package_digest、size 和时间；派生另含基础引用。
+新版本另含 creator 对象（issuer、sub），由 Hub 从已验证的发布用户身份生成，不接受客户端指定。发布回执、请求状态、版本详情和列表均返回该字段；每个版本保留自己的 creator，同版本同内容重复上传保留原版本的 creator。旧版本没有 creator 时省略该字段，不回填。
+调用服务须将 creator.issuer 与 creator.sub 同时与当前用户的可信身份匹配，以区分本人发布和其他授权用户发布；issuer 须使用 Hub 的 HUB_AUTH_ISSUER（未设置时为 HUB_AUTH_URL 去除末尾斜杠），不能只比较 sub。缺少 creator 表示发布者未知；该字段不改变授权规则。
 包摘要取最新提交正式版本，无正式版本取最新快照。列表采用 offset/limit（默认20、最大100），返回 items/total/next_offset。
+包摘要中的 creator 属于所展示的最新版本，不表示整个包的首版创建者。
 展示文件名为去连字符本体前12位-安全化包名-版本.zip；不改变归档字节和摘要。
 
 ## 授权与删除
@@ -40,12 +43,12 @@ mapping 仅允许修改 mapping 和清单 version。
 | API | 输入和行为 |
 | --- | --- |
 | GET /api/packages/{ontology_id}/authorized-users | 分页返回 issuer、sub、subject_id |
-| PUT /api/packages/{ontology_id}/authorized-users | users 数组（1至100项），各项 issuer+sub；全部身份通过可信目录校验后原子增加 |
+| PUT /api/packages/{ontology_id}/authorized-users | users 数组（1至100项），各项 issuer+sub；全部身份通过格式与可信 issuer 校验后原子增加 |
 | DELETE /api/packages/{ontology_id}/authorized-users/{subject_id} | 幂等撤销，最后一人返回 409 last_authorized_user |
 | DELETE /api/packages/{ontology_id} | 整体逻辑删除；原授权用户重复调用成功 |
 
 所有授权用户有相同权限；Hub 不识别项目角色或授权来源。
-新增授权使用已配置账号服务 /admin/users 及 HUB_AUTH_DIRECTORY_TOKEN；不配置则返回503，不接受未验证身份。
+目标账号的选择和存在性由调用服务负责。Hub 不查询账号目录、不持有账号管理凭据；操作者仍须通过在线身份验证及包授权检查。账号 sub 应保持稳定且不可复用。
 删除保留 ACL 和墓碑，全部版本与资料停止访问，相同 ID 不可重新创建。项目删除不调用此接口。
 
 ## 本体共享资料
