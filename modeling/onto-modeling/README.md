@@ -10,7 +10,7 @@ onto-modeling/
   backend/    FastAPI 服务：项目/工作区管理、Agent 会话编排（会话池 + SSE）、文件与版本 API
   frontend/   React 19 + Vite 7 + antd + @ant-design/x 三栏工作台
   assets/     官方包：workspace-toolkit 即 core 包（manifest.yaml、flow.yaml），packs/ 下是可选能力包与行业包，
-              启动时导入包仓库
+              启动时导入包仓库；packs/<包>/ui/ 是包自带的编辑器，前端构建时一起编译
   deploy/     离线交付包构建、预检与部署脚本
   docs/       架构决策记录（decisions/）、API v1 契约（api-v1.md）、插件化改造的设计与交接文档（plugin-architecture/）
 ```
@@ -232,7 +232,7 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
 - **包仓库**：数据目录 `packs/<名>/<版本>/`，每个版本不可修改、附 `checksums.sha256`；`packs/channels.json`
   记 stable / beta 通道指向的版本。镜像里的 `assets/workspace-toolkit` 是 core 包，启动时入库，版本号是
   清单版本加内容摘要（如 `0.1.0+3f9a1c2d`）。管理员经 `POST /api/v1/admin/packs/uploads` 上传插件包，
-  静态检查通过后发布到通道；带前端代码、带凭据、名字冲突、兼容范围不符的包检查不通过。旧的
+  静态检查通过后发布到通道；`ui/` 之外带前端代码、带凭据、名字冲突、兼容范围不符的包检查不通过。旧的
   `POST /api/settings/assets/upload` 改写到这里：没有清单的资产包当作 core 新版本，检查通过直接发布到 stable。
 - **锁文件**：每个项目一份 `.onto/packs.lock`（进项目 git），记启用的包、版本与摘要；改它是一次带
   `Onto-Source: plugin` 的提交。项目设置里启用、升级、回滚、停用都改它。
@@ -259,6 +259,24 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
   内核按登记的格式解析、在工作区 `.onto/run/artifacts.sqlite` 建索引，不跑包的代码，也不进知识包。页面按钮经
   `POST /api/v1/projects/{id}/commands` 的 `action` 换成包里的命令；产物变化、左栏变化经项目流
   （`artifacts.updated`、`workspace.changed.artifacts`、`extensions.updated`）推给前端（ADR-0045，接线在 `backend/app/wiring.py`）。
+- **包自带界面**（ADR-0055）：对话里的产物卡按包的 `views/<类型>.yaml` 里 `card` 的声明画（`title`、`subtitle`、
+  `chips`、`fields`，`component` 选平台的专用卡片组件如 `flowchart`），包不带卡片代码。编辑器可以随包发布：清单
+  `contributes.editors: [{id, title, ui_api}]`，视图 `detail.editor: <id>` 引用，双击产物时打开它（没有编辑器时用平台专用
+  组件或通用详情）。
+  - 官方包（镜像内置）：入口 `ui/<id>/index.jsx`，默认导出接 `{artifact, onClose}` 的 React 组件，随平台一起编译、
+    按包懒加载，包没启用时不加载；平台模块用 `@onto/…` 引，第三方库用平台前端已有的依赖。流程图编辑器就在
+    `assets/packs/diagram/ui/flowchart/`。
+  - 上传包：`ui/` 里只能放构建好的静态资源（html、js、css、json、图片、字体），入口 `ui/<id>/index.html`，脚本写成
+    外部文件。编辑器在不同源的 iframe 里跑，拿不到登录态、自己发不了请求，只能经窄接口（界面接口 1.0）：先往父窗口发
+    `{onto_ui: "1.0", connect: true}` 握手，平台转交一个 MessagePort，之后请求 `{onto_ui, id, method, params}`、回应
+    `{onto_ui, id, ok, result | error}` 都走它。方法有 `context.get`、`artifact.read`、`artifact.save`（就是 AR-05，助手正在改时
+    如实回 423）、`chat.command`（只能发本包清单里的命令，参数是短的单行值，5 秒一条）、`theme.get`。编辑器把自己导航到别的
+    页面，平台就关掉它。包名不能叫 `ontology` 这类保留名，命令不能和已入库的包重名。合成样例在
+    `backend/tests/fixtures/packs/sticky-notes/`。
+  - `ui/` 不进装配目录。
+- **证据源**（ADR-0056）：本期只留接口。`backend/app/evidence/` 只有提供方、网关客户端、数据源登记的协议；
+  `/api/v1/evidence/…`、项目下的 `/evidence/…`、`/anchors/resolve` 与提供方安装接口一律回 `501 evidence_not_available`；
+  助手没有 `evidence.*` 工具；界面上连接业务系统的入口不出现。
 - **主流程**：阶段、完成判定、命令前置与 `/ontology` 的下一步建议只在 core 包的 `flow.yaml` 里定义一次，
   后端进度、`state_helper.py`、`GET /api/v1/projects/{id}/flow` 都读它。「质量检查完成」= 有校验报告且
   `reports/` 下没有未处理的 `[ ]`。

@@ -1,0 +1,725 @@
+{
+ "note": "界面接口版本范围（ui_api）的对照用例：后端 manifest.satisfies 与前端 packUi.uiApiSatisfies 用同一组（审查第 4 条）",
+ "cases": [
+  {
+   "range": "",
+   "version": "1.0",
+   "satisfies": true
+  },
+  {
+   "range": "",
+   "version": "1.2",
+   "satisfies": true
+  },
+  {
+   "range": "",
+   "version": "1.0.5",
+   "satisfies": true
+  },
+  {
+   "range": "",
+   "version": "2.0",
+   "satisfies": true
+  },
+  {
+   "range": "",
+   "version": "0.9",
+   "satisfies": true
+  },
+  {
+   "range": "",
+   "version": "0.1.4",
+   "satisfies": true
+  },
+  {
+   "range": "*",
+   "version": "1.0",
+   "satisfies": true
+  },
+  {
+   "range": "*",
+   "version": "1.2",
+   "satisfies": true
+  },
+  {
+   "range": "*",
+   "version": "1.0.5",
+   "satisfies": true
+  },
+  {
+   "range": "*",
+   "version": "2.0",
+   "satisfies": true
+  },
+  {
+   "range": "*",
+   "version": "0.9",
+   "satisfies": true
+  },
+  {
+   "range": "*",
+   "version": "0.1.4",
+   "satisfies": true
+  },
+  {
+   "range": ">=1.0 <2.0",
+   "version": "1.0",
+   "satisfies": true
+  },
+  {
+   "range": ">=1.0 <2.0",
+   "version": "1.2",
+   "satisfies": true
+  },
+  {
+   "range": ">=1.0 <2.0",
+   "version": "1.0.5",
+   "satisfies": true
+  },
+  {
+   "range": ">=1.0 <2.0",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": ">=1.0 <2.0",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": ">=1.0 <2.0",
+   "version": "0.1.4",
+   "satisfies": false
+  },
+  {
+   "range": ">=1.0, <2.0",
+   "version": "1.0",
+   "satisfies": true
+  },
+  {
+   "range": ">=1.0, <2.0",
+   "version": "1.2",
+   "satisfies": true
+  },
+  {
+   "range": ">=1.0, <2.0",
+   "version": "1.0.5",
+   "satisfies": true
+  },
+  {
+   "range": ">=1.0, <2.0",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": ">=1.0, <2.0",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": ">=1.0, <2.0",
+   "version": "0.1.4",
+   "satisfies": false
+  },
+  {
+   "range": "^1.0",
+   "version": "1.0",
+   "satisfies": true
+  },
+  {
+   "range": "^1.0",
+   "version": "1.2",
+   "satisfies": true
+  },
+  {
+   "range": "^1.0",
+   "version": "1.0.5",
+   "satisfies": true
+  },
+  {
+   "range": "^1.0",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": "^1.0",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": "^1.0",
+   "version": "0.1.4",
+   "satisfies": false
+  },
+  {
+   "range": "~1.0",
+   "version": "1.0",
+   "satisfies": true
+  },
+  {
+   "range": "~1.0",
+   "version": "1.2",
+   "satisfies": false
+  },
+  {
+   "range": "~1.0",
+   "version": "1.0.5",
+   "satisfies": true
+  },
+  {
+   "range": "~1.0",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": "~1.0",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": "~1.0",
+   "version": "0.1.4",
+   "satisfies": false
+  },
+  {
+   "range": "1.0",
+   "version": "1.0",
+   "satisfies": true
+  },
+  {
+   "range": "1.0",
+   "version": "1.2",
+   "satisfies": false
+  },
+  {
+   "range": "1.0",
+   "version": "1.0.5",
+   "satisfies": false
+  },
+  {
+   "range": "1.0",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": "1.0",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": "1.0",
+   "version": "0.1.4",
+   "satisfies": false
+  },
+  {
+   "range": "1",
+   "version": "1.0",
+   "satisfies": true
+  },
+  {
+   "range": "1",
+   "version": "1.2",
+   "satisfies": false
+  },
+  {
+   "range": "1",
+   "version": "1.0.5",
+   "satisfies": false
+  },
+  {
+   "range": "1",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": "1",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": "1",
+   "version": "0.1.4",
+   "satisfies": false
+  },
+  {
+   "range": "=1.0",
+   "version": "1.0",
+   "satisfies": true
+  },
+  {
+   "range": "=1.0",
+   "version": "1.2",
+   "satisfies": false
+  },
+  {
+   "range": "=1.0",
+   "version": "1.0.5",
+   "satisfies": false
+  },
+  {
+   "range": "=1.0",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": "=1.0",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": "=1.0",
+   "version": "0.1.4",
+   "satisfies": false
+  },
+  {
+   "range": ">1.0",
+   "version": "1.0",
+   "satisfies": false
+  },
+  {
+   "range": ">1.0",
+   "version": "1.2",
+   "satisfies": true
+  },
+  {
+   "range": ">1.0",
+   "version": "1.0.5",
+   "satisfies": true
+  },
+  {
+   "range": ">1.0",
+   "version": "2.0",
+   "satisfies": true
+  },
+  {
+   "range": ">1.0",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": ">1.0",
+   "version": "0.1.4",
+   "satisfies": false
+  },
+  {
+   "range": "<=1.0",
+   "version": "1.0",
+   "satisfies": true
+  },
+  {
+   "range": "<=1.0",
+   "version": "1.2",
+   "satisfies": false
+  },
+  {
+   "range": "<=1.0",
+   "version": "1.0.5",
+   "satisfies": false
+  },
+  {
+   "range": "<=1.0",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": "<=1.0",
+   "version": "0.9",
+   "satisfies": true
+  },
+  {
+   "range": "<=1.0",
+   "version": "0.1.4",
+   "satisfies": true
+  },
+  {
+   "range": "<1.0",
+   "version": "1.0",
+   "satisfies": false
+  },
+  {
+   "range": "<1.0",
+   "version": "1.2",
+   "satisfies": false
+  },
+  {
+   "range": "<1.0",
+   "version": "1.0.5",
+   "satisfies": false
+  },
+  {
+   "range": "<1.0",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": "<1.0",
+   "version": "0.9",
+   "satisfies": true
+  },
+  {
+   "range": "<1.0",
+   "version": "0.1.4",
+   "satisfies": true
+  },
+  {
+   "range": "1.x",
+   "version": "1.0",
+   "satisfies": false
+  },
+  {
+   "range": "1.x",
+   "version": "1.2",
+   "satisfies": false
+  },
+  {
+   "range": "1.x",
+   "version": "1.0.5",
+   "satisfies": false
+  },
+  {
+   "range": "1.x",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": "1.x",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": "1.x",
+   "version": "0.1.4",
+   "satisfies": false
+  },
+  {
+   "range": ">=abc",
+   "version": "1.0",
+   "satisfies": false
+  },
+  {
+   "range": ">=abc",
+   "version": "1.2",
+   "satisfies": false
+  },
+  {
+   "range": ">=abc",
+   "version": "1.0.5",
+   "satisfies": false
+  },
+  {
+   "range": ">=abc",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": ">=abc",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": ">=abc",
+   "version": "0.1.4",
+   "satisfies": false
+  },
+  {
+   "range": "^0.9",
+   "version": "1.0",
+   "satisfies": false
+  },
+  {
+   "range": "^0.9",
+   "version": "1.2",
+   "satisfies": false
+  },
+  {
+   "range": "^0.9",
+   "version": "1.0.5",
+   "satisfies": false
+  },
+  {
+   "range": "^0.9",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": "^0.9",
+   "version": "0.9",
+   "satisfies": true
+  },
+  {
+   "range": "^0.9",
+   "version": "0.1.4",
+   "satisfies": false
+  },
+  {
+   "range": "~1.2",
+   "version": "1.0",
+   "satisfies": false
+  },
+  {
+   "range": "~1.2",
+   "version": "1.2",
+   "satisfies": true
+  },
+  {
+   "range": "~1.2",
+   "version": "1.0.5",
+   "satisfies": false
+  },
+  {
+   "range": "~1.2",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": "~1.2",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": "~1.2",
+   "version": "0.1.4",
+   "satisfies": false
+  },
+  {
+   "range": "^2",
+   "version": "1.0",
+   "satisfies": false
+  },
+  {
+   "range": "^2",
+   "version": "1.2",
+   "satisfies": false
+  },
+  {
+   "range": "^2",
+   "version": "1.0.5",
+   "satisfies": false
+  },
+  {
+   "range": "^2",
+   "version": "2.0",
+   "satisfies": true
+  },
+  {
+   "range": "^2",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": "^2",
+   "version": "0.1.4",
+   "satisfies": false
+  },
+  {
+   "range": "^0.1",
+   "version": "1.0",
+   "satisfies": false
+  },
+  {
+   "range": "^0.1",
+   "version": "1.2",
+   "satisfies": false
+  },
+  {
+   "range": "^0.1",
+   "version": "1.0.5",
+   "satisfies": false
+  },
+  {
+   "range": "^0.1",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": "^0.1",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": "^0.1",
+   "version": "0.1.4",
+   "satisfies": true
+  },
+  {
+   "range": "~0",
+   "version": "1.0",
+   "satisfies": false
+  },
+  {
+   "range": "~0",
+   "version": "1.2",
+   "satisfies": false
+  },
+  {
+   "range": "~0",
+   "version": "1.0.5",
+   "satisfies": false
+  },
+  {
+   "range": "~0",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": "~0",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": "~0",
+   "version": "0.1.4",
+   "satisfies": false
+  },
+  {
+   "range": ">=1.0.0-beta",
+   "version": "1.0",
+   "satisfies": true
+  },
+  {
+   "range": ">=1.0.0-beta",
+   "version": "1.2",
+   "satisfies": true
+  },
+  {
+   "range": ">=1.0.0-beta",
+   "version": "1.0.5",
+   "satisfies": true
+  },
+  {
+   "range": ">=1.0.0-beta",
+   "version": "2.0",
+   "satisfies": true
+  },
+  {
+   "range": ">=1.0.0-beta",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": ">=1.0.0-beta",
+   "version": "0.1.4",
+   "satisfies": false
+  },
+  {
+   "range": "<1.0.0-rc.1",
+   "version": "1.0",
+   "satisfies": false
+  },
+  {
+   "range": "<1.0.0-rc.1",
+   "version": "1.2",
+   "satisfies": false
+  },
+  {
+   "range": "<1.0.0-rc.1",
+   "version": "1.0.5",
+   "satisfies": false
+  },
+  {
+   "range": "<1.0.0-rc.1",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": "<1.0.0-rc.1",
+   "version": "0.9",
+   "satisfies": true
+  },
+  {
+   "range": "<1.0.0-rc.1",
+   "version": "0.1.4",
+   "satisfies": true
+  },
+  {
+   "range": "1.0.0",
+   "version": "1.0",
+   "satisfies": true
+  },
+  {
+   "range": "1.0.0",
+   "version": "1.2",
+   "satisfies": false
+  },
+  {
+   "range": "1.0.0",
+   "version": "1.0.5",
+   "satisfies": false
+  },
+  {
+   "range": "1.0.0",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": "1.0.0",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": "1.0.0",
+   "version": "0.1.4",
+   "satisfies": false
+  },
+  {
+   "range": ">=1 <1.1",
+   "version": "1.0",
+   "satisfies": true
+  },
+  {
+   "range": ">=1 <1.1",
+   "version": "1.2",
+   "satisfies": false
+  },
+  {
+   "range": ">=1 <1.1",
+   "version": "1.0.5",
+   "satisfies": true
+  },
+  {
+   "range": ">=1 <1.1",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": ">=1 <1.1",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": ">=1 <1.1",
+   "version": "0.1.4",
+   "satisfies": false
+  },
+  {
+   "range": "^1.0.3",
+   "version": "1.0",
+   "satisfies": false
+  },
+  {
+   "range": "^1.0.3",
+   "version": "1.2",
+   "satisfies": true
+  },
+  {
+   "range": "^1.0.3",
+   "version": "1.0.5",
+   "satisfies": true
+  },
+  {
+   "range": "^1.0.3",
+   "version": "2.0",
+   "satisfies": false
+  },
+  {
+   "range": "^1.0.3",
+   "version": "0.9",
+   "satisfies": false
+  },
+  {
+   "range": "^1.0.3",
+   "version": "0.1.4",
+   "satisfies": false
+  }
+ ]
+}

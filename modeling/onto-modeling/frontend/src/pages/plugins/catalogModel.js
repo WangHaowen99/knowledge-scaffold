@@ -10,6 +10,8 @@ export const PACK_CATEGORIES = {
   node: ['节点包', 'branch', '往流程里加节点'],
   exporter: ['导出器', 'download', '把知识包导出成其他格式'],
 };
+// 有包时才出现在左栏的分类：节点包、导出器设计稿没画；证据源提供方本期只留接口（ADR-0056），目录里没有
+export const OPTIONAL_CATEGORIES = ['node', 'exporter', 'provider'];
 // 卡片图标底色（设计稿 .pl-ico.cap / .node / .ind / .sys / .prov / .exp）
 export const PACK_ICON_CLASS = { capability: 'cap', node: 'node', industry: 'ind', system: 'sys', provider: 'prov', exporter: 'exp' };
 // 详情页英雄区的大图标：能力包按包名（与新建向导第 3 步一致），其余按分类

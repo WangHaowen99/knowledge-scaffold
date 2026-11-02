@@ -2,7 +2,8 @@
 
 依据详设 4.6、5.2、5.6、5.9、8.1，方案 D1～D4、D17。切换从下一条消息开始生效，正在进行的一轮按
 旧版本跑完；只有纯数据包（H0）立即生效。左栏页面跟锁文件走：启用马上出现、停用马上消失（产物保留）。
-PL-19（平台安装提供方，H2）属于以后阶段。
+PL-04、PL-19（提供方安装）随证据源只留接口，在 routers/evidence.py。PL-20、PL-21 是上传包自带界面的
+iframe 地址与静态资源（ADR-0055）。
 """
 
 from __future__ import annotations
@@ -13,12 +14,13 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from ..api import deps
 from ..api.errors import ApiError
 from ..services import audit
 from ..services.packs import catalog, registry, service
+from ..services.packs import ui as pack_ui
 from ..services.packs.assembler import AssemblyError
 from ..services.packs.repository import RepositoryError
 from ..services.packs.uploads import MAX_UPLOAD_BYTES, UploadError, UploadStore
@@ -191,6 +193,33 @@ async def assembly(project_id: str, request: Request):
     if view["last_error"]:
         view["last_error"] = {**view["last_error"], "at": deps.iso(view["last_error"].get("at"))}
     return view
+
+
+# ---- 上传包自带界面（ADR-0055） ----
+
+
+@router.post("/api/v1/projects/{project_id}/packs/{name}/ui-sessions")
+async def open_pack_ui(project_id: str, name: str, request: Request):
+    """PL-20：给本项目启用中的上传包的编辑器发 iframe 地址（短期票据在路径里，不是登录态）。"""
+    deps.require_owner(project_id, request)
+    body = await deps.json_body(request)
+    editor = body.get("editor") if isinstance(body.get("editor"), str) else ""
+    try:
+        result = await asyncio.to_thread(pack_ui.open_session, deps.workspaces, project_id, name, editor,
+                                         user=deps.actor(request))
+    except pack_ui.PackUiError as exc:
+        raise ApiError(exc.code, str(exc), exc.status, exc.details) from exc
+    return JSONResponse(status_code=201, content={**result, "expires_at": deps.iso(result["expires_at"])})
+
+
+@router.get(pack_ui.URL_PREFIX + "/{ticket}/{path:path}", include_in_schema=False)
+async def pack_ui_file(ticket: str, path: str):
+    """PL-21：上传包 ui/ 下的静态资源；免登录（票据即授权），带隔离响应头。"""
+    try:
+        found, media = await asyncio.to_thread(pack_ui.resolve, deps.workspaces, ticket, path)
+    except pack_ui.PackUiError as exc:
+        raise ApiError(exc.code, str(exc), exc.status, None) from exc
+    return FileResponse(found, media_type=media, headers=pack_ui.ISOLATION_HEADERS)
 
 
 # ---- 上传与审核（管理员） ----

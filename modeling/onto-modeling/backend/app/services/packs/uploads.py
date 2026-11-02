@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import tempfile
 import threading
@@ -40,6 +41,7 @@ _LEGACY_KERNEL_FILES = (
 # 旧资产包里没有、要从镜像补齐的 core 文件（原来就不在上传范围里）
 _LEGACY_IMAGE_FILES = ("workspace-rules.md", "workspace-readme.md", "flow.yaml", "scripts/flow_state.py")
 _LOCK = threading.RLock()
+_log = logging.getLogger(__name__)
 
 
 class UploadError(Exception):
@@ -183,8 +185,12 @@ class UploadStore:
         if stable:
             core_dir = self.repository.version_dir(builtin.CORE, stable)
             core_names = checks.declared_names(self.repository.manifest(builtin.CORE, stable), core_dir)
-        manifest, items = checks.run(pack, self.repository, tenant=bool(record.get("tenant_label")),
-                                     core_names=core_names)
+        try:
+            manifest, items = checks.run(pack, self.repository, tenant=bool(record.get("tenant_label")),
+                                         core_names=core_names)
+        except Exception as exc:  # noqa: BLE001 - 检查本身出错也要落成「失败」，不能一直停在 checking
+            _log.exception("静态检查出错：%s", upload_id)
+            manifest, items = None, [checks.item("internal", "静态检查", "fail", f"检查过程出错：{type(exc).__name__}")]
         if manifest is not None and manifest.name == builtin.CORE and record.get("tenant_label"):
             items.append(checks.item("tenant_core", "租户包不能替换基础建模能力", "fail", ""))
         summary = checks.summary(items)

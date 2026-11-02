@@ -8,6 +8,7 @@ import {
   CC, DiffBlock, FlowThumb, Inline, Md, SrcRow, Tli, WbCtx, Wl, fmtDuration, hhmm,
 } from './parts.jsx';
 import { EXTRA_CARDS } from './extraCards.js';
+import { cardComponent, cardLocked, cardOpen, declaredCardView } from './artifactCard.js';
 
 // 卡片按钮要调的动作，由工作台页注入
 export const ActionsCtx = createContext({});
@@ -67,10 +68,11 @@ export function StepOutputCard({ card }) {
 // ---------- 流程图卡 ----------
 export function FlowchartCard({ card, locked }) {
   const { pid } = useContext(WbCtx);
-  const { openFlowchart } = useActions();
-  // 工作台里双击就地打开弹窗；说明页等没有弹窗宿主的地方跳到 flowchart 页
-  const open = () => (openFlowchart ? openFlowchart(card.artifact) : navigate(pagePath('flowchart', pid), card.artifact ? { key: card.artifact.key } : undefined));
-  const isLocked = locked || card.locked;
+  const { openArtifact } = useActions();
+  // 工作台里双击就地打开（图示包自带的编辑器）；说明页等没有弹窗宿主的地方跳到 flowchart 页
+  const open = () => (openArtifact && card.artifact ? openArtifact(card.artifact) : navigate(pagePath('flowchart', pid), card.artifact ? { key: card.artifact.key } : undefined));
+  // 只看实时的写入范围锁：卡片在对话历史里，存在卡上的 locked 会过时
+  const isLocked = !!locked;
   const actLabel = isLocked ? '打开查看' : '打开编辑';
   // 不带 eyebrow 的卡（设计稿 flowchart 页）：标题后跟状态，缩略图下面一行说明和按钮
   if (!card.eyebrow) {
@@ -252,25 +254,40 @@ export function PackRecommendationCard({ card }) {
   );
 }
 
-// 其余产物卡（资料地图、蓝图、变更点清单、运行报告等）：显示标题并能打开对应页面，弹窗在后续阶段接入
-const GENERIC_ICON = { material_map: 'map', blueprint: 'layers', change_list: 'refresh', run_report: 'rocket', research_summary: 'filetext', impact: 'target', regression: 'flask', external_feedback: 'inbox', autobuild_start: 'rocket', slice_progress: 'layers', auto_decision: 'bot', suspension: 'pause', build_choice: 'compass', upload_prompt: 'upload' };
-const GENERIC_PAGE = { material_map: 'wb-materials', blueprint: 'wb-blueprint', change_list: 'incremental', run_report: 'l4-run', impact: 'incremental', regression: 'incremental', external_feedback: 'incremental', autobuild_start: 'l4-run', slice_progress: 'l4-run', auto_decision: 'inbox', suspension: 'inbox' };
-export function GenericCard({ card }) {
+// 通用卡：插件产物卡按包的 views.<类型>.card 声明画（契约 4.7 artifact，ADR-0055）；没有专用组件的其余卡片
+// （资料地图、蓝图、变更点清单、运行报告等）也走这里，有声明画声明，没有就是标题加状态
+export function GenericCard({ card, locked }) {
   const { pid } = useContext(WbCtx);
-  const page = card.open?.kind === 'page' ? card.open.target : GENERIC_PAGE[card.card_type];
+  const { openArtifact } = useActions();
+  const v = declaredCardView(card, { locked });
+  const target = cardOpen(card);
+  let open = null;
+  if (target?.kind === 'artifact') open = openArtifact ? () => openArtifact(target.ref) : null;
+  else if (target?.kind === 'page') open = () => navigate(pagePath(target.page, pid));
+  const chip = v.status ? <St k={v.status.key} sm label={v.status.label} />
+    : v.chips.length ? <span className="row g4">{v.chips.map((c) => <Chip key={c.key} tone={c.tone} sm>{c.text}</Chip>)}</span> : null;
   return (
     <CC
-      icon={GENERIC_ICON[card.card_type] || 'filetext'} eyebrow={card.eyebrow} title={card.title} sub={card.subtitle}
-      chip={card.status ? <St k={card.status.key} sm label={card.status.label} /> : null}
-      dbl={!!page} onDoubleClick={page ? () => navigate(pagePath(page, pid)) : undefined}
-    />
+      icon={v.icon} tone={v.plugin ? 'indigo' : undefined} eyebrow={v.eyebrow} title={v.title} sub={v.sub} chip={chip}
+      dbl={!!open} onDoubleClick={open || undefined}
+      acts={v.locked ? <Chip tone="gray" icon="lock" sm>只读</Chip> : null}
+    >
+      {v.fields.length ? <KV w="72px" pairs={v.fields} /> : null}
+    </CC>
   );
 }
+
+// 插件产物卡可以按 card.component 选的平台专用组件（契约 4.7 flowchart 卡保留兼容）
+const ARTIFACT_CARDS = { flowchart: FlowchartCard };
 
 export function CardItem({ card, scope }) {
   switch (card.card_type) {
     case 'step_output': return <StepOutputCard card={card} />;
-    case 'flowchart': return <FlowchartCard card={card} locked={!!scope && scope.state !== 'none' && (scope.artifacts || []).some((a) => a.type === card.artifact?.type && a.key === card.artifact?.key)} />;
+    case 'flowchart': return <FlowchartCard card={card} locked={cardLocked(card, scope)} />;
+    case 'artifact': {
+      const Comp = ARTIFACT_CARDS[cardComponent(card, Object.keys(ARTIFACT_CARDS))];
+      return Comp ? <Comp card={card} locked={cardLocked(card, scope)} /> : <GenericCard card={card} locked={cardLocked(card, scope)} />;
+    }
     case 'round_changes': {
       // 增量更新执行后的那一轮（带 change_list_id）按设计稿 incremental 的样子画
       const Inc = card.change_list_id ? EXTRA_CARDS['round_changes.incremental'] : null;

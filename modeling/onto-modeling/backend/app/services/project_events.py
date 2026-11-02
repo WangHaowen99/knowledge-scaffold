@@ -67,6 +67,26 @@ def register_extension_differ(differ: Callable[[str, str | None, str | None], li
         _extension_differs.append(differ)
 
 
+_round_card_providers: list[Callable[[str, dict, str, str], list[dict]]] = []
+
+
+def register_round_card_provider(provider: Callable[[str, dict, str, str], list[dict]]) -> None:
+    """对话里的产物卡（ADR-0055）：(项目, {added, modified, deleted}, 本轮起点提交, 终点提交) → 卡片列表。"""
+    if provider not in _round_card_providers:
+        _round_card_providers.append(provider)
+
+
+def round_cards(project_id: str, changes: dict, base: str, head: str) -> list[dict]:
+    """一轮结束后要放进对话的产物卡；出错只记日志（卡片是增强信息）。"""
+    cards: list[dict] = []
+    for provider in list(_round_card_providers):
+        try:
+            cards.extend(provider(project_id, changes, base, head) or [])
+        except Exception:  # noqa: BLE001
+            _log.exception("产物卡生成出错（项目 %s）", project_id)
+    return cards
+
+
 def register_scope_provider(provider: Callable[[str], dict] | None) -> None:
     """写入范围锁（B4b，方案 C10）：项目 → ScopeLock。登记前一律「没有锁」。"""
     global _scope_provider

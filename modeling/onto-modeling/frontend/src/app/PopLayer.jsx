@@ -51,7 +51,10 @@ export function PopLayer() {
         if (!res) return;
         cache.current.set(anchor, res);
         if (current === el) setState({ show: true, content: { res }, target: el });
-      }).catch(() => {});
+      }).catch(() => {
+        // 解析不了（证据源本期只留接口，EV-29 回 501）：不留一个一直转圈的浮层
+        if (current === el) setState((s) => ({ ...s, show: false }));
+      });
     };
     document.addEventListener('mouseover', onOver);
     return () => document.removeEventListener('mouseover', onOver);

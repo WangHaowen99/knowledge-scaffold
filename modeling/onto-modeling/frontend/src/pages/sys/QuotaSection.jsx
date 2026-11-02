@@ -15,7 +15,7 @@ import {
 
 const EMPTY_OVERRIDE = { kind: 'user', id: '', item: 'daily_tokens', value: '', reason: '' };
 
-function OverrideDialog({ existing, onClose, onAdded }) {
+function OverrideDialog({ existing, onClose, onAdded, hidden }) {
   const { api } = useApp();
   const [f, setF] = useState(EMPTY_OVERRIDE);
   const [tried, setTried] = useState(false);
@@ -61,7 +61,7 @@ function OverrideDialog({ existing, onClose, onAdded }) {
         )}
         <div className="grid2">
           <Field label="项" hint={err('item')}>
-            <Select value={f.item} options={QUOTA_ITEMS[f.kind].map(([value, label]) => ({ value, label }))} onChange={set('item')} />
+            <Select value={f.item} options={QUOTA_ITEMS[f.kind].filter(([k]) => !hidden.has(k)).map(([value, label]) => ({ value, label }))} onChange={set('item')} />
           </Field>
           <Field label="值" hint={err('value')}>
             <Inp mono value={f.value} error={!!problems.value} placeholder="如 5,000,000" onChange={set('value')} />
@@ -132,6 +132,8 @@ export function QuotaSection() {
   if (both404) return <>{head}<LoadNote error={quota.error} what="配额与 L4 限制" code="SY-15～SY-17" /></>;
 
   const overrides = quota.data?.overrides || [];
+  // 本期不生效的项（SY-15 not_enforced：证据采集频率、快照体积，证据源只留接口）字段保留、不显示
+  const hidden = new Set(quota.data?.not_enforced || []);
   const sym = moneySymbol(lForm?.currency);
   return (
     <>
@@ -147,10 +149,12 @@ export function QuotaSection() {
                 <Field label="每日 token 预算" hint={err(qp, 'daily_tokens', '到 80% 时提醒，用完后当日只能浏览')}>
                   <Inp mono value={qForm.daily_tokens} error={!!qp.daily_tokens} onChange={setQ('daily_tokens')} />
                 </Field>
-                <Field label="证据采集频率" hint={err(qp, 'collections_per_source_per_hour', '生产环境另需确认')}>
-                  <Inp value={qForm.collections_per_source_per_hour} error={!!qp.collections_per_source_per_hour} onChange={setQ('collections_per_source_per_hour')}
-                    after={<span className="muted sm sy-nowrap">次 / 每个数据源每小时</span>} />
-                </Field>
+                {hidden.has('collections_per_source_per_hour') ? null : (
+                  <Field label="证据采集频率" hint={err(qp, 'collections_per_source_per_hour', '生产环境另需确认')}>
+                    <Inp value={qForm.collections_per_source_per_hour} error={!!qp.collections_per_source_per_hour} onChange={setQ('collections_per_source_per_hour')}
+                      after={<span className="muted sm sy-nowrap">次 / 每个数据源每小时</span>} />
+                  </Field>
+                )}
               </div>
             </Card>
             <Card title="按项目" icon="pkg">
@@ -161,9 +165,11 @@ export function QuotaSection() {
                 <Field label="每月 token 预算" hint={err(qp, 'monthly_tokens', null)}>
                   <Inp mono value={qForm.monthly_tokens} error={!!qp.monthly_tokens} onChange={setQ('monthly_tokens')} />
                 </Field>
-                <Field label="单份快照在 git 里的上限" hint={err(qp, 'snapshot_git_mb', '超出的大件放 blob 仓')}>
-                  <Inp mono value={qForm.snapshot_git_mb} error={!!qp.snapshot_git_mb} onChange={setQ('snapshot_git_mb')} after={<span className="muted sm">MB</span>} />
-                </Field>
+                {hidden.has('snapshot_git_mb') ? null : (
+                  <Field label="单份快照在 git 里的上限" hint={err(qp, 'snapshot_git_mb', '超出的大件放 blob 仓')}>
+                    <Inp mono value={qForm.snapshot_git_mb} error={!!qp.snapshot_git_mb} onChange={setQ('snapshot_git_mb')} after={<span className="muted sm">MB</span>} />
+                  </Field>
+                )}
               </div>
             </Card>
           </div>
@@ -229,6 +235,7 @@ export function QuotaSection() {
       {adding ? (
         <OverrideDialog
           existing={overrides}
+          hidden={hidden}
           onClose={() => setAdding(false)}
           onAdded={(o) => { quota.setData((x) => ({ ...x, overrides: [...x.overrides, o] })); setAdding(false); }}
         />

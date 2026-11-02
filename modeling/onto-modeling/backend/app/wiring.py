@@ -9,6 +9,7 @@
 - 变更集（B4b）：会话状态 → `kernel/changesets/service.register_activity_provider`，变更集变化 → 项目流
   （`changeset.updated`、`scope.updated`、`flow.updated`），写入范围锁 → `project_events.register_scope_provider`
   与插件产物的 `register_lock_provider`。
+- 一轮改到的插件产物 → 对话里的产物卡（ADR-0055）：`services/project_events.register_round_card_provider`。
 
 登记的都是进程内的函数引用，不做 I/O，可以重复调。在建应用时（`app/main.py`）调，而不是在 lifespan 里：
 不开 lifespan 的 TestClient、uvicorn 起的服务看到的是同一套接线。工作区管理器一律调用时再取
@@ -41,6 +42,13 @@ def _artifact_refs(root: Path, paths: list[str]) -> list[dict]:
     from .kernel.artifacts import service as artifact_service
 
     return artifact_service.after_commit(_workspaces(), root.name, paths)
+
+
+def _round_artifact_cards(project_id: str, changes: dict, base: str, head: str) -> list[dict]:
+    """一轮结束：改到的插件产物按包的 card 声明出卡（只读与否由前端按实时的写入范围判断，卡上不存）。"""
+    from .kernel.artifacts import cards
+
+    return cards.round_cards(_workspaces(), project_id, changes, base=base, seed=head)
 
 
 def _publish_kernel_event(project_id: str, event_type: str, data: dict) -> None:
@@ -143,6 +151,7 @@ def install() -> None:
 
     sessions.register_action_resolver(_page_action_command)
     project_events.register_artifact_mapper(_artifact_refs)
+    project_events.register_round_card_provider(_round_artifact_cards)
     if _extension_differ is None:
         _extension_differ = registry.extension_differ()
     project_events.register_extension_differ(_extension_differ)

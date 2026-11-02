@@ -1,0 +1,4 @@
+body { margin: 0; font: 14px/1.6 var(--font, sans-serif); color: var(--ink, #111); display: flex; flex-direction: column; height: 100vh; }
+header, footer { display: flex; gap: 8px; align-items: center; padding: 8px 12px; }
+#state, #probe { color: var(--sub, #666); font-size: 12px; }
+textarea { flex: 1; margin: 0 12px; padding: 8px; border: 1px solid var(--line, #ddd); border-radius: 8px; resize: none; font: inherit; }

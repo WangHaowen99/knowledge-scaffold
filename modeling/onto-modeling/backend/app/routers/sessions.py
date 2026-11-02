@@ -674,6 +674,15 @@ async def dispatch_command(project_id: str, root: Path, request: Request, body: 
                            {"pack": action.get("pack"), "effective": None})
     if not command.startswith("/"):
         raise ApiError("invalid_argument", "命令须以 / 开头", 400, {"fields": {"command": "format"}})
+    if origin.get("pack"):
+        # 包自带界面经窄接口发来的：按包再校验一次（ADR-0055，审查第 1 条）
+        from ..services.packs import ui as pack_ui
+
+        try:
+            pack_ui.check_command(deps.workspaces, project_id, str(origin["pack"]), command, args,
+                                  str(body.get("text") or ""))
+        except pack_ui.PackUiError as exc:
+            raise ApiError(exc.code, str(exc), exc.status, exc.details) from exc
     catalog = command_catalog(root)
     known = {item["command"]: item for group in catalog["groups"] for item in group["items"]}
     name = command.split()[0]

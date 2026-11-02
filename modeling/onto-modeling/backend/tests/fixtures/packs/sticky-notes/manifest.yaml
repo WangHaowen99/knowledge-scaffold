@@ -1,0 +1,18 @@
+# 测试夹具：合成的上传包样例（ADR-0055）。包名、内容全部合成，不进 assets/packs。
+# 带一个很小的 iframe 编辑器，端到端验证上传包这一档：读不到平台的登录态、保存走写入路径、停用后打不开。
+name: sticky-notes
+version: 0.1.0
+kind: capability
+label: 便签
+description: 合成样例：便签产物，带一个只经窄接口和平台通信的编辑器。
+publisher: {kind: tenant, label: 示例租户}
+kernel_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {core: ">=0.1"}
+contributes:
+  commands: [sticky-notes-tidy]
+  artifacts: [artifacts/note.yaml]
+  views: [views/note.yaml]
+  editors:
+    - {id: note, title: 便签编辑器, ui_api: ">=1.0 <2.0"}
+checksums: checksums.sha256

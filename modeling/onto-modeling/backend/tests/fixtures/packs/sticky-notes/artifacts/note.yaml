@@ -1,0 +1,19 @@
+type: sticky-notes.note
+title: 便签
+path: ext/sticky-notes/notes/*.md
+format: md-frontmatter
+key: filename
+schema:
+  version: "1"
+  fields:
+    - {name: title, type: text, label: 标题, required: true}
+    - name: color
+      type: enum
+      label: 颜色
+      required: false
+      enum:
+        - {value: yellow, label: 黄色, tone: amber}
+        - {value: blue, label: 蓝色, tone: blue}
+    - {name: topic, type: text, label: 主题, required: false}
+sections: [正文]
+status: {field: color, map: {yellow: 黄色, blue: 蓝色}}

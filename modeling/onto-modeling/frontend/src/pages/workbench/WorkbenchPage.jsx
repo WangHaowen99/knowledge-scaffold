@@ -10,7 +10,7 @@ import { ShellP } from '../../shell/Shell.jsx';
 import {
   Button, Drawer, Field, Icon, Menu, Modal, Ring, Seg, SegBar, St, cx, useOutside,
 } from '../../ui/index.jsx';
-import { latestFlowchartArtifact } from '../flowchart/flowchartDialog.js';
+import { FLOWCHART_TYPE, latestFlowchartArtifact } from '../../app/packUi.js';
 import { cellClass } from '../projects/projectCard.js';
 import { AutobuildBar, AutobuildCtx, useAutobuild } from './autobuild.jsx';
 import { ActionsCtx, ContextPanel, QueueCard } from './cards.jsx';
@@ -22,7 +22,8 @@ import { MATERIAL_DIALOGS } from './materials/model.js';
 import { useIncremental, useIncrementalTarget } from './incremental/useIncremental.jsx';
 import '../../styles/workbench-extra.css';
 
-const FlowchartDialog = lazy(() => import('../flowchart/FlowchartDialog.jsx'));
+// 双击插件产物（流程图卡、按声明画的产物卡）打开的编辑器或详情，按包的 views.detail 选（ADR-0055）
+const ArtifactOpener = lazy(() => import('../../components/packs/ArtifactOpener.jsx'));
 const MaterialsDialogs = lazy(() => import('./materials/MaterialsDialogs.jsx'));
 
 const TRACK_CLASS = { confirmed: 'ok', running: 'running', pending: 'pending', blocked: 'blocked' };
@@ -443,7 +444,7 @@ export default function WorkbenchPage({ route }) {
   const [usage, setUsage] = useState(null);
   const [drag, setDrag] = useState(false);
   const [suggestions, setSuggestions] = useState(null);
-  const [flowchart, setFlowchart] = useState(null);
+  const [opened, setOpened] = useState(null);
   const [mDialog, setMDialog] = useState(null);
   const ab = useAutobuild({ pid, cid, list });
   const mainRef = useRef(null);
@@ -456,19 +457,23 @@ export default function WorkbenchPage({ route }) {
   useEffect(() => { api.commandCatalog(pid).then(setCatalog).catch(() => {}); }, [api, pid]);
   useEffect(() => { if (cid) api.suggestions(pid, cid).then(setSuggestions).catch(() => {}); }, [api, pid, cid]);
   useEffect(() => { if (menu === 'ctx') api.projectUsage(pid).then(setUsage).catch(() => {}); }, [api, pid, menu]);
-  // flowchart 页（设计稿）= 工作台 + 打开的流程图弹窗；地址带 key 时打开那一张，
-  // 不带时等对话历史到了，打开最近一张流程图卡的那张图；对话里没有就交给弹窗取 AR-02 的第一张
+  // flowchart 页（设计稿）= 工作台 + 图示包的流程图编辑器；地址带 key 时打开那一张，
+  // 不带时等对话历史到了，打开最近一张流程图卡的那张图；对话里没有就交给编辑器取 AR-02 的第一张；图示包没启用时说「插件已停用」
   const fcPicked = useRef(null);
+  const closeOpened = useCallback(() => {
+    setOpened(null);
+    if (route.page === 'flowchart') navigate(pagePath('wb-l2', pid));
+  }, [route.page, pid]);
   useEffect(() => {
     if (route.page !== 'flowchart') { fcPicked.current = null; return; }
     const want = route.query?.key || null;
     if (want) {
-      if (fcPicked.current !== want) { fcPicked.current = want; setFlowchart({ type: 'diagram.flowchart', key: want }); }
+      if (fcPicked.current !== want) { fcPicked.current = want; setOpened({ type: FLOWCHART_TYPE, key: want }); }
       return;
     }
     if (fcPicked.current || !state.lastSeq) return;
     fcPicked.current = '*';
-    setFlowchart(latestFlowchartArtifact(state) || { type: 'diagram.flowchart', key: null });
+    setOpened(latestFlowchartArtifact(state) || { type: FLOWCHART_TYPE, key: null });
   }, [route.page, route.query?.key, state]);
   // 资料分析 / 建模蓝图的弹窗：地址带 ?dialog=material_map|verification|blueprint|build 时打开（建议条、建模步骤抽屉跳过来）
   useEffect(() => {
@@ -538,7 +543,7 @@ export default function WorkbenchPage({ route }) {
     registerRound: (cs, fn) => { rounds.current.set(cs, fn); },
     canSaveKnowledge: hasPlugin('knowledge'),
     saveKnowledge: (item) => setKnItem({ ...item, conversation_id: cid }),
-    openFlowchart: (artifact) => setFlowchart(artifact),
+    openArtifact: (artifact) => setOpened(artifact),
     openMaterials: (d) => setMDialog(typeof d === 'string' ? { kind: d } : d),
     // 增量更新的卡片：清单弹窗、确认清单并执行、页面命令发到这条对话
     openChangeList: inc.openChangeList,
@@ -695,9 +700,9 @@ export default function WorkbenchPage({ route }) {
             <div className="sm muted">对话记录保留，按最新配置重连模型；稳定引擎会清空模型上下文。要从空白上下文开始，请新建会话。</div>
           </Modal>
           <KnowledgeDialog item={knItem} onClose={() => setKnItem(null)} />
-          {flowchart ? (
+          {opened ? (
             <Suspense fallback={null}>
-              <FlowchartDialog artifact={flowchart} onClose={() => { setFlowchart(null); if (route.page === 'flowchart') navigate(pagePath('wb-l2', pid)); }} />
+              <ArtifactOpener artifact={opened} onClose={closeOpened} />
             </Suspense>
           ) : null}
           {mDialog ? <Suspense fallback={null}><MaterialsDialogs dialog={mDialog} onClose={closeMDialog} /></Suspense> : null}

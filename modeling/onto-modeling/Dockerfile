@@ -3,12 +3,14 @@
 # 需要 BuildKit（docker buildx / Docker Desktop 默认）：cache/bind mount 用于依赖复用。
 
 FROM node:22-slim AS frontend-build
-WORKDIR /build
+WORKDIR /build/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 # npm 缓存挂载：同机重复构建不再重新下载依赖
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --prefer-offline --registry=https://registry.npmmirror.com
 COPY frontend/ ./
+# 官方包自带的界面代码（assets/packs/<包>/ui/）随平台一起编译（ADR-0055），路径与仓库里一致
+COPY assets/packs /build/assets/packs
 RUN npm run build
 
 # python:3.11-slim 与 auth-server / consumer backend 同基础镜像，复用已拉取的层
@@ -50,7 +52,7 @@ RUN ln -s /opt/onto-modeling /opt/onto-web \
     && ln -s /opt/onto-modeling/assets/workspace-toolkit /opt/onto-modeling/assets/claude-workspace-dotclaude \
     && ln -s /opt/onto-modeling/assets/workspace-rules.md /opt/onto-modeling/assets/claude-workspace-CLAUDE.md \
     && ln -s /opt/onto-modeling/assets/workspace-readme.md /opt/onto-modeling/assets/claude-workspace-README.md
-COPY --from=frontend-build /build/dist /opt/onto-modeling/static
+COPY --from=frontend-build /build/frontend/dist /opt/onto-modeling/static
 # drawio 官方 webapp（build_release.sh 供应到 vendor/drawio/webapp；缺席时编辑功能降级为只读）
 COPY vendor/drawio/webapp /opt/onto-modeling/drawio
 

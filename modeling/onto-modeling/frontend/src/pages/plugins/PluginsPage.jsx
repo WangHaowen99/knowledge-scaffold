@@ -57,9 +57,9 @@ export default function PluginsPage({ route }) {
   return (
     <ShellG active="plugins" side={<PluginsNav active={cat} counts={data?.counts || {}} onCat={pickCat} projectId={projectId} />}>
       <PageHead
-        eyebrow="能力 · 知识 · 提供方"
+        eyebrow={data?.counts?.provider ? '能力 · 知识 · 提供方' : '能力 · 知识'}
         title="插件中心"
-        desc="能力包决定怎么建模，证据源提供方决定能从哪些业务系统取证据。按项目锁定版本，升级可以回滚。"
+        desc={data?.counts?.provider ? '能力包决定怎么建模，证据源提供方决定能从哪些业务系统取证据。按项目锁定版本，升级可以回滚。' : '能力包决定怎么建模，行业包带来领域知识。按项目锁定版本，升级可以回滚。'}
       />
       <div className="pl-bar">
         <Inp w={300} icon="search" placeholder="搜索插件名称、ID 或用途…" value={q} onChange={(e) => setQ(e.target.value)} />

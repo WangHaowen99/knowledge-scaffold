@@ -366,6 +366,7 @@ def test_get_and_put_quotas(env):
         "per_user": {"concurrent_sessions": 3, "daily_tokens": 2_000_000, "collections_per_source_per_hour": 6},
         "per_project": {"online_engines": 1, "monthly_tokens": 20_000_000, "snapshot_git_mb": 20},
         "overrides": [],
+        "not_enforced": ["collections_per_source_per_hour", "snapshot_git_mb"],  # 证据源本期只留接口
     }
     saved = client.put("/api/v1/admin/quotas", json={
         "per_user": {"daily_tokens": 5000}, "per_project": {"online_engines": 4, "snapshot_git_mb": 50},

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node --test",
+    "test": "node --import ./tests/pack-resolve.mjs --test",
     "preview": "vite preview"
   },
   "dependencies": {

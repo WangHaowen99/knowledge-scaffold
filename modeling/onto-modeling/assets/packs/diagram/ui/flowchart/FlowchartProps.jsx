@@ -1,6 +1,6 @@
 // 流程图属性面板：流程属性 / 节点属性 / 连线属性三个页签（设计稿 fc-props）
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Chip, Field, Inp, Note, Select, Tabs } from '../../ui/index.jsx';
+import { Chip, Field, Inp, Note, Select, Tabs } from '@onto/ui/index.jsx';
 import { EDGE_TYPE_LABEL, NODE_TYPE_LABEL, listToText, textToList } from './flowchartModel.js';
 
 const NODE_OPTIONS = ['step', 'decision', 'data', 'start', 'end'].map((value) => ({ value, label: NODE_TYPE_LABEL[value] }));
