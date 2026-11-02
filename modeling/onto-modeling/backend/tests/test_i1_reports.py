@@ -73,6 +73,8 @@ def test_list_detail_items_and_raw(env):
     client, _workspaces, _pid, _root, base = env
     listed = client.get(f"{base}/reports").json()
     by_id = {item["id"]: item for item in listed["items"]}
+    # 工作区模板自带的 reports/index.md 是占位索引，不算报告
+    assert not any(item["path"].endswith("/index.md") for item in listed["items"])
     rule = by_id["20261102-120000-all-rule"]
     assert rule == {"id": "20261102-120000-all-rule", "name": "规则检查报告 · 全量", "type": "rule", "type_label": "规则",
                     "at": rule["at"], "summary": "错误 1 · 警告 1", "path": "reports/20261102-120000-all-rule.md"}

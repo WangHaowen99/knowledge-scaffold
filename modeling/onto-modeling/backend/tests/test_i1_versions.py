@@ -123,6 +123,8 @@ def test_revert_preview_matches_revert(api):
     head_label = client.get(base).json()["current_version_label"]
     assert preview["next_version_label"] == f"v0.{int(head_label.split('.')[1]) + 1}"
     assert preview["packs_lock_changes"][0]["pack"] == "core" and preview["packs_lock_changes"][0]["from"] == "9.9.9"
+    # 带能力的显示名（9.9.9 不在包仓库里时取仓库里别的版本的清单 label）
+    assert preview["packs_lock_changes"][0]["label"] and preview["packs_lock_changes"][0]["label"] != "core"
     head = client.get(base).json()["head"]
     assert client.get(f"{base}/revert-preview", params={"commit": head}).json()["code"] == "nothing_to_revert"
     done = client.post(f"{base}/revert", json={"commit": target}).json()

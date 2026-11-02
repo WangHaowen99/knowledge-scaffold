@@ -166,6 +166,18 @@ def _lock_versions(root: Path, rev: str) -> dict[str, str]:
     return {entry.name: entry.version for entry in lock.enabled()}
 
 
+def _pack_label(name: str, version: str | None) -> str:
+    """能力的显示名（清单 label）；包仓库里找不到这个版本时用包名。"""
+    from ..api import deps
+
+    try:
+        repository = deps.workspaces.packs.repository
+        version = version if version and repository.has(name, version) else (repository.versions(name) or [None])[0]
+        return (repository.manifest(name, version).label or name) if version else name
+    except Exception:  # noqa: BLE001 - 显示名取不到不影响预览
+        return name
+
+
 def revert_preview(root: Path, target: str, head: str) -> dict:
     """回退到 target 会动哪些文件、撤回哪些版本、能力锁怎么变（与 V-06 的整树恢复同一口径）。"""
     from . import mainline
@@ -177,7 +189,8 @@ def revert_preview(root: Path, target: str, head: str) -> dict:
                  for status, rel in changed if not rel.startswith(SYSTEM_PREFIXES)]
     target_n, head_n = mainline.count(root, target), mainline.count(root, head)
     before, now = _lock_versions(root, target), _lock_versions(root, head)
-    packs = [{"pack": name, "from": now.get(name), "to": before.get(name)}
+    packs = [{"pack": name, "label": _pack_label(name, now.get(name) or before.get(name)),
+              "from": now.get(name), "to": before.get(name)}
              for name in sorted(set(before) | set(now)) if before.get(name) != now.get(name)]
     return {
         "target": {"commit": target, "version_label": mainline.label(target_n)},

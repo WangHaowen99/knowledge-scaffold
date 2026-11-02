@@ -15,7 +15,7 @@ import json
 import re
 import subprocess
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from . import report_items, research_view
 
@@ -199,7 +199,10 @@ def _paths(manager, project_id: str) -> list[tuple[Path, str]]:
         for path in sorted(copy_reports.rglob("*.md")):
             if path.is_file() and not path.is_symlink():
                 found.setdefault(path.relative_to(copy).as_posix(), copy)
-    return [(where, rel) for rel, where in found.items()]
+    # 各目录里的占位索引（index.md，工作区模板自带）不是报告
+    from ..kernel.metamodel import mm
+
+    return [(where, rel) for rel, where in found.items() if PurePosixPath(rel).name != mm.INDEX_FILE]
 
 
 def summary_of(where: Path, rel: str, manager=None, project_id: str = "") -> dict:
