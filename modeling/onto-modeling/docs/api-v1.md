@@ -1,0 +1,5534 @@
+# onto-modeling API v1 契约
+
+| 项 | 内容 |
+|---|---|
+| 版本 | v1.0（C0 阶段产出） |
+| 日期 | 2026-11-01 |
+| 依据 | 详细设计 v1.1（20261101）；后端改造方案（20261101）；高保真设计稿第五版（34 个界面页、`features.js`、`标注.json`）；主线 worktree `feat/onto-modeling-plugin-architecture` @ 2ad2ad7b 的 `backend/app/routers/*.py` |
+| 适用 | 前端按设计稿第五版重写、后端按详设 v1.1 改造，都以本文件为准 |
+| 修改 | 实现中必须改契约时，在 `_plan/contract-changes.md` 追加一条（改了什么、为什么），不得静默偏离 |
+
+**怎么读**
+
+- 第 1 章通用约定，第 2 章错误码目录，第 3 章按资源分组的接口，第 4 章 SSE 事件目录，第 5 章页面 → 接口对照表，第 6 章旧接口对照，第 7 章数据模型附录，第 8 章本文定下的不确定项，第 9 章详设与设计稿的矛盾。
+- 每个接口一个小标题，编号形如 `P-03`。编号前缀对应分组（见 3.0）。
+- 接口块里的「依据」写详设章节或接口编号（①～㊹），「页面」写设计稿页面 id。
+- 对象类型名（如 `ProjectCard`、`ScopeLock`）在第 7 章定义；接口里只写引用。
+- 只写契约，不写实现。实现位置以改造方案第 3 章为准。
+
+---
+
+## 1 通用约定
+
+### 1.1 前缀、版本与两个监听面
+
+| 面 | 前缀 | 监听 | 说明 |
+|---|---|---|---|
+| 业务面 | `/api/v1` | 主监听（容器内 8100） | 工作台、Studio、资料、发布、插件、个人与系统设置、三份契约 |
+| 运维管理面 | `/api/v1/ops` | 运维监听（默认 `127.0.0.1:8101`，同进程，见方案 E8） | 运维中心 4 页的大部分接口（㊲） |
+| 健康检查 | `/api/health`、`/api/health/live`、`/api/health/ready` | 两个监听都提供 | 不带版本号，免鉴权 |
+| MCP 传输 | `/api/v1/onto-mcp/...` | 主监听 | 外部协议（②），MCP token 鉴权 |
+
+- 前端从 `C-01 GET /api/v1/client-config` 取 `ops_base_url`，运维管理面接口一律请求 `{ops_base_url}/api/v1/ops/...`。`ops_base_url` 为空串表示与业务面同源（部署在反代上把 `/api/v1/ops/` 转到运维监听）。
+- 运维管理面同样校验 JWT（方案 E8：独立端口挡不住同容器的 agent）。
+- 业务面上收到 `/api/v1/ops/*` 时：配置 `ONTO_WEB_OPS_ON_MAIN=true` 则照常处理，否则返回 404 `not_found`。
+
+### 1.2 旧路径兼容期
+
+依据方案 A14。
+
+1. 兼容中间件位于鉴权中间件之前，把旧路径改写为 v1 路径后交给 v1 处理器。对照表见第 6 章。
+2. 经旧路径进来的响应加三个头：
+   - `Deprecation: true`
+   - `Sunset: Sat, 01 May 2027 00:00:00 GMT`（v1 上线后 6 个月；之后旧路径一律 410）
+   - `Link: </api/v1/...>; rel="successor-version"`
+3. 旧路径的响应体就是 v1 的响应体，不做形状兼容。唯一的例外：错误体额外带 `error` 字段（值同 `message`），方便旧脚本读取。
+4. 已删除的旧接口（评测、Studio 租约、成员、资产包等，见第 6 章）返回 `410 endpoint_removed`，`details.successor` 给出替代接口或 `null`。
+5. 永久保留、不进兼容期的旧路径：
+   - `/api/health`：响应不变，`{ok, agent_sdk, drawio}`；
+   - `/api/onto-mcp/{project_id}/{toolset}/{mcp|sse|sse/messages}`：外部 MCP 客户端已经配好的地址，行为与 `/api/v1/onto-mcp/...` 完全相同，不加 Sunset 头；
+   - `/drawio/*`：drawio 静态页，不属于 API。
+6. 免鉴权前缀同步更新为：`/api/v1/auth/`、`/api/v1/client-config`、`/api/health`、`/api/v1/onto-mcp/`、`/api/onto-mcp/`。
+   - 带 `onto_svc_` 前缀令牌的请求，鉴权中间件只放行到服务令牌接口：`X-01`、`PB-05`、`PB-06`、`PB-07`、`X-04`、`X-05`，由处理器校验权限范围；用在其他接口返回 `401 unauthenticated`。
+
+### 1.3 鉴权
+
+**JWT。**
+
+- auth-server 签发 RS256 access token，后端按 JWKS 验签，校验 `iss`、`aud`、`typ`（③）。
+- 携带方式：`Authorization: Bearer <access_token>`。
+- 只有下面这些接口允许用查询参数 `?token=` 携带（浏览器的 EventSource 和下载链接带不了头）：
+  - 全部 SSE 接口（第 4 章列出的 4 条流）；
+  - 文件下载：`F-04`、`P-09`、`PB-07`、`V-03` 的 `download=1`、`PL-16`、`O-47`、`O-49`。
+- 其余接口带 `?token=` 一律忽略。
+- 令牌过期返回 `401 token_expired`，无效返回 `401 unauthenticated`。前端用 `A-04` 无感刷新后重试一次。
+
+**角色。** JWT 的 `role` claim 取三个值之一（方案第 6 章 #2：auth-server 新增 `ops`）：
+
+| role | 界面叫法 | 能做什么 |
+|---|---|---|
+| `user` | 建模者 | 自己的项目全部操作；个人设置；浏览插件目录，把包启用到自己的项目；提交数据源登记申请、插件安装申请 |
+| `admin` | 管理员 | `user` 的全部能力，另加：系统设置（3.23）、用户管理、指定项目所有者、插件上传 / 审核 / 发布、平台安装提供方、证据源租户级登记与凭据、知识提名审核、服务令牌 |
+| `ops` | 运维 | `user` 的全部能力，另加：运维管理面（3.24 中标 ops 的接口）、审计、错误留档、回收站 |
+
+- admin 也能调用运维管理面的只读接口和回收站（见各接口「调用方」）。
+- 任何角色都能创建并拥有自己的项目。管理员和运维**不能**读写别人项目的内容，只能看项目元数据（1.6、详设 1.6）。
+
+**本地模式。** 没有配置 `ONTO_WEB_AUTH_URL` 时鉴权关闭：
+
+- 所有请求视为本机用户 `local`，同时拥有 `user`、`admin`、`ops` 三种角色；
+- 所有权检查全部放行；
+- 审计照常记录，`actor` 为 `local`；
+- `C-01` 返回 `auth.enabled=false`，登录页显示「本地模式」。
+
+**MCP token。** 只用于 `/api/v1/onto-mcp/*` 传输接口（M-05～M-07）。
+
+- 格式 `onto_pat_<urlsafe>`，只存 SHA-256 摘要，明文只在签发响应里出现一次。
+- 权限范围 `ontology.read`、`ontology.change.validate`、`ontology.change.apply`，新增 `evidence.read`（方案 E13）。
+- token 绑定项目和签发人；签发人不再是项目所有者时立即失效。
+
+**服务令牌**（三份契约用，方案第 6 章 #6）。
+
+- 格式 `onto_svc_<urlsafe>`，由管理员签发（X-06），与 MCP token 分开存放。
+- 携带方式：`Authorization: Bearer onto_svc_...`。
+- 权限范围：`releases.read`、`receipts.write`、`feedback.write`。可以限定到项目列表，也可以不限。
+- 只能调用 `X-01`、`PB-05`、`PB-06`、`PB-07`、`X-04`、`X-05`；用在别处返回 `401 unauthenticated`。
+
+### 1.4 项目所有权
+
+依据方案 A11、`services/ownership.py`。
+
+- 一个项目只有一个所有者（`owner` = 用户名），没有成员和评审人。
+- 项目内容接口（工作区文件、条目、对话、产物、报告、版本、变更集、证据快照等）只有所有者能调。
+  - 非所有者返回 `403 project_owner_only`；
+  - 项目没有所有者时返回 `403 project_unowned`（等管理员用 `AD-07` 指定）。
+- 项目元数据接口（`P-01`、`P-04`）对 admin 和 ops 返回 `ProjectMetaView`：只有名称、所有者、阶段、构建方式、占用、最近活动，没有目标、资料、产物。
+- 项目 ID 不合法或不存在返回 `404 project_not_found`。为了不泄露存在性，非所有者访问不存在的项目也返回 404。
+- 已归档项目只读。写接口返回 `409 project_archived`，取消归档（`P-07`）除外。
+
+### 1.5 错误体
+
+所有非 2xx 响应体都是：
+
+```json
+{
+  "code": "revision_conflict",
+  "message": "文件已被助手修改，请刷新对比后再保存",
+  "details": {"path": "ontology/object/配送时限.md", "expected": "9f3c1a…", "actual": "a71e03…"},
+  "trace_id": "4f9c2e1d"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `code` | string | 小写蛇形错误码，全集见第 2 章 |
+| `message` | string | 给用户看的中文短句，遵守用户词汇表，不含路径以外的内部术语 |
+| `details` | object \| null | 错误码约定的结构化补充 |
+| `trace_id` | string | 本次请求的链路 ID，可在可观测（`O-04`）里查 |
+| `error` | string | 仅旧路径兼容期返回，值同 `message` |
+
+- FastAPI 参数校验失败统一转成 `400 invalid_argument`，`details.fields` 为 `{字段路径: 原因}`。
+- MCP 传输层保留 MCP 自己的错误码和 JSON-RPC 信封（见 `M-05`），不受本节约束。
+
+### 1.6 分页、筛选、排序
+
+- 列表接口统一用游标分页：
+  - 请求：`?cursor=<不透明串>&limit=<n>`，`limit` 默认 50，上限 200（详设 4.1，与 MCP 一致）；
+  - 响应：`{items: [...], next_cursor: string|null, total: int|null}`。
+  - 游标里绑定了筛选、排序条件和数据版本。条件变了再用旧游标返回 `400 invalid_cursor`；数据版本变了返回 `409 cursor_stale`，前端从头拉。
+- 少数本身有上限、不分页的列表，接口里写明「不分页，上限 N」。
+- 排序参数：`sort=<字段>&order=asc|desc`。
+- 筛选参数：各接口逐个列出，多值用逗号分隔，如 `?kind=decision,stale`。
+
+### 1.7 内容版本号与乐观并发
+
+| 对象 | 读到的版本号 | 写入时带回 | 冲突时 |
+|---|---|---|---|
+| 工作区文件、Studio 条目、插件产物、知识条目 | `revision`：文件内容 `sha256` 的前 16 位 hex | `base_revision` | `409 revision_conflict` |
+| 求解契约 | `revision`：契约目录、绑定操作、评估器源码的摘要；`revision_no` 是给人看的整数（界面显示 r8） | `base_revision` | `409 revision_conflict`，`details.kind="solver_contract"` |
+| 蓝图、变更点清单、自主构建策略 | `revision` | `base_revision` | `409 revision_conflict` |
+| 项目主线 | `head`：主线最新提交；`version_label`：如 `v0.13` | 变更集合入时可选带 `expected_head` | `409 head_moved` |
+
+- `revision_conflict` 的 `details` 是 `{target, expected, actual, changed_by, changed_at, version_label}`。`changed_by` 取 `assistant|web|studio|mcp|autobuild|import|plugin`，前端据此显示「文件已被助手修改（2 分钟前，版本 v0.13）」。
+- `base_revision` 为空串或省略时不做冲突检查。只有新建文件，或明确要覆盖时才这样传。
+- **写入范围锁**（详设 4.3、方案 C10）：
+  - 写到助手写入范围内的条目，所有写接口统一返回 `423 write_scope_locked`，`details` 为 `ScopeLock`；
+  - 锁的状态有两态：`assistant_running`（助手运行中）、`pending_confirm`（修改待确认）。自主构建下是 `autobuild_slice`，持续到这一片自动合入；
+  - 范围外照常写，保存即合入主线。
+- 网页、Studio、MCP、导入的写入都经内核写入路径（⑤），成功响应带 `commit` 和 `version_label`。
+
+### 1.8 请求体与上传上限
+
+| 类别 | 上限 | 超限 |
+|---|---|---|
+| JSON 请求体（默认） | 1 MiB | `413 payload_too_large` |
+| 文件内容写入（`F-03`、产物保存） | 4 MiB | `413` |
+| 资料上传（`R-02`、`U-01` `purpose=material`） | 单个 20 MiB | `413` |
+| 对话附件（`U-01` `purpose=attachment`） | 单个 20 MiB，一条消息最多 10 个 | `413` / `400 invalid_argument` |
+| 项目导入包（`U-01` `purpose=project_import`） | 200 MiB | `413` |
+| 插件离线包（`PL-13`） | 200 MiB | `413` |
+| MCP 请求体 | 1 MiB | `413 REQUEST_TOO_LARGE`（MCP 码） |
+| 证据锚点批量解析 | 一次 100 个 | `400 invalid_argument` |
+
+允许的资料类型：`.md .markdown .txt .doc .docx .xls .xlsx .xlsm .csv .pdf .drawio .html .htm .png .jpg .jpeg`。图片只作为对话附件和资料附件。其他类型返回 `415 unsupported_media_type`，`details.allowed` 列出允许的扩展名。
+
+### 1.9 时间、数量与金额
+
+- 时间一律 RFC 3339 UTC，毫秒精度，以 `Z` 结尾，如 `2026-11-01T08:52:00.000Z`。界面上的「5 分钟前」由前端换算。
+- 时长用整数毫秒，字段名以 `_ms` 结尾；配置项里的秒数以 `_s` 结尾。
+- token 数用整数。
+- 金额用 `Money`：`{amount: number（两位小数）, currency: "CNY"|"USD"}`。币种取平台配置 `billing.currency`，默认 `CNY`。费用 = token × 单价表（方案 B14），没配单价的模型 `amount=null`。
+- 百分比用 0～100 的数，字段名以 `_pct` 结尾；置信度用 0～1 的数。
+
+### 1.10 ID 与引用格式
+
+| 对象 | 格式 | 例子 |
+|---|---|---|
+| 项目 | `^[a-z0-9][a-z0-9-]{0,63}$` | `retail-restock-3f9a1c2d` |
+| 对话 | 12 位 hex | `c7a1e2f03b44` |
+| 本体条目 | `<kind>:<key>`，kind 取 `object\|operation\|rule\|metric\|script` | `object:hardness_limit` |
+| 插件产物 | 类型 `<包>.<名>` + key | `trace.scenario` / `s-03` |
+| 变更集 | `cs-<n>` | `cs-31` |
+| 执行记录 | `ex-<n>` | `ex-0412` |
+| 自主构建运行 | `run-<n>`，界面显示「运行 #n」 | `run-3` |
+| 采集任务 | `job-<n>` | `job-0131` |
+| 证据快照 | `YYYYMMDD-HHMMSS-xxxx` | `20261030-221500-9c1d` |
+| 证据锚点 | `<scheme>:<源ID>/<路径>[#<片段>]`（详设 5.8.5，名字里的特殊字符百分号编码） | `db:mes-prod/mes.std_limit.limit_max` |
+| 流程节点 | `<包>.<名>` | `core.model` |
+| 待处理事项 | `<kind>:<来源ID>`，来源不变 ID 就不变 | `decision:q-7f3a` |
+| 错误留档 | `err-<4～8 位 hex>` | `err-7f3a` |
+| 凭据引用 | `cred://<源ID>/<版本>` | `cred://mes-prod/3` |
+
+- 锚点放在查询参数里传（`?anchor=`），不放路径段，避免 `/` 和 `#` 被路由或浏览器截断。
+- 条目和产物引用的统一写法见第 7 章 `EntryRef`、`ArtifactRef`。
+
+### 1.11 SSE 事件流
+
+**四条流。**
+
+| 流 | 接口 | 谁开 | 内容 |
+|---|---|---|---|
+| 对话流 | `S-13 GET /api/v1/projects/{id}/conversations/{cid}/events` | 工作台对话页 | 消息、卡片、决策、确认、进展、会话状态（4.2） |
+| 项目流 | `P-15 GET /api/v1/projects/{id}/events` | 进入任意项目页 | 流程、待处理、写入范围锁、变更集、产物、插件命令进度、采集、自主构建（4.3） |
+| 用户流 | `A-12 GET /api/v1/me/events` | 全局页（我的项目、插件中心、个人设置） | 通知、项目卡片更新（4.4） |
+| 日志跟随 | `O-07 GET /api/v1/ops/logs/stream` | 可观测页「跟随」 | 结构化日志（4.5） |
+
+同一时刻前端最多开两条：项目页是「项目流 + 对话流」，全局页是「用户流」。每个用户同时最多 8 条连接，超过返回 `429 too_many_streams`。
+
+**帧格式。**
+
+```
+retry: 3000
+
+id: 1532
+data: {"id":"1532","type":"question.asked","ts":"2026-11-01T07:21:03.120Z","project_id":"retail-restock-3f9a1c2d","conversation_id":"c7a1e2f03b44","data":{...}}
+
+```
+
+- 不写 `event:` 行，前端统一走 `onmessage`，按 `type` 分发。
+- 信封字段：
+  - `id`：同 SSE 的 id 行；
+  - `type`：事件类型，见第 4 章；
+  - `ts`：时间；
+  - `project_id`；
+  - `conversation_id`：只有对话流有；
+  - `data`：载荷。
+- 流开始时先发一次 `retry: 3000`。
+
+**事件 id 与回放。**
+
+| 流 | id 形式 | 持久化 | 断线重连 |
+|---|---|---|---|
+| 对话流 | 十进制整数 `seq`，每条对话单调递增，写进 JSONL 历史 | 是（瞬时事件除外） | 带 `Last-Event-ID` 头或 `?after=<seq>`，服务端补发 `seq > after` 的全部持久事件，再接实时推送 |
+| 项目流、用户流 | `<epoch>.<n>`：`epoch` 是进程启动标识，`n` 单调递增 | 内存环形缓冲：每个项目（用户）最近 2000 条或 30 分钟 | 带 `Last-Event-ID` 或 `?last_event_id=`。缓冲里还有就补发；epoch 不同或已被挤出时，先发一条 `stream.reset`，前端据此重新拉快照接口 |
+
+- **瞬时事件**不带 `id:` 行，不回放：`message.delta`、`context.usage`、`ping`、`command.progress` 的中间百分比。它们的最终状态由持久事件或快照接口给出。
+- 对话流首次打开的推荐顺序：
+  1. 先用 `S-06` 分页拉历史（默认最近 200 条）；
+  2. 再带 `after=<最后一条 seq>` 打开流。
+  - `after` 缺省为 0，表示从头回放全部历史。
+- 项目流 `stream.reset` 之后要重拉的快照：`FL-01`、`IN-01`、`CS-06`、`PL-12`、`AB-05`（有运行时），以及当前页自己的列表接口。
+
+**心跳与令牌过期。**
+
+- 每 15 秒发一条 `{"type":"ping"}`（不带 id）。前端 45 秒收不到任何帧，就判定断线并重连。
+- 服务端发现 access token 到期，先发 `auth.expired` 再关流。前端刷新令牌后，带 `?token=<新>&last_event_id=<最后 id>` 重连。
+- 服务器重启后，对话流按持久 seq 续上；项目流和用户流会收到 `stream.reset`。
+
+### 1.12 审计
+
+- 业务面和运维管理面的每个写请求（POST、PUT、PATCH、DELETE）都在**响应之后**写一条审计（方案 E4）：`AuditEntry{ts, actor, actor_kind, type, method, path, status, project_id, summary, trace_id, ip}`。
+- 读请求不记，例外是证据检索（E 组的 `EV-25`～`EV-29`）和下载发布包（`PB-07`、`X-03`），这两类按详设 4.10.1 记录。
+- 另有几类不经 HTTP 的专项审计：agent 提交与合入、插件切换、采集访问、熔断等。事件类型见第 7 章 `AuditEntry.type`。
+- 审计不带项目内容：只记路径、条目 key、动作和结果，不记文件正文、对话正文、字段值。
+- 接口块里的「审计」一栏：
+  - `是`：按本节默认规则记；
+  - `专项：<type>`：额外写一条该类型的专项审计；
+  - `否`：不记。
+
+### 1.13 维护模式
+
+运维开启维护模式后（`O-21`）：
+
+| 模式 | 写请求 | 新会话 | 已有会话 |
+|---|---|---|---|
+| `reject_new_sessions` | 照常 | 发消息返回 `503 maintenance_no_new_sessions`，`details.message` 是运维填的提示 | 跑完当前这一轮 |
+| `read_only` | 一律 `503 maintenance_read_only`，运维管理面和登录除外 | 同上 | 同上 |
+
+`C-01` 返回当前的维护状态，前端据此显示横幅。
+
+---
+
+## 2 错误码目录
+
+HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里状态码不同，在接口块里单独写明。
+
+### 2.1 通用
+
+| code | 状态 | 含义 | details |
+|---|---|---|---|
+| `invalid_argument` | 400 | 参数或请求体不合法 | `fields: {路径: 原因}` |
+| `invalid_cursor` | 400 | 游标无法解析，或筛选条件变了 | — |
+| `cursor_stale` | 409 | 游标绑定的数据版本已变 | — |
+| `unauthenticated` | 401 | 没带令牌或令牌无效 | — |
+| `token_expired` | 401 | access token 过期 | — |
+| `forbidden` | 403 | 角色不够 | `required_role` |
+| `scope_forbidden` | 403 | 服务令牌权限范围不够 | `required_scope` |
+| `project_owner_only` | 403 | 不是项目所有者 | — |
+| `project_unowned` | 403 | 项目没有所有者，等管理员指定 | — |
+| `not_found` | 404 | 路径不存在 | — |
+| `project_not_found` | 404 | 项目不存在或 ID 不合法 | — |
+| `endpoint_removed` | 410 | 旧接口已删除 | `successor` |
+| `payload_too_large` | 413 | 请求体或文件超限 | `limit_bytes` |
+| `unsupported_media_type` | 415 | 文件类型不支持 | `allowed[]` |
+| `confirmation_required` | 428 | 需要先确认（生产采集、强确认操作） | 各接口自定 |
+| `rate_limited` | 429 | 频率限制 | `retry_after_s` |
+| `quota_exceeded` | 429 | 超出配额 | `quota, scope(user\|project), limit, used, reset_at` |
+| `too_many_streams` | 429 | SSE 连接超限 | `limit` |
+| `internal_error` | 500 | 未预期错误，原始错误已留档 | `error_id` |
+| `upstream_unavailable` | 502 | auth-server、连接器网关、沙箱网关不可达 | `upstream` |
+| `service_unavailable` | 503 | 依赖未就绪 | `dependency` |
+| `maintenance_read_only` | 503 | 维护模式：只读 | `message, until` |
+| `maintenance_no_new_sessions` | 503 | 维护模式：拒绝新会话 | `message, until` |
+| `metadata_unavailable` | 503 | 项目元数据或资料用途清单暂时读不到（旧码 `project_metadata_unavailable`、`resource_metadata_unavailable`） | `which` |
+
+### 2.2 认证与账号
+
+| code | 状态 | 含义 | details |
+|---|---|---|---|
+| `invalid_credentials` | 401 | 用户名或密码不正确 | `remaining_attempts`（auth-server 提供时） |
+| `account_locked` | 429 | 连续失败被锁定 | `retry_after_s` |
+| `refresh_invalid` | 401 | 刷新令牌无效或过期 | — |
+| `registration_disabled` | 403 | 注册未开启 | — |
+| `username_taken` | 409 | 用户名已存在 | — |
+| `weak_password` | 400 | 密码不满足规则 | `failed_rules[]`：取 `len, max, classes, contains_username, common, edge_space, same_as_old` |
+| `old_password_incorrect` | 400 | 旧密码不正确 | — |
+| `user_admin_unavailable` | 503 | 没配置 auth-server 管理令牌 | — |
+| `user_not_found` | 404 | 用户不存在 | — |
+| `transfer_target_invalid` | 400 | 移交对象不是建模者或不存在 | — |
+| `invalid_owner` | 400 | 指定的所有者用户名不合法 | — |
+
+### 2.3 项目、上传、文件
+
+| code | 状态 | 含义 | details |
+|---|---|---|---|
+| `project_name_required` | 400 | 名称为空 | — |
+| `project_name_too_long` | 400 | 名称超过 200 字符 | `max` |
+| `project_name_conflict` | 409 | 同一用户下重名（含已归档） | `conflict: {original_name, attempted_name, candidates[≤3]}` |
+| `confirm_name_mismatch` | 400 | 删除时输入的名称与项目名不一致 | — |
+| `project_archived` | 409 | 已归档项目只读 | — |
+| `project_busy` | 409 | 目录被占用，删除没完成 | — |
+| `engine_unavailable` | 409 | 引擎在当前部署未安装 | `engine` |
+| `archive_invalid` | 400 | 压缩包无法解析，或含符号链接、`..`、绝对路径 | `reason, entry` |
+| `unsupported_archive_kind` | 400 | 认不出格式，或有阻断项 | `blockers[]: {code, message}` |
+| `upload_not_found` | 404 | 暂存上传不存在 | — |
+| `upload_expired` | 410 | 暂存上传已过期（24 小时） | — |
+| `upload_purpose_mismatch` | 400 | 暂存上传的用途与接口不符 | `expected, actual` |
+| `path_forbidden` | 403 | 路径越界，或是受保护目录（`.git`、`.claude`、`.onto`、`.ontology-state` 等） | `path` |
+| `managed_path` | 403 | 受管目录，要用专用接口写（求解契约、脚本描述符、`resource/`） | `path, use` |
+| `file_not_found` | 404 | 文件不存在 | `path` |
+| `binary_not_previewable` | 415 | 二进制文件不能按文本预览 | — |
+| `preview_unavailable` | 501 | 服务端缺预览依赖 | `reason` |
+| `invalid_filename` | 400 | 文件名不合法（含路径、以 `.` 开头） | — |
+| `revision_conflict` | 409 | 版本号不一致 | `target, expected, actual, changed_by, changed_at, version_label, kind` |
+
+### 2.4 写入路径、变更集、版本
+
+| code | 状态 | 含义 | details |
+|---|---|---|---|
+| `write_scope_locked` | 423 | 目标在助手写入范围内，确认生效或撤回前只读 | `ScopeLock` |
+| `check_rejected` | 422 | 确定性检查有硬伤，拒绝保存 | `errors[]: Finding, warnings[]: Finding` |
+| `gate_failed` | 422 | 门禁链不通过 | `findings[]: Finding` |
+| `changeset_not_found` | 404 | 变更集不存在 | — |
+| `changeset_in_progress` | 409 | 助手还在跑，不能确认或撤回 | `conversation_id` |
+| `changeset_closed` | 409 | 变更集已经合入或撤回 | `state` |
+| `merge_conflict` | 409 | 合入时检测到实体冲突，已进待处理 | `entities[]: EntryRef, inbox_item_id` |
+| `head_moved` | 409 | 主线已前进，`expected_head` 不符 | `head` |
+| `invalid_commit` | 400 | 版本号不合法，或不在主线上 | — |
+| `nothing_to_revert` | 400 | 当前内容与目标版本一致 | — |
+| `tag_not_found` | 404 | 标记不存在，或不是用户标记 | — |
+| `entry_referenced` | 409 | 条目被其他条目引用，不能删除（流程图除外） | `references: EntryRef[]` |
+
+### 2.5 会话与执行
+
+| code | 状态 | 含义 | details |
+|---|---|---|---|
+| `conversation_not_found` | 404 | 对话不存在或已删除 | — |
+| `session_busy` | 409 | 另一条对话正在运行，或运行中不能切换、新建、删除 | `running_conversation_id` |
+| `message_empty` | 400 | 消息正文和附件都为空 | — |
+| `engine_not_installed` | 503 | 引擎运行时不可用 | `engine` |
+| `permission_request_gone` | 410 | 确认请求已处理、超时或会话已重启 | — |
+| `question_gone` | 410 | 问题已回答、撤回或失效 | `state` |
+| `answer_invalid` | 400 | 选项不存在，或要求自定义回答却为空 | — |
+| `not_queued` | 409 | 当前不在排队，无法取消排队 | — |
+| `exec_not_found` | 404 | 执行记录不存在 | — |
+| `exec_not_resumable` | 409 | 不能续跑 | `reason`：`inputs_changed\|node_upgraded\|already_finished` |
+| `nothing_to_retry` | 409 | 没有可重试的出错轮次 | — |
+| `title_invalid` | 400 | 对话名称须为 1–60 个字符 | — |
+
+### 2.6 流程与蓝图
+
+| code | 状态 | 含义 | details |
+|---|---|---|---|
+| `node_not_found` | 404 | 节点不存在或未出现 | — |
+| `node_not_skippable` | 409 | 主线或必经节点不能跳过 | — |
+| `node_not_skipped` | 409 | 节点没有被跳过，无法恢复 | — |
+| `flow_assembly_failed` | 422 | 流程组装不通过（锚点、环、输出冲突、版本） | `problems[]` |
+| `blueprint_not_found` | 404 | 还没有建模蓝图 | — |
+| `blueprint_not_confirmed` | 409 | 蓝图还没确认（启动自主构建等操作需要） | — |
+| `slice_invalid` | 400 | 切片编辑不合法（合并少于 2 片、依赖成环、名称重复等） | `reason` |
+| `low_confidence_batch` | 422 | 把握低的变更点不能批量接受，必须单独确认 | `point_ids` |
+
+### 2.7 插件与产物
+
+| code | 状态 | 含义 | details |
+|---|---|---|---|
+| `pack_not_found` | 404 | 包不存在 | — |
+| `pack_version_not_found` | 404 | 版本不存在 | — |
+| `pack_incompatible` | 409 | 兼容检查不通过 | `checks[]: CompatCheck` |
+| `pack_required` | 409 | 必装包不能停用 | — |
+| `pack_not_enabled` | 409 | 本项目没启用这个包 | — |
+| `pack_already_enabled` | 409 | 已启用 | — |
+| `pack_unavailable` | 409 | 离线部署不可用、本项目不适用，或平台未安装 | `reason`：`offline\|not_applicable\|not_installed` |
+| `page_api_unsupported` | 409 | 平台页面版本不够 | `required, platform` |
+| `assembly_failed` | 409 | 装配失败，项目保持原版本 | `error_id, reason` |
+| `no_pending_switch` | 409 | 没有待生效的切换可撤销 | — |
+| `pack_upload_invalid` | 400 | 不是 zip，或缺清单、校验和 | `reason` |
+| `static_check_failed` | 422 | 有失败项，不能发布 | `failed[]` |
+| `pack_upload_state` | 409 | 上传已发布或已退回 | `state` |
+| `artifact_type_unknown` | 404 | 产物类型没有登记，或登记它的包没启用 | — |
+| `artifact_not_found` | 404 | 产物不存在 | — |
+| `artifact_schema_invalid` | 422 | 不符合登记的格式定义 | `errors[]: {field, message}` |
+| `artifact_readonly` | 403 | 只读产物（行业层知识、索引文件等） | `reason` |
+| `format_migration_required` | 409 | 产物还是旧格式版本，要先迁移 | `from, to` |
+| `knowledge_duplicate` | 409 | 入库查重发现同名或同范围条目 | `conflicts[]` |
+| `nomination_not_found` | 404 | 提名不存在 | — |
+
+### 2.8 证据源
+
+| code | 状态 | 含义 | details |
+|---|---|---|---|
+| `source_not_found` | 404 | 数据源不存在 | — |
+| `source_id_taken` | 409 | 数据源 ID 已被占用（ID 是锚点前缀，登记后不能改） | — |
+| `source_not_authorized` | 403 | 本项目没获授权使用该数据源 | — |
+| `provider_not_installed` | 409 | 提供方未安装 | `provider` |
+| `gateway_unavailable` | 503 | 连接器网关不可达 | — |
+| `connection_test_failed` | 422 | 测试连接或只读自检不通过 | `checks[]` |
+| `outside_access_window` | 409 | 不在访问时间窗口内（任务会排队，只在要求立即执行时报） | `window` |
+| `confirmation_expired` | 410 | 生产采集确认已过期（10 分钟） | — |
+| `job_not_found` | 404 | 采集任务不存在 | — |
+| `job_state_invalid` | 409 | 任务当前状态不允许该操作 | `state` |
+| `snapshot_not_found` | 404 | 快照不存在 | — |
+| `snapshot_referenced` | 409 | 快照被已确认产物引用，不能清理 | `references: int` |
+| `anchor_invalid` | 400 | 锚点格式不合法 | — |
+| `anchor_not_found` | 404 | 锚点在所声明的快照或资料里不存在 | — |
+
+### 2.9 发布与三份契约
+
+| code | 状态 | 含义 | details |
+|---|---|---|---|
+| `gate_blocked` | 422 | 门禁链有未通过项，不能发布；降级发布只放宽数据绑定 | `gates[]: GateResult` |
+| `solver_contract_rejected` | 422 | 求解契约结构被拒 | `findings[]` |
+| `solver_contract_invalid` | 400 | 求解契约语法错误 | `findings[]` |
+| `release_not_found` | 404 | 发布记录不存在 | — |
+| `receipt_revision_unknown` | 422 | 回执里的契约修订号在本项目不存在 | `revision` |
+| `feedback_invalid` | 422 | 反馈载荷不符合反馈契约 | `errors[]` |
+
+门禁链里各项的 `Finding.code`（不作为 HTTP 错误码出现）：
+
+- 数据绑定：`declared_missing`、`no_columns`、`declared_unverifiable`；
+- 求解契约：
+  - `solver_contract_invalid`、`solver_contract_version_incompatible`、`solver_contract_reference_missing`、`solver_context_missing`、`solver_runtime_binding_forbidden`；
+  - `solver_receipt_required`、`solver_receipt_stale`、`solver_receipt_failed`（旧码 `solver_contract_validation_required/_stale/_failed`）；
+- 脚本：`script_binding_conflict`、`script_argument_shape`；
+- 发布树：`release_tree_unsafe`、`release_tree_mismatch`；
+- 证据：`anchor_missing`（ERROR）、`property_unevidenced`（WARNING）；
+- 流程关卡：`node_blocked`（`details.node_id`）；
+- 包声明的门禁：`<包>.<规则ID>`，例如 `trace.pass_rate`。
+
+### 2.10 自主构建
+
+| code | 状态 | 含义 | details |
+|---|---|---|---|
+| `autobuild_running` | 409 | 有运行在跑（运行中发消息、改引擎、再启动等） | `run_id` |
+| `autobuild_not_running` | 409 | 运行不在可控制的状态 | `state` |
+| `run_not_found` | 404 | 运行不存在 | — |
+| `budget_exceeds_quota` | 422 | 预算超出平台上限或剩余配额 | `dimension, max` |
+| `ledger_entry_not_found` | 404 | 台账条目不存在 | — |
+| `suspension_not_found` | 404 | 挂起问题不存在或已回答 | — |
+| `slice_not_revertible` | 409 | 这一片不能撤回（未合入、已撤回，或后续片依赖它的改动） | `reason` |
+| `preview_expired` | 410 | 开始前预览已过期（10 分钟），要重新预览 | — |
+
+### 2.11 运维
+
+| code | 状态 | 含义 | details |
+|---|---|---|---|
+| `maintenance_active` | 409 | 已在维护模式 | — |
+| `maintenance_not_active` | 409 | 不在维护模式 | — |
+| `maintenance_step_blocked` | 409 | 当前步骤没完成，不能进入下一步 | `step, remaining` |
+| `session_not_found` | 404 | 该项目没有在线会话 | — |
+| `session_running` | 409 | 运行中的会话不能回收，只能强制断开 | — |
+| `breaker_state_invalid` | 409 | 熔断状态不允许该操作 | `state` |
+| `backup_in_progress` | 409 | 已有备份在跑 | — |
+| `task_not_found` | 404 | 任务不存在 | — |
+| `task_state_invalid` | 409 | 任务状态不允许该操作 | `state` |
+| `diagnostics_not_found` | 404 | 诊断包不存在或已过期 | — |
+| `trash_entry_not_found` | 404 | 回收站条目不存在 | — |
+| `trace_not_found` | 404 | 链路不存在或已过保留期 | — |
+| `error_record_not_found` | 404 | 错误留档不存在 | — |
+
+### 2.12 MCP 传输层
+
+MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信封，不改：
+
+- 400：`INVALID_INPUT`、`INVALID_REQUEST`、`PARSE_ERROR`、`UNSUPPORTED_PROTOCOL`、`PROTOCOL_MISMATCH`、`CURSOR_CONTEXT_MISMATCH`、`INVALID_CURSOR`；
+- 401：`MCP_AUTH_REQUIRED`、`MCP_AUTH_INVALID`；
+- 403：`MCP_PROJECT_FORBIDDEN`、`MCP_SCOPE_FORBIDDEN`、`SESSION_PRINCIPAL_MISMATCH`；
+- 404：`METHOD_NOT_FOUND`、`MCP_TOOL_NOT_FOUND`、`SESSION_NOT_FOUND`；
+- 409：`REVISION_CONFLICT`、`CURSOR_REVISION_MISMATCH`、`RESOURCE_ALREADY_EXISTS`、`RESOURCE_NAME_CONFLICT`、`UNSAFE_PATH`、`PROJECT_EDITING_BUSY`；
+- 413：`REQUEST_TOO_LARGE`；
+- 422：`RESOURCE_NOT_FOUND`（另有 404 用法）、`RESOURCE_REFERENCED`、`NO_CHANGES`、`SUBMISSION_BLOCKED`、`AMBIGUOUS_SECTION`、`INVALID_METADATA`、`FIELD_DUPLICATE`、`RELATION_TARGET_INVALID`；
+- 429：`SESSION_BUSY`、`SESSION_LIMIT`；
+- 500：`MCP_INTERNAL_ERROR`。
+
+`PROJECT_EDITING_BUSY` 的触发条件改为：目标条目在写入范围锁内（方案 C10），`details.entities` 列出锁定的条目。整项目忙的判断删除。
+
+---
+## 3 接口
+
+### 3.0 分组与编号
+
+| 前缀 | 分组 | 节 |
+|---|---|---|
+| `C-` | 客户端配置、健康检查、元模型、引擎 | 3.1 |
+| `A-` | 认证与个人设置、通知 | 3.2 |
+| `U-` | 暂存上传 | 3.3 |
+| `P-` | 项目 | 3.4 |
+| `F-` | 文件与检索 | 3.5 |
+| `R-` | 资料与资料分析 | 3.6 |
+| `ST-` | Studio 条目 | 3.7 |
+| `K-` | 知识 | 3.8 |
+| `V-` | 版本与标签 | 3.9 |
+| `CS-` | 变更集与写入范围 | 3.10 |
+| `S-` | 会话、对话、执行记录、命令 | 3.11 |
+| `FL-`、`BP-` | 流程与统一下一步、建模蓝图 | 3.12 |
+| `IN-` | 待处理 | 3.13 |
+| `INC-` | 增量更新（变更点清单） | 3.14 |
+| `RP-` | 报告 | 3.15 |
+| `PL-` | 插件：目录、按项目启用、装配状态、上传审核 | 3.16 |
+| `AR-` | 插件产物与通用视图 | 3.17 |
+| `SC-`、`SV-` | 脚本、求解契约 | 3.18 |
+| `EV-` | 证据源 | 3.19 |
+| `PB-` | 发布 | 3.20 |
+| `X-` | 三份契约（服务令牌） | 3.21 |
+| `AB-` | 自主构建 | 3.22 |
+| `M-` | MCP | 3.23 |
+| `SY-`、`AD-` | 系统设置、管理员 | 3.24 |
+| `O-` | 运维管理面 | 3.25 |
+
+每个接口块的第一行是：方法与路径 · 调用方 · 旧路径 · 审计 · 依据 · 页面。
+
+- 「调用方」里的 **所有者** 指 1.4 的项目所有者检查，**登录** 指任何已登录用户。
+- 路径里的 `{id}` 一律指项目 ID。
+
+---
+
+### 3.1 客户端配置、健康检查、元模型、引擎
+
+#### C-01 客户端配置
+
+`GET /api/v1/client-config` · 免鉴权 · 旧：`GET /api/auth/status` · 审计：否 · 依据：①、4.10.1 · 页面：login、全部页面（启动时）
+
+响应 `200`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `api_version` | string | 固定 `"1"` |
+| `server_version` | string | 内核版本，如 `2.0.0` |
+| `page_api` | string | 前端页面接口版本，如 `1.0`；包声明的 `page_api` 据此校验 |
+| `auth.enabled` | bool | false 即本地模式 |
+| `auth.registration_enabled` | bool \| null | 不确定时为 null，前端照常显示注册页，由 `A-03` 的 `registration_disabled` 兜底 |
+| `auth.local_user` | string \| null | 本地模式下的用户名，固定 `local` |
+| `ops_base_url` | string | 运维管理面地址，空串表示同源 |
+| `maintenance` | `MaintenanceState` \| null | 维护模式状态，供横幅使用 |
+| `limits` | object | `{json_body_bytes, file_write_bytes, material_upload_bytes, attachment_bytes, attachments_per_message, project_import_bytes, pack_upload_bytes, page_size_max}`，数值同 1.8 |
+| `material_types` | string[] | 允许的资料扩展名 |
+| `features.drawio` | bool | drawio 静态页是否可用 |
+| `billing.currency` | string | 金额币种 |
+
+#### C-02 健康检查（旧）
+
+`GET /api/health` · 免鉴权 · 旧：同路径，永久保留 · 审计：否 · 依据：4.10.2 · 页面：—
+
+响应 `200`：`{ok: true, agent_sdk: bool, drawio: bool}`，与现状一致。
+
+#### C-03 存活
+
+`GET /api/health/live` · 免鉴权 · 旧：— · 审计：否 · 依据：4.10.2、方案 E7 · 页面：ops-ctl（显示）
+
+- 响应 `200`：`{status: "ok", uptime_ms, started_at}`。
+- 只要进程能响应就返回 200，不探测依赖。容器 HEALTHCHECK 用它。
+
+#### C-04 就绪
+
+`GET /api/health/ready` · 免鉴权 · 旧：— · 审计：否 · 依据：4.10.2、方案 E7 · 页面：ops-ctl（显示）
+
+- 响应 `200`（全部就绪或降级）或 `503`（关键依赖不可用）：`{status: "ready"|"degraded"|"not_ready", checks: [{name, status: "ok"|"slow"|"warn"|"fail", latency_ms, detail}]}`。
+- `name` 取 `model_gateway`、`auth_server`、`sandbox_gateway`、`connector_gateway`、`disk`、`git`、`assembly`。
+- 匿名请求只返回 `status` 和每项的 `name`、`status`，不返回 `detail`。
+- 启动恢复还没完成时返回 `503 not_ready`（方案 B8）。
+
+#### C-05 元模型
+
+`GET /api/v1/metamodel` · 登录 · 旧：— · 审计：否 · 依据：4.4、方案 C3 · 页面：studio、studio-table（表单与链接渲染）
+
+响应 `200`：`Metamodel`，即实体类型、目录、只读别名、章节结构、链接语法、关系语法、文件名编码规则、属性表列定义（含「证据」列）。前端用它生成条目编辑表单、解析 `[[链接]]`。
+
+#### C-06 可用引擎
+
+`GET /api/v1/engines` · 登录 · 旧：`GET /api/projects/{id}/engine` 的 `available` 部分 · 审计：否 · 依据：4.2、5.7 · 页面：create、proj-settings
+
+响应 `200`：`{items: [{id: "claude"|"jiuwen", channel: "stable"|"beta", label: "稳定引擎"|"内测引擎", installed: bool, unavailable_reason: string|null, resume: "native"|"replay"}], default: string}`。
+
+- 界面只显示 `label`，不显示 `id`。
+- `resume`：`native` 表示会话中断后能续上上下文；`replay` 表示回放历史续上。
+
+---
+
+### 3.2 认证与个人设置、通知
+
+#### A-01 登录
+
+`POST /api/v1/auth/login` · 免鉴权 · 旧：`POST /api/auth/login` · 审计：专项 `auth.login`（成功和失败都记，不记密码） · 依据：③ · 页面：login
+
+- 请求：`{username: string 1–64, password: string 1–128}`。
+- 响应 `200`：`{access_token, refresh_token, token_type: "Bearer", expires_in: int（秒）, user: UserProfile}`。
+- 错误：`invalid_credentials`、`account_locked`、`rate_limited`、`upstream_unavailable`。
+
+#### A-02 本地模式进入
+
+`POST /api/v1/auth/local` · 免鉴权，只在 `auth.enabled=false` 时可用，否则 404 · 旧：— · 审计：否 · 依据：4.10.1 · 页面：login（本地模式「进入工作台」）
+
+响应 `200`：`{user: UserProfile}`。前端此后不带令牌请求。
+
+#### A-03 注册
+
+`POST /api/v1/auth/register` · 免鉴权 · 旧：`POST /api/auth/register` · 审计：专项 `auth.register` · 依据：③ · 页面：login
+
+- 请求：`{username: string 3–64，匹配 ^[A-Za-z0-9_.-]+$, password: string 8–128}`。邮箱由服务端合成，界面不收集（沿用现状）。
+- 服务端校验密码规则：
+  - 8–128 位；
+  - 大写、小写、数字、符号至少三类；
+  - 不含用户名（不区分大小写）；
+  - 不在常见密码表里；
+  - 首尾无空格。
+- 响应 `201`：同 `A-01`（注册即登录）。
+- 错误：`registration_disabled`、`username_taken`、`weak_password`、`rate_limited`。
+
+#### A-04 刷新令牌
+
+`POST /api/v1/auth/refresh` · 免鉴权 · 旧：`POST /api/auth/refresh` · 审计：否 · 依据：③ · 页面：全部（无感刷新）
+
+- 请求：`{refresh_token}`。
+- 响应 `200`：同 `A-01`。
+- 错误：`refresh_invalid`。
+
+#### A-05 退出登录
+
+`POST /api/v1/auth/logout` · 登录 · 旧：— · 审计：专项 `auth.logout` · 依据：③ · 页面：me
+
+- 请求：`{refresh_token?: string}`。
+- 响应 `204`。服务端吊销刷新令牌（auth-server 支持时），并关闭该用户的 SSE 连接。
+
+#### A-06 修改密码
+
+`PUT /api/v1/me/password` · 登录（不能用于本地模式） · 旧：`POST /api/auth/password`（旧接口在请求体里带 `username`，v1 改为取令牌里的用户） · 审计：是 · 依据：③ · 页面：me
+
+- 请求：`{old_password, new_password}`。新密码规则同 `A-03`，另加「不能与旧密码相同」。
+- 响应 `204`。其他设备的刷新令牌全部作废。
+- 错误：`old_password_incorrect`、`weak_password`、`user_admin_unavailable`、`rate_limited`。
+
+#### A-07 我的资料
+
+`GET /api/v1/me` · 登录 · 旧：— · 审计：否 · 依据：4.10.1 · 页面：me、所有页面顶栏头像
+
+响应 `200`：`UserProfile` 加 `{last_login: {at, ip}|null, project_count, usage_this_month: {output_tokens, input_tokens, cost: Money}}`。
+
+#### A-08 我的偏好
+
+`GET /api/v1/me/preferences`、`PUT /api/v1/me/preferences` · 登录 · 旧：— · 审计：PUT 记 · 依据：—（设计稿 me） · 页面：me
+
+- 读写同一个对象 `Preferences`：
+  - `theme`：`light|dark`；
+  - `notifications`：`{system: bool, l2_step_done: bool, l2_needs_input: bool, l2_error: bool, l4_finished: bool, l4_new_suspension: bool, l4_error_or_stopped: bool}`。
+- 标题闪烁始终开启，不提供开关。
+- PUT 是整体替换，响应 `200` 返回保存后的对象。
+
+#### A-09 我的模型配置
+
+`GET /api/v1/me/model-settings` · 登录 · 旧：`GET /api/settings/model/me` · 审计：否 · 依据：⑧、4.2 · 页面：me、create（显示「使用我的模型配置」）
+
+响应 `200`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `personal_allowed` | bool | 管理员是否允许个人 Key；false 时页面锁定 |
+| `engines` | object | 键是引擎 id，值是 `PersonalEngineConfig` |
+| `PersonalEngineConfig.source` | string | `deployment\|admin\|personal`：当前生效的来源（部署默认、管理员配置、个人 Key） |
+| `PersonalEngineConfig.admin_summary` | object | `{gateway_host, model}`：管理员配置的摘要，不含 Key |
+| `PersonalEngineConfig.base_url` | string | 个人网关地址，可为空 |
+| `PersonalEngineConfig.model` | string | 个人模型，可为空 |
+| `PersonalEngineConfig.api_key_set` | bool | 是否已设置个人 Key；Key 不回显 |
+| `PersonalEngineConfig.context` | object | `{window, max_output, compact_at_pct}`：按推荐表带出的有效值 |
+
+#### A-10 保存我的模型配置
+
+`PUT /api/v1/me/model-settings/{engine}` · 登录 · 旧：`PUT /api/settings/model/me/{engine}` · 审计：是（只记来源切换，不记 Key） · 依据：⑧ · 页面：me
+
+- 请求：`{source: "deployment"|"admin"|"personal", api_key?: string（留空表示不改）, base_url?: string（http/https）, model?: string}`。
+- `source=personal` 而且以前没设过 Key 时，`api_key` 必填。
+- 响应 `200`：`PersonalEngineConfig`，从该用户下一条消息生效。
+- 错误：`forbidden`（管理员已关闭个人 Key）、`invalid_argument`。
+
+#### A-11 清除我的模型配置
+
+`DELETE /api/v1/me/model-settings/{engine}` · 登录 · 旧：`DELETE /api/settings/model/me/{engine}` · 审计：是 · 依据：⑧ · 页面：me
+
+响应 `200`：`PersonalEngineConfig`（`source` 回到 `admin`）。
+
+#### A-12 用户事件流
+
+`GET /api/v1/me/events` · 登录（可用 `?token=`） · 旧：— · 审计：否 · 依据：①、8.5 · 页面：projects、plugins、plugin-detail、plugin-upload、me、sys、ops*
+
+- SSE 用户流，事件见 4.4。
+- 查询参数：`last_event_id?`。
+
+#### A-13 通知列表
+
+`GET /api/v1/me/notifications` · 登录 · 旧：— · 审计：否 · 依据：8.5 · 页面：projects（铃铛抽屉）
+
+- 查询参数：`unread_only?: bool`；分页（1.6），默认 20 条。
+- 响应：`{items: Notification[], next_cursor, unread_count}`。
+- 通知保留 30 天。
+
+#### A-14 标为已读
+
+`POST /api/v1/me/notifications/read` · 登录 · 旧：— · 审计：否 · 依据：— · 页面：projects
+
+- 请求：`{ids?: string[], all?: bool}`，二者必选其一。
+- 响应：`{unread_count}`。
+
+---
+
+### 3.3 暂存上传
+
+创建项目、导入项目、对话附件都要在项目确定之前或消息发出之前先传文件，所以单设暂存区。暂存文件 24 小时后过期。
+
+#### U-01 上传到暂存区
+
+`POST /api/v1/uploads`（multipart） · 登录 · 旧：— · 审计：是 · 依据：㉗ · 页面：create、import、wb-materials、chat-states（附件）、wb-l2
+
+请求字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `file` | file | 是 | 单个文件 |
+| `purpose` | string | 是 | `material\|attachment\|project_import` |
+| `project_id` | string | `attachment` 时必填 | 附件归属的项目，用于所有权检查 |
+
+- 上限：`material`、`attachment` 各 20 MiB，`project_import` 200 MiB。
+- 类型：`material`、`attachment` 按 1.8 的白名单；`project_import` 只收 zip。
+- 响应 `201`：
+
+  | 字段 | 类型 | 说明 |
+  |---|---|---|
+  | `upload_id` | string | 暂存 ID |
+  | `filename` | string | 原文件名 |
+  | `size` | int | 字节数 |
+  | `content_type` | string | — |
+  | `sha256` | string | — |
+  | `expires_at` | time | 过期时间 |
+  | `detected` | object \| null | 仅 `material`：`{purpose: "goal"\|"schema"\|"term"\|"evidence"\|null, tables: string[]}`，按表格结构自动识别 |
+
+- 错误：`payload_too_large`、`unsupported_media_type`、`invalid_filename`。
+
+#### U-02 查看暂存上传
+
+`GET /api/v1/uploads/{upload_id}` · 上传者本人 · 旧：— · 审计：否 · 依据：— · 页面：create、import
+
+- 响应：同 `U-01`。
+- 错误：`upload_not_found`、`upload_expired`。
+
+#### U-03 删除暂存上传
+
+`DELETE /api/v1/uploads/{upload_id}` · 上传者本人 · 旧：— · 审计：是 · 依据：— · 页面：create（文件行「移除」「全部移除」）、chat-states（附件 ×）
+
+响应 `204`。
+
+---
+
+### 3.4 项目
+
+#### P-01 列出项目
+
+`GET /api/v1/projects` · 登录 · 旧：`GET /api/projects` · 审计：否 · 依据：①、1.6、6.7 · 页面：projects、ops（admin、ops 的元数据视图另见 `O-01`）
+
+查询参数：
+
+| 名 | 类型 | 说明 |
+|---|---|---|
+| `status` | string | `all`（默认，不含已归档）\|`active`\|`autobuild`\|`publishable`\|`archived` |
+| `q` | string | 按名称和目标做子串匹配，不区分大小写 |
+| `sort` | string | `recent`（默认，按最近活动）\|`name`\|`created` |
+| `cursor`、`limit` | — | 分页，见 1.6 |
+
+响应 `200`：
+
+- `items: ProjectCard[]`：只含自己的项目。admin、ops 看别人的项目用 `O-01`。
+- `next_cursor`。
+- `counts: {all, active, autobuild, publishable, archived}`：筛选分段上的数字。
+
+各状态的含义：
+
+| status | 条件 |
+|---|---|
+| `active` | 未归档 |
+| `autobuild` | 有运行中的自主构建 |
+| `publishable` | 门禁链全部通过，且有未发布的主线版本 |
+
+#### P-02 新建项目
+
+`POST /api/v1/projects` · 登录 · 旧：`POST /api/projects` · 审计：是 · 依据：1.6、5.5、5.8、6.9 · 页面：create、projects（空状态「看示例项目」）
+
+请求体：
+
+| 字段 | 类型 | 必填 | 约束 / 说明 |
+|---|---|---|---|
+| `name` | string | 是 | 1–200 字符，去首尾空白；同一用户下唯一（含已归档） |
+| `goal` | string | 是 | 一句话目标，1–500 字符 |
+| `starting_points` | string[] | 否 | 取 `upload\|connect_system\|industry_pack\|import_package\|example`，只用于欢迎卡的推荐顺序，不改变行为 |
+| `materials` | `{upload_id, purpose?}`[] | 否 | 第 2 步上传的资料。`purpose` 取 `auto\|goal\|schema\|term\|evidence`，缺省 `auto` |
+| `industry_packs` | `{name, version?}`[] | 否 | 行业包，可多选；不写版本时取 stable 通道 |
+| `system_packs` | `{name, version?}`[] | 否 | 系统知识包 |
+| `capabilities` | `{[pack_name]: bool}` | 否 | 可选能力包开关。缺省取推荐值；core 必装、忽略；离线部署不可用的包传 true 返回 `pack_unavailable` |
+| `engine` | string | 否 | 引擎 id，缺省取系统默认引擎 |
+| `build_mode` | string | 否 | `L2\|L4`，缺省 `L2` |
+| `example` | `{pack?: string, id: string}` | 否 | 看示例项目：内置示例（`seed_example`）或行业包里的示例项目 |
+
+- 知识包包名由服务端按名称生成（`package_name`），创建后不能改。
+- 资料按 `materials` 落到 `resource/` 并提交，提交说明 `import: 新建项目资料`。
+- 选中的包写进 `.onto/packs.lock`，作为首个系统提交（`Onto-Source: plugin`）。
+- 响应 `201`：`ProjectMeta`，加 `landing_page: "wb-materials"`。
+- 错误：
+  - `project_name_required`、`project_name_too_long`、`project_name_conflict`；
+  - `upload_not_found`、`upload_expired`、`upload_purpose_mismatch`；
+  - `pack_not_found`、`pack_incompatible`、`pack_unavailable`；
+  - `engine_unavailable`、`quota_exceeded`。
+
+#### P-03 名称可用检查
+
+`GET /api/v1/projects/name-check` · 登录 · 旧：— · 审计：否 · 依据：— · 页面：create、projects（重命名弹窗）、import
+
+- 查询参数：`name`（必填）、`exclude_project_id?`（重命名时排除自己）。
+- 响应 `200`：`{available: bool, normalized: string, package_name: string（建议包名）, conflict: {original_name, attempted_name, candidates[≤3]}|null, reason: "empty"|"too_long"|"conflict"|null}`。
+- 比较规则：去首尾空白，NFKC 归一，不区分大小写，含已归档项目。
+
+#### P-04 项目详情
+
+`GET /api/v1/projects/{id}` · 所有者得 `ProjectMeta`；admin、ops 得 `ProjectMetaView` · 旧：`GET /api/projects/{id}` · 审计：否 · 依据：1.6、4.9 · 页面：全部项目页（外壳面包屑、知识包版本 chip）、proj-settings
+
+- 响应 `200`：`ProjectMeta` 或 `ProjectMetaView`。
+- 错误：`project_not_found`、`project_owner_only`、`project_unowned`、`metadata_unavailable`。
+
+#### P-05 修改项目
+
+`PATCH /api/v1/projects/{id}` · 所有者 · 旧：`PATCH /api/projects/{id}`（旧接口只能改名） · 审计：是 · 依据：4.9 · 页面：proj-settings、projects（重命名）、wb-materials（联网 / 仅本地）
+
+- 请求（字段都可选）：`{name?: string, goal?: string, research_mode?: "web"|"local"}`。
+- `research_mode=web` 要求「联网调研」包已启用，否则返回 `pack_not_enabled`。
+- 改名不影响包名和版本历史。
+- 元数据不进工作区 git（方案 A13），不产生版本。
+- 响应 `200`：`ProjectMeta`。
+- 错误：`project_name_required`、`project_name_too_long`、`project_name_conflict`、`pack_not_enabled`、`project_archived`。
+
+#### P-06 删除项目
+
+`DELETE /api/v1/projects/{id}` · 所有者 · 旧：`DELETE /api/projects/{id}` · 审计：是 · 依据：ADR 0010 · 页面：projects、proj-settings
+
+- 请求体：`{confirm_name: string}`，必须与项目名逐字相同。
+- 效果：
+  - 不论当前状态都直接删除；
+  - 会话、排队消息、自主构建运行立即强制终止；
+  - 工作区、对话、版本历史、证据快照永久清除，不进回收站；
+  - 该项目的 MCP token 全部吊销；
+  - 数据源登记和凭据不受影响。
+- 响应 `202`：`{deleted: id}`。清扫在后台完成，进程中途重启会接着清。
+- 错误：`confirm_name_mismatch`、`project_busy`。
+
+#### P-07 归档 / 恢复
+
+`POST /api/v1/projects/{id}/archive` · 所有者 · 旧：`POST /api/projects/{id}/archive` · 审计：是 · 依据：4.9 · 页面：projects、proj-settings
+
+- 请求：`{archived: bool}`。
+- 归档时：
+  - 有运行中的自主构建返回 `autobuild_running`；
+  - 在线会话关闭；
+  - MCP change 工具集拒绝写入。
+- 响应 `200`：`ProjectMeta`。
+
+#### P-08 克隆项目
+
+`POST /api/v1/projects/{id}/clone` · 所有者 · 旧：`POST /api/projects/{id}/clone` · 审计：是 · 依据：4.9 · 页面：projects
+
+- 请求：
+
+  | 字段 | 类型 | 说明 |
+  |---|---|---|
+  | `name` | string? | 缺省为「原名（副本）」 |
+  | `include_history` | bool | 默认 true：带 `.git` 历史 |
+  | `include_snapshots` | bool | 默认 true：带 `resource/systems/` |
+  | `include_conversations` | bool | 默认 false：带对话记录 |
+
+- 新项目只归调用者。
+- 启用的能力和锁定版本与原项目一致。
+- 数据源授权不复制，凭据不复制。
+- 响应 `201`：`ProjectMeta`。
+- 错误：`project_name_conflict`、`project_name_too_long`、`quota_exceeded`。
+
+#### P-09 导出迁移包
+
+`GET /api/v1/projects/{id}/transfer-package` · 所有者（可用 `?token=`） · 旧：`GET /api/projects/{id}/export?scope=workspace` · 审计：专项 `project.export` · 依据：4.1 文件契约 · 页面：projects（卡片菜单）、publish（导出迁移包）
+
+- 响应 `200`：`application/zip`，文件名 `{name}-transfer.zip`。
+- 包内：
+  - 完整工作区，含 `.git` 版本历史；
+  - 项目元数据；
+  - 数据源的登记信息，不带凭据引用（详设 5.8.6）。
+- 不含：`.ontology-state`、`.onto/run`、对话记录。
+
+#### P-10 检查导入包
+
+`POST /api/v1/projects/import/inspect` · 登录 · 旧：`POST /api/projects/import`（`dry_run=true`） · 审计：否 · 依据：4.1、ADR 0008 · 页面：import
+
+- 请求：`{upload_id, name?: string}`。
+- 响应 `200`：
+
+  | 字段 | 类型 | 说明 |
+  |---|---|---|
+  | `kind` | string | `transfer\|published_package\|workspace_archive\|unknown`：迁移包、已发布知识包、工作区压缩包 |
+  | `kind_label` | string | 界面叫法 |
+  | `root_dir` | string | 压缩包根目录 |
+  | `files` | int | 文件数 |
+  | `total_size` | int | 字节数 |
+  | `counts` | object | `{objects, operations, rules, metrics, scripts, solver_operations}` |
+  | `package` | object \| null | `{name, version, schema_version}`（已发布知识包） |
+  | `blockers` | `{code, message, entry?}`[] | `code` 取 `symlink\|path_traversal\|absolute_path\|unknown_format\|empty_archive\|too_large\|solver_contract_invalid\|no_objects` |
+  | `warnings` | `{code, message}`[] | 不阻断导入的提醒 |
+  | `suggested_name` | string | 默认取包里的名称 |
+  | `name_check` | object | 同 `P-03` 的响应 |
+  | `after_import` | object | `{capabilities: {name, version}[]（按包里记录自动匹配）, start_node: "core.research", mark_needs_review: bool}` |
+  | `evidence_sources` | `{id, display_name, needs_reauth: true}`[] | 包里登记的数据源 |
+
+- 错误：`upload_not_found`、`upload_expired`、`upload_purpose_mismatch`、`archive_invalid`。
+
+#### P-11 导入项目
+
+`POST /api/v1/projects/import` · 登录 · 旧：`POST /api/projects/import`（工作区、知识包）、`POST /api/projects/transfer-import`（迁移包） · 审计：是 · 依据：4.1、ADR 0008、6.6（导入产物标需复核） · 页面：import
+
+- 请求：`{upload_id, name: string, name_strategy?: "exact"|"suggested"（默认 exact）, build_mode?: "L2"|"L4"}`。
+- 格式自动识别，规则同 `P-10`。
+  - 迁移包：原样恢复。
+  - 已发布知识包：反向转换，原包完整留底在 `.imported-package/`；导入的产物标「需复核」（来源 `import`）。
+  - 工作区压缩包：按原样导入。
+- 导入作为一个变更集校验通过后合入，可撤回（详设 8.2）。
+- 响应 `201`：`ProjectMeta`，加 `landing_page: "wb-l2"`。
+- 错误：
+  - `unsupported_archive_kind`（带 `blockers`）、`archive_invalid`；
+  - `project_name_conflict`（`name_strategy=exact` 时）、`project_name_too_long`；
+  - `upload_expired`、`quota_exceeded`。
+
+#### P-12 引擎
+
+`GET /api/v1/projects/{id}/engine`、`PUT /api/v1/projects/{id}/engine` · 所有者 · 旧：`GET/PUT /api/projects/{id}/engine` · 审计：PUT 记 · 依据：4.2、5.7 · 页面：proj-settings
+
+- GET 响应：`{engine: string, model_source: "personal"|"admin"|"deployment"}`。
+- PUT 请求：`{engine}`。
+  - 效果：关闭本项目全部会话，下一条消息用新引擎启动。
+  - 响应：`{engine}`。
+- 错误：`engine_unavailable`、`autobuild_running`。
+
+#### P-13 构建方式
+
+`GET /api/v1/projects/{id}/build-mode`、`PUT /api/v1/projects/{id}/build-mode` · 所有者 · 旧：— · 审计：PUT 记 · 依据：1.6#2、8.5 · 页面：proj-settings、wb-l2（输入框模式胶囊）、create
+
+- GET 响应：`{build_mode: "L2"|"L4", autobuild_running: bool, run_id: string|null}`。
+- PUT 请求：`{build_mode}`。
+  - 只改默认方式：选 L4 后，确认建模蓝图时直接开始自主构建。
+  - 已在跑的运行不受影响。
+  - 下一条消息生效。
+- 响应：GET 的形状。
+
+#### P-14 助手可用的 MCP 服务器（项目级）
+
+`GET /api/v1/projects/{id}/mcp-servers`、`PUT /api/v1/projects/{id}/mcp-servers` · 所有者 · 旧：`GET/PUT /api/projects/{id}/mcp` · 审计：PUT 记 · 依据：4.2 指纹 · 页面：proj-settings
+
+- GET 响应：`{items: [{name, transport: "stdio"|"http", target: string（地址或命令）, origin: "builtin"|"global"|"pack", read_only: bool, status: "running"|"stopped"|"error", tools: string[], enabled: bool, enabled_globally: bool}]}`。
+  - `origin=builtin` 的是内核内置的只读服务器：`evidence`（`evidence.search/show/where-used/lineage/diff`）、`flow`（`flow.get`）。
+- PUT 请求：`{disabled: string[]}`，即本项目停用的服务器名，最多 64 个。
+- 只影响新建的会话。
+- 响应：GET 的形状。
+
+#### P-15 项目事件流
+
+`GET /api/v1/projects/{id}/events` · 所有者（可用 `?token=`） · 旧：— · 审计：否 · 依据：①、4.1（`flow.updated`、`inbox.updated`、`artifacts.updated`）、4.3 · 页面：全部项目页
+
+- SSE 项目流，事件见 4.3。
+- 查询参数：`last_event_id?`。
+
+#### P-16 项目用量
+
+`GET /api/v1/projects/{id}/usage` · 所有者 · 旧：`GET /api/projects/{id}/session/usage` · 审计：否 · 依据：4.2 · 页面：chat-states（第 10 项「项目累计」）
+
+响应 `200`：`{calls, input_tokens, output_tokens, cost: Money, last_activity_at}`。统计口径含全部对话和已删除对话留存的用量。
+
+---
+
+### 3.5 文件与检索
+
+工作区文件的通用读写。本体条目优先用 Studio 接口（3.7），资料优先用资料接口（3.6）。
+
+#### F-01 文件树
+
+`GET /api/v1/projects/{id}/files/tree` · 所有者 · 旧：`GET /api/projects/{id}/files` · 审计：否 · 依据：4.9 · 页面：—（设计稿删除了产物树；保留给 MCP 客户端和排障）
+
+- 查询参数：`root?: string`，缺省为工作区根目录。
+- 响应：`{tree: FileNode[]}`。
+- 跳过 `.git`、`.ontology-state`、`.onto/run`、以 `.` 开头的条目和符号链接。
+- 只读，不再有刷新索引、自动提交的副作用（方案 C6）。
+
+#### F-02 读文本文件
+
+`GET /api/v1/projects/{id}/files/content` · 所有者 · 旧：`GET /api/projects/{id}/file` · 审计：否 · 依据：4.9 · 页面：studio-table（编辑原文）、resources（文本预览）、versions
+
+- 查询参数：`path`（必填）。
+- 响应：
+
+  | 字段 | 类型 | 说明 |
+  |---|---|---|
+  | `path` | string | — |
+  | `content` | string | 最多 512 KiB |
+  | `truncated` | bool | 超过 512 KiB 时为 true；此时前端只读，提示下载原文件 |
+  | `size` | int | 全文件字节数 |
+  | `revision` | string | 对全文件计算 |
+  | `last_change` | object | `{commit, version_label, source, at}` |
+  | `lock` | `ScopeLock` \| null | 写入范围锁 |
+
+- 错误：`path_forbidden`、`file_not_found`、`binary_not_previewable`。
+
+#### F-03 写文本文件
+
+`PUT /api/v1/projects/{id}/files/content` · 所有者 · 旧：`PUT /api/projects/{id}/file` · 审计：是 · 依据：⑤、4.3 · 页面：studio-table（编辑原文）、resources（drawio 编辑保存）、versions（对比右侧保存）
+
+- 请求：`{path, content: string（≤4 MiB）, base_revision: string, summary?: string（≤80，写进版本说明）}`。
+- 经写入路径提交，trailer `Onto-Source: web`。
+- 写 `.py` 脚本时同步脚本描述符。
+- 响应 `200`：`{path, size, revision, commit, version_label}`。
+- 错误：
+  - `path_forbidden`、`managed_path`；
+  - `revision_conflict`、`write_scope_locked`；
+  - `check_rejected`：确定性检查硬伤；
+  - `project_archived`、`payload_too_large`。
+
+#### F-04 下载原文件
+
+`GET /api/v1/projects/{id}/files/raw` · 所有者（可用 `?token=`） · 旧：`GET /api/projects/{id}/raw` · 审计：否 · 依据：4.9 · 页面：resources（下载原文件、HTML 报告预览、drawio）、studio-table（大文件）
+
+- 查询参数：`path`（必填）、`download?: bool`（加 `Content-Disposition: attachment`）。
+- 响应：原样字节。
+- `.html`、`.htm` 一律带 `Content-Security-Policy: sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'` 和 `X-Content-Type-Options: nosniff`。前端放进 sandbox iframe 预览。
+- 错误：`path_forbidden`、`file_not_found`。
+
+#### F-05 表格预览
+
+`GET /api/v1/projects/{id}/files/table-preview` · 所有者 · 旧：`GET /api/projects/{id}/excel` · 审计：否 · 依据：4.5 · 页面：resources
+
+- 查询参数：`path`（必填）、`sheet?: string`（缺省返回全部 sheet，最多 20 个）。
+- 支持 `.xlsx`、`.xlsm`、`.csv`。
+- 响应：`{format: "xlsx"|"csv", sheets: [{name, rows: string[][], merges: {row, col, rowspan, colspan}[], total_rows, truncated: bool}], sheet_truncated: bool}`。
+  - 每个 sheet 最多 500 行 × 60 列。
+  - CSV 只有一个 sheet，首行作表头。
+- 错误：`file_not_found`、`unsupported_media_type`、`preview_unavailable`。
+
+#### F-06 读历史版本文件
+
+`GET /api/v1/projects/{id}/files/at` · 所有者 · 旧：`GET /api/projects/{id}/file-at` · 审计：否 · 依据：4.9 · 页面：versions
+
+- 查询参数：`commit`（hex 6–40 或 `HEAD~n`）、`path`。
+- 响应：`{path, commit, version_label, content, truncated}`，上限 512 KiB。
+- 错误：`invalid_commit`、`file_not_found`、`path_forbidden`。
+
+#### F-07 全局搜索
+
+`GET /api/v1/projects/{id}/search` · 所有者 · 旧：`GET /api/projects/{id}/search` · 审计：否 · 依据：5.9.5（插件产物进全局搜索）、features「全文搜索（⌘K）」 · 页面：全部项目页（⌘K 命令面板）
+
+- 查询参数：`q`（必填，1–200）、`groups?: string`（`entries,materials,reports,knowledge,artifacts`，缺省全部）、`limit?`（每组上限，默认 10，最大 50）。
+- 响应：`{q, groups: [{group, total, items: SearchHit[]}], term_summary: [{term, by_group: {entries, materials, reports, knowledge, artifacts}, referenced_by: int}]}`。
+  - `term_summary` 用于「陈列上限 · 知识包 3 处、资料 2 处、报告 1 处」这类聚合行。
+- 搜索范围：
+  - 本体条目、资料（经文件提供方抽取的文本）、报告、知识条目、已登记的插件产物；
+  - 不区分大小写。
+
+#### F-08 引用查询
+
+`GET /api/v1/projects/{id}/query` · 所有者 · 旧：`GET /api/projects/{id}/query` · 审计：否 · 依据：4.4 · 页面：—（MCP 与排障；Studio 用 `ST-04` 的 `backlinks`，链接检查用 `RP-06`）
+
+- 查询参数：`kind`（`used_by|orphans|search|unused|dangling|knowledge`）、`term?`。
+- 响应：`{markdown}`。
+- 内核按锁定的契约库版本执行，不再运行工作区里的脚本（方案 D19）。
+
+---
+
+### 3.6 资料与资料分析
+
+资料区对 agent 只读，只能由用户上传、替换、删除，每次都保存版本（详设 4.5、4.8）。`resource/systems/`（证据快照）不出现在资料接口里。
+
+#### R-01 资料列表
+
+`GET /api/v1/projects/{id}/resources` · 所有者 · 旧：`GET /api/projects/{id}/resource-meta` + `GET /files` · 审计：否 · 依据：4.5、ADR 0017 · 页面：resources、wb-materials
+
+- 响应 `200`：`{groups: [{key: "diagrams"|"excel"|"others", label, items: Material[]}], feedback_group: {enabled: bool, count: int}, purposes: PurposeOption[]}`。
+  - `feedback_group` 对应资料区的「外部反馈」分组：反馈演进包启用时 `enabled=true`，条目用 `R-11` 取。
+  - `purposes` 是 5 种用途：`goal` 建模目标依据、`schema` 数据 Schema、`term` 术语表、`evidence` 通用业务依据、`auto` 由助手判断，每项带 `{value, label, description}`。
+- 不分页，单项目资料上限 500 份。
+
+#### R-02 上传资料
+
+`POST /api/v1/projects/{id}/resources` · 所有者 · 旧：`POST /api/projects/{id}/resources` · 审计：是 · 依据：㉗、4.5 · 页面：resources、wb-materials（上传卡、追加资料）、wb-l2（输入框拖入文件）
+
+- 请求：multipart，或 JSON `{upload_id}`（先经 `U-01` 暂存）。
+
+  | 字段 | 类型 | 必填 | 说明 |
+  |---|---|---|---|
+  | `file` / `upload_id` | — | 二选一 | 单个文件 ≤20 MiB，类型见 1.8 |
+  | `subdir` | string | 否 | `diagrams\|excel\|others`，缺省按扩展名归类 |
+  | `purpose` | string | 否 | 5 种用途之一，缺省 `auto` |
+  | `reading_mode` | string | 否 | `on_demand\|full`，缺省 `on_demand` |
+  | `is_revision` | bool | 否 | 「这批是修订 / 变更资料」 |
+  | `batch_id` | string | 否 | 同一批多个文件共用；`is_revision=true` 时整批只发起一次增量更新 |
+
+- 同名文件直接替换（`replaced=true`）。上传即经写入路径提交，`Onto-Source: web`。
+- `is_revision=true` 时，整批上传完成后往工作台对话发一条增量更新命令（`core.update`），响应里带 `command_task`。
+- 响应 `201`：`{material: Material, replaced: bool, commit, version_label, detected: {purpose, tables[]}|null, command_task: CommandTask|null}`。
+- 错误：`payload_too_large`、`unsupported_media_type`、`invalid_filename`、`project_archived`、`upload_expired`。
+
+#### R-03 改资料用途
+
+`PATCH /api/v1/projects/{id}/resources/purpose` · 所有者 · 旧：`PATCH /api/projects/{id}/resource-meta` · 审计：是 · 依据：ADR 0017 · 页面：resources、wb-materials（资料地图改用途菜单）
+
+- 请求：`{path, purpose, reading_mode?}`。改用途会覆盖自动识别结果。
+- 响应 `200`：`{material: Material, commit, version_label, reread_task: CommandTask|null}`。
+  - 资料分析已经开始过时，服务端自动发一条「重读受影响部分」命令，在 `reread_task` 里返回。
+- 错误：`file_not_found`、`path_forbidden`、`invalid_argument`。
+
+#### R-04 删除资料
+
+`DELETE /api/v1/projects/{id}/resources` · 所有者 · 旧：`DELETE /api/projects/{id}/resources` · 审计：是 · 依据：4.5 · 页面：resources
+
+- 查询参数：`path`。
+- 删除保存为新版本，可从版本历史恢复。引用它的出处变为「来源无法核验」，派生产物不自动删除。
+- 响应 `200`：`{deleted: path, commit, version_label, broken_references: int}`。
+- 错误：`file_not_found`、`path_forbidden`（含 `resource/materials.json`、`resource/systems/`）。
+
+#### R-05 资料被谁引用
+
+`GET /api/v1/projects/{id}/resources/references` · 所有者 · 旧：— · 审计：否 · 依据：5.8.5、4.4 · 页面：resources（「被引用」页签、删除弹窗）
+
+- 查询参数：`path`。
+- 响应：`{path, total, items: [{target: EntryRef|ArtifactRef, location: string（如「步骤 3」「依据」）, anchors: string[]（片段，如 p:9.2）}]}`，不分页，上限 500。
+
+#### R-06 资料原文预览
+
+`GET /api/v1/projects/{id}/resources/preview` · 所有者 · 旧：— · 审计：否 · 依据：5.8.3（文件提供方）、5.8.5 · 页面：resources（文档预览）、全部页面（锚点悬停的「看原文」）
+
+- 查询参数：`path`、`around?: string`（锚点片段，如 `p:9.2`，定位到该段前后）、`limit?: int`（块数，默认 200，最大 1000）、`cursor?`。
+- 文档类资料（docx、pdf、md、txt）经文件提供方抽取成带锚点的块，片段格式沿用 `source_extract`：`L12`、`p:3`、`table:1/row:2/cell:3`。
+- 表格和 drawio 分别用 `F-05` 和 `F-04`。
+- 响应：
+
+  | 字段 | 类型 | 说明 |
+  |---|---|---|
+  | `path` | string | — |
+  | `format` | string | — |
+  | `coverage` | object | `{read_sections: string（如「第 1–14 章」）, read_pct, complete: bool}`：资料分析读到哪 |
+  | `blocks` | `[{anchor, kind: "heading"\|"paragraph"\|"table"\|"list", level?, text, highlights?: [{start, end}]}]` | 带锚点的块 |
+  | `next_cursor` | string \| null | — |
+
+#### R-07 资料地图
+
+`GET /api/v1/projects/{id}/materials/map` · 所有者 · 旧：— · 审计：否 · 依据：第 9 章建议 5、ADR 0011 · 页面：wb-materials（资料地图卡与弹窗）、chat-states（产物卡）
+
+- 响应 `200`：`MaterialMap`，即
+  - 每份资料的用途、读取进度与状态、读到的位置、排队原因、矛盾提示、计数；
+  - 总读取率；
+  - 问题（资料矛盾、疑似缺失）；
+  - 核验摘要；
+  - 分析范围（联网 / 仅本地）。
+- 增量变化经项目流 `materials.updated` 推送。
+
+#### R-08 资料分析候选
+
+`GET /api/v1/projects/{id}/materials/candidates` · 所有者 · 旧：— · 审计：否 · 依据：第 9 章 · 页面：wb-materials（候选实时流）
+
+- 查询参数：`after?: string`（候选 ID，返回在它之后新增的）、`limit?`（默认 50）。
+- 响应：`{total, items: [{id, kind: "object"|"rule"|"term", name, anchor, anchor_label, created_at}]}`。
+- 新候选经项目流 `materials.candidate` 推送。
+
+#### R-09 资料分析核验
+
+`GET /api/v1/projects/{id}/materials/verification` · 所有者 · 旧：— · 审计：否 · 依据：ADR 0011（research_checker） · 页面：wb-materials（核验抽屉）、reports（资料分析报告）
+
+- 响应：`{checked_at, total, passed, problems, items: [{subject: string, kind: "rule"|"term"|"object"|"item", anchor, anchor_label, status: "passed"|"unverifiable"|"pending", reason: string|null}]}`。
+- 不分页，上限 1000。
+
+#### R-10 把资料问题记为待答问题
+
+`POST /api/v1/projects/{id}/materials/problems/{problem_id}/promote` · 所有者 · 旧：— · 审计：是 · 依据：第 9 章（资料矛盾与缺失转待答问题） · 页面：wb-materials
+
+- 请求：`{as: "blueprint_question"|"ask_me"}`。
+  - `blueprint_question`：「记为待答问题」，进建模蓝图的「待你回答」；
+  - `ask_me`：「向我确认」，进待处理的决策。
+- 响应 `200`：`{question_id, inbox_item_id|null}`。
+- 错误：`not_found`、`write_scope_locked`。
+
+#### R-11 外部反馈列表
+
+`GET /api/v1/projects/{id}/feedback` · 所有者 · 旧：— · 审计：否 · 依据：㉔、5.3（反馈演进） · 页面：resources（外部反馈分组）、inbox（外部反馈详情）、incremental（外部反馈卡）
+
+- 查询参数：`state?: "open"|"handled"`；分页。
+- 响应：`{items: Feedback[], next_cursor}`。
+- 反馈演进包没启用时返回空列表，并带 `plugin_disabled: true`。
+
+#### R-12 标记外部反馈状态
+
+`PATCH /api/v1/projects/{id}/feedback/{feedback_id}` · 所有者 · 旧：— · 审计：是 · 依据：㉔ · 页面：resources、inbox
+
+- 请求：`{state: "open"|"handled"|"dismissed"}`。
+- 响应：`Feedback`。
+- 「交给反馈演进处理」「在对话里处理」用 `S-20` 发命令，不经这里。
+
+---
+
+### 3.7 Studio 条目
+
+Studio 管五元组本体条目（对象、操作、规则、指标、脚本），加上图示包启用时的「流程图」（插件产物 `diagram.flowchart`，见 9.2）。30 分钟租约取消，改为写入范围锁（详设 4.3）。
+
+#### ST-01 知识包统计
+
+`GET /api/v1/projects/{id}/studio/stats` · 所有者 · 旧：`GET /api/projects/{id}/metrics`（字段不同） · 审计：否 · 依据：features「知识包统计」 · 页面：studio（顶部统计条）、projects（卡片）
+
+响应 `200`：`{objects, operations, rules, metrics, scripts, relations, flowcharts: int|null, scenarios: {total, passed, pass_rate_pct}|null, version_label, head}`。
+
+- `flowcharts` 只在图示包启用时有值；
+- `scenarios` 只在场景走查包启用时有值，这时前端在统计条上加插件标记。
+
+#### ST-02 关系图
+
+`GET /api/v1/projects/{id}/studio/graph` · 所有者 · 旧：`GET /api/projects/{id}/studio/graph` · 审计：否 · 依据：4.4、R3-9 · 页面：studio
+
+- 查询参数：`include_mentions?: bool`，默认 true。
+- 响应：
+
+  | 字段 | 类型 | 说明 |
+  |---|---|---|
+  | `head` | string | 主线提交 |
+  | `nodes` | `[{id: EntryId, kind, key, label, description, status, locked: bool, slice_ids: string[]}]` | — |
+  | `edges` | `[{id, source, target, kind: "declared"\|"mention", relation: string, label}]` | `declared` 是一级标题「关联对象」下的关系声明（实线）；`mention` 是正文里的提及（虚线） |
+  | `clusters` | `[{id, label, slice_id, node_ids}]` | 按切片分组的关系簇 |
+  | `chains` | `{rule: EntryId[], metric: EntryId[]}` | 规则链、指标链高亮用 |
+
+- `relation` 沿用现有取值：`object_relation\|calls_operation\|operation_input_object\|operation_output_object\|operation_support_object\|uses_rule\|uses_metric\|applies_to_object\|uses_object\|script_uses_object\|uses_script\|references`。
+- 链接解析以统一的 `parse_links` 为准（方案 C4），对象名带 `#` 不再断边。
+
+#### ST-03 条目表
+
+`GET /api/v1/projects/{id}/studio/entries` · 所有者 · 旧：— · 审计：否 · 依据：4.4、5.9.5 · 页面：studio-table
+
+- 查询参数：
+  - `kind?`：`object|operation|rule|metric|script|flowchart`，多值逗号分隔；
+  - `q?`：名称、Key 子串；
+  - `status?`；
+  - `sort?`：`name|refs_in|refs_out|updated`；
+  - 分页。
+- 响应：`{items: EntryRow[], next_cursor, counts: {all, object, operation, rule, metric, script, flowchart|null}, kinds: [{kind, label, plugin: {name, label}|null}]}`。
+  - `kinds` 里 `flowchart` 带插件标记（图示）。
+
+#### ST-04 条目详情
+
+`GET /api/v1/projects/{id}/studio/entries/{entry_id}` · 所有者 · 旧：`GET /api/projects/{id}/studio/element?path=` · 审计：否 · 依据：4.4、5.8.5 · 页面：studio（节点侧栏）、studio-table（条目编辑器）
+
+- 响应：`Entry`，即
+  - 结构化字段、属性表（含证据列）、关系（声明 / 提及）；
+  - 被谁引用、数据来源；
+  - `revision`、`lock`、`draft`（本人未提交的草稿）、需复核标记。
+- 错误：`not_found`、`path_forbidden`。
+- 流程图条目返回 `410 endpoint_removed`，`details.successor` 指向 `AR-03`。
+
+#### ST-05 操作流程面板
+
+`GET /api/v1/projects/{id}/studio/entries/{entry_id}/flow` · 所有者 · 旧：`GET /api/projects/{id}/studio/elements/{element_id}/flow` · 审计：否 · 依据：4.4 · 页面：studio（操作流程面板）
+
+- 只对 `operation:` 条目可用，其他返回 `invalid_argument`。
+- 响应：`{operation: EntryRef, business_flow: {steps: [{label, owner_label, entry: EntryRef|null, hit: bool}], main_operation: EntryRef|null, sub_operations: int, referenced_by_scenarios: int}, steps: [{index, text_md}], diagrams: ArtifactRef[]}`。
+
+#### ST-06 证据侧栏
+
+`GET /api/v1/projects/{id}/studio/entries/{entry_id}/evidence` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.6（证据侧栏）、5.8.5 · 页面：studio（证据页签）、studio-table（属性表证据列悬停）
+
+- 响应：`{snapshot_basis: [{source_id, snapshot_id, collected_at}], items: [{anchor, scheme: "file"|"db"|"code"|"api"|"ui"|"cli"|"log"|"bin", title, confidence: "declared"|"observed"|"inferred"|null, used_for: string[]（属性名）, resolved: AnchorResolution}]}`。
+- 前端「查看原文」按 `scheme` 跳转：`db` 去 schema，`file` 去 resources。
+
+#### ST-07 草稿
+
+`GET`、`PUT`、`DELETE /api/v1/projects/{id}/studio/entries/{entry_id}/draft` · 所有者 · 旧：`GET/PUT/DELETE /api/projects/{id}/studio/draft` · 审计：PUT、DELETE 记 · 依据：4.3 · 页面：studio-table
+
+- **GET** 响应：`{draft: Draft|null}`。
+- **PUT** 请求：`{base_revision, form?: EntryForm, content?: string}`。
+  - `form` 是结构化编辑器的内容，由服务端按元模型渲染成 Markdown；`content` 是原文。二者必选其一。
+  - 自动暂存时调用，节流由前端控制（建议 2 秒）。
+  - 响应：`{saved_at, draft: Draft}`。
+- **DELETE**（放弃草稿）响应 `204`。
+- 草稿存数据目录，不进 git；每人每条目一份。
+- 写入范围锁住时，PUT 仍允许（「你的草稿会保留」），但 `ST-08` 提交会被拒。
+
+#### ST-08 提交条目
+
+`POST /api/v1/projects/{id}/studio/entries/{entry_id}/submit` · 所有者 · 旧：`POST /api/projects/{id}/studio/submit` · 审计：是 · 依据：4.3（确定性检查三路）、方案 C15 · 页面：studio-table
+
+- 请求：`{summary?: string}`。提交的是当前草稿。
+- 响应 `200`，按结果分三种：
+
+  | `result` | 其他字段 | 含义 |
+  |---|---|---|
+  | `committed` | `entry: Entry, revision, commit, version_label` | 检查通过，直接保存为新版本（`Onto-Source: studio`），草稿删除 |
+  | `rejected` | `errors: Finding[], warnings: Finding[]` | 有硬伤，草稿保留 |
+  | `needs_review` | `review_points: string[], conversation_id, command_task: CommandTask` | 超出确定性检查范围。草稿移进助手变更集副本，往工作台对话发一条复核命令，结果在对话里 |
+
+- 错误：`not_found`（没有草稿）、`revision_conflict`、`write_scope_locked`、`project_archived`。
+
+#### ST-09 新建条目
+
+`POST /api/v1/projects/{id}/studio/entries` · 所有者 · 旧：— · 审计：是 · 依据：4.4 · 页面：studio-table（「新建」）
+
+- 请求：`{kind: "object"|"operation"|"rule"|"metric"|"flowchart", name: string, key?: string, from_template?: bool（默认 true）}`。
+- `flowchart` 要求图示包已启用，创建的是 `diagram.flowchart` 产物。
+- 响应 `201`：`Entry`，流程图返回 `Artifact`。
+- 错误：`invalid_argument`、`pack_not_enabled`、`revision_conflict`（重名，`details.kind="name"`）。
+
+#### ST-10 删除条目
+
+`DELETE /api/v1/projects/{id}/studio/entries/{entry_id}` · 所有者 · 旧：— · 审计：是 · 依据：4.3 · 页面：studio-table（删除流程图）
+
+- 请求：`{base_revision}`。
+- 删除也保存为一个版本，可以回退。
+- 被引用时返回 `409 entry_referenced`，`details.references` 是 `EntryRef[]`。流程图例外：引用它的操作会提示「流程图缺失」，不挡删除。
+- 响应 `200`：`{commit, version_label}`。
+- 错误：`write_scope_locked`、`revision_conflict`、`entry_referenced`。
+
+
+---
+
+### 3.8 知识
+
+知识条目的存放和加载在 core（详设 5.3、5.5），知识沉淀页由知识沉淀包带来。没启用知识沉淀包时，读接口照常可用，`K-07`、`K-08` 返回 `pack_not_enabled`。
+
+#### K-01 知识条目列表
+
+`GET /api/v1/projects/{id}/knowledge` · 所有者 · 旧：`GET /api/projects/{id}/knowledge` · 审计：否 · 依据：5.5 · 页面：knowledge
+
+- 查询参数：
+  - `layer?`：`all|project|industry`，默认 all；core 通用守则不展示；
+  - `type?`：`correction|convention|term|domain_rule`；
+  - `q?`；分页。
+- 响应：`{items: KnowledgeEntry[], next_cursor, counts: {all, project, industry}, layers: [{layer, label, count, packs?: string[], overridden: int}], loading_rule: string}`。
+  - `loading_rule` 是给人看的加载规则说明。
+
+#### K-02 知识条目详情
+
+`GET /api/v1/projects/{id}/knowledge/{knowledge_id}` · 所有者 · 旧：— · 审计：否 · 依据：5.5 · 页面：knowledge
+
+- 响应：`KnowledgeEntry`，加：
+  - `background_md`、`rule_md`；
+  - `source_quote: {text, conversation_id?, message_id?, at, by}|null`；
+  - `overrides: {pack, entry_title, note}|null`；
+  - `used_by: (EntryRef|ArtifactRef)[]`。
+
+#### K-03 新增知识条目（确认入库）
+
+`POST /api/v1/projects/{id}/knowledge` · 所有者 · 旧：`POST /api/projects/{id}/knowledge` · 审计：是 · 依据：5.5 · 页面：knowledge（新增弹窗）、chat-states（第 12 项「沉淀为业务知识」）
+
+- 请求：
+
+  | 字段 | 类型 | 必填 | 说明 |
+  |---|---|---|---|
+  | `title` | string | 是 | 1–60 字符 |
+  | `type` | string | 是 | `correction\|convention\|term\|domain_rule` |
+  | `scope` | object | 是 | `{kind: "global"}` 或 `{kind: "entries", entries: EntryRef[]}` |
+  | `background_md` | string | 否 | — |
+  | `rule_md` | string | 是 | — |
+  | `source` | object | 否 | `{conversation_id, message_id}`，从消息旁沉淀时带上 |
+  | `confidence` | string | 否 | `high\|medium\|low`，缺省 `medium` |
+  | `base_revision` | string | 否 | — |
+
+- 入库前做确定性查重：同名、同范围、失效引用。
+- 需要语义判断的口径冲突，由知识沉淀包的命令发到对话复核，响应里带 `review_task`。
+- 保存为新版本。
+- 响应 `201`：`{entry: KnowledgeEntry, commit, version_label, conflicts: ConflictFinding[], review_task: CommandTask|null}`。
+- 错误：`knowledge_duplicate`（同名同范围）、`invalid_argument`、`write_scope_locked`。
+
+#### K-04 修改知识条目
+
+`PUT /api/v1/projects/{id}/knowledge/{knowledge_id}` · 所有者 · 旧：— · 审计：是 · 依据：5.5 · 页面：knowledge（「编辑」）
+
+- 请求：同 `K-03`，`base_revision` 必填。
+- 行业层条目只读，返回 `artifact_readonly`；要覆盖就在项目层写一条同名条目。
+- 响应：同 `K-03`。
+
+#### K-05 删除知识条目
+
+`DELETE /api/v1/projects/{id}/knowledge/{knowledge_id}` · 所有者 · 旧：`DELETE /api/projects/{id}/knowledge?path=` · 审计：是 · 依据：5.5 · 页面：knowledge
+
+- 请求：`{base_revision}`。
+- 删除保存为新版本。被覆盖的行业条目重新生效。
+- 响应：`{commit, version_label, affected_artifacts: int, restored_industry_entry: string|null}`。
+
+#### K-06 知识冲突检查
+
+`GET /api/v1/projects/{id}/knowledge/conflicts`、`POST /api/v1/projects/{id}/knowledge/conflicts` · 所有者 · 旧：— · 审计：POST 记 · 依据：5.5 · 页面：knowledge（冲突卡、明细弹窗）、chat-states（第 12 项「入库前先查重」）
+
+- GET 返回最近一次结果；POST 立即跑一次确定性检查。
+- 响应：`{checked_at, duration_ms, total_entries, conflicts: [{kind: "scope_conflict"|"duplicate"|"broken_ref", project_entry, industry_entry?, note, effective: "project"}], consistent_with_materials: int, unsourced: int, duplicates: int, broken_refs: int}`。
+- 「在对话里复核」用 `S-20` 发命令。
+
+#### K-07 提名预览（脱敏检查）
+
+`POST /api/v1/projects/{id}/knowledge/{knowledge_id}/nomination-preview` · 所有者 · 旧：— · 审计：否 · 依据：5.5（回流与脱敏） · 页面：knowledge（提名弹窗）
+
+- 请求：`{industry_pack: string}`。
+- 响应：`{sanitized_text, highlights: [{start, end}], checks: [{item: "customer_name"|"internal_id"|"amount"|"secret_or_pii", found: int, action: string}], pack: {name, label}}`。
+- 错误：`pack_not_enabled`（知识沉淀包没启用，或项目没启用该行业包）。
+
+#### K-08 提交提名
+
+`POST /api/v1/projects/{id}/knowledge/{knowledge_id}/nominations` · 所有者 · 旧：— · 审计：是 · 依据：5.5 · 页面：knowledge
+
+- 请求：`{industry_pack, sanitized_text, confirm_general: true}`。`confirm_general` 必须为 true。
+- 响应 `201`：`{nomination_id, state: "pending_review"}`。
+- 审核结果出现在待处理（kind `notification`），并发用户通知。
+- 管理员审核接口见 `AD-09`、`AD-10`。
+
+---
+
+### 3.9 版本与标签
+
+主线版本只计合入提交（`--first-parent`，方案 C14）。版本号 `n` 从 1 开始，界面显示 `version_label = "v0.{n}"`。
+
+#### V-01 版本列表
+
+`GET /api/v1/projects/{id}/versions` · 所有者 · 旧：`GET /api/projects/{id}/versions`（旧接口固定 50 条） · 审计：否 · 依据：4.3 trailer、4.9 · 页面：versions、publish（版本下拉）
+
+- 查询参数：`source?`（`assistant|web|studio|mcp|autobuild|import|plugin|revert`，多值）、分页（默认 50）。
+- 响应：`{items: Version[], next_cursor, total, head, current_version_label}`。
+
+#### V-02 版本详情
+
+`GET /api/v1/projects/{id}/versions/{commit}` · 所有者 · 旧：— · 审计：否 · 依据：4.3 · 页面：versions（「v0.11 改了什么」）、inbox（查看这一片的改动）、l4-run
+
+- 响应：`Version`，加 `changes: [{target: EntryRef|ArtifactRef, change: "add"|"mod"|"del", detail: string, review: "needs_review"|"accepted"|null}], run: {run_id, run_no, slice_id}|null`。
+
+#### V-03 某版本的文件
+
+`GET /api/v1/projects/{id}/versions/{commit}/files` · 所有者（`download=1` 时可用 `?token=`） · 旧：— · 审计：否 · 依据：4.9 · 页面：versions（查看此版本的文件）
+
+- 查询参数：`prefix?`（默认 `ontology/`）、`download?: bool`。
+- `download=1` 时返回该版本 `ontology/` 的 zip，否则返回 `{items: [{path, size}]}`（不分页，上限 5000）。
+- 单个文件内容用 `F-06`。
+
+#### V-04 对比
+
+`GET /api/v1/projects/{id}/versions/diff` · 所有者 · 旧：— · 审计：否 · 依据：4.9（MergeDiff） · 页面：versions
+
+- 查询参数：`from`（commit）、`to`（commit 或 `WORKTREE` 表示当前文件）、`path?` 或 `entry?`（二选一）。
+- 响应：`{from: {commit, version_label}, to: {commit|null, version_label|null}, path, left: string, right: string, right_revision: string|null, hunks: [{left_start, left_lines, right_start, right_lines}]}`。
+- 右侧可编辑时，前端用 `right_revision` 作为 `F-03` 的 `base_revision`，保存后生成新版本。
+
+#### V-05 回退预览
+
+`GET /api/v1/projects/{id}/versions/revert-preview` · 所有者 · 旧：— · 审计：否 · 依据：4.9 · 页面：versions（回退确认弹窗）
+
+- 查询参数：`commit`。
+- 响应：`{target: {commit, version_label}, next_version_label, files: [{path, change: "restore"|"delete"}], undone_versions: string[], packs_lock_changes: [{pack, from, to}]}`。
+  - 回退会把启用的能力和版本也一起恢复到当时状态，所以要列出 `packs_lock_changes`。
+
+#### V-06 回退
+
+`POST /api/v1/projects/{id}/versions/revert` · 所有者 · 旧：`POST /api/projects/{id}/versions/revert` · 审计：是 · 依据：4.9、方案 C1 · 页面：versions
+
+- 请求：`{commit}`。
+- 整树恢复，之后新增的文件也会删掉（方案 C1）。生成新版本，历史保留。
+- 能力切换下一条消息生效。
+- 响应：`{commit, version_label, reverted_to: {commit, version_label}}`。
+- 错误：`invalid_commit`、`nothing_to_revert`、`write_scope_locked`（有未确认的助手变更集时，要先确认或撤回）、`autobuild_running`。
+
+#### V-07 标记版本
+
+`POST /api/v1/projects/{id}/versions/tags` · 所有者 · 旧：`POST /api/projects/{id}/versions/tag` · 审计：是 · 依据：4.9 · 页面：versions
+
+- 请求：`{commit, label: string 1–120}`。
+- 响应 `201`：`{name: "mark-<epoch>-<hex4>", label, commit, version_label}`。
+
+#### V-08 删除标记
+
+`DELETE /api/v1/projects/{id}/versions/tags/{name}` · 所有者 · 旧：`DELETE /api/projects/{id}/versions/tag/{tag_name}` · 审计：是 · 依据：4.9 · 页面：versions
+
+- 只能删用户标记（`mark-*`），发布标签 `release/*` 不能删。
+- 响应 `204`。
+- 错误：`tag_not_found`。
+
+---
+
+### 3.10 变更集与写入范围
+
+依据详设 8.2、4.3、方案 C7～C12。陪伴建模下一个变更集从助手开始改起，到用户确认生效或撤回为止，中间可以跨好几轮。自主构建下一片一个变更集，自动合入。Studio、MCP、导入、插件变更各自的「一次保存」也是变更集，校验通过即合入，接口上不可见。
+
+#### CS-01 变更集列表
+
+`GET /api/v1/projects/{id}/changesets` · 所有者 · 旧：— · 审计：否 · 依据：8.2 · 页面：wb-l2（恢复页面时找未确认的变更集）、inbox
+
+- 查询参数：`state?`（`open|pending_confirm|merged|discarded|conflict`，多值）、`source?`；分页。
+- 响应：`{items: Changeset[], next_cursor}`。
+
+#### CS-02 变更集详情
+
+`GET /api/v1/projects/{id}/changesets/{cs}` · 所有者 · 旧：— · 审计：否 · 依据：8.2 · 页面：wb-l2、chat-states（第 8 项「本轮改了什么」）、incremental
+
+- 响应：`Changeset`，加：
+  - `groups: [{kind: "object"|"operation"|"rule"|"metric"|"script"|"scenario"|"artifact", items: [{target: EntryRef|ArtifactRef, change: "add"|"mod"|"del", detail, checks: "passed"|"warning"|"failed"}]}]`；
+  - `checks: {errors, warnings, findings: Finding[]}`；
+  - `next_version_label`。
+- 用户在 Studio 或文件里另外保存的改动不算在这里（方案 C12）。
+
+#### CS-03 变更集实体差异
+
+`GET /api/v1/projects/{id}/changesets/{cs}/diff` · 所有者 · 旧：— · 审计：否 · 依据：4.4（实体级差异）、方案 C9 · 页面：wb-l2（「查看改动」）、chat-states（「对比」）、incremental
+
+- 查询参数：`target?`（`EntryId` 或 `<artifact_type>/<key>`）。不传时返回全部。
+- 响应：`{items: [{target, change, sections: [{title, lines: DiffLine[]}]}]}`。
+  - `DiffLine` 是 `{kind: "header"|"del"|"add"|"ctx"|"note", text}`。
+  - 渲染时去掉 `[[ ]]` 由前端做。
+
+#### CS-04 确认生效
+
+`POST /api/v1/projects/{id}/changesets/{cs}/merge` · 所有者 · 旧：— · 审计：专项 `changeset.merge` · 依据：8.2、14#7 · 页面：wb-l2、chat-states、incremental、inbox
+
+- 请求：`{expected_head?: string}`。
+- 合入步骤：
+  1. 叠到最新主线上重新校验；
+  2. 按实体检测冲突；
+  3. 跑门禁链；
+  4. 写 squash 提交，trailer 记 `Onto-Changeset`、`Onto-Source`、构建方式、包版本。
+- 响应 `200`：`{state: "merged", commit, version_label, merged_at}`。同时：
+  - 写入范围锁解除（`scope.updated`）；
+  - 节点状态重算（`flow.updated`）；
+  - 对话里出一条 `notice`。
+- 错误：
+  - `changeset_in_progress`：助手还在跑，先打断或等它停；
+  - `changeset_closed`；
+  - `merge_conflict`：已进待处理，由用户选保留哪一边；
+  - `gate_failed`；
+  - `head_moved`。
+
+#### CS-05 撤回这一轮
+
+`POST /api/v1/projects/{id}/changesets/{cs}/discard` · 所有者 · 旧：— · 审计：专项 `changeset.discard` · 依据：8.2 · 页面：wb-l2、chat-states、incremental
+
+- 请求：`{}`。
+- 丢弃整个变更集，主线不受影响，助手副本重置，写入范围锁解除。
+- 响应：`{state: "discarded"}`。
+- 错误：`changeset_in_progress`、`changeset_closed`。
+
+#### CS-06 写入范围锁
+
+`GET /api/v1/projects/{id}/scope` · 所有者 · 旧：Studio 租约 `POST/DELETE /api/projects/{id}/studio/lease`（删除） · 审计：否 · 依据：4.3、㊹、方案 C10 · 页面：studio、studio-table、flowchart、scenarios、scripts、knowledge、l4-run
+
+- 查询参数：`target?`（单个 `EntryId` 或 `<artifact_type>/<key>`，只问它锁没锁）。
+- 响应：`ScopeLock`。没锁时 `state="none"`、`entries=[]`。
+- 变化经项目流 `scope.updated` 推送。
+
+#### CS-07 解决合入冲突
+
+`POST /api/v1/projects/{id}/changesets/{cs}/conflicts/resolve` · 所有者 · 旧：— · 审计：是 · 依据：8.2（守卫失效时的冲突兜底） · 页面：inbox（kind `changeset_conflict`）
+
+- 请求：`{choices: [{target: EntryId|string, keep: "mainline"|"changeset"}]}`。
+- 全部选完后自动重试合入。
+- 响应：同 `CS-04`。
+
+---
+
+### 3.11 会话、对话、执行记录、命令
+
+依据详设 4.2、8.4、方案 B1～B7。
+
+- 一个项目可以有多条对话，但同一时刻只有一个在线引擎（14#14）。
+- 对话流事件见 4.2。
+- 下面的 `{cid}` 是对话 ID。
+
+#### S-01 对话列表
+
+`GET /api/v1/projects/{id}/conversations` · 所有者 · 旧：`GET /api/projects/{id}/session/conversations` · 审计：否 · 依据：4.2、ADR 0013 · 页面：chat-states（第 1 项会话切换菜单）、wb-l2 等全部工作台页（顶栏会话名）
+
+- 响应：`{items: Conversation[], live: {conversation_id, state, busy: bool}|null, pool: PoolStatus}`。
+- 不分页，单项目上限 200 条。
+- 按最近更新排序，至少有一条。
+
+#### S-02 新建对话
+
+`POST /api/v1/projects/{id}/conversations` · 所有者 · 旧：`POST /api/projects/{id}/session/conversations` · 审计：是 · 依据：ADR 0013 · 页面：chat-states
+
+- 请求：`{title?: string}`。
+- 响应 `201`：`Conversation`。发第一条消息时引擎才换绑过来。
+- 错误：`session_busy`（当前有对话在运行）。
+
+#### S-03 重命名对话
+
+`PATCH /api/v1/projects/{id}/conversations/{cid}` · 所有者 · 旧：`PATCH /api/projects/{id}/session/conversations/{cid}` · 审计：是 · 依据：ADR 0013 · 页面：chat-states
+
+- 请求：`{title: string 1–60}`。
+- 响应：`Conversation`。
+- 错误：`title_invalid`、`conversation_not_found`、`session_busy`。
+
+#### S-04 删除对话
+
+`DELETE /api/v1/projects/{id}/conversations/{cid}` · 所有者 · 旧：`DELETE /api/projects/{id}/session/conversations/{cid}` · 审计：是 · 依据：ADR 0013 · 页面：chat-states
+
+- 对话记录与模型上下文一并删除，不可恢复。累计用量照常计入项目。
+- 响应：`{items: Conversation[]}`，即剩余对话。
+- 错误：`session_busy`、`conversation_not_found`。
+
+#### S-05 对话状态
+
+`GET /api/v1/projects/{id}/conversations/{cid}` · 所有者 · 旧：`GET /api/projects/{id}/session?conversation=` · 审计：否 · 依据：4.2 · 页面：全部工作台页
+
+- 响应：`ConversationState`，包括：
+  - `state`、`queue_position`、`turn_started_at`、`last_seq`；
+  - `context: ContextUsage`；
+  - `pending_permission`、`open_questions[]`；
+  - `active_exec: ExecRecord|null`、`open_changeset: Changeset|null`；
+  - `config_pending: ConfigPending|null`；
+  - `autobuild_run_id`。
+
+#### S-06 对话历史
+
+`GET /api/v1/projects/{id}/conversations/{cid}/messages` · 所有者 · 旧：`GET /api/projects/{id}/session` + 流回放 · 审计：否 · 依据：4.2 · 页面：全部工作台页
+
+- 查询参数：`before_seq?`（取这条之前的）、`limit?`（默认 200，最大 500）。
+- 响应：`{items: StreamEvent[]（按 seq 升序）, has_more: bool, first_seq, last_seq}`。
+  - `StreamEvent` 就是对话流里的持久事件信封（1.11），不含瞬时事件。
+  - 卡片和问题以最新状态返回：同一 `card_id` 只保留最后一个版本，原位置不变。
+
+#### S-07 发消息
+
+`POST /api/v1/projects/{id}/conversations/{cid}/messages` · 所有者 · 旧：`POST /api/projects/{id}/session/messages` · 审计：是（不记正文） · 依据：④、4.2 · 页面：全部工作台页、studio（问助手）、studio-table（问助手）
+
+请求：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `text` | string | 有附件时可空 | ≤ 32,000 字符 |
+| `attachments` | string[] | 否 | `U-01` 的 `upload_id`，最多 10 个。作为资料附件：确认使用时落到 `resource/` |
+| `references` | `(EntryRef\|ArtifactRef\|{kind: "anchor", anchor})[]` | 否 | 「问助手」带进来的条目引用，最多 20 个 |
+| `client_message_id` | string | 否 | 幂等键，同一键重复提交只生效一次 |
+
+响应 `202`：`{message_id, seq, conversation_id, state, delivery: "immediate"|"deferred"|"queued", queue_position: int|null}`。
+
+- `deferred`：助手正在跑这一轮，消息在这一步结束后送达。「运行中也能补充说明」和自主构建的「补充说明不打断运行」都是这种。
+- `queued`：会话池满，排队。
+
+错误：
+
+- `message_empty`、`session_busy`（另一条对话正在运行）；
+- `engine_not_installed`、`quota_exceeded`；
+- `maintenance_no_new_sessions`、`project_archived`；
+- `upload_expired`。
+
+#### S-08 打断
+
+`POST /api/v1/projects/{id}/conversations/{cid}/interrupt` · 所有者 · 旧：`POST /api/projects/{id}/session/interrupt` · 审计：是 · 依据：④、8.4 · 页面：chat-states（第 3 项「打断」）、wb-materials（「打断」）、flowchart（锁定条「回到对话里打断它」）
+
+- 响应：`{interrupted: bool, exec: ExecRecord|null}`。
+- 已保存的内容不会丢。执行记录标为「在某阶段中断」，对话流发 `session.interrupted`。
+- 自主构建运行中不能用它，要用 `AB-06` 暂停，否则返回 `autobuild_running`。
+
+#### S-09 重启对话
+
+`POST /api/v1/projects/{id}/conversations/{cid}/restart` · 所有者 · 旧：`POST /api/projects/{id}/session/close` · 审计：是 · 依据：4.2 · 页面：chat-states（第 11 项）
+
+- 对话记录保留，丢弃模型上下文。下次发消息按最新配置重连。稳定引擎会清空模型上下文。
+- 响应：`{state: "closed"}`。
+- 错误：`session_busy`（运行中，先打断）。
+
+#### S-10 回复确认卡
+
+`POST /api/v1/projects/{id}/conversations/{cid}/permissions/{request_id}` · 所有者 · 旧：`POST /api/projects/{id}/session/permissions/{request_id}` · 审计：专项 `permission.reply` · 依据：4.2、4.8#6 · 页面：chat-states（第 6 项）
+
+- 请求：`{behavior: "allow"|"deny", message?: string}`。
+- 响应：`{ok: true}`。
+- 错误：`permission_request_gone`。
+- 只在系统设置为「逐操作确认」时出现；600 秒没回复按拒绝处理。
+
+#### S-11 回答问题（决策卡、分支、专家确认、采集确认）
+
+`POST /api/v1/projects/{id}/conversations/{cid}/questions/{question_id}/answer` · 所有者 · 旧：`POST .../permissions/{request_id}` 的 `answers`（AskUserQuestion） · 审计：是 · 依据：第 9 章建议 4、4.7 · 页面：wb-l2、wb-materials、chat-states（第 7、20 项）、inbox、reports（专家裁决）、snapshots（生产采集确认）
+
+- 请求：`{option_id?: string, option_ids?: string[], custom_text?: string}`。
+  - 单选题传 `option_id`，多选题传 `option_ids`。
+  - 选「其他，我来说」时传对应 `option_id` 加 `custom_text`。
+  - 没选不能确认：三项都空返回 `answer_invalid`。
+- 响应：`{question: Question}`（`state="answered"`）。
+  - 对话流发 `question.answered`；
+  - 助手是陪伴建模的等待态时，随即继续；
+  - 待处理里对应事项消失。
+- 错误：`question_gone`、`answer_invalid`、`conversation_not_found`。
+
+#### S-12 取消排队
+
+`POST /api/v1/projects/{id}/conversations/{cid}/queue/cancel` · 所有者 · 旧：— · 审计：是 · 依据：4.2 会话池 · 页面：chat-states（第 9 项）
+
+- 响应：`{state: "idle"}`。排队中的消息作废，记录保留并标「已取消」。
+- 错误：`not_queued`。
+
+#### S-13 对话事件流
+
+`GET /api/v1/projects/{id}/conversations/{cid}/events` · 所有者（可用 `?token=`） · 旧：`GET /api/projects/{id}/session/stream?after=&conversation=` · 审计：否 · 依据：①、4.2 · 页面：全部工作台页
+
+- SSE 对话流，事件见 4.2。
+- 查询参数：`after?: int`（最后收到的 seq）、`last_event_id?`。
+- 引擎绑着别的对话时，这条流只回放历史并发心跳。
+
+#### S-14 重试出错的一轮
+
+`POST /api/v1/projects/{id}/conversations/{cid}/retry` · 所有者 · 旧：— · 审计：是 · 依据：4.10.1 错误留档 · 页面：chat-states（第 15 项「重试」）
+
+- 重新发起最近一轮出错的请求。
+- 响应 `202`：同 `S-07`。
+- 错误：`nothing_to_retry`、`session_busy`。
+
+#### S-15 执行记录列表
+
+`GET /api/v1/projects/{id}/execs` · 所有者 · 旧：— · 审计：否 · 依据：8.4、方案 B5 · 页面：chat-states（第 5 项续跑卡）、inbox（续跑）、ops-obs（链路里看）
+
+- 查询参数：`state?`（`running|waiting|interrupted|done|abandoned`，多值）、`conversation_id?`；分页。
+- 响应：`{items: ExecRecord[], next_cursor}`。
+
+#### S-16 续跑
+
+`POST /api/v1/projects/{id}/execs/{exec_id}/resume` · 所有者 · 旧：— · 审计：是 · 依据：8.4、方案 B6 · 页面：chat-states（第 4、5 项「从打断处继续」「从步骤 3 续跑」）、inbox
+
+- 请求：`{conversation_id?: string}`。缺省用执行记录所在的对话。
+- 往对话发一条续跑指令。
+- 响应 `202`：`{exec: ExecRecord, message_id, conversation_id}`。
+- 错误：`exec_not_found`、`exec_not_resumable`（输入变了或节点升级了）、`session_busy`。
+
+#### S-17 放弃执行
+
+`POST /api/v1/projects/{id}/execs/{exec_id}/abandon` · 所有者 · 旧：— · 审计：是 · 依据：8.4 · 页面：chat-states（「放弃，从头再来」）、inbox
+
+- 响应：`{exec: ExecRecord}`（`state="abandoned"`）。
+- 已经保存的版本不回退。
+
+#### S-18 全部命令
+
+`GET /api/v1/projects/{id}/commands/catalog` · 所有者 · 旧：— · 审计：否 · 依据：5.6（界面入口）、6.10（全部命令下拉） · 页面：chat-states（第 2 项）、全部工作台页（「全部命令」、⌘K）
+
+- 响应：`{groups: [{id, label, items: CommandItem[]}], total}`。
+- 按业务名分组，只列已启用包的命令。命令名只在 `command` 字段里，界面不显示。
+
+#### S-19 页面命令任务
+
+`GET /api/v1/projects/{id}/commands/tasks` · 所有者 · 旧：— · 审计：否 · 依据：5.9.3 · 页面：scenarios、scripts、knowledge、reports、resources（刷新页面后恢复进度条）
+
+- 查询参数：`origin_page?`、`state?`（默认 `queued,running,waiting_user`）。
+- 响应：`{items: CommandTask[]}`，不分页，上限 50。
+
+#### S-20 发命令到对话
+
+`POST /api/v1/projects/{id}/commands` · 所有者 · 旧：— · 审计：是 · 依据：5.9.3「页面只发命令、不跑助手」、6.10 · 页面：scenarios、scripts、knowledge、reports、resources、snapshots、wb-materials、inbox、publish、wb-l2（建模步骤抽屉「开始」）、incremental
+
+请求：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `action` | `{pack, page, action_id}` | 与 `command` 二选一 | 包页面声明里的按钮（详设 5.9.2 `actions`） |
+| `command` | string | 与 `action` 二选一 | 内核或包的命令名，如 `/ontology-trace-batch` |
+| `args` | object | 否 | 命令参数，如 `{scenario: "s-03"}`、`{report_item: "RI-12"}` |
+| `text` | string | 否 | 附带的自然语言说明 |
+| `origin` | `{page, label}` | 是 | 对话里显示「来自「场景走查」页」用 |
+| `conversation_id` | string | 否 | 缺省：引擎当前绑定的对话，没有就取最近更新的一条 |
+
+- 响应 `202`：`{task: CommandTask, conversation_id, message_id}`。
+  - 对话里出现一条带 `origin` 的用户消息；
+  - 进度经项目流 `command.progress` 推送；
+  - 跑完结果回到页面列表（`artifacts.updated`）。
+- 错误：
+  - `pack_not_enabled`：按钮所属的包没启用，或要等下一条消息才生效；这时 `details.effective="next_message"`；
+  - `autobuild_running`、`session_busy`、`invalid_argument`。
+
+---
+
+### 3.12 流程、统一下一步、建模蓝图
+
+#### FL-01 流程
+
+`GET /api/v1/projects/{id}/flow` · 所有者 · 旧：— · 审计：否 · 依据：㊴、6.6、6.7 · 页面：全部工作台页（主线进度条、建模步骤抽屉）、projects（卡片切片进度，经 `P-01`）
+
+- 查询参数：`conversation_id?`（带上时 `suggestions` 按这条对话的打断状态计算）。
+- 响应：`Flow`，即
+  - `flow_hash`；
+  - `nodes`：`FlowNode[]`，建模节点带 `slices`；
+  - `edges`；
+  - `sections`：抽屉分组「必经步骤 / 发布前检查 / 可选步骤 / 有需要时」；
+  - `slices`：切片 × 步骤；
+  - `suggestions`；
+  - `notices`：如「1 份新资料」；
+  - `autobuild`：运行中时给运行控制。
+
+返回示例：
+
+```json
+{"flow_hash": "b41e09…",
+ "nodes": [{"id": "core.model", "title": "建模", "kind": "agent", "placement": "spine",
+            "state": "running", "flags": {"needs_review": false, "disabled": false, "backfill": false},
+            "progress": {"done": 3, "total": 5, "label": "3/5 片"}, "version": "core@1.4.2",
+            "section": "required", "actions": [], "per_slice": true}],
+ "edges": [{"from": "core.research", "to": "core.model"}],
+ "slice_stages": [{"id": "object", "label": "对象"}, {"id": "operation", "label": "操作"},
+                  {"id": "rule", "label": "规则"}, {"id": "check", "label": "写入即查"},
+                  {"id": "scenario", "label": "场景", "plugin": "trace"}],
+ "slices": [{"id": "s5", "name": "超量与审批提示", "group": "now",
+             "stages": {"object": "confirmed", "operation": "pending_confirm", "rule": "draft",
+                        "check": "running", "scenario": "not_ready"},
+             "note": "正在做 · 停在「操作」"}],
+ "suggestions": {"mode": "normal", "primary": {...}, "secondary": [...]},
+ "notices": [{"kind": "new_materials", "count": 1, "files": ["resource/others/09-修订通知.docx"],
+              "action": {"type": "navigate", "page": "incremental"}}]}
+```
+
+#### FL-02 统一下一步
+
+`GET /api/v1/projects/{id}/flow/suggestions` · 所有者 · 旧：— · 审计：否 · 依据：6.10、㊸（`state_helper suggest` 同源） · 页面：全部工作台页（建议条）、chat-states（第 18 项）
+
+- 查询参数：`conversation_id?`。
+- 响应：`Suggestions`。规则：
+  - 1 个主推，最多 2 个次选；
+  - 优先级按 6.10；
+  - 自主构建运行中 `mode="autobuild_controls"`，返回运行控制，不推荐下一步；
+  - 有未回答的决策卡时 `mode="waiting_decision"`，主推是禁用的「先做上面的决定」。
+
+#### FL-03 跳过节点
+
+`POST /api/v1/projects/{id}/flow/nodes/{node_id}/skip` · 所有者 · 旧：— · 审计：是 · 依据：6.9、features「跳过 / 补做 / 恢复」 · 页面：全部工作台页（建模步骤抽屉「跳过」）
+
+- 请求：`{slice_id?: string, reason?: string}`。
+- 主线和必经节点不能跳过。
+- 响应：`{node: FlowNode, flow_hash}`。
+- 错误：`node_not_found`、`node_not_skippable`。
+
+#### FL-04 恢复节点
+
+`POST /api/v1/projects/{id}/flow/nodes/{node_id}/restore` · 所有者 · 旧：— · 审计：是 · 依据：6.9 · 页面：建模步骤抽屉（「恢复」）
+
+- 请求：`{slice_id?}`。
+- 响应：同 `FL-03`。
+- 错误：`node_not_skipped`。
+
+#### FL-05 开始节点（含补做）
+
+`POST /api/v1/projects/{id}/flow/nodes/{node_id}/start` · 所有者 · 旧：— · 审计：是 · 依据：6.3 `entry`、6.9 · 页面：建模步骤抽屉（「开始」「刷新」）、publish（合规检查「去运行」）、inbox（「刷新这个场景」）
+
+- 请求：`{slice_id?, args?: object, origin: {page, label}}`。
+- 等价于用节点声明的 `entry.command` 调 `S-20`。
+- 响应 `202`：同 `S-20`。
+- 错误：`node_not_found`、`flow_assembly_failed`、`autobuild_running`。
+
+#### BP-01 建模蓝图
+
+`GET /api/v1/projects/{id}/blueprint` · 所有者 · 旧：— · 审计：否 · 依据：第 9 章建议 2、6.8（`core.research` 含切片规划） · 页面：wb-blueprint（蓝图卡、调整弹窗）、chat-states（产物卡）、proj-settings（自主构建范围的切片清单）
+
+- 响应：`Blueprint`，即目标、范围外、切片、术语口径、待答问题、草案版本、状态、`revision`。
+- 错误：`blueprint_not_found`。
+
+#### BP-02 保存蓝图调整
+
+`PUT /api/v1/projects/{id}/blueprint` · 所有者 · 旧：— · 审计：是 · 依据：第 9 章建议 2 · 页面：wb-blueprint
+
+请求：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `base_revision` | string | 是 | — |
+| `mode` | string | 是 | `draft`：保存为草案，草案号不变；`adjust`：保存调整，草案号加 1 |
+| `out_of_scope` | string[] | 否 | — |
+| `slices` | `BlueprintSliceInput[]` | 否 | 完整切片列表，按数组顺序排。合并、排除、改名、调顺序、新增都表达为对这份列表的修改。合并时 `merged_from` 写原切片 ID，`excluded: true` 表示排除 |
+| `term_choices` | `{term_id, chosen}[]` | 否 | 统一叫法 |
+| `answers` | `{question_id, option_id?, custom_text?}[]` | 否 | 待你回答 |
+
+- 「按章节拆分」需要读资料，不在这里做，前端用 `S-20` 发命令「把切片 X 按章节拆分」。
+- 保存后助手按新蓝图继续（下一条消息读取）。
+- 响应：`Blueprint`。
+- 错误：`revision_conflict`、`slice_invalid`、`write_scope_locked`、`blueprint_not_found`。
+
+#### BP-03 确认蓝图
+
+`POST /api/v1/projects/{id}/blueprint/confirm` · 所有者 · 旧：— · 审计：是 · 依据：1.6#2、8.5 · 页面：wb-blueprint（「确认蓝图，开始第一个切片」「一片一片来」「按蓝图一路建完」）
+
+- 请求：`{base_revision, next: "L2"|"L4"}`。缺省取项目的构建方式。
+- 没答的问题留在待处理。
+- 响应：
+  - `next="L2"`：返回 `{blueprint, command_task}`，往对话发「开始第一个切片」；
+  - `next="L4"`：返回 `{blueprint, autobuild_preview: AutobuildPreview}`，前端展示范围和预算后再调 `AB-04`（详设 8.5：开始前展示、确认后才跑）。
+- 错误：`revision_conflict`、`blueprint_not_found`。
+
+---
+
+### 3.13 待处理
+
+依据详设 4.7。待处理不另存一份状态：处理完一项，它的来源就变了，计数随之减少。唯一自存的是「忽略」记录（`.onto/run/` 下，不进 git）。
+
+事项类型 `kind`：
+
+| kind | 界面叫法 | 来源 | 可做的动作（`IN-03` 的 `action`） |
+|---|---|---|---|
+| `decision` | 决策 | 陪伴建模里没回答的决策卡 | `answer` |
+| `evidence_conflict` | 证据冲突 | 三方对账报告 | `arbitrate` |
+| `change_list` | 变更清单 | 增量更新的变更点清单 | `accept_points`、`rewrite_point`、`execute` |
+| `review` | 需复核 | 自主构建自动决定、节点升级、导入；`source` 分别为 `autobuild\|upgrade\|import` | `accept`、`rejudge`、`revert_slice` |
+| `suspension` | 挂起 | 自主构建挂起的问题，包括未授权的采集 | `answer`、`use_generic` |
+| `stale` | 过期 | 节点状态 | `refresh`、`keep_stale` |
+| `resumable` | 续跑 | 中断的执行 | `resume`、`abandon` |
+| `feedback` | 外部反馈 | 评测服务回传（㉔） | `send_to_evolution`、`dismiss` |
+| `report` | 报告待处理 | 某份报告里还没处理的条目，一份报告合成一项 | `send_to_assistant` |
+| `pending_changeset` | 修改待确认 | 没确认的助手变更集（详设 8.2 风险应对） | `merge`、`discard` |
+| `changeset_conflict` | 合入冲突 | 合入时检测到实体冲突 | `resolve` |
+| `format_migration` | 格式待迁移 | 插件升级改了产物格式（5.9.4） | `migrate` |
+| `notification` | 通知 | 提名审核结果等 | `dismiss` |
+
+所有事项都可以 `dismiss`，忽略后不计数。设计稿的筛选分段对应：
+
+| 设计稿筛选 | 对应的 kind |
+|---|---|
+| 全部 | 全部 kind |
+| 自主构建复核 | `review`（`source=autobuild`）和 `suspension` |
+| 决策 | `decision` |
+| 证据冲突 | `evidence_conflict` |
+| 变更清单 | `change_list` |
+| 过期 | `stale` |
+| 续跑 | `resumable` |
+| 外部反馈 | `feedback` |
+
+#### IN-01 待处理列表
+
+`GET /api/v1/projects/{id}/inbox` · 所有者 · 旧：— · 审计：否 · 依据：4.7、㊴ · 页面：inbox、全部项目页（左栏工作台角标、顶栏「待处理 N」）、projects（卡片「待处理 N」，经 `P-01`）
+
+- 查询参数：
+  - `filter?`：`all|autobuild_review|decision|evidence_conflict|change_list|stale|resumable|feedback`；
+  - `kind?`（多值）、`run_id?`、`pack?`（插件页角标用）；
+  - 分页，默认 50。
+- 响应：
+
+  | 字段 | 类型 | 说明 |
+  |---|---|---|
+  | `items` | `InboxItem[]` | — |
+  | `next_cursor` | string \| null | — |
+  | `counts` | object | `{total, by_filter: {all, autobuild_review, decision, evidence_conflict, change_list, stale, resumable, feedback}, by_pack: {[pack]: int}}` |
+  | `today` | object | `{handled, total, eta_minutes, remaining_by_filter: {...}}`：「今天的进度」 |
+  | `autobuild_summary` | object \| null | 只在 `filter=autobuild_review` 时有：`{run_id, run_no, started_at, ended_at, state, cost: Money, decisions, high_confidence, needs_look, suspended, assumptions}` |
+
+#### IN-02 事项详情
+
+`GET /api/v1/projects/{id}/inbox/{item_id}` · 所有者 · 旧：— · 审计：否 · 依据：4.7 · 页面：inbox
+
+- 响应：`InboxItem`，加 `detail`。`detail` 按 `kind` 取不同结构（见第 7 章 `InboxDetail`）：
+
+  | kind | `detail` 结构 |
+  |---|---|
+  | `decision` | `Question` |
+  | `evidence_conflict` | `ConflictDetail`：左右两侧来源和取值、选项 |
+  | `change_list` | `ChangeList` |
+  | `review` | `LedgerEntry` 加选项 |
+  | `suspension` | `Suspension` |
+  | `stale` | `StaleDetail`：上游差异、对本项的影响 |
+  | `resumable` | `ExecRecord` |
+  | `feedback` | `Feedback` |
+  | `report` | 报告摘要 |
+
+#### IN-03 处理事项
+
+`POST /api/v1/projects/{id}/inbox/{item_id}/actions` · 所有者 · 旧：— · 审计：是 · 依据：4.7 · 页面：inbox（「确认并下一条」、各类按钮、键盘 1–4、E、↵）
+
+请求：`{action: string, option_id?, custom_text?, point_ids?: string[], point_id?, text?, choices?, base_revision?}`。字段按 action 取用：
+
+| action | 用到的字段 | 等价接口 |
+|---|---|---|
+| `answer` | `option_id`、`custom_text` | `S-11` 或 `AB-15` |
+| `arbitrate` | `option_id`、`custom_text` | 写进对应对象的「证据」章节，两处出处都保留，经写入路径 |
+| `accept_points` | `point_ids` | `INC-03` |
+| `rewrite_point` | `point_id`、`text` | `INC-02` 的单行版 |
+| `execute` | — | `INC-04` |
+| `accept`、`rejudge` | `option_id`、`custom_text` | `AB-11`、`AB-12` |
+| `revert_slice` | — | `AB-17` |
+| `use_generic` | — | 挂起问题「先按通用要求」 |
+| `refresh` | — | `FL-05` |
+| `keep_stale` | — | 忽略并保持过期 |
+| `resume`、`abandon` | — | `S-16`、`S-17` |
+| `send_to_evolution` | — | 以反馈演进命令调 `S-20` |
+| `send_to_assistant` | — | 以报告修复命令调 `S-20` |
+| `merge`、`discard` | — | `CS-04`、`CS-05` |
+| `resolve` | `choices` | `CS-07` |
+| `migrate` | — | 包的迁移命令 |
+| `dismiss` | — | 忽略 |
+
+- 响应 `200`：`{item_id, resolved: bool, result: object, next_item_id: string|null}`。
+  - 会触发助手工作的动作，`result` 里带 `command_task`。
+  - 「改判」后助手重做受影响的部分并保存新版本。
+- 错误：
+  - `invalid_argument`：动作与 kind 不匹配；
+  - `not_found`：事项已不存在，前端刷新列表；
+  - 以及等价接口的全部错误码。
+
+#### IN-04 批量处理
+
+`POST /api/v1/projects/{id}/inbox/batch` · 所有者 · 旧：— · 审计：是 · 依据：4.7、8.5 · 页面：inbox（「一键接受高置信 13 项」「全部刷新 3 项」「接受选中的 3 项（高把握）」）
+
+- 请求：`{action: "accept_high_confidence"|"refresh_stale"|"accept_change_points", run_id?, item_ids?: string[], change_list_id?, point_ids?: string[]}`。
+- 规则：
+  - `accept_high_confidence`：只接受置信度 ≥ 阈值（默认 0.80）的自动决定；
+  - `accept_change_points`：只接受「把握高」的变更点，低把握的条目不能批量接受。
+- 响应：`{accepted: int, skipped: [{id, reason}], command_task: CommandTask|null}`。
+- 错误：`invalid_argument`、`run_not_found`。
+
+---
+
+### 3.14 增量更新（变更点清单）
+
+增量更新是内核能力（core 的按需节点 `core.update`），不单独设页面，在对话里走完（详设 1.6、14#16）。变更点清单是对话里的卡片，双击打开弹窗逐条改。清单在执行前可以编辑，不受写入范围锁约束。
+
+#### INC-01 变更点清单
+
+`GET /api/v1/projects/{id}/change-lists/{change_list_id}` · 所有者 · 旧：— · 审计：否 · 依据：第 9 章建议 6、INC-5、INC-11 · 页面：incremental（清单卡、弹窗）、inbox（变更清单）
+
+- 响应：`ChangeList`，即来源资料、变更点、状态、`revision`、影响面摘要。
+- 错误：`not_found`。
+
+#### INC-02 保存清单
+
+`PUT /api/v1/projects/{id}/change-lists/{change_list_id}` · 所有者 · 旧：— · 审计：是 · 依据：第 9 章建议 6 · 页面：incremental（「保存清单」「补充一条」「改写」）、inbox
+
+- 请求：`{base_revision, points: ChangePointInput[]}`。完整列表；新增条目不带 `id`。
+- 保存后重算影响面（确定性，秒级），经项目流 `change_list.updated` 推送。
+- 响应：`{change_list: ChangeList, impact_ms: int}`。
+- 错误：`revision_conflict`、`invalid_argument`、`changeset_closed`（清单已执行）。
+
+#### INC-03 接受变更点
+
+`POST /api/v1/projects/{id}/change-lists/{change_list_id}/accept` · 所有者 · 旧：— · 审计：是 · 依据：INC-11 · 页面：incremental（「接受高把握项 2」「接受」）、inbox
+
+- 请求：`{point_ids?: string[], high_confidence?: bool}`，二者必选其一。
+- 低把握的条目不能出现在多于一条的批量里。
+- 响应：`ChangeList`。
+- 错误：`low_confidence_batch`、`revision_conflict`。
+
+
+#### INC-04 确认清单并执行
+
+`POST /api/v1/projects/{id}/change-lists/{change_list_id}/execute` · 所有者 · 旧：— · 审计：是 · 依据：第 9 章建议 6 · 页面：incremental（「确认清单并执行」）、inbox
+
+- 请求：`{base_revision}`。
+- 要求所有条目已接受或已改写，低把握条目必须单独确认过。
+- 往对话发执行命令。之后的流程：只改受影响部分 → 只查改动 → 自动回归 → 回归结果卡 → 本轮改了什么卡 → 确认生效。
+- 响应 `202`：`{command_task: CommandTask, changeset_id}`。
+- 错误：`revision_conflict`、`invalid_argument`（`details.unconfirmed` 列出没确认的条目）。
+
+#### INC-05 影响面
+
+`GET /api/v1/projects/{id}/change-lists/{change_list_id}/impact` · 所有者 · 旧：— · 审计：否 · 依据：第 9 章建议 6、INC-6 · 页面：incremental（影响面卡）
+
+- 响应：`Impact`，即：
+  - 耗时，拆成按变更点定位产物、沿引用算下游、挑回归场景三段；
+  - 将标为过期的产物；
+  - 回归场景：受影响的旧场景，加守护老路径的场景。
+
+---
+
+### 3.15 报告
+
+报告逐条评审吸收了现有 `report_items`，改由产物登记解析（详设 5.9.4、方案 C13）。报告类型有：
+
+| type | 界面叫法 |
+|---|---|
+| `rule` | 规则 |
+| `link` | 链接 |
+| `research` | 资料 |
+| `semantic` | 语义 |
+| `trace` | 追踪 |
+| `candidate` | 候选 |
+| `coverage` | 覆盖 |
+| `diagram` | 流程图校验 |
+| `codegen` | 代码生成 |
+| `<包>.<名>` | 包登记的报告格式 |
+
+#### RP-01 报告列表
+
+`GET /api/v1/projects/{id}/reports` · 所有者 · 旧：— · 审计：否 · 依据：5.9.4 · 页面：reports
+
+- 查询参数：`type?`（多值）；分页（默认 50）。
+- 响应：`{items: ReportSummary[], next_cursor}`。
+
+#### RP-02 报告详情
+
+`GET /api/v1/projects/{id}/reports/{report_id}` · 所有者 · 旧：`GET /api/projects/{id}/report-items?path=` · 审计：否 · 依据：5.9.4、第 9 章建议 3 · 页面：reports、wb-blueprint（资料分析小结卡）
+
+- 响应：`Report`，包括：
+  - 摘要、范围、模式、耗时、上一份；
+  - 处理进度；
+  - 条目（第一页）；
+  - 修复轮次 `repair: {rounds: [{n, count}], limit: 2, exhausted: bool}`；
+  - 专家裁决 `arbitration: Question|null`（`conversation_id` 在 `Question` 里，用 `S-11` 回答）；
+  - 类型专属内容 `extras`：
+    - `link`：`{orphans, unused, dangling}`；
+    - `research`：资料读取结果，见 `MaterialMap` 的摘要；
+    - `codegen`：候选与不适合的操作。
+
+#### RP-03 报告条目
+
+`GET /api/v1/projects/{id}/reports/{report_id}/items` · 所有者 · 旧：`GET /api/projects/{id}/report-items` · 审计：否 · 依据：5.9.4 · 页面：reports
+
+- 查询参数：`status?`（`expert|fixing|pending|fixed`）、`level?`；分页（默认 100）。
+- 响应：`{items: ReportItem[], next_cursor, counts: {error, warning, fixed}}`。
+
+#### RP-04 报告原文
+
+`GET /api/v1/projects/{id}/reports/{report_id}/raw` · 所有者 · 旧：`GET /api/projects/{id}/file?path=reports/...` · 审计：否 · 依据：5.9.4 · 页面：reports（「报告原文」）
+
+响应：`{path, content_md, truncated}`。
+
+#### RP-05 发给助手修复
+
+`POST /api/v1/projects/{id}/reports/{report_id}/fix` · 所有者 · 旧：— · 审计：是 · 依据：第 9 章建议 3（修复最多 2 轮） · 页面：reports（「逐条修复（发给助手）」、单条「发给助手」）
+
+- 请求：`{item_ids?: string[]}`，不传表示全部未修复条目。
+- 等价于 `S-20`，发报告修复命令，参数里带条目。
+- 响应 `202`：同 `S-20`。
+- 错误：`invalid_argument`（条目已修复）、`autobuild_running`。
+
+#### RP-06 重新检查
+
+`POST /api/v1/projects/{id}/reports/recheck` · 所有者 · 旧：— · 审计：是 · 依据：4.4、第 9 章建议 3 · 页面：reports（「重新校验」）、publish（「修完重新检查」）
+
+- 请求：`{kind: "rule"|"semantic"|"link"|"coverage"|"diagram", mode?: "regression"|"full"}`。
+- `link` 由内核确定性计算，同步返回 `200 {report: Report}`。其余发命令，返回 `202 {command_task}`。
+
+---
+
+### 3.16 插件：目录、按项目启用、装配状态、上传与审核
+
+依据详设 4.6、5.2、5.3、5.6、5.9、8.1、方案 D1～D7、D17。
+
+- 包有 6 类：能力包、行业包、系统知识包、证据源提供方、节点包、导出器。
+- 包仓库里每个版本的目录不可修改。项目用 `.onto/packs.lock` 锁定版本。
+- 切换从下一条消息开始生效；正在进行的一轮按旧版本跑完；自主构建运行中时，在下一个安全点之后生效。
+
+#### PL-01 插件目录
+
+`GET /api/v1/packs` · 登录 · 旧：`GET /api/settings/assets`（全局单版本，删除） · 审计：否 · 依据：5.3、5.7、8.1 · 页面：plugins、create（第 3 步行业包、系统知识包、能力包）
+
+- 查询参数：
+  - `category?`：`capability|industry|system|provider|node|exporter`，多值；
+  - `q?`：名称、ID、描述子串；
+  - `project_id?`：带上时，每项计算本项目视角的 `project_status`，并返回推荐；
+  - `installed_only?`：只看「已启用」；
+  - `updatable_only?`：只看「可更新」。
+- 不分页，平台包总数上限 500。
+- 响应：
+
+  | 字段 | 类型 | 说明 |
+  |---|---|---|
+  | `items` | `PackCard[]` | — |
+  | `counts` | object | `{all, capability, industry, system, provider, node, exporter, enabled, updatable}` |
+  | `recommendations` | `[{pack: PackRef, reason: string, action: "enable"\|"upgrade"}]` | 只在带 `project_id` 时有，按资料、已登记的数据源和切片进度推荐，最多 3 条 |
+
+- `PackCard.project_status` 取值：
+
+  | 值 | 卡片显示 | 按钮 |
+  |---|---|---|
+  | `required` | 必装 · 已启用 | 详情 |
+  | `enabled` | 已启用 | 详情 |
+  | `update` | 已启用 x.y | 更新到 x.z |
+  | `available` | — | 启用到本项目 |
+  | `offline` | 离线部署不可用 | 启用（禁用） |
+  | `not_applicable` | 本项目不适用 | 详情 |
+  | `platform_installed` | 平台已安装（提供方） | 详情 |
+  | `platform_available` | 未安装（提供方） | 安装到平台 |
+  | `pending` | 已启用 · 下一条消息生效 | 详情 |
+
+#### PL-02 插件详情
+
+`GET /api/v1/packs/{name}` · 登录 · 旧：— · 审计：否 · 依据：5.2、6.9 · 页面：plugin-detail
+
+- 查询参数：`project_id?`、`version?`（缺省取项目锁定的版本，没有则取 stable 最新版）。
+- 响应：`PackDetail`，包括：
+  - 头部：名称、版本、类别、发布方、标签、描述、大小、发布日期、本项目启用日期；
+  - `requires`：依赖范围（「基础建模能力 1.4 以上」）、`kernel_api`、`page_api`；
+  - `flow_insertions`：往流程里加了什么；
+  - `project_stats`：本项目里的产出统计；
+  - `contents`：「包含什么」分组，组名用界面叫法；
+  - `ui`：界面入口；
+  - `config`：可调设置；
+  - `changelog`：更新记录，每条带 `{version, date, notes, tags: ["needs_core_upgrade"|"in_use"]}`。
+
+#### PL-03 兼容检查
+
+`GET /api/v1/packs/{name}/versions/{version}/compatibility` · 登录 · 旧：— · 审计：否 · 依据：4.6、8.1、6.7（组装检查） · 页面：plugins（启用、更新弹窗）、plugin-detail（「更新到 0.10.0」、不能更新弹窗）
+
+- 查询参数：`project_id`（必填）。
+- 响应：
+
+  | 字段 | 类型 | 说明 |
+  |---|---|---|
+  | `ok` | bool | — |
+  | `checks` | `CompatCheck[]` | 内核接口 `kernel_api`、会话引擎、依赖、命令 / 子代理 / 脚本名唯一、流程组装、`page_api` |
+  | `brings` | object | `{summary_md, commands: int, agents: int, skills: int, nodes: [{id, title, placement}], pages: [{id, title}], subpages: [{parent, id, title}]}` |
+  | `ui_effect` | object | `{kind: "page"\|"subpages"\|"none"\|"kernel", text}`，如「启用后左栏出现「场景走查」」 |
+  | `effective` | string | `next_message\|next_safe_point\|immediate`：行业包这类纯数据包是 `immediate` |
+  | `impact` | object | `{needs_review_after_upgrade: int, affected_artifacts: int, note}`：节点完成判定变化等 |
+  | `blocked_reason` | string \| null | 如「需要先升级基础建模能力」 |
+
+#### PL-04 申请平台安装
+
+`POST /api/v1/packs/{name}/install-requests` · 登录 · 旧：— · 审计：是 · 依据：5.8.3（提供方由管理员安装） · 页面：plugins（非管理员点「安装到平台」）
+
+- 请求：`{version?, note?: string}`。
+- 响应 `202`：`{request_id}`。管理员收到通知。
+
+#### PL-05 本项目的能力
+
+`GET /api/v1/projects/{id}/packs` · 所有者 · 旧：— · 审计：否 · 依据：8.1、1.6#4 · 页面：proj-settings（能力与插件）、plugins（「本项目已启用」）
+
+- 响应：`{items: ProjectPack[], pending_switches: int, lock_hash, flow_hash}`。
+
+#### PL-06 启用到本项目
+
+`POST /api/v1/projects/{id}/packs` · 所有者 · 旧：— · 审计：专项 `pack.enable` · 依据：8.1、6.9、14#1 · 页面：plugins（启用弹窗「启用」、推荐「启用」）、proj-settings（「启用」）
+
+- 请求：`{name, version?: string}`，缺省取 stable 最新版。
+- 效果：
+  - 改 `packs.lock`，作为一个变更集自动合入（`Onto-Source: plugin`），可撤回；
+  - 下一条消息前重新装配。
+- 响应 `201`：`{pack: ProjectPack, commit, version_label, effective: "next_message"|"next_safe_point"|"immediate", extensions_pending_hash}`。
+- 错误：`pack_not_found`、`pack_already_enabled`、`pack_incompatible`、`pack_unavailable`、`page_api_unsupported`、`flow_assembly_failed`、`write_scope_locked`。
+
+#### PL-07 升级
+
+`POST /api/v1/projects/{id}/packs/{name}/upgrade` · 所有者 · 旧：— · 审计：专项 `pack.upgrade` · 依据：8.1、6.9#6 · 页面：plugins（「更新到 x」、更新弹窗）、plugin-detail（「更新到 0.10.0」）、proj-settings（「升级」）
+
+- 请求：`{to_version: string, effective?: "next_message"|"next_autobuild"}`。
+  - `next_autobuild` 对应「只在下次自主构建时启用新版本」。
+- 节点完成判定变了的话，旧的「已确认」标为「需复核」（6.9）。
+- 响应：同 `PL-06`。
+- 错误：同 `PL-06`，加 `pack_not_enabled`、`pack_version_not_found`。
+
+#### PL-08 回滚
+
+`POST /api/v1/projects/{id}/packs/{name}/rollback` · 所有者 · 旧：`POST /api/settings/assets/rollback`（全局，删除） · 审计：专项 `pack.rollback` · 依据：8.1#6 · 页面：proj-settings（「回滚」）
+
+- 请求：`{to_version: string}`。旧版本一直保留在包仓库。
+- 响应：同 `PL-06`。
+
+#### PL-09 停用
+
+`POST /api/v1/projects/{id}/packs/{name}/disable` · 所有者 · 旧：— · 审计：专项 `pack.disable` · 依据：5.9.6、6.9#5 · 页面：proj-settings（「停用」）、plugin-detail（菜单「停用」）
+
+- 效果：
+  - 产物保留；
+  - 节点标「已停用」，被它挡住的关卡随之解除；
+  - 带页面的包，左栏页面立即消失；
+  - 待处理里属于它的事项保留，可以忽略。
+- 响应：同 `PL-06`。
+- 错误：`pack_required`（core）、`pack_not_enabled`。
+
+#### PL-10 撤销待生效的切换
+
+`POST /api/v1/projects/{id}/packs/{name}/cancel-pending` · 所有者 · 旧：— · 审计：是 · 依据：8.1 · 页面：proj-settings（「撤销切换」）
+
+- 在下一条消息之前把锁文件改回去。
+- 响应：`{pack: ProjectPack}`。
+- 错误：`no_pending_switch`。
+
+#### PL-11 装配状态
+
+`GET /api/v1/projects/{id}/assembly` · 所有者 · 旧：— · 审计：否 · 依据：8.1、⑭⑮、方案 D2～D4 · 页面：proj-settings（待生效 chip）、chat-states（第 14 项能力包升级提示）
+
+- 响应：`{active_hash, pending_hash|null, lock_hash, flow_hash, state: "applied"|"pending"|"failed", pending_changes: [{pack, from, to, kind: "enable"|"upgrade"|"rollback"|"disable"}], effective: "next_message"|"next_safe_point", last_error: {error_id, message, at}|null}`。
+
+#### PL-12 扩展项注册表
+
+`GET /api/v1/projects/{id}/extensions` · 所有者 · 旧：— · 审计：否 · 依据：⑥、5.6、5.9.2、5.9.7、方案 D17 · 页面：全部项目页（左栏）、resources（子页）、studio-table（条目类型）、chat-states（快捷操作）、scenarios、knowledge、scripts
+
+- 响应：`Extensions`，包括：
+  - 左栏 `nav`：内核 4 项，加上插件页面，按声明顺序排，超过 5 个进「更多」；
+  - `subpages`；
+  - `pages`：页面声明，含 `data`、`actions`、`badge`；
+  - `entries`：界面入口，如快捷项、附加操作、数据源连接向导；
+  - `artifact_types`、`views`、`gates`、`config`；
+  - `active_hash`、`pending_hash`；
+  - `disabled_pages`：已停用插件的页面，打开旧链接显示「插件已停用」和重新启用按钮。
+- 左栏只列「声明的页面 ∩ 前端内置页面」，且通过 `page_api` 校验。
+
+#### PL-13 上传插件包
+
+`POST /api/v1/admin/packs/uploads`（multipart） · admin · 旧：`POST /api/settings/assets/upload`（改写为上传 core 新版本） · 审计：专项 `pack.upload` · 依据：6.9#1、8.1#1、方案 D1 · 页面：plugin-upload
+
+- 请求：`file`（zip，≤200 MiB）、`tenant_label?: string`（以租户身份上传时填）。
+- 上传后自动做静态检查。
+- 响应 `202`：`PackUpload`（`state="checking"`）。
+- 错误：`pack_upload_invalid`、`payload_too_large`。
+
+#### PL-14 上传列表
+
+`GET /api/v1/admin/packs/uploads` · admin · 旧：— · 审计：否 · 依据：6.9 · 页面：plugin-upload
+
+- 查询参数：`state?`（`checking|passed|failed|published|rejected|held`）；分页。
+- 响应：`{items: PackUpload[], next_cursor}`。
+
+#### PL-15 上传详情与静态检查
+
+`GET /api/v1/admin/packs/uploads/{upload_id}` · admin · 旧：— · 审计：否 · 依据：6.9#1、5.9.6（租户包不能带前端代码）、方案 D1 · 页面：plugin-upload
+
+- 响应：`PackUpload`，加：
+  - `manifest: ManifestSummary`；
+  - `checks: StaticCheck[]`；
+  - `timeline: [{at, actor, text, state}]`：审核记录。
+- 检查项至少包括：
+  - 清单格式与必填字段、校验和一致；
+  - 声明的命令都存在；
+  - 写入范围不碰受保护目录（`resource/`、`.claude`、`.onto` 等）；
+  - 没有新增实体类型、兼容范围对得上、名字不冲突；
+  - 不含凭据；
+  - hooks 只追加拒绝型；
+  - 页面只选用平台内置、没有前端代码；
+  - 提示词体积预算。
+
+#### PL-16 下载检查报告
+
+`GET /api/v1/admin/packs/uploads/{upload_id}/report` · admin（可用 `?token=`） · 旧：— · 审计：否 · 依据：6.9 · 页面：plugin-upload
+
+- 响应：`text/markdown` 附件。
+
+#### PL-17 发布到通道
+
+`POST /api/v1/admin/packs/uploads/{upload_id}/publish` · admin · 旧：— · 审计：专项 `pack.publish` · 依据：8.1#2（灰度通道） · 页面：plugin-upload
+
+- 请求：`{channel: "beta"|"stable", rollout: {by: "project"|"tenant", percent: 0–100, targets?: string[]}, auto_breaker: bool}`。
+  - `auto_breaker`：失败率超过 5% 或连续 5 次失败时，回退到上一版本。
+- 包进入只读的包仓库目录。
+- 响应：`{pack: PackRef, channel, rollout}`。
+- 错误：`static_check_failed`、`pack_upload_state`、`invalid_argument`。
+
+#### PL-18 退回
+
+`POST /api/v1/admin/packs/uploads/{upload_id}/reject` · admin · 旧：— · 审计：是 · 依据：6.9 · 页面：plugin-upload
+
+- 请求：`{reason: string}`。上传者收到通知。
+- 响应：`PackUpload`（`state="rejected"`）。
+- 「暂不发布」不调接口，上传保持 `passed`。
+
+#### PL-19 平台安装提供方
+
+`POST /api/v1/admin/packs/{name}/install` · admin · 旧：— · 审计：专项 `pack.install` · 依据：5.8.3、H2 · 页面：plugins（管理员点「安装到平台」）
+
+- 请求：`{version}`。证据源提供方和导出器装进网关或旁路容器，H2 级生效。
+- 响应 `202`：`{task_id}`，进度在 `O-40` 任务列表。
+
+---
+
+### 3.17 插件产物与通用视图
+
+依据详设 5.9.4、5.9.5、方案 C13。
+
+- 包登记的产物类型（如 `trace.scenario`、`trace.mock`、`codegen.solver_contract`、`diagram.flowchart`、`core.knowledge`）都经这组接口读写。
+- 内核按登记的格式解析，不跑包的代码；保存走写入路径，先按格式定义校验，再过包声明的门禁规则。
+- 插件产物不是本体实体：不建关系边，不进知识包。
+
+#### AR-01 产物类型
+
+`GET /api/v1/projects/{id}/artifact-types` · 所有者 · 旧：— · 审计：否 · 依据：5.9.4 · 页面：scenarios、scripts、knowledge、studio-table（流程图）
+
+- 响应：`{items: ArtifactType[]}`，每项含格式定义（字段与类型）、`refs`、`status` 映射和视图声明（`list`、`detail`、`card`）。
+- 只返回已启用包登记的类型。
+
+#### AR-02 产物列表
+
+`GET /api/v1/projects/{id}/artifacts/{type}` · 所有者 · 旧：— · 审计：否 · 依据：5.9.4 · 页面：scenarios（场景、示例数据）、studio-table（流程图行）
+
+- 查询参数：
+  - `filter[<field>]=<value>`：只允许视图声明的 `filters` 字段；
+  - `q?`：全文；
+  - `stale?: bool`；
+  - `sort?`、`order?`；分页。
+- 响应：`{items: ArtifactRow[], next_cursor, total, facets: {[field]: [{value, label, count}]}}`。
+  - 每项带 `status`（经 `status.map` 映射成界面文案）、`stale`、`locked`。
+- 错误：`artifact_type_unknown`、`invalid_argument`。
+
+#### AR-03 产物详情
+
+`GET /api/v1/projects/{id}/artifacts/{type}/{key}` · 所有者 · 旧：— · 审计：否 · 依据：5.9.4 · 页面：scenarios、flowchart、studio-table、scripts（求解契约之外的产物）
+
+- 查询参数：`rows_limit?`：表格类产物（csv、jsonl）预览行数，默认 20，最大 500。
+- 响应：`Artifact`，包括：
+  - `fields`、`sections`（Markdown 按标题切段）；
+  - `table`（表格类）、`refs`（解析后的条目引用）；
+  - `status`、`stale`、`stale_reason`；
+  - `revision`、`lock`、`format_version`。
+- `diagram.flowchart` 的 `content` 是 `FlowchartModel`。
+- 错误：`artifact_type_unknown`、`artifact_not_found`。
+
+#### AR-04 产物历史
+
+`GET /api/v1/projects/{id}/artifacts/{type}/{key}/history` · 所有者 · 旧：— · 审计：否 · 依据：5.9.4 · 页面：scenarios（详情侧栏 history）
+
+- 分页。
+- 响应：`{items: [{commit, version_label, at, source, summary}], next_cursor}`。
+
+#### AR-05 保存产物
+
+`PUT /api/v1/projects/{id}/artifacts/{type}/{key}` · 所有者 · 旧：— · 审计：是 · 依据：5.9.3 规则 3、5.9.4 · 页面：scenarios（编辑场景、示例数据）、flowchart（保存）、scripts（求解契约以外）
+
+- 请求：`{base_revision, fields?: object, sections?: {[title]: string}, content?: any, summary?: string}`。
+  - `fields`、`sections` 用于 md-frontmatter；`content` 用于 yaml、json、jsonl、csv、drawio。
+- 响应：`{artifact: Artifact, commit, version_label}`。
+- 错误：
+  - `artifact_schema_invalid`、`gate_failed`；
+  - `revision_conflict`、`write_scope_locked`；
+  - `artifact_readonly`、`format_migration_required`。
+
+#### AR-06 新建产物
+
+`POST /api/v1/projects/{id}/artifacts/{type}` · 所有者 · 旧：— · 审计：是 · 依据：5.9.4 · 页面：scenarios、studio-table（新建流程图，经 `ST-09`）
+
+- 请求：`{key?: string, fields?, sections?, content?}`。路径只能落在 `ext/<包名>/` 下。
+- 响应 `201`：同 `AR-05`。
+
+#### AR-07 删除产物
+
+`DELETE /api/v1/projects/{id}/artifacts/{type}/{key}` · 所有者 · 旧：— · 审计：是 · 依据：5.9.4 · 页面：scenarios、studio-table（删除流程图）
+
+- 请求：`{base_revision}`。
+- 响应：`{commit, version_label}`。
+
+#### AR-08 校验产物
+
+`POST /api/v1/projects/{id}/artifacts/{type}/{key}/validate` · 所有者 · 旧：— · 审计：否 · 依据：5.9.4 · 页面：flowchart（「校验」）、studio-table（流程图「校验流程图」）
+
+- 请求：`{content?: any}`。不带时校验已保存版本。
+- 按格式定义和包声明的确定性规则校验，不调模型。
+- 响应：`{ok: bool, errors: Finding[], warnings: Finding[]}`。
+- 流程图的全量刷新在对话里提，不在这里。
+
+#### AR-09 产物汇总
+
+`GET /api/v1/projects/{id}/artifacts/{type}/summary` · 所有者 · 旧：— · 审计：否 · 依据：5.9.5（通用视图） · 页面：scenarios（通过率、通过 / 失败 / 过期计数、趋势）
+
+- 查询参数：`group_by?`（默认 `status`）、`trend?: bool`。
+- 响应：`{total, by: [{value, label, count}], stale: int, trend: [{version_label, value_pct}]|null, delta_vs_previous_pct: number|null}`。
+
+---
+
+### 3.18 脚本与求解契约
+
+脚本属于五元组，内核本来就能读。求解契约是受管目录，加硬锁（详设 5.9.8），由内核的求解模块和共享契约库处理（方案 A10、A16）。代码生成页的扫描、生成、修复、重新生成都只发命令（`S-20`）。
+
+#### SC-01 脚本与可代码化候选
+
+`GET /api/v1/projects/{id}/scripts` · 所有者 · 旧：— · 审计：否 · 依据：5.4、5.7（共享契约库）、⑳ · 页面：scripts
+
+- 响应：`{sandbox: SandboxSummary, candidates: {scanned_at, items: [{operation: EntryRef, reason, suitable: "yes"|"partial"|"no", selected_default: bool}], unsuitable: [{operation: EntryRef, reason}]}, items: ScriptRow[]}`。
+  - `candidates` 来自最近一份代码生成扫描报告。
+  - `ScriptRow` 含：脚本条目、对应操作、契约检查（`passed|failed`，带 `findings`）、描述符（`synced|stale|none`）、沙箱验证（`passed|failed|not_run`，带耗时）。
+
+#### SC-02 沙箱验证结果
+
+`GET /api/v1/projects/{id}/scripts/{key}/verification` · 所有者 · 旧：— · 审计：否 · 依据：㉑、5.4 · 页面：scripts（沙箱验证输出卡）
+
+- 响应：`{script: EntryRef, ran_at, status: "passed"|"failed"|"not_run", duration_ms, network_access: false, cases: [{args: string, output: string, passed: bool}]}`。
+- 错误：`not_found`。
+
+#### SC-03 沙箱状态（摘要）
+
+`GET /api/v1/sandbox/status` · 登录 · 旧：`GET /api/settings/sandbox`（管理员全量见 `SY-10`） · 审计：否 · 依据：5.7 · 页面：scripts（「脚本验证沙箱可用」）
+
+- 响应：`{available: bool, network: "denied", python: string|null, checked_at}`。
+
+#### SV-01 求解契约
+
+`GET /api/v1/projects/{id}/solver/contract` · 所有者 · 旧：`GET /api/projects/{id}/package/solver-contract` · 审计：否 · 依据：5.9.8、方案 A10、ADR 0009/0010/0011 · 页面：scripts（求解模型页签）
+
+- 响应：`SolverContractView`，包括：
+  - `revision`、`revision_no`、`enabled`；
+  - `operations[]`：每项是一份「求解契约」，界面上一张卡，含 `solver_key`、`operation`、`problem_family`、`capabilities`、`field_units`、`evaluator`、`option_labels`、`result_title`、`result_texts`、`enabled`、`mode: "template"|"manual"`、`sidecars`、`managed`；
+  - `findings`、`gate`；
+  - `receipt`：本修订的验证回执状态；
+  - 目录：`available_operations`、`evaluators`、`problem_families[{id, label, capabilities}]`、`supported_profiles`、`template`；
+  - `lock: ScopeLock|null`。
+
+#### SV-02 保存求解契约
+
+`PUT /api/v1/projects/{id}/solver/contract` · 所有者 · 旧：`PUT /api/projects/{id}/package/solver-contract` · 审计：是 · 依据：5.9.8、方案 A10 · 页面：scripts（「保存求解契约」、「转为手动编辑」后保存）
+
+- 请求：`{base_revision, contract: {operations: [{binding, template?: object, sidecars?: {role: text}}]}, summary?: string（≤80，写进版本记录）}`。
+- 经写入路径提交到受管目录 `ontology/solver/`，修订号加 1。旧修订的验证回执对新修订不再有效。
+- 保存后由代码生成包的命令生成评估器，不在这里。
+- 响应：`SolverContractView`，加 `commit`、`version_label`。
+- 错误：`revision_conflict`（`details.kind="solver_contract"`）、`solver_contract_invalid`、`solver_contract_rejected`、`write_scope_locked`。
+
+#### SV-03 检查求解契约（不落盘）
+
+`POST /api/v1/projects/{id}/solver/contract/check` · 所有者 · 旧：`POST /api/projects/{id}/package/solver-contract/check` · 审计：否 · 依据：ADR 0009 · 页面：scripts（检查卡）
+
+- 请求：同 `SV-02`，忽略 `base_revision`。
+- 响应：`{rejected: Finding[], findings: Finding[], rendered: [{role: text}|null], evaluator: {kind: "declarative"|"script", constraints: int}|null}`。
+
+#### SV-04 验证回执
+
+`GET /api/v1/projects/{id}/solver/receipts` · 所有者 · 旧：`GET /api/projects/{id}/package/solver-validations/latest` · 审计：否 · 依据：㉕、第 11 章 · 页面：publish（门禁「求解契约回执」）、scripts
+
+- 查询参数：`revision?`（缺省当前修订）；分页。
+- 响应：`{revision, revision_no, latest: Receipt|null, items: Receipt[], gate: {status: "pass"|"required"|"stale"|"failed", finding: Finding|null}}`。
+- 写入回执的接口是 `X-04`（服务令牌）。
+
+---
+
+### 3.19 证据源
+
+依据详设 5.8、14#4、#5、方案 E11～E15。
+
+- 数据源在平台级登记（代码里没有租户概念，「租户级」即平台全局），项目级授权。
+- 凭据只写不读，明文只在连接器网关。
+- 采集由内核签发一次性票据，经网关只读执行，全程审计。
+- 资料页的 3 个子页（数据源、采集与快照、证据浏览器）由系统逆向建模包带来。包没启用时，项目侧接口返回 `pack_not_enabled`。
+
+#### EV-01 数据源列表
+
+`GET /api/v1/evidence/sources` · 登录 · 旧：— · 审计：否 · 依据：5.8.7 · 页面：sources、wb-materials（「已登记 2 个数据源可用」）、create（第 2 步）、proj-settings（自主构建生产库授权）
+
+- 查询参数：`project_id?`（带上时返回 `authorized_for_project`）、`filter?`（`all|authorized|production`）。
+- 响应：`{items: EvidenceSource[], total, authorized_count}`。
+- 普通用户只看到不敏感的登记字段；`secret_fields` 只有是否已设置的标记。
+
+#### EV-02 登记数据源
+
+`POST /api/v1/admin/evidence/sources` · admin · 旧：— · 审计：专项 `evidence.source.register` · 依据：5.8.7、5.8.6 · 页面：sources（登记抽屉「保存登记并授权本项目」）
+
+- 请求：
+
+  | 字段 | 类型 | 必填 | 说明 |
+  |---|---|---|---|
+  | `id` | string | 是 | `^[a-z0-9][a-z0-9-]{1,40}$`，锚点前缀，登记后不能改 |
+  | `display_name` | string | 是 | — |
+  | `provider` | string | 是 | 已安装的提供方 id |
+  | `environment` | string | 是 | `production\|test` |
+  | `connection` | object | 是 | 不含密钥的连接参数，字段由提供方的 `cred_fields` 决定，如 `{host, port, database, username}` |
+  | `secret` | object | 否 | 如 `{password}`；内核立即转交网关 `PUT /v1/secrets`，不保存，日志只记引用 |
+  | `scope_allowlist` | string[] | 是 | 只采这些对象 |
+  | `egress` | `{host, port}[]` | 是 | 网关只连白名单里的主机和端口 |
+  | `access_window` | object | 否 | `{days: "daily"\|string[], start: "22:00", end: "06:00", tz}` |
+  | `budget` | object | 是 | `{max_rows, max_bytes, max_duration_s}` |
+  | `rate_limit` | object | 是 | `{concurrency, qps, query_timeout_s}` |
+  | `masking_policy` | string | 是 | 如 `mask-v3` |
+  | `authorization_note` | string | REA 类必填 | — |
+  | `owner` | string | 是 | 负责人用户名 |
+  | `grant_project_id` | string | 否 | 登记后立即授权给这个项目 |
+
+- 响应 `201`：`EvidenceSource`（`cred_ref` 如 `cred://mes-prod/1`）。
+- 错误：`source_id_taken`、`provider_not_installed`、`gateway_unavailable`、`invalid_argument`。
+
+#### EV-03 提交登记申请
+
+`POST /api/v1/evidence/source-requests` · 登录 · 旧：— · 审计：是 · 依据：5.8.7 · 页面：sources（非管理员「提交给管理员」）
+
+- 请求：同 `EV-02`，但不能带 `secret`。
+- 响应 `202`：`{request_id}`。管理员收到通知，写入凭据、测试后登记。
+
+#### EV-04 修改登记
+
+`PATCH /api/v1/admin/evidence/sources/{source_id}` · admin · 旧：— · 审计：专项 `evidence.source.update` · 依据：5.8.7 · 页面：sources（⋯「编辑登记」）
+
+- 请求：`EV-02` 里除 `id`、`provider` 外的任意字段。
+- 响应：`EvidenceSource`。
+
+#### EV-05 删除登记
+
+`DELETE /api/v1/admin/evidence/sources/{source_id}` · admin · 旧：— · 审计：专项 `evidence.source.delete` · 依据：5.8.7 · 页面：sources（⋯「删除登记」）
+
+- 已有快照保留，锚点照常解析。
+- 响应 `204`。
+- 错误：`job_state_invalid`（有运行中的任务）。
+
+#### EV-06 写入或轮换凭据
+
+`PUT /api/v1/admin/evidence/sources/{source_id}/secret` · admin · 旧：— · 审计：专项 `evidence.secret.write`（只记引用） · 依据：5.8.6 · 页面：sources（「轮换」「写入新密码」）
+
+- 请求：`{fields: {password?: string, token?: string, ...}}`。
+- 新任务用新版本；旧版本等没有任务在用时由网关删除。
+- 响应：`{cred_ref: "cred://mes-prod/4", written_at}`。没有任何能读出明文的接口。
+- 错误：`gateway_unavailable`、`upstream_unavailable`。
+
+#### EV-07 删除凭据
+
+`DELETE /api/v1/admin/evidence/sources/{source_id}/secret` · admin · 旧：— · 审计：专项 `evidence.secret.delete` · 依据：5.8.6 · 页面：sources
+
+- 响应 `204`。
+
+#### EV-08 测试连接
+
+`POST /api/v1/evidence/sources/{source_id}/test` · admin，或已获授权项目的所有者（带 `project_id`） · 旧：— · 审计：专项 `evidence.test` · 依据：5.8.2（测试连接并自检只读） · 页面：sources（「测试已授权的连接」、⋯「测试连接」、抽屉「重新测试」）
+
+- 请求：`{project_id?: string}`。
+- 响应：`{ok: bool, checks: [{name: "connectivity"|"readonly_account"|"statement_allowlist", ok, detail, latency_ms?}], ticket: {id_prefix, expires_in_s: 600, consumed: true}}`。
+- 错误：`source_not_authorized`、`gateway_unavailable`、`connection_test_failed`（`ok=false` 时也可以直接返回 200，前端按 `ok` 判断；返回 422 只在网关报错时）。
+
+#### EV-09 访问审计
+
+`GET /api/v1/evidence/sources/{source_id}/access-log` · admin，或已获授权项目的所有者（只看本项目的访问） · 旧：— · 审计：否 · 依据：5.8.2（每次访问业务系统都留记录） · 页面：sources（⋯「查看访问审计」）
+
+- 查询参数：`project_id?`；分页。
+- 响应：`{items: [{at, job_id, project_id, operation, statement_digest, rows, bytes, duration_ms}], next_cursor}`。
+
+#### EV-10 提供方列表
+
+`GET /api/v1/evidence/providers` · 登录 · 旧：— · 审计：否 · 依据：5.8.3 · 页面：sources（登记抽屉类型格）、snapshots（「已加载 N 个提供方」）
+
+- 响应：`{gateway: {status: "ok"|"slow"|"down", checked_at}, items: [{id, version, label, kind: "file"|"db"|"code"|"api"|"rea"|"ui"|"cli"|"log", evidence_types: string[], capabilities: ("discover"|"snapshot"|"sample"|"incremental")[], cred_fields: [{name, secret: bool, label}], readonly_method, runtime: "subprocess"|"sidecar"|"mcp", installed: bool, license_note}]}`。
+
+#### EV-11 本项目的授权
+
+`GET /api/v1/projects/{id}/evidence/grants`、`PUT /api/v1/projects/{id}/evidence/grants/{source_id}` · 所有者 · 旧：— · 审计：PUT 专项 `evidence.grant` · 依据：14#4 · 页面：sources（「授权本项目使用」开关、⋯「取消授权」）
+
+- GET 响应：`{items: [{source_id, authorized: bool, granted_at, granted_by}]}`。
+- PUT 请求：`{authorized: bool}`。
+  - 授权记录存数据目录，不放工作区（agent 能改工作区，方案 E11）。
+  - 自主构建的生产库采集授权另在 `AB-02` 设置。
+- 响应：GET 列表里的一项。
+
+#### EV-12 本项目在用
+
+`GET /api/v1/projects/{id}/evidence/summary` · 所有者 · 旧：— · 审计：否 · 依据：5.8.7 · 页面：sources（「本项目在用」卡）、snapshots（统计条）
+
+- 响应：`{authorized_sources: EvidenceSourceRef[], snapshots: {count, sources, referenced, last_at}, referenced_anchors: int, jobs_this_month: {total, succeeded, partial, failed, cancelled}, running_jobs: int, queued_jobs: int, gateway: {status, providers_loaded}}`。
+
+#### EV-13 采集预览
+
+`POST /api/v1/projects/{id}/evidence/jobs/preview` · 所有者 · 旧：— · 审计：否 · 依据：5.8.7、14#5 · 页面：snapshots（「发起采集」→ 生产采集确认弹窗）
+
+- 请求：`{source_id, operation: "discover"|"snapshot"|"sample", scope?: string[]（缺省沿用登记白名单）, incremental_base?: string（快照 ID）, budget?: object, sample?: {selector, limit ≤ 20}}`。
+- 响应：
+
+  | 字段 | 类型 | 说明 |
+  |---|---|---|
+  | `requires_confirmation` | bool | 生产环境为 true |
+  | `confirmation_token` | string \| null | 10 分钟有效 |
+  | `summary` | object | `{scope_text, tables, window, in_window_now, rate_limit, estimate: {rows, bytes}\|null, readonly_methods: string[], masking: {policy, sample_rows}, ticket: {ttl_s: 600, single_use: true}}` |
+
+- 错误：`source_not_authorized`、`provider_not_installed`、`invalid_argument`。
+
+#### EV-14 发起采集
+
+`POST /api/v1/projects/{id}/evidence/jobs` · 所有者 · 旧：— · 审计：专项 `evidence.collect`（含同意记录） · 依据：5.8.7、㉜、14#5 · 页面：snapshots（「同意并开始采集」）、chat-states（采集确认卡经 `S-11` 回答后由内核发起）
+
+- 请求：同 `EV-13`，加 `confirmation_token?`。
+- 生产环境没带有效 token 时返回 `428 confirmation_required`，`details` 同 `EV-13` 的响应。
+- 不在访问窗口内的任务进入排队，等窗口开启。
+- 响应 `202`：`CollectionJob`。进度经项目流 `evidence.job.updated` 推送。
+- 错误：`confirmation_required`、`confirmation_expired`、`source_not_authorized`、`quota_exceeded`（采集频率）、`gateway_unavailable`。
+
+#### EV-15 采集任务列表
+
+`GET /api/v1/projects/{id}/evidence/jobs` · 所有者 · 旧：— · 审计：否 · 依据：5.8.2 · 页面：snapshots
+
+- 查询参数：`state?`（`active` 即排队和运行中、`finished`，或具体状态值）；分页。
+- 响应：`{items: CollectionJob[], next_cursor}`。
+
+#### EV-16 采集任务详情
+
+`GET /api/v1/projects/{id}/evidence/jobs/{job_id}` · 所有者 · 旧：— · 审计：否 · 依据：5.8.2 · 页面：snapshots
+
+- 响应：`CollectionJob`。
+
+#### EV-17 取消、续采、重试
+
+`POST /api/v1/projects/{id}/evidence/jobs/{job_id}/cancel`、`.../resume`、`.../retry` · 所有者 · 旧：— · 审计：专项 `evidence.collect` · 依据：5.8.2（按实体记断点，可续采） · 页面：snapshots
+
+- `cancel`：排队或运行中可用。
+- `resume`：部分完成可用，从断点续采，生成新任务，`resumed_from` 指向原任务。
+- `retry`：失败或已取消可用，生成新任务；生产环境要重新确认，返回 `428`。
+- 响应：`CollectionJob`。
+- 错误：`job_state_invalid`、`confirmation_required`。
+- 「联系管理员」（凭据过期）用 `EV-30`。
+
+#### EV-18 快照列表
+
+`GET /api/v1/projects/{id}/evidence/snapshots` · 所有者 · 旧：— · 审计：否 · 依据：5.8.4 · 页面：snapshots、schema（快照下拉）
+
+- 查询参数：`source_id?`；分页。
+- 响应：`{items: SnapshotSummary[], next_cursor}`。
+
+#### EV-19 快照详情
+
+`GET /api/v1/projects/{id}/evidence/snapshots/{snapshot_id}` · 所有者 · 旧：— · 审计：否 · 依据：5.8.4 · 页面：snapshots、schema
+
+- 响应：`SnapshotSummary`，加 `manifest: object`（`manifest.json` 去掉哈希和凭据引用之外的内容）、`inventory: {collected, skipped: [{object, reason}]}`。
+
+#### EV-20 清理快照
+
+`DELETE /api/v1/projects/{id}/evidence/snapshots/{snapshot_id}` · 所有者 · 旧：— · 审计：是 · 依据：5.8.4（被已确认产物引用的快照不能清理） · 页面：snapshots（「清理」）
+
+- 响应：`{removed: true, blob_retention_days: 90}`。
+- 错误：`snapshot_referenced`。
+
+#### EV-21 快照对比
+
+`GET /api/v1/projects/{id}/evidence/snapshots/diff` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.8.4（按记录 ID + 哈希比较）、`evidence.diff` · 页面：snapshots（对比卡）、schema（「对比快照」）
+
+- 查询参数：`from`、`to`（快照 ID，同一数据源）、`change?`（`added|removed|modified`）；分页。
+- 响应：`{from, to, counts: {added, removed, modified, touching_confirmed}, items: [{change, type, anchor, summary, affected: (EntryRef|ArtifactRef)[]}], next_cursor}`。
+
+#### EV-22 推送建议修订
+
+`POST /api/v1/projects/{id}/evidence/snapshots/diff/suggestions` · 所有者 · 旧：— · 审计：是 · 依据：5.8.8（快照差异驱动演进） · 页面：snapshots（「推送建议修订」）
+
+- 请求：`{from, to}`。
+- 变化的锚点进影响分析，生成建议修订，放进待处理。
+- 响应：`{created: int, inbox_item_ids: string[]}`。
+- 「在对话里分析影响」用 `S-20` 发命令。
+
+#### EV-23 分层摘要
+
+`GET /api/v1/projects/{id}/evidence/summary-tree` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.8.4（`summary.md`） · 页面：schema（左栏）
+
+- 查询参数：`snapshot`（必填）。
+- 响应：`{snapshot: SnapshotRef, domains: [{name, count, entities: [{anchor, name, label, mapped_to: EntryRef|null}]}]}`。
+
+#### EV-24 证据检索（evidence.search）
+
+`GET /api/v1/projects/{id}/evidence/search` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.8.7、㉟ · 页面：schema（检索框）
+
+- 查询参数：`q`、`type?`（`entity|field|relation|constraint|operation|rule|flow|profile|sample|term`）、`source_id?`、`snapshot?`；分页（默认 50，上限 200）。
+- 响应：`{items: [{anchor, type, name, label, parent_anchor, snippet, confidence}], next_cursor, total}`。
+
+#### EV-25 记录详情（evidence.show）
+
+`GET /api/v1/projects/{id}/evidence/record` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.8.5 规则 4 · 页面：schema（右栏）、studio（证据卡「查看原文」）
+
+- 查询参数：`anchor`、`snapshot?`（缺省用产物声明的快照，没有则取最新完整快照）。
+- 响应：`EvidenceRecord`，即记录本身，加原始上下文：字段、DDL、脱敏样本（每表最多 20 行）、数据画像（低基数 top-k、数值统计量）。
+- 错误：`anchor_invalid`、`anchor_not_found`。
+
+#### EV-26 被谁引用（evidence.where-used）
+
+`GET /api/v1/projects/{id}/evidence/where-used` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.8.7 · 页面：schema（「被引用」）、studio（证据卡「被谁引用」）、snapshots（被引用数）
+
+- 查询参数：`anchor`、`prefix?: bool`（true 时匹配锚点前缀，如整张表）。
+- 响应：`{items: [{target: EntryRef|ArtifactRef, location}], total}`，不分页，上限 500。
+
+#### EV-27 相邻记录（evidence.lineage）
+
+`GET /api/v1/projects/{id}/evidence/lineage` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.8.7 · 页面：schema（「相邻记录」）
+
+- 查询参数：`anchor`、`snapshot?`。
+- 响应：`{items: [{anchor, label, basis: string（如「外键邻居」「取值重合 98%」「代码调用方」）, confidence}]}`。
+
+#### EV-28 ER 视图
+
+`GET /api/v1/projects/{id}/evidence/er` · 所有者 · 旧：— · 审计：专项 `evidence.query` · 依据：5.6（视图选择：Schema 浏览器、ER 视图） · 页面：schema（中栏）
+
+- 查询参数：`snapshot`、`focus?: anchor`、`depth?: 1–3`（默认 1）、`domain?`。
+- 响应：`{tables: [{anchor, name, label, fields: [{name, type, pk: bool, fk: bool, masked: bool}]}], relations: [{from_anchor, to_anchor, confidence: "declared"|"observed"|"inferred", basis}]}`，表数上限 60。
+
+#### EV-29 锚点解析
+
+`GET /api/v1/projects/{id}/anchors/resolve`、`POST /api/v1/projects/{id}/anchors/resolve` · 所有者 · 旧：— · 审计：`db`、`code` 等系统锚点记专项 `evidence.query`；`file` 锚点不记 · 依据：5.8.5 · 页面：全部出现出处角标的页面（wb-l2、wb-materials、inbox、l4-run、studio、studio-table、reports、incremental、scenarios、knowledge 等，悬停看原文）
+
+- GET 查询参数：`anchor`。
+- POST 请求：`{anchors: string[]}`，最多 100 个。
+- 响应：`{items: AnchorResolution[]}`。
+  - 每项含：来源名、位置、原文（带高亮区间）、置信度、快照、是否可解析。
+  - 解析失败的锚点 `resolved=false`，并带 `reason`。
+
+#### EV-30 通知管理员处理数据源
+
+`POST /api/v1/evidence/sources/{source_id}/notify-admin` · 已获授权项目的所有者 · 旧：— · 审计：是 · 依据：5.8.6（凭据由管理员轮换） · 页面：snapshots（失败任务「联系管理员」）
+
+- 请求：`{project_id, job_id?: string, reason: "credential_expired"|"connection_failed"|"other", note?: string}`。
+- 管理员收到 `request_pending` 通知。
+- 响应 `202`：`{request_id}`。
+- 错误：`source_not_authorized`、`source_not_found`。
+
+---
+
+### 3.20 发布
+
+依据详设 5.6（门禁链）、⑱、第 11 章、方案 A8、A9。
+
+- 发布从主线版本标签出，变更集永远不发布。
+- 发布格式自动判定：启用了求解契约就发求解知识包（schema 0.2），否则发普通知识包（ontology-package v0.1），不再手选。
+- 发布版本号 `0.{n}.0`，`n` 是主线版本号，所以界面显示的 `v0.13` 与包版本一一对应（见 8.4）。
+- 同一提交重复发布得到逐字节相同的包。
+
+#### PB-01 发布检查（门禁链）
+
+`GET /api/v1/projects/{id}/publish/check` · 所有者 · 旧：`GET /api/projects/{id}/package/check` · 审计：否 · 依据：5.6、㉖、第 11 章 · 页面：publish、projects（「可发布」状态）
+
+- 查询参数：`commit?`（缺省主线最新）、`refresh?: bool`。
+- 响应：
+
+  | 字段 | 类型 | 说明 |
+  |---|---|---|
+  | `commit` | string | — |
+  | `version_label` | string | — |
+  | `package_name` | string | — |
+  | `format` | string | `ontology\|solver`：自动判定 |
+  | `gates` | `GateResult[]` | 按顺序：数据绑定、求解契约回执、包声明的门禁（如合规检查）、证据出处检查、全局一致性等流程关卡 |
+  | `blocking_count` | int | — |
+  | `binding` | object | `{issues: BindingIssue[], warnings: string[], tables: string[], table_count, objects, bound_objects, table_resources: string[]（没标 Schema 的表格资料）, truncated}` |
+  | `degradable` | bool | 只有数据绑定不通过时为 true |
+  | `uncommitted` | object | `{count, paths: string[≤50]}`：发布源路径下的未提交改动（发布不会带上它们） |
+  | `last_release` | `ReleaseRecord` \| null | — |
+  | `checked_at` | time | — |
+  | `duration_ms` | int | — |
+
+#### PB-02 设置对象数据来源
+
+`PUT /api/v1/projects/{id}/objects/{key}/data-source` · 所有者 · 旧：`POST /api/projects/{id}/objects/{key}/data-source` · 审计：是 · 依据：5.8.8 · 页面：publish（数据绑定「改为现有表」「改为「无」」）
+
+- 请求：`{kind: "table"|"anchor"|"none", value?: string, base_revision}`。
+  - `table`：首行只写现有数据表名，逐字相同，大小写规范成原名；
+  - `anchor`：写数据库锚点，如 `db:pos-prod/pos.store_grade`，表名列名从快照解析；
+  - `none`：确实不落库的对象。
+- 响应：`{entry: EntryRef, revision, commit, version_label, binding: BindingIssue|null}`。
+- 错误：`not_found`、`invalid_argument`（表名不在 Schema 资料和快照里）、`anchor_not_found`、`revision_conflict`、`write_scope_locked`。
+
+#### PB-03 发布
+
+`POST /api/v1/projects/{id}/releases` · 所有者 · 旧：`GET /api/projects/{id}/export?scope=package`（旧接口用 GET 发布，改为 POST） · 审计：专项 `publish.release` · 依据：⑱、㉒、㉓、方案 A8 · 页面：publish（「发布为知识包」「发布」「降级发布」）
+
+- 请求：`{commit?: string（缺省主线最新）, degrade?: bool}`。
+  - `degrade=true` 表示忽略数据绑定、降级发布，其他门禁不放宽。
+- 流程：门禁 → 渲染 → 打 `release/0.{n}.0` 标签 → 写发布记录 → 附包清单。
+- 响应 `201`：`ReleaseRecord`。
+- 错误：
+  - `gate_blocked`（`details.gates` 列出不通过的项）；
+  - `invalid_commit`；
+  - `project_archived`；
+  - `maintenance_read_only`。
+
+#### PB-04 发布记录
+
+`GET /api/v1/projects/{id}/releases` · 所有者 · 旧：— · 审计：否 · 依据：第 11 章 ㉓ · 页面：publish（发布记录）
+
+- 分页。
+- 响应：`{items: ReleaseRecord[], next_cursor}`。
+
+#### PB-05 发布记录详情
+
+`GET /api/v1/projects/{id}/releases/{version}` · 所有者或服务令牌 `releases.read` · 旧：— · 审计：否 · 依据：㉓ · 页面：publish
+
+- 响应：`ReleaseRecord`。
+- 错误：`release_not_found`。
+
+#### PB-06 包清单
+
+`GET /api/v1/projects/{id}/releases/{version}/manifest` · 所有者或服务令牌 `releases.read` · 旧：— · 审计：否 · 依据：㉓（包出：版本化知识包 + 包清单） · 页面：publish
+
+- 响应：`ReleaseManifest`。
+
+#### PB-07 下载发布包
+
+`GET /api/v1/projects/{id}/releases/{version}/download` · 所有者（可用 `?token=`）或服务令牌 `releases.read` · 旧：`GET /api/projects/{id}/export?scope=package` · 审计：专项 `publish.download` · 依据：㉒、㉓、方案第 6 章 #1（图模式留作适配器变体） · 页面：publish
+
+- 查询参数：`variant?`：`standard`（默认）或 `graph`。
+  - `graph` 是图模式，给评测服务导入 Neo4j 用，由发布适配器按同一提交渲染，不另打标签。
+- 响应：`application/zip`。响应头带 `X-Package-Version`、`X-Package-Commit`、`X-Package-Format`、`X-Package-Variant`。
+- 服务令牌下载时，在发布记录上记「已拉取」。
+- 错误：`release_not_found`、`invalid_argument`（变体不支持）。
+
+---
+
+### 3.21 三份契约（服务令牌）
+
+依据详设第 11 章、方案 A2、A7、第 6 章 #6。onto 不主动调用评测服务，评测服务用服务令牌来拉包、交回执、交反馈。
+
+#### X-01 发布列表（跨项目）
+
+`GET /api/v1/contract/releases` · 服务令牌 `releases.read` · 旧：—（现在是 onto 主动推包） · 审计：否 · 依据：㉓ · 页面：—
+
+- 查询参数：`since?: time`、`project_id?`；分页（默认 100，上限 200）。
+- 只返回令牌授权范围内的项目。
+- 响应：`{items: [{project_id, package_name, version, commit, format, released_at, degraded, manifest_url, download_url}], next_cursor}`。
+
+#### X-02 包清单（服务令牌）
+
+即 `PB-06`。服务令牌可调，令牌限定了项目时校验项目。
+
+#### X-03 下载发布包（服务令牌）
+
+即 `PB-07`。服务令牌可调；每次下载在发布记录上写 `pulls`。
+
+#### X-04 提交验证回执
+
+`POST /api/v1/projects/{id}/solver/receipts` · 服务令牌 `receipts.write` · 旧：`POST /api/projects/{id}/package/solver-validations`（旧接口由 onto 发起端到端验证，删除） · 审计：专项 `contract.receipt` · 依据：㉕、方案 A2 · 页面：—（结果显示在 publish、scripts）
+
+- 请求：
+
+  | 字段 | 类型 | 必填 | 说明 |
+  |---|---|---|---|
+  | `revision` | string | 是 | 求解契约修订号（`SV-01` 的 `revision`），修订号一变就要重新验证 |
+  | `release_version` | string | 否 | 所验证的发布版本 |
+  | `solver_keys` | string[] | 是 | — |
+  | `status` | string | 是 | `passed\|failed` |
+  | `authoritative` | bool | 是 | false 时不放行门禁 |
+  | `contract_digest` | string | 是 | — |
+  | `request_digest` | string | 是 | — |
+  | `result_digest` | string | 是 | — |
+  | `candidate_count` | int | 否 | — |
+  | `evidence` | object | 否 | `{package: {id, version}, cases: [...]}` |
+  | `error_code` | string | 否 | — |
+  | `message` | string | 否 | — |
+  | `completed_at` | time | 是 | — |
+  | `receipt_id` | string | 是 | 回执方的唯一 ID，用作幂等键 |
+
+- 响应 `201`：`Receipt`。门禁规则：当前修订最新回执 `passed` 且 `authoritative=true` 才放行。
+- 错误：`receipt_revision_unknown`、`invalid_argument`、`scope_forbidden`。
+
+#### X-05 提交外部反馈
+
+`POST /api/v1/projects/{id}/feedback` · 服务令牌 `feedback.write` · 旧：—（现在反馈演进读 `.ontology-state/eval.json`） · 审计：专项 `contract.feedback` · 依据：㉔、14#3 · 页面：—（结果显示在 resources 外部反馈分组、inbox、incremental）
+
+- 请求：`{feedback_id: string（幂等键）, source: {service: string, run: string}, release_version?: string, items: [{case_id, question, expected, actual, loss_reason?, suspected_artifacts?: string[]}], received_at?}`，`items` 最多 200 条。
+- 响应 `201`：`Feedback`。进待处理（kind `feedback`），反馈演进包启用时对话里出外部反馈卡。
+- 错误：`feedback_invalid`、`scope_forbidden`。
+
+#### X-06 服务令牌管理
+
+`GET /api/v1/admin/service-tokens`、`POST /api/v1/admin/service-tokens`、`DELETE /api/v1/admin/service-tokens/{token_id}` · admin · 旧：— · 审计：POST、DELETE 记 · 依据：方案第 6 章 #6 · 页面：—（设计稿没有画，见 8.2）
+
+- GET 响应：`{items: [{id, name, scopes, project_ids: string[]|null, created_at, created_by, expires_at, last_used_at}]}`。
+- POST 请求：`{name, scopes: ("releases.read"|"receipts.write"|"feedback.write")[], project_ids?: string[], expires_in_s?: int|null}`。
+  - 响应 `201`：`{token: "onto_svc_...", summary}`，明文只出现一次。
+- DELETE 响应 `204`。
+
+---
+
+### 3.22 自主构建
+
+依据详设 8.5、1.6#2、方案 B12～B14、C8。
+
+- 运行由会话宿主托管，每片一个变更集，检查通过自动合入，产出标「需复核」。
+- 每片合入之后是安全点。
+- 运行在自己的对话里进行（会话名「自主构建 · 运行 #n」）。
+- 运行中用户发的消息按 `deferred` 处理，下一步开始前读取。
+
+#### AB-01 自主构建策略
+
+`GET /api/v1/projects/{id}/autobuild/policy` · 所有者 · 旧：— · 审计：否 · 依据：8.5 策略表 · 页面：proj-settings（构建方式内嵌策略）、l4-run（开始时的策略说明）
+
+- 响应：`AutobuildPolicy`，加：
+  - `platform_limits: {max_duration_min, max_tokens, max_cost: Money, allow_production_collection: bool}`；
+  - `quota_remaining: {tokens, cost: Money}`；
+  - `last_run: {run_id, run_no, ended_at, duration_ms, reviewed: bool}|null`；
+  - `revision`。
+
+#### AB-02 保存策略
+
+`PUT /api/v1/projects/{id}/autobuild/policy` · 所有者 · 旧：— · 审计：是 · 依据：8.5、4.10.1（预算只能设在配额之内） · 页面：proj-settings（「保存」「保存并开始自主构建」）
+
+- 请求：`AutobuildPolicy` 去掉只读字段，加 `base_revision`。
+- 硬性不做的几项（发布、删除已确认内容、改资料区、采集未授权的生产库）不在策略里，打不开。
+- 响应：同 `AB-01`。
+- 错误：`budget_exceeds_quota`、`revision_conflict`、`invalid_argument`、`source_not_authorized`（生产库授权引用了本项目没授权的数据源）。
+
+#### AB-03 开始前预览
+
+`POST /api/v1/projects/{id}/autobuild/runs/preview` · 所有者 · 旧：— · 审计：否 · 依据：8.5「开始前会展示这次的范围和预算」 · 页面：l4-run、wb-blueprint（「按蓝图一路建完」）、proj-settings（「保存并开始自主构建」）、⌘K（开始自主构建）
+
+- 请求：`{policy_overrides?: Partial<AutobuildPolicy>}`。开始前可以临时改。
+- 响应：`AutobuildPreview`，即：
+  - `preview_token`（10 分钟有效）；
+  - 范围：切片列表、每片现状；
+  - 预算；
+  - 生产库授权；
+  - 低于阈值时怎么处理；
+  - `warnings`，如「有 1 个未决决策会被按策略决定」；
+  - `queued`：平台同时运行数满了时为 true。
+- 错误：`blueprint_not_confirmed`、`budget_exceeds_quota`、`autobuild_running`。
+
+#### AB-04 开始自主构建
+
+`POST /api/v1/projects/{id}/autobuild/runs` · 所有者 · 旧：— · 审计：专项 `autobuild.start` · 依据：④、8.5 · 页面：l4-run、wb-blueprint、proj-settings、chat-states（对话里说「剩下的你自己做完」时由助手发起确认，用户确认后前端调本接口）
+
+- 请求：`{preview_token}`。
+- 响应 `201`：`AutobuildRun`（`state` 为 `queued` 或 `running`），加 `conversation_id`。
+- 错误：`preview_expired`、`autobuild_running`、`session_busy`、`quota_exceeded`、`maintenance_no_new_sessions`。
+
+#### AB-05 运行详情
+
+`GET /api/v1/projects/{id}/autobuild/runs/{run_id}` · 所有者 · 旧：— · 审计：否 · 依据：8.5 · 页面：l4-run（运行条、运行详情抽屉、流水线矩阵）
+
+- 响应：`AutobuildRun`，包括：
+  - 状态、当前切片与步骤；
+  - 指标：用时与预计、token、费用、写入即查错误与提醒、场景通过、修复轮次；
+  - `slices`：每片状态、摘要、版本、矩阵单元格；
+  - 自动决定数、挂起数；
+  - `recovered_from_checkpoint: int`（崩溃后自动续跑次数）；
+  - `report_available`。
+- 错误：`run_not_found`。
+
+#### AB-06 暂停
+
+`POST /api/v1/projects/{id}/autobuild/runs/{run_id}/pause` · 所有者 · 旧：— · 审计：专项 `autobuild.control` · 依据：8.5 安全点 · 页面：l4-run（「暂停」）
+
+- 停在当前步骤，以后可以续跑。
+- 响应：`AutobuildRun`（`state="pausing"`，到点后变 `paused`）。
+- 错误：`autobuild_not_running`。
+
+#### AB-07 停在安全点
+
+`POST /api/v1/projects/{id}/autobuild/runs/{run_id}/stop-at-safe-point` · 所有者 · 旧：— · 审计：专项 `autobuild.control` · 依据：8.5 · 页面：l4-run（「停在安全点」）
+
+- 做完这一片再停。
+- 响应：`AutobuildRun`（`state="stopping"`）。
+
+#### AB-08 转为陪伴
+
+`POST /api/v1/projects/{id}/autobuild/runs/{run_id}/convert-to-l2` · 所有者 · 旧：— · 审计：专项 `autobuild.control` · 依据：8.5 · 页面：l4-run（「转为陪伴」「转为陪伴继续」）
+
+- 停在安全点之后，剩下的改成逐个确认。项目默认构建方式不变。
+- 响应：`AutobuildRun`（`state="converting"`，到点后变 `converted`）。
+
+#### AB-09 续跑
+
+`POST /api/v1/projects/{id}/autobuild/runs/{run_id}/resume` · 所有者 · 旧：— · 审计：专项 `autobuild.control` · 依据：8.4、8.5 · 页面：l4-run
+
+- 只对 `paused`、`interrupted` 可用。预算按剩余额度继续。
+- 响应：`AutobuildRun`。
+
+#### AB-10 决策台账
+
+`GET /api/v1/projects/{id}/autobuild/runs/{run_id}/ledger` · 所有者 · 旧：— · 审计：否 · 依据：8.5（台账存 `reports/autobuild/<运行号>/`，进 git） · 页面：l4-run（运行详情抽屉「自动决策台账」）、inbox（需复核）
+
+- 查询参数：`review_state?`（`pending|accepted|rejudged`）、`below_threshold?: bool`；分页。
+- 响应：`{items: LedgerEntry[], next_cursor, counts: {total, high_confidence, below_threshold, assumptions}}`。
+
+#### AB-11 接受自动决定
+
+`POST /api/v1/projects/{id}/autobuild/ledger/{entry_id}/accept` · 所有者 · 旧：— · 审计：是 · 依据：8.5 · 页面：inbox（「接受这个决定」）
+
+- 响应：`LedgerEntry`（`review_state="accepted"`）。受影响产物去掉「需复核」标记。
+
+#### AB-12 改判
+
+`POST /api/v1/projects/{id}/autobuild/ledger/{entry_id}/rejudge` · 所有者 · 旧：— · 审计：是 · 依据：8.5「可事后改判」 · 页面：inbox（「改判为选中的选项」）、l4-run（台账「改判」，跳 inbox）
+
+- 请求：`{option_id?: string, custom_text?: string}`。
+- 往对话发重做受影响部分的命令，跑完保存新版本。
+- 响应 `202`：`{entry: LedgerEntry, command_task: CommandTask}`。
+- 错误：`ledger_entry_not_found`、`answer_invalid`。
+- 本次运行还在跑时不报错：改判排到运行结束后执行，返回的 `command_task.state` 为 `queued`。
+
+#### AB-13 一键接受高置信
+
+`POST /api/v1/projects/{id}/autobuild/runs/{run_id}/ledger/accept-high-confidence` · 所有者 · 旧：— · 审计：是 · 依据：8.5 · 页面：inbox（汇总条「一键接受高置信 13 项」）
+
+- 响应：`{accepted: int, threshold: number}`。
+
+#### AB-14 挂起的问题
+
+`GET /api/v1/projects/{id}/autobuild/runs/{run_id}/suspensions` · 所有者 · 旧：— · 审计：否 · 依据：8.5「挂起」 · 页面：l4-run（抽屉「挂起的问题」）、inbox
+
+- 响应：`{items: Suspension[]}`，不分页，上限 200。
+
+#### AB-15 回答挂起问题
+
+`POST /api/v1/projects/{id}/autobuild/suspensions/{suspension_id}/answer` · 所有者 · 旧：— · 审计：是 · 依据：8.5 · 页面：inbox、l4-run（「现在回答」跳 inbox）
+
+- 请求：`{option_id?: string, custom_text?: string, action?: "use_generic"|"defer_to_next_run"}`。
+- 陪伴模式下助手马上补上；也可以留到下一次自主构建一起做。
+- 响应：`{suspension: Suspension, command_task: CommandTask|null}`。
+- 错误：`suspension_not_found`、`answer_invalid`。
+
+#### AB-16 运行报告
+
+`GET /api/v1/projects/{id}/autobuild/runs/{run_id}/report` · 所有者 · 旧：— · 审计：否 · 依据：8.5「运行报告卡」 · 页面：l4-run（报告卡）、inbox（「按片结果」弹窗）
+
+- 响应：`AutobuildReport`，即：
+  - 起止时间、重启续跑说明；
+  - 指标：用时与预算、切片、产出（对象 / 操作 / 规则）、检查、场景推演、自动决策、挂起、费用与 token；
+  - 按片结果：结果、产出、场景、运行后版本、能否撤回；
+  - 提示文案。
+
+#### AB-17 按片撤回
+
+`POST /api/v1/projects/{id}/autobuild/runs/{run_id}/slices/{slice_id}/revert` · 所有者 · 旧：— · 审计：专项 `autobuild.revert_slice` · 依据：8.5、方案 C8（反向提交） · 页面：inbox（「回退到运行前」）、l4-run（报告卡「回退这一片」）
+
+- 只动这一片：恢复成运行开始前的样子，另存为新版本，其他切片不受影响。
+- 响应：`{commit, version_label, reverted_to_version_label}`。
+- 错误：`slice_not_revertible`、`autobuild_running`（本次运行还在跑）。
+
+#### AB-18 运行列表
+
+`GET /api/v1/projects/{id}/autobuild/runs` · 所有者 · 旧：— · 审计：否 · 依据：8.5 · 页面：proj-settings（「上次运行 #2」）、projects（卡片，经 `P-01`）
+
+- 查询参数：`state?`；分页。
+- 响应：`{items: AutobuildRunSummary[], next_cursor}`。
+
+---
+
+### 3.23 MCP
+
+依据详设 4.1、②、5.6（只读 MCP 工具）、`docs/decisions/onto-local-mcp.md`。
+
+#### M-01 对外 MCP 概况
+
+`GET /api/v1/projects/{id}/mcp` · 所有者 · 旧：`GET /api/projects/{id}/modeling-mcp` · 审计：否 · 依据：② · 页面：proj-settings（对外 MCP 接口）
+
+- 响应：
+
+  | 字段 | 类型 | 说明 |
+  |---|---|---|
+  | `status` | string | `running\|disabled` |
+  | `base_url` | string | 取 `ONTO_WEB_MCP_PUBLIC_BASE_URL`，没配置时取请求的基地址 |
+  | `local_only` | bool | 地址只能本机访问时为 true，界面给出提示 |
+  | `endpoints` | `[{toolset: "read"\|"change", transport: "streamable-http"\|"sse", url}]` | — |
+  | `toolsets` | `[{name, scope_requirement, accepted_scopes, tools: string[]}]` | — |
+  | `pack_tools` | `[{name, scope, read_only: true, pack}]` | 包贡献的只读工具，见 `M-08` |
+  | `scope_catalog` | `[{scope, description}]` | — |
+  | `token_policy` | object | `{min_ttl_s: 300, default_ttl_s: 86400, max_ttl_s: 2592000, supports_non_expiring: true}` |
+  | `protocol_versions` | string[] | — |
+  | `client_config_templates` | `{read, change, full}` | JSON 字符串，令牌位置是 `<READ_TOKEN>` 这类占位符 |
+  | `recommended_order` | string[] | `["server/discover", "tools/list", "tools/call"]` |
+  | `limits` | object | `{page_size_max: 200, body_bytes: 1048576}` |
+
+#### M-02 MCP token 列表
+
+`GET /api/v1/projects/{id}/mcp/tokens` · 所有者 · 旧：`GET /api/projects/{id}/modeling-mcp/tokens` · 审计：否 · 依据：② · 页面：proj-settings
+
+- 响应：`{items: McpTokenSummary[]}`。只列未吊销的，按签发时间倒序，不分页，上限 100。
+
+#### M-03 新建 MCP token
+
+`POST /api/v1/projects/{id}/mcp/tokens` · 所有者 · 旧：`POST /api/projects/{id}/modeling-mcp/tokens` · 审计：专项 `mcp.token.issue` · 依据：② · 页面：proj-settings（新建 Token 弹窗）
+
+- 请求：`{name: string 1–120, scopes: string[]（至少一个，取 ontology.read|ontology.change.validate|ontology.change.apply|evidence.read）, expires_in_s: int 300–2592000 | null（永不过期）}`。
+- 响应 `201`：`{token: "onto_pat_...", summary: McpTokenSummary, client_config: {read, change, full}}`。`client_config` 已填入本次 token。明文只出现一次。
+- 管理员不能代所有者签发（方案 A11）。
+
+#### M-04 吊销 MCP token
+
+`DELETE /api/v1/projects/{id}/mcp/tokens/{token_id}` · 所有者 · 旧：`DELETE /api/projects/{id}/modeling-mcp/tokens/{token_id}` · 审计：专项 `mcp.token.revoke` · 依据：② · 页面：proj-settings
+
+- 响应 `204`。
+- 错误：`not_found`。
+
+#### M-05 MCP 传输：streamable-http
+
+`POST /api/v1/onto-mcp/{id}/{toolset}/mcp` · MCP token · 旧：`POST /api/onto-mcp/{id}/{toolset}/mcp`（永久保留） · 审计：写工具专项 `mcp.write` · 依据：② · 页面：—
+
+- `toolset`：`read|change`。请求体最大 1 MiB。
+- 方法：`ping`、`initialize`、`server/discover`、`tools/list`、`tools/call`、`notifications/*`。
+- 协议版本：`2026-07-28`、`2025-11-25`、`2025-06-18`。
+- 行为、JSON-RPC 信封、错误码与现状一致（2.12）。
+
+#### M-06 MCP 传输：SSE
+
+`GET /api/v1/onto-mcp/{id}/{toolset}/sse` · MCP token · 旧：`GET /api/onto-mcp/{id}/{toolset}/sse`（永久保留） · 审计：否 · 依据：② · 页面：—
+
+- 首个事件 `endpoint`，之后是 `message`。
+- 每 15 秒重新校验 token 并发 keep-alive。
+- 会话总数上限 128，每个会话的队列上限 64。
+
+#### M-07 MCP 传输：SSE 消息
+
+`POST /api/v1/onto-mcp/{id}/{toolset}/sse/messages?session_id=` · MCP token · 旧：同路径去掉 `/v1`（永久保留） · 审计：写工具专项 `mcp.write` · 依据：② · 页面：—
+
+- 响应 `202`。
+
+#### M-08 MCP 工具目录
+
+依据 4.1#5、5.6、5.8.7、方案 E13。
+
+**现有 15 个，保留，参数与返回不变：**
+
+- `list_ontology_objects`、`get_ontology_object`；
+- `list_ontology_operations`、`get_ontology_operation`；
+- `list_ontology_rules`、`get_ontology_rule`；
+- `validate_ontology_object_change`、`update_ontology_object`；
+- `create_ontology_operation`、`update_ontology_operation`、`delete_ontology_operation`；
+- `create_ontology_rule`、`update_ontology_rule`、`delete_ontology_rule`；
+- `validate_ontology_operation_rule_change`。
+
+写工具改为经内核写入路径（⑤）：
+
+- 写入范围内的条目返回 `PROJECT_EDITING_BUSY`，`details.entities` 列出锁定的条目；
+- 提交带 trailer `Onto-Source: mcp`。
+
+**新增只读工具（read 工具集）：**
+
+| 工具 | scope | 等价 REST |
+|---|---|---|
+| `flow_get` | `ontology.read` | `FL-01` |
+| `artifact_list` | `ontology.read` | `AR-02` |
+| `artifact_get` | `ontology.read` | `AR-03` |
+| `evidence_search` | `evidence.read` | `EV-24` |
+| `evidence_show` | `evidence.read` | `EV-25` |
+| `evidence_where_used` | `evidence.read` | `EV-26` |
+| `evidence_lineage` | `evidence.read` | `EV-27` |
+| `evidence_diff` | `evidence.read` | `EV-21` |
+
+- 工具名用下划线，因为 MCP 客户端普遍不接受点号；文档和界面上写作 `flow.get`、`evidence.*`。
+- 包贡献的只读工具按 `<包>_<名>` 命名，只读，写操作一律走写入路径。
+
+---
+
+### 3.24 系统设置与管理员
+
+以下都是业务面上的 admin 接口（方案 E8：用户管理、模型和 MCP 配置留在管理员）。
+
+#### SY-01 模型接入
+
+`GET /api/v1/admin/settings/model` · admin · 旧：`GET /api/settings/model` · 审计：否 · 依据：⑧ · 页面：sys（模型接入）
+
+- 响应：`{engines: {[engine]: {label, channel, installed, runtime_version, base_url, api_key_masked, api_key_set: bool, model, context: {window, max_output, compact_at_pct}, context_defaults: {...}}}, default_engine, personal_key_allowed: bool}`。
+
+#### SY-02 保存引擎模型配置
+
+`PUT /api/v1/admin/settings/model/{engine}` · admin · 旧：`PUT /api/settings/model`（claude）、`PUT /api/settings/model/jiuwen`、`PUT /api/settings/model/context` · 审计：是（不记 Key） · 依据：⑧、4.10.1 · 页面：sys
+
+- 请求：`{base_url?: string, api_key?: string（留空不改）, model?: string, context?: {window?: int, max_output?: int, compact_at_pct?: int 50–95}}`。
+- 新会话生效。在线会话在下一条消息前因指纹变化重连。
+- 响应：`SY-01` 里对应引擎的那一项。
+- 错误：`invalid_argument`。
+
+#### SY-03 默认引擎
+
+`PUT /api/v1/admin/settings/default-engine` · admin · 旧：`PUT /api/settings/model/default-engine` · 审计：是 · 依据：4.2 · 页面：sys
+
+- 请求：`{engine}`。此后新建或导入的项目用它，已有项目不变。
+- 响应：`{default_engine}`。
+- 错误：`engine_unavailable`。
+
+#### SY-04 个人 Key 策略
+
+`PUT /api/v1/admin/settings/personal-key-policy` · admin · 旧：`PUT /api/settings/model/personal-policy` · 审计：是 · 依据：⑧ · 页面：sys
+
+- 请求：`{allow: bool}`。从每个用户的下一条消息生效。
+- 响应：`{allow}`。
+
+#### SY-05 上下文推荐表
+
+`GET /api/v1/admin/settings/context-presets` · admin · 旧：`GET /api/settings/model/context-presets` · 审计：否 · 依据：— · 页面：sys
+
+- 响应：`{rows: [{model, vendor, window, max_output, note, origin: "builtin"|"override"|"custom", builtin: {window, max_output}|null}], custom: {version, status: "ok"|"invalid"|"disabled", error: {row, column, message}|null, overrides: int, added: int, verified_at}}`。
+
+#### SY-06 保存自定义推荐表
+
+`PUT /api/v1/admin/settings/context-presets/custom` · admin · 旧：`PUT /api/settings/model/context-presets/custom` · 审计：是 · 依据：— · 页面：sys（覆盖、编辑、删除、恢复内置、新增一行）
+
+- 请求：`{version: string（读取时的 custom.version）, presets: [{model, vendor, window, max_output, note}], verified_at?}`。整份替换。
+- 「恢复内置」就是从 `presets` 里删掉该模型的覆盖行。
+- 已保存的模型配置与上下文参数不受影响。
+- 响应：同 `SY-05`。
+- 错误：`revision_conflict`（version 不符）、`invalid_argument`。
+
+#### SY-07 停用自定义推荐表
+
+`POST /api/v1/admin/settings/context-presets/custom/disable` · admin · 旧：`POST /api/settings/model/context-presets/custom/disable` · 审计：是 · 依据：— · 页面：sys
+
+- 响应：同 `SY-05`。
+
+#### SY-08 按模型查推荐
+
+`GET /api/v1/admin/settings/context-presets/match` · admin · 旧：`GET /api/settings/model/context-presets/match` · 审计：否 · 依据：— · 页面：sys（填模型名时自动带出）
+
+- 查询参数：`model`。
+- 响应：`{model, preset: {window, max_output, origin}|null}`。
+
+#### SY-09 会话与权限
+
+`GET /api/v1/admin/settings/session`、`PUT /api/v1/admin/settings/session` · admin · 旧：`GET/PUT /api/settings/runtime` · 审计：PUT 记 · 依据：4.2、4.8#6、14#8 · 页面：sys（会话与权限）
+
+- GET 响应：`{permission_mode: "bypassPermissions"|"default"|"acceptEdits"|"plan", allowed: string[], pool: {max_sessions, idle_ttl_s, permission_timeout_s, source: "env"}}`。
+  - 四种模式对应界面上的：全放行（默认）、逐操作确认、仅自动接受编辑、计划模式。
+  - `pool` 只读，来自环境变量，改了要重启。
+- PUT 请求：`{permission_mode}`。新会话生效。
+- 响应：GET 的形状。
+
+#### SY-10 脚本验证沙箱
+
+`GET /api/v1/admin/settings/sandbox` · admin · 旧：`GET /api/settings/sandbox` · 审计：否 · 依据：5.7、㉑㉚ · 页面：sys（脚本验证沙箱）
+
+- 响应：`{connected: bool, gateway: string, isolation: {non_root, readonly_root, memory_mb, max_procs, network: "denied"}, python: string, checked_at, packages: [{name, version: string|null, purpose}]}`。
+
+#### SY-11 重新检测沙箱
+
+`POST /api/v1/admin/settings/sandbox/probe` · admin · 旧：— · 审计：否 · 依据：5.7 · 页面：sys（「重新检测」）
+
+- 响应：同 `SY-10`。
+
+#### SY-12 全局 MCP 服务器
+
+`GET /api/v1/admin/settings/mcp-servers`、`PUT /api/v1/admin/settings/mcp-servers` · admin · 旧：`GET/PUT /api/settings/mcp` · 审计：PUT 记 · 依据：4.2 · 页面：sys（MCP 服务器）
+
+- GET 响应：`{items: [{name, transport: "http"|"stdio", url?: string, command?: string, auth: {kind: "none"|"bearer", secret_ref?: string}, status: "connected"|"failed"|"unknown", status_detail, tools: [{name, description, read_only}], last_test_at, latency_ms}]}`。
+- PUT 请求：`{items: [...]}`，整份替换；鉴权密钥只存引用。只影响新建的会话。
+- 响应：GET 的形状。
+- 错误：`invalid_argument`。
+
+#### SY-13 测试 MCP 服务器
+
+`POST /api/v1/admin/settings/mcp-servers/test` · admin · 旧：`POST /api/settings/mcp/test` · 审计：否 · 依据：— · 页面：sys（「测试连接」）
+
+- 请求：`{server: {...}}`，形状同 `SY-12` 的一项。
+- 响应：`{ok: bool, latency_ms, tools: [{name, description, read_only}], error: string|null}`。
+
+#### SY-14 配置注册表
+
+`GET /api/v1/admin/config-registry` · admin（ops 只读可看） · 旧：— · 审计：否 · 依据：4.10.1、方案 E5 · 页面：sys（配置注册表）
+
+- 查询参数：`effect?`（`immediate|next_message|new_session|restart`）、`q?`。
+- 响应：`{precedence: ["env", "data_dir", "pack", "default"], items: ConfigItem[]}`，不分页。
+- 只读，配置项在各自的设置页修改。
+
+#### SY-15 配额
+
+`GET /api/v1/admin/quotas`、`PUT /api/v1/admin/quotas` · admin · 旧：— · 审计：PUT 记 · 依据：4.10.1、方案 E9 · 页面：sys（配额与 L4 限制）
+
+- 对象：`{per_user: {concurrent_sessions: int, daily_tokens: int, collections_per_source_per_hour: int}, per_project: {online_engines: 1（只读）, monthly_tokens: int, snapshot_git_mb: int}, overrides: QuotaOverride[]}`。
+- PUT 只改 `per_user`、`per_project`，立即生效。
+
+#### SY-16 配额单独设置
+
+`POST /api/v1/admin/quotas/overrides`、`DELETE /api/v1/admin/quotas/overrides/{override_id}` · admin · 旧：— · 审计：是 · 依据：4.10.1 · 页面：sys（「单独设置」）
+
+- POST 请求：`{subject: {kind: "user"|"project", id}, item: string, value: int, reason: string}`。响应 `201`：`QuotaOverride`。
+- DELETE 响应 `204`。
+
+#### SY-17 自主构建平台限制
+
+`GET /api/v1/admin/autobuild-limits`、`PUT /api/v1/admin/autobuild-limits` · admin · 旧：— · 审计：PUT 记 · 依据：8.5、4.10.1 · 页面：sys（L4 自主构建限制）
+
+- 对象：`{max_concurrent_runs: int 0–16, max_duration_min, max_tokens, max_cost: Money, allow_production_collection: bool, night_priority: {enabled: bool, start: "20:00", end: "08:00"}, running: int（只读）}`。
+- 立即生效。
+
+#### SY-18 模型单价表
+
+`GET /api/v1/admin/settings/pricing`、`PUT /api/v1/admin/settings/pricing` · admin · 旧：— · 审计：PUT 记 · 依据：方案 B14 · 页面：—（设计稿没有画，见 8.2）
+
+- 对象：`{currency, items: [{engine, model, input_per_mtok, output_per_mtok, cache_read_per_mtok}]}`。
+
+#### AD-01 用户列表
+
+`GET /api/v1/admin/users` · admin、ops（只读） · 旧：`GET /api/admin/users` · 审计：否 · 依据：4.10.1 · 页面：ops-users（用户管理）
+
+- 查询参数：`q?`；分页。
+- 响应：`{items: AdminUser[], next_cursor, stats: {accounts, by_role: {user, admin, ops}, new_7d, locked, registration_enabled, auth: {alg: "RS256", issuer_checked: true}}, available: bool}`。
+  - `available=false` 表示没配置 auth-server 管理令牌，此时 `items` 为空。
+
+#### AD-02 改角色
+
+`PATCH /api/v1/admin/users/{username}` · admin · 旧：`PUT /api/admin/users/{username}` · 审计：专项 `user.role` · 依据：4.10.1 · 页面：ops-users（「改角色」）
+
+- 请求：`{role: "user"|"admin"|"ops"}`。立即生效，用户的现有令牌刷新后带新角色。
+- 响应：`AdminUser`。
+- 错误：`user_not_found`、`user_admin_unavailable`、`forbidden`（不能降级最后一个管理员，`details.reason="last_admin"`）。
+
+#### AD-03 重置密码
+
+`POST /api/v1/admin/users/{username}/reset-password` · admin · 旧：`PUT /api/admin/users/{username}`（`password` 字段） · 审计：专项 `user.password_reset` · 依据：4.10.1 · 页面：ops-users（重置密码弹窗）
+
+- 请求：`{password?: string, generate?: bool, require_change: bool}`。
+  - `generate=true` 时由服务端生成并在响应里返回一次。
+- 响应：`{generated_password?: string}`。
+- 错误：`weak_password`、`user_not_found`、`user_admin_unavailable`。
+
+#### AD-04 删除用户
+
+`DELETE /api/v1/admin/users/{username}` · admin · 旧：`DELETE /api/admin/users/{username}` · 审计：专项 `user.delete` · 依据：4.10.1、1.6 · 页面：ops-users（删除用户弹窗）
+
+- 请求：`{projects: "transfer"|"trash", transfer_to?: string}`。
+  - `transfer`：项目只归新所有者，原用户的个人 Key 配置不随项目走；
+  - `trash`：移入回收站，30 天内可恢复。
+- 用户的 MCP token 全部吊销，个人模型配置删除。
+- 响应：`{deleted: username, transferred: int, trashed: int}`。
+- 错误：`user_not_found`、`transfer_target_invalid`、`user_admin_unavailable`。
+
+#### AD-05 用户名下的项目
+
+`GET /api/v1/admin/users/{username}/projects` · admin · 旧：— · 审计：否 · 依据：1.6 · 页面：ops-users（删除用户弹窗的项目表）
+
+- 响应：`{items: ProjectMetaView[]}`。
+
+#### AD-06 无主项目
+
+`GET /api/v1/admin/projects/unowned` · admin · 旧：—（启动日志里报告） · 审计：否 · 依据：方案 A12 · 页面：—（设计稿没有入口，见 8.2）
+
+- 响应：`{items: ProjectMetaView[]}`。
+
+#### AD-07 指定项目所有者
+
+`PUT /api/v1/admin/projects/{id}/owner` · admin · 旧：`PUT /api/admin/projects/{id}/owner` · 审计：专项 `project.set_owner`（记原值与新值） · 依据：方案 A12 · 页面：—（见 8.2）
+
+- 请求：`{owner: string}`，匹配 `^[A-Za-z0-9_.-]{1,64}$`。
+- 响应：`ProjectMetaView`。
+- 错误：`invalid_owner`、`project_not_found`。
+
+#### AD-08 待管理员处理的申请
+
+`GET /api/v1/admin/requests` · admin · 旧：— · 审计：否 · 依据：5.5（提名审核）、5.8.7、5.8.3 · 页面：—（经通知进入，见 8.2）
+
+- 查询参数：`kind?`（`pack_install|source_registration|knowledge_nomination`）、`state?`；分页。
+- 响应：`{items: [{id, kind, state: "pending"|"approved"|"rejected", requested_by, requested_at, project_id?, summary, payload}], next_cursor}`。
+
+#### AD-09 通过申请
+
+`POST /api/v1/admin/requests/{request_id}/approve` · admin · 旧：— · 审计：是 · 依据：同上 · 页面：—
+
+- 请求：`{note?: string, edits?: object}`。
+  - 知识提名通过后，进入对应行业包下一个版本的待发布内容；
+  - 数据源申请通过需要先写凭据。
+- 响应：申请对象。申请人收到通知。
+
+#### AD-10 退回申请
+
+`POST /api/v1/admin/requests/{request_id}/reject` · admin · 旧：— · 审计：是 · 依据：同上 · 页面：—
+
+- 请求：`{reason: string}`。
+- 响应：申请对象。
+
+---
+
+### 3.25 运维管理面
+
+前缀 `{ops_base_url}/api/v1/ops`（1.1），依据详设 4.10.2、4.10.3、㊲、方案 E2、E6～E8。
+
+- 「调用方」写 **ops** 的接口，admin 也能调用只读的 GET；写操作只有 ops 能调，另有说明的除外。
+- 所有写操作都写审计，类型 `ops`。
+- 项目一律只显示元数据（`ProjectMetaView`），不读内容。
+
+#### O-01 运维总览
+
+`GET /api/v1/ops/overview` · ops、admin · 旧：`GET /api/admin/overview` · 审计：否 · 依据：4.10.3、features「运维总览」 · 页面：ops
+
+- 查询参数：`range?`（`today|7d|14d`，默认 14d）。
+- 响应：
+
+  | 字段 | 类型 | 说明 |
+  |---|---|---|
+  | `stats` | object | `{online_users, accounts, sessions: {active, max, queued, idle_ttl_s}, projects: {total, active, archived}, autobuild: {running, limit}, cost: {total: Money, this_month: Money}, disk: {free_pct, free_bytes, threshold_pct, warn: bool}}` |
+  | `advice` | `[{level, text}]` | 如磁盘告警、回收站占用 |
+  | `usage_daily` | object | `{days: [{date, calls, cost: Money, output_tokens}], totals: {calls, cost, output_tokens}, avg: {...}, peak: {date, calls, cost, output_tokens}, vs_previous_pct: {calls, cost, output_tokens}}` |
+  | `alerts` | `Alert[]` | 触发中和最近恢复的 |
+  | `autobuild_runs` | `[{project: ProjectMetaView, run_no, elapsed_ms, progress: {done, total, pct}, budget_used_pct, cost: Money, budget: Money, state}]` | 运行中的 L4 |
+  | `autobuild_today` | object | `{completed, avg_duration_ms, avg_cost: Money, stopped_by_budget}` |
+  | `startup` | object | `{at, items: [{label, result}]}`：最近一次启动自检摘要 |
+  | `users` | `[{username, display_name, online, last_seen_at, calls_today}]` | 用户活跃 |
+  | `projects` | `[ProjectMetaView & {disk_bytes, last_activity_at}]` | 项目占用，按磁盘占用倒序 |
+
+#### O-02 指标
+
+`GET /api/v1/ops/metrics` · ops、admin · 旧：— · 审计：否 · 依据：4.10.2、方案 E6 · 页面：ops-obs
+
+- 查询参数：`range?`（`1h|24h|7d`，默认 24h）、`labels?`（如 `project=…,pack=core@1.4.2`，公共标签过滤）。
+- 响应：`{cards: [{id, label, value, unit, secondary, note, series: number[12], tone: "normal"|"warn"|"error"}]}`。
+- `id` 至少包括：
+
+  | id | 指标 |
+  |---|---|
+  | `pool` | 会话池与排队 |
+  | `turn_duration` | 轮次时长 |
+  | `model_latency_p95` | 模型耗时 p95 |
+  | `output_tokens` | 输出 tokens |
+  | `model_fail_rate` | 模型失败 |
+  | `guard_denies` | 守卫拒绝 |
+  | `check_failures` | 检查失败 |
+  | `merges` | 合入 |
+  | `collections` | 证据采集 |
+  | `reconnects` | 热更新与重连 |
+
+- Prometheus 抓取地址是运维监听上的 `/metrics`，不属于本契约。
+
+#### O-03 按包、按节点归因
+
+`GET /api/v1/ops/attribution` · ops、admin · 旧：— · 审计：否 · 依据：4.10.2 · 页面：ops-obs
+
+- 查询参数：`by`（`pack|node`）、`range?`、`labels?`。
+- 响应：`{items: [{key, version_or_source, calls, fail_rate_pct, avg_duration_ms, guard_denies, reruns: int|null, first_accept_pct: number|null}]}`。
+  - 按节点时 `version_or_source` 是「节点来自哪个包、哪个版本」。
+
+#### O-04 链路详情
+
+`GET /api/v1/ops/traces/{trace_id}` · ops、admin · 旧：— · 审计：否 · 依据：4.10.2「一条完整链路」 · 页面：ops-obs（链路瀑布）、ops-users（原始错误「在可观测中查看链路」）
+
+- 响应：`{trace_id, total_ms, labels: {project, session, exec, changeset, pack, node}, spans: [{id, parent_id, name, kind: "message"|"turn"|"model"|"subagent"|"tool"|"script"|"guard"|"commit"|"check"|"event", start_offset_ms, duration_ms, status: "ok"|"denied"|"error", attrs: object}]}`。
+- `attrs` 不含项目内容，只含路径、条目 key、计数。
+- 错误：`trace_not_found`。
+
+#### O-05 链路检索
+
+`GET /api/v1/ops/traces` · ops、admin · 旧：— · 审计：否 · 依据：4.10.2 · 页面：ops-obs
+
+- 查询参数：`labels?`、`range?`、`status?`；分页。
+- 响应：`{items: [{trace_id, started_at, total_ms, root_name, labels, status}], next_cursor}`。
+
+#### O-06 结构化日志
+
+`GET /api/v1/ops/logs` · ops、admin · 旧：— · 审计：否 · 依据：4.10.2 · 页面：ops-obs
+
+- 查询参数：`level?`（`INFO|WARN|ERROR`，多值）、`q?`（支持 `key=value OR key=value`）、`labels?`、`range?`；分页（默认 100）。
+- 响应：`{items: [{ts, level, event, fields: {[key]: string}}], next_cursor}`。
+- 日志里的 `token=` 等敏感字段已脱敏。
+
+#### O-07 日志跟随
+
+`GET /api/v1/ops/logs/stream` · ops、admin（可用 `?token=`） · 旧：— · 审计：否 · 依据：4.10.2 · 页面：ops-obs（「跟随」）
+
+- SSE，查询参数同 `O-06` 的过滤条件。事件 `log`，见 4.5。
+
+#### O-08 告警规则列表
+
+`GET /api/v1/ops/alerts/rules` · ops、admin · 旧：— · 审计：否 · 依据：4.10.2（告警规则 + 处置手册，包可声明） · 页面：ops-obs、ops（「全部规则」）
+
+- 响应：`{items: AlertRule[], firing: int}`。
+
+#### O-09 新建告警规则
+
+`POST /api/v1/ops/alerts/rules` · ops · 旧：— · 审计：是 · 依据：4.10.2 · 页面：ops-obs（「新建规则」）
+
+- 请求：`{name, condition: string（表达式，如 node.fail_rate > 5%）, window: string, level: "critical"|"warning"|"info", runbook_md: string, auto_action?: "breaker"|null}`。
+- 响应 `201`：`AlertRule`（`source="kernel"`）。
+
+#### O-10 修改、删除告警规则
+
+`PUT /api/v1/ops/alerts/rules/{rule_id}`、`DELETE /api/v1/ops/alerts/rules/{rule_id}` · ops · 旧：— · 审计：是 · 依据：4.10.2 · 页面：ops-obs
+
+- 包声明的规则只能停用（`PUT {enabled: false}`），不能删，删除返回 `forbidden`。
+- 响应：`AlertRule` 或 `204`。
+
+#### O-11 导出器
+
+`GET /api/v1/ops/exporters` · ops、admin · 旧：— · 审计：否 · 依据：5.7、㊱ · 页面：ops-obs（导出器卡、弹窗）
+
+- 响应：`{items: [{id: "otel"|"prometheus"|"file"|"custom", label, implementation: string（如 exporter-otel@0.2.0 或 builtin）, target: string|null, signals: ("logs"|"metrics"|"traces")[], enabled: bool, configured: bool}]}`。
+
+#### O-12 保存导出器设置
+
+`PUT /api/v1/ops/exporters` · ops · 旧：— · 审计：是 · 依据：5.7（H2，滚动重启生效） · 页面：ops-obs
+
+- 请求：`{items: [{id, enabled, target?, signals?, options?: object}]}`。
+- 响应：`{items: [...], effective: "rolling_restart"}`。
+
+#### O-13 健康详情
+
+`GET /api/v1/ops/health` · ops、admin · 旧：`GET /api/admin/health` · 审计：否 · 依据：4.10.2、8.3 · 页面：ops-ctl（健康、版本与资源）
+
+- 响应：
+
+  | 字段 | 类型 | 说明 |
+  |---|---|---|
+  | `live` | object | `{status, path: "/api/health/live", latency_ms, uptime_ms, started_at}` |
+  | `ready` | object | `{status: "ready"\|"degraded"\|"not_ready", path: "/api/health/ready", passed, total, summary}` |
+  | `dependencies` | `[{name, probe, latency_ms, status: "ready"\|"slow"\|"warn"\|"fail", last_issue: string\|null}]` | 每 30 秒探测一次 |
+  | `runtime` | object | `{engines: [{id, label, runtime_version, cli_version, available, note}], disk: {total, used_pct, warn}, load: [1m, 5m, 15m], cpu_cores, memory: {used, total}, process: {cmd, pid, init_managed: bool}, last_exit: {at, reason, code}\|null}` |
+
+#### O-14 立即探测
+
+`POST /api/v1/ops/health/probe` · ops · 旧：— · 审计：否 · 依据：4.10.2 · 页面：ops-ctl（「立即探测」）
+
+- 响应：同 `O-13` 的 `dependencies`。
+
+#### O-15 会话池
+
+`GET /api/v1/ops/sessions` · ops、admin · 旧：`GET /api/admin/overview` 的 `sessions`、`session_pool` · 审计：否 · 依据：4.10.3 · 页面：ops-ctl（会话池）
+
+- 响应：`{config: {max_sessions, idle_ttl_s, overflow_policy: "evict_idle_then_queue"}, active, queued, items: [{project: ProjectMetaView, engine_label, state: "running"|"idle"|"queued", events: int, idle_ms: int|null, queue_position: int|null, autobuild: bool}]}`。
+
+#### O-16 会话池配置
+
+`PUT /api/v1/ops/sessions/config` · ops · 旧：— · 审计：是 · 依据：4.10.3（调整并发上限） · 页面：ops-ctl（会话池「保存」）
+
+- 请求：`{max_sessions: int 1–64, idle_ttl_s: int 60–86400, overflow_policy: "evict_idle_then_queue"|"queue_only"}`。
+- 下一个会话起生效，覆盖环境变量默认值，记入配置注册表，来源 `data_dir`。
+- 响应：`{config}`。
+
+#### O-17 回收会话
+
+`POST /api/v1/ops/sessions/{project_id}/recycle` · ops · 旧：`POST /api/admin/sessions/{project_id}/recycle` · 审计：是 · 依据：4.10.3 · 页面：ops-ctl（回收弹窗）
+
+- 模型上下文经 resume 保留，用户下次发消息自动恢复。
+- 响应：`{recycled: bool, pool: {...}}`。
+- 错误：`session_not_found`、`session_running`。
+
+#### O-18 强制断开
+
+`POST /api/v1/ops/sessions/{project_id}/disconnect` · ops · 旧：— · 审计：是（记原因） · 依据：4.10.3、8.4 · 页面：ops-ctl（强制断开弹窗）
+
+- 请求：`{reason: string}`。
+- 正在进行的一轮中断：历史标「上一轮未正常结束」，执行记录标「在某阶段中断」，用户回来时可以续跑。
+- 响应：`{disconnected: true}`。
+
+#### O-19 排空会话
+
+`POST /api/v1/ops/sessions/drain` · ops · 旧：— · 审计：是 · 依据：4.10.3 · 页面：ops-ctl（排空弹窗）
+
+- 请求：`{max_wait_s: int, 默认 600}`。
+- 排空期间拒绝新会话；在线会话跑完当前这一轮后回收；超时的强制断开并标中断；运行中的 L4 在安全点暂停。
+- 响应 `202`：`{online: int, running: int, autobuild_running: int, eta_ms: int}`。
+
+#### O-20 维护状态
+
+`GET /api/v1/ops/maintenance` · ops、admin · 旧：— · 审计：否 · 依据：4.10.3（维护模式） · 页面：ops-ctl（维护窗口）
+
+- 响应：`MaintenanceState`，或 `{active: false}`。
+
+#### O-21 进入维护模式
+
+`POST /api/v1/ops/maintenance` · ops · 旧：— · 审计：是 · 依据：4.10.3 · 页面：ops-ctl（「进入维护模式」弹窗）
+
+- 请求：`{mode: "reject_new_sessions"|"read_only", message: string, autobuild: "pause_at_safe_point", target?: {kind: "core_upgrade", pack: "core", version: string}}`。
+- 依次走四步：拒绝新会话（或只读）→ 排空 → 升级 → 恢复。
+- 响应 `201`：`MaintenanceState`。
+- 错误：`maintenance_active`。
+
+#### O-22 维护：继续下一步
+
+`POST /api/v1/ops/maintenance/advance` · ops · 旧：— · 审计：是 · 依据：4.10.3 · 页面：ops-ctl（「继续下一步」）
+
+- 响应：`MaintenanceState`。
+- 错误：`maintenance_step_blocked`（排空没完成）、`maintenance_not_active`。
+
+#### O-23 维护：强制断开剩余会话
+
+`POST /api/v1/ops/maintenance/force-disconnect` · ops · 旧：— · 审计：是 · 依据：4.10.3 · 页面：ops-ctl（「跳过等待，强制断开剩余会话」）
+
+- 请求：`{reason: string}`。
+- 响应：`MaintenanceState`。
+
+#### O-24 退出维护模式
+
+`DELETE /api/v1/ops/maintenance` · ops · 旧：— · 审计：是 · 依据：4.10.3 · 页面：ops-ctl（「取消维护」，以及第 4 步「恢复」）
+
+- 解除限制，L4 从检查点续跑。
+- 响应：`{active: false}`。
+- 错误：`maintenance_not_active`。
+
+#### O-25 插件运维
+
+`GET /api/v1/ops/packs` · ops、admin · 旧：— · 审计：否 · 依据：4.10.3、㉙ · 页面：ops-ctl（插件运维）
+
+- 响应：`{items: [{name, kind, version, channel: "stable"|"beta"|"retired", rollout_pct, rollout_by, error_rate_pct, breaker: "closed"|"half_open"|"open", projects_using: int}]}`。
+
+#### O-26 调整灰度
+
+`PUT /api/v1/ops/packs/{name}/{version}/rollout` · ops · 旧：— · 审计：是 · 依据：8.1#2 · 页面：ops-ctl（「灰度 ▾」）
+
+- 请求：`{percent: 0–100, by: "project"|"tenant", targets?: string[]}`。
+- 响应：`O-25` 的一项。
+
+#### O-27 回滚通道版本
+
+`POST /api/v1/ops/packs/{name}/rollback` · ops · 旧：— · 审计：是 · 依据：4.10.3、㉙ · 页面：ops-ctl（插件行「回滚」）
+
+- 请求：`{channel: "stable"|"beta", to_version: string}`。
+- 把通道指针改回旧版本。已锁定版本的项目不受影响；跟随通道的项目下一条消息生效。
+- 响应：`O-25` 的一项。
+
+#### O-28 禁用版本
+
+`POST /api/v1/ops/packs/{name}/{version}/disable` · ops · 旧：— · 审计：是 · 依据：4.10.3 · 页面：ops-ctl（「禁用」）
+
+- 请求：`{reason: string}`。
+- 该版本不能再被新项目启用。已锁定它的项目进待处理，提示升级或回滚。
+- 响应：`O-25` 的一项。
+
+#### O-29 熔断与恢复
+
+`POST /api/v1/ops/packs/{name}/{version}/breaker` · ops · 旧：— · 审计：是 · 依据：4.10.3（出错时熔断）、㊳ · 页面：ops-ctl（「熔断」「恢复」）
+
+- 请求：`{action: "open"|"close", reason?: string}`。
+  - 熔断后节点暂时跳过，发布关卡解除，错误留档注明；
+  - `close` 先进入半开试探。
+- 响应：`O-25` 的一项。
+- 错误：`breaker_state_invalid`。
+
+#### O-30 core 默认版本
+
+`GET /api/v1/ops/core-default` · ops、admin · 旧：`GET /api/settings/assets`（全局资产版本） · 审计：否 · 依据：方案 2.3 第 4、5 步 · 页面：ops-ctl（core 默认版本）
+
+- 响应：`{stable: string, beta: {version, rollout_pct}|null, versions: [{version, channel: "beta"|"stable"|"retired", released_at, is_default: bool}]}`。
+
+#### O-31 推广到 stable
+
+`POST /api/v1/ops/core-default/promote` · ops · 旧：— · 审计：是 · 依据：同上 · 页面：ops-ctl（「推广到 stable」）
+
+- 请求：`{version}`。切换是原子的；各项目仍按自己锁定的版本运行，跟随默认的项目下一条消息生效。
+- 响应：同 `O-30`。
+
+#### O-32 回滚默认版本
+
+`POST /api/v1/ops/core-default/rollback` · ops · 旧：`POST /api/settings/assets/rollback` · 审计：是 · 依据：同上 · 页面：ops-ctl（回滚确认弹窗）
+
+- 请求：`{version}`。回滚前先自动备份包仓库。
+- 响应：同 `O-30`。
+
+#### O-33 包仓库备份列表
+
+`GET /api/v1/ops/pack-repo/backups` · ops、admin · 旧：`GET /api/settings/assets/backups` · 审计：否 · 依据：4.10.3 · 页面：ops-ctl（包仓库备份）
+
+- 响应：`{items: [{name, size, created_at}], keep: 3}`。
+
+#### O-34 立即备份包仓库
+
+`POST /api/v1/ops/pack-repo/backups` · ops · 旧：— · 审计：是 · 依据：4.10.3 · 页面：ops-ctl
+
+- 响应 `202`：`{task_id}`。
+
+#### O-35 启动自检报告
+
+`GET /api/v1/ops/startup-report` · ops、admin · 旧：— · 审计：否 · 依据：8.3、方案 B8 · 页面：ops-ctl（启动自检报告）、ops（摘要）
+
+- 响应：`{at, last_exit: {at, reason, code}|null, items: [{id: "index_lock"|"uncommitted"|"assembly"|"dependencies"|"interrupted_execs"|"history_repair"|"purge", title, detail, result: "cleared"|"committed"|"ok"|"reassembled"|"awaiting_user"|"failed", tone: "fix"|"ok"|"warn"}]}`。
+
+#### O-36 备份列表
+
+`GET /api/v1/ops/backups` · ops、admin · 旧：`GET /api/admin/overview` 的 `backups` · 审计：否 · 依据：8.3、方案 E2 · 页面：ops-ctl（备份与恢复）
+
+- 响应：`{schedule: {daily_at: "02:00", keep: 3, dir_volume: string}, scope: string[], items: [{name, size, created_at, scope: "full"|"workspace_only", scope_items: string[]}], last_drill: Drill|null}`。
+- `scope` 取值：`workspaces`、`session_history`、`session_index`、`config`、`mcp_tokens`、`jiuwen_archives`、`studio_drafts`、`audit`、`cli_transcripts`。主密钥和密文分开放。
+
+#### O-37 立即备份
+
+`POST /api/v1/ops/backups` · ops（admin 也可） · 旧：`POST /api/admin/backup` · 审计：是 · 依据：8.3 · 页面：ops-ctl（「立即备份」）
+
+- 响应 `202`：`{task_id}`。
+- 错误：`backup_in_progress`。
+
+#### O-38 发起恢复演练
+
+`POST /api/v1/ops/backups/drills` · ops · 旧：— · 审计：是 · 依据：4.9#5、8.3 · 页面：ops-ctl（「发起演练」）
+
+- 请求：`{backup: string, sample_projects?: int, 默认 5}`。恢复到隔离环境，抽检项目能否打开、版本历史是否完整。
+- 响应 `202`：`{task_id}`。
+
+#### O-39 演练记录
+
+`GET /api/v1/ops/backups/drills` · ops、admin · 旧：— · 审计：否 · 依据：8.3 · 页面：ops-ctl
+
+- 分页。
+- 响应：`{items: Drill[], next_cursor}`。
+
+#### O-40 任务列表
+
+`GET /api/v1/ops/tasks` · ops、admin · 旧：— · 审计：否 · 依据：4.10.3（证据采集、导出、备份、清扫） · 页面：ops-ctl（任务）
+
+- 查询参数：`type?`（`collection|export|backup|sweep|pack_install|drill|pack_repo_backup`）、`state?`；分页。
+- 响应：`{items: [{id, type, target: string, project: ProjectMetaView|null, initiator: string（用户名或 system）, state: "queued"|"running"|"succeeded"|"partial"|"failed"|"cancelled", progress_pct, started_at, finished_at, error: string|null}], next_cursor}`。
+
+#### O-41 任务操作
+
+`POST /api/v1/ops/tasks/{task_id}/cancel`、`.../retry`、`.../resume` · ops · 旧：— · 审计：是 · 依据：4.10.3 · 页面：ops-ctl
+
+- 证据采集类任务转调 `EV-17`。生产环境的续采和重试仍要项目所有者确认，运维调用时返回 `428 confirmation_required`，并通知所有者。
+- 响应：任务对象。
+- 错误：`task_not_found`、`task_state_invalid`。
+
+#### O-42 版本清单
+
+`GET /api/v1/ops/versions` · ops、admin · 旧：— · 审计：否 · 依据：4.10.3 · 页面：ops-ctl（版本清单）
+
+- 响应：`{items: [{category: "kernel"|"capability"|"industry"|"system"|"provider"|"exporter"|"engine"|"data_format"|"lockfile", component, version, note}]}`。
+- 至少包括：onto-modeling、kernel_api、page_api、各包、引擎、ontology-package、operation-centric、evidence-snapshot、packs.lock 与 flow.lock 格式版本。
+
+#### O-43 数据保留
+
+`GET /api/v1/ops/retention` · ops、admin · 旧：— · 审计：否 · 依据：4.10.3 · 页面：ops-ctl（数据保留）
+
+- 响应：`{items: [{id: "session_history"|"snapshots"|"logs"|"audit"|"backups"|"trash"|"diagnostics"|"notifications", label, retention: {days?: int, keep_last?: int}, rule, next_run_at, editable: bool}]}`。
+- 审计日志 365 天，只追加，`editable=false`。
+
+#### O-44 修改数据保留
+
+`PUT /api/v1/ops/retention` · ops · 旧：— · 审计：是 · 依据：4.10.3 · 页面：ops-ctl（「编辑」）
+
+- 请求：`{items: [{id, retention}]}`。被引用的快照无论保留期多短都不清理。
+- 响应：同 `O-43`。
+
+#### O-45 生成诊断包
+
+`POST /api/v1/ops/diagnostics` · ops · 旧：— · 审计：是 · 依据：4.10.3 · 页面：ops-ctl（诊断包弹窗）
+
+- 请求：`{include: ("logs_24h"|"config_refs"|"versions"|"recent_errors"|"startup_report"|"pool_alert_snapshot")[]}`。
+- 内容全部脱敏，不含密钥和项目内容，保留 7 天。
+- 响应 `201`：`{id, name, size, created_at, created_by}`。
+
+#### O-46 诊断包列表
+
+`GET /api/v1/ops/diagnostics` · ops、admin · 旧：— · 审计：否 · 依据：4.10.3 · 页面：ops-ctl
+
+- 响应：`{items: [{id, name, size, created_at, created_by, expires_at}]}`。
+
+#### O-47 下载诊断包
+
+`GET /api/v1/ops/diagnostics/{id}/download` · ops、admin（可用 `?token=`） · 旧：— · 审计：是 · 依据：4.10.3 · 页面：ops-ctl（「下载」）
+
+- 响应：`application/zip`。
+- 错误：`diagnostics_not_found`。
+
+#### O-48 审计日志
+
+`GET /api/v1/ops/audit` · ops、admin · 旧：`GET /api/admin/audit`（旧接口固定 200 条） · 审计：否 · 依据：4.10.1、方案 E4 · 页面：ops-users（审计日志）
+
+- 查询参数：`type?`（`write|mcp|commit|plugin|evidence|ops|auth|publish|changeset|autobuild|user`，多值）、`q?`（操作者、项目、内容）、`from?`、`to?`；分页（默认 100）。
+- 响应：`{items: AuditEntry[], next_cursor}`。
+
+#### O-49 导出审计
+
+`GET /api/v1/ops/audit/export` · ops、admin（可用 `?token=`） · 旧：— · 审计：是 · 依据：4.10.1 · 页面：ops-users（「导出」）
+
+- 查询参数：同 `O-48`，加 `format?`（`jsonl|csv`）。
+- 响应：附件，上限 10 万条。
+
+#### O-50 错误留档
+
+`GET /api/v1/ops/errors` · ops、admin · 旧：`GET /api/admin/overview` 的 `errors` · 审计：否 · 依据：4.10.1（标出包与节点） · 页面：ops-users（错误留档）
+
+- 分页（默认 20）。
+- 响应：`{items: ErrorRecord[], next_cursor, total}`。
+
+#### O-51 错误详情
+
+`GET /api/v1/ops/errors/{error_id}` · ops、admin · 旧：— · 审计：否 · 依据：4.10.1 · 页面：ops-users（原始错误抽屉）、chat-states（第 15 项错误编号）
+
+- 响应：`ErrorRecord`，加 `{stack: string（已脱敏）, context: {project_id, changeset_id, pack, node, exec_id, session_id}, auto_action: string|null}`。
+- 错误：`error_record_not_found`。
+
+#### O-52 回收站
+
+`GET /api/v1/ops/trash` · ops、admin · 旧：`GET /api/admin/trash` · 审计：否 · 依据：4.9 · 页面：ops-users（回收站）
+
+- 响应：`{retention_days: 30, items: [{entry, project: ProjectMetaView, deleted_at, size, purge_at}]}`。
+
+#### O-53 恢复回收站项目
+
+`POST /api/v1/ops/trash/{entry}/restore` · ops、admin · 旧：`POST /api/admin/trash/restore` · 审计：是 · 依据：4.9 · 页面：ops-users（「恢复」）
+
+- 恢复到所有者的项目列表；重名时自动改名。
+- 响应：`ProjectMetaView`。
+- 错误：`trash_entry_not_found`。
+
+#### O-54 永久删除回收站项目
+
+`DELETE /api/v1/ops/trash/{entry}` · ops、admin · 旧：— · 审计：是 · 依据：4.9 · 页面：ops-users（「永久删除」）
+
+- 删除分两段：先移走，再清除；进程中途重启会接着清。
+- 响应 `202`。
+
+---
+
+## 4 SSE 事件目录
+
+信封格式和回放规则见 1.11。
+
+- 下表「持久」一列写「是」的事件带 `id:` 行，会写进对话历史或项目流缓冲，可以回放；写「否」的是瞬时事件。
+- 载荷字段都在信封的 `data` 里。
+
+### 4.1 四条流共有的事件
+
+| 编号 | type | 持久 | 载荷 | 说明 |
+|---|---|---|---|---|
+| E-00 | `ping` | 否 | `{}` | 每 15 秒一次 |
+| E-01 | `stream.reset` | 否 | `{reason: "epoch_changed"\|"gap"\|"overflow", resync: string[]}` | `resync` 列出要重拉的接口编号，如 `["FL-01", "IN-01", "CS-06"]` |
+| E-02 | `auth.expired` | 否 | `{}` | 发完即关流 |
+
+### 4.2 对话流
+
+`S-13 GET /api/v1/projects/{id}/conversations/{cid}/events`
+
+#### 会话状态
+
+| 编号 | type | 持久 | 载荷 | 用在哪 |
+|---|---|---|---|---|
+| EC-01 | `session.state` | 是 | `{state: "idle"\|"connecting"\|"running"\|"waiting_user"\|"queued"\|"error"\|"closed", since: time, turn_started_at: time\|null, reason: string\|null}` | 顶栏状态 chip、运行计时（chat-states 第 3 项「2:14」）、运行中禁止切换会话（第 1 项） |
+| EC-02 | `session.queued` | 是 | `{position: int, ahead: int, pool: {active, max}, progress_pct: number}` | chat-states 第 9 项排队卡 |
+| EC-03 | `session.started` | 是 | `{engine_label, resumed: bool, context_kept: bool}` | — |
+| EC-04 | `session.error` | 是 | `{error_id: "err-7f3a", message: string（友好提示）, retries: int, retryable: bool, actions: ("retry"\|"redirect")[]}` | chat-states 第 15 项出错卡 |
+| EC-05 | `session.interrupted` | 是 | `{by: "user"\|"ops"\|"restart"\|"engine_exit"\|"shutdown", at, exec_id: string\|null, position_label: string（如「你在生成第 3 个场景时打断了」）, saved: {files: int, version_label}\|null}` | chat-states 第 4 项 |
+| EC-06 | `session.config_pending` | 是 | `{changes: [{kind: "assembly"\|"model"\|"flow"\|"mcp"\|"permission_mode"\|"engine", summary: string}], effective: "next_message"\|"next_safe_point", detail_link: {page: "plugin-detail", pack: string}\|null}` | chat-states 第 14 项「建模能力有更新」提示条 |
+| EC-07 | `session.reconnected` | 是 | `{reason: "config_changed"\|"restart"\|"recycled", changes: string[], context_kept: bool, duration_ms: int}` | chat-states 第 14 项时间线「已切换到新版本并重新连接，上下文保留」 |
+
+#### 消息
+
+| 编号 | type | 持久 | 载荷 | 用在哪 |
+|---|---|---|---|---|
+| EC-10 | `message.user` | 是 | `{message_id, text, attachments: AttachmentRef[], references: (EntryRef\|ArtifactRef\|{kind: "anchor", anchor})[], origin: {kind: "page"\|"inbox"\|"studio"\|"report", page, label, task_id}\|null, delivery: "immediate"\|"deferred"\|"queued"}` | 用户气泡；带 `origin` 时显示「来自「场景走查」页」（第 19 项） |
+| EC-11 | `message.delta` | 否 | `{message_id, kind: "text"\|"thinking", text}` | 流式输出 |
+| EC-12 | `message.assistant` | 是 | `{message_id, text_md, anchors: [{n: int, anchor}], entry_links: EntryRef[], continued: bool}` | 助手正文。正文里 `[[名称]]` 渲染成去 Studio 的链接，出处角标按 `anchors` 编号悬停看原文。`continued=true` 表示与上一条连续，不重复署名 |
+| EC-13 | `notice` | 是 | `{kind: "merged"\|"discarded"\|"decided"\|"info"\|"warning", text, version_label: string\|null, changeset_id: string\|null, align: "center"\|"left"}` | 系统提示行，如「切片「订单与配送时限」已确认生效 · 版本 v0.12」「步骤 2 选了 A：…」 |
+| EC-14 | `day.marker` | 是 | `{label: string}` | 日期分隔（「今天」） |
+
+#### 进展与子代理
+
+| 编号 | type | 持久 | 载荷 | 用在哪 |
+|---|---|---|---|---|
+| EC-20 | `progress` | 是 | `ProgressGroup`：`{group_id, title, desc, state: "running"\|"done"\|"failed"\|"waiting"\|"interrupted", started_at, duration_ms: int\|null, collapsed: bool, steps: [{id, text, meta: string（耗时或状态文字）, state: "done"\|"running"\|"waiting"\|"failed"\|"info", duration_ms}]}` | 「工作过程」折叠块和时间线（wb-l2「已完成 3 步」，wb-materials 读资料进度，chat-states 第 3、4、15、17、19 项） |
+| EC-21 | `progress.updated` | 是 | 同 EC-20，同一 `group_id` 整体替换 | 运行中步骤逐条回填耗时 |
+| EC-22 | `subagent.updated` | 是 | `{task_id, group_id: string\|null, title: string（业务名，如「语义检查」）, status: "started"\|"running"\|"done"\|"failed", progress_text: string（如「第 6 / 11 个操作」）, summary: string\|null}` | chat-states 第 3 项子任务面板 |
+| EC-23 | `tool.activity` | 是 | `{tool_use_id, visibility: "internal", tool, summary, state: "started"\|"done"\|"failed"}` | 默认不渲染；内部步骤只进执行日志（第 9 章建议 4），留给排障 |
+
+内部步骤由执行记录的阶段（㊶）和子代理事件归并成业务话的 `progress`。工具调用原文不进用户可见的事件。
+
+#### 确认、决策、问题
+
+| 编号 | type | 持久 | 载荷 | 用在哪 |
+|---|---|---|---|---|
+| EC-30 | `permission.requested` | 是 | `{request_id, title: string（如「助手请求执行一个操作」）, description: string（业务话）, details_text: string（「查看技术细节」里的内容）, timeout_s: 600, expires_at}` | chat-states 第 6 项确认卡 |
+| EC-31 | `permission.resolved` | 是 | `{request_id, behavior: "allow"\|"deny", by: "user"\|"timeout"\|"autobuild_policy", message}` | 确认卡变为已处理 |
+| EC-32 | `question.asked` | 是 | `Question`（kind 见 4.6） | 决策卡、走查分支、请专家确认、交互走查、采集确认、资料用途确认 |
+| EC-33 | `question.answered` | 是 | `{question_id, answer: {option_id?, option_ids?, custom_text?}, by: "user"\|"autobuild_policy", summary: string（如「步骤 2 选了 A：…」）, answered_at}` | 决策卡收起为一行 |
+| EC-34 | `question.withdrawn` | 是 | `{question_id, reason: string}` | 问题失效（撤回这一轮、重启等） |
+
+#### 卡片
+
+| 编号 | type | 持久 | 载荷 | 用在哪 |
+|---|---|---|---|---|
+| EC-40 | `card` | 是 | `Card`：`{card_id, card_type, ...}`，按 `card_type` 取 4.7 的结构 | 产物卡、本步产出卡、这一轮改了什么、续跑卡等 |
+| EC-41 | `card.updated` | 是 | 同 EC-40，同一 `card_id` 整体替换 | 卡片状态变化（待确认 → 已确认、清单已保存、执行后结果） |
+
+#### 轮次、上下文、下一步
+
+| 编号 | type | 持久 | 载荷 | 用在哪 |
+|---|---|---|---|---|
+| EC-50 | `turn.completed` | 是 | `{turn_id, duration_ms, is_error: bool, usage: {input_tokens, output_tokens, cache_read_tokens}, cost: Money}` | 用量统计 |
+| EC-51 | `context.usage` | 否 | `ContextUsage`：`{used, window, pct, compact_at_pct, breakdown: {rules, materials, conversation, tool_results}\|null, last_call: {input, output, estimated: bool}\|null}` | 顶栏上下文占用环；chat-states 第 10 项 |
+| EC-52 | `context.compacted` | 是 | `{trigger: "auto"\|"manual", pre_tokens, post_tokens, freed_tokens, kept: {decisions: int, artifacts: bool, todos: bool}, at}` | chat-states 第 10 项「已自动压缩上下文」 |
+| EC-53 | `suggestions.updated` | 是 | `Suggestions` | 输入框上方建议条（6.10；chat-states 第 18 项；wb-l2 三种状态） |
+
+### 4.3 项目流
+
+`P-15 GET /api/v1/projects/{id}/events`
+
+| 编号 | type | 载荷 | 用在哪 | 依据 |
+|---|---|---|---|---|
+| EP-01 | `flow.updated` | `{flow_hash, nodes: [{id, state, flags, progress}], slices: [{id, stages, note}], suggestions_changed: bool}`，只含变化的节点和切片 | 主线进度条、建模步骤抽屉、projects 卡片 | ㊴ |
+| EP-02 | `inbox.updated` | `{counts: {total, by_filter, by_pack}, added: string[], removed: string[], changed: string[]}` | 左栏工作台角标、「待处理 N」、inbox 列表、插件页角标 | ㊴ |
+| EP-03 | `scope.updated` | `ScopeLock` | Studio、流程图弹窗、场景走查、代码生成、知识沉淀页的锁定条和只读；两态「助手运行中 / 修改待确认」，自主构建下是「这一片自动合入为止」 | 4.3、方案 C10 |
+| EP-04 | `changeset.updated` | `{changeset_id, state: "open"\|"pending_confirm"\|"merged"\|"discarded"\|"conflict", source, conversation_id, version_label: string\|null}` | wb-l2「这一轮」卡、inbox | 8.2 |
+| EP-05 | `workspace.changed` | `{commit, version_label, source: "assistant"\|"web"\|"studio"\|"mcp"\|"autobuild"\|"import"\|"plugin"\|"revert", changeset_id, by, entries: EntryRef[], artifacts: ArtifactRef[], paths: string[≤200]}` | 外壳知识包版本、Studio 表格与图谱刷新、编辑器「文件已被助手修改」提示 | 方案 C2 |
+| EP-06 | `artifacts.updated` | `{type, change: "created"\|"updated"\|"deleted"\|"stale"\|"fresh", keys: string[]}` | 场景走查、代码生成、知识沉淀页列表；Studio 流程图行 | 4.1、5.9.4 |
+| EP-07 | `extensions.updated` | `{active_hash, pending_hash, changed: ("nav"\|"pages"\|"subpages"\|"entries"\|"artifact_types"\|"views"\|"gates")[]}` | 左栏插件页面出现或消失、资料子页、Studio 条目类型 | 5.9.6 |
+| EP-08 | `assembly.updated` | `{state: "pending"\|"applied"\|"failed", pending_changes: [{pack, from, to, kind}], effective, error_id: string\|null}` | proj-settings 待生效 chip；与对话流 EC-06 配合 | 8.1 |
+| EP-09 | `exec.updated` | `ExecRecord` | 续跑卡、inbox 续跑、插件页进度 | 8.4、㊶ |
+| EP-10 | `command.progress` | `CommandTask`（中间百分比瞬时，状态变化持久） | 插件页、报告页、资料页的进度条和「去对话里看」；完成后列表刷新 | 5.9.3 |
+| EP-11 | `materials.updated` | `{items: MaterialMapItem[]（只含变化的）, read_pct, problems_count}` | 资料地图卡与弹窗 | 第 9 章建议 5 |
+| EP-12 | `materials.candidate` | `{candidate: {id, kind, name, anchor, anchor_label}, total}` | 资料地图弹窗「候选实时流」 | 第 9 章 |
+| EP-13 | `evidence.job.updated` | `CollectionJob` | snapshots 采集任务表 | 5.8.7「通过 SSE 推送进度」 |
+| EP-14 | `autobuild.run.updated` | `AutobuildRunSummary` | l4-run 运行条（进度、用时、token、费用、自动决定数、挂起数） | 8.5 |
+| EP-15 | `autobuild.safe_point` | `{run_id, slice_id, slice_name, version_label, next: "continue"\|"paused"\|"stopped"\|"converted"}` | l4-run | 8.5 |
+| EP-16 | `autobuild.budget_warning` | `{run_id, dimension: "duration"\|"tokens"\|"cost", used_pct: number}` | l4-run，到 80% 提醒 | 8.5 |
+| EP-17 | `autobuild.finished` | `{run_id, run_no, state: "completed"\|"stopped"\|"budget_exhausted"\|"failed"\|"converted", report_available: bool}` | l4-run、inbox 汇总条 | 8.5 |
+| EP-18 | `change_list.updated` | `{change_list_id, revision, impact_ms}` | incremental 清单卡、影响面卡 | 第 9 章建议 6 |
+| EP-19 | `release.updated` | `{release: ReleaseRecord}` | publish 发布记录（含评测服务「已拉取」） | ㉓ |
+| EP-20 | `project.updated` | `{fields: string[], meta: ProjectMeta}` | 外壳面包屑、构建方式胶囊、引擎、归档状态 | — |
+| EP-21 | `conversation.updated` | `{conversation: Conversation, deleted: bool}` | 会话切换菜单 | ADR 0013 |
+| EP-22 | `report.updated` | `{report_id, type, items_changed: bool}` | reports 条目状态（修复中 → 已修复） | 5.9.4 |
+| EP-23 | `knowledge.updated` | `{ids: string[], change: "created"\|"updated"\|"deleted"}` | 知识沉淀页 | 5.5 |
+| EP-24 | `maintenance.updated` | `MaintenanceState` | 全局横幅 | 4.10.3 |
+
+### 4.4 用户流
+
+`A-12 GET /api/v1/me/events`
+
+| 编号 | type | 载荷 | 用在哪 |
+|---|---|---|---|
+| EU-01 | `notification` | `Notification` | 顶栏铃铛未读数、通知抽屉、浏览器系统通知（按 `A-08` 偏好） |
+| EU-02 | `project.card.updated` | `{project_id, card: ProjectCard}` | projects 卡片（L4 进度、待处理数、最近活动） |
+| EU-03 | `project.removed` | `{project_id, reason: "deleted"\|"transferred"\|"trashed"}` | projects 列表 |
+| EU-04 | `maintenance.updated` | `MaintenanceState` | 全局横幅 |
+
+`Notification.kind` 取值：
+
+| kind | 界面示例 |
+|---|---|
+| `autobuild_finished` | 自主构建完成，需复核 4 项 |
+| `autobuild_progress` | 自主构建中 |
+| `autobuild_suspension` | 新增挂起问题 |
+| `autobuild_stopped` | 运行出错或在安全点停止 |
+| `needs_input` | 需要你回答问题或确认操作 |
+| `step_done` | 一步跑完 |
+| `session_error` | 构建出错 |
+| `evidence_conflict` | 需要你处理：证据冲突 |
+| `publish_done` | 发布完成 |
+| `nomination_reviewed` | 提名审核结果 |
+| `request_pending` | 给管理员：待处理的申请 |
+| `upload_rejected` | 插件包被退回 |
+
+### 4.5 日志跟随流
+
+`O-07 GET /api/v1/ops/logs/stream`
+
+| 编号 | type | 载荷 |
+|---|---|---|
+| EO-01 | `log` | `{ts, level, event, fields}`（同 `O-06` 的条目） |
+
+### 4.6 `Question` 的 kind
+
+`Question` 的结构见第 7 章。下表列出各 kind 怎么用。
+
+| kind | 界面 | 特有字段 | 回答 |
+|---|---|---|---|
+| `decision` | 结构化决策卡（wb-l2、wb-materials 资料用途确认、inbox 决策） | `options[].consequence`；`options[].preview: DiffLine[]`（选中后卡内显示「选 X 会这样改」）；最后一项「其他，我来说」`allow_custom_on` | `S-11`；没选不能确认；键盘 1–4、↵ |
+| `branch` | 走查分支选择卡（chat-states 第 7 项） | `scenario: ArtifactRef`、`context_text` | `S-11`，可带 `custom_text` |
+| `expert` | 请专家确认卡（chat-states 第 7 项、reports 专家裁决） | `options` 渲染为按钮，含 `dismiss` 型选项「不需要问这个」 | `S-11` |
+| `walkthrough` | 交互走查卡（chat-states 第 20 项） | `scenario: ArtifactRef`、`inputs: [{name, value, type, source: "input"\|"example"}]`、`steps: [{n, label, text, ref: EntryRef\|null, source}]`、判断点 `prompt` | `S-11`；选择记进场景，下次批量验证按这条分支推演 |
+| `collection` | 采集确认（陪伴建模下要采生产库时） | `collection: {source: EvidenceSourceRef, summary}`（同 `EV-13` 的 `summary`） | `S-11` 选「同意」后内核发起采集，等价于带确认的 `EV-14` |
+| `confirm` | 一般的是 / 否确认 | 两个选项 | `S-11` |
+
+`Question` 的共有字段：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `question_id` | string | — |
+| `kind` | string | 上表的取值 |
+| `conversation_id` | string | — |
+| `exec_id` | string \| null | — |
+| `step_label` | string | 如「步骤 2」 |
+| `eyebrow` | string | 如「需要你决定 · 步骤 2」 |
+| `title` | string | — |
+| `background_md` | string | 带出处角标 |
+| `anchors` | `[{n, anchor}]` | — |
+| `options` | `Option[]` | `{id, key: "A", label, consequence, recommended: bool, preview: DiffLine[]\|null, custom: bool}` |
+| `multi` | bool | — |
+| `allow_custom` | bool | — |
+| `custom_placeholder` | string | — |
+| `state` | string | `open\|answered\|withdrawn` |
+| `answer` | object \| null | — |
+| `inbox_item_id` | string | — |
+| `affected` | `(EntryRef\|ArtifactRef)[]` | 决策卡改动预览里列出的条目，计入写入范围（4.3） |
+
+### 4.7 `Card` 的 card_type
+
+所有卡片的共有字段：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `card_id` | string | — |
+| `card_type` | string | 下表的取值 |
+| `eyebrow` | string | 眉题 |
+| `title` | string | — |
+| `subtitle` | string | — |
+| `status` | object \| null | `{key, label}`，key 取第 7 章 `DisplayState` |
+| `plugin` | object \| null | `{name, label}`，插件带来的卡片显示插件标记 |
+| `open` | object \| null | 双击或按钮打开什么：`{kind: "dialog"\|"page", target: string, ref?}` |
+
+| card_type | 设计稿名称 | 特有字段 | 出现在 |
+|---|---|---|---|
+| `upload_prompt` | 欢迎与上传卡 | `{accept: string[], max_bytes, sources_available: int, actions: ("upload"\|"connect_system"\|"import_package")[]}` | wb-materials（还没传资料） |
+| `material_map` | 资料地图卡 | `{total, read_pct, items: MaterialMapItem[≤8], unverifiable: int, problems: {contradiction, missing}}`；`open={dialog, "material_map"}` | wb-materials、chat-states 产物卡 |
+| `research_summary` | 资料分析小结卡 | `{files, coverage_pct, verified_anchors: int, problems_carried: int, verified: bool, report_id}` | wb-blueprint |
+| `blueprint` | 建模蓝图卡 | `{version_label: "草案 v2", state: "draft"\|"confirmed", goal_md, goal_anchor, out_of_scope: string[], slices: BlueprintSlice[], terms: {aligned: int, ambiguous: int}, questions_pending: int, research_verified: bool}`；`open={dialog, "blueprint"}` | wb-blueprint、chat-states |
+| `build_choice` | 确认后怎么建 | `{options: [{mode: "L2", label}, {mode: "L4", label}], policy_link: true}` | wb-blueprint |
+| `step_output` | 本步产出卡 | `{entry: EntryRef, eyebrow: "操作 · 本轮新抽出", state: "pending"\|"confirmed", inputs: (EntryRef\|{text})[], steps: [{n, text_md, anchors, awaiting_question_id: string\|null}], outputs: (EntryRef\|{text})[], rules: [{ref: EntryRef, state}], sources: [{n, anchor, label, scheme}]}` | wb-l2、chat-states；点条目名去 Studio |
+| `flowchart` | 流程图卡 | `{artifact: ArtifactRef, state: "draft"\|"confirmed", summary: "8 个节点、1 个判断", thumbnail: {nodes: [{id, type, label, pending: bool}], edges: [{from, to, label}]}, locked: bool}`；`open={dialog, "flowchart"}` | wb-l2、flowchart、chat-states；只在图示包启用时出现 |
+| `round_changes` | 这一轮改了什么 | `{changeset_id, title: "改了 3 处，检查全部通过", checks: {errors, warnings}, groups: [{kind, label, items: [{change: "mod"\|"add"\|"del"\|"test", target: EntryRef\|ArtifactRef, text, comparable: bool}]}], lock_note: string, next_version_label, state: "pending_confirm"\|"merged"\|"discarded", merged_version_label: string\|null, remaining_failures: int}` | wb-l2、chat-states 第 8 项、incremental；按钮：查看改动（`CS-03`）、撤回这一轮（`CS-05`）、确认生效（`CS-04`） |
+| `change_list` | 变更点清单卡 | `{change_list_id, source: {path, label}, count, low_confidence: int, rows: ChangePoint[≤10], state: "editing"\|"confirmed"\|"executed"}`；`open={dialog, "change_list"}` | incremental、chat-states |
+| `impact` | 影响面卡 | `Impact` 加 `{change_list_id, executed: bool}` | incremental |
+| `regression` | 回归结果卡 | `{passed, total, rows: [{scenario: ArtifactRef, type: "affected"\|"guard", result: "pass"\|"fail", reason: string\|null}]}` | incremental |
+| `external_feedback` | 外部反馈卡 | `{feedback_id, source: {service, run}, items: [{question, loss_reason, artifacts: (EntryRef\|ArtifactRef)[], related: string\|null}]}`；`plugin={evolution}` | incremental；只在反馈演进包启用时出现 |
+| `pack_recommendation` | 助手推荐插件 | `{pack: PackRef, category_label, description, reason}` | chat-states 第 16 项 |
+| `resume` | 中断续跑卡 | `{exec_id, title: "上次没做完：操作提取在步骤 3 / 4 中断", reason, position: {step, total, label}, saved: {files, version_label}, resumable: bool, not_resumable_reason: string\|null}` | chat-states 第 5 项；按钮：`S-16`、`S-17` |
+| `autobuild_start` | 自主构建开始时的策略说明 | `{run_id, run_no, chips: [{label, value}]}`（范围、预算、生产库、拿不准时） | l4-run |
+| `slice_progress` | 按切片的进展块 | `{run_id, slice: {id, name}, state: "done"\|"running"\|"queued"\|"partial", summary, version_label: string\|null, timeline: ProgressStep[], decision_ids: string[], suspension_ids: string[]}` | l4-run |
+| `auto_decision` | 自动决定卡 | `{run_id, ledger_id, at, question, chosen, anchors, confidence: number, threshold: number, assumption: bool, review_state: "pending"\|"accepted"\|"rejudged", recorded: true}` | l4-run；「改判」去 inbox |
+| `suspension` | 挂起卡 | `{run_id, suspension_id, title, reason, inbox_item_id}` | l4-run；「现在回答」去 inbox |
+| `run_report` | 运行报告卡 | `AutobuildReport` 摘要：`{run_id, run_no, state, started_at, ended_at, recovered_restarts: int, metrics: [...], slices: [...]}` | l4-run、chat-states 产物卡；按钮「去复核」「转为陪伴继续」 |
+| `knowledge_saved` | 沉淀入库结果 | `{knowledge_id, title, conflicts: int}` | chat-states 第 12 项「已入库，后续建模会自动应用」 |
+
+### 4.8 `chat-states` 页全部条目 → 事件与接口
+
+| 设计稿条目 | 事件 | 接口 |
+|---|---|---|
+| 0 产物卡一览：资料地图、建模蓝图、本步产出、流程图、变更点清单、运行报告 | EC-40/41：`material_map`、`blueprint`、`step_output`、`flowchart`、`change_list`、`run_report` | `R-07`、`BP-01`、`ST-04`、`AR-03`、`INC-01`、`AB-16` |
+| 1 会话切换菜单（新建、续聊、重命名、删除；运行中禁止） | EC-01、EP-21 | `S-01`～`S-04` |
+| 2 全部命令（按业务名分组） | — | `S-18`；选中后 `S-07` 或 `S-20` |
+| 3 运行中：子代理进度与打断 | EC-01、EC-20/21、EC-22 | `S-08` |
+| 4 打断之后（继续 / 从打断处继续 / 换个方向） | EC-05、EC-53（`mode="interrupted"`） | 继续：`S-07`；从打断处继续：`S-16`；换个方向：前端清空输入框 |
+| 5 中断续跑卡 | EC-40 `resume`、EP-09 | `S-16`、`S-17` |
+| 6 权限确认卡（允许 / 拒绝，超时按拒绝） | EC-30、EC-31 | `S-10` |
+| 7 走查分支选择、请专家确认 | EC-32 `branch`、`expert`；EC-33 | `S-11` |
+| 8 本轮改了什么（展开明细、对比） | EC-40/41 `round_changes`、EP-03、EP-04 | `CS-02`、`CS-03`、`CS-04`、`CS-05` |
+| 9 排队中 | EC-01（`queued`）、EC-02 | `S-12` |
+| 10 上下文占用与自动压缩、项目累计用量 | EC-51、EC-52 | `S-05`、`P-16` |
+| 11 重启会话 | EC-01（`closed`） | `S-09` |
+| 12 沉淀为业务知识 | EC-40 `knowledge_saved` | `K-06`（查重提示）、`K-03`（带 `source`） |
+| 13 复制 | — | 前端本地完成 |
+| 14 能力包升级提示（下一条消息生效） | EC-06、EC-07、EP-08 | `PL-11`；「查看更新内容」去 `PL-02` |
+| 15 出错时（友好提示 + 错误编号） | EC-04 | `S-14`（重试）；管理员看 `O-51` |
+| 16 助手推荐插件 | EC-40 `pack_recommendation` | `PL-01`、`PL-03`、`PL-06` |
+| 17 拖入附件、粘贴截图 | EC-10（`attachments`） | `U-01`、`U-03`、`S-07` |
+| 18 下一步建议条三种情况 | EC-53 | `FL-02`；建议项的 `action` 见 `Suggestion` |
+| 19 插件页发来的任务 | EC-10（`origin`）、EC-20、EP-10 | `S-20`、`S-19` |
+| 20 交互走查卡 | EC-32 `walkthrough`、EC-33 | `S-11` |
+
+### 4.9 `wb-l2` 页 → 事件与接口
+
+| 界面元素 | 事件 | 接口 |
+|---|---|---|
+| 顶栏会话名、主线进度条、「1 份新资料」、「待处理 18」、上下文环 | EP-01、EP-02、EC-51 | `S-01`、`FL-01`、`IN-01`、`S-05` |
+| 系统提示行「切片已确认生效 · 版本 v0.12」 | EC-13 | — |
+| 用户消息、助手消息、出处角标 | EC-10、EC-12 | `EV-29`（悬停看原文） |
+| 工作过程（已完成 3 步） | EC-20/21 | — |
+| 本步产出卡（条目名去 Studio） | EC-40 `step_output` | `ST-04` |
+| 流程图卡（双击打开编辑） | EC-40 `flowchart` | `AR-03`、`AR-05` |
+| 决策卡（单选 + 后果 + 改动预览，稍后决定，确认这个方向） | EC-32、EC-33、EC-13 | `S-11`；「稍后决定」去 inbox |
+| 写入范围只读（助手运行中 / 修改待确认） | EP-03 | `CS-06` |
+| 这一轮改了什么卡（查看改动、撤回这一轮、确认生效） | EC-40/41 `round_changes`、EP-04 | `CS-03`、`CS-05`、`CS-04` |
+| 建议条三态（先做上面的决定 / 确认生效 / 提取本切片的规则） | EC-53 | `FL-02` |
+| 建模步骤抽屉（切片、必经、发布前检查、可选、有需要时；开始、跳过、恢复、调整切片） | EP-01 | `FL-01`、`FL-03`、`FL-04`、`FL-05` |
+| 输入框（拖入文件、粘贴截图、@ 引用条目、命令、发送；模式胶囊） | EC-10 | `U-01`、`S-07`、`S-18`、`F-07`（@ 搜条目）、`P-13` |
+
+---
+
+## 5 页面 → 接口对照表
+
+前端按这张表接线。设计稿共 36 页，去掉「设计说明」（cover）和「功能点清单」（features），剩 34 个界面页，下面逐页列出。
+
+### 5.0 外壳（每页都会用到）
+
+| 外壳 | 接口 | 事件 |
+|---|---|---|
+| 启动 | `C-01`、`A-07`、`A-04`（无感刷新） | — |
+| 全局页外壳（顶栏：我的项目、插件中心、运维中心、铃铛、头像） | `A-13`、`A-14` | 用户流 EU-01～04 |
+| 项目页外壳（面包屑、知识包版本、左栏内核 4 项 + 插件页面、工作台角标、子导航） | `P-04`、`PL-12`、`IN-01`（只取 `counts`）、`ST-01`（只取 `version_label`） | 项目流 EP-01、EP-02、EP-07、EP-20、EP-24 |
+| ⌘K 命令面板 | `F-07`、`S-18`；「开始自主构建」走 `AB-03`；「上传资料」「连接业务系统」等跳页 | — |
+| 证据锚点悬停看原文（所有页） | `EV-29` | — |
+| 维护横幅 | `C-01` 的 `maintenance` | EP-24、EU-04 |
+| 工作台公共件（顶栏、建模步骤抽屉、输入框、建议条） | 见 4.9 | — |
+
+### 5.1 逐页对照
+
+| 页面 id | 页面 | 接口 | 事件 |
+|---|---|---|---|
+| `login` | 登录与注册 | `C-01`、`A-01`、`A-02`、`A-03`、`A-04` | — |
+| `projects` | 我的项目 | `P-01`、`P-03`（重命名弹窗实时检查）、`P-05`、`P-06`、`P-07`、`P-08`、`P-09`、`A-13`、`A-14`、`FL-01`（卡片切片进度已含在 `ProjectCard`，不单独调） | EU-01、EU-02、EU-03 |
+| `import` | 导入项目 | `U-01`（`project_import`）、`U-03`、`P-10`、`P-03`、`P-11` | — |
+| `create` | 新建项目 | `P-03`、`U-01`（`material`）、`U-03`、`EV-01`（已登记数据源数）、`PL-01`（`category=industry,system,capability`）、`C-06`、`A-09`、`P-02` | — |
+| `wb-materials` | 建模初期 · 资料分析 | `S-01`、`S-05`、`S-06`、`S-07`、`S-08`、`S-11`、`U-01`、`R-02`、`R-03`、`R-06`、`R-07`、`R-08`、`R-09`、`R-10`、`P-05`（联网 / 仅本地）、`S-20`（追加分析、继续读取、让助手逐条修正）、`EV-01`、`FL-01`、`FL-02` | EC-01、EC-10、EC-12、EC-20/21、EC-32/33、EC-40/41（`upload_prompt`、`material_map`）、EC-51、EC-53；EP-01、EP-11、EP-12 |
+| `wb-blueprint` | 建模初期 · 切片规划 | `BP-01`、`BP-02`、`BP-03`、`RP-02`（资料分析小结）、`AB-03`、`AB-04`、`EV-01`（数据源提示）、`S-07`、`S-20`（重新划分、按章节拆分）、`FL-01`、`FL-02` | EC-40/41（`research_summary`、`blueprint`、`build_choice`）、EC-20、EC-53；EP-01 |
+| `wb-l2` | 建模中 · 陪伴（L2） | 见 4.9：`S-01`、`S-05`、`S-06`、`S-07`、`S-11`、`ST-04`、`AR-03`、`CS-02`～`CS-06`、`FL-01`～`FL-05`、`IN-01`、`EV-29`、`U-01`、`F-07`、`S-18`、`P-13` | 对话流全部；EP-01～EP-05 |
+| `flowchart` | 流程图编辑弹窗 | `AR-03`、`AR-05`、`AR-08`、`CS-06`、`PL-12`（图示插件标记）、`S-08`（锁定条「回到对话里打断它」） | EC-40 `flowchart`、EP-03、EP-05、EP-06 |
+| `l4-run` | 建模中 · 自主构建（L4） | `AB-01`、`AB-03`、`AB-04`、`AB-05`～`AB-10`、`AB-14`、`AB-16`、`AB-17`、`V-02`（查看改动）、`S-05`、`S-06`、`S-07`（补充说明，`deferred`）、`CS-06`、`FL-01`、`FL-02` | EC-40/41（`autobuild_start`、`slice_progress`、`auto_decision`、`suspension`、`run_report`）、EC-53（`autobuild_controls`）；EP-03、EP-14～EP-17 |
+| `incremental` | 增量更新 | `INC-01`～`INC-05`、`R-11`、`R-12`、`CS-02`～`CS-05`、`S-07`、`S-20`（让助手分析、交给助手修）、`FL-01`、`FL-02` | EC-40/41（`change_list`、`impact`、`regression`、`external_feedback`、`round_changes`）、EC-20、EC-53；EP-18、EP-04 |
+| `inbox` | 待处理与复核 | `IN-01`～`IN-04`、`AB-10`～`AB-17`、`INC-01`～`INC-04`、`S-11`、`S-16`、`S-17`、`R-11`、`V-02`、`EV-29` | EP-02、EP-09、EP-17 |
+| `chat-states` | 对话卡片与状态 | 见 4.8 | 见 4.8 |
+| `studio` | 图谱 | `ST-01`、`ST-02`、`ST-04`、`ST-05`、`ST-06`、`CS-06`、`EV-26`（证据卡「被谁引用」）、`AR-09`（场景通过率，已含在 `ST-01`） | EP-03、EP-05 |
+| `studio-table` | 表格与条目编辑 | `ST-03`、`ST-04`、`ST-07`、`ST-08`、`ST-09`、`ST-10`、`F-02`、`F-03`（编辑原文）、`F-04`（大文件下载）、`V-04`（刷新后对比）、`AR-02`、`AR-03`、`AR-07`、`AR-08`（流程图条目）、`CS-06`、`C-05`、`PL-12` | EP-03、EP-05、EP-06 |
+| `reports` | 报告评审 | `RP-01`～`RP-06`、`S-11`（专家裁决）、`R-09`（资料分析报告核验） | EP-22、EP-10 |
+| `resources` | 资料区 | `R-01`～`R-06`、`R-11`、`R-12`、`F-04`、`F-05`、`F-03`（drawio 保存）、`F-02`（drawio、文本）、`PL-12`（子页） | EP-05、EP-07 |
+| `sources` | 业务系统数据源 | `EV-01`～`EV-12`、`PL-01`（去插件中心安装提供方） | — |
+| `snapshots` | 采集与快照 | `EV-12`、`EV-13`～`EV-22`、`EV-30`（联系管理员）、`S-20`（在对话里分析影响） | EP-13 |
+| `schema` | 证据浏览器 | `EV-18`（快照下拉）、`EV-23`～`EV-28` | — |
+| `publish` | 发布知识包 | `PB-01`～`PB-07`、`P-09`、`SV-04`、`FL-05`（合规检查「去运行」）、`RP-06`（修完重新检查）、`V-01`（版本下拉） | EP-19、EP-01 |
+| `versions` | 版本历史与对比 | `V-01`～`V-08`、`F-06`、`F-03` | EP-05 |
+| `scenarios` | 场景走查（插件） | `AR-01`、`AR-02`、`AR-03`、`AR-04`、`AR-05`、`AR-06`、`AR-07`、`AR-09`（类型 `trace.scenario`、`trace.mock`）、`S-20`（批量验证、交互走查、补齐过期场景、按场景补生成、行内 ▶）、`S-19`、`CS-06`、`IN-01`（`pack=trace` 角标）、`PL-12` | EP-03、EP-06、EP-10 |
+| `knowledge` | 知识沉淀（插件） | `K-01`～`K-08`、`S-20`（在对话里复核）、`CS-06` | EP-23、EP-03 |
+| `scripts` | 代码生成与求解（插件） | `SC-01`、`SC-02`、`SC-03`、`SV-01`～`SV-04`、`ST-04`（脚本只读预览）、`S-20`（扫描、生成脚本、修复、重新生成、按模板重新生成）、`S-19`、`CS-06` | EP-03、EP-06、EP-10 |
+| `proj-settings` | 项目设置 | `P-04`、`P-05`、`P-06`、`P-07`、`P-12`、`P-13`、`P-14`、`C-06`、`A-09`、`AB-01`、`AB-02`、`AB-03`、`AB-18`、`BP-01`（范围里的切片清单）、`EV-01`（生产库授权行）、`PL-05`～`PL-11`、`M-01`～`M-04` | EP-08、EP-20 |
+| `plugins` | 插件中心 | `PL-01`、`PL-03`、`PL-04`、`PL-06`、`PL-07`、`PL-19`（管理员） | EU-01 |
+| `plugin-detail` | 插件详情 | `PL-02`、`PL-03`、`PL-07`、`PL-09`、`PL-05` | — |
+| `plugin-upload` | 上传与审核插件 | `PL-13`～`PL-18` | — |
+| `me` | 个人设置 | `A-05`～`A-11` | — |
+| `sys` | 系统设置 | `SY-01`～`SY-17`、`C-06` | — |
+| `ops` | 运维总览 | `O-01`、`O-08`（全部规则）、`O-35`（完整报告） | — |
+| `ops-obs` | 可观测 | `O-02`～`O-12` | EO-01 |
+| `ops-ctl` | 运维管控与健康 | `O-13`～`O-47`、`C-03`、`C-04`（显示路径） | — |
+| `ops-users` | 用户、审计与回收站 | `AD-01`～`AD-05`、`O-48`～`O-54`、`O-04`（在可观测中查看链路） | — |
+
+### 5.2 空缺检查
+
+上面 34 页都已对上接口。逐页核对的结论：
+
+1. **只在前端完成、不需要接口的交互：** 复制消息、复制锚点、复制地址、复制 token、主题切换的即时预览、分段切换、展开收起、键盘快捷键本身（J/K、1–4、E、↵、⌘K）、图谱的缩放和全屏、流程图的撤销和重做、自动布局。保存时才调接口。
+2. **设计稿里画了、本契约有意不提供接口的：**
+   - 「查看原始最终答复」（features 标为移除）；
+   - Studio 力模拟、折叠关系簇（移除）。
+3. **本契约提供了接口、设计稿没有画入口的**（实现时由主控决定是否补页面，见 8.2）：
+   - `X-06` 服务令牌管理；
+   - `SY-18` 模型单价表；
+   - `AD-06`～`AD-10`：无主项目、指定所有者、管理员申请审核；
+   - `O-05` 链路检索。
+
+---
+
+## 6 旧接口对照
+
+主线 2ad2ad7b 的全部路由，逐条给出 v1 去向。
+
+- 「删除」的旧路径在兼容期返回 `410 endpoint_removed`。
+- 「改写」的旧路径经兼容中间件转到 v1，带 Deprecation 头（1.2）。
+
+### 6.1 `routers/projects.py`
+
+| 旧接口 | v1 | 处理 |
+|---|---|---|
+| `GET /api/projects` | `P-01` | 改写；响应形状改为 `ProjectCard` |
+| `POST /api/projects` | `P-02` | 改写；`template`、`background` 改为 `example`、`goal` |
+| `POST /api/projects/import` | `P-10`（`dry_run=true`）、`P-11` | 改写；multipart 改为先 `U-01` 再引用 `upload_id` |
+| `POST /api/projects/transfer-import` | `P-11` | 改写；格式自动识别 |
+| `GET /api/projects/{id}` | `P-04` | 改写 |
+| `PATCH /api/projects/{id}` | `P-05` | 改写 |
+| `DELETE /api/projects/{id}` | `P-06` | 改写；新增必填 `confirm_name` |
+| `POST /api/projects/{id}/archive` | `P-07` | 改写 |
+| `POST /api/projects/{id}/clone` | `P-08` | 改写 |
+| `GET /api/projects/{id}/export?scope=workspace` | `P-09` | 改写 |
+| `GET /api/projects/{id}/export?scope=package` | `PB-03` + `PB-07` | 删除（GET 不再有发布副作用） |
+| `GET /api/projects/{id}/export?scope=ontology` | — | 删除（features：导出知识包原始产物，移除） |
+| `GET /api/projects/{id}/package/check` | `PB-01` | 改写 |
+| `GET /api/projects/{id}/package/solver-contract` | `SV-01` | 改写 |
+| `PUT /api/projects/{id}/package/solver-contract` | `SV-02` | 改写；`baseRevision` 改为 `base_revision` |
+| `POST /api/projects/{id}/package/solver-contract/check` | `SV-03` | 改写 |
+| `GET /api/projects/{id}/package/solver-validations/latest` | `SV-04` | 改写 |
+| `GET/PUT /api/projects/{id}/package/solver-validations/cases` | — | 删除（第 11 章、14#2） |
+| `POST /api/projects/{id}/package/solver-validations` | `X-04`（回执由评测服务写入） | 删除 |
+| `POST /api/projects/{id}/objects/{key}/data-source` | `PB-02` | 改写；方法改 PUT |
+| `GET /api/projects/{id}/files` | `F-01` | 改写；去掉写副作用 |
+| `GET /api/projects/{id}/file` | `F-02` | 改写 |
+| `PUT /api/projects/{id}/file` | `F-03` | 改写 |
+| `GET /api/projects/{id}/excel` | `F-05` | 改写 |
+| `GET /api/projects/{id}/file-at` | `F-06` | 改写；`rev` 改为 `commit` |
+| `GET /api/projects/{id}/raw` | `F-04` | 改写 |
+| `GET /api/projects/{id}/search` | `F-07` | 改写 |
+| `GET /api/projects/{id}/metrics` | `ST-01` | 改写（字段不同） |
+| `POST /api/projects/{id}/resources` | `R-02` | 改写 |
+| `GET /api/projects/{id}/resource-meta` | `R-01` | 改写 |
+| `PATCH /api/projects/{id}/resource-meta` | `R-03` | 改写 |
+| `DELETE /api/projects/{id}/resources` | `R-04` | 改写 |
+| `GET/PUT /api/projects/{id}/mcp` | `P-14` | 改写 |
+| `GET/POST/PUT/DELETE /api/projects/{id}/eval/*`（18 个） | — | 删除（第 11 章） |
+| `GET/PUT /api/projects/{id}/engine` | `P-12` | 改写 |
+| `GET /api/projects/{id}/studio/graph` | `ST-02` | 改写 |
+| `GET /api/projects/{id}/studio/elements/{eid}/flow` | `ST-05` | 改写 |
+| `GET /api/projects/{id}/studio/element?path=` | `ST-04` | 改写；按 `path` 定位改为按 `entry_id` 定位，兼容期旧接口按 path 换算 |
+| `POST/DELETE /api/projects/{id}/studio/lease` | `CS-06` | 删除（租约取消，详设 4.3） |
+| `GET/PUT/DELETE /api/projects/{id}/studio/draft` | `ST-07` | 改写 |
+| `POST /api/projects/{id}/studio/submit` | `ST-08` | 改写 |
+| `GET /api/projects/{id}/report-items?path=` | `RP-02`、`RP-03` | 改写 |
+| `GET /api/projects/{id}/query` | `F-08` | 改写 |
+| `GET/POST/DELETE /api/projects/{id}/knowledge` | `K-01`、`K-03`、`K-05` | 改写；按路径改为按 `knowledge_id` |
+| `GET /api/projects/{id}/versions` | `V-01` | 改写 |
+| `POST /api/projects/{id}/versions/revert` | `V-06` | 改写 |
+| `POST /api/projects/{id}/versions/tag` | `V-07` | 改写 |
+| `DELETE /api/projects/{id}/versions/tag/{tag}` | `V-08` | 改写 |
+| `GET/PUT /api/projects/{id}/members`（54eb190f 已删） | — | 删除（单人项目） |
+
+### 6.2 `routers/sessions.py`
+
+| 旧接口 | v1 | 处理 |
+|---|---|---|
+| `GET /api/projects/{id}/session/usage` | `P-16` | 改写 |
+| `GET /api/projects/{id}/session?conversation=` | `S-05` | 改写 |
+| `GET /api/projects/{id}/session/conversations` | `S-01` | 改写 |
+| `POST /api/projects/{id}/session/conversations` | `S-02` | 改写 |
+| `PATCH /api/projects/{id}/session/conversations/{cid}` | `S-03` | 改写 |
+| `DELETE /api/projects/{id}/session/conversations/{cid}` | `S-04` | 改写 |
+| `POST /api/projects/{id}/session/messages` | `S-07` | 改写；`conversation_id` 移到路径 |
+| `POST /api/projects/{id}/session/permissions/{rid}` | `S-10`；带 `answers` 的改走 `S-11` | 改写 |
+| `POST /api/projects/{id}/session/close` | `S-09` | 改写 |
+| `POST /api/projects/{id}/session/interrupt` | `S-08` | 改写 |
+| `GET /api/projects/{id}/session/stream` | `S-13` | 改写；事件名和载荷按第 4 章重新定义，旧事件名不再发出 |
+
+旧事件到 v1 事件：
+
+| 旧事件 | v1 事件 |
+|---|---|
+| `user_message` | `message.user` |
+| `stream_delta` | `message.delta` |
+| `assistant_message` | `message.assistant`；其中工具调用块转为 `tool.activity` |
+| `tool_results` | `tool.activity` |
+| `result` | `turn.completed` |
+| `subagent_started`、`subagent_finished` | `subagent.updated` |
+| `permission_request`、`permission_resolved` | `permission.requested`、`permission.resolved` |
+| `session_state`、`session_started`、`session_error`、`session_interrupted` | 同名的点号形式 |
+| `queue_position` | `session.queued` |
+| `context_usage`、`context_compacted` | `context.usage`、`context.compacted` |
+| `workspace_changes` | `card` 的 `round_changes`，加上项目流 `workspace.changed` |
+| `model_usage` | 并入 `turn.completed` |
+
+### 6.3 `routers/auth_routes.py`
+
+| 旧接口 | v1 | 处理 |
+|---|---|---|
+| `GET /api/auth/status` | `C-01` | 改写 |
+| `POST /api/auth/login` | `A-01` | 改写 |
+| `POST /api/auth/register` | `A-03` | 改写 |
+| `POST /api/auth/refresh` | `A-04` | 改写 |
+| `POST /api/auth/password` | `A-06` | 改写；不再接受请求体里的 `username` |
+
+### 6.4 `routers/settings.py`
+
+| 旧接口 | v1 | 处理 |
+|---|---|---|
+| `GET /api/settings/model` | `SY-01` | 改写 |
+| `PUT /api/settings/model` | `SY-02`（`engine=claude`） | 改写 |
+| `PUT /api/settings/model/jiuwen` | `SY-02`（`engine=jiuwen`） | 改写 |
+| `PUT /api/settings/model/context` | `SY-02` 的 `context` | 改写 |
+| `GET /api/settings/model/context-presets` | `SY-05` | 改写 |
+| `PUT /api/settings/model/context-presets/custom` | `SY-06` | 改写 |
+| `POST /api/settings/model/context-presets/custom/disable` | `SY-07` | 改写 |
+| `GET /api/settings/model/context-presets/match` | `SY-08` | 改写 |
+| `PUT /api/settings/model/default-engine` | `SY-03` | 改写 |
+| `PUT /api/settings/model/personal-policy` | `SY-04` | 改写 |
+| `GET /api/settings/model/me` | `A-09` | 改写 |
+| `PUT /api/settings/model/me/{engine}` | `A-10` | 改写 |
+| `DELETE /api/settings/model/me/{engine}` | `A-11` | 改写 |
+| `GET/PUT /api/settings/runtime` | `SY-09` | 改写 |
+| `GET /api/settings/sandbox` | `SY-10` | 改写 |
+| `GET /api/settings/assets` | `O-30`、`PL-01` | 删除（全局单版本改为包仓库） |
+| `POST /api/settings/assets/upload` | `PL-13` | 改写：上传的资产包当作 core 新版本，走静态检查，发布到 stable（方案 2.3 第 4 步） |
+| `GET /api/settings/assets/backups` | `O-33` | 改写 |
+| `POST /api/settings/assets/rollback` | `O-32` | 改写 |
+| `GET/PUT /api/settings/mcp` | `SY-12` | 改写 |
+| `POST /api/settings/mcp/test` | `SY-13` | 改写 |
+
+### 6.5 `routers/admin.py`
+
+| 旧接口 | v1 | 处理 |
+|---|---|---|
+| `GET /api/admin/overview` | `O-01`、`O-15`、`O-36`、`O-50` | 改写到 `O-01`（运维管理面） |
+| `POST /api/admin/backup` | `O-37` | 改写 |
+| `POST /api/admin/sessions/{pid}/recycle` | `O-17` | 改写 |
+| `GET /api/admin/health` | `O-13` | 改写 |
+| `GET /api/admin/trash` | `O-52` | 改写 |
+| `POST /api/admin/trash/restore` | `O-53` | 改写；`name` 移到路径 |
+| `GET /api/admin/audit` | `O-48` | 改写 |
+| `PUT /api/admin/projects/{id}/owner` | `AD-07` | 改写 |
+| `GET /api/admin/users` | `AD-01` | 改写 |
+| `PUT /api/admin/users/{u}` | `AD-02`（role）、`AD-03`（password） | 改写 |
+| `DELETE /api/admin/users/{u}` | `AD-04` | 改写；新增项目去向 |
+| `GET /api/admin/modeling-cleanups` | — | 删除（第 11 章） |
+| `POST /api/admin/modeling-cleanups/{id}/retry` | — | 删除 |
+
+### 6.6 `routers/onto_mcp.py` 与 `main.py`
+
+| 旧接口 | v1 | 处理 |
+|---|---|---|
+| `GET /api/projects/{id}/modeling-mcp` | `M-01` | 改写 |
+| `GET /api/projects/{id}/modeling-mcp/tokens` | `M-02` | 改写 |
+| `POST /api/projects/{id}/modeling-mcp/tokens` | `M-03` | 改写；`expires_in_seconds` 改为 `expires_in_s` |
+| `DELETE /api/projects/{id}/modeling-mcp/tokens/{tid}` | `M-04` | 改写 |
+| `POST /api/onto-mcp/{id}/{toolset}/mcp` | `M-05` | 永久保留，同时提供 v1 路径 |
+| `GET /api/onto-mcp/{id}/{toolset}/sse` | `M-06` | 永久保留 |
+| `POST /api/onto-mcp/{id}/{toolset}/sse/messages[/]` | `M-07` | 永久保留 |
+| `GET /api/health` | `C-02` | 永久保留 |
+
+---
+
+## 7 数据模型附录
+
+跨接口复用的对象。写法约定：
+
+- 用类 TypeScript 的写法：`?` 表示可省略，`| null` 表示可为空。
+- `time` 是 RFC 3339 字符串，`Money` 见 1.9。
+- 和详设对得上的格式（节点状态、提交 trailer、包清单、产物登记、快照清单、锚点）以详设原文为准，这里只给 API 上的投影。
+
+### 7.1 通用
+
+```ts
+type Money = { amount: number | null; currency: "CNY" | "USD" };
+
+type EntryKind = "object" | "operation" | "rule" | "metric" | "script";
+type EntryId = string;            // "<kind>:<key>"，如 "object:hardness_limit"
+type EntryRef = { kind: EntryKind | "flowchart"; id: EntryId; key: string; name: string };
+type ArtifactRef = { type: string; key: string; title: string };   // type 如 "trace.scenario"
+type PackRef = { name: string; version: string; label: string };
+type AttachmentRef = { upload_id: string; filename: string; size: number; kind: "doc" | "xls" | "pdf" | "image" | "file" };
+
+type Finding = {
+  code: string;                   // 见 2.9 门禁 finding 码，或检查器规则码，如 E-ROUTE-01
+  level: "error" | "warning";
+  message: string;
+  target?: EntryRef | ArtifactRef;
+  path?: string;
+  field?: string;
+  hint?: string;
+};
+
+type DiffLine = { kind: "header" | "del" | "add" | "ctx" | "note"; text: string };
+
+// 决策卡、台账、挂起问题共用的选项；Question、Card 的结构见 4.6、4.7
+type Option = { id: string; key: string; label: string; consequence: string | null;
+                recommended: boolean; preview: DiffLine[] | null; custom: boolean;
+                adopted?: boolean };   // adopted = 自主构建采用的选项
+
+// 界面状态色（设计稿 core.js 的 ST），由 API 状态映射而来，前端统一渲染
+type DisplayState = "not_ready" | "ready" | "running" | "pending" | "confirmed" | "stale" | "skipped"
+  | "blocked" | "needs_review" | "disabled" | "conflict" | "draft" | "none" | "backfill" | "auto"
+  | "fail" | "pass";
+
+type AnchorResolution = {
+  anchor: string;
+  scheme: "file" | "db" | "code" | "bin" | "ui" | "api" | "cli" | "log";
+  resolved: boolean;
+  reason?: string;                // resolved=false 时：not_in_snapshot | file_missing | invalid
+  source_label: string;           // 如 "02-配送规则说明.docx" 或 "业务系统 订单库"
+  location_label: string;         // 如 "§9.2 超量处理" 或 "补货标准表 · 标准上限"
+  text: string;                   // 原文或记录摘要
+  highlights: { start: number; end: number }[];
+  confidence: "declared" | "observed" | "inferred" | null;   // 界面叫法：系统元数据 / 数据观察 / 推断
+  snapshot_id: string | null;
+  page: "resources" | "schema" | null;   // 「查看原文」去哪
+};
+```
+
+### 7.2 用户与通知
+
+```ts
+type UserProfile = {
+  username: string;
+  display_name: string;
+  role: "user" | "admin" | "ops";
+  role_label: "建模者" | "管理员" | "运维";
+  auth_source: "auth-server" | "local";
+};
+
+type Preferences = {
+  theme: "light" | "dark";
+  notifications: {
+    system: boolean;
+    l2_step_done: boolean; l2_needs_input: boolean; l2_error: boolean;
+    l4_finished: boolean; l4_new_suspension: boolean; l4_error_or_stopped: boolean;
+  };
+};
+
+type Notification = {
+  id: string; kind: string;       // 取值见 4.4
+  title: string; body: string;
+  project_id: string | null; project_name: string | null;
+  action: { label: string; page: string; params?: Record<string, string> } | null;
+  created_at: time; read: boolean;
+};
+
+type AdminUser = {
+  username: string; display_name: string;
+  role: "user" | "admin" | "ops";
+  online: boolean; last_seen_at: time | null;
+  project_count: number; locked_until: time | null;
+};
+```
+
+### 7.3 项目
+
+```ts
+type ProjectMeta = {
+  id: string; name: string; package_name: string; goal: string;
+  owner: string; created_at: time; archived: boolean; archived_at: time | null;
+  engine: string; engine_label: string;
+  build_mode: "L2" | "L4";
+  research_mode: "web" | "local";
+  version_label: string;          // 主线当前版本，如 "v0.12"
+  head: string;
+  last_release: { version: string; at: time } | null;
+  last_activity_at: time | null;
+  created_from: "wizard" | "import" | "clone" | "example";
+};
+
+// admin、ops 看到的元数据视图（1.4），不含目标、资料、产物
+type ProjectMetaView = {
+  id: string; name: string; owner: string | null;
+  stage_label: string;            // 如 "建模 3/5 片"、"校验与走查"、"可发布"
+  build_mode: "L2" | "L4";
+  archived: boolean; created_at: time; last_activity_at: time | null;
+  disk_bytes?: number;
+};
+
+type ProjectCard = ProjectMeta & {
+  industry_label: string | null;
+  slices: { total: number; confirmed: number; cells: DisplayState[] } | null;   // null = 切片待规划
+  inbox_count: number;
+  status: ("active" | "autobuild" | "autobuild_done" | "publishable" | "archived")[];
+  autobuild: {
+    run_id: string; run_no: number;
+    state: "queued" | "running" | "pausing" | "paused" | "completed" | "stopped";
+    slice_done: number; slice_total: number; progress_pct: number; eta_ms: number | null;
+    decisions: number; suspended: number; budget_used_pct: number;
+    needs_review: number; duration_ms: number;
+  } | null;
+  publishable: { gates_passed: true; last_release: { version: string; at: time } | null } | null;
+  landing_page: "wb-l2" | "wb-materials" | "l4-run" | "inbox";   // 点卡片打开哪页
+};
+```
+
+### 7.4 文件、资料、检索
+
+```ts
+type FileNode = { name: string; path: string; type: "dir" | "file"; size?: number; children?: FileNode[] };
+
+type SearchHit = {
+  group: "entries" | "materials" | "reports" | "knowledge" | "artifacts";
+  title: string; snippet: string;
+  target: EntryRef | ArtifactRef | { kind: "material"; path: string; anchor?: string }
+        | { kind: "report"; report_id: string; item_id?: string } | { kind: "knowledge"; id: string };
+  page: string;                   // 点了去哪页
+};
+
+type PurposeOption = { value: "goal" | "schema" | "term" | "evidence" | "auto"; label: string; description: string };
+
+type Material = {
+  path: string; name: string; group: "diagrams" | "excel" | "others";
+  kind: "doc" | "xls" | "csv" | "pdf" | "drawio" | "html" | "image" | "text";
+  size: number; uploaded_at: time;
+  sheets?: number; rows?: number;
+  purpose: PurposeOption["value"]; purpose_auto: boolean;
+  reading_mode: "on_demand" | "full";
+  is_revision: boolean; revision_task: { conversation_id: string; label: string } | null;
+  is_template: boolean;           // 如「图示说明定义.drawio」资源模板
+  referenced: number;
+  coverage: { read_pct: number; label: string } | null;
+  preview: "doc" | "xls" | "csv" | "drawio" | "html" | "text" | null;
+  revision: string;
+};
+
+type MaterialMapItem = {
+  path: string; name: string; kind: Material["kind"];
+  purpose: PurposeOption["value"]; purpose_auto: boolean;
+  read_pct: number;
+  status: "done" | "reading" | "queued" | "partial";
+  position: string | null;        // 「读到 §10 · 还剩 §10–§12」
+  queue_reason: string | null;    // 「读完 02 后开始」
+  contradiction: string | null;   // 「与规则 §9.2 有 1 处矛盾」
+  blocked: { reason: string; unread_parts: string[] } | null;   // 没读完不能进入下一步
+  counts: { objects: number; rules?: number; terms: number; fields?: number };
+};
+
+type MaterialMap = {
+  total: number; read_pct: number;
+  analysis_mode: "web" | "local"; web_available: boolean;
+  items: MaterialMapItem[];
+  problems: { id: string; kind: "contradiction" | "missing"; text_md: string; anchors: string[];
+              state: "open" | "promoted" | "resolved" }[];
+  verification: { total: number; passed: number; unverifiable: number; pending: number; checked_at: time | null };
+  can_generate_blueprint: boolean;
+};
+
+type Feedback = {
+  id: string; source: { service: string; run: string };
+  release_version: string | null; received_at: time;
+  state: "open" | "handled" | "dismissed";
+  summary: string;                // 「评测失分用例 2 条 · 都和「临时放宽」有关」
+  items: { case_id: string; question: string; expected: string; actual: string;
+           loss_reason: string | null; suspected: (EntryRef | ArtifactRef)[]; related: string | null }[];
+  handled_version_label: string | null;
+};
+```
+
+### 7.5 Studio 与知识
+
+```ts
+type EntryRow = {
+  id: EntryId | string; kind: EntryKind | "flowchart"; key: string; name: string;
+  refs_out: number; refs_in: number;
+  status: "confirmed" | "pending" | "stale" | "draft" | "editing";   // editing = 本人有未提交草稿
+  needs_review: boolean; locked: boolean;
+  plugin: { name: string; label: string } | null;
+};
+
+type EvidenceCell = {
+  anchor: string | null; label: string;       // 业务说法，如「ERP · 商品品类」，不显示原始锚点
+  scheme: AnchorResolution["scheme"] | null;
+  confidence: "declared" | "observed" | "inferred" | null;
+  expert_confirmed: boolean; missing: boolean;
+};
+
+type Entry = {
+  id: EntryId; kind: EntryKind; key: string; name: string; path: string;
+  description: string;
+  status: EntryRow["status"]; needs_review: { source: "autobuild" | "upgrade" | "import"; run_id?: string } | null;
+  sections: { level: number; title: string; content_md: string }[];
+  fields: { name: string; column: string; type: string; unit?: string; primary_key?: boolean; evidence: EvidenceCell }[];
+  relations: {
+    declared: { target: EntryRef; label: string }[];
+    mentions: { target: EntryRef; where: string }[];   // 「在描述中提到」
+  };
+  backlinks: { source: EntryRef | ArtifactRef; relation: string; locked: boolean }[];
+  data_source: { kind: "table" | "anchor" | "none" | "unset"; value: string | null; label: string };
+  evidence_snapshots: Record<string, string>;   // frontmatter 里的 evidence_snapshots
+  counts: { refs_out: number; refs_in: number; fields: number; evidence: number };
+  revision: string; head: string;
+  lock: ScopeLock | null;
+  draft: Draft | null;
+};
+
+type EntryForm = {
+  name: string; key: string; description: string;
+  fields: { name: string; column: string; type: string; unit?: string; evidence_anchor?: string | null; expert_confirmed?: boolean }[];
+  relations: EntryId[];
+  data_source: { kind: "table" | "anchor" | "none"; value?: string };
+  sections?: Record<string, string>;            // 操作的步骤、规则的条件等，按元模型章节
+};
+
+type Draft = { author: string; updated_at: time; base_revision: string; form: EntryForm | null; content: string };
+
+type KnowledgeEntry = {
+  id: string; title: string;
+  layer: "project" | "industry";
+  pack: string | null;            // 行业层的包名
+  type: "correction" | "convention" | "term" | "domain_rule";
+  scope: { kind: "global" } | { kind: "entries"; entries: EntryRef[] };
+  confidence: "high" | "medium" | "low";
+  source: { kind: "conversation" | "material" | "pack"; label: string; at?: time; anchor?: string };
+  overrides_industry: boolean; readonly: boolean;
+  revision: string; updated_at: time;
+};
+
+type ConflictFinding = { kind: "duplicate" | "scope_conflict" | "broken_ref"; with: string; note: string };
+```
+
+### 7.6 版本、变更集、写入范围
+
+```ts
+type VersionSource = "assistant" | "web" | "studio" | "mcp" | "autobuild" | "import" | "plugin" | "revert";
+
+type Version = {
+  commit: string; n: number; version_label: string;   // "v0.{n}"
+  at: time; source: VersionSource; source_label: string;
+  author: string; summary: string;
+  tags: { name: string; label: string }[];
+  release: string | null;                             // 如 "0.13.0"
+  current: boolean;
+  changeset_id: string | null;
+  run: { run_id: string; run_no: number; slice_name: string } | null;
+  needs_review: number;
+  trailer: { source: string; author: string; changeset?: string; packs?: string; node?: string };   // 详设 4.3
+};
+
+type Changeset = {
+  id: string;                     // "cs-31"
+  source: "assistant" | "autobuild" | "studio" | "mcp" | "import" | "plugin";
+  build_mode: "L2" | "L4" | null;
+  purpose: string;
+  state: "open" | "pending_confirm" | "merged" | "discarded" | "conflict";
+  base: string;                   // 基准主线提交
+  conversation_id: string | null; run_id: string | null; slice_id: string | null;
+  created_at: time; updated_at: time;
+  merged: { commit: string; version_label: string; at: time } | null;
+  entity_count: number;
+};
+
+type ScopeLock = {
+  state: "none" | "assistant_running" | "pending_confirm" | "autobuild_slice";
+  changeset_id: string | null; conversation_id: string | null; run_id: string | null;
+  slice: { id: string; name: string } | null;
+  node: { id: string; version: string } | null;
+  entries: EntryRef[];            // 范围内的本体条目
+  artifacts: ArtifactRef[];       // 范围内的插件产物（场景、求解契约、流程图……）
+  paths: string[];                // produces 声明的路径模式
+  reason_text: string;            // 「助手正在改「超量与审批提示」这一片……」
+  since: time | null;
+};
+```
+
+`ScopeLock` 的范围按详设 4.3 计算：当前节点 `produces` 落到当前切片的条目，加这一轮已经改过的条目，加等用户决定的决策卡在改动预览里列出的条目。节点不按切片执行时，范围是 `produces` 声明的整类条目。
+
+### 7.7 会话、执行记录、命令
+
+```ts
+type Conversation = {
+  id: string; title: string; title_manual: boolean;
+  created_at: time; updated_at: time;
+  live: boolean; state: ConversationState["state"];
+  kind: "chat" | "autobuild";     // 自主构建的对话标题固定「自主构建 · 运行 #n」
+  run_id: string | null;
+};
+
+type PoolStatus = { max: number; active: number; queued: number; idle_ttl_s: number };
+
+type ContextUsage = {
+  used: number; window: number; pct: number; compact_at_pct: number;
+  breakdown: { rules: number; materials: number; conversation: number; tool_results: number } | null;
+  last_call: { input: number; output: number; estimated: boolean } | null;
+};
+
+type ConfigPending = { changes: { kind: string; summary: string }[]; effective: "next_message" | "next_safe_point" };
+
+type ConversationState = {
+  conversation_id: string;
+  state: "idle" | "connecting" | "running" | "waiting_user" | "queued" | "error" | "closed";
+  live: boolean; turn_started_at: time | null; queue_position: number | null;
+  last_seq: number; history_count: number;
+  context: ContextUsage | null;
+  pending_permission: { request_id: string; title: string; expires_at: time } | null;
+  open_questions: string[];
+  active_exec: ExecRecord | null;
+  open_changeset: Changeset | null;
+  config_pending: ConfigPending | null;
+  autobuild_run_id: string | null;
+  pool: PoolStatus;
+};
+
+type ExecRecord = {
+  id: string;                     // "ex-0412"
+  conversation_id: string; engine_instance: string;
+  node: { id: string; version: string; title: string };
+  slice: { id: string; name: string } | null;
+  run_id: string | null;
+  command_label: string;          // 业务名，如「操作提取」
+  phase: { index: number; total: number; label: string };   // 「写入即查（步骤 3 / 4）」
+  state: "running" | "waiting" | "interrupted" | "done" | "abandoned";
+  input_fingerprint: string;
+  started_at: time; heartbeat_at: time; ended_at: time | null;
+  interrupted: { at: time; reason: "user" | "restart" | "recycled" | "engine_exit" | "shutdown" | "ops"; reason_text: string } | null;
+  saved: { files: number; version_label: string | null };
+  resumable: boolean; not_resumable_reason: "inputs_changed" | "node_upgraded" | null;
+};
+
+type CommandItem = {
+  id: string; label: string; description: string;
+  command: string;                // 不在界面显示
+  pack: string; node_id: string | null;
+  args_schema: object | null;
+  available: boolean; unavailable_reason: string | null;
+};
+
+type CommandTask = {
+  task_id: string;
+  origin: { page: string; label: string };
+  title: string;                  // 「助手正在批量推演 23 个场景」
+  state: "queued" | "running" | "waiting_user" | "done" | "failed" | "interrupted" | "cancelled";
+  percent: number | null; step_label: string | null;   // 「已推演 9 / 23」
+  conversation_id: string; message_id: string; exec_id: string | null;
+  started_at: time; finished_at: time | null;
+  result: { summary: string; refs: (EntryRef | ArtifactRef)[] } | null;
+};
+
+type ProgressStep = { id: string; text: string; meta: string; state: "done" | "running" | "waiting" | "failed" | "info"; duration_ms: number | null };
+```
+
+### 7.8 流程、建议、蓝图
+
+```ts
+// 详设 6.6：8 种状态 + 2 个附加标记
+type NodeState = "not_ready" | "ready" | "running" | "pending_confirm" | "confirmed" | "stale" | "skipped" | "blocked";
+
+type FlowNode = {
+  id: string; title: string;      // 没装场景走查包时 core.validate 的 title 为「校验」
+  kind: "agent" | "script" | "human" | "external";
+  placement: "spine" | "step" | "branch" | "gate" | "on_demand";
+  section: "required" | "pre_publish" | "optional" | "on_demand";
+  state: NodeState;
+  flags: { needs_review: boolean; review_source?: "autobuild" | "upgrade" | "import"; disabled: boolean; backfill: boolean };
+  display_state: DisplayState;
+  progress: { done: number; total: number; label: string } | null;   // 「3/5 片」
+  version: string;                // "core@1.4.2"
+  per_slice: boolean;
+  note: string | null;            // 「登记了业务系统数据源才有这一步」
+  blocks: string[];
+  actions: { kind: "start" | "skip" | "restore" | "refresh" | "confirm"; label: string; target?: string }[];
+  plugin: { name: string; label: string } | null;
+};
+
+type SliceStageState = NodeState | "draft" | "auto";   // auto = 自主完成（已确认 + 需复核）
+
+type Flow = {
+  flow_hash: string;
+  nodes: FlowNode[];
+  edges: { from: string; to: string }[];
+  slice_stages: { id: "object" | "operation" | "rule" | "check" | "scenario"; label: string; plugin?: string }[];
+  slices: { id: string; name: string; core_flow: string;
+            group: "done" | "now" | "wait" | "todo";
+            stages: Record<string, SliceStageState>;
+            note: string; no_rules: boolean }[];
+  suggestions: Suggestions;
+  notices: { kind: "new_materials" | "pending_changeset" | "assembly_pending"; count?: number; files?: string[];
+             text: string; action: SuggestionAction }[];
+};
+
+type SuggestionAction =
+  | { type: "send"; text: string; command?: string; args?: object }
+  | { type: "resume_exec"; exec_id: string }
+  | { type: "merge_changeset" | "discard_changeset" | "show_changes"; changeset_id: string }
+  | { type: "start_node"; node_id: string; slice_id?: string }
+  | { type: "navigate"; page: string; params?: Record<string, string> }
+  | { type: "autobuild"; op: "pause" | "stop_at_safe_point" | "convert_to_l2" | "details" }
+  | { type: "clear_input" };
+
+type Suggestion = { id: string; label: string; icon?: string; primary: boolean; disabled: boolean;
+                    reason: string; priority: 1 | 2 | 3 | 4 | 5; action: SuggestionAction };
+
+type Suggestions = {
+  mode: "normal" | "interrupted" | "waiting_decision" | "pending_confirm" | "autobuild_controls";
+  primary: Suggestion | null;
+  secondary: Suggestion[];        // 最多 2 个
+  all_commands: true;             // 末尾固定有「全部命令」
+};
+
+type BlueprintSlice = {
+  id: string; name: string; core_flow: string;
+  scale: { objects: number; rules: number };
+  depends_on: string[]; order: number;
+  order_label: string;            // 「推荐先做」「第 2 个」「建议最后做」
+  excluded: boolean;
+};
+
+type BlueprintSliceInput = Omit<BlueprintSlice, "order" | "order_label" | "scale"> & { merged_from?: string[] };
+
+type Blueprint = {
+  version_no: number; version_label: string;   // 「草案 v2」
+  state: "draft" | "confirmed";
+  goal_md: string; goal_anchor: string | null;
+  out_of_scope: string[];
+  slices: BlueprintSlice[];
+  terms: { aligned: string[];
+           ambiguous: { id: string; variants: string[]; chosen: string | null }[] };
+  questions: { id: string; title: string; background: string;
+               options: { id: string; label: string }[];
+               answer: { option_id?: string; custom_text?: string } | null }[];
+  research: { verified: boolean; report_id: string | null };
+  evidence_hint: { sources: { id: string; label: string; environment: string }[]; text: string } | null;
+  revision: string; updated_at: time;
+};
+```
+
+### 7.9 待处理
+
+```ts
+type InboxItem = {
+  id: string;                     // "<kind>:<来源ID>"
+  kind: "decision" | "evidence_conflict" | "change_list" | "review" | "suspension" | "stale" | "resumable"
+      | "feedback" | "report" | "pending_changeset" | "changeset_conflict" | "format_migration" | "notification";
+  kind_label: string;
+  title: string; meta: string;    // 「4 个选项 · 推荐 A」「置信度 0.72 · 记为假设」
+  slice: { id: string; name: string } | null;
+  run: { run_id: string; run_no: number; at: time } | null;
+  source: "assistant" | "autobuild" | "upgrade" | "import" | "materials" | "restart" | "external" | "plugin";
+  confidence: number | null; high_confidence: boolean;
+  pack: string | null;            // 归属的插件，插件页角标用
+  impact: { label: string; items: string[] }[];   // 右栏「影响范围」
+  created_at: time;
+  actions: string[];              // 可用的 IN-03 action
+  batchable: boolean;             // 低把握、低置信条目为 false
+};
+
+type ConflictDetail = {
+  question: Question;
+  sides: { label: string; type_label: "资料" | "系统元数据" | "发布日期"; value: string; note: string; anchor: string; date?: string }[];
+  writes_to: EntryRef;            // 裁决写进这个对象的「证据」章节
+};
+
+type StaleDetail = {
+  upstream_diff: { title: string; lines: DiffLine[] };
+  impact: { expected_before: string; now: string; action: string; eta_ms: number };
+  siblings: number;               // 「全部刷新 3 项」
+};
+```
+
+### 7.10 增量更新与报告
+
+```ts
+type ChangePoint = {
+  id: string; n: number;
+  condition: string; value: string; scope: string;
+  anchor: string; anchor_label: string;
+  confidence: "high" | "medium" | "low"; confidence_note: string | null;
+  state: "pending" | "accepted" | "rewritten";
+  rewritten_text: string | null;
+  impact: (EntryRef | ArtifactRef)[];
+};
+
+type ChangePointInput = Partial<Pick<ChangePoint, "id" | "condition" | "value" | "scope" | "anchor">> & { rewritten_text?: string };
+
+type ChangeList = {
+  id: string; source: { path: string; label: string };
+  points: ChangePoint[];
+  state: "editing" | "confirmed" | "executed";
+  changeset_id: string | null;
+  impact_summary: { artifacts: number; scenarios: number; duration_ms: number };
+  revision: string;
+};
+
+type Impact = {
+  duration_ms: number;
+  phases: { label: string; duration_ms: number }[];   // 定位产物、算下游、挑回归场景
+  stale: { target: EntryRef | ArtifactRef; note: string | null }[];
+  regression: { affected: ArtifactRef[]; guard: ArtifactRef[] };
+  semantic_scope_text: string;    // 「只对这 6 个产物做语义判断，其余不动」
+};
+
+type ReportSummary = {
+  id: string; name: string; type: string; type_label: string;
+  at: time; summary: string;      // 「错误 1 · 警告 2」
+  path: string;
+};
+
+type ReportItem = {
+  id: string; code: string | null;   // 如 E-ROUTE-01
+  level: "error" | "warning";
+  text: string;
+  location: { label: string; target: EntryRef | ArtifactRef | null; page: "studio-table" | "studio" | null };
+  status: "expert" | "fixing" | "pending" | "fixed";
+  status_note: string;            // 「第 2 轮仍未收敛」
+};
+
+type Report = ReportSummary & {
+  scope_text: string; mode: "regression" | "full" | "research";
+  duration_ms: number;
+  previous: { at: time; summary: string } | null;
+  progress: { handled: number; total: number; note: string };
+  items: ReportItem[]; items_next_cursor: string | null;
+  repair: { rounds: { n: number; count: number }[]; limit: 2; exhausted: boolean } | null;
+  arbitration: Question | null;
+  extras: object | null;
+};
+```
+
+### 7.11 插件、扩展项、产物
+
+```ts
+type PackCategory = "capability" | "industry" | "system" | "provider" | "node" | "exporter";
+
+type PackUi =
+  | { kind: "kernel"; note: string }
+  | { kind: "page"; pages: { id: string; title: string }[]; note: string }
+  | { kind: "subpages"; subpages: { parent: string; id: string; title: string }[]; note: string }
+  | { kind: "none"; note: string };
+
+type PackCard = {
+  name: string; version: string; label: string; description: string;
+  category: PackCategory;
+  publisher: { kind: "official" | "tenant"; label: string };
+  ui: PackUi | null;              // 只有能力包有
+  batch: "first" | "second" | "third" | null;
+  badges: ("new" | "recommended")[];
+  meta: string | null;            // 「22 命令 · 18 子代理」
+  latest: string; channel: "stable" | "beta";
+  project_status: string | null;  // 见 PL-01
+  locked_version: string | null;
+  usage_note: string | null;      // 「mes-prod 在用」
+};
+
+type CompatCheck = { id: "kernel_api" | "engines" | "depends" | "names" | "flow" | "page_api";
+                     label: string; ok: boolean; detail: string };
+
+type ProjectPack = {
+  name: string; label: string; category: PackCategory;
+  ui: PackUi | null;
+  locked_version: string; latest_available: string | null; channel: "stable" | "beta";
+  status: "required" | "enabled" | "disabled" | "pending";
+  pending: { from: string | null; to: string | null; kind: "enable" | "upgrade" | "rollback" | "disable";
+             effective: "next_message" | "next_safe_point" | "next_autobuild" } | null;
+  enabled_at: time | null;
+  actions: ("upgrade" | "rollback" | "disable" | "enable" | "cancel_pending")[];
+  rollback_to: string | null;
+};
+
+// 详设 5.2 的 manifest 投影
+type ManifestSummary = {
+  name: string; version: string; kind: "capability" | "knowledge" | "node" | "provider" | "exporter";
+  kernel_api: string; engines: string[]; depends: Record<string, string>;
+  contributes: { commands: number; agents: number; skills: number; scripts: number; templates: number;
+                 hooks: number; nodes: string[]; entries: number; pages: string[];
+                 artifacts: string[]; views: string[]; reports: string[]; gates: number;
+                 config: number; metrics: number };
+  checksums_ok: boolean; size: number; files: number;
+};
+
+type StaticCheck = { id: string; label: string; detail: string; result: "pass" | "warn" | "fail" };
+
+type PackUpload = {
+  id: string; filename: string; size: number; uploaded_at: time; uploaded_by: string;
+  tenant_label: string | null;
+  state: "checking" | "passed" | "failed" | "published" | "rejected" | "held";
+  summary: { pass: number; warn: number; fail: number };
+  manifest_ok: boolean; checksums_ok: boolean;
+};
+
+type Extensions = {
+  active_hash: string; pending_hash: string | null; page_api: string;
+  nav: { id: string; title: string; icon: string; kind: "kernel" | "plugin"; pack?: string;
+         badge?: { source: "inbox"; count: number }; order: number; overflow: boolean }[];
+  subpages: { parent: string; id: string; title: string; pack: string }[];
+  pages: { id: string; pack: string; page_api: string;
+           data: { artifacts: string[]; reports: string[]; nodes: string[] };
+           actions: { id: string; label: string; command: string; hint: string }[];
+           pending: boolean }[];   // pending = 下一条消息生效前，按钮显示「下一条消息生效」
+  entries: { id: string; kind: "quick_action" | "extra_action" | "source_wizard"; label: string;
+             where: string; command?: string; pack: string }[];
+  artifact_types: string[];
+  views: string[];
+  gates: { id: string; label: string; pack: string }[];
+  config: { key: string; pack: string }[];
+  disabled_pages: { id: string; pack: string; title: string }[];
+};
+
+// 详设 5.9.4 的登记投影
+type ArtifactType = {
+  type: string; title: string; pack: string; pack_version: string;
+  format: "md-frontmatter" | "yaml" | "json" | "jsonl" | "csv" | "drawio" | "md-report";
+  path: string; key: string;
+  schema: { version: string; fields: { name: string; type: "text" | "number" | "enum" | "date" | "ref" | "anchor" | "markdown" | "code" | "table";
+                                      label: string; enum?: { value: string; label: string; tone?: string }[]; required: boolean }[] };
+  sections: string[];
+  refs: { field: string; kind: EntryKind }[];
+  status: { field: string; map: Record<string, string> } | null;
+  view: { list: { columns: string[]; filters: string[]; group_by?: string };
+          detail: { layout: "sections" | "table" | "custom"; side: string[]; component?: string };
+          card: { title: string; chips: string[] } };
+  studio: boolean;                // true 时出现在 Studio 条目表（流程图）
+};
+
+type ArtifactRow = {
+  key: string; title: string;
+  fields: Record<string, any>;
+  status: { value: string; label: string; tone: string } | null;
+  stale: boolean; locked: boolean;
+  updated_at: time; revision: string;
+};
+
+type Artifact = ArtifactRow & {
+  type: string; format: string; format_version: string;
+  sections: Record<string, string>;
+  table: { columns: string[]; rows: string[][]; total_rows: number } | null;
+  content: any;                   // yaml/json 原样结构；diagram.flowchart 为 FlowchartModel
+  refs: (EntryRef & { field: string })[];
+  stale_reason: string | null;
+  lock: ScopeLock | null;
+  path: string;
+};
+
+type FlowchartModel = {
+  storage: "standard" | "drawio_compressed";   // 压缩格式只能用 drawio 高级编辑
+  process: { name: string; description: string; roles: string[]; inputs: string[]; exceptions: string[]; handoffs: string[] };
+  nodes: { id: string; type: "start" | "step" | "decision" | "data" | "end"; label: string; description: string;
+           x: number; y: number; refs: EntryRef[]; pending: boolean }[];
+  edges: { id: string; type: "seq" | "cond" | "exc" | "data"; from: string; to: string; label: string; condition: string }[];
+  drawio_xml: string | null;
+  operation: EntryRef | null;
+};
+```
+
+### 7.12 脚本与求解
+
+```ts
+type SandboxSummary = { available: boolean; network: "denied"; python: string | null; checked_at: time };
+
+type ScriptRow = {
+  script: EntryRef; operation: EntryRef | null;
+  contract: { status: "passed" | "failed"; findings: Finding[] };
+  descriptor: "synced" | "stale" | "none";
+  sandbox: { status: "passed" | "failed" | "not_run"; duration_ms: number | null; ran_at: time | null };
+  actions: ("regenerate_descriptor" | "fix" | "regenerate")[];
+};
+
+type SolverContractView = {
+  revision: string; revision_no: number; enabled: boolean;
+  operations: {
+    solver_key: string; operation: EntryRef; enabled: boolean;
+    mode: "template" | "manual";
+    problem_family: string; capabilities: string[];
+    field_units: { field: string; unit: string; note: string }[];
+    evaluator: { path: string; kind: "declarative" | "script" } | null;
+    option_labels: [string, string] | null;
+    result_title: string | null; result_texts: [string, string] | null;
+    sidecars: Record<"entry" | "input_schema" | "result_schema" | "fact_snapshot_schema" | "presentation", string>;
+    managed: string[];            // 受管的附属文件
+  }[];
+  findings: Finding[]; gate: Finding[];
+  receipt: { status: "pass" | "required" | "stale" | "failed"; latest: Receipt | null };
+  available_operations: EntryRef[];
+  evaluators: { path: string; file: string }[];
+  problem_families: { id: string; label: string; capabilities: string[] }[];
+  supported_profiles: string[]; template: object;
+  lock: ScopeLock | null;
+};
+
+type Receipt = {
+  id: string; receipt_id: string;
+  revision: string; revision_no: number | null;
+  release_version: string | null; solver_keys: string[];
+  status: "passed" | "failed"; authoritative: boolean;
+  contract_digest: string; request_digest: string; result_digest: string;
+  candidate_count: number | null; error_code: string | null; message: string | null;
+  completed_at: time; received_at: time; by_token: string;
+};
+```
+
+### 7.13 证据源
+
+```ts
+type EvidenceSourceRef = { id: string; display_name: string; environment: "production" | "test" };
+
+type EvidenceSource = EvidenceSourceRef & {
+  provider: { id: string; version: string; label: string };
+  connection: Record<string, string | number>;   // 不含密钥
+  cred_ref: string | null;        // "cred://mes-prod/3"
+  secret_fields: { name: string; set: boolean; written_at: time | null }[];
+  scope_allowlist: string[]; scope_summary: string;   // 「mes.* 42 表」
+  egress: { host: string; port: number }[];
+  access_window: { days: "daily" | string[]; start: string; end: string; tz: string } | null;
+  budget: { max_rows: number; max_bytes: number; max_duration_s: number };
+  rate_limit: { concurrency: number; qps: number; query_timeout_s: number };
+  masking_policy: string;
+  authorization_note: string | null; owner: string;
+  last_job: { at: time; state: CollectionJob["state"] } | null;
+  authorized_for_project: boolean | null;
+};
+
+type CollectionJob = {
+  id: string; project_id: string; source: EvidenceSourceRef;
+  operation: "discover" | "snapshot" | "sample";
+  scope_text: string; incremental_base: string | null;
+  state: "queued" | "running" | "succeeded" | "partial" | "failed" | "cancelled";
+  phase: string | null;           // 「采集字段与约束」
+  progress: { done: number; total: number; unit: string; pct: number } | null;
+  queue_reason: string | null;    // 「等待访问窗口 22:00，前面还有 1 个任务」
+  started_at: time | null; ended_at: time | null; duration_ms: number | null;
+  result: { snapshot_id?: string; message: string } | null;
+  error: { code: string; message: string } | null;   // 「401：凭据已过期」
+  resumed_from: string | null; checkpoint: boolean;
+  initiated_by: string; consent: { by: string; at: time } | null;
+  actions: ("cancel" | "browse" | "resume" | "retry" | "notify_admin")[];
+};
+
+// 详设 5.8.4 manifest.json 的投影
+type SnapshotSummary = {
+  id: string; source: EvidenceSourceRef;
+  provider: string;               // "db-mysql@1.0.0"
+  complete: boolean; coverage_pct: number;
+  records: Record<"entity" | "field" | "relation" | "constraint" | "operation" | "rule" | "flow" | "profile" | "sample" | "term", number>;
+  referenced: number;
+  masking_policy: string;
+  started_at: time; ended_at: time;
+  previous: string | null; job_id: string;
+  git_bytes: number;
+};
+
+type SnapshotRef = { id: string; source_id: string; complete: boolean };
+
+type EvidenceRecord = {
+  anchor: string; type: string; name: string; label: string | null;
+  parent_anchor: string | null;
+  confidence: "declared" | "observed" | "inferred";
+  evidence: { provider: string; method: string };
+  attrs: Record<string, any>;
+  fields?: { name: string; type: string; note: string; confidence: string; masked: boolean; anchor: string }[];
+  ddl?: string;
+  samples?: { columns: string[]; rows: string[][]; shown: number; max: 20 };
+  profile?: { column: string; top_k?: { value: string; pct: number }[]; stats?: { min: number; max: number; null_pct: number } }[];
+  rows?: number;
+  snapshot: SnapshotRef;
+};
+```
+
+### 7.14 发布
+
+```ts
+type GateResult = {
+  id: string; order: number; title: string;
+  source: { kind: "platform" | "pack" | "flow"; label: string; pack?: string };
+  status: "pass" | "fail" | "not_run" | "warn";
+  summary: string;                // 「3 个对象和数据表对不上」「还没运行 · 挡住发布」
+  blocking: boolean; degradable: boolean;
+  findings: Finding[];
+  action: SuggestionAction | null;   // 如合规检查「去运行」
+};
+
+type BindingIssue = {
+  object: EntryRef; declared: string | null;
+  kind: "declared_missing" | "no_columns" | "declared_unverifiable";
+  message: string;
+  detail: { attr_columns: string[]; table_columns: string[] } | null;
+  candidates: { table: string; matched: number }[];
+  fixes: ("set_table" | "set_none" | "set_anchor" | "mark_schema_material")[];
+  revision: string;
+};
+
+type ReleaseRecord = {
+  version: string;                // "0.13.0"
+  version_label: string;          // "v0.13"
+  commit: string; tag: string;    // "release/0.13.0"
+  at: time; by: string;
+  format: "ontology" | "solver"; format_label: "普通知识包" | "求解知识包";
+  gates: { all_passed: boolean; degraded: boolean; unbound_objects: string[] };
+  manifest_attached: true;
+  pulls: { at: time; by_token: string; variant: string }[];
+  feedback_count: number;
+  size: number; sha256: string;
+};
+
+type ReleaseManifest = {
+  package_name: string; version: string; schema_version: "0.1" | "0.2";
+  source_commit: string; released_at: time;
+  packs: { name: string; version: string }[];       // 来自 packs.lock，用于版本归因（P4）
+  flow_hash: string;
+  solver: { revision: string; receipt: { status: string; receipt_id: string } | null } | null;
+  degraded: { unbound_objects: string[] } | null;
+  files: { path: string; sha256: string; size: number }[];
+};
+```
+
+### 7.15 自主构建
+
+```ts
+type AutobuildPolicy = {
+  scope: { mode: "all_pending" | "selected"; slice_ids: string[];
+           refresh_stale_first: boolean; generate_scenarios: boolean; include_optional: boolean;
+           until_node: string | null };   // 做到哪一步，如 "core.validate"
+  budget: { max_duration_min: number; max_tokens: number; max_cost: Money };
+  production_collection: { source_id: string; allowed: boolean; window: { start: string; end: string } | null; scope: string[] }[];
+  advanced: { confidence_threshold: number;            // 0.5–1.0，默认 0.80
+              below_threshold: "conservative_assumption" | "suspend";
+              must_suspend_kinds: string[];
+              source_priority: string[];                // 资料与证据冲突时的取值顺序
+              max_fix_rounds: 1 | 2 | 3 };
+  boundary_text: string;          // 硬性不做，只读
+};
+
+type AutobuildPreview = {
+  preview_token: string; expires_at: time;
+  slices: { id: string; name: string; current: string; included: boolean }[];
+  budget: AutobuildPolicy["budget"]; production: string; below_threshold_text: string;
+  warnings: string[]; queued: boolean; queue_position: number | null;
+};
+
+type AutobuildRunSummary = {
+  run_id: string; run_no: number;
+  state: "queued" | "running" | "pausing" | "paused" | "stopping" | "converting" | "converted"
+       | "completed" | "stopped" | "budget_exhausted" | "failed" | "interrupted";
+  current: { slice_id: string; slice_name: string; step_label: string } | null;
+  elapsed_ms: number; est_total_ms: number | null;
+  tokens: { used: number; limit: number };
+  cost: { used: Money; budget: Money };
+  slices: { done: number; total: number };
+  decisions: number; suspended: number; needs_review: number;
+  started_at: time; ended_at: time | null;
+};
+
+type AutobuildRun = AutobuildRunSummary & {
+  conversation_id: string;
+  policy: AutobuildPolicy;
+  checks: { errors: number; warnings: number };
+  scenarios: { passed: number; total: number };
+  fix_rounds: { used: number; limit: number };
+  matrix: { slice_id: string; slice_name: string;
+            cells: Record<"object" | "operation" | "rule" | "check" | "scenario", "confirmed" | "auto" | "running" | "queued" | "skipped">;
+            result: string }[];
+  tail_text: string;              // 「跑完全部切片后：全局一致性检查 → 合规检查（发布前，留给你）」
+  scope_lock_text: string;
+  recovered_from_checkpoint: number;
+  report_available: boolean;
+};
+
+type LedgerEntry = {
+  id: string; run_id: string; at: time;
+  slice: { id: string; name: string };
+  question: string; chosen: string;
+  options: Option[];              // 改判用
+  confidence: number; threshold: number; assumption: boolean;
+  anchors: { n: number; anchor: string; label: string }[];
+  affected: (EntryRef | ArtifactRef)[];
+  review_state: "pending" | "accepted" | "rejudged";
+  rejudged_to: string | null;
+  reason_text: string;            // 「低于阈值，按策略采用了保守选项并记为假设，继续往下跑。」
+};
+
+type Suspension = {
+  id: string; run_id: string; at: time;
+  slice: { id: string; name: string };
+  title: string; reason: string; handled_as: string;   // 「跳过这一项，先做下一步」
+  kind: "question" | "unauthorized_collection" | "unreadable_material";
+  options: Option[]; allow_custom: boolean;
+  actions: ("upload_text" | "use_generic")[];
+  state: "open" | "answered" | "deferred";
+};
+
+type AutobuildReport = {
+  run_id: string; run_no: number; state: AutobuildRunSummary["state"];
+  started_at: time; ended_at: time;
+  recovered_restarts: number;     // 「中途服务重启 1 次，已从检查点自动续跑」
+  metrics: { duration_ms: number; budget_duration_ms: number;
+             slices: { done: number; total: number; partial: string[] };
+             produced: { objects: number; operations: number; rules: number };
+             checks: { errors: number; warnings: number };
+             scenarios: { passed: number; total: number; suspended_failures: number };
+             decisions: { total: number; high_confidence: number; needs_look: number };
+             suspended: number; cost: Money; tokens: number; budget: Money };
+  slices: { slice_id: string; name: string; result: "done" | "partial" | "skipped"; result_text: string;
+            produced_text: string; scenarios: { passed: number; total: number };
+            version_label: string; revertible: boolean }[];
+  note: string;                   // 「产出已确认生效并标「需复核」；复核完之前，发布检查会提醒你」
+};
+```
+
+### 7.16 MCP、配置、配额、运维
+
+```ts
+type McpTokenSummary = {
+  id: string; name: string; scopes: string[];
+  subject: string; issued_by: string;
+  created_at: time; expires_at: time | null; last_used_at: time | null;
+  remaining_text: string;         // 「30 天 · 剩 21 天」「永不过期」
+};
+
+type ConfigItem = {
+  key: string; value: string;     // 密钥只显示引用，如 cred://model/stable/4
+  source: "env" | "data_dir" | "pack" | "default"; pack?: string;
+  validation: string;             // 「整数 1–64」
+  effect: "immediate" | "next_message" | "new_session" | "restart";
+  secret: boolean; edit_page: string | null;
+};
+
+type QuotaOverride = { id: string; subject: { kind: "user" | "project"; id: string; label: string };
+                       item: string; value: number; reason: string; created_at: time; created_by: string };
+
+type Alert = { rule_id: string; name: string; detail: string; level: "critical" | "warning" | "info";
+               state: "firing" | "resolved"; since: time; resolved_at: time | null; auto_action: string | null };
+
+type AlertRule = { id: string; name: string; condition: string; window: string;
+                   level: "critical" | "warning" | "info"; state: "firing" | "ok"; enabled: boolean;
+                   source: "kernel" | string;   // 或包版本，如 "industry-retail@1.0.3"
+                   runbook_md: string; auto_action: "breaker" | null };
+
+type MaintenanceState = {
+  active: boolean;
+  mode: "reject_new_sessions" | "read_only";
+  message: string; started_at: time; started_by: string;
+  target: { kind: "core_upgrade"; pack: string; version: string } | null;
+  steps: { id: "restrict" | "drain" | "upgrade" | "resume"; label: string;
+           state: "done" | "current" | "pending"; detail: string; progress_pct: number | null }[];
+};
+
+type Drill = { id: string; backup: string; at: time; duration_ms: number;
+               result: "passed" | "failed"; detail: string };
+
+type AuditEntry = {
+  id: string; ts: time;
+  actor: string;                  // 用户名、"agent"、"mcp:<token 名>"、"system"
+  actor_kind: "user" | "agent" | "mcp" | "service" | "system";
+  type: "write" | "mcp" | "commit" | "plugin" | "evidence" | "ops" | "auth" | "publish" | "changeset"
+      | "autobuild" | "user" | "contract";
+  action: string;                 // 如 changeset.merge、pack.enable、evidence.collect
+  method: string | null; path: string | null; status: number | null;
+  project_id: string | null;
+  summary: string;                // 不含项目内容
+  trailer: Record<string, string> | null;   // agent 提交：Onto-Source、Onto-Changeset、Onto-Packs、Onto-Node
+  ip: string | null; trace_id: string | null;
+};
+
+type ErrorRecord = {
+  id: string;                     // "err-7f3a"
+  at: time;
+  project: ProjectMetaView | null;
+  origin: "session" | "publish" | "collection" | "assembly" | "gate" | "kernel";
+  pack: string | null; node: string | null;
+  raw_message: string;            // 已脱敏：去掉密钥、连接串、内容摘录
+  friendly_message: string;       // 用户看到的那句
+  trace_id: string | null;
+};
+```
+
+### 7.17 提交 trailer 与锚点
+
+本节只引用详设，不重复定义。
+
+- 提交 trailer（详设 4.3）：`Onto-Source`、`Onto-Author`、`Onto-Changeset`、`Onto-Packs`、`Onto-Node`。
+  - `Onto-Source` 取 `agent|web|studio|mcp|autobuild|import|plugin|revert`。
+  - API 上的 `VersionSource` 是它的界面口径：`agent` 对应 `assistant`。
+- 锚点（详设 5.8.5）：`<scheme>:<源ID>/<路径>[#<片段>]`，名字里的 `% / . # @ | [ ]` 和空格一律百分号编码。
+  - 文件锚点的片段沿用 `source_extract`：`L12`、`p:3`、`table:1/row:2/cell:3`、`sheet:Sheet1!A1`。
+
+---
+
+## 8 本契约定下的不确定项
+
+详设、方案和设计稿没写清、由本契约定下的点。每条一句理由。实现中要改，按文首的流程走 `contract-changes.md`。
+
+### 8.1 决定清单
+
+**路径与兼容**
+
+1. **运维管理面路径用 `/api/v1/ops`，前端从 `C-01` 取 `ops_base_url`。** 详设只说「独立端口或内网」，前端运维中心和业务页是同一个 SPA，地址必须可配置。
+2. **健康检查用 `/api/health/live`、`/api/health/ready`，不带版本号、免鉴权。** 方案 E7 已定这个路径；A14 要求 `/api/health` 保留；设计稿上的 `/livez`、`/readyz` 只当显示文案。
+3. **MCP 传输新增 `/api/v1/onto-mcp/...`，旧 `/api/onto-mcp/...` 永久保留、不进兼容期。** 这是外部协议（②），外部客户端已经配好了地址。
+4. **兼容期的旧路径只改写路径，不做响应形状兼容，只在错误体里加 `error` 字段。** 旧前端在同一版本里整体替换，外部调用方（MCP、评测服务）另有专门处理。
+5. **Sunset 定为 v1 上线后 6 个月（2027-05-01）。** 覆盖一个内核季度发版周期，再加缓冲。
+
+**通用约定**
+
+6. **错误体统一为 `{code, message, details, trace_id}`。** 现状是 `{error}` 和 `{error, code}` 混用，多数错误没有码，前端无法按码分支。
+7. **列表统一游标分页，默认 50，上限 200。** 与 MCP 现有约定一致（详设 4.1）。
+8. **乐观并发统一用 `revision` / `base_revision` 加 `409 revision_conflict`；求解契约冲突不再用专用码，改用 `details.kind` 区分。** 一套口径，前端只写一个冲突处理。
+9. **写入范围锁返回 `423 write_scope_locked`，`details` 是完整的 `ScopeLock`。** 方案 C10 已写 423；带上完整锁信息，前端能直接渲染锁定条。
+10. **时间一律 RFC 3339 UTC 毫秒，金额用 `Money`，币种默认 CNY。** 现状混用 epoch 秒和 ISO；设计稿金额全部用 ¥。
+
+**事件流**
+
+11. **SSE 拆成对话流、项目流、用户流三条，另加运维日志流。** Studio 和插件页没有打开对话，也要收写入范围锁、流程、产物事件。方案 D14 说「`flow.updated` 复用会话事件流」，但会话流按对话划分，承载不了页面级状态。
+12. **对话流的事件 id 用持久 seq；项目流和用户流用 `epoch.n` 加内存环形缓冲，断档时发 `stream.reset`。** 项目级事件都能由快照接口重建，没必要持久化。
+13. **SSE 不写 `event:` 行，统一 `onmessage` 加信封 `type`。** 与现状一致，前端不用为每种事件单独注册监听。
+14. **事件名改为点号小写（`message.user`、`question.asked`），旧事件名不再发出。** 详设 4.1 已经用了 `flow.updated`、`inbox.updated`、`artifacts.updated` 这种命名。
+15. **工具调用原文只以 `tool.activity`（`visibility: internal`）发出，用户可见的进展由执行记录阶段归并成 `progress`。** 第 9 章建议 4 要求内部步骤只进执行日志，不外泄。
+
+**上传**
+
+16. **单设暂存上传区 `U-01`，24 小时过期。** 新建向导第 2 步、导入、对话附件，都发生在项目或消息还没确定的时候。
+17. **上传上限：资料 20 MiB、项目导入 200 MiB、插件包 200 MiB；资料类型用白名单。** 取设计稿标注；现有后端没有上限。
+
+**项目与会话**
+
+18. **引擎 ID 保持 `claude`、`jiuwen`，界面只用 `label` 和 `channel`。** 项目元数据里已经存了这两个值，改名要迁移；设计稿只要求界面不显示底层实现。
+19. **删除项目要求请求体带 `confirm_name`，同时吊销该项目的 MCP token。** 设计稿是强确认；盘点发现现在删项目不吊销 token，属于遗漏。
+20. **新增实时名称检查 `P-03`。** 设计稿新建和重命名都实时提示重名。
+21. **运行中发消息返回 `deferred`（这一步结束后送达），不返回 409。** 设计稿写「运行中也能补充说明，这一步结束后送达」「补充说明不打断运行」。
+22. **页面按钮一律走 `S-20 POST /commands`，返回可追踪的 `CommandTask`。** 详设 5.9.3 要求页面只发命令、显示进度、结果回到列表，需要一个能追踪的对象。
+23. **命令缺省发到引擎当前绑定的对话，没有就发到最近更新的一条。** 同一项目同一时刻只有一个在线引擎（14#14）。
+24. **偏好（主题、通知开关）和通知存服务端，通知保留 30 天。** 设计稿有铃铛未读数和「全部标为已读」，跨设备也要一致。
+25. **本地模式加 `A-02` 进入接口，本地用户 `local` 拥有全部角色。** 设计稿本地模式有「进入工作台」按钮；鉴权关闭时全部放开是现状。
+
+**角色与权限**
+
+26. **JWT 的 `role` 是单值，取 `user`、`admin`、`ops`；admin 可以读运维管理面，写操作只有 ops 能做。** 方案 E8 把运维动作和管理员职责分开，审计里也要分得清是谁做的。
+27. **用户管理接口（`AD-*`）在业务面，写操作只有 admin 能调，ops 可以读列表。** 方案 E8 要求用户管理留在管理员；设计稿又把它放在运维中心，以运维身份浏览。
+28. **回收站 ops 和 admin 都能操作。** 设计稿回收站在运维中心，删除用户弹窗又写「管理员可以恢复」。
+29. **运维、管理员看项目只给 `ProjectMetaView`；审计 `summary` 保留路径和条目 key，但不含正文；错误原文脱敏。** 详设 1.6 规定只看元数据；路径和 key 是定位信息，设计稿审计里也有；方案 E3 要求脱敏。
+
+**Studio、产物、知识**
+
+30. **Studio 提交的三路结果都返回 200 加 `result`，`rejected` 不算 422。** 编辑器把三种结果都当正常流程显示，与现有接口一致。
+31. **草稿 PUT 接受 `form`（结构化）或 `content`（原文），由服务端按元模型渲染 Markdown。** 前端重写；序列化放在后端，才能和校验器用同一份元模型（详设 4.4）。
+32. **流程图是图示包登记的插件产物 `diagram.flowchart`，Studio 经通用产物接口读写。** 理由见 9.1#2。
+33. **知识条目用专用的 `K-*` 接口，不走通用产物接口。** 分层、覆盖、提名是 core 的知识逻辑，通用视图表达不了；列表读法和 `core.knowledge` 产物等价。
+34. **`ST-10` 删除被引用的条目返回 `409 entry_referenced`，流程图例外。** 避免断链；设计稿删流程图时只提示「流程图缺失」。
+
+**流程、蓝图、待处理**
+
+35. **节点状态只用详设 6.6 的 8 种，加 `flags`（`needs_review`、`disabled`、`backfill`），另给 `display_state` 对应设计稿的 17 种显示态。** 理由见 9.1#3。
+36. **蓝图保存是整份切片列表替换；「按章节拆分」走命令。** 拆分要读资料，不是确定性操作。
+37. **待处理在设计稿 8 种之外，再加 `report`、`pending_changeset`、`changeset_conflict`、`format_migration`、`notification`，计入「全部」。** 详设 4.7、8.2、5.9.4 列了这些来源，设计稿的筛选只是子集。
+38. **报告里的待处理条目，一份报告合成一项。** 逐条计数会把待处理撑爆；设计稿示例总数 18 也不含逐条报告条目。
+39. **待处理的「忽略」记录存 `.onto/run/`，不进 git。** 详设 4.7 规定待处理不另存状态，「忽略」是唯一的界面偏好例外。
+40. **变更点清单在执行前可编辑，不受写入范围锁约束。** 清单是这一轮的输入；设计稿要求用户在助手等待时逐条改。
+
+**自主构建**
+
+41. **自主构建先 `AB-03` 预览、拿 `preview_token`，再用 `AB-04` 启动。** 详设 8.5 要求开始前展示范围和预算，用户确认后才跑。
+42. **预算加 token 上限。** 设计稿有 token 上限；与配额口径（4.10.1）一致。
+43. **自主构建的生产库授权放在策略里（`AB-02`），和项目授权（`EV-11`）分开。** 详设 8.5 说「只能用项目设置里事先授权过的数据源」，设计稿也分两处。
+
+**证据源**
+
+44. **「租户级登记」就是平台全局登记。** 方案 E11 指出代码里没有租户概念。
+45. **数据源登记接口放在 admin 下，普通用户走 `EV-03` 提交申请。** 设计稿登记抽屉写「需要管理员权限，你可以先填好不含密钥的部分提交」。
+46. **测试连接：admin 可测任意源，项目所有者只能测已授权给本项目的源。** 设计稿项目侧有「测试连接」；凭据只在网关，测试不暴露明文。
+47. **生产采集先预览、拿 `confirmation_token`，没带 token 返回 `428 confirmation_required`。** 确认弹窗要展示窗口、规模、限流，必须先算出来；428 正好表示「缺前置条件」。
+
+**MCP 与三份契约**
+
+48. **MCP 新工具名用下划线（`flow_get`、`evidence_search`），文档写点号；evidence 工具 5 个，新增 scope `evidence.read`。** 现有 15 个工具都用下划线，MCP 客户端对点号兼容性差；工具数按详设 5.8.7。
+49. **服务令牌前缀 `onto_svc_`，可以限定项目，由 admin 在 `X-06` 管理。** 方案第 6 章 #6 定了服务令牌和 MCP token 分开。
+50. **验证回执用方案 A2 给的路径 `/api/v1/projects/{id}/solver/receipts`；包清单和下载与所有者共用 `PB-06`、`PB-07`；另加跨项目列表 `/api/v1/contract/releases`。** A2 的路径已定；评测服务要按时间增量拉取。
+51. **图模式是 `PB-07` 的 `variant=graph`，按需渲染，不另打标签。** 方案第 6 章 #1：同一提交的格式变体。
+52. **回执的修订号未知返回 422；旧修订的回执照常保存，但不放行门禁。** 回执可能晚到，留档便于追溯。
+53. **回执和外部反馈都带幂等键（`receipt_id`、`feedback_id`）。** 评测服务会重试。
+
+**发布与版本**
+
+54. **主线版本号 `n` 只计合入提交（方案 C14），显示 `v0.{n}`；发布版本号 `0.{n}.0`，标签 `release/0.{n}.0`。** 设计稿的发布下拉和发布记录都用主线版本；按 semver，`0.n.0`（n ≥ 2）大于旧的 `0.1.N`，下游去重仍然单调。
+55. **发布改为 `POST /releases`，下载单独 GET。** 现在用 GET 发布，有副作用，会被预取或缓存。
+
+**运维**
+
+56. **会话池配置可以在运维面在线修改（`O-16`），覆盖环境变量默认值。** 详设 4.10.3 写「调整并发上限」，理由见 9.2#4。
+57. **维护模式两种：`reject_new_sessions` 只拒新会话，`read_only` 拒绝一切写请求（运维面和登录除外）。** 详设只说「设为只读或拒绝新会话」，没写对写请求的影响。
+
+### 8.2 有接口、设计稿没有画入口
+
+主控决定是否补页面。在补之前，这些接口只供运维脚本和后续版本使用。
+
+| 接口 | 用途 | 建议入口 |
+|---|---|---|
+| `X-06` | 服务令牌管理 | sys 页新增「对外契约」一节 |
+| `SY-18` | 模型单价表（费用计算） | sys 页「模型接入」卡里加单价 |
+| `AD-06`、`AD-07` | 无主项目列表、指定所有者 | ops-users「用户管理」加一个「无主项目」筛选 |
+| `AD-08`～`AD-10` | 管理员审核申请：插件安装、数据源登记、知识提名 | 通知进入；plugin-upload 加「申请」页签 |
+| `O-05` | 链路检索 | ops-obs 链路卡的搜索框 |
+
+---
+
+## 9 矛盾与取舍
+
+### 9.1 详设与设计稿之间
+
+| # | 矛盾 | 详设 | 设计稿 | 本契约按 |
+|---|---|---|---|---|
+| 1 | 运维、管理员能看到多少项目信息 | 1.6、4.10.1：只看元数据（名称、所有者、阶段、占用） | ops-users 审计「内容」列有文件名、对象名、表名；错误留档有表名、凭据引用、规则文件行号 | 详设。只保留路径、条目 key 这类定位标识，不含正文；错误原文脱敏 |
+| 2 | 流程图归在哪 | 4.4「插件不能新增实体类型」；5.9.3 规则 3「本体条目只在 Studio 编辑，插件产物在插件页面编辑」 | 流程图是 Studio 的「条目类型」：表格筛选、新建、删除、编辑器面板，图示插件决定它出不出现 | 两边都保住。流程图是图示包登记的插件产物 `diagram.flowchart`（5.9.5 把流程图列为专用组件），不算本体实体，不进知识包；Studio 和流程图弹窗经通用产物接口读写 |
+| 3 | 节点状态有几种 | 6.6：8 种状态 + 需复核、已停用 2 个标记；6.9 又用了「可补做」 | core.js 状态表有 17 种：多了冲突、草稿、未开始、可补做、自主完成、失败、通过 | 详设。API 只用 8 种加 `flags`；`display_state` 给出设计稿的显示态。「可补做」是 `ready` 加 `backfill` 标记，「自主完成」是切片步骤的 `auto` |
+| 4 | evidence 工具有几个 | 5.8.7：search、show、where-used、lineage、diff 共 5 个 | proj-settings 写「evidence.*（6）」，同页 MCP 表列了 5 个 | 详设，5 个 |
+| 5 | 待处理有哪些类型 | 4.7 列了「报告里的待处理条目」，8.2 有未确认的变更集提示 | inbox 筛选只有 8 类，没有报告条目 | 详设。保留这些类型，计入「全部」，不单设筛选 |
+| 6 | 自主构建预算有哪些维度 | 8.5：费用和时长上限 | 有时长、token、费用三项 | 设计稿。加上 token，与配额口径一致 |
+| 7 | 提名回流由谁审核 | 5.5：管理员审核、脱敏后发布 | knowledge 页只有提交，没有管理员审核入口 | 详设。提供 `AD-08`～`AD-10`，页面空缺列在 8.2 |
+| 8 | 资料用途有几种 | ADR 0017 与现有代码：goal、schema、term、evidence、auto | features 写 4 种，资料菜单实际 5 种（多「由助手判断」） | 5 种（菜单与代码一致） |
+
+### 9.2 设计稿内部不一致
+
+| # | 不一致 | 本契约按 |
+|---|---|---|
+| 1 | 登录锁定时长：login 写「连续失败 5 次后需要等 1 分钟」，ops-users 写「锁定 15 分钟」 | 由 auth-server 决定，接口返回 `retry_after_s`，两页都显示实际值 |
+| 2 | L4 平台上限：proj-settings 写「4 小时、10M、¥300」，sys 写「4 小时、8,000,000、¥600」 | 单一来源 `SY-17`，proj-settings 经 `AB-01.platform_limits` 读同一份 |
+| 3 | 场景走查更新到 0.10.0：plugins 页直接提示成功，plugin-detail 弹「暂时不能更新」 | 两页都先调 `PL-03` 兼容检查，按结果显示 |
+| 4 | 会话池：sys 写「来自环境变量，改了要重建容器」，ops-ctl 却能编辑并保存 | 详设 4.10.3（运维可调整并发上限）。运维面可改（`O-16`）；sys 页只读显示当前值和来源 |
+| 5 | 提供方数量：features 写 8 个，插件目录 9 个（MySQL、PostgreSQL 分开），登记抽屉类型格另有 Oracle、达梦 | 按实现的提供方 ID 列出（`EV-10`）；`kind` 分组对应详设的 8 类 |
+| 6 | 待处理和锁定条里的数字（如过期场景 2 / 3、通过 19 / 21）前后不一 | 示例数据问题，不影响契约 |
+
+### 9.3 与代码或方案的出入
+
+| # | 出入 | 本契约按 |
+|---|---|---|
+| 1 | 健康检查路径：设计稿 ops-ctl 写 `/livez`、`/readyz`，方案 E7 写 `/api/health/live`、`/ready` | 方案（8.1#2） |
+| 2 | MCP 地址：设计稿写 `/api/onto-mcp/projects/retail-restock/sse`（没有工具集段），代码是 `/api/onto-mcp/{id}/{toolset}/sse` | 代码；`M-01` 返回实际地址 |
+| 3 | 求解契约修订号：设计稿显示 r7、r8，代码的修订号是摘要串 | 两者都给：`revision`（摘要，做并发和回执绑定）、`revision_no`（显示用整数） |
+| 4 | 发布版本号：设计稿和详设 8.2 都用主线版本（v0.13），代码是 `0.1.N` | `0.{n}.0`（8.1#54） |
+| 5 | SSE：方案 D14 说 `flow.updated` 复用会话事件流 | 另设项目流（8.1#11） |
+| 6 | 用户管理：方案 E8 说留在管理员，设计稿放在运维中心 | 接口在业务面，写操作只有 admin，ops 只读（8.1#27） |
