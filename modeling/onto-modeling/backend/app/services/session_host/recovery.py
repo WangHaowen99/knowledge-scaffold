@@ -48,6 +48,9 @@ def sweep_execs(manager) -> dict:
     from .. import agent_sessions, background_jobs
     from .turns import _flow
 
+    from ...kernel.changesets import service as changesets
+    from ...kernel.changesets import worktree
+
     changed = exec_records.sweep_interrupted()
     per_project: dict[str, int] = {}
     for record in changed:
@@ -57,6 +60,10 @@ def sweep_execs(manager) -> dict:
             root = manager.project_root(project_id)
         except Exception:  # noqa: BLE001 - 项目已删除：记录留着，不放卡
             continue
+        copy = changesets.existing_copy(root)
+        if copy is not None:
+            # 启动时没有命令在跑：副本里留下的命令锁与写入范围一起清掉（审查第 9 条）
+            worktree.clear_run_state(copy)
         view = exec_records.view(record, root=root, flow=_flow(root))
         if record.get("conversation_id"):
             agent_sessions.append_history(project_id, record["conversation_id"],

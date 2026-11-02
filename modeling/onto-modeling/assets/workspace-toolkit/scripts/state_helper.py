@@ -498,10 +498,14 @@ def _git_quiet(*args) -> str | None:
 
 
 def _local_changes(mainline_head: str) -> bool:
-    """这份副本里有没确认生效的改动（相对后端记下的主线版本，含没提交的、没跟踪的文件）。"""
+    """这份副本里有没确认生效的改动（含没提交的、没跟踪的文件）。
+
+    和副本与主线的分叉点比，不和主线最新比：这一轮里你在网页上的保存让主线前进了，副本没有那些改动，
+    不能当成副本改了东西。资料区与锁文件不算。"""
     if not mainline_head:
         return False
-    diff = _git_quiet('diff', '--name-only', mainline_head, '--')
+    base = (_git_quiet('merge-base', 'HEAD', mainline_head) or '').strip() or mainline_head
+    diff = _git_quiet('diff', '--name-only', base, '--', '.', ':(exclude).onto')
     untracked = _git_quiet('ls-files', '--others', '--exclude-standard')
     return bool((diff or '').strip() or (untracked or '').strip())
 

@@ -538,6 +538,7 @@ async def abandon_exec(project_id: str, exec_id: str, request: Request):
     if session is not None and session.exec_id == exec_id:
         session.exec_id = None
     updated = exec_records.abandon(project_id, exec_id) or record
+    _clear_command_scope(root, record)
     flow = turns._flow(root)
     turns.publish_exec(project_id, updated, root, flow)
     conversation_id = updated.get("conversation_id") or ""
@@ -549,6 +550,16 @@ async def abandon_exec(project_id: str, exec_id: str, request: Request):
             "kind": "info", "text": f"已放弃「{updated.get('command_label') or '命令'}」，已经保存的版本不回退",
             "version_label": saved.get("version_label"), "changeset_id": None, "align": "center"}})
     return {"exec": exec_records.view(updated, root=root, flow=flow)}
+
+
+def _clear_command_scope(root: Path, record: dict) -> None:
+    """放弃一步：副本里这条命令留下的锁与写入范围一起清掉，守卫与节点状态不再按它算（审查第 9 条）。"""
+    from ..kernel.changesets import service as changesets
+    from ..kernel.changesets import worktree
+
+    copy = changesets.existing_copy(root)
+    if copy is not None and record.get("command_name"):
+        worktree.clear_run_state(copy, [record["command_name"]])
 
 
 def _update_resume_card(project_id: str, conversation_id: str, record: dict, root: Path, flow: dict) -> None:

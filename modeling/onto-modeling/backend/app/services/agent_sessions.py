@@ -298,6 +298,8 @@ class Session:
     round_base_commit: str = ""  # 本轮起点 HEAD，用于 result 后产出"产物变更"事件
     # 本轮起点助手副本的树（含没提交的文件，跟上主线之后取）：产物卡只按助手这一轮的改动出
     round_base_tree: str = ""
+    # 引擎连接时的工作目录：和这一轮的工作目录（副本或退回的主线工作区）不同就重连（审查第 7 条）
+    engine_cwd: Path | None = None
     discarded: bool = False  # 项目已删除：事件不再落盘，也不再申请槽位
     # 引擎绑定的会话：决定事件历史写到哪份文件、续接哪个 token
     conversation_id: str = DEFAULT_CONVERSATION
@@ -716,6 +718,13 @@ class SessionManager:
             session.round_base_commit, session.round_base_tree = await asyncio.to_thread(_round_start, session.cwd)
         elif session.cwd is None:
             session.cwd = cwd
+        if not running and session.engine is not None and session.engine_cwd != session.cwd:
+            # 这一轮的工作目录换了（建副本失败退回主线、或副本恢复了）：引擎还在旧目录里改，改动就进不了
+            # 变更集。断开，这条消息按新目录重连（resume 续接上下文）
+            if session.reader_task:
+                session.reader_task.cancel()
+            await session.engine.disconnect()
+            session.engine = None
         # 会话配置指纹（模型、归属、装配、流程、MCP、权限模式）变了：断开重连（resume 续接上下文），
         # 让新配置、新装配目录在这条消息生效（方案 B2、详设 8.1 第 4 步）。正在跑的一轮不能切断：
         # 只记待重载，这条消息仍交给旧引擎，等手头的轮次都出 result 再断开（_read_loop）
@@ -903,6 +912,7 @@ class SessionManager:
             await asyncio.to_thread(_install_commit_hooks, session.cwd)
             session.engine_instance = uuid.uuid4().hex
             engine = self._make_engine(session)
+            session.engine_cwd = session.cwd
             # 连接前写：state_helper 按新实例认锁，agent 的 git 钩子按它写来源 trailer
             _write_engine_marker(
                 session.cwd, getattr(engine, "name", ""), session.conversation_id,
@@ -1463,8 +1473,8 @@ class SessionManager:
             if not running:
                 session.round_base_commit = head
                 session.round_base_tree = (record or {}).get("tree") or ""
-                if record is not None:
-                    record = await asyncio.to_thread(_capture_change_list, session, record) or record
+                # 只做了影响分析（只写了不进版本的 update-plan.json）的一轮也收清单，变更集编号之后补上（审查第 8 条）
+                record = await asyncio.to_thread(_capture_change_list, session, record) or record
             if running or record is None or record.get("card_tree") == record.get("tree"):
                 return
             # 这一轮的起点：一轮开始时取的树；取不到时退回上一张卡时的树、变更集基点
@@ -1707,16 +1717,19 @@ def _install_commit_hooks(cwd: Path | None) -> None:
         pass
 
 
-def _capture_change_list(session: Session, record: dict) -> dict | None:
-    """增量更新的影响分析（副本里的 update-plan.json）收成变更清单，记下所在对话与变更集（契约 3.14、F3 补充）。"""
+def _capture_change_list(session: Session, record: dict | None) -> dict | None:
+    """增量更新的影响分析（副本里的 update-plan.json）收成变更清单，记下所在对话与变更集（契约 3.14、F3 补充）。
+
+    这一轮还没有变更集时清单先不挂编号，之后这条对话开了变更集再补上（`change_lists.link`，接在变更集事件上）。
+    """
     from ..api import deps
     from ..kernel.changesets import store
     from .flow import change_lists
 
     root = deps.workspaces.project_root(session.project_id)
     captured = change_lists.capture(root, session.cwd, conversation_id=session.conversation_id,
-                                    changeset_id=record["id"])
-    if captured is None:
+                                    changeset_id=(record or {}).get("id"))
+    if captured is None or record is None:
         return None
     return store.update(root, record["id"], change_list_id=captured["id"])
 

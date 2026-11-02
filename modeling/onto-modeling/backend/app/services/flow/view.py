@@ -43,10 +43,18 @@ def _lock_running(flow: dict, roots: list[Path], state) -> set[str]:
         except OSError:
             continue
         for path in locks:
-            node = state.command_node(flow, path.name[len("lock-"):-len(".json")])
-            if node:
+            command = path.name[len("lock-"):-len(".json")]
+            node = state.command_node(flow, command)
+            if node and _lock_alive(Path(root), command):
                 running.add(node)
     return running
+
+
+def _lock_alive(root: Path, command: str) -> bool:
+    """命令锁的持有者还在（与内核守卫同一口径）：引擎换了实例、进程没了的旧锁不算进行中。"""
+    from ...kernel_guards import _guard_common
+
+    return _guard_common._command_alive(root, command)
 
 
 def _suggest_module(root: Path, state):
