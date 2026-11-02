@@ -11,12 +11,12 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
 import threading
 import time
-import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -30,7 +30,7 @@ from ..api.errors import ApiError
 from ..api.views import engine_label, project_meta_view
 from ..governance import health as health_checks
 from ..governance import lifecycle, roles
-from ..services import audit, auth, conversation_store, error_log
+from ..services import audit, auth, conversation_store, error_log, ops_center
 from ..services import backup as backup_service
 from ..services.agent_sessions import SDK_AVAILABLE, manager
 from ..services.workspace import META_FILE, WorkspaceError
@@ -38,6 +38,7 @@ from .admin import ONLINE_WINDOW_SECONDS, auth_admin_available, list_auth_users,
 from .auth_routes import BILLING_CURRENCY
 
 router = APIRouter(prefix="/api/v1/ops", tags=["ops"])
+_log = logging.getLogger(__name__)
 
 DISK_WARN_PCT = health_checks.DISK_WARN_PCT
 USAGE_RANGES = {"today": 1, "7d": 7, "14d": 14}
@@ -533,26 +534,151 @@ def backups(request: Request):
             "daily_at": None,
             "interval_hours": interval,
             "next_due_at": next_due,
-            "keep": backup_service.BACKUP_KEEP,
+            "keep": backup_service.keep_last(),
             "dir_volume": str(backup_service.backups_dir()),
         },
         "scope": list(BACKUP_SCOPE),
         "items": _backup_items(),
-        "last_drill": None,
+        "last_drill": ops_center.last_drill(),
     }
+
+
+def _backup_task(initiator: str) -> tuple[dict, str]:
+    """打一份备份并记进任务中心（O-40）；同一时刻只打一份。"""
+    if not _backup_lock.acquire(blocking=False):
+        raise ApiError("backup_in_progress", "已有备份在进行", 409)
+    try:
+        return ops_center.tracked("backup", "数据备份", initiator,
+                                  lambda: backup_service.run_backup(deps.workspaces))
+    finally:
+        _backup_lock.release()
 
 
 @router.post("/backups")
 async def run_backup(request: Request):
-    """O-37：立即备份（ops，admin 也可）。备份同步打完再回 202（任务中心 O-40 属于以后阶段）。"""
+    """O-37：立即备份（ops，admin 也可）。备份同步打完再回 202，任务进任务中心。"""
     _write(request, admin_too=True)
-    if not _backup_lock.acquire(blocking=False):
-        raise ApiError("backup_in_progress", "已有备份在进行", 409)
+    task, name = await asyncio.to_thread(_backup_task, deps.actor(request))
+    return JSONResponse(status_code=202, content={"task_id": task["id"], "name": name})
+
+
+# ---- O-38、O-39 恢复演练 ----
+
+
+def _drill_in_background(task: dict) -> None:
+    params = task.get("params") or {}
+
+    def run() -> None:
+        try:
+            ops_center.run_drill(task["id"], params["backup"], params["sample_projects"])
+        except Exception as exc:  # noqa: BLE001 - 演练出意外也要把任务收成失败，不能一直「运行中」
+            _log.exception("恢复演练出错")
+            ops_center.finish_task(task["id"], state="failed", error=str(exc)[:300])
+
+    threading.Thread(target=run, name=f"drill-{task['id']}", daemon=True).start()
+
+
+def _retry_drill(record: dict, actor: str) -> dict:
+    params = record.get("params") or {}
     try:
-        name = await asyncio.to_thread(backup_service.run_backup, deps.workspaces)
-    finally:
-        _backup_lock.release()
-    return JSONResponse(status_code=202, content={"task_id": f"backup-{uuid.uuid4().hex[:12]}", "name": name})
+        task = ops_center.start_drill(params.get("backup") or "", params.get("sample_projects"), actor)
+    except ops_center.OpsCenterError as exc:
+        raise ApiError(exc.code, str(exc), exc.status, exc.details) from exc
+    _drill_in_background(task)
+    return task
+
+
+def _retry_backup(_record: dict, actor: str) -> dict:
+    try:
+        return _backup_task(actor)[0]
+    except Exception as exc:  # noqa: BLE001 - 重试又失败：任务中心里已有一条失败记录
+        if isinstance(exc, ApiError):
+            raise
+        return ops_center.list_tasks(types=["backup"])[0]
+
+
+ops_center.register_retry("drill", _retry_drill)
+ops_center.register_retry("backup", _retry_backup)
+
+
+@router.post("/backups/drills")
+async def start_drill(request: Request):
+    """O-38：把一份备份恢复到临时目录，抽检项目能否打开、版本历史是否完整；后台跑，进任务中心。"""
+    _write(request)
+    body = await deps.json_body(request)
+    try:
+        task = ops_center.start_drill(str(body.get("backup") or ""), body.get("sample_projects"), deps.actor(request))
+    except ops_center.OpsCenterError as exc:
+        raise ApiError(exc.code, str(exc), exc.status, exc.details) from exc
+    _drill_in_background(task)
+    return JSONResponse(status_code=202, content={"task_id": task["id"]})
+
+
+@router.get("/backups/drills")
+def drills(request: Request, cursor: str = "", limit: int = 0):
+    """O-39：演练记录，新的在前。"""
+    _read(request)
+    items = [{**item, "at": deps.iso(item["at"])} for item in ops_center.list_drills()]
+    page = deps.page(items, cursor, limit, {})
+    return {"items": page["items"], "next_cursor": page["next_cursor"]}
+
+
+# ---- O-40、O-41 任务中心 ----
+
+
+@router.get("/tasks")
+def tasks(request: Request, type: str = "", state: str = "", cursor: str = "", limit: int = 0):  # noqa: A002
+    """O-40：备份、包仓库备份、恢复演练的任务记录（新的在前）；证据采集本期没有。"""
+    from ..services import ops_center as center
+
+    _read(request)
+    types = [item for item in type.split(",") if item]
+    states = [item for item in state.split(",") if item]
+    if set(types) - set(center.TASK_TYPES) or set(states) - set(center.TASK_STATES):
+        raise ApiError("invalid_argument", "type 或 state 取值不合法", 400, {"fields": {"type": "enum", "state": "enum"}})
+    items = [center.task_view(record, lambda pid: project_meta_view(_meta_or_none(pid) or {"id": pid}))
+             for record in center.list_tasks(types=types, states=states)]
+    page = deps.page(items, cursor, limit, {"type": types, "state": states})
+    return {"items": page["items"], "next_cursor": page["next_cursor"]}
+
+
+@router.post("/tasks/{task_id}/{op}")
+async def task_action(task_id: str, op: str, request: Request):
+    """O-41：cancel（还在跑的恢复演练）、retry（失败的备份、恢复演练）；resume 只有证据采集有。"""
+    _write(request)
+    if op not in ("cancel", "retry", "resume"):
+        raise ApiError("not_found", "没有这个操作", 404)
+    try:
+        record = await asyncio.to_thread(ops_center.act, task_id, op, deps.actor(request))
+    except ops_center.OpsCenterError as exc:
+        raise ApiError(exc.code, str(exc), exc.status, exc.details) from exc
+    audit.record(type="ops", action=f"ops.task.{op}", actor=deps.actor(request) or "anonymous", method=request.method,
+                 path=request.url.path, detail={"task_id": task_id})
+    return ops_center.task_view(record, lambda pid: project_meta_view(_meta_or_none(pid) or {"id": pid}))
+
+
+# ---- O-43、O-44 数据保留 ----
+
+
+@router.get("/retention")
+def retention(request: Request):
+    _read(request)
+    return {"items": ops_center.retention_items()}
+
+
+@router.put("/retention")
+async def save_retention(request: Request):
+    """O-44：只改可编辑的项，改完下一次清理就按新值。"""
+    _write(request)
+    body = await deps.json_body(request)
+    try:
+        items = ops_center.save_retention(body.get("items"))
+    except ops_center.OpsCenterError as exc:
+        raise ApiError(exc.code, str(exc), exc.status, exc.details) from exc
+    audit.record(type="ops", action="ops.retention", actor=deps.actor(request) or "anonymous", method=request.method,
+                 path=request.url.path, detail={"items": [item.get("id") for item in body.get("items") or []
+                                                         if isinstance(item, dict)]})
+    return {"items": items}
 
 
 # ---- O-25～O-28 插件运维（O-29 熔断在 ops_control；逻辑在 services/packs/governance.py） ----
@@ -702,12 +828,13 @@ def pack_repo_backups(request: Request):
 
 @router.post("/pack-repo/backups")
 def pack_repo_backup_now(request: Request):
-    """O-34：立即备份包仓库（同步打完再回 202，任务中心 O-40 以后做）。"""
+    """O-34：立即备份包仓库（同步打完再回 202），任务进任务中心。"""
     _write(request)
     from ..services.packs import channels
 
-    name = channels.backup(deps.workspaces.packs.repository)
-    return JSONResponse(status_code=202, content={"task_id": f"pack-backup-{uuid.uuid4().hex[:12]}", "name": name})
+    task, name = ops_center.tracked("pack_repo_backup", "包仓库", deps.actor(request),
+                                    lambda: channels.backup(deps.workspaces.packs.repository))
+    return JSONResponse(status_code=202, content={"task_id": task["id"], "name": name})
 
 
 # ---- 追加写日志的游标分页（审计、错误留档） ----

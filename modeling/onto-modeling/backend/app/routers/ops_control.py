@@ -32,7 +32,6 @@ from . import ops
 
 router = APIRouter(prefix="/api/v1/ops", tags=["ops"])
 
-DIAGNOSTICS_KEEP_DAYS = 7
 AUDIT_EXPORT_LIMIT = 100_000
 RANGES = {"1h": 3600, "24h": 86400, "7d": 7 * 86400}
 BUCKETS = 12
@@ -539,6 +538,33 @@ async def breaker(name: str, version: str, request: Request):
 # ---- O-42 版本清单 ----
 
 
+# ---- O-11、O-12 导出器 ----
+
+
+@router.get("/exporters")
+def exporters(request: Request):
+    """O-11：本部署有的导出器（Prometheus 抓取地址、本地日志文件）。"""
+    from ..services import ops_center
+
+    _read(request)
+    return {"items": ops_center.exporter_items()}
+
+
+@router.put("/exporters")
+async def save_exporters(request: Request):
+    """O-12：改完马上生效（不用滚动重启）。"""
+    from ..services import ops_center
+
+    _write(request)
+    body = await deps.json_body(request)
+    try:
+        items = ops_center.save_exporters(body.get("items"))
+    except ops_center.OpsCenterError as exc:
+        raise ApiError(exc.code, str(exc), exc.status, exc.details) from exc
+    _ops_audit(request, "ops.exporters", items=[{"id": item["id"], "enabled": item["enabled"]} for item in items])
+    return {"items": items, "effective": "immediate"}
+
+
 @router.get("/versions")
 def versions(request: Request):
     _read(request)
@@ -585,6 +611,13 @@ def _app_version() -> str:
 DIAGNOSTIC_PARTS = ("logs_24h", "config_refs", "versions", "recent_errors", "startup_report", "pool_alert_snapshot")
 
 
+def _diagnostics_keep_days() -> int:
+    """诊断包保留天数：运维在数据保留里改过就用改过的（O-44），缺省 7 天。"""
+    from ..services import ops_center
+
+    return ops_center.retention_value("diagnostics")
+
+
 def _diagnostics_dir() -> Path:
     return Path(config.DATA_DIR) / "ops" / "diagnostics"
 
@@ -593,7 +626,7 @@ def _purge_old_diagnostics() -> None:
     directory = _diagnostics_dir()
     if not directory.is_dir():
         return
-    cutoff = time.time() - DIAGNOSTICS_KEEP_DAYS * 86400
+    cutoff = time.time() - _diagnostics_keep_days() * 86400
     for path in directory.glob("*.zip"):
         if path.stat().st_mtime < cutoff:
             path.unlink(missing_ok=True)
@@ -607,12 +640,12 @@ def _diagnostic_item(path: Path) -> dict:
         meta = {}
     created = path.stat().st_mtime
     return {"id": path.stem, "name": path.name, "size": path.stat().st_size, "created_at": deps.iso(created),
-            "created_by": meta.get("created_by"), "expires_at": deps.iso(created + DIAGNOSTICS_KEEP_DAYS * 86400)}
+            "created_by": meta.get("created_by"), "expires_at": deps.iso(created + _diagnostics_keep_days() * 86400)}
 
 
 @router.post("/diagnostics")
 async def create_diagnostics(request: Request):
-    """O-45：诊断包。全部脱敏，不含密钥和项目内容，保留 7 天。"""
+    """O-45：诊断包。全部脱敏，不含密钥和项目内容，缺省保留 7 天（O-44 可改）。"""
     _write(request)
     body = await deps.json_body(request)
     include = body.get("include") or list(DIAGNOSTIC_PARTS)

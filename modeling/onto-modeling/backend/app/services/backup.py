@@ -1,4 +1,4 @@
-"""数据备份：恢复一套部署所需的状态打成一个 tar.gz，保留最近 BACKUP_KEEP 份。
+"""数据备份：恢复一套部署所需的状态打成一个 tar.gz，保留最近 keep_last() 份（缺省 BACKUP_KEEP，O-44 可改）。
 
 包内布局与数据目录一一对应，恢复时 `data/` 解到 ONTO_WEB_DATA_DIR、`home/` 解到 HOME：
 
@@ -43,6 +43,13 @@ _PARTIAL_SUFFIX = ".partial"
 _STAGING_PREFIX = ".staging-"
 _SQLITE_SUFFIXES = (".sqlite", ".sqlite3", ".db")
 _SQLITE_SIDECARS = ("-wal", "-shm", "-journal")
+
+
+def keep_last() -> int:
+    """保留最近几份：运维在数据保留里改过就用改过的（O-44），否则 BACKUP_KEEP。"""
+    from . import ops_center
+
+    return ops_center.retention_value("backups")
 
 
 def backups_dir() -> Path:
@@ -115,6 +122,9 @@ def _data_entries(manager) -> list[Path]:
         Path(config.DATA_DIR) / "flow-state",
         Path(config.DATA_DIR) / "change-lists",
         error_log._file(),
+        # 个人偏好与通知（A-08、A-13）；运维的数据保留、导出器设置与演练、任务记录（诊断包不备）
+        Path(config.DATA_DIR) / "me",
+        *(Path(config.DATA_DIR) / "ops" / name for name in ("retention.json", "exporters.json", "drills.json", "tasks.json")),
     ]
 
 
@@ -211,7 +221,7 @@ def run_backup(manager) -> str:
     except BaseException:
         partial.unlink(missing_ok=True)
         raise
-    for old in list_backups()[BACKUP_KEEP:]:
+    for old in list_backups()[keep_last():]:
         (directory / old["name"]).unlink(missing_ok=True)
     from ..governance import secrets
 
@@ -249,7 +259,10 @@ async def scheduler_loop(manager, *, sleep=asyncio.sleep) -> None:
         if delay > 0:
             await sleep(delay)
         try:
-            await asyncio.to_thread(run_backup, manager)
+            from . import ops_center
+
+            # 定时备份也进任务中心（O-40），发起人是 system
+            await asyncio.to_thread(ops_center.tracked, "backup", "数据备份", "system", lambda: run_backup(manager))
         except Exception:
             _log.exception("定时备份失败，稍后重试")
             await sleep(min(period, FAILURE_RETRY_SECONDS))

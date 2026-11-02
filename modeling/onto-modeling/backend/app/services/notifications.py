@@ -1,6 +1,6 @@
 """个人偏好与通知中心（契约 A-08、A-13、A-14，用户流 EU-01）。
 
-按用户存在数据目录 `me/<用户>/`：`preferences.json`（整体替换）、`notifications.json`（最新在前，保留 30 天、
+按用户存在数据目录 `me/<用户>/`：`preferences.json`（整体替换）、`notifications.json`（最新在前，缺省保留 30 天（O-44 可改）、
 最多 NOTIFICATIONS_MAX 条）。本地模式（不登录）的用户是空用户名，和用户流同一个频道。
 
 通知由各处调 `notify` 发：存一条、往用户流推 `notification`。同一对话里还没读的同类通知（如一轮跑完）
@@ -23,7 +23,6 @@ from .. import config
 _log = logging.getLogger(__name__)
 _LOCK = threading.Lock()
 
-RETENTION_SECONDS = 30 * 24 * 3600
 NOTIFICATIONS_MAX = 500
 TITLE_MAX = 80
 BODY_MAX = 300
@@ -111,7 +110,15 @@ def _load(username: str, now: float) -> list[dict]:
     items = _read(_dir(username) / "notifications.json", [])
     if not isinstance(items, list):
         return []
-    return [item for item in items if isinstance(item, dict) and now - float(item.get("at") or 0) < RETENTION_SECONDS]
+    keep = retention_seconds()
+    return [item for item in items if isinstance(item, dict) and now - float(item.get("at") or 0) < keep]
+
+
+def retention_seconds() -> int:
+    """通知保留期：运维在数据保留里改过就用改过的（O-44），缺省 30 天。"""
+    from . import ops_center
+
+    return ops_center.retention_value("notifications") * 86400
 
 
 def _view(item: dict) -> dict:

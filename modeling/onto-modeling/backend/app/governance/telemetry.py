@@ -105,6 +105,21 @@ def log_file() -> Path:
     return log_dir() / LOG_FILE
 
 
+def _configured_keep_days() -> int:
+    """日志保留天数：运维在数据保留里改过就用改过的（O-44，ops/retention.json），否则 LOG_KEEP_DAYS。"""
+    try:
+        value = json.loads((Path(config.DATA_DIR) / "ops" / "retention.json").read_text(encoding="utf-8"))["logs"]["days"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return LOG_KEEP_DAYS
+    return value if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 3650 else LOG_KEEP_DAYS
+
+
+def set_log_keep_days(days: int) -> None:
+    """改日志保留天数，下一次滚动时按新值删旧文件。"""
+    if _file_handler is not None:
+        _file_handler.backupCount = days
+
+
 def configure_logging(level: int = logging.INFO) -> None:
     """根 logger 输出 JSON（控制台 + 数据目录按日轮转的文件）；重复调用无副作用。"""
     global _configured, _file_handler
@@ -120,7 +135,7 @@ def configure_logging(level: int = logging.INFO) -> None:
     try:
         log_dir().mkdir(parents=True, exist_ok=True)
         _file_handler = logging.handlers.TimedRotatingFileHandler(
-            log_file(), when="midnight", backupCount=LOG_KEEP_DAYS, encoding="utf-8", utc=True,
+            log_file(), when="midnight", backupCount=_configured_keep_days(), encoding="utf-8", utc=True,
         )
         _file_handler.setFormatter(formatter)
         root.addHandler(_file_handler)

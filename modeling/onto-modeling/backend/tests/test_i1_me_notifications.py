@@ -83,7 +83,7 @@ def test_retention_and_grouping(api, monkeypatch):
     notifications.notify("employee_0001", "step_done", "一步跑完", "乙", group="p:c")
     items = notifications.list_notifications("employee_0001")
     assert [item["body"] for item in items] == ["乙"]  # 同一对话还没读的同类只留最新一条
-    later = notifications.RETENTION_SECONDS + 10
+    later = notifications.retention_seconds() + 10
     real = notifications.time.time
     monkeypatch.setattr(notifications.time, "time", lambda: real() + later)
     assert notifications.list_notifications("employee_0001") == []
