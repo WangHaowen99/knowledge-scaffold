@@ -6,7 +6,10 @@
   - warn：上次启动核对有项目装配失败（这些项目保持原版本还能用，其余项目不受影响）；
   - ok：其余情况；镜像里没有工具箱（测试里的最小部署）也算 ok。
 - O-29 熔断的包查询：返回 O-25 的一项，包或版本不在包仓库里返回 None（接口回 404）。
-- O-42 版本清单：各包 stable 版本、`packs.lock` 格式版本。
+- O-42 版本清单：各包 stable 版本、`packs.lock` 与 `flow.lock` 格式版本。
+- O-25～O-28 插件运维（B5c，ADR-0067）：列表、灰度、回滚通道、禁用版本。灰度只做按项目：beta 通道带比例，
+  跟随 stable 的项目按项目编号的稳定分桶落进比例里就跟 beta（`runtime.follow`）；按租户、自动熔断属于 P4，
+  接口如实回未开放。
 - 提交 trailer 的 `Onto-Packs`（详设 4.3、契约 7.17）：本项目生效中的装配里启用的包与版本，
   `core@0.2.0+c08f6c92, trace@0.9.1+98687971` 这样按名字排；没有装配目录时不带。
 """
@@ -18,6 +21,7 @@ import threading
 from pathlib import Path
 
 from . import lockfile
+from . import manifest as mf
 
 _log = logging.getLogger(__name__)
 _LOCK = threading.Lock()
@@ -79,17 +83,148 @@ def pack_item(manager, name: str, version: str) -> dict | None:
         current = lock.get(name) if lock else None
         if current and current.enabled and current.version == version:
             using += 1
+    if version in repository.disabled(name):
+        channel, rollout_pct = "retired", 0
     breaker = ops_state.breaker_state(name, version)
     return {"name": name, "kind": manifest.kind, "version": version, "channel": channel,
             "rollout_pct": rollout_pct, "rollout_by": rollout_by, "error_rate_pct": None,
-            "breaker": breaker or "closed", "projects_using": using}
+            "breaker": breaker or "closed", "projects_using": using,
+            "rollback_to": rollback_to(repository, name, version, channel)}
+
+
+def rollback_to(repository, name: str, version: str, channel: str) -> str | None:
+    """O-27 能把这个通道改回去的版本：通道历史里上一个不同、还在、没禁用的版本；历史里没有时取更早的版本。"""
+    if channel not in ("stable", "beta"):
+        return None
+    disabled = repository.disabled(name)
+    usable = [item for item in repository.versions(name) if item != version and item not in disabled]
+    history = [item.get("version") for item in repository.channel_entry(name).get("history") or []
+               if item.get("channel") == channel]
+    for candidate in reversed(history):
+        if candidate and candidate in usable:
+            return candidate
+    older = [item for item in usable if mf.version_key(item) < mf.version_key(version)]
+    return older[0] if older else None
+
+
+def ops_items(manager) -> list[dict]:
+    """O-25：每个包在通道上的版本、项目在用的版本与禁用的版本，各一行。"""
+    runtime = manager.packs
+    runtime.core_version()
+    repository = runtime.repository
+    used: dict[str, set[str]] = {}
+    for root in manager._project_dirs():
+        try:
+            lock = lockfile.read(root)
+        except (ValueError, OSError):
+            continue
+        for entry in (lock.enabled() if lock else []):
+            used.setdefault(entry.name, set()).add(entry.version)
+    items = []
+    for name in repository.names():
+        entry = repository.channel_entry(name)
+        beta = entry.get("beta") if isinstance(entry.get("beta"), dict) else {}
+        wanted = {repository.latest(name, "stable"), beta.get("version"), *used.get(name, set()),
+                  *repository.disabled(name)}
+        for version in sorted((item for item in wanted if item and repository.has(name, item)),
+                              key=mf.version_key, reverse=True):
+            item = pack_item(manager, name, version)
+            if item is not None:
+                items.append(item)
+    return items
+
+
+class OpsError(Exception):
+    def __init__(self, code: str, message: str, status: int = 409, details: dict | None = None):
+        super().__init__(message)
+        self.code = code
+        self.status = status
+        self.details = details
+
+
+def _require(manager, name: str, version: str) -> None:
+    if not manager.packs.repository.has(name, version):
+        raise OpsError("pack_version_not_found", "包或版本不存在", 404)
+
+
+def set_rollout(manager, name: str, version: str, *, percent: int, by: str, targets: list[str], actor: str) -> dict:
+    """O-26：调 beta 通道的放量比例（按项目）。stable 版本恒为全量；按租户放量本期未开放。"""
+    repository = manager.packs.repository
+    _require(manager, name, version)
+    if by != "project":
+        raise OpsError("rollout_not_available", "按租户灰度本期未开放", 501, {"by": by})
+    entry = repository.channel_entry(name)
+    beta = entry.get("beta") if isinstance(entry.get("beta"), dict) else {}
+    if beta.get("version") != version:
+        raise OpsError("invalid_argument", "只有 beta 通道上的版本能调灰度", 400, {"fields": {"version": "not_beta"}})
+    rollout = {key: value for key, value in beta.items() if key not in ("version", "percent", "by", "targets")}
+    repository.set_channel(name, "beta", version, by=actor,
+                           rollout={**rollout, "percent": percent, "by": by, "targets": list(targets)})
+    return pack_item(manager, name, version)
+
+
+def rollback_channel(manager, name: str, *, channel: str, to_version: str, actor: str) -> dict:
+    """O-27：把通道指针改回旧版本。锁定版本的项目不受影响，跟随通道的项目下一条消息生效；core 的 stable
+    同 O-32（先备份包仓库）。"""
+    from . import builtin, channels
+
+    repository = manager.packs.repository
+    _require(manager, name, to_version)
+    if to_version in repository.disabled(name):
+        raise OpsError("pack_unavailable", f"{name} {to_version} 已被禁用", 409, {"reason": "not_installed"})
+    if channel == "stable" and name == builtin.CORE:
+        channels.set_core_default(repository, to_version, by=actor, backup_first=True)
+    elif channel == "beta":
+        beta = repository.channel_entry(name).get("beta")
+        rollout = {key: value for key, value in (beta or {}).items() if key != "version"} if isinstance(beta, dict) else None
+        repository.set_channel(name, "beta", to_version, by=actor, rollout=rollout)
+    else:
+        repository.set_channel(name, channel, to_version, by=actor)
+    return pack_item(manager, name, to_version)
+
+
+def disable_version(manager, name: str, version: str, *, reason: str, actor: str) -> dict:
+    """O-28：禁用一个版本：新项目不能再启用它，通道指着它的时候改取最新的可用版本（跟随的项目下一条消息换过去）。
+    基础建模能力的默认版本不能禁用（新项目会建不起来），先回滚默认版本。"""
+    from . import builtin
+
+    repository = manager.packs.repository
+    _require(manager, name, version)
+    if name == builtin.CORE and repository.latest(name, "stable") == version:
+        raise OpsError("pack_required", "基础建模能力的默认版本不能禁用，先回滚默认版本", 409)
+    repository.disable_version(name, version, reason, by=actor)
+    return pack_item(manager, name, version)
+
+
+def rollout_bucket(project_id: str) -> int:
+    """按项目灰度的稳定分桶 0～99（同一个项目每次落在同一个桶）。"""
+    import hashlib
+
+    return int(hashlib.sha256(project_id.encode("utf-8")).hexdigest()[:8], 16) % 100
+
+
+def beta_for(repository, name: str, project_id: str) -> str | None:
+    """跟随 stable 的项目这次该不该拿 beta：beta 在名单里点了它，或分桶落在放量比例里。"""
+    beta = repository.channel_entry(name).get("beta")
+    if not isinstance(beta, dict) or not beta.get("version") or str(beta.get("by") or "project") != "project":
+        return None
+    version = beta["version"]
+    if not repository.has(name, version) or version in repository.disabled(name):
+        return None
+    if project_id in (beta.get("targets") or []) or rollout_bucket(project_id) < int(beta.get("percent") or 0):
+        return version
+    return None
 
 
 def versions(manager) -> list[dict]:
     """O-42：各包 stable 版本与锁文件格式版本。"""
     runtime = manager.packs
+    from ..flow import flowlock
+
     items = [{"category": "lockfile", "component": "packs.lock", "version": str(lockfile.LOCK_VERSION),
-              "note": "2：core 拆出可选包之后的锁文件"}]
+              "note": "2：core 拆出可选包之后的锁文件"},
+             {"category": "lockfile", "component": "flow.lock", "version": str(flowlock.FLOW_LOCK_VERSION),
+              "note": "组装后的流程节点"}]
     try:
         runtime.core_version()
         repository = runtime.repository

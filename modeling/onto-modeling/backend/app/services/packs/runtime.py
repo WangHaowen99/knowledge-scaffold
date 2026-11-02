@@ -169,10 +169,15 @@ class PackRuntime:
             return False
         changed = False
         guarded = self._plannable(lock)  # 原来就装配不了的锁不拦（跟随可能正好修好它）
+        from .governance import beta_for
+
         for entry in sorted(lock.packs, key=lambda item: (item.name != CORE, item.name)):
             if not entry.follow or not entry.enabled:
                 continue
             latest = self.repository.latest(entry.name, entry.channel or "stable")
+            if (entry.channel or "stable") == "stable":
+                # 按项目灰度（O-26）：分桶落在 beta 的放量比例里的项目跟 beta
+                latest = beta_for(self.repository, entry.name, Path(root).name) or latest
             if not latest or latest == entry.version:
                 continue
             before = (entry.version, entry.sha256)
