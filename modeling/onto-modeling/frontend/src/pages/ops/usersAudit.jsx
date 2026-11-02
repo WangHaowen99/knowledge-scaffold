@@ -39,10 +39,10 @@ function ExportButton({ onPick }) {
       {open ? (
         <div style={{ position: 'absolute', top: 36, right: 0, zIndex: 5 }}>
           <Menu
-            style={{ minWidth: 230 }}
+            style={{ minWidth: 120 }}
             items={[
-              { label: '导出 CSV（表格）', icon: 'download', fmt: 'csv' },
-              { label: '导出 JSONL（完整字段）', icon: 'download', fmt: 'jsonl' },
+              { label: 'CSV', icon: 'download', fmt: 'csv' },
+              { label: 'JSONL', icon: 'download', fmt: 'jsonl' },
             ]}
             onPick={(x) => { setOpen(false); onPick(x.fmt); }}
           />
@@ -87,7 +87,7 @@ export function AuditPane({ nameOf }) {
   async function exportAs(format) {
     try {
       await services.download('/audit/export', exportName(format), { ops: true, query: { ...auditQuery(filter, qd), format } });
-      toast('已按当前筛选导出审计，已写审计');
+      toast('已导出');
       load(false);
     } catch (e) {
       toast(errorText(e), 'alert');
@@ -106,7 +106,7 @@ export function AuditPane({ nameOf }) {
       {loadErr ? <Note tone="red">{loadErr}</Note> : null}
       {data && !items.length ? (
         <div className="card" style={{ padding: 10 }}>
-          <Empty icon="list" title="没有符合条件的审计记录">换个类型或关键词试试。</Empty>
+          <Empty icon="list" title="没有符合条件的审计记录" />
         </div>
       ) : null}
       {items.length ? (
@@ -130,7 +130,6 @@ export function AuditPane({ nameOf }) {
           {pagerText(items.length, data.total)} · <Button size="xs" kind="ghost" disabled={busy} onClick={() => load(true, data)}>加载更多</Button>
         </div>
       ) : null}
-      <div className="xs muted mt8">审计只追加不可编辑，保留 365 天。读请求不记录。</div>
     </div>
   );
 }
@@ -139,11 +138,10 @@ export function ErrorsPane({ data, loadError, busy, onMore, onOpen }) {
   const items = data?.items || [];
   return (
     <div className="mt16">
-      <Note tone="gray">用户只看到右侧那句友好提示，原始错误留在这里，并标出是哪个包、哪个节点出的错。点击一行查看完整堆栈。</Note>
-      {loadError ? <Note tone="red" className="mt12">{loadError}</Note> : null}
+      {loadError ? <Note tone="red">{loadError}</Note> : null}
       {data && !items.length ? (
         <div className="card mt12" style={{ padding: 10 }}>
-          <Empty icon="check" title="没有错误留档">服务端出错时，原始错误会留在这里。</Empty>
+          <Empty icon="check" title="没有错误留档" />
         </div>
       ) : null}
       {items.length ? (

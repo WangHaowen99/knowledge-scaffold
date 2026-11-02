@@ -8,10 +8,11 @@ const DAY = 24 * 3600 * 1000;
 
 // ---------- 角色 ----------
 
+// title：角色含义，放在改角色菜单每一项的悬停里
 export const ROLE_OPTIONS = [
-  { value: 'user', label: '建模者', icon: 'user' },
-  { value: 'admin', label: '管理员', icon: 'key' },
-  { value: 'ops', label: '运维', icon: 'wrench' },
+  { value: 'user', label: '建模者', icon: 'user', title: '只能看到自己的项目' },
+  { value: 'admin', label: '管理员', icon: 'key', title: '模型、插件、系统设置' },
+  { value: 'ops', label: '运维', icon: 'wrench', title: '运维管理面' },
 ];
 export const ROLE_TONE = { user: 'blue', admin: 'indigo', ops: 'amber' };
 export const roleLabel = (role) => ROLE_OPTIONS.find((r) => r.value === role)?.label || role || '建模者';
@@ -81,11 +82,11 @@ export function userStats(stats, total) {
     },
     {
       key: 'locked', label: '登录失败锁定', icon: 'lock', value: s.locked ?? '—',
-      desc: s.locked == null ? '认证服务没有提供锁定统计' : '连续登录失败、暂时被锁定的账号',
+      desc: s.locked == null ? '认证服务未提供' : null,
     },
     {
       key: 'auth', label: '鉴权', icon: 'key', value: auth.alg || 'RS256',
-      desc: auth.issuer_checked === false ? 'auth-server · JWKS 验签' : 'auth-server · JWKS 验签 · 校验颁发方与受众',
+      desc: 'JWKS 验签',
     },
   ];
 }
@@ -117,7 +118,7 @@ export function passwordProblems(username, password) {
 // 重置按钮能不能点、点了发什么
 export function resetRequest({ username, password, generate }) {
   if (generate) return { ok: true, body: { generate: true, require_change: false } };
-  if (!password) return { ok: false, error: '请填写新密码，或点「生成」由服务端生成' };
+  if (!password) return { ok: false, error: '请填写新密码或点「生成」' };
   const failed = passwordProblems(username, password);
   if (failed.length) return { ok: false, error: `不满足：${ruleTexts(failed).join('、')}`, failed };
   // require_change：auth-server 不支持（B2 第 14 条），界面不勾、请求里也不带 true
@@ -138,13 +139,11 @@ export function defaultTransferTarget(users, username) {
 
 export const userOptionLabel = (u) => `${u.display_name || u.username}（${u.username}）`;
 
-// 「移入回收站」选项：回收站在用（O-52 retention_days 有值）才能选；
-// B2 后端删除已是永久删除、回收站只剩存量（retention_days 为 null，AD-04 trash 返回 trash_unsupported）
+// 「移入回收站」选项：回收站在用（O-52 retention_days 有值）才出二选一；
+// B2 后端删除已是永久删除、回收站只剩存量（retention_days 为 null，AD-04 trash 返回 trash_unsupported）时只能移交（R20）
 export function trashOption(retentionDays) {
-  if (typeof retentionDays === 'number') {
-    return { enabled: true, text: `${retentionDays} 天内管理员或运维可以恢复，之后永久删除` };
-  }
-  return { enabled: false, text: '暂不支持：删除项目已改为直接永久删除，请移交给其他建模者' };
+  if (typeof retentionDays === 'number') return { enabled: true, text: `${retentionDays} 天内可恢复` };
+  return { enabled: false, text: null };
 }
 
 export function deleteSub(user, projectCount) {
@@ -157,7 +156,7 @@ export function deleteSub(user, projectCount) {
 export function deleteRequest({ projectCount, mode, target, users, username, trashEnabled }) {
   if (!projectCount) return { ok: true, body: {} };
   if (mode === 'trash') {
-    if (!trashEnabled) return { ok: false, error: '暂不支持移入回收站，请移交给其他建模者' };
+    if (!trashEnabled) return { ok: false, error: '回收站不可用' };
     return { ok: true, body: { projects: 'trash' } };
   }
   if (!target) return { ok: false, error: '请选择接手这些项目的建模者' };
@@ -169,7 +168,7 @@ export function deleteRequest({ projectCount, mode, target, users, username, tra
 export function deleteDoneText(result, nameOf = (x) => x) {
   if (result?.transferred) return `已删除用户，${result.transferred} 个项目已移交给${nameOf(result.transfer_to)}`;
   if (result?.trashed) return `已删除用户，${result.trashed} 个项目已移入回收站`;
-  return '已删除用户，已写审计';
+  return '已删除用户';
 }
 
 // AD-04 返回 trash_unsupported（B2 第 15 条）：把选项改成不可选并切回移交
@@ -180,7 +179,7 @@ export const isTrashUnsupported = (err) => err?.code === 'invalid_argument' && e
 // 筛选分段（设计稿七项）；「全部」不带 type
 export const AUDIT_FILTERS = [
   ['all', '全部'], ['write', '写请求'], ['mcp', 'MCP 写入'], ['commit', 'agent 提交'],
-  ['plugin', '插件安装 / 切换 / 回滚'], ['evidence', '证据采集'], ['ops', '运维操作'],
+  ['plugin', '插件'], ['ops', '运维操作'],
 ];
 
 // AuditEntry.type → [表格里的 chip 文字, 配色]（设计稿 opAud 的配色，其余类型按设计系统补）
@@ -293,21 +292,19 @@ export function purgeText(purgeAt, now = Date.now()) {
   return d === 0 ? '今天' : `${d} 天 后`;
 }
 
-export function trashIntro(retentionDays) {
-  return typeof retentionDays === 'number'
-    ? `删除的项目先进回收站，${retentionDays} 天后自动永久删除。`
-    : '这里是早先删除的项目，不会自动清除，需要时手动永久删除。';
-}
-
-export function trashEmptyText(retentionDays) {
-  return typeof retentionDays === 'number' ? `被删除的项目会在这里保留 ${retentionDays} 天。` : '现在删除项目会直接永久删除，不进回收站。';
+// 回收站页签（R21）：有保留期时照常；没有保留期（只剩旧版存量）时不出「自动清除」列，存量清空后整个页签不出。
+// 还没读到或读失败时照常出页签（失败要在页签里报错）
+export function trashView(data, { loadError = false } = {}) {
+  if (!data) return { show: true, autoPurge: true };
+  const autoPurge = typeof data.retention_days === 'number';
+  return { show: loadError || autoPurge || (data.items || []).length > 0, autoPurge };
 }
 
 // O-53 恢复：重名时服务端自动改名
 export function restoreDoneText(item, restored) {
   const before = item?.project?.name;
   const after = restored?.name;
-  return after && before && after !== before ? `已恢复为「${after}」，回到所有者的项目列表` : '已恢复到所有者的项目列表';
+  return after && before && after !== before ? `已恢复为「${after}」` : '已恢复';
 }
 
 // ---------- 无主项目与指定所有者（AD-06、AD-07，设计稿没画入口） ----------
