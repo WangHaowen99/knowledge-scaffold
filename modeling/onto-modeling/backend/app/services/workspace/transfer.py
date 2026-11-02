@@ -119,6 +119,11 @@ class TransferMixin:
         )
         if not (root / ".git").is_dir():
             _git(root, "init")
+        else:
+            from ...kernel.changesets import worktree as changeset_copies
+
+            # 原环境的助手副本登记与副本分支（没确认的改动）不随迁移包带过来（ADR-0046）
+            changeset_copies.strip_copy_metadata(root)
         _git(root, "config", "user.name", "Onto Modeling")
         _git(root, "config", "user.email", "onto-modeling@example.invalid")
         # 保险：禁用可能随包携带的 hooks 路径配置

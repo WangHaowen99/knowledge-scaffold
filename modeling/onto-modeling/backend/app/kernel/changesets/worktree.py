@@ -340,6 +340,15 @@ def reset(root: Path, copy: Path, to: str | None = None) -> None:
     seed_state(root, copy)
 
 
+def strip_copy_metadata(root: Path) -> None:
+    """克隆、迁移导入带过来的 `.git` 里有源项目的副本登记与副本分支（没确认的改动）：一并去掉，
+    新项目的副本从自己的主线重新建。"""
+    root = Path(root)
+    shutil.rmtree(root / ".git" / "worktrees", ignore_errors=True)
+    if _branch_exists(root) and _run_git(root, ("symbolic-ref", "-q", "--short", "HEAD")).stdout.strip() != BRANCH:
+        _run_git(root, ("branch", "-D", BRANCH))
+
+
 def remove(root: Path) -> None:
     """删掉副本与副本分支（删除项目时由删除流程整体处理，这里给测试与运维用）。"""
     copy = copy_path(root)

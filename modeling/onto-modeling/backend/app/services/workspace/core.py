@@ -441,6 +441,10 @@ class WorkspaceCore:
             shutil.copytree(source_root / ".git", dest_root / ".git", symlinks=True)
             for path in sorted((dest_root / ".git").rglob("*.lock")):
                 path.unlink(missing_ok=True)
+            from ...kernel.changesets import worktree as changeset_copies
+
+            # 源项目的助手副本登记与副本分支（没确认的改动）不随克隆带走（ADR-0046）
+            changeset_copies.strip_copy_metadata(dest_root)
             release_tags = _git(dest_root, "tag", "--list", "release/*").split()
             if release_tags:
                 _git(dest_root, "tag", "-d", *release_tags)

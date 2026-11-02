@@ -466,3 +466,18 @@ def test_autobuild_slice_changeset_merges_with_its_own_source(project):
     out = service.merge(workspaces, project_id, record["id"], actor="employee_0001", needs_review=True)
     assert trailers(root)["Onto-Source"] == "autobuild" and trailers(root)["Onto-Changeset"] == record["id"]
     assert out["record"]["needs_review"] is True and out["record"]["build_mode"] == "L4"
+
+
+def test_clone_with_history_leaves_the_assistant_copy_behind(project):
+    """克隆带历史时，源项目的副本登记与副本分支（没确认的改动）不随过去，新项目的副本从自己的主线建。"""
+    workspaces, project_id, root = project
+    _pending(workspaces, project_id, root)
+    clone = workspaces.clone_project(project_id, owner="employee_0001", include_history=True)
+    clone_root = workspaces.project_root(clone["id"])
+    assert not (clone_root / ".git" / "worktrees").exists()
+    assert subprocess.run(["git", "rev-parse", "--verify", "-q", "refs/heads/onto/assistant"], cwd=clone_root,
+                          capture_output=True).returncode != 0
+    copy = service.copy_for_turn(workspaces, clone["id"], clone_root)
+    assert worktree.healthy(clone_root) and not (copy / "ontology/object/门店.md").exists()
+    # 源项目的副本不受影响
+    assert worktree.healthy(root) and (worktree.copy_path(root) / "ontology/object/门店.md").is_file()
