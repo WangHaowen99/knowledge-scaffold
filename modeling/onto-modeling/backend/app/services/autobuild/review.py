@@ -320,6 +320,34 @@ def revert_slice(project_id: str, run_id: str, slice_id: str, *, actor: str) -> 
             "reverted_to_version_label": run.get("base_version_label")}
 
 
+def repair_reverts(project_id: str) -> int:
+    """启动时（审查推断）：按片撤回的反向提交已经在主线上、记录没补完就停了机——按反向提交把变更集与运行记录补上。
+    返回补上的片数。"""
+    from ...kernel.changesets import service as changesets
+    from ...kernel.changesets import store as changeset_store
+
+    ws = _ws()
+    root = ws.project_root(project_id)
+    found = None
+    fixed = 0
+    for run in store.runs(project_id):
+        if run.get("state") not in store.ENDED:
+            continue
+        for unit in run.get("units") or []:
+            info = (run.get("slices") or {}).get(unit["id"]) or {}
+            if unit["kind"] != "slice" or info.get("reverted") or not info.get("commit") or not info.get("changeset_id"):
+                continue
+            done = (changeset_store.get(root, info["changeset_id"]) or {}).get("reverted")
+            if not done:
+                found = changesets.reverse_commits(root) if found is None else found
+                if info["changeset_id"] not in found:
+                    continue
+                done = changesets.mark_reverted(ws, project_id, info["changeset_id"], found[info["changeset_id"]])
+            _after_revert(project_id, run["run_id"], unit, done, "system")
+            fixed += 1
+    return fixed
+
+
 def _after_revert(project_id: str, run_id: str, unit: dict, result: dict, actor: str) -> dict:
     """反向提交之后：这一片的确认记录恢复成运行开始前的、运行里记下撤回、去掉这一片的「需复核」。"""
     from ..flow import slices

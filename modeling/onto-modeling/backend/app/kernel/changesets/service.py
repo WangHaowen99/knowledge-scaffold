@@ -778,6 +778,9 @@ def discard(manager, project_id: str, changeset_id: str, *, actor: str) -> dict:
     return {"state": "discarded", "record": record}
 
 
+REVERT_PREFIX = "revert: 撤回 "
+
+
 def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, source: str = "revert",
                   keep: tuple[str, ...] = (), rewrite: dict | None = None) -> dict:
     """撤回一个已经合入的变更集（P3 自主构建「按片撤回」）：在主线上写它的反向提交。
@@ -797,13 +800,9 @@ def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, so
         raise WorkspaceError("只有已合入的变更集能撤回", 409, "changeset_closed", {"state": record["state"]})
     if record.get("reverted"):
         raise WorkspaceError("这个变更集已经撤回过", 409, "changeset_closed", {"state": "reverted"})
-    subject = f"revert: 撤回 {record['id']}（"
-    done = next((sha for sha, body in _commits_since(root, commit) if body.startswith(subject)), None)
+    done = reverse_commits(root, since=commit).get(record["id"])
     if done is not None:
-        label = _label(root, done)
-        store.update(root, record["id"], reverted={"commit": done, "version_label": label, "at": time.time()})
-        _notify(project_id, "changeset", store.get(root, record["id"]))
-        return {"commit": done, "version_label": label}
+        return mark_reverted(manager, project_id, record["id"], done)
     parent = f"{commit}^"
     paths = [(status, rel) for status, rel in worktree.diff(root, parent, commit) if not _derived(rel) and rel not in keep]
     with ChangeTx(manager, project_id, Origin(source, actor), summary=f"撤回 {record['id']}",
@@ -832,12 +831,28 @@ def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, so
             if data is not None:
                 tx.write(rel, data)
         # 派生文件（index.md、脚本描述符）不按旧版本恢复：写入事务按撤回后的条目重新生成
-        result = tx.commit(f"revert: 撤回 {record['id']}（{record.get('purpose') or '助手的修改'}）")
-    new = result.commit or tx.base_head
-    label = _label(root, new)
-    store.update(root, record["id"], reverted={"commit": new, "version_label": label, "at": time.time()})
-    _notify(project_id, "changeset", store.get(root, record["id"]))
-    return {"commit": new, "version_label": label}
+        result = tx.commit(f"{REVERT_PREFIX}{record['id']}（{record.get('purpose') or '助手的修改'}）")
+    return mark_reverted(manager, project_id, record["id"], result.commit or tx.base_head)
+
+
+def mark_reverted(manager, project_id: str, changeset_id: str, commit: str) -> dict:
+    """变更集记为已撤回（反向提交 commit）。返回 {commit, version_label}。"""
+    root = manager.project_root(project_id)
+    label = _label(root, commit)
+    store.update(root, changeset_id, reverted={"commit": commit, "version_label": label, "at": time.time()})
+    _notify(project_id, "changeset", store.get(root, changeset_id))
+    return {"commit": commit, "version_label": label}
+
+
+def reverse_commits(root: Path, *, since: str | None = None) -> dict[str, str]:
+    """主线上的反向提交 {变更集: 提交}：给了 since 取它之后的全部，否则取最近 50 个（--first-parent）。"""
+    commits = _commits_since(root, since) if since else _recent_commits(root)
+    found: dict[str, str] = {}
+    for sha, body in commits:
+        if body.startswith(REVERT_PREFIX):
+            changeset_id = body[len(REVERT_PREFIX):].partition("（")[0].strip()
+            found.setdefault(changeset_id, sha)
+    return found
 
 
 def _derived(rel: str) -> bool:

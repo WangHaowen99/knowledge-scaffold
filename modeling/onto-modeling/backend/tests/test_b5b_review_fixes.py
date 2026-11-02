@@ -509,6 +509,32 @@ def test_revert_interrupted_before_the_changeset_is_marked_is_finished_on_retry(
     assert reverts == [again.json()["commit"]]
     assert store.get(project_id, run["run_id"])["slices"]["s1"]["reverted"]
 
+
+def test_revert_interrupted_by_a_shutdown_is_finished_at_startup(ab, monkeypatch):
+    """推断：撤回写完反向提交就停了机——启动恢复按主线上的反向提交补记，这一片记为已撤回、不再提供撤回。"""
+    from app.kernel.changesets import store as changeset_store
+    from app.services.autobuild import runner as runner_module
+
+    client, workspaces, project_id, root = ab
+    run = start(client, project_id, **ONE)
+    wait_state(client, project_id, run["run_id"], "completed")
+    real = changeset_store.update
+
+    def broken(root_, changeset_id, **fields):
+        if "reverted" in fields:
+            raise RuntimeError("合成故障")
+        return real(root_, changeset_id, **fields)
+
+    monkeypatch.setattr(changeset_store, "update", broken)
+    with pytest.raises(RuntimeError):
+        client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/s1/revert")
+    monkeypatch.setattr(changeset_store, "update", real)
+    report = runner_module.startup_sweep(workspaces)
+    assert report is not None and "补完 1 片撤回" in report["detail"], report
+    info = store.get(project_id, run["run_id"])["slices"]["s1"]
+    assert info["reverted"]["commit"] == git(root, "log", "-1", "--format=%H", "--grep", "^revert: 撤回").strip()
+    assert runner_module.startup_sweep(workspaces) is None
+
 def test_snapshot_sees_a_same_size_edit_made_in_the_same_second_as_the_checkout(tmp_path):
     """附带（排查 K 的偶发失败时发现）：快照拷索引时没保留时间戳，git 的同秒防护失效；
     同一秒里刚检出又被改成同样长度的文件被当成没改，变更集被悄悄关掉。"""

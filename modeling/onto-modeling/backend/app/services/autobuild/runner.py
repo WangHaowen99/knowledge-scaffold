@@ -1180,15 +1180,34 @@ def startup_sweep(manager) -> dict:
         updated = store.update(run["project_id"], run["run_id"], change)
         if updated is not None:
             changed.append(updated)
-    if not changed:
+    reverted = _repair_reverts()
+    if not changed and not reverted:
         return None  # 没有停机时在跑的运行：不进报告（同 agent 提交钩子、助手副本）
-    per_project: dict[str, int] = {}
+    per_project: dict[str, int] = dict(reverted)
     for run in changed:
         per_project[run["project_id"]] = per_project.get(run["project_id"], 0) + 1
     resumed = sum(1 for run in changed if run.get("resume_pending"))
-    return {"id": "autobuild_runs", "title": "自主构建", "result": "cleared", "tone": "fix",
-            "detail": f"{len(changed)} 次运行停在检查点，{resumed} 次启动后自动续跑",
+    detail = f"{len(changed)} 次运行停在检查点，{resumed} 次启动后自动续跑" if changed else ""
+    if reverted:
+        detail = "，".join(filter(None, [detail, f"补完 {sum(reverted.values())} 片撤回"]))
+    return {"id": "autobuild_runs", "title": "自主构建", "result": "cleared", "tone": "fix", "detail": detail,
             "projects": [{"project_id": pid, "count": count, "paths": []} for pid, count in sorted(per_project.items())]}
+
+
+def _repair_reverts() -> dict[str, int]:
+    """撤回到一半停了机的片（审查推断）：{项目: 补完的片数}；一个项目出错不挡别的。"""
+    from . import review
+
+    out = {}
+    for project_id in sorted({run["project_id"] for run in store.all_runs(store.ENDED)}):
+        try:
+            fixed = review.repair_reverts(project_id)
+        except Exception:  # noqa: BLE001
+            _log.exception("补完撤回失败（%s）", project_id)
+            continue
+        if fixed:
+            out[project_id] = fixed
+    return out
 
 
 def register_steps(register) -> None:
