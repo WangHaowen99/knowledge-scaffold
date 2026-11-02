@@ -27,7 +27,7 @@ const WorkbenchPage = lazy(() => import('../pages/workbench/WorkbenchPage.jsx'))
 const DEV_PAGES = import.meta.env.DEV || __API_MOCK__
   ? { 'chat-states': lazy(() => import('../pages/chat-states/ChatStatesPage.jsx')) }
   : {};
-// 已实现的页面；其余页面先显示「后续版本接入」
+// 入口页；地址不认识时显示「页面不存在」
 const ENTRY_PAGES = { projects: ProjectsPage, create: CreatePage, import: ImportPage };
 // Studio（含 WebGL 图谱）、报告、待处理按路由拆包
 const StudioPage = lazy(() => import('../pages/studio/StudioPage.jsx'));

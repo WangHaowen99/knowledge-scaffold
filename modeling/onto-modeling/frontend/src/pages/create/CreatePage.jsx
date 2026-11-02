@@ -7,6 +7,7 @@ import { errorText } from '../../api/errors.js';
 import { evidenceFromSources, isEvidencePack } from '../../state/evidence.js';
 import { ShellG } from '../../shell/Shell.jsx';
 import { Button, Chip, Field, Icon, Menu, Prog, Toggle, cx, useOutside } from '../../ui/index.jsx';
+import { uiChip } from '../plugins/catalogModel.js';
 import { createBody } from './createBody.js';
 
 const STEPS = ['目标', '起点与资料', '行业与能力', '引擎与构建方式'];
@@ -152,13 +153,12 @@ export default function CreatePage() {
     ['example', 'play', '看示例项目', ''],
   ];
 
+  // 只给带页面的能力包标「带页面：xx」（同插件中心 pl-10）；后端的 ui.note 说明不显示（口径 5）
   const uiTag = (p) => {
     const kind = p.ui?.kind;
-    if (kind === 'kernel') return <span className="en-ui core"><Icon name="layout" size={12} />{p.ui.note}</span>;
-    if (kind === 'page') return <span className="en-ui page"><Icon name="layout" size={12} />{p.ui.note}</span>;
-    if (kind === 'subpages') return <span className="en-ui sub"><Icon name="folder" size={12} />{p.ui.note}</span>;
-    if (kind === 'none') return <span className="en-ui none">{p.ui.note}</span>;
-    return null;
+    if (kind !== 'page' && kind !== 'subpages') return null;
+    const chip = uiChip(p.ui);
+    return <span className={`en-ui ${kind === 'page' ? 'page' : 'sub'}`}><Icon name={chip.icon} size={12} />{chip.text}</span>;
   };
 
   return (
