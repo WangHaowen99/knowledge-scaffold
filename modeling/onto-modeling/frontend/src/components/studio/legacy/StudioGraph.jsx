@@ -539,7 +539,7 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
         </div>
         {!filtered.nodes.length && (
           <div className="studio-graph-empty-overlay" role="status">
-            <b>没有匹配的知识元素</b><span>调整搜索或筛选条件后重试。</span>
+            <b>没有匹配的知识元素</b>
           </div>
         )}
         {webglUnavailable ? <ReactFlow
@@ -773,7 +773,7 @@ const StudioNode = memo(({ data }) => {
       }}>
       <Handle id="target-left" type="target" position={Position.Left} isConnectable={false} />
       <Handle id="source-left" type="source" position={Position.Left} isConnectable={false} />
-      <div className="studio-node-meta"><Icon size={13} /><span>{meta.label}</span><small>{data.relationCount} 条关系</small></div>
+      <div className="studio-node-meta"><Icon size={13} /><span>{meta.label}</span></div>
       <strong title={data.label}>{data.label}</strong>
       <Handle id="target-right" type="target" position={Position.Right} isConnectable={false} />
       <Handle id="source-right" type="source" position={Position.Right} isConnectable={false} />

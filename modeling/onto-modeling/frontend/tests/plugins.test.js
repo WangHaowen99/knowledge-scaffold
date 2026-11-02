@@ -7,12 +7,12 @@ import { compareVersions, satisfies } from '../src/api/mock/plugins-data.js';
 import { compatibilityOf, register as registerPlugins } from '../src/api/mock/routes-plugins.js';
 import { register as registerSettings } from '../src/api/mock/routes-settings.js';
 import {
-  blockedView, bringsView, cardFoot, cardTags, catOf, compatRows, effectiveNote, enableToast, impactText, matchCard, recView,
-  sectionsOf, uiChip, uiEffectText, updateRoute, updateToast, versionOf,
+  blockedView, bringsView, cardFoot, cardTags, catOf, categoryOf, compatRows, compatView, effectiveNote, enableToast, impactText, matchCard, recView,
+  sectionsOf, uiChip, uiEffectText, updateRoute, updateToast, versionOf, visibleCatalog,
 } from '../src/pages/plugins/catalogModel.js';
 import {
-  changelogView, configText, contentGroups, contentTotal, dependsText, flowCaption, flowLayout, fmtSize, heroActions, heroFacts, heroMenu,
-  heroMenuSub, insertionAt, rangeText, statCards,
+  changelogView, configText, contentGroups, contentTotal, dependsText, disableConfirm, flowCaption, flowLayout, fmtSize, heroActions, heroFacts, heroMenu,
+  insertionAt, rangeText, statCards,
 } from '../src/pages/plugins/detailModel.js';
 
 const card = (o) => ({ name: 'x', label: 'X', category: 'capability', version: '1.0.0', latest: '1.0.0', description: '', publisher: { kind: 'official', label: '官方' }, ...o });
@@ -39,12 +39,31 @@ test('筛选：分类、已启用（含待生效）、可更新，搜索名称 /
   assert.equal(catOf({}), 'all');
 });
 
+test('证据源不可用时：提供方和系统逆向建模不出现，计数与推荐按剩下的重算；可用时原样', () => {
+  const data = {
+    items: [
+      card({ name: 'trace', project_status: 'update' }),
+      card({ name: 'reverse', project_status: 'enabled' }),
+      card({ name: 'industry-retail', category: 'industry', project_status: 'enabled' }),
+      card({ name: 'db-mysql', category: 'provider', project_status: 'platform_installed' }),
+    ],
+    counts: { all: 4, capability: 2, industry: 1, provider: 1, enabled: 3, updatable: 1 },
+    recommendations: [{ pack: { name: 'reverse' } }, { pack: { name: 'migrate' } }],
+  };
+  const off = visibleCatalog(data, false);
+  assert.deepEqual(off.items.map((p) => p.name), ['trace', 'industry-retail']);
+  assert.deepEqual([off.counts.all, off.counts.capability, off.counts.industry, off.counts.provider, off.counts.enabled, off.counts.updatable], [2, 1, 1, 0, 2, 1]);
+  assert.deepEqual(off.recommendations.map((r) => r.pack.name), ['migrate']);
+  assert.equal(visibleCatalog(data, true), data);
+  assert.equal(visibleCatalog(null, false), null);
+});
+
 test('节点包归进能力包：不单列分类，旧数据里的 node 分类也算能力包', () => {
   const items = [card({ name: 'trace' }), card({ name: 'naming', label: '命名检查', category: 'node' })];
   assert.deepEqual(sectionsOf(items, { cat: 'all', q: '' }).map((s) => [s.key, s.items.length]), [['capability', 2]]);
   assert.deepEqual(items.filter((p) => matchCard(p, { cat: 'capability' })).map((p) => p.name), ['trace', 'naming']);
   assert.equal(catOf({ cat: 'node' }), 'all');
-  assert.equal(cardTags(items[1]).tags[0].text, '能力包');
+  assert.equal(categoryOf(items[1]), 'capability');
 });
 
 // ---------- 卡片 ----------
@@ -67,18 +86,18 @@ test('卡脚：9 种 project_status 的 chip 与按钮（契约 PL-01 的表）'
   assert.equal(foot(null).note, '先建一个项目才能启用');
 });
 
-test('卡片标记：能力包带界面，提供方带批次，可更新时不显示 meta；租户发布方', () => {
+test('卡片标记：只标带页面的能力包、提供方批次、租户发布方；分类、官方、无独立页面、可更新、后端 meta 都不标', () => {
   const cap = cardTags(card({ ui: { kind: 'page', pages: [{ id: 'scenarios', title: '场景走查' }] }, meta: '5 命令', project_status: 'enabled' }));
-  assert.deepEqual(cap.tags.map((t) => t.text), ['能力包', '官方', '带页面：场景走查']);
-  assert.equal(cap.meta, '5 命令');
+  assert.deepEqual(cap.tags.map((t) => t.text), ['带页面：场景走查']);
+  assert.equal('meta' in cap, false);
   const upd = cardTags(card({ project_status: 'update', latest: '0.6.0', meta: '2 命令' }));
-  assert.equal(upd.tags.at(-1).text, '可更新到 0.6.0');
-  assert.equal(upd.meta, null);
+  assert.deepEqual(upd.tags, []);
+  assert.deepEqual(cardTags(card({ ui: { kind: 'none', note: '无独立页面' } })).tags, []);
+  assert.deepEqual(cardTags(card({ ui: { kind: 'kernel', note: '内核：工作台' } })).tags.map((t) => t.text), ['内核页面']);
   const prov = cardTags(card({ category: 'provider', batch: 'second', meta: 'x' }));
-  assert.deepEqual(prov.tags.map((t) => t.text), ['证据源提供方', '官方', '第二批']);
-  assert.equal(prov.meta, null);
+  assert.deepEqual(prov.tags.map((t) => t.text), ['第二批']);
   const tenant = cardTags(card({ category: 'industry', publisher: { kind: 'tenant', label: '示例租户' }, ui: null }));
-  assert.deepEqual(tenant.tags[1], { text: '租户 · 示例租户', tone: 'indigo' });
+  assert.deepEqual(tenant.tags, [{ text: '租户 · 示例租户', tone: 'indigo' }]);
   assert.equal(versionOf(card({ project_status: 'update', locked_version: '0.9.1', version: '0.10.0' })), '0.9.1');
   assert.equal(versionOf(card({ project_status: 'available', locked_version: '0.2.0', version: '0.2.1' })), '0.2.1');
 });
@@ -110,6 +129,15 @@ test('兼容检查到弹窗：通过的页面接口在不带页面的包上不�
   assert.equal(updateRoute(card({ category: 'industry' }), { ok: false }), 'blocked');
 });
 
+test('兼容检查（R13）：全部通过折成一行可展开；有不通过的默认展开、只列不通过的', () => {
+  const ok = [{ id: 'kernel_api', ok: true }, { id: 'depends', ok: true }, { id: 'engines', ok: true }, { id: 'names', ok: true }, { id: 'flow', ok: true }, { id: 'page_api', ok: true }];
+  const v = compatView(ok, { kind: 'none' });
+  assert.deepEqual([v.ok, v.summary, v.expanded, v.rows.length], [true, '兼容检查通过（5 项）', false, 5]);
+  const bad = [{ id: 'kernel_api', ok: true }, { id: 'depends', label: '依赖 core', ok: false }, { id: 'page_api', ok: false, label: '页面接口' }];
+  const w = compatView(bad, { kind: 'none' });
+  assert.deepEqual([w.ok, w.summary, w.expanded, w.rows.map((c) => c.id)], [false, '兼容检查不通过（2 项）', true, ['depends', 'page_api']]);
+});
+
 test('会带来什么、界面、生效时机、影响、提示语', () => {
   assert.deepEqual(bringsView({ summary_md: '- 规则 3 条\n- 样例 2 份' }), { list: ['规则 3 条', '样例 2 份'] });
   assert.deepEqual(bringsView({ summary_md: '1 个 skill。' }), { text: '1 个 skill。' });
@@ -117,8 +145,7 @@ test('会带来什么、界面、生效时机、影响、提示语', () => {
   assert.equal(uiEffectText(null, { kind: 'page', pages: [{ title: '场景走查' }] }), '启用后左栏出现「场景走查」');
   assert.equal(uiEffectText(null, { kind: 'none', note: '无独立页面，在对话里生效' }), '在对话里生效');
   assert.equal(uiEffectText({ text: '自定' }, null), '自定');
-  assert.match(effectiveNote('next_message'), /下一条消息发出前重新装配/);
-  assert.match(effectiveNote('immediate'), /现读即生效/);
+  assert.deepEqual(['next_message', 'immediate', 'next_safe_point', undefined].map(effectiveNote), ['下一条消息生效', '现读即生效', '下一个安全点后生效', '下一条消息生效']);
   assert.equal(impactText({ note: '原样' }), '原样');
   assert.equal(impactText({ needs_review_after_upgrade: 0, affected_artifacts: 4 }), '节点完成判定没有变化，已确认的产物不会被标为需复核。用到这个包的 4 个产物会在下次校验时按新内容检查。');
   assert.match(impactText({ needs_review_after_upgrade: 2 }), /2 个已确认的产物会标为需复核/);
@@ -136,6 +163,7 @@ test('主线图：插入点挂到对应的段，同一段竖排，图下那句�
   assert.equal(L.width, 944);
   assert.equal(L.height, 162); // 和设计稿 viewBox 一致
   assert.deepEqual(L.pills.map((p) => [p.at, p.x, p.y, p.lineFrom]), [['model', 204, 88, 69], ['validate', 402, 88, 69]]);
+  assert.equal(L.pills[0].sub, ''); // 后端下发的节点说明不画（口径 5）
   assert.equal(L.caption.x, (198 + 396 + 150) / 2);
   const stacked = flowLayout([{ id: 'a', at: 'model' }, { id: 'b', at: 'model' }]);
   assert.deepEqual(stacked.pills.map((p) => [p.y, p.lineFrom]), [[88, 69], [140, 132]]);
@@ -147,9 +175,12 @@ test('主线图：插入点挂到对应的段，同一段竖排，图下那句�
   assert.ok(kernel.nodes.every((n) => n.hi));
   // 真实后端只给节点 ID：按 ID 猜段
   assert.deepEqual(['core.research', 'trace.regression', 'retail.compliance', 'foo.bar'].map((id) => insertionAt({ id })), ['research', 'validate', 'publish', 'model']);
-  assert.equal(flowCaption({ flow_insertions: [{}, {}], flow_note: '示例' }), '本包往流程里加的 2 处；示例');
+  // 图下只用包自带的说明；处数和统计卡、图本身重复，不写
+  assert.equal(flowCaption({ flow_insertions: [{}, {}], flow_note: '示例' }), '示例');
+  assert.equal(flowCaption({ flow_insertions: [{}, {}] }), '');
   assert.equal(flowCaption({ flow_insertions: [] }), '这个包不往流程里加步骤');
   assert.equal(flowCaption({ flow_note: '主线' }, true), '主线');
+  assert.equal(flowCaption({}, true), '');
 });
 
 test('包含什么：mock 的完整分组原样，真实后端的 contents 补上加进流程、界面入口、可调设置', () => {
@@ -160,6 +191,7 @@ test('包含什么：mock 的完整分组原样，真实后端的 contents 补�
   });
   assert.deepEqual(mock.map((g) => [g.title, g.count]), [['加进流程', 2], ['命令', 1], ['术语', 312], ['界面入口', 1], ['可调设置', 1]]);
   assert.equal(mock[4].items[0], '回归模式 开');
+  assert.equal(mock[4].note, null);
   assert.equal(contentTotal(mock), 317);
   const backend = contentGroups({
     flow_insertions: [{ id: 'trace.scenario', title: 'trace.scenario' }],
@@ -183,16 +215,20 @@ test('英雄区：依赖、大小、日期；按钮与菜单随状态变', () =>
     category: 'capability', project_status: 'update', latest: '0.10.0', locked_version: '0.9.1', ui: { kind: 'page', pages: [{ title: '场景走查' }] },
     requires: { depends: { core: '>=1.4' } }, size: 190464, released_at: '2026-10-12T10:00:00.000Z', enabled_at: null,
   };
-  assert.deepEqual(heroFacts(d), [['需要', '基础建模能力 1.4 以上'], ['大小', '186 KB'], ['发布', '2026-10-12']]);
+  assert.deepEqual(heroFacts(d), [['需要', '基础建模能力 1.4 以上'], ['发布', '2026-10-12']]);
   const h = heroActions(d, { hasProject: true });
-  assert.deepEqual([h.menu.label, h.primary.label], ['已启用到本项目', '更新到 0.10.0']);
-  assert.match(h.hint, /下一条消息开始生效/);
+  assert.deepEqual([h.menu.label, h.primary.label, h.hint], ['已启用到本项目', '更新到 0.10.0', undefined]);
+  // R14：下拉菜单只写动作，停用的后果在确认框里说一次
   const menu = heroMenu(d);
-  assert.equal(menu[0].label, '停用（左栏「场景走查」页面消失，产物保留，步骤标为已停用）');
+  assert.deepEqual(menu.map((x) => (x === '-' ? x : x.label)), ['停用', '只在下次自主构建时启用新版本', '-', '在项目设置里查看']);
   assert.equal(menu[1].disabled, false);
+  assert.deepEqual(disableConfirm({ ...d, label: '场景走查' }), { title: '停用场景走查？', body: '左栏「场景走查」页面会消失，已有产物保留。' });
+  assert.equal(disableConfirm({ label: '零售连锁', category: 'industry' }).body, '已有产物保留。');
   assert.equal(heroMenu({ ...d, project_status: 'enabled' })[1].disabled, true);
   assert.equal(heroMenu({ ...d, project_status: 'required' })[0].disabled, true);
-  assert.equal(heroMenuSub({ ...d, enabled_at: '2026-10-14T10:00:00.000Z' }), '本项目在用 0.9.1 · 启用于 2026-10-14');
+  const pend = heroMenu({ ...d, project_status: 'pending' }, { pending: { kind: 'disable', from: '0.9.1' } });
+  assert.deepEqual(pend.map((x) => (x === '-' ? x : x.key)), ['disable', 'cancel_pending', 'next_autobuild', '-', 'settings']);
+  assert.equal(pend[0].disabled, true);
   assert.equal(heroActions({ ...d, project_status: 'pending' }, { hasProject: true, pending: { kind: 'upgrade', to: '0.10.0' } }).menu.label, '0.10.0 · 下一条消息生效');
   assert.equal(heroActions({ ...d, project_status: 'available' }, { hasProject: true }).primary.action, 'enable');
   assert.equal(heroActions({ ...d, category: 'provider', project_status: 'platform_available' }, { admin: false }).hint, '需要管理员安装，点了会发送安装申请。');
@@ -200,13 +236,13 @@ test('英雄区：依赖、大小、日期；按钮与菜单随状态变', () =>
 });
 
 test('统计卡：project_stats 为 null 时显示「—」；更新记录标记', () => {
+  // 「加进流程」那格和主线图重复，只留两格
   const s = statCards({ category: 'capability', project_status: 'enabled', flow_insertions: [{ short: '片内「场景」' }, { title: '全量回归' }], project_stats: null }, { hasProject: true });
-  assert.deepEqual(s.map((x) => [x.label, x.value]), [['加进流程', 2], ['在本项目产出', '—'], ['运行情况', '—']]);
-  assert.equal(s[0].desc, '片内「场景」 · 全量回归');
-  assert.equal(s[1].desc, '暂时没有统计');
+  assert.deepEqual(s.map((x) => [x.label, x.value]), [['在本项目产出', '—'], ['运行情况', '—']]);
+  assert.equal(s[0].desc, '暂时没有统计');
   const withStats = statCards({ project_status: 'enabled', project_stats: { produced: { value: 23, unit: '个场景', note: 'n' }, metric: { label: '推演通过率', value: '83%', note: 'm' } } }, { hasProject: true });
-  assert.deepEqual(withStats.slice(1).map((x) => [x.label, x.value]), [['在本项目产出', 23], ['推演通过率', '83%']]);
-  assert.equal(statCards({ ui: { kind: 'kernel' } })[0].label, '主线阶段');
+  assert.deepEqual(withStats.map((x) => [x.label, x.value]), [['在本项目产出', 23], ['推演通过率', '83%']]);
+  assert.deepEqual(statCards({ ui: { kind: 'kernel' } }).map((x) => x.label), ['在本项目产出', '运行情况']);
   const cl = changelogView([{ version: '0.10.0', date: '2026-10-28T10:00:00.000Z', notes: 'n', tags: ['needs_core_upgrade'] }, { version: '0.9.1', tags: ['in_use'] }]);
   assert.deepEqual(cl.map((c) => c.chips.map((x) => x.text)), [['需要先升级基础建模能力'], ['本项目在用']]);
   assert.equal(cl[0].date, '2026-10-28');

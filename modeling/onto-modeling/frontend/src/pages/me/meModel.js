@@ -3,14 +3,14 @@
 import { passwordRules } from '../login/passwordRules.js';
 
 // ---------- 分区 ----------
+// 外观（浅色 / 深色）本期不出：深色还没做，选了也不生效（R16）。深色做好后再加回来；偏好里的 theme 字段照旧保留
 export const SECTIONS = [
   { key: 'acct', title: '账号', icon: 'user' },
-  { key: 'look', title: '外观', icon: 'sun' },
   { key: 'noti', title: '通知', icon: 'bell' },
   { key: 'model', title: '我的模型配置', icon: 'key' },
 ];
-// ?section=acct|look|noti|model；也认几个顺手的别名，认不出的落到账号
-const SECTION_ALIAS = { account: 'acct', password: 'acct', appearance: 'look', theme: 'look', notifications: 'noti', notification: 'noti', models: 'model' };
+// ?section=acct|noti|model；也认几个顺手的别名，认不出的（含旧的 look）落到账号
+const SECTION_ALIAS = { account: 'acct', password: 'acct', notifications: 'noti', notification: 'noti', models: 'model' };
 export function parseSection(raw) {
   const k = String(raw || '').trim().toLowerCase();
   if (SECTIONS.some((s) => s.key === k)) return k;
@@ -55,11 +55,12 @@ export function lastLoginText(last) {
   if (!at) return '';
   return `上次登录 ${at}${last.ip ? ` · ${last.ip}` : ''}`;
 }
+// 角色；本地模式再加一个「本地模式」（登录来源不显示）
 export function profileChips(user, local) {
   const role = user?.role_label || { user: '建模者', admin: '管理员', ops: '运维' }[user?.role] || '建模者';
   return [
     { text: role, tone: 'blue', icon: 'user' },
-    local ? { text: '本地模式', tone: 'gray', icon: 'server' } : { text: user?.auth_source || 'auth-server', tone: 'gray', icon: 'shield' },
+    ...(local ? [{ text: '本地模式', tone: 'gray', icon: 'server' }] : []),
   ];
 }
 export const avatarText = (user) => [...(user?.display_name || user?.username || '我')][0];
@@ -135,19 +136,19 @@ export function withPref(prefs, path, value) {
 
 export const NOTI_GROUPS = [
   {
-    title: '陪伴建模（L2）',
+    title: '陪伴建模',
     items: [
-      ['l2_step_done', '一步跑完', '例如「操作提取完成，等你确认生效」'],
-      ['l2_needs_input', '需要你回答问题或确认操作', '决策卡、确认卡、走查分支选择'],
-      ['l2_error', '构建出错', '附带友好提示；原始错误进运维页'],
+      ['l2_step_done', '一步跑完'],
+      ['l2_needs_input', '需要你回答问题或确认操作'],
+      ['l2_error', '构建出错'],
     ],
   },
   {
-    title: '自主构建（L4）',
+    title: '自主构建',
     items: [
-      ['l4_finished', '运行完成', '附带报告摘要：完成几片、几个自动决策待复核'],
-      ['l4_new_suspension', '新增挂起问题', 'L4 不会停下来，问题先记着，你可以晚点处理'],
-      ['l4_error_or_stopped', '运行出错或在安全点停止', '预算用完、连续失败、手动暂停'],
+      ['l4_finished', '运行完成'],
+      ['l4_new_suspension', '新增挂起问题'],
+      ['l4_error_or_stopped', '运行出错或在安全点停止'],
     ],
   },
 ];
@@ -170,17 +171,11 @@ export function systemNotifyAllowed(prefs, kind, permission) {
 
 // 浏览器通知权限 → 总开关旁边的说明；granted 时不说
 export function permissionNote(permission, systemOn) {
-  if (permission === 'unsupported') return { tone: 'gray', text: '这个浏览器不支持系统通知，只能靠标签页标题闪烁提醒你。', action: null };
-  if (permission === 'denied') return { tone: 'amber', text: '浏览器已禁止本站发通知。要在浏览器的网站设置里允许通知，再回来打开。', action: null };
-  if (permission === 'default' && systemOn) return { tone: 'amber', text: '这个浏览器还没允许本站发通知，系统通知暂时弹不出来。', action: '允许通知' };
+  if (permission === 'unsupported') return { tone: 'gray', text: '这个浏览器不支持系统通知', action: null };
+  if (permission === 'denied') return { tone: 'amber', text: '浏览器已禁止本站通知，请在浏览器设置里允许', action: null };
+  if (permission === 'default' && systemOn) return { tone: 'amber', text: '浏览器还没允许通知', action: '允许通知' };
   return null;
 }
-
-// 预览卡里的示例（合成场景）
-export const NOTI_PREVIEW = [
-  { when: '现在', title: 'L4 运行完成 · 门店补货单编制', body: '5 片里 4 片完成、1 片部分完成；17 个自动决策待复核', pref: 'l4_finished' },
-  { when: '3 分钟前', title: '需要你决定 · 超量与审批提示', body: '标准上限从哪里来？4 个选项，推荐 A', pref: 'l2_needs_input' },
-];
 
 // ---------- 我的模型配置（A-09～A-11） ----------
 const ENGINE_FALLBACK = { claude: { label: '稳定引擎', channel: 'stable' }, jiuwen: { label: '内测引擎', channel: 'beta' } };
@@ -196,33 +191,31 @@ export function engineCards(settings, engines) {
     const e = items.find((x) => x.id === id) || { id, ...(ENGINE_FALLBACK[id] || { label: '引擎', channel: 'beta' }), installed: true };
     const stable = e.channel === 'stable';
     const title = PROTOCOL[id] ? `${e.label} · ${PROTOCOL[id]}` : e.label;
-    const sub = e.installed === false ? (e.unavailable_reason || '当前部署未安装') : stable ? '功能最完整' : '内测中';
+    // 卡头只在没装时说原因；来源看下面选中的单选项（R15）
+    const sub = e.installed === false ? (e.unavailable_reason || '当前部署未安装') : '';
     return { id, title, sub, icon: stable ? 'cap' : 'node', cfg: settings.engines[id] };
   });
 }
 
-export function sourceChip(source) {
-  if (source === 'personal') return { text: '个人 Key', tone: 'blue', icon: 'key' };
-  if (source === 'deployment') return { text: '部署默认', tone: 'gray', icon: null };
-  return { text: '管理员配置', tone: 'gray', icon: null };
-}
-
+// 管理员配置那一项只写「网关 · 模型」
 export function adminText(cfg) {
   const s = cfg?.admin_summary;
   if (!s) return '管理员还没有配置，会按部署默认配置调用';
-  return `管理员配置：${s.gateway_host || '部署默认网关'} · ${s.model || '网关默认模型'}`;
+  return `${s.gateway_host || '部署默认网关'} · ${s.model || '网关默认模型'}`;
 }
 export function sourceOptions(cfg) {
   return [
-    { key: 'deployment', title: '使用部署默认配置', desc: '部署机 .env 里的网关和模型' },
+    { key: 'deployment', title: '使用部署默认配置', desc: '' },
     { key: 'admin', title: '使用管理员配置', desc: adminText(cfg) },
-    { key: 'personal', title: '使用个人 Key', desc: '用你自己的 Key 计费，你的项目都按它发消息' },
+    { key: 'personal', title: '使用个人 Key', desc: '' },
   ];
 }
+// Key、网关、模型三栏只在选「使用个人 Key」时出现（R15）
+export const showsPersonalFields = (form) => form?.source === 'personal';
 const fallbackOf = (cfg) => (cfg?.admin_summary ? '管理员配置' : '部署默认');
 export function placeholders(cfg) {
   return {
-    api_key: cfg?.api_key_set ? 'sk-•••• •••• ••••' : '粘贴你的 API Key',
+    api_key: cfg?.api_key_set ? '留空保持不变' : '粘贴你的 API Key',
     base_url: `留空沿用${fallbackOf(cfg)}的网关地址`,
     model: `留空沿用${fallbackOf(cfg)}的模型 · ${cfg?.admin_summary?.model || '网关默认模型'}`,
   };

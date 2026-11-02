@@ -31,7 +31,7 @@ function splitAnchor(anchor) {
 }
 
 // setTimer、now 只有单测会传（手动推进、固定时刻），开发服务器用真时钟
-export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, setTimer, now: nowFn }) {
+export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, setTimer, now: nowFn, sc = {} }) {
   const later = setTimer || ((fn, ms) => setTimeout(fn, ms));
   const clock = nowFn || (() => Date.now());
   const srcs = D.sources();
@@ -71,6 +71,8 @@ export function register({ on, json, err, wait, uid, F, emitProj, commandHooks, 
 
   // ---------- EV-01～EV-12 数据源 ----------
   on('GET', '/evidence/sources', ({ query, user }) => {
+    // ?mock=evidence:off：按本期后端（ADR-0056）回 501，前端按「证据源不可用」过滤露出
+    if (sc.evidence === 'off') return err(501, 'evidence_not_available', '证据源本期不开放');
     const pid = query.get('project_id');
     const filter = query.get('filter') || 'all';
     let items = srcs.map((s) => view(s, pid, user));

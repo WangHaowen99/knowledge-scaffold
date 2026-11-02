@@ -88,7 +88,7 @@ export function PopLayer() {
           {r.location_label ? <span>· {r.location_label}</span> : null}
         </div>
         <div style={{ whiteSpace: 'pre-line' }}>
-          {r.resolved ? <Marked text={r.text} highlights={r.highlights} /> : '这个出处在资料或快照里找不到了'}
+          {r.resolved ? <Marked text={r.text} highlights={r.highlights} /> : '找不到这个出处'}
         </div>
         {r.confidence && CONFIDENCE[r.confidence] && db ? <div className="mt8 xs muted">依据：{CONFIDENCE[r.confidence]}</div> : null}
       </>

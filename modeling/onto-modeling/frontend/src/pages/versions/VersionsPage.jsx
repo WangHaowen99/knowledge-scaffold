@@ -18,14 +18,14 @@ import {
 } from './dialogs.jsx';
 import {
   SOURCES, SOURCE_FILTERS, byNewest, changeText, compareFromOf, compareOptions, defaultCompare, diffLines, editBlocks, entryPath,
-  fmtStamp, originText, pathLocked, syncMeta, pickLanding, rangeOptions, reviewView, srcClass, srcLabel, targetLabel, versionMenu, versionSub,
+  fmtStamp, pathLocked, syncMeta, pickLanding, rangeOptions, reviewView, srcClass, srcLabel, targetLabel, versionMenu, versionSub,
 } from './versionsModel.js';
 import '../../styles/more.css';
 import '../../styles/versions.css';
 
 const LOCK_TEXT = {
-  running: ['助手正在改这个文件，确认生效或撤回后才能在这里编辑', '左边的历史版本照常可看；要改，回到对话里打断它，或等这一轮结束。'],
-  pending: ['助手的修改还没确认，确认生效或撤回后才能在这里编辑', '确认生效后，这里的「当前」会更新成助手改过的内容。'],
+  running: ['助手正在改这个文件，确认生效或撤回后才能在这里编辑'],
+  pending: ['助手的修改还没确认，确认生效或撤回后才能在这里编辑'],
 };
 
 function VersionRow({ v, on, onSelect, onMenu, onDelTag }) {
@@ -60,7 +60,7 @@ function VersionRow({ v, on, onSelect, onMenu, onDelTag }) {
               <button type="button" title="删除标记" onClick={(e) => { e.stopPropagation(); onDelTag({ ...t, version_label: v.version_label }); }}><Icon name="x" size={12} /></button>
             </span>
           ))}
-          {v.release ? <span className="vr-rel" title={`发布标签 release/${v.release}`}><Icon name="upload" size={12} />已发布 {v.release}</span> : null}
+          {v.release ? <span className="vr-rel"><Icon name="upload" size={12} />已发布 {v.release}</span> : null}
         </div>
       </div>
     </div>
@@ -98,7 +98,7 @@ function ChangesCard({ detail, onPick, current }) {
             </tbody>
           </table>
         </div>
-      ) : <div className="sm muted">这个版本没有改知识包条目（只改了能力版本或插件产物）。</div>}
+      ) : <div className="sm muted">这个版本没有改动条目</div>}
     </Card>
   );
 }
@@ -207,7 +207,7 @@ export default function VersionsPage({ route }) {
         const fromV = byCommit.get(c.from);
         const prev = fromV && byNewest(items).find((x) => x.n < fromV.n);
         if (prev) {
-          setNote(`${fromV.version_label} 和当前文件内容相同，下面改为对比它的上一个版本 ${prev.version_label} 和当前`);
+          setNote(`${fromV.version_label} 与当前相同，已改为对比 ${prev.version_label}`);
           setCmp({ ...c, from: prev.commit });
           return;
         }
@@ -286,7 +286,6 @@ export default function VersionsPage({ route }) {
     <ShellP active="versions">
       <PageHead
         title="版本历史"
-        desc="每次确认生效都会保存一个版本，写明来源。回退会生成新版本，历史都在。"
         actions={<Button icon="tag" disabled={!head} onClick={() => setTagFor(head?.commit)}>标记当前版本</Button>}
       />
       <div className="mr-2c vr-page" style={{ gridTemplateColumns: '480px minmax(0,1fr)' }}>
@@ -330,7 +329,7 @@ export default function VersionsPage({ route }) {
               {conflict ? (
                 <div className="note amber mb12">
                   <Icon name="alert" />
-                  <div className="grow">{describeConflict(conflict).replace('，请刷新对比后再保存', '')}。你的修改还在，可以先复制，再刷新对比后重新改。</div>
+                  <div className="grow">{describeConflict(conflict).replace('，请刷新对比后再保存', '')}</div>
                   <Button size="xs" icon="copy" onClick={copyMine}>复制我的修改</Button>
                   <Button size="xs" kind="primary" onClick={() => loadDiff(cmp)}>刷新对比</Button>
                 </div>
@@ -338,14 +337,14 @@ export default function VersionsPage({ route }) {
               {outside && !conflict ? (
                 <div className="note amber mb12">
                   <Icon name="alert" />
-                  <div className="grow">这个文件刚被{SOURCES.find(([k]) => k === outside.by)?.[1] || '别处'}修改（版本 {outside.version_label}）。你的修改还在，保存前先复制，刷新对比后再决定保留哪边。</div>
+                  <div className="grow">这个文件刚被{SOURCES.find(([k]) => k === outside.by)?.[1] || '别处'}修改（版本 {outside.version_label}）</div>
                   <Button size="xs" icon="copy" onClick={copyMine}>复制我的修改</Button>
                   <Button size="xs" kind="primary" onClick={() => loadDiff(cmp)}>刷新对比</Button>
                 </div>
               ) : null}
               {diffErr ? <Note tone="gray">{diffErr}</Note> : null}
               {!cmp.path && detail && !diffErr ? (
-                <div className="sm muted">这个版本没有改知识包条目文件（只改了能力版本或插件产物），没有可以对比的内容；可以查看这个版本的全部文件。</div>
+                <div className="sm muted">这个版本没有条目改动</div>
               ) : null}
               {diff && view ? (
                 <div className="mr-cmp">
@@ -369,7 +368,6 @@ export default function VersionsPage({ route }) {
               ) : null}
               {diff ? (
                 <div className="row mt12">
-                  <span className="sm muted">左边是历史版本，右边是当前文件，可以直接改；保存后生成新版本。</span>
                   <span className="sp" />
                   <Button size="sm" kind="ghost" disabled={!dirty || saving} onClick={() => { setText(diff.right); setGen((g) => g + 1); setConflict(null); }}>放弃修改</Button>
                   <Button size="sm" kind="primary" disabled={!dirty || readOnly || saving} onClick={save}>保存为新版本</Button>
@@ -380,9 +378,7 @@ export default function VersionsPage({ route }) {
                   <div className="divider" />
                   <div className="row">
                     <Button size="sm" icon="eye" onClick={() => setFilesFor(fromV)}>查看 {fromV.version_label} 的全部文件</Button>
-                    <Button size="sm" icon="undo" disabled={fromV.current} title={fromV.current ? '这就是当前版本' : undefined} onClick={() => setRevertFor(fromV)}>回退到 {fromV.version_label}</Button>
-                    <span className="sp" />
-                    <span className="xs faint">{originText(fromV)}</span>
+                    <Button size="sm" icon="undo" disabled={fromV.current} title={fromV.current ? '已是当前版本' : undefined} onClick={() => setRevertFor(fromV)}>回退到 {fromV.version_label}</Button>
                   </div>
                 </>
               ) : null}

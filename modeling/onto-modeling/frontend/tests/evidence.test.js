@@ -162,10 +162,11 @@ test('采集确认：summary 展开成键值；发起采集的请求体', () => 
     scope_text: 'erp.*，42 张表（增量，基于 5e2b）', window: '22:00 – 06:00', in_window_now: true, rate_limit: { concurrency: 2, qps: 20, query_timeout_s: 30 },
     estimate: { rows: 860000, bytes: 1.2 * 1024 ** 3 }, readonly_methods: ['只读账号 ro_onto', '只读会话', '语句白名单'], masking: { policy: 'mask-v3', sample_rows: 20 }, ticket: { ttl_s: 600, single_use: true },
   }, now);
-  assert.deepEqual(pairs.map(([k]) => k), ['范围', '访问时间窗口', '限流', '预计规模', '只读方式', '脱敏', '票据']);
+  // 票据是内部机制，确认弹窗不列（copy-audit snapshots-18）
+  assert.deepEqual(pairs.map(([k]) => k), ['范围', '访问时间窗口', '限流', '预计规模', '只读方式', '脱敏']);
   assert.equal(pairs[1][1], '22:00 – 06:00（现在 22:41，在窗口内）');
   assert.equal(pairs[3][1], '约 86 万行 · 1.2 GB（按 discover 估算）');
-  assert.equal(pairs[6][1], '一次性，10 分钟过期，用过作废');
+  assert.equal(pairs[5][1], 'mask-v3 · 样本每表最多 20 行');
   assert.match(previewPairs({ window: '22:00 – 06:00', in_window_now: false }, now)[1][1], /不在窗口内，同意后排队到 22:00 开始/);
   assert.deepEqual(collectBody({ sourceId: 'erp-prod', operation: 'snapshot', incremental: true, base: SNAP.s5e, budget: '≤ 200 万行 · 2 GB · 30 分钟' }), {
     source_id: 'erp-prod', operation: 'snapshot', incremental_base: SNAP.s5e, budget: { max_rows: 2000000, max_bytes: 2 * 1024 ** 3, max_duration_s: 1800 },

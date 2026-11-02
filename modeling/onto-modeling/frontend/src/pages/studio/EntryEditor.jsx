@@ -116,13 +116,13 @@ function ResultNote({ result, pid }) {
     return <Note tone="teal" icon="check"><b>检查通过，已直接保存为新版本 {result.version}</b>{result.summary ? `　${result.summary}` : ''}</Note>;
   }
   if (result.kind === 'fail') {
-    return <Note tone="red" icon="alert"><b>未通过确定性检查，请修正后再提交</b>{result.summary ? `　${result.summary}` : ''}</Note>;
+    return <Note tone="red" icon="alert"><b>没通过检查：</b>{result.summary || ''}</Note>;
   }
   return (
     <div className="note">
       <Icon name="sparkle" />
       <div className="grow">
-        <b>改动超出确定性检查范围，已连同疑点发给助手复核</b>，结果会出现在右侧对话里：
+        <b>已交给助手复核：</b>
         <ul style={{ paddingLeft: 18, marginTop: 4 }}>{result.points.map((p) => <li key={p}>{p}</li>)}</ul>
         <div className="mt8">
           <Button size="xs" icon="msg" onClick={() => navigate(pagePath('wb-l2', pid), result.cid ? { c: result.cid } : undefined)}>去对话里看</Button>
@@ -231,7 +231,7 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
   const submit = async () => {
     const flushed = await putDraft();
     if (!flushed.ok) return;
-    if (!hasDraft && !flushed.saved) { toast('没有改动，不用提交', 'info'); return; }
+    if (!hasDraft && !flushed.saved) { toast('没有改动', 'info'); return; }
     const before = entry;
     const submitted = formRef.current;
     setSubmitting(true);
@@ -285,7 +285,7 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
   const relRows = (form.relations || []).map((rid) => rows.find((r) => r.id === rid) || { id: rid, name: rid.split(':').pop() });
   const saveText = save.kind === 'saving' ? '正在暂存…'
     : save.kind === 'error' ? '暂存失败，稍后再试'
-      : hasDraft ? `草稿已暂存 · ${relativeTime(save.at || entry.draft?.updated_at) || '刚刚'}` : '改动会自动暂存为草稿';
+      : hasDraft ? `草稿已暂存 · ${relativeTime(save.at || entry.draft?.updated_at) || '刚刚'}` : '';
 
   return (
     <div className="stt-r card">
@@ -295,7 +295,7 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
         <KindChip kind={entry.kind} />
         <span className="mono xs muted">{entry.key}</span>
         <span className="sp" />
-        <Button size="sm" icon="sparkle" data-pop={`回到工作台，把「${entry.name}」作为引用带进对话`} onClick={() => askAssistant(pid, entry.id)}>问助手</Button>
+        <Button size="sm" icon="sparkle" onClick={() => askAssistant(pid, entry.id)}>问助手</Button>
         <Button size="sm" kind="ghost" icon={raw ? 'arrowl' : 'code'} onClick={async () => { if (!raw) await putDraft(); setRaw((v) => !v); if (raw) load({ keepResult: true }); }}>
           {raw ? '返回结构化编辑' : '编辑原文（高级）'}
         </Button>
@@ -313,9 +313,13 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
       ) : (
         <>
           <div className="stt-bar">
-            <span className="row g4"><Icon name="history" size={12} />{loadedDraftAt ? `已载入上次未提交的草稿（${hhmm(loadedDraftAt)}）` : `当前版本 ${meta?.version_label || ''}`}</span>
-            <span>·</span>
-            <span className="row g4">{save.kind === 'error' ? <Icon name="alert" size={12} /> : save.kind === 'saving' ? <span className="spin" /> : <Icon name="check" size={12} />}{saveText}</span>
+            <span className="row g4"><Icon name="history" size={12} />{loadedDraftAt ? `已载入上次未保存的草稿（${hhmm(loadedDraftAt)}）` : `当前版本 ${meta?.version_label || ''}`}</span>
+            {saveText ? (
+              <>
+                <span>·</span>
+                <span className="row g4">{save.kind === 'error' ? <Icon name="alert" size={12} /> : save.kind === 'saving' ? <span className="spin" /> : <Icon name="check" size={12} />}{saveText}</span>
+              </>
+            ) : null}
           </div>
           {lockInfo || result ? (
             <div style={{ padding: '12px 18px 0' }}>
@@ -323,10 +327,10 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
             </div>
           ) : null}
           <div className={cx('bd', lockInfo && 'stt-lock')}>
-            {entry.draft && !entry.draft.form ? <Note tone="gray" icon="code" className="mb12">这份草稿是在原文里改的，去「编辑原文（高级）」继续，或者放弃草稿。</Note> : null}
+            {entry.draft && !entry.draft.form ? <Note tone="gray" icon="code" className="mb12">这份草稿在原文里，去「编辑原文（高级）」继续</Note> : null}
             <div className="grid2">
               <Field label="名称" req><Inp value={form.name} onChange={(e) => change({ name: e.target.value })} /></Field>
-              <Field label="Key" hint={`英文标识，导出时作为${isObject ? '对象' : kindLabel(entry.kind)} Key`}><Inp mono value={form.key} onChange={(e) => change({ key: e.target.value })} /></Field>
+              <Field label="Key"><Inp mono value={form.key} onChange={(e) => change({ key: e.target.value })} /></Field>
             </div>
             <div className="mt12">
               <Field label="描述"><Area minHeight={58} textareaStyle={{ height: 40 }} value={form.description} onChange={(e) => change({ description: e.target.value })} /></Field>
@@ -337,7 +341,7 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
                 <div className="tbl-wrap">
                   <table className="tbl stt-ed" style={{ tableLayout: 'fixed' }}>
                     <colgroup><col style={{ width: 112 }} /><col style={{ width: 150 }} /><col style={{ width: 92 }} /><col /></colgroup>
-                    <thead><tr><th>属性</th><th>英文名（真实列名）</th><th>类型</th><th>证据</th></tr></thead>
+                    <thead><tr><th>属性</th><th>列名</th><th>类型</th><th>证据</th></tr></thead>
                     <tbody>
                       {form.fields.map((f, i) => {
                         const colErr = errs[`fields[${i}].column`];
@@ -380,9 +384,10 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
             </div>
             {isObject ? (
               <div className="mt16">
-                <Field label="数据来源" hint="可以直接写数据库锚点，表名和列名从快照里解析；确实不落库的对象填「无」，不要编造表名。">
+                <Field label="数据来源">
                   <Inp
                     icon="db"
+                    placeholder="不落库填「无」"
                     value={dsDraft ?? dsText(form, entry)}
                     onChange={(e) => setDsDraft(e.target.value)}
                     onBlur={() => { if (dsDraft != null) { change({ data_source: parseDs(dsDraft) }); setDsDraft(null); } }}
@@ -392,10 +397,9 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
             ) : null}
           </div>
           <div className="stt-ft">
-            <span className="xs muted">提交时先跑确定性检查：硬伤直接拒绝，通过就保存版本，超出范围交给助手复核</span>
             <span className="sp" />
             <Button kind="ghost" disabled={!hasDraft && !changes.length} onClick={() => setDiscardOpen(true)}>放弃草稿</Button>
-            <Button kind="primary" icon="check" disabled={!!lockInfo || submitting} onClick={submit}>{submitting ? '检查中…' : '提交'}</Button>
+            <Button kind="primary" icon="check" disabled={!!lockInfo || submitting} onClick={submit}>{submitting ? '检查中…' : '保存'}</Button>
           </div>
         </>
       )}
@@ -405,7 +409,6 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
         icon="trash"
         danger
         title="放弃草稿？"
-        sub="未提交的修改将被丢弃，文档保持当前版本。"
         w={440}
         foot={<><Button onClick={() => setDiscardOpen(false)}>继续编辑</Button><Button kind="danger" onClick={discard}>放弃</Button></>}
       >

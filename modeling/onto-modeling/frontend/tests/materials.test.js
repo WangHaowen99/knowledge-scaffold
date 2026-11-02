@@ -62,15 +62,22 @@ test('核验：有问题的排前面，通过的默认只露两条；说明里�
   assert.equal(rows.filter((r) => r.status === 'passed').length, 2);
   assert.equal(hidden, items.filter((x) => x.status === 'passed').length - 2);
   assert.equal(verificationRows(items, { expanded: true }).hidden, 0);
-  assert.match(verificationNote(items), /^「来源无法核验」需要修正读取范围或来源位置：R-07 引用的 §7\.3 在原文里找不到这句话；/);
+  // 只列原因（状态列已标「来源无法核验」），按出现顺序、一条不漏
+  const reasons = items.filter((x) => x.status === 'unverifiable').map((x) => x.reason);
+  assert.equal(verificationNote(items), `${reasons.join('；')}。`);
+  assert.match(verificationNote(items), /^R-07 引用的 §7\.3 在原文里找不到这句话；/);
   assert.equal(verificationNote(mockData.verificationItems(false)), '');
 });
 
-test('输入框占位：读资料和切片规划不同；运行中仍是「运行中也能补充说明」', () => {
+test('输入框占位：读资料和切片规划不同；运行中仍是「补充说明、这一步结束后送达」', () => {
   assert.equal(composerState({ sessionState: 'idle', researching: 'materials' }).placeholder, '给助手补充说明，或者继续拖入资料…');
   assert.equal(composerState({ sessionState: 'idle', researching: true }).placeholder, '给助手补充说明，或者继续拖入资料…');
   assert.match(composerState({ sessionState: 'idle', researching: 'blueprint' }).placeholder, /^对蓝图有意见直接说/);
-  assert.match(composerState({ sessionState: 'running', researching: 'materials' }).placeholder, /运行中也能补充说明/);
+  // 运行中不再是读资料的占位，补充说明延后送达（文案由外壳的只读口径定）
+  const running = composerState({ sessionState: 'running', researching: 'materials' });
+  assert.match(running.placeholder, /补充说明/);
+  assert.notEqual(running.placeholder, '给助手补充说明，或者继续拖入资料…');
+  assert.equal(running.delivery, 'deferred');
 });
 
 test('mock 阶段 materials：资料地图卡、资料用途问题卡、建议条（1 个主推 + 2 个次选）、流程条「读资料 5/7」', () => {

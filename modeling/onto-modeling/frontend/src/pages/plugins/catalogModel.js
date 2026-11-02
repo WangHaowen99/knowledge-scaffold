@@ -1,5 +1,6 @@
 // 插件中心的纯逻辑（设计稿 pages-60-plugins.js 的 PL_CAT、plFoot、plUi、plCard、启用 / 更新弹窗）：
 // 筛选与分组、卡脚按 project_status 映射、兼容检查结果到弹窗文字、提示语。页面只负责画。
+import { isEvidencePack } from '../../state/evidence.js';
 
 // 分类：名称、图标、说明（设计稿 PL_CAT）；exporter 契约里有、设计稿没画，有包时才出现。
 // 节点包是能力包的特例（用户 2026-11-02 定），归进能力包，不单列
@@ -27,6 +28,22 @@ export const isDataPack = (p) => DATA_CATEGORIES.includes(p?.category);
 const INSTALLED = ['required', 'enabled', 'update', 'pending'];
 export const isInstalled = (p) => INSTALLED.includes(p?.project_status);
 
+// ---------- 证据源 ----------
+/**
+ * 证据源本期不开放（ADR-0056）：EV-01 读不到时，证据源提供方和依赖证据源的包（系统逆向建模）不出现，
+ * 计数、推荐按剩下的重算。不依赖后端碰巧不下发
+ */
+export function visibleCatalog(data, evidenceOn) {
+  if (!data || evidenceOn) return data;
+  const hidden = (p) => categoryOf(p) === 'provider' || isEvidencePack(p?.name);
+  const items = (data.items || []).filter((p) => !hidden(p));
+  const counts = { ...(data.counts || {}), all: items.length };
+  Object.keys(PACK_CATEGORIES).forEach((k) => { counts[k] = items.filter((p) => categoryOf(p) === k).length; });
+  counts.enabled = items.filter(isInstalled).length;
+  counts.updatable = items.filter((p) => p.project_status === 'update').length;
+  return { ...data, items, counts, recommendations: (data.recommendations || []).filter((r) => !isEvidencePack(r.pack?.name)) };
+}
+
 // ---------- 筛选与分组 ----------
 // cat：all、分类键、inst（本项目已启用，含待生效）、upd（可更新）；q 按名称、ID、说明（设计稿 data-name）
 export function matchCard(p, { cat = 'all', q = '' } = {}) {
@@ -52,9 +69,10 @@ export function catOf(query) {
 }
 
 // ---------- 卡片 ----------
+// 只给租户包打标；官方包不标（几乎所有包都是官方）
 export function publisherChip(p) {
   const pub = p.publisher || { kind: 'official', label: '官方' };
-  if (pub.kind !== 'tenant') return { text: pub.label || '官方', tone: 'gray' };
+  if (pub.kind !== 'tenant') return null;
   return { text: /^租户/.test(pub.label || '') ? pub.label : `租户 · ${pub.label || ''}`, tone: 'indigo' };
 }
 
@@ -78,16 +96,19 @@ export function uiChip(ui) {
 
 const BATCH = { first: ['首版', 'blue'], second: ['第二批', 'gray'], third: ['第三批', 'gray'] };
 
-/** 卡片中间那排标记：分类、发布方、界面（能力包）、批次（提供方）、可更新；都没有时显示 meta */
+/**
+ * 卡片中间那排标记：租户发布方、带页面的能力包、批次（提供方）。
+ * 分类不标（卡片已按分类分区）；官方不标；不带页面不标；可更新看卡脚按钮；后端的元信息 meta 不显示（口径 5）
+ */
 export function cardTags(p) {
-  const tags = [{ text: PACK_CATEGORIES[categoryOf(p)]?.[0] || p.category, tone: 'line' }, publisherChip(p)];
+  const tags = [];
+  const pub = publisherChip(p);
+  if (pub) tags.push(pub);
   const ui = categoryOf(p) === 'capability' ? uiChip(p.ui) : null;
-  if (ui) tags.push(ui);
+  if (ui && ui.text !== '无独立页面') tags.push(ui);
   const batch = p.category === 'provider' ? BATCH[p.batch] : null;
   if (batch) tags.push({ text: batch[0], tone: batch[1] });
-  const upd = p.project_status === 'update';
-  if (upd) tags.push({ text: `可更新到 ${p.latest}`, tone: 'amber', icon: 'refresh' });
-  return { tags, meta: !batch && !upd ? p.meta || null : null };
+  return { tags };
 }
 
 /** 卡片上的「包名@版本」：已启用的显示锁定版本 */
@@ -132,6 +153,18 @@ export function compatRows(checks, ui) {
   return (checks || []).filter((c) => c.id !== 'page_api' || !c.ok || withPages);
 }
 
+/**
+ * 启用弹窗的兼容检查（R13）：全部通过时折成一行「兼容检查通过（n 项）」，点开看明细；
+ * 有不通过的默认展开，只列不通过的那几行
+ */
+export function compatView(checks, ui) {
+  const rows = compatRows(checks, ui);
+  const failed = rows.filter((c) => !c.ok);
+  return failed.length
+    ? { ok: false, summary: `兼容检查不通过（${failed.length} 项）`, rows: failed, expanded: true }
+    : { ok: true, summary: `兼容检查通过（${rows.length} 项）`, rows, expanded: false };
+}
+
 /** 「会带来什么」：summary_md 是「- 」开头的几行时画成列表，否则是一段话；没有时按数量拼 */
 export function bringsView(brings) {
   const md = String(brings?.summary_md || '').trim();
@@ -156,11 +189,11 @@ export function uiEffectText(effect, ui) {
   return stripNone(ui?.note) || '能力体现在助手对话和 Studio 里';
 }
 
-/** 什么时候生效（契约 PL-03 effective） */
+/** 什么时候生效（契约 PL-03 effective），一行 */
 export function effectiveNote(effective) {
-  if (effective === 'immediate') return '纯数据包现读即生效：下一次读取时就用新内容，不用重连，正在进行的一轮也不受影响。';
-  if (effective === 'next_safe_point') return '自主构建正在运行，会在下一个安全点之后生效；正在进行的一轮按旧版本跑完。';
-  return '下一条消息发出前重新装配并重连，上下文保留；正在进行的一轮按旧版本跑完。自主构建正在运行时，会在下一个安全点之后生效。';
+  if (effective === 'immediate') return '现读即生效';
+  if (effective === 'next_safe_point') return '下一个安全点后生效';
+  return '下一条消息生效';
 }
 
 /** 更新弹窗「对已有产物的影响」 */

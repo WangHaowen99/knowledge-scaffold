@@ -44,7 +44,8 @@ export function flowLayout(insertions = [], { kernel = false, caption = '' } = {
     stack[at] = k + 1;
     const y = 88 + k * (PILL_H + PILL_GAP);
     return {
-      id: ins.id, at, title: ins.title || ins.id, sub: ins.note || '',
+      // 插入点下的小字（ins.note，如「节点钩子 · 写入即查之后」）是后端下发的说明，不画（口径 5）
+      id: ins.id, at, title: ins.title || ins.id, sub: '',
       x: X(i) + 6, y, w: NW - 12, h: PILL_H, cx: X(i) + NW / 2,
       lineFrom: k ? y - PILL_GAP : 69, lineTo: y,
     };
@@ -61,11 +62,10 @@ export function flowLayout(insertions = [], { kernel = false, caption = '' } = {
   return { width, height: captionY + 8, nodes, edges, pills, caption: { x: captionX, y: captionY } };
 }
 
-/** 图下方那句话 */
+/** 图下方那句话：只用包自带的说明（处数和统计卡重复，不写）；不往流程里加步骤时说一句 */
 export function flowCaption(d, kernel) {
   const n = d?.flow_insertions?.length || 0;
-  if (kernel) return d?.flow_note || '主线由基础建模定义，其他包往里加步骤';
-  if (n) return `本包往流程里加的 ${n} 处${d?.flow_note ? `；${d.flow_note}` : ''}`;
+  if (kernel || n) return d?.flow_note || '';
   return d?.flow_note || '这个包不往流程里加步骤';
 }
 
@@ -75,7 +75,6 @@ const GROUP_ICON = {
   检查规则: 'gate', 界面入口: 'layout', 报告格式: 'list', 可调设置: 'sliders', 参考指南: 'book', 术语: 'book', 规则: 'scale',
   参考对象: 'cube', 示例项目: 'folder', 表字典: 'table', 状态码: 'tag', 证据类型: 'db', 只读保障: 'shieldok', 凭据字段: 'key', 登记要求: 'filetext',
 };
-const CONFIG_NOTE = '在项目设置里改，从下一条消息开始生效';
 
 /** 可调设置一项的说法：字符串原样；{label, value} →「每片最多场景数 6」；清单原样给的 {id, default} 也认 */
 export function configText(item) {
@@ -111,7 +110,7 @@ export function contentGroups(d) {
   if (!has('加进流程')) push('加进流程', (d?.flow_insertions || []).map((x) => x.title || x.id));
   contents.forEach((g) => push(g.group, g.items, g.note, g.total));
   if (!has('界面入口')) push('界面入口', uiEntries(d?.ui));
-  if (!has('可调设置')) push('可调设置', (d?.config || []).map(configText), CONFIG_NOTE);
+  if (!has('可调设置')) push('可调设置', (d?.config || []).map(configText));
   return out;
 }
 export const contentTotal = (groups) => groups.reduce((s, g) => s + g.count, 0);
@@ -145,41 +144,36 @@ export function fmtDate(iso) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
-/** 英雄区下方那一行：需要、大小、发布、本项目启用于（没有的项不出） */
+/** 英雄区下方那一行：需要、发布、本项目启用于（没有的项不出；大小不影响启用判断，不列） */
 export function heroFacts(d) {
   return [
     ['需要', dependsText(d?.requires?.depends)],
-    ['大小', fmtSize(d?.size)],
     ['发布', fmtDate(d?.released_at)],
     ['本项目启用于', fmtDate(d?.enabled_at)],
   ].filter(([, v]) => v);
 }
 
 /**
- * 英雄区右侧：menu 是「已启用到本项目」那个按钮（点开菜单弹窗），primary 是主按钮，hint 是下面那句说明。
+ * 英雄区右侧：menu 是「已启用到本项目」那个按钮（点开下拉菜单），primary 是主按钮，hint 是下面那句说明。
+ * 已启用、必装、待生效、可启用时不写说明：生效时机由按钮、启用弹窗和 toast 说。
  * o：{pending: PL-05 的 pending, hasProject, admin, requested}
  */
 export function heroActions(d, o = {}) {
   const st = d?.project_status;
-  const data = ['industry', 'system'].includes(d?.category);
-  const updHint = data ? '行业包这类纯数据包现读即生效，更新后下一次读取就用新内容。' : '更新后从下一条消息开始生效，正在进行的一轮按原来的方式跑完。';
   if (!o.hasProject && d?.category !== 'provider') return { hint: '先在「我的项目」里建一个项目，才能启用到项目。' };
   switch (st) {
-    case 'required': return { menu: { label: '必装 · 已启用', icon: 'lock' }, hint: '基础建模是必装能力，不能停用；版本跟随部署的默认版本。' };
-    case 'enabled': return { menu: { label: '已启用到本项目', icon: 'check' }, hint: updHint };
+    case 'required': return { menu: { label: '必装 · 已启用', icon: 'lock' } };
+    case 'enabled': return { menu: { label: '已启用到本项目', icon: 'check' } };
     case 'update':
-      return { menu: { label: '已启用到本项目', icon: 'check' }, primary: { label: `更新到 ${d.latest}`, icon: 'refresh', action: 'update' }, hint: updHint };
+      return { menu: { label: '已启用到本项目', icon: 'check' }, primary: { label: `更新到 ${d.latest}`, icon: 'refresh', action: 'update' } };
     case 'pending': {
       const p = o.pending;
       const what = p?.kind === 'disable' ? '停用' : p?.kind === 'enable' ? '已启用' : p?.to ? `${p.to}` : '已启用';
       const when = p?.effective === 'next_autobuild' ? '下次自主构建时生效' : '下一条消息生效';
-      return {
-        menu: { label: `${what} · ${when}`, icon: 'clock' },
-        hint: '已排队：下一条消息发出前切换，正在进行的一轮按旧版本跑完。要撤销，到项目设置的「能力与插件」里操作。',
-      };
+      return { menu: { label: `${what} · ${when}`, icon: 'clock' } };
     }
     case 'available':
-      return { primary: { label: '启用到本项目', icon: 'plus', action: 'enable' }, hint: data ? '启用后保存一个版本，纯数据包现读即生效。' : '启用后保存一个版本，从下一条消息开始生效。' };
+      return { primary: { label: '启用到本项目', icon: 'plus', action: 'enable' } };
     case 'offline': return { primary: { label: '启用', disabled: true, title: '离线部署不可用', kind: '' }, hint: '离线部署不可用：这个包要联网。' };
     case 'not_applicable': return { primary: { label: '本项目不适用', disabled: true, kind: '' }, hint: d.usage_note || '本项目不适用这个包。' };
     case 'platform_installed': return { primary: { label: '平台已安装', icon: 'check', disabled: true, kind: 'soft' }, hint: '提供方装在连接器网关里；登记数据源在项目的资料页里。' };
@@ -193,42 +187,42 @@ export function heroActions(d, o = {}) {
   }
 }
 
-/** 「已启用到本项目」菜单（设计稿 pdMenu）：停用、只在下次自主构建时启用新版本、在项目设置里查看全部能力 */
+/**
+ * 「已启用到本项目」下拉菜单（R14，设计稿 pdMenu）：只写动作——停用、只在下次自主构建时启用新版本、在项目设置里查看；
+ * 有待生效的切换时多一项「撤销切换」。停用的后果在点了之后的确认框里说（disableConfirm）
+ */
 export function heroMenu(d, o = {}) {
-  const ui = d?.ui;
-  let disable;
+  let disable = { label: '停用' };
   if (d?.project_status === 'required') disable = { label: '停用', disabled: true, title: '必装，不能停用' };
-  else if (o.pending?.kind === 'disable') disable = { label: '停用（已排队，下一条消息生效）', disabled: true };
-  else if (ui?.kind === 'page') disable = { label: `停用（左栏${ui.pages.map((p) => `「${p.title}」`).join('')}页面消失，产物保留，步骤标为已停用）` };
-  else if (ui?.kind === 'subpages') disable = { label: `停用（资料页的 ${ui.subpages.length} 个子页消失，产物保留，步骤标为已停用）` };
-  else disable = { label: ['industry', 'system'].includes(d?.category) ? '停用（立即生效，已有产物保留）' : '停用（产物保留，步骤标为已停用）' };
+  else if (o.pending?.kind === 'disable') disable = { label: '停用', disabled: true, title: '已排队，下一条消息生效' };
   const canLater = d?.project_status === 'update';
   return [
     { key: 'disable', icon: 'ban', ...disable },
+    ...(o.pending ? [{ key: 'cancel_pending', icon: 'undo', label: '撤销切换' }] : []),
     { key: 'next_autobuild', icon: 'rocket', label: '只在下次自主构建时启用新版本', disabled: !canLater, title: canLater ? null : '没有可更新的版本' },
     '-',
-    { key: 'settings', icon: 'gear', label: '在项目设置里查看全部能力' },
+    { key: 'settings', icon: 'gear', label: '在项目设置里查看' },
   ];
 }
-export function heroMenuSub(d) {
-  const v = d?.locked_version || d?.version;
-  const on = fmtDate(d?.enabled_at);
-  return `本项目在用 ${v}${on ? ` · 启用于 ${on}` : ''}`;
+
+/** 停用前的确认（R14）：后果只在这里说一次 */
+export function disableConfirm(d) {
+  const ui = d?.ui;
+  let what = '';
+  if (ui?.kind === 'page') what = `左栏${ui.pages.map((p) => `「${p.title}」`).join('')}页面会消失，`;
+  else if (ui?.kind === 'subpages') what = `资料页的 ${ui.subpages.length} 个子页会消失，`;
+  return { title: `停用${d?.label || ''}？`, body: `${what}已有产物保留。` };
 }
 
 // ---------- 统计卡 ----------
+// 两格：本项目产出、运行情况（「加进流程」那格和上面的主线图重复，不出）
 export function statCards(d, { hasProject } = {}) {
-  const kernel = d?.ui?.kind === 'kernel';
-  const ins = d?.flow_insertions || [];
-  const first = kernel
-    ? { label: '主线阶段', value: MAINLINE.length, unit: '个', desc: '资料分析 · 建模 · 校验与走查 · 全局一致性 · 发布' }
-    : { label: '加进流程', value: ins.length, unit: '处', desc: ins.length ? ins.map((x) => x.short || x.title || x.id).join(' · ') : '不往流程里加步骤' };
   const ps = d?.project_stats;
   const where = d?.category === 'provider' ? '在平台上' : '在本项目产出';
   const none = !hasProject && d?.category !== 'provider' ? '没有选项目' : ['required', 'enabled', 'update', 'pending'].includes(d?.project_status) || d?.category === 'provider' ? '暂时没有统计' : '本项目没有启用';
   const second = ps?.produced ? { label: where, value: ps.produced.value, unit: ps.produced.unit, desc: ps.produced.note } : { label: where, value: '—', desc: none };
   const third = ps?.metric ? { label: ps.metric.label, value: ps.metric.value, desc: ps.metric.note } : { label: '运行情况', value: '—', desc: none };
-  return [first, second, third];
+  return [second, third];
 }
 
 // ---------- 更新记录 ----------

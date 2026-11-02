@@ -7,7 +7,7 @@ import {
   AUDIT_FILTERS, actorLabel, auditContent, auditQuery, clockText, dateTimeText, daysLeft, defaultTransferTarget, deleteDoneText,
   deleteRequest, deleteSub, errorProject, errorSub, execText, isTrashUnsupported, lastSeenText, mergePage, ownerRequest, packNode,
   pagerText, passwordProblems, purgeText, resetRequest, restoreDoneText, roleMenu, ruleTexts, traceTarget, transferCandidates,
-  trashEmptyText, trashIntro, trashOption, userStats,
+  trashOption, trashView, userStats,
 } from '../src/pages/ops/usersModel.js';
 
 const NOW = new Date(2026, 10, 1, 15, 50, 0).getTime();
@@ -35,17 +35,18 @@ test('改角色菜单：三种角色，当前角色标「当前」', () => {
   assert.equal(roleMenu('ops')[2].hint, '当前');
 });
 
-test('统计卡：B2 第 13 条 new_7d、locked 为 null 时显示「—」并换说明', () => {
+test('统计卡：B2 第 13 条 new_7d、locked 为 null 时显示「—」并标出读不到；有值时不出复述标签的说明', () => {
   const full = userStats({ accounts: 23, by_role: { user: 19, admin: 2, ops: 2 }, new_7d: 2, locked: 1, registration_enabled: false, auth: { alg: 'RS256', issuer_checked: true } });
   assert.deepEqual(full.map((s) => s.value), [23, 2, 1, 'RS256']);
   assert.equal(full[0].desc, '建模者 19 · 管理员 2 · 运维 2');
   assert.equal(full[1].desc, '注册开关：关闭');
-  assert.equal(full[3].desc, 'auth-server · JWKS 验签 · 校验颁发方与受众');
+  assert.equal(full[2].desc, null);
+  assert.equal(full[3].desc, 'JWKS 验签');
   const b2 = userStats({ accounts: 5, by_role: { user: 4, admin: 1 }, new_7d: null, locked: null, registration_enabled: null, auth: { alg: 'RS256', issuer_checked: true } });
   assert.equal(b2[1].value, '—');
   assert.equal(b2[2].value, '—');
   assert.equal(b2[1].desc, '注册开关：读不到');
-  assert.equal(b2[2].desc, '认证服务没有提供锁定统计');
+  assert.equal(b2[2].desc, '认证服务未提供');
   assert.equal(b2[0].desc, '建模者 4 · 管理员 1 · 运维 0');
   // 没有 stats 时用 total 兜底
   assert.equal(userStats(null, 7)[0].value, 7);
@@ -98,17 +99,21 @@ test('删除用户：只能移交给另一位建模者；名下没有项目不�
   const nameOf = (u) => USERS.find((x) => x.username === u)?.display_name || u;
   assert.equal(deleteDoneText({ transferred: 3, transfer_to: 'sunyu' }, nameOf), '已删除用户，3 个项目已移交给孙宇');
   assert.equal(deleteDoneText({ trashed: 2 }), '已删除用户，2 个项目已移入回收站');
-  assert.equal(deleteDoneText({ transferred: 0, trashed: 0 }), '已删除用户，已写审计');
+  assert.equal(deleteDoneText({ transferred: 0, trashed: 0 }), '已删除用户');
 });
 
-test('「移入回收站」与回收站说明按 retention_days：有值照契约，null（B2 第 15、24 条）停用并改说法', () => {
-  assert.deepEqual(trashOption(30), { enabled: true, text: '30 天内管理员或运维可以恢复，之后永久删除' });
-  assert.equal(trashOption(null).enabled, false);
+test('「移入回收站」与回收站页签按 retention_days：有值照契约，null（B2 第 15、24 条）只能移交、存量清空后不出页签（R20、R21）', () => {
+  assert.deepEqual(trashOption(30), { enabled: true, text: '30 天内可恢复' });
+  assert.deepEqual(trashOption(null), { enabled: false, text: null });
   assert.equal(trashOption(undefined).enabled, false);
-  assert.equal(trashIntro(30), '删除的项目先进回收站，30 天后自动永久删除。');
-  assert.equal(trashIntro(null), '这里是早先删除的项目，不会自动清除，需要时手动永久删除。');
-  assert.equal(trashEmptyText(30), '被删除的项目会在这里保留 30 天。');
-  assert.match(trashEmptyText(null), /直接永久删除/);
+  // 有保留期：页签照常、带「自动清除」列，空了也出
+  assert.deepEqual(trashView({ retention_days: 30, items: [] }), { show: true, autoPurge: true });
+  // 只剩旧版存量：有数据照常列、不出「自动清除」列；清空后整个页签不出；读失败时照常出（页签里报错）
+  assert.deepEqual(trashView({ retention_days: null, items: [{ entry: 'x' }] }), { show: true, autoPurge: false });
+  assert.deepEqual(trashView({ retention_days: null, items: [] }), { show: false, autoPurge: false });
+  assert.equal(trashView({ retention_days: null, items: [] }, { loadError: true }).show, true);
+  assert.deepEqual(trashView(null), { show: true, autoPurge: true });
+  assert.equal(deleteRequest({ projectCount: 2, mode: 'trash', users: USERS, username: 'wanggong', trashEnabled: false }).ok, false);
   assert.equal(isTrashUnsupported({ code: 'invalid_argument', details: { fields: { projects: 'trash_unsupported' } } }), true);
   assert.equal(isTrashUnsupported({ code: 'invalid_argument', details: { fields: { projects: 'required' } } }), false);
 });
@@ -121,12 +126,13 @@ test('回收站剩余天数：向上取整，过期算「今天」，purge_at �
   assert.equal(purgeText(new Date(NOW + 5 * day).toISOString(), NOW), '5 天 后');
   assert.equal(purgeText(new Date(NOW + 3600 * 1000 * -2).toISOString(), NOW), '今天');
   assert.equal(purgeText(null, NOW), '不自动清除');
-  assert.equal(restoreDoneText({ project: { name: '测试项目 0919' } }, { name: '测试项目 0919' }), '已恢复到所有者的项目列表');
-  assert.equal(restoreDoneText({ project: { name: '测试项目 0919' } }, { name: '测试项目 0919（恢复）' }), '已恢复为「测试项目 0919（恢复）」，回到所有者的项目列表');
+  assert.equal(restoreDoneText({ project: { name: '测试项目 0919' } }, { name: '测试项目 0919' }), '已恢复');
+  assert.equal(restoreDoneText({ project: { name: '测试项目 0919' } }, { name: '测试项目 0919（恢复）' }), '已恢复为「测试项目 0919（恢复）」');
 });
 
-test('审计筛选：设计稿七个分段，「全部」不带 type；分页合并按 id 去重，第一页整体替换', () => {
-  assert.deepEqual(AUDIT_FILTERS.map(([k]) => k), ['all', 'write', 'mcp', 'commit', 'plugin', 'evidence', 'ops']);
+test('审计筛选：设计稿的分段去掉证据采集（证据源本期不开放），「全部」不带 type；分页合并按 id 去重，第一页整体替换', () => {
+  assert.deepEqual(AUDIT_FILTERS.map(([k]) => k), ['all', 'write', 'mcp', 'commit', 'plugin', 'ops']);
+  assert.equal(AUDIT_FILTERS.find(([k]) => k === 'plugin')[1], '插件');
   assert.deepEqual(auditQuery('all', '', 50), { limit: 50 });
   assert.deepEqual(auditQuery('plugin', '  王工 ', 50), { type: 'plugin', q: '王工', limit: 50 });
 
@@ -295,6 +301,9 @@ test('AD-04 / AD-05：移交给建模者后项目归新所有者；移入回收�
   const lt = await legacy.call('GET', '/api/v1/ops/trash');
   assert.equal(lt.body.retention_days, null);
   assert.ok(lt.body.items.every((t) => t.purge_at === null));
+  // trash:legacy-empty：旧数据已清空，页面据此不出回收站页签（R21）
+  const le = await server({ sc: { trash: 'legacy-empty' } }).call('GET', '/api/v1/ops/trash');
+  assert.deepEqual([le.body.retention_days, le.body.items.length, trashView(le.body).show], [null, 0, false]);
   assert.equal((await server({ role: 'ops' }).call('GET', '/api/v1/admin/users/wanggong/projects')).status, 403);
 });
 

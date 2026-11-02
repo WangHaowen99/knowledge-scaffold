@@ -77,18 +77,13 @@ export function useCommandTasks(page, { onFinish } = {}) {
   return { tasks, active: pageTask(tasks, page), send, sending };
 }
 
-// 页头 eyebrow：插件标识，点了看插件详情（plugin-detail?pack=<包名>，与 F1、F2 的入口同一个参数）
+// 页头 eyebrow：插件标识只留拼图图标，悬停显示插件名，点了看插件详情（plugin-detail?pack=<包名>，与 F1、F2 的入口同一个参数）
 export function PluginEyebrow({ pack, label }) {
   return (
-    <span className="mr-plg" title={`查看「${label}」插件详情`} onClick={() => navigate(pagePath('plugin-detail'), { pack })}>
-      <Icon name="puzzle" size={12} />插件 · {label}
+    <span className="mr-plg" data-pop={`由「${label}」插件提供`} aria-label={label} onClick={() => navigate(pagePath('plugin-detail'), { pack })}>
+      <Icon name="puzzle" size={12} />
     </span>
   );
-}
-
-// 页头说明的第二行：停用后的去向
-export function PluginDesc({ label, what }) {
-  return <span className="mr-plgd">由「{label}」能力包提供；停用后此页从左栏消失，已有{what}保留在知识包里。</span>;
 }
 
 // 发命令的按钮：只往工作台对话发一条命令，页面上显示进度
@@ -105,6 +100,15 @@ export function SendButton({
       {children}
     </Button>
   );
+}
+
+// 包声明的附加操作（PL-12 entries，kind=extra_action、where=这一页）：放在页头操作区，和页面自己的按钮一样只发命令
+export function ExtraActions({ page, tasks }) {
+  const { extensions } = useProject();
+  const items = (extensions?.entries || []).filter((e) => e.kind === 'extra_action' && e.where === page && e.command);
+  return items.map((e) => (
+    <SendButton key={e.id} tasks={tasks} command={e.command} text={e.label} icon="sparkle" kind="soft">{e.label}</SendButton>
+  ));
 }
 
 // 进度条：助手在工作台跑这一页发的命令（设计稿 mrRun）；没有进行中的任务时不显示
@@ -174,7 +178,7 @@ export function PluginOff({ label, what }) {
           </>
         )}
       >
-        这一页由「{label}」能力包提供，启用后才会出现在左栏。{what ? `已有的${what}仍保留在知识包里。` : ''}
+        {what ? `已有的${what}仍在知识包里` : null}
       </Empty>
     </div>
   );

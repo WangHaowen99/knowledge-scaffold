@@ -1,6 +1,6 @@
 // 可观测（设计稿 ops-obs）的纯逻辑：公共标签、指标卡、归因表、链路瀑布、结构化日志、告警规则、导出器、链路检索。
 // 后端口径（contract-changes B3b 第 6～8 条）：指标的 value 是数、unit 是「个 / 秒 / tokens / % / 次」；
-// merges、collections 恒为 0 时带 note；归因的 reruns、first_accept_pct 为 null；日志 level 另有 DEBUG。
+// merges、collections 恒为 0 时带 note（底注是后端下发的说明，前端不画）；归因的 reruns、first_accept_pct 为 null；日志 level 另有 DEBUG。
 import { DASH, fmtNum } from './overviewModel.js';
 
 const pad = (n, w = 2) => String(n).padStart(w, '0');
@@ -91,11 +91,16 @@ export function fmtCount(n) {
 }
 
 /**
- * 指标卡的显示：大字（数值带单位）、小字（secondary，没有时给计数单位）、迷你折线颜色、底下一行（note）。
+ * 指标卡的显示：大字（数值带单位）、小字（secondary，没有时给计数单位）、迷你折线颜色。
  * value 是字符串时原样显示（mock 的「7 / 12」）。
  */
+// O-02 的卡片哪些画：没有数据来源的（后端不返回或带 unavailable）不画；证据采集随证据源开关（R18）
+export function visibleMetricCards(cards, { evidenceOn = false } = {}) {
+  return (cards || []).filter((c) => c && !c.unavailable && c.available !== false && (evidenceOn || c.id !== 'collections'));
+}
+
 export function metricView(card) {
-  const { value, unit, secondary, note } = card;
+  const { value, unit, secondary } = card;
   let big;
   let small = secondary || '';
   if (typeof value === 'string') big = unit && !['次', '个'].includes(unit) ? `${value} ${unit}` : value;
@@ -112,7 +117,6 @@ export function metricView(card) {
     big: value == null ? DASH : big,
     small,
     series: Array.isArray(card.series) ? card.series : [],
-    note: note || '',
     tone: card.tone === 'error' ? 'var(--red)' : card.tone === 'warn' ? 'var(--amber)' : undefined,
     ...color,
   };
@@ -134,6 +138,13 @@ export function sparkPath(points, { w = 180, h = 30 } = {}) {
 export function fmtMs(ms) {
   if (ms == null) return DASH;
   return fmtSeconds(ms / 1000);
+}
+
+// 归因表可选列：整列都是空值（后端还没有数据来源）时不出这一列（R18）
+export const ATTRIBUTION_OPTIONAL = [['reruns', '重跑'], ['first_accept_pct', '首次接受率']];
+export function attributionColumns(items) {
+  const list = items || [];
+  return ATTRIBUTION_OPTIONAL.filter(([k]) => list.some((it) => it?.[k] != null)).map(([k]) => k);
 }
 
 export function attributionRow(item) {
@@ -273,7 +284,7 @@ export function runbookSummary(md) {
 
 export function rulesSub(items) {
   const n = (items || []).length;
-  return `${n} 条${(items || []).some(isPackRule) ? ' · 含包声明的规则' : ''}`;
+  return `${n} 条`;
 }
 
 export const emptyRule = () => ({ name: '', condition: '', window: '', level: 'warning', runbook_md: '', auto_action: null, enabled: true });

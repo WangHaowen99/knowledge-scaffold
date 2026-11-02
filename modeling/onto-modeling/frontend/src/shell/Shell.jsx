@@ -37,7 +37,6 @@ function NotificationDrawer({ open, onClose, items, onReadAll }) {
       onClose={onClose}
       icon="bell"
       title="通知"
-      sub="自主构建进展与需要你处理的事"
       w={420}
       foot={<Button size="sm" kind="ghost" onClick={onReadAll}>全部标为已读</Button>}
     >
@@ -58,9 +57,6 @@ function NotificationDrawer({ open, onClose, items, onReadAll }) {
           </div>
         );
       }) : <div className="muted sm">暂时没有通知</div>}
-      <div className="xs muted mt8 row g4">
-        <Icon name="info" size={12} />离开页面时也会弹系统通知，可在<a className="link" href="#/me?section=noti">个人设置</a>里调整
-      </div>
     </Drawer>
   );
 }
@@ -120,7 +116,7 @@ const KERNEL_RAIL = [['wb-l2', '工作台', 'layout'], ['studio', 'Studio', 'gra
 // 子页面归到哪个导航项（同设计稿 RAIL_OF）
 export const RAIL_OF = {
   inbox: 'wb-l2', 'wb-materials': 'wb-l2', 'wb-blueprint': 'wb-l2', 'l4-run': 'wb-l2', incremental: 'wb-l2', flowchart: 'wb-l2', 'chat-states': 'wb-l2',
-  'studio-table': 'studio', reports: 'studio', sources: 'resources', snapshots: 'resources', schema: 'resources', versions: 'publish',
+  'studio-table': 'studio', 'studio-er': 'studio', reports: 'studio', sources: 'resources', snapshots: 'resources', schema: 'resources', versions: 'publish',
 };
 const MAX_PLUGIN_RAIL = 5;
 
@@ -151,7 +147,7 @@ function ProjectRail({ active }) {
       {kernel.map((x) => item(x, x.id === 'wb-l2' ? inboxCount : 0))}
       {shown.length ? (
         <>
-          <div className="pr-pl" data-pop="以下页面由已启用的插件带来，在项目设置里停用后会消失">插件</div>
+          <div className="pr-pl">插件</div>
           {shown.map((x) => item(x, 0))}
           {more.length ? (
             <a className={more.some((m) => m.id === act) ? 'on' : ''} onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setMoreAt({ left: r.right + 6, top: r.top }); }}>
@@ -178,11 +174,15 @@ function SubNav({ active }) {
   const { pid, extensions, inboxCount } = useProject();
   const grp = RAIL_OF[active] || active;
   const plugMark = (title) => (
-    <span className="sn-pl" data-pop={`由「${title}」插件提供，未启用时不显示`}><Icon name="puzzle" size={12} /></span>
+    <span className="sn-pl" data-pop={`由「${title}」插件提供`}><Icon name="puzzle" size={12} /></span>
   );
   let items = null;
   if (grp === 'wb-l2') items = [['wb-l2', '对话'], ['inbox', <>待处理{inboxCount ? <span className="sn-n">{inboxCount}</span> : null}</>]];
-  if (grp === 'studio') items = [['studio', '图谱'], ['studio-table', '表格与条目'], ['reports', '报告']];
+  if (grp === 'studio') {
+    // 包选用了 ER 视图（PL-12 view_choices）时，Studio 的视图切换多一项（R23）
+    const er = (extensions?.view_choices || []).some((v) => v.id === 'er_view');
+    items = [['studio', '图谱'], ...(er ? [['studio-er', 'ER 视图']] : []), ['studio-table', '表格与条目'], ['reports', '报告']];
+  }
   if (grp === 'publish') items = [['publish', '发布'], ['versions', '版本历史']];
   if (grp === 'resources') {
     items = [['resources', '资料区'], ...(extensions?.subpages || []).filter((s) => s.parent === 'resources').map((s) => [s.id, <>{s.title}{plugMark(s.pack_label || '系统逆向建模')}</>])];

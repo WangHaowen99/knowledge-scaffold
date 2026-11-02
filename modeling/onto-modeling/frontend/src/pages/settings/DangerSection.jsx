@@ -31,8 +31,7 @@ function DeleteDialog({ onClose }) {
       open onClose={onClose} icon="trash" danger title={`永久删除「${name}」？`} sub="删除后不可恢复。" w={520}
       foot={<><Button onClick={onClose}>取消</Button><Button kind="danger" className="fill" disabled={v !== name || busy} onClick={go}>确认删除</Button></>}
     >
-      <Note tone="red">无论项目当前状态如何都会直接删除：进行中的建模会话、排队中的消息和正在运行的自主构建立即强制终止。</Note>
-      <div className="mt12 sm muted">工作区文件、对话记录与版本历史将被永久清除。如果只是暂时不用，建议先归档。</div>
+      <Note tone="red">正在进行的会话和自主构建会立即终止。</Note>
       <div className="mt12">
         <Field label="输入项目名称确认">
           <Inp placeholder={name} value={v} autoFocus onChange={(e) => setV(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && v === name && !busy) go(); }} />
@@ -60,7 +59,7 @@ export function DangerSection({ archived }) {
       setBusy(null);
     }
   };
-  const exportPkg = () => act('export', () => services.download(`/projects/${encodeURIComponent(pid)}/transfer-package`, `${meta.name}-transfer.zip`), '已导出迁移包（含版本历史，不含凭据）', 'download');
+  const exportPkg = () => act('export', () => services.download(`/projects/${encodeURIComponent(pid)}/transfer-package`, `${meta.name}-transfer.zip`), '已导出迁移包', 'download');
 
   return (
     <div className="card" data-sec="danger" style={{ borderColor: '#F3C4C4' }}>
@@ -68,20 +67,20 @@ export function DangerSection({ archived }) {
       <div className="card-b" style={{ paddingTop: 4 }}>
         <div className="evd-danger">
           <span style={{ color: 'var(--ink3)' }}><Icon name="download" size={18} /></span>
-          <div className="grow"><b>导出迁移包</b><div className="sm muted">完整工作区和版本历史，可以在另一套部署里导入；不含对话记录和数据源凭据。</div></div>
+          <div className="grow"><b>导出迁移包</b><div className="sm muted">含工作区和版本历史，不含对话记录</div></div>
           <Button icon="download" disabled={!!busy} onClick={exportPkg}>导出</Button>
         </div>
         {archived ? (
           <div className="evd-danger">
             <span style={{ color: 'var(--ink3)' }}><Icon name="refresh" size={18} /></span>
-            <div className="grow"><b>恢复项目</b><div className="sm muted">项目已归档、只读。恢复后回到项目列表，可以继续建模。</div></div>
-            <Button icon="refresh" disabled={!!busy} onClick={() => act('archive', () => api.archiveProject(pid, false), '已恢复，可以继续建模', 'refresh')}>恢复</Button>
+            <div className="grow"><b>恢复项目</b><div className="sm muted">恢复后可以继续建模</div></div>
+            <Button icon="refresh" disabled={!!busy} onClick={() => act('archive', () => api.archiveProject(pid, false), '已恢复', 'refresh')}>恢复</Button>
           </div>
         ) : (
           <div className="evd-danger">
             <span style={{ color: 'var(--ink3)' }}><Icon name="archive" size={18} /></span>
-            <div className="grow"><b>归档项目</b><div className="sm muted">归档后只读，不能再建模；可以在项目列表的「已归档」里恢复。</div></div>
-            <Button icon="archive" disabled={!!busy} onClick={() => act('archive', () => api.archiveProject(pid, true), '已归档，可在项目列表恢复', 'archive')}>归档</Button>
+            <div className="grow"><b>归档项目</b><div className="sm muted">归档后只读，可以恢复</div></div>
+            <Button icon="archive" disabled={!!busy} onClick={() => act('archive', () => api.archiveProject(pid, true), '已归档', 'archive')}>归档</Button>
           </div>
         )}
         <div className="evd-danger">

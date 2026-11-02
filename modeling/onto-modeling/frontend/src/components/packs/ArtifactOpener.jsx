@@ -16,9 +16,7 @@ function PluginOff({ type, onClose }) {
   const pack = packOfType(type);
   const go = () => { onClose?.(); navigate(pagePath('plugin-detail'), { pack }); };
   return (
-    <Modal open onClose={onClose} icon="puzzle" title="插件已停用" w={420} foot={<Button kind="primary" onClick={go}>去启用</Button>}>
-      <div className="sm muted pk-off" data-pack={pack}>启用后才能打开。</div>
-    </Modal>
+    <Modal open onClose={onClose} icon="puzzle" title="插件已停用" w={420} foot={<Button kind="primary" onClick={go}>去启用</Button>} />
   );
 }
 
@@ -32,7 +30,7 @@ function FrameDialog({ type, mode, artifact, types, onClose }) {
         <div className="pk-h">
           <span className="ik"><Icon name="puzzle" size={16} /></span>
           <b className="grow ell">{artifact.title || artifact.key || type.title}</b>
-          <span className="plg-tag"><Icon name="puzzle" size={12} />插件 · {mode.editor.title}</span>
+          <span className="plg-tag" data-pop={`由「${mode.editor.pack}」插件提供`} onClick={() => { onClose?.(); navigate(pagePath('plugin-detail'), { pack: mode.editor.pack }); }}><Icon name="puzzle" size={12} /></span>
           {readonly ? <span className="chip gray sm"><Icon name="lock" size={12} />只读</span> : null}
           <button type="button" className="icon-btn" title="关闭" aria-label="关闭" onClick={onClose}><Icon name="x" /></button>
         </div>

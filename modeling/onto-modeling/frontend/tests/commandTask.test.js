@@ -38,11 +38,11 @@ test('从进行中变成结束的任务才算刚结束', () => {
 
 test('进度条第二行：运行中写步骤，排队与等回答写状态，再接页面的补充说明', () => {
   assert.equal(taskDetail(t('a', 'p', 'running', { step_label: '已推演 9 / 23' }), '结果回到下面的列表'), '已推演 9 / 23 · 结果回到下面的列表');
-  assert.equal(taskDetail(t('a', 'p', 'queued'), ''), '排队中，前一步结束后开始');
+  assert.equal(taskDetail(t('a', 'p', 'queued'), ''), '排队中');
   assert.equal(taskDetail(t('a', 'p', 'waiting_user', { step_label: '第 2 步' })), '等你在对话里回答');
   assert.equal(taskDetail(null, '说明'), '说明');
   assert.equal(taskPercent(t('a', 'p', 'running', { percent: 38.6 })), 39);
   assert.equal(taskPercent(t('a', 'p', 'running', { percent: 130 })), 100);
   assert.equal(taskPercent(t('a', 'p', 'running')), null);
-  assert.match(sendHint('批量推演 23 个场景'), /^发到工作台对话里执行：批量推演 23 个场景。/);
+  assert.equal(sendHint('批量推演 23 个场景'), '在对话里执行：批量推演 23 个场景');
 });

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mainItems, runItems } from '../src/api/mock/inbox-data.js';
+import { humanNodeItem, mainItems, runItems } from '../src/api/mock/inbox-data.js';
 import { createRunStore } from '../src/api/mock/run3.js';
 import {
-  adoptedIndex, afterResolve, ageText, anchorLabel, changePointText, confirmPlan, impactName, keyAction, kindStyle, sortItems, stepId, summarySub, todayRows,
+  adoptedIndex, afterResolve, ageText, anchorLabel, changePointText, confirmLabel, confirmPlan, countsWithoutEvidence, impactName, keyAction, keyHints,
+  kindStyle, pickHint, sortItems, stepId, summarySub, todayRows, visibleFilters, withoutEvidence,
 } from '../src/pages/inbox/inboxModel.js';
 
 const NOW = new Date(2026, 10, 1, 17, 30).getTime();
@@ -75,7 +76,8 @@ test('出处短标签、汇总条副标题、今天的进度、变更点文字�
   assert.equal(anchorLabel('db:erp-prod/erp.replenish_std.max_qty'), '数据库');
   assert.equal(summarySub({ started_at: at(1, 15, 10), ended_at: at(1, 17, 2), state: 'completed', cost: { amount: 86, currency: 'CNY' } }), '15:10 – 17:02 · 全部切片完成 · 费用 ¥86');
   assert.equal(summarySub({ started_at: at(1, 15, 10), ended_at: null, state: 'running', cost: null }), '15:10 开始 · 运行中');
-  assert.deepEqual(todayRows({ remaining_by_filter: { decision: 2, autobuild_review: 8, stale: 0 } }), [['决策', '2 剩余'], ['自主构建复核', '8 剩余，高置信可一键接受']]);
+  // 只列有剩余的几类，每类只给剩余数
+  assert.deepEqual(todayRows({ remaining_by_filter: { decision: 2, autobuild_review: 8, stale: 0 } }), [['决策', '2 剩余'], ['自主构建复核', '8 剩余']]);
   assert.equal(changePointText({ condition: '乳制品陈列上限', value: '120 → 150 箱', scope: '' }), '乳制品陈列上限 120 → 150 箱');
   assert.equal(changePointText({ condition: 'x', rewritten_text: '改写后' }), '改写后');
   assert.equal(impactName({ kind: 'rule', name: 'R-11 临时加量须审批' }), 'R-11');
@@ -107,4 +109,49 @@ test('mock 待处理：主示例项目 18 项，筛选计数与设计稿一致�
   assert.equal(hi[0].title, '高置信的 13 个自动决定，可以一起接受');
   done.acceptHigh();
   assert.equal(runItems(done).some(([it]) => it.high_confidence), false);
+});
+
+test('人工节点的决策卡：没有自定义回答，不提示 E、E 不进改写、只能按选项回答', () => {
+  const [it, q] = humanNodeItem();
+  assert.equal(it.kind, 'decision');
+  assert.equal(it.source, 'plugin');
+  assert.equal(q.options.some((o) => o.custom), false);
+  // 底栏只提示 1–4 选择，不提示 E
+  assert.deepEqual(keyHints(q.options), { rewrite: false });
+  assert.equal(pickHint(q.options), '先选一个选项');
+  assert.deepEqual(confirmPlan(it, q, null, null), { error: '先选一个选项' });
+  assert.deepEqual(confirmPlan(it, q, 1, null), { action: 'answer', body: { option_id: 'B' } });
+  // 普通决策卡有「其他，我来说」时照常提示 E
+  const withCustom = [{ id: 'A' }, { id: 'D', custom: true }];
+  assert.deepEqual(keyHints(withCustom), { rewrite: true });
+  assert.match(pickHint(withCustom), /按 E 写下你的方向/);
+  // 没有选项的事项（过期、续跑、外部反馈、变更清单）不出键位提示
+  assert.equal(keyHints([]), null);
+});
+
+test('底栏主按钮按类型写清楚会做什么', () => {
+  assert.equal(confirmLabel({ kind: 'decision' }, {}), '确认并下一条');
+  assert.equal(confirmLabel({ kind: 'review' }, { group: 'high_confidence' }), '全部接受并下一条');
+  assert.equal(confirmLabel({ kind: 'change_list' }, {}), '执行清单并下一条');
+  assert.equal(confirmLabel({ kind: 'stale' }, {}), '刷新并下一条');
+  assert.equal(confirmLabel({ kind: 'resumable' }, {}), '续跑并下一条');
+  assert.equal(confirmLabel({ kind: 'feedback' }, {}), '交给反馈演进并下一条');
+  assert.equal(confirmLabel({ kind: 'notification', actions: ['dismiss'] }, {}), '忽略并下一条');
+  // 和「确认并下一条」实际发的动作一致
+  assert.equal(confirmPlan({ kind: 'stale' }, {}).action, 'refresh');
+  assert.equal(confirmPlan({ kind: 'notification', actions: ['dismiss'] }, {}).action, 'dismiss');
+});
+
+test('证据源不可用时不列证据冲突（筛选格、列表、计数）', () => {
+  const counts = { total: 18, by_filter: { all: 18, evidence_conflict: 2, decision: 2 } };
+  assert.ok(visibleFilters(counts, 'all', true).some(([k]) => k === 'evidence_conflict'));
+  assert.equal(visibleFilters(counts, 'evidence_conflict', false).some(([k]) => k === 'evidence_conflict'), false);
+  assert.equal(visibleFilters({ by_filter: { evidence_conflict: 0 } }, 'all', true).some(([k]) => k === 'evidence_conflict'), false);
+  const items = [{ id: 'a', kind: 'decision' }, { id: 'b', kind: 'evidence_conflict' }];
+  assert.deepEqual(withoutEvidence(items, false).map((x) => x.id), ['a']);
+  assert.equal(withoutEvidence(items, true).length, 2);
+  assert.equal(countsWithoutEvidence(counts, false).total, 16);
+  assert.equal(countsWithoutEvidence(counts, false).by_filter.evidence_conflict, 0);
+  assert.equal(countsWithoutEvidence(counts, false).by_filter.all, 16);
+  assert.equal(countsWithoutEvidence(counts, true), counts);
 });

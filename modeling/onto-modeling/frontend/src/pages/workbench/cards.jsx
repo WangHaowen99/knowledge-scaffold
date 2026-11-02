@@ -82,7 +82,7 @@ export function FlowchartCard({ card, locked }) {
         dbl onDoubleClick={open}
         foot={(
           <>
-            <span className="xs muted grow">{isLocked ? '在助手写入范围内，确认生效或撤回前只读' : '双击在弹窗里编辑；保存后和 Studio 里是同一份'}</span>
+            <span className="xs muted grow">{isLocked ? '助手改动中，暂时只读' : null}</span>
             <Button size="xs" icon={isLocked ? 'lock' : 'edit'} onClick={open}>{actLabel}</Button>
           </>
         )}
@@ -98,7 +98,7 @@ export function FlowchartCard({ card, locked }) {
     >
       <div className="wx-cv">
         <FlowThumb thumbnail={card.thumbnail} height={140} />
-        <span className="ov"><Icon name={isLocked ? 'lock' : 'maximize'} size={12} />{isLocked ? '在助手写入范围内，确认生效或撤回前只读' : '双击打开编辑，保存后和 Studio 是同一份'}</span>
+        {isLocked ? <span className="ov"><Icon name="lock" size={12} />助手改动中，暂时只读</span> : null}
       </div>
     </CC>
   );
@@ -150,7 +150,7 @@ export function RoundChangesCard({ card, scope }) {
             {!merged && !discarded ? <Button size="sm" kind="ghost" icon="undo" disabled={busy} onClick={() => run(() => actions.discard(card.changeset_id))}>撤回这一轮</Button> : null}
             <span className="sp" />
             {merged ? <span className="wx-ok"><Icon name="check" size={14} />已确认生效 · 版本 {card.merged_version_label}</span>
-              : discarded ? <span className="xs" style={{ color: 'var(--faint)' }}>已撤回这一轮，主线没有变化</span>
+              : discarded ? <span className="xs" style={{ color: 'var(--faint)' }}>已撤回</span>
                 : (
                   <>
                     <span className="xs" style={{ color: 'var(--faint)' }}>确认后保存为版本 {card.next_version_label}</span>
@@ -167,7 +167,7 @@ export function RoundChangesCard({ card, scope }) {
           })}
         </div>
         {!merged && !discarded ? (
-          <div className="xs row g4" style={{ color: 'var(--faint)', marginTop: 8 }}><Icon name="lock" size={12} />{card.lock_note || roundLockNote(scope)}</div>
+          <div className="xs row g4" style={{ color: 'var(--faint)', marginTop: 8 }}><Icon name="lock" size={12} />{roundLockNote(scope)}</div>
         ) : null}
         {card.remaining_failures ? <Note tone="amber" className="mt8">还有 {card.remaining_failures} 项检查没通过</Note> : null}
         {showDiff && diff ? <DiffBlock lines={diff} style={{ marginTop: 10 }} /> : null}
@@ -195,8 +195,7 @@ export function RoundChangesDetail({ card, onCollapse }) {
           ))}
         </Fragment>
       ))}
-      <div className="xs faint mt8">你在 Studio 或文件里另外保存的改动不算在这里</div>
-      {card.state === 'pending_confirm' ? <div className="xs faint mt4 row g4"><Icon name="lock" size={12} />确认生效前，这些条目在 Studio 和插件页里只读；撤回这一轮也会解除</div> : null}
+      {card.state === 'pending_confirm' ? <div className="xs faint mt8 row g4"><Icon name="lock" size={12} />确认或撤回前，这些条目只读</div> : null}
       {card.state === 'pending_confirm' ? (
         <div className="row mt8">
           <Button size="sm" icon="undo" onClick={() => actions.discard?.(card.changeset_id)}>撤回这一轮</Button>
@@ -229,7 +228,6 @@ export function ResumeCard({ card }) {
           {card.resumable ? <Button size="sm" kind="primary" icon="play" onClick={() => actions.resume?.(card.exec_id)}>从步骤 {card.position?.step} 续跑</Button> : null}
         </div>
       </div>
-      <div className="xs faint mt8">执行进度由平台记录，助手进程退出后也能续跑</div>
     </>
   );
 }
@@ -295,7 +293,7 @@ export function CardItem({ card, scope }) {
     }
     case 'resume': return <ResumeCard card={card} />;
     case 'pack_recommendation': return <PackRecommendationCard card={card} />;
-    case 'knowledge_saved': return <div className="row mt8"><Chip tone="teal" icon="check">已入库，后续建模会自动应用</Chip></div>;
+    case 'knowledge_saved': return <div className="row mt8"><Chip tone="teal" icon="check">已入库</Chip></div>;
     default: {
       const Extra = EXTRA_CARDS[card.card_type];
       return Extra ? <Extra card={card} scope={scope} /> : <GenericCard card={card} />;
@@ -316,7 +314,7 @@ export function ErrorItem({ item }) {
         <Button size="sm" onClick={() => actions.clearInput?.()}>换个方向</Button>
       </div>
       <div className="xs muted mt12" style={{ marginLeft: 30 }}>
-        原始错误已留档（编号 {item.error_id}）{canSee ? <>，可以在 <a className="link" href="#/ops-users">运维中心 › 错误留档</a> 查看</> : '，管理员可以在运维中心查看'}
+        错误编号 {item.error_id}{canSee ? <> · <a className="link" href={`#/ops-users?tab=errors&error=${encodeURIComponent(item.error_id)}`}>查看</a></> : null}
       </div>
     </>
   );
@@ -331,21 +329,20 @@ export function ConfigPendingItem({ item }) {
   return (
     <Note icon="pkg">
       <b>{summary || '建模能力有更新'}</b>
-      <div className="mt4">{item.effective === 'next_safe_point' ? '到下一个安全点生效；正在进行的这一片按原来的方式跑完。' : '下一条消息开始生效；正在进行的这一轮按原来的方式跑完。'}</div>
+      <div className="mt4">{item.effective === 'next_safe_point' ? '下一个安全点起生效' : '下一条消息起生效'}</div>
       {item.detail_link ? <div className="row mt8"><a className="link sm" href={`#/plugin-detail?pack=${encodeURIComponent(item.detail_link.pack)}`}>查看更新内容</a></div> : null}
     </Note>
   );
 }
 
 export function ReconnectedItem({ item }) {
-  return <div className="tl mt12"><Tli k="ok" t={item.context_kept ? '已切换到新版本并重新连接，上下文保留' : '已切换到新版本并重新连接'} m={`你发出下一条消息时 · ${((item.duration_ms || 0) / 1000).toFixed(1)} 秒`} /></div>;
+  return <div className="tl mt12"><Tli k="ok" t={item.context_kept ? '已切换到新版本并重新连接，上下文保留' : '已切换到新版本并重新连接'} /></div>;
 }
 
 export function CompactedItem({ item }) {
-  const k = item.kept || {};
   return (
     <div className="tl mt12">
-      <Tli k="info" t={`已${item.trigger === 'manual' ? '' : '自动'}压缩上下文：释放 ${Math.round((item.freed_tokens || 0) / 1000)}k，保留 ${k.decisions || 0} 个决定${k.artifacts ? '、产物清单' : ''}${k.todos ? '和没做完的事' : ''}`} m={hhmm(item.at || item.ts)} />
+      <Tli k="info" t={`已${item.trigger === 'manual' ? '' : '自动'}压缩上下文，释放 ${Math.round((item.freed_tokens || 0) / 1000)}k`} m={hhmm(item.at || item.ts)} />
     </div>
   );
 }
@@ -359,7 +356,6 @@ export function QueueCard({ queue, onCancel }) {
           <b>{queue.position}</b>
           <div className="grow">
             <div className="b sm">正在排队，前面还有 {queue.ahead ?? Math.max(0, queue.position - 1)} 个</div>
-            <div className="xs muted mt4">服务器同时最多运行 {queue.pool?.max ?? '—'} 个助手。轮到你时自动开始，不用守着页面。</div>
             {queue.progress_pct != null ? <div className="mt4"><div className="prog amber thin"><i style={{ width: `${queue.progress_pct}%` }} /></div></div> : null}
           </div>
         </div>
@@ -378,7 +374,7 @@ export function ContextPanel({ context, usage }) {
   const warn = (c.pct || 0) >= 75;
   return (
     <div className="g2-mm" style={{ boxShadow: 'none' }}>
-      <div className="row"><Ring p={c.pct} r={16} color={warn ? '#F59E0B' : '#2563EB'} /><div><div className="b">{k(c.used)} / {k(c.window)} tokens</div><div className="xs muted">本会话上下文 · 到 {c.compact_at_pct ?? 80}% 自动压缩</div></div></div>
+      <div className="row"><Ring p={c.pct} r={16} color={warn ? '#F59E0B' : '#2563EB'} /><div><div className="b">{k(c.used)} / {k(c.window)} tokens</div><div className="xs muted">本会话上下文</div></div></div>
       {b ? (
         <>
           <div className="g2-stack mt12">
@@ -395,8 +391,8 @@ export function ContextPanel({ context, usage }) {
       ) : null}
       <div className="divider" />
       <KV w="60px" pairs={[
-        ['上次调用', c.last_call ? `输入 ${(c.last_call.input / 1000).toFixed(1)}k / 输出 ${(c.last_call.output / 1000).toFixed(1)}k${c.last_call.estimated ? '（按流式片段估算）' : ''}` : '—'],
-        ['项目累计', usage ? `含全部会话：输入 ${fmtTokens(usage.input_tokens)} · 输出 ${fmtTokens(usage.output_tokens)}${usage.cost?.amount != null ? ` · 约 ${usage.cost.currency === 'USD' ? '$' : '¥'}${Math.round(usage.cost.amount)}` : ''}` : '—'],
+        ['上次调用', c.last_call ? `输入 ${(c.last_call.input / 1000).toFixed(1)}k / 输出 ${(c.last_call.output / 1000).toFixed(1)}k` : '—'],
+        ['项目累计', usage ? `输入 ${fmtTokens(usage.input_tokens)} · 输出 ${fmtTokens(usage.output_tokens)}${usage.cost?.amount != null ? ` · 约 ${usage.cost.currency === 'USD' ? '$' : '¥'}${Math.round(usage.cost.amount)}` : ''}` : '—'],
       ]} />
     </div>
   );

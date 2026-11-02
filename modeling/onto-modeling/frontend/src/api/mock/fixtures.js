@@ -239,9 +239,15 @@ export function extensions(enabled = ['trace', 'knowledge', 'solver', 'reverse',
       { parent: 'resources', id: 'schema', title: '证据浏览器', pack: 'reverse' },
     ] : [],
     pages: plug.map(([p, id]) => ({ id, pack: p, page_api: '>=1.0 <2.0', data: { artifacts: [], reports: [], nodes: [] }, actions: [], pending: false })),
-    entries: [],
+    // 包声明的界面入口（B5c）：快捷项放输入框「全部命令」旁，附加操作放对应插件页的操作区（R22）
+    entries: [
+      ...(enabled.includes('trace') ? [{ id: 'trace.walk', kind: 'quick_action', label: '交互走查', where: 'composer', command: '/ontology-trace-walk', pack: 'trace' }] : []),
+      ...(enabled.includes('knowledge') ? [{ id: 'knowledge.export', kind: 'extra_action', label: '导出知识清单', where: 'knowledge', command: '/ontology-knowledge-export', pack: 'knowledge' }] : []),
+    ],
     artifact_types: enabled.includes('diagram') ? ['diagram.flowchart'] : [],
     views: [],
+    // 包选用的内核视图（B5c）：ER 视图放进 Studio 的视图切换（R23）；依赖证据源的两种本期不下发
+    view_choices: enabled.includes('diagram') ? [{ id: 'er_view', pack: 'diagram' }] : [],
     gates: [],
     config: [],
     disabled_pages: [],
@@ -281,6 +287,8 @@ export function flow({ trace = true } = {}) {
     node({ id: 'core.publish', title: '发布' }),
     node({ id: 'retail.compliance', title: '合规检查', placement: 'gate', section: 'pre_publish', state: 'blocked', display_state: 'blocked', version: 'industry-retail@1.0.3', note: `零售行业包带来；${trace ? '校验与走查' : '校验'}确认后才能运行` }),
     node({ id: 'diagram.flowchart', title: '流程图', placement: 'branch', section: 'optional', state: 'confirmed', display_state: 'confirmed', version: 'diagram@0.5.0', plugin: { name: 'diagram', label: '图示' } }),
+    // 节点包的脚本节点（B5c）：最近一次运行结果在建模步骤抽屉里展开看（R24）；last_run 是待后端补的 FL-01 字段（gaps「UI 文案」）
+    node({ id: 'stock-check.run', title: '库存口径检查', kind: 'script', placement: 'branch', section: 'optional', state: 'confirmed', display_state: 'confirmed', version: 'stock-check@0.1.0', actions: [{ kind: 'start', label: '重新运行' }], plugin: { name: 'stock-check', label: '库存口径检查' }, last_run: { state: 'passed', summary: '15 个对象的库存口径一致', at: '2026-10-31T07:12:00Z' } }),
     node({ id: 'core.rules', title: '规则与指标', placement: 'branch', section: 'optional', state: 'pending_confirm', display_state: 'pending', actions: [{ kind: 'confirm', label: '去确认', target: 'inbox' }] }),
     node({ id: 'solver.codegen', title: '代码生成', placement: 'branch', section: 'optional', state: 'ready', display_state: 'ready', version: 'solver@0.7.2', actions: [{ kind: 'start', label: '开始' }, { kind: 'skip', label: '跳过' }], plugin: { name: 'solver', label: '代码生成与求解' } }),
     node({ id: 'solver.adapt', title: '求解适配', placement: 'branch', section: 'optional', state: 'skipped', display_state: 'skipped', version: 'solver@0.7.2', actions: [{ kind: 'restore', label: '恢复' }] }),

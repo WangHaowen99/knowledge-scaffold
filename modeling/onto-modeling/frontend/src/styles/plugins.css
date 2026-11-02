@@ -16,8 +16,6 @@
 .pl-rec{border:1px solid var(--b100);border-radius:16px;padding:14px 16px;background:linear-gradient(120deg,#EEF5FF 0%,#F7FBFF 55%,#ECFAFD 100%);display:flex;gap:14px;align-items:stretch}
 .pl-rec .it{flex:1;background:rgba(255,255,255,.85);border:1px solid #DCE8FB;border-radius:12px;padding:10px 12px;display:flex;gap:10px;align-items:center}
 .pl-bar{display:flex;align-items:center;gap:10px;margin-top:2px}
-.pl-snote{margin:16px 6px 0;padding:11px 12px;border-radius:12px;background:#fff;border:1px solid var(--line);font-size:12px;color:var(--ink3);line-height:1.55}
-.pl-snote b{color:var(--ink2)}
 .pl-hero{display:flex;gap:16px;align-items:flex-start;padding:18px 20px}
 .pl-hero .big{width:54px;height:54px;border-radius:16px;display:grid;place-items:center;background:linear-gradient(140deg,#DCE8FF,#EFF5FF);color:var(--blue2);flex:none}
 .pl-hero h1{font-size:21px;font-weight:700;display:flex;align-items:center;gap:10px}
@@ -56,3 +54,6 @@
 .pl-src{font-size:11px;font-weight:650;padding:2px 7px;border-radius:6px}
 .pl-src.env{background:#EEF1F6;color:#475569}.pl-src.data{background:var(--b50);color:var(--blue2)}.pl-src.def{background:var(--panel3);color:var(--ink3)}.pl-src.pkg{background:var(--i50);color:var(--indigo)}
 .pl-gauge{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:#fff}
+/* 插件详情「已启用到本项目」的下拉菜单（R14） */
+.pd-menu{position:relative;display:inline-flex}
+.pd-menu .menu{position:absolute;right:0;top:42px;z-index:30;min-width:260px;text-align:left}

@@ -14,7 +14,7 @@ import {
 const R02 = 'resource/others/02-门店补货规则.docx';
 const R03B = 'resource/others/03-样例补货单-B.docx';
 
-test('行文字：大小、两天内带时刻、表格写规模、资源模板与被引用', () => {
+test('行文字：大小、两天内带时刻、表格写规模、被引用（资源模板不标）', () => {
   assert.equal(fmtSize(900), '900 B');
   assert.equal(fmtSize(312 * 1024), '312 KB');
   assert.equal(fmtSize(2.4 * 1024 * 1024), '2.4 MB');
@@ -25,7 +25,7 @@ test('行文字：大小、两天内带时刻、表格写规模、资源模板�
   assert.equal(scaleText({ kind: 'csv', rows: 412, size: 1 }), '412 行');
   assert.equal(scaleText({ kind: 'xls', size: 22 * 1024 }), '22 KB');
   const at = new Date('2026-10-16T10:20:00').toISOString();
-  assert.equal(metaText({ kind: 'drawio', size: 24 * 1024, uploaded_at: at, is_template: true }, now), '24 KB · 10-16 上传 · 资源模板');
+  assert.equal(metaText({ kind: 'drawio', size: 24 * 1024, uploaded_at: at, is_template: true }, now), '24 KB · 10-16 上传');
   assert.equal(metaText({ kind: 'doc', size: 312 * 1024, uploaded_at: at, referenced: 16 }, now), '312 KB · 10-16 上传 · 被引用 16 处');
 });
 
@@ -107,7 +107,7 @@ test('被引用：行文字、出处数、删除弹窗的那句话、点了去�
   assert.equal(rows[0].chip, '§4');
   assert.equal(rows[1].sub, '场景');
   assert.equal(refCount(items), 2);
-  assert.equal(refSentence(items), '有 2 处出处引用了这份资料：操作「超量与审批提示」的决策依据、场景「区域统一配额取值」。删除后它们会变成「来源无法核验」，需要换出处或重新核验。');
+  assert.equal(refSentence(items), '2 处出处引用了它：操作「超量与审批提示」的决策依据、场景「区域统一配额取值」。删除后这些出处会变成「来源无法核验」。');
   assert.equal(refSentence([]), '');
   assert.deepEqual(refTarget(items[0].target), { page: 'studio-table', query: { entry: 'operation:overage_and_hint' } });
   assert.deepEqual(refTarget({ type: 'diagram.flowchart', key: 'overage-flow' }), { page: 'studio-table', query: { entry: 'flowchart:overage-flow' } });
@@ -271,7 +271,7 @@ test('R-04 / R-05：删除前查引用，删除保存为新版本、出处变为
   const s = fakeServer();
   const refs = s.call('GET', '/resources/references', { query: `path=${R03B}` }).body;
   assert.equal(refs.total, 2);
-  assert.equal(refSentence(refs.items).slice(0, 14), '有 2 处出处引用了这份资料');
+  assert.ok(refSentence(refs.items).startsWith('2 处出处引用了它'));
   const r = s.call('DELETE', '/resources', { query: `path=${R03B}` });
   assert.equal(r.body.broken_references, 2);
   assert.equal(r.body.version_label, 'v0.13');

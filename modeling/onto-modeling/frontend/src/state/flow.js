@@ -3,6 +3,8 @@
 // P1 的 /flow 只给 4 种状态、命令文本形式的 actions、顶层 sections 与 commands；P2 起给全量的 8 种状态与切片。
 // normalizeFlow 把两种形状收成同一份视图数据，页面只认归一后的字段。
 
+import { isEvidenceNode } from './evidence.js';
+
 export const SECTION_TITLES = {
   required: '必经步骤',
   pre_publish: '发布前检查',
@@ -140,4 +142,47 @@ export function overlayRunning(flow, nodeId) {
   const hit = flow.nodes.find((n) => n.id === nodeId);
   if (!hit || hit.state === 'running' || hit.display_state === 'running') return flow;
   return { ...flow, nodes: flow.nodes.map((n) => (n.id === nodeId ? { ...n, state: 'running', display_state: 'running' } : n)) };
+}
+
+// 证据源本期不开放（ADR-0056）：证据源不可用时去掉依赖它的节点（如系统逆向建模的「系统取证」），
+// 连线接过去（前一个直接连到后一个），抽屉分组与命令归属同步去掉
+export function withoutEvidence(flow, evidenceOn) {
+  if (!flow || evidenceOn) return flow;
+  const gone = new Set(flow.nodes.filter(isEvidenceNode).map((n) => n.id));
+  if (!gone.size) return flow;
+  const edges = (flow.edges || []).filter((e) => !gone.has(e.from) && !gone.has(e.to));
+  gone.forEach((id) => {
+    const ins = (flow.edges || []).filter((e) => e.to === id && !gone.has(e.from)).map((e) => e.from);
+    const outs = (flow.edges || []).filter((e) => e.from === id && !gone.has(e.to)).map((e) => e.to);
+    ins.forEach((from) => outs.forEach((to) => { if (!edges.some((e) => e.from === from && e.to === to)) edges.push({ from, to }); }));
+  });
+  const commands = Object.fromEntries(Object.entries(flow.commands || {}).filter(([, id]) => !gone.has(id)));
+  return {
+    ...flow,
+    nodes: flow.nodes.filter((n) => !gone.has(n.id)),
+    edges,
+    sections: (flow.sections || []).map((s) => ({ ...s, nodes: (s.nodes || []).filter((id) => !gone.has(id)) })),
+    commands,
+  };
+}
+
+// 切片小进度条每一格的悬停：「规则 · 已跳过」
+const SLICE_STAGE_TEXT = {
+  not_ready: '未开始', ready: '可开始', running: '进行中', pending_confirm: '待确认', confirmed: '已确认',
+  stale: '已过期', skipped: '已跳过', blocked: '被挡住', draft: '草稿', auto: '自主完成',
+};
+export function sliceStageTitle(stage, state) {
+  const text = SLICE_STAGE_TEXT[state];
+  return text ? `${stage.label} · ${text}` : stage.label;
+}
+
+// 脚本节点的运行结果（FL-05 同步返回的 run，或 node_run_failed 错误）→ 通过 / 失败 + 一行摘要
+const firstLine = (t) => String(t || '').split('\n').map((x) => x.trim()).find(Boolean) || '';
+export function scriptRunView(run, error) {
+  if (error) {
+    const d = error.details || {};
+    return { ok: false, summary: d.timed_out ? '超时' : firstLine(d.stderr) || (d.exit_code != null ? `退出码 ${d.exit_code}` : '') };
+  }
+  const ok = run?.state === 'passed';
+  return { ok, summary: firstLine(run?.summary || run?.output) };
 }

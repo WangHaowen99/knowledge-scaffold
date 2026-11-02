@@ -34,20 +34,20 @@ export function can(user, ability) {
 
 // 只读时按钮旁边的说明（悬浮提示）
 export function deniedHint(ability) {
-  if (ability === 'ops.write') return '只有运维能做这个操作，管理员只能查看';
+  if (ability === 'ops.write') return '仅运维可操作';
   if (ability === 'users.write') return '只有管理员能管理用户，运维只能查看';
   if (ability === 'admin') return '需要管理员权限';
   return '没有权限';
 }
 
-// 运维中心左栏的身份卡：显示哪个角色、说什么
+// 运维中心左栏的身份卡：名字、角色标签；管理员另标运维面只读
 export function opsRoleCard(user) {
   const rs = rolesOf(user);
   if (rs.includes('ops') && rs.includes('admin')) {
-    return { role: 'ops', label: user?.auth_source === 'local' ? '本地模式' : '运维 · 管理员', text: '只能看项目元数据（名称、所有者、阶段、占用）。项目内容只归所有者。' };
+    return { role: 'ops', label: user?.auth_source === 'local' ? '本地模式' : '运维 · 管理员', text: null };
   }
-  if (rs.includes('ops')) return { role: 'ops', label: '运维', text: '只能看项目元数据（名称、所有者、阶段、占用）。项目内容只归所有者。' };
-  if (rs.includes('admin')) return { role: 'admin', label: '管理员', text: '运维面只读，可以管理用户和回收站。只能看项目元数据，项目内容只归所有者。' };
+  if (rs.includes('ops')) return { role: 'ops', label: '运维', text: null };
+  if (rs.includes('admin')) return { role: 'admin', label: '管理员', text: '运维面只读' };
   return null;
 }
 

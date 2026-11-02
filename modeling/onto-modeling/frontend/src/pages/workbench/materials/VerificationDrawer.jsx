@@ -22,13 +22,13 @@ export function VerificationDrawer({ onClose }) {
   const note = verificationNote(items);
   const fix = async () => {
     const ok = await pageCommand(api, pid, {
-      command: '/ontology-research', args: { fix: 'anchors' }, text: '逐条修正来源无法核验的条目', label: '资料分析报告', done: '已发给助手：逐条修正来源位置',
+      command: '/ontology-research', args: { fix: 'anchors' }, text: '逐条修正来源无法核验的条目', label: '资料分析报告', done: '已发给助手',
     });
     if (ok) onClose();
   };
   return (
     <Drawer
-      open onClose={onClose} icon="shieldok" title="资料分析报告 · 自动核验" sub="逐条核对来源位置，每次资料分析后自动运行" w={480}
+      open onClose={onClose} icon="shieldok" title="资料分析报告 · 自动核验" w={480}
       foot={<><Button onClick={onClose}>关闭</Button><Button kind="primary" disabled={!data?.problems} onClick={fix}>让助手逐条修正</Button></>}
     >
       <div className="en-vf">
@@ -51,7 +51,7 @@ export function VerificationDrawer({ onClose }) {
             />
             {hidden ? <div className="xs muted mt8"><a className="link" onClick={() => setExpanded(true)}>另外 {hidden} 条通过，展开看</a></div> : null}
             {note ? <div className="mt12"><Note tone="red">{note}</Note></div> : null}
-            {!items.length ? <div className="xs muted mt8"><Icon name="info" size={12} /> 资料还没读，读完后自动核验</div> : null}
+            {!items.length ? <div className="xs muted mt8"><Icon name="info" size={12} /> 资料还没读</div> : null}
           </>
         ) : null}
       </div>

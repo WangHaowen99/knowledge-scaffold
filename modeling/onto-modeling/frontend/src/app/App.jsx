@@ -1,6 +1,5 @@
 // 应用入口：启动（C-01、A-07、无感刷新）、登录态与角色、路由
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
-import { PAGE_TITLES } from '../shell/CommandPalette.jsx';
 import { ShellG, ShellP } from '../shell/Shell.jsx';
 import { Button, Empty } from '../ui/index.jsx';
 import { AppCtx } from './context.js';
@@ -24,8 +23,11 @@ const ProjectsPage = lazy(() => import('../pages/projects/ProjectsPage.jsx'));
 const CreatePage = lazy(() => import('../pages/create/CreatePage.jsx'));
 const ImportPage = lazy(() => import('../pages/import/ImportPage.jsx'));
 const WorkbenchPage = lazy(() => import('../pages/workbench/WorkbenchPage.jsx'));
-const ChatStatesPage = lazy(() => import('../pages/chat-states/ChatStatesPage.jsx'));
-// 已实现的页面；其余页面先显示「后续版本接入」
+// 对话卡片与状态：设计稿给评审看的卡片目录，不是产品页面（R6）。只在开发与 mock 构建里注册，生产构建摇掉
+const DEV_PAGES = import.meta.env.DEV || __API_MOCK__
+  ? { 'chat-states': lazy(() => import('../pages/chat-states/ChatStatesPage.jsx')) }
+  : {};
+// 入口页；地址不认识时显示「页面不存在」
 const ENTRY_PAGES = { projects: ProjectsPage, create: CreatePage, import: ImportPage };
 // Studio（含 WebGL 图谱）、报告、待处理按路由拆包
 const StudioPage = lazy(() => import('../pages/studio/StudioPage.jsx'));
@@ -63,9 +65,9 @@ const PROJECT_PAGES = {
   'l4-run': WorkbenchPage,
   flowchart: WorkbenchPage,
   incremental: WorkbenchPage,
-  'chat-states': ChatStatesPage,
   inbox: InboxPage,
   studio: StudioPage,
+  'studio-er': StudioPage,
   'studio-table': StudioTablePage,
   reports: ReportsPage,
   knowledge: KnowledgePage,
@@ -78,6 +80,7 @@ const PROJECT_PAGES = {
   snapshots: SnapshotsPage,
   schema: SchemaPage,
   'proj-settings': ProjectSettingsPage,
+  ...DEV_PAGES,
 };
 
 function Pending({ project, page, projectId }) {
@@ -85,11 +88,9 @@ function Pending({ project, page, projectId }) {
     <div className="card" style={{ padding: 30, maxWidth: 640, margin: '40px auto' }}>
       <Empty
         icon="layout"
-        title={PAGE_TITLES[page] || '页面'}
+        title="页面不存在"
         actions={<Button icon="arrowl" onClick={() => navigate(project ? pagePath('wb-l2', projectId) : '/projects')}>{project ? '回到工作台' : '回到我的项目'}</Button>}
-      >
-        这一页在后续版本接入。
-      </Empty>
+      />
     </div>
   );
   if (project) return <ShellP active={page}>{body}</ShellP>;

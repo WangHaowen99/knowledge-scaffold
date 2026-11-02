@@ -10,7 +10,7 @@ import { Tabs } from '../../ui/index.jsx';
 import { OpsShell } from './parts.jsx';
 import { AccountsPane } from './usersAccounts.jsx';
 import { AuditPane, ErrorDrawer, ErrorsPane } from './usersAudit.jsx';
-import { mergePage } from './usersModel.js';
+import { mergePage, trashView } from './usersModel.js';
 import { TrashPane } from './usersTrash.jsx';
 import '../../styles/ops-users.css';
 
@@ -70,20 +70,23 @@ function Body({ route, perm }) {
   }, [users]);
 
   const usersCount = users && users.available !== false ? users.total ?? users.items?.length : null;
+  // 回收站只剩旧数据且已清空时整个页签不出，页头随之改成「用户与审计」（R21）
+  const showTrash = trashView(trash, { loadError: !!trashErr }).show;
+  const current = tab === 't' && !showTrash ? 'u' : tab;
   return (
     <>
-      <PageHead eyebrow="运维中心" title="用户、审计与回收站" desc="账号与角色、全量审计、原始错误、被删除的项目。" />
+      <PageHead title={showTrash ? '用户、审计与回收站' : '用户与审计'} />
       <Tabs
-        value={tab}
+        value={current}
         onChange={setTab}
         items={[
           ['u', '用户管理', usersCount ?? null, 'users'],
           ['a', '审计日志', null, 'list'],
           ['e', '错误留档', errors?.total ?? null, 'alert'],
-          ['t', '回收站', trash ? trash.items.length : null, 'trash'],
+          ...(showTrash ? [['t', '回收站', trash ? trash.items.length : null, 'trash']] : []),
         ]}
       />
-      {tab === 'u' ? (
+      {current === 'u' ? (
         <AccountsPane
           data={users}
           loadError={usersErr}
@@ -96,9 +99,9 @@ function Body({ route, perm }) {
           onReload={(o) => { loadUsers(); if (o?.trash) loadTrash(); }}
         />
       ) : null}
-      {tab === 'a' ? <AuditPane nameOf={nameOf} /> : null}
-      {tab === 'e' ? <ErrorsPane data={errors} loadError={errorsErr} busy={busy === 'errors'} onMore={moreErrors} onOpen={setErrorRow} /> : null}
-      {tab === 't' ? <TrashPane data={trash} loadError={trashErr} perm={perm} nameOf={nameOf} onChanged={loadTrash} /> : null}
+      {current === 'a' ? <AuditPane nameOf={nameOf} /> : null}
+      {current === 'e' ? <ErrorsPane data={errors} loadError={errorsErr} busy={busy === 'errors'} onMore={moreErrors} onOpen={setErrorRow} /> : null}
+      {current === 't' ? <TrashPane data={trash} loadError={trashErr} perm={perm} nameOf={nameOf} onChanged={loadTrash} /> : null}
       {errorRow ? <ErrorDrawer row={errorRow} onClose={() => setErrorRow(null)} /> : null}
     </>
   );

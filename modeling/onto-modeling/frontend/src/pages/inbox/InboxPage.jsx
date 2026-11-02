@@ -1,7 +1,8 @@
-// 待处理与复核（设计稿 inbox）：左栏列表与筛选，中间按类型的详情，右栏影响范围、今天的进度、键盘处理。
+// 待处理与复核（设计稿 inbox）：左栏列表与筛选，中间按类型的详情，右栏影响范围、今天的进度。
 // 接口：IN-01～IN-04；高置信合并项里单独改判走 AB-11 / AB-12；「按片结果」读 AB-16、回退走 AB-17。
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
+import { evidenceInProject } from '../../state/evidence.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
@@ -16,13 +17,13 @@ import '../../styles/inbox.css';
 
 const AMBER_CARD = { borderColor: 'var(--a100)', background: 'linear-gradient(180deg,#FFFBF2,#fff)' };
 const DONE_TOAST = {
-  accept: ['已接受，「需复核」标记已去掉', 'check'],
-  rejudge: ['已改判，助手会重做受影响的部分并保存新版本', 'edit'],
-  use_generic: ['先按通用要求处理，这一项不再单独提醒', 'check'],
-  refresh: ['已开始刷新，推演完会更新', 'refresh'],
+  accept: ['已接受', 'check'],
+  rejudge: ['已改判，助手正在重做', 'edit'],
+  use_generic: ['已按通用要求处理', 'check'],
+  refresh: ['已开始刷新', 'refresh'],
   keep_stale: ['先不管，保持过期', 'check'],
   resume: ['已续跑，进展在对话里', 'play'],
-  abandon: ['已放弃，下次从头开始', 'undo'],
+  abandon: ['已放弃', 'undo'],
   send_to_evolution: ['已交给反馈演进处理，进展在对话里', 'refresh'],
   execute: ['清单已确认，开始按清单修改', 'check'],
   dismiss: ['已忽略', 'check'],
@@ -101,7 +102,6 @@ function ConflictBody({ d, ...p }) {
     <>
       <div className="g2-vs">{a ? <Side s={a} /> : <div />}<div className="ne">≠</div>{b ? <Side s={b} /> : <div />}</div>
       <Opts options={d.question?.options || []} {...p} tagOf={(o) => (o.recommended ? <Chip tone="blue" sm>推荐</Chip> : null)} />
-      <div className="mt12"><Note tone="gray" icon="quote">裁决会写进对应对象的「证据」章节，两处出处都保留，方便以后追溯。</Note></div>
     </>
   );
 }
@@ -124,8 +124,8 @@ function ChangeListBody({ d, act, batch, busy }) {
   return (
     <>
       <div className="row mt12">
-        <span className="sm muted">逐条确认后才会动手修改。把握不高的条目只能单独确认。</span><span className="sp" />
-        <Button size="sm" kind="primary" disabled={!sel.length || busy} onClick={() => batch({ action: 'accept_change_points', change_list_id: d.id, point_ids: sel })}>接受选中的 {sel.length} 项（高把握）</Button>
+        <span className="sp" />
+        <Button size="sm" kind="primary" disabled={!sel.length || busy} onClick={() => batch({ action: 'accept_change_points', change_list_id: d.id, point_ids: sel })}>接受选中的 {sel.length} 项</Button>
       </div>
       <div className="tbl-wrap mt12">
         <table className="tbl g2-ct">
@@ -176,7 +176,7 @@ function ChangeListBody({ d, act, batch, busy }) {
         </table>
       </div>
       {low.map((pt) => (
-        <div className="mt12" key={pt.id}><Note tone="amber">第 {pt.n} 条把握低：{pt.confidence_note || '资料说法不完整'}。这条不能批量接受，需要你单独确认或改写。</Note></div>
+        <div className="mt12" key={pt.id}><Note tone="amber">第 {pt.n} 条把握低：{pt.confidence_note || '资料说法不完整'}</Note></div>
       ))}
     </>
   );
@@ -187,7 +187,7 @@ function ReviewBody({ d, item, act, sub, busy, ...p }) {
   const adopted = M.adoptedIndex(d.options, d.chosen);
   const changed = p.text != null ? !!p.text.trim() : p.sel != null && p.sel !== adopted;
   const rejudge = () => {
-    if (!changed) { toast('先选一个别的选项，或按 E 写下你的方向', 'info'); return; }
+    if (!changed) { toast(M.pickHint(d.options, '先选一个别的选项'), 'info'); return; }
     const plan = M.confirmPlan({ kind: 'review', actions: ['rejudge'] }, d, p.sel, p.text);
     if (plan.error) toast(plan.error, 'alert');
     else act(plan.action, plan.body);
@@ -219,8 +219,7 @@ function HighBody({ d, act, openSub, busy }) {
   const n = d.entries?.length || 0;
   return (
     <>
-      <div className="sm muted mt12">置信度都达到阈值 {(d.threshold ?? 0.8).toFixed(2)}，按推荐选项采用。接受后去掉「需复核」标记；有疑问的点「改判」单独处理。</div>
-      <div className="row mt12"><b className="sm">{n} 项</b><span className="sp" /><Button size="sm" kind="primary" icon="check" disabled={busy || !n} onClick={() => act('accept')}>全部接受（{n}）</Button></div>
+      <div className="row mt12"><span className="sp" /><Button size="sm" kind="primary" icon="check" disabled={busy || !n} onClick={() => act('accept')}>全部接受（{n}）</Button></div>
       <div className="tbl-wrap mt8">
         <table className="tbl compact">
           <thead><tr><th>时间</th><th>自动决定</th><th>置信度</th><th /></tr></thead>
@@ -250,10 +249,9 @@ function SuspensionBody({ d, item, act, busy, ...p }) {
       {d.options?.length ? <Opts options={d.options} {...p} /> : (
         <div className="row mt16 wrap" style={{ gap: 8 }}>
           {(d.actions || []).includes('upload_text') ? <Button size="sm" kind="primary" icon="upload" onClick={() => navigate(pagePath('resources', pid), d.material ? { path: d.material.path } : undefined)}>上传文本版</Button> : null}
-          {(d.actions || []).includes('use_generic') ? <Button size="sm" disabled={busy} onClick={() => act('use_generic')}>先按通用要求，不单独处理</Button> : null}
+          {(d.actions || []).includes('use_generic') ? <Button size="sm" disabled={busy} onClick={() => act('use_generic')}>先按通用要求</Button> : null}
         </div>
       )}
-      <div className="xs muted mt12">回答后，陪伴模式下助手马上补上；也可以留到下一次自主构建一起做。</div>
     </>
   );
 }
@@ -310,8 +308,7 @@ function FeedbackBody({ d, act, busy }) {
   const { pid } = useProject();
   return (
     <>
-      <div className="sm muted mt12">评测服务按反馈契约回传。处理时会先定位到产物，不会为了「应试」改知识。</div>
-      <div className="tbl-wrap">
+      <div className="tbl-wrap mt12">
         <table className="tbl compact">
           <thead><tr><th>用例</th><th>期望</th><th>实际</th><th>疑似原因</th></tr></thead>
           <tbody>{(d.items || []).map((x, i) => <tr key={i}><td>{x.question}</td><td>{x.expected}</td><td>{x.actual}</td><td>{x.loss_reason}</td></tr>)}</tbody>
@@ -338,7 +335,6 @@ function Detail({ view, sub, ...p }) {
   const { item, detail: d } = view;
   const [cls, icon] = M.kindStyle(item.kind);
   const title = sub ? sub.summary || sub.question : item.title;
-  const meta = sub ? `置信度 ${sub.confidence.toFixed(2)}${sub.assumption ? ' · 记为假设' : ' · 高置信'}` : item.meta;
   const sliceName = sub ? sub.slice?.name : item.slice?.name;
   const age = sub ? M.ageText({ run: { ...item.run, at: sub.at } }) : M.ageText(item);
   let body = null;
@@ -361,9 +357,6 @@ function Detail({ view, sub, ...p }) {
         <span className="muted sm">{[sliceName, age].filter(Boolean).join(' · ')}</span>
       </div>
       <h1>{title}</h1>
-      <div className="row sm muted mt4">
-        <Icon name={item.run ? 'bot' : 'sparkle'} size={14} />{item.run ? '由自主构建记录' : '由助手发起'}{meta ? <><span>·</span>{meta}</> : null}
-      </div>
       {body}
     </>
   );
@@ -433,7 +426,7 @@ function SliceResults({ open, onClose, runId, onReverted }) {
               </tbody>
             </table>
           </div>
-          <div className="mt12"><Note tone="gray" icon="undo">回退只动这一片：把它恢复成运行开始前（{r.base_version_label || '运行前版本'}）的样子，另存为新版本，其他切片不受影响。</Note></div>
+          <div className="mt12"><Note tone="gray" icon="undo">回退只影响这一片，另存为新版本</Note></div>
         </>
       ) : <div className="sm muted">{span || '正在读取…'}</div>}
     </Modal>
@@ -460,7 +453,9 @@ function SortButton({ sort, setSort }) {
 
 export default function InboxPage({ route }) {
   const { api } = useApp();
-  const { pid, subscribe } = useProject();
+  const project = useProject();
+  const { pid, subscribe } = project;
+  const evidenceOn = evidenceInProject(project);
   const q = route?.query || {};
   const validFilter = (f) => (M.FILTERS.some(([k]) => k === f) ? f : 'all');
   const [filter, setFilter] = useState(validFilter(q.filter));
@@ -489,7 +484,7 @@ export default function InboxPage({ route }) {
     if (q.item || q.entry) setWant({ item: q.item || null, entry: q.entry || null });
   }, [q.filter, q.item, q.entry]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const items = useMemo(() => M.sortItems(data?.items, sort), [data, sort]);
+  const items = useMemo(() => M.sortItems(M.withoutEvidence(data?.items, evidenceOn), sort), [data, sort, evidenceOn]);
 
   useEffect(() => {
     if (!data) return;
@@ -537,6 +532,7 @@ export default function InboxPage({ route }) {
   const view = detail && detail.id === cur ? { item: detail, detail: sub || detail.detail } : null;
   const curItem = items.find((x) => x.id === cur);
   const opts = view ? M.optionsOf(sub ? { kind: 'review' } : view.item, view.detail) : [];
+  const keys = M.keyHints(opts);
 
   const goNext = (next) => setCur(M.afterResolve(items, cur, next));
   const act = async (action, body = {}, { silent } = {}) => {
@@ -577,8 +573,8 @@ export default function InboxPage({ route }) {
     try {
       const r = await api.inboxBatch(pid, body);
       const skipped = r.skipped?.length ? `，${r.skipped.length} 项把握不够高要单独确认` : '';
-      if (body.action === 'accept_high_confidence') toast(`已接受 ${r.accepted} 项，「需复核」标记已去掉`, 'check');
-      else if (body.action === 'refresh_stale') toast(`已开始刷新 ${r.accepted} 项，推演完会更新`, 'refresh');
+      if (body.action === 'accept_high_confidence') toast(`已接受 ${r.accepted} 项`, 'check');
+      else if (body.action === 'refresh_stale') toast(`已开始刷新 ${r.accepted} 项`, 'refresh');
       else toast(`已接受 ${r.accepted} 项${skipped}`, 'check');
       setRev((x) => x + 1);
       await load();
@@ -616,8 +612,9 @@ export default function InboxPage({ route }) {
     if (a.type === 'move') setCur(M.stepId(items, cur, a.dir));
     else if (a.type === 'pick') pick(a.index);
     else if (a.type === 'rewrite') {
+      // 没有自定义回答的事项（如人工节点的决策卡，后端只收选项）不进改写
       const i = opts.findIndex((o) => o.custom);
-      if (i < 0) { toast('这一项没有自定义回答', 'info'); return; }
+      if (i < 0) return;
       pick(i);
       toast('改写：在选项里写下你的方向', 'edit');
     } else if (a.type === 'confirm') confirm();
@@ -633,7 +630,7 @@ export default function InboxPage({ route }) {
     return () => document.removeEventListener('keydown', h);
   }, []);
 
-  const counts = data?.counts;
+  const counts = M.countsWithoutEvidence(data?.counts, evidenceOn);
   const today = data?.today;
   const summary = filter === 'autobuild_review' ? data?.autobuild_summary : null;
   const impact = sub ? [{ label: '切片', items: [sub.slice?.name] }, ...(sub.affected?.length ? [{ label: '条目', items: sub.affected.map((x) => x.name || x.title) }] : [])] : view?.item.impact || [];
@@ -651,7 +648,7 @@ export default function InboxPage({ route }) {
               <SortButton sort={sort} setSort={setSort} />
             </div>
             <div className="g2-fl">
-              {M.visibleFilters(counts, filter).map(([k, t]) => (
+              {M.visibleFilters(counts, filter, evidenceOn).map(([k, t]) => (
                 <span key={k} className={k === filter ? 'on' : ''} onClick={() => setFilter(k)}>
                   {k === 'autobuild_review' ? <Icon name="bot" size={12} /> : null}{t} <i>{counts?.by_filter?.[k] ?? 0}</i>
                 </span>
@@ -665,7 +662,7 @@ export default function InboxPage({ route }) {
                     <div className={cx('g2-qic', `k-${cls}`)}><Icon name={icon} size={14} /></div>
                     <div style={{ minWidth: 0 }}>
                       <div className="g2-qt">{it.title}</div>
-                      <div className="g2-qm"><span className={cx('chip sm', `k-${cls}`)}>{it.kind_label}</span><span>{it.slice?.name}</span><span>·</span><span>{M.ageText(it)}</span></div>
+                      <div className="g2-qm"><span className={cx('chip sm', `k-${cls}`)}>{it.kind_label}</span>{it.slice?.name ? <><span>{it.slice.name}</span><span>·</span></> : null}<span>{M.ageText(it)}</span></div>
                     </div>
                   </div>
                 );
@@ -682,14 +679,14 @@ export default function InboxPage({ route }) {
                   openSub={(l) => { setSub(l); setText(null); setSel(M.adoptedIndex(l.options, l.chosen)); }}
                   closeSub={() => { setSub(null); setSel(null); setText(null); }}
                 />
-              ) : data && !items.length ? <Empty icon="check" title="都处理完了">新的决策、冲突和复核会出现在这里。</Empty>
+              ) : data && !items.length ? <Empty icon="check" title="都处理完了" />
                 : curItem ? <div className="sm muted">正在读取…</div> : null}
             </div>
             <div className="g2-cft">
-              <span className="xs muted row g4"><Kbd>J</Kbd><Kbd>K</Kbd> 上下条　<Kbd>1</Kbd>–<Kbd>4</Kbd> 选择　<Kbd>E</Kbd> 改写　<Kbd>↵</Kbd> 确认并下一条</span>
+              {keys ? <span className="xs muted row g4"><Kbd>1</Kbd>–<Kbd>4</Kbd> 选择{keys.rewrite ? <>　<Kbd>E</Kbd> 改写</> : null}</span> : null}
               <span className="sp" />
-              <Button size="sm" kind="ghost" disabled={!view} onClick={later}>稍后再说</Button>
-              <Button size="sm" kind="primary" icon="check" disabled={!view || busy} onClick={confirm}>确认并下一条</Button>
+              <Button size="sm" kind="ghost" disabled={!view} onClick={later} title="J">稍后再说</Button>
+              <Button size="sm" kind="primary" icon="check" disabled={!view || busy} onClick={confirm} title="↵">{M.confirmLabel(sub ? { kind: 'review' } : view?.item, view?.detail)}</Button>
             </div>
           </div>
           <div className="col" style={{ gap: 14, minHeight: 0, overflow: 'auto' }}>
@@ -699,7 +696,7 @@ export default function InboxPage({ route }) {
                   <span className="muted" style={{ width: 40, flex: 'none' }}>{x.label}</span><span>{(x.items || []).join('、')}</span>
                 </div>
               ))}
-              {view ? <div className="xs faint mt8">切片：{(sub ? sub.slice?.name : view.item.slice?.name) || '—'}</div> : <div className="xs muted">选中一项后显示</div>}
+              {view ? null : <div className="xs muted">选中一项后显示</div>}
             </Card>
             <Card title="今天的进度" icon="trend">
               <div className="row"><b className="num" style={{ fontSize: 22 }}>{today?.handled ?? 0}</b><span className="muted">/ {doneTotal} 已处理</span><span className="sp" /><span className="xs muted">约 {today?.eta_minutes ?? 0} 分钟</span></div>
@@ -707,13 +704,6 @@ export default function InboxPage({ route }) {
               <div className="col mt12" style={{ gap: 6 }}>
                 {M.todayRows(today).map(([a, b]) => (
                   <div key={a} className="row sm" style={{ alignItems: 'flex-start', gap: 8 }}><span style={{ flex: 'none' }}>{a}</span><span className="muted grow" style={{ textAlign: 'right' }}>{b}</span></div>
-                ))}
-              </div>
-            </Card>
-            <Card title="键盘处理" icon="cmd">
-              <div className="g2-keys">
-                {[[['J', '/', 'K'], '下一条 / 上一条'], [['1', '–', '4'], '选择选项'], [['E'], '改写（自定义回答）'], [['↵'], '确认并跳到下一条'], [['Esc'], '取消改写']].map(([ks, t]) => (
-                  <div key={t}>{ks.map((k) => (k === '/' || k === '–' ? <span key={k} className="faint">{k}</span> : <Kbd key={k}>{k}</Kbd>))}<span className="muted">{t}</span></div>
                 ))}
               </div>
             </Card>

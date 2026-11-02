@@ -7,7 +7,7 @@ import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { PageHead, ShellP } from '../../shell/Shell.jsx';
-import { Button, Card, Chip, Field, Icon, Inp, KV, Modal, Note, Prog, Seg, Select, Stat, Table, Toggle, cx } from '../../ui/index.jsx';
+import { Button, Card, Chip, Field, Icon, Inp, KV, Modal, Prog, Seg, Select, Stat, Table, Toggle, cx } from '../../ui/index.jsx';
 import { CommandRunBar, useCommandTasks, useProjectEvent } from '../plugin/parts.jsx';
 import {
   DIFF_CHANGE, GATEWAY_STATE, JOB_FILTERS, collectBody, defaultDiffPair, diffPair, fmtBudget, fmtDuration, fmtNum, fmtWhen,
@@ -34,12 +34,10 @@ function ConfirmModal({ confirm, onClose, onAgree, busy }) {
       onClose={onClose}
       icon="shield"
       title={`采集生产库 ${src?.id || ''}？`}
-      sub="生产环境的数据源每次采集都要你同意。"
       w={540}
       foot={<><Button onClick={onClose}>取消</Button><Button kind="primary" icon="check" disabled={busy} onClick={onAgree}>同意并开始采集</Button></>}
     >
       <KV pairs={previewPairs(confirm?.preview?.summary)} w="96px" />
-      <div className="mt12"><Note tone="gray" icon="list">同意后由内核下发票据交连接器网关执行，每次访问业务系统都写审计（语句摘要、行数、字节数、耗时）。</Note></div>
     </Modal>
   );
 }
@@ -122,7 +120,7 @@ function SnapshotsBody({ route }) {
   const started = (j, msg) => {
     setJobs((list) => mergeJob(list || [], j).filter((x) => jobMatches(x, jobFilter)));
     loadSummary();
-    toast(j.state === 'queued' ? `任务 ${j.id} 已排队：${j.queue_reason || '等访问时间窗口'}` : msg || `已下发票据，任务 ${j.id} 开始执行`, 'play');
+    toast(j.state === 'queued' ? `任务 ${j.id} 已排队：${j.queue_reason || '等访问时间窗口'}` : msg || `任务 ${j.id} 已开始`, 'play');
   };
   // 生产库缺 token（428）或过期（410）都回到确认弹窗
   const handleConsentError = async (e, ctx) => {
@@ -199,7 +197,7 @@ function SnapshotsBody({ route }) {
   const clean = async (s) => {
     try {
       const r = await api.deleteEvidenceSnapshot(pid, s.id);
-      toast(`快照已清理，大件在 blob 仓保留 ${r.blob_retention_days} 天`, 'trash');
+      toast('快照已清理', 'trash');
       setPicked((p) => p.filter((x) => x !== s.id));
       if (pair && (pair.from === s.id || pair.to === s.id)) { setPair(null); setDiff(null); }
       loadSnaps();
@@ -227,10 +225,10 @@ function SnapshotsBody({ route }) {
 
   return (
     <>
-      <PageHead title={<>采集任务与证据快照 <EvdPlg /></>} desc="快照提交后不再修改。建模只读快照，不碰运行中的系统。" />
+      <PageHead title={<>采集任务与证据快照 <EvdPlg /></>} />
       <div className="grid4 mb16" style={{ gridTemplateColumns: 'repeat(5,1fr)' }}>
         <Stat label="快照" value={s?.snapshots?.count ?? '—'} icon="db" desc={`${s?.snapshots?.sources ?? 0} 个数据源`} />
-        <Stat label="被引用的快照" value={s?.snapshots?.referenced ?? '—'} icon="lock" desc="不能清理，锚点在用" />
+        <Stat label="被引用的快照" value={s?.snapshots?.referenced ?? '—'} icon="lock" />
         <Stat label="本月采集" value={s?.jobs_this_month?.total ?? '—'} unit="次" icon="scan" desc={monthText(s?.jobs_this_month) || '本月还没有采集'} />
         <Stat label="进行中" value={s?.running_jobs ?? '—'} unit="个" icon="activity" desc={`排队 ${s?.queued_jobs ?? 0} 个`} />
         <Stat label="连接器网关" value={<span style={{ fontSize: 18, color: gwColor || undefined }}>{gwText}</span>} icon="server" desc={`已加载 ${s?.gateway?.providers_loaded ?? 0} 个提供方`} />
@@ -239,7 +237,7 @@ function SnapshotsBody({ route }) {
         <Card title="发起采集" icon="scan">
           {sources === null ? <div className="sm muted">正在读取…</div> : !sources.length ? (
             <div className="sm muted" style={{ lineHeight: 1.7 }}>
-              本项目还没有授权的数据源。先到<a className="link" onClick={() => navigate(pagePath('sources', pid))}>业务系统数据源</a>授权一个，再回来采集。
+              还没有授权的数据源。去<a className="link" onClick={() => navigate(pagePath('sources', pid))}>「业务系统数据源」</a>授权
             </div>
           ) : (
             <>
@@ -258,20 +256,19 @@ function SnapshotsBody({ route }) {
                 </div>
               </div>
               <div className="mt8">
-                <Field label="范围" hint={form.operation === 'sample' ? '每表最多 20 行，按脱敏策略处理' : undefined}>
+                <Field label="范围" hint={form.operation === 'sample' ? '每表最多 20 行' : undefined}>
                   {form.operation === 'sample'
                     ? <Inp mono icon="table" value={form.sampleTable} placeholder="表名，如 replenish_std" onChange={(e) => setForm((f) => ({ ...f, sampleTable: e.target.value }))} />
                     : <div className="evd-tags"><span className="tag">{scopeTag(source?.scope_summary)}</span><span className="xs muted">沿用登记白名单</span></div>}
                 </Field>
               </div>
               {form.operation !== 'sample' ? <div className="mt8"><Field label="预算"><Inp value={form.budget} onChange={(e) => setForm((f) => ({ ...f, budget: e.target.value }))} /></Field></div> : null}
-              {production ? <div className="mt12"><Note tone="amber" icon="alert">生产环境：提交后会弹出确认卡，需要你同意才会下发票据。</Note></div> : null}
               <div className="row mt12"><span className="sp" /><Button kind="primary" icon="play" disabled={busy} onClick={collect}>发起采集</Button></div>
             </>
           )}
         </Card>
         <div>
-          <Card title="采集任务" sub="经连接器网关执行 · 进度实时推送" icon="activity" extra={<Seg items={JOB_FILTERS} value={jobFilter} onChange={setJobFilter} />}>
+          <Card title="采集任务" icon="activity" extra={<Seg items={JOB_FILTERS} value={jobFilter} onChange={setJobFilter} />}>
             {jobs === null ? <div className="sm muted">正在读取…</div> : jobs.length ? (
               <Table
                 compact
@@ -297,7 +294,6 @@ function SnapshotsBody({ route }) {
 
       <Card
         title="证据快照"
-        sub="按记录 ID + 哈希做对比；快照本身永远不进知识包"
         icon="db"
         extra={(
           <>
@@ -314,7 +310,7 @@ function SnapshotsBody({ route }) {
               <thead><tr>{['快照', '数据源', '完整度', '覆盖率', '记录条数', '被引用', ''].map((c) => <th key={c}>{c}</th>)}</tr></thead>
               <tbody>
                 {snaps.map((x) => (
-                  <tr key={x.id} className={picked.includes(x.id) ? 'pick' : undefined} title="点一下选中，选两份对比" onClick={() => setPicked((p) => toggleSnapPick(p, x.id))}>
+                  <tr key={x.id} className={picked.includes(x.id) ? 'pick' : undefined} onClick={() => setPicked((p) => toggleSnapPick(p, x.id))}>
                     <td><span className="mono b" style={{ fontSize: 12 }}>{x.id}</span></td>
                     <td>{x.source?.id}</td>
                     <td>{x.complete ? <Chip tone="teal" icon="check" sm>完整</Chip> : <Chip tone="amber" icon="alert" sm>不完整</Chip>}</td>
@@ -322,7 +318,7 @@ function SnapshotsBody({ route }) {
                     <td><div className="evd-rec">{snapRecords(x.records).map(([k, n]) => <span key={k}>{k} {fmtNum(n)}</span>)}</div></td>
                     <td>
                       {x.referenced
-                        ? <span className="row g4" data-pop="被已确认产物引用，不能清理；否则锚点会断"><Icon name="lock" size={12} /><b className="num">{x.referenced}</b><span className="xs muted">处</span></span>
+                        ? <span className="row g4"><Icon name="lock" size={12} /><b className="num">{x.referenced}</b><span className="xs muted">处</span></span>
                         : <span className="faint sm">0</span>}
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
@@ -336,19 +332,19 @@ function SnapshotsBody({ route }) {
               </tbody>
             </table>
           </div>
-        ) : <div className="sm muted" style={{ padding: '18px 4px' }}>还没有快照。发起一次「快照」采集后会出现在这里。</div>}
+        ) : <div className="sm muted" style={{ padding: '18px 4px' }}>还没有快照</div>}
       </Card>
 
       {pair ? (
         <div className="mt16">
           <Card
             title={`对比 ${pair.from} → ${pair.to}`}
-            sub={`${pairSnap?.source?.id || ''} · 变化的锚点进入影响分析`}
+            sub={pairSnap?.source?.id || ''}
             icon="split"
             extra={(
               <>
                 <Button size="sm" icon="send" disabled={!counts?.touching_confirmed} onClick={push}>推送建议修订</Button>
-                <Button size="sm" kind="primary" icon="target" disabled={!!tasks.active || tasks.sending} data-pop="发到工作台对话里执行：分析这两份快照的变化影响到哪些已确认产物。页面上显示进度，跑完结果在对话里" onClick={analyze}>在对话里分析影响</Button>
+                <Button size="sm" kind="primary" icon="target" disabled={!!tasks.active || tasks.sending} onClick={analyze}>在对话里分析影响</Button>
               </>
             )}
           >
@@ -359,7 +355,7 @@ function SnapshotsBody({ route }) {
                   <span className="xs muted">{DIFF_CHANGE[k][0]}</span><b>{counts ? counts[k] : '—'}</b>
                 </div>
               ))}
-              <div className="x"><span className="xs muted">涉及已确认产物的锚点</span><b>{counts ? counts.touching_confirmed : '—'}</b></div>
+              <div className="x"><span className="xs muted">涉及已确认产物</span><b>{counts ? counts.touching_confirmed : '—'}</b></div>
             </div>
             {diff?.items?.length ? (
               <Table

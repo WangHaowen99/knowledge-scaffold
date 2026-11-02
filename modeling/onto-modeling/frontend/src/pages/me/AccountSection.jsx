@@ -1,12 +1,12 @@
 // 个人设置 · 账号：资料卡（A-07）、退出登录（A-05）、修改密码（A-06）。
 // 改密成功后所有设备（含当前这台）的令牌都作废（B2 第 4 条），提示后回登录页。
-// 本地模式没有登录、没有密码：不放退出登录，改密卡换成说明。
+// 本地模式没有登录、没有密码：不放退出登录，也不出改密卡。
 import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { PageHead } from '../../shell/Shell.jsx';
-import { Avatar, Button, Card, Chip, Field, Inp, Note } from '../../ui/index.jsx';
+import { Avatar, Button, Card, Chip, Field, Inp } from '../../ui/index.jsx';
 import {
   avatarText, isLocalMode, lastLoginText, passwordError, passwordFormView, profileChips, usageView,
 } from './meModel.js';
@@ -74,7 +74,7 @@ function PasswordCard({ username }) {
         <Field label="当前密码" req hint={oldErr ? <span style={{ color: 'var(--red)' }}>{oldErr}</span> : null}>
           <Inp icon="lock" type="password" name="old_password" value={f.old} onChange={set('old')} error={!!oldErr} autoComplete="current-password" />
         </Field>
-        <Field label="新密码" req hint="至少 8 位，包含大写、小写、数字、符号中的至少三类；不能包含用户名；不能与旧密码相同">
+        <Field label="新密码" req>
           <Inp icon="key" type="password" name="new_password" value={f.next} onChange={set('next')} error={!!f.next && v.failed.length > 0} autoComplete="new-password" />
         </Field>
         <div className="row g4 xs wrap">
@@ -86,7 +86,7 @@ function PasswordCard({ username }) {
         </Field>
         <div className="row mt4">
           <Button kind="primary" type="submit" disabled={!v.canSubmit || busy}>{busy ? '正在保存…' : '保存新密码'}</Button>
-          <span className="xs muted">修改后所有设备都要重新登录，包括这台</span>
+          <span className="xs muted">保存后所有设备需重新登录</span>
         </div>
       </form>
     </Card>
@@ -107,19 +107,15 @@ export function AccountSection() {
   return (
     <>
       <PageHead
-        eyebrow="个人设置"
         title="账号"
-        desc={local ? '本地模式：没有配置登录服务，以本机用户的身份使用。' : '登录由 auth-server 统一管理。'}
         actions={local ? null : <Button kind="danger" icon="logout" onClick={() => logout()}>退出登录</Button>}
       />
       {me ? <ProfileCard me={me} local={local} /> : null}
-      <div className="mt16" style={{ maxWidth: 640 }}>
-        {local ? (
-          <Card title="修改密码" icon="lock">
-            <Note tone="gray" icon="lock">本地模式没有账号密码，不需要修改。部署时接入登录服务后，在这里改密码。</Note>
-          </Card>
-        ) : <PasswordCard username={me?.username || user?.username} />}
-      </div>
+      {local ? null : (
+        <div className="mt16" style={{ maxWidth: 640 }}>
+          <PasswordCard username={me?.username || user?.username} />
+        </div>
+      )}
     </>
   );
 }

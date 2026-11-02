@@ -47,13 +47,16 @@ test('glob：* 不跨目录，** 跨目录', () => {
 });
 
 test('这一轮卡片的锁定说明随状态变', () => {
-  assert.match(roundLockNote(lock('pending_confirm')), /确认生效前/);
+  assert.match(roundLockNote(lock('pending_confirm')), /确认生效或撤回前/);
   assert.match(roundLockNote(lock('assistant_running')), /助手运行中/);
+  assert.match(roundLockNote(lock('autobuild_slice')), /这一片完成前/);
+  assert.notEqual(roundLockNote(lock('pending_confirm')), roundLockNote(lock('autobuild_slice')));
 });
 
 test('输入框：运行中可补充说明（deferred），归档与只读维护时禁用', () => {
   assert.equal(composerState({ sessionState: 'running' }).delivery, 'deferred');
-  assert.match(composerState({ sessionState: 'running' }).placeholder, /运行中也能补充说明/);
+  assert.match(composerState({ sessionState: 'running' }).placeholder, /补充说明/);
+  assert.equal(composerState({ sessionState: 'idle', autobuildRunning: true }).delivery, 'deferred');
   assert.equal(composerState({ sessionState: 'idle', archived: true }).disabled, true);
   assert.equal(composerState({ sessionState: 'idle', maintenance: { active: true, mode: 'read_only', message: '升级中' } }).placeholder, '升级中');
   assert.equal(composerState({ sessionState: 'idle', maintenance: { active: true, mode: 'reject_new_sessions', message: 'm' } }).warn, true);

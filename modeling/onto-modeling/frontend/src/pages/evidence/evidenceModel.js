@@ -354,7 +354,6 @@ export function previewPairs(summary, now = Date.now()) {
     ['预计规模', summary.estimate ? `${fmtRows(summary.estimate.rows)} · ${fmtBytes(summary.estimate.bytes)}（按 discover 估算）` : '还没有 discover 结果，无法估算'],
     ['只读方式', (summary.readonly_methods || []).join(' · ') || '—'],
     ['脱敏', summary.masking ? `${summary.masking.policy} · 样本每表最多 ${summary.masking.sample_rows} 行` : '—'],
-    ['票据', summary.ticket ? `${summary.ticket.single_use ? '一次性，' : ''}${Math.round(summary.ticket.ttl_s / 60)} 分钟过期，用过作废` : '—'],
   ];
 }
 
@@ -391,13 +390,9 @@ export function parseDbAnchor(anchor) {
 export const fieldAnchor = (tableAnchor, field) => `${tableAnchor}.${encodeURIComponent(field).replace(/\./g, '%2E')}`;
 export const shortName = (name) => String(name || '').split('.').pop();
 
-// 证据浏览器的置信度小标签（设计稿用英文原词，悬停说中文）
+// 证据浏览器的置信度小标签
 export const CONF_TONE = { declared: 'teal', inferred: 'indigo', observed: 'blue' };
-export const CONF_TEXT = {
-  declared: '系统元数据：表结构里明确写着',
-  observed: '数据观察：采样数据里看到的',
-  inferred: '推断：按命名或取值推断，没有直接证据',
-};
+export const CONF_TEXT = { declared: '声明', observed: '观察', inferred: '推断' };
 
 // 字段一行的说明：类型 · 说明（主键写 PK）
 export const fieldDesc = (f) => [f.type, f.note].filter(Boolean).join(' · ');

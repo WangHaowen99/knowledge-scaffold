@@ -1,14 +1,7 @@
 /* 用户、审计与回收站（ops-users）的补充样式；设计稿的 op-* 在 ops.css */
 
-/* 角色说明、回收站说明那一行：设计稿右侧有一排演示切换（产品不要），保留它撑出的行高，下面的表格不上移 */
-.ou-legend{min-height:42px}
-
 /* 删除用户弹窗：建模者较多时，移交对象的下拉菜单限高滚动 */
 .ou-sel .menu{max-height:232px;overflow:auto}
-
-/* 当前版本不能选的处理方式（移入回收站） */
-.opt.ou-off{opacity:.55;cursor:not-allowed}
-.opt.ou-off:hover{border-color:var(--line)}
 
 /* 审计行尾的「在可观测中查看链路」 */
 .ou-trace{display:inline-flex;margin-left:6px;color:var(--muted);cursor:pointer;vertical-align:-2px}
@@ -16,3 +9,4 @@
 
 /* 错误留档：整行可点，打开原始错误 */
 .ou-errs tbody tr{cursor:pointer}
+.ou-errs tbody tr:hover td{background:var(--panel2)}

@@ -56,7 +56,7 @@ export function TraceCard({ traceId, range, labels, onTag, scrollOnLoad }) {
   return (
     <div ref={ref} id="op-trace" style={{ scrollMarginTop: 16 }}>
       <Card
-        className="mt16" title="链路" icon="activity" sub="用户消息 → 轮次 → 子代理 → 工具 / 脚本 → 提交 → 检查"
+        className="mt16" title="链路" icon="activity"
         extra={<span className="mono xs muted">{traceTotalText(trace)}</span>}
       >
         {trace ? (
@@ -81,13 +81,13 @@ export function TraceCard({ traceId, range, labels, onTag, scrollOnLoad }) {
         ) : null}
         {missing ? (
           <Note tone="amber">
-            链路 <span className="mono">{missing}</span> 不存在或已过保留期（进程内只保留最近 2000 条，重启后清空）。
+            链路 <span className="mono">{missing}</span> 不存在或已过期
             <a className="link" style={{ marginLeft: 6 }} onClick={() => navigate('/ops-obs')}>看最近一条</a>
           </Note>
         ) : null}
         {error ? <div className="muted sm">链路没取到：{error}</div> : null}
         {!trace && !missing && !error && !loading ? (
-          <Empty icon="activity" title="这段时间还没有链路">每一轮对话都会留一条链路；进程内只保留最近 2000 条，重启后清空。</Empty>
+          <Empty icon="activity" title="这段时间还没有链路" />
         ) : null}
       </Card>
     </div>

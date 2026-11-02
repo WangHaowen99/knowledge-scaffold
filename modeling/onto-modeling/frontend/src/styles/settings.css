@@ -27,6 +27,9 @@
 .ps-hl{box-shadow:0 0 0 3px rgba(59,130,246,.35);transition:box-shadow .2s}
 .ps-hl.out{box-shadow:0 0 0 3px rgba(59,130,246,0);transition:box-shadow 1s ease-out}
 .evd-l4w.ps-hl{border-radius:16px}
+/* 自主构建策略：分区标题（R11，范围、预算、高级设置归到这一个分区） */
+.ps-sech{display:flex;align-items:center;gap:8px;margin:0 4px 10px;color:var(--blue)}
+.ps-sech h3{font-size:15px;font-weight:650;color:var(--ink)}
 /* 滑块可拖、可用方向键调 */
 .g2-slider{cursor:pointer;touch-action:none;outline:0}
 .g2-slider:focus-visible .kn{box-shadow:0 0 0 4px rgba(59,130,246,.25)}

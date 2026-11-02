@@ -9,7 +9,7 @@ import {
 import {
   SOLVER_TYPE, candidateView, checkLines, contractChip, contractLocked, contractProblems, contractTitle, defaultPicked, defaultScript,
   descriptorChip, draftOf, evaluatorCommand, evaluatorOptions, evaluatorTarget, familyOptions, fmtSecs, fmtStamp, generateCommand,
-  lockText, modelOperation, moreItems, pickedOperations, removeUnit, revisionTag, rowAction, runDetail, sandboxChip, sandboxView,
+  lockText, modelOperation, moreItems, pickedOperations, removeUnit, revisionTag, rowAction, sandboxChip, sandboxView, savedToast,
   saveErrorView, saveState, scanCommand, setUnit, templateCommand, toggleCapability, togglePicked, verificationView,
 } from '../src/pages/scripts/scriptsModel.js';
 
@@ -109,19 +109,22 @@ test('可代码化候选：标题、默认勾选、不建议代码化的说明�
 });
 
 test('沙箱：状态 chip 与验证输出', async () => {
-  assert.deepEqual(sandboxView({ available: true, network: 'denied' }), { text: '脚本验证沙箱可用', tone: 'teal', icon: 'check', note: '沙箱禁止出网，查数脚本请用合成输入验证' });
+  // 可用时只有状态 chip，不再挂说明；不可用时一句话让用户找管理员
+  assert.deepEqual(sandboxView({ available: true, network: 'denied' }), { text: '脚本验证沙箱可用', tone: 'teal', icon: 'check', note: null });
   assert.equal(sandboxView({ available: false, network: 'denied' }).tone, 'red');
+  assert.equal(sandboxView({ available: false }).note, '暂时不能验证和保存脚本，请联系管理员');
   assert.equal(sandboxView(null), null);
   const { call } = server();
   const v = (await call('GET', `${P}/scripts/build_replenish_order/verification`)).body;
   assert.equal(v.network_access, false);
   const vv = verificationView(v, 'build_replenish_order.py');
   assert.equal(vv.chip.text, '通过');
-  assert.equal(vv.sub, '脚本验证沙箱 · 合成输入 · 10-31 15:19');
+  assert.equal(vv.sub, '10-31 15:19');
   assert.equal(vv.lines[0].text, '$ build_replenish_order.py --store_code A001 --request_qty 96');
   assert.equal(vv.summary.text, '✓ 2/2 用例通过 · 0.8s · 无网络访问');
   const nr = (await call('GET', `${P}/scripts/overage_compare/verification`)).body;
   assert.equal(verificationView(nr, 'overage_compare.py').status, 'not_run');
+  assert.equal(verificationView(nr, 'overage_compare.py').sub, null);
   const failed = verificationView({ status: 'failed', duration_ms: 900, network_access: false, cases: [{ args: '-x', output: 'boom', passed: false }] }, 'a.py');
   assert.equal(failed.summary.text, '✗ 0/1 用例通过 · 0.9s · 无网络访问');
   assert.equal(failed.lines[1].kind, 'err');
@@ -201,10 +204,11 @@ test('卡片标题、问题族与评估器下拉', async () => {
   assert.equal(familyOptions([{ id: 'a.v1', label: 'a.v1', capabilities: [] }], 'old')[1].label, 'old（不在注册目录里）');
   const ev = evaluatorOptions(view, main);
   assert.equal(ev[0].label, '自动查找 → ontology/scripts/restock_route_evaluator.py');
+  assert.equal(evaluatorOptions(view, { evaluator: '', params: {} })[0].label, '自动查找');
   assert.equal(evaluatorOptions(view, { evaluator: '', params: { evaluator_path: 'x.py' } }).at(-1).label, 'x.py（不存在或不是评估器）');
 });
 
-test('写入范围只读：锁住的求解契约、锁定条两态文字、进度条补充说明', async () => {
+test('写入范围只读：锁住的求解契约、锁定条两态文字', async () => {
   const { call } = server();
   const view = (await call('GET', `${P}/solver/contract`)).body;
   const [main, other] = draftOf(view);
@@ -216,12 +220,12 @@ test('写入范围只读：锁住的求解契约、锁定条两态文字、进�
   // 只按路径锁也算
   assert.equal(contractLocked({ state: 'pending_confirm', entries: [], artifacts: [], paths: ['ontology/solver/**'] }, other), true);
   const t = lockText(lock, '补货编制主流程');
-  assert.equal(t.running[0], '助手正在为「补货编制主流程」生成评估器，这份求解契约在写入范围里，确认生效或撤回后才能编辑');
-  assert.equal(t.pending[0], '评估器已经生成，这一轮的修改还没确认：这份求解契约确认生效或撤回后才能编辑');
-  assert.equal(t.pending[1], '助手已经停下来等你确认；其他求解契约照常编辑，保存即生效。');
-  assert.match(lockText({ state: 'autobuild_slice' }, 'X').running[0], /^自主构建正在改这一片/);
-  assert.equal(runDetail(true), '这份求解契约在写入范围里，确认生效或撤回前只读 · 结果回到这里');
-  assert.equal(runDetail(false), '结果回到这里');
+  // 只读条只有标题（旁边有「回到对话」「去确认」「查看运行」），不再挂范围说明
+  assert.deepEqual(t.running, ['助手正在为「补货编制主流程」生成评估器，暂时只读']);
+  assert.deepEqual(t.pending, ['评估器已生成，待确认']);
+  const auto = lockText({ state: 'autobuild_slice' }, 'X');
+  assert.deepEqual(auto.running, ['自主构建正在改「X」，暂时只读']);
+  assert.equal(auto.pending, undefined);
 });
 
 test('检查卡：已保存、草稿、检查中、回执几种情况', async () => {
@@ -232,14 +236,14 @@ test('检查卡：已保存、草稿、检查中、回执几种情况', async ()
   const live = { key, rejected: [], findings: [], evaluator: { kind: 'declarative', constraints: 3 } };
   const texts = (o) => checkLines({ view, item: items[0], draftKey: key, live, receipt: view.receipt, ...o }).map((l) => l.text);
   assert.deepEqual(texts({ dirty: false }), ['r7 未发现契约问题', '评估器已解析：声明式 · 3 条约束', 'r7 已通过验证（评测服务回执 · 10-31 16:02）']);
-  assert.deepEqual(texts({ dirty: true }), ['草稿未发现契约问题', '评估器已解析：声明式 · 3 条约束', '保存会改变求解契约修订，r7 的验证回执对新修订不再有效']);
+  assert.deepEqual(texts({ dirty: true }), ['草稿未发现契约问题', '评估器已解析：声明式 · 3 条约束', '保存后 r7 的验证回执失效']);
   assert.equal(texts({ dirty: true, live: { ...live, key: 'old' } })[0], '正在检查草稿…');
-  assert.equal(texts({ dirty: true, live: { key, failed: true } })[0], '暂时检查不了草稿，保存时还会按同一套规则再查一遍');
+  assert.equal(texts({ dirty: true, live: { key, failed: true } })[0], '暂时检查不了草稿');
   assert.equal(texts({ dirty: true, live: { ...live, rejected: [{ message: '被拒了' }] } })[0], '被拒了');
-  assert.equal(texts({ dirty: false, receipt: { status: 'required', latest: null } })[2], 'r7 还没有验证回执，发布前要由评测服务验证');
+  assert.equal(texts({ dirty: false, receipt: { status: 'required', latest: null } })[2], 'r7 还没有验证回执');
   // 新建的那份还没有评估器：不借用别的契约的解析结果
-  assert.equal(checkLines({ view, item: { ...items[0], evaluator: '' }, dirty: true, live, draftKey: key, receipt: view.receipt })[1].text, '还没有评估器：保存后由助手按契约生成并自检');
-  assert.equal(texts({ dirty: true, receipt: { status: 'required', latest: null } })[2], '保存会改变求解契约修订，发布前要由评测服务验证');
+  assert.equal(checkLines({ view, item: { ...items[0], evaluator: '' }, dirty: true, live, draftKey: key, receipt: view.receipt })[1].text, '还没有评估器');
+  assert.equal(texts({ dirty: true, receipt: { status: 'required', latest: null } })[2], '保存后需重新验证');
   // 回执类门禁不当成契约问题
   const gated = { ...view, gate: [{ code: 'solver_receipt_required', level: 'error', message: 'x' }] };
   assert.equal(checkLines({ view: gated, item: items[0], dirty: false, live, draftKey: key, receipt: view.receipt })[0].text, 'r7 未发现契约问题');
@@ -272,7 +276,11 @@ test('修订标签、保存按钮、保存后发评估器命令', async () => {
   assert.deepEqual(evaluatorCommand('restock_route', '补货编制主流程'), {
     command: '/ontology-solver-evaluator', args: { solver_key: 'restock_route' }, text: '为「补货编制主流程」生成评估器',
   });
-  assert.equal(templateCommand('restock_route', '补货编制主流程').text, '按模板重新生成「补货编制主流程」的附属文件和评估器（手动修改会被覆盖）');
+  // 「手动修改会被覆盖」放在点按钮后的确认框里，命令本身只说做什么
+  assert.deepEqual(templateCommand('restock_route', '补货编制主流程'), {
+    command: '/ontology-solver-evaluator', args: { solver_key: 'restock_route', mode: 'template' }, text: '按模板重新生成「补货编制主流程」的附属文件和评估器',
+  });
+  assert.equal(savedToast({ revision_no: 8 }), '已保存 r8');
 });
 
 test('保存失败的说法：冲突、被拒、被锁', () => {

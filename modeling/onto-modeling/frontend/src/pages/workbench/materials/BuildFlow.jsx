@@ -5,8 +5,9 @@ import { navigate, pagePath } from '../../../app/router.js';
 import { toast } from '../../../app/toast.jsx';
 import { errorText } from '../../../api/errors.js';
 import {
-  Button, Chip, Icon, KV, Modal, Note,
+  Button, Chip, KV, Modal, Note,
 } from '../../../ui/index.jsx';
+import { evidenceInProject } from '../../../state/evidence.js';
 import { budgetText } from './model.js';
 
 async function currentBlueprint(api, pid) {
@@ -20,7 +21,8 @@ async function currentBlueprint(api, pid) {
 
 export function AutobuildPreviewDialog({ preview: initial, onClose }) {
   const { api } = useApp();
-  const { pid } = useProject();
+  const project = useProject();
+  const { pid } = project;
   const [preview, setPreview] = useState(initial);
   const [busy, setBusy] = useState(false);
   const included = (preview.slices || []).filter((s) => s.included);
@@ -28,12 +30,12 @@ export function AutobuildPreviewDialog({ preview: initial, onClose }) {
     setBusy(true);
     try {
       await api.startAutobuild(pid, { preview_token: preview.preview_token });
-      toast('自主构建已开始，按蓝图一路建完', 'rocket');
+      toast('自主构建已开始', 'rocket');
       onClose();
       navigate(pagePath('l4-run', pid));
     } catch (e) {
       if (e.code === 'preview_expired') {
-        try { setPreview(await api.previewAutobuild(pid, {})); toast('预览过期了，已按最新状态刷新，再确认一次', 'refresh'); } catch (e2) { toast(errorText(e2), 'alert'); }
+        try { setPreview(await api.previewAutobuild(pid, {})); toast('预览已刷新，请再确认', 'refresh'); } catch (e2) { toast(errorText(e2), 'alert'); }
       } else toast(errorText(e), 'alert');
     } finally {
       setBusy(false);
@@ -42,10 +44,9 @@ export function AutobuildPreviewDialog({ preview: initial, onClose }) {
   return (
     <Modal
       open onClose={onClose} icon="rocket" title="按蓝图一路建完" w={580}
-      sub="开始前确认这次的范围和预算；运行中随时可以暂停，或转为陪伴继续"
       foot={(
         <>
-          <a className="link xs grow" onClick={() => { onClose(); navigate(pagePath('proj-settings', pid), { section: 'autobuild' }); }}>在项目设置里调整自主构建策略</a>
+          <a className="link xs grow" onClick={() => { onClose(); navigate(pagePath('proj-settings', pid), { section: 'autobuild' }); }}>调整策略</a>
           <Button onClick={onClose}>取消</Button>
           <Button kind="l4" icon="rocket" disabled={busy} onClick={start}>{preview.queued ? '开始（排队）' : '开始自主构建'}</Button>
         </>
@@ -63,13 +64,13 @@ export function AutobuildPreviewDialog({ preview: initial, onClose }) {
             </div>
           )],
           ['预算', budgetText(preview.budget)],
-          ['生产库', preview.production || '—'],
+          // 证据源本期不开放：生产库采集这一行随证据源出现
+          ...(evidenceInProject(project) ? [['生产库', preview.production || '—']] : []),
           ['拿不准时', preview.below_threshold_text || '—'],
         ]}
       />
       {(preview.warnings || []).map((w) => <Note key={w} tone="amber" className="mt12">{w}</Note>)}
-      {preview.queued ? <Note tone="gray" className="mt12">平台同时运行的自主构建已满，开始后排队{preview.queue_position ? `（第 ${preview.queue_position} 位）` : ''}，轮到时自动开始。</Note> : null}
-      <div className="xs faint mt12 row g4"><Icon name="clock" size={12} />这份预览 10 分钟内有效，过期后重新预览</div>
+      {preview.queued ? <Note tone="gray" className="mt12">名额已满，开始后排队{preview.queue_position ? `（第 ${preview.queue_position} 位）` : ''}</Note> : null}
     </Modal>
   );
 }

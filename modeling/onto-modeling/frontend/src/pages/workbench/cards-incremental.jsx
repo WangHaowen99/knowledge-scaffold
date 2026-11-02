@@ -75,10 +75,10 @@ function ChangeListCard({ card }) {
       id={`inc-cl-${id}`} icon="list" title={card.title || '变更点清单'} chip={<Chip tone="line" sm>{cl.points.length} 条</Chip>}
       sub={M.listSubtitle(cl)} dbl onDoubleClick={open}
       foot={executed ? (
-        <><span className="xs muted grow">清单已确认并执行；双击打开查看</span><Button size="xs" icon="eye" onClick={open}>查看清单</Button></>
+        <><span className="xs muted grow">已执行</span><Button size="xs" icon="eye" onClick={open}>查看清单</Button></>
       ) : (
         <>
-          <span className="xs muted grow">双击打开，逐条修改条件、取值和范围</span>
+          <span className="sp" />
           <Button size="xs" kind="soft" icon="check" disabled={busy || !high.length} onClick={acceptHigh}>接受高把握项 {high.length}</Button>
           <Button size="xs" icon="edit" onClick={open}>逐条修改</Button>
         </>
@@ -117,10 +117,10 @@ function ImpactCard({ card }) {
   };
   return (
     <CC
-      icon="target" title={card.title || '影响面'} chip={<Chip tone="blue" sm icon="zap">{M.secs(imp.duration_ms)}</Chip>} sub={M.phasesText(imp.phases)}
+      icon="target" title={card.title || '影响面'} chip={<Chip tone="blue" sm icon="zap">{M.secs(imp.duration_ms)}</Chip>}
       foot={(
         <>
-          <span className="xs muted grow">{imp.semantic_scope_text}</span>
+          <span className="sp" />
           {card.executed
             ? <Button size="sm" kind="primary" icon="check" disabled>已确认并执行</Button>
             : <Button size="sm" kind="primary" icon="play" disabled={busy} onClick={run}>确认清单并执行</Button>}
@@ -145,7 +145,7 @@ function ImpactCard({ card }) {
           <div className="mr-sec" style={{ marginTop: 0 }}>回归场景 {reg.affected.length + reg.guard.length}</div>
           <div className="xs muted mb8">受影响的旧场景 {reg.affected.length}</div>
           <div className="row wrap g4">{reg.affected.map((s) => <Chip key={s.key} tone="dash" sm>{M.refName(s)}</Chip>)}</div>
-          <div className="xs muted mb8 mt12">守护老路径的场景 {reg.guard.length} · 变更没碰到的分支也跑一遍</div>
+          <div className="xs muted mb8 mt12">守护老路径的场景 {reg.guard.length}</div>
           <div className="row wrap g4">{reg.guard.map((s) => <Chip key={s.key} tone="line" sm icon="shield">{M.refName(s)}</Chip>)}</div>
         </div>
       </div>
@@ -164,7 +164,7 @@ function RegressionCard({ card }) {
     try {
       await api.sendCommand(pid, M.fixCommand(card.change_list_id, r.scenario, conversationId));
       setSent((s) => new Set(s).add(r.scenario.key));
-      toast('已交给助手，修完会重跑这个场景', 'sparkle');
+      toast('已交给助手', 'sparkle');
     } catch (e) {
       toast(errorText(e), 'alert');
     }
@@ -172,7 +172,6 @@ function RegressionCard({ card }) {
   return (
     <CC
       icon="flask" title={card.title || '回归结果'} chip={<Chip tone={sum.failed ? 'amber' : 'teal'} sm>{sum.passed} / {sum.total} 通过</Chip>}
-      sub={`受影响的旧场景 ${sum.affected} 个 + 守护老路径的场景 ${sum.guard} 个`}
     >
       {(card.rows || []).map((r) => (
         <Fragment key={r.scenario.key}>
@@ -227,7 +226,7 @@ function ExternalFeedbackCard({ card }) {
   };
   const later = () => {
     setDone('留在待处理里');
-    toast('这份反馈留在「待处理 › 外部反馈」里，随时可以处理', 'inbox');
+    toast('已留在待处理', 'inbox');
   };
   return (
     <CC
@@ -235,7 +234,7 @@ function ExternalFeedbackCard({ card }) {
       sub={card.source ? M.feedbackSource(card.source) : card.subtitle}
       foot={(
         <>
-          <span className="xs muted grow">反馈也记入了资料区的「外部反馈」</span>
+          <span className="sp" />
           {done ? <Chip tone="gray" sm icon="check">{done}</Chip> : (
             <>
               <Button size="xs" kind="ghost" onClick={later}>稍后处理</Button>
@@ -305,7 +304,7 @@ function IncrementalRoundCard({ card, scope }) {
   return (
     <div ref={ref}>
       <CC
-        icon={discarded ? 'undo' : 'edit'} title={card.title || '这一轮改了什么'} sub={card.subtitle}
+        icon={discarded ? 'undo' : 'edit'} title={card.title || '这一轮改了什么'}
         foot={(
           <>
             <Button size="sm" icon="eye" onClick={toggleDiff}>{showDiff ? '收起改动' : '查看改动'}</Button>
@@ -313,9 +312,9 @@ function IncrementalRoundCard({ card, scope }) {
             <span className="sp" />
             {note && !discarded ? <span className="xs muted">{note}</span> : null}
             {merged ? <Chip tone="blue" icon="check">已确认生效 · 版本 {card.merged_version_label || closed?.version_label}</Chip>
-              : discarded ? <span className="xs faint">已撤回这一轮，主线没有变化</span>
+              : discarded ? <span className="xs faint">已撤回</span>
                 : (
-                  <span title={running ? '助手还在跑，这一步结束后才能确认' : `确认后保存为版本 ${card.next_version_label}`}>
+                  <span title={running ? '助手运行中' : `确认后保存为版本 ${card.next_version_label}`}>
                     <Button size="sm" kind="primary" icon="merge" disabled={busy || running} onClick={() => run(() => actions.merge(card.changeset_id))}>确认生效</Button>
                   </span>
                 )}
@@ -325,7 +324,7 @@ function IncrementalRoundCard({ card, scope }) {
         <ul className="mr-done">
           {M.roundLines(card).map((l, i) => <li key={i}><Icon name={l.icon} size={14} /><Inline text={`${l.verb} ${l.text}`} /></li>)}
         </ul>
-        {pending ? <div className="xs row g4 inc-lock"><Icon name="lock" size={12} />{mine ? roundLockNote(scope) : card.lock_note || roundLockNote(null)}</div> : null}
+        {pending ? <div className="xs row g4 inc-lock"><Icon name="lock" size={12} />{roundLockNote(mine ? scope : null)}</div> : null}
         {showDiff && diff ? <DiffBlock lines={diff} style={{ marginTop: 10 }} /> : null}
       </CC>
     </div>

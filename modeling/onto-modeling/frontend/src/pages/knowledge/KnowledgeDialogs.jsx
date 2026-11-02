@@ -47,7 +47,6 @@ export function EntryFormModal({ open, mode, initial, detail, onClose, onSaved }
       onClose={onClose}
       icon={edit ? 'edit' : 'plus'}
       title={edit ? '编辑业务知识' : '新增业务知识'}
-      sub={edit ? '保存后生成新版本，后续建模自动应用' : '确认入库后保存为新版本，后续建模自动应用'}
       w={600}
       foot={<><Button onClick={onClose}>取消</Button><Button kind="primary" disabled={busy} onClick={save}>{edit ? '保存' : '确认入库'}</Button></>}
     >
@@ -57,7 +56,7 @@ export function EntryFormModal({ open, mode, initial, detail, onClose, onSaved }
         </Field>
         <div className="grid2">
           <Field label="类型"><span><Seg items={TYPE_ITEMS} value={form.type} onChange={set('type')} /></span></Field>
-          <Field label="适用范围" hint="选「全局」会在每次抽取时加载"><ScopePicker value={form.scope} onChange={set('scope')} /></Field>
+          <Field label="适用范围"><ScopePicker value={form.scope} onChange={set('scope')} /></Field>
         </div>
         <Field label="背景">
           <Area textareaStyle={AREA_H} placeholder="为什么有这条知识，什么情况下会用错" value={form.background} onChange={(e) => set('background')(e.target.value)} />
@@ -65,7 +64,6 @@ export function EntryFormModal({ open, mode, initial, detail, onClose, onSaved }
         <Field label="规则" hint={tried && errs.rule ? <span className="kn-err">{errs.rule}</span> : null}>
           <Area textareaStyle={AREA_H} className={tried && errs.rule ? 'err' : undefined} placeholder={'## 规则\n写成可以照着做的一句话或几条'} value={form.rule} onChange={(e) => set('rule')(e.target.value)} />
         </Field>
-        <Note tone="gray" icon="shield">入库时先做确定性查重（同名、同范围、失效引用）；需要语义判断的口径冲突会发到工作台对话里由助手复核，结果回到这里。</Note>
       </div>
     </Modal>
   );
@@ -99,7 +97,7 @@ export function DeleteModal({ open, detail, onClose, onDeleted }) {
       foot={<><Button onClick={onClose}>取消</Button><Button kind="danger fill" disabled={busy} onClick={del}>删除</Button></>}
     >
       <div className="col sm" style={{ gap: 8 }}>
-        <div>删除后会保存为新版本，可以在版本历史里找回。</div>
+        <div>可在版本历史里找回</div>
         <div>{deleteImpact(detail)}</div>
       </div>
     </Modal>
@@ -145,7 +143,6 @@ export function NominateModal({ open, detail, pack, onClose }) {
       onClose={onClose}
       icon="upload"
       title={nominateTitle(label)}
-      sub="管理员审核、脱敏后发布新版本；其他项目切换到新版本后，从下一条消息开始生效"
       w={620}
       foot={<><Button onClick={onClose}>取消</Button><Button kind="primary" disabled={!preview || !general || busy} onClick={submit}>提交提名</Button></>}
     >
@@ -169,8 +166,7 @@ export function NominateModal({ open, detail, pack, onClose }) {
             </table>
           </div>
           <div className="mr-sec">人工审核</div>
-          <div className="sm muted">由管理员审核两件事：这条知识是行业通用的，不是某家单位特有；脱敏结果没有遗漏。审核结果会在待处理里通知你。</div>
-          <div className="mt12"><Check on={general} onChange={setGeneral} label="我确认这条知识在行业内通用" /></div>
+          <div><Check on={general} onChange={setGeneral} label="我确认这条知识在行业内通用" /></div>
         </>
       ) : null}
     </Modal>
@@ -190,7 +186,7 @@ export function ConflictsModal({ open, check, onClose, onNominate }) {
       onClose={onClose}
       icon="shield"
       title="知识冲突检查"
-      sub={check.checked_at ? checkModalSub(check) : '还没有做过检查，保存条目时会自动查重'}
+      sub={checkModalSub(check)}
       foot={<Button kind="primary" onClick={onClose}>知道了</Button>}
     >
       <div className="col sm" style={{ gap: 10 }}>

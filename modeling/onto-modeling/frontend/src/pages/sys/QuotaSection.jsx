@@ -1,9 +1,11 @@
-// 系统设置 · 配额与 L4 限制：按用户 / 按项目的默认配额（SY-15）、单独设置的增删（SY-16）、自主构建平台限制（SY-17）。
-// 页头「保存」一次存两份（哪份改了存哪份），立即生效；后端还没有这组接口时（404）只给说明。
+// 系统设置 · 配额与自主构建：按用户 / 按项目的默认配额（SY-15）、单独设置的增删（SY-16）、自主构建平台限制（SY-17）。
+// 页头「保存」一次存两份（哪份改了存哪份），立即生效。哪组接口回 404 就不画那一块（R17；两组都没有时左栏不出这个分区）。
+// 证据源相关的项（采集频率、快照体积、自主构建采集生产库）按证据源是否可用过滤（EV-01 读不到就不出），不只靠 not_enforced。
 import { useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
+import { evidenceFromSources } from '../../state/evidence.js';
 import {
   Button, Card, Chip, Field, Icon, Inp, Modal, Seg, Select, Table, Toggle, cx,
 } from '../../ui/index.jsx';
@@ -45,7 +47,7 @@ function OverrideDialog({ existing, onClose, onAdded, hidden }) {
 
   return (
     <Modal
-      open onClose={onClose} icon="sliders" title="新增单独设置" sub="给某个用户或项目单独放宽、收紧配额，立即生效" w={520}
+      open onClose={onClose} icon="sliders" title="新增单独设置" w={520}
       foot={<><Button onClick={onClose}>取消</Button><Button kind="primary" disabled={busy} onClick={add}>添加</Button></>}
     >
       <div className="col" style={{ gap: 12 }}>
@@ -79,6 +81,8 @@ export function QuotaSection() {
   const { api } = useApp();
   const quota = useLoad(() => api.quotas());
   const limits = useLoad(() => api.autobuildLimits());
+  const sources = useLoad(() => api.evidenceSources());
+  const evidenceOn = evidenceFromSources(sources.data);
   const [qf, setQf] = useState(null);
   const [lf, setLf] = useState(null);
   const [tried, setTried] = useState(false);
@@ -121,32 +125,31 @@ export function QuotaSection() {
     }
   };
 
-  const both404 = quota.error?.status === 404 && limits.error?.status === 404;
+  const quotaMissing = quota.error?.status === 404;
+  const limitsMissing = limits.error?.status === 404;
   const head = (
     <SysHead
-      title="配额与 L4 限制"
-      desc="按用户、按项目限制并发、token 预算和采集频率，防止单个任务占满资源。"
+      title="配额与自主构建"
       actions={<Button kind="primary" disabled={busy || (!qDirty && !lDirty)} onClick={save}>保存</Button>}
     />
   );
-  if (both404) return <>{head}<LoadNote error={quota.error} what="配额与 L4 限制" code="SY-15～SY-17" /></>;
 
   const overrides = quota.data?.overrides || [];
-  // 本期不生效的项（SY-15 not_enforced：证据采集频率、快照体积，证据源只留接口）字段保留、不显示
-  const hidden = new Set(quota.data?.not_enforced || []);
+  // 不显示的项：SY-15 not_enforced 列出的，加上证据源不可用时的采集频率、快照体积（字段保留、照常能存）
+  const hidden = new Set([...(quota.data?.not_enforced || []), ...(evidenceOn ? [] : ['collections_per_source_per_hour', 'snapshot_git_mb'])]);
   const sym = moneySymbol(lForm?.currency);
   return (
     <>
       {head}
-      {!quota.data ? (quota.error ? <LoadNote error={quota.error} what="配额" code="SY-15" onRetry={quota.reload} /> : <Loading />) : (
+      {quotaMissing ? null : !quota.data ? (quota.error ? <LoadNote error={quota.error} what="配额" onRetry={quota.reload} /> : <Loading />) : (
         <>
           <div className="grid2">
             <Card title="按用户（默认）" icon="user">
               <div className="col" style={{ gap: 12 }}>
-                <Field label="同时在线会话" hint={err(qp, 'concurrent_sessions', '超过时排队')}>
+                <Field label="同时在线会话" hint={err(qp, 'concurrent_sessions', null)}>
                   <Inp mono value={qForm.concurrent_sessions} error={!!qp.concurrent_sessions} onChange={setQ('concurrent_sessions')} />
                 </Field>
-                <Field label="每日 token 预算" hint={err(qp, 'daily_tokens', '到 80% 时提醒，用完后当日只能浏览')}>
+                <Field label="每日 token 预算" hint={err(qp, 'daily_tokens', null)}>
                   <Inp mono value={qForm.daily_tokens} error={!!qp.daily_tokens} onChange={setQ('daily_tokens')} />
                 </Field>
                 {hidden.has('collections_per_source_per_hour') ? null : (
@@ -159,9 +162,6 @@ export function QuotaSection() {
             </Card>
             <Card title="按项目" icon="pkg">
               <div className="col" style={{ gap: 12 }}>
-                <Field label="同时在线引擎" hint="一个项目同一时刻只有一个在线引擎">
-                  <Inp mono value={String(quota.data.per_project?.online_engines ?? 1)} readOnly disabled />
-                </Field>
                 <Field label="每月 token 预算" hint={err(qp, 'monthly_tokens', null)}>
                   <Inp mono value={qForm.monthly_tokens} error={!!qp.monthly_tokens} onChange={setQ('monthly_tokens')} />
                 </Field>
@@ -186,20 +186,20 @@ export function QuotaSection() {
                   <Button size="xs" kind="ghost" onClick={() => removeOverride(o)}>删除</Button>,
                 ])}
               />
-            ) : <div className="sm muted">还没有单独设置，所有用户和项目都按上面的默认配额。</div>}
+            ) : <div className="sm muted">还没有单独设置</div>}
           </Card>
         </>
       )}
-      {!limits.data ? (limits.error ? <div className="mt16"><LoadNote error={limits.error} what="自主构建平台限制" code="SY-17" onRetry={limits.reload} /></div> : null) : (
-        <div className="card mt16 l4-border">
+      {limitsMissing ? null : !limits.data ? (limits.error ? <div className="mt16"><LoadNote error={limits.error} what="自主构建限制" onRetry={limits.reload} /></div> : null) : (
+        <div className={cx('card l4-border', !quotaMissing && 'mt16')}>
           <div className="card-h">
             <span style={{ color: 'var(--blue)' }}><Icon name="rocket" /></span>
-            <h3>L4 自主构建限制</h3><span className="sub">平台级</span><span className="sp" />
+            <h3>自主构建限制</h3><span className="sp" />
             <Chip tone="indigo" icon="bot" sm>当前 {limits.data.running ?? 0} 个运行中</Chip>
           </div>
           <div className="card-b">
             <div className="grid4">
-              <Field label="同时运行上限" hint={err(lp, 'max_concurrent_runs', '超过时排队')}>
+              <Field label="同时运行上限" hint={err(lp, 'max_concurrent_runs', null)}>
                 <Inp mono value={lForm.max_concurrent_runs} error={!!lp.max_concurrent_runs} onChange={setL('max_concurrent_runs')} />
               </Field>
               <Field label="单次时长上限" hint={err(lp, 'hours', null)}>
@@ -215,14 +215,13 @@ export function QuotaSection() {
                 </div>
               </Field>
             </div>
-            <div className="pl-sw mt8">
-              <div>
-                <div className="sm b">允许 L4 采集生产环境数据源</div>
-                <div className="xs muted">关闭时，L4 遇到生产采集只能挂起；开启后仍需用户在项目设置的自主构建策略里预先授权</div>
+            {evidenceOn ? (
+              <div className="pl-sw mt8">
+                <div className="sm b">允许自主构建采集生产环境数据源</div>
+                <Toggle on={lForm.allow_production_collection} onChange={setL('allow_production_collection')} />
               </div>
-              <Toggle on={lForm.allow_production_collection} onChange={setL('allow_production_collection')} />
-            </div>
-            <div className="pl-sw">
+            ) : null}
+            <div className={cx('pl-sw', !evidenceOn && 'mt8')}>
               <div>
                 <div className="sm b">夜间优先</div>
                 <div className="xs muted">{nightText(limits.data.night_priority)}</div>

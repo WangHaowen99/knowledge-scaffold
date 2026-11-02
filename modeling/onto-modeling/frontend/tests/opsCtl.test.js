@@ -5,11 +5,11 @@ import * as F from '../src/api/mock/fixtures.js';
 import * as D from '../src/api/mock/ops-ctl-data.js';
 import { register } from '../src/api/mock/routes-ops-ctl.js';
 import {
-  coreRows, currentStep, defaultMaintMessage, depView, diagDefaults, diagNote, drainSummary, errorRateView, exitText, fmtBytes,
+  coreRows, currentStep, defaultMaintMessage, depView, diagDefaults, drillView, diagNote, drainSummary, errorRateView, exitText, fmtBytes,
   fmtBytesPair, fmtDuration, fmtMs, fmtStamp, fmtWhen, idleText, liveView, maintActions, maintBody, maintErrorText, maintProblem,
   maintSteps, maintTitle, nameOf, packActions, poolBody, poolDirty, poolForm, readyView, reloadsAfter, retentionBody, retentionForm,
   retentionText, rolloutProblem, scheduleText, sectionOf, sessionActions, sessionSub, startupSub, taskAction, taskActionToast, validatePool,
-  validateRetention,
+  validateRetention, visibleInventory, visiblePacks, visibleRetention, visibleTasks,
 } from '../src/pages/ops/ctlModel.js';
 
 const local = (...a) => new Date(...a).toISOString();
@@ -96,7 +96,7 @@ test('会话池：运行中不能回收、排队的没有按钮；管理员只�
   assert.equal(sessionActions({ state: 'queued' }, true).show, false);
   const ro = sessionActions({ state: 'idle' }, false);
   assert.equal(ro.recycle.disabled && ro.kill.disabled, true);
-  assert.match(ro.kill.title, /管理员只能查看/);
+  assert.match(ro.kill.title, /仅运维可操作/);
   assert.equal(idleText({ state: 'queued', queue_position: 1 }), '排第 1 位');
   assert.equal(idleText({ state: 'idle', idle_ms: 250e3 }), '4 分 10 秒');
   assert.equal(idleText({ state: 'running' }), '—');
@@ -128,18 +128,19 @@ const maintAt = (cur, pct = null, extra = {}) => ({
   ...extra,
 });
 
-test('维护四步条：没在维护时全部未开始；进行中按 steps，第一步带开始时刻与模式', () => {
-  const off = maintSteps({ active: false });
-  assert.deepEqual(off.map((s) => s.cls), ['', '', '', '']);
-  assert.equal(off[0].title, '拒绝新会话或只读');
+test('维护四步条（R19）：没在维护时不画；进行中按 steps，第一步带开始时刻与模式，没走到的步骤只有标题', () => {
+  assert.deepEqual(maintSteps({ active: false }), []);
+  assert.deepEqual(maintSteps(null), []);
   assert.equal(maintTitle({ active: false }), '维护窗口');
   const on = maintSteps(maintAt('drain', 57));
   assert.deepEqual(on.map((s) => s.cls), ['done', 'cur', '', '']);
-  assert.equal(on[0].title, '拒绝新会话');
-  assert.equal(on[0].detail, '15:20 开始 · 新会话返回维护提示');
+  assert.deepEqual(on.map((s) => s.title), ['拒绝新会话', '排空', '升级', '恢复']);
+  assert.equal(on[0].detail, '15:20 开始');
   assert.equal(on[1].detail, '剩余 3 个会话');
   assert.equal(on[1].progress, 57);
-  assert.equal(on[2].detail, '切换包仓库、重新装配、滚动重启');
+  assert.equal(on[2].detail, '');
+  assert.equal(on[3].detail, '');
+  assert.equal(on[2].progress, null);
   assert.equal(maintSteps(maintAt('drain', 57, { mode: 'read_only' }))[0].title, '只读');
   assert.equal(maintTitle(maintAt('drain')), '维护窗口 · 升级 core 0.1.1+8e41b7c0');
   assert.equal(currentStep(maintAt('upgrade')).id, 'upgrade');
@@ -238,12 +239,39 @@ test('数据保留：快照按份数说，表单只送改过的可编辑项，�
   assert.deepEqual(retentionBody(changed, items), { items: [{ id: 'logs', retention: { days: 60 } }] });
   const bad = form.map((f) => (f.id === 'snapshots' ? { ...f, value: '0' } : f.id === 'audit' ? { ...f, value: '0' } : f));
   assert.deepEqual(Object.keys(validateRetention(bad)), ['snapshots']);
+  // 证据快照一行随证据源开关（本期不开放时不列）
+  assert.equal(visibleRetention(items).some((x) => x.id === 'snapshots'), false);
+  assert.equal(visibleRetention(items).length, items.length - 1);
+  assert.deepEqual(visibleRetention(items, { evidenceOn: true }), items);
+  assert.deepEqual(visibleRetention(null), []);
+});
+
+test('证据源不可用时运维管控不列证据相关的行：提供方与系统逆向建模包、证据采集任务；可用时原样', () => {
+  const packs = D.opsPacks();
+  const off = visiblePacks(packs);
+  assert.equal(off.some((p) => p.kind === 'provider' || p.name === 'reverse'), false);
+  assert.equal(off.length, packs.filter((p) => p.kind !== 'provider' && p.name !== 'reverse').length);
+  assert.deepEqual(visiblePacks(packs, { evidenceOn: true }), packs);
+  const inv = D.versions();
+  assert.equal(visibleInventory(inv).some((r) => r.category === 'provider' || r.component === 'reverse' || r.component.startsWith('evidence')), false);
+  assert.deepEqual(visibleInventory(inv, { evidenceOn: true }), inv);
+  const tasks = D.tasks(Date.now()).items || D.tasks(Date.now());
+  assert.ok(tasks.some((t) => t.type === 'collection'));
+  assert.equal(visibleTasks(tasks).some((t) => t.type === 'collection'), false);
+  assert.deepEqual(visibleTasks(tasks, { evidenceOn: true }), tasks);
+  assert.deepEqual([visiblePacks(null), visibleInventory(null), visibleTasks(null)], [[], [], []]);
 });
 
 test('诊断包：默认勾前 5 项；提示里写上次生成的时间与人', () => {
   assert.deepEqual(diagDefaults(), ['logs_24h', 'config_refs', 'versions', 'recent_errors', 'startup_report']);
-  assert.equal(diagNote({ created_at: local(2026, 9, 30, 17, 52), created_by: 'ops01' }, { ops01: '周运维' }), '诊断包保留 7 天。上次生成：10-30 17:52，周运维。');
-  assert.equal(diagNote(null, {}), '诊断包保留 7 天。还没有生成过。');
+  assert.equal(diagNote({ created_at: local(2026, 9, 30, 17, 52), created_by: 'ops01' }, { ops01: '周运维' }), '上次生成：10-30 17:52 · 周运维');
+  assert.equal(diagNote(null, {}), null);
+  // 恢复演练：没做过时只有标题；做过的只写日期、用时、抽检结果
+  assert.deepEqual([drillView(null).title, drillView(null).detail], ['还没做过恢复演练', '']);
+  const passed = drillView({ at: local(2026, 9, 30, 3, 0), duration_ms: 125e3, detail: '抽检 5 个项目都能打开', result: 'passed' });
+  assert.equal(passed.title, '最近一次恢复演练：通过');
+  assert.equal(passed.detail.split(' · ').length, 3);
+  assert.match(passed.detail, /抽检 5 个项目都能打开$/);
 });
 
 // ---------- mock：维护向导与排空按时间推进 ----------
@@ -252,11 +280,11 @@ test('mock 维护向导：进入即开始排空（剩 3 个、57%）→ 排空�
   const pool = D.sessionPool(t0);
   const m = D.enterMaintenance(pool, { mode: 'reject_new_sessions', message: 'x', target: { pack: 'core', version: D.CORE.beta } }, { now: t0, user: 'ops01' });
   const drain = m.steps.find((s) => s.id === 'drain');
-  assert.deepEqual([drain.state, drain.progress_pct, drain.detail], ['current', 57, '剩余 3 个会话 · 2 个 L4 已在安全点暂停']);
+  assert.deepEqual([drain.state, drain.progress_pct, drain.detail], ['current', 57, '剩余 3 个会话 · 2 个自主构建已在安全点暂停']);
   assert.equal(pool.items.length, 3);
   assert.deepEqual(D.advanceMaintenance(m, pool, t0 + 1000).error, { step: 'drain', remaining: 3 });
   D.refreshMaintenance(m, pool, t0 + 2 * D.DRAIN_STEP_MS);
-  assert.equal(drain.detail, '剩余 1 个会话 · 2 个 L4 已在安全点暂停');
+  assert.equal(drain.detail, '剩余 1 个会话 · 2 个自主构建已在安全点暂停');
   const t1 = t0 + 3 * D.DRAIN_STEP_MS;
   assert.equal(D.advanceMaintenance(m, pool, t1).state.steps.find((s) => s.state === 'current').id, 'upgrade');
   assert.equal(drain.detail, '已排空 · 7 个会话已回收');

@@ -4,12 +4,13 @@ import { createPortal } from 'react-dom';
 import { useApp } from '../../app/context.js';
 import { navigate } from '../../app/router.js';
 import {
-  Button, Card, Chip, Icon, Inp, OverlayHostCtx, Prog, Seg, Table, useEscape,
+  Button, Card, Chip, Icon, Inp, OverlayHostCtx, Prog, Table, useEscape,
 } from '../../ui/index.jsx';
 import { ConfirmModal, Missing, ViewChip } from './ctlParts.jsx';
 import {
-  BREAKER, CHANNEL, PACK_KIND, ROLLOUT_PRESETS, coreRows, errorRateView, fmtBytes, fmtDateTime, packActions, rolloutProblem,
+  BREAKER, CHANNEL, PACK_KIND, ROLLOUT_PRESETS, coreRows, errorRateView, fmtBytes, fmtDateTime, packActions, rolloutProblem, visiblePacks,
 } from './ctlModel.js';
+import { useEvidenceOn } from './parts.jsx';
 
 // 「灰度 ▾」：按钮下方的小浮层（表格外框 overflow:hidden，浮层用 fixed 定位挂到弹层宿主）
 function RolloutButton({ item, act, onApply, busy }) {
@@ -18,7 +19,8 @@ function RolloutButton({ item, act, onApply, busy }) {
   const pop = useRef(null);
   const [at, setAt] = useState(null);
   const [pct, setPct] = useState(String(item.rollout_pct ?? 0));
-  const [by, setBy] = useState(item.rollout_by || 'project');
+  // 按租户灰度本期回 501（O-26 rollout_not_available）：用不了的选项不出，只按项目
+  const by = 'project';
   const close = () => setAt(null);
   const place = () => {
     const r = btn.current.getBoundingClientRect();
@@ -38,14 +40,12 @@ function RolloutButton({ item, act, onApply, busy }) {
   }, [shown]);
   const open = () => {
     setPct(String(item.rollout_pct ?? 0));
-    setBy(item.rollout_by || 'project');
     setAt(place());
   };
   const problem = rolloutProblem(pct);
   const node = at ? (
     <div className="menu oc-roll" ref={pop} style={{ position: 'fixed', top: at.top, left: at.left, zIndex: 120 }}>
       <div className="b sm">灰度 · <span className="mono">{item.name} {item.version}</span></div>
-      <div className="xs muted mt4">按比例放给{by === 'tenant' ? '租户' : '项目'}，跟随通道的项目下一条消息生效</div>
       <div className="row mt8" style={{ gap: 4 }}>
         {ROLLOUT_PRESETS.map((p) => (
           <button key={p} type="button" className={`oc-preset${String(p) === pct ? ' on' : ''}`} onClick={() => setPct(String(p))}>{p}%</button>
@@ -53,7 +53,6 @@ function RolloutButton({ item, act, onApply, busy }) {
       </div>
       <div className="row mt8" style={{ gap: 8 }}>
         <Inp w="96px" value={pct} onChange={(e) => setPct(e.target.value.replace(/[^\d]/g, ''))} error={!!problem} inputMode="numeric" after={<span className="faint xs">%</span>} />
-        <Seg items={[['project', '按项目'], ['tenant', '按租户']]} value={by} onChange={setBy} />
       </div>
       {problem ? <div className="xs mt4" style={{ color: 'var(--red)' }}>{problem}</div> : null}
       <div className="row mt12" style={{ justifyContent: 'flex-end', gap: 6 }}>
@@ -81,23 +80,24 @@ export function PacksSection({
   const after = (...keys) => (r) => { if (r) reload(...keys); return r; };
 
   const rollout = (it, percent, by) => run(`roll:${it.name}@${it.version}`, () => api.ops.setPackRollout(it.name, it.version, { percent, by }), {
-    ok: `已把 ${it.name} ${it.version} 的灰度调到 ${percent}%，已写审计`,
+    ok: `已把 ${it.name} ${it.version} 的灰度调到 ${percent}%`,
   }).then(after('packs', 'core'));
   const rollback = (it) => run('pack', () => api.ops.rollbackPackChannel(it.name, { channel: it.channel, to_version: it.rollback_to }), {
-    ok: `已把 ${it.name} 的 ${it.channel} 通道回滚到 ${it.rollback_to}，已写审计`,
+    ok: `已把 ${it.name} 的 ${it.channel} 通道回滚到 ${it.rollback_to}`,
   }).then(after('packs', 'core', 'versions'));
   const disable = (it, reason) => run('pack', () => api.ops.disablePackVersion(it.name, it.version, { reason }), {
-    ok: `已禁用 ${it.name} ${it.version}，已写审计`,
+    ok: `已禁用 ${it.name} ${it.version}`,
   }).then(after('packs'));
   const breaker = (it, action, reason) => run('pack', () => api.ops.packBreaker(it.name, it.version, reason ? { action, reason } : { action }), {
-    ok: action === 'open' ? `已熔断 ${it.name} ${it.version}，已写审计` : '已恢复，进入半开试探',
+    ok: action === 'open' ? `已熔断 ${it.name} ${it.version}` : '已恢复，进入半开试探',
   }).then(after('packs'));
-  const promote = (v) => run('core', () => api.ops.promoteCore({ version: v }), { ok: `已推广 core ${v} 到 stable，已写审计` }).then(after('core', 'packs', 'versions'));
-  const rollbackCore = (v) => run('core', () => api.ops.rollbackCore({ version: v }), { ok: '已回滚默认版本，已写审计' }).then(after('core', 'packs', 'versions', 'repoBackups'));
+  const promote = (v) => run('core', () => api.ops.promoteCore({ version: v }), { ok: `已推广 core ${v} 到 stable` }).then(after('core', 'packs', 'versions'));
+  const rollbackCore = (v) => run('core', () => api.ops.rollbackCore({ version: v }), { ok: '已回滚默认版本' }).then(after('core', 'packs', 'versions', 'repoBackups'));
   const backupRepo = () => run('repo', () => api.ops.backupPackRepo(), { ok: '已开始备份包仓库', icon: 'archive' }).then(after('tasks'));
   const deny = perm.opsWrite ? null : perm.hint('ops.write');
+  const evidenceOn = useEvidenceOn();
 
-  const rows = (packs?.items || []).map((it) => {
+  const rows = visiblePacks(packs?.items, { evidenceOn }).map((it) => {
     const a = packActions(it, perm.opsWrite);
     const ch = CHANNEL[it.channel] || { label: it.channel, tone: 'gray' };
     const er = errorRateView(it.error_rate_pct);
@@ -126,7 +126,7 @@ export function PacksSection({
   const it = dialog?.item;
   return (
     <Card
-      className="mt16" title="插件运维" icon="puzzle" sub="灰度、通道、回滚、禁用、出错熔断（可观测告警可自动触发熔断）" data-sec="packs"
+      className="mt16" title="插件运维" icon="puzzle" data-sec="packs"
       extra={<Button size="xs" onClick={() => navigate('/plugins')}>去插件中心</Button>}
     >
       <Table compact cols={['包', '类型', '版本', '通道', '灰度比例', '错误率', '熔断', '操作']} rows={rows} />
@@ -150,7 +150,6 @@ export function PacksSection({
             })}
           />
           {!core ? <Missing /> : null}
-          <div className="xs muted mt8">切换是原子的；各项目仍按自己锁定的版本运行，下一条消息才生效。</div>
         </div>
         <div className="card pad" style={{ background: 'var(--panel2)' }}>
           <div className="row mb8">
@@ -163,14 +162,14 @@ export function PacksSection({
             rows={(repo?.items || []).map((b) => [<span className="mono xs">{b.name}</span>, fmtBytes(b.size), fmtDateTime(b.created_at)])}
           />
           {!repo ? <Missing /> : null}
-          <div className="xs muted mt8">自动保留最近 {repo?.keep ?? 3} 份；回滚默认版本前会先备份一次。</div>
+          <div className="xs muted mt8">保留最近 {repo?.keep ?? 3} 份</div>
         </div>
       </div>
 
       <ConfirmModal
         open={dialog?.kind === 'rollback'} onClose={close} icon="history" title={it ? `把 ${it.name} 的 ${it.channel} 通道回滚到 ${it.rollback_to}？` : ''}
-        sub="只改通道指针，已锁定版本的项目不受影响" noteTone="gray" noteIcon="info"
-        note={it ? `跟随 ${it.channel} 通道的项目从下一条消息开始用 ${it.rollback_to}；${it.version} 仍留在包仓库里，可以再推广回来。` : ''}
+        sub="已锁定版本的项目不受影响" noteTone="gray" noteIcon="info"
+        note={it ? `跟随 ${it.channel} 通道的项目下一条消息起用 ${it.rollback_to}` : ''}
         okText="回滚" onConfirm={() => rollback(it)}
       />
       <ConfirmModal
@@ -182,13 +181,13 @@ export function PacksSection({
       <ConfirmModal
         open={dialog?.kind === 'breaker'} onClose={close} danger icon="ban" title={it ? `熔断 ${it.name} ${it.version}？` : ''}
         sub={it ? `${it.projects_using ?? 0} 个项目在用 · 错误率 ${errorRateView(it.error_rate_pct).text}` : ''}
-        note="熔断后这个包的节点暂时跳过，发布关卡解除，错误留档里注明。恢复时先进入半开试探。"
+        note="这个包的节点暂时跳过，发布关卡解除"
         reason="optional" placeholder="例如：近 1 小时失败率超过阈值" okText="熔断" onConfirm={(reason) => breaker(it, 'open', reason)}
       />
       <ConfirmModal
         open={dialog?.kind === 'core'} onClose={close} icon="history" title={it ? `把 core 默认版本回滚到 ${it.version}？` : ''}
-        sub="只改平台默认版本，已锁定版本的项目不受影响" noteTone="gray" noteIcon="info"
-        note={it ? `回滚前会先备份包仓库。新建项目和选择「跟随默认」的项目，从下一条消息开始用 ${it.version}。` : ''}
+        sub="已锁定版本的项目不受影响" noteTone="gray" noteIcon="info"
+        note={it ? `新建项目和跟随默认的项目下一条消息起用 ${it.version}` : ''}
         okText="回滚" onConfirm={() => rollbackCore(it.version)}
       />
     </Card>

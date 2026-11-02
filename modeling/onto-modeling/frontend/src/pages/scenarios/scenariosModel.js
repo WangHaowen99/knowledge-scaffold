@@ -73,10 +73,9 @@ export function staleDesc(rows) {
   return `来自 ${src.join('、')}`;
 }
 
+// 示例数据统计卡的说明：只在还没生成时给一句（生成方式在表格「生成方式」列里）
 export function mockDesc(mockRows) {
-  const modes = [...new Set((mockRows || []).map((r) => r.fields?.mode))];
-  if (!modes.length) return '还没有生成';
-  return modes.length === 1 && modes[0] === 'by_scenario' ? '按场景生成' : '按场景生成为主';
+  return (mockRows || []).length ? null : '还没有生成';
 }
 
 export function skippedNote(skipped) {
@@ -109,30 +108,25 @@ export function rowLocked(lock, row, type) {
 // 锁来自批量推演（全量回归节点）
 export const fromBatch = (lock) => /^trace\./.test(lock?.node?.id || '');
 
-// 页面上那条只读条的文字：{ running: [标题, 说明], pending: [标题, 说明] }
-export function lockBarText(lock, lockedRows, total) {
+// 页面上那条只读条的文字：{ running: [标题, 说明], pending: [标题, 说明] }；说明只在待确认时给推演计数
+export function lockBarText(lock, lockedRows) {
   const n = lockedRows.length;
   const c = countRows(lockedRows);
-  const rest = n < total ? '；其余场景照常编辑，保存即生效' : '';
-  const sum = `通过 ${c.pass} · 失败 ${c.fail} · 过期 ${c.stale}${rest}`;
+  const sum = `通过 ${c.pass} · 失败 ${c.fail} · 过期 ${c.stale}`;
   const batch = fromBatch(lock);
-  const slice = lock?.slice?.name ? `「${lock.slice.name}」这一片` : '这部分内容';
+  const slice = lock?.slice?.name ? `「${lock.slice.name}」` : '这部分内容';
   return {
-    running: batch
-      ? [`助手正在批量推演：这 ${n} 个场景确认生效或撤回前只读`, `推演到的场景先只读，结果回到下面的列表${rest}`]
-      : [`助手正在改${slice}：这 ${n} 个场景确认生效或撤回前只读`, rest ? '其余场景照常编辑，保存即生效' : '这一轮结束后确认生效或撤回才解除'],
-    pending: batch
-      ? [`批量推演跑完了，结果还没确认：这 ${n} 个场景确认生效或撤回前只读`, sum]
-      : [`助手的修改还没确认：这 ${n} 个场景确认生效或撤回前只读`, sum],
+    running: batch ? [`助手正在推演 ${n} 个场景，暂时只读`] : [`助手正在改${slice}，${n} 个场景暂时只读`],
+    pending: batch ? [`批量推演结果待确认，${n} 个场景暂时只读`, sum] : [`助手的修改待确认，${n} 个场景暂时只读`, sum],
   };
 }
 
 // 锁住的行上那把锁的悬浮说明
 export function rowLockPop(lock) {
   const st = lockState(lock);
-  if (st === 'pending_confirm') return '这个场景的修改还没确认：确认生效或撤回前只读，其余场景照常编辑';
-  if (st === 'autobuild_slice') return '自主构建正在改这个场景：这一片合入前只读，其余场景照常编辑';
-  return fromBatch(lock) ? '推演到了这个场景：确认生效或撤回前只读，其余场景照常编辑' : '助手正在改这个场景：确认生效或撤回前只读，其余场景照常编辑';
+  if (st === 'pending_confirm') return '修改待确认，暂时只读';
+  if (st === 'autobuild_slice') return '自主构建在改，暂时只读';
+  return '助手在改，暂时只读';
 }
 
 // ---------- 页面命令（S-20）：只发命令，助手在工作台对话里跑 ----------
@@ -145,12 +139,4 @@ export const mockCommand = () => ({ command: '/ontology-mock', args: { by: 'scen
 export function walkTarget(rows, selectedKey) {
   const list = rows || [];
   return list.find((r) => r.key === selectedKey) || list.find((r) => rowState(r) === 'fail') || list[0] || null;
-}
-
-// 进度条第二行的补充说明（按命令说明只读范围和结果去向）
-export function runDetail(task) {
-  const t = task?.title || '';
-  if (/示例数据/.test(t)) return '生成的示例数据在确认生效或撤回前只读 · 结果回到「示例数据」页签';
-  if (/交互走查/.test(t)) return '走查到的场景在确认生效或撤回前只读，其余照常编辑 · 结果回到下面的列表';
-  return '推演到的场景在确认生效或撤回前只读，其余照常编辑 · 结果回到下面的列表';
 }

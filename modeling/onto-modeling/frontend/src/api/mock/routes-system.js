@@ -6,6 +6,7 @@
 // - sys:ctxbad  自定义推荐表有误（custom.status=invalid，第 4 行「上下文窗口」不是数字），只用内置表
 // - sys:ctxoff  自定义推荐表已停用（status=disabled，留有备份）
 // - sys:boxdown 脚本验证沙箱连不上（与 F3 的 sandbox:off 等价）
+// - sys:nolimits 只有 SY-17 自主构建限制回 404（配额照常），看「只缺一组接口时不画那张卡」（R17）
 // 另外认 engine:missing（内测引擎没安装，SY-01 installed=false）；个人 Key 策略与个人设置共用 db.me.modelSettings.personal_allowed。
 import {
   mergePresets, matchPreset, normalizeModelName, parseIntText, validatePresets,
@@ -23,6 +24,7 @@ export function register(ctx) {
   const { on, json, err, db, sc, uid, forbid } = ctx;
   const flags = new Set(String(sc.sys || '').split('+').filter(Boolean));
   const p1 = flags.has('p1');
+  const noLimits = p1 || flags.has('nolimits');
   const admin = (user) => forbid(user, ['admin']);
   const gone = () => err(404, 'not_found', '路径不存在');
 
@@ -294,11 +296,11 @@ export function register(ctx) {
     st.quotas = { ...st.quotas, overrides: st.quotas.overrides.filter((o) => o.id !== m[1]) };
     return new Response(null, { status: 204 });
   });
-  on('GET', '/admin/autobuild-limits', ({ user }) => admin(user) || (p1 ? gone() : json(200, st.limits)));
+  on('GET', '/admin/autobuild-limits', ({ user }) => admin(user) || (noLimits ? gone() : json(200, st.limits)));
   on('PUT', '/admin/autobuild-limits', ({ user, body }) => {
     const no = admin(user);
     if (no) return no;
-    if (p1) return gone();
+    if (noLimits) return gone();
     const r = body.max_concurrent_runs;
     if (!Number.isInteger(r) || r < 0 || r > 16) return err(400, 'invalid_argument', '同时运行上限要在 0–16 之间', { fields: { max_concurrent_runs: 'range' } });
     if (!(body.max_duration_min > 0) || !(body.max_tokens > 0) || !(body.max_cost?.amount > 0)) {

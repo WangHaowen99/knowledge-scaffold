@@ -3,7 +3,8 @@
 // 地址参数（?mock=，逗号分隔）：
 // - users:unavailable  没配认证服务管理令牌：AD-01 available=false、列表为空，AD-02～AD-05 返回 503 user_admin_unavailable；
 // - trash:empty        回收站为空；
-// - trash:legacy       B2 后端口径：O-52 retention_days、purge_at 为 null，AD-04 选「移入回收站」返回 trash_unsupported。
+// - trash:legacy       B2 后端口径：O-52 retention_days、purge_at 为 null，AD-04 选「移入回收站」返回 trash_unsupported；
+// - trash:legacy-empty 同上，旧数据已清空（回收站页签不出，R21）。
 // 页面上的写操作会追加一条审计（新的在最前），审计页能看到刚才的改角色、重置密码、删除用户、恢复与永久删除。
 import { passwordRules } from '../../pages/login/passwordRules.js';
 import { metaView, platformMetaViews, seedAudit, seedErrors, seedTrash, seedUnowned, seedUsers } from './admin-data.js';
@@ -17,7 +18,7 @@ export function register(ctx) {
   const { on, json, err, forbid, sc = {} } = ctx;
   const now = () => (ctx.now ? ctx.now() : Date.now());
   const unavailable = sc.users === 'unavailable';
-  const legacyTrash = sc.trash === 'legacy';
+  const legacyTrash = sc.trash === 'legacy' || sc.trash === 'legacy-empty';
 
   const st = {
     users: seedUsers(now(), sc.role),
@@ -26,7 +27,7 @@ export function register(ctx) {
     unowned: seedUnowned(now()),
     audit: seedAudit(now()),
     errors: seedErrors(now()),
-    trash: sc.trash === 'empty' ? [] : seedTrash(now(), { legacy: legacyTrash }),
+    trash: sc.trash === 'empty' || sc.trash === 'legacy-empty' ? [] : seedTrash(now(), { legacy: legacyTrash }),
     seq: 0,
   };
 

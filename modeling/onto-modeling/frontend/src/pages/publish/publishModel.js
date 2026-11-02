@@ -1,4 +1,5 @@
-// 发布知识包（设计稿 publish）的纯逻辑：门禁链每一关的样子、数据绑定问题与修正选项、降级说明、发布记录的说法
+// 发布知识包（设计稿 publish）的纯逻辑：门禁链每一关的样子、数据绑定问题与修正选项、能不能降级、发布记录的说法
+import { isEvidencePack } from '../../state/evidence.js';
 
 // 门禁卡片：样式类（设计稿 mr-gate ok / bad / warn）、图标、状态标、动作按钮
 export function gateView(g) {
@@ -25,9 +26,9 @@ export function blockingSummary(check) {
 // 「发布为知识包」按钮置灰时的说明
 export const publishBlockedTitle = (check) => (check?.blocking_count ? `${check.blocking_count} 项未通过` : '');
 
-export function formatHint(check) {
-  return check?.format === 'solver' ? '本知识包启用了求解契约，会按求解知识包发布' : '没有启用求解契约，会按普通知识包发布';
-}
+// 门禁链里显示哪些关：证据源不可用时，依赖证据源的包带来的门禁（如证据出处检查）不出现
+export const visibleGates = (check, evidenceOn) => (check?.gates || []).filter((g) => evidenceOn || !isEvidencePack(g.source?.pack));
+
 export const formatLabel = (check) => (check?.format === 'solver' ? '求解知识包' : '普通知识包');
 
 // 数据绑定问题：状态标与下面的一行说明
@@ -51,13 +52,11 @@ export function fixOptions(issue, tables) {
 }
 export const canFix = (issue, fix) => (issue.fixes || []).includes(fix);
 
-// 降级发布弹窗的提示：降级只放宽数据绑定，其余挡住的门禁照样挡
+// 能不能降级发布：降级只放宽数据绑定，还有别的门禁挡着时降级也发不了（R7）。text 是置灰按钮的悬停
 export function degradeNote(check) {
   const others = (check?.gates || []).filter((g) => g.blocking && !g.degradable);
-  const head = '降级只放宽数据绑定。求解契约回执、合规检查这类门禁不会被放宽';
-  if (!others.length) return { tone: 'gray', text: `${head}；其余门禁都已通过，降级后就能发布。`, blocked: false };
-  const parts = others.map((g) => `${g.title}${g.status === 'not_run' ? '还没运行' : '没有通过'}`).join('，');
-  return { tone: 'amber', text: `${head} —— ${parts}，所以现在仍然发不了。`, blocked: true };
+  if (!others.length) return { blocked: false, text: '' };
+  return { blocked: true, text: `${others.map((g) => g.title).join('、')}未通过` };
 }
 export const unboundObjects = (check) => (check?.binding?.issues || []).map((x) => x.object);
 
@@ -90,7 +89,7 @@ export function mergeRelease(list, rec) {
   return out.sort((a, b) => String(b.at).localeCompare(String(a.at)));
 }
 
-// 版本下拉：主线版本，已发布的注明
+// 版本下拉：当前分支上的版本
 export const versionOptions = (items) => (items || []).map((v) => ({ value: v.commit, label: v.version_label }));
 
 export function releasedText(rec, fresh) {

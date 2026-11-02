@@ -1,22 +1,23 @@
 // 项目设置页的纯逻辑：分区与地址参数、表单与校验、自主构建策略、能力与插件的行、MCP 的展示
+import { isEvidenceMcp } from '../../state/evidence.js';
 
 // ---------- 分区 ----------
-// 地址参数 section 取这里的 id；autobuild 定位到「构建方式」里的自主构建策略
+// 地址参数 section 取这里的 id
 export const SECTIONS = [
   { id: 'basic', title: '基本信息', icon: 'filetext' },
   { id: 'engine', title: '引擎与模型', icon: 'cpu' },
   { id: 'build-mode', title: '构建方式', icon: 'rocket' },
+  { id: 'autobuild', title: '自主构建策略', icon: 'sliders' },
   { id: 'plugins', title: '能力与插件', icon: 'puzzle' },
   { id: 'mcp-servers', title: '助手可用的 MCP', icon: 'plug' },
   { id: 'mcp', title: '对外 MCP 接口', icon: 'link' },
   { id: 'danger', title: '危险操作', icon: 'alert' },
 ];
-const ALIASES = { autobuild: 'build-mode', build: 'build-mode', packs: 'plugins', mcpin: 'mcp-servers', mcpout: 'mcp' };
+const ALIASES = { build: 'build-mode', packs: 'plugins', mcpin: 'mcp-servers', mcpout: 'mcp' };
 
 // 返回 { nav: 左侧导航高亮哪一项, anchor: 滚到哪个元素（data-sec） }；不认识的参数返回 null
 export function sectionTarget(param) {
   if (!param) return null;
-  if (param === 'autobuild') return { nav: 'build-mode', anchor: 'autobuild' };
   const id = ALIASES[param] || param;
   return SECTIONS.some((s) => s.id === id) ? { nav: id, anchor: id } : null;
 }
@@ -65,14 +66,14 @@ export function nameProblem(check, name) {
 }
 
 // ---------- 引擎与模型 ----------
-const RESUME_TEXT = { native: '功能最完整 · 会话中断后可以续接上下文', replay: '轻量 · 回放历史续上上下文' };
+const RESUME_TEXT = { native: '功能最完整', replay: '轻量' };
 export function engineCards(engines, current) {
   const items = engines?.items || [];
   return items.map((e) => ({
     id: e.id,
     label: e.label,
     icon: e.channel === 'beta' ? 'cpu' : 'terminal',
-    badge: e.channel === 'beta' ? ['内测', 'indigo'] : e.id === engines.default ? ['推荐', 'blue'] : null,
+    badge: e.channel !== 'beta' && e.id === engines.default ? ['推荐', 'blue'] : null,
     desc: RESUME_TEXT[e.resume] || '',
     resume: e.resume,
     installed: e.installed !== false,
@@ -232,19 +233,19 @@ export function finalizePolicy(form, drafts = {}) {
 // ---------- 能力与插件 ----------
 export const CATEGORY_LABEL = { capability: '能力包', industry: '行业包', system: '系统知识包', provider: '证据源提供方', node: '能力包', exporter: '导出器' };
 
-// 「界面」列：左栏页面 / 资料页子页 / 内核 / 无独立页面
+// 「界面」列：左栏页面 / 资料页子页 / 内核 / 没有页面时「—」
 export function uiCell(ui) {
-  if (!ui || ui.kind === 'none') return { kind: 'none', text: '无独立页面' };
+  if (!ui || ui.kind === 'none') return { kind: 'none', text: '—' };
   if (ui.kind === 'kernel') return { kind: 'kernel', text: (ui.note || '内核').replace(/^内核[:：]\s*/, '内核：') };
   if (ui.kind === 'page') return { kind: 'page', text: `左栏页面：${ui.pages.map((p) => p.title).join('、')}` };
   if (ui.kind === 'subpages') {
     const parent = ui.subpages[0]?.parent === 'resources' ? '资料页' : '页面';
     return { kind: 'subpages', text: `${parent} ${ui.subpages.length} 个子页`, pop: ui.subpages.map((s) => s.title).join('、') };
   }
-  return { kind: 'none', text: '无独立页面' };
+  return { kind: 'none', text: '—' };
 }
 
-const PENDING_POP = '已排队：用户发下一条消息前切换，正在进行的一轮按旧版本跑完';
+const PENDING_POP = '下一条消息前切换';
 export function statusChip(p) {
   if (p.status === 'required') return { tone: 'blue', icon: 'lock', text: '必装' };
   if (p.status === 'disabled') return { tone: 'gray', icon: 'ban', text: '已停用' };
@@ -256,10 +257,10 @@ export function statusChip(p) {
   return { tone: 'teal', icon: 'check', text: '已启用' };
 }
 
-// 行内按钮：有升级时「升级」+ 更多（停用）；有回滚时「回滚」「停用」；否则「停用」
+// 行内按钮：有升级时「升级」+ 更多（停用）；有回滚时「回滚」「停用」；否则「停用」；必装的没有按钮（状态列已标「必装」）
 export function rowActions(p) {
   const a = p.actions || [];
-  if (p.status === 'required') return { note: '不能停用', buttons: [], more: [] };
+  if (p.status === 'required') return { buttons: [], more: [] };
   if (a.includes('cancel_pending')) return { buttons: [{ op: 'cancel_pending', label: '撤销切换' }], more: [] };
   if (a.includes('enable')) return { buttons: [{ op: 'enable', label: '启用', kind: 'soft' }], more: [] };
   const buttons = [];
@@ -296,6 +297,9 @@ export function switchToast(op, p, res) {
 }
 
 // ---------- MCP ----------
+// 证据源本期不开放：EV-01 读不到时，内置的 evidence 服务器、包贡献的 evidence.* 工具不出现
+export const visibleMcp = (items, evidenceOn) => (evidenceOn ? items || [] : (items || []).filter((x) => !isEvidenceMcp(x)));
+
 // 「evidence.search / show / where-used / lineage / diff」；没有工具时「—」
 export function toolsText(tools) {
   if (!tools?.length) return '—';
@@ -338,7 +342,7 @@ export const TTL_OPTIONS = [['1', '1 天', 86400], ['30', '30 天', 2592000], ['
 export function tokenProblems(form) {
   const out = {};
   const name = (form.name || '').trim();
-  if (!name) out.name = '写一个用途，方便以后认出它';
+  if (!name) out.name = '请填写名称';
   else if (name.length > 120) out.name = '不超过 120 个字';
   if (!form.scopes?.length) out.scopes = '至少选一个';
   return out;

@@ -9,7 +9,7 @@ import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { PageHead, ShellG } from '../../shell/Shell.jsx';
 import { can } from '../../state/roles.js';
-import { Button, Chip, Empty, Note } from '../../ui/index.jsx';
+import { Button, Empty, Note } from '../../ui/index.jsx';
 import '../../styles/plugins-upload.css';
 import { PluginsNav } from './parts.jsx';
 import {
@@ -27,9 +27,7 @@ export default function PluginUploadPage({ route }) {
     return (
       <ShellG active="plugins" side={<PluginsNav active="up" />}>
         <div className="card" style={{ padding: 30, maxWidth: 640, margin: '40px auto' }}>
-          <Empty icon="lock" title="上传与审核只对管理员开放" actions={<Button icon="arrowl" onClick={() => navigate(pagePath('plugins'))}>回到插件中心</Button>}>
-            上传、检查和发布插件包由管理员负责。你可以在插件中心浏览插件、把包启用到自己的项目。
-          </Empty>
+          <Empty icon="lock" title="上传与审核只对管理员开放" actions={<Button icon="arrowl" onClick={() => navigate(pagePath('plugins'))}>回到插件中心</Button>} />
         </div>
       </ShellG>
     );
@@ -145,7 +143,7 @@ function UploadReview({ route }) {
     setWanted(rejecting.id);
     try {
       await api.rejectPackUpload(rejecting.id, { reason });
-      toast(`已退回 ${uploadTitle(rejecting)}（不会自动通知上传者）`, 'undo');
+      toast(`已退回 ${uploadTitle(rejecting)}`, 'undo');
       setRejecting(null);
     } catch (e) {
       toast(uploadErrorText(e, rejecting), 'alert');
@@ -160,12 +158,7 @@ function UploadReview({ route }) {
 
   return (
     <ShellG active="plugins" side={<PluginsNav active="up" />}>
-      <PageHead
-        eyebrow="插件中心 · 管理员"
-        title="上传与审核"
-        desc="离线包交付：zip + manifest.yaml + checksums.sha256，运行时不联网拉取。通过静态检查才能进入目录。租户上传的包只能选用平台内置的页面，不能带新页面。"
-        actions={<Chip tone="indigo" icon="shield">管理员</Chip>}
-      />
+      <PageHead title="上传与审核" />
       {loadError ? (
         <Note tone="red" className="mb12">上传列表没读到：{loadError} <a className="link" onClick={loadList}>重试</a></Note>
       ) : null}
@@ -182,7 +175,7 @@ function UploadReview({ route }) {
             <PublishCard
               upload={u || list.find((x) => x.id === selectedId) || null} rollout={rollout} busy={busy} error={publishError}
               onPublish={publish}
-              onHold={(x) => toast(`${uploadTitle(x)} 先不发布，留在上传列表里，之后随时可以发布`, 'pause')}
+              onHold={(x) => toast(`${uploadTitle(x)} 暂不发布`, 'pause')}
             />
             <TimelineCard upload={u} nameOf={nameOf} />
           </div>

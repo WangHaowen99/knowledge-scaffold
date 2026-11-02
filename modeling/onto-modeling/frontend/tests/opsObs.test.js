@@ -4,9 +4,9 @@ import test from 'node:test';
 import { register } from '../src/api/mock/routes-ops-obs.js';
 import * as D from '../src/api/mock/ops-obs-data.js';
 import {
-  addLabel, appendLog, attributionRow, exporterProblems, exportersBody, exportersDirty, filterTraces, fmtCount, fmtSeconds,
+  addLabel, appendLog, attributionColumns, attributionRow, exporterProblems, exportersBody, exportersDirty, filterTraces, fmtCount, fmtSeconds,
   labelsQuery, latestTrace, levelCls, levelParam, logFields, matchLog, metricView, parseLabelInput, parseLabelsQuery,
-  parseTraceQuery, ruleProblems, rulePatch, ruleView, rulesSub, runbookSummary, selectTraces, sortLogs, sparkPath,
+  parseTraceQuery, ruleProblems, rulePatch, ruleView, rulesSub, runbookSummary, selectTraces, sortLogs, sparkPath, visibleMetricCards,
   traceSearchQuery, traceTags, waterfallRows, MAX_LOG_LINES,
 } from '../src/pages/ops/obsModel.js';
 import {
@@ -106,10 +106,10 @@ test('柱状图几何：最高的顶到 h-14、最矮 2、柱宽占 62% 且不�
   assert.deepEqual(barRects([]), []);
 });
 
-test('统计卡：B2 口径下 accounts、autobuild.limit 为 null、费用是美元也不出错', () => {
+test('统计卡：B2 口径下 accounts、autobuild.limit 为 null 时不出说明行，费用是美元也不出错', () => {
   const s = statCards(D.overview({ p1: true }).stats);
-  assert.equal(s.online.desc, '共 — 个账号');
-  assert.equal(s.autobuild.desc, '平台上限 — 个');
+  assert.equal(s.online.desc, null);
+  assert.equal(s.autobuild.desc, null);
   assert.equal(s.cost.value, '$ 1,784');
   assert.match(s.cost.desc, /^本月 \$ /);
   assert.equal(s.disk.value, '18%');
@@ -118,7 +118,7 @@ test('统计卡：B2 口径下 accounts、autobuild.limit 为 null、费用是�
   const d = statCards(D.overview().stats);
   assert.equal(d.online.desc, '共 23 个账号');
   assert.equal(d.sessions.pct, 58);
-  assert.equal(d.sessions.desc, '排队 1 · 空闲回收 600 秒');
+  assert.equal(d.sessions.desc, '排队 1');
   assert.equal(d.autobuild.desc, '平台上限 4 个');
   assert.equal(d.cost.value, '¥ 12,846');
   const none = statCards({});
@@ -199,7 +199,7 @@ test('公共标签：解析 键=值（中文叫法也认）、同键替换、拼
   assert.deepEqual(traceTags({ project: 'p', session: null, node: 'core.operation@1.4.2' }), [{ key: 'project', value: 'p' }, { key: 'node', value: 'core.operation@1.4.2' }]);
 });
 
-test('指标卡：设计稿形状与 B3b 后端形状都能显示，合入 / 证据采集恒为 0 时带 note', () => {
+test('指标卡：设计稿形状与 B3b 后端形状都能显示，后端下发的底注（note）不画', () => {
   const byId = (cards) => Object.fromEntries(cards.map((c) => [c.id, metricView(c)]));
   const d = byId(D.metrics().cards);
   assert.equal(d.pool.big, '7 / 12');
@@ -212,20 +212,34 @@ test('指标卡：设计稿形状与 B3b 后端形状都能显示，合入 / 证
   assert.equal(d.model_fail_rate.color, '#DC2626');
   assert.equal(d.guard_denies.big, '23');
   assert.equal(d.guard_denies.small, '次');
-  assert.equal(d.guard_denies.note, 'resource_write_guard 占 70%');
+  assert.equal('note' in d.guard_denies, false);
   const p = byId(D.metrics({ p1: true }).cards);
   assert.equal(p.pool.big, '7');
   assert.equal(p.pool.small, '上限 12 · 排队 1');
   assert.equal(p.pool.tone, 'var(--amber)');
   assert.equal(p.turn_duration.big, '3 分 10 秒');
   assert.equal(p.merges.big, '0');
-  assert.equal(p.merges.note, '变更集在 P2');
-  assert.equal(p.collections.note, '证据源在 P3');
+  assert.equal('note' in p.merges, false);
+  assert.equal('note' in p.collections, false);
   assert.equal(metricView({ id: 'x', value: null, unit: '次' }).big, '—');
   assert.equal(fmtSeconds(190), '3 分 10 秒');
   assert.equal(fmtSeconds(120), '2 分');
   assert.equal(fmtCount(12000), '1.2 万');
   assert.equal(fmtCount(2.3e8), '2.3 亿');
+});
+
+test('指标卡哪些画（R18）：没有数据来源的不画（unavailable / available=false），证据采集随证据源开关', () => {
+  const ids = (cards, o) => visibleMetricCards(cards, o).map((c) => c.id);
+  const p1 = D.metrics({ p1: true }).cards;
+  assert.equal(ids(p1).includes('merges'), false);
+  assert.equal(ids(p1).includes('collections'), false);
+  assert.equal(ids(p1, { evidenceOn: true }).includes('collections'), true);
+  assert.equal(ids(p1).length, p1.length - 2);
+  const design = D.metrics().cards;
+  assert.equal(ids(design).includes('merges'), true);
+  assert.equal(ids(design).includes('collections'), false);
+  assert.deepEqual(ids(design, { evidenceOn: true }), design.map((c) => c.id));
+  assert.deepEqual(ids([{ id: 'merges', available: false }, { id: 'pool' }, null]), ['pool']);
 });
 
 test('迷你折线：12 个点铺满宽度，最大值在上、最小值在下；全 0 时是一条平线', () => {
@@ -252,6 +266,11 @@ test('归因：重跑、首次接受率为 null 显示「—」，包名去掉 @
   assert.equal(D.attribution({ by: 'node' }).items.map(attributionRow)[0].version, 'core@1.4.2');
   const d = D.attribution({ by: 'pack' }).items.map(attributionRow);
   assert.equal(d[0].accept, 82);
+  // 整列为空的可选列不出（R18）：B3b 口径 reruns、first_accept_pct 全是 null
+  assert.deepEqual(attributionColumns(D.attribution({ by: 'pack', p1: true }).items), []);
+  assert.deepEqual(attributionColumns(D.attribution({ by: 'pack' }).items), ['reruns', 'first_accept_pct']);
+  assert.deepEqual(attributionColumns([{ reruns: null, first_accept_pct: 40 }]), ['first_accept_pct']);
+  assert.deepEqual(attributionColumns(null), []);
   assert.equal(d[0].duration, '38 秒');
   assert.equal(d[2].duration, '1 分 46 秒');
 });
@@ -316,7 +335,7 @@ test('跟随：按 ts 与事件去重，最多留 500 条', () => {
 
 test('告警规则：显示、处置手册第一句、校验、只提交改了的字段、包声明的规则只能改 enabled', () => {
   const rules = D.alertRules();
-  assert.equal(rulesSub(rules), '7 条 · 含包声明的规则');
+  assert.equal(rulesSub(rules), '7 条');
   assert.equal(rulesSub(rules.filter((r) => r.source === 'kernel')), '5 条');
   const v = ruleView(rules[0]);
   assert.equal(v.condition, 'node.fail_rate > 5%（1 小时）');
@@ -492,5 +511,7 @@ test('mock obs:p1：告警规则与导出器后端没做，返回 404', async ()
   const { call } = mockServer({ obs: 'p1' });
   assert.equal((await call('GET', `${O}/alerts/rules`)).status, 404);
   assert.equal((await call('GET', `${O}/exporters`)).status, 404);
-  assert.equal((await call('GET', `${O}/metrics`)).body.cards.find((c) => c.id === 'merges').note, '变更集在 P2');
+  const merges = (await call('GET', `${O}/metrics`)).body.cards.find((c) => c.id === 'merges');
+  assert.equal(merges.note, '变更集在 P2');
+  assert.equal(merges.unavailable, true);
 });

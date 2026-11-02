@@ -23,7 +23,6 @@ const ZOOMS = [0.6, 0.8, 1, 1.25, 1.5, 2];
 function Tree({ tree, sel, collapsed, onToggle, onPick }) {
   return (
     <>
-      <div className="xs muted" style={{ padding: '2px 6px 6px', lineHeight: 1.5 }}><Icon name="layers" size={12} /> 按 summary.md 分层：业务域 → 实体，先读摘要再下钻</div>
       {(tree?.domains || []).map((d) => {
         const off = collapsed.has(d.name);
         return (
@@ -50,10 +49,10 @@ function Tree({ tree, sel, collapsed, onToggle, onPick }) {
 
 function Hits({ hits, sel, onPick }) {
   if (!hits) return <div className="sm muted" style={{ padding: 6 }}>正在检索…</div>;
-  if (!hits.items.length) return <div className="sm muted" style={{ padding: 6 }}>没有匹配的表或字段。换个说法，或者去掉类型筛选。</div>;
+  if (!hits.items.length) return <div className="sm muted" style={{ padding: 6 }}>没有匹配的表或字段</div>;
   return (
     <>
-      <div className="xs muted" style={{ padding: '2px 6px 6px' }}>evidence.search · 共 {hits.total} 条</div>
+      <div className="xs muted" style={{ padding: '2px 6px 6px' }}>共 {hits.total} 条</div>
       {hits.items.map((h) => {
         const table = h.type === 'field' ? h.parent_anchor : h.anchor;
         const field = h.type === 'field' ? h.name : null;
@@ -110,7 +109,6 @@ function Detail({ record, sel, used, lineage, onField, onPick, pid }) {
         </div>
         <div className="row g4 mt8 wrap evp-jump">
           {JUMPS.map(([k, t]) => <span key={k} className="chip line sm" onClick={() => jump(k)}>{t}</span>)}
-          <span className="xs faint">evidence.show</span>
         </div>
       </div>
       <div className="scroll evd-det" ref={scrollRef} style={{ flex: 1, padding: '0 14px 14px', position: 'relative' }}>
@@ -120,7 +118,7 @@ function Detail({ record, sel, used, lineage, onField, onPick, pid }) {
             key={f.name}
             data-f={f.name}
             className={cx('evd-fl', sel?.field === f.name && 'on')}
-            title={sel?.field === f.name ? '再点一下回到整张表' : '选中这个字段：被引用按字段看，锚点也换成字段的'}
+            title={sel?.field === f.name ? '再点一下回到整张表' : '只看这个字段'}
             onClick={() => onField(sel?.field === f.name ? null : f.name)}
           >
             <div><span className="mono b" style={{ fontSize: 12 }}>{f.name}</span><div className="xs muted">{fieldDesc(f)}</div></div>
@@ -143,11 +141,11 @@ function Detail({ record, sel, used, lineage, onField, onPick, pid }) {
         )))}
         {stats.map((p, i) => (
           <div className="xs muted mt4" key={p.column}>
-            {p.column}：最小 {fmtNum(p.stats.min)} · 最大 {fmtNum(p.stats.max)} · 空值率 {p.stats.null_pct}%{i === stats.length - 1 ? ' · 数值列只给统计量' : ''}
+            {p.column}：最小 {fmtNum(p.stats.min)} · 最大 {fmtNum(p.stats.max)} · 空值率 {p.stats.null_pct}%
           </div>
         ))}
         {!topk.length && !stats.length ? <div className="xs muted">还没有画像。</div> : null}
-        <div className="sh" ref={mark('used')}><Icon name="link" size={12} />被引用 where-used <span className="faint" style={{ fontWeight: 500 }}>{used ? used.total : ''}</span>{sel?.field ? <span className="faint" style={{ fontWeight: 500 }}>· 只看 {sel.field}</span> : null}</div>
+        <div className="sh" ref={mark('used')}><Icon name="link" size={12} />被引用 <span className="faint" style={{ fontWeight: 500 }}>{used ? used.total : ''}</span>{sel?.field ? <span className="faint" style={{ fontWeight: 500 }}>· 只看 {sel.field}</span> : null}</div>
         {used === null ? <div className="xs muted">正在查…</div> : used.items.length ? used.items.map((u, i) => {
           const v = backlinkView(u.target);
           const go = () => (v.artifact
@@ -161,7 +159,7 @@ function Detail({ record, sel, used, lineage, onField, onPick, pid }) {
             </div>
           );
         }) : <div className="xs muted">{sel?.field ? '还没有产物引用这个字段。' : '还没有产物引用这张表。'}</div>}
-        <div className="sh" ref={mark('lineage')}><Icon name="graph" size={12} />相邻记录 lineage</div>
+        <div className="sh" ref={mark('lineage')}><Icon name="graph" size={12} />相邻记录</div>
         {lineage === null ? <div className="xs muted">正在查…</div> : lineage.length ? lineage.map((l) => {
           const db = /^db:/.test(l.anchor);
           const t = parseDbAnchor(l.anchor);
@@ -282,17 +280,14 @@ function SchemaBody({ route }) {
   const toggleDomain = (name) => setCollapsed((s) => { const n = new Set(s); if (n.has(name)) n.delete(name); else n.add(name); return n; });
   const snapOptions = (snaps || []).map((s) => ({ value: s.id, label: `${s.source?.id} · ${s.id}（${s.complete ? '完整' : '不完整'}）` }));
   const focusTable = er?.tables.find((t) => t.anchor === er.focus);
-  const selName = er?.tables.find((t) => t.anchor === selTable)?.name || shortName(selTable);
   const zi = ZOOMS.indexOf(zoom);
 
   if (snaps && !snaps.length) {
     return (
       <div className="evd-full">
-        <div className="row"><b className="lg">证据浏览器</b><EvdPlg /><span className="muted sm">按快照只读检索，不碰运行中的系统</span></div>
+        <div className="row"><b className="lg">证据浏览器</b><EvdPlg /></div>
         <div className="card" style={{ maxWidth: 640, margin: '40px auto' }}>
-          <Empty icon="db" title="还没有证据快照" actions={<Button kind="primary" icon="scan" onClick={() => navigate(pagePath('snapshots', pid))}>去采集一次</Button>}>
-            证据浏览器只读快照。先在「采集与快照」里对已授权的数据源采集一次快照。
-          </Empty>
+          <Empty icon="db" title="还没有证据快照" actions={<Button kind="primary" icon="scan" onClick={() => navigate(pagePath('snapshots', pid))}>去采集一次</Button>} />
         </div>
       </div>
     );
@@ -301,7 +296,7 @@ function SchemaBody({ route }) {
   return (
     <div className="evd-full">
       <div className="row">
-        <b className="lg">证据浏览器</b><EvdPlg /><span className="muted sm">按快照只读检索，不碰运行中的系统</span>
+        <b className="lg">证据浏览器</b><EvdPlg />
         <span className="sp" />
         <Select icon="db" w="356px" value={snapshot} options={snapOptions} onChange={(id) => setSnapshot(id)} />
         <Button size="sm" icon="split" disabled={!snapshot} onClick={() => navigate(pagePath('snapshots', pid), { to: snapshot })}>对比快照</Button>
@@ -310,7 +305,7 @@ function SchemaBody({ route }) {
         {maxed ? null : (
           <div className="card">
             <div style={{ padding: '12px 12px 8px' }}>
-              <Inp icon="search" value={q} placeholder="evidence.search：表、字段、注释…" onChange={(e) => setQ(e.target.value)} after={q ? <span style={{ cursor: 'pointer', display: 'inline-flex', color: 'var(--muted)' }} title="清空" onClick={() => setQ('')}><Icon name="x" size={12} /></span> : null} />
+              <Inp icon="search" value={q} placeholder="搜索表、字段、注释" onChange={(e) => setQ(e.target.value)} after={q ? <span style={{ cursor: 'pointer', display: 'inline-flex', color: 'var(--muted)' }} title="清空" onClick={() => setQ('')}><Icon name="x" size={12} /></span> : null} />
               <div className="row mt8"><Seg items={SEARCH_TYPES} value={qType} onChange={setQType} /><span className="sp" /><span className="xs faint">{treeTotal(tree)} 实体</span></div>
             </div>
             <div className="scroll evd-tree" style={{ flex: 1, padding: '0 8px 10px' }}>
@@ -321,9 +316,9 @@ function SchemaBody({ route }) {
         <div className="card">
           <div className="row" style={{ padding: '12px 14px', borderBottom: '1px solid var(--line)' }}>
             <b>ER 视图</b><span className="muted sm">{focusTable ? `${focusTable.label || focusTable.name}相关 ${er.tables.length} 张表` : ''}</span><span className="sp" />
-            <span className="row g4 xs muted"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#64748B" strokeWidth="1.6" /></svg>declared 外键</span>
-            <span className="row g4 xs muted"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#64748B" strokeWidth="1.8" strokeDasharray="1.5 4" strokeLinecap="round" /></svg>observed 取值重合</span>
-            <span className="row g4 xs muted"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#64748B" strokeWidth="1.6" strokeDasharray="6 4" /></svg>inferred 命名推断</span>
+            <span className="row g4 xs muted"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#64748B" strokeWidth="1.6" /></svg>外键</span>
+            <span className="row g4 xs muted"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#64748B" strokeWidth="1.8" strokeDasharray="1.5 4" strokeLinecap="round" /></svg>取值重合</span>
+            <span className="row g4 xs muted"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#64748B" strokeWidth="1.6" strokeDasharray="6 4" /></svg>命名推断</span>
           </div>
           <div style={{ flex: 1, minHeight: 0, padding: 12, position: 'relative' }}>
             <div className="evp-er-cv">
@@ -334,7 +329,6 @@ function SchemaBody({ route }) {
               <Button size="sm" icon="zoomin" title="放大" disabled={zi >= ZOOMS.length - 1} onClick={() => setZoom(ZOOMS[Math.min(ZOOMS.length - 1, zi + 1)])} />
               <Button size="sm" icon="maximize" title={maxed ? '还原三栏' : '只看 ER 视图'} onClick={() => setMaxed((v) => !v)} />
             </div>
-            {selTable ? <div className="xs muted" style={{ position: 'absolute', left: 16, top: 16 }}>蓝色：当前选中 erp.{selName}{selField ? `.${selField}` : ''} 及其相邻关系</div> : null}
           </div>
         </div>
         {maxed ? null : (

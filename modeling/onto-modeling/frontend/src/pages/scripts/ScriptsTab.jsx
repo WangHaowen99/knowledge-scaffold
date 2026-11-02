@@ -50,7 +50,7 @@ function Candidates({ data, tasks }) {
   let body;
   if (!data) body = <div className="sm muted">正在读取…</div>;
   else if (!cv.scanned) {
-    body = <div className="sm muted">还没扫描过。点右上角「扫描可代码化的操作」，助手在对话里逐个判断哪些操作适合写成脚本，结果回到这里。</div>;
+    body = <div className="sm muted">还没扫描过</div>;
   } else {
     body = (
       <>
@@ -84,9 +84,8 @@ function Candidates({ data, tasks }) {
 
 function ScriptTable({ items, selected, onSelect, tasks, onStudio }) {
   return (
-    <>
-      <div className="tbl-wrap">
-        <table className="tbl compact scr-tbl">
+    <div className="tbl-wrap">
+      <table className="tbl compact scr-tbl">
           <thead>
             <tr><th>脚本</th><th>对应操作</th><th>契约检查</th><th>描述符</th><th>沙箱验证</th><th aria-label="操作" /></tr>
           </thead>
@@ -95,7 +94,7 @@ function ScriptTable({ items, selected, onSelect, tasks, onStudio }) {
               const cc = contractChip(row);
               const act = rowAction(row);
               return (
-                <tr key={row.script.key} className={cx(row.script.key === selected && 'on')} onClick={() => onSelect(row.script.key)} title="点一下在下面预览">
+                <tr key={row.script.key} className={cx(row.script.key === selected && 'on')} onClick={() => onSelect(row.script.key)}>
                   <td><span className="mono">{row.script.name}</span></td>
                   <td>{row.operation?.name || '—'}</td>
                   <td>{cc.pop ? <span data-pop={cc.pop}><StateChip c={cc} /></span> : <StateChip c={cc} />}</td>
@@ -110,10 +109,8 @@ function ScriptTable({ items, selected, onSelect, tasks, onStudio }) {
               );
             })}
           </tbody>
-        </table>
-      </div>
-      <div className="row mt12 xs muted g4"><Icon name="info" size={12} />契约检查：头部注释和参数一一对应、入参形式和消费端一致；描述符供消费端调用脚本时使用。三项都通过才能保存。</div>
-    </>
+      </table>
+    </div>
   );
 }
 
@@ -142,12 +139,12 @@ function Preview({ row, tick, onStudio }) {
   let body;
   if (!state) body = <span className="muted">正在读取…</span>;
   else if (state.error) body = <span className="muted">读不到脚本原文：{state.error}</span>;
-  else body = <>{state.content}{state.truncated ? '\n…（文件较大，只显示开头，完整内容去 Studio 看）' : ''}</>;
+  else body = <>{state.content}{state.truncated ? '\n…（只显示开头）' : ''}</>;
   return (
     <Card
       title={row.script.name}
       icon="code"
-      sub={`${row.operation?.name ? `${row.operation.name} · ` : ''}只读预览，脚本内容在 Studio 编辑`}
+      sub={`${row.operation?.name ? `${row.operation.name} · ` : ''}只读`}
       extra={<Button size="xs" kind="soft" icon="edit" onClick={() => onStudio(row)}>去 Studio 编辑</Button>}
     >
       <div className="code scr-src">{body}</div>
@@ -172,7 +169,7 @@ function Verification({ row, tick }) {
   const vv = verificationView(v, row.script.name);
   let body;
   if (v === undefined) body = <span className="scr-dim">正在读取…</span>;
-  else if (vv.status === 'not_run') body = <span className="scr-dim">还没在沙箱里跑过：契约检查通过后，助手会用合成输入跑一遍。</span>;
+  else if (vv.status === 'not_run') body = <span className="scr-dim">还没在沙箱里跑过</span>;
   else {
     body = (
       <>
@@ -202,7 +199,7 @@ export default function ScriptsTab({ data, sandbox, tick, tasks }) {
       {sb ? (
         <div className="row g12">
           <Chip tone={sb.tone} icon={sb.icon}>{sb.text}</Chip>
-          <span className="row g4 sm muted"><Icon name="ban" size={14} />{sb.note}</span>
+          {sb.note ? <span className="row g4 sm muted"><Icon name="ban" size={14} />{sb.note}</span> : null}
         </div>
       ) : null}
       <div className="grid2 mt16" style={{ gridTemplateColumns: '400px 1fr' }}>
@@ -211,7 +208,7 @@ export default function ScriptsTab({ data, sandbox, tick, tasks }) {
           {!data ? <div className="sm muted">正在读取…</div> : items.length ? (
             <ScriptTable items={items} selected={key} onSelect={setSel} tasks={tasks} onStudio={toStudio} />
           ) : (
-            <Empty icon="code" title="还没有脚本">勾选左边的操作点「生成脚本」，助手在对话里写脚本，并在沙箱里用合成输入跑通。</Empty>
+            <Empty icon="code" title="还没有脚本" />
           )}
         </Card>
       </div>

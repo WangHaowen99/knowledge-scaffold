@@ -5,7 +5,7 @@ import { useApp } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, formatBytes } from '../../api/errors.js';
 import {
-  Avatar, Button, Check, Chip, Empty, Field, Icon, Inp, Menu, Modal, Note, Select, Stat, Table, cx, useOutside,
+  Avatar, Button, Chip, Empty, Field, Icon, Inp, Menu, Modal, Note, Select, Stat, Table, cx, useOutside,
 } from '../../ui/index.jsx';
 import {
   PASSWORD_HINT, ROLE_TONE, avatarIndex, defaultTransferTarget, deleteDoneText, deleteRequest, deleteSub, isTrashUnsupported,
@@ -27,7 +27,7 @@ function RoleButton({ u, disabled, title, onPick }) {
         <div style={{ position: 'absolute', top: 30, left: 0, zIndex: 5 }}>
           <Menu
             style={{ minWidth: 170 }}
-            items={roleMenu(u.role).map((r) => ({ label: r.label, icon: r.icon, hint: r.hint, value: r.value }))}
+            items={roleMenu(u.role).map((r) => ({ label: r.label, icon: r.icon, hint: r.hint, value: r.value, title: r.title }))}
             onPick={(x) => { setOpen(false); if (x.value !== u.role) onPick(x.value); }}
           />
         </div>
@@ -48,7 +48,7 @@ export function AccountsPane({ data, loadError, perm, me, nameOf, retentionDays,
   async function changeRole(u, role) {
     try {
       await api.setUserRole(u.username, role);
-      toast(`已把 ${u.display_name || u.username} 改为${roleLabel(role)}，已写审计`);
+      toast(`已把 ${u.display_name || u.username} 改为${roleLabel(role)}`);
       onReload();
     } catch (e) {
       toast(e?.details?.reason === 'last_admin' ? '不能降级最后一个管理员' : errorText(e), 'alert');
@@ -78,19 +78,13 @@ export function AccountsPane({ data, loadError, perm, me, nameOf, retentionDays,
 
   return (
     <div className="mt16">
-      <div className="row mb12 ou-legend">
-        <div className="row g12 sm muted">
-          <Chip tone="blue" sm>建模者</Chip>只能看到自己的项目 <Chip tone="indigo" sm>管理员</Chip>模型、插件、系统设置 <Chip tone="amber" sm>运维</Chip>运维管理面
-        </div>
-        <span className="sp" />
-      </div>
       {loadError ? <Note tone="red">{loadError}</Note> : null}
       {unavailable ? (
         <>
           <Note tone="red" icon="key">
-            <b>用户管理不可用：</b>需要在服务端配置认证服务管理令牌（<span className="mono">ONTO_WEB_AUTH_ADMIN_TOKEN</span> 与 <span className="mono">AUTH_SERVER_ADMIN_TOKEN</span>）。配置后重启生效。
+            <b>用户管理不可用：</b>服务端未配置认证服务管理令牌（<span className="mono">ONTO_WEB_AUTH_ADMIN_TOKEN</span>、<span className="mono">AUTH_SERVER_ADMIN_TOKEN</span>）
           </Note>
-          <Empty icon="users" title="暂时无法列出账号">登录鉴权本身不受影响，用户仍可正常登录和建模。</Empty>
+          <Empty icon="users" title="暂时无法列出账号" />
         </>
       ) : data ? (
         <>
@@ -100,7 +94,6 @@ export function AccountsPane({ data, loadError, perm, me, nameOf, retentionDays,
               显示前 {items.length} 个，共 {data.total ?? '—'} 个 · <Button size="xs" kind="ghost" disabled={moreBusy} onClick={onMore}>加载更多</Button>
             </div>
           ) : null}
-          <div className="xs muted mt8">角色改动立即生效并写审计；管理员和运维都看不到项目内容。</div>
           <div className="grid4 mt16">
             {userStats(data.stats, data.total).map((s) => <Stat key={s.key} label={s.label} value={s.value} icon={s.icon} desc={s.desc} />)}
           </div>
@@ -141,7 +134,7 @@ export function ResetPasswordModal({ target, onClose }) {
     try {
       const r = await api.resetUserPassword(target.username, req.body);
       if (r?.generated_password) setResult(r.generated_password);
-      else { toast('密码已重置，已写审计'); onClose(); }
+      else { toast('密码已重置'); onClose(); }
     } catch (e) {
       if (e?.code === 'weak_password') setProblem(`不满足：${ruleTexts(e.details?.failed_rules).join('、')}`);
       else toast(errorText(e), 'alert');
@@ -168,7 +161,7 @@ export function ResetPasswordModal({ target, onClose }) {
     >
       {result ? (
         <div className="col" style={{ gap: 12 }}>
-          <Note tone="teal" icon="check">密码已重置，已写审计。生成的密码只显示这一次，请转交给{display}。</Note>
+          <Note tone="teal" icon="check">密码只显示这一次，请转交给{display}。</Note>
           <Field label="新密码">
             <Inp value={result} readOnly mono after={<Button size="xs" kind="ghost" icon="copy" onClick={copy}>复制</Button>} />
           </Field>
@@ -182,15 +175,11 @@ export function ResetPasswordModal({ target, onClose }) {
               value={generate ? '' : pw}
               disabled={generate}
               error={!!problem}
-              placeholder={generate ? '由服务端生成，重置后只显示一次' : '输入新密码'}
+              placeholder={generate ? '自动生成' : '输入新密码'}
               onChange={(e) => setPw(e.target.value)}
               after={<Button size="xs" kind="ghost" onClick={() => setGenerate((v) => !v)}>{generate ? '手动输入' : '生成'}</Button>}
             />
           </Field>
-          {/* B2 第 14 条：auth-server 不支持 require_change，先停用 */}
-          <div style={{ opacity: 0.55 }} title="认证服务暂不支持，重置后请提醒用户自己修改密码">
-            <Check on={false} disabled label={<>下次登录时要求修改<span className="xs faint">（认证服务暂不支持）</span></>} />
-          </div>
         </div>
       )}
     </Modal>
@@ -230,7 +219,8 @@ export function DeleteUserModal({ target, users, nameOf, retentionDays, onClose,
       toast(deleteDoneText({ ...r, transfer_to: to }, nameOf));
       onDone();
     } catch (e) {
-      if (isTrashUnsupported(e)) { setTrashBlocked(true); setMode('transfer'); setProblem('当前版本不支持移入回收站，请移交给其他建模者'); }
+      // 后端说回收站不可用：退回只能移交的版式（R20），不另加说明
+      if (isTrashUnsupported(e)) { setTrashBlocked(true); setMode('transfer'); }
       else setProblem(errorText(e));
     } finally {
       setBusy(false);
@@ -238,6 +228,9 @@ export function DeleteUserModal({ target, users, nameOf, retentionDays, onClose,
   }
 
   const count = projects ? projects.length : null;
+  const transferPicker = candidates.length
+    ? <Select value={to} options={candidates.map((u) => ({ value: u.username, label: userOptionLabel(u) }))} onChange={setTo} />
+    : <div className="xs muted">没有其他建模者可以接手</div>;
   return (
     <Modal
       open
@@ -254,36 +247,35 @@ export function DeleteUserModal({ target, users, nameOf, retentionDays, onClose,
       {projects && projects.length ? (
         <>
           <Table compact cols={['项目', '阶段', '大小']} rows={projects.map((p) => [p.name, p.stage_label || '—', p.disk_bytes != null ? formatBytes(p.disk_bytes) : '—'])} />
-          <div className="mt12 col" style={{ gap: 8 }}>
-            <div className="b sm">这些项目怎么处理</div>
-            <div className={cx('opt', mode === 'transfer' && 'on')} onClick={() => setMode('transfer')}>
-              <span className="k">1</span>
-              <div className="grow">
-                <div className="t">移交给另一位建模者</div>
-                <div className="c">移交后项目只归新所有者，原用户的个人 Key 配置不随项目走</div>
-                <div className="mt8 ou-sel" style={{ width: 240 }}>
-                  {candidates.length
-                    ? <Select value={to} options={candidates.map((u) => ({ value: u.username, label: userOptionLabel(u) }))} onChange={setTo} />
-                    : <div className="xs muted">没有其他建模者可以接手</div>}
+          {opt.enabled ? (
+            <div className="mt12 col" style={{ gap: 8 }}>
+              <div className="b sm">这些项目怎么处理</div>
+              <div className={cx('opt', mode === 'transfer' && 'on')} onClick={() => setMode('transfer')}>
+                <span className="k">1</span>
+                <div className="grow">
+                  <div className="t">移交给另一位建模者</div>
+                  <div className="mt8 ou-sel" style={{ width: 240 }}>{transferPicker}</div>
+                </div>
+              </div>
+              <div className={cx('opt', mode === 'trash' && 'on')} onClick={() => setMode('trash')}>
+                <span className="k">2</span>
+                <div className="grow">
+                  <div className="t">移入回收站</div>
+                  <div className="c">{opt.text}</div>
                 </div>
               </div>
             </div>
-            <div
-              className={cx('opt', mode === 'trash' && 'on', !opt.enabled && 'ou-off')}
-              title={opt.enabled ? undefined : '删除项目已改为直接永久删除，没有回收站去向'}
-              onClick={() => opt.enabled && setMode('trash')}
-            >
-              <span className="k">2</span>
-              <div className="grow">
-                <div className="t">移入回收站</div>
-                <div className="c">{opt.text}</div>
-              </div>
+          ) : (
+            // 回收站不可用（R20）：不出二选一，项目表下面直接一行「移交给」
+            <div className="row g12 mt12">
+              <span className="b sm">移交给</span>
+              <div className="ou-sel" style={{ width: 240 }}>{transferPicker}</div>
             </div>
-          </div>
+          )}
         </>
       ) : null}
       {projects && !projects.length && !loadErr ? (
-        <Note tone="gray">名下没有项目。删除后这个账号的 MCP token 全部吊销，个人模型配置一并删除，不能恢复。</Note>
+        <Note tone="gray">MCP token 和个人模型配置一并删除，不能恢复。</Note>
       ) : null}
       {problem ? <div className="xs mt8" style={{ color: 'var(--red)' }}>{problem}</div> : null}
     </Modal>

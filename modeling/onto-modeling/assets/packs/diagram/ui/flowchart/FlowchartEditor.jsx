@@ -8,6 +8,8 @@ import FlowchartProps from './FlowchartProps.jsx';
 import { nextNodePosition } from './flowchartModel.js';
 import { autoLayout } from './layout.js';
 
+const GESTURES = '拖圆点连线 · 拖到空白处新建相连节点 · 双击改名 · Delete 删除';
+
 const isEditable = (t) => !!t?.closest?.('input, textarea, select, [contenteditable="true"]');
 
 /**
@@ -73,6 +75,8 @@ export default function FlowchartEditor({
           <Button size="sm" icon="redo" kind="ghost" title="重做（Ctrl+Shift+Z）" disabled={!editing || !session.future.length} onClick={() => dispatch({ type: 'redo' })} />
           <Button size="sm" icon="grid" kind="ghost" title="自动布局" disabled={!editing || !model.nodes.length} onClick={layout} />
           <span className="sp" />
+          {/* 画布手势（R5）：节点四边的圆点悬停即出现，这里给全四个手势 */}
+          <Button size="sm" kind="ghost" aria-label="画布操作" data-pop={GESTURES}>?</Button>
           <Button size="sm" kind="ghost" icon="shieldok" disabled={validating} onClick={onValidate}>校验</Button>
         </div>
         {findings?.errors?.length ? (

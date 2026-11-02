@@ -1,5 +1,4 @@
 /* 知识沉淀页：设计稿 mr-* 之外、产品才有的补充样式 */
-.kn-chk{cursor:pointer;height:30px;padding:0 10px}
 .kn-lk{display:inline-flex;align-items:center;gap:3px;color:#B45309;font-weight:600;cursor:help}
 .kn-mark{background:#FEF3C7}
 .kn-err{color:var(--red)}

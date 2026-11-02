@@ -117,17 +117,15 @@ export function generateCommand(operations) {
 
 export function sandboxView(s) {
   if (!s) return null;
-  if (s.available) {
-    return { text: '脚本验证沙箱可用', tone: 'teal', icon: 'check', note: s.network === 'denied' ? '沙箱禁止出网，查数脚本请用合成输入验证' : '查数脚本请用合成输入验证' };
-  }
-  return { text: '脚本验证沙箱不可用', tone: 'red', icon: 'alert', note: '生成的脚本暂时跑不了验证，三项都通过才能保存；请管理员在系统设置里检查沙箱' };
+  if (s.available) return { text: '脚本验证沙箱可用', tone: 'teal', icon: 'check', note: null };
+  return { text: '脚本验证沙箱不可用', tone: 'red', icon: 'alert', note: '暂时不能验证和保存脚本，请联系管理员' };
 }
 
 // 沙箱验证输出卡：命令行、输出、结论
 export function verificationView(v, scriptName) {
   const name = scriptName || v?.script?.name || '';
   if (!v || v.status === 'not_run') {
-    return { status: 'not_run', chip: { text: '未运行', tone: 'gray', icon: null }, sub: '脚本验证沙箱 · 合成输入', lines: [], summary: null };
+    return { status: 'not_run', chip: { text: '未运行', tone: 'gray', icon: null }, sub: null, lines: [], summary: null };
   }
   const cases = v.cases || [];
   const ok = cases.filter((c) => c.passed).length;
@@ -135,7 +133,7 @@ export function verificationView(v, scriptName) {
   return {
     status: v.status,
     chip: passed ? { text: '通过', tone: 'teal', icon: 'check' } : { text: '未通过', tone: 'red', icon: 'x' },
-    sub: ['脚本验证沙箱', '合成输入', fmtStamp(v.ran_at)].filter(Boolean).join(' · '),
+    sub: fmtStamp(v.ran_at) || null,
     lines: cases.flatMap((c) => [{ kind: 'cmd', text: `$ ${name} ${c.args}`.trimEnd() }, { kind: c.passed ? 'out' : 'err', text: c.output }]),
     summary: {
       ok: passed,
@@ -196,7 +194,7 @@ export function familyOptions(families = [], current = '') {
 // 评估器下拉：留空 = 自动查找
 export function evaluatorOptions(view, item) {
   const found = item?.evaluator || '';
-  const opts = [{ value: '', label: found ? `自动查找 → ${found}` : '自动查找（保存后由助手按契约生成）' }];
+  const opts = [{ value: '', label: found ? `自动查找 → ${found}` : '自动查找' }];
   (view?.evaluators || []).forEach((e) => { if (e.path) opts.push({ value: e.path, label: e.path }); });
   const cur = item?.params?.evaluator_path || '';
   if (cur && !opts.some((o) => o.value === cur)) opts.push({ value: cur, label: `${cur}（不存在或不是评估器）` });
@@ -214,21 +212,14 @@ export function contractLocked(lock, item) {
   return isLocked(lock, { type: SOLVER_TYPE, key }) || isLocked(lock, { path: `${SOLVER_DIR}${key}/binding.yaml` });
 }
 
-// 锁定条的文字（设计稿 scripts mount 里的三态切换）
+// 锁定条的文字（设计稿 scripts mount 里的三态切换）：只有标题，旁边是「回到对话」「去确认」「查看运行」
 export function lockText(lock, title) {
-  if (lockState(lock) === 'autobuild_slice') {
-    return {
-      running: [`自主构建正在改这一片，「${title}」这份求解契约在写入范围里，这一片自动合入后才能编辑`, '其他求解契约照常编辑，保存即生效；脚本内容只在 Studio 编辑。'],
-    };
-  }
+  if (lockState(lock) === 'autobuild_slice') return { running: [`自主构建正在改「${title}」，暂时只读`] };
   return {
-    running: [`助手正在为「${title}」生成评估器，这份求解契约在写入范围里，确认生效或撤回后才能编辑`, '其他求解契约照常编辑，保存即生效；脚本内容只在 Studio 编辑。'],
-    pending: ['评估器已经生成，这一轮的修改还没确认：这份求解契约确认生效或撤回后才能编辑', '助手已经停下来等你确认；其他求解契约照常编辑，保存即生效。'],
+    running: [`助手正在为「${title}」生成评估器，暂时只读`],
+    pending: ['评估器已生成，待确认'],
   };
 }
-
-// 进度条第二行的补充说明
-export const runDetail = (locked) => (locked ? '这份求解契约在写入范围里，确认生效或撤回前只读 · 结果回到这里' : '结果回到这里');
 
 // ---------- 检查卡 ----------
 
@@ -253,7 +244,7 @@ export function checkLines({ view, item, dirty, live, draftKey, problems = [], r
   const local = problems.filter((p) => p.severity !== 'warning');
   if (local.length) local.forEach((p) => lines.push({ icon: 'x', tone: 'err', text: p.message }));
   else if (dirty && !fresh) lines.push({ icon: 'spin', tone: 'wait', text: '正在检查草稿…' });
-  else if (dirty && fresh.failed) lines.push({ icon: 'info', tone: 'warn', text: '暂时检查不了草稿，保存时还会按同一套规则再查一遍' });
+  else if (dirty && fresh.failed) lines.push({ icon: 'info', tone: 'warn', text: '暂时检查不了草稿' });
   else {
     const rejected = dirty ? fresh.rejected || [] : [];
     const findings = (dirty ? fresh.findings || [] : [...(view?.findings || []), ...(view?.gate || [])])
@@ -266,17 +257,17 @@ export function checkLines({ view, item, dirty, live, draftKey, problems = [], r
   const ev = item?.evaluator ? (fresh || live)?.evaluator : null;
   if (ev) lines.push({ icon: 'check', tone: 'ok', text: `评估器已解析：${EVALUATOR_KIND[ev.kind] || ev.kind}${ev.constraints != null ? ` · ${ev.constraints} 条约束` : ''}` });
   else if (item?.evaluator) lines.push({ icon: 'check', tone: 'ok', text: `评估器：${String(item.evaluator).split('/').pop()}` });
-  else if (item && isEnabled(item.binding)) lines.push({ icon: 'info', tone: 'warn', text: '还没有评估器：保存后由助手按契约生成并自检' });
+  else if (item && isEnabled(item.binding)) lines.push({ icon: 'info', tone: 'warn', text: '还没有评估器' });
   // 验证回执
   const latest = receipt?.latest || null;
   if (dirty) {
-    lines.push({ icon: 'alert', tone: 'warn', text: latest ? `保存会改变求解契约修订，r${n} 的验证回执对新修订不再有效` : '保存会改变求解契约修订，发布前要由评测服务验证' });
+    lines.push({ icon: 'alert', tone: 'warn', text: latest ? `保存后 r${n} 的验证回执失效` : '保存后需重新验证' });
   } else if (view?.operations?.some((o) => o.enabled)) {
     const st = receipt?.status || 'required';
     if (st === 'pass') lines.push({ icon: 'check', tone: 'ok', text: `r${n} 已通过验证${latest?.completed_at ? `（评测服务回执 · ${fmtStamp(latest.completed_at)}）` : ''}` });
     else if (st === 'stale') lines.push({ icon: 'alert', tone: 'warn', text: `r${n} 的验证回执已过期，发布前要重新验证` });
     else if (st === 'failed') lines.push({ icon: 'x', tone: 'err', text: `r${n} 的验证没通过${latest?.message ? `：${latest.message}` : ''}，发布会被拦下` });
-    else lines.push({ icon: 'alert', tone: 'warn', text: `r${n} 还没有验证回执，发布前要由评测服务验证` });
+    else lines.push({ icon: 'alert', tone: 'warn', text: `r${n} 还没有验证回执` });
   }
   return lines;
 }
@@ -317,7 +308,7 @@ export function evaluatorCommand(solverKey, title) {
   return { command: COMMANDS.evaluator, args: { solver_key: solverKey }, text: `为「${title}」生成评估器` };
 }
 export function templateCommand(solverKey, title) {
-  return { command: COMMANDS.evaluator, args: { solver_key: solverKey, mode: 'template' }, text: `按模板重新生成「${title}」的附属文件和评估器（手动修改会被覆盖）` };
+  return { command: COMMANDS.evaluator, args: { solver_key: solverKey, mode: 'template' }, text: `按模板重新生成「${title}」的附属文件和评估器` };
 }
 
 const WHO = { assistant: '助手', web: '网页', studio: 'Studio', mcp: 'MCP 客户端', autobuild: '自主构建', import: '导入', plugin: '插件', revert: '回退' };
@@ -339,7 +330,7 @@ export function saveErrorView(e, now = Date.now()) {
 }
 
 // 保存成功的提示
-export const savedToast = (res) => `检查通过，已保存求解契约修订 r${res?.revision_no ?? ''}`.trim();
+export const savedToast = (res) => `已保存 r${res?.revision_no ?? ''}`;
 
 // 字段单位表：改一格；最后一行留空可以继续加
 export function setUnit(units, index, key, value) {

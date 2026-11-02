@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { errorText } from '../api/errors.js';
 import { mergeFlow, normalizeFlow } from '../state/flow.js';
-import { Button, Empty, KV, Note } from '../ui/index.jsx';
+import { Button, Empty, KV } from '../ui/index.jsx';
 import { ShellG } from '../shell/Shell.jsx';
 import { ProjectCtx, useApp } from './context.js';
 import { anchorResolver } from './PopLayer.jsx';
@@ -95,7 +95,7 @@ function ProjectError({ error }) {
           title={unowned ? '这个项目还没有所有者' : '打不开这个项目'}
           actions={<Button icon="arrowl" onClick={() => { window.location.hash = '#/projects'; }}>回到我的项目</Button>}
         >
-          {unowned ? '项目的所有者还没有指定，管理员指定后才能打开。' : errorText(error)}
+          {unowned ? '请联系管理员指定所有者' : errorText(error)}
         </Empty>
       </div>
     </ShellG>
@@ -107,18 +107,17 @@ function MetaOnly({ meta }) {
   return (
     <ShellG active="projects">
       <div className="meta-only">
-        <div className="page-h"><div><div className="eyebrow">项目元数据</div><h1>{meta.name}</h1><p>这个项目归 {meta.owner || '—'} 所有。管理员和运维只能看元数据，不能打开项目内容。</p></div></div>
+        <div className="page-h"><div><div className="eyebrow">项目元数据</div><h1>{meta.name}</h1></div></div>
         <div className="card pad">
           <KV pairs={[
             ['所有者', meta.owner || '未指定'],
             ['阶段', meta.stage_label || '—'],
-            ['构建方式', meta.build_mode === 'L4' ? '自主构建（L4）' : '陪伴建模（L2）'],
+            ['构建方式', meta.build_mode === 'L4' ? '自主构建' : '陪伴建模'],
             ['状态', meta.archived ? '已归档' : '进行中'],
             ['创建时间', meta.created_at ? new Date(meta.created_at).toLocaleString('zh-CN') : '—'],
             ['最近活动', meta.last_activity_at ? new Date(meta.last_activity_at).toLocaleString('zh-CN') : '—'],
           ]} />
         </div>
-        <Note tone="gray" className="mt12">项目里的目标、资料、产物和对话只有所有者能看到。</Note>
       </div>
     </ShellG>
   );

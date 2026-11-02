@@ -20,7 +20,7 @@ export function RegistrySection() {
 
   return (
     <>
-      <SysHead title="配置注册表" desc="每一项都声明来源优先级、校验规则和生效时机。插件也在清单里声明自己的配置项。" />
+      <SysHead title="配置注册表" />
       <div className="row mb12">
         <Inp icon="search" placeholder="搜索配置项" w="260px" value={q} onChange={(e) => setQ(e.target.value)} />
         <Seg items={EFFECT_SEG} value={effect} onChange={setEffect} />

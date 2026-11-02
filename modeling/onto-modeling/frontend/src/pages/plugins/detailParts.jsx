@@ -26,7 +26,7 @@ export function FlowMap({ layout: L, caption }) {
           {p.sub ? <text x={p.cx} y={p.y + 35} textAnchor="middle" style={{ fontSize: 10.5, fill: '#DCE8FF' }}>{p.sub}</text> : null}
         </g>
       ))}
-      <text x={L.caption.x} y={L.caption.y} textAnchor="middle" style={{ fontSize: 12, fill: '#1D4ED8' }}>{caption}</text>
+      {caption ? <text x={L.caption.x} y={L.caption.y} textAnchor="middle" style={{ fontSize: 12, fill: '#1D4ED8' }}>{caption}</text> : null}
     </svg>
   );
 }
@@ -60,7 +60,6 @@ export function Changelog({ changelog }) {
           </div>
         </div>
       )) : <div className="sm muted" style={{ padding: '12px 0' }}>还没有更新记录。</div>}
-      <div className="xs muted mt8">要回到旧版本，在项目设置的「能力与插件」里操作。</div>
     </>
   );
 }

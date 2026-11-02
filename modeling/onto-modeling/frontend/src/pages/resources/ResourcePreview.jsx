@@ -64,7 +64,7 @@ function DocPane({ m, fragment, onCoverage, onUploadText, tasks }) {
   if (!blocks.length) {
     return m.kind === 'pdf' ? (
       <Note tone="amber">
-        这份资料读不出文字（可能是扫描件），助手没法引用里面的内容。上传一份文本版（Word、TXT 或 Markdown），助手会接着读，挂起的问题也会继续。
+        读不出文字（可能是扫描件）。上传文本版后助手会接着读。
         <div className="row mt8"><Button size="xs" kind="primary" icon="upload" onClick={onUploadText}>上传文本版</Button></div>
       </Note>
     ) : <Note tone="gray">这份资料还没有可预览的文字。</Note>;
@@ -74,7 +74,7 @@ function DocPane({ m, fragment, onCoverage, onUploadText, tasks }) {
   const partial = cov && !cov.complete && cov.read_pct > 0;
   return (
     <>
-      {missing ? <Note tone="amber" className="mb8">原文里找不到出处位置 {blockLabel(around) || around}，资料可能已经改过；产物里的这处出处需要换出处或重新核验。</Note> : null}
+      {missing ? <Note tone="amber" className="mb8">原文里找不到 {blockLabel(around) || around}，资料可能已改过。</Note> : null}
       <div className="evd-paper" ref={paperRef}>
         {blocks.map((b) => {
           if (b.kind === 'heading') return <h5 key={b.anchor} data-anchor={b.anchor}>{b.text}</h5>;
@@ -88,18 +88,17 @@ function DocPane({ m, fragment, onCoverage, onUploadText, tasks }) {
           );
         })}
       </div>
-      <div className="row mt8">
-        <span className="xs faint grow">左侧灰色编号就是出处位置；产物里的出处标签会指到这里。</span>
-        {partial ? (
+      {partial ? (
+        <div className="row mt8">
+          <span className="sp" />
           <Button
             size="xs" kind="soft" icon="sparkle" disabled={tasks.sending}
-            data-pop="发到工作台对话里执行：把这份资料没读的部分读完。页面上显示进度，跑完结果回到这里"
             onClick={() => tasks.send({ command: '/ontology-research', args: { path: m.path, reading_mode: 'full' }, text: `把「${m.name}」没读的部分读完` })}
           >
             让助手读完
           </Button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </>
   );
 }
@@ -160,7 +159,7 @@ function SheetPane({ m, fragment }) {
           {sheets.map((s, i) => <span key={s.name} className={i === index ? 'on' : ''} onClick={() => setPick(i)}>{s.name}</span>)}
         </div>
       </div>
-      {tableTruncated(data, sheet) ? <div className="xs muted mt8 row g4"><Icon name="info" size={12} />表格较大，仅预览前 500 行 × 60 列；完整内容请下载原文件。</div> : null}
+      {tableTruncated(data, sheet) ? <div className="xs muted mt8 row g4"><Icon name="info" size={12} />仅预览前 500 行 × 60 列</div> : null}
     </>
   );
 }
@@ -174,7 +173,7 @@ function CsvPane({ m }) {
   return (
     <>
       <div className="evd-csv">{csvText(sheet?.rows || [])}</div>
-      <div className="xs muted mt8">首行作为表头，共 {total.toLocaleString('en-US')} 行；仅预览前 500 行。</div>
+      {total > 500 ? <div className="xs muted mt8">仅预览前 500 行</div> : null}
     </>
   );
 }
@@ -185,7 +184,7 @@ function DrawioSvg({ xml, full }) {
   const lay = useMemo(() => drawioLayout(model), [model]);
   const id = useMemo(() => `rsA${Math.random().toString(36).slice(2, 8)}`, []);
   if (model.compressed) return <DrawioPreview xml={xml} hint="" />;
-  if (!lay.nodes.length) return <span className="xs muted">空白流程图，点「编辑」开始画</span>;
+  if (!lay.nodes.length) return <span className="xs muted">空白流程图</span>;
   return (
     <svg viewBox={lay.viewBox} width={full ? '100%' : lay.width} height={full ? '100%' : lay.height} style={{ maxWidth: '100%', maxHeight: '100%' }}>
       <defs><marker id={id} markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 7 3.5 0 7z" fill="#93A1B5" /></marker></defs>
@@ -275,7 +274,7 @@ function DrawioPane({ m, full, onFull, onSaved }) {
   return (
     <>
       <div className="row mb8">
-        <Button size="sm" kind="soft" icon="edit" disabled={!doc || !!doc.error || locked} title={locked ? '在助手的写入范围里，确认生效或撤回后才能编辑' : '在 drawio 编辑器里修改，保存为新版本'} onClick={() => { latest.current = draft; setEditing(true); }}>编辑</Button>
+        <Button size="sm" kind="soft" icon="edit" disabled={!doc || !!doc.error || locked} title={locked ? '在助手的写入范围里，确认生效或撤回后才能编辑' : undefined} onClick={() => { latest.current = draft; setEditing(true); }}>编辑</Button>
         <Button size="sm" icon="refresh" title="刷新预览" onClick={() => setTick((t) => t + 1)} />
         <Button size="sm" icon="download" title="下载原文件" onClick={download} />
         <Button size="sm" icon="maximize" title={full ? '退出全屏' : '全屏'} onClick={onFull} />
@@ -284,7 +283,7 @@ function DrawioPane({ m, full, onFull, onSaved }) {
       {changed ? (
         <div style={{ marginBottom: 8 }}>
           <Note tone="amber">
-            流程图已被助手修改。当前编辑内容已保留，可以继续编辑，或放弃本次修改并载入最新版本。
+            流程图已被助手修改，你的编辑还在。
             <div className="row mt8">
               <Button size="xs" onClick={() => { latest.current = draft; setEditing(true); }}>继续编辑</Button>
               <Button size="xs" kind="primary" onClick={reloadLatest}>载入最新版本</Button>
@@ -298,7 +297,7 @@ function DrawioPane({ m, full, onFull, onSaved }) {
             : <DrawioSvg xml={doc.content} full={full} />}
       </div>
       <Modal
-        open={editing} onClose={closeEditor} icon="flow" title={`编辑 ${m.name}`} sub="保存后提交为一个新版本；资料区里只有 drawio 能在线编辑" w={1080}
+        open={editing} onClose={closeEditor} icon="flow" title={`编辑 ${m.name}`} w={1080}
         foot={(
           <>
             <span className="xs muted grow">{drawioStateText(edState)}</span>
@@ -409,7 +408,7 @@ export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, 
   else if (m.preview === 'csv') pane = <CsvPane m={m} />;
   else if (m.preview === 'drawio') pane = <DrawioPane key={m.path} m={m} full={full} onFull={onFull} onSaved={onSaved} />;
   else if (m.preview === 'html') pane = <HtmlPane m={m} />;
-  else pane = <Note tone="gray">这种格式不能在线预览，可以下载原文件查看。<div className="row mt8"><Button size="xs" icon="download" onClick={download}>下载原文件</Button></div></Note>;
+  else pane = <Note tone="gray">不能在线预览<div className="row mt8"><Button size="xs" icon="download" onClick={download}>下载原文件</Button></div></Note>;
 
   return (
     <div className="card">
@@ -474,7 +473,7 @@ export function FeedbackPreview({ fb, onSetState, onHandle, busy }) {
         <div className="row mt12">
           {fb.state === 'open' ? (
             <>
-              <Button size="sm" kind="primary" icon="msg" disabled={busy} data-pop="发到工作台对话里执行：处理这批外部反馈。助手会先说明要改什么，等你确认" onClick={onHandle}>在对话里处理</Button>
+              <Button size="sm" kind="primary" icon="msg" disabled={busy} onClick={onHandle}>在对话里处理</Button>
               <Button size="sm" disabled={busy} onClick={() => onSetState('handled')}>标为已处理</Button>
               <Button size="sm" kind="ghost" disabled={busy} onClick={() => onSetState('dismissed')}>忽略</Button>
             </>

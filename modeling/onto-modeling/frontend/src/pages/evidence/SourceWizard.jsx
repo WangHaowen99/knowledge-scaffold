@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
-import { Area, Button, Chip, Field, Icon, Inp, Note, Seg, Select, cx } from '../../ui/index.jsx';
+import { Area, Button, Field, Icon, Inp, Note, Seg, Select, cx } from '../../ui/index.jsx';
 import {
   CHECK_LABEL, KIND_ICON, KIND_LABEL, MASKING, checkDetail, connFields, emptyForm, fmtDay, fmtEgress, formFromSource,
   parsePortDb, registerBody, secretField, validateForm,
@@ -115,7 +115,7 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
   const types = useMemo(() => items.filter((p) => p.kind !== 'file'), [items]);
   const pickType = (p) => {
     if (editing) return;
-    if (!p.installed) { toast(`「${p.label}」提供方还没安装，去插件中心安装后才能登记`, 'puzzle'); return; }
+    if (!p.installed) { toast(`「${p.label}」提供方未安装`, 'puzzle'); return; }
     if (p.id === form.provider) return;
     set({ provider: p.id, conn: {}, port_db: '' });
   };
@@ -142,7 +142,7 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
       const r = await api.writeEvidenceSecret(source.id, { fields: { [sf.name]: form.password } });
       setCred({ ref: r.cred_ref, at: r.written_at });
       set({ password: '' });
-      toast(`已写入 ${r.cred_ref}；旧版本等任务跑完后删除`, 'key');
+      toast(`已写入 ${r.cred_ref}`, 'key');
       onSaved?.({ silent: true });
     } catch (e) { toast(errorText(e), 'alert'); }
   };
@@ -151,7 +151,7 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
       await api.deleteEvidenceSecret(source.id);
       setCred({ ref: null, at: null });
       setTest(null);
-      toast('已删除凭据；重新写入之前不能采集', 'trash');
+      toast('已删除凭据', 'trash');
       onSaved?.({ silent: true });
     } catch (e) { toast(errorText(e), 'alert'); }
   };
@@ -163,7 +163,7 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
     try {
       if (!admin) {
         await api.requestEvidenceSource(registerBody(form, provider, { withSecret: false }));
-        toast('已提交登记申请，管理员处理后通知你', 'send');
+        toast('已提交登记申请', 'send');
         onSaved?.();
         return;
       }
@@ -174,13 +174,13 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
         }
         const { id, provider: p, secret, ...rest } = registerBody(form, provider, { withSecret: false });
         await api.updateEvidenceSource(source.id, rest);
-        toast(`已保存 ${source.id} 的登记，新任务按新设置执行`, 'check');
+        toast(`已保存 ${source.id} 的登记`, 'check');
         onSaved?.();
         return;
       }
       const created = await api.registerEvidenceSource(registerBody(form, provider, { grantProjectId: pid }));
       const r = await api.testEvidenceSource(created.id, { project_id: pid }).catch(() => null);
-      toast(r?.ok ? `已登记 ${created.id}，并授权给本项目；测试连接通过` : `已登记 ${created.id}，并授权给本项目；测试连接没通过，到「⋯」里重新测试`, r?.ok ? 'check' : 'alert');
+      toast(r?.ok ? `已登记 ${created.id} 并授权本项目` : `已登记 ${created.id}，测试连接没通过`, r?.ok ? 'check' : 'alert');
       onSaved?.();
     } catch (e) {
       if (e.code === 'source_id_taken') { setServerErr({ id: '这个 ID 已被占用' }); setShowErr(true); }
@@ -191,7 +191,7 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
   };
 
   const title = !admin ? '申请登记数据源' : editing ? `编辑登记（管理员）` : '登记数据源（管理员）';
-  const sub = !admin ? '管理员写入凭据、测试通过后登记；登记后在租户内可复用' : editing ? `${source?.display_name || ''} · 修改后新任务按新设置执行` : '登记后在租户内可复用；本项目随即获得授权';
+  const sub = admin && editing ? source?.id : null;
   const foot = (
     <>
       <Button onClick={onClose}>取消</Button>
@@ -205,10 +205,10 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
 
   return (
     <EvdDrawer id="evdWiz" open={open} onClose={onClose} icon="plug" title={title} sub={sub} foot={foot}>
-      {!admin ? <div className="mb12"><Note tone="amber" icon="lock">需要管理员权限。你可以先填好不含密钥的部分提交，由管理员写入凭据、完成测试后登记。</Note></div> : null}
+      {!admin ? <div className="mb12"><Note tone="amber" icon="lock">需要管理员登记，先填不含密钥的部分提交给管理员。</Note></div> : null}
       <div className="evd-stepper">{STEP_TITLES.map((t, i) => <i key={t} className={v.done[i] || i === v.current ? 'on' : ''} />)}</div>
 
-      <Step n={1} state={stepState(0)} title="选择类型" right={provider ? <span className="xs muted">{KIND_LABEL[provider.kind]} · {provider.label}</span> : <span className="xs muted">选一种</span>}>
+      <Step n={1} state={stepState(0)} title="选择类型" right={provider ? <span className="xs muted">{KIND_LABEL[provider.kind]} · {provider.label}</span> : null}>
         <div className="evd-types">
           {types.map((p) => (
             <div key={p.id} className={cx('t', p.id === form.provider && 'on', !p.installed && 'na')} style={editing && p.id !== form.provider ? { opacity: 0.45, cursor: 'not-allowed' } : undefined} onClick={() => pickType(p)}>
@@ -218,11 +218,11 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
         </div>
       </Step>
 
-      <Step n={2} state={stepState(1)} title="连接参数" extra={<span className="xs muted">不含密钥</span>}>
+      <Step n={2} state={stepState(1)} title="连接参数">
         {provider ? (
           <div className="evd-g2">
             <Field label="显示名" hint={err('display_name')}><Inp value={form.display_name} placeholder="如 ERP 生产库" onChange={(e) => set({ display_name: e.target.value })} error={showErr && errs.display_name} /></Field>
-            <Field label="数据源 ID" hint={err('id') || '锚点前缀，登记后不能改'}><Inp mono value={form.id} placeholder="如 erp-prod" disabled={editing} onChange={(e) => set({ id: e.target.value.trim() })} error={showErr && errs.id} /></Field>
+            <Field label="数据源 ID" hint={err('id') || '登记后不能改'}><Inp mono value={form.id} placeholder="如 erp-prod" disabled={editing} onChange={(e) => set({ id: e.target.value.trim() })} error={showErr && errs.id} /></Field>
             {(provider.cred_fields || []).filter((f) => !f.secret).map((f) => {
               if (portDb && f.name === 'database') return null;
               if (portDb && f.name === 'port') {
@@ -233,13 +233,13 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
             })}
             <Field label="环境" hint="生产环境每次采集都要你确认"><Seg items={[['production', '生产'], ['test', '测试']]} value={form.environment} onChange={(k) => set({ environment: k })} /></Field>
           </div>
-        ) : <div className="sm muted">先选类型，再填这类数据源要的连接参数。</div>}
+        ) : <div className="sm muted">先选类型</div>}
       </Step>
 
-      <Step n={3} state={stepState(2)} title="凭据" extra={<Chip tone="indigo" sm icon="lock">只写不读</Chip>}>
+      <Step n={3} state={stepState(2)} title="凭据">
         {provider && !sf ? <div className="sm muted">这类数据源不需要凭据。</div> : !admin ? (
           <>
-            <div className="evd-cred none"><Icon name="key" size={18} /><div className="grow sm muted">凭据只能由管理员写入，申请里不带密钥。管理员写入后，明文只在连接器网关，主容器和助手都拿不到。</div></div>
+            <div className="evd-cred none"><Icon name="key" size={18} /><div className="grow sm muted">凭据由管理员写入</div></div>
             <div className="mt8"><Field label="写入新密码"><Inp icon="lock" type="password" disabled placeholder="由管理员写入" /></Field></div>
           </>
         ) : (
@@ -249,16 +249,16 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
                 <Icon name="key" size={18} />
                 <div className="grow">
                   <div className="anchor" style={{ fontSize: 12.5 }}>{cred.ref}</div>
-                  <div className="xs muted mt4">{cred.at ? `${fmtDay(cred.at)} 写入 · ` : ''}明文只在连接器网关，主容器和助手都拿不到</div>
+                  {cred.at ? <div className="xs muted mt4">{fmtDay(cred.at)} 写入</div> : null}
                 </div>
                 <Button size="sm" icon="refresh" onClick={rotate}>轮换</Button>
                 <Button size="sm" icon="trash" kind="ghost" title="删除凭据" onClick={dropCred} />
               </div>
             ) : (
-              <div className="evd-cred none"><Icon name="key" size={18} /><div className="grow sm muted">{editing ? '凭据已删除，写入新密码后才能采集。' : '还没有凭据，保存登记时转交连接器网关。'}明文只在网关，主容器和助手都拿不到。</div></div>
+              <div className="evd-cred none"><Icon name="key" size={18} /><div className="grow sm muted">{editing ? '凭据已删除，写入新密码后才能采集。' : '还没有凭据'}</div></div>
             )}
             <div className="mt8">
-              <Field label="写入新密码" hint="提交后立即转交网关，内核不保存；日志和审计里只记引用">
+              <Field label="写入新密码">
                 <Inp icon="lock" type="password" autoComplete="new-password" value={form.password} placeholder={sf?.label ? `写入${sf.label}` : ''} onChange={(e) => set({ password: e.target.value })} />
               </Field>
             </div>
@@ -267,15 +267,15 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
       </Step>
 
       <Step n={4} state={stepState(3)} title="范围与限制">
-        <Field label="范围白名单" hint={err('scope') || '只采这些对象；其余对象在 discover 里会列出但不采'}><ScopeTags value={form.scope} onChange={(scope) => set({ scope })} /></Field>
+        <Field label="范围白名单" hint={err('scope') || '只采这些对象'}><ScopeTags value={form.scope} onChange={(scope) => set({ scope })} /></Field>
         <div className="evd-g2 mt8">
-          <Field label="出口地址" hint={err('egress') || '网关只连白名单里的主机和端口'}><Inp mono value={form.egress} placeholder="192.0.2.14:3306" onChange={(e) => { setEgressTouched(true); set({ egress: e.target.value }); }} error={showErr && errs.egress} /></Field>
+          <Field label="允许连接的地址" hint={err('egress')}><Inp mono value={form.egress} placeholder="192.0.2.14:3306" onChange={(e) => { setEgressTouched(true); set({ egress: e.target.value }); }} error={showErr && errs.egress} /></Field>
           <Field label="访问时间窗口" hint={err('window')}><Inp icon="clock" value={form.window} placeholder="全天" onChange={(e) => set({ window: e.target.value })} error={showErr && errs.window} /></Field>
-          <Field label="预算" hint={err('budget') || '超出预算按「部分完成」结束，可以续采'}><Inp value={form.budget} onChange={(e) => set({ budget: e.target.value })} error={showErr && errs.budget} /></Field>
+          <Field label="预算" hint={err('budget')}><Inp value={form.budget} onChange={(e) => set({ budget: e.target.value })} error={showErr && errs.budget} /></Field>
           <Field label="限流" hint={err('rate')}><Inp value={form.rate} onChange={(e) => set({ rate: e.target.value })} error={showErr && errs.rate} /></Field>
         </div>
         <div className="mt8">
-          <Field label="脱敏策略" hint="判断不了的列一律按敏感处理；样本每表最多 20 行">
+          <Field label="脱敏策略" hint="样本每表最多 20 行">
             <Select value={form.masking} options={MASKING.map(([value, label]) => ({ value, label }))} onChange={(masking) => set({ masking })} />
           </Field>
         </div>
@@ -302,15 +302,8 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
                 <b>{CHECK_LABEL[c.name] || c.name}</b><span className="muted">{checkDetail(c)}</span>
               </div>
             ))}
-            {test.ticket ? <div className="xs faint mt8">本次测试用的一次性票据 {test.ticket.id_prefix}…（{Math.round(test.ticket.expires_in_s / 60)} 分钟过期，{test.ticket.consumed ? '已作废' : '未使用'}）</div> : null}
           </>
-        ) : testing ? <div className="sm muted row g4"><span className="spin" />正在测试连通、账号只读自检和语句白名单…</div> : (
-          <div className="sm muted">
-            {!admin ? '管理员写入凭据后测试连通、账号只读自检和语句白名单，通过才会登记。'
-              : editing ? '测试连通、账号只读自检和语句白名单；用一次性票据，10 分钟过期。'
-                : '保存登记后自动测试连通、账号只读自检和语句白名单。'}
-          </div>
-        )}
+        ) : testing ? <div className="sm muted row g4"><span className="spin" />正在测试…</div> : admin && !editing ? <div className="sm muted">保存后自动测试</div> : null}
       </Step>
     </EvdDrawer>
   );

@@ -92,3 +92,14 @@
 .fl-ed-cm.ro{opacity:.7}
 .stt-evc{display:flex;align-items:center;gap:6px;height:28px;border:1px solid #DCE6F5;background:#F2F6FD;border-radius:7px;padding:0 7px;font-size:12px;color:#3A5A8C;white-space:nowrap;overflow:hidden;cursor:help}
 .stt-evc.ok{border-color:#DCE6F5}
+/* ER 视图（包选用的内核视图 er_view） */
+.sd-er{position:absolute;inset:0;overflow:auto;padding:12px}
+.sd-er svg{display:block;margin:0 auto}
+.sd-er text{font-size:11.5px;fill:var(--ink2)}
+.sd-er .tn{font-size:12.5px;font-weight:650;fill:var(--ink)}
+.sd-er .k{fill:var(--ink3);font-family:var(--mono);font-size:10.5px}
+.sd-er .lb{font-size:11px;fill:var(--ink3);paint-order:stroke;stroke:#F7F9FD;stroke-width:4px;stroke-linejoin:round}
+.sd-er .tb{cursor:pointer}
+.sd-er .tb:hover rect:first-of-type{stroke:var(--blue)}
+.sd-er-zoom{position:absolute;right:14px;bottom:14px;background:rgba(255,255,255,.94);border:1px solid var(--line);border-radius:10px;padding:4px 6px;box-shadow:var(--sh-soft)}
+.sd-er-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}

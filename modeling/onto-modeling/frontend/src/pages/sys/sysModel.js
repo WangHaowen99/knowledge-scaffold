@@ -1,5 +1,5 @@
 // 系统设置（sys）的纯逻辑：分区、模型接入表单、上下文推荐表（合并、匹配、校验、导入）、会话池、沙箱、
-// 全局 MCP、配置注册表、配额与 L4 限制，以及没挂界面的模型单价（SY-18）、服务令牌（X-06）。
+// 全局 MCP、配置注册表、配额与自主构建限制，以及没挂界面的模型单价（SY-18）、服务令牌（X-06）。
 // mock（routes-system.js）也用这里的推荐表合并与校验，保证页面和 mock 是同一套规则。
 
 // ---------- 分区 ----------
@@ -10,17 +10,31 @@ export const SYS_SECTIONS = [
   { key: 'box', title: '脚本验证沙箱', icon: 'server' },
   { key: 'mcp', title: 'MCP 服务器', icon: 'link' },
   { key: 'reg', title: '配置注册表', icon: 'sliders' },
-  { key: 'quota', title: '配额与 L4 限制', icon: 'gauge' },
+  { key: 'quota', title: '配额与自主构建', icon: 'gauge' },
 ];
 const SECTION_ALIAS = {
   models: 'model', engine: 'model', context: 'ctx', presets: 'ctx', session: 'sess', permission: 'sess',
   sandbox: 'box', 'mcp-servers': 'mcp', registry: 'reg', config: 'reg', quotas: 'quota', l4: 'quota', autobuild: 'quota',
 };
-/** 地址参数 ?section= → 分区 key；认不出时落到模型接入 */
-export function sysSection(q) {
+/** 地址参数 ?section= → 分区 key；认不出时落到模型接入。available 给了时，不在里面的分区也落到模型接入（R17） */
+export function sysSection(q, available) {
   const k = String(q || '').trim().toLowerCase();
-  if (SYS_SECTIONS.some((s) => s.key === k)) return k;
-  return SECTION_ALIAS[k] || 'model';
+  const key = SYS_SECTIONS.some((s) => s.key === k) ? k : SECTION_ALIAS[k] || 'model';
+  return available && !available.includes(key) ? 'model' : key;
+}
+
+// 分区随接口出现（R17）：进系统设置时读一次各分区的接口，回 404 的分区不进左栏。
+// 配额分区有两组接口（SY-15 配额、SY-17 自主构建限制），任一组在就出；模型接入是落脚点，一直在。
+export const SECTION_PROBES = {
+  model: [], ctx: ['contextPresets'], sess: ['sessionSettings'], box: ['sandboxSettings'], mcp: ['globalMcpServers'], reg: ['configRegistry'],
+  quota: ['quotas', 'autobuildLimits'],
+};
+/** results：{接口名: 'ok' | 'missing' | 'error'}（missing = 404）；读不出来但不是 404 的分区照常出，进去看错误和重试 */
+export function availableSections(results) {
+  return SYS_SECTIONS.map((s) => s.key).filter((k) => {
+    const probes = SECTION_PROBES[k] || [];
+    return !probes.length || probes.some((name) => results?.[name] !== 'missing');
+  });
 }
 
 // ---------- 数字与时间 ----------
@@ -57,14 +71,15 @@ export function fmtHm(iso) {
 }
 
 // ---------- 模型接入（SY-01～SY-04） ----------
+// 引擎卡副标题是接口类型：配网关时要知道对接哪一种
 export const ENGINE_META = {
-  claude: { suffix: ' — 功能最完整', sub: 'Anthropic 兼容接口' },
-  jiuwen: { suffix: '', sub: 'OpenAI 兼容接口' },
+  claude: { sub: 'Anthropic 兼容接口' },
+  jiuwen: { sub: 'OpenAI 兼容接口' },
 };
-/** 引擎卡右上角：已安装（带运行时版本）或当前部署未安装 */
+/** 引擎卡右上角：已安装或当前部署未安装（运行时版本在运维管控的版本清单里） */
 export function installChip(e) {
   if (!e?.installed) return { text: '当前部署未安装', tone: 'amber', icon: 'alert' };
-  return { text: e.runtime_version ? `已安装 · 运行时 ${e.runtime_version}` : '已安装', tone: 'teal', icon: 'check' };
+  return { text: '已安装', tone: 'teal', icon: 'check' };
 }
 const SOURCE_TEXT = { env: '.env', default: '内置默认', derived: '按窗口与最大输出推算' };
 /** context_defaults 一项的来源说法（B2 第 8 条：env / default，没有值时交给引擎默认） */
@@ -77,10 +92,9 @@ export function defaultPlaceholder(d) {
   if (!d || d.value == null) return '留空交给引擎默认';
   return `留空按 ${d.value}（${defaultSourceText(d)}）`;
 }
-/** 压缩触发点的字段提示：页面填的值只校验范围，服务端按窗口与最大输出推算（或 .env）（B2 第 9 条） */
+/** 压缩触发点的字段提示：只在取 .env 时说一声；页面填的值只校验范围，服务端按窗口与最大输出推算（B2 第 9 条） */
 export function compactHint(d) {
-  if (d?.source === 'env') return '占用超过后自动压缩上下文（当前取 .env）';
-  return '占用超过后自动压缩上下文';
+  return d?.source === 'env' ? '当前取 .env' : null;
 }
 
 export function engineForm(e) {
@@ -135,7 +149,7 @@ export function engineSavedText(label, sent, saved) {
   const pct = sent?.context?.compact_at_pct;
   const eff = saved?.context?.compact_at_pct;
   if (pct != null && eff != null && pct !== eff) {
-    return `已保存，${label}的新会话生效；自动压缩阈值由服务端按窗口与最大输出推算，现为 ${eff}%`;
+    return `已保存，新会话生效；自动压缩阈值按推算为 ${eff}%`;
   }
   return `已保存，${label}的新会话生效`;
 }
@@ -213,13 +227,13 @@ export function upsertPreset(list, entry, replaced) {
 }
 export const removePreset = (list, model) => list.filter((p) => normalizeModelName(p.model) !== normalizeModelName(model));
 
-export const PRESET_COLUMNS = { model: '模型', vendor: '厂商', window: '上下文窗口', max_output: '最大输出', note: '说明与来源' };
+export const PRESET_COLUMNS = { model: '模型', vendor: '厂商', window: '上下文窗口', max_output: '最大输出', note: '备注' };
 // 导入文件的表头 → 字段
 const HEADER_ALIAS = {
   model: 'model', id: 'model', 模型: 'model', vendor: 'vendor', 厂商: 'vendor',
   window: 'window', max_context_tokens: 'window', 上下文窗口: 'window',
   max_output: 'max_output', max_output_tokens: 'max_output', 最大输出: 'max_output',
-  note: 'note', 说明: 'note', 说明与来源: 'note', aliases: 'aliases', 别名: 'aliases', sources: 'sources', 来源链接: 'sources',
+  note: 'note', 备注: 'note', 说明: 'note', 说明与来源: 'note', aliases: 'aliases', 别名: 'aliases', sources: 'sources', 来源链接: 'sources',
 };
 
 /** 一行推荐值的问题：{column, message}，没问题返回 null */
@@ -334,24 +348,17 @@ export function importSummary(presets, rows) {
   return { total: presets.length, overrides: over, added: presets.length - over, replacing: customPresets(rows).length };
 }
 
-/** 推荐表顶部提示条：正常 / 停用 / 有误 */
+/** 推荐表顶部提示条：只在有误、停用时出；正常时不出（覆盖、自定义看表格「来源」列） */
 export function presetsNote(view) {
   const c = view?.custom || {};
   if (c.status === 'invalid') {
     const fallback = c.loaded_at ? `当前沿用 ${fmtShort(c.loaded_at)} 加载的自定义表` : '当前未生效';
-    return { tone: 'red', lead: `自定义表有误，${fallback}：`, text: `${presetErrorText(c.error)}。停用后改用内置表；已保存的模型配置与上下文参数不受影响。` };
+    return { tone: 'red', lead: `自定义表有误，${fallback}：`, text: presetErrorText(c.error) };
   }
   if (c.status === 'disabled') {
-    return { tone: 'gray', lead: '', text: `当前只用内置表${view?.builtin_verified_at ? `（核对日期 ${view.builtin_verified_at}）` : ''}。${c.backup_available ? '上次停用的自定义表留有备份，把备份文件改回原名即可重新启用，无需重启。' : ''}` };
+    return { tone: 'gray', lead: '', text: `当前只用内置表${view?.builtin_verified_at ? `（核对日期 ${view.builtin_verified_at}）` : ''}` };
   }
-  const parts = [c.overrides ? `${c.overrides} 行覆盖` : '', c.added ? `${c.added} 行新增` : ''].filter(Boolean);
-  return { tone: 'blue', lead: '', text: `当前使用：内置表 + 自定义表${parts.length ? `（${parts.join('、')}）` : ''}。` };
-}
-/** 提示条右侧的小字：内置表核对日期、自定义表加载时间 */
-export function presetsMeta(view) {
-  const c = view?.custom || {};
-  return [view?.builtin_verified_at ? `内置表核对于 ${view.builtin_verified_at}` : '', c.status === 'ok' && c.loaded_at ? `自定义表 ${fmtShort(c.loaded_at)} 加载` : '']
-    .filter(Boolean).join(' · ');
+  return null;
 }
 
 export function filterPresets(rows, q) {
@@ -392,20 +399,16 @@ export const presetEntry = (f) => ({
 
 // ---------- 会话与权限（SY-09） ----------
 export const PERMISSION_MODES = [
-  ['bypassPermissions', '全放行（默认）', '不弹确认卡，写保护守卫是硬约束。业务用户操作最少'],
-  ['default', '逐操作确认', '每次写文件、执行命令都弹确认卡，600 秒不回复按拒绝处理'],
+  ['bypassPermissions', '全放行（默认）', '不弹确认卡'],
+  ['default', '逐操作确认', '写文件、执行命令都要确认'],
   ['acceptEdits', '仅自动接受编辑', '改产物自动通过，执行命令仍要确认'],
-  ['plan', '计划模式', '只出计划不动文件，适合先看方案'],
+  ['plan', '计划模式', '只出计划，不改文件'],
 ];
-/** 权限模式说明里的超时秒数按会话池的实际值 */
-export function permissionModes(timeoutS) {
-  return PERMISSION_MODES.map(([k, t, c]) => [k, t, k === 'default' && timeoutS ? c.replace('600', String(timeoutS)) : c]);
-}
-const POOL_ENV = { max_sessions: 'ONTO_WEB_MAX_SESSIONS', idle_ttl_s: 'ONTO_WEB_SESSION_IDLE_TTL', permission_timeout_s: 'ONTO_WEB_PERMISSION_TIMEOUT' };
-/** 会话池三格（契约 #56：sys 只读，运维面可改；来源 env 时显示变量名，运维改过时说明覆盖了环境变量） */
+export const permissionModes = () => PERMISSION_MODES;
+/** 会话池三格（契约 #56：sys 只读，运维面可改）；运维改过时标「运维已调整」 */
 export function poolRows(pool) {
   const p = pool || {};
-  const sub = (k) => (p.source === 'env' || !p.source ? POOL_ENV[k] : '运维面已调整（覆盖环境变量）');
+  const sub = () => (p.source === 'env' || !p.source ? '' : '运维已调整');
   return [
     { key: 'max_sessions', label: '活跃会话上限', value: p.max_sessions == null ? '—' : String(p.max_sessions), sub: sub('max_sessions') },
     { key: 'idle_ttl_s', label: '空闲回收', value: p.idle_ttl_s == null ? '—' : p.idle_ttl_s === 0 ? '不回收' : `${p.idle_ttl_s} 秒`, sub: sub('idle_ttl_s') },
@@ -414,7 +417,7 @@ export function poolRows(pool) {
 }
 
 // ---------- 脚本验证沙箱（SY-10、SY-11） ----------
-/** 「经 sandbox-gateway:8110 · 非 root、只读根文件系统、内存 256MB、最多 64 个进程」 */
+/** 「非 root、只读根文件系统、内存 256MB、最多 64 个进程」（网关地址在右侧「脚本验证网关」） */
 export function sandboxLine(v) {
   if (!v) return '';
   const i = v.isolation || {};
@@ -425,7 +428,7 @@ export function sandboxLine(v) {
     i.max_procs ? `最多 ${i.max_procs} 个进程` : '',
   ].filter(Boolean);
   if (!v.connected) return v.detail || `连不上 ${v.gateway || '脚本验证网关'}`;
-  return `经 ${v.gateway || '脚本验证网关'}${parts.length ? ` · ${parts.join('、')}` : ''}`;
+  return parts.join('、');
 }
 export function filterPackages(list, q) {
   const k = String(q || '').trim().toLowerCase();
@@ -493,7 +496,7 @@ export const mcpItemsAfterRemove = (items, name) => (items || []).filter((x) => 
 /** 保存失败的说法：后端这一版不支持鉴权（B2 第 12 条）时直接说清楚，其余返回 null 交给通用错误提示 */
 export function mcpSaveError(e) {
   const f = e?.details?.fields || {};
-  if (e?.code === 'invalid_argument' && f['auth.kind']) return '这一版服务端还不支持为 MCP 服务器配置鉴权，把鉴权改成「不鉴权」再保存';
+  if (e?.code === 'invalid_argument' && f['auth.kind']) return '暂不支持鉴权，请选「不鉴权」';
   return null;
 }
 /** 测试连接的提示：「kb-search：连接正常，4 个工具，延迟 86ms」 */
@@ -530,7 +533,7 @@ export function registryValue(item) {
   return { text: String(v), mono: item.secret || /^[a-z]+:\/\//i.test(String(v)), muted: false };
 }
 
-// ---------- 配额与 L4 限制（SY-15～SY-17） ----------
+// ---------- 配额与自主构建限制（SY-15～SY-17） ----------
 export const QUOTA_ITEMS = {
   user: [['concurrent_sessions', '同时在线会话'], ['daily_tokens', '每日 token 预算'], ['collections_per_source_per_hour', '证据采集频率']],
   project: [['monthly_tokens', '每月 token 预算'], ['snapshot_git_mb', '单份快照在 git 里的上限']],
@@ -593,10 +596,10 @@ export function overrideProblems(f, existing) {
   const v = parseIntText(f.value);
   if (v === null || Number.isNaN(v) || v < 0) out.value = '填非负整数';
   const reason = (f.reason || '').trim();
-  if (!reason) out.reason = '写一下原因，方便以后核对';
+  if (!reason) out.reason = '填写原因';
   else if (reason.length > 200) out.reason = '不超过 200 个字';
   if (!out.id && !out.item && (existing || []).some((o) => o.subject?.kind === f.kind && o.subject?.id === id && o.item === f.item)) {
-    out.item = '这个对象已经有这一项的单独设置，先删掉再加';
+    out.item = '已有这一项的单独设置';
   }
   return out;
 }
@@ -639,7 +642,7 @@ export function limitsBody(f, prev) {
   };
 }
 export const limitsDirty = (l, f) => JSON.stringify(limitsForm(l)) !== JSON.stringify(f);
-export const nightText = (n) => `${n?.start || '20:00'}–${n?.end || '08:00'} 启动的 L4 不占白天的会话池名额`;
+export const nightText = (n) => `${n?.start || '20:00'}–${n?.end || '08:00'} 启动的不占会话池名额`;
 
 // ---------- 模型单价（SY-18，设计稿没画入口） ----------
 export const PRICE_FIELDS = [['input_per_mtok', '输入'], ['output_per_mtok', '输出'], ['cache_read_per_mtok', '缓存读取']];

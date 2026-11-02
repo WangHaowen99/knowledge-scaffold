@@ -1,6 +1,7 @@
 // mock 服务端：按契约路径响应，状态放在内存里；SSE 由 StreamHub 推送。
 // 只在 VITE_API_MOCK=1 的开发 / 测试构建里加载。
 // 演示状态用地址参数切换：?mock=login:fail,projects:empty,auth:local,maint:readonly,engine:missing,import:conflict,role:user,scope:running|pending
+// ?mock=evidence:off：证据源按本期后端不可用（EV-01 回 501、没有系统逆向建模包）
 // ?mock=flow:p1：/flow 按 P1 后端（B3a）的形状返回（4 种状态、命令文本 actions、没有切片），核对前端归一处理
 // 项目所处阶段（工作台显示什么）：?mock=stage:materials 等，见 stageOf；各阶段的对话、流程由 routes-*.js 的 stages 提供。
 // F2、F3 各页的接口按分组放在 routes-*.js，每个文件导出 register(ctx)、可选的 stages、projectStages、lockScope、taskSeeds。
@@ -422,7 +423,16 @@ export function createMockServer() {
     emitProj(m[1], 'flow.updated', { flow_hash: f.flow_hash, nodes: [{ id: n.id, state: n.state, flags: n.flags, progress: n.progress }], slices: [], suggestions_changed: false });
     return json(200, { node: n, flow_hash: f.flow_hash });
   });
-  on('POST', '/projects/([^/]+)/flow/nodes/([^/]+)/start', ({ m, body }) => {
+  on('POST', '/projects/([^/]+)/flow/nodes/([^/]+)/start', async ({ m, body }) => {
+    // 脚本节点（B5c）：同步跑完回 run，不发对话（契约 B5c 第 10 条）；建模步骤抽屉里展开看结果（R24）
+    const f = flowOf(m[1]);
+    const sn = f.nodes.find((x) => x.id === m[2] && x.kind === 'script');
+    if (sn) {
+      await wait(600);
+      const at = new Date().toISOString();
+      sn.last_run = { state: 'passed', summary: sn.last_run?.summary || '检查通过', at };
+      return json(200, { node: sn, flow_hash: f.flow_hash, run: { state: 'passed', output: sn.last_run.summary, commit: null, version_label: null, duration_ms: 600, runtime: 'jiuwenbox' } });
+    }
     const cid = convsOf(m[1])[0].id;
     const msgId = `m-${uid()}`;
     emitConv(m[1], cid, 'message.user', { message_id: msgId, text: `开始「${flowOf(m[1]).nodes.find((x) => x.id === m[2])?.title || m[2]}」`, attachments: [], references: [], origin: body.origin ? { kind: 'page', ...body.origin, task_id: null } : null, delivery: 'immediate' });

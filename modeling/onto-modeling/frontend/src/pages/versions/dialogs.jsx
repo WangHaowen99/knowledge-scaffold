@@ -44,7 +44,6 @@ export function TagModal({ open, items, initial, onClose, onDone }) {
       onClose={onClose}
       icon="tag"
       title="标记版本"
-      sub="给一个值得回来的版本起个名字"
       foot={(
         <>
           <Button onClick={onClose}>取消</Button>
@@ -98,7 +97,7 @@ export function DeleteTagModal({ tag, onClose, onDone }) {
       onClose={onClose}
       danger
       icon="tag"
-      title="删除这个标记？"
+      title={`删除标记${tag?.label ? `「${tag.label}」` : ''}？`}
       sub="只删标记，版本本身保留"
       foot={(
         <>
@@ -106,9 +105,7 @@ export function DeleteTagModal({ tag, onClose, onDone }) {
           <Button kind="danger fill" disabled={busy} onClick={submit}>删除标记</Button>
         </>
       )}
-    >
-      <div className="sm">删除后，这个版本在列表里不再显示标记名称{tag?.label ? `「${tag.label}」` : ''}。</div>
-    </Modal>
+    />
   );
 }
 
@@ -158,7 +155,7 @@ export function RevertModal({ version, onClose, onDone }) {
       onClose={onClose}
       icon="undo"
       title={`回退到 ${label}？`}
-      sub={`回退会生成新版本 ${preview?.next_version_label || '…'}，历史保留，可以再回退`}
+      sub={`会生成新版本 ${preview?.next_version_label || '…'}，可再回退`}
       foot={(
         <>
           <Button onClick={onClose}>取消</Button>
@@ -188,7 +185,7 @@ export function RevertModal({ version, onClose, onDone }) {
               </div>
             ) : null}
             <Note tone="gray" icon="layers">
-              启用的能力和版本也一起回到 {label} 当时的状态，下一条消息开始生效。
+              启用的能力也回到 {label} 时的状态
               {preview.packs_lock_changes.length ? (
                 <div className="xs mt4">
                   {preview.packs_lock_changes.map((p) => `${PACK_LABEL[p.pack] || p.pack} ${p.from} → ${p.to || '停用'}`).join('；')}

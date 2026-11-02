@@ -8,7 +8,7 @@ import { navigate } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { PageHead } from '../../shell/Shell.jsx';
-import { Button, Icon } from '../../ui/index.jsx';
+import { Icon } from '../../ui/index.jsx';
 import { useAct, useUserNames } from './ctlParts.jsx';
 import { HealthSection } from './ctlHealth.jsx';
 import { EnterMaintModal, MaintenanceCard } from './ctlMaint.jsx';
@@ -136,28 +136,15 @@ function CtlBody({ route, perm }) {
 
   const probe = () => run('probe', () => api.ops.probeHealth(), { ok: (r) => `已重新探测 ${(r || []).length} 个依赖` })
     .then((r) => { if (r) put('health', { ...d.health, dependencies: r }); });
-  const maintActive = !!d?.maint?.active;
-  const deny = perm.opsWrite ? null : perm.hint('ops.write');
-
   return (
     <div ref={rootRef}>
-      <PageHead
-        eyebrow="运维中心" title="运维管控与健康" desc="管控指令经治理平面下发，所有操作写审计。"
-        actions={(
-          <Button
-            icon="wrench" kind="primary" disabled={!perm.opsWrite || maintActive || !ready}
-            title={deny || (maintActive ? '已在维护模式中：在下面的维护窗口里继续或取消' : null)} onClick={() => setEnter(true)}
-          >
-            进入维护模式
-          </Button>
-        )}
-      />
+      <PageHead title="运维管控与健康" />
       {!ready ? <div className="card pad muted sm">正在读取运维状态…</div> : (
         <>
           <HealthSection health={d.health} startup={d.startup} perm={perm} busy={busy} onProbe={probe} />
           <SessionsSection pool={d.sessions} names={names} perm={perm} run={run} busy={busy} reload={reload} onDrained={() => setDrainWatch(true)} />
           <div className="sec-t mt24"><Icon name="wrench" size={14} />管控</div>
-          <MaintenanceCard state={d.maint} perm={perm} run={run} busy={busy} onChanged={onMaint} />
+          <MaintenanceCard state={d.maint} perm={perm} run={run} busy={busy} onChanged={onMaint} onEnter={() => setEnter(true)} />
           <PacksSection packs={d.packs} core={d.core} repo={d.repoBackups} perm={perm} run={run} busy={busy} reload={reload} />
           <div className="op-g12 mt16">
             <StartupCard report={d.startup} />

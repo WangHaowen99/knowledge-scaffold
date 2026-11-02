@@ -1,6 +1,6 @@
 // 等用户回答的卡片：决策卡（单选 + 后果 + 改动预览）、走查分支、请专家确认、交互走查、一般确认、权限确认
 import { useEffect, useRef, useState } from 'react';
-import { Button, Chip, Icon, Kbd, Ring, cx } from '../../ui/index.jsx';
+import { Button, Chip, Icon, Ring, cx } from '../../ui/index.jsx';
 import { useActions } from './cards.jsx';
 import { DiffBlock, Inline, MSys, Tli } from './parts.jsx';
 
@@ -64,15 +64,14 @@ export function DecisionCard({ q, active }) {
       </div>
       {opt?.preview?.length ? (
         <div className="wb-prev">
-          <div className="lb"><Icon name="eye" size={14} />选 {opt.key} 会这样改<span style={{ fontWeight: 500, color: 'var(--faint)' }}>· 还没写入，确认后才执行</span></div>
+          <div className="lb"><Icon name="eye" size={14} />选 {opt.key} 会这样改</div>
           <DiffBlock lines={opt.preview} />
         </div>
       ) : null}
       <div className="wx-dcf">
-        <span className="wx-kh"><Kbd>1</Kbd>–<Kbd>{q.options.length}</Kbd> 选择<span style={{ margin: '0 4px' }}>·</span><Kbd>↵</Kbd> 确认</span>
         <span className="sp" />
         <Button size="sm" kind="ghost" onClick={() => actions.later?.(q)}>稍后决定</Button>
-        <Button kind="primary" size="sm" disabled={!ready || busy} onClick={() => submit({ option_id: pick, custom_text: opt?.custom ? custom.trim() : undefined })}>
+        <Button kind="primary" size="sm" title={`1–${q.options.length} 选择 · ↵ 确认`} disabled={!ready || busy} onClick={() => submit({ option_id: pick, custom_text: opt?.custom ? custom.trim() : undefined })}>
           {opt ? `确认方向 ${opt.key}` : '确认这个方向'}
         </Button>
       </div>
@@ -155,7 +154,7 @@ export function WalkthroughCard({ q }) {
         ))}
       </div>
       <div className="row mt12">
-        <span className="xs faint grow">选择会记进场景，下次批量验证按这条分支推演；结果回到场景走查页</span>
+        <span className="sp" />
         <Button kind="primary" size="sm" icon="play" disabled={!pick || busy} onClick={() => submit({ option_id: pick })}>继续推演</Button>
       </div>
     </div>
@@ -212,7 +211,7 @@ export function PermissionCard({ item }) {
   }, [item.resolved]);
   if (item.resolved) {
     const r = item.resolved;
-    return <MSys left>{r.behavior === 'allow' ? '已允许' : r.by === 'timeout' ? '超时未回复，已按拒绝处理' : '已拒绝'}：{item.description}</MSys>;
+    return <MSys left>{r.behavior === 'allow' ? '已允许' : r.by === 'timeout' ? '超时，已拒绝' : '已拒绝'}：{item.description}</MSys>;
   }
   const total = (item.timeout_s || 600) * 1000;
   const left = Math.max(0, (item.expires_at ? Date.parse(item.expires_at) : Date.parse(item.ts) + total) - now);
@@ -227,7 +226,7 @@ export function PermissionCard({ item }) {
       <div className="sm mt8">{item.description}</div>
       {item.details_text ? <details className="mt8"><summary className="xs muted" style={{ cursor: 'pointer' }}>查看技术细节</summary><div className="code mt4" style={{ fontSize: 11 }}>{item.details_text}</div></details> : null}
       <div className="row mt12">
-        <span className="xs faint grow">{Math.round(total / 1000)} 秒内没回复按拒绝处理</span>
+        <span className="xs faint grow">超时按拒绝</span>
         <Button size="sm" disabled={busy} onClick={() => reply('deny')}>拒绝</Button>
         <Button size="sm" kind="primary" disabled={busy} onClick={() => reply('allow')}>允许</Button>
       </div>

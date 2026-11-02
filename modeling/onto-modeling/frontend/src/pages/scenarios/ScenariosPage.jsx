@@ -13,11 +13,11 @@ import {
   Chip, Empty, Ev, Icon, Note, Seg, Select, St, Stat, Tabs, cx,
 } from '../../ui/index.jsx';
 import {
-  CommandRunBar, PluginDesc, PluginEyebrow, PluginOff, ScopeLockBar, SendButton, useCommandTasks, usePageEnabled, useProjectEvent,
+  CommandRunBar, ExtraActions, PluginEyebrow, PluginOff, ScopeLockBar, SendButton, useCommandTasks, usePageEnabled, useProjectEvent,
 } from '../plugin/parts.jsx';
 import {
   INPUT_KIND, MOCK, SCENARIO, STATUS_SEG, batchCommand, countRows, enumLabel, enumOptions, failDesc, failHint, filterRows,
-  lastRun, lockBarText, mockCommand, mockDesc, passRate, refreshCommand, rowLocked, rowLockPop, rowState, runDetail,
+  lastRun, lockBarText, mockCommand, mockDesc, passRate, refreshCommand, rowLocked, rowLockPop, rowState,
   skippedNote, sparkPaths, staleDesc, walkCommand, walkTarget,
 } from './scenariosModel.js';
 import { ScenarioDrawer } from './ScenarioDrawer.jsx';
@@ -135,9 +135,9 @@ function Scenarios({ route }) {
       <PageHead
         eyebrow={<PluginEyebrow pack="trace" label="场景走查" />}
         title="场景走查"
-        desc={<>每个场景都从样例资料或修订通知里来，用真实输入把操作推演一遍。场景输入写明类型，推演时显式传入。<PluginDesc label="场景走查" what="场景和示例数据" /></>}
         actions={(
           <>
+            <ExtraActions page="scenarios" tasks={tasks} />
             <SendButton tasks={tasks} {...refresh} icon="refresh" kind="soft" disabled={!stale.length}>补齐过期场景 {stale.length}</SendButton>
             <SendButton tasks={tasks} command={headWalk?.command} args={headWalk?.args} text={headWalk?.text} icon="hand" disabled={!headWalk}>交互走查</SendButton>
             <SendButton tasks={tasks} {...batch} kind="primary" icon="play" disabled={!all.length}>批量验证</SendButton>
@@ -146,8 +146,8 @@ function Scenarios({ route }) {
       />
       {tasks.active || showLock ? (
         <div className="mr-runrow" style={{ margin: '0 0 14px' }}>
-          <CommandRunBar task={tasks.active} detail={runDetail(tasks.active)} />
-          {showLock ? <ScopeLockBar lock={scope} text={lockBarText(scope, lockedRows, all.length)} style={{ margin: 0, flex: 1, alignItems: 'center' }} /> : null}
+          <CommandRunBar task={tasks.active} />
+          {showLock ? <ScopeLockBar lock={scope} text={lockBarText(scope, lockedRows)} style={{ margin: 0, flex: 1, alignItems: 'center' }} /> : null}
         </div>
       ) : null}
       <div className="grid4" style={{ gridTemplateColumns: '1.3fr 1fr 1fr 1fr 1fr' }}>
@@ -174,10 +174,6 @@ function Scenarios({ route }) {
             <div className="row mb12">
               <span><Seg items={STATUS_SEG} value={status} onChange={setStatus} /></span>
               <Select w="150px" icon="layers" options={sliceOptions} value={slice} onChange={setSlice} />
-              <span className="sp" />
-              <span className="xs muted">输入类型：</span>
-              <Chip tone="indigo" sm>自定义输入</Chip><span className="xs muted">推演时直接传入</span>
-              <Chip tone="line" sm>来自示例数据</Chip><span className="xs muted">推演时查示例数据</span>
             </div>
             <div className="tbl-wrap">
               <table className="tbl compact sc-tbl">
@@ -193,15 +189,13 @@ function Scenarios({ route }) {
                   ))}
                 </tbody>
               </table>
-              {rows && !list.length ? <Empty icon="flask" title={all.length ? '没有符合条件的场景' : '还没有场景'}>{all.length ? '换个状态或切片看看。' : '在工作台对话里建好操作后，助手会从样例资料和修订通知里生成场景。'}</Empty> : null}
+              {rows && !list.length ? <Empty icon="flask" title={all.length ? '没有符合条件的场景' : '还没有场景'} /> : null}
             </div>
           </div>
         ) : (
           <div className="card-b">
-            <Note tone="teal" icon="check">
-              示例数据只为场景需要的对象生成。{skip ? <>不落库的对象已跳过：<b>{skip.labels}</b>{skip.reason ? `（${skip.reason}）` : ''}。</> : null}
-            </Note>
-            <div className="grid2 mt12" style={{ gridTemplateColumns: '1fr 1.2fr' }}>
+            {skip ? <Note tone="teal" icon="check">已跳过不落库的对象：<b>{skip.labels}</b></Note> : null}
+            <div className={cx('grid2', skip && 'mt12')} style={{ gridTemplateColumns: '1fr 1.2fr' }}>
               <div className="tbl-wrap">
                 <table className="tbl compact">
                   <thead><tr><th>示例数据</th><th>用于场景</th><th>行数</th><th>生成方式</th></tr></thead>
@@ -231,7 +225,6 @@ function Scenarios({ route }) {
                     </table>
                   </div>
                 ) : null}
-                <div className="xs faint mt8">属性英文名就是真实数据表的列名；已脱敏，不含真实门店。</div>
               </div>
             </div>
           </div>

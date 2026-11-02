@@ -8,6 +8,7 @@ import {
   formFromEntry, kindSegments, lockActionTarget, lockCopy, mergeFlowchartRows, rawNotices, rejectSummary, relationText, resolutionLabel,
   rowStatus, summarizeFormChanges,
 } from '../src/pages/studio/studioModel.js';
+import { boxHeight, erData, erLayout, hasErView } from '../src/pages/studio/erModel.js';
 
 const ref = (kind, key, name) => ({ kind, id: `${kind}:${key}`, key, name });
 const DISPLAY = ref('object', 'display_qty_std', '陈列量标准');
@@ -40,17 +41,24 @@ test('写入范围锁：不在范围里没有说法；运行中「回到对话�
   assert.equal(lockCopy({ state: 'none', entries: [DISPLAY] }, DISPLAY, '陈列量标准'), null);
   const run = lockCopy(lock('assistant_running'), DISPLAY, '陈列量标准');
   assert.equal(run.chip, '运行中');
-  assert.match(run.title, /^助手正在改「超量与审批提示」这一片，「陈列量标准」在写入范围里，确认生效或撤回后才能编辑$/);
+  assert.equal(run.title, '助手正在改这一片，确认生效或撤回前只读');
   assert.equal(run.action.kind, 'conversation');
-  assert.match(run.pop, /^这个条目在「超量与审批提示」这一片的写入范围里/);
+  assert.equal(run.pop, '在「超量与审批提示」的写入范围里，确认生效或撤回前只读');
   const wait = lockCopy(lock('pending_confirm'), DISPLAY, '陈列量标准');
   assert.equal(wait.chip, '待确认');
   assert.equal(wait.action.label, '去确认');
-  assert.match(wait.sub, /助手已经停下来等你确认/);
-  // 决策卡改动预览里列了它：更具体的说法
+  assert.equal(wait.title, '这一片的修改待确认，确认生效或撤回前只读');
+  // 自主构建：这一片完成前只读，按钮去运行页；项目内不说「合入」
+  const auto = lockCopy(lock('autobuild_slice'), DISPLAY, '陈列量标准');
+  assert.equal(auto.title, '自主构建正在做这一片，完成前只读');
+  assert.equal(auto.pop, '在「超量与审批提示」的写入范围里，这一片完成前只读');
+  assert.equal(auto.action.kind, 'run');
+  [run, wait, auto].forEach((c) => assert.doesNotMatch(`${c.title}${c.pop}${c.sub}`, /合入|主线/));
+  // 决策卡改动预览里列了它：悬停换成更具体的说法，锁定条不变
   const hl = lockCopy(lock('assistant_running'), DISPLAY, '陈列量标准', { affected: [DISPLAY.id] });
-  assert.match(hl.pop, /^「陈列量标准」在这一片的写入范围里：等你决定的口径会改到它/);
-  assert.match(hl.title, /等你决定的口径会改到它（决策卡的改动预览里列了它）/);
+  assert.equal(hl.pop, '等你决定的口径会改到它，决定前只读');
+  assert.notEqual(hl.pop, run.pop);
+  assert.equal(hl.title, run.title);
   // 流程图按产物判断
   assert.ok(lockCopy(lock('pending_confirm'), { type: 'diagram.flowchart', key: 'overage-flow' }, '超量处理流程'));
   assert.deepEqual(lockActionTarget({ kind: 'confirm' }, lock('pending_confirm')), { page: 'wb-l2', query: { c: 'c1' } });
@@ -266,4 +274,40 @@ test('mock：新建重名、删除被引用的条目、证据被谁引用', asyn
   assert.ok(wu.body.items.some((x) => x.target.id === DISPLAY.id));
   const other = await call('GET', '/projects/bike-fleet-7b20e4a1/studio/entries');
   assert.equal(other.body.items.length, 0);
+});
+
+test('ER 视图：包选用了 er_view 才有；只画对象和对象之间的关系声明，属性最多列 8 个', () => {
+  assert.equal(hasErView({ view_choices: [{ id: 'er_view', pack: 'diagram' }] }), true);
+  assert.equal(hasErView({ view_choices: [{ id: 'schema_browser', pack: 'reverse' }] }), false);
+  assert.equal(hasErView({}), false);
+  assert.equal(hasErView(F.extensions(['trace', 'knowledge', 'solver', 'diagram'])), true);
+  assert.equal(hasErView(F.extensions(['trace'])), false);
+  const graph = {
+    nodes: [
+      { id: 'object:a', kind: 'object', label: '补货单' }, { id: 'object:b', kind: 'object', label: '门店' },
+      { id: 'object:c', kind: 'object', label: '品类' }, { id: 'operation:x', kind: 'operation', label: '提交补货' },
+    ],
+    edges: [
+      { id: 'd1', source: 'object:a', target: 'object:b', kind: 'declared', label: '关联门店' },
+      { id: 'd1b', source: 'object:a', target: 'object:b', kind: 'declared', label: '关联门店' },
+      { id: 'd2', source: 'operation:x', target: 'object:a', kind: 'declared', label: '输出' },
+      { id: 'm1', source: 'object:a', target: 'object:c', kind: 'mention', label: '提及' },
+    ],
+  };
+  const many = Array.from({ length: 11 }, (_, i) => ({ name: `属性${i}`, column: `col_${i}` }));
+  const data = erData(graph, { 'object:a': many, 'object:b': [{ name: '门店编号', column: 'store_code' }] });
+  assert.deepEqual(data.entities.map((e) => e.id), ['object:a', 'object:b', 'object:c']);
+  assert.deepEqual(data.relations, [{ id: 'd1', from: 'object:a', to: 'object:b', label: '关联门店' }]);
+  const a = data.entities[0];
+  assert.equal(a.fields.length, 8);
+  assert.equal(a.more, 3);
+  assert.equal(data.entities[2].fields.length, 0);
+  const lay = erLayout(data);
+  assert.equal(lay.boxes.length, 3);
+  const box = lay.boxes.find((b) => b.id === 'object:a');
+  assert.equal(box.h, boxHeight(a));
+  // 从左到右：关系的起点实体在终点左边，连线有路径
+  assert.ok(box.x < lay.boxes.find((b) => b.id === 'object:b').x);
+  assert.match(lay.edges[0].d, /^M\d+ \d+( L\d+ \d+)+$/);
+  assert.ok(lay.width >= 320 && lay.height >= 200);
 });

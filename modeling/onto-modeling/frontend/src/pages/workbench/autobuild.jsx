@@ -17,7 +17,7 @@ export const useAutobuildCtx = () => useContext(AutobuildCtx);
 const OP = {
   pause: ['pauseAutobuild', '当前步骤做完后暂停', 'pause'],
   stop_at_safe_point: ['stopAutobuildAtSafePoint', '会在当前切片的安全点停下', 'stop'],
-  convert_to_l2: ['convertAutobuildToL2', '这一片做完后转为陪伴，剩下的逐个确认', 'hand'],
+  convert_to_l2: ['convertAutobuildToL2', '这一片做完后转为陪伴', 'hand'],
   resume: ['resumeAutobuild', '继续运行', 'play'],
 };
 const DIMENSION = { duration: '时长', tokens: 'token', cost: '费用' };
@@ -53,7 +53,7 @@ export function useAutobuild({ pid, cid, list }) {
     if (!runId || (d.run_id && d.run_id !== runId)) return;
     switch (env.type) {
       case 'autobuild.run.updated': setRun((r) => (r ? { ...r, ...d } : r)); break;
-      case 'autobuild.budget_warning': toast(`${DIMENSION[d.dimension] || '预算'}已用到 ${Math.round(d.used_pct)}%，到上限会在安全点停下`, 'gauge'); break;
+      case 'autobuild.budget_warning': toast(`${DIMENSION[d.dimension] || '预算'}已用 ${Math.round(d.used_pct)}%`, 'gauge'); break;
       case 'autobuild.safe_point': if (d.next !== 'continue') load().catch(() => {}); break;
       case 'autobuild.finished': load().catch(() => {}); break;
       default: break;
@@ -201,19 +201,13 @@ export function RunDrawer({ ab }) {
     <Drawer
       open={ab.drawer} onClose={ab.closeDetails} icon="rocket" w={820}
       title={`运行详情 · 运行 #${run.run_no}`}
-      sub={`${hhmm(run.started_at)} 开始 · 按「项目设置 › 构建方式」里的策略运行`}
+      sub={`${hhmm(run.started_at)} 开始`}
     >
       <div className="g2-mini">
         {miniMetrics(run).map(([b, t]) => <div key={t}><b>{b}</b><span>{t}</span></div>)}
       </div>
       <div className="sec-t mt16">
-        <Icon name="layers" size={14} />切片流水线<span className="sp" />
-        <span className="row g12 xs muted" style={{ fontWeight: 500 }}>
-          {['ok', 'auto', 'run', 'q', 'skip'].map((k) => {
-            const label = Object.values(CELL).find(([c]) => c === k)[1];
-            return <span key={k} className="row g4"><span className={cx('g2-cell', k)} style={{ width: 14, height: 12, borderRadius: 4 }} />{label}</span>;
-          })}
-        </span>
+        <Icon name="layers" size={14} />切片流水线
       </div>
       <div className="g2-pipe" style={{ gridTemplateColumns: `150px repeat(${keys.length},1fr) 128px` }}>
         <span />
@@ -231,7 +225,6 @@ export function RunDrawer({ ab }) {
           {tail2 ? <><span className="faint">→</span><Icon name="gate" size={14} /><span>{tail2}</span></> : null}
         </div>
       ) : null}
-      {ab.running && run.scope_lock_text ? <div className="row mt8 xs muted g4"><Icon name="lock" size={12} />{run.scope_lock_text}</div> : null}
       <div className="sec-t mt16">
         <Icon name="book" size={14} />自动决策台账<span className="sp" />
         <Button size="xs" kind="ghost" onClick={() => toInbox({ filter: 'autobuild_review' })}>全部在待处理里复核</Button>

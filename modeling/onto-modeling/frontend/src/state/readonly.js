@@ -64,7 +64,7 @@ export function readonlyInfo(lock, target) {
   return {
     state: st,
     label: LOCK_LABEL[st],
-    text: lock.slice ? `自主构建正在做「${lock.slice.name}」，到这一片自动合入为止只读；范围外的条目照常编辑` : '自主构建正在改这部分内容，到这一片自动合入为止只读',
+    text: lock.slice ? `自主构建正在做「${lock.slice.name}」，这一片完成前只读` : '自主构建正在改这部分内容，这一片完成前只读',
     actions: [{ kind: 'run', label: '查看运行' }],
   };
 }
@@ -72,9 +72,9 @@ export function readonlyInfo(lock, target) {
 // 「这一轮改了什么」卡上的锁定说明
 export function roundLockNote(lock) {
   const st = lockState(lock);
-  if (st === 'pending_confirm' || st === 'none') return '确认生效前，这些条目在 Studio 和插件页里只读；撤回这一轮也会解除';
-  if (st === 'assistant_running') return '助手运行中，这些条目在 Studio 和插件页里只读；这一轮结束后确认生效或撤回才解除';
-  return '这一片自动合入前，这些条目在 Studio 和插件页里只读';
+  if (st === 'pending_confirm' || st === 'none') return '确认生效或撤回前，这些条目只读';
+  if (st === 'assistant_running') return '助手运行中，这些条目只读';
+  return '这一片完成前，这些条目只读';
 }
 
 /**
@@ -85,16 +85,16 @@ export function composerState({ sessionState, archived, maintenance, autobuildRu
   if (maintenance?.active && maintenance.mode === 'read_only') {
     return { disabled: true, placeholder: maintenance.message || '平台正在维护，暂时只能查看' };
   }
-  if (autobuildRunning) return { disabled: false, placeholder: '补充说明，不打断运行；下一步开始前读取', delivery: 'deferred' };
+  if (autobuildRunning) return { disabled: false, placeholder: '补充说明，不打断运行…', delivery: 'deferred' };
   if (sessionState === 'running' || sessionState === 'connecting') {
-    return { disabled: false, placeholder: '运行中也能补充说明，这一步结束后送达', delivery: 'deferred' };
+    return { disabled: false, placeholder: '补充说明，不打断运行…', delivery: 'deferred' };
   }
   if (sessionState === 'queued') return { disabled: false, placeholder: '正在排队，补充说明会和消息一起送达', delivery: 'queued' };
   if (maintenance?.active && maintenance.mode === 'reject_new_sessions' && sessionState !== 'running') {
     return { disabled: false, placeholder: maintenance.message || '平台正在维护，暂停新会话', warn: true };
   }
   // researching：'blueprint' 蓝图待确认（切片规划）；其余真值是读资料
-  if (researching === 'blueprint') return { disabled: false, placeholder: '对蓝图有意见直接说，比如「把陈列量和临期合成一片」…' };
+  if (researching === 'blueprint') return { disabled: false, placeholder: '对蓝图有意见直接说…' };
   if (researching) return { disabled: false, placeholder: '给助手补充说明，或者继续拖入资料…' };
   return { disabled: false, placeholder: '给助手补充说明，可拖入文件或粘贴截图…' };
 }

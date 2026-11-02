@@ -1,6 +1,6 @@
 // 自主构建的对话卡片（契约 4.7：autobuild_start、slice_progress、auto_decision、suspension、run_report），样式见 autobuild.css
 import { useContext, useEffect, useState } from 'react';
-import { useApp } from '../../app/context.js';
+import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
@@ -9,21 +9,23 @@ import { Conf, useAutobuildCtx } from './autobuild.jsx';
 import {
   REPORT_CHIP, hhmm, reportMetrics, reportSub, sliceSegments,
 } from './autobuildModel.js';
+import { evidenceInProject } from '../../state/evidence.js';
 import { CC, Tli, WbCtx } from './parts.jsx';
 import '../../styles/autobuild.css';
 
 const POLICY_ICON = { 范围: 'layers', 预算: 'gauge', 生产库: 'db', 拿不准时: 'scale' };
 
-// 开始时的策略说明：范围 / 预算 / 生产库 / 拿不准时
+// 开始时的策略：范围 / 预算 / 生产库 / 拿不准时（生产库一格随证据源出现，本期不开放）
 function AutobuildStartCard({ card }) {
   const { pid } = useContext(WbCtx);
+  const evidenceOn = evidenceInProject(useProject());
+  const chips = (card.chips || []).filter((c) => c.label !== '生产库' || evidenceOn);
   return (
     <>
       <div className="g2-pol">
-        {(card.chips || []).map((c) => <span key={c.label}><Icon name={POLICY_ICON[c.label] || 'dot'} size={12} />{c.label} <b>{c.value}</b></span>)}
+        {chips.map((c) => <span key={c.label}><Icon name={POLICY_ICON[c.label] || 'dot'} size={12} />{c.label} <b>{c.value}</b></span>)}
       </div>
       <p className="sm muted g2-pol-note">
-        跑的过程中不会停下来问你：每个自动决定都记进台账，产出通过检查后确认生效并标「需复核」，跑完集中复核。你随时可以补充说明，不会打断运行。
         <a className="link" onClick={() => navigate(pagePath('proj-settings', pid), { section: 'build-mode' })}>查看或调整策略</a>
       </p>
     </>
@@ -47,7 +49,6 @@ export function AutoDecision({ card }) {
         {review === 'accepted' ? <Chip tone="gray" sm>已复核 · 接受</Chip>
           : review === 'rejudged' ? <Chip tone="indigo" sm>已改判</Chip>
             : <Chip tone={card.assumption ? 'amber' : 'indigo'} sm>{card.assumption ? '需复核 · 记为假设' : '需复核 · 高置信'}</Chip>}
-        {card.recorded ? <Chip tone="gray" sm>已记入台账</Chip> : null}
         <span className="sp" />
         {review === 'pending' ? <a className="link xs" onClick={() => navigate(pagePath('inbox', pid), { entry: card.ledger_id })}>改判</a> : null}
       </div>
@@ -116,7 +117,7 @@ function ReportRow({ row, card, onRevert, busy }) {
       <td>
         <span className="row g4">
           <Button size="xs" onClick={() => navigate(pagePath('versions', pid), { v: row.version_label, run: card.run_id, slice: row.slice_id })}>查看改动</Button>
-          <Button size="xs" kind="ghost" disabled={!row.revertible || busy} title={row.revertible ? '恢复成运行开始前的样子，另存为新版本' : '这一片不能撤回'} onClick={() => onRevert(row)}>回退这一片</Button>
+          <Button size="xs" kind="ghost" disabled={!row.revertible || busy} title={row.revertible ? '回退到运行前，另存新版本' : '这一片不能撤回'} onClick={() => onRevert(row)}>回退这一片</Button>
         </span>
       </td>
     </tr>
@@ -135,7 +136,7 @@ function RunReportCard({ card }) {
     setBusy(true);
     try {
       const r = await api.revertAutobuildSlice(pid, card.run_id, row.slice_id);
-      toast(`已把「${row.name}」回退到运行前（${r.reverted_to_version_label}），保存为新版本 ${r.version_label}`, 'undo');
+      toast(`已回退「${row.name}」，存为 ${r.version_label}`, 'undo');
     } catch (e) {
       toast(errorText(e), 'alert');
     } finally {
@@ -157,7 +158,7 @@ function RunReportCard({ card }) {
       icon="check" title={card.title} chip={<Chip tone={chipTone} sm>{chipText}</Chip>} sub={reportSub(card)}
       foot={(
         <>
-          <span className="xs muted grow">{card.note}</span>
+          <span className="sp" />
           <Button size="sm" kind="ghost" icon="hand" onClick={toL2}>转为陪伴继续</Button>
           <Button size="sm" kind="primary" icon="inbox" onClick={() => navigate(pagePath('inbox', pid), { filter: 'autobuild_review' })}>{review ? `去复核 ${review} 项` : '去待处理'}</Button>
         </>

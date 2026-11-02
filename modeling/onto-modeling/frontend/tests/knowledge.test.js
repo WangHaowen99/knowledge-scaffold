@@ -4,8 +4,8 @@ import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
 import { lockScope, register, taskSeeds } from '../src/api/mock/routes-knowledge.js';
 import {
-  checkRows, conflictChip, conflictDetail, conflictLine, deleteImpact, emptyForm, entryLocked, footText, formBody, formFromDetail,
-  inlineParts, isEmptyProject, layerInfo, layerSeg, listQuery, lockCopy, markSegments, overrideForm, overrideParts, quoteMeta,
+  checkModalSub, checkRows, checkSub, conflictChip, conflictDetail, conflictLine, deleteImpact, emptyForm, entryLocked, footText, formBody, formFromDetail,
+  inlineParts, isEmptyProject, layerInfo, layerSeg, listQuery, lockCopy, markSegments, materialsLine, overrideForm, overrideParts, quoteMeta,
   reviewCommand, richBlocks, scopeLabel, sourceMeta, usedByLabel, usedByTarget, validateForm,
 } from '../src/pages/knowledge/knowledgeModel.js';
 
@@ -62,11 +62,15 @@ test('范围、来源、筛选参数、分层条与列表尾注', () => {
   assert.equal(sourceMeta({ kind: 'manual', label: '手动新增', at }).icon, 'edit');
   assert.deepEqual(listQuery({ layer: 'all', type: '', q: '  ' }), { limit: 20 });
   assert.deepEqual(listQuery({ layer: 'industry', type: 'term', q: ' 陈列 ', cursor: '20', limit: 20 }), { limit: 20, layer: 'industry', type: 'term', q: '陈列', cursor: '20' });
-  assert.deepEqual(layerSeg({ all: 36, project: 12, industry: 24 }).map((x) => x[1]), ['全部 36', '项目 12', '行业包 24']);
+  const seg = layerSeg({ all: 36, project: 12, industry: 24 });
+  assert.deepEqual(seg.map((x) => x[1]), ['全部 36', '项目 12', '行业包 24']);
+  // 分层条去掉后，「项目优先」只在「项目」那一格的悬停里
+  assert.deepEqual(seg.map((x) => x[2] || null), [null, '同名时项目条目优先', null]);
   const info = layerInfo({ layers: [{ layer: 'industry', label: '零售连锁', count: 24, packs: ['industry-retail'] }, { layer: 'project', count: 12, overridden: 1 }], loading_rule: '规则' });
-  assert.deepEqual(info, { industry: { count: 24, label: '零售连锁', pack: 'industry-retail' }, project: { count: 12, note: '同名条目覆盖行业包 · 已覆盖 1 条' }, rule: '规则' });
-  assert.equal(footText(20, 36), '显示前 20 条 · 共 36 条，行业包条目只读，可以在项目里写同名条目覆盖');
-  assert.equal(footText(12, 12), '共 12 条，行业包条目只读，可以在项目里写同名条目覆盖');
+  assert.deepEqual(info, { industry: { count: 24, label: '零售连锁', pack: 'industry-retail' } });
+  assert.equal(layerInfo({ layers: [] }).industry.label, '未启用行业包');
+  assert.equal(footText(20, 36), '显示前 20 条 · 共 36 条');
+  assert.equal(footText(12, 12), '共 12 条');
   assert.equal(isEmptyProject({ layers: [{ layer: 'project', count: 0 }] }), true);
   assert.equal(isEmptyProject({ layers: [{ layer: 'project', count: 3 }] }), false);
 });
@@ -79,11 +83,16 @@ test('写入范围只读：锁里的知识条目「编辑」「删除」停用�
   assert.equal(entryLocked(lockOf('pending_confirm'), { id: 'kn-p99', locked: true }), true);
   const run = lockCopy(lockOf('assistant_running'));
   assert.match(run.text.running[0], /助手正在改「超量与审批提示」这一片/);
-  assert.match(run.pop, /确认生效或撤回前不能编辑、删除/);
+  assert.equal(run.text.running.length, 1);
+  assert.equal(run.pop, '助手在改，暂不能编辑');
   const pend = lockCopy(lockOf('pending_confirm'));
   assert.match(pend.text.pending[0], /修改还没确认/);
+  assert.equal(pend.pop, '修改待确认，暂不能编辑');
   assert.equal(lockCopy({ state: 'none' }), null);
-  assert.match(lockCopy({ ...lockOf('autobuild_slice') }).pop, /这一片合入前/);
+  const auto = lockCopy({ ...lockOf('autobuild_slice') });
+  assert.equal(auto.pop, '自主构建在改，暂不能编辑');
+  assert.equal(auto.text.running[0], '自主构建正在做「超量与审批提示」，这条知识暂时只读');
+  assert.doesNotMatch(`${auto.pop}${auto.text.running[0]}`, /合入/);
 });
 
 test('表单：校验、请求体、编辑回填、行业包条目覆盖', () => {
@@ -101,9 +110,14 @@ test('表单：校验、请求体、编辑回填、行业包条目覆盖', () =>
 });
 
 test('冲突检查、删除影响、来源引用、提名检查项', () => {
-  assert.deepEqual(conflictChip(null), { text: '保存时自动查重', tone: 'line', n: 0 });
-  assert.equal(conflictChip({ checked_at: 'x', conflicts: [{}] }).text, '保存时自动查重 · 最近一次：1 处冲突');
-  assert.equal(conflictChip({ checked_at: 'x', conflicts: [] }).tone, 'line');
+  // 冲突检查卡右上的计数：没检查过不显示；有冲突给处数（点开明细），没有冲突给「没有冲突」
+  assert.equal(conflictChip(null), null);
+  assert.deepEqual(conflictChip({ checked_at: 'x', conflicts: [{}] }), { text: '1 处', tone: 'amber', n: 1 });
+  assert.deepEqual(conflictChip({ checked_at: 'x', conflicts: [] }), { text: '没有冲突', tone: 'teal', n: 0 });
+  assert.equal(checkSub(null), null);
+  assert.equal(checkModalSub(null), '还没有检查过');
+  assert.equal(checkModalSub({ checked_at: '2026-10-31T07:02:00Z', total_entries: 36, duration_ms: 4200 }), '36 条 · 用时 4 秒');
+  assert.equal(materialsLine({ consistent_with_materials: 11, unsourced: 1 }), '与资料原文一致 11 条 · 找不到出处 1 条');
   const c = { kind: 'scope_conflict', effective: 'project', project_entry: { id: 'kn-p01', title: '陈列上限按到货周期区分，不是按品类' }, industry_entry: { id: 'kn-i04', title: '陈列上限按品类取' } };
   assert.equal(conflictLine(c), '「陈列上限按到货周期区分」与行业包「陈列上限按品类取」口径不同');
   assert.equal(conflictDetail(c), '项目「陈列上限按到货周期区分」↔ 行业包「陈列上限按品类取」：项目优先，已生效');

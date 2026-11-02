@@ -118,15 +118,15 @@ export const ERROR_MESSAGES = {
   write_scope_locked: (d) => (d?.state === 'pending_confirm'
     ? '这些条目有助手的修改待确认，确认生效或撤回后才能编辑'
     : d?.state === 'autobuild_slice'
-      ? '自主构建正在改这一片，这一片合入后才能编辑'
+      ? '自主构建正在改这一片，完成后才能编辑'
       : '助手正在改这些条目，确认生效或撤回后才能编辑'),
   check_rejected: '检查发现硬伤，没有保存',
   gate_failed: '门禁检查没有通过',
   changeset_not_found: '这组修改已不存在',
   changeset_in_progress: '助手还在跑，先打断或等它停下来再确认',
   changeset_closed: '这组修改已经确认或撤回过了',
-  merge_conflict: '合入时发现冲突，已放进待处理，请选择保留哪一边',
-  head_moved: '主线已经前进，请刷新后再确认',
+  merge_conflict: '确认时发现冲突，已放进待处理',
+  head_moved: '内容已更新，请刷新后再确认',
   invalid_commit: '版本号不合法',
   nothing_to_revert: '当前内容和目标版本一致，不用回退',
   tag_not_found: '标记不存在',
@@ -150,7 +150,7 @@ export const ERROR_MESSAGES = {
   title_invalid: '对话名称须为 1–60 个字符',
   // 2.6 流程与蓝图
   node_not_found: '这一步不存在',
-  node_not_skippable: '主线和必经步骤不能跳过',
+  node_not_skippable: '主流程和必经步骤不能跳过',
   node_not_skipped: '这一步没有被跳过',
   flow_assembly_failed: '流程组装没有通过',
   blueprint_not_found: '还没有建模蓝图',
@@ -183,7 +183,7 @@ export const ERROR_MESSAGES = {
   outside_access_window: '不在访问时间窗口内',
   confirmation_expired: '确认已过期，请重新确认',
   anchor_invalid: '出处格式不合法',
-  anchor_not_found: '出处在资料或快照里找不到',
+  anchor_not_found: '找不到这个出处',
   // 2.10 自主构建
   autobuild_running: '自主构建正在运行，先暂停或等它结束',
   autobuild_not_running: '自主构建不在可以控制的状态',
@@ -191,7 +191,7 @@ export const ERROR_MESSAGES = {
   budget_exceeds_quota: '预算超出平台上限或剩余配额',
   ledger_entry_not_found: '这条自动决定不存在',
   suspension_not_found: '这个挂起的问题不存在或已回答',
-  slice_not_revertible: '这一片不能回退（还没合入、已经回退过，或后面的切片依赖它的改动）',
+  slice_not_revertible: '这一片不能回退（未生效、已回退过，或后面的切片依赖它）',
   preview_expired: '预览已过期，请重新预览',
 };
 

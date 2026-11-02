@@ -38,7 +38,9 @@ test('管理员专属：系统设置、插件上传', () => {
 
 test('左栏身份卡按角色给说法', () => {
   assert.equal(opsRoleCard(U('ops')).label, '运维');
+  assert.equal(opsRoleCard(U('ops')).text, null);
   assert.equal(opsRoleCard(U('admin')).role, 'admin');
+  assert.equal(opsRoleCard(U('admin')).text, '运维面只读');
   assert.equal(opsRoleCard(U('user')), null);
   assert.equal(opsRoleCard({ username: 'local', role: 'admin', auth_source: 'local' }).label, '本地模式');
 });

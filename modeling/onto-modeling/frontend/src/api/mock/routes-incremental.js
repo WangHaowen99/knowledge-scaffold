@@ -315,7 +315,7 @@ export function register(ctx) {
     emitConv(pid, cid, 'card.updated', D.roundCard({ csId: m[2], nextVersion: st.version, state: 'discarded' }));
     emitConv(pid, cid, 'card.updated', D.listCard(cl));
     emitConv(pid, cid, 'card.updated', D.impactCard(cl, D.impactOf(st.impactMs), false));
-    emitConv(pid, cid, 'notice', { kind: 'discarded', text: '已撤回这一轮，主线没有变化；清单可以改了再执行', version_label: null, changeset_id: m[2], align: 'center' });
+    emitConv(pid, cid, 'notice', { kind: 'discarded', text: '已撤回这一轮；清单可以改了再执行', version_label: null, changeset_id: m[2], align: 'center' });
     emitConv(pid, cid, 'suggestions.updated', D.preSuggestions(othersOf(pid)));
     setScope(pid, noLock());
     setNode(pid, 'ready');

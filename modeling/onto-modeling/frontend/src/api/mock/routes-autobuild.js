@@ -105,16 +105,16 @@ export function register(ctx) {
   const timers = new Map();
   const after = (pid, ms, fn) => { clearTimeout(timers.get(pid)); timers.set(pid, setTimeout(fn, ms)); };
 
-  // 停在安全点 / 转为陪伴：这一片做完合入后停下
+  // 停在安全点 / 转为陪伴：这一片做完生效后停下
   function finishAtSafePoint(pid, st, next) {
     st.state = next;
     emitProj(pid, 'autobuild.safe_point', { run_id: R.RUN_ID, slice_id: 's4', slice_name: R.RUN_SLICES.s4.name, version_label: 'v0.17', next });
     emitConv(pid, cidOf(), 'card.updated', R.sliceCard('s4', 'partial'));
     emitConv(pid, cidOf(), 'card.updated', R.sliceCard('s5', 'skipped'));
     if (next === 'converted') {
-      notice(pid, '已转为陪伴：「临期与损耗检查」做完并合入（v0.17），剩下的「超量与审批提示」改成逐个确认');
+      notice(pid, '已转为陪伴：「临期与损耗检查」已完成（v0.17），剩下的「超量与审批提示」改成逐个确认');
     } else {
-      notice(pid, '已在安全点停下：「临期与损耗检查」做完并合入，保存为版本 v0.17');
+      notice(pid, '已在安全点停下：「临期与损耗检查」已完成，保存为版本 v0.17');
     }
     emitConv(pid, cidOf(), 'card', R.reportCard('stopped'));
     emitConv(pid, cidOf(), 'suggestions.updated', next === 'converted'

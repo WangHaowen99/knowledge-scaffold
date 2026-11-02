@@ -1,6 +1,7 @@
-// 「求解模型」页签：一份求解契约一张卡（SV-01），表单生成 / 手动编辑，即时检查（SV-03），保存（SV-02，带 base_revision），
+// 「求解契约」页签：一份求解契约一张卡（SV-01），表单生成 / 手动编辑，即时检查（SV-03），保存（SV-02，带 base_revision），
 // 验证回执（SV-04）。这份契约在助手写入范围里时整卡只读（mr-ro），保存与放弃禁用；范围外照常编辑，保存即生效。
 // 保存后往工作台对话发「生成评估器」；手动编辑改回表单要「按模板重新生成」（都发命令，S-20）。
+// 模式只显示当前状态（R10）：表单生成时只有「转为手动编辑」，手动编辑时只有「按模板重新生成」，两个都先确认。
 import { useEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
@@ -11,7 +12,7 @@ import {
 } from '../../lib/solver-contract-model.js';
 import { sendHint } from '../../state/commandTask.js';
 import {
-  Area, Button, Card, Chip, Empty, Field, Icon, Inp, Modal, Note, Seg, Select, Toggle, cx,
+  Area, Button, Card, Chip, Empty, Field, Icon, Inp, Modal, Note, Select, Toggle, cx,
 } from '../../ui/index.jsx';
 import { ScopeLockBar } from '../plugin/parts.jsx';
 import {
@@ -73,10 +74,10 @@ function Capabilities({ item, families, onChange }) {
   return (
     <div className="inp scr-caps">
       {caps.map((c) => (
-        <Chip key={c} tone={allowed.includes(c) || !fam ? 'blue' : 'red'} sm title="点一下取消" onClick={() => toggle(c)}>{c}</Chip>
+        <Chip key={c} tone={allowed.includes(c) || !fam ? 'blue' : 'red'} sm onClick={() => toggle(c)}>{c}</Chip>
       ))}
       {allowed.filter((c) => !caps.includes(c)).map((c) => (
-        <Chip key={c} tone="line" sm icon="plus" title="点一下加上" onClick={() => toggle(c)}>{c}</Chip>
+        <Chip key={c} tone="line" sm icon="plus" onClick={() => toggle(c)}>{c}</Chip>
       ))}
     </div>
   );
@@ -94,6 +95,7 @@ export default function SolverTab({ view, receipts, lock, tasks, onSaved, reload
   const [saveErr, setSaveErr] = useState(null);
   const [newer, setNewer] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
+  const [templateOpen, setTemplateOpen] = useState(false);
   const [fileRole, setFileRole] = useState('entry');
   const [previewRole, setPreviewRole] = useState(null);
 
@@ -151,9 +153,7 @@ export default function SolverTab({ view, receipts, lock, tasks, onSaved, reload
   if (!current) {
     return (
       <div className="card">
-        <Empty icon="cpu" title="还没有求解契约" actions={<Button kind="primary" icon="plus" onClick={addNew}>新的求解契约</Button>}>
-          把一个操作绑定成求解契约，知识包就能对外提供求解能力，按求解知识包发布。
-        </Empty>
+        <Empty icon="cpu" title="还没有求解契约" actions={<Button kind="primary" icon="plus" onClick={addNew}>新的求解契约</Button>} />
       </div>
     );
   }
@@ -174,13 +174,16 @@ export default function SolverTab({ view, receipts, lock, tasks, onSaved, reload
   const fp = (field) => fieldProblem(problems, current.uid, field);
   const tpl = templateCommand(itemKey(current), title);
 
-  const onMode = (m) => {
-    if (m === 'm' && current.managed) setManualOpen(true);
-    else if (m === 'f' && !current.managed) {
-      // 这次才转成手动、还没保存：直接改回表单；已保存为手动的要按模板重新生成
-      if (!savedOp || savedOp.managed) update(regenerate(current));
-      else toast('手动编辑过的求解契约，要「按模板重新生成」才能改回表单，手动修改会被覆盖', 'info');
-    }
+  // 这次才转成手动、还没保存的：按模板重新生成就是在本地改回表单；已保存为手动的发命令
+  const savedManual = !!savedOp && !savedOp.managed;
+  const openTemplate = () => {
+    if (savedManual && dirty) { toast('先保存或放弃修改，再按模板重新生成', 'info'); return; }
+    setTemplateOpen(true);
+  };
+  const confirmTemplate = () => {
+    setTemplateOpen(false);
+    if (savedManual) sendTemplate();
+    else update(regenerate(current));
   };
   const confirmManual = () => {
     update(toManual(current, renderedSidecars(current, rendered) || current.sidecars || {}));
@@ -204,7 +207,7 @@ export default function SolverTab({ view, receipts, lock, tasks, onSaved, reload
       onSaved(res);
       if (target) {
         const sent = await tasks.send(evaluatorCommand(String(target.binding.solver_key).trim(), contractTitle(target, ops)));
-        toast(sent ? `${savedToast(res)}；评估器发到工作台对话生成，进度在这页顶部` : savedToast(res), 'check');
+        toast(sent ? `${savedToast(res)}，正在生成评估器` : savedToast(res), 'check');
       } else toast(savedToast(res), 'check');
     } catch (e) {
       setSaveErr(saveErrorView(e));
@@ -238,23 +241,23 @@ export default function SolverTab({ view, receipts, lock, tasks, onSaved, reload
             {locked ? <ScopeLockBar lock={lock} text={lockText(lock, title)} /> : null}
             <div className={cx(locked && 'mr-ro')}>
               <div className="row mb12">
-                <Seg items={[['f', '表单生成'], ['m', '手动编辑']]} value={current.managed ? 'f' : 'm'} onChange={onMode} />
-                <span className="xs muted">{current.managed ? '· 五份附属文件按表单参数生成，只读' : '· 按原文编辑五份附属文件，保存时原样写入'}</span>
+                <Chip tone="line" sm icon={current.managed ? 'list' : 'edit'}>{current.managed ? '表单生成' : '手动编辑'}</Chip>
                 <span className="sp" />
-                {current.managed ? <Button size="xs" kind="ghost" onClick={() => setManualOpen(true)}>转为手动编辑</Button> : null}
-                <Button size="xs" kind="ghost" data-pop={sendHint(tpl.text)} disabled={tasks.sending || !current.origin} onClick={sendTemplate}>按模板重新生成</Button>
+                {current.managed
+                  ? <Button size="xs" kind="ghost" onClick={() => setManualOpen(true)}>转为手动编辑</Button>
+                  : <Button size="xs" kind="ghost" data-pop={savedManual ? sendHint(tpl.text) : undefined} disabled={savedManual && tasks.sending} onClick={openTemplate}>按模板重新生成</Button>}
               </div>
               <div className="grid2" style={{ gap: 12 }}>
-                <Field label="绑定的 Operation" hint={fp('operation') ? <Err p={fp('operation')} /> : null}>
+                <Field label="绑定的操作" hint={fp('operation') ? <Err p={fp('operation')} /> : null}>
                   <Select value={current.binding.operation || ''} options={opOptions} icon="flow" onChange={(v) => update(setOperation(current, v))} />
                 </Field>
-                <Field label="求解标识 solver_key" hint={fp('solver_key') ? <Err p={fp('solver_key')} /> : '小写字母开头，只含小写字母、数字、下划线'}>
-                  <Inp mono value={current.binding.solver_key || ''} error={!!fp('solver_key')} onChange={(e) => update(setField(current, 'solver_key', e.target.value))} />
+                <Field label="求解标识" hint={fp('solver_key') ? <Err p={fp('solver_key')} /> : '小写字母开头，只含小写字母、数字、下划线'}>
+                  <Inp mono placeholder="solver_key" value={current.binding.solver_key || ''} error={!!fp('solver_key')} onChange={(e) => update(setField(current, 'solver_key', e.target.value))} />
                 </Field>
-                <Field label="问题族" hint={fp('problem_family') ? <Err p={fp('problem_family')} /> : '从平台注册目录选择'}>
+                <Field label="问题族" hint={fp('problem_family') ? <Err p={fp('problem_family')} /> : null}>
                   <Select value={problemFamily(current.binding)} options={familyOptions(families, problemFamily(current.binding))} onChange={(v) => update(setProblemFamily(current, v))} />
                 </Field>
-                <Field label="引擎能力" hint={fp('engine_capabilities') ? <Err p={fp('engine_capabilities')} /> : '只能选问题族目录列出的能力'}>
+                <Field label="引擎能力" hint={fp('engine_capabilities') ? <Err p={fp('engine_capabilities')} /> : null}>
                   <Capabilities item={current} families={families} onChange={update} />
                 </Field>
               </div>
@@ -262,10 +265,10 @@ export default function SolverTab({ view, receipts, lock, tasks, onSaved, reload
               {current.managed ? (
                 <>
                   <div className="grid2 mt12" style={{ gap: 12 }}>
-                    <Field label="评估器" hint="声明式评估器，由助手按契约生成并自检">
+                    <Field label="评估器">
                       <Select value={params.evaluator_path || ''} options={evaluatorOptions(base, current)} onChange={(v) => update(setTemplateParam(current, 'evaluator_path', v))} />
                     </Field>
-                    <Field label="两个选项的显示名称" hint={fp('display_mapping') ? <Err p={fp('display_mapping')} /> : '每个批次在两个选项中二选一'}>
+                    <Field label="两个选项的显示名称" hint={fp('display_mapping') ? <Err p={fp('display_mapping')} /> : null}>
                       <div className="row">
                         <Inp className="grow" value={params.display_mapping?.OPTION_0 || ''} placeholder="选项一" error={!!fp('display_mapping')} onChange={(e) => update(setOptionLabel(current, 'OPTION_0', e.target.value))} />
                         <Inp className="grow" value={params.display_mapping?.OPTION_1 || ''} placeholder="选项二" error={!!fp('display_mapping')} onChange={(e) => update(setOptionLabel(current, 'OPTION_1', e.target.value))} />
@@ -283,7 +286,7 @@ export default function SolverTab({ view, receipts, lock, tasks, onSaved, reload
                   </div>
                   <div className="row mt12 wrap g4">
                     {SIDECAR_FILES.map((f) => (
-                      <span key={f.role} className="mr-file scr-file" title="按表单参数生成，只读；点开看内容" onClick={() => setPreviewRole(f.role)}>
+                      <span key={f.role} className="mr-file scr-file" title="只读" onClick={() => setPreviewRole(f.role)}>
                         <Icon name="lock" size={12} /><span className="mono">{f.file}</span>
                       </span>
                     ))}
@@ -317,7 +320,7 @@ export default function SolverTab({ view, receipts, lock, tasks, onSaved, reload
             {newer && !saveErr ? (
               <Note tone="amber" className="mt12">
                 <div className="row">
-                  <span className="grow">求解契约在别处有了新修订，先刷新再保存，不然会被拒。</span>
+                  <span className="grow">求解契约已在别处更新，请先刷新</span>
                   <Button size="xs" icon="refresh" onClick={refresh}>刷新</Button>
                 </div>
               </Note>
@@ -334,7 +337,7 @@ export default function SolverTab({ view, receipts, lock, tasks, onSaved, reload
               </Note>
             ) : null}
             <div className="mt12">
-              <Field label="改动说明（写进版本记录）">
+              <Field label="改动说明">
                 <Area placeholder="如：批次量单位改为箱" maxLength={80} minHeight={60} textareaStyle={{ height: 40 }} value={summary} disabled={locked} onChange={(e) => setSummary(e.target.value)} />
               </Field>
             </div>
@@ -343,19 +346,15 @@ export default function SolverTab({ view, receipts, lock, tasks, onSaved, reload
               <span className="sp" />
               <Button size="sm" kind="primary" disabled={ss.disabled} title={ss.title || undefined} onClick={save}>保存求解契约</Button>
             </div>
-            <div className="xs faint mt8">保存走写入路径；保存后会往工作台对话发一条「生成评估器」，进度显示在这页顶部。知识包会按求解知识包发布</div>
           </Card>
           <Card title="其他求解契约" icon="list">
             {others.map((it) => (
-              <div key={it.uid} className="row sm scr-other" onClick={() => setSelUid(it.uid)} title="点一下切换到这份">
+              <div key={it.uid} className="row sm scr-other" onClick={() => setSelUid(it.uid)}>
                 <span className="grow">{contractTitle(it, ops)}</span>
                 {changedUids.has(it.uid) ? <Chip tone="amber" sm dot>有修改</Chip> : null}
                 {isEnabled(it.binding) ? <Chip tone="blue" sm>已启用</Chip> : <Chip tone="gray" sm icon="ban">已停用</Chip>}
               </div>
             ))}
-            {others.some((it) => !isEnabled(it.binding))
-              ? <div className="xs muted">停用后契约仍随知识包保存，但导出包不再列出，发布也不再要求验证。</div>
-              : null}
             {!others.length ? <div className="xs muted">只有这一份求解契约。</div> : null}
             <div className="mt12"><Button size="sm" icon="plus" onClick={addNew}>新的求解契约</Button></div>
           </Card>
@@ -366,17 +365,25 @@ export default function SolverTab({ view, receipts, lock, tasks, onSaved, reload
         onClose={() => setManualOpen(false)}
         icon="edit"
         title="转为手动编辑？"
-        sub="以当前生成结果为起点，按原文编辑五份附属文件"
         foot={<><Button onClick={() => setManualOpen(false)}>取消</Button><Button kind="primary" onClick={confirmManual}>转为手动编辑</Button></>}
       >
-        <div className="sm">转换后，表单里的选项名称、标题和评估器不再生效；保存时按原文写入。之后想改回表单，要「按模板重新生成」，手动修改会被覆盖。</div>
+        <div className="sm">转换后表单不再生效；改回表单要「按模板重新生成」，手动修改会被覆盖</div>
+      </Modal>
+      <Modal
+        open={templateOpen}
+        onClose={() => setTemplateOpen(false)}
+        icon="refresh"
+        title="按模板重新生成？"
+        foot={<><Button onClick={() => setTemplateOpen(false)}>取消</Button><Button kind="primary" onClick={confirmTemplate}>按模板重新生成</Button></>}
+      >
+        <div className="sm">手动修改会被覆盖</div>
       </Modal>
       <Modal
         open={!!previewRole}
         onClose={() => setPreviewRole(null)}
         icon="file"
         title={SIDECAR_FILES.find((f) => f.role === previewRole)?.file || ''}
-        sub="按表单参数生成，只读；要改原文先转为手动编辑"
+        sub="只读"
         w={640}
       >
         <div className="code scr-preview">{preview ?? '参数还在生成，稍等片刻再看。'}</div>

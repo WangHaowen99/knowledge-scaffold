@@ -45,7 +45,6 @@ function NewEntryDialog({ open, onClose, onCreated, flowchartEnabled }) {
       onClose={onClose}
       icon="plus"
       title="新建条目"
-      sub="新建对象、操作、规则、指标或流程图，按模板生成后在右边继续编辑"
       w={480}
       foot={<><Button onClick={onClose}>取消</Button><Button kind="primary" disabled={busy} onClick={create}>新建</Button></>}
     >
@@ -54,7 +53,7 @@ function NewEntryDialog({ open, onClose, onCreated, flowchartEnabled }) {
         <Field label="名称" req hint={err ? <span style={{ color: 'var(--red)' }}>{err}</span> : null}>
           <Inp error={!!err} autoFocus value={name} placeholder={kind === 'flowchart' ? '如：超量处理流程' : '如：门店等级'} onChange={(e) => { setName(e.target.value); setErr(null); }} />
         </Field>
-        <Field label="Key" hint="英文标识，不填会自动生成"><Inp mono value={key} placeholder="如：store_level" onChange={(e) => setKey(e.target.value)} /></Field>
+        <Field label="Key" hint="选填，不填自动生成"><Inp mono value={key} placeholder="如：store_level" onChange={(e) => setKey(e.target.value)} /></Field>
       </div>
     </Modal>
   );
@@ -114,7 +113,7 @@ export default function StudioTablePage({ route }) {
     const key = selected?.key || selectedId.slice('flowchart:'.length);
     right = <FlowchartPanel key={key} row={selected || { key, name: key, kind: 'flowchart', status: 'confirmed' }} onDeleted={() => { navigate(pagePath('studio-table', pid)); setTick((t) => t + 1); }} onChanged={() => setTick((t) => t + 1)} />;
   } else if (selectedId) right = <EntryEditor key={selectedId} id={selectedId} rows={rows} tick={tick} onChanged={() => setTick((t) => t + 1)} />;
-  else right = <div className="stt-r card"><div className="sd-empty">知识包里还没有条目，点「新建」开始</div></div>;
+  else right = <div className="stt-r card"><div className="sd-empty">还没有条目</div></div>;
 
   return (
     <ShellP active="studio-table" bodyStyle={{ padding: '14px 18px 56px' }}>
@@ -122,9 +121,8 @@ export default function StudioTablePage({ route }) {
         <div className="stt-l card">
           <div className="card-h">
             <h3>知识包条目</h3>
-            <span className="sub">共 {data?.counts?.all ?? 0} 个</span>
             <span className="sp" />
-            <Button size="sm" icon="plus" data-pop="新建对象、操作、规则、指标或流程图" onClick={() => setNewOpen(true)}>新建</Button>
+            <Button size="sm" icon="plus" onClick={() => setNewOpen(true)}>新建</Button>
           </div>
           <div className="row" style={{ padding: '12px 16px 10px', gap: 10 }}>
             <Seg

@@ -121,7 +121,6 @@ export function MaintenanceBanner() {
       <Icon name="wrench" size={14} />
       <b>{ro ? '平台维护中 · 只读' : '平台维护中 · 暂停新会话'}</b>
       <span className="grow ell">{maintenance.message}</span>
-      {ro ? <span className="xs muted">维护期间所有修改都会被拒绝，正在跑的这一轮会跑完</span> : <span className="xs muted">已有会话可以跑完当前这一轮，网页可浏览、可编辑</span>}
     </div>
   );
 }

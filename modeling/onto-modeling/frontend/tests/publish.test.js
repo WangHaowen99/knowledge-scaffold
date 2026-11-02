@@ -5,8 +5,8 @@ import * as F from '../src/api/mock/fixtures.js';
 import { nextReleaseVersion, register as registerPublish } from '../src/api/mock/routes-publish.js';
 import { register as registerVersions } from '../src/api/mock/routes-versions.js';
 import {
-  blockingSummary, degradeNote, fixOptions, formatHint, gateBlockedText, gateView, issueView, mergeRelease, publishBlockedTitle,
-  pullView, releaseGate, releasedText,
+  blockingSummary, degradeNote, fixOptions, formatLabel, gateBlockedText, gateView, issueView, mergeRelease, publishBlockedTitle,
+  pullView, releaseGate, releasedText, visibleGates,
 } from '../src/pages/publish/publishModel.js';
 
 // ---------- 纯逻辑 ----------
@@ -28,11 +28,12 @@ test('门禁卡片：不通过 / 还没运行 / 通过（含有提醒）三种�
   assert.deepEqual(blockingSummary({ blocking_count: 0 }), { text: '全部通过', tone: 'teal' });
   assert.equal(publishBlockedTitle({ blocking_count: 2 }), '2 项未通过');
   assert.equal(publishBlockedTitle({ blocking_count: 0 }), '');
-  assert.equal(formatHint({ format: 'solver' }), '本知识包启用了求解契约，会按求解知识包发布');
+  assert.equal(formatLabel({ format: 'solver' }), '求解知识包');
+  assert.equal(formatLabel({ format: 'ontology' }), '普通知识包');
 });
 
 test('数据绑定：问题标签、说明与「改为现有表」的选项', () => {
-  assert.deepEqual(issueView({ kind: 'declared_missing', message: '快照和 Schema 资料里都没有这张表' }).chip, ['声明的表不存在', 'red']);
+  assert.deepEqual(issueView({ kind: 'declared_missing', message: 'Schema 资料里没有这张表' }).chip, ['声明的表不存在', 'red']);
   assert.equal(issueView({ kind: 'no_columns', message: '', detail: { attr_columns: ['a', 'b'], table_columns: ['c'] } }).note, '属性英文名 a、b；表列 c');
   assert.deepEqual(issueView({ kind: 'declared_unverifiable', message: 'x' }).chip, ['无表可核对', 'amber']);
   const o = fixOptions({ declared: 'replenish_ledger', candidates: [{ table: 'erp.replenish_ledger', matched: 2 }] }, ['erp.store', 'erp.replenish_ledger']);
@@ -41,16 +42,26 @@ test('数据绑定：问题标签、说明与「改为现有表」的选项', ()
   assert.equal(fixOptions({ declared: 'crm.x', candidates: [] }, ['erp.store']).placeholder, '改为现有数据表');
 });
 
-test('降级说明：其余挡住的门禁照样挡；都过了就能降级发布', () => {
+test('门禁链：证据源不可用时不出依赖证据源的包带来的门禁', () => {
+  const check = { gates: [
+    { id: 'data_binding', source: { kind: 'platform' } },
+    { id: 'retail.compliance', source: { kind: 'pack', pack: 'industry-retail' } },
+    { id: 'reverse.anchor_coverage', source: { kind: 'pack', pack: 'reverse' } },
+  ] };
+  assert.deepEqual(visibleGates(check, false).map((g) => g.id), ['data_binding', 'retail.compliance']);
+  assert.equal(visibleGates(check, true).length, 3);
+  assert.deepEqual(visibleGates(null, false), []);
+});
+
+test('能不能降级：其余挡住的门禁照样挡（按钮置灰、悬停写是哪一关）；都过了就能降级发布', () => {
   const gates = [
     { id: 'data_binding', title: '数据绑定检查', status: 'fail', blocking: true, degradable: true },
     { id: 'retail.compliance', title: '合规检查', status: 'not_run', blocking: true, degradable: false },
   ];
   const n = degradeNote({ gates });
   assert.equal(n.blocked, true);
-  assert.equal(n.tone, 'amber');
-  assert.match(n.text, /—— 合规检查还没运行，所以现在仍然发不了。$/);
-  assert.equal(degradeNote({ gates: gates.slice(0, 1) }).blocked, false);
+  assert.equal(n.text, '合规检查未通过');
+  assert.deepEqual(degradeNote({ gates: gates.slice(0, 1) }), { blocked: false, text: '' });
   assert.equal(gateBlockedText({ gates: [{ title: '合规检查' }] }), '合规检查未通过，仍不能发布');
   assert.equal(gateBlockedText(null), '门禁链有未通过的项，仍不能发布');
 });

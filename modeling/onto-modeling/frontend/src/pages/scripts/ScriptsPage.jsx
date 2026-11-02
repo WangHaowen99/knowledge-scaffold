@@ -1,21 +1,21 @@
-// 代码生成与求解（插件页，设计稿 scripts）：脚本（SC-01～SC-03、ST-04 / F-02 只读预览）与求解模型（SV-01～SV-04）两个页签。
+// 代码生成与求解（插件页，设计稿 scripts）：脚本（SC-01～SC-03、ST-04 / F-02 只读预览）与求解契约（SV-01～SV-04）两个页签。
 // 插件页只发命令、不跑助手（S-20）：扫描、生成脚本、修复、重新生成、按模板重新生成、生成评估器都发到工作台对话，
 // 页面显示进度条和「去对话里看」，跑完列表刷新（S-19 恢复、EP-10 进度、EP-06 刷新）。
 // 求解契约在助手写入范围里（CS-06 / EP-03）时只读到确认生效或撤回，不再有覆盖保存的冲突框。
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { PageHead, ShellP } from '../../shell/Shell.jsx';
 import { Tabs } from '../../ui/index.jsx';
 import {
-  CommandRunBar, PluginDesc, PluginEyebrow, PluginOff, SendButton, useCommandTasks, usePageEnabled, useProjectEvent,
+  CommandRunBar, ExtraActions, PluginEyebrow, PluginOff, SendButton, useCommandTasks, usePageEnabled, useProjectEvent,
 } from '../plugin/parts.jsx';
 import '../../styles/scripts.css';
 import ScriptsTab from './ScriptsTab.jsx';
 import SolverTab from './SolverTab.jsx';
 import {
-  SOLVER_DIR, SOLVER_TYPE, contractLocked, modelOperation, runDetail, scanCommand,
+  SOLVER_DIR, SOLVER_TYPE, scanCommand,
 } from './scriptsModel.js';
 
 const LABEL = '代码生成与求解';
@@ -83,10 +83,6 @@ export default function ScriptsPage({ route }) {
   }, [api, pid]);
 
   const lock = scope || solver?.lock || null;
-  const anyLocked = useMemo(
-    () => (solver?.operations || []).some((op) => contractLocked(lock, { origin: op.solver_key, binding: modelOperation(op).binding })),
-    [solver, lock],
-  );
 
   if (enabled === false) {
     return (
@@ -105,16 +101,20 @@ export default function ScriptsPage({ route }) {
       <PageHead
         eyebrow={<PluginEyebrow pack="solver" label={LABEL} />}
         title={LABEL}
-        desc={<>能确定算出来的操作生成脚本，在沙箱里跑通才保存；求解契约让知识包对外提供求解能力。<PluginDesc label={LABEL} what="脚本和求解契约" /></>}
-        actions={<SendButton tasks={tasks} {...scanCommand()} icon="scan">扫描可代码化的操作</SendButton>}
+        actions={(
+          <>
+            <ExtraActions page="scripts" tasks={tasks} />
+            <SendButton tasks={tasks} {...scanCommand()} icon="scan">扫描可代码化的操作</SendButton>
+          </>
+        )}
       />
       {tasks.active ? (
         <div className="mr-runrow" style={{ margin: '0 0 14px' }}>
-          <CommandRunBar task={tasks.active} detail={runDetail(anyLocked)} />
+          <CommandRunBar task={tasks.active} />
         </div>
       ) : null}
       <Tabs
-        items={[['sc', '脚本', scriptCount, 'code'], ['sv', '求解模型', enabledCount, 'cpu']]}
+        items={[['sc', '脚本', scriptCount, 'code'], ['sv', '求解契约', enabledCount, 'cpu']]}
         value={tab}
         onChange={setTab}
       />

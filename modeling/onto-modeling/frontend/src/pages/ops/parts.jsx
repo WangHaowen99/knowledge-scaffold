@@ -6,6 +6,7 @@ import { useApp } from '../../app/context.js';
 import { navigate } from '../../app/router.js';
 import { ShellG } from '../../shell/Shell.jsx';
 import { SNav } from '../../shell/SideNav.jsx';
+import { evidenceFromSources } from '../../state/evidence.js';
 import { can, deniedHint, opsListenLabel, opsRoleCard } from '../../state/roles.js';
 import { Avatar, Button, Chip, Empty, Icon } from '../../ui/index.jsx';
 import '../../styles/ops.css';
@@ -33,11 +34,10 @@ function OpsNav({ active }) {
       top={card ? (
         <div className="op-role">
           <div className="row"><Avatar text={initial} i={2} size="sm" /><b>{user?.display_name || user?.username}</b><Chip tone="indigo" sm>{card.label}</Chip></div>
-          <div className="mt4">{card.text}</div>
+          {card.text ? <div className="mt4">{card.text}</div> : null}
         </div>
       ) : null}
       groups={[{
-        title: '运维',
         items: [
           { key: 'ops', title: '总览', icon: 'gauge', go: 'ops' },
           { key: 'ops-obs', title: '可观测', icon: 'activity', go: 'ops-obs', extra: firing ? <Chip tone="red" sm>{firing}</Chip> : null },
@@ -49,7 +49,6 @@ function OpsNav({ active }) {
         <div className="op-foot">
           <Icon name="lock" size={12} /> <b>运维管理面</b>
           {port ? <> · 内网端口 <span className="mono">{port}</span></> : ' · 独立监听'}
-          <br />与业务接口分离，这里的每个操作都写审计。
         </div>
       )}
     />
@@ -68,7 +67,7 @@ export function OpsShell({ active, children, bodyStyle }) {
       <ShellG active="ops">
         <div className="card" style={{ padding: 30, maxWidth: 640, margin: '40px auto' }}>
           <Empty icon="lock" title="运维中心只对运维和管理员开放" actions={<Button icon="arrowl" onClick={() => navigate('/projects')}>回到我的项目</Button>}>
-            你的账号是建模者，看不到平台运行状态。需要时请联系管理员。
+            需要时请联系管理员
           </Empty>
         </div>
       </ShellG>
@@ -79,6 +78,18 @@ export function OpsShell({ active, children, bodyStyle }) {
       {typeof children === 'function' ? children(perm) : children}
     </ShellG>
   );
+}
+
+// 证据源本期不开放（ADR-0056）：运维页在项目外，按 EV-01 读不读得到判断；读之前、读不到（501、无权限、出错）都按不可用
+export function useEvidenceOn() {
+  const { api } = useApp();
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api.evidenceSources().then((r) => alive && setOn(evidenceFromSources(r)), () => alive && setOn(false));
+    return () => { alive = false; };
+  }, [api]);
+  return on;
 }
 
 // 当前用户在运维中心能做什么；按钮用 disabled + title={perm.hint(...)} 表示只读
