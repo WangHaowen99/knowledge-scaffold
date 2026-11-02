@@ -5,7 +5,15 @@ import { sendHttpError } from '../http-error.js';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { PackageArtifactStoreError } from '../artifacts/package-store.js';
 import { getAuthoringState } from '../authoring/state.js';
-import { canReadProject, canWriteProject, claimAgentRuntime, getProject, projectMemberRole } from '../projects/repo.js';
+import {
+  canReadProject,
+  canWriteProject,
+  claimAgentRuntime,
+  confirmProjectGoal,
+  getProject,
+  ProjectGoalNotPendingError,
+  projectMemberRole,
+} from '../projects/repo.js';
 import { parsePackageArchive } from '../workflow/package-import.js';
 import {
   getProjectPackageDataSourceSelection,
@@ -300,6 +308,29 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
       );
     } catch (error) {
       return sendAgentCoreError(reply, error);
+    }
+  });
+
+  // 开始建模前的目标确认卡：background 省略 = 确认原目标；给出 = 用户改写后的新目标
+  app.put('/api/projects/:id/goal', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canWriteProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    const background = (request.body as any)?.background;
+    if (background !== undefined && typeof background !== 'string') {
+      return reply.code(400).send({ code: 'INVALID_INPUT', error: '请填写建模目标' });
+    }
+    try {
+      return { project: confirmProjectGoal(project.id, background) };
+    } catch (error) {
+      if (error instanceof ProjectGoalNotPendingError) {
+        return reply.code(409).send({ code: 'PROJECT_GOAL_NOT_PENDING', error: error.message });
+      }
+      return reply.code(400).send({
+        code: 'INVALID_INPUT',
+        error: error instanceof Error ? error.message : '请填写建模目标',
+      });
     }
   });
 

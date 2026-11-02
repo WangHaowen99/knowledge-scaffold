@@ -23,6 +23,10 @@ export const savePackageDataSource = (id, dataSourceType) => api(`${P(id)}/agent
   method: 'PUT', body: JSON.stringify({ dataSourceType }),
 });
 export const getAgentState = (id) => api(`${P(id)}/agent/state`);
+// 开始建模前的目标确认卡：background 省略 = 确认原目标；给出 = 提交改写后的新目标
+export const confirmProjectGoal = (id, background) => api(`${P(id)}/goal`, {
+  method: 'PUT', body: JSON.stringify(background === undefined ? {} : { background }),
+});
 export const getConstraints = (id) => api(`${P(id)}/agent/constraints`);
 export const revokeConstraint = (id, constraintId, reason = '') => api(
   `${P(id)}/agent/constraints/${encodeURIComponent(constraintId)}/revoke`,

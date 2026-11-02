@@ -173,6 +173,12 @@ export const api = {
   },
   renameProject: (pid, name) =>
     request(`/api/projects/${pid}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  // 开始建模前的目标确认卡：background 省略 = 确认原目标；给出 = 提交改写后的新目标
+  confirmProjectGoal: (pid, background) =>
+    request(`/api/projects/${pid}/goal`, {
+      method: 'PUT',
+      body: JSON.stringify(background === undefined ? {} : { background }),
+    }),
   // 显式确认体：request() 一律带 application/json，空体在严格服务端/网关会被判为非法 JSON；
   // 同时与 modeling 侧删除接口的 confirmed 契约保持一致
   deleteProject: (pid) =>

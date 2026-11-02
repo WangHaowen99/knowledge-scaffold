@@ -529,6 +529,90 @@ function SubagentCard({ item }) {
   );
 }
 
+// 与创建页的目标输入上限一致
+const GOAL_MAX_LENGTH = 2000;
+
+// 开始建模前确认创建时填写的目标：确认即沿原流程继续；修改须提交新的目标原文
+function GoalConfirmCard({ goal, onConfirm }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(goal);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (background) => {
+    setBusy(true);
+    try {
+      await onConfirm(background);
+    } catch (error) {
+      message.error(error.message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="question-card goal-confirm-card">
+      <div className="qc-head">
+        <span className="qc-glyph">?</span>
+        <span className="qc-title">确认建模目标</span>
+        <span className="qc-state live">
+          <span className="qc-dot" />
+          开始建模前请确认
+        </span>
+      </div>
+      {editing ? (
+        <Input.TextArea
+          value={draft}
+          maxLength={GOAL_MAX_LENGTH}
+          showCount
+          autoSize={{ minRows: 3, maxRows: 10 }}
+          aria-label="新的建模目标"
+          onChange={(e) => setDraft(e.target.value)}
+        />
+      ) : (
+        <>
+          <div className="goal-confirm-text">{goal}</div>
+          <div className="goal-confirm-hint">
+            确认后助手会以这个目标为起点开始建模；需要调整请点「修改」提交新的目标。
+          </div>
+        </>
+      )}
+      <div className="goal-confirm-actions">
+        {editing ? (
+          <>
+            <Button
+              size="small"
+              disabled={busy}
+              onClick={() => {
+                setEditing(false);
+                setDraft(goal);
+              }}
+            >
+              取消
+            </Button>
+            <Button
+              size="small"
+              type="primary"
+              loading={busy}
+              disabled={!draft.trim()}
+              onClick={() => void submit(draft.trim())}
+            >
+              提交新目标
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button size="small" disabled={busy} onClick={() => setEditing(true)}>
+              修改
+            </Button>
+            <Button size="small" type="primary" loading={busy} onClick={() => void submit(undefined)}>
+              确认
+            </Button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // AskUserQuestion 专用卡：渲染问题与选项，答案经 answers 回填给工具
 function QuestionCard({ req, resolved, onAnswer, trace = 0 }) {
   const questions = req.tool_input?.questions || [];
@@ -781,6 +865,9 @@ export default function ChatPane({
   const [input, setInput] = useState('');
   const [state, setState] = useState('idle');
   const [pending, setPending] = useState(null); // 乐观显示的用户消息
+  // 确认卡提交成功后立即收起，不等项目列表刷新回来
+  const [goalConfirmedFor, setGoalConfirmedFor] = useState('');
+  const goalPending = meta?.goal_status === 'pending' && goalConfirmedFor !== project.id;
   const [metrics, setMetrics] = useState(null);
   const [attachments, setAttachments] = useState([]);
   const [uploads, setUploads] = useState([]); // 发送中的附件卡：{uid,name,size,percent,status}
@@ -1144,6 +1231,10 @@ export default function ChatPane({
   const send = async (text, explicitAttachments = null) => {
     const trimmed = (text || '').trim();
     if (uploading) return;
+    if (goalPending) {
+      message.warning('请先确认建模目标');
+      return;
+    }
     const toUpload = explicitAttachments ?? attachments;
     if (!trimmed && toUpload.length === 0) return;
     requestPermissionOnFirstBuild(); // 须在用户发送这一操作中申请，浏览器才弹申请框
@@ -1223,8 +1314,20 @@ export default function ChatPane({
     }
   };
 
+  const confirmGoal = async (background) => {
+    try {
+      await api.confirmProjectGoal(project.id, background);
+    } catch (error) {
+      // 另一个页面已确认过：按已确认处理，只刷新项目信息
+      if (error.code !== 'goal_not_pending') throw error;
+    }
+    setGoalConfirmedFor(project.id);
+    onWorkspaceChanged?.();
+  };
+
+  // 初始资料等目标确认后再发：助手连接时才读取已确认的目标
   useEffect(() => {
-    if (!initialFiles?.length) return;
+    if (!initialFiles?.length || goalPending) return;
     const atts = initialFiles.map((f, i) => ({
       uid: `init-${Date.now()}-${i}`,
       name: f.name,
@@ -1234,7 +1337,7 @@ export default function ChatPane({
     onInitialFilesConsumed?.();
     void send('这是本项目的初始领域资料，请接收并简要浏览，等待我的下一步指令。', atts);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialFiles]);
+  }, [initialFiles, goalPending]);
 
   // 外部入口（左栏命令等）只注册一次，经 ref 调最新的 send，避免读到旧的上传态与附件
   const sendRef = useRef(send);
@@ -1602,10 +1705,18 @@ export default function ChatPane({
             已折叠较早的对话记录 · 点击加载全部
           </button>
         )}
-        {items.length === 0 && !hasLive && !pending && (
-          <Typography.Paragraph type="secondary" style={{ padding: 12 }}>
-            回复下方建议或直接输入，开始建模。
-          </Typography.Paragraph>
+        {goalPending ? (
+          <div className="msg-in msg-left">
+            <GoalConfirmCard key={project.id} goal={meta.background || ''} onConfirm={confirmGoal} />
+          </div>
+        ) : (
+          items.length === 0 &&
+          !hasLive &&
+          !pending && (
+            <Typography.Paragraph type="secondary" style={{ padding: 12 }}>
+              回复下方建议或直接输入，开始建模。
+            </Typography.Paragraph>
+          )
         )}
         <Space direction="vertical" style={{ width: '100%' }} size={12}>
           {items.map((item) => {
@@ -1890,7 +2001,7 @@ export default function ChatPane({
             )}
           </div>
         )}
-        {state !== 'running' && state !== 'queued' && !uploading && (
+        {state !== 'running' && state !== 'queued' && !uploading && !goalPending && (
           <div className="quick-row msg-soft">
             {suggestions.map((sug) => (
               <Tooltip key={sug.key} title={sug.tooltip} mouseEnterDelay={0.4}>

@@ -398,6 +398,12 @@
 .wb-purpose-error { padding: var(--s-2); border-left: 2px solid var(--c-stale); background: var(--c-stale-bg); color: var(--c-stale); font-size: var(--t-xs); overflow-wrap: anywhere; }
 .wb-purpose-review > .btn { width: 100%; }
 .wb-purpose-batch-intro { margin-bottom: var(--s-3); color: var(--c-muted); font-size: var(--t-sm); line-height: 1.5; }
+.wb-goal-confirm-text { max-height: 240px; margin-bottom: var(--s-3); padding: var(--s-3); overflow-y: auto; border-radius: var(--r-sm); background: var(--c-surface-2); font-size: var(--t-sm); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.wb-goal-confirm-actions { margin-top: var(--s-3); }
+.wb-goal-confirm-files { margin-top: var(--s-3); color: var(--c-muted); font-size: var(--t-sm); }
+.wb-goal-confirm-files b { color: var(--c-ink-2); font-weight: 600; }
+.wb-goal-confirm-files ul { max-height: 120px; margin: var(--s-1) 0 0; padding-left: var(--s-4); overflow-y: auto; }
+.wb-goal-confirm-files li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wb-purpose-batch-files { display: grid; gap: 0; margin: 0 0 var(--s-4); padding: 0; list-style: none; }
 .wb-purpose-batch-files li {
   display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s-3);
@@ -695,6 +701,9 @@
 .wb-create .inner { max-width: 780px; margin: 0 auto; padding: var(--s-8) var(--s-7) 56px; }
 .wb-field { margin-bottom: var(--s-6); }
 .wb-field > label { display: block; font-size: var(--t-md); color: var(--c-muted); margin-bottom: var(--s-2); }
+.wb-count-input { position: relative; }
+.wb-count-input textarea { padding-bottom: 22px; }
+.wb-count { position: absolute; right: var(--s-3); bottom: 6px; color: var(--c-faint); font-size: var(--t-xs); pointer-events: none; }
 .wb-data-source-choice {
   margin: var(--s-6) 0 0; padding: 0; border: 0;
 }

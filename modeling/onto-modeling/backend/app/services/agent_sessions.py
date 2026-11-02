@@ -25,6 +25,7 @@ from . import conversation_store, error_log, personal_model_settings
 from .conversation_store import DEFAULT_ID as DEFAULT_CONVERSATION
 from .engines import EngineContext, get_engine_class
 from .engines.base import CONFIG_ERROR, FRIENDLY_ERROR, safe_json as _safe_json
+from .workspace import confirmed_goal
 
 # 兼容重导出：既有测试与调用方从本模块取这些符号（引擎实现已移至 engines/claude.py）
 from .engines.claude import (  # noqa: F401
@@ -592,23 +593,27 @@ class SessionManager:
 
     # ---- 引擎装配 ----
 
-    def _engine_class_for(self, project_id: str):
-        """按项目 meta 的 engine 字段路由（无字段回落 claude；灰度开关）。"""
+    @staticmethod
+    def _project_meta(project_id: str) -> dict:
         meta_path = (
             Path(config.DATA_DIR) / "workspaces" / project_id / ".onto-web.json"
         )
-        name = ""
         try:
-            name = json.loads(meta_path.read_text(encoding="utf-8")).get("engine") or ""
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            pass
-        return get_engine_class(name)
+            return {}
+        return meta if isinstance(meta, dict) else {}
+
+    def _engine_class_for(self, project_id: str):
+        """按项目 meta 的 engine 字段路由（无字段回落 claude；灰度开关）。"""
+        return get_engine_class(self._project_meta(project_id).get("engine") or "")
 
     def _make_engine(self, session: Session):
         project_id = session.project_id
         # 构造时定住会话 id：续接 token 的存取必须跟着这个引擎实例绑定的会话走
         conversation_id = session.conversation_id
-        engine_cls = self._engine_class_for(project_id)
+        meta = self._project_meta(project_id)
+        engine_cls = get_engine_class(meta.get("engine") or "")
         engine_name = engine_cls.name
 
         def save_token(token: str) -> None:
@@ -637,6 +642,7 @@ class SessionManager:
             load_history=lambda: list(session.events),
             conversation_id=conversation_id,
             model_owner=session.model_owner,
+            project_goal=confirmed_goal(meta),
         )
         return engine_cls(ctx)
 

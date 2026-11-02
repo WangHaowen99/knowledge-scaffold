@@ -9,6 +9,7 @@ import type {
   ConfigurableWorkflowStep,
   NodeType,
   Project,
+  ProjectGoalStatus,
   ProjectKind,
   ProjectSensitivity,
   ProjectWorkflowProfile,
@@ -74,6 +75,7 @@ function rowToProject(r: any): Project {
     kind: r.kind === 'package' ? 'package' : 'modeling',
     runtime: r.runtime === 'agent' ? 'agent' : 'legacy',
     name: r.name, domain: r.domain, background: r.background,
+    goalStatus: r.goal_status === 'pending' || r.goal_status === 'confirmed' ? r.goal_status : '',
     targetUsers: r.target_users ?? undefined, glossaryPrefs: r.glossary_prefs ?? undefined,
     sensitivityLevel,
     workflowProfile: parseWorkflowProfile(r.workflow_profile_json, sensitivityLevel),
@@ -88,6 +90,8 @@ export function createProject(input: {
   targetUsers?: string; glossaryPrefs?: string;
   sensitivityLevel?: ProjectSensitivity;
   workflowProfile?: Partial<ProjectWorkflowProfile>;
+  // 创建页填了目标时要求开始建模前先确认；无目标时不进入待确认
+  requireGoalConfirmation?: boolean;
 }): Project {
   const db = getDb();
   const id = `pj_${randomUUID().slice(0, 12)}`;
@@ -98,16 +102,18 @@ export function createProject(input: {
     ? 'restricted'
     : 'standard';
   const workflowProfile = normalizeWorkflowProfile(input.workflowProfile, sensitivityLevel);
+  const background = (input.background ?? '').trim();
+  const goalStatus: ProjectGoalStatus = input.requireGoalConfirmation && background ? 'pending' : '';
   db.exec('BEGIN IMMEDIATE');
   try {
     db.prepare(`INSERT INTO projects
       (id, owner, external_id, kind, runtime, name, domain, background, target_users, glossary_prefs,
-        sensitivity_level, workflow_profile_json,
+        sensitivity_level, workflow_profile_json, goal_status,
         stage, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(id, input.owner, input.externalId ?? null, kind, runtime, input.name, input.domain ?? '', input.background ?? '',
         input.targetUsers ?? null, input.glossaryPrefs ?? null,
-        sensitivityLevel, JSON.stringify(workflowProfile),
+        sensitivityLevel, JSON.stringify(workflowProfile), goalStatus,
         kind === 'package' ? 'review' : 'project_setup', now, now);
     if (runtime === 'legacy') {
       new AiConstructionTaskGraph(db).initialize(id, aiConstructionGraphSourceForProjectKind(kind));
@@ -177,6 +183,23 @@ export function updateProject(id: string, input: UpdateProjectInput): Project | 
     WHERE id = ?`)
     .run(name, domain, background, targetUsers || null, glossaryPrefs || null,
       sensitivityLevel, JSON.stringify(workflowProfile), nowIso(), id);
+  return getProject(id)!;
+}
+
+export class ProjectGoalNotPendingError extends Error {}
+
+/** 开始建模前确认创建时填写的目标；传入 background 表示用户改写后再确认。 */
+export function confirmProjectGoal(id: string, background?: string): Project | null {
+  const current = getProject(id);
+  if (!current) return null;
+  if (current.goalStatus !== 'pending') {
+    throw new ProjectGoalNotPendingError('建模目标已确认，如需调整请在对话中告诉助手');
+  }
+  const goal = (background ?? current.background).trim();
+  if (!goal) throw new Error('请填写建模目标');
+  getDb().prepare(`UPDATE projects SET background = ?, goal_status = 'confirmed', updated_at = ?
+    WHERE id = ? AND goal_status = 'pending'`)
+    .run(goal, nowIso(), id);
   return getProject(id)!;
 }
 

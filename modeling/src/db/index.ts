@@ -456,6 +456,7 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'projects', 'sensitivity_level', "TEXT NOT NULL DEFAULT 'standard'");
   ensureColumn(db, 'projects', 'workflow_profile_json', `TEXT NOT NULL DEFAULT '{"enabledSteps":[],"requiredSteps":["scenario","data_source"],"releaseRequested":true,"externalResearch":false}'`);
   ensureColumn(db, 'projects', 'product_ledger_required', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'projects', 'goal_status', "TEXT NOT NULL DEFAULT ''");
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_external_id ON projects(external_id) WHERE external_id IS NOT NULL');
   ensureColumn(db, 'product_ledger_drafts', 'source_fingerprint', 'TEXT');
   // 旧库的用户 LLM 配置表可能没有上下文窗口列；保留 NULL 以继续回退部署默认值。

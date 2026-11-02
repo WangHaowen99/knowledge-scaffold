@@ -16,7 +16,13 @@ from pathlib import Path
 from typing import Any
 
 from ... import config
-from .base import FRIENDLY_ERROR, EngineContext, config_error_for, safe_json
+from .base import (
+    FRIENDLY_ERROR,
+    EngineContext,
+    config_error_for,
+    project_goal_section,
+    safe_json,
+)
 
 _RAW_ERROR_PATTERN = None  # 延迟编译
 _CONFIG_ERROR_PATTERN = None
@@ -686,9 +692,13 @@ class ClaudeEngine:
                 message=decision.get("message") or "用户拒绝了该操作"
             )
 
+        system_prompt: dict[str, str] = {"type": "preset", "preset": "claude_code"}
+        goal_section = project_goal_section(self._ctx.project_goal)
+        if goal_section:
+            system_prompt["append"] = goal_section
         kwargs: dict[str, Any] = dict(
             cwd=str(self._ctx.cwd),
-            system_prompt={"type": "preset", "preset": "claude_code"},
+            system_prompt=system_prompt,
             # user 级设置承载部署机的模型网关配置（~/.claude/settings.json 的 env）
             setting_sources=["user", "project"],
             # bypassPermissions 下 can_use_tool 不会被触发；切回 default 即恢复确认卡

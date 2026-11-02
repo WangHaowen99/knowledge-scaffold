@@ -6,6 +6,7 @@ import { refreshWorkbenchAfterConfirmation } from '../interaction-settlement.js'
 import {
   answerAgent,
   cancelAgent,
+  confirmProjectGoal as confirmProjectGoalRequest,
   confirmMaterialPurposeReview as confirmMaterialPurposeReviewRequest,
   confirmMaterialPurposeReviews as confirmMaterialPurposeReviewsRequest,
   getAgentState,
@@ -95,6 +96,8 @@ const initial = {
   lastSeq: 0,
   replayUntilSeq: 0,
   autoStartSent: false,
+  // 建模目标待确认期间暂存的资料批次 { projectId, files, options }：确认后合成一批上传再开工
+  pendingUploads: [],
   scene: boot.id,
   leftTab: boot.leftTab,                // pkg | mat
   focus: initialProjectId
@@ -298,6 +301,27 @@ export function shouldUseStaleRunTermination(recovery) {
 }
 
 /* ---- actions ---- */
+// 暂存的多批资料合成一个上传批次：同一批次只触发助手一次续跑，与创建页一次选好全部资料的流程一致。
+// 替换已有资料的批次要带 replacementOf 单独上传。
+export function mergePendingUploads(batches) {
+  const merged = { files: [], options: { followUp: true, directivesByName: {} } };
+  const replacements = [];
+  for (const batch of batches) {
+    if (batch.options?.replacementOf) {
+      replacements.push(batch);
+      continue;
+    }
+    for (const file of batch.files) {
+      merged.files.push(file);
+      merged.options.directivesByName[file.name] = batch.options?.directivesByName?.[file.name] || {
+        purpose: batch.options?.purpose,
+        readingMode: batch.options?.readingMode,
+      };
+    }
+  }
+  return { merged, replacements };
+}
+
 export const actions = {
   /** 门禁是按需拉的：computeGates 要叠加整个候选工作区，不适合跟着事件流反复算。 */
   async loadProgress() {
@@ -1176,8 +1200,16 @@ export const actions = {
   },
   async send(text, options = {}) {
     const value = String(text || '').trim();
-    const { projectId } = store.get();
+    const { projectId, project } = store.get();
     if (!projectId || !value) return;
+    if (project?.goalStatus === 'pending') {
+      store.set({ error: {
+        scope: 'send',
+        message: '请先确认建模目标',
+        recovery: '在对话区的确认卡中确认或修改建模目标后再发送，输入内容仍保留在发送框中。',
+      } });
+      return null;
+    }
     const messageId = optimisticId('message');
     actions.appendMessage({
       id: messageId,
@@ -1203,6 +1235,54 @@ export const actions = {
       }));
       return null;
     }
+  },
+  // 新项目开工只发一次：同时清掉 URL 的 start 标记，刷新页面不会重复开工
+  startModeling() {
+    const { project, autoStartSent } = store.get();
+    if (!project || autoStartSent) return null;
+    store.set({ autoStartSent: true });
+    const url = new URL(window.location.href);
+    url.searchParams.delete('start');
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+    return actions.send(`请开始为“${project.name}”建模。先完整读取已上传资料，主动确认目标并持续推进下一步。`);
+  },
+  // 目标确认卡：确认后沿创建时的原流程继续——有初始资料就上传并由解析结果续跑，否则直接开工
+  async confirmProjectGoal(background) {
+    const { projectId, project } = store.get();
+    if (!projectId) return null;
+    let confirmed;
+    let confirmedElsewhere = false;
+    try {
+      confirmed = (await confirmProjectGoalRequest(projectId, background)).project;
+    } catch (error) {
+      if (error?.data?.code !== 'PROJECT_GOAL_NOT_PENDING') throw error;
+      // 另一个页面已确认并开工：同步状态，不在这里重复开工
+      confirmed = { ...project, goalStatus: 'confirmed' };
+      confirmedElsewhere = true;
+    }
+    // 等待确认期间切走了项目：不覆盖新项目的状态
+    if (store.get().projectId !== projectId) return confirmed;
+    // 确认请求在途时也可能有新暂存的资料，按确认后的最新状态取；只取本项目的批次
+    const { pendingUploads, run } = store.get();
+    const ownUploads = pendingUploads.filter((batch) => batch.projectId === projectId);
+    store.set((state) => ({
+      project: confirmed,
+      error: '',
+      pendingUploads: state.pendingUploads.filter((batch) => batch.projectId !== projectId),
+    }));
+    if (confirmedElsewhere) void actions.refreshSnapshot().catch(() => undefined);
+    if (ownUploads.length) {
+      const { merged, replacements } = mergePendingUploads(ownUploads);
+      void (async () => {
+        if (merged.files.length) await actions.upload(merged.files, merged.options);
+        for (const batch of replacements) await actions.upload(batch.files, batch.options);
+      })().catch((cause) => {
+        store.set({ error: cause instanceof Error ? cause.message : '暂存资料上传失败' });
+      });
+    } else if (!run && !confirmedElsewhere) {
+      void actions.startModeling();
+    }
+    return confirmed;
   },
   async startIncrementRound() {
     const { projectId } = store.get();
@@ -1334,9 +1414,14 @@ export const actions = {
     return result;
   },
   async upload(filesLike, options = {}) {
-    const { projectId } = store.get();
+    const { projectId, project } = store.get();
     const files = [...(filesLike || [])].filter((file) => file instanceof File);
     if (!projectId || !files.length) return;
+    // 资料上传会触发助手续跑；目标确认前先暂存，确认后再上传开工
+    if (project?.goalStatus === 'pending') {
+      store.set((state) => ({ pendingUploads: [...state.pendingUploads, { projectId, files, options }] }));
+      return { parsed: 0, failed: 0, details: [], queued: files.length };
+    }
     const packageFiles = files.filter((file) => file.name.toLocaleLowerCase('zh-CN').endsWith('.zip'));
     const materialFiles = files.filter((file) => !packageFiles.includes(file));
     const packageResults = [];
