@@ -12,7 +12,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from ...kernel.metamodel import mm
+from ...kernel import metamodel
 from .. import package_mapping, package_operations, solver_contract
 from ..document_metadata import report_name
 from ..solver.service import solver_check_at
@@ -23,8 +23,8 @@ from .spi import Manifest, ReleaseSource
 
 
 def _used_objects(body: str, object_keys) -> list[str]:
-    """条目正文链接到的对象 key（frontmatter uses.objects），按元模型解析链接。"""
-    return sorted(set(mm.link_names(body, object_keys)) & set(object_keys))
+    """条目正文链接到的对象 key（frontmatter uses.objects），按本项目锁定版本的元模型解析链接（render 定下）。"""
+    return sorted(set(metamodel.current().link_names(body, object_keys)) & set(object_keys))
 
 
 ADAPTER_ID = "ontology-package"
@@ -172,6 +172,11 @@ class OntologyPackageAdapter:
         return findings
 
     def render(self, src: ReleaseSource, out: Path) -> Manifest:
+        # 链接解析、关系端点按本项目锁定版本的元模型（B3 合并遗留：原来一律用镜像版本）
+        with metamodel.using(Path(src.state_root).parent):
+            return self._render(src, out)
+
+    def _render(self, src: ReleaseSource, out: Path) -> Manifest:
         """发布为知识包（consumer 可导入的 ontology-package v0.1）。
 
         对齐 consumer/backend/ontology/package_import.py 的校验契约：

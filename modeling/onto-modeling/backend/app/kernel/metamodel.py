@@ -3,14 +3,18 @@
 
 - `for_project(root)`：项目锁定的 core 版本（装配目录里核对过的那份）；
 - `stable()`：没有项目上下文的接口（全局 C-05 `/metamodel`、O-42 版本清单）用 stable 通道指向的 core 版本；
-- `mm`：模块级常量（实体类型、目录这类导入时就要的结构）与拿不到项目根目录的辅助函数用镜像自带的
-  版本，与 `services/toolkit.py` 同口径。
+- `mm`：模块级常量（实体类型、目录这类导入时就要的结构）用镜像自带的版本，与 `services/toolkit.py` 同口径；
+- `current()` / `using(root)`：深处的辅助函数（MCP 文档模型、发布 frontmatter、关系端点、兼容中间件）拿不到
+  项目根目录，由入口（MCP 执行、发布渲染、兼容改写）用 `with using(root):` 定下本项目的版本，辅助函数取
+  `current()`；没定时是镜像版本。按上下文变量传，线程、协程互不串。
 
 契约库里的脚本之间按同目录模块名 import（`import onto_metamodel`），由契约库解析到同一版本。
 """
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
 from pathlib import Path
 from types import ModuleType
@@ -40,3 +44,31 @@ def stable() -> ModuleType:
 
 
 mm = contracts.default().load(MODULE_NAME)
+
+
+_CURRENT: contextvars.ContextVar[ModuleType | None] = contextvars.ContextVar("onto_metamodel_current", default=None)
+
+
+def current() -> ModuleType:
+    """这次调用所属项目的元模型（入口用 `using` 定下）；没定时用镜像版本。"""
+    return _CURRENT.get() or mm
+
+
+@contextlib.contextmanager
+def using(target: Path | ModuleType | None):
+    """在 with 块里让 `current()` 给本项目锁定的版本（target 是项目根目录或已加载的元模型）。"""
+    if target is None:
+        model = None
+    elif isinstance(target, ModuleType):
+        model = target
+    else:
+        try:
+            model = for_project(Path(target))
+        except Exception:  # noqa: BLE001 - 加载不了按镜像版本
+            _log.warning("项目 %s 的元模型加载不了，改用镜像版本", Path(target).name, exc_info=True)
+            model = None
+    token = _CURRENT.set(model)
+    try:
+        yield current()
+    finally:
+        _CURRENT.reset(token)

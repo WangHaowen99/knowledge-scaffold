@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Callable
 from urllib.parse import parse_qs, quote
 
-from ..kernel.metamodel import mm
+from ..kernel import metamodel
 
 SUNSET = "Sat, 01 May 2027 00:00:00 GMT"
 _P = r"(?P<id>[^/]+)"
@@ -25,10 +25,25 @@ _BODY_LIMIT = 4 * 1024 * 1024  # 需要看请求体才能改写的几个旧接�
 CURRENT_CONVERSATION = "-"
 
 
-def entry_id_for_path(path: str) -> str:
-    """旧接口按文件路径定位的条目 → v1 的 entry_id（<kind>:<key>）；认不出时原样返回路径。"""
+def entry_id_for_path(path: str, project_id: str | None = None) -> str:
+    """旧接口按文件路径定位的条目 → v1 的 entry_id（<kind>:<key>）；认不出时原样返回路径。
+
+    给了项目时按本项目锁定版本的元模型认目录（B3 合并遗留），项目不存在时用镜像版本。
+    """
     path = (path or "").strip().lstrip("/")
-    return mm.entry_key(path) or path
+    return _model_for(project_id).entry_key(path) or path
+
+
+def _model_for(project_id: str | None):
+    if not project_id:
+        return metamodel.current()
+    try:
+        from . import deps
+
+        root = deps.workspaces.project_root(project_id)
+    except Exception:  # noqa: BLE001 - 项目不存在（改写后由 v1 处理器回 404）
+        return metamodel.current()
+    return metamodel.for_project(root) if root.is_dir() else metamodel.current()
 
 
 @dataclass(frozen=True)
@@ -81,7 +96,7 @@ def _export_successor(groups, query):
 def _entry(suffix: str, method: str | None = None):
     def target(groups, query, body):
         path = _q(query, "path") or ((body or {}).get("path") if isinstance(body, dict) else "") or ""
-        entry = quote(entry_id_for_path(str(path)), safe=":")
+        entry = quote(entry_id_for_path(str(path), groups.get("id")), safe=":")
         return method or groups["_method"], f"/api/v1/projects/{groups['id']}/studio/entries/{entry}{suffix}"
 
     return target

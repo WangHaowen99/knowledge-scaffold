@@ -27,7 +27,7 @@ import re
 import unicodedata
 from pathlib import Path
 
-from ..kernel.metamodel import mm
+from ..kernel import metamodel
 
 # modeling 契约：来源Sheet 为 "—" 表示该对象不绑定物理表（package-import 按此跳过）
 UNBOUND = "—"
@@ -573,14 +573,14 @@ def _relation_node(value: str) -> str:
 
     按元模型解析；端点带 `#` 时保留全名，存量文件名里带 `#` 的对象（如 `1#油泵`）才连得上。
     """
-    link = mm.parse_link(value)
+    link = metamodel.current().parse_link(value)
     name = link.full_name if link else value
     return CURRENT_OBJECT if name in _CURRENT_OBJECT_ALIASES else name
 
 
 def _endpoint(name: str, object_texts) -> str:
     """关系端点全名 → 对象 key：先按全名，再去掉 `#锚点` 按名称（元模型 resolve）；都对不上时原样。"""
-    return mm.resolve(name, object_texts) or name
+    return metamodel.current().resolve(name, object_texts) or name
 
 
 def _split_relation_arrows(value: str) -> list[str]:

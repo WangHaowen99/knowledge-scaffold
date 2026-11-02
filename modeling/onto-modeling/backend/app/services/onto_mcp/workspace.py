@@ -211,6 +211,14 @@ def execute(manager, project_id, name, args, username):
     validate_input(args, TOOLS[name]["inputSchema"])
     if name in ("artifact_list", "artifact_get"):
         return _artifact_tool(manager, project_id, name, args)
+    from ...kernel import metamodel
+
+    # 文档模型按本项目锁定版本的元模型解析（B3 合并遗留：原来一律用镜像版本）
+    with metamodel.using(manager.project_root(project_id)):
+        return _execute(manager, project_id, name, args, username)
+
+
+def _execute(manager, project_id, name, args, username):
     # Shared with web writes, protects the revision check and persistence as one operation.
     with manager._project_lock(project_id):
         root = manager.project_root(project_id)

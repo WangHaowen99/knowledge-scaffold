@@ -209,12 +209,12 @@ def _group_of(rel: str) -> str | None:
     return None
 
 
-def _hit_target(group: str, rel: str) -> tuple[dict, str, str]:
+def _hit_target(group: str, rel: str, project_id: str | None = None) -> tuple[dict, str, str]:
     from ..api.compat import entry_id_for_path
 
     stem = Path(rel).stem
     if group == "entries":
-        entry = entry_id_for_path(rel)
+        entry = entry_id_for_path(rel, project_id)
         kind = entry.split(":", 1)[0]
         return {"kind": kind, "id": entry, "key": stem, "name": stem}, "studio-table", stem
     if group == "materials":
@@ -257,7 +257,7 @@ def search(project_id: str, request: Request, q: str = "", groups: str = "", lim
             continue
         totals[group] += 1
         if len(found[group]) < limit:
-            target, page, title = _hit_target(group, rel)
+            target, page, title = _hit_target(group, rel, project_id)
             snippet = (lines[0].strip() if lines else title)[:160]
             found[group].append({"group": group, "title": title, "snippet": snippet, "target": target, "page": page})
     result_groups = [{"group": group, "total": totals[group], "items": found[group]} for group in wanted]
