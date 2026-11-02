@@ -1,7 +1,7 @@
-"""资料（API 契约 3.6）：R-01 列表、R-02 上传、R-03 改用途、R-04 删除。
+"""资料（API 契约 3.6）：R-01 列表、R-02 上传、R-03 改用途、R-04 删除、R-05 被谁引用、R-06 原文预览、
+R-11 / R-12 外部反馈。
 
-资料区对 agent 只读，只能由用户上传、替换、删除，每次都保存版本。资料分析（R-05～R-10）、
-外部反馈（R-11、R-12）属于以后阶段。
+资料区对 agent 只读，只能由用户上传、替换、删除，每次都保存版本。资料分析（R-07～R-10）在 `materials.py`。
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from .. import config
 from ..api import deps
 from ..api.errors import ApiError
-from ..services import mainline, uploads
+from ..services import mainline, material_text, uploads
 from ..services.workspace.layout import RESOURCE_DIRECTIVES, RESOURCE_SUBDIRS, _content_revision, is_auto_detected
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/resources", tags=["resources"])
@@ -174,4 +174,34 @@ def delete_resource(project_id: str, request: Request, path: str = ""):
         "commit": result["commit"] or state["head"],
         "version_label": state["version_label"],
         "broken_references": 0,
+    }
+
+
+def _material_target(root: Path, path: str) -> str:
+    rel = (path or "").strip().lstrip("/")
+    if not rel:
+        raise ApiError("invalid_argument", "要指定 path", 400, {"fields": {"path": "required"}})
+    if not material_text.is_material(rel):
+        raise ApiError("path_forbidden", "只能查看资料区的资料", 403, {"path": rel})
+    target = (root / rel).resolve()
+    if not target.is_relative_to(root.resolve()) or not target.is_file():
+        raise ApiError("file_not_found", "资料不存在", 404, {"path": rel})
+    return rel
+
+
+@router.get("/preview")
+def preview(project_id: str, request: Request, path: str = "", around: str = "", limit: int = 0, cursor: str = ""):
+    """R-06：文档类资料按 source_extract 的锚点抽成块；抽取器读不了的格式（pdf、doc）没有块。"""
+    root = deps.require_owner(project_id, request)
+    rel = _material_target(root, path)
+    try:
+        data = material_text.blocks(root, rel, around=around.strip(), limit=limit, cursor=cursor)
+    except ValueError:
+        raise ApiError("invalid_cursor", "游标无法解析", 400) from None
+    return {
+        "path": rel,
+        "format": Path(rel).suffix.lower().lstrip("."),
+        "coverage": None,
+        "blocks": data["blocks"],
+        "next_cursor": data["next_cursor"],
     }

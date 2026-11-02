@@ -265,6 +265,30 @@ def entry_flow(project_id: str, entry_id: str, request: Request):
     }
 
 
+@router.get("/entries/{entry_id}/evidence")
+def entry_evidence(project_id: str, entry_id: str, request: Request):
+    """ST-06：条目正文里上传资料的出处（`file:` 锚点，同 EV-29 解析）；业务系统证据快照本期没有。"""
+    from ..services import material_text
+
+    root = deps.require_owner(project_id, request)
+    rel, _, _ = entry_path(root, entry_id)
+    target = deps.workspaces._resolve_inside(root, rel)
+    if not target.is_file():
+        raise ApiError("not_found", "条目不存在", 404)
+    items: dict[str, dict] = {}
+    for line in target.read_text(encoding="utf-8").splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")] if line.lstrip().startswith("|") else []
+        for path, fragment, _ in material_text.find_anchors(line):
+            anchor = material_text.file_anchor(path, fragment)
+            item = items.setdefault(anchor, {"anchor": anchor, "scheme": "file", "title": path.rsplit("/", 1)[-1],
+                                             "confidence": None, "used_for": []})
+            # 属性表里的出处：这一行的第一格是属性名
+            if cells and cells[0] and cells[0] not in item["used_for"]:
+                item["used_for"].append(cells[0])
+    return {"snapshot_basis": [],
+            "items": [{**item, "resolved": material_text.resolve(root, item["anchor"])} for item in items.values()]}
+
+
 # ---- ST-07 草稿、ST-08 提交 ----
 
 
