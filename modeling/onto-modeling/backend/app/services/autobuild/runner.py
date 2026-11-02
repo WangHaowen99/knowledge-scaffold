@@ -209,8 +209,9 @@ class AutobuildRunner:
             for run in queued:
                 if not slots or busy >= slots:
                     break
-                if run["project_id"] in self._tasks:
-                    continue
+                task = self._tasks.get(run["project_id"])
+                if task is not None and not task.done() and task is not asyncio.current_task():
+                    continue  # 这个项目的上一次驱动还没退出（自己正在收尾时不算）
                 busy += 1
                 self._spawn(run["project_id"], run["run_id"])
 
