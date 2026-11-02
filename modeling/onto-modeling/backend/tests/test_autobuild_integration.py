@@ -54,6 +54,8 @@ def test_cards_ops_views_and_guards_while_running(ab, monkeypatch):
                           json={"confirm_name": "自主构建"}).json()["code"] == "autobuild_running"
     assert client.post(f"/api/v1/projects/{project_id}/changesets/{head['id']}/merge", json={}).json()["code"] == \
         "autobuild_running"
+    assert client.post(f"/api/v1/projects/{project_id}/archive", json={"archived": True}).json()["code"] == \
+        "autobuild_running"
     preview = client.post(f"/api/v1/projects/{project_id}/autobuild/runs/preview", json={})
     assert preview.status_code == 409 and preview.json()["code"] == "autobuild_running"
     release.set()

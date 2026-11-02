@@ -503,6 +503,10 @@ async def archive_project(project_id: str, request: Request, body: dict = Body(.
 
     deps.require_owner(project_id, request)
     archived = bool(body.get("archived"))
+    if archived:
+        from ..services.autobuild import store as autobuild_store
+
+        autobuild_store.ensure_no_run(project_id)
     deps.workspaces._update_meta(project_id, archived=archived, archived_at=time.time() if archived else None)
     if archived:
         await manager.close(project_id, all_conversations=True)
