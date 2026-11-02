@@ -131,8 +131,6 @@ def status(project_id: str, request: Request):
         "client_config_templates": client_configs(
             project_id, base, {"read": "<READ_TOKEN>", "change": "<CHANGE_TOKEN>"}
         ),
-        "recommended_order": ["server/discover", "tools/list", "tools/call"],
-        "limits": {"page_size_max": deps.PAGE_MAX, "body_bytes": MAX_BODY},
     }
 
 

@@ -95,15 +95,15 @@ def _p95(values: list[float]) -> float:
     return ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))] if ordered else 0
 
 
-def _card(card_id: str, label: str, value, unit: str, series: list[float], secondary: str = "", note: str = "",
+def _card(card_id: str, label: str, value, unit: str, series: list[float], secondary: str = "",
           tone: str = "normal") -> dict:
-    return {"id": card_id, "label": label, "value": value, "unit": unit, "secondary": secondary, "note": note,
+    return {"id": card_id, "label": label, "value": value, "unit": unit, "secondary": secondary,
             "series": series, "tone": tone}
 
 
 @router.get("/metrics")
 def metrics(request: Request, range: str = "24h", labels: str = ""):  # noqa: A002  契约查询参数名
-    """O-02：指标卡片。数值来自进程内指标（重启后从零开始）；合入、证据采集属于以后阶段，恒为 0。"""
+    """O-02：指标卡片。数值来自进程内指标（重启后从零开始）；证据采集卡本期不返回（证据源只留接口）。"""
     _read(request)
     if range not in RANGES:
         raise ApiError("invalid_argument", "range 只能是 1h、24h、7d", 400, {"fields": {"range": "enum"}})
@@ -135,8 +135,7 @@ def metrics(request: Request, range: str = "24h", labels: str = ""):  # noqa: A0
               tone="error" if fail_rate >= 5 else "normal"),
         _card("guard_denies", "守卫拒绝", int(guards), "次", guard_series),
         _card("check_failures", "检查失败", int(checks), "次", check_series),
-        _card("merges", "合入", int(merges), "次", merge_series, note="变更集在 P2"),
-        _card("collections", "证据采集", 0, "次", [0] * BUCKETS, note="证据源在 P3"),
+        _card("merges", "合入", int(merges), "次", merge_series),
         _card("reconnects", "热更新与重连", int(reconnects), "次", reconnect_series),
     ]}
 
@@ -167,7 +166,7 @@ def attribution(request: Request, by: str = "pack", range: str = "24h", labels: 
         {"key": key, "version_or_source": key.partition("@")[2] or None, "calls": row["calls"],
          "fail_rate_pct": round(row["failures"] / row["calls"] * 100, 1) if row["calls"] else 0,
          "avg_duration_ms": int(sum(row["durations"]) / len(row["durations"]) * 1000) if row["durations"] else 0,
-         "guard_denies": int(row["guard_denies"]), "reruns": None, "first_accept_pct": None}
+         "guard_denies": int(row["guard_denies"])}  # 重跑、一次通过率没有数据来源，不返回
         for key, row in sorted(rows.items())
     ]}
 

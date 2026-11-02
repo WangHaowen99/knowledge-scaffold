@@ -722,6 +722,10 @@ def _write_merge(manager, project_id: str, root: Path, record: dict, main: str, 
             if data is not None:
                 tx.write(rel, data)
         committed = tx.commit(message or f"assistant: {record.get('purpose') or '助手的修改'}（{record['id']}）")
+    if committed.commit:
+        from ...governance import telemetry
+
+        telemetry.count("onto_merges_total", source=origin_source)  # 运维可观测「合入」卡（O-02）
     return committed.commit or None
 
 

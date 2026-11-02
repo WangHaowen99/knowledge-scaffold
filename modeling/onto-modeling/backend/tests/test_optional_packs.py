@@ -312,7 +312,7 @@ def test_industry_layer_lists_and_overrides(env):
     assert body["counts"]["project"] == 0 and body["counts"]["industry"] >= 10
     industry = next(layer for layer in body["layers"] if layer["layer"] == "industry")
     assert industry["label"] == "零售连锁" and industry["packs"] == ["industry-retail"]
-    assert "零售连锁" in body["loading_rule"]
+    assert "loading_rule" not in body  # 加载规则的说明句不再下发（UI 文案口径 ⑤）
     entry = next(item for item in body["items"] if item["id"].endswith("safety-stock-formula"))
     assert entry["layer"] == "industry" and entry["readonly"] is True and entry["pack"] == "industry-retail"
     detail = client.get(f"{base}/{entry['id']}").json()

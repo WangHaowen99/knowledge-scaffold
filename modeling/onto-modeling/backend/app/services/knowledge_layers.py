@@ -143,14 +143,6 @@ def layers_view(project: list[dict], industry: list[dict], packs: list) -> list[
     return layers
 
 
-def loading_rule(packs: list) -> str:
-    if not packs:
-        return "助手按条目的适用范围加载项目知识：全局条目都加载，按条目划范围的取最近修改的 10 条。没有启用行业包。"
-    labels = "、".join(view.manifest.label for view in packs)
-    return (f"加载优先级从低到高：行业知识（{labels}）、项目知识；同一条知识两层都有时以项目知识为准。"
-            "全局条目都加载；行业条目按概念与别名匹配到当前处理的条目时加载，按条目划范围的取最近修改的 10 条。")
-
-
 # ---- K-06 冲突检查 ----
 
 
@@ -173,22 +165,20 @@ def check_conflicts(root: Path, project: list[dict], industry: list[dict]) -> di
         twin = titles.get(entry["title"])
         if twin is not None:
             conflicts.append({"kind": "duplicate", "project_entry": {"id": entry["id"], "title": entry["title"]},
-                              "industry_entry": None, "note": f"与「{twin['title']}」同名",
+                              "industry_entry": None, "duplicate_of": {"id": twin["id"], "title": twin["title"]},
                               "effective": "project"})
         titles.setdefault(entry["title"], entry)
         industry_twin = by_slug.get(entry.get("_slug") or "")
         if industry_twin is not None and industry_twin["_rule"].strip() != entry.get("_rule", "").strip():
             conflicts.append({"kind": "scope_conflict", "project_entry": {"id": entry["id"], "title": entry["title"]},
                               "industry_entry": {"id": industry_twin["id"], "title": industry_twin["title"]},
-                              "note": f"项目口径与{industry_twin['_pack_label']}的行业口径不同，现以项目口径为准",
                               "effective": "project"})
         scope = entry.get("scope") or {}
         missing = [ref["key"] for ref in scope.get("entries") or []
                    if ref.get("kind") in _ENTITY_DIRS and not _entity_exists(root, ref["kind"], ref["key"])]
         if missing:
             conflicts.append({"kind": "broken_ref", "project_entry": {"id": entry["id"], "title": entry["title"]},
-                              "industry_entry": None, "note": "适用范围里的条目不存在：" + "、".join(missing),
-                              "effective": "project"})
+                              "industry_entry": None, "missing": missing, "effective": "project"})
     for index, item in enumerate(conflicts, 1):
         item["id"] = f"kc-{index}"
     unsourced = sum(1 for entry in project if entry["source"]["kind"] == "manual")
@@ -213,10 +203,20 @@ def save_conflicts(root: Path, result: dict) -> None:
     path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def conflict_with(item: dict) -> str:
+    """冲突的另一方，给 K-03/K-04 的 `conflicts[].with`：行业条目、同名条目或不存在的引用。"""
+    other = item.get("industry_entry") or item.get("duplicate_of") or {}
+    return other.get("title") or "、".join(item.get("missing") or [])
+
+
 def last_conflicts(root: Path) -> dict:
     try:
-        return json.loads((Path(root) / CONFLICTS_REL).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        result = json.loads((Path(root) / CONFLICTS_REL).read_text(encoding="utf-8"))
+        # 旧版存的冲突带说明句 note，不再下发（UI 文案口径 ⑤）
+        for item in result.get("conflicts") or []:
+            item.pop("note", None)
+        return result
+    except (OSError, ValueError, AttributeError):
         return {"checked_at": None, "duration_ms": 0, "total_entries": 0, "conflicts": [],
                 "consistent_with_materials": 0, "unsourced": 0, "duplicates": 0, "broken_refs": 0}
 
