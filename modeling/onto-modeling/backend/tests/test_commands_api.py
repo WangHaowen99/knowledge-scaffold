@@ -61,7 +61,7 @@ def test_catalog_lists_assembled_commands_by_business_group(api):
     assert catalog["total"] == len(items) > 5
     assert all(set(item) == COMMAND_ITEM for item in items)
     by_command = {item["command"]: item for item in items}
-    assert by_command["/ontology-extract-object"]["node_id"] == "core.object"
+    assert by_command["/ontology-extract-object"]["node_id"] == "core.model"
     assert by_command["/ontology-research"]["label"] and by_command["/ontology-research"]["pack"] == "core"
     assert catalog["groups"][0]["label"] == "建模"
 
@@ -81,7 +81,7 @@ def test_page_command_returns_task_and_tracks_exec_until_done(api):
     assert wait(lambda: FakeEngine.sent)[0] == '/ontology-validate scope=全部 keys=["s-01", "s-02"]\n\n只看规则'
     done = wait(lambda: next((task for task in command_tasks.query(project_id, states=["done"])
                               if task["task_id"] == task_id), None))
-    assert done["exec_id"] and done["result"]["summary"].startswith("「质量检查」做完了")
+    assert done["exec_id"] and done["result"]["summary"].startswith("「校验与走查」做完了")
     assert exec_records.get(project_id, done["exec_id"])["task_id"] == task_id
     assert client.get(f"/api/v1/projects/{project_id}/commands/tasks?origin_page=reports").json()["items"] == []
     finished = client.get(f"/api/v1/projects/{project_id}/commands/tasks?state=done").json()["items"]

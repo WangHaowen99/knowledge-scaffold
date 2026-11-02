@@ -79,10 +79,11 @@ def test_sources_counts_and_detail_shapes(env):
     client, workspaces, _manager, project_id, root = env
     # 过期的场景验证节点（场景走查包的节点，计进它的角标）、需复核的对象节点、报告、外部反馈、续跑
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
-    main_write(root, "ontology/data-mock/门店.md", "# 门店\n\n| 编号 |\n| --- |\n| 1 |\n")
+    main_write(root, "ontology/operation/补货.md", "# 补货\n\n## 业务描述\n\n合成\n")
+    main_write(root, "ontology/testcase/补货.md", "# 测试场景：补货\n\n## 场景 1：合成\n")
     assert inbox.collect(workspaces, project_id) is not None  # 记基线
     main_write(root, "ontology/object/仓库.md", obj("仓库", "上游变了"))
-    node_state.mark_needs_review(root, ["core.object"], "import", note="导入的知识包带进来的产物")
+    node_state.mark_needs_review(root, ["core.model"], "import", note="导入的知识包带进来的产物")
     main_write(root, "reports/20261102-rule.md", "# 校验\n\n- [ ] 门店缺少数据来源\n- [x] 已处理\n")
     (root / "feedback").mkdir(exist_ok=True)
     main_write(root, "feedback/20261102-fb1.json", json.dumps({"feedback_id": "fb1", "source": "评测服务",
@@ -95,8 +96,9 @@ def test_sources_counts_and_detail_shapes(env):
 
     body = client.get(f"/api/v1/projects/{project_id}/inbox").json()
     found = {item["id"]: item for item in body["items"]}
-    assert "stale:trace.mock" in found and found["stale:trace.mock"]["pack"] == "trace"
-    assert found["review:core.object"]["source"] == "import"
+    assert "stale:trace.trace" in found and found["stale:trace.trace"]["pack"] == "trace"
+    assert found["stale:core.model"]["pack"] is None
+    assert found["review:core.model"]["source"] == "import"
     assert found["report:20261102-rule"]["title"].endswith("1 条待处理")
     assert found["feedback:fb1"]["source"] == "external"
     assert found[f"resumable:{record['id']}"]["actions"] == ["resume", "abandon", "dismiss"]
@@ -115,7 +117,7 @@ def test_sources_counts_and_detail_shapes(env):
     # 详情按 kind
     detail = client.get(f"/api/v1/projects/{project_id}/inbox/pending_changeset:cs-1").json()["detail"]
     assert detail["id"] == "cs-1" and detail["groups"]
-    stale = client.get(f"/api/v1/projects/{project_id}/inbox/stale:trace.mock").json()["detail"]
+    stale = client.get(f"/api/v1/projects/{project_id}/inbox/stale:trace.trace").json()["detail"]
     assert set(stale) == {"upstream_diff", "impact", "siblings"}
     assert client.get(f"/api/v1/projects/{project_id}/inbox/nope:1").json()["code"] == "not_found"
     # 左栏角标：场景走查页（声明了 badge: inbox）
@@ -134,9 +136,10 @@ def test_actions_go_to_the_equivalent_endpoints(env):
     assert (root / "ontology/object/门店.md").is_file()
     assert client.post(f"{base}/pending_changeset:cs-1/actions", json={"action": "merge"}).json()["code"] == "not_found"
     # 需复核：接受后去掉
-    node_state.mark_needs_review(root, ["core.object"], "upgrade")
-    assert client.post(f"{base}/review:core.object/actions", json={"action": "discard"}).status_code == 400
-    accepted = client.post(f"{base}/review:core.object/actions", json={"action": "accept"})
+    main_write(root, "ontology/operation/补货.md", "# 补货\n\n## 业务描述\n\n合成\n")
+    node_state.mark_needs_review(root, ["core.model"], "upgrade")
+    assert client.post(f"{base}/review:core.model/actions", json={"action": "discard"}).status_code == 400
+    accepted = client.post(f"{base}/review:core.model/actions", json={"action": "accept"})
     assert accepted.json()["resolved"] is True and node_state.reviews(root) == []
     # 忽略：不再计数，当天处理数加一
     main_write(root, "reports/r.md", "- [ ] 一条\n")

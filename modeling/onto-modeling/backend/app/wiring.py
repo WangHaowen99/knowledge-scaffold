@@ -114,16 +114,26 @@ def _changeset_event(project_id: str, event: str, data: dict) -> None:
 
 
 def _confirm_nodes(project_id: str, node_ids: list[str], record: dict | None = None) -> None:
+    import time
+
+    from .services.flow import blueprint, slices
     from .services.flow import model as flow_model
     from .services.flow import state as node_state
 
     if not node_ids:
         return
     root = _workspaces().project_root(project_id)
-    node_state.confirm(root, flow_model.load_for(root), node_ids)
+    flow = flow_model.load_for(root)
+    node_state.confirm(root, flow, node_ids)
+    review = None
     if record and record.get("needs_review"):
+        review = {"source": "autobuild", "at": time.time(), "run_id": record.get("run_id"),
+                  "slice_id": record.get("slice_id")}
         node_state.mark_needs_review(root, node_ids, "autobuild", run_id=record.get("run_id"),
                                      slice_id=record.get("slice_id"), note=record.get("purpose") or "")
+    # 按切片的节点：这个变更集做过的那几片那几步记为确认过（B4d）
+    slices.confirm(root, flow, (record or {}).get("slice_steps") or [], doc=blueprint.load_doc(root),
+                   needs_review=review)
 
 
 def _sync_change_lists(project_id: str, record: dict) -> None:

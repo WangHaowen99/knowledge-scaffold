@@ -234,8 +234,10 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
     from . import model
     from . import state as node_state
 
+    from .view import node_states
+
     hits = model.flow_state(root).node_hits(flow, root)
-    states = node_state.compute(root, flow, hits)
+    states, sliced, _doc, _context = node_states(root, flow, hits)
     by_id = {node["id"]: node for node in flow.get("nodes") or []}
     reviews = {item["node_id"]: item for item in node_state.reviews(root)}
     items = []
@@ -246,7 +248,8 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
             items.append(_item("stale", node_id, f"「{node.get('title') or node_id}」过期了",
                                meta=f"上游（{'、'.join(node.get('stale_on') or [])}）改过", source="assistant",
                                pack=pack, extra={"node": node},
-                               fingerprint=node_state.fingerprint(root, list(node.get("stale_on") or []))))
+                               fingerprint=(sliced or {}).get("stale_key") if node.get("per_slice") and sliced
+                               else node_state.fingerprint(root, list(node.get("stale_on") or []))))
         review = reviews.get(node_id)
         if review and info["state"] in ("confirmed", "stale"):
             source = review.get("source") or "upgrade"

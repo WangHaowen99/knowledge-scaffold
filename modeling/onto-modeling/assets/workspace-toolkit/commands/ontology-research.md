@@ -18,6 +18,9 @@ Conduct domain research for an ontology modeling project. The domain is: $ARGUME
 
 命令结束前执行 `release research` 与 `update-progress`。
 
+5. **只做切片规划**：`$ARGUMENTS` 里有 `phase=blueprint`（或 `phase=slices`）时，不重做资料分析：先跑一次
+   Step 4.5 的内容验收（只核验，不改报告），通过后直接到 Step 6；没通过按 Step 4.5 的未通过话术处理并停下。
+
 ## 业务知识识别（贯穿整个命令）
 
 整个 research 命令期间始终遵循 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md`。
@@ -166,17 +169,8 @@ For append mode use: `git commit -m "research: append {FOCUS_DIRECTIONS}"`
 
 commit 前置 hook 会再跑一次同一检查；未通过时提交会被阻止，这是预期行为。
 
-Show the user a brief summary of the report (5-10 bullet points covering key objects and operations found), then ask:
+**Step 4.5 已验收（退出码 0）时：** 不在这里给下一步建议，直接进 Step 6 做切片规划。
 
-**Step 4.5 已验收（退出码 0）时：**
-
-"资料分析报告已保存并通过内容验收：`research/{filename}`（计数、ID 与引用字段均已对账）。
-
-**下一步建议：**
-- 回复 **流程图**（/ontology-flowchart）→ 创建业务流程图（流程复杂、多子流程交叉时推荐）
-- 回复 **提取对象**（/ontology-extract-object）→ 跳过流程图，直接从本份资料分析报告提取对象
-- 回复 **追加资料分析** → 补充其它方向
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
 
 **Step 4.5 未通过时**（不展示上面的下一步建议，也不要提议提取对象）：
 
@@ -188,8 +182,44 @@ Show the user a brief summary of the report (5-10 bullet points covering key obj
 - 回复 **人工确认** → 你逐条给出结论，我据此补充报告再核验
 验收通过前不要进入对象提取：错误的字段或 ID 会被后续映射、规则与追溯继续沿用。"
 
-If user replies **流程图** (or any affirmative like 好/开始/继续/是): read `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions immediately.
-If user replies **提取对象**: read `.claude/commands/ontology-extract-object.md` and follow it（由于没有流程图摘要，Step 1 会进入"仅基于资料分析报告"模式）。
-If user replies **修正** or **人工确认**: 回到 Step 4.5 按对应分支处理，通过后再问一次本节的下一步。
-If user replies **追加资料分析**: restart this command from Step 1.
+If user replies **修正** or **人工确认**: 回到 Step 4.5 按对应分支处理，通过后进 Step 6。
 If user wants other changes first: handle them, then ask again.
+
+## Step 6: 切片规划（建模蓝图）
+
+资料分析含切片规划（详设第 9 章建议 2）：把业务拆成几片，之后按片建模，每片单独走完「对象 → 操作 → 规则 → 写入即查」
+再确认生效。蓝图文件 `research/blueprint.json` **只由脚本写**：你先写一份草稿 JSON，再让脚本校验、编号后落盘。
+
+1. 读已验收的资料分析报告（业务项清单、候选段、缺口与待决）和资料用途清单，按下面的规则划片：
+   - 一片是一条能单独讲清楚、单独验证的业务链路：通常 1 个主操作、3～8 个对象、几条规则；
+   - 被几片共用的对象（如基础档案）放在最先做的那一片，别的片依赖它、只引用不改；
+   - 按依赖排顺序：被依赖的在前；
+   - 资料少、业务链路只有一条时只划一片（全量模式），不要硬拆。
+2. 写草稿 `.ontology-state/blueprint-draft.json`（字段名照写，名称用资料里的业务叫法，不编造）：
+
+   ```json
+   {"goal_md": "一句话的建模目标", "goal_anchor": "出处锚点或 null", "goal_anchor_label": "出处短标签或 null",
+    "out_of_scope": ["明确不建的内容"],
+    "slices": [{"name": "片名（≤20 字）", "core_flow": "核心链路（≤30 字）", "depends_on": ["依赖的片名"],
+                "objects": ["对象名"], "operations": ["操作名"], "rules": ["规则名"],
+                "sources": [{"anchor": "出处锚点", "label": "出处短标签"}]}],
+    "terms": {"aligned": ["已经统一的叫法"], "ambiguous": [{"variants": ["叫法一", "叫法二"]}]},
+    "questions": [{"title": "需要用户回答的问题", "background": "为什么要问（一句）", "options": ["选项一", "选项二"]}]}
+   ```
+
+   对象、操作、规则的名字就是之后条目的文件名，不能带 `/ \ # ? & | [ ]`。资料里没有规则的片，`rules` 留空。
+3. 落盘：
+
+   ```bash
+   python3 .claude/scripts/blueprint.py write .ontology-state/blueprint-draft.json
+   ```
+
+   输出 `ok:…` 才算写好；输出 `error:…` 时按提示改草稿再写，不要手工改 `research/blueprint.json`。
+   已有蓝图时（重新划分）草案号会加 1，同名的片沿用原来的编号。
+4. 提交：`git add research/blueprint.json && git commit -m "research: 建模蓝图"`。
+
+界面会出建模蓝图卡和「确认后怎么建」，回复里不要重复整份蓝图。只用一两句说明划了几片、哪一片推荐先做、
+有几个问题等用户回答，然后停下等用户确认蓝图（确认在界面上做，或用户在对话里说「确认」时提醒他点「确认蓝图」）。
+
+用户要调整切片（合并、排除、改名、调顺序）时，请他在建模蓝图里直接改；要「把某一片按章节拆分」时，重读那一片的
+资料，按上面的规则重写草稿并再跑一次 `blueprint.py write`。

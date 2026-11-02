@@ -71,11 +71,30 @@ def flow_state(root: Path):
 
 
 def progress(root: Path) -> dict:
-    """项目列表上的阶段进度：{done, total, hits, stage, probes}。"""
+    """项目列表上的阶段进度：{done, total, hits, stage, probes}。按切片建模时建模节点要全部片做完才算（同 FL-01）。"""
     flow = load_for(root)
     state = flow_state(root)
     probes = state.evaluate(flow, root)
     info = state.progress(flow, root, probes)
+    sliced = _sliced(root, flow)
+    if sliced is not None and sliced["node_id"] in info["hits"]:
+        before = info["hits"][sliced["node_id"]]
+        info["hits"][sliced["node_id"]] = sliced["hit"]
+        counted = any(node["id"] == sliced["node_id"] for node in state.progress_nodes(flow))
+        info["done"] += (int(sliced["hit"]) - int(before)) if counted else 0
     info["stage"] = state.legacy_stage(flow, root, probes)
     info["probes"] = probes
     return info
+
+
+def _sliced(root: Path, flow: dict) -> dict | None:
+    """按片模式时建模节点按切片的汇总；全量模式（没有蓝图或只有一片）时 None。"""
+    from . import blueprint, slices
+
+    doc = blueprint.load_doc(root)
+    if blueprint.script(root).mode(doc) != "sliced":
+        return None
+    try:
+        return slices.compute(root, flow, doc=doc, persist=False)
+    except Exception:  # noqa: BLE001 - 进度是概览，算不出时按完成判定
+        return None

@@ -79,7 +79,7 @@ def test_project_progress_counts_stages_after_missing_required(manager: Workspac
     _write(root, "ontology/testcase/下单.md", "# 下单")
 
     overview = next(p for p in manager.list_projects() if p["id"] == meta["id"])
-    assert overview["stages_done"] == 4
+    assert overview["stages_done"] == 3  # 建模、校验与走查、全量回归
     assert overview["stages_total"] == 10
 
 
@@ -106,8 +106,12 @@ def test_project_progress_full_chain_reaches_total(manager: WorkspaceManager):
         "ontology/testcase/下单.md",
         "ontology/scripts/calc.py",
         "ontology/solver/route_choice/contract.json",
+        "reports/consistency/consistency.md",  # 全局一致性：有报告、没有未处理的条目
     ):
         _write(root, rel)
+    # 发布：工作区里有发布标签
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "tag", "release/0.1.0"],
+                   cwd=root, check=True, capture_output=True)
 
     progress = manager._project_progress(root)
     assert progress["stages_done"] == progress["stages_total"] == 10

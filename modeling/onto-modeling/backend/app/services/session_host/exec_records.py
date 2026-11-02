@@ -21,6 +21,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -239,9 +240,44 @@ def phase_label(phase: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+_SLICE_ARG_RE = re.compile(r"(?:^|\s)slice=([A-Za-z0-9_-]{1,40})(?=\s|$)")
+
+
+def slice_of(flow: dict, command: str, text: str, root: Path) -> tuple[dict | None, dict | None, str | None]:
+    """命令属于按切片的节点时 → (节点, 切片 {id, name}, 步骤)；不是时 (None, None, None)。
+
+    带 `slice=<切片>` 的命令按节点的 steps 归到按切片的节点（`/ontology-extract-rule-metric slice=s2` 是建模的
+    「规则」一步，不带是指标旁支）；不带切片的建模命令取这一步还没做完的第一片；全量模式是「全部」那一片。
+    """
+    from ..flow import slices
+
+    node = slices.per_slice_node(flow)
+    if node is None:
+        return None, None, None
+    step = next((item for item in node.get("steps") or [] if item.get("command") == command), None)
+    if step is None:
+        return None, None, None
+    match = _SLICE_ARG_RE.search(text or "")
+    owner = (flow.get("commands") or {}).get(command.lstrip("/").removeprefix("ontology-"), {}).get("node")
+    if match is None and owner != node["id"]:
+        return None, None, None
+    try:
+        return node, slices.slice_for_command(Path(root), flow, step["id"], match.group(1) if match else None), step["id"]
+    except Exception:  # noqa: BLE001 - 蓝图读不出时不带切片（写入范围按整类条目）
+        _log.warning("执行记录取切片失败", exc_info=True)
+        return node, None, step["id"]
+
+
 def start(project_id: str, conversation_id: str, *, root: Path, flow: dict, command: str, command_name: str,
-          engine_instance: str = "", task_id: str | None = None) -> dict:
+          engine_instance: str = "", task_id: str | None = None, text: str = "") -> dict:
     node = _node(flow, (flow.get("commands") or {}).get(command_name, {}).get("node")) or {}
+    sliced_node, slice_ref, step = slice_of(flow, command, text, root)
+    label = node.get("title") or command_name
+    if sliced_node is not None:
+        node = sliced_node
+        # 按切片的节点：业务名取这一步的（「对象提取」「操作提取」），节点名「建模」太笼统
+        step_spec = next((item for item in node.get("steps") or [] if item.get("id") == step), {})
+        label = step_spec.get("title") or step_spec.get("label") or node.get("title") or command_name
     now = time.time()
     record = {
         "id": f"ex-{uuid.uuid4().hex[:8]}",
@@ -250,10 +286,11 @@ def start(project_id: str, conversation_id: str, *, root: Path, flow: dict, comm
         "engine_instance": engine_instance,
         "command": command,
         "command_name": command_name,
-        "command_label": node.get("title") or command_name,
+        "command_label": label,
         "node": {"id": node.get("id") or f"command.{command_name}", "version": node.get("version") or "",
                  "title": node.get("title") or command_name},
-        "slice": None,
+        "slice": slice_ref,
+        "step": step,
         "run_id": None,
         "phase": {"index": 0, "total": 0, "label": "", "raw": None},
         "phases_seen": [],

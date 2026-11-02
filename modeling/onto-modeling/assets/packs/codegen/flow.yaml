@@ -21,7 +21,7 @@ nodes:
     placement: branch
     section: optional
     optional: true
-    after: core.operation
+    after: core.model
     display_after: [codegen.codegen]
     done: [solver]
     writes: ["ontology/scripts/*"]

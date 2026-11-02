@@ -50,24 +50,26 @@ def _default_flow() -> dict:
 
 DEFAULT_FLOW = _default_flow()
 
-# 场景：要建的文件 → 期望的旧版阶段、计入进度的完成数
+# 场景：要建的文件 → 期望的旧版阶段、计入进度的完成数（0.3.0 起对象与操作合成「建模」一个节点，详设 6.8）
 SCENARIOS = {
     "empty": ({}, "未开始", 0),
     "research_pending": ({"research/20260101-订单.md": "# 报告\n"}, "资料分析待核验", 0),
     "diagram": ({"research/r.md": "# 报告\n", "ontology/diagrams/下单.drawio": "<mxfile/>"}, "流程图就绪", 1),
-    "objects": ({"ontology/object/订单.md": "# 订单\n"}, "对象已提取", 1),
-    "operations": ({"ontology/object/订单.md": "# 订单\n", "ontology/operation/下单.md": "# 下单\n"}, "逻辑已提取", 2),
+    # 只有对象：建模还没做完（全量模式那一片停在「操作」）
+    "objects": ({"ontology/object/订单.md": "# 订单\n"}, "对象已提取", 0),
+    "operations": ({"ontology/object/订单.md": "# 订单\n", "ontology/operation/下单.md": "# 下单\n"}, "逻辑已提取", 1),
     # 只有场景验证报告：不算质量检查完成（统一口径前后端会算完成）
     "trace_report_only": ({"ontology/object/a.md": "x", "ontology/operation/b.md": "x",
-                           "reports/20260101-000000-trace.md": "- [x] 通过\n"}, "逻辑已提取", 2),
+                           "reports/20260101-000000-trace.md": "- [x] 通过\n"}, "逻辑已提取", 1),
     "validated": ({"ontology/object/a.md": "x", "ontology/operation/b.md": "x",
-                   "reports/20260101-000000-all-rule.md": "- [x] 已修\n"}, "完成", 3),
+                   "reports/20260101-000000-all-rule.md": "- [x] 已修\n"}, "完成", 2),
     "validate_pending": ({"ontology/object/a.md": "x", "ontology/operation/b.md": "x",
-                          "reports/20260101-000000-all-rule.md": "- [ ] 待修\n"}, "校验待审阅", 2),
+                          "reports/20260101-000000-all-rule.md": "- [ ] 待修\n"}, "校验待审阅", 1),
+    # 建模、流程图、校验、全量回归、代码生成；全局一致性、发布还没做
     "full": ({"ontology/object/a.md": "x", "ontology/operation/b.md": "x", "ontology/rule/r.md": "x",
               "reports/20260101-000000-all-semantic.md": "ok\n", "ontology/data-mock/m.md": "x",
               "ontology/testcase/t.md": "x", "ontology/scripts/s.py": "x", "ontology/diagrams/d.drawio": "x"},
-             "完成", 8),
+             "完成", 5),
 }
 
 
@@ -108,8 +110,8 @@ def test_flow_definition_assembles_and_references_real_commands():
     assert ids[0] == "core.research" and len(ids) == len(set(ids))
     referenced = set()
     for node in FLOW["nodes"]:
-        for action in node.get("actions") or []:
-            if action["command"].startswith("/"):
+        for action in [*(node.get("actions") or []), *(node.get("steps") or [])]:
+            if str(action.get("command") or "").startswith("/"):
                 referenced.add(action["command"].split()[0][1:])
         if node.get("entry"):
             referenced.add(node["entry"]["command"][1:])
@@ -204,7 +206,7 @@ def test_flow_api_suggests_mainline_next_step(manager: WorkspaceManager, monkeyp
     assert client.get(f"/api/v1/projects/{root.name}/flow/suggestions").json() == body["suggestions"]
     sections = {section["id"]: section["nodes"] for section in body["sections"]}
     assert "core.update" in sections["on_demand"] and "diagram.flowchart" in sections["optional"]
-    assert body["commands"]["extract-object"] == "core.object"
+    assert body["commands"]["extract-object"] == "core.model"
 
 
 def test_running_command_marks_node_running(manager: WorkspaceManager, monkeypatch):
@@ -214,7 +216,7 @@ def test_running_command_marks_node_running(manager: WorkspaceManager, monkeypat
     monkeypatch.setattr(deps, "workspaces", manager)
     monkeypatch.setattr(auth, "ENABLED", False)
     body = TestClient(app).get(f"/api/v1/projects/{root.name}/flow").json()
-    assert next(node for node in body["nodes"] if node["id"] == "core.object")["state"] == "running"
+    assert next(node for node in body["nodes"] if node["id"] == "core.model")["state"] == "running"
 
 
 def test_flow_follows_project_locked_core_version(manager: WorkspaceManager):

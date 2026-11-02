@@ -17,6 +17,12 @@ Trace operation with concrete scenarios and mock data to find operation gaps. Th
 整个 trace 命令期间始终遵循 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md`。
 trace 主代理 prompt 与可能的 mock 子代理 prompt 都需 transclude 该文件全文。
 
+## 按切片走查
+
+`$ARGUMENTS` 带 `slice=<编号>` 时是建模里这一片的「场景」一步：读 `.claude/SLICE_MODE.md`，用
+`python3 .claude/scripts/blueprint.py brief` 取这一片，按批量模式只推演这一片的操作（`brief` 的「操作」），
+示例数据只为这些场景需要的对象生成；做完就停下等用户确认生效。
+
 ## Step 0.5: Determine mode
 
 - If $ARGUMENTS first token is `全部` / `all` / `batch`:

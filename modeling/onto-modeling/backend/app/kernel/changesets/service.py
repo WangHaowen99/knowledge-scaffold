@@ -218,6 +218,11 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
         snap = worktree.snapshot(copy)
         changes = [(status, rel) for status, rel in (worktree.diff(root, base, snap) if base else [])
                    if not worktree.is_protected(rel)]
+        if not running and changes and _assign_to_slice(copy, exec_record, changes):
+            # 这一片新建的条目记进蓝图的这一片（B4d）：蓝图也改了，重新取一次快照
+            snap = worktree.snapshot(copy)
+            changes = [(status, rel) for status, rel in worktree.diff(root, base, snap)
+                       if not worktree.is_protected(rel)]
         record = store.current(root)
         if not changes:
             if record is not None and record["state"] in ("open", "pending_confirm") and record.get("tree"):
@@ -253,6 +258,15 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
             updates = {"nodes": nodes, "execs": execs, "node_trailer": _node_trailer(exec_record)}
             if not record.get("purpose"):
                 updates["purpose"] = _purpose(exec_record)
+            slice_ref, step = exec_record.get("slice"), exec_record.get("step")
+            if isinstance(slice_ref, dict) and slice_ref.get("id") and step:
+                # 按切片的节点：记下这个变更集做了哪一片哪一步（确认生效时这一片这一步记为确认过）
+                pairs = [list(pair) for pair in record.get("slice_steps") or []]
+                if [slice_ref["id"], step] not in pairs:
+                    pairs.append([slice_ref["id"], step])
+                updates["slice_steps"] = pairs
+                if not record.get("slice_id"):
+                    updates["slice_id"] = slice_ref["id"]
             record = store.update(root, record["id"], **updates)
     if checks and (record.get("checks") or {}).get("tree") != snap:
         try:
@@ -264,6 +278,36 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
     if previous_state != record["state"] or previous_scope != scope or checks:
         _notify(project_id, "changeset", record)
     return record
+
+
+def _assign_to_slice(copy: Path, exec_record: dict | None, changes: list[tuple[str, str]]) -> bool:
+    """按切片建模时，这一轮新建、还不属于任何一片的对象、操作、规则记进这一片（副本里的蓝图）。"""
+    slice_ref = (exec_record or {}).get("slice")
+    if not isinstance(slice_ref, dict) or not slice_ref.get("id") or slice_ref["id"] == "all":
+        return False
+    from ...services.flow import blueprint
+
+    model = _model(copy)
+    entries = []
+    for status, rel in changes:
+        key = model.entry_key(rel) if status == "A" else None
+        if key and key.split(":", 1)[0] in ("object", "operation", "rule"):
+            kind, _, stem = key.partition(":")
+            entries.append((kind, model.decode_filename(stem)))
+    if not entries:
+        return False
+    module = blueprint.script(copy)
+    try:
+        doc = module.load(copy)
+        if doc is None or module.mode(doc) != "sliced":
+            return False
+        doc, added = module.assign(doc, slice_ref["id"], entries)
+        if added:
+            module.save(copy, doc)
+        return bool(added)
+    except (OSError, module.BlueprintError):
+        _log.warning("新条目记进切片 %s 失败", slice_ref.get("id"), exc_info=True)
+        return False
 
 
 def open_changeset(manager, project_id: str, *, source: str = "assistant", build_mode: str = "L2",

@@ -6,7 +6,7 @@ nodes:
     placement: on_demand
     section: on_demand
     progress: false
-    after: core.operation
+    after: core.model
     display_after: [core.update]
     done: []
     # 反馈演进只改会打包的目录（consumer 看得到）和用例、对账素材（原守卫里的特判，方案 D11 改成声明）
