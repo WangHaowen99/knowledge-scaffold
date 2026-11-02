@@ -32,7 +32,8 @@ RECEIPT_DIR = Path('.ontology-state/artifact-reviews')
 
 
 def _contained(root: Path, path: Path) -> Path:
-    if not path.resolve().is_relative_to(root.resolve()):
+    # 助手副本里 resource 是平台挂的链接，按链接目标判断（同 table_profile.within_workspace）
+    if not table_profile.within_workspace(root, path):
         raise ValueError('核验路径越出工作区')
     return path
 
