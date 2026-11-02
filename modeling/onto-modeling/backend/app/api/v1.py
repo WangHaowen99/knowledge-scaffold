@@ -92,6 +92,7 @@ def _routers():
         files.router,
         resources.router,
         materials.router,
+        materials.feedback_router,
         studio.router,
         knowledge.router,
         versions.router,

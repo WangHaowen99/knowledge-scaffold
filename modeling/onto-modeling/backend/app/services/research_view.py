@@ -268,7 +268,7 @@ def _mentioned(parsed: dict, rel: str) -> bool:
     return any(rel in text or name in text for text in parsed["texts"].values())
 
 
-def _pack_enabled(main: Path, name: str) -> bool:
+def pack_enabled(main: Path, name: str) -> bool:
     from .packs import lockfile
 
     try:
@@ -335,7 +335,7 @@ def material_map(manager, project_id: str) -> dict:
         "total": len(items),
         "read_pct": round(sum(item["read_pct"] for item in items) / len(items)) if items else 0,
         "analysis_mode": "web" if meta.get("research_mode") == "web" else "local",
-        "web_available": _pack_enabled(main, "websearch"),
+        "web_available": pack_enabled(main, "websearch"),
         "items": items,
         "problems": found,
         "verification": {"total": checked["total"], "passed": checked["passed"], "unverifiable": checked["problems"],

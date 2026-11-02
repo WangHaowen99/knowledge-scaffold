@@ -72,7 +72,12 @@ def list_resources(project_id: str, request: Request):
         {"key": key, "label": label, "items": [item for item in items if item["group"] == key]}
         for key, label in GROUP_LABELS
     ]
-    return {"groups": groups, "feedback_group": {"enabled": False, "count": 0}, "purposes": list(PURPOSES)}
+    from ..services import feedback_inbox
+
+    feedback_on = research_view.pack_enabled(root, feedback_inbox.EVOLUTION_PACK)
+    return {"groups": groups,
+            "feedback_group": {"enabled": feedback_on, "count": feedback_inbox.open_count(root) if feedback_on else 0},
+            "purposes": list(PURPOSES)}
 
 
 @router.post("")

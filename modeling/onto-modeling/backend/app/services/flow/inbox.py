@@ -318,6 +318,8 @@ def _feedback(root: Path) -> list[dict]:
             continue
         if not isinstance(document, dict) or not document.get("feedback_id"):
             continue
+        if feedback_inbox.state_of(root, document["feedback_id"]) != "open":
+            continue  # 资料区里标过已处理、已忽略的（R-12）
         view = feedback_inbox.view(f"{feedback_inbox.FEEDBACK_DIR}/{path.name}", document, "")
         failed = view["verdicts"].get("fail", 0)
         if not failed:
