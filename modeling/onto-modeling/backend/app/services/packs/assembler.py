@@ -206,7 +206,8 @@ class Assembler:
             special = {mf.MANIFEST_FILE, flow_rel, readme_rel, *manifest.items("rules")}
             prefix = f"{DATA_PACK_DIR}/{entry.name}/" if manifest.kind == "knowledge" else ""
             for rel in pack_files(source):
-                if rel in special:
+                # 包自带界面（ui/）只给浏览器用，不进装配目录：agent 用不到，也免得两个包的 ui/ 互相冲突（ADR-0055）
+                if rel in special or rel.split("/", 1)[0] == mf.UI_DIR:
                     continue
                 target = prefix + rel
                 if target in owners:

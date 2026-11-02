@@ -1,4 +1,4 @@
-"""包仓库入库前的静态检查（详设 6.9 第 1 步、8.1 第 1 步、5.9.6；契约 PL-15）。
+"""包仓库入库前的静态检查（详设 6.9 第 1 步、8.1 第 1 步、5.9.6；契约 PL-15；包自带界面见 ADR-0055）。
 
 每项给 pass / warn / fail；有 fail 不能发布。检查只读包内容、清单与仓库，不执行包里的任何代码
 （脚本只做语法编译检查，不运行）。
@@ -17,7 +17,7 @@ from . import manifest as mf
 from .manifest import Manifest, ManifestError
 from .repository import PackRepository, pack_files, symlinks, verify_checksums
 
-# 前端代码（详设 5.9.1：包不能带前端代码，页面由前端内置）
+# 前端代码：只能放在 ui/ 下（ADR-0055 修订详设 5.9.1）；其余位置一律不行
 FRONTEND_SUFFIXES = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".wasm", ".css", ".scss", ".less")
 FRONTEND_NAMES = ("package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "vite.config.js")
 FRONTEND_DIRS = ("node_modules", "frontend", "web", "static", "dist", "public")
@@ -30,7 +30,11 @@ _SECRET_PATTERNS = (
     re.compile(r"(?i)\b(?:password|passwd|secret|api[_-]?key|access[_-]?token)\s*[:=]\s*['\"][^'\"\s$<{]{8,}['\"]"),
     re.compile(r"(?i)\b(?:mysql|postgres(?:ql)?|mongodb|redis)://[^\s:/]+:[^\s@/]+@"),
 )
-_TEXT_SUFFIXES = (".md", ".py", ".sh", ".yaml", ".yml", ".json", ".txt", ".html", ".toml", ".ini", ".cfg", ".env")
+_TEXT_SUFFIXES = (".md", ".py", ".sh", ".yaml", ".yml", ".json", ".txt", ".html", ".toml", ".ini", ".cfg", ".env",
+                  ".js", ".mjs", ".jsx", ".css")
+# 上传包 ui/ 下只能是构建好的静态资源（ADR-0055）：经不同源的 iframe 加载，不能有要编译的源码，也不能有服务端可执行内容
+UI_STATIC_SUFFIXES = (".html", ".htm", ".js", ".mjs", ".css", ".json", ".map", ".txt",
+                      ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".woff", ".woff2", ".ttf")
 # 提示词体积预算：命令、子代理、skill、规则片段合计
 PROMPT_SOFT_BYTES = 1536 * 1024
 PROMPT_HARD_BYTES = 4 * 1024 * 1024
@@ -68,9 +72,12 @@ def declared_names(manifest: Manifest, directory: Path) -> dict[str, set[str]]:
 
 
 def _frontend_files(directory: Path, files: list[str], tenant: bool) -> tuple[list[str], list[str]]:
+    """ui/ 之外的前端代码（ui/ 由 _ui_problems 单独检查）。"""
     hard, soft = [], []
     for rel in files:
         parts = Path(rel).parts
+        if parts[0] == mf.UI_DIR:
+            continue
         name = parts[-1]
         if name.lower().endswith(FRONTEND_SUFFIXES) or name in FRONTEND_NAMES or any(p in FRONTEND_DIRS for p in parts[:-1]):
             hard.append(rel)
@@ -81,6 +88,55 @@ def _frontend_files(directory: Path, files: list[str], tenant: bool) -> tuple[li
                 continue
             if "<script" in text or "javascript:" in text:
                 (hard if tenant else soft).append(rel)
+    return hard, soft
+
+
+def _view_editor_refs(directory: Path, manifest: Manifest) -> list[tuple[str, str]]:
+    """视图声明里 `detail.editor` 引用的编辑器：[(视图文件, 编辑器 id)]。"""
+    import yaml
+
+    refs = []
+    for rel in manifest.items("views"):
+        try:
+            data = yaml.safe_load((directory / rel).read_text(encoding="utf-8")) or {}
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            continue
+        editor = (data.get("detail") or {}).get("editor") if isinstance(data, dict) else None
+        if editor not in (None, ""):
+            refs.append((rel, str(editor)))
+    return refs
+
+
+def _ui_problems(directory: Path, files: list[str], manifest: Manifest, *, official: bool) -> tuple[list[str], list[str]]:
+    """包自带界面（ADR-0055）：编辑器入口要在、视图引用的编辑器要声明；上传包的 ui/ 只能是构建好的静态资源。
+
+    官方包（镜像内置）的 ui/ 是随平台一起编译的源码，入口 ui/<id>/index.jsx；上传包的入口是 ui/<id>/index.html，
+    只在不同源的 iframe 里跑。返回（失败项, 警告项）。
+    """
+    hard, soft = [], []
+    ui_files = [rel for rel in files if Path(rel).parts[0] == mf.UI_DIR]
+    entry_name = mf.EDITOR_ENTRY_BUNDLED if official else mf.EDITOR_ENTRY_IFRAME
+    editors = manifest.editors()
+    declared = {editor["id"] for editor in editors}
+    for editor in editors:
+        entry = f"{mf.UI_DIR}/{editor['id']}/{entry_name}"
+        if entry not in files:
+            hard.append(f"编辑器 {editor['id']} 缺少入口 {entry}")
+        if editor["ui_api"] and not mf.satisfies(mf.UI_API, editor["ui_api"]):
+            hard.append(f"编辑器 {editor['id']} 需要界面接口 {editor['ui_api']}，平台是 {mf.UI_API}")
+    for view_rel, editor_id in _view_editor_refs(directory, manifest):
+        if editor_id not in declared:
+            hard.append(f"{view_rel} 引用的编辑器 {editor_id} 没有在 contributes.editors 里声明")
+    if not official:
+        for rel in ui_files:
+            parts = Path(rel).parts
+            name = parts[-1]
+            if ".." in parts or any(part.startswith(".") for part in parts) or "node_modules" in parts:
+                hard.append(f"{rel} 不能出现在 ui/ 里")
+            elif name in FRONTEND_NAMES or not name.lower().endswith(UI_STATIC_SUFFIXES):
+                hard.append(f"{rel} 不是构建好的静态资源（只能是 html、js、css、图片、字体）")
+    if ui_files and not editors:
+        soft.append("ui/ 没有被任何编辑器引用")
     return hard, soft
 
 
@@ -267,11 +323,17 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
               for page in manifest.pages() if (page.get("nav") or {}).get("icon") not in (None, *mf.NAV_ICONS)]
     frontend, frontend_soft = _frontend_files(directory, files, tenant)
     if frontend:
-        pages.append("包含前端代码：" + "、".join(frontend[:10]))
+        pages.append("ui/ 之外有前端代码：" + "、".join(frontend[:10]))
     checks.append(_check(
-        "frontend", "页面只选用平台内置、没有前端代码",
+        "frontend", "页面只选用平台内置，前端代码只在 ui/ 下",
         "fail" if pages else ("warn" if frontend_soft else "pass"),
         "；".join(pages) if pages else ("报告模板含脚本：" + "、".join(frontend_soft[:5]) if frontend_soft else ""),
+    ))
+    ui_hard, ui_soft = _ui_problems(directory, files, manifest, official=official and not tenant)
+    checks.append(_check(
+        "ui", "包自带界面：上传包只能是静态资源、经隔离 iframe 加载",
+        "fail" if ui_hard else ("warn" if ui_soft else "pass"),
+        "；".join(ui_hard[:10]) if ui_hard else "；".join(ui_soft),
     ))
 
     secrets = _secrets(directory, files)

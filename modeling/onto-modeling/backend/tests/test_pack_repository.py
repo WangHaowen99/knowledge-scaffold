@@ -149,7 +149,8 @@ def test_clean_pack_passes(tmp_path):
 def test_frontend_code_fails(tmp_path, rel):
     source = make_pack(tmp_path, "trace", "0.9.1", files={"commands/trace-run.md": "运行\n", rel: "x\n"})
     _, items = checks.run(source, tenant=False)
-    assert _result(items, "frontend") == "fail"
+    # ui/ 下的由 ui 检查拦（上传包只能放构建好的静态资源，ADR-0055），其余位置的前端代码由 frontend 检查拦
+    assert _result(items, "ui" if rel.startswith("ui/") else "frontend") == "fail"
 
 
 def test_tenant_html_with_script_fails_but_official_only_warns(tmp_path):

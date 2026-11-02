@@ -20,6 +20,12 @@ readonly: managed                 # 可选：只读产物的原因（求解契�
 ```
 
 视图声明（`views/*.yaml`）按 `artifact:` 挂到类型上：`list`（列、筛选、分组）、`detail`（布局、侧栏）、`card`。
+
+- `card`：对话里的产物卡按它画（ADR-0055）：`title`、`subtitle` 取哪个字段，`chips`、`fields` 各最多 4 个字段；
+  `component` 选平台的专用卡片组件（如 `flowchart`），平台不认识时按通用卡画。
+- `detail`：双击打开什么：通用详情（`layout`），平台专用组件（`component`），或包自带编辑器（`editor`，
+  引用清单 `contributes.editors` 的 id）。编辑器解析成 `{id, title, pack, version, mode, ui_api, entry}`：
+  官方包（入库来源 builtin）`mode=bundled`，随平台编译；上传包 `mode=iframe`，只在不同源的 iframe 里跑。
 """
 
 from __future__ import annotations
@@ -45,6 +51,8 @@ DERIVATIONS = ("stem", "h1", "h1_suffix", "table_rows", "heading", "file_mtime",
 LEGACY_DIRS = ("ontology/testcase", "ontology/data-mock", "ontology/diagrams", "ontology/knowledge",
                "ontology/solver", "reports")
 _TONES = ("teal", "red", "gray", "dash", "blue", "indigo", "amber", "green", "line")
+_COMPONENT_RE = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
+CARD_ITEMS_MAX = 4
 
 
 class RegistrationError(ValueError):
@@ -220,7 +228,33 @@ def _default_view(fields: list[dict], status: dict | None) -> dict:
             "card": {"title": title, "chips": chips}}
 
 
-def _view(declared: dict | None, fields: list[dict], status: dict | None) -> dict:
+def _card(spec: dict, names: set[str]) -> dict:
+    """card 声明只留认得的键，字段名都要在类型里。"""
+    card = {"title": str(spec.get("title")) if str(spec.get("title") or "") in names else "title",
+            "chips": [str(name) for name in spec.get("chips") or [] if str(name) in names][:CARD_ITEMS_MAX]}
+    if str(spec.get("subtitle") or "") in names:
+        card["subtitle"] = str(spec["subtitle"])
+    shown = [str(name) for name in spec.get("fields") or [] if str(name) in names][:CARD_ITEMS_MAX]
+    if shown:
+        card["fields"] = shown
+    if isinstance(spec.get("component"), str) and _COMPONENT_RE.match(spec["component"]):
+        card["component"] = spec["component"]
+    return card
+
+
+def _editor(editor_id, editors: dict | None, *, pack: str, version: str, official: bool) -> dict | None:
+    """detail.editor（编辑器 id）→ 编辑器引用；包没声明这个编辑器时为 None（按通用详情打开）。"""
+    declared = (editors or {}).get(str(editor_id or ""))
+    if declared is None:
+        return None
+    entry = mf.EDITOR_ENTRY_BUNDLED if official else mf.EDITOR_ENTRY_IFRAME
+    return {"id": declared["id"], "title": declared["title"], "pack": pack, "version": version,
+            "mode": "bundled" if official else "iframe", "ui_api": declared.get("ui_api") or "",
+            "entry": f"{mf.UI_DIR}/{declared['id']}/{entry}"}
+
+
+def _view(declared: dict | None, fields: list[dict], status: dict | None, *, editors: dict | None = None,
+          pack: str = "", version: str = "", official: bool = False) -> dict:
     view = _default_view(fields, status)
     if not declared:
         return view
@@ -234,13 +268,22 @@ def _view(declared: dict | None, fields: list[dict], status: dict | None) -> dic
     lst["filters"] = [str(name) for name in lst.get("filters") or [] if str(name) in names]
     if lst.get("group_by") and lst["group_by"] not in names:
         lst.pop("group_by")
-    if view["detail"].get("layout") not in ("sections", "table", "custom"):
-        view["detail"]["layout"] = "sections"
+    detail = view["detail"]
+    if detail.get("layout") not in ("sections", "table", "custom"):
+        detail["layout"] = "sections"
+    if "component" in detail and not (isinstance(detail["component"], str) and _COMPONENT_RE.match(detail["component"])):
+        detail.pop("component")
+    if "editor" in detail:
+        editor = _editor(detail.pop("editor"), editors, pack=pack, version=version, official=official)
+        if editor is not None:
+            detail["editor"] = editor
+    view["card"] = _card(view["card"], names)
     return view
 
 
 def parse_registration(data: dict, *, pack: str, pack_version: str, official: bool,
-                       directory: Path | None = None, view: dict | None = None) -> ArtifactType:
+                       directory: Path | None = None, view: dict | None = None,
+                       editors: dict | None = None) -> ArtifactType:
     """校验一份产物登记，返回 ArtifactType；不合法抛 RegistrationError。"""
     art_type = str(data.get("type") or "")
     if not art_type.startswith(f"{pack}.") or art_type in mf.CORE_ENTITY_TYPES or len(art_type) > 80:
@@ -296,7 +339,8 @@ def parse_registration(data: dict, *, pack: str, pack_version: str, official: bo
         type=art_type, title=str(data.get("title") or art_type), pack=pack, pack_version=pack_version,
         format=fmt, path=path, key=str(data.get("key") or "filename"), schema_version=version, fields=fields,
         sections=[str(item) for item in data.get("sections") or []], refs=refs, status=status,
-        view=_view(view, fields, status), view_declared=view is not None, studio=bool(data.get("studio")),
+        view=_view(view, fields, status, editors=editors, pack=pack, version=pack_version, official=official),
+        view_declared=view is not None, studio=bool(data.get("studio")),
         index=index, derive=derive, readonly=str(readonly) if readonly else None,
         section_labels={str(k): str(v) for k, v in (data.get("section_labels") or {}).items()},
         field_labels={str(k): str(v) for k, v in (data.get("field_labels") or {}).items()},
@@ -318,13 +362,14 @@ def types_for_pack(view) -> list[ArtifactType]:
             continue
         if data.get("artifact"):
             declared_views[str(data["artifact"])] = data
+    editors = {editor["id"]: editor for editor in manifest.editors()}
     out = []
     for rel in manifest.items("artifacts"):
         try:
             data = _load_yaml(view.directory / rel)
             out.append(parse_registration(
                 data, pack=view.name, pack_version=view.version, official=bool(getattr(view, "official", False)),
-                directory=view.directory, view=declared_views.get(str(data.get("type") or "")),
+                directory=view.directory, view=declared_views.get(str(data.get("type") or "")), editors=editors,
             ))
         except RegistrationError as exc:
             _log.warning("包 %s 的产物登记 %s 不合法：%s", view.name, rel, exc)

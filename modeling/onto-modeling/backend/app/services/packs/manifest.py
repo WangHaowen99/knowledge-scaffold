@@ -21,6 +21,14 @@ KERNEL_API = "1.0"
 PAGE_API = "1.0"
 # 流程定义格式版本（flow.yaml 的 flow_api）
 FLOW_API = 1
+# 包自带界面的窄接口版本（ADR-0055）：上传包的 iframe 编辑器与平台之间 postMessage 协议的版本
+UI_API = "1.0"
+# 包自带界面的目录与编辑器入口（ADR-0055）：官方包（镜像内置）的编辑器随平台编译，入口是 ui/<id>/index.jsx；
+# 上传包只能是构建好的静态资源，经不同源的 iframe 加载，入口是 ui/<id>/index.html
+UI_DIR = "ui"
+EDITOR_ENTRY_BUNDLED = "index.jsx"
+EDITOR_ENTRY_IFRAME = "index.html"
+EDITOR_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
 
 KINDS = ("capability", "knowledge", "node", "provider", "exporter")
 CATEGORIES = ("capability", "industry", "system", "provider", "node", "exporter")
@@ -220,6 +228,12 @@ class Manifest:
     def subpages(self) -> list[dict]:
         return [dict(item) for item in self.contributes.get("subpages") or [] if isinstance(item, dict)]
 
+    def editors(self) -> list[dict]:
+        """包自带的编辑器（ADR-0055）：`{id, title, ui_api}`；视图 `detail.editor` 按 id 引用。"""
+        return [{"id": str(item["id"]), "title": str(item.get("title") or item["id"]),
+                 "ui_api": str(item.get("ui_api") or "")}
+                for item in self.contributes.get("editors") or [] if isinstance(item, dict) and item.get("id")]
+
     def declared(self, kind: str) -> list[dict]:
         """entries、gates、config、metrics、prompts 这类按映射声明的扩展项（字符串项当作 id）。"""
         return [dict(item) if isinstance(item, dict) else {"id": str(item)} for item in self.contributes.get(kind) or []]
@@ -239,6 +253,7 @@ class Manifest:
                 "artifacts": self.items("artifacts"),
                 "views": self.items("views"),
                 "reports": self.items("reports"),
+                "editors": [editor["id"] for editor in self.editors()],
             },
             "checksums_ok": checksums_ok, "size": size, "files": files,
         }
@@ -304,8 +319,19 @@ def parse(data: dict) -> Manifest:
         problems.append("contributes 必须是映射")
         contributes = {}
     normalized = dict(contributes)
-    for key in LIST_FIELDS + ("pages", "subpages"):
+    for key in LIST_FIELDS + ("pages", "subpages", "editors"):
         normalized[key] = _as_list(contributes.get(key), problems, key)
+    editor_ids = set()
+    for item in normalized["editors"]:
+        editor_id = item.get("id") if isinstance(item, dict) else None
+        if not isinstance(editor_id, str) or not EDITOR_ID_RE.match(editor_id):
+            problems.append(f"contributes.editors 每项要有 id（小写字母开头，字母、数字、连字符）：{item!r}")
+        elif editor_id in editor_ids:
+            problems.append(f"contributes.editors 里的 id 重复：{editor_id}")
+        else:
+            editor_ids.add(editor_id)
+            if item.get("ui_api") not in (None, "") and not valid_range(str(item["ui_api"])):
+                problems.append(f"编辑器 {editor_id} 的 ui_api 范围写法不合法：{item['ui_api']}")
     for key in ("commands", "agents", "skills", "scripts", "templates", "reference", "rules"):
         for item in normalized[key]:
             if not isinstance(item, str) or not _ITEM_NAME_RE.match(item) or ".." in item:

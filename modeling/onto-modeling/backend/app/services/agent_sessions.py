@@ -1409,6 +1409,10 @@ class SessionManager:
                         "version_label": version_label,
                     }
                 )
+                # 改到的插件产物各出一张卡（按包的 card 声明，ADR-0055；登记在 app/wiring.py）
+                for card in await asyncio.to_thread(
+                        project_events.round_cards, session.project_id, changes, session.round_base_commit, head):
+                    session.broadcast({"type": "card", "payload": card})
                 # 项目流 EP-05：agent 的提交不经写入事务，由宿主在这一轮结束时补发
                 paths = [path for bucket in ("added", "modified", "deleted") for path in changes.get(bucket) or []]
                 await asyncio.to_thread(

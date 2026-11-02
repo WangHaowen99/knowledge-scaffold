@@ -22,6 +22,7 @@ AUTH_EXEMPT_PREFIXES = (
     "/api/health",
     "/api/v1/onto-mcp/",
     "/api/onto-mcp/",
+    "/api/v1/pack-ui/",  # 上传包界面的静态资源：路径里的短期票据即授权，iframe 拿不到登录态（ADR-0055）
 )
 # 允许用 ?token= 携带令牌的接口（契约 1.3：SSE 与文件下载），其余接口的 ?token= 一律忽略
 _P = r"/api/v1/projects/[^/]+"
