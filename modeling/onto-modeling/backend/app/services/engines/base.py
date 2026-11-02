@@ -87,6 +87,25 @@ class EngineContext:
     conversation_id: str = "default"
     # 本引擎实例使用谁的模型配置：用户名 = 该用户的个人 Key；"" = 管理员配置
     model_owner: str = ""
+    # 用户在开始建模前确认过的创建目标原文；"" = 未填写、未确认或存量项目（不注入）
+    project_goal: str = ""
+
+
+def project_goal_section(goal: str) -> str:
+    """系统提示词里的「初始建模目标」段：两个引擎共用同一份文本，目标为空时不注入。"""
+    text = (goal or "").strip()
+    if not text:
+        return ""
+    quoted = "\n".join(f"> {line}" if line.strip() else ">" for line in text.splitlines())
+    return (
+        "# 用户确认的初始建模目标\n"
+        "以下是用户创建项目时填写、并在开始建模前通过确认卡确认的目标原文：\n"
+        f"{quoted}\n"
+        "- 以它为起点，结合资料补全范围、约束和产出；其中已写明的内容不得再要求用户重新说明，"
+        "只追问缺口或与资料冲突之处。\n"
+        "- 命令文档要求确认建模目标或询问领域范围时，先以此为准，只就未写明的部分提问。\n"
+        "- 用户在对话中调整目标后，以对话中的最新说法为准。"
+    )
 
 
 class AgentEngine(Protocol):

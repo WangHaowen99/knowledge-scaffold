@@ -109,12 +109,9 @@ function Workbench() {
     let bootstrapTimer = 0;
     const bootstrapWorkbench = () => actions.bootstrap(projectId).then(({ agent, snapshot, agentAvailable }) => {
       const shouldStart = new URLSearchParams(window.location.search).get('start') === '1';
-      if (!stopped && agentAvailable && shouldStart && !store.get().autoStartSent && !agent.run) {
-        store.set({ autoStartSent: true });
-        const url = new URL(window.location.href);
-        url.searchParams.delete('start');
-        window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
-        void actions.send(`请开始为“${snapshot.project.name}”建模。先完整读取已上传资料，主动确认目标并持续推进下一步。`);
+      // 建模目标待确认时不自动开工：由确认卡确认后再开工
+      if (!stopped && agentAvailable && shouldStart && !agent.run && snapshot.project.goalStatus !== 'pending') {
+        void actions.startModeling();
       }
       if (!stopped && agentAvailable) {
         // 事件流会携带游标自动重连；瞬时断线不属于内容读取失败。
