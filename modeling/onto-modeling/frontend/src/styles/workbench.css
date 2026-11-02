@@ -39,8 +39,9 @@
 .wx-run .g2-rs-t{flex:none;margin:0 18px 0 4px}
 .wx-run .g2-rs-m{margin-right:12px}
 .wx-run .g2-rs-t b{font-size:13.5px;font-weight:650;letter-spacing:.2px}
-.wx-run .g2-rs-m{gap:20px}
-.wx-run .g2-rs-m .m{min-width:92px}
+/* 别的对话里多一个「回到运行对话」：指标区让出宽度，按钮不被裁掉 */
+.wx-run .g2-rs-m{gap:20px;flex:0 1 auto;min-width:0}
+.wx-run .g2-rs-m .m{flex:0 1 92px;min-width:0;overflow:hidden;white-space:nowrap}
 .wx-run .g2-wbtn{height:30px;padding:0 11px;background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.14);font-weight:600}
 .wx-run .g2-wbtn.w{background:#fff;color:#0B1736;border-color:#fff}
 .wbc-main{flex:1;min-height:0;overflow:auto;scroll-behavior:smooth}
