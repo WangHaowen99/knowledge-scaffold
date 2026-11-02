@@ -2,7 +2,6 @@
 // BP-01 读、BP-02 整份切片列表保存；按章节拆分要读资料，走 S-20 命令
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../../app/context.js';
-import { navigate, pagePath } from '../../../app/router.js';
 import { toast } from '../../../app/toast.jsx';
 import { errorText } from '../../../api/errors.js';
 import {
@@ -14,8 +13,6 @@ import {
   renameSlice, toggleExcluded,
 } from './model.js';
 import '../../../styles/materials.css';
-
-const ENV_LABEL = { production: '生产', staging: '预发', test: '测试', development: '开发' };
 
 function initEdit(bp) {
   return {
@@ -84,21 +81,21 @@ export function BlueprintDialog({ onClose }) {
     setSlices(() => list);
     setSel([merged.id]);
     setRenaming({ id: merged.id, value: merged.name, original: merged.name });
-    toast('已合并为一个切片，可以再改名', 'merge');
+    toast('已合并', 'merge');
   };
   const split = () => {
     if (sel.length !== 1) { toast('选一片后按章节拆分', 'info'); return; }
     const s = slices.find((x) => x.id === sel[0]);
     pageCommand(api, pid, {
       command: '/ontology-research', args: { split_slice: s.id, by: 'chapter' }, text: `把切片「${s.name}」按章节拆分`,
-      page: 'wb-blueprint', label: '调整建模蓝图', done: '已发给助手：按章节拆分，拆好后更新蓝图',
+      page: 'wb-blueprint', label: '调整建模蓝图', done: '已发给助手',
     });
   };
   const exclude = () => {
     if (!sel.length) { toast('先勾选要排除的切片', 'info'); return; }
     const restoring = slices.filter((s) => sel.includes(s.id)).every((s) => s.excluded);
     setSlices((l) => toggleExcluded(l, sel));
-    toast(restoring ? '已恢复，重新进入流程' : '已排除，排除的切片不进流程', 'ban');
+    toast(restoring ? '已恢复' : '已排除', 'ban');
   };
   const rename = () => {
     if (sel.length !== 1) { toast('勾选一片再改名', 'info'); return; }
@@ -145,11 +142,10 @@ export function BlueprintDialog({ onClose }) {
   const live = slices.filter((s) => !s.excluded).length;
   const terms = bp?.terms || { aligned: [], ambiguous: [] };
   const questions = bp?.questions || [];
-  const hint = bp?.evidence_hint;
   return (
     <Modal
       open onClose={onClose} icon="layers" title="调整建模蓝图" w={1100}
-      sub={`${bp?.version_label || '建模蓝图'} · 拖动调整顺序；保存后助手按新蓝图继续`}
+      sub={bp?.version_label || '建模蓝图'}
       foot={(
         <>
           <Button kind="ghost" icon="download" disabled={!bp || busy} onClick={() => save('draft')}>保存为草案</Button>
@@ -198,7 +194,7 @@ export function BlueprintDialog({ onClose }) {
 
           <div className="en-bp-sec">
             <h4>
-              <Icon name="layers" size={14} />切片规划 <span className="n">{live} 片 · 拖动调整顺序</span><span className="sp" />
+              <Icon name="layers" size={14} />切片规划 <span className="n">{live} 片</span><span className="sp" />
               <Button size="xs" icon="merge" disabled={sel.length < 2} onClick={merge}>{sel.length >= 2 ? `合并 ${sel.length} 片` : '合并'}</Button>
               <Button size="xs" icon="split" onClick={split}>拆分</Button>
               <Button size="xs" icon="ban" onClick={exclude}>排除</Button>
@@ -238,7 +234,7 @@ export function BlueprintDialog({ onClose }) {
                           <Button icon="check" size="xs" kind="primary" title="确定" disabled={!renaming.value.trim()} onClick={commitRename} />
                           <Button icon="x" size="xs" kind="ghost" title="取消" onClick={() => setRenaming(null)} />
                         </div>
-                        <div className="xs muted mt4">{renaming.fresh ? '新切片 · 起个名字，保存后助手补全中心流程和规模' : `改名中 · 原名「${renaming.original}」`}</div>
+                        <div className="xs muted mt4">{renaming.fresh ? '新切片' : `改名中 · 原名「${renaming.original}」`}</div>
                       </>
                     ) : <div className="nm b ell" onDoubleClick={() => setRenaming({ id: s.id, value: s.name, original: s.name })} title="双击改名">{s.name}</div>}
                   </div>
@@ -249,11 +245,11 @@ export function BlueprintDialog({ onClose }) {
                   <div className="col" style={{ gap: 3, alignItems: 'flex-start' }}>
                     <span className="xs muted">
                       依赖 <b style={{ color: 'var(--ink)' }}>{depLabel(s, slices)}</b>
-                      {depAfter(s, slices) ? <span title="依赖的切片排在它后面，保存时会被拒绝" style={{ color: 'var(--amber)', marginLeft: 4 }}><Icon name="alert" size={12} /></span> : null}
+                      {depAfter(s, slices) ? <span title="依赖的切片排在后面" style={{ color: 'var(--amber)', marginLeft: 4 }}><Icon name="alert" size={12} /></span> : null}
                     </span>
                     <OrderTag slice={s} index={i} />
                   </div>
-                  <span className="grip" title="拖动调整顺序，点开有上移、下移" onMouseDown={(e) => e.stopPropagation()} onClick={() => setGrip(grip === s.id ? null : s.id)}><Icon name="more" size={14} /></span>
+                  <span className="grip" title="拖动排序" onMouseDown={(e) => e.stopPropagation()} onClick={() => setGrip(grip === s.id ? null : s.id)}><Icon name="more" size={14} /></span>
                   {grip === s.id ? <GripMenu index={i} total={slices.length} onMove={(to) => move(i, to)} onClose={() => setGrip(null)} /> : null}
                 </div>
               );
@@ -280,7 +276,7 @@ export function BlueprintDialog({ onClose }) {
           </div>
 
           <div className="en-bp-sec">
-            <h4><Icon name="hand" size={14} />待你回答 <span className="n">{questions.length} 个问题 · 可以先确认蓝图，没答的会留在待处理里</span></h4>
+            <h4><Icon name="hand" size={14} />待你回答 <span className="n">{questions.length} 个问题</span></h4>
             {questions.length ? (
               <div className="grid3" style={{ gap: 10 }}>
                 {questions.map((q) => (
@@ -300,14 +296,6 @@ export function BlueprintDialog({ onClose }) {
             ) : <div className="xs muted">没有要你回答的问题</div>}
           </div>
 
-          {hint ? (
-            <div className="en-bp-sec">
-              <Note tone="teal" icon="db">
-                <b>已登记数据源 {hint.sources.map((s) => `${s.id}（${s.label} · ${ENV_LABEL[s.environment] || s.environment}）`).join('、')}。</b>
-                {hint.text} <a className="link" onClick={() => navigate(pagePath('sources', pid))}>查看数据源</a>
-              </Note>
-            </div>
-          ) : null}
         </div>
       ) : null}
     </Modal>

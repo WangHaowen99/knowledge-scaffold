@@ -1,6 +1,8 @@
 // 资料分析与建模蓝图的对话卡片（契约 4.7：upload_prompt、material_map、research_summary、blueprint、build_choice）
 // 设计稿 wb-materials、wb-blueprint；弹窗在 materials/ 里，由工作台统一挂（useOpenDialog）
-import { useContext, useState } from 'react';
+import {
+  useContext, useEffect, useState, useSyncExternalStore,
+} from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import {
@@ -145,24 +147,43 @@ function OrderTag({ slice, index }) {
   return <span className="xs faint">{o.text}</span>;
 }
 
+// 「确认后怎么建」（R3）：两种方式并进蓝图卡底部，不再单独成卡。
+// 自主构建能不能选：蓝图卡自带的 build_options，或者对话里有 build_choice 卡（后端只在自主构建登记了才发）
+const buildChoices = new Map(); // pid → options
+const choiceSubs = new Set();
+function registerBuildChoice(pid, options) {
+  buildChoices.set(pid, options);
+  choiceSubs.forEach((fn) => fn());
+}
+const subscribeChoices = (fn) => { choiceSubs.add(fn); return () => choiceSubs.delete(fn); };
+function useAutobuildOffered(pid, card) {
+  const registered = useSyncExternalStore(subscribeChoices, () => buildChoices.get(pid) || null);
+  const options = card.build_options || registered || [];
+  return options.some((o) => o.mode === 'L4');
+}
+
 function BlueprintCard({ card }) {
+  const { pid } = useContext(WbCtx);
   const open = useOpenDialog();
   const slices = card.slices || [];
   const confirmed = card.state === 'confirmed';
   const terms = card.terms || {};
+  const autobuild = useAutobuildOffered(pid, card);
   return (
     <CC
-      icon="layers" title={card.title || `建模蓝图 · ${card.version_label}`} sub={card.subtitle}
+      icon="layers" title={card.title || `建模蓝图 · ${card.version_label}`}
       chip={card.research_verified ? <Chip tone="teal" sm icon="shieldok">资料分析报告 · 已核验</Chip> : <Chip tone="amber" sm icon="alert">资料分析报告 · 待核验</Chip>}
       dbl onDoubleClick={() => open('blueprint')}
       foot={(
         <>
           <Button size="sm" icon="layers" onClick={() => open('blueprint')}>调整切片…</Button>
-          <span className="xs muted">合并、拆分、排除、改名、调顺序</span>
           <span className="sp" />
-          {confirmed
-            ? <span className="wx-ok"><Icon name="check" size={14} />蓝图已确认 · {card.version_label}</span>
-            : <Button size="sm" kind="primary" icon="play" onClick={() => open({ kind: 'build', next: 'L2' })}>确认蓝图，开始第一个切片</Button>}
+          {confirmed ? <span className="wx-ok"><Icon name="check" size={14} />蓝图已确认 · {card.version_label}</span> : (
+            <>
+              {autobuild ? <Button size="sm" icon="rocket" onClick={() => open({ kind: 'build', next: 'L4' })}>确认，一路建完…</Button> : null}
+              <Button size="sm" kind="primary" icon="hand" onClick={() => open({ kind: 'build', next: 'L2' })}>确认，一片一片来</Button>
+            </>
+          )}
         </>
       )}
     >
@@ -199,35 +220,19 @@ function BlueprintCard({ card }) {
         <div>
           {terms.aligned ?? 0} 条已对齐
           {terms.ambiguous ? <>，<a className="link" onClick={() => open('blueprint')}>{terms.ambiguous} 条有歧义待你统一</a></> : null}
-          {card.questions_pending ? <>；另有 <a className="link" onClick={() => open('blueprint')}>{card.questions_pending} 个问题待回答</a>，可以先确认蓝图，没答的会留在待处理里</> : null}
+          {card.questions_pending ? <>；另有 <a className="link" onClick={() => open('blueprint')}>{card.questions_pending} 个问题待回答</a></> : null}
         </div>
       </div>
     </CC>
   );
 }
 
-// ---------- 确认后怎么建 ----------
+// ---------- 确认后怎么建：并进蓝图卡（R3），这张卡不再单独显示，只登记可选的方式 ----------
 function BuildChoiceCard({ card }) {
   const { pid } = useContext(WbCtx);
-  const open = useOpenDialog();
-  const options = card.options?.length ? card.options : [{ mode: 'L2', label: '一片一片来' }, { mode: 'L4', label: '按蓝图一路建完' }];
-  return (
-    <div className="en-l4s">
-      <div className="row g8"><span style={{ color: 'var(--blue2)', display: 'flex' }}><Icon name="rocket" size={16} /></span><b>{card.title || '确认后怎么建？'}</b></div>
-      {card.subtitle ? <div className="sm mt4" style={{ color: 'var(--ink2)', lineHeight: 1.7 }}>{card.subtitle}</div> : null}
-      <div className="row mt12" style={{ gap: 8 }}>
-        {options.map((o) => (o.mode === 'L4'
-          ? <Button key={o.mode} size="sm" kind="l4" icon="rocket" onClick={() => open({ kind: 'build', next: 'L4' })}>{o.label}</Button>
-          : <Button key={o.mode} size="sm" icon="hand" onClick={() => open({ kind: 'build', next: 'L2' })}>{o.label}</Button>))}
-        <span className="sp" />
-        {card.policy_link ? (
-          <a className="link xs" onClick={() => navigate(pagePath('proj-settings', pid), { section: 'autobuild' })}>
-            在项目设置里调整自主构建策略 <Icon name="chev" size={12} />
-          </a>
-        ) : null}
-      </div>
-    </div>
-  );
+  const modes = (card.options?.length ? card.options : [{ mode: 'L2' }, { mode: 'L4' }]).map((o) => o.mode).join(',');
+  useEffect(() => { registerBuildChoice(pid, modes.split(',').map((mode) => ({ mode }))); }, [pid, modes]);
+  return null;
 }
 
 export const MATERIAL_CARDS = {
