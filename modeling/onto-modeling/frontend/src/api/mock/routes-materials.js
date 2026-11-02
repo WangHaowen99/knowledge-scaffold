@@ -417,6 +417,8 @@ function materialsHistory() {
   ];
 }
 
+const autobuildOff = () => typeof window !== 'undefined' && /(^|[?&,=])autobuild:off/.test(window.location.search);
+
 function blueprintHistory() {
   const e = evOf(MAIN_PID, CID);
   const t0 = atDaysAgo(0, 9, 31);
@@ -439,7 +441,8 @@ function blueprintHistory() {
       anchors: [], entry_links: [], continued: true,
     }, t1),
     e('card', blueprintCard(blueprintOf()), t1),
-    e('card', buildChoiceCard(), t1),
+    // ?mock=autobuild:off：自主构建没登记（BP-03 409 autobuild_not_available），后端不发「确认后怎么建」
+    ...(autobuildOff() ? [] : [e('card', buildChoiceCard(), t1)]),
     e('suggestions.updated', blueprintSuggestions(), t1),
   ];
 }
