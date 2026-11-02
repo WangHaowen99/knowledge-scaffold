@@ -27,10 +27,10 @@
    登记进配置注册表（键 `<包名>.<key>`，来源 `pack`，生效 next_message），SY-14 能看到；PL-12 `config[].key` 同一写法。
    按项目改值没做。
 5. **指标与告警规则** `metrics: [{name, help, type}]`、`alerts: [{id, name, condition, window, level, runbook, auto_action}]`：
-   指标名统一加前缀 `onto_pack_<包>_`，`/metrics` 给出 HELP 与 TYPE；告警规则接 O-08～O-10（运维新建的 `source=kernel`
+   指标全名 `onto_pack_<包名，连字符换下划线>__<指标名>`，`/metrics` 每个指标名一个族、HELP 与 TYPE 各一行；告警规则接 O-08～O-10（运维新建的 `source=kernel`
    可改可删；包声明的 `source=<包>@<版本>` 只能停用、删除回 403）。**规则只登记、不评估**：`state` 恒为 ok、`firing` 恒为 0。
 6. **只读 MCP 工具** `mcp_tools: [{name, title, artifact, mode: list|get}]`：只能指本包的产物类型；本项目生效中的包的工具
-   出现在 MCP 读工具集（名字 `<包>_<名>`），调用时固定类型走 `artifact_list` / `artifact_get` 同一套上限。没有写工具。
+   出现在 MCP 读工具集（名字 `<包名>__<工具名>`），调用时固定类型走 `artifact_list` / `artifact_get` 同一套上限。没有写工具。
 7. **节点钩子** flow.yaml `hooks: [{id: <包>.<名>, title, node, when: before|after, command}]`：组装时检查编号、宿主节点存在、
    命令在本次装配里；FL-01 宿主节点多 `hooks`，动作里多一项（之前的排在前、之后的排在后）；用户发宿主节点的命令时，
    宿主在两轮之间提示助手先做或接着做那一步（和提示规则同一个出口，两个引擎都能拿到）。不新增节点。
@@ -46,3 +46,10 @@
 
 - 声明门禁 on 含 commit 的包，网页保存与助手合入都会被它挡住；规则写错会挡住写入，静态检查只查格式。
 - 告警评估器、配置项按项目取值、前端显示快捷项与视图选择都是后续项（`_plan/gaps.md` B5c）。
+
+## 补充（B5c 审查修复，审查第 8、9 条）
+
+- 包名里只有小写字母、数字、连字符，工具名、指标名里不许写 `__`，用 `__` 把包名和名字隔开，生成的全名不会和内置工具
+  （没有 `__`）或别的包撞名；上传检查再按包仓库里别的包的 stable 版本查一遍重名，列出时也去重（先到先得）。
+- `/metrics` 按指标名合成一个族：已记录样本的按实际类型出一行 TYPE，只有声明的按声明类型；不按「有项目启用」筛
+  （/metrics 是平台级的，每次抓取都扫项目锁文件不划算，没有样本的 HELP / TYPE 不影响抓取）。

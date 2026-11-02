@@ -241,23 +241,25 @@ def _prom_labels(labels: tuple) -> str:
 
 
 def prometheus_text() -> str:
-    lines: list[str] = []
-    for item in declared_metrics():
-        name = _prom_name(str(item.get("name") or ""))
-        if name:
-            lines.append(f"# HELP {name} {str(item.get('help') or '').replace(chr(10), ' ')}")
-            lines.append(f"# TYPE {name} {item.get('type') or 'gauge'}")
+    """Prometheus 文本格式：每个指标名一个族，HELP、TYPE 各一行（审查第 9 条：包声明的指标与已记录的同名指标
+    不能各出一行 TYPE，重复的 TYPE 会让整次抓取被拒）。已记录样本的按实际类型，只有声明的按声明类型。"""
     with _metrics_lock:
         counters = dict(_counters)
         histograms = {key: list(values) for key, values in _histograms.items()}
+    declared: dict[str, dict] = {}
+    for item in declared_metrics():
+        name = _prom_name(str(item.get("name") or ""))
+        if name and name not in declared:
+            declared[name] = item
+    families: dict[str, tuple[str, list[str]]] = {}
     for name in sorted({key[0] for key in counters}):
-        lines.append(f"# TYPE {_prom_name(name)} counter")
-        for (metric, labels), value in sorted(counters.items()):
-            if metric == name:
-                lines.append(f"{_prom_name(name)}{_prom_labels(labels)} {value}")
+        prom = _prom_name(name)
+        lines = [f"{prom}{_prom_labels(labels)} {value}" for (metric, labels), value in sorted(counters.items())
+                 if metric == name]
+        families.setdefault(prom, ("counter", []))[1].extend(lines)
     for name in sorted({key[0] for key in histograms}):
         prom = _prom_name(name)
-        lines.append(f"# TYPE {prom} histogram")
+        lines = []
         for (metric, labels), values in sorted(histograms.items()):
             if metric != name:
                 continue
@@ -267,12 +269,23 @@ def prometheus_text() -> str:
             lines.append(f"{prom}_bucket{_prom_labels(labels + (('le', '+Inf'),))} {len(values)}")
             lines.append(f"{prom}_sum{_prom_labels(labels)} {sum(values)}")
             lines.append(f"{prom}_count{_prom_labels(labels)} {len(values)}")
+        if prom not in families:
+            families[prom] = ("histogram", lines)
     for name, _read in sorted(_gauges.items()):
         value = gauge(name)
-        if isinstance(value, (int, float)):
-            lines.append(f"# TYPE {_prom_name(name)} gauge")
-            lines.append(f"{_prom_name(name)} {value}")
-    return "\n".join(lines) + "\n"
+        prom = _prom_name(name)
+        if isinstance(value, (int, float)) and prom not in families:
+            families[prom] = ("gauge", [f"{prom} {value}"])
+    for prom, item in declared.items():
+        if prom not in families:
+            families[prom] = (str(item.get("type") or "gauge"), [])
+    out: list[str] = []
+    for prom, (kind, lines) in families.items():
+        if prom in declared:
+            out.append(f"# HELP {prom} {str(declared[prom].get('help') or '').replace(chr(10), ' ')}")
+        out.append(f"# TYPE {prom} {kind}")
+        out.extend(lines)
+    return "\n".join(out) + "\n"
 
 
 def reset_metrics() -> None:

@@ -181,7 +181,7 @@ def test_metrics_and_alert_rules(env, monkeypatch):
     monkeypatch.setattr(auth, "verify_access_token", lambda token: TOKENS.get(token))
     monkeypatch.setattr(auth, "check_access_token", lambda token: (TOKENS.get(token), "" if token in TOKENS else "invalid"))
     ops = TestClient(ops_app)
-    assert "# HELP onto_pack_checklist_items_checked 检查过的检查项数" in telemetry.prometheus_text()
+    assert "# HELP onto_pack_checklist__items_checked 检查过的检查项数" in telemetry.prometheus_text()
     rules = ops.get("/api/v1/ops/alerts/rules", headers=OPS).json()
     pack_rule = next(rule for rule in rules["items"] if rule["id"] == "checklist.fail-rate")
     assert pack_rule["source"] == "checklist@1.0.0" and pack_rule["enabled"] and pack_rule["state"] == "ok"
@@ -209,14 +209,14 @@ def test_pack_mcp_tools_are_read_only_views_of_own_artifacts(env):
     principal = {"project_id": project_id, "scopes": ["ontology.read"], "username": "local"}
     listed = asyncio.run(onto_mcp.dispatch({"method": "tools/list"}, "read", principal, "2025-06-18"))["tools"]
     names = {tool["name"]: tool for tool in listed}
-    assert {"checklist_items", "checklist_item"} <= set(names) and names["checklist_items"]["annotations"]["readOnlyHint"]
+    assert {"checklist__items", "checklist__item"} <= set(names) and names["checklist__items"]["annotations"]["readOnlyHint"]
     change = asyncio.run(onto_mcp.dispatch({"method": "tools/list"}, "change", {**principal, "scopes": ["ontology.change.apply"]},
                                            "2025-06-18"))["tools"]
-    assert "checklist_items" not in {tool["name"] for tool in change}
-    called = asyncio.run(onto_mcp.dispatch({"method": "tools/call", "params": {"name": "checklist_items", "arguments": {}}},
+    assert "checklist__items" not in {tool["name"] for tool in change}
+    called = asyncio.run(onto_mcp.dispatch({"method": "tools/call", "params": {"name": "checklist__items", "arguments": {}}},
                                            "read", principal, "2025-06-18"))
     assert not called["isError"] and [row["key"] for row in called["structuredContent"]["items"]] == ["借阅检查"]
-    got = asyncio.run(onto_mcp.dispatch({"method": "tools/call", "params": {"name": "checklist_item",
+    got = asyncio.run(onto_mcp.dispatch({"method": "tools/call", "params": {"name": "checklist__item",
                                                                             "arguments": {"key": "借阅检查"}}},
                                         "read", principal, "2025-06-18"))
     assert not got["isError"] and got["structuredContent"]["artifact"]["key"] == "借阅检查"

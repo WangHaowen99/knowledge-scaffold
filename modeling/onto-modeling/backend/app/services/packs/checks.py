@@ -518,7 +518,7 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
     from . import extensions
 
     if extensions.declares_any(manifest):
-        declared = extensions.problems(manifest)
+        declared = extensions.problems(manifest, repository)
         checks.append(_check("extensions", "扩展项声明格式正确", "fail" if declared else "pass", "；".join(declared[:10])))
 
     secrets = _secrets(directory, files)

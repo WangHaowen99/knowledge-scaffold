@@ -408,3 +408,81 @@ def test_review_7_cancel_pending_undoes_stacked_switches(env):
     assert client.get(f"/api/v1/projects/{project_id}/assembly").json()["state"] == "applied"
     assert "naming.check" not in node_ids(root)
     assert cancelled.json()["pack"]["status"] == "disabled"
+
+
+# ---- 审查第 8、9 条：包的 MCP 工具名、指标名不能和内置或别的包撞名 ----
+
+def typed_pack(base: Path, name: str, extra: dict) -> Path:
+    from tests.test_extensions_artifacts import ITEM_TYPE, ITEM_VIEW
+
+    item = {**copy.deepcopy(ITEM_TYPE), "type": f"{name}.item", "path": f"ext/{name}/items/{{key}}.md",
+            "index": f"ext/{name}/index/items.jsonl"}
+    view = {**copy.deepcopy(ITEM_VIEW), "artifact": f"{name}.item"}
+    # 文件名带包名：几个包一起装配时 artifacts/、views/ 下的文件不能同名
+    files = {f"commands/{name}-run.md": "运行 $ARGUMENTS\n",
+             f"artifacts/{name}-item.yaml": yaml.safe_dump(item, allow_unicode=True),
+             f"views/{name}-item.yaml": yaml.safe_dump(view, allow_unicode=True)}
+    return make_pack(base / name, name, "1.0.0", files=files, tenant=True,
+                     contributes={"artifacts": [f"artifacts/{name}-item.yaml"], "views": [f"views/{name}-item.yaml"],
+                                  **extra})
+
+
+def publish_typed(manager, source: Path) -> dict[str, str]:
+    name = yaml.safe_load((source / "manifest.yaml").read_text(encoding="utf-8"))["name"]
+    result = failed(checks.run(source, manager.packs.repository, tenant=True)[1])
+    if not result:
+        manager.packs.repository.install(source, origin="upload", by="admin")
+        manager.packs.repository.set_channel(name, "stable", "1.0.0", by="admin")
+    return result
+
+
+def test_review_8_pack_mcp_tool_names_never_collide(ops_env, tmp_path):
+    import asyncio
+    from collections import Counter
+
+    from app.routers import onto_mcp
+    from app.services.packs import service as pack_service
+
+    _client, manager, _tmp = ops_env
+    project_id = manager.create_project("工具名", owner="employee_0001")["id"]
+    tools = lambda *pairs: {"mcp_tools": [{"name": tool, "title": tool, "artifact": art, "mode": "list"}  # noqa: E731
+                                         for tool, art in pairs]}
+    assert publish_typed(manager, typed_pack(tmp_path / "a", "artifact", tools(("list", "artifact.item")))) == {}
+    assert publish_typed(manager, typed_pack(tmp_path / "b", "ab", tools(("x-y", "ab.item")))) == {}
+    assert publish_typed(manager, typed_pack(tmp_path / "c", "ab-x", tools(("y", "ab-x.item")))) == {}
+    bad = publish_typed(manager, typed_pack(tmp_path / "d", "dup", tools(("a__b", "dup.item"))))
+    assert "extensions" in bad
+    for name in ("artifact", "ab", "ab-x"):
+        pack_service.enable(manager, project_id, name)
+    pack_service.prepare_for_message(manager, project_id)
+    principal = {"project_id": project_id, "scopes": ["ontology.read"], "username": "local"}
+    listed = asyncio.run(onto_mcp.dispatch({"method": "tools/list"}, "read", principal, "2025-06-18"))["tools"]
+    counts = Counter(tool["name"] for tool in listed)
+    assert all(count == 1 for count in counts.values()), counts
+    assert {"artifact__list", "ab__x-y", "ab-x__y"} <= set(counts)
+
+
+def test_review_9_metrics_exposition_has_one_family_per_name(checklist_env, tmp_path):
+    from app.governance import telemetry
+    from app.services.packs import governance
+
+    _client, manager, _pid = checklist_env
+    a = typed_pack(tmp_path / "a", "artifact", {"metrics": [{"name": "x_runs", "help": "A", "type": "counter"}]})
+    assert publish_typed(manager, a) == {}
+    b = make_pack(tmp_path / "b", "artifact-x", "1.0.0", tenant=True, files={"commands/artifact-x-run.md": "运行\n"},
+                  contributes={"metrics": [{"name": "runs", "help": "B", "type": "gauge"}]})
+    publish_typed(manager, b)
+    c = make_pack(tmp_path / "c", "metrics-dup", "1.0.0", tenant=True, files={"commands/metrics-dup-run.md": "运行\n"},
+                  contributes={"metrics": [{"name": "a__b", "help": "C"}]})
+    assert "extensions" in publish_typed(manager, c)
+    governance.install(manager)
+    telemetry.reset_metrics()
+    names = [metric["name"] for metric in governance._declared_metrics()]
+    assert len(names) == len(set(names))
+    full = next(name for name in names if name.endswith("x_runs"))
+    telemetry.count(full)
+    text = telemetry.prometheus_text()
+    for name in set(names):
+        assert sum(1 for line in text.splitlines() if line.startswith(f"# TYPE {name} ")) == 1, name
+        assert sum(1 for line in text.splitlines() if line.startswith(f"# HELP {name} ")) == 1, name
+    telemetry.reset_metrics()

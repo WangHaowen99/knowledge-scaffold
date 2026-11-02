@@ -49,9 +49,34 @@ def own_type(manifest: Manifest, art_type) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def problems(manifest: Manifest) -> list[str]:
-    """这几类扩展项的声明格式（包仓库静态检查 `extensions` 项）。"""
+# 包名与工具名、指标名之间的分隔：包名（小写字母、数字、连字符）里不会有下划线，名字里不许写「__」，生成的全名
+# 不会和内置工具（没有「__」）或别的包撞名（审查第 8、9 条）
+SEPARATOR = "__"
+
+
+def _taken_names(repository, own: str) -> tuple[set[str], set[str]]:
+    """包仓库里别的包（stable 版本）已经占用的 MCP 工具全名与指标全名。"""
+    tools, metrics = set(), set()
+    if repository is None:
+        return tools, metrics
+    for name in repository.names():
+        version = repository.latest(name, "stable")
+        if name == own or not version:
+            continue
+        try:
+            manifest = repository.manifest(name, version)
+        except Exception:  # noqa: BLE001 - 坏掉的包不影响检查别的包
+            continue
+        tools |= {mcp_tool_name(name, str(item.get("name") or item.get("id") or "")) for item in manifest.declared("mcp_tools")}
+        metrics |= {metric_name(name, str(item.get("name") or item.get("id") or "")) for item in manifest.declared("metrics")}
+    return tools, metrics
+
+
+def problems(manifest: Manifest, repository=None) -> list[str]:
+    """这几类扩展项的声明格式（包仓库静态检查 `extensions` 项）；给了包仓库时再查工具名、指标名和别的包撞没撞。"""
     out: list[str] = []
+    taken_tools, taken_metrics = _taken_names(repository, manifest.name)
+    from ..onto_mcp.definitions import TOOLS
     commands = {f"/{name}" for name in manifest.items("commands")}
     for item in manifest.declared("entries"):
         kind = item.get("kind", "quick_action")
@@ -96,8 +121,10 @@ def problems(manifest: Manifest) -> list[str]:
             out.append(f"配置项 {key} 是 enum，要写 choices")
     for item in manifest.declared("metrics"):
         name = str(item.get("name") or item.get("id") or "")
-        if not _METRIC_RE.match(name):
-            out.append(f"指标 {name or '（空）'} 的名字只能是小写字母、数字、下划线")
+        if not _METRIC_RE.match(name) or SEPARATOR in name:
+            out.append(f"指标 {name or '（空）'} 的名字只能是小写字母、数字、单个下划线")
+        elif metric_name(manifest.name, name) in taken_metrics:
+            out.append(f"指标 {metric_name(manifest.name, name)} 已被别的包占用")
         if str(item.get("type") or "gauge") not in METRIC_TYPES:
             out.append(f"指标 {name} 的 type 只能是 {' / '.join(METRIC_TYPES)}")
     for item in manifest.declared("alerts"):
@@ -109,8 +136,11 @@ def problems(manifest: Manifest) -> list[str]:
             out.append(f"告警规则 {item.get('id')} 的 auto_action 只能是 breaker")
     for item in manifest.declared("mcp_tools"):
         name = str(item.get("name") or item.get("id") or "")
-        if not _ID_RE.match(name):
-            out.append(f"MCP 工具 {name or '（空）'} 的名字只能是小写字母开头的字母、数字、下划线、连字符")
+        full = mcp_tool_name(manifest.name, name)
+        if not _ID_RE.match(name) or SEPARATOR in name:
+            out.append(f"MCP 工具 {name or '（空）'} 的名字只能是小写字母开头的字母、数字、单个下划线、连字符")
+        elif full in TOOLS or full in taken_tools:
+            out.append(f"MCP 工具 {full} 和内置工具或别的包重名")
         if not own_type(manifest, item.get("artifact")):
             out.append(f"MCP 工具 {name} 只能读本包登记的产物类型（{manifest.name}.…）")
         if str(item.get("mode") or "list") not in MCP_MODES:
@@ -223,12 +253,15 @@ def sync_config(manager) -> None:
 
 
 def metric_name(pack: str, name: str) -> str:
-    """包的指标统一带前缀，不和内核指标重名。"""
-    return f"onto_pack_{pack.replace('-', '_')}_{name}"
+    """包的指标统一带前缀，不和内核指标重名；包名与指标名之间用「__」分开（见 SEPARATOR）。"""
+    return f"onto_pack_{pack.replace('-', '_')}{SEPARATOR}{name}"
 
 
 def declared_metrics(manager) -> list[dict]:
+    """各包 stable 版本声明的指标，按全名去重（先到先得）。不按「有项目启用」筛：/metrics 是平台级的，
+    启用是项目级的，每次抓取都扫一遍项目锁文件不划算；没有样本的 HELP / TYPE 不影响抓取。"""
     out = []
+    seen: set[str] = set()
     repository = manager.packs.repository
     for name in repository.names():
         version = repository.latest(name, "stable")
@@ -236,8 +269,10 @@ def declared_metrics(manager) -> list[dict]:
             continue
         for item in repository.manifest(name, version).declared("metrics"):
             metric = str(item.get("name") or item.get("id") or "")
-            if _METRIC_RE.match(metric):
-                out.append({"name": metric_name(name, metric), "help": str(item.get("help") or metric),
+            full = metric_name(name, metric)
+            if _METRIC_RE.match(metric) and SEPARATOR not in metric and full not in seen:
+                seen.add(full)
+                out.append({"name": full, "help": str(item.get("help") or metric),
                             "type": str(item.get("type") or "gauge"), "pack": f"{name}@{version}"})
     return out
 
@@ -267,7 +302,7 @@ def declared_alerts(manager) -> list[dict]:
 
 
 def mcp_tool_name(pack: str, name: str) -> str:
-    return f"{pack.replace('-', '_')}_{name.replace('-', '_')}"
+    return f"{pack}{SEPARATOR}{name}"
 
 
 def mcp_tools(manager, project_id: str) -> list[dict]:
@@ -279,14 +314,18 @@ def mcp_tools(manager, project_id: str) -> list[dict]:
         views = registry.active_packs(manager, root)
     except Exception:  # noqa: BLE001 - 项目不在了：没有包工具
         return []
-    from ..onto_mcp.definitions import TEXT, definition
+    from ..onto_mcp.definitions import TEXT, TOOLS, definition
 
     out = []
+    seen: set[str] = set(TOOLS)
     for view in views:
         for item in view.manifest.declared("mcp_tools"):
             name = str(item.get("name") or item.get("id") or "")
-            if not _ID_RE.match(name) or not own_type(view.manifest, item.get("artifact")):
+            if not _ID_RE.match(name) or SEPARATOR in name or not own_type(view.manifest, item.get("artifact")):
                 continue
+            if mcp_tool_name(view.name, name) in seen:  # 和内置或前面的包重名：不列（上传检查已经挡住）
+                continue
+            seen.add(mcp_tool_name(view.name, name))
             mode = str(item.get("mode") or "list")
             props = ({"filters": {"type": "object"}, "query": TEXT, "cursor": TEXT,
                       "limit": {"type": "integer", "minimum": 1, "maximum": 50}} if mode == "list" else {"key": TEXT})
