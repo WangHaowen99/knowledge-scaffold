@@ -97,7 +97,7 @@ export function locateTarget(location) {
 }
 
 // 资料用途、读取计数
-export const PURPOSE_LABEL = { goal: '建模目标依据', evidence: '通用业务依据', schema: '数据结构', term: '术语' };
+export const PURPOSE_LABEL = { goal: '建模目标依据', evidence: '通用业务依据', schema: '数据结构', term: '术语', auto: '由助手判断' };
 export const PURPOSE_TONE = { goal: 'blue', evidence: 'gray', schema: 'teal', term: 'indigo' };
 export function materialCounts(c) {
   if (!c) return '';

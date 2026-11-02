@@ -4,7 +4,7 @@ import * as F from '../src/api/mock/fixtures.js';
 import { StreamHub } from '../src/api/mock/hub.js';
 import { register } from '../src/api/mock/routes-reports.js';
 import {
-  LINK_STATS, fmtDuration, fmtSince, fmtStamp, infoPairs, linkKind, locateTarget, materialCounts, progressView, repairView,
+  LINK_STATS, PURPOSE_LABEL, fmtDuration, fmtSince, fmtStamp, infoPairs, linkKind, locateTarget, materialCounts, progressView, repairView,
 } from '../src/pages/reports/reportModel.js';
 
 const at = (m, d, h, mi) => new Date(2026, m - 1, d, h, mi).toISOString();
@@ -126,4 +126,8 @@ test('mock：发给助手（单条 / 全部）、重新校验（链接同步，�
   assert.equal(link.body.report.type, 'link');
   assert.equal((await call('POST', `${P}/reports/recheck`, { kind: 'rule', mode: 'regression' })).status, 202);
   assert.equal((await call('POST', `${P}/reports/recheck`, { kind: 'research' })).status, 400);
+});
+
+test('资料用途：由助手判断的不显示成 auto（V 阶段截图）', () => {
+  assert.equal(PURPOSE_LABEL.auto, '由助手判断');
 });
