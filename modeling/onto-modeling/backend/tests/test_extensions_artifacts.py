@@ -133,7 +133,7 @@ def test_extensions_nav_lists_kernel_pages_then_enabled_plugin_pages(env):
     # 能力包的按钮下一条消息才可用；左栏、产物类型马上出现
     assert page["pending"] is True and view["pending_hash"]
     assert view["artifact_types"] == ["checklist.item"] and view["views"] == ["checklist.item"]
-    assert view["gates"] == [{"id": "title-short", "label": "检查项标题不超过 20 字", "pack": "checklist"}]
+    assert view["gates"] == [{"id": "title-short", "label": "检查项标题不超过 20 字", "pack": "checklist", "on": ["save"]}]
     events = buffered(project_id, "extensions.updated")
     assert events and {"nav", "pages", "artifact_types"} <= set(events[-1]["data"]["changed"])
     assert buffered(project_id, "assembly.updated")[-1]["data"]["state"] == "pending"

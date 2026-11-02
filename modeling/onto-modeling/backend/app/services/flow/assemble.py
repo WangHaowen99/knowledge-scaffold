@@ -8,7 +8,8 @@
 - `display_after` 只管显示顺序（缺省同 after）：节点排在锚点后面，同一锚点的按包顺序排；
 - 包可以补命令前置（`commands`）与探针（`probes`），和已有的重名就拒绝；
 - 主流程的下一步建议（`next_steps`）里指向没启用的包的命令去掉，只列本项目能用的命令。
-节点包的四种挂法与节点钩子（详设 6.4）在 P3。
+节点钩子（详设 6.4，B5c）：包在 flow.yaml 的 `hooks` 里给某个节点之前或之后追加一步检查或补充，不新增节点：
+`{id: <包>.<名>, title, node: <宿主节点>, when: before|after, command: /<本包命令>}`；宿主节点要存在、命令要在本次装配里。
 """
 
 from __future__ import annotations
@@ -42,6 +43,25 @@ def _node_problems(pack: str, node: dict) -> list[str]:
         problems.append(f"节点 {node_id} 的类型 {node.get('kind')} 不认识")
     if not node.get("title"):
         problems.append(f"节点 {node_id} 缺少 title")
+    return problems
+
+
+def _hook_problems(pack: str, hook, known: set[str], available: set[str] | None) -> list[str]:
+    if not isinstance(hook, dict):
+        return [f"{pack} 的节点钩子必须是映射"]
+    hook_id = str(hook.get("id") or "")
+    problems = []
+    if not hook_id.startswith(f"{pack}."):
+        problems.append(f"节点钩子 {hook_id or '（空）'} 的编号要以包名 {pack}. 开头")
+    if hook.get("node") not in known:
+        problems.append(f"节点钩子 {hook_id} 挂的节点 {hook.get('node')} 不存在")
+    if hook.get("when", "after") not in ("before", "after"):
+        problems.append(f"节点钩子 {hook_id} 的 when 只能是 before 或 after")
+    command = _command_name(hook.get("command"))
+    if not command:
+        problems.append(f"节点钩子 {hook_id} 要有命令")
+    elif available is not None and command not in available:
+        problems.append(f"节点钩子 {hook_id} 的命令 /{command} 不在本次装配里")
     return problems
 
 
@@ -185,6 +205,16 @@ def assemble(contributions: list[tuple[str, str, dict]], available_commands: set
                 if other != node["id"] and _overlaps(pattern, other_pattern):
                     problems.append(f"{node['id']} 与 {other} 同时声明输出 {pattern}")
             owners.append((node["id"], pattern))
+    hooks = []
+    for pack, version, declared in contributions:
+        for hook in declared.get("hooks") or []:
+            problems += _hook_problems(pack, hook, known, available_commands)
+            if isinstance(hook, dict):
+                hooks.append({"id": str(hook.get("id") or ""), "title": str(hook.get("title") or hook.get("id") or ""),
+                              "node": str(hook.get("node") or ""), "when": hook.get("when", "after"),
+                              "command": str(hook.get("command") or ""), "pack": pack, "version": f"{pack}@{version}"})
+    if len({hook["id"] for hook in hooks}) != len(hooks):
+        problems.append("节点钩子编号重复")
     # 命令 → 节点的映射只能指向存在的节点
     for command, spec in (flow.get("commands") or {}).items():
         target = (spec or {}).get("node") if isinstance(spec, dict) else None
@@ -200,6 +230,8 @@ def assemble(contributions: list[tuple[str, str, dict]], available_commands: set
         }
         flow["available_commands"] = sorted(available_commands)
     flow["nodes"] = nodes
+    if hooks:
+        flow["hooks"] = hooks
     flow["edges"] = [{"from": source, "to": target} for source, target in edges]
     flow["sources"] = sources
     flow["flow_hash"] = flow_hash(flow)

@@ -10,6 +10,7 @@
   （`changeset.updated`、`scope.updated`、`flow.updated`），写入范围锁 → `project_events.register_scope_provider`
   与插件产物的 `register_lock_provider`。
 - 一轮改到的插件产物 → 对话里的产物卡（ADR-0055）：`services/project_events.register_round_card_provider`。
+- 包声明的门禁 → 写入事务的门禁链（ADR-0068）：`kernel/writepath.register_gate_checker`。
 
 登记的都是进程内的函数引用，不做 I/O，可以重复调。在建应用时（`app/main.py`）调，而不是在 lifespan 里：
 不开 lifespan 的 TestClient、uvicorn 起的服务看到的是同一套接线。工作区管理器一律调用时再取
@@ -185,6 +186,11 @@ def install() -> None:
     from .kernel.writepath import scope as write_scope
 
     changesets.register_activity_provider(_session_activity)
+    # 包声明的门禁（B5c，ADR-0068）：写入事务提交与合入时查 on 含 commit 的规则
+    from .kernel.writepath import register_gate_checker
+    from .services.packs import extensions
+
+    register_gate_checker(extensions.commit_findings)
     injection.register_next_step_provider(_next_steps)
     write_scope.register_checker(changesets.paths_in_scope)
     registry.register_badge_provider(_badge)

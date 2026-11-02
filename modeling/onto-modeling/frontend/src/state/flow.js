@@ -73,16 +73,22 @@ export function mergeFlow(flow, patch) {
   return { ...flow, flow_hash: patch.flow_hash || flow.flow_hash, nodes, slices };
 }
 
-// 主线节点按边的顺序排（只放 spine / step / gate）
+// 主线节点按边的顺序排（只放 spine / step / gate；已停用的包的节点只在建模步骤抽屉里列出）。
+// 同一锚点后面挂了两个以上主线节点（节点包串入的一步和场景走查都挂在质量检查之后）时连线排不出唯一顺序，
+// 按后端给的节点顺序（组装时已按锚点与包顺序排好）
 export function trackNodes(flow) {
   if (!flow) return [];
-  const spine = flow.nodes.filter((n) => ['spine', 'step', 'gate'].includes(n.placement));
+  const spine = flow.nodes.filter((n) => ['spine', 'step', 'gate'].includes(n.placement) && !n.flags?.disabled);
   const ids = new Set(spine.map((n) => n.id));
   const next = new Map();
   const hasIn = new Set();
+  let forked = false;
   (flow.edges || []).forEach((e) => {
-    if (ids.has(e.from) && ids.has(e.to)) { next.set(e.from, e.to); hasIn.add(e.to); }
+    if (!ids.has(e.from) || !ids.has(e.to)) return;
+    if (next.has(e.from) && next.get(e.from) !== e.to) forked = true;
+    next.set(e.from, e.to); hasIn.add(e.to);
   });
+  if (forked) return spine;
   const order = [];
   let cur = spine.find((n) => !hasIn.has(n.id))?.id;
   while (cur && !order.includes(cur)) { order.push(cur); cur = next.get(cur); }

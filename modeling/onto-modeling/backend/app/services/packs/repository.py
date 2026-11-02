@@ -280,11 +280,13 @@ class PackRepository:
         return data if isinstance(data, dict) else {}
 
     def channel(self, name: str, channel: str = "stable") -> str | None:
+        """通道指向的版本；指向的版本被禁用（O-28）后视为没设，`latest` 改取最新的可用版本。"""
         entry = self.channels().get(name) or {}
         value = entry.get(channel)
         if isinstance(value, dict):
             value = value.get("version")
-        return value if value and self.has(name, value) else None
+        disabled = entry.get("disabled") or {}
+        return value if value and value not in disabled and self.has(name, value) else None
 
     def channel_entry(self, name: str) -> dict:
         return dict(self.channels().get(name) or {})

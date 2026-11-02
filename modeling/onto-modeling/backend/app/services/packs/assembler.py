@@ -203,7 +203,9 @@ class Assembler:
                 raise AssemblyError("tampered", [f"包仓库里 {entry.name} {entry.version} 的内容被改过：{problems[0]}"])
             flow_rel = manifest.contributes.get("flow") or ""
             readme_rel = manifest.contributes.get("readme") or ""
-            special = {mf.MANIFEST_FILE, flow_rel, readme_rel, *manifest.items("rules")}
+            # 节点声明文件只进组装后的 flow.yaml，不复制（两个包都叫 nodes/check.yaml 也不冲突）
+            node_files = [rel for rel in manifest.items("nodes") if rel.endswith((".yaml", ".yml"))]
+            special = {mf.MANIFEST_FILE, flow_rel, readme_rel, *manifest.items("rules"), *node_files}
             prefix = f"{DATA_PACK_DIR}/{entry.name}/" if manifest.kind == "knowledge" else ""
             for rel in pack_files(source):
                 # 包自带界面（ui/）只给浏览器用，不进装配目录：agent 用不到，也免得两个包的 ui/ 互相冲突（ADR-0055）
@@ -221,8 +223,9 @@ class Assembler:
                     rules.append((source / rel).read_text(encoding="utf-8").rstrip() + "\n")
             if entry.name == CORE and readme_rel and (source / readme_rel).is_file():
                 readme = (source / readme_rel).read_text(encoding="utf-8")
-            if flow_rel and (source / flow_rel).is_file():
-                flows.append((entry.name, entry.version, yaml.safe_load((source / flow_rel).read_text(encoding="utf-8")) or {}))
+            declared = flow_declaration(entry.name, manifest, source)
+            if declared is not None:
+                flows.append((entry.name, entry.version, declared))
             extra_hooks += manifest.hooks()
         for script in kernel_guards.scripts():
             rel = f"scripts/{script.name}"
@@ -355,6 +358,27 @@ class Assembler:
             shutil.rmtree(entry, ignore_errors=True)
             removed.append(entry)
         return removed
+
+
+def flow_declaration(name: str, manifest: Manifest, source: Path) -> dict | None:
+    """包的流程声明：`contributes.flow` 文件，加上 `contributes.nodes` 里列出的节点文件（详设 5.2、6.3：
+    节点包常把每个节点写成 nodes/*.yaml）；都没有时返回 None。"""
+    flow_rel = manifest.contributes.get("flow") or ""
+    declared = None
+    if flow_rel and (source / flow_rel).is_file():
+        declared = yaml.safe_load((source / flow_rel).read_text(encoding="utf-8")) or {}
+    files = [rel for rel in manifest.items("nodes") if rel.endswith((".yaml", ".yml"))]
+    if files:
+        declared = dict(declared or {})
+        nodes = list(declared.get("nodes") or [])
+        for rel in files:
+            try:
+                node = yaml.safe_load((source / rel).read_text(encoding="utf-8")) or {}
+            except (OSError, yaml.YAMLError) as exc:
+                raise AssemblyError("flow", [f"{name} 的节点声明 {rel} 无法解析：{exc}"]) from exc
+            nodes.append(node)
+        declared["nodes"] = nodes
+    return declared
 
 
 def verified_file(project_root: Path, rel: str) -> Path | None:

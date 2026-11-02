@@ -98,8 +98,8 @@ export function segUploads(items, selectedId, max = 3) {
 
 // ---------- 清单摘要（kind、贡献、生效时机） ----------
 
-const KIND_LABEL = { capability: '能力包', knowledge: '行业包', node: '节点包', provider: '证据源提供方', exporter: '导出器' };
-const CATEGORY_LABEL = { capability: '能力包', industry: '行业包', system: '系统知识包', provider: '证据源提供方', node: '节点包', exporter: '导出器' };
+const KIND_LABEL = { capability: '能力包', knowledge: '行业包', node: '能力包', provider: '证据源提供方', exporter: '导出器' };
+const CATEGORY_LABEL = { capability: '能力包', industry: '行业包', system: '系统知识包', provider: '证据源提供方', node: '能力包', exporter: '导出器' };
 /** 「knowledge（行业包）」：清单带 category 时按它，否则按后端的缺省类别（knowledge → 行业包） */
 export function kindText(m) {
   if (!m?.kind) return '';

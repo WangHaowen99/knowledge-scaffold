@@ -312,6 +312,9 @@ async def publish_upload(upload_id: str, request: Request):
         record = await asyncio.to_thread(_uploads().publish, upload_id, channel=channel, rollout=rollout,
                                          by=deps.actor(request), auto_breaker=bool(body.get("auto_breaker")))
     _audit(request, "pack.publish", {"name": record["name"], "version": record["version"], "channel": channel})
+    from ..services.packs import extensions
+
+    await asyncio.to_thread(extensions.sync_config, deps.workspaces)  # 新版本声明的配置项进配置注册表
     label = deps.workspaces.packs.repository.manifest(record["name"], record["version"]).label
     return {"pack": {"name": record["name"], "version": record["version"], "label": label},
             "channel": channel, "rollout": rollout}

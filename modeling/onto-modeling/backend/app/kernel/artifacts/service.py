@@ -385,37 +385,55 @@ def _schema_message(atype: ArtifactType, error) -> str:
     return f"「{label}」类型不对"
 
 
-def _gates(manager, root: Path, atype: ArtifactType) -> list[dict]:
+# 门禁在哪些时候查（ADR-0068）：save 网页保存（AR-05/06，B4c 起的缺省），commit 写入事务提交与合入（㉖），
+# publish 发布前检查（PB-01 门禁链）
+GATE_SCOPES = ("save", "commit", "publish")
+
+
+def gate_scopes(gate: dict) -> list[str]:
+    scopes = gate.get("on")
+    if isinstance(scopes, str):
+        scopes = [scopes]
+    return [str(item) for item in scopes or ["save"]]
+
+
+def _gates(manager, root: Path, atype: ArtifactType, scope: str = "save") -> list[dict]:
     from ...services.packs import registry
 
     for view in registry.desired_packs(manager, root):
         if view.name == atype.pack:
-            return [gate for gate in view.manifest.declared("gates") if gate.get("artifact") == atype.type]
+            return [gate for gate in view.manifest.declared("gates")
+                    if gate.get("artifact") == atype.type and scope in gate_scopes(gate)]
     return []
 
 
+def rule_problem(root: Path, atype: ArtifactType, rule: dict, fields: dict) -> str | None:
+    """一条逐项规则：required、in、max_length、ref_exists；不满足时返回说法。"""
+    name = str(rule.get("field") or "")
+    value = fields.get(name)
+    label = (atype.field(name) or {}).get("label") or name
+    if rule.get("required") and value in (None, "", []):
+        return f"「{label}」必须填写"
+    if rule.get("in") and value not in (None, "") and str(value) not in [str(item) for item in rule["in"]]:
+        return f"「{label}」只能是 {'、'.join(str(item) for item in rule['in'])}"
+    if rule.get("max_length") and isinstance(value, str) and len(value) > int(rule["max_length"]):
+        return f"「{label}」不能超过 {rule['max_length']} 个字符"
+    if rule.get("ref_exists") and value not in (None, ""):
+        kind = rule.get("kind") or next((ref["kind"] for ref in atype.refs if ref["field"] == name), "object")
+        if index.entity_path(root, kind, value if not isinstance(value, dict) else value.get("key", "")) is None:
+            return f"「{label}」引用的条目不存在"
+    return None
+
+
 def gate_findings(manager, root: Path, atype: ArtifactType, fields: dict) -> list[dict]:
-    """包声明的门禁规则（声明式，详设 5.6）：required、in、max_length、ref_exists。"""
+    """包声明的门禁规则（声明式，详设 5.6）里保存时查的那些：required、in、max_length、ref_exists。"""
     failed = []
     for gate in _gates(manager, root, atype):
         for rule in gate.get("rules") or []:
-            name = str(rule.get("field") or "")
-            value = fields.get(name)
-            label = (atype.field(name) or {}).get("label") or name
-            problem = None
-            if rule.get("required") and value in (None, "", []):
-                problem = f"「{label}」必须填写"
-            elif rule.get("in") and value not in (None, "") and str(value) not in [str(item) for item in rule["in"]]:
-                problem = f"「{label}」只能是 {'、'.join(str(item) for item in rule['in'])}"
-            elif rule.get("max_length") and isinstance(value, str) and len(value) > int(rule["max_length"]):
-                problem = f"「{label}」不能超过 {rule['max_length']} 个字符"
-            elif rule.get("ref_exists") and value not in (None, ""):
-                kind = rule.get("kind") or next((ref["kind"] for ref in atype.refs if ref["field"] == name), "object")
-                if index.entity_path(root, kind, value if not isinstance(value, dict) else value.get("key", "")) is None:
-                    problem = f"「{label}」引用的条目不存在"
+            problem = rule_problem(root, atype, rule, fields)
             if problem:
                 failed.append({"id": str(gate.get("id") or ""), "label": str(gate.get("label") or gate.get("id") or ""),
-                               "field": name, "message": str(rule.get("message") or problem)})
+                               "field": str(rule.get("field") or ""), "message": str(rule.get("message") or problem)})
     return failed
 
 

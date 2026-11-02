@@ -3,7 +3,7 @@
 O-02～O-07 指标、归因、链路、日志；O-14 立即探测；O-16～O-19 会话池配置、强制断开、排空；
 O-20～O-24 维护模式；O-29 熔断；O-42 版本清单；O-45～O-47 诊断包；O-49 导出审计；O-51 错误详情；
 O-54 永久删除回收站项目。写操作只有 ops（除另有说明），读操作 ops、admin；写操作都记审计（类型 ops）。
-告警规则与导出器（O-08～O-12）、插件运维（O-25～O-28、O-31、O-34）、恢复演练（O-38、O-39）、
+O-08～O-10 告警规则（规则只登记、本期不评估，state 恒为 ok）；导出器（O-11、O-12）、恢复演练（O-38、O-39）、
 任务中心（O-40、O-41）、数据保留（O-43、O-44）不在本阶段。
 """
 
@@ -413,6 +413,100 @@ def exit_maintenance(request: Request):
         raise _maintenance_error(exc) from None
     _ops_audit(request, "ops.maintenance_exit")
     return {"active": False}
+
+
+# ---- O-08～O-10 告警规则：运维新建的（source=kernel）与各包声明的（source=包版本，只能停用） ----
+
+# 插件运行时登记：() → 包声明的规则（契约 7.16 AlertRule 去掉 state、enabled）
+_alert_providers: list[Callable[[], list[dict]]] = []
+
+
+def register_alert_provider(provider: Callable[[], list[dict]]) -> None:
+    if provider not in _alert_providers:
+        _alert_providers.append(provider)
+
+
+def _alert_rules() -> list[dict]:
+    stored = ops_state.alert_rules()
+    disabled = set(stored["disabled"])
+    rules = [{**rule, "state": "ok"} for rule in stored["rules"].values()]
+    for provider in _alert_providers:
+        rules += [{**rule, "state": "ok", "enabled": rule["id"] not in disabled} for rule in _safe(provider)]
+    return sorted(rules, key=lambda rule: (rule.get("source") != "kernel", rule["id"]))
+
+
+@router.get("/alerts/rules")
+def list_alert_rules(request: Request):
+    """O-08：告警规则。本期只登记、不评估（firing 恒为 0）。"""
+    _read(request)
+    return {"items": _alert_rules(), "firing": 0}
+
+
+def _rule_body(body: dict, *, partial: bool = False) -> dict:
+    out = {}
+    for key in ("name", "condition", "window", "runbook_md"):
+        if key in body or not partial:
+            value = str(body.get(key) or "").strip()
+            if key in ("name", "condition") and not value:
+                raise ApiError("invalid_argument", f"{key} 必填", 400, {"fields": {key: "required"}})
+            out[key] = value[:2000] if key == "runbook_md" else value[:200]
+    if "level" in body or not partial:
+        if body.get("level") not in ops_state.ALERT_LEVELS:
+            raise ApiError("invalid_argument", "level 只能是 critical、warning、info", 400, {"fields": {"level": "enum"}})
+        out["level"] = body["level"]
+    if "auto_action" in body or not partial:
+        if body.get("auto_action") not in (None, "breaker"):
+            raise ApiError("invalid_argument", "auto_action 只能是 breaker", 400, {"fields": {"auto_action": "enum"}})
+        out["auto_action"] = body.get("auto_action")
+    if "enabled" in body:
+        out["enabled"] = bool(body["enabled"])
+    return out
+
+
+@router.post("/alerts/rules")
+async def create_alert_rule(request: Request):
+    """O-09：新建告警规则（source=kernel）。"""
+    _write(request)
+    rule = {"id": f"rule-{uuid.uuid4().hex[:8]}", **_rule_body(await deps.json_body(request)), "enabled": True,
+            "source": "kernel"}
+    rule.setdefault("window", "5m")
+    ops_state.save_alert_rule(rule)
+    _ops_audit(request, "alert.create", rule=rule["id"])
+    return JSONResponse(status_code=201, content={**rule, "state": "ok"})
+
+
+@router.put("/alerts/rules/{rule_id}")
+async def update_alert_rule(rule_id: str, request: Request):
+    """O-10：修改规则；包声明的规则只能停用或重新启用。"""
+    _write(request)
+    body = await deps.json_body(request)
+    current = next((rule for rule in _alert_rules() if rule["id"] == rule_id), None)
+    if current is None:
+        raise ApiError("not_found", "告警规则不存在", 404)
+    if current.get("source") != "kernel":
+        if set(body) - {"enabled"}:
+            raise ApiError("forbidden", "包声明的规则只能停用或启用", 403)
+        ops_state.set_pack_rule_enabled(rule_id, bool(body.get("enabled")))
+    else:
+        updated = {key: value for key, value in current.items() if key != "state"}
+        updated.update(_rule_body(body, partial=True))
+        ops_state.save_alert_rule(updated)
+    _ops_audit(request, "alert.update", rule=rule_id)
+    return next(rule for rule in _alert_rules() if rule["id"] == rule_id)
+
+
+@router.delete("/alerts/rules/{rule_id}")
+def delete_alert_rule(rule_id: str, request: Request):
+    """O-10：删除运维新建的规则；包声明的不能删（forbidden）。"""
+    _write(request)
+    current = next((rule for rule in _alert_rules() if rule["id"] == rule_id), None)
+    if current is None:
+        raise ApiError("not_found", "告警规则不存在", 404)
+    if current.get("source") != "kernel":
+        raise ApiError("forbidden", "包声明的规则只能停用，不能删除", 403)
+    ops_state.delete_alert_rule(rule_id)
+    _ops_audit(request, "alert.delete", rule=rule_id)
+    return Response(status_code=204)
 
 
 # ---- O-29 熔断 ----

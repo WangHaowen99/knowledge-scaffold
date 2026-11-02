@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 import re
 import shutil
 import tempfile
@@ -104,6 +105,7 @@ def package_binding_check(manager, project_id: str, commit: str | None = None) -
     binding = {"issues": [], "warnings": [], "tables": {}, "objects": {}, "problems": []}
     table_resources, solver = [], {"enabled": False}
     script_findings: list[dict] = []
+    pack_gates: list[dict] = []
     try:
         with release_tree(root, commit) as tree:
             binding = package_mapping.resolve_object_tables(tree, tables=package_mapping.read_source_tables(tree))
@@ -111,6 +113,7 @@ def package_binding_check(manager, project_id: str, commit: str | None = None) -
             solver = solver_service.release_status_at(tree, root)
             src = _source(manager, project_id, root, tree, commit, versioning.next_version(root, commit)[0])
             script_findings = gates.render_findings(src)
+        pack_gates = _pack_gates(manager, root, commit)
     except WorkspaceError as exc:
         if exc.code not in ("release_tree_unsafe", "release_tree_mismatch"):
             raise
@@ -127,7 +130,7 @@ def package_binding_check(manager, project_id: str, commit: str | None = None) -
         shown.append({**item, "path": rel, "revision": revision})
     objects = binding["objects"]
     uncommitted = uncommitted_package_changes(root)
-    gate_list = gates.gate_chain(issues, solver, script_findings, tree_error)
+    gate_list = gates.gate_chain(issues, solver, script_findings, tree_error, pack_gates)
     return {
         "commit": commit,
         "blocking": sum(1 for item in issues if item["blocking"]),
@@ -149,6 +152,17 @@ def package_binding_check(manager, project_id: str, commit: str | None = None) -
         "checked_at": time.time(),
         "duration_ms": int((time.time() - started) * 1000),
     }
+
+
+def _pack_gates(manager, root: Path, commit: str) -> list[dict]:
+    """包声明、发布前查的门禁（ADR-0068）；读包声明出错不挡发布前检查，记日志。"""
+    from ..packs import extensions
+
+    try:
+        return extensions.publish_gates(manager, root, commit, 0)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).warning("包声明的发布门禁没跑起来", exc_info=True)
+        return []
 
 
 def set_object_data_source(

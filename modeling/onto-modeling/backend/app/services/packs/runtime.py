@@ -169,10 +169,15 @@ class PackRuntime:
             return False
         changed = False
         guarded = self._plannable(lock)  # 原来就装配不了的锁不拦（跟随可能正好修好它）
+        from .governance import beta_for
+
         for entry in sorted(lock.packs, key=lambda item: (item.name != CORE, item.name)):
             if not entry.follow or not entry.enabled:
                 continue
             latest = self.repository.latest(entry.name, entry.channel or "stable")
+            if (entry.channel or "stable") == "stable":
+                # 按项目灰度（O-26）：分桶落在 beta 的放量比例里的项目跟 beta
+                latest = beta_for(self.repository, entry.name, Path(root).name) or latest
             if not latest or latest == entry.version:
                 continue
             before = (entry.version, entry.sha256)
@@ -224,11 +229,38 @@ class PackRuntime:
         return self.status(root)
 
     def mount(self, root: Path, selection: list[str] | None = None) -> dict | None:
-        """建项目、导入、克隆：补齐锁文件并立即装配切换（没有会话在跑）。工具箱缺席时返回 None。"""
+        """建项目、导入、克隆：补齐锁文件并立即装配切换（没有会话在跑），写好 flow.lock（随后由调用方一起提交）。
+        工具箱缺席时返回 None。"""
         lock, _ = self.ensure_lock(root, selection)
         if lock is None:
             return None
-        return self.apply(root)
+        status = self.apply(root)
+        self.write_flow_lock(root, lock)
+        return status
+
+    # ---- 流程锁（方案 D18）----
+
+    def flow_of(self, plan: Plan) -> dict | None:
+        """装配计划组装出的流程（装配目录里的 flow.yaml）；包都没有流程声明时为 None。"""
+        built = self.assembler.build(plan)
+        try:
+            return json.loads((built / "flow.yaml").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def desired_flow(self, root: Path, lock: PackLock | None = None) -> dict | None:
+        """锁文件要求的流程；装配不起来时为 None（保持原来的 flow.lock）。"""
+        try:
+            return self.flow_of(self.plan(root, lock))
+        except (AssemblyError, ValueError, OSError):
+            return None
+
+    def write_flow_lock(self, root: Path, lock: PackLock | None = None) -> bool:
+        """按锁文件写 `.onto/flow.lock`，返回内容是否变了。不提交。"""
+        from ..flow import flowlock
+
+        flow = self.desired_flow(root, lock)
+        return flowlock.write(root, flow) if flow is not None else False
 
     def reconcile(self, root: Path, verified: set | None = None) -> dict | None:
         """启动核对（方案 D4）：`.claude` 指向的装配目录在不在、内容对不对、和锁文件一致不一致。

@@ -1,8 +1,8 @@
 """发布门禁链（详设 5.6、㉖；API 契约 PB-01 的 gates、7.14 GateResult）。
 
-现在只有平台自带的三道：数据绑定（可降级）、求解契约（静态检查与验证回执）、知识包结构
-（脚本绑定、入参形态、文档元数据、发布树安全）。包声明的门禁、证据出处与流程关卡
-随插件运行时（P1）与证据源（P3）接进来，按 order 排在后面。
+平台自带三道：数据绑定（可降级）、求解契约（静态检查与验证回执）、知识包结构（脚本绑定、入参形态、
+文档元数据、发布树安全）；包声明的门禁（on 含 publish，`services/packs/extensions.publish_gates`）按包排在
+后面。证据出处与流程关卡随证据源、发布节点接进来。
 """
 
 from __future__ import annotations
@@ -83,12 +83,15 @@ def _structure_gate(findings: list[dict], order: int) -> dict:
     }
 
 
-def gate_chain(issues: list[dict], solver: dict, structure: list[dict], tree_error: dict | None = None) -> list[dict]:
+def gate_chain(issues: list[dict], solver: dict, structure: list[dict], tree_error: dict | None = None,
+               packs: list[dict] | None = None) -> list[dict]:
     chain = [_binding_gate(issues)]
     solver_gate = _solver_gate(solver)
     if solver_gate:
         chain.append(solver_gate)
     chain.append(_structure_gate([*([tree_error] if tree_error else []), *structure], len(chain) + 1))
+    for gate in packs or []:
+        chain.append({**gate, "order": len(chain) + 1})
     return chain
 
 

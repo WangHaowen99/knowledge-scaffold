@@ -29,7 +29,7 @@ PATHS_MAX = 200
 FLOW_DEBOUNCE_SECONDS = 0.3
 _SOURCES = {"agent": "assistant"}
 # 变了哪几类扩展项：扩展项注册表（PL-12，B4c）登记精确的比较；没登记时整份重拉
-EXTENSION_KINDS = ("nav", "pages", "subpages", "entries", "artifact_types", "views", "gates")
+EXTENSION_KINDS = ("nav", "pages", "subpages", "entries", "artifact_types", "views", "gates", "view_choices")
 
 
 def _manager():

@@ -85,3 +85,28 @@ def link_assembled(workspace: Path, data_dir: Path) -> Path:
     target = assemble_real(data_dir)
     (Path(workspace) / ".claude").symlink_to(target)
     return target
+
+
+# 合成节点包（详设 6.3、6.9；kind: node）：一个挂在质量检查之后的 agent 关卡节点，命令、探针都在包里
+NODE_PACK_FLOW = {
+    "requires_flow": "core>=0.1",
+    "probes": {"naming_report": {"files": ["reports"], "glob": "naming-*.md"}},
+    "nodes": [{
+        "id": "naming.check", "title": "命名一致性检查", "kind": "agent", "placement": "step",
+        "section": "required", "after": "core.validate", "done": ["naming_report"],
+        "stale_on": ["object"], "produces": [{"path": "reports/naming-*.md", "kind": "report"}],
+        "entry": {"command": "/naming-check"},
+        "actions": [{"label": "运行命名检查", "command": "/naming-check"}],
+    }],
+}
+
+
+def make_node_pack(base: Path, name: str = "naming", version: str = "0.1.0", *, flow: dict | None = None,
+                   files: dict[str, str] | None = None, **extra) -> Path:
+    """合成节点包：清单 kind: node，流程声明写在 flow.yaml。files 默认带入口命令。"""
+    flow = flow if flow is not None else NODE_PACK_FLOW
+    files = dict(files if files is not None else {f"commands/{name}-check.md": "按命名约定逐条检查对象名，写报告 $ARGUMENTS\n"})
+    files["flow.yaml"] = yaml.safe_dump(flow, allow_unicode=True, sort_keys=False)
+    contributes = {"flow": "flow.yaml", "nodes": [node["id"] for node in flow.get("nodes") or []]}
+    contributes.update(extra.pop("contributes", {}))
+    return make_pack(base, name, version, files=files, kind="node", contributes=contributes, **extra)

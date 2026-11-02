@@ -18,7 +18,7 @@ import os
 import uuid
 from pathlib import Path
 
-from . import model
+from . import model, overlay
 from . import state as node_state
 
 _log = logging.getLogger(__name__)
@@ -114,11 +114,16 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     from ...kernel.changesets import worktree
 
     copy = worktree.copy_path(root)
-    states = node_state.compute(root, flow, hits)
+    broken = overlay.broken_nodes(flow)
+    states = node_state.compute(root, overlay.released(flow, broken), hits)
     for node_id in _lock_running(flow, [root, copy], state):
         if node_id in states and states[node_id]["state"] not in ("running", "pending_confirm"):
             states[node_id]["state"] = "running"
             states[node_id]["display_state"] = node_state.display("running", states[node_id]["flags"])
+    overlay.mark_broken(states, broken)
+    overlay.mark_backfill(flow, states, hits)
+    passed = overlay.backfill_ids(flow, hits)
+    hooks = _hooks_by_node(flow)
     nodes = []
     for node in flow.get("nodes") or []:
         item = states[node["id"]]
@@ -136,12 +141,16 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
             "per_slice": bool(node.get("per_slice")),
             "note": node.get("note"),
             "blocks": list(node.get("blocks") or []),
-            "actions": _actions(node, item["state"]),
+            "actions": [] if item.get("broken") else _actions(node, item["state"], hooks.get(node["id"], [])),
+            "hooks": [{key: hook[key] for key in ("id", "title", "when", "command", "pack")}
+                      for hook in hooks.get(node["id"], [])],
             "plugin": None if node.get("pack", "core") == "core" else {"name": node["pack"], "label": node["pack"]},
             "optional": bool(node.get("optional")),
             "panel": bool(node.get("panel")),
-            "counts_in_progress": bool(node.get("progress", True)),
+            # 可补做的节点做完之前不计入进度：越过插入位置的项目，主线进度不往回退（详设 6.9 第 4 步）
+            "counts_in_progress": bool(node.get("progress", True)) and node["id"] not in passed,
         })
+    nodes += [_disabled_view(node) for node in overlay.disabled_nodes(root, flow)]
     sections = [
         {"id": key, "title": title, "nodes": [node["id"] for node in nodes if node["section"] == key]}
         for key, title in SECTION_TITLES.items()
@@ -159,6 +168,8 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
         suggest_stage = state.legacy_stage(flow, copy, copy_probes)
         suggester.overlay_pending(flow, simple_states, state.node_hits(flow, copy, copy_probes))
         for node in nodes:
+            if node["id"] not in simple_states:
+                continue
             changed = simple_states[node["id"]]["state"]
             if changed != node["state"]:
                 node["state"] = changed
@@ -175,7 +186,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
         "slice_stages": [],
         "slices": [],
         "suggestions": suggestions,
-        "notices": _notices(suggest_context),
+        "notices": _notices(suggest_context) + _assembly_notice(root),
         "stage": stage,
         # 进度：主线上满足完成判定的节点（已确认与过期都算做过）；助手副本里的改动要确认生效才算
         "progress": {
@@ -188,12 +199,38 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     return result
 
 
-def _actions(node: dict, state: str) -> list[dict]:
+def _disabled_view(node: dict) -> dict:
+    """停用了的包的节点：产物保留，列出来标「已停用」，不进进度、没有动作（详设 6.9 第 5 步）。"""
+    flags = {"needs_review": False, "disabled": True, "backfill": False}
+    return {
+        "id": node["id"], "title": str(node.get("title") or node["id"]), "kind": node.get("kind", "agent"),
+        "placement": node.get("placement", "step"), "section": node.get("section", "optional"),
+        "state": "skipped", "flags": flags, "display_state": node_state.display("skipped", flags),
+        "progress": None, "version": node.get("version") or "", "per_slice": False, "note": None, "blocks": [],
+        "actions": [], "plugin": {"name": node["pack"], "label": node["pack"]}, "optional": True, "panel": False,
+        "counts_in_progress": False,
+    }
+
+
+def _hooks_by_node(flow: dict) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for hook in flow.get("hooks") or []:
+        out.setdefault(hook["node"], []).append(hook)
+    return out
+
+
+def _actions(node: dict, state: str, hooks: list[dict] | None = None) -> list[dict]:
     actions = [
         {"kind": "start", "label": action["label"], "target": action["command"],
          **({"verify": True} if action.get("verify") else {})}
         for action in node.get("actions") or [] if action.get("command")
     ]
+    # 节点钩子（详设 6.4）：之前的排在节点自己的动作前面，之后的排在后面
+    before = [{"kind": "start", "label": hook["title"], "target": hook["command"], "hook": hook["id"]}
+              for hook in hooks or [] if hook.get("when") == "before"]
+    after = [{"kind": "start", "label": hook["title"], "target": hook["command"], "hook": hook["id"]}
+             for hook in hooks or [] if hook.get("when") != "before"]
+    actions = before + actions + after
     if state == "stale" and actions:
         actions = [{**actions[0], "kind": "refresh", "label": f"刷新「{node['title']}」"}, *actions]
     if node.get("optional"):
@@ -208,6 +245,20 @@ def _notices(context: dict) -> list[dict]:
         return [{"kind": "pending_changeset", "count": 1, "text": "这一轮的修改还没确认",
                  "action": {"type": "show_changes", "changeset_id": changeset["id"]}}]
     return []
+
+
+def _assembly_notice(root: Path) -> list[dict]:
+    """启用、升级、停用了包还没生效（下一条消息前切换）：流程按生效中的装配显示，另给一条提示（契约 7.8 notices）。"""
+    from ...api import deps
+
+    try:
+        status = deps.workspaces.packs.status(root)
+    except Exception:  # noqa: BLE001 - 取不到装配状态不影响流程
+        return []
+    if status.get("state") != "pending" or status.get("effective") != "next_message":
+        return []
+    return [{"kind": "assembly_pending", "count": len(status.get("pending_changes") or []),
+             "text": "插件变更下一条消息生效", "action": {"type": "navigate", "page": "proj-settings"}}]
 
 
 def _write_flow_state(root: Path, copy: Path, flow: dict, states: dict, context: dict, suggestions: dict) -> None:

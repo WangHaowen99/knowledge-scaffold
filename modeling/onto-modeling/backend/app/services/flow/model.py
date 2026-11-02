@@ -76,6 +76,11 @@ def progress(root: Path) -> dict:
     state = flow_state(root)
     probes = state.evaluate(flow, root)
     info = state.progress(flow, root, probes)
+    # 越过插入位置的插件节点（可补做）做完之前不计入分母，和 FL-01 的进度同一口径
+    from .overlay import backfill_ids
+
+    progress_ids = {node["id"] for node in state.progress_nodes(flow)}
+    info["total"] -= len(backfill_ids(flow, info["hits"]) & progress_ids)
     info["stage"] = state.legacy_stage(flow, root, probes)
     info["probes"] = probes
     return info

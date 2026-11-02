@@ -555,6 +555,89 @@ async def run_backup(request: Request):
     return JSONResponse(status_code=202, content={"task_id": f"backup-{uuid.uuid4().hex[:12]}", "name": name})
 
 
+# ---- O-25～O-28 插件运维（O-29 熔断在 ops_control；逻辑在 services/packs/governance.py） ----
+
+
+def _pack_ops(call, *args, **kwargs):
+    from ..services.packs import governance
+    from ..services.packs.repository import RepositoryError
+
+    try:
+        return call(deps.workspaces, *args, **kwargs)
+    except governance.OpsError as exc:
+        raise ApiError(exc.code, str(exc), exc.status, exc.details) from exc
+    except RepositoryError as exc:
+        raise ApiError(exc.code, str(exc), exc.status, exc.details) from exc
+
+
+@router.get("/packs")
+def ops_packs(request: Request):
+    """O-25：插件运维列表（通道上的、项目在用的、禁用的版本各一行）。"""
+    _read(request)
+    from ..services.packs import governance
+
+    return {"items": _pack_ops(governance.ops_items)}
+
+
+class RolloutBody(BaseModel):
+    percent: int
+    by: str = "project"
+    targets: list[str] = []
+
+
+@router.put("/packs/{name}/{version}/rollout")
+def ops_pack_rollout(name: str, version: str, body: RolloutBody, request: Request):
+    """O-26：调灰度（只做按项目；按租户回 501 rollout_not_available）。"""
+    _write(request)
+    if not 0 <= body.percent <= 100:
+        raise ApiError("invalid_argument", "比例是 0–100 的整数", 400, {"fields": {"percent": "range"}})
+    from ..services.packs import governance
+
+    item = _pack_ops(governance.set_rollout, name, version, percent=body.percent, by=body.by,
+                     targets=body.targets, actor=deps.actor(request))
+    audit.log(deps.actor(request), "PUT", request.url.path, {"plugin.rollout": f"{name}@{version}",
+                                                             "percent": body.percent, "by": body.by})
+    return item
+
+
+class ChannelRollbackBody(BaseModel):
+    channel: str
+    to_version: str
+
+
+@router.post("/packs/{name}/rollback")
+def ops_pack_rollback(name: str, body: ChannelRollbackBody, request: Request):
+    """O-27：把通道指针改回旧版本。"""
+    _write(request)
+    if body.channel not in ("stable", "beta"):
+        raise ApiError("invalid_argument", "channel 只能是 stable 或 beta", 400, {"fields": {"channel": "enum"}})
+    from ..services.packs import governance
+
+    item = _pack_ops(governance.rollback_channel, name, channel=body.channel, to_version=body.to_version,
+                     actor=deps.actor(request))
+    audit.log(deps.actor(request), "POST", request.url.path, {"plugin.rollback": f"{name}@{body.to_version}",
+                                                              "channel": body.channel})
+    return item
+
+
+class DisableVersionBody(BaseModel):
+    reason: str = ""
+
+
+@router.post("/packs/{name}/{version}/disable")
+def ops_pack_disable(name: str, version: str, body: DisableVersionBody, request: Request):
+    """O-28：禁用版本。"""
+    _write(request)
+    if not body.reason.strip():
+        raise ApiError("invalid_argument", "要写禁用原因", 400, {"fields": {"reason": "required"}})
+    from ..services.packs import governance
+
+    item = _pack_ops(governance.disable_version, name, version, reason=body.reason.strip()[:300],
+                     actor=deps.actor(request))
+    audit.log(deps.actor(request), "POST", request.url.path, {"plugin.disable": f"{name}@{version}"})
+    return item
+
+
 # ---- O-30～O-34 core 默认版本与包仓库备份（包仓库承接原资产包，services/packs/channels.py） ----
 
 

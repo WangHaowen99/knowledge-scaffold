@@ -13,6 +13,25 @@ test('P1 形状：主线按 after 连线排出 6 个必经步骤，分支与按�
   assert.deepEqual(flow.slice_stages, []);
 });
 
+test('已停用的包的节点不进进度条，只在抽屉分组里', () => {
+  const raw = F.flowP1();
+  raw.nodes.push({ id: 'naming.check', title: '命名检查', placement: 'step', section: 'required', state: 'skipped',
+    display_state: 'disabled', flags: { needs_review: false, disabled: true, backfill: false } });
+  raw.sections.find((x) => x.id === 'required').nodes.push('naming.check');
+  const flow = normalizeFlow(raw);
+  assert.ok(!trackNodes(flow).some((n) => n.id === 'naming.check'));
+  assert.ok(sectionGroups(flow).find((g) => g.id === 'required').nodes.some((n) => n.id === 'naming.check'));
+});
+
+test('同一锚点后面挂了两个主线节点：按后端给的节点顺序排', () => {
+  const raw = F.flowP1();
+  const at = raw.nodes.findIndex((n) => n.id === 'core.validate') + 1;
+  raw.nodes.splice(at, 0, { id: 'naming.check', title: '命名检查', placement: 'step', section: 'required', state: 'not_ready' });
+  raw.edges = [...(raw.edges || []), { from: 'core.validate', to: 'naming.check' }];
+  const titles = trackNodes(normalizeFlow(raw)).map((n) => n.title);
+  assert.deepEqual(titles.slice(3, 6), ['质量检查', '命名检查', '示例数据']);
+});
+
 test('P1 形状：没有 section 的节点按顶层 sections 归组，空组不出', () => {
   const raw = F.flowP1();
   raw.nodes = raw.nodes.map(({ section, ...n }) => n);
