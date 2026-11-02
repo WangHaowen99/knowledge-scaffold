@@ -607,6 +607,10 @@ class WorkspaceCore:
         dest = root / "resource"
         if template.is_dir():
             shutil.copytree(template, dest)
+            # copytree 按镜像里的模板设权限（0755、没有 setgid）：之后上传时新建的子目录归后端的组，agent 读不到
+            from ...governance import agent_identity
+
+            agent_identity.share_writable(dest)
         else:
             dest.mkdir()
 

@@ -315,3 +315,23 @@ def test_assembly_built_after_startup_is_readable_by_agent(agent_env):
     assert guard.returncode == 0 and not guard.stdout.strip(), guard.stdout + guard.stderr
     assert _as_agent(f"echo x >> '{command}'").returncode != 0  # 不能改
     assert _as_agent(f"touch '{dotclaude / 'scripts' / 'planted.sh'}'").returncode != 0
+
+
+@linux_root
+def test_agent_can_read_materials_uploaded_after_startup(agent_env):
+    """V 阶段真实环境发现：资料区从镜像模板复制（copytree 带过来 0755、没有 setgid），之后上传时新建的
+    `resource/others/` 归后端的组、0770，agent 读不到资料，资料分析说「没有业务资料」。"""
+    data, _home = agent_env
+    assert agent_identity.prepare_filesystem()["switching"]  # 此后后端 umask 是 007
+
+    manager = WorkspaceManager(data, Path(config.ASSETS_DIR))
+    meta = manager.create_project("资料演示", owner="operator_a")
+    manager.save_resource(meta["id"], "others", "合成制度.md", "# 合成制度\n".encode("utf-8"), author="operator_a")
+    manager.save_resource(meta["id"], "excel", "合成表.csv", "a,b\n1,2\n".encode("utf-8"), author="operator_a")
+    root = manager.project_root(meta["id"])
+    for rel in ("resource/others/合成制度.md", "resource/excel/合成表.csv"):
+        read = _as_agent(f"cat '{rel}'", cwd=root)
+        assert read.returncode == 0 and read.stdout.strip(), (rel, read.stderr)
+    assert _as_agent("ls resource/others resource/excel", cwd=root).returncode == 0
+    if (root / "resource" / "materials.json").exists():
+        assert _as_agent("cat resource/materials.json", cwd=root).returncode == 0
