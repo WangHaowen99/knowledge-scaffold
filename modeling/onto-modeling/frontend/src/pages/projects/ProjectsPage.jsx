@@ -4,6 +4,7 @@ import { useApp } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
+import { evidenceFromSources } from '../../state/evidence.js';
 import { PageHead, ShellG } from '../../shell/Shell.jsx';
 import {
   Button, Check, Empty, Field, Icon, Modal, Note, Prog, Seg, SegBar, Select, cx, useOutside,
@@ -12,8 +13,8 @@ import { activityText, cellClass, projectLook } from './projectCard.js';
 
 function ModeChip({ mode }) {
   return mode === 'L4'
-    ? <span className="chip indigo sm" title="构建方式：自主构建（L4）"><Icon name="rocket" />自主</span>
-    : <span className="chip blue sm" title="构建方式：陪伴建模（L2）"><Icon name="hand" />陪伴</span>;
+    ? <span className="chip indigo sm" title="自主构建"><Icon name="rocket" />自主</span>
+    : <span className="chip blue sm" title="陪伴建模"><Icon name="hand" />陪伴</span>;
 }
 
 function ProjectCardView({ p, onMenu, onRestore }) {
@@ -152,7 +153,6 @@ export default function ProjectsPage() {
     <ShellG active="projects" onUserEvent={onUserEvent}>
       <PageHead
         title="我的项目"
-        desc="每个项目就是一个知识包，只有你能打开。"
         actions={<><Button icon="download" onClick={() => navigate('/projects/import')}>导入项目</Button><Button kind="primary" icon="plus" onClick={() => navigate('/projects/new')}>新建项目</Button></>}
       />
       {isEmpty ? (
@@ -166,7 +166,7 @@ export default function ProjectsPage() {
               <Button icon="play" kind="ghost" onClick={() => navigate('/projects/new', { start: 'example' })}>看示例项目</Button>
             </>}
           >
-            创建项目并说明建模目标，AI 会围绕目标分析资料。一个项目就是一个知识包。
+            说明建模目标，创建第一个项目
           </Empty>
         </div>
       ) : (
@@ -189,10 +189,6 @@ export default function ProjectsPage() {
                 <div className="en-ghost" onClick={() => navigate('/projects/new')}>
                   <Icon name="plus" size={24} />
                   <b>新建项目</b>
-                  <span className="xs muted">说明建模目标，上传资料或连接业务系统</span>
-                  <div className="row mt8">
-                    <Button size="sm" kind="ghost" icon="download" onClick={(e) => { e.stopPropagation(); navigate('/projects/import'); }}>导入项目</Button>
-                  </div>
                 </div>
               ) : null}
             </div>
@@ -203,14 +199,14 @@ export default function ProjectsPage() {
                 <div className="mi" onClick={() => { setMenu(null); setDlg({ kind: 'rename', p: menu.p }); }}><Icon name="edit" size={14} /><span>重命名</span></div>
                 <div className="mi" onClick={() => { setMenu(null); setDlg({ kind: 'clone', p: menu.p }); }}><Icon name="copy" size={14} /><span>克隆</span></div>
                 <hr />
-                <div className="mi" onClick={() => { setMenu(null); act(() => services.download(`/projects/${encodeURIComponent(menu.p.id)}/transfer-package`, `${menu.p.name}-transfer.zip`), '已导出迁移包（含版本历史，不含凭据）', 'archive'); }}>
-                  <Icon name="archive" size={14} /><span>导出迁移包（完整工作区）</span>
+                <div className="mi" onClick={() => { setMenu(null); act(() => services.download(`/projects/${encodeURIComponent(menu.p.id)}/transfer-package`, `${menu.p.name}-transfer.zip`), '已导出迁移包', 'archive'); }}>
+                  <Icon name="archive" size={14} /><span>导出迁移包</span>
                 </div>
                 <hr />
                 {menu.p.archived ? (
                   <div className="mi" onClick={() => { setMenu(null); act(() => api.archiveProject(menu.p.id, false), '已恢复到项目列表', 'refresh'); }}><Icon name="refresh" size={14} /><span>恢复</span></div>
                 ) : (
-                  <div className="mi" onClick={() => { setMenu(null); act(() => api.archiveProject(menu.p.id, true), '已归档，可在「已归档」里恢复', 'archive'); }}><Icon name="archive" size={14} /><span>归档</span></div>
+                  <div className="mi" onClick={() => { setMenu(null); act(() => api.archiveProject(menu.p.id, true), '已归档', 'archive'); }}><Icon name="archive" size={14} /><span>归档</span></div>
                 )}
                 <div className="mi danger" onClick={() => { setMenu(null); setDlg({ kind: 'delete', p: menu.p }); }}><Icon name="trash" size={14} /><span>删除项目</span></div>
               </div>
@@ -250,8 +246,8 @@ function DeleteDialog({ dlg, onClose, onDone }) {
       open onClose={onClose} icon="trash" danger title={`删除「${name}」？`} sub="这个操作不可恢复" w={520}
       foot={<><Button onClick={onClose}>取消</Button><Button kind="danger fill" icon="trash" disabled={v !== name || busy} onClick={go}>确认删除</Button></>}
     >
-      <Note tone="red">无论项目当前状态如何都会直接删除：正在进行的建模会话、排队中的消息、<b>正在进行的自主构建</b>会立即强制终止。</Note>
-      <div className="mt12 sm muted">删除后工作区文件、对话记录、版本历史和证据快照将被永久清除，回收站里也不会保留。数据源的凭据由网关保管，不受影响。</div>
+      <Note tone="red">正在进行的会话和<b>自主构建</b>会立即终止。</Note>
+      <div className="mt12 sm muted">工作区、对话记录和版本历史将永久清除。</div>
       <div className="mt16">
         <Field label="输入项目名称确认删除">
           <div className="inp"><Icon name="edit" size={14} /><input placeholder={name} value={v} onChange={(e) => setV(e.target.value)} autoFocus /></div>
@@ -303,13 +299,12 @@ function RenameDialog({ dlg, onClose, onDone }) {
   };
   return (
     <Modal
-      open onClose={onClose} icon="edit" title="重命名项目" sub="名称在你的项目里必须唯一" w={480}
-      foot={<><Button onClick={onClose}>取消</Button><Button kind="primary" disabled={same || bad || !v.trim()} onClick={go}>改名并检查</Button></>}
+      open onClose={onClose} icon="edit" title="重命名项目" w={480}
+      foot={<><Button onClick={onClose}>取消</Button><Button kind="primary" disabled={same || bad || !v.trim()} onClick={go}>改名</Button></>}
     >
       <Field label="项目名称" hint={same ? null : nameHint(chk, v)}>
         <div className={cx('inp', bad && 'err')}><Icon name="edit" size={14} /><input value={v} onChange={(e) => setV(e.target.value)} autoFocus /></div>
       </Field>
-      <div className="mt12 xs muted">改名不影响知识包包名 <span className="mono">{dlg.p.package_name}</span> 和版本历史。</div>
     </Modal>
   );
 }
@@ -318,13 +313,23 @@ function CloneDialog({ dlg, onClose, onDone }) {
   const { api } = useApp();
   const [v, setV] = useState('');
   const [opt, setOpt] = useState({ include_history: true, include_snapshots: true, include_conversations: false });
-  useEffect(() => { if (dlg) { setV(`${dlg.p.name}（副本）`); setOpt({ include_history: true, include_snapshots: true, include_conversations: false }); } }, [dlg]);
+  // 证据源本期不开放：EV-01 读不到时不出「包含证据快照」，也不带这个选项
+  const [evidenceOn, setEvidenceOn] = useState(false);
+  useEffect(() => {
+    if (!dlg) return undefined;
+    setV(`${dlg.p.name}（副本）`);
+    setOpt({ include_history: true, include_snapshots: true, include_conversations: false });
+    let alive = true;
+    api.evidenceSources().then((r) => alive && setEvidenceOn(evidenceFromSources(r)), () => alive && setEvidenceOn(false));
+    return () => { alive = false; };
+  }, [api, dlg]);
   const chk = useNameCheck(v, undefined, !!dlg);
   if (!dlg) return null;
   const bad = chk && !chk.available;
   const go = async () => {
     try {
-      await api.cloneProject(dlg.p.id, { name: v.trim(), ...opt });
+      const { include_snapshots: snapshots, ...rest } = opt;
+      await api.cloneProject(dlg.p.id, { name: v.trim(), ...rest, ...(evidenceOn ? { include_snapshots: snapshots } : {}) });
       toast('克隆完成');
       onClose();
       onDone();
@@ -334,7 +339,7 @@ function CloneDialog({ dlg, onClose, onDone }) {
   };
   return (
     <Modal
-      open onClose={onClose} icon="copy" title={`克隆「${dlg.p.name}」`} sub="复制出一个新的知识包项目，只归你" w={500}
+      open onClose={onClose} icon="copy" title={`克隆「${dlg.p.name}」`} w={500}
       foot={<><Button onClick={onClose}>取消</Button><Button kind="primary" disabled={bad || !v.trim()} onClick={go}>改名并克隆</Button></>}
     >
       <Field label="新项目名称" hint={nameHint(chk, v)}>
@@ -342,10 +347,9 @@ function CloneDialog({ dlg, onClose, onDone }) {
       </Field>
       <div className="col mt16" style={{ gap: 10 }}>
         <Check on={opt.include_history} onChange={(x) => setOpt((o) => ({ ...o, include_history: x }))} label="包含版本历史" />
-        <Check on={opt.include_snapshots} onChange={(x) => setOpt((o) => ({ ...o, include_snapshots: x }))} label="包含证据快照" />
+        {evidenceOn ? <Check on={opt.include_snapshots} onChange={(x) => setOpt((o) => ({ ...o, include_snapshots: x }))} label="包含证据快照" /> : null}
         <Check on={opt.include_conversations} onChange={(x) => setOpt((o) => ({ ...o, include_conversations: x }))} label="包含对话记录" />
       </div>
-      <Note tone="gray" icon="info">数据源的凭据不会复制，新项目需要重新授权才能采集。启用的能力和原项目保持一致。</Note>
     </Modal>
   );
 }
