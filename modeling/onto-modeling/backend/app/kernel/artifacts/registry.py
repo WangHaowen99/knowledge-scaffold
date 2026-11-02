@@ -228,6 +228,51 @@ def _default_view(fields: list[dict], status: dict | None) -> dict:
             "card": {"title": title, "chips": chips}}
 
 
+_VIEW_KEYS = {
+    "list": {"columns": "names", "filters": "names", "group_by": "name"},
+    "detail": {"layout": "name", "side": "names", "component": "name", "editor": "name"},
+    "card": {"title": "name", "subtitle": "name", "chips": "names", "fields": "names", "component": "name"},
+}
+
+
+def _well_typed(kind: str, value) -> bool:
+    if kind == "name":
+        return isinstance(value, str)
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def view_problems(declared) -> list[str]:
+    """视图声明的形状问题（静态检查用）：三段都要是映射，各键的值要是字段名或字段名列表。"""
+    if not isinstance(declared, dict):
+        return ["视图声明必须是映射"]
+    problems = []
+    for part, keys in _VIEW_KEYS.items():
+        spec = declared.get(part)
+        if spec is None:
+            continue
+        if not isinstance(spec, dict):
+            problems.append(f"{part} 必须是映射")
+            continue
+        for key, kind in keys.items():
+            if key in spec and not _well_typed(kind, spec[key]):
+                problems.append(f"{part}.{key} 必须是{'字段名' if kind == 'name' else '字段名列表'}")
+    layout = (declared.get("detail") or {}).get("layout") if isinstance(declared.get("detail"), dict) else None
+    if layout is not None and layout not in ("sections", "table", "custom"):
+        problems.append(f"detail.layout 只能是 sections、table、custom")
+    return problems
+
+
+def _clean_view(declared: dict) -> dict:
+    """运行时的宽松读法：形状不对的段、键直接丢掉，回到缺省（静态检查会先拦住，这里兜住绕过检查入库的旧版本）。"""
+    clean = {}
+    for part, keys in _VIEW_KEYS.items():
+        spec = declared.get(part)
+        if isinstance(spec, dict):
+            clean[part] = {key: value for key, value in spec.items()
+                           if key not in keys or _well_typed(keys[key], value)}
+    return clean
+
+
 def _card(spec: dict, names: set[str]) -> dict:
     """card 声明只留认得的键，字段名都要在类型里。"""
     card = {"title": str(spec.get("title")) if str(spec.get("title") or "") in names else "title",
@@ -256,8 +301,9 @@ def _editor(editor_id, editors: dict | None, *, pack: str, version: str, officia
 def _view(declared: dict | None, fields: list[dict], status: dict | None, *, editors: dict | None = None,
           pack: str = "", version: str = "", official: bool = False) -> dict:
     view = _default_view(fields, status)
-    if not declared:
+    if not isinstance(declared, dict) or not declared:
         return view
+    declared = _clean_view(declared)
     names = {item["name"] for item in fields} | {"title", "key", "updated", "updated_at"}
     for part in ("list", "detail", "card"):
         spec = declared.get(part)
@@ -371,7 +417,7 @@ def types_for_pack(view) -> list[ArtifactType]:
                 data, pack=view.name, pack_version=view.version, official=bool(getattr(view, "official", False)),
                 directory=view.directory, view=declared_views.get(str(data.get("type") or "")), editors=editors,
             ))
-        except RegistrationError as exc:
+        except Exception as exc:  # noqa: BLE001 - 一份登记坏了只跳过它，不连累同包别的类型
             _log.warning("包 %s 的产物登记 %s 不合法：%s", view.name, rel, exc)
     return out
 
@@ -380,7 +426,12 @@ def types_for_packs(views) -> list[ArtifactType]:
     out: list[ArtifactType] = []
     seen: set[str] = set()
     for view in views:
-        for item in types_for_pack(view):
+        try:
+            items = types_for_pack(view)
+        except Exception as exc:  # noqa: BLE001 - 一个包坏了不连累别的包
+            _log.warning("包 %s 的产物登记读不出来：%s", view.name, exc)
+            continue
+        for item in items:
             if item.type not in seen:
                 seen.add(item.type)
                 out.append(item)
@@ -396,6 +447,30 @@ def types_for_project(manager, root: Path) -> list[ArtifactType]:
 
 def get_type(manager, root: Path, art_type: str) -> ArtifactType | None:
     return next((item for item in types_for_project(manager, root) if item.type == art_type), None)
+
+
+def check_views(directory: Path, manifest) -> list[str]:
+    """静态检查用（PL-15 views）：每份视图声明能解析、是映射、挂在本包登记的类型上、各段形状对。"""
+    types = set()
+    for rel in manifest.items("artifacts"):
+        try:
+            types.add(str(_load_yaml(Path(directory) / rel).get("type") or ""))
+        except RegistrationError:
+            continue
+    problems = []
+    for rel in manifest.items("views"):
+        try:
+            data = yaml.safe_load((Path(directory) / rel).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+            problems.append(f"{rel} 无法解析：{exc}")
+            continue
+        if not isinstance(data, dict):
+            problems.append(f"{rel}: 视图声明必须是映射")
+            continue
+        if str(data.get("artifact") or "") not in types:
+            problems.append(f"{rel}: artifact 要是本包登记的产物类型")
+        problems += [f"{rel}: {problem}" for problem in view_problems(data)]
+    return problems
 
 
 def check_registration(directory: Path, rel: str, manifest, *, official: bool = False) -> list[str]:

@@ -101,9 +101,10 @@ def _view_editor_refs(directory: Path, manifest: Manifest) -> list[tuple[str, st
             data = yaml.safe_load((directory / rel).read_text(encoding="utf-8")) or {}
         except (OSError, UnicodeDecodeError, yaml.YAMLError):
             continue
-        editor = (data.get("detail") or {}).get("editor") if isinstance(data, dict) else None
-        if editor not in (None, ""):
-            refs.append((rel, str(editor)))
+        detail = data.get("detail") if isinstance(data, dict) else None
+        editor = detail.get("editor") if isinstance(detail, dict) else None
+        if isinstance(editor, str) and editor:
+            refs.append((rel, editor))
     return refs
 
 
@@ -299,6 +300,8 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
     for rel in manifest.items("artifacts"):
         entity += artifact_registry.check_registration(directory, rel, manifest, official=official and not tenant)
     checks.append(_check("entity_types", "没有新增实体类型", "fail" if entity else "pass", "；".join(entity[:10])))
+    views = artifact_registry.check_views(directory, manifest)
+    checks.append(_check("views", "视图声明格式正确", "fail" if views else "pass", "；".join(views[:10])))
 
     protected, missing_entry = _node_problems(directory, manifest)
     checks.append(_check("write_scope", "写入范围不碰受保护目录", "fail" if protected else "pass", "；".join(protected[:10])))
