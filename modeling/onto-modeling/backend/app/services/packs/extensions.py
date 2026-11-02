@@ -343,8 +343,9 @@ def find_mcp_tool(manager, project_id: str, name: str) -> dict | None:
 # 声明式门禁：写入事务（commit）与发布门禁链（publish）
 # ---------------------------------------------------------------------------
 
-# 这些来源的提交不查包的门禁：回退与撤回恢复的是以前的样子，插件变更与导入不是在改产物
-_GATE_SKIP_SOURCES = ("revert", "plugin", "import")
+# 这些来源的提交不查包的门禁：回退与撤回恢复的是以前的样子，导入带进来的是别处已有的内容。来源 plugin 照查
+# （审查第 12 条：脚本节点也以 plugin 提交，会写别的包有门禁的产物）；锁文件提交改不到产物，查了也是空
+_GATE_SKIP_SOURCES = ("revert", "import")
 
 
 def _gated_types(manager, root: Path, scope: str):

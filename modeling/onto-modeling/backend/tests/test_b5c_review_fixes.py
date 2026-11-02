@@ -532,3 +532,29 @@ def test_review_11_archived_project_cannot_answer_human_node_card(env):
     assert subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout == head
     manager.set_archived(project_id, False)
     assert client.post(url, json={"option_id": "pass"}).status_code == 200
+
+
+# ---- 审查第 12 条：脚本节点的提交也要过 commit 门禁 ----
+
+def test_review_12_script_node_output_goes_through_commit_gates(env, fake_sandbox):
+    from tests.test_extensions_artifacts import CHECKLIST_CONTRIBUTES, _checklist_files
+
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    gates = [{"id": "level-set", "label": "检查项要有级别", "artifact": "checklist.item", "on": ["commit"],
+              "rules": [{"field": "level", "required": True}]}]
+    checklist = make_pack(tmp_path / "checklist", "checklist", "1.0.0", files=_checklist_files(),
+                          contributes={**CHECKLIST_CONTRIBUTES, "gates": gates})
+    manager.packs.repository.install(checklist, origin="upload", by="admin")
+    manager.packs.repository.set_channel("checklist", "stable", "1.0.0", by="admin")
+    enable_and_apply(client, manager, project_id, "checklist")
+    writer = "".join(f"print({line!r})\n" for line in ("---", "title: 借阅检查", "result: pass", "---", "", "## 说明", "", "合成"))
+    node = {**SCRIPT_NODE, "produces": ["ext/checklist/items/*"],
+            "script": {"name": "naming_lint.py", "inputs": [], "output": "ext/checklist/items/借阅检查.md"}}
+    install(manager, tmp_path, flow=kinds_flow(node, probes={"naming_lint": {"files": ["ext/checklist/items"]}}),
+            files={"commands/naming-check.md": "检查 $ARGUMENTS\n", "scripts/naming_lint.py": writer})
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
+    enable_and_apply(client, manager, project_id)
+    started = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.lint/start", json={})
+    assert started.status_code == 422 and started.json()["code"] == "gate_failed", started.text
+    assert not (root / "ext" / "checklist" / "items" / "借阅检查.md").exists()
