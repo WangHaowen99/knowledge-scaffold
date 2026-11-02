@@ -254,12 +254,14 @@ def test_save_from_editor_goes_through_write_path(env):
     from app.kernel.artifacts import service as artifact_service
 
     lock = {"state": "assistant_running", "artifacts": [{"type": NOTE, "key": "n1"}], "paths": []}
+    # 用完换回建应用时登记的那个（变更集一侧的写入范围锁，app/wiring.py），后面的用例还要用
+    previous = artifact_service._lock_provider
     artifact_service.register_lock_provider(lambda _root: lock)
     try:
         locked = client.put(f"/api/v1/projects/{project_id}/artifacts/{NOTE}/n1",
                             json={"base_revision": saved.json()["artifact"]["revision"], "sections": {"正文": "第三版"}})
     finally:
-        artifact_service.register_lock_provider(None)
+        artifact_service.register_lock_provider(previous)
     assert locked.status_code == 423 and locked.json()["code"] == "write_scope_locked"
 
 
@@ -357,6 +359,124 @@ def test_session_host_broadcasts_artifact_cards_after_a_turn(env):
     assert [record["type"] for record in sent] == ["workspace_changes", "card"]
     card = sent[1]["payload"]
     assert card["card_type"] == "artifact" and card["artifact"]["key"] == "n2" and card["change"] == "add"
+
+
+def test_turn_in_the_assistant_copy_puts_artifact_cards_in_the_chat(env, monkeypatch):
+    """变更集之后（ADR-0046）：一轮在助手副本里改了插件产物，「这一轮改了什么」之后出产物卡，内容从副本读
+    （还没确认，主线上没有）；只算这一轮助手的改动——上一轮改过的、跟上主线时并进副本的网页保存都不出卡，
+    没提交的文件也算。"""
+    import asyncio
+
+    from app import wiring
+    from app.kernel.changesets import service as changesets, worktree
+    from app.routers import sessions as session_routes
+    from app.services import agent_sessions
+    from app.services.agent_sessions import SessionManager
+    from tests.test_session_host import FakeEngine, result, settle
+
+    client, manager, project_id, tmp_path = env
+    _publish_and_enable(client, tmp_path, project_id)
+    root = manager.project_root(project_id)
+    _write_note(manager, project_id, "n1", "第一版")
+    _commit(root, "合成：便签")
+    sessions = SessionManager()
+    monkeypatch.setattr(sessions, "_engine_class_for", lambda pid: FakeEngine)
+    monkeypatch.setattr(agent_sessions, "manager", sessions)
+    monkeypatch.setattr(session_routes, "manager", sessions)
+    monkeypatch.setattr(changesets, "_activity_provider", wiring._session_activity)
+
+    def note(ctx, key: str, body: str, *, color: str = "yellow", commit: str | None = None) -> None:
+        copy = Path(ctx.cwd)
+        assert worktree.is_copy(copy)
+        path = copy / "ext" / "sticky-notes" / "notes" / f"{key}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"---\ntitle: {key} 便签\ncolor: {color}\ntopic: 借阅规则\n---\n\n## 正文\n\n{body}\n",
+                        encoding="utf-8")
+        if commit:
+            _commit(copy, commit)
+
+    def first(ctx):
+        note(ctx, "n1", "助手改的", color="blue")
+        note(ctx, "n2", "助手新写的", commit="agent: 便签")
+
+    def second(ctx):
+        note(ctx, "n2", "助手又改了一次（没提交）", color="green")
+
+    FakeEngine.scripts, FakeEngine.sent = [[first, result()], [second, result()]], []
+
+    def cards_in_chat() -> list[dict]:
+        return [event["payload"] for event in sessions.get_history(project_id, "default") if event.get("type") == "card"]
+
+    async def run() -> tuple[list[dict], list[dict]]:
+        # 两轮在同一个事件循环里跑（会话的读循环属于建它的那个循环）
+        await sessions.send(project_id, root, "整理便签", username="local")
+        await settle(sessions, project_id)
+        first_round = cards_in_chat()
+        # 网页在主线上新建一张便签（不在写入范围里），下一轮开始时跟上主线、并进副本；这一轮助手只改 n2
+        created = await asyncio.to_thread(
+            client.post, f"/api/v1/projects/{project_id}/artifacts/{NOTE}",
+            json={"key": "n3", "fields": {"title": "n3 便签", "color": "yellow", "topic": "借阅规则"},
+                  "sections": {"正文": "网页写的"}})
+        assert created.status_code == 201, created.text
+        await sessions.send(project_id, root, "再改一下", username="local")
+        await settle(sessions, project_id)
+        later = cards_in_chat()[len(first_round):]
+        await sessions.shutdown()
+        return first_round, later
+
+    cards, later = asyncio.run(run())
+    assert [card["card_type"] for card in cards] == ["round_changes", "artifact", "artifact"]
+    artifact_cards = {card["artifact"]["key"]: card for card in cards[1:]}
+    assert {key: card["change"] for key, card in artifact_cards.items()} == {"n1": "mod", "n2": "add"}
+    assert artifact_cards["n1"]["chips"][0]["value"] == "blue" and artifact_cards["n1"]["eyebrow"] == "便签 · 本轮修改"
+    assert all(card["card_id"].startswith("ac-") for card in cards[1:])
+    # 改动还在副本里：主线上的便签没变、新便签不在
+    assert "color: yellow" in (root / "ext/sticky-notes/notes/n1.md").read_text(encoding="utf-8")
+    assert not (root / "ext/sticky-notes/notes/n2.md").exists()
+    assert (changesets.existing_copy(root) / "ext/sticky-notes/notes/n3.md").is_file()  # 网页保存确实并进了副本
+    assert [card["card_type"] for card in later] == ["round_changes", "artifact"]
+    assert (later[1]["artifact"]["key"], later[1]["change"]) == ("n2", "mod")
+    assert later[1]["chips"][0]["value"] == "green"
+
+
+def test_pending_changeset_locks_the_pack_editor(env):
+    """写入范围锁接到包界面：助手在副本里改了便签、等确认时，项目流 scope.updated 带这项产物（前端据此给编辑器推
+    readonly.changed），AR-03 标只读，AR-05（窄接口的保存）回 423；范围外的照常；撤回后解锁、能保存。"""
+    from app.kernel.changesets import service as changesets
+    from app.services import streams
+    from tests.test_event_streams import buffered
+
+    client, manager, project_id, tmp_path = env
+    _publish_and_enable(client, tmp_path, project_id)
+    root = manager.project_root(project_id)
+    _write_note(manager, project_id, "n1", "第一版")
+    _write_note(manager, project_id, "n2", "别的便签")
+    _commit(root, "合成：便签")
+    streams.reset_all()
+    copy = changesets.copy_for_turn(manager, project_id, root)
+    (copy / "ext/sticky-notes/notes/n1.md").write_text(
+        "---\ntitle: n1 便签\ncolor: blue\ntopic: 借阅规则\n---\n\n## 正文\n\n助手改的\n", encoding="utf-8")
+    record = changesets.observe(manager, project_id, running=False, conversation_id="default")
+    assert record["state"] == "pending_confirm"
+    scope = buffered(project_id, "scope.updated")[-1]["data"]
+    assert scope["state"] == "pending_confirm" and scope["changeset_id"] == record["id"]
+    assert {"type": NOTE, "key": "n1"} in [{"type": ref["type"], "key": ref["key"]} for ref in scope["artifacts"]]
+    base = f"/api/v1/projects/{project_id}/artifacts/{NOTE}"
+    detail = client.get(f"{base}/n1").json()
+    assert detail["locked"] is True and detail["lock"]["changeset_id"] == record["id"]
+    locked = client.put(f"{base}/n1", json={"base_revision": detail["revision"], "sections": {"正文": "网页改"}})
+    assert locked.status_code == 423 and locked.json()["code"] == "write_scope_locked"
+    assert locked.json()["details"]["changeset_id"] == record["id"]
+    other = client.get(f"{base}/n2").json()
+    assert other["locked"] is False
+    assert client.put(f"{base}/n2", json={"base_revision": other["revision"], "sections": {"正文": "网页改"}}).status_code == 200
+    discarded = client.post(f"/api/v1/projects/{project_id}/changesets/{record['id']}/discard", json={})
+    assert discarded.status_code == 200, discarded.text
+    assert buffered(project_id, "scope.updated")[-1]["data"]["state"] == "none"
+    detail = client.get(f"{base}/n1").json()
+    assert detail["locked"] is False
+    assert client.put(f"{base}/n1", json={"base_revision": detail["revision"], "sections": {"正文": "网页改"}}).status_code == 200
+    streams.reset_all()
 
 
 def test_builtin_diagram_pack_ships_its_flowchart_editor(tmp_path):

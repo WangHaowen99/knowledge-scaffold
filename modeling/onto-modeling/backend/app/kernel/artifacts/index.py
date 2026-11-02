@@ -260,6 +260,21 @@ def _refresh_rows(conn: sqlite3.Connection, atype: ArtifactType, root: Path) -> 
     return rows
 
 
+def rows_of(atype: ArtifactType, root: Path, rels) -> list[dict]:
+    """只解析给定的几份文件（不走缓存、不记基线、不算过期），已并入包索引与缺省值。
+
+    一轮结束出产物卡用：助手在变更集副本里改的文件还没进主线，不给副本另建一份索引。"""
+    root = Path(root)
+    wanted = sorted({rel for rel in rels if atype.key_from_path(rel) is not None and Path(rel).name not in _SKIP_NAMES
+                     and inside(root, rel) is not None and (root / rel).is_file()})
+    rows = _merge_index(atype, root, [row for rel in wanted for row in _parse_rows(atype, root, rel)])
+    for row in rows:
+        for name, value in atype.defaults.items():
+            if row["fields"].get(name) in (None, ""):
+                row["fields"][name] = value
+    return sorted(rows, key=lambda row: (row["rel"], row["key"]))
+
+
 def _drop_rows(conn: sqlite3.Connection, art_type: str, rel: str) -> None:
     keys = [row["key"] for row in conn.execute("SELECT key FROM rows WHERE type=? AND rel=?", (art_type, rel))]
     for key in keys:

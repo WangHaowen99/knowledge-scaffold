@@ -296,6 +296,8 @@ class Session:
     resume_attempted: bool = False
     last_activity: float = field(default_factory=time.time)
     round_base_commit: str = ""  # 本轮起点 HEAD，用于 result 后产出"产物变更"事件
+    # 本轮起点助手副本的树（含没提交的文件，跟上主线之后取）：产物卡只按助手这一轮的改动出
+    round_base_tree: str = ""
     discarded: bool = False  # 项目已删除：事件不再落盘，也不再申请槽位
     # 引擎绑定的会话：决定事件历史写到哪份文件、续接哪个 token
     conversation_id: str = DEFAULT_CONVERSATION
@@ -711,7 +713,7 @@ class SessionManager:
         if not running:
             # 助手在变更集副本里改（方案 C7）：一轮开始前建或修副本、跟上主线；建不了时退回主线工作区
             session.cwd = await asyncio.to_thread(_agent_cwd, session.project_id, cwd)
-            session.round_base_commit = await asyncio.to_thread(_git_head, session.cwd)
+            session.round_base_commit, session.round_base_tree = await asyncio.to_thread(_round_start, session.cwd)
         elif session.cwd is None:
             session.cwd = cwd
         # 会话配置指纹（模型、归属、装配、流程、MCP、权限模式）变了：断开重连（resume 续接上下文），
@@ -944,8 +946,8 @@ class SessionManager:
             session.broadcast(started)
             prompts, session.pending_prompts = session.pending_prompts, []
             if prompts and session.cwd:
-                session.round_base_commit = await asyncio.to_thread(
-                    _git_head, session.cwd
+                session.round_base_commit, session.round_base_tree = await asyncio.to_thread(
+                    _round_start, session.cwd
                 )
             for prompt in prompts:
                 await self._send_turn(session, engine, prompt)
@@ -1388,7 +1390,8 @@ class SessionManager:
 
     async def _emit_workspace_changes(self, session: Session) -> None:
         """一轮结束后：助手在副本里改的进变更集，放「这一轮改了什么」卡（方案 C12：基点是变更集基点，
-        在副本里算，不把你这段时间在 Studio 的保存算进来）；主线这时不变，确认生效才写主线。"""
+        在副本里算，不把你这段时间在 Studio 的保存算进来）和这一轮改到的插件产物卡；主线这时不变，
+        确认生效才写主线。没有副本（不是 git 仓库、建不了副本）时按主线这一轮的提交出卡。"""
         if not session.cwd:
             return
         from ..kernel.changesets import worktree
@@ -1443,6 +1446,7 @@ class SessionManager:
         from ..kernel.changesets import service as changesets
         from .session_host import exec_records
 
+        start_tree = session.round_base_tree
         try:
             record_exec = exec_records.get(session.project_id, session.exec_id) if session.exec_id else None
             head = await asyncio.to_thread(_git_head, session.cwd)
@@ -1458,10 +1462,13 @@ class SessionManager:
             )
             if not running:
                 session.round_base_commit = head
+                session.round_base_tree = (record or {}).get("tree") or ""
                 if record is not None:
                     record = await asyncio.to_thread(_capture_change_list, session, record) or record
             if running or record is None or record.get("card_tree") == record.get("tree"):
                 return
+            # 这一轮的起点：一轮开始时取的树；取不到时退回上一张卡时的树、变更集基点
+            start = start_tree or record.get("card_tree") or record.get("base") or ""
             records = await asyncio.to_thread(changesets.card_records, deps.workspaces, session.project_id,
                                               {**record, "conversation_id": session.conversation_id}, new_card=True)
             await asyncio.to_thread(changesets.store.update, deps.workspaces.project_root(session.project_id),
@@ -1471,6 +1478,12 @@ class SessionManager:
                     session.broadcast(item)
                 else:
                     self.append_record(session.project_id, conversation_id, item)
+            # 改到的插件产物各出一张卡（按包的 card 声明，ADR-0055；登记在 app/wiring.py）：
+            # 路径是这一轮助手在副本里的增删改，内容从副本读（确认生效前主线上还没有）
+            seed = next((item["payload"]["card_id"] for _cid, item in records if item.get("type") == "card"),
+                        record.get("tree") or "")
+            for card in await asyncio.to_thread(_round_artifact_cards, session, start, record.get("tree") or "", seed):
+                session.broadcast({"type": "card", "payload": card})
         except Exception:  # noqa: BLE001 - 变更卡是增强信息，失败不影响会话
             _log.warning("项目 %s 观察助手副本失败", session.project_id, exc_info=True)
 
@@ -1734,6 +1747,33 @@ def project_owner(project_id: str) -> str:
         return str(json.loads(meta_path.read_text(encoding="utf-8")).get("owner") or "")
     except (OSError, ValueError, AttributeError):
         return ""
+
+
+def _round_start(cwd: Path) -> tuple[str, str]:
+    """一轮起点：HEAD，以及（助手副本里）当前文件的树。树含没提交的文件、在跟上主线之后取，
+    一轮结束时和它比，得到的就只是助手这一轮的改动（不含上一轮的、同步进来的主线保存）。"""
+    from ..kernel.changesets import worktree
+
+    head = _git_head(cwd)
+    if not worktree.is_copy(Path(cwd)):
+        return head, ""
+    try:
+        return head, worktree.snapshot(Path(cwd))
+    except Exception:  # noqa: BLE001 - 取不到时一轮结束退回上一张卡时的树
+        return head, ""
+
+
+def _round_artifact_cards(session: Session, start: str, end: str, seed: str) -> list[dict]:
+    """副本里这一轮（起点树 → 终点树）改到的插件产物 → 产物卡。"""
+    from ..kernel.changesets import worktree
+
+    if not start or not end or start == end:
+        return []
+    buckets = {"A": "added", "D": "deleted"}
+    changes: dict[str, list[str]] = {"added": [], "modified": [], "deleted": []}
+    for status, rel in worktree.diff(Path(session.cwd), start, end):
+        changes[buckets.get(status, "modified")].append(rel)
+    return project_events.round_cards(session.project_id, changes, start, seed, root=Path(session.cwd))
 
 
 def _git_head(cwd: Path) -> str:

@@ -1,5 +1,6 @@
-// 包的界面（ADR-0055）的纯逻辑：产物双击打开什么、官方包编辑器怎么认、界面接口版本够不够。
+// 包的界面（ADR-0055）的纯逻辑：产物双击打开什么、官方包编辑器怎么认、界面接口版本够不够、编辑器只读不只读。
 // 打开方式按 AR-01 的 view.detail：包自带编辑器（官方包随平台编译 bundled / 上传包 iframe）> 平台专用组件 > 通用详情。
+import { isLocked } from '../state/readonly.js';
 
 export const UI_API = '1.0';
 export const FLOWCHART_TYPE = 'diagram.flowchart';
@@ -108,6 +109,19 @@ export function openerState({ types, error, type, bundled = new Set() }) {
 
 // 产物类型前缀就是包名（AR-01 type 规则）
 export const packOfType = (type) => String(type || '').split('.')[0] || '';
+
+/**
+ * 包编辑器只读不只读（窄接口 context.get 与 readonly.changed）：按写入范围锁（项目流 scope.updated / CS-06）判断，
+ * 和后端 AR-05 回 423 同一口径——锁里有这份产物，或它所在的文件落在锁的路径里（助手正在跑的节点声明的范围）。
+ * type：AR-01 的一项（path 形如 `ext/x/notes/{key}.md`）；一个文件多项的格式，键的 `--` 之前是文件键。
+ */
+export function editorReadonly(scope, type, artifact) {
+  if (!artifact?.key) return false;
+  const template = String(type?.path || '');
+  const fileKey = type?.format === 'md-sections' ? String(artifact.key).split('--')[0] : String(artifact.key);
+  const path = template.includes('{key}') ? template.replace('{key}', fileKey) : undefined;
+  return isLocked(scope, { type: artifact.type, key: artifact.key, path });
+}
 
 /**
  * flowchart 页没带 ?key= 时打开哪一张：对话里最近一张流程图卡（旧的 flowchart 卡，或按图示包声明画的产物卡）的那张图。

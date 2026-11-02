@@ -44,11 +44,12 @@ def _artifact_refs(root: Path, paths: list[str]) -> list[dict]:
     return artifact_service.after_commit(_workspaces(), root.name, paths)
 
 
-def _round_artifact_cards(project_id: str, changes: dict, base: str, head: str) -> list[dict]:
-    """一轮结束：改到的插件产物按包的 card 声明出卡（只读与否由前端按实时的写入范围判断，卡上不存）。"""
+def _round_artifact_cards(project_id: str, changes: dict, base: str, seed: str, root: Path | None = None) -> list[dict]:
+    """一轮结束：改到的插件产物按包的 card 声明出卡（只读与否由前端按实时的写入范围判断，卡上不存）。
+    助手在变更集副本里改时 root 是副本，内容从副本读（ADR-0046、0055）。"""
     from .kernel.artifacts import cards
 
-    return cards.round_cards(_workspaces(), project_id, changes, base=base, seed=head)
+    return cards.round_cards(_workspaces(), project_id, changes, base=base, seed=seed, root=root)
 
 
 def _publish_kernel_event(project_id: str, event_type: str, data: dict) -> None:

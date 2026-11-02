@@ -5,7 +5,7 @@ import {
   BridgeError, METHODS, UI_API, errorResponse, event, handle, parseRequest, readTheme, response,
 } from '../src/app/packBridge.js';
 import {
-  bundledKey, latestFlowchartArtifact, openModeFor, packOfType, uiApiSatisfies,
+  bundledKey, editorReadonly, latestFlowchartArtifact, openModeFor, packOfType, uiApiSatisfies,
 } from '../src/app/packUi.js';
 import {
   cardComponent, cardLocked, cardOpen, declaredCardView,
@@ -63,6 +63,27 @@ test('卡片只读：写入范围锁里有这份产物', () => {
   assert.equal(cardLocked(noteCard, scope), true);
   assert.equal(cardLocked(noteCard, { ...scope, state: 'none' }), false);
   assert.equal(cardLocked({ ...noteCard, artifact: { type: 'sticky-notes.note', key: 'n2' } }, scope), false);
+});
+
+test('包编辑器只读：和 AR-05 的 423 同一口径——锁里有这份产物，或文件落在锁的路径里（助手正在跑的节点范围）', () => {
+  const note = { type: 'sticky-notes.note', key: 'n1', title: 'n1 便签' };
+  const noteType = { type: 'sticky-notes.note', path: 'ext/sticky-notes/notes/{key}.md', format: 'md-frontmatter' };
+  const none = { state: 'none', artifacts: [], paths: [] };
+  const pending = { state: 'pending_confirm', artifacts: [{ type: 'sticky-notes.note', key: 'n1' }], paths: ['ext/sticky-notes/notes/n1.md'] };
+  const running = { state: 'assistant_running', artifacts: [], paths: ['ext/sticky-notes/notes/*'] };
+  assert.equal(editorReadonly(none, noteType, note), false);
+  assert.equal(editorReadonly(pending, noteType, note), true);
+  assert.equal(editorReadonly(pending, noteType, { ...note, key: 'n2' }), false);
+  // 助手在跑、还没改到这一份：节点声明的路径已经锁住（后端保存会 423），编辑器先变只读
+  assert.equal(editorReadonly(running, noteType, { ...note, key: 'n9' }), true);
+  assert.equal(editorReadonly({ ...running, paths: ['ext/other/*'] }, noteType, note), false);
+  // 一个文件多项：按文件键找文件
+  const scenarioType = { type: 'trace.scenario', path: 'ontology/testcase/{key}.md', format: 'md-sections' };
+  assert.equal(editorReadonly({ ...running, paths: ['ontology/testcase/借阅.md'] }, scenarioType, { type: 'trace.scenario', key: '借阅--2' }), true);
+  // 没有类型信息时只按产物；没有键（编辑器自己取第一项）不算只读
+  assert.equal(editorReadonly(pending, null, note), true);
+  assert.equal(editorReadonly(running, null, note), false);
+  assert.equal(editorReadonly(pending, noteType, { type: 'sticky-notes.note', key: '' }), false);
 });
 
 // ---------- 打开方式的选择 ----------

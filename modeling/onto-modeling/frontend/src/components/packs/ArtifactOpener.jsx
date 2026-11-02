@@ -5,9 +5,8 @@ import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { BUNDLED, bundledEditor } from '../../app/packEditors.js';
-import { openerState, packOfType } from '../../app/packUi.js';
+import { editorReadonly, openerState, packOfType } from '../../app/packUi.js';
 import { errorText } from '../../api/errors.js';
-import { isLocked } from '../../state/readonly.js';
 import { Button, Icon, Modal } from '../../ui/index.jsx';
 import ArtifactDetail from './ArtifactDetail.jsx';
 import PackFrame from './PackFrame.jsx';
@@ -24,8 +23,9 @@ function PluginOff({ type, onClose }) {
 }
 
 function FrameDialog({ type, mode, artifact, types, onClose }) {
+  // 写入范围随项目流 scope.updated 变；变了 PackFrame 给编辑器推 readonly.changed
   const { scope } = useProject();
-  const readonly = !!artifact.key && isLocked(scope, artifact);
+  const readonly = editorReadonly(scope, type, artifact);
   return (
     <div className="overlay" onMouseDown={(e) => e.stopPropagation()}>
       <div className="pk-dlg" role="dialog" aria-modal="true" aria-label={artifact.title || mode.editor.title}>

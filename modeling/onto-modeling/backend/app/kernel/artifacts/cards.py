@@ -137,21 +137,25 @@ def _previous_items(atype: ArtifactType, root: Path, base: str, rel: str) -> dic
                                            sort_keys=True).encode()) for item in items}
 
 
-def round_cards(manager, project_id: str, changes: dict, *, base: str = "", seed: str = "") -> list[dict]:
+def round_cards(manager, project_id: str, changes: dict, *, base: str = "", seed: str = "",
+                root: Path | None = None) -> list[dict]:
     """一轮结束时改到的插件产物 → 卡片（新增在前）。changes 是 {added, modified, deleted} 路径列表；
-    base 是这一轮开始时的提交：一个文件多项的格式按项比较，只出真的变了的那几项。"""
+    base 是这一轮开始时的提交或树：一个文件多项的格式按项比较，只出真的变了的那几项。
+    root 是读文件的地方：缺省是项目工作区；助手在变更集副本里改时传副本（改动还没进主线）。
+    产物类型与包名按项目工作区的锁文件算（卡片打开时看到的是同一套）。"""
     from ...services.packs import registry
 
-    root = manager.project_root(project_id)
+    project_root = manager.project_root(project_id)
+    source = Path(root) if root else project_root
     added = {str(path).lstrip("./") for path in changes.get("added") or []}
     modified = {str(path).lstrip("./") for path in changes.get("modified") or []}
     if not added and not modified:
         return []
-    labels = {view.name: view.manifest.label for view in registry.desired_packs(manager, root)}
+    labels = {view.name: view.manifest.label for view in registry.desired_packs(manager, project_root)}
     cards: list[dict] = []
-    for atype in types_for_project(manager, root):
+    for atype in types_for_project(manager, project_root):
         try:
-            rows = index.refresh(atype, root)
+            rows = index.rows_of(atype, source, added | modified)
         except Exception:  # noqa: BLE001 - 单个类型解析失败不影响别的卡
             continue
         previous: dict[str, dict | None] = {}
@@ -161,13 +165,13 @@ def round_cards(manager, project_id: str, changes: dict, *, base: str = "", seed
                 continue
             if change == "mod" and base and atype.format == "md-sections":
                 if row["rel"] not in previous:
-                    previous[row["rel"]] = _previous_items(atype, root, base, row["rel"])
+                    previous[row["rel"]] = _previous_items(atype, source, base, row["rel"])
                 before = previous[row["rel"]]
                 if before is not None:
                     if row["key"] not in before:
                         change = "add"
                     elif before[row["key"]] == row.get("revision"):
                         continue
-            cards.append(card_for(atype, root, row, change=change, pack_label=labels.get(atype.pack, ""), seed=seed))
+            cards.append(card_for(atype, source, row, change=change, pack_label=labels.get(atype.pack, ""), seed=seed))
     cards.sort(key=lambda card: card["change"] != "add")
     return cards[:ROUND_CARDS_MAX]

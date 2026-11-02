@@ -67,21 +67,24 @@ def register_extension_differ(differ: Callable[[str, str | None, str | None], li
         _extension_differs.append(differ)
 
 
-_round_card_providers: list[Callable[[str, dict, str, str], list[dict]]] = []
+_round_card_providers: list[Callable[[str, dict, str, str, Path | None], list[dict]]] = []
 
 
-def register_round_card_provider(provider: Callable[[str, dict, str, str], list[dict]]) -> None:
-    """对话里的产物卡（ADR-0055）：(项目, {added, modified, deleted}, 本轮起点提交, 终点提交) → 卡片列表。"""
+def register_round_card_provider(provider: Callable[[str, dict, str, str, Path | None], list[dict]]) -> None:
+    """对话里的产物卡（ADR-0055）：(项目, {added, modified, deleted}, 本轮起点, 卡片种子, 读文件的目录) → 卡片列表。"""
     if provider not in _round_card_providers:
         _round_card_providers.append(provider)
 
 
-def round_cards(project_id: str, changes: dict, base: str, head: str) -> list[dict]:
-    """一轮结束后要放进对话的产物卡；出错只记日志（卡片是增强信息）。"""
+def round_cards(project_id: str, changes: dict, base: str, head: str, root: Path | None = None) -> list[dict]:
+    """一轮结束后要放进对话的产物卡；出错只记日志（卡片是增强信息）。
+
+    base 是这一轮起点的提交或树（一个文件多项的格式按项比较），head 用作卡片编号的种子；
+    root 缺省读项目工作区，助手在变更集副本里改时传副本（ADR-0046：确认生效前改动只在副本里）。"""
     cards: list[dict] = []
     for provider in list(_round_card_providers):
         try:
-            cards.extend(provider(project_id, changes, base, head) or [])
+            cards.extend(provider(project_id, changes, base, head, root) or [])
         except Exception:  # noqa: BLE001
             _log.exception("产物卡生成出错（项目 %s）", project_id)
     return cards
