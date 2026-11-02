@@ -1,9 +1,11 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Project-shared Hub modeling adapter. No consumer/workspace integration."""
 import hashlib
 import json
 import os
 import posixpath
 import shutil
+import time
 import uuid
 from pathlib import Path
 
@@ -99,10 +101,29 @@ def reference_path(package_id, release_id=''):
     return base + ('/' + transport.identifier(release_id) if release_id else '')
 
 
-def download(package_id, release_id, token, dest):
+def download(package_id, release_id, token, dest, *, checkpoint=None, timeout=None, deadline=None):
+    def remaining_timeout():
+        if deadline is None:
+            return timeout
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if checkpoint:
+                checkpoint()
+            raise WorkspaceError('知识包比较处理超时，请缩小知识包后重试', 408, 'compare_timeout')
+        return remaining
+
+    def request(path, **kwargs):
+        options = dict(kwargs)
+        remaining = remaining_timeout()
+        if checkpoint is not None:
+            options['checkpoint'] = checkpoint
+        if remaining is not None:
+            options['timeout'] = remaining
+        return call('GET', path, token, **options)
+
     base = reference_path(package_id, release_id)
-    receipt = call('GET', base, token)
-    call('GET', f'{base}/package', token, download=dest)
+    receipt = request(base)
+    request(f'{base}/package', download=dest)
     if receipt.get('ontology_id') != package_id or receipt.get('release_id') != release_id or (
             transport.file_digest(dest) != receipt.get('package_digest')):
         Path(dest).unlink(missing_ok=True)

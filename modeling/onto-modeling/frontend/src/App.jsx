@@ -416,7 +416,7 @@ export default function App() {
       }
       if (key === 'export-onto') window.open(api.exportUrl(item.id, 'ontology'));
       if (key === 'export-pkg') homePublish.publish(item.id);
-      if (key === 'published-versions') homePublish.showVersions(item.id);
+      if (key === 'published-versions') homePublish.showVersions(item);
       if (key === 'export-ws') window.open(api.exportUrl(item.id, 'workspace'));
       if (key === 'delete') removeProject(item);
     },

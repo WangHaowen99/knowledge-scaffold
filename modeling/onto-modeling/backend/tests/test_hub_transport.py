@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Loopback HTTP integration with real Hub transport and a synthetic account service."""
 import importlib
 import json
@@ -95,3 +96,134 @@ def test_publish_list_download_and_revocation_over_http(tmp_path, monkeypatch):
         authority.shutdown()
         authority.server_close()
         authority_thread.join(5)
+
+
+def test_download_deadline_stops_continuous_slow_response(tmp_path, monkeypatch):
+    secret = secrets.token_urlsafe(32)
+
+    class SlowHub(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/zip')
+            self.send_header('X-Package-Digest', 'unused')
+            self.send_header('Content-Length', '1000')
+            self.end_headers()
+            try:
+                for _ in range(100):
+                    self.wfile.write(b'x')
+                    self.wfile.flush()
+                    time.sleep(.03)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), SlowHub)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv('ONTO_HUB_URL', f'http://127.0.0.1:{server.server_port}')
+    monkeypatch.setenv('ONTO_HUB_SERVICE_TOKEN', secret)
+    started = time.monotonic()
+    try:
+        with pytest.raises(WorkspaceError) as error:
+            knowledge_hub.call(
+                'GET',
+                '/slow-package',
+                download=tmp_path / 'slow.zip',
+                timeout=.2,
+            )
+        assert error.value.status == 408
+        assert error.value.code == 'compare_timeout'
+        assert time.monotonic() - started < .8
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+
+
+def test_deadline_interrupts_connection_close_body(monkeypatch):
+    secret = secrets.token_urlsafe(32)
+
+    class CloseHub(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            time.sleep(.3)
+            self.send_response(200)
+            self.send_header('Content-Length', '10')
+            self.end_headers()
+            time.sleep(1)
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), CloseHub)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv('ONTO_HUB_URL', f'http://127.0.0.1:{server.server_port}')
+    monkeypatch.setenv('ONTO_HUB_SERVICE_TOKEN', secret)
+    started = time.monotonic()
+    try:
+        with pytest.raises(WorkspaceError) as error:
+            knowledge_hub.call('GET', '/close-body', timeout=.4)
+        assert error.value.status == 408
+        assert time.monotonic() - started < .6
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+
+
+def test_deadline_interrupts_slow_chunk_header_on_close(monkeypatch):
+    secret = secrets.token_urlsafe(32)
+    entered = threading.Event()
+    stop = threading.Event()
+
+    class ChunkHub(BaseHTTPRequestHandler):
+        protocol_version = 'HTTP/1.1'
+
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Connection', 'close')
+            self.send_header('Transfer-Encoding', 'chunked')
+            self.end_headers()
+            entered.set()
+            try:
+                for byte in b'0000000000000000000000001\r\nx\r\n0\r\n\r\n':
+                    if stop.is_set():
+                        break
+                    self.wfile.write(bytes([byte]))
+                    self.wfile.flush()
+                    time.sleep(.03)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), ChunkHub)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv('ONTO_HUB_URL', f'http://127.0.0.1:{server.server_port}')
+    monkeypatch.setenv('ONTO_HUB_SERVICE_TOKEN', secret)
+    try:
+        outcome = {}
+
+        def request():
+            try:
+                knowledge_hub.call('GET', '/slow-chunk', timeout=.2)
+            except WorkspaceError as error:
+                outcome['error'] = error
+
+        request_thread = threading.Thread(target=request)
+        request_thread.start()
+        assert entered.wait(3)
+        request_thread.join(.6)
+        stop.set()
+        request_thread.join(3)
+        assert not request_thread.is_alive()
+        assert outcome['error'].status == 408
+    finally:
+        stop.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(5)

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Hub transport and recoverable Onto publication; never persists user credentials."""
 from contextlib import contextmanager
 from pathlib import Path
@@ -8,8 +9,11 @@ import http.client
 import json
 import logging
 import os
+import socket
 import shutil
 import tempfile
+import threading
+import time
 import urllib.parse
 import uuid
 import zipfile
@@ -66,7 +70,8 @@ def token_of(request):
     return header[7:] if header.lower().startswith('bearer ') else request.query_params.get('token', '')
 
 
-def call(method, path, token='', body=None, upload=None, headers=None, download=None, upload_name=None):
+def call(method, path, token='', body=None, upload=None, headers=None, download=None,
+         upload_name=None, checkpoint=None, timeout=None):
     """Bounded JSON responses; stream ZIP transfers without encoding them as JSON."""
     url = urllib.parse.urlsplit(os.environ.get('ONTO_HUB_URL', '').rstrip('/'))
     if url.scheme not in ('http', 'https') or not url.hostname or any((url.username, url.password)):
@@ -75,7 +80,13 @@ def call(method, path, token='', body=None, upload=None, headers=None, download=
     if not secret:
         raise WorkspaceError('知识包 Hub 服务身份未配置', 503, 'hub_unavailable')
     conn_type = http.client.HTTPSConnection if url.scheme == 'https' else http.client.HTTPConnection
-    conn = conn_type(url.hostname, url.port, timeout=120)
+    request_timeout = float(timeout) if timeout is not None else 120.0
+    if request_timeout <= 0:
+        raise WorkspaceError('知识包比较处理超时，请缩小知识包后重试', 408, 'compare_timeout')
+    deadline = time.monotonic() + request_timeout if timeout is not None else None
+    conn = conn_type(url.hostname, url.port, timeout=request_timeout)
+    deadline_timer = None
+    transport_socket = None
     request_headers = {'X-Hub-Service-Token': secret, **(headers or {})}
     if token:
         request_headers['Authorization'] = f'Bearer {token}'
@@ -93,22 +104,87 @@ def call(method, path, token='', body=None, upload=None, headers=None, download=
         request_headers['Content-Type'] = 'application/json'
         length = len(payload)
     request_headers['Content-Length'] = str(length)
+
+    def check_deadline():
+        if checkpoint:
+            checkpoint()
+        if deadline is None:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise WorkspaceError(
+                '知识包比较处理超时，请缩小知识包后重试',
+                408,
+                'compare_timeout',
+            )
+        active_socket = transport_socket or conn.sock
+        if active_socket is not None:
+            try:
+                active_socket.settimeout(remaining)
+            except OSError:
+                # Connection: close responses may close the retained socket as
+                # soon as the final body byte is consumed. That is a normal EOF
+                # while the deadline is still valid; a timer-triggered close is
+                # classified as timeout by the next deadline check.
+                if time.monotonic() >= deadline:
+                    raise WorkspaceError(
+                        '知识包比较处理超时，请缩小知识包后重试',
+                        408,
+                        'compare_timeout',
+                    )
+
+    def read_bounded(response, limit):
+        chunks = []
+        total = 0
+        reader = getattr(response, 'read1', response.read)
+        while True:
+            check_deadline()
+            chunk = reader(min(64 * 1024, limit + 1 - total))
+            check_deadline()
+            if not chunk:
+                return b''.join(chunks)
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > limit:
+                return b''.join(chunks)
+
     try:
+        if deadline is not None:
+            def abort_at_deadline():
+                current_socket = transport_socket or conn.sock
+                if current_socket is not None:
+                    try:
+                        current_socket.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+
+            deadline_timer = threading.Timer(request_timeout, abort_at_deadline)
+            deadline_timer.daemon = True
+            deadline_timer.start()
+        check_deadline()
         conn.putrequest(method, urllib.parse.quote(url.path.rstrip('/') + path, safe='/?=&'))
         for key, value in request_headers.items():
             conn.putheader(key, value)
         conn.endheaders()
+        # HTTPConnection clears conn.sock after getresponse() for HTTP/1.0 and
+        # Connection: close responses, while HTTPResponse keeps reading from a
+        # file object backed by the same socket. Retain the socket explicitly so
+        # the absolute deadline can still update and interrupt those reads.
+        transport_socket = conn.sock
         if upload:
             conn.send(prefix)
             with Path(upload).open('rb') as f:
                 for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                    check_deadline()
                     conn.send(chunk)
+                    check_deadline()
             conn.send(suffix)
         elif payload:
             conn.send(payload)
         response = conn.getresponse()
+        check_deadline()
         if response.status >= 300:
-            raw_error = response.read(65536)
+            raw_error = read_bounded(response, 65536)
             try:
                 code = json.loads(raw_error).get('code', 'hub_error')
             except (ValueError, AttributeError):
@@ -128,7 +204,13 @@ def call(method, path, token='', body=None, upload=None, headers=None, download=
             target.parent.mkdir(parents=True, exist_ok=True)
             with target.open('wb') as f:
                 total = 0
-                for chunk in iter(lambda: response.read(1024 * 1024), b''):
+                reader = getattr(response, 'read1', response.read)
+                while True:
+                    check_deadline()
+                    chunk = reader(64 * 1024)
+                    check_deadline()
+                    if not chunk:
+                        break
                     total += len(chunk)
                     if total > int(os.environ.get('ONTO_HUB_MAX_DOWNLOAD_BYTES', 256 * 1024**2)):
                         target.unlink(missing_ok=True)
@@ -142,13 +224,16 @@ def call(method, path, token='', body=None, upload=None, headers=None, download=
                 target.unlink(missing_ok=True)
                 raise WorkspaceError('Hub 下载完整性校验失败', 502)
             return target
-        data = response.read(2 * 1024**2 + 1)
+        data = read_bounded(response, 2 * 1024**2)
         if len(data) > 2 * 1024**2:
             raise WorkspaceError('Hub 响应超过限制', 502)
         return json.loads(data)
     except (OSError, http.client.HTTPException, ValueError) as exc:
+        check_deadline()
         raise WorkspaceError('知识包 Hub 不可用，请稍后重试', 503, 'hub_unavailable') from exc
     finally:
+        if deadline_timer is not None:
+            deadline_timer.cancel()
         conn.close()
 
 
@@ -165,7 +250,9 @@ def delegation_header(method, path, delegation_id, ontology_id, issuer, sub):
     payload = dict(v=1, method=method, path=base_path + path, delegation_id=identifier(delegation_id),
                    ontology_id=identifier(ontology_id), issuer=issuer, sub=sub,
                    nonce=secrets.token_urlsafe(24), iat=issued, exp=issued + 300)
-    encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(',', ':'), ensure_ascii=False).encode()).decode().rstrip('=')
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(',', ':'), ensure_ascii=False).encode()
+    ).decode().rstrip('=')
     signature = hmac.new(secret.encode(), b'hub-delegation-v1.' + encoded.encode(), hashlib.sha256).hexdigest()
     return encoded + '.' + signature
 
