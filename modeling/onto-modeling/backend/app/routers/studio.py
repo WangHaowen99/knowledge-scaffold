@@ -1,6 +1,6 @@
 """Studio 条目（API 契约 3.7）：ST-01 统计、ST-02 关系图、ST-03 条目表、ST-04 条目详情、ST-05 操作流程、
-ST-07 草稿、ST-08 提交。条目按 entry_id（`<kind>:<key>`）定位；30 分钟租约取消，写入范围锁（C10）
-之前 lock 恒为 null。证据侧栏（ST-06）、新建与删除条目（ST-09、ST-10）属于以后阶段。
+ST-07 草稿、ST-08 提交、ST-09 新建、ST-10 删除。条目按 entry_id（`<kind>:<key>`）定位；30 分钟租约取消，
+条目在写入范围锁（C10）里时只读。
 """
 
 from __future__ import annotations
@@ -353,3 +353,144 @@ async def submit(project_id: str, entry_id: str, request: Request):
         "commit": saved["commit"] or state["head"],
         "version_label": state["version_label"],
     }
+
+
+# ---- ST-09 新建、ST-10 删除 ----
+
+NEW_KINDS = ("object", "operation", "rule", "metric", "flowchart")
+NAME_MAX = 80
+# 条目名就是文件名、也是 [[链接]] 的目标：路径分隔、通配与链接语法里的字符都不行
+_NAME_BAD = re.compile(r"[\\/:*?\"<>|#\[\]\x00-\x1f]")
+
+
+def _template(root: Path, kind: str, from_template: bool) -> str:
+    """新条目的正文：项目锁定的 core 版本的条目模板（装配目录 .claude/templates），取不到时用镜像里的。"""
+    from .. import config
+
+    name = f"{kind}-template.md"
+    for candidate in (root / ".claude" / "templates" / name,
+                      Path(config.ASSETS_DIR) / "workspace-toolkit" / "templates" / name):
+        if candidate.is_file():
+            text = candidate.read_text(encoding="utf-8")
+            break
+    else:
+        text = ""
+    if from_template:
+        return text
+    # 只要章节骨架：留下标题行
+    return "".join(f"{line}\n\n" for line in text.splitlines() if re.match(r"^#{1,2}\s", line))
+
+
+def _name_taken(root: Path, name: str, key: str) -> bool:
+    data, _ = _graph(root)
+    for node in data["nodes"]:
+        if name in (node.get("id"), node.get("label")) or key in (node.get("id"), node.get("label")):
+            return True
+    return False
+
+
+def _flowchart_titles(project_id: str) -> set[str]:
+    from ..kernel.artifacts import service as artifact_service
+
+    try:
+        rows = artifact_service.list_rows(deps.workspaces, project_id, "diagram.flowchart", filters={},
+                                          limit=500, page=deps.page, iso=deps.iso)["items"]
+    except artifact_service.ArtifactError:
+        return set()
+    return {value for row in rows for value in (row.get("key"), row.get("title")) if value}
+
+
+def _new_flowchart(project_id: str, name: str, key: str, actor: str) -> dict:
+    from ..kernel.artifacts import service as artifact_service
+
+    if name in _flowchart_titles(project_id) or (key and key in _flowchart_titles(project_id)):
+        raise ApiError("revision_conflict", "已经有同名的流程图", 409, {"kind": "name", "target": name})
+    try:
+        result = artifact_service.create(deps.workspaces, project_id, "diagram.flowchart",
+                                         {"key": key, "fields": {"title": name}} if key else {"fields": {"title": name}},
+                                         actor=actor, iso=deps.iso)
+    except artifact_service.ArtifactError as exc:
+        if exc.code == "artifact_type_unknown":
+            raise ApiError("pack_not_enabled", "图示插件没有启用", 409, {"pack": "diagram"}) from exc
+        if (exc.details or {}).get("fields", {}).get("key") == "exists":
+            raise ApiError("revision_conflict", "已经有同名的流程图", 409, {"kind": "name", "target": key}) from exc
+        raise ApiError(exc.code, str(exc), exc.status, exc.details) from exc
+    return result["artifact"]
+
+
+@router.post("/entries")
+async def create_entry(project_id: str, request: Request):
+    """ST-09：按 core 的条目模板新建对象、操作、规则、指标（经写入路径保存为一个版本）；流程图建成图示插件的产物。
+
+    key 缺省用名称（条目名就是文件名）；key 与名称不同时名称写进文档头 report_name。"""
+    from fastapi.responses import JSONResponse
+
+    from ..kernel.writepath import ChangeTx, Origin
+    from ..services.document_metadata import name_frontmatter
+
+    root = deps.require_writable(project_id, request)
+    body = await deps.json_body(request)
+    kind = str(body.get("kind") or "")
+    name = " ".join(str(body.get("name") or "").split())
+    key = str(body.get("key") or "").strip()
+    if kind not in NEW_KINDS:
+        raise ApiError("invalid_argument", "kind 取值不合法", 400, {"fields": {"kind": "enum"}})
+    if not name:
+        raise ApiError("invalid_argument", "名称不能为空", 400, {"fields": {"name": "required"}})
+    if len(name) > NAME_MAX or _NAME_BAD.search(name):
+        raise ApiError("invalid_argument", "名称不合法", 400, {"fields": {"name": "pattern"}})
+    if key and (len(key) > NAME_MAX or _NAME_BAD.search(key) or key.startswith(".")):
+        raise ApiError("invalid_argument", "key 不合法", 400, {"fields": {"key": "pattern"}})
+    actor = deps.username(request)
+    if kind == "flowchart":
+        artifact = await asyncio.to_thread(_new_flowchart, project_id, name, key, actor)
+        return JSONResponse(status_code=201, content=artifact)
+    key = key or name
+    directory, suffix = KIND_PATHS[kind]
+    rel = f"{directory}/{key}{suffix}"
+    if _name_taken(root, name, key) or (root / rel).exists():
+        raise ApiError("revision_conflict", "已经有同名的条目", 409, {"kind": "name", "target": name})
+    text = name_frontmatter(name if name != key else None) + _template(root, kind, bool(body.get("from_template", True)))
+    with ChangeTx(deps.workspaces, project_id, Origin("studio", actor), summary=f"新建 {rel}") as tx:
+        if (root / rel).exists():  # 拿到项目锁之后再判一次：并发新建同名
+            raise ApiError("revision_conflict", "已经有同名的条目", 409, {"kind": "name", "target": name})
+        tx.write(rel, text)
+        tx.commit(f"studio: 新建{KIND_LABELS.get(kind, '条目')}「{name}」 by {actor or '本机用户'}")
+    return JSONResponse(status_code=201, content=entry_detail(project_id, f"{kind}:{key}", request))
+
+
+@router.delete("/entries/{entry_id}")
+async def delete_entry(project_id: str, entry_id: str, request: Request):
+    """ST-10：删除条目，保存为一个版本（可回退）。被别的条目引用时 409 entry_referenced；
+    流程图走图示插件的产物删除，引用它的操作只是提示「流程图缺失」，不挡删除。"""
+    from ..kernel.writepath import ChangeTx, Origin
+
+    root = deps.require_writable(project_id, request)
+    body = await deps.json_body(request)
+    base_revision = str(body.get("base_revision") or "")
+    actor = deps.username(request)
+    kind, _, key = (entry_id or "").partition(":")
+    if kind == "flowchart":
+        from ..kernel.artifacts import service as artifact_service
+
+        try:
+            return await asyncio.to_thread(artifact_service.delete, deps.workspaces, project_id, "diagram.flowchart",
+                                           key, {"base_revision": base_revision}, actor=actor)
+        except artifact_service.ArtifactError as exc:
+            code = "pack_not_enabled" if exc.code == "artifact_type_unknown" else exc.code
+            raise ApiError(code, str(exc), 409 if code == "pack_not_enabled" else exc.status,
+                           {"pack": "diagram"} if code == "pack_not_enabled" else exc.details) from exc
+    rel, kind, key = entry_path(root, entry_id)
+    if not (root / rel).is_file():
+        raise ApiError("not_found", "条目不存在", 404)
+    referenced = [entry_ref(item["kind"], item["name"], item["label"])
+                  for item in studio_service.element(root, rel)["backlinks"] if item["kind"] != "script"]
+    if referenced:
+        raise ApiError("entry_referenced", "还有条目引用它", 409, {"references": referenced})
+    with ChangeTx(deps.workspaces, project_id, Origin("studio", actor), summary=f"删除 {rel}") as tx:
+        tx.check_revision(rel, base_revision)
+        tx.remove(rel)
+        result = tx.commit(f"studio: 删除{KIND_LABELS.get(kind, '条目')}「{key}」 by {actor or '本机用户'}")
+    studio_service.discard_draft(project_id, rel, actor or "本机用户")
+    state = mainline.state(root)
+    return {"commit": result.commit or state["head"], "version_label": state["version_label"]}
