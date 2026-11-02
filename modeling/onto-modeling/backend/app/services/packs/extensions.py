@@ -380,7 +380,9 @@ def publish_gates(manager, root: Path, commit: str, start_order: int) -> list[di
     with tempfile.TemporaryDirectory(prefix="onto-pack-gates-") as scratch:
         tree = Path(scratch) / "tree"
         tree.mkdir()
-        _export(Path(root), commit, sorted({atype.glob_root() or "." for _view, _gate, atype in gated}), tree)
+        # 本体目录一起导出：ref_exists 要在同一个提交里找被引用的条目（审查第 2 条）
+        dirs = {atype.glob_root() or "." for _view, _gate, atype in gated} | {"ontology"}
+        _export(Path(root), commit, sorted(dirs), tree)
         return _publish_results(gated, tree, start_order)
 
 

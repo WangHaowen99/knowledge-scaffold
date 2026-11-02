@@ -129,3 +129,62 @@ def test_review_1_change_tx_refuses_git_dir(env, rel):
             tx.commit("web: 越界")
     assert exc.value.status == 403
     assert (root / ".git" / "config").read_text(encoding="utf-8") == before
+
+
+# ---- 审查第 2 条：发布门禁的 ref_exists 在只导出产物目录的临时树里永远找不到本体条目 ----
+
+@pytest.fixture()
+def checklist_env(tmp_path: Path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app import config
+    from app.api import deps
+    from app.kernel import event_port
+    from app.main import app
+    from app.services import auth
+    from app.services.packs import builtin
+    from app.services.packs import service as pack_service
+    from app.services.workspace import WorkspaceManager
+    from tests.pack_helpers import make_assets
+    from tests.test_extensions_artifacts import CHECKLIST_CONTRIBUTES, _checklist_files
+
+    builtin.clear_cache()
+    event_port.clear()
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    manager = WorkspaceManager(tmp_path / "data", make_assets(tmp_path))
+    monkeypatch.setattr(deps, "workspaces", manager)
+    monkeypatch.setattr(auth, "ENABLED", False)
+    client = TestClient(app)
+    project_id = client.post("/api/v1/projects", json={"name": "引用门禁", "goal": "合成"}).json()["id"]
+    gates = [{"id": "ref-ok", "label": "关联操作要存在", "artifact": "checklist.item", "on": ["publish"],
+              "rules": [{"field": "operation", "ref_exists": True}]}]
+    source = make_pack(tmp_path / "src", "checklist", "1.0.0", files=_checklist_files(),
+                       contributes={**CHECKLIST_CONTRIBUTES, "gates": gates})
+    manager.packs.repository.install(source, origin="upload", by="admin")
+    manager.packs.repository.set_channel("checklist", "stable", "1.0.0", by="admin")
+    pack_service.enable(manager, project_id, "checklist")
+    pack_service.prepare_for_message(manager, project_id)
+    yield client, manager, project_id
+    builtin.clear_cache()
+
+
+def test_review_2_publish_ref_gate_sees_ontology_entries(checklist_env):
+    from tests.test_pack_extensions import item_md
+
+    client, manager, project_id = checklist_env
+
+    def save(rel: str, text: str) -> None:
+        with ChangeTx(manager, project_id, Origin("web", "local")) as tx:
+            tx.write(rel, text)
+            tx.commit(f"web: {rel}")
+
+    def gate() -> dict:
+        body = client.get(f"/api/v1/projects/{project_id}/publish/check").json()
+        return next(item for item in body["gates"] if item["id"] == "checklist.ref-ok")
+
+    save("ontology/operation/借书.md", "# 借书\n\n合成操作\n")
+    save("ext/checklist/items/借阅检查.md", item_md("借阅检查", "high").replace("result: pass", "result: pass\noperation: 借书"))
+    assert gate()["status"] == "pass"
+    save("ext/checklist/items/还书检查.md", item_md("还书检查", "high").replace("result: pass", "result: pass\noperation: 还书"))
+    missing = gate()
+    assert missing["status"] == "fail" and "引用的条目不存在" in missing["summary"]
