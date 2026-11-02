@@ -11,7 +11,8 @@ nodes:
   - id: trace.trace
     title: 全量回归
     kind: agent
-    placement: step
+    # 串在校验之后；随 core 拆出、本来就在主线上，按主线位置（spine）算，不当成新插进来的可补做节点（ADR-0066）
+    placement: spine
     section: required
     after: core.validate
     done: [testcase]

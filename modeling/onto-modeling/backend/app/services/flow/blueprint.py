@@ -1,4 +1,4 @@
-"""建模蓝图（契约 BP-01～BP-03、4.7 blueprint / research_summary / build_choice 卡；详设第 9 章建议 2、6.8）。
+"""建模蓝图（契约 BP-01～BP-03、4.7 blueprint / research_summary 卡；详设第 9 章建议 2、6.8）。
 
 蓝图是工作区里的 `research/blueprint.json`，格式、校验、调整都在 core 的 `blueprint.py`（契约库按项目锁定
 版本加载，与助手在工作区里跑的是同一份）。这里只管它放在哪、怎么写进去：
@@ -342,7 +342,19 @@ def blueprint_card(module, doc: dict, card_id: str, *, research_verified: bool) 
         "terms": {"aligned": len(data["terms"]["aligned"]), "ambiguous": len(data["terms"]["ambiguous"])},
         "questions_pending": sum(1 for item in data["questions"] if not item.get("answer")),
         "research_verified": research_verified,
+        # 卡片底部的两个按钮（设计调整 R3，取代「确认后怎么建」卡）：草案时给，一路建完要等自主构建可用
+        "confirm_options": confirm_options(data["state"]),
     }
+
+
+def confirm_options(state: str) -> list[dict]:
+    """蓝图卡底部的确认按钮（BP-03 的 next）：草案时「确认，一片一片来」，自主构建可用时再加「确认，一路建完…」。"""
+    if state == "confirmed":
+        return []
+    options = [{"mode": "L2", "label": "确认，一片一片来"}]
+    if autobuild_available():
+        options.append({"mode": "L4", "label": "确认，一路建完…"})
+    return options
 
 
 def research_card(root: Path, card_id: str) -> dict | None:
@@ -372,14 +384,8 @@ def research_card(root: Path, card_id: str) -> dict | None:
     }
 
 
-def build_choice_card(card_id: str) -> dict:
-    options = [{"mode": "L2", "label": "一片一片来"}, {"mode": "L4", "label": "按蓝图一路建完"}]
-    return {"card_id": card_id, "card_type": "build_choice", "eyebrow": "", "title": "确认后怎么建？", "subtitle": "",
-            "status": None, "plugin": None, "open": None, "options": options, "policy_link": True}
-
-
 def round_cards(manager, project_id: str, changes: dict, seed: str, root: Path | None = None) -> list[dict]:
-    """一轮结束：这一轮写出或改了蓝图 → 资料分析小结卡（报告也改了时）、蓝图卡、确认后怎么建（草案时）。"""
+    """一轮结束：这一轮写出或改了蓝图 → 资料分析小结卡（报告也改了时）、蓝图卡（底部带确认按钮）。"""
     touched = [rel for bucket in ("added", "modified") for rel in changes.get(bucket) or []]
     if BLUEPRINT_REL not in touched:
         return []
@@ -405,9 +411,6 @@ def round_cards(manager, project_id: str, changes: dict, seed: str, root: Path |
     cards.append(card)
     if conversation_id:
         _register(main, conversation_id, card["card_id"])
-    if doc.get("state") != "confirmed" and autobuild_available():
-        # 只有「一片一片来」时不出这张卡：确认蓝图就是一片一片来（用不了的选项不出现）
-        cards.append(build_choice_card(f"{seed}-build"))
     return cards
 
 

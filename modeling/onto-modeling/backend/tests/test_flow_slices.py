@@ -108,8 +108,8 @@ def test_flow_api_shape_for_a_new_project(env):
     assert model["per_slice"] is True and model["progress"] is None
     assert [stage["id"] for stage in built["slice_stages"]] == ["object", "operation", "rule", "check", "scenario"]
     assert built["slice_stages"][-1] == {"id": "scenario", "label": "场景", "plugin": "trace"}
-    # 没有蓝图：全量模式，只有一片「全部」
-    assert [item["id"] for item in built["slices"]] == ["all"]
+    # 没有蓝图：全量模式，只有一片「全部」；`blueprint.state` 让前端把「调整切片」换成发起切片规划
+    assert [item["id"] for item in built["slices"]] == ["all"] and built["blueprint"] == {"state": "none"}
     assert set(built["slices"][0]) == {"id", "name", "core_flow", "group", "stages", "note", "no_rules"}
     publish = next(node for node in built["nodes"] if node["id"] == "core.publish")
     assert publish["actions"] == [{"kind": "start", "label": "去发布", "target": "publish"}]
@@ -333,6 +333,7 @@ def test_blueprint_draft_suggestions_and_research_waits_for_confirmation(env):
     assert research["state"] == "pending_confirm"
     assert research["actions"][0] == {"kind": "confirm", "label": "去确认", "target": "wb-blueprint"}
     primary = built["suggestions"]["primary"]
+    assert built["blueprint"] == {"state": "draft"}
     assert primary["label"] == "确认蓝图" and primary["action"] == {"type": "confirm_blueprint", "next": "L2"}
     labels = [item["label"] for item in built["suggestions"]["secondary"]]
     assert labels == ["调整切片", "重新划分"]

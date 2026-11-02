@@ -30,7 +30,7 @@ from tests.test_node_pack_lifecycle import (  # noqa: F401
     HUMAN_NODE,
     enable_and_apply,
     env,
-    flow_after_object,
+    flow_before_model,
     git,
     install,
     kinds_flow,
@@ -236,13 +236,13 @@ def test_refresh_stale_follows_flow_order_and_skips_broken_nodes(env, monkeypatc
 
     main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
     main_write(root, "ontology/operation/借书.md", "# 借书\n\n## 业务描述\n\n合成操作\n")
-    install(manager, tmp_path, flow=flow_after_object())
+    install(manager, tmp_path, flow=flow_before_model())
     enable_and_apply(client, manager, project_id)
     main_write(root, "reports/naming-1.md", "# 命名检查\n\n合成报告\n")
     nodes = nodes_of(root)
-    assert nodes["naming.check"]["state"] == nodes["core.operation"]["state"] == "confirmed"
+    assert nodes["naming.check"]["state"] == nodes["core.model"]["state"] == "confirmed"
     order = [node["id"] for node in flow_model.load_for(root)["nodes"]]
-    assert order.index("naming.check") < order.index("core.operation")
+    assert order.index("naming.check") < order.index("core.model")
     main_write(root, "ontology/object/图书.md", obj("图书", "上游变了"))
     started = []
 
@@ -257,9 +257,9 @@ def test_refresh_stale_follows_flow_order_and_skips_broken_nodes(env, monkeypatc
     ops_state.set_breaker("naming", "0.1.0", "open", "ops")
     try:
         ids = [item["id"] for item in inbox.collect(manager, project_id) if not item.get("_dismissed")]
-        assert "stale:naming.check" not in ids and "stale:core.operation" in ids
+        assert "stale:naming.check" not in ids and "stale:core.model" in ids  # 建模按片汇总：操作那一步过期
         client.post(batch, json={"action": "refresh_stale"})
-        assert started[-1] == "core.operation"
+        assert started[-1] == "core.model"
     finally:
         ops_state.set_breaker("naming", "0.1.0", "close", "ops")
         ops_state.set_breaker("naming", "0.1.0", "close", "ops")

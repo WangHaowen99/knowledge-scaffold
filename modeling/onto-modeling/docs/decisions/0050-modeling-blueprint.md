@@ -39,15 +39,16 @@
    - 缺省取项目的构建方式（P-13）。
 5. **对话里的卡片**（契约 4.7）：一轮写出或改了蓝图，在「这一轮改了什么」之后出蓝图卡（`open={dialog, blueprint}`）；
    这一轮也改了资料分析报告时先出资料分析小结卡（数字取验收回执：读过的资料、核对过的出处、带过来的问题）；
-   蓝图是草案且自主构建可用时再出「确认后怎么建」（只有「一片一片来」时不出，确认蓝图就是一片一片来）。卡片编号登记在
-   数据目录，BP-02、BP-03、回答问题之后对话里的蓝图卡全部 `card.updated`。
+   蓝图卡底部带确认按钮 `confirm_options`（设计调整 R3，取代「确认后怎么建」卡）：草案时「确认，一片一片来」（L2），
+   自主构建可用时再加「确认，一路建完…」（L4）；已确认时为空。卡片编号登记在数据目录，BP-02、BP-03、回答问题之后对话里
+   的蓝图卡全部 `card.updated`。
 6. **没答的问题**进待处理（`decision:bq-<问题>`，IN-03 `answer` 写回蓝图）。
 
 ### 给 B5b（自主构建）的接口
 
 | 用途 | 位置 | 说明 |
 |---|---|---|
-| 开始前预览登记点 | `services/flow/blueprint.register_autobuild_preview(fn)` | `fn(manager, project_id, blueprint_view, *, actor) -> AutobuildPreview`；登记后 BP-03 `next=L4` 返回它，「确认后怎么建」卡出现 |
+| 开始前预览登记点 | `services/flow/blueprint.register_autobuild_preview(fn)` | `fn(manager, project_id, blueprint_view, *, actor) -> AutobuildPreview`；登记后 BP-03 `next=L4` 返回它，蓝图卡底部出现「确认，一路建完…」 |
 | 按片执行的切片列表 | `services/flow/blueprint.run_slices(manager, project_id)` | `[{id, name, core_flow, depends_on, brief, group, stages}]`，按建议顺序、没排除的片；全量模式是一片「全部」 |
 | 片说明 | `brief`（同上）；工作区里 `python3 .claude/scripts/blueprint.py brief <片>` | 片名、核心链路、依赖、规划的条目、依据、范围外、统一叫法；建模命令注入的是同一份 |
 | 片的命令 | `/ontology-extract-object slice=<片>` 等（ADR-0051） | 执行记录自动带切片与步骤，变更集记 `slice_steps`，确认生效时这一片这一步记为确认过 |
@@ -68,4 +69,4 @@
 - 蓝图随项目进 git、跟着版本走；回退、克隆、导出都带着它。
 - BP-03 可能回变更集的错误（`gate_failed`、`merge_conflict`、`changeset_in_progress`），见 contract-changes B4d。
 - 资料分析小结卡的数字只取验收回执里有的；资料地图（R-07）没做，`report_id` 先为 null（研究报告不在 `reports/` 下）。
-- 选 L4 在 B5b 之前不可用，界面上不出「按蓝图一路建完」。
+- 选 L4 在 B5b 之前不可用，蓝图卡上不出「确认，一路建完…」。

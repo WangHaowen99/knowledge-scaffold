@@ -290,10 +290,11 @@ def test_blueprint_in_the_research_changeset_is_edited_in_the_copy_and_confirm_m
     cards = [event["payload"] for event in history if event.get("type") == "card"]
     kinds = [card["card_type"] for card in cards]
     assert "round_changes" in kinds and "blueprint" in kinds
-    assert "build_choice" not in kinds  # 自主构建没登记：只能一片一片来，不出「确认后怎么建」
+    assert "build_choice" not in kinds  # 设计调整 R3：确认按钮放在蓝图卡底部，不再单出一张卡
     card = next(card for card in cards if card["card_type"] == "blueprint")
     assert card["title"] == "建模蓝图 · 草案 v1" and card["open"] == {"kind": "dialog", "target": "blueprint"}
     assert card["questions_pending"] == 1 and card["terms"] == {"aligned": 1, "ambiguous": 1}
+    assert card["confirm_options"] == [{"mode": "L2", "label": "确认，一片一片来"}]  # 一路建完等 B5b
     rc = next(card for card in cards if card["card_type"] == "round_changes")
     assert rc["groups"][0]["items"][0]["target"]["title"] == "建模蓝图"
     base = f"/api/v1/projects/{project_id}/blueprint"
@@ -344,11 +345,14 @@ def test_saving_while_the_assistant_runs_is_423(env, monkeypatch):
     assert locked.status_code == 423 and locked.json()["code"] == "write_scope_locked"
 
 
-def test_build_choice_card_appears_once_autobuild_registers(env, monkeypatch):
+def test_blueprint_card_offers_build_all_once_autobuild_registers(env, monkeypatch):
     _client, workspaces, _manager, project_id, root = env
     _write_mainline(root, bp().from_draft(DRAFT))
     monkeypatch.setattr(blueprint_service, "_autobuild_preview", lambda *args, **kwargs: {})
     cards = blueprint_service.round_cards(workspaces, project_id, {"added": ["research/blueprint.json"]}, "seed")
-    assert [card["card_type"] for card in cards] == ["blueprint", "build_choice"]
-    assert [option["mode"] for option in cards[1]["options"]] == ["L2", "L4"] and cards[1]["policy_link"] is True
+    assert [card["card_type"] for card in cards] == ["blueprint"]
+    assert cards[0]["confirm_options"] == [{"mode": "L2", "label": "确认，一片一片来"},
+                                           {"mode": "L4", "label": "确认，一路建完…"}]
+    confirmed = blueprint_service.blueprint_card(bp(), bp().confirm(bp().from_draft(DRAFT)), "c", research_verified=True)
+    assert confirmed["confirm_options"] == []
     assert blueprint_service.round_cards(workspaces, project_id, {"modified": ["ontology/object/x.md"]}, "s") == []
