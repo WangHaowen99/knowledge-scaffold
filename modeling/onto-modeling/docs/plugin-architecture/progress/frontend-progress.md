@@ -2,7 +2,7 @@
 
 前端 worktree：`<worktrees>/onto-modeling-plugin-frontend`，分支 `feat/onto-modeling-plugin-frontend`。
 
-## F1（2026-11-01）提交 a2aca4ee..a2153a82
+## F1（2026-11-01）提交 aa8048e0
 
 | 块 | 状态 | 位置 |
 |---|---|---|
@@ -19,7 +19,7 @@
 
 测试：`npm test` 85 项（客户端、SSE、对话状态机、只读判定、Markdown 标记、页面纯函数，另有保留的求解契约与 MCP 配置测试）；`npm run build` 通过。
 
-## F2（2026-11-01）提交 4c0369b1..8c936dca
+## F2（2026-11-01）提交 34a9cf72..63674692
 
 | 块 | 状态 | 位置 |
 |---|---|---|
@@ -63,7 +63,7 @@ F2 已接线、删掉的旧代码：流程图多图侧栏（`FlowchartView`、`A
 
 ## 后端 B3a 带来的前端改动（2026-11-01 记）
 
-- **前端阶段定义改读 `/flow`**（F3 已完成，提交 1d7c5bea）：主流程只在 core 包的 `flow.yaml` 定义一次（ADR 0025）。前端的 `LeftPane` 的 `STAGES`、`stageHits`、`stageStatuses`、`stageForCommand` 与 `ChatPane.buildSuggestions` 不再自带阶段表，改读 `GET /api/v1/projects/{id}/flow`：
+- **前端阶段定义改读 `/flow`**（F3 已完成，提交 cfbe901e）：主流程只在 core 包的 `flow.yaml` 定义一次（ADR 0025）。前端的 `LeftPane` 的 `STAGES`、`stageHits`、`stageStatuses`、`stageForCommand` 与 `ChatPane.buildSuggestions` 不再自带阶段表，改读 `GET /api/v1/projects/{id}/flow`：
   - 进度条与建模步骤：`nodes[]`（标题、`optional`、`state`、`actions`、`panel`），分组用 `sections`，进度数用 `progress`；
   - 运行中的命令属于哪个节点：`commands`（命令名 → 节点 ID，命令名不带斜杠与 `ontology-` 前缀）；
   - 输入框上方建议条：`suggestions`（P1 只给主线下一步，打断、过期等优先级 P2 补）。
@@ -73,7 +73,7 @@ F2 已接线、删掉的旧代码：流程图多图侧栏（`FlowchartView`、`A
 - **chat-states 第 14 项**（能力包升级提示）：对话流已发 `session.config_pending`、`session.reconnected`（契约 EC-06、EC-07，字段见 contract-changes B3a 第 15 条）；项目流的 `assembly.updated` 要等 P-15。
 - **ops-ctl 的 core 默认版本**：O-30～O-34 已改由包仓库承接，版本号是真实的 core 版本（如 `0.1.0+3f9a1c2d`），不再是 `current` / `dotclaude-*`。
 
-## F3（2026-11-01）提交 1d7c5bea..77f819e1
+## F3（2026-11-01）提交 cfbe901e..a0e85230
 
 主控先把前端阶段定义改读 `/flow`、搭骨架，再拆 7 个并行子任务（A 知识沉淀与场景走查、B 代码生成、C 增量更新、D 版本与发布、E 资料区、F 数据源 / 快照 / 证据浏览器、G 项目设置），由主控核对后按页提交。
 
@@ -122,21 +122,21 @@ mock 状态（地址参数 `?mock=`，逗号分隔）：
 2. 新页面照 F2、F3 的写法：路由在 `App.jsx` 懒加载登记；接口补进 `endpoints.js`；mock 每组一个 `routes-*.js`，同一路径可以有几个处理者（返回 `undefined` 交给下一个）；示例只用合成场景，交付前跑安全 grep。
 3. 视觉对照脚本：`/tmp/ks-f3/shotx.mjs`（设计稿，自动隐藏原型导航条）、`shotapp.mjs`（本地 mock）、`diff.mjs`（像素差）。
 
-## F4（2026-11-02）提交 29890e75..9f8ba691
+## F4（2026-11-02）提交 bfee56bc..8bdf8b63
 
-主控先搭骨架（29890e75 运维面与管理接口分组、角色判定、全局页路由拆包、二级导航与共用件、mock 分组；11bb5b6e 平台视角的账号与项目元数据），再拆 7 个并行子任务（A 运维总览与可观测、B 运维管控与健康、C 用户审计与回收站、D 插件中心与详情、E 上传与审核、F 个人设置、G 系统设置）。D 被网络中断打断，由接手的主控补完；收尾按页提交。
+主控先搭骨架（bfee56bc 运维面与管理接口分组、角色判定、全局页路由拆包、二级导航与共用件、mock 分组；ebf9b461 平台视角的账号与项目元数据），再拆 7 个并行子任务（A 运维总览与可观测、B 运维管控与健康、C 用户审计与回收站、D 插件中心与详情、E 上传与审核、F 个人设置、G 系统设置）。D 被网络中断打断，由接手的主控补完；收尾按页提交。
 
 | 块 | 状态 | 提交 | 位置 |
 |---|---|---|---|
-| F4 骨架 | 完成 | 29890e75、11bb5b6e | `src/api/endpoints.js`（O-01～O-54 走 `ops_base_url`、AD、SY、X-06、PL-13～PL-19、A-06/08/10/11）、`src/state/roles.js`、`src/shell/SideNav.jsx`、`src/pages/ops/parts.jsx`（`OpsShell`）、`src/pages/plugins/parts.jsx`（`PluginsNav`、`usePluginProject`）、`src/api/mock/platform-data.js` |
-| ops、ops-obs | 完成 | 28dc5d9d | `src/pages/ops/OpsOverviewPage.jsx`、`OpsObsPage.jsx`、`overviewModel.js`、`obsModel.js`、`charts.jsx`、`obs*.jsx`；`routes-ops-obs.js`、`ops-obs-data.js` |
-| ops-ctl | 完成 | ff11c4b0 | `src/pages/ops/OpsCtlPage.jsx`、`ctl*.{js,jsx}`；`routes-ops-ctl.js`、`ops-ctl-data.js`；mock 只读维护放行运维面写请求（`index.js`） |
-| ops-users | 完成 | 6790c9d5 | `src/pages/ops/OpsUsersPage.jsx`、`users*.{js,jsx}`；`routes-admin.js`、`admin-data.js` |
-| plugin-upload | 完成 | 02a29d6d | `src/pages/plugins/PluginUploadPage.jsx`、`upload*.{js,jsx}`；`routes-pack-uploads.js`（另导出 `addAdminRequest`）、`pack-uploads-data.js` |
-| plugins、plugin-detail | 完成 | 5f697ff0 | `src/pages/plugins/PluginsPage.jsx`、`PluginDetailPage.jsx`、`catalog*.{js,jsx}`、`detail*.{js,jsx}`；`routes-plugins.js`、`plugins-data.js`；`routes-settings.js` 加两处挂钩，插件中心与项目设置能力表同一状态 |
-| me | 完成 | ce6cec71 | `src/pages/me/`、`routes-me.js` |
-| sys | 完成 | 23de2829 | `src/pages/sys/`、`routes-system.js`、`system-data.js` |
-| 收尾 | 完成 | 6b89d5c6、e815a277、9f8ba691 | 个人设置两处入口带分区；删除旧组件；主入口拆包（ops-ctl 测试的包名断言改为对照合成目录，已并进 ff11c4b0，历史里不留设计稿的包名关键词） |
+| F4 骨架 | 完成 | bfee56bc、ebf9b461 | `src/api/endpoints.js`（O-01～O-54 走 `ops_base_url`、AD、SY、X-06、PL-13～PL-19、A-06/08/10/11）、`src/state/roles.js`、`src/shell/SideNav.jsx`、`src/pages/ops/parts.jsx`（`OpsShell`）、`src/pages/plugins/parts.jsx`（`PluginsNav`、`usePluginProject`）、`src/api/mock/platform-data.js` |
+| ops、ops-obs | 完成 | 9283cd59 | `src/pages/ops/OpsOverviewPage.jsx`、`OpsObsPage.jsx`、`overviewModel.js`、`obsModel.js`、`charts.jsx`、`obs*.jsx`；`routes-ops-obs.js`、`ops-obs-data.js` |
+| ops-ctl | 完成 | a23e6dc1 | `src/pages/ops/OpsCtlPage.jsx`、`ctl*.{js,jsx}`；`routes-ops-ctl.js`、`ops-ctl-data.js`；mock 只读维护放行运维面写请求（`index.js`） |
+| ops-users | 完成 | 5f5fc279 | `src/pages/ops/OpsUsersPage.jsx`、`users*.{js,jsx}`；`routes-admin.js`、`admin-data.js` |
+| plugin-upload | 完成 | 51381bbe | `src/pages/plugins/PluginUploadPage.jsx`、`upload*.{js,jsx}`；`routes-pack-uploads.js`（另导出 `addAdminRequest`）、`pack-uploads-data.js` |
+| plugins、plugin-detail | 完成 | 38a2f960 | `src/pages/plugins/PluginsPage.jsx`、`PluginDetailPage.jsx`、`catalog*.{js,jsx}`、`detail*.{js,jsx}`；`routes-plugins.js`、`plugins-data.js`；`routes-settings.js` 加两处挂钩，插件中心与项目设置能力表同一状态 |
+| me | 完成 | d253efa9 | `src/pages/me/`、`routes-me.js` |
+| sys | 完成 | 4507e2c4 | `src/pages/sys/`、`routes-system.js`、`system-data.js` |
+| 收尾 | 完成 | bf84cdf9、9734bbcf、8bdf8b63 | 个人设置两处入口带分区；删除旧组件；主入口拆包（ops-ctl 测试的包名断言改为对照合成目录，已并进 a23e6dc1，历史里不留设计稿的包名关键词） |
 
 mock 状态（地址参数 `?mock=`，逗号分隔；同一组的多个标记用 `+` 连写）：
 - 角色与模式：`role:ops`、`role:user`、`role:admin`（缺省 zhangsan 是管理员）、`auth:local`、`maint:readonly`、`maint:reject`。
