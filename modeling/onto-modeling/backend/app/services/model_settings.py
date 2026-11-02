@@ -43,6 +43,14 @@ def _mask(key: str) -> str:
     return (key[:6] + "…" + key[-4:]) if len(key) > 12 else ("已设置" if key else "")
 
 
+def deploy_config(engine: str) -> dict:
+    """界面没配时引擎在用的部署环境变量：只给有没有、模型名（SY-01 deploy、健康检查用），不含网关地址与 Key。"""
+    if engine == "claude":
+        configured = any(os.environ.get(name) for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"))
+        return {"configured": bool(configured), "model": os.environ.get("ANTHROPIC_MODEL", "")}
+    return {"configured": bool(config.JIUWEN_BASE_URL or config.JIUWEN_API_KEY), "model": config.JIUWEN_MODEL or ""}
+
+
 def masked() -> dict:
     from .engines import available_engines
 

@@ -39,3 +39,11 @@ def test_claude_from_env_is_reported_as_deploy_configured(data_dir, monkeypatch)
     view = settings.model_settings_view()["engines"]["claude"]
     assert view["configured"] is False
     assert view["deploy"] == {"configured": True, "model": "model-synthetic"}
+
+
+def test_health_model_gateway_ok_when_jiuwen_env_configured(data_dir, monkeypatch):
+    from app.governance import health
+
+    assert health._probe_model_gateway()[0] == "warn"
+    monkeypatch.setattr(config, "JIUWEN_API_KEY", "sk-synthetic-0123456789abcdef")
+    assert health._probe_model_gateway() == ("ok", None)

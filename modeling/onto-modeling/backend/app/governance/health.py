@@ -100,7 +100,9 @@ def _probe_model_gateway():
     from ..services import model_settings
 
     admin = model_settings.masked()
-    configured = admin.get("configured") or os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("ANTHROPIC_API_KEY")
+    # 任一引擎在界面或部署环境变量里接上了模型就算配置了（只配内测引擎的部署原来报「未配置」）
+    configured = (admin.get("configured") or (admin.get("jiuwen") or {}).get("configured")
+                  or any(model_settings.deploy_config(engine)["configured"] for engine in ("claude", "jiuwen")))
     return ("ok", None) if configured else ("warn", "未配置模型接入，使用部署机默认配置")
 
 
