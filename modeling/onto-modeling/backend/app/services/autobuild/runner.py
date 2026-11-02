@@ -584,8 +584,15 @@ class AutobuildRunner:
                         await asyncio.to_thread(changesets.observe, ws, project_id, running=False,
                                                 conversation_id=run["conversation_id"], checks=True)
                         continue
+                    findings = (exc.details or {}).get("findings") or []
                     return await self._give_up(project_id, run_id, unit, changeset_id, owner,
-                                               (exc.details or {}).get("findings") or [])
+                                               title=f"「{unit['name']}」检查没通过", flag="gate_failed",
+                                               reason="；".join(str(item.get("message") or item.get("code") or "")
+                                                               for item in findings[:3]))
+                if exc.code == "delete_forbidden":
+                    return await self._give_up(project_id, run_id, unit, changeset_id, owner,
+                                               title=f"「{unit['name']}」要删除已确认的内容", flag="delete_forbidden",
+                                               reason="、".join((exc.details or {}).get("paths") or []))
                 if exc.code == "changeset_closed":
                     return self._unit_done(project_id, run_id, unit, record=None)
                 self._fail(project_id, run_id, exc.code or "merge")
@@ -601,25 +608,25 @@ class AutobuildRunner:
         await self._wait_turn(project_id, run_id, run["conversation_id"])
         await self._account(project_id, run_id)
 
-    async def _give_up(self, project_id: str, run_id: str, unit: dict, changeset_id: str, owner: str,
-                       findings: list[dict]) -> str:
-        """修了几轮门禁还不过：这一片的修改撤回，挂起一个问题（进待处理），接着做下一片。"""
+    async def _give_up(self, project_id: str, run_id: str, unit: dict, changeset_id: str, owner: str, *,
+                       title: str, flag: str, reason: str) -> str:
+        """这一片合入不了（门禁修了几轮还不过、要删除已确认的内容）：这一片的修改撤回，挂起一个问题（进待处理），
+        接着做下一片。"""
         from ...kernel.changesets import service as changesets
 
         await asyncio.to_thread(changesets.discard, _ws(), project_id, changeset_id, actor=owner)
-        reason = "；".join(str(item.get("message") or item.get("code") or "") for item in findings[:3])
+        handled = "这一片没生效，先做下一片" if unit["kind"] == "slice" else "这一步没生效，接着做下一步"
 
         def change(record: dict) -> None:
             item = {"id": f"sp-{uuid.uuid4().hex[:8]}", "run_id": run_id, "at": time.time(),
-                    "slice": {"id": unit["id"], "name": unit["name"]}, "title": f"「{unit['name']}」检查没通过",
-                    "reason": reason, "handled_as": "这一片没生效，先做下一片", "kind": "question", "options": [],
-                    "allow_custom": True, "actions": [], "state": "open", "step": None, "exec_id": None,
-                    "gate": True}
+                    "slice": {"id": unit["id"], "name": unit["name"]}, "title": title, "reason": reason,
+                    "handled_as": handled, "kind": "question", "options": [], "allow_custom": True, "actions": [],
+                    "state": "open", "step": None, "exec_id": None, flag: True}
             record.setdefault("suspensions", []).append(item)
             info = record["slices"][unit["id"]]
             info.setdefault("suspensions", []).append(item["id"])
             info.setdefault("timeline", []).append({"type": "suspension", "id": item["id"]})
-            info.update(state="skipped", gate_failed=True, ended_at=time.time())
+            info.update({"state": "skipped", flag: True, "ended_at": time.time()})
 
         run = store.update(project_id, run_id, change)
         self._slice_card(run, unit)

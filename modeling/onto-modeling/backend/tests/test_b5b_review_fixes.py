@@ -69,3 +69,64 @@ def test_A_internal_entry_points_cannot_send_during_a_run(ab):
     record = store.get(project_id, run["run_id"])
     files = git(root, "-c", "core.quotePath=false", "show", "--name-only", "--format=", record["slices"]["s1"]["commit"])
     assert "ontology/object/门店.md" not in files.split()
+
+
+# ---------------------------------------------------------------------------
+# B：硬性不做的「删除已确认内容」、发布标签
+# ---------------------------------------------------------------------------
+
+
+def test_B_autobuild_never_deletes_confirmed_content(ab):
+    client, _workspaces, project_id, root = ab
+    main_write(root, "ontology/object/门店.md", obj("门店", "已确认的对象"), "web: 门店")
+    AutoEngine.hooks["/ontology-validate"] = [_delete("ontology/object/门店.md")]
+    run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s1"], "until_node": "core.validate"},
+                budget={"max_tokens": 500_000})
+    wait_state(client, project_id, run["run_id"], "completed")
+    # 合入时发现删了主线上已有的条目：这一步不生效，挂起，主线上的文件还在
+    assert (root / "ontology/object/门店.md").is_file()
+    assert not git(root, "log", "--format=%h", "--diff-filter=D", "--", "ontology/object/门店.md").strip()
+    record = store.get(project_id, run["run_id"])
+    assert record["slices"]["core.validate"]["state"] == "skipped"
+    titles = [item["title"] for item in record["suspensions"]]
+    assert titles == ["「校验与走查」要删除已确认的内容"]
+    assert "ontology/object/门店.md" in record["suspensions"][0]["reason"]
+
+
+def test_B_policy_refuses_deletes_and_release_tags(ab):
+    client, _workspaces, project_id, _root = ab
+    decisions: list = []
+
+    def confirm(command: str):
+        async def action(ctx):
+            decisions.append(await ctx.request_permission("Bash", {"command": command}, None, None))
+        return action
+
+    AutoEngine.hooks["/ontology-extract-object:s1"] = [confirm("rm ontology/object/对象9.md"),
+                                                      confirm("git tag release/9.9.9"),
+                                                      confirm("git tag -a v3-合成 -m 合成")]
+    run = start(client, project_id, **ONE)
+    wait_state(client, project_id, run["run_id"], "completed")
+    assert [item["behavior"] for item in decisions] == ["deny", "deny", "allow"]
+
+
+def test_B_guard_blocks_release_tags_in_any_mode(tmp_path, monkeypatch):
+    import json
+    import subprocess
+
+    from app import kernel_guards
+    from app.kernel_guards import _guard_common as guard
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+
+    def verdict(command: str) -> list:
+        data = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(tmp_path)}
+        return [reason for reason in (guard.check(name, data) for name in guard.GUARDS) if reason]
+
+    for command in ("git tag release/9.9.9", "git tag -a release/1.0.0 -m x", "git tag -d release/0.3.0",
+                    "git update-ref refs/tags/release/9.9.9 HEAD", "git push origin release/9.9.9"):
+        assert verdict(command), command
+    assert verdict("git tag -a v3-合成 -m 合成") == []
+    deny = kernel_guards.settings_base()["permissions"]["deny"]
+    assert "Bash(git tag release/*)" in deny and json.dumps(deny)

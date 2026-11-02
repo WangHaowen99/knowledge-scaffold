@@ -146,6 +146,8 @@ def result_text(run: dict, unit_id: str) -> str:
     if state == "queued":
         return "未开始" if run.get("state") in store.ENDED else "排队"
     if state == "skipped":
+        if info.get("delete_forbidden"):
+            return "要删除已确认的内容"
         return "检查没通过" if info.get("gate_failed") else "未开始"
     text = "部分完成" if state == "partial" else "完成"
     return f"{text} · 挂起 {suspended} 项" if suspended else text

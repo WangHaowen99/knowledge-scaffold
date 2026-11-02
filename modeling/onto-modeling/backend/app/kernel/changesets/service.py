@@ -651,7 +651,8 @@ def merge(manager, project_id: str, changeset_id: str, *, actor: str, expected_h
             raise WorkspaceError("主线已前进，请刷新后重试", 409, "head_moved", {"head": main})
         worktree.commit_pending(copy, "chore: 收拢这一轮没提交的改动")
         head = worktree.rev(copy)
-        merged_tree, result = _merged_tree(manager, project_id, root, record, main, head, choices)
+        merged_tree, result = _merged_tree(manager, project_id, root, record, main, head, choices,
+                                           forbid_deletes=source == "autobuild")
         commit = _write_merge(manager, project_id, root, record, main, merged_tree, actor=actor, source=source,
                               message=message)
         version_label = _label(root, commit or main)
@@ -669,7 +670,7 @@ def merge(manager, project_id: str, changeset_id: str, *, actor: str, expected_h
 
 
 def _merged_tree(manager, project_id: str, root: Path, record: dict, main: str, head: str,
-                 choices: dict[str, str] | None) -> tuple[str, dict]:
+                 choices: dict[str, str] | None, *, forbid_deletes: bool = False) -> tuple[str, dict]:
     """合成树：三方合并 → 按实体与文本检测冲突（选了哪一边就取哪一边）→ 受保护路径一律取主线 → 门禁。"""
     base = _git(root, "merge-base", main, head).strip() or main
     merged_tree, textual = _merge_tree(root, main, head)
@@ -691,6 +692,12 @@ def _merged_tree(manager, project_id: str, root: Path, record: dict, main: str, 
         if worktree.is_protected(rel):
             picks[rel] = main
     merged_tree = _tree_with(root, merged_tree, picks)
+    if forbid_deletes:
+        # 自主构建硬性不做「删除已确认的内容」（详设 1.6 #2、8.5）：主线上已有的本体文件被删、被改名，这一片不合入
+        removed = [rel for status, rel in worktree.diff(root, main, merged_tree)
+                   if status == "D" and rel.startswith("ontology/") and not _derived(rel)]
+        if removed:
+            raise WorkspaceError("自主构建不能删除已确认的内容", 422, "delete_forbidden", {"paths": removed[:50]})
     try:
         result = gates.compare(root, worktree.tree_of(root, main), merged_tree)
     except gates.GateUnavailable as exc:

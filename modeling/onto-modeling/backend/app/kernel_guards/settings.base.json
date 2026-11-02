@@ -17,7 +17,11 @@
       "Write(/.claude/**)",
       "Write(/CLAUDE.md)",
       "Write(/README.md)",
-      "Write(/.onto/**)"
+      "Write(/.onto/**)",
+      "Bash(git tag release/*)",
+      "Bash(git tag -a release/*)",
+      "Bash(git tag -d release/*)",
+      "Bash(git push --tags*)"
     ]
   },
   "hooks": {

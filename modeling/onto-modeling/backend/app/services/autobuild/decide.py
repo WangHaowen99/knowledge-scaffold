@@ -21,10 +21,24 @@ import uuid
 from . import store
 
 ASK_TOOL = "AskUserQuestion"
+# 硬性不做（详设 1.6 #2）：删除文件、打或删发布标签。守卫与合入另有一层，这里是工具确认卡这一层
+_FORBIDDEN_BASH = re.compile(
+    r"(?:^|[\s;&|(`])(?:rm|rmdir|unlink|shred)(?:\s|$)|\bgit\s+(?:-\S+\s+)*rm\b|\s-delete\b"
+    r"|\bgit\b[^\n;&|]*\b(?:tag|push|update-ref)\b[^\n;&|]*release/")
+FORBIDDEN_MESSAGE = "自主构建不能删除内容，也不能打发布标签"
 UNSTATED_CONFIDENCE = 0.5
 SUSPEND_ANSWER = "挂起：这个问题先不定，等用户回答。跳过和它相关的部分，继续做别的。"
 _CONFIDENCE = re.compile(r"(?:置信度|confidence)\s*[:：=]?\s*(0(?:\.\d+)?|1(?:\.0+)?|\.\d+)", re.IGNORECASE)
 _ANCHOR = re.compile(r"((?:file|ev|snap|db|url):[^\s，。；、,;)）\]】]+)")
+
+
+def forbidden(tool_name: str, tool_input) -> bool:
+    """工具确认卡里的删除、发布标签：策略一律拒绝。"""
+    if tool_name in ("Delete", "DeleteFile"):
+        return True
+    if tool_name != "Bash" or not isinstance(tool_input, dict):
+        return False
+    return bool(_FORBIDDEN_BASH.search(str(tool_input.get("command") or "")))
 
 
 def confidence(text: str) -> float | None:
@@ -149,11 +163,15 @@ async def respond(session, tool_name: str, tool_input: dict, title: str | None, 
         return None
     request_id = uuid.uuid4().hex[:12]
     if tool_name != ASK_TOOL:
+        refused = forbidden(tool_name, tool_input)
         session.broadcast({"type": "permission_request", "request_id": request_id, "tool_name": tool_name,
                            "tool_input": tool_input if isinstance(tool_input, dict) else {}, "title": title,
                            "description": description, "timeout_s": 0, "expires_at": time.time()})
-        session.broadcast({"type": "permission_resolved", "request_id": request_id, "behavior": "allow",
-                           "by": "autobuild_policy", "message": ""})
+        session.broadcast({"type": "permission_resolved", "request_id": request_id,
+                           "behavior": "deny" if refused else "allow", "by": "autobuild_policy",
+                           "message": FORBIDDEN_MESSAGE if refused else ""})
+        if refused:
+            return {"behavior": "deny", "message": FORBIDDEN_MESSAGE}
         return {"behavior": "allow", "updated_input": None}
     raws = [item if isinstance(item, dict) else {"question": str(item)} for item in (tool_input or {}).get("questions") or []]
     questions = timeline.build_questions(request_id, tool_input if isinstance(tool_input, dict) else {},

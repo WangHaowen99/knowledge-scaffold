@@ -94,6 +94,8 @@ class Call:
     command: str = ""
     # 动 git 内部设置的子命令（稀疏规则、跳过检出标记、worktree、钩子路径）：副本靠它们隔开资料区
     git_internal: list[str] = field(default_factory=list)
+    # 打、删、推发布标签（release/*）：发布只在发布页做，陪伴建模、自主构建都不让助手打
+    git_release: list[str] = field(default_factory=list)
 
 
 # ---- 输入与项目根 ----
@@ -371,6 +373,9 @@ class _Parser:
                 or (sub == "config" and any(key in lowered for key in GIT_INTERNAL_CONFIG))
                 or any(key in lowered for key in ("core.sparsecheckout", "core.hookspath"))):
             self.call.git_internal.append(f"git {sub}")
+        if (sub in ("tag", "push", "update-ref") and any("release/" in arg for arg in args)) \
+                or (sub == "push" and "--tags" in args):
+            self.call.git_release.append(" ".join(["git", sub, *args])[:120])
         if sub not in GIT_PATH_SUBCOMMANDS:
             return cwd
         if "--" in args:
@@ -508,6 +513,8 @@ def _toolset_dirs(call: Call) -> list[Path]:
 
 
 def guard_toolset(call: Call) -> str | None:
+    if call.git_release:
+        return f"发布标签（release/*）只在发布页打，助手不能打、删、推：{'; '.join(dict.fromkeys(call.git_release))}。"
     if call.git_internal:
         return f"不能改版本库的内部设置：{'; '.join(dict.fromkeys(call.git_internal))}。"
     hits = _hits(call, _toolset_dirs(call), (".claude", "CLAUDE.md", ".onto", "assembled", ".git"))
