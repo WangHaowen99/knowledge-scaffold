@@ -59,6 +59,13 @@ def _entry(project_id: str, entry_id: str) -> tuple[dict, dict]:
     return found
 
 
+def _ensure_live(run: dict, slice_ref: dict | None) -> None:
+    """撤回了的片上的决定与挂起问题不再接受、改判、回答（审查 G）：改判与补上会把撤掉的内容又做回来。"""
+    slice_id = (slice_ref or {}).get("id")
+    if slice_id and ((run.get("slices") or {}).get(slice_id) or {}).get("reverted"):
+        raise ApiError("slice_reverted", "这一片已经撤回", 409, {"slice_id": slice_id})
+
+
 def _count(outcome: str, project_id: str, count: int = 1) -> None:
     from ...governance import telemetry
 
@@ -68,7 +75,8 @@ def _count(outcome: str, project_id: str, count: int = 1) -> None:
 
 def accept(project_id: str, entry_id: str) -> dict:
     """AB-11：接受这个决定；受影响产物的「需复核」随之去掉（这一片都复核过时）。"""
-    run, _entry_found = _entry(project_id, entry_id)
+    run, found = _entry(project_id, entry_id)
+    _ensure_live(run, found.get("slice"))
 
     def change(record: dict) -> None:
         for entry in record.get("ledger") or []:
@@ -157,6 +165,7 @@ async def rejudge(project_id: str, entry_id: str, body: dict) -> dict:
     from ..session_host import command_tasks
 
     run, entry = _entry(project_id, entry_id)
+    _ensure_live(run, entry.get("slice"))
     label = _option_label(entry, body)
 
     def change(record: dict) -> None:
@@ -184,6 +193,7 @@ async def rejudge(project_id: str, entry_id: str, body: dict) -> dict:
 async def send_rejudge(project_id: str, run_id: str, entry_id: str, *, task_id: str | None = None) -> dict:
     run = _run(project_id, run_id)
     entry = next(item for item in run["ledger"] if item["id"] == entry_id)
+    _ensure_live(run, entry.get("slice"))
     line = _command_for(run, entry["slice"], entry.get("step"))
     text = (f"改判：「{entry.get('question')}」原来按「{entry.get('chosen')}」做，改为「{entry.get('rejudged_to')}」。"
             "只重做受影响的部分。")
@@ -204,17 +214,21 @@ def suspensions(project_id: str, run_id: str) -> dict:
 
 async def answer(project_id: str, suspension_id: str, body: dict) -> dict:
     """AB-15：回答挂起的问题。陪伴模式下马上补上（往运行对话发这一片这一步的命令；有运行没结束时排到它结束后）；
-    `defer_to_next_run` 留到下一次。"""
+    `defer_to_next_run` 留到下一次：带着的回答记下，下一次自主构建做到这一片时补做这一步、把回答注入给助手，
+    做完才算回答过（审查 I）。留到下一次的还可以现在回答。"""
     from ..session_host import command_tasks
 
     found = store.find_suspension(project_id, suspension_id)
-    if found is None or found[1].get("state") != "open":
+    if found is not None:
+        _ensure_live(found[0], found[1].get("slice"))
+    if found is None or found[1].get("state") not in ("open", "deferred"):
         raise ApiError("suspension_not_found", "挂起问题不存在或已回答", 404)
     run, item = found
     action = body.get("action")
     if action not in (None, "", "use_generic", "defer_to_next_run"):
         raise ApiError("invalid_argument", "action 取值不合法", 400, {"fields": {"action": "enum"}})
-    label = "" if action else _option_label(item, body)
+    chose = body.get("option_id") or str(body.get("custom_text") or "").strip()
+    label = _option_label(item, body) if not action or (action == "defer_to_next_run" and chose) else ""
     state = "deferred" if action == "defer_to_next_run" else "answered"
 
     def change(record: dict) -> None:
@@ -244,6 +258,7 @@ async def send_answer(project_id: str, run_id: str, suspension_id: str, *, task_
     """挂起的问题回答之后（陪伴模式）：往运行对话发这一片这一步的命令，把跳过的部分补上。"""
     run = _run(project_id, run_id)
     item = next(entry for entry in run["suspensions"] if entry["id"] == suspension_id)
+    _ensure_live(run, item.get("slice"))
     line = _command_for(run, item["slice"], item.get("step"))
     reply = f"按通用做法处理「{item.get('title')}」。" if item.get("answer") == "use_generic" else \
         f"「{item.get('title')}」的回答：{item.get('answer')}。把之前跳过的部分补上。"

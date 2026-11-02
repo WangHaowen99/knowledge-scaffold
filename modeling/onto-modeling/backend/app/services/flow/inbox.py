@@ -337,7 +337,8 @@ def _autobuild(project_id: str) -> list[dict]:
             item["high_confidence"] = True
             items.append(item)
         for suspended in views.live_suspensions(run):
-            if suspended.get("state") != "open":
+            # 留到下一次的也列着，直到下一次运行带着回答补做完（审查 I）；这时还可以改成现在回答
+            if suspended.get("state") not in views.UNRESOLVED:
                 continue
             actions = ["use_generic"] if suspended.get("kind") == "unreadable_material" else ["answer", "use_generic"]
             items.append(_item("suspension", suspended["id"], suspended.get("title") or "", source="autobuild",

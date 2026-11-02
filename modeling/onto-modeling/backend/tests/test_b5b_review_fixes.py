@@ -362,6 +362,57 @@ def test_D_confidence_parsing_and_tags():
     assert low["option"]["label"] == "按通用做法（保守）" and low["assumption"] is True
 
 
+# ---------------------------------------------------------------------------
+# G、I、K、L 与推断：复核、挂起、按片撤回
+# ---------------------------------------------------------------------------
+
+ASK_TWO = [{"question": "临期按几级分", "header": "置信度 0.6", "options": [{"label": "四级（推荐）"},
+                                                                       {"label": "三级（保守）"}]},
+           {"question": "审批交给谁", "header": "新增对象 · 置信度 0.9", "options": [{"label": "区域（推荐）"},
+                                                                            {"label": "门店"}]}]
+
+
+def test_G_reverted_slices_refuse_rejudge_and_answers(ab):
+    client, _workspaces, project_id, _root = ab
+    AutoEngine.hooks["/ontology-extract-operation:s1"] = [ask(ASK_TWO)]
+    run = start(client, project_id, scope=ONE["scope"], budget=ONE["budget"],
+                advanced={"must_suspend_kinds": ["新增对象"]})
+    wait_state(client, project_id, run["run_id"], "completed")
+    record = store.get(project_id, run["run_id"])
+    entry, suspension = record["ledger"][0], record["suspensions"][0]
+    base = f"/api/v1/projects/{project_id}/autobuild"
+    assert client.post(f"{base}/runs/{run['run_id']}/slices/s1/revert").status_code == 200
+    sent = len(AutoEngine.sent)
+    for response in (client.post(f"{base}/ledger/{entry['id']}/rejudge", json={"option_id": entry["options"][0]["id"]}),
+                     client.post(f"{base}/ledger/{entry['id']}/accept"),
+                     client.post(f"{base}/suspensions/{suspension['id']}/answer",
+                                 json={"option_id": suspension["options"][0]["id"]})):
+        assert response.status_code == 409 and response.json()["code"] == "slice_reverted", response.text
+    assert len(AutoEngine.sent) == sent
+
+
+def test_I_defer_to_next_run_keeps_the_answer_and_the_next_run_uses_it(ab):
+    client, _workspaces, project_id, _root = ab
+    AutoEngine.hooks["/ontology-extract-operation:s1"] = [ask(ASK_TWO[1:])]
+    first = start(client, project_id, scope=ONE["scope"], budget=ONE["budget"],
+                  advanced={"must_suspend_kinds": ["新增对象"]})
+    wait_state(client, project_id, first["run_id"], "completed")
+    item = store.get(project_id, first["run_id"])["suspensions"][0]
+    answered = client.post(f"/api/v1/projects/{project_id}/autobuild/suspensions/{item['id']}/answer",
+                           json={"option_id": item["options"][1]["id"], "action": "defer_to_next_run"}).json()
+    assert answered["suspension"]["state"] == "deferred" and answered["command_task"] is None
+    inbox = client.get(f"/api/v1/projects/{project_id}/inbox", params={"filter": "autobuild_review"}).json()
+    assert f"suspension:{item['id']}" in [entry["id"] for entry in inbox["items"]]
+    AutoEngine.hints.clear()
+    # 下一次运行：这一片做完了，也为它补做挂起的那一步，注入里带上回答
+    second = start(client, project_id, scope=ONE["scope"], budget=ONE["budget"])
+    wait_state(client, project_id, second["run_id"], "completed")
+    assert any("审批交给谁" in hint and "门店" in hint for hint in AutoEngine.hints)
+    assert store.get(project_id, first["run_id"])["suspensions"][0]["state"] == "answered"
+    inbox = client.get(f"/api/v1/projects/{project_id}/inbox", params={"filter": "autobuild_review"}).json()
+    assert f"suspension:{item['id']}" not in [entry["id"] for entry in inbox["items"]]
+
+
 def test_snapshot_sees_a_same_size_edit_made_in_the_same_second_as_the_checkout(tmp_path):
     """附带（排查 K 的偶发失败时发现）：快照拷索引时没保留时间戳，git 的同秒防护失效；
     同一秒里刚检出又被改成同样长度的文件被当成没改，变更集被悄悄关掉。"""

@@ -17,6 +17,9 @@ INSTRUCTIONS = (
 )
 
 
+ANSWER_LATER = "defer_to_next_run"
+
+
 def _path(project_id: str) -> Path:
     return store.project_dir(project_id) / "current.json"
 
@@ -43,8 +46,8 @@ def for_engine(project_root: Path, conversation_id: str | None) -> str:
     return str(data.get("text") or "")
 
 
-def compose(run: dict, unit: dict, *, brief: str, notes: list[str]) -> str:
-    """一步的注入：说明、这一片（第几片）、片说明、最近的自动决定、用户补充。"""
+def compose(run: dict, unit: dict, *, brief: str, notes: list[str], carried: list[dict] = ()) -> str:
+    """一步的注入：说明、这一片（第几片）、片说明、上次留到这一次的问题与回答、最近的自动决定、用户补充。"""
     units = [item for item in run.get("units") or [] if item["kind"] == unit["kind"]]
     position = next((index + 1 for index, item in enumerate(units) if item["id"] == unit["id"]), 0)
     head = (f"自主构建 · 运行 #{run['run_no']} · 「{unit['name']}」（{position}/{len(units)}）"
@@ -52,6 +55,10 @@ def compose(run: dict, unit: dict, *, brief: str, notes: list[str]) -> str:
     parts = [head, INSTRUCTIONS]
     if brief:
         parts.append(f"片说明：\n{brief.strip()}")
+    if carried:
+        lines = [f"- {item.get('title')}：" + (item["answer"] if item.get("answer") not in (None, "", ANSWER_LATER)
+                                               else "还没回答，拿不准照常提问") for item in carried]
+        parts.append("上次挂起、留到这一次的问题（按回答把跳过的部分补上）：\n" + "\n".join(lines))
     recent = [entry for entry in run.get("ledger") or []][-20:]
     if recent:
         lines = [f"- {(entry.get('slice') or {}).get('name') or ''}：{entry.get('question')} → {entry.get('chosen')}"

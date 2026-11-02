@@ -16,6 +16,8 @@ LEDGER_FIELDS = ("id", "run_id", "at", "slice", "question", "chosen", "options",
                  "assumption", "anchors", "affected", "review_state", "rejudged_to", "reason_text", "summary")
 SUSPENSION_FIELDS = ("id", "run_id", "at", "slice", "title", "reason", "handled_as", "kind", "options",
                      "allow_custom", "actions", "state")
+# 还没解决的挂起问题：没回答的、留到下一次还没补做的
+UNRESOLVED = ("open", "deferred")
 KINDS = {"object": "objects", "operation": "operations", "rule": "rules"}
 KIND_LABELS = {"objects": "对象", "operations": "操作", "rules": "规则"}
 
@@ -108,7 +110,7 @@ def summary(run: dict, now: float | None = None) -> dict:
                  "budget": money((limits.get("max_cost") or {}).get("amount"), currency)},
         "slices": {"done": done_slices, "total": len(slices)},
         "decisions": len(ledger),
-        "suspended": sum(1 for item in live_suspensions(run) if item.get("state") == "open"),
+        "suspended": sum(1 for item in live_suspensions(run) if item.get("state") in UNRESOLVED),
         "needs_review": sum(1 for entry in ledger if entry.get("review_state") == "pending"),
         "started_at": iso(run.get("started_at") or run.get("created_at")), "ended_at": iso(run.get("ended_at")),
     }
@@ -234,7 +236,7 @@ def report(run: dict, now: float | None = None) -> dict:
                        "warnings": sum(int((info.get("checks") or {}).get("warnings") or 0) for info in infos)},
             "scenarios": {"passed": 0, "total": 0, "suspended_failures": 0},
             "decisions": {"total": len(ledger), "high_confidence": high, "needs_look": len(ledger) - high},
-            "suspended": sum(1 for item in live_suspensions(run) if item.get("state") == "open"),
+            "suspended": sum(1 for item in live_suspensions(run) if item.get("state") in UNRESOLVED),
             "cost": money((run.get("budget") or {}).get("cost") or 0, currency),
             "tokens": int((run.get("budget") or {}).get("tokens") or 0),
             "budget": money((limits.get("max_cost") or {}).get("amount"), currency),

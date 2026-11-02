@@ -412,7 +412,11 @@ class AutobuildRunner:
             except Exception:  # noqa: BLE001 - 片说明是增强信息
                 brief = ""
         notes = [item["text"] for item in run.get("notes") or [] if not item.get("read")]
-        hint.write(run["project_id"], run["conversation_id"], hint.compose(run, unit, brief=brief, notes=notes))
+        carried = [found[1] for found in (store.find_suspension(run["project_id"], ref["id"])
+                                          for ref in unit.get("carried") or [])
+                   if found is not None and found[1].get("state") == "deferred"]
+        hint.write(run["project_id"], run["conversation_id"],
+                   hint.compose(run, unit, brief=brief, notes=notes, carried=carried))
         if notes:
             def mark(record: dict) -> None:
                 for item in record.get("notes") or []:
@@ -696,9 +700,21 @@ class AutobuildRunner:
                         checks={"errors": int(checks.get("errors") or 0), "warnings": int(checks.get("warnings") or 0)})
 
         run = store.update(project_id, run_id, mark)
+        self._consume_carried(project_id, run_id, unit)
         self._slice_card(run, unit)
         self._updated(run)
         return "merged"
+
+    @staticmethod
+    def _consume_carried(project_id: str, run_id: str, unit: dict) -> None:
+        """之前留到这一次的挂起问题：这一片做完（带着回答补做过）就算回答过，待处理里不再列（审查 I）。"""
+        for ref in unit.get("carried") or []:
+            def change(record: dict, ref=ref) -> None:
+                for item in record.get("suspensions") or []:
+                    if item.get("id") == ref["id"] and item.get("state") == "deferred":
+                        item.update(state="answered", consumed_by=run_id)
+
+            store.update(project_id, ref["run_id"], change)
 
     async def _safe_point(self, project_id: str, run_id: str, unit: dict) -> str:
         """一片合入之后：EP-15；停在安全点、转为陪伴、预算用完、在安全点暂停（维护）在这里生效。"""
@@ -1069,6 +1085,7 @@ class AutobuildRunner:
     # ------------------------------------------------------------------
 
     async def _dispatch_rejudges(self, project_id: str, run_id: str) -> None:
+        from ..session_host import command_tasks
         from . import review
 
         run = store.get(project_id, run_id)
@@ -1084,6 +1101,12 @@ class AutobuildRunner:
                 else:
                     await review.send_rejudge(project_id, item.get("run_id") or run_id, item["entry_id"],
                                               task_id=item.get("task_id"))
+            except ApiError as exc:
+                if exc.code != "slice_reverted":
+                    _log.exception("改判发不出去（%s %s）", project_id, item.get("entry_id"))
+                # 排队期间这一片撤回了：不再发，任务记为取消（审查 G）
+                command_tasks.update(project_id, item.get("task_id") or "", state="cancelled",
+                                     result={"summary": "这一片已经撤回", "refs": []})
             except Exception:  # noqa: BLE001 - 一条改判发不出去不挡别的
                 _log.exception("改判发不出去（%s %s）", project_id, item.get("entry_id"))
 
