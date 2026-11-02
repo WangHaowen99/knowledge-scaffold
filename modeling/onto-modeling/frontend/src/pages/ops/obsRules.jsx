@@ -62,8 +62,8 @@ function RuleModal({ rule, isNew, perm, onClose, onDone }) {
     }
   };
 
-  let sub = '规则按条件与窗口评估；触发时按级别通知，处置手册随告警一起带上。';
-  if (pack) sub = `由 ${rule.source} 在包清单里声明：只能停用或启用，不能修改和删除。`;
+  let sub = null;
+  if (pack) sub = `由 ${rule.source} 声明，只能启停`;
   else if (!perm.opsWrite) sub = `${perm.hint('ops.write')}。`;
   const title = isNew ? '新建告警规则' : editable ? '修改告警规则' : '告警规则';
 
@@ -86,7 +86,7 @@ function RuleModal({ rule, isNew, perm, onClose, onDone }) {
           <Inp value={form.name} disabled={!editable} error={!!shown.name} onChange={(e) => set('name')(e.target.value)} placeholder="如：节点失败率过高" />
         </Field>
         <div className="row g12" style={{ alignItems: 'flex-start' }}>
-          <Field label="触发条件" req className="grow" hint={errHint(shown.condition) || '指标表达式，如 node.fail_rate > 5%'}>
+          <Field label="触发条件" req className="grow" hint={errHint(shown.condition)}>
             <Inp mono value={form.condition} disabled={!editable} error={!!shown.condition} onChange={(e) => set('condition')(e.target.value)} placeholder="node.fail_rate > 5%" />
           </Field>
           <Field label="窗口" hint="留空表示即时判断">
@@ -98,7 +98,7 @@ function RuleModal({ rule, isNew, perm, onClose, onDone }) {
             <Seg items={RULE_LEVELS} value={form.level} onChange={set('level')} />
           </div>
         </Field>
-        <Field label="处置手册" hint={editable ? 'Markdown；告警通知和总览里会带上第一句' : null}>
+        <Field label="处置手册" hint={editable ? '支持 Markdown' : null}>
           {editable ? (
             <Area minHeight={130} value={form.runbook_md} onChange={(e) => set('runbook_md')(e.target.value)} placeholder={'第一句写最该做的事，比如「熔断出错的包」。\n\n1. …'} />
           ) : (

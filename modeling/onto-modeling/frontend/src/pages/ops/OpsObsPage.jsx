@@ -12,11 +12,11 @@ import { Spark } from './charts.jsx';
 import { ExportersCard, ExportersModal } from './obsExporters.jsx';
 import { LogsCard } from './obsLogs.jsx';
 import {
-  OBS_RANGES, addLabel, attributionRow, labelName, labelsQuery, metricView, parseLabelInput,
+  OBS_RANGES, addLabel, attributionColumns, attributionRow, labelName, labelsQuery, metricView, parseLabelInput, visibleMetricCards,
 } from './obsModel.js';
 import { RulesCard } from './obsRules.jsx';
 import { TraceCard } from './obsTrace.jsx';
-import { OpsShell } from './parts.jsx';
+import { OpsShell, useEvidenceOn } from './parts.jsx';
 import '../../styles/ops-obs.css';
 
 function LabelFilter({ tags, onChange }) {
@@ -36,7 +36,6 @@ function LabelFilter({ tags, onChange }) {
     <div className="card pad">
       <div className="row mb8">
         <span className="b"><Icon name="filter" size={14} /> 公共标签过滤</span>
-        <span className="muted sm">所有图表和日志按这组标签联动</span>
         <span className="sp" />
         <Button size="xs" kind="ghost" disabled={!tags.length} onClick={() => onChange([])}>清空</Button>
       </div>
@@ -68,6 +67,7 @@ function LabelFilter({ tags, onChange }) {
 
 function MetricCards({ range, labels }) {
   const { api } = useApp();
+  const evidenceOn = useEvidenceOn();
   const [cards, setCards] = useState(null);
   const [error, setError] = useState(null);
   useEffect(() => {
@@ -80,14 +80,13 @@ function MetricCards({ range, labels }) {
   if (error) return <div className="card pad mt16 muted sm">指标没取到：{error}</div>;
   return (
     <div className="op-k5 mt16">
-      {(cards || []).map((c) => {
+      {visibleMetricCards(cards, { evidenceOn }).map((c) => {
         const v = metricView(c);
         return (
           <div className="op-mc" key={v.id}>
             <div className="lb"><Icon name={v.icon} size={12} />{v.label}</div>
             <div className="v" style={v.tone ? { color: v.tone } : undefined}>{v.big}{v.small ? <small>{v.small}</small> : null}</div>
             <Spark points={v.series} w={180} h={30} color={v.color} fill={v.fill} />
-            <div className="xs muted mt4">{v.note || ' '}</div>
           </div>
         );
       })}
@@ -109,14 +108,16 @@ function AttributionCard({ range, labels }) {
   }, [api, by, range, labels]);
   const node = by === 'node';
   const rows = (items || []).map(attributionRow);
+  const optional = attributionColumns(items);
   let body;
   if (error) body = <div className="muted sm">归因没取到：{error}</div>;
-  else if (items && !items.length) body = <div className="muted sm">这段时间没有带包、节点标签的样本（插件运行时接入后才有数据）。</div>;
+  else if (items && !items.length) body = <div className="muted sm">这段时间没有归因数据</div>;
   else {
     body = (
       <Table
         compact
-        cols={[node ? '节点' : '包', node ? '来自' : '版本', '调用', '失败率', '平均耗时', '守卫拒绝', '重跑', '首次接受率']}
+        cols={[node ? '节点' : '包', node ? '来自' : '版本', '调用', '失败率', '平均耗时', '守卫拒绝',
+          ...(optional.includes('reruns') ? ['重跑'] : []), ...(optional.includes('first_accept_pct') ? ['首次接受率'] : [])]}
         rows={rows.map((r) => [
           <b key="n" className={node ? 'mono' : undefined} style={node ? { fontSize: 12 } : undefined}>{r.name}</b>,
           <span key="v" className="tag">{r.version}</span>,
@@ -124,16 +125,16 @@ function AttributionCard({ range, labels }) {
           r.failHigh ? <span key="f" className="chip red sm">{r.fail}</span> : <span key="f" className="num">{r.fail}</span>,
           <span key="d" className="num">{r.duration}</span>,
           <span key="g" className="num">{r.guards}</span>,
-          <span key="r" className="num">{r.reruns}</span>,
-          r.accept == null ? <span key="a" className="faint">—</span>
-            : <div key="a" className="row"><Prog p={r.accept} w="54px" thin /><span className="num xs">{r.accept}%</span></div>,
+          ...(optional.includes('reruns') ? [<span key="r" className="num">{r.reruns}</span>] : []),
+          ...(optional.includes('first_accept_pct') ? [r.accept == null ? <span key="a" className="faint">—</span>
+            : <div key="a" className="row"><Prog p={r.accept} w="54px" thin /><span className="num xs">{r.accept}%</span></div>] : []),
         ])}
       />
     );
   }
   return (
     <Card
-      className="mt16" title="按包 / 按节点归因" icon="pie" sub="调用、失败、耗时、守卫拒绝、重跑、首次被接受的比例"
+      className="mt16" title="按包 / 按节点归因" icon="pie"
       extra={<Seg items={[['pack', '按包'], ['node', '按节点']]} value={by} onChange={setBy} />}
     >
       {body}
@@ -160,17 +161,7 @@ function Obs({ route, perm }) {
 
   return (
     <>
-      <PageHead
-        eyebrow="运维中心"
-        title="可观测"
-        desc="统一信号：结构化日志、指标、链路、事件。每条信号都带公共标签，可以按包、按节点归因。"
-        actions={(
-          <>
-            <Seg items={OBS_RANGES} value={range} onChange={setRange} />
-            <Button icon="sliders" disabled={!exp.items} onClick={() => openExporters()}>导出器设置</Button>
-          </>
-        )}
-      />
+      <PageHead title="可观测" actions={<Seg items={OBS_RANGES} value={range} onChange={setRange} />} />
       <LabelFilter tags={tags} onChange={setTags} />
       <MetricCards range={range} labels={labels} />
       <AttributionCard range={range} labels={labels} />

@@ -6,6 +6,7 @@ import { useApp } from '../../app/context.js';
 import { navigate } from '../../app/router.js';
 import { ShellG } from '../../shell/Shell.jsx';
 import { SNav } from '../../shell/SideNav.jsx';
+import { evidenceFromSources } from '../../state/evidence.js';
 import { can, deniedHint, opsListenLabel, opsRoleCard } from '../../state/roles.js';
 import { Avatar, Button, Chip, Empty, Icon } from '../../ui/index.jsx';
 import '../../styles/ops.css';
@@ -77,6 +78,18 @@ export function OpsShell({ active, children, bodyStyle }) {
       {typeof children === 'function' ? children(perm) : children}
     </ShellG>
   );
+}
+
+// 证据源本期不开放（ADR-0056）：运维页在项目外，按 EV-01 读不读得到判断；读之前、读不到（501、无权限、出错）都按不可用
+export function useEvidenceOn() {
+  const { api } = useApp();
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api.evidenceSources().then((r) => alive && setOn(evidenceFromSources(r)), () => alive && setOn(false));
+    return () => { alive = false; };
+  }, [api]);
+  return on;
 }
 
 // 当前用户在运维中心能做什么；按钮用 disabled + title={perm.hint(...)} 表示只读

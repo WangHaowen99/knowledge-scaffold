@@ -11,7 +11,7 @@ export function ExportersCard({ data, error, perm, onOpen }) {
   const items = data || [];
   const denied = perm.opsWrite ? undefined : perm.hint('ops.write');
   return (
-    <Card title="导出器" icon="cloud" sub={data ? `${items.length} 个` : ''} extra={<Button size="xs" disabled={!!error} onClick={() => onOpen()}>配置</Button>}>
+    <Card title="导出器" icon="cloud" extra={<Button size="xs" disabled={!!error} onClick={() => onOpen()}>配置</Button>}>
       {error ? <div className="muted sm">导出器没取到：{error}</div> : items.map((e) => {
         const v = exporterView(e);
         return (
@@ -26,7 +26,6 @@ export function ExportersCard({ data, error, perm, onOpen }) {
           </div>
         );
       })}
-      <div className="xs muted mt8">信号格式由内核统一，导出器只负责送出去；切换后滚动重启生效。</div>
     </Card>
   );
 }
@@ -62,7 +61,7 @@ export function ExportersModal({ items, change, perm, onClose, onSaved }) {
     setError(null);
     try {
       const r = await api.ops.saveExporters(exportersBody(draft));
-      toast('已保存导出器设置，下次滚动重启生效');
+      toast('已保存，滚动重启后生效');
       onSaved(r.items);
     } catch (e) {
       setError(errorText(e));
@@ -73,8 +72,7 @@ export function ExportersModal({ items, change, perm, onClose, onSaved }) {
   return (
     <Modal
       open onClose={onClose} w={640} icon="sliders"
-      title="导出器（OTel / Prometheus / 本地文件 / 外部平台）"
-      sub="导出器是一个可替换实现，切换后进程级生效。信号格式由内核统一，导出器只负责送出去。"
+      title="导出器"
       foot={(
         <>
           <Button onClick={onClose}>取消</Button>
@@ -104,7 +102,7 @@ export function ExportersModal({ items, change, perm, onClose, onSaved }) {
               </div>
               {open ? (
                 <div className="op-exp-ed">
-                  <Field label="地址" req={e.enabled} hint={e.id === 'prometheus' ? '运维监听上的抓取路径' : '采集端地址，如 grpc://collector.example.com:4317'}>
+                  <Field label="地址" req={e.enabled} hint={e.id === 'prometheus' ? '运维监听上的抓取路径' : null}>
                     <Inp mono value={e.target || ''} onChange={(ev) => patch(e.id, { target: ev.target.value })} placeholder="grpc://collector.example.com:4317" />
                   </Field>
                   <Field label="信号">

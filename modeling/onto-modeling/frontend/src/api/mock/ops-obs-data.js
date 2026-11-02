@@ -155,7 +155,8 @@ export function metrics({ range = '24h', labels = '', p1 = false } = {}) {
   const k = (RANGE_SCALE[range] ?? 1) * (labels ? 0.12 : 1);
   const n = (v) => Math.max(0, Math.round(v * k));
   if (p1) {
-    // B3b 后端的形状：value 是数、unit 是计量单位；合入、证据采集恒为 0 并带 note
+    // B3b 后端的形状：value 是数、unit 是计量单位；合入、证据采集恒为 0 并带 note。
+    // 合入按 I1 的口径带 unavailable（变更集合入还没计数，前端不画这张卡，R18）
     return {
       cards: [
         card('pool', '会话池与排队', 7, '个', '上限 12 · 排队 1', '', 'warn'),
@@ -165,7 +166,7 @@ export function metrics({ range = '24h', labels = '', p1 = false } = {}) {
         card('model_fail_rate', '模型失败', 0.8, '%', `${n(3)} 次`, ''),
         card('guard_denies', '守卫拒绝', n(23), '次', '', ''),
         card('check_failures', '检查失败', n(41), '次', '', ''),
-        { ...card('merges', '合入', 0, '次', '', '变更集在 P2'), series: Array(12).fill(0) },
+        { ...card('merges', '合入', 0, '次', '', '变更集在 P2'), series: Array(12).fill(0), unavailable: true },
         { ...card('collections', '证据采集', 0, '次', '', '证据源在 P3'), series: Array(12).fill(0) },
         card('reconnects', '热更新与重连', n(14), '次', '', ''),
       ],
