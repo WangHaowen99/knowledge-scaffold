@@ -68,15 +68,6 @@ export function versionSub(v) {
   if (v.run) return `自主构建运行 #${v.run.run_no}${v.run.slice_name ? ` · ${v.run.slice_name}` : ''}`;
   return [srcLabel(v), fmtStamp(v.at)].filter(Boolean).join(' · ');
 }
-const ORIGIN = {
-  assistant: '由助手确认生效生成', web: '由网页编辑生成', studio: '由 Studio 编辑生成', mcp: '由 MCP 写入生成',
-  import: '由导入生成', plugin: '由能力变更生成', revert: '由回退生成',
-};
-export function originText(v) {
-  if (!v) return '';
-  if (v.run) return `${v.version_label} 由自主构建运行 #${v.run.run_no} 生成`;
-  return `${v.version_label} ${ORIGIN[v.source] || '由修改生成'}`;
-}
 
 // 外壳顶栏「知识包 vX」：版本列表（V-01）知道主线最新版本，元数据落后时跟上
 export function syncMeta(meta, list) {
@@ -113,7 +104,7 @@ export function pickLanding(items, query = {}) {
     if (!from) return { commit: head.commit, note: '' };
     const hit = list.find((x) => x.commit === from || (from.length >= 6 && x.commit.startsWith(from)));
     if (hit) return { commit: hit.commit, note: '' };
-    return { commit: head.commit, note: `没有找到版本 ${from.slice(0, 8)}，改为和当前版本的上一版对比` };
+    return { commit: head.commit, note: '没有找到这个版本，已改为对比上一版' };
   }
   if (!v && !run) return { commit: head.commit, note: '' };
   const byLabel = v ? list.find((x) => x.version_label === v) : null;
@@ -121,7 +112,7 @@ export function pickLanding(items, query = {}) {
   if (byLabel && (!run || !byLabel.run || sameRun(byLabel))) return { commit: byLabel.commit, note: '' };
   const bySlice = run ? list.find(sameRun) : null;
   if (bySlice) return { commit: bySlice.commit, note: '' };
-  if (byLabel) return { commit: byLabel.commit, note: `${byLabel.version_label} 不是这次运行里这一片生成的，这一片可能还没有合入` };
+  if (byLabel) return { commit: byLabel.commit, note: `${byLabel.version_label} 不是这一片生成的，这一片可能还没完成` };
   return { commit: head.commit, note: `没有找到版本 ${v || ''}，可能已被回退或还没有生成` };
 }
 
@@ -255,16 +246,16 @@ export function revertCountText(files) {
 // 有未确认的助手修改、助手正在跑、自主构建中：都不能回退（V-06 返回 423 / 409），弹窗里先说明
 export function revertBlock(lock) {
   const st = lock?.state;
-  if (st === 'pending_confirm') return { text: '助手的修改还没确认。先在工作台确认生效或撤回这一轮，再回退。', action: 'confirm' };
-  if (st === 'assistant_running') return { text: '助手正在修改，这一轮结束并确认生效或撤回后才能回退。', action: 'chat' };
-  if (st === 'autobuild_slice') return { text: '自主构建正在运行，暂停或等它结束后才能回退。', action: 'run' };
+  if (st === 'pending_confirm') return { text: '助手的修改还没确认', action: 'confirm' };
+  if (st === 'assistant_running') return { text: '助手正在修改', action: 'chat' };
+  if (st === 'autobuild_slice') return { text: '自主构建正在运行', action: 'run' };
   return null;
 }
 
 // 回退失败的提示（按契约错误码）
 export function revertErrorText(e, fallback) {
   if (e?.code === 'write_scope_locked') return revertBlock(e.details || { state: 'pending_confirm' })?.text || fallback;
-  if (e?.code === 'autobuild_running') return '自主构建正在运行，暂停或等它结束后才能回退。';
+  if (e?.code === 'autobuild_running') return '自主构建正在运行';
   if (e?.code === 'nothing_to_revert') return '当前内容和这个版本一致，不用回退。';
   return fallback;
 }
@@ -281,10 +272,10 @@ export function tagLabelError(label) {
 export function versionMenu(v) {
   return [
     { key: 'files', label: '查看此版本的文件', icon: 'eye' },
-    { key: 'compare', label: '与当前对比', icon: 'split', disabled: !!v.current, title: v.current ? '这就是当前版本' : undefined },
+    { key: 'compare', label: '与当前对比', icon: 'split', disabled: !!v.current, title: v.current ? '已是当前版本' : undefined },
     { key: 'tag', label: '标记版本…', icon: 'tag' },
     '-',
-    { key: 'revert', label: '回退到此版本…', icon: 'undo', disabled: !!v.current, title: v.current ? '这就是当前版本，不用回退' : undefined },
+    { key: 'revert', label: '回退到此版本…', icon: 'undo', disabled: !!v.current, title: v.current ? '已是当前版本' : undefined },
   ];
 }
 

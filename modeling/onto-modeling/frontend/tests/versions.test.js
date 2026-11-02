@@ -61,7 +61,7 @@ test('落地：查看改动按版本号选中，对不上运行和切片时改�
   // 版本号找到了但属于别的切片：还有这一片的版本就改选它，没有就仍选中并说明
   const q = pickLanding(LIST.filter((v) => v.n <= 16), { v: 'v0.14', run: 'run-3', slice: 's5' });
   assert.equal(LIST.find((v) => v.commit === q.commit).version_label, 'v0.14');
-  assert.match(q.note, /不是这次运行里这一片生成的/);
+  assert.match(q.note, /不是这一片生成的/);
   // 版本没带运行信息（P1 后端）：只认版本号，不提示
   const bare = LIST.map((v) => ({ ...v, run: null }));
   assert.deepEqual(pickLanding(bare, { v: 'v0.15', run: 'run-3', slice: 's3' }), { commit: '8d3f6a10', note: '' });
@@ -74,7 +74,9 @@ test('落地：刷新后对比按提交找；找不到时说明', () => {
   const p = pickLanding(LIST, { path: 'ontology/object/陈列量标准.md', from: 'c0ffee13', to: 'WORKTREE' });
   assert.equal(LIST.find((v) => v.commit === p.commit).version_label, 'v0.13');
   assert.equal(pickLanding(LIST, { path: 'x', from: 'c0ffee' }).commit, 'c0ffee13');
-  assert.match(pickLanding(LIST, { path: 'x', from: 'deadbeef' }).note, /没有找到版本 deadbeef/);
+  const miss = pickLanding(LIST, { path: 'x', from: 'deadbeef' }).note;
+  assert.match(miss, /没有找到这个版本/);
+  assert.ok(!miss.includes('deadbeef'), '不显示提交哈希');
 });
 
 test('对比左侧：选中当前版本时和上一个版本比；对象下拉取这个版本改过的条目', () => {
@@ -108,7 +110,8 @@ test('回退说明：撤回哪些版本、文件标签、被挡住时的说法',
   assert.equal(revertBlock({ state: 'assistant_running' }).action, 'chat');
   assert.equal(revertBlock({ state: 'autobuild_slice' }).action, 'run');
   assert.equal(revertBlock({ state: 'none' }), null);
-  assert.match(revertErrorText({ code: 'write_scope_locked', details: { state: 'pending_confirm' } }, 'x'), /先在工作台确认生效或撤回/);
+  assert.equal(revertErrorText({ code: 'write_scope_locked', details: { state: 'pending_confirm' } }, 'x'), revertBlock({ state: 'pending_confirm' }).text);
+  assert.notEqual(revertErrorText({ code: 'write_scope_locked', details: { state: 'pending_confirm' } }, 'x'), 'x');
   assert.match(revertErrorText({ code: 'autobuild_running' }, 'x'), /自主构建正在运行/);
   assert.equal(revertErrorText({ code: 'other' }, 'fallback'), 'fallback');
 });
