@@ -64,11 +64,8 @@
 .en-im-steps .s.on{color:var(--ink)} .en-im-steps .s.on i{background:var(--blue);border-color:var(--blue);color:#fff}
 .en-im-steps .s.done i{background:var(--b50);border-color:var(--b200);color:var(--blue2)}
 .en-im-steps .ln{flex:1;height:1.5px;background:var(--line);max-width:120px}
-.en-fmt{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
-.en-fmt .f{border:1px solid var(--line);border-radius:14px;padding:14px;background:#fff;position:relative}
-.en-fmt .f.on{border-color:var(--blue3);background:var(--b50);box-shadow:0 0 0 3px rgba(59,130,246,.1)}
-.en-fmt .f.off{opacity:.55}
-.en-fmt .f .hit{position:absolute;top:12px;right:12px}
+.en-fmt{display:flex;align-items:center;gap:6px;margin-top:14px;font-size:13px}
+.en-fmt .ic{display:inline-flex;color:var(--blue);margin-right:2px}
 .en-file{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:#fff}
 .en-file .fi{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;background:var(--b50);color:var(--blue);flex:none}
 

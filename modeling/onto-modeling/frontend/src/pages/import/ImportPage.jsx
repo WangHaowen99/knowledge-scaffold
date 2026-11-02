@@ -7,21 +7,22 @@ import { errorText, formatBytes } from '../../api/errors.js';
 import { PageHead, ShellG } from '../../shell/Shell.jsx';
 import { Button, Chip, Field, Icon, Note, Prog, Seg, Table, cx } from '../../ui/index.jsx';
 
+// 格式由后端自动识别，页面只显示识别结果（R2）
 const FORMATS = [
-  ['transfer', 'archive', '迁移包', '完整工作区，含版本历史。用于从其他环境搬过来；凭据不随包迁移，导入后重新授权数据源。'],
-  ['published_package', 'pkg', '已发布知识包', '只有交付物：对象、操作、规则、指标与脚本落到工作区继续建模。资料与报告为空，阶段进度从头计算；原包完整留底，映射与引用不会丢失。'],
-  ['workspace_archive', 'folder', '工作区压缩包', '建模任务工作区内容（ontology/、resource/、research/ 等），按原样导入。'],
+  ['transfer', 'archive', '迁移包'],
+  ['published_package', 'pkg', '已发布知识包'],
+  ['workspace_archive', 'folder', '工作区压缩包'],
 ];
 
 const BLOCKERS = {
-  symlink: ['包含符号链接', '出于安全原因，压缩包里的符号链接和 .. 路径一律拒绝。'],
-  path_traversal: ['包含 .. 路径', '出于安全原因，压缩包里的符号链接和 .. 路径一律拒绝。'],
+  symlink: ['包含符号链接', ''],
+  path_traversal: ['包含 .. 路径', ''],
   absolute_path: ['包含绝对路径', '压缩包里的文件必须用相对路径。'],
   unknown_format: ['认不出格式', '缺少 ontology/ 目录和包清单。'],
-  empty_archive: ['压缩包是空的', '导入后项目里会什么都没有。'],
+  empty_archive: ['压缩包是空的', ''],
   too_large: ['超过 200 MB 上限', '请拆分或精简后再导入。'],
-  solver_contract_invalid: ['求解契约不合法', '包里的求解契约有语法错误。'],
-  no_objects: ['没有业务对象', '包里找不到任何业务对象。'],
+  solver_contract_invalid: ['求解契约不合法', ''],
+  no_objects: ['没有业务对象', ''],
 };
 
 export default function ImportPage() {
@@ -91,7 +92,7 @@ export default function ImportPage() {
           : { ...body, name: custom.trim() };
       }
       const meta = await api.importProject(body);
-      toast(pane === 'conflict' ? `导入完成（已改名为「${meta.name}」）` : '导入完成，原包已留底', 'download');
+      toast(pane === 'conflict' ? `导入完成（已改名为「${meta.name}」）` : '导入完成', 'download');
       setUpload(null);
       setTimeout(() => navigate(pagePath(meta.landing_page || 'wb-l2', meta.id)), 700);
     } catch (e) {
@@ -109,7 +110,7 @@ export default function ImportPage() {
   };
 
   const step2 = pane === 'confirm' || pane === 'conflict';
-  const kindIndex = FORMATS.findIndex(([k]) => k === inspect?.kind);
+  const format = FORMATS.find(([k]) => k === inspect?.kind);
   const c = inspect?.counts || {};
   const conflictName = inspect?.name_check?.conflict;
   const caps = (inspect?.after_import?.capabilities || []).map((x) => x.label || x.name).join('、');
@@ -118,7 +119,7 @@ export default function ImportPage() {
     <ShellG active="projects">
       <div className="en-im">
         <div className="row mb12"><a className="link row g4" href="#/projects"><Icon name="arrowl" size={14} />返回我的项目</a><span className="sp" /></div>
-        <PageHead title="导入项目" desc="从其他环境搬过来的迁移包，或者别处发布的知识包，导入后成为你的一个新项目。" eyebrow="导入" />
+        <PageHead title="导入项目" />
         <div className="en-im-steps">
           <div className={cx('s', step2 ? 'done' : 'on')}><i>{step2 ? <Icon name="check" size={12} /> : '1'}</i>选择与命名</div>
           <span className="ln" />
@@ -133,7 +134,7 @@ export default function ImportPage() {
                   <span className="fi"><Icon name="archive" size={18} /></span>
                   <div className="grow">
                     <div className="b">{file.name}</div>
-                    <div className="xs muted">{formatBytes(file.size)} · 从本机选择 · 格式自动识别</div>
+                    <div className="xs muted">{formatBytes(file.size)}</div>
                     {progress != null ? <div className="mt4" style={{ width: 240 }}><Prog p={progress} thin /></div> : null}
                   </div>
                   <Button size="sm" kind="ghost" icon="refresh" onClick={() => fileRef.current?.click()}>重新选择</Button>
@@ -147,29 +148,22 @@ export default function ImportPage() {
                 >
                   <div className="ic"><Icon name="upload" size={20} /></div>
                   <b style={{ color: 'var(--ink)' }}>把迁移包或知识包拖到这里，或点击选择</b>
-                  <div className="sm mt4">zip · 不超过 200 MB · 格式自动识别</div>
+                  <div className="sm mt4">zip · 不超过 200 MB</div>
                 </div>
               )}
               {error ? <Note tone="red" className="mt12">{errorText(error)}</Note> : null}
               {inspect ? (
                 <>
-                  <div className="sec-t" style={{ marginTop: 20 }}>识别结果 · 格式自动识别</div>
                   <div className="en-fmt">
-                    {FORMATS.map(([k, i, t, d], idx) => (
-                      <div key={k} className={cx('f', idx === kindIndex ? 'on' : 'off')}>
-                        {idx === kindIndex ? <span className="hit chip blue sm"><Icon name="check" />已识别</span> : null}
-                        <span style={{ color: idx === kindIndex ? 'var(--blue)' : 'var(--ink3)' }}><Icon name={i} size={20} /></span>
-                        <div className="b mt8">{t}</div>
-                        <div className="xs muted mt4" style={{ lineHeight: 1.6 }}>{d}</div>
-                      </div>
-                    ))}
+                    <span className="ic"><Icon name={format?.[1] || 'pkg'} size={16} /></span>
+                    <span className="muted">已识别：</span><b>{format?.[2] || inspect.kind_label}</b>
                   </div>
                   <div className="grid2 mt20">
-                    <Field label="项目名称" req hint="默认取包里的名称，可以改">
+                    <Field label="项目名称" req>
                       <div className="inp"><Icon name="edit" size={14} /><input value={name} onChange={(e) => setName(e.target.value)} /></div>
                     </Field>
-                    <Field label="构建方式" hint="导入后在「项目设置 › 构建方式」里也能改">
-                      <Seg items={[['L2', '陪伴建模（L2）'], ['L4', '自主构建（L4）']]} value={buildMode} onChange={setBuildMode} />
+                    <Field label="构建方式">
+                      <Seg items={[['L2', '陪伴建模'], ['L4', '自主构建']]} value={buildMode} onChange={setBuildMode} />
                     </Field>
                   </div>
                 </>
@@ -180,7 +174,7 @@ export default function ImportPage() {
             <div className="grid2" style={{ gridTemplateColumns: '1.2fr 1fr', gap: 20 }}>
               <div>
                 <Table compact cols={['项目', '内容']} rows={[
-                  ['识别格式', <Chip tone="blue" icon={FORMATS[kindIndex]?.[1] || 'pkg'}>{inspect.kind_label}</Chip>],
+                  ['识别格式', <Chip tone="blue" icon={format?.[1] || 'pkg'}>{inspect.kind_label}</Chip>],
                   ['压缩包根目录', <span className="mono">{inspect.root_dir}</span>],
                   ['文件数', <b className="num">{inspect.files}</b>],
                   ['业务对象', <b className="num">{c.objects}</b>],
@@ -192,19 +186,15 @@ export default function ImportPage() {
               </div>
               <div className="col" style={{ gap: 10 }}>
                 {inspect.kind === 'published_package' ? (
-                  <Note tone="blue" icon="pkg"><b>已发布知识包只含交付物。</b>对象、操作、规则、指标与脚本会落到工作区继续建模；资料与报告等过程资产为空，阶段进度从头计算。原包会完整留底，映射与引用不会丢失。</Note>
+                  <Note tone="blue" icon="pkg">已发布知识包只含交付物：资料和报告为空，进度从头开始。</Note>
                 ) : inspect.kind === 'transfer' ? (
-                  <Note tone="blue" icon="archive"><b>迁移包会原样恢复。</b>完整工作区和版本历史都会带过来；凭据不随包迁移。</Note>
-                ) : null}
-                {inspect.evidence_sources?.length ? (
-                  <Note tone="gray" icon="db">证据快照不随包导入；包里登记的数据源 {inspect.evidence_sources.map((s) => s.id).join('、')} 只带连接信息，不带凭据，导入后需要重新授权。</Note>
+                  <Note tone="blue" icon="archive">迁移包会原样恢复，含版本历史。</Note>
                 ) : null}
                 <div className="card pad">
                   <div className="sm b">导入后</div>
                   <div className="xs muted mt4" style={{ lineHeight: 1.8 }}>
-                    项目名：{name}<br />
-                    能力：按包里记录的能力自动匹配{caps ? `（${caps}）` : ''}<br />
-                    流程：从「资料分析」开始{inspect.after_import?.mark_needs_review ? '，已有产物标为「需复核」' : ''}
+                    {caps ? <>能力：{caps}<br /></> : null}
+                    流程：从「资料分析」开始{inspect.after_import?.mark_needs_review ? '，已有产物标「需复核」' : ''}
                   </div>
                 </div>
               </div>
@@ -212,12 +202,12 @@ export default function ImportPage() {
           ) : null}
           {pane === 'conflict' ? (
             <div>
-              <Note tone="amber"><b>项目名称已存在。</b>你已经有一个叫「{conflictName?.attempted_name || name}」的项目，换个名字就能继续。</Note>
+              <Note tone="amber">已有同名项目「{conflictName?.attempted_name || name}」</Note>
               <div className="col mt16" style={{ gap: 8 }}>
                 {conflictName?.candidates?.[0] ? (
                   <div className={cx('opt', ncPick === 'A' && 'on')} onClick={() => setNcPick('A')}>
                     <span className="k">A</span>
-                    <div className="grow"><div className="t">改名为「{conflictName.candidates[0]}」</div><div className="c">系统建议的名称，可以直接用</div></div>
+                    <div className="grow"><div className="t">改名为「{conflictName.candidates[0]}」</div></div>
                   </div>
                 ) : null}
                 <div className={cx('opt', ncPick === 'B' && 'on')} onClick={() => setNcPick('B')}>
@@ -228,7 +218,6 @@ export default function ImportPage() {
                   </div>
                 </div>
               </div>
-              <div className="xs muted mt8">新名称不能与原名称相同，也不能和你已有的项目重名。</div>
             </div>
           ) : null}
           {pane === 'bad' && inspect ? (
@@ -243,11 +232,10 @@ export default function ImportPage() {
                     return (
                       <div className="note red" key={i}>
                         <Icon name="alert" />
-                        <div className="grow"><b>{t}</b>{b.entry ? <>：<span className="mono">{b.entry}</span></> : null}。{why}</div>
+                        <div className="grow"><b>{t}</b>{b.entry ? <>：<span className="mono">{b.entry}</span></> : null}{why ? `。${why}` : null}</div>
                       </div>
                     );
                   })}
-                  <div className="note gray"><Icon name="info" /><div className="grow">其他常见原因：认不出格式（缺少 <span className="mono">ontology/</span> 目录和包清单）、超过 200 MB 上限、压缩包是空的（导入会显示成功但项目里什么都没有）。</div></div>
                 </div>
               </div>
             </div>
