@@ -120,6 +120,14 @@ async def drain(times: int = 30):
         await asyncio.sleep(0.005)
 
 
+async def until(predicate, timeout: float = 10.0):
+    """按条件等（一轮收尾要做的事多了以后，固定次数的空转在慢机器上等不够）。"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate() and loop.time() < deadline:
+        await asyncio.sleep(0.01)
+
+
 def events_of(session, kind: str) -> list[dict]:
     return [event for event in session.events if event.get("type") == kind]
 
@@ -222,7 +230,7 @@ def test_upgrade_while_running_finishes_turn_on_old_version(env):
 
         first.queue.put_nowait({"type": "result"})
         first.queue.put_nowait({"type": "result"})
-        await drain()
+        await until(lambda: first.disconnected and session.engine is None)
         assert first.disconnected and session.engine is None
         assert (root / ".claude").resolve() == old  # 断开不切，下一条消息前才切
 
