@@ -912,8 +912,46 @@ def node_patterns(root: Path, node_ids: list[str]) -> list[str]:
     return patterns
 
 
+def _slice_scope(manager, project_id: str, root: Path, node_ids: list[str], slice_ids: dict[str, set]) -> tuple:
+    """按切片的节点落到这几片的条目上（详设 4.3）：返回 (仍按声明范围的节点, 片的路径模式, 片的条目, 蓝图)。
+
+    全量模式（没有蓝图或只有一片）、或不知道在哪一片时，按节点声明的整类条目。"""
+    from ...services.flow import blueprint, model as flow_model
+
+    wanted = {node_id: ids - {"all"} for node_id, ids in slice_ids.items() if ids - {"all"}}
+    if not wanted:
+        return node_ids, [], [], None
+    try:
+        flow = flow_model.load_for(root)
+        doc = blueprint.effective_doc(manager, project_id)
+        module = blueprint.script(root)
+    except Exception:  # noqa: BLE001 - 读不出蓝图按整类条目锁，宁宽勿漏
+        return node_ids, [], [], None
+    if module.mode(doc) != "sliced":
+        return node_ids, [], [], None
+    per_slice = {node["id"] for node in flow.get("nodes") or [] if node.get("per_slice")}
+    model = _model(root)
+    paths, entries, rest = [], [], []
+    for node_id in node_ids:
+        ids = wanted.get(node_id)
+        if node_id not in per_slice or not ids:
+            rest.append(node_id)
+            continue
+        for slice_id in sorted(ids):
+            item = module.find_slice(doc, slice_id)
+            if item is None:
+                continue
+            paths += [_escape(rel) for rel in module.member_paths(item)]
+            for kind, names in module.members(item).items():
+                entries += [{**_entry_ref(kind, model.encode_filename(name)), "name": name} for name in names]
+    return rest, paths, entries, doc
+
+
 def scope_lock(manager, project_id: str) -> dict:
-    """当前的写入范围锁；没有助手变更集、助手也没在跑时是 state="none" 的空锁。"""
+    """当前的写入范围锁；没有助手变更集、助手也没在跑时是 state="none" 的空锁。
+
+    按切片的节点（建模）只锁这一片的条目，不再锁整类（详设 4.3「落到当前切片」）：助手在跑时取执行记录的切片，
+    这一轮结束后取变更集里做过的那几片；再加上这一轮已经改过的、等你决定的决策卡预览列出的。"""
     try:
         root = manager.project_root(project_id)
     except Exception:  # noqa: BLE001 - 项目不在
@@ -928,18 +966,32 @@ def scope_lock(manager, project_id: str) -> dict:
     node_ids = list((record or {}).get("nodes") or [])
     if running and node.get("id") and node["id"] not in node_ids:
         node_ids.append(node["id"])
+    slice_ids: dict[str, set] = {}
+    for slice_id, _step in (record or {}).get("slice_steps") or []:
+        for node_id in node_ids:
+            slice_ids.setdefault(node_id, set()).add(slice_id)
+    current_slice = exec_record.get("slice") if isinstance(exec_record.get("slice"), dict) else None
+    if running and node.get("id") and current_slice and current_slice.get("id"):
+        slice_ids.setdefault(node["id"], set()).add(current_slice["id"])
+    whole, slice_paths, slice_entries, doc = _slice_scope(manager, project_id, root, node_ids, slice_ids)
     entries = list((record or {}).get("entries") or [])
     artifacts = list((record or {}).get("artifacts") or [])
-    for ref in state.get("affected") or []:
+    for ref in [*slice_entries, *(state.get("affected") or [])]:
         bucket = entries if "id" in ref else artifacts
-        if ref not in bucket:
+        if not any(existing.get("id", (existing.get("type"), existing.get("key"))) ==
+                   ref.get("id", (ref.get("type"), ref.get("key"))) for existing in bucket):
             bucket.append(ref)
-    paths = node_patterns(root, node_ids) + [_escape(rel) for rel in (record or {}).get("paths") or []]
+    paths = node_patterns(root, whole) + slice_paths + [_escape(rel) for rel in (record or {}).get("paths") or []]
     if not entries and not artifacts and not paths and not running:
         return empty_scope()
+    if current_slice is None and doc is not None and (record or {}).get("slice_id"):
+        found = next((item for item in doc.get("slices") or [] if item.get("id") == record["slice_id"]), None)
+        current_slice = {"id": found["id"], "name": found["name"]} if found else None
+    sliced = doc is not None and current_slice is not None
     if running:
         label = node.get("title") or "这一步"
-        reason = f"助手正在{('执行「' + label + '」') if node.get('title') else '改这个项目'}，确认生效或撤回之前这些内容只读"
+        reason = (f"助手正在改「{current_slice['name']}」这一片，确认生效或撤回之前这些内容只读" if sliced else
+                  f"助手正在{('执行「' + label + '」') if node.get('title') else '改这个项目'}，确认生效或撤回之前这些内容只读")
         lock_state = "assistant_running"
     else:
         reason = "这一轮的修改还没确认，确认生效或撤回之后才能编辑"
@@ -950,7 +1002,7 @@ def scope_lock(manager, project_id: str) -> dict:
         "changeset_id": (record or {}).get("id"),
         "conversation_id": (record or {}).get("conversation_id") or state.get("conversation_id"),
         "run_id": None,
-        "slice": exec_record.get("slice"),
+        "slice": current_slice if sliced else None,
         "node": {"id": node["id"], "version": node.get("version") or ""} if running and node.get("id") else None,
         "entries": entries,
         "artifacts": artifacts,

@@ -7,7 +7,8 @@ State helper — 单一文件管理所有命令的执行锁与进度快照。
                             持有者为 owner（Web 后端托管的引擎实例）或 owner_pid）
     progress.json           各阶段完整进度快照（全体命令共用）
 另有 `.onto/run/active.json`：正在执行的命令所属节点与写入范围（节点声明的 produces、writes），
-acquire 时写、release 时删；内核守卫只放行这些路径（方案 D11）。
+acquire 时写、release 时删；内核守卫只放行这些路径（方案 D11）。按切片建模时（后端在
+`.onto/run/exec.json` 记了这一片）另记 `protect`：这一片以外、已经有了的条目，守卫不让改（详设 4.3）。
 
 锁的持有者：Web 后端每次连接引擎时把实例标识写进 `.onto/run/engine.json`，本进程是
 该后端的子孙时，持有者就是这个引擎实例——同一实例的多次 Bash 调用可续写锁，实例换了
@@ -43,6 +44,7 @@ import time
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent))
+import blueprint
 import flow_state
 
 STATE_DIR = Path('.ontology-state')
@@ -366,11 +368,55 @@ def _command_scope(command: str) -> tuple:
     return node_id, allow
 
 
+def _changed_here() -> set:
+    """这份副本里相对主线分叉点改过的文件（含没提交、没跟踪的）：这一轮自己建的、改的不算片外。"""
+    try:
+        head = str(json.loads(FLOW_STATE_FILE.read_text(encoding='utf-8')).get('mainline_head') or '')
+    except (OSError, ValueError):
+        head = ''
+    base = ((_git_quiet('merge-base', 'HEAD', head) or '').strip() if head else '') or 'HEAD'
+    changed = (_git_quiet('-c', 'core.quotepath=false', 'diff', '--name-only', base) or '').splitlines()
+    changed += (_git_quiet('-c', 'core.quotepath=false', 'ls-files', '--others', '--exclude-standard') or '').splitlines()
+    return {line.strip() for line in changed if line.strip()}
+
+
+def _slice_protect(node_id: str, allow: list) -> tuple:
+    """按切片建模：(切片, 片外已有的条目)。不是按切片的节点、全量模式、不知道哪一片时 (None, [])。"""
+    slice_id = blueprint.current_slice()
+    if not slice_id or slice_id == blueprint.FULL_SLICE_ID:
+        return None, []
+    try:
+        flow = _flow()
+        node = next((item for item in flow.get('nodes') or [] if item.get('id') == node_id), None)
+        doc = blueprint.load(Path('.'))
+    except (OSError, ValueError):
+        return None, []
+    item = blueprint.find_slice(doc, slice_id)
+    if node is None or not node.get('per_slice') or blueprint.mode(doc) != 'sliced' or item is None:
+        return None, []
+    own = set(blueprint.member_paths(item))
+    changed = _changed_here()
+    protect = []
+    for pattern in allow:
+        directory = pattern.rsplit('/', 1)[0] if pattern.endswith('/*') else ''
+        if not directory.startswith('ontology/') or not Path(directory).is_dir():
+            continue
+        for path in sorted(Path(directory).glob('*.md')):
+            rel = path.as_posix()
+            if path.name.lower() != 'index.md' and rel not in own and rel not in changed and rel not in protect:
+                protect.append(rel)
+    return slice_id, protect
+
+
 def _mark_active(command: str, phase: str) -> None:
     node_id, allow = _command_scope(command)
     data = _load_active()
-    data['commands'][command] = {'node': node_id, 'allow': allow, 'phase': phase,
-                                 'since': time.strftime('%Y-%m-%d %H:%M:%S')}
+    spec = {'node': node_id, 'allow': allow, 'phase': phase, 'since': time.strftime('%Y-%m-%d %H:%M:%S')}
+    if node_id and allow:
+        slice_id, protect = _slice_protect(node_id, allow)
+        if slice_id:
+            spec.update(slice=slice_id, protect=protect)
+    data['commands'][command] = spec
     try:
         _save_active(data)
     except OSError:

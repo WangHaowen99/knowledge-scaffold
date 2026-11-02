@@ -542,9 +542,11 @@ def guard_lock(call: Call) -> str | None:
     return None
 
 
-def _active_scope(call: Call) -> tuple[list[str], list[str]] | None:
-    """正在执行的命令的写入范围 (命令名, 放行的路径模式)；没有在执行的命令、或有不属于任何节点的
-    命令（不限范围）时返回 None。文件读不出按没有处理（命令照常，只是不收窄）。"""
+def _active_scope(call: Call) -> tuple[list[str], list[str], set[str]] | None:
+    """正在执行的命令的写入范围 (命令名, 放行的路径模式, 片外已有的条目)；没有在执行的命令、或有不属于任何节点的
+    命令（不限范围）时返回 None。文件读不出按没有处理（命令照常，只是不收窄）。
+
+    按切片建模时 state_helper 另记 `protect`：这一片以外、已经有了的条目，在放行的模式里也不让改（详设 4.3）。"""
     try:
         data = json.loads(call.root.joinpath(*ACTIVE_REL).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -552,7 +554,7 @@ def _active_scope(call: Call) -> tuple[list[str], list[str]] | None:
     commands = data.get("commands") if isinstance(data, dict) else None
     if not isinstance(commands, dict) or not commands:
         return None
-    names, patterns = [], []
+    names, patterns, protect = [], [], set()
     for name, spec in commands.items():
         if not _command_alive(call.root, str(name)):
             continue  # 命令被打断、引擎换了实例：它的范围不再算数（审查第 9 条）
@@ -561,7 +563,9 @@ def _active_scope(call: Call) -> tuple[list[str], list[str]] | None:
             return None
         names.append(str(name))
         patterns += [str(item).replace("**", "*") for item in allow if str(item) not in patterns]
-    return (names, patterns) if names else None
+        if isinstance(spec.get("protect"), list):
+            protect |= {str(item) for item in spec["protect"]}
+    return (names, patterns, protect) if names else None
 
 
 def _command_alive(root: Path, command: str) -> bool:
@@ -607,7 +611,7 @@ def _ontology_kind(call: Call, path: Path, scope: tuple[list[str], list[str]] | 
         return "unknown"
     if scope is not None:
         rel = "/".join(parts)
-        if not any(fnmatch.fnmatchcase(rel, pattern) for pattern in scope[1]):
+        if not any(fnmatch.fnmatchcase(rel, pattern) for pattern in scope[1]) or rel in scope[2]:
             return "outside"
     return None
 
@@ -636,10 +640,11 @@ def guard_scope(call: Call) -> str | None:
             "Decision Model、Schema 与 Presentation 须成组一致，请提示用户在求解模型面板中维护。"
         )
     if "outside" in kinds and scope is not None:
-        names, patterns = scope
+        names, patterns, protect = scope
         allowed = "、".join(patterns) or "（没有声明可写的路径）"
+        sliced = "；别的片已有的条目只读，只能链接引用" if protect else ""
         return (
-            f"正在执行「{'、'.join(names)}」，这一步只能写它声明的范围：{allowed}；此次写入越界：{reasons}。"
+            f"正在执行「{'、'.join(names)}」，这一步只能写它声明的范围：{allowed}{sliced}；此次写入越界：{reasons}。"
             "范围外的条目可能正被你在编辑器里修改；确实要改，先结束这条命令，或换用负责那部分内容的命令。"
         )
     packaged_hint = (
