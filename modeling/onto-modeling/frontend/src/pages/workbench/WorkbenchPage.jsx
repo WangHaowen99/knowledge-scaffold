@@ -4,7 +4,7 @@ import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, relativeTime } from '../../api/errors.js';
-import { commandNode, nodeActionKind, overlayRunning, scriptRunView, sectionGroups, sliceStageTitle, trackNodes, withoutEvidence } from '../../state/flow.js';
+import { commandFromTarget, commandNode, nodeActionKind, planSlicesCommand, overlayRunning, scriptRunView, sectionGroups, sliceStageTitle, trackNodes, withoutEvidence } from '../../state/flow.js';
 import { evidenceInProject, withoutEvidenceSuggestions } from '../../state/evidence.js';
 import { composerState, readonlyInfo } from '../../state/readonly.js';
 import { ShellP } from '../../shell/Shell.jsx';
@@ -69,7 +69,9 @@ function StepsDrawer({ open, onClose, flow, cid }) {
     if (kind === 'navigate') { navigate(pagePath(a.target, pid)); return; }
     try {
       if (kind === 'command') {
-        await api.sendCommand(pid, { command: a.target.trim().split(/\s+/)[0], text: a.target, origin: { page: 'wb-l2', label: '建模步骤' }, conversation_id: cid || undefined });
+        const c = commandFromTarget(a.target);
+        if (c.command) await api.sendCommand(pid, { ...c, origin: { page: 'wb-l2', label: '建模步骤' }, conversation_id: cid || undefined });
+        else await api.sendMessage(pid, cid || 'default', { text: c.text, client_message_id: `cm-${Date.now()}` });
         onClose();
       } else if (kind === 'skip') await api.skipNode(pid, n.id, {});
       else if (kind === 'restore') await api.restoreNode(pid, n.id, {});
@@ -85,6 +87,16 @@ function StepsDrawer({ open, onClose, flow, cid }) {
         setExpanded(n.id);
         return;
       }
+      toast(errorText(e), 'alert');
+    }
+  };
+  const adjustSlices = async () => {
+    const plan = planSlicesCommand(flow);
+    if (!plan) { onClose(); navigate(pagePath('wb-blueprint', pid), { dialog: 'blueprint' }); return; }
+    try {
+      await api.sendCommand(pid, { ...plan, origin: { page: 'wb-l2', label: '建模步骤' }, conversation_id: cid || undefined });
+      onClose();
+    } catch (e) {
       toast(errorText(e), 'alert');
     }
   };
@@ -122,7 +134,7 @@ function StepsDrawer({ open, onClose, flow, cid }) {
     <Drawer open={open} onClose={onClose} icon="branch" title="建模步骤" w={440}>
       {flow.slices.length ? (
         <>
-          <div className="sec-t"><Icon name="layers" size={14} />业务切片 {flow.slices.length}<span className="sp" /><Button size="xs" kind="ghost" icon="layers" onClick={() => { onClose(); navigate(pagePath('wb-blueprint', pid), { dialog: 'blueprint' }); }}>调整切片</Button></div>
+          <div className="sec-t"><Icon name="layers" size={14} />业务切片 {flow.slices.length}<span className="sp" /><Button size="xs" kind="ghost" icon="layers" onClick={adjustSlices}>调整切片</Button></div>
           {/* 小进度条的列头：和每格对齐（同运行详情「切片流水线」的表头） */}
           <div className="wb-sr wb-sr-h">
             <span className="ix" />

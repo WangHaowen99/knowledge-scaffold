@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
 import {
-  commandName, commandNode, mergeFlow, nodeActionKind, normalizeFlow, overlayRunning, scriptRunView, sectionGroups, sliceStageTitle,
+  commandFromTarget, commandName, commandNode, mergeFlow, nodeActionKind, normalizeFlow, planSlicesCommand, overlayRunning, scriptRunView, sectionGroups, sliceStageTitle,
   trackNodes, withoutEvidence,
 } from '../src/state/flow.js';
 
@@ -129,4 +129,23 @@ test('脚本节点的运行结果：通过 / 失败 + 一行摘要（FL-05 的 r
   // FL-01 带 last_run 时按它的摘要
   const node = F.flow().nodes.find((n) => n.kind === 'script');
   assert.deepEqual(scriptRunView(node.last_run), { ok: true, summary: '15 个对象的库存口径一致' });
+});
+
+test('节点动作的命令文本拆成 S-20 的 command / args / text；不以斜杠开头的当普通消息', () => {
+  assert.deepEqual(commandFromTarget('/ontology-research phase=blueprint'), { command: '/ontology-research', args: { phase: 'blueprint' }, text: '' });
+  assert.deepEqual(commandFromTarget('/ontology-research 仅基于本地文档 '), { command: '/ontology-research', text: '仅基于本地文档' });
+  assert.deepEqual(commandFromTarget('/ontology-extract-object'), { command: '/ontology-extract-object', text: '' });
+  assert.deepEqual(commandFromTarget('运行 python3 .claude/scripts/research_checker.py 核验'), { text: '运行 python3 .claude/scripts/research_checker.py 核验' });
+});
+
+test('没有蓝图时「调整切片」改发切片规划；有蓝图时打开蓝图弹窗（返回 null）', () => {
+  assert.deepEqual(planSlicesCommand({ blueprint: { state: 'none' } }), { command: '/ontology-research', args: { phase: 'blueprint' }, text: '' });
+  assert.equal(planSlicesCommand({ blueprint: { state: 'draft' } }), null);
+  assert.equal(planSlicesCommand({ blueprint: { state: 'confirmed' } }), null);
+  assert.equal(planSlicesCommand({}), null);
+});
+
+test('B4d 新流程的页面动作：发布去发布页、资料分析「去确认」去蓝图页', () => {
+  assert.equal(nodeActionKind({ kind: 'start', label: '去发布', target: 'publish' }), 'navigate');
+  assert.equal(nodeActionKind({ kind: 'confirm', label: '去确认', target: 'wb-blueprint' }), 'navigate');
 });

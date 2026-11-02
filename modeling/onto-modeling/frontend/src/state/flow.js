@@ -122,6 +122,26 @@ export function nodeActionKind(action) {
   return 'start';
 }
 
+// 节点动作的命令文本 → S-20 的 {command, args, text}：`键=值` 进 args，其余词是 text；
+// 不以斜杠开头的（如「核验报告」的一句指令）当普通消息发，只给 text
+export function commandFromTarget(target) {
+  const parts = String(target || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length || !parts[0].startsWith('/')) return { text: String(target || '').trim() };
+  const args = {};
+  const words = [];
+  parts.slice(1).forEach((w) => {
+    const m = /^([A-Za-z_][A-Za-z0-9_-]*)=(.+)$/.exec(w);
+    if (m) args[m[1]] = m[2];
+    else words.push(w);
+  });
+  return { command: parts[0], ...(Object.keys(args).length ? { args } : {}), text: words.join(' ') };
+}
+
+// 没有蓝图时（FL-01 blueprint.state = none）「调整切片」改为发切片规划（contract-changes B4d 合并第 2 条）
+export const planSlicesCommand = (flow) => (flow?.blueprint?.state === 'none'
+  ? { command: '/ontology-research', args: { phase: 'blueprint' }, text: '' }
+  : null);
+
 // 命令文本 → 命令名：去掉斜杠与 `ontology-` 前缀，只取第一个词（`/ontology-trace 全部` → `trace`）
 export function commandName(text) {
   const m = /^\/(\S+)/.exec((text || '').trim());

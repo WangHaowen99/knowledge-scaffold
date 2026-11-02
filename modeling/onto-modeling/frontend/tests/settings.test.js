@@ -133,7 +133,7 @@ test('能力表：界面列、状态 chip、行内按钮与设计稿一致', () 
   assert.deepEqual(labels('core'), [null, [], []]);
   assert.deepEqual(labels('trace'), [null, ['撤销切换'], []]);
   assert.deepEqual(labels('knowledge'), [null, ['停用'], []]);
-  assert.deepEqual(labels('solver'), [null, ['回滚', '停用'], []]);
+  assert.deepEqual(labels('codegen'), [null, ['回滚', '停用'], []]);
   assert.deepEqual(labels('diagram'), [null, ['升级'], ['停用']]);
   assert.deepEqual(labels('migrate'), [null, ['启用'], []]);
   assert.equal(pendingSummary([{ pack: 'trace', from: '0.9.1', to: '0.10.0', kind: 'upgrade' }], items), '1 个待生效的切换：场景走查 0.9.1 → 0.10.0');
@@ -239,8 +239,8 @@ test('mock PL-06～PL-09：升级、回滚待生效；纯数据包立即生效�
   assert.equal(up.body.pack.status, 'pending');
   assert.equal(up.body.pack.pending.kind, 'upgrade');
   assert.equal((await call('POST', `${P}/packs/diagram/upgrade`, { to_version: '0.6.0' })).body.code, 'pack_not_enabled');
-  assert.equal((await call('POST', `${P}/packs/solver/rollback`, { to_version: '9.9.9' })).body.code, 'pack_version_not_found');
-  assert.equal((await call('POST', `${P}/packs/solver/rollback`, { to_version: '0.7.1' })).body.pack.pending.to, '0.7.1');
+  assert.equal((await call('POST', `${P}/packs/codegen/rollback`, { to_version: '9.9.9' })).body.code, 'pack_version_not_found');
+  assert.equal((await call('POST', `${P}/packs/codegen/rollback`, { to_version: '0.9.1' })).body.pack.pending.to, '0.9.1');
   const ind = await call('POST', `${P}/packs/industry-retail/disable`);
   assert.equal(ind.body.effective, 'immediate');
   assert.equal(ind.body.pack.status, 'disabled');
@@ -249,7 +249,7 @@ test('mock PL-06～PL-09：升级、回滚待生效；纯数据包立即生效�
   assert.equal(en.status, 201);
   assert.deepEqual(en.body.pack.pending, { from: null, to: '0.2.0', kind: 'enable', effective: 'next_message' });
   assert.equal((await call('POST', `${P}/packs`, { name: 'knowledge' })).body.code, 'pack_already_enabled');
-  assert.equal((await call('POST', `${P}/packs`, { name: 'web-research' })).body.code, 'pack_unavailable');
+  assert.equal((await call('POST', `${P}/packs`, { name: 'websearch' })).body.code, 'pack_unavailable');
   // 停用场景走查（有待生效的升级）要先撤销
   await call('POST', `${P}/packs/trace/cancel-pending`);
   await call('POST', `${P}/packs/trace/disable`);

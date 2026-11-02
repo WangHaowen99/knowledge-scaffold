@@ -30,7 +30,7 @@ export function fmtStamp(iso) {
 
 // 条目 / 产物的说法：对象「陈列量标准」、场景「场景 3」
 const KIND_LABEL = { object: '对象', operation: '操作', rule: '规则', metric: '指标', script: '脚本', flowchart: '流程图' };
-const ARTIFACT_LABEL = { 'trace.scenario': '场景', 'trace.mock': '模拟数据', 'diagram.flowchart': '流程图', 'solver.contract': '求解契约' };
+const ARTIFACT_LABEL = { 'trace.scenario': '场景', 'trace.mock': '模拟数据', 'diagram.flowchart': '流程图', 'codegen.solver_contract': '求解契约' };
 export function targetLabel(t) {
   if (!t) return '';
   if (t.type) return `${ARTIFACT_LABEL[t.type] || '产物'}「${t.title || t.key}」`;

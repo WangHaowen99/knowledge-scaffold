@@ -93,7 +93,7 @@ test('页面命令：只发 S-20，文字就是对话里那句', () => {
 
 test('写入范围只读：按产物或场景目录判定，两态的只读条文字', () => {
   const type = { path: 'ext/trace/scenarios/{key}.md' };
-  const byPath = { state: 'pending_confirm', artifacts: [], entries: [], paths: ['ext/trace/scenarios/**'], node: { id: 'trace.regression' } };
+  const byPath = { state: 'pending_confirm', artifacts: [], entries: [], paths: ['ext/trace/scenarios/**'], node: { id: 'trace.trace' } };
   const byRef = { state: 'assistant_running', artifacts: [{ type: SC, key: 's-21' }], entries: [], paths: [], slice: { name: '超量与审批提示' } };
   assert.equal(rowLocked(byPath, row('s-01', 'pass'), type), true);
   assert.equal(rowLocked(byRef, row('s-01', 'pass'), type), false);
@@ -197,7 +197,7 @@ test('页面命令：批量验证、补齐过期、交互走查、按场景补�
 test('?mock=trace:batch 把开场的锁标成批量推演（只读条用「批量推演跑完了」）', () => {
   const scope = new Map([[F.MAIN_PID, { state: 'pending_confirm', node: { id: 'core.model' }, reason_text: 'x', paths: [] }]]);
   server({ sc: { trace: 'batch' }, scope });
-  assert.equal(scope.get(F.MAIN_PID).node.id, 'trace.regression');
+  assert.equal(scope.get(F.MAIN_PID).node.id, 'trace.trace');
   const untouched = new Map([[F.MAIN_PID, { state: 'pending_confirm', node: { id: 'core.model' } }]]);
   server({ sc: {}, scope: untouched });
   assert.equal(untouched.get(F.MAIN_PID).node.id, 'core.model');
@@ -210,7 +210,7 @@ test('批量验证的两态：开跑进锁（助手运行中）→ 跑完修改�
   const hook = s1.hooks.find((h) => h.match(body));
   hook.start(F.MAIN_PID, body, { conversation_id: 'c1' });
   assert.equal(s1.lockBox.lock.state, 'assistant_running');
-  assert.equal(s1.lockBox.lock.node.id, 'trace.regression');
+  assert.equal(s1.lockBox.lock.node.id, 'trace.trace');
   assert.equal(s1.lockBox.lock.artifacts.length, 23);
   assert.ok((await s1.call('GET', `${P}/artifacts/${SC}`)).body.items.every((r) => r.locked));
   assert.match(hook.doneText(body), /确认生效后写进场景走查/);

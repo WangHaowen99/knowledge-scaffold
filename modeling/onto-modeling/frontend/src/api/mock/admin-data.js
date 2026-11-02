@@ -141,13 +141,13 @@ const ERR_TEMPLATES = [
     auto: '保持原来的装配，锁文件没有改动', exec: null, session: null,
   },
   {
-    origin: 'session', pack: 'core@1.4.2', node: 'solver.codegen', older: true,
+    origin: 'session', pack: 'codegen@0.9.2', node: 'codegen.codegen', older: true,
     raw: 'model gateway timeout after 120s', friendly: '模型响应超时，请稍后重试',
     stack: (p) => `TimeoutError: model gateway timeout after 120s\n  at engine.stream (claude)\n  at session.turn (kernel/session_host)\ncontext: project=${p} session=7a0c`,
     auto: null, exec: 'ex-0498', session: '7a0c',
   },
   {
-    origin: 'gate', pack: 'core@1.4.2', node: 'core.object', older: true,
+    origin: 'gate', pack: 'core@1.4.2', node: 'core.model', older: true,
     raw: 'guard: 写入受保护路径 resource/01-场景说明.docx 被拒绝', friendly: '助手试图改动资料原文，已拦下',
     stack: (p) => `GuardDenied: write to protected path resource/01-场景说明.docx\n  at guard.check_write (kernel/guards)\n  at tool_proxy.bash (kernel/session_host)\ncontext: project=${p}`,
     auto: '已拒绝这次写入，对话继续', exec: 'ex-0477', session: 'c41e',
@@ -159,7 +159,7 @@ const ERR_TEMPLATES = [
     auto: null, exec: null, session: null,
   },
   {
-    origin: 'session', pack: 'core@1.4.2', node: 'solver.run', older: true,
+    origin: 'session', pack: 'codegen@0.9.2', node: 'codegen.solver', older: true,
     raw: 'sandbox-gateway: check_rules.py 运行超过 60s 被终止', friendly: '脚本运行超时，已停止',
     stack: (p) => `SandboxTimeout: check_rules.py exceeded 60s\n  at sandbox_gateway.run (sandbox)\n  at script_runner.exec (core/1.4.2)\ncontext: project=${p}`,
     auto: null, exec: 'ex-0460', session: '19bd',

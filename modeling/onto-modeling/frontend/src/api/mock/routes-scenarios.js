@@ -4,7 +4,7 @@
 // 演示参数：
 //   ?mock=task:scenarios          一打开就在「批量推演 23 个场景」（已推演 9 / 23，静止不动）
 //   ?mock=scope:running|pending   写入范围锁两态：场景目录 ext/trace/scenarios/** 在锁里，23 个场景全部只读
-//   ?mock=scope:pending,trace:batch  这把锁来自批量推演（node=trace.regression）：只读条写「批量推演跑完了，结果还没确认」
+//   ?mock=scope:pending,trace:batch  这把锁来自批量推演（node=trace.trace）：只读条写「批量推演跑完了，结果还没确认」
 // 批量验证走完整的两态：开跑时 23 个场景进写入范围锁（助手运行中），跑完结果放进一轮变更集（修改待确认，对话里出「这一轮」卡），
 // 在对话里确认生效或撤回后解锁；开跑时项目已经有别的锁（如 scope 参数）就不动锁，结果直接回到列表。
 import { isLocked } from '../../state/readonly.js';
@@ -91,9 +91,9 @@ export function register(ctx) {
   const { on, json, err, db, sc, uid, F, cardOf, emitProj, emitConv, scopeOf, setScope, commandHooks = [], artifactTypeDefs = [] } = ctx;
   artifactTypeDefs.push(SCENARIO_TYPE, MOCK_TYPE);
   D.SC_RESOLUTIONS.forEach((r) => { if (F.ANCHOR_RESOLUTIONS && !F.ANCHOR_RESOLUTIONS[r.anchor]) F.ANCHOR_RESOLUTIONS[r.anchor] = r; });
-  // ?mock=trace:batch：开场的写入范围锁换成批量推演那一把（节点 trace.regression）
+  // ?mock=trace:batch：开场的写入范围锁换成批量推演那一把（节点 trace.trace）
   if (sc.trace === 'batch' && db.scope?.has(F.MAIN_PID)) {
-    db.scope.set(F.MAIN_PID, { ...db.scope.get(F.MAIN_PID), node: { id: 'trace.regression', version: 'trace@0.9.1' }, reason_text: '助手正在批量推演 23 个场景' });
+    db.scope.set(F.MAIN_PID, { ...db.scope.get(F.MAIN_PID), node: { id: 'trace.trace', version: 'trace@0.10.0' }, reason_text: '助手正在批量推演 23 个场景' });
   }
 
   const stateOf = (pid) => {
@@ -292,7 +292,7 @@ export function register(ctx) {
   // 批量验证：开跑时推演范围进写入范围锁（助手运行中），跑完结果先写进一轮变更集（修改待确认），
   // 对话里出「这一轮」卡，确认生效或撤回后解锁（CS-02～CS-05 见下）。开跑时项目已经有别的锁就不动锁，结果直接回到列表。
   const batchLock = (pid, state, csId, cid) => ({
-    state, changeset_id: csId, conversation_id: cid, run_id: null, slice: null, node: { id: 'trace.regression', version: 'trace@0.9.1' },
+    state, changeset_id: csId, conversation_id: cid, run_id: null, slice: null, node: { id: 'trace.trace', version: 'trace@0.10.0' },
     entries: [], artifacts: stateOf(pid).scenarios.map((x) => ({ type: SCENARIO, key: x.key, title: x.title })), paths: [],
     reason_text: `助手正在批量推演 ${stateOf(pid).scenarios.length} 个场景`, since: new Date().toISOString(),
   });

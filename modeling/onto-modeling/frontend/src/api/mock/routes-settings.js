@@ -8,7 +8,7 @@ import {
 } from './settings-data.js';
 
 // 带左栏页面、资料子页或产物类型的包，决定扩展项
-const EXT_PACKS = ['trace', 'knowledge', 'solver', 'reverse', 'diagram'];
+const EXT_PACKS = ['trace', 'knowledge', 'codegen', 'reverse', 'diagram'];
 const PAGE_OF = { trace: ['scenarios', '场景走查'], knowledge: ['knowledge', '知识沉淀'], solver: ['scripts', '代码生成'] };
 
 export function actionsOf(p) {

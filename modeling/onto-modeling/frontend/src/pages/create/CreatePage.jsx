@@ -14,7 +14,7 @@ const STEPS = ['目标', '起点与资料', '行业与能力', '引擎与构建�
 const EXAMPLES = ['店长一句话说明需求，按规则自动生成补货单', '根据业主报修判断故障紧急程度并派维修工单', '按订单预测和站点约束求解骑手排班方案'];
 const PURPOSES = [['auto', '由助手判断'], ['goal', '建模目标依据'], ['evidence', '通用业务依据'], ['schema', '数据 Schema'], ['term', '术语表']];
 const PURPOSE_LABEL = Object.fromEntries(PURPOSES);
-const CAP_ICON = { core: 'cube', trace: 'flask', knowledge: 'book', solver: 'code', reverse: 'db', diagram: 'branch', 'web-research': 'globe', migrate: 'recycle', evolution: 'refresh' };
+const CAP_ICON = { core: 'cube', trace: 'flask', knowledge: 'book', codegen: 'code', reverse: 'db', diagram: 'branch', websearch: 'globe', migrate: 'recycle', evo: 'refresh' };
 
 function useNameCheck(api, name) {
   const [res, setRes] = useState(null);

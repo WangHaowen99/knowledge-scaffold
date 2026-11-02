@@ -444,8 +444,8 @@ test('mock 插件运维：灰度、熔断 → 半开、重复熔断 409、禁用
   assert.equal((await call('POST', `${O}/packs/trace/0.9.1/breaker`, { action: 'open', reason: '失败率高' })).body.breaker, 'open');
   assert.equal((await call('POST', `${O}/packs/trace/0.9.1/disable`, {})).status, 400);
   assert.equal((await call('POST', `${O}/packs/trace/0.9.1/disable`, { reason: '等修复' })).body.channel, 'retired');
-  const rb = await call('POST', `${O}/packs/solver/rollback`, { channel: 'stable', to_version: '0.7.1' });
-  assert.equal(rb.body.version, '0.7.1');
+  const rb = await call('POST', `${O}/packs/codegen/rollback`, { channel: 'stable', to_version: '0.9.1' });
+  assert.equal(rb.body.version, '0.9.1');
   assert.equal((await call('PUT', `${O}/packs/nope/1.0.0/rollout`, { percent: 1 })).body.code, 'pack_version_not_found');
 });
 

@@ -88,7 +88,7 @@ function mainStatic() {
       saved: { files: 2, version_label: BASE_VERSION }, resumable: true, not_resumable_reason: null,
     }],
     [item('feedback:fb-1101-01', 'feedback', '外部反馈：评测服务回传 4 个失分用例', {
-      slice: sl('release', '知识包 v0.11'), meta: '交给反馈演进处理', source: 'external', pack: 'evolution', created_at: todayOrYesterdayAt(9, 10),
+      slice: sl('release', '知识包 v0.11'), meta: '交给反馈演进处理', source: 'external', pack: 'evo', created_at: todayOrYesterdayAt(9, 10),
       impact: imp(['操作', '超量与审批提示、陈列量核定'], ['规则', 'R-09']),
     }), {
       feedback_id: 'fb-1101-01', path: 'feedback/20261101T091000Z-fb-1101-01.json', source: '评测服务', release_version: 'v0.11', item_count: 4,

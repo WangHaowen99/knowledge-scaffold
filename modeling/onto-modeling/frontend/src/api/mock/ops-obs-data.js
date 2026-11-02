@@ -192,18 +192,18 @@ export function metrics({ range = '24h', labels = '', p1 = false } = {}) {
 const ATTR = {
   pack: [
     ['core', '1.4.2', 6284, 0.6, 38000, 14, null, 82],
-    ['trace', '0.9.1', 1102, 1.1, 52000, 2, 3, 76],
-    ['solver', '0.7.2', 214, 2.8, 106000, 0, 9, 61],
-    ['diagram', '0.5.0', 186, 0.5, 24000, 1, null, 88],
+    ['trace', '0.10.0', 1102, 1.1, 52000, 2, 3, 76],
+    ['codegen', '0.9.2', 214, 2.8, 106000, 0, 9, 61],
+    ['diagram', '0.6.0', 186, 0.5, 24000, 1, null, 88],
     ['reverse', '0.3.0', 96, 3.1, 130000, 5, 4, 58],
     ['industry-retail', '1.0.3', 312, 12.0, 11000, 0, 27, null],
   ],
   node: [
     ['core.research', 'core@1.4.2', 148, 0.7, 252000, 2, 6, 79],
-    ['core.object', 'core@1.4.2', 402, 0.5, 68000, 3, 11, 84],
-    ['core.operation', 'core@1.4.2', 366, 0.8, 91000, 5, 14, 77],
+    ['core.model', 'core@1.4.2', 402, 0.5, 68000, 3, 11, 84],
+    ['core.metric', 'core@1.4.2', 366, 0.8, 91000, 5, 14, 77],
     ['core.validate', 'core@1.4.2', 591, 0.3, 46000, 4, null, null],
-    ['trace.trace', 'trace@0.9.1', 684, 1.2, 58000, 2, 3, 76],
+    ['trace.trace', 'trace@0.10.0', 684, 1.2, 58000, 2, 3, 76],
     ['retail.compliance', 'industry-retail@1.0.3', 212, 12.0, 11000, 0, 27, null],
   ],
 };
@@ -312,7 +312,7 @@ const LOGS = [
   [-53238, 'INFO', 'script.run', { script: 'source_extract.py', anchors: '12', ms: '412', trace: '4f9c2e1d' }],
   [-21770, 'INFO', 'write.commit', { source: 'agent', changeset: 'cs-31', node: 'core.operation@1.4.2', files: '2', trace: '4f9c2e1d' }],
   [-21402, 'INFO', 'gate.chain.pass', { gates: '4', changeset: 'cs-31', trace: '4f9c2e1d' }],
-  [-20786, 'INFO', 'flow.updated', { project: 'retail-restock', node: 'core.operation', state: 'pending' }],
+  [-20786, 'INFO', 'flow.updated', { project: 'retail-restock', node: 'core.model', state: 'pending' }],
   [-19, 'ERROR', 'node.fail', { project: 'canteen-menu', node: 'retail.compliance', pack: 'industry-retail@1.0.3', err: 'RuleSchemaError', trace: 'a83d0b52' }],
   [0, 'WARN', 'pack.breaker.open', { pack: 'industry-retail@1.0.3', node: 'retail.compliance', reason: 'fail_rate>5%' }],
 ];

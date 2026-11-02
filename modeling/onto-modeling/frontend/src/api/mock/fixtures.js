@@ -200,12 +200,12 @@ export function packs({ offline = true } = {}) {
     pack({ name: 'core', label: '基础建模', category: 'capability', latest: '1.4.2', description: '资料分析、对象 / 操作 / 规则抽取、校验、增量更新、版本', ui: ui.kernel, project_status: 'required', default_on: true }),
     pack({ name: 'trace', label: '场景走查', category: 'capability', latest: '0.9.1', description: '每片多出「场景」一步；全量回归串在「校验与走查」里', ui: ui.page('scenarios', '场景走查'), badges: ['recommended'], default_on: true }),
     pack({ name: 'knowledge', label: '知识沉淀', category: 'capability', latest: '0.6.0', description: '把对话里的纠错、惯例沉淀成条目，可提名进行业包；已有知识不装也会加载', ui: ui.page('knowledge', '知识沉淀'), default_on: true }),
-    pack({ name: 'solver', label: '代码生成与求解', category: 'capability', latest: '0.7.2', description: '脚本生成、沙箱验证、求解契约', ui: ui.page('scripts', '代码生成'), default_on: true }),
+    pack({ name: 'codegen', label: '代码生成与求解', category: 'capability', latest: '0.9.2', description: '脚本生成、沙箱验证、求解契约', ui: ui.page('scripts', '代码生成'), default_on: true }),
     pack({ name: 'reverse', label: '系统逆向建模', category: 'capability', latest: '0.3.0', description: '连接数据源、采集快照、三方对账', ui: ui.subpages, default_on: true }),
     pack({ name: 'diagram', label: '图示', category: 'capability', latest: '0.5.0', description: '流程图生成与校验；不启用就没有流程图卡和流程图条目', ui: ui.none('无独立页面 · 对话里出现流程图卡，Studio 多出「流程图」类型'), default_on: true }),
-    pack({ name: 'web-research', label: '联网调研', category: 'capability', latest: '0.2.0', description: '离线部署已禁用', ui: ui.none('无独立页面，在对话里生效'), batch: 'second', project_status: offline ? 'offline' : null }),
+    pack({ name: 'websearch', label: '联网调研', category: 'capability', latest: '0.2.0', description: '离线部署已禁用', ui: ui.none('无独立页面，在对话里生效'), batch: 'second', project_status: offline ? 'offline' : null }),
     pack({ name: 'migrate', label: '迁移复用', category: 'capability', latest: '0.2.0', description: '复用旧项目里的对象', ui: ui.none('无独立页面，在对话里生效'), batch: 'second' }),
-    pack({ name: 'evolution', label: '反馈演进', category: 'capability', latest: '0.3.0', description: '按外部反馈修订本体', ui: ui.none('无独立页面，在对话里生效'), batch: 'second' }),
+    pack({ name: 'evo', label: '反馈演进', category: 'capability', latest: '0.3.0', description: '按外部反馈修订本体', ui: ui.none('无独立页面，在对话里生效'), batch: 'second' }),
   ];
 }
 
@@ -215,7 +215,7 @@ export function projectMeta(cardItem) {
   return meta;
 }
 
-export function extensions(enabled = ['trace', 'knowledge', 'solver', 'reverse', 'diagram']) {
+export function extensions(enabled = ['trace', 'knowledge', 'codegen', 'reverse', 'diagram']) {
   const nav = [
     { id: 'wb-l2', title: '工作台', icon: 'layout', kind: 'kernel', badge: { source: 'inbox', count: 18 }, order: 0, overflow: false },
     { id: 'studio', title: 'Studio', icon: 'graph', kind: 'kernel', order: 1, overflow: false },
@@ -225,7 +225,7 @@ export function extensions(enabled = ['trace', 'knowledge', 'solver', 'reverse',
   const plug = [
     ['trace', 'scenarios', '场景走查', 'flask'],
     ['knowledge', 'knowledge', '知识沉淀', 'book'],
-    ['solver', 'scripts', '代码生成', 'code'],
+    ['codegen', 'scripts', '代码生成', 'code'],
   ].filter(([p]) => enabled.includes(p));
   plug.forEach(([p, id, title, icon], i) => nav.push({ id, title, icon, kind: 'plugin', pack: p, order: 10 + i, overflow: false }));
   return {
@@ -272,7 +272,7 @@ export function inboxCounts() {
 
 const node = (o) => ({
   kind: 'agent', placement: 'spine', section: 'required', state: 'not_ready', display_state: 'not_ready',
-  flags: { needs_review: false, disabled: false, backfill: false }, progress: null, version: 'core@1.4.2', per_slice: false,
+  flags: { needs_review: false, disabled: false, backfill: false }, progress: null, version: 'core@0.3.0', per_slice: false,
   note: null, blocks: [], actions: [], plugin: null, ...o,
 });
 
@@ -282,18 +282,19 @@ export function flow({ trace = true } = {}) {
     node({ id: 'rev.evidence', title: '系统取证', placement: 'step', state: 'confirmed', display_state: 'confirmed', version: 'rev@0.3.0', note: '登记了业务系统数据源才有这一步', plugin: { name: 'reverse', label: '系统逆向建模' } }),
     node({ id: 'core.model', title: '建模', state: 'running', display_state: 'running', progress: { done: 3, total: 5, label: '3/5 片' }, per_slice: true }),
     node({ id: 'core.validate', title: trace ? '校验与走查' : '校验', note: trace ? '场景走查插件把全量回归串在这一步里' : null }),
-    ...(trace ? [node({ id: 'trace.regression', title: '全量回归', placement: 'branch', state: 'stale', display_state: 'stale', version: 'trace@0.9.1', note: '场景走查 · 09 修订通知改了陈列量标准，3 个场景过期', actions: [{ kind: 'refresh', label: '刷新', target: 'scenarios' }], plugin: { name: 'trace', label: '场景走查' } })] : []),
+    // 全量回归随 core 拆出、串在校验之后（spine，contract-changes B4d 合并第 4 条）
+    ...(trace ? [node({ id: 'trace.trace', title: '全量回归', state: 'stale', display_state: 'stale', version: 'trace@0.10.0', note: '场景走查 · 09 修订通知改了陈列量标准，3 个场景过期', actions: [{ kind: 'refresh', label: '刷新', target: 'scenarios' }], plugin: { name: 'trace', label: '场景走查' } })] : []),
     node({ id: 'core.consistency', title: '全局一致性' }),
-    node({ id: 'core.publish', title: '发布' }),
+    node({ id: 'core.publish', title: '发布', kind: 'human', actions: [{ kind: 'start', label: '去发布', target: 'publish' }] }),
     node({ id: 'retail.compliance', title: '合规检查', placement: 'gate', section: 'pre_publish', state: 'blocked', display_state: 'blocked', version: 'industry-retail@1.0.3', note: `零售行业包带来；${trace ? '校验与走查' : '校验'}确认后才能运行` }),
-    node({ id: 'diagram.flowchart', title: '流程图', placement: 'branch', section: 'optional', state: 'confirmed', display_state: 'confirmed', version: 'diagram@0.5.0', plugin: { name: 'diagram', label: '图示' } }),
+    node({ id: 'diagram.flowchart', title: '流程图', placement: 'branch', section: 'optional', state: 'confirmed', display_state: 'confirmed', version: 'diagram@0.6.0', plugin: { name: 'diagram', label: '图示' } }),
     // 节点包的脚本节点（B5c）：最近一次运行结果在建模步骤抽屉里展开看（R24）；last_run 是待后端补的 FL-01 字段（gaps「UI 文案」）
     node({ id: 'stock-check.run', title: '库存口径检查', kind: 'script', placement: 'branch', section: 'optional', state: 'confirmed', display_state: 'confirmed', version: 'stock-check@0.1.0', actions: [{ kind: 'start', label: '重新运行' }], plugin: { name: 'stock-check', label: '库存口径检查' }, last_run: { state: 'passed', summary: '15 个对象的库存口径一致', at: '2026-10-31T07:12:00Z' } }),
-    node({ id: 'core.rules', title: '规则与指标', placement: 'branch', section: 'optional', state: 'pending_confirm', display_state: 'pending', actions: [{ kind: 'confirm', label: '去确认', target: 'inbox' }] }),
-    node({ id: 'solver.codegen', title: '代码生成', placement: 'branch', section: 'optional', state: 'ready', display_state: 'ready', version: 'solver@0.7.2', actions: [{ kind: 'start', label: '开始' }, { kind: 'skip', label: '跳过' }], plugin: { name: 'solver', label: '代码生成与求解' } }),
-    node({ id: 'solver.adapt', title: '求解适配', placement: 'branch', section: 'optional', state: 'skipped', display_state: 'skipped', version: 'solver@0.7.2', actions: [{ kind: 'restore', label: '恢复' }] }),
-    node({ id: 'core.incremental', title: '增量更新', placement: 'on_demand', section: 'on_demand', state: 'ready', display_state: 'ready', note: '资料区有 1 个新文件：09 修订通知', actions: [{ kind: 'start', label: '开始', target: 'incremental' }] }),
-    node({ id: 'evolution.feedback', title: '反馈演进', placement: 'on_demand', section: 'on_demand', note: '收到外部反馈后出现', version: 'evolution@0.3.0' }),
+    node({ id: 'core.metric', title: '指标', placement: 'branch', section: 'optional', state: 'pending_confirm', display_state: 'pending', actions: [{ kind: 'confirm', label: '去确认', target: 'inbox' }] }),
+    node({ id: 'codegen.codegen', title: '代码生成', placement: 'branch', section: 'optional', state: 'ready', display_state: 'ready', version: 'codegen@0.9.2', actions: [{ kind: 'start', label: '开始' }, { kind: 'skip', label: '跳过' }], plugin: { name: 'codegen', label: '代码生成与求解' } }),
+    node({ id: 'codegen.solver', title: '求解适配', placement: 'branch', section: 'optional', state: 'skipped', display_state: 'skipped', version: 'codegen@0.9.2', actions: [{ kind: 'restore', label: '恢复' }], plugin: { name: 'codegen', label: '代码生成与求解' } }),
+    node({ id: 'core.update', title: '增量更新', placement: 'on_demand', section: 'on_demand', state: 'ready', display_state: 'ready', note: '资料区有 1 个新文件：09 修订通知', actions: [{ kind: 'start', label: '开始', target: 'incremental' }] }),
+    node({ id: 'evo.evolution', title: '反馈演进', placement: 'on_demand', section: 'on_demand', note: '收到外部反馈后出现', version: 'evo@0.3.0', plugin: { name: 'evo', label: '反馈演进' } }),
   ];
   const st = (a) => {
     const keys = ['object', 'operation', 'rule', 'check', 'scenario'];
@@ -306,7 +307,7 @@ export function flow({ trace = true } = {}) {
     nodes,
     edges: [
       { from: 'core.research', to: 'rev.evidence' }, { from: 'rev.evidence', to: 'core.model' }, { from: 'core.model', to: 'core.validate' },
-      { from: 'core.validate', to: 'core.consistency' }, { from: 'core.consistency', to: 'retail.compliance' }, { from: 'retail.compliance', to: 'core.publish' },
+      ...(trace ? [{ from: 'core.validate', to: 'trace.trace' }, { from: 'trace.trace', to: 'core.consistency' }] : [{ from: 'core.validate', to: 'core.consistency' }]), { from: 'core.consistency', to: 'retail.compliance' }, { from: 'retail.compliance', to: 'core.publish' },
     ],
     slice_stages: [
       { id: 'object', label: '对象' }, { id: 'operation', label: '操作' }, { id: 'rule', label: '规则' }, { id: 'check', label: '写入即查' },
@@ -319,15 +320,16 @@ export function flow({ trace = true } = {}) {
       { id: 's4', name: '临期与损耗检查', core_flow: '临期损耗限值', group: 'todo', stages: st(['ready', 'not_ready', 'not_ready', 'not_ready', 'not_ready']), note: '未开始 · 推荐下一个做', no_rules: false },
       { id: 's5', name: '超量与审批提示', core_flow: '超量清单与审批提示', group: 'now', stages: st(['confirmed', 'pending_confirm', 'draft', 'running', 'not_ready']), note: '正在做 · 停在「操作」', no_rules: false },
     ],
+    blueprint: { state: 'confirmed' },
     suggestions: null,
     notices: [{ kind: 'new_materials', count: 1, files: ['resource/others/09-修订通知.docx'], text: '资料区有 1 个新文件（09 修订通知），建议走增量更新', action: { type: 'navigate', page: 'incremental' } }],
     // 以下按 P1 的 /flow 补齐（contract-changes B3a 第 1 条）：抽屉分组、命令归属、项目进度、旧版阶段名
     sections: [['required', '必经步骤'], ['pre_publish', '发布前检查'], ['optional', '可选步骤'], ['on_demand', '有需要时']]
       .map(([id, title]) => ({ id, title, nodes: nodes.filter((n) => n.section === id).map((n) => n.id) })),
     commands: {
-      research: 'core.research', 'extract-object': 'core.model', 'extract-operation': 'core.model', 'extract-rule-metric': 'core.rules',
-      validate: 'core.validate', 'validate-diagrams': 'diagram.flowchart', flowchart: 'diagram.flowchart', update: 'core.incremental',
-      codegen: 'solver.codegen', 'codegen-scan': 'solver.codegen', 'solver-evaluator': 'solver.adapt', ...(trace ? { trace: 'trace.regression' } : {}),
+      research: 'core.research', 'extract-object': 'core.model', 'extract-operation': 'core.model', 'extract-rule-metric': 'core.metric',
+      validate: 'core.validate', consistency: 'core.consistency', 'validate-diagrams': 'diagram.flowchart', flowchart: 'diagram.flowchart', update: 'core.update',
+      codegen: 'codegen.codegen', 'codegen-scan': 'codegen.codegen', 'solver-evaluator': 'codegen.solver', evolution: 'evo.evolution', ...(trace ? { trace: 'trace.trace' } : {}),
     },
     progress: { done: 2, total: 6 },
     stage: '逻辑已提取',
@@ -649,7 +651,8 @@ export function suggestionsPendingConfirm() {
 export function suggestionsAfterMerge() {
   return {
     mode: 'normal',
-    primary: { id: 'sg-rules', label: '提取本切片的规则', icon: 'scale', primary: true, disabled: false, reason: '', priority: 4, action: { type: 'send', text: '提取本切片的规则', command: '/ontology-rules' } },
+    // 建模的下一步（contract-changes B4d 第 14 条）：send 的 text 为空串，命令与切片在 command、args 里
+    primary: { id: 'core.model:s2:rule', label: '提取规则', icon: 'scale', primary: true, disabled: false, reason: '', priority: 4, action: { type: 'send', text: '', command: '/ontology-extract-rule-metric', args: { slice: 's2' } } },
     secondary: [
       { id: 'sg-sc', label: '看场景推演', icon: 'flask', primary: false, disabled: false, reason: '', priority: 4, action: { type: 'navigate', page: 'scenarios' } },
       { id: 'sg-pause', label: '先到这里', icon: 'pause', primary: false, disabled: false, reason: '', priority: 5, action: { type: 'clear_input' } },
@@ -675,19 +678,20 @@ export function commandCatalog() {
   return {
     groups: [
       { id: 'model', label: '建模', items: [
-        item('guide', '引导式建模', '从头带你走一遍', '/ontology-guide'),
+        item('guide', '引导式建模', '从头带你走一遍', '/ontology'),
         item('research', '资料分析', '读全资料，提出切片', '/ontology-research'),
-        item('objects', '提取对象', '从资料里抽出业务对象', '/ontology-objects'),
-        item('operations', '提取操作', '抽出业务流程和步骤', '/ontology-operations'),
-        item('rules', '规则与指标', '抽出判断规则和统计口径', '/ontology-rules'),
-        item('check', '质量检查', '规则检查 + 语义检查', '/ontology-check'),
+        item('objects', '提取对象', '从资料里抽出业务对象', '/ontology-extract-object'),
+        item('operations', '提取操作', '抽出业务流程和步骤', '/ontology-extract-operation'),
+        item('rules', '规则与指标', '抽出判断规则和统计口径', '/ontology-extract-rule-metric'),
+        item('check', '校验', '规则检查 + 语义检查', '/ontology-validate'),
+        item('consistency', '全局一致性', '关系、口径与切片衔接', '/ontology-consistency'),
         item('incremental', '增量更新', '资料变了，只改受影响的部分', '/ontology-update'),
       ] },
       { id: 'optional', label: '可选能力', items: [
-        { ...item('trace', '场景验证', '用样例推演，看结论对不对', '/ontology-trace-batch'), pack: 'trace' },
+        { ...item('trace', '场景验证', '用样例推演，看结论对不对', '/ontology-trace'), pack: 'trace' },
         { ...item('mock', '生成示例数据', '按场景需要生成', '/ontology-mock'), pack: 'trace' },
         { ...item('flowchart', '画流程图', '创建或打磨业务流程图', '/ontology-flowchart'), pack: 'diagram' },
-        { ...item('scan', '扫描脚本候选', '找出适合写成脚本的操作', '/ontology-script-scan'), pack: 'solver' },
+        { ...item('scan', '扫描脚本候选', '找出适合写成脚本的操作', '/ontology-codegen-scan'), pack: 'codegen' },
       ] },
     ],
     total: 22,

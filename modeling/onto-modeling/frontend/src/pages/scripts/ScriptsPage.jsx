@@ -87,7 +87,7 @@ export default function ScriptsPage({ route }) {
   if (enabled === false) {
     return (
       <ShellP active="scripts">
-        <PageHead title={LABEL} eyebrow={<PluginEyebrow pack="solver" label={LABEL} />} />
+        <PageHead title={LABEL} eyebrow={<PluginEyebrow pack="codegen" label={LABEL} />} />
         <PluginOff label={LABEL} what="脚本和求解契约" />
       </ShellP>
     );
@@ -99,7 +99,7 @@ export default function ScriptsPage({ route }) {
   return (
     <ShellP active="scripts">
       <PageHead
-        eyebrow={<PluginEyebrow pack="solver" label={LABEL} />}
+        eyebrow={<PluginEyebrow pack="codegen" label={LABEL} />}
         title={LABEL}
         actions={(
           <>

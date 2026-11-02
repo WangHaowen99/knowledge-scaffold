@@ -9,7 +9,7 @@ const projectWith = (ext) => ({ hasSubpage: (id) => (ext.subpages || []).some((s
 
 test('证据源可用：项目内看有没有数据源子页，项目外看 EV-01 读不读得到', () => {
   assert.equal(evidenceInProject(projectWith(F.extensions())), true);
-  assert.equal(evidenceInProject(projectWith(F.extensions(['trace', 'knowledge', 'solver', 'diagram']))), false);
+  assert.equal(evidenceInProject(projectWith(F.extensions(['trace', 'knowledge', 'codegen', 'diagram']))), false);
   assert.equal(evidenceInProject(null), false);
   assert.equal(evidenceFromSources({ items: [] }), true);
   assert.equal(evidenceFromSources(null), false);

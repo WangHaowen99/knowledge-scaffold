@@ -269,12 +269,15 @@ function blueprintOf(confirmed = false) {
   };
 }
 
+const autobuildOff = () => typeof window !== 'undefined' && /(^|[?&,=])autobuild:off/.test(window.location.search);
+
 function blueprintCard(bp) {
-  const live = bp.slices.filter((s) => !s.excluded).length;
   return {
     card_id: BP_CARD, card_type: 'blueprint', eyebrow: '', title: `建模蓝图 · ${bp.version_label}`,
-    subtitle: `按补货规则的章节和业务项划成 ${live} 片，已按依赖排好顺序`,
+    subtitle: '',
     status: bp.state === 'confirmed' ? { key: 'confirmed', label: '已确认' } : null, plugin: null,
+    // 后端口径（contract-changes B4d 合并第 1 条）：草案时给，L4 只在自主构建登记后出现，已确认时为空
+    confirm_options: bp.state === 'confirmed' ? [] : [{ mode: 'L2', label: '确认，一片一片来' }, ...(autobuildOff() ? [] : [{ mode: 'L4', label: '确认，一路建完…' }])],
     open: { kind: 'dialog', target: 'blueprint' },
     version_label: bp.version_label, state: bp.state, goal_md: bp.goal_md, goal_anchor: bp.goal_anchor, goal_anchor_label: bp.goal_anchor_label,
     out_of_scope: bp.out_of_scope, slices: bp.slices,
@@ -289,15 +292,6 @@ function researchSummaryCard() {
     card_id: 'card-research-summary', card_type: 'research_summary', eyebrow: '', title: '资料分析完成', subtitle: '',
     status: { key: 'confirmed', label: '已核验' }, plugin: null, open: { kind: 'page', target: 'reports', ref: { report_id: RESEARCH_REPORT } },
     files: 7, coverage_pct: 100, verified_anchors: 46, problems_carried: 2, verified: true, report_id: RESEARCH_REPORT,
-  };
-}
-
-function buildChoiceCard() {
-  return {
-    card_id: 'card-build-choice', card_type: 'build_choice', eyebrow: '', title: '确认后怎么建？',
-    subtitle: '可以一片一片陪你做，每个决定都等你选；也可以让我按蓝图一路建完（自主构建）：在你设定的范围和预算内跑完，不停下来问，拿不准的先挂起，结束后集中复核。',
-    status: null, plugin: null, open: null,
-    options: [{ mode: 'L2', label: '一片一片来' }, { mode: 'L4', label: '按蓝图一路建完' }], policy_link: true,
   };
 }
 
@@ -417,7 +411,6 @@ function materialsHistory() {
   ];
 }
 
-const autobuildOff = () => typeof window !== 'undefined' && /(^|[?&,=])autobuild:off/.test(window.location.search);
 
 function blueprintHistory() {
   const e = evOf(MAIN_PID, CID);
@@ -440,9 +433,8 @@ function blueprintHistory() {
       text_md: '每片是一条能单独讲清楚、单独验证的业务链路：1 个主操作、3–8 个对象、几条规则，约半天能走完一圈。「商品品类」三片都会用到，先在第 1 片建好，其他片引用。',
       anchors: [], entry_links: [], continued: true,
     }, t1),
+    // ?mock=autobuild:off：自主构建没登记（BP-03 409 autobuild_not_available），蓝图卡的 confirm_options 没有 L4
     e('card', blueprintCard(blueprintOf()), t1),
-    // ?mock=autobuild:off：自主构建没登记（BP-03 409 autobuild_not_available），后端不发「确认后怎么建」
-    ...(autobuildOff() ? [] : [e('card', buildChoiceCard(), t1)]),
     e('suggestions.updated', blueprintSuggestions(), t1),
   ];
 }
@@ -451,14 +443,17 @@ function blueprintHistory() {
 function stageFlow(base, research, slices = []) {
   const nodes = base.nodes.map((n) => {
     if (n.id === 'core.research') return { ...n, ...research };
-    if (n.id === 'evolution.feedback') return n;
+    if (n.id === 'evo.evolution') return n;
     const reset = { ...n, state: 'not_ready', display_state: 'not_ready', progress: null, flags: { ...n.flags, needs_review: false }, actions: [] };
-    if (n.id === 'trace.regression') return { ...reset, note: '场景走查 · 建模之后才有场景' };
-    if (n.id === 'core.incremental') return { ...reset, note: '资料有修订时再用' };
+    if (n.id === 'trace.trace') return { ...reset, note: '场景走查 · 建模之后才有场景' };
+    if (n.id === 'core.update') return { ...reset, note: '资料有修订时再用' };
     if (n.section === 'optional') return { ...reset, actions: [{ kind: 'skip', label: '跳过' }] };
     return reset;
   });
-  return { ...base, flow_hash: `${base.flow_hash.slice(0, 6)}m${slices.length}`, nodes, slices, notices: [], suggestions: null };
+  // 没有蓝图时后端给一片「全部」（全量模式）与 blueprint.state=none（contract-changes B4d 第 8 条、B4d 合并第 2 条）
+  const draft = slices.length > 0;
+  const all = [{ id: 'all', name: '全部', core_flow: '', group: 'todo', stages: Object.fromEntries(base.slice_stages.map((x) => [x.id, 'not_ready'])), note: '', no_rules: false }];
+  return { ...base, flow_hash: `${base.flow_hash.slice(0, 6)}m${slices.length}`, nodes, slices: draft ? slices : all, blueprint: { state: draft ? 'draft' : 'none' }, notices: [], suggestions: null };
 }
 const emptyResearch = { state: 'ready', display_state: 'pending', progress: { done: 0, total: 0, label: '等资料' }, actions: [] };
 function draftSlices(base) {
