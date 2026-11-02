@@ -27,6 +27,12 @@ class FakeWorkerEngine:
         if text == "提问":
             decision = await self.ctx.request_permission("AskUserQuestion", {"questions": []}, None, None)
             await self.queue.put({"type": "assistant_message", "blocks": [{"kind": "text", "text": decision["behavior"]}]})
+        elif text.startswith("注入："):
+            # 宿主注入在 worker 里算（同 JiuwenEngine）：回出这条消息要附上的包提示规则
+            from app.services.session_host import injection
+
+            hint = injection.prompt_hint(self.ctx.cwd, text[len("注入："):])
+            await self.queue.put({"type": "assistant_message", "blocks": [{"kind": "text", "text": hint}]})
         else:
             history = len(self.ctx.load_history() or [])
             await self.queue.put({"type": "assistant_message",

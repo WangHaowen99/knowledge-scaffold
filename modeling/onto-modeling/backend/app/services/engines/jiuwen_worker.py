@@ -182,6 +182,10 @@ def main(argv: list[str] | None = None) -> int:
         config.DATA_DIR = Path(args.data_dir)
     if args.assets_dir:
         config.ASSETS_DIR = Path(args.assets_dir)
+    from ... import wiring
+
+    # 宿主注入在 worker 里算：包的提示规则按内核给的数据目录读（ADR-0045）
+    wiring.install_worker(config.DATA_DIR, config.ASSETS_DIR)
     engine_class = _load(args.engine)
 
     async def run() -> None:

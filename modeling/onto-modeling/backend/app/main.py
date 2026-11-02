@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import config
+from . import config, wiring
 from .api import deps, v1
 from .routers import auth_routes
 
@@ -55,6 +55,8 @@ async def _lifespan(app: FastAPI):
 app = FastAPI(title="Onto Modeling", version="0.1.0", lifespan=_lifespan)
 # 健康检查（/api/health、/live、/ready）由 governance/health 的路由提供，两个监听都挂
 v1.install(app)
+# 插件运行时接到会话宿主与项目流（页面按钮、产物、扩展项、事件、提示规则；ADR-0045）
+wiring.install()
 
 
 # drawio 编辑器（官方 webapp 静态部署，iframe embed 协议接入；缺席时前端只读降级）

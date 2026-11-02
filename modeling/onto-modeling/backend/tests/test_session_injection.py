@@ -1,19 +1,22 @@
 """宿主注入（session_host/injection.py）与两个引擎接入的测试。
 
-两个提示 hook（session_start_hook.sh、knowledge_signal_probe.sh）已退役（ADR-0034），阶段提示与
-业务知识信号只剩 injection.py 一份实现。下面的期望文本是退役前用 hook 脚本本体对同一组场景跑出的
-输出，保证移植后逐字一致；bash、python3、git 不可用时跳过要起工作区的用例。测试数据全部为合成内容。
+两个提示 hook（session_start_hook.sh、knowledge_signal_probe.sh）已退役（ADR-0034）。阶段提示只剩
+injection.py 一份实现，下面的期望文本是退役前用 hook 脚本本体对同一组场景跑出的输出，保证移植后逐字一致；
+业务知识信号改由知识沉淀包声明的提示规则给（ADR-0045），命中的消息与退役的 hook 一致。
+bash、python3、git 不可用时跳过要起工作区的用例。测试数据全部为合成内容。
 """
 
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from app import config
 from app.services.engines.base import EngineContext
@@ -44,48 +47,62 @@ def write(path: Path, text: str, mtime: int | None = None) -> None:
         os.utime(path, (mtime, mtime))
 
 
-# ---- 业务知识信号 ----
+# ---- 业务知识信号（知识沉淀包的提示规则）----
 
 
-PROBE_TAIL = (
-    "请对照 .claude/BUSINESS_KNOWLEDGE_SNIPPET.md 评估是否需要沉淀为业务知识："
-    "若是，按 .claude/INTERACTION_CONVENTIONS.md 的「业务知识确认类」模板向用户确认；"
-    "若用户已用「记一下：…」「记下这条规则」等明确指令，则直接调用 knowledge_helper.py add 落盘。"
-)
-# 用户原话 → 退役前 knowledge_signal_probe.sh 输出的第一行（空串表示没有输出）
+def knowledge_rules() -> list[dict]:
+    """知识沉淀包清单里声明的提示规则（官方包原文）。"""
+    manifest = yaml.safe_load((ASSETS_DIR / "packs" / "knowledge" / "manifest.yaml").read_text(encoding="utf-8"))
+    return manifest["contributes"]["prompts"]
+
+
+def knowledge_provider(root, user_text):
+    """不起包仓库时的提示规则数据源：只按知识沉淀包的规则匹配（等同于项目启用了这个包）。"""
+    return [rule["text"] for rule in knowledge_rules()
+            if any(re.search(pattern, user_text) for pattern in rule["match"])]
+
+
+@pytest.fixture()
+def knowledge_on(monkeypatch):
+    monkeypatch.setattr(injection, "_prompt_hint_provider", knowledge_provider)
+    return knowledge_rules()[0]["text"]
+
+
+# 用户原话 → 退役前 knowledge_signal_probe.sh 有没有输出
 PROBE_CASES = [
-    ("帮我看看订单对象的属性", ""),
-    ("不对，配送时长应该是从接单开始算", "【业务知识信号词探针】检测到 — 纠错信号：不对、应该是。"),
-    ("我们公司规则是满 100 元免配送费", "【业务知识信号词探针】检测到 — 业务常识/规范信号：我们公司、规则是。"),
-    ("其实通常由站长审核，行业里也是这样，必须留痕",
-     "【业务知识信号词探针】检测到 — 纠错信号：其实；业务常识/规范信号：通常、必须、行业里。"),
-    ("实际上你弄错了，标准做法是先校验再派单",
-     "【业务知识信号词探针】检测到 — 纠错信号：你弄错了、实际上；业务常识/规范信号：标准做法。"),
-    ("   ", ""),
-    ("", ""),
-    ("/ontology-research 示例领域", ""),
+    ("帮我看看订单对象的属性", False),
+    ("不对，配送时长应该是从接单开始算", True),
+    ("我们公司规则是满 100 元免配送费", True),
+    ("其实通常由站长审核，行业里也是这样，必须留痕", True),
+    ("实际上你弄错了，标准做法是先校验再派单", True),
+    ("   ", False),
+    ("", False),
+    ("/ontology-research 示例领域", False),
 ]
 
 
-def test_knowledge_hint_lists_hits_by_category_in_fixed_order():
-    hint = injection.knowledge_signal_hint("必须先建对象。其实我们这边通常不这样")
-    assert hint.startswith(
-        "【业务知识信号词探针】检测到 — 纠错信号：其实；业务常识/规范信号：我们这边、通常、必须。\n"
-    )
-    assert "BUSINESS_KNOWLEDGE_SNIPPET.md" in hint
-    assert "knowledge_helper.py add" in hint
+@pytest.mark.parametrize("prompt,hit", PROBE_CASES)
+def test_knowledge_rule_fires_on_the_same_messages_as_retired_probe(knowledge_on, tmp_path, prompt, hit):
+    assert injection.prompt_hint(tmp_path, prompt) == (knowledge_on if hit else "")
 
 
-def test_knowledge_hint_empty_without_signal():
-    assert injection.knowledge_signal_hint("帮我画一张流程图") == ""
-    assert injection.knowledge_signal_hint("  \n ") == ""
-    assert injection.knowledge_signal_hint("") == ""
+def test_knowledge_rule_points_at_pack_guide():
+    text = knowledge_rules()[0]["text"]
+    assert text.startswith("【业务知识信号】") and ".claude/KNOWLEDGE_SEDIMENTATION.md" in text
+    assert "「业务知识确认类」" in text
 
 
-@pytest.mark.parametrize("prompt,header", PROBE_CASES)
-def test_knowledge_hint_matches_retired_probe_script(prompt, header):
-    expected = f"{header}\n{PROBE_TAIL}" if header else ""
-    assert injection.knowledge_signal_hint(prompt) == expected
+def test_prompt_hint_empty_without_provider_or_on_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(injection, "_prompt_hint_provider", None)
+    assert injection.prompt_hint(tmp_path, "其实应该是按箱") == ""
+
+    def broken(root, text):
+        raise RuntimeError("模拟包仓库读不出")
+
+    monkeypatch.setattr(injection, "_prompt_hint_provider", broken)
+    assert injection.prompt_hint(tmp_path, "其实应该是按箱") == ""
+    monkeypatch.setattr(injection, "_prompt_hint_provider", lambda root, text: ["甲", "", "乙"])
+    assert injection.prompt_hint(tmp_path, "随便") == "甲\n\n乙"
 
 
 # ---- 阶段提示 ----
@@ -179,21 +196,20 @@ def test_retired_prompt_hooks_are_not_in_kernel_guards():
 # ---- 入口：去重与拼接 ----
 
 
-def test_build_context_dedupes_unchanged_stage_and_probes_each_message(tmp_path, monkeypatch):
+def test_build_context_dedupes_unchanged_stage_and_probes_each_message(tmp_path, monkeypatch, knowledge_on):
     stage = {"text": "本体项目当前阶段：未开始。"}
     monkeypatch.setattr(injection, "stage_hint", lambda root: stage["text"])
 
     first = injection.build_context(tmp_path, user_text="开始建模", session_start=True, last_injected=None)
     assert first.text == "本体项目当前阶段：未开始。"
-    assert first.stage_hint and not first.knowledge_hint and first.digest
+    assert first.stage_hint and not first.prompt_hint and first.digest
 
     # 阶段没变：不重复；知识信号按本条消息判断
     second = injection.build_context(
         tmp_path, user_text="其实这里应该是两个对象", session_start=False, last_injected=first.digest
     )
     assert second.stage_hint == "" and second.digest == first.digest
-    assert second.text == second.knowledge_hint
-    assert "纠错信号：应该是、其实" in second.text
+    assert second.text == second.prompt_hint == knowledge_on
 
     third = injection.build_context(tmp_path, user_text="好的", session_start=False, last_injected=second.digest)
     assert third.text == ""
@@ -204,7 +220,7 @@ def test_build_context_dedupes_unchanged_stage_and_probes_each_message(tmp_path,
         tmp_path, user_text="我们公司通常按周盘点", session_start=False, last_injected=third.digest
     )
     assert fourth.digest != third.digest
-    assert fourth.text == fourth.stage_hint + "\n\n" + fourth.knowledge_hint
+    assert fourth.text == fourth.stage_hint + "\n\n" + fourth.prompt_hint
 
     # 新引擎实例（重连、续接）的第一条：内容没变也要带
     fifth = injection.build_context(tmp_path, user_text="继续", session_start=True, last_injected=fourth.digest)
@@ -253,7 +269,7 @@ def answer(text):
 
 
 @needs_shell
-def test_jiuwen_first_message_carries_stage_and_later_only_on_change(tmp_path, monkeypatch):
+def test_jiuwen_first_message_carries_stage_and_later_only_on_change(tmp_path, monkeypatch, knowledge_on):
     from openjiuwen.core.runner import Runner
 
     ws = make_workspace(tmp_path / "ws")
@@ -284,13 +300,13 @@ def test_jiuwen_first_message_carries_stage_and_later_only_on_change(tmp_path, m
     assert second == "好的，继续"
     assert third.startswith("<system-reminder>\n")
     assert "本体项目当前阶段：对象已提取。" in third
-    assert "纠错信号：其实" in third
+    assert knowledge_on in third
     assert third.endswith("\n\n其实订单还要拆出明细")
     # 注入只进发给模型的 query，引擎产出的事件里没有
     assert "本体项目当前阶段" not in json.dumps(events, ensure_ascii=False)
 
 
-def test_jiuwen_buffered_messages_get_injection_when_delivered(tmp_path, monkeypatch):
+def test_jiuwen_buffered_messages_get_injection_when_delivered(tmp_path, monkeypatch, knowledge_on):
     from openjiuwen.core.runner import Runner
 
     stage = {"text": "本体项目当前阶段：未开始。"}
@@ -331,11 +347,11 @@ def test_jiuwen_buffered_messages_get_injection_when_delivered(tmp_path, monkeyp
     assert first == injection.compose_query("第一条", "本体项目当前阶段：未开始。")
     # 积压的消息送达时才算阶段：带上新阶段与本条的知识信号
     assert "本体项目当前阶段：资料分析待核验。" in second
-    assert "业务常识/规范信号：我们这边、规则是" in second
+    assert knowledge_on in second
     assert second.endswith("\n\n我们这边规则是先审后派")
     # 斜杠命令照常展开；信号词只看用户原文，命令文档里的「必须」等不算
     assert "示例领域" in third and "state_helper.py" in third
-    assert any(word in third for word in injection.CORRECTION_SIGNALS + injection.CONVENTION_SIGNALS)
+    assert knowledge_provider(tmp_path, third)
     assert not third.startswith("<system-reminder>")
 
 

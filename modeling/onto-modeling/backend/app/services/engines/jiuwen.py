@@ -17,8 +17,8 @@
   workspace = DATA_DIR/jiuwen/<pid>（框架私有工件区），互不污染；子代理工件区
   再下沉到 workspace/sub_agents（必须与主 agent 分开，见 _general_purpose_spec）
 - hook：只执行 PreToolUse 守卫（jiuwen_assets.ClaudeHooksRail）；阶段提示、统一下一步与
-  业务知识信号由宿主注入（session_host/injection.Injector，两个引擎同一份），每条消息
-  送达模型时拼在 query 前面
+  包的提示规则（如知识沉淀的纠错信号）由宿主注入（session_host/injection.Injector，两个引擎
+  同一份），每条消息送达模型时拼在 query 前面
 
 同步 task_tool 的子代理执行步骤由 jiuwen_progress.py 通过 Rail 回调送回主事件队列；
 成本无单价来源，只报 tokens：每次模型调用发 model_usage 逐次记账，result 只给单轮合计。
@@ -804,7 +804,7 @@ class JiuwenEngine(ObservableEngine):
         self._turn_task = asyncio.create_task(self._run_turn(text))
 
     async def _model_query(self, text: str) -> str:
-        """发给模型的 query：斜杠命令展开后，前面附上宿主注入的阶段提示与业务知识信号。
+        """发给模型的 query：斜杠命令展开后，前面附上宿主注入的阶段提示与包的提示规则。
 
         Jiuwen 不执行 SessionStart / UserPromptSubmit hook，由这里补上（ADR-0022）。
         会话历史里的用户消息由会话层按原文记录，不受影响；注入出错只留档，照常发送。

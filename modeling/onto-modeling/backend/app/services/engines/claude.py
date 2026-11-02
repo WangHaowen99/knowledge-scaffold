@@ -696,7 +696,7 @@ class ClaudeEngine(ObservableEngine):
     # ---- 权限回调（SDK 契约 → 中立决策 dict）----
 
     async def _on_prompt(self, input_data: Any, tool_use_id: Any = None, context: Any = None) -> dict:
-        """UserPromptSubmit 回调：消息进模型之前附上宿主注入的阶段、下一步与业务知识信号。
+        """UserPromptSubmit 回调：消息进模型之前附上宿主注入的阶段、下一步与包的提示规则。
 
         CLI 把 additionalContext 作为系统提示放在这条消息前面；斜杠命令照常展开（不改用户原文）。
         注入出错只留档，照常发送。

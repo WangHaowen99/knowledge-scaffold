@@ -6,8 +6,10 @@
 - 阶段提示：当前阶段、进行中的命令、最近报告（原 `session_start_hook.sh` 的内容，逐字一致）；
 - 统一「下一步」：与界面建议条（FL-02）同一份结果，助手回复末尾的「下一步建议」按它给。计算由
   登记的提供方给（`register_next_step_provider`，B4b 的 `state_helper suggest` 接上之前用 FL-02）；
-- 业务知识信号：用户原话里的纠错、规范信号词（原 `knowledge_signal_probe.sh`），每条消息单独判断，
-  探测的是用户原文，不是斜杠命令展开后的全文。
+- 包的提示规则（详设 5.6；ADR-0040、0045）：生效中的装配里各包声明的 `prompts`，按用户原话匹配，
+  每条消息单独判断，探测的是用户原文，不是斜杠命令展开后的全文。知识沉淀包的纠错与惯例信号就是一条
+  （原 `knowledge_signal_probe.sh`），没启用这个包的项目不提示。规则由登记的数据源算
+  （`register_prompt_hint_provider`，启动时在 `app/wiring.py` 登记；Jiuwen worker 进程自己登记一份）。
 
 宿主给每个引擎实例建一个 `Injector`（经 EngineContext 交给引擎）：引擎在消息真正送到模型的那一刻
 调 `context_for(原文)`——Claude 在 send() 时，Jiuwen 在轮内积压的消息开始跑时——阶段与下一步按
@@ -18,6 +20,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -26,12 +29,10 @@ from pathlib import Path
 from ... import config
 from ..script_env import minimal_env
 
+_log = logging.getLogger(__name__)
+
 # 与 Jiuwen 守卫 hook 的超时一致；超时按 hook 超时处理，本条不带阶段提示
 _STAGE_TIMEOUT_SECONDS = 15
-
-# 两类信号词与 BUSINESS_KNOWLEDGE_SNIPPET.md 保持一致（原 knowledge_signal_probe.sh）
-CORRECTION_SIGNALS = ("不对", "你弄错了", "应该是", "其实", "实际上")
-CONVENTION_SIGNALS = ("我们公司", "我们这边", "规则是", "通常", "必须", "行业里", "标准做法")
 
 
 _next_step_provider: "Callable[[Path], dict | None] | None" = None
@@ -81,7 +82,7 @@ class InjectionResult:
     text: str  # 拼好的注入文本；空串 = 本条不注入
     digest: str | None  # 模型已看到的阶段提示摘要，下一条消息作为 last_injected 传回
     stage_hint: str = ""  # 本条带上的阶段提示，没带为空
-    knowledge_hint: str = ""  # 本条命中的业务知识信号提示，没命中为空
+    prompt_hint: str = ""  # 本条命中的包提示规则（如知识沉淀的纠错信号），没命中为空
 
 
 def build_context(
@@ -107,9 +108,9 @@ def build_context(
         digest = _digest(hint)
         if session_start or digest != last_injected:
             stage_part = hint
-    knowledge = knowledge_signal_hint(user_text)
-    text = "\n\n".join(part for part in (stage_part, knowledge) if part)
-    return InjectionResult(text=text, digest=digest, stage_hint=stage_part, knowledge_hint=knowledge)
+    rules = prompt_hint(project_root, user_text)
+    text = "\n\n".join(part for part in (stage_part, rules) if part)
+    return InjectionResult(text=text, digest=digest, stage_hint=stage_part, prompt_hint=rules)
 
 
 class Injector:
@@ -232,27 +233,25 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-# ---- 业务知识信号（原 knowledge_signal_probe.sh）----
+# ---- 包的提示规则（知识沉淀的纠错信号原是 knowledge_signal_probe.sh）----
+
+_prompt_hint_provider: "Callable[[Path, str], list[str]] | None" = None
 
 
-def knowledge_signal_hint(user_text: str) -> str:
-    """用户消息命中信号词时给模型的提示，与已退役的 knowledge_signal_probe.sh 的
-    additionalContext 逐字一致；没命中返回空串。"""
-    prompt = (user_text or "").strip()
-    if not prompt:
+def register_prompt_hint_provider(provider: "Callable[[Path, str], list[str]] | None") -> None:
+    """包提示规则的数据源：(项目根目录, 用户原文) → 命中的提示文本（packs/registry.prompt_hints）。"""
+    global _prompt_hint_provider
+    _prompt_hint_provider = provider
+
+
+def prompt_hint(project_root: Path, user_text: str) -> str:
+    """用户原文命中的包提示规则，多条之间空一行；没登记数据源、没命中、算不出来时返回空串（不挡消息）。"""
+    provider = _prompt_hint_provider
+    if provider is None or not (user_text or "").strip():
         return ""
-    hit_correction = [word for word in CORRECTION_SIGNALS if word in prompt]
-    hit_convention = [word for word in CONVENTION_SIGNALS if word in prompt]
-    if not hit_correction and not hit_convention:
+    try:
+        hints = provider(Path(project_root), user_text) or []
+    except Exception:  # noqa: BLE001 - 提示规则是增强信息
+        _log.warning("项目 %s 的提示规则算不出来，本条不带", Path(project_root).name, exc_info=True)
         return ""
-    parts = []
-    if hit_correction:
-        parts.append(f"纠错信号：{'、'.join(hit_correction)}")
-    if hit_convention:
-        parts.append(f"业务常识/规范信号：{'、'.join(hit_convention)}")
-    return (
-        "【业务知识信号词探针】检测到 — " + "；".join(parts) + "。\n"
-        "请对照 .claude/BUSINESS_KNOWLEDGE_SNIPPET.md 评估是否需要沉淀为业务知识："
-        "若是，按 .claude/INTERACTION_CONVENTIONS.md 的「业务知识确认类」模板向用户确认；"
-        "若用户已用「记一下：…」「记下这条规则」等明确指令，则直接调用 knowledge_helper.py add 落盘。"
-    )
+    return "\n\n".join(hint for hint in hints if hint)
