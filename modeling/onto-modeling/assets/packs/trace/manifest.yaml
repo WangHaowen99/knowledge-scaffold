@@ -2,7 +2,7 @@
 # 官方包保留原命令名（方案第 6 章第 7 项）。存量产物还在原目录（ontology/testcase、ontology/data-mock），
 # 登记成插件产物供「场景走查」页读；推演结论由 trace_index.py 写进 ext/trace/index/ 的标准索引。
 name: trace
-version: 0.9.1
+version: 0.9.2
 kind: capability
 category: capability
 label: 场景走查
@@ -15,7 +15,7 @@ badges: [recommended]
 kernel_api: ">=1.0 <2.0"
 page_api: ">=1.0 <2.0"
 engines: [claude, jiuwen]
-depends: {core: ">=0.1"}
+depends: {core: ">=0.2"}  # 拆分后的 core（0.2.0 起）：拆出去的命令、行业知识分层都要它
 changelog: 从基础建模能力拆出；场景与示例数据登记成插件产物，推演结论写进标准索引。
 contributes:
   commands: [ontology-mock, ontology-trace, ontology-trace-single, ontology-trace-batch, ontology-trace-interactive]

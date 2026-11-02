@@ -61,7 +61,7 @@ class PackRuntime:
             if name == CORE:
                 continue
             version, manifest = self._stable_manifest(name)
-            if manifest is not None and manifest.raw.get("split_from_core") and manifest.official:
+            if manifest is not None and manifest.raw.get("split_from_core") and self.repository.is_builtin(name, version):
                 out.append((name, version))
         return out
 
@@ -156,7 +156,11 @@ class PackRuntime:
         return lock, (lockfile.write(root, lock) if changed else False)
 
     def follow(self, root: Path) -> bool:
-        """跟随通道的包：通道指针动了就把锁改到通道版本（方案 2.3 第 4 步）。返回是否改了锁。"""
+        """跟随通道的包：通道指针动了就把锁改到通道版本（方案 2.3 第 4 步）。返回是否改了锁。
+
+        每改一个包先试着定装配计划（依赖、内核接口）：通道指到一个和项目里别的包配不上的版本（比如 core 的
+        stable 被回滚到拆分前，拆出去的包要求 core ≥0.2）时这个包不跟，留在原版本，项目照常能装配。
+        """
         try:
             lock = lockfile.read(root)
         except (ValueError, OSError):
@@ -164,16 +168,29 @@ class PackRuntime:
         if lock is None:
             return False
         changed = False
-        for entry in lock.packs:
+        guarded = self._plannable(lock)  # 原来就装配不了的锁不拦（跟随可能正好修好它）
+        for entry in sorted(lock.packs, key=lambda item: (item.name != CORE, item.name)):
             if not entry.follow or not entry.enabled:
                 continue
             latest = self.repository.latest(entry.name, entry.channel or "stable")
-            if latest and latest != entry.version:
-                entry.version = latest
-                entry.sha256 = self.repository.digest(entry.name, latest)
-                changed = True
+            if not latest or latest == entry.version:
+                continue
+            before = (entry.version, entry.sha256)
+            entry.version, entry.sha256 = latest, self.repository.digest(entry.name, latest)
+            if guarded and not self._plannable(lock):
+                entry.version, entry.sha256 = before
+                _log.warning("项目 %s 的 %s 不跟随通道版本 %s：和项目里别的包配不上", Path(root).name, entry.name, latest)
+                continue
+            changed = True
         changed = self._migrate_split(lock) or changed
         return lockfile.write(root, lock) if changed else False
+
+    def _plannable(self, lock: PackLock) -> bool:
+        try:
+            self.assembler.plan(lock)
+        except AssemblyError:
+            return False
+        return True
 
     # ---- 装配与切换 ----
 

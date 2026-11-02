@@ -78,6 +78,7 @@ class ArtifactType:
     defaults: dict
     directory: Path | None = None
     raw: dict = field(default_factory=dict)
+    heading: str = ""               # md-sections 新建文件的一级标题，{key} 换成文件键；空时就是文件键
 
     @property
     def path_template(self) -> str:
@@ -288,6 +289,9 @@ def parse_registration(data: dict, *, pack: str, pack_version: str, official: bo
             raise RegistrationError(f"{art_type} 的 extras.{name} 只能是 ext/{pack}/ 下的 .jsonl")
         extras[str(name)] = rel
     readonly = data.get("readonly")
+    heading = str(data.get("heading") or "")
+    if "\n" in heading or heading.startswith("#") or len(heading) > 80:
+        raise RegistrationError(f"{art_type} 的 heading 要是一行、不带 #、不超过 80 字")
     return ArtifactType(
         type=art_type, title=str(data.get("title") or art_type), pack=pack, pack_version=pack_version,
         format=fmt, path=path, key=str(data.get("key") or "filename"), schema_version=version, fields=fields,
@@ -298,7 +302,7 @@ def parse_registration(data: dict, *, pack: str, pack_version: str, official: bo
         field_labels={str(k): str(v) for k, v in (data.get("field_labels") or {}).items()},
         table=bool(data.get("table")) or fmt in ("csv", "jsonl") or "table_rows" in derive.values(),
         extras=extras, defaults={str(k): v for k, v in (data.get("defaults") or {}).items()},
-        directory=directory, raw=dict(data),
+        directory=directory, raw=dict(data), heading=heading,
     )
 
 
@@ -319,7 +323,7 @@ def types_for_pack(view) -> list[ArtifactType]:
         try:
             data = _load_yaml(view.directory / rel)
             out.append(parse_registration(
-                data, pack=view.name, pack_version=view.version, official=manifest.official,
+                data, pack=view.name, pack_version=view.version, official=bool(getattr(view, "official", False)),
                 directory=view.directory, view=declared_views.get(str(data.get("type") or "")),
             ))
         except RegistrationError as exc:
@@ -349,12 +353,12 @@ def get_type(manager, root: Path, art_type: str) -> ArtifactType | None:
     return next((item for item in types_for_project(manager, root) if item.type == art_type), None)
 
 
-def check_registration(directory: Path, rel: str, manifest) -> list[str]:
+def check_registration(directory: Path, rel: str, manifest, *, official: bool = False) -> list[str]:
     """静态检查用（PL-15 entity_types）：一份登记的问题清单。"""
     try:
         data = _load_yaml(Path(directory) / rel)
         parse_registration(data, pack=manifest.name, pack_version=manifest.version,
-                           official=manifest.official, directory=Path(directory))
+                           official=official, directory=Path(directory))
     except RegistrationError as exc:
         return [f"{rel}: {exc}"]
     return []

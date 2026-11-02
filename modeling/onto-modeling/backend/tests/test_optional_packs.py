@@ -80,7 +80,8 @@ def test_builtin_optional_packs_are_imported_and_pass_static_checks(env, tmp_pat
                                        repository.version_dir("core", repository.latest("core")))
     for name in (*OPTIONAL, "industry-retail"):
         version = repository.latest(name, "stable")
-        manifest, items = checks.run(repository.version_dir(name, version), core_names=core_names)
+        manifest, items = checks.run(repository.version_dir(name, version), core_names=core_names,
+                                     official=repository.is_builtin(name, version))
         failed = [item for item in items if item["result"] == "fail" and item["id"] != "names"]
         assert manifest is not None and not failed, (name, failed)
         assert repository.manifest(name, version).raw.get("split_from_core") or name == "industry-retail"

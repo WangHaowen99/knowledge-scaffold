@@ -26,6 +26,13 @@ def _latest(repository, name: str) -> tuple[str | None, str]:
     return beta, "beta"
 
 
+def _publisher(repository, name: str, version: str, manifest) -> dict:
+    """发布方：官方只认镜像内置的包；上传的包清单里写了 official 也按租户显示。"""
+    if repository.is_builtin(name, version):
+        return {"kind": "official", "label": manifest.publisher.get("label") or "平台"}
+    return {"kind": "tenant", "label": manifest.publisher.get("label") if manifest.publisher.get("kind") == "tenant" else ""}
+
+
 def card(manager, name: str, project: dict | None) -> dict | None:
     """契约 7.11 PackCard；project 是 project_packs 的结果（不带项目时为 None）。"""
     repository = manager.packs.repository
@@ -48,7 +55,7 @@ def card(manager, name: str, project: dict | None) -> dict | None:
             status = item["status"]
     return {
         "name": name, "version": latest, "label": manifest.label, "description": manifest.description,
-        "category": manifest.category, "publisher": dict(manifest.publisher), "ui": _ui(manifest),
+        "category": manifest.category, "publisher": _publisher(repository, name, latest, manifest), "ui": _ui(manifest),
         "batch": manifest.raw.get("batch"), "badges": list(manifest.raw.get("badges") or []),
         "meta": _meta_line(manifest), "latest": latest, "channel": channel,
         "project_status": status, "locked_version": locked, "usage_note": None,

@@ -1,6 +1,6 @@
 # 迁移复用（详设 5.3：extract-migrated-objects 技能）。没有页面：发现可复用的对象时在对话里推荐。
 name: migrate
-version: 0.2.0
+version: 0.2.1
 kind: capability
 category: capability
 label: 迁移复用
@@ -11,7 +11,7 @@ default_on: false
 batch: second
 kernel_api: ">=1.0 <2.0"
 engines: [claude, jiuwen]
-depends: {core: ">=0.1"}
+depends: {core: ">=0.2"}  # 拆分后的 core（0.2.0 起）：拆出去的命令、行业知识分层都要它
 changelog: 从基础建模能力拆出。
 contributes:
   skills: [extract-migrated-objects]

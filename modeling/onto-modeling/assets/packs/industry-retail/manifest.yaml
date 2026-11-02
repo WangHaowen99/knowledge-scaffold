@@ -1,5 +1,5 @@
 name: industry-retail
-version: 1.0.0
+version: 1.0.1
 kind: knowledge
 category: industry
 label: 零售连锁
@@ -8,7 +8,7 @@ publisher: {kind: official, label: 平台}
 default_on: true
 kernel_api: ">=1.0 <2.0"
 engines: [claude, jiuwen]
-depends: {core: ">=0.1"}
+depends: {core: ">=0.2"}  # 拆分后的 core（0.2.0 起）：拆出去的命令、行业知识分层都要它
 changelog: 首个版本：零售连锁通用术语、概念别名、参考对象与操作、声明式校验规则、门店补货示例。
 contributes:
   knowledge_dir: knowledge

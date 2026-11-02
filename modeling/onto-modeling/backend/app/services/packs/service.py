@@ -160,15 +160,23 @@ def _newer_available(repository, name: str, locked: str, channel: str) -> str | 
     return latest if latest and mf.version_key(latest) > mf.version_key(locked) else None
 
 
-def _rollback_target(repository, name: str, locked: str) -> str | None:
+def _rollback_target(runtime, lock: PackLock, name: str, locked: str) -> str | None:
+    """PL-08 能回滚到的版本：比锁定版本旧、没停用，而且换上它以后本项目还能装配（依赖、内核接口对得上）；
+    一个都没有就不给回滚选项（不给出必然 409 的按钮）。"""
+    repository = runtime.repository
     disabled = repository.disabled(name)
     older = [version for version in repository.versions(name)
              if version not in disabled and mf.version_key(version) < mf.version_key(locked)]
     if not older:
         # 同一基础版本的内容摘要不同（镜像自带的 core）：按入库时间取上一个
-        same = [version for version in repository.versions(name) if version != locked and version not in disabled]
-        return same[0] if same else None
-    return older[0]
+        older = [version for version in repository.versions(name) if version != locked and version not in disabled]
+    for version in older:
+        trial = lock.copy()
+        entry = trial.get(name)
+        entry.version, entry.sha256 = version, repository.digest(name, version)
+        if runtime._plannable(trial):
+            return version
+    return None
 
 
 def project_packs(manager, project_id: str) -> dict:
@@ -185,7 +193,7 @@ def project_packs(manager, project_id: str) -> dict:
         manifest = runtime.repository.manifest(entry.name, entry.version)
         change = changes.get(entry.name)
         latest = _newer_available(runtime.repository, entry.name, entry.version, entry.channel)
-        rollback_to = _rollback_target(runtime.repository, entry.name, entry.version)
+        rollback_to = _rollback_target(runtime, lock, entry.name, entry.version)
         if change:
             state = "pending"
             actions = ["cancel_pending"]

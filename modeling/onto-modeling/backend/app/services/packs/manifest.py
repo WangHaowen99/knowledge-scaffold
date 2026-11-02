@@ -202,10 +202,6 @@ class Manifest:
     def effective(self) -> str:
         return EFFECTIVE[self.hot_level]
 
-    @property
-    def official(self) -> bool:
-        return self.publisher.get("kind") == "official"
-
     def items(self, kind: str) -> list[str]:
         value = self.contributes.get(kind) or []
         return [str(item.get("id") if isinstance(item, dict) else item) for item in value]
@@ -296,7 +292,8 @@ def parse(data: dict) -> Manifest:
     category = str(data.get("category") or _DEFAULT_CATEGORY.get(kind, "capability"))
     if category not in CATEGORIES:
         problems.append(f"category 必须是 {' | '.join(CATEGORIES)} 之一")
-    publisher = data.get("publisher") or {"kind": "official", "label": "平台"}
+    # 清单里的发布方只用来显示：是不是官方包看入库来源（镜像内置），不看清单自己怎么写（ADR-0045）
+    publisher = data.get("publisher") or {"kind": "tenant", "label": ""}
     if isinstance(publisher, str):
         publisher = {"kind": "official" if publisher == "official" else "tenant", "label": publisher}
     if not isinstance(publisher, dict) or publisher.get("kind") not in ("official", "tenant"):
@@ -324,9 +321,15 @@ def parse(data: dict) -> Manifest:
         if not isinstance(item, dict) or not item.get("command") or not isinstance(item.get("command"), str):
             problems.append("contributes.hooks.PreToolUse 每项要有 matcher 与 command")
     normalized["hooks"] = hooks
-    flow = contributes.get("flow")
-    if flow is not None and (not isinstance(flow, str) or ".." in flow or flow.startswith("/")):
-        problems.append("contributes.flow 必须是包内的相对路径")
+    # 指向包内文件、目录的字段：只能是包内的相对路径（不能是绝对路径、不能带 ..）
+    for key in ("flow", "readme", "knowledge_dir"):
+        value = contributes.get(key)
+        if value not in (None, "") and not _inside_pack(value):
+            problems.append(f"contributes.{key} 必须是包内的相对路径")
+    for key in ("artifacts", "views", "docs"):
+        for item in normalized[key]:
+            if not _inside_pack(item):
+                problems.append(f"contributes.{key} 里的路径必须在包内：{item!r}")
     if problems:
         raise ManifestError(problems)
     return Manifest(
@@ -338,6 +341,14 @@ def parse(data: dict) -> Manifest:
         required=bool(data.get("required")), contributes=normalized,
         checksums=str(data.get("checksums") or CHECKSUMS_FILE), raw=dict(data),
     )
+
+
+def _inside_pack(value) -> bool:
+    """包内的相对路径：非空字符串，不以 / 或 \\ 开头、不带盘符，没有 .. 这一级。"""
+    if not isinstance(value, str) or not value.strip():
+        return False
+    parts = re.split(r"[\\/]", value)
+    return not (value.startswith(("/", "\\")) or ":" in parts[0] or ".." in parts)
 
 
 def load(directory: Path) -> Manifest:

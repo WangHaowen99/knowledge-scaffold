@@ -63,6 +63,7 @@ class PackView:
     version: str
     manifest: Manifest
     directory: Path
+    official: bool = False  # 镜像自带的官方包（入库来源 builtin）
 
 
 def _views(repository, entries) -> list[PackView]:
@@ -71,7 +72,8 @@ def _views(repository, entries) -> list[PackView]:
         if not repository.has(name, version):
             continue
         try:
-            out.append(PackView(name, version, repository.manifest(name, version), repository.version_dir(name, version)))
+            out.append(PackView(name, version, repository.manifest(name, version), repository.version_dir(name, version),
+                                official=repository.is_builtin(name, version)))
         except Exception as exc:  # noqa: BLE001 - 一个包的清单坏了不挡别的包
             _log.warning("读取包 %s %s 的清单失败：%s", name, version, exc)
     # core 在最前，其余按名字（与锁文件、装配顺序一致）

@@ -2,7 +2,7 @@
 # 知识条目的存放与加载（knowledge_helper、ontology/knowledge/）留在 core，停用本包后已有条目照常加载，
 # 只是不再新增。纠错与惯例的信号改成提示规则（prompts），由会话宿主在两轮之间注入，两个引擎都拿得到。
 name: knowledge
-version: 0.2.0
+version: 0.2.1
 kind: capability
 category: capability
 label: 知识沉淀
@@ -14,7 +14,7 @@ batch: first
 kernel_api: ">=1.0 <2.0"
 page_api: ">=1.0 <2.0"
 engines: [claude, jiuwen]
-depends: {core: ">=0.1"}
+depends: {core: ">=0.2"}  # 拆分后的 core（0.2.0 起）：拆出去的命令、行业知识分层都要它
 changelog: 从基础建模能力拆出；新增记录、复核、提名三个命令与知识沉淀页。
 contributes:
   commands: [knowledge-record, knowledge-review, knowledge-nominate]

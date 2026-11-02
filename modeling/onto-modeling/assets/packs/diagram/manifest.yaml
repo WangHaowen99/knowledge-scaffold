@@ -2,7 +2,7 @@
 # 流程图登记成插件产物 diagram.flowchart，内核内置 drawio 解析器读写（详设 5.9.5「专用组件」）；
 # 存量流程图还在 ontology/diagrams/。流程图格式检查 check_diagrams 随提交检查留在 core。
 name: diagram
-version: 0.5.0
+version: 0.5.1
 kind: capability
 category: capability
 label: 图示
@@ -13,7 +13,7 @@ default_on: true
 batch: first
 kernel_api: ">=1.0 <2.0"
 engines: [claude, jiuwen]
-depends: {core: ">=0.1"}
+depends: {core: ">=0.2"}  # 拆分后的 core（0.2.0 起）：拆出去的命令、行业知识分层都要它
 changelog: 从基础建模能力拆出；流程图登记成插件产物，Studio 与流程图编辑弹窗经通用产物接口读写。
 contributes:
   commands: [ontology-flowchart, ontology-validate-diagrams]

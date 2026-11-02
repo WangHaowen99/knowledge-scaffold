@@ -184,6 +184,10 @@ class PackRepository:
             self._manifests[key] = cached
         return cached
 
+    def is_builtin(self, name: str, version: str) -> bool:
+        """这个版本是不是镜像自带、启动时入库的（官方包身份只认这个，不看清单里的 publisher）。"""
+        return self.meta(name, version).get("origin") == "builtin"
+
     def meta(self, name: str, version: str) -> dict:
         path = self.root / name / f"{version}.json"
         try:

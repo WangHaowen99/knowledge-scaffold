@@ -1,7 +1,7 @@
 # 联网调研（详设 5.3：deep-research 技能；离线部署时禁用）。没有页面。
 # 没启用时资料分析只基于本地资料（research-agent 看 deep-research 技能在不在）。
 name: websearch
-version: 0.2.0
+version: 0.2.1
 kind: capability
 category: capability
 label: 联网调研
@@ -13,7 +13,7 @@ requires_network: true
 batch: second
 kernel_api: ">=1.0 <2.0"
 engines: [claude, jiuwen]
-depends: {core: ">=0.1"}
+depends: {core: ">=0.2"}  # 拆分后的 core（0.2.0 起）：拆出去的命令、行业知识分层都要它
 changelog: 从基础建模能力拆出。
 contributes:
   skills: [deep-research]

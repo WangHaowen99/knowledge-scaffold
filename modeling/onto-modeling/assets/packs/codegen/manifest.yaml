@@ -2,7 +2,7 @@
 # 生成求解评估器。脚本属于五元组（内核能读、在 Studio 编辑）；求解契约在受管目录，由内核的求解模块读写，
 # 这里只把它登记成只读产物。脚本契约与验证（script_verify、jiuwenbox_client 等）随共享契约库留在 core。
 name: codegen
-version: 0.9.0
+version: 0.9.1
 kind: capability
 category: capability
 label: 代码生成与求解
@@ -14,7 +14,7 @@ batch: first
 kernel_api: ">=1.0 <2.0"
 page_api: ">=1.0 <2.0"
 engines: [claude, jiuwen]
-depends: {core: ">=0.1"}
+depends: {core: ">=0.2"}  # 拆分后的 core（0.2.0 起）：拆出去的命令、行业知识分层都要它
 changelog: 从基础建模能力拆出；扫描报告与求解契约登记成插件产物，「代码生成与求解」页读它们。
 contributes:
   commands: [ontology-codegen-scan, ontology-codegen, ontology-solver-evaluator]

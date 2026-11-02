@@ -171,10 +171,11 @@ def _node_problems(directory: Path, manifest: Manifest) -> tuple[list[str], list
 
 
 def run(directory: Path, repository: PackRepository | None = None, *, tenant: bool = False,
-        core_names: dict[str, set[str]] | None = None) -> tuple[Manifest | None, list[dict]]:
+        core_names: dict[str, set[str]] | None = None, official: bool = False) -> tuple[Manifest | None, list[dict]]:
     """对解压后的包目录做全部静态检查，返回（清单或 None, 检查项列表）。
 
     core_names：当前 stable core 的命令、子代理、skill、脚本名，非 core 包不能与之重名。
+    official：镜像内置的官方包（只有入库来源是 builtin 的才算，上传的包一律 False，清单里写了 official 也不算）。
     """
     directory = Path(directory)
     checks: list[dict] = []
@@ -223,7 +224,7 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
     names = declared_names(manifest, directory)
     if manifest.name != "core":
         prefix = f"{manifest.name}-"
-        if tenant or not manifest.official:
+        if tenant or not official:
             conflicts += [f"命令 {name} 没有包前缀 {prefix}" for name in sorted(names["commands"]) if not name.startswith(prefix)]
         for key, existing in (core_names or {}).items():
             conflicts += [f"{key} 与基础建模能力重名：{name}" for name in sorted(names.get(key, set()) & existing)]
@@ -240,7 +241,7 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
 
     entity = []
     for rel in manifest.items("artifacts"):
-        entity += artifact_registry.check_registration(directory, rel, manifest)
+        entity += artifact_registry.check_registration(directory, rel, manifest, official=official and not tenant)
     checks.append(_check("entity_types", "没有新增实体类型", "fail" if entity else "pass", "；".join(entity[:10])))
 
     protected, missing_entry = _node_problems(directory, manifest)
