@@ -251,9 +251,19 @@ def _promoted(main: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def problems(main: Path, parsed: dict) -> list[dict]:
+def _live_promoted(manager, project_id: str, main: Path) -> dict:
+    """转出记录存在 .onto/run/（不随版本走）：只认现在蓝图里还在的问题，回退、撤回之后蓝图里没了的不算转出。"""
+    from .flow import blueprint
+
+    doc = blueprint.effective_doc(manager, project_id) or {}
+    live = {f"bq-{item.get('id')}" for item in doc.get("questions") or [] if isinstance(item, dict)}
+    return {pid: record for pid, record in _promoted(main).items()
+            if isinstance(record, dict) and record.get("question_id") in live}
+
+
+def problems(main: Path, parsed: dict, promoted: dict | None = None) -> list[dict]:
     """「缺口与待决」的条目：写到「矛盾」的算资料矛盾，其余算疑似缺失；勾掉的已解决，转成待答问题的已转出。"""
-    promoted = _promoted(main)
+    promoted = _promoted(main) if promoted is None else promoted
     out, seen = [], set()
     for gap in parsed["gaps"]:
         problem_id = "pb-" + hashlib.sha256(gap["text"].encode("utf-8")).hexdigest()[:10]
@@ -330,7 +340,7 @@ def material_map(manager, project_id: str) -> dict:
     where = base(manager, project_id)
     main = manager.project_root(project_id)
     parsed = parse(where)
-    found = problems(main, parsed)
+    found = problems(main, parsed, _live_promoted(manager, project_id, main))
     items = map_items(manager, project_id, parsed, found)
     checked = verification(manager, project_id, parsed)
     receipt = review(where)
@@ -378,11 +388,13 @@ def promote(manager, project_id: str, problem_id: str, target: str, *, actor: st
     if target not in ("blueprint_question", "ask_me"):
         raise WorkspaceError("as 只能是 blueprint_question 或 ask_me", 400, "invalid_argument", {"fields": {"as": "enum"}})
     main = manager.project_root(project_id)
-    found = next((item for item in problems(main, parse(base(manager, project_id))) if item["id"] == problem_id), None)
+    live = _live_promoted(manager, project_id, main)
+    found = next((item for item in problems(main, parse(base(manager, project_id)), live)
+                  if item["id"] == problem_id), None)
     if found is None:
         raise WorkspaceError("资料问题不存在", 404, "not_found")
     promoted = _promoted(main)
-    record = promoted.get(problem_id)
+    record = live.get(problem_id)
     if not record:
         question = blueprint.add_question(manager, project_id, found["text_md"], actor=actor)
         record = {"question_id": f"bq-{question}", "as": target, "by": actor, "at": time.time()}
