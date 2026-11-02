@@ -214,3 +214,10 @@ test('审查第 7 条：卡片只读只看实时的写入范围，不看卡片�
   assert.equal(declaredCardView({ ...noteCard, locked: true }, { locked: false }).locked, false);
   assert.equal(declaredCardView({ ...noteCard, locked: false }, { locked: true }).locked, true);
 });
+
+test('审查第 4 条：ui_api 范围写法和后端同一套（^、~、省略次版本、逗号、预发布），用同一组用例对照', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const data = JSON.parse(await readFile(new URL('../../backend/tests/fixtures/ui_api_ranges.json', import.meta.url), 'utf8'));
+  const wrong = data.cases.filter((c) => uiApiSatisfies(c.range, c.version) !== c.satisfies);
+  assert.deepEqual(wrong, []);
+});

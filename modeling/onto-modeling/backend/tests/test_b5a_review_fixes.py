@@ -153,3 +153,16 @@ def test_round_cards_do_not_persist_lock_state(env):
     head = _commit(root, "合成：一轮")
     result = cards.round_cards(manager, project_id, {"added": ["ext/sticky-notes/notes/n1.md"]}, base=base, seed=head)
     assert result and all("locked" not in card for card in result)
+
+
+# ---- 第 4 条：ui_api 范围写法前后端一致（前端 tests/packUi.test.js 读同一份用例） ----
+
+
+def test_ui_api_range_cases_match_backend():
+    import json
+
+    from app.services.packs import manifest as mf
+
+    data = json.loads((Path(__file__).parent / "fixtures" / "ui_api_ranges.json").read_text(encoding="utf-8"))
+    mismatched = [case for case in data["cases"] if mf.satisfies(case["version"], case["range"]) != case["satisfies"]]
+    assert len(data["cases"]) > 100 and not mismatched

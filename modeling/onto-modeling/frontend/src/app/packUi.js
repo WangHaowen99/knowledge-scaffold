@@ -15,33 +15,62 @@ export function bundledKey(path) {
   return m ? `${m[1]}/${m[2]}` : null;
 }
 
-function parseVersion(text) {
-  const m = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?$/.exec(String(text || '').trim());
-  return m ? [Number(m[1]), Number(m[2] || 0), Number(m[3] || 0)] : null;
+// 版本号与兼容范围：和后端 services/packs/manifest.py 的 Version / satisfies 同一套写法（审查第 4 条，两边用同一组用例对照）
+const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+const SHORT_RE = /^(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?$/;
+
+// 版本 → 比较键 [主, 次, 修订, 正式版 1 / 预发布 0, 预发布各段]；写错返回 null（「1.4」即 1.4.0）
+function versionKey(text) {
+  const t = String(text ?? '').trim();
+  const m = SEMVER_RE.exec(t);
+  if (m) {
+    const pre = m[4] ? m[4].split('.').map((p) => (/^\d+$/.test(p) ? [0, Number(p)] : [1, p])) : [];
+    return [Number(m[1]), Number(m[2]), Number(m[3]), pre.length ? 0 : 1, pre];
+  }
+  const s = SHORT_RE.exec(t);
+  return s ? [Number(s[1]), Number(s[2] || 0), 0, 1, []] : null;
 }
 
-function cmp(a, b) {
-  for (let i = 0; i < 3; i += 1) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
-  return 0;
+function cmpPre(a, b) {
+  for (let i = 0; i < Math.min(a.length, b.length); i += 1) {
+    const [ka, va] = a[i];
+    const [kb, vb] = b[i];
+    if (ka !== kb) return ka < kb ? -1 : 1;
+    if (va !== vb) return va < vb ? -1 : 1;
+  }
+  return a.length === b.length ? 0 : a.length < b.length ? -1 : 1;
 }
 
-// 界面接口版本是否落在范围里：空格分隔的 >= > <= < = 比较式，全部满足才算；空串不限；写错按不满足
+function cmp(a, b, depth = 5) {
+  for (let i = 0; i < Math.min(depth, 4); i += 1) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+  return depth > 4 ? cmpPre(a[4], b[4]) : 0;
+}
+
+const OPS = ['>=', '<=', '>', '<', '=', '^', '~'];
+
+// 界面接口版本是否落在范围里：空格或逗号分隔的比较式全部满足才算（>=、>、<=、<、=、^、~，可省略次版本、修订号）；
+// 空串、* 不限；写错按不满足
 export function uiApiSatisfies(range, version = UI_API) {
-  const spec = String(range || '').trim();
+  const spec = String(range ?? '').trim();
   if (!spec || spec === '*') return true;
-  const current = parseVersion(version);
+  const current = versionKey(version);
   if (!current) return false;
-  return spec.split(/[\s,]+/).every((token) => {
-    const m = /^(>=|<=|>|<|=)?(.+)$/.exec(token);
-    const bound = m && parseVersion(m[2]);
+  return spec.replace(/,/g, ' ').split(/\s+/).filter(Boolean).every((token) => {
+    const op = OPS.find((o) => token.startsWith(o)) || '=';
+    const bound = versionKey(token.startsWith(op) ? token.slice(op.length) : token);
     if (!bound) return false;
     const c = cmp(current, bound);
-    switch (m[1] || '=') {
+    switch (op) {
       case '>=': return c >= 0;
       case '>': return c > 0;
       case '<=': return c <= 0;
       case '<': return c < 0;
-      default: return c === 0;
+      case '^': {
+        const upper = bound[0] ? [bound[0] + 1, 0, 0] : [0, bound[1] + 1, 0];
+        return c >= 0 && cmp(current, upper, 3) < 0;
+      }
+      case '~': return c >= 0 && cmp(current, [bound[0], bound[1] + 1, 0], 3) < 0;
+      default: return cmp(current, bound, 4) === 0;
     }
   });
 }
