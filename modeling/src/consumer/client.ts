@@ -45,6 +45,25 @@ export interface ConsumerConnectivity {
   detail?: string;
 }
 
+export interface ConsumerGlobalModelProfile {
+  id: string;
+  name: string;
+  provider: string;
+  model: string;
+}
+
+export interface ConsumerGlobalModelProfiles {
+  profiles: ConsumerGlobalModelProfile[];
+  defaultProfileId: string;
+}
+
+export class ConsumerModelProfilesError extends Error {
+  constructor(readonly statusCode: number, message: string) {
+    super(message);
+    this.name = 'ConsumerModelProfilesError';
+  }
+}
+
 export interface ShadowWorkspaceProvisionResult {
   created: boolean;
   workspace: { id: string; owner: string | null };
@@ -191,4 +210,39 @@ export async function consumerFetch(token: string, path: string, options: Reques
   } catch (error) {
     throw new Error(`Consumer 请求失败：${describeConsumerRequestError(error)}`, { cause: error });
   }
+}
+
+/** Read enabled global model profiles without exposing connection details. */
+export async function getConsumerGlobalModelProfiles(
+  token: string,
+  signal?: AbortSignal,
+): Promise<ConsumerGlobalModelProfiles> {
+  const response = await consumerFetch(token, '/api/system-config', { signal });
+  const data = await response.json().catch(() => ({})) as any;
+  if (!response.ok) {
+    throw new ConsumerModelProfilesError(
+      response.status,
+      String(data?.detail || data?.error || `Consumer 返回 ${response.status}`),
+    );
+  }
+  const rawProfiles = Array.isArray(data?.llm_profiles?.profiles)
+    ? data.llm_profiles.profiles
+    : [];
+  const profiles: ConsumerGlobalModelProfile[] = rawProfiles
+    .filter((profile: any) => (
+      profile?.enabled === true
+      && String(profile?.id || '').trim()
+      && String(profile?.model || '').trim()
+    ))
+    .map((profile: any) => ({
+      id: `global:${String(profile.id).trim()}`,
+      name: String(profile.name || profile.id).trim(),
+      provider: String(profile.provider || '').trim(),
+      model: String(profile.model).trim(),
+    }));
+  const configuredDefault = String(data?.llm_profiles?.default_main_profile_ref?.id || '').trim();
+  const defaultProfileId = profiles.some((profile) => profile.id === `global:${configuredDefault}`)
+    ? `global:${configuredDefault}`
+    : profiles[0]?.id || '';
+  return { profiles, defaultProfileId };
 }

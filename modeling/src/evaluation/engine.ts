@@ -3,8 +3,10 @@ import { consumerFetch } from '../consumer/client.js';
 import { zipPackage } from '../workflow/export.js';
 import { publicKnowledgePackageFiles } from '../workflow/package-file-scope.js';
 import { judge, type Verdict } from './judge.js';
+import { buildJudgeLlm, judgeModelFailure, type JudgeModelConfig } from './judge-model.js';
+import type { LlmDeps } from '../llm/provider.js';
 import { runCasesWithLimit } from './case-runner.js';
-import { config } from '../config.js';
+import { config, normalizeEvaluationCaseConcurrency } from '../config.js';
 import * as repo from '../workflow/m3-repo.js';
 import { getProjectDataSource, type ProjectDataSource } from './data-source-repo.js';
 import { prepareProjectDataSourceForEvaluation } from './data-source-evaluation-service.js';
@@ -38,7 +40,7 @@ import {
 } from '../agent/project-event-outbox.js';
 
 // 评测引擎（M3 核心）：评测工作空间 → 导入包 → 复用本体级数据源 →
-// 逐用例 runs/sync（串行 + 退避）→ Judge → 落轮次结果。
+// 有界并发运行用例（异步事件流 + 退避）→ Judge → 落轮次结果。
 // 后台执行：startEvaluation 立即返回 roundId，前端轮询 GET round。
 export { shadowWorkspaceId } from './shadow-workspace.js';
 
@@ -100,11 +102,12 @@ export async function judgeEvaluationAnswer(
   finalAnswer: string,
   judgeAnswer: typeof judge = judge,
   signal?: AbortSignal,
+  judgeLlm?: LlmDeps,
 ): Promise<Verdict> {
   if (!groundTruth.trim()) {
     return { verdict: 'partial', reason: '缺少参考答案，等待人工判定' };
   }
-  return judgeAnswer(question, groundTruth, finalAnswer, undefined, signal);
+  return judgeAnswer(question, groundTruth, finalAnswer, judgeLlm, signal);
 }
 
 export async function activateEvaluationPackageVersion(input: {
@@ -147,6 +150,9 @@ interface RunOptions {
   owner?: string;
   token: string; // 专家 token 透传
   refreshToken?: string; // 仅保留在评测任务内存中，用于长任务续期
+  modelProfileId?: string;
+  caseConcurrency?: number;
+  judgeModel?: JudgeModelConfig;
   authSession?: EvaluationAuthSession; // Agent 评测复用 Core 内存中的可续期会话
   caseIds?: string[]; // 为空时全量；有值时只运行受影响的真实用例
   evaluationScope?: repo.EvaluationScope;
@@ -462,6 +468,7 @@ async function runRound(
   const request: ConsumerRequest = (_token, path, options) => authenticatedConsumerRequest(auth, path, options);
   const ws = workspaceId;
   const log = (m: string) => repo.roundLog(roundId, m);
+  const judgeLlm = opts.judgeModel ? buildJudgeLlm(opts.judgeModel) : undefined;
   assertEvaluationNotCancelled(signal);
 
   // 1. 评测工作空间
@@ -524,7 +531,10 @@ async function runRound(
 
   // 5. 用例按有界并发运行 + judge；结果仍按用例顺序落库
   repo.roundPhase(roundId, 'cases');
-  const concurrency = Math.min(config.evaluationCaseConcurrency, testcases.length || 1);
+  const concurrency = Math.min(
+    normalizeEvaluationCaseConcurrency(opts.caseConcurrency, config.evaluationCaseConcurrency),
+    testcases.length || 1,
+  );
   if (concurrency > 1) log(`并发运行评测用例：${concurrency} 条并行`);
   let done = 0;
   let pass = 0;
@@ -554,14 +564,21 @@ async function runRound(
       };
       const run = await withRateLimitRetry(
         '用例执行',
-        () => runCase(request, ws, tc.question, signal, runHooks),
+        () => runCase(request, ws, tc.question, signal, runHooks, opts.modelProfileId, projectId, true),
         runHooks,
         signal,
       );
       assertEvaluationNotCancelled(signal);
       const v = await withRateLimitRetry(
         '评测判分',
-        () => judgeEvaluationAnswer(tc.question, tc.groundTruth, run.finalAnswer, judge, signal),
+        async () => {
+          try {
+            return await judgeEvaluationAnswer(tc.question, tc.groundTruth, run.finalAnswer, judge, signal, judgeLlm);
+          } catch (error) {
+            if (signal.aborted || !judgeLlm) throw error;
+            throw judgeModelFailure(error);
+          }
+        },
         {
           onRateLimited: (attempt, waitMs, failure) => {
             log(`⏳ 判分被限流，${Math.round(waitMs / 1000)} 秒后重试（第 ${attempt} 次）：${failure.slice(0, 80)}`);
@@ -715,6 +732,111 @@ export interface RunCaseHooks {
   backoffMs?: (attempt: number) => number;
 }
 
+async function cancelConsumerRun(
+  request: ConsumerRequest,
+  workspaceId: string,
+  runId: string,
+  reason: string,
+): Promise<void> {
+  try {
+    const response = await request('', `/agentic/runs/${encodeURIComponent(runId)}/cancel`, {
+      method: 'POST',
+      workspaceId,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    await response.body?.cancel();
+  } catch {
+    // Best effort: the shared AbortSignal still stops the local request.
+  }
+}
+
+async function readConsumerRunEvents(
+  request: ConsumerRequest,
+  workspaceId: string,
+  runId: string,
+  signal: AbortSignal,
+): Promise<Record<string, any>> {
+  let afterSeq = 0;
+  const toolCalls: string[] = [];
+  const toolFailures: { tool_name: string; error: string }[] = [];
+  for (;;) {
+    assertEvaluationNotCancelled(signal);
+    const response = await request('', `/agentic/runs/${encodeURIComponent(runId)}/events?after_seq=${afterSeq}`, {
+      workspaceId,
+      headers: { Accept: 'text/event-stream' },
+      signal,
+    });
+    if (!response.ok || !response.body) {
+      const data = await response.json().catch(() => ({})) as any;
+      throw new Error(String(data?.error?.detail || data?.detail || `Consumer 事件流返回 ${response.status}`));
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        let boundary = buffer.indexOf('\n\n');
+        while (boundary >= 0) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          let dataText = '';
+          for (const line of frame.split('\n')) {
+            if (line.startsWith('data:')) dataText += line.slice(5).replace(/^ /u, '');
+          }
+          if (dataText) {
+            const event = JSON.parse(dataText) as any;
+            const seq = Number(event?.seq);
+            if (Number.isSafeInteger(seq) && seq <= afterSeq) {
+              boundary = buffer.indexOf('\n\n');
+              continue;
+            }
+            if (Number.isSafeInteger(seq)) afterSeq = Math.max(afterSeq, seq);
+            const payload = event?.payload || {};
+            const toolName = String(payload.name || payload.tool_name || '').trim().slice(0, 256);
+            if (event?.event_type === 'tool.started' && toolName && toolCalls.length < 2048) {
+              toolCalls.push(toolName);
+            }
+            if (event?.event_type === 'tool.finished' && toolName && toolFailures.length < 512
+              && ['error', 'failed'].includes(String(payload.status || '').toLowerCase())) {
+              const error = String(payload.error?.message || payload.error || '').trim().slice(0, 1024);
+              if (error) toolFailures.push({ tool_name: toolName, error });
+            }
+            if (event?.event_type === 'turn.finished') {
+              return {
+                ...payload,
+                execution_trace: payload.execution_trace ?? { tool_calls: toolCalls, tool_failures: toolFailures },
+              };
+            }
+          }
+          boundary = buffer.indexOf('\n\n');
+        }
+        if (done) break;
+      }
+    } finally {
+      await reader.cancel().catch(() => undefined);
+    }
+  }
+}
+
+function consumerTerminalAnswer(terminal: Record<string, any>): string {
+  const output = terminal.content ?? terminal.final_answer ?? terminal.final_output;
+  if (typeof output === 'string') return output;
+  if (output == null) return '';
+  if (typeof output === 'object' && !Array.isArray(output)) {
+    for (const key of ['text', 'formatted_result', 'output', 'message', 'content']) {
+      if (typeof output[key] === 'string' && output[key].trim()) return output[key];
+    }
+    if (typeof output.interaction?.prompt === 'string' && output.interaction.prompt.trim()) {
+      return output.interaction.prompt;
+    }
+  }
+  return typeof output === 'object' ? JSON.stringify(output) : String(output);
+}
+
 /** 导出供测试直接驱动限流重试循环；生产路径只由 runRound 调用。 */
 export async function runCase(
   request: ConsumerRequest,
@@ -722,6 +844,9 @@ export async function runCase(
   question: string,
   signal: AbortSignal,
   hooks: RunCaseHooks = {},
+  modelProfileId = '',
+  projectId = '',
+  useAsyncProtocol = false,
 ): Promise<{ finalAnswer: string; trace: EvaluationExecutionTrace }> {
   let rateLimitAttempts = 0;
   let transientAttempts = 0;
@@ -729,14 +854,66 @@ export async function runCase(
     assertEvaluationNotCancelled(signal);
     // 每次尝试都用新会话：失败的会话已经留下 failed 轮次，复用会污染下一次的上下文。
     const sessionId = `mw-eval-${randomUUID().slice(0, 8)}`;
-    const res = await request('', '/agentic/runs/sync', {
-      method: 'POST', workspaceId: ws, headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ request: question, session_id: sessionId, include_trace: true }),
-      signal,
+    const body: Record<string, unknown> = {
+      request: question,
+      session_id: sessionId,
+      include_trace: true,
+    };
+    if (modelProfileId) body.model_profile_id = modelProfileId;
+    if (!useAsyncProtocol) {
+      const response = await request('', '/agentic/runs/sync', {
+        method: 'POST',
+        workspaceId: ws,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal,
+      });
+      const data = await response.json().catch(() => ({})) as any;
+      const failure = response.ok ? '' : (data.error || data.detail || `runs/sync ${response.status}`);
+      if (!response.ok && isRateLimitedFailure(response.status, failure)) {
+        rateLimitAttempts += 1;
+        if (rateLimitAttempts >= RATE_LIMIT_MAX_ATTEMPTS) {
+          throw new Error(`runs/sync 重试 ${RATE_LIMIT_MAX_ATTEMPTS} 次后仍被限流：${failure}`);
+        }
+        const waitMs = (hooks.backoffMs ?? rateLimitBackoffMs)(rateLimitAttempts);
+        hooks.onRateLimited?.(rateLimitAttempts, waitMs, String(failure));
+        await waitForBackoff(waitMs, signal);
+        continue;
+      }
+      if (!response.ok) throw new Error(failure);
+      if (isTransientRunFailure(data)) {
+        const detail = String(data.error ?? '').trim();
+        transientAttempts += 1;
+        if (transientAttempts >= RATE_LIMIT_MAX_ATTEMPTS) {
+          throw new Error(`runs/sync 重试 ${RATE_LIMIT_MAX_ATTEMPTS} 次后仍然${detail}`);
+        }
+        const waitMs = (hooks.backoffMs ?? rateLimitBackoffMs)(transientAttempts);
+        hooks.onTransientFailure?.(transientAttempts, waitMs, detail);
+        await waitForBackoff(waitMs, signal);
+        continue;
+      }
+      const resolvedSessionId = String(data.session_id || sessionId);
+      const runId = String(data.run_id || '');
+      const trace = traceFromSyncResponse(data) ?? await fetchEvaluationRunTrace({
+        workspaceId: ws, sessionId: resolvedSessionId, runId, signal,
+      });
+      return { finalAnswer: evaluationFinalAnswer(data), trace };
+    }
+    const startResponse = await request('', '/agentic/runs', {
+      method: 'POST',
+      workspaceId: ws,
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${projectId || 'evaluation'}-${sessionId}` },
+      body: JSON.stringify(body),
+      // Do not abort admission with the round signal: if the POST has already
+      // created a Consumer run, we need its run_id back so stop can cancel it.
+      signal: AbortSignal.timeout(30_000),
     });
-    const data = (await res.json().catch(() => ({}))) as any;
-    const failure = res.ok ? '' : (data.error || data.detail || `runs/sync ${res.status}`);
-    if (!res.ok && isRateLimitedFailure(res.status, failure)) {
+    const startData = await startResponse.json().catch(() => ({})) as any;
+    let data: any;
+    const failure = startResponse.ok
+      ? ''
+      : (startData?.error?.detail || startData?.error || startData?.detail || `runs ${startResponse.status}`);
+    if (!startResponse.ok && isRateLimitedFailure(startResponse.status, failure)) {
       rateLimitAttempts += 1;
       if (rateLimitAttempts >= RATE_LIMIT_MAX_ATTEMPTS) {
         throw new Error(`runs/sync 重试 ${RATE_LIMIT_MAX_ATTEMPTS} 次后仍被限流：${failure}`);
@@ -746,7 +923,60 @@ export async function runCase(
       await waitForBackoff(waitMs, signal);
       continue;
     }
-    if (!res.ok) throw new Error(failure);
+    if (!startResponse.ok && ![404, 405, 501].includes(startResponse.status)) throw new Error(failure);
+    const runId = String(startData?.run_id || '').trim();
+    if (signal.aborted && runId) {
+      await cancelConsumerRun(request, ws, runId, 'evaluation_cancelled');
+      throw signal.reason || new Error('本轮评测已由用户停止');
+    }
+    const hasLegacyTerminal = startResponse.ok && typeof startData.final_answer === 'string';
+    if (hasLegacyTerminal) {
+      data = startData;
+    }
+    if (!runId && !hasLegacyTerminal) {
+      // Keep compatibility with older Consumer deployments while new deployments
+      // use the cancellable async run protocol above.
+      assertEvaluationNotCancelled(signal);
+      const legacyResponse = await request('', '/agentic/runs/sync', {
+        method: 'POST',
+        workspaceId: ws,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal,
+      });
+      const legacyData = await legacyResponse.json().catch(() => ({})) as any;
+      const legacyFailure = legacyResponse.ok
+        ? ''
+        : (legacyData?.error?.detail || legacyData?.error || legacyData?.detail || `runs/sync ${legacyResponse.status}`);
+      if (!legacyResponse.ok && isRateLimitedFailure(legacyResponse.status, legacyFailure)) {
+        rateLimitAttempts += 1;
+        if (rateLimitAttempts >= RATE_LIMIT_MAX_ATTEMPTS) {
+          throw new Error(`runs/sync 重试 ${RATE_LIMIT_MAX_ATTEMPTS} 次后仍被限流：${legacyFailure}`);
+        }
+        const waitMs = (hooks.backoffMs ?? rateLimitBackoffMs)(rateLimitAttempts);
+        hooks.onRateLimited?.(rateLimitAttempts, waitMs, String(legacyFailure));
+        await waitForBackoff(waitMs, signal);
+        continue;
+      }
+      if (!legacyResponse.ok) throw new Error(legacyFailure);
+      data = legacyData;
+    }
+    if (runId && !hasLegacyTerminal) {
+      try {
+        const terminal = await readConsumerRunEvents(request, ws, runId, signal);
+        data = {
+          ...terminal,
+          session_id: sessionId,
+          run_id: runId,
+          error_code: terminal.error?.error_code ?? terminal.error_code,
+          error: terminal.error?.message || terminal.error,
+          final_answer: consumerTerminalAnswer(terminal),
+        };
+      } catch (error) {
+        if (signal.aborted) await cancelConsumerRun(request, ws, runId, 'evaluation_cancelled');
+        throw error;
+      }
+    }
     if (isTransientRunFailure(data)) {
       const detail = String(data.error ?? '').trim();
       transientAttempts += 1;
@@ -759,9 +989,8 @@ export async function runCase(
       continue;
     }
     const resolvedSessionId = String(data.session_id || sessionId);
-    const runId = String(data.run_id || '');
     const trace = traceFromSyncResponse(data) ?? await fetchEvaluationRunTrace({
-      workspaceId: ws, sessionId: resolvedSessionId, runId,
+      workspaceId: ws, sessionId: resolvedSessionId, runId: runId || String(data.run_id || ''),
       signal,
     });
     return { finalAnswer: evaluationFinalAnswer(data), trace };
