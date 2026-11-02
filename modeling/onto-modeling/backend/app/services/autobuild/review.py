@@ -347,6 +347,34 @@ def clear_reviews(project_id: str, run: dict) -> list[str]:
     return [unit["id"] for unit in cleared]
 
 
+def _flagged(run: dict) -> list[dict]:
+    """这次运行里还标着「需复核」的片（与 clear_reviews 同一口径）。"""
+    entries = views.live_ledger(run)
+    pending = {(entry.get("slice") or {}).get("id") for entry in entries if entry.get("review_state") == "pending"}
+    decided = {(entry.get("slice") or {}).get("id") for entry in entries}
+    out = []
+    for unit in run.get("units") or []:
+        info = (run.get("slices") or {}).get(unit["id"]) or {}
+        if info.get("commit") and not info.get("reverted") and (
+                unit["id"] in pending or (unit["id"] not in decided and pending)):
+            out.append(info)
+    return out
+
+
+def entry_marks(project_id: str) -> dict[str, dict]:
+    """条目 → 「需复核（自主构建）」标记 {source, run_id}：还标着需复核的片生效时改到的条目（Studio 表格与详情）。"""
+    from ...kernel.changesets import store as changeset_store
+
+    root = Path(_ws().project_root(project_id))
+    marks: dict[str, dict] = {}
+    for run in store.runs(project_id):
+        for info in _flagged(run):
+            record = changeset_store.get(root, info.get("changeset_id") or "") or {}
+            for ref in record.get("entries") or []:
+                marks.setdefault(ref.get("id"), {"source": "autobuild", "run_id": run["run_id"]})
+    return marks
+
+
 def review_ratio(project_id: str | None = None) -> float | None:
     """复核时被改掉的比例：改判 / 复核过的（可观测，详设 8.5）。"""
     runs = store.runs(project_id) if project_id else store.all_runs()

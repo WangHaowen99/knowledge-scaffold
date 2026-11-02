@@ -64,6 +64,10 @@ def test_suspensions_and_reviews_go_to_the_inbox_and_get_resolved(ab):
     # 切片「自主完成」：复核之前 s2 的格子是 auto
     flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
     assert {item["id"]: item for item in flow["slices"]}["s2"]["stages"]["operation"] == "auto"
+    rows = {row["name"]: row for row in client.get(f"/api/v1/projects/{project_id}/studio/entries").json()["items"]}
+    assert rows["操作2"]["needs_review"] is True and rows["对象2"]["needs_review"] is True
+    detail_entry = client.get(f"/api/v1/projects/{project_id}/studio/entries/{rows['操作2']['id']}").json()
+    assert detail_entry["needs_review"] == {"source": "autobuild", "run_id": run["run_id"]}
     # 一键接受高置信（IN-04）
     accepted = client.post(f"/api/v1/projects/{project_id}/inbox/batch", json={"action": "accept_high_confidence"}).json()
     assert accepted["accepted"] == 2
@@ -75,6 +79,8 @@ def test_suspensions_and_reviews_go_to_the_inbox_and_get_resolved(ab):
     assert slices["s2"]["stages"]["operation"] == "confirmed" and slices["s1"]["stages"]["object"] == "confirmed"
     model = next(node for node in flow["nodes"] if node["id"] == "core.model")
     assert model["flags"]["needs_review"] is False
+    rows = {row["name"]: row for row in client.get(f"/api/v1/projects/{project_id}/studio/entries").json()["items"]}
+    assert not any(row["needs_review"] for row in rows.values())
     # 回答挂起的问题（IN-03 → AB-15）：运行结束了，往运行对话发这一片这一步的命令补上
     answered = client.post(f"/api/v1/projects/{project_id}/inbox/{suspended['id']}/actions",
                            json={"action": "answer", "option_id": sus["options"][1]["id"]}).json()
