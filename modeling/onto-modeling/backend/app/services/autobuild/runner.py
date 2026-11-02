@@ -719,6 +719,7 @@ class AutobuildRunner:
             return
         cursor = run.get("cursor") or {}
         await asyncio.to_thread(self._close_exec, project_id, cursor.get("exec_id"))
+        await asyncio.to_thread(self._settle_changeset, run)
 
         ended_at = time.time()
 
@@ -756,6 +757,23 @@ class AutobuildRunner:
         self._refresh(project_id)
         await self._dispatch_rejudges(project_id, run_id)
         await self.admit()
+
+    @staticmethod
+    def _settle_changeset(run: dict) -> None:
+        """出错停在一片中间：这一片的变更集有改动就留给用户确认（修改待确认），没改动就关掉，不挡之后的对话。"""
+        from ...kernel.changesets import service as changesets
+
+        ws = _ws()
+        record = changesets.current(ws, run["project_id"])
+        if record is None or record.get("run_id") != run["run_id"] or record.get("state") != "open":
+            return
+        try:
+            observed = changesets.observe(ws, run["project_id"], running=False, conversation_id=run["conversation_id"],
+                                          checks=True)
+            if observed is None and (changesets.current(ws, run["project_id"]) or {}).get("id") == record["id"]:
+                changesets.discard(ws, run["project_id"], record["id"], actor=run.get("owner") or "system")
+        except Exception:  # noqa: BLE001 - 收不了尾时变更集留着，用户在待处理里处理
+            _log.warning("自主构建结束时整理变更集失败（%s）", run["project_id"], exc_info=True)
 
     def _write_report(self, run: dict) -> None:
         """台账与运行报告进 git（`reports/autobuild/<运行号>/`，一次提交，来源 autobuild）。"""

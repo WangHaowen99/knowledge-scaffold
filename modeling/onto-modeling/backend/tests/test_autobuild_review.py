@@ -185,3 +185,21 @@ def test_gate_failures_are_fixed_or_the_slice_is_suspended(ab, monkeypatch):
     suspensions = client.get(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/suspensions").json()["items"]
     assert [item["title"] for item in suspensions] == ["「合成片1」检查没通过"]
     assert suspensions[0]["handled_as"] == "这一片没生效，先做下一片"
+
+
+def test_a_failed_run_leaves_the_slice_for_the_user_to_confirm(ab, monkeypatch):
+    client, workspaces, project_id, _root = ab
+    from app.services.workspace.errors import WorkspaceError
+
+    def unavailable(*args, **kwargs):
+        raise WorkspaceError("门禁跑不起来", 503, "service_unavailable", {"dependency": "gate"})
+
+    monkeypatch.setattr("app.kernel.changesets.service.merge", unavailable)
+    run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s1"], "until_node": "core.model"},
+                budget={"max_tokens": 500_000})
+    failed = wait_state(client, project_id, run["run_id"], "failed")
+    assert failed["matrix"][0]["result"] in ("未开始", "部分完成")
+    # 这一片的修改留给用户：待处理里「修改待确认」，之后的对话照常
+    pending = [item for item in _inbox(client, project_id)["items"] if item["kind"] == "pending_changeset"]
+    assert len(pending) == 1
+    assert client.get(f"/api/v1/projects/{project_id}/scope").json()["state"] == "pending_confirm"

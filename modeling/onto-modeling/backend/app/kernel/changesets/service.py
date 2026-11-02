@@ -1036,7 +1036,8 @@ def scope_lock(manager, project_id: str) -> dict:
     else:
         reason = "这一轮的修改还没确认，确认生效或撤回之后才能编辑"
         lock_state = "pending_confirm"
-    if record is not None and record.get("source") == "autobuild" and record.get("state") in ("open", "pending_confirm"):
+    if record is not None and record.get("source") == "autobuild" and record.get("state") in ("open", "pending_confirm") \
+            and _run_active(project_id, record.get("run_id")):
         # 自主构建的一片（契约 2.4、EP-03）：锁到这一片自动合入为止
         lock_state = "autobuild_slice"
         name = (current_slice or {}).get("name") or (node.get("title") if running else "") or ""
@@ -1055,6 +1056,14 @@ def scope_lock(manager, project_id: str) -> dict:
         "reason_text": reason,
         "since": _iso(since) if since else None,
     }
+
+
+def _run_active(project_id: str, run_id: str | None) -> bool:
+    """自主构建的这次运行还没结束（运行出错停下后，这一片的修改按陪伴建模的「修改待确认」锁）。"""
+    from ...services.autobuild import store as runs
+
+    active = runs.active(project_id)
+    return active is not None and active["run_id"] == run_id
 
 
 def locked(lock: dict, *, entry: str | None = None, artifact: tuple[str, str] | None = None,
