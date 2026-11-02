@@ -47,6 +47,7 @@ def test_running_slice_locks_only_its_entries(env, monkeypatch):
     lock = service.scope_lock(workspaces, project_id)
     assert lock["state"] == "assistant_running" and lock["slice"] == {"id": "s1", "name": "订单受理"}
     assert "ontology/object/*" not in lock["paths"] and "ontology/object/订单.md" in lock["paths"]
+    assert "ontology/testcase/受理订单.md" in lock["paths"]  # 这一片的场景也在范围里
     assert {ref["id"] for ref in lock["entries"]} >= {"object:订单", "operation:受理订单"}
     assert "「订单受理」这一片" in lock["reason_text"]
     with pytest.raises(WorkspaceError) as exc:

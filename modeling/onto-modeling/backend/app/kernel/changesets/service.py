@@ -942,6 +942,8 @@ def _slice_scope(manager, project_id: str, root: Path, node_ids: list[str], slic
             if item is None:
                 continue
             paths += [_escape(rel) for rel in module.member_paths(item)]
+            # 这一片的场景（场景走查一个操作一份，片里的「场景」一步写它们）
+            paths += [_escape(f"ontology/testcase/{model.encode_filename(name)}.md") for name in item.get("operations") or []]
             for kind, names in module.members(item).items():
                 entries += [{**_entry_ref(kind, model.encode_filename(name)), "name": name} for name in names]
     return rest, paths, entries, doc

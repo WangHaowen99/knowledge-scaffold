@@ -10,7 +10,8 @@
 ## Decision
 
 1. **用户一侧（ScopeLock，`kernel/changesets/service.scope_lock`）**：按切片的节点（建模）在按片模式下不再用节点声明的
-   整类模式，而是这几片包含的条目路径（`blueprint.member_paths`，操作含旧目录，转义成字面量）与条目（`entries`）：
+   整类模式，而是这几片包含的条目路径（`blueprint.member_paths`，操作含旧目录，转义成字面量；再加这几片操作的场景文件
+   `ontology/testcase/<操作>.md`，片里的「场景」一步写它们）与条目（`entries`）：
    - 助手在跑：执行记录的切片；
    - 这一轮结束、修改待确认：变更集 `slice_steps` 里做过的那几片；
    - 加上这一轮改过的路径与条目、决策卡预览列出的条目（不变）；
