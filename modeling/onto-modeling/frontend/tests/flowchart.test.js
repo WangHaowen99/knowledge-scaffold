@@ -173,14 +173,9 @@ test('弹窗：打开时选中待定节点；锁定条两态的说法', () => {
   assert.deepEqual(initialSelection(overage()), { type: 'node', id: 'n4' });
   assert.equal(initialSelection({ nodes: [n('a', 'step', 'A', 0, 0)] }), null);
   const lock = (state) => ({ state, slice: { id: 's5', name: '超量与审批提示' }, entries: [], artifacts: [], paths: [] });
-  assert.deepEqual(lockBarText(lock('assistant_running')), {
-    title: '助手正在改「超量与审批提示」这一片，这张图在写入范围里，确认生效或撤回后才能编辑',
-    desc: '片外的条目照常编辑；也可以回到对话里打断它',
-  });
-  assert.deepEqual(lockBarText(lock('pending_confirm')), {
-    title: '「超量与审批提示」这一片的修改还没确认，这张图在写入范围里，确认生效或撤回后才能编辑',
-    desc: '助手已经停下来等你确认；片外的条目照常编辑',
-  });
+  assert.deepEqual(lockBarText(lock('assistant_running')), { title: '助手正在改「超量与审批提示」，确认生效或撤回前只读' });
+  assert.deepEqual(lockBarText(lock('pending_confirm')), { title: '「超量与审批提示」的修改待确认，确认生效或撤回前只读' });
+  assert.deepEqual(lockBarText(lock('autobuild_slice')), { title: '自主构建正在做「超量与审批提示」，这一片完成前只读' });
   assert.equal(lockBarText({ state: 'none' }), null);
   assert.equal(lockBarText({ ...lock('pending_confirm'), slice: null }, { text: '兜底说法' }).title, '兜底说法');
 });

@@ -113,7 +113,7 @@ export default function FlowchartDialog({ artifact, onClose }) {
       setArt(r.artifact);
       dispatch({ type: 'mark-saved', model: r.artifact?.content, savedRevision: r.artifact?.revision });
       setSavedVersion(r.version_label || null);
-      toast(r.version_label ? `流程图已保存为版本 ${r.version_label}，Studio 里同步更新` : '流程图已保存，Studio 里同步更新', 'check');
+      toast(r.version_label ? `已保存为版本 ${r.version_label}` : '已保存', 'check');
       return r;
     } catch (e) {
       dispatch({ type: 'mark-save-failed', message: errorText(e) });
@@ -138,8 +138,8 @@ export default function FlowchartDialog({ artifact, onClose }) {
 
   const switchMode = (m) => {
     if (m === 'std') {
-      if (compressed) { toast('该文件使用压缩存储，暂只支持 drawio 编辑器打开', 'info'); return; }
-      if (dio.dirty) { toast('drawio 里的修改还没保存，先保存（Ctrl+S）再切回标准编辑器', 'alert'); return; }
+      if (compressed) { toast('压缩格式只能在 drawio 里编辑', 'info'); return; }
+      if (dio.dirty) { toast('先保存（Ctrl+S）再切回', 'alert'); return; }
       setMode('std');
       return;
     }
@@ -196,14 +196,8 @@ export default function FlowchartDialog({ artifact, onClose }) {
       <div className="dtb">
         <b>draw.io</b>
         <span className="muted">{drawioStateText(dio.state)}</span>
-        <span className="sp" />
-        {compressed ? <Chip tone="amber" sm>压缩格式</Chip> : null}
       </div>
-      <div style={{ padding: '12px 16px' }}>
-        {compressed
-          ? <Note tone="amber" icon="info">该文件使用压缩存储，暂只支持 drawio 编辑器打开，已自动回退到 drawio 高级编辑。双击节点修改文字 · 拖动节点调整位置 · Ctrl+S 保存。</Note>
-          : <Note tone="gray" icon="info">在 drawio 里改节点、文字和连线。双击节点修改文字 · 拖动节点调整位置 · Ctrl+S 保存；保存后切回标准编辑器。</Note>}
-      </div>
+      {compressed ? <div style={{ padding: '12px 16px' }}><Note tone="amber" icon="info">压缩格式，只能在 drawio 里编辑</Note></div> : null}
       <div className="fc-dcv">
         <DrawioEditorFrame
           key={dio.key} ref={frame} xml={dio.xml} title={title} available={config?.features?.drawio !== false}
@@ -223,9 +217,13 @@ export default function FlowchartDialog({ artifact, onClose }) {
 
   let body;
   if (pluginOff) {
-    body = <div className="fc-load"><Empty icon="puzzle" title="图示插件没有启用">启用「{PACK_LABEL}」插件后，才能查看和编辑流程图。</Empty></div>;
+    body = (
+      <div className="fc-load">
+        <Empty icon="puzzle" title="图示插件没有启用" actions={<Button size="sm" onClick={() => { onClose?.(); navigate(pagePath('plugin-detail'), { pack: 'diagram' }); }}>去启用</Button>} />
+      </div>
+    );
   } else if (empty) {
-    body = <div className="fc-load"><Empty icon="branch" title="还没有流程图">可以在对话里让助手画一张，或者在 Studio 里新建。</Empty></div>;
+    body = <div className="fc-load"><Empty icon="branch" title="还没有流程图" /></div>;
   } else if (loadError) {
     body = (
       <div className="fc-load">
@@ -255,10 +253,10 @@ export default function FlowchartDialog({ artifact, onClose }) {
                 <h3 className="ell">{title}</h3>
                 {art?.status ? <St k={art.status.value} sm label={art.status.label} /> : null}
                 <span
-                  className="plg-tag" data-pop={`由「${PACK_LABEL}」插件提供；未启用时不显示流程图卡和流程图条目`}
+                  className="plg-tag" data-pop={`由「${PACK_LABEL}」插件提供`}
                   onClick={() => (dirty ? toast('先保存或放弃这张图的修改，再去看插件', 'info') : navigate(pagePath('plugin-detail'), { pack: 'diagram' }))}
                 >
-                  <Icon name="puzzle" size={12} />插件 · {PACK_LABEL}
+                  <Icon name="puzzle" size={12} />
                 </span>
               </div>
               <div className="xs muted">{art ? `${op ? `关联操作「${op.name}」· ` : ''}${sum.text}` : ' '}</div>
@@ -271,17 +269,11 @@ export default function FlowchartDialog({ artifact, onClose }) {
             <div className="fcm-lock">
               <Icon name="lock" size={14} />
               <b>{info.title}</b>
-              <span className="muted">{info.desc}</span>
               <span className="sp" />
               {lockAction}
             </div>
           ) : null}
           {body}
-          <div className="fcm-f">
-            <Icon name="info" size={12} />保存后生成新版本，和 Studio 里是同一份；助手下一条消息会知道你改了什么。
-            <span className="sp" />
-            <span className="faint">拖节点圆点连线 · 拖到空白处新建相连节点 · 双击改名 · Delete 删除</span>
-          </div>
         </div>
       </div>
       <Modal
@@ -293,7 +285,7 @@ export default function FlowchartDialog({ artifact, onClose }) {
           </>
         )}
       >
-        <div className="sm muted">关闭后这些修改会丢掉。要留下它们，先点「保存」生成新版本。</div>
+        <div className="sm muted">关闭后这些修改会丢掉。</div>
       </Modal>
       <Modal
         open={!!conflict} onClose={() => setConflict(null)} icon="alert" title="这张流程图已经被改过了" w={480}
@@ -316,7 +308,6 @@ export default function FlowchartDialog({ artifact, onClose }) {
       >
         <div className="sm muted">
           {describeConflict(conflict?.details).replace(/^文件/, '这张图').replace('请刷新对比后再保存', '你的修改还在')}。
-          可以载入最新版本（放弃你的修改），也可以用你的版本覆盖。
         </div>
       </Modal>
     </Overlay>

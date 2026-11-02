@@ -48,32 +48,31 @@ function FlowPane({ model, dispatch, disabled }) {
     <div className="col" style={{ gap: 12 }}>
       <Field label="流程名称"><Inp value={p.name} disabled={disabled} aria-label="流程名称" onChange={(e) => up('name', e.target.value)} /></Field>
       <Field label="流程说明"><AutoArea label="流程说明" value={p.description} minHeight={64} disabled={disabled} onChange={(v) => up('description', v)} /></Field>
-      <Field label="参与角色" hint="每行一个角色"><ListArea label="参与角色" list={p.roles} minHeight={48} disabled={disabled} onChange={(v) => up('roles', v)} /></Field>
-      <Field label="流程输入" hint="每行一项输入"><ListArea label="流程输入" list={p.inputs} minHeight={48} disabled={disabled} onChange={(v) => up('inputs', v)} /></Field>
-      <Field label="异常处理" hint="每行一种异常或处理方式"><ListArea label="异常处理" list={p.exceptions} minHeight={40} disabled={disabled} onChange={(v) => up('exceptions', v)} /></Field>
-      <Field label="流程交接" hint="每行一项交接说明"><ListArea label="流程交接" list={p.handoffs} minHeight={40} disabled={disabled} onChange={(v) => up('handoffs', v)} /></Field>
-      <Note tone="gray">触发条件请编辑开始节点，流程输出请编辑结束节点。</Note>
+      <Field label="参与角色"><ListArea label="参与角色" placeholder="每行一项" list={p.roles} minHeight={48} disabled={disabled} onChange={(v) => up('roles', v)} /></Field>
+      <Field label="流程输入"><ListArea label="流程输入" placeholder="每行一项" list={p.inputs} minHeight={48} disabled={disabled} onChange={(v) => up('inputs', v)} /></Field>
+      <Field label="异常处理"><ListArea label="异常处理" placeholder="每行一项" list={p.exceptions} minHeight={40} disabled={disabled} onChange={(v) => up('exceptions', v)} /></Field>
+      <Field label="流程交接"><ListArea label="流程交接" placeholder="每行一项" list={p.handoffs} minHeight={40} disabled={disabled} onChange={(v) => up('handoffs', v)} /></Field>
     </div>
   );
 }
 
 function NodePane({ node, dispatch, disabled }) {
-  if (!node) return <div className="fc-empty">在画布上点一个节点，这里显示它的属性。</div>;
+  if (!node) return <div className="fc-empty">未选中节点</div>;
   const up = (patch, coalesce) => dispatch({ type: 'update-node', id: node.id, patch, coalesce });
   return (
     <div className="col" style={{ gap: 12 }}>
-      <Field label="节点名称" hint="双击画布上的节点也可以改名">
+      <Field label="节点名称">
         <Inp value={node.label} disabled={disabled} aria-label="节点名称" onChange={(e) => up({ label: e.target.value }, 'label')} />
       </Field>
       <Field label="节点类型">
         <Select value={node.type} options={NODE_OPTIONS} disabled={disabled} onChange={(v) => up({ type: v })} />
       </Field>
-      <Field label="业务说明" hint="帮助模型理解节点职责，不直接显示在图上。">
+      <Field label="业务说明">
         <AutoArea label="业务说明" value={node.description} minHeight={72} disabled={disabled} onChange={(v) => up({ description: v }, 'description')} />
       </Field>
       {node.pending ? (
         <Note tone="amber" icon="hand">
-          {node.pending_note ? `这一步的口径（${node.pending_note}）还在对话里等你决定，定了以后助手会同步改这里。` : '这一步的口径还在对话里等你决定，定了以后助手会同步改这里。'}
+          {node.pending_note ? `口径待定（${node.pending_note}），在对话里等你决定` : '口径待定，在对话里等你决定'}
         </Note>
       ) : null}
       {node.refs?.length ? (
@@ -91,19 +90,18 @@ function NodePane({ node, dispatch, disabled }) {
   );
 }
 
-function EdgePane({ model, edge, dispatch, disabled }) {
-  if (!edge) return <div className="fc-empty">在画布上点一条连线，这里显示它的流转条件。</div>;
+function EdgePane({ edge, dispatch, disabled }) {
+  if (!edge) return <div className="fc-empty">未选中连线</div>;
   const up = (patch, coalesce) => dispatch({ type: 'update-edge', id: edge.id, patch, coalesce });
   return (
     <div className="col" style={{ gap: 12 }}>
-      <div className="xs muted">选中：{selectionLabel(model, { type: 'edge', id: edge.id })}</div>
-      <Field label="图上文字" hint="画布上只显示简短文字">
+      <Field label="图上文字">
         <Inp value={edge.label} disabled={disabled} aria-label="图上文字" placeholder="如：是、否、超出范围" onChange={(e) => up({ label: e.target.value }, 'label')} />
       </Field>
       <Field label="流转类型">
         <Select value={edge.type} options={EDGE_OPTIONS} disabled={disabled} onChange={(v) => up({ type: v })} />
       </Field>
-      <Field label="业务逻辑或条件" hint="完整条件写在这里，画布上仍显示简短文字。">
+      <Field label="业务逻辑或条件">
         <AutoArea label="业务逻辑或条件" value={edge.condition} minHeight={64} disabled={disabled} onChange={(v) => up({ condition: v }, 'condition')} />
       </Field>
     </div>
@@ -127,7 +125,7 @@ export default function FlowchartProps({ model, selection, tab, onTab, dispatch,
       <div className="bd">
         {tab === 'flow' ? <FlowPane model={model} dispatch={dispatch} disabled={disabled} /> : null}
         {tab === 'node' ? <NodePane key={node?.id} node={node} dispatch={dispatch} disabled={disabled} /> : null}
-        {tab === 'edge' ? <EdgePane key={edge?.id} model={model} edge={edge} dispatch={dispatch} disabled={disabled} /> : null}
+        {tab === 'edge' ? <EdgePane key={edge?.id} edge={edge} dispatch={dispatch} disabled={disabled} /> : null}
       </div>
     </aside>
   );
