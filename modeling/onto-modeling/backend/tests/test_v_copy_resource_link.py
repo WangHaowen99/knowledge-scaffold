@@ -156,3 +156,27 @@ def test_research_report_title_is_the_topic_not_the_template_heading(tmp_path, m
         items = client.get(f"/api/v1/projects/{project_id}/reports").json()["items"]
     names = {item["id"]: item["name"] for item in items}
     assert names.get("research:合成门店运营") == "合成门店运营"
+
+
+def test_new_id_confirmation_marker_is_not_a_material_problem(tmp_path, monkeypatch):
+    """「缺口与待决」里的 `- [x] 新增ID确认：…` 是给检查器的记号，资料地图问题区、报告页把它当「疑似缺失」
+    列出一长串编号（V 阶段截图）。"""
+    from fastapi.testclient import TestClient
+
+    from app.api import deps
+    from app.main import app
+    from app.services import auth
+    from app.services.workspace import WorkspaceManager
+    from tests.test_changesets import main_write
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(auth, "ENABLED", False)
+    workspaces = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
+    monkeypatch.setattr(deps, "workspaces", workspaces)
+    project_id = workspaces.create_project("记号不算问题", owner="employee_0001")["id"]
+    report = ("# 分析主题\n合成。\n\n# 缺口与待决\n- [x] 新增ID确认：ITEM-01、ITEM-02、RULE-01\n"
+              "- [ ] 缺少退货流程的资料\n")
+    main_write(workspaces.project_root(project_id), "research/合成.md", report, "research: 合成")
+    with TestClient(app) as client:
+        problems = client.get(f"/api/v1/projects/{project_id}/materials/map").json()["problems"]
+    assert [p["text_md"] for p in problems] == ["缺少退货流程的资料"]

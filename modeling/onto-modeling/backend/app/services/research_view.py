@@ -141,6 +141,8 @@ def _parse(where: Path) -> dict:
             for name in checker._section_candidates(sections, section):
                 candidates.append({"report": rel, "category": category, "name": name})
         for done, text in _gap_lines(sections.get(checker.GAP_SECTION, "")):
+            if re.match(r"^新增\s*ID\s*确认\s*[：:]", text):
+                continue  # 给检查器的记号（新造编号已确认），不是资料问题
             gaps.append({"report": rel, "done": done, "text": text})
     return {"reports": list(texts), "rows": rows, "candidates": candidates, "gaps": gaps, "texts": texts}
 
