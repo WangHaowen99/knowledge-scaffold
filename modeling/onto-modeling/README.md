@@ -213,6 +213,12 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
 运维面与登录除外）→ 排空（在线会话跑完当前这一轮后回收，超时强制断开并标中断）→ 升级 → 恢复。
 另有会话池在线调整、强制断开、排空、熔断、诊断包（脱敏）、版本清单、审计导出等。
 
+插件运维（ADR-0067）：`GET /api/v1/ops/packs` 列出各包在通道上的、项目在用的、禁用的版本；回滚通道
+（`POST /packs/{名}/rollback`）只改指针，跟随通道的项目下一条消息换过去；禁用版本后新项目不能再启用它，通道指着它时
+改取最新的可用版本（core 的默认版本不能禁用）；灰度只做按项目（beta 通道带比例与名单，跟随 stable 的项目按项目编号
+稳定分桶），按租户回 501。熔断的包版本，它的节点暂时跳过、挡住的关卡解除。告警规则（`/api/v1/ops/alerts/rules`）
+本期只登记、不评估。
+
 ## 密钥与 agent 身份
 
 - 管理员模型 Key、个人 Key 密文与自动生成的主密钥、MCP token 库、服务令牌库都在密钥目录
@@ -234,8 +240,10 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
   清单版本加内容摘要（如 `0.1.0+3f9a1c2d`）。管理员经 `POST /api/v1/admin/packs/uploads` 上传插件包，
   静态检查通过后发布到通道；`ui/` 之外带前端代码、带凭据、名字冲突、兼容范围不符的包检查不通过。旧的
   `POST /api/settings/assets/upload` 改写到这里：没有清单的资产包当作 core 新版本，检查通过直接发布到 stable。
-- **锁文件**：每个项目一份 `.onto/packs.lock`（进项目 git），记启用的包、版本与摘要；改它是一次带
-  `Onto-Source: plugin` 的提交。项目设置里启用、升级、回滚、停用都改它。
+- **锁文件**：每个项目一份 `.onto/packs.lock`（进项目 git），记启用的包、版本与摘要；`.onto/flow.lock` 记它组装出的流程节点
+  （来源包与版本、挂法、锚点、完成判定签名），两份在同一个带 `Onto-Source: plugin` 的提交里。项目设置里启用、升级、回滚、
+  停用都改它，每次切换是一个已合入的插件变更集（带 `Onto-Changeset`，可用变更集的反向提交撤回）；助手的修改还没确认时，
+  会改流程节点的切换回 423（ADR-0065）。
 - **装配目录**：数据目录 `assembled/<哈希>/`，内核守卫 + 已启用的包按锁文件组装，锁文件相同的项目共用；
   项目的 `.claude` 是指向它的相对链接，`CLAUDE.md`、`README.md` 指向 `.claude/` 里的同名文件。
   切换用原子替换软链，装配失败项目保持原版本。
@@ -275,6 +283,17 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
     `ontology` 这类保留名，命令不能和已入库的包重名。合成样例在 `backend/tests/fixtures/packs/sticky-notes/`。
   - `ui/` 不进装配目录。
   - 助手这一轮改到的产物，在「这一轮改了什么」之后各出一张卡；确认生效前改动只在助手副本里（ADR-0046），卡片内容从副本读。
+- **节点包**（ADR-0065、0066）：清单 `kind: node`，插件目录里归进能力包；只带节点声明（`flow.yaml` 或 `nodes/*.yaml`）和节点要用的
+  命令、子代理、脚本、模板，上传时多一项 `node_pack` 检查。节点挂法只能是串入 `step`、旁支 `branch`、关卡 `gate`、按需
+  `on_demand`，类型有四种：agent（助手执行入口命令）、script（`script: {name, inputs, output}`，内核经脚本验证网关在
+  jiuwenbox 沙箱里跑，不在本机回退，标准输出写进 `output`）、human（`decision: {title, options, record}`，只出一张决策卡，
+  结论写进 `record`）、external（`provider: {kind}`，本期没有证据源提供方，启用时回 `409 pack_unavailable`）。启用后从下一条
+  消息开始出现在流程里；项目已经越过插入位置时显示「可补做」、不计入进度；停用后节点标「已停用」、它挡住的关卡解除；
+  升级后完成判定变了，之前已确认的标「需复核」。合成样例见 `backend/tests/pack_helpers.make_node_pack`。
+- **扩展项补齐**（ADR-0068）：清单还能声明界面入口 `entries`（快捷项、附加操作）、门禁 `gates`（`on: save|commit|publish`，
+  commit 在写入事务提交与合入时查，publish 进发布门禁链）、视图选择 `view_choices`、配置项 `config`（进配置注册表，键
+  `<包名>.<key>`）、指标 `metrics` 与告警规则 `alerts`（进 /metrics 与 O-08，规则本期只登记不评估）、只读 MCP 工具 `mcp_tools`
+  （按本包产物类型列表或取一项）；包的 flow.yaml 可以写节点钩子 `hooks`（挂在已有节点前后，进节点动作与两轮之间的提示）。
 - **证据源**（ADR-0056）：本期只留接口。`backend/app/evidence/` 只有提供方、网关客户端、数据源登记的协议；
   `/api/v1/evidence/…`、项目下的 `/evidence/…`、`/anchors/resolve` 与提供方安装接口一律回 `501 evidence_not_available`；
   助手没有 `evidence.*` 工具；界面上连接业务系统的入口不出现。
