@@ -110,3 +110,15 @@ def test_research_receipt_inputs_cannot_probe_outside(api, tmp_path):
     os.symlink(str(outside / "secret.md"), root / "research-link.md")
     assert review.file_revision(root / "research-link.md") == ""
     assert review.file_revision(outside / "secret.md") != ""  # 普通文件照常算
+
+
+def test_entry_endpoints_do_not_read_linked_files(api):
+    client, root, base, outside = api
+    _link(root, "ontology/object/泄露.md", outside / "secret.md")
+    os.symlink("../../.git/config", root / "ontology" / "object" / "配置.md")
+    for entry in ("object:泄露", "object:配置"):
+        for suffix in ("", "/evidence", "/draft"):
+            resp = client.get(f"{base}/studio/entries/{entry}{suffix}")
+            assert resp.status_code == 404 and SECRET not in resp.text and "[core]" not in resp.text, (entry, suffix)
+    diff = client.get(f"{base}/versions/diff", params={"from": "HEAD", "entry": "object:泄露"})
+    assert SECRET not in diff.text

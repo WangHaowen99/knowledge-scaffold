@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 
+import os
 import re
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from fastapi import APIRouter, Request, Response
 
 from ..api import deps
 from ..api.errors import ApiError
+from ..kernel.artifacts import index as artifact_index
 from ..governance import telemetry
 from ..kernel.metamodel import mm
 from ..services import mainline
@@ -47,6 +49,8 @@ def entry_path(root: Path, entry_id: str) -> tuple[str, str, str]:
     rel = f"{directory}/{key}{suffix}"
     if kind == "operation" and not (root / rel).is_file() and (root / f"ontology/logic/{key}.md").is_file():
         rel = f"ontology/logic/{key}.md"  # operation 的旧目录（ADR-0004）
+    if os.path.lexists(root / rel) and artifact_index.inside_no_links(root, rel) is None:
+        raise ApiError("not_found", "条目不存在", 404)  # 符号链接（可以指到工作区外或 .git）不当条目
     return rel, kind, key
 
 
