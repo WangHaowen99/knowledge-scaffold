@@ -126,3 +126,13 @@ def test_guard_keeps_the_assistant_inside_its_slice(env):
     assert not denied(guard("ontology/object/订单.md"))
     assert not denied(guard("ontology/object/又一个新对象.md"))
     subprocess.run([*helper, "release", "extract-object"], cwd=copy, check=True, capture_output=True)
+    # 带切片的规则提取：命令本来归指标旁支，这一次是建模的「规则」一步，按这一片收窄
+    (copy / ".onto" / "run" / "exec.json").write_text(json.dumps({"exec_id": "ex-2", "node": "core.model",
+                                                                  "slice": {"id": "s1", "name": "订单受理"},
+                                                                  "step": "rule"}))
+    subprocess.run([*helper, "acquire", "extract-rule-metric", "rule-metric"], cwd=copy, check=True,
+                   capture_output=True)
+    spec = json.loads((copy / ".onto" / "run" / "active.json").read_text(encoding="utf-8"))["commands"]["extract-rule-metric"]
+    assert spec["node"] == "core.model" and spec["slice"] == "s1"
+    assert "ontology/metric/*" in spec["allow"] and "ontology/object/客户.md" in spec["protect"]
+    subprocess.run([*helper, "release", "extract-rule-metric"], cwd=copy, check=True, capture_output=True)

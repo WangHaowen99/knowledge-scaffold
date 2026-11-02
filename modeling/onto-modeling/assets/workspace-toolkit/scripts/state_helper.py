@@ -46,11 +46,14 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent))
 import blueprint
 import flow_state
+import onto_metamodel
 
 STATE_DIR = Path('.ontology-state')
 PROGRESS_FILE = STATE_DIR / 'progress.json'
 # Web 后端写入的在线引擎实例标识（见模块说明）
 ENGINE_MARKER = Path('.onto') / 'run' / 'engine.json'
+# Web 后端开始执行一条命令时写的标记（节点、切片、步骤）
+EXEC_MARKER = Path('.onto') / 'run' / 'exec.json'
 # 正在执行的命令与它们的写入范围（节点声明的 produces、writes）：内核守卫只放行这些路径（方案 D11）
 ACTIVE_FILE = Path('.onto') / 'run' / 'active.json'
 ANCESTOR_SCAN_LIMIT = 32
@@ -349,23 +352,47 @@ def _save_active(data: dict) -> None:
     os.replace(tmp, ACTIVE_FILE)
 
 
-def _command_scope(command: str) -> tuple:
-    """命令所属节点与它的写入范围（produces + writes）；不属于任何节点时为 (None, None)：不限范围。"""
-    try:
-        flow = _flow()
-    except (OSError, ValueError):
-        return None, None
-    node_id = flow_state.command_node(flow, command)
-    node = next((item for item in flow.get('nodes') or [] if item.get('id') == node_id), None)
-    if node is None:
-        return None, None
+def _node_patterns(node: dict) -> list:
     allow = []
     for key in ('produces', 'writes'):
         for item in node.get(key) or []:
             pattern = str(item.get('path') if isinstance(item, dict) else item)
             if pattern and pattern not in allow:
                 allow.append(pattern)
-    return node_id, allow
+    return allow
+
+
+def _slice_node(flow: dict, command: str):
+    """后端开始执行时记的是按切片的节点、这条命令是它的一步（如带切片的规则提取、场景走查）时返回那个节点。"""
+    try:
+        marker = json.loads(EXEC_MARKER.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    node = next((item for item in flow.get('nodes') or [] if item.get('id') == (marker or {}).get('node')), None)
+    if node is None or not node.get('per_slice'):
+        return None
+    commands = {str(step.get('command') or '').lstrip('/').removeprefix('ontology-') for step in node.get('steps') or []}
+    return node if command in commands else None
+
+
+def _command_scope(command: str) -> tuple:
+    """命令所属节点与它的写入范围（produces + writes）；不属于任何节点时为 (None, None)：不限范围。
+
+    这一次是按切片的节点的一步时，节点取按切片的那个、范围是两者的并集（规则提取还会写指标，场景走查写场景文件）。"""
+    try:
+        flow = _flow()
+    except (OSError, ValueError):
+        return None, None
+    node_id = flow_state.command_node(flow, command)
+    node = next((item for item in flow.get('nodes') or [] if item.get('id') == node_id), None)
+    sliced = _slice_node(flow, command)
+    if sliced is not None:
+        allow = _node_patterns(node) if node is not None else []
+        allow += [pattern for pattern in _node_patterns(sliced) if pattern not in allow]
+        return sliced['id'], allow
+    if node is None:
+        return None, None
+    return node_id, _node_patterns(node)
 
 
 def _changed_here() -> set:
@@ -395,6 +422,8 @@ def _slice_protect(node_id: str, allow: list) -> tuple:
     if node is None or not node.get('per_slice') or blueprint.mode(doc) != 'sliced' or item is None:
         return None, []
     own = set(blueprint.member_paths(item))
+    # 这一片的场景（一个操作一份）也是这一片的
+    own |= {f'ontology/testcase/{onto_metamodel.encode_filename(name)}.md' for name in item.get('operations') or []}
     changed = _changed_here()
     protect = []
     for pattern in allow:
