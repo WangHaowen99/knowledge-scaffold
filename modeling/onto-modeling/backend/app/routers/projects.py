@@ -344,6 +344,11 @@ async def import_project(request: Request, body: dict = Body(...)):
 
     created = await asyncio.to_thread(claim_and_import)
     uploads.consume(upload_id)
+    if kind == package_archive.KIND_KNOWLEDGE_PACKAGE:
+        # 导入已发布的知识包：带进来的产物没有经过本项目确认，已满足完成判定的节点标「需复核」（详设 6.6）
+        from ..services.flow import state as node_state
+
+        await asyncio.to_thread(node_state.mark_imported, deps.workspaces.project_root(created["id"]))
     return JSONResponse(status_code=201, content={**_meta(created["id"]), "landing_page": "wb-l2"})
 
 

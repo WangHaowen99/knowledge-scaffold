@@ -5,7 +5,8 @@
 
 - 阶段提示：当前阶段、进行中的命令、最近报告（原 `session_start_hook.sh` 的内容，逐字一致）；
 - 统一「下一步」：与界面建议条（FL-02）同一份结果，助手回复末尾的「下一步建议」按它给。计算由
-  登记的提供方给（`register_next_step_provider`，B4b 的 `state_helper suggest` 接上之前用 FL-02）；
+  登记的提供方给（`register_next_step_provider`：在助手工作目录里跑 `state_helper suggest`，ADR-0048），
+  没登记时用 FL-02；
 - 包的提示规则（详设 5.6；ADR-0040、0045）：生效中的装配里各包声明的 `prompts`，按用户原话匹配，
   每条消息单独判断，探测的是用户原文，不是斜杠命令展开后的全文。知识沉淀包的纠错与惯例信号就是一条
   （原 `knowledge_signal_probe.sh`），没启用这个包的项目不提示。规则由登记的数据源算
@@ -45,9 +46,10 @@ def register_next_step_provider(provider: "Callable[[Path], dict | None] | None"
 
 
 def _default_next_steps(project_root: Path) -> dict | None:
+    from ...kernel.changesets import worktree
     from ..flow import view
 
-    return view.build(project_root).get("suggestions")
+    return view.build(worktree.main_root(Path(project_root))).get("suggestions")
 
 
 def next_step_hint(project_root: Path) -> str:

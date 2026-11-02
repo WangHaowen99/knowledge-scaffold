@@ -80,6 +80,9 @@ def _changeset_event(project_id: str, event: str, data: dict) -> None:
     """变更集变了：EP-04 changeset.updated、EP-03 scope.updated，并重算流程（节点「待确认」）。"""
     from .services import project_events, streams
 
+    if event == "changeset" and data and data.get("state") == "merged":
+        # 确认生效：变更集里执行过的节点按主线现状重记基线（不再过期；完成判定满足即已确认）
+        _confirm_nodes(project_id, data.get("nodes") or [])
     if event == "changeset" and data:
         merged = data.get("merged") or {}
         streams.publish_project(project_id, "changeset.updated", {
@@ -88,6 +91,23 @@ def _changeset_event(project_id: str, event: str, data: dict) -> None:
         })
     project_events.scope_changed(project_id)
     project_events.schedule_flow_refresh(project_id)
+
+
+def _confirm_nodes(project_id: str, node_ids: list[str]) -> None:
+    from .services.flow import model as flow_model
+    from .services.flow import state as node_state
+
+    if not node_ids:
+        return
+    root = _workspaces().project_root(project_id)
+    node_state.confirm(root, flow_model.load_for(root), node_ids)
+
+
+def _next_steps(root: Path) -> dict | None:
+    """统一下一步（D16）：宿主注入与助手收尾同一份——在助手工作目录里跑 state_helper suggest。"""
+    from .services.session_host import next_steps
+
+    return next_steps.suggest(root)
 
 
 def _scope_lock(project_id: str) -> dict:
@@ -128,6 +148,7 @@ def install() -> None:
     from .kernel.writepath import scope as write_scope
 
     changesets.register_activity_provider(_session_activity)
+    injection.register_next_step_provider(_next_steps)
     write_scope.register_checker(changesets.paths_in_scope)
     changesets.subscribe(_changeset_event)
     project_events.register_scope_provider(_scope_lock)
@@ -142,3 +163,4 @@ def install_worker(data_dir: Path, assets_dir: Path) -> None:
 
     manager = WorkspaceManager(data_dir, assets_dir)
     injection.register_prompt_hint_provider(lambda root, user_text: registry.prompt_hints(manager, root, user_text))
+    injection.register_next_step_provider(_next_steps)

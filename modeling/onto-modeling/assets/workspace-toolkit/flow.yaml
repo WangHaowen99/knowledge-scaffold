@@ -10,7 +10,13 @@
 # 装配时组装成装配目录里的 flow.yaml（JSON 写法，也是合法 YAML）。
 #
 # P1 保持现有行为：节点就是现有的 10 个阶段加按需的增量更新。按切片的建模节点、全局一致性、
-# 发布节点、节点状态的完整计算在 P2 按详设 6.6、6.8 重排。
+# 发布节点在切片规划落地后按详设 6.8 重排。
+#
+# 节点状态由后端按执行记录、变更集、产物指纹算（详设 6.6；方案 D13）。节点上与之相关的声明：
+# - produces：本节点的输出（组装时检查两节点不能声明同一路径）；writes：运行期间还会改、但不归它产出的路径；
+#   两者合起来是节点运行期间的写入范围——守卫只放行这些路径，编辑器里这些条目只读（方案 C10、D11）；
+# - stale_on：这些类别的产物在主线上变了，已确认的节点退回「过期」（research、object、operation、rule、
+#   metric、script、mock、testcase、diagram、solver、knowledge）。
 flow_api: 1
 title: 主流程
 
@@ -60,6 +66,7 @@ nodes:
     section: required
     after: core.research
     done: [object]
+    stale_on: [research]
     produces: ["ontology/object/*"]
     entry: {command: /ontology-extract-object}
     actions:
@@ -71,6 +78,7 @@ nodes:
     section: required
     after: core.object
     done: [operation]
+    stale_on: [object]
     produces: ["ontology/operation/*"]
     # 操作提取按资料分流：规则、指标随操作一起抽，也会补对象的关联（ADR-0012）
     writes: ["ontology/logic/*", "ontology/object/*", "ontology/rule/*", "ontology/metric/*"]
@@ -85,6 +93,7 @@ nodes:
     optional: true
     after: core.operation
     done: [rule_metric]
+    stale_on: [object, operation]
     produces: ["ontology/rule/*", "ontology/metric/*"]
     writes: ["ontology/operation/*", "ontology/logic/*", "ontology/object/*"]
     entry: {command: /ontology-extract-rule-metric}
@@ -97,6 +106,7 @@ nodes:
     section: required
     after: core.operation
     done: [validation_report, "!reports_pending"]
+    stale_on: [object, operation, rule, metric]
     produces: ["reports/*-rule.md", "reports/*-semantic.md"]
     # 修复型节点：校验后的修复可能改到任何条目
     writes: ["ontology/*"]

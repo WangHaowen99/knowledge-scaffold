@@ -8,6 +8,7 @@ nodes:
     section: required
     after: core.validate
     done: [mock]
+    stale_on: [object]
     produces: ["ontology/data-mock/*"]
     entry: {command: /ontology-mock}
     actions:
@@ -19,6 +20,7 @@ nodes:
     section: required
     after: trace.mock
     done: [testcase]
+    stale_on: [object, operation]
     produces: ["ontology/testcase/*", "ext/trace/*"]
     writes: ["ontology/data-mock/*"]
     entry: {command: /ontology-trace}

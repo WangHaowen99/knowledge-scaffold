@@ -1662,8 +1662,15 @@ def _agent_cwd(project_id: str, root: Path) -> Path:
         return root
     from ..api import deps
     from ..kernel.changesets import service as changesets
+    from .flow import view
 
-    return changesets.copy_for_turn(deps.workspaces, project_id, root)
+    copy = changesets.copy_for_turn(deps.workspaces, project_id, root)
+    try:
+        # 节点状态与下一步写进副本的 flow-state.json：这一轮的宿主注入、助手收尾的 suggest 都读它（方案 D15）
+        view.build(root)
+    except Exception:  # noqa: BLE001 - 算不出流程不挡消息
+        _log.warning("项目 %s 一轮开始前算流程失败", project_id, exc_info=True)
+    return copy
 
 
 def _install_commit_hooks(cwd: Path | None) -> None:
@@ -1686,7 +1693,11 @@ def _purge_changesets(project_id: str) -> None:
     try:
         from ..api import deps
 
-        changesets.purge(Path(deps.workspaces.workspaces_dir) / project_id)
+        from .flow import state as node_state
+
+        root = Path(deps.workspaces.workspaces_dir) / project_id
+        changesets.purge(root)
+        node_state.purge(root)
     except Exception:  # noqa: BLE001 - 清不干净的由启动核对兜底
         _log.warning("清除项目 %s 的变更集失败", project_id, exc_info=True)
 

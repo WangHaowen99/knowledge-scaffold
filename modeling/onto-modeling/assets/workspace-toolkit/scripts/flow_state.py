@@ -206,6 +206,143 @@ def next_step_lines(flow: dict, stage: str) -> list:
     return lines
 
 
+# ---- 统一下一步（详设 6.10；方案 D16）----
+#
+# 后端（FL-01/FL-02、宿主注入）与 state_helper suggest 共用这一份：输入是节点状态（后端按执行记录、变更集、
+# 指纹算好，写进 `.onto/run/flow-state.json`）与上下文，输出契约 7.8 的 Suggestions。
+
+SUGGESTIONS_MAX = 3
+
+
+def _item(sid: str, label: str, action: dict, *, reason: str, priority: int, primary: bool = False,
+          disabled: bool = False, icon: str | None = None) -> dict:
+    item = {'id': sid, 'label': label, 'primary': primary, 'disabled': disabled, 'reason': reason,
+            'priority': priority, 'action': action}
+    if icon:
+        item['icon'] = icon
+    return item
+
+
+def _send(command: str) -> dict:
+    return {'type': 'send', 'text': command, 'command': command.split()[0]}
+
+
+def _node_actions(node: dict, *, verify_first: bool = False) -> list:
+    actions = [action for action in node.get('actions') or [] if action.get('command')]
+    if verify_first:
+        actions = sorted(actions, key=lambda action: not action.get('verify'))
+    return actions
+
+
+def _candidates(flow: dict, states: dict, context: dict) -> list:
+    """按 6.10 的优先级排好的候选（还没分主推、次选）。"""
+    nodes = [node for node in flow.get('nodes') or [] if node.get('id') in states]
+    state_of = {node_id: (item or {}).get('state') for node_id, item in states.items()}
+    stage = context.get('stage') or ''
+    out = []
+    # 2. 过期的节点：刷新
+    for node in nodes:
+        if state_of.get(node['id']) == 'stale':
+            entry = (node.get('entry') or {}).get('command') or next(
+                (action['command'] for action in _node_actions(node)), None)
+            if entry:
+                out.append(_item(f"refresh:{node['id']}", f"刷新「{node['title']}」", _send(entry),
+                                 reason='上游改过，这一步要刷新', priority=2, icon='refresh'))
+    # 3. 报告里还有待处理的错误项、挡住发布的关卡没通过：修复
+    if stage == '校验待审阅' or context.get('report_pending'):
+        out.append(_item('core.validate', '继续校验', _send('/ontology-validate'),
+                         reason='报告里还有待处理的问题', priority=3))
+    for node in nodes:
+        if node.get('placement') == 'gate' and state_of.get(node['id']) in ('ready', 'not_ready') and node.get('blocks'):
+            for index, action in enumerate(_node_actions(node)[:1]):
+                out.append(_item(f"gate:{node['id']}", action['label'], _send(action['command']),
+                                 reason='挡住发布的关卡还没通过', priority=3))
+    # 4. 主线下一步：第一个没完成的必经步骤
+    required = [node for node in nodes if node.get('section', 'required') == 'required'
+                and state_of.get(node['id']) not in ('confirmed', 'stale', 'skipped')]
+    if required:
+        current = required[0]
+        if state_of.get(current['id']) not in ('running', 'pending_confirm'):
+            actions = _node_actions(current, verify_first=stage == '资料分析待核验')
+            for index, action in enumerate(actions[:SUGGESTIONS_MAX]):
+                out.append(_item(f"{current['id']}#{index}", action['label'], _send(action['command']),
+                                 reason='主线下一步', priority=4))
+    else:
+        out.append(_item('overview', '整体视图', _send('/ontology-overview'), reason='必经步骤都已完成', priority=5))
+        available = flow.get('available_commands')
+        if available is None or 'ontology-codegen-scan' in available:
+            out.append(_item('codegen-scan', '扫描脚本候选', _send('/ontology-codegen-scan'),
+                             reason='可选步骤', priority=5))
+    return out
+
+
+def overlay_pending(flow: dict, states: dict, local_hits: dict, locked: set | None = None) -> dict:
+    """助手副本里还没确认生效的改动叠到节点状态上（后端与 state_helper 同一份规则）。
+
+    - 副本里满足完成判定、主线上还没做的节点 → 待确认；
+    - locked 给出时（state_helper 在副本里跑）：记为进行中、但命令锁已经释放的节点，命令做完了 → 有改动
+      待确认、没改动可开始。
+    """
+    for node in flow.get('nodes') or []:
+        item = states.setdefault(node['id'], {'state': 'not_ready', 'flags': {}})
+        if item.get('state') == 'running' and locked is not None and node['id'] not in locked:
+            item['state'] = 'pending_confirm' if local_hits.get(node['id']) else 'ready'
+        elif local_hits.get(node['id']) and item.get('state') in ('ready', 'not_ready', 'blocked'):
+            item['state'] = 'pending_confirm'
+    return states
+
+
+def suggest(flow: dict, states: dict, context: dict | None = None) -> dict:
+    """统一下一步：1 个主推、最多 2 个次选（契约 7.8 Suggestions）。
+
+    context：
+    - interrupted：刚被打断的执行 {id}（没有执行记录时给 {}）→ 打断后的三项；
+    - autobuild：自主构建在跑 → 运行控制；
+    - waiting_decision：有没回答的决策卡 → 主推禁用「先做上面的决定」；
+    - changeset：没确认的变更集 {id, state} → 主推「确认生效」，次选「撤回这一轮」与下一步；
+    - stage：旧版线性阶段（资料分析待核验时核验排第一、校验待审阅时继续校验）；report_pending：报告有待处理项。
+    """
+    context = context or {}
+    if context.get('autobuild'):
+        controls = [
+            _item('pause', '暂停', {'type': 'autobuild', 'op': 'pause'}, reason='自主构建运行中', priority=1, primary=True),
+            _item('safe_point', '在安全点停下', {'type': 'autobuild', 'op': 'stop_at_safe_point'},
+                  reason='自主构建运行中', priority=1),
+            _item('convert', '转为陪伴', {'type': 'autobuild', 'op': 'convert_to_l2'}, reason='自主构建运行中', priority=1),
+        ]
+        return {'mode': 'autobuild_controls', 'primary': controls[0], 'secondary': controls[1:], 'all_commands': True}
+    interrupted = context.get('interrupted')
+    if interrupted is not None:
+        cont = _item('continue', '继续', {'type': 'send', 'text': '继续'}, reason='刚被打断', priority=1)
+        redirect = _item('redirect', '换个方向', {'type': 'clear_input'}, reason='刚被打断', priority=1)
+        if interrupted.get('id'):
+            primary = _item('resume', '从打断处继续', {'type': 'resume_exec', 'exec_id': interrupted['id']},
+                            reason='刚被打断', priority=1, primary=True, icon='redo')
+            return {'mode': 'interrupted', 'primary': primary, 'secondary': [cont, redirect], 'all_commands': True}
+        return {'mode': 'interrupted', 'primary': {**cont, 'primary': True}, 'secondary': [redirect],
+                'all_commands': True}
+    candidates = _candidates(flow, states, context)
+    changeset = context.get('changeset')
+    mode = 'normal'
+    if changeset and changeset.get('state') in ('pending_confirm', 'conflict'):
+        mode = 'pending_confirm'
+        merge = _item('merge', '确认生效', {'type': 'merge_changeset', 'changeset_id': changeset['id']},
+                      reason='这一轮的修改等你确认', priority=1, icon='merge')
+        discard = _item('discard', '撤回这一轮', {'type': 'discard_changeset', 'changeset_id': changeset['id']},
+                        reason='这一轮的修改等你确认', priority=1, icon='undo')
+        candidates = [merge, *candidates[:1], discard]
+    if context.get('waiting_decision'):
+        mode = 'waiting_decision'
+        waiting = _item('decide', '先做上面的决定', {'type': 'navigate', 'page': 'wb-l2'},
+                        reason='有等你回答的问题', priority=1, disabled=True)
+        candidates = [waiting, *candidates]
+    if not candidates:
+        return {'mode': mode, 'primary': None, 'secondary': [], 'all_commands': True}
+    primary = {**candidates[0], 'primary': True}
+    secondary = [{**item, 'primary': False} for item in candidates[1:SUGGESTIONS_MAX]]
+    return {'mode': mode, 'primary': primary, 'secondary': secondary, 'all_commands': True}
+
+
 def main(argv: list) -> int:
     """调试入口：python3 flow_state.py [项目目录] → 打印阶段、进度与各节点完成情况。"""
     root = Path(argv[1]) if len(argv) > 1 else Path('.')

@@ -8,6 +8,7 @@ nodes:
     optional: true
     after: [trace.trace, core.validate]
     done: [scripts]
+    stale_on: [operation]
     produces: ["ontology/scripts/*"]
     writes: ["ontology/operation/*", "ontology/data-mock/*"]
     entry: {command: /ontology-codegen-scan}

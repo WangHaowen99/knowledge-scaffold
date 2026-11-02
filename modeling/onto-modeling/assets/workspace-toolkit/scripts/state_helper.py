@@ -27,6 +27,8 @@ acquire 时写、release 时删；内核守卫只放行这些路径（方案 D11
     detect-stage                        按主流程定义推断当前建模阶段
     check-prereq <command>              命令前置：ok 或 missing:{阶段},{阶段}
     next-step [阶段]                    /ontology 的「下一步建议」条目（缺省取当前阶段）
+    suggest                             统一下一步（JSON：mode、primary、最多 2 个 secondary），与界面
+                                        建议条、宿主注入同一份（后端写的 .onto/run/flow-state.json）
 
 阶段、命令前置与下一步建议都来自主流程定义 `.claude/flow.yaml`（flow_state.py 解释），
 本文件不再自带阶段表（方案 D12；命令模板按 detect-stage 的 8 个阶段名分支，名字不变）。
@@ -482,6 +484,65 @@ def detect_stage() -> int:
     return 0
 
 
+# ---- 统一下一步（方案 D15、D16；详设 6.10）----
+
+FLOW_STATE_FILE = Path('.onto') / 'run' / 'flow-state.json'
+
+
+def _git_quiet(*args) -> str | None:
+    try:
+        result = subprocess.run(['git', *args], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def _local_changes(mainline_head: str) -> bool:
+    """这份副本里有没确认生效的改动（相对后端记下的主线版本，含没提交的、没跟踪的文件）。"""
+    if not mainline_head:
+        return False
+    diff = _git_quiet('diff', '--name-only', mainline_head, '--')
+    untracked = _git_quiet('ls-files', '--others', '--exclude-standard')
+    return bool((diff or '').strip() or (untracked or '').strip())
+
+
+def _locked_nodes(flow: dict) -> set:
+    nodes = set()
+    for path in STATE_DIR.glob('lock-*.json') if STATE_DIR.is_dir() else []:
+        node = flow_state.command_node(flow, path.name[len('lock-'):-len('.json')])
+        if node:
+            nodes.add(node)
+    return nodes
+
+
+def suggest_payload() -> dict:
+    """下一步建议（契约 7.8 Suggestions）：节点状态取后端写的 `.onto/run/flow-state.json`（执行记录、变更集、
+    指纹算出的那份），再叠上这份副本里还没确认的改动；算法与后端、宿主注入是同一个 flow_state.suggest。"""
+    flow = _flow()
+    try:
+        data = json.loads(FLOW_STATE_FILE.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        data = {}
+    states = {key: dict(value) for key, value in (data.get('nodes') or {}).items() if isinstance(value, dict)}
+    context = dict(data.get('context') or {})
+    root = Path('.')
+    probes = flow_state.evaluate(flow, root)
+    hits = flow_state.node_hits(flow, root, probes)
+    context['stage'] = flow_state.legacy_stage(flow, root, probes)
+    changed = _local_changes(str(data.get('mainline_head') or ''))
+    flow_state.overlay_pending(flow, states, hits if changed else {}, _locked_nodes(flow))
+    if changed:
+        changeset = context.get('changeset') or {'id': 'current'}
+        context['changeset'] = {**changeset, 'state': 'pending_confirm'}
+    return flow_state.suggest(flow, states, context)
+
+
+def suggest() -> int:
+    """输出 JSON（1 个主推，最多 2 个次选）；命令收尾按它渲染「下一步建议」，最多 3 条。"""
+    print(json.dumps(suggest_payload(), ensure_ascii=False))
+    return 0
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -518,6 +579,8 @@ def main():
         return 1 if name is None else check_prereq(name)
     if cmd == 'next-step':
         return next_step(args[0] if args else None)
+    if cmd == 'suggest':
+        return suggest()
     print(f'unknown subcommand: {cmd}', file=sys.stderr)
     return 1
 

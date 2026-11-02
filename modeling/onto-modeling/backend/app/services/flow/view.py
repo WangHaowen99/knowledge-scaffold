@@ -1,16 +1,27 @@
-"""`GET /api/v1/projects/{id}/flow` 的响应（契约 FL-01、FL-02；详设 6.7 第 6 项）。
+"""`GET /api/v1/projects/{id}/flow` 的响应（契约 FL-01、FL-02；详设 6.6、6.7 第 6 项、6.10）。
 
-P1 只做流程定义与读取：节点、连线、分组都来自装配好的 flow.yaml；节点状态按完成判定
-（flow_state 探针）与进行中的命令锁粗算——已确认 / 进行中 / 可开始 / 未就绪四种。按执行记录、
-变更集、产物指纹算 8 种状态与按切片的进度是 P2（方案 D13），这里不假装算出来。
-下一步建议只按主线给（第一个没完成的必经步骤），打断、过期、报告错误这几条优先级在 P2 补齐。
+- 节点、连线、分组来自装配好的 flow.yaml；
+- 节点状态由内核算（`flow/state.py`，方案 D13）：执行记录 + 变更集 + 产物指纹 → 8 种状态与需复核标记，
+  完成判定只看主线；
+- 下一步建议由 core 的 `flow_state.suggest` 算（方案 D15、D16）：后端（FL-01/FL-02、对话里的建议条）、
+  宿主注入、助手命令收尾的 `state_helper.py suggest` 三处同一份算法、同一份输入——后端每算一次就把节点状态
+  与上下文写进助手副本的 `.onto/run/flow-state.json`，`state_helper suggest` 读它。
+
+按切片的状态（`slices`、`slice_stages`）要等切片规划（建模蓝图），现在为空。
 """
 
 from __future__ import annotations
 
+import json
+import logging
+import os
+import uuid
 from pathlib import Path
 
 from . import model
+from . import state as node_state
+
+_log = logging.getLogger(__name__)
 
 SECTION_TITLES = {
     "required": "必经步骤",
@@ -18,106 +29,106 @@ SECTION_TITLES = {
     "optional": "可选步骤",
     "on_demand": "有需要时",
 }
-_DISPLAY = {"confirmed": "confirmed", "running": "running", "ready": "ready", "not_ready": "not_ready"}
+FLOW_STATE_REL = Path(".onto") / "run" / "flow-state.json"
 
 
-def _running_nodes(flow: dict, root: Path, state) -> set[str]:
-    """`.ontology-state/lock-<命令>.json` 在的命令所属的节点（state_helper 的命令锁）。"""
-    directory = Path(root) / ".ontology-state"
+def _lock_running(flow: dict, roots: list[Path], state) -> set[str]:
+    """工具箱命令锁 `.ontology-state/lock-<命令>.json` 在的命令所属节点（主线工作区与助手副本都看）：
+    不经网页宿主跑的命令（终端里直接跑 CLI）也算进行中。"""
     running = set()
-    try:
-        locks = list(directory.glob("lock-*.json"))
-    except OSError:
-        return running
-    for path in locks:
-        node = state.command_node(flow, path.name[len("lock-"):-len(".json")])
-        if node:
-            running.add(node)
+    for root in roots:
+        directory = Path(root) / ".ontology-state"
+        try:
+            locks = list(directory.glob("lock-*.json"))
+        except OSError:
+            continue
+        for path in locks:
+            node = state.command_node(flow, path.name[len("lock-"):-len(".json")])
+            if node:
+                running.add(node)
     return running
 
 
-def _node_state(node: dict, hits: dict, running: set[str], by_id: dict) -> str:
-    if node["id"] in running:
-        return "running"
-    if hits.get(node["id"]):
-        return "confirmed"
-    anchor = node.get("after")
-    while anchor and by_id.get(anchor, {}).get("optional") and not hits.get(anchor):
-        anchor = by_id[anchor].get("after")
-    return "ready" if not anchor or hits.get(anchor) else "not_ready"
+def _suggest_module(root: Path, state):
+    """本项目锁定版本的 flow_state 有 suggest 就用它，旧 core 版本没有时用镜像版本。"""
+    if hasattr(state, "suggest"):
+        return state
+    from ..packs import contracts
+
+    return contracts.default().load("flow_state")
 
 
-def _suggestion(sid: str, label: str, command: str, *, primary: bool, reason: str, priority: int) -> dict:
-    return {
-        "id": sid, "label": label, "primary": primary, "disabled": False, "reason": reason,
-        "priority": priority, "action": {"type": "send", "text": command, "command": command.split()[0]},
-    }
+def _session_context(project_id: str, conversation_id: str | None) -> dict:
+    """会话侧的上下文：这条对话刚被打断（建议条换成打断后的三项）、有等你回答的问题。"""
+    try:
+        from ..agent_sessions import manager
+    except Exception:  # noqa: BLE001
+        return {}
+    context: dict = {}
+    session = manager.get(project_id)
+    if session is not None and (conversation_id in (None, "", session.conversation_id)):
+        waiting = [request for request in session.pending_permissions.values()
+                   if request.future is not None and not request.future.done()]
+        if waiting:
+            context["waiting_decision"] = True
+    if conversation_id:
+        try:
+            history = manager.get_history(project_id, conversation_id)
+        except Exception:  # noqa: BLE001 - 对话不存在
+            return context
+        for event in reversed(history):
+            kind = event.get("type")
+            if kind == "user_message":
+                break
+            if kind == "suggestions":
+                payload = event.get("payload") or {}
+                if payload.get("mode") == "interrupted":
+                    action = (payload.get("primary") or {}).get("action") or {}
+                    context["interrupted"] = {"id": action.get("exec_id")} if action.get("type") == "resume_exec" else {}
+                break
+    return context
 
 
-def suggestions(flow: dict, nodes: list[dict], stage: str) -> dict:
-    """主线下一步（详设 6.10 第 4、5 条）；1 个主推，最多 2 个次选。"""
-    primary = None
-    secondary: list[dict] = []
-    declared = {node["id"]: node for node in flow.get("nodes") or []}
-    pending = [node for node in nodes
-               if node["section"] == "required" and node["state"] != "confirmed"]
-    if stage == "校验待审阅":
-        primary = _suggestion("core.validate", "继续校验", "/ontology-validate", primary=True,
-                              reason="报告里还有待处理的问题", priority=3)
-    elif pending:
-        current = pending[0]
-        actions = [action for action in declared[current["id"]].get("actions") or [] if action.get("command")]
-        if stage == "资料分析待核验":
-            # 报告已在、验收没过：核验排第一（原前端 researchGate 的口径）
-            actions = sorted(actions, key=lambda action: not action.get("verify"))
-        for index, action in enumerate(actions[:3]):
-            item = _suggestion(f"{current['id']}#{index}", action["label"], action["command"],
-                               primary=index == 0, reason="主线下一步", priority=4)
-            if index == 0:
-                primary = item
-            else:
-                secondary.append(item)
-    else:
-        primary = _suggestion("overview", "整体视图", "/ontology-overview", primary=True,
-                              reason="必经步骤都已完成", priority=5)
-        # 扫描脚本候选属于代码生成与求解包：没启用就不推荐（装配时记下了本项目能用的命令）
-        available = flow.get("available_commands")
-        if available is None or "ontology-codegen-scan" in available:
-            secondary.append(_suggestion("codegen-scan", "扫描脚本候选", "/ontology-codegen-scan",
-                                         primary=False, reason="可选步骤", priority=5))
-    return {"mode": "normal", "primary": primary, "secondary": secondary[:2], "all_commands": True}
+def _changeset_context(root: Path) -> dict | None:
+    from ...kernel.changesets import store
+
+    record = store.current(root)
+    return {"id": record["id"], "state": record["state"]} if record else None
 
 
-def build(root: Path) -> dict:
+def build(root: Path, *, conversation_id: str | None = None, context: dict | None = None) -> dict:
+    root = Path(root)
     flow = model.load_for(root)
     state = model.flow_state(root)
     probes = state.evaluate(flow, root)
     hits = state.node_hits(flow, root, probes)
     stage = state.legacy_stage(flow, root, probes)
-    running = _running_nodes(flow, root, state)
-    by_id = {node["id"]: node for node in flow.get("nodes") or []}
+    from ...kernel.changesets import worktree
+
+    copy = worktree.copy_path(root)
+    states = node_state.compute(root, flow, hits)
+    for node_id in _lock_running(flow, [root, copy], state):
+        if node_id in states and states[node_id]["state"] not in ("running", "pending_confirm"):
+            states[node_id]["state"] = "running"
+            states[node_id]["display_state"] = node_state.display("running", states[node_id]["flags"])
     nodes = []
     for node in flow.get("nodes") or []:
-        node_state = _node_state(node, hits, running, by_id)
+        item = states[node["id"]]
         nodes.append({
             "id": node["id"],
             "title": node["title"],
             "kind": node.get("kind", "agent"),
             "placement": node.get("placement", "spine"),
             "section": node.get("section", "required"),
-            "state": node_state,
-            "flags": {"needs_review": False, "disabled": False, "backfill": False},
-            "display_state": _DISPLAY[node_state],
+            "state": item["state"],
+            "flags": item["flags"],
+            "display_state": item["display_state"],
             "progress": None,
             "version": node.get("version") or "",
             "per_slice": bool(node.get("per_slice")),
             "note": node.get("note"),
             "blocks": list(node.get("blocks") or []),
-            "actions": [
-                {"kind": "start", "label": action["label"], "target": action["command"],
-                 **({"verify": True} if action.get("verify") else {})}
-                for action in node.get("actions") or [] if action.get("command")
-            ],
+            "actions": _actions(node, item["state"]),
             "plugin": None if node.get("pack", "core") == "core" else {"name": node["pack"], "label": node["pack"]},
             "optional": bool(node.get("optional")),
             "panel": bool(node.get("panel")),
@@ -130,20 +141,85 @@ def build(root: Path) -> dict:
     commands = {
         name: spec.get("node") for name, spec in (flow.get("commands") or {}).items() if spec.get("node")
     }
+    changeset = _changeset_context(root)
+    simple_states = {node_id: {"state": item["state"], "flags": item["flags"]} for node_id, item in states.items()}
+    suggester = _suggest_module(root, state)
+    suggest_stage = stage
+    if changeset and (copy / ".git").is_file():
+        # 有没确认的变更集：下一步按助手副本里的样子算（和助手收尾时 state_helper suggest 看到的一样）
+        copy_probes = state.evaluate(flow, copy)
+        suggest_stage = state.legacy_stage(flow, copy, copy_probes)
+        suggester.overlay_pending(flow, simple_states, state.node_hits(flow, copy, copy_probes))
+        for node in nodes:
+            changed = simple_states[node["id"]]["state"]
+            if changed != node["state"]:
+                node["state"] = changed
+                node["display_state"] = node_state.display(changed, node["flags"])
+    suggest_context = {"stage": suggest_stage, "changeset": changeset,
+                       **_session_context(root.name, conversation_id), **(context or {})}
+    suggestions = suggester.suggest(flow, simple_states, suggest_context)
     progress_nodes = [node for node in nodes if node["counts_in_progress"]]
-    return {
+    result = {
         "flow_hash": flow.get("flow_hash") or "",
         "nodes": nodes,
         "edges": list(flow.get("edges") or []),
         "sections": sections,
         "slice_stages": [],
         "slices": [],
-        "suggestions": suggestions(flow, nodes, stage),
-        "notices": [],
+        "suggestions": suggestions,
+        "notices": _notices(suggest_context),
         "stage": stage,
+        # 进度：主线上满足完成判定的节点（已确认与过期都算做过）；助手副本里的改动要确认生效才算
         "progress": {
             "done": sum(1 for node in progress_nodes if hits.get(node["id"])),
             "total": len(progress_nodes),
         },
         "commands": commands,
     }
+    _write_flow_state(root, copy, flow, simple_states, suggest_context, suggestions)
+    return result
+
+
+def _actions(node: dict, state: str) -> list[dict]:
+    actions = [
+        {"kind": "start", "label": action["label"], "target": action["command"],
+         **({"verify": True} if action.get("verify") else {})}
+        for action in node.get("actions") or [] if action.get("command")
+    ]
+    if state == "stale" and actions:
+        actions = [{**actions[0], "kind": "refresh", "label": f"刷新「{node['title']}」"}, *actions]
+    if node.get("optional"):
+        actions.append({"kind": "restore" if state == "skipped" else "skip",
+                        "label": "恢复" if state == "skipped" else "跳过"})
+    return actions
+
+
+def _notices(context: dict) -> list[dict]:
+    changeset = context.get("changeset")
+    if changeset and changeset.get("state") in ("pending_confirm", "conflict"):
+        return [{"kind": "pending_changeset", "count": 1, "text": "这一轮的修改还没确认",
+                 "action": {"type": "show_changes", "changeset_id": changeset["id"]}}]
+    return []
+
+
+def _write_flow_state(root: Path, copy: Path, flow: dict, states: dict, context: dict, suggestions: dict) -> None:
+    """节点状态与上下文写进助手副本（没有副本时写主线工作区）的 `.onto/run/flow-state.json`：
+    `state_helper.py suggest` 读它，按同一份输入、同一份算法给出下一步（方案 D15）。"""
+    from ...services import mainline
+
+    payload = {
+        "flow_hash": flow.get("flow_hash") or "",
+        "mainline_head": mainline.state(root)["head"],
+        "nodes": states,
+        "context": {key: value for key, value in context.items() if key in ("stage", "changeset", "autobuild")},
+        "suggestions": suggestions,
+    }
+    for target in ([copy] if (copy / ".git").is_file() else [root]):
+        path = target / FLOW_STATE_REL
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(f".flow-state.{uuid.uuid4().hex[:8]}.tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            _log.debug("写 flow-state.json 失败：%s", path)

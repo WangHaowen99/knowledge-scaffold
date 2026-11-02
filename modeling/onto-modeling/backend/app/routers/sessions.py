@@ -650,6 +650,11 @@ async def send_command(project_id: str, request: Request):
     """S-20：页面只发命令、不跑助手；返回可追踪的任务对象，进度经项目流 command.progress 推送。"""
     root = deps.require_writable(project_id, request)
     body = await deps.json_body(request)
+    return await dispatch_command(project_id, root, request, body)
+
+
+async def dispatch_command(project_id: str, root: Path, request: Request, body: dict) -> JSONResponse:
+    """S-20 的本体：FL-05（开始节点）也走这里。"""
     origin = body.get("origin")
     if not isinstance(origin, dict) or not origin.get("page"):
         raise ApiError("invalid_argument", "缺少 origin", 400, {"fields": {"origin": "required"}})
