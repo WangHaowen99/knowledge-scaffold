@@ -77,3 +77,7 @@ ChangeTx 统一检查（命中 423）、MCP 继续回 `PROJECT_EDITING_BUSY` 并
   打断、重启没跑到 release 时旧范围不再收窄；撤回、放弃一步、启动恢复时清掉副本里的锁与 `.onto/run/active.json`。
 - 资料区守卫同时比对 `resource` 链接后面的真实目录（副本里经主线路径写资料也拦）；内核守卫拦
   `git sparse-checkout`、`git worktree`、改 skip-worktree 与稀疏、排除文件、钩子路径相关配置。
+
+## 补充（B4d）
+
+切片规划落地后，建模节点的范围按片收窄、守卫不让助手改别的片已有的条目，见 ADR-0052。
