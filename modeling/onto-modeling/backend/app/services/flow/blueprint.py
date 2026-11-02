@@ -259,6 +259,28 @@ def first_command(manager, project_id: str) -> tuple[str, dict]:
     return "/ontology-extract-object", {}
 
 
+def run_slices(manager, project_id: str) -> list[dict]:
+    """按片执行用的切片列表（自主构建 B5b）：按建议顺序、没排除的片，带依赖、这一片的说明与现在的进度。
+
+    [{id, name, core_flow, depends_on, brief, group, stages}]；没有蓝图或全量模式时是一片「全部」。
+    说明（brief）与建模命令在工作区里 `blueprint.py brief <片>` 输出的是同一份。"""
+    from . import model, slices
+
+    root = manager.project_root(project_id)
+    doc = effective_doc(manager, project_id)
+    module = script(root)
+    states = {item["id"]: item for item in (slices.compute(root, model.load_for(root), doc=doc, persist=False)
+                                            or {}).get("slices") or []}
+    items = module.live_slices(doc) if module.mode(doc) == "sliced" else [dict(slices.FULL_SLICE)]
+    out = []
+    for item in items:
+        state = states.get(item["id"]) or {}
+        out.append({"id": item["id"], "name": item["name"], "core_flow": item.get("core_flow") or "",
+                    "depends_on": list(item.get("depends_on") or []), "brief": module.brief(doc, item["id"]),
+                    "group": state.get("group") or "todo", "stages": state.get("stages") or {}})
+    return out
+
+
 def autobuild_preview(manager, project_id: str, blueprint_view: dict, *, actor: str) -> dict:
     if _autobuild_preview is None:
         raise WorkspaceError("自主构建还不能用", 409, "autobuild_not_available")
@@ -351,11 +373,9 @@ def research_card(root: Path, card_id: str) -> dict | None:
 
 
 def build_choice_card(card_id: str) -> dict:
-    options = [{"mode": "L2", "label": "一片一片来"}]
-    if autobuild_available():
-        options.append({"mode": "L4", "label": "按蓝图一路建完"})
+    options = [{"mode": "L2", "label": "一片一片来"}, {"mode": "L4", "label": "按蓝图一路建完"}]
     return {"card_id": card_id, "card_type": "build_choice", "eyebrow": "", "title": "确认后怎么建？", "subtitle": "",
-            "status": None, "plugin": None, "open": None, "options": options, "policy_link": autobuild_available()}
+            "status": None, "plugin": None, "open": None, "options": options, "policy_link": True}
 
 
 def round_cards(manager, project_id: str, changes: dict, seed: str, root: Path | None = None) -> list[dict]:
@@ -385,7 +405,8 @@ def round_cards(manager, project_id: str, changes: dict, seed: str, root: Path |
     cards.append(card)
     if conversation_id:
         _register(main, conversation_id, card["card_id"])
-    if doc.get("state") != "confirmed":
+    if doc.get("state") != "confirmed" and autobuild_available():
+        # 只有「一片一片来」时不出这张卡：确认蓝图就是一片一片来（用不了的选项不出现）
         cards.append(build_choice_card(f"{seed}-build"))
     return cards
 

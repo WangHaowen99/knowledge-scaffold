@@ -8,8 +8,9 @@
 - `display_after` 只管显示顺序（缺省同 after）：节点排在锚点后面，同一锚点的按包顺序排；
 - 包可以补命令前置（`commands`）与探针（`probes`），和已有的重名就拒绝；
 - 主流程的下一步建议（`next_steps`）里指向没启用的包的命令去掉，只列本项目能用的命令。
-按切片的节点（详设 6.6，B4d）：`per_slice: true` 的节点带 `steps`（切片里的步骤）；包用 `hooks` 往这类节点的
-切片里加步骤（`{node, step}`，如场景走查的「场景」），或改主线节点的显示名（`{node, title}`，如「校验与走查」）。
+按切片的节点（详设 6.6，B4d）：`per_slice: true` 的节点带 `steps`（切片里的步骤）；包用 `slice_steps` 往这类节点的
+切片里加步骤（`[{node, step}]`，如场景走查的「场景」），用 `node_titles` 改主线节点的显示名（`{节点: 名称}`，如
+「校验与走查」）。两者和节点前后追加命令的节点钩子（`hooks`）是两回事。
 core 的 `aliases` 把旧版节点编号映射到现在的节点：没升级的包写的锚点、命令归属照样认。
 节点包的四种挂法与通用的节点钩子（详设 6.4）在 P3。
 """
@@ -165,7 +166,7 @@ def assemble(contributions: list[tuple[str, str, dict]], available_commands: set
     known = set(ids)
     aliases = {str(old): str(new) for old, new in (base.get("aliases") or {}).items() if str(new) in known}
     _apply_aliases(nodes, flow, aliases)
-    problems += _apply_hooks(contributions, nodes)
+    problems += _apply_slice_steps(contributions, nodes)
     edges: list[tuple[str, str]] = []
     for node in nodes:
         for key in ("after", "before"):
@@ -234,8 +235,8 @@ def _apply_aliases(nodes: list[dict], flow: dict, aliases: dict[str, str]) -> No
 STEP_KEYS = ("id", "label")
 
 
-def _apply_hooks(contributions: list[tuple[str, str, dict]], nodes: list[dict]) -> list[str]:
-    """包的节点钩子：往按切片的节点里加步骤（after 指定放在哪一步后面），或改节点的显示名。"""
+def _apply_slice_steps(contributions: list[tuple[str, str, dict]], nodes: list[dict]) -> list[str]:
+    """包往按切片的节点里加步骤（`slice_steps`，step.after 指定放在哪一步后面），改节点的显示名（`node_titles`）。"""
     problems: list[str] = []
     by_id = {node["id"]: node for node in nodes}
     for node in nodes:
@@ -246,16 +247,21 @@ def _apply_hooks(contributions: list[tuple[str, str, dict]], nodes: list[dict]) 
                 problems.append(f"按切片的节点 {node['id']} 要声明 steps（每一步有 id、label）")
             node["steps"] = [{**step, "pack": node["pack"]} for step in steps if isinstance(step, dict)]
     for pack, _version, declared in contributions[1:]:
-        for hook in declared.get("hooks") or []:
-            target = by_id.get(str((hook or {}).get("node") or "")) if isinstance(hook, dict) else None
+        titles = declared.get("node_titles") or {}
+        if not isinstance(titles, dict):
+            problems.append(f"{pack} 的 node_titles 要是「节点: 名称」的映射")
+            titles = {}
+        for node_id, title in titles.items():
+            if node_id not in by_id or not str(title or "").strip():
+                problems.append(f"{pack} 改名的节点 {node_id} 不存在或名称为空")
+                continue
+            by_id[node_id]["title"] = str(title).strip()
+        for item in declared.get("slice_steps") or []:
+            target = by_id.get(str((item or {}).get("node") or "")) if isinstance(item, dict) else None
             if target is None:
-                problems.append(f"{pack} 的节点钩子挂的节点 {(hook or {}).get('node') if isinstance(hook, dict) else hook} 不存在")
+                problems.append(f"{pack} 加步骤的节点 {(item or {}).get('node') if isinstance(item, dict) else item} 不存在")
                 continue
-            if hook.get("title"):
-                target["title"] = str(hook["title"])
-            step = hook.get("step")
-            if step is None:
-                continue
+            step = item.get("step")
             if not target.get("per_slice") or not isinstance(step, dict) or not all(step.get(k) for k in STEP_KEYS):
                 problems.append(f"{pack} 只能往按切片的节点里加步骤（要有 id、label）")
                 continue

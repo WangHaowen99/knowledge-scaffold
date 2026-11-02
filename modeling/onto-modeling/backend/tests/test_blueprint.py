@@ -289,12 +289,11 @@ def test_blueprint_in_the_research_changeset_is_edited_in_the_copy_and_confirm_m
     history = manager.get_history(project_id, "default")
     cards = [event["payload"] for event in history if event.get("type") == "card"]
     kinds = [card["card_type"] for card in cards]
-    assert "round_changes" in kinds and "blueprint" in kinds and "build_choice" in kinds
+    assert "round_changes" in kinds and "blueprint" in kinds
+    assert "build_choice" not in kinds  # 自主构建没登记：只能一片一片来，不出「确认后怎么建」
     card = next(card for card in cards if card["card_type"] == "blueprint")
     assert card["title"] == "建模蓝图 · 草案 v1" and card["open"] == {"kind": "dialog", "target": "blueprint"}
     assert card["questions_pending"] == 1 and card["terms"] == {"aligned": 1, "ambiguous": 1}
-    choice = next(card for card in cards if card["card_type"] == "build_choice")
-    assert [option["mode"] for option in choice["options"]] == ["L2"]  # 自主构建没登记：只给能用的
     rc = next(card for card in cards if card["card_type"] == "round_changes")
     assert rc["groups"][0]["items"][0]["target"]["title"] == "建模蓝图"
     base = f"/api/v1/projects/{project_id}/blueprint"
@@ -343,3 +342,13 @@ def test_saving_while_the_assistant_runs_is_423(env, monkeypatch):
     locked = client.put(f"/api/v1/projects/{project_id}/blueprint",
                         json={"base_revision": got["revision"], "mode": "draft", "out_of_scope": ["x"]})
     assert locked.status_code == 423 and locked.json()["code"] == "write_scope_locked"
+
+
+def test_build_choice_card_appears_once_autobuild_registers(env, monkeypatch):
+    _client, workspaces, _manager, project_id, root = env
+    _write_mainline(root, bp().from_draft(DRAFT))
+    monkeypatch.setattr(blueprint_service, "_autobuild_preview", lambda *args, **kwargs: {})
+    cards = blueprint_service.round_cards(workspaces, project_id, {"added": ["research/blueprint.json"]}, "seed")
+    assert [card["card_type"] for card in cards] == ["blueprint", "build_choice"]
+    assert [option["mode"] for option in cards[1]["options"]] == ["L2", "L4"] and cards[1]["policy_link"] is True
+    assert blueprint_service.round_cards(workspaces, project_id, {"modified": ["ontology/object/x.md"]}, "s") == []

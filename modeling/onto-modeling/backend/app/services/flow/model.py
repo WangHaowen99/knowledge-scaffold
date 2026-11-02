@@ -98,3 +98,21 @@ def _sliced(root: Path, flow: dict) -> dict | None:
         return slices.compute(root, flow, doc=doc, persist=False)
     except Exception:  # noqa: BLE001 - 进度是概览，算不出时按完成判定
         return None
+
+
+_CELLS = {"done": "confirmed", "now": "running", "wait": "pending", "todo": "ready"}
+
+
+def slice_summary(root: Path) -> dict | None:
+    """项目卡片上的切片进度（契约 7.3 ProjectCard.slices）：按片建模时 {total, confirmed, cells}，每片一格；
+    全量模式（没有蓝图或只有一片）时 None（切片待规划）。"""
+    flow = load_for(root)
+    sliced = _sliced(root, flow)
+    if sliced is None:
+        return None
+    items = sliced["slices"]
+    cells = []
+    for item in items:
+        stale = any(value == "stale" for value in item["stages"].values())
+        cells.append("stale" if stale else _CELLS.get(item["group"], "ready"))
+    return {"total": len(items), "confirmed": sum(1 for item in items if item["group"] == "done"), "cells": cells}

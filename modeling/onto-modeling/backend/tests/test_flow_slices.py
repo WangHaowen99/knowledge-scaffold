@@ -92,7 +92,7 @@ def test_flow_shape_with_and_without_scenario_walkthrough():
               "commands": {"old-cmd": {"node": "old.node"}}}
     assembled = assemble.assemble([core, ("old", "1.0.0", legacy)])
     assert next(node for node in assembled["nodes"] if node["id"] == "old.node")["after"] == "core.model"
-    bad_hook = {"hooks": [{"node": "core.validate", "step": {"id": "x", "label": "X"}}]}
+    bad_hook = {"slice_steps": [{"node": "core.validate", "step": {"id": "x", "label": "X"}}]}
     try:
         assemble.assemble([core, ("bad", "1.0.0", bad_hook)])
     except assemble.FlowAssemblyError as exc:
@@ -387,3 +387,50 @@ def test_consistency_check_script_reports_relations_terms_and_cross_slice(tmp_pa
     again = json.loads(subprocess.run([sys.executable, str(script), "--json"], cwd=tmp_path, capture_output=True,
                                       text=True).stdout)
     assert again["pending"] == result["pending"] - 1
+
+
+def test_new_core_assembles_with_packs_that_have_not_upgraded_yet():
+    """跟随通道升级时 core 先换（packs/runtime.follow）：这时别的包还是旧版本，写的是 0.2 的锚点与节点。"""
+    core = ("core", "0.3.0", _yaml("workspace-toolkit/flow.yaml"))
+    old_trace = {"nodes": [
+        {"id": "trace.mock", "title": "示例数据", "placement": "spine", "section": "required", "after": "core.validate",
+         "done": ["mock"], "stale_on": ["object"], "produces": ["ontology/data-mock/*"],
+         "entry": {"command": "/ontology-mock"}},
+        {"id": "trace.trace", "title": "场景验证", "placement": "spine", "section": "required", "after": "trace.mock",
+         "done": ["testcase"], "produces": ["ontology/testcase/*", "ext/trace/*"], "entry": {"command": "/ontology-trace"}}],
+        "commands": {"mock": {"node": "trace.mock"}, "trace": {"node": "trace.trace"}}}
+    old_codegen = {"nodes": [
+        {"id": "codegen.solver", "title": "求解适配", "placement": "branch", "section": "optional", "optional": True,
+         "after": "core.operation", "done": ["solver"], "panel": True, "actions": []}],
+        "commands": {"solver-evaluator": {"node": "codegen.solver"}}}
+    old_evo = {"nodes": [
+        {"id": "evo.evolution", "title": "反馈演进", "placement": "on_demand", "section": "on_demand", "progress": False,
+         "after": "core.operation", "display_after": ["core.update"], "done": []}],
+        "commands": {"evolution": {"node": "evo.evolution", "requires": []}}}
+    flow = assemble.assemble([core, ("trace", "0.9.2", old_trace), ("codegen", "0.9.1", old_codegen),
+                              ("evo", "0.3.1", old_evo)])
+    by_id = {node["id"]: node for node in flow["nodes"]}
+    assert by_id["codegen.solver"]["after"] == "core.model" and by_id["evo.evolution"]["after"] == "core.model"
+    assert {"from": "trace.trace", "to": "core.consistency"} in flow["edges"]
+
+
+def test_project_card_and_run_slices_for_autobuild(env):
+    client, workspaces, _manager, project_id, root = env
+    from app.services.flow import blueprint
+
+    card = next(item for item in client.get("/api/v1/projects").json()["items"] if item["id"] == project_id)
+    assert card["slices"] is None  # 全量模式：切片待规划
+    full = blueprint.run_slices(workspaces, project_id)
+    assert [item["id"] for item in full] == ["all"] and full[0]["brief"].startswith("全量模式")
+    _blueprint(root)
+    main_write(root, "ontology/object/门店.md", obj("门店", "合成"))
+    card = next(item for item in client.get("/api/v1/projects").json()["items"] if item["id"] == project_id)
+    # 规划的对象还差一个：这一片还没开始
+    assert card["slices"] == {"total": 3, "confirmed": 0, "cells": ["ready", "ready", "ready"]}
+    main_write(root, "ontology/object/商品.md", obj("商品", "合成"))
+    card = next(item for item in client.get("/api/v1/projects").json()["items"] if item["id"] == project_id)
+    assert card["slices"] == {"total": 3, "confirmed": 0, "cells": ["running", "ready", "ready"]}
+    items = blueprint.run_slices(workspaces, project_id)
+    assert [item["id"] for item in items] == ["s1", "s2", "s3"] and items[1]["depends_on"] == ["s1"]
+    assert items[0]["group"] == "now" and items[0]["stages"]["object"] == "confirmed"
+    assert items[1]["brief"].startswith("切片：库存测算（s2）")
