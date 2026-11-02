@@ -145,3 +145,35 @@ def test_find_anchors_reads_paths_in_reports_and_entries():
     assert found[1][:2] == ("resource/excel/表.xlsx", "sheet:规则!B3")
     assert material_text.parse_anchor("file:resource/a%20b.md#L3") == {"scheme": "file", "path": "resource/a b.md",
                                                                         "fragment": "L3"}
+
+
+# ---- R-05 被谁引用、R-01 referenced、R-04 broken_references ----
+
+
+def _commit_entry(root: Path, rel: str, text: str) -> None:
+    from tests.test_changesets import main_write
+
+    main_write(root, rel, text, "web: 合成条目")
+
+
+def test_references_from_entries_and_counts(env):
+    client, _workspaces, _pid, root, base = env
+    _commit_entry(root, "ontology/rule/超量规则.md",
+                  "# 超量规则\n\n## 规则描述\n\n超过上限要审批。\n\n## 来源\n\n"
+                  "- resource/others/01-补货规则.md#L7\n- file:resource/others/01-补货规则.md#L10\n")
+    _commit_entry(root, "ontology/object/门店.md", "# 门店\n\n## 对象描述\n\n见《01-补货规则.md》。\n")
+    _commit_entry(root, "research/20261102-合成.md", "依据 resource/others/01-补货规则.md#L5\n")
+    got = client.get(f"{base}/resources/references", params={"path": "resource/others/01-补货规则.md"}).json()
+    assert got["path"] == "resource/others/01-补货规则.md" and got["total"] == 2
+    by_id = {item["target"]["id"]: item for item in got["items"]}
+    assert by_id["rule:超量规则"]["anchors"] == ["L7", "L10"] and by_id["rule:超量规则"]["location"] == "来源"
+    assert by_id["object:门店"]["anchors"] == [] and by_id["object:门店"]["location"] == "对象描述"
+    assert by_id["rule:超量规则"]["target"] == {"kind": "rule", "id": "rule:超量规则", "key": "超量规则", "name": "超量规则"}
+    listed = client.get(f"{base}/resources").json()
+    materials = {item["path"]: item for group in listed["groups"] for item in group["items"]}
+    assert materials["resource/others/01-补货规则.md"]["referenced"] == 2
+    assert materials["resource/others/02-配送说明.docx"]["referenced"] == 0
+    assert all(set(option) == {"value", "label"} for option in listed["purposes"])
+    assert client.get(f"{base}/resources/references", params={"path": "ontology/rule/超量规则.md"}).json()["code"] == "path_forbidden"
+    deleted = client.delete(f"{base}/resources", params={"path": "resource/others/01-补货规则.md"}).json()
+    assert deleted["broken_references"] == 2

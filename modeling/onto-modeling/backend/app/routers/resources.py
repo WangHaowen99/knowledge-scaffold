@@ -14,18 +14,19 @@ from fastapi.responses import JSONResponse
 from .. import config
 from ..api import deps
 from ..api.errors import ApiError
-from ..services import mainline, material_text, uploads
+from ..services import mainline, material_refs, material_text, uploads
 from ..services.workspace.layout import RESOURCE_DIRECTIVES, RESOURCE_SUBDIRS, _content_revision, is_auto_detected
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/resources", tags=["resources"])
 
 GROUP_LABELS = (("diagrams", "流程图"), ("excel", "表格"), ("others", "文档与其他"))
+# 用途的说明文字不下发（UI 文案口径 ⑤，contract-changes「UI 文案」第 9 条）
 PURPOSES = (
-    {"value": "goal", "label": "建模目标依据", "description": "说明要建什么、为谁用、做到什么程度"},
-    {"value": "schema", "label": "数据 Schema", "description": "数据表结构，发布时对象按它绑定数据表"},
-    {"value": "term", "label": "术语表", "description": "业务术语与同义词"},
-    {"value": "evidence", "label": "通用业务依据", "description": "制度、流程、规则等业务原文"},
-    {"value": "auto", "label": "由助手判断", "description": "上传时按内容识别，之后可以改"},
+    {"value": "goal", "label": "建模目标依据"},
+    {"value": "schema", "label": "数据 Schema"},
+    {"value": "term", "label": "术语表"},
+    {"value": "evidence", "label": "通用业务依据"},
+    {"value": "auto", "label": "由助手判断"},
 )
 _KINDS = {
     ".doc": ("doc", "doc"), ".docx": ("doc", "doc"), ".pdf": ("pdf", "doc"),
@@ -42,7 +43,7 @@ def _is_template(rel: str) -> bool:
     return (Path(config.ASSETS_DIR) / "resource-template" / rel.removeprefix("resource/")).is_file()
 
 
-def _material(root: Path, rel: str, directives: dict) -> dict:
+def _material(root: Path, rel: str, directives: dict, referenced: int = 0) -> dict:
     path = root / rel
     kind, preview = _KINDS.get(path.suffix.lower(), ("text", None))
     directive = directives.get(rel)
@@ -61,7 +62,7 @@ def _material(root: Path, rel: str, directives: dict) -> dict:
         "is_revision": False,
         "revision_task": None,
         "is_template": _is_template(rel),
-        "referenced": 0,
+        "referenced": referenced,
         "coverage": None,
         "preview": preview,
         "revision": _content_revision(data),
@@ -84,7 +85,9 @@ def _material_paths(root: Path) -> list[str]:
 def list_resources(project_id: str, request: Request):
     root = deps.require_owner(project_id, request)
     directives = deps.workspaces.resource_directives(project_id)
-    items = [_material(root, rel, directives) for rel in _material_paths(root)]
+    paths = _material_paths(root)
+    referenced = material_refs.counts(root, paths)
+    items = [_material(root, rel, directives, referenced.get(rel, 0)) for rel in paths]
     groups = [
         {"key": key, "label": label, "items": [item for item in items if item["group"] == key]}
         for key, label in GROUP_LABELS
@@ -129,7 +132,8 @@ async def upload_resource(project_id: str, request: Request):
     directives = deps.workspaces.resource_directives(project_id)
     detected = saved.get("detected")
     return JSONResponse(status_code=201, content={
-        "material": _material(root, saved["path"], directives),
+        "material": _material(root, saved["path"], directives,
+                              material_refs.counts(root, [saved["path"]]).get(saved["path"], 0)),
         "replaced": saved["replaced"],
         "commit": saved["commit"] or state["head"],
         "version_label": state["version_label"],
@@ -154,7 +158,8 @@ async def set_purpose(project_id: str, request: Request):
     )
     state = mainline.state(root)
     return {
-        "material": _material(root, path, deps.workspaces.resource_directives(project_id)),
+        "material": _material(root, path, deps.workspaces.resource_directives(project_id),
+                              material_refs.counts(root, [path]).get(path, 0)),
         "commit": state["head"],
         "version_label": state["version_label"],
         "reread_task": None,
@@ -167,13 +172,15 @@ def delete_resource(project_id: str, request: Request, path: str = ""):
     root = deps.require_writable(project_id, request)
     if path == RESOURCE_DIRECTIVES or path.startswith("resource/systems/") or not path.startswith("resource/"):
         raise ApiError("path_forbidden", "只能删除资料区的资料", 403, {"path": path})
+    # 引用它的出处删除后变成「来源无法核验」：删之前数一遍
+    broken = material_refs.counts(root, [path]).get(path, 0) if material_text.is_material(path) else 0
     result = deps.workspaces.delete_resource(project_id, path, author=deps.username(request))
     state = mainline.state(root)
     return {
         "deleted": result["deleted"],
         "commit": result["commit"] or state["head"],
         "version_label": state["version_label"],
-        "broken_references": 0,
+        "broken_references": broken,
     }
 
 
@@ -205,3 +212,10 @@ def preview(project_id: str, request: Request, path: str = "", around: str = "",
         "blocks": data["blocks"],
         "next_cursor": data["next_cursor"],
     }
+
+
+@router.get("/references")
+def references(project_id: str, request: Request, path: str = ""):
+    """R-05：本体条目、插件产物里引用这份资料的地方（出处路径或文件名）。"""
+    root = deps.require_owner(project_id, request)
+    return material_refs.references(root, _material_target(root, path))
