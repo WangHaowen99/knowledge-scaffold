@@ -2,21 +2,23 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '../../app/context.js';
 import {
-  Button, Card, Check, Chip, Icon, Inp, Modal, Note, Table,
+  Button, Card, Check, Icon, Inp, Modal, Note, Table,
 } from '../../ui/index.jsx';
 import { Missing } from './ctlParts.jsx';
 import {
   DIAG_ITEMS, INV_CATEGORY, diagDefaults, diagLine, diagNote, fmtBytes, fmtDay, retentionBody, retentionForm, retentionText,
-  validateRetention,
+  validateRetention, visibleInventory, visibleRetention,
 } from './ctlModel.js';
+import { useEvidenceOn } from './parts.jsx';
 
 export function VersionsCard({ versions }) {
+  const evidenceOn = useEvidenceOn();
   return (
-    <Card title="版本清单" icon="layers" sub="内核、包、引擎、数据格式" data-sec="versions">
+    <Card title="版本清单" icon="layers" data-sec="versions">
       <Table
         compact
         cols={['类别', '组件', '版本']}
-        rows={(versions?.items || []).map((r) => [
+        rows={visibleInventory(versions?.items, { evidenceOn }).map((r) => [
           <span className="muted" style={{ whiteSpace: 'nowrap' }}>{INV_CATEGORY[r.category] || r.category}</span>,
           <span className="sm" title={r.note || undefined}>{r.component}</span>,
           <span className="mono xs">{r.version}</span>,
@@ -33,11 +35,11 @@ function RetentionModal({ open, onClose, items, run, busy, onSaved }) {
   useEffect(() => { if (open) setForm(retentionForm(items)); }, [open, items]);
   const errors = validateRetention(form);
   const body = retentionBody(form, items);
-  const save = () => run('retention', () => api.ops.saveRetention(body), { ok: '已保存保留期，下次清理按新规则执行' })
+  const save = () => run('retention', () => api.ops.saveRetention(body), { ok: '已保存保留期' })
     .then((r) => { if (r) { onSaved(r); onClose(); } });
   return (
     <Modal
-      open={open} onClose={onClose} icon="clock" title="编辑数据保留" sub="保留期到了由定时清理删除，改动写审计" w={560}
+      open={open} onClose={onClose} icon="clock" title="编辑数据保留" w={560}
       foot={(
         <>
           <Button onClick={onClose}>取消</Button>
@@ -63,7 +65,6 @@ function RetentionModal({ open, onClose, items, run, busy, onSaved }) {
             </span>
           </div>
         ))}
-        <Note tone="gray" icon="info">被已确认产物引用的快照，无论保留期多短都不清理。</Note>
       </div>
     </Modal>
   );
@@ -71,10 +72,11 @@ function RetentionModal({ open, onClose, items, run, busy, onSaved }) {
 
 export function RetentionCard({ retention, perm, run, busy, onSaved }) {
   const [open, setOpen] = useState(false);
-  const items = retention?.items || [];
+  const evidenceOn = useEvidenceOn();
+  const items = visibleRetention(retention?.items, { evidenceOn });
   return (
     <Card
-      title="数据保留" icon="clock" sub="保留期与清理规则" data-sec="retention"
+      title="数据保留" icon="clock" data-sec="retention"
       extra={<Button size="xs" icon="edit" disabled={!perm.opsWrite || !items.length} title={perm.opsWrite ? null : perm.hint('ops.write')} onClick={() => setOpen(true)}>编辑</Button>}
     >
       <Table
@@ -108,23 +110,19 @@ export function DiagnosticsCard({ diags, names, perm, run, busy, reload }) {
   });
   return (
     <Card
-      title="诊断包" icon="download" sub="脱敏，不含密钥和项目内容" data-sec="diagnostics"
+      title="诊断包" icon="download" data-sec="diagnostics"
       extra={<Button size="xs" kind="primary" icon="download" disabled={!perm.opsWrite} title={perm.opsWrite ? null : perm.hint('ops.write')} onClick={() => setOpen(true)}>生成诊断包</Button>}
     >
-      <div className="row wrap" style={{ gap: 6 }}>
-        {DIAG_ITEMS.filter((x) => x[3]).map((x) => <Chip key={x[0]} tone="line" sm icon="check">{x[2]}</Chip>)}
-      </div>
-      {items.slice(0, 3).map((d) => (
-        <div key={d.id} className="row mt12 sm">
+      {items.slice(0, 3).map((d, i) => (
+        <div key={d.id} className={i ? 'row mt12 sm' : 'row sm'}>
           <span className="mono xs muted grow">{diagLine(d, names)}</span>
           <Button size="xs" kind="ghost" icon="download" disabled={busy === `dl:${d.id}`} onClick={() => download(d)}>下载</Button>
         </div>
       ))}
-      {diags && !items.length ? <div className="xs muted mt12">还没有生成过诊断包。</div> : null}
+      {diags && !items.length ? <div className="xs muted">还没有生成过诊断包。</div> : null}
       {!diags ? <Missing /> : null}
-      <div className="xs faint mt4">保留 7 天</div>
       <Modal
-        open={open} onClose={() => setOpen(false)} icon="download" title="导出诊断包" sub="一键打包，所有内容已脱敏，不含密钥与项目内容"
+        open={open} onClose={() => setOpen(false)} icon="download" title="导出诊断包" sub="已脱敏，不含密钥和项目内容"
         foot={(
           <>
             <Button onClick={() => setOpen(false)}>取消</Button>
@@ -139,7 +137,7 @@ export function DiagnosticsCard({ diags, names, perm, run, busy, reload }) {
             <Check on={pick.includes(k)} label={label} onChange={(on) => setPick((x) => (on ? [...x, k] : x.filter((y) => y !== k)))} />
           </div>
         ))}
-        <div className="mt8"><Note tone="gray" icon="clock">{diagNote(latest, names)}</Note></div>
+        {latest ? <div className="mt8"><Note tone="gray" icon="clock">{diagNote(latest, names)}</Note></div> : null}
       </Modal>
     </Card>
   );

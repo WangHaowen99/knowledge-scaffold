@@ -12,7 +12,6 @@ export function HealthSection({ health, startup, perm, busy, onProbe }) {
     <div data-sec="health">
       <div className="sec-t">
         <Icon name="heart" size={14} />健康<span className="sp" />
-        <span className="xs" style={{ fontWeight: 500 }}>健康检查分存活和就绪。就绪会逐个探测模型网关、auth-server、两个网关、磁盘和 git。</span>
         <Button
           size="xs" icon="refresh" disabled={!perm.opsWrite || busy === 'probe'} title={perm.opsWrite ? null : perm.hint('ops.write')}
           onClick={onProbe}
@@ -39,7 +38,7 @@ export function HealthSection({ health, startup, perm, busy, onProbe }) {
         </div>
       </div>
       <div className="op-g21 mt16">
-        <Card title="依赖探测" icon="activity" sub="每 30 秒一次">
+        <Card title="依赖探测" icon="activity">
           <Table
             compact
             cols={['依赖', '探测内容', '耗时', '状态', '最近异常']}

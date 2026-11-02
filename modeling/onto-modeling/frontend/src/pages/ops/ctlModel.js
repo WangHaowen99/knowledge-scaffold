@@ -1,8 +1,9 @@
 // 运维管控与健康（设计稿 ops-ctl）页面纯逻辑：格式化、状态到显示的映射、维护向导、插件运维的按钮可用性、表单校验、分区参数。
 // 接口见契约 3.25 O-13～O-47；后端实际口径见 contract-changes B2、B3a、B3b（字段为 null 时这里都有兜底）。
+import { isEvidencePack } from '../../state/evidence.js';
 
 const pad2 = (n) => String(n).padStart(2, '0');
-const DENY = '只有运维能做这个操作，管理员只能查看';
+const DENY = '仅运维可操作';
 
 // ---------- 分区（?section=） ----------
 export const SECTIONS = ['health', 'sessions', 'maintenance', 'packs', 'core', 'startup', 'backups', 'tasks', 'versions', 'retention', 'diagnostics'];
@@ -244,8 +245,8 @@ export const poolBody = (form) => ({
 
 // ---------- 维护模式（O-20～O-24，契约 1.13、#57；B3b 第 11 条） ----------
 export const MAINT_MODES = {
-  reject_new_sessions: { label: '拒绝新会话', desc: '已有会话可以跑完当前这一轮，网页可浏览、可编辑', step: '新会话返回维护提示' },
-  read_only: { label: '只读', desc: '所有写入被拒绝，适合迁移数据盘', step: '写请求返回维护提示' },
+  reject_new_sessions: { label: '拒绝新会话', desc: '已有会话跑完这一轮，网页仍可编辑' },
+  read_only: { label: '只读', desc: '拒绝所有写入' },
 };
 
 // 对用户提示的默认写法：十分钟后的整十分开始
@@ -259,29 +260,25 @@ export function defaultMaintMessage(mode, { upgrade = true, now = Date.now() } =
     : `平台将在 ${at} ${what}，预计 20 分钟，期间暂停新会话。`;
 }
 
-const STEP_TEXT = {
-  drain: ['排空', '在线会话跑完当前这一轮后回收'],
-  upgrade: ['升级', '切换包仓库、重新装配、滚动重启'],
-  resume: ['恢复', '解除限制，L4 从检查点续跑'],
-};
+const STEP_TITLE = { drain: '排空', upgrade: '升级', resume: '恢复' };
 const STEP_IDS = ['restrict', 'drain', 'upgrade', 'resume'];
 
-// 四步条：没在维护时也画出来（全部未开始），进行中按 steps[].state
+// 四步条只在维护进行中出现（R19）：已完成和当前这一步显示实时状态，还没走到的只写标题
 export function maintSteps(state) {
-  const active = !!state?.active;
-  const byId = Object.fromEntries((state?.steps || []).map((s) => [s.id, s]));
+  if (!state?.active) return [];
+  const byId = Object.fromEntries((state.steps || []).map((s) => [s.id, s]));
   return STEP_IDS.map((id, i) => {
-    const s = active ? byId[id] : null;
+    const s = byId[id];
     const st = s?.state || 'pending';
+    const reached = st === 'done' || st === 'current';
     let title;
     let detail;
     if (id === 'restrict') {
-      const mode = MAINT_MODES[state?.mode];
-      title = active && mode ? mode.label : '拒绝新会话或只读';
-      detail = active ? [state.started_at ? `${fmtClock(state.started_at)} 开始` : null, s?.detail || mode?.step].filter(Boolean).join(' · ') : '进入维护模式时选择';
+      title = MAINT_MODES[state.mode]?.label || '限制';
+      detail = reached ? [state.started_at ? `${fmtClock(state.started_at)} 开始` : null, s?.detail].filter(Boolean).join(' · ') : '';
     } else {
-      [title, detail] = STEP_TEXT[id];
-      if (s?.detail) detail = s.detail;
+      title = STEP_TITLE[id];
+      detail = reached ? s?.detail || '' : '';
     }
     return {
       id, n: i + 1, title, detail,
@@ -432,8 +429,8 @@ export function backupScope(item) {
   return { chip: false, text: `全量 ${(item?.scope_items || []).length} 项` };
 }
 export function drillView(drill) {
-  if (!drill) return { tone: 'gray', icon: 'info', title: '还没做过恢复演练', detail: '演练把备份恢复到隔离环境，抽检项目能否打开、版本历史是否完整' };
-  const bits = [fmtDay(drill.at), '恢复到隔离环境'];
+  if (!drill) return { tone: 'gray', icon: 'info', title: '还没做过恢复演练', detail: '' };
+  const bits = [fmtDay(drill.at)];
   if (drill.duration_ms != null) bits.push(`用时 ${fmtDuration(drill.duration_ms)}`);
   if (drill.detail) bits.push(drill.detail);
   if (drill.result === 'passed') return { tone: 'teal', icon: 'check', title: '最近一次恢复演练：通过', detail: bits.join(' · ') };
@@ -499,6 +496,21 @@ export function retentionText(item) {
   if (r.keep_last != null) return item.id === 'snapshots' ? `每个数据源最近 ${r.keep_last} 份` : `最近 ${r.keep_last} 份`;
   return '—';
 }
+// 证据源本期不开放（ADR-0056）：证据源不可用时，运维管控不列证据相关的行——数据保留的证据快照、
+// 插件运维与版本清单里的证据源提供方（和系统逆向建模包）、任务里的证据采集
+export function visibleRetention(items, { evidenceOn = false } = {}) {
+  return (items || []).filter((r) => evidenceOn || r.id !== 'snapshots');
+}
+export function visiblePacks(items, { evidenceOn = false } = {}) {
+  return (items || []).filter((p) => evidenceOn || (p.kind !== 'provider' && !isEvidencePack(p.name)));
+}
+export function visibleInventory(items, { evidenceOn = false } = {}) {
+  return (items || []).filter((r) => evidenceOn || (r.category !== 'provider' && !isEvidencePack(r.component) && !/^evidence/.test(r.component || '')));
+}
+export function visibleTasks(items, { evidenceOn = false } = {}) {
+  return (items || []).filter((t) => evidenceOn || t.type !== 'collection');
+}
+
 export function retentionForm(items) {
   return (items || []).map((x) => {
     const unit = x.retention?.days != null ? 'days' : 'keep_last';
@@ -538,7 +550,5 @@ export function diagLine(d, names) {
   return [d.name, fmtBytes(d.size), nameOf(names, d.created_by)].join(' · ');
 }
 export function diagNote(latest, names) {
-  return latest
-    ? `诊断包保留 7 天。上次生成：${fmtDateTime(latest.created_at)}，${nameOf(names, latest.created_by)}。`
-    : '诊断包保留 7 天。还没有生成过。';
+  return latest ? `上次生成：${fmtDateTime(latest.created_at)} · ${nameOf(names, latest.created_by)}` : null;
 }

@@ -9,8 +9,9 @@ import {
 import { Missing, ViewChip } from './ctlParts.jsx';
 import {
   CHECK_ICON, CHECK_RESULT, SCOPE_LABEL, TASK_STATE, TASK_TYPE, backupScope, drillView, fmtBytes, fmtDateTime, fmtDuration, fmtWhen,
-  nameOf, scheduleText, startupSub, taskAction, taskActionToast, taskProgress,
+  nameOf, scheduleText, startupSub, taskAction, taskActionToast, taskProgress, visibleTasks,
 } from './ctlModel.js';
+import { useEvidenceOn } from './parts.jsx';
 
 export function StartupCard({ report }) {
   return (
@@ -40,16 +41,16 @@ export function BackupsCard({
   const deny = perm.opsWrite ? null : perm.hint('ops.write');
   const items = backups?.items || [];
   const dv = drillView(backups?.last_drill || null);
-  const backupNow = () => run('backup', () => api.ops.backupNow(), { ok: '已开始备份，完成后出现在列表', icon: 'archive' }).then((r) => r && reload('tasks'));
+  const backupNow = () => run('backup', () => api.ops.backupNow(), { ok: '已开始备份', icon: 'archive' }).then((r) => r && reload('tasks'));
   const drill = () => run('drill', () => api.ops.startDrill({ backup: items[0].name, sample_projects: 5 }), {
-    ok: `已开始恢复演练：${items[0].name} 恢复到隔离环境`,
+    ok: '已开始恢复演练',
   }).then((r) => r && reload('tasks'));
   return (
     <Card
       title="备份与恢复" icon="archive" sub={scheduleText(backups?.schedule)} data-sec="backups"
       extra={<Button size="xs" kind="primary" icon="archive" disabled={busy === 'backup'} onClick={backupNow}>立即备份</Button>}
     >
-      <div className="xs muted mb8">备份范围（已补齐，原来只包含工作区）</div>
+      <div className="xs muted mb8">备份范围</div>
       <div className="op-scope mb12">
         {(backups?.scope || []).map((k) => <Chip key={k} tone="blue" sm icon="check">{SCOPE_LABEL[k] || k}</Chip>)}
       </div>
@@ -70,11 +71,11 @@ export function BackupsCard({
         <div className="grow sm">
           <b>{dv.title}</b>
           {(drills?.items || []).length ? <a className="link xs oc-drill-log" onClick={() => setOpen(true)}>演练记录</a> : null}
-          <div className="xs muted">{dv.detail}</div>
+          {dv.detail ? <div className="xs muted">{dv.detail}</div> : null}
         </div>
         <Button size="xs" disabled={!perm.opsWrite || !items.length || busy === 'drill'} title={deny || (items.length ? `用最新的备份 ${items[0].name} 演练` : '还没有备份')} onClick={drill}>发起演练</Button>
       </div>
-      <Drawer open={open} onClose={() => setOpen(false)} icon="history" title="恢复演练记录" sub="恢复到隔离环境，抽检项目能否打开、版本历史是否完整" w={560}>
+      <Drawer open={open} onClose={() => setOpen(false)} icon="history" title="恢复演练记录" w={560}>
         <Table
           compact
           cols={['时间', '备份', '用时', '结果']}
@@ -83,7 +84,6 @@ export function BackupsCard({
             <span title={d.detail}><Chip tone={d.result === 'passed' ? 'teal' : 'red'} sm>{d.result === 'passed' ? '通过' : '没通过'}</Chip></span>,
           ])}
         />
-        <div className="xs muted mt8">每条的抽检说明悬停结果可见。</div>
       </Drawer>
     </Card>
   );
@@ -91,6 +91,7 @@ export function BackupsCard({
 
 export function TasksCard({ tasks, names, perm, reload }) {
   const { api } = useApp();
+  const evidenceOn = useEvidenceOn();
   const [busy, setBusy] = useState(null);
   const act = async (t, a) => {
     setBusy(t.id);
@@ -106,11 +107,11 @@ export function TasksCard({ tasks, names, perm, reload }) {
   };
   const now = Date.now();
   return (
-    <Card className="mt16" title="任务" icon="list" sub="证据采集、导出、备份、清扫" data-sec="tasks">
+    <Card className="mt16" title="任务" icon="list" data-sec="tasks">
       <Table
         compact
         cols={['类型', '对象', '发起人', '状态', '进度', '开始', '操作']}
-        rows={(tasks?.items || []).map((t) => {
+        rows={visibleTasks(tasks?.items, { evidenceOn }).map((t) => {
           const p = taskProgress(t);
           const a = taskAction(t, perm.opsWrite);
           return [
