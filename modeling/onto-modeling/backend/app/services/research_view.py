@@ -279,7 +279,7 @@ def problems(main: Path, parsed: dict, promoted: dict | None = None) -> list[dic
 
 def _mentioned(parsed: dict, rel: str) -> bool:
     name = rel.rsplit("/", 1)[-1]
-    return any(rel in text or name in text for text in parsed["texts"].values())
+    return any(rel in text or material_text.name_positions(text, name) for text in parsed["texts"].values())
 
 
 def pack_enabled(main: Path, name: str) -> bool:

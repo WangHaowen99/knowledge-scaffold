@@ -24,7 +24,7 @@ def _scan_files(root: Path) -> list[Path]:
     files = []
     for top in SCAN_DIRS:
         folder = root / top
-        if not folder.is_dir():
+        if not folder.is_dir() or folder.is_symlink():  # 目录本身是链接：不读链接指向的东西
             continue
         for path in sorted(folder.rglob("*")):
             if path.is_file() and not path.is_symlink() and path.suffix.lower() in SCAN_SUFFIXES \
@@ -47,12 +47,7 @@ def _mentions(text: str, materials: dict[str, str]) -> list[tuple[str, str, int]
     """[(资料路径, 片段, 位置)]：出处路径，加上只写了文件名的（前面不是路径的一部分）。"""
     found = [(path, fragment, pos) for path, fragment, pos in material_text.find_anchors(text) if path in materials]
     for rel, name in materials.items():
-        start = 0
-        while (pos := text.find(name, start)) >= 0:
-            start = pos + len(name)
-            if pos > 0 and text[pos - 1] in "/\\":
-                continue
-            found.append((rel, "", pos))
+        found += [(rel, "", pos) for pos in material_text.name_positions(text, name)]
     return found
 
 

@@ -37,6 +37,14 @@ _MD_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 _MD_LIST = re.compile(r"^\s*(?:[-*+]|\d+[.)、])\s+")
 
 
+def name_positions(text: str, name: str) -> list[int]:
+    """只写了文件名的引用：文件名前后都不能连着别的文件名字符（「周报告.md」里没有「报告.md」），前面也不能是路径的一部分。"""
+    if not name:
+        return []
+    pattern = re.compile(r"(?<![\w./\\-])" + re.escape(name) + r"(?![\w])")
+    return [match.start() for match in pattern.finditer(text or "")]
+
+
 def is_material(rel: str) -> bool:
     rel = (rel or "").strip("/")
     return (rel.startswith("resource/") and rel != RESOURCE_DIRECTIVES and not rel.startswith("resource/systems/")
