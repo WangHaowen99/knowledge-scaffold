@@ -10,22 +10,21 @@ import {
 import { FieldErr, LoadNote, Loading, SysHead, useLoad } from './parts.jsx';
 import {
   customPresets, filterPresets, fmtInt, importSummary, locatePresetError, parsePresetFile, presetEntry, presetErrorText,
-  presetForm, presetFormProblems, presetRowActions, presetsMeta, presetsNote, removePreset, upsertPreset,
+  presetForm, presetFormProblems, presetRowActions, presetsNote, removePreset, upsertPreset,
 } from './sysModel.js';
 
 const ORIGIN_CHIP = { builtin: ['内置', 'gray'], override: ['覆盖', 'amber'], custom: ['自定义', 'blue'] };
-const NOTE_ICON = { blue: 'table', gray: 'info', red: 'alert' };
+const NOTE_ICON = { gray: 'info', red: 'alert' };
 
 function EditCard({ f, setF, busy, problems, onCancel, onSave }) {
   const set = (k) => (e) => setF((x) => ({ ...x, [k]: e.target.value }));
   const title = f.mode === 'new' ? '新增一行' : `${f.mode === 'override' ? '覆盖' : '编辑'} ${f.replaced}`;
-  const sub = f.builtin ? '覆盖内置值' : '自定义';
   const hint = (k, text) => (problems[k] ? <FieldErr>{problems[k]}</FieldErr> : text);
   const locked = f.mode !== 'new' && !!f.builtin;
   return (
-    <Card title={title} sub={sub} icon="edit" className="mt16">
+    <Card title={title} icon="edit" className="mt16">
       <div className="grid4">
-        <Field label="模型" hint={hint('model', locked ? '与内置行同名，保存后覆盖内置值' : null)}>
+        <Field label="模型" hint={hint('model', null)}>
           <Inp mono value={f.model} readOnly={locked} error={!!problems.model} placeholder="model-…" onChange={set('model')} />
         </Field>
         <Field label="厂商"><Inp value={f.vendor} placeholder="厂商 A" onChange={set('vendor')} /></Field>
@@ -37,7 +36,7 @@ function EditCard({ f, setF, busy, problems, onCancel, onSave }) {
         </Field>
       </div>
       <div className="row mt12">
-        <Field label="说明与来源" className="grow" hint={problems.note ? <FieldErr>{problems.note}</FieldErr> : null}>
+        <Field label="备注" className="grow" hint={problems.note ? <FieldErr>{problems.note}</FieldErr> : null}>
           <Inp value={f.note} placeholder="例如：实测超过 12 万后输出变短" onChange={set('note')} />
         </Field>
         <div style={{ alignSelf: 'flex-end' }} className="row">
@@ -97,7 +96,7 @@ export function PresetsSection() {
     if (Object.keys(presetFormProblems(edit, rows)).length) return;
     const entry = presetEntry(edit);
     const list = upsertPreset(customPresets(rows), entry, edit.mode === 'new' ? null : edit.replaced);
-    if (await saveList(list, '已保存。已保存的模型配置与上下文参数不受影响', 'edit')) { setEdit(null); setTried(false); }
+    if (await saveList(list, '已保存', 'edit')) { setEdit(null); setTried(false); }
   };
   const startEdit = (row, mode) => { setEdit(presetForm(row, mode)); setTried(false); setSaveErr(null); };
   const restore = (row) => saveList(removePreset(customPresets(rows), row.model), `已恢复 ${row.model} 的内置值`, 'edit');
@@ -133,38 +132,36 @@ export function PresetsSection() {
   };
 
   const note = data ? presetsNote(data) : null;
-  const meta = data ? presetsMeta(data) : '';
   const errText = saveErr ? `${presetErrorText(saveErr.error)}${located?.model ? `（${located.model}）` : ''}` : '';
 
   return (
     <>
-      <SysHead title="模型上下文推荐表" desc="填模型名时自动带出上下文窗口和最大输出。自定义表覆盖内置表的同名行。" />
+      <SysHead title="模型上下文推荐表" />
       {!data ? (error ? <LoadNote error={error} what="上下文推荐表" onRetry={reload} /> : <Loading />) : (
         <>
-          <Note tone={note.tone === 'blue' ? undefined : note.tone} icon={NOTE_ICON[note.tone]}>
-            <div className="row g12">
-              <span className="grow">{note.lead ? <b>{note.lead}</b> : null}{note.text}</span>
-              {meta ? <span className="xs muted sy-nowrap">{meta}</span> : null}
-            </div>
-          </Note>
+          {note ? (
+            <Note tone={note.tone} icon={NOTE_ICON[note.tone]}>
+              {note.lead ? <b>{note.lead}</b> : null}{note.text}
+            </Note>
+          ) : null}
           {saveErr ? (
-            <div className="mt8">
+            <div className={note ? 'mt8' : undefined}>
               <Note tone="red">
                 <b>{saveErr.source === 'import' ? `「${saveErr.name}」没有导入：` : '没有保存：'}</b>{errText}。
-                {saveErr.source === 'import' ? '改好文件再导入；现有的推荐表没有变。' : ''}
+                {saveErr.source === 'import' ? '现有推荐表未变' : ''}
               </Note>
             </div>
           ) : null}
-          <div className="row mt12 mb12">
+          <div className={note || saveErr ? 'row mt12 mb12' : 'row mb12'}>
             <Inp icon="search" placeholder="按模型或厂商筛选" w="260px" value={q} onChange={(e) => setQ(e.target.value)} />
             <span className="sp" />
             <Button size="sm" icon="plus" disabled={invalid || busy} title={lockHint} onClick={() => startEdit(null, 'new')}>新增一行</Button>
-            <Button size="sm" kind="ghost" icon="upload" disabled={busy} onClick={() => fileRef.current?.click()} title="JSON 或 CSV（模型、厂商、上下文窗口、最大输出、说明），整份替换自定义表">导入</Button>
+            <Button size="sm" kind="ghost" icon="upload" disabled={busy} onClick={() => fileRef.current?.click()} title="JSON 或 CSV，整份替换自定义表">导入</Button>
             <Button size="sm" kind="ghost" disabled={data.custom.status === 'disabled' || busy} onClick={() => setOff(true)}>停用自定义表</Button>
             <input ref={fileRef} type="file" accept=".json,.csv,application/json,text/csv" hidden onChange={pickFile} />
           </div>
           <Table
-            cols={['模型', '厂商', '上下文窗口', '最大输出', '说明与来源', '来源', '操作']}
+            cols={['模型', '厂商', '上下文窗口', '最大输出', '备注', '来源', '操作']}
             rows={filterPresets(rows, q).map((r) => {
               const [label, tone] = ORIGIN_CHIP[r.origin] || ORIGIN_CHIP.builtin;
               const acts = presetRowActions(r);
@@ -195,10 +192,10 @@ export function PresetsSection() {
         </>
       )}
       <Modal
-        open={off} onClose={() => setOff(false)} icon="table" title="停用自定义推荐表？" sub="停用后只使用内置表" w={480}
+        open={off} onClose={() => setOff(false)} icon="table" title="停用自定义推荐表？" w={480}
         foot={<><Button onClick={() => setOff(false)}>取消</Button><Button kind="danger" disabled={busy} onClick={doDisable}>停用</Button></>}
       >
-        <div className="sm muted">已保存的模型配置与上下文参数不受影响：按自定义值保存过的上下文参数仍然生效，需要时请在模型接入里修改。</div>
+        <div className="sm muted">已保存的模型上下文参数不受影响。</div>
       </Modal>
       <Modal
         open={!!imp} onClose={() => setImp(null)} icon="upload" title="导入自定义推荐表？" sub={imp?.name} w={480}
@@ -206,8 +203,7 @@ export function PresetsSection() {
       >
         {imp ? (
           <div className="sm muted">
-            共 {imp.summary.total} 行：覆盖内置 {imp.summary.overrides} 行、新增 {imp.summary.added} 行。
-            导入后整份替换现有的自定义表（{imp.summary.replacing} 行）。已保存的模型配置与上下文参数不受影响。
+            共 {imp.summary.total} 行（覆盖内置 {imp.summary.overrides}、新增 {imp.summary.added}），替换现有自定义表 {imp.summary.replacing} 行。
           </div>
         ) : null}
       </Modal>

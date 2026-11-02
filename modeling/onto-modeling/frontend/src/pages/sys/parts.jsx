@@ -4,10 +4,8 @@ import { errorText } from '../../api/errors.js';
 import { PageHead } from '../../shell/Shell.jsx';
 import { Button, Note } from '../../ui/index.jsx';
 
-export const EYEBROW = '系统设置 · 管理员';
-
-export function SysHead({ title, desc, actions }) {
-  return <PageHead eyebrow={EYEBROW} title={title} desc={desc} actions={actions} />;
+export function SysHead({ title, actions }) {
+  return <PageHead title={title} actions={actions} />;
 }
 
 /** 分区打开时取一次数据；data 为 undefined 表示还在读，error 是最近一次失败 */
@@ -30,12 +28,9 @@ export function useLoad(loader) {
   return { data: state.data, error: state.error, loading: state.data === undefined && !state.error, reload, setData };
 }
 
-/** 接口读不出来：404 说明服务端还没有这组接口（以后阶段），其余给错误原因和重试 */
-export function LoadNote({ error, what, code, onRetry }) {
+/** 接口读不出来：给错误原因和重试（服务端没有的分区在左栏就不出，R17） */
+export function LoadNote({ error, what, onRetry }) {
   if (!error) return null;
-  if (error.status === 404) {
-    return <Note tone="gray" icon="info">这一版服务端还没有{what}接口{code ? `（${code}）` : ''}，这里暂时只能看说明，保存不了。</Note>;
-  }
   return (
     <Note tone="red">
       {what}没有读出来：{errorText(error)}

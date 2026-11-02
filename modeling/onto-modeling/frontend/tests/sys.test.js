@@ -6,11 +6,11 @@ import * as F from '../src/api/mock/fixtures.js';
 import { register } from '../src/api/mock/routes-system.js';
 import * as S from '../src/api/mock/system-data.js';
 import {
-  SERVICE_TOKEN_RE, contextSummary, customPresets, defaultPlaceholder, defaultSourceText, engineBody, engineForm, engineProblems, engineSavedText,
+  SECTION_PROBES, SERVICE_TOKEN_RE, SYS_SECTIONS, availableSections, compactHint, contextSummary, customPresets, defaultPlaceholder, defaultSourceText, engineBody, engineForm, engineProblems, engineSavedText,
   expiryText, filterPresets, filterRegistry, fmtInt, importSummary, installChip, itemPrecedenceNote, limitsBody, limitsDirty, limitsForm, limitsProblems,
   locatePresetError, matchPreset, mcpForm, mcpItemFromForm, mcpItemsAfterRemove, mcpItemsAfterSave, mcpProblems, mcpSaveError, mcpStatus, mcpTarget,
   mcpTestText, mergePresets, normalizeModelName, overrideBody, overrideProblems, parseIntText, parsePresetFile, permissionModes, poolRows,
-  precedenceText, presetErrorText, presetForm, presetFormProblems, presetRowActions, presetsMeta, presetsNote, pricingBody, pricingForm,
+  precedenceText, presetErrorText, presetForm, presetFormProblems, presetRowActions, presetsNote, pricingBody, pricingForm,
   pricingProblems, projectScopeText, quotaBody, quotaDirty, quotaForm, quotaProblems, quotaValueText, registryValue, removePreset, sandboxLine,
   serviceTokenBody, serviceTokenProblems, subjectText, sysSection, upsertPreset, validatePresets,
 } from '../src/pages/sys/sysModel.js';
@@ -24,6 +24,24 @@ test('分区参数：七个分区直达，项目设置「添加服务器」的 m
   assert.equal(sysSection('l4'), 'quota');
   assert.equal(sysSection(undefined), 'model');
   assert.equal(sysSection('nope'), 'model');
+  // 不在可用分区里的（服务端没有这组接口）也落到模型接入
+  assert.equal(sysSection('quota', ['model', 'ctx', 'quota']), 'quota');
+  assert.equal(sysSection('quota', ['model', 'ctx']), 'model');
+  assert.equal(SYS_SECTIONS.find((s) => s.key === 'quota').title, '配额与自主构建');
+});
+
+test('分区随接口出现（R17）：404 的分区不进左栏，读不出来但不是 404 的照常出；配额任一组在就出；模型接入一直在', () => {
+  const all = Object.fromEntries([...new Set(Object.values(SECTION_PROBES).flat())].map((n) => [n, 'ok']));
+  assert.deepEqual(availableSections(all), SYS_SECTIONS.map((s) => s.key));
+  // 后端现状 sys:p1：SY-15～SY-17 都 404
+  assert.deepEqual(availableSections({ ...all, quotas: 'missing', autobuildLimits: 'missing' }), ['model', 'ctx', 'sess', 'box', 'mcp', 'reg']);
+  // 只有自主构建限制没有：分区照常出（那张卡不画）
+  assert.ok(availableSections({ ...all, autobuildLimits: 'missing' }).includes('quota'));
+  assert.ok(availableSections({ ...all, quotas: 'missing' }).includes('quota'));
+  // 网络错误不算没有这组接口
+  assert.ok(availableSections({ ...all, globalMcpServers: 'error' }).includes('mcp'));
+  assert.ok(!availableSections({ ...all, globalMcpServers: 'missing' }).includes('mcp'));
+  assert.ok(availableSections({}).includes('model'));
 });
 
 test('整数输入：千分位、空格、百分号都认；空是 null，不是整数是 NaN', () => {
@@ -40,8 +58,9 @@ test('整数输入：千分位、空格、百分号都认；空是 null，不是
 const stable = () => S.modelSettings().engines.claude;
 const beta = () => S.modelSettings().engines.jiuwen;
 
-test('引擎卡右上角：已安装带运行时版本；没装写「当前部署未安装」', () => {
-  assert.deepEqual(installChip(stable()), { text: '已安装 · 运行时 2.1.30', tone: 'teal', icon: 'check' });
+test('引擎卡右上角：已安装（不带运行时版本）；没装写「当前部署未安装」', () => {
+  assert.equal(stable().runtime_version, '2.1.30');
+  assert.deepEqual(installChip(stable()), { text: '已安装', tone: 'teal', icon: 'check' });
   assert.equal(installChip(S.modelSettings({ betaInstalled: false }).engines.jiuwen).text, '当前部署未安装');
 });
 
@@ -74,7 +93,7 @@ test('SY-02 请求体：只带改过的字段；Key 留空不改；清空上下�
 
 test('保存提示：压缩阈值被服务端推算覆盖时说清楚没按填的值保存', () => {
   assert.equal(engineSavedText('稳定引擎', { base_url: 'x' }, { context: { compact_at_pct: 80 } }), '已保存，稳定引擎的新会话生效');
-  assert.match(engineSavedText('稳定引擎', { context: { compact_at_pct: 70 } }, { context: { compact_at_pct: 80 } }), /由服务端按窗口与最大输出推算，现为 80%/);
+  assert.equal(engineSavedText('稳定引擎', { context: { compact_at_pct: 70 } }, { context: { compact_at_pct: 80 } }), '已保存，新会话生效；自动压缩阈值按推算为 80%');
   assert.equal(engineSavedText('稳定引擎', { context: { compact_at_pct: 80 } }, { context: { compact_at_pct: 80 } }), '已保存，稳定引擎的新会话生效');
 });
 
@@ -85,6 +104,9 @@ test('留空时的默认值与来源（B2 第 8 条：env / default / 推算）'
   assert.equal(defaultSourceText({ value: null, source: null }), '引擎默认');
   assert.equal(defaultPlaceholder(d.window), '留空按 200000（内置默认）');
   assert.equal(defaultPlaceholder({ value: null }), '留空交给引擎默认');
+  // 自动压缩阈值的字段提示只在取 .env 时出
+  assert.equal(compactHint({ value: 80, source: 'env' }), '当前取 .env');
+  assert.equal(compactHint(d.compact_at_pct), null);
 });
 
 test('内测引擎底部那行：与推荐表一致时写「来自推荐表」，留空时写默认值的来源', () => {
@@ -183,16 +205,16 @@ test('导入自定义表：CSV（中英文表头）、JSON（数组或 presets�
   assert.deepEqual(sum, { total: 3, overrides: 1, added: 2, replacing: 2 });
 });
 
-test('推荐表提示条：正常 / 有误（沿用或未生效）/ 停用（留有备份）；右侧的核对日期与加载时间', () => {
+test('推荐表提示条：正常时不出；有误（沿用或未生效）只给错误；停用只说当前只用内置表', () => {
   const ok = { rows: ROWS(), builtin_verified_at: '2026-06-30', custom: { status: 'ok', overrides: 1, added: 1, loaded_at: '2026-10-20T06:02:00Z' } };
-  assert.equal(presetsNote(ok).text, '当前使用：内置表 + 自定义表（1 行覆盖、1 行新增）。');
-  assert.match(presetsMeta(ok), /^内置表核对于 2026-06-30 · 自定义表 \d\d-\d\d \d\d:\d\d 加载$/);
+  assert.equal(presetsNote(ok), null);
+  assert.equal(presetsNote({ custom: {} }), null);
   const bad = { custom: { status: 'invalid', error: S.CUSTOM_ERROR, loaded_at: null } };
-  assert.deepEqual(presetsNote(bad), { tone: 'red', lead: '自定义表有误，当前未生效：', text: '第 4 行「上下文窗口」不是数字。停用后改用内置表；已保存的模型配置与上下文参数不受影响。' });
+  assert.deepEqual(presetsNote(bad), { tone: 'red', lead: '自定义表有误，当前未生效：', text: '第 4 行「上下文窗口」不是数字' });
   assert.match(presetsNote({ custom: { ...bad.custom, loaded_at: '2026-10-20T06:02:00Z' } }).lead, /当前沿用 .* 加载的自定义表/);
   const off = presetsNote({ builtin_verified_at: '2026-06-30', custom: { status: 'disabled', backup_available: true } });
   assert.equal(off.tone, 'gray');
-  assert.match(off.text, /当前只用内置表（核对日期 2026-06-30）。上次停用的自定义表留有备份/);
+  assert.equal(off.text, '当前只用内置表（核对日期 2026-06-30）');
   assert.equal(filterPresets(ROWS(), '厂商 f').length, 1);
   assert.equal(filterPresets(ROWS(), 'large-256K').length, 1);
 });
@@ -211,17 +233,18 @@ test('推荐表编辑卡：覆盖内置时模型名锁定、带内置值；新�
 });
 
 // ---------- 会话与权限、沙箱 ----------
-test('会话池只读：来源是环境变量时给变量名，运维改过时说明覆盖了环境变量；逐操作确认的超时按实际值', () => {
+test('会话池只读：来源是环境变量时不标；运维改过时标「运维已调整」；权限模式四种，说明只写做什么', () => {
   const rows = poolRows({ max_sessions: 12, idle_ttl_s: 600, permission_timeout_s: 300, source: 'env' });
-  assert.deepEqual(rows.map((r) => [r.value, r.sub]), [['12', 'ONTO_WEB_MAX_SESSIONS'], ['600 秒', 'ONTO_WEB_SESSION_IDLE_TTL'], ['300 秒', 'ONTO_WEB_PERMISSION_TIMEOUT']]);
-  assert.equal(poolRows({ max_sessions: 16, idle_ttl_s: 0, source: 'data_dir' })[0].sub, '运维面已调整（覆盖环境变量）');
+  assert.deepEqual(rows.map((r) => [r.value, r.sub]), [['12', ''], ['600 秒', ''], ['300 秒', '']]);
+  assert.deepEqual(poolRows({ max_sessions: 16, idle_ttl_s: 0, source: 'data_dir' }).map((r) => r.sub), ['运维已调整', '运维已调整', '运维已调整']);
   assert.equal(poolRows({ idle_ttl_s: 0 })[1].value, '不回收');
-  assert.match(permissionModes(300)[1][2], /300 秒不回复/);
-  assert.equal(permissionModes()[0][0], 'bypassPermissions');
+  assert.deepEqual(permissionModes().map(([k]) => k), ['bypassPermissions', 'default', 'acceptEdits', 'plan']);
+  assert.equal(permissionModes()[1][2], '写文件、执行命令都要确认');
 });
 
 test('沙箱那一行：连上时列隔离参数，没连上时给未连接原因（B2 第 11 条 detail）', () => {
-  assert.equal(sandboxLine(S.sandbox()), '经 sandbox-gateway:8110 · 非 root、只读根文件系统、内存 256MB、最多 64 个进程');
+  assert.equal(sandboxLine(S.sandbox()), '非 root、只读根文件系统、内存 256MB、最多 64 个进程');
+  assert.equal(sandboxLine({ connected: true, gateway: 'gw:1' }), '');
   assert.match(sandboxLine(S.sandbox({ connected: false })), /^连不上 sandbox-gateway:8110/);
   assert.equal(sandboxLine({ connected: false, gateway: 'gw:1' }), '连不上 gw:1');
   assert.ok(S.sandbox({ p1: true }).packages.every((p) => p.purpose === null));
@@ -259,7 +282,7 @@ test('MCP 表单：名称、地址校验，Bearer 只存引用；stdio 命令拆
   assert.ok(saved.every((x) => !('status' in x) && !('tools' in x) && !('latency_ms' in x)));
   assert.equal(mcpItemsAfterSave(items, { ...bearer, name: 'kb-2' }, 'kb-search')[2].name, 'kb-2');
   assert.deepEqual(mcpItemsAfterRemove(items, 'mermaid-render').map((x) => x.name), ['replenish-std-lookup', 'kb-search']);
-  assert.match(mcpSaveError({ code: 'invalid_argument', details: { fields: { 'auth.kind': 'unsupported' } } }), /还不支持为 MCP 服务器配置鉴权/);
+  assert.equal(mcpSaveError({ code: 'invalid_argument', details: { fields: { 'auth.kind': 'unsupported' } } }), '暂不支持鉴权，请选「不鉴权」');
   assert.equal(mcpSaveError({ code: 'invalid_argument', details: { fields: { name: 'x' } } }), null);
 });
 
@@ -302,13 +325,13 @@ test('单独设置：对象、项、值、原因都要；同一对象同一项�
   const base = { kind: 'user', id: 'wanggong', item: 'daily_tokens', value: '3,000,000', reason: '培训周' };
   assert.deepEqual(overrideProblems(base, existing), {});
   assert.deepEqual(overrideBody(base), { subject: { kind: 'user', id: 'wanggong' }, item: 'daily_tokens', value: 3000000, reason: '培训周' });
-  assert.equal(overrideProblems({ ...base, id: 'zhangsan' }, existing).item, '这个对象已经有这一项的单独设置，先删掉再加');
+  assert.equal(overrideProblems({ ...base, id: 'zhangsan' }, existing).item, '已有这一项的单独设置');
   assert.equal(overrideProblems({ ...base, kind: 'project', id: 'bike-fleet-7b20e4a1', item: 'daily_tokens' }, existing).item, '选一项');
   assert.equal(overrideProblems({ ...base, id: '' }, existing).id, '选一个用户');
   assert.equal(overrideProblems({ ...base, kind: 'project', id: '', item: 'monthly_tokens' }, existing).id, '填项目 ID');
   assert.equal(overrideProblems({ ...base, id: '张 三' }, existing).id, '用户名只含字母、数字、- _ .');
   assert.equal(overrideProblems({ ...base, value: '-1' }, existing).value, '填非负整数');
-  assert.equal(overrideProblems({ ...base, reason: ' ' }, existing).reason, '写一下原因，方便以后核对');
+  assert.equal(overrideProblems({ ...base, reason: ' ' }, existing).reason, '填写原因');
   assert.equal(subjectText(existing[0].subject), '用户 zhangsan');
   assert.equal(subjectText(existing[1].subject), '项目 共享单车故障诊断');
   assert.equal(quotaValueText('monthly_tokens', 60000000), '60,000,000');

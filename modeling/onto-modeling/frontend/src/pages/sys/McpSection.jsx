@@ -5,14 +5,14 @@ import { useApp } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import {
-  Button, Card, Chip, Field, Inp, Modal, Note, Seg, Select, Table,
+  Button, Card, Chip, Field, Inp, Modal, Seg, Select, Table,
 } from '../../ui/index.jsx';
 import { FieldErr, LoadNote, Loading, SysHead, useLoad } from './parts.jsx';
 import {
   fmtHm, mcpForm, mcpItemFromForm, mcpItemsAfterRemove, mcpItemsAfterSave, mcpProblems, mcpSaveError, mcpStatus, mcpTarget, mcpTestText, mcpTools,
 } from './sysModel.js';
 
-const AUTH_OPTIONS = [{ value: 'none', label: '不鉴权' }, { value: 'bearer', label: 'Bearer Token（存引用）' }];
+const AUTH_OPTIONS = [{ value: 'none', label: '不鉴权' }, { value: 'bearer', label: 'Bearer Token' }];
 
 function ToolsCard({ server, tested }) {
   if (!server) {
@@ -23,9 +23,9 @@ function ToolsCard({ server, tested }) {
   const at = t?.at || server.last_test_at;
   const ms = t ? t.latency_ms : server.latency_ms;
   const sub = at ? `上次测试 ${fmtHm(at)}${ms != null ? ` · ${ms}ms` : ''}` : '还没测试过';
-  let empty = '还没测试过。点上面的「测试连接」检查连通性。';
+  let empty = '还没测试过';
   if ((t && !t.ok) || (!t && server.status === 'failed')) empty = '连接失败，拿不到工具清单。';
-  else if (t?.ok || server.status === 'connected') empty = '连接正常；服务端这一版只检查连通性，不列工具清单。';
+  else if (t?.ok || server.status === 'connected') empty = '连接正常，没有返回工具清单';
   return (
     <Card title={`${server.name} 提供的工具`} sub={sub} icon="terminal">
       {tools.length ? (
@@ -114,10 +114,8 @@ export function McpSection() {
     <>
       <SysHead
         title="MCP 服务器（全局）"
-        desc="所有项目的助手都能用的外部工具。项目级的 MCP 在项目设置里单独配。"
         actions={<Button kind="primary" icon="plus" onClick={() => { reset(); document.getElementById('sy-mcp-name')?.focus(); }}>新增服务器</Button>}
       />
-      <div className="mb12"><Note tone="gray" icon="info">变更只影响新建的会话，已运行的会话保持原配置。</Note></div>
       {!data ? (error ? <LoadNote error={error} what="MCP 服务器" onRetry={reload} /> : <Loading />) : (
         <>
           {items.length ? (
@@ -142,7 +140,7 @@ export function McpSection() {
                 ];
               })}
             />
-          ) : <div className="card pad sm muted">还没有全局 MCP 服务器。在下面新增一个，所有项目的助手都能用。</div>}
+          ) : <div className="card pad sm muted">还没有全局 MCP 服务器</div>}
           <div className="grid2 mt16">
             <ToolsCard server={shown} tested={tested} />
             <Card title={editing ? `编辑 ${editing}` : '新增服务器'} icon={editing ? 'edit' : 'plus'}>
@@ -155,7 +153,7 @@ export function McpSection() {
                   <Field label="鉴权"><Select value={form.auth} options={AUTH_OPTIONS} onChange={set('auth')} /></Field>
                 </div>
                 {form.auth === 'bearer' ? (
-                  <Field label="密钥引用" hint={problems.secret_ref ? <FieldErr>{problems.secret_ref}</FieldErr> : '只存引用，Token 本身放在密钥目录里'}>
+                  <Field label="密钥引用" hint={problems.secret_ref ? <FieldErr>{problems.secret_ref}</FieldErr> : null}>
                     <Inp mono value={form.secret_ref} error={!!problems.secret_ref} placeholder="cred://mcp/<名称>" onChange={set('secret_ref')} />
                   </Field>
                 ) : null}
@@ -182,7 +180,7 @@ export function McpSection() {
         open={del} onClose={() => setDel(false)} icon="trash" danger title={`删除「${editing}」？`} sub="所有项目的新会话都不再带这个服务器" w={460}
         foot={<><Button onClick={() => setDel(false)}>取消</Button><Button kind="danger" className="fill" onClick={remove}>删除</Button></>}
       >
-        <div className="sm muted">已在运行的会话保持原配置；项目设置里为它单独做的启用、停用也一并失效。</div>
+        <div className="sm muted">项目里对它的单独启停一并失效</div>
       </Modal>
     </>
   );

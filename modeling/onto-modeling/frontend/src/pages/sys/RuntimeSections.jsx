@@ -36,13 +36,13 @@ export function SessionSection() {
 
   return (
     <>
-      <SysHead title="会话与权限" desc="助手调用工具前要不要问人。改动只对新会话生效。" />
+      <SysHead title="会话与权限" />
       {!data ? (error ? <LoadNote error={error} what="会话与权限" onRetry={reload} /> : <Loading />) : (
         <>
           {saved ? <div className="mb12"><Note tone="teal" icon="check">已保存，新会话生效。</Note></div> : null}
           <Card title="权限模式" icon="shield">
             <div className="pl-radio">
-              {permissionModes(data.pool?.permission_timeout_s).map(([k, t, c]) => {
+              {permissionModes().map(([k, t, c]) => {
                 const on = data.permission_mode === k;
                 const allowed = allowedModes.includes(k);
                 return (
@@ -55,18 +55,17 @@ export function SessionSection() {
               })}
             </div>
           </Card>
-          <Card title="会话池" sub="只读 · 运维可在运维管控里调整" icon="server" className="mt16">
+          <Card title="会话池" icon="server" className="mt16">
             <div className="grid3">
               {poolRows(data.pool).map((r) => (
                 <div key={r.key} className="pl-kvro">
                   <Icon name="lock" size={14} />
-                  <div className="grow"><div className="sm b">{r.label}</div><div className="xs muted mono">{r.sub}</div></div>
+                  <div className="grow"><div className="sm b">{r.label}</div>{r.sub ? <div className="xs muted">{r.sub}</div> : null}</div>
                   <b className="num">{r.value}</b>
                 </div>
               ))}
             </div>
             <div className="row mt12">
-              <span className="xs muted">超过上限时先驱逐最久空闲的会话；全部在忙就排队，并告诉用户排第几位。</span>
               <span className="sp" />
               <a className="link xs" onClick={() => navigate(pagePath('ops-ctl'))}>在运维管控查看 →</a>
             </div>
@@ -101,7 +100,6 @@ export function SandboxSection() {
     <>
       <SysHead
         title="脚本验证沙箱"
-        desc="代码生成时，生成的脚本在这里实际跑一遍再提交。"
         actions={<Button icon="refresh" disabled={busy} onClick={probe}>{busy ? '检测中…' : '重新检测'}</Button>}
       />
       {!data ? (error ? <LoadNote error={error} what="脚本验证沙箱" onRetry={reload} /> : <Loading />) : (
@@ -112,13 +110,13 @@ export function SandboxSection() {
             </span>
             <div className="grow">
               <div className="b">{data.connected ? '已连接脚本验证沙箱' : '没有连上脚本验证沙箱'}</div>
-              <div className="xs muted">{sandboxLine(data)}</div>
+              {sandboxLine(data) ? <div className="xs muted">{sandboxLine(data)}</div> : null}
             </div>
             <KV w="96px" pairs={[['验证用 Python', data.python || '—'], ['脚本验证网关', data.gateway || '—'], ['检测时间', fmtDateTime(data.checked_at)]]} />
           </div>
           <div className="mt12">
             {data.isolation?.network === 'denied' || !data.isolation
-              ? <Note tone="amber" icon="globe">沙箱禁止出网，查数脚本请用合成输入验证。</Note>
+              ? <Note tone="amber" icon="globe">沙箱禁止出网</Note>
               : <Note tone="red" icon="globe">沙箱当前允许出网，请检查脚本验证网关下发的网络策略。</Note>}
           </div>
           <div className="row mt16 mb12">
@@ -132,7 +130,7 @@ export function SandboxSection() {
               cols={['包名', '版本', '用途']}
               rows={pkgs.map((p) => [
                 <span className="mono">{p.name}</span>,
-                p.version ? <span className="mono">{p.version}</span> : <span className="muted">未安装（按包元数据列出）</span>,
+                p.version ? <span className="mono">{p.version}</span> : <span className="muted">未安装</span>,
                 <span className="muted sm">{p.purpose || '—'}</span>,
               ])}
             />
