@@ -12,17 +12,48 @@ export function lockState(lock) {
   return lock && LOCK_LABEL[lock.state] ? lock.state : 'none';
 }
 
-// 简单 glob：** 跨目录，* 不跨目录，? 单个字符
-export function globToRegExp(glob) {
+// 写入范围 ScopeLock.paths 是 Python fnmatch 模式（后端 fnmatchcase）：* 跨目录（** 同 *），? 任一字符，
+// [seq] / [!seq] 字符类，没有闭合的 [ 按字面；字面量的 [ ] * ? 由后端转义成 [[]、[]]、[*]、[?]。
+// 按 CPython fnmatch.translate 的规则翻成 JS 正则，两边判断同一条路径结果一致（gaps「B5 合并」第 2 条）
+export function fnmatchToRegExp(pat) {
   let re = '';
-  for (let i = 0; i < glob.length; i += 1) {
-    const ch = glob[i];
-    if (ch === '*') {
-      if (glob[i + 1] === '*') { re += '.*'; i += 1; if (glob[i + 1] === '/') i += 1; } else re += '[^/]*';
-    } else if (ch === '?') re += '[^/]';
-    else re += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  let i = 0;
+  const n = pat.length;
+  while (i < n) {
+    const c = pat[i];
+    i += 1;
+    if (c === '*') {
+      while (i < n && pat[i] === '*') i += 1;
+      re += '.*';
+    } else if (c === '?') re += '.';
+    else if (c === '[') {
+      let j = i;
+      if (j < n && pat[j] === '!') j += 1;
+      if (j < n && pat[j] === ']') j += 1;
+      while (j < n && pat[j] !== ']') j += 1;
+      if (j >= n) re += '\\[';
+      else {
+        let stuff = pat.slice(i, j);
+        i = j + 1;
+        if (!stuff) re += '(?!)';
+        else if (stuff === '!') re += '.';
+        else {
+          const neg = stuff[0] === '!';
+          if (neg) stuff = stuff.slice(1);
+          // JS 字符类里 ] \ [ 要转义（Python 允许 []a] 这种写法）；区间的 - 原样保留
+          stuff = stuff.replace(/[\\\][]/g, '\\$&');
+          if (!neg && stuff[0] === '^') stuff = `\\${stuff}`;
+          re += `[${neg ? '^' : ''}${stuff}]`;
+        }
+      }
+    } else re += c.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
   }
-  return new RegExp(`^${re}$`);
+  try {
+    return new RegExp(`^${re}$`, 's');
+  } catch {
+    // 区间写反之类 JS 不认的字符类：退回按字面比
+    return { test: (s) => s === pat };
+  }
 }
 
 /**
@@ -33,7 +64,7 @@ export function isLocked(lock, target) {
   const t = typeof target === 'string' ? (target.includes('/') && !target.includes(':') ? { path: target } : { id: target }) : target;
   if (t.id && (lock.entries || []).some((e) => e.id === t.id)) return true;
   if (t.type && t.key && (lock.artifacts || []).some((a) => a.type === t.type && a.key === t.key)) return true;
-  if (t.path && (lock.paths || []).some((p) => globToRegExp(p).test(t.path))) return true;
+  if (t.path && (lock.paths || []).some((p) => fnmatchToRegExp(p).test(t.path))) return true;
   return false;
 }
 

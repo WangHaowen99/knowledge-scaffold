@@ -8,6 +8,7 @@ import {
 import { createPortal } from 'react-dom';
 import { useApp, useProject } from '@onto/app/context.js';
 import { navigate, pagePath } from '@onto/app/router.js';
+import { artifactQuery } from '@onto/app/packUi.js';
 import { toast } from '@onto/app/toast.jsx';
 import { describeConflict, errorText } from '@onto/api/errors.js';
 import { DrawioEditorFrame, drawioStateText } from '@onto/components/DrawioView.jsx';
@@ -58,7 +59,8 @@ export default function FlowchartDialog({ artifact, onClose }) {
 
   const compressed = session.model.storage === 'drawio_compressed';
   const ref = { type, key: key || artifact?.key || '' };
-  const lock = scope && key && isLocked(scope, ref) ? scope : null;
+  // 只读按写入范围：锁里有这张图，或它的文件落在锁的路径里（和 AR-05 回 423 同一口径，同上传包编辑器的 editorReadonly）
+  const lock = scope && key && isLocked(scope, art?.path ? { ...ref, path: art.path } : ref) ? scope : null;
   const ro = !!lock;
   const dirty = session.dirty || dio.dirty;
   const title = session.model.process.name || art?.title || artifact?.title || '流程图';
@@ -73,7 +75,7 @@ export default function FlowchartDialog({ artifact, onClose }) {
         k = r.items?.[0]?.key || null;
         if (!k) { setEmpty(true); return; }
       }
-      const a = await api.artifact(pid, type, k);
+      const a = await api.artifact(pid, type, k, artifactQuery(artifact, type, k));
       setKey(k);
       setArt(a);
       dispatch({ type: 'replace-model', model: a.content, savedRevision: a.revision, force: true, selection: initialSelection(a.content) });
@@ -87,7 +89,7 @@ export default function FlowchartDialog({ artifact, onClose }) {
     } catch (e) {
       setLoadError(e);
     }
-  }, [api, pid, type, artifact?.key]);
+  }, [api, pid, type, artifact?.key, artifact?.changeset]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(); }, [load]);
 

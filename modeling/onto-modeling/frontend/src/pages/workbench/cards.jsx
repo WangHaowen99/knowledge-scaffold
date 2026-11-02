@@ -70,7 +70,7 @@ export function FlowchartCard({ card, locked }) {
   const { pid } = useContext(WbCtx);
   const { openArtifact } = useActions();
   // 工作台里双击就地打开（图示包自带的编辑器）；说明页等没有弹窗宿主的地方跳到 flowchart 页
-  const open = () => (openArtifact && card.artifact ? openArtifact(card.artifact) : navigate(pagePath('flowchart', pid), card.artifact ? { key: card.artifact.key } : undefined));
+  const open = () => (openArtifact && card.artifact ? openArtifact(card.artifact, card.changeset_id) : navigate(pagePath('flowchart', pid), card.artifact ? { key: card.artifact.key } : undefined));
   // 只看实时的写入范围锁：卡片在对话历史里，存在卡上的 locked 会过时
   const isLocked = !!locked;
   const actLabel = isLocked ? '打开查看' : '打开编辑';
@@ -260,7 +260,7 @@ export function GenericCard({ card, locked }) {
   const v = declaredCardView(card, { locked });
   const target = cardOpen(card);
   let open = null;
-  if (target?.kind === 'artifact') open = openArtifact ? () => openArtifact(target.ref) : null;
+  if (target?.kind === 'artifact') open = openArtifact ? () => openArtifact(target.ref, card.changeset_id) : null;
   else if (target?.kind === 'page') open = () => navigate(pagePath(target.page, pid));
   const chip = v.status ? <St k={v.status.key} sm label={v.status.label} />
     : v.chips.length ? <span className="row g4">{v.chips.map((c) => <Chip key={c.key} tone={c.tone} sm>{c.text}</Chip>)}</span> : null;

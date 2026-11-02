@@ -11,7 +11,7 @@ import { ShellP } from '../../shell/Shell.jsx';
 import {
   Button, Drawer, Field, Icon, Menu, Modal, Ring, Seg, St, cx, useOutside,
 } from '../../ui/index.jsx';
-import { FLOWCHART_TYPE, latestFlowchartArtifact } from '../../app/packUi.js';
+import { FLOWCHART_TYPE, latestFlowchartArtifact, pendingChangeset } from '../../app/packUi.js';
 import { cellClass } from '../projects/projectCard.js';
 import { AutobuildBar, AutobuildCtx, useAutobuild } from './autobuild.jsx';
 import { ActionsCtx, ContextPanel, QueueCard } from './cards.jsx';
@@ -484,6 +484,8 @@ export default function WorkbenchPage({ route }) {
   const [drag, setDrag] = useState(false);
   const [suggestions, setSuggestions] = useState(null);
   const [opened, setOpened] = useState(null);
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
   const [mDialog, setMDialog] = useState(null);
   const ab = useAutobuild({ pid, cid, list });
   const mainRef = useRef(null);
@@ -582,7 +584,11 @@ export default function WorkbenchPage({ route }) {
     registerRound: (cs, fn) => { rounds.current.set(cs, fn); },
     canSaveKnowledge: hasPlugin('knowledge'),
     saveKnowledge: (item) => setKnItem({ ...item, conversation_id: cid }),
-    openArtifact: (artifact) => setOpened(artifact),
+    // 卡上的变更集还待确认时，带上它读这一轮的版本（AR-03 ?changeset=）
+    openArtifact: (artifact, changesetId) => {
+      const cs = pendingChangeset(scopeRef.current, changesetId);
+      setOpened(cs ? { ...artifact, changeset: cs } : artifact);
+    },
     openMaterials: (d) => setMDialog(typeof d === 'string' ? { kind: d } : d),
     // 增量更新的卡片：清单弹窗、确认清单并执行、页面命令发到这条对话
     openChangeList: inc.openChangeList,
