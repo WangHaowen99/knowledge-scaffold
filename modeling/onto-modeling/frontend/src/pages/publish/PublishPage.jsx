@@ -1,12 +1,13 @@
 // 发布知识包（设计稿 publish）：门禁链（PB-01；合规检查「去运行」走 FL-05，求解契约回执的结论来自 SV-04）、
 // 数据绑定修正（PB-02）、发布与降级发布（PB-03）、导出迁移包（P-09）、发布记录（PB-04）与包清单（PB-06）、下载标准包 / 图模式变体（PB-07）。
-// 版本下拉取主线版本（V-01）；项目流 release.updated（EP-19，评测服务拉取）、flow.updated（EP-01）、workspace.changed 实时刷新。
+// 版本下拉取当前分支上的版本（V-01）；项目流 release.updated（EP-19，评测服务拉取）、flow.updated（EP-01）、workspace.changed 实时刷新。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, formatBytes } from '../../api/errors.js';
 import { PageHead, ShellP } from '../../shell/Shell.jsx';
+import { evidenceInProject } from '../../state/evidence.js';
 import { isLocked } from '../../state/readonly.js';
 import { ScopeLockBar, useProjectEvent } from '../plugin/parts.jsx';
 import {
@@ -15,28 +16,28 @@ import {
 import { usePopMenu } from '../versions/popMenu.js';
 import { byNewest, fmtStamp, syncMeta } from '../versions/versionsModel.js';
 import {
-  blockingSummary, canFix, degradeNote, fixOptions, formatHint, formatLabel, gateBlockedText, gateView, issueView, mergeRelease,
-  publishBlockedTitle, pullTitle, pullView, releaseGate, releasedText, unboundObjects, versionOptions,
+  blockingSummary, canFix, degradeNote, fixOptions, formatLabel, gateBlockedText, gateView, issueView, mergeRelease,
+  publishBlockedTitle, pullTitle, pullView, releaseGate, releasedText, unboundObjects, versionOptions, visibleGates,
 } from './publishModel.js';
 import '../../styles/more.css';
 import '../../styles/publish.css';
 
 const LOCK_TEXT = {
-  running: ['助手正在改其中的对象，确认生效或撤回后才能改数据来源', '可以先发布已有的版本；锁住的对象改不了数据来源。'],
-  pending: ['助手的修改还没确认，确认生效或撤回后才能改数据来源', '确认生效后会生成新版本，门禁链按新版本重新检查。'],
+  running: ['助手正在改其中的对象，确认生效或撤回后才能改数据来源'],
+  pending: ['助手的修改还没确认，确认生效或撤回后才能改数据来源'],
 };
 
 function GateChain({ check, onAction, busy }) {
   const sum = blockingSummary(check);
+  const evidenceOn = evidenceInProject(useProject());
   return (
     <>
       <div className="row mb8">
         <span className="sec-t" style={{ margin: 0 }}><Icon name="shield" size={14} />门禁链</span>
         {check ? <span className={cx('chip sm', sum.tone)}>{sum.text}</span> : null}
-        <span className="xs muted">平台检查 + 已启用能力带来的检查，按顺序执行</span>
       </div>
       <div className="mr-gates">
-        {(check?.gates || []).map((g, i) => {
+        {visibleGates(check, evidenceOn).map((g, i) => {
           const v = gateView(g);
           return [
             i ? <span key={`a${g.id}`} className="mr-garr"><Icon name="chev" size={14} /></span> : null,
@@ -46,8 +47,7 @@ function GateChain({ check, onAction, busy }) {
                 <div className="t grow">{g.title}</div>
                 <St k={v.chip.k} sm label={v.chip.label} />
               </div>
-              <div className="o mt8">{g.source?.label}</div>
-              <div className="d" style={{ marginTop: 4 }}>{g.summary}</div>
+              <div className="d mt8">{g.summary}</div>
               {v.action ? <div className="mt8"><Button size="xs" kind="soft" disabled={busy} onClick={() => onAction(g, v.action.action)}>{v.action.label}</Button></div> : null}
             </div>,
           ];
@@ -83,16 +83,18 @@ function BindingCard({ check, scope, fixing, onFix, onDegrade, onRecheck, checki
   const { pid } = useProject();
   const issues = check.binding?.issues || [];
   const lockedAny = issues.some((x) => isLocked(scope, x.object));
+  // 除数据绑定外还有门禁挡着时，降级也发不了：按钮置灰，悬停写是哪一关（R7）
+  const degrade = degradeNote(check);
   if (!issues.length) {
     return (
-      <Card title="数据绑定检查" icon="db" sub="对象「# 数据来源」声明的表要真实存在、列要对得上" extra={<Chip tone="teal" sm icon="check">全部对上</Chip>}>
-        <Note tone="gray" icon="check">{check.binding?.bound_objects ?? 0} 个对象的数据来源都对得上（{check.binding?.table_count ?? 0} 张表可核对）。确实不落库的对象写的是「无」。</Note>
+      <Card title="数据绑定检查" icon="db" extra={<Chip tone="teal" sm icon="check">全部对上</Chip>}>
+        <Note tone="gray" icon="check">{check.binding?.bound_objects ?? 0} 个对象、{check.binding?.table_count ?? 0} 张表已核对</Note>
         <div className="row mt12"><span className="sp" /><Button size="sm" kind="soft" icon="refresh" disabled={checking} onClick={onRecheck}>重新检查</Button></div>
       </Card>
     );
   }
   return (
-    <Card title="数据绑定检查" icon="db" sub="对象「# 数据来源」声明的表要真实存在、列要对得上" extra={<Chip tone="red" sm>{issues.length} 个对象</Chip>}>
+    <Card title="数据绑定检查" icon="db" extra={<Chip tone="red" sm>{issues.length} 个对象</Chip>}>
       {lockedAny ? <ScopeLockBar lock={scope} targets={issues.map((x) => x.object)} text={LOCK_TEXT} /> : null}
       <div className="tbl-wrap">
         <table className="tbl compact">
@@ -107,7 +109,7 @@ function BindingCard({ check, scope, fixing, onFix, onDegrade, onRecheck, checki
               const dis = locked || !!fixing;
               const soft = !canFix(x, 'set_table');
               return (
-                <tr key={x.object.id} title={locked ? '这个对象在助手的写入范围内，确认生效或撤回后才能改' : undefined}>
+                <tr key={x.object.id} title={locked ? '助手在改，暂不能修改' : undefined}>
                   <td><b>{x.object.name}</b></td>
                   <td><span className="mono">{x.declared || '—'}</span></td>
                   <td><Chip tone={v.chip[1]} sm>{v.chip[0]}</Chip><div className="xs muted mt4">{v.note}</div></td>
@@ -124,16 +126,10 @@ function BindingCard({ check, scope, fixing, onFix, onDegrade, onRecheck, checki
           </tbody>
         </table>
       </div>
-      <div className="note gray mt12">
-        <Icon name="info" />
-        <div>
-          修正口径：首行只写现有数据表名，逐字相同；确实不落库的对象填「无」；不要臆造表名。<br />
-          有数据库证据时，数据来源可以直接写锚点，如 <span className="anchor">db:erp-prod/erp.store</span>，表名列名从快照解析 —— 门店已经这样写，绑定通过。
-        </div>
-      </div>
       <div className="row mt12">
-        {check.degradable ? <Button size="sm" icon="alert" onClick={onDegrade}>忽略并降级发布</Button> : null}
-        <span className="xs muted">只放宽数据绑定，求解契约问题必须先修</span>
+        {check.degradable ? (
+          <Button size="sm" icon="alert" disabled={degrade.blocked} title={degrade.text || undefined} onClick={onDegrade}>忽略并降级发布</Button>
+        ) : null}
         <span className="sp" />
         <Button size="sm" kind="soft" icon="refresh" disabled={checking} onClick={onRecheck}>修完重新检查</Button>
       </div>
@@ -143,9 +139,9 @@ function BindingCard({ check, scope, fixing, onFix, onDegrade, onRecheck, checki
 
 function ReleaseRecords({ records, onManifest, onDownload }) {
   return (
-    <Card className="mt16" title="发布记录" icon="history" extra={<span className="xs muted">评测服务按包清单拉取</span>}>
+    <Card className="mt16" title="发布记录" icon="history">
       {records && !records.length ? (
-        <div className="sm muted">还没有发布过。门禁链全部通过后，从上面的「发布」出包，包清单会一起交给评测服务。</div>
+        <div className="sm muted">还没有发布过</div>
       ) : (
         <div className="tbl-wrap">
           <table className="tbl compact">
@@ -156,7 +152,7 @@ function ReleaseRecords({ records, onManifest, onDownload }) {
                 const p = pullView(r);
                 return (
                   <tr key={r.version}>
-                    <td><b title={`包版本 ${r.version} · 标签 ${r.tag}`}>{r.version_label}</b></td>
+                    <td><b title={`包版本 ${r.version}`}>{r.version_label}</b></td>
                     <td className="num">{fmtStamp(r.at)}</td>
                     <td>{r.format_label}</td>
                     <td><Chip tone={g.chip[1]} sm>{g.chip[0]}</Chip>{g.note ? <> <span className="xs muted">{g.note}</span></> : null}</td>
@@ -165,7 +161,7 @@ function ReleaseRecords({ records, onManifest, onDownload }) {
                     <td>
                       <span className="row" style={{ justifyContent: 'flex-end', gap: 12 }}>
                         <span className="xs pb-link row g4" title="下载标准包" onClick={() => onDownload(r, 'standard')}><Icon name="download" size={12} />标准包</span>
-                        <span className="xs pb-link" title="图模式变体：给评测服务导入图数据库用，同一提交渲染" onClick={() => onDownload(r, 'graph')}>图模式</span>
+                        <span className="xs pb-link" title="下载图模式包" onClick={() => onDownload(r, 'graph')}>图模式</span>
                       </span>
                     </td>
                   </tr>
@@ -217,13 +213,12 @@ function ManifestDrawer({ rec, onClose, onDownload }) {
               ['包名', <span className="mono">{m.package_name}</span>],
               ['包版本', <span className="mono">{m.version}</span>],
               ['格式', `${rec.format_label}（schema ${m.schema_version}）`],
-              ['源提交', <span className="mono">{String(m.source_commit).slice(0, 8)}</span>],
+              ['源版本', rec.version_label],
               ['发布时间', fmtStamp(m.released_at)],
               ['能力版本', (m.packs || []).length ? m.packs.map((p) => `${p.name}@${p.version}`).join('、') : '—'],
-              ['流程摘要', m.flow_hash ? <span className="mono">{m.flow_hash}</span> : '—'],
               ['求解契约', m.solver ? `${m.solver.revision}${m.solver.receipt ? ` · 回执${m.solver.receipt.status === 'passed' ? '已通过' : '未通过'}` : ' · 没有回执'}` : '没有启用'],
               ['降级', m.degraded ? `${m.degraded.unbound_objects.join('、')} 不绑定数据表` : '没有降级'],
-              ['大小', `${formatBytes(m.size)} · sha256 ${String(m.sha256).slice(0, 12)}…`],
+              ['大小', formatBytes(m.size)],
             ]}
           />
           <div className="sec-t mt16"><Icon name="file" size={14} />包里的文件<span className="sp" /><span className="faint">{m.files.length}</span></div>
@@ -245,14 +240,12 @@ function ManifestDrawer({ rec, onClose, onDownload }) {
 }
 
 function DegradeModal({ open, check, busy, onClose, onConfirm }) {
-  const n = degradeNote(check);
   return (
     <Modal
       open={open}
       onClose={onClose}
       icon="alert"
       title="忽略并降级发布？"
-      sub="这些对象发布后不绑定数据表，发布记录会注明降级发布"
       foot={(
         <>
           <Button onClick={onClose}>取消</Button>
@@ -261,8 +254,7 @@ function DegradeModal({ open, check, busy, onClose, onConfirm }) {
       )}
     >
       <div className="row wrap g4">{unboundObjects(check).map((o) => <Chip key={o.id} tone="line" sm icon="cube">{o.name}</Chip>)}</div>
-      <div className="sm mt12">消费端问到这些对象时无法查库，只能按知识回答。</div>
-      <Note tone={n.tone === 'amber' ? 'amber' : 'gray'}>{n.text}</Note>
+      <div className="sm mt12">这些对象发布后不能查库。</div>
     </Modal>
   );
 }
@@ -271,7 +263,7 @@ export default function PublishPage() {
   const { api, services } = useApp();
   const { pid, meta, scope, setMeta } = useProject();
   const [versions, setVersions] = useState(null);
-  const [commit, setCommit] = useState(null); // null 表示跟随主线最新版本
+  const [commit, setCommit] = useState(null); // null 表示跟随当前版本
   const [check, setCheck] = useState(null);
   const [checking, setChecking] = useState(false);
   const [records, setRecords] = useState(null);
@@ -293,7 +285,7 @@ export default function PublishPage() {
     try {
       const c = await api.publishCheck(pid, { commit: commitRef.current || undefined, refresh: refresh || undefined });
       setCheck(c);
-      if (refresh) toast(`已重新检查，用时 ${Math.max(1, Math.round((c.duration_ms || 0) / 1000))} 秒`, 'refresh');
+      if (refresh) toast('已重新检查', 'refresh');
     } catch (e) {
       toast(errorText(e), 'alert');
     } finally {
@@ -388,17 +380,12 @@ export default function PublishPage() {
     <ShellP active="publish">
       <PageHead
         title="发布知识包"
-        desc={`${pkg} · 主线 ${mainLabel} · 发布从版本标签出，过完门禁链才能发。`}
-        actions={(
-          <>
-            <Button icon="refresh" disabled={checking} onClick={() => runCheck({ refresh: true })}>重新检查</Button>
-            <Button kind="primary" icon="upload" disabled={!check || !!blockedTitle || publishing} title={blockedTitle || undefined} onClick={() => publish(false)}>发布为知识包</Button>
-          </>
-        )}
+        desc={`${pkg} · 当前版本 ${mainLabel}`}
+        actions={<Button icon="refresh" disabled={checking} onClick={() => runCheck({ refresh: true })}>重新检查</Button>}
       />
       <GateChain check={check} onAction={gateAction} busy={starting} />
       {check?.uncommitted?.count ? (
-        <Note tone="amber" className="mb12">有 {check.uncommitted.count} 处改动还没成为版本，发布不会带上它们；确认生效后再发布。</Note>
+        <Note tone="amber" className="mb12">{check.uncommitted.count} 处改动未确认，不会随这次发布</Note>
       ) : null}
       <div className="mr-2c" style={{ gridTemplateColumns: 'minmax(0,1fr) 400px' }}>
         {check ? (
@@ -416,22 +403,20 @@ export default function PublishPage() {
           <div className="mr-exp main">
             <span className="ei"><Icon name="upload" size={18} /></span>
             <div className="grow">
-              <div className="b">发布为知识包（供消费端导入）</div>
-              <div className="xs muted" style={{ margin: '2px 0 4px' }}>{formatHint(check)}</div>
-              <div className="sm muted mb8">附包清单，供消费端导入</div>
+              <div className="b mb8">发布为知识包</div>
               <div className="row">
                 <Chip tone="blue" icon="cpu">{formatLabel(check)}</Chip>
                 <Select value={selCommit} options={versionOptions(versions)} onChange={(c) => setCommit(c === head?.commit ? null : c)} icon="tag" w="104px" className="pb-sel" />
                 <span className="sp" />
-                <Button size="sm" kind="primary" disabled={!check || !!blockedTitle || publishing} title={blockedTitle ? '门禁未通过' : undefined} onClick={() => publish(false)}>发布</Button>
+                <Button size="sm" kind="primary" disabled={!check || !!blockedTitle || publishing} title={blockedTitle || undefined} onClick={() => publish(false)}>发布</Button>
               </div>
             </div>
           </div>
           <div className="mr-exp">
             <span className="ei"><Icon name="archive" size={18} /></span>
             <div className="grow">
-              <div className="b">导出迁移包（完整工作区）</div>
-              <div className="sm muted">含资料和版本历史；不含数据源凭据，导入后重新录入</div>
+              <div className="b">导出迁移包</div>
+              <div className="sm muted">含资料和版本历史</div>
             </div>
             <Button size="sm" onClick={exportTransfer}>导出</Button>
           </div>

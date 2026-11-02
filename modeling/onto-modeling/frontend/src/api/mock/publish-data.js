@@ -16,7 +16,7 @@ export function bindingIssues() {
   return [
     {
       object: entryRef('replenish_ledger'), declared: 'replenish_ledger', kind: 'declared_missing',
-      message: '快照和 Schema 资料里都没有这张表', detail: null,
+      message: 'Schema 资料里没有这张表', detail: null,
       candidates: [{ table: 'erp.replenish_ledger', matched: 2 }], fixes: ['set_table', 'set_none'], blocking: true,
     },
     {
@@ -27,7 +27,7 @@ export function bindingIssues() {
     },
     {
       object: entryRef('overage_list'), declared: 'overage_list', kind: 'declared_unverifiable',
-      message: '没有标为「数据 Schema」的表格资料，也没有对应快照', detail: null,
+      message: '没有标为「数据 Schema」的表格资料', detail: null,
       candidates: [], fixes: ['set_none', 'mark_schema_material'], blocking: true,
     },
   ];
