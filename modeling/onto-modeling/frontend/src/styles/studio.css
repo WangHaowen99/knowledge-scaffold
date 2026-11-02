@@ -1,0 +1,94 @@
+/* ===== Studio（图谱 / 表格与条目 / 编辑原文）：搬自设计稿 pages-30-content.js 的 addCSS ===== */
+/* ---- 列表行（图谱侧栏用） ---- */
+.ov-li{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px dashed var(--line)}
+.ov-li:last-child{border-bottom:0}
+
+/* ---- Studio ---- */
+.sd{display:flex;flex-direction:column;height:100%;min-height:0}
+.sd-tb{height:54px;flex:none;display:flex;align-items:center;gap:10px;padding:0 14px;background:rgba(255,255,255,.88);border-bottom:1px solid var(--line)}
+.sd-main{flex:1;min-height:0;display:flex}
+.sd-canvas{flex:1;min-width:0;position:relative;overflow:hidden;background:radial-gradient(circle at 1px 1px,#DCE4F0 1px,transparent 1.2px) 0 0/22px 22px,linear-gradient(180deg,#FBFCFF,#F4F7FC)}
+.sd-canvas text{font-family:var(--font)}
+.sd-legend{position:absolute;left:14px;top:14px;background:rgba(255,255,255,.94);border:1px solid var(--line);border-radius:12px;padding:10px 12px;font-size:11.5px;box-shadow:var(--sh-soft);z-index:5}
+.sd-legend .r{display:flex;align-items:center;gap:7px;margin:3px 0;color:var(--ink2)}
+.sd-legend .d{width:10px;height:10px;border-radius:50%}
+.sd-flow{position:absolute;left:12px;right:12px;bottom:12px;height:226px;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 -10px 30px -22px rgba(15,35,80,.35);display:flex;flex-direction:column;z-index:5;transition:height .15s}
+.sd-flow .h{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line)}
+.sd-flow .b{flex:1;min-height:0;overflow:auto;padding:14px 16px}
+.sd-flow.min{height:46px}.sd-flow.min .b{display:none}.sd-flow.min .h{border-bottom:0}
+.sd-step{min-width:132px;padding:9px 11px;border-radius:11px;border:1px solid var(--line);background:#fff;font-size:12.5px}
+.sd-step small{display:block;color:var(--ink3);font-size:11px;margin-top:2px}
+.sd-step.hit{border-color:var(--blue3);background:var(--b50);box-shadow:0 0 0 3px rgba(59,130,246,.12)}
+.sd-step.hit b{color:var(--blue2)}
+.sd-step[data-go]{cursor:pointer}
+.sd-side{width:372px;flex:none;border-left:1px solid var(--line);background:#fff;display:flex;flex-direction:column;min-height:0}
+.sd-side .hd{padding:14px 16px 0}
+.sd-side .bd{flex:1;min-height:0;overflow:auto;padding:12px 16px 16px}
+.sd-attr td{font-size:12px}
+.sd-sum{display:flex;align-items:center;gap:14px;font-size:12px;color:var(--ink3);white-space:nowrap}
+.sd-sum b{color:var(--ink);font-size:13px;font-variant-numeric:tabular-nums;margin-right:3px}
+.sd-sum .k{display:inline-block;width:8px;height:8px;margin-right:5px;vertical-align:1px}
+.sd-sum .sn-pl{display:inline-flex;margin-left:3px;color:var(--indigo);opacity:.75;vertical-align:-1px}
+.sd-attr .en{font-family:var(--mono);font-size:11px;color:var(--ink3)}
+.sd-empty{flex:1;display:grid;place-items:center;color:var(--ink3);font-size:12.5px;padding:24px;text-align:center}
+.sd-wu{margin-top:8px;padding:8px 10px;border-radius:9px;background:var(--panel2);font-size:12px}
+.sd-wu .it{display:flex;gap:6px;align-items:center;padding:2px 0;cursor:pointer}
+.sd-wu .it:hover b{color:var(--blue2)}
+.sd-canvas:fullscreen{background:radial-gradient(circle at 1px 1px,#DCE4F0 1px,transparent 1.2px) 0 0/22px 22px,linear-gradient(180deg,#FBFCFF,#F4F7FC)}
+
+/* 原版图谱只负责画布：它自带的工具条、图例、节点摘要由页面的工具条、左上图例、右侧详情代替 */
+.sd-canvas .legacy-studio-host{position:absolute;inset:0;display:flex}
+.sd-canvas .legacy-studio-host.wb{background:transparent}
+.sd-canvas .legacy-studio-host .studio-graph{background:transparent}
+.sd-canvas .legacy-studio-host .studio-graph-tools,
+.sd-canvas .legacy-studio-host .studio-graph-legend,
+.sd-canvas .legacy-studio-host .studio-graph-summary{display:none!important}
+
+/* ---- Studio 表格 ---- */
+.stt{display:grid;grid-template-columns:minmax(0,1fr) 640px;gap:16px;height:100%;min-height:0}
+.stt-l{display:flex;flex-direction:column;min-height:0}
+.stt-l .tw{flex:1;min-height:0;overflow:auto}
+.stt-row{cursor:pointer}
+.stt-row.sel td{background:var(--b50)!important}
+.stt-r{display:flex;flex-direction:column;min-height:0}
+.stt-r .bd{flex:1;min-height:0;overflow:auto;padding:14px 18px}
+.stt-bar{display:flex;align-items:center;gap:8px;white-space:nowrap;padding:8px 18px;background:var(--panel2);border-bottom:1px solid var(--line);font-size:12px;color:var(--ink3)}
+.stt-ed td{padding:6px 8px!important}
+.stt-ed .cell{height:28px;width:100%;white-space:nowrap;overflow:hidden;border:1px solid var(--line);border-radius:7px;display:flex;align-items:center;padding:0 7px;font-size:12px;background:#fff;outline:none;color:var(--ink)}
+.stt-ed input.cell:focus{border-color:var(--blue3);box-shadow:0 0 0 3px rgba(59,130,246,.12)}
+.stt-ed input.cell.mono{font-family:var(--mono)}
+.stt-ed .cell.err{border-color:#F19A9A;background:#FFF7F7}
+.stt-ed .cell.add{border-style:dashed;color:var(--amber);cursor:pointer}
+.stt-ed .rm{opacity:0;color:var(--muted);display:inline-grid;place-items:center;width:20px;height:20px;border-radius:6px}
+.stt-ed tr:hover .rm{opacity:1}
+.stt-ed .rm:hover{background:var(--r50);color:var(--red)}
+.stt-lock{opacity:.55;pointer-events:none;filter:saturate(.6)}
+.stt-lockbar{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:10px;background:#FFFBEB;border:1px solid #FDE68A;color:#B45309;font-size:13px;line-height:1.55}.stt-lockbar>svg{margin-top:2px;flex:none}.stt-lockbar b{color:#92400E;font-weight:600}
+.stt-lk{display:inline-flex;margin-left:6px;color:#B45309;vertical-align:-1px;cursor:help}
+.sd-lk{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:6px;background:#FFFBEB;border:1px solid #FDE68A;color:#B45309;font-size:11.5px;font-weight:600;cursor:help;white-space:nowrap}
+.stt-fcv{position:relative;height:300px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:radial-gradient(circle at 1px 1px,#D9E2EE 1px,transparent 1.2px) 0 0/20px 20px,#FAFBFE}
+.stt-fcv>svg{position:absolute;inset:0;width:100%;height:100%}.stt-fcv text{font-family:var(--font)}
+.stt-fcv .ph{position:absolute;inset:0;display:grid;place-items:center;color:var(--ink3);font-size:12.5px}
+.stt-ft{padding:12px 18px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center;background:#fff;border-radius:0 0 14px 14px}
+.stt-rel{position:relative}
+.stt-rel .menu{position:absolute;top:30px;left:0;z-index:30;width:260px;max-height:240px;overflow:auto}
+.stt-rel .menu .inp{margin:4px 4px 6px}
+
+/* ---- 原文编辑（Studio 表格页「编辑原文」） ---- */
+.fl-ptb{display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--line)}
+.fl-pb{flex:1;min-height:0;overflow:auto;padding:14px 16px}
+.stt-raw{flex:1;min-height:0;flex-direction:column;display:flex}
+/* CodeMirror 按设计稿 .fl-ed 的样子：等宽 12.3px、行高 1.85、左侧行号栏 */
+.fl-ed-cm{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#fff}
+.fl-ed-cm .cm-editor{font-family:var(--mono);font-size:12.3px;line-height:1.85;color:var(--ink2)}
+.fl-ed-cm .cm-editor.cm-focused{outline:none}
+.fl-ed-cm .cm-scroller{font-family:var(--mono);line-height:1.85}
+.fl-ed-cm .cm-gutters{background:var(--panel2);color:var(--muted);border-right:1px solid var(--line)}
+.fl-ed-cm .cm-lineNumbers .cm-gutterElement{min-width:43px;padding:0 8px 0 0;text-align:right}
+.fl-ed-cm .cm-content{padding:8px 0}
+.fl-ed-cm .cm-line{padding:0 12px}
+.fl-ed-cm .cm-activeLine{background:#EEF4FF;box-shadow:inset 2px 0 0 var(--blue)}
+.fl-ed-cm .cm-activeLineGutter{background:var(--panel2)}
+.fl-ed-cm.ro{opacity:.7}
+.stt-evc{display:flex;align-items:center;gap:6px;height:28px;border:1px solid #DCE6F5;background:#F2F6FD;border-radius:7px;padding:0 7px;font-size:12px;color:#3A5A8C;white-space:nowrap;overflow:hidden;cursor:help}
+.stt-evc.ok{border-color:#DCE6F5}

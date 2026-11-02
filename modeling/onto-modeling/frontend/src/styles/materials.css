@@ -1,0 +1,93 @@
+/* 资料分析与建模蓝图（设计稿 wb-materials、wb-blueprint；类名沿用设计稿 pages-10-entry.js 的 en-*） */
+
+/* 欢迎与上传卡 */
+.en-up{border:1.5px dashed var(--b300);border-radius:14px;background:linear-gradient(180deg,#F5F9FF,#fff);padding:18px;text-align:center;color:var(--ink3);cursor:pointer}
+.en-up:hover{border-color:var(--blue3);background:#F0F6FF}
+.en-up .ic{width:42px;height:42px;border-radius:13px;margin:0 auto 8px;display:grid;place-items:center;background:#fff;color:var(--blue);box-shadow:0 6px 16px -10px rgba(37,99,235,.6)}
+.en-up-list{display:flex;flex-direction:column;gap:4px;margin-top:10px}
+.en-up-list .r{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink2)}
+
+/* 对话里的迷你资料卡 */
+.en-mini{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.en-mt{border:1px solid var(--line);border-radius:11px;padding:9px 10px 8px;background:#fff;min-width:0}
+.en-mt .nm{font-size:12px;font-weight:600}
+.en-mt.run{border-color:var(--b200);background:#F8FBFF}
+.en-mt.blk{border-color:#F5C26B;background:#FFFCF5}
+.en-mt.add{border-style:dashed;display:flex;align-items:center;justify-content:center;gap:6px;color:var(--blue2);font-weight:600;font-size:12.5px;cursor:pointer;background:rgba(255,255,255,.6)}
+.en-mt.add:hover{background:var(--b50)}
+.en-mt .sl2{font-size:11px;margin-top:5px;display:flex;align-items:center;gap:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.en-mt .sl2 .spin{width:10px;height:10px;flex:none;display:inline-block}
+
+/* 资料地图弹窗 */
+.en-mm{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px}
+.en-mc-g{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;align-content:start}
+.en-mc{border:1px solid var(--line);border-radius:14px;padding:12px 13px;background:#fff;position:relative}
+.en-mc .fi{width:32px;height:32px;border-radius:10px;display:grid;place-items:center;flex:none}
+.en-mc .nm{font-weight:650;font-size:12.8px}
+.en-mc .role{display:inline-flex;align-items:center;gap:4px;height:21px;padding:0 7px;border-radius:7px;font-size:11px;font-weight:600;background:var(--b50);color:var(--blue2);border:1px solid var(--b100);cursor:pointer}
+.en-mc .role.ai{background:var(--i50);color:var(--indigo);border-color:var(--i100)}
+.en-mc .cnt{display:flex;gap:10px;font-size:11.5px;color:var(--ink3);margin-top:8px}
+.en-mc .cnt b{color:var(--ink);font-variant-numeric:tabular-nums}
+.en-mc.run{border-color:var(--b200)}
+.en-mc.blk{border-color:#F5C26B;background:#FFFCF5}
+.menu.en-rmenu{position:absolute;top:44px;left:52px;z-index:10;min-width:210px}
+.en-stream{display:flex;flex-direction:column;gap:6px}
+.en-si{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border:1px solid var(--line);border-radius:11px;background:#fff;font-size:12.5px;animation:enIn .35s ease}
+@keyframes enIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+.en-iss{border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:#fff;margin-top:8px}
+.en-iss .tp{font-size:11px;font-weight:700}
+.en-live-dot{width:7px;height:7px;border-radius:50%;background:#22C3EE;animation:pulse 1.6s infinite;display:inline-block}
+.chip.en-map-chip{height:28px;cursor:pointer}
+
+/* 核验抽屉要盖在资料地图弹窗上面 */
+.drawer:has(.en-vf){z-index:70}
+
+/* 并排看原文 */
+.en-side{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.en-doc{border:1px solid var(--line);border-radius:12px;background:#fff;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.en-doc-h{padding:9px 12px;border-bottom:1px solid var(--line);background:var(--panel2);display:flex;align-items:center;gap:8px;font-size:12.5px}
+.en-doc-b{padding:10px 14px;max-height:420px;overflow:auto;font-size:13px;line-height:1.75;color:var(--ink2)}
+.en-doc-b .hd{font-weight:650;color:var(--ink);margin-top:8px}
+.en-doc-b .on{background:#FFF8E6;border-radius:6px;margin:0 -6px;padding:2px 6px}
+.en-doc-b mark{background:#FDE68A;color:inherit;border-radius:3px;padding:0 1px}
+
+/* 建模蓝图卡 */
+.en-bps{display:grid;grid-template-columns:24px minmax(0,1.15fr) minmax(0,1fr) 92px 170px;gap:10px;align-items:center;padding:8px 2px;border-bottom:1px dashed var(--line);font-size:13px}
+.en-bps:last-child{border-bottom:0}
+.en-bps.hd{font-size:11px;color:var(--ink3);font-weight:600;padding:0 2px 4px;border-bottom:1px solid var(--line)}
+.en-bps .ix{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;background:var(--b50);color:var(--blue2);font-weight:700;font-size:11px}
+.en-bps.ex{opacity:.5}
+.en-bps.ex b{text-decoration:line-through}
+.en-kv{display:flex;gap:12px;align-items:flex-start;font-size:13px;line-height:1.7}
+.en-kv>span:first-child{flex:none;width:72px;color:var(--ink3);font-size:12px;padding-top:1px}
+.en-l4s{border:1px solid #D7E5FD;border-radius:14px;padding:12px 14px;background:linear-gradient(110deg,#EEF4FF,#F2FBFE);margin-top:8px}
+/* 资料分析小结是系统摘要（设计稿不带助手署名）：一段里只有这张卡时不显示「建模助手」 */
+.m-a:has(> .bd > .en-rs:only-child){margin-top:14px}
+.m-a:has(> .bd > .en-rs:only-child) > .wx-who{display:none}
+.en-rs{cursor:pointer;font-size:13.5px;line-height:1.55}
+.en-rs .cc-h{border-bottom:0}
+.en-rs .cc-h .ik{background:var(--t50);color:var(--teal)}
+
+/* 调整建模蓝图弹窗 */
+.en-bp-sec{margin-top:20px}
+.en-bp-sec>h4{font-size:13px;font-weight:700;display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.en-bp-sec>h4 .n{font-size:11px;font-weight:600;color:var(--ink3)}
+.en-sl{display:grid;grid-template-columns:18px 24px minmax(0,1.2fr) minmax(0,1fr) 70px 112px 18px;gap:8px;align-items:center;padding:9px 10px;border:1px solid var(--line);border-radius:12px;background:#fff;margin-bottom:6px;font-size:12.6px;position:relative}
+.en-sl.hd{background:transparent;border:0;padding:0 10px 2px;font-size:11px;color:var(--ink3);font-weight:600;margin-bottom:2px}
+.en-sl .ix{width:24px;height:24px;border-radius:8px;display:grid;place-items:center;background:var(--b50);color:var(--blue2);font-weight:700;font-size:11.5px}
+.en-sl.sel{border-color:var(--b200);background:#F8FBFF}
+.en-sl.ex{opacity:.45}
+.en-sl.ex .nm{text-decoration:line-through}
+.en-sl .grip{color:var(--muted);cursor:grab}
+.en-sl.drag{opacity:.4}
+.en-sl.over{box-shadow:0 -2px 0 0 var(--blue3)}
+.en-sl .gmenu{position:absolute;right:8px;top:36px;z-index:10;min-width:150px}
+.chip.en-chip-x{height:28px;cursor:default}
+.en-chip-x svg{cursor:pointer}
+.en-term{display:inline-flex;align-items:center;gap:6px;padding:6px 8px 6px 10px;border-radius:11px;border:1px solid var(--a100);background:var(--a50);font-size:12.5px}
+.en-term .o{height:24px;padding:0 9px;border-radius:7px;border:1px solid var(--line2);background:#fff;font-size:11.5px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center}
+.en-term .o.on{background:var(--blue);color:#fff;border-color:var(--blue)}
+.en-q{border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:#fff}
+.en-q .os{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.en-q .os span{height:26px;padding:0 10px;border-radius:8px;border:1px solid var(--line2);font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:5px;cursor:pointer;background:#fff;color:var(--ink2)}
+.en-q .os span.on{border-color:var(--blue3);background:var(--b50);color:var(--blue2)}

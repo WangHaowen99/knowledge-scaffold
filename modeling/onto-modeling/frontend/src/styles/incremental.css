@@ -1,0 +1,7 @@
+/* 增量更新（设计稿 incremental）：设计稿 pages-40 的 mr-* 类在 more.css，这里只放产品才有的补充 */
+.inc-conf{flex-wrap:nowrap}
+.inc-lock{color:var(--faint);margin-top:8px}
+/* 弹窗：点单元格进入编辑 */
+.inc-dlg .inc-cell{cursor:text;border-radius:6px;padding:2px 4px;margin:-2px -4px}
+.inc-dlg .inc-cell:hover{background:var(--panel2)}
+.inc-dlg .mr-edit .inp{padding:0 9px}

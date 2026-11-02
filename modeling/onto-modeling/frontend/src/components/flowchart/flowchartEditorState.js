@@ -1,96 +1,56 @@
-function clone(value) {
-  return structuredClone(value);
-}
+// 流程图编辑会话：一张图（FlowchartModel）的撤销 / 重做、选中、脏标记与保存状态。
+// 连续编辑同一个字段（带同一个 coalesce 键）只记一步撤销，避免逐字撤销。
+import { normalizeModel } from './flowchartModel.js';
+
+const clone = (v) => structuredClone(v);
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 function nextId(prefix, ids) {
-  let index = 1;
-  while (ids.has(`${prefix}-${index}`)) index += 1;
-  return `${prefix}-${index}`;
+  let i = 1;
+  while (ids.has(`${prefix}${i}`)) i += 1;
+  return `${prefix}${i}`;
 }
 
-function normalizeDiagram(diagram, fallbackId) {
-  const normalized = clone(diagram);
-  normalized.id = normalized.id || fallbackId;
-  normalized.title = normalized.title || '未命名流程';
-  normalized.nodes = Array.isArray(normalized.nodes) ? normalized.nodes : [];
-  normalized.edges = Array.isArray(normalized.edges) ? normalized.edges : [];
-
-  const nodeIds = new Set(normalized.nodes.map((node) => node.id).filter(Boolean));
-  normalized.nodes = normalized.nodes.map((node) => {
-    const id = node.id || nextId('node', nodeIds);
-    nodeIds.add(id);
-    return {
-      ...node,
-      id,
-      kind: node.kind || 'action',
-      label: node.label || '未命名节点',
-    };
-  });
-
-  const edgeIds = new Set(normalized.edges.map((edge) => edge.id).filter(Boolean));
-  normalized.edges = normalized.edges.map((edge) => {
-    const id = edge.id || nextId('edge', edgeIds);
-    edgeIds.add(id);
-    return {
-      ...edge,
-      id,
-      kind: edge.kind || 'sequence',
-      label: edge.label || '',
-      conditionText: edge.conditionText || '',
-    };
-  });
-  normalized.layout = normalized.layout || { direction: 'TB', positions: {} };
-  normalized.layout.direction = normalized.layout.direction || 'TB';
-  normalized.layout.positions = normalized.layout.positions || {};
-  return normalized;
+function statusOf(session, dirty) {
+  if (session.saveInFlight) return 'saving';
+  return dirty ? 'dirty' : 'saved';
 }
 
-function normalizeDocument(document) {
-  const diagrams = Array.isArray(document?.diagrams) ? document.diagrams : [];
-  return {
-    diagrams: diagrams.map((diagram, index) => normalizeDiagram(diagram, `diagram-${index + 1}`)),
-  };
-}
-
-function documentsEqual(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function diagramById(document, diagramId) {
-  return document.diagrams.find((diagram) => diagram.id === diagramId);
-}
-
-function commit(session, document, selection = session.selection) {
-  const dirty = !documentsEqual(document, session.savedDocument);
+function commit(session, model, selection = session.selection, coalesce = null) {
+  const dirty = !same(model, session.savedModel);
+  const merge = coalesce && session.coalesceKey === coalesce;
   return {
     ...session,
-    past: [...session.past, session.document],
-    document,
+    past: merge ? session.past : [...session.past, session.model],
+    model,
     future: [],
     selection,
+    coalesceKey: coalesce,
     editGeneration: session.editGeneration + 1,
     dirty,
-    saveStatus: (() => { if (session.saveInFlight) return 'saving'; return dirty ? 'dirty' : 'saved'; })(),
+    saveStatus: statusOf(session, dirty),
   };
 }
 
-export function createFlowchartEditorSession(document, { savedRevision = null, activeDiagramId = '' } = {}) {
-  const normalized = normalizeDocument(document);
-  // 从 .mmd 打开时要直接停在被点击的那张图上；传入的 id 不存在则退回第一张
-  const requested = normalized.diagrams.some((diagram) => diagram.id === activeDiagramId)
-    ? activeDiagramId
-    : '';
+const validSelection = (model, sel) => {
+  if (!sel) return null;
+  const list = sel.type === 'node' ? model.nodes : model.edges;
+  return list.some((x) => x.id === sel.id) ? sel : null;
+};
+
+export function createFlowchartEditorSession(model, { savedRevision = null, selection = null } = {}) {
+  const m = normalizeModel(model);
   return {
-    document: normalized,
-    savedDocument: clone(normalized),
+    model: m,
+    savedModel: clone(m),
     savedRevision,
-    activeDiagramId: requested || normalized.diagrams[0]?.id || '',
     past: [],
     future: [],
-    selection: null,
+    selection: validSelection(m, selection),
+    coalesceKey: null,
     editGeneration: 0,
     saveGeneration: null,
-    savingDocument: null,
+    savingModel: null,
     saveInFlight: false,
     dirty: false,
     saveStatus: 'saved',
@@ -99,288 +59,208 @@ export function createFlowchartEditorSession(document, { savedRevision = null, a
 }
 
 export function reduceFlowchartEditorSession(session, action) {
-  if (action.type === 'replace-document') {
-    if (session.dirty && !action.force) return session;
-    const replacement = createFlowchartEditorSession(action.document, {
-      savedRevision: action.savedRevision ?? session.savedRevision,
-      activeDiagramId: action.activeDiagramId || session.activeDiagramId,
-    });
-    if (documentsEqual(replacement.document, session.document)
-      && replacement.savedRevision === session.savedRevision) return session;
-    return replacement;
-  }
+  switch (action.type) {
+    case 'replace-model': {
+      // 有未保存修改时不覆盖，除非明确要求（载入最新版本）
+      if (session.dirty && !action.force) return session;
+      const next = createFlowchartEditorSession(action.model, {
+        savedRevision: action.savedRevision ?? session.savedRevision,
+        selection: action.selection === undefined ? session.selection : action.selection,
+      });
+      if (same(next.model, session.model) && next.savedRevision === session.savedRevision && !session.dirty) return session;
+      return next;
+    }
 
-  if (action.type === 'mark-saving') {
-    if (!session.dirty || session.saveInFlight) return session;
-    return {
-      ...session,
-      saveGeneration: session.editGeneration,
-      savingDocument: clone(session.document),
-      saveInFlight: true,
-      saveStatus: 'saving',
-      saveError: '',
-    };
-  }
+    case 'mark-saving':
+      if (session.saveInFlight) return session;
+      return {
+        ...session,
+        saveGeneration: session.editGeneration,
+        savingModel: clone(session.model),
+        saveInFlight: true,
+        saveStatus: 'saving',
+        saveError: '',
+        coalesceKey: null,
+      };
 
-  if (action.type === 'mark-saved') {
-    const savedDocument = action.document
-      ? normalizeDocument(action.document)
-      : clone(session.savingDocument ?? session.document);
-    const editedAfterRequest = session.saveGeneration !== null
-      && session.editGeneration !== session.saveGeneration;
-    const document = editedAfterRequest ? session.document : savedDocument;
-    const dirty = !documentsEqual(document, savedDocument);
-    return {
-      ...session,
-      document,
-      savedDocument: clone(savedDocument),
-      savedRevision: action.savedRevision ?? session.savedRevision,
-      saveGeneration: null,
-      savingDocument: null,
-      saveInFlight: false,
-      dirty,
-      saveStatus: dirty ? 'dirty' : 'saved',
-      saveError: '',
-    };
-  }
-
-  if (action.type === 'mark-save-failed') {
-    return {
-      ...session,
-      saveGeneration: null,
-      savingDocument: null,
-      saveInFlight: false,
-      saveStatus: 'error',
-      saveError: action.message || '保存失败',
-    };
-  }
-
-  if (action.type === 'undo') {
-    const document = session.past.at(-1);
-    if (!document) return session;
-    const dirty = !documentsEqual(document, session.savedDocument);
-    return {
-      ...session,
-      document,
-      past: session.past.slice(0, -1),
-      future: [session.document, ...session.future],
-      selection: null,
-      editGeneration: session.editGeneration + 1,
-      dirty,
-      saveStatus: (() => { if (session.saveInFlight) return 'saving'; return dirty ? 'dirty' : 'saved'; })(),
-    };
-  }
-
-  if (action.type === 'redo') {
-    const [document, ...future] = session.future;
-    if (!document) return session;
-    const dirty = !documentsEqual(document, session.savedDocument);
-    return {
-      ...session,
-      document,
-      past: [...session.past, session.document],
-      future,
-      selection: null,
-      editGeneration: session.editGeneration + 1,
-      dirty,
-      saveStatus: (() => { if (session.saveInFlight) return 'saving'; return dirty ? 'dirty' : 'saved'; })(),
-    };
-  }
-
-  if (action.type === 'add-diagram') {
-    const document = clone(session.document);
-    const id = action.id || nextId('diagram', new Set(document.diagrams.map((diagram) => diagram.id)));
-    document.diagrams.push({
-      id,
-      title: action.title || '未命名流程',
-      description: action.description || '',
-      nodes: [],
-      edges: [],
-      layout: { direction: 'TB', positions: {} },
-    });
-    return { ...commit(session, document, null), activeDiagramId: id };
-  }
-
-  if (action.type === 'delete-diagram') {
-    const document = clone(session.document);
-    const index = document.diagrams.findIndex((diagram) => diagram.id === action.diagramId);
-    if (index < 0) return session;
-    const deletingActive = session.activeDiagramId === action.diagramId;
-    document.diagrams.splice(index, 1);
-    const activeDiagramId = deletingActive
-      ? document.diagrams[Math.min(index, document.diagrams.length - 1)]?.id || ''
-      : session.activeDiagramId;
-    return { ...commit(session, document, null), activeDiagramId };
-  }
-
-  if (action.type === 'select-diagram') {
-    if (!session.document.diagrams.some((diagram) => diagram.id === action.diagramId)) return session;
-    return { ...session, activeDiagramId: action.diagramId, selection: null };
-  }
-
-  if (action.type === 'select-element') {
-    return { ...session, selection: action.selection || null };
-  }
-
-  if (action.type === 'add-node') {
-    const document = clone(session.document);
-    const diagram = diagramById(document, action.diagramId);
-    if (!diagram) return session;
-
-    const ids = new Set(diagram.nodes.map((node) => node.id));
-    const id = action.node.id || nextId('node', ids);
-    diagram.nodes.push({
-      id,
-      kind: action.node.kind || 'action',
-      label: action.node.label || '新建步骤',
-      detail: action.node.detail || '',
-    });
-    diagram.layout = diagram.layout || { direction: 'TB', positions: {} };
-    diagram.layout.positions = diagram.layout.positions || {};
-    diagram.layout.positions[id] = action.position || { x: 120, y: 120 };
-
-    return commit(session, document, { type: 'node', diagramId: diagram.id, id });
-  }
-
-  if (action.type === 'connect-nodes') {
-    const document = clone(session.document);
-    const diagram = diagramById(document, action.diagramId);
-    if (!diagram) return session;
-    const nodeIds = new Set(diagram.nodes.map((node) => node.id));
-    if (!nodeIds.has(action.from) || !nodeIds.has(action.to)) return session;
-
-    const id = action.edge?.id || nextId('edge', new Set(diagram.edges.map((edge) => edge.id)));
-    diagram.edges.push({
-      id,
-      from: action.from,
-      to: action.to,
-      kind: action.edge?.kind || 'sequence',
-      label: action.edge?.label || '下一步',
-      conditionText: action.edge?.conditionText || '',
-    });
-    return commit(session, document, { type: 'edge', diagramId: diagram.id, id });
-  }
-
-  if (action.type === 'spawn-connected-node') {
-    const document = clone(session.document);
-    const diagram = diagramById(document, action.diagramId);
-    if (!diagram) return session;
-    const nodeIds = new Set(diagram.nodes.map((node) => node.id));
-    if (!nodeIds.has(action.from)) return session;
-
-    const nodeId = action.node?.id || nextId('node', nodeIds);
-    diagram.nodes.push({
-      id: nodeId,
-      kind: action.node?.kind || 'action',
-      label: action.node?.label || '新建步骤',
-      detail: action.node?.detail || '',
-    });
-    diagram.layout = diagram.layout || { direction: 'TB', positions: {} };
-    diagram.layout.positions = diagram.layout.positions || {};
-    diagram.layout.positions[nodeId] = action.position || { x: 120, y: 120 };
-
-    const edgeId = action.edge?.id || nextId('edge', new Set(diagram.edges.map((edge) => edge.id)));
-    diagram.edges.push({
-      id: edgeId,
-      from: action.from,
-      to: nodeId,
-      kind: action.edge?.kind || 'sequence',
-      label: action.edge?.label || '下一步',
-      conditionText: action.edge?.conditionText || '',
-    });
-    return commit(session, document, { type: 'node', diagramId: diagram.id, id: nodeId });
-  }
-
-  if (action.type === 'reconnect-edge') {
-    const document = clone(session.document);
-    const diagram = diagramById(document, action.diagramId);
-    const edge = diagram?.edges.find((candidate) => candidate.id === action.id);
-    if (!edge) return session;
-    const nodeIds = new Set(diagram.nodes.map((node) => node.id));
-    if (!nodeIds.has(action.from) || !nodeIds.has(action.to)) return session;
-    edge.from = action.from;
-    edge.to = action.to;
-    return commit(session, document, { type: 'edge', diagramId: diagram.id, id: edge.id });
-  }
-
-  if (action.type === 'update-node') {
-    const document = clone(session.document);
-    const diagram = diagramById(document, action.diagramId);
-    const node = diagram?.nodes.find((candidate) => candidate.id === action.id);
-    if (!node) return session;
-    if (action.patch.kind !== undefined) node.kind = action.patch.kind;
-    if (action.patch.label !== undefined) node.label = action.patch.label;
-    if (action.patch.detail !== undefined) node.detail = action.patch.detail;
-    return commit(session, document, { type: 'node', diagramId: diagram.id, id: node.id });
-  }
-
-  if (action.type === 'update-diagram') {
-    const document = clone(session.document);
-    const diagram = diagramById(document, action.diagramId);
-    if (!diagram) return session;
-    if (action.patch.title !== undefined) diagram.title = action.patch.title;
-    if (action.patch.description !== undefined) diagram.description = action.patch.description;
-    if (action.patch.processMeta !== undefined) {
-      diagram.processMeta = {
-        ...(diagram.processMeta || {}),
-        ...clone(action.patch.processMeta),
+    case 'mark-saved': {
+      const saved = action.model ? normalizeModel(action.model) : clone(session.savingModel ?? session.model);
+      const editedAfter = session.saveGeneration !== null && session.editGeneration !== session.saveGeneration;
+      const model = editedAfter ? session.model : saved;
+      const dirty = !same(model, saved);
+      return {
+        ...session,
+        model,
+        savedModel: clone(saved),
+        savedRevision: action.savedRevision ?? session.savedRevision,
+        saveGeneration: null,
+        savingModel: null,
+        saveInFlight: false,
+        dirty,
+        saveStatus: dirty ? 'dirty' : 'saved',
+        saveError: '',
+        selection: validSelection(model, session.selection),
       };
     }
-    return commit(session, document, null);
-  }
 
-  if (action.type === 'update-edge') {
-    const document = clone(session.document);
-    const diagram = diagramById(document, action.diagramId);
-    const edge = diagram?.edges.find((candidate) => candidate.id === action.id);
-    if (!edge) return session;
-    if (action.patch.kind !== undefined) edge.kind = action.patch.kind;
-    if (action.patch.label !== undefined) edge.label = action.patch.label;
-    if (action.patch.conditionText !== undefined) edge.conditionText = action.patch.conditionText;
-    return commit(session, document, { type: 'edge', diagramId: diagram.id, id: edge.id });
-  }
+    case 'mark-save-failed':
+      return {
+        ...session,
+        saveGeneration: null,
+        savingModel: null,
+        saveInFlight: false,
+        saveStatus: 'error',
+        saveError: action.message || '保存失败',
+      };
 
-  if (action.type === 'delete-node') {
-    const document = clone(session.document);
-    const diagram = diagramById(document, action.diagramId);
-    if (!diagram?.nodes.some((node) => node.id === action.id)) return session;
-    diagram.nodes = diagram.nodes.filter((node) => node.id !== action.id);
-    diagram.edges = diagram.edges.filter((edge) => edge.from !== action.id && edge.to !== action.id);
-    if (diagram.layout?.positions) delete diagram.layout.positions[action.id];
-    return commit(session, document, null);
-  }
+    case 'undo': {
+      const model = session.past.at(-1);
+      if (!model) return session;
+      const dirty = !same(model, session.savedModel);
+      return {
+        ...session,
+        model,
+        past: session.past.slice(0, -1),
+        future: [session.model, ...session.future],
+        selection: validSelection(model, session.selection),
+        coalesceKey: null,
+        editGeneration: session.editGeneration + 1,
+        dirty,
+        saveStatus: statusOf(session, dirty),
+      };
+    }
 
-  if (action.type === 'delete-edge') {
-    const document = clone(session.document);
-    const diagram = diagramById(document, action.diagramId);
-    if (!diagram?.edges.some((edge) => edge.id === action.id)) return session;
-    diagram.edges = diagram.edges.filter((edge) => edge.id !== action.id);
-    return commit(session, document, null);
-  }
+    case 'redo': {
+      const [model, ...future] = session.future;
+      if (!model) return session;
+      const dirty = !same(model, session.savedModel);
+      return {
+        ...session,
+        model,
+        past: [...session.past, session.model],
+        future,
+        selection: validSelection(model, session.selection),
+        coalesceKey: null,
+        editGeneration: session.editGeneration + 1,
+        dirty,
+        saveStatus: statusOf(session, dirty),
+      };
+    }
 
-  if (action.type === 'move-node') {
-    const document = clone(session.document);
-    const diagram = diagramById(document, action.diagramId);
-    if (!diagram?.nodes.some((node) => node.id === action.id)) return session;
-    diagram.layout = diagram.layout || { direction: 'TB', positions: {} };
-    diagram.layout.positions = diagram.layout.positions || {};
-    diagram.layout.positions[action.id] = clone(action.position);
-    return commit(session, document);
-  }
+    case 'select':
+      return { ...session, selection: validSelection(session.model, action.selection), coalesceKey: null };
 
-  if (action.type === 'set-layout') {
-    const document = clone(session.document);
-    const diagram = diagramById(document, action.diagramId);
-    if (!diagram) return session;
-    const nodeIds = new Set(diagram.nodes.map((node) => node.id));
-    diagram.layout = {
-      direction: action.direction || diagram.layout?.direction || 'TB',
-      positions: Object.fromEntries(
-        Object.entries(action.positions || {}).filter(([nodeId]) => nodeIds.has(nodeId)),
-      ),
-    };
-    return commit(session, document);
-  }
+    case 'add-node': {
+      const model = clone(session.model);
+      const id = action.node?.id || nextId('n', new Set(model.nodes.map((n) => n.id)));
+      model.nodes.push({
+        id,
+        type: action.node?.type || 'step',
+        label: action.node?.label ?? '新建步骤',
+        description: action.node?.description || '',
+        x: Math.round(action.position?.x ?? 150),
+        y: Math.round(action.position?.y ?? 60),
+        refs: [],
+        pending: false,
+        pending_note: null,
+      });
+      return commit(session, model, { type: 'node', id });
+    }
 
-  return session;
+    case 'connect': {
+      const model = clone(session.model);
+      const ids = new Set(model.nodes.map((n) => n.id));
+      if (!ids.has(action.from) || !ids.has(action.to) || action.from === action.to) return session;
+      if (model.edges.some((e) => e.from === action.from && e.to === action.to)) return session;
+      const id = nextId('e', new Set(model.edges.map((e) => e.id)));
+      model.edges.push({ id, type: action.edge?.type || 'seq', from: action.from, to: action.to, label: action.edge?.label || '', condition: action.edge?.condition || '' });
+      return commit(session, model, { type: 'edge', id });
+    }
+
+    // 拖线到空白处：在松手的位置新建节点并连上
+    case 'spawn-connected': {
+      const model = clone(session.model);
+      if (!model.nodes.some((n) => n.id === action.from)) return session;
+      const nodeId = nextId('n', new Set(model.nodes.map((n) => n.id)));
+      model.nodes.push({
+        id: nodeId, type: action.node?.type || 'step', label: action.node?.label ?? '新建步骤', description: '',
+        x: Math.round(action.position.x), y: Math.round(action.position.y), refs: [], pending: false, pending_note: null,
+      });
+      const edgeId = nextId('e', new Set(model.edges.map((e) => e.id)));
+      model.edges.push({ id: edgeId, type: action.edge?.type || 'seq', from: action.from, to: nodeId, label: '', condition: '' });
+      return commit(session, model, { type: 'node', id: nodeId });
+    }
+
+    case 'update-node': {
+      const model = clone(session.model);
+      const node = model.nodes.find((n) => n.id === action.id);
+      if (!node) return session;
+      ['type', 'label', 'description'].forEach((k) => { if (action.patch[k] !== undefined) node[k] = action.patch[k]; });
+      if (same(model, session.model)) return session;
+      return commit(session, model, { type: 'node', id: node.id }, action.coalesce ? `node:${node.id}:${action.coalesce}` : null);
+    }
+
+    case 'update-edge': {
+      const model = clone(session.model);
+      const edge = model.edges.find((e) => e.id === action.id);
+      if (!edge) return session;
+      ['type', 'label', 'condition'].forEach((k) => { if (action.patch[k] !== undefined) edge[k] = action.patch[k]; });
+      if (same(model, session.model)) return session;
+      return commit(session, model, { type: 'edge', id: edge.id }, action.coalesce ? `edge:${edge.id}:${action.coalesce}` : null);
+    }
+
+    case 'update-process': {
+      const model = clone(session.model);
+      model.process = { ...model.process, ...clone(action.patch) };
+      if (same(model, session.model)) return session;
+      return commit(session, model, session.selection, action.coalesce ? `process:${action.coalesce}` : null);
+    }
+
+    case 'delete-selection': {
+      const sel = session.selection;
+      if (!sel) return session;
+      return reduceFlowchartEditorSession(session, { type: sel.type === 'node' ? 'delete-node' : 'delete-edge', id: sel.id });
+    }
+
+    case 'delete-node': {
+      if (!session.model.nodes.some((n) => n.id === action.id)) return session;
+      const model = clone(session.model);
+      model.nodes = model.nodes.filter((n) => n.id !== action.id);
+      model.edges = model.edges.filter((e) => e.from !== action.id && e.to !== action.id);
+      return commit(session, model, null);
+    }
+
+    case 'delete-edge': {
+      if (!session.model.edges.some((e) => e.id === action.id)) return session;
+      const model = clone(session.model);
+      model.edges = model.edges.filter((e) => e.id !== action.id);
+      return commit(session, model, null);
+    }
+
+    case 'move-node': {
+      const model = clone(session.model);
+      const node = model.nodes.find((n) => n.id === action.id);
+      if (!node) return session;
+      const x = Math.round(action.position.x);
+      const y = Math.round(action.position.y);
+      if (node.x === x && node.y === y) return session;
+      node.x = x;
+      node.y = y;
+      return commit(session, model);
+    }
+
+    // 自动布局：positions 是 {id: {x, y}}（节点中心）
+    case 'set-positions': {
+      const model = clone(session.model);
+      model.nodes.forEach((n) => {
+        const p = action.positions?.[n.id];
+        if (p) { n.x = Math.round(p.x); n.y = Math.round(p.y); }
+      });
+      if (same(model, session.model)) return session;
+      return commit(session, model);
+    }
+
+    default:
+      return session;
+  }
 }

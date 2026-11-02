@@ -1,0 +1,27 @@
+/* 工作台里设计稿没有单独画、产品需要的几处：消息旁的复制 / 沉淀按钮、流式光标、输入框弹出的菜单 */
+.wb-msg{position:relative}
+.wb-msg>p{margin:0 0 10px}
+.wb-msg>ul,.wb-msg>ol{margin:0 0 10px;padding-left:22px}
+.wb-msg>pre,.wb-msg code{font-family:var(--mono);font-size:12.5px}
+.wb-msg>pre{background:#FAFBFE;border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:0 0 10px;overflow:auto}
+.wb-msg table{border-collapse:collapse;margin:0 0 10px;font-size:13px}
+.wb-msg th,.wb-msg td{border:1px solid var(--line);padding:5px 9px}
+.wb-msg-acts{position:absolute;right:0;top:-28px;opacity:0;transition:opacity .15s;background:var(--cv,#FBFCFE);border-radius:8px;z-index:2;margin:0}
+.wb-msg:hover .wb-msg-acts{opacity:1}
+.wb-caret{display:inline-block;width:7px;height:15px;background:var(--blue);vertical-align:-2px;margin-left:2px;animation:wbblink 1s steps(2) infinite}
+@keyframes wbblink{50%{opacity:0}}
+.wb-pop{position:absolute;z-index:30}
+.wb-conv-menu{top:48px;left:14px;width:340px}
+.wb-more-menu{top:48px;right:12px}
+.wb-ctx-pop{top:48px;right:46px;width:380px}
+.wb-cmd-pop{bottom:calc(100% + 8px);left:0;width:440px;max-height:360px;overflow:auto}
+.wb-ref-pop{bottom:calc(100% + 8px);left:0;width:380px}
+.wb-atts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+.wbc-main.drag{outline:2px dashed var(--blue3);outline-offset:-10px}
+.wb-dropmask{position:absolute;inset:66px 24px 120px;border:2px dashed var(--blue3);border-radius:14px;background:rgba(240,246,255,.94);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:var(--blue2);z-index:5;text-align:center;pointer-events:none}
+.wb-state-chip{margin-right:4px}
+.g2-conv .ops{visibility:hidden}
+.g2-conv:hover .ops,.g2-conv .ops.show{visibility:visible}
+.wb-conv-menu>.g2-cmd{box-shadow:var(--sh-pop)}
+.wb-conv-menu>.mt8>.note{box-shadow:var(--sh-pop)}
+.wb-conv-menu>.g2-mm{box-shadow:var(--sh-pop)!important}

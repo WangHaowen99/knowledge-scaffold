@@ -1,0 +1,78 @@
+/* 流程图编辑弹窗（设计稿 pages-30-content.js「流程图」一节原样搬来）与 drawio 预览 / 编辑 */
+
+/* ---- 流程图 ---- */
+.fc{display:flex;height:100%;min-height:0}
+.fc-mid{flex:1;min-width:0;display:flex;flex-direction:column}
+.fc-tb{height:52px;flex:none;display:flex;align-items:center;gap:6px;padding:0 12px;background:#fff;border-bottom:1px solid var(--line)}
+.fc-tb .vd{width:1px;height:22px;background:var(--line);margin:0 4px}
+.fc-cv{flex:1;min-height:0;position:relative;overflow:hidden;background:radial-gradient(circle at 1px 1px,#D9E2EE 1px,transparent 1.2px) 0 0/20px 20px,#FAFBFE}
+.fc-dcv>svg{position:absolute;inset:0;width:100%;height:100%}.fc-tb .seg button{white-space:nowrap}
+.fc-cv text,.fc-dcv text{font-family:var(--font)}.fc-dcv{flex:1;position:relative;background:#fff;min-height:0}
+.fc-hint{position:absolute;left:50%;bottom:64px;transform:translateX(-50%);background:rgba(11,26,51,.78);color:#E6EEFB;border-radius:10px;padding:6px 12px;font-size:11.5px;white-space:nowrap}
+.fc-leg{position:absolute;left:14px;top:14px;background:rgba(255,255,255,.95);border:1px solid var(--line);border-radius:12px;padding:8px 12px;font-size:11.5px;display:flex;flex-direction:column;gap:6px;z-index:5;pointer-events:none}.fc-leg .lr{display:flex;align-items:center;gap:12px}.fc-leg .lr b{width:26px}
+.fc-leg .r{display:flex;align-items:center;gap:6px;color:var(--ink2);white-space:nowrap}
+.fc-zoom{position:absolute;right:14px;top:14px;display:flex;flex-direction:column;background:#fff;border:1px solid var(--line);border-radius:11px;overflow:hidden;z-index:5}
+.fc-zoom button{width:32px;height:30px;display:grid;place-items:center;color:var(--ink2)}
+.fc-zoom button:hover{background:var(--panel2)}
+.fc-props{width:330px;flex:none;border-left:1px solid var(--line);background:#fff;display:flex;flex-direction:column;min-height:0}
+.fc-props .bd{flex:1;min-height:0;overflow:auto;padding:14px 16px}
+.fc-props .tabs{padding:0 12px}
+.fcm{width:1200px;height:780px;max-width:calc(100% - 48px);max-height:calc(100% - 40px);background:#fff;border-radius:18px;box-shadow:0 30px 70px -20px rgba(11,26,51,.45);display:flex;flex-direction:column;overflow:hidden}
+.fcm-h{display:flex;align-items:center;gap:10px;padding:13px 16px 13px 18px;border-bottom:1px solid var(--line);flex:none}
+.fcm-h .ik{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--i50);color:var(--indigo);flex:none}
+.fcm-h h3{font-size:15.5px;font-weight:700}
+.fcm .fc{flex:1;min-height:0}
+.fcm-lock{display:flex;align-items:center;gap:10px;padding:9px 18px;background:#F3F5F9;border-bottom:1px solid var(--line);font-size:12.5px;color:var(--ink2);flex:none}
+.fcm.ro .fc-tb .btn[disabled]{opacity:1}
+.fcm.ro .fc-tb,.fcm.ro .fc-stage,.fcm.ro .fc-find,.fcm.ro .fc-props{opacity:.5;filter:grayscale(.6);pointer-events:none}
+.fcm-f{flex:none;display:flex;align-items:center;gap:8px;padding:9px 18px;border-top:1px solid var(--line);background:var(--panel2);font-size:12px;color:var(--ink3)}
+.fc-drawio{position:absolute;inset:0;background:#fff;display:flex;flex-direction:column;z-index:6}
+.fc-drawio .dtb{height:38px;flex:none;border-bottom:1px solid #DADCE0;display:flex;align-items:center;gap:14px;padding:0 12px;font-size:12px;color:#444;background:#F8F9FA}
+
+/* ---- 产品补充：画布宿主、节点、手柄、改名、校验结果条 ---- */
+.fc-stage{flex:1;min-height:0;position:relative;display:flex}
+.fc-stage>.fc-cv{flex:1}
+.fc-cv>.react-flow{position:absolute;inset:0;width:100%;height:100%}
+.fc-defs{position:absolute;width:0;height:0;overflow:hidden}
+.fc-unfitted .react-flow__viewport{opacity:0}
+.fcn{position:relative}
+.fcn-svg{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
+.fcn .fcn-h{width:9px;height:9px;min-width:0;min-height:0;border-radius:50%;background:#fff;border:1.6px solid #2563EB;opacity:0;transition:opacity .12s}
+.fcn.sel .fcn-h,.react-flow__node:hover .fcn-h,.react-flow.fc-connecting .fcn-h{opacity:1}
+.fcn.t-decision .fcn-h,.fcn.t-start .fcn-h,.fcn.t-end .fcn-h,.fcn.t-data .fcn-h{border-color:#93A1B5}
+.fcn.sel .fcn-h{border-color:#2563EB}
+.fcn-rename{position:absolute;left:8px;right:8px;top:50%;transform:translateY(-50%);height:26px;border:1px solid var(--blue3);border-radius:7px;padding:0 6px;font-size:12.5px;text-align:center;background:#fff;outline:0;box-shadow:0 0 0 3px rgba(59,130,246,.15);font-family:var(--font)}
+.fce{cursor:pointer}
+.fc-cv .react-flow__edge rect{pointer-events:all}
+.fc-cv .react-flow__connection-path{stroke:#2563EB;stroke-width:1.6;stroke-dasharray:5 4}
+.fc-find{flex:none;display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--r50);border-bottom:1px solid var(--r100);color:var(--red);font-size:12px;min-width:0}
+.fc-find .it{color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+.fc-find .it.go{cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}
+.fc-props .inp.sel{opacity:1!important}
+.fc-empty{padding:28px 6px;color:var(--ink3);font-size:12.5px;text-align:center}
+.fc-area textarea{height:auto;overflow:hidden;line-height:1.55}
+.fc-load{flex:1;display:flex;align-items:center;justify-content:center;gap:10px;color:var(--ink3);font-size:12.5px}
+.fc-dfb{position:absolute;inset:0}
+.fc-dfb>svg{position:absolute;inset:0;width:100%;height:100%}
+.fc-dfb .act{position:absolute;right:14px;top:12px}
+/* 设计稿标题行里有一个 42px 高的演示切换（原型控件，产品不要），保留它撑出的行高 */
+.fcm-h{min-height:69px}
+
+/* ---- drawio 预览 / 编辑（资料区与流程图弹窗共用） ---- */
+.dio-shell{position:absolute;inset:0;display:flex}
+.dio-root .dio-shell{position:relative;flex:1;min-height:360px}
+.dio-frame{flex:1;width:100%;height:100%;border:0;background:#fff}
+.dio-mask{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:8px;background:rgba(255,255,255,.88);color:var(--ink3);font-size:12.5px;padding:24px}
+.dio-mask.static{position:relative;min-height:240px;background:transparent}
+.dio-mask .note{max-width:520px}
+.dio-root{display:flex;flex-direction:column;min-height:420px;height:100%;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.dio-root.full{position:fixed;inset:0;z-index:80;border-radius:0;border:0}
+.dio-head{display:flex;align-items:center;gap:6px;padding:8px 12px;border-bottom:1px solid var(--line);flex:none;min-width:0}
+.dio-name{display:flex;flex-direction:column;min-width:0}
+.dio-name b{font-size:13px}
+.dio-name span{font-size:11px;color:var(--ink3)}
+.dio-hint{flex:none;padding:6px 12px;border-top:1px solid var(--line);background:var(--panel2);font-size:11.5px;color:var(--ink3)}
+.dio-preview{flex:1;display:flex;flex-direction:column;min-height:0}
+.dio-ptb{display:flex;align-items:center;gap:4px;padding:6px 10px;border-bottom:1px solid var(--line);flex:none}
+.dio-viewport{flex:1;min-height:300px;position:relative;overflow:hidden;background:radial-gradient(circle at 1px 1px,#D9E2EE 1px,transparent 1.2px) 0 0/20px 20px,#FAFBFE}
+.dio-viewer{position:absolute;inset:0}

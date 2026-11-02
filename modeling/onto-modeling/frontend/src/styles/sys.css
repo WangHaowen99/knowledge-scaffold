@@ -1,0 +1,14 @@
+/* 系统设置（sys）补充样式；设计稿的 pl-* 在 plugins.css */
+.pl-pane.sy-wide{max-width:1100px}
+.sy-err{color:var(--red)}
+.sy-nowrap{white-space:nowrap}
+.pl-radio .opt.sy-dis{opacity:.5;cursor:not-allowed}
+.pl-ico.sy-bad{background:var(--r50);color:var(--red)}
+.seg button[disabled]{opacity:.45;cursor:not-allowed}
+.sy-src{margin-left:6px;text-decoration:none}
+.sy-pick{cursor:pointer}
+.sy-tok{font-size:12.5px;padding:8px 10px;word-break:break-all}
+.sy-price .tbl{table-layout:fixed}
+.sy-price .inp{height:32px}
+.sy-price .inp input{width:100%}
+.tbl-wrap.sy-price{overflow:visible}

@@ -1,0 +1,61 @@
+/* 运维中心 4 页（设计稿 pages-70-ops.js 的 addCSS 原样移植，op-*） */
+.op-foot{margin:18px 6px 0;padding:10px 10px;border-radius:10px;background:var(--panel3);font-size:11.5px;color:var(--ink3);line-height:1.6}
+.op-foot b{color:var(--ink2)}
+.op-role{margin:0 4px 12px;padding:10px;border-radius:11px;border:1px solid var(--line);background:#fff;font-size:11.5px;color:var(--ink3)}
+.op-role b{color:var(--ink);font-size:12.5px}
+.op-k6{display:grid;grid-template-columns:repeat(6,1fr);gap:12px}
+.op-k5{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
+.op-g21{display:grid;grid-template-columns:2fr 1fr;gap:16px}
+.op-g12{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.op-g3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.op-g12>*,.op-g21>*,.op-g3>*,.op-k5>*,.op-k6>*{min-width:0}
+.op-us{display:flex;gap:28px;margin-bottom:12px}
+.op-us b{display:block;font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
+.op-us span{font-size:11.5px;color:var(--ink3)}
+.op-axis{display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted);margin-top:6px;font-variant-numeric:tabular-nums}
+.op-al{display:flex;gap:10px;padding:10px 0;border-bottom:1px dashed var(--line)}
+.op-al:last-child{border-bottom:0}
+.op-al .lv{width:8px;height:8px;border-radius:50%;margin-top:6px;flex:none}
+.op-mc{padding:12px 14px;border-radius:13px;background:#fff;border:1px solid var(--line)}
+.op-mc .lb{font-size:11.5px;color:var(--ink3);display:flex;align-items:center;gap:6px}
+.op-mc .v{font-size:19px;font-weight:700;margin:2px 0 4px;font-variant-numeric:tabular-nums}
+.op-mc .v small{font-size:11.5px;font-weight:500;color:var(--ink3);margin-left:4px}
+.op-tags{display:flex;flex-wrap:wrap;gap:6px}
+.op-tg{display:inline-flex;align-items:center;height:24px;border-radius:7px;border:1px solid var(--line2);background:#fff;font-size:11.5px;overflow:hidden}
+.op-tg span{padding:0 7px;color:var(--ink3);background:var(--panel2);height:100%;display:flex;align-items:center;border-right:1px solid var(--line)}
+.op-tg b{padding:0 7px;font-weight:600;font-family:var(--mono);font-size:11px;color:var(--ink2)}
+.op-wf .r{display:grid;grid-template-columns:270px 1fr 64px;align-items:center;min-height:30px;border-bottom:1px solid var(--line);font-size:12.5px}
+.op-wf .r:last-child{border-bottom:0}
+.op-wf .nm{display:flex;align-items:center;gap:6px;white-space:nowrap;overflow:hidden}
+.op-wf .bar{position:relative;height:30px;background:repeating-linear-gradient(90deg,transparent 0 calc(10% - 1px),#EEF2F8 calc(10% - 1px) 10%)}
+.op-wf .bar i{position:absolute;top:9px;height:12px;border-radius:4px;background:linear-gradient(90deg,#93C5FD,#3B82F6)}
+.op-wf .bar i.sub{background:linear-gradient(90deg,#A5B4FC,#6366F1)}
+.op-wf .bar i.tool{background:linear-gradient(90deg,#5EEAD4,#0D9488)}
+.op-wf .bar i.wr{background:linear-gradient(90deg,#FCD34D,#F59E0B)}
+.op-wf .ms{text-align:right;color:var(--ink3);font-variant-numeric:tabular-nums;font-size:11.5px}
+.op-log{background:#FAFBFE;border:1px solid var(--line);border-radius:10px;font-family:var(--mono);font-size:11.5px;line-height:1.75;padding:6px 0;max-height:250px;overflow:auto}
+.op-log div{padding:0 12px;white-space:nowrap}
+.op-log div:hover{background:var(--b50)}
+.op-log .t{color:var(--muted)}
+.op-log .L{display:inline-block;width:42px;font-weight:700}
+.op-log .I{color:var(--blue2)}.op-log .W{color:var(--amber)}.op-log .E{color:var(--red)}
+.op-log .g{color:#6B7FA3}
+.op-big{display:flex;gap:14px;align-items:center;padding:16px 18px;border-radius:var(--r);background:#fff;border:1px solid var(--line)}
+.op-big .ico{width:46px;height:46px;border-radius:14px;display:grid;place-items:center;flex:none}
+.op-big h3{font-size:16px}
+.op-step{display:flex;align-items:stretch;gap:0}
+.op-step .s{flex:1;position:relative;padding:12px 14px 12px 14px;border:1px solid var(--line);background:#fff;margin-right:-1px}
+.op-step .s:first-child{border-radius:12px 0 0 12px}.op-step .s:last-child{border-radius:0 12px 12px 0;margin-right:0}
+.op-step .s .n{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:11.5px;font-weight:700;background:var(--panel3);color:var(--ink3)}
+.op-step .s.done .n{background:var(--blue);color:#fff}
+.op-step .s.cur{background:var(--b50);border-color:var(--b300);z-index:1}
+.op-step .s.cur .n{background:#fff;color:var(--blue);box-shadow:0 0 0 2px var(--blue3)}
+.op-step .s .t{font-weight:650;margin-top:6px}
+.op-step .s .d{font-size:11.5px;color:var(--ink3);margin-top:2px}
+.op-ck{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px dashed var(--line)}
+.op-ck:last-child{border-bottom:0}
+.op-ck .ci{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;flex:none}
+.op-ck .ci.ok{background:var(--b50);color:var(--blue)}.op-ck .ci.fix{background:var(--t50);color:var(--teal)}.op-ck .ci.w{background:var(--a50);color:var(--amber2)}
+.op-scope{display:flex;flex-wrap:wrap;gap:6px}
+.op-lock{display:inline-flex;align-items:center;gap:4px;color:var(--ink3);font-size:11.5px}
+.op-cb{display:flex;align-items:center;gap:8px;padding:7px 0;font-size:12.8px}
