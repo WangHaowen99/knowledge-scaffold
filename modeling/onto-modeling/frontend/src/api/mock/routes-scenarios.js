@@ -309,7 +309,7 @@ export function register(ctx) {
     return { total: list.length, pass: n('pass'), fail: n('fail'), stale: n('stale') };
   };
   commandHooks.push({
-    match: (b) => fromPage(b, '/ontology-trace-batch'),
+    match: (b) => fromPage(b, '/ontology-trace-batch') && !b.args?.keys?.length,
     title: (b) => `助手正在${b.text || '批量推演全部场景'}`,
     steps: ['已推演 3 / 23', '已推演 9 / 23', '已推演 16 / 23', '已推演 23 / 23'],
     start: (pid, b, task) => {
@@ -393,7 +393,8 @@ export function register(ctx) {
     return json(200, { state: 'merged', commit: out.commit, version_label: out.version_label, merged_at: new Date().toISOString() });
   }); // CS-04 / CS-05
   commandHooks.push({
-    match: (b) => fromPage(b, '/ontology-trace-refresh'),
+    // 补齐过期：后端同一条命令 /ontology-trace-batch，只带 keys（contract-changes B4c 映射表）
+    match: (b) => fromPage(b, '/ontology-trace-batch') && !!b.args?.keys?.length,
     title: (b) => `助手正在${b.text || '补齐过期场景'}`,
     steps: ['已补齐 1 / 3', '已补齐 2 / 3', '已补齐 3 / 3'],
     finish: (pid, b) => {
@@ -403,7 +404,7 @@ export function register(ctx) {
     },
   });
   commandHooks.push({
-    match: (b) => fromPage(b, '/ontology-trace-walk'),
+    match: (b) => fromPage(b, '/ontology-trace-interactive'),
     title: (b) => `助手正在${b.text || '交互走查'}`,
     steps: ['走查到第 1 步', '走查到第 2 步', '走查到第 3 步', '走查完成'],
     finish: (pid, b) => {
