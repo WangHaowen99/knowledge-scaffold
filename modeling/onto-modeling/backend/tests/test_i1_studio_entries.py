@@ -42,6 +42,10 @@ def test_create_entry_from_template(api):
     assert entry["id"] == "object:门店等级" and entry["name"] == "门店等级" and entry["path"] == "ontology/object/门店等级.md"
     text = (root / "ontology/object/门店等级.md").read_text(encoding="utf-8")
     assert text.startswith("# 对象描述") and "# 对象属性清单" in text
+    # 只有章节骨架：没有给助手看的填写指引，属性清单留表头
+    assert "{待填写" not in text and "\n>" not in text and "| 中文名称 | 英文名称 |" in text
+    for title in ("# 对象别名", "# 英文名称", "# 数据来源", "# 查询边界", "# 关联对象"):
+        assert f"\n{title}\n" in text
     assert "Onto-Source: studio" in last_message(root)
     # 同名：不管类型，[[链接]] 按名字认
     dup = client.post(base, json={"kind": "rule", "name": "门店等级"})

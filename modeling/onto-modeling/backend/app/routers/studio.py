@@ -434,10 +434,18 @@ def _template(root: Path, kind: str, from_template: bool) -> str:
             break
     else:
         text = ""
-    if from_template:
-        return text
-    # 只要章节骨架：留下标题行
-    return "".join(f"{line}\n\n" for line in text.splitlines() if re.match(r"^#{1,2}\s", line))
+    # 模板里的填写指引（`{待填写：…}`、引用块里的说明）是写给助手的，人在 Studio 里新建只要章节骨架：
+    # 标题行；from_template 时再留表格章节的表头（属性清单、输入输出），助手用的模板文件不变
+    out: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if re.match(r"^#{1,2}\s", line):
+            if out and out[-1] != "":
+                out.append("")
+            out += [line, ""]
+        elif from_template and stripped.startswith("|") and "{" not in stripped:
+            out.append(line)
+    return "\n".join(out).rstrip("\n") + "\n"
 
 
 def _name_taken(root: Path, name: str, key: str) -> bool:

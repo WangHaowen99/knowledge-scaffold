@@ -208,8 +208,9 @@ def test_template_entry_description(api):
     form = studio_form.form_from_entry(created)
     form["description"] = "合成：读者借书时出示的凭证。"
     text = put_form(client, pid, "object:借阅证", form, created["revision"]).json()["draft"]["content"]
-    assert text.startswith("# 对象描述\n合成：读者借书时出示的凭证。\n\n# 对象别名")
-    assert "{待填写：该对象对应的真实数据表名" in text  # 数据来源没动，占位原样
+    assert text.startswith("# 对象描述\n\n合成：读者借书时出示的凭证。\n\n# 对象别名")
+    # Studio 新建的是章节骨架（主控定：不带给助手的填写指引）：数据来源一节在、是空的
+    assert "{待填写" not in text and "\n# 数据来源\n" in text
 
 
 def test_rejects_key_rename_and_bad_input(api):
