@@ -8,11 +8,11 @@ import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { can } from '../../state/roles.js';
 import {
-  Button, Chip, Modal, Note,
+  Button, Chip, Icon, Modal, Note,
 } from '../../ui/index.jsx';
 import { PackIcon, UiChip } from './catalogCards.jsx';
 import {
-  PACK_CATEGORIES, blockedView, bringsView, compatRows, effectiveNote, enableToast, impactText, isDataPack, uiEffectText, updateRoute, updateToast,
+  PACK_CATEGORIES, blockedView, bringsView, compatView, effectiveNote, enableToast, impactText, isDataPack, uiEffectText, updateRoute, updateToast,
 } from './catalogModel.js';
 
 function Brings({ brings }) {
@@ -21,6 +21,31 @@ function Brings({ brings }) {
     return <ul className="sm" style={{ paddingLeft: 18, color: 'var(--ink2)', lineHeight: 1.8 }}>{v.list.map((x) => <li key={x}>{x}</li>)}</ul>;
   }
   return <div className="sm muted">{v.text}</div>;
+}
+
+// 兼容检查（R13）：全部通过时一行，点开看明细；有不通过的默认展开、只列不通过的
+function CompatChecks({ compat, ui }) {
+  const v = compatView(compat.checks, ui);
+  const [open, setOpen] = useState(v.expanded);
+  const shown = open || v.expanded;
+  return (
+    <div>
+      <div className="row sm" style={v.ok ? { cursor: 'pointer' } : undefined} onClick={v.ok ? () => setOpen((x) => !x) : undefined}>
+        <Chip tone={v.ok ? 'teal' : 'red'} sm icon={v.ok ? 'check' : 'x'}>{v.summary}</Chip>
+        {v.ok ? <span className="faint"><Icon name={open ? 'chevu' : 'chevd'} size={12} /></span> : null}
+      </div>
+      {shown ? (
+        <div className="col mt8" style={{ gap: 6 }}>
+          {v.rows.map((c) => (
+            <div className="row sm" key={c.id}>
+              <span style={{ color: c.ok ? 'var(--teal)' : 'var(--red)', display: 'inline-flex' }}><Icon name={c.ok ? 'check' : 'x'} size={12} /></span>
+              <span>{c.label}</span><span className="sp" /><span className="muted xs">{c.detail}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function EnableDialog({ dlg, projectName, busy, onOk, onClose }) {
@@ -32,7 +57,6 @@ function EnableDialog({ dlg, projectName, busy, onOk, onClose }) {
       onClose={onClose}
       icon="puzzle"
       title={`启用到「${projectName || '本项目'}」`}
-      sub="启用后保存为一个版本"
       w={560}
       foot={(
         <>
@@ -45,27 +69,16 @@ function EnableDialog({ dlg, projectName, busy, onOk, onClose }) {
         <PackIcon category={p.category} />
         <div><div className="b">{p.label}</div><div className="mono xs muted">{p.name}@{p.latest || p.version}</div></div>
       </div>
-      <div className="sec-t">兼容检查</div>
       {!compat && !error ? <div className="row sm muted"><span className="spin" />正在检查…</div> : null}
       {error ? <Note tone="red">兼容检查没做成：{error}</Note> : null}
-      {compat ? (
-        <div className="col" style={{ gap: 6 }}>
-          {compatRows(compat.checks, p.ui).map((c) => (
-            <div className="row sm" key={c.id}>
-              <Chip tone={c.ok ? 'teal' : 'red'} sm icon={c.ok ? 'check' : 'x'}>{c.ok ? '通过' : '不通过'}</Chip>
-              <span>{c.label}</span><span className="sp" /><span className="muted xs">{c.detail}</span>
-            </div>
-          ))}
-        </div>
-      ) : null}
-      {blocked ? <Note tone="red" className="mt12">暂时不能启用：{blocked.reason}。条件不满足时不会启用到一半。</Note> : null}
+      {compat ? <CompatChecks key={compat.ok ? 'ok' : 'no'} compat={compat} ui={p.ui} /> : null}
+      {blocked ? <Note tone="red" className="mt12">暂时不能启用：{blocked.reason}</Note> : null}
       <div className="sec-t" style={{ marginTop: 16 }}>会带来什么</div>
       {compat ? <Brings brings={compat.brings} /> : <div className="sm muted">{p.description}</div>}
       <div className="sec-t" style={{ marginTop: 16 }}>界面</div>
       <div className="row g8 sm"><UiChip ui={p.ui} fallback /><span className="muted">{uiEffectText(compat?.ui_effect, p.ui)}</span></div>
-      {p.category === 'capability' ? <div className="xs muted mt4">带页面的能力启用后，项目左栏「插件」分组会多出对应页面；停用后页面消失，已经产生的内容留在知识包里。</div> : null}
       <div className="mt12">
-        <Note tone="gray" icon="clock"><b>什么时候生效：</b>{effectiveNote(compat?.effective || (isDataPack(p) ? 'immediate' : 'next_message'))}</Note>
+        <Note tone="gray" icon="clock">{effectiveNote(compat?.effective || (isDataPack(p) ? 'immediate' : 'next_message'))}</Note>
       </div>
     </Modal>
   );
@@ -93,7 +106,6 @@ function ConfirmUpdateDialog({ dlg, busy, onOk, onClose }) {
       <Brings brings={compat.brings} />
       <div className="sec-t" style={{ marginTop: 12 }}>对已有产物的影响</div>
       <Note tone="teal" icon="shieldok">{impactText(compat.impact)}</Note>
-      <div className="mt12"><Note tone="gray" icon="undo">回滚：在项目设置里改回 {from} 即可，旧版本一直保留。</Note></div>
     </Modal>
   );
 }
@@ -112,7 +124,7 @@ function BlockedDialog({ dlg, onClose }) {
       w={520}
       foot={<Button kind="primary" onClick={onClose}>知道了</Button>}
     >
-      <Note tone="red">暂时不能更新：{v.reason}。条件不满足时不会更新到一半。</Note>
+      <Note tone="red">{v.reason}</Note>
       {v.details.map((t) => <div className="sm muted mt12" key={t}>{t}</div>)}
     </Modal>
   );

@@ -6,19 +6,21 @@ import { navigate, pagePath } from '../../app/router.js';
 import { errorText } from '../../api/errors.js';
 import { PageHead, ShellG } from '../../shell/Shell.jsx';
 import {
-  Button, Empty, Icon, Inp, Note, Select,
+  Button, Empty, Inp, Note, Select,
 } from '../../ui/index.jsx';
 import { PackCard, RecBar } from './catalogCards.jsx';
 import { usePackActions } from './catalogDialogs.jsx';
-import { catOf, sectionsOf } from './catalogModel.js';
-import { PluginsNav, usePluginProject } from './parts.jsx';
+import { catOf, sectionsOf, visibleCatalog } from './catalogModel.js';
+import { PluginsNav, useEvidenceOn, usePluginProject } from './parts.jsx';
 
 export default function PluginsPage({ route }) {
   const { api } = useApp();
   const { projectId, setProjectId, projects, ready } = usePluginProject(route);
   const cat = catOf(route.query);
   const [q, setQ] = useState('');
-  const [data, setData] = useState(null);
+  const [raw, setData] = useState(null);
+  const evidenceOn = useEvidenceOn();
+  const data = visibleCatalog(raw, evidenceOn);
   const [error, setError] = useState(null);
   const [pending, setPending] = useState({});
   // 推荐只在换项目时取一次：处理过的那条留着，按钮换成「已启用」「已更新」（设计稿）
@@ -48,6 +50,7 @@ export default function PluginsPage({ route }) {
   const actions = usePackActions({ projectId, projectName, onChanged: load });
   const items = data?.items || [];
   const sections = sectionsOf(items, { cat, q });
+  const recItems = visibleCatalog({ recommendations: recs.items }, evidenceOn).recommendations || [];
   const pickCat = (k) => {
     const rest = { ...(route.query || {}) };
     delete rest.cat;
@@ -56,11 +59,7 @@ export default function PluginsPage({ route }) {
 
   return (
     <ShellG active="plugins" side={<PluginsNav active={cat} counts={data?.counts || {}} onCat={pickCat} projectId={projectId} />}>
-      <PageHead
-        eyebrow={data?.counts?.provider ? '能力 · 知识 · 提供方' : '能力 · 知识'}
-        title="插件中心"
-        desc={data?.counts?.provider ? '能力包决定怎么建模，证据源提供方决定能从哪些业务系统取证据。按项目锁定版本，升级可以回滚。' : '能力包决定怎么建模，行业包带来领域知识。按项目锁定版本，升级可以回滚。'}
-      />
+      <PageHead title="插件中心" />
       <div className="pl-bar">
         <Inp w={300} icon="search" placeholder="搜索插件名称、ID 或用途…" value={q} onChange={(e) => setQ(e.target.value)} />
         <span className="sp" />
@@ -69,15 +68,14 @@ export default function PluginsPage({ route }) {
           <Select w="230px" icon="pkg" value={projectId} options={projects.map((p) => ({ value: p.id, label: p.name }))} onChange={setProjectId} />
         ) : <span className="xs faint">{ready ? '还没有项目' : ''}</span>}
       </div>
-      {recs.pid === projectId && recs.items.length ? <RecBar recs={recs.items} items={items} busy={actions.busy} onAction={actions.act} /> : null}
-      <div className="row mt12 xs muted" style={{ gap: 6 }}><Icon name="info" size={14} />启用后保存一个版本，从下一条消息开始生效；正在进行的一轮按原来的方式跑完。</div>
+      {recs.pid === projectId && recItems.length ? <RecBar recs={recItems} items={items} busy={actions.busy} onAction={actions.act} /> : null}
       {error ? (
         <Note tone="red" className="mt16">插件目录没有读出来：{error} <Button size="xs" onClick={load}>重试</Button></Note>
       ) : null}
       {!data && !error ? <div className="row mt16 sm muted"><span className="spin" />正在读取插件目录…</div> : null}
       {data ? sections.map((s) => (
         <div key={s.key}>
-          <div className="pl-sec"><h3>{s.title}</h3><span>{s.desc}</span><span className="sp" /><span>{s.items.length} 个</span></div>
+          <div className="pl-sec"><h3>{s.title}</h3></div>
           <div className="pl-grid">
             {s.items.map((p) => (
               <PackCard
@@ -93,7 +91,7 @@ export default function PluginsPage({ route }) {
           </div>
         </div>
       )) : null}
-      {data && !sections.length ? <Empty icon="search" title="没有匹配的插件">换个关键词，或切到「全部」分类。</Empty> : null}
+      {data && !sections.length ? <Empty icon="search" title="没有匹配的插件" /> : null}
       {actions.dialogs}
     </ShellG>
   );

@@ -56,3 +56,6 @@
 .pl-src{font-size:11px;font-weight:650;padding:2px 7px;border-radius:6px}
 .pl-src.env{background:#EEF1F6;color:#475569}.pl-src.data{background:var(--b50);color:var(--blue2)}.pl-src.def{background:var(--panel3);color:var(--ink3)}.pl-src.pkg{background:var(--i50);color:var(--indigo)}
 .pl-gauge{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:#fff}
+/* 插件详情「已启用到本项目」的下拉菜单（R14） */
+.pd-menu{position:relative;display:inline-flex}
+.pd-menu .menu{position:absolute;right:0;top:42px;z-index:30;min-width:260px;text-align:left}

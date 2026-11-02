@@ -31,7 +31,7 @@ function FootPart({ part, busy, onAction, detail }) {
 
 /** 一张插件卡。pendingKind 来自 PL-05；busy 是这张卡正在做兼容检查 */
 export function PackCard({ p, projectId, pendingKind, requested, busy, onAction }) {
-  const { tags, meta } = cardTags(p);
+  const { tags } = cardTags(p);
   const foot = cardFoot(p, { pendingKind, requested });
   const detail = () => goDetail(p.name, projectId);
   return (
@@ -46,7 +46,6 @@ export function PackCard({ p, projectId, pendingKind, requested, busy, onAction 
       <div className="pl-desc">{p.description}</div>
       <div className="row wrap g4">
         {tags.map((t) => <Chip key={t.text} tone={t.tone} sm icon={t.icon || undefined} data-pop={t.pop || undefined}>{t.text}</Chip>)}
-        {meta ? <span className="xs faint ell">{meta}</span> : null}
       </div>
       <div className="pl-foot">
         <FootPart part={foot.left} busy={busy} onAction={(a) => onAction(a, p)} detail={detail} />
@@ -63,7 +62,6 @@ export function RecBar({ recs, items, busy, onAction }) {
     <div className="pl-rec mt16">
       <div style={{ width: 150, flex: 'none' }}>
         <div className="row g4 b" style={{ color: 'var(--blue2)' }}><Icon name="sparkle" size={14} />为你的项目推荐</div>
-        <div className="xs muted mt4">根据资料、已登记的数据源和切片进度</div>
       </div>
       {recs.map((r) => {
         const item = items.find((x) => x.name === r.pack.name);
