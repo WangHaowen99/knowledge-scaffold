@@ -173,6 +173,8 @@ def _material_target(root: Path, path: str) -> str:
     rel = (path or "").strip().lstrip("/")
     if not rel:
         raise ApiError("invalid_argument", "要指定 path", 400, {"fields": {"path": "required"}})
+    if "\x00" in rel:
+        raise ApiError("invalid_argument", "path 不合法", 400, {"fields": {"path": "pattern"}})
     if not material_text.is_material(rel):
         raise ApiError("path_forbidden", "只能查看资料区的资料", 403, {"path": rel})
     target = (root / rel).resolve()

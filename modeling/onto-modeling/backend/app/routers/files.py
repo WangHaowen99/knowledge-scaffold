@@ -45,9 +45,13 @@ def _guard_path(path: str) -> str:
     rel = (path or "").strip().lstrip("/")
     if not rel:
         raise ApiError("invalid_argument", "要指定 path", 400, {"fields": {"path": "required"}})
-    if rel.split("/", 1)[0] in PROTECTED_TOP:
+    if "\x00" in rel:
+        raise ApiError("invalid_argument", "path 不合法", 400, {"fields": {"path": "pattern"}})
+    # 先规范化再判：`ontology/../.git/config`、`./.git/config` 这类写法不能绕过受保护目录
+    parts = [part for part in rel.replace("\\", "/").split("/") if part not in ("", ".")]
+    if not parts or ".." in parts or parts[0] in PROTECTED_TOP:
         raise ApiError("path_forbidden", "该路径不允许访问", 403, {"path": rel})
-    return rel
+    return "/".join(parts)
 
 
 def _target(project_id: str, request: Request, path: str) -> tuple[Path, Path, str]:

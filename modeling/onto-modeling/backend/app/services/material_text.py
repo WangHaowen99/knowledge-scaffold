@@ -47,6 +47,8 @@ def name_positions(text: str, name: str) -> list[int]:
 
 def is_material(rel: str) -> bool:
     rel = (rel or "").strip("/")
+    if "\x00" in rel:
+        return False
     return (rel.startswith("resource/") and rel != RESOURCE_DIRECTIVES and not rel.startswith("resource/systems/")
             and ".." not in rel.split("/"))
 
@@ -65,9 +67,10 @@ def parse_anchor(anchor: str) -> dict | None:
         return None
     path, _, fragment = rest.partition("#")
     path = unquote(path).strip().lstrip("/")
-    if not path:
+    fragment = unquote(fragment).strip()
+    if not path or "\x00" in path or "\x00" in fragment:
         return None
-    return {"scheme": scheme, "path": path, "fragment": unquote(fragment).strip()}
+    return {"scheme": scheme, "path": path, "fragment": fragment}
 
 
 def file_anchor(path: str, fragment: str = "") -> str:
@@ -203,7 +206,13 @@ def _join(parts: list, target: int | None) -> tuple[str, list[dict]]:
 
 
 def resolve_many(root: Path, anchors: list) -> list[dict]:
-    return [resolve(root, str(anchor)) for anchor in anchors]
+    out = []
+    for anchor in anchors:
+        try:
+            out.append(resolve(root, str(anchor)))
+        except (OSError, ValueError):  # 一个坏锚点不拖垮整批：这一项判为格式不对
+            out.append(_unresolved(str(anchor), SCHEME_FILE, "invalid"))
+    return out
 
 
 # ---------------------------------------------------------------------------
