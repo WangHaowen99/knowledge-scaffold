@@ -193,6 +193,7 @@ def test_ui_session_serves_static_files_with_isolation_headers(env):
     assert csp.startswith("sandbox allow-scripts") and "allow-same-origin" not in csp
     assert "connect-src 'none'" in csp and "frame-ancestors 'self'" in csp and "default-src 'none'" in csp
     assert page.headers["x-content-type-options"] == "nosniff" and page.headers["referrer-policy"] == "no-referrer"
+    assert page.headers["allow-csp-from"] == "*"  # 接受平台 iframe 的 csp 属性再加一层
     base = body["url"].rsplit("/", 1)[0]
     script = client.get(f"{base}/editor.js")
     assert script.status_code == 200 and script.headers["content-type"].startswith("text/javascript")

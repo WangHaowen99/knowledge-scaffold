@@ -39,16 +39,28 @@
      `ui/`；每次读都按项目锁文件重查，包停用或换了版本立即 404；
    - 响应头 `Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'self'
      'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'none'; form-action 'none'; base-uri 'none';
-     frame-ancestors 'self'`，加 `nosniff`、`no-referrer`、`no-store`：直接打开也是沙箱；发不了任何请求，脚本只能是
-     包里的外部文件；
-   - 和平台只经 postMessage 窄接口通信（界面接口 `UI_API = 1.0`）：`context.get`、`artifact.read`、`artifact.save`、
-     `chat.command`、`theme.get`。读写只限本包登记的产物类型，保存就是 AR-05（走写入事务，命中写入范围时如实回 423），
-     命令只能是本包的（`/<包名>-…`），主题只给设计系统的几样变量。认不出的方法、越权的类型与命令一律拒绝。
-6. **静态检查**：包里的前端代码只能放在 `ui/` 下（`frontend` 检查）；新增 `ui` 检查——编辑器入口要在、视图引用的编辑器
+     frame-ancestors 'self'`，加 `nosniff`、`no-referrer`、`no-store`、`Allow-CSP-From: *`：直接打开也是沙箱；包页面自己
+     发不了请求，脚本只能是包里的外部文件；
+   - 和平台只经窄接口通信（界面接口 `UI_API = 1.0`）：iframe 先往父窗口发一次握手 `{onto_ui, connect: true}`，平台转交一个
+     MessagePort，之后的请求、回应、推送都走这个端口；每个 iframe 只握手一次。方法 `context.get`、`artifact.read`、
+     `artifact.save`、`chat.command`、`theme.get`。读写只限本包登记的产物类型，保存就是 AR-05（走写入事务，命中写入范围时
+     如实回 423）；命令只能是本包清单 `contributes.commands` 里声明的（PL-20 给出列表），参数只能是不超过 200 字的单行值、
+     说明不超过 500 字，同一个编辑器 5 秒最多一条；平台把 `origin.pack` 带给 S-20，服务端按包再校验一次（同样的限制，
+     同一项目同一包 3 秒一条）。主题只给设计系统的几样变量。认不出的方法、越权的类型与命令一律拒绝；
+   - **导航走了就拆掉**：上面这些头只管包自己的页面。包页面可以把自己导航到外站，外站页面没有这些限制。iframe 第二次
+     `load` 就认定已经离开：拆掉桥接、卸掉 iframe、提示用户可以重新打开；握手时转交的端口随原页面一起失效，外站页面
+     重新握手也不理。另外 iframe 带 `csp` 属性（Chromium 的 CSP 嵌入强制，来源写平台的完整地址）：外站页面不回
+     `Allow-CSP-From` 就加载不了，回了也只能用平台上包界面的静态资源、发不了请求；
+   - **挡不住的残余通道**：包页面在离开时可以把已经读到的数据写进目标地址带出去（导航本身就是一次请求）；包页面在自己
+     加载完之前就跳走、由外站页面抢先握手时，平台分辨不出来（在不支持 CSP 嵌入强制的浏览器里，外站页面能用这个端口）。
+     这两条要靠包的审核与发布流程（管理员审核、灰度、退回）兜，不是窄接口能挡的。
+6. **保留包名与命令重名**：上传包不能叫 `ontology`、`onto`、`kernel`、`platform`（租户也不能叫 `core`）；命令不能和 core、
+   包仓库里别的包（任何版本）声明的命令重名。
+7. **静态检查**：包里的前端代码只能放在 `ui/` 下（`frontend` 检查）；新增 `ui` 检查——编辑器入口要在、视图引用的编辑器
    要声明、`ui_api` 要满足；上传包的 `ui/` 只能是 html、js、css、json、map、txt、图片与字体，拒绝要编译的源码
    （jsx、ts、vue……）、`package.json`、`node_modules`、点文件与服务端可执行内容；符号链接与 `..` 照旧在解压与
    `symlinks` 检查拦下。凭据扫描加上 js、css。
-7. **`ui/` 不进装配目录**：agent 用不到，两个包的 `ui/` 也不会互相冲突。
+8. **`ui/` 不进装配目录**：agent 用不到，两个包的 `ui/` 也不会互相冲突。
 
 ## Alternatives considered
 
@@ -64,7 +76,8 @@
 
 - 契约新增 PL-20、PL-21、`card_type: artifact`、`ArtifactType.view.detail.editor`、`ManifestSummary.contributes.editors`、
   窄接口协议与 `UI_API`（`_plan/contract-changes.md` B5a 节）。
-- 上传包能读写的只有自己登记的产物，跨包读写、调助手、拿登录态都做不到；它仍能在 iframe 里显示任意内容，
-  拿到的产物内容也能显示出来——这是给它开编辑器的本意。`img-src` 等只放同源，减少把内容带到外面的通道。
+- 上传包能读写的只有自己登记的产物，跨包读写、发别的包的命令、直接调助手、拿登录态都做不到；它仍能在 iframe 里显示
+  任意内容，拿到的产物内容也能显示出来——这是给它开编辑器的本意。`img-src` 等只放同源，减少把内容带到外面的通道；
+  导航带出数据这条残余通道见第 5 条。
 - 票据存在后端进程内存里，后端重启后 iframe 里后续的静态请求会 404，重新打开编辑器即可。
 - 卡片的出卡点在会话宿主「一轮结束」那一处；变更集（B4b）改了一轮结束的流程后，这一处调用要跟着挪。

@@ -255,3 +255,44 @@ test('审查第 1 条：命令只认本包清单里的（不按前缀），参�
   await handle(parseRequest(req('chat.command', { command: '/sticky-notes-tidy' })), c, timed);
   assert.equal(timed.calls.length, 2);
 });
+
+test('审查第 2 条：桥接走一次性 MessageChannel；iframe 第二次 load（导航走了）就拆掉，新页面接不上', async () => {
+  const { createBridgeHost } = await import('../src/app/packBridge.js');
+  const posted = [];
+  const target = { postMessage: (data, origin, transfer) => posted.push({ data, origin, transfer }) };
+  const calls = [];
+  let navigated = 0;
+  const host = createBridgeHost({
+    target: () => target,
+    respond: async (call) => { calls.push(call.method); return { ok: call.method }; },
+    onNavigated: () => { navigated += 1; },
+  });
+  const nextReply = (port) => new Promise((resolve) => { port.onmessage = (e) => resolve(e.data); });
+  // 窗口级的请求（不握手）不理
+  host.onWindowMessage({ source: target, data: { onto_ui: '1.0', id: 'w1', method: 'artifact.read', params: {} } });
+  assert.equal(posted.length, 0);
+  // 别的来源的握手不理
+  host.onWindowMessage({ source: {}, data: { onto_ui: '1.0', connect: true } });
+  assert.equal(posted.length, 0);
+  host.onWindowMessage({ source: target, data: { onto_ui: '1.0', connect: true } });
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].data.event, 'connected');
+  const port = posted[0].transfer[0];
+  host.onLoad();
+  const reply = nextReply(port);
+  port.postMessage({ onto_ui: '1.0', id: 'r1', method: 'theme.get', params: {} });
+  assert.deepEqual(await reply, { onto_ui: '1.0', id: 'r1', ok: true, result: { ok: 'theme.get' } });
+  // 再握手一次（比如导航后的新页面抢先发）不给第二个通道
+  host.onWindowMessage({ source: target, data: { onto_ui: '1.0', connect: true } });
+  assert.equal(posted.length, 1);
+  // 第二次 load：已经导航离开，拆掉
+  host.onLoad();
+  assert.equal(navigated, 1);
+  assert.equal(host.connected, false);
+  host.onWindowMessage({ source: target, data: { onto_ui: '1.0', connect: true } });
+  assert.equal(posted.length, 1);
+  port.postMessage({ onto_ui: '1.0', id: 'r2', method: 'artifact.read', params: {} });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(calls, ['theme.get']);
+  port.close();
+});

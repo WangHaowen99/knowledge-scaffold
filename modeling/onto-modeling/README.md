@@ -250,10 +250,12 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
     按包懒加载，包没启用时不加载；平台模块用 `@onto/…` 引，第三方库用平台前端已有的依赖。流程图编辑器就在
     `assets/packs/diagram/ui/flowchart/`。
   - 上传包：`ui/` 里只能放构建好的静态资源（html、js、css、json、图片、字体），入口 `ui/<id>/index.html`，脚本写成
-    外部文件。编辑器在不同源的 iframe 里跑，拿不到登录态、发不了请求，只能经 postMessage 窄接口（界面接口 1.0）：
-    `context.get`、`artifact.read`、`artifact.save`（就是 AR-05，助手正在改时如实回 423）、`chat.command`（只能发本包的
-    命令）、`theme.get`。消息格式 `{onto_ui: "1.0", id, method, params}`，回应 `{onto_ui, id, ok, result | error}`。
-    合成样例在 `backend/tests/fixtures/packs/sticky-notes/`。
+    外部文件。编辑器在不同源的 iframe 里跑，拿不到登录态、自己发不了请求，只能经窄接口（界面接口 1.0）：先往父窗口发
+    `{onto_ui: "1.0", connect: true}` 握手，平台转交一个 MessagePort，之后请求 `{onto_ui, id, method, params}`、回应
+    `{onto_ui, id, ok, result | error}` 都走它。方法有 `context.get`、`artifact.read`、`artifact.save`（就是 AR-05，助手正在改时
+    如实回 423）、`chat.command`（只能发本包清单里的命令，参数是短的单行值，5 秒一条）、`theme.get`。编辑器把自己导航到别的
+    页面，平台就关掉它。包名不能叫 `ontology` 这类保留名，命令不能和已入库的包重名。合成样例在
+    `backend/tests/fixtures/packs/sticky-notes/`。
   - `ui/` 不进装配目录。
 - **证据源**（ADR-0056）：本期只留接口。`backend/app/evidence/` 只有提供方、网关客户端、数据源登记的协议；
   `/api/v1/evidence/…`、项目下的 `/evidence/…`、`/anchors/resolve` 与提供方安装接口一律回 `501 evidence_not_available`；

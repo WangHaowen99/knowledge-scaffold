@@ -5,7 +5,8 @@
   这个版本的 `ui/`，不是登录态，泄露给 iframe 里的代码也拿不到别的东西；
 - 每次读都按项目锁文件重查：包停用、换了版本，旧票据立即打不开；
 - 响应加隔离头：CSP `sandbox allow-scripts`（直接打开也是不透明源，读不到平台的 localStorage）、
-  `connect-src 'none'`（发不了请求，只能经 postMessage 窄接口）、`frame-ancestors 'self'`、nosniff。
+  `connect-src 'none'`（包页面自己发不了请求，只能经窄接口）、`frame-ancestors 'self'`、nosniff；包页面把自己导航到
+  外站后这些头就不管用了，由前端宿主在 iframe 第二次 load 时拆掉桥接（ADR-0055 第 5 条）。
 
 票据存在进程内（后端单进程）；重启后作废，前端重新申请即可。
 """
@@ -43,6 +44,9 @@ CSP = "; ".join((
 ))
 ISOLATION_HEADERS = {
     "Content-Security-Policy": CSP,
+    # 平台的 iframe 带 csp 属性（Chromium 的 CSP 嵌入强制）：这个头表示接受嵌入方再加一层 CSP，
+    # 包页面导航到外站时，外站页面不带它就加载不了（ADR-0055 第 5 条）
+    "Allow-CSP-From": "*",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
     "Cache-Control": "no-store",

@@ -1,7 +1,10 @@
 // 上传包 iframe 编辑器与平台之间的窄接口（界面接口 1.0，ADR-0055；契约「包自带界面」一节）。
-// iframe 是不同源的（sandbox 只给 allow-scripts），拿不到登录态、发不了请求，只能 postMessage 到这里；
-// 平台按下面的白名单代办，越权的、认不出的一律拒绝。只做消息校验与分派，不碰 DOM，可以单测。
+// iframe 是不同源的（sandbox 只给 allow-scripts），拿不到登录态，只能经这里；平台按下面的白名单代办，
+// 越权的、认不出的一律拒绝。只做消息校验与分派，不碰 DOM，可以单测。
 //
+// 握手：iframe 往父窗口发 {onto_ui: "1.0", connect: true}，平台回 {onto_ui, event: "connected"} 并转交一个 MessagePort；
+// 之后的请求、回应、推送都走这个端口。每个 iframe 只握手一次；iframe 再次 load（导航走了）就拆掉，
+// 端口随原页面一起失效，导航到的新页面接不上（审查第 2 条）。
 // 请求：{onto_ui: "1.0", id, method, params}；回应：{onto_ui, id, ok: true, result} 或 {onto_ui, id, ok: false, error}；
 // 平台主动推：{onto_ui, event: "artifact.changed" | "readonly.changed", data}。
 import { UI_API } from './packUi.js';
@@ -160,4 +163,66 @@ export function readTheme(get) {
     if (v) vars[name] = v;
   }
   return { mode: 'light', vars };
+}
+
+/**
+ * iframe 一侧的桥接宿主（PackFrame 用）。target()：iframe 的 contentWindow；respond(call)：校验后的调用 → 结果（抛错即错误回应）；
+ * onNavigated()：iframe 第二次 load 时调，宿主据此卸掉 iframe。
+ * 窗口消息只认来自 target 的一次握手；请求只走握手时转交的端口。
+ */
+export function createBridgeHost({ target, respond, onNavigated }) {
+  let port = null;
+  let used = false;
+  let loads = 0;
+  let closed = false;
+
+  const close = () => {
+    closed = true;
+    if (port) { port.onmessage = null; port.close(); }
+    port = null;
+  };
+
+  const onPortMessage = async (e) => {
+    if (closed) return;
+    const reply = (msg) => { if (!closed && port) port.postMessage(msg); };
+    let call;
+    try {
+      call = parseRequest(e.data);
+    } catch (err) {
+      if (err.id) reply(errorResponse(err.id, err));
+      return;
+    }
+    if (!call) return;
+    try {
+      const result = await respond(call);
+      reply(response(call.id, result));
+    } catch (err) {
+      reply(errorResponse(call.id, err));
+    }
+  };
+
+  return {
+    get connected() { return !!port && !closed; },
+    onWindowMessage(e) {
+      const win = target();
+      if (closed || used || !win || e.source !== win) return;
+      if (!isObject(e.data) || !('onto_ui' in e.data) || e.data.connect !== true) return;
+      used = true;
+      const channel = new MessageChannel();
+      port = channel.port1;
+      port.onmessage = onPortMessage;
+      win.postMessage(event('connected', { ui_api: UI_API }), '*', [channel.port2]);
+    },
+    onLoad() {
+      loads += 1;
+      if (loads > 1 && !closed) {
+        close();
+        onNavigated?.();
+      }
+    },
+    send(name, data) {
+      if (!closed && port) port.postMessage(event(name, data));
+    },
+    close,
+  };
 }

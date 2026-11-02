@@ -1,29 +1,42 @@
-// 合成样例编辑器：只经 postMessage 窄接口（界面接口 1.0）和平台通信，拿不到登录态，也发不了请求。
+// 合成样例编辑器：只经窄接口（界面接口 1.0）和平台通信，拿不到登录态，也发不了请求。
+// 先往父窗口握手，平台转交一个 MessagePort，之后的请求都走它（页面一旦导航走，端口就失效）。
 (function () {
   var UI_API = '1.0';
   var pending = {};
   var seq = 0;
   var current = null;
+  var port = null;
+  var queue = [];
 
   function call(method, params) {
     seq += 1;
     var id = 'r' + seq;
     return new Promise(function (resolve, reject) {
       pending[id] = { resolve: resolve, reject: reject };
-      window.parent.postMessage({ onto_ui: UI_API, id: id, method: method, params: params || {} }, '*');
+      var msg = { onto_ui: UI_API, id: id, method: method, params: params || {} };
+      if (port) port.postMessage(msg); else queue.push(msg);
     });
   }
 
-  window.addEventListener('message', function (event) {
-    if (event.source !== window.parent) return;
+  function onPortMessage(event) {
     var msg = event.data || {};
-    if (msg.onto_ui == null) return;
     if (msg.event === 'artifact.changed') { load(); return; }
+    if (msg.event === 'readonly.changed') { show('state', msg.data && msg.data.readonly ? '只读' : ''); return; }
     var waiter = msg.id && pending[msg.id];
     if (!waiter) return;
     delete pending[msg.id];
     if (msg.ok) waiter.resolve(msg.result); else waiter.reject(msg.error || {});
+  }
+
+  window.addEventListener('message', function (event) {
+    if (event.source !== window.parent || port) return;
+    var msg = event.data || {};
+    if (msg.onto_ui == null || msg.event !== 'connected' || !event.ports || !event.ports[0]) return;
+    port = event.ports[0];
+    port.onmessage = onPortMessage;
+    queue.splice(0).forEach(function (m) { port.postMessage(m); });
   });
+  window.parent.postMessage({ onto_ui: UI_API, connect: true }, '*');
 
   function show(id, text) { document.getElementById(id).textContent = text; }
 
@@ -66,6 +79,9 @@
       .then(function () { show('state', 'sent'); })
       .catch(function (error) { show('state', error.code || 'error'); });
   });
+
+  // 给端到端测试用：在 iframe 里直接发窄接口调用
+  window.stickyNotes = { call: call };
 
   call('context.get', {}).then(function () { return call('theme.get', {}); }).then(function (theme) {
     Object.keys(theme.vars || {}).forEach(function (name) { document.body.style.setProperty(name, theme.vars[name]); });
