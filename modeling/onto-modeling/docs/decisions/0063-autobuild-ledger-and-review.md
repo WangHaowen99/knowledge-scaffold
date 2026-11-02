@@ -1,0 +1,45 @@
+# 0063 自主构建的决策台账、挂起、复核与按片撤回
+
+## Context
+
+详设 8.5：每个自动决定记进台账（问题、选择、依据、置信度、影响的条目）；拿不准、又不能自己决定的挂起，进待处理；结束后
+在待处理的「自主构建复核」里逐项接受或修改，也可以撤回某一片。契约 AB-10～AB-17、IN-01～IN-04，F2 补充第 11～14 条
+（高置信合并项 `review:<run_id>:high`、`autobuild_summary.high_confidence_pending`、IN-02 的版本标签），方案 C8「自主构建
+撤回单片用反向提交」。B4b 已有 `revert_merged` 与待处理的 `review` / `suspension` 来源、IN-04 `accept_high_confidence` 预留。
+
+## Decision
+
+1. **台账与挂起**存在运行记录里（ADR-0060），接口投影成 LedgerEntry、Suspension；撤回了的片上的决定、挂起不再列。
+2. **待处理**（`flow/inbox._autobuild`）：低于阈值的自动决定一条一项（`review:<条目>`，标题是「片名：选择」）；同一次运行里
+   高置信、还没复核的合成一项（`review:<运行>:high`，`high_confidence=true`，`detail={group, run_id, threshold, entries}`）；
+   挂起的问题一个一项（`suspension:<问题>`，读不出的资料只能 `use_generic`）。节点级的「需复核（自主构建）」不再单列
+   （由台账代替）；运行中这一片的变更集不列「修改待确认」；自主构建的执行记录不列「续跑」。IN-01 `filter=autobuild_review`
+   给 `autobuild_summary`（最近一次或 `run_id` 指定的那次）。
+3. **复核**：
+   - 接受（AB-11 / IN-03 `accept`）、一键接受高置信（AB-13 / IN-04 / 合并项的 `accept`）；
+   - 改判（AB-12 / IN-03 `rejudge`）：条目记 `rejudged`、改判到的选项，往运行对话发这一片这一步的命令（带改判说明，
+     「只重做受影响的部分」），返回页面命令任务；运行还没结束时任务 `queued`，运行结束后再发；
+   - 「需复核」标记：一片里的自动决定都复核过就去掉这一片的标记（格子从「自主完成」变成已确认）；没有决定的片在整次
+     运行都复核完时去掉；没有还需复核的片时去掉节点上的标记。改判重做的部分在用户确认生效时由原有逻辑去掉标记。
+   - 复核被改掉的比例（改判 / 复核过的）进可观测：计数 `onto_autobuild_reviews_total{outcome}`、即时值
+     `onto_autobuild_rejudge_ratio`。
+4. **挂起的问题**（AB-14、AB-15 / IN-03 `answer`、`use_generic`）：回答后记 `answered`；运行已结束时往运行对话发这一片
+   这一步的命令把跳过的部分补上（陪伴模式），`defer_to_next_run` 记 `deferred` 留到下一次；门禁修不好挂起的那一片，
+   回答后同样补做。
+5. **按片撤回**（AB-17 / IN-03 `revert_slice`）：`revert_merged(source="revert", keep=("research/blueprint.json",))`——在主线上
+   写这一片合入提交的反向提交，另存为新版本；蓝图里这一片记下的条目名不撤（后面的片合入时也会改蓝图）；这一片的切片
+   步骤记录作废（按主线现状重算，条目没了就回到可开始）。合入之后这一片的文件又被改过（后面的片、人在 Studio 里）不撤：
+   `409 slice_not_revertible {reason: later_changes, entities}`；已撤回 `already_reverted`、没生效过 `not_merged`；有运行
+   没结束时 `409 autobuild_running`。撤回后对话里的运行报告卡更新（这一片「已回退到运行前 · v0.x」）。
+
+## Alternatives considered
+
+- **待处理按节点出一项「自主构建完成的内容要你复核」**：没法逐条接受、改判，F2 已按台账画了界面。
+- **撤回连同蓝图一起撤**：后面的片合入时都会改 `research/blueprint.json`，按「合入后又被改过就不撤」的口径，除了最后一片
+  都撤不动。
+- **撤回时重写后面的片**：反向提交只动这一片，后面的片依赖它的改动时按冲突拒绝，由用户决定。
+
+## Consequences
+
+- 撤回后蓝图里会留下这一片运行时新记进来的条目名（规划了、主线上没有），这一片显示为没做完。
+- 一片没有自动决定、整次运行又一直没复核完时，这一片一直显示「自主完成」。

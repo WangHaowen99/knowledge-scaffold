@@ -106,6 +106,9 @@ def _begin(session, text: str, task_id: str | None) -> None:
         record = exec_records.start(session.project_id, session.conversation_id, root=root, flow=flow,
                                     command=slash, command_name=name, engine_instance=session.engine_instance,
                                     task_id=task_id, text=text)
+        if getattr(session, "run_id", None):
+            # 自主构建的一步（契约 ExecRecord.run_id）：重启后由运行器续跑，不放续跑卡、不进待处理
+            record = exec_records.update(session.project_id, record["id"], run_id=session.run_id) or record
         session.exec_id = record["id"]
         _write_marker(root, record)
         publish_exec(session.project_id, record, root, flow)

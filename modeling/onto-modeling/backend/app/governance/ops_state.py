@@ -129,7 +129,10 @@ def online_counts() -> dict:
     manager = _sessions()
     sessions = list(manager._sessions.values())
     running = sum(1 for session in sessions if _is_running(session))
-    return {"online": len(sessions), "running": running, "autobuild_running": 0}
+    from ..services.autobuild import store as autobuild_store
+
+    return {"online": len(sessions), "running": running,
+            "autobuild_running": len(autobuild_store.all_runs(autobuild_store.RUNNING))}
 
 
 async def force_disconnect(project_id: str, reason: str) -> bool:

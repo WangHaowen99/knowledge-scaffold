@@ -22,6 +22,7 @@ from ..api.errors import ApiError
 from ..governance.http import reject_new_session
 from ..services import conversation_store, project_events, streams, uploads
 from ..services.agent_sessions import SessionError, manager
+from ..services.autobuild import store as autobuild_store
 from ..services.session_host import command_tasks, exec_records, timeline, turns
 from ..services.session_host import views as session_views
 
@@ -110,6 +111,7 @@ async def delete_conversation(project_id: str, cid: str, request: Request):
     """对话记录与模型上下文一并删除，累计用量照常计入项目。"""
     deps.require_owner(project_id, request)
     conversation_id = _resolve(project_id, cid)
+    autobuild_store.ensure_no_run(project_id, conversation_id=conversation_id)
     snapshot = session_views.conversation(project_id, conversation_id)
     await manager.delete_conversation(project_id, conversation_id)
     project_events.conversation_changed(project_id, conversation_id, deleted=True, snapshot=snapshot)
@@ -176,6 +178,7 @@ def conversation_state(project_id: str, cid: str, request: Request):
         config_pending = {"changes": fingerprint.describe(list(session.pending_changes) or ["model"]),
                           "effective": "next_message"}
     active = exec_records.open_record(project_id, conversation_id)
+    view = session_views.conversation(project_id, conversation_id) or {}
     return {
         "conversation_id": conversation_id,
         "state": state,
@@ -190,7 +193,7 @@ def conversation_state(project_id: str, cid: str, request: Request):
         "active_exec": _exec_view(project_id, active),
         "open_changeset": _open_changeset(project_id, conversation_id),
         "config_pending": config_pending,
-        "autobuild_run_id": None,  # 自主构建（P3）
+        "autobuild_run_id": view.get("run_id"),
         "pool": _pool(),
     }
 
@@ -269,7 +272,8 @@ def _reference_text(references: list) -> str:
 
 
 async def _send(project_id: str, root: Path, conversation_id: str, request: Request, text: str, meta: dict) -> dict:
-    """发给对话并给出 S-07 的响应形状；会话层的错误转契约错误码。"""
+    """发给对话并给出 S-07 的响应形状；会话层的错误转契约错误码。自主构建没结束时一律 409（契约 2.10）。"""
+    autobuild_store.ensure_no_run(project_id)
     reject_new_session(project_id)
     _ensure_not_busy(project_id, conversation_id)
     live = manager.get(project_id)
@@ -312,7 +316,17 @@ async def send_message(project_id: str, cid: str, request: Request):
     prompt += _reference_text(references)
     meta = {"display_text": text.strip() or "（附件）", "attachments": [item["ref"] for item in saved],
             "references": references, "origin": None}
-    result = await _send(project_id, root, conversation_id, request, prompt, meta)
+    run = autobuild_store.active(project_id)
+    if run is not None and run.get("conversation_id") == conversation_id:
+        # 运行对话里发的是补充说明（契约 3.22）：不打断运行，下一步开始前带给助手
+        from ..services.autobuild.runner import runner
+
+        record = runner.note(project_id, run, prompt, meta)
+        result = {"message_id": timeline.message_id(record), "seq": timeline.external_id(record),
+                  "conversation_id": conversation_id, "state": "running", "delivery": "deferred",
+                  "queue_position": None}
+    else:
+        result = await _send(project_id, root, conversation_id, request, prompt, meta)
     if key:
         _SENT[(project_id, conversation_id, key)] = result
         while len(_SENT) > _SENT_MAX:
@@ -327,6 +341,7 @@ async def send_message(project_id: str, cid: str, request: Request):
 async def interrupt(project_id: str, cid: str, request: Request):
     deps.require_owner(project_id, request)
     conversation_id = _resolve(project_id, cid)
+    autobuild_store.ensure_no_run(project_id, conversation_id=conversation_id)  # 运行中用 AB-06 暂停
     live = manager.get(project_id)
     running = bool(live and live.conversation_id == conversation_id and live.state in ("running", "connecting"))
     manager.interrupted_execs.pop((project_id, conversation_id), None)
@@ -340,6 +355,7 @@ async def restart(project_id: str, cid: str, request: Request):
     """丢弃模型上下文（对话记录保留），下次发消息按最新配置重连。"""
     deps.require_owner(project_id, request)
     conversation_id = _resolve(project_id, cid)
+    autobuild_store.ensure_no_run(project_id, conversation_id=conversation_id)
     live = manager.live_status(project_id)
     if live and live["busy"] and live["conversation_id"] == conversation_id:
         raise ApiError("session_busy", "对话正在运行，请先打断", 409, {"running_conversation_id": conversation_id})

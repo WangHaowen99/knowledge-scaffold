@@ -16,6 +16,16 @@ from ..kernel.changesets import service
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}", tags=["changesets"])
 
+
+def _not_in_run(project_id: str, changeset_id: str) -> None:
+    """自主构建这一片的变更集由运行器自动合入：运行没结束时不能手动确认、撤回（409 autobuild_running）。"""
+    from ..services.autobuild import store as autobuild_store
+
+    record = service.get(deps.workspaces, project_id, changeset_id)
+    run = autobuild_store.active(project_id)
+    if run is not None and record.get("source") == "autobuild" and record.get("run_id") == run["run_id"]:
+        raise ApiError("autobuild_running", "自主构建运行中", 409, {"run_id": run["run_id"]})
+
 STATES = ("open", "pending_confirm", "merged", "discarded", "conflict")
 SOURCES = ("assistant", "autobuild", "studio", "mcp", "import", "plugin")
 
@@ -95,6 +105,7 @@ async def merge_changeset(project_id: str, changeset_id: str, request: Request):
     deps.require_writable(project_id, request)
     body = await deps.json_body(request)
     expected = body.get("expected_head")
+    _not_in_run(project_id, changeset_id)
     if expected is not None and not isinstance(expected, str):
         raise ApiError("invalid_argument", "expected_head 要是提交号", 400, {"fields": {"expected_head": "type"}})
     return await merge_and_announce(project_id, changeset_id, actor=deps.actor(request), expected_head=expected or None)
@@ -104,6 +115,7 @@ async def merge_changeset(project_id: str, changeset_id: str, request: Request):
 async def discard_changeset(project_id: str, changeset_id: str, request: Request):
     """CS-05 撤回这一轮。"""
     deps.require_writable(project_id, request)
+    _not_in_run(project_id, changeset_id)
     return await discard_and_announce(project_id, changeset_id, actor=deps.actor(request))
 
 

@@ -23,8 +23,30 @@ SOURCE_LABELS = {
 LABEL_MAX = 120
 
 
-def _version(entry: dict, head: str) -> dict:
+def _autobuild_slices(project_id: str) -> dict[str, dict]:
+    """自主构建合入的片：变更集 → {run, needs_review}（契约 7.6 Version.run，F3 补充第 19 条）。"""
+    from ..services.autobuild import store, views
+
+    index = {}
+    for run in store.runs(project_id):
+        pending: dict[str, int] = {}
+        for entry in views.live_ledger(run):
+            if entry.get("review_state") == "pending":
+                slice_id = (entry.get("slice") or {}).get("id")
+                pending[slice_id] = pending.get(slice_id, 0) + 1
+        for unit in run.get("units") or []:
+            info = (run.get("slices") or {}).get(unit["id"]) or {}
+            if info.get("changeset_id") and info.get("commit"):
+                index[info["changeset_id"]] = {
+                    "run": {"run_id": run["run_id"], "run_no": run["run_no"], "slice_id": unit["id"],
+                            "slice_name": unit["name"]},
+                    "needs_review": pending.get(unit["id"], 0)}
+    return index
+
+
+def _version(entry: dict, head: str, autobuild: dict | None = None) -> dict:
     trailer = entry["trailer"]
+    slice_run = (autobuild or {}).get(trailer.get("Onto-Changeset") or "") if entry["source"] == "autobuild" else None
     return {
         "commit": entry["commit"],
         "n": entry["n"],
@@ -38,8 +60,8 @@ def _version(entry: dict, head: str) -> dict:
         "release": entry["release"],
         "current": entry["commit"] == head,
         "changeset_id": trailer.get("Onto-Changeset"),
-        "run": None,
-        "needs_review": 0,
+        "run": (slice_run or {}).get("run"),
+        "needs_review": (slice_run or {}).get("needs_review", 0),
         "trailer": {
             "source": trailer.get("Onto-Source", ""),
             "author": trailer.get("Onto-Author", ""),
@@ -58,7 +80,8 @@ def list_versions(project_id: str, request: Request, source: str = "", cursor: s
         raise ApiError("invalid_argument", "source 取值不合法", 400, {"fields": {"source": "enum"}})
     state = mainline.state(root)
     entries = deps.workspaces.versions(project_id)
-    items = [_version(entry, state["head"]) for entry in entries if not wanted or entry["source"] in wanted]
+    autobuild = _autobuild_slices(project_id)
+    items = [_version(entry, state["head"], autobuild) for entry in entries if not wanted or entry["source"] in wanted]
     page = deps.page(items, cursor, limit, {"source": sorted(wanted)})
     return {
         "items": page["items"], "next_cursor": page["next_cursor"], "total": page["total"],
@@ -69,7 +92,10 @@ def list_versions(project_id: str, request: Request, source: str = "", cursor: s
 @router.post("/revert")
 async def revert(project_id: str, request: Request):
     """整树恢复到目标版本，之后新增的文件一并删除；生成新版本，历史保留。"""
+    from ..services.autobuild import store as autobuild_store
+
     root = deps.require_writable(project_id, request)
+    autobuild_store.ensure_no_run(project_id)
     body = await deps.json_body(request)
     result = deps.workspaces.revert_to(project_id, str(body.get("commit") or ""), author=deps.actor(request))
     target = result["reverted_to"]

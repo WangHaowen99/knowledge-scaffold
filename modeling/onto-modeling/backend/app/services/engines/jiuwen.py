@@ -616,7 +616,7 @@ class JiuwenEngine(ObservableEngine):
         self._turn_task: asyncio.Task | None = None
         self._buffered: list[str] = []  # 轮内追加的消息（用户原文），本轮结束后接续
         # 宿主注入（session_host.injection.Injector，方案 B4）：宿主经 ctx 给，单测直接构造时自建
-        self._injector = ctx.injector or injection.Injector(ctx.cwd)
+        self._injector = ctx.injector or injection.Injector(ctx.cwd, ctx.conversation_id)
         # 上下文引擎与流式运行都按这个 id 寻址：每条会话一个，default 沿用单会话时期的值
         self._sid = f"onto-{ctx.project_id}"
         if ctx.conversation_id != "default":

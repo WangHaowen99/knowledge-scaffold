@@ -65,7 +65,8 @@ def sweep_execs(manager) -> dict:
             # 启动时没有命令在跑：副本里留下的命令锁与写入范围一起清掉（审查第 9 条）
             worktree.clear_run_state(copy)
         view = exec_records.view(record, root=root, flow=_flow(root))
-        if record.get("conversation_id"):
+        if record.get("conversation_id") and not record.get("run_id"):
+            # 自主构建的一步不放续跑卡：运行器启动后按执行记录接着做（AB-09）
             agent_sessions.append_history(project_id, record["conversation_id"],
                                           {"type": "card", "payload": exec_records.resume_card(record, view)})
         try:

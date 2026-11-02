@@ -378,6 +378,11 @@ async def enter_maintenance(request: Request):
     except ops_state.MaintenanceError as exc:
         raise _maintenance_error(exc) from None
     _ops_audit(request, "ops.maintenance_enter", mode=state["mode"])
+    if body.get("autobuild", "pause_at_safe_point") == "pause_at_safe_point":
+        # 自主构建（O-21 autobuild）：在跑的做完这一片就暂停，排队的等维护结束
+        from ..services.autobuild.runner import runner as autobuild_runner
+
+        autobuild_runner.pause_all_at_safe_point()
     return JSONResponse(status_code=201, content=_maintenance_view(state))
 
 
@@ -405,13 +410,16 @@ async def maintenance_force_disconnect(request: Request):
 
 
 @router.delete("/maintenance")
-def exit_maintenance(request: Request):
+async def exit_maintenance(request: Request):
     _write(request)
     try:
         ops_state.exit_maintenance(deps.actor(request))
     except ops_state.MaintenanceError as exc:
         raise _maintenance_error(exc) from None
     _ops_audit(request, "ops.maintenance_exit")
+    from ..services.autobuild.runner import runner as autobuild_runner
+
+    await autobuild_runner.admit()  # 维护期间排队的自主构建接着开始
     return {"active": False}
 
 

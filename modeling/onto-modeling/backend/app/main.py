@@ -31,6 +31,9 @@ async def _lifespan(app: FastAPI):
     # 补提交写入意图、存量迁移、核对装配目录、修对话历史、把没结束的执行改判中断——并留存报告（O-35）
     await asyncio.to_thread(startup_recovery.run, deps.workspaces, include_background=False)
     manager.start_background()  # 空闲会话回收（方案 4.1.1）
+    from .services.autobuild.runner import runner as autobuild_runner
+
+    await autobuild_runner.resume_after_restart()  # 停机时在跑的自主构建从检查点接着跑（AB-09）
     write_example()  # 内置推荐表副本，供管理员复制成自定义表
     # 定期备份：距上次已超过间隔时启动即补跑
     backup_task = asyncio.create_task(backup.scheduler_loop(deps.workspaces))
@@ -45,6 +48,7 @@ async def _lifespan(app: FastAPI):
         backup_task.cancel()
         recovery_task.cancel()
         await asyncio.gather(backup_task, recovery_task, return_exceptions=True)
+        await autobuild_runner.shutdown()  # 运行停在检查点，下次启动接着跑
         await manager.shutdown()
         from .services.engines import jiuwen_remote
 

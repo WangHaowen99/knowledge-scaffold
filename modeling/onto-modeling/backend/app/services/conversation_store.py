@@ -152,6 +152,9 @@ def _view(project_id: str, conversation_id: str, entry: dict) -> dict:
         "title_manual": bool(entry.get("title_manual")),
         "created_at": created_at,
         "updated_at": updated_at,
+        # 自主构建的对话（契约 7.7 Conversation.kind、run_id）：标题固定「自主构建 · 运行 #n」
+        "kind": entry.get("kind") or "chat",
+        "run_id": entry.get("run_id"),
     }
 
 
@@ -180,11 +183,15 @@ def exists(project_id: str, conversation_id: str) -> bool:
         return conversation_id in _load(project_id)
 
 
-def create(project_id: str) -> dict:
+def create(project_id: str, *, kind: str = "chat", run_id: str | None = None, title: str = "") -> dict:
     with _lock:
         conversations = _load(project_id)
         conversation_id = uuid.uuid4().hex[:12]
         conversations[conversation_id] = _new_entry()
+        if kind != "chat":
+            conversations[conversation_id].update(kind=kind, run_id=run_id)
+        if title:
+            conversations[conversation_id]["title"] = title
         _write(project_id, conversations)
         return _view(project_id, conversation_id, conversations[conversation_id])
 

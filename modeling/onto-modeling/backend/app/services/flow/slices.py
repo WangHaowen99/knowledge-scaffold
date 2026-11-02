@@ -384,6 +384,16 @@ def confirm(root: Path, flow: dict, pairs: list, *, doc: dict | None, needs_revi
         node_state.save(root, stored)
 
 
+def forget(root: Path, slice_id: str, step_ids: list[str]) -> None:
+    """这一片这几步的确认记录作废（自主构建按片撤回之后）：按主线现状重算，条目没了就回到可开始。"""
+    with node_state._lock:
+        stored = node_state.load(root)
+        records = (stored.get("slices") or {}).get(slice_id) or {}
+        for step_id in step_ids:
+            records.pop(step_id, None)
+        node_state.save(root, stored)
+
+
 def skip(root: Path, slice_id: str, step_id: str, *, reason: str = "") -> None:
     with node_state._lock:
         stored = node_state.load(root)

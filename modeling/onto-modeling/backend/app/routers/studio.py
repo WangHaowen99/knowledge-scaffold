@@ -135,6 +135,16 @@ def graph(project_id: str, request: Request, include_mentions: bool = True):
     return {"head": mainline.state(root)["head"], "nodes": nodes, "edges": edges, "clusters": [], "chains": chains}
 
 
+def _review_marks(project_id: str) -> dict:
+    """自主构建生效、还没复核完的片改到的条目（ST-03 `needs_review`、ST-04 `needs_review`）。"""
+    from ..services.autobuild import review
+
+    try:
+        return review.entry_marks(project_id)
+    except Exception:  # noqa: BLE001 - 标记是附加信息
+        return {}
+
+
 @router.get("/entries")
 def entries(
     project_id: str, request: Request, kind: str = "", q: str = "", status: str = "", sort: str = "name",
@@ -144,6 +154,7 @@ def entries(
     data, _ = _graph(root)
     drafts = studio_service._load(project_id, "drafts")
     scope = _scope(project_id)
+    marks = _review_marks(project_id)
     rows = []
     for node in data["nodes"]:
         rel = node["path"]
@@ -151,7 +162,8 @@ def entries(
             "id": f"{node['kind']}:{node['id']}", "kind": node["kind"], "key": node["id"], "name": node["label"],
             "refs_out": node["out"], "refs_in": node["in"],
             "status": "editing" if rel in drafts else "confirmed",
-            "needs_review": False, "locked": _locked(scope, f"{node['kind']}:{node['id']}", rel), "plugin": None,
+            "needs_review": f"{node['kind']}:{node['id']}" in marks,
+            "locked": _locked(scope, f"{node['kind']}:{node['id']}", rel), "plugin": None,
         })
     counts = {"all": len(rows), **{kind_: sum(1 for row in rows if row["kind"] == kind_) for kind_ in KINDS}, "flowchart": None}
     kinds = set(filter(None, kind.split(",")))
@@ -233,7 +245,7 @@ def entry_detail(project_id: str, entry_id: str, request: Request):
     return {
         "id": f"{kind}:{key}", "kind": kind, "key": key, "name": element["label"], "path": rel,
         "description": node.get("description", ""),
-        "status": "editing" if draft else "confirmed", "needs_review": None,
+        "status": "editing" if draft else "confirmed", "needs_review": _review_marks(project_id).get(f"{kind}:{key}"),
         "sections": [{"level": item["level"], "title": item["title"], "content_md": item["content"]} for item in element["sections"]],
         "fields": fields,
         "relations": {"declared": declared, "mentions": mentions},

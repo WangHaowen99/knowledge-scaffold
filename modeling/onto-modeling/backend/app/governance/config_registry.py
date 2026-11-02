@@ -290,6 +290,15 @@ def _context_value(name: str):
     return read
 
 
+def _autobuild_value(name: str):
+    def read():
+        from ..services.autobuild import limits
+
+        return limits.stored().get(name)
+
+    return read
+
+
 C = ConfigItem
 declare(
     # 部署与路径
@@ -326,6 +335,9 @@ declare(
       edit_page="ops-ctl", precedence=UI_FIRST, data_dir=_pool_value("idle_ttl_s"), description="空闲会话回收阈值（秒）"),
     C("ONTO_WEB_SESSION_REAPER_INTERVAL", "30", "int", minimum=5, maximum=3600, description="空闲回收巡检间隔（秒）"),
     C("ONTO_WEB_CLI_PATH", "", "path", effect="new_session", description="降级兼容包的外部 CLI 路径"),
+    # 自主构建（方案 B13）：平台同时运行的上限（1–16），超出的排队；0 不合法（启动时报配置错误、回落默认值）
+    C("ONTO_WEB_AUTOBUILD_MAX_RUNS", "2", "int", minimum=1, maximum=16, effect="immediate", edit_page="sys",
+      precedence=UI_FIRST, data_dir=_autobuild_value("max_concurrent_runs"), description="自主构建同时运行上限"),
     # 稳定引擎（Claude）部署机兜底
     C("ANTHROPIC_BASE_URL", "", "url", effect="next_message", edit_page="sys",
       precedence=UI_FIRST, data_dir=_model_settings_value("base_url"), description="稳定引擎模型网关"),
