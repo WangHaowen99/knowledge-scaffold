@@ -963,6 +963,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           owner, name: b.name, externalId, domain: b.domain,
           background: b.background, targetUsers: b.targetUsers, glossaryPrefs: b.glossaryPrefs,
           runtime: b.runtime === 'agent' ? 'agent' : 'legacy',
+          requireGoalConfirmation: b.requireGoalConfirmation === true,
         });
         return reply.code(201).send({ project });
       } catch (error) {
@@ -1127,6 +1128,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.post('/api/projects/:id/documents', async (req, reply) => {
       const p = getProject((req.params as any).id);
       if (!p || p.owner !== req.user!.username) return reply.code(404).send({ error: '项目不存在' });
+      // 资料上传会触发助手续跑；创建时填写的目标确认前不开工
+      if (p.goalStatus === 'pending') {
+        return reply.code(409).send({ code: 'PROJECT_GOAL_CONFIRMATION_REQUIRED', error: '请先确认建模目标' });
+      }
       const replacementOf = String((req.query as any)?.replacementOf ?? '').trim();
       const autoContinue = String((req.query as any)?.agentFollowUp ?? '1') !== '0';
       const uploadBatchId = String((req.query as any)?.uploadBatchId ?? '').trim().slice(0, 200);

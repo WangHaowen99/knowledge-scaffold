@@ -33,6 +33,8 @@ const selPackageVersion = (s) => s.packageVersion;
 const selStatusText = (s) => s.statusText;
 const selReplayUntilSeq = (s) => s.replayUntilSeq;
 const selMaterials = (s) => s.materials;
+const selGoalPending = (s) => s.project?.goalStatus === 'pending';
+const selPendingUploads = (s) => s.pendingUploads;
 const selCandidateRevisionRefreshKey = (s) => s.candidateRevisionRefreshKey;
 const selPendingInteractionMessageId = (s) => {
   for (let index = s.messages.length - 1; index >= 0; index -= 1) {
@@ -62,6 +64,7 @@ export default function RightPane() {
   const statusText = useStore(store, selStatusText);
   const replayUntilSeq = useStore(store, selReplayUntilSeq);
   const materials = useStore(store, selMaterials);
+  const goalPending = useStore(store, selGoalPending);
   const candidateRevisionRefreshKey = useStore(store, selCandidateRevisionRefreshKey);
   const interactionId = useStore(store, selPendingInteractionMessageId);
   const [candidateAttentionKey, setCandidateAttentionKey] = useState('');
@@ -242,6 +245,7 @@ export default function RightPane() {
           {base.map((m) => <Message key={m.id} m={m} />)}
           {user.map((m) => <Message key={m.id} m={m} />)}
           {!demo && restoredInteractionMessage && <Message m={restoredInteractionMessage} />}
+          {!demo && goalPending && <GoalConfirmCard key={projectId} />}
           {!demo && <MaterialPurposeBatchCard materials={materials} />}
           {!demo && projectId && <CandidateRevisionPanel
             projectId={projectId}
@@ -255,7 +259,7 @@ export default function RightPane() {
             }}
             title="需要你确认的修改"
           />}
-          {!demo && !base.length && !restoredInteractionMessage
+          {!demo && !base.length && !restoredInteractionMessage && !goalPending
             && pendingMaterialPurposeReviews(materials).length === 0
             && !candidateAttentionKey
             && <div className="empty">{loading ? '正在加载项目…' : '助手接手后，进度、问题和变更都会出现在这里'}</div>}
@@ -345,6 +349,92 @@ export default function RightPane() {
 
       <Composer />
     </>
+  );
+}
+
+// 与创建页的目标输入上限一致
+const GOAL_MAX_LENGTH = 2000;
+
+// 开始建模前确认创建时填写的目标：确认后按原流程开工，修改则提交新的目标再开工
+export function GoalConfirmCard() {
+  const goal = useStore(store, (s) => s.project?.background || '');
+  const projectId = useStore(store, selProjectId);
+  const pendingUploads = useStore(store, selPendingUploads);
+  const stagedNames = pendingUploads
+    .filter((batch) => batch.projectId === projectId)
+    .flatMap((batch) => batch.files.map((file) => file.name));
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [failure, setFailure] = useState('');
+  const submit = async (background) => {
+    if (saving) return;
+    setSaving(true); setFailure('');
+    try {
+      await actions.confirmProjectGoal(background);
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : '建模目标确认失败，请重试');
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="wb-msg" aria-label="确认建模目标">
+      <div className="wb-who"><b>助手</b></div>
+      <div className="wb-msg-assistant-body">
+        <div className="card card-wait">
+          <div className="card-h">确认建模目标<span className="spacer" />开始建模前请确认</div>
+          <div className="card-b">
+            {editing ? (
+              <div className="wb-count-input">
+                <textarea className="input" rows={4} value={draft} maxLength={GOAL_MAX_LENGTH}
+                  aria-label="新的建模目标" aria-describedby="goal-confirm-count" disabled={saving}
+                  onChange={(event) => setDraft(event.target.value)} />
+                <span id="goal-confirm-count" className="wb-count">{draft.length} / {GOAL_MAX_LENGTH}</span>
+              </div>
+            ) : (
+              <>
+                <div className="wb-goal-confirm-text">{goal}</div>
+                <div className="wb-purpose-batch-intro">
+                  确认后助手会以这个目标为起点开始建模；需要调整请点「修改」提交新的目标。
+                </div>
+              </>
+            )}
+            {stagedNames.length > 0 && (
+              <div className="wb-goal-confirm-files">
+                <b>已暂存 {stagedNames.length} 份资料，确认后自动上传并开始解析</b>
+                <ul>{stagedNames.map((name, index) => <li key={`${index}-${name}`} title={name}>{name}</li>)}</ul>
+              </div>
+            )}
+            {failure && <div className="wb-purpose-error" role="alert">{failure}</div>}
+            <div className="btn-row wb-goal-confirm-actions">
+              {editing ? (
+                <>
+                  <button className="btn btn-p" type="button" disabled={saving || !draft.trim()}
+                    aria-busy={saving} onClick={() => void submit(draft)}>
+                    {saving ? '提交中…' : '提交新目标'}
+                  </button>
+                  <button className="btn" type="button" disabled={saving}
+                    onClick={() => { setEditing(false); setFailure(''); }}>
+                    取消
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button className="btn btn-p" type="button" disabled={saving}
+                    aria-busy={saving} onClick={() => void submit()}>
+                    {saving ? '确认中…' : '确认'}
+                  </button>
+                  <button className="btn" type="button" disabled={saving}
+                    onClick={() => { setDraft(goal); setEditing(true); setFailure(''); }}>
+                    修改
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

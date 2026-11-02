@@ -3,6 +3,9 @@ import { createModelingProject, downloadTermTemplate, savePackageDataSource } fr
 import { actions, store, materialPurposeLabel } from '../lib/appStore.js';
 import Icon from '../ui/Icon.jsx';
 
+// 与知识包说明的后端上限（package-store requiredText 2_000）一致，超长在输入阶段拦住。
+const GOAL_MAX_LENGTH = 2000;
+
 export function initialUploadOptions(files) {
   return {
     followUp: true,
@@ -50,7 +53,9 @@ export default function CreatePage() {
     if (!name.trim() || creating) return;
     setCreating(true); setError('');
     try {
-      const result = await createModelingProject({ name: name.trim(), background: goal.trim(), domain: '' });
+      const result = await createModelingProject({
+        name: name.trim(), background: goal.trim(), domain: '', requireGoalConfirmation: true,
+      });
       const projectId = result.project.id;
       await savePackageDataSource(projectId, packageDataSourceType);
       store.set({
@@ -80,6 +85,7 @@ export default function CreatePage() {
         replayUntilSeq: 0,
         autoStartSent: false,
       });
+      // 填了目标时项目先停在确认卡：upload 会把初始资料暂存，确认后再上传并续跑
       const initialUpload = files.length
         ? actions.upload(files.map((item) => item.file), initialUploadOptions(files))
         : null;
@@ -121,8 +127,12 @@ export default function CreatePage() {
 
           <div className="wb-field">
             <label htmlFor="pg">一句话说明这个知识包要解决什么问题（可以先粗略写，助手会带你确认）</label>
-            <textarea id="pg" className="input" rows={2} value={goal} onChange={(event) => setGoal(event.target.value)}
-              placeholder="先写一个粗略目标，助手会结合资料带你确认" />
+            <div className="wb-count-input">
+              <textarea id="pg" className="input" rows={2} value={goal} maxLength={GOAL_MAX_LENGTH}
+                aria-describedby="pg-count" onChange={(event) => setGoal(event.target.value)}
+                placeholder="先写一个粗略目标，助手会结合资料带你确认" />
+              <span id="pg-count" className="wb-count">{goal.length} / {GOAL_MAX_LENGTH}</span>
+            </div>
           </div>
 
           <div className={`wb-drop${over ? ' over' : ''}`}

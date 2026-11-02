@@ -26,6 +26,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from .base import project_goal_section
+
 _HOOK_TIMEOUT_SECONDS = 15
 
 # jiuwen 工具名 → Claude hook 协议里的工具名（matcher 与 tool_input 键两边同形）
@@ -67,7 +69,7 @@ class JiuwenAssetLoader:
             index.append((path.stem, desc))
         return index
 
-    def system_prompt(self) -> str:
+    def system_prompt(self, project_goal: str = "") -> str:
         parts: list[str] = []
         try:
             parts.append(self.rules_file.read_text(encoding="utf-8").strip())
@@ -95,6 +97,9 @@ class JiuwenAssetLoader:
             "`update-progress`、git 提交等）。收尾未完成前不得宣布任务完成或结束回合。\n"
             "- 全程使用中文。"
         )
+        goal_section = project_goal_section(project_goal)
+        if goal_section:
+            parts.append(goal_section)
         return "\n\n".join(parts)
 
     # ---- 斜杠命令展开 ----
