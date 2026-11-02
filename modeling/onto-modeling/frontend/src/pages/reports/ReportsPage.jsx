@@ -11,11 +11,11 @@ import { inlineTokens } from '../workbench/md.js';
 import { anchorChipLabel } from '../studio/studioModel.js';
 import '../../styles/reports.css';
 import {
-  ITEM_STATUS, LINK_STATS, PURPOSE_LABEL, PURPOSE_TONE, RECHECK_KINDS, TYPE_TONE, eyebrow, fmtStamp, infoPairs, linkKind,
+  ITEM_STATUS, LINK_STATS, PURPOSE_LABEL, PURPOSE_TONE, RECHECK_KINDS, fmtStamp, infoPairs, linkKind,
   locateTarget, materialCounts, progressView, repairView,
 } from './reportModel.js';
 
-const FIX_TOAST = '已发给助手：逐条修复，完成后重新运行对应校验并汇报';
+const FIX_TOAST = '已发给助手';
 
 // 正文：[[条目]] 画成条目链接，[^n] 画成出处小标签（悬停看原文）
 function RichText({ text, anchors }) {
@@ -87,7 +87,7 @@ function Arbitration({ q, onAnswered }) {
         ))}
       </div>
       <div className="row mt12">
-        <span className="xs faint grow">裁决后助手按你的方向改，再跑一次检查</span>
+        <span className="sp" />
         <Button size="sm" kind="primary" disabled={!pick || busy} onClick={answer}>确认裁决</Button>
       </div>
     </div>
@@ -113,7 +113,7 @@ function RepairCard({ repair, items, arbitration, onAnswered }) {
           </div>
           <div className="grow">
             <div className="row"><b>{v.title}</b>{v.exhausted ? <Chip tone="indigo" sm>已到上限</Chip> : null}</div>
-            <div className="sm muted mt4">{v.note}</div>
+            {v.note ? <div className="sm muted mt4">{v.note}</div> : null}
           </div>
         </div>
       ) : null}
@@ -126,7 +126,6 @@ function RawPane({ raw }) {
   return (
     <div className="bd">
       <div className="row mb12">
-        <span className="xs muted">原文 · Markdown</span>
         <span className="sp" />
         <Button size="xs" icon="copy" disabled={!raw} onClick={async () => { try { await navigator.clipboard.writeText(raw.content_md); toast('已复制', 'copy'); } catch { toast('复制失败，请手动选择', 'alert'); } }}>复制</Button>
       </div>
@@ -153,9 +152,8 @@ function ResearchBody({ report }) {
           <div className="xs muted mt4">识别业务项 {found.items ?? 0} · 术语 {found.terms ?? 0} · 规则候选 {found.rule_candidates ?? 0}{allVerified ? ' · 来源全部可核验' : ''}</div>
         </div>
       </div>
-      <div className="mt16" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
+      <div className="mt16" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
         {[
-          ['资料', `${x.total ?? 0} 份 · 读全 ${x.read_pct ?? 0}%`],
           ['候选', `对象 ${x.candidates?.objects ?? 0} · 规则 ${x.candidates?.rules ?? 0}`],
           ['待答问题', `${x.open_questions ?? 0} 个`],
           ['资料矛盾', x.contradictions?.total ? `${x.contradictions.total} 处 · ${x.contradictions.resolved >= x.contradictions.total ? '已裁决' : `${x.contradictions.total - (x.contradictions.resolved || 0)} 处待裁决`}` : '没有'],
@@ -246,7 +244,7 @@ export default function ReportsPage({ route }) {
     const kind = RECHECK_KINDS.includes(current?.type) ? current.type : 'rule';
     try {
       const r = await api.recheckReports(pid, { kind, mode: 'regression' });
-      if (r?.report) { toast('链接检查已完成', 'check'); reload(); } else toast('已开始重新校验（回归模式）', 'refresh');
+      if (r?.report) { toast('链接检查已完成', 'check'); reload(); } else toast('已开始重新校验', 'refresh');
     } catch (e) { fail(e); }
   };
 
@@ -267,14 +265,13 @@ export default function ReportsPage({ route }) {
     ) : (
       <>
         {isLink ? null : <Seg items={[['items', '逐条审阅'], ['raw', '报告原文']]} value={pane} onChange={setPane} />}
-        <Button size="sm" kind="primary" icon="sparkle" disabled={!its.some((x) => x.status !== 'fixed')} onClick={fixAll}>逐条修复（发给助手）</Button>
+        <Button size="sm" kind="primary" icon="sparkle" disabled={!its.some((x) => x.status !== 'fixed')} onClick={fixAll}>全部发给助手</Button>
       </>
     );
     header = (
       <div className="card-h" style={{ paddingBottom: 12 }}>
         <div>
-          <div className="xs muted">{eyebrow(current, verification)}</div>
-          <h3 style={{ fontSize: 16, marginTop: 2 }}>{current.name}</h3>
+          <h3 style={{ fontSize: 16 }}>{current.name}</h3>
         </div>
         <span className="sp" />
         {actions}
@@ -287,9 +284,9 @@ export default function ReportsPage({ route }) {
         <div className="bd">
           {isLink ? (
             <div className="row g12">
-              {LINK_STATS.map(([k, t, d]) => (
+              {LINK_STATS.map(([k, t]) => (
                 <div key={k} className="stat grow" style={{ padding: '12px 14px' }}>
-                  <div className="lb">{t}</div><div className="v" style={{ fontSize: 22 }}>{current.extras?.[k] ?? 0}</div><div className="d">{d}</div>
+                  <div className="lb">{t}</div><div className="v" style={{ fontSize: 22 }}>{current.extras?.[k] ?? 0}</div>
                 </div>
               ))}
             </div>
@@ -324,11 +321,11 @@ export default function ReportsPage({ route }) {
           <div style={{ padding: 10, flex: 1, overflow: 'auto' }}>
             {(list || []).map((r) => (
               <div key={r.id} className={cx('rp-it', r.id === selectedId && 'on')} onClick={() => select(r.id)}>
-                <div className="row"><b className="sm grow ell">{r.name.split(' · ')[0]}</b><Chip tone={TYPE_TONE[r.type] || 'gray'} sm>{r.type_label}</Chip></div>
+                <div className="row"><b className="sm grow ell">{r.name.split(' · ')[0]}</b></div>
                 <div className="row mt4 xs muted"><span className="num">{fmtStamp(r.at)}</span><span className="sp" /><span>{r.summary}</span></div>
               </div>
             ))}
-            {list && !list.length ? <div className="rp-empty">还没有报告。建模过程中写入即查、校验与走查都会生成报告。</div> : null}
+            {list && !list.length ? <div className="rp-empty">还没有报告</div> : null}
           </div>
         </aside>
         <section className="rp-c card">
@@ -340,7 +337,6 @@ export default function ReportsPage({ route }) {
           <Card title="处理进度" icon="activity">
             <div className="row"><span className="grow sm">{prog.text}</span><span className="num xs muted">{prog.pct}%</span></div>
             <Prog p={prog.pct} />
-            {prog.note ? <div className="xs muted mt8">{prog.note}</div> : null}
           </Card>
         </aside>
       </div>

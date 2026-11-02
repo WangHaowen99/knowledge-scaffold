@@ -1,9 +1,5 @@
-// 报告页的纯逻辑：类型色、时间与耗时的写法、修复轮次、「这份报告」的几行、条目状态与链接问题的分类
+// 报告页的纯逻辑：时间与耗时的写法、修复轮次、「这份报告」的几行、条目状态与链接问题的分类
 
-// 报告类型 → 标签色（界面叫法由服务端 type_label 给）
-export const TYPE_TONE = {
-  rule: 'red', coverage: 'red', diagram: 'red', link: 'gray', research: 'blue', candidate: 'blue', semantic: 'indigo', trace: 'teal', codegen: 'gray',
-};
 export const CHECK_LABEL = {
   rule: '规则检查', link: '链接检查', research: '资料分析', semantic: '语义检查', trace: '场景追踪', candidate: '资料分析候选',
   coverage: '覆盖检查', diagram: '流程图校验', codegen: '代码生成',
@@ -38,20 +34,6 @@ export function fmtDuration(ms) {
 
 const MODE = { regression: '回归 · 只查改动', full: '全量', research: '读全 · 出处核验' };
 
-// 标题上面那行小字
-export function eyebrow(report, verification) {
-  if (!report) return '';
-  if (report.type === 'research') {
-    const n = report.extras?.total ?? report.extras?.items?.length ?? 0;
-    const at = verification?.checked_at || report.extras?.verification?.checked_at || report.at;
-    return `资料分析 · ${n} 份资料 · 核验 ${fmtStamp(at)}`;
-  }
-  if (report.type === 'link') return `${report.scope_text}之间的链接`;
-  const sep = /」$/.test(report.scope_text || '') ? '· ' : ' · ';
-  if (report.mode === 'regression') return `${report.scope_text}${sep}回归模式 · 只查改动`;
-  return `${report.scope_text}${sep}全量`;
-}
-
 // 右侧「这份报告」
 export function infoPairs(report) {
   if (!report) return [];
@@ -66,17 +48,17 @@ export function infoPairs(report) {
   ];
 }
 
-// 右侧「处理进度」
+// 右侧「处理进度」：只给计数和进度条（服务端的 progress.note 是说明槽位，不显示）
 export function progressView(report) {
-  const p = report?.progress || { handled: 0, total: 0, note: '' };
+  const p = report?.progress || { handled: 0, total: 0 };
   const pct = p.total ? Math.round((p.handled / p.total) * 100) : 0;
   const label = report?.type === 'research' ? '候选已审阅' : '已处理';
-  return { text: `${label} ${p.handled} / ${p.total}`, pct, note: p.note };
+  return { text: `${label} ${p.handled} / ${p.total}`, pct };
 }
 
 /**
  * 修复轮次（最多 2 轮，第 9 章建议 3）：rounds 里 n 不超过上限的是「第 n 轮」，之后那一根是「现在」。
- * 返回柱子、轮次文字、说明
+ * 返回柱子、轮次文字；到上限还有没收敛的才带一句说明
  */
 export function repairView(repair, items) {
   if (!repair) return null;
@@ -85,10 +67,7 @@ export function repairView(repair, items) {
   if (bars.length && !bars.some((b) => b.cur)) bars[bars.length - 1].cur = true;
   const done = Math.min(limit, (repair.rounds || []).filter((r) => r.n <= limit).length);
   const stuck = (items || []).filter((i) => i.status === 'expert').length;
-  let note = `修复前先用影响分析把上下游一起补；最多修 ${limit} 轮。`;
-  if (repair.exhausted && stuck) note += `还剩 ${stuck} 项没收敛，不再自动重试，交给你裁决。`;
-  else if (repair.exhausted) note += '已经修满，剩下的按条处理。';
-  else note += `现在是第 ${Math.max(1, done)} 轮。`;
+  const note = repair.exhausted && stuck ? `还剩 ${stuck} 项没收敛，交给你裁决` : '';
   return { bars, title: `修复轮次 ${done} / ${limit}`, exhausted: !!repair.exhausted, note };
 }
 
@@ -105,7 +84,7 @@ const LINK_KIND = { 'LINK-ORPHAN': ['孤立', 'amber'], 'LINK-UNUSED': ['未用'
 export function linkKind(item) {
   return LINK_KIND[item?.code] || [item?.level === 'error' ? '错误' : '警告', item?.level === 'error' ? 'red' : 'amber'];
 }
-export const LINK_STATS = [['orphans', '孤立', '没有任何链接进出'], ['unused', '未用', '没有被任何操作引用'], ['dangling', '失效链接', '指向的元素不存在']];
+export const LINK_STATS = [['orphans', '孤立'], ['unused', '未用'], ['dangling', '失效链接']];
 
 // 「定位」去哪：条目去 Studio（表格或图谱），流程图去表格里的流程图行
 export function locateTarget(location) {

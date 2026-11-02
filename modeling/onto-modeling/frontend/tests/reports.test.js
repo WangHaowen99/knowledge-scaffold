@@ -4,7 +4,7 @@ import * as F from '../src/api/mock/fixtures.js';
 import { StreamHub } from '../src/api/mock/hub.js';
 import { register } from '../src/api/mock/routes-reports.js';
 import {
-  eyebrow, fmtDuration, fmtSince, fmtStamp, infoPairs, linkKind, locateTarget, materialCounts, progressView, repairView,
+  LINK_STATS, fmtDuration, fmtSince, fmtStamp, infoPairs, linkKind, locateTarget, materialCounts, progressView, repairView,
 } from '../src/pages/reports/reportModel.js';
 
 const at = (m, d, h, mi) => new Date(2026, m - 1, d, h, mi).toISOString();
@@ -26,14 +26,13 @@ const RULE = {
   previous: { at: at(10, 31, 21, 31), summary: '错误 2' }, progress: { handled: 2, total: 5, note: 'n' },
 };
 
-test('标题小字、「这份报告」、处理进度', () => {
-  assert.equal(eyebrow(RULE), '切片「超量与审批提示」· 回归模式 · 只查改动');
-  assert.equal(eyebrow({ ...RULE, scope_text: '全知识包', mode: 'full' }), '全知识包 · 全量');
-  assert.equal(eyebrow({ type: 'link', scope_text: '全知识包 · 34 个元素' }), '全知识包 · 34 个元素之间的链接');
-  assert.equal(eyebrow({ type: 'research', at: at(10, 30, 18, 20), extras: { total: 7 } }), '资料分析 · 7 份资料 · 核验 10-30 18:20');
+test('「这份报告」（范围、模式只在这里出，报告头不再重复）、处理进度', () => {
+  assert.deepEqual(infoPairs({ ...RULE, scope_text: '全知识包', mode: 'full' }).slice(1, 3), [['范围', '全知识包'], ['模式', '全量']]);
+  assert.deepEqual(infoPairs({ type: 'link', scope_text: '全知识包 · 34 个元素', mode: 'full' }).slice(0, 2), [['检查类型', '链接检查'], ['范围', '全知识包 · 34 个元素']]);
   assert.deepEqual(infoPairs(RULE), [['检查类型', '规则检查'], ['范围', '切片「超量与审批提示」'], ['模式', '回归 · 只查改动'], ['耗时', '3.2 秒'], ['上一份', '21:31 · 错误 2']]);
   assert.equal(infoPairs({ ...RULE, type: 'research', mode: 'research', extras: { total: 7 }, previous: null })[1][1], '资料区 7 份');
-  assert.deepEqual(progressView(RULE), { text: '已处理 2 / 5', pct: 40, note: 'n' });
+  // 服务端的 progress.note 是说明槽位，不再带出来
+  assert.deepEqual(progressView(RULE), { text: '已处理 2 / 5', pct: 40 });
   assert.equal(progressView({ type: 'research', progress: { handled: 41, total: 41, note: '' } }).text, '候选已审阅 41 / 41');
   assert.equal(progressView(null).pct, 0);
 });
@@ -43,15 +42,19 @@ test('修复轮次：最多 2 轮，之后那一根是「现在」，没收敛�
   const v = repairView({ rounds: [{ n: 1, count: 4 }, { n: 2, count: 2 }, { n: 3, count: 1 }], limit: 2, exhausted: true }, items);
   assert.deepEqual(v.bars.map((b) => [b.label, b.count, b.cur]), [['第 1 轮', 4, false], ['第 2 轮', 2, false], ['现在', 1, true]]);
   assert.equal(v.title, '修复轮次 2 / 2');
-  assert.equal(v.note, '修复前先用影响分析把上下游一起补；最多修 2 轮。还剩 1 项没收敛，不再自动重试，交给你裁决。');
+  assert.equal(v.note, '还剩 1 项没收敛，交给你裁决');
+  assert.equal(v.exhausted, true);
+  assert.equal(repairView({ rounds: [{ n: 1, count: 4 }, { n: 2, count: 2 }], limit: 2, exhausted: true }, [{ status: 'fixed' }]).note, '');
   const first = repairView({ rounds: [{ n: 1, count: 3 }], limit: 2, exhausted: false }, items);
   assert.equal(first.title, '修复轮次 1 / 2');
   assert.equal(first.bars[0].cur, true);
-  assert.match(first.note, /现在是第 1 轮/);
+  assert.equal(first.exhausted, false);
+  assert.equal(first.note, '');
   assert.equal(repairView(null, items), null);
 });
 
 test('链接问题分类、定位去哪、资料计数', () => {
+  assert.deepEqual(LINK_STATS.map(([k]) => k), ['orphans', 'unused', 'dangling']);
   assert.deepEqual(linkKind({ code: 'LINK-DANGLING' }), ['失效链接', 'red']);
   assert.deepEqual(linkKind({ code: 'X', level: 'warning' }), ['警告', 'amber']);
   assert.deepEqual(locateTarget({ target: { kind: 'object', id: 'object:a', key: 'a', name: 'A' }, page: 'studio' }), { page: 'studio', query: { entry: 'object:a' } });
