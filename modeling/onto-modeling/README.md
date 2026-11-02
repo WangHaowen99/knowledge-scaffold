@@ -264,22 +264,37 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
   `contributes.editors: [{id, title, ui_api}]`，视图 `detail.editor: <id>` 引用，双击产物时打开它（没有编辑器时用平台专用
   组件或通用详情）。
   - 官方包（镜像内置）：入口 `ui/<id>/index.jsx`，默认导出接 `{artifact, onClose}` 的 React 组件，随平台一起编译、
-    按包懒加载，包没启用时不加载；平台模块用 `@onto/…` 引，第三方库用平台前端已有的依赖。流程图编辑器就在
+    按包懒加载，包没启用时不加载；怎么引平台模块与第三方库见下面「包作者：官方包界面代码」。流程图编辑器就在
     `assets/packs/diagram/ui/flowchart/`。
   - 上传包：`ui/` 里只能放构建好的静态资源（html、js、css、json、图片、字体），入口 `ui/<id>/index.html`，脚本写成
     外部文件。编辑器在不同源的 iframe 里跑，拿不到登录态、自己发不了请求，只能经窄接口（界面接口 1.0）：先往父窗口发
     `{onto_ui: "1.0", connect: true}` 握手，平台转交一个 MessagePort，之后请求 `{onto_ui, id, method, params}`、回应
     `{onto_ui, id, ok, result | error}` 都走它。方法有 `context.get`、`artifact.read`、`artifact.save`（就是 AR-05，助手正在改时
     如实回 423）、`chat.command`（只能发本包清单里的命令，参数是短的单行值，5 秒一条）、`theme.get`。编辑器把自己导航到别的
-    页面，平台就关掉它。包名不能叫 `ontology` 这类保留名，命令不能和已入库的包重名。合成样例在
-    `backend/tests/fixtures/packs/sticky-notes/`。
+    页面，平台就关掉它。编辑器的只读状态随写入范围变（`context.get` 给初值，之后推 `readonly.changed`）。包名不能叫
+    `ontology` 这类保留名，命令不能和已入库的包重名。合成样例在 `backend/tests/fixtures/packs/sticky-notes/`。
   - `ui/` 不进装配目录。
+  - 助手这一轮改到的产物，在「这一轮改了什么」之后各出一张卡；确认生效前改动只在助手副本里（ADR-0046），卡片内容从副本读。
 - **证据源**（ADR-0056）：本期只留接口。`backend/app/evidence/` 只有提供方、网关客户端、数据源登记的协议；
   `/api/v1/evidence/…`、项目下的 `/evidence/…`、`/anchors/resolve` 与提供方安装接口一律回 `501 evidence_not_available`；
   助手没有 `evidence.*` 工具；界面上连接业务系统的入口不出现。
 - **主流程**：阶段、完成判定、命令前置与 `/ontology` 的下一步建议只在 core 包的 `flow.yaml` 里定义一次，
   后端进度、`state_helper.py`、`GET /api/v1/projects/{id}/flow` 都读它。「质量检查完成」= 有校验报告且
   `reports/` 下没有未处理的 `[ ]`。
+
+### 包作者：官方包界面代码
+
+官方包的 `ui/<id>/` 随平台前端一起编译，但目录在 `assets/packs/<包>/ui/`，不在前端工程里（ADR-0055 补充第 1 条）：
+
+- 平台模块一律写 `@onto/<src 下的路径>`（如 `@onto/app/context.js`、`@onto/styles/flowchart.css`），不写指向
+  `frontend/src` 的相对路径。`@onto/` 在开发服务器、单测（`frontend/tests/pack-resolve-hooks.mjs`）和镜像构建里指同一处，
+  拿到的上下文、项目流、写入范围锁才和应用是同一个实例。
+- 第三方库只用平台前端 `package.json` 里已有的依赖，写裸模块名（`react`、`@xyflow/react`），按平台前端解析；包里不放
+  `package.json`、`node_modules`。要用新库，先加进平台前端的依赖、随平台发版；平台没有的库构建直接失败。
+- 包内文件之间用相对路径，不引别的包的 `ui/`。
+- 只读按写入范围锁判断（项目上下文的 `scope`、`@onto/state/readonly.js`），保存以 AR-05 的 423 为准。
+
+上传包不适用：上传包的 `ui/` 只能是构建好的静态资源，在 iframe 里经窄接口和平台通信（见上面「包自带界面」）。
 
 ## 项目所有权
 

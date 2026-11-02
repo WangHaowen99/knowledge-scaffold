@@ -54,7 +54,8 @@ git worktree 副本、`merge-tree --write-tree` 合成、按实体检测冲突�
 6. **产物变更卡（C12）**：基点是变更集基点，在副本里算；一轮有改动就放一张新卡（`rc-<cs>-<n>`），同一变更集之前的
    卡更新到最新内容，按钮作用于同一个变更集。`state`、`changeset_id`、`checks`（相对基准新增的问题）、
    `lock_note`、`next_version_label` 给真实值；S-05 的 `open_changeset` 是这条对话里没确认的变更集。
-   助手在副本里的提交不再发 `workspace.changed`（主线没变），合入时由写入事务发。
+   助手在副本里的提交不再发 `workspace.changed`（主线没变），合入时由写入事务发。这一轮改到的插件产物在这张卡
+   之后各出一张产物卡，路径按这一轮在副本里的改动、内容从副本读（ADR-0055 补充第 2 条）。
 7. **版本编号（C14）**：主线按 `--first-parent` 计数（B2 已改），合入是一个 squash 提交，主线版本只 +1；
    侧枝合并（`--no-ff`）也只计一次。
 8. **Studio 复核草稿（C15）**：放进副本的 `.ontology-state/studio-review/`，助手才看得到。
