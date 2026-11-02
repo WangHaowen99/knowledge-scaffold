@@ -486,3 +486,27 @@ def test_review_9_metrics_exposition_has_one_family_per_name(checklist_env, tmp_
         assert sum(1 for line in text.splitlines() if line.startswith(f"# TYPE {name} ")) == 1, name
         assert sum(1 for line in text.splitlines() if line.startswith(f"# HELP {name} ")) == 1, name
     telemetry.reset_metrics()
+
+
+# ---- 审查第 10 条：contributes.nodes 里的节点文件只能在包内 ----
+
+@pytest.mark.parametrize("ref", ["{outside}", "../outside-node.yaml", "nodes/../../outside-node.yaml"])
+def test_review_10_node_files_must_be_inside_the_pack(tmp_path, ref):
+    from app.services.packs import manifest as mf
+    from app.services.packs.assembler import AssemblyError, flow_declaration
+
+    outside = tmp_path / "outside-node.yaml"
+    outside.write_text(yaml.safe_dump({"id": "naming.check", "title": "命名检查", "kind": "agent",
+                                       "placement": "on_demand", "entry": {"command": "/naming-check"}, "done": []},
+                                      allow_unicode=True), encoding="utf-8")
+    ref = ref.format(outside=outside)
+    source = make_pack(tmp_path / "src", "naming", "1.0.0", kind="node", tenant=True,
+                       files={"commands/naming-check.md": "检查\n"}, contributes={"nodes": [ref]})
+    items = checks.run(source, None, tenant=True)[1]
+    assert "manifest" in failed(items)
+    data = yaml.safe_load((source / "manifest.yaml").read_text(encoding="utf-8"))
+    data["contributes"]["nodes"] = ["placeholder"]
+    manifest = mf.parse(data)
+    manifest.contributes["nodes"] = [ref]  # 绕过清单校验也读不到包外
+    with pytest.raises(AssemblyError):
+        flow_declaration("naming", manifest, source)

@@ -372,6 +372,8 @@ def flow_declaration(name: str, manifest: Manifest, source: Path) -> dict | None
         declared = dict(declared or {})
         nodes = list(declared.get("nodes") or [])
         for rel in files:
+            if not mf._inside_pack(rel):
+                raise AssemblyError("flow", [f"{name} 的节点声明 {rel} 不在包内"])
             try:
                 node = yaml.safe_load((source / rel).read_text(encoding="utf-8")) or {}
             except (OSError, yaml.YAMLError) as exc:

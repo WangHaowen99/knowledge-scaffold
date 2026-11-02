@@ -355,7 +355,7 @@ def parse(data: dict) -> Manifest:
         value = contributes.get(key)
         if value not in (None, "") and not _inside_pack(value):
             problems.append(f"contributes.{key} 必须是包内的相对路径")
-    for key in ("artifacts", "views", "docs"):
+    for key in ("artifacts", "views", "docs", "nodes"):  # nodes：节点编号或包内的节点文件（审查第 10 条）
         for item in normalized[key]:
             if not _inside_pack(item):
                 problems.append(f"contributes.{key} 里的路径必须在包内：{item!r}")
