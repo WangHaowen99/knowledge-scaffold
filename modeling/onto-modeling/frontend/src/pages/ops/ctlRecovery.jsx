@@ -9,7 +9,7 @@ import {
 import { Missing, ViewChip } from './ctlParts.jsx';
 import {
   CHECK_ICON, CHECK_RESULT, SCOPE_LABEL, TASK_STATE, TASK_TYPE, backupScope, drillView, fmtBytes, fmtDateTime, fmtDuration, fmtWhen,
-  nameOf, scheduleText, startupSub, taskAction, taskActionToast, taskProgress, visibleTasks,
+  nameOf, scheduleText, startReloads, startupSub, taskAction, taskActionToast, taskProgress, visibleTasks,
 } from './ctlModel.js';
 import { useEvidenceOn } from './parts.jsx';
 
@@ -41,10 +41,10 @@ export function BackupsCard({
   const deny = perm.opsWrite ? null : perm.hint('ops.write');
   const items = backups?.items || [];
   const dv = drillView(backups?.last_drill || null);
-  const backupNow = () => run('backup', () => api.ops.backupNow(), { ok: '已开始备份', icon: 'archive' }).then((r) => r && reload('tasks'));
+  const backupNow = () => run('backup', () => api.ops.backupNow(), { ok: '已开始备份', icon: 'archive' }).then((r) => r && reload(...startReloads('backup')));
   const drill = () => run('drill', () => api.ops.startDrill({ backup: items[0].name, sample_projects: 5 }), {
     ok: '已开始恢复演练',
-  }).then((r) => r && reload('tasks'));
+  }).then((r) => r && reload(...startReloads('drill')));
   return (
     <Card
       title="备份与恢复" icon="archive" sub={scheduleText(backups?.schedule)} data-sec="backups"
