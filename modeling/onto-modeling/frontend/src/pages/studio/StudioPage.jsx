@@ -144,8 +144,11 @@ function EvidenceCell({ cell }) {
 
 function EvidenceCard({ item, pid }) {
   const { api } = useApp();
+  const project = useProject();
   const [used, setUsed] = useState(null);
   const db = item.scheme === 'db';
+  // 证据浏览器与「被谁引用」（EV-26）随系统逆向建模包出现；证据源本期只留接口（ADR-0056）
+  const evidenceOn = !!project?.hasSubpage?.('schema');
   const [conf, tone] = CONFIDENCE_CHIP[item.confidence] || [];
   const page = item.resolved?.page || (db ? 'schema' : 'resources');
   const whereUsed = async () => {
@@ -161,8 +164,8 @@ function EvidenceCard({ item, pid }) {
       </div>
       <div className="xs muted mt4">用于属性{(item.used_for || []).map((u) => `「${u}」`).join('、')}</div>
       <div className="row mt8">
-        <Button size="xs" onClick={() => navigate(pagePath(page, pid), { anchor: item.anchor })}>查看原文</Button>
-        <Button size="xs" kind="ghost" onClick={whereUsed}>被谁引用</Button>
+        {!db || evidenceOn ? <Button size="xs" onClick={() => navigate(pagePath(page, pid), { anchor: item.anchor })}>查看原文</Button> : null}
+        {evidenceOn ? <Button size="xs" kind="ghost" onClick={whereUsed}>被谁引用</Button> : null}
         <span className="sp" />
         <Button size="xs" kind="ghost" icon="copy" title="复制锚点" onClick={async () => toast((await copyText(item.anchor)) ? '已复制锚点' : '复制失败，请手动选择', 'copy')} />
       </div>

@@ -651,7 +651,7 @@ export default function InboxPage({ route }) {
               <SortButton sort={sort} setSort={setSort} />
             </div>
             <div className="g2-fl">
-              {M.FILTERS.map(([k, t]) => (
+              {M.visibleFilters(counts, filter).map(([k, t]) => (
                 <span key={k} className={k === filter ? 'on' : ''} onClick={() => setFilter(k)}>
                   {k === 'autobuild_review' ? <Icon name="bot" size={12} /> : null}{t} <i>{counts?.by_filter?.[k] ?? 0}</i>
                 </span>

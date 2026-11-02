@@ -6,6 +6,10 @@ export const FILTERS = [
   ['change_list', '变更清单'], ['stale', '过期'], ['resumable', '续跑'], ['feedback', '外部反馈'],
 ];
 
+// 证据冲突来自证据源（三方对账），证据源本期只留接口（ADR-0056）：没有这类事项时筛选带上不出这一格
+export const visibleFilters = (counts, current) => FILTERS
+  .filter(([k]) => k !== 'evidence_conflict' || k === current || (counts?.by_filter?.[k] ?? 0) > 0);
+
 // 类型 → 设计稿的样式类（k-*）与图标
 export const KIND_STYLE = {
   decision: ['decision', 'hand'],

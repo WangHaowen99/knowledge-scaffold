@@ -195,6 +195,8 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
   const blocker = startBlocker({ archived, active, rows });
   const limits = policy?.platform_limits || {};
   const sources = d.sources?.items || [];
+  // 证据源本期只留接口（EV-01 回 501）：读不到数据源登记时不出生产库采集授权（策略里的字段保留，ADR-0056）
+  const evidenceOn = !!d.sources;
 
   const setF = (k, fn) => setForm((f) => ({ ...f, [k]: fn(f[k]) }));
   const setScope = (patch) => setF('scope', (s) => ({ ...s, ...patch }));
@@ -352,7 +354,7 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
               </div>
             </Card>
 
-            <Card title="生产库采集授权" icon="db" sub="没授权的数据源，需要采集时会挂起该项，不会自己去连">
+            {evidenceOn ? <Card title="生产库采集授权" icon="db" sub="没授权的数据源，需要采集时会挂起该项，不会自己去连">
               {(form.production_collection || []).length ? (form.production_collection || []).map((row) => {
                 const src = sources.find((s) => s.id === row.source_id);
                 const dr = drafts[row.source_id] || {};
@@ -378,7 +380,7 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
                   </div>
                 );
               }) : <div className="sm muted">本项目还没有授权的生产库数据源；在「资料 › 业务系统数据源」里登记并授权后会出现在这里。</div>}
-            </Card>
+            </Card> : null}
 
             <div className="card">
               <div className="g2-advh" onClick={() => setAdv((v) => !v)}>

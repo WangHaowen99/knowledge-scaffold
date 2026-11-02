@@ -1,7 +1,7 @@
 // 资料分析与建模蓝图的对话卡片（契约 4.7：upload_prompt、material_map、research_summary、blueprint、build_choice）
 // 设计稿 wb-materials、wb-blueprint；弹窗在 materials/ 里，由工作台统一挂（useOpenDialog）
 import { useContext, useState } from 'react';
-import { useApp } from '../../app/context.js';
+import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import {
   Button, Chip, Ev, Icon, Prog, cx,
@@ -27,7 +27,10 @@ function UploadPromptCard({ card }) {
   const { pid } = useContext(WbCtx);
   const up = useMaterialUpload(pid, card.accept);
   const [over, setOver] = useState(false);
-  const acts = card.actions || ['upload', 'connect_system', 'import_package'];
+  const project = useProject();
+  // 「连接业务系统」只在服务端给了这个动作、且本项目有数据源子页（系统逆向建模包）时出现；证据源本期只留接口（ADR-0056）
+  const evidenceOn = !!project?.hasSubpage?.('sources');
+  const acts = (card.actions || ['upload', 'import_package']).filter((a) => a !== 'connect_system' || evidenceOn);
   const importPackage = () => pageCommand(api, pid, {
     command: '/ontology-guide', args: { start: 'import_package' }, text: '从已有知识包导入：列出可选的已发布知识包',
     label: '欢迎卡', done: '已发给助手：选一个已发布的知识包，内容会落到本项目继续建模',
@@ -51,7 +54,7 @@ function UploadPromptCard({ card }) {
         {acts.includes('connect_system') ? <Button icon="plug" size="sm" onClick={() => navigate(pagePath('sources', pid))}>连接业务系统</Button> : null}
         {acts.includes('import_package') ? <Button icon="pkg" size="sm" onClick={importPackage}>从已有知识包导入</Button> : null}
         <span className="sp" />
-        {card.sources_available ? <span className="xs muted">已登记 {card.sources_available} 个数据源可用</span> : null}
+        {evidenceOn && card.sources_available ? <span className="xs muted">已登记 {card.sources_available} 个数据源可用</span> : null}
       </div>
     </CC>
   );

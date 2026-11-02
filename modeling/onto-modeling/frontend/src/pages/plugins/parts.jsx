@@ -4,7 +4,7 @@ import { useApp } from '../../app/context.js';
 import { SNav } from '../../shell/SideNav.jsx';
 import { can } from '../../state/roles.js';
 import { Chip } from '../../ui/index.jsx';
-import { PACK_CATEGORIES } from './catalogModel.js';
+import { OPTIONAL_CATEGORIES, PACK_CATEGORIES } from './catalogModel.js';
 import '../../styles/plugins.css';
 
 // 分类与图标底色的定义在 catalogModel.js（纯逻辑，单测用），这里照旧导出
@@ -62,7 +62,7 @@ export function PluginsNav({ active, counts: given, onCat, projectId }) {
   const n = (k) => <span className="xs faint num">{counts[k] ?? ''}</span>;
   const item = (key, title, icon, extra) => (onCat ? { key, title, icon, extra } : { key, title, icon, extra, go: 'plugins', query: key === 'all' ? undefined : { cat: key } });
   const cats = Object.entries(PACK_CATEGORIES)
-    .filter(([k]) => !['node', 'exporter'].includes(k) || counts[k] > 0)
+    .filter(([k]) => !OPTIONAL_CATEGORIES.includes(k) || counts[k] > 0)
     .map(([k, [t, i]]) => item(k, t, i, n(k)));
   return (
     <SNav

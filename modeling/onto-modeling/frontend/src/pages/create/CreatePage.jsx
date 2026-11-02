@@ -111,6 +111,8 @@ export default function CreatePage() {
   const capPacks = packs.filter((p) => p.category === 'capability');
   const selectedPages = capPacks.filter((p) => p.ui?.kind === 'page' && caps[p.name]).flatMap((p) => p.ui.pages.map((x) => x.title));
   const srcCount = sources?.total ?? 0;
+  // 证据源本期只留接口（EV-01 回 501）：读不到数据源登记时不出「连接业务系统」（ADR-0056）
+  const evidenceOn = !!sources;
   const ctx = model?.engines?.[engine]?.context;
   const uploading = files.some((f) => f.progress != null && f.progress < 100);
 
@@ -141,7 +143,7 @@ export default function CreatePage() {
 
   const startItems = [
     ['upload', 'upload', '上传资料', '业务说明、规则文档、样例单据、表结构'],
-    ['connect_system', 'plug', '连接业务系统', srcCount ? `已登记 ${srcCount} 个数据源可用：${sources.items.map((s) => s.id).join('、')}` : '还没有登记数据源，管理员登记后可用'],
+    ...(evidenceOn ? [['connect_system', 'plug', '连接业务系统', srcCount ? `已登记 ${srcCount} 个数据源可用：${sources.items.map((s) => s.id).join('、')}` : '还没有登记数据源，管理员登记后可用']] : []),
     ['industry_pack', 'layers', '从行业包开始', '用行业术语、参考对象和示例起步'],
     ['import_package', 'pkg', '导入已有知识包', '从别处发布的包继续建模'],
     ['example', 'play', '看示例项目', '5 分钟走完一遍完整流程'],
@@ -208,8 +210,8 @@ export default function CreatePage() {
             {step === 2 ? (
               <div>
                 <h2>从哪里开始？</h2>
-                <p>可以多选：先传资料，再连业务系统，也可以先什么都不传。</p>
-                <div className="grid3 mt16" style={{ gridTemplateColumns: 'repeat(5,1fr)', gap: 10 }}>
+                <p>{evidenceOn ? '可以多选：先传资料，再连业务系统，也可以先什么都不传。' : '可以多选，也可以先什么都不传。'}</p>
+                <div className="grid3 mt16" style={{ gridTemplateColumns: `repeat(${startItems.length},1fr)`, gap: 10 }}>
                   {startItems.map(([k, i, t, d]) => {
                     const on = starts.includes(k);
                     const dis = k === 'connect_system' && !srcCount;

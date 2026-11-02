@@ -196,3 +196,16 @@ test('窄接口：上下文与主题变量；回应与推送的信封', async ()
   assert.deepEqual(response('r9', undefined), { onto_ui: UI_API, id: 'r9', ok: true, result: null });
   assert.deepEqual(event('artifact.changed', { key: 'n1' }), { onto_ui: UI_API, event: 'artifact.changed', data: { key: 'n1' } });
 });
+
+// ---------- 证据源只留接口：入口不出现 ----------
+
+test('证据源入口：待处理的「证据冲突」没有事项时不出，插件中心的提供方分类没有包时不出', async () => {
+  const { visibleFilters, FILTERS } = await import('../src/pages/inbox/inboxModel.js');
+  const { OPTIONAL_CATEGORIES } = await import('../src/pages/plugins/catalogModel.js');
+  const keys = (list) => list.map(([k]) => k);
+  assert.equal(keys(visibleFilters({ by_filter: {} }, 'all')).includes('evidence_conflict'), false);
+  assert.equal(keys(visibleFilters({ by_filter: { evidence_conflict: 2 } }, 'all')).includes('evidence_conflict'), true);
+  assert.equal(keys(visibleFilters(null, 'evidence_conflict')).includes('evidence_conflict'), true);
+  assert.equal(visibleFilters({ by_filter: { evidence_conflict: 1 } }, 'all').length, FILTERS.length);
+  assert.ok(OPTIONAL_CATEGORIES.includes('provider'));
+});
