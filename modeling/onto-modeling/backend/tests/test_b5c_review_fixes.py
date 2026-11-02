@@ -268,3 +268,81 @@ def test_review_4_disabling_stable_falls_back_to_previous_stable(ops_env):
     for project_id, root in projects:
         pack_service.prepare_for_message(manager, project_id)
         assert lockfile.read(root).get("lint").version == "0.1.0"
+
+
+# ---- 审查第 5 条：跟随通道升级要过启用检查、助手修改没确认时推迟、记成插件变更集；PL-10 撤回也查 ----
+
+def pending_assistant_changes(manager, project_id: str, root: Path) -> None:
+    from app.kernel.changesets import service as changesets
+    from tests.test_changesets import agent_write
+
+    copy_dir = changesets.copy_for_turn(manager, project_id, root)
+    agent_write(copy_dir, "ontology/object/借书人.md", obj("借书人", "合成"), commit="agent: 借书人")
+    changesets.observe(manager, project_id, running=False, conversation_id="default")
+    assert changesets.current(manager, project_id)["state"] == "pending_confirm"
+
+
+def flow_with_extra_node(extra: dict) -> dict:
+    flow = copy.deepcopy(NODE_PACK_FLOW)
+    flow["nodes"].append(extra)
+    return flow
+
+
+def test_review_5_follow_skips_versions_needing_missing_providers(env):
+    from app.services.packs import lockfile
+    from app.services.packs import service as pack_service
+    from tests.test_node_pack_lifecycle import EXTERNAL_NODE, node_ids
+
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
+    install(manager, tmp_path, "0.1.0")
+    enable_and_apply(client, manager, project_id)
+    gate = {**EXTERNAL_NODE, "placement": "gate", "after": "core.object", "blocks": ["core.operation"]}
+    install(manager, tmp_path, "0.2.0", flow=flow_with_extra_node(gate))
+    pack_service.prepare_for_message(manager, project_id)
+    assert lockfile.read(root).get("naming").version == "0.1.0"
+    assert "naming.fetch" not in node_ids(root)
+    assert nodes_of(root)["core.operation"]["state"] != "blocked"
+
+
+def test_review_5_follow_waits_for_unconfirmed_assistant_changes_and_is_a_changeset(env):
+    from app.kernel.changesets import service as changesets
+    from app.services.packs import lockfile
+    from app.services.packs import service as pack_service
+    from tests.test_node_pack_lifecycle import node_ids
+
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    install(manager, tmp_path, "0.1.0")
+    enable_and_apply(client, manager, project_id)
+    pending_assistant_changes(manager, project_id, root)
+    extra = {"id": "naming.extra", "title": "命名复核", "kind": "agent", "placement": "branch", "after": "core.object",
+             "done": [], "entry": {"command": "/naming-check"}}
+    install(manager, tmp_path, "0.2.0", flow=flow_with_extra_node(extra))
+    pack_service.prepare_for_message(manager, project_id)
+    assert lockfile.read(root).get("naming").version == "0.1.0"  # 会改流程节点：等助手那组确认或撤回
+    assert "naming.extra" not in node_ids(root)
+
+    current = changesets.current(manager, project_id)
+    changesets.discard(manager, project_id, current["id"], actor="local")
+    pack_service.prepare_for_message(manager, project_id)
+    assert lockfile.read(root).get("naming").version == "0.2.0"
+    record = changesets.records(manager, project_id, sources=["plugin"])[0]
+    assert record["state"] == "merged" and record["switch"] == "follow"
+    head = subprocess.run(["git", "log", "-1", "--format=%(trailers:key=Onto-Changeset,valueonly)"], cwd=root,
+                          capture_output=True, text=True).stdout.strip()
+    assert head == record["id"]
+
+
+def test_review_5_cancel_pending_respects_unconfirmed_assistant_changes(env):
+    from app.services.packs import lockfile
+
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    install(manager, tmp_path, "0.1.0")
+    assert client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "naming"}).status_code == 201
+    pending_assistant_changes(manager, project_id, root)
+    cancelled = client.post(f"/api/v1/projects/{project_id}/packs/naming/cancel-pending")
+    assert cancelled.status_code == 423 and cancelled.json()["code"] == "write_scope_locked"
+    assert lockfile.read(root).get("naming").enabled

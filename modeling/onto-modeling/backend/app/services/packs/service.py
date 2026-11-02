@@ -102,14 +102,44 @@ def prepare_for_message(manager, project_id: str, *, follow: bool = True) -> dic
         if runtime.core_version() is None:
             return {}
         _, wrote = runtime.ensure_lock(root)
-        changed = runtime.follow(root) if follow else False
-        if wrote or changed:
-            commit_lock(manager, project_id, "chore: 跟随通道升级能力包" if changed else "chore: 写入能力包锁文件")
+        committed = _follow_channels(manager, project_id, root) if follow else ""
+        if wrote and not committed:
+            commit_lock(manager, project_id, "chore: 写入能力包锁文件")
         try:
             return runtime.apply(root)
         except AssemblyError as exc:
             _log.warning("项目 %s 装配失败，保持原版本：%s", project_id, exc)
             return runtime.status(root)
+
+
+def _follow_channels(manager, project_id: str, root) -> str:
+    """跟随通道升级（审查第 5 条）：和手动切换一样记成插件变更集；助手的修改还没确认、这次升级又会改流程节点时
+    推迟到那组修改确认或撤回之后（不回 423：这是系统发起的，下一条消息前再试）。返回提交号，没提交为空串。"""
+    from ...kernel.changesets import store
+    from . import changes
+
+    runtime = manager.packs
+    lock, packs = runtime.followed(root)
+    if lock is None:
+        return ""
+    try:
+        flow_changed = _flow_changed(manager, root, runtime.assembler.plan(lock))
+    except AssemblyError:
+        flow_changed = False
+    if flow_changed and store.current(root) is not None:
+        _log.info("项目 %s 的助手修改还没确认，推迟跟随通道升级 %s", project_id, "、".join(packs))
+        return ""
+    names = "、".join(packs) or "能力包"
+    record = changes.begin(manager, project_id, purpose=f"跟随通道升级 {names}", pack=",".join(packs), kind="follow",
+                           flow_changed=flow_changed)
+    try:
+        commit = commit_lock(manager, project_id, "chore: 跟随通道升级能力包", write=lambda: lockfile.write(root, lock),
+                             changeset=record["id"] if record else None)
+    except BaseException:
+        changes.abort(manager, project_id, record)
+        raise
+    changes.finish(manager, project_id, record, commit)
+    return commit
 
 
 def desired_parts(manager, project_id: str) -> dict:
@@ -478,12 +508,17 @@ def _revert_pending(manager, project_id: str, name: str, actor: str) -> bool:
     from ...services.workspace.errors import WorkspaceError
     from . import changes
 
+    from ...kernel.changesets import store
+
     record = changes.latest_for(manager, project_id, name)
     if record is None:
         return False
     runtime = manager.packs
     root = manager.project_root(project_id)
     with manager._project_lock(project_id):
+        if store.current(root) is not None:
+            # 助手的修改还没确认：回退类写入一律 423（B4b 口径），交给调用方按生效中的版本改回，改流程的那条路回 423
+            return False
         try:
             changes.revert(manager, project_id, record, actor=actor)
         except WorkspaceError as exc:

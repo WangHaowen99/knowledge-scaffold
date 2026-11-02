@@ -156,18 +156,25 @@ class PackRuntime:
         return lock, (lockfile.write(root, lock) if changed else False)
 
     def follow(self, root: Path) -> bool:
-        """跟随通道的包：通道指针动了就把锁改到通道版本（方案 2.3 第 4 步）。返回是否改了锁。
+        """跟随通道：把锁改到通道版本并写盘（不提交）。返回是否改了锁。见 `followed`。"""
+        lock, _packs = self.followed(root)
+        return lockfile.write(root, lock) if lock is not None else False
+
+    def followed(self, root: Path) -> tuple[PackLock | None, list[str]]:
+        """跟随通道的包：通道指针动了就把锁改到通道版本（方案 2.3 第 4 步）。返回（新锁, 改了的包），没变时 (None, [])；
+        不写盘，提交与要不要推迟由调用方定（service.prepare_for_message）。
 
         每改一个包先试着定装配计划（依赖、内核接口）：通道指到一个和项目里别的包配不上的版本（比如 core 的
         stable 被回滚到拆分前，拆出去的包要求 core ≥0.2）时这个包不跟，留在原版本，项目照常能装配。
+        和手动启用同一道检查（审查第 5 条）：新版本里有外部节点、需要的证据源提供方不可用时也不跟。
         """
         try:
             lock = lockfile.read(root)
         except (ValueError, OSError):
-            return False
+            return None, []
         if lock is None:
-            return False
-        changed = False
+            return None, []
+        changed: list[str] = []
         guarded = self._plannable(lock)  # 原来就装配不了的锁不拦（跟随可能正好修好它）
         from .governance import beta_for
 
@@ -180,15 +187,28 @@ class PackRuntime:
                 latest = beta_for(self.repository, entry.name, Path(root).name) or latest
             if not latest or latest == entry.version:
                 continue
+            missing = self._missing_providers(entry.name, latest)
+            if missing:
+                _log.warning("项目 %s 的 %s 不跟随通道版本 %s：需要的证据源提供方不可用（%s）",
+                             Path(root).name, entry.name, latest, "、".join(missing))
+                continue
             before = (entry.version, entry.sha256)
             entry.version, entry.sha256 = latest, self.repository.digest(entry.name, latest)
             if guarded and not self._plannable(lock):
                 entry.version, entry.sha256 = before
                 _log.warning("项目 %s 的 %s 不跟随通道版本 %s：和项目里别的包配不上", Path(root).name, entry.name, latest)
                 continue
-            changed = True
-        changed = self._migrate_split(lock) or changed
-        return lockfile.write(root, lock) if changed else False
+            changed.append(entry.name)
+        migrated = self._migrate_split(lock)
+        return (lock, changed) if changed or migrated else (None, [])
+
+    def _missing_providers(self, name: str, version: str) -> list[str]:
+        from ..flow import node_kinds
+
+        try:
+            return node_kinds.missing_providers(node_kinds.pack_nodes(self.repository, name, version))
+        except Exception:  # noqa: BLE001 - 节点声明坏了由装配检查报
+            return []
 
     def _plannable(self, lock: PackLock) -> bool:
         try:
