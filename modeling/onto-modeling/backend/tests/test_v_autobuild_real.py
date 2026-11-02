@@ -23,3 +23,60 @@ def test_hint_says_how_to_write_anchor():
     from app.services.autobuild import hint
 
     assert "置信度 0.xx" in hint.INSTRUCTIONS and "resource/" in hint.INSTRUCTIONS
+
+
+def test_wait_turn_does_not_count_old_error_while_reconnecting(monkeypatch):
+    """真实模型一次流式超时（这一轮出错）之后，运行器发续跑指令：会话还停在 error、正在重连，原来立刻又记一次出错，
+    几毫秒里连记三次就按「引擎出错」整次运行停下，而续跑的那一轮照样在跑（运行停了它还改了 56 分钟）。"""
+    import asyncio
+
+    from app.services.autobuild import runner as runner_module
+
+    class Session:
+        conversation_id = "c1"
+        state = "error"
+        sending = 0
+        finishing = False
+        pending_prompts = ["继续"]
+        turns_in_flight = 0
+        deferred = []
+
+        def __init__(self):
+            self.connect_task = object()
+
+        def is_connecting(self):
+            return self.connect_task is not None
+
+    session = Session()
+    signal = asyncio.Event()
+
+    class Manager:
+        def signal(self, project_id):
+            return signal
+
+        def get(self, project_id):
+            return session
+
+        def queue_position(self, project_id):
+            return None
+
+    monkeypatch.setattr(runner_module, "_manager", lambda: Manager())
+
+    async def accounted(self, project_id, run_id):
+        return None
+
+    monkeypatch.setattr(runner_module.AutobuildRunner, "_account", accounted)
+
+    async def scenario():
+        waiting = asyncio.create_task(runner_module.AutobuildRunner()._wait_turn("p1", "run-1", "c1"))
+        await asyncio.sleep(0.05)
+        assert not waiting.done()  # 重连中：不算出错，接着等
+        # 连上、续跑的一轮跑完
+        session.connect_task, session.pending_prompts, session.state = None, [], "idle"
+        signal.set()
+        return await asyncio.wait_for(waiting, 2)
+
+    assert asyncio.run(scenario()) == "idle"
+    # 连不上（重连结束仍是 error）：照常记出错
+    session.state = "error"
+    assert asyncio.run(runner_module.AutobuildRunner()._wait_turn("p1", "run-1", "c1")) == "error"
