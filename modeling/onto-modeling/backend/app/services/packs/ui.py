@@ -24,7 +24,9 @@ from . import registry
 from .checks import UI_STATIC_SUFFIXES
 
 TICKET_TTL_S = 2 * 3600
-TICKETS_MAX = 2000
+# 票据限额：每个用户同时有效的最多这么多张，全平台另有总上限；满了拒绝新申请，不淘汰别人已经在用的
+TICKETS_PER_USER = 50
+TICKETS_MAX = 5000
 URL_PREFIX = "/api/v1/pack-ui"
 CSP = "; ".join((
     "sandbox allow-scripts",
@@ -92,14 +94,23 @@ def open_session(manager, project_id: str, pack: str, editor_id: str, *, user: s
     entry = f"{editor['id']}/{mf.EDITOR_ENTRY_IFRAME}"
     if not (view.directory / mf.UI_DIR / entry).is_file():
         raise PackUiError("not_found", "插件的编辑器缺少入口文件", 404, {"pack": pack, "editor": editor_id})
-    token = secrets.token_urlsafe(24)
     expires = time.time() + TICKET_TTL_S
     with _lock:
         now = time.time()
         for key in [key for key, item in _tickets.items() if item.expires_at <= now]:
             _tickets.pop(key, None)
-        while len(_tickets) >= TICKETS_MAX:
-            _tickets.pop(next(iter(_tickets)))
+        # 同一个人重开同一个编辑器：沿用原来的票据、顺延有效期
+        token = next((key for key, item in _tickets.items()
+                      if (item.user, item.project_id, item.pack, item.version, item.editor)
+                      == (user, project_id, pack, view.version, editor["id"])), None)
+        if token is None:
+            if sum(1 for item in _tickets.values() if item.user == user) >= TICKETS_PER_USER:
+                raise PackUiError("rate_limited", "打开的插件编辑器太多了，关掉一些或稍后再试", 429,
+                                  {"limit": TICKETS_PER_USER})
+            if len(_tickets) >= TICKETS_MAX:
+                raise PackUiError("rate_limited", "平台上打开的插件编辑器太多了，请稍后再试", 429,
+                                  {"limit": TICKETS_MAX})
+            token = secrets.token_urlsafe(24)
         _tickets[token] = Ticket(project_id, pack, view.version, editor["id"], user, expires)
     return {
         "url": f"{URL_PREFIX}/{token}/{entry}", "expires_at": expires, "ui_api": mf.UI_API,

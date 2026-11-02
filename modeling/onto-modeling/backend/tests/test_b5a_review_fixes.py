@@ -102,3 +102,34 @@ def test_static_check_crash_marks_upload_failed(env, monkeypatch):
                            files={"file": ("p.zip", zipped(_pack(tmp_path / "c")), "application/zip")})
     detail = client.get(f"/api/v1/admin/packs/uploads/{accepted.json()['id']}").json()
     assert detail["state"] == "failed" and detail["checks"][0]["id"] == "internal"
+
+
+# ---- 第 5 条：票据表全局共用、满了淘汰别人的 ----
+
+
+def test_ticket_flood_by_one_user_does_not_evict_others(env, monkeypatch):
+    """一个用户的票据到了上限只拒绝他的新申请，不挤掉别人（别的用户、别的项目）正在用的。"""
+    client, manager, project_id, tmp_path = env
+    _publish_and_enable(client, tmp_path, project_id)
+    victim = client.post(f"/api/v1/projects/{project_id}/packs/sticky-notes/ui-sessions", json={"editor": "note"}).json()["url"]
+    monkeypatch.setattr(pack_ui, "TICKETS_PER_USER", 2)
+    projects = []
+    for index in range(3):
+        pid = client.post("/api/v1/projects", json={"name": f"便签{index}", "goal": "合成场景"}).json()["id"]
+        assert client.post(f"/api/v1/projects/{pid}/packs", json={"name": "sticky-notes"}).status_code == 201
+        projects.append(pid)
+    pack_ui.open_session(manager, projects[0], "sticky-notes", "note", user="attacker")
+    pack_ui.open_session(manager, projects[1], "sticky-notes", "note", user="attacker")
+    with pytest.raises(pack_ui.PackUiError) as refused:
+        pack_ui.open_session(manager, projects[2], "sticky-notes", "note", user="attacker")
+    assert (refused.value.code, refused.value.status) == ("rate_limited", 429)
+    assert client.get(victim).status_code == 200
+
+
+def test_reopening_the_same_editor_reuses_the_ticket(env):
+    client, manager, project_id, tmp_path = env
+    _publish_and_enable(client, tmp_path, project_id)
+    first = pack_ui.open_session(manager, project_id, "sticky-notes", "note", user="u1")
+    for _ in range(pack_ui.TICKETS_PER_USER + 3):
+        again = pack_ui.open_session(manager, project_id, "sticky-notes", "note", user="u1")
+    assert again["url"] == first["url"] and again["expires_at"] >= first["expires_at"]
