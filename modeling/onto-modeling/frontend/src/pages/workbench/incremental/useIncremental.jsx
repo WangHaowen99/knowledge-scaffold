@@ -69,7 +69,7 @@ export function useIncremental({ route, target, conv, state, flow, mainRef }) {
       const plan = M.executePlan(cl.points);
       if (plan.blocked.length) {
         setDialog({ id });
-        toast(`第 ${plan.blocked.map((p) => p.n).join('、')} 条把握低，单独确认（接受或改写）后才能执行`, 'alert');
+        toast(`第 ${plan.blocked.map((p) => p.n).join('、')} 条需先单独确认`, 'alert');
         return;
       }
       let revision = cl.revision;

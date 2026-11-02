@@ -22,14 +22,19 @@ test('执行前的确认计划：低把握没单独确认就拦下，其余没�
 });
 
 test('把握低的悬浮说明、清单副标题、出处短标签', () => {
-  assert.equal(M.lowPop({ confidence_note: '修订通知只写了「每批」，没说批的口径' }), '修订通知只写了「每批」，没说批的口径。把握低的条目不能批量接受');
-  assert.equal(M.lowPop({ confidence_note: '是上限还是建议值？' }), '是上限还是建议值？把握低的条目不能批量接受');
-  assert.equal(M.lowPop({}), '把握低的条目不能批量接受，必须单独确认');
+  // 悬浮只给后端的原因；没有原因时写「把握低」
+  assert.equal(M.lowPop({ confidence_note: '修订通知只写了「每批」，没说批的口径' }), '修订通知只写了「每批」，没说批的口径');
+  assert.equal(M.lowPop({ confidence_note: ' 是上限还是建议值？ ' }), '是上限还是建议值？');
+  assert.equal(M.lowPop({}), '把握低');
+  // 副标题只写来源，状态由表格的「把握」列和「需你确认」标记表达：各种状态下都一样
   const src = { path: 'resource/others/09-修订通知.docx', label: '09 修订通知' };
-  assert.equal(M.listSubtitle({ source: src, points: [P(1, 'high'), P(4, 'low')] }), '从 09-修订通知拆出 · 第 4 条把握低，必须单独确认');
-  assert.equal(M.listSubtitle({ source: src, points: [P(1, 'high'), P(4, 'low', 'accepted')] }), '从 09-修订通知拆出 · 还有 1 条没确认');
-  assert.equal(M.listSubtitle({ source: src, points: [P(1, 'high', 'accepted')] }), '从 09-修订通知拆出 · 全部确认，可以执行');
-  assert.equal(M.listSubtitle({ source: src, state: 'executed', points: [] }), '从 09-修订通知拆出 · 已按这份清单执行');
+  const subs = [
+    { source: src, points: [P(1, 'high'), P(4, 'low')] },
+    { source: src, points: [P(1, 'high'), P(4, 'low', 'accepted')] },
+    { source: src, points: [P(1, 'high', 'accepted')] },
+    { source: src, state: 'executed', points: [] },
+  ].map((cl) => M.listSubtitle(cl));
+  assert.deepEqual(subs, Array(4).fill('来自 09-修订通知'));
   assert.equal(M.sourceName({ label: '09 修订通知' }), '09 修订通知');
   assert.equal(M.shortAnchor('09 §6.3'), '§6.3');
   assert.equal(M.shortAnchor('§2'), '§2');
@@ -57,10 +62,10 @@ test('弹窗的编辑行：改过才算脏，校验，整份提交，底部说�
   assert.equal(inputs[1].value, '取值 2b');
   assert.equal(inputs[1].rewritten_text, '条件 2 取值 2b 陈列量核定');
   assert.equal(inputs[3].id, undefined, '新增条目不带 id');
-  assert.equal(M.dialogNote(rows, new Set([rows[1].key])), '第 2 行在编辑；第 3 行把握低，必须单独确认。保存后助手按新清单重算影响面。');
-  assert.equal(M.dialogNote(rows, new Set()), '第 3 行把握低，必须单独确认。保存后助手按新清单重算影响面。');
+  assert.equal(M.dialogNote(rows, new Set([rows[1].key])), '第 2 行在编辑；第 3 行把握低，必须单独确认。');
+  assert.equal(M.dialogNote(rows, new Set()), '第 3 行把握低，必须单独确认。');
   const lowEdited = rows.map((r) => (r.n === 3 ? { ...r, value: '每批' } : r));
-  assert.equal(M.dialogNote(lowEdited, new Set()), '保存后助手按新清单重算影响面。');
+  assert.equal(M.dialogNote(lowEdited, new Set()), '', '改写过的低把握行不再提示，没有要提示的就不出说明');
 });
 
 test('影响面、回归、这一轮的文字', () => {

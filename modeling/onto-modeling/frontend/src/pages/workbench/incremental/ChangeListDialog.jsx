@@ -79,7 +79,7 @@ export default function ChangeListDialog({ id, onClose }) {
     setBusy(true);
     try {
       const r = await api.saveChangeList(pid, id, { base_revision: cl.revision, points: M.toInputs(rows) });
-      toast(`已保存清单，影响面已重算（${M.secs(r.impact_ms)}）`, 'check');
+      toast('已保存，影响面已重算', 'check');
       onClose();
     } catch (e) {
       toast(errorText(e), 'alert');
@@ -116,7 +116,7 @@ export default function ChangeListDialog({ id, onClose }) {
       return (
         <div className="row g4">
           <Button size="xs" icon="edit" onClick={() => edit(r.key, true)}>改写</Button>
-          <Button size="xs" kind="soft" icon="check" title="原样接受这一条（单独确认）" disabled={busy} onClick={() => accept(r)} />
+          <Button size="xs" kind="soft" icon="check" title="接受" disabled={busy} onClick={() => accept(r)} />
         </div>
       );
     }
@@ -124,11 +124,12 @@ export default function ChangeListDialog({ id, onClose }) {
   };
 
   const source = cl ? M.sourceName(cl.source) : '';
+  const note = M.dialogNote(rows, editing);
   return (
     <Modal
       open onClose={onClose} icon="list" w={1080} className="inc-dlg"
       title={`变更点清单${source ? ` · ${source}` : ''}`}
-      sub={readOnly ? '清单已确认并执行，这里只能查看' : '逐条核对条件、取值和范围；把握低的条目不能批量接受，必须单独确认'}
+      sub={readOnly ? '已执行，只读' : undefined}
       foot={readOnly ? <><span className="sp" /><Button onClick={onClose}>关闭</Button></> : (
         <>
           <Button kind="ghost" icon="plus" onClick={addRow}>补充一条</Button>
@@ -163,7 +164,7 @@ export default function ChangeListDialog({ id, onClose }) {
               </tbody>
             </table>
           </div>
-          {readOnly ? null : <div className="row mt12 sm muted g4"><Icon name="info" size={14} />{M.dialogNote(rows, editing)}</div>}
+          {!readOnly && note ? <div className="row mt12 sm muted g4"><Icon name="info" size={14} />{note}</div> : null}
           {error ? <div className="row mt4 sm g4" style={{ color: 'var(--red)' }}><Icon name="alert" size={14} />{error}</div> : null}
         </>
       )}

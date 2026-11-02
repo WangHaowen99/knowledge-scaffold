@@ -12,23 +12,16 @@ export const isLowPending = (p) => p.confidence === 'low' && !isDone(p);
 // 「接受高把握项 N」：只算还没处理的高把握条目
 export const highPending = (points) => (points || []).filter((p) => p.confidence === 'high' && !isDone(p));
 
-// 把握低的悬浮说明（标注 incremental-017）：原因 + 不能批量接受
+// 把握低的悬浮说明（标注 incremental-017）：只给后端的原因，没有原因时写「把握低」
 export function lowPop(p) {
-  const note = (p?.confidence_note || '').trim();
-  if (!note) return '把握低的条目不能批量接受，必须单独确认';
-  return `${note}${/[。？！?!]$/.test(note) ? '' : '。'}把握低的条目不能批量接受`;
+  return (p?.confidence_note || '').trim() || '把握低';
 }
 
-// 清单卡的副标题：「从 09 修订通知拆出 · 第 4 条把握低，必须单独确认」
+// 清单卡的副标题：「来自 09-修订通知」（状态看表格的「把握」列和「需你确认」标记）
 export const sourceName = (source) => String(source?.path || '').split('/').pop().replace(/\.[^.]+$/, '') || source?.label || '变更资料';
 
 export function listSubtitle(cl) {
-  const head = `从 ${sourceName(cl?.source)}拆出`;
-  if (cl?.state === 'executed') return `${head} · 已按这份清单执行`;
-  const low = (cl?.points || []).filter(isLowPending).map((p) => p.n);
-  if (low.length) return `${head} · 第 ${low.join('、')} 条把握低，必须单独确认`;
-  const left = (cl?.points || []).filter((p) => !isDone(p)).length;
-  return left ? `${head} · 还有 ${left} 条没确认` : `${head} · 全部确认，可以执行`;
+  return `来自 ${sourceName(cl?.source)}`;
 }
 
 /**
@@ -104,14 +97,14 @@ export function toInputs(rows) {
   });
 }
 
-// 弹窗底部的说明（标注 incremental-008）：「第 2 行在编辑；第 3 行把握低，必须单独确认。保存后助手按新清单重算影响面。」
+// 弹窗底部的说明（标注 incremental-008）：「第 2 行在编辑；第 3 行把握低，必须单独确认。」
 export function dialogNote(rows, editing) {
   const parts = [];
   const ed = (rows || []).filter((r) => editing?.has?.(r.key)).map((r) => r.n);
   if (ed.length) parts.push(`第 ${ed.join('、')} 行在编辑`);
   const low = (rows || []).filter((r) => r.confidence === 'low' && !isDone(r) && !rowChanged(r)).map((r) => r.n);
   if (low.length) parts.push(`第 ${low.join('、')} 行把握低，必须单独确认`);
-  return `${parts.length ? `${parts.join('；')}。` : ''}保存后助手按新清单重算影响面。`;
+  return parts.length ? `${parts.join('；')}。` : '';
 }
 
 // ---------- 影响面、回归 ----------
@@ -203,7 +196,7 @@ export function withStartSuggestion(sug, notice) {
   const file = notice?.files?.[0] || null;
   const start = {
     id: 'sg-inc-start', label: '开始增量更新', icon: 'refresh', primary: true, disabled: false, priority: 2,
-    reason: notice?.text || '资料有修订时，按修订内容只改受影响的部分',
+    reason: notice?.text || null,
     action: { type: 'start_incremental', reference: file },
   };
   const rest = [sug?.primary, ...(sug?.secondary || [])].filter((s) => s && !s.disabled && s.id !== start.id).map((s) => ({ ...s, primary: false }));
