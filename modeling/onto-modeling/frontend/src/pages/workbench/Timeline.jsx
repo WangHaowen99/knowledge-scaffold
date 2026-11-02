@@ -2,7 +2,7 @@
 import { Fragment, useState } from 'react';
 import { toast } from '../../app/toast.jsx';
 import { timelineBlocks } from '../../state/conversation.js';
-import { Button, Icon, Kbd } from '../../ui/index.jsx';
+import { Button, Icon } from '../../ui/index.jsx';
 import {
   CardItem, CompactedItem, ConfigPendingItem, ErrorItem, InterruptedItem, ReconnectedItem, useActions,
 } from './cards.jsx';
@@ -43,9 +43,7 @@ function ProgressItem({ item, running, onInterrupt }) {
       {item.title ? <WxProc group={item} /> : <TimelineGroup group={item} />}
       {item.state === 'running' && running ? (
         <div className="row mt8">
-          <Button size="sm" kind="danger" icon="stop" onClick={onInterrupt}>打断</Button>
-          <Kbd>Esc</Kbd>
-          <span className="xs muted grow">打断后，已保存的内容不会丢</span>
+          <Button size="sm" kind="danger" icon="stop" title="打断（Esc）" onClick={onInterrupt}>打断</Button>
         </div>
       ) : null}
     </>
@@ -64,7 +62,7 @@ function UserMessage({ item }) {
           {item.text}
         </div>
         {item.delivery === 'deferred' ? <div className="xs faint mt4">这一步结束后送达</div> : null}
-        {item.delivery === 'queued' ? <div className="xs faint mt4">排队中，轮到时一起送达</div> : null}
+        {item.delivery === 'queued' ? <div className="xs faint mt4">排队中</div> : null}
       </div>
     </div>
   );

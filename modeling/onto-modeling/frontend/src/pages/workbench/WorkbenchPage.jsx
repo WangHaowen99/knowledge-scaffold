@@ -4,11 +4,12 @@ import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, relativeTime } from '../../api/errors.js';
-import { commandNode, nodeActionKind, overlayRunning, sectionGroups, trackNodes } from '../../state/flow.js';
+import { commandNode, nodeActionKind, overlayRunning, scriptRunView, sectionGroups, sliceStageTitle, trackNodes, withoutEvidence } from '../../state/flow.js';
+import { evidenceInProject } from '../../state/evidence.js';
 import { composerState, readonlyInfo } from '../../state/readonly.js';
 import { ShellP } from '../../shell/Shell.jsx';
 import {
-  Button, Drawer, Field, Icon, Menu, Modal, Ring, Seg, SegBar, St, cx, useOutside,
+  Button, Drawer, Field, Icon, Menu, Modal, Ring, Seg, St, cx, useOutside,
 } from '../../ui/index.jsx';
 import { FLOWCHART_TYPE, latestFlowchartArtifact } from '../../app/packUi.js';
 import { cellClass } from '../projects/projectCard.js';
@@ -31,7 +32,7 @@ const TRACK_CLASS = { confirmed: 'ok', running: 'running', pending: 'pending', b
 function Track({ flow, onOpen }) {
   const nodes = trackNodes(flow);
   return (
-    <div className="wx-track" onClick={onOpen} data-pop="点开看建模步骤和每个切片的进度">
+    <div className="wx-track" onClick={onOpen}>
       {nodes.map((n, i) => {
         const k = TRACK_CLASS[n.display_state] || '';
         const prevOk = i > 0 && TRACK_CLASS[nodes[i - 1].display_state] === 'ok';
@@ -51,14 +52,16 @@ function Track({ flow, onOpen }) {
 }
 
 // 建模步骤抽屉：切片 × 步骤（P2 起有）、按 sections 分组的节点；节点动作的执行方式见 nodeActionKind
-function StepsDrawer({ open, onClose, flow, meta, cid }) {
+function StepsDrawer({ open, onClose, flow, cid }) {
   const { api } = useApp();
   const { pid, reloadFlow } = useProject();
   const [more, setMore] = useState(null);
+  // 脚本节点最近一次运行结果（FL-05 同步返回的；FL-01 带 last_run 时以它为准）与展开的行
+  const [runs, setRuns] = useState({});
+  const [expanded, setExpanded] = useState(null);
   const moreRef = useRef(null);
   useOutside(moreRef, () => setMore(null), !!more);
   if (!flow) return <Drawer open={open} onClose={onClose} icon="branch" title="建模步骤" w={440}>正在读取…</Drawer>;
-  const hasScenario = flow.slice_stages.some((s) => s.id === 'scenario');
   const recommended = (flow.notices || []).some((n) => n.kind === 'new_materials');
   const doAct = async (n, a) => {
     setMore(null);
@@ -71,11 +74,17 @@ function StepsDrawer({ open, onClose, flow, meta, cid }) {
       } else if (kind === 'skip') await api.skipNode(pid, n.id, {});
       else if (kind === 'restore') await api.restoreNode(pid, n.id, {});
       else {
-        await api.startNode(pid, n.id, { origin: { page: 'wb-l2', label: '建模步骤' } });
-        onClose();
+        const r = await api.startNode(pid, n.id, { origin: { page: 'wb-l2', label: '建模步骤' } });
+        // 脚本节点同步跑完，结果留在这一行；其余节点发到对话
+        if (r?.run) { setRuns((x) => ({ ...x, [n.id]: scriptRunView(r.run) })); setExpanded(n.id); } else onClose();
       }
       reloadFlow();
     } catch (e) {
+      if (n.kind === 'script' && e.code === 'node_run_failed') {
+        setRuns((x) => ({ ...x, [n.id]: scriptRunView(null, e) }));
+        setExpanded(n.id);
+        return;
+      }
       toast(errorText(e), 'alert');
     }
   };
@@ -84,9 +93,14 @@ function StepsDrawer({ open, onClose, flow, meta, cid }) {
     // 面板入口的节点（如求解适配）不走对话命令；同一节点的多个命令只摆第一个，其余收进「⋯」
     const acts = n.panel ? [] : n.actions || [];
     const [first, ...rest] = acts;
+    const run = n.kind === 'script' ? (runs[n.id] || (n.last_run ? scriptRunView(n.last_run) : null)) : null;
+    const open = run && expanded === n.id;
     return (
-      <div className="row" key={n.id} style={{ padding: '9px 2px', borderBottom: '1px dashed var(--line)' }}>
-        <span className="grow"><b style={{ fontWeight: 600 }}>{n.title}</b>{n.note ? <div className="xs muted">{n.note}</div> : null}</span>
+      <div key={n.id} style={{ borderBottom: '1px dashed var(--line)' }}>
+      <div className="row" style={{ padding: '9px 2px' }}>
+        <span className="grow" style={run ? { cursor: 'pointer' } : undefined} onClick={run ? () => setExpanded(open ? null : n.id) : undefined}>
+          <b style={{ fontWeight: 600 }}>{n.title}</b>{run ? <Icon name={open ? 'chevd' : 'chev'} size={12} style={{ marginLeft: 4, verticalAlign: -1 }} /> : null}
+        </span>
         {n.flags?.needs_review ? <St k="needs_review" sm /> : null}
         <St k={n.display_state} sm label={label} />
         {first ? <Button size="xs" kind={first.kind === 'skip' || first.kind === 'restore' ? 'ghost' : 'soft'} onClick={() => doAct(n, first)}>{first.label}</Button> : null}
@@ -95,16 +109,25 @@ function StepsDrawer({ open, onClose, flow, meta, cid }) {
           <Button size="xs" kind="ghost" icon="more" title="更多操作" onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setMore({ node: n, left: r.right - 180, top: r.bottom + 4 }); }} />
         ) : null}
       </div>
+      {open ? (
+        <div className="row g8 wb-run" style={{ padding: '0 2px 9px' }}>
+          <St k={run.ok ? 'pass' : 'fail'} sm />
+          <span className="xs muted grow ell" title={run.summary}>{run.summary}</span>
+        </div>
+      ) : null}
+      </div>
     );
   };
   return (
-    <Drawer open={open} onClose={onClose} icon="branch" title="建模步骤" sub={`${meta?.name || ''} · 步骤由已启用的能力决定`} w={440}>
+    <Drawer open={open} onClose={onClose} icon="branch" title="建模步骤" w={440}>
       {flow.slices.length ? (
         <>
           <div className="sec-t"><Icon name="layers" size={14} />业务切片 {flow.slices.length}<span className="sp" /><Button size="xs" kind="ghost" icon="layers" onClick={() => { onClose(); navigate(pagePath('wb-blueprint', pid), { dialog: 'blueprint' }); }}>调整切片</Button></div>
-          <div className="xs muted" style={{ margin: '-4px 0 4px' }}>每条小进度条依次是：{flow.slice_stages.map((s) => s.label).join('、')}</div>
-          <div className="xs muted" style={{ margin: '0 0 6px', padding: '7px 9px', borderRadius: 8, background: 'var(--panel2)', lineHeight: 1.65 }}>
-            <Icon name="info" size={12} /> 「规则」按资料出现，资料里没有规则就跳过，不挡这一片确认{hasScenario ? '；「场景」来自场景走查插件，未启用时不出现' : '；启用场景走查插件后，每片多出「场景」一步'}
+          {/* 小进度条的列头：和每格对齐（同运行详情「切片流水线」的表头） */}
+          <div className="wb-sr wb-sr-h">
+            <span className="ix" />
+            <span className="grow" />
+            <div className="wb-sh">{flow.slice_stages.map((st) => <span key={st.id}>{st.id === 'check' ? '查' : st.label}</span>)}</div>
           </div>
           {flow.slices.map((s, i) => (
             <div key={s.id} className={cx('wb-sr', s.group === 'now' && 'now')}>
@@ -113,7 +136,9 @@ function StepsDrawer({ open, onClose, flow, meta, cid }) {
                 <div className="b ell" style={{ fontSize: 13 }}>{s.name}</div>
                 <div className="xs muted ell">{s.note || s.core_flow}</div>
               </div>
-              <SegBar states={flow.slice_stages.map((st) => cellClass(s.stages[st.id]))} />
+              <div className="segbar">
+                {flow.slice_stages.map((st) => <i key={st.id} className={cellClass(s.stages[st.id]) || undefined} data-pop={sliceStageTitle(st, s.stages[st.id])} />)}
+              </div>
             </div>
           ))}
         </>
@@ -178,7 +203,7 @@ export function ConversationMenu({
             <>
               <div className="grow">
                 <div className={c.id === cid ? 'b' : undefined}>{c.title}</div>
-                <div className="xs muted">{c.id === cid ? '当前会话 · ' : ''}{c.time || relativeTime(c.updated_at)}</div>
+                <div className="xs muted">{c.time || relativeTime(c.updated_at)}</div>
               </div>
               {c.id === cid && running ? <St k="running" sm label="运行中" /> : null}
               {c.id !== cid ? (
@@ -192,11 +217,11 @@ export function ConversationMenu({
         </div>
       ))}
     </div>
-      {running ? <div className="mt8"><div className="note amber"><Icon name="alert" /><div className="grow">当前会话运行中，结束或打断后才能切换、新建或删除会话</div></div></div> : null}
+      {running ? <div className="mt8"><div className="note amber"><Icon name="alert" /><div className="grow">运行中，打断后才能切换会话</div></div></div> : null}
       {deleting ? (
         <div className="g2-mm mt8" style={{ boxShadow: 'none', padding: '10px 12px' }}>
           <div className="b sm">删除这条会话？</div>
-          <div className="xs muted mt4">对话记录与模型上下文一并删除，无法恢复。累计用量照常计入项目。</div>
+          <div className="xs muted mt4">对话记录一并删除，无法恢复</div>
           <div className="row mt8"><span className="sp" /><Button size="xs" onClick={() => setDeleting(null)}>取消</Button><Button size="xs" kind="danger" disabled={running} onClick={() => act(async () => { await ops.remove(deleting.id); setDeleting(null); })}>删除</Button></div>
         </div>
       ) : null}
@@ -245,22 +270,20 @@ function KnowledgeDialog({ item, onClose }) {
   const [type, setType] = useState('domain_rule');
   const [body, setBody] = useState('');
   const [scope, setScope] = useState({ kind: 'global' });
-  const [total, setTotal] = useState(null);
   useEffect(() => {
     if (!item) return;
     const plain = item.text_md.replace(/\[\[|\]\]/g, '').replace(/\[\^\d+\]/g, '');
     setTitle(plain.split(/[。；\n]/)[0].slice(0, 60));
     setBody(`## 规则\n${plain}`);
     setScope({ kind: 'global' });
-    services.client.get(`/projects/${encodeURIComponent(pid)}/knowledge/conflicts`).then((r) => setTotal(r.total_entries)).catch(() => setTotal(null));
-  }, [item, pid, services]);
+  }, [item]);
   if (!item) return null;
   const save = async () => {
     try {
       await services.client.post(`/projects/${encodeURIComponent(pid)}/knowledge`, {
         title: title.trim(), type, scope, rule_md: body, source: { conversation_id: item.conversation_id, message_id: item.message_id },
       });
-      toast('已入库，后续建模会自动应用', 'book');
+      toast('已入库', 'book');
       onClose();
     } catch (e) {
       toast(errorText(e), 'alert');
@@ -274,7 +297,6 @@ function KnowledgeDialog({ item, onClose }) {
         <Field label="作用范围"><ScopePicker value={scope} onChange={setScope} /></Field>
         <Field label="内容"><div className="inp area" style={{ minHeight: 90 }}><textarea style={{ height: 72 }} value={body} onChange={(e) => setBody(e.target.value)} /></div></Field>
       </div>
-      <div className="xs faint mt8">入库前先和已有的{total != null ? ` ${total} 条` : ''}知识查重、查冲突</div>
     </Modal>
   );
 }
@@ -370,7 +392,7 @@ function Composer({ pid, cid, apiRef, st, buildMode, autobuild, modeLabel, onSen
         <span className="wx-tb" title="引用知识包里的条目" onClick={() => setPop(pop === 'ref' ? null : 'ref')}><Icon name="at" size={16} /></span>
         <span className="wx-tb" title="命令" onClick={() => setPop(pop === 'cmd' ? null : 'cmd')}><Icon name="cmd" size={16} /></span>
         <span className="sp" />
-        <span className={cx('wx-mode', buildMode === 'L4' && 'l4')} onClick={() => navigate(pagePath('proj-settings', pid), { section: 'build-mode' })} data-pop="构建方式在「项目设置 › 构建方式」里改">
+        <span className={cx('wx-mode', buildMode === 'L4' && 'l4')} onClick={() => navigate(pagePath('proj-settings', pid), { section: 'build-mode' })} data-pop="在项目设置里改">
           <i />{modeLabel || (buildMode === 'L4' ? (autobuild ? '自主构建中' : '自主构建') : '陪伴建模')}
         </span>
         <span className="wx-send" title="发送" onClick={send} style={st.disabled || uploading ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}><Icon name="arrow" size={16} /></span>
@@ -387,7 +409,7 @@ function Composer({ pid, cid, apiRef, st, buildMode, autobuild, modeLabel, onSen
               ))}
             </div>
           ))}
-          <div className="row xs muted" style={{ padding: '6px 6px 0', borderTop: '1px solid var(--line)', marginTop: 4 }}>共 {catalog?.total ?? 0} 条<span className="sp" />点选即发到对话</div>
+          <div className="row xs muted" style={{ padding: '6px 6px 0', borderTop: '1px solid var(--line)', marginTop: 4 }}>共 {catalog?.total ?? 0} 条</div>
         </div>
       ) : null}
       {pop === 'ref' ? (
@@ -397,7 +419,7 @@ function Composer({ pid, cid, apiRef, st, buildMode, autobuild, modeLabel, onSen
             <div key={i} className="mi" onClick={() => { if (h.target?.id) setRefs((x) => (x.some((y) => y.id === h.target.id) ? x : [...x, h.target])); setPop(null); setRefQ(''); }}>
               <Icon name="cube" size={14} /><span className="ell">{h.title}</span><span className="k">{h.snippet}</span>
             </div>
-          )) : <div className="xs muted" style={{ padding: '4px 10px 6px' }}>{refQ ? '没有匹配的条目' : '输入名称搜索知识包里的条目'}</div>}
+          )) : refQ ? <div className="xs muted" style={{ padding: '4px 10px 6px' }}>没有匹配的条目</div> : null}
         </div>
       ) : null}
     </div>
@@ -405,12 +427,14 @@ function Composer({ pid, cid, apiRef, st, buildMode, autobuild, modeLabel, onSen
 }
 
 const INLINE_ALL = ['waiting_decision', 'pending_confirm'];
-function SuggestionBar({ sug, onAction, onAll }) {
-  if (!sug) return null;
+// 包声明的快捷项（PL-12 entries，kind=quick_action）放在「全部命令」旁，点了发它的命令（R22）
+function SuggestionBar({ sug, quick = [], onAction, onAll, onQuick }) {
+  if (!sug && !quick.length) return null;
   const items = [];
-  if (sug.primary) items.push({ ...sug.primary, isPrimary: true });
-  (sug.secondary || []).slice(0, 2).forEach((s) => items.push(s));
-  const inline = INLINE_ALL.includes(sug.mode);
+  if (sug?.primary) items.push({ ...sug.primary, isPrimary: true });
+  (sug?.secondary || []).slice(0, 2).forEach((s) => items.push(s));
+  const inline = !sug || INLINE_ALL.includes(sug.mode);
+  const quickEls = quick.map((q) => <span key={q.id} className="s" onClick={() => onQuick(q)}><Icon name="zap" size={12} />{q.label}</span>);
   return (
     <div className="wb-sug">
       {items.map((s) => {
@@ -421,8 +445,11 @@ function SuggestionBar({ sug, onAction, onAll }) {
           </span>
         );
       })}
-      {sug.all_commands !== false && inline ? <span className="s" onClick={onAll}><Icon name="cmd" size={12} />全部命令</span> : null}
-      {sug.all_commands !== false && !inline ? <><span className="sp" /><span className="s" style={{ border: 0 }} onClick={onAll}><Icon name="cmd" size={12} />全部命令<Icon name="chevd" size={12} /></span></> : null}
+      {inline ? quickEls : null}
+      {sug?.all_commands !== false && inline ? <span className="s" onClick={onAll}><Icon name="cmd" size={12} />全部命令</span> : null}
+      {!inline ? <span className="sp" /> : null}
+      {!inline ? quickEls : null}
+      {sug?.all_commands !== false && !inline ? <span className="s" style={{ border: 0 }} onClick={onAll}><Icon name="cmd" size={12} />全部命令<Icon name="chevd" size={12} /></span> : null}
     </div>
   );
 }
@@ -430,7 +457,7 @@ function SuggestionBar({ sug, onAction, onAll }) {
 export default function WorkbenchPage({ route }) {
   const { api, maintenance } = useApp();
   const project = useProject();
-  const { pid, meta, flow, scope, inboxCount, hasPlugin } = project;
+  const { pid, meta, flow, scope, inboxCount, hasPlugin, extensions } = project;
   // 增量更新（incremental）落到进行中的变更清单所在的对话
   const incTarget = useIncrementalTarget(route);
   const conv = useConversation(route.query?.c || incTarget.cid);
@@ -537,7 +564,7 @@ export default function WorkbenchPage({ route }) {
     discard: async (cs) => { try { await api.discardChangeset(pid, cs); toast('已撤回这一轮', 'undo'); } catch (e) { fail(e); } },
     permission: async (rid, behavior) => { try { await api.replyPermission(pid, cid, rid, { behavior }); } catch (e) { fail(e); } },
     resume: async (execId) => { try { await api.resumeExec(pid, execId, cid); } catch (e) { fail(e); } },
-    abandon: async (execId) => { try { await api.abandonExec(pid, execId); toast('已放弃，下次从头开始', 'undo'); } catch (e) { fail(e); } },
+    abandon: async (execId) => { try { await api.abandonExec(pid, execId); toast('已放弃', 'undo'); } catch (e) { fail(e); } },
     retry: async () => { try { await api.retryTurn(pid, cid); } catch (e) { fail(e); } },
     clearInput: () => comp.current.clear?.(),
     registerRound: (cs, fn) => { rounds.current.set(cs, fn); },
@@ -583,10 +610,19 @@ export default function WorkbenchPage({ route }) {
     }
   };
 
+  const quickActions = useMemo(() => (extensions?.entries || []).filter((e) => e.kind === 'quick_action' && e.command), [extensions]);
+  const runQuick = async (q) => {
+    try {
+      await api.sendCommand(pid, { command: q.command, text: q.label, origin: { page: 'wb-l2', label: q.label, pack: q.pack }, conversation_id: cid });
+    } catch (e) {
+      fail(e);
+    }
+  };
+
   const send = async (body) => {
     try {
       const r = await api.sendMessage(pid, cid, { ...body, client_message_id: `cm-${Date.now()}` });
-      if (r.delivery === 'queued') toast('会话池已满，正在排队', 'clock');
+      if (r.delivery === 'queued') toast('已排队', 'clock');
       return true;
     } catch (e) {
       fail(e);
@@ -597,7 +633,11 @@ export default function WorkbenchPage({ route }) {
   const sug = inc.decorate(state.suggestions || suggestions);
   // 对话正在跑的命令属于哪个节点（FL-01 commands）；服务端标出进行中之前，进度条先按它显示
   const runningCmd = ['running', 'connecting'].includes(state.session.state) ? lastUserText(state) : null;
-  const viewFlow = useMemo(() => overlayRunning(flow, commandNode(flow, runningCmd)), [flow, runningCmd]);
+  const evidenceOn = evidenceInProject(project);
+  const viewFlow = useMemo(() => {
+    const f = withoutEvidence(flow, evidenceOn);
+    return overlayRunning(f, commandNode(f, runningCmd));
+  }, [flow, evidenceOn, runningCmd]);
   // 自主构建正在做的那一片由运行条和运行详情说明，顶栏不再放锁标记
   const lockInfo = scope && scope.state !== 'none' && !(ab.active && scope.state === 'autobuild_slice') ? readonlyInfo(scope) : null;
   // 运行中、排队时顶栏多了状态，「新资料」先收起，避免挤出顶栏；自主构建的状态在运行条上
@@ -631,7 +671,7 @@ export default function WorkbenchPage({ route }) {
         {lockInfo ? (
           <span
             className="wx-ib nt"
-            data-pop={`${lockInfo.label}：${lockInfo.text}。范围内 ${(scope.entries || []).length + (scope.artifacts || []).length} 个条目在 Studio 和插件页里只读，范围外照常编辑。`}
+            data-pop={`${lockInfo.label}：范围内 ${(scope.entries || []).length + (scope.artifacts || []).length} 个条目只读`}
             onClick={() => { if (scope.state === 'pending_confirm' && scope.changeset_id) rounds.current.get(scope.changeset_id)?.(); }}
           >
             <Icon name="lock" size={14} />
@@ -645,7 +685,7 @@ export default function WorkbenchPage({ route }) {
         <span className="wx-ib" onClick={() => navigate(pagePath('inbox', pid))}><Icon name="inbox" size={14} />待处理{inboxCount ? <span className="n">{inboxCount}</span> : null}</span>
         <span className="wx-sep" />
         <span className="wx-ib" title="建模步骤" onClick={() => setDrawer(true)}><Icon name="branch" size={16} /></span>
-        <span className="wx-ib" data-pop={ctx ? `上下文 ${Math.round(ctx.used / 1000)}k / ${Math.round(ctx.window / 1000)}k tokens，接近 ${ctx.compact_at_pct}% 时自动压缩` : '上下文占用'} onClick={() => setMenu(menu === 'ctx' ? null : 'ctx')}>
+        <span className="wx-ib" data-pop={ctx ? `上下文 ${Math.round(ctx.used / 1000)}k / ${Math.round(ctx.window / 1000)}k` : '上下文占用'} onClick={() => setMenu(menu === 'ctx' ? null : 'ctx')}>
           <Ring p={ctxPct} r={7} color={ctxPct >= 75 ? '#F59E0B' : '#2563EB'} /><span className="num">{ctxPct}%</span>
         </span>
         <span className="wx-ib" title="更多" onClick={() => setMenu(menu === 'more' ? null : 'more')}><Icon name="more" size={16} /></span>
@@ -654,7 +694,7 @@ export default function WorkbenchPage({ route }) {
       {menu === 'ctx' ? <div className="wb-pop wb-ctx-pop"><ContextPanel context={ctx} usage={usage} /></div> : null}
       {menu === 'more' ? (
         <div className="menu wb-pop wb-more-menu">
-          <div className="mi" onClick={() => { setMenu(null); setRestart(true); }}><Icon name="refresh" size={14} /><span>重启会话</span><span className="k">按最新配置重连</span></div>
+          <div className="mi" onClick={() => { setMenu(null); setRestart(true); }}><Icon name="refresh" size={14} /><span>重启会话</span></div>
           <div className="mi" onClick={() => setMenu('ctx')}><Icon name="gauge" size={14} /><span>上下文与用量</span></div>
         </div>
       ) : null}
@@ -684,18 +724,18 @@ export default function WorkbenchPage({ route }) {
             </div>
             <div className="wbc-foot">
               <div className="in">
-                <SuggestionBar sug={sug} onAction={onSuggestion} onAll={() => comp.current.setText?.('/')} />
+                <SuggestionBar sug={sug} quick={quickActions} onAction={onSuggestion} onQuick={runQuick} onAll={() => comp.current.setText?.('/')} />
                 <Composer pid={pid} cid={cid} apiRef={comp} st={st} buildMode={ab.active ? 'L4' : meta?.build_mode} autobuild={ab.running} modeLabel={ab.active ? (ab.ended ? '自主构建 · 已结束' : ab.paused ? '自主构建 · 已暂停' : '自主构建中') : null} onSend={send} catalog={catalog} />
               </div>
             </div>
             {drag ? <div className="wb-dropmask"><Icon name="upload" size={24} /><b>松开以添加附件</b><span className="xs muted">Markdown、Word、Excel、PDF、Drawio、TXT · 单个不超过 20 MB</span></div> : null}
           </div>
-          <StepsDrawer open={drawer} onClose={() => setDrawer(false)} flow={viewFlow} meta={meta} cid={cid} />
+          <StepsDrawer open={drawer} onClose={() => setDrawer(false)} flow={viewFlow} cid={cid} />
           <Modal
             open={restart} onClose={() => setRestart(false)} icon="refresh" title="重启会话？" w={460}
-            foot={<><Button onClick={() => setRestart(false)}>取消</Button><Button kind="primary" onClick={async () => { setRestart(false); try { await api.restartConversation(pid, cid); toast('会话已重置，下次发消息生效', 'check'); } catch (e) { fail(e); } }}>重启会话</Button></>}
+            foot={<><Button onClick={() => setRestart(false)}>取消</Button><Button kind="primary" onClick={async () => { setRestart(false); try { await api.restartConversation(pid, cid); toast('会话已重启', 'check'); } catch (e) { fail(e); } }}>重启会话</Button></>}
           >
-            <div className="sm muted">对话记录保留，按最新配置重连模型；稳定引擎会清空模型上下文。要从空白上下文开始，请新建会话。</div>
+            <div className="sm muted">对话记录保留；稳定引擎会清空模型上下文</div>
           </Modal>
           <KnowledgeDialog item={knItem} onClose={() => setKnItem(null)} />
           {opened ? (

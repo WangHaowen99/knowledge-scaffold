@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
 import {
-  commandName, commandNode, mergeFlow, nodeActionKind, normalizeFlow, overlayRunning, sectionGroups, trackNodes,
+  commandName, commandNode, mergeFlow, nodeActionKind, normalizeFlow, overlayRunning, scriptRunView, sectionGroups, sliceStageTitle,
+  trackNodes, withoutEvidence,
 } from '../src/state/flow.js';
 
 test('P1 形状：主线按 after 连线排出 6 个必经步骤，分支与按需节点不进进度条', () => {
@@ -96,4 +97,36 @@ test('流程增量只带 state 时显示态跟着变', () => {
   const m = mergeFlow(flow, { nodes: [{ id: 'core.validate', state: 'running' }] });
   assert.equal(m.nodes.find((n) => n.id === 'core.validate').display_state, 'running');
   assert.equal(mergeFlow(null, {}), null);
+});
+
+test('证据源不可用：系统取证节点从进度条与抽屉分组里去掉，前后连线接上；可用时原样', () => {
+  const flow = normalizeFlow(F.flow());
+  assert.ok(trackNodes(flow).some((n) => n.title === '系统取证'));
+  assert.equal(withoutEvidence(flow, true), flow);
+  const off = withoutEvidence(flow, false);
+  assert.deepEqual(trackNodes(off).map((n) => n.title).slice(0, 2), ['资料分析', '建模']);
+  assert.ok(!sectionGroups(off).flatMap((g) => g.nodes).some((n) => n.id === 'rev.evidence'));
+  assert.ok(off.edges.some((e) => e.from === 'core.research' && e.to === 'core.model'));
+  // 外部节点（要证据源提供方）同样去掉
+  const raw = F.flow();
+  raw.nodes.push({ id: 'x.ext', title: '外部取数', kind: 'external', placement: 'branch', section: 'optional', state: 'ready' });
+  raw.sections.find((x) => x.id === 'optional').nodes.push('x.ext');
+  assert.ok(!sectionGroups(withoutEvidence(normalizeFlow(raw), false)).flatMap((g) => g.nodes).some((n) => n.id === 'x.ext'));
+});
+
+test('切片小进度条每格的悬停：步骤名 · 状态', () => {
+  assert.equal(sliceStageTitle({ id: 'rule', label: '规则' }, 'skipped'), '规则 · 已跳过');
+  assert.equal(sliceStageTitle({ id: 'scenario', label: '场景' }, 'stale'), '场景 · 已过期');
+  assert.equal(sliceStageTitle({ id: 'object', label: '对象' }, 'pending_confirm'), '对象 · 待确认');
+  assert.equal(sliceStageTitle({ id: 'object', label: '对象' }, undefined), '对象');
+});
+
+test('脚本节点的运行结果：通过 / 失败 + 一行摘要（FL-05 的 run 或 node_run_failed）', () => {
+  assert.deepEqual(scriptRunView({ state: 'passed', output: '\n15 个对象口径一致\n明细……' }), { ok: true, summary: '15 个对象口径一致' });
+  assert.deepEqual(scriptRunView(null, { code: 'node_run_failed', details: { exit_code: 2, timed_out: false, stderr: 'Traceback…\nKeyError' } }), { ok: false, summary: 'Traceback…' });
+  assert.deepEqual(scriptRunView(null, { details: { timed_out: true } }), { ok: false, summary: '超时' });
+  assert.deepEqual(scriptRunView(null, { details: { exit_code: 1 } }), { ok: false, summary: '退出码 1' });
+  // FL-01 带 last_run 时按它的摘要
+  const node = F.flow().nodes.find((n) => n.kind === 'script');
+  assert.deepEqual(scriptRunView(node.last_run), { ok: true, summary: '15 个对象的库存口径一致' });
 });

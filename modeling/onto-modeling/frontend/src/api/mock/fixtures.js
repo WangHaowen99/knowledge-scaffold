@@ -287,6 +287,8 @@ export function flow({ trace = true } = {}) {
     node({ id: 'core.publish', title: '发布' }),
     node({ id: 'retail.compliance', title: '合规检查', placement: 'gate', section: 'pre_publish', state: 'blocked', display_state: 'blocked', version: 'industry-retail@1.0.3', note: `零售行业包带来；${trace ? '校验与走查' : '校验'}确认后才能运行` }),
     node({ id: 'diagram.flowchart', title: '流程图', placement: 'branch', section: 'optional', state: 'confirmed', display_state: 'confirmed', version: 'diagram@0.5.0', plugin: { name: 'diagram', label: '图示' } }),
+    // 节点包的脚本节点（B5c）：最近一次运行结果在建模步骤抽屉里展开看（R24）；last_run 是待后端补的 FL-01 字段（gaps「UI 文案」）
+    node({ id: 'stock-check.run', title: '库存口径检查', kind: 'script', placement: 'branch', section: 'optional', state: 'confirmed', display_state: 'confirmed', version: 'stock-check@0.1.0', actions: [{ kind: 'start', label: '重新运行' }], plugin: { name: 'stock-check', label: '库存口径检查' }, last_run: { state: 'passed', summary: '15 个对象的库存口径一致', at: '2026-10-31T07:12:00Z' } }),
     node({ id: 'core.rules', title: '规则与指标', placement: 'branch', section: 'optional', state: 'pending_confirm', display_state: 'pending', actions: [{ kind: 'confirm', label: '去确认', target: 'inbox' }] }),
     node({ id: 'solver.codegen', title: '代码生成', placement: 'branch', section: 'optional', state: 'ready', display_state: 'ready', version: 'solver@0.7.2', actions: [{ kind: 'start', label: '开始' }, { kind: 'skip', label: '跳过' }], plugin: { name: 'solver', label: '代码生成与求解' } }),
     node({ id: 'solver.adapt', title: '求解适配', placement: 'branch', section: 'optional', state: 'skipped', display_state: 'skipped', version: 'solver@0.7.2', actions: [{ kind: 'restore', label: '恢复' }] }),
