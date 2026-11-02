@@ -78,13 +78,13 @@ export function stripTitle(run) {
   const n = `运行 #${run.run_no}`;
   const cur = run.current ? `${run.current.slice_name} › ${run.current.step_label}` : '';
   switch (run.state) {
-    case 'queued': return { title: `排队中 · ${n}`, sub: '平台同时运行数满了，轮到时自动开始' };
+    case 'queued': return { title: `排队中 · ${n}`, sub: '' };
     case 'running': return { title: `自主构建中 · ${n}`, sub: cur ? `当前：${cur}` : '' };
     case 'pausing': return { title: `正在暂停 · ${n}`, sub: '当前步骤做完后暂停' };
     case 'stopping': return { title: `停在安全点 · ${n}`, sub: run.current ? `「${run.current.slice_name}」做完后停下` : '这一片做完后停下' };
     case 'converting': return { title: `转为陪伴 · ${n}`, sub: run.current ? `「${run.current.slice_name}」做完后转为逐个确认` : '这一片做完后转为逐个确认' };
-    case 'paused': return { title: `已暂停 · ${n}`, sub: cur ? `停在：${cur}` : '随时可以续跑' };
-    case 'interrupted': return { title: `${n} 中断了`, sub: '服务重启，可以从检查点续跑' };
+    case 'paused': return { title: `已暂停 · ${n}`, sub: cur ? `停在：${cur}` : '' };
+    case 'interrupted': return { title: `${n} 中断了`, sub: '服务重启' };
     default: {
       const [t, tail] = ENDED_TEXT[run.state] || ['已结束', ''];
       return { title: `${n} ${t}`, sub: [run.started_at && run.ended_at ? `${hhmm(run.started_at)} – ${hhmm(run.ended_at)}` : '', tail].filter(Boolean).join(' · ') };
@@ -163,7 +163,7 @@ export function reportMetrics(r) {
 export function reportSub(r) {
   if (!r) return '';
   const span = r.started_at && r.ended_at ? `${hhmm(r.started_at)} – ${hhmm(r.ended_at)}` : '';
-  const rec = r.recovered_restarts ? `中途服务重启 ${r.recovered_restarts} 次，已从检查点自动续跑，没有丢内容` : '';
+  const rec = r.recovered_restarts ? `服务重启 ${r.recovered_restarts} 次，已自动续跑` : '';
   return [span, rec].filter(Boolean).join(' · ');
 }
 

@@ -70,15 +70,17 @@ test('运行详情六格与报告卡八格', () => {
   assert.equal(m.length, 8);
   assert.deepEqual(m[1], ['切片', '5 / 5', '临期与损耗检查部分完成']);
   assert.deepEqual(m[5], ['自动决策', '17 项', '高置信 13 · 需看 4']);
-  assert.match(reportSub({ ...r, started_at: at(15, 10), ended_at: at(17, 2) }), /^15:10 – 17:02 · 中途服务重启 1 次/);
+  assert.match(reportSub({ ...r, started_at: at(15, 10), ended_at: at(17, 2) }), /^15:10 – 17:02 · 服务重启 1 次，已自动续跑$/);
 });
 
-test('运行中的输入框：补充说明不打断运行；正在做的这一片只读到自动合入为止', () => {
+test('运行中的输入框：补充说明不打断运行；正在做的这一片完成前只读', () => {
   const st = composerState({ sessionState: 'running', autobuildRunning: true });
-  assert.equal(st.placeholder, '补充说明，不打断运行；下一步开始前读取');
+  // 文案由外壳的只读口径定（state/readonly.js），这里只认「补充说明、不打断运行」与送达方式
+  assert.match(st.placeholder, /^补充说明，不打断运行/);
   assert.equal(st.delivery, 'deferred');
   const info = readonlyInfo({ state: 'autobuild_slice', slice: { id: 's4', name: '临期与损耗检查' }, entries: [], artifacts: [], paths: [] });
-  assert.match(info.text, /自主构建正在做「临期与损耗检查」，到这一片自动合入为止只读/);
+  assert.match(info.text, /^自主构建正在做「临期与损耗检查」/);
+  assert.match(info.text, /只读/);
   assert.equal(info.actions[0].kind, 'run');
 });
 
