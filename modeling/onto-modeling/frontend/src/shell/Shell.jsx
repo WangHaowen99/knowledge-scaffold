@@ -6,6 +6,7 @@ import { toast } from '../app/toast.jsx';
 import { errorText } from '../api/errors.js';
 import { Button, Drawer, Icon, Menu, OverlayHostCtx, cx, useOutside } from '../ui/index.jsx';
 import { CommandPalette } from './CommandPalette.jsx';
+import { applyNotification } from './notifications.js';
 import { GlobalTopbar, MaintenanceBanner, ProjectTopbar } from './Topbar.jsx';
 
 function useOverlayHost() {
@@ -77,7 +78,7 @@ export function ShellG({ active, side, children, flush, bodyStyle, onUserEvent }
       kind: 'user',
       url: (q) => api.userEventsUrl(q),
       onEvent: (env) => {
-        if (env.type === 'notification') setNtf((s) => ({ items: [env.data, ...s.items], unread: s.unread + (env.data.read ? 0 : 1) }));
+        if (env.type === 'notification') setNtf((s) => applyNotification(s, env.data));
         if (env.type === 'maintenance.updated') setMaintenance(env.data);
         handler.current?.(env);
       },

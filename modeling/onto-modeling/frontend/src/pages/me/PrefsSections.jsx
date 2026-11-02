@@ -89,7 +89,7 @@ export function NotiSection({ prefs }) {
     if (p === 'unsupported') { toast('这个浏览器不支持系统通知', 'alert'); return; }
     if (p === 'default') p = await ask();
     if (p !== 'granted') {
-      toast(p === 'denied' ? '浏览器已禁止本站发通知，请在浏览器的网站设置里允许后再打开' : '没有拿到通知权限，系统通知没有打开', 'alert');
+      toast(p === 'denied' ? '浏览器已禁止本站通知，请在浏览器设置里允许' : '没有拿到通知权限', 'alert');
       return;
     }
     save('notifications.system', true);

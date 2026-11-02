@@ -9,7 +9,7 @@ const projectWith = (ext) => ({ hasSubpage: (id) => (ext.subpages || []).some((s
 
 test('证据源可用：项目内看有没有数据源子页，项目外看 EV-01 读不读得到', () => {
   assert.equal(evidenceInProject(projectWith(F.extensions())), true);
-  assert.equal(evidenceInProject(projectWith(F.extensions(['trace', 'knowledge', 'solver', 'diagram']))), false);
+  assert.equal(evidenceInProject(projectWith(F.extensions(['trace', 'knowledge', 'codegen', 'diagram']))), false);
   assert.equal(evidenceInProject(null), false);
   assert.equal(evidenceFromSources({ items: [] }), true);
   assert.equal(evidenceFromSources(null), false);
@@ -43,4 +43,21 @@ test('建议条：证据源不可用时去掉跳到证据源页面的建议，�
   assert.equal(off.all_commands, true);
   assert.equal(withoutEvidenceSuggestions(sug, true), sug);
   assert.equal(withoutEvidenceSuggestions(null, false), null);
+});
+
+test('C-01 features.evidence === false 之后：EV-01 不再发请求，直接按 501 evidence_not_available 失败', async () => {
+  const { createApi } = await import('../src/api/endpoints.js');
+  const calls = [];
+  const client = {
+    get: async (path) => { calls.push(path); return path === '/client-config' ? { features: { evidence: false } } : { items: [] }; },
+  };
+  const api = createApi(client);
+  await api.clientConfig();
+  await assert.rejects(api.evidenceSources(), (e) => e.status === 501 && e.code === 'evidence_not_available');
+  await assert.rejects(api.evidenceSources({ project_id: 'p1' }), (e) => e.code === 'evidence_not_available');
+  assert.deepEqual(calls, ['/client-config']);
+  // 后端没给这个开关（旧版本、mock）时照常请求
+  const plain = createApi({ get: async (path) => { calls.push(path); return path === '/client-config' ? { features: {} } : { items: [] }; } });
+  await plain.clientConfig();
+  assert.deepEqual(await plain.evidenceSources(), { items: [] });
 });

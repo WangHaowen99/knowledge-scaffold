@@ -122,6 +122,35 @@ export function nodeActionKind(action) {
   return 'start';
 }
 
+// 节点动作的命令文本 → S-20 的 {command, args, text}：`键=值` 进 args，其余词是 text；
+// 不以斜杠开头的（如「核验报告」的一句指令）当普通消息发，只给 text
+export function commandFromTarget(target) {
+  const parts = String(target || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length || !parts[0].startsWith('/')) return { text: String(target || '').trim() };
+  const args = {};
+  const words = [];
+  parts.slice(1).forEach((w) => {
+    const m = /^([A-Za-z_][A-Za-z0-9_-]*)=(.+)$/.exec(w);
+    if (m) args[m[1]] = m[2];
+    else words.push(w);
+  });
+  return { command: parts[0], ...(Object.keys(args).length ? { args } : {}), text: words.join(' ') };
+}
+
+// 建议条的 send 动作 → S-20 请求体：建模的下一步给 command + args、text 为空串（contract-changes B4d 第 14 条），
+// 不把空 text 当正文；core 的 _send 给的是整段命令文本（如「/ontology-research phase=blueprint」），拆成 command / args / text
+export function suggestionCommand(action) {
+  if (!action?.command) return null;
+  const text = String(action.text || '').trim();
+  if (!action.args && text.split(/\s+/)[0] === action.command) return commandFromTarget(text);
+  return { command: action.command, ...(action.args ? { args: action.args } : {}), text };
+}
+
+// 没有蓝图时（FL-01 blueprint.state = none）「调整切片」改为发切片规划（contract-changes B4d 合并第 2 条）
+export const planSlicesCommand = (flow) => (flow?.blueprint?.state === 'none'
+  ? { command: '/ontology-research', args: { phase: 'blueprint' }, text: '' }
+  : null);
+
 // 命令文本 → 命令名：去掉斜杠与 `ontology-` 前缀，只取第一个词（`/ontology-trace 全部` → `trace`）
 export function commandName(text) {
   const m = /^\/(\S+)/.exec((text || '').trim());

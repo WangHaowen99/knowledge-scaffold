@@ -287,19 +287,20 @@ def _card(spec: dict, names: set[str]) -> dict:
     return card
 
 
-def _editor(editor_id, editors: dict | None, *, pack: str, version: str, official: bool) -> dict | None:
+def _editor(editor_id, editors: dict | None, *, pack: str, version: str, official: bool,
+            pack_label: str = "") -> dict | None:
     """detail.editor（编辑器 id）→ 编辑器引用；包没声明这个编辑器时为 None（按通用详情打开）。"""
     declared = (editors or {}).get(str(editor_id or ""))
     if declared is None:
         return None
     entry = mf.EDITOR_ENTRY_BUNDLED if official else mf.EDITOR_ENTRY_IFRAME
-    return {"id": declared["id"], "title": declared["title"], "pack": pack, "version": version,
-            "mode": "bundled" if official else "iframe", "ui_api": declared.get("ui_api") or "",
+    return {"id": declared["id"], "title": declared["title"], "pack": pack, "pack_label": pack_label or pack,
+            "version": version, "mode": "bundled" if official else "iframe", "ui_api": declared.get("ui_api") or "",
             "entry": f"{mf.UI_DIR}/{declared['id']}/{entry}"}
 
 
 def _view(declared: dict | None, fields: list[dict], status: dict | None, *, editors: dict | None = None,
-          pack: str = "", version: str = "", official: bool = False) -> dict:
+          pack: str = "", version: str = "", official: bool = False, pack_label: str = "") -> dict:
     view = _default_view(fields, status)
     if not isinstance(declared, dict) or not declared:
         return view
@@ -320,7 +321,8 @@ def _view(declared: dict | None, fields: list[dict], status: dict | None, *, edi
     if "component" in detail and not (isinstance(detail["component"], str) and _COMPONENT_RE.match(detail["component"])):
         detail.pop("component")
     if "editor" in detail:
-        editor = _editor(detail.pop("editor"), editors, pack=pack, version=version, official=official)
+        editor = _editor(detail.pop("editor"), editors, pack=pack, version=version, official=official,
+                         pack_label=pack_label)
         if editor is not None:
             detail["editor"] = editor
     view["card"] = _card(view["card"], names)
@@ -329,7 +331,7 @@ def _view(declared: dict | None, fields: list[dict], status: dict | None, *, edi
 
 def parse_registration(data: dict, *, pack: str, pack_version: str, official: bool,
                        directory: Path | None = None, view: dict | None = None,
-                       editors: dict | None = None) -> ArtifactType:
+                       editors: dict | None = None, pack_label: str = "") -> ArtifactType:
     """校验一份产物登记，返回 ArtifactType；不合法抛 RegistrationError。"""
     art_type = str(data.get("type") or "")
     if not art_type.startswith(f"{pack}.") or art_type in mf.CORE_ENTITY_TYPES or len(art_type) > 80:
@@ -385,7 +387,8 @@ def parse_registration(data: dict, *, pack: str, pack_version: str, official: bo
         type=art_type, title=str(data.get("title") or art_type), pack=pack, pack_version=pack_version,
         format=fmt, path=path, key=str(data.get("key") or "filename"), schema_version=version, fields=fields,
         sections=[str(item) for item in data.get("sections") or []], refs=refs, status=status,
-        view=_view(view, fields, status, editors=editors, pack=pack, version=pack_version, official=official),
+        view=_view(view, fields, status, editors=editors, pack=pack, version=pack_version, official=official,
+                   pack_label=pack_label),
         view_declared=view is not None, studio=bool(data.get("studio")),
         index=index, derive=derive, readonly=str(readonly) if readonly else None,
         section_labels={str(k): str(v) for k, v in (data.get("section_labels") or {}).items()},
@@ -416,6 +419,7 @@ def types_for_pack(view) -> list[ArtifactType]:
             out.append(parse_registration(
                 data, pack=view.name, pack_version=view.version, official=bool(getattr(view, "official", False)),
                 directory=view.directory, view=declared_views.get(str(data.get("type") or "")), editors=editors,
+                pack_label=manifest.label,
             ))
         except Exception as exc:  # noqa: BLE001 - 一份登记坏了只跳过它，不连累同包别的类型
             _log.warning("包 %s 的产物登记 %s 不合法：%s", view.name, rel, exc)

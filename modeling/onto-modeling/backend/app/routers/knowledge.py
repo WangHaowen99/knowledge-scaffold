@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 
 from ..api import deps
 from ..api.errors import ApiError
+from ..kernel.artifacts import index as artifact_index
 from ..kernel.writepath import ChangeTx, Origin
 from ..services import audit, knowledge_layers, mainline, project_events
 from ..services.workspace.layout import _content_revision
@@ -130,10 +131,10 @@ def _public(entry: dict) -> dict:
 def _entries(root: Path) -> list[dict]:
     found = []
     for directory, legacy in ((root / KNOWLEDGE_DIR, False), (root / LEGACY_DIR, True)):
-        if not directory.is_dir():
-            continue
+        if not directory.is_dir() or artifact_index.inside_no_links(root, directory.relative_to(root).as_posix()) is None:
+            continue  # 目录本身（或上层）是符号链接：不读
         for path in sorted(directory.glob("*.md")):
-            if path.name == "INDEX.md" or path.is_symlink():
+            if path.name == "INDEX.md" or path.is_symlink() or not path.is_file():
                 continue
             try:
                 found.append(_entry(path, legacy))
@@ -197,7 +198,6 @@ def list_knowledge(project_id: str, request: Request, layer: str = "all", type: 
         "next_cursor": page["next_cursor"],
         "counts": {"all": len(entries), "project": len(project), "industry": len(industry)},
         "layers": knowledge_layers.layers_view(project, industry, packs),
-        "loading_rule": knowledge_layers.loading_rule(packs),
     }
 
 
@@ -274,8 +274,8 @@ def _saved(root: Path, project_id: str, request: Request, entry_id: str, status:
     entry["overrides_industry"] = any(item["_slug"] == entry["_slug"] for item in industry)
     # 入库后的确定性查重（同名、覆盖了口径不同的行业条目、失效引用）；需要语义判断的冲突在对话里复核
     found = knowledge_layers.check_conflicts(root, project, industry)["conflicts"]
-    conflicts = [{"kind": item["kind"], "with": (item.get("industry_entry") or {}).get("title") or item["note"],
-                  "note": item["note"]} for item in found if item["project_entry"]["id"] == entry_id]
+    conflicts = [{"kind": item["kind"], "with": knowledge_layers.conflict_with(item)}
+                 for item in found if item["project_entry"]["id"] == entry_id]
     _emit(project_id, [entry_id], "created" if status == 201 else "updated")
     return JSONResponse(status_code=status, content={
         "entry": _public(entry), "commit": state["head"], "version_label": state["version_label"],

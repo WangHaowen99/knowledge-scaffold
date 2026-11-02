@@ -3,6 +3,7 @@
 // 桥接走握手时转交的 MessagePort；iframe 第二次 load 说明它把自己导航走了，立即拆掉桥接、卸掉 iframe（审查第 2 条）。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
+import { artifactQuery } from '../../app/packUi.js';
 import { errorText } from '../../api/errors.js';
 import { createBridgeHost, handle, readTheme } from '../../app/packBridge.js';
 import { Button, Note } from '../../ui/index.jsx';
@@ -46,7 +47,7 @@ export default function PackFrame({ editor, artifact, types, readonly }) {
   const host = useMemo(() => {
     if (!session) return null;
     const deps = {
-      readArtifact: (type, key) => api.artifact(pid, type, key),
+      readArtifact: (type, key) => api.artifact(pid, type, key, artifactQuery(ctx.current.artifact, type, key)),
       saveArtifact: (type, key, body) => api.saveArtifact(pid, type, key, body),
       // origin.pack：服务端据此按包再校验一次（只认本包的命令、参数短、限频）
       sendCommand: ({ command, args, text }) => api.sendCommand(pid, { command, args, text, origin: { page: 'artifact', label: editor.title, pack: editor.pack } }),

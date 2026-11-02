@@ -23,7 +23,7 @@ function ToolsCard({ server, tested }) {
   const ms = t ? t.latency_ms : server.latency_ms;
   const sub = at ? `上次测试 ${fmtHm(at)}${ms != null ? ` · ${ms}ms` : ''}` : '还没测试过';
   let empty = '还没测试过';
-  if ((t && !t.ok) || (!t && server.status === 'failed')) empty = '连接失败，拿不到工具清单。';
+  if ((t && !t.ok) || (!t && server.status === 'failed')) empty = '连接失败';
   else if (t?.ok || server.status === 'connected') empty = '连接正常，没有返回工具清单';
   return (
     <Card title={`${server.name} 提供的工具`} sub={sub} icon="terminal">

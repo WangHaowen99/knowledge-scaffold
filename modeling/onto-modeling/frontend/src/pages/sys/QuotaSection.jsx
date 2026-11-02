@@ -153,7 +153,7 @@ export function QuotaSection() {
                   <Inp mono value={qForm.daily_tokens} error={!!qp.daily_tokens} onChange={setQ('daily_tokens')} />
                 </Field>
                 {hidden.has('collections_per_source_per_hour') ? null : (
-                  <Field label="证据采集频率" hint={err(qp, 'collections_per_source_per_hour', '生产环境另需确认')}>
+                  <Field label="证据采集频率" hint={err(qp, 'collections_per_source_per_hour', null)}>
                     <Inp value={qForm.collections_per_source_per_hour} error={!!qp.collections_per_source_per_hour} onChange={setQ('collections_per_source_per_hour')}
                       after={<span className="muted sm sy-nowrap">次 / 每个数据源每小时</span>} />
                   </Field>
@@ -166,7 +166,7 @@ export function QuotaSection() {
                   <Inp mono value={qForm.monthly_tokens} error={!!qp.monthly_tokens} onChange={setQ('monthly_tokens')} />
                 </Field>
                 {hidden.has('snapshot_git_mb') ? null : (
-                  <Field label="单份快照在 git 里的上限" hint={err(qp, 'snapshot_git_mb', '超出的大件放 blob 仓')}>
+                  <Field label="单份快照在 git 里的上限" hint={err(qp, 'snapshot_git_mb', null)}>
                     <Inp mono value={qForm.snapshot_git_mb} error={!!qp.snapshot_git_mb} onChange={setQ('snapshot_git_mb')} after={<span className="muted sm">MB</span>} />
                   </Field>
                 )}

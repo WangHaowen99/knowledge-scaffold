@@ -1,14 +1,13 @@
 // 项目设置 · 基本信息（P-04、P-05，重名用 P-03 实时检查）与引擎与模型（C-06、P-12、A-09）
 import { useEffect, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
-import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import {
   Area, Button, Chip, Field, Icon, Inp, KV, Modal, Note, cx,
 } from '../../ui/index.jsx';
 import {
-  basicPatch, createdText, engineCards, modelSourceText, nameProblem,
+  basicPatch, createdText, engineCards, modelDisplayName, nameProblem,
 } from './settingsModel.js';
 
 function useNameCheck(name, excludeId, enabled) {
@@ -86,7 +85,6 @@ export function EngineSection({ d, put, archived, active }) {
   const cards = engineCards(d.engines, current);
   const locked = archived || !!active;
   const cfg = d.model?.engines?.[current];
-  const source = d.engine?.model_source || cfg?.source;
 
   const pick = (c) => {
     if (c.on || !c.installed) return;
@@ -128,15 +126,12 @@ export function EngineSection({ d, put, archived, active }) {
             </div>
           ))}
         </div>
-        <div className="row mt12 g12">
-          <div className="grow">
-            <Field label="模型">
-              <div className="inp sel ps-src">
-                <Icon name="key" size={14} /><span className="grow ell">{modelSourceText(source, cfg)}</span>
-              </div>
-            </Field>
-          </div>
-          <div style={{ alignSelf: 'flex-end' }}><Button size="sm" onClick={() => navigate(pagePath('me'), { section: 'model' })}>改我的模型配置</Button></div>
+        {/* 模型跟着个人设置走，这里只读一行（同新建向导第 4 步）：不画成下拉框，旁边给改的入口 */}
+        <div className="en-model mt12">
+          <span className="xs muted">模型</span>
+          <Icon name="sparkle" size={14} />
+          <b className="sm ell">{modelDisplayName(cfg)}</b>
+          <a className="link xs" href="#/me?section=model">改我的模型配置</a>
         </div>
       </div>
       {confirm ? (

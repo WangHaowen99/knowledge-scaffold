@@ -32,7 +32,6 @@ from . import ops
 
 router = APIRouter(prefix="/api/v1/ops", tags=["ops"])
 
-DIAGNOSTICS_KEEP_DAYS = 7
 AUDIT_EXPORT_LIMIT = 100_000
 RANGES = {"1h": 3600, "24h": 86400, "7d": 7 * 86400}
 BUCKETS = 12
@@ -95,15 +94,15 @@ def _p95(values: list[float]) -> float:
     return ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))] if ordered else 0
 
 
-def _card(card_id: str, label: str, value, unit: str, series: list[float], secondary: str = "", note: str = "",
+def _card(card_id: str, label: str, value, unit: str, series: list[float], secondary: str = "",
           tone: str = "normal") -> dict:
-    return {"id": card_id, "label": label, "value": value, "unit": unit, "secondary": secondary, "note": note,
+    return {"id": card_id, "label": label, "value": value, "unit": unit, "secondary": secondary,
             "series": series, "tone": tone}
 
 
 @router.get("/metrics")
 def metrics(request: Request, range: str = "24h", labels: str = ""):  # noqa: A002  契约查询参数名
-    """O-02：指标卡片。数值来自进程内指标（重启后从零开始）；合入、证据采集属于以后阶段，恒为 0。"""
+    """O-02：指标卡片。数值来自进程内指标（重启后从零开始）；证据采集卡本期不返回（证据源只留接口）。"""
     _read(request)
     if range not in RANGES:
         raise ApiError("invalid_argument", "range 只能是 1h、24h、7d", 400, {"fields": {"range": "enum"}})
@@ -135,8 +134,7 @@ def metrics(request: Request, range: str = "24h", labels: str = ""):  # noqa: A0
               tone="error" if fail_rate >= 5 else "normal"),
         _card("guard_denies", "守卫拒绝", int(guards), "次", guard_series),
         _card("check_failures", "检查失败", int(checks), "次", check_series),
-        _card("merges", "合入", int(merges), "次", merge_series, note="变更集在 P2"),
-        _card("collections", "证据采集", 0, "次", [0] * BUCKETS, note="证据源在 P3"),
+        _card("merges", "合入", int(merges), "次", merge_series),
         _card("reconnects", "热更新与重连", int(reconnects), "次", reconnect_series),
     ]}
 
@@ -167,7 +165,7 @@ def attribution(request: Request, by: str = "pack", range: str = "24h", labels: 
         {"key": key, "version_or_source": key.partition("@")[2] or None, "calls": row["calls"],
          "fail_rate_pct": round(row["failures"] / row["calls"] * 100, 1) if row["calls"] else 0,
          "avg_duration_ms": int(sum(row["durations"]) / len(row["durations"]) * 1000) if row["durations"] else 0,
-         "guard_denies": int(row["guard_denies"]), "reruns": None, "first_accept_pct": None}
+         "guard_denies": int(row["guard_denies"])}  # 重跑、一次通过率没有数据来源，不返回
         for key, row in sorted(rows.items())
     ]}
 
@@ -548,6 +546,33 @@ async def breaker(name: str, version: str, request: Request):
 # ---- O-42 版本清单 ----
 
 
+# ---- O-11、O-12 导出器 ----
+
+
+@router.get("/exporters")
+def exporters(request: Request):
+    """O-11：本部署有的导出器（Prometheus 抓取地址、本地日志文件）。"""
+    from ..services import ops_center
+
+    _read(request)
+    return {"items": ops_center.exporter_items()}
+
+
+@router.put("/exporters")
+async def save_exporters(request: Request):
+    """O-12：改完马上生效（不用滚动重启）。"""
+    from ..services import ops_center
+
+    _write(request)
+    body = await deps.json_body(request)
+    try:
+        items = ops_center.save_exporters(body.get("items"))
+    except ops_center.OpsCenterError as exc:
+        raise ApiError(exc.code, str(exc), exc.status, exc.details) from exc
+    _ops_audit(request, "ops.exporters", items=[{"id": item["id"], "enabled": item["enabled"]} for item in items])
+    return {"items": items, "effective": "immediate"}
+
+
 @router.get("/versions")
 def versions(request: Request):
     _read(request)
@@ -594,6 +619,13 @@ def _app_version() -> str:
 DIAGNOSTIC_PARTS = ("logs_24h", "config_refs", "versions", "recent_errors", "startup_report", "pool_alert_snapshot")
 
 
+def _diagnostics_keep_days() -> int:
+    """诊断包保留天数：运维在数据保留里改过就用改过的（O-44），缺省 7 天。"""
+    from ..services import ops_center
+
+    return ops_center.retention_value("diagnostics")
+
+
 def _diagnostics_dir() -> Path:
     return Path(config.DATA_DIR) / "ops" / "diagnostics"
 
@@ -602,7 +634,7 @@ def _purge_old_diagnostics() -> None:
     directory = _diagnostics_dir()
     if not directory.is_dir():
         return
-    cutoff = time.time() - DIAGNOSTICS_KEEP_DAYS * 86400
+    cutoff = time.time() - _diagnostics_keep_days() * 86400
     for path in directory.glob("*.zip"):
         if path.stat().st_mtime < cutoff:
             path.unlink(missing_ok=True)
@@ -616,12 +648,12 @@ def _diagnostic_item(path: Path) -> dict:
         meta = {}
     created = path.stat().st_mtime
     return {"id": path.stem, "name": path.name, "size": path.stat().st_size, "created_at": deps.iso(created),
-            "created_by": meta.get("created_by"), "expires_at": deps.iso(created + DIAGNOSTICS_KEEP_DAYS * 86400)}
+            "created_by": meta.get("created_by"), "expires_at": deps.iso(created + _diagnostics_keep_days() * 86400)}
 
 
 @router.post("/diagnostics")
 async def create_diagnostics(request: Request):
-    """O-45：诊断包。全部脱敏，不含密钥和项目内容，保留 7 天。"""
+    """O-45：诊断包。全部脱敏，不含密钥和项目内容，缺省保留 7 天（O-44 可改）。"""
     _write(request)
     body = await deps.json_body(request)
     include = body.get("include") or list(DIAGNOSTIC_PARTS)

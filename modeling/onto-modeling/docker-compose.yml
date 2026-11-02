@@ -9,6 +9,8 @@ services:
     environment:
       # 首次启动必须提供初始管理员密码（本地验证可在 .env 里设置）
       - AUTH_BOOTSTRAP_ADMIN_PASSWORD=${AUTH_BOOTSTRAP_ADMIN_PASSWORD:-}
+      # 管理 API 令牌：与 onto-modeling 的 ONTO_WEB_AUTH_ADMIN_TOKEN 同一个值（.env 里设），运维中心的用户管理靠它
+      - AUTH_SERVER_ADMIN_TOKEN=${ONTO_WEB_AUTH_ADMIN_TOKEN:-}
     volumes:
       - onto-modeling-auth-data-dev:/data
 

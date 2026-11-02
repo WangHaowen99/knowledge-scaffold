@@ -101,8 +101,10 @@ export function BuildFlow({ next = 'L2', onClose }) {
         onClose();
         navigate(pagePath('wb-l2', pid));
       } catch (e) {
+        // 蓝图还在这一轮的修改里时 BP-03 先确认生效（同 CS-04）：错误按确认生效同样处理，冲突去待处理
         toast(errorText(e), 'alert');
         onClose();
+        if (e.code === 'merge_conflict') navigate(pagePath('inbox', pid));
       }
     })();
   }, [api, pid, next, onClose]);

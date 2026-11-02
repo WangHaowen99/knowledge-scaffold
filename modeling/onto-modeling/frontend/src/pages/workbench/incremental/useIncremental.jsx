@@ -1,5 +1,6 @@
 // 工作台里的增量更新（设计稿 incremental，内核能力，不单设页面）：
-// - 进入 incremental 时落到哪条对话：地址带 ?c= 的 > 待处理里进行中的变更清单所在的对话（IN-01 → INC-01 的 conversation_id）> 当前对话；
+// - 进入 incremental 时落到哪条对话：地址带 ?c= 的 > 待处理里进行中的变更清单所在的对话（IN-01 → INC-01 的 conversation_id）
+//   > 已执行未确认的清单所在的对话（待确认的助手变更集，CS-01）> 当前对话；
 //   都没有时建议条主推「开始增量更新」：新开一条对话发 /ontology-update（S-02 + S-20）。
 // - 变更点清单弹窗（?dialog=change_list 或卡片双击）、「确认清单并执行」（INC-03 补接受 + INC-04）。
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
@@ -30,6 +31,9 @@ export function useIncrementalTarget(route) {
           const cl = await api.changeList(pid, id);
           const convs = cl.conversation_id ? await api.conversations(pid) : null;
           if (convs?.items?.some((c) => c.id === cl.conversation_id)) out.cid = cl.conversation_id;
+        } else {
+          const [cs, convs] = await Promise.all([api.changesets(pid, { state: 'pending_confirm' }), api.conversations(pid)]);
+          out.cid = M.pendingChangesetConversation(cs.items, convs.items);
         }
       } catch { /* 找不到就留在当前对话 */ }
       if (alive) setTarget(out);

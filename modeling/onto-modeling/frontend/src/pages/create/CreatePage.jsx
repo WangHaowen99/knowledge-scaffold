@@ -9,12 +9,13 @@ import { ShellG } from '../../shell/Shell.jsx';
 import { Button, Chip, Field, Icon, Menu, Prog, Toggle, cx, useOutside } from '../../ui/index.jsx';
 import { uiChip } from '../plugins/catalogModel.js';
 import { createBody } from './createBody.js';
+import { modelDisplayName } from '../settings/settingsModel.js';
 
 const STEPS = ['目标', '起点与资料', '行业与能力', '引擎与构建方式'];
 const EXAMPLES = ['店长一句话说明需求，按规则自动生成补货单', '根据业主报修判断故障紧急程度并派维修工单', '按订单预测和站点约束求解骑手排班方案'];
 const PURPOSES = [['auto', '由助手判断'], ['goal', '建模目标依据'], ['evidence', '通用业务依据'], ['schema', '数据 Schema'], ['term', '术语表']];
 const PURPOSE_LABEL = Object.fromEntries(PURPOSES);
-const CAP_ICON = { core: 'cube', trace: 'flask', knowledge: 'book', solver: 'code', reverse: 'db', diagram: 'branch', 'web-research': 'globe', migrate: 'recycle', evolution: 'refresh' };
+const CAP_ICON = { core: 'cube', trace: 'flask', knowledge: 'book', codegen: 'code', reverse: 'db', diagram: 'branch', websearch: 'globe', migrate: 'recycle', evo: 'refresh' };
 
 function useNameCheck(api, name) {
   const [res, setRes] = useState(null);
@@ -116,7 +117,7 @@ export default function CreatePage() {
   const selectedPages = capPacks.filter((p) => p.ui?.kind === 'page' && caps[p.name]).flatMap((p) => p.ui.pages.map((x) => x.title));
   const srcCount = sources?.total ?? 0;
   const engineModel = model?.engines?.[engine];
-  const modelName = engineModel?.model || engineModel?.admin_summary?.model || '使用我的模型配置';
+  const modelName = modelDisplayName(engineModel);
   const uploading = files.some((f) => f.progress != null && f.progress < 100);
 
   const create = async () => {

@@ -214,6 +214,9 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
         if not running:
             # 每轮收尾把副本里新出的验收回执带回主线：只跑了验证、没改文件的一轮也要带（审查第 11 条）
             worktree.collect_state(root, copy)
+            # 一轮结束：这一轮建的、指向工作区外的符号链接删掉，不进快照、不让后端的读接口跟着走
+            worktree.drop_escaping_links(copy)
+            worktree.drop_escaping_links(root)
         base = worktree.merge_base(root, copy)
         snap = worktree.snapshot(copy)
         changes = [(status, rel) for status, rel in (worktree.diff(root, base, snap) if base else [])
@@ -492,16 +495,13 @@ def round_card(manager, project_id: str, record: dict, card_id: str) -> dict:
     title = f"改了 {total} 处，" + ("检查全部通过" if not errors and not warnings else
                                    f"检查有 {errors} 个新错误" if errors else f"检查有 {warnings} 个新警告")
     merged = record.get("merged") or {}
-    lock = scope_lock(manager, project_id) if card_state == "pending_confirm" else None
-    lock_note = ""
-    if lock and lock["state"] != "none":
-        lock_note = f"确认生效或撤回之前，这 {len(lock['entries']) + len(lock['artifacts'])} 项在编辑器里只读"
+    # 说明槽位不下发（UI 文案口径 ⑤）：只读说明由前端按写入范围算；增量更新那一轮不带副标题
     return {
         "card_id": card_id,
         "card_type": "round_changes",
         "eyebrow": "这一轮改了什么",
         "title": title,
-        "subtitle": record.get("purpose") or "",
+        "subtitle": "" if record.get("change_list_id") else record.get("purpose") or "",
         "status": {"key": {"merged": "confirmed", "discarded": "skipped"}.get(card_state, "pending"),
                    "label": {"merged": "已确认生效", "discarded": "已撤回"}.get(card_state, "待确认")},
         "plugin": None,
@@ -511,7 +511,6 @@ def round_card(manager, project_id: str, record: dict, card_id: str) -> dict:
         "checks": {"errors": errors, "warnings": warnings},
         "groups": [{"kind": kind, "label": GROUP_LABELS[kind], "items": groups[kind]}
                    for kind in GROUP_ORDER if kind in groups],
-        "lock_note": lock_note,
         "next_version_label": merged.get("version_label") or _next_label(root),
         "state": card_state,
         "merged_version_label": merged.get("version_label"),
@@ -563,7 +562,7 @@ def _require_open(manager, project_id: str, changeset_id: str, *, allow_conflict
     if record["state"] in ("merged", "discarded"):
         raise WorkspaceError("这一轮的修改已经确认生效或撤回", 409, "changeset_closed", {"state": record["state"]})
     if record["state"] == "conflict" and not allow_conflict:
-        raise WorkspaceError("合入时检测到冲突，先选好保留哪一边", 409, "merge_conflict",
+        raise WorkspaceError("确认生效时有冲突，先选好保留哪一边", 409, "merge_conflict",
                              {"entities": (record.get("conflict") or {}).get("entities") or [],
                               "inbox_item_id": f"changeset_conflict:{record['id']}"})
     state = activity(project_id)
@@ -645,10 +644,10 @@ def merge(manager, project_id: str, changeset_id: str, *, actor: str, expected_h
         record = _require_open(manager, project_id, changeset_id)
         copy = existing_copy(root)
         if copy is None:
-            raise WorkspaceError("助手副本不在了，这一轮的修改没法合入", 409, "changeset_closed", {"state": record["state"]})
+            raise WorkspaceError("助手副本不在了，这一轮的修改没法生效", 409, "changeset_closed", {"state": record["state"]})
         main = worktree.rev(root)
         if expected_head and expected_head != main:
-            raise WorkspaceError("主线已前进，请刷新后重试", 409, "head_moved", {"head": main})
+            raise WorkspaceError("有新的版本，请刷新后重试", 409, "head_moved", {"head": main})
         worktree.commit_pending(copy, "chore: 收拢这一轮没提交的改动")
         head = worktree.rev(copy)
         merged_tree, result = _merged_tree(manager, project_id, root, record, main, head, choices,
@@ -684,7 +683,7 @@ def _merged_tree(manager, project_id: str, root: Path, record: dict, main: str, 
                          conflict={"paths": conflicted, "entities": targets, "main": main, "head": head,
                                    "at": time.time()})
             _notify(project_id, "changeset", store.get(root, record["id"]))
-            raise WorkspaceError("合入时检测到冲突，已放进待处理，选好保留哪一边再合入", 409, "merge_conflict",
+            raise WorkspaceError("确认生效时有冲突，已放进待处理，选好保留哪一边再确认", 409, "merge_conflict",
                                  {"entities": targets, "inbox_item_id": f"changeset_conflict:{record['id']}"})
         picks = {rel: (main if keep == "mainline" else head) for rel, keep in chosen.items()}
     # 资料区、锁文件不采用副本的版本（审查第 1 条）：副本里关了稀疏规则时 git 会把资料当成删了
@@ -704,7 +703,7 @@ def _merged_tree(manager, project_id: str, root: Path, record: dict, main: str, 
         raise WorkspaceError(f"门禁跑不起来：{exc}", 503, "service_unavailable", {"dependency": "gate"}) from exc
     if result["errors"]:
         store.update(root, record["id"], checks={**result, "tree": record.get("tree")})
-        raise WorkspaceError(f"合入会带进 {result['errors']} 个新的错误，先修好再确认", 422, "gate_failed",
+        raise WorkspaceError(f"这一轮有 {result['errors']} 个新的错误，先修好再确认", 422, "gate_failed",
                              {"findings": [item for item in result["findings"] if item["level"] == "error"]})
     return merged_tree, result
 
@@ -733,6 +732,10 @@ def _write_merge(manager, project_id: str, root: Path, record: dict, main: str, 
             if data is not None:
                 tx.write(rel, data)
         committed = tx.commit(message or f"assistant: {record.get('purpose') or '助手的修改'}（{record['id']}）")
+    if committed.commit:
+        from ...governance import telemetry
+
+        telemetry.count("onto_merges_total", source=origin_source)  # 运维可观测「合入」卡（O-02）
     return committed.commit or None
 
 
@@ -797,7 +800,7 @@ def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, so
     merged = record.get("merged") or {}
     commit = merged.get("commit")
     if record["state"] != "merged" or not commit:
-        raise WorkspaceError("只有已合入的变更集能撤回", 409, "changeset_closed", {"state": record["state"]})
+        raise WorkspaceError("只有已生效的修改能撤回", 409, "changeset_closed", {"state": record["state"]})
     if record.get("reverted"):
         raise WorkspaceError("这个变更集已经撤回过", 409, "changeset_closed", {"state": "reverted"})
     done = reverse_commits(root, since=commit).get(record["id"])
@@ -817,7 +820,7 @@ def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, so
                 kind, _, key = (entry or f"file:{rel}").partition(":")
                 clashes.append(_entry_ref(kind, key))
         if clashes:
-            raise WorkspaceError("合入之后这些条目又被改过，不能单独撤回", 409, "merge_conflict",
+            raise WorkspaceError("生效之后这些条目又被改过，不能单独撤回", 409, "merge_conflict",
                                  {"entities": clashes, "inbox_item_id": None})
         for _status, rel in paths:
             data = worktree.read_blob(root, parent, rel)

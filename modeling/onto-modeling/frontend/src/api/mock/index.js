@@ -442,6 +442,14 @@ export function createMockServer() {
   // ---------- 3.10 变更集 ----------
   // 带 owner 的变更集（如增量更新那一轮）由登记它的 routes-*.js 处理，这里让过去
   on('GET', '/projects/([^/]+)/scope', ({ m }) => json(200, scopeOf(m[1])));
+  // CS-01：变更集列表（增量更新按待确认的助手变更集找所在对话）
+  on('GET', '/projects/([^/]+)/changesets', ({ m, query }) => {
+    const want = (query.get('state') || '').split(',').filter(Boolean);
+    const items = [...db.changesets.entries()]
+      .filter(([, cs]) => cs.pid === m[1] && (!want.length || want.includes(cs.state)))
+      .map(([id, cs]) => ({ id, source: 'assistant', build_mode: 'L2', purpose: '助手的修改', state: cs.state, base: 'a71e03c9', conversation_id: cs.cid || null, run_id: null, slice_id: null, created_at: null, updated_at: null, merged: null, entity_count: 0 }));
+    return json(200, { items, next_cursor: null });
+  });
   on('GET', '/projects/([^/]+)/changesets/([^/]+)/diff', ({ m }) => {
     const cs = db.changesets.get(m[2]);
     if (cs?.owner) return undefined;

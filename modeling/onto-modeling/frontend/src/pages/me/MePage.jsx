@@ -25,7 +25,7 @@ export default function Page({ route }) {
 
   const side = (
     <SNav
-      groups={[{ title: '个人', items: SECTIONS }]}
+      groups={[{ items: SECTIONS }]}
       active={section}
       onPick={(k) => { if (k !== section) navigate(pagePath('me'), { section: k }); }}
     />

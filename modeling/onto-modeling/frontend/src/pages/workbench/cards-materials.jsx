@@ -1,8 +1,6 @@
 // 资料分析与建模蓝图的对话卡片（契约 4.7：upload_prompt、material_map、research_summary、blueprint、build_choice）
 // 设计稿 wb-materials、wb-blueprint；弹窗在 materials/ 里，由工作台统一挂（useOpenDialog）
-import {
-  useContext, useEffect, useState, useSyncExternalStore,
-} from 'react';
+import { useContext, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import {
@@ -14,7 +12,7 @@ import {
   MatIcon, pageCommand, useMaterialUpload, useOpenDialog,
 } from './materials/parts.jsx';
 import {
-  acceptLabel, anchorLabel, depLabel, miniStatus, orderLabel, purposeLabel, readState,
+  acceptLabel, anchorLabel, confirmOptions, depLabel, miniStatus, orderLabel, purposeLabel, readState,
 } from './materials/model.js';
 import '../../styles/materials.css';
 
@@ -35,7 +33,7 @@ function UploadPromptCard({ card }) {
   const evidenceOn = evidenceInProject(project);
   const acts = (card.actions || ['upload', 'import_package']).filter((a) => a !== 'connect_system' || evidenceOn);
   const importPackage = () => pageCommand(api, pid, {
-    command: '/ontology-guide', args: { start: 'import_package' }, text: '从已有知识包导入：列出可选的已发布知识包',
+    command: '/ontology', text: '从已有知识包导入：列出可选的已发布知识包',
     label: '欢迎卡', done: '已发给助手',
   });
   return (
@@ -147,28 +145,14 @@ function OrderTag({ slice, index }) {
   return <span className="xs faint">{o.text}</span>;
 }
 
-// 「确认后怎么建」（R3）：两种方式并进蓝图卡底部，不再单独成卡。
-// 自主构建能不能选：蓝图卡自带的 build_options，或者对话里有 build_choice 卡（后端只在自主构建登记了才发）
-const buildChoices = new Map(); // pid → options
-const choiceSubs = new Set();
-function registerBuildChoice(pid, options) {
-  buildChoices.set(pid, options);
-  choiceSubs.forEach((fn) => fn());
-}
-const subscribeChoices = (fn) => { choiceSubs.add(fn); return () => choiceSubs.delete(fn); };
-function useAutobuildOffered(pid, card) {
-  const registered = useSyncExternalStore(subscribeChoices, () => buildChoices.get(pid) || null);
-  const options = card.build_options || registered || [];
-  return options.some((o) => o.mode === 'L4');
-}
-
 function BlueprintCard({ card }) {
-  const { pid } = useContext(WbCtx);
   const open = useOpenDialog();
   const slices = card.slices || [];
   const confirmed = card.state === 'confirmed';
   const terms = card.terms || {};
-  const autobuild = useAutobuildOffered(pid, card);
+  const options = confirmOptions(card);
+  const l4 = options.find((o) => o.mode === 'L4');
+  const l2 = options.find((o) => o.mode === 'L2');
   return (
     <CC
       icon="layers" title={card.title || `建模蓝图 · ${card.version_label}`}
@@ -180,8 +164,8 @@ function BlueprintCard({ card }) {
           <span className="sp" />
           {confirmed ? <span className="wx-ok"><Icon name="check" size={14} />蓝图已确认 · {card.version_label}</span> : (
             <>
-              {autobuild ? <Button size="sm" icon="rocket" onClick={() => open({ kind: 'build', next: 'L4' })}>确认，一路建完…</Button> : null}
-              <Button size="sm" kind="primary" icon="hand" onClick={() => open({ kind: 'build', next: 'L2' })}>确认，一片一片来</Button>
+              {l4 ? <Button size="sm" icon="rocket" onClick={() => open({ kind: 'build', next: 'L4' })}>{l4.label || '确认，一路建完…'}</Button> : null}
+              {l2 ? <Button size="sm" kind="primary" icon="hand" onClick={() => open({ kind: 'build', next: 'L2' })}>{l2.label || '确认，一片一片来'}</Button> : null}
             </>
           )}
         </>
@@ -227,13 +211,8 @@ function BlueprintCard({ card }) {
   );
 }
 
-// ---------- 确认后怎么建：并进蓝图卡（R3），这张卡不再单独显示，只登记可选的方式 ----------
-function BuildChoiceCard({ card }) {
-  const { pid } = useContext(WbCtx);
-  const modes = (card.options?.length ? card.options : [{ mode: 'L2' }, { mode: 'L4' }]).map((o) => o.mode).join(',');
-  useEffect(() => { registerBuildChoice(pid, modes.split(',').map((mode) => ({ mode }))); }, [pid, modes]);
-  return null;
-}
+// ---------- 「确认后怎么建」卡已取消（R3，后端不再发）；旧历史里的这张卡不画 ----------
+const BuildChoiceCard = () => null;
 
 export const MATERIAL_CARDS = {
   upload_prompt: UploadPromptCard,

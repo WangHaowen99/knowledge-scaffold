@@ -9,8 +9,15 @@ export const MAINLINE = [
 const MAIN_IDS = MAINLINE.map(([id]) => id);
 
 /** 插入点挂在主线哪一段：带 at 就用；只有节点 ID 时按 ID 里的词猜，猜不出算「建模」 */
+// 官方包节点挂在主线哪一段（各包 flow.yaml 的 after）；后端 PL-02 只给 {id, title} 时用
+const KNOWN_AT = {
+  'diagram.flowchart': 'research', 'migrate.reuse': 'research', 'codegen.solver': 'model',
+  'trace.trace': 'validate', 'codegen.codegen': 'validate', 'evo.evolution': 'publish',
+};
+
 export function insertionAt(ins) {
   if (MAIN_IDS.includes(ins?.at)) return ins.at;
+  if (KNOWN_AT[ins?.id]) return KNOWN_AT[ins.id];
   const id = String(ins?.id || '').toLowerCase();
   if (/research|material|evidence/.test(id)) return 'research';
   if (/publish|release|compliance|gate|feedback/.test(id)) return 'publish';

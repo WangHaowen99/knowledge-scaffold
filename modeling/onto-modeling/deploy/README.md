@@ -27,6 +27,9 @@ vi .env              # 填 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN
 
 访问 `http://<部署机地址>:5100`（端口可用 `ONTO_WEB_PORT` 覆盖）。
 
+首次运行时 deploy.sh 在 `.env` 里生成两项：初始管理员密码 `AUTH_BOOTSTRAP_ADMIN_PASSWORD`（登录名 admin）和
+auth-server 管理令牌 `ONTO_WEB_AUTH_ADMIN_TOKEN`（auth-server 与后端读同一个值，运维中心「用户与审计」靠它）。
+
 ### 对接评测服务
 
 评测已移出 onto-modeling（ADR-0020），onto 不主动调用评测服务，也不再关联 Modeling 项目；
@@ -119,7 +122,8 @@ ONTO_MODELING_EXTERNAL_AUTH_NETWORK=consumer_onto-agent-network
 ```
 
 deploy.sh 会停用自带 auth-server、让应用容器加入 consumer 栈网络，直接复用其
-`auth-server` 服务（issuer/audience 一致，token 互认）。切换回自带模式：删除这
+`auth-server` 服务（issuer/audience 一致，token 互认）。用户管理要外部 auth-server 的管理令牌：把它的
+`AUTH_SERVER_ADMIN_TOKEN` 填进 `ONTO_WEB_AUTH_ADMIN_TOKEN`。切换回自带模式：删除这
 两行重跑 deploy.sh 即可（自带 auth 数据卷始终保留）。需要 docker compose v2.24+。
 
 ## 脚本运行验证的沙箱（jiuwenbox）

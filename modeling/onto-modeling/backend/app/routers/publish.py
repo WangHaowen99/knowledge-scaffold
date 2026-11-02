@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from ..api import deps, views
 from ..api.errors import ApiError
 from ..governance import telemetry
-from ..services import audit, feedback_inbox, mainline, ownership, publish, release_store, service_tokens
+from ..services import audit, feedback_inbox, mainline, ownership, publish, release_store, service_tokens, streams
 from ..services.service_tokens import SCOPE_RELEASES_READ
 from ..services.workspace import WorkspaceError
 
@@ -223,7 +223,9 @@ async def create_release(project_id: str, request: Request):
         # 门禁之后渲染才发现的问题（与门禁同口径，正常不会走到这里）
         raise ApiError("gate_blocked", str(exc), 422, {"gates": [], "reason": exc.code}) from exc
     audit.log(deps.actor(request), "POST", request.url.path, {"publish.release": record["version"], "commit": record["commit"]})
-    return JSONResponse(status_code=201, content=record_view(project_id, find_release(project_id, record["version"]), root))
+    view = record_view(project_id, find_release(project_id, record["version"]), root)
+    streams.publish_project(project_id, "release.updated", {"release": view})  # EP-19
+    return JSONResponse(status_code=201, content=view)
 
 
 # ---- PB-04～PB-07 ----
@@ -253,11 +255,15 @@ def get_release_manifest(project_id: str, version: str, request: Request):
     path, record = publish.release_package(deps.workspaces, project_id, version)
     files, truncated = release_store.list_files(path)
     manifest = release_store.read_manifest(path) or {}
+    root = deps.workspaces.project_root(project_id)
+    commit = record.get("commit", "")
     return {
         "package_name": manifest.get("id") or project_id,
         "version": version,
         "schema_version": str(manifest.get("schema_version") or "0.1"),
-        "source_commit": record.get("commit", ""),
+        "source_commit": commit,
+        # 「源版本」按项目内的版本号显示（v0.n），提交号留给 API 客户端
+        "source_version_label": mainline.label(mainline.count(root, commit)) if commit else None,
         "released_at": deps.iso(record.get("released_at")),
         "packs": [],
         "flow_hash": "",
@@ -280,6 +286,14 @@ def download_release(project_id: str, version: str, request: Request, variant: s
     if token:
         actor = f"service:{token['name']}"
         release_store.record_pull(deps.workspaces.data_dir, project_id, version, actor, variant)
+        # EP-19：评测服务拉取后发布记录多一条 pulls，发布页实时显示「已拉取」
+        try:
+            root = deps.workspaces.project_root(project_id)
+            streams.publish_project(project_id, "release.updated",
+                                    {"release": record_view(project_id, find_release(project_id, version), root,
+                                                            _feedback_counts(root))})
+        except (ApiError, WorkspaceError):
+            pass
     else:
         actor = deps.actor(request)
     audit.log(actor, "GET", request.url.path, {"publish.download": version, "variant": variant})

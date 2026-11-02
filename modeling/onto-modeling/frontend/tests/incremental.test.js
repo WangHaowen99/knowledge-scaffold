@@ -93,6 +93,11 @@ test('影响面、回归、这一轮的文字', () => {
 test('进入增量更新：从待处理找清单、新对话的名字、没有清单时主推「开始增量更新」', () => {
   assert.equal(M.changeListIdFromInbox([{ id: 'decision:q', kind: 'decision' }, { id: 'change_list:cl-09', kind: 'change_list' }]), 'cl-09');
   assert.equal(M.changeListIdFromInbox([]), null);
+  // 已执行未确认的清单：落到待确认的助手变更集所在的对话（还在对话列表里的）
+  const convs = [{ id: 'default' }, { id: 'c-inc' }];
+  assert.equal(M.pendingChangesetConversation([{ id: 'cs-2', source: 'assistant', conversation_id: 'c-inc', state: 'pending_confirm' }], convs), 'c-inc');
+  assert.equal(M.pendingChangesetConversation([{ id: 'cs-2', source: 'assistant', conversation_id: 'gone' }], convs), null);
+  assert.equal(M.pendingChangesetConversation([], convs), null);
   assert.equal(M.conversationTitleFor('resource/others/09-修订通知.docx'), '09 修订通知');
   assert.equal(M.conversationTitleFor(null), '增量更新');
   const server = { mode: 'waiting_decision', primary: { id: 'w', label: '先做上面的决定', disabled: true }, secondary: [{ id: 'i', label: '其他待处理 17', primary: false, action: { type: 'navigate', page: 'inbox' } }], all_commands: true };

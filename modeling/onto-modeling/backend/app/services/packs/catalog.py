@@ -12,12 +12,6 @@ CONTENT_GROUPS = (("commands", "命令"), ("agents", "子代理"), ("skills", "�
                   ("templates", "模板"), ("reference", "参考指南"))
 
 
-def _meta_line(manifest: mf.Manifest) -> str | None:
-    parts = [f"{len(manifest.items(key))} {label}" for key, label in (("commands", "命令"), ("agents", "子代理"))
-             if manifest.items(key)]
-    return " · ".join(parts) or None
-
-
 def _latest(repository, name: str) -> tuple[str | None, str]:
     stable = repository.latest(name, "stable")
     if stable:
@@ -57,7 +51,7 @@ def card(manager, name: str, project: dict | None) -> dict | None:
         "name": name, "version": latest, "label": manifest.label, "description": manifest.description,
         "category": manifest.category, "publisher": _publisher(repository, name, latest, manifest), "ui": _ui(manifest),
         "batch": manifest.raw.get("batch"), "badges": list(manifest.raw.get("badges") or []),
-        "meta": _meta_line(manifest), "latest": latest, "channel": channel,
+        "latest": latest, "channel": channel,
         "project_status": status, "locked_version": locked, "usage_note": None,
         "default_on": bool(manifest.raw.get("default_on") or manifest.required),
     }
@@ -73,8 +67,10 @@ def catalog(manager, *, category: str = "", q: str = "", project_id: str = "",
     if wanted - set(CATEGORY_KEYS):
         raise PackError("invalid_argument", f"category 只能取 {'|'.join(CATEGORY_KEYS)}", 400,
                         {"fields": {"category": "enum"}})
-    cards = [item for item in (card(manager, name, project) for name in repository.names()[:500]) if item]
-    counts = {key: sum(1 for item in cards if item["category"] == key) for key in CATEGORY_KEYS}
+    # 证据源提供方本期不开放（ADR-0056）：目录里不列，计数里也不出这一类
+    cards = [item for item in (card(manager, name, project) for name in repository.names()[:500])
+             if item and item["category"] != "provider"]
+    counts = {key: sum(1 for item in cards if item["category"] == key) for key in CATEGORY_KEYS if key != "provider"}
     counts.update(all=len(cards),
                   enabled=sum(1 for item in cards if item["project_status"] in ("required", "enabled", "update", "pending")),
                   updatable=sum(1 for item in cards if item["project_status"] == "update"))
@@ -134,7 +130,7 @@ def detail(manager, name: str, *, project_id: str = "", version: str = "") -> di
         "enabled_at": item["enabled_at"] if item else None,
         "requires": {"depends": dict(manifest.depends), "kernel_api": manifest.kernel_api,
                      "page_api": manifest.page_api or None},
-        "flow_insertions": [{"id": node, "title": node} for node in manifest.items("nodes")],
+        "flow_insertions": _flow_insertions(repository, name, version, manifest),
         "project_stats": None,
         "contents": [{"group": label, "items": manifest.items(key)} for key, label in CONTENT_GROUPS
                      if manifest.items(key)],
@@ -143,3 +139,44 @@ def detail(manager, name: str, *, project_id: str = "", version: str = "") -> di
         "hot_level": manifest.hot_level,
         "effective": manifest.effective if manifest.effective != "restart" else "next_message",
     }
+
+
+# 主流程的段（PL-02 `flow_insertions[].at`）：包节点挂在哪个 core 节点前后就归哪一段；指标是建模旁支
+_SEGMENTS = {"core.research": "research", "core.model": "model", "core.metric": "model", "core.validate": "validate",
+             "core.consistency": "consistency", "core.publish": "publish"}
+
+
+def _flow_insertions(repository, name: str, version: str, manifest) -> list[dict]:
+    """包往主流程里加的节点：编号、标题与插在哪一段（按 after / before 指向的 core 节点算，指向本包别的节点时跟着它）。"""
+    from .assembler import AssemblyError, flow_declaration
+
+    try:
+        declared = flow_declaration(name, manifest, repository.version_dir(name, version)) or {}
+    except (AssemblyError, OSError, ValueError):
+        declared = {}
+    nodes = [node for node in declared.get("nodes") or [] if isinstance(node, dict) and node.get("id")]
+    if not nodes:
+        return [{"id": node, "title": node} for node in manifest.items("nodes") if not node.endswith((".yaml", ".yml"))]
+    by_id = {str(node["id"]): node for node in nodes}
+
+    def segment(node: dict, seen: set) -> str | None:
+        for key in ("after", "before"):
+            for anchor in (node.get(key) if isinstance(node.get(key), list) else [node.get(key)]):
+                anchor = str(anchor or "")
+                if anchor in _SEGMENTS:
+                    return _SEGMENTS[anchor]
+                if anchor in by_id and anchor not in seen:
+                    found = segment(by_id[anchor], seen | {anchor})
+                    if found:
+                        return found
+        return None
+
+    out = []
+    for node in nodes:
+        item = {"id": str(node["id"]), "title": str(node.get("title") or node["id"])}
+        at = segment(node, {str(node["id"])})
+        if at:
+            item["at"] = at
+        out.append(item)
+    return out
+

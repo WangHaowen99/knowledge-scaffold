@@ -102,7 +102,7 @@ const FEEDBACK_ITEMS = [
 export function feedbackCard() {
   return {
     card_id: CARD.feedback, card_type: 'external_feedback', eyebrow: '', title: `外部反馈 · ${FEEDBACK_ITEMS.length} 条失分用例`, subtitle: '',
-    status: null, plugin: { name: 'evolution', label: '反馈演进' }, open: null,
+    status: null, plugin: { name: 'evo', label: '反馈演进' }, open: null,
     feedback_id: FEEDBACK_ID, source: { service: '评测服务', run: 'eval-1101-0910' }, items: FEEDBACK_ITEMS,
     entry_links: [REFS.op, entryRef('expiry_loss_std'), entryRef('applicable_std'), entryRef('r11_temp_increase')],
   };

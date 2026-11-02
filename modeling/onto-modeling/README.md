@@ -35,6 +35,39 @@ npm install
 npm run dev
 ```
 
+不连后端时可以用前端自带的 mock 服务端（按契约路径响应，状态在内存里）：
+
+```bash
+cd frontend
+VITE_API_MOCK=1 npm run dev     # 或把 VITE_API_MOCK=1 写进 frontend/.env.local
+```
+
+- 只在开发、测试构建里生效；`npm run build`（生产模式）恒为关，`src/api/mock/` 不进产物（ADR-0069）。
+- 演示状态用查询串 `mock` 切换（写在 `#` 之前），如 `http://127.0.0.1:5180/?mock=projects:empty#/projects`、
+  `?mock=stage:materials,evidence:off`；可用的键见 `src/api/mock/index.js` 文件头。也可以存在浏览器 `localStorage`
+  的 `onto.mock` 里。
+- 「对话卡片与状态」说明页（项目内页面 `chat-states`）只在开发与 mock 构建里有。
+
+前端的路由、事件流读法与 mock 的打包约定见 ADR-0069。
+
+本机起带登录的完整服务（不用容器；三步各开一个终端，都从本目录出发）：
+
+```bash
+# 1. auth-server（仓库根 auth-server/，127.0.0.1:5056）
+cd ../../auth-server && python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
+AUTH_SERVER_DATA_DIR=/tmp/onto-auth AUTH_SERVER_ISSUER=http://127.0.0.1:5056 \
+  AUTH_BOOTSTRAP_ADMIN_PASSWORD='<初始密码>' AUTH_SERVER_ADMIN_TOKEN='<管理令牌>' ./venv/bin/python run.py
+# 2. 前端构建产物由后端直接发（frontend/dist）
+cd frontend && npm ci && npm run build
+# 3. 后端：登录、用户管理、运维中心经业务端口
+cd backend && ONTO_WEB_AUTH_URL=http://127.0.0.1:5056 ONTO_WEB_AUTH_ISSUER=http://127.0.0.1:5056 \
+  ONTO_WEB_AUTH_ADMIN_TOKEN='<管理令牌>' ONTO_WEB_OPS_ON_MAIN=true ONTO_WEB_RELOAD=0 ./venv/bin/python run.py
+```
+
+- 打开 `http://127.0.0.1:8100`，用 `admin` 和初始密码登录；模型网关在「系统设置 → 模型接入」或 `.env` 里配。
+- 脚本验证与脚本节点要沙箱网关（`ONTO_WEB_SANDBOX_GATEWAY_URL`），本机没有时这两项报沙箱不可用，其余不受影响；
+  要全套（含网关）用 `docker compose up --build`。
+
 模型接入通过环境变量注入（见 `.env.example`），不落盘、不进仓库。
 
 模型上下文约束按 配置中心「模型接入 → 上下文与自动压缩」> `.env` 中的 `ONTO_WEB_CONTEXT_*`

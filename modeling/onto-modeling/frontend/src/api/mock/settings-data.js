@@ -41,10 +41,10 @@ export function projectPacks() {
       pending: { from: '0.9.1', to: '0.10.0', kind: 'upgrade', effective: 'next_message' },
     }),
     pk({ name: 'knowledge', label: '知识沉淀', ui: UI.page('knowledge', '知识沉淀'), locked_version: '0.6.0' }),
-    pk({ name: 'solver', label: '代码生成与求解', ui: UI.page('scripts', '代码生成'), locked_version: '0.7.2', rollback_to: '0.7.1' }),
+    pk({ name: 'codegen', label: '代码生成与求解', ui: UI.page('scripts', '代码生成'), locked_version: '0.9.2', rollback_to: '0.9.1' }),
     pk({ name: 'reverse', label: '系统逆向建模', ui: UI.reverse, locked_version: '0.3.0' }),
     pk({ name: 'diagram', label: '图示', locked_version: '0.5.0', latest_available: '0.6.0' }),
-    pk({ name: 'evolution', label: '反馈演进', locked_version: '0.3.0' }),
+    pk({ name: 'evo', label: '反馈演进', locked_version: '0.3.0' }),
     pk({ name: 'industry-retail', label: '零售连锁', category: 'industry', ui: null, locked_version: '1.0.3' }),
     pk({ name: 'sys-erp-generic', label: 'ERP 通用表结构', category: 'system', ui: null, locked_version: '0.3.0' }),
     pk({ name: 'migrate', label: '迁移复用', locked_version: '0.2.0', status: 'disabled', enabled_at: null }),
@@ -55,7 +55,7 @@ export function projectPacks() {
 export const DATA_CATEGORIES = ['industry', 'system'];
 
 // 「上次锁定版本」之外，PL-06 新启用时用目录里的最新版；离线部署不可用的包拒绝启用
-export const OFFLINE_PACKS = ['web-research'];
+export const OFFLINE_PACKS = ['websearch'];
 
 export function mcpServers() {
   return [

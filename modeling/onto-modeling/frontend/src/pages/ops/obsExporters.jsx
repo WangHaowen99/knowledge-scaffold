@@ -1,5 +1,5 @@
 // 可观测 · 导出器（O-11 列表、O-12 保存）：卡片与弹窗（OTel / Prometheus / 本地文件 / 外部平台）。
-// 切换导出器是进程级生效（H2，滚动重启），所以卡片上的开关不直接保存，而是带着这次改动打开弹窗确认。
+// 卡片上的开关不直接保存，带着这次改动打开弹窗确认。不能关的（required）不出开关，内置的（builtin）地址与信号固定、不出编辑。
 import { useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';
@@ -22,7 +22,7 @@ export function ExportersCard({ data, error, perm, onOpen }) {
               <div className="xs muted mono ell" style={{ maxWidth: 240 }} title={v.target}>{v.target}</div>
               <div className="xs faint">{v.signals}</div>
             </div>
-            <Toggle on={e.enabled} disabled={!perm.opsWrite} title={denied || '切换后要在弹窗里确认，滚动重启生效'} onChange={(on) => onOpen({ id: e.id, enabled: on })} />
+            {e.required ? null : <Toggle on={e.enabled} disabled={!perm.opsWrite} title={denied} onChange={(on) => onOpen({ id: e.id, enabled: on })} />}
           </div>
         );
       })}
@@ -61,7 +61,7 @@ export function ExportersModal({ items, change, perm, onClose, onSaved }) {
     setError(null);
     try {
       const r = await api.ops.saveExporters(exportersBody(draft));
-      toast('已保存，滚动重启后生效');
+      toast('已保存');
       onSaved(r.items);
     } catch (e) {
       setError(errorText(e));
@@ -77,7 +77,7 @@ export function ExportersModal({ items, change, perm, onClose, onSaved }) {
         <>
           <Button onClick={onClose}>取消</Button>
           <Button kind="primary" disabled={!perm.opsWrite || busy || !dirty || Object.keys(problems).length > 0} title={denied || problems[Object.keys(problems)[0]]} onClick={save}>
-            保存，滚动重启生效
+            保存
           </Button>
         </>
       )}
@@ -85,20 +85,22 @@ export function ExportersModal({ items, change, perm, onClose, onSaved }) {
       <div className="col" style={{ gap: 10 }}>
         {draft.map((e) => {
           const v = exporterView({ ...e, configured: !!String(e.target || '').trim() });
-          const open = editing.has(e.id);
+          const fixed = e.implementation === 'builtin';
+          const open = !fixed && editing.has(e.id);
+          const canEdit = perm.opsWrite && !fixed;
           return (
             <div className="card pad" key={e.id}>
               <div className="row g12">
                 <span style={{ width: 34, height: 34, borderRadius: 10, display: 'grid', placeItems: 'center', background: 'var(--b50)', color: 'var(--blue)', flex: 'none' }}>
                   <Icon name="cloud" size={18} />
                 </span>
-                <div className="grow" style={{ cursor: perm.opsWrite ? 'pointer' : undefined, minWidth: 0 }} title={perm.opsWrite ? '点开修改地址与信号' : undefined} onClick={() => perm.opsWrite && toggleEdit(e.id)}>
+                <div className="grow" style={{ cursor: canEdit ? 'pointer' : undefined, minWidth: 0 }} title={canEdit ? '点开修改地址与信号' : undefined} onClick={() => canEdit && toggleEdit(e.id)}>
                   <div className="row g4"><b>{v.label}</b><span className="tag">{v.impl}</span></div>
                   <div className="xs muted mono ell">{v.target}</div>
                   <div className="xs muted">{v.signals}</div>
                 </div>
-                {!e.enabled ? <Button size="xs" disabled={!perm.opsWrite} title={denied} onClick={() => toggleEdit(e.id)}>配置</Button> : null}
-                <Toggle on={e.enabled} disabled={!perm.opsWrite} title={denied} onChange={(on) => setOn(e, on)} />
+                {!e.enabled && !fixed ? <Button size="xs" disabled={!perm.opsWrite} title={denied} onClick={() => toggleEdit(e.id)}>配置</Button> : null}
+                {e.required ? null : <Toggle on={e.enabled} disabled={!perm.opsWrite} title={denied} onChange={(on) => setOn(e, on)} />}
               </div>
               {open ? (
                 <div className="op-exp-ed">

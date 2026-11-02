@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { composerState, globToRegExp, isLocked, lockState, readonlyInfo, roundLockNote } from '../src/state/readonly.js';
+import { composerState, fnmatchToRegExp, isLocked, lockState, readonlyInfo, roundLockNote } from '../src/state/readonly.js';
 
 const lock = (state, extra = {}) => ({
   state, changeset_id: 'cs-31', conversation_id: 'c1', run_id: null, slice: { id: 's5', name: '超量与审批提示' }, node: null,
@@ -38,12 +38,24 @@ test('两态：助手运行中给「回到对话里打断它」，修改待确�
   assert.match(r.text, /超量与审批提示/);
 });
 
-test('glob：* 不跨目录，** 跨目录', () => {
-  assert.ok(globToRegExp('ext/trace/*.md').test('ext/trace/a.md'));
-  assert.equal(globToRegExp('ext/trace/*.md').test('ext/trace/x/a.md'), false);
-  assert.ok(globToRegExp('ontology/**/*.md').test('ontology/object/a.md'));
-  assert.ok(globToRegExp('a.b?').test('a.bc'));
-  assert.equal(globToRegExp('a.b').test('axb'), false);
+// 期望值由 Python fnmatch.fnmatchcase 算出（后端 ScopeLock.paths 的判断口径）；后端把字面量的 [ ] * ? 转义成 [[] []] [*] [?]
+const FNMATCH_CASES = [
+  ['ext/trace/*.md', 'ext/trace/a.md', true], ['ext/trace/*.md', 'ext/trace/x/a.md', true],
+  ['ontology/**/*.md', 'ontology/object/a.md', true], ['ontology/**/*.md', 'ontology/a.md', false],
+  ['ontology/object/*', 'ontology/object/sub/a.md', true], ['a.b?', 'a.bc', true], ['a.b', 'axb', false], ['a.b?', 'a.b/', true],
+  ['ontology/object/[[]草稿[]].md', 'ontology/object/[草稿].md', true], ['ontology/object/[[]草稿[]].md', 'ontology/object/X草稿].md', false],
+  ['ontology/x[*]y[?].md', 'ontology/x*y?.md', true], ['ontology/x[*]y.md', 'ontology/xay.md', false], ['ontology/q[?].md', 'ontology/qa.md', false],
+  ['[!a]b', 'cb', true], ['[!a]b', 'ab', false], ['[a-c]x', 'bx', true], ['[a-c]x', 'dx', false],
+  ['[]a]', 'a', true], ['[]a]', ']', true], ['a[b', 'a[b', true], ['[', '[', true],
+  ['*', 'ontology/object/a.md', true], ['research/*', 'research/blueprint.json', true],
+  ['ontology/testcase/借阅.md', 'ontology/testcase/借阅.md', true], ['x\\y', 'x\\y', true],
+];
+
+test('写入范围路径按 Python fnmatch 判断：* 跨目录、[seq] 字符类、后端转义的字面量', () => {
+  FNMATCH_CASES.forEach(([pat, path, want]) => assert.equal(fnmatchToRegExp(pat).test(path), want, `${pat} ~ ${path}`));
+  // 区间写反（JS 不认）退回按字面比，不抛错
+  assert.equal(fnmatchToRegExp('[z-a]').test('b'), false);
+  assert.ok(isLocked({ state: 'pending_confirm', entries: [], artifacts: [], paths: ['ontology/object/[[]草稿[]].md'] }, { path: 'ontology/object/[草稿].md' }));
 });
 
 test('这一轮卡片的锁定说明随状态变', () => {

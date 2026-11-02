@@ -1,6 +1,7 @@
 // 插件产物的通用详情（详设 5.9.5 第一档）：按登记的字段与分段显示，表格类给预览；不带包的代码。
 import { useEffect, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
+import { artifactQuery } from '../../app/packUi.js';
 import { errorText } from '../../api/errors.js';
 import { Chip, KV, Modal, Note, Table } from '../../ui/index.jsx';
 import { Md } from '../../pages/workbench/parts.jsx';
@@ -18,8 +19,8 @@ export default function ArtifactDetail({ type, artifact, onClose }) {
   const [art, setArt] = useState(null);
   const [error, setError] = useState(null);
   useEffect(() => {
-    api.artifact(pid, type.type, artifact.key).then(setArt).catch(setError);
-  }, [api, pid, type.type, artifact.key]);
+    api.artifact(pid, type.type, artifact.key, artifactQuery(artifact, type.type, artifact.key)).then(setArt).catch(setError);
+  }, [api, pid, type.type, artifact.key, artifact.changeset]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fields = (type.schema?.fields || [])
     .map((f) => [f.label || f.name, fieldText(art?.fields?.[f.name])])

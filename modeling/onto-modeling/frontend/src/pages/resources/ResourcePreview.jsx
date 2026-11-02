@@ -11,7 +11,7 @@ import { isLocked } from '../../state/readonly.js';
 import { Button, Chip, Icon, Modal, Note, Seg, cx, useEscape } from '../../ui/index.jsx';
 import { useProjectEvent } from '../plugin/parts.jsx';
 import {
-  PREVIEW_ICON, blockBody, blockLabel, coverageChip, csvText, diamondPoints, drawioLayout, feedbackView, fmtSize,
+  PREVIEW_ICON, blockBody, isDocPreview, blockLabel, coverageChip, csvText, diamondPoints, drawioLayout, feedbackView, fmtSize,
   parseDrawio, parseFragment, purposeView, refRows, refTarget, scaleText, sheetView, splitHighlights, tableTruncated, cellPos,
 } from './resourcesModel.js';
 
@@ -377,7 +377,7 @@ function RefsPane({ m, onLocate }) {
             {r.chip ? (
               <span
                 className="chip line sm rs-go" title="在原文里定位"
-                onClick={(e) => { e.stopPropagation(); if (m.preview === 'doc') onLocate(r.anchors[0]); }}
+                onClick={(e) => { e.stopPropagation(); if (isDocPreview(m)) onLocate(r.anchors[0]); }}
               >
                 {r.chip}
               </span>
@@ -398,12 +398,12 @@ export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, 
   useEffect(() => { setFocus(fragment); setTab('pv'); }, [m.path, fragment]);
   useEffect(() => { setCoverage(null); }, [m.path]);
   const onCoverage = useCallback((c) => setCoverage(c), []);
-  const cov = m.preview === 'doc' ? coverageChip(coverage) : null;
+  const cov = isDocPreview(m) ? coverageChip(coverage) : null;
   const p = purposeView(m, purposes);
-  const scale = m.preview === 'doc' || m.preview === 'drawio' || m.preview === 'html' ? fmtSize(m.size) : scaleText(m);
+  const scale = isDocPreview(m) || m.preview === 'drawio' || m.preview === 'html' ? fmtSize(m.size) : scaleText(m);
 
   let pane;
-  if (m.preview === 'doc') pane = <DocPane m={m} fragment={focus} onCoverage={onCoverage} onUploadText={onUploadText} tasks={tasks} />;
+  if (isDocPreview(m)) pane = <DocPane m={m} fragment={focus} onCoverage={onCoverage} onUploadText={onUploadText} tasks={tasks} />;
   else if (m.preview === 'xls') pane = <SheetPane key={`${m.path}:${focus || ''}`} m={m} fragment={focus} />;
   else if (m.preview === 'csv') pane = <CsvPane m={m} />;
   else if (m.preview === 'drawio') pane = <DrawioPane key={m.path} m={m} full={full} onFull={onFull} onSaved={onSaved} />;

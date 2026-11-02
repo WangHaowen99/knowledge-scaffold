@@ -124,6 +124,18 @@ export function editorReadonly(scope, type, artifact) {
 }
 
 /**
+ * 确认生效前双击产物卡要读这一轮的版本（gaps「B5 合并」第 1 条）：卡上的变更集还没关闭（写入范围锁指着它）时，
+ * 打开时带上它，AR-03 按 ?changeset= 从助手副本读；确认或撤回之后照常读当前版本。
+ */
+export function pendingChangeset(scope, changesetId) {
+  if (!changesetId || !scope?.changeset_id) return undefined;
+  return scope.changeset_id === changesetId && ['pending_confirm', 'assistant_running'].includes(scope.state) ? changesetId : undefined;
+}
+
+// 打开的产物带着 changeset 时，读它本身要带上（只读这一份；别的类型、别的键照常读当前版本）
+export const artifactQuery = (opened, type, key) => (opened?.changeset && opened.type === type && opened.key === key ? { changeset: opened.changeset } : undefined);
+
+/**
  * flowchart 页没带 ?key= 时打开哪一张：对话里最近一张流程图卡（旧的 flowchart 卡，或按图示包声明画的产物卡）的那张图。
  * state 是对话状态机（state/conversation.js）的状态；没有返回 null（由编辑器取 AR-02 的第一张）。
  */

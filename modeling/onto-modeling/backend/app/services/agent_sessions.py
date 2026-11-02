@@ -24,7 +24,7 @@ from typing import Any
 
 from .. import config
 from ..governance import context, telemetry
-from . import audit, conversation_store, error_log, personal_model_settings, project_events
+from . import audit, conversation_store, error_log, notifications, personal_model_settings, project_events
 from .conversation_store import DEFAULT_ID as DEFAULT_CONVERSATION
 from .engines import EngineContext, get_engine_class
 from .engines.base import CONFIG_ERROR, FRIENDLY_ERROR, safe_json as _safe_json
@@ -360,6 +360,10 @@ class Session:
                 pass  # 落盘失败不阻断会话
         for queue in list(self.subscribers):
             queue.put_nowait(event)
+        if event.get("type") in notifications.SESSION_EVENT_TYPES and not self.discarded:
+            # 通知中心（A-13）：一轮跑完、要你回答、出错，发给项目所有者
+            notifications.session_event(self.project_id, self.conversation_id, event,
+                                        owner=project_owner(self.project_id))
 
     def set_state(self, state: str, reason: str | None = None) -> None:
         if self.state != state:
@@ -1552,7 +1556,7 @@ class SessionManager:
             seed = next((item["payload"]["card_id"] for _cid, item in records if item.get("type") == "card"),
                         record.get("tree") or "")
             for card in await asyncio.to_thread(_round_artifact_cards, session, start, record.get("tree") or "", seed):
-                session.broadcast({"type": "card", "payload": card})
+                session.broadcast({"type": "card", "payload": {**card, "changeset_id": record["id"]}})
         except Exception:  # noqa: BLE001 - 变更卡是增强信息，失败不影响会话
             _log.warning("项目 %s 观察助手副本失败", session.project_id, exc_info=True)
 

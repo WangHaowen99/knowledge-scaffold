@@ -341,9 +341,10 @@ def delete_user(username: str, request: Request, body: DeleteUserBody | None = N
         project_events.project_removed(username, meta["id"], "transferred")
         project_events.card_changed(meta["id"])
     revoked = revoke_mcp_tokens_of(username)
-    from ..services import personal_model_settings
+    from ..services import notifications, personal_model_settings
 
     personal_model_settings.delete_user(username)
+    notifications.forget_user(username)
     audit.log(
         deps.actor(request), "DELETE", request.url.path,
         detail={

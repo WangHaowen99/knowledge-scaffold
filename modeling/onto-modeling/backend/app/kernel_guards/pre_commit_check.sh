@@ -104,6 +104,14 @@ if [ -n "$PROTECTED_STAGED" ]; then
     block_error "$REASON"
 fi
 
+# --- 符号链接：助手的提交里不能有（链接可以指到工作区外，进了版本，检出、回退、导出都会带着它）---------
+LINKS_STAGED=$(git -c core.quotePath=false diff --cached --raw --no-renames --diff-filter=ACMT 2>/dev/null \
+    | awk -F '\t' '{ split($1, m, " "); if (m[2] == "120000") print $2 }' || true)
+if [ -n "$LINKS_STAGED" ]; then
+    REASON=$(printf '提交里不能有符号链接：\n%s\n\n请取消暂存并删掉这些链接，需要的内容复制成普通文件。' "$LINKS_STAGED")
+    block_error "$REASON"
+fi
+
 # --- Toolchain check：lint .claude/scripts/*.py and *.sh ----------------------
 # 这部分检查的对象是工具自身（hooks、state_helper、checker 等）。任何工具脚本
 # 在提交时存在语法错误都直接 block — 工具坏了下一次 commit 会连 hook 都跑不起来。

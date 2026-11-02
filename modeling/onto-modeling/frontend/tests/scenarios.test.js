@@ -80,7 +80,10 @@ test('行状态、筛选、计数、统计卡文字', () => {
 test('页面命令：只发 S-20，文字就是对话里那句', () => {
   assert.deepEqual(batchCommand(23), { command: '/ontology-trace-batch', args: { scope: 'all' }, text: '批量推演 23 个场景' });
   assert.deepEqual(refreshCommand([row('s-03', 'stale'), row('s-04', 'stale'), row('s-06', 'stale')]).text, '补齐 3 个过期场景');
-  assert.deepEqual(walkCommand({ key: 's-21', title: '门店申请严于标准，按门店执行' }), { command: '/ontology-trace-walk', args: { scenario: 's-21' }, text: '交互走查「门店申请严于标准，按门店执行」' });
+  // 后端命令名（contract-changes B4c 映射表）：补齐过期也是 /ontology-trace-batch，只带 keys
+  assert.deepEqual(refreshCommand([row('s-03', 'stale')]).command, '/ontology-trace-batch');
+  assert.deepEqual(refreshCommand([row('s-03', 'stale')]).args, { keys: ['s-03'] });
+  assert.deepEqual(walkCommand({ key: 's-21', title: '门店申请严于标准，按门店执行' }), { command: '/ontology-trace-interactive', args: { scenario: 's-21' }, text: '交互走查「门店申请严于标准，按门店执行」' });
   assert.equal(mockCommand().text, '按场景补生成示例数据');
   const rows = [row('a', 'pass'), row('b', 'fail')];
   assert.equal(walkTarget(rows, 'a').key, 'a');
@@ -90,7 +93,7 @@ test('页面命令：只发 S-20，文字就是对话里那句', () => {
 
 test('写入范围只读：按产物或场景目录判定，两态的只读条文字', () => {
   const type = { path: 'ext/trace/scenarios/{key}.md' };
-  const byPath = { state: 'pending_confirm', artifacts: [], entries: [], paths: ['ext/trace/scenarios/**'], node: { id: 'trace.regression' } };
+  const byPath = { state: 'pending_confirm', artifacts: [], entries: [], paths: ['ext/trace/scenarios/**'], node: { id: 'trace.trace' } };
   const byRef = { state: 'assistant_running', artifacts: [{ type: SC, key: 's-21' }], entries: [], paths: [], slice: { name: '超量与审批提示' } };
   assert.equal(rowLocked(byPath, row('s-01', 'pass'), type), true);
   assert.equal(rowLocked(byRef, row('s-01', 'pass'), type), false);
@@ -172,7 +175,7 @@ test('AR-03 / AR-04 / AR-05 / AR-07：详情、历史、保存改输入后过期
 test('页面命令：批量验证、补齐过期、交互走查、按场景补生成跑完改结果并发 artifacts.updated', async () => {
   const { call, hooks, events } = server();
   const origin = { page: 'scenarios', label: '场景走查' };
-  const find = (command) => hooks.find((h) => h.match({ command, origin }));
+  const find = (command, args) => hooks.find((h) => h.match({ command, origin, args }));
   assert.equal(hooks.find((h) => h.match({ command: '/ontology-trace-batch', origin: { page: 'wb-l2' } })), undefined);
   const batch = find('/ontology-trace-batch');
   assert.equal(batch.title({ text: '批量推演 23 个场景' }), '助手正在批量推演 23 个场景');
@@ -180,11 +183,11 @@ test('页面命令：批量验证、补齐过期、交互走查、按场景补�
   let rows = (await call('GET', `${P}/artifacts/${SC}`)).body.items;
   assert.deepEqual(countRows(rows), { total: 23, pass: 21, fail: 1, stale: 1, none: 0 });
   assert.equal(events.at(-1).type, 'artifacts.updated');
-  find('/ontology-trace-refresh').finish(F.MAIN_PID, { args: { keys: ['s-04'] } });
+  find('/ontology-trace-batch', { keys: ['s-04'] }).finish(F.MAIN_PID, { args: { keys: ['s-04'] } });
   rows = (await call('GET', `${P}/artifacts/${SC}`)).body.items;
   assert.equal(countRows(rows).stale, 0);
   assert.equal(events.at(-1).data.change, 'fresh');
-  find('/ontology-trace-walk').finish(F.MAIN_PID, { args: { scenario: 's-05' } });
+  find('/ontology-trace-interactive').finish(F.MAIN_PID, { args: { scenario: 's-05' } });
   assert.deepEqual(events.at(-1).data.keys, ['s-05']);
   find('/ontology-mock').finish(F.MAIN_PID, { args: { by: 'scenario' } });
   assert.equal(events.at(-1).data.type, 'trace.mock');
@@ -194,7 +197,7 @@ test('页面命令：批量验证、补齐过期、交互走查、按场景补�
 test('?mock=trace:batch 把开场的锁标成批量推演（只读条用「批量推演跑完了」）', () => {
   const scope = new Map([[F.MAIN_PID, { state: 'pending_confirm', node: { id: 'core.model' }, reason_text: 'x', paths: [] }]]);
   server({ sc: { trace: 'batch' }, scope });
-  assert.equal(scope.get(F.MAIN_PID).node.id, 'trace.regression');
+  assert.equal(scope.get(F.MAIN_PID).node.id, 'trace.trace');
   const untouched = new Map([[F.MAIN_PID, { state: 'pending_confirm', node: { id: 'core.model' } }]]);
   server({ sc: {}, scope: untouched });
   assert.equal(untouched.get(F.MAIN_PID).node.id, 'core.model');
@@ -207,7 +210,7 @@ test('批量验证的两态：开跑进锁（助手运行中）→ 跑完修改�
   const hook = s1.hooks.find((h) => h.match(body));
   hook.start(F.MAIN_PID, body, { conversation_id: 'c1' });
   assert.equal(s1.lockBox.lock.state, 'assistant_running');
-  assert.equal(s1.lockBox.lock.node.id, 'trace.regression');
+  assert.equal(s1.lockBox.lock.node.id, 'trace.trace');
   assert.equal(s1.lockBox.lock.artifacts.length, 23);
   assert.ok((await s1.call('GET', `${P}/artifacts/${SC}`)).body.items.every((r) => r.locked));
   assert.match(hook.doneText(body), /确认生效后写进场景走查/);

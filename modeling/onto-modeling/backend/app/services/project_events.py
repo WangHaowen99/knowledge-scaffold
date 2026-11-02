@@ -179,7 +179,34 @@ def workspace_changed(project_id: str, *, commit: str, source: str, by: str, pat
     if lockfile.LOCK_REL in paths:
         assembly_changed(project_id)
     schedule_flow_refresh(project_id)
+    if any(path.startswith(("resource/", "research/")) for path in paths):
+        # 资料地图要抽取资料原文，放后台线程，不拖慢提交
+        threading.Thread(target=_guard, args=("materials.updated", materials_changed, project_id), daemon=True).start()
     return envelope
+
+
+# ---------------------------------------------------------------------------
+# materials.updated（EP-11）：资料或资料分析报告变了，资料地图里变了的那几份
+# ---------------------------------------------------------------------------
+
+_materials_cache: dict[str, dict] = {}
+_materials_lock = threading.Lock()
+
+
+def materials_changed(project_id: str) -> dict | None:
+    from . import research_view
+
+    data = research_view.material_map(_manager(), project_id)
+    current = {item["path"]: item for item in data["items"]}
+    with _materials_lock:
+        previous = _materials_cache.get(project_id)
+        _materials_cache[project_id] = current
+    changed = [item for path, item in current.items() if previous is None or previous.get(path) != item]
+    if previous is not None and not changed and previous.keys() == current.keys():
+        return None
+    return streams.publish_project(project_id, "materials.updated", {
+        "items": changed, "read_pct": data["read_pct"],
+        "problems_count": sum(1 for item in data["problems"] if item["state"] == "open")})
 
 
 def _on_write(event) -> None:

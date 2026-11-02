@@ -217,3 +217,127 @@ def view(rel: str, document: dict, commit: str) -> dict:
         "received_by": document.get("received_by"),
         "commit": commit or None,
     }
+
+
+# ---------------------------------------------------------------------------
+# 资料区「外部反馈」分组（契约 R-11、R-12）：批次的处理状态
+# ---------------------------------------------------------------------------
+#
+# 状态不进 git（与待处理的忽略记录同一做法，放 `.onto/run/`）：反馈文件本身随项目克隆、回退，
+# 「我处理过了」是这台机器上的操作记录。没有记录的批次是 open。
+
+STATE_REL = Path(".onto") / "run" / "feedback-state.json"
+STATES = ("open", "handled", "dismissed")
+EVOLUTION_PACK = "evo"
+
+
+def _states(root: Path) -> dict:
+    try:
+        data = json.loads((Path(root) / STATE_REL).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def state_of(root: Path, feedback_id: str) -> str:
+    record = _states(root).get(feedback_id)
+    return record.get("state", "open") if isinstance(record, dict) else "open"
+
+
+def _suspected(root: Path, names: list[str]) -> list[dict]:
+    """疑似相关的产物：路径按条目 / 插件产物认，只写了名字的按条目文件名找；认不出的不列。"""
+    from ..kernel.metamodel import mm
+    from . import project_events
+
+    refs: list[dict] = []
+    for name in names:
+        if "/" in name:
+            exists = (Path(root) / name).is_file() and ".." not in name.split("/")
+            found = (project_events.entry_refs(root, [name]) or project_events.artifact_refs(root, [name])) if exists else []
+        else:
+            found = []
+            for _kind, directory, _glob in mm.kind_dirs():
+                rel = f"{directory}/{name}.md"
+                if (Path(root) / rel).is_file():
+                    found = project_events.entry_refs(root, [rel])
+                    break
+        refs.extend(ref for ref in found[:1] if ref not in refs)
+    return refs
+
+
+def feedback_view(root: Path, document: dict, record: dict | None) -> dict:
+    """契约 7.4 Feedback。"""
+    items = document.get("items") or []
+    failed = sum(1 for item in items if item.get("verdict", "fail") == "fail")
+    record = record if isinstance(record, dict) else {}
+    return {
+        "id": document.get("feedback_id"),
+        "source": document.get("source") or {"service": "", "run": ""},
+        "release_version": document.get("release_version") or None,
+        "received_at": document.get("received_at"),
+        "state": record.get("state", "open"),
+        "summary": f"失分用例 {failed} 条" if failed else f"反馈 {len(items)} 条",
+        "items": [{
+            "case_id": item.get("case_id") or "", "question": item.get("question") or "",
+            "expected": item.get("expected") or "", "actual": item.get("actual") or "",
+            "loss_reason": item.get("loss_reason") or None,
+            "suspected": _suspected(root, item.get("suspected_artifacts") or []), "related": None,
+        } for item in items],
+        "handled_version_label": record.get("version_label"),
+    }
+
+
+def _documents(root: Path) -> list[dict]:
+    folder = Path(root) / FEEDBACK_DIR
+    out = []
+    for path in sorted(folder.glob("*.json"), reverse=True) if folder.is_dir() and not folder.is_symlink() else []:
+        if path.is_symlink() or not path.is_file():  # 符号链接不读
+            continue
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(document, dict) and document.get("feedback_id"):
+            out.append(document)
+    return out
+
+
+def list_feedback(root: Path, state: str = "") -> list[dict]:
+    """新的在前；state 只认 open / handled（handled 含已忽略的，界面上都算处理过了）。"""
+    states = _states(root)
+    views = [feedback_view(root, document, states.get(document["feedback_id"])) for document in _documents(root)]
+    if state == "open":
+        return [view for view in views if view["state"] == "open"]
+    if state == "handled":
+        return [view for view in views if view["state"] != "open"]
+    return views
+
+
+def open_count(root: Path) -> int:
+    states = _states(root)
+    return sum(1 for document in _documents(root)
+               if (states.get(document["feedback_id"]) or {}).get("state", "open") == "open")
+
+
+def set_state(manager, project_id: str, feedback_id: str, state: str, *, by: str) -> dict:
+    """R-12：标记一批反馈的处理状态；标成已处理时记下当时的版本号。"""
+    from . import mainline
+
+    root = manager.project_root(project_id)
+    document = next((item for item in _documents(root) if item["feedback_id"] == feedback_id), None)
+    if document is None:
+        raise FeedbackRejected("反馈不存在", 404, "not_found")
+    if state not in STATES:
+        raise FeedbackRejected("state 只能是 open、handled、dismissed", 400, "invalid_argument",
+                               {"fields": {"state": "enum"}})
+    with manager._project_lock(project_id):
+        states = _states(root)
+        if state == "open":
+            states.pop(feedback_id, None)
+        else:
+            states[feedback_id] = {"state": state, "by": by, "at": time.time(),
+                                   "version_label": mainline.state(root)["version_label"] if state == "handled" else None}
+        path = root / STATE_REL
+        path.parent.mkdir(parents=True, exist_ok=True)
+        manager._atomic_write_text(path, json.dumps(states, ensure_ascii=False, indent=2))
+    return feedback_view(root, document, states.get(feedback_id))

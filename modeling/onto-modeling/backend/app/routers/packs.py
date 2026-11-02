@@ -322,7 +322,9 @@ async def publish_upload(upload_id: str, request: Request):
 
 @router.post("/api/v1/admin/packs/uploads/{upload_id}/reject")
 async def reject_upload(upload_id: str, request: Request):
-    """PL-18：退回（上传者的通知在通知中心落地后补）。"""
+    """PL-18：退回，通知上传者（自己退回自己的不通知）。"""
+    from ..services import notifications
+
     deps.require_role(request, "admin")
     body = await deps.json_body(request)
     reason = str(body.get("reason") or "").strip()
@@ -330,4 +332,9 @@ async def reject_upload(upload_id: str, request: Request):
         raise ApiError("invalid_argument", "reason 必填", 400, {"fields": {"reason": "required"}})
     with _errors():
         record = await asyncio.to_thread(_uploads().reject, upload_id, reason=reason, by=deps.actor(request))
+    uploader = str(record.get("uploaded_by") or "")
+    if uploader and uploader != deps.actor(request):
+        notifications.notify(uploader, "upload_rejected", "插件包被退回",
+                             f"{record.get('name') or ''} {record.get('version') or ''}：{reason}".strip(),
+                             action={"label": "查看", "page": "plugin-upload", "params": {"upload": upload_id}})
     return _upload_view(record)

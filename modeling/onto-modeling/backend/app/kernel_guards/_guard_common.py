@@ -96,6 +96,8 @@ class Call:
     git_internal: list[str] = field(default_factory=list)
     # 打、删、推发布标签（release/*）：发布只在发布页做，陪伴建模、自主构建都不让助手打
     git_release: list[str] = field(default_factory=list)
+    # `ln -s` 建的符号链接：(链接所在目录, 链接目标)；变量代不出来时为 None
+    links: list[tuple[Path | None, str | None]] = field(default_factory=list)
 
 
 # ---- 输入与项目根 ----
@@ -241,6 +243,46 @@ class _Parser:
                 break
             self.add(cwd, arg, destructive=True)
 
+    def _value(self, cwd: Path, raw: str) -> Path | None:
+        value = _substitute(raw, self.variables)
+        return None if _has_variable(value) else _lexical(cwd, value)
+
+    def _symlinks(self, rest: list[str], cwd: Path) -> None:
+        """`ln -s 目标 链接`、`ln -s 目标… 目录`、`ln -s -t 目录 目标…`、`ln -s 目标`（链接建在当前目录）。"""
+        operands: list[str] = []
+        directory, no_dir, index = None, False, 0
+        while index < len(rest):
+            arg = rest[index]
+            if arg in ("-t", "--target-directory", "-S", "--suffix") and index + 1 < len(rest):
+                if arg in ("-t", "--target-directory"):
+                    directory = rest[index + 1]
+                index += 2
+                continue
+            if arg.startswith("--target-directory="):
+                directory = arg.split("=", 1)[1]
+            elif arg in ("-T", "--no-target-directory"):
+                no_dir = True
+            elif arg == "--":
+                operands += rest[index + 1:]
+                break
+            elif not arg.startswith("-"):
+                operands.append(arg)
+            index += 1
+        if directory is not None:
+            link_dir, targets = self._value(cwd, directory), operands
+        elif len(operands) == 1:
+            link_dir, targets = cwd, operands
+        elif len(operands) >= 2:
+            last = self._value(cwd, operands[-1])
+            single = len(operands) == 2 and last is not None and (no_dir or not last.is_dir())
+            link_dir, targets = (last.parent if single else last), operands[:-1]
+        else:
+            return
+        for target in targets:
+            value = _substitute(target, self.variables)
+            known = link_dir is not None and not _has_variable(value)
+            self.call.links.append((link_dir, os.path.expanduser(value) if known else None))
+
     def _segment(self, words: list[str], cwd: Path, bodies: list[str], depth: int) -> Path:
         args: list[str] = []
         index = 0
@@ -273,6 +315,8 @@ class _Parser:
         recursive = any(re.fullmatch(r"-[a-zA-Z]*[rRf][a-zA-Z]*", arg) or arg in ("--recursive", "--force")
                         for arg in rest)
 
+        if name == "ln" and any(arg == "--symbolic" or re.fullmatch(r"-[a-zA-Z]*s[a-zA-Z]*", arg) for arg in rest):
+            self._symlinks(rest, cwd)
         if name in ("cd", "pushd"):
             if plain:
                 target = _substitute(plain[0], self.variables)
@@ -512,9 +556,43 @@ def _toolset_dirs(call: Call) -> list[Path]:
     return list(dict.fromkeys(dirs))
 
 
+# 内联代码里建符号链接的调用：python os.symlink / Path.symlink_to、node fs.symlink(Sync)、ruby File.symlink、perl / php symlink
+_CODE_SYMLINK_RE = re.compile(r"(?:os\.symlink|\.symlink_to|symlinkSync|fs\.symlink|File\.symlink|(?<![\w.])symlink)\s*\(\s*")
+_STRING_RE = re.compile(r"""(['"])((?:(?!\1).)*)\1""")
+
+
+def _code_links(call: Call) -> list[tuple[Path | None, str | None]]:
+    """内联代码里的建链接调用：第一个参数（链接目标）是字面量就按当前目录解析，不是就当看不出来。"""
+    out: list[tuple[Path | None, str | None]] = []
+    for code in call.code:
+        for match in _CODE_SYMLINK_RE.finditer(code or ""):
+            literal = _STRING_RE.match(code, match.end())
+            out.append((call.cwd, os.path.expanduser(literal.group(2)) if literal else None))
+    return out
+
+
+def _escaping_links(call: Call) -> list[str]:
+    """要建的符号链接里，目标按链接所在目录解析后不在项目根（或副本根）内的；资料区（副本里是链接）也算根内。"""
+    roots = [Path(os.path.realpath(call.root))]
+    if (call.root / "resource").exists():
+        roots.append(Path(os.path.realpath(call.root / "resource")))
+    out = []
+    for link_dir, target in [*call.links, *_code_links(call)]:
+        if link_dir is None or not target:
+            out.append(target or "（目标看不出来）")
+            continue
+        real = Path(os.path.realpath(target if os.path.isabs(target) else link_dir / target))
+        if not any(_under(real, root) for root in roots):
+            out.append(target)
+    return out
+
+
 def guard_toolset(call: Call) -> str | None:
     if call.git_release:
         return f"发布标签（release/*）只在发布页打，助手不能打、删、推：{'; '.join(dict.fromkeys(call.git_release))}。"
+    escaping = _escaping_links(call)
+    if escaping:
+        return f"不能建指向工作区外的符号链接：{'; '.join(dict.fromkeys(escaping))}。需要的内容复制进工作区再用。"
     if call.git_internal:
         return f"不能改版本库的内部设置：{'; '.join(dict.fromkeys(call.git_internal))}。"
     hits = _hits(call, _toolset_dirs(call), (".claude", "CLAUDE.md", ".onto", "assembled", ".git"))

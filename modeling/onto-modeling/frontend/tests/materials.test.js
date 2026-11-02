@@ -6,6 +6,7 @@ import { applyEvents, initialConversation, timelineBlocks } from '../src/state/c
 import { trackNodes } from '../src/state/flow.js';
 import { composerState } from '../src/state/readonly.js';
 import {
+  confirmOptions,
   MATERIAL_DIALOGS, acceptLabel, anchorLabel, anchorTokens, countPairs, miniStatus, parseAnchor, purposeLabel, readState,
   shortPosition, unreadText, verificationNote, verificationRows,
 } from '../src/pages/workbench/materials/model.js';
@@ -96,7 +97,9 @@ test('mock 阶段 materials：资料地图卡、资料用途问题卡、建议�
   assert.equal(first.display_state, 'running');
   assert.equal(first.progress.label, '读资料 5/7');
   assert.ok(trackNodes(stages.materials.flow(F.flow())).slice(1).every((n) => n.display_state === 'not_ready'));
-  assert.deepEqual(stages.materials.flow(F.flow()).slices, []);
+  // 没有蓝图时后端给一片「全部」（全量模式），blueprint.state = none
+  assert.deepEqual(stages.materials.flow(F.flow()).slices.map((x) => x.id), ['all']);
+  assert.equal(stages.materials.flow(F.flow()).blueprint.state, 'none');
 });
 
 test('mock 阶段 materials-empty / estate-empty / blueprint', () => {
@@ -109,7 +112,14 @@ test('mock 阶段 materials-empty / estate-empty / blueprint', () => {
   assert.match(timelineBlocks(estate)[0].item.text, /物业报修工单处理/);
   const bp = applyEvents(initialConversation(), stages.blueprint.history());
   const types = timelineBlocks(bp).filter((b) => b.type === 'assistant').flatMap((b) => b.items).filter((x) => x.kind === 'card').map((x) => x.card.card_type);
-  assert.deepEqual(types, ['research_summary', 'blueprint', 'build_choice']);
+  // R3：不再发「确认后怎么建」卡，蓝图卡底部按 confirm_options 出按钮（contract-changes B4d 合并第 1 条）
+  assert.deepEqual(types, ['research_summary', 'blueprint']);
+  const bpCard = timelineBlocks(bp).flatMap((b) => b.items || []).find((x) => x.kind === 'card' && x.card.card_type === 'blueprint').card;
+  assert.deepEqual(bpCard.confirm_options.map((o) => o.mode), ['L2', 'L4']);
+  assert.equal(bpCard.subtitle, '');
+  assert.equal(stages.blueprint.flow(F.flow()).blueprint.state, 'draft');
+  assert.equal(stages['materials-empty'].flow(F.flow()).blueprint.state, 'none');
+  assert.deepEqual(stages['materials-empty'].flow(F.flow()).slices.map((x) => x.id), ['all']);
   assert.equal(bp.suggestions.secondary.length, 2);
   assert.equal(bp.suggestions.primary.action.type, 'confirm_blueprint');
   const node = trackNodes(stages.blueprint.flow(F.flow()))[0];
@@ -173,4 +183,12 @@ test('还没传资料的项目：资料地图为空，没有蓝图', () => {
   const s = fakeServer('materials-empty');
   assert.equal(s.call('GET', `${PID}/materials/map`).body.total, 0);
   assert.equal(s.call('GET', `${PID}/blueprint`).body.code, 'blueprint_not_found');
+});
+
+test('蓝图卡底部的确认按钮按 confirm_options：草案给两项或一项，已确认没有，旧卡没有字段只给一片一片来', () => {
+  assert.deepEqual(confirmOptions({ state: 'draft', confirm_options: [{ mode: 'L2', label: '确认，一片一片来' }] }).map((o) => o.mode), ['L2']);
+  assert.deepEqual(confirmOptions({ state: 'draft', confirm_options: [{ mode: 'L2' }, { mode: 'L4' }] }).map((o) => o.mode), ['L2', 'L4']);
+  assert.deepEqual(confirmOptions({ state: 'confirmed', confirm_options: [{ mode: 'L2' }] }), []);
+  assert.deepEqual(confirmOptions({ state: 'draft' }).map((o) => o.mode), ['L2']);
+  assert.deepEqual(confirmOptions({ state: 'draft', confirm_options: [] }), []);
 });

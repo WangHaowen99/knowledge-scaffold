@@ -143,7 +143,8 @@ def client_config(request: Request):
         "maintenance": _maintenance_state(),
         "limits": dict(LIMITS),
         "material_types": list(MATERIAL_TYPES),
-        "features": {"drawio": drawio_available()},
+        # evidence：证据源本期不开放（ADR-0056），前端据此不再调 EV-01 探测
+        "features": {"drawio": drawio_available(), "evidence": False},
         "billing": {"currency": BILLING_CURRENCY},
     }
 

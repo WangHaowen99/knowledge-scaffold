@@ -265,3 +265,8 @@ export function budgetText(budget) {
   if (budget.max_cost) parts.push(`费用 ≤ ${money(budget.max_cost)}`);
   return parts.join(' · ') || '—';
 }
+
+// 「确认后怎么建」（R3）并进蓝图卡底部：按卡上的 confirm_options 画（草案时给，自主构建登记了才有 L4，已确认时为空）；
+// 早于 B4d 合并的旧卡没有这个字段，只给「一片一片来」
+const DEFAULT_CONFIRM = [{ mode: 'L2', label: '确认，一片一片来' }];
+export const confirmOptions = (card) => (card?.state === 'confirmed' ? [] : (Array.isArray(card?.confirm_options) ? card.confirm_options : DEFAULT_CONFIRM));

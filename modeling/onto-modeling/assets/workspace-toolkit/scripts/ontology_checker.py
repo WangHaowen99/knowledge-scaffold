@@ -124,14 +124,18 @@ def load_ontology(ontology_dir: Path) -> dict:
     as Issues via ``check_duplicate_stems`` during rule checks.
     """
     docs = {}
+    if ontology_dir.is_symlink():  # 符号链接（目录或文件）不读：链接可以指到工作区外
+        return docs
     # ontology/logic 是旧版目录，兼容读取为 operation（范式升级 ADR-0004）
     for subdir, dtype in [('object', 'object'), ('operation', 'operation'), ('logic', 'operation'), ('rule', 'rule'), ('metric', 'metric'), ('action', 'action')]:
         d = ontology_dir / subdir
-        if d.exists():
+        if d.exists() and not d.is_symlink():
             files = d.rglob('*.md') if subdir in ('object', 'operation', 'logic') else d.glob('*.md')
             for f in sorted(files):
                 if f.name.lower() == 'index.md':
                     continue  # 目录索引不是实体文档
+                if f.is_symlink() or not f.is_file():
+                    continue
                 docs[f.stem] = load_doc(f, dtype)
     return docs
 

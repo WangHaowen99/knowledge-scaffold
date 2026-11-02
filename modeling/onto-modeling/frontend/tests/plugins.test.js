@@ -158,7 +158,7 @@ test('会带来什么、界面、生效时机、影响、提示语', () => {
 test('主线图：插入点挂到对应的段，同一段竖排，图下那句话居中在插入点之间', () => {
   const L = flowLayout([
     { id: 'trace.scenario', title: '每片多一步「场景」', at: 'model', note: '节点钩子' },
-    { id: 'trace.regression', title: '全量回归', at: 'validate' },
+    { id: 'trace.trace', title: '全量回归', at: 'validate' },
   ]);
   assert.equal(L.width, 944);
   assert.equal(L.height, 162); // 和设计稿 viewBox 一致
@@ -175,6 +175,8 @@ test('主线图：插入点挂到对应的段，同一段竖排，图下那句�
   assert.ok(kernel.nodes.every((n) => n.hi));
   // 真实后端只给节点 ID：按 ID 猜段
   assert.deepEqual(['core.research', 'trace.regression', 'retail.compliance', 'foo.bar'].map((id) => insertionAt({ id })), ['research', 'validate', 'publish', 'model']);
+  // 官方包的真实节点编号（各包 flow.yaml 的 after）
+  assert.deepEqual(['trace.trace', 'codegen.codegen', 'codegen.solver', 'diagram.flowchart', 'evo.evolution'].map((id) => insertionAt({ id })), ['validate', 'validate', 'model', 'research', 'publish']);
   // 图下只用包自带的说明；处数和统计卡、图本身重复，不写
   assert.equal(flowCaption({ flow_insertions: [{}, {}], flow_note: '示例' }), '示例');
   assert.equal(flowCaption({ flow_insertions: [{}, {}] }), '');
@@ -308,7 +310,7 @@ test('mock PL-01 带项目：状态按项目设置的能力表算，计数、推
   assert.equal(st.diagram, 'update');
   assert.equal(r.body.items.find((p) => p.name === 'diagram').latest, '0.6.0');
   assert.equal(st.migrate, 'available'); // 停用过
-  assert.equal(st['web-research'], 'offline');
+  assert.equal(st.websearch, 'offline');
   assert.equal(st['property-compliance'], 'not_applicable');
   assert.equal(r.body.items.find((p) => p.name === 'property-compliance').usage_note, '适用于物业服务项目');
   assert.equal(st['db-mysql'], 'platform_installed');
@@ -413,7 +415,7 @@ test('mock PL-02：详情、在用 / 需要先升级的标记、统计只给主�
   const core = await api('GET', `/api/v1/packs/core?project_id=${P}`);
   assert.equal(core.body.ui.kind, 'kernel');
   assert.match(core.body.project_stats.produced.note, /^对象 15/);
-  for (const name of ['knowledge', 'solver', 'diagram', 'reverse', 'evolution', 'migrate', 'web-research', 'sys-wms-generic', 'code-repo']) {
+  for (const name of ['knowledge', 'codegen', 'diagram', 'reverse', 'evo', 'migrate', 'websearch', 'sys-wms-generic', 'code-repo']) {
     assert.equal((await api('GET', `/api/v1/packs/${name}?project_id=${P}`)).status, 200, name);
   }
   assert.equal((await api('GET', '/api/v1/packs/nope')).body.code, 'pack_not_found');

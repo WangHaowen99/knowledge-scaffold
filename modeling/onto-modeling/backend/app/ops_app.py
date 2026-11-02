@@ -22,6 +22,10 @@ def create_app() -> FastAPI:
 
     @app.get("/metrics", include_in_schema=False)
     def prometheus_metrics():
+        from .services import ops_center
+
+        if not ops_center.prometheus_enabled():  # 运维在导出器里关了 Prometheus（O-12）
+            return PlainTextResponse("not found\n", status_code=404)
         return PlainTextResponse(telemetry.prometheus_text(), media_type="text/plain; version=0.0.4")
 
     errors.install(app)

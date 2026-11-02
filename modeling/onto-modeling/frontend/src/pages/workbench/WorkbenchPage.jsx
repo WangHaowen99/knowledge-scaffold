@@ -4,14 +4,14 @@ import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, relativeTime } from '../../api/errors.js';
-import { commandNode, nodeActionKind, overlayRunning, scriptRunView, sectionGroups, sliceStageTitle, trackNodes, withoutEvidence } from '../../state/flow.js';
+import { commandFromTarget, commandNode, nodeActionKind, planSlicesCommand, suggestionCommand, overlayRunning, scriptRunView, sectionGroups, sliceStageTitle, trackNodes, withoutEvidence } from '../../state/flow.js';
 import { evidenceInProject, withoutEvidenceSuggestions } from '../../state/evidence.js';
 import { composerState, readonlyInfo } from '../../state/readonly.js';
 import { ShellP } from '../../shell/Shell.jsx';
 import {
   Button, Drawer, Field, Icon, Menu, Modal, Ring, Seg, St, cx, useOutside,
 } from '../../ui/index.jsx';
-import { FLOWCHART_TYPE, latestFlowchartArtifact } from '../../app/packUi.js';
+import { FLOWCHART_TYPE, latestFlowchartArtifact, pendingChangeset } from '../../app/packUi.js';
 import { cellClass } from '../projects/projectCard.js';
 import { AutobuildBar, AutobuildCtx, useAutobuild } from './autobuild.jsx';
 import { ActionsCtx, ContextPanel, QueueCard } from './cards.jsx';
@@ -69,7 +69,9 @@ function StepsDrawer({ open, onClose, flow, cid }) {
     if (kind === 'navigate') { navigate(pagePath(a.target, pid)); return; }
     try {
       if (kind === 'command') {
-        await api.sendCommand(pid, { command: a.target.trim().split(/\s+/)[0], text: a.target, origin: { page: 'wb-l2', label: '建模步骤' }, conversation_id: cid || undefined });
+        const c = commandFromTarget(a.target);
+        if (c.command) await api.sendCommand(pid, { ...c, origin: { page: 'wb-l2', label: '建模步骤' }, conversation_id: cid || undefined });
+        else await api.sendMessage(pid, cid || 'default', { text: c.text, client_message_id: `cm-${Date.now()}` });
         onClose();
       } else if (kind === 'skip') await api.skipNode(pid, n.id, {});
       else if (kind === 'restore') await api.restoreNode(pid, n.id, {});
@@ -85,6 +87,16 @@ function StepsDrawer({ open, onClose, flow, cid }) {
         setExpanded(n.id);
         return;
       }
+      toast(errorText(e), 'alert');
+    }
+  };
+  const adjustSlices = async () => {
+    const plan = planSlicesCommand(flow);
+    if (!plan) { onClose(); navigate(pagePath('wb-blueprint', pid), { dialog: 'blueprint' }); return; }
+    try {
+      await api.sendCommand(pid, { ...plan, origin: { page: 'wb-l2', label: '建模步骤' }, conversation_id: cid || undefined });
+      onClose();
+    } catch (e) {
       toast(errorText(e), 'alert');
     }
   };
@@ -122,7 +134,7 @@ function StepsDrawer({ open, onClose, flow, cid }) {
     <Drawer open={open} onClose={onClose} icon="branch" title="建模步骤" w={440}>
       {flow.slices.length ? (
         <>
-          <div className="sec-t"><Icon name="layers" size={14} />业务切片 {flow.slices.length}<span className="sp" /><Button size="xs" kind="ghost" icon="layers" onClick={() => { onClose(); navigate(pagePath('wb-blueprint', pid), { dialog: 'blueprint' }); }}>调整切片</Button></div>
+          <div className="sec-t"><Icon name="layers" size={14} />业务切片 {flow.slices.length}<span className="sp" /><Button size="xs" kind="ghost" icon="layers" onClick={adjustSlices}>调整切片</Button></div>
           {/* 小进度条的列头：和每格对齐（同运行详情「切片流水线」的表头） */}
           <div className="wb-sr wb-sr-h">
             <span className="ix" />
@@ -472,6 +484,8 @@ export default function WorkbenchPage({ route }) {
   const [drag, setDrag] = useState(false);
   const [suggestions, setSuggestions] = useState(null);
   const [opened, setOpened] = useState(null);
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
   const [mDialog, setMDialog] = useState(null);
   const ab = useAutobuild({ pid, cid, list });
   const mainRef = useRef(null);
@@ -492,7 +506,8 @@ export default function WorkbenchPage({ route }) {
     if (route.page === 'flowchart') navigate(pagePath('wb-l2', pid));
   }, [route.page, pid]);
   useEffect(() => {
-    if (route.page !== 'flowchart') { fcPicked.current = null; return; }
+    // 离开 flowchart 页（地址换成别的工作台页）时，由地址打开的编辑器跟着关
+    if (route.page !== 'flowchart') { if (fcPicked.current) setOpened(null); fcPicked.current = null; return; }
     const want = route.query?.key || null;
     if (want) {
       if (fcPicked.current !== want) { fcPicked.current = want; setOpened({ type: FLOWCHART_TYPE, key: want }); }
@@ -570,7 +585,11 @@ export default function WorkbenchPage({ route }) {
     registerRound: (cs, fn) => { rounds.current.set(cs, fn); },
     canSaveKnowledge: hasPlugin('knowledge'),
     saveKnowledge: (item) => setKnItem({ ...item, conversation_id: cid }),
-    openArtifact: (artifact) => setOpened(artifact),
+    // 卡上的变更集还待确认时，带上它读这一轮的版本（AR-03 ?changeset=）
+    openArtifact: (artifact, changesetId) => {
+      const cs = pendingChangeset(scopeRef.current, changesetId);
+      setOpened(cs ? { ...artifact, changeset: cs } : artifact);
+    },
     openMaterials: (d) => setMDialog(typeof d === 'string' ? { kind: d } : d),
     // 增量更新的卡片：清单弹窗、确认清单并执行、页面命令发到这条对话
     openChangeList: inc.openChangeList,
@@ -582,7 +601,7 @@ export default function WorkbenchPage({ route }) {
     try {
       switch (a.type) {
         case 'send':
-          if (a.command) await api.sendCommand(pid, { command: a.command, args: a.args, text: a.text, origin: { page: 'wb-l2', label: '下一步建议' }, conversation_id: cid });
+          if (a.command) await api.sendCommand(pid, { ...suggestionCommand(a), origin: { page: 'wb-l2', label: '下一步建议' }, conversation_id: cid });
           else await api.sendMessage(pid, cid, { text: a.text, client_message_id: `cm-${Date.now()}` });
           break;
         case 'resume_exec': await actions.resume(a.exec_id); break;

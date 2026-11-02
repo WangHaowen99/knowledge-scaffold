@@ -280,7 +280,7 @@ test('ER 视图：包选用了 er_view 才有；只画对象和对象之间的�
   assert.equal(hasErView({ view_choices: [{ id: 'er_view', pack: 'diagram' }] }), true);
   assert.equal(hasErView({ view_choices: [{ id: 'schema_browser', pack: 'reverse' }] }), false);
   assert.equal(hasErView({}), false);
-  assert.equal(hasErView(F.extensions(['trace', 'knowledge', 'solver', 'diagram'])), true);
+  assert.equal(hasErView(F.extensions(['trace', 'knowledge', 'codegen', 'diagram'])), true);
   assert.equal(hasErView(F.extensions(['trace'])), false);
   const graph = {
     nodes: [

@@ -58,7 +58,7 @@ def release_tree(root: Path, commit: str):
                     tar.extractall(tree, filter="data")
             except tarfile.TarError as exc:  # FilterError 是 TarError 的子类
                 raise WorkspaceError(
-                    f"提交里有不安全的路径，无法发布：{exc}", code="release_tree_unsafe"
+                    f"版本里有不安全的路径，无法发布：{exc}", code="release_tree_unsafe"
                 ) from exc
             _verify_release_tree(root, commit, present, tree)
         yield tree
@@ -76,7 +76,7 @@ def _verify_release_tree(root: Path, commit: str, paths: list[str], tree: Path) 
         target = tree / path
         if not target.is_file() or target.stat().st_size != int(size):
             raise WorkspaceError(
-                f"{path} 导出后与提交内容不一致（请去掉 .gitattributes 里的 export-ignore / export-subst）",
+                f"{path} 导出后与版本内容不一致（请去掉 .gitattributes 里的 export-ignore / export-subst）",
                 code="release_tree_mismatch",
             )
 

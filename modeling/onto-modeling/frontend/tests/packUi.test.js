@@ -5,7 +5,7 @@ import {
   BridgeError, METHODS, UI_API, errorResponse, event, handle, parseRequest, readTheme, response,
 } from '../src/app/packBridge.js';
 import {
-  bundledKey, editorReadonly, latestFlowchartArtifact, openModeFor, packOfType, uiApiSatisfies,
+  artifactQuery, bundledKey, editorReadonly, latestFlowchartArtifact, openModeFor, packOfType, pendingChangeset, uiApiSatisfies,
 } from '../src/app/packUi.js';
 import {
   cardComponent, cardLocked, cardOpen, declaredCardView,
@@ -316,4 +316,17 @@ test('审查第 2 条：桥接走一次性 MessageChannel；iframe 第二次 loa
   await new Promise((r) => setTimeout(r, 20));
   assert.deepEqual(calls, ['theme.get']);
   port.close();
+});
+
+test('确认生效前双击产物卡：卡上的变更集还待确认（写入范围锁指着它）才带 ?changeset=，只用于打开的那一份', () => {
+  const pending = { state: 'pending_confirm', changeset_id: 'cs-3', entries: [], artifacts: [], paths: [] };
+  assert.equal(pendingChangeset(pending, 'cs-3'), 'cs-3');
+  assert.equal(pendingChangeset({ ...pending, state: 'assistant_running' }, 'cs-3'), 'cs-3');
+  assert.equal(pendingChangeset(pending, 'cs-2'), undefined);
+  assert.equal(pendingChangeset({ state: 'none', changeset_id: null }, 'cs-3'), undefined);
+  assert.equal(pendingChangeset(pending, null), undefined);
+  const opened = { type: 'diagram.flowchart', key: 'borrow-flow', changeset: 'cs-3' };
+  assert.deepEqual(artifactQuery(opened, 'diagram.flowchart', 'borrow-flow'), { changeset: 'cs-3' });
+  assert.equal(artifactQuery(opened, 'diagram.flowchart', 'other'), undefined);
+  assert.equal(artifactQuery({ type: 'diagram.flowchart', key: 'borrow-flow' }, 'diagram.flowchart', 'borrow-flow'), undefined);
 });

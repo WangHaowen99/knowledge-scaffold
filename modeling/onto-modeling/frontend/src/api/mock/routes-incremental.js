@@ -67,7 +67,7 @@ export function register(ctx) {
   const cid = D.INC_CID;
 
   const lockOf = (state, csId) => ({
-    state, changeset_id: csId, conversation_id: cid, run_id: null, slice: null, node: { id: 'core.incremental', version: 'core@1.4.2' },
+    state, changeset_id: csId, conversation_id: cid, run_id: null, slice: null, node: { id: 'core.update', version: 'core@1.4.2' },
     entries: D.impactOf().stale.map((s) => s.target), artifacts: D.SCENARIOS.affected, paths: [],
     reason_text: '助手正在按 09 修订通知修改 6 个产物', since: new Date().toISOString(),
   });

@@ -76,6 +76,8 @@ def read(manager, project_id: str) -> dict | None:
     """{doc, revision, where, base, record, root}；没有蓝图时 None，文件坏了抛 422。"""
     base, where, record = locate(manager, project_id)
     module = script(manager.project_root(project_id))
+    if (base / BLUEPRINT_REL).is_symlink() or (base / BLUEPRINT_REL).parent.is_symlink():
+        return None  # 符号链接可以指到工作区外：不读
     try:
         text = (base / BLUEPRINT_REL).read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -118,8 +120,15 @@ def _research(root: Path) -> dict:
         review = contracts.module_for(root, "research_review").review_status(root)
     except Exception:  # noqa: BLE001 - 验收状态是附加信息
         return {"verified": False, "report_id": None}
-    # 资料分析报告在 research/ 下，报告接口（RP-02）只读 reports/：先不给编号（见 gaps B4d）
-    return {"verified": review.get("status") == "passed", "report_id": None}
+    return {"verified": review.get("status") == "passed", "report_id": research_report_id(root)}
+
+
+def research_report_id(root: Path) -> str | None:
+    """最新一份资料分析报告在报告页（RP-02）里的编号；没有报告时 None。报告名以日期开头，按名排最新。"""
+    from .. import reports, research_view
+
+    paths = research_view.report_paths(Path(root))
+    return reports.id_of(paths[-1]) if paths else None
 
 
 def view(manager, project_id: str, loaded: dict | None = None) -> dict:
@@ -219,6 +228,25 @@ def answer(manager, project_id: str, question_id: str, reply: dict, *, actor: st
         raise _invalid(exc) from exc
     _write(manager, project_id, loaded, doc, actor=actor, summary="回答建模蓝图的问题")
     return view(manager, project_id)
+
+
+def add_question(manager, project_id: str, title: str, *, actor: str, background: str = "") -> str:
+    """资料问题记为待答问题（R-10）：加进蓝图的「待你回答」（同时进待处理的决策），返回问题编号。"""
+    import copy
+
+    loaded = read(manager, project_id)
+    if loaded is None:
+        raise WorkspaceError("还没有建模蓝图", 404, "blueprint_not_found")
+    module = script(loaded["root"])
+    doc = copy.deepcopy(loaded["doc"])
+    question_id = f"q{module._next(doc, 'question')}"
+    doc.setdefault("questions", []).append({"id": question_id, "title": module._text(title, 200),
+                                            "background": module._text(background, 400), "options": [], "answer": None})
+    problems = module.validate(doc)
+    if problems:
+        raise _invalid(problems[0])
+    _write(manager, project_id, loaded, doc, actor=actor, summary="资料问题记为待答问题")
+    return question_id
 
 
 def prepare_confirm(manager, project_id: str, body: dict) -> dict:
@@ -400,14 +428,15 @@ def research_card(root: Path, card_id: str) -> dict | None:
     files = len(evidence) or len([rel for rel in receipt.get("inputs") or {} if rel.startswith("resource/")])
     readable = sum(1 for item in evidence.values() if isinstance(item, dict) and item.get("status") == "ok")
     verified = status.get("status") == "passed"
+    report_id = research_report_id(root)
     return {
         "card_id": card_id, "card_type": "research_summary", "eyebrow": "", "title": "资料分析完成", "subtitle": "",
         "status": {"key": "confirmed", "label": "已核验"} if verified else {"key": "pending", "label": "待核验"},
-        "plugin": None, "open": None,
+        "plugin": None, "open": {"kind": "page", "target": "reports", "ref": {"report": report_id}} if report_id else None,
         "files": files, "coverage_pct": round(100 * readable / len(evidence)) if evidence else 0,
         "verified_anchors": sum(len(item.get("anchors") or []) for item in evidence.values() if isinstance(item, dict)),
         "problems_carried": len(status.get("manual_pending") or []) + len(status.get("errors") or []),
-        "verified": verified, "report_id": None,
+        "verified": verified, "report_id": report_id,
     }
 
 

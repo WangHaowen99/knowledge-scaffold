@@ -71,7 +71,9 @@ MAX_HASH_BYTES = 8 * 1024 * 1024
 
 
 def file_revision(path: Path) -> str:
-    """文件指纹；不存在或读不到时为空串（视为与任何已记录指纹不符）。"""
+    """文件指纹；不存在或读不到时为空串（视为与任何已记录指纹不符）。符号链接、设备文件也当读不到。"""
+    if path.is_symlink() or not path.is_file():
+        return ''
     try:
         size = path.stat().st_size
         if size > MAX_HASH_BYTES:
@@ -92,14 +94,20 @@ def report_paths(root: Path) -> list[str]:
     （工作区 CLI 的用法），那时 relative_to 会抛 ValueError。
     """
     directory = root / RESEARCH_DIR
-    if not directory.is_dir():
+    # 符号链接（目录本身或报告文件）不算报告：链接可以指到工作区外
+    if not directory.is_dir() or directory.is_symlink():
         return []
     prefix = RESEARCH_DIR.as_posix()
     return sorted(
         f'{prefix}/{path.relative_to(directory).as_posix()}'
         for path in directory.rglob('*.md')
-        if path.is_file() and path.name.lower() != 'index.md'
+        if path.is_file() and not path.is_symlink() and path.name.lower() != 'index.md'
     )
+
+
+def _relative(rel) -> bool:
+    parts = Path(str(rel)).parts
+    return bool(parts) and not Path(str(rel)).is_absolute() and '..' not in parts
 
 
 def file_revisions(root: Path, rels) -> dict:
@@ -114,6 +122,8 @@ def file_revisions(root: Path, rels) -> dict:
 
 def load_review(root: Path) -> dict | None:
     path = root / REVIEW_FILE
+    if path.is_symlink():
+        return None
     try:
         data = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError):
@@ -200,7 +210,8 @@ def review_status(root: Path) -> dict:
     if sorted(rel for rel in inputs if rel.startswith(f'{RESEARCH_DIR.as_posix()}/')) != reports:
         return _result(PENDING, REASON_REPORTS_CHANGED, reports, review)
     # 报告正文、源表格、规范清单任一改动都让旧结论失效。
-    if any(file_revision(root / rel) != revision for rel, revision in inputs.items()):
+    # 回执里的路径只认工作区内的相对路径（绝对路径、.. 一律算对不上）
+    if any(not _relative(rel) or file_revision(root / rel) != revision for rel, revision in inputs.items()):
         return _result(PENDING, REASON_INPUTS_CHANGED, reports, review)
 
     if review.get('status') in {FAILED, UNVERIFIABLE}:

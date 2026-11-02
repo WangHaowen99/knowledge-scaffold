@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .. import config
 from ..kernel import metamodel
+from ..kernel.artifacts import index as artifact_index
 from ..kernel.metamodel import mm
 from . import package_mapping
 from .document_metadata import name_frontmatter, report_name
@@ -30,11 +31,13 @@ def _docs(root: Path) -> list[dict]:
     docs = []
     for kind, rel_dir, pattern in KIND_DIRS:
         directory = root / rel_dir
-        if not directory.is_dir():
-            continue
+        if not directory.is_dir() or artifact_index.inside_no_links(root, rel_dir) is None:
+            continue  # 目录本身是符号链接：不读
         for path in sorted(directory.glob(pattern)):
             if path.name == mm.INDEX_FILE:  # 工作区占位 index 不是本体元素
                 continue
+            if not path.is_file() or artifact_index.inside_no_links(root, path.relative_to(root).as_posix()) is None:
+                continue  # 符号链接（可以指到工作区外）、设备文件不读
             docs.append(
                 {
                     "name": path.stem,
@@ -594,12 +597,15 @@ def purge_project(project_id: str) -> None:
 
 
 def save_draft(
-    project_id: str, rel_path: str, content: str, base_revision: str, user: str
+    project_id: str, rel_path: str, content: str, base_revision: str, user: str, form: dict | None = None
 ) -> dict:
-    """自动暂存草稿。不再占租约：助手在改的条目由写入范围锁挡（提交时 ChangeTx 统一检查，423）。"""
+    """自动暂存草稿。不再占租约：助手在改的条目由写入范围锁挡（提交时 ChangeTx 统一检查，423）。
+
+    结构化编辑器存的草稿另带表单原样（form），重新打开时编辑器按它还原；content 是按表单渲染好的原文。"""
     drafts = _load(project_id, "drafts")
     drafts[rel_path] = {
         "content": content,
+        "form": form,
         "base_revision": base_revision,
         "author": user,
         "updated_at": int(time.time()),
@@ -666,7 +672,14 @@ def deterministic_check(root: Path, rel_path: str, content: str) -> dict:
     # 链接目标存在性：指向不存在的文档 → 可能是要新建对象，转复核
     names = {d["name"] for d in _docs(root)}
     stem = Path(rel_path).stem
-    for link in metamodel.for_project(root).unresolved(content, names | {stem}):
+    # 模板里的填写指引（引用块）、行内代码里的写法示例、模板占位（`[[{待填写：对象A}]]`）不是链接：
+    # 按模板新建的条目保存时不因它们转复核（规则检查在确认生效、发布时照常查全文）
+    scanned = "\n".join(line for line in content.splitlines() if not line.lstrip().startswith(">"))
+    scanned = re.sub(r"`[^`\n]*`", "", scanned)
+    scanned = re.sub(r"\{待填写[^{}]*\}", "", scanned)
+    for link in metamodel.for_project(root).unresolved(scanned, names | {stem}):
+        if "{" in link.full_name or "待填写" in link.full_name:
+            continue
         review.append(f"[[{link.full_name}]] 指向不存在的文档")
 
     return {"errors": errors, "review": review}

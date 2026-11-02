@@ -3,13 +3,18 @@
 全部回 `501 evidence_not_available`，错误信封按契约 1.5；`details.api` 带接口编号，方便前端与日志认。
 路由先注册好，前端与以后的实现有固定落点；实现时按编号逐条换成真的处理函数。
 同一前缀下固定段（`snapshots/diff`）先于路径参数（`snapshots/{snapshot_id}`）登记。
+
+例外：EV-29 锚点解析先实现了 `file:` 锚点（上传资料里的出处，主控 11-02 定）：对话、资料、Studio 的出处
+角标悬停看原文；`db`、`code` 等业务系统锚点逐项回 `resolved=false`（`reason=not_available`），整体不再 501。
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
-from ..api import errors
+from ..api import deps, errors
+from ..api.errors import ApiError
+from ..services import material_text
 
 router = APIRouter(tags=["evidence"])
 
@@ -51,8 +56,6 @@ ROUTES = (
     ("EV-26", "GET", f"{_P}/evidence/where-used"),
     ("EV-27", "GET", f"{_P}/evidence/lineage"),
     ("EV-28", "GET", f"{_P}/evidence/er"),
-    ("EV-29", "GET", f"{_P}/anchors/resolve"),
-    ("EV-29", "POST", f"{_P}/anchors/resolve"),
     ("EV-30", "POST", "/api/v1/evidence/sources/{source_id}/notify-admin"),
     # 提供方由管理员装进网关或旁路容器（H2），随证据源一起留接口
     ("PL-04", "POST", "/api/v1/packs/{name}/install-requests"),
@@ -75,3 +78,31 @@ def _handler(api: str):
 
 for _api, _method, _path in ROUTES:
     router.add_api_route(_path, _handler(_api), methods=[_method], include_in_schema=False)
+
+
+# ---- EV-29 锚点解析（只实现 file: 锚点） ----
+
+ANCHORS_MAX = 100
+IMPLEMENTED = (("EV-29", "GET", f"{_P}/anchors/resolve"), ("EV-29", "POST", f"{_P}/anchors/resolve"))
+
+
+@router.get(f"{_P}/anchors/resolve")
+def resolve_anchor(project_id: str, request: Request, anchor: str = ""):
+    """EV-29（GET）：一个锚点。"""
+    root = deps.require_owner(project_id, request)
+    if not anchor.strip():
+        raise ApiError("invalid_argument", "要指定 anchor", 400, {"fields": {"anchor": "required"}})
+    return {"items": material_text.resolve_many(root, [anchor])}
+
+
+@router.post(f"{_P}/anchors/resolve")
+async def resolve_anchors(project_id: str, request: Request):
+    """EV-29（POST）：一批锚点，最多 100 个，按请求顺序返回。"""
+    root = deps.require_owner(project_id, request)
+    body = await deps.json_body(request)
+    anchors = body.get("anchors")
+    if not isinstance(anchors, list) or not all(isinstance(item, str) for item in anchors):
+        raise ApiError("invalid_argument", "anchors 要是文字列表", 400, {"fields": {"anchors": "list"}})
+    if len(anchors) > ANCHORS_MAX:
+        raise ApiError("invalid_argument", f"一次最多 {ANCHORS_MAX} 个锚点", 400, {"fields": {"anchors": "too_many"}})
+    return {"items": material_text.resolve_many(root, anchors)}

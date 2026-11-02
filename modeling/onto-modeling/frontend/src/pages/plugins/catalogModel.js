@@ -18,7 +18,7 @@ export const PACK_ICON_CLASS = { capability: 'cap', industry: 'ind', system: 'sy
 // 旧数据里的 node 分类按能力包算
 export const categoryOf = (p) => (p?.category === 'node' ? 'capability' : p?.category);
 // 详情页英雄区的大图标：能力包按包名（与新建向导第 3 步一致），其余按分类
-const PACK_ICON = { core: 'cube', trace: 'flask', knowledge: 'book', solver: 'code', reverse: 'db', diagram: 'branch', 'web-research': 'globe', migrate: 'recycle', evolution: 'refresh' };
+const PACK_ICON = { core: 'cube', trace: 'flask', knowledge: 'book', codegen: 'code', reverse: 'db', diagram: 'branch', websearch: 'globe', migrate: 'recycle', evo: 'refresh' };
 export const packIcon = (p) => PACK_ICON[p?.name] || PACK_CATEGORIES[categoryOf(p)]?.[1] || 'puzzle';
 
 // 纯数据包（行业包、系统知识包）现读即生效，更新前先给看更新弹窗

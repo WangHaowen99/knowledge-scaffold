@@ -18,7 +18,7 @@ import logging
 import re
 from pathlib import Path
 
-from .manifest import Manifest
+from .manifest import BUILTIN_PAGES, Manifest
 
 _log = logging.getLogger(__name__)
 
@@ -165,6 +165,17 @@ def declares_any(manifest: Manifest) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _entry_where(view, kind: str, declared) -> str | None:
+    """入口放哪（设计调整 R22）：快捷项一律在对话输入框「全部命令」旁（`composer`）；附加操作放在插件页页头，
+    取声明的页面 id，没写或不是插件页时取本包自己的第一个页面；包没有插件页时没有位置（不出现）。"""
+    if kind == "quick_action":
+        return "composer"
+    pages = [str(page.get("id")) for page in view.manifest.pages() if str(page.get("id")) in BUILTIN_PAGES]
+    if str(declared or "") in BUILTIN_PAGES:
+        return str(declared)
+    return pages[0] if pages else None
+
+
 def entries(view) -> list[dict]:
     """包的界面入口：快捷项、附加操作；命令要是本包的。数据源连接向导随证据源留空（ADR-0056），不出现。"""
     commands = {f"/{name}" for name in view.manifest.items("commands")}
@@ -174,9 +185,12 @@ def entries(view) -> list[dict]:
         command = str(entry.get("command") or "")
         if kind == "source_wizard" or command.split(" ")[0] not in commands:
             continue
+        where = _entry_where(view, kind, entry.get("where"))
+        if where is None:
+            continue
         out.append({"id": str(entry.get("id") or f"{view.name}-{index + 1}"), "kind": kind,
                     "label": str(entry.get("label") or entry.get("id") or ""),
-                    "where": str(entry.get("where") or "wb-l2"), "pack": view.name, "command": command})
+                    "where": where, "pack": view.name, "command": command})
     return out
 
 

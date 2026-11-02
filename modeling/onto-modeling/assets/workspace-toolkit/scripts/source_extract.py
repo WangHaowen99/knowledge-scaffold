@@ -98,7 +98,7 @@ def extract(path: Path) -> dict:
         if not segments:
             raise ValueError('未抽取到正文，无法核验来源')
         result.update(status='ok', segments=segments)
-    except (OSError, ValueError, KeyError, ImportError, ET.ParseError, zipfile.BadZipFile) as exc:
+    except Exception as exc:  # 坏文件：解析库会抛各种异常（如 lxml 的 XMLSyntaxError），一律按无法核验
         result['reason'] = f'无法核验：{type(exc).__name__}：{str(exc)[:160]}'
     return result
 

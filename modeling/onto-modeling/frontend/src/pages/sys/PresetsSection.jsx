@@ -37,7 +37,7 @@ function EditCard({ f, setF, busy, problems, onCancel, onSave }) {
       </div>
       <div className="row mt12">
         <Field label="备注" className="grow" hint={problems.note ? <FieldErr>{problems.note}</FieldErr> : null}>
-          <Inp value={f.note} placeholder="例如：实测超过 12 万后输出变短" onChange={set('note')} />
+          <Inp value={f.note} onChange={set('note')} />
         </Field>
         <div style={{ alignSelf: 'flex-end' }} className="row">
           <Button kind="ghost" onClick={onCancel}>取消</Button>
@@ -62,7 +62,7 @@ export function PresetsSection() {
 
   const rows = data?.rows || [];
   const invalid = data?.custom?.status === 'invalid';
-  const lockHint = invalid ? '自定义表有误：先停用，或导入一份正确的表' : undefined;
+  const lockHint = invalid ? '自定义表有误' : undefined;
 
   const saveList = async (list, okText, source, name) => {
     setBusy(true);
@@ -123,7 +123,7 @@ export function PresetsSection() {
       setData(await api.disableCustomContextPresets());
       setOff(false);
       setEdit(null);
-      toast('自定义表已停用，推荐表为内置表', 'check');
+      toast('自定义表已停用', 'check');
     } catch (e) {
       toast(errorText(e), 'alert');
     } finally {

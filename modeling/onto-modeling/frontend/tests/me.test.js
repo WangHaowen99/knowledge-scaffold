@@ -160,7 +160,8 @@ test('来源三选一、管理员摘要、个人 Key 才出三栏、占位、上
   assert.deepEqual(sourceOptions(cfg).map((o) => o.desc), ['', 'gateway.example.com · model-standard', '']);
   assert.equal(adminText(cfg), 'gateway.example.com · model-standard');
   assert.equal(adminText({ admin_summary: { gateway_host: 'gateway.example.com', model: null } }), 'gateway.example.com · 网关默认模型');
-  assert.match(adminText({ admin_summary: null }), /部署默认/);
+  // 管理员没配置时只说状态，不解释会按什么调用（I1 按「界面文案」删解释句）
+  assert.equal(adminText({ admin_summary: null }), '管理员还没有配置');
   // Key、网关、模型三栏只在选个人 Key 时出现（R15）
   assert.equal(showsPersonalFields(modelForm(cfg)), false);
   assert.equal(showsPersonalFields({ ...modelForm(cfg), source: 'deployment' }), false);

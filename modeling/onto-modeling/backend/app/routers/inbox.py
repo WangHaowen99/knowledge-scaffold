@@ -197,8 +197,11 @@ async def _run_action(project_id: str, item: dict, action: str, request: Request
         payload = {"command": "/ontology-evolution", "args": {"feedback_id": source_id},
                    "origin": {"page": "inbox", "label": "交给反馈演进"}, "conversation_id": "-"}
         response = await session_routes.dispatch_command(project_id, root, request, payload)
-        # 交出去就算处理了：这批反馈没有「已处理」状态（R-11、R-12 未做），按处理记下（审查第 22 条）
+        # 交出去就算处理了：按处理记下（审查第 22 条），资料区的外部反馈分组同一个状态（R-12）
         inbox.dismiss(root, item["id"], by=actor, fingerprint=item.get("_fp"))
+        from ..services import feedback_inbox
+
+        feedback_inbox.set_state(deps.workspaces, project_id, source_id, "handled", by=actor)
         return {"command_task": _json(response).get("task")}
     if action == "migrate":
         raise ApiError("pack_not_enabled", "登记这个产物的包没有提供迁移命令", 409,

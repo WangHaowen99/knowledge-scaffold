@@ -35,10 +35,10 @@ function rows() {
       ch(R('replenish_order'), 'add', '新增'), ch(R('store'), 'add', '新增'), ch(R('goods_category'), 'add', '新增'), ch(R('display_qty_std'), 'add', '新增'),
     ]],
     [2, '6d20a8c1', dayAt(5, 10, 12), 'assistant', '资料分析确认：7 份资料，2 份作为建模目标依据', [
-      ch({ type: 'core.research', key: 'material-map', title: '资料地图' }, 'add', '新增'),
+      ch({ type: 'file', key: 'research/material-map.json', title: '资料地图' }, 'add', '新增'),
     ], { changeset_id: 'cs-21' }],
     [3, '91c47e2a', dayAt(5, 16, 40), 'assistant', '建模蓝图确认：5 个切片，先做「补货申请与门店需求」', [
-      ch({ type: 'core.blueprint', key: 'blueprint', title: '建模蓝图' }, 'add', '新增'),
+      ch({ type: 'file', key: 'research/blueprint.json', title: '建模蓝图' }, 'add', '新增'),
     ], { changeset_id: 'cs-22' }],
     [4, 'b5e0d913', dayAt(4, 11, 5), 'assistant', '确认生效：对象「补货单」「门店」，新增「门店特殊需求」', [
       ch(R('store_request'), 'add', '新增', null, { add: true }), ch(R('replenish_order'), 'mod', '修改 · 2 处'), ch(R('store'), 'mod', '修改 · 1 处'),

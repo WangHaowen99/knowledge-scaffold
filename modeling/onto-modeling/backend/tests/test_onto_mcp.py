@@ -168,7 +168,8 @@ def test_management_status_is_onto_local_without_modeling(env, monkeypatch):
     templates = body["client_config_templates"]
     assert "<READ_TOKEN>" in templates["read"] and "<CHANGE_TOKEN>" in templates["change"]
     assert json.loads(templates["full"])["mcpServers"].keys() == {"modeling-read", "modeling-change"}
-    assert body["recommended_order"] == ["server/discover", "tools/list", "tools/call"]
+    # 连接顺序与协议细节不再下发（UI 文案口径 ⑤，契约补充 UI 文案第 15 条）
+    assert "recommended_order" not in body and "limits" not in body
 
 
 def test_management_token_lifecycle_shapes(env, monkeypatch):

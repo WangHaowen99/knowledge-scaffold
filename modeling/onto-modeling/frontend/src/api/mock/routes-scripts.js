@@ -352,7 +352,7 @@ export function register(ctx) {
   // 跑完直接解除（mock 的工作台没有这一轮的确认卡，不进「修改待确认」，那一态用 ?mock=scope:pending 看）
   const evaluatorLock = (key, cid) => ({
     state: 'assistant_running', changeset_id: null, conversation_id: cid, run_id: null, slice: null,
-    node: { id: 'solver.adapt', version: 'solver@0.7.2' }, entries: [],
+    node: { id: 'codegen.solver', version: 'codegen@0.9.2' }, entries: [],
     artifacts: [{ type: SOLVER_TYPE, key, title: solverTitle(key) }], paths: [`ontology/solver/${key}/**`, D.evaluatorPath(key)],
     reason_text: `助手正在为「${solverTitle(key)}」生成评估器`, since: new Date().toISOString(),
   });

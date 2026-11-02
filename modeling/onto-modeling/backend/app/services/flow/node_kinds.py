@@ -96,6 +96,7 @@ def _target(node: dict, value: str, label: str) -> str:
 
 
 def _inputs(root: Path, patterns: list[str]) -> list[str]:
+    from ...kernel.artifacts import index as artifact_index
     from ..packs import manifest as mf
 
     found: list[str] = []
@@ -105,7 +106,8 @@ def _inputs(root: Path, patterns: list[str]) -> list[str]:
             raise NodeRunError("path_forbidden", "脚本节点的输入不能读工作区外或内核目录", 403, {"path": str(pattern)})
         for path in sorted(Path(root).glob(rel)):
             rel = path.relative_to(root).as_posix()
-            if not path.is_file() or path.is_symlink() or any(part.startswith(".") for part in Path(rel).parts):
+            if not path.is_file() or path.is_symlink() or any(part.startswith(".") for part in Path(rel).parts) \
+                    or artifact_index.inside_no_links(root, rel) is None:  # 中间段是目录链接也不送进沙箱
                 continue
             if rel not in found:
                 found.append(rel)
@@ -130,8 +132,54 @@ def _client():
     return contracts.default().load("jiuwenbox_client")
 
 
+RUNS_REL = Path(".onto") / "run" / "script-runs.json"
+
+
+def _first_line(text: str) -> str:
+    return next((line.strip() for line in str(text or "").splitlines() if line.strip()), "")[:120]
+
+
+def last_runs(root: Path) -> dict[str, dict]:
+    """脚本节点最近一次运行结果 {节点: {state, summary, at}}（FL-01 `last_run`；`.onto/run/` 不进版本）。"""
+    try:
+        data = json.loads((Path(root) / RUNS_REL).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _record_run(root: Path, node_id: str, state: str, summary: str) -> None:
+    from datetime import datetime, timezone
+
+    with _lock:
+        data = last_runs(root)
+        data[node_id] = {"state": state, "summary": summary,
+                         "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+        path = Path(root) / RUNS_REL
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+
+
 def run_script(manager, project_id: str, node: dict, *, actor: str) -> dict:
-    """在沙箱里跑脚本节点，标准输出写成 `script.output`；返回 {output, commit, version_label, duration_ms}。"""
+    """跑脚本节点并记下最近一次结果：跑了的（通过、没通过）记，沙箱不可用这类没跑起来的不记。"""
+    root = manager.project_root(project_id)
+    try:
+        run, stdout = _run_script(manager, project_id, node, actor=actor)
+    except NodeRunError as exc:
+        if exc.code == "node_run_failed" and exc.status == 422:
+            details = exc.details or {}
+            summary = ("超时" if details.get("timed_out") else _first_line(details.get("stderr"))
+                       or (f"退出码 {details['exit_code']}" if details.get("exit_code") is not None else str(exc)))
+            _record_run(root, node["id"], "failed", summary)
+        raise
+    _record_run(root, node["id"], "passed", _first_line(stdout) or run["output"])
+    return run
+
+
+def _run_script(manager, project_id: str, node: dict, *, actor: str) -> tuple[dict, str]:
+    """在沙箱里跑脚本节点，标准输出写成 `script.output`；返回 ({output, commit, version_label, duration_ms}, 标准输出)。"""
     from ...kernel.writepath import ChangeTx, Origin
     from ..packs.assembler import verified_file
 
@@ -173,7 +221,8 @@ def run_script(manager, project_id: str, node: dict, *, actor: str) -> dict:
 
     commit = committed.commit or ""
     return {"state": "passed", "output": output, "commit": commit or None,
-            "version_label": mainline.state(root)["version_label"], "duration_ms": duration, "runtime": "jiuwenbox"}
+            "version_label": mainline.state(root)["version_label"], "duration_ms": duration,
+            "runtime": "jiuwenbox"}, text
 
 
 # ---------------------------------------------------------------------------

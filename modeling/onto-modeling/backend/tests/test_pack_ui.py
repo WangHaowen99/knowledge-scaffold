@@ -359,6 +359,7 @@ def test_session_host_broadcasts_artifact_cards_after_a_turn(env):
     assert [record["type"] for record in sent] == ["workspace_changes", "card"]
     card = sent[1]["payload"]
     assert card["card_type"] == "artifact" and card["artifact"]["key"] == "n2" and card["change"] == "add"
+    assert card["changeset_id"] is None  # 没有副本、改动直接在主线上的一轮（I1）
 
 
 def test_turn_in_the_assistant_copy_puts_artifact_cards_in_the_chat(env, monkeypatch):
@@ -430,6 +431,8 @@ def test_turn_in_the_assistant_copy_puts_artifact_cards_in_the_chat(env, monkeyp
     assert {key: card["change"] for key, card in artifact_cards.items()} == {"n1": "mod", "n2": "add"}
     assert artifact_cards["n1"]["chips"][0]["value"] == "blue" and artifact_cards["n1"]["eyebrow"] == "便签 · 本轮修改"
     assert all(card["card_id"].startswith("ac-") for card in cards[1:])
+    # 产物卡带这一轮所属的变更集：确认生效前双击按它读副本（I1，AR-03 ?changeset=）
+    assert cards[0]["changeset_id"] and all(card["changeset_id"] == cards[0]["changeset_id"] for card in cards[1:])
     # 改动还在副本里：主线上的便签没变、新便签不在
     assert "color: yellow" in (root / "ext/sticky-notes/notes/n1.md").read_text(encoding="utf-8")
     assert not (root / "ext/sticky-notes/notes/n2.md").exists()

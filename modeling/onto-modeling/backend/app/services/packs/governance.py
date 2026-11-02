@@ -105,6 +105,15 @@ def rollback_to(repository, name: str, version: str, channel: str) -> str | None
     return older[0] if older else None
 
 
+def _is_provider(repository, name: str) -> bool:
+    """证据源提供方（本期不开放，ADR-0056）：插件运维与版本清单里不列。"""
+    versions = repository.versions(name)
+    try:
+        return bool(versions) and repository.manifest(name, versions[0]).category == "provider"
+    except Exception:  # noqa: BLE001 - 读不出清单的照常列，由 pack_item 兜底
+        return False
+
+
 def ops_items(manager) -> list[dict]:
     """O-25：每个包在通道上的版本、项目在用的版本与禁用的版本，各一行。"""
     runtime = manager.packs
@@ -120,6 +129,8 @@ def ops_items(manager) -> list[dict]:
             used.setdefault(entry.name, set()).add(entry.version)
     items = []
     for name in repository.names():
+        if _is_provider(repository, name):
+            continue
         entry = repository.channel_entry(name)
         beta = entry.get("beta") if isinstance(entry.get("beta"), dict) else {}
         wanted = {repository.latest(name, "stable"), beta.get("version"), *used.get(name, set()),
@@ -235,6 +246,8 @@ def versions(manager) -> list[dict]:
             if not version:
                 continue
             manifest = repository.manifest(name, version)
+            if manifest.category == "provider":
+                continue  # 证据源提供方本期不开放（ADR-0056）
             items.append({"category": manifest.category, "component": name, "version": version, "note": manifest.label})
     except Exception as exc:  # noqa: BLE001 - 版本清单取不到包时只给锁文件格式
         _log.warning("版本清单读取包仓库失败：%s", exc)

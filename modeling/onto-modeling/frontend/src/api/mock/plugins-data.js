@@ -31,8 +31,8 @@ export function pluginFlags(sc) {
 
 // ---------- 目录 ----------
 const META = {
-  core: '22 命令 · 18 子代理', trace: '5 命令 · 片内 1 步 + 回归', knowledge: '3 命令 · 1 子代理 · 纠错提示', solver: '3 命令 · 旁支节点',
-  reverse: '5 命令 · 串入节点', diagram: '2 命令 · 1 skill', 'web-research': '1 skill', migrate: '1 skill · 按需节点', evolution: '按需节点',
+  core: '22 命令 · 18 子代理', trace: '5 命令 · 片内 1 步 + 回归', knowledge: '3 命令 · 1 子代理 · 纠错提示', codegen: '3 命令 · 旁支节点',
+  reverse: '5 命令 · 串入节点', diagram: '2 命令 · 1 skill', websearch: '1 skill', migrate: '1 skill · 按需节点', evo: '按需节点',
   'industry-retail': '附「合规检查」', 'industry-property': '参考对象 22 个', 'industry-workorder': '参考对象 9 个',
   'sys-erp-generic': '表 126 · 状态码 48', 'sys-wms-generic': '表 64', 'sys-pos-generic': '表 38',
 };
@@ -208,7 +208,7 @@ const DETAILS = {
     size: 186 * KB, files: 23,
     flow_insertions: [
       { id: 'trace.scenario', kind: '节点钩子', title: '每片多一步「场景」', at: 'model', note: '节点钩子 · 写入即查之后', short: '片内「场景」' },
-      { id: 'trace.regression', kind: '串入节点', title: '全量回归', at: 'validate', note: '串入「校验与走查」', short: '全量回归' },
+      { id: 'trace.trace', kind: '串入节点', title: '全量回归', at: 'validate', note: '串入「校验与走查」', short: '全量回归' },
     ],
     flow_note: '示例数据按场景需要生成，不单独占一步',
     contents: [
@@ -246,12 +246,12 @@ const DETAILS = {
       log('0.4.0', '2026-09-12', '首个可用版本：纠错提示、手动新增、提名回流'),
     ],
   },
-  solver: {
+  codegen: {
     description: '把复杂计算写成脚本并在沙箱跑通；维护求解契约。旁支，不挡主线。',
     size: 148 * KB, files: 19,
     flow_insertions: [
-      { id: 'solver.codegen', kind: '旁支节点', title: '代码生成', at: 'model', note: '旁支 · 不挡主线', short: '代码生成' },
-      { id: 'solver.adapt', kind: '旁支节点', title: '求解适配', at: 'validate', note: '旁支 · 在页面里配置', short: '求解适配' },
+      { id: 'codegen.codegen', kind: '旁支节点', title: '代码生成', at: 'model', note: '旁支 · 不挡主线', short: '代码生成' },
+      { id: 'codegen.solver', kind: '旁支节点', title: '求解适配', at: 'validate', note: '旁支 · 在页面里配置', short: '求解适配' },
     ],
     flow_note: '两步都是旁支，跳过也不挡发布',
     contents: [
@@ -263,9 +263,9 @@ const DETAILS = {
     ],
     config: [{ id: 'sandbox_timeout', label: '沙箱超时', value: '120 秒' }],
     changelog: [
-      log('0.7.2', '2026-10-18', '求解契约表单按模板参数还原；评估器失败时给出约束位置'),
-      log('0.7.1', '2026-10-06', '修复沙箱里中文路径的脚本读不到'),
-      log('0.7.0', '2026-09-22', '新增求解契约与评估器'),
+      log('0.9.2', '2026-10-18', '求解契约表单按模板参数还原；评估器失败时给出约束位置'),
+      log('0.9.1', '2026-10-06', '修复沙箱里中文路径的脚本读不到'),
+      log('0.9.0', '2026-09-22', '新增求解契约与评估器'),
     ],
   },
   reverse: {
@@ -303,10 +303,10 @@ const DETAILS = {
       log('0.4.2', '2026-09-18', '修复中文节点名的换行'),
     ],
   },
-  evolution: {
+  evo: {
     description: '接收评测服务回传的失分用例和线上反馈，生成本体修订建议。反馈进资料区「外部反馈」分组，在对话里处理。',
     size: 64 * KB, files: 9,
-    flow_insertions: [{ id: 'evolution.feedback', kind: '按需节点', title: '反馈演进', at: 'publish', note: '按需节点 · 收到反馈后出现', short: '反馈演进' }],
+    flow_insertions: [{ id: 'evo.evolution', kind: '按需节点', title: '反馈演进', at: 'publish', note: '按需节点 · 收到反馈后出现', short: '反馈演进' }],
     contents: [
       { group: '命令', items: ['反馈演进'] },
       { group: '助手角色', items: ['反馈归因'] },
@@ -324,7 +324,7 @@ const DETAILS = {
     changelog: [log('0.2.0', '2026-10-16', '复用结果只作候选，由你确认'), log('0.1.0', '2026-09-20', '首个版本')],
     brings: '1 个 skill（extract-migrated-objects）、1 个按需节点；助手发现可复用对象时会推荐它，复用结果只作候选，由你确认。',
   },
-  'web-research': {
+  websearch: {
     flow_insertions: [{ id: 'research.web', kind: '串入节点', title: '联网调研', at: 'research', note: '补充资料分析', short: '联网调研' }],
     contents: [{ group: '技能', items: ['deep-research'] }],
     changelog: [log('0.2.0', '2026-10-03', '联网查标准、规范和公开资料')],
@@ -436,7 +436,7 @@ export function projectStatsOf(name, { entries, knowledge, scripts, flowcharts, 
       produced: { value: knowledge.project, unit: '条知识', note: '本项目层 · 覆盖行业条目 1' },
       metric: { label: '行业层条目', value: knowledge.industry, note: '零售连锁 · 只读' },
     },
-    solver: {
+    codegen: {
       produced: { value: scripts, unit: '个脚本', note: '求解契约 1 份' },
       metric: { label: '沙箱验证', value: '通过', note: '最近一次 10-31' },
     },
@@ -448,7 +448,7 @@ export function projectStatsOf(name, { entries, knowledge, scripts, flowcharts, 
       produced: { value: flowcharts.total, unit: '张流程图', note: flowcharts.note },
       metric: { label: '流程图校验', value: '通过', note: '门店补货主流程' },
     },
-    evolution: {
+    evo: {
       produced: { value: 1, unit: '份外部反馈', note: '还没处理' },
       metric: { label: '已归因用例', value: 0, note: '在对话里处理后计入' },
     },

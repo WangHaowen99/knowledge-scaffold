@@ -48,7 +48,9 @@ def test_every_reserved_route_returns_501_with_contract_envelope(env):
         assert set(body) == {"code", "message", "details", "trace_id"}
         assert body["trace_id"] == response.headers["x-trace-id"]
         seen.add(api)
-    assert seen == {f"EV-{n:02d}" for n in range(1, 31)} | {"PL-04", "PL-19"}
+    # EV-29 的 file: 锚点 I1 已实现（主控 11-02 定），不再整体 501，见 test_i1_material_text
+    assert seen == {f"EV-{n:02d}" for n in range(1, 31)} - {"EV-29"} | {"PL-04", "PL-19"}
+    assert {api for api, _method, _path in evidence.IMPLEMENTED} == {"EV-29"}
 
 
 def test_fixed_segment_wins_over_path_parameter(env):
@@ -69,7 +71,8 @@ def test_routes_cover_contract_section_3_19():
             declared.add((method, re.sub(r"\{[^}]+\}", "{}", path)))
         for suffix in re.findall(r"`\.\.\./(\w+)`", line):  # EV-17 的 `.../resume`、`.../retry`
             declared.add(("POST", f"/api/v1/projects/{{}}/evidence/jobs/{{}}/{suffix}"))
-    registered = {(method, re.sub(r"\{[^}]+\}", "{}", path)) for _, method, path in evidence.ROUTES}
+    registered = {(method, re.sub(r"\{[^}]+\}", "{}", path))
+                  for _, method, path in (*evidence.ROUTES, *evidence.IMPLEMENTED)}
     assert declared and declared <= registered, declared - registered
 
 

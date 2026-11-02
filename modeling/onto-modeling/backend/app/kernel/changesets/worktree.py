@@ -155,8 +155,10 @@ def ensure(root: Path) -> Path:
     if branch == BRANCH:
         _ensure_sparse(copy)
         _ensure_links(root, copy)
-        return copy
-    _create(root, copy)
+    else:
+        _create(root, copy)
+    drop_escaping_links(copy)
+    drop_escaping_links(root)
     return copy
 
 
@@ -276,6 +278,41 @@ def _ensure_links(root: Path, copy: Path) -> None:
     for name in ("CLAUDE.md", "README.md"):
         if os.path.lexists(root / name):
             _link(copy / name, f".claude/{name}")
+
+
+# 工作区与副本里本来就有、指向根外的链接（装配目录、副本里的资料区）
+KEEP_LINKS = (".claude", "resource", "CLAUDE.md", "README.md")
+
+
+def drop_escaping_links(base: Path, keep: tuple[str, ...] = KEEP_LINKS) -> list[str]:
+    """删掉工作区（或副本）里指向根外的符号链接，返回删掉的相对路径。
+
+    助手能在工作区里建任意链接（守卫拦不住 `tar`、`cp -s` 这类写法），后端按路径读文件的接口跟着链接就会读到
+    密钥、别的项目。只扫一遍目录树（不进链接目录、不读文件内容），跳过 `.git`；白名单里的顶层链接与指向根内的链接不动。
+    """
+    base = Path(base)
+    real_base = os.path.realpath(base)
+    removed: list[str] = []
+    for current, dirs, files in os.walk(base, followlinks=False):
+        rel_dir = os.path.relpath(current, base)
+        if rel_dir == ".":
+            dirs[:] = [name for name in dirs if name != ".git"]
+        for name in [*dirs, *files]:
+            path = os.path.join(current, name)
+            if not os.path.islink(path):
+                continue
+            rel = os.path.normpath(os.path.join(rel_dir, name)).replace(os.sep, "/")
+            real = os.path.realpath(path)
+            if rel in keep or real == real_base or real.startswith(real_base + os.sep):
+                continue
+            try:
+                os.unlink(path)
+                removed.append(rel)
+            except OSError:
+                _log.warning("删不掉指向工作区外的符号链接：%s", path, exc_info=True)
+    if removed:
+        _log.warning("%s 里有 %d 个指向工作区外的符号链接，已删除：%s", base.name, len(removed), "、".join(removed[:10]))
+    return removed
 
 
 def _share_with_agent(copy: Path) -> None:

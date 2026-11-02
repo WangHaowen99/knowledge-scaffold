@@ -190,7 +190,9 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
     } catch (e) {
       dirty.current = true;
       setSave({ kind: 'error', at: null });
-      toast(errorText(e), 'alert');
+      // 表单写不进原文（改 Key、这类条目的数据来源、加不了的关联）：服务端的说法更具体
+      const unsupported = Object.values(e.details?.fields || {}).some((c) => c === 'rename_unsupported' || c === 'unsupported');
+      toast(unsupported && e.serverMessage ? e.serverMessage : errorText(e), 'alert');
       return { ok: false, saved: false };
     }
   }, [api, pid, id, baseRevision]);
