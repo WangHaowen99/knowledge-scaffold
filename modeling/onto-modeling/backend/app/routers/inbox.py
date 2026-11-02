@@ -42,8 +42,11 @@ async def list_inbox(project_id: str, request: Request, filter: str = "all", pac
                                                    kinds=kinds, pack=pack or None, run_id=run_id or None)
     paged = deps.page([inbox.public(item) for item in items], cursor, limit,
                       binding={"filter": filter, "kind": kinds, "pack": pack, "run_id": run_id})
+    summary = None
+    if filter == "autobuild_review":
+        summary = await asyncio.to_thread(inbox.autobuild_summary, project_id, run_id or None)
     return {"items": paged["items"], "next_cursor": paged["next_cursor"], "counts": counts, "today": today,
-            "autobuild_summary": None}
+            "autobuild_summary": summary}
 
 
 async def _item_or_404(project_id: str, item_id: str) -> dict:
@@ -73,6 +76,24 @@ def _detail(project_id: str, item: dict) -> dict | None:
                 "impact": {"expected_before": "已确认", "now": "过期", "action": f"重新执行「{node.get('title')}」",
                            "eta_ms": 0},
                 "siblings": 0}
+    if kind == "review" and extra.get("group") is not None:
+        from ..services.autobuild import views as autobuild_views
+
+        run = extra["run"]
+        threshold = float(((run.get("policy") or {}).get("advanced") or {}).get("confidence_threshold") or 0.8)
+        return {"group": "high_confidence", "run_id": run["run_id"], "threshold": threshold,
+                "entries": [autobuild_views.ledger_entry(entry) for entry in extra["group"]]}
+    if kind == "review" and extra.get("entry") is not None:
+        from ..services.autobuild import views as autobuild_views
+
+        run, entry = extra["run"], extra["entry"]
+        info = (run.get("slices") or {}).get((entry.get("slice") or {}).get("id")) or {}
+        return {**autobuild_views.ledger_entry(entry), "base_version_label": run.get("base_version_label"),
+                "slice_version_label": info.get("version_label")}
+    if kind == "suspension":
+        from ..services.autobuild import views as autobuild_views
+
+        return autobuild_views.suspension(extra["suspension"])
     if kind == "review":
         return {**(extra.get("review") or {}), "node": {"id": (extra.get("node") or {}).get("id"),
                                                        "title": (extra.get("node") or {}).get("title")},
@@ -156,6 +177,14 @@ async def _run_action(project_id: str, item: dict, action: str, request: Request
     if action in ("refresh", "rejudge"):
         response = await flow_routes.start_node(project_id, source_id, request)
         return {"command_task": _json(response).get("task")}
+    if item["kind"] == "review" and item.get("source") == "autobuild":
+        return await _autobuild_review(project_id, item, action, request, body)
+    if item["kind"] == "suspension":
+        from ..services.autobuild import review
+
+        reply = {"action": "use_generic"} if action == "use_generic" else \
+            {key: body.get(key) for key in ("option_id", "custom_text") if body.get(key)}
+        return await review.answer(project_id, source_id, reply)
     if action == "accept" and item["kind"] == "review":
         node_state.accept_review(root, source_id)
         return {"accepted": True}
@@ -189,6 +218,24 @@ async def _run_action(project_id: str, item: dict, action: str, request: Request
                                                  {"base_revision": (change_lists.get(root, source_id) or {}).get("revision")})
             return _json(response)
     raise ApiError("invalid_argument", f"「{item['kind_label']}」现在不支持 {action}", 400, {"fields": {"action": "enum"}})
+
+
+async def _autobuild_review(project_id: str, item: dict, action: str, request: Request, body: dict) -> dict:
+    """自主构建复核：接受（AB-11 / 高置信合并项 = AB-13）、改判（AB-12）、回退这一片（AB-17）。"""
+    from ..services.autobuild import review
+
+    extra = item.get("_extra") or {}
+    run = extra["run"]
+    if extra.get("group") is not None:
+        return await asyncio.to_thread(review.accept_high, project_id, run["run_id"])
+    entry = extra["entry"]
+    if action == "accept":
+        return {"entry": await asyncio.to_thread(review.accept, project_id, entry["id"])}
+    if action == "rejudge":
+        return await review.rejudge(project_id, entry["id"], body)
+    from . import autobuild as autobuild_routes
+
+    return await autobuild_routes.revert_slice(project_id, run["run_id"], entry["slice"]["id"], request)
 
 
 def _json(response) -> dict:
@@ -239,10 +286,20 @@ async def batch(project_id: str, request: Request):
         record = _call(change_lists.accept, root, list_id, point_ids=list(body.get("point_ids") or []))
         accepted = [point["id"] for point in record["points"] if point.get("state") == "accepted"]
         return {"accepted": len(accepted), "skipped": [], "command_task": None}
-    items = await asyncio.to_thread(inbox.collect, deps.workspaces, project_id)
     if action == "accept_high_confidence":
-        # 自主构建的高置信自动决定在 P3（决策台账）；现在没有这类事项
-        return {"accepted": 0, "skipped": [], "command_task": None}
+        from ..services.autobuild import review
+        from ..services.autobuild import store as runs
+
+        run_id = str(body.get("run_id") or "")
+        targets = [run for run in runs.runs(project_id) if not run_id or run["run_id"] == run_id]
+        if run_id and not targets:
+            raise ApiError("run_not_found", "运行不存在", 404)
+        accepted = 0
+        for run in targets:
+            accepted += (await asyncio.to_thread(review.accept_high, project_id, run["run_id"]))["accepted"]
+        await asyncio.to_thread(inbox.refresh, deps.workspaces, project_id)
+        return {"accepted": accepted, "skipped": [], "command_task": None}
+    items = await asyncio.to_thread(inbox.collect, deps.workspaces, project_id)
     stale = [item for item in items if item["kind"] == "stale" and not item.get("_dismissed")
              and (not body.get("item_ids") or item["id"] in body["item_ids"])]
     if not stale:

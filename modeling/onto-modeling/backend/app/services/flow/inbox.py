@@ -10,13 +10,14 @@
 | pending_changeset 修改待确认 | 没确认的助手变更集 |
 | changeset_conflict 合入冲突 | 合入时检测到实体冲突的变更集 |
 | stale 过期 | 过期的节点（所属包版本被熔断的不列） |
-| review 需复核 | 节点升级、导入（自主构建那一种在 P3 由 `mark_needs_review` 带来）；熔断的同上 |
+| review 需复核 | 节点升级、导入；熔断的同上。自主构建的按决策台账出：低于阈值的一条一项，高置信的同一次运行合成一项 |
+| suspension 挂起 | 自主构建挂起的问题（撤回了的片上的不列） |
 | report 报告待处理 | 报告里还有没处理的 `[ ]` 条目，一份报告一项 |
 | format_migration 格式待迁移 | 插件产物的格式版本比包里登记的旧 |
 | feedback 外部反馈 | 评测服务回传的反馈批次 |
 | change_list 变更清单 | 增量更新识别出、还没执行的变更点清单 |
 
-证据冲突（evidence_conflict）、挂起（suspension）随证据源与自主构建（P3）。
+证据冲突（evidence_conflict）随证据源（本期只留接口）。
 """
 
 from __future__ import annotations
@@ -216,6 +217,8 @@ def _resumables(project_id: str, root: Path, flow: dict) -> list[dict]:
 
     items = []
     for record in exec_records.query(project_id, ["interrupted"]):
+        if record.get("run_id"):
+            continue  # 自主构建的一步由运行器按执行记录续跑（AB-09）
         view = exec_records.view(record, root=root, flow=flow)
         if not view["resumable"]:
             continue
@@ -235,6 +238,12 @@ def _changesets(root: Path) -> list[dict]:
     record = store.current(root)
     if record is None or record.get("state") not in ("pending_confirm", "conflict"):
         return []
+    if record.get("source") == "autobuild" and record.get("state") != "conflict":
+        from ..autobuild import store as runs
+
+        active = runs.active(Path(root).name)
+        if active is not None and active["run_id"] == record.get("run_id"):
+            return []  # 运行中的一片由运行器自动合入
     names = [ref.get("name") or ref.get("title") or ref.get("key") for ref in
              (record.get("entries") or []) + (record.get("artifacts") or [])]
     impact = [{"label": "涉及", "items": names[:20]}] if names else []
@@ -275,6 +284,8 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
                                fingerprint=(sliced or {}).get("stale_key") if node.get("per_slice") and sliced
                                else node_state.fingerprint(root, list(node.get("stale_on") or []))))
         review = reviews.get(node_id)
+        if review and review.get("source") == "autobuild":
+            review = None  # 自主构建的需复核按决策台账出（_autobuild）
         if review and info["state"] in ("confirmed", "stale"):
             source = review.get("source") or "upgrade"
             title = {"upgrade": "这一步的方法升级了，旧结论要你看一眼", "import": "导入带进来的内容要你看一眼",
@@ -287,6 +298,76 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
                                # 「撤回这一片」只对自主构建合入的片
                                actions=ACTIONS["review"] if source == "autobuild" else ["accept", "rejudge"]))
     return items
+
+
+def _autobuild(project_id: str) -> list[dict]:
+    """自主构建复核（详设 4.7、8.5；契约 F2 补充第 12 条）：低于阈值的自动决定一条一项；同一次运行里高置信的
+    合成一项（`review:<运行>:high`）；挂起的问题一个一项。撤回了的片上的不列。"""
+    from ..autobuild import store as runs
+    from ..autobuild import views
+
+    items = []
+    for run in runs.runs(project_id):
+        threshold = float(((run.get("policy") or {}).get("advanced") or {}).get("confidence_threshold") or 0.8)
+        ref = {"run_id": run["run_id"], "run_no": run["run_no"]}
+        ended = run.get("state") in runs.ENDED
+        slices = run.get("slices") or {}
+        pending = [entry for entry in views.live_ledger(run) if entry.get("review_state") == "pending"]
+        high = [entry for entry in pending if float(entry.get("confidence") or 0) >= threshold]
+        for entry in pending:
+            if entry in high:
+                continue
+            slice_ref = entry.get("slice") or {}
+            revertible = ended and bool((slices.get(slice_ref.get("id")) or {}).get("commit"))
+            items.append(_item("review", entry["id"], entry.get("summary") or entry.get("question") or "",
+                               source="autobuild", created_at=entry.get("at"), slice_=slice_ref,
+                               run={**ref, "at": _iso(entry.get("at"))}, confidence=entry.get("confidence"),
+                               batchable=False, impact=[{"label": "切片", "items": [slice_ref.get("name") or ""]}],
+                               extra={"entry": entry, "run": run},
+                               actions=["accept", "rejudge", "revert_slice"] if revertible else ["accept", "rejudge"]))
+            items[-1]["high_confidence"] = False  # 低于这次运行的阈值
+        if high:
+            names = list(dict.fromkeys((entry.get("slice") or {}).get("name") or "" for entry in high))
+            item = _item("review", f"{run['run_id']}:high", f"高置信的 {len(high)} 个自动决定",
+                         source="autobuild", created_at=high[-1].get("at"),
+                         slice_={"id": None, "name": f"{len(names)} 个切片"}, run={**ref, "at": None},
+                         confidence=min(float(entry.get("confidence") or 0) for entry in high),
+                         impact=[{"label": "切片", "items": names}], extra={"group": high, "run": run},
+                         fingerprint=f"high:{','.join(entry['id'] for entry in high)}", actions=["accept"])
+            item["high_confidence"] = True
+            items.append(item)
+        for suspended in views.live_suspensions(run):
+            if suspended.get("state") != "open":
+                continue
+            actions = ["use_generic"] if suspended.get("kind") == "unreadable_material" else ["answer", "use_generic"]
+            items.append(_item("suspension", suspended["id"], suspended.get("title") or "", source="autobuild",
+                               created_at=suspended.get("at"), slice_=suspended.get("slice"),
+                               run={**ref, "at": _iso(suspended.get("at"))}, batchable=False,
+                               extra={"suspension": suspended, "run": run}, actions=actions))
+    return items
+
+
+def autobuild_summary(project_id: str, run_id: str | None = None) -> dict | None:
+    """IN-01 `filter=autobuild_review` 的汇总条：指定的运行，或最近一次。"""
+    from ..autobuild import store as runs
+    from ..autobuild import views
+
+    items = runs.runs(project_id)
+    run = next((item for item in items if not run_id or item["run_id"] == run_id), None)
+    if run is None:
+        return None
+    report = views.report(run)
+    ledger = views.live_ledger(run)
+    threshold = float(((run.get("policy") or {}).get("advanced") or {}).get("confidence_threshold") or 0.8)
+    return {
+        "run_id": run["run_id"], "run_no": run["run_no"], "started_at": report["started_at"],
+        "ended_at": report["ended_at"], "state": run["state"], "cost": report["metrics"]["cost"],
+        "decisions": len(ledger), "high_confidence": report["metrics"]["decisions"]["high_confidence"],
+        "needs_look": report["metrics"]["decisions"]["needs_look"], "suspended": report["metrics"]["suspended"],
+        "assumptions": sum(1 for entry in ledger if entry.get("assumption")),
+        "high_confidence_pending": sum(1 for entry in ledger if entry.get("review_state") == "pending"
+                                       and float(entry.get("confidence") or 0) >= threshold),
+    }
 
 
 def _reports(root: Path) -> list[dict]:
@@ -397,6 +478,7 @@ def collect(manager, project_id: str) -> list[dict]:
         lambda: _feedback(root),
         lambda: _format_migrations(manager, root),
         lambda: _change_lists(root),
+        lambda: _autobuild(project_id),
     ]
     items: list[dict] = []
     for source in sources:

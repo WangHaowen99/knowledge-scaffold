@@ -240,8 +240,10 @@ def revert_slice(project_id: str, run_id: str, slice_id: str, *, actor: str) -> 
     from ..flow import blueprint, slices
 
     run = _run(project_id, run_id)
-    if run["state"] in store.ACTIVE:
-        raise ApiError("autobuild_running", "本次运行还在跑", 409, {"run_id": run_id})
+    active = store.active(project_id)
+    if active is not None:
+        # 本次运行还在跑；或者又开了一次运行（它占着写入范围）：都等运行结束
+        raise ApiError("autobuild_running", "自主构建运行中", 409, {"run_id": active["run_id"]})
     info = (run.get("slices") or {}).get(slice_id)
     unit = _unit(run, slice_id)
     if info is None or unit is None or unit["kind"] != "slice":
