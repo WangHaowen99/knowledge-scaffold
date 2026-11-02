@@ -506,7 +506,8 @@ export default function WorkbenchPage({ route }) {
     if (route.page === 'flowchart') navigate(pagePath('wb-l2', pid));
   }, [route.page, pid]);
   useEffect(() => {
-    if (route.page !== 'flowchart') { fcPicked.current = null; return; }
+    // 离开 flowchart 页（地址换成别的工作台页）时，由地址打开的编辑器跟着关
+    if (route.page !== 'flowchart') { if (fcPicked.current) setOpened(null); fcPicked.current = null; return; }
     const want = route.query?.key || null;
     if (want) {
       if (fcPicked.current !== want) { fcPicked.current = want; setOpened({ type: FLOWCHART_TYPE, key: want }); }
