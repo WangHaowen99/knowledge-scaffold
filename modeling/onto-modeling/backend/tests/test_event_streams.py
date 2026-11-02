@@ -273,13 +273,15 @@ def test_flow_refresh_sends_only_changed_nodes(env):
     target = root / "ontology" / "object" / "订单.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("# 订单\n", encoding="utf-8")
+    (root / "ontology" / "operation").mkdir(parents=True, exist_ok=True)
+    (root / "ontology" / "operation" / "下单.md").write_text("# 下单\n", encoding="utf-8")
     envelope = project_events.refresh_flow(project_id)
     assert envelope is not None and envelope["type"] == "flow.updated"
     data = envelope["data"]
     assert set(data) == {"flow_hash", "nodes", "slices", "suggestions_changed"}
     assert data["nodes"] and all(set(node) >= {"id", "state", "flags", "progress"} for node in data["nodes"])
-    assert {"id": "core.object", "state": "confirmed"}.items() <= next(
-        node for node in data["nodes"] if node["id"] == "core.object").items()
+    assert {"id": "core.model", "state": "confirmed"}.items() <= next(
+        node for node in data["nodes"] if node["id"] == "core.model").items()
     assert len(data["nodes"]) < len(project_events._flow_cache[project_id]["nodes"])
 
 

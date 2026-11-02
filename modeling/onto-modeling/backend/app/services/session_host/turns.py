@@ -57,7 +57,9 @@ def _write_marker(root: Path | None, record: dict | None) -> None:
         tmp = path.with_name(f".exec.{uuid.uuid4().hex[:8]}.tmp")
         tmp.write_text(json.dumps({"exec_id": record["id"], "node": node.get("id") or "",
                                    "node_version": node.get("version") or "",
-                                   "conversation_id": record.get("conversation_id") or ""}), encoding="utf-8")
+                                   "conversation_id": record.get("conversation_id") or "",
+                                   # 按切片的命令：当前这一片（blueprint.py brief、state_helper acquire 读它）
+                                   "slice": record.get("slice"), "step": record.get("step")}), encoding="utf-8")
         os.replace(tmp, path)
     except OSError:
         pass
@@ -103,7 +105,7 @@ def _begin(session, text: str, task_id: str | None) -> None:
         slash, name = parsed
         record = exec_records.start(session.project_id, session.conversation_id, root=root, flow=flow,
                                     command=slash, command_name=name, engine_instance=session.engine_instance,
-                                    task_id=task_id)
+                                    task_id=task_id, text=text)
         session.exec_id = record["id"]
         _write_marker(root, record)
         publish_exec(session.project_id, record, root, flow)

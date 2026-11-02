@@ -91,8 +91,8 @@ def test_core_no_longer_carries_split_out_commands_and_keeps_knowledge_loading()
     toolkit = ASSETS / "workspace-toolkit"
     commands = {path.stem for path in (toolkit / "commands").glob("*.md")}
     assert commands == {"ontology", "ontology-research", "ontology-extract-object", "ontology-extract-operation",
-                        "ontology-extract-rule-metric", "ontology-validate", "ontology-update", "ontology-impact",
-                        "ontology-query", "ontology-overview", "version"}
+                        "ontology-extract-rule-metric", "ontology-validate", "ontology-consistency", "ontology-update",
+                        "ontology-impact", "ontology-query", "ontology-overview", "version"}
     # 知识的存放与加载留在 core（第 14 章第 15 项），沉淀这一段进知识沉淀包
     assert (toolkit / "scripts" / "knowledge_helper.py").is_file()
     assert not (toolkit / "agents" / "knowledge-conflict-agent.md").exists()
@@ -121,8 +121,8 @@ def test_new_project_enables_default_capabilities(env):
     assert not (root / ".claude" / "skills" / "deep-research").exists()
     flow = json.loads((root / ".claude" / "flow.yaml").read_text(encoding="utf-8"))
     assert [node["id"] for node in flow["nodes"]] == [
-        "core.research", "diagram.flowchart", "core.object", "core.operation", "core.rule_metric", "core.validate",
-        "trace.mock", "trace.trace", "codegen.codegen", "codegen.solver", "core.update"]
+        "core.research", "diagram.flowchart", "core.model", "core.metric", "core.validate", "trace.trace",
+        "codegen.codegen", "codegen.solver", "core.consistency", "core.publish", "core.update"]
     assert flow["commands"]["trace"]["node"] == "trace.trace" and flow["commands"]["flowchart"]["node"] == "diagram.flowchart"
     assert "ontology-codegen-scan" in flow["available_commands"]
 
@@ -132,11 +132,14 @@ def test_core_only_project_assembles_and_filters_suggestions(env):
     root = manager.project_root(manager.create_project("只有核心", packs=[])["id"])
     assert set(_lock_names(root)) == {"core"}
     assert _commands(root) == {"ontology", "ontology-research", "ontology-extract-object", "ontology-extract-operation",
-                               "ontology-extract-rule-metric", "ontology-validate", "ontology-update", "ontology-impact",
-                               "ontology-query", "ontology-overview", "version"}
+                               "ontology-extract-rule-metric", "ontology-validate", "ontology-consistency",
+                               "ontology-update", "ontology-impact", "ontology-query", "ontology-overview", "version"}
     flow = json.loads((root / ".claude" / "flow.yaml").read_text(encoding="utf-8"))
     assert [node["id"] for node in flow["nodes"]] == [
-        "core.research", "core.object", "core.operation", "core.rule_metric", "core.validate", "core.update"]
+        "core.research", "core.model", "core.metric", "core.validate", "core.consistency", "core.publish",
+        "core.update"]
+    model = next(node for node in flow["nodes"] if node["id"] == "core.model")
+    assert [step["id"] for step in model["steps"]] == ["object", "operation", "rule", "check"]  # 没有「场景」
     suggested = {item.get("command") for items in flow["next_steps"].values() for item in items}
     assert not suggested & {"/ontology-mock", "/ontology-trace", "/ontology-codegen", "/ontology-flowchart"}
     # 「完成」之后不再推荐扫描脚本候选（代码生成与求解包没启用）
@@ -145,6 +148,13 @@ def test_core_only_project_assembles_and_filters_suggestions(env):
         (root / rel).write_text("# x\n", encoding="utf-8")
     (root / "reports").mkdir(exist_ok=True)
     (root / "reports" / "20260101-000000-all-rule.md").write_text("- [x] 已修\n", encoding="utf-8")
+    body = client.get(f"/api/v1/projects/{root.name}/flow").json()
+    assert body["suggestions"]["primary"]["action"]["command"] == "/ontology-consistency"  # 主线下一步
+    assert next(node for node in body["nodes"] if node["id"] == "core.validate")["title"] == "校验"
+    # 全局一致性、发布都做完：整体视图，不推荐扫描脚本候选
+    (root / "reports" / "consistency").mkdir()
+    (root / "reports" / "consistency" / "consistency.md").write_text("没有发现问题。\n", encoding="utf-8")
+    subprocess.run(["git", "tag", "release/0.1.0"], cwd=root, check=True, capture_output=True)
     body = client.get(f"/api/v1/projects/{root.name}/flow").json()
     assert body["suggestions"]["primary"]["action"]["command"] == "/ontology-overview"
     assert body["suggestions"]["secondary"] == []

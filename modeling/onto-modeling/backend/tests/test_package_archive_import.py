@@ -101,8 +101,8 @@ def test_published_package_import_restores_entities(
     assert overview["objects"] == 2
     assert overview["operations"] == 1
     # 已发布知识包只有交付物、没有过程资产：research/ 等必选阶段不命中，但不截断后续，
-    # 对象、操作、规则与指标、代码生成四个阶段各自计入（与前端 stageStatuses 一致）
-    assert overview["stages_done"] == 4
+    # 建模（对象与操作）、指标、代码生成三个节点各自计入（与前端 stageStatuses 一致）
+    assert overview["stages_done"] == 3
     # 按需节点（增量更新、反馈演进、迁移复用）不计进度
     assert overview["stages_total"] == sum(1 for node in flow_model.image_flow()["nodes"] if node.get("progress", True))
 

@@ -155,8 +155,8 @@ def _pending(workspaces, project_id, root, rel="ontology/object/门店.md", text
     copy = service.copy_for_turn(workspaces, project_id, root)
     agent_write(copy, rel, text or obj("门店", "合成门店"), commit="agent: 门店" if commit else None)
     record = service.observe(workspaces, project_id, running=False, conversation_id="default",
-                             exec_record={"id": "ex-1", "command_label": "对象提取",
-                                          "node": {"id": "core.object", "version": "core@0.2.0"}})
+                             exec_record={"id": "ex-1", "command_label": "建模",
+                                          "node": {"id": "core.model", "version": "core@0.3.0"}})
     assert record is not None and record["state"] == "pending_confirm"
     return copy, record
 
@@ -174,7 +174,7 @@ def test_merge_writes_one_squash_commit_with_trailers(project):
     assert "补充说明" in (root / "ontology/object/订单.md").read_text(encoding="utf-8")
     values = trailers(root)
     assert values["Onto-Source"] == "agent" and values["Onto-Changeset"] == record["id"]
-    assert values["Onto-Author"] == "employee_0001" and values["Onto-Node"] == "core.object@0.2.0"
+    assert values["Onto-Author"] == "employee_0001" and values["Onto-Node"] == "core.model@0.3.0"
     assert "core@" in values.get("Onto-Packs", "")
     # 只有一个提交进主线（squash），副本重置到合入后的主线
     assert len(git(root, "rev-list", "--first-parent", f"{out['commit']}^..{out['commit']}").split()) == 1
@@ -370,9 +370,10 @@ def test_changeset_endpoints(api):
     scope = client.get(f"{base}/scope").json()
     assert scope["state"] == "pending_confirm" and scope["changeset_id"] == record["id"]
     assert client.get(f"{base}/scope", params={"target": "object:门店"}).json()["state"] == "pending_confirm"
-    # 对象提取节点声明的范围（ontology/object/*）也一直锁着，直到确认或撤回；范围外的照常
+    # 建模节点声明的范围（全量模式下是整类对象、操作、规则）也一直锁着，直到确认或撤回；范围外的照常
     assert client.get(f"{base}/scope", params={"target": "object:客户"}).json()["state"] == "pending_confirm"
-    assert client.get(f"{base}/scope", params={"target": "operation:下单"}).json()["state"] == "none"
+    assert client.get(f"{base}/scope", params={"target": "operation:下单"}).json()["state"] == "pending_confirm"
+    assert client.get(f"{base}/scope", params={"target": "script:合成脚本"}).json()["state"] == "none"
     merged = client.post(f"{base}/changesets/{record['id']}/merge", json={"expected_head": "0" * 40})
     assert merged.status_code == 409 and merged.json()["code"] == "head_moved"
     merged = client.post(f"{base}/changesets/{record['id']}/merge", json={})

@@ -40,6 +40,8 @@ GROUP_LABELS = {"object": "对象", "operation": "操作", "rule": "规则", "me
                 "scenario": "场景", "artifact": "插件产物", "other": "其他文件"}
 GROUP_ORDER = tuple(GROUP_LABELS)
 OBSERVE_EVERY_SECONDS = 5.0
+# 不是条目、也不是插件产物、但用户认得的文件：卡片上按业务名显示
+FILE_TITLES = {"research/blueprint.json": "建模蓝图"}
 _last_observed: dict[str, float] = {}
 
 
@@ -169,7 +171,7 @@ def describe(manager, root: Path, changes: list[tuple[str, str]]) -> dict:
             items.append({"group": group, "change": change, "target": ref, "path": rel})
             continue
         items.append({"group": "other", "change": change, "path": rel,
-                      "target": {"type": "file", "key": rel, "title": rel.rsplit("/", 1)[-1]}})
+                      "target": {"type": "file", "key": rel, "title": FILE_TITLES.get(rel) or rel.rsplit("/", 1)[-1]}})
     return {"entries": entries, "artifacts": artifacts, "paths": [rel for _status, rel in changes[:CHANGES_MAX]],
             "items": items}
 
@@ -216,6 +218,11 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
         snap = worktree.snapshot(copy)
         changes = [(status, rel) for status, rel in (worktree.diff(root, base, snap) if base else [])
                    if not worktree.is_protected(rel)]
+        if not running and changes and _assign_to_slice(copy, exec_record, changes):
+            # 这一片新建的条目记进蓝图的这一片（B4d）：蓝图也改了，重新取一次快照
+            snap = worktree.snapshot(copy)
+            changes = [(status, rel) for status, rel in worktree.diff(root, base, snap)
+                       if not worktree.is_protected(rel)]
         record = store.current(root)
         if not changes:
             if record is not None and record["state"] in ("open", "pending_confirm") and record.get("tree"):
@@ -251,6 +258,15 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
             updates = {"nodes": nodes, "execs": execs, "node_trailer": _node_trailer(exec_record)}
             if not record.get("purpose"):
                 updates["purpose"] = _purpose(exec_record)
+            slice_ref, step = exec_record.get("slice"), exec_record.get("step")
+            if isinstance(slice_ref, dict) and slice_ref.get("id") and step:
+                # 按切片的节点：记下这个变更集做了哪一片哪一步（确认生效时这一片这一步记为确认过）
+                pairs = [list(pair) for pair in record.get("slice_steps") or []]
+                if [slice_ref["id"], step] not in pairs:
+                    pairs.append([slice_ref["id"], step])
+                updates["slice_steps"] = pairs
+                if not record.get("slice_id"):
+                    updates["slice_id"] = slice_ref["id"]
             record = store.update(root, record["id"], **updates)
     if checks and (record.get("checks") or {}).get("tree") != snap:
         try:
@@ -262,6 +278,36 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
     if previous_state != record["state"] or previous_scope != scope or checks:
         _notify(project_id, "changeset", record)
     return record
+
+
+def _assign_to_slice(copy: Path, exec_record: dict | None, changes: list[tuple[str, str]]) -> bool:
+    """按切片建模时，这一轮新建、还不属于任何一片的对象、操作、规则记进这一片（副本里的蓝图）。"""
+    slice_ref = (exec_record or {}).get("slice")
+    if not isinstance(slice_ref, dict) or not slice_ref.get("id") or slice_ref["id"] == "all":
+        return False
+    from ...services.flow import blueprint
+
+    model = _model(copy)
+    entries = []
+    for status, rel in changes:
+        key = model.entry_key(rel) if status == "A" else None
+        if key and key.split(":", 1)[0] in ("object", "operation", "rule"):
+            kind, _, stem = key.partition(":")
+            entries.append((kind, model.decode_filename(stem)))
+    if not entries:
+        return False
+    module = blueprint.script(copy)
+    try:
+        doc = module.load(copy)
+        if doc is None or module.mode(doc) != "sliced":
+            return False
+        doc, added = module.assign(doc, slice_ref["id"], entries)
+        if added:
+            module.save(copy, doc)
+        return bool(added)
+    except (OSError, module.BlueprintError):
+        _log.warning("新条目记进切片 %s 失败", slice_ref.get("id"), exc_info=True)
+        return False
 
 
 def open_changeset(manager, project_id: str, *, source: str = "assistant", build_mode: str = "L2",
@@ -903,8 +949,48 @@ def node_patterns(root: Path, node_ids: list[str]) -> list[str]:
     return patterns
 
 
+def _slice_scope(manager, project_id: str, root: Path, node_ids: list[str], slice_ids: dict[str, set]) -> tuple:
+    """按切片的节点落到这几片的条目上（详设 4.3）：返回 (仍按声明范围的节点, 片的路径模式, 片的条目, 蓝图)。
+
+    全量模式（没有蓝图或只有一片）、或不知道在哪一片时，按节点声明的整类条目。"""
+    from ...services.flow import blueprint, model as flow_model
+
+    wanted = {node_id: ids - {"all"} for node_id, ids in slice_ids.items() if ids - {"all"}}
+    if not wanted:
+        return node_ids, [], [], None
+    try:
+        flow = flow_model.load_for(root)
+        doc = blueprint.effective_doc(manager, project_id)
+        module = blueprint.script(root)
+    except Exception:  # noqa: BLE001 - 读不出蓝图按整类条目锁，宁宽勿漏
+        return node_ids, [], [], None
+    if module.mode(doc) != "sliced":
+        return node_ids, [], [], None
+    per_slice = {node["id"] for node in flow.get("nodes") or [] if node.get("per_slice")}
+    model = _model(root)
+    paths, entries, rest = [], [], []
+    for node_id in node_ids:
+        ids = wanted.get(node_id)
+        if node_id not in per_slice or not ids:
+            rest.append(node_id)
+            continue
+        for slice_id in sorted(ids):
+            item = module.find_slice(doc, slice_id)
+            if item is None:
+                continue
+            paths += [_escape(rel) for rel in module.member_paths(item)]
+            # 这一片的场景（场景走查一个操作一份，片里的「场景」一步写它们）
+            paths += [_escape(f"ontology/testcase/{model.encode_filename(name)}.md") for name in item.get("operations") or []]
+            for kind, names in module.members(item).items():
+                entries += [{**_entry_ref(kind, model.encode_filename(name)), "name": name} for name in names]
+    return rest, paths, entries, doc
+
+
 def scope_lock(manager, project_id: str) -> dict:
-    """当前的写入范围锁；没有助手变更集、助手也没在跑时是 state="none" 的空锁。"""
+    """当前的写入范围锁；没有助手变更集、助手也没在跑时是 state="none" 的空锁。
+
+    按切片的节点（建模）只锁这一片的条目，不再锁整类（详设 4.3「落到当前切片」）：助手在跑时取执行记录的切片，
+    这一轮结束后取变更集里做过的那几片；再加上这一轮已经改过的、等你决定的决策卡预览列出的。"""
     try:
         root = manager.project_root(project_id)
     except Exception:  # noqa: BLE001 - 项目不在
@@ -919,18 +1005,32 @@ def scope_lock(manager, project_id: str) -> dict:
     node_ids = list((record or {}).get("nodes") or [])
     if running and node.get("id") and node["id"] not in node_ids:
         node_ids.append(node["id"])
+    slice_ids: dict[str, set] = {}
+    for slice_id, _step in (record or {}).get("slice_steps") or []:
+        for node_id in node_ids:
+            slice_ids.setdefault(node_id, set()).add(slice_id)
+    current_slice = exec_record.get("slice") if isinstance(exec_record.get("slice"), dict) else None
+    if running and node.get("id") and current_slice and current_slice.get("id"):
+        slice_ids.setdefault(node["id"], set()).add(current_slice["id"])
+    whole, slice_paths, slice_entries, doc = _slice_scope(manager, project_id, root, node_ids, slice_ids)
     entries = list((record or {}).get("entries") or [])
     artifacts = list((record or {}).get("artifacts") or [])
-    for ref in state.get("affected") or []:
+    for ref in [*slice_entries, *(state.get("affected") or [])]:
         bucket = entries if "id" in ref else artifacts
-        if ref not in bucket:
+        if not any(existing.get("id", (existing.get("type"), existing.get("key"))) ==
+                   ref.get("id", (ref.get("type"), ref.get("key"))) for existing in bucket):
             bucket.append(ref)
-    paths = node_patterns(root, node_ids) + [_escape(rel) for rel in (record or {}).get("paths") or []]
+    paths = node_patterns(root, whole) + slice_paths + [_escape(rel) for rel in (record or {}).get("paths") or []]
     if not entries and not artifacts and not paths and not running:
         return empty_scope()
+    if current_slice is None and doc is not None and (record or {}).get("slice_id"):
+        found = next((item for item in doc.get("slices") or [] if item.get("id") == record["slice_id"]), None)
+        current_slice = {"id": found["id"], "name": found["name"]} if found else None
+    sliced = doc is not None and current_slice is not None
     if running:
         label = node.get("title") or "这一步"
-        reason = f"助手正在{('执行「' + label + '」') if node.get('title') else '改这个项目'}，确认生效或撤回之前这些内容只读"
+        reason = (f"助手正在改「{current_slice['name']}」这一片，确认生效或撤回之前这些内容只读" if sliced else
+                  f"助手正在{('执行「' + label + '」') if node.get('title') else '改这个项目'}，确认生效或撤回之前这些内容只读")
         lock_state = "assistant_running"
     else:
         reason = "这一轮的修改还没确认，确认生效或撤回之后才能编辑"
@@ -941,7 +1041,7 @@ def scope_lock(manager, project_id: str) -> dict:
         "changeset_id": (record or {}).get("id"),
         "conversation_id": (record or {}).get("conversation_id") or state.get("conversation_id"),
         "run_id": None,
-        "slice": exec_record.get("slice"),
+        "slice": current_slice if sliced else None,
         "node": {"id": node["id"], "version": node.get("version") or ""} if running and node.get("id") else None,
         "entries": entries,
         "artifacts": artifacts,

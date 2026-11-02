@@ -1,4 +1,4 @@
-# 主流程定义（详设 6.1、6.8；方案 D12）：阶段、完成判定、命令前置、下一步建议的唯一来源。
+# 主流程定义（详设 6.1、6.8、第 9 章；方案 D12）：阶段、完成判定、命令前置、下一步建议的唯一来源。
 #
 # 读它的地方（原来散在 5 处，各写一份）：
 # - 后端项目进度（项目列表上的 x/N，原 workspace.STAGES）；
@@ -9,14 +9,18 @@
 # 探针怎么算在 scripts/flow_state.py（只用标准库），后端与 state_helper 共用同一份实现。
 # 装配时组装成装配目录里的 flow.yaml（JSON 写法，也是合法 YAML）。
 #
-# P1 保持现有行为：节点就是现有的 10 个阶段加按需的增量更新。按切片的建模节点、全局一致性、
-# 发布节点在切片规划落地后按详设 6.8 重排。
+# 主线（详设 6.8，0.3.0 起）：资料分析（含切片规划）→ 建模（按切片：对象、操作、规则、写入即查，装了场景走查
+# 再加「场景」）→ 校验（与走查）→ 全局一致性 → 发布；指标、流程图是旁支，增量更新按需。
+# 切片来自建模蓝图（research/blueprint.json，scripts/blueprint.py）；没有蓝图或只有一片时是全量模式。
 #
 # 节点状态由后端按执行记录、变更集、产物指纹算（详设 6.6；方案 D13）。节点上与之相关的声明：
 # - produces：本节点的输出（组装时检查两节点不能声明同一路径）；writes：运行期间还会改、但不归它产出的路径；
 #   两者合起来是节点运行期间的写入范围——守卫只放行这些路径，编辑器里这些条目只读（方案 C10、D11）；
+#   按切片的节点落到当前这一片的条目上（详设 4.3）；
 # - stale_on：这些类别的产物在主线上变了，已确认的节点退回「过期」（research、object、operation、rule、
-#   metric、script、mock、testcase、diagram、solver、knowledge）。
+#   metric、script、mock、testcase、diagram、solver、knowledge）；
+# - per_slice + steps：按切片算状态的节点和片里的步骤（详设 6.6），包可以用 hooks 往片里加步骤；
+# - blocks：没确认就挡住的节点（关卡挂在发布前面）；blocks_in: sliced 表示只在按片模式下挡。
 flow_api: 1
 title: 主流程
 
@@ -43,6 +47,19 @@ probes:
   testcase: {files: [ontology/testcase]}
   scripts: {files: [ontology/scripts]}
   solver: {files: [ontology/solver]}
+  rule: {files: [ontology/rule], glob: "*.md", recursive: true}
+  metric: {files: [ontology/metric], glob: "*.md", recursive: true}
+  # 全局一致性的报告放在 reports/consistency/ 下：不算进质量检查的 reports_pending（那个只看 reports/ 第一层）
+  consistency_report: {files: [reports/consistency], glob: "*.md"}
+  consistency_pending: {pending: [reports/consistency], glob: "*.md"}
+  # 发布过：工作区里有 release/* 标签（发布流程打的，PB-03）
+  released: {tags: "release/*"}
+
+# 0.2 的节点编号 → 现在的节点：没升级的包里写的锚点照样认（对象提取、操作提取并进建模，规则与指标成了指标旁支）
+aliases:
+  core.object: core.model
+  core.operation: core.model
+  core.rule_metric: core.metric
 
 nodes:
   - id: core.research
@@ -57,54 +74,52 @@ nodes:
       - {label: 联网资料分析, command: "/ontology-research "}
       - {label: 仅本地资料, command: "/ontology-research 仅基于本地文档 "}
       - {label: 追加分析, command: "/ontology-research 追加"}
+      - {label: 切片规划, command: "/ontology-research phase=blueprint"}
       # 报告挡着后续阶段时，这个入口排到最前
       - {label: 核验报告, verify: true, command: "运行 python3 .claude/scripts/research_checker.py 核验资料分析报告，逐条列出错误项与来源位置"}
-  - id: core.object
-    title: 对象提取
+  # 建模按切片走（详设 6.6、6.8）：每片依次是对象、操作、规则、写入即查；规则按资料出现，没有就跳过、不挡这一片。
+  # 写入即查由确认生效时的门禁保证（ADR-0046），不单独跑命令。全量模式（没有蓝图或只有一片）就是原来的对象、操作提取。
+  - id: core.model
+    title: 建模
     kind: agent
     placement: spine
     section: required
     after: core.research
-    done: [object]
+    per_slice: true
+    done: [object, operation]
     stale_on: [research]
-    produces: ["ontology/object/*"]
+    produces: ["ontology/object/*", "ontology/operation/*", "ontology/rule/*"]
+    # 操作提取按资料分流：规则、指标随操作一起抽，也会补对象的关联（ADR-0012）
+    writes: ["ontology/logic/*", "ontology/metric/*"]
     entry: {command: /ontology-extract-object}
+    steps:
+      - {id: object, label: 对象, title: 对象提取, command: /ontology-extract-object, action: 提取对象, kinds: [object], done: [object], stale_on: [research]}
+      - {id: operation, label: 操作, title: 操作提取, command: /ontology-extract-operation, action: 提取操作, kinds: [operation], done: [operation], stale_on: [object]}
+      - {id: rule, label: 规则, title: 规则提取, command: /ontology-extract-rule-metric, action: 提取规则, kinds: [rule], done: [rule], stale_on: [object, operation], optional: true}
+      - {id: check, label: 写入即查, derived: true}
     actions:
       - {label: 提取对象, command: /ontology-extract-object}
-  - id: core.operation
-    title: 操作提取
-    kind: agent
-    placement: spine
-    section: required
-    after: core.object
-    done: [operation]
-    stale_on: [object]
-    produces: ["ontology/operation/*"]
-    # 操作提取按资料分流：规则、指标随操作一起抽，也会补对象的关联（ADR-0012）
-    writes: ["ontology/logic/*", "ontology/object/*", "ontology/rule/*", "ontology/metric/*"]
-    entry: {command: /ontology-extract-operation}
-    actions:
       - {label: 提取操作, command: /ontology-extract-operation}
-  - id: core.rule_metric
-    title: 规则与指标
+  - id: core.metric
+    title: 指标
     kind: agent
     placement: branch
     section: optional
     optional: true
-    after: core.operation
-    done: [rule_metric]
+    after: core.model
+    done: [metric]
     stale_on: [object, operation]
-    produces: ["ontology/rule/*", "ontology/metric/*"]
-    writes: ["ontology/operation/*", "ontology/logic/*", "ontology/object/*"]
+    produces: ["ontology/metric/*"]
+    writes: ["ontology/rule/*", "ontology/operation/*", "ontology/logic/*", "ontology/object/*"]
     entry: {command: /ontology-extract-rule-metric}
     actions:
       - {label: 提取规则与指标, command: /ontology-extract-rule-metric}
   - id: core.validate
-    title: 质量检查
+    title: 校验
     kind: agent
     placement: spine
     section: required
-    after: core.operation
+    after: core.model
     done: [validation_report, "!reports_pending"]
     stale_on: [object, operation, rule, metric]
     produces: ["reports/*-rule.md", "reports/*-semantic.md"]
@@ -113,13 +128,40 @@ nodes:
     entry: {command: /ontology-validate}
     actions:
       - {label: 运行质量检查, command: /ontology-validate}
+  # 全局一致性（详设 6.8 新增）：关系、口径、跨切片衔接；按片建模时挡住发布，全量模式下只提醒
+  - id: core.consistency
+    title: 全局一致性
+    kind: agent
+    placement: spine
+    section: required
+    after: [trace.trace, core.validate]
+    done: [consistency_report, "!consistency_pending"]
+    stale_on: [object, operation, rule, metric]
+    produces: ["reports/consistency/*"]
+    writes: ["ontology/*"]
+    blocks: [core.publish]
+    blocks_in: sliced
+    entry: {command: /ontology-consistency}
+    actions:
+      - {label: 全局一致性检查, command: /ontology-consistency}
+  # 发布（详设 6.8 新增）：主线终点，关卡都挂在它前面；就是发布页那套流程（PB-01～PB-03），不另写一套
+  - id: core.publish
+    title: 发布
+    kind: human
+    placement: spine
+    section: required
+    after: core.consistency
+    done: [released]
+    stale_on: [object, operation, rule, metric, script]
+    actions:
+      - {label: 去发布, page: publish}
   - id: core.update
     title: 增量更新
     kind: agent
     placement: on_demand
     section: on_demand
     progress: false
-    after: core.operation
+    after: core.model
     done: []
     writes: ["ontology/*", "reports/*"]
     entry: {command: /ontology-update}
@@ -139,12 +181,14 @@ stages:
   - {name: 完成, when: [operation, validation_report, "!reports_pending"]}
 
 # 命令 → 所属节点与前置阶段（check-prereq：每个前置阶段都要已到达，输出 ok 或 missing:…）
+# 带 slice=<切片> 的命令按节点的 steps 归到按切片的节点（extract-rule-metric 带切片是「规则」一步，不带是指标旁支）。
 commands:
   research: {node: core.research, requires: []}
-  extract-object: {node: core.object, requires: [资料分析完成]}
-  extract-operation: {node: core.operation, requires: [对象已提取]}
-  extract-rule-metric: {node: core.rule_metric, requires: []}
+  extract-object: {node: core.model, requires: [资料分析完成]}
+  extract-operation: {node: core.model, requires: [对象已提取]}
+  extract-rule-metric: {node: core.metric, requires: []}
   validate: {node: core.validate, requires: [逻辑已提取, 对象已提取]}
+  consistency: {node: core.consistency, requires: [逻辑已提取, 对象已提取]}
   update: {node: core.update, requires: [逻辑已提取, 对象已提取]}
   overview: {requires: [对象已提取]}
   impact: {requires: [对象已提取]}
@@ -162,6 +206,7 @@ next_steps:
     - {reply: 重新做资料分析, command: /ontology-research, text: 重做本轮资料分析}
     - {after: 验收通过前不建议提取对象：错误的字段或 ID 会被后续映射、规则与追溯继续沿用。}
   资料分析完成:
+    - {reply: 切片规划, command: /ontology-research, text: 把业务切成几片、出建模蓝图（资料多、业务链路多时推荐）}
     - {reply: 流程图, command: /ontology-flowchart, text: 创建业务流程图（流程复杂或多子流程交叉时推荐）}
     - {reply: 提取对象, command: /ontology-extract-object, text: 跳过流程图，直接从资料分析报告提取对象（概念清晰、流程线性时推荐）}
     - {reply: 追加资料分析, command: /ontology-research, text: 补充分析方向}
@@ -178,6 +223,7 @@ next_steps:
   校验待审阅:
     - {reply: 继续校验, command: /ontology-validate, text: 继续处理问题清单}
   完成:
+    - {reply: 全局一致性, command: /ontology-consistency, text: 检查关系、口径与切片之间的衔接（发布前做）}
     - {reply: 测试数据, command: /ontology-mock, text: 生成测试数据}
     - {reply: 追踪, command: /ontology-trace, text: 场景追踪验证}
     - {reply: 交互走查, command: /ontology-trace 交互, text: 逐个分支由你选方向，AI 辅助构造 testcase 和正常 mock 数据}

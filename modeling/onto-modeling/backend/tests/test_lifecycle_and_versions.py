@@ -398,6 +398,8 @@ def test_ensure_package_layout_migrates_logic_and_indexes(
     legacy.mkdir()
     (legacy / "创建订单.md").write_text("# 创建订单\n\n步骤若干\n", encoding="utf-8")
     (legacy / "index.md").write_text("旧占位\n", encoding="utf-8")
+    (root / "ontology" / "object").mkdir(parents=True, exist_ok=True)
+    (root / "ontology" / "object" / "订单.md").write_text("# 订单\n", encoding="utf-8")
 
     assert manager.ensure_package_layout(meta["id"]) is True
     assert not legacy.exists()
@@ -406,7 +408,7 @@ def test_ensure_package_layout_migrates_logic_and_indexes(
     assert "| 创建订单.md | 创建订单 |" in index
     # 幂等：第二次无变化，也不产生新提交
     assert manager.ensure_package_layout(meta["id"]) is False
-    # index.md 不计入进度探针与实体计数：只有迁移来的 operation 阶段算完成
+    # index.md 不计入进度探针与实体计数：对象加上迁移来的操作，建模这一步算完成
     progress = manager._project_progress(root)
     assert progress["stages_done"] == 1
     assert progress["operations"] == 1

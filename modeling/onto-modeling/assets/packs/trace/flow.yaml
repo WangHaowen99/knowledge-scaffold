@@ -1,32 +1,27 @@
-# 场景走查包往主流程上挂的节点（详设 6.8：示例数据、场景验证；全量回归 trace.trace 串在质量检查之后）。
-# 完成判定用 core 的探针（mock、testcase）。
+# 场景走查包往主流程上挂的（详设 6.8，0.10.0 起按切片）：
+# - 片内「场景」一步（`slice_steps`，挂在建模节点的切片里）：示例数据按场景需要生成，不单独占一步；
+# - 全量回归 trace.trace 串在校验之后，这时主线上的「校验」显示为「校验与走查」（`node_titles`）。
+# 完成判定用 core 的探针（testcase）。
+slice_steps:
+  - node: core.model
+    step: {id: scenario, label: 场景, title: 场景走查, command: /ontology-trace, action: 场景走查, kinds: [testcase], done: [testcase], stale_on: [object, operation], after: check}
+node_titles:
+  core.validate: 校验与走查
 nodes:
-  - id: trace.mock
-    title: 示例数据
+  - id: trace.trace
+    title: 全量回归
     kind: agent
-    placement: spine
+    placement: step
     section: required
     after: core.validate
-    done: [mock]
-    stale_on: [object]
-    produces: ["ontology/data-mock/*"]
-    entry: {command: /ontology-mock}
-    actions:
-      - {label: 生成示例数据, command: /ontology-mock}
-  - id: trace.trace
-    title: 场景验证
-    kind: agent
-    placement: spine
-    section: required
-    after: trace.mock
     done: [testcase]
     stale_on: [object, operation]
-    produces: ["ontology/testcase/*", "ext/trace/*"]
-    writes: ["ontology/data-mock/*"]
+    produces: ["ontology/testcase/*", "ext/trace/*", "ontology/data-mock/*"]
     entry: {command: /ontology-trace}
     actions:
       - {label: 批量验证, command: /ontology-trace 全部}
       - {label: 交互走查, command: /ontology-trace 交互}
+      - {label: 生成示例数据, command: /ontology-mock}
 commands:
-  mock: {node: trace.mock, requires: [对象已提取]}
+  mock: {node: trace.trace, requires: [对象已提取]}
   trace: {node: trace.trace, requires: [逻辑已提取]}

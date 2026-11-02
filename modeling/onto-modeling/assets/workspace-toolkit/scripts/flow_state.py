@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -89,6 +90,16 @@ def _has_pending(root: Path, spec: dict) -> bool:
     return False
 
 
+def _has_tags(root: Path, pattern: str) -> bool:
+    """工作区的版本库里有没有符合 pattern 的标签（发布打的 release/*）；不是版本库时 False。"""
+    try:
+        result = subprocess.run(['git', 'tag', '--list', pattern], cwd=root, capture_output=True, text=True,
+                                timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
 def evaluate(flow: dict, root: Path) -> dict:
     """全部命名探针 → bool。"""
     root = Path(root)
@@ -110,6 +121,8 @@ def evaluate(flow: dict, root: Path) -> dict:
             result = _has_files(root, spec)
         elif 'pending' in spec:
             result = _has_pending(root, spec)
+        elif 'tags' in spec:
+            result = _has_tags(root, str(spec['tags']))
         elif spec.get('research') == 'accepted':
             result = research_review.accepted(root)
         elif spec.get('research') == 'done':
@@ -227,11 +240,40 @@ def _send(command: str) -> dict:
     return {'type': 'send', 'text': command, 'command': command.split()[0]}
 
 
+def _action(action: dict) -> dict:
+    """节点动作 → 建议的动作：命令发到对话，页面动作（如「去发布」）跳页。"""
+    if action.get('page'):
+        return {'type': 'navigate', 'page': action['page']}
+    return _send(action['command'])
+
+
 def _node_actions(node: dict, *, verify_first: bool = False) -> list:
-    actions = [action for action in node.get('actions') or [] if action.get('command')]
+    actions = [action for action in node.get('actions') or [] if action.get('command') or action.get('page')]
     if verify_first:
         actions = sorted(actions, key=lambda action: not action.get('verify'))
     return actions
+
+
+def _slice_step(next_step: dict) -> dict:
+    """按切片的下一步：这一片下一步的命令带上切片（全量模式不带）。"""
+    args = {'slice': next_step['slice_id']} if next_step.get('slice_id') and next_step.get('sliced') else {}
+    action = {'type': 'send', 'text': '', 'command': next_step['command']}
+    if args:
+        action['args'] = args
+    return action
+
+
+def _blueprint_candidates(context: dict) -> list:
+    """蓝图草案等你确认：确认蓝图、调整切片，再加重新划分（还在资料分析那一轮里时换成撤回这一轮）。"""
+    blueprint = context.get('blueprint') or {}
+    confirm = _item('confirm_blueprint', '确认蓝图', {'type': 'confirm_blueprint', 'next': blueprint.get('next') or 'L2'},
+                    reason='建模蓝图等你确认', priority=4, icon='check')
+    adjust = _item('adjust_blueprint', '调整切片',
+                   {'type': 'navigate', 'page': 'wb-blueprint', 'params': {'dialog': 'blueprint'}},
+                   reason='建模蓝图等你确认', priority=4, icon='layers')
+    redo = _item('replan', '重新划分', _send('/ontology-research phase=blueprint'), reason='建模蓝图等你确认',
+                 priority=4, icon='refresh')
+    return [confirm, adjust, redo]
 
 
 def _candidates(flow: dict, states: dict, context: dict) -> list:
@@ -240,11 +282,18 @@ def _candidates(flow: dict, states: dict, context: dict) -> list:
     state_of = {node_id: (item or {}).get('state') for node_id, item in states.items()}
     stage = context.get('stage') or ''
     out = []
-    # 2. 过期的节点：刷新
+    # 2. 过期的节点：刷新（按切片的节点刷新过期的那一片那一步）
+    slice_next = context.get('slice_next')
     for node in nodes:
         if state_of.get(node['id']) == 'stale':
+            if node.get('per_slice'):
+                if slice_next:
+                    out.append(_item(f"refresh:{node['id']}", f"刷新「{slice_next.get('slice_name') or node['title']}」",
+                                     _slice_step(slice_next), reason='上游改过，这一步要刷新', priority=2,
+                                     icon='refresh'))
+                continue
             entry = (node.get('entry') or {}).get('command') or next(
-                (action['command'] for action in _node_actions(node)), None)
+                (action['command'] for action in _node_actions(node) if action.get('command')), None)
             if entry:
                 out.append(_item(f"refresh:{node['id']}", f"刷新「{node['title']}」", _send(entry),
                                  reason='上游改过，这一步要刷新', priority=2, icon='refresh'))
@@ -255,21 +304,32 @@ def _candidates(flow: dict, states: dict, context: dict) -> list:
     for node in nodes:
         if node.get('placement') == 'gate' and state_of.get(node['id']) in ('ready', 'not_ready') and node.get('blocks'):
             for index, action in enumerate(_node_actions(node)[:1]):
-                out.append(_item(f"gate:{node['id']}", action['label'], _send(action['command']),
+                out.append(_item(f"gate:{node['id']}", action['label'], _action(action),
                                  reason='挡住发布的关卡还没通过', priority=3))
-    # 4. 主线下一步：第一个没完成的必经步骤；已经越过插入位置的插件节点（可补做）不抢主线，放到第 5 级
+    # 4. 主线下一步：第一个没完成的必经步骤；建模蓝图草案等你确认时先确认蓝图；按切片的节点给这一片的下一步；
+    # 已经越过插入位置的插件节点（可补做）不抢主线，放到第 5 级
     flags_of = {node_id: (item or {}).get('flags') or {} for node_id, item in states.items()}
     backfill = [node for node in nodes if flags_of.get(node['id'], {}).get('backfill')]
     required = [node for node in nodes if node.get('section', 'required') == 'required'
                 and state_of.get(node['id']) not in ('confirmed', 'stale', 'skipped')
                 and not flags_of.get(node['id'], {}).get('backfill')]
-    if required:
+    blueprint = context.get('blueprint') or {}
+    if blueprint.get('state') == 'draft':
+        out += _blueprint_candidates(context)
+    elif required:
         current = required[0]
-        if state_of.get(current['id']) not in ('running', 'pending_confirm'):
+        if current.get('per_slice') and slice_next and state_of.get(current['id']) not in ('pending_confirm', 'stale'):
+            out.append(_item(f"{current['id']}:{slice_next.get('slice_id')}:{slice_next.get('step')}",
+                             slice_next.get('label') or current['title'], _slice_step(slice_next),
+                             reason='主线下一步', priority=4))
+        elif state_of.get(current['id']) not in ('running', 'pending_confirm') and not current.get('per_slice'):
             actions = _node_actions(current, verify_first=stage == '资料分析待核验')
             for index, action in enumerate(actions[:SUGGESTIONS_MAX]):
-                out.append(_item(f"{current['id']}#{index}", action['label'], _send(action['command']),
+                out.append(_item(f"{current['id']}#{index}", action['label'], _action(action),
                                  reason='主线下一步', priority=4))
+        if blueprint.get('state') == 'none' and state_of.get('core.research') in ('confirmed', 'stale'):
+            out.append(_item('plan_slices', '切片规划', _send('/ontology-research phase=blueprint'),
+                             reason='可选步骤', priority=5, icon='layers'))
     else:
         out.append(_item('overview', '整体视图', _send('/ontology-overview'), reason='必经步骤都已完成', priority=5))
         available = flow.get('available_commands')
@@ -278,7 +338,7 @@ def _candidates(flow: dict, states: dict, context: dict) -> list:
                              reason='可选步骤', priority=5))
     for node in backfill:
         for action in _node_actions(node)[:1]:
-            out.append(_item(f"backfill:{node['id']}", f"补做「{node['title']}」", _send(action['command']),
+            out.append(_item(f"backfill:{node['id']}", f"补做「{node['title']}」", _action(action),
                              reason='可补做', priority=5))
     return out
 
@@ -307,7 +367,9 @@ def suggest(flow: dict, states: dict, context: dict | None = None) -> dict:
     - autobuild：自主构建在跑 → 运行控制；
     - waiting_decision：有没回答的决策卡 → 主推禁用「先做上面的决定」；
     - changeset：没确认的变更集 {id, state} → 主推「确认生效」，次选「撤回这一轮」与下一步；
-    - stage：旧版线性阶段（资料分析待核验时核验排第一、校验待审阅时继续校验）；report_pending：报告有待处理项。
+    - stage：旧版线性阶段（资料分析待核验时核验排第一、校验待审阅时继续校验）；report_pending：报告有待处理项；
+    - blueprint：建模蓝图 {state: none|draft|confirmed, where: mainline|changeset, next}，草案时主推「确认蓝图」；
+    - slice_next：按切片的节点这一片的下一步 {slice_id, slice_name, step, label, command, sliced}。
     """
     context = context or {}
     if context.get('autobuild'):
@@ -337,7 +399,11 @@ def suggest(flow: dict, states: dict, context: dict | None = None) -> dict:
                       reason='这一轮的修改等你确认', priority=1, icon='merge')
         discard = _item('discard', '撤回这一轮', {'type': 'discard_changeset', 'changeset_id': changeset['id']},
                         reason='这一轮的修改等你确认', priority=1, icon='undo')
-        candidates = [merge, *candidates[:1], discard]
+        if (context.get('blueprint') or {}).get('where') == 'changeset' and changeset.get('state') != 'conflict':
+            # 蓝图草案就在这一轮的修改里：确认蓝图会先确认生效这一轮，不再单列「确认生效」
+            candidates = [*_blueprint_candidates(context)[:2], discard]
+        else:
+            candidates = [merge, *candidates[:1], discard]
     if context.get('waiting_decision'):
         mode = 'waiting_decision'
         waiting = _item('decide', '先做上面的决定', {'type': 'navigate', 'page': 'wb-l2'},

@@ -182,6 +182,21 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
 - **待处理**：`GET .../inbox` 汇总决策（含人工节点的决策卡）、续跑、修改待确认、合入冲突、过期、需复核、报告待处理、
   外部反馈、变更点清单；不另存状态，处理完来源一变就消失。
 
+## 建模蓝图与按切片建模
+
+见 `docs/decisions/0050-modeling-blueprint.md`～`0052-slice-write-scope.md`。
+
+- **主流程**（core 0.3.0，详设 6.8）：资料分析（含切片规划）→ 建模（按切片：对象、操作、规则、写入即查，启用场景走查
+  再加「场景」）→ 校验（与走查）→ 全局一致性（`/ontology-consistency`）→ 发布；指标、流程图是旁支，增量更新按需。
+  存量项目跟随通道升级到 0.3.0 后按全量模式显示（一片「全部」），原来对象提取、操作提取上的已确认状态映射过来。
+- **建模蓝图**：`research/blueprint.json`，只由 core 的 `blueprint.py` 写入与校验（资料分析时助手写草稿、脚本编号落盘；
+  网页调整与确认由后端调同一份）。`GET/PUT .../blueprint`、`POST .../blueprint/confirm`（BP-01～03）；蓝图还在资料分析
+  那一轮的修改里时，调整写进同一个变更集，确认蓝图先确认生效这一轮。`next=L4`（按蓝图一路建完）在自主构建登记前回
+  `409 autobuild_not_available`。
+- **按切片**：`GET .../flow` 的 `slices`、`slice_stages` 给每片每步的状态，建模节点给「n/m 片」；建模命令带
+  `slice=<切片>`（不带时取这一步还没做完的第一片），写入范围只锁这一片的条目，守卫不让助手改别的片已有的条目。
+  按片建模时全局一致性是发布前的流程关卡（`GET .../publish/check` 的 `gates` 里 `source.kind=flow`）。
+
 ## 治理平面
 
 - **配置**：每个环境变量在配置注册表里声明来源优先级、校验与生效时机（`app/governance/config_registry.py`），
@@ -299,7 +314,8 @@ agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githo
   助手没有 `evidence.*` 工具；界面上连接业务系统的入口不出现。
 - **主流程**：阶段、完成判定、命令前置与 `/ontology` 的下一步建议只在 core 包的 `flow.yaml` 里定义一次，
   后端进度、`state_helper.py`、`GET /api/v1/projects/{id}/flow` 都读它。「质量检查完成」= 有校验报告且
-  `reports/` 下没有未处理的 `[ ]`。
+  `reports/` 下没有未处理的 `[ ]`。包可以用 `slice_steps` 往按切片的节点里加步骤、用 `node_titles` 改主线节点的显示名；core 的 `aliases`
+  让还没升级的包写的旧节点编号照样认。
 
 ### 包作者：官方包界面代码
 

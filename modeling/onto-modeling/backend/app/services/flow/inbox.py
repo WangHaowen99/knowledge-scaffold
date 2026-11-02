@@ -5,7 +5,7 @@
 
 | kind | 来源 |
 |---|---|
-| decision 决策 | 在线会话里没回答的决策卡；人工节点出的、没回答的决策卡（节点不在当前流程里的不列） |
+| decision 决策 | 在线会话里没回答的决策卡；人工节点出的、没回答的决策卡（节点不在当前流程里的不列）；建模蓝图里没回答的问题 |
 | resumable 续跑 | 中断、能续跑的执行记录 |
 | pending_changeset 修改待确认 | 没确认的助手变更集 |
 | changeset_conflict 合入冲突 | 合入时检测到实体冲突的变更集 |
@@ -26,6 +26,7 @@ import os
 import threading
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 KIND_LABELS = {
@@ -182,6 +183,34 @@ def _human_nodes(root: Path, flow: dict) -> list[dict]:
     return items
 
 
+def _blueprint_questions(manager, project_id: str) -> list[dict]:
+    """建模蓝图里还没回答的问题（契约 BP-03「没答的问题留在待处理」）：编号 `decision:bq-<问题>`。"""
+    from . import blueprint
+
+    doc = blueprint.effective_doc(manager, project_id)
+    try:
+        updated = datetime.fromisoformat(str((doc or {}).get("updated_at"))).timestamp()
+    except ValueError:
+        updated = None
+    items = []
+    for question in (doc or {}).get("questions") or []:
+        if question.get("answer"):
+            continue
+        source_id = f"bq-{question['id']}"
+        options = [{"id": option["id"], "key": option["id"], "label": option["label"], "consequence": "",
+                    "recommended": False, "preview": None, "custom": False} for option in question.get("options") or []]
+        detail = {"question_id": source_id, "kind": "decision", "conversation_id": None, "exec_id": None,
+                  "step_label": "建模蓝图", "eyebrow": "", "title": question.get("title") or "",
+                  "background_md": question.get("background") or "", "anchors": [], "options": options,
+                  "multi": False, "allow_custom": True, "custom_placeholder": "", "state": "open", "answer": None,
+                  "inbox_item_id": f"decision:{source_id}", "affected": []}
+        items.append(_item("decision", source_id, question.get("title") or "建模蓝图的问题",
+                           meta=f"{len(options)} 个选项", source="assistant", batchable=False,
+                           created_at=updated, extra={"question": detail, "blueprint_question": question["id"]},
+                           fingerprint=f"{source_id}:{doc.get('version_no')}"))
+    return items
+
+
 def _resumables(project_id: str, root: Path, flow: dict) -> list[dict]:
     from ..session_host import exec_records
 
@@ -222,13 +251,15 @@ def _changesets(root: Path) -> list[dict]:
 
 
 def _node_items(root: Path, flow: dict) -> list[dict]:
-    from . import model, overlay
+    from . import model
     from . import state as node_state
 
+    from .view import node_states
+
     hits = model.flow_state(root).node_hits(flow, root)
-    # 所属包版本被熔断的节点在流程里算跳过、开始不了（FL-05 回 409）：不列，免得 IN-04 选中它
-    broken = overlay.broken_nodes(flow)
-    states = node_state.compute(root, overlay.released(flow, broken), hits)
+    # 所属包版本被熔断的节点在流程里算跳过、开始不了（FL-05 回 409）：不列，免得 IN-04 选中它；
+    # 状态与 FL-01 同一份（建模节点按切片汇总、熔断的节点不挡别的节点）
+    states, sliced, _doc, _context, broken = node_states(root, flow, hits)
     by_id = {node["id"]: node for node in flow.get("nodes") or []}
     reviews = {item["node_id"]: item for item in node_state.reviews(root)}
     items = []
@@ -241,7 +272,8 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
             items.append(_item("stale", node_id, f"「{node.get('title') or node_id}」过期了",
                                meta=f"上游（{'、'.join(node.get('stale_on') or [])}）改过", source="assistant",
                                pack=pack, extra={"node": node},
-                               fingerprint=node_state.fingerprint(root, list(node.get("stale_on") or []))))
+                               fingerprint=(sliced or {}).get("stale_key") if node.get("per_slice") and sliced
+                               else node_state.fingerprint(root, list(node.get("stale_on") or []))))
         review = reviews.get(node_id)
         if review and info["state"] in ("confirmed", "stale"):
             source = review.get("source") or "upgrade"
@@ -357,6 +389,7 @@ def collect(manager, project_id: str) -> list[dict]:
     sources = [
         lambda: _decisions(project_id),
         lambda: _human_nodes(root, flow),
+        lambda: _blueprint_questions(manager, project_id),
         lambda: _changesets(root),
         lambda: _resumables(project_id, root, flow),
         lambda: _node_items(root, flow),

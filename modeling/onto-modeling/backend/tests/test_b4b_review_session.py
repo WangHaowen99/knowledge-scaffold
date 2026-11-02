@@ -87,7 +87,7 @@ def test_09_stale_active_scope_does_not_outlive_the_command(env):
     service.open_changeset(workspaces, project_id)
     service.discard(workspaces, project_id, "cs-1", actor="employee_0001")
     assert not (copy / ".onto/run/active.json").exists() and not (copy / ".ontology-state/lock-mock.json").exists()
-    assert next(item for item in view.build(root)["nodes"] if item["id"] == "trace.mock")["state"] != "running"
+    assert next(item for item in view.build(root)["nodes"] if item["id"] == "trace.trace")["state"] != "running"
 
 
 def test_09_abandon_and_startup_clear_the_commands_scope(env):

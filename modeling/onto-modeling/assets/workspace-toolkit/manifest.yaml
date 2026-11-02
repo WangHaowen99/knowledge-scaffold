@@ -7,11 +7,12 @@
 # （如 0.1.0+3f9a1c2d）：内容变了就是新版本，包仓库里的版本目录永不改写。
 # 新增命令、子代理、脚本时同步下面的清单（静态检查核对「声明的都存在、存在的都声明」）。
 name: core
-version: 0.2.0
+version: 0.3.0
 kind: capability
 category: capability
 label: 基础建模能力
-description: 资料分析、对象与操作抽取、规则与指标、质量检查、增量更新、影响分析、业务知识的存放与加载、共享契约库。
+description: 资料分析与切片规划、按切片建模、指标、校验、全局一致性、发布、增量更新、影响分析、业务知识的存放与加载、共享契约库。
+changelog: 建模按切片走（建模蓝图）；新增全局一致性与发布节点。
 publisher:
   kind: official
   label: 平台
@@ -27,6 +28,7 @@ contributes:
     - ontology-extract-operation
     - ontology-extract-rule-metric
     - ontology-validate
+    - ontology-consistency
     - ontology-update
     - ontology-impact
     - ontology-query
@@ -48,9 +50,11 @@ contributes:
     - update-apply-agent
   skills: []
   scripts:
+    - blueprint.py
     - candidate_revision.py
     - check_diagrams.py
     - check_eval_data.py
+    - consistency_check.py
     - excel_context.py
     - field_semantics.py
     - flow_state.py

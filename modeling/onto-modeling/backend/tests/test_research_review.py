@@ -706,7 +706,7 @@ def test_unaccepted_report_stops_blocking_once_objects_exist(workspace, toolkit,
 
     assert progress["research_review"]["status"] == status  # 提醒仍在
     assert progress["research_review"]["blocking"] is False
-    assert progress["stages_done"] == 2  # 资料分析 + 对象提取；流程图是可选阶段
+    assert progress["stages_done"] == 1  # 资料分析；建模还差操作（0.3.0 起对象与操作合成「建模」），流程图是可选阶段
 
 
 def test_objects_alone_do_not_count_research_as_done(workspace, toolkit):
@@ -719,5 +719,5 @@ def test_objects_alone_do_not_count_research_as_done(workspace, toolkit):
 
     assert progress["research_review"]["status"] == "none"
     assert progress["research_review"]["blocking"] is False
-    # 各阶段独立计数：只算对象提取，资料分析不计完成
-    assert progress["stages_done"] == 1
+    # 各阶段独立计数：资料分析不计完成；只有对象时建模也还没做完
+    assert progress["stages_done"] == 0

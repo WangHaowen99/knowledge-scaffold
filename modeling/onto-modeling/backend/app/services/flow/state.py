@@ -89,15 +89,22 @@ def save(root: Path, data: dict) -> None:
 
 
 def purge(root: Path) -> None:
-    try:
-        _store_path(root).unlink()
-    except OSError:
-        pass
+    """删除项目：节点状态与同一项目的附属记录（`<项目>.*.json`，如蓝图卡登记）一起删。"""
+    path = _store_path(root)
+    for candidate in [path, *path.parent.glob(f"{path.stem}.*.json")]:
+        try:
+            candidate.unlink()
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
 # 指纹与签名
 # ---------------------------------------------------------------------------
+
+
+# 不算进上游指纹的文件：建模蓝图在 research/ 下，调整切片不该让对象提取过期
+FINGERPRINT_EXCLUDE = ("research/blueprint.json",)
 
 
 def _ls_tree(root: Path, dirs: list[str]) -> str:
@@ -106,7 +113,15 @@ def _ls_tree(root: Path, dirs: list[str]) -> str:
                                 capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
         return ""
-    return result.stdout if result.returncode == 0 else ""
+    if result.returncode != 0:
+        return ""
+    return "".join(line + "\n" for line in result.stdout.splitlines()
+                   if line.split("\t", 1)[-1] not in FINGERPRINT_EXCLUDE)
+
+
+def tree_listing(root: Path) -> list[str]:
+    """主线上 ontology/、research/ 的 ls-tree 行（一次读出，按切片的指纹从里面挑）。"""
+    return _ls_tree(root, ["ontology", "research"]).splitlines()
 
 
 def fingerprint(root: Path, kinds: list[str]) -> str:
@@ -151,8 +166,10 @@ def _pending_nodes(root: Path) -> tuple[set[str], dict | None]:
 
 
 def compute(root: Path, flow: dict, hits: dict[str, bool], *, project_id: str | None = None,
-            persist: bool = True) -> dict[str, dict]:
-    """全部节点 → {state, flags, display_state}。persist=False 时只算不记（预览、测试）。"""
+            persist: bool = True, sliced: bool = False) -> dict[str, dict]:
+    """全部节点 → {state, flags, display_state}。persist=False 时只算不记（预览、测试）。
+
+    sliced：项目按切片建模（建模蓝图多于一片）；声明 `blocks_in: sliced` 的关卡只在这时挡。"""
     root = Path(root)
     project_id = project_id or root.name
     nodes = flow.get("nodes") or []
@@ -212,7 +229,8 @@ def compute(root: Path, flow: dict, hits: dict[str, bool], *, project_id: str | 
             item = result[node["id"]]
             if item["state"] is not None:
                 continue
-            gates = [other for other in nodes if node["id"] in (other.get("blocks") or [])]
+            gates = [other for other in nodes if node["id"] in (other.get("blocks") or [])
+                     and (other.get("blocks_in") != "sliced" or sliced)]
             if any(result[gate["id"]]["state"] not in ("confirmed", "stale", "skipped") for gate in gates):
                 item["state"] = "blocked"
                 continue

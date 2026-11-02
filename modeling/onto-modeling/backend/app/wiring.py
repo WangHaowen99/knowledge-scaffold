@@ -9,7 +9,8 @@
 - 变更集（B4b）：会话状态 → `kernel/changesets/service.register_activity_provider`，变更集变化 → 项目流
   （`changeset.updated`、`scope.updated`、`flow.updated`），写入范围锁 → `project_events.register_scope_provider`
   与插件产物的 `register_lock_provider`。
-- 一轮改到的插件产物 → 对话里的产物卡（ADR-0055）：`services/project_events.register_round_card_provider`。
+- 一轮改到的插件产物 → 对话里的产物卡（ADR-0055）：`services/project_events.register_round_card_provider`；
+  一轮写出建模蓝图 → 蓝图卡（B4d，ADR-0050）同一个登记点。
 - 包声明的门禁 → 写入事务的门禁链（ADR-0068）：`kernel/writepath.register_gate_checker`。
 
 登记的都是进程内的函数引用，不做 I/O，可以重复调。在建应用时（`app/main.py`）调，而不是在 lifespan 里：
@@ -51,6 +52,13 @@ def _round_artifact_cards(project_id: str, changes: dict, base: str, seed: str, 
     from .kernel.artifacts import cards
 
     return cards.round_cards(_workspaces(), project_id, changes, base=base, seed=seed, root=root)
+
+
+def _round_blueprint_cards(project_id: str, changes: dict, base: str, seed: str, root: Path | None = None) -> list[dict]:
+    """一轮写出或改了建模蓝图：资料分析小结卡、蓝图卡、确认后怎么建（B4d，ADR-0050）。"""
+    from .services.flow import blueprint
+
+    return blueprint.round_cards(_workspaces(), project_id, changes, seed, root)
 
 
 def _publish_kernel_event(project_id: str, event_type: str, data: dict) -> None:
@@ -107,16 +115,26 @@ def _changeset_event(project_id: str, event: str, data: dict) -> None:
 
 
 def _confirm_nodes(project_id: str, node_ids: list[str], record: dict | None = None) -> None:
+    import time
+
+    from .services.flow import blueprint, slices
     from .services.flow import model as flow_model
     from .services.flow import state as node_state
 
     if not node_ids:
         return
     root = _workspaces().project_root(project_id)
-    node_state.confirm(root, flow_model.load_for(root), node_ids)
+    flow = flow_model.load_for(root)
+    node_state.confirm(root, flow, node_ids)
+    review = None
     if record and record.get("needs_review"):
+        review = {"source": "autobuild", "at": time.time(), "run_id": record.get("run_id"),
+                  "slice_id": record.get("slice_id")}
         node_state.mark_needs_review(root, node_ids, "autobuild", run_id=record.get("run_id"),
                                      slice_id=record.get("slice_id"), note=record.get("purpose") or "")
+    # 按切片的节点：这个变更集做过的那几片那几步记为确认过（B4d）
+    slices.confirm(root, flow, (record or {}).get("slice_steps") or [], doc=blueprint.load_doc(root),
+                   needs_review=review)
 
 
 def _sync_change_lists(project_id: str, record: dict) -> None:
@@ -174,6 +192,7 @@ def install() -> None:
     sessions.register_action_resolver(_page_action_command)
     project_events.register_artifact_mapper(_artifact_refs)
     project_events.register_round_card_provider(_round_artifact_cards)
+    project_events.register_round_card_provider(_round_blueprint_cards)
     if _extension_differ is None:
         _extension_differ = registry.extension_differ()
     project_events.register_extension_differ(_extension_differ)

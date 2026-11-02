@@ -33,6 +33,10 @@ python3 .claude/scripts/state_helper.py acquire extract-operation operation
 
 命令结束前 `release extract-operation`。
 
+## 按切片建模
+
+Step 0 之后读 `.claude/SLICE_MODE.md` 并照做：`python3 .claude/scripts/blueprint.py brief` 不是「全量模式」时，这一次只做 brief 里的那一片（派子代理时把 brief 原样放进 prompt），做完这一步就停下等用户确认生效。
+
 ## 业务知识识别（贯穿整个命令）
 
 整个命令期间始终遵循 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md`。

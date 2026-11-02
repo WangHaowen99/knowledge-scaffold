@@ -10,6 +10,10 @@
 - 主流程的下一步建议（`next_steps`）里指向没启用的包的命令去掉，只列本项目能用的命令。
 节点钩子（详设 6.4，B5c）：包在 flow.yaml 的 `hooks` 里给某个节点之前或之后追加一步检查或补充，不新增节点：
 `{id: <包>.<名>, title, node: <宿主节点>, when: before|after, command: /<本包命令>}`；宿主节点要存在、命令要在本次装配里。
+按切片的节点（详设 6.6，B4d）：`per_slice: true` 的节点带 `steps`（切片里的步骤）；包用 `slice_steps` 往这类节点的
+切片里加步骤（`[{node, step}]`，如场景走查的「场景」），用 `node_titles` 改主线节点的显示名（`{节点: 名称}`，如
+「校验与走查」）。这两项和节点钩子（`hooks`）分开声明，各管各的。
+core 的 `aliases` 把旧版节点编号映射到现在的节点：没升级的包写的锚点、钩子宿主、命令归属照样认。
 """
 
 from __future__ import annotations
@@ -180,6 +184,9 @@ def assemble(contributions: list[tuple[str, str, dict]], available_commands: set
     duplicates = sorted({node_id for node_id in ids if ids.count(node_id) > 1})
     problems += [f"节点编号重复：{node_id}" for node_id in duplicates]
     known = set(ids)
+    aliases = {str(old): str(new) for old, new in (base.get("aliases") or {}).items() if str(new) in known}
+    _apply_aliases(nodes, flow, aliases)
+    problems += _apply_slice_steps(contributions, nodes)
     edges: list[tuple[str, str]] = []
     for node in nodes:
         for key in ("after", "before"):
@@ -208,6 +215,8 @@ def assemble(contributions: list[tuple[str, str, dict]], available_commands: set
     hooks = []
     for pack, version, declared in contributions:
         for hook in declared.get("hooks") or []:
+            if isinstance(hook, dict) and str(hook.get("node") or "") in aliases:
+                hook = {**hook, "node": aliases[str(hook["node"])]}  # 还没升级的包挂在 0.2 的节点上
             problems += _hook_problems(pack, hook, known, available_commands)
             if isinstance(hook, dict):
                 hooks.append({"id": str(hook.get("id") or ""), "title": str(hook.get("title") or hook.get("id") or ""),
@@ -236,6 +245,71 @@ def assemble(contributions: list[tuple[str, str, dict]], available_commands: set
     flow["sources"] = sources
     flow["flow_hash"] = flow_hash(flow)
     return flow
+
+
+def _apply_aliases(nodes: list[dict], flow: dict, aliases: dict[str, str]) -> None:
+    """旧节点编号 → 现在的节点：锚点、显示锚点、关卡挡住的节点、命令归属都换过去。"""
+    if not aliases:
+        return
+
+    def mapped(value):
+        if isinstance(value, list):
+            return list(dict.fromkeys(aliases.get(str(item), str(item)) for item in value))
+        return aliases.get(str(value), value) if value else value
+
+    for node in nodes:
+        for key in ("after", "before", "display_after", "blocks"):
+            if node.get(key):
+                node[key] = mapped(node[key])
+        if node.get("before") and node.get("before") == node.get("after"):
+            # 原来插在对象提取与操作提取之间的（两者都并进了建模）：挂在建模之后
+            node.pop("before")
+    for spec in (flow.get("commands") or {}).values():
+        if isinstance(spec, dict) and spec.get("node"):
+            spec["node"] = aliases.get(spec["node"], spec["node"])
+
+
+STEP_KEYS = ("id", "label")
+
+
+def _apply_slice_steps(contributions: list[tuple[str, str, dict]], nodes: list[dict]) -> list[str]:
+    """包往按切片的节点里加步骤（`slice_steps`，step.after 指定放在哪一步后面），改节点的显示名（`node_titles`）。"""
+    problems: list[str] = []
+    by_id = {node["id"]: node for node in nodes}
+    for node in nodes:
+        if node.get("per_slice"):
+            steps = node.get("steps") or []
+            if not steps or not all(isinstance(step, dict) and all(step.get(key) for key in STEP_KEYS)
+                                    for step in steps):
+                problems.append(f"按切片的节点 {node['id']} 要声明 steps（每一步有 id、label）")
+            node["steps"] = [{**step, "pack": node["pack"]} for step in steps if isinstance(step, dict)]
+    for pack, _version, declared in contributions[1:]:
+        titles = declared.get("node_titles") or {}
+        if not isinstance(titles, dict):
+            problems.append(f"{pack} 的 node_titles 要是「节点: 名称」的映射")
+            titles = {}
+        for node_id, title in titles.items():
+            if node_id not in by_id or not str(title or "").strip():
+                problems.append(f"{pack} 改名的节点 {node_id} 不存在或名称为空")
+                continue
+            by_id[node_id]["title"] = str(title).strip()
+        for item in declared.get("slice_steps") or []:
+            target = by_id.get(str((item or {}).get("node") or "")) if isinstance(item, dict) else None
+            if target is None:
+                problems.append(f"{pack} 加步骤的节点 {(item or {}).get('node') if isinstance(item, dict) else item} 不存在")
+                continue
+            step = item.get("step")
+            if not target.get("per_slice") or not isinstance(step, dict) or not all(step.get(k) for k in STEP_KEYS):
+                problems.append(f"{pack} 只能往按切片的节点里加步骤（要有 id、label）")
+                continue
+            steps = target["steps"]
+            if any(existing["id"] == step["id"] for existing in steps):
+                problems.append(f"{pack} 加的步骤 {step['id']} 在 {target['id']} 里已经有了")
+                continue
+            position = next((index + 1 for index, existing in enumerate(steps) if existing["id"] == step.get("after")),
+                            len(steps))
+            steps.insert(position, {**step, "pack": pack})
+    return problems
 
 
 def flow_hash(flow: dict) -> str:

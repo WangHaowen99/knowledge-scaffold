@@ -7,7 +7,8 @@ State helper — 单一文件管理所有命令的执行锁与进度快照。
                             持有者为 owner（Web 后端托管的引擎实例）或 owner_pid）
     progress.json           各阶段完整进度快照（全体命令共用）
 另有 `.onto/run/active.json`：正在执行的命令所属节点与写入范围（节点声明的 produces、writes），
-acquire 时写、release 时删；内核守卫只放行这些路径（方案 D11）。
+acquire 时写、release 时删；内核守卫只放行这些路径（方案 D11）。按切片建模时（后端在
+`.onto/run/exec.json` 记了这一片）另记 `protect`：这一片以外、已经有了的条目，守卫不让改（详设 4.3）。
 
 锁的持有者：Web 后端每次连接引擎时把实例标识写进 `.onto/run/engine.json`，本进程是
 该后端的子孙时，持有者就是这个引擎实例——同一实例的多次 Bash 调用可续写锁，实例换了
@@ -43,12 +44,16 @@ import time
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent))
+import blueprint
 import flow_state
+import onto_metamodel
 
 STATE_DIR = Path('.ontology-state')
 PROGRESS_FILE = STATE_DIR / 'progress.json'
 # Web 后端写入的在线引擎实例标识（见模块说明）
 ENGINE_MARKER = Path('.onto') / 'run' / 'engine.json'
+# Web 后端开始执行一条命令时写的标记（节点、切片、步骤）
+EXEC_MARKER = Path('.onto') / 'run' / 'exec.json'
 # 正在执行的命令与它们的写入范围（节点声明的 produces、writes）：内核守卫只放行这些路径（方案 D11）
 ACTIVE_FILE = Path('.onto') / 'run' / 'active.json'
 ANCESTOR_SCAN_LIMIT = 32
@@ -347,30 +352,100 @@ def _save_active(data: dict) -> None:
     os.replace(tmp, ACTIVE_FILE)
 
 
-def _command_scope(command: str) -> tuple:
-    """命令所属节点与它的写入范围（produces + writes）；不属于任何节点时为 (None, None)：不限范围。"""
-    try:
-        flow = _flow()
-    except (OSError, ValueError):
-        return None, None
-    node_id = flow_state.command_node(flow, command)
-    node = next((item for item in flow.get('nodes') or [] if item.get('id') == node_id), None)
-    if node is None:
-        return None, None
+def _node_patterns(node: dict) -> list:
     allow = []
     for key in ('produces', 'writes'):
         for item in node.get(key) or []:
             pattern = str(item.get('path') if isinstance(item, dict) else item)
             if pattern and pattern not in allow:
                 allow.append(pattern)
-    return node_id, allow
+    return allow
+
+
+def _slice_node(flow: dict, command: str):
+    """后端开始执行时记的是按切片的节点、这条命令是它的一步（如带切片的规则提取、场景走查）时返回那个节点。"""
+    try:
+        marker = json.loads(EXEC_MARKER.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    node = next((item for item in flow.get('nodes') or [] if item.get('id') == (marker or {}).get('node')), None)
+    if node is None or not node.get('per_slice'):
+        return None
+    commands = {str(step.get('command') or '').lstrip('/').removeprefix('ontology-') for step in node.get('steps') or []}
+    return node if command in commands else None
+
+
+def _command_scope(command: str) -> tuple:
+    """命令所属节点与它的写入范围（produces + writes）；不属于任何节点时为 (None, None)：不限范围。
+
+    这一次是按切片的节点的一步时，节点取按切片的那个、范围是两者的并集（规则提取还会写指标，场景走查写场景文件）。"""
+    try:
+        flow = _flow()
+    except (OSError, ValueError):
+        return None, None
+    node_id = flow_state.command_node(flow, command)
+    node = next((item for item in flow.get('nodes') or [] if item.get('id') == node_id), None)
+    sliced = _slice_node(flow, command)
+    if sliced is not None:
+        allow = _node_patterns(node) if node is not None else []
+        allow += [pattern for pattern in _node_patterns(sliced) if pattern not in allow]
+        return sliced['id'], allow
+    if node is None:
+        return None, None
+    return node_id, _node_patterns(node)
+
+
+def _changed_here() -> set:
+    """这份副本里相对主线分叉点改过的文件（含没提交、没跟踪的）：这一轮自己建的、改的不算片外。"""
+    try:
+        head = str(json.loads(FLOW_STATE_FILE.read_text(encoding='utf-8')).get('mainline_head') or '')
+    except (OSError, ValueError):
+        head = ''
+    base = ((_git_quiet('merge-base', 'HEAD', head) or '').strip() if head else '') or 'HEAD'
+    changed = (_git_quiet('-c', 'core.quotepath=false', 'diff', '--name-only', base) or '').splitlines()
+    changed += (_git_quiet('-c', 'core.quotepath=false', 'ls-files', '--others', '--exclude-standard') or '').splitlines()
+    return {line.strip() for line in changed if line.strip()}
+
+
+def _slice_protect(node_id: str, allow: list) -> tuple:
+    """按切片建模：(切片, 片外已有的条目)。不是按切片的节点、全量模式、不知道哪一片时 (None, [])。"""
+    slice_id = blueprint.current_slice()
+    if not slice_id or slice_id == blueprint.FULL_SLICE_ID:
+        return None, []
+    try:
+        flow = _flow()
+        node = next((item for item in flow.get('nodes') or [] if item.get('id') == node_id), None)
+        doc = blueprint.load(Path('.'))
+    except (OSError, ValueError):
+        return None, []
+    item = blueprint.find_slice(doc, slice_id)
+    if node is None or not node.get('per_slice') or blueprint.mode(doc) != 'sliced' or item is None:
+        return None, []
+    own = set(blueprint.member_paths(item))
+    # 这一片的场景（一个操作一份）也是这一片的
+    own |= {f'ontology/testcase/{onto_metamodel.encode_filename(name)}.md' for name in item.get('operations') or []}
+    changed = _changed_here()
+    protect = []
+    for pattern in allow:
+        directory = pattern.rsplit('/', 1)[0] if pattern.endswith('/*') else ''
+        if not directory.startswith('ontology/') or not Path(directory).is_dir():
+            continue
+        for path in sorted(Path(directory).glob('*.md')):
+            rel = path.as_posix()
+            if path.name.lower() != 'index.md' and rel not in own and rel not in changed and rel not in protect:
+                protect.append(rel)
+    return slice_id, protect
 
 
 def _mark_active(command: str, phase: str) -> None:
     node_id, allow = _command_scope(command)
     data = _load_active()
-    data['commands'][command] = {'node': node_id, 'allow': allow, 'phase': phase,
-                                 'since': time.strftime('%Y-%m-%d %H:%M:%S')}
+    spec = {'node': node_id, 'allow': allow, 'phase': phase, 'since': time.strftime('%Y-%m-%d %H:%M:%S')}
+    if node_id and allow:
+        slice_id, protect = _slice_protect(node_id, allow)
+        if slice_id:
+            spec.update(slice=slice_id, protect=protect)
+    data['commands'][command] = spec
     try:
         _save_active(data)
     except OSError:

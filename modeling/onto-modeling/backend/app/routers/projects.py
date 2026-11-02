@@ -55,13 +55,23 @@ def _meta(project_id: str) -> dict:
     return views.project_meta(deps.workspaces.get_project(project_id), root)
 
 
+def _slices(root) -> dict | None:
+    """按片建模的进度；全量模式（切片待规划）或算不出时 None。"""
+    from ..services.flow import model as flow_model
+
+    try:
+        return flow_model.slice_summary(root)
+    except Exception:  # noqa: BLE001 - 列表上的概览，不挡列项目
+        return None
+
+
 def _card(meta: dict) -> dict:
     root = deps.workspaces.workspaces_dir / meta["id"]
     card = views.project_meta(meta, root)
     archived = bool(meta.get("archived"))
     card.update({
         "industry_label": None,
-        "slices": None,  # 切片待规划：流程运行时（P2）之前没有切片
+        "slices": _slices(root),
         "inbox_count": 0,
         "status": ["archived"] if archived else ["active"],
         "autobuild": None,
