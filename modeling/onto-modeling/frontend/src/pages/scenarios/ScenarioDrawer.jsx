@@ -102,13 +102,13 @@ export function ScenarioDrawer({ row, type, lock, tasks, onClose, onChanged }) {
 
   return (
     <>
-      <Drawer open onClose={onClose} icon="flask" title={row.title} sub={`${enumLabel(type, 'slice', f.slice)} · ${inputLabel}`} w={520} foot={foot}>
+      <Drawer open onClose={onClose} icon="flask" title={row.title} w={520} foot={foot}>
         {locked ? (
           <ScopeLockBar
             lock={lock}
             text={{
-              running: ['助手正在改这个场景，确认生效或撤回前只读', '其余场景照常编辑，保存即生效；交互走查照常可以发'],
-              pending: ['这个场景的修改还没确认：确认生效或撤回前只读', '其余场景照常编辑，保存即生效'],
+              running: ['助手正在改这个场景，确认生效或撤回前只读'],
+              pending: ['这个场景的修改还没确认：确认生效或撤回前只读'],
             }}
           />
         ) : null}
@@ -129,7 +129,7 @@ export function ScenarioDrawer({ row, type, lock, tasks, onClose, onChanged }) {
           <div className="col mt16" style={{ gap: 12 }}>
             <Field label="场景名称" req><Inp value={form.title} maxLength={80} onChange={(e) => setForm((x) => ({ ...x, title: e.target.value }))} /></Field>
             {EDITABLE.map((s) => (
-              <Field key={s} label={s} hint={s === '输入' ? '改了输入，上次的推演结果会标成过期' : null}>
+              <Field key={s} label={s}>
                 <Area value={form[s]} onChange={(e) => setForm((x) => ({ ...x, [s]: e.target.value }))} />
               </Field>
             ))}
@@ -167,7 +167,7 @@ export function ScenarioDrawer({ row, type, lock, tasks, onClose, onChanged }) {
         sub={row.title}
         foot={<><Button onClick={() => setConfirmDel(false)}>取消</Button><Button kind="danger fill" disabled={busy} onClick={remove}>删除</Button></>}
       >
-        <div className="sm">删除后会保存为新版本，可以在版本历史里找回。示例数据不会跟着删，下次「按场景补生成」时不再为它生成。</div>
+        <div className="sm">可在版本历史里找回</div>
       </Modal>
     </>
   );

@@ -5,7 +5,7 @@ import * as F from '../src/api/mock/fixtures.js';
 import { lockScope, register, taskSeeds } from '../src/api/mock/routes-scenarios.js';
 import {
   batchCommand, countRows, enumLabel, failDesc, failHint, filterRows, lastRun, lockBarText, mockCommand, mockDesc, passRate,
-  refreshCommand, rowLocked, rowLockPop, rowState, runDetail, skippedNote, sparkPaths, staleDesc, walkCommand, walkTarget,
+  refreshCommand, rowLocked, rowLockPop, rowState, skippedNote, sparkPaths, staleDesc, walkCommand, walkTarget,
 } from '../src/pages/scenarios/scenariosModel.js';
 
 const P = `/api/v1/projects/${F.MAIN_PID}`;
@@ -62,7 +62,8 @@ test('行状态、筛选、计数、统计卡文字', () => {
   assert.equal(staleDesc(rows), '来自 09 修订通知');
   assert.deepEqual(passRate({ total: 23, by: [{ value: 'pass', count: 19 }], delta_vs_previous_pct: 5 }), { pct: 83, desc: '19 / 23 · 比上一版 +5%' });
   assert.deepEqual(passRate(null, { total: 0, pass: 0 }), { pct: 0, desc: '0 / 0' });
-  assert.equal(mockDesc([{ fields: { mode: 'by_scenario' } }]), '按场景生成');
+  // 生成方式只在表格列里：有示例数据时统计卡不再带说明，还没生成时才给一句
+  assert.equal(mockDesc([{ fields: { mode: 'by_scenario' } }]), null);
   assert.equal(mockDesc([]), '还没有生成');
   assert.deepEqual(skippedNote([{ entry: { name: '审批提示' }, reason: '数据来源写的是「无」' }, { entry: { name: '超量清单' }, reason: '数据来源写的是「无」' }]), { labels: '审批提示、超量清单', reason: '数据来源写的是「无」' });
   assert.equal(skippedNote([]), null);
@@ -85,8 +86,6 @@ test('页面命令：只发 S-20，文字就是对话里那句', () => {
   assert.equal(walkTarget(rows, 'a').key, 'a');
   assert.equal(walkTarget(rows, null).key, 'b');
   assert.equal(walkTarget([], null), null);
-  assert.match(runDetail({ title: '助手正在批量推演 23 个场景' }), /^推演到的场景在确认生效或撤回前只读，其余照常编辑 · 结果回到下面的列表$/);
-  assert.match(runDetail({ title: '助手正在按场景补生成示例数据' }), /示例数据/);
 });
 
 test('写入范围只读：按产物或场景目录判定，两态的只读条文字', () => {
@@ -98,15 +97,18 @@ test('写入范围只读：按产物或场景目录判定，两态的只读条�
   assert.equal(rowLocked(byRef, row('s-21', 'pass'), type), true);
   assert.equal(rowLocked({ state: 'none' }, row('s-21', 'pass', { locked: true }), type), false);
   const all = [row('a', 'pass'), row('b', 'pass'), row('c', 'fail'), row('d', 'stale')];
-  const batch = lockBarText(byPath, all, 4);
-  assert.equal(batch.pending[0], '批量推演跑完了，结果还没确认：这 4 个场景确认生效或撤回前只读');
+  const batch = lockBarText(byPath, all);
+  assert.equal(batch.pending[0], '批量推演结果待确认，4 个场景暂时只读');
   assert.equal(batch.pending[1], '通过 2 · 失败 1 · 过期 1');
-  const part = lockBarText({ ...byPath, node: { id: 'core.model' } }, all.slice(0, 2), 23);
-  assert.equal(part.pending[0], '助手的修改还没确认：这 2 个场景确认生效或撤回前只读');
-  assert.equal(part.pending[1], '通过 2 · 失败 0 · 过期 0；其余场景照常编辑，保存即生效');
-  assert.equal(lockBarText(byRef, all.slice(0, 1), 23).running[0], '助手正在改「超量与审批提示」这一片：这 1 个场景确认生效或撤回前只读');
-  assert.match(rowLockPop(byPath), /修改还没确认/);
-  assert.match(rowLockPop(byRef), /助手正在改这个场景/);
+  assert.equal(batch.running[0], '助手正在推演 4 个场景，暂时只读');
+  assert.equal(batch.running[1], undefined);
+  const part = lockBarText({ ...byPath, node: { id: 'core.model' } }, all.slice(0, 2));
+  assert.equal(part.pending[0], '助手的修改待确认，2 个场景暂时只读');
+  assert.equal(part.pending[1], '通过 2 · 失败 0 · 过期 0');
+  assert.equal(lockBarText(byRef, all.slice(0, 1)).running[0], '助手正在改「超量与审批提示」，1 个场景暂时只读');
+  assert.equal(rowLockPop(byPath), '修改待确认，暂时只读');
+  assert.equal(rowLockPop(byRef), '助手在改，暂时只读');
+  assert.equal(rowLockPop({ state: 'autobuild_slice', artifacts: [], entries: [], paths: [] }), '自主构建在改，暂时只读');
 });
 
 // ---------- mock ----------
@@ -216,7 +218,7 @@ test('批量验证的两态：开跑进锁（助手运行中）→ 跑完修改�
   assert.equal(card.card_type, 'round_changes');
   assert.equal(card.groups[0].items[0].text, '推演 23 个：通过 21 · 失败 1 · 过期 1');
   const rows = (await s1.call('GET', `${P}/artifacts/${SC}`)).body.items;
-  assert.equal(lockBarText(lock, rows.filter((r) => r.locked), 23).pending[0], '批量推演跑完了，结果还没确认：这 23 个场景确认生效或撤回前只读');
+  assert.equal(lockBarText(lock, rows.filter((r) => r.locked)).pending[0], '批量推演结果待确认，23 个场景暂时只读');
   const diff = await s1.call('GET', `${P}/changesets/${lock.changeset_id}/diff`);
   assert.deepEqual(diff.body.items.map((x) => x.target.key), ['s-03', 's-06']);
   const merged = await s1.call('POST', `${P}/changesets/${lock.changeset_id}/merge`);
