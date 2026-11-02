@@ -53,17 +53,17 @@ const PENDING = ['checking', 'passed', 'failed', 'held'];
 export const isPending = (u) => PENDING.includes(u?.state);
 export const isPublishable = (u) => !!u && (u.state === 'passed' || u.state === 'held') && !(u.summary?.fail > 0);
 
-/** 上传列表一行的状态：chip 文案与色调，marks 表示要不要显示 manifest / checksums 两个标记 */
+/** 上传列表一行的状态：chip 文案与色调（清单、校验和的结果在静态检查里逐项列出，行上不再单标） */
 export function uploadStatus(u) {
   const fail = u?.summary?.fail || 0;
   switch (u?.state) {
-    case 'checking': return { running: true, text: '检查中', marks: false };
-    case 'passed': return { tone: 'blue', text: '检查完成', marks: true };
-    case 'held': return { tone: 'gray', text: '暂不发布', marks: true };
-    case 'failed': return { tone: 'red', icon: 'x', text: `${fail} 项失败`, marks: false };
-    case 'published': return { tone: 'teal', icon: 'check', text: '已发布', marks: true };
-    case 'rejected': return { tone: 'gray', icon: 'undo', text: '已退回', marks: fail === 0 };
-    default: return { tone: 'gray', text: u?.state || '', marks: false };
+    case 'checking': return { running: true, text: '检查中' };
+    case 'passed': return { tone: 'blue', text: '检查完成' };
+    case 'held': return { tone: 'gray', text: '暂不发布' };
+    case 'failed': return { tone: 'red', icon: 'x', text: `${fail} 项失败` };
+    case 'published': return { tone: 'teal', icon: 'check', text: '已发布' };
+    case 'rejected': return { tone: 'gray', icon: 'undo', text: '已退回' };
+    default: return { tone: 'gray', text: u?.state || '' };
   }
 }
 
@@ -125,28 +125,28 @@ export function effectText(m) {
   const c = m.contributes || {};
   const runtime = ['commands', 'agents', 'skills', 'hooks', 'nodes'].some((k) => countOf(c[k]) > 0);
   if (m.kind === 'knowledge') return runtime ? '数据现读即生效；新增的步骤从下一条消息开始生效' : '数据现读即生效';
-  return '从下一条消息开始生效；正在进行的一轮按旧版本跑完';
+  return '下一条消息生效';
 }
 
 // ---------- 发布 ----------
 
-/** 不能发布时的说明（能发布返回 null） */
+/** 不能发布时的状态（能发布返回 null） */
 export function publishBlock(u) {
   if (!u) return null;
   if (isPublishable(u)) return null;
   switch (u.state) {
-    case 'checking': return '静态检查跑完、没有失败项才能发布。';
-    case 'failed': return `静态检查有 ${u.summary?.fail || 0} 项失败，不能发布，只能退回给上传者。`;
-    case 'published': return '已经发布。之后调整灰度、处理熔断，由运维在运维中心「插件运维」里操作。';
-    case 'rejected': return '已经退回，不能再发布。上传者改好后重新上传。';
+    case 'checking': return '检查完成后才能发布';
+    case 'failed': return `${u.summary?.fail || 0} 项失败，不能发布`;
+    case 'published': return '已发布';
+    case 'rejected': return '已退回';
     default: return '这个上传现在不能发布。';
   }
 }
 export const canReject = (u) => !!u && ['passed', 'failed', 'held'].includes(u.state);
 
 export const CHANNELS = [
-  ['beta', 'β', '先给愿意尝鲜的项目，稳定后再推广'],
-  ['stable', 'S', '所有新建项目默认可选；已有项目仍按锁定版本'],
+  ['beta', 'β', '先给部分项目试用'],
+  ['stable', 'S', '所有项目可选'],
 ];
 
 export const defaultPublishForm = () => ({ channel: 'beta', by: 'project', percent: 10, targets: [], autoBreaker: true });
@@ -245,9 +245,9 @@ export function timelineRows(u, { nameOf = (x) => x, now = Date.now() } = {}) {
     }
     return { icon: 'dot', title: it.text || it.state, meta: meta(who(it.actor), clock) };
   });
-  if (u.state === 'checking') rows.push({ spin: true, dot: 'wait', title: '静态检查中', meta: '不执行包里的代码，通常几秒钟' });
-  else if (isPublishable(u)) rows.push({ icon: 'hand', dot: 'wait', title: '待发布', meta: '选择通道和灰度范围' });
-  else if (u.state === 'failed') rows.push({ icon: 'hand', dot: 'wait', title: '待退回', meta: '有失败项，只能退回给上传者' });
+  if (u.state === 'checking') rows.push({ spin: true, dot: 'wait', title: '静态检查中', meta: '' });
+  else if (isPublishable(u)) rows.push({ icon: 'hand', dot: 'wait', title: '待发布', meta: '' });
+  else if (u.state === 'failed') rows.push({ icon: 'hand', dot: 'wait', title: '待退回', meta: '' });
   return rows;
 }
 

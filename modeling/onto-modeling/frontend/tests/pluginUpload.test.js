@@ -53,13 +53,13 @@ test('检查结果汇总：「9 通过 · 1 警告」，没有的项不写', () 
   assert.equal(checkView({ result: 'odd' }).label, 'odd');
 });
 
-test('上传列表一行：状态标、manifest / checksums 标记、说明', () => {
-  assert.deepEqual(uploadStatus(up()), { tone: 'blue', text: '检查完成', marks: true });
-  assert.deepEqual(uploadStatus(up({ state: 'checking' })), { running: true, text: '检查中', marks: false });
-  assert.deepEqual(uploadStatus(up({ state: 'failed', summary: { pass: 9, warn: 1, fail: 4 } })), { tone: 'red', icon: 'x', text: '4 项失败', marks: false });
+test('上传列表一行：状态标、说明（清单、校验和只在静态检查里逐项列，行上不单标）', () => {
+  assert.deepEqual(uploadStatus(up()), { tone: 'blue', text: '检查完成' });
+  assert.deepEqual(uploadStatus(up({ state: 'checking' })), { running: true, text: '检查中' });
+  assert.deepEqual(uploadStatus(up({ state: 'failed', summary: { pass: 9, warn: 1, fail: 4 } })), { tone: 'red', icon: 'x', text: '4 项失败' });
   assert.equal(uploadStatus(up({ state: 'published' })).text, '已发布');
-  assert.equal(uploadStatus(up({ state: 'rejected', summary: { pass: 9, warn: 1, fail: 4 } })).marks, false);
-  assert.equal(uploadStatus(up({ state: 'rejected' })).marks, true);
+  assert.deepEqual(uploadStatus(up({ state: 'rejected', summary: { pass: 9, warn: 1, fail: 4 } })), { tone: 'gray', icon: 'undo', text: '已退回' });
+  assert.equal(uploadStatus(up({ state: 'held' })).text, '暂不发布');
   const now = new Date(2026, 10, 1, 22, 0).getTime();
   const at = new Date(2026, 10, 1, 21, 52).toISOString();
   assert.equal(uploadMeta(up({ size: 88 * 1024, uploaded_at: at, tenant_label: '示例租户' }), now), '88 KB · 上传于 21:52 · 租户 · 示例租户');
@@ -96,7 +96,7 @@ test('清单摘要：kind、贡献、生效时机', () => {
   assert.equal(contributesText({}), '没有声明贡献');
   assert.equal(effectText(m), '数据现读即生效；新增的步骤从下一条消息开始生效');
   assert.equal(effectText({ kind: 'knowledge', contributes: { templates: 2 } }), '数据现读即生效');
-  assert.equal(effectText({ kind: 'capability', contributes: { commands: 2 } }), '从下一条消息开始生效；正在进行的一轮按旧版本跑完');
+  assert.equal(effectText({ kind: 'capability', contributes: { commands: 2 } }), '下一条消息生效');
   assert.match(effectText({ kind: 'provider' }), /安装到平台/);
 });
 
@@ -108,10 +108,10 @@ test('能否发布：检查通过且没有失败项才能发布；其余给说�
   assert.equal(isPublishable(up({ state: 'passed', summary: { pass: 1, warn: 0, fail: 1 } })), false);
   assert.equal(isPublishable(null), false);
   assert.equal(publishBlock(up()), null);
-  assert.equal(publishBlock(up({ state: 'checking' })), '静态检查跑完、没有失败项才能发布。');
-  assert.equal(publishBlock(up({ state: 'failed', summary: { pass: 9, warn: 1, fail: 4 } })), '静态检查有 4 项失败，不能发布，只能退回给上传者。');
-  assert.match(publishBlock(up({ state: 'published' })), /运维中心「插件运维」/);
-  assert.match(publishBlock(up({ state: 'rejected' })), /已经退回/);
+  assert.equal(publishBlock(up({ state: 'checking' })), '检查完成后才能发布');
+  assert.equal(publishBlock(up({ state: 'failed', summary: { pass: 9, warn: 1, fail: 4 } })), '4 项失败，不能发布');
+  assert.equal(publishBlock(up({ state: 'published' })), '已发布');
+  assert.equal(publishBlock(up({ state: 'rejected' })), '已退回');
   assert.equal(canReject(up({ state: 'failed' })), true);
   assert.equal(canReject(up({ state: 'published' })), false);
   assert.equal(canReject(up({ state: 'checking' })), false);
@@ -169,13 +169,13 @@ test('审核记录：上传、静态检查（用时）、发布、退回，末�
   assert.match(rows[0].meta, /^管理员 张工 · /);
   assert.equal(rows[1].title, '静态检查：13 通过 · 1 警告');
   assert.match(rows[1].meta, / · 用时 4 秒$/);
-  assert.deepEqual([rows[2].title, rows[2].dot, rows[2].icon], ['待发布', 'wait', 'hand']);
+  assert.deepEqual([rows[2].title, rows[2].dot, rows[2].icon, rows[2].meta], ['待发布', 'wait', 'hand', '']);
   const checking = timelineRows(up({ state: 'checking', timeline: base.timeline.slice(0, 1) }), { nameOf });
-  assert.deepEqual([checking[1].title, checking[1].spin], ['静态检查中', true]);
+  assert.deepEqual([checking[1].title, checking[1].spin, checking[1].meta], ['静态检查中', true, '']);
   const failed = timelineRows(up({ state: 'failed', summary: { pass: 9, warn: 1, fail: 4 }, tenant_label: '示例租户', timeline: [base.timeline[0], { ...base.timeline[1], state: 'failed' }] }), { nameOf });
   assert.match(failed[0].meta, /租户 · 示例租户/);
   assert.equal(failed[1].dot, 'err');
-  assert.equal(failed[2].title, '待退回');
+  assert.deepEqual([failed[2].title, failed[2].meta], ['待退回', '']);
   const rejected = timelineRows(up({ state: 'rejected', timeline: [...base.timeline, { at: at(60), actor: 'zhangsan', text: '退回：版本号写错了', state: 'rejected' }] }), { nameOf });
   assert.equal(rejected.length, 3);
   assert.deepEqual([rejected[2].title, rejected[2].note], ['退回', '版本号写错了']);

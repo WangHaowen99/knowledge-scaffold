@@ -43,12 +43,6 @@ function UploadRow({ u, on, onSelect }) {
       onKeyDown={(e) => { if (e.key === 'Enter') onSelect(u.id); }}>
       <Icon name="pkg" size={18} />
       <div className="grow"><div className="b sm ell">{u.filename}</div><div className="xs muted">{uploadMeta(u)}</div></div>
-      {st.marks ? (
-        <>
-          <Chip tone={u.manifest_ok ? 'teal' : 'red'} icon={u.manifest_ok ? 'check' : 'x'} sm>manifest.yaml</Chip>
-          <Chip tone={u.checksums_ok ? 'teal' : 'red'} icon={u.checksums_ok ? 'check' : 'x'} sm>checksums.sha256</Chip>
-        </>
-      ) : null}
       {st.running ? <St k="running" sm label={st.text} /> : <Chip tone={st.tone} icon={st.icon} sm>{st.text}</Chip>}
     </div>
   );
@@ -92,7 +86,7 @@ export function UploadCard({ list, sending, selectedId, limit, onFiles, onSelect
         <span className="pl-ico cap" style={{ width: 46, height: 46 }}><Icon name="upload" size={20} /></span>
         <div className="grow">
           <div className="b">把插件包拖到这里</div>
-          <div className="xs muted">支持 .zip：能力包、节点包、行业包、系统知识包、提供方、导出器 · ≤ {formatBytes(limit)}</div>
+          <div className="xs muted">.zip，≤ {formatBytes(limit)}</div>
         </div>
         <Button icon="folder" onClick={() => input.current?.click()}>选择文件</Button>
         <input
@@ -105,7 +99,7 @@ export function UploadCard({ list, sending, selectedId, limit, onFiles, onSelect
           {sending.map((s) => <SendingRow key={s.key} s={s} onDismiss={onDismiss} />)}
           {shown.map((u) => <UploadRow key={u.id} u={u} on={u.id === selectedId} onSelect={onSelect} />)}
           {rows.length > SHOW_ROWS ? (
-            <a className="link plu-more" onClick={() => setAll((v) => !v)}>{all ? '收起' : `再显示 ${rows.length - SHOW_ROWS} 个已处理或更早的上传`}</a>
+            <a className="link plu-more" onClick={() => setAll((v) => !v)}>{all ? '收起' : `更多（${rows.length - SHOW_ROWS}）`}</a>
           ) : null}
         </div>
       ) : null}
@@ -131,21 +125,14 @@ export function CheckCard({ list, selectedId, detail, onSelect, onDownload, onRe
   const u = detail && detail.id === selectedId ? detail : null;
   let body;
   if (!list.length) {
-    body = (
-      <Empty icon="shield" title="还没有上传过插件包">
-        上传后自动做静态检查：清单、校验和、写入范围、hooks、前端代码、凭据、提示词体积逐项列在这里。
-      </Empty>
-    );
+    body = <Empty icon="shield" title="还没有上传过插件包" />;
   } else if (!u) {
     body = <div className="muted sm">正在读取检查结果…</div>;
   } else if (u.state === 'checking') {
     body = (
       <div className="pl-chk">
         <span className="d wait"><span className="spin" /></span>
-        <div className="grow">
-          <div className="sm b">静态检查进行中</div>
-          <div className="xs muted">逐项检查清单、校验和、写入范围、hooks、前端代码、凭据、提示词体积，不执行包里的代码；跑完自动刷新。</div>
-        </div>
+        <div className="grow"><div className="sm b">静态检查进行中</div></div>
         <St k="running" sm label="检查中" />
       </div>
     );
@@ -153,16 +140,12 @@ export function CheckCard({ list, selectedId, detail, onSelect, onDownload, onRe
     const failed = (u.summary?.fail || 0) > 0;
     body = (
       <>
-        {failed ? (
-          <Note tone={u.state === 'rejected' ? 'gray' : 'red'}>
-            {u.state === 'rejected' ? '已退回给上传者，不会进入包仓库。' : '有失败项的包不能发布，只能退回给上传者。'}
-          </Note>
-        ) : u.manifest ? (
+        {!failed && u.manifest ? (
           <div className="row mb8">
-            <KV w="70px" pairs={[['kind', kindText(u.manifest)], ['贡献', contributesText(u.manifest.contributes)], ['生效时机', effectText(u.manifest)]]} />
+            <KV w="70px" pairs={[['类型', kindText(u.manifest)], ['贡献', contributesText(u.manifest.contributes)], ['生效时机', effectText(u.manifest)]]} />
           </div>
         ) : null}
-        <div className={failed ? 'mt8' : undefined}>{(u.checks || []).map((c) => <CheckRow key={c.id} c={c} />)}</div>
+        <div>{(u.checks || []).map((c) => <CheckRow key={c.id} c={c} />)}</div>
         {failed || u.state === 'rejected' ? (
           <div className="row mt12">
             <span className="sp" />
@@ -190,7 +173,7 @@ export function RejectModal({ upload, busy, onClose, onSubmit }) {
   const problem = reasonProblem(reason);
   return (
     <Modal
-      open icon="undo" danger w={520} title={`退回 ${uploadTitle(upload)}`} sub="退回的上传不进包仓库，也不留下版本" onClose={onClose}
+      open icon="undo" danger w={520} title={`退回 ${uploadTitle(upload)}`} onClose={onClose}
       foot={(
         <>
           <Button onClick={onClose}>取消</Button>
@@ -198,10 +181,10 @@ export function RejectModal({ upload, busy, onClose, onSubmit }) {
         </>
       )}
     >
-      <Field label="退回原因" req hint="写进审核记录；上传者改好后重新上传。">
+      <Field label="退回原因" req>
         <Area value={reason} onChange={(e) => setReason(e.target.value)} minHeight={96} />
       </Field>
-      <Note tone="gray" className="mt12">现在退回不会自动通知上传者，请另行告知。</Note>
+      <Note tone="gray" className="mt12">不会自动通知上传者</Note>
     </Modal>
   );
 }
@@ -265,7 +248,7 @@ export function PublishCard({ upload, rollout, busy, error, onPublish, onHold })
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
   const title = upload ? `发布 ${uploadTitle(upload)}` : '发布';
   if (!upload) {
-    return <Card title={title} icon="upload"><div className="muted sm">上传的包通过静态检查后，在这里选择通道和灰度范围再发布。</div></Card>;
+    return <Card title={title} icon="upload"><div className="muted sm">没有可发布的包</div></Card>;
   }
   const block = publishBlock(upload);
   if (block) {
@@ -306,7 +289,7 @@ export function PublishCard({ upload, rollout, busy, error, onPublish, onHold })
         </Field>
       </div>
       <div className="pl-sw mt8">
-        <div><div className="sm b">出错自动熔断</div><div className="xs muted">失败率超过 5% 或连续 5 次失败时，回退到上一版本</div></div>
+        <div><div className="sm b">出错自动熔断</div><div className="xs muted">失败率 &gt; 5% 或连续失败 5 次时回退</div></div>
         <Toggle on={form.autoBreaker} onChange={(v) => set({ autoBreaker: v })} />
       </div>
       {error || problem ? <Note tone={error ? 'red' : 'amber'} className="mt12">{error || problem}</Note> : null}
