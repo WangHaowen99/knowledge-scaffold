@@ -96,3 +96,18 @@ git worktree 副本、`merge-tree --write-tree` 合成、按实体检测冲突�
 - 副本里的 git 配置（稀疏规则、排除文件）用 `extensions.worktreeConfig`，主线仓库的 git 版本要 ≥ 2.38
   （`merge-tree --write-tree`）；镜像是 Debian 的 git，满足。
 - 建不了副本时退回主线工作区：功能不丢，只是没有隔离，日志里有记录。
+
+## 审查修复（2026-11-02）
+
+独立审查查出的问题按下面改（用例 `tests/test_b4b_review_kernel.py` 等）：
+
+- **受保护路径**：资料区与锁文件（`resource/`、`.onto/`）不进快照、不进收拢提交（`git add -A` 后恢复成 HEAD），合入时一律取
+  主线的版本；每轮开始核对稀疏规则与资料条目的「不检出」标记，被改过就重设。
+- **副本不在副本分支上**：收住改动接回副本分支，分叉合不上留 `refs/onto/rescued/<时间>`；目录真坏了挪到
+  `assistant.broken-<时间>`（只留最近 3 份），不删。
+- **合入**：全程持项目锁，锁内重读变更集；git 报文本冲突的路径一律算冲突；合成结果和主线一样时不写提交
+  （`merged.commit` 为 null，不能 `revert_merged`）；写入意图标成整片回滚，崩溃后启动恢复回到合入前；启动时按
+  `Onto-Changeset` 补记已合入、没记下的变更集（`startup_repair`）。
+- **撤回已合入的变更集**：派生文件（`index.md`、脚本描述符）不比对、由写入事务重新生成；其余文件后来有任何改动就不撤。
+- **先占的变更集**（`open_changeset`）没改过之前不当成空的关掉；`open_changeset`、`revert_merged` 签名不变。
+- **回执**每轮收尾带回主线，两边同步只拿新的。
