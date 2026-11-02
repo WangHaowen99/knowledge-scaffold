@@ -14,6 +14,8 @@ services:
     environment:
       # 首次启动（auth 数据卷为空）必须在 .env 里设初始管理员密码；已有用户数据后可移除
       - AUTH_BOOTSTRAP_ADMIN_PASSWORD=${AUTH_BOOTSTRAP_ADMIN_PASSWORD:-}
+      # 管理 API 令牌：与 onto-modeling 的 ONTO_WEB_AUTH_ADMIN_TOKEN 同一个值（.env 里设），运维中心的用户管理靠它
+      - AUTH_SERVER_ADMIN_TOKEN=${ONTO_WEB_AUTH_ADMIN_TOKEN:-}
     volumes:
       - onto-web-auth-data:/data
     mem_limit: 512m
