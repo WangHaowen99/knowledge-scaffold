@@ -6,7 +6,7 @@ export const PURPOSE_FALLBACK = [
   { value: 'schema', label: '数据 Schema', description: '含表结构，用于对象与数据表映射' },
   { value: 'term', label: '术语表', description: '业务术语与别名' },
   { value: 'evidence', label: '通用业务依据', description: '规则、制度、样例等' },
-  { value: 'auto', label: '由助手判断', description: '资料分析时按内容判断用途' },
+  { value: 'auto', label: '由助手判断', description: '' },
 ];
 
 export const GROUP_ICON = { diagrams: 'flow', excel: 'table', others: 'filetext' };
@@ -52,10 +52,9 @@ export function scaleText(m) {
   return fmtSize(m.size);
 }
 
-// 行的第二行：规模 · 上传时间 · 资源模板 · 被引用（修订资料的「已在对话里发起增量更新 →」由页面另画）
+// 行的第二行：规模 · 上传时间 · 被引用（修订资料的「去对话里确认 →」由页面另画）
 export function metaText(m, now = Date.now()) {
   const parts = [scaleText(m), `${shortTime(m.uploaded_at, now)} 上传`];
-  if (m.is_template) parts.push('资源模板');
   if (m.referenced) parts.push(`被引用 ${m.referenced} 处`);
   return parts.join(' · ');
 }
@@ -207,7 +206,7 @@ export function refSentence(items = []) {
   if (!items.length) return '';
   const names = items.slice(0, 3).map((x) => `${targetKind(x.target)}「${targetName(x.target)}」${x.location ? `的${x.location}` : ''}`);
   const more = items.length > 3 ? ` 等 ${items.length} 项` : '';
-  return `有 ${refCount(items)} 处出处引用了这份资料：${names.join('、')}${more}。删除后它们会变成「来源无法核验」，需要换出处或重新核验。`;
+  return `${refCount(items)} 处出处引用了它：${names.join('、')}${more}。删除后这些出处会变成「来源无法核验」。`;
 }
 
 // 点引用去哪：条目去 Studio 表格，流程图去 Studio 表格的流程图行，场景去场景走查

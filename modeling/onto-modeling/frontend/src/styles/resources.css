@@ -44,3 +44,4 @@
 .evd-prev.rs-full .evd-dio,.evd-prev.rs-full .evd-html{height:auto;flex:1;min-height:300px}
 .rs-case .chip.rs-go{cursor:pointer}
 .rs-case .chip.rs-go:hover{border-color:var(--b300);color:var(--blue2)}
+.evd-pmenu .auto{margin-left:6px;font-size:10px;color:var(--teal);font-weight:700}

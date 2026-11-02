@@ -42,7 +42,7 @@ function useTrackedTasks(onFinish) {
 }
 
 // 用途菜单（设计稿 .evd-pmenu）：点菜单外、或再点一次用途按钮关掉
-function PurposeMenu({ value, purposes, onPick, onClose }) {
+function PurposeMenu({ value, auto, purposes, onPick, onClose }) {
   const ref = useRef(null);
   useEffect(() => {
     const h = (e) => { if (!ref.current?.contains(e.target) && !e.target.closest?.('[data-purp-open]')) onClose(); };
@@ -56,13 +56,13 @@ function PurposeMenu({ value, purposes, onPick, onClose }) {
           <div key={x.value} className="mi" onClick={() => onPick(x.value)}>
             {x.value === value ? <Icon name="check" size={14} /> : <span style={{ width: 14, flex: 'none' }} />}
             <div>
-              <div className="pt" style={x.value === value ? { color: 'var(--blue2)', fontWeight: 600 } : undefined}>{x.label}</div>
-              <small>{x.description}</small>
+              <div className="pt" style={x.value === value ? { color: 'var(--blue2)', fontWeight: 600 } : undefined}>
+                {x.label}{auto && x.value === value ? <span className="auto">自动识别</span> : null}
+              </div>
+              {x.value !== 'auto' && x.description ? <small>{x.description}</small> : null}
             </div>
           </div>
         ))}
-        <hr />
-        <div className="xs muted" style={{ padding: '4px 10px 6px', lineHeight: 1.5 }}>上传时按表格结构自动识别（数据表或术语表）；改用途即覆盖。</div>
       </div>
     </div>
   );
@@ -82,18 +82,18 @@ function FileRow({ m, picked, purposes, menuOpen, onPick, onMenu, onPurpose, onR
         </div>
         <div className="xs muted ell">
           {metaText(m)}
-          {m.is_revision && m.revision_task ? <> · <span className="evd-incl" onClick={stop(() => onRevision(m))}>已在对话里发起增量更新 →</span></> : null}
+          {m.is_revision && m.revision_task ? <> · <span className="evd-incl" onClick={stop(() => onRevision(m))}>去对话里确认 →</span></> : null}
         </div>
       </div>
       <div className="evd-purp" data-purp {...(menuOpen ? { 'data-purp-open': '' } : {})} onClick={stop(() => onMenu(menuOpen ? null : m.path))}>
-        {p.label}{p.auto ? <span className="auto">自动识别</span> : null}<Icon name="chevd" size={12} />
+        {p.label}<Icon name="chevd" size={12} />
       </div>
       <div className="evd-acts">
         <Button size="sm" kind="ghost" icon="eye" title="预览" onClick={stop(() => onPick(m, true))} />
-        <Button size="sm" kind="ghost" icon="upload" title="替换（上传同名文件覆盖）" onClick={stop(() => onReplace(m))} />
+        <Button size="sm" kind="ghost" icon="upload" title="替换" onClick={stop(() => onReplace(m))} />
         <Button size="sm" kind="ghost" icon="trash" title="删除" onClick={stop(() => onDelete(m))} />
       </div>
-      {menuOpen ? <PurposeMenu value={m.purpose} purposes={purposes} onPick={(v) => onPurpose(m, v)} onClose={() => onMenu(null)} /> : null}
+      {menuOpen ? <PurposeMenu value={m.purpose} auto={p.auto} purposes={purposes} onPick={(v) => onPurpose(m, v)} onClose={() => onMenu(null)} /> : null}
     </div>
   );
 }
@@ -179,11 +179,10 @@ function DeleteDialog({ m, onClose, onDeleted }) {
   };
   return (
     <Modal
-      open onClose={onClose} danger icon="trash" title={`删除 ${m.name}？`} sub="删除会保存为一个新版本，可以从版本历史恢复。"
+      open onClose={onClose} danger icon="trash" title={`删除 ${m.name}？`} sub="可以从版本历史恢复"
       foot={<><Button onClick={onClose}>取消</Button><Button kind="danger" className="fill" icon="trash" disabled={busy} onClick={del}>删除资料</Button></>}
     >
-      {refs == null ? <div className="xs muted">正在查哪些产物引用了它…</div> : refs.length ? <Note tone="amber">{refSentence(refs)}</Note> : null}
-      <div className={cx('sm muted', refs?.length ? 'mt12' : refs == null && 'mt8')}>派生产物不会自动删除；建议随后在工作台对话里发起一次增量更新，只改受影响的内容。</div>
+      {refs == null ? <div className="xs muted">正在查引用…</div> : refs.length ? <Note tone="amber">{refSentence(refs)}</Note> : null}
     </Modal>
   );
 }
@@ -302,7 +301,7 @@ export default function ResourcesPage({ route }) {
     if (!done.length) return;
     const last = done[done.length - 1];
     if (replaceOf) toast(`已替换 ${replaceOf.name}，保存为新版本 ${last.version_label}`, 'upload');
-    else toast(`已上传 ${done.length} 份资料，保存为版本 ${last.version_label}${revision ? '；已在工作台对话里发起增量更新' : ''}`, 'upload');
+    else toast(`已上传 ${done.length} 份资料（${last.version_label}）${revision ? '；已发起增量更新' : ''}`, 'upload');
     if (revision) setRev(false);
     setSel({ kind: 'file', path: last.material.path, fragment: null });
     load();
@@ -333,7 +332,7 @@ export default function ResourcesPage({ route }) {
       }));
       if (r.reread_task) tracked.track(r.reread_task);
       const label = purposes.find((x) => x.value === value)?.label || value;
-      toast(`用途已改为「${label}」，保存为新版本${r.reread_task ? '；助手会重读受影响的部分' : ''}`, 'check');
+      toast(`用途已改为「${label}」`, 'check');
     } catch (e) {
       toast(errorText(e), 'alert');
     }
@@ -369,24 +368,22 @@ export default function ResourcesPage({ route }) {
     right = (
       <div className="card">
         <Empty icon="filetext" title="找不到这份资料" actions={<Button size="sm" icon="history" onClick={() => navigate(pagePath('versions', pid))}>去版本历史</Button>}>
-          「{selPath.split('/').pop()}」可能已经删除；删除前的版本可以从版本历史恢复。引用它的出处会显示「来源无法核验」。
+          「{selPath.split('/').pop()}」可能已被删除。
         </Empty>
       </div>
     );
-  } else if (data && !data.error) {
-    right = <div className="card"><Empty icon="eye" title="在这里预览">上传后点左边的资料，在这里看原文、表格或流程图，以及它被哪些产物引用。</Empty></div>;
   }
 
   return (
     <ShellP active={PAGE}>
       <PageHead
-        eyebrow="资料" title="资料区" desc="你上传的原始资料。助手只能读，不能改；改动由你上传、替换或删除，每次都会保存版本。"
+        title="资料区"
         actions={<Button kind="primary" icon="upload" onClick={() => choose()}>上传资料</Button>}
       />
       {banner ? (
         <div className="evd-banner">
           <span className="ic"><Icon name="refresh" size={14} /></span>
-          <div className="grow"><b>{banner.name} 是修订资料</b><span className="muted">　已在工作台对话里发起增量更新：{banner.revision_task.label}</span></div>
+          <div className="grow"><b>{banner.name}</b><span className="muted">：{banner.revision_task.label}</span></div>
           <Button size="sm" kind="primary" icon="arrow" onClick={() => goIncremental(banner)}>去对话里确认</Button>
         </div>
       ) : null}
@@ -401,14 +398,13 @@ export default function ResourcesPage({ route }) {
           >
             <span className="ic"><Icon name="upload" size={20} /></span>
             <div className="grow">
-              <div className="b lg">把资料拖到这里，或点击选择</div>
-              <div className="muted sm">支持 Markdown、Word、Excel、CSV、PDF、Drawio、TXT、HTML · 单个文件不超过 20 MB · 同名文件会替换原文件</div>
+              <div className="b lg">把资料拖到这里</div>
+              <div className="muted sm">Word、Excel、PDF、Markdown、CSV、drawio、TXT、HTML · ≤ 20 MB</div>
             </div>
             <Button icon="folder" onClick={() => choose()}>选择文件</Button>
           </div>
           <div className="evd-rev">
-            <Check on={rev} onChange={setRev} label={<>这批是<b>修订 / 变更资料</b></>} />
-            <span className="muted xs grow">勾选后，上传完成会在工作台对话里发起增量更新：先列变更点给你确认，再只改受影响的内容</span>
+            <Check on={rev} onChange={setRev} label={<>作为<b>修订资料</b>上传（发起增量更新）</>} />
           </div>
           {ups.length ? <div className="col mt8" style={{ gap: 6 }}>{ups.map((u) => <UploadRow key={u.key} u={u} onDismiss={() => dismissUp(u)} />)}</div> : null}
 
@@ -416,13 +412,13 @@ export default function ResourcesPage({ route }) {
           {data?.error ? <Note tone="red" className="mt16">{data.error}<div className="row mt8"><Button size="xs" icon="refresh" onClick={load}>重试</Button></div></Note> : null}
           {data && !data.error && !total ? (
             <div className="card evd-grp">
-              <Empty icon="folder" title="还没有资料">把场景说明、业务规则、样例单据和数据表拖进来。助手先读资料、标出用途，再开始建模。</Empty>
+              <Empty icon="folder" title="还没有资料">把场景说明、业务规则、样例单据和数据表拖进来。</Empty>
             </div>
           ) : null}
 
           {groups.map((g) => (
             <div className="evd-grp" key={g.key}>
-              <h4><Icon name={GROUP_ICON[g.key] || 'filetext'} size={14} />{g.label} <span className="mono">{g.key}</span><span className="faint" style={{ fontWeight: 500 }}>{g.items.length}</span></h4>
+              <h4><Icon name={GROUP_ICON[g.key] || 'filetext'} size={14} />{g.label} <span className="faint" style={{ fontWeight: 500 }}>{g.items.length}</span></h4>
               <div className="card">
                 {g.items.map((m) => (
                   <FileRow
@@ -438,8 +434,8 @@ export default function ResourcesPage({ route }) {
             <div className="evd-grp rs-fbgrp">
               <h4>
                 <Icon name="msg" size={14} />外部反馈<span className="faint" style={{ fontWeight: 500 }}>{feedback.length}</span><span className="sp" />
-                <span className="evd-plg" data-pop="由「反馈演进」插件提供；未启用时不显示这个分组" onClick={() => navigate(pagePath('plugin-detail'), { pack: 'evolution' })}>
-                  <Icon name="puzzle" size={12} />插件 · 反馈演进
+                <span className="evd-plg" data-pop="由「反馈演进」插件提供" onClick={() => navigate(pagePath('plugin-detail'), { pack: 'evolution' })}>
+                  <Icon name="puzzle" size={12} />
                 </span>
               </h4>
               <div className="card">
@@ -448,9 +444,8 @@ export default function ResourcesPage({ route }) {
                     key={fb.id} fb={fb} picked={selFeedback?.id === fb.id} onPick={(x) => setSel({ kind: 'feedback', id: x.id })}
                     onHandle={() => handleFb(fb)} onSetState={(s) => setFbState(fb, s)}
                   />
-                )) : <div className="evd-fb xs muted">还没有外部反馈。发布后，评测服务和线上反馈会回传到这里。</div>}
+                )) : <div className="evd-fb xs muted">还没有外部反馈</div>}
               </div>
-              <div className="xs faint mt4">反馈只作为建模输入，不是资料原文；处理时助手会先说明要改什么，等你确认。</div>
             </div>
           ) : null}
         </div>
