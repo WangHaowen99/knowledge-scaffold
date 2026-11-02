@@ -1,14 +1,15 @@
-"""文件与检索（API 契约 3.5）：F-01～F-08；报告详情与条目（RP-02、RP-03，报告即 reports/ 下的文件）。"""
+"""文件与检索（API 契约 3.5）：F-01～F-08；报告（RP-01～RP-06，见 services/reports.py）。"""
 
 from __future__ import annotations
 
 import csv
+import json
 import subprocess
 from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from ..api import deps
 from ..api.errors import ApiError
@@ -226,7 +227,9 @@ def _hit_target(group: str, rel: str, project_id: str | None = None) -> tuple[di
     if group == "materials":
         return {"kind": "material", "path": rel}, "resources", Path(rel).name
     if group == "reports":
-        return {"kind": "report", "report_id": rel.removeprefix("reports/").removesuffix(".md")}, "reports", stem
+        from ..services import reports
+
+        return {"kind": "report", "report_id": reports.id_of(rel)}, "reports", stem
     if group == "knowledge":
         return {"kind": "knowledge", "id": stem}, "knowledge", stem
     return {"type": "unknown", "key": stem, "title": stem}, "artifacts", stem
@@ -306,59 +309,112 @@ def reverse_query(project_id: str, request: Request, kind: str = "", term: str =
     return {"markdown": "\n\n".join(outputs)}
 
 
-# ---- RP-02 报告详情、RP-03 报告条目（报告即 reports/ 下的 Markdown） ----
+# ---- 报告（RP-01～RP-06）：reports/ 下的检查报告、research/ 下的资料分析报告、内核算的链接检查 ----
+
+ITEM_STATUSES = ("expert", "fixing", "pending", "fixed")
 
 
-def _report(project_id: str, request: Request, report_id: str) -> tuple[str, dict]:
-    from ..services import report_items
+def _report_call(func, *args, **kwargs):
+    from ..services import reports
 
-    rel = f"reports/{report_id.strip('/')}.md"
-    if ".." in rel.split("/"):
-        raise ApiError("path_forbidden", "路径越界", 403, {"path": rel})
-    data = deps.workspaces.read_file(project_id, rel, TEXT_PREVIEW_BYTES)
-    return rel, report_items.parse(data["content"])
+    try:
+        return func(*args, **kwargs)
+    except reports.ReportError as exc:
+        raise ApiError(exc.code, str(exc), exc.status, exc.details) from exc
 
 
-def _item_view(item: dict) -> dict:
-    return {
-        "id": str(item.get("id")),
-        "group": item.get("group", ""),
-        "text_md": item.get("text", ""),
-        "level": item.get("severity", "error"),
-        "status": "pending",
-    }
+@router.get("/reports")
+def report_list(project_id: str, request: Request, type: str = "", cursor: str = "", limit: int = 0):
+    """RP-01：新的在前；type 可多值（逗号分隔）。"""
+    from ..services import reports
+
+    deps.require_owner(project_id, request)
+    types = [item for item in type.split(",") if item]
+    rows = reports.listing(deps.workspaces, project_id, types)
+    page = deps.page(rows, cursor, limit, {"type": sorted(types)}, default=50)
+    return {"items": page["items"], "next_cursor": page["next_cursor"]}
+
+
+@router.post("/reports/recheck")
+async def report_recheck(project_id: str, request: Request):
+    """RP-06：链接检查同步算（200 {report}），其余发校验命令（202 {command_task}）。"""
+    from ..services import reports
+    from . import sessions as session_routes
+
+    root = deps.require_writable(project_id, request)
+    body = await deps.json_body(request)
+    kind = str(body.get("kind") or "")
+    mode = str(body.get("mode") or "regression")
+    if kind not in (*reports.RECHECK_COMMANDS, "link"):
+        raise ApiError("invalid_argument", "kind 只能是 rule、semantic、link、coverage、diagram", 400,
+                       {"fields": {"kind": "enum"}})
+    if mode not in ("regression", "full"):
+        raise ApiError("invalid_argument", "mode 只能是 regression 或 full", 400, {"fields": {"mode": "enum"}})
+    if kind == "link":
+        return {"report": _report_call(reports.link_check, deps.workspaces, project_id)}
+    payload = {"command": reports.RECHECK_COMMANDS[kind], "origin": {"page": "reports", "label": "重新校验"},
+               "text": "只查改动" if mode == "regression" else "", "conversation_id": "-"}
+    response = await session_routes.dispatch_command(project_id, root, request, payload)
+    return JSONResponse(status_code=202, content={"command_task": json.loads(response.body)["task"]})
 
 
 @router.get("/reports/{report_id:path}/items")
-def report_items(project_id: str, report_id: str, request: Request, cursor: str = "", limit: int = 0):
+def report_items(project_id: str, report_id: str, request: Request, status: str = "", level: str = "",
+                 cursor: str = "", limit: int = 0):
+    """RP-03：counts 按全部条目算，不受筛选影响。"""
+    from ..services import reports
+
     deps.require_owner(project_id, request)
-    _rel, parsed = _report(project_id, request, report_id)
-    items = [_item_view(item) for item in parsed.get("items") or []]
+    if status and status not in ITEM_STATUSES:
+        raise ApiError("invalid_argument", "status 取值不对", 400, {"fields": {"status": "enum"}})
+    if level and level not in ("error", "warning"):
+        raise ApiError("invalid_argument", "level 只能是 error 或 warning", 400, {"fields": {"level": "enum"}})
+    items = _report_call(reports.all_items, deps.workspaces, project_id, report_id)
     counts = {
         "error": sum(1 for item in items if item["level"] == "error"),
         "warning": sum(1 for item in items if item["level"] == "warning"),
-        "fixed": 0,
+        "fixed": sum(1 for item in items if item["status"] == "fixed"),
     }
-    page = deps.page(items, cursor, limit, {"report": report_id}, default=100)
+    picked = [item for item in items if (not status or item["status"] == status) and (not level or item["level"] == level)]
+    page = deps.page(picked, cursor, limit, {"report": report_id, "status": status, "level": level}, default=100)
     return {"items": page["items"], "next_cursor": page["next_cursor"], "counts": counts}
+
+
+@router.get("/reports/{report_id:path}/raw")
+def report_raw(project_id: str, report_id: str, request: Request):
+    """RP-04：报告原文。"""
+    from ..services import reports
+
+    deps.require_owner(project_id, request)
+    return _report_call(reports.raw, deps.workspaces, project_id, report_id)
+
+
+@router.post("/reports/{report_id:path}/fix")
+async def report_fix(project_id: str, report_id: str, request: Request):
+    """RP-05：把还没修复的条目发给助手（同 S-20，发校验命令并带上条目）；不传 item_ids 是全部未修复的。"""
+    from ..services import reports
+    from . import sessions as session_routes
+
+    root = deps.require_writable(project_id, request)
+    body = await deps.json_body(request)
+    wanted = body.get("item_ids")
+    if wanted is not None and (not isinstance(wanted, list) or not all(isinstance(item, str) for item in wanted)):
+        raise ApiError("invalid_argument", "item_ids 要是文字列表", 400, {"fields": {"item_ids": "list"}})
+    items = _report_call(reports.all_items, deps.workspaces, project_id, report_id)
+    targets = [item for item in items if item["status"] != "fixed" and (wanted is None or item["id"] in wanted)]
+    if not targets:
+        raise ApiError("invalid_argument", "没有要修复的条目", 400, {"fields": {"item_ids": "fixed"}})
+    rel = reports.rel_of(report_id) if report_id != reports.LINK_ID else "链接检查报告"
+    lines = "\n".join(f"{n}. {item['code'] + ' ' if item['code'] else ''}{item['text']}" for n, item in enumerate(targets, 1))
+    payload = {"command": "/ontology-validate", "origin": {"page": "reports", "label": "发给助手"},
+               "text": f"修复报告 {rel} 里的这些条目，改完重新检查：\n{lines}", "conversation_id": "-"}
+    return await session_routes.dispatch_command(project_id, root, request, payload)
 
 
 @router.get("/reports/{report_id:path}")
 def report_detail(project_id: str, report_id: str, request: Request):
-    """报告的结构化视图：报告格式登记（C13，P2）之前按现有的启发式解析给摘要与条目。"""
-    root = deps.require_owner(project_id, request)
-    rel, parsed = _report(project_id, request, report_id)
-    items = [_item_view(item) for item in parsed.get("items") or []]
-    return {
-        "id": report_id,
-        "path": rel,
-        "title": Path(rel).stem,
-        "type": "codegen" if "candidates" in parsed else None,
-        "summary": parsed.get("summary", ""),
-        "last_change": last_change(root, rel),
-        "items": items[:100],
-        "item_total": len(items),
-        "repair": None,
-        "arbitration": None,
-        "extras": {key: value for key, value in parsed.items() if key not in ("items", "summary")},
-    }
+    """RP-02：契约 7.10 Report；资料分析报告的 extras 是资料读取结果（MaterialMap 的摘要）。"""
+    from ..services import reports
+
+    deps.require_owner(project_id, request)
+    return _report_call(reports.detail, deps.workspaces, project_id, report_id)
