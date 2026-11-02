@@ -82,3 +82,29 @@ def test_suspension_notifications_replace_within_a_run(tmp_path, monkeypatch):
     stored = notifications.list_notifications("alice")
     assert len(stored) == 1 and stored[0]["body"] == "2 个"
     assert pushed[1]["replaces"] == [pushed[0]["id"]]
+
+
+def test_pause_and_resume_refresh_the_run_suggestions(ab):
+    """暂停后运行对话的建议条只有「运行详情」，续跑后回到三个控制（不再停在暂停前的那一份）。"""
+    from tests.autobuild_helpers import history
+
+    client, _workspaces, project_id, _root = ab
+    release = gate("/ontology-extract-object:s1")
+    run = start(client, project_id, **ONE)
+    wait_until(lambda: "/ontology-extract-object slice=s1" in AutoEngine.sent)
+    base = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}"
+    assert client.post(f"{base}/pause").status_code == 200
+    release.set()
+    wait_state(client, project_id, run["run_id"], "paused")
+
+    def last_bar():
+        bars = [event["data"] for event in history(client, project_id, run["conversation_id"])
+                if event["type"] == "suggestions.updated"]
+        return bars[-1] if bars else {}
+
+    wait_until(lambda: last_bar().get("primary") is None and last_bar().get("mode") == "autobuild_controls")
+    assert [item["id"] for item in last_bar()["secondary"]] == ["autobuild_details"]
+    assert client.post(f"{base}/resume").status_code == 200
+    wait_until(lambda: (last_bar().get("primary") or {}).get("id") == "pause" or
+               run_of(client, project_id, run["run_id"])["state"] == "completed")
+    wait_state(client, project_id, run["run_id"], "completed")

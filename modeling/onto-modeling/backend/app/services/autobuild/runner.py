@@ -778,6 +778,7 @@ class AutobuildRunner:
         _manager().set_run(project_id, None)
         hint.clear(project_id)
         self._updated(run)
+        self._post_controls(run)
         self._refresh(project_id)
         await self.admit()
 
@@ -935,6 +936,7 @@ class AutobuildRunner:
             if state not in ("paused", "interrupted"):
                 raise ApiError("autobuild_not_running", "运行不在可以续跑的状态", 409, {"state": state})
             run = store.update(project_id, run_id, lambda record: record.update(state="queued", resume_pending=False))
+            self._post_controls(run)
             await self.admit()
             return run_view(store.get(project_id, run_id) or run)
         allowed = {"pause": ("running", "queued"), "stop": ("running", "queued", "pausing", "paused", "interrupted"),
@@ -949,6 +951,7 @@ class AutobuildRunner:
         if state == "queued":
             run = store.update(project_id, run_id, lambda record: record.update(state="paused"))
             self._updated(run)
+            self._post_controls(run)
             return run_view(run)
 
         def change(record: dict) -> None:
@@ -1033,6 +1036,18 @@ class AutobuildRunner:
             _manager().append_record(run["project_id"], run["conversation_id"], record)
         except Exception:  # noqa: BLE001 - 对话删了：卡片不更新
             _log.warning("运行对话追加失败（%s）", run["project_id"], exc_info=True)
+
+    def _post_controls(self, run: dict) -> None:
+        """暂停、续跑之后运行对话的建议条（EC-53）跟着换：暂停时只有「运行详情」，在跑时是三个控制（与 FL-02 同一份）。"""
+        from ..flow import view
+
+        context = {"autobuild_paused": True} if run["state"] in ("paused", "interrupted") else {"autobuild": True}
+        try:
+            suggestions = view.build(_ws().project_root(run["project_id"]), context=context)["suggestions"]
+        except Exception:  # noqa: BLE001 - 建议条算不出不影响运行
+            _log.warning("运行对话的建议条没算出来（%s）", run["project_id"], exc_info=True)
+            return
+        self._post(run, {"type": "suggestions", "payload": suggestions})
 
     def _post_card(self, run: dict, card: dict) -> None:
         posted = card["card_id"] in (run.get("cards") or [])

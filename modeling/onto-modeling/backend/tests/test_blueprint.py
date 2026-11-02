@@ -332,6 +332,9 @@ def test_blueprint_in_the_research_changeset_is_edited_in_the_copy_and_confirm_m
     assert changesets.current(workspaces, project_id) is None or \
         changesets.current(workspaces, project_id)["state"] in ("open", "pending_confirm")
     assert "Onto-Changeset: cs-1" in git(root, "log", "--format=%B", "-4")
+    # I1 合并：确认之后蓝图卡所在对话的建议条跟着换，不再停在「确认蓝图」
+    bars = [event["payload"] for event in manager.get_history(project_id, "default") if event.get("type") == "suggestions"]
+    assert bars and (bars[-1].get("primary") or {}).get("id") != "confirm_blueprint"
 
 
 def test_saving_while_the_assistant_runs_is_423(env, monkeypatch):

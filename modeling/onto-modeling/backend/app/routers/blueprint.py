@@ -23,10 +23,21 @@ async def announce(project_id: str) -> None:
     from ..services import project_events
     from ..services.agent_sessions import manager
 
+    from .changesets import _suggestions_after_close
+
+    conversations = set()
     for conversation_id, item in await asyncio.to_thread(service.card_updates, deps.workspaces, project_id):
         try:
             manager.append_record(project_id, conversation_id, item)
+            conversations.add(conversation_id)
         except Exception:  # noqa: BLE001 - 对话已删除：卡片不更新
+            continue
+    # 蓝图卡所在对话的建议条跟着换（确认之后不再是「确认蓝图 / 调整切片」）
+    suggestions = await asyncio.to_thread(_suggestions_after_close, project_id) if conversations else None
+    for conversation_id in sorted(conversations) if suggestions is not None else ():
+        try:
+            manager.append_record(project_id, conversation_id, {"type": "suggestions", "payload": suggestions})
+        except Exception:  # noqa: BLE001 - 同上
             continue
     project_events.schedule_flow_refresh(project_id, delay=0)
 
