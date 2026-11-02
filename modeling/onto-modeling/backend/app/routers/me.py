@@ -1,7 +1,6 @@
-"""个人（API 契约 3.2 A-06、A-07、A-09～A-11）：修改密码、我的资料、我的模型配置。
+"""个人（API 契约 3.2 A-06～A-11、A-13、A-14）：修改密码、我的资料、偏好、我的模型配置、通知。
 
-用户一律取令牌里的用户名，请求体里的用户名不认。偏好、通知、用户事件流（A-08、A-12～A-14）
-属于以后阶段。
+用户一律取令牌里的用户名，请求体里的用户名不认（本地模式是空用户名）。用户事件流 A-12 在 routers/events.py。
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from ..api import deps
 from ..api.errors import ApiError
-from ..services import auth, personal_model_settings
+from ..services import auth, notifications, personal_model_settings
 
 router = APIRouter(prefix="/api/v1/me", tags=["me"])
 
@@ -144,3 +143,46 @@ def delete_my_model_settings(engine: str, request: Request):
     username = _username(request)
     personal_model_settings.clear(username, engine)
     return personal_engine_view(username, engine)
+
+
+# ---- A-08 偏好 ----
+
+
+@router.get("/preferences")
+def get_preferences(request: Request):
+    return notifications.get_preferences(_username(request))
+
+
+@router.put("/preferences")
+async def put_preferences(request: Request):
+    """A-08：整体替换，返回保存后的对象。"""
+    body = await deps.json_body(request)
+    try:
+        return notifications.save_preferences(_username(request), body)
+    except notifications.PreferenceError as exc:
+        raise ApiError("invalid_argument", str(exc), 400, {"fields": exc.fields}) from exc
+
+
+# ---- A-13、A-14 通知 ----
+
+
+@router.get("/notifications")
+def list_notifications(request: Request, unread_only: bool = False, cursor: str = "", limit: int = 0):
+    """A-13：最新在前，默认 20 条；保留 30 天。"""
+    username = _username(request)
+    items = notifications.list_notifications(username, unread_only=unread_only)
+    page = deps.page(items, cursor, limit, {"unread_only": unread_only}, default=20)
+    return {"items": page["items"], "next_cursor": page["next_cursor"],
+            "unread_count": notifications.unread_count(username)}
+
+
+@router.post("/notifications/read")
+async def read_notifications(request: Request):
+    """A-14：ids 与 all 二者必选其一。"""
+    body = await deps.json_body(request)
+    ids = body.get("ids")
+    if ids is not None and (not isinstance(ids, list) or not all(isinstance(item, str) for item in ids)):
+        raise ApiError("invalid_argument", "ids 要是字符串数组", 400, {"fields": {"ids": "array"}})
+    if not ids and body.get("all") is not True:
+        raise ApiError("invalid_argument", "ids 与 all 二者必选其一", 400, {"fields": {"ids": "required"}})
+    return {"unread_count": notifications.mark_read(_username(request), ids, all_items=body.get("all") is True)}
