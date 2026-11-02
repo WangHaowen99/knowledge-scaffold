@@ -237,7 +237,7 @@ def sessions(request: Request):
             "events": len(session.events),
             "idle_ms": int((now - session.last_activity) * 1000) if state == "idle" else None,
             "queue_position": manager.queue_position(project_id),
-            "autobuild": False,
+            "autobuild": bool(getattr(session, "run_id", None)),
         })
     return {
         "config": {
@@ -321,6 +321,9 @@ def overview(request: Request, range: str = "14d"):  # noqa: A002  契约查询�
         active += 0 if meta.get("archived") else 1
         projects.append(project_meta_view(meta, root, disk_bytes=workspace_size(root)))
     projects.sort(key=lambda item: item.get("disk_bytes") or 0, reverse=True)
+    from ..services.autobuild import limits
+
+    autobuild_runs = _autobuild_runs()
     pool = pool_view()
     advice = []
     if disk["warn"]:
@@ -337,7 +340,7 @@ def overview(request: Request, range: str = "14d"):  # noqa: A002  契约查询�
                 "queued": pool["queued"], "idle_ttl_s": pool["idle_ttl_s"],
             },
             "projects": {"total": active + archived, "active": active, "archived": archived},
-            "autobuild": {"running": 0, "limit": None},
+            "autobuild": {"running": len(autobuild_runs), "limit": limits.max_runs()},
             "cost": {"total": money(total_cost), "this_month": month_usage(now=now)["cost"]},
             "disk": {
                 "free_pct": disk["free_pct"], "free_bytes": disk["free"],
@@ -347,12 +350,49 @@ def overview(request: Request, range: str = "14d"):  # noqa: A002  契约查询�
         "advice": advice,
         "usage_daily": usage_report(USAGE_RANGES[range]),
         "alerts": [],
-        "autobuild_runs": [],
-        "autobuild_today": {"completed": 0, "avg_duration_ms": None, "avg_cost": money(None), "stopped_by_budget": 0},
+        "autobuild_runs": autobuild_runs,
+        "autobuild_today": _autobuild_today(now),
         "startup": _startup_summary(),
         "users": users,
         "projects": projects,
     }
+
+
+def _autobuild_runs() -> list[dict]:
+    """O-01 运行中的自主构建（元数据视图，不含项目内容）。"""
+    from ..services.autobuild import budget, store, views
+
+    items = []
+    for run in store.all_runs(("queued", *store.RUNNING)):
+        meta = _meta_or_none(run["project_id"])
+        if meta is None:
+            continue
+        summary = views.summary(run)
+        done, total = summary["slices"]["done"], summary["slices"]["total"]
+        items.append({
+            "project": project_meta_view(meta, deps.workspaces.project_root(run["project_id"])),
+            "run_no": run["run_no"], "elapsed_ms": summary["elapsed_ms"],
+            "progress": {"done": done, "total": total, "pct": round(done * 100 / total) if total else 0},
+            "budget_used_pct": round(max(budget.used_pct(run).values() or [0]), 1),
+            "cost": summary["cost"]["used"], "budget": summary["cost"]["budget"], "state": run["state"],
+        })
+    return items
+
+
+def _autobuild_today(now: float) -> dict:
+    """O-01 今天结束的自主构建：完成数、平均用时与费用、因预算停下的次数。"""
+    from ..services.autobuild import budget, store, views
+
+    start = now - (now % 86400)
+    ended = [run for run in store.all_runs(store.ENDED) if float(run.get("ended_at") or 0) >= start]
+    completed = [run for run in ended if run["state"] == "completed"]
+    currency = views.currency_of(ended[0]) if ended else BILLING_CURRENCY
+    durations = [budget.elapsed_ms(run) for run in completed]
+    costs = [float((run.get("budget") or {}).get("cost") or 0) for run in completed]
+    return {"completed": len(completed),
+            "avg_duration_ms": int(sum(durations) / len(durations)) if durations else None,
+            "avg_cost": {"amount": round(sum(costs) / len(costs), 2) if costs else None, "currency": currency},
+            "stopped_by_budget": sum(1 for run in ended if run["state"] == "budget_exhausted")}
 
 
 # ---- O-13 健康详情 ----

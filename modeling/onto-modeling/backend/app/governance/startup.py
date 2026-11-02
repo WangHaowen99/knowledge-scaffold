@@ -31,6 +31,11 @@ def _register_gauges() -> None:
     telemetry.register_gauge("onto_sessions_active", manager.active_count)
     telemetry.register_gauge("onto_sessions_queued", lambda: len(manager.pool_status()["waiting"]))
     telemetry.register_gauge("onto_maintenance_active", lambda: int(ops_state.maintenance_active()))
+    # 自主构建（详设 8.5 可观测）：在跑的运行数、复核时被改掉的比例（没复核过时不出）
+    from ..services.autobuild import review, store
+
+    telemetry.register_gauge("onto_autobuild_running", lambda: len(store.all_runs(store.RUNNING)))
+    telemetry.register_gauge("onto_autobuild_rejudge_ratio", review.review_ratio)
 
 
 async def after_recovery():

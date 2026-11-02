@@ -197,7 +197,11 @@ class AutobuildRunner:
         return self._admit_lock
 
     async def admit(self) -> None:
-        """有名额就按先来后到开始排队的运行（同时运行数上限 SY-17）。"""
+        """有名额就按先来后到开始排队的运行（同时运行数上限 SY-17）；维护期间不开新的。"""
+        from ...governance import ops_state
+
+        if ops_state.rejects_new_sessions():
+            return
         async with self._lock():
             slots = limits.max_runs()
             busy = len(store.all_runs(store.RUNNING))
@@ -843,6 +847,14 @@ class AutobuildRunner:
     def _in_slice(run: dict) -> bool:
         return any(info.get("state") == "running" for info in (run.get("slices") or {}).values())
 
+    def pause_all_at_safe_point(self) -> int:
+        """进入维护模式（O-21 `autobuild=pause_at_safe_point`）：在跑的运行做完这一片就暂停。"""
+        runs = store.all_runs(store.RUNNING)
+        for run in runs:
+            store.update(run["project_id"], run["run_id"],
+                         lambda record: record.setdefault("flags", {}).update(safe_pause=True))
+        return len(runs)
+
     # ------------------------------------------------------------------
     # 运行中的补充说明、自动决定
     # ------------------------------------------------------------------
@@ -1024,7 +1036,7 @@ def startup_sweep(manager) -> dict:
         if updated is not None:
             changed.append(updated)
     if not changed:
-        return {"id": "autobuild_runs", "title": "自主构建", "result": "ok", "tone": "ok", "detail": "没有停机时在跑的运行"}
+        return None  # 没有停机时在跑的运行：不进报告（同 agent 提交钩子、助手副本）
     per_project: dict[str, int] = {}
     for run in changed:
         per_project[run["project_id"]] = per_project.get(run["project_id"], 0) + 1

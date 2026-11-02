@@ -218,3 +218,8 @@ def test_restart_resumes_from_the_checkpoint(ab, monkeypatch):
         assert report["recovered_restarts"] == 1
         # 第 2 片的操作按执行记录续跑（续跑指令带原命令）
         assert any(text.startswith("/ontology-extract-operation 继续上次没做完") for text in AutoEngine.sent)
+        # 启动自检报告（O-35）记了这一项
+        from app.services import startup_report
+
+        item = next(entry for entry in startup_report.latest()["items"] if entry["id"] == "autobuild_runs")
+        assert item["tone"] == "fix" and "1 次启动后自动续跑" in item["detail"]

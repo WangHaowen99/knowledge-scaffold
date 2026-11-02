@@ -65,18 +65,46 @@ def _slices(root) -> dict | None:
         return None
 
 
+_CARD_RUN_STATE = {"stopping": "running", "converting": "running", "interrupted": "paused",
+                   "budget_exhausted": "stopped", "failed": "stopped", "converted": "completed"}
+
+
+def _autobuild_card(project_id: str) -> tuple[dict | None, str | None]:
+    """项目卡片上的自主构建（契约 7.3 ProjectCard.autobuild）：没结束的运行，或结束了还有要复核的那次。
+    返回 (卡片字段, 状态标签 autobuild|autobuild_done)。"""
+    from ..services.autobuild import budget, store, views
+
+    runs = store.runs(project_id)
+    run = next((item for item in runs if item["state"] in store.ACTIVE), None)
+    tag = "autobuild"
+    if run is None:
+        run = runs[0] if runs else None
+        if run is None or not views.summary(run)["needs_review"]:
+            return None, None
+        tag = "autobuild_done"
+    summary = views.summary(run)
+    done, total = summary["slices"]["done"], summary["slices"]["total"]
+    eta = summary["est_total_ms"] - summary["elapsed_ms"] if summary["est_total_ms"] else None
+    return {"run_id": run["run_id"], "run_no": run["run_no"], "state": _CARD_RUN_STATE.get(run["state"], run["state"]),
+            "slice_done": done, "slice_total": total, "progress_pct": round(done * 100 / total) if total else 0,
+            "eta_ms": max(0, eta) if eta is not None else None, "decisions": summary["decisions"],
+            "suspended": summary["suspended"], "budget_used_pct": round(max(budget.used_pct(run).values() or [0]), 1),
+            "needs_review": summary["needs_review"], "duration_ms": summary["elapsed_ms"]}, tag
+
+
 def _card(meta: dict) -> dict:
     root = deps.workspaces.workspaces_dir / meta["id"]
     card = views.project_meta(meta, root)
     archived = bool(meta.get("archived"))
+    autobuild, tag = (None, None) if archived else _autobuild_card(meta["id"])
     card.update({
         "industry_label": None,
         "slices": _slices(root),
         "inbox_count": 0,
-        "status": ["archived"] if archived else ["active"],
-        "autobuild": None,
+        "status": ["archived"] if archived else ["active", *([tag] if tag else [])],
+        "autobuild": autobuild,
         "publishable": None,
-        "landing_page": "wb-l2",
+        "landing_page": "l4-run" if tag == "autobuild" else "wb-l2",
     })
     return card
 
@@ -103,6 +131,8 @@ def list_projects(
         counts["archived" if card["archived"] else "all"] += 1
         if not card["archived"]:
             counts["active"] += 1
+        if "autobuild" in card["status"]:
+            counts["autobuild"] += 1
     needle = q.strip().lower()
 
     def wanted(card: dict) -> bool:
