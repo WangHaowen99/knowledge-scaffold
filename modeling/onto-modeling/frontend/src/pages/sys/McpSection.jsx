@@ -15,9 +15,8 @@ import {
 const AUTH_OPTIONS = [{ value: 'none', label: '不鉴权' }, { value: 'bearer', label: 'Bearer Token' }];
 
 function ToolsCard({ server, tested }) {
-  if (!server) {
-    return <Card title="提供的工具" icon="terminal"><div className="sm muted">还没有全局 MCP 服务器。</div></Card>;
-  }
+  // 没有服务器时上面的表格已经说了「还没有全局 MCP 服务器」，这里不再重复
+  if (!server) return null;
   const t = tested[server.name];
   const tools = mcpTools(server, tested);
   const at = t?.at || server.last_test_at;

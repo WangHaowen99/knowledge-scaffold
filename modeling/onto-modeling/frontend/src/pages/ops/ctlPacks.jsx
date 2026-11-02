@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { useApp } from '../../app/context.js';
 import { navigate } from '../../app/router.js';
 import {
-  Button, Card, Chip, Icon, Inp, OverlayHostCtx, Prog, Seg, Table, useEscape,
+  Button, Card, Chip, Icon, Inp, OverlayHostCtx, Prog, Table, useEscape,
 } from '../../ui/index.jsx';
 import { ConfirmModal, Missing, ViewChip } from './ctlParts.jsx';
 import {
@@ -19,7 +19,8 @@ function RolloutButton({ item, act, onApply, busy }) {
   const pop = useRef(null);
   const [at, setAt] = useState(null);
   const [pct, setPct] = useState(String(item.rollout_pct ?? 0));
-  const [by, setBy] = useState(item.rollout_by || 'project');
+  // 按租户灰度本期回 501（O-26 rollout_not_available）：用不了的选项不出，只按项目
+  const by = 'project';
   const close = () => setAt(null);
   const place = () => {
     const r = btn.current.getBoundingClientRect();
@@ -39,7 +40,6 @@ function RolloutButton({ item, act, onApply, busy }) {
   }, [shown]);
   const open = () => {
     setPct(String(item.rollout_pct ?? 0));
-    setBy(item.rollout_by || 'project');
     setAt(place());
   };
   const problem = rolloutProblem(pct);
@@ -53,7 +53,6 @@ function RolloutButton({ item, act, onApply, busy }) {
       </div>
       <div className="row mt8" style={{ gap: 8 }}>
         <Inp w="96px" value={pct} onChange={(e) => setPct(e.target.value.replace(/[^\d]/g, ''))} error={!!problem} inputMode="numeric" after={<span className="faint xs">%</span>} />
-        <Seg items={[['project', '按项目'], ['tenant', '按租户']]} value={by} onChange={setBy} />
       </div>
       {problem ? <div className="xs mt4" style={{ color: 'var(--red)' }}>{problem}</div> : null}
       <div className="row mt12" style={{ justifyContent: 'flex-end', gap: 6 }}>
