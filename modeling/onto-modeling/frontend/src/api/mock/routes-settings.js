@@ -45,6 +45,7 @@ export function register(ctx) {
     if (!db.settings.has(pid)) {
       // ?mock=off:<包名>[+<包名>]：一开始就停用这些能力（插件页的「本项目没有启用」空状态用）
       const off = (sc.off || '').split(/[+\s]+/).filter(Boolean); // 地址里的 + 会解码成空格
+      if (sc.evidence === 'off') off.push('reverse'); // ?mock=evidence:off：系统逆向建模包不在（本期后端没有这个包）
       const packs = projectPacks().map((p) => (off.includes(p.name) && p.status !== 'required' ? { ...p, status: 'disabled', locked_version: p.locked_version } : p));
       db.seedProjectPacks?.(pid, packs); // 插件中心的 mock 状态（routes-plugins.js 的 ?mock=plugins:…）在这里改初始能力表
       db.settings.set(pid, { packs, servers: mcpServers(), tokens: mcpTokens(), rev: 1 });
