@@ -1,4 +1,4 @@
-"""I1 联调收尾：插件详情的插入节点（PL-02 flow_insertions）、导出器能不能关（O-11 editable）、对话出处角标（message.assistant anchors）。"""
+"""I1 联调收尾：插件详情的插入节点（PL-02 flow_insertions）、导出器能不能关（O-11）、对话出处角标（message.assistant anchors）、发布记录事件（EP-19）。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from pathlib import Path
 from app import config
 from app.services.packs import builtin, catalog
 from app.services.workspace import WorkspaceManager
+from tests.test_release_publish import manager  # noqa: F401  （夹具按名字注入）
 
 
 def test_flow_insertions_carry_title_and_segment(tmp_path: Path):
@@ -46,3 +47,23 @@ def test_assistant_citations_become_anchors():
     plain = "见说明[^1]\n\n[^1]: 这是一句补充"
     assert timeline.split_citations(plain) == (plain, [])
     assert timeline.split_citations("没有出处") == ("没有出处", [])
+
+
+def test_release_updated_on_publish(manager, monkeypatch):
+    """EP-19：发布之后项目流发 release.updated（发布页按它实时合并记录）。"""
+    from fastapi.testclient import TestClient
+
+    from app.api import deps
+    from app.main import app
+    from app.services import auth, streams
+    from tests.test_event_streams import buffered
+    from tests.test_release_publish import rich_project
+
+    monkeypatch.setattr(deps, "workspaces", manager)
+    monkeypatch.setattr(auth, "ENABLED", False)
+    streams.reset_all()
+    pid, _root = rich_project(manager)
+    response = TestClient(app).post(f"/api/v1/projects/{pid}/releases", json={})
+    assert response.status_code == 201
+    events = buffered(pid, "release.updated")
+    assert events and events[-1]["data"]["release"]["version"] == response.json()["version"]
