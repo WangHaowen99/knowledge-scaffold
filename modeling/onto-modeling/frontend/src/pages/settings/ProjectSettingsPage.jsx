@@ -1,4 +1,4 @@
-// 项目设置（设计稿 proj-settings）：左侧分区导航 + 基本信息、引擎与模型、构建方式（含自主构建策略与开始入口）、
+// 项目设置（设计稿 proj-settings）：左侧分区导航 + 基本信息、引擎与模型、构建方式、自主构建策略（含开始入口）、
 // 能力与插件、助手可用的 MCP、对外 MCP 接口、危险操作。
 // 地址参数：?section=basic|engine|build-mode|autobuild|plugins|mcp-servers|mcp|danger 滚到并高亮对应分区；
 // ?dialog=start 直接走「开始自主构建」（AB-03 预览 → 确认 → AB-04），⌘K 用它。
@@ -141,7 +141,7 @@ export default function Page({ route }) {
 
   return (
     <ShellP active="proj-settings">
-      <PageHead eyebrow={meta?.name} title={PAGE_TITLES['proj-settings']} desc="改动保存后，能力切换从下一条消息开始生效。" />
+      <PageHead title={PAGE_TITLES['proj-settings']} />
       <div className="evd-ps" ref={rootRef}>
         <nav className="evd-pn">
           {SECTIONS.map((s) => (
@@ -153,7 +153,7 @@ export default function Page({ route }) {
         <div className="evd-pc">
           {!ready ? <div className="card pad muted sm">正在读取项目设置…</div> : (
             <>
-              {archived ? <Note tone="amber" icon="archive">项目已归档，只能查看：设置都不能改。要继续建模，先在下面的「危险操作」里恢复。</Note> : null}
+              {archived ? <Note tone="amber" icon="archive">项目已归档，只读。在「危险操作」里恢复。</Note> : null}
               <BasicSection archived={archived} />
               <EngineSection d={d} put={put} archived={archived} active={active} />
               <BuildSection d={d} put={put} reload={reload} archived={archived} active={active} autoStart={autoStart} onAutoStarted={() => setAutoStart(false)} />

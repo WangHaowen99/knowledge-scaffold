@@ -9,7 +9,7 @@ import {
   Button, Chip, Icon, Menu, Note, Table, useOutside,
 } from '../../ui/index.jsx';
 import {
-  CATEGORY_LABEL, pendingSummary, rowActions, statusChip, switchToast, uiCell,
+  pendingSummary, rowActions, statusChip, switchToast, uiCell,
 } from './settingsModel.js';
 
 const UI_ICON = { page: 'layout', kernel: 'layout', subpages: 'folder' };
@@ -68,7 +68,7 @@ export function PacksSection({ d, reload, archived }) {
     const st = statusChip(p);
     const acts = rowActions(p);
     return [
-      <div key="n"><b>{p.label}</b><div className="xs faint">{CATEGORY_LABEL[p.category] || p.category}</div></div>,
+      <b key="n">{p.label}</b>,
       <UiCell key="u" ui={p.ui} />,
       <span key="l" className="mono b" style={{ fontSize: 12 }}>{p.locked_version}</span>,
       p.latest_available && p.latest_available !== p.locked_version
@@ -95,7 +95,7 @@ export function PacksSection({ d, reload, archived }) {
   return (
     <div className="card" data-sec="plugins">
       <div className="card-h">
-        <h3>能力与插件</h3><span className="sub">本项目用的版本固定下来，升级由你决定</span><span className="sp" />
+        <h3>能力与插件</h3><span className="sp" />
         <Button size="sm" kind="primary" icon="plus" onClick={() => navigate(pagePath('plugins'))}>添加能力</Button>
       </div>
       <div className="card-b">
@@ -104,8 +104,6 @@ export function PacksSection({ d, reload, archived }) {
           <Note tone="red" className="mb12">装配失败，本项目保持原来的版本：{assembly.last_error.message}（错误编号 {assembly.last_error.error_id}）</Note>
         ) : null}
         {d.packs ? <Table compact cols={['能力', '界面', '锁定版本', '最新可用', '状态', '']} rows={rows} /> : <Note tone="red">本项目的能力没有读出来，刷新页面再试。</Note>}
-        <div className="mt12"><Note tone="blue" icon="info">升级从下一条消息开始生效，正在进行的一轮按旧版本跑完。包之间不兼容时拒绝切换，不会切到一半；装配失败只影响这个项目，并保持原来的版本。</Note></div>
-        <div className="mt8"><Note tone="gray" icon="layout">停用带页面的能力，对应页面会从左栏消失；已经产生的内容留在知识包里，重新启用后回来。</Note></div>
       </div>
     </div>
   );

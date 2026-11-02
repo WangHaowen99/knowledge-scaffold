@@ -57,10 +57,10 @@ export function BasicSection({ archived }) {
       </div>
       <div className="card-b">
         <div className="grid2">
-          <Field label="项目名称" hint={problem ? <span style={{ color: 'var(--red)' }}>{problem}</span> : '重名时会提示改名'}>
+          <Field label="项目名称" hint={problem ? <span style={{ color: 'var(--red)' }}>{problem}</span> : null}>
             <Inp value={form.name} error={!!problem} disabled={archived} maxLength={220} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
           </Field>
-          <Field label="知识包名" hint="发布时作为包名，创建后不能改">
+          <Field label="知识包名">
             <Inp mono value={meta.package_name || ''} readOnly after={<Icon name="lock" size={14} />} title="知识包名创建后不能改" />
           </Field>
         </div>
@@ -99,7 +99,7 @@ export function EngineSection({ d, put, archived, active }) {
       const r = await api.setEngine(pid, { engine: confirm.id });
       put('engine', (x) => ({ ...x, engine: r.engine }));
       setMeta({ ...meta, engine: r.engine, engine_label: confirm.label });
-      toast(`已切换到${confirm.label}，下一条消息用新引擎启动`, 'cpu');
+      toast(`已切换到${confirm.label}`, 'cpu');
       setConfirm(null);
     } catch (e) {
       toast(errorText(e), 'alert');
@@ -110,7 +110,7 @@ export function EngineSection({ d, put, archived, active }) {
 
   return (
     <div className="card" data-sec="engine">
-      <div className="card-h"><h3>引擎与模型</h3><span className="sub">每个项目同一时刻只有一个在线引擎</span></div>
+      <div className="card-h"><h3>引擎与模型</h3></div>
       <div className="card-b">
         <div className="grid2">
           {cards.map((c) => (
@@ -131,23 +131,20 @@ export function EngineSection({ d, put, archived, active }) {
         <div className="row mt12 g12">
           <div className="grow">
             <Field label="模型">
-              <div className="inp sel ps-src" title="模型配置跟着你的账号走，在个人设置里改">
+              <div className="inp sel ps-src">
                 <Icon name="key" size={14} /><span className="grow ell">{modelSourceText(source, cfg)}</span>
               </div>
             </Field>
           </div>
           <div style={{ alignSelf: 'flex-end' }}><Button size="sm" onClick={() => navigate(pagePath('me'), { section: 'model' })}>改我的模型配置</Button></div>
         </div>
-        <div className="mt12">
-          <Note tone="amber">切换引擎会关闭本项目的全部会话：当前会话会重启，下一条消息用新引擎启动。稳定引擎从空白上下文开始；内测引擎回放历史续上上下文。部署里没装的引擎会标「当前部署未安装」。</Note>
-        </div>
       </div>
       {confirm ? (
         <Modal
-          open onClose={() => setConfirm(null)} icon="cpu" title={`切换到${confirm.label}？`} sub="下一条消息用新引擎启动" w={480}
+          open onClose={() => setConfirm(null)} icon="cpu" title={`切换到${confirm.label}？`} w={480}
           foot={<><Button onClick={() => setConfirm(null)}>取消</Button><Button kind="primary" disabled={busy} onClick={go}>切换引擎</Button></>}
         >
-          <Note tone="amber">本项目的全部会话会关闭，正在进行的一轮会被中断。{confirm.label}{confirm.resume === 'replay' ? '回放历史续上上下文' : '从空白上下文开始'}。</Note>
+          <Note tone="amber">本项目的会话会关闭，正在进行的一轮会中断。</Note>
         </Modal>
       ) : null}
     </div>

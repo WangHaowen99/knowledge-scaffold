@@ -4,20 +4,20 @@ import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
 import { register as registerAutobuild } from '../src/api/mock/routes-autobuild.js';
 import { actionsOf, extensionState, register as registerSettings } from '../src/api/mock/routes-settings.js';
-import { projectPacks, remainingText } from '../src/api/mock/settings-data.js';
+import { mcpServers, projectPacks, remainingText } from '../src/api/mock/settings-data.js';
 import {
   activeSection, advancedSummary, basicPatch, budgetOptions, budgetPct, createdText, defaultConfigTab, engineCards, finalizePolicy,
   fmtDuration, fmtMoney, fmtTokens, isRecommended, lastRunText, modelSourceText, moveItem, nameProblem, packToolsText, parseScope,
   parseWindow, pendingSummary, policyBody, policyDirty, policyForm, rowActions, scopeLabel, sectionTarget, sliceRows, startBlocker,
-  statusChip, switchToast, thresholdAt, thresholdPos, tokenBody, tokenProblems, toolList, toolsText, uiCell, windowText,
+  statusChip, switchToast, thresholdAt, thresholdPos, tokenBody, tokenProblems, toolList, toolsText, uiCell, visibleMcp, windowText,
 } from '../src/pages/settings/settingsModel.js';
 
 const P = `/api/v1/projects/${F.MAIN_PID}`;
 
 // ---------- 页面纯逻辑 ----------
-test('分区参数：工作台、蓝图、插件页的跳转都能落到分区，autobuild 落到构建方式里的策略', () => {
+test('分区参数：工作台、蓝图、插件页的跳转都能落到分区，autobuild 落到自主构建策略分区（R11 单列一个分区）', () => {
   assert.deepEqual(sectionTarget('build-mode'), { nav: 'build-mode', anchor: 'build-mode' });
-  assert.deepEqual(sectionTarget('autobuild'), { nav: 'build-mode', anchor: 'autobuild' });
+  assert.deepEqual(sectionTarget('autobuild'), { nav: 'autobuild', anchor: 'autobuild' });
   assert.deepEqual(sectionTarget('plugins'), { nav: 'plugins', anchor: 'plugins' });
   assert.deepEqual(sectionTarget('mcp'), { nav: 'mcp', anchor: 'mcp' });
   assert.deepEqual(sectionTarget('packs'), { nav: 'plugins', anchor: 'plugins' });
@@ -40,14 +40,15 @@ test('基本信息：只提交改了的字段，重名给候选，创建来源',
   assert.match(createdText(meta), /^2026-10-0\d · 来自新建向导$/);
 });
 
-test('引擎卡：界面只显示标签；没装的标「当前部署未安装」；模型来源的说法', () => {
+test('引擎卡：界面只显示标签；内测引擎不再挂「内测」小标签（名字已说明）；没装的标「当前部署未安装」；模型来源的说法', () => {
   const cards = engineCards(F.engines({ betaInstalled: false }), 'claude');
   assert.deepEqual(cards.map((c) => [c.label, c.on, c.installed, c.badge?.[0], c.reason]), [
     ['稳定引擎', true, true, '推荐', null],
-    ['内测引擎', false, false, '内测', '当前部署未安装'],
+    ['内测引擎', false, false, undefined, '当前部署未安装'],
   ]);
   assert.ok(cards.every((c) => !JSON.stringify([c.label, c.desc]).includes('claude')));
-  assert.equal(cards[1].desc, '轻量 · 回放历史续上上下文');
+  assert.equal(cards[1].desc, '轻量');
+  assert.equal(cards[0].desc, '功能最完整');
   assert.equal(modelSourceText('personal', { model: 'model-x' }), '使用我的模型配置 · model-x');
   assert.equal(modelSourceText('admin', F.modelSettings().engines.claude), '使用管理员配置 · model-standard');
   assert.equal(modelSourceText('deployment'), '使用部署默认配置');
@@ -123,13 +124,13 @@ test('能力表：界面列、状态 chip、行内按钮与设计稿一致', () 
   assert.deepEqual(uiCell(by('core').ui), { kind: 'kernel', text: '内核：工作台 · Studio · 资料 · 发布' });
   assert.deepEqual(uiCell(by('trace').ui), { kind: 'page', text: '左栏页面：场景走查' });
   assert.deepEqual(uiCell(by('reverse').ui), { kind: 'subpages', text: '资料页 3 个子页', pop: '业务系统数据源、采集与快照、证据浏览器' });
-  assert.equal(uiCell(by('industry-retail').ui).text, '无独立页面');
+  assert.deepEqual(uiCell(by('industry-retail').ui), { kind: 'none', text: '—' });
   assert.deepEqual(statusChip(by('core')), { tone: 'blue', icon: 'lock', text: '必装' });
   assert.equal(statusChip(by('trace')).text, '0.10.0 下一条消息生效');
-  assert.equal(statusChip(by('trace')).pop, '已排队：用户发下一条消息前切换，正在进行的一轮按旧版本跑完');
+  assert.equal(statusChip(by('trace')).pop, '下一条消息前切换');
   assert.equal(statusChip(by('migrate')).text, '已停用');
   const labels = (n) => { const r = rowActions(by(n)); return [r.note || null, r.buttons.map((b) => b.label), r.more.map((b) => b.label)]; };
-  assert.deepEqual(labels('core'), ['不能停用', [], []]);
+  assert.deepEqual(labels('core'), [null, [], []]);
   assert.deepEqual(labels('trace'), [null, ['撤销切换'], []]);
   assert.deepEqual(labels('knowledge'), [null, ['停用'], []]);
   assert.deepEqual(labels('solver'), [null, ['回滚', '停用'], []]);
@@ -152,7 +153,12 @@ test('MCP：工具的写法、对外工具排序、包贡献工具、权限范�
   assert.deepEqual(tools, ['object_list', 'object_get', 'object_change_validate', 'object_change_apply', 'object_delete', 'rule_get']);
   assert.equal(packToolsText([{ name: 'flow.get' }, ...['search', 'show', 'where-used', 'lineage', 'diff', 'er'].map((t) => ({ name: `evidence.${t}` }))]), 'flow.get、evidence.*（6）');
   assert.deepEqual(['ontology.read', 'ontology.change.validate', 'ontology.change.apply'].map(scopeLabel), ['ontology.read', 'change.validate', 'change.apply']);
-  assert.deepEqual(tokenProblems({ name: ' ', scopes: [] }), { name: '写一个用途，方便以后认出它', scopes: '至少选一个' });
+  assert.deepEqual(tokenProblems({ name: ' ', scopes: [] }), { name: '请填写名称', scopes: '至少选一个' });
+  // 证据源本期不开放：EV-01 读不到时不列内置的 evidence 服务器与 evidence.* 工具；读得到时照常
+  assert.deepEqual(visibleMcp(mcpServers(), false).map((s) => s.name), ['flow', 'replenish-std-lookup', 'mermaid-render']);
+  assert.equal(visibleMcp(mcpServers(), true).length, 4);
+  assert.deepEqual(visibleMcp([{ name: 'flow.get' }, { name: 'evidence.search' }], false).map((x) => x.name), ['flow.get']);
+  assert.deepEqual(visibleMcp(undefined, false), []);
   assert.deepEqual(tokenBody({ name: ' 联调 ', scopes: ['ontology.read'], ttl: '0' }), { name: '联调', scopes: ['ontology.read'], expires_in_s: null });
   assert.equal(tokenBody({ name: 'x', scopes: ['ontology.read'], ttl: '1' }).expires_in_s, 86400);
   assert.equal(defaultConfigTab(['ontology.read']), 'r');
