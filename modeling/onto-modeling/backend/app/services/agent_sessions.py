@@ -675,7 +675,8 @@ class SessionManager:
         text = (text or "").strip()
         if not text:
             raise SessionError("消息不能为空")
-        _ensure_no_autobuild(project_id, (meta or {}).get("autobuild_run"))
+        autobuild_run = (meta or {}).get("autobuild_run")
+        _ensure_no_autobuild(project_id, autobuild_run)
         engine_cls = self._engine_class_for(project_id)
         if engine_cls.name == "claude":
             # Claude 引擎沿用模块级开关（测试可 monkeypatch SDK_AVAILABLE）
@@ -694,7 +695,9 @@ class SessionManager:
 
         await asyncio.to_thread(quota.check_before_turn, project_id, username, "tokens")
         async with self._lock:
-            await asyncio.to_thread(quota.check_before_turn, project_id, username, "concurrency", self._sessions)
+            if not autobuild_run:
+                # 自主构建的会话不算用户的并发会话（审查 F）：同时运行数由平台限制（SY-17）管
+                await asyncio.to_thread(quota.check_before_turn, project_id, username, "concurrency", self._sessions)
             session = await self._bind_session(project_id, conversation_id)
             self._bind_model_owner(session, owner, engine_cls.name)
             session.sending += 1

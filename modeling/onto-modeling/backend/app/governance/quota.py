@@ -526,8 +526,8 @@ class QuotaService:
         sessions = dict(sessions)
         result = []
         for project_id, session in sessions.items():
-            if project_id == exclude or not _holds_engine(session):
-                continue
+            if project_id == exclude or not _holds_engine(session) or getattr(session, "run_id", None):
+                continue  # 自主构建的会话不算（同时运行数由平台限制管）
             if (self.project_owner(project_id) or LOCAL_USER) == owner:
                 result.append(project_id)
         return result
