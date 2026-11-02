@@ -441,7 +441,7 @@ class ClaudeEngine(ObservableEngine):
         self.client: Any = None
         self.resume_attempted = False
         # 宿主注入（方案 B4）：经 SDK 的 UserPromptSubmit 回调在后端进程里算，替代原来的两个 shell hook
-        self._injector = ctx.injector or injection.Injector(ctx.cwd)
+        self._injector = ctx.injector or injection.Injector(ctx.cwd, ctx.conversation_id)
         self._received_any = False
         self._sdk_session_id: str | None = None
         self._fingerprint = ""

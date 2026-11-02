@@ -68,7 +68,10 @@ async def put_project_engine(project_id: str, request: Request, body: dict = Bod
     from ..services.agent_sessions import manager
     from ..services.engines import ENGINE_NAMES, get_engine_class
 
+    from ..services.autobuild import store as autobuild_store
+
     deps.require_writable(project_id, request)
+    autobuild_store.ensure_no_run(project_id)
     name = str(body.get("engine") or "").strip()
     if name not in ENGINE_NAMES or not get_engine_class(name).available():
         raise ApiError("engine_unavailable", "所选引擎在当前部署不可用", 409, {"engine": name})
@@ -79,10 +82,13 @@ async def put_project_engine(project_id: str, request: Request, body: dict = Bod
 
 
 def _build_mode(project_id: str) -> dict:
+    from ..services.autobuild import store as autobuild_store
+
+    run = autobuild_store.active(project_id)
     return {
         "build_mode": deps.workspaces.get_project(project_id).get("build_mode") or "L2",
-        "autobuild_running": False,  # 自主构建运行器（B12，P3）之前没有运行
-        "run_id": None,
+        "autobuild_running": run is not None,
+        "run_id": run["run_id"] if run else None,
     }
 
 

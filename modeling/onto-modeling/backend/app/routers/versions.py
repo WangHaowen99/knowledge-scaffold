@@ -69,7 +69,10 @@ def list_versions(project_id: str, request: Request, source: str = "", cursor: s
 @router.post("/revert")
 async def revert(project_id: str, request: Request):
     """整树恢复到目标版本，之后新增的文件一并删除；生成新版本，历史保留。"""
+    from ..services.autobuild import store as autobuild_store
+
     root = deps.require_writable(project_id, request)
+    autobuild_store.ensure_no_run(project_id)
     body = await deps.json_body(request)
     result = deps.workspaces.revert_to(project_id, str(body.get("commit") or ""), author=deps.actor(request))
     target = result["reverted_to"]

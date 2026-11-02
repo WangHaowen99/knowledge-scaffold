@@ -330,6 +330,12 @@ class Session:
     last_day: str = ""
     # 刚被打断：这一轮随后出的 result 不覆盖「打断之后」的建议条
     keep_suggestions: bool = False
+    # 自主构建（方案 B13）：这条对话正在跑的运行；运行中不驱逐、不回收，确认卡由策略作答，不出续跑卡
+    run_id: str | None = None
+    # 状态变了通知会话池（自主构建的运行器按条件等这一轮结束）
+    on_change: Any = field(default=None, repr=False)
+    # 一轮出了 result、收尾（执行记录、变更集）还没做完：这期间状态已是 idle，等它的不能当成这一轮结束了
+    finishing: bool = False
 
     @property
     def client(self) -> Any:
@@ -366,6 +372,8 @@ class Session:
                             "reason": reason})
             if not self.discarded:
                 project_events.conversation_changed(self.project_id, self.conversation_id)
+            if self.on_change is not None:
+                self.on_change()
 
     def show_state(self, state: str) -> None:
         """只给界面看的状态（等你回答 waiting_user）：不改会话池调度用的 state。"""
@@ -388,6 +396,7 @@ def _recyclable(session: "Session") -> bool:
         and not session.pending_permissions
         and not session.pending_prompts
         and not session.sending
+        and not session.run_id
     )
 
 
@@ -407,7 +416,7 @@ def _mark_interrupted(session: "Session", reason: str, message: str) -> None:
         session.turn.finish("interrupted")
         session.broadcast(session.turn.progress_record())
     session.turn = None
-    record, card = turns.interrupt_exec(session, _EXEC_REASONS.get(reason, "engine_exit"), card=True)
+    record, card = turns.interrupt_exec(session, _EXEC_REASONS.get(reason, "engine_exit"), card=not session.run_id)
     now = time.time()
     session.broadcast({"type": "session_interrupted", "reason": reason, "message": message, "ts": now,
                        **turns.interrupted_fields(record)})
@@ -505,11 +514,41 @@ class SessionManager:
         self._watchers: dict[tuple[str, str], set[asyncio.Queue]] = {}
         # 最近一次被你打断的执行（S-08 的响应带它）
         self.interrupted_execs: dict[tuple[str, str], dict | None] = {}
+        # 自主构建（方案 B13）：项目 → 正在跑的运行；各项目一个信号，状态变了、一轮结束时置位
+        self._runs: dict[str, str] = {}
+        self._signals: dict[str, asyncio.Event] = {}
 
     def _spawn(self, coro) -> None:
         task = asyncio.create_task(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    # ---- 自主构建（方案 B13）----
+
+    def set_run(self, project_id: str, run_id: str | None) -> None:
+        """项目进入或离开自主构建：运行中的会话不驱逐、不回收，确认卡由策略作答。"""
+        if run_id:
+            self._runs[project_id] = run_id
+        else:
+            self._runs.pop(project_id, None)
+        session = self._sessions.get(project_id)
+        if session is not None:
+            session.run_id = run_id or None
+
+    def run_of(self, project_id: str) -> str | None:
+        return self._runs.get(project_id)
+
+    def signal(self, project_id: str) -> asyncio.Event:
+        """这个项目的会话状态变了、一轮结束时置位（运行器清掉后按条件等）。"""
+        event = self._signals.get(project_id)
+        if event is None:
+            event = self._signals[project_id] = asyncio.Event()
+        return event
+
+    def _wake(self, project_id: str) -> None:
+        event = self._signals.get(project_id)
+        if event is not None:
+            event.set()
 
     # ---- 事件流订阅 ----
 
@@ -680,6 +719,8 @@ class SessionManager:
                 id=uuid.uuid4().hex[:12],
                 project_id=project_id,
                 conversation_id=conversation_id,
+                run_id=self._runs.get(project_id),
+                on_change=lambda: self._wake(project_id),
             )
             # 续接历史，seq 连续
             session.events = load_history(project_id, conversation_id)
@@ -797,6 +838,8 @@ class SessionManager:
         }
         if meta.get("command"):
             record["command"] = meta["command"]
+        if meta.get("hidden"):
+            record["hidden"] = True  # 自主构建运行器发的步骤：不进对话流，只留给续接回放
         if display != text:
             record["prompt"] = text
         session.broadcast(record)
@@ -884,12 +927,12 @@ class SessionManager:
             save_resume_token=save_token,
             clear_resume_token=lambda: clear_resume_id(project_id, conversation_id),
             log_error=lambda kind, text: self._log_error(session, kind, text),
-            load_history=lambda: list(session.events),
+            load_history=lambda: _since_context_reset(session.events),
             conversation_id=conversation_id,
             model_owner=session.model_owner,
             assembly_dir=_assembly_dir(session.cwd),
             # 宿主注入（方案 B4）：每个引擎实例一份注入状态，两个引擎同一份内容
-            injector=injection.Injector(session.cwd) if session.cwd is not None else None,
+            injector=injection.Injector(session.cwd, conversation_id) if session.cwd is not None else None,
             engine_instance=session.engine_instance,
         )
         return engine_cls(ctx)
@@ -1008,7 +1051,7 @@ class SessionManager:
         """
         self._sessions.pop(session.project_id, None)
         if session.exec_id and not session.discarded:
-            _, card = turns.interrupt_exec(session, reason, card=True)
+            _, card = turns.interrupt_exec(session, reason, card=not session.run_id)
             if card is not None:
                 session.broadcast(card)
         session.set_state("closed")
@@ -1077,8 +1120,8 @@ class SessionManager:
             if _unfinished(session):
                 _mark_interrupted(session, "shutdown", SHUTDOWN_INTERRUPT_MESSAGE)
             elif session.exec_id and not session.discarded:
-                # 命令还在等你的下一句：停机后续不上，记为中断并放续跑卡
-                _, card = turns.interrupt_exec(session, "shutdown", card=True)
+                # 命令还在等你的下一句：停机后续不上，记为中断并放续跑卡（自主构建的由运行器续跑，不放）
+                _, card = turns.interrupt_exec(session, "shutdown", card=not session.run_id)
                 if card is not None:
                     session.broadcast(card)
         engines = []
@@ -1277,7 +1320,18 @@ class SessionManager:
         title: str | None,
         description: str | None,
     ) -> dict:
-        """确认卡（EC-30）与决策卡（AskUserQuestion → EC-32 question.asked）。等待期间界面显示「等你回答」。"""
+        """确认卡（EC-30）与决策卡（AskUserQuestion → EC-32 question.asked）。等待期间界面显示「等你回答」。
+
+        自主构建运行中（方案 B13）：交给登记的策略立即作答并记台账，不等人。
+        """
+        if session.run_id and _policy_responder is not None:
+            try:
+                decision = await _policy_responder(session, tool_name, tool_input, title, description)
+            except Exception:  # noqa: BLE001 - 策略作答失败按原流程等人
+                _log.exception("项目 %s 的自主构建代答失败", session.project_id)
+                decision = None
+            if decision is not None:
+                return decision
         request = PendingPermission(
             id=uuid.uuid4().hex[:12],
             tool_name=tool_name,
@@ -1475,7 +1529,8 @@ class SessionManager:
                 session.round_base_tree = (record or {}).get("tree") or ""
                 # 只做了影响分析（只写了不进版本的 update-plan.json）的一轮也收清单，变更集编号之后补上（审查第 8 条）
                 record = await asyncio.to_thread(_capture_change_list, session, record) or record
-            if running or record is None or record.get("card_tree") == record.get("tree"):
+            if running or record is None or record.get("card_tree") == record.get("tree") or session.run_id:
+                # 自主构建的一片不出「这一轮改了什么」卡：自动合入，进展在切片进展块里
                 return
             # 这一轮的起点：一轮开始时取的树；取不到时退回上一张卡时的树、变更集基点
             start = start_tree or record.get("card_tree") or record.get("base") or ""
@@ -1509,7 +1564,8 @@ class SessionManager:
             if kind == "_engine_end":
                 # 引擎终止：closed（重启/终止）静默收尾，error 给用户出错卡
                 if event.get("reason") == "closed":
-                    _, card = await asyncio.to_thread(turns.interrupt_exec, session, "engine_exit", card=True)
+                    _, card = await asyncio.to_thread(turns.interrupt_exec, session, "engine_exit",
+                                                      card=not session.run_id)
                     if card is not None:
                         session.broadcast(card)
                     session.set_state("closed")
@@ -1522,8 +1578,12 @@ class SessionManager:
                 await self._drain_waiters()
                 return
             if kind == "result":
-                if await self._finish_turn(session, event, getattr(engine, "name", "")):
-                    return
+                try:
+                    if await self._finish_turn(session, event, getattr(engine, "name", "")):
+                        return
+                finally:
+                    session.finishing = False
+                    self._wake(session.project_id)
                 continue
             # 宿主拆开引擎事件：助手正文、每个工具调用、「工作过程」组各一条记录（session_host/timeline）
             for record, transient in timeline.ingest(session.current_turn(), event):
@@ -1545,6 +1605,7 @@ class SessionManager:
         返回 True 表示待重载的会话已断开，读循环结束。
         """
         failed = bool(event.get("is_error")) or str(event.get("subtype") or "").startswith("error")
+        session.finishing = True
         turn = session.turn
         if turn is not None and turn.steps and turn.state == "running":
             turn.finish("interrupted" if session.interrupting else "failed" if failed else "done")
@@ -1588,7 +1649,7 @@ class SessionManager:
             session.broadcast(session.turn.progress_record())
         session.turn = None
         session.deferred.clear()
-        _, card = turns.interrupt_exec(session, "engine_exit", card=True)
+        _, card = turns.interrupt_exec(session, "engine_exit", card=not session.run_id)
         if card is not None:
             session.broadcast(card)
         from .session_host import command_tasks
@@ -1618,6 +1679,27 @@ class SessionManager:
             stop.add_done_callback(self._tasks.discard)
             await asyncio.shield(stop)
         await self._drain_waiters()
+
+
+_policy_responder = None
+
+
+def register_policy_responder(responder) -> None:
+    """自主构建（方案 B13）：运行中的确认卡、决策卡由它立即作答——
+    `await responder(session, tool_name, tool_input, title, description)` 返回给引擎的决定，None 表示照常等人。"""
+    global _policy_responder
+    _policy_responder = responder
+
+
+CONTEXT_RESET = "context_reset"
+
+
+def _since_context_reset(events: list[dict]) -> list[dict]:
+    """历史回放续接（Jiuwen）只从最近一次「新开上下文」之后取：自主构建每片新开上下文，不把前几片的对话塞回去。"""
+    for index in range(len(events) - 1, -1, -1):
+        if events[index].get("type") == CONTEXT_RESET:
+            return list(events[index + 1:])
+    return list(events)
 
 
 def usage_summary(project_id: str) -> dict:
@@ -1735,20 +1817,23 @@ def _capture_change_list(session: Session, record: dict | None) -> dict | None:
 
 
 def _purge_changesets(project_id: str) -> None:
-    """删除项目：变更集记录与助手副本目录一起清掉。"""
+    """删除项目：变更集记录与助手副本目录、节点与切片状态、变更清单、人工节点的问题、蓝图卡登记、
+    自主构建的运行记录一起清掉。"""
     from ..kernel.changesets import service as changesets
 
     try:
         from ..api import deps
-
+        from .autobuild.runner import runner as autobuild_runner
+        from .flow import blueprint, change_lists, node_kinds
         from .flow import state as node_state
-
-        from .flow import change_lists
 
         root = Path(deps.workspaces.workspaces_dir) / project_id
         changesets.purge(root)
         node_state.purge(root)
         change_lists.purge(root)
+        node_kinds.purge(root)
+        blueprint.purge(root)
+        autobuild_runner.forget(project_id)
     except Exception:  # noqa: BLE001 - 清不干净的由启动核对兜底
         _log.warning("清除项目 %s 的变更集失败", project_id, exc_info=True)
 

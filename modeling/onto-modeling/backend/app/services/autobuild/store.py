@@ -135,3 +135,15 @@ def find_suspension(project_id: str, suspension_id: str) -> tuple[dict, dict] | 
 def purge(project_id: str) -> None:
     with _lock:
         shutil.rmtree(project_dir(project_id), ignore_errors=True)
+
+
+def ensure_no_run(project_id: str, *, conversation_id: str | None = None) -> None:
+    """有运行没结束时，改引擎、发消息、发命令、回退版本、删项目等都回 409 autobuild_running（契约 2.10）。
+
+    conversation_id 给了时只拦这次运行的对话（打断、重启、删对话）。"""
+    from ...api.errors import ApiError
+
+    run = active(project_id)
+    if run is None or (conversation_id is not None and run.get("conversation_id") != conversation_id):
+        return
+    raise ApiError("autobuild_running", "自主构建运行中", 409, {"run_id": run["run_id"]})

@@ -12,6 +12,8 @@
   （原 `knowledge_signal_probe.sh`），没启用这个包的项目不提示。规则由登记的数据源算
   （`register_prompt_hint_provider`，启动时在 `app/wiring.py` 登记；Jiuwen worker 进程自己登记一份）。
 
+- 自主构建（方案 B12）：运行中给这条对话注入片说明、台账摘要与用户补充，每条都带（`register_autobuild_hint_provider`）。
+
 宿主给每个引擎实例建一个 `Injector`（经 EngineContext 交给引擎）：引擎在消息真正送到模型的那一刻
 调 `context_for(原文)`——Claude 在 send() 时，Jiuwen 在轮内积压的消息开始跑时——阶段与下一步按
 那一刻算。实例的第一条消息必带阶段与下一步，之后内容不变不重复；这一轮被打断（模型不一定看到了）
@@ -93,6 +95,7 @@ def build_context(
     user_text: str,
     session_start: bool,
     last_injected: str | None,
+    conversation_id: str | None = None,
 ) -> InjectionResult:
     """引擎无关的注入入口：一条用户消息送达模型前调用一次（同步，会起子进程）。
 
@@ -111,22 +114,24 @@ def build_context(
         if session_start or digest != last_injected:
             stage_part = hint
     rules = prompt_hint(project_root, user_text)
-    text = "\n\n".join(part for part in (stage_part, rules) if part)
+    autobuild = autobuild_hint(project_root, conversation_id)
+    text = "\n\n".join(part for part in (stage_part, autobuild, rules) if part)
     return InjectionResult(text=text, digest=digest, stage_hint=stage_part, prompt_hint=rules)
 
 
 class Injector:
     """一个引擎实例的注入状态（宿主建、交给引擎）：第一条必带，之后内容不变不重复。"""
 
-    def __init__(self, project_root: Path):
+    def __init__(self, project_root: Path, conversation_id: str | None = None):
         self.project_root = Path(project_root)
+        self.conversation_id = conversation_id
         self.started = False
         self.digest: str | None = None
 
     def context_for(self, user_text: str) -> str:
         """消息送到模型前调一次（同步，会起子进程）；返回要放在消息前面的注入文本。"""
         result = build_context(self.project_root, user_text=user_text, session_start=not self.started,
-                               last_injected=self.digest)
+                               last_injected=self.digest, conversation_id=self.conversation_id)
         self.started = True
         self.digest = result.digest
         return result.text
@@ -257,3 +262,25 @@ def prompt_hint(project_root: Path, user_text: str) -> str:
         _log.warning("项目 %s 的提示规则算不出来，本条不带", Path(project_root).name, exc_info=True)
         return ""
     return "\n\n".join(hint for hint in hints if hint)
+
+
+# ---- 自主构建（方案 B12）----
+
+_autobuild_hint_provider: "Callable[[Path, str | None], str] | None" = None
+
+
+def register_autobuild_hint_provider(provider: "Callable[[Path, str | None], str] | None") -> None:
+    """自主构建的注入：(助手工作目录, 对话) → 片说明与台账摘要；不在运行中返回空串。"""
+    global _autobuild_hint_provider
+    _autobuild_hint_provider = provider
+
+
+def autobuild_hint(project_root: Path, conversation_id: str | None) -> str:
+    provider = _autobuild_hint_provider
+    if provider is None:
+        return ""
+    try:
+        return provider(Path(project_root), conversation_id) or ""
+    except Exception:  # noqa: BLE001 - 注入是增强信息
+        _log.warning("项目 %s 的自主构建注入算不出来，本条不带", Path(project_root).name, exc_info=True)
+        return ""

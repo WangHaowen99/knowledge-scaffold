@@ -771,11 +771,12 @@ def discard(manager, project_id: str, changeset_id: str, *, actor: str) -> dict:
     return {"state": "discarded", "record": record}
 
 
-def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, source: str = "revert") -> dict:
+def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, source: str = "revert",
+                  keep: tuple[str, ...] = ()) -> dict:
     """撤回一个已经合入的变更集（P3 自主构建「按片撤回」）：在主线上写它的反向提交。
 
     合入之后别的提交又改到了同一实体时不撤（`merge_conflict`，details 列出实体），免得把后来的修改一起撤掉。
-    返回 {commit, version_label}。
+    keep 里的路径不撤（自主构建撤回一片时的建模蓝图：后面的片合入时也会改它）。返回 {commit, version_label}。
     """
     from ..writepath import ChangeTx, Origin
 
@@ -788,7 +789,7 @@ def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, so
     if record.get("reverted"):
         raise WorkspaceError("这个变更集已经撤回过", 409, "changeset_closed", {"state": "reverted"})
     parent = f"{commit}^"
-    paths = [(status, rel) for status, rel in worktree.diff(root, parent, commit) if not _derived(rel)]
+    paths = [(status, rel) for status, rel in worktree.diff(root, parent, commit) if not _derived(rel) and rel not in keep]
     with ChangeTx(manager, project_id, Origin(source, actor), summary=f"撤回 {record['id']}",
                   rollback_on_crash=True) as tx:
         later = {rel for _status, rel in worktree.diff(root, commit, tx.base_head)}
@@ -1035,12 +1036,17 @@ def scope_lock(manager, project_id: str) -> dict:
     else:
         reason = "这一轮的修改还没确认，确认生效或撤回之后才能编辑"
         lock_state = "pending_confirm"
+    if record is not None and record.get("source") == "autobuild" and record.get("state") in ("open", "pending_confirm"):
+        # 自主构建的一片（契约 2.4、EP-03）：锁到这一片自动合入为止
+        lock_state = "autobuild_slice"
+        name = (current_slice or {}).get("name") or (node.get("title") if running else "") or ""
+        reason = f"自主构建正在做「{name}」这一片" if sliced else "自主构建正在做这一步"
     since = (record or {}).get("created_at") or exec_record.get("started_at")
     return {
         "state": lock_state,
         "changeset_id": (record or {}).get("id"),
         "conversation_id": (record or {}).get("conversation_id") or state.get("conversation_id"),
-        "run_id": None,
+        "run_id": (record or {}).get("run_id") if lock_state == "autobuild_slice" else None,
         "slice": current_slice if sliced else None,
         "node": {"id": node["id"], "version": node.get("version") or ""} if running and node.get("id") else None,
         "entries": entries,

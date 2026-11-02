@@ -425,6 +425,9 @@ async def delete_project(
     meta = deps.workspaces.get_project(project_id)
     if (body or {}).get("confirm_name") != meta.get("name"):
         raise ApiError("confirm_name_mismatch", "输入的名称与项目名不一致", 400)
+    from ..services.autobuild import store as autobuild_store
+
+    autobuild_store.ensure_no_run(project_id)
     await manager.discard(project_id)
     staged = await asyncio.to_thread(deps.workspaces.stage_delete, project_id)
     await manager.discard(project_id)  # 移走期间并发发消息新建的会话一并清掉

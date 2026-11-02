@@ -98,6 +98,33 @@ def _session_context(project_id: str, conversation_id: str | None) -> dict:
     return context
 
 
+_autobuild_context = None
+
+
+def register_autobuild_context(provider) -> None:
+    """自主构建（B5b）登记：项目 → {"autobuild": True}（运行中，建议条换成运行控制，详设 6.10）、
+    {"autobuild_paused": True}（暂停、中断）或 {}。"""
+    global _autobuild_context
+    _autobuild_context = provider
+
+
+def _run_context(project_id: str) -> dict:
+    if _autobuild_context is None:
+        return {}
+    try:
+        return _autobuild_context(project_id) or {}
+    except Exception:  # noqa: BLE001 - 取不到按没有运行
+        _log.warning("项目 %s 的自主构建状态取不到", project_id, exc_info=True)
+        return {}
+
+
+def _paused_controls() -> dict:
+    """暂停、中断的运行：不推荐下一步，只留「运行详情」（续跑、停在安全点在运行条上）。"""
+    details = {"id": "autobuild_details", "label": "运行详情", "icon": "list", "primary": False, "disabled": False,
+               "reason": "", "priority": 1, "action": {"type": "autobuild", "op": "details"}}
+    return {"mode": "autobuild_controls", "primary": None, "secondary": [details], "all_commands": True}
+
+
 def _changeset_context(root: Path) -> dict | None:
     from ...kernel.changesets import store
 
@@ -224,8 +251,10 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
                 node["display_state"] = node_state.display(changed, node["flags"])
     suggest_context = {"stage": suggest_stage, "changeset": changeset, "blueprint": blueprint_context,
                        "slice_next": (sliced or {}).get("slice_next"),
-                       **_session_context(root.name, conversation_id), **(context or {})}
+                       **_session_context(root.name, conversation_id), **_run_context(root.name), **(context or {})}
     suggestions = suggester.suggest(flow, simple_states, suggest_context)
+    if suggest_context.get("autobuild_paused"):
+        suggestions = _paused_controls()
     progress_nodes = [node for node in nodes if node["counts_in_progress"]]
     result = {
         "flow_hash": flow.get("flow_hash") or "",

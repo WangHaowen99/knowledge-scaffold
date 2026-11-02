@@ -12,6 +12,10 @@
 - 一轮改到的插件产物 → 对话里的产物卡（ADR-0055）：`services/project_events.register_round_card_provider`；
   一轮写出建模蓝图 → 蓝图卡（B4d，ADR-0050）同一个登记点。
 - 包声明的门禁 → 写入事务的门禁链（ADR-0068）：`kernel/writepath.register_gate_checker`。
+- 自主构建（B5b，ADR-0060～0062）：运行中确认卡、决策卡由策略作答（`agent_sessions.register_policy_responder`）；
+  片说明与台账摘要注入（`injection.register_autobuild_hint_provider`）；BP-03 `next=L4` 的开始前预览
+  （`blueprint.register_autobuild_preview`）；运行期间建议条换成运行控制（`view.register_autobuild_context`）；
+  启动恢复的「自主构建」一步。
 
 登记的都是进程内的函数引用，不做 I/O，可以重复调。在建应用时（`app/main.py`）调，而不是在 lifespan 里：
 不开 lifespan 的 TestClient、uvicorn 起的服务看到的是同一套接线。工作区管理器一律调用时再取
@@ -177,6 +181,22 @@ def _artifact_lock(root: Path) -> dict | None:
     return changesets.scope_lock(_workspaces(), root.name)
 
 
+def _autobuild_preview(manager, project_id: str, blueprint_view: dict, *, actor: str) -> dict:
+    """BP-03 `next=L4`：按项目的策略算开始前预览（同 AB-03）。"""
+    from .routers import autobuild
+
+    return autobuild.preview_for(project_id, None)
+
+
+def _autobuild_context(project_id: str) -> dict:
+    from .services.autobuild import store
+
+    run = store.active(project_id)
+    if run is None:
+        return {}
+    return {"autobuild_paused": True} if run["state"] in ("paused", "interrupted") else {"autobuild": True}
+
+
 _extension_differ = None
 
 
@@ -216,6 +236,17 @@ def install() -> None:
     changesets.subscribe(_changeset_event)
     project_events.register_scope_provider(_scope_lock)
     artifact_service.register_lock_provider(_artifact_lock)
+    # 自主构建（B5b）
+    from .governance import startup_recovery
+    from .services import agent_sessions
+    from .services.autobuild import decide, hint, runner
+    from .services.flow import blueprint, view
+
+    agent_sessions.register_policy_responder(decide.respond)
+    injection.register_autobuild_hint_provider(hint.for_engine)
+    blueprint.register_autobuild_preview(_autobuild_preview)
+    view.register_autobuild_context(_autobuild_context)
+    runner.register_steps(startup_recovery.register)
 
 
 def install_worker(data_dir: Path, assets_dir: Path) -> None:
@@ -227,3 +258,6 @@ def install_worker(data_dir: Path, assets_dir: Path) -> None:
     manager = WorkspaceManager(data_dir, assets_dir)
     injection.register_prompt_hint_provider(lambda root, user_text: registry.prompt_hints(manager, root, user_text))
     injection.register_next_step_provider(_next_steps)
+    from .services.autobuild import hint
+
+    injection.register_autobuild_hint_provider(hint.for_engine)

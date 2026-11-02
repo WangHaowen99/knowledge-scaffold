@@ -23,7 +23,7 @@ BELOW_THRESHOLD = ("conservative_assumption", "suspend")
 BELOW_TEXT = {"conservative_assumption": "采用保守选项并记为假设", "suspend": "挂起这一项，跳到下一步"}
 SCOPE_MODES = ("all_pending", "selected")
 NOT_ENFORCED = ("production_collection",)
-DEFAULT_BUDGET = {"max_duration_min": 120, "max_tokens": 3_000_000, "max_cost": 30.0}
+DEFAULT_BUDGET = {"max_duration_min": 120, "max_tokens": 1_000_000, "max_cost": 30.0}
 LIST_MAX = 20
 TEXT_MAX = 60
 # 做到哪一步：这些节点不能作为终点（发布是硬性不做；资料分析在建模之前）
