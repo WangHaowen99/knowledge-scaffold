@@ -177,12 +177,17 @@ def notify(username: str, kind: str, title: str, body: str = "", *, project_id: 
     }
     try:
         with _LOCK:
-            items = [old for old in _load(username, now)
-                     if not (group and old.get("group") == group and old.get("kind") == kind and not old.get("read"))]
+            items, replaced = [], []
+            for old in _load(username, now):
+                if group and old.get("group") == group and old.get("kind") == kind and not old.get("read"):
+                    replaced.append(old["id"])
+                else:
+                    items.append(old)
             items.insert(0, item)
             _write(_dir(username) / "notifications.json", items[:NOTIFICATIONS_MAX])
         view = _view(item)
-        streams.publish_user(username, "notification", view, project_id=project_id)
+        # replaces：这一条替换掉的同组未读通知，前端照着从列表里拿掉、未读数不重复算
+        streams.publish_user(username, "notification", {**view, "replaces": replaced}, project_id=project_id)
         return view
     except Exception:  # noqa: BLE001 - 通知是附带的，失败不影响原操作
         _log.warning("给 %s 发通知失败", username or "本地用户", exc_info=True)
