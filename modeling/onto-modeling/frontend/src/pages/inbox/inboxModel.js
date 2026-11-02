@@ -15,7 +15,8 @@ export const withoutEvidence = (items, evidenceOn) => (evidenceOn ? items : (ite
 export function countsWithoutEvidence(counts, evidenceOn) {
   const n = counts?.by_filter?.evidence_conflict || 0;
   if (evidenceOn || !counts || !n) return counts;
-  return { ...counts, total: counts.total - n, by_filter: { ...counts.by_filter, evidence_conflict: 0 } };
+  const all = counts.by_filter.all != null ? counts.by_filter.all - n : undefined;
+  return { ...counts, total: counts.total - n, by_filter: { ...counts.by_filter, all, evidence_conflict: 0 } };
 }
 
 // 类型 → 设计稿的样式类（k-*）与图标

@@ -152,5 +152,6 @@ test('证据源不可用时不列证据冲突（筛选格、列表、计数）',
   assert.equal(withoutEvidence(items, true).length, 2);
   assert.equal(countsWithoutEvidence(counts, false).total, 16);
   assert.equal(countsWithoutEvidence(counts, false).by_filter.evidence_conflict, 0);
+  assert.equal(countsWithoutEvidence(counts, false).by_filter.all, 16);
   assert.equal(countsWithoutEvidence(counts, true), counts);
 });
