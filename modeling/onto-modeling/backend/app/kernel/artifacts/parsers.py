@@ -405,7 +405,33 @@ def _replace_sections(body: str, sections: dict, order: list[str]) -> str:
     return re.sub(r"\n{3,}", "\n\n", text)
 
 
+def _bullet_lines(label: str, value: str) -> list[str]:
+    value = (value or "").strip("\n")
+    if "\n" in value or value.startswith("- "):
+        # 多行或列表值：标签单独一行，内容缩进两格挂在下面（与模板的「输入」写法一致）
+        return [f"- **{label}**：", *(f"  {line}" if line.strip() else "" for line in value.split("\n"))]
+    return [f"- **{label}**：{value}".rstrip()]
+
+
+def _bullet_spans(lines: list[str]) -> list[tuple[str, int, int]]:
+    """块里的 `- **标签**：值` 列表项：(标签, 起始行, 结束行后一行)；缩进的续行算进去，末尾空行不算。"""
+    spans: list[list] = []
+    current = None
+    for index, line in enumerate(lines):
+        match = _BULLET_RE.match(line.strip()) if not line.startswith((" ", "\t")) else None
+        if match:
+            current = [match.group(1).strip(), index, index + 1]
+            spans.append(current)
+        elif current is not None and line.strip() and line.startswith((" ", "\t")):
+            current[2] = index + 1
+        elif current is not None and line.strip():
+            current = None  # 不缩进的正文（段落、表格、小标题）：列表项到此为止
+    return [(label, start, end) for label, start, end in spans]
+
+
 def _render_section(atype: ArtifactType, previous: str, item_key: str, fields: dict, sections: dict) -> str:
+    """只改目标那一节：标题、登记了的字段与分段对应的列表项；节里别的内容（段落、表格、小标题、
+    没登记的列表项）原样保留。字段、分段在节里还没有对应的列表项时，接在最后一个列表项后面。"""
     lines = previous.splitlines()
     blocks = _section_blocks(previous)
     file_key, _, number = item_key.rpartition("--")
@@ -417,35 +443,57 @@ def _render_section(atype: ArtifactType, previous: str, item_key: str, fields: d
             break
     if target is None:
         raise ParseError(f"文件里找不到 {item_key} 这一项")
-    heading, body, start, end = target
+    heading, _body, start, end = target
     title = fields.get("title")
     if title:
         prefix = heading[: len(heading) - len(_ITEM_PREFIX_RE.sub("", heading))]
         heading = f"{prefix}{title}" if prefix else str(title)
-    values = dict(_bullets(body))
-    field_by_label = {label: name for name, label in atype.field_labels.items()}
-    section_by_label = {label: name for name, label in atype.section_labels.items()}
-    for label in list(values):
-        if field_by_label.get(label) in fields:
-            values[label] = str(fields[field_by_label[label]])
-        name = section_by_label.get(label, label)
+
+    body = lines[start + 1:end + 1]
+    spans = _bullet_spans(body)
+    present = {label for label, _, _ in spans}
+    # 要写的标签 → 值，按模板顺序：登记的分段，再是登记了标签的字段；分段的值优先
+    updates: dict[str, str] = {}
+    for name in atype.sections:
+        label = atype.section_labels.get(name, name)
         if name in sections:
-            values[label] = str(sections[name])
+            updates[label] = str(sections[name])
+        else:
+            field = next((key for key, value in atype.field_labels.items() if value == label), None)
+            if field is not None and fields.get(field) is not None:
+                updates[label] = str(fields[field])
+    for name, label in atype.field_labels.items():
+        if label not in updates and fields.get(name) is not None:
+            updates[label] = str(fields[name])
     for name, value in sections.items():
         label = atype.section_labels.get(name, name)
-        if label not in values and name in atype.sections:
-            values[label] = str(value)
-    rendered = [f"## {heading}", ""]
-    for label, value in values.items():
-        value = (value or "").strip("\n")
-        if "\n" in value or value.startswith("- "):
-            # 多行或列表值：标签单独一行，内容缩进两格挂在下面（与模板的「输入」写法一致）
-            rendered.append(f"- **{label}**：")
-            rendered += [f"  {line}" if line.strip() else "" for line in value.split("\n")]
-        else:
-            rendered.append(f"- **{label}**：{value}".rstrip())
-    rendered.append("")
-    return "\n".join(lines[:start] + rendered + lines[end + 1:]).rstrip("\n") + "\n"
+        if label in present:  # 没登记的分段只改已有的同名列表项
+            updates[label] = str(value)
+    last = {label: (begin, finish) for label, begin, finish in spans}  # 同名的取最后一个（与解析一致）
+    appended = [label for label in updates if label not in present]
+    insert_at = spans[-1][2] if spans else 0
+
+    out: list[str] = []
+    index = 0
+    while index <= len(body):
+        if index == insert_at and appended:
+            chunk = [line for label in appended for line in _bullet_lines(label, updates[label])]
+            if not spans:
+                chunk = [""] + chunk + ([""] if index < len(body) and body[index].strip() else [])
+            out += chunk
+        if index == len(body):
+            break
+        span = next(((label, finish) for label, (begin, finish) in last.items()
+                     if begin == index and label in updates), None)
+        if span is not None:
+            out += _bullet_lines(span[0], updates[span[0]])
+            index = span[1]
+            continue
+        out.append(body[index])
+        index += 1
+    if not spans and not out[-1:] == [""]:
+        out.append("")
+    return "\n".join(lines[:start] + [f"## {heading}"] + out + lines[end + 1:]).rstrip("\n") + "\n"
 
 
 def parse_file(atype: ArtifactType, root: Path, rel: str) -> list[Parsed]:

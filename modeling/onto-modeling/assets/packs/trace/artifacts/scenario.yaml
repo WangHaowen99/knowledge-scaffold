@@ -4,6 +4,8 @@ title: 场景
 path: ontology/testcase/*.md
 format: md-sections
 key: filename
+# 网页新建场景文件时的一级标题（与 templates/testcase-template.md、trace_inputs.parse_source 一致）
+heading: "测试场景：{key}"
 schema:
   version: "1"
   fields:

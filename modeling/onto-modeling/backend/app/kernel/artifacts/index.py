@@ -99,7 +99,7 @@ def entity_path(root: Path, kind: str, name: str) -> Path | None:
 
 def entity_fingerprint(root: Path, kind: str, name: str) -> str | None:
     path = entity_path(root, kind, name)
-    if path is None:
+    if path is None or inside(root, path.relative_to(root).as_posix()) is None:
         return None
     try:
         return sha(path.read_bytes())
@@ -117,6 +117,18 @@ def entry_ref(kind: str, value) -> dict | None:
 # ---- 文件与行 ----
 
 
+def inside(root: Path, rel: str) -> Path | None:
+    """工作区里的一个文件：本身不是符号链接、解析后（含目录链接）仍在项目根目录内才返回，
+    和写入事务的 `_resolve_inside` 同一个口径；否则 None（不读工作区外的东西）。"""
+    path = Path(root) / rel
+    try:
+        if path.is_symlink() or not path.resolve().is_relative_to(Path(root).resolve()):
+            return None
+    except (OSError, RuntimeError):
+        return None
+    return path
+
+
 def _files(atype: ArtifactType, root: Path) -> list[str]:
     base = Path(root) / atype.glob_root() if atype.glob_root() else Path(root)
     if not base.is_dir():
@@ -126,8 +138,8 @@ def _files(atype: ArtifactType, root: Path) -> list[str]:
     pattern = atype.path[len(atype.glob_root()) + 1:] if atype.glob_root() else atype.path
     for path in sorted(base.glob(pattern)):
         rel = path.relative_to(root).as_posix()
-        if path.is_file() and not path.is_symlink() and path.name not in _SKIP_NAMES and rel.startswith(prefix) \
-                and atype.key_from_path(rel) is not None:
+        if path.is_file() and path.name not in _SKIP_NAMES and rel.startswith(prefix) \
+                and atype.key_from_path(rel) is not None and inside(root, rel) is not None:
             out.append(rel)
     return out
 
@@ -170,8 +182,10 @@ def _parse_rows(atype: ArtifactType, root: Path, rel: str) -> list[dict]:
 def _read_index_file(root: Path, rel: str | None) -> dict[str, dict]:
     if not rel:
         return {}
-    path = Path(root) / rel
+    path = inside(root, rel)
     out: dict[str, dict] = {}
+    if path is None:
+        return out
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -187,8 +201,10 @@ def _read_index_file(root: Path, rel: str | None) -> dict[str, dict]:
 
 
 def read_extras(root: Path, rel: str) -> list[dict]:
-    path = Path(root) / rel
+    path = inside(root, rel)
     out = []
+    if path is None:
+        return out
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError):

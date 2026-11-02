@@ -50,6 +50,157 @@ def _write(root: Path, rel: str, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+# ---- 1. 流程图标准保存不丢模型以外的内容 ----
+
+DRAWIO = """<mxfile host="drawio" compressed="false">
+  <diagram id="p1" name="主流程">
+    <mxGraphModel><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="lane" value="门店" style="swimlane;" vertex="1" parent="1"><mxGeometry x="100" y="50" width="400" height="300" as="geometry"/></mxCell>
+      <mxCell id="s" value="开始" style="ellipse;" vertex="1" parent="lane"><mxGeometry x="20" y="40" width="80" height="40" as="geometry"/></mxCell>
+      <mxCell id="a" value="编制补货单" style="rounded=1;fillColor=#ffe6cc;" vertex="1" parent="lane"><mxGeometry x="20" y="120" width="120" height="60" as="geometry"/></mxCell>
+      <mxCell id="note" value="专家批注：这里要区分促销期" style="text;" vertex="1" parent="1"><mxGeometry x="550" y="20" width="200" height="40" as="geometry"/></mxCell>
+      <mxCell id="e1" style="endArrow=classic;" edge="1" parent="lane" source="s" target="a"><mxGeometry relative="1" as="geometry"/></mxCell>
+    </root></mxGraphModel>
+  </diagram>
+  <diagram id="p2" name="异常处理">
+    <mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="x" value="第二页的异常分支" style="rounded=1;" vertex="1" parent="1"><mxGeometry x="0" y="0" width="120" height="60" as="geometry"/></mxCell>
+    </root></mxGraphModel>
+  </diagram>
+</mxfile>
+"""
+
+
+def test_flowchart_standard_save_keeps_lanes_notes_and_other_pages(env):
+    manager, client = env
+    project_id = manager.create_project("流程图")["id"]
+    root = manager.project_root(project_id)
+    _write(root, "ontology/diagrams/补货.drawio", DRAWIO)
+    _commit_all(root)
+    base = f"/api/v1/projects/{project_id}/artifacts/diagram.flowchart/补货"
+    detail = client.get(base).json()
+    model = json.loads(json.dumps(detail["content"]))
+    step = next(node for node in model["nodes"] if node["id"] == "a")
+    assert (step["x"], step["y"]) == (180, 200)  # 泳道里的节点按父级累加成绝对坐标
+    step["label"] = "编制并提交补货单"
+    step["x"] += 40
+    model["nodes"].append({"id": "n-end", "type": "end", "label": "结束", "description": "", "x": 300, "y": 420,
+                           "refs": [], "pending": False, "pending_note": None})
+    model["edges"].append({"id": "e2", "type": "seq", "from": "a", "to": "n-end", "label": "", "condition": ""})
+    saved = client.put(base, json={"base_revision": detail["revision"], "content": model})
+    assert saved.status_code == 200, saved.text
+
+    text = (root / "ontology/diagrams/补货.drawio").read_text(encoding="utf-8")
+    pages = ET.fromstring(text).findall("diagram")
+    assert [page.get("name") for page in pages] == ["主流程", "异常处理"]
+    assert "第二页的异常分支" in text and "专家批注：这里要区分促销期" in text
+    cells = {el.get("id"): el for el in pages[0].find("mxGraphModel/root")}
+    assert "swimlane" in cells["lane"].get("style")
+    # 改过的节点留在泳道里、样式不动，坐标换算回相对泳道
+    moved = cells["a"].find("mxCell")
+    assert cells["a"].get("label") == "编制并提交补货单" and moved.get("parent") == "lane"
+    assert moved.get("style") == "rounded=1;fillColor=#ffe6cc;"
+    assert (moved.find("mxGeometry").get("x"), moved.find("mxGeometry").get("y")) == ("60", "120")
+    # 没改的节点不动；新节点、新连线追加
+    start_geometry = cells["s"].find("mxCell/mxGeometry")
+    assert (start_geometry.get("x"), start_geometry.get("y"), start_geometry.get("width")) == ("20", "40", "80")
+    assert cells["n-end"].get("onto_type") == "end" and cells["e2"].find("mxCell").get("target") == "n-end"
+    back = client.get(base).json()["content"]
+    assert {node["id"] for node in back["nodes"]} == {"s", "a", "n-end"}
+    assert next(node for node in back["nodes"] if node["id"] == "a")["x"] == 220
+    assert back["process"]["roles"] == ["门店"]
+
+
+def test_flowchart_save_drops_cells_hanging_on_removed_nodes():
+    from app.kernel.artifacts import flowchart
+
+    model = flowchart.parse(DRAWIO)
+    model["nodes"] = [node for node in model["nodes"] if node["id"] != "s"]
+    model["edges"] = []
+    text = flowchart.render(model, previous=DRAWIO)
+    cells = {el.get("id") for el in ET.fromstring(text).find("diagram/mxGraphModel/root")}
+    assert "s" not in cells and "e1" not in cells  # 删掉的节点和连在它上面的连线一起删
+    assert {"lane", "note", "a"} <= cells
+
+
+# ---- 2. 场景保存不删节内的自由内容 ----
+
+SCENARIO = ("# 测试场景：补货编制主流程\n\n## 场景 1：正常补货\n\n- **输入**：\n  - `qty` = `12`\n"
+            "- **预期路径**：正常完成\n- **数据来源**：自定义\n\n备注：这一段是专家手写的说明，不是列表项。\n\n"
+            "| 参数 | 取值 |\n|---|---|\n| qty | 12 |\n\n### 补充\n\n人工补充的细节\n\n"
+            "## 场景 2：缺货补货\n\n- **输入**：\n  - `qty` = `0`\n- **预期路径**：异常终止于步骤2\n- **数据来源**：自定义\n")
+
+
+def test_scenario_save_keeps_free_text_tables_and_subsections(env):
+    manager, client = env
+    project_id = manager.create_project("场景")["id"]
+    root = manager.project_root(project_id)
+    _write(root, SCENARIO_REL, SCENARIO)
+    _commit_all(root)
+    base = f"/api/v1/projects/{project_id}/artifacts/trace.scenario"
+    row = next(item for item in client.get(base).json()["items"] if item["key"] == "补货编制主流程--1")
+    saved = client.put(f"{base}/补货编制主流程--1", json={
+        "base_revision": row["revision"], "fields": {"title": "正常补货（改名）", "expected": "走审批分支"}})
+    assert saved.status_code == 200, saved.text
+    text = (root / SCENARIO_REL).read_text(encoding="utf-8")
+    assert "## 场景 1：正常补货（改名）" in text and "- **预期路径**：走审批分支" in text
+    assert "备注：这一段是专家手写的说明，不是列表项。" in text
+    assert "| qty | 12 |" in text and "### 补充\n\n人工补充的细节" in text
+    assert "- **输入**：\n  - `qty` = `12`" in text
+    assert text.endswith("- **数据来源**：自定义\n") and "异常终止于步骤2" in text  # 别的场景不动
+
+
+# ---- 3. 网页新建的场景符合模板 ----
+
+
+def test_new_scenario_file_follows_testcase_template(env):
+    manager, client = env
+    project_id = manager.create_project("新场景")["id"]
+    root = manager.project_root(project_id)
+    created = client.post(f"/api/v1/projects/{project_id}/artifacts/trace.scenario", json={
+        "key": "补货编制主流程",
+        "fields": {"title": "缺货补货", "source_label": "自定义", "expected": "正常完成"},
+        "sections": {"输入": "- `qty` = `3`"}})
+    assert created.status_code == 201, created.text
+    text = (root / SCENARIO_REL).read_text(encoding="utf-8")
+    assert text.startswith("# 测试场景：补货编制主流程\n")
+    assert "## 场景 1：缺货补货\n\n- **输入**：\n  - `qty` = `3`\n- **预期路径**：正常完成\n- **数据来源**：自定义\n" in text
+    # 场景走查包自己的解析脚本认得它
+    script = root / ".claude" / "scripts" / "trace_inputs.py"
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("trace_inputs_under_test", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    parsed = module.parse_source(root / SCENARIO_REL)
+    assert parsed["operation"] == "补货编制主流程"
+    assert parsed["scenarios"] == [{"id": "1", "name": "缺货补货", "inputs": {"qty": 3}, "input_notes": {},
+                                    "expected_path": "正常完成", "data_source": "自定义"}]
+
+
+# ---- 8. 目录符号链接读不到工作区外 ----
+
+
+def test_artifacts_do_not_follow_directory_symlinks_out_of_project(env):
+    manager, client = env
+    first, second = (manager.create_project(name)["id"] for name in ("甲项目", "乙项目"))
+    root_a, root_b = manager.project_root(first), manager.project_root(second)
+    _write(root_b, "ontology/testcase/机密流程.md",
+           "# 测试场景：机密流程\n\n## 场景 1：乙项目的场景\n\n- **输入**：\n  - `x` = `1`\n- **预期路径**：乙项目内部口径\n")
+    target = root_a / "ontology" / "testcase"
+    if target.exists():
+        import shutil
+
+        shutil.rmtree(target)
+    os.symlink(os.path.relpath(root_b / "ontology" / "testcase", root_a / "ontology"), target)
+    rows = client.get(f"/api/v1/projects/{first}/artifacts/trace.scenario").json()
+    assert rows["items"] == []
+    # 项目里正常的文件照常读
+    rows_b = client.get(f"/api/v1/projects/{second}/artifacts/trace.scenario").json()
+    assert [item["key"] for item in rows_b["items"]] == ["机密流程--1"]
+
+
 # ---- 9. core 的 stable 回滚到拆分前：跟随的项目不跟，回滚选项不给 ----
 
 
@@ -106,3 +257,50 @@ def test_uploaded_pack_claiming_official_gets_no_legacy_dirs(tmp_path):
             "kernel_api": ">=1.0 <2.0", "contributes": {field: value}}), encoding="utf-8")
         with pytest.raises(mf.ManifestError):
             mf.load(directory)
+
+
+# ---- 11. 产物保存：版本校验和写入在同一把锁里 ----
+
+
+def test_artifact_saves_racing_on_same_revision_do_not_lose_updates(env, monkeypatch):
+    from app.kernel.artifacts import service as artifact_service
+
+    manager, client = env
+    project_id = manager.create_project("并发保存")["id"]
+    root = manager.project_root(project_id)
+    _write(root, SCENARIO_REL, SCENARIO)
+    _commit_all(root)
+    row = next(item for item in client.get(f"/api/v1/projects/{project_id}/artifacts/trace.scenario").json()["items"]
+               if item["key"] == "补货编制主流程--1")
+    original = artifact_service._write_text
+    inside, release = threading.Event(), threading.Event()
+
+    def slow_first(*args, **kwargs):
+        if not inside.is_set():
+            inside.set()
+            release.wait(5)  # 第一个保存校验过版本、正在算内容时，第二个保存进来
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(artifact_service, "_write_text", slow_first)
+    outcomes: dict[str, object] = {}
+
+    def save(name: str, title: str) -> None:
+        try:
+            artifact_service.save(manager, project_id, "trace.scenario", "补货编制主流程--1",
+                                  {"base_revision": row["revision"], "fields": {"title": title}},
+                                  actor="local", iso=deps.iso)
+            outcomes[name] = "saved"
+        except artifact_service.ArtifactError as exc:
+            outcomes[name] = exc.code
+
+    first = threading.Thread(target=save, args=("first", "甲改的标题"))
+    first.start()
+    assert inside.wait(5)
+    second = threading.Thread(target=save, args=("second", "乙改的标题"))
+    second.start()
+    time.sleep(0.3)
+    release.set()
+    first.join(10)
+    second.join(10)
+    assert sorted(outcomes.values()) == ["revision_conflict", "saved"]
+    assert "## 场景 1：甲改的标题" in (root / SCENARIO_REL).read_text(encoding="utf-8")

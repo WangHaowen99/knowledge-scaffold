@@ -466,8 +466,10 @@ def _content_for_save(atype: ArtifactType, root: Path, rel: str, body: dict, pre
             if previous_model and previous_model.get("storage") == "drawio_compressed":
                 return xml, flowchart.parse(xml, key=Path(rel).stem)
             model = flowchart.from_drawio_edit(xml, previous_model)
-        else:
-            model = flowchart.normalize(content)
+            # 高级编辑器提交的是整份文件：在它上面补内核属性，泳道、批注、其他页照它保留
+            return flowchart.render(model, previous=xml), model
+        model = flowchart.normalize(content)
+        # 标准编辑器只改模型里的节点与连线，上一版里别的单元格与其他页原样保留
         return flowchart.render(model, previous=previous), model
     except flowchart.FlowchartError as exc:
         raise ArtifactError("artifact_schema_invalid", str(exc), 422,
@@ -544,21 +546,23 @@ def save(manager, project_id: str, art_type: str, key: str, body: dict, *, actor
     root = manager.project_root(project_id)
     atype = _require_type(manager, root, art_type)
     _require_writable(atype)
-    row = _find(manager, root, atype, key)
-    base = str(body.get("base_revision") or "")
-    if not base:
-        raise ArtifactError("invalid_argument", "base_revision 必填", 400, {"fields": {"base_revision": "required"}})
-    if base != row.get("revision"):
-        raise ArtifactError("revision_conflict", "产物已被他人或助手修改，请刷新后再保存", 409,
-                            {"target": f"{art_type}/{key}", "expected": base, "actual": row.get("revision")})
-    _check_format_version(atype, row["fields"])
-    _locked_or_raise(root, atype, key, row["rel"])
-    previous = (root / row["rel"]).read_text(encoding="utf-8")
-    text, fields = _write_text(atype, root, row["rel"], body, previous, key, row["fields"])
-    _check(manager, root, atype, fields)
-    summary = str(body.get("summary") or "").strip()[:80]
-    note = f"：{summary}" if summary else ""
-    outcome = _commit(manager, project_id, row["rel"], text, f"web: 保存{atype.title}「{row['title']}」{note} by {actor}", actor)
+    # 读出版本、校验、算内容、提交在同一把项目锁里：两个基于同一版本的保存只有一个能成（另一个 409）
+    with manager._project_lock(project_id):
+        row = _find(manager, root, atype, key)
+        base = str(body.get("base_revision") or "")
+        if not base:
+            raise ArtifactError("invalid_argument", "base_revision 必填", 400, {"fields": {"base_revision": "required"}})
+        if base != row.get("revision"):
+            raise ArtifactError("revision_conflict", "产物已被他人或助手修改，请刷新后再保存", 409,
+                                {"target": f"{art_type}/{key}", "expected": base, "actual": row.get("revision")})
+        _check_format_version(atype, row["fields"])
+        _locked_or_raise(root, atype, key, row["rel"])
+        previous = (root / row["rel"]).read_text(encoding="utf-8")
+        text, fields = _write_text(atype, root, row["rel"], body, previous, key, row["fields"])
+        _check(manager, root, atype, fields)
+        summary = str(body.get("summary") or "").strip()[:80]
+        note = f"：{summary}" if summary else ""
+        outcome = _commit(manager, project_id, row["rel"], text, f"web: 保存{atype.title}「{row['title']}」{note} by {actor}", actor)
     event_port.emit(project_id, "artifacts.updated", {"type": art_type, "change": "updated", "keys": [key]})
     saved = _find(manager, root, atype, key) if atype.format != "md-sections" else _find_by_file(manager, root, atype, row["rel"], key)
     return {"artifact": _detail_view(atype, root, saved, rows_limit=0, iso=iso), **outcome}
@@ -580,34 +584,38 @@ def create(manager, project_id: str, art_type: str, body: dict, *, actor: str, i
     root = manager.project_root(project_id)
     atype = _require_type(manager, root, art_type)
     _require_writable(atype)
-    key = str(body.get("key") or "").strip() or _new_key(atype, body)
-    if not _KEY_RE.match(key) or key.startswith("."):
-        raise ArtifactError("invalid_argument", "key 不合法", 400, {"fields": {"key": "pattern"}})
-    file_key = key.split("--", 1)[0] if atype.format == "md-sections" else key
-    rel = atype.path_for(file_key)
-    target = root / rel
-    if atype.format != "md-sections" and target.exists():
-        raise ArtifactError("invalid_argument", f"{atype.title}「{key}」已存在", 400, {"fields": {"key": "exists"}})
-    _locked_or_raise(root, atype, key, rel)
-    if atype.format == "md-sections":
-        previous = target.read_text(encoding="utf-8") if target.exists() else f"# {file_key}\n\n"
-        existing = [item.key for item in parsers.parse(atype, rel, previous.encode(), file_key=file_key)]
-        number = max([int(item.rsplit("--", 1)[1]) for item in existing if item.rsplit("--", 1)[1].isdigit()] or [0]) + 1
-        title = str((body.get("fields") or {}).get("title") or f"新{atype.title}")
-        previous = previous.rstrip("\n") + f"\n\n## {atype.title} {number}：{title}\n\n"
-        key = f"{file_key}--{number}"
-        text, fields = _write_text(atype, root, rel, body, previous, key, {})
-        fields.setdefault("title", title)
-    else:
-        if atype.format == "drawio" and not isinstance(body.get("content"), dict):
-            body = {**body, "content": {"process": {"name": (body.get("fields") or {}).get("title") or key},
-                                        "nodes": [], "edges": []}}
-        text, fields = _write_text(atype, root, rel, body, None, key, {})
-        if atype.format in ("md-frontmatter", "md-report") and atype.schema_version and "format_version" in {
-                spec["name"] for spec in atype.fields}:
-            fields.setdefault("format_version", atype.schema_version)
-    _check(manager, root, atype, fields)
-    outcome = _commit(manager, project_id, rel, text, f"web: 新建{atype.title}「{key}」 by {actor}", actor)
+    # 判重、算内容、提交在同一把项目锁里（md-sections 是往同一份文件里追加）
+    with manager._project_lock(project_id):
+        key = str(body.get("key") or "").strip() or _new_key(atype, body)
+        if not _KEY_RE.match(key) or key.startswith("."):
+            raise ArtifactError("invalid_argument", "key 不合法", 400, {"fields": {"key": "pattern"}})
+        file_key = key.split("--", 1)[0] if atype.format == "md-sections" else key
+        rel = atype.path_for(file_key)
+        target = root / rel
+        if atype.format != "md-sections" and target.exists():
+            raise ArtifactError("invalid_argument", f"{atype.title}「{key}」已存在", 400, {"fields": {"key": "exists"}})
+        _locked_or_raise(root, atype, key, rel)
+        if atype.format == "md-sections":
+            # 新文件的一级标题按登记的 heading 写（场景是「# 测试场景：<逻辑名>」，trace_inputs 认它）
+            heading = atype.heading.replace("{key}", file_key) if atype.heading else file_key
+            previous = target.read_text(encoding="utf-8") if target.exists() else f"# {heading}\n\n"
+            existing = [item.key for item in parsers.parse(atype, rel, previous.encode(), file_key=file_key)]
+            number = max([int(item.rsplit("--", 1)[1]) for item in existing if item.rsplit("--", 1)[1].isdigit()] or [0]) + 1
+            title = str((body.get("fields") or {}).get("title") or f"新{atype.title}")
+            previous = previous.rstrip("\n") + f"\n\n## {atype.title} {number}：{title}\n\n"
+            key = f"{file_key}--{number}"
+            text, fields = _write_text(atype, root, rel, body, previous, key, {})
+            fields.setdefault("title", title)
+        else:
+            if atype.format == "drawio" and not isinstance(body.get("content"), dict):
+                body = {**body, "content": {"process": {"name": (body.get("fields") or {}).get("title") or key},
+                                            "nodes": [], "edges": []}}
+            text, fields = _write_text(atype, root, rel, body, None, key, {})
+            if atype.format in ("md-frontmatter", "md-report") and atype.schema_version and "format_version" in {
+                    spec["name"] for spec in atype.fields}:
+                fields.setdefault("format_version", atype.schema_version)
+        _check(manager, root, atype, fields)
+        outcome = _commit(manager, project_id, rel, text, f"web: 新建{atype.title}「{key}」 by {actor}", actor)
     event_port.emit(project_id, "artifacts.updated", {"type": art_type, "change": "created", "keys": [key]})
     row = _find(manager, root, atype, key)
     return {"artifact": _detail_view(atype, root, row, rows_limit=0, iso=iso), **outcome}
@@ -618,17 +626,19 @@ def delete(manager, project_id: str, art_type: str, key: str, body: dict, *, act
     root = manager.project_root(project_id)
     atype = _require_type(manager, root, art_type)
     _require_writable(atype)
-    row = _find(manager, root, atype, key)
-    base = str(body.get("base_revision") or "")
-    if base and base != row.get("revision"):
-        raise ArtifactError("revision_conflict", "产物已被他人或助手修改，请刷新后再删除", 409,
-                            {"target": f"{art_type}/{key}", "expected": base, "actual": row.get("revision")})
-    _locked_or_raise(root, atype, key, row["rel"])
-    text = None
-    if atype.format == "md-sections":
-        previous = (root / row["rel"]).read_text(encoding="utf-8")
-        text = _remove_section(atype, previous, row["rel"], key)
-    outcome = _commit(manager, project_id, row["rel"], text, f"web: 删除{atype.title}「{row['title']}」 by {actor}", actor)
+    # 校验版本与删除在同一把项目锁里
+    with manager._project_lock(project_id):
+        row = _find(manager, root, atype, key)
+        base = str(body.get("base_revision") or "")
+        if base and base != row.get("revision"):
+            raise ArtifactError("revision_conflict", "产物已被他人或助手修改，请刷新后再删除", 409,
+                                {"target": f"{art_type}/{key}", "expected": base, "actual": row.get("revision")})
+        _locked_or_raise(root, atype, key, row["rel"])
+        text = None
+        if atype.format == "md-sections":
+            previous = (root / row["rel"]).read_text(encoding="utf-8")
+            text = _remove_section(atype, previous, row["rel"], key)
+        outcome = _commit(manager, project_id, row["rel"], text, f"web: 删除{atype.title}「{row['title']}」 by {actor}", actor)
     event_port.emit(project_id, "artifacts.updated", {"type": art_type, "change": "deleted", "keys": [key]})
     return outcome
 

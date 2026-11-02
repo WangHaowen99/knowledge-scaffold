@@ -14,7 +14,8 @@ draw.io。只用标准库；解析前拒绝 DOCTYPE、ENTITY 声明，输入限 
 
 没有 `onto_type` 的图按样式推断类型。带 `onto_type` 时以它为准，除非高级编辑器里把形状换成了另一类
 特征形状（椭圆、菱形、数据形状；连线改成虚线），这时按新形状重新推断。
-压缩格式的 `<diagram>` 只解出节点、连线供展示，`storage="drawio_compressed"`，标准编辑器只读。只建模第一页。
+压缩格式的 `<diagram>` 只解出节点、连线供展示，`storage="drawio_compressed"`，标准编辑器只读。只建模第一页；
+写回时只改第一页里内核认得的单元格，别的单元格与其他页原样保留（`render`）。
 """
 
 from __future__ import annotations
@@ -125,66 +126,217 @@ def parse(data: bytes | str, *, key: str = "", include_xml: bool = False) -> dic
 
 
 def render(model: dict, *, previous: str | bytes | None = None) -> str:
-    """FlowchartModel → 不压缩的 draw.io XML；`previous` 只用来保留留存节点的宽高和页面名、id。"""
+    """FlowchartModel → 不压缩的 draw.io XML。
+
+    `previous` 是要改的那份文件（标准编辑器保存时是上一版，高级编辑器保存时是提交的 XML）：只改第一页里
+    内核认得的节点、连线与根单元格上的流程元数据，别的单元格（泳道、分组、批注、连线上的文字）与其他页按 id
+    原样保留；没改位置、类型的节点不动坐标和样式。解析不了时当作没有，整份按模型写。
+    """
     m = normalize(model)
     _check_ids(m)
-    prev = _previous_doc(previous)
-    page_name = (prev.page_name if prev else "") or m["process"]["name"] or "Page-1"
-    page_id = (prev.page_id if prev else "") or "flowchart"
-    sizes = prev.sizes if prev else {}
+    base = _base_file(previous)
+    if base is not None:
+        return _merge(m, *base)
 
     mxfile = ET.Element("mxfile", {"host": "onto-modeling", "compressed": "false"})
-    diagram = ET.SubElement(mxfile, "diagram", {"id": page_id, "name": page_name})
+    diagram = ET.SubElement(mxfile, "diagram", {"id": "flowchart", "name": m["process"]["name"] or "Page-1"})
     graph = ET.SubElement(diagram, "mxGraphModel", dict(_GRAPH_ATTRS))
     root = ET.SubElement(graph, "root")
-
-    process = m["process"]
-    meta = {"id": "0", "label": "", "process_name": process["name"], "process_description": process["description"]}
-    for k in PROCESS_LISTS:
-        meta[f"process_{k}"] = _dumps(process[k])
-    meta["operation"] = _dumps(m["operation"]) if m["operation"] else ""
-    ET.SubElement(ET.SubElement(root, "object", meta), "mxCell")
+    root.append(_meta_element(m))
     ET.SubElement(root, "mxCell", {"id": "1", "parent": "0"})
-
-    node_ids = set()
-    for node in m["nodes"]:
-        node_ids.add(node["id"])
-        ntype = node["type"] if node["type"] in NODE_TYPES else "step"
-        w, h = NODE_SIZES[ntype]
-        old = sizes.get(node["id"])
-        if old and old[0] == ntype:
-            w, h = old[1], old[2]
-        attrs = {
-            "id": node["id"], "label": _label_html(node["label"]), "onto_type": node["type"],
-            "description": node["description"], "refs": _dumps(node["refs"]),
-            "pending": "1" if node["pending"] else "0",
-        }
-        if node["pending_note"] is not None:
-            attrs["pending_note"] = node["pending_note"]
-        obj = ET.SubElement(root, "object", attrs)
-        cell = ET.SubElement(obj, "mxCell", {"style": _NODE_STYLES[ntype], "vertex": "1", "parent": "1"})
-        ET.SubElement(cell, "mxGeometry", {
-            "x": _fmt(node["x"] - w / 2), "y": _fmt(node["y"] - h / 2),
-            "width": _fmt(w), "height": _fmt(h), "as": "geometry",
-        })
-
-    for edge in m["edges"]:
-        # 端点缺失的连线写进去 draw.io 打不开，校验会报 FLOW-EDGE-DANGLING
-        if edge["from"] not in node_ids or edge["to"] not in node_ids:
-            continue
-        etype = edge["type"] if edge["type"] in EDGE_TYPES else "seq"
-        obj = ET.SubElement(root, "object", {
-            "id": edge["id"], "label": _label_html(edge["label"]), "onto_type": edge["type"],
-            "condition": edge["condition"],
-        })
-        cell = ET.SubElement(obj, "mxCell", {
-            "style": _EDGE_STYLES[etype], "edge": "1", "parent": "1",
-            "source": edge["from"], "target": edge["to"],
-        })
-        ET.SubElement(cell, "mxGeometry", {"relative": "1", "as": "geometry"})
-
+    node_ids = {node["id"] for node in m["nodes"]}
+    root.extend(_node_element(node) for node in m["nodes"])
+    # 端点缺失的连线写进去 draw.io 打不开，校验会报 FLOW-EDGE-DANGLING
+    root.extend(_edge_element(edge) for edge in m["edges"] if edge["from"] in node_ids and edge["to"] in node_ids)
     ET.indent(mxfile, space="  ")
     return ET.tostring(mxfile, encoding="unicode") + "\n"
+
+
+def _meta_element(m: dict, existing: ET.Element | None = None) -> ET.Element:
+    """根单元格 id="0"：流程元数据与所描述的操作；原来是带别的用户属性的 object 时保留那些属性。"""
+    process = m["process"]
+    attrs = dict(existing.attrib) if existing is not None and existing.tag in ("object", "UserObject") else {}
+    attrs.update({"id": "0", "label": attrs.get("label", ""), "process_name": process["name"],
+                  "process_description": process["description"]})
+    for k in PROCESS_LISTS:
+        attrs[f"process_{k}"] = _dumps(process[k])
+    attrs["operation"] = _dumps(m["operation"]) if m["operation"] else ""
+    obj = ET.Element(existing.tag if existing is not None and existing.tag == "UserObject" else "object", attrs)
+    cell = existing.find("mxCell") if existing is not None and existing.tag != "mxCell" else None
+    obj.append(cell if cell is not None else ET.Element("mxCell"))
+    return obj
+
+
+def _node_attrs(node: dict) -> dict:
+    attrs = {"onto_type": node["type"], "description": node["description"], "refs": _dumps(node["refs"]),
+             "pending": "1" if node["pending"] else "0"}
+    if node["pending_note"] is not None:
+        attrs["pending_note"] = node["pending_note"]
+    return attrs
+
+
+def _node_element(node: dict) -> ET.Element:
+    ntype = node["type"] if node["type"] in NODE_TYPES else "step"
+    w, h = NODE_SIZES[ntype]
+    obj = ET.Element("object", {"id": node["id"], "label": _label_html(node["label"]), **_node_attrs(node)})
+    cell = ET.SubElement(obj, "mxCell", {"style": _NODE_STYLES[ntype], "vertex": "1", "parent": "1"})
+    ET.SubElement(cell, "mxGeometry", {
+        "x": _fmt(node["x"] - w / 2), "y": _fmt(node["y"] - h / 2), "width": _fmt(w), "height": _fmt(h), "as": "geometry",
+    })
+    return obj
+
+
+def _edge_element(edge: dict) -> ET.Element:
+    etype = edge["type"] if edge["type"] in EDGE_TYPES else "seq"
+    obj = ET.Element("object", {"id": edge["id"], "label": _label_html(edge["label"]), "onto_type": edge["type"],
+                                "condition": edge["condition"]})
+    cell = ET.SubElement(obj, "mxCell", {"style": _EDGE_STYLES[etype], "edge": "1", "parent": "1",
+                                         "source": edge["from"], "target": edge["to"]})
+    ET.SubElement(cell, "mxGeometry", {"relative": "1", "as": "geometry"})
+    return obj
+
+
+def _base_file(previous: str | bytes | None):
+    """要在上面改的那份文件：(mxfile, 第一页 diagram, 第一页 mxGraphModel)；第一页是压缩的解开成明文写回。"""
+    if previous is None:
+        return None
+    try:
+        top = _xml(_text(previous))
+        if top.tag == "mxGraphModel":
+            mxfile = ET.Element("mxfile", {"host": "onto-modeling", "compressed": "false"})
+            diagram = ET.SubElement(mxfile, "diagram", {"id": "flowchart", "name": ""})
+            diagram.append(top)
+            graph = top
+        elif top.tag == "mxfile" and top.find("diagram") is not None:
+            mxfile, diagram = top, top.find("diagram")
+            graph = diagram.find("mxGraphModel")
+            if graph is None:
+                payload = (diagram.text or "").strip()
+                if not payload:
+                    return None
+                graph = _inflate(payload)
+                diagram.text = None
+                diagram.append(graph)
+        else:
+            return None
+    except FlowchartError:
+        return None
+    if graph.find("root") is None:
+        ET.SubElement(graph, "root")
+    return mxfile, diagram, graph
+
+
+def _as_object(el: ET.Element) -> ET.Element:
+    """裸 mxCell 改写成 object 包 mxCell（内核属性要写在 object 上），id 与文字挪到 object。"""
+    if el.tag != "mxCell":
+        return el
+    obj = ET.Element("object", {"id": el.get("id", ""), "label": el.get("value", "")})
+    el.attrib.pop("id", None)
+    el.attrib.pop("value", None)
+    obj.append(el)
+    return obj
+
+
+def _merge(m: dict, mxfile: ET.Element, diagram: ET.Element, graph: ET.Element) -> str:
+    root = graph.find("root")
+    cells = _cells(graph)
+    by_id = {c.id: c for c in cells}
+    before = _build(cells, key="", page_name=diagram.get("name", ""), storage="standard")
+    old_nodes = {n["id"]: n for n in before.model["nodes"]}
+    old_edges = {e["id"]: e for e in before.model["edges"]}
+    managed = set(old_nodes) | set(old_edges)
+    nodes = {n["id"]: n for n in m["nodes"]}
+    edges = {e["id"]: e for e in m["edges"] if e["from"] in nodes and e["to"] in nodes}
+    for cid in (*nodes, *edges):
+        if cid in by_id and cid not in managed:
+            raise FlowchartError(f"id「{cid}」和图里的另一个单元格（泳道、分组、批注等）重名，换一个 id")
+
+    # 这次去掉的节点、连线，连同挂在它们上面的单元格一起删；改了文字的连线，原来挂着的文字单元格也删
+    kept = set(nodes) | set(edges)
+    relabeled = {eid for eid, e in edges.items() if eid in old_edges and e["label"] != old_edges[eid]["label"]}
+    dropped = managed - kept
+    grew = True
+    while grew:
+        grew = False
+        for c in cells:
+            if c.id in dropped or c.id in kept or c.id in RESERVED_IDS:
+                continue
+            if ({c.parent, c.source, c.target} & dropped) or (c.vertex and c.parent in relabeled):
+                dropped.add(c.id)
+                grew = True
+
+    out: list[ET.Element] = []
+    written: set[str] = set()
+    for el in list(root):
+        root.remove(el)
+        cid = el.get("id")
+        if cid == "0":
+            out.append(_meta_element(m, el))
+        elif cid in dropped:
+            continue
+        elif cid in nodes:
+            out.append(_update_node(el, nodes[cid], old_nodes[cid], by_id, dropped))
+        elif cid in edges:
+            out.append(_update_edge(el, edges[cid], old_edges[cid]))
+        else:
+            out.append(el)
+        if cid:
+            written.add(cid)
+    if "0" not in written:
+        out.insert(0, _meta_element(m))
+    if "1" not in written:
+        out.insert(1, ET.Element("mxCell", {"id": "1", "parent": "0"}))
+    out += [_node_element(node) for nid, node in nodes.items() if nid not in written]
+    out += [_edge_element(edge) for eid, edge in edges.items() if eid not in written]
+    root.extend(out)
+    if not diagram.get("name"):
+        diagram.set("name", m["process"]["name"] or "Page-1")
+    ET.indent(mxfile, space="  ")
+    return ET.tostring(mxfile, encoding="unicode") + "\n"
+
+
+def _update_node(el: ET.Element, node: dict, old: dict, by_id: dict[str, _Cell], dropped: set[str]) -> ET.Element:
+    obj = _as_object(el)
+    if node["label"] != old["label"]:
+        obj.set("label", _label_html(node["label"]))
+    obj.attrib.pop("pending_note", None)
+    obj.attrib.update(_node_attrs(node))
+    cell = obj.find("mxCell")
+    if cell is None:
+        cell = ET.SubElement(obj, "mxCell", {"vertex": "1", "parent": "1"})
+    ntype = node["type"] if node["type"] in NODE_TYPES else "step"
+    retyped = node["type"] != old["type"]
+    if retyped:
+        cell.set("style", _NODE_STYLES[ntype])
+    if cell.get("parent") in dropped:
+        cell.set("parent", "1")
+    geo = cell.find("mxGeometry")
+    if geo is None:
+        geo = ET.SubElement(cell, "mxGeometry", {"as": "geometry"})
+    if not retyped and (node["x"], node["y"]) == (old["x"], old["y"]) and geo.get("width") and geo.get("height"):
+        return obj
+    w, h = NODE_SIZES[ntype]
+    if not retyped and _float(geo.get("width")) and _float(geo.get("height")):
+        w, h = _float(geo.get("width")), _float(geo.get("height"))
+    ox, oy = _offset(cell.get("parent"), by_id)
+    geo.attrib.update({"x": _fmt(node["x"] - w / 2 - ox), "y": _fmt(node["y"] - h / 2 - oy),
+                       "width": _fmt(w), "height": _fmt(h)})
+    return obj
+
+
+def _update_edge(el: ET.Element, edge: dict, old: dict) -> ET.Element:
+    obj = _as_object(el)
+    if edge["label"] != old["label"]:
+        obj.set("label", _label_html(edge["label"]))
+    obj.attrib.update({"onto_type": edge["type"], "condition": edge["condition"]})
+    cell = obj.find("mxCell")
+    if cell is None:
+        cell = ET.SubElement(obj, "mxCell", {"edge": "1", "parent": "1"})
+        ET.SubElement(cell, "mxGeometry", {"relative": "1", "as": "geometry"})
+    if edge["type"] != old["type"]:
+        cell.set("style", _EDGE_STYLES[edge["type"] if edge["type"] in EDGE_TYPES else "seq"])
+    cell.attrib.update({"source": edge["from"], "target": edge["to"]})
+    return obj
 
 
 def from_drawio_edit(xml: str, previous_model: dict | None) -> dict:
@@ -718,15 +870,6 @@ def _ref_attr(value: str | None) -> dict | None:
     try:
         return _norm_ref(json.loads(value), "operation") if value else None
     except (ValueError, FlowchartError):
-        return None
-
-
-def _previous_doc(previous: str | bytes | None) -> _Doc | None:
-    if previous is None:
-        return None
-    try:
-        return _parse_doc(previous, key="", include_xml=False)
-    except FlowchartError:
         return None
 
 
