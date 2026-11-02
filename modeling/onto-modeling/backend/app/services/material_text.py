@@ -94,7 +94,10 @@ def extract(root: Path, rel: str) -> dict:
         if cached is not None:
             _cache.move_to_end(key)
             return cached
-    result = module.extract(path)
+    try:
+        result = module.extract(path)
+    except Exception as exc:  # noqa: BLE001 - 坏文件（解析库各种异常）按不可核验，不让预览、出处、资料地图 500
+        result = {"status": "unverifiable", "segments": [], "reason": f"无法核验：{type(exc).__name__}"}
     with _cache_lock:
         _cache[key] = result
         while len(_cache) > _CACHE_MAX:

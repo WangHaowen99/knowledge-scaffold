@@ -13,11 +13,9 @@ from __future__ import annotations
 import csv
 import functools
 import re
-import zipfile
 from pathlib import Path
 
 import openpyxl
-from openpyxl.utils.exceptions import InvalidFileException
 
 from .package_mapping import TABLE_SUFFIXES
 
@@ -121,7 +119,7 @@ def _workbook_sheets(path: Path):
     read_only = path.stat().st_size > FULL_LOAD_MAX_BYTES
     try:
         workbook = openpyxl.load_workbook(path, read_only=read_only, data_only=True)
-    except (OSError, KeyError, ValueError, zipfile.BadZipFile, InvalidFileException):
+    except Exception:  # noqa: BLE001 - 坏表（解析库各种异常）按无法识别，上传照常
         return []
     sheets = []
     try:
@@ -131,6 +129,8 @@ def _workbook_sheets(path: Path):
             )
             rows = [list(row) for row in sheet.iter_rows(max_row=SAMPLE_ROWS, values_only=True)]
             sheets.append((sheet.title, rows, merged))
+    except Exception:  # noqa: BLE001 - 某张表的内容坏了：只用前面读出来的
+        pass
     finally:
         workbook.close()
     return sheets
