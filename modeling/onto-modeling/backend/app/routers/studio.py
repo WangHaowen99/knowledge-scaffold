@@ -330,6 +330,10 @@ async def submit(project_id: str, entry_id: str, request: Request):
             "warnings": [{"code": "needs_review", "level": "warning", "message": text, "path": rel} for text in checks["review"]],
         }
     if checks["review"]:
+        # 自主构建没结束时不能转给助手（契约 2.10）：先拦，免得把草稿放进运行器正在用的副本
+        from ..services.autobuild import store as autobuild_store
+
+        autobuild_store.ensure_no_run(project_id)
         # 复核草稿放进助手的变更集副本（方案 C15）：放主线工作区助手看不到
         from ..kernel.changesets import service as changesets
 

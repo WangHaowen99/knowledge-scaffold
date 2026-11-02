@@ -675,6 +675,7 @@ class SessionManager:
         text = (text or "").strip()
         if not text:
             raise SessionError("消息不能为空")
+        _ensure_no_autobuild(project_id, (meta or {}).get("autobuild_run"))
         engine_cls = self._engine_class_for(project_id)
         if engine_cls.name == "claude":
             # Claude 引擎沿用模块级开关（测试可 monkeypatch SDK_AVAILABLE）
@@ -1679,6 +1680,17 @@ class SessionManager:
             stop.add_done_callback(self._tasks.discard)
             await asyncio.shield(stop)
         await self._drain_waiters()
+
+
+def _ensure_no_autobuild(project_id: str, exempt_run: str | None) -> None:
+    """自主构建没结束时（契约 2.10），发起一轮的入口都在这里拦：只有运行器自己发的步骤（meta 带 `autobuild_run`）
+    放行。路由层的检查（S-07、S-20……）是提前拦；Studio 转助手复核等内部入口也走到这里。"""
+    from ..api.errors import ApiError
+    from .autobuild import store as autobuild_store
+
+    run = autobuild_store.active(project_id)
+    if run is not None and run["run_id"] != exempt_run:
+        raise ApiError("autobuild_running", "自主构建运行中", 409, {"run_id": run["run_id"]})
 
 
 _policy_responder = None

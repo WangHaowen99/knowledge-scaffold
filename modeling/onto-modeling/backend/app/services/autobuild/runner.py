@@ -392,7 +392,7 @@ class AutobuildRunner:
         run = store.get(project_id, run_id)
         run = await asyncio.to_thread(self._write_hint, run, unit)
         manager = _manager()
-        meta = {"display_text": text, "origin": None, "hidden": True}
+        meta = {"display_text": text, "origin": None, "hidden": True, "autobuild_run": run_id}
         if resume_exec:
             meta["resume_exec"] = resume_exec
         try:

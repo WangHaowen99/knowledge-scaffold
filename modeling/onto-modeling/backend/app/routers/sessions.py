@@ -404,6 +404,7 @@ async def answer_question(project_id: str, cid: str, question_id: str, request: 
 async def cancel_queue(project_id: str, cid: str, request: Request):
     deps.require_owner(project_id, request)
     conversation_id = _resolve(project_id, cid)
+    autobuild_store.ensure_no_run(project_id, conversation_id=conversation_id)
     if manager.queue_position(project_id) is None:
         raise ApiError("not_queued", "当前不在排队", 409)
     await manager.interrupt(project_id, conversation_id)
@@ -550,6 +551,7 @@ async def resume_exec(project_id: str, exec_id: str, request: Request):
 async def abandon_exec(project_id: str, exec_id: str, request: Request):
     """放弃：已经保存的版本不回退；续跑卡变为已处理。"""
     root = deps.require_writable(project_id, request)
+    autobuild_store.ensure_no_run(project_id)
     record = _exec_or_404(project_id, exec_id)
     if record.get("state") in ("done", "abandoned"):
         raise ApiError("exec_not_resumable", "这一步已经结束", 409, {"reason": "already_finished"})
