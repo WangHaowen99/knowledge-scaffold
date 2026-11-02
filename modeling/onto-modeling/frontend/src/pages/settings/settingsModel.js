@@ -182,7 +182,7 @@ export function advancedSummary(adv) {
 }
 export function isRecommended(adv) {
   if (!adv) return true;
-  return Object.entries(RECOMMENDED).every(([k, v]) => adv[k] === v);
+  return Object.entries(RECOMMENDED).every(([k, v]) => adv[k] === v) && !adv.must_suspend_kinds?.length;
 }
 
 // 阈值滑块：0.5～1.0，步长 0.05
