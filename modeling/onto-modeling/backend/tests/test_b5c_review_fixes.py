@@ -188,3 +188,83 @@ def test_review_2_publish_ref_gate_sees_ontology_entries(checklist_env):
     save("ext/checklist/items/还书检查.md", item_md("还书检查", "high").replace("result: pass", "result: pass\noperation: 还书"))
     missing = gate()
     assert missing["status"] == "fail" and "引用的条目不存在" in missing["summary"]
+
+
+# ---- 审查第 3、4 条：灰度与禁用 ----
+
+@pytest.fixture()
+def ops_env(tmp_path: Path, monkeypatch):
+    """同 tests/test_pack_ops 的 env：最小镜像资产 + 运维面客户端。"""
+    from fastapi.testclient import TestClient
+
+    from app import config
+    from app.api import deps
+    from app.ops_app import ops_app
+    from app.services import auth
+    from app.services.packs import builtin, governance
+    from app.services.workspace import WorkspaceManager
+    from tests.pack_helpers import make_assets
+    from tests.test_pack_ops import TOKENS
+
+    builtin.clear_cache()
+    governance.record_reconcile({})
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    manager = WorkspaceManager(tmp_path / "data", make_assets(tmp_path))
+    monkeypatch.setattr(deps, "workspaces", manager)
+    monkeypatch.setattr(auth, "ENABLED", True)
+    monkeypatch.setattr(auth, "verify_access_token", lambda token: TOKENS.get(token))
+    monkeypatch.setattr(auth, "check_access_token", lambda token: (TOKENS.get(token), "" if token in TOKENS else "invalid"))
+    yield TestClient(ops_app), manager, tmp_path
+    builtin.clear_cache()
+    governance.record_reconcile({})
+
+
+def test_review_3_stale_beta_never_downgrades_stable_followers(ops_env):
+    from app.services.packs import lockfile
+    from tests.test_pack_ops import project_with_lint, publish
+
+    _client, manager, tmp_path = ops_env
+    publish(manager, tmp_path, "0.1.0")
+    publish(manager, tmp_path, "0.2.0", channel="beta", rollout={"percent": 100, "by": "project", "targets": []})
+    publish(manager, tmp_path, "0.3.0")  # 0.2.0 灰度完，直接发 0.3.0 到 stable
+    _project_id, root = project_with_lint(manager)
+    assert lockfile.read(root).get("lint").version == "0.3.0"
+    beta = manager.packs.repository.channel_entry("lint")["beta"]
+    assert beta["percent"] == 0 and beta["targets"] == []  # stable 追上 beta 后放量清零
+
+
+def test_review_3_stable_rollback_reaches_beta_bucket(ops_env):
+    from app.services.packs import lockfile
+    from app.services.packs import service as pack_service
+    from tests.test_pack_ops import OPS, project_with_lint, publish
+
+    client, manager, tmp_path = ops_env
+    publish(manager, tmp_path, "0.1.0")
+    project_id, root = project_with_lint(manager)
+    publish(manager, tmp_path, "0.2.0-rc.1", channel="beta", rollout={"percent": 100, "by": "project", "targets": []})
+    pack_service.prepare_for_message(manager, project_id)
+    assert lockfile.read(root).get("lint").version == "0.2.0-rc.1"
+    publish(manager, tmp_path, "0.2.0")
+    pack_service.prepare_for_message(manager, project_id)
+    assert lockfile.read(root).get("lint").version == "0.2.0"
+    rolled = client.post("/api/v1/ops/packs/lint/rollback", headers=OPS, json={"channel": "stable", "to_version": "0.1.0"})
+    assert rolled.status_code == 200
+    pack_service.prepare_for_message(manager, project_id)
+    assert lockfile.read(root).get("lint").version == "0.1.0"
+
+
+def test_review_4_disabling_stable_falls_back_to_previous_stable(ops_env):
+    from app.services.packs import lockfile
+    from app.services.packs import service as pack_service
+    from tests.test_pack_ops import OPS, project_with_lint, publish
+
+    client, manager, tmp_path = ops_env
+    publish(manager, tmp_path, "0.1.0")
+    publish(manager, tmp_path, "0.2.0")
+    projects = [project_with_lint(manager, f"项目{index}") for index in range(4)]
+    publish(manager, tmp_path, "0.3.0-rc.1", channel="beta", rollout={"percent": 0, "by": "project", "targets": []})
+    assert client.post("/api/v1/ops/packs/lint/0.2.0/disable", headers=OPS, json={"reason": "合成故障"}).status_code == 200
+    assert manager.packs.repository.latest("lint", "stable") == "0.1.0"
+    for project_id, root in projects:
+        pack_service.prepare_for_message(manager, project_id)
+        assert lockfile.read(root).get("lint").version == "0.1.0"

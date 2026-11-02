@@ -135,6 +135,19 @@ def _now() -> float:
     return time.time()
 
 
+def _settle_beta(entry: dict, stable: str, previous: str | None) -> dict:
+    """stable 指针动了以后的 beta 放量（审查第 3 条）：stable 追上或超过 beta，或者 stable 往回退（回滚），
+    beta 的放量比例与名单清零，分桶里的项目回到 stable。"""
+    beta = entry.get("beta")
+    if not isinstance(beta, dict) or not beta.get("version"):
+        return entry
+    caught_up = mf.version_key(stable) >= mf.version_key(beta["version"])
+    rolled_back = previous is not None and mf.version_key(stable) < mf.version_key(previous)
+    if caught_up or rolled_back:
+        entry["beta"] = {**beta, "percent": 0, "targets": []}
+    return entry
+
+
 class PackRepository:
     """<数据目录>/packs 下的包仓库。"""
 
@@ -305,7 +318,10 @@ class PackRepository:
             if channel == "beta" and version is not None:
                 entry["beta"] = {"version": version, **(rollout or {"percent": 0, "by": "project", "targets": []})}
             else:
+                previous = entry.get(channel)
                 entry[channel] = version
+                if channel == "stable" and version is not None:
+                    entry = _settle_beta(entry, version, previous if isinstance(previous, str) else None)
             history = list(entry.get("history") or [])
             history.append({"at": _now(), "channel": channel, "version": version, "by": by})
             entry["history"] = history[-50:]
@@ -335,12 +351,31 @@ class PackRepository:
             data[name] = entry
             _atomic_write_json(self._channels_path(), data)
 
+    def previous_in_channel(self, name: str, channel: str, exclude: str | None = None) -> str | None:
+        """通道历史里最近一个还在、没禁用的版本（不含 exclude）。"""
+        entry = self.channel_entry(name)
+        disabled = entry.get("disabled") or {}
+        for item in reversed(entry.get("history") or []):
+            version = item.get("version")
+            if item.get("channel") == channel and version and version != exclude and version not in disabled \
+                    and self.has(name, version):
+                return version
+        return None
+
     def latest(self, name: str, channel: str = "stable") -> str | None:
-        """通道指向的版本；通道没设时取最新的、没被禁用的版本。"""
+        """通道指向的版本；指向的版本被禁用时退回这个通道历史里上一个可用的版本（审查第 4 条：不能退到只在
+        beta 上、还没放量的预发布版本）；通道没设时取最新的、没被禁用的正式版本。"""
         pinned = self.channel(name, channel)
         if pinned:
             return pinned
+        if self.channel_entry(name).get(channel):
+            fallback = self.previous_in_channel(name, channel)
+            if fallback:
+                return fallback
         disabled = self.disabled(name)
+        released = [version for version in self.versions(name) if version not in disabled and "-" not in version.split("+")[0]]
+        if released:
+            return released[0]
         for version in self.versions(name):
             if version not in disabled:
                 return version

@@ -96,14 +96,12 @@ def rollback_to(repository, name: str, version: str, channel: str) -> str | None
     """O-27 能把这个通道改回去的版本：通道历史里上一个不同、还在、没禁用的版本；历史里没有时取更早的版本。"""
     if channel not in ("stable", "beta"):
         return None
+    previous = repository.previous_in_channel(name, channel, exclude=version)
+    if previous:
+        return previous
     disabled = repository.disabled(name)
-    usable = [item for item in repository.versions(name) if item != version and item not in disabled]
-    history = [item.get("version") for item in repository.channel_entry(name).get("history") or []
-               if item.get("channel") == channel]
-    for candidate in reversed(history):
-        if candidate and candidate in usable:
-            return candidate
-    older = [item for item in usable if mf.version_key(item) < mf.version_key(version)]
+    older = [item for item in repository.versions(name)
+             if item != version and item not in disabled and mf.version_key(item) < mf.version_key(version)]
     return older[0] if older else None
 
 
@@ -210,6 +208,10 @@ def beta_for(repository, name: str, project_id: str) -> str | None:
         return None
     version = beta["version"]
     if not repository.has(name, version) or version in repository.disabled(name):
+        return None
+    # beta 要比 stable 新才放量（审查第 3 条）：停在旧版本上的 beta 会把分桶里的项目降级
+    stable = repository.latest(name, "stable")
+    if stable and mf.version_key(version) <= mf.version_key(stable):
         return None
     if project_id in (beta.get("targets") or []) or rollout_bucket(project_id) < int(beta.get("percent") or 0):
         return version
