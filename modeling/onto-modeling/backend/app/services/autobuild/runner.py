@@ -89,6 +89,8 @@ class AutobuildRunner:
         self._tasks: dict[str, asyncio.Task] = {}
         self._previews: dict[str, dict] = {}
         self._admit_lock: asyncio.Lock | None = None
+        # 按项目串行开始、控制（审查 H 与推断：两次「开始」、停止与续跑并发）；锁跟着事件循环换
+        self._project_locks: dict[str, tuple[object, asyncio.Lock]] = {}
 
     # ------------------------------------------------------------------
     # 开始前预览（AB-03）与开始（AB-04）
@@ -133,7 +135,11 @@ class AutobuildRunner:
         }
 
     async def start(self, project_id: str, token: str, *, actor: str, owner: str) -> dict:
-        """AB-04：开一条「自主构建 · 运行 #n」对话，记下运行，轮到时开始。"""
+        """AB-04：开一条「自主构建 · 运行 #n」对话，记下运行，轮到时开始。同一项目的两次开始串行（审查 H）。"""
+        async with self._project_lock(project_id):
+            return await self._start(project_id, token, actor=actor, owner=owner)
+
+    async def _start(self, project_id: str, token: str, *, actor: str, owner: str) -> dict:
         from ...governance import quota
         from ...governance.http import reject_new_session
         from ...kernel.changesets import store as changeset_store
@@ -192,9 +198,18 @@ class AutobuildRunner:
     # ------------------------------------------------------------------
 
     def _lock(self) -> asyncio.Lock:
-        if self._admit_lock is None:
+        loop = asyncio.get_running_loop()
+        if self._admit_lock is None or getattr(self._admit_lock, "_onto_loop", None) is not loop:
             self._admit_lock = asyncio.Lock()
+            self._admit_lock._onto_loop = loop
         return self._admit_lock
+
+    def _project_lock(self, project_id: str) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        found = self._project_locks.get(project_id)
+        if found is None or found[0] is not loop:
+            found = self._project_locks[project_id] = (loop, asyncio.Lock())
+        return found[1]
 
     async def admit(self) -> None:
         """有名额就按先来后到开始排队的运行（同时运行数上限 SY-17）；维护期间不开新的。"""
@@ -236,7 +251,12 @@ class AutobuildRunner:
         manager = _manager()
         try:
             manager.set_run(project_id, run_id)
-            self._updated(store.get(project_id, run_id))
+            run = store.get(project_id, run_id)
+            self._updated(run)
+            if run is not None and run.get("finishing"):
+                # 收尾到一半停了机（审查 M）：接着收尾，不再做别的
+                await self._finish(project_id, run_id, run["finishing"].get("state") or "completed")
+                return
             while True:
                 run = store.get(project_id, run_id)
                 if run is None or run["state"] not in store.RUNNING:
@@ -314,6 +334,13 @@ class AutobuildRunner:
 
             run = store.update(project_id, run_id, begin)
             await self._new_context(run, unit)
+        else:
+            merged = self._merged_already(project_id, run, unit)
+            if merged is not None:
+                # 合入刚做完就停了机（审查 C）：这一片已经在主线上，接回它的合入提交，不再另开变更集
+                return self._unit_done(project_id, run_id, unit, record=merged,
+                                       merged={"commit": (merged.get("merged") or {}).get("commit"),
+                                               "version_label": (merged.get("merged") or {}).get("version_label")})
         self._slice_card(run, unit)
         ws = _ws()
         try:
@@ -348,6 +375,16 @@ class AutobuildRunner:
         except _Stop as stop:
             self._fail(project_id, run_id, stop.reason or stop.outcome)
             return stop.outcome
+
+    @staticmethod
+    def _merged_already(project_id: str, run: dict, unit: dict) -> dict | None:
+        from ...kernel.changesets import store as changeset_store
+
+        changeset_id = ((run.get("slices") or {}).get(unit["id"]) or {}).get("changeset_id")
+        if not changeset_id:
+            return None
+        record = changeset_store.get(_ws().project_root(project_id), changeset_id)
+        return record if record and record.get("state") == "merged" and record.get("run_id") == run["run_id"] else None
 
     async def _new_context(self, run: dict, unit: dict) -> None:
         """每片新开上下文（方案 B12 第 1 步）：关掉模型上下文、历史里记分界（Jiuwen 回放从这里起）。"""
@@ -722,14 +759,28 @@ class AutobuildRunner:
         await self.admit()
 
     async def _finish(self, project_id: str, run_id: str, state: str, *, reason: str | None = None) -> None:
+        """运行结束。先落「收尾中」标记（state、原因），收尾的每一步各自兜住出错，最后一定落到结束态（推断：收尾出错
+        卡在「在跑」）；停机后重启按标记接着收尾，已经做过的步骤不重做（审查 M）。"""
         run = store.get(project_id, run_id)
-        if run is None:
+        if run is None or run.get("state") in store.ENDED:
             return
-        cursor = run.get("cursor") or {}
-        await asyncio.to_thread(self._close_exec, project_id, cursor.get("exec_id"))
-        await asyncio.to_thread(self._settle_changeset, run)
+        marker = dict(run.get("finishing") or {})
+        if marker:
+            state, reason = marker.get("state") or state, marker.get("reason") or reason
+        else:
+            marker = {"state": state, "reason": reason, "at": time.time()}
+            run = store.update(project_id, run_id, lambda record: record.update(finishing=marker)) or run
+        ended_at = float(marker.get("at") or time.time())
 
-        ended_at = time.time()
+        async def step(label: str, func, *args):
+            try:
+                return await asyncio.to_thread(func, *args)
+            except Exception:  # noqa: BLE001 - 收尾的一步出错不挡落到结束态
+                _log.exception("自主构建收尾「%s」出错（%s %s）", label, project_id, run_id)
+                return None
+
+        await step("执行记录", self._close_exec, project_id, (run.get("cursor") or {}).get("exec_id"))
+        await step("变更集", self._settle_changeset, run)
 
         def change(record: dict) -> None:
             record["state"] = state
@@ -745,25 +796,42 @@ class AutobuildRunner:
         # 报告先进 git、卡片先进对话，最后才记结束：看到运行结束时，报告已经在版本里、对话里了
         final = json.loads(json.dumps(run))
         change(final)
-        await asyncio.to_thread(self._write_report, final)
-        for unit in final.get("units") or []:
-            if unit["id"] in (final.get("slices") or {}):
-                self._slice_card(final, unit)
-        self._post_card(final, views.report_card(final))
-        self._post(final, {"type": "notice", "payload": {
-            "kind": "info", "text": f"运行 #{final['run_no']} {END_NOTICE.get(state, '已结束')}",
-            "version_label": None, "changeset_id": None, "align": "center"}})
-        self._post(final, {"type": "suggestions", "payload": await asyncio.to_thread(self._end_suggestions, final)})
-        run = store.update(project_id, run_id, change)
-        _manager().set_run(project_id, None)
-        hint.clear(project_id)
-        self._updated(run)
-        _publish(project_id, "autobuild.finished", {"run_id": run_id, "run_no": run["run_no"], "state": state,
-                                                    "report_available": True})
-        self._notify(run, NOTIFY_KIND.get(state, "autobuild_stopped"))
-        self._telemetry(run)
-        self._refresh(project_id)
-        await self._dispatch_rejudges(project_id, run_id)
+        if not marker.get("report"):
+            await step("报告", self._write_report, final)
+            store.update(project_id, run_id, lambda record: record.setdefault("finishing", {}).update(report=True))
+        if not marker.get("posted"):
+            try:
+                for unit in final.get("units") or []:
+                    if unit["id"] in (final.get("slices") or {}):
+                        self._slice_card(final, unit)
+                self._post_card(final, views.report_card(final))
+                self._post(final, {"type": "notice", "payload": {
+                    "kind": "info", "text": f"运行 #{final['run_no']} {END_NOTICE.get(state, '已结束')}",
+                    "version_label": None, "changeset_id": None, "align": "center"}})
+                suggestions = await step("建议条", self._end_suggestions, final)
+                if suggestions:
+                    self._post(final, {"type": "suggestions", "payload": suggestions})
+            except Exception:  # noqa: BLE001
+                _log.exception("自主构建收尾时对话更新出错（%s %s）", project_id, run_id)
+            store.update(project_id, run_id, lambda record: record.setdefault("finishing", {}).update(posted=True))
+
+        def close(record: dict) -> None:
+            change(record)
+            record.pop("finishing", None)
+
+        run = store.update(project_id, run_id, close) or run
+        try:
+            _manager().set_run(project_id, None)
+            hint.clear(project_id)
+            self._updated(run)
+            _publish(project_id, "autobuild.finished", {"run_id": run_id, "run_no": run["run_no"], "state": state,
+                                                        "report_available": True})
+            self._notify(run, NOTIFY_KIND.get(state, "autobuild_stopped"))
+            self._telemetry(run)
+            self._refresh(project_id)
+            await self._dispatch_rejudges(project_id, run_id)
+        except Exception:  # noqa: BLE001
+            _log.exception("自主构建结束后的通知出错（%s %s）", project_id, run_id)
         await self.admit()
 
     @staticmethod
@@ -787,8 +855,13 @@ class AutobuildRunner:
         """台账与运行报告进 git（`reports/autobuild/<运行号>/`，一次提交，来源 autobuild）。"""
         from ...kernel.writepath import ChangeTx, Origin
 
+        from ...kernel.changesets import worktree
+
         ws = _ws()
         folder = f"{REPORT_DIR}/{run['run_no']}"
+        root = ws.project_root(run["project_id"])
+        if worktree.read_blob(root, "HEAD", f"{folder}/report.json") is not None:
+            return  # 这次运行的报告已经提交过（收尾时停了机，审查 M）
         ledger = [views.ledger_entry(entry) for entry in run.get("ledger") or []]
         suspended = [views.suspension(item) for item in run.get("suspensions") or []]
         try:
@@ -823,10 +896,18 @@ class AutobuildRunner:
     # ------------------------------------------------------------------
 
     async def control(self, project_id: str, run_id: str, op: str) -> dict:
+        """AB-06～AB-09。同一项目的控制串行，持锁重读状态（推断：停止收尾时来了续跑）。"""
+        async with self._project_lock(project_id):
+            return await self._control(project_id, run_id, op)
+
+    async def _control(self, project_id: str, run_id: str, op: str) -> dict:
         run = store.get(project_id, run_id)
         if run is None:
             raise ApiError("run_not_found", "运行不存在", 404)
         state = run["state"]
+        if run.get("finishing"):
+            raise ApiError("autobuild_not_running", "运行正在收尾", 409, {"state": state})
+        orphan = state in store.RUNNING and not self.running(project_id)  # 在跑却没有驱动任务
         if op == "resume":
             if state not in ("paused", "interrupted"):
                 raise ApiError("autobuild_not_running", "运行不在可以续跑的状态", 409, {"state": state})
@@ -835,9 +916,10 @@ class AutobuildRunner:
             return run_view(store.get(project_id, run_id) or run)
         allowed = {"pause": ("running", "queued"), "stop": ("running", "queued", "pausing", "paused", "interrupted"),
                    "convert": ("running", "queued", "pausing", "paused", "interrupted")}[op]
-        if state not in allowed:
+        if state not in allowed and not (orphan and op != "pause"):
             raise ApiError("autobuild_not_running", "运行不在可以控制的状态", 409, {"state": state})
-        if state == "queued" and op != "pause" or (state in ("paused", "interrupted") and not self._in_slice(run)):
+        idle = state in ("paused", "interrupted") or orphan
+        if state == "queued" and op != "pause" or (idle and not self._in_slice(run)):
             # 还没开始、或已经停在安全点：直接结束
             await self._finish(project_id, run_id, "stopped" if op == "stop" else "converted")
             return run_view(store.get(project_id, run_id))
@@ -856,7 +938,7 @@ class AutobuildRunner:
                 flags["stop" if op == "stop" else "convert"] = True
                 record["state"] = "stopping" if op == "stop" else "converting"
 
-        was_idle = state in ("paused", "interrupted")
+        was_idle = idle
         run = store.update(project_id, run_id, change)
         self._updated(run)
         if was_idle:
@@ -1057,6 +1139,8 @@ def startup_sweep(manager) -> dict:
             previous = _restore_state(record)
             if previous == "paused":
                 record["state"] = "paused"
+                record.setdefault("flags", {}).pop("pause", None)  # 和 _pause 一样（审查 E）
+                record["flags"].pop("safe_pause", None)
                 return
             if previous in ("stopping", "converting"):
                 record["resume_state"] = previous

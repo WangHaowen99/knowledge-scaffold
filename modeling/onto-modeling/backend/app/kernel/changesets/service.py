@@ -847,9 +847,13 @@ def reconcile_merged(manager, root: Path) -> str | None:
         worktree.collect_state(root, copy)
         worktree.reset(root, copy, worktree.rev(root))
     now = time.time()
-    store.update(root, record["id"], state="merged", closed_at=now, conflict=None,
-                 merged={"commit": commit, "version_label": _label(root, commit), "at": now})
+    # 自主构建的一片：合入时本该带的「需复核」一起补上，并照常通知（节点、切片记成确认过并标需复核，审查 C）
+    updated = store.update(root, record["id"], state="merged", closed_at=now, conflict=None,
+                           needs_review=record.get("source") == "autobuild",
+                           merged={"commit": commit, "version_label": _label(root, commit), "at": now})
     _log.warning("项目 %s 的变更集 %s 已合入主线但没记下，启动时补记", root.name, record["id"])
+    if updated is not None:
+        _notify(Path(root).name, "changeset", updated)
     return record["id"]
 
 
