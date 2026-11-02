@@ -108,12 +108,15 @@ class JobStore:
             self._save([record, *self.list()])
         return record
 
-    def update(self, job_id: str, **fields: Any) -> dict | None:
+    def update(self, job_id: str, *, only_from: tuple[str, ...] | None = None, **fields: Any) -> dict | None:
+        """改一条记录；给了 only_from 时只在当前状态在其中时改（不覆盖别人已经写下的终态，如已取消）。"""
         with _store_lock(self.path):
             records = self.list()
             for item in records:
                 if item.get("id") != job_id:
                     continue
+                if only_from is not None and item.get("status") not in only_from:
+                    return item
                 item.update(fields)
                 if fields.get("status") in self.terminal_statuses:
                     item["completed_at"] = int(time.time())

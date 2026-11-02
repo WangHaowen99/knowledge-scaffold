@@ -98,12 +98,13 @@ def start_task(task_type: str, target: str, initiator: str, *, project_id: str |
 
 def finish_task(task_id: str, *, state: str, error: str | None = None) -> dict | None:
     _cancel_flags.pop(task_id, None)
-    return _tasks().update(task_id, status=state, error=error,
+    # 只从还在跑的状态收尾：跑的过程中被取消的，保持已取消
+    return _tasks().update(task_id, only_from=LIVE_STATES, status=state, error=error,
                            progress_pct=100 if state == "succeeded" else None)
 
 
 def progress(task_id: str, pct: int) -> None:
-    _tasks().update(task_id, progress_pct=max(0, min(100, int(pct))))
+    _tasks().update(task_id, only_from=LIVE_STATES, progress_pct=max(0, min(100, int(pct))))
 
 
 def cancelled(task_id: str) -> bool:
@@ -248,6 +249,9 @@ def run_drill(task_id: str, backup_name: str, sample: int) -> dict:
                 progress(task_id, 30 + int(70 * (index + 1) / max(1, len(chosen))))
     except (OSError, tarfile.TarError, EOFError) as exc:
         problems.append(f"备份读不出：{exc}"[:200])
+    if cancelled(task_id):  # 最后一个项目抽检期间被取消：不记演练、不改任务
+        _cancel_flags.pop(task_id, None)
+        return {}
     result = "failed" if problems else "passed"
     detail = "；".join(problems[:3]) if problems else f"抽检 {checked} 个项目"
     drill = {"id": task_id, "backup": backup_name, "at": started, "duration_ms": int((time.time() - started) * 1000),
