@@ -28,6 +28,11 @@ For each document, extract and record:
 
 Store all extracted content as LOCAL_KNOWLEDGE. This is your **primary source material** — it takes precedence over web-sourced information.
 
+**行业包**：`.claude/industry/` 存在时（项目启用了行业包），读每个包的 `standards.json` 与 `concepts.json`：
+- 用 `concepts.json` 的概念与别名识别资料里的术语，报告里用概念的标准称谓；
+- 对照 `standards.json` 的规范类型，在资料里找不到对应内容的，逐条写进报告「缺口与待决」；
+- 「信息来源」里注明用到的行业包（`pack.json` 的名称与版本，如 `industry-retail@1.0.1`）。行业包只辅助识别，不当作资料来源引用。
+
 Check `Web research mode`:
 - **supplement**: Proceed to Step 2 and Step 3 normally, but in Step 3 focus searches only on areas not covered by LOCAL_KNOWLEDGE.
 - **skip**: Skip Step 2 (methodology) and Step 3 (web research) entirely. Proceed directly to Step 4 using only LOCAL_KNOWLEDGE.
