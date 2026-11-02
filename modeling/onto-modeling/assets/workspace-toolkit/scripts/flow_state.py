@@ -321,12 +321,12 @@ def _candidates(flow: dict, states: dict, context: dict) -> list:
         if current.get('per_slice') and slice_next and state_of.get(current['id']) not in ('pending_confirm', 'stale'):
             out.append(_item(f"{current['id']}:{slice_next.get('slice_id')}:{slice_next.get('step')}",
                              slice_next.get('label') or current['title'], _slice_step(slice_next),
-                             reason='主线下一步', priority=4))
+                             reason='下一步', priority=4))
         elif state_of.get(current['id']) not in ('running', 'pending_confirm') and not current.get('per_slice'):
             actions = _node_actions(current, verify_first=stage == '资料分析待核验')
             for index, action in enumerate(actions[:SUGGESTIONS_MAX]):
                 out.append(_item(f"{current['id']}#{index}", action['label'], _action(action),
-                                 reason='主线下一步', priority=4))
+                                 reason='下一步', priority=4))
         if blueprint.get('state') == 'none' and state_of.get('core.research') in ('confirmed', 'stale'):
             out.append(_item('plan_slices', '切片规划', _send('/ontology-research phase=blueprint'),
                              reason='可选步骤', priority=5, icon='layers'))

@@ -42,7 +42,7 @@ def resolve_commit(root: Path, commit: str | None) -> str:
     if found.returncode != 0 or not full:
         raise WorkspaceError("版本不存在", 400, "invalid_commit")
     if full not in _git(root, "rev-list", "--first-parent", "HEAD").split():
-        raise WorkspaceError("只能发布主线上的版本", 400, "invalid_commit")
+        raise WorkspaceError("只能发布版本历史里的版本", 400, "invalid_commit")
     return full
 
 
@@ -327,7 +327,7 @@ def release_package(manager, project_id: str, version: str, variant: str = VARIA
                     ADAPTER.render(dataclasses.replace(src, binding=resolve_binding(src)), dest)
             except WorkspaceError as exc:
                 raise WorkspaceError(
-                    f"版本 {version} 没有留存的包，按标签提交渲染失败：{exc}",
+                    f"版本 {version} 没有留存的包，按发布标签重新生成失败：{exc}",
                     409, "release_package_unavailable",
                 ) from exc
             release_store.save(manager.data_dir, project_id, version, dest, {
@@ -353,7 +353,7 @@ def solver_candidate_package(manager, project_id: str, dest_path: Path, allow_un
             check = solver_service.solver_check_at(tree)
             if not check.needs_validation:
                 raise WorkspaceError(
-                    "当前提交没有启用的求解契约，无需端到端验证", 400, "solver_validation_not_required"
+                    "当前版本没有启用的求解契约，无需端到端验证", 400, "solver_validation_not_required"
                 )
             if check.findings:
                 raise WorkspaceError(

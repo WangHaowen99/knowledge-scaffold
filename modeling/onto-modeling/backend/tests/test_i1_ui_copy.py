@@ -192,3 +192,33 @@ def test_provider_packs_are_not_listed_anywhere(env, monkeypatch):
     ops = TestClient(ops_app)
     assert "db-generic" not in {item.get("name") for item in ops.get("/api/v1/ops/packs").json()["items"]}
     assert "db-generic" not in {item["component"] for item in ops.get("/api/v1/ops/versions").json()["items"]}
+
+
+# ---- 口径 ③：项目内显示的错误提示、通知、待处理标签不用「合入」「主线」 ----
+
+PROJECT_FACING = ("app/routers/changesets.py", "app/routers/flow.py", "app/routers/studio.py", "app/routers/versions.py",
+                  "app/kernel/writepath/tx.py", "app/kernel/changesets/service.py", "app/services/flow/inbox.py",
+                  "app/services/publish/service.py", "app/services/publish/tree.py")
+ERRORS = {"ApiError", "WorkspaceError", "ArtifactError", "after_close"}
+
+
+def _messages(path):
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", getattr(node.func, "attr", "")) in ERRORS:
+            for arg in node.args:
+                for part in ast.walk(arg):
+                    if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                        yield part.value
+
+
+def test_project_facing_texts_avoid_merge_and_mainline():
+    from app.services.flow import inbox
+
+    words = ("合入", "主线")
+    found = [(path, text) for path in PROJECT_FACING for text in _messages(path) if any(w in text for w in words)]
+    assert found == []
+    assert not [label for label in inbox.KIND_LABELS.values() if any(w in label for w in words)]

@@ -85,7 +85,7 @@ async def merge_and_announce(project_id: str, changeset_id: str, *, actor: str, 
 async def discard_and_announce(project_id: str, changeset_id: str, *, actor: str) -> dict:
     result = await asyncio.to_thread(service.discard, deps.workspaces, project_id, changeset_id, actor=actor)
     record = result.pop("record")
-    await after_close(project_id, record, "discarded", "已撤回这一轮的修改，主线没有变化")
+    await after_close(project_id, record, "discarded", "这一轮的修改已撤回")
     return result
 
 

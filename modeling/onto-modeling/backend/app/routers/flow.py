@@ -78,7 +78,7 @@ async def skip_node(project_id: str, node_id: str, request: Request):
         _after_change(project_id)
         return await asyncio.to_thread(_node_view, root, node_id)
     if not node.get("optional") or node.get("section", "required") == "required":
-        raise ApiError("node_not_skippable", "主线或必经节点不能跳过", 409)
+        raise ApiError("node_not_skippable", "必经节点不能跳过", 409)
     node_state.skip(root, node_id, reason=str(body.get("reason") or "")[:200], slice_id=body.get("slice_id") or None)
     _after_change(project_id)
     return await asyncio.to_thread(_node_view, root, node_id)

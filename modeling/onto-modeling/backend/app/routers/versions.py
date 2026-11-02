@@ -75,7 +75,7 @@ def _on_mainline(project_id: str, commit: str) -> dict:
     """主线上的这个版本（V-01 的一项）；不在主线上（如副本分支的提交）时 invalid_commit。"""
     entry = next((item for item in deps.workspaces.versions(project_id) if item["commit"] == commit), None)
     if entry is None:
-        raise ApiError("invalid_commit", "不是主线上的版本", 400)
+        raise ApiError("invalid_commit", "不是这个项目版本历史里的版本", 400)
     return entry
 
 

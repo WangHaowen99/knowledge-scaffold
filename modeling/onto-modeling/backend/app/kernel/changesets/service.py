@@ -559,7 +559,7 @@ def _require_open(manager, project_id: str, changeset_id: str, *, allow_conflict
     if record["state"] in ("merged", "discarded"):
         raise WorkspaceError("这一轮的修改已经确认生效或撤回", 409, "changeset_closed", {"state": record["state"]})
     if record["state"] == "conflict" and not allow_conflict:
-        raise WorkspaceError("合入时检测到冲突，先选好保留哪一边", 409, "merge_conflict",
+        raise WorkspaceError("确认生效时有冲突，先选好保留哪一边", 409, "merge_conflict",
                              {"entities": (record.get("conflict") or {}).get("entities") or [],
                               "inbox_item_id": f"changeset_conflict:{record['id']}"})
     state = activity(project_id)
@@ -641,10 +641,10 @@ def merge(manager, project_id: str, changeset_id: str, *, actor: str, expected_h
         record = _require_open(manager, project_id, changeset_id)
         copy = existing_copy(root)
         if copy is None:
-            raise WorkspaceError("助手副本不在了，这一轮的修改没法合入", 409, "changeset_closed", {"state": record["state"]})
+            raise WorkspaceError("助手副本不在了，这一轮的修改没法生效", 409, "changeset_closed", {"state": record["state"]})
         main = worktree.rev(root)
         if expected_head and expected_head != main:
-            raise WorkspaceError("主线已前进，请刷新后重试", 409, "head_moved", {"head": main})
+            raise WorkspaceError("有新的版本，请刷新后重试", 409, "head_moved", {"head": main})
         worktree.commit_pending(copy, "chore: 收拢这一轮没提交的改动")
         head = worktree.rev(copy)
         merged_tree, result = _merged_tree(manager, project_id, root, record, main, head, choices)
@@ -679,7 +679,7 @@ def _merged_tree(manager, project_id: str, root: Path, record: dict, main: str, 
                          conflict={"paths": conflicted, "entities": targets, "main": main, "head": head,
                                    "at": time.time()})
             _notify(project_id, "changeset", store.get(root, record["id"]))
-            raise WorkspaceError("合入时检测到冲突，已放进待处理，选好保留哪一边再合入", 409, "merge_conflict",
+            raise WorkspaceError("确认生效时有冲突，已放进待处理，选好保留哪一边再确认", 409, "merge_conflict",
                                  {"entities": targets, "inbox_item_id": f"changeset_conflict:{record['id']}"})
         picks = {rel: (main if keep == "mainline" else head) for rel, keep in chosen.items()}
     # 资料区、锁文件不采用副本的版本（审查第 1 条）：副本里关了稀疏规则时 git 会把资料当成删了
@@ -693,7 +693,7 @@ def _merged_tree(manager, project_id: str, root: Path, record: dict, main: str, 
         raise WorkspaceError(f"门禁跑不起来：{exc}", 503, "service_unavailable", {"dependency": "gate"}) from exc
     if result["errors"]:
         store.update(root, record["id"], checks={**result, "tree": record.get("tree")})
-        raise WorkspaceError(f"合入会带进 {result['errors']} 个新的错误，先修好再确认", 422, "gate_failed",
+        raise WorkspaceError(f"这一轮有 {result['errors']} 个新的错误，先修好再确认", 422, "gate_failed",
                              {"findings": [item for item in result["findings"] if item["level"] == "error"]})
     return merged_tree, result
 
@@ -784,7 +784,7 @@ def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, so
     merged = record.get("merged") or {}
     commit = merged.get("commit")
     if record["state"] != "merged" or not commit:
-        raise WorkspaceError("只有已合入的变更集能撤回", 409, "changeset_closed", {"state": record["state"]})
+        raise WorkspaceError("只有已生效的修改能撤回", 409, "changeset_closed", {"state": record["state"]})
     if record.get("reverted"):
         raise WorkspaceError("这个变更集已经撤回过", 409, "changeset_closed", {"state": "reverted"})
     parent = f"{commit}^"
@@ -801,7 +801,7 @@ def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, so
                 kind, _, key = (entry or f"file:{rel}").partition(":")
                 clashes.append(_entry_ref(kind, key))
         if clashes:
-            raise WorkspaceError("合入之后这些条目又被改过，不能单独撤回", 409, "merge_conflict",
+            raise WorkspaceError("生效之后这些条目又被改过，不能单独撤回", 409, "merge_conflict",
                                  {"entities": clashes, "inbox_item_id": None})
         for _status, rel in paths:
             data = worktree.read_blob(root, parent, rel)

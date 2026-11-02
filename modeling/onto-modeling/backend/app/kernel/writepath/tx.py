@@ -187,7 +187,7 @@ def commit_paths(root: Path, paths: Iterable[str], message: str, values: dict[st
     if not changed:
         return "", previous, []
     if expected_head and previous != expected_head:
-        raise WorkspaceError("主线已前进，请刷新后重试", 409, "head_moved", {"head": previous})
+        raise WorkspaceError("有新的版本，请刷新后重试", 409, "head_moved", {"head": previous})
     _wait_index_unlocked(root)
     text = format_message(message, values)
     for _attempt in range(_CAS_RETRIES):
@@ -216,7 +216,7 @@ def commit_paths(root: Path, paths: Iterable[str], message: str, values: dict[st
         if expected_head or current == previous:
             raise WorkspaceError(f"git update-ref 失败: {result.stderr.strip()}", 500)
         previous = current
-    raise WorkspaceError("主线在提交期间反复移动，请稍后重试", 409, "head_moved", {"head": _head(root)})
+    raise WorkspaceError("保存期间版本反复变化，请稍后重试", 409, "head_moved", {"head": _head(root)})
 
 
 # ---------------------------------------------------------------------------

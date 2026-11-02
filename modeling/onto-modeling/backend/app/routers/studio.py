@@ -333,7 +333,7 @@ async def submit(project_id: str, entry_id: str, request: Request):
     user = deps.actor(request) or "本机用户"
     draft = studio_service.get_draft(project_id, rel)
     if not draft:
-        raise ApiError("not_found", "没有待提交的草稿", 404)
+        raise ApiError("not_found", "没有待保存的草稿", 404)
     checks = studio_service.deterministic_check(root, rel, draft["content"])
     if checks["errors"]:
         return {
