@@ -73,7 +73,8 @@ export function catOf(query) {
 export function publisherChip(p) {
   const pub = p.publisher || { kind: 'official', label: '官方' };
   if (pub.kind !== 'tenant') return null;
-  return { text: /^租户/.test(pub.label || '') ? pub.label : `租户 · ${pub.label || ''}`, tone: 'indigo' };
+  const label = pub.label || '';
+  return { text: !label ? '租户' : /^租户/.test(label) ? label : `租户 · ${label}`, tone: 'indigo' };
 }
 
 const stripNone = (note) => String(note || '').replace(/^无独立页面\s*[·，,]\s*/, '').replace(/^无独立页面$/, '');
