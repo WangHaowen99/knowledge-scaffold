@@ -6,27 +6,30 @@ import { applyModelClear, applyModelSave, initialMe, register as registerMe } fr
 import {
   DEFAULT_PREFS, KIND_PREF, NOTI_GROUPS, RULE_CHIPS, adminText, avatarText, canClear, changePasswordRules, clearedToast, contextText,
   engineCards, failedRules, fmtMoney, fmtTokensShort, isLocalMode, lastLoginText, modelDirty, modelForm, modelProblems, modelRequest,
-  normalizePrefs, parseSection, passwordError, passwordFormView, permissionNote, placeholders, profileChips, sourceChip, sourceOptions,
-  systemNotifyAllowed, usageView, withPref,
+  normalizePrefs, parseSection, passwordError, passwordFormView, permissionNote, placeholders, profileChips, SECTIONS, showsPersonalFields,
+  sourceOptions, systemNotifyAllowed, usageView, withPref,
 } from '../src/pages/me/meModel.js';
 
 // ---------- 分区 ----------
-test('分区参数：四个分区原样，别名认得，其余落到账号', () => {
-  assert.deepEqual(['acct', 'look', 'noti', 'model'].map(parseSection), ['acct', 'look', 'noti', 'model']);
+test('分区参数：三个分区原样（外观本期不出，R16），别名认得，其余落到账号', () => {
+  assert.deepEqual(SECTIONS.map((s) => s.key), ['acct', 'noti', 'model']);
+  assert.deepEqual(['acct', 'noti', 'model'].map(parseSection), ['acct', 'noti', 'model']);
   assert.equal(parseSection(' MODEL '), 'model');
   assert.equal(parseSection('password'), 'acct');
-  assert.equal(parseSection('theme'), 'look');
+  // 旧地址 ?section=look / theme 落到账号，不出外观
+  assert.equal(parseSection('look'), 'acct');
+  assert.equal(parseSection('theme'), 'acct');
   assert.equal(parseSection('notifications'), 'noti');
   assert.equal(parseSection(undefined), 'acct');
   assert.equal(parseSection('sys'), 'acct');
 });
 
 // ---------- 账号 ----------
-test('账号卡：本地模式、角色与认证来源 chip、头像字、用量与上次登录', () => {
+test('账号卡：本地模式、角色 chip（不显示登录来源）、头像字、用量与上次登录', () => {
   assert.equal(isLocalMode({ auth_source: 'local' }, null), true);
   assert.equal(isLocalMode(F.USERS.zhangsan, { auth: { enabled: false } }), true);
   assert.equal(isLocalMode(F.USERS.zhangsan, { auth: { enabled: true } }), false);
-  assert.deepEqual(profileChips(F.USERS.modeler01, false).map((c) => c.text), ['建模者', 'auth-server']);
+  assert.deepEqual(profileChips(F.USERS.modeler01, false).map((c) => c.text), ['建模者']);
   assert.deepEqual(profileChips(F.USERS.local, true).map((c) => c.text), ['管理员', '本地模式']);
   assert.equal(avatarText(F.USERS.zhangsan), '张');
   assert.equal(avatarText({ username: 'ops01' }), 'o');
@@ -136,33 +139,36 @@ test('系统通知：要浏览器授权、总开关打开，按通知类型对�
 });
 
 // ---------- 我的模型配置 ----------
-test('引擎卡：按 C-06 排序、只用 label、带接口类型；没装的说原因；C-06 拿不到时用兜底名字', () => {
+test('引擎卡：按 C-06 排序、只用 label、带接口类型；卡头只在没装时说原因；C-06 拿不到时用兜底名字', () => {
   const settings = F.modelSettings();
   const cards = engineCards(settings, F.engines({ betaInstalled: false }));
   assert.deepEqual(cards.map((c) => [c.id, c.title, c.sub, c.icon]), [
-    ['claude', '稳定引擎 · Anthropic 兼容接口', '功能最完整', 'cap'],
+    ['claude', '稳定引擎 · Anthropic 兼容接口', '', 'cap'],
     ['jiuwen', '内测引擎 · OpenAI 兼容接口', '当前部署未安装', 'node'],
   ]);
   assert.ok(cards.every((c) => !`${c.title}${c.sub}`.includes(c.id)));
   assert.deepEqual(engineCards(settings, null).map((c) => c.title), ['稳定引擎 · Anthropic 兼容接口', '内测引擎 · OpenAI 兼容接口']);
-  assert.equal(engineCards(settings, F.engines()).at(1).sub, '内测中');
+  assert.equal(engineCards(settings, F.engines()).at(1).sub, '');
   // A-09 没有的引擎不出卡
   assert.deepEqual(engineCards({ engines: { jiuwen: settings.engines.jiuwen } }, F.engines()).map((c) => c.id), ['jiuwen']);
 });
 
-test('来源三选一、管理员摘要、占位、上下文参数', () => {
+test('来源三选一、管理员摘要、个人 Key 才出三栏、占位、上下文参数', () => {
   const cfg = F.modelSettings().engines.claude;
   assert.deepEqual(sourceOptions(cfg).map((o) => o.key), ['deployment', 'admin', 'personal']);
-  assert.equal(adminText(cfg), '管理员配置：gateway.example.com · model-standard');
-  assert.equal(adminText({ admin_summary: { gateway_host: 'gateway.example.com', model: null } }), '管理员配置：gateway.example.com · 网关默认模型');
+  // 只有管理员配置那一项带描述：网关 · 模型
+  assert.deepEqual(sourceOptions(cfg).map((o) => o.desc), ['', 'gateway.example.com · model-standard', '']);
+  assert.equal(adminText(cfg), 'gateway.example.com · model-standard');
+  assert.equal(adminText({ admin_summary: { gateway_host: 'gateway.example.com', model: null } }), 'gateway.example.com · 网关默认模型');
   assert.match(adminText({ admin_summary: null }), /部署默认/);
-  assert.deepEqual(sourceChip('personal'), { text: '个人 Key', tone: 'blue', icon: 'key' });
-  assert.equal(sourceChip('admin').text, '管理员配置');
-  assert.equal(sourceChip('deployment').text, '部署默认');
+  // Key、网关、模型三栏只在选个人 Key 时出现（R15）
+  assert.equal(showsPersonalFields(modelForm(cfg)), false);
+  assert.equal(showsPersonalFields({ ...modelForm(cfg), source: 'deployment' }), false);
+  assert.equal(showsPersonalFields({ ...modelForm(cfg), source: 'personal' }), true);
   const ph = placeholders(cfg);
   assert.equal(ph.api_key, '粘贴你的 API Key');
   assert.equal(ph.model, '留空沿用管理员配置的模型 · model-standard');
-  assert.equal(placeholders({ ...cfg, api_key_set: true }).api_key, 'sk-•••• •••• ••••');
+  assert.equal(placeholders({ ...cfg, api_key_set: true }).api_key, '留空保持不变');
   assert.equal(placeholders({ ...cfg, admin_summary: null }).base_url, '留空沿用部署默认的网关地址');
   assert.equal(contextText(cfg.context), '上下文 200k · 输出上限 32k · 用到 80% 时压缩');
   assert.equal(contextText(null), '');
