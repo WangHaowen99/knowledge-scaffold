@@ -200,7 +200,7 @@ export function engineCards(settings, engines) {
 // 管理员配置那一项只写「网关 · 模型」
 export function adminText(cfg) {
   const s = cfg?.admin_summary;
-  if (!s) return '管理员还没有配置，会按部署默认配置调用';
+  if (!s) return '管理员还没有配置';
   return `${s.gateway_host || '部署默认网关'} · ${s.model || '网关默认模型'}`;
 }
 export function sourceOptions(cfg) {
@@ -242,7 +242,7 @@ export function modelDirty(cfg, form) {
 export function modelProblems(cfg, form) {
   const out = {};
   if (form.source !== 'personal') return out;
-  if (!cfg?.api_key_set && !form.api_key.trim()) out.api_key = '第一次使用个人 Key，要先填 API Key';
+  if (!cfg?.api_key_set && !form.api_key.trim()) out.api_key = '请填写 API Key';
   const url = form.base_url.trim();
   if (url && !/^https?:\/\/[^\s/]+/i.test(url)) out.base_url = '网关地址要以 http:// 或 https:// 开头';
   return out;

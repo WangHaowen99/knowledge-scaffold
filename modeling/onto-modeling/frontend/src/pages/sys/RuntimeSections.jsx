@@ -117,7 +117,7 @@ export function SandboxSection() {
           <div className="mt12">
             {data.isolation?.network === 'denied' || !data.isolation
               ? <Note tone="amber" icon="globe">沙箱禁止出网</Note>
-              : <Note tone="red" icon="globe">沙箱当前允许出网，请检查脚本验证网关下发的网络策略。</Note>}
+              : <Note tone="red" icon="globe">沙箱当前允许出网</Note>}
           </div>
           <div className="row mt16 mb12">
             <div className="sec-t" style={{ margin: 0 }}>沙箱里的 Python 包</div>
@@ -134,7 +134,7 @@ export function SandboxSection() {
                 <span className="muted sm">{p.purpose || '—'}</span>,
               ])}
             />
-          ) : <div className="card pad sm muted">{data.connected ? '沙箱没有报告 Python 包。' : '连上沙箱后才能列出里面的 Python 包。'}</div>}
+          ) : data.connected ? <div className="card pad sm muted">没有 Python 包</div> : null}
           {data.packages?.length && !pkgs.length ? <div className="sm muted mt8">没有匹配「{q}」的包。</div> : null}
         </>
       )}

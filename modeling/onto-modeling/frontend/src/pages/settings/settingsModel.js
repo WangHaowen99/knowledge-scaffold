@@ -82,6 +82,9 @@ export function engineCards(engines, current) {
   }));
 }
 
+// 项目里显示的模型名（新建向导第 4 步、项目设置「引擎与模型」同一行）：A-09 的个人配置，其次管理员配置
+export const modelDisplayName = (cfg) => cfg?.model || cfg?.admin_summary?.model || '使用我的模型配置';
+
 export function modelSourceText(source, cfg) {
   if (source === 'personal') return `使用我的模型配置${cfg?.model ? ` · ${cfg.model}` : ''}`;
   if (source === 'admin') return `使用管理员配置${cfg?.admin_summary?.model ? ` · ${cfg.admin_summary.model}` : ''}`;

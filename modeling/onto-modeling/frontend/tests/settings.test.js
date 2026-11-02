@@ -7,7 +7,7 @@ import { actionsOf, extensionState, register as registerSettings } from '../src/
 import { mcpServers, projectPacks, remainingText } from '../src/api/mock/settings-data.js';
 import {
   activeSection, advancedSummary, basicPatch, budgetOptions, budgetPct, createdText, defaultConfigTab, engineCards, finalizePolicy,
-  fmtDuration, fmtMoney, fmtTokens, isRecommended, lastRunText, modelSourceText, moveItem, nameProblem, packToolsText, parseScope,
+  fmtDuration, fmtMoney, fmtTokens, isRecommended, lastRunText, modelDisplayName, modelSourceText, moveItem, nameProblem, packToolsText, parseScope,
   parseWindow, pendingSummary, policyBody, policyDirty, policyForm, rowActions, scopeLabel, sectionTarget, sliceRows, startBlocker,
   statusChip, switchToast, thresholdAt, thresholdPos, tokenBody, tokenProblems, toolList, toolsText, uiCell, visibleMcp, windowText,
 } from '../src/pages/settings/settingsModel.js';
@@ -52,6 +52,10 @@ test('引擎卡：界面只显示标签；内测引擎不再挂「内测」小�
   assert.equal(modelSourceText('personal', { model: 'model-x' }), '使用我的模型配置 · model-x');
   assert.equal(modelSourceText('admin', F.modelSettings().engines.claude), '使用管理员配置 · model-standard');
   assert.equal(modelSourceText('deployment'), '使用部署默认配置');
+  // 项目设置与新建第 4 步同一行只读的模型名
+  assert.equal(modelDisplayName({ model: 'model-x' }), 'model-x');
+  assert.equal(modelDisplayName(F.modelSettings().engines.claude), 'model-standard');
+  assert.equal(modelDisplayName(undefined), '使用我的模型配置');
 });
 
 test('策略表单：只读字段不提交；生产库的时间窗口、采集范围文字并进表单', () => {

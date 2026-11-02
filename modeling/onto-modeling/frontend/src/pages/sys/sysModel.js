@@ -401,7 +401,7 @@ export const presetEntry = (f) => ({
 export const PERMISSION_MODES = [
   ['bypassPermissions', '全放行（默认）', '不弹确认卡'],
   ['default', '逐操作确认', '写文件、执行命令都要确认'],
-  ['acceptEdits', '仅自动接受编辑', '改产物自动通过，执行命令仍要确认'],
+  ['acceptEdits', '仅自动接受编辑', '执行命令仍要确认'],
   ['plan', '计划模式', '只出计划，不改文件'],
 ];
 export const permissionModes = () => PERMISSION_MODES;

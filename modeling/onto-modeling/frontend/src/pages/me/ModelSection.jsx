@@ -73,7 +73,7 @@ function EngineCard({ card, allowed, onChange, onForbidden }) {
         {card.sub ? <span className="sub">{card.sub}</span> : null}
       </div>
       <div className="card-b">
-        {!allowed ? <div className="mb12"><Note tone="gray" icon="lock">管理员已关闭个人 API Key，当前统一使用管理员配置。</Note></div> : null}
+        {!allowed ? <div className="mb12"><Note tone="gray" icon="lock">管理员已关闭个人 API Key</Note></div> : null}
         <div className="pl-engb">
           <div className="pl-radio c3">
             {sourceOptions(cfg).map((o) => (
@@ -102,7 +102,7 @@ function EngineCard({ card, allowed, onChange, onForbidden }) {
               </Field>
             ) : <div />}
             <div className="row me-eng-acts">
-              {ctx ? <span className="xs muted grow me-ctx" title="上下文参数按管理员配置；个人 Key 只换网关、Key 和模型">{ctx}</span> : null}
+              {ctx ? <span className="xs muted grow me-ctx">{ctx}</span> : null}
               <Button kind="ghost" onClick={clear} disabled={!allowed || busy || !canClear(cfg)}>清除个人配置</Button>
               <Button kind="primary" onClick={save} disabled={!allowed || busy || !dirty}>保存</Button>
             </div>
