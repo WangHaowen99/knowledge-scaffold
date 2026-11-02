@@ -72,7 +72,8 @@ def test_hub_compose_is_an_independent_project_on_the_shared_network() -> None:
     assert "ports:" not in content
     # 源码与离线包共用：镜像由部署脚本构建或加载，compose 不引用源码目录
     assert "build:" not in content
-    assert "ONTO_AUTHZ_URL=http://onto-modeling:8100/api/internal/hub/authorize" in content
+    assert "ONTO_AUTHZ_URL" not in content
+    assert "HUB_AUTH_DIRECTORY_TOKEN" not in content
 
 
 @pytest.mark.parametrize("compose_path", ONTO_COMPOSE_FILES, ids=lambda path: path.name)

@@ -25,7 +25,7 @@ def request_key(subject, service, request_id):
 
 
 PUBLIC = ('request_id', 'ontology_id', 'release_id', 'name', 'filename', 'existing', 'version', 'kind',
-          'source_service', 'change_type', 'base_release_id', 'base_digest', 'status',
+          'source_service', 'creator', 'change_type', 'base_release_id', 'base_digest', 'status',
           'package_digest', 'size', 'created_at', 'expires_at', 'committed_at')
 SNAPSHOT = re.compile(r'^(?P<root>.+)-eval\.(?P<number>[0-9]{1,9})$')
 
@@ -181,6 +181,7 @@ class PackageStore:
         row = dict(payload, version=version, release_id=uuid.uuid4().hex,
                    input=payload, internal_request_id=key, owner_subject=identity.subject,
                    creator_identity=dict(issuer=identity.issuer, sub=identity.sub),
+                   creator=dict(issuer=identity.issuer, sub=identity.sub),
                    source_service=identity.service, status='pending', created_at=timestamp.isoformat(),
                    expires_at=(timestamp + timedelta(seconds=self.io.pending_ttl)).isoformat())
         self.save(row)
@@ -229,6 +230,7 @@ class PackageStore:
             if duplicate:
                 updated['existing'] = True
                 updated['release_id'] = duplicate['release_id']
+                updated['creator'] = duplicate.get('creator')
             os.replace(path, folder / 'package.zip')
             sync_dir(folder)
             updated['status'] = 'uploaded'
@@ -247,6 +249,7 @@ class PackageStore:
         self.validate(row, self.pending(row) / 'package.zip')
         duplicate = self.version_match(row)
         if duplicate:
+            row['creator'] = duplicate.get('creator')
             row.update({k: duplicate[k] for k in ('name', 'filename', 'version', 'kind', 'release_id',
                                                   'package_digest', 'size', 'committed_at')})
             row.update(existing=True, status='committed')
