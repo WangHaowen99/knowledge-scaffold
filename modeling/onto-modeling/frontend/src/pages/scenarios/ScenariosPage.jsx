@@ -13,7 +13,7 @@ import {
   Chip, Empty, Ev, Icon, Note, Seg, Select, St, Stat, Tabs, cx,
 } from '../../ui/index.jsx';
 import {
-  CommandRunBar, PluginEyebrow, PluginOff, ScopeLockBar, SendButton, useCommandTasks, usePageEnabled, useProjectEvent,
+  CommandRunBar, ExtraActions, PluginEyebrow, PluginOff, ScopeLockBar, SendButton, useCommandTasks, usePageEnabled, useProjectEvent,
 } from '../plugin/parts.jsx';
 import {
   INPUT_KIND, MOCK, SCENARIO, STATUS_SEG, batchCommand, countRows, enumLabel, enumOptions, failDesc, failHint, filterRows,
@@ -137,6 +137,7 @@ function Scenarios({ route }) {
         title="场景走查"
         actions={(
           <>
+            <ExtraActions page="scenarios" tasks={tasks} />
             <SendButton tasks={tasks} {...refresh} icon="refresh" kind="soft" disabled={!stale.length}>补齐过期场景 {stale.length}</SendButton>
             <SendButton tasks={tasks} command={headWalk?.command} args={headWalk?.args} text={headWalk?.text} icon="hand" disabled={!headWalk}>交互走查</SendButton>
             <SendButton tasks={tasks} {...batch} kind="primary" icon="play" disabled={!all.length}>批量验证</SendButton>

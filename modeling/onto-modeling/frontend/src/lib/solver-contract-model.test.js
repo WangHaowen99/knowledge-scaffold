@@ -346,13 +346,16 @@ test('changing the operation carries along a title that was never edited', () =>
   assert.deepEqual(setOperation(raw, '查询站点').params, raw.params, 'manual contracts keep their parameters');
 });
 
-test('local problems flag key, operation, decision model, units and empty sidecars', () => {
+test('local problems flag key, operation, units and empty sidecars; a missing decision model is filled in on save', () => {
   const [base] = draftFromView(view());
   const second = { ...setField(setField(base, 'decision_model', ' '), 'units', [{ field: 'd', unit: '' }]), uid: 'new:2', origin: null };
   const problems = localProblems([base, setSidecar(second, 'presentation', '  ')], ['规划路线', '查询站点']);
   const byField = (uid) => problems.filter((p) => p.uid === uid).map((p) => p.field).sort();
   assert.deepEqual(byField('saved:plan_route'), ['operation', 'solver_key']);
-  assert.deepEqual(byField('new:2'), ['decision_model', 'operation', 'presentation', 'solver_key', 'units']);
+  assert.deepEqual(byField('new:2'), ['operation', 'presentation', 'solver_key', 'units']);
+  // 表单上没有 Decision Model ID：不报给用户，提交时按求解标识补齐
+  const [payload] = toPayload([second]);
+  assert.equal(payload.binding.decision_model, `${String(second.binding.solver_key).trim()}_model`);
 
   const clash = setField(base, 'solver_key', 'cha_xun');
   assert.match(localProblems([clash], ['规划路线', 'cha_xun'])[0].message, /同名/);
