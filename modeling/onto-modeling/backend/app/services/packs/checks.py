@@ -195,7 +195,11 @@ def _syntax_errors(directory: Path, files: list[str]) -> list[str]:
 
 
 def _touches_protected(pattern: str) -> bool:
-    first = Path(str(pattern).lstrip("./")).parts[:1]
+    # 只去掉开头的 ./（原来 lstrip("./") 会把 .onto、.claude 的点也去掉，受保护的点目录永远查不出来）
+    text = str(pattern)
+    while text.startswith("./"):
+        text = text[2:]
+    first = Path(text.lstrip("/")).parts[:1]
     return bool(first) and any(fnmatch.fnmatch(first[0], protected) or protected == first[0]
                                for protected in mf.PROTECTED_DIRS)
 
@@ -230,6 +234,16 @@ def _declared_nodes(directory: Path, manifest: Manifest) -> tuple[list[tuple[str
     return found, broken
 
 
+def _scope_patterns(node: dict) -> list[str]:
+    """节点的写入范围：produces（`{path}` 或字符串）加 writes。"""
+    out = []
+    for item in [*(node.get("produces") or []), *(node.get("writes") or [])]:
+        pattern = item.get("path") if isinstance(item, dict) else item
+        if pattern:
+            out.append(str(pattern))
+    return out
+
+
 def _node_problems(directory: Path, manifest: Manifest) -> tuple[list[str], list[str]]:
     """节点声明：写入范围不碰受保护目录；入口命令确实存在（详设 6.9）。"""
     protected, missing_commands = [], []
@@ -237,13 +251,125 @@ def _node_problems(directory: Path, manifest: Manifest) -> tuple[list[str], list
     nodes, broken = _declared_nodes(directory, manifest)
     missing_commands += broken
     for rel, node in nodes:
-        for item in node.get("produces") or []:
-            if isinstance(item, dict) and _touches_protected(str(item.get("path") or "")):
-                protected.append(f"{rel}: {item.get('path')}")
+        protected += [f"{rel}: {pattern}" for pattern in _scope_patterns(node) if _touches_protected(pattern)]
         entry = (node.get("entry") or {}).get("command")
         if entry and entry.split()[0] not in commands:
             missing_commands.append(f"{rel}: {entry}")
     return protected, missing_commands
+
+
+# 节点包（kind: node，详设 6.9；用户 2026-11-02 定：能力包的特例）只带节点声明和节点要用的命令、子代理、
+# 脚本、模板（参考指南随子代理一起允许）；hooks、skill、页面、产物登记、界面代码等一律不能带
+NODE_PACK_ALLOWED = ("commands", "agents", "scripts", "templates", "reference", "nodes", "flow", "readme", "docs")
+NODE_PLACEMENTS = ("step", "branch", "gate", "on_demand")
+
+
+def _flow_probes(directory: Path, manifest: Manifest) -> set[str]:
+    return set((_flow_data(directory, manifest) or {}).get("probes") or {})
+
+
+def _core_probes(repository: PackRepository | None) -> set[str] | None:
+    """stable core 的主流程探针（节点完成判定可以直接用）；没有包仓库时不检查。"""
+    if repository is None:
+        return None
+    version = repository.latest("core", "stable")
+    if not version:
+        return None
+    try:
+        return _flow_probes(repository.version_dir("core", version), repository.manifest("core", version))
+    except Exception:  # noqa: BLE001 - core 读不出来时不拿它挡检查
+        return None
+
+
+def _node_pack_problems(directory: Path, manifest: Manifest, files: list[str],
+                        repository: PackRepository | None) -> list[str]:
+    """kind: node 的附加检查：只带允许的组成；节点挂法、编号、四类节点各自的声明；不新增产物类别。"""
+    from ..flow.state import KIND_DIRS
+
+    problems = []
+    for key, value in manifest.contributes.items():
+        if key in NODE_PACK_ALLOWED or not value:
+            continue
+        if key == "hooks" and not manifest.hooks():
+            continue
+        problems.append(f"节点包不能带 contributes.{key}")
+    if any(Path(rel).parts[0] in (mf.UI_DIR, "skills") for rel in files):
+        problems.append("节点包不能带界面代码（ui/）或 skill（skills/）")
+    if (directory / "settings.json").exists():
+        problems.append("节点包不能带 settings.json")
+    nodes, _broken = _declared_nodes(directory, manifest)
+    if not nodes:
+        problems.append("节点包至少要声明一个流程节点")
+    own_commands = {f"/{name}" for name in manifest.items("commands")}
+    own_scripts = set(manifest.items("scripts"))
+    probes = _flow_probes(directory, manifest)
+    core_probes = _core_probes(repository)
+    for rel, node in nodes:
+        node_id = str(node.get("id") or "")
+        where = f"{rel}"
+        if not node_id.startswith(f"{manifest.name}."):
+            problems.append(f"{where}: 节点编号要以 {manifest.name}. 开头")
+        placement = node.get("placement")
+        if placement not in NODE_PLACEMENTS:
+            problems.append(f"{where}: 挂法只能是 {' / '.join(NODE_PLACEMENTS)}（主线节点只能随基础建模能力发布）")
+        if placement != "on_demand" and not (node.get("after") or node.get("before")):
+            problems.append(f"{where}: 要写锚点 after 或 before")
+        for key in ("stale_on", "requires"):
+            for item in node.get(key) or []:
+                kind = item.get("kind") if isinstance(item, dict) else item
+                if str(kind) not in KIND_DIRS:
+                    problems.append(f"{where}: {key} 里的 {kind} 不是已有的产物类别（节点包不能新增实体类型）")
+        for name in node.get("done") or []:
+            probe = str(name).lstrip("!")
+            if probe not in probes and (core_probes is not None and probe not in core_probes):
+                problems.append(f"{where}: 完成判定用到的探针 {probe} 没有声明")
+        kind = node.get("kind", "agent")
+        entry = str((node.get("entry") or {}).get("command") or "").split(" ")[0]
+        if kind == "agent":
+            if not entry:
+                problems.append(f"{where}: agent 节点要有入口命令 entry.command")
+            elif entry not in own_commands:
+                problems.append(f"{where}: 入口命令 {entry} 不是本包声明的命令")
+        elif kind == "script":
+            script = node.get("script") if isinstance(node.get("script"), dict) else {}
+            if str(script.get("name") or "") not in own_scripts:
+                problems.append(f"{where}: 脚本节点要声明本包里的脚本 script.name")
+            output = str(script.get("output") or "")
+            if not output or not any(fnmatch.fnmatch(output, pattern) for pattern in _scope_patterns(node)):
+                problems.append(f"{where}: 脚本节点的 script.output 要落在 produces 里")
+        elif kind == "human":
+            decision = node.get("decision") if isinstance(node.get("decision"), dict) else {}
+            options = [item for item in decision.get("options") or [] if isinstance(item, dict) and item.get("id")]
+            record = str(decision.get("record") or "")
+            if not decision.get("title") or len(options) < 2:
+                problems.append(f"{where}: 人工节点要有 decision.title 和至少两个选项")
+            if not record or not any(fnmatch.fnmatch(record, pattern) for pattern in _scope_patterns(node)):
+                problems.append(f"{where}: 人工节点的 decision.record 要落在 produces 里")
+        elif kind == "external":
+            provider = node.get("provider") if isinstance(node.get("provider"), dict) else {}
+            if not provider.get("kind"):
+                problems.append(f"{where}: 外部节点要声明需要的证据源提供方 provider.kind")
+    requires = str((_flow_data(directory, manifest) or {}).get("requires_flow") or "")
+    if requires and repository is not None:
+        spec = requires[len("core"):].strip() if requires.startswith("core") else None
+        if spec is None:
+            problems.append(f"requires_flow 只能约束 core：{requires}")
+        elif not any(mf.satisfies(version, spec) for version in repository.versions("core")):
+            problems.append(f"requires_flow {requires} 在包仓库里没有满足的基础建模能力")
+    return problems
+
+
+def _flow_data(directory: Path, manifest: Manifest) -> dict | None:
+    import yaml
+
+    flow_rel = manifest.contributes.get("flow")
+    if not isinstance(flow_rel, str) or not (directory / flow_rel).is_file():
+        return None
+    try:
+        data = yaml.safe_load((directory / flow_rel).read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def run(directory: Path, repository: PackRepository | None = None, *, tenant: bool = False,
@@ -326,6 +452,11 @@ def run(directory: Path, repository: PackRepository | None = None, *, tenant: bo
     checks.append(_check("entity_types", "没有新增实体类型", "fail" if entity else "pass", "；".join(entity[:10])))
     views = artifact_registry.check_views(directory, manifest)
     checks.append(_check("views", "视图声明格式正确", "fail" if views else "pass", "；".join(views[:10])))
+
+    if manifest.kind == "node":
+        node_pack = _node_pack_problems(directory, manifest, files, repository)
+        checks.append(_check("node_pack", "节点包只带节点与节点要用的命令、子代理、脚本、模板",
+                             "fail" if node_pack else "pass", "；".join(node_pack[:10])))
 
     protected, missing_entry = _node_problems(directory, manifest)
     checks.append(_check("write_scope", "写入范围不碰受保护目录", "fail" if protected else "pass", "；".join(protected[:10])))

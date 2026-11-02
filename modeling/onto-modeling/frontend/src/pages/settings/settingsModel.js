@@ -230,7 +230,7 @@ export function finalizePolicy(form, drafts = {}) {
 }
 
 // ---------- 能力与插件 ----------
-export const CATEGORY_LABEL = { capability: '能力包', industry: '行业包', system: '系统知识包', provider: '证据源提供方', node: '节点包', exporter: '导出器' };
+export const CATEGORY_LABEL = { capability: '能力包', industry: '行业包', system: '系统知识包', provider: '证据源提供方', node: '能力包', exporter: '导出器' };
 
 // 「界面」列：左栏页面 / 资料页子页 / 内核 / 无独立页面
 export function uiCell(ui) {

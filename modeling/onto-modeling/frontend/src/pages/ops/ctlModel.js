@@ -347,7 +347,7 @@ export function maintErrorText(e, fallback) {
 
 // ---------- 插件运维（O-25～O-29） ----------
 export const PACK_KIND = {
-  capability: '能力包', industry: '行业包', system: '系统知识包', provider: '证据源提供方', node: '节点包', exporter: '导出器', tenant: '租户包',
+  capability: '能力包', industry: '行业包', system: '系统知识包', provider: '证据源提供方', node: '能力包', exporter: '导出器', tenant: '租户包',
 };
 export const CHANNEL = {
   stable: { label: 'stable', tone: 'line' },

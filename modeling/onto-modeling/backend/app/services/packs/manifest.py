@@ -32,7 +32,8 @@ EDITOR_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
 
 KINDS = ("capability", "knowledge", "node", "provider", "exporter")
 CATEGORIES = ("capability", "industry", "system", "provider", "node", "exporter")
-_DEFAULT_CATEGORY = {"capability": "capability", "knowledge": "industry", "node": "node",
+# 节点包是能力包的特例（用户 2026-11-02 定）：插件目录里归进能力包，清单 kind 仍是 node，用于更严的静态检查
+_DEFAULT_CATEGORY = {"capability": "capability", "knowledge": "industry", "node": "capability",
                      "provider": "provider", "exporter": "exporter"}
 ENGINES = ("claude", "jiuwen")
 
@@ -305,6 +306,8 @@ def parse(data: dict) -> Manifest:
         if not NAME_RE.match(str(dep)) or not valid_range(str(spec)):
             problems.append(f"depends 里 {dep}: {spec} 写法不合法")
     category = str(data.get("category") or _DEFAULT_CATEGORY.get(kind, "capability"))
+    if kind == "node" or category == "node":
+        category = "capability"
     if category not in CATEGORIES:
         problems.append(f"category 必须是 {' | '.join(CATEGORIES)} 之一")
     # 清单里的发布方只用来显示：是不是官方包看入库来源（镜像内置），不看清单自己怎么写（ADR-0045）

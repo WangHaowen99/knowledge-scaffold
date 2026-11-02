@@ -39,6 +39,14 @@ test('筛选：分类、已启用（含待生效）、可更新，搜索名称 /
   assert.equal(catOf({}), 'all');
 });
 
+test('节点包归进能力包：不单列分类，旧数据里的 node 分类也算能力包', () => {
+  const items = [card({ name: 'trace' }), card({ name: 'naming', label: '命名检查', category: 'node' })];
+  assert.deepEqual(sectionsOf(items, { cat: 'all', q: '' }).map((s) => [s.key, s.items.length]), [['capability', 2]]);
+  assert.deepEqual(items.filter((p) => matchCard(p, { cat: 'capability' })).map((p) => p.name), ['trace', 'naming']);
+  assert.equal(catOf({ cat: 'node' }), 'all');
+  assert.equal(cardTags(items[1]).tags[0].text, '能力包');
+});
+
 // ---------- 卡片 ----------
 test('卡脚：9 种 project_status 的 chip 与按钮（契约 PL-01 的表）', () => {
   const foot = (st, o, extra) => cardFoot(card({ project_status: st, locked_version: '0.9.1', latest: '0.10.0', usage_note: 'erp-prod 在用', ...extra }), o);

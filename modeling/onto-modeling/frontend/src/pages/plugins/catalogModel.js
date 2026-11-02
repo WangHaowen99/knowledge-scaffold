@@ -1,22 +1,24 @@
 // 插件中心的纯逻辑（设计稿 pages-60-plugins.js 的 PL_CAT、plFoot、plUi、plCard、启用 / 更新弹窗）：
 // 筛选与分组、卡脚按 project_status 映射、兼容检查结果到弹窗文字、提示语。页面只负责画。
 
-// 分类：名称、图标、说明（设计稿 PL_CAT）；node、exporter 契约里有、设计稿没画，有包时才出现
+// 分类：名称、图标、说明（设计稿 PL_CAT）；exporter 契约里有、设计稿没画，有包时才出现。
+// 节点包是能力包的特例（用户 2026-11-02 定），归进能力包，不单列
 export const PACK_CATEGORIES = {
   capability: ['能力包', 'cube', '决定怎么建模'],
   industry: ['行业包', 'book', '行业知识资产，只有数据'],
   system: ['系统知识包', 'server', '商用系统的表字段字典'],
   provider: ['证据源提供方', 'db', '连接器网关里运行，管理员安装'],
-  node: ['节点包', 'branch', '往流程里加节点'],
   exporter: ['导出器', 'download', '把知识包导出成其他格式'],
 };
-// 有包时才出现在左栏的分类：节点包、导出器设计稿没画；证据源提供方本期只留接口（ADR-0056），目录里没有
-export const OPTIONAL_CATEGORIES = ['node', 'exporter', 'provider'];
-// 卡片图标底色（设计稿 .pl-ico.cap / .node / .ind / .sys / .prov / .exp）
-export const PACK_ICON_CLASS = { capability: 'cap', node: 'node', industry: 'ind', system: 'sys', provider: 'prov', exporter: 'exp' };
+// 有包时才出现在左栏的分类：导出器设计稿没画；证据源提供方本期只留接口（ADR-0056），目录里没有
+export const OPTIONAL_CATEGORIES = ['exporter', 'provider'];
+// 卡片图标底色（设计稿 .pl-ico.cap / .ind / .sys / .prov / .exp）
+export const PACK_ICON_CLASS = { capability: 'cap', industry: 'ind', system: 'sys', provider: 'prov', exporter: 'exp' };
+// 旧数据里的 node 分类按能力包算
+export const categoryOf = (p) => (p?.category === 'node' ? 'capability' : p?.category);
 // 详情页英雄区的大图标：能力包按包名（与新建向导第 3 步一致），其余按分类
 const PACK_ICON = { core: 'cube', trace: 'flask', knowledge: 'book', solver: 'code', reverse: 'db', diagram: 'branch', 'web-research': 'globe', migrate: 'recycle', evolution: 'refresh' };
-export const packIcon = (p) => PACK_ICON[p?.name] || PACK_CATEGORIES[p?.category]?.[1] || 'puzzle';
+export const packIcon = (p) => PACK_ICON[p?.name] || PACK_CATEGORIES[categoryOf(p)]?.[1] || 'puzzle';
 
 // 纯数据包（行业包、系统知识包）现读即生效，更新前先给看更新弹窗
 export const DATA_CATEGORIES = ['industry', 'system'];
@@ -28,7 +30,7 @@ export const isInstalled = (p) => INSTALLED.includes(p?.project_status);
 // ---------- 筛选与分组 ----------
 // cat：all、分类键、inst（本项目已启用，含待生效）、upd（可更新）；q 按名称、ID、说明（设计稿 data-name）
 export function matchCard(p, { cat = 'all', q = '' } = {}) {
-  const byCat = cat === 'all' || p.category === cat || (cat === 'inst' && isInstalled(p)) || (cat === 'upd' && p.project_status === 'update');
+  const byCat = cat === 'all' || categoryOf(p) === cat || (cat === 'inst' && isInstalled(p)) || (cat === 'upd' && p.project_status === 'update');
   const s = q.trim().toLowerCase();
   return byCat && (!s || `${p.label} ${p.name} ${p.description || ''}`.toLowerCase().includes(s));
 }
@@ -37,7 +39,7 @@ export function matchCard(p, { cat = 'all', q = '' } = {}) {
 export function sectionsOf(items, filter) {
   return Object.entries(PACK_CATEGORIES)
     .map(([key, [title, , desc]]) => {
-      const all = items.filter((p) => p.category === key);
+      const all = items.filter((p) => categoryOf(p) === key);
       return { key, title, desc, total: all.length, items: all.filter((p) => matchCard(p, filter)) };
     })
     .filter((s) => s.items.length);
@@ -78,8 +80,8 @@ const BATCH = { first: ['首版', 'blue'], second: ['第二批', 'gray'], third:
 
 /** 卡片中间那排标记：分类、发布方、界面（能力包）、批次（提供方）、可更新；都没有时显示 meta */
 export function cardTags(p) {
-  const tags = [{ text: PACK_CATEGORIES[p.category]?.[0] || p.category, tone: 'line' }, publisherChip(p)];
-  const ui = p.category === 'capability' ? uiChip(p.ui) : null;
+  const tags = [{ text: PACK_CATEGORIES[categoryOf(p)]?.[0] || p.category, tone: 'line' }, publisherChip(p)];
+  const ui = categoryOf(p) === 'capability' ? uiChip(p.ui) : null;
   if (ui) tags.push(ui);
   const batch = p.category === 'provider' ? BATCH[p.batch] : null;
   if (batch) tags.push({ text: batch[0], tone: batch[1] });

@@ -90,7 +90,7 @@ test('清单摘要：kind、贡献、生效时机', () => {
   const m = { kind: 'knowledge', contributes: { commands: 1, templates: 3, nodes: ['retail.compliance'], gates: 1, config: 2, pages: [], hooks: 0 } };
   assert.equal(kindText(m), 'knowledge（行业包）');
   assert.equal(kindText({ ...m, category: 'system' }), 'knowledge（系统知识包）');
-  assert.equal(kindText({ kind: 'node' }), 'node（节点包）');
+  assert.equal(kindText({ kind: 'node' }), 'node（能力包）'); // 节点包归进能力包
   assert.equal(kindText(null), '');
   assert.equal(contributesText(m.contributes), '命令 1 · 模板 3 · 节点 1 · 关卡 1 · 可调设置 2');
   assert.equal(contributesText({}), '没有声明贡献');
