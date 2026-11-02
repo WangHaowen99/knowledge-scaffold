@@ -17,7 +17,7 @@ from jwt import PyJWKClient
 
 AUTH_URL = os.environ.get("ONTO_WEB_AUTH_URL", "").rstrip("/")
 ISSUER = os.environ.get("ONTO_WEB_AUTH_ISSUER", AUTH_URL)
-AUDIENCE = os.environ.get("ONTO_WEB_AUTH_AUDIENCE", "meta-wise")
+AUDIENCE = os.environ.get("ONTO_WEB_AUTH_AUDIENCE", "knowledge-scaffold")
 
 ENABLED = bool(AUTH_URL)
 _jwks_client = PyJWKClient(f"{AUTH_URL}/jwks.json") if ENABLED else None

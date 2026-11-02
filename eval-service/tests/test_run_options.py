@@ -3,7 +3,7 @@ import threading
 import time
 
 from evaluation.core import Failure
-from test_evaluation import environment, preparation, wait
+from test_evaluation import consumer_data_source, environment, preparation, wait
 
 
 def eval_set(client, count, name):
@@ -121,7 +121,9 @@ def test_graph_runs_use_the_workspace_value_as_the_consumer_workspace(environmen
 
     def consumer(method, path, kwargs):
         calls.append((method, path, kwargs.get('workspace', '')))
-        if path.endswith('/data-source') or path.endswith('/data-source/test'):
+        if path.endswith('/data-source'):
+            return consumer_data_source(kwargs['json'])
+        if path.endswith('/data-source/test'):
             return {'success': True}
 
     wrap(deps, consumer)
@@ -146,7 +148,9 @@ def test_graph_runs_refuse_foreign_or_shared_workspaces(environment):
 
     def consumer(method, path, kwargs):
         calls.append(path)
-        if path.endswith('/data-source') or path.endswith('/data-source/test'):
+        if path.endswith('/data-source'):
+            return consumer_data_source(kwargs['json'])
+        if path.endswith('/data-source/test'):
             return {'success': True}
         if path == '/agentic/workspaces/workspace_foreign':
             raise Failure('dependency_rejected', 'Forbidden', 403, 'dependency', upstream_status=403)
@@ -161,13 +165,16 @@ def test_graph_runs_refuse_foreign_or_shared_workspaces(environment):
 
 def test_nl2sql_runs_use_the_evaluation_workspace_id_as_the_consumer_workspace(environment):
     client, app, deps, cfg = environment
-    calls = []
+    calls, captured = [], []
 
     def consumer(method, path, kwargs):
         calls.append((method, path, kwargs.get('workspace', '')))
+        captured.append((method, path, kwargs))
         if path == '/api/v1/sql':
             return {'success': True, 'data': [{'table_name': 'items', 'column_name': 'id', 'data_type': 'varchar(64)', 'is_nullable': 'NO'}]}
-        if path.endswith('/data-source') or path.endswith('/data-source/test'):
+        if path.endswith('/data-source'):
+            return consumer_data_source(kwargs['json'])
+        if path.endswith('/data-source/test'):
             return {'success': True}
 
     wrap(deps, consumer)
@@ -184,5 +191,7 @@ def test_nl2sql_runs_use_the_evaluation_workspace_id_as_the_consumer_workspace(e
     assert deps.workspaces['workspace_sql_demo'] == {'id': 'workspace_sql_demo', 'name': 'workspace_sql_demo', 'role': 'admin', 'members': []}
     assert not any(path.startswith('/agentic/internal/evaluation/workspaces') for _, path, _ in calls)
     assert {ws for _, path, ws in calls if path.endswith('/import-zip') or path == '/agentic/runs'} == {'workspace_sql_demo'}
+    sent = next(kwargs['json'] for _, path, kwargs in captured if path.endswith('/data-source'))
+    assert sent['config'] == {'url': 'https://service.example.net', 'scene': 'scene_demo', 'token': 'synthetic-invalid-token'}
     assert client.delete('/evaluation/api/runs/' + result['id']).json() == {'deleted': True}
     assert not any(method == 'DELETE' for method, _, _ in calls)

@@ -95,7 +95,7 @@ bash deploy/deploy.sh --eval-only
 
 独立 Compose 不启动账号、Hub、consumer 或建模依赖。默认全栈 `bash deploy/deploy.sh` 会在其他服务之后部署评测；`--onto-modeling-only` 不包含评测。默认宿主端口 8090（所有网卡），网关按实际网络配置访问；直连方式见“配置与权限”。`/evaluation/api/health` 只报告进程活性，不能替代依赖与模型协议验证。
 
-离线包：`bash eval-service/build.sh <version> [amd|arm]`。产物包含镜像、Compose、部署脚本和说明；目标机设置 `EVAL_IMAGE=knowledge-evaluation:<version>` 后执行包内 `deploy/deploy.sh`，运行配置规则同上。不包含运行配置和数据。根目录 `bash deploy/build.sh <version> [amd|arm]` 生成的完整离线包也包含评测镜像、部署脚本及网关配置示例。
+离线包：`bash eval-service/build.sh <version> [amd|arm]`，产物为 `eval-service/dist/evaluation-<version>-linux-<arch>.tar.gz`（顶层目录 `eval-service/`），包含镜像、Compose、部署脚本和说明。目标机解压后执行包内 `deploy/deploy.sh`（自动加载镜像），或交给分离部署脚本的 `--evaluation-package`；运行配置规则同上。不包含运行配置和数据。根目录 `bash deploy/build.sh <version> [amd|arm]` 生成的完整离线包也包含评测镜像、部署脚本及网关配置示例。
 
 ## 恢复与清理
 

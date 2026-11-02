@@ -9,6 +9,12 @@ from .core import Failure, endpoint
 from .nl2sql import scene_token
 
 IDENTIFIER=re.compile(r'^[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]{0,63}$')
+# Evaluation-only connection keys. Consumer rejects unknown provider fields, so they never leave this service.
+EVALUATION_ONLY_KEYS=('evaluation_workspace_id',)
+
+
+def consumer_config(connection):
+    return {k:v for k,v in connection.items() if k not in EVALUATION_ONLY_KEYS}
 
 
 def identifier(value):
@@ -108,10 +114,10 @@ class DataSources:
         tables=self.store.decrypt(source['tables_snapshot']) if source.get('tables_snapshot') else {}
         connection=self.store.decrypt(source['connection']) if source.get('connection') else {}
         if mode=='connection' and not source.get('import_data'):
-            return dict(mode='direct_provider',provider=source['provider'],config=connection)
+            return dict(mode='direct_provider',provider=source['provider'],config=consumer_config(connection))
         if source.get('provider')=='neo4j':
             self.graph.import_data(run_id,source,connection,tables,mapping,relations or {})
-            return dict(mode='direct_provider',provider='neo4j',config=connection)
+            return dict(mode='direct_provider',provider='neo4j',config=consumer_config(connection))
         if mode=='connection':
             # Never replace arbitrary external SQL tables. Read-only external connections are supported.
             raise Failure('external_import_denied','外部 SQL 连接仅支持查询，请使用 dataset 导入隔离评测库',422,'data_import')

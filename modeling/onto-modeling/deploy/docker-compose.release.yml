@@ -7,7 +7,7 @@ services:
     image: ${AUTH_SERVER_IMAGE:-onto-modeling-auth-server:latest}
     container_name: onto-modeling-auth-server
     restart: unless-stopped
-    # 只在 compose 网络内可达；issuer/audience 用镜像默认值（http://auth-server:5056 / meta-wise），
+    # 只在 compose 网络内可达；issuer/audience 用镜像默认值（http://auth-server:5056 / knowledge-scaffold），
     # 与 onto-modeling 容器内 ONTO_WEB_AUTH_URL 一致，改动时两边同步
     expose:
       - "5056"

@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from app.services import auth
 
 ISSUER = "https://auth.example.com"
-AUDIENCE = "meta-wise"
+AUDIENCE = "knowledge-scaffold"
 
 
 @pytest.fixture()

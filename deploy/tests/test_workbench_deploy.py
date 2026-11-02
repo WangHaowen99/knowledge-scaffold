@@ -903,6 +903,12 @@ _UPGRADE_DOCKER_STUB = """\
 case "$1" in
     container) ;;
     image) [ "${4:-}" != --format ] || printf 'sha256:%064d\\n' 0; exit 0 ;;
+    exec)
+        [ "$2 $3" != "-i onto-agent-backend" ] || printf '%s\\n' "${STUB_EVALUATION_ROUTE_STATUS:-401}"
+        exit 0 ;;
+    ps)
+        case "$*" in *"publish=${STUB_BUSY_PORT:-none}"*) printf 'synthetic-other-service\\n' ;; esac
+        exit 0 ;;
     port)
         [ "$2 $3" != "mw-modeling 5100/tcp" ] || [ -z "${STUB_LEGACY_MODELING_PORT:-}" ] \\
             || printf '0.0.0.0:%s\\n' "${STUB_LEGACY_MODELING_PORT}"
@@ -923,7 +929,9 @@ case "${format}" in
     *working_dir*) printf '%s\\n' "${owner}" ;;
     *Mounts*) printf 'mw-modeling_%s-data\\n' "${name#mw-}" ;;
     *Config.Image*) printf '%s:previous\\n' "${name}" ;;
-    *State.Running*) printf 'false\\n' ;;
+    *State.Running*)
+        if [ "${name}" = onto-agent-backend ]; then printf '%s\\n' "${STUB_CONSUMER_RUNNING:-false}"
+        else printf 'false\\n'; fi ;;
     *Networks*) printf 'onto-agent_default\\n' ;;
 esac\
 """
@@ -1280,7 +1288,7 @@ def _interactive_upgrade_answers(
         ("请输入 Modeling 发布包路径", str(modeling_package)),
         ("请输入 Onto Modeling 发布包路径", str(onto_package.parent / "onto-modeling-*.tar.gz")),
         ("请输入知识包 Hub 发布包路径", hub),
-        ("请输入独立评测服务发布目录", evaluation),
+        ("请输入独立评测服务发布包", evaluation),
         *extra,
     ]
 
@@ -1376,7 +1384,7 @@ def test_interactive_install_rejects_custom_onto_port_equal_to_modeling(tmp_path
             ("请输入 Modeling 发布包路径", str(modeling_package)),
             ("请输入 Onto Modeling 发布包路径", str(onto_package)),
             ("请输入知识包 Hub 发布包路径", ""),
-            ("请输入独立评测服务发布目录", ""),
+            ("请输入独立评测服务发布包", ""),
             ("请输入 Onto Modeling 宿主端口", "55110"),
         ],
         setup["env"],
@@ -1430,7 +1438,7 @@ def _legacy_answers(
         ("Modeling 镜像 tar 包路径", str(modeling_package)),
         ("Onto Modeling 发布包路径", onto_answer),
         ("知识包 Hub 发布包路径", hub_answer),
-        ("独立评测服务发布目录", evaluation),
+        ("独立评测服务发布包", evaluation),
         *extra,
     ]
 
