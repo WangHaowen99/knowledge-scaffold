@@ -280,11 +280,11 @@ test('mock 维护向导：进入即开始排空（剩 3 个、57%）→ 排空�
   const pool = D.sessionPool(t0);
   const m = D.enterMaintenance(pool, { mode: 'reject_new_sessions', message: 'x', target: { pack: 'core', version: D.CORE.beta } }, { now: t0, user: 'ops01' });
   const drain = m.steps.find((s) => s.id === 'drain');
-  assert.deepEqual([drain.state, drain.progress_pct, drain.detail], ['current', 57, '剩余 3 个会话 · 2 个 L4 已在安全点暂停']);
+  assert.deepEqual([drain.state, drain.progress_pct, drain.detail], ['current', 57, '剩余 3 个会话 · 2 个自主构建已在安全点暂停']);
   assert.equal(pool.items.length, 3);
   assert.deepEqual(D.advanceMaintenance(m, pool, t0 + 1000).error, { step: 'drain', remaining: 3 });
   D.refreshMaintenance(m, pool, t0 + 2 * D.DRAIN_STEP_MS);
-  assert.equal(drain.detail, '剩余 1 个会话 · 2 个 L4 已在安全点暂停');
+  assert.equal(drain.detail, '剩余 1 个会话 · 2 个自主构建已在安全点暂停');
   const t1 = t0 + 3 * D.DRAIN_STEP_MS;
   assert.equal(D.advanceMaintenance(m, pool, t1).state.steps.find((s) => s.state === 'current').id, 'upgrade');
   assert.equal(drain.detail, '已排空 · 7 个会话已回收');

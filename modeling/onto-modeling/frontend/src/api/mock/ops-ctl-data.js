@@ -184,7 +184,7 @@ export function refreshMaintenance(m, pool, now) {
     if (drain.state === 'current') {
       drain.progress_pct = pct;
       drain.detail = left
-        ? [`剩余 ${left} 个会话`, pool.drain.autobuild ? `${pool.drain.autobuild} 个 L4 已在安全点暂停` : null].filter(Boolean).join(' · ')
+        ? [`剩余 ${left} 个会话`, pool.drain.autobuild ? `${pool.drain.autobuild} 个自主构建已在安全点暂停` : null].filter(Boolean).join(' · ')
         : `已排空 · ${total} 个会话已回收${pool.drain.forced ? `（强制断开 ${pool.drain.forced} 个）` : ''}`;
     }
   }
