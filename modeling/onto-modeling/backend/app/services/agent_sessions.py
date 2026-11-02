@@ -1493,7 +1493,7 @@ class SessionManager:
             seed = next((item["payload"]["card_id"] for _cid, item in records if item.get("type") == "card"),
                         record.get("tree") or "")
             for card in await asyncio.to_thread(_round_artifact_cards, session, start, record.get("tree") or "", seed):
-                session.broadcast({"type": "card", "payload": card})
+                session.broadcast({"type": "card", "payload": {**card, "changeset_id": record["id"]}})
         except Exception:  # noqa: BLE001 - 变更卡是增强信息，失败不影响会话
             _log.warning("项目 %s 观察助手副本失败", session.project_id, exc_info=True)
 

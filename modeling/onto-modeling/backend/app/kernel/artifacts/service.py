@@ -276,8 +276,31 @@ def detail(manager, project_id: str, art_type: str, key: str, *, rows_limit: int
     return _detail_view(atype, root, row, rows_limit=rows_limit, iso=iso)
 
 
-def _detail_view(atype: ArtifactType, root: Path, row: dict, *, rows_limit: int, iso) -> dict:
-    lock = _scope_lock(root)
+def detail_in_changeset(manager, project_id: str, art_type: str, key: str, changeset_id: str, *,
+                        rows_limit: int = 0, iso) -> dict:
+    """AR-03 `?changeset=`：确认生效前双击这一轮的产物卡，读助手副本里这一轮的版本（副本里新增的也读得到）。
+
+    变更集还没关闭（开着、待确认、合入冲突）且副本在、副本里有这份产物时读副本；否则（已确认、已撤回、
+    不存在、副本里没有）读当前版本。响应多 `from_changeset`：读的是哪个变更集，读当前版本时为 null。
+    产物类型按项目工作区的锁文件认（同出卡）；只读按项目的写入范围锁算。"""
+    from ..changesets import service as changesets
+    from ..changesets import store
+
+    root = manager.project_root(project_id)
+    atype = _require_type(manager, root, art_type)
+    record = store.get(root, changeset_id) if changeset_id else None
+    copy = changesets.existing_copy(root) if record and record.get("state") in store.OPEN_STATES else None
+    if copy is not None:
+        row = next((row for row in index.rows_of(atype, copy, index._files(atype, copy)) if row["key"] == key), None)
+        if row is not None:
+            view = _detail_view(atype, copy, row, rows_limit=rows_limit, iso=iso, lock_root=root)
+            return {**view, "from_changeset": changeset_id}
+    return {**detail(manager, project_id, art_type, key, rows_limit=rows_limit, iso=iso), "from_changeset": None}
+
+
+def _detail_view(atype: ArtifactType, root: Path, row: dict, *, rows_limit: int, iso,
+                 lock_root: Path | None = None) -> dict:
+    lock = _scope_lock(lock_root or root)
     parsed = _parsed(atype, root, row)
     limit = max(1, min(int(rows_limit or ROWS_LIMIT_DEFAULT), ROWS_LIMIT_MAX))
     table = None

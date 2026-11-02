@@ -83,10 +83,14 @@ async def artifact_summary(project_id: str, art_type: str, request: Request, gro
 
 
 @router.get("/artifacts/{art_type}/{key}")
-async def get_artifact(project_id: str, art_type: str, key: str, request: Request, rows_limit: int = 0):
-    """AR-03：产物详情。"""
+async def get_artifact(project_id: str, art_type: str, key: str, request: Request, rows_limit: int = 0,
+                       changeset: str = ""):
+    """AR-03：产物详情。带 changeset（产物卡上的 changeset_id）时，这个变更集还没确认就读助手副本里这一轮的版本。"""
     deps.require_owner(project_id, request)
     with _errors():
+        if changeset:
+            return await asyncio.to_thread(service.detail_in_changeset, deps.workspaces, project_id, art_type, key,
+                                           changeset, rows_limit=rows_limit, iso=deps.iso)
         return await asyncio.to_thread(service.detail, deps.workspaces, project_id, art_type, key,
                                        rows_limit=rows_limit, iso=deps.iso)
 
