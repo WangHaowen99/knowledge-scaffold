@@ -5,7 +5,7 @@ import { Button, Empty } from '../ui/index.jsx';
 import { AppCtx } from './context.js';
 import { PopLayer } from './PopLayer.jsx';
 import { ProjectArea } from './ProjectArea.jsx';
-import { navigate, pagePath, useRoute } from './router.js';
+import { navigate, pagePath, parseHash, useRoute } from './router.js';
 import { createServices } from './services.js';
 import { ToastHost } from './toast.jsx';
 // 这几份样式原来随工作台一起进主入口；工作台拆包后仍留在主入口，先后不变（层叠顺序不变，别的页面也用到其中的类）
@@ -149,7 +149,8 @@ export default function App() {
   const signedIn = useCallback(async (u) => {
     setUser(u);
     try { setUser(await services.api.me()); } catch { /* 用登录响应里的资料 */ }
-    navigate('/projects');
+    // 只在还停在登录页时才去项目列表：取 A-07 期间用户（或地址）已经去了别的页面就不再拽回来
+    if (parseHash(window.location.hash).name === 'login') navigate('/projects');
   }, [services]);
 
   const logout = useCallback(async () => {
