@@ -57,6 +57,8 @@ vi .env              # 填 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN
   30–50 名在线用户（突发式交互节奏）。
 - 几十用户同时建模为目标时建议 16G 主机，并按比例调高 `ONTO_WEB_MAX_SESSIONS`
   与 compose 里的 `ONTO_WEB_MEM_LIMIT`。
+- 自主构建的每次运行占一个会话（运行中不被驱逐、不被空闲回收），同时运行数由 `ONTO_WEB_AUTOBUILD_MAX_RUNS`
+  （默认 2）限制，超出的排队；会话池上限要给陪伴建模的用户留出余量。
 - 建议主机配置 2–4G swap 或 zram 吸收峰值。
 - 空闲会话默认 10 分钟回收（`ONTO_WEB_SESSION_IDLE_TTL`），回收后靠 resume
   续接模型上下文，用户无感；会话 transcript 持久化在数据卷 `/data/home/.claude/`。
