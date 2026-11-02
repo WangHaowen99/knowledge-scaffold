@@ -4,11 +4,12 @@ import { useApp } from '../../app/context.js';
 import { navigate, pagePath, useRoute } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
+import { evidenceFromSources, isEvidencePack } from '../../state/evidence.js';
 import { ShellG } from '../../shell/Shell.jsx';
 import { Button, Chip, Field, Icon, Menu, Prog, Toggle, cx, useOutside } from '../../ui/index.jsx';
 import { createBody } from './createBody.js';
 
-const STEPS = [['目标', '名称与一句话目标'], ['起点与资料', '从哪里开始、先给什么'], ['行业与能力', '行业包、可选能力包'], ['引擎与构建方式', '用什么跑、怎么跑']];
+const STEPS = ['目标', '起点与资料', '行业与能力', '引擎与构建方式'];
 const EXAMPLES = ['店长一句话说明需求，按规则自动生成补货单', '根据业主报修判断故障紧急程度并派维修工单', '按订单预测和站点约束求解骑手排班方案'];
 const PURPOSES = [['auto', '由助手判断'], ['goal', '建模目标依据'], ['evidence', '通用业务依据'], ['schema', '数据 Schema'], ['term', '术语表']];
 const PURPOSE_LABEL = Object.fromEntries(PURPOSES);
@@ -108,12 +109,13 @@ export default function CreatePage() {
   };
 
   const conflict = chk?.reason === 'conflict';
-  const capPacks = packs.filter((p) => p.category === 'capability');
+  // 证据源本期只留接口（EV-01 回 501）：读不到数据源登记时不出「连接业务系统」和依赖证据源的能力包（ADR-0056）
+  const evidenceOn = evidenceFromSources(sources);
+  const capPacks = packs.filter((p) => p.category === 'capability' && (evidenceOn || !isEvidencePack(p.name)));
   const selectedPages = capPacks.filter((p) => p.ui?.kind === 'page' && caps[p.name]).flatMap((p) => p.ui.pages.map((x) => x.title));
   const srcCount = sources?.total ?? 0;
-  // 证据源本期只留接口（EV-01 回 501）：读不到数据源登记时不出「连接业务系统」（ADR-0056）
-  const evidenceOn = !!sources;
-  const ctx = model?.engines?.[engine]?.context;
+  const engineModel = model?.engines?.[engine];
+  const modelName = engineModel?.model || engineModel?.admin_summary?.model || '使用我的模型配置';
   const uploading = files.some((f) => f.progress != null && f.progress < 100);
 
   const create = async () => {
@@ -122,7 +124,8 @@ export default function CreatePage() {
     setBusy(true);
     try {
       const finalName = conflict && chk.conflict?.candidates?.[0] ? chk.conflict.candidates[0] : name;
-      const meta = await api.createProject(createBody({ name: finalName, goal, starts, files, industries, systems, caps, engine, buildMode }));
+      const enabledCaps = evidenceOn ? caps : Object.fromEntries(Object.entries(caps).filter(([n]) => !isEvidencePack(n)));
+      const meta = await api.createProject(createBody({ name: finalName, goal, starts, files, industries, systems, caps: enabledCaps, engine, buildMode }));
       toast(`项目已创建：${meta.name}`, 'check');
       setTimeout(() => navigate(pagePath(meta.landing_page || 'wb-materials', meta.id)), 600);
     } catch (e) {
@@ -139,14 +142,14 @@ export default function CreatePage() {
       ? <span className="row g4" style={{ color: 'var(--red)' }}><Icon name="alert" size={12} />你已经有一个叫「{name.trim()}」的项目</span>
       : chk.reason === 'too_long'
         ? <span className="row g4" style={{ color: 'var(--red)' }}>项目名称不能超过 200 个字符</span>
-        : <span className="row g4" style={{ color: 'var(--teal)' }}><Icon name="check" size={12} />名称可用 · 知识包包名自动生成为 <span className="mono">{chk.package_name}</span></span>;
+        : <span className="row g4" style={{ color: 'var(--teal)' }}><Icon name="check" size={12} />包名：<span className="mono">{chk.package_name}</span></span>;
 
   const startItems = [
-    ['upload', 'upload', '上传资料', '业务说明、规则文档、样例单据、表结构'],
+    ['upload', 'upload', '上传资料', ''],
     ...(evidenceOn ? [['connect_system', 'plug', '连接业务系统', srcCount ? `已登记 ${srcCount} 个数据源可用：${sources.items.map((s) => s.id).join('、')}` : '还没有登记数据源，管理员登记后可用']] : []),
-    ['industry_pack', 'layers', '从行业包开始', '用行业术语、参考对象和示例起步'],
-    ['import_package', 'pkg', '导入已有知识包', '从别处发布的包继续建模'],
-    ['example', 'play', '看示例项目', '5 分钟走完一遍完整流程'],
+    ['industry_pack', 'layers', '从行业包开始', ''],
+    ['import_package', 'pkg', '导入已有知识包', ''],
+    ['example', 'play', '看示例项目', ''],
   ];
 
   const uiTag = (p) => {
@@ -165,12 +168,12 @@ export default function CreatePage() {
           <a className="link row g4 sm" href="#/projects"><Icon name="arrowl" size={14} />返回我的项目</a>
           <div className="mt12"><h1 style={{ fontSize: 18, fontWeight: 700 }}>新建项目</h1></div>
           <div className="en-steps">
-            {STEPS.map(([t, d], i) => {
+            {STEPS.map((t, i) => {
               const n = i + 1;
               return (
                 <div key={t} className={cx('s', n === step ? 'on' : n < step && 'done')} onClick={() => setStep(n)}>
                   <span className="n">{n < step ? <Icon name="check" size={12} /> : n}</span>
-                  <div><div className="t">{t}</div><div className="d">{d}</div></div>
+                  <div><div className="t">{t}</div></div>
                 </div>
               );
             })}
@@ -181,7 +184,6 @@ export default function CreatePage() {
             {step === 1 ? (
               <div>
                 <h2>先说说这个知识包要解决什么问题</h2>
-                <p>先写个粗略的目标就行，助手会结合资料带你确认。</p>
                 <div className="mt20">
                   <Field label="项目名称" req hint={nameHint}>
                     <div className={cx('inp', (conflict || chk?.reason === 'too_long') && 'err')}><Icon name="edit" size={14} /><input value={name} onChange={(e) => setName(e.target.value)} placeholder="给项目起个名字" autoFocus /></div>
@@ -196,21 +198,11 @@ export default function CreatePage() {
                   <span className="xs muted">参考写法：</span>
                   {EXAMPLES.map((t) => <span key={t} className="chip line en-ex" style={{ cursor: 'pointer' }} onClick={() => setGoal(t)}><Icon name="sparkle" />{t}</span>)}
                 </div>
-                <div className="sec-t" style={{ marginTop: 20 }}><Icon name="sparkle" size={14} />好的目标写清楚三件事</div>
-                <div className="grid3" style={{ gap: 10 }}>
-                  {[['user', '谁在用', '店长 / 区域督导'], ['download', '给什么输入', '门店、品类、库存、到货周期'], ['upload', '要什么输出', '补货单初稿 + 超量清单']].map(([i, t, d]) => (
-                    <div key={t} className="card pad" style={{ padding: '12px 14px' }}>
-                      <div className="row g4" style={{ color: 'var(--blue2)' }}><Icon name={i} size={14} /><b className="sm">{t}</b></div>
-                      <div className="sm mt4">{d}</div>
-                    </div>
-                  ))}
-                </div>
               </div>
             ) : null}
             {step === 2 ? (
               <div>
                 <h2>从哪里开始？</h2>
-                <p>{evidenceOn ? '可以多选：先传资料，再连业务系统，也可以先什么都不传。' : '可以多选，也可以先什么都不传。'}</p>
                 <div className="grid3 mt16" style={{ gridTemplateColumns: `repeat(${startItems.length},1fr)`, gap: 10 }}>
                   {startItems.map(([k, i, t, d]) => {
                     const on = starts.includes(k);
@@ -220,7 +212,7 @@ export default function CreatePage() {
                         <span className={cx('ck chk', on && 'on')} />
                         <span className="pi"><Icon name={i} size={18} /></span>
                         <div className="t mt8">{t}</div>
-                        <div className="c">{d}</div>
+                        {d ? <div className="c">{d}</div> : null}
                       </div>
                     );
                   })}
@@ -229,12 +221,12 @@ export default function CreatePage() {
                 <div className="en-drop mt16" onClick={() => fileRef.current?.click()} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); addFiles(e.dataTransfer.files); }}>
                   <div className="ic"><Icon name="upload" size={20} /></div>
                   <b style={{ color: 'var(--ink)' }}>把资料拖到这里，或点击选择</b>
-                  <div className="sm mt4">md / txt / pdf / word / excel / drawio · 单个不超过 20 MB · 现在没有也可以直接开始</div>
+                  <div className="sm mt4">md / txt / pdf / word / excel / drawio · 单个不超过 20 MB</div>
                 </div>
                 {files.length ? (
                   <>
                     <div className="sec-t" style={{ marginTop: 16 }}>
-                      已选 {files.length} 份 · 用途由平台自动识别，可以改<span className="sp" />
+                      已选 {files.length} 份<span className="sp" />
                       <a className="link xs" onClick={() => files.forEach(removeFile)}>全部移除</a>
                     </div>
                     <div className="col" style={{ gap: 6 }}>
@@ -249,8 +241,7 @@ export default function CreatePage() {
             {step === 3 ? (
               <div>
                 <h2>选行业和能力</h2>
-                <p>选好的能力之后在项目设置里随时增减，从下一条消息开始生效。带页面的能力启用后，会出现在左栏的「插件」分组里。</p>
-                <div className="sec-t" style={{ marginTop: 16 }}><Icon name="layers" size={14} />行业包 · 可多选<span className="sp" /><a className="link xs" href="#/plugins">去插件中心看更多 <Icon name="chev" size={12} /></a></div>
+                <div className="sec-t" style={{ marginTop: 16 }}><Icon name="layers" size={14} />行业包<span className="sp" /><a className="link xs" href="#/plugins">去插件中心看更多 <Icon name="chev" size={12} /></a></div>
                 <div className="grid3" style={{ gap: 10 }}>
                   {packs.filter((p) => p.category === 'industry').map((p) => {
                     const on = industries.includes(p.name);
@@ -263,7 +254,7 @@ export default function CreatePage() {
                     );
                   })}
                 </div>
-                <div className="sec-t" style={{ marginTop: 16 }}><Icon name="server" size={14} />系统知识包 · 可选</div>
+                <div className="sec-t" style={{ marginTop: 16 }}><Icon name="server" size={14} />系统知识包</div>
                 <div className="row wrap" style={{ gap: 8 }}>
                   {packs.filter((p) => p.category === 'system').map((p) => {
                     const on = systems.includes(p.name);
@@ -274,7 +265,7 @@ export default function CreatePage() {
                     );
                   })}
                 </div>
-                <div className="sec-t" style={{ marginTop: 16 }}><Icon name="puzzle" size={14} />能力包<span className="sp" /><span className="xs faint" style={{ fontWeight: 500 }}>不是每个能力包都带页面</span></div>
+                <div className="sec-t" style={{ marginTop: 16 }}><Icon name="puzzle" size={14} />能力包</div>
                 <div className="grid2" style={{ gap: 8 }}>
                   {capPacks.map((p) => {
                     const required = p.project_status === 'required';
@@ -307,7 +298,6 @@ export default function CreatePage() {
             {step === 4 ? (
               <div>
                 <h2>用什么跑、怎么跑</h2>
-                <p>都可以之后在项目设置里改。</p>
                 <div className="sec-t" style={{ marginTop: 16, minHeight: 42 }}><Icon name="cpu" size={14} />会话引擎<span className="sp" /></div>
                 <div className="grid2" style={{ gap: 10 }}>
                   {(engines?.items || []).map((e) => {
@@ -327,46 +317,39 @@ export default function CreatePage() {
                     );
                   })}
                 </div>
-                <div className="grid2 mt12" style={{ gap: 10 }}>
-                  <Field label="模型" hint={<>想用自己的 Key？在 <a className="link" href="#/me?section=model">个人设置 › 我的模型配置</a> 里填写</>}>
-                    <div className="inp sel"><Icon name="sparkle" size={14} /><span className="grow ell">{model?.engines?.[engine]?.source === 'personal' ? '使用我的模型配置（个人 Key）' : '使用我的模型配置'}</span></div>
-                  </Field>
-                  <Field label="上下文窗口" hint="按模型上下文推荐表自动带出">
-                    <div className="inp sel"><span className="grow ell">{ctx ? `${Math.round(ctx.window / 1000)}k · 自动压缩阈值 ${ctx.compact_at_pct}%` : '按模型推荐值'}</span></div>
-                  </Field>
+                {/* 模型跟着个人设置走，这里只读：不画成下拉框，旁边给改的入口 */}
+                <div className="en-model mt12">
+                  <span className="xs muted">模型</span>
+                  <Icon name="sparkle" size={14} />
+                  <b className="sm ell">{modelName}</b>
+                  <a className="link xs" href="#/me?section=model">改我的模型配置</a>
                 </div>
                 <div className="sec-t" style={{ marginTop: 20 }}><Icon name="compass" size={14} />构建方式</div>
                 <div className="grid2" style={{ gap: 12 }}>
                   <div className={cx('en-mode', buildMode === 'L2' && 'on')} onClick={() => setBuildMode('L2')}>
-                    <div className="row"><span className="lv">L2</span><b style={{ fontSize: 15 }}>陪伴建模</b><span className="sp" /><span className={cx('rad', buildMode === 'L2' && 'on')} /></div>
+                    <div className="row"><b style={{ fontSize: 15 }}>陪伴建模</b><span className="sp" /><span className={cx('rad', buildMode === 'L2' && 'on')} /></div>
                     <ul>
-                      <li><Icon name="hand" size={12} />每个决定点发决策卡，等你选</li>
-                      <li><Icon name="merge" size={12} />每一步你点「确认生效」才算完成</li>
-                      <li><Icon name="target" size={12} />适合第一次建模、规则复杂的场景</li>
+                      <li><Icon name="hand" size={12} />每个决定等你确认</li>
                     </ul>
                   </div>
                   <div className={cx('en-mode l4', buildMode === 'L4' && 'on')} onClick={() => setBuildMode('L4')}>
-                    <div className="row"><span className="lv">L4</span><b style={{ fontSize: 15 }}>自主构建</b><span className="badge-new">新</span><span className="sp" /><span className={cx('rad', buildMode === 'L4' && 'on')} /></div>
+                    <div className="row"><b style={{ fontSize: 15 }}>自主构建</b><span className="sp" /><span className={cx('rad', buildMode === 'L4' && 'on')} /></div>
                     <ul>
-                      <li><Icon name="rocket" size={12} />在范围和预算内一路跑完，不停下来问</li>
-                      <li><Icon name="bot" size={12} />拿不准的按策略决定并记账，产出标「需复核」</li>
-                      <li><Icon name="target" size={12} />适合资料齐全、想先快速出一版</li>
+                      <li><Icon name="rocket" size={12} />一路建完，结束后集中复核</li>
                     </ul>
                   </div>
                 </div>
                 {buildMode === 'L4' ? (
                   <div className="en-l4n">
-                    <div className="row g8"><Icon name="info" size={14} /><b className="sm">自主构建的范围、预算和生产库采集授权，在「项目设置 › 构建方式」里调</b></div>
-                    <div className="xs muted mt4" style={{ lineHeight: 1.7, paddingLeft: 22 }}>资料分析和切片规划照常进行；蓝图确认后，助手按设置一路建完，结束后集中复核。它不会发布、不会删除已确认的内容。项目建好后可以在项目设置里先看看默认设置。</div>
+                    <div className="row g8"><Icon name="info" size={14} /><span className="sm">范围和预算在「项目设置 › 构建方式」里调</span></div>
                   </div>
                 ) : null}
               </div>
             ) : null}
           </div>
           <div className="ftr">
-            <Button kind="ghost" onClick={() => navigate('/projects')}>取消并返回项目列表</Button>
+            <Button kind="ghost" onClick={() => navigate('/projects')}>取消</Button>
             <span className="sp" />
-            <span className="xs muted">第 {step} 步，共 4 步</span>
             <Button icon="arrowl" disabled={step === 1} onClick={() => setStep((s) => Math.max(1, s - 1))}>上一步</Button>
             {step < 4 ? (
               <Button kind="primary" after={<Icon name="arrow" size={14} />} onClick={() => setStep((s) => s + 1)}>下一步</Button>
