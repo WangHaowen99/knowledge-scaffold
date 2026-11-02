@@ -9,7 +9,8 @@
 - 变更集（B4b）：会话状态 → `kernel/changesets/service.register_activity_provider`，变更集变化 → 项目流
   （`changeset.updated`、`scope.updated`、`flow.updated`），写入范围锁 → `project_events.register_scope_provider`
   与插件产物的 `register_lock_provider`。
-- 一轮改到的插件产物 → 对话里的产物卡（ADR-0055）：`services/project_events.register_round_card_provider`。
+- 一轮改到的插件产物 → 对话里的产物卡（ADR-0055）：`services/project_events.register_round_card_provider`；
+  一轮写出建模蓝图 → 蓝图卡（B4d，ADR-0050）同一个登记点。
 
 登记的都是进程内的函数引用，不做 I/O，可以重复调。在建应用时（`app/main.py`）调，而不是在 lifespan 里：
 不开 lifespan 的 TestClient、uvicorn 起的服务看到的是同一套接线。工作区管理器一律调用时再取
@@ -50,6 +51,13 @@ def _round_artifact_cards(project_id: str, changes: dict, base: str, seed: str, 
     from .kernel.artifacts import cards
 
     return cards.round_cards(_workspaces(), project_id, changes, base=base, seed=seed, root=root)
+
+
+def _round_blueprint_cards(project_id: str, changes: dict, base: str, seed: str, root: Path | None = None) -> list[dict]:
+    """一轮写出或改了建模蓝图：资料分析小结卡、蓝图卡、确认后怎么建（B4d，ADR-0050）。"""
+    from .services.flow import blueprint
+
+    return blueprint.round_cards(_workspaces(), project_id, changes, seed, root)
 
 
 def _publish_kernel_event(project_id: str, event_type: str, data: dict) -> None:
@@ -173,6 +181,7 @@ def install() -> None:
     sessions.register_action_resolver(_page_action_command)
     project_events.register_artifact_mapper(_artifact_refs)
     project_events.register_round_card_provider(_round_artifact_cards)
+    project_events.register_round_card_provider(_round_blueprint_cards)
     if _extension_differ is None:
         _extension_differ = registry.extension_differ()
     project_events.register_extension_differ(_extension_differ)

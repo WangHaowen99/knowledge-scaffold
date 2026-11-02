@@ -40,6 +40,8 @@ GROUP_LABELS = {"object": "对象", "operation": "操作", "rule": "规则", "me
                 "scenario": "场景", "artifact": "插件产物", "other": "其他文件"}
 GROUP_ORDER = tuple(GROUP_LABELS)
 OBSERVE_EVERY_SECONDS = 5.0
+# 不是条目、也不是插件产物、但用户认得的文件：卡片上按业务名显示
+FILE_TITLES = {"research/blueprint.json": "建模蓝图"}
 _last_observed: dict[str, float] = {}
 
 
@@ -169,7 +171,7 @@ def describe(manager, root: Path, changes: list[tuple[str, str]]) -> dict:
             items.append({"group": group, "change": change, "target": ref, "path": rel})
             continue
         items.append({"group": "other", "change": change, "path": rel,
-                      "target": {"type": "file", "key": rel, "title": rel.rsplit("/", 1)[-1]}})
+                      "target": {"type": "file", "key": rel, "title": FILE_TITLES.get(rel) or rel.rsplit("/", 1)[-1]}})
     return {"entries": entries, "artifacts": artifacts, "paths": [rel for _status, rel in changes[:CHANGES_MAX]],
             "items": items}
 

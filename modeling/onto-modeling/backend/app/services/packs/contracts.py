@@ -37,7 +37,7 @@ _log = logging.getLogger(__name__)
 # 契约库里的脚本（P2 拆包后就是 contracts 包的内容）
 NAMES = (
     "operation_relations", "script_argument_shape", "script_contract", "script_descriptor",
-    "solver_evaluator_contract", "research_review", "jiuwenbox_client", "flow_state", "onto_metamodel",
+    "solver_evaluator_contract", "research_review", "jiuwenbox_client", "flow_state", "onto_metamodel", "blueprint",
 )
 _LOCK = threading.RLock()
 _LIBRARIES: dict[str, "ContractLibrary"] = {}

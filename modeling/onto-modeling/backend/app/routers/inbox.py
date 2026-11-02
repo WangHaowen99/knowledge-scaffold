@@ -109,6 +109,22 @@ async def _run_action(project_id: str, item: dict, action: str, request: Request
     if action == "dismiss" or action == "keep_stale":
         inbox.dismiss(root, item["id"], by=actor, fingerprint=item.get("_fp"))
         return {}
+    if action == "answer" and extra.get("blueprint_question"):
+        from ..services.flow import blueprint
+        from ..services.workspace.errors import WorkspaceError
+
+        try:
+            await asyncio.to_thread(blueprint.answer, deps.workspaces, project_id, extra["blueprint_question"],
+                                    body, actor=actor)
+        except WorkspaceError as exc:
+            if exc.code == "invalid_argument":
+                raise ApiError("answer_invalid", str(exc), 400) from exc
+            raise
+        from .blueprint import announce
+
+        await announce(project_id)
+        return {"question": {**extra["question"], "state": "answered",
+                             "answer": {key: body.get(key) for key in ("option_id", "custom_text") if body.get(key)}}}
     if action == "answer" and item["kind"] == "decision":
         answer = {key: body.get(key) for key in ("option_id", "custom_text") if body.get(key)}
         from ..services.agent_sessions import SessionError

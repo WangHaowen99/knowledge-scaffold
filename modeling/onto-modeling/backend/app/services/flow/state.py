@@ -89,10 +89,13 @@ def save(root: Path, data: dict) -> None:
 
 
 def purge(root: Path) -> None:
-    try:
-        _store_path(root).unlink()
-    except OSError:
-        pass
+    """删除项目：节点状态与同一项目的附属记录（`<项目>.*.json`，如蓝图卡登记）一起删。"""
+    path = _store_path(root)
+    for candidate in [path, *path.parent.glob(f"{path.stem}.*.json")]:
+        try:
+            candidate.unlink()
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------

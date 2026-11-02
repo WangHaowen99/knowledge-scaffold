@@ -48,6 +48,7 @@ contributes:
     - update-apply-agent
   skills: []
   scripts:
+    - blueprint.py
     - candidate_revision.py
     - check_diagrams.py
     - check_eval_data.py

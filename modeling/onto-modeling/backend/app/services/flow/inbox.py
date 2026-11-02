@@ -5,7 +5,7 @@
 
 | kind | 来源 |
 |---|---|
-| decision 决策 | 在线会话里没回答的决策卡 |
+| decision 决策 | 在线会话里没回答的决策卡；建模蓝图里没回答的问题 |
 | resumable 续跑 | 中断、能续跑的执行记录 |
 | pending_changeset 修改待确认 | 没确认的助手变更集 |
 | changeset_conflict 合入冲突 | 合入时检测到实体冲突的变更集 |
@@ -26,6 +26,7 @@ import os
 import threading
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 KIND_LABELS = {
@@ -159,6 +160,34 @@ def _decisions(project_id: str) -> list[dict]:
                                                                     for ref in question.get("affected") or []]}]
                                if question.get("affected") else [],
                                extra={"question": question, "conversation_id": session.conversation_id}))
+    return items
+
+
+def _blueprint_questions(manager, project_id: str) -> list[dict]:
+    """建模蓝图里还没回答的问题（契约 BP-03「没答的问题留在待处理」）：编号 `decision:bq-<问题>`。"""
+    from . import blueprint
+
+    doc = blueprint.effective_doc(manager, project_id)
+    try:
+        updated = datetime.fromisoformat(str((doc or {}).get("updated_at"))).timestamp()
+    except ValueError:
+        updated = None
+    items = []
+    for question in (doc or {}).get("questions") or []:
+        if question.get("answer"):
+            continue
+        source_id = f"bq-{question['id']}"
+        options = [{"id": option["id"], "key": option["id"], "label": option["label"], "consequence": "",
+                    "recommended": False, "preview": None, "custom": False} for option in question.get("options") or []]
+        detail = {"question_id": source_id, "kind": "decision", "conversation_id": None, "exec_id": None,
+                  "step_label": "建模蓝图", "eyebrow": "", "title": question.get("title") or "",
+                  "background_md": question.get("background") or "", "anchors": [], "options": options,
+                  "multi": False, "allow_custom": True, "custom_placeholder": "", "state": "open", "answer": None,
+                  "inbox_item_id": f"decision:{source_id}", "affected": []}
+        items.append(_item("decision", source_id, question.get("title") or "建模蓝图的问题",
+                           meta=f"{len(options)} 个选项", source="assistant", batchable=False,
+                           created_at=updated, extra={"question": detail, "blueprint_question": question["id"]},
+                           fingerprint=f"{source_id}:{doc.get('version_no')}"))
     return items
 
 
@@ -332,6 +361,7 @@ def collect(manager, project_id: str) -> list[dict]:
     flow = model.load_for(root)
     sources = [
         lambda: _decisions(project_id),
+        lambda: _blueprint_questions(manager, project_id),
         lambda: _changesets(root),
         lambda: _resumables(project_id, root, flow),
         lambda: _node_items(root, flow),
