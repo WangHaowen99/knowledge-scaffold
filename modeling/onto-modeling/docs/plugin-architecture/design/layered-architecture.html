@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>onto-modeling 分层架构图 · 模块 / 插件 / 接口</title>
+<style>
+  :root{
+    --paper:#fbf6ea; --ink:#2a2a2a;
+    --k-fill:#dbeafe; --k-fill2:#cfe0fb; --k-ink:#1d4ed8;
+    --x-fill:#e0e7ff; --x-fill2:#d4ddff; --x-ink:#4338ca;
+    --s-fill:#ffedd5; --s-fill2:#ffe2bf; --s-ink:#c2410c;
+    --p-fill:#dcfce7; --p-fill2:#cdf5da; --p-ink:#15803d;
+    --d-fill:#fef9c3; --d-fill2:#fbf1a6; --d-ink:#a16207;
+    --e-fill:#ede9fe; --e-fill2:#e2dcfd; --e-ink:#6d28d9;
+    --c-fill:#ccfbf1; --c-fill2:#b5f3e6; --c-ink:#0f766e;
+    --o-fill:#fce7f3; --o-fill2:#f9d8eb; --o-ink:#be185d;
+    --g-fill:#f1f1ef; --g-fill2:#e8e8e5; --g-ink:#6b7280;
+    --u-fill:#fffdf5; --u-fill2:#f7f1e1; --u-ink:#374151;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#e9e1cf}
+  body{font-family:"Hannotate SC","HanziPen SC","Kaiti SC","STKaiti","KaiTi",cursive;color:var(--ink)}
+  #bar{position:fixed;right:14px;bottom:12px;z-index:60;display:flex;gap:8px}
+  #bar button{font:inherit;font-size:15px;padding:5px 12px;background:#fffdf5;border:2px solid #333;border-radius:14px 10px 16px 9px;cursor:pointer}
+  #holder{position:relative;margin:0 auto}
+  #wrap{position:absolute;left:0;top:0;transform-origin:0 0}
+  #canvas{position:relative;width:3000px;padding:34px 44px 40px;background-color:var(--paper);
+    background-image:linear-gradient(rgba(60,40,0,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(60,40,0,.045) 1px,transparent 1px);
+    background-size:30px 30px}
+
+  /* ---------- header ---------- */
+  #head{display:grid;grid-template-columns:1130px 1fr;gap:28px;align-items:start}
+  #title h1{margin:0;font-size:52px;font-weight:700;letter-spacing:1px}
+  #title h1 .hl{background:linear-gradient(transparent 58%,rgba(255,214,0,.6) 58%);padding:0 6px}
+  #title p{margin:8px 0 0 4px;font-size:19px;color:#555;line-height:1.5}
+  #title p b{color:#333}
+  #legend{font-size:15px;padding:12px 16px 10px 18px}
+  #legend .row{display:flex;align-items:center;gap:12px;margin:5px 0;flex-wrap:wrap}
+  #legend .row>b{width:64px;flex:none}
+  .sw{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+  .sw i{display:inline-block;width:26px;height:16px;border:2px solid;border-radius:4px 7px 5px 6px}
+  .ln{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+  .ln i{display:inline-block;width:28px;height:0;border-top:3.4px solid}
+
+  /* ---------- grid of layers ---------- */
+  #grid{display:grid;grid-template-columns:168px minmax(0,1fr) 78px 486px;column-gap:18px;row-gap:22px;margin-top:40px;position:relative}
+  #grid>*{position:relative;z-index:1}
+  .lab{grid-column:1;display:flex;flex-direction:column;justify-content:center;align-items:flex-end;text-align:right;padding-right:4px}
+  .lab .nm{font-size:31px;font-weight:700;color:var(--lc);line-height:1.1}
+  .lab .tg{font-size:13.5px;font-weight:700;color:var(--lc);border:1.8px solid var(--lc);border-radius:11px 8px 12px 9px;padding:1px 8px;margin-top:6px;background:rgba(255,255,255,.7);white-space:nowrap}
+  .lab.sl .nm{font-size:20px;color:#6b5a3c}
+  .lab.sl .tg{color:#8a7756;border-color:#b9a77f;font-weight:400}
+
+  .strip{border-top:2.6px dashed #cbbd9b;border-bottom:2.6px dashed #cbbd9b;background:rgba(255,252,240,.82);padding:9px 12px;display:flex;flex-wrap:wrap;gap:9px 10px;align-items:center;min-height:62px;align-content:center}
+  .strip .cap{flex-basis:100%;font-size:15.5px;color:#6b5a3c;margin:0 0 1px 2px}
+  .strip .cap b{color:#3f3424}
+  .strip.inner{border-color:rgba(29,78,216,.35);background:rgba(239,246,255,.75)}
+  .strip .plain{font-size:15px;color:#6b5a3c}
+  .halves{display:grid;grid-template-columns:1.16fr 1fr;gap:24px}
+
+  .chip{--c:#333;display:inline-flex;align-items:center;gap:6px;padding:2px 11px 2px 2px;border:2px solid var(--c);color:var(--c);
+    background:#fff;border-radius:20px 14px 19px 13px/15px 20px 13px 19px;font-size:15.5px;font-weight:700;line-height:1.2;cursor:default;transition:opacity .15s}
+  .chip .nb{flex:none;width:29px;height:29px;border:2.3px solid var(--c);border-radius:50% 46% 52% 48%;display:grid;place-items:center;
+    font:700 15px "SF Pro Rounded","Hannotate SC",sans-serif;background:#fff}
+  .chip .dir{font-size:19px;font-weight:900;margin-left:2px}
+  .chip .ep{font-weight:400;color:#555}
+  .chip.on{outline:3px solid #f59e0b;outline-offset:2px}
+
+  /* ---------- cards ---------- */
+  .card{position:relative;padding:12px 15px 10px 17px;z-index:2}
+  .card::before{content:"";position:absolute;inset:4px;border-radius:9px;z-index:-1;
+    background:repeating-linear-gradient(-38deg,var(--fill) 0 8px,var(--fill2) 8px 10px)}
+  .card svg.sk,.frame svg.sk{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
+  .card .hd{display:flex;align-items:center;gap:7px;font-size:21px;font-weight:700;margin-bottom:5px;line-height:1.2;flex-wrap:wrap}
+  .card .hd b{color:var(--ink2)}
+  .card .hd .sub{font-size:14px;font-weight:400;color:#555}
+  .lv{margin-left:auto;font-size:13px;font-weight:700;padding:1px 8px;border:2px solid;border-radius:12px 8px 13px 9px;transform:rotate(-2deg);white-space:nowrap;background:rgba(255,255,255,.7);color:var(--ink2)}
+  .card ul{margin:0;padding-left:16px;font-size:15px;line-height:1.42}
+  .card li{margin:1px 0}
+  .card li::marker{content:"• ";color:var(--ink2)}
+  .card code{font-family:"SF Mono",Menlo,monospace;font-size:12.8px;background:rgba(255,255,255,.65);padding:0 3px;border-radius:3px}
+  .tags{display:flex;flex-wrap:wrap;gap:7px 9px;margin-top:3px}
+  .tag{font-size:14.5px;padding:2px 10px;border:1.8px solid var(--ink2);border-radius:14px 9px 15px 10px;background:rgba(255,255,255,.6);white-space:nowrap}
+  .new-tag{display:inline-block;font-size:12px;font-weight:700;color:#fff;background:#e11d48;border-radius:8px 5px 9px 6px;padding:0 6px;transform:rotate(-3deg)}
+  .t{display:inline-block;font-size:12.5px;font-weight:700;padding:0 6px;margin-right:3px;border-radius:7px 5px 8px 5px;border:1.4px solid}
+  .t.cmd{background:#dbeafe;color:#1e40af;border-color:#1e40af}
+  .t.agent{background:#ede9fe;color:#5b21b6;border-color:#5b21b6}
+  .t.skill{background:#fce7f3;color:#9d174d;border-color:#9d174d}
+  .t.script{background:#ffedd5;color:#9a3412;border-color:#9a3412}
+  .t.tpl{background:#ccfbf1;color:#115e59;border-color:#115e59}
+
+  .kernel{--fill:var(--k-fill);--fill2:var(--k-fill2);--ink2:var(--k-ink)}
+  .gov{--fill:var(--x-fill);--fill2:var(--x-fill2);--ink2:var(--x-ink)}
+  .seam{--fill:var(--s-fill);--fill2:var(--s-fill2);--ink2:var(--s-ink)}
+  .pack{--fill:var(--p-fill);--fill2:var(--p-fill2);--ink2:var(--p-ink)}
+  .data{--fill:var(--d-fill);--fill2:var(--d-fill2);--ink2:var(--d-ink)}
+  .extp{--fill:var(--e-fill);--fill2:var(--e-fill2);--ink2:var(--e-ink)}
+  .clib{--fill:var(--c-fill);--fill2:var(--c-fill2);--ink2:var(--c-ink)}
+  .outer{--fill:var(--o-fill);--fill2:var(--o-fill2);--ink2:var(--o-ink)}
+  .gone{--fill:var(--g-fill);--fill2:var(--g-fill2);--ink2:var(--g-ink);color:#555}
+  .user{--fill:var(--u-fill);--fill2:var(--u-fill2);--ink2:var(--u-ink)}
+
+  /* ---------- frames ---------- */
+  .frame{position:relative}
+  .frame>.tab{position:absolute;top:-19px;left:22px;white-space:nowrap;font-size:20px;font-weight:700;padding:2px 12px;background:var(--paper);transform:rotate(-1deg);color:var(--fi);z-index:3}
+  #kframe{grid-column:2;grid-row:3/6;margin:8px -12px -16px;z-index:0;background:rgba(219,234,254,.28);--fi:#1d4ed8;border-radius:16px}
+  #F_gov{grid-column:4;grid-row:3/6;padding:30px 16px 14px;background:rgba(224,231,255,.35);--fi:#4338ca;display:flex;flex-direction:column;gap:14px;margin:8px -6px -16px}
+  .zone{padding:34px 14px 14px;--fi:var(--zi)}
+  #P2{--zi:#15803d;background:rgba(220,252,231,.3)}
+  #SZ{--zi:#c2410c;background:rgba(255,237,213,.3)}
+  .zone .zcap{font-size:15px;color:#555;margin:-4px 2px 10px;line-height:1.45}
+
+  .k6grid{display:grid;grid-template-columns:repeat(7,1fr);gap:14px;flex:1}
+  .kband{display:flex;flex-direction:column;gap:14px}
+  .pgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:13px}
+  .s2{grid-column:span 2}.s4{grid-column:span 4}
+  .prov{display:grid;grid-template-columns:repeat(4,1fr);gap:8px 10px;margin-top:8px}
+  .prov div{font-size:14px;line-height:1.35;padding:6px 9px;border:1.6px dashed var(--s-ink);border-radius:9px 6px 10px 7px;background:rgba(255,255,255,.65)}
+  .prov div b{display:block;font-size:15.5px;color:#9a3412}
+  .kk{display:flex;flex-wrap:wrap;gap:6px 22px;font-size:15.5px;line-height:1.45;margin-top:2px}
+  .kk span::before{content:"• ";color:var(--ink2)}
+
+  #vbus{grid-column:3;grid-row:3/6;margin-top:30px;display:flex;align-items:center;justify-content:center}
+  .vchip{flex-direction:column;width:58px;padding:10px 0;gap:8px;border-radius:22px 18px 24px 16px}
+  .vchip .vt{white-space:nowrap;writing-mode:vertical-rl;font-size:16px;letter-spacing:1px;line-height:1.3}
+  .vchip .big{font-size:30px;line-height:1}
+
+  .note{position:relative;padding:16px 18px 12px;font-size:17px;line-height:1.5;transform:rotate(var(--r,0deg))}
+  .note::after{content:"";position:absolute;left:50%;top:-11px;width:92px;height:24px;margin-left:-46px;background:rgba(255,255,255,.55);border:1px solid rgba(0,0,0,.08);transform:rotate(-3deg)}
+  .note b{font-size:19px}
+  .n-y{background:#fff59d}.n-p{background:#ffd6e7}.n-g{background:#d9f7c9}.n-b{background:#d6ecff}
+  #foot{display:grid;grid-template-columns:1fr 1fr 1fr;gap:34px;margin-top:44px}
+  .stamp{position:absolute;right:18px;top:12px;font-size:24px;font-weight:700;color:#d33;border:3.5px solid #d33;padding:0 12px;border-radius:10px 14px 8px 12px;transform:rotate(-7deg);opacity:.8;letter-spacing:2px}
+
+  #canvas.dim .card:not(.hl){opacity:.28}
+  #canvas.dim .chip:not(.on){opacity:.25}
+  .card,.frame{transition:opacity .15s}
+  .hl{outline:3.5px solid #f59e0b;outline-offset:3px;border-radius:10px}
+  #tip{position:fixed;z-index:80;max-width:460px;padding:9px 13px;background:#fffdf3;border:2px solid #333;border-radius:12px 9px 14px 8px;font-family:inherit;font-size:15px;line-height:1.45;pointer-events:none;display:none}
+  #tip b{font-size:16px}
+</style>
+</head>
+<body>
+<div id="bar"><button id="bFit">适应窗口</button><button id="bFull">原始大小</button></div>
+<div id="tip"></div>
+<div id="holder"><div id="wrap"><div id="canvas">
+
+<!-- ================= header ================= -->
+<div id="head">
+  <div id="title">
+    <h1>onto-modeling <span class="hl">分层架构图</span></h1>
+    <p>同一套设计的分层视图：<b>使用方 → 接入层 → 内核层 → 插件层 → 外部系统</b>，治理平面竖贯中间三层。<br>
+    层与层之间的虚线带列出<b>层间接口</b>，各层底部那一行是<b>层内接口</b>；44 个接口编号与《插件化架构全景图》一一对应。<br>
+    依据 knowledge-scaffold develop 44644e0a（2026-10-31）与本轮设计讨论 · v1.1（2026-11-01）：单人项目、L2 / L4、9 个能力包 · 悬停编号或模块可高亮相关接口</p>
+  </div>
+  <div class="card user" id="legend">
+    <div class="row"><b>模块</b>
+      <span class="sw"><i style="background:var(--k-fill);border-color:var(--k-ink)"></i>内核（H3）</span>
+      <span class="sw"><i style="background:var(--x-fill);border-color:var(--x-ink)"></i>治理平面（H3）</span>
+      <span class="sw"><i style="background:var(--p-fill);border-color:var(--p-ink)"></i>能力包（H1）</span>
+      <span class="sw"><i style="background:var(--d-fill);border-color:var(--d-ink)"></i>行业 · 系统知识包（H0）</span>
+      <span class="sw"><i style="background:var(--e-fill);border-color:var(--e-ink)"></i>扩展项</span>
+      <span class="sw"><i style="background:var(--s-fill);border-color:var(--s-ink)"></i>可替换实现 seam（H2）</span>
+      <span class="sw"><i style="background:var(--c-fill);border-color:var(--c-ink)"></i>共享契约库</span>
+      <span class="sw"><i style="background:var(--o-fill);border-color:var(--o-ink)"></i>外部系统</span>
+      <span class="sw"><i style="background:var(--g-fill);border-color:var(--g-ink);border-style:dashed"></i>已移出</span>
+    </div>
+    <div class="row"><b>热更新</b>
+      <span>H0 下次读取即生效</span><span>H1 下一条消息生效（重连 + resume）</span><span>H2 进程级重启或独立进程重载</span><span>H3 随版本发布</span>
+    </div>
+    <div class="row"><b>接口</b>
+      <span class="ln"><i style="border-color:#2563eb"></i>用户请求</span>
+      <span class="ln"><i style="border-color:#16a34a"></i>插件装配</span>
+      <span class="ln"><i style="border-color:#dc2626"></i>写入与守卫</span>
+      <span class="ln"><i style="border-color:#ea580c"></i>执行调用</span>
+      <span class="ln"><i style="border-color:#7c3aed"></i>对外契约</span>
+      <span class="ln"><i style="border-color:#0d9488"></i>共享契约库</span>
+      <span class="ln"><i style="border-color:#b45309"></i>证据采集</span>
+      <span class="ln"><i style="border-color:#4338ca"></i>观测与运维</span>
+      <span class="ln"><i style="border-color:#6b7280"></i>内部读取</span>
+    </div>
+    <div class="row"><b>方向</b><span>↓ 上层调用下层</span><span>↑ 下层向上提供或回调</span><span>⇄ 双向</span><span>层内接口写成「甲 → 乙」</span></div>
+  </div>
+</div>
+
+<!-- ================= layers ================= -->
+<div id="grid">
+
+  <!-- r1 使用方 -->
+  <div class="lab" style="grid-row:1;--lc:#374151"><div class="nm">使用方</div><div class="tg">人 · 外部 agent · 账号中心</div></div>
+  <div style="grid-column:2;grid-row:1;display:grid;grid-template-columns:1.5fr 1fr;gap:18px">
+    <div class="card user" id="U1">
+      <div class="hd"><span>🧑‍💼</span><b>Web 工作台</b><span class="sub">建模专家 · 管理员 · 一个项目只归一个人</span></div>
+      <ul>
+        <li>工作台只有对话：图表产物是卡片，双击弹窗；条目在 Studio 编辑</li>
+        <li>陪伴建模（L2）/ 自主构建（L4）· 待处理 · 版本历史 · 插件管理</li>
+        <li>只看到业务词：“这一轮的修改”“确认生效”“撤回这一轮”</li>
+      </ul>
+    </div>
+    <div class="card user" id="U2">
+      <div class="hd"><span>🤝</span><b>MCP 客户端</b><span class="sub">外部 agent / 工具</span></div>
+      <ul>
+        <li>读写对象 · 操作 · 规则（15 个工具）</li>
+        <li>持本地签发的 token，按项目与权限范围访问</li>
+        <li>写入同样走内核写入路径</li>
+      </ul>
+    </div>
+  </div>
+  <div style="grid-column:4;grid-row:1;display:grid;grid-template-columns:1fr 1fr;gap:14px">
+    <div class="card user" id="U3">
+      <div class="hd"><span>🔐</span><b>auth-server</b></div>
+      <ul><li>账号中心</li><li>签发 RS256 JWT</li><li>提供 JWKS 公钥</li></ul>
+    </div>
+    <div class="card user" id="U4">
+      <div class="hd"><span>🧑‍🔧</span><b>运维人员</b></div>
+      <ul><li>运维控制台 / 脚本</li><li>走独立管理面（独立端口或内网）</li></ul>
+    </div>
+  </div>
+
+  <!-- r2 北向 API -->
+  <div class="lab sl" style="grid-row:2"><div class="nm">北向 API</div><div class="tg">层间接口</div></div>
+  <div class="strip" data-slot="s1" style="grid-column:2;grid-row:2"></div>
+  <div class="strip" data-slot="s1g" style="grid-column:4;grid-row:2"></div>
+
+  <!-- kernel frame (rows 3-5) -->
+  <div id="kframe" class="frame" data-ink="#1d4ed8"><div class="tab">🧱 内核 · 不可插拔 · 随版本发布（H3）</div></div>
+
+  <!-- r3 接入层 -->
+  <div class="lab" style="grid-row:3;--lc:#1d4ed8;margin-top:30px"><div class="nm">接入层</div><div class="tg">内核 · H3</div></div>
+  <div class="card kernel" id="K1" style="grid-column:2;grid-row:3;margin-top:30px">
+    <div class="hd"><span>🔌</span><b>对外接口</b><span class="sub">业务面唯一入口；插件不直接加路由，包声明的扩展项由内核统一暴露</span><span class="lv">H3</span></div>
+    <div class="kk">
+      <span><b>REST</b> <code>/api/v1</code>：项目 · 文件 · Studio · 版本 · 变更集 · 发布 · 数据源</span>
+      <span><b>SSE</b> 会话事件流</span>
+      <span><b>MCP</b>：对象 / 操作 / 规则 15 个工具（权限范围 · 版本号防覆盖）</span>
+      <span><b>文件契约</b>：知识包 / 搬迁包导入导出</span>
+      <span>接口加版本号 + 契约测试</span>
+    </div>
+  </div>
+
+  <!-- r4 内核入口 -->
+  <div class="lab sl" style="grid-row:4"><div class="nm">内核入口</div><div class="tg">层间接口</div></div>
+  <div class="strip inner" data-slot="s2" style="grid-column:2;grid-row:4"></div>
+
+  <!-- r5 内核层 -->
+  <div class="lab" style="grid-row:5;--lc:#1d4ed8"><div class="nm">内核层</div><div class="tg">内核 · H3</div><div class="tg">只管状态与契约</div></div>
+  <div class="kband" style="grid-column:2;grid-row:5">
+    <div class="k6grid">
+      <div class="card kernel" id="K2">
+        <div class="hd"><span>🤖</span><b>会话宿主</b></div>
+        <ul>
+          <li>会话池：并发上限 · 排队 · 空闲回收</li>
+          <li>每个项目一个在线引擎 · 托管自主构建（L4）</li>
+          <li>平台事件契约：流式 · 消息 · 子代理 · 用量</li>
+          <li>确认卡；resume 续接；配置指纹变了就重连</li>
+          <li>执行记录与断点（取代按进程号的锁）</li>
+        </ul>
+      </div>
+      <div class="card kernel" id="K5">
+        <div class="hd"><span>✍️</span><b>写入路径</b></div>
+        <ul>
+          <li>变更事务：拿锁 → 版本校验 → 检查 → 提交</li>
+          <li>变更集：独立副本 · 差异 · 确认生效 / 撤回 · 合入主线</li>
+          <li>门禁链（包声明的规则在这里执行）</li>
+          <li>提交记录来源 · 作者 · 包版本</li>
+          <li>主线只能由“合入”写</li>
+        </ul>
+      </div>
+      <div class="card kernel" id="K7">
+        <div class="hd"><span>🧠</span><b>元模型与索引</b></div>
+        <ul>
+          <li>五元组：object · operation · rule · metric · script</li>
+          <li>文档格式：章节 · [[链接]] · 关系声明 · 属性表</li>
+          <li>只留<b>一份</b>定义，校验 / Studio / 导出 / MCP 都从它派生</li>
+          <li>证据锚点 · 实体级差异与冲突检测</li>
+          <li>包只能加扩展字段与声明式规则</li>
+        </ul>
+      </div>
+      <div class="card kernel" id="K11">
+        <div class="hd"><span>🧾</span><b>资料与证据</b><span class="new-tag">新增</span></div>
+        <ul>
+          <li>资料区：上传 · 用途识别 · 文件解析</li>
+          <li>证据源 SPI + 采集任务编排</li>
+          <li>证据快照：版本化 · 脱敏 · 只读</li>
+          <li>证据锚点：结论指回表 / 代码 / 页面 / 接口</li>
+          <li>凭据只存引用，由网关按次解析</li>
+        </ul>
+      </div>
+      <div class="card kernel" id="K3">
+        <div class="hd"><span>🧩</span><b>插件运行时</b><span class="new-tag">新建</span></div>
+        <ul>
+          <li>包仓库：不可变版本 + 校验和</li>
+          <li>清单解析 · 兼容检查 · 依赖解析</li>
+          <li><code>packs.lock</code> + 装配器 → 装配目录</li>
+          <li>生效控制：两轮对话之间切换</li>
+          <li>扩展项注册表 · 启动时核对装配</li>
+        </ul>
+      </div>
+      <div class="card kernel" id="K12">
+        <div class="hd"><span>🔀</span><b>流程运行时</b><span class="new-tag">新增</span></div>
+        <ul>
+          <li>组装节点声明 → 流程图 → <code>flow.lock</code></li>
+          <li>节点与切片状态：按确认、执行记录、指纹算</li>
+          <li>命令开始前按 requires 守门</li>
+          <li>下一步 1 主推 + 2 次选 · 汇总待处理</li>
+          <li>当前节点的写入范围交给守卫</li>
+        </ul>
+      </div>
+      <div class="card kernel" id="K8">
+        <div class="hd"><span>🛡️</span><b>安全守卫基线</b></div>
+        <ul>
+          <li>写保护 ×4：状态文件 · 工具集 · 原始资料 · 本体目录范围</li>
+          <li>提交关：有 ERROR 就阻断</li>
+          <li>内核注入，包只能加拒绝型、不能删</li>
+          <li>守卫出错一律按拒绝</li>
+          <li>agent 不直连业务系统</li>
+        </ul>
+      </div>
+    </div>
+    <div class="card kernel" id="K6">
+      <div class="hd"><span>🗂️</span><b>工作区与版本</b><span class="sub">存储底座：一切产物以 git 为准</span><span class="lv">H3</span></div>
+      <div class="kk">
+        <span>每项目一个 git 仓库</span><span>主线 + 变更集副本（用户不可见）</span><span><code>resource/</code> 原始资料（只读）</span>
+        <span><code>resource/systems/</code> 证据快照</span><span><code>ontology/</code> 产物</span><span><code>.ontology-state/</code> 工具状态</span>
+        <span><code>.onto/packs.lock</code> 插件锁</span><span>版本 · 标签 · 回退 · 回收站</span><span>发布只从主线标签出</span><span>备份 · 启动自检</span>
+      </div>
+    </div>
+    <div class="strip inner" data-slot="kin"><div class="cap"><b>层内接口</b>（内核模块之间）</div></div>
+  </div>
+
+  <!-- ㉛ vertical bus -->
+  <div id="vbus" data-slot="g31"></div>
+
+  <!-- governance plane rows 3-5 -->
+  <div id="F_gov" class="frame" data-ink="#4338ca">
+    <div class="tab">🧭 治理平面 · 也属于内核 · 竖贯各层</div>
+    <div class="card gov" id="K4">
+      <div class="hd"><span>🔑</span><b>横切能力</b></div>
+      <ul>
+        <li><b>鉴权</b>：JWT + JWKS 验签；<b>角色</b>：管理员 · 用户（项目所有者）· 运维</li>
+        <li><b>审计</b>：写请求 · MCP · agent 提交 · 合入 · 插件操作 · 证据采集 · 运维操作</li>
+        <li><b>配置注册表</b>：来源优先级 · 校验 · 生效时机</li>
+        <li><b>凭据</b>只存引用 · <b>错误留档</b> · <b>配额</b></li>
+      </ul>
+    </div>
+    <div class="card gov" id="K9">
+      <div class="hd"><span>🔭</span><b>可观测</b><span class="new-tag">新增</span></div>
+      <ul>
+        <li>统一信号：日志 · 指标 · 链路 · 事件</li>
+        <li>公共标签：项目 · 会话 · 执行 · 变更集 · 包版本 · trace id</li>
+        <li>关键指标：会话池 · 轮次 · 模型耗时与 token · 守卫拒绝 · 检查失败 · 采集 · 热更新</li>
+        <li>按包归因；健康检查分存活 / 就绪；告警 + 处置手册</li>
+      </ul>
+    </div>
+    <div class="card gov" id="K10">
+      <div class="hd"><span>🛠️</span><b>运维管控</b><span class="new-tag">新增</span></div>
+      <ul>
+        <li>插件：安装 · 灰度 · 回滚 · 禁用 · 出错熔断</li>
+        <li>会话：排空 · 强制断开 · 并发上限；维护模式</li>
+        <li>备份恢复演练 · 启动自检报告 · 诊断包</li>
+        <li>版本清单 · 数据保留期</li>
+      </ul>
+    </div>
+    <div class="strip" data-slot="gin" style="background:rgba(255,255,255,.6)"><div class="cap"><b>层内接口</b></div></div>
+  </div>
+
+  <!-- r6 插件契约 / SPI -->
+  <div class="lab sl" style="grid-row:6"><div class="nm">插件契约<br>南向 SPI</div><div class="tg">层间接口</div></div>
+  <div class="halves" style="grid-column:2;grid-row:6">
+    <div class="strip" data-slot="s3p"><div class="cap"><b>插件契约</b>：能力包 → 内核（声明 + 调用）</div></div>
+    <div class="strip" data-slot="s3s"><div class="cap"><b>南向 SPI</b>：内核定义接口，可替换实现来实现</div></div>
+  </div>
+  <div class="strip" data-slot="s3g" style="grid-column:4;grid-row:6"><div class="cap"><b>导出器 SPI</b></div></div>
+
+  <!-- r7 插件层 -->
+  <div class="lab" style="grid-row:7;--lc:#15803d"><div class="nm">插件层</div><div class="tg" style="--lc:#15803d">能力包 · H1 / H0</div><div class="tg" style="--lc:#c2410c;color:#c2410c;border-color:#c2410c">可替换实现 · H2</div><div class="tg" style="color:#555;border-color:#999">都可插拔</div></div>
+  <div style="grid-column:2;grid-row:7;display:flex;flex-direction:column;gap:16px">
+    <div class="halves">
+      <!-- 能力包 zone -->
+      <div class="frame zone" id="P2" data-ink="#15803d">
+        <div class="tab">🌱 能力包 · agent 侧插件 · 决定“怎么建模”</div>
+        <div class="zcap">每个包 = <b>manifest</b> + <span class="t cmd">命令</span><span class="t agent">子代理</span><span class="t skill">skill</span><span class="t script">脚本</span><span class="t tpl">模板</span> + 参考指南 + hooks（只能加拒绝型）。插件运行时按 <code>packs.lock</code> 装配成目录，引擎经 ⑨ 读取执行。</div>
+        <div class="pgrid">
+          <div class="card pack s2" id="PK_core">
+            <div class="hd"><span>🌱</span><b>core 建模</b><span class="sub">必装</span><span class="lv">H1</span></div>
+            <ul>
+              <li><span class="t cmd">命令</span>/ontology 主入口 · 资料分析 · 抽取对象 / 操作 / 规则指标 · validate · query · overview · update · impact · version</li>
+              <li><span class="t agent">子代理</span>抽取 ×3 · 规则检查 · 语义检查 / 修复 · 资料分析 · 影响分析</li>
+              <li><span class="t script">脚本</span>state_helper · knowledge_helper · ontology_checker · research_checker · verify_artifacts · candidate_revision</li>
+              <li><span class="t tpl">模板</span>object / operation / rule / metric · 参考指南 ×5 · 用户词汇表</li>
+            </ul>
+          </div>
+          <div class="card pack" id="PK_rev">
+            <div class="hd"><span>🛰️</span><b>系统逆向建模</b><span class="new-tag">新增</span><span class="lv">H1</span></div>
+            <ul>
+              <li><span class="t cmd">命令</span>连接数据源 · 采集快照 · 从系统抽取 · 三方对账 · 快照差异</li>
+              <li><span class="t agent">子代理</span>表 → 对象 · 关系推断 · 规则挖掘 · 流程挖掘 · 命名语义</li>
+              <li><span class="t script">脚本</span>证据检索 · 关系推断 · 锚点校验</li>
+              <li>系统抽出的结果一律先当候选，进变更集由用户确认</li>
+            </ul>
+          </div>
+          <div class="card pack" id="PK_trace">
+            <div class="hd"><span>🔍</span><b>场景走查</b><span class="lv">H1</span></div>
+            <ul>
+              <li><span class="t cmd">命令</span>trace · mock</li>
+              <li><span class="t agent">子代理</span>trace-agent · mock-data-agent</li>
+              <li><span class="t script">脚本</span>trace_inputs · report_reconcile</li>
+            </ul>
+          </div>
+          <div class="card pack" id="PK_know"> <div class="hd"><span>📒</span><b>知识沉淀</b><span class="new-tag">拆出</span><span class="lv">H1</span></div> <ul> <li><span class="t cmd">命令</span>记录 · 整理 · 提名进行业包</li> <li><span class="t agent">子代理</span>knowledge-conflict</li> <li>存放与加载留在 core</li> </ul> </div>
+        <div class="card pack" id="PK_diag">
+            <div class="hd"><span>🗺️</span><b>图示</b><span class="lv">H1</span></div>
+            <ul>
+              <li><span class="t cmd">命令</span>flowchart · validate-diagrams</li>
+              <li><span class="t skill">skill</span>mermaid-flowchart</li>
+              <li><span class="t script">脚本</span>drawio 拆分 / 摘要 / 对齐检查</li>
+            </ul>
+          </div>
+          <div class="card pack" id="PK_codegen">
+            <div class="hd"><span>🧮</span><b>代码生成与求解</b><span class="lv">H1</span></div>
+            <ul>
+              <li><span class="t cmd">命令</span>codegen-scan · codegen · solver-evaluator</li>
+              <li><span class="t agent">子代理</span>codegen-review · script-candidate</li>
+              <li><span class="t script">脚本</span>script_verify · 评估器契约</li>
+            </ul>
+          </div>
+          <div class="card pack" id="PK_evo">
+            <div class="hd"><span>🔁</span><b>反馈演进</b><span class="lv">H1</span></div>
+            <ul>
+              <li><span class="t cmd">命令</span>/ontology-evolution</li>
+              <li>输入：外部反馈契约 · 系统快照差异</li>
+              <li>泛化检查，防“应试”式修改</li>
+            </ul>
+          </div>
+          <div class="card pack" id="PK_web">
+            <div class="hd"><span>🌐</span><b>联网调研</b><span class="lv">H1</span></div>
+            <ul><li><span class="t skill">skill</span>deep-research</li><li>离线部署时禁用</li></ul>
+          </div>
+          <div class="card pack" id="PK_mig">
+            <div class="hd"><span>♻️</span><b>迁移复用</b><span class="lv">H1</span></div>
+            <ul><li><span class="t skill">skill</span>extract-migrated-objects</li><li>可从行业包参考库取候选</li></ul>
+          </div>
+          <div class="card data s2" id="PK_ind">
+            <div class="hd"><span>🏭</span><b>行业包 · 系统知识包</b><span class="sub">纯数据，最“热”</span><span class="lv">H0</span></div>
+            <ul>
+              <li>术语 / 惯例 / 领域规则 · 概念与别名 · 参考对象 / 操作库 · 模板变体 · 声明式规则</li>
+              <li>系统知识包<span class="new-tag">新增</span>：SAP / 用友 / MES 的表字段字典、表 → 对象映射、状态码</li>
+            </ul>
+          </div>
+          <div class="card extp s4" id="EXT">
+            <div class="hd"><span>🧷</span><b>包可声明的扩展项</b><span class="sub">写在 manifest 的 contributes 里，由插件运行时的注册表收口（经 ⑥ 暴露、经 ㉖ 执行）</span></div>
+            <div class="tags">
+              <span class="tag">流程节点（串入 · 旁支 · 关卡 · 按需）</span><span class="tag">界面入口</span><span class="tag">页面入口（前端内置，包只选用）</span><span class="tag">产物格式（含报告）</span><span class="tag">视图声明</span><span class="tag">发布门禁规则</span>
+              <span class="tag">视图选择</span><span class="tag">只读 MCP 工具（evidence.*）</span><span class="tag">配置项</span><span class="tag">指标与告警</span><span class="tag">拒绝型 hooks</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- seam zone -->
+      <div class="frame zone" id="SZ" data-ink="#c2410c">
+        <div class="tab">⚙️ 可替换实现 · seam · 决定“用什么跑”</div>
+        <div class="zcap">实现内核定义的 SPI，按名字替换；放在子进程或独立进程里，出错不拖垮内核。只有出现第二个实现时才开放替换。</div>
+        <div class="pgrid">
+          <div class="card seam" id="S1">
+            <div class="hd"><span>⚙️</span><b>引擎</b><span class="lv">H2</span></div>
+            <ul>
+              <li>实现 AgentEngine 协议</li>
+              <li>Claude CLI 子进程（≈400MB/会话）</li>
+              <li>Jiuwen 进程内（≈3MB/会话），建议移到独立 worker</li>
+              <li>项目级切换，下条消息生效</li>
+            </ul>
+          </div>
+          <div class="card seam" id="S4">
+            <div class="hd"><span>📦</span><b>发布适配器</b><span class="lv">H2</span></div>
+            <ul>
+              <li>知识包 ontology-package v0.1</li>
+              <li>求解契约 operation-centric.v1</li>
+              <li>对象 ↔ 数据表映射 · 脚本描述符</li>
+              <li>只从主线标签出包；证据原文不进包</li>
+            </ul>
+          </div>
+          <div class="card clib" id="C">
+            <div class="hd"><span>📐</span><b>共享契约库</b></div>
+            <ul>
+              <li>script_contract · script_descriptor · script_argument_shape · operation_relations</li>
+              <li>带版本号；后端与代码生成包用同一份实现</li>
+            </ul>
+          </div>
+          <div class="card seam" id="S3">
+            <div class="hd"><span>🧪</span><b>脚本验证沙箱</b><span class="lv">H2</span></div>
+            <ul>
+              <li>生成的脚本跑通才能提交</li>
+              <li>经网关 HTTP 调 jiuwenbox</li>
+              <li>主容器不挂管理 socket</li>
+            </ul>
+          </div>
+          <div class="card seam s4" id="EV">
+            <div class="hd"><span>🔌</span><b>证据源层</b><span class="sub">连接器网关（独立进程）：只读账号 · 出口白名单 · 限流 · 默认脱敏 · 全部审计 · 凭据由网关解析</span><span class="new-tag">新增</span><span class="lv">H2</span></div>
+            <div class="prov">
+              <div><b>📁 文件资料</b>docx · xlsx · txt · drawio</div>
+              <div><b>🗄️ 数据库</b>表结构 · 主外键 · 约束 · 数据画像</div>
+              <div><b>💻 代码仓库</b>实体类 · service · 校验 · 调用图</div>
+              <div><b>🔬 REA 逆向</b>闭源客户端 · Electron · APK</div>
+              <div><b>🖱️ 界面录制 / RPA</b>字段 · 表单校验 · 操作序列</div>
+              <div><b>🔗 OpenAPI</b>端点 · 入参出参 · 资源模型</div>
+              <div><b>⌨️ CLI-Anything</b>命令结构 · 可执行绑定</div>
+              <div><b>📜 日志流程挖掘</b>事件日志 → 状态流转</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="strip" data-slot="pin"><div class="cap"><b>层内接口</b>（插件之间）</div></div>
+  </div>
+  <div style="grid-column:4;grid-row:7;display:flex;flex-direction:column">
+    <div class="card seam" id="S5">
+      <div class="hd"><span>📤</span><b>可观测导出器</b><span class="lv">H2</span></div>
+      <ul><li>OTel · Prometheus · 本地文件 · 客户自有平台</li><li>信号格式由内核统一，只有导出方式可替换</li></ul>
+    </div>
+  </div>
+
+  <!-- r8 外部协议 -->
+  <div class="lab sl" style="grid-row:8"><div class="nm">外部协议</div><div class="tg">层间接口</div></div>
+  <div class="halves" style="grid-column:2;grid-row:8">
+    <div class="strip" data-slot="s4p"><div class="cap"><b>评测三份契约</b>：onto 不主动调用评测服务</div></div>
+    <div class="strip" data-slot="s4s"></div>
+  </div>
+  <div class="strip" style="grid-column:4;grid-row:8"><span class="plain">㊱ 续：OTel / Prometheus 协议推送</span></div>
+
+  <!-- r9 外部系统 -->
+  <div class="lab" style="grid-row:9;--lc:#be185d"><div class="nm">外部系统</div><div class="tg">不归 onto 管</div></div>
+  <div class="halves" style="grid-column:2;grid-row:9">
+    <div class="card gone" id="X4">
+      <div class="stamp">评测已移出</div>
+      <div class="hd"><span>📊</span><b>评测服务</b><span class="sub">独立部署</span></div>
+      <ul>
+        <li>移出的模块：评测编排 · 评测数据源与评测集 · 一键导入评测库 · 求解端到端验证运行 · modeling 远端关联与清理</li>
+        <li>脚本 check_eval_* / mock_to_eval_seed；评测向导与执行详情页</li>
+        <li>和 onto 只通过 ㉓ ㉔ ㉕ 三份契约往来</li>
+      </ul>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:13px">
+      <div class="card outer" id="X1"><div class="hd"><span>☁️</span><b>模型网关</b></div><ul><li>管理员配置 / 个人 Key</li><li>Claude 官方或兼容网关</li></ul></div>
+      <div class="card outer" id="X3"><div class="hd"><span>🏢</span><b>下游</b><span class="sub">modeling · consumer</span></div><ul><li>导入知识包</li><li>NL2SQL · 求解 · 问答</li><li>按 operation 调脚本</li></ul></div>
+      <div class="card outer" id="X5"><div class="hd"><span>📦</span><b>jiuwenbox</b></div><ul><li>脚本执行沙箱</li><li>管理 socket 只交给网关容器</li></ul></div>
+      <div class="card outer" id="BIZ"><div class="hd"><span>🏭</span><b>业务系统</b><span class="new-tag">新增</span></div><ul><li>数据库 · 代码 · 客户端 · 页面 · API · 日志</li><li>只开放只读账号与访问窗口</li></ul></div>
+    </div>
+  </div>
+  <div class="card outer" id="U5" style="grid-column:4;grid-row:9">
+    <div class="hd"><span>📈</span><b>监控告警平台</b><span class="new-tag">新增</span></div>
+    <ul><li>OTel Collector / Prometheus / 日志平台</li><li>或客户自有平台</li></ul>
+  </div>
+</div>
+
+<!-- ================= footer notes ================= -->
+<div id="foot">
+  <div class="note n-y" style="--r:-.6deg"><b>怎么读</b><br>横向色带是层；层与层之间的虚线带是<b>层间接口</b>（25 个），每层底部一行是<b>层内接口</b>（19 个）。编号与全景图相同，悬停能看到两端模块和完整说明。</div>
+  <div class="note n-g" style="--r:.5deg"><b>为什么两类插件都画在内核下面</b><br>能力包和可替换实现都插在内核上，区别只在契约：能力包走<b>插件契约</b>（manifest + 装配目录 + 扩展项），可替换实现走<b>南向 SPI</b>。这样摆，每个接口最多跨一层，没有跳层。</div>
+  <div class="note n-p" style="--r:-.4deg"><b>这张图看不出的</b><br>一次请求先后经过哪些接口，例如用户发一条消息：① → ④ → ⑦ → ⑧ → ⑨ → ⑩ → ⑫ → ⑪。要追这种链路，还是看全景图里的连线。</div>
+</div>
+
+</div></div></div>
+
+<script>
+const C={blue:'#2563eb',green:'#16a34a',red:'#dc2626',orange:'#ea580c',purple:'#7c3aed',teal:'#0d9488',grey:'#6b7280',brown:'#b45309',indigo:'#4338ca'};
+// n: 与全景图一致的编号；s: 放在哪条接口带；e: 两端模块；l: 图上短标签；ft/d: 全景图里的完整说明
+const IF=[
+ {n:1, s:'s1', c:'blue', dir:'↓', e:['U1','K1'], l:'Web 工作台 → 对外接口 · REST + SSE', ft:'Web 工作台 → 对外接口', d:'REST /api/v1 + SSE 事件流；携带登录 token'},
+ {n:2, s:'s1', c:'blue', dir:'↓', e:['U2','K1'], l:'MCP 客户端 → 对外接口 · MCP', ft:'MCP 客户端 → 对外接口', d:'MCP over HTTP/SSE；token 权限范围 · 版本号防覆盖 · 每页 ≤200 · 请求体 ≤1MiB'},
+ {n:3, s:'s1g', c:'purple', dir:'↓', e:['U3','K4'], l:'auth-server → 横切 · JWKS', ft:'auth-server → 横切能力', d:'JWKS 公钥；校验签发方 / 受众 / 类型'},
+ {n:37, s:'s1g', c:'indigo', dir:'↓', e:['U4','K10'], l:'运维人员 → 运维管控 · 管理面', ft:'运维人员 → 运维管控', d:'独立端口或内网的运维管理面；所有运维操作都审计'},
+
+ {n:4, s:'s2', c:'blue', dir:'↓', e:['K1','K2'], l:'→ 会话宿主 · 发消息 / 打断 / 确认卡', ft:'对外接口 → 会话宿主', d:'发消息 · 打断 · 回复确认卡 · 订阅事件 · 自主构建的启动 / 暂停 / 转为陪伴'},
+ {n:5, s:'s2', c:'blue', dir:'↓', e:['K1','K5'], l:'→ 写入路径 · 变更事务', ft:'对外接口 → 写入路径', d:'变更事务：网页编辑 · Studio 提交 · MCP 写入 · 导入'},
+ {n:27, s:'s2', c:'blue', dir:'↓', e:['K1','K11'], l:'→ 资料与证据 · 资料上传 / 数据源登记', ft:'对外接口 → 资料与证据', d:'资料上传 · 用途识别 · 数据源登记与连接测试'},
+ {n:6, s:'s2', c:'green', dir:'↑', e:['K3','K1','EXT'], l:'插件运行时 → 对外接口 · 扩展项暴露', ft:'插件运行时 → 对外接口', d:'扩展项注册表：阶段、界面入口、页面入口、产物格式、视图声明，经接口给前端'},
+
+ {n:10, s:'kin', c:'red', e:['K2','K5'], l:'会话宿主 → 写入路径 · agent 提交收口', ft:'会话宿主 → 写入路径', d:'agent 提交收口：pre-commit 调提交接口，同样拿锁、跑检查、记来源'},
+ {n:11, s:'kin', c:'red', e:['K5','K7'], l:'写入路径 → 元模型 · 检查 / 索引 / 冲突', ft:'写入路径 → 元模型与索引', d:'确定性检查 · 刷新索引 · 实体级差异与冲突检测 · 证据锚点校验'},
+ {n:12, s:'kin', c:'red', e:['K5','K6'], l:'写入路径 → 工作区 · git 提交 / 合入', ft:'写入路径 → 工作区与版本', d:'git 提交（提交信息记来源 / 作者 / 包版本）· 变更集副本 · 合入主线'},
+ {n:13, s:'kin', c:'grey', e:['K6','K7'], l:'工作区 → 元模型 · 读产物建索引', ft:'工作区与版本 → 元模型与索引', d:'读取产物文件，建立 index.md 与链接索引；按登记解析插件产物、建索引'},
+ {n:14, s:'kin', c:'green', e:['K3','K6'], l:'插件运行时 → 工作区 · 装配目录 + 锁文件', ft:'插件运行时 → 工作区与版本', d:'装配目录（软链原子切换）+ packs.lock'},
+ {n:15, s:'kin', c:'green', e:['K3','K2'], l:'插件运行时 → 会话宿主 · 装配哈希入指纹', ft:'插件运行时 → 会话宿主', d:'装配哈希计入配置指纹 → 下一条消息重连 + resume（H1 生效点）'},
+ {n:16, s:'kin', c:'red', e:['K8','K3'], l:'安全守卫 → 插件运行时 · 守卫注入', ft:'安全守卫基线 → 插件运行时', d:'内核守卫注入每个装配目录，包删不掉，只能追加拒绝型 hooks'},
+ {n:26, s:'kin', c:'red', e:['K3','K5','EXT'], l:'插件运行时 → 写入路径 · 门禁链', ft:'插件运行时 → 写入路径', d:'门禁链：包声明的发布门禁规则在提交 / 合入时执行'},
+ {n:34, s:'kin', c:'brown', e:['K11','K6'], l:'资料与证据 → 工作区 · 快照落盘', ft:'资料与证据 → 工作区与版本', d:'证据快照写入 resource/systems/<源>/<快照号>（版本化，大件只存哈希引用）'},
+
+ {n:31, s:'g31', c:'indigo', e:['kframe','F_gov'], l:'', ft:'所有内核模块 ⇄ 治理平面', d:'上报：结构化日志 · 指标 · 链路 · 审计事件（带公共标签）；下发：配置变更与管控指令（灰度、熔断、排空、维护模式）'},
+ {n:29, s:'gin', c:'indigo', e:['K10','K3'], l:'运维管控 → 插件运行时 · 灰度 / 回滚 / 熔断', ft:'运维管控 → 插件运行时', d:'安装 · 灰度 · 回滚 · 禁用 · 出错熔断（经 ㉛ 下发）'},
+ {n:38, s:'gin', c:'indigo', e:['K9','K10'], l:'可观测 → 运维管控 · 告警触发动作', ft:'可观测 → 运维管控', d:'健康 · 指标 · 告警 → 运维动作（如熔断出错的包、排空后升级）'},
+
+ {n:17, s:'s3p', c:'green', dir:'↑', e:['P2','K3'], l:'能力包 → 插件运行时 · manifest', ft:'能力包 → 插件运行时', d:'manifest：贡献项 · 依赖 · 兼容的内核版本与引擎'},
+ {n:28, s:'s3p', c:'orange', dir:'↑', e:['PK_core','K7'], l:'core 脚本 → 元模型 · 调结构校验', ft:'能力包脚本 → 元模型与索引', d:'调用结构校验核心（ontology_checker 由元模型定义派生，含证据锚点校验）'},
+ {n:7, s:'s3s', c:'orange', dir:'↓', e:['K2','S1'], l:'会话宿主 → 引擎 · AgentEngine', ft:'会话宿主 → 引擎', d:'AgentEngine 协议（connect/send/events/interrupt/disconnect）+ EngineContext；引擎不得反向依赖会话层'},
+ {n:9, s:'s3s', c:'orange', dir:'↑', e:['S1','K6','P2'], l:'引擎 → 工作区 · 读装配目录 / 改产物', ft:'引擎 → 工作区与版本', d:'读 .claude 装配目录（命令/子代理/skill/规则）；在变更集副本里用文件工具与 Bash 改产物'},
+ {n:35, s:'s3s', c:'brown', dir:'↑', e:['S1','K11'], l:'引擎 → 资料与证据 · evidence.* 只读', ft:'引擎 → 资料与证据', d:'证据检索工具 evidence.search / show / where-used / lineage（只读，按快照）'},
+ {n:18, s:'s3s', c:'purple', dir:'↓', e:['K6','S4'], l:'工作区 → 发布适配器 · 主线标签导出', ft:'工作区与版本 → 发布适配器', d:'读取主线版本标签导出；变更集永不发布'},
+ {n:32, s:'s3s', c:'brown', dir:'↓', e:['K11','EV'], l:'资料与证据 → 证据源 · 采集 / 只读查询', ft:'资料与证据 → 证据源层', d:'下发采集任务与只读查询；凭据只交给连接器网关，不给 agent'},
+ {n:36, s:'s3g', c:'indigo', dir:'↓', e:['K9','S5','U5'], l:'可观测 → 导出器 → 监控平台', ft:'可观测 → 监控告警平台', d:'导出器 seam：OTel / Prometheus / 本地文件 / 客户平台'},
+
+ {n:19, s:'pin', c:'teal', e:['S4','C'], l:'发布适配器 ⇄ 共享契约库 · 同一份实现', ft:'发布适配器 ↔ 共享契约库', d:'导出时校验脚本契约、生成描述符，用同一份实现（带版本）'},
+ {n:20, s:'pin', c:'teal', e:['C','PK_codegen'], l:'共享契约库 ⇄ 代码生成包 · 自检口径一致', ft:'共享契约库 ↔ 代码生成包', d:'建模阶段自检与导出拦截口径一致'},
+ {n:21, s:'pin', c:'orange', e:['PK_codegen','S3'], l:'代码生成包 → 沙箱 · 跑通才能提交', ft:'代码生成包 → 脚本验证沙箱', d:'生成的脚本必须在沙箱里跑通才能提交'},
+
+ {n:23, s:'s4p', c:'purple', dir:'↓', e:['S4','X4'], l:'发布适配器 → 评测 · 包出', ft:'发布适配器 → 评测服务', d:'包出：版本化知识包 + 包清单'},
+ {n:24, s:'s4p', c:'purple', dir:'↑', e:['X4','PK_evo'], l:'评测 → 反馈演进包 · 反馈入', ft:'评测服务 → 反馈演进包', d:'反馈入：失分用例 · 线上反馈'},
+ {n:25, s:'s4p', c:'purple', dir:'↑', e:['X4','EXT'], l:'评测 → 门禁扩展项 · 验证回执', ft:'评测服务 → 扩展项（发布门禁）', d:'验证回执入：绑定求解契约修订号，修订一变就要重新验证'},
+ {n:8, s:'s4s', c:'orange', dir:'↓', e:['S1','X1'], l:'引擎 → 模型网关 · 模型 API', ft:'引擎 → 模型网关', d:'模型 API（按发消息的人选择管理员配置或个人 Key）'},
+ {n:22, s:'s4s', c:'purple', dir:'↓', e:['S4','X3'], l:'发布适配器 → 下游 · 知识包 zip', ft:'发布适配器 → 下游 modeling · consumer', d:'知识包 zip：ontology-package v0.1 · operation-centric.v1'},
+ {n:30, s:'s4s', c:'orange', dir:'↓', e:['S3','X5'], l:'沙箱 → jiuwenbox · 网关 HTTP', ft:'脚本验证沙箱 → jiuwenbox', d:'经网关 HTTP 调用；主容器不挂管理 socket'},
+ {n:33, s:'s4s', c:'brown', dir:'↓', e:['EV','BIZ'], l:'证据源 → 业务系统 · 只读采集', ft:'证据源层 → 业务系统', d:'只读账号 · 出口白名单 · 访问窗口与限流 · 默认脱敏 · 每次采集与查询都审计'},
+ {n:39, s:'s2', c:'blue', dir:'⇅', e:['K1','K12'], l:'⇄ 流程运行时 · 流程图 / 节点状态 / 下一步', ft:'对外接口 ⇄ 流程运行时', d:'流程图、节点和切片状态、下一步建议、待处理汇总（GET /api/v1/projects/{id}/flow，SSE flow.updated）；启用 / 跳过 / 补做节点'},
+ {n:40, s:'kin', c:'green', e:['K3','K12'], l:'插件运行时 → 流程运行时 · 节点声明', ft:'插件运行时 → 流程运行时', d:'装配后的节点声明，组装结果写 flow.lock，哈希计入配置指纹'},
+ {n:41, s:'kin', c:'orange', e:['K12','K2'], l:'流程运行时 ⇄ 会话宿主 · 执行记录 / 阶段提示', ft:'流程运行时 ⇄ 会话宿主', d:'执行记录（开始 / 阶段 / 结束 / 中断）上报；两轮对话之间注入当前阶段与下一步，两个引擎通用'},
+ {n:42, s:'kin', c:'grey', e:['K5','K7','K12'], l:'写入路径、元模型 → 流程运行时 · 确认与过期', ft:'写入路径、元模型 → 流程运行时', d:'变更集被接受、产物指纹变化 → 重算节点状态并向下游传播“过期”'},
+ {n:44, s:'kin', c:'red', e:['K12','K8'], l:'流程运行时 → 安全守卫 · 节点写入范围', ft:'流程运行时 → 安全守卫基线', d:'当前节点声明的 produces 作为 ontology_scope_guard 的允许写入范围'},
+ {n:43, s:'s3p', c:'orange', dir:'↑', e:['PK_core','K12'], l:'state_helper → 流程运行时 · 兼容层', ft:'能力包脚本 → 流程运行时', d:'state_helper 命令行接口不变（check-prereq / detect-stage / acquire / release），新增 suggest；底层改问流程运行时'},
+];
+
+/* ---------- hand-drawn borders (same routine as the panorama) ---------- */
+function hashStr(s){let h=2166136261;for(const ch of s){h^=ch.charCodeAt(0);h=Math.imul(h,16777619)}return h>>>0}
+function rng(seed){return function(){seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const NS='http://www.w3.org/2000/svg';
+function el(tag,attrs,parent){const e=document.createElementNS(NS,tag);for(const k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e}
+function roughLine(x1,y1,x2,y2,R,amp){
+  const j=a=>(R()-.5)*2*a;
+  const len=Math.hypot(x2-x1,y2-y1),off=Math.min(amp,len*.012+.8);
+  const ex=(x2-x1)/len,ey=(y2-y1)/len,over=2+R()*4;
+  const ax=x1-ex*over+j(off),ay=y1-ey*over+j(off),bx=x2+ex*over*.6+j(off),by=y2+ey*over*.6+j(off);
+  const mx=(ax+bx)/2+j(off*1.8),my=(ay+by)/2+j(off*1.8);
+  return `M${ax.toFixed(1)} ${ay.toFixed(1)} Q${mx.toFixed(1)} ${my.toFixed(1)} ${bx.toFixed(1)} ${by.toFixed(1)} `;
+}
+function sketchBox(node,ink,opts={}){
+  const w=node.offsetWidth,h=node.offsetHeight,R=rng(hashStr(node.id||node.className+w+h));
+  const svg=el('svg',{class:'sk',width:w,height:h});
+  const pts=[[3,3],[w-3,3],[w-3,h-3],[3,h-3]];let d1='',d2='';const amp=opts.amp||2.4;
+  for(let i=0;i<4;i++){const a=pts[i],b=pts[(i+1)%4];d1+=roughLine(a[0],a[1],b[0],b[1],R,amp);d2+=roughLine(a[0],a[1],b[0],b[1],R,amp*1.3)}
+  el('path',{d:d1,fill:'none',stroke:ink,'stroke-width':opts.w1||2.5,'stroke-linecap':'round','stroke-dasharray':opts.dash||'none',opacity:.92},svg);
+  el('path',{d:d2,fill:'none',stroke:ink,'stroke-width':opts.w2||1.1,'stroke-linecap':'round','stroke-dasharray':opts.dash||'none',opacity:.6},svg);
+  node.insertBefore(svg,node.firstChild);
+}
+
+/* ---------- chips ---------- */
+const canvas=document.getElementById('canvas'),tip=document.getElementById('tip');
+function chipHTML(A){
+  if(A.s==='g31')return `<span class="nb">${A.n}</span><span class="big">⇅</span><span class="vt">上报：日志 · 指标 · 链路 · 审计</span><span class="big">⇄</span><span class="vt">下发：配置 · 管控指令</span>`;
+  return `<span class="nb">${A.n}</span>${A.dir?`<span class="dir">${A.dir}</span>`:''}<span>${A.l}</span>`;
+}
+function buildChips(){
+  for(const A of IF){
+    const box=document.querySelector(`[data-slot="${A.s}"]`);
+    const c=document.createElement('span');
+    c.className='chip'+(A.s==='g31'?' vchip':'');c.style.setProperty('--c',C[A.c]);c.dataset.n=A.n;
+    c.innerHTML=chipHTML(A);
+    c.addEventListener('mouseenter',ev=>{focus(A.e,[A.n]);showTip(A,c)});
+    c.addEventListener('mouseleave',()=>{focus(null);tip.style.display='none'});
+    box.appendChild(c);A.el=c;
+  }
+}
+function showTip(A,c){
+  tip.innerHTML=`<b>${A.n} · ${A.ft}</b><br>${A.d}`;tip.style.display='block';
+  const r=c.getBoundingClientRect();let x=r.left,y=r.bottom+8;
+  if(x+470>innerWidth)x=innerWidth-470;if(y+tip.offsetHeight>innerHeight)y=r.top-tip.offsetHeight-8;
+  tip.style.left=Math.max(6,x)+'px';tip.style.top=y+'px';
+}
+function focus(ids,ns){
+  document.querySelectorAll('.hl').forEach(e=>e.classList.remove('hl'));
+  document.querySelectorAll('.chip.on').forEach(e=>e.classList.remove('on'));
+  if(!ids){canvas.classList.remove('dim');return}
+  canvas.classList.add('dim');
+  for(const id of ids){const e=document.getElementById(id);if(!e)continue;e.classList.add('hl');e.querySelectorAll('.card').forEach(x=>x.classList.add('hl'))}
+  for(const A of IF)if(ns.includes(A.n))A.el.classList.add('on');
+}
+function hookCards(){
+  const KER=['K1','K2','K3','K5','K6','K7','K8','K11','K12'],GOV=['K4','K9','K10'];
+  document.querySelectorAll('.card[id]').forEach(c=>{
+    if(c.id==='legend')return;
+    const keys=[c.id];
+    if(c.id.startsWith('PK_')||c.id==='EXT')keys.push('P2');
+    if(KER.includes(c.id))keys.push('kframe');
+    if(GOV.includes(c.id))keys.push('F_gov');
+    const mine=IF.filter(A=>A.e.some(x=>keys.includes(x)));
+    if(!mine.length)return;
+    c.addEventListener('mouseenter',()=>{
+      const ids=new Set([c.id]);mine.forEach(A=>A.e.forEach(x=>{if(x!=='kframe'&&x!=='F_gov'&&x!=='P2')ids.add(x)}));
+      focus([...ids],mine.map(A=>A.n));
+    });
+    c.addEventListener('mouseleave',()=>focus(null));
+  });
+}
+
+/* ---------- fit ---------- */
+const W=3000;let mode='fit';
+function layout(){
+  const wrap=document.getElementById('wrap'),holder=document.getElementById('holder'),H=canvas.offsetHeight;
+  const s=mode==='fit'?Math.min(1,(innerWidth-16)/W):1;
+  wrap.style.transform=`scale(${s})`;holder.style.width=W*s+'px';holder.style.height=H*s+'px';
+}
+document.getElementById('bFit').onclick=()=>{mode='fit';layout()};
+document.getElementById('bFull').onclick=()=>{mode='full';layout()};
+addEventListener('resize',layout);
+
+buildChips();
+(document.fonts?document.fonts.ready:Promise.resolve()).then(()=>{
+  document.querySelectorAll('.card').forEach(c=>{
+    const ink=getComputedStyle(c).getPropertyValue('--ink2').trim()||'#333';
+    sketchBox(c,ink,c.classList.contains('gone')?{dash:'10 7'}:{});
+  });
+  document.querySelectorAll('.frame').forEach(f=>sketchBox(f,f.dataset.ink,{amp:3.5,w1:3,w2:1.3,dash:'16 9'}));
+  hookCards();layout();
+});
+</script>
+</body>
+</html>

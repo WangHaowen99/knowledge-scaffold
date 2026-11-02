@@ -12,8 +12,10 @@ onto-modeling/
   assets/     官方包：workspace-toolkit 即 core 包（manifest.yaml、flow.yaml），packs/ 下是可选能力包与行业包，
               启动时导入包仓库
   deploy/     离线交付包构建、预检与部署脚本
-  docs/       架构决策记录
+  docs/       架构决策记录（decisions/）、API v1 契约（api-v1.md）、插件化改造的设计与交接文档（plugin-architecture/）
 ```
+
+插件化改造的现状、分支与接手方式见 [docs/plugin-architecture/handoff.md](docs/plugin-architecture/handoff.md)。
 
 ## 启动（开发）
 
