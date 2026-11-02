@@ -189,6 +189,7 @@
 - 所有报告文件名中的日期时间、报告正文中的生成时间/日期/时间戳，统一使用 `Asia/Shanghai`。shell 里生成时间戳时使用 `TZ=Asia/Shanghai date ...`；Python 脚本使用 timezone-aware 的 `Asia/Shanghai` 时间，不依赖运行环境默认时区。
 - 终端输出使用 `❌ / ⚠️ / 💡 / ✅ / ⏭️ / 🔧` 表情分别表示 错误/警告/建议/已修复/已跳过/已自动修复，与 `ontology_checker.py` 的 `SEVERITY_ICON` 保持一致。
 - 中文报告/提示默认，偶有英文术语需用代码块包裹（如 `HEAD~1`、`[[link]]`）。
+- 对话里引用资料原文时，在句末标 `[^1]`、`[^2]`，消息末尾每个编号一行 `[^1]: resource/<文件>#<位置>`（位置写法同 `source_extract`：`L12`、`p:3`、`table:1/row:2/cell:3`、`sheet:表!B3`）；界面会画成角标，悬停看原文。
 
 ---
 

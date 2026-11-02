@@ -46,7 +46,8 @@ def test_exporters_list_and_prometheus_switch(api):
     client, _ = api
     items = client.get(f"{OPS}/exporters").json()["items"]
     assert [item["id"] for item in items] == ["prometheus", "file"]
-    assert all(set(item) == {"id", "label", "implementation", "target", "signals", "enabled", "configured"} for item in items)
+    assert all(set(item) == {"id", "label", "implementation", "target", "signals", "enabled", "configured",
+                                         "required"} for item in items)
     metrics = TestClient(ops_app.ops_app)
     assert metrics.get("/metrics").status_code == 200
     saved = client.put(f"{OPS}/exporters", json={"items": [{"id": "prometheus", "enabled": False, "target": "/metrics",

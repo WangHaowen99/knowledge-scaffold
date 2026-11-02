@@ -362,10 +362,11 @@ def prometheus_enabled() -> bool:
 def exporter_items() -> list[dict]:
     return [
         {"id": "prometheus", "label": "Prometheus", "implementation": "builtin", "target": "/metrics",
-         "signals": ["metrics"], "enabled": prometheus_enabled(), "configured": True},
+         "signals": ["metrics"], "enabled": prometheus_enabled(), "configured": True, "required": False},
+        # 日志页读的就是它，不能关（required）；内置的两项地址与信号固定
         {"id": "file", "label": "本地文件", "implementation": "builtin",
          "target": f"{telemetry.log_dir().name}/{telemetry.LOG_FILE}", "signals": ["logs"], "enabled": True,
-         "configured": True},
+         "configured": True, "required": True},
     ]
 
 

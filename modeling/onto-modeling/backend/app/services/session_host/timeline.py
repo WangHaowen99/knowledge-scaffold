@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -456,9 +457,10 @@ def payload(record: dict) -> tuple[str | None, dict | None]:
                            if block.get("kind") == "text" and str(block.get("text") or "").strip())
         if not text:
             return None, None
+        text, anchors = split_citations(text)
         return "message.assistant", {
             "message_id": record.get("message_id") or f"a-{external_id(record) or 0}", "text_md": text,
-            "anchors": [], "entry_links": [], "continued": bool(record.get("continued")),
+            "anchors": anchors, "entry_links": [], "continued": bool(record.get("continued")),
         }
     if kind == "tool_activity":
         return "tool.activity", {"tool_use_id": record.get("tool_use_id"), "visibility": "internal",
@@ -606,3 +608,26 @@ def collapse(envelopes: list[dict]) -> list[dict]:
             envelope = {**envelope, "data": {**data, **question_state[data["question_id"]]}}
         result.append(envelope)
     return result
+
+
+# 正文里的出处角标 `[^n]` 与文末的定义行 `[^n]: <锚点>`（锚点写法同契约 1.10，如 `resource/采购制度.docx#p:3`）
+_CITATION_DEF = re.compile(r"^\[\^(\d{1,3})\]:\s*(\S.*?)\s*$")
+
+
+def split_citations(text: str) -> tuple[str, list[dict]]:
+    """把文末的出处定义行收成 `anchors`（`[{n, anchor}]`）并从正文里去掉；正文里的 `[^n]` 留给前端画角标。
+    只认锚点（带 scheme 或 `resource/` 开头）的定义，别的脚注原样留着。"""
+    if "[^" not in text:
+        return text, []
+    anchors, kept = [], []
+    for line in text.split("\n"):
+        match = _CITATION_DEF.match(line.strip())
+        target = match.group(2).strip("`<> ") if match else ""
+        if match and (target.startswith("resource/") or re.match(r"^[a-z]+:[^\s]", target)):
+            anchors.append({"n": int(match.group(1)), "anchor": target})
+            continue
+        kept.append(line)
+    if not anchors:
+        return text, []
+    return "\n".join(kept).rstrip(), anchors
+

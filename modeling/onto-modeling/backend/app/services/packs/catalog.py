@@ -130,7 +130,7 @@ def detail(manager, name: str, *, project_id: str = "", version: str = "") -> di
         "enabled_at": item["enabled_at"] if item else None,
         "requires": {"depends": dict(manifest.depends), "kernel_api": manifest.kernel_api,
                      "page_api": manifest.page_api or None},
-        "flow_insertions": [{"id": node, "title": node} for node in manifest.items("nodes")],
+        "flow_insertions": _flow_insertions(repository, name, version, manifest),
         "project_stats": None,
         "contents": [{"group": label, "items": manifest.items(key)} for key, label in CONTENT_GROUPS
                      if manifest.items(key)],
@@ -139,3 +139,44 @@ def detail(manager, name: str, *, project_id: str = "", version: str = "") -> di
         "hot_level": manifest.hot_level,
         "effective": manifest.effective if manifest.effective != "restart" else "next_message",
     }
+
+
+# 主流程的段（PL-02 `flow_insertions[].at`）：包节点挂在哪个 core 节点前后就归哪一段；指标是建模旁支
+_SEGMENTS = {"core.research": "research", "core.model": "model", "core.metric": "model", "core.validate": "validate",
+             "core.consistency": "consistency", "core.publish": "publish"}
+
+
+def _flow_insertions(repository, name: str, version: str, manifest) -> list[dict]:
+    """包往主流程里加的节点：编号、标题与插在哪一段（按 after / before 指向的 core 节点算，指向本包别的节点时跟着它）。"""
+    from .assembler import AssemblyError, flow_declaration
+
+    try:
+        declared = flow_declaration(name, manifest, repository.version_dir(name, version)) or {}
+    except (AssemblyError, OSError, ValueError):
+        declared = {}
+    nodes = [node for node in declared.get("nodes") or [] if isinstance(node, dict) and node.get("id")]
+    if not nodes:
+        return [{"id": node, "title": node} for node in manifest.items("nodes") if not node.endswith((".yaml", ".yml"))]
+    by_id = {str(node["id"]): node for node in nodes}
+
+    def segment(node: dict, seen: set) -> str | None:
+        for key in ("after", "before"):
+            for anchor in (node.get(key) if isinstance(node.get(key), list) else [node.get(key)]):
+                anchor = str(anchor or "")
+                if anchor in _SEGMENTS:
+                    return _SEGMENTS[anchor]
+                if anchor in by_id and anchor not in seen:
+                    found = segment(by_id[anchor], seen | {anchor})
+                    if found:
+                        return found
+        return None
+
+    out = []
+    for node in nodes:
+        item = {"id": str(node["id"]), "title": str(node.get("title") or node["id"])}
+        at = segment(node, {str(node["id"])})
+        if at:
+            item["at"] = at
+        out.append(item)
+    return out
+
