@@ -73,7 +73,7 @@ export function useMaterialUpload(pid, accept) {
         setBusy((n) => n - 1);
       }
     }
-    if (ok) toast(`已上传 ${ok} 份资料，助手会接着读`, 'upload');
+    if (ok) toast(`已上传 ${ok} 份资料`, 'upload');
   }, [api, services, pid]);
   const input = (
     <input

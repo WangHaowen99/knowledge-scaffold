@@ -139,7 +139,7 @@ export function verificationRows(items = [], { passedShown = 2, expanded = false
 export function verificationNote(items = []) {
   const reasons = items.filter((x) => x.status === 'unverifiable').map((x) => x.reason).filter(Boolean);
   if (!reasons.length) return '';
-  return `「来源无法核验」需要修正读取范围或来源位置：${reasons.join('；')}。`;
+  return `${reasons.join('；')}。`;
 }
 
 // ---------- 建模蓝图（BP-01 / BP-02） ----------

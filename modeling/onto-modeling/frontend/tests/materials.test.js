@@ -62,7 +62,10 @@ test('核验：有问题的排前面，通过的默认只露两条；说明里�
   assert.equal(rows.filter((r) => r.status === 'passed').length, 2);
   assert.equal(hidden, items.filter((x) => x.status === 'passed').length - 2);
   assert.equal(verificationRows(items, { expanded: true }).hidden, 0);
-  assert.match(verificationNote(items), /^「来源无法核验」需要修正读取范围或来源位置：R-07 引用的 §7\.3 在原文里找不到这句话；/);
+  // 只列原因（状态列已标「来源无法核验」），按出现顺序、一条不漏
+  const reasons = items.filter((x) => x.status === 'unverifiable').map((x) => x.reason);
+  assert.equal(verificationNote(items), `${reasons.join('；')}。`);
+  assert.match(verificationNote(items), /^R-07 引用的 §7\.3 在原文里找不到这句话；/);
   assert.equal(verificationNote(mockData.verificationItems(false)), '');
 });
 

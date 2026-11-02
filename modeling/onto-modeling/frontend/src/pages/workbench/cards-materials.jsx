@@ -6,6 +6,7 @@ import { navigate, pagePath } from '../../app/router.js';
 import {
   Button, Chip, Ev, Icon, Prog, cx,
 } from '../../ui/index.jsx';
+import { evidenceInProject } from '../../state/evidence.js';
 import { CC, WbCtx } from './parts.jsx';
 import {
   MatIcon, pageCommand, useMaterialUpload, useOpenDialog,
@@ -28,15 +29,15 @@ function UploadPromptCard({ card }) {
   const up = useMaterialUpload(pid, card.accept);
   const [over, setOver] = useState(false);
   const project = useProject();
-  // 「连接业务系统」只在服务端给了这个动作、且本项目有数据源子页（系统逆向建模包）时出现；证据源本期只留接口（ADR-0056）
-  const evidenceOn = !!project?.hasSubpage?.('sources');
+  // 「连接业务系统」只在服务端给了这个动作、且证据源可用时出现；证据源本期只留接口（ADR-0056）
+  const evidenceOn = evidenceInProject(project);
   const acts = (card.actions || ['upload', 'import_package']).filter((a) => a !== 'connect_system' || evidenceOn);
   const importPackage = () => pageCommand(api, pid, {
     command: '/ontology-guide', args: { start: 'import_package' }, text: '从已有知识包导入：列出可选的已发布知识包',
-    label: '欢迎卡', done: '已发给助手：选一个已发布的知识包，内容会落到本项目继续建模',
+    label: '欢迎卡', done: '已发给助手',
   });
   return (
-    <CC icon="upload" title={card.title || '先把资料给我'} sub={card.subtitle}>
+    <CC icon="upload" title={card.title || '先把资料给我'}>
       <div
         className="en-up" style={over ? { borderColor: 'var(--blue3)', background: '#F0F6FF' } : undefined}
         onClick={up.pick}
@@ -91,7 +92,7 @@ function MaterialMapCard({ card }) {
   const pbText = [pb.contradiction ? `资料矛盾 ${pb.contradiction}` : '', pb.missing ? `疑似缺失 ${pb.missing}` : ''].filter(Boolean).join('、');
   return (
     <CC
-      icon="map" title={card.title || '资料地图'} sub={card.subtitle}
+      icon="map" title={card.title || '资料地图'}
       chip={<Chip tone="line" sm>{card.total} 份 · 已读 {card.read_pct}%</Chip>}
       dbl onDoubleClick={() => open('material_map')}
       foot={(

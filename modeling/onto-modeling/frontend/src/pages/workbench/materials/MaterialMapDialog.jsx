@@ -39,8 +39,6 @@ function PurposeMenu({ value, onPick, onClose }) {
           <span>{p.label}</span>
         </div>
       ))}
-      <hr />
-      <div className="xs muted" style={{ padding: '4px 10px 6px', lineHeight: 1.5 }}>上传时按表格结构自动识别（数据表或术语表）；改用途会覆盖自动识别</div>
     </div>
   );
 }
@@ -138,7 +136,7 @@ function Marked({ text, highlights }) {
 }
 
 function VerifyChip({ v, onClick }) {
-  if (!v || !v.checked_at) return <span className="chip gray en-map-chip"><Icon name="shieldok" />读完后自动核验</span>;
+  if (!v || !v.checked_at) return <span className="chip gray en-map-chip"><Icon name="shieldok" />待核验</span>;
   if (v.unverifiable) return <span className="chip amber en-map-chip" onClick={onClick}><Icon name="shieldok" />已自动核验 · {v.unverifiable} 条来源无法核验<Icon name="chev" /></span>;
   return <span className="chip teal en-map-chip" onClick={onClick}><Icon name="shieldok" />已自动核验 · {v.pending ? `${v.pending} 条待核验` : '全部通过'}<Icon name="chev" /></span>;
 }
@@ -193,16 +191,16 @@ export function MaterialMapDialog({ onClose, initialVerify = false }) {
     setMenu(null);
     if (purpose === item.purpose) return;
     try {
-      const r = await api.setResourcePurpose(pid, { path: item.path, purpose });
+      await api.setResourcePurpose(pid, { path: item.path, purpose });
       setMap((m) => ({ ...m, items: m.items.map((x) => (x.path === item.path ? { ...x, purpose, purpose_auto: false } : x)) }));
-      toast(`用途已改为：${purposeLabel(purpose)}${r.reread_task ? '，助手会重读受影响的部分' : ''}`, 'check');
+      toast(`用途已改为：${purposeLabel(purpose)}`, 'check');
     } catch (e) {
       toast(errorText(e), 'alert');
     }
   };
   const setMode = async (mode) => {
     if (!map || mode === map.analysis_mode) return;
-    if (mode === 'web' && !map.web_available) { toast('「联网调研」插件没有启用（离线部署不可用），只能用本地资料', 'alert'); return; }
+    if (mode === 'web' && !map.web_available) { toast('「联网调研」插件未启用', 'alert'); return; }
     try {
       const meta = await api.patchProject(pid, { research_mode: mode });
       setMeta?.(meta);
@@ -216,14 +214,14 @@ export function MaterialMapDialog({ onClose, initialVerify = false }) {
     try {
       await api.promoteMaterialProblem(pid, p.id, { as });
       setMap((m) => ({ ...m, problems: m.problems.map((x) => (x.id === p.id ? { ...x, state: 'promoted' } : x)) }));
-      toast(as === 'blueprint_question' ? '已加入建模蓝图的待答问题' : '已加入待答问题', 'check');
+      toast('已加入待答问题', 'check');
     } catch (e) {
       toast(errorText(e), 'alert');
     }
   };
   const continueRead = (item) => pageCommand(api, pid, {
     command: '/ontology-research', args: { path: item.path, parts: item.blocked?.unread_parts || [] },
-    text: `继续读取「${item.name}」：${(item.blocked?.unread_parts || []).join('、') || '没读完的部分'}`, done: '已发给助手：继续读取没读完的部分',
+    text: `继续读取「${item.name}」：${(item.blocked?.unread_parts || []).join('、') || '没读完的部分'}`, done: '已发给助手',
   });
   const appendAnalysis = () => pageCommand(api, pid, { command: '/ontology-research', args: { mode: 'append' }, text: '追加分析', done: '已开始追加分析' });
 
@@ -233,8 +231,7 @@ export function MaterialMapDialog({ onClose, initialVerify = false }) {
     <>
       <Modal
         open onClose={onClose} icon="map" title="资料地图" w={1180}
-        sub="读取、编号、出处都由确定性工具完成：记录每份读到哪一章，没读全不能进入下一步"
-        foot={<><span className="xs muted grow">改用途、追加资料都会让助手重读受影响的部分</span><Button onClick={onClose}>关闭</Button></>}
+        foot={<Button onClick={onClose}>关闭</Button>}
       >
         {error ? <div className="note red"><Icon name="alert" /><div className="grow">{errorText(error)}</div></div> : null}
         {!map && !error ? <div className="muted sm">正在读取资料地图…</div> : null}
@@ -275,11 +272,10 @@ export function MaterialMapDialog({ onClose, initialVerify = false }) {
                         <div className="grow"><div style={{ fontWeight: 600 }}>{c.name}</div><div className="mt4"><Ev anchor={c.anchor} label={c.anchor_label} /></div></div>
                       </div>
                     );
-                  }) : <div className="xs muted">读到的对象、规则、术语会一条条出现在这里</div>}
+                  }) : <div className="xs muted">还没有候选</div>}
                 </div>
                 <div className="sec-t" style={{ marginTop: 16 }}>
                   <Icon name="alert" size={14} />问题区 <span className="faint">{problems.length}</span>
-                  <span className="sp" /><span className="xs faint" style={{ fontWeight: 500 }}>会带进建模蓝图的「待你回答」</span>
                 </div>
                 {problems.length ? problems.map((p) => {
                   const done = p.state !== 'open';
