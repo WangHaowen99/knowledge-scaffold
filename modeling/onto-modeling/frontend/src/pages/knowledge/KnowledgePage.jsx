@@ -338,7 +338,6 @@ function ConflictCard({ check, tasks, onOpen }) {
               <span style={{ color: 'var(--amber2)' }}><Icon name="alert" size={14} /></span>
               <div className="grow">
                 {conflictLine(c)}
-                <div className="xs muted">{c.note}</div>
                 {c.kind === 'scope_conflict' ? (
                   <div className="mt8">
                     <SendButton tasks={tasks} command={cmd.command} args={cmd.args} text={cmd.text} size="xs" kind="soft" icon="msg" disabled={!!tasks.active}>在对话里复核</SendButton>
