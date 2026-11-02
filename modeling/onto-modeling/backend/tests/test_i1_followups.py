@@ -77,3 +77,21 @@ def test_client_config_says_evidence_unavailable():
 
     features = TestClient(app).get("/api/v1/client-config").json()["features"]
     assert features["evidence"] is False and "drawio" in features
+
+
+def test_web_research_action_needs_websearch_pack():
+    """联网资料分析要联网调研包：没启用时研究节点不出这个动作（用不了的入口不出现），启用了照常。"""
+    import yaml
+
+    from app.services.flow import assemble
+
+    toolkit = Path(config.ASSETS_DIR) / "workspace-toolkit"
+    core = yaml.safe_load((toolkit / "flow.yaml").read_text(encoding="utf-8"))
+
+    def labels(*packs):
+        contributions = [("core", "test", core)] + [(name, "test", {}) for name in packs]
+        flow = assemble.assemble(contributions)
+        return [action["label"] for action in next(n for n in flow["nodes"] if n["id"] == "core.research")["actions"]]
+
+    assert "联网资料分析" not in labels() and labels()[0] == "仅本地资料"
+    assert labels("websearch")[0] == "联网资料分析"
