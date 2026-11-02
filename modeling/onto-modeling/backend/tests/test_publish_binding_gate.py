@@ -223,6 +223,7 @@ def test_set_object_data_source_guards(manager):
 
 def eval_router(tmp_path, monkeypatch):
     from app.routers import projects
+    from app.services import eval_judge_config
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "MODELING_TOKEN", "")
@@ -231,6 +232,7 @@ def eval_router(tmp_path, monkeypatch):
     monkeypatch.setattr(projects, "workspaces", manager)
     monkeypatch.setattr(modeling_eval, "enabled", lambda: True)
     monkeypatch.setattr(modeling_eval, "reachable", lambda: True)
+    monkeypatch.setattr(eval_judge_config, "resolve", lambda *args: {"model": "synthetic-judge-model"})
     pid = manager.create_project("评测门禁")["id"]
     root = manager.project_root(pid)
     write_schema(root, {"T_ORDER": ["ORDER_ID", "AMOUNT"]})
@@ -243,7 +245,7 @@ def test_eval_run_reports_binding_problems_until_user_allows_unbound(tmp_path, m
     projects, pid, request = eval_router(tmp_path, monkeypatch)
     captured = {}
 
-    async def fake_run(project_id, root_, token, cases, data_source, eval_set_name="", allow_unbound=False, refresh_token=""):
+    async def fake_run(project_id, root_, token, cases, data_source, eval_set_name="", allow_unbound=False, refresh_token="", judge_model=None):
         captured["allow_unbound"] = allow_unbound
 
     monkeypatch.setattr(modeling_eval, "run", fake_run)

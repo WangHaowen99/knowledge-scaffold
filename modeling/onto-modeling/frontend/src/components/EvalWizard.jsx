@@ -49,6 +49,9 @@ export default function EvalWizard({ project, open, onClose, onStarted, onBindin
   const [editing, setEditing] = useState(null); // {id, form} | null；无已存配置时恒为表单
   const [savingSource, setSavingSource] = useState(false);
   const [sets, setSets] = useState([]);
+  const [modelProfiles, setModelProfiles] = useState([]);
+  const [modelProfileId, setModelProfileId] = useState('');
+  const [caseConcurrency, setCaseConcurrency] = useState(4);
   const [traceCases, setTraceCases] = useState([]);
   const [caseChoice, setCaseChoice] = useState(MANUAL_CHOICE);
   const [cases, setCases] = useState([]);
@@ -67,8 +70,9 @@ export default function EvalWizard({ project, open, onClose, onStarted, onBindin
       api.evalDataSources(project.id),
       api.evalSets(project.id).catch(() => ({ sets: [] })),
       api.evalCases(project.id).catch(() => ({ cases: [] })),
+      api.evalModelProfiles(project.id).catch(() => ({ profiles: [] })),
     ])
-      .then(([ds, setData, trace]) => {
+      .then(([ds, setData, trace, profileData]) => {
         if (!active) return;
         const saved = ds.sources || [];
         const visibleSources = saved.filter((source) => sourceKind(source) !== 'dataset');
@@ -80,6 +84,9 @@ export default function EvalWizard({ project, open, onClose, onStarted, onBindin
         if (!saved.length) setEditing({ id: '', form: emptySourceForm(ds.defaults) });
         setSets(setData.sets || []);
         setTraceCases(trace.cases || []);
+        const profiles = profileData.profiles || [];
+        setModelProfiles(profiles);
+        setModelProfileId(profileData.defaultProfileId || profiles[0]?.id || '');
         return initCases(setData.sets || [], trace.cases || []);
       })
       .catch((error) => {
@@ -215,6 +222,8 @@ export default function EvalWizard({ project, open, onClose, onStarted, onBindin
       dataSourceId: selectedSourceId,
       evalSetId: savedSetId,
       allowUnbound,
+      modelProfileId,
+      caseConcurrency: Math.min(16, Math.max(1, Number(caseConcurrency) || 4)),
     });
     message.success('评测已启动，进度见「数据评测」阶段');
     onStarted?.();
@@ -393,10 +402,44 @@ export default function EvalWizard({ project, open, onClose, onStarted, onBindin
         </div>
         <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
           {casesHint}
+          {' 评测模型仅使用 Consumer 全局模型池中已启用的配置；并发上限为 16。'}
           {!sets.length && ' 导入的用例会保存为评测集，下次评测可直接选用。'}
         </Typography.Paragraph>
+        <Space align="center" wrap style={{ marginBottom: 8 }}>
+          <Typography.Text type="secondary" style={{ fontSize: 12, flexShrink: 0 }}>
+            评测模型
+          </Typography.Text>
+          <Select
+            size="small"
+            style={{ width: 320, flexShrink: 0 }}
+            value={modelProfileId || undefined}
+            placeholder="选择 Consumer 模型"
+            onChange={setModelProfileId}
+            options={modelProfiles.map((profile) => ({
+              value: profile.id,
+              label: `${profile.name || profile.id} · ${profile.model}`,
+            }))}
+            notFoundContent="暂无启用的全局模型配置"
+          />
+          <Typography.Text type="secondary" style={{ fontSize: 12, flexShrink: 0 }}>
+            并发数
+          </Typography.Text>
+          <Select
+            size="small"
+            style={{ width: 88, flexShrink: 0 }}
+            value={caseConcurrency}
+            onChange={setCaseConcurrency}
+            options={Array.from({ length: 16 }, (_, index) => ({
+              value: index + 1,
+              label: `${index + 1}`,
+            }))}
+          />
+        </Space>
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+          评测模型使用consumer模型池中启用的模型，评测判分模型使用你在 onto-modeling「我的模型配置」中为当前项目引擎设置的模型；未设置个人覆盖时沿用管理员配置。
+        </Typography.Paragraph>
         <Spin spinning={loadingSet}>
-          <div style={{ maxHeight: 340, overflow: 'auto' }}>
+          <div style={{ maxHeight: 500, overflow: 'auto' }}>
             {cases.map((item, index) => (
               <div key={index} className="eval-case-row">
                 <div className="eval-case-head">
@@ -472,7 +515,24 @@ export default function EvalWizard({ project, open, onClose, onStarted, onBindin
   }
 
   return (
-    <Modal title={title} open={open} onCancel={onClose} width={720} footer={footer} destroyOnHidden>
+    <Modal
+      className="eval-wizard-modal"
+      title={title}
+      open={open}
+      onCancel={onClose}
+      centered
+      width={1040}
+      styles={{
+        content: { minHeight: 'min(680px, calc(100vh - 48px))' },
+        body: {
+          minHeight: 'min(560px, calc(100vh - 180px))',
+          maxHeight: 'calc(100vh - 180px)',
+          overflowY: 'auto',
+        },
+      }}
+      footer={footer}
+      destroyOnHidden
+    >
       {body}
     </Modal>
   );
