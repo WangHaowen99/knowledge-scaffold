@@ -334,3 +334,11 @@ test('页面命令：让助手读完的命令跑完后资料标为读完；?mock
   assert.equal(s.call('GET', '/materials/map').body.items.find((x) => x.path === R02).read_pct, 100);
   assert.equal(taskSeeds.resources().origin.page, 'resources');
 });
+
+test('md / txt 资料（R-01 preview=text）按文档预览：R-06 的块、锚点定位', async () => {
+  const { isDocPreview } = await import('../src/pages/resources/resourcesModel.js');
+  assert.equal(isDocPreview({ preview: 'text' }), true);
+  assert.equal(isDocPreview({ preview: 'doc' }), true);
+  assert.equal(isDocPreview({ preview: 'xls' }), false);
+  assert.equal(isDocPreview(null), false);
+});

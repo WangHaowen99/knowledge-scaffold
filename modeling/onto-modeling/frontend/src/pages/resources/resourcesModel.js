@@ -20,7 +20,9 @@ export function fileIcon(kind) {
   return { cls: 'w', icon: 'filetext' };
 }
 // 预览卡标题旁的图标（设计稿 PV 表）
-export const PREVIEW_ICON = { doc: 'filetext', xls: 'table', csv: 'list', drawio: 'flow', html: 'globe' };
+export const PREVIEW_ICON = { doc: 'filetext', text: 'filetext', xls: 'table', csv: 'list', drawio: 'flow', html: 'globe' };
+// 文档类（R-06 抽成带锚点的块）：Word 等是 doc，md / txt 是 text（契约 7.4 Material.preview）
+export const isDocPreview = (m) => m?.preview === 'doc' || m?.preview === 'text';
 
 export function fmtSize(bytes) {
   const n = Number(bytes) || 0;
