@@ -175,7 +175,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
         "slice_stages": [],
         "slices": [],
         "suggestions": suggestions,
-        "notices": _notices(suggest_context),
+        "notices": _notices(suggest_context) + _assembly_notice(root),
         "stage": stage,
         # 进度：主线上满足完成判定的节点（已确认与过期都算做过）；助手副本里的改动要确认生效才算
         "progress": {
@@ -221,6 +221,20 @@ def _notices(context: dict) -> list[dict]:
         return [{"kind": "pending_changeset", "count": 1, "text": "这一轮的修改还没确认",
                  "action": {"type": "show_changes", "changeset_id": changeset["id"]}}]
     return []
+
+
+def _assembly_notice(root: Path) -> list[dict]:
+    """启用、升级、停用了包还没生效（下一条消息前切换）：流程按生效中的装配显示，另给一条提示（契约 7.8 notices）。"""
+    from ...api import deps
+
+    try:
+        status = deps.workspaces.packs.status(root)
+    except Exception:  # noqa: BLE001 - 取不到装配状态不影响流程
+        return []
+    if status.get("state") != "pending" or status.get("effective") != "next_message":
+        return []
+    return [{"kind": "assembly_pending", "count": len(status.get("pending_changes") or []),
+             "text": "插件变更下一条消息生效", "action": {"type": "navigate", "page": "proj-settings"}}]
 
 
 def _write_flow_state(root: Path, copy: Path, flow: dict, states: dict, context: dict, suggestions: dict) -> None:
