@@ -1,7 +1,8 @@
 """插件运行时里要动工作区 git 的操作：持项目锁，只按路径提交锁文件（不带 agent 的其他改动）。
 
-锁文件的改动经统一变更事务（ChangeTx，方案 C1）作为一次提交合入主线，带 `Onto-Source: plugin`
-（契约 PL-06；变更集在 P2，那时换成变更集目标，自动合入、可撤回）。
+锁文件 `packs.lock` 与组装后的流程锁 `flow.lock` 经统一变更事务（ChangeTx，方案 C1）在同一个提交里合入主线，
+带 `Onto-Source: plugin`。用户在项目里的切换（PL-06～PL-10）同时是一个插件变更集：校验通过即合入、
+可以撤回（changes.py，ADR-0065）。
 """
 
 from __future__ import annotations
@@ -18,23 +19,35 @@ _log = logging.getLogger(__name__)
 
 
 def commit_lock(manager, project_id: str, message: str, actor: str = "",
-                write: Callable[[], object] | None = None) -> str:
-    """经写入事务提交锁文件，只提交这一个路径；没有改动返回空串。调用方持项目锁（可重入）。
+                write: Callable[[], object] | None = None, changeset: str | None = None) -> str:
+    """经写入事务提交锁文件与 flow.lock，只提交这两个路径；没有改动返回空串。调用方持项目锁（可重入）。
 
     write 给定时在事务里写锁文件，提交失败恢复原内容；不给定时提交已经写好的锁文件（启动核对、
-    跟随通道这类先写后提交的路径，中途停机由写入意图在下次启动补提交）。项目没有 git 时只写不提交。
+    跟随通道这类先写后提交的路径，中途停机由写入意图在下次启动补提交）。flow.lock 按写好的锁文件重新组装，
+    装配不起来时保持原样。项目没有 git 时只写不提交。changeset：这次切换的插件变更集（trailer 带上）。
     """
     from ...kernel.writepath import ChangeTx, Origin
+    from ..flow import flowlock
 
     root = manager.project_root(project_id)
     if not (root / ".git").is_dir():
         if write is not None:
             write()
+        manager.packs.write_flow_lock(root)
         return ""
-    with ChangeTx(manager, project_id, Origin("plugin", actor), summary=message) as tx:
+    with ChangeTx(manager, project_id, Origin("plugin", actor, changeset=changeset), summary=message) as tx:
         tx.touch(lockfile.LOCK_REL, snapshot=write is not None)
         if write is not None:
             write()
+        flow = manager.packs.desired_flow(root)
+        if flow is not None:
+            text = flowlock.render(flow)
+            try:
+                current = flowlock.path(root).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                current = None
+            if text != current:
+                tx.write(flowlock.FLOW_LOCK_REL, text)
         return tx.commit(message).commit
 
 
@@ -255,8 +268,25 @@ def announce_immediate_switch(project_id: str, active_before: str | None, status
     project_events.assembly_switched(project_id, active_before, status.get("active_hash"))
 
 
-def _switch(manager, project_id: str, mutate, message: str, actor: str) -> dict:
-    """改锁文件的公共流程：先装配新版本（失败就不改锁文件），再提交锁文件；只动纯数据包时立即生效。"""
+def _flow_changed(manager, root, plan) -> bool:
+    """这次切换会不会改流程节点（flow.lock 的内容变不变）。"""
+    from ..flow import flowlock
+
+    flow = manager.packs.flow_of(plan)
+    if flow is None:
+        return False
+    current = flowlock.read(root)
+    if current is None:  # 存量项目还没有 flow.lock：和现在锁文件组装出的流程比
+        before = manager.packs.desired_flow(root)
+        current = flowlock.summarize(before) if before is not None else {}
+    return current.get("nodes_hash") != flowlock.summarize(flow)["nodes_hash"]
+
+
+def _switch(manager, project_id: str, mutate, message: str, actor: str, *, pack: str = "", kind: str = "") -> dict:
+    """改锁文件的公共流程：先装配新版本（失败就不改锁文件），再作为插件变更集提交锁文件与 flow.lock；
+    只动纯数据包时立即生效。"""
+    from . import changes
+
     runtime = manager.packs
     root = manager.project_root(project_id)
     if manager.get_project(project_id).get("archived"):
@@ -273,7 +303,15 @@ def _switch(manager, project_id: str, mutate, message: str, actor: str) -> dict:
         result = mutate(new_lock)
         plan = _plan_or_raise(runtime, new_lock)
         runtime.assembler.build(plan)
-        commit = commit_lock(manager, project_id, message, actor, write=lambda: lockfile.write(root, new_lock))
+        record = changes.begin(manager, project_id, purpose=message.removeprefix("plugin: "), pack=pack, kind=kind,
+                               flow_changed=_flow_changed(manager, root, plan))
+        try:
+            commit = commit_lock(manager, project_id, message, actor, write=lambda: lockfile.write(root, new_lock),
+                                 changeset=record["id"] if record else None)
+        except BaseException:
+            changes.abort(manager, project_id, record)
+            raise
+        record = changes.finish(manager, project_id, record, commit)
         if wrote and not commit:
             commit = commit_lock(manager, project_id, "chore: 写入能力包锁文件", actor)
         active_before = (runtime.assembler.active(root) or {}).get("assembly_hash")
@@ -285,7 +323,7 @@ def _switch(manager, project_id: str, mutate, message: str, actor: str) -> dict:
 
     announce_immediate_switch(project_id, active_before, status)
     return {"result": result, "commit": commit or None, "version_label": mainline.state(root)["version_label"],
-            "status": status}
+            "status": status, "changeset_id": record["id"] if record and record.get("state") == "merged" else None}
 
 
 def _pack_view(manager, project_id: str, name: str) -> dict | None:
@@ -300,6 +338,7 @@ def _response(manager, project_id: str, name: str, outcome: dict) -> dict:
         "version_label": outcome["version_label"],
         "effective": "immediate" if status["state"] == "applied" else status["effective"],
         "extensions_pending_hash": status["pending_hash"],
+        "changeset_id": outcome.get("changeset_id"),
     }
 
 
@@ -337,7 +376,7 @@ def enable(manager, project_id: str, name: str, version: str | None = None, acto
         lock.upsert(entry)
 
     label = repository.manifest(name, version).label
-    outcome = _switch(manager, project_id, mutate, f"plugin: 启用 {label} {version}", actor)
+    outcome = _switch(manager, project_id, mutate, f"plugin: 启用 {label} {version}", actor, pack=name, kind="enable")
     return _response(manager, project_id, name, outcome)
 
 
@@ -357,7 +396,8 @@ def change_version(manager, project_id: str, name: str, to_version: str, *, kind
                                             follow=kind == "upgrade" and to_version == latest))
 
     verb = "升级" if kind == "upgrade" else "回滚"
-    outcome = _switch(manager, project_id, mutate, f"plugin: {verb} {label} {current.version} → {to_version}", actor)
+    outcome = _switch(manager, project_id, mutate, f"plugin: {verb} {label} {current.version} → {to_version}", actor,
+                      pack=name, kind=kind)
     return _response(manager, project_id, name, outcome)
 
 
@@ -374,7 +414,7 @@ def disable(manager, project_id: str, name: str, actor: str = "") -> dict:
     def mutate(lock: PackLock):
         lock.get(name).enabled = False
 
-    outcome = _switch(manager, project_id, mutate, f"plugin: 停用 {name}", actor)
+    outcome = _switch(manager, project_id, mutate, f"plugin: 停用 {name}", actor, pack=name, kind="disable")
     return _response(manager, project_id, name, outcome)
 
 
@@ -400,8 +440,47 @@ def cancel_pending(manager, project_id: str, name: str, actor: str = "") -> dict
         elif lock.get(name):
             lock.get(name).enabled = False
 
-    _switch(manager, project_id, mutate, f"plugin: 撤销待生效的切换 {name}", actor)
-    return {"pack": _pack_view(manager, project_id, name)}
+    if not _revert_pending(manager, project_id, name, actor):
+        _switch(manager, project_id, mutate, f"plugin: 撤销待生效的切换 {name}", actor, pack=name, kind="cancel")
+    return {"pack": _pack_view(manager, project_id, name) or _unlocked_view(manager, name, current)}
+
+
+def _unlocked_view(manager, name: str, entry) -> dict | None:
+    """撤回了第一次启用之后锁文件里没有这个包了：按「没启用」给一项（和停用的一样可以再启用）。"""
+    repository = manager.packs.repository
+    version = entry.version if entry and repository.has(name, entry.version) else repository.latest(name, "stable")
+    if not version:
+        return None
+    manifest = repository.manifest(name, version)
+    return {"name": name, "label": manifest.label, "category": manifest.category, "ui": _ui(manifest),
+            "locked_version": version, "latest_available": None, "channel": "stable", "status": "disabled",
+            "pending": None, "enabled_at": None, "actions": ["enable"], "rollback_to": None, "follow": True}
+
+
+def _revert_pending(manager, project_id: str, name: str, actor: str) -> bool:
+    """待生效的切换正好是这个包最近一次插件变更集、而且之后锁文件没再改过：撤回这个变更集（反向提交）。
+    撤不了（之后又切换过别的包、助手的修改还没确认）返回 False，由调用方按生效中的版本改回。"""
+    from ...services.workspace.errors import WorkspaceError
+    from . import changes
+
+    record = changes.latest_for(manager, project_id, name)
+    if record is None:
+        return False
+    runtime = manager.packs
+    root = manager.project_root(project_id)
+    with manager._project_lock(project_id):
+        try:
+            changes.revert(manager, project_id, record, actor=actor)
+        except WorkspaceError as exc:
+            _log.info("项目 %s 撤销 %s 没有走变更集撤回：%s", project_id, name, exc)
+            return False
+        active_before = (runtime.assembler.active(root) or {}).get("assembly_hash")
+        try:
+            status = runtime.apply(root, h0_only=True)
+        except AssemblyError:
+            status = runtime.status(root)
+    announce_immediate_switch(project_id, active_before, status)
+    return True
 
 
 def assembly_view(manager, project_id: str) -> dict:
