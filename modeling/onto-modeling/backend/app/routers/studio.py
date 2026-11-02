@@ -396,6 +396,8 @@ async def submit(project_id: str, entry_id: str, request: Request):
 
 NEW_KINDS = ("object", "operation", "rule", "metric", "flowchart")
 NAME_MAX = 80
+# 文件名按 UTF-8 字节限长：原子写的临时文件名是「.<文件名>.<随机>.tmp」，要留在文件系统的 255 字节以内
+KEY_BYTES_MAX = 200
 # 条目名就是文件名、也是 [[链接]] 的目标：路径分隔、通配与链接语法里的字符都不行
 _NAME_BAD = re.compile(r"[\\/:*?\"<>|#\[\]\x00-\x1f]")
 
@@ -478,6 +480,12 @@ async def create_entry(project_id: str, request: Request):
         raise ApiError("invalid_argument", "名称不合法", 400, {"fields": {"name": "pattern"}})
     if key and (len(key) > NAME_MAX or _NAME_BAD.search(key) or key.startswith(".")):
         raise ApiError("invalid_argument", "key 不合法", 400, {"fields": {"key": "pattern"}})
+    # key 缺省用名称（也是文件名）：推出来的 key 同样要能当文件名，在写入之前就判
+    field = "key" if key else "name"
+    if not key and name.startswith("."):
+        raise ApiError("invalid_argument", "名称不能以「.」开头", 400, {"fields": {"name": "pattern"}})
+    if len((key or name).encode("utf-8")) > KEY_BYTES_MAX:
+        raise ApiError("invalid_argument", "名称太长", 400, {"fields": {field: "too_long"}})
     actor = deps.username(request)
     if kind == "flowchart":
         artifact = await asyncio.to_thread(_new_flowchart, project_id, name, key, actor)
@@ -491,7 +499,10 @@ async def create_entry(project_id: str, request: Request):
     with ChangeTx(deps.workspaces, project_id, Origin("studio", actor), summary=f"新建 {rel}") as tx:
         if (root / rel).exists():  # 拿到项目锁之后再判一次：并发新建同名
             raise ApiError("revision_conflict", "已经有同名的条目", 409, {"kind": "name", "target": name})
-        tx.write(rel, text)
+        try:
+            tx.write(rel, text)
+        except OSError as exc:  # 文件系统不认这个名字（过长等）：说明名字不行，不是服务出错
+            raise ApiError("invalid_argument", "名称不能用作文件名", 400, {"fields": {field: "pattern"}}) from exc
         tx.commit(f"studio: 新建{KIND_LABELS.get(kind, '条目')}「{name}」 by {actor or '本机用户'}")
     return JSONResponse(status_code=201, content=entry_detail(project_id, f"{kind}:{key}", request))
 
