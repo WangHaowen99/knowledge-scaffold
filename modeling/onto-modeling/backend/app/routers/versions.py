@@ -89,7 +89,7 @@ def _resolve(root, rev: str) -> str:
 @router.get("/diff")
 def diff(project_id: str, request: Request, path: str = "", entry: str = ""):
     """V-04：from 版本与 to 版本（或 WORKTREE 当前文件）里同一份文件的左右两侧与改动块。"""
-    from .files import _guard_path
+    from .files import _guard_path, worktree_file
     from .studio import entry_path
 
     root = deps.require_owner(project_id, request)
@@ -102,7 +102,7 @@ def diff(project_id: str, request: Request, path: str = "", entry: str = ""):
     left = version_views.text_at(root, source, rel)
     right_revision = None
     if to == "WORKTREE":
-        target = deps.workspaces._resolve_inside(root, rel)
+        target = worktree_file(root, rel)
         right = None
         if target.is_file():
             data = target.read_bytes()

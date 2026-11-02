@@ -95,7 +95,9 @@ def parse(text: str) -> dict:
 
 
 def load(root: Path) -> dict | None:
-    """读蓝图；没有时 None，读出来不合法时抛 BlueprintError。"""
+    """读蓝图；没有时 None，读出来不合法时抛 BlueprintError。符号链接当没有（可以指到工作区外）。"""
+    if path_of(root).is_symlink() or path_of(root).parent.is_symlink():
+        return None
     try:
         text = path_of(root).read_text(encoding='utf-8')
     except FileNotFoundError:

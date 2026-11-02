@@ -41,7 +41,7 @@ def entry_path(root: Path, entry_id: str) -> tuple[str, str, str]:
     if kind == "flowchart":
         raise ApiError("endpoint_removed", "流程图改由插件产物接口读写", 410,
                        {"successor": "/api/v1/projects/{id}/artifacts/diagram.flowchart/{key}"})
-    if kind not in KIND_PATHS or not key or "/" in key or "\\" in key or key.startswith("."):
+    if kind not in KIND_PATHS or not key or "/" in key or "\\" in key or "\x00" in key or key.startswith("."):
         raise ApiError("not_found", "条目不存在", 404)
     directory, suffix = KIND_PATHS[kind]
     rel = f"{directory}/{key}{suffix}"

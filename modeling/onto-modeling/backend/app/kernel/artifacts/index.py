@@ -124,7 +124,7 @@ def inside(root: Path, rel: str) -> Path | None:
     try:
         if path.is_symlink() or not path.resolve().is_relative_to(Path(root).resolve()):
             return None
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return None
     return path
 

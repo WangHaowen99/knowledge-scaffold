@@ -695,6 +695,8 @@ class WorkspaceCore:
 
     @staticmethod
     def _resolve_inside(root: Path, rel_path: str) -> Path:
+        if "\x00" in str(rel_path):
+            raise WorkspaceError("路径不合法", 400, "invalid_argument", {"fields": {"path": "pattern"}})
         target = (root / rel_path).resolve()
         root_resolved = root.resolve()
         if not target.is_relative_to(root_resolved):

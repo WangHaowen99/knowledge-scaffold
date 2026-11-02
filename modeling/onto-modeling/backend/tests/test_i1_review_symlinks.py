@@ -48,15 +48,16 @@ def _plant(workspaces, pid, root, tmp_path):
     (outside / "dirleak.md").write_text("# 外面\n\ntop-secret-value\n", encoding="utf-8")
     copy = changesets.copy_for_turn(workspaces, pid, root)
     (copy / "reports").mkdir(exist_ok=True)
+    (copy / "research").mkdir(exist_ok=True)
+    (copy / "research" / "normal.md").write_text("# 资料分析\n", encoding="utf-8")
+    record = changesets.observe(workspaces, pid, running=False, conversation_id="default")
+    assert record is not None and record["state"] == "pending_confirm", record
+    # 一轮结束的核对会删掉指到副本外的链接；这里在核对之后再建，测的是读取一侧（一轮进行中也有这个窗口）
     os.symlink(str(secret), copy / "reports" / "leak.md")
     os.symlink(os.path.relpath(other_root / "ontology" / "object" / "机密.md", copy / "reports"),
                copy / "reports" / "cross.md")
     os.symlink(str(outside), copy / "reports" / "sub")
-    (copy / "research").mkdir(exist_ok=True)
     os.symlink(str(secret), copy / "research" / "leak2.md")
-    (copy / "research" / "normal.md").write_text("# 资料分析\n", encoding="utf-8")
-    record = changesets.observe(workspaces, pid, running=False, conversation_id="default")
-    assert record is not None and record["state"] == "pending_confirm", record
     return copy, secret
 
 

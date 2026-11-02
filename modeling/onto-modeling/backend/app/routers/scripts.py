@@ -40,7 +40,9 @@ def _sandbox_summary() -> dict:
 def _latest_scan(root: Path) -> tuple[Path | None, dict]:
     from ..services import report_items
 
-    reports = sorted((root / "reports").glob(SCAN_GLOB)) if (root / "reports").is_dir() else []
+    folder = root / "reports"
+    reports = [path for path in sorted(folder.glob(SCAN_GLOB)) if not path.is_symlink()] \
+        if folder.is_dir() and not folder.is_symlink() else []
     if not reports:
         return None, {}
     latest = reports[-1]
@@ -101,8 +103,8 @@ def _rows(root: Path) -> list[dict]:
         issues = [("scripts", "错误", f"契约检查没能运行：{type(exc).__name__}")]
     records = _verify_records(root)
     rows = []
-    for path in sorted(scripts_dir.glob("*.py")):
-        if path.name.startswith("_"):
+    for path in sorted(scripts_dir.glob("*.py")) if not scripts_dir.is_symlink() else []:
+        if path.name.startswith("_") or path.is_symlink():
             continue
         name = path.stem
         rel = path.relative_to(root).as_posix()

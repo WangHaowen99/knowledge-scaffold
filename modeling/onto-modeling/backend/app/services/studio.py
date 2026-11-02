@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .. import config
 from ..kernel import metamodel
+from ..kernel.artifacts import index as artifact_index
 from ..kernel.metamodel import mm
 from . import package_mapping
 from .document_metadata import name_frontmatter, report_name
@@ -30,11 +31,13 @@ def _docs(root: Path) -> list[dict]:
     docs = []
     for kind, rel_dir, pattern in KIND_DIRS:
         directory = root / rel_dir
-        if not directory.is_dir():
-            continue
+        if not directory.is_dir() or artifact_index.inside_no_links(root, rel_dir) is None:
+            continue  # 目录本身是符号链接：不读
         for path in sorted(directory.glob(pattern)):
             if path.name == mm.INDEX_FILE:  # 工作区占位 index 不是本体元素
                 continue
+            if not path.is_file() or artifact_index.inside_no_links(root, path.relative_to(root).as_posix()) is None:
+                continue  # 符号链接（可以指到工作区外）、设备文件不读
             docs.append(
                 {
                     "name": path.stem,

@@ -54,10 +54,20 @@ def _guard_path(path: str) -> str:
     return "/".join(parts)
 
 
+def worktree_file(root: Path, rel: str) -> Path:
+    """工作区里的一个文件（已过 _guard_path）：解析后不能出工作区（_resolve_inside），也不能落进受保护目录
+    （根内的符号链接指到 .git、.onto 等）。"""
+    target = deps.workspaces._resolve_inside(root, rel)
+    resolved = target.relative_to(root.resolve()).parts
+    if resolved and resolved[0] in PROTECTED_TOP:
+        raise ApiError("path_forbidden", "该路径不允许访问", 403, {"path": rel})
+    return target
+
+
 def _target(project_id: str, request: Request, path: str) -> tuple[Path, Path, str]:
     root = deps.require_owner(project_id, request)
     rel = _guard_path(path)
-    target = deps.workspaces._resolve_inside(root, rel)
+    target = worktree_file(root, rel)
     if not target.is_file():
         raise ApiError("file_not_found", "文件不存在", 404, {"path": rel})
     return root, target, rel
@@ -106,6 +116,7 @@ def file_tree(project_id: str, request: Request, root: str = ""):
 def read_file(project_id: str, request: Request, path: str = ""):
     root = deps.require_owner(project_id, request)
     rel = _guard_path(path)
+    worktree_file(root, rel)  # 根内的符号链接指到受保护目录（.git 等）也不读
     data = deps.workspaces.read_file(project_id, rel, TEXT_PREVIEW_BYTES)
     from ..api.compat import entry_id_for_path
     from ..kernel.changesets import service as changesets

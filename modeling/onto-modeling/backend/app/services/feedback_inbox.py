@@ -290,7 +290,9 @@ def feedback_view(root: Path, document: dict, record: dict | None) -> dict:
 def _documents(root: Path) -> list[dict]:
     folder = Path(root) / FEEDBACK_DIR
     out = []
-    for path in sorted(folder.glob("*.json"), reverse=True) if folder.is_dir() else []:
+    for path in sorted(folder.glob("*.json"), reverse=True) if folder.is_dir() and not folder.is_symlink() else []:
+        if path.is_symlink() or not path.is_file():  # 符号链接不读
+            continue
         try:
             document = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):

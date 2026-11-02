@@ -135,6 +135,8 @@ def _points(entries: list, model=None) -> list[dict]:
 def capture(root: Path, copy: Path, *, conversation_id: str | None, changeset_id: str | None) -> dict | None:
     """一轮结束时：副本里有新的影响分析（update-plan.json 变了）就收成一份清单；返回新建或更新的清单。"""
     path = Path(copy) / PLAN_REL
+    if path.is_symlink() or path.parent.is_symlink():  # 助手在副本里建的链接不读
+        return None
     try:
         raw = path.read_bytes()
     except OSError:

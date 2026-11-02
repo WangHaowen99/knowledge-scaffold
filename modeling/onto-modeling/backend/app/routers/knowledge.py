@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 
 from ..api import deps
 from ..api.errors import ApiError
+from ..kernel.artifacts import index as artifact_index
 from ..kernel.writepath import ChangeTx, Origin
 from ..services import audit, knowledge_layers, mainline, project_events
 from ..services.workspace.layout import _content_revision
@@ -130,10 +131,10 @@ def _public(entry: dict) -> dict:
 def _entries(root: Path) -> list[dict]:
     found = []
     for directory, legacy in ((root / KNOWLEDGE_DIR, False), (root / LEGACY_DIR, True)):
-        if not directory.is_dir():
-            continue
+        if not directory.is_dir() or artifact_index.inside_no_links(root, directory.relative_to(root).as_posix()) is None:
+            continue  # 目录本身（或上层）是符号链接：不读
         for path in sorted(directory.glob("*.md")):
-            if path.name == "INDEX.md" or path.is_symlink():
+            if path.name == "INDEX.md" or path.is_symlink() or not path.is_file():
                 continue
             try:
                 found.append(_entry(path, legacy))

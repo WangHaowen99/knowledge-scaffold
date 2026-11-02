@@ -288,7 +288,9 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
 def _reports(root: Path) -> list[dict]:
     folder = Path(root) / "reports"
     items = []
-    for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
+    for path in sorted(folder.glob("*.md")) if folder.is_dir() and not folder.is_symlink() else []:
+        if path.is_symlink():  # 符号链接不读（可以指到工作区外）
+            continue
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
@@ -311,7 +313,9 @@ def _feedback(root: Path) -> list[dict]:
 
     folder = Path(root) / feedback_inbox.FEEDBACK_DIR
     items = []
-    for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+    for path in sorted(folder.glob("*.json")) if folder.is_dir() and not folder.is_symlink() else []:
+        if path.is_symlink():
+            continue
         try:
             document = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):

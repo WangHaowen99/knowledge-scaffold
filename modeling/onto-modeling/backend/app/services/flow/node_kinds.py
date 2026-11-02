@@ -96,6 +96,7 @@ def _target(node: dict, value: str, label: str) -> str:
 
 
 def _inputs(root: Path, patterns: list[str]) -> list[str]:
+    from ...kernel.artifacts import index as artifact_index
     from ..packs import manifest as mf
 
     found: list[str] = []
@@ -105,7 +106,8 @@ def _inputs(root: Path, patterns: list[str]) -> list[str]:
             raise NodeRunError("path_forbidden", "脚本节点的输入不能读工作区外或内核目录", 403, {"path": str(pattern)})
         for path in sorted(Path(root).glob(rel)):
             rel = path.relative_to(root).as_posix()
-            if not path.is_file() or path.is_symlink() or any(part.startswith(".") for part in Path(rel).parts):
+            if not path.is_file() or path.is_symlink() or any(part.startswith(".") for part in Path(rel).parts) \
+                    or artifact_index.inside_no_links(root, rel) is None:  # 中间段是目录链接也不送进沙箱
                 continue
             if rel not in found:
                 found.append(rel)

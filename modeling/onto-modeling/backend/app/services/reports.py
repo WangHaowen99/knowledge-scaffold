@@ -293,6 +293,8 @@ def raw(manager, project_id: str, report_id: str) -> dict:
 
 
 def _link_cached(root: Path) -> dict | None:
+    if (Path(root) / LINK_REL).is_symlink():
+        return None
     try:
         data = json.loads((Path(root) / LINK_REL).read_text(encoding="utf-8"))
     except (OSError, ValueError):

@@ -54,8 +54,8 @@ def material_paths(root: Path) -> list[str]:
     found = []
     for subdir in sorted(RESOURCE_SUBDIRS):
         folder = Path(root) / "resource" / subdir
-        if not folder.is_dir():
-            continue
+        if not folder.is_dir() or folder.is_symlink() or folder.parent.is_symlink():
+            continue  # 资料目录被换成符号链接：不列链接指向的东西
         for path in sorted(folder.rglob("*")):
             if path.is_file() and not path.is_symlink() and not path.name.startswith("."):
                 found.append(path.relative_to(root).as_posix())

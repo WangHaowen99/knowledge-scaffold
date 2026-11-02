@@ -681,13 +681,13 @@ def load_workspace_solver(
 ) -> tuple[list[WorkspaceSolverContract], list[SolverContractError]]:
     """读取工作区全部求解契约；问题逐个收集，供导出与发布检查共用。"""
     base = Path(root) / SOLVER_DIR
-    if not base.is_dir():
+    if not base.is_dir() or base.is_symlink():
         return [], []
     stems = set(operation_stems)
     contracts: list[WorkspaceSolverContract] = []
     problems: list[SolverContractError] = []
     for directory in sorted(base.iterdir(), key=lambda item: item.name):
-        if not directory.is_dir() or directory.name.startswith("."):
+        if not directory.is_dir() or directory.is_symlink() or directory.name.startswith("."):
             continue
         try:
             contracts.append(_load_contract(directory, stems))

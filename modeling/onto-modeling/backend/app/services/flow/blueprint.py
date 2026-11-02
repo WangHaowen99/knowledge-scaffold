@@ -76,6 +76,8 @@ def read(manager, project_id: str) -> dict | None:
     """{doc, revision, where, base, record, root}；没有蓝图时 None，文件坏了抛 422。"""
     base, where, record = locate(manager, project_id)
     module = script(manager.project_root(project_id))
+    if (base / BLUEPRINT_REL).is_symlink() or (base / BLUEPRINT_REL).parent.is_symlink():
+        return None  # 符号链接可以指到工作区外：不读
     try:
         text = (base / BLUEPRINT_REL).read_text(encoding="utf-8")
     except FileNotFoundError:
