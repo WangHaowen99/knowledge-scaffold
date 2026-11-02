@@ -1842,6 +1842,7 @@ def _stage_files(
                 path=f"{SOLVER_DIR}/{solver_key}/{BINDING_FILE}", field="solver_key",
             ))
             continue
+        binding = dict(binding)
         if template is not None:
             params, template_problems = normalize_template_params(template, f"{SOLVER_DIR}/{solver_key}")
             if template_problems:
@@ -1854,10 +1855,24 @@ def _stage_files(
                 sidecar.role: sidecars[sidecar.role].encode("utf-8")
                 for sidecar in SIDECARS if isinstance(sidecars.get(sidecar.role), str)
             }
+        if not str(binding.get("decision_model") or "").strip():
+            # 面板不再让用户填 Decision Model ID：取 Decision Model 文档里的 id，没有时按新建契约的默认命名补上（与前端一致）
+            binding["decision_model"] = _model_document_id(data) or f"{solver_key}_model"
         files = {BINDING_FILE: _dump_yaml(dict(binding))}
         files.update({SIDECAR_BY_ROLE[role].filename: value for role, value in data.items()})
         staged[solver_key] = files
     return staged, problems, rendered
+
+
+def _model_document_id(data: Mapping[str, bytes]) -> str:
+    entry = data.get("entry")
+    if entry is None:
+        return ""
+    try:
+        document = parse_sidecar(entry, SIDECAR_BY_ROLE["entry"].filename, SIDECAR_BY_ROLE["entry"].filename)
+    except SolverContractError:
+        return ""
+    return str(document.get("id") or "").strip() if isinstance(document, Mapping) else ""
 
 
 def _load_staged(

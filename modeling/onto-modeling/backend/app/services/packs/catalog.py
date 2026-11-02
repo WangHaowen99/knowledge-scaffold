@@ -12,12 +12,6 @@ CONTENT_GROUPS = (("commands", "命令"), ("agents", "子代理"), ("skills", "�
                   ("templates", "模板"), ("reference", "参考指南"))
 
 
-def _meta_line(manifest: mf.Manifest) -> str | None:
-    parts = [f"{len(manifest.items(key))} {label}" for key, label in (("commands", "命令"), ("agents", "子代理"))
-             if manifest.items(key)]
-    return " · ".join(parts) or None
-
-
 def _latest(repository, name: str) -> tuple[str | None, str]:
     stable = repository.latest(name, "stable")
     if stable:
@@ -57,7 +51,7 @@ def card(manager, name: str, project: dict | None) -> dict | None:
         "name": name, "version": latest, "label": manifest.label, "description": manifest.description,
         "category": manifest.category, "publisher": _publisher(repository, name, latest, manifest), "ui": _ui(manifest),
         "batch": manifest.raw.get("batch"), "badges": list(manifest.raw.get("badges") or []),
-        "meta": _meta_line(manifest), "latest": latest, "channel": channel,
+        "latest": latest, "channel": channel,
         "project_status": status, "locked_version": locked, "usage_note": None,
         "default_on": bool(manifest.raw.get("default_on") or manifest.required),
     }
@@ -73,8 +67,10 @@ def catalog(manager, *, category: str = "", q: str = "", project_id: str = "",
     if wanted - set(CATEGORY_KEYS):
         raise PackError("invalid_argument", f"category 只能取 {'|'.join(CATEGORY_KEYS)}", 400,
                         {"fields": {"category": "enum"}})
-    cards = [item for item in (card(manager, name, project) for name in repository.names()[:500]) if item]
-    counts = {key: sum(1 for item in cards if item["category"] == key) for key in CATEGORY_KEYS}
+    # 证据源提供方本期不开放（ADR-0056）：目录里不列，计数里也不出这一类
+    cards = [item for item in (card(manager, name, project) for name in repository.names()[:500])
+             if item and item["category"] != "provider"]
+    counts = {key: sum(1 for item in cards if item["category"] == key) for key in CATEGORY_KEYS if key != "provider"}
     counts.update(all=len(cards),
                   enabled=sum(1 for item in cards if item["project_status"] in ("required", "enabled", "update", "pending")),
                   updatable=sum(1 for item in cards if item["project_status"] == "update"))

@@ -10,6 +10,7 @@ from app.services.flow import view
 from tests.test_node_pack_lifecycle import (  # noqa: F401  （夹具按名字注入）
     LINT_SCRIPT, SCRIPT_NODE, enable_and_apply, env, fake_sandbox, install, kinds_flow)
 from tests.test_changesets import main_write, obj, project  # noqa: F401
+from tests.test_release_publish import manager  # noqa: F401
 
 
 def _script_pack(manager, tmp_path, *, fail: bool = False) -> None:
@@ -117,3 +118,38 @@ def test_attribution_omits_columns_without_a_source(tmp_path, monkeypatch):
     rows = TestClient(ops_app).get("/api/v1/ops/attribution", params={"by": "pack"}).json()["items"]
     assert rows and rows[0]["key"] == "naming@0.1.0"
     assert "reruns" not in rows[0] and "first_accept_pct" not in rows[0]
+
+
+# ---- 插件目录、发布 ----
+
+
+def test_release_manifest_gives_source_version_label(manager, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.api import deps
+    from app.main import app
+    from app.services import auth
+    from tests.test_release_publish import rich_project
+
+    monkeypatch.setattr(deps, "workspaces", manager)
+    monkeypatch.setattr(auth, "ENABLED", False)
+    pid, _root = rich_project(manager)
+    client = TestClient(app)
+    record = client.post(f"/api/v1/projects/{pid}/releases", json={}).json()
+    body = client.get(f"/api/v1/projects/{pid}/releases/{record['version']}/manifest").json()
+    assert body["source_version_label"] == record["version_label"] and body["source_commit"] == record["commit"]
+
+
+def test_pack_catalog_has_no_meta_line_or_provider_category(env):
+    client, _manager, project_id, _tmp = env
+    body = client.get("/api/v1/packs", params={"project_id": project_id}).json()
+    assert body["items"] and all("meta" not in item for item in body["items"])
+    assert "provider" not in body["counts"] and all(item["category"] != "provider" for item in body["items"])
+
+
+def test_editor_reference_carries_pack_label(env):
+    client, _manager, project_id, _tmp = env
+    types = client.get(f"/api/v1/projects/{project_id}/artifact-types").json()["items"]
+    flowchart = next(item for item in types if item["type"] == "diagram.flowchart")
+    editor = flowchart["view"]["detail"]["editor"]
+    assert editor["pack"] == "diagram" and editor["pack_label"] == "图示"

@@ -253,11 +253,15 @@ def get_release_manifest(project_id: str, version: str, request: Request):
     path, record = publish.release_package(deps.workspaces, project_id, version)
     files, truncated = release_store.list_files(path)
     manifest = release_store.read_manifest(path) or {}
+    root = deps.workspaces.project_root(project_id)
+    commit = record.get("commit", "")
     return {
         "package_name": manifest.get("id") or project_id,
         "version": version,
         "schema_version": str(manifest.get("schema_version") or "0.1"),
-        "source_commit": record.get("commit", ""),
+        "source_commit": commit,
+        # 「源版本」按项目内的版本号显示（v0.n），提交号留给 API 客户端
+        "source_version_label": mainline.label(mainline.count(root, commit)) if commit else None,
         "released_at": deps.iso(record.get("released_at")),
         "packs": [],
         "flow_hash": "",
