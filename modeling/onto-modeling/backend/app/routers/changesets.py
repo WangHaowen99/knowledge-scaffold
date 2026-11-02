@@ -69,6 +69,25 @@ async def after_close(project_id: str, record: dict, kind: str, text: str) -> No
             manager.append_record(project_id, conversation_id, item)
         except Exception:  # noqa: BLE001 - 对话已删除：卡片不更新，不影响合入结果
             continue
+    # 建议条（EC-53）跟着换：确认生效、撤回之后不再是「确认生效 / 撤回这一轮」，和 FL-02 同一份
+    conversations = {conversation_id for conversation_id, _item in records}
+    if record.get("conversation_id"):
+        conversations.add(record["conversation_id"])
+    suggestions = await asyncio.to_thread(_suggestions_after_close, project_id)
+    for conversation_id in sorted(conversations) if suggestions is not None else ():
+        try:
+            manager.append_record(project_id, conversation_id, {"type": "suggestions", "payload": suggestions})
+        except Exception:  # noqa: BLE001 - 同上
+            continue
+
+
+def _suggestions_after_close(project_id: str) -> dict | None:
+    from ..services.flow import view
+
+    try:
+        return dict(view.build(deps.workspaces.project_root(project_id))["suggestions"])
+    except Exception:  # noqa: BLE001 - 算不出建议不影响合入结果，下一轮结束时照常给
+        return None
 
 
 async def merge_and_announce(project_id: str, changeset_id: str, *, actor: str, expected_head: str | None = None,

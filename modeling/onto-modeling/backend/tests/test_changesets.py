@@ -426,6 +426,10 @@ def test_round_card_open_changeset_and_merge_notice(api, monkeypatch):
     assert updated and updated[-1]["state"] == "merged" and updated[-1]["merged_version_label"]
     notices = [event["payload"] for event in history if event.get("type") == "notice"]
     assert notices[-1]["kind"] == "merged" and notices[-1]["changeset_id"] == "cs-1"
+    # 确认生效之后建议条跟着换（I1：不再停在「确认生效 / 撤回这一轮」）
+    bars = [event["payload"] for event in history if event.get("type") == "suggestions"]
+    assert bars and bars[-1]["mode"] != "pending_confirm"
+    assert (bars[-1].get("primary") or {}).get("action", {}).get("type") != "merge_changeset"
     assert client.get(f"/api/v1/projects/{project_id}/conversations/default").json()["open_changeset"] is None
     asyncio.run(manager.shutdown())
 
