@@ -69,12 +69,12 @@ def test_publish_used_objects_follow_the_project_metamodel(project, monkeypatch)
     variant = _variant(link_names=lambda text, names=None: ["对象乙"])
     with metamodel.using(variant):
         assert ontology_package._used_objects(body, ["对象甲", "对象乙"]) == ["对象乙"]
-    # render 入口按项目根目录定下版本（项目根是回执目录的上一级）
+    # render 入口按项目根目录定下版本（ReleaseSource.state_root 就是项目工作区根目录，见 publish/service._source）
     captured = []
     monkeypatch.setattr(metamodel, "for_project", lambda path: variant)
     monkeypatch.setattr(ontology_package.OntologyPackageAdapter, "_render",
                         lambda self, src, out: captured.append(metamodel.current()) or "rendered")
-    source = types.SimpleNamespace(state_root=root / ".ontology-state")
+    source = types.SimpleNamespace(state_root=root)
     assert ontology_package.OntologyPackageAdapter().render(source, root / "out.zip") == "rendered"
     assert captured == [variant]
 

@@ -209,13 +209,17 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
     if copy is None:
         return None
     with manager._project_lock(project_id):
+        if not running:
+            # 每轮收尾把副本里新出的验收回执带回主线：只跑了验证、没改文件的一轮也要带（审查第 11 条）
+            worktree.collect_state(root, copy)
         base = worktree.merge_base(root, copy)
         snap = worktree.snapshot(copy)
-        changes = worktree.diff(root, base, snap) if base else []
+        changes = [(status, rel) for status, rel in (worktree.diff(root, base, snap) if base else [])
+                   if not worktree.is_protected(rel)]
         record = store.current(root)
         if not changes:
-            if record is not None and record["state"] in ("open", "pending_confirm"):
-                # 助手把改动又改回去了：这个变更集是空的，悄悄关掉
+            if record is not None and record["state"] in ("open", "pending_confirm") and record.get("tree"):
+                # 助手把改动又改回去了：这个变更集是空的，悄悄关掉。先占着、还没改过的（自主构建的一片）不关
                 closed = store.update(root, record["id"], state="discarded", closed_at=time.time(), empty=True)
                 _notify(project_id, "changeset", closed)
             return None
@@ -566,7 +570,8 @@ def _conflict_check(manager, root: Path, base: str, main: str, head: str,
             entity_inputs[rel] = (kind, worktree.read_blob(root, base, rel), worktree.read_blob(root, main, rel),
                                   worktree.read_blob(root, head, rel))
     conflicted = set(entity_diff.conflicts(model, entity_inputs))
-    conflicted |= {rel for rel in textual if rel not in entity_inputs}
+    # git 报了文本冲突的路径一律算冲突（审查第 4 条）：实体口径看不出的改动（空行、标题）照样会带出冲突标记
+    conflicted |= set(textual)
     targets = []
     for rel in sorted(conflicted):
         entry = model.entry_key(rel)
@@ -584,71 +589,98 @@ def merge(manager, project_id: str, changeset_id: str, *, actor: str, expected_h
     """确认生效（CS-04）；自主构建（P3）检查通过后也调它自动合入（source="autobuild"、needs_review=True）。
 
     choices：合入冲突时用户选的 {路径或条目 ID: "mainline"|"changeset"}（CS-07）。
+    全程持项目锁（审查第 5 条）：拿到锁后重读变更集确认仍没关闭，合成、门禁、提交、重置副本、记 merged 都在
+    这把锁里，和撤回、另一次确认、一轮开始（`copy_for_turn`）互斥。
+    合成结果和主线一样时不写提交，`commit` 为 None（审查第 3、10 条）。
     返回 {state, commit, version_label, merged_at, record}；错误按契约 2.4 抛 WorkspaceError。
     """
-    from ..writepath import ChangeTx, Origin
-
-    record = _require_open(manager, project_id, changeset_id)
     root = manager.project_root(project_id)
-    copy = existing_copy(root)
-    if copy is None:
-        raise WorkspaceError("助手副本不在了，这一轮的修改没法合入", 409, "changeset_closed", {"state": record["state"]})
-    owner = str((manager.get_project(project_id) or {}).get("owner") or "") or actor
-    origin_source = source or ("autobuild" if record.get("source") == "autobuild" else "agent")
-    origin = Origin(origin_source, owner, changeset=record["id"], node=record.get("node_trailer"))
-    with ChangeTx(manager, project_id, origin, summary=f"确认生效 {record['id']}", expected_head=expected_head) as tx:
-        main = tx.base_head
+    with manager._project_lock(project_id):
+        record = _require_open(manager, project_id, changeset_id)
+        copy = existing_copy(root)
+        if copy is None:
+            raise WorkspaceError("助手副本不在了，这一轮的修改没法合入", 409, "changeset_closed", {"state": record["state"]})
+        main = worktree.rev(root)
         if expected_head and expected_head != main:
             raise WorkspaceError("主线已前进，请刷新后重试", 409, "head_moved", {"head": main})
         worktree.commit_pending(copy, "chore: 收拢这一轮没提交的改动")
         head = worktree.rev(copy)
-        base = _git(root, "merge-base", main, head).strip() or main
-        merged_tree, textual = _merge_tree(root, main, head)
-        conflicted, targets = _conflict_check(manager, root, base, main, head, textual)
-        picks: dict[str, str] = {}
-        if conflicted:
-            chosen = _normalize_choices(conflicted, targets, choices or {})
-            missing = [target for rel, target in zip(conflicted, targets) if rel not in chosen]
-            if missing:
-                store.update(root, record["id"], state="conflict",
-                             conflict={"paths": conflicted, "entities": targets, "main": main, "head": head,
-                                       "at": time.time()})
-                _notify(project_id, "changeset", store.get(root, record["id"]))
-                raise WorkspaceError("合入时检测到冲突，已放进待处理，选好保留哪一边再合入", 409, "merge_conflict",
-                                     {"entities": targets, "inbox_item_id": f"changeset_conflict:{record['id']}"})
-            picks = {rel: (main if keep == "mainline" else head) for rel, keep in chosen.items()}
-        merged_tree = _tree_with(root, merged_tree, picks)
-        try:
-            result = gates.compare(root, worktree.tree_of(root, main), merged_tree)
-        except gates.GateUnavailable as exc:
-            raise WorkspaceError(f"门禁跑不起来：{exc}", 503, "service_unavailable", {"dependency": "gate"}) from exc
-        if result["errors"]:
-            store.update(root, record["id"], checks={**result, "tree": record.get("tree")})
-            raise WorkspaceError(f"合入会带进 {result['errors']} 个新的错误，先修好再确认", 422, "gate_failed",
-                                 {"findings": [item for item in result["findings"] if item["level"] == "error"]})
-        for status, rel in worktree.diff(root, main, merged_tree):
-            if status == "D":
-                tx.remove(rel)
-                continue
-            data = worktree.read_blob(root, merged_tree, rel)
-            if data is None:
-                continue
-            tx.write(rel, data)
-        text = message or f"assistant: {record.get('purpose') or '助手的修改'}（{record['id']}）"
-        committed = tx.commit(text)
-    commit = committed.commit or main
-    version_label = _label(root, commit)
-    worktree.collect_state(root, copy)
-    with manager._project_lock(project_id):
-        worktree.reset(root, copy, commit)
-    now = time.time()
-    record = store.update(root, record["id"], state="merged", closed_at=now, conflict=None,
-                          merged={"commit": commit, "version_label": version_label, "at": now},
-                          needs_review=needs_review, checks={**result, "tree": record.get("tree")}) or record
+        merged_tree, result = _merged_tree(manager, project_id, root, record, main, head, choices)
+        commit = _write_merge(manager, project_id, root, record, main, merged_tree, actor=actor, source=source,
+                              message=message)
+        version_label = _label(root, commit or main)
+        worktree.collect_state(root, copy)
+        worktree.reset(root, copy, worktree.rev(root))
+        now = time.time()
+        record = store.update(root, record["id"], state="merged", closed_at=now, conflict=None,
+                              merged={"commit": commit, "version_label": version_label, "at": now,
+                                      **({} if commit else {"noop": True})},
+                              needs_review=needs_review, checks={**result, "tree": record.get("tree")}) or record
     _notify(project_id, "changeset", record)
     _audit(actor, project_id, "changeset.merge", record)
     return {"state": "merged", "commit": commit, "version_label": version_label, "merged_at": _iso(now),
             "record": record}
+
+
+def _merged_tree(manager, project_id: str, root: Path, record: dict, main: str, head: str,
+                 choices: dict[str, str] | None) -> tuple[str, dict]:
+    """合成树：三方合并 → 按实体与文本检测冲突（选了哪一边就取哪一边）→ 受保护路径一律取主线 → 门禁。"""
+    base = _git(root, "merge-base", main, head).strip() or main
+    merged_tree, textual = _merge_tree(root, main, head)
+    conflicted, targets = _conflict_check(manager, root, base, main, head, textual)
+    picks: dict[str, str] = {}
+    if conflicted:
+        chosen = _normalize_choices(conflicted, targets, choices or {})
+        missing = [target for rel, target in zip(conflicted, targets) if rel not in chosen]
+        if missing:
+            store.update(root, record["id"], state="conflict",
+                         conflict={"paths": conflicted, "entities": targets, "main": main, "head": head,
+                                   "at": time.time()})
+            _notify(project_id, "changeset", store.get(root, record["id"]))
+            raise WorkspaceError("合入时检测到冲突，已放进待处理，选好保留哪一边再合入", 409, "merge_conflict",
+                                 {"entities": targets, "inbox_item_id": f"changeset_conflict:{record['id']}"})
+        picks = {rel: (main if keep == "mainline" else head) for rel, keep in chosen.items()}
+    # 资料区、锁文件不采用副本的版本（审查第 1 条）：副本里关了稀疏规则时 git 会把资料当成删了
+    for _status, rel in worktree.diff(root, main, _tree_with(root, merged_tree, picks)):
+        if worktree.is_protected(rel):
+            picks[rel] = main
+    merged_tree = _tree_with(root, merged_tree, picks)
+    try:
+        result = gates.compare(root, worktree.tree_of(root, main), merged_tree)
+    except gates.GateUnavailable as exc:
+        raise WorkspaceError(f"门禁跑不起来：{exc}", 503, "service_unavailable", {"dependency": "gate"}) from exc
+    if result["errors"]:
+        store.update(root, record["id"], checks={**result, "tree": record.get("tree")})
+        raise WorkspaceError(f"合入会带进 {result['errors']} 个新的错误，先修好再确认", 422, "gate_failed",
+                             {"findings": [item for item in result["findings"] if item["level"] == "error"]})
+    return merged_tree, result
+
+
+def _write_merge(manager, project_id: str, root: Path, record: dict, main: str, merged_tree: str, *,
+                 actor: str, source: str | None, message: str | None) -> str | None:
+    """把合成树写成主线上的一个 squash 提交（经写入事务，trailer 在这个提交上）；和主线一样时不写，返回 None。
+
+    写入意图标成整片回滚（审查第 6 条）：写到一半崩溃，启动恢复把这些路径回到主线，不补提交半片。
+    """
+    from ..writepath import ChangeTx, Origin
+
+    changes = worktree.diff(root, main, merged_tree)
+    if not changes:
+        return None
+    owner = str((manager.get_project(project_id) or {}).get("owner") or "") or actor
+    origin_source = source or ("autobuild" if record.get("source") == "autobuild" else "agent")
+    origin = Origin(origin_source, owner, changeset=record["id"], node=record.get("node_trailer"))
+    with ChangeTx(manager, project_id, origin, summary=f"确认生效 {record['id']}", expected_head=main,
+                  rollback_on_crash=True) as tx:
+        for status, rel in changes:
+            if status == "D":
+                tx.remove(rel)
+                continue
+            data = worktree.read_blob(root, merged_tree, rel)
+            if data is not None:
+                tx.write(rel, data)
+        committed = tx.commit(message or f"assistant: {record.get('purpose') or '助手的修改'}（{record['id']}）")
+    return committed.commit or None
 
 
 def _normalize_choices(paths: list[str], targets: list[dict], choices: dict[str, str]) -> dict[str, str]:
@@ -679,12 +711,14 @@ def resolve(manager, project_id: str, changeset_id: str, choices: list[dict], *,
 
 def discard(manager, project_id: str, changeset_id: str, *, actor: str) -> dict:
     """撤回这一轮（CS-05）：副本分支与副本重置到主线，主线不受影响。"""
-    record = _require_open(manager, project_id, changeset_id)
     root = manager.project_root(project_id)
-    copy = existing_copy(root)
     with manager._project_lock(project_id):
+        record = _require_open(manager, project_id, changeset_id)  # 锁里重读：确认生效可能刚做完（审查第 5 条）
+        copy = existing_copy(root)
         if copy is not None:
             worktree.reset(root, copy)
+            # 这一轮的命令锁与写入范围一起清掉，守卫与节点状态不再按它算（审查第 9 条）
+            worktree.clear_run_state(copy)
         record = store.update(root, record["id"], state="discarded", closed_at=time.time(), conflict=None) or record
     _notify(project_id, "changeset", record)
     _audit(actor, project_id, "changeset.discard", record)
@@ -708,21 +742,18 @@ def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, so
     if record.get("reverted"):
         raise WorkspaceError("这个变更集已经撤回过", 409, "changeset_closed", {"state": "reverted"})
     parent = f"{commit}^"
-    paths = worktree.diff(root, parent, commit)
-    with ChangeTx(manager, project_id, Origin(source, actor), summary=f"撤回 {record['id']}") as tx:
+    paths = [(status, rel) for status, rel in worktree.diff(root, parent, commit) if not _derived(rel)]
+    with ChangeTx(manager, project_id, Origin(source, actor), summary=f"撤回 {record['id']}",
+                  rollback_on_crash=True) as tx:
         later = {rel for _status, rel in worktree.diff(root, commit, tx.base_head)}
         model = _model(root)
         clashes = []
         for _status, rel in paths:
-            if rel not in later:
-                continue
-            entry = model.entry_key(rel)
-            if entry and not entity_diff.entity_touched(model, entry.partition(":")[0],
-                                                        worktree.read_blob(root, commit, rel),
-                                                        worktree.read_blob(root, tx.base_head, rel)):
-                continue
-            kind, _, key = (entry or f"file:{rel}").partition(":")
-            clashes.append(_entry_ref(kind, key))
+            # 合入之后这个文件又被改过（哪怕只是标题、空行）：反向提交会把后来的修改一起盖掉，不撤（审查第 17 条）
+            if rel in later and worktree.read_blob(root, commit, rel) != worktree.read_blob(root, tx.base_head, rel):
+                entry = model.entry_key(rel)
+                kind, _, key = (entry or f"file:{rel}").partition(":")
+                clashes.append(_entry_ref(kind, key))
         if clashes:
             raise WorkspaceError("合入之后这些条目又被改过，不能单独撤回", 409, "merge_conflict",
                                  {"entities": clashes, "inbox_item_id": None})
@@ -732,12 +763,64 @@ def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, so
                 tx.remove(rel)
             else:
                 tx.write(rel, data)
+        # 派生文件（index.md、脚本描述符）不按旧版本恢复：写入事务按撤回后的条目重新生成
         result = tx.commit(f"revert: 撤回 {record['id']}（{record.get('purpose') or '助手的修改'}）")
     new = result.commit or tx.base_head
     label = _label(root, new)
     store.update(root, record["id"], reverted={"commit": new, "version_label": label, "at": time.time()})
     _notify(project_id, "changeset", store.get(root, record["id"]))
     return {"commit": new, "version_label": label}
+
+
+def _derived(rel: str) -> bool:
+    """派生文件：目录的 index.md、脚本的描述符（由 .py 生成）。"""
+    from ...services.workspace.layout import _is_script_descriptor
+
+    return Path(rel).name.lower() == "index.md" or _is_script_descriptor(Path(rel))
+
+
+def reconcile_merged(manager, root: Path) -> str | None:
+    """启动时核对（审查第 6 条）：主线上已经有这个变更集的合入提交（`Onto-Changeset`），记录却还没关——崩在
+    提交之后、记 merged 之前。补记 merged、把回执带回、副本重置到主线。返回补记的变更集编号。"""
+    record = store.current(root)
+    if record is None:
+        return None
+    out = _run_git(root, ("log", "--first-parent", "-50", "--format=%H%x1f%B%x1e")).stdout
+    for chunk in out.split("\x1e"):
+        commit, _, body = chunk.strip("\n").partition("\x1f")
+        if commit and f"Onto-Changeset: {record['id']}" in body:
+            copy = existing_copy(root)
+            if copy is not None:
+                worktree.collect_state(root, copy)
+                worktree.reset(root, copy, worktree.rev(root))
+            now = time.time()
+            store.update(root, record["id"], state="merged", closed_at=now, conflict=None,
+                         merged={"commit": commit, "version_label": _label(root, commit), "at": now})
+            _log.warning("项目 %s 的变更集 %s 已合入主线但没记下，启动时补记", root.name, record["id"])
+            return record["id"]
+    return None
+
+
+def startup_repair(manager) -> dict | None:
+    """启动恢复步骤 changeset_copies：核对副本（worktree.repair_all）、补记已合入的变更集、清掉副本里上次留下的
+    命令锁与写入范围（启动时没有命令在跑，审查第 9 条）。"""
+    report = worktree.repair_all(manager)
+    reconciled = []
+    for root in manager._project_dirs():
+        try:
+            with manager._project_lock(root.name):
+                if reconcile_merged(manager, root):
+                    reconciled.append(root.name)
+                copy = existing_copy(root)
+                if copy is not None:
+                    worktree.clear_run_state(copy)
+        except Exception:  # noqa: BLE001 - 单个项目核对不了不挡启动
+            _log.warning("项目 %s 的变更集核对失败", root.name, exc_info=True)
+    if reconciled and report is None:
+        report = {"id": "changeset_copies", "title": "助手副本", "result": "cleared", "tone": "fix", "failed": [],
+                  "detail": f"补记了 {len(reconciled)} 个已合入的变更集",
+                  "projects": [{"project_id": name, "count": 1, "paths": []} for name in reconciled]}
+    return report
 
 
 def _audit(actor: str, project_id: str, action: str, record: dict) -> None:

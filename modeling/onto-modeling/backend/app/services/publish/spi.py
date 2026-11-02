@@ -20,7 +20,7 @@ class ReleaseSource:
     tree: Path  # 只读树：渲染只从这里读内容
     meta: dict
     version: str
-    state_root: Path  # 验证回执所在（项目工作区的 .ontology-state，不进 git）
+    state_root: Path  # 项目工作区根目录：验证回执在它的 .ontology-state 下（不进 git），锁定版本的契约库与元模型按它取
     variant: str = "standard"  # standard | graph（图模式变体）
     allow_unbound: bool = False  # 降级发布：只放宽数据绑定
     draft: bool = False  # 求解验证候选包：manifest 标 draft，不是发布

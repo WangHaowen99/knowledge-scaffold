@@ -40,6 +40,10 @@ INTERPRETERS = {"python", "python3", "perl", "node", "ruby", "php", "deno", "bun
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 PREFIX_COMMANDS = {"sudo", "env", "command", "nohup", "time", "nice", "exec", "builtin", "xargs", "timeout", "stdbuf"}
 GIT_PATH_SUBCOMMANDS = {"checkout", "restore", "rm", "clean", "mv"}
+# 改了就能让 resource/ 在助手副本里「被删」的 git 写法（ADR-0046 审查修复）
+GIT_INTERNAL_SUBCOMMANDS = {"sparse-checkout", "worktree"}
+GIT_INTERNAL_FLAGS = ("--skip-worktree", "--no-skip-worktree", "--assume-unchanged", "--no-assume-unchanged")
+GIT_INTERNAL_CONFIG = ("sparse", "excludesfile", "worktreeconfig", "hookspath")
 # 内联代码里出现这些调用才算写（读资料的 python -c 很常见，不能一律拒）
 _CODE_WRITE_RE = re.compile(
     r"open\([^)]*['\"][wax+][bt+]?['\"]|open\([^)]*['\"]\+?>|\.write\(|write_text|write_bytes|unlink|"
@@ -88,6 +92,8 @@ class Call:
     targets: list[Target] = field(default_factory=list)
     code: list[str] = field(default_factory=list)
     command: str = ""
+    # 动 git 内部设置的子命令（稀疏规则、跳过检出标记、worktree、钩子路径）：副本靠它们隔开资料区
+    git_internal: list[str] = field(default_factory=list)
 
 
 # ---- 输入与项目根 ----
@@ -354,10 +360,17 @@ class _Parser:
                 index += 2
                 continue
             index += 1
+        options = rest[:index]
         if index >= len(rest):
             return cwd
         sub = rest[index]
         args = rest[index + 1:]
+        lowered = " ".join([*options, *args]).lower()
+        if (sub in GIT_INTERNAL_SUBCOMMANDS
+                or (sub == "update-index" and any(flag in args for flag in GIT_INTERNAL_FLAGS))
+                or (sub == "config" and any(key in lowered for key in GIT_INTERNAL_CONFIG))
+                or any(key in lowered for key in ("core.sparsecheckout", "core.hookspath"))):
+            self.call.git_internal.append(f"git {sub}")
         if sub not in GIT_PATH_SUBCOMMANDS:
             return cwd
         if "--" in args:
@@ -453,8 +466,14 @@ def _hits(call: Call, protected: list[Path], names: tuple[str, ...]) -> list[str
 
 
 def _resource_dirs(call: Call) -> list[Path]:
-    """资料区：项目根下的 resource/，以及目标路径里出现的任何 resource 目录（同旧守卫口径）。"""
+    """资料区：项目根下的 resource/，以及目标路径里出现的任何 resource 目录（同旧守卫口径）。
+
+    助手副本里 resource 是指向主线工作区的链接：链接后面的真实目录同样受保护（经相对或绝对路径直接写主线资料）。
+    """
     dirs = [call.root / "resource"]
+    real = Path(os.path.realpath(call.root / "resource"))
+    if real != call.root / "resource":
+        dirs.append(real)
     for target in call.targets:
         if target.path is not None and _under(target.path, call.root):
             parts = target.path.relative_to(call.root).parts
@@ -489,6 +508,8 @@ def _toolset_dirs(call: Call) -> list[Path]:
 
 
 def guard_toolset(call: Call) -> str | None:
+    if call.git_internal:
+        return f"不能改版本库的内部设置：{'; '.join(dict.fromkeys(call.git_internal))}。"
     hits = _hits(call, _toolset_dirs(call), (".claude", "CLAUDE.md", ".onto", "assembled", ".git"))
     if not hits:
         return None
@@ -533,12 +554,44 @@ def _active_scope(call: Call) -> tuple[list[str], list[str]] | None:
         return None
     names, patterns = [], []
     for name, spec in commands.items():
+        if not _command_alive(call.root, str(name)):
+            continue  # 命令被打断、引擎换了实例：它的范围不再算数（审查第 9 条）
         allow = spec.get("allow") if isinstance(spec, dict) else None
         if not spec or not isinstance(spec, dict) or not spec.get("node") or not isinstance(allow, list):
             return None
         names.append(str(name))
         patterns += [str(item).replace("**", "*") for item in allow if str(item) not in patterns]
-    return names, patterns
+    return (names, patterns) if names else None
+
+
+def _command_alive(root: Path, command: str) -> bool:
+    """命令的锁还在、持有者还活着：锁记的引擎实例是工作区当前的引擎，或记的进程号还在。"""
+    try:
+        lock = json.loads((root / ".ontology-state" / f"lock-{command}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(lock, dict):
+        return False
+    owner = lock.get("owner")
+    if owner:
+        try:
+            engine = json.loads(root.joinpath(".onto", "run", "engine.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        return isinstance(engine, dict) and owner == f"engine:{engine.get('engine_id')}"
+    pid = lock.get("owner_pid")
+    if pid is None:
+        return True  # 没有持有者信息的旧锁：按还在跑
+    try:
+        pid = int(pid)
+        if pid <= 1:
+            return False
+        os.kill(pid, 0)
+    except (TypeError, ValueError, ProcessLookupError):
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _ontology_kind(call: Call, path: Path, scope: tuple[list[str], list[str]] | None) -> str | None:

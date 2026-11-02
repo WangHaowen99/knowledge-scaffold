@@ -156,8 +156,12 @@ def commit_paths(root: Path, paths: Iterable[str], message: str, values: dict[st
     抛 409 head_moved（契约 2.4），不给定时基于新 HEAD 重做。
     """
     root = Path(root)
-    changed = _changed_paths(root, list(paths))
+    paths = list(paths)
     previous = _head(root)
+    if not paths:
+        # 没有登记路径就是没有改动：空路径交给 git status 等于「全仓」，会把别人没提交的文件扫进来
+        return "", previous, []
+    changed = _changed_paths(root, paths)
     if not changed:
         return "", previous, []
     if expected_head and previous != expected_head:
@@ -229,6 +233,18 @@ def recover_intents(manager) -> dict:
             path.unlink(missing_ok=True)
             dropped += 1
             continue
+        if data.get("rollback"):
+            # 整片写入（确认生效、撤回已合入的变更集）：没提交完就整片回到主线，不补提交半片（审查第 6 条）
+            try:
+                with manager._project_lock(project_id):
+                    _restore_from_head(root, data.get("paths") or [])
+                dropped += 1
+            except Exception as exc:
+                failed.append(project_id)
+                _log.warning("回滚中断的整片写入失败（%s）：%s", project_id, exc)
+                continue
+            path.unlink(missing_ok=True)
+            continue
         try:
             with manager._project_lock(project_id):
                 origin = Origin(data.get("source") or "web", data.get("author") or "")
@@ -258,6 +274,23 @@ def recover_intents(manager) -> dict:
         "id": "write_intents", "title": "中断的写入", "detail": detail, "result": result, "tone": tone,
         "projects": recovered, "failed": failed,
     }
+
+
+def _restore_from_head(root: Path, paths: list[str]) -> None:
+    """这些路径回到 HEAD 的样子：HEAD 里有的取回来，没有的删掉。已经提交了的（崩在提交之后）就是原样。"""
+    root = Path(root)
+    keep, gone = [], []
+    for rel in paths:
+        exists = _run_git(root, ("--literal-pathspecs", "cat-file", "-e", f"HEAD:{rel}")).returncode == 0
+        (keep if exists else gone).append(rel)
+    if keep:
+        _git(root, "--literal-pathspecs", "checkout", "HEAD", "--", *keep)
+    for rel in gone:
+        target = root / rel
+        if target.is_file() or target.is_symlink():
+            target.unlink()
+    if gone:
+        _run_git(root, ("--literal-pathspecs", "reset", "-q", "HEAD", "--", *gone))
 
 
 # ---------------------------------------------------------------------------
@@ -308,13 +341,16 @@ class ChangeTx:
     """
 
     def __init__(self, manager, project_id: str, origin: Origin, *, summary: str = "",
-                 target: ChangeTarget | None = None, expected_head: str | None = None):
+                 target: ChangeTarget | None = None, expected_head: str | None = None,
+                 rollback_on_crash: bool = False):
         self.manager = manager
         self.project_id = project_id
         self.origin = origin
         self.summary = summary
         self._target = target
         self.expected_head = expected_head
+        # 整片写入（确认生效）：崩溃后启动恢复整片回滚，而不是把已落盘的部分补提交
+        self.rollback_on_crash = rollback_on_crash
         self.root: Path | None = None
         self.base_head = ""
         self.result: TxResult | None = None
@@ -377,6 +413,7 @@ class ChangeTx:
             "project_id": self.project_id, "tx": self._tx_id, "source": self.origin.source,
             "author": self.origin.author, "summary": self.summary, "base_head": self.base_head,
             "paths": list(self._paths), "started_at": time.time(),
+            **({"rollback": True, "changeset": self.origin.changeset} if self.rollback_on_crash else {}),
         }
         if self._intent is None:
             self._intent = _intent_path(self.project_id, self._tx_id)
@@ -442,6 +479,8 @@ class ChangeTx:
         for rel in refresh(self.root, self._paths):
             if rel not in self._paths:
                 self._paths.append(rel)
+        if self._intent is not None:
+            self._record_intent()  # 派生文件也记进意图：崩溃回滚时一起回到主线
 
     def _sync_script_descriptors(self) -> None:
         """改了 ontology/scripts/*.py 时同名描述符跟着刷新、进同一个提交。

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -34,6 +35,8 @@ SPARSE_PATTERNS = ("/*", "!/resource/")
 EXCLUDE_FILE = "onto-exclude"
 # 副本里不进 git 的链接（主线的 .gitignore 已排除 .claude、CLAUDE.md、README.md；resource 是稀疏外的目录名）
 EXCLUDES = ("/resource", "/.claude", "/CLAUDE.md", "/README.md")
+# 副本里改不得、合入时也不采用副本版本的路径：资料区是指向主线的链接，锁文件归插件运行时
+PROTECTED = ("resource", ".onto")
 STATE_DIR = ".ontology-state"
 # 建副本、撤回时从主线带过来，合入时带回主线的派生回执（锁、Studio 复核草稿、后端自己管的求解回执不带）
 RECEIPTS = ("research-review.json", "research-inventory.json", "research-baseline.json", "script-verifications.json")
@@ -70,6 +73,12 @@ def main_root(path: Path | None) -> Path | None:
     return path.parent.parent.parent / "workspaces" / path.parent.name
 
 
+def is_protected(rel: str) -> bool:
+    """受保护的路径（资料区、锁文件目录）：副本里的改动不进变更集、合入时一律取主线的版本。"""
+    first = str(rel).replace("\\", "/").lstrip("/").split("/", 1)[0]
+    return first in PROTECTED
+
+
 def project_id_of(path: Path) -> str:
     """副本或主线工作区所属的项目 ID（目录名）。"""
     path = Path(path)
@@ -103,25 +112,30 @@ def _gitdir(copy: Path) -> Path | None:
     return Path(result.stdout.strip()) if result.returncode == 0 and result.stdout.strip() else None
 
 
-def healthy(root: Path) -> bool:
-    """副本在、是本项目仓库登记的 worktree、检出的是副本分支。"""
+def _ours(root: Path) -> str | None:
+    """副本是本项目仓库登记的 worktree 时返回它检出的分支名（分离 HEAD 时为 "HEAD"）；不是时 None。"""
     copy = copy_path(root)
     if not (copy / ".git").is_file():
-        return False
+        return None
     top = _run_git(copy, ("rev-parse", "--show-toplevel", "--git-common-dir", "--abbrev-ref", "HEAD"))
     if top.returncode != 0:
-        return False
+        return None
     lines = top.stdout.strip().splitlines()
     if len(lines) != 3:
-        return False
+        return None
     toplevel, common, branch = lines
     common_dir = Path(common) if os.path.isabs(common) else copy / common
     try:
         same_repo = common_dir.resolve() == (Path(root) / ".git").resolve()
         same_top = Path(toplevel).resolve() == copy.resolve()
     except OSError:
-        return False
-    return same_repo and same_top and branch == BRANCH
+        return None
+    return branch if same_repo and same_top else None
+
+
+def healthy(root: Path) -> bool:
+    """副本在、是本项目仓库登记的 worktree、检出的是副本分支。"""
+    return _ours(root) == BRANCH
 
 
 # ---------------------------------------------------------------------------
@@ -130,14 +144,72 @@ def healthy(root: Path) -> bool:
 
 
 def ensure(root: Path) -> Path:
-    """副本可用就补齐链接后返回；不在或坏了就（接着原分支）重建。调用方持项目锁。"""
+    """副本可用就核对稀疏规则、补齐链接后返回；不在副本分支上就接回去；不在或坏了才（接着原分支）重建。
+    调用方持项目锁。"""
     root = Path(root)
     copy = copy_path(root)
-    if healthy(root):
+    branch = _ours(root)
+    if branch is not None and branch != BRANCH:
+        _back_to_branch(root, copy)
+        branch = _ours(root)
+    if branch == BRANCH:
+        _ensure_sparse(copy)
         _ensure_links(root, copy)
         return copy
     _create(root, copy)
     return copy
+
+
+def _back_to_branch(root: Path, copy: Path) -> None:
+    """副本在别的分支、分离 HEAD、合并或变基到一半：收住改动、接回副本分支，什么都不丢（审查第 2 条）。
+
+    没提交的文件先在当前位置收成一个提交；当前位置包含副本分支就把分支移过去，被副本分支包含就直接切回，
+    两边分叉就切回副本分支再把当前位置合进来——合不上时留一个 `refs/onto/rescued/<时间>` 引用，不丢提交。
+    """
+    for args in (("merge", "--abort"), ("rebase", "--abort"), ("cherry-pick", "--abort"), ("revert", "--abort"),
+                 ("am", "--abort")):
+        _run_git(copy, args)
+    commit_pending(copy, "chore: 收拢副本里没提交的改动")
+    current = rev(copy)
+    branch_head = rev(root, f"refs/heads/{BRANCH}")
+    ancestor = lambda older, newer: _run_git(copy, ("merge-base", "--is-ancestor", older, newer)).returncode == 0  # noqa: E731
+    if not branch_head or (current and ancestor(branch_head, current)):
+        git(copy, "checkout", "-q", "-B", BRANCH, current or "HEAD")
+    elif not current or ancestor(current, branch_head):
+        git(copy, "checkout", "-q", BRANCH)
+    else:
+        rescued = f"refs/onto/rescued/{int(time.time())}"
+        git(copy, "update-ref", rescued, current)
+        git(copy, "checkout", "-q", BRANCH)
+        merged = _run_git(copy, ("merge", "-q", "--no-edit", "--no-ff", "-m", "chore: 接回副本里另一处的提交", current))
+        if merged.returncode != 0:
+            _run_git(copy, ("merge", "--abort"))
+            _log.warning("项目 %s 的副本里另一处的提交接不回副本分支，留在 %s", root.name, rescued)
+    _log.warning("项目 %s 的助手副本不在副本分支上，已接回", root.name)
+
+
+def _ensure_sparse(copy: Path) -> None:
+    """每轮核对：稀疏规则还在、资料条目仍标成不检出（助手关了稀疏时，git 经链接看到资料，会把它们当成删了）。"""
+    enabled = _run_git(copy, ("config", "--worktree", "--get", "core.sparseCheckout")).stdout.strip() == "true"
+    patterns = _run_git(copy, ("sparse-checkout", "list")).stdout.split()
+    listed = _run_git(copy, ("-c", "core.quotePath=false", "ls-files", "-t", "--", "resource")).stdout.splitlines()
+    if enabled and patterns == list(SPARSE_PATTERNS) and all(line.startswith("S ") for line in listed):
+        return
+    link = copy / "resource"
+    target = os.readlink(link) if link.is_symlink() else None
+    if link.is_symlink():
+        link.unlink()  # 不经链接：重设稀疏规则时 git 只看副本自己的目录
+    try:
+        git(copy, "sparse-checkout", "set", "--no-cone", *SPARSE_PATTERNS)
+        git(copy, "config", "--worktree", "sparse.expectFilesOutsideOfPatterns", "true")
+        unmarked = [line[2:] for line in _run_git(copy, ("-c", "core.quotePath=false", "ls-files", "-t", "-z", "--",
+                                                         "resource")).stdout.split("\0") if line and not line.startswith("S ")]
+        if unmarked:
+            git(copy, "--literal-pathspecs", "update-index", "--skip-worktree", "--", *unmarked)
+    finally:
+        if target is not None and not os.path.lexists(link):
+            os.symlink(target, link)
+    _log.warning("助手副本的稀疏规则被改过，已重设：%s", copy)
 
 
 def _create(root: Path, copy: Path) -> None:
@@ -145,12 +217,15 @@ def _create(root: Path, copy: Path) -> None:
         raise WorkspaceError("项目还没有版本库，不能建助手副本", 409, "changeset_unavailable")
     _run_git(root, ("worktree", "prune"))
     if copy.exists() or copy.is_symlink():
-        # 建到一半崩溃、或被人改坏的副本：git 状态已经对不上，留着只会让 worktree add 失败
-        _log.warning("项目 %s 的助手副本不可用，重建：%s", root.name, copy)
+        # 建到一半崩溃、或被人改坏的副本：git 状态已经对不上。挪到旁边留着（里面可能有没提交的东西），不直接删
         if copy.is_symlink() or copy.is_file():
             copy.unlink()
         else:
-            shutil.rmtree(copy, ignore_errors=True)
+            aside = copy.with_name(f"{COPY_NAME}.broken-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}")
+            copy.rename(aside)
+            _log.warning("项目 %s 的助手副本不可用，原目录挪到 %s 后重建", root.name, aside)
+            _prune_broken(copy.parent)
+        _run_git(root, ("worktree", "prune"))
     copy.parent.mkdir(parents=True, exist_ok=True)
     if _branch_exists(root):
         # 接着原分支：上次没确认的改动还在
@@ -168,6 +243,16 @@ def _create(root: Path, copy: Path) -> None:
     _ensure_links(root, copy)
     seed_state(root, copy)
     _share_with_agent(copy)
+
+
+BROKEN_KEEP = 3
+
+
+def _prune_broken(directory: Path) -> None:
+    """挪到旁边的坏副本只留最近几份。"""
+    broken = sorted(path for path in directory.glob(f"{COPY_NAME}.broken-*") if path.is_dir())
+    for path in broken[:-BROKEN_KEEP]:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _link(path: Path, target: str) -> None:
@@ -204,16 +289,20 @@ def _share_with_agent(copy: Path) -> None:
 
 
 def seed_state(root: Path, copy: Path) -> None:
-    """主线上的验收回执带进副本（建副本、撤回之后）。"""
+    """主线上比副本新的验收回执带进副本（建副本、跟上主线、撤回之后）；副本里更新的不被旧的盖掉。"""
     _copy_receipts(Path(root) / STATE_DIR, Path(copy) / STATE_DIR)
 
 
 def collect_state(root: Path, copy: Path) -> list[str]:
-    """合入时把副本里新出的回执带回主线；返回带回的文件名。"""
+    """把副本里更新的回执带回主线（每轮收尾、合入时）；返回带回的文件名。
+
+    回执绑定内容指纹，不随变更集走：只跑了验证、没改文件的一轮也要带回去，否则下一轮就被主线上的旧回执盖掉。
+    """
     return _copy_receipts(Path(copy) / STATE_DIR, Path(root) / STATE_DIR)
 
 
 def _copy_receipts(source: Path, dest: Path) -> list[str]:
+    """只拷比目标新的（按修改时间，拷时保留时间）：两边来回同步不会拿旧的盖新的。"""
     copied = []
     for name in RECEIPTS:
         src = source / name
@@ -222,16 +311,55 @@ def _copy_receipts(source: Path, dest: Path) -> list[str]:
         target = dest / name
         try:
             data = src.read_bytes()
-            if target.is_file() and not target.is_symlink() and target.read_bytes() == data:
-                continue
+            if target.is_file() and not target.is_symlink():
+                if target.read_bytes() == data or target.stat().st_mtime_ns >= src.stat().st_mtime_ns:
+                    continue
             dest.mkdir(parents=True, exist_ok=True)
             tmp = target.with_name(f".{name}.copy-tmp")
             tmp.write_bytes(data)
+            stat = src.stat()
+            os.utime(tmp, ns=(stat.st_atime_ns, stat.st_mtime_ns))
             os.replace(tmp, target)
             copied.append(name)
         except OSError:
             _log.warning("带回执失败：%s → %s", src, target)
     return copied
+
+
+RUN_STATE = (".onto/run/active.json",)
+
+
+def clear_run_state(copy: Path, commands: list[str] | None = None) -> None:
+    """撤回、放弃、启动恢复时：副本里留下的命令锁与写入范围（`.onto/run/active.json`）一起清掉（审查第 9 条）。
+
+    commands 给出时只清这几条命令的；否则全清。
+    """
+    copy = Path(copy)
+    state = copy / STATE_DIR
+    if commands is None:
+        for lock in state.glob("lock-*.json") if state.is_dir() else []:
+            lock.unlink(missing_ok=True)
+        (copy / RUN_STATE[0]).unlink(missing_ok=True)
+        return
+    for command in commands:
+        (state / f"lock-{command}.json").unlink(missing_ok=True)
+    active = copy / RUN_STATE[0]
+    try:
+        data = json.loads(active.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    entries = data.get("commands") if isinstance(data, dict) else None
+    if not isinstance(entries, dict):
+        active.unlink(missing_ok=True)
+        return
+    for command in commands:
+        entries.pop(command, None)
+    if entries:
+        tmp = active.with_name(".active.clear.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, active)
+    else:
+        active.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +379,33 @@ def snapshot(copy: Path) -> str:
             shutil.copyfile(gitdir / "index", index)
         env = {**os.environ, "GIT_INDEX_FILE": str(index)}
         git(copy, "add", "-A", env=env)
+        _keep_protected(copy, env)
         return git(copy, "write-tree", env=env).strip()
+
+
+def _keep_protected(copy: Path, env: dict | None, *, mark_skip: bool = False) -> None:
+    """受保护目录在索引里恢复成 HEAD 的样子（`git add -A` 之后调）：资料区是链接，稀疏规则被关时 git 会把链接
+    后面的资料当成删了；锁文件归插件运行时。mark_skip：真实索引里资料条目重新标成不检出（审查第 1 条）。"""
+    import subprocess
+
+    base = ["git", "-c", "core.hooksPath=/dev/null"]
+    run_env = env or None
+    listed = subprocess.run([*base, "ls-tree", "-r", "-z", "HEAD", "--", *PROTECTED], cwd=copy, capture_output=True,
+                            env=run_env, timeout=60)
+    head_paths = {entry.split(b"\t", 1)[1] for entry in listed.stdout.split(b"\0") if b"\t" in entry}
+    indexed = subprocess.run([*base, "ls-files", "-z", "--", *PROTECTED], cwd=copy, capture_output=True, env=run_env,
+                             timeout=60)
+    extra = [path for path in indexed.stdout.split(b"\0") if path and path not in head_paths]
+    if extra:
+        subprocess.run([*base, "update-index", "-z", "--force-remove", "--stdin"], cwd=copy, input=b"\0".join(extra),
+                       capture_output=True, env=run_env, timeout=60)
+    if listed.stdout:
+        subprocess.run([*base, "update-index", "-z", "--index-info"], cwd=copy, input=listed.stdout,
+                       capture_output=True, env=run_env, timeout=60)
+    resources = [path for path in head_paths if path.startswith(b"resource/")]
+    if mark_skip and resources:
+        subprocess.run([*base, "update-index", "-z", "--skip-worktree", "--stdin"], cwd=copy,
+                       input=b"\0".join(resources), capture_output=True, env=run_env, timeout=60)
 
 
 def merge_base(root: Path, copy: Path) -> str:
@@ -324,6 +478,7 @@ def commit_pending(copy: Path, message: str) -> str:
     if not dirty(copy):
         return ""
     git(copy, "add", "-A")
+    _keep_protected(copy, None, mark_skip=True)
     if not _run_git(copy, ("diff", "--cached", "--quiet")).returncode:
         return ""
     git(copy, "commit", "-q", "-m", message)
@@ -390,11 +545,16 @@ def repair(root: Path) -> str | None:
             _run_git(root, ("worktree", "prune"))
             done.append("清登记")
         return "、".join(done) or None
+    branch = _ours(root)
+    if branch is not None and branch != BRANCH:
+        _back_to_branch(root, copy)
+        done.append("接回副本分支")
     if not healthy(root):
         if copy.exists() or _branch_exists(root):
             _create(root, copy)
             done.append("重建副本")
     else:
+        _ensure_sparse(copy)
         before = {name: os.readlink(copy / name) if (copy / name).is_symlink() else None
                   for name in (".claude", "resource", "CLAUDE.md", "README.md")}
         _ensure_links(root, copy)

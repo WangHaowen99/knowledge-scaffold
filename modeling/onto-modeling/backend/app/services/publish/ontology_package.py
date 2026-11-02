@@ -128,7 +128,7 @@ def _contract_modules(src: ReleaseSource):
     """本项目锁定版本的脚本契约、描述符与入参形态实现；项目没有装配目录时用镜像版本。"""
     from ..packs import contracts
 
-    project_root = Path(src.state_root).parent
+    project_root = Path(src.state_root)
     return (
         contracts.module_for(project_root, "script_contract"),
         contracts.module_for(project_root, "script_descriptor"),
@@ -173,7 +173,7 @@ class OntologyPackageAdapter:
 
     def render(self, src: ReleaseSource, out: Path) -> Manifest:
         # 链接解析、关系端点按本项目锁定版本的元模型（B3 合并遗留：原来一律用镜像版本）
-        with metamodel.using(Path(src.state_root).parent):
+        with metamodel.using(Path(src.state_root)):
             return self._render(src, out)
 
     def _render(self, src: ReleaseSource, out: Path) -> Manifest:
