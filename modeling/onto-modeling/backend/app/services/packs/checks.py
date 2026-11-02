@@ -195,13 +195,8 @@ def _syntax_errors(directory: Path, files: list[str]) -> list[str]:
 
 
 def _touches_protected(pattern: str) -> bool:
-    # 只去掉开头的 ./（原来 lstrip("./") 会把 .onto、.claude 的点也去掉，受保护的点目录永远查不出来）
-    text = str(pattern)
-    while text.startswith("./"):
-        text = text[2:]
-    first = Path(text.lstrip("/")).parts[:1]
-    return bool(first) and any(fnmatch.fnmatch(first[0], protected) or protected == first[0]
-                               for protected in mf.PROTECTED_DIRS)
+    """按规范化后的完整路径判：带 `..`、绝对路径，或第一段是受保护目录（含 .git）都算碰。"""
+    return mf.protected_path(str(pattern))
 
 
 def _declared_nodes(directory: Path, manifest: Manifest) -> tuple[list[tuple[str, dict]], list[str]]:
@@ -244,6 +239,24 @@ def _scope_patterns(node: dict) -> list[str]:
     return out
 
 
+def _output_paths(node: dict) -> list[tuple[str, str]]:
+    out = []
+    if isinstance(node.get("script"), dict) and node["script"].get("output") is not None:
+        out.append(("script.output", str(node["script"]["output"])))
+    if isinstance(node.get("decision"), dict) and node["decision"].get("record") is not None:
+        out.append(("decision.record", str(node["decision"]["record"])))
+    return out
+
+
+def in_scope(target: str, patterns: list[str]) -> bool:
+    """规范化后的路径不碰受保护目录，并且匹配某个（规范化后的）写入范围。"""
+    rel = mf.workspace_rel(target)
+    if rel is None or mf.protected_path(rel):
+        return False
+    return any(fnmatch.fnmatch(rel, normalized) for normalized in
+               (mf.workspace_rel(pattern) for pattern in patterns) if normalized and not mf.protected_path(normalized))
+
+
 def _node_problems(directory: Path, manifest: Manifest) -> tuple[list[str], list[str]]:
     """节点声明：写入范围不碰受保护目录；入口命令确实存在（详设 6.9）。"""
     protected, missing_commands = [], []
@@ -252,6 +265,10 @@ def _node_problems(directory: Path, manifest: Manifest) -> tuple[list[str], list
     missing_commands += broken
     for rel, node in nodes:
         protected += [f"{rel}: {pattern}" for pattern in _scope_patterns(node) if _touches_protected(pattern)]
+        # 脚本节点的输出、人工节点的记录：规范化后要落在本节点的写入范围里（所有类型的包，审查第 1 条）
+        for label, target in _output_paths(node):
+            if not in_scope(target, _scope_patterns(node)):
+                protected.append(f"{rel}: {label} {target} 不在节点的写入范围里，或碰到受保护目录")
         entry = (node.get("entry") or {}).get("command")
         if entry and entry.split()[0] not in commands:
             missing_commands.append(f"{rel}: {entry}")
@@ -339,17 +356,16 @@ def _node_pack_problems(directory: Path, manifest: Manifest, files: list[str],
             script = node.get("script") if isinstance(node.get("script"), dict) else {}
             if str(script.get("name") or "") not in own_scripts:
                 problems.append(f"{where}: 脚本节点要声明本包里的脚本 script.name")
-            output = str(script.get("output") or "")
-            if not output or not any(fnmatch.fnmatch(output, pattern) for pattern in _scope_patterns(node)):
-                problems.append(f"{where}: 脚本节点的 script.output 要落在 produces 里")
+            if not str(script.get("output") or ""):
+                problems.append(f"{where}: 脚本节点要声明 script.output（落在 produces 里）")
         elif kind == "human":
             decision = node.get("decision") if isinstance(node.get("decision"), dict) else {}
             options = [item for item in decision.get("options") or [] if isinstance(item, dict) and item.get("id")]
             record = str(decision.get("record") or "")
             if not decision.get("title") or len(options) < 2:
                 problems.append(f"{where}: 人工节点要有 decision.title 和至少两个选项")
-            if not record or not any(fnmatch.fnmatch(record, pattern) for pattern in _scope_patterns(node)):
-                problems.append(f"{where}: 人工节点的 decision.record 要落在 produces 里")
+            if not record:
+                problems.append(f"{where}: 人工节点要声明 decision.record（落在 produces 里）")
         elif kind == "external":
             provider = node.get("provider") if isinstance(node.get("provider"), dict) else {}
             if not provider.get("kind"):

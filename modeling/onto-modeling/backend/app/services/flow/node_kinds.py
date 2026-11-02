@@ -79,10 +79,31 @@ def pack_nodes(repository, name: str, version: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+# 脚本节点的输入可以读资料，读不了内核与 git 的目录
+_INPUT_FORBIDDEN = (".git", ".claude", ".onto", ".ontology-state")
+
+
+def _target(node: dict, value: str, label: str) -> str:
+    """节点要写的路径（脚本输出、决策记录）：规范化后不碰受保护目录、落在节点自己的写入范围里，否则 403
+    （审查第 1 条：静态检查之外的第二道，绕过检查入库的包也写不了 `.git/config`、锁文件）。"""
+    from ..packs import checks
+    from ..packs import manifest as mf
+
+    rel = mf.workspace_rel(value)
+    if not value or rel is None or not checks.in_scope(rel, checks._scope_patterns(node)):
+        raise NodeRunError("path_forbidden", f"{label} 不在节点声明的写入范围里", 403, {"path": value})
+    return rel
+
+
 def _inputs(root: Path, patterns: list[str]) -> list[str]:
+    from ..packs import manifest as mf
+
     found: list[str] = []
     for pattern in patterns:
-        for path in sorted(Path(root).glob(str(pattern))):
+        rel = mf.workspace_rel(str(pattern))
+        if rel is None or rel.split("/", 1)[0] in _INPUT_FORBIDDEN:
+            raise NodeRunError("path_forbidden", "脚本节点的输入不能读工作区外或内核目录", 403, {"path": str(pattern)})
+        for path in sorted(Path(root).glob(rel)):
             rel = path.relative_to(root).as_posix()
             if not path.is_file() or path.is_symlink() or any(part.startswith(".") for part in Path(rel).parts):
                 continue
@@ -120,8 +141,7 @@ def run_script(manager, project_id: str, node: dict, *, actor: str) -> dict:
     script = verified_file(root, f"scripts/{name}") if name else None
     if script is None:
         raise NodeRunError("node_run_failed", "脚本不在本项目的装配目录里，或内容被改过", 409, {"script": name})
-    if not output:
-        raise NodeRunError("node_run_failed", "脚本节点没有声明输出", 409)
+    output = _target(node, output, "script.output")
     client = _client()
     args = [str(item) for item in spec.get("args") or []]
     try:
@@ -202,10 +222,11 @@ def ask(project_id: str, root: Path, node: dict, conversation_id: str, append) -
         for question_id, item in data.items():
             if item.get("node_id") == node["id"] and item.get("state") == "open":
                 return item["question"]
+        record = _target(node, str((node.get("decision") or {}).get("record") or ""), "decision.record")
         question_id = f"node-{uuid.uuid4().hex[:10]}"
         question = _question(question_id, node, conversation_id)
         data[question_id] = {"node_id": node["id"], "state": "open", "question": question, "asked_at": time.time(),
-                             "record": str((node.get("decision") or {}).get("record") or ""),
+                             "record": record,
                              "trailer": node_trailer(node), "title": str(node.get("title") or "")}
         _save(root, data)
     append(conversation_id, {"type": "question_asked", "payload": question})
@@ -239,9 +260,14 @@ def answer(manager, project_id: str, question_id: str, body: dict, *, actor: str
         note = str(body.get("custom_text") or "").strip()
         text = (f"# {item['title']}\n\n- 结论：{chosen['label']}\n- 记录人：{actor or 'local'}\n"
                 f"- 时间：{time.strftime('%Y-%m-%d %H:%M', time.localtime(now))}\n" + (f"\n{note}\n" if note else ""))
+        from ..packs import manifest as mf
+
+        record_rel = mf.workspace_rel(item["record"])
+        if record_rel is None or mf.protected_path(record_rel):
+            raise NodeRunError("path_forbidden", "decision.record 不在节点声明的写入范围里", 403, {"path": item["record"]})
         with ChangeTx(manager, project_id, Origin("web", actor, node=item.get("trailer")),
                       summary=f"记录「{item['title']}」") as tx:
-            tx.write(item["record"], text)
+            tx.write(record_rel, text)
             tx.commit(f"web: 记录「{item['title']}」：{chosen['label']}")
         data = _load(root)
         data[question_id] = {**item, "state": "answered", "answered_at": now, "answer": {"option_id": option_id}}

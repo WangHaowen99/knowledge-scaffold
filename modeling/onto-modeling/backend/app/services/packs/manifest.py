@@ -372,6 +372,27 @@ def parse(data: dict) -> Manifest:
     )
 
 
+def workspace_rel(value) -> str | None:
+    """包声明的工作区路径（或通配）规范化成相对路径；绝对路径、带 `..`、带反斜杠或控制字符的一律 None。
+
+    节点的 produces / writes、脚本输出、决策记录都先过它，再按规范化后的完整路径判受保护目录、匹配写入范围
+    （审查第 1 条：`ext/../.git/config`、`reports/x/../../.onto/packs.lock` 这类写法原来能越过检查）。"""
+    if not isinstance(value, str) or not value.strip() or "\\" in value or any(ord(ch) < 32 for ch in value):
+        return None
+    if value.startswith("/") or ":" in value.split("/", 1)[0]:
+        return None
+    parts = [part for part in value.split("/") if part not in ("", ".")]
+    if not parts or ".." in parts:
+        return None
+    return "/".join(parts)
+
+
+def protected_path(value) -> bool:
+    """规范化不了，或第一段是受保护目录（含 .git）。"""
+    rel = workspace_rel(value)
+    return rel is None or rel.split("/", 1)[0] in PROTECTED_DIRS
+
+
 def _inside_pack(value) -> bool:
     """包内的相对路径：非空字符串，不以 / 或 \\ 开头、不带盘符，没有 .. 这一级。"""
     if not isinstance(value, str) or not value.strip():

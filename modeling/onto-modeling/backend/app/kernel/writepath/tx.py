@@ -414,7 +414,11 @@ class ChangeTx:
 
     def resolve(self, rel_path: str) -> tuple[Path, str]:
         target = self.manager._resolve_inside(self.root, rel_path)
-        return target, target.relative_to(self.root.resolve()).as_posix()
+        rel = target.relative_to(self.root.resolve()).as_posix()
+        # git 自己的目录一律不经写入事务改（审查第 1 条）：.git/config 的 fsmonitor、hooks 会在后端主机上执行命令
+        if rel == ".git" or rel.startswith(".git/"):
+            raise WorkspaceError("该路径不允许写入", 403, "path_forbidden", {"path": rel_path})
+        return target, rel
 
     def check_revision(self, rel_path: str, base_revision: str, details: Callable[[], dict] | None = None) -> None:
         """base_revision 为空不检查（新建或明确覆盖，契约 1.7）；文件不存在也不检查。"""
