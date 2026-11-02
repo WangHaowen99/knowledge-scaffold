@@ -656,8 +656,6 @@ export default function WorkbenchPage({ route }) {
         <div className="menu wb-pop wb-more-menu">
           <div className="mi" onClick={() => { setMenu(null); setRestart(true); }}><Icon name="refresh" size={14} /><span>重启会话</span><span className="k">按最新配置重连</span></div>
           <div className="mi" onClick={() => setMenu('ctx')}><Icon name="gauge" size={14} /><span>上下文与用量</span></div>
-          <hr />
-          <div className="mi" onClick={() => { setMenu(null); navigate(pagePath('chat-states', pid)); }}><Icon name="list" size={14} /><span>对话卡片与状态</span></div>
         </div>
       ) : null}
     </div>

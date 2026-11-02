@@ -16,7 +16,7 @@ export const PAGE_TITLES = {
   incremental: '增量更新', 'wb-materials': '资料分析', 'wb-blueprint': '切片规划', flowchart: '流程图', 'plugin-detail': '插件详情', 'plugin-upload': '上传与审核插件', sys: '系统设置',
   'ops-obs': '可观测', 'ops-ctl': '运维管控与健康', 'ops-users': '用户、审计与回收站', 'l4-run': '自主构建', 'proj-settings': '项目设置', scenarios: '场景走查',
   knowledge: '知识沉淀', scripts: '代码生成', plugins: '插件中心', me: '个人设置', ops: '运维中心', projects: '我的项目',
-  create: '新建项目', import: '导入项目', 'chat-states': '对话卡片与状态',
+  create: '新建项目', import: '导入项目',
 };
 
 function staticItems({ projectId, inboxCount, hasPlugin, hasSubpage, user }) {

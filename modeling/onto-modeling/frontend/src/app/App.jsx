@@ -24,7 +24,10 @@ const ProjectsPage = lazy(() => import('../pages/projects/ProjectsPage.jsx'));
 const CreatePage = lazy(() => import('../pages/create/CreatePage.jsx'));
 const ImportPage = lazy(() => import('../pages/import/ImportPage.jsx'));
 const WorkbenchPage = lazy(() => import('../pages/workbench/WorkbenchPage.jsx'));
-const ChatStatesPage = lazy(() => import('../pages/chat-states/ChatStatesPage.jsx'));
+// 对话卡片与状态：设计稿给评审看的卡片目录，不是产品页面（R6）。只在开发与 mock 构建里注册，生产构建摇掉
+const DEV_PAGES = import.meta.env.DEV || __API_MOCK__
+  ? { 'chat-states': lazy(() => import('../pages/chat-states/ChatStatesPage.jsx')) }
+  : {};
 // 已实现的页面；其余页面先显示「后续版本接入」
 const ENTRY_PAGES = { projects: ProjectsPage, create: CreatePage, import: ImportPage };
 // Studio（含 WebGL 图谱）、报告、待处理按路由拆包
@@ -63,7 +66,6 @@ const PROJECT_PAGES = {
   'l4-run': WorkbenchPage,
   flowchart: WorkbenchPage,
   incremental: WorkbenchPage,
-  'chat-states': ChatStatesPage,
   inbox: InboxPage,
   studio: StudioPage,
   'studio-table': StudioTablePage,
@@ -78,6 +80,7 @@ const PROJECT_PAGES = {
   snapshots: SnapshotsPage,
   schema: SchemaPage,
   'proj-settings': ProjectSettingsPage,
+  ...DEV_PAGES,
 };
 
 function Pending({ project, page, projectId }) {
