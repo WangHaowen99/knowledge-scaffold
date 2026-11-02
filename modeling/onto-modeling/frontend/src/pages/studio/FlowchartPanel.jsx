@@ -1,4 +1,4 @@
-// 流程图条目（图示包的插件产物 diagram.flowchart）：预览缩略、打开编辑（与工作台流程图卡同一个弹窗）、
+// 流程图条目（图示包的插件产物 diagram.flowchart）：预览缩略、打开编辑（图示包自带的编辑器，与工作台流程图卡同一个）、
 // 概况、关联条目、删除（AR-07）、校验（AR-08）；详情走 AR-03
 import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
@@ -8,7 +8,7 @@ import { Button, Chip, Icon, KV, Modal, St } from '../../ui/index.jsx';
 import { FlowPreview, LockMark, askAssistant, useLockCopy } from './parts.jsx';
 import { KIND_META, flowchartNodeSummary, hhmm, kindLabel } from './studioModel.js';
 
-const FlowchartDialog = lazy(() => import('../flowchart/FlowchartDialog.jsx'));
+const ArtifactOpener = lazy(() => import('../../components/packs/ArtifactOpener.jsx'));
 const TYPE = 'diagram.flowchart';
 const WHO = { assistant: '助手', web: '你在 Studio', studio: '你在 Studio', mcp: 'MCP 客户端', autobuild: '自主构建' };
 
@@ -123,7 +123,7 @@ export default function FlowchartPanel({ row, onDeleted, onChanged }) {
       />
       {editing ? (
         <Suspense fallback={null}>
-          <FlowchartDialog artifact={ref} onClose={() => { setEditing(false); load(); onChanged?.(); }} />
+          <ArtifactOpener artifact={ref} onClose={() => { setEditing(false); load(); onChanged?.(); }} />
         </Suspense>
       ) : null}
     </div>

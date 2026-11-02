@@ -1,5 +1,5 @@
-// 流程图弹窗的纯逻辑：打开时选中哪个节点、锁定条怎么说、工作台里打开哪一张
-import { lockState } from '../../state/readonly.js';
+// 流程图弹窗的纯逻辑：打开时选中哪个节点、锁定条怎么说
+import { lockState } from '@onto/state/readonly.js';
 
 // 打开时先选中口径待定的节点：它是这张图里最需要人看的地方
 export function initialSelection(model) {
@@ -29,17 +29,4 @@ export function lockBarText(lock, info) {
     default:
       return null;
   }
-}
-
-/**
- * flowchart 页没带 ?key= 时打开哪一张：对话里最近一张流程图卡的那张图。
- * state 是对话状态机（state/conversation.js）的状态；没有流程图卡返回 null（由弹窗取 AR-02 的第一张）。
- */
-export function latestFlowchartArtifact(state) {
-  const order = state?.order || [];
-  for (let i = order.length - 1; i >= 0; i -= 1) {
-    const it = state.items[order[i]];
-    if (it?.kind === 'card' && it.card?.card_type === 'flowchart' && it.card.artifact?.key) return it.card.artifact;
-  }
-  return null;
 }

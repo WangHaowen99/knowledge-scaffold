@@ -1,8 +1,8 @@
 // 流程图标准编辑器（设计稿 fc）：工具条 + 画布 + 属性面板。编辑会话由宿主（流程图弹窗）持有，
 // 保存、校验、切换 drawio 高级编辑也由宿主决定；这里只管编辑。
 import { useEffect, useState } from 'react';
-import { toast } from '../../app/toast.jsx';
-import { Button, Icon, Seg, cx } from '../../ui/index.jsx';
+import { toast } from '@onto/app/toast.jsx';
+import { Button, Icon, Seg, cx } from '@onto/ui/index.jsx';
 import FlowchartCanvas from './FlowchartCanvas.jsx';
 import FlowchartProps from './FlowchartProps.jsx';
 import { nextNodePosition } from './flowchartModel.js';

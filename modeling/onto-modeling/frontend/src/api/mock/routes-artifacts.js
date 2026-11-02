@@ -1,6 +1,6 @@
 // 3.17 插件产物（AR-01～AR-09），F2 只有图示包的流程图 diagram.flowchart；另导出阶段 flowchart（设计稿 flowchart 页背后那段对话）。
 // 演示参数：?mock=fc:conflict 第一次保存返回 409（模拟助手刚改过这张图）；?mock=fc:compressed 「超量处理流程」是压缩存储（自动回退 drawio 高级编辑）。
-import { checkFlowchart, normalizeModel, summarize } from '../../components/flowchart/flowchartModel.js';
+import { checkFlowchart, normalizeModel, summarize } from '@packs/diagram/ui/flowchart/flowchartModel.js';
 import { isLocked } from '../../state/readonly.js';
 import * as F from './fixtures.js';
 import { FLOWCHARTS, entryRef } from './scenario.js';
@@ -30,8 +30,12 @@ export const FLOWCHART_TYPE = {
   status: { field: 'state', map: { draft: '草稿', confirmed: '已确认' } },
   view: {
     list: { columns: ['title', 'operation', 'summary', 'state'], filters: ['state'] },
-    detail: { layout: 'custom', side: [], component: 'flowchart' },
-    card: { title: 'title', chips: ['state'] },
+    // 流程图编辑器是图示包自带的（ADR-0055）：官方包随平台编译；对话里的卡片选平台的流程图卡组件
+    detail: {
+      layout: 'custom', side: [],
+      editor: { id: 'flowchart', title: '流程图编辑器', pack: 'diagram', version: '0.5.0', mode: 'bundled', ui_api: '', entry: 'ui/flowchart/index.jsx' },
+    },
+    card: { component: 'flowchart', title: 'title', chips: ['state'] },
   },
   studio: true,
 };
@@ -313,7 +317,7 @@ export function register(ctx) {
     // drawio 高级编辑交来的是 XML：服务端（图示包）解析成模型；mock 在浏览器里用 DOMParser 解析明文 XML
     if (content.drawio_xml && rec.content.storage !== 'drawio_compressed') {
       try {
-        const { drawioToModel } = await import('../../components/flowchart/drawioConvert.js');
+        const { drawioToModel } = await import('@packs/diagram/ui/flowchart/drawioConvert.js');
         next = normalizeModel(drawioToModel(content.drawio_xml, next));
       } catch { /* 解析不了就按模型保存 */ }
     }

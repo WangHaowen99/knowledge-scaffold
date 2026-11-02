@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { bindFileTransport, request } from '../src/api/files.js';
-import { isCompressedDrawio, modelToDrawio } from '../src/components/flowchart/drawioConvert.js';
-import { createFlowchartEditorSession, reduceFlowchartEditorSession } from '../src/components/flowchart/flowchartEditorState.js';
+import { isCompressedDrawio, modelToDrawio } from '@packs/diagram/ui/flowchart/drawioConvert.js';
+import { createFlowchartEditorSession, reduceFlowchartEditorSession } from '@packs/diagram/ui/flowchart/flowchartEditorState.js';
 import {
   checkFlowchart, checkSummary, edgeGeometry, edgeTypeFor, fitViewport, nodeSize, normalizeModel, summarize, textToList,
-} from '../src/components/flowchart/flowchartModel.js';
-import { autoLayout } from '../src/components/flowchart/layout.js';
-import { initialSelection, latestFlowchartArtifact, lockBarText } from '../src/pages/flowchart/flowchartDialog.js';
+} from '@packs/diagram/ui/flowchart/flowchartModel.js';
+import { autoLayout } from '@packs/diagram/ui/flowchart/layout.js';
+import { initialSelection, lockBarText } from '@packs/diagram/ui/flowchart/flowchartDialog.js';
+import { latestFlowchartArtifact } from '../src/app/packUi.js';
 
 const n = (id, type, label, x, y, extra = {}) => ({ id, type, label, x, y, ...extra });
 const e = (id, type, from, to, label = '') => ({ id, type, from, to, label, condition: '' });

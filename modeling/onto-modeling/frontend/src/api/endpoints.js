@@ -213,6 +213,7 @@ export function createApi(client) {
     deleteArtifact: (id, type, key, base_revision) => client.del(`${P(id)}/artifacts/${enc(type)}/${enc(key)}`, { base_revision }), // AR-07
     validateArtifact: (id, type, key, body) => client.post(`${P(id)}/artifacts/${enc(type)}/${enc(key)}/validate`, body || {}), // AR-08
     artifactSummary: (id, type, query) => client.get(`${P(id)}/artifacts/${enc(type)}/summary`, { query }), // AR-09
+    openPackUi: (id, name, editor) => client.post(`${P(id)}/packs/${enc(name)}/ui-sessions`, { editor }), // PL-20：上传包编辑器的 iframe 地址
 
     // 3.18 脚本与求解契约
     scripts: (id) => client.get(`${P(id)}/scripts`), // SC-01

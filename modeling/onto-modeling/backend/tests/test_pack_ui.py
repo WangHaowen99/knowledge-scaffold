@@ -356,3 +356,26 @@ def test_session_host_broadcasts_artifact_cards_after_a_turn(env):
     assert [record["type"] for record in sent] == ["workspace_changes", "card"]
     card = sent[1]["payload"]
     assert card["card_type"] == "artifact" and card["artifact"]["key"] == "n2" and card["change"] == "add"
+
+
+def test_builtin_diagram_pack_ships_its_flowchart_editor(tmp_path):
+    """第一个样例：流程图编辑器迁进图示包 ui/flowchart/，随平台编译；视图选平台的流程图卡组件。"""
+    from app import config
+    from app.services.packs import registry
+    from app.services.packs.repository import PackRepository
+
+    builtin.clear_cache()
+    repository = PackRepository(tmp_path / "data")
+    versions = builtin.import_packs(repository, Path(config.ASSETS_DIR))
+    version = versions["diagram"]
+    directory = repository.version_dir("diagram", version)
+    assert (directory / "ui" / "flowchart" / "index.jsx").is_file()
+    view = registry.PackView("diagram", version, repository.manifest("diagram", version), directory,
+                             official=repository.is_builtin("diagram", version))
+    atype = next(item for item in artifact_registry.types_for_pack(view) if item.type == "diagram.flowchart")
+    assert atype.view["card"]["component"] == "flowchart"
+    editor = atype.view["detail"]["editor"]
+    assert editor["mode"] == "bundled" and editor["entry"] == "ui/flowchart/index.jsx" and editor["pack"] == "diagram"
+    _, items = checks.run(directory, official=True)
+    assert _result(items, "ui")[0] == "pass" and _result(items, "frontend")[0] == "pass"
+    builtin.clear_cache()

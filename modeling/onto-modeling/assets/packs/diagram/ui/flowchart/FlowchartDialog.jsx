@@ -1,26 +1,27 @@
-// 流程图编辑弹窗（设计稿 flowchart）：图示包登记的插件产物 diagram.flowchart，经 AR-03 读、AR-05 存（带 base_revision）、AR-08 校验。
+// 流程图编辑弹窗（设计稿 flowchart）：图示包自带的编辑器（ADR-0055，随平台编译），编辑图示包登记的插件产物
+// diagram.flowchart，经 AR-03 读、AR-05 存（带 base_revision）、AR-08 校验。
 // artifact：{type, key, title?}；key 为空时打开 AR-02 的第一张。工作台的流程图卡和 Studio 表格的「打开编辑」打开的是同一个弹窗。
 // 只读两态由写入范围锁（CS-06）决定：助手运行中 → 「回到对话」；修改待确认 → 「去确认」；编辑区变灰、保存禁用。
 import {
   useCallback, useContext, useEffect, useReducer, useRef, useState,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { useApp, useProject } from '../../app/context.js';
-import { navigate, pagePath } from '../../app/router.js';
-import { toast } from '../../app/toast.jsx';
-import { describeConflict, errorText } from '../../api/errors.js';
-import { DrawioEditorFrame, drawioStateText } from '../../components/DrawioView.jsx';
-import FlowchartEditor from '../../components/flowchart/FlowchartEditor.jsx';
-import { FlowchartSvg } from '../../components/flowchart/FlowShapes.jsx';
-import { modelToDrawio } from '../../components/flowchart/drawioConvert.js';
-import { createFlowchartEditorSession, reduceFlowchartEditorSession } from '../../components/flowchart/flowchartEditorState.js';
-import { checkSummary, summarize } from '../../components/flowchart/flowchartModel.js';
-import { isLocked, lockState, readonlyInfo } from '../../state/readonly.js';
+import { useApp, useProject } from '@onto/app/context.js';
+import { navigate, pagePath } from '@onto/app/router.js';
+import { toast } from '@onto/app/toast.jsx';
+import { describeConflict, errorText } from '@onto/api/errors.js';
+import { DrawioEditorFrame, drawioStateText } from '@onto/components/DrawioView.jsx';
+import FlowchartEditor from './FlowchartEditor.jsx';
+import { FlowchartSvg } from './FlowShapes.jsx';
+import { modelToDrawio } from './drawioConvert.js';
+import { createFlowchartEditorSession, reduceFlowchartEditorSession } from './flowchartEditorState.js';
+import { checkSummary, summarize } from './flowchartModel.js';
+import { isLocked, lockState, readonlyInfo } from '@onto/state/readonly.js';
 import {
   Button, Chip, Empty, Icon, Modal, Note, OverlayHostCtx, St, cx,
-} from '../../ui/index.jsx';
+} from '@onto/ui/index.jsx';
 import { initialSelection, lockBarText } from './flowchartDialog.js';
-import '../../styles/flowchart.css';
+import '@onto/styles/flowchart.css';
 
 const TYPE = 'diagram.flowchart';
 const PACK_LABEL = '图示';

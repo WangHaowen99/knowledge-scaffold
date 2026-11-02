@@ -3,7 +3,7 @@
 import { ConnectionMode, Handle, Position, ReactFlow } from '@xyflow/react';
 import '@xyflow/react/dist/base.css';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { Button, cx } from '../../ui/index.jsx';
+import { Button, cx } from '@onto/ui/index.jsx';
 import { EdgeMarkers, EdgeShape, FlowLegend, NodeShape } from './FlowShapes.jsx';
 import { edgeGeometry, edgeTypeFor, fitViewport, nodeSize } from './flowchartModel.js';
 
