@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .. import config
 from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets, package_mapping
 from ..services import modeling_cleanup, modeling_mcp, package_archive, solver_contract, version_revert
-from ..services.workspace import WorkspaceError, WorkspaceManager, remove_tree
+from ..services.workspace import GOAL_PENDING, WorkspaceError, WorkspaceManager, remove_tree
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 workspaces = WorkspaceManager(config.DATA_DIR, config.ASSETS_DIR)
@@ -30,6 +30,10 @@ class CreateProjectBody(BaseModel):
 
 class RenameBody(BaseModel):
     name: str
+
+
+class GoalBody(BaseModel):
+    background: str | None = None  # 留空 = 按创建时的目标确认；给出 = 用户改写后的新目标
 
 
 class CloneBody(BaseModel):
@@ -313,6 +317,19 @@ def rename_project(project_id: str, body: RenameBody, request: Request):
         return meta
     with workspaces.name_claim(body.name, _name_viewer(request), exclude_id=project_id):
         return workspaces.rename_project(project_id, body.name)
+
+
+@router.put("/{project_id}/goal")
+def confirm_project_goal(project_id: str, body: GoalBody, request: Request):
+    """开始建模前的目标确认卡：确认原目标或提交改写后的目标，之后才允许发起对话。"""
+    ensure_access(project_id, request, write=True)
+    return workspaces.confirm_goal(project_id, body.background)
+
+
+def ensure_goal_confirmed(project_id: str) -> None:
+    """创建时填了目标的项目，须先在确认卡上确认，助手才拿着确认后的目标开始建模。"""
+    if workspaces.get_project(project_id).get("goal_status") == GOAL_PENDING:
+        raise WorkspaceError("请先确认建模目标", 409, "goal_confirmation_required")
 
 
 @router.delete("/{project_id}")

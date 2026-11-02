@@ -345,6 +345,9 @@
 .wb-create .inner { max-width: 780px; margin: 0 auto; padding: var(--s-8) var(--s-7) 56px; }
 .wb-field { margin-bottom: var(--s-6); }
 .wb-field > label { display: block; font-size: var(--t-md); color: var(--c-muted); margin-bottom: var(--s-2); }
+.wb-count-input { position: relative; }
+.wb-count-input textarea { padding-bottom: 22px; }
+.wb-count { position: absolute; right: var(--s-3); bottom: 6px; color: var(--c-faint); font-size: var(--t-xs); pointer-events: none; }
 .wb-data-source-choice {
   margin: var(--s-6) 0 0; padding: 0; border: 0;
 }

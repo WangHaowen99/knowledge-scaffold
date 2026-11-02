@@ -389,6 +389,8 @@ class LiveRun:
     reasoning_chars_published: int = 0
     reasoning_truncated: bool = False
     package_contract: dict[str, Any] = field(default_factory=dict)
+    # 用户在开始建模前确认过的创建目标；"" = 未填写或存量项目
+    project_goal: str = ""
     validation_repair: CandidateValidationRepairState = field(default_factory=CandidateValidationRepairState)
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     inflight_core_calls: set[asyncio.Task[Any]] = field(default_factory=set)
@@ -1604,6 +1606,7 @@ class AgentService:
             ),
             confirmation_required=confirmation_required,
             package_contract=dict(claimed.get("packageContract") or {}),
+            project_goal=str(claimed.get("projectGoal") or ""),
             autonomous_seed=(
                 confirmation_required
                 or bool(intent_required_tools)
@@ -4873,6 +4876,7 @@ class AgentService:
             confirmation_required=confirmation_required,
             autonomous_seed=autonomous_seed,
             package_contract=dict(claimed.get("packageContract") or {}),
+            project_goal=str(claimed.get("projectGoal") or ""),
             validation_repair=self._validation_repair_state(run.id),
             technical_recoveries=technical_recoveries,
             required_text_constraint=resolved_required_text_constraint,
@@ -4963,6 +4967,7 @@ class AgentService:
             confirmation_required=confirmation_required,
             autonomous_seed=autonomous_seed,
             package_contract=dict(claimed.get("packageContract") or {}),
+            project_goal=str(claimed.get("projectGoal") or ""),
             validation_repair=self._validation_repair_state(run.id),
             technical_recoveries=technical_recoveries,
             required_text_constraint=resolved_required_text_constraint,
@@ -5233,6 +5238,7 @@ class AgentService:
                     model=model,
                     analyst_model=analyst_model,
                     package_contract=live.package_contract,
+                    project_goal=live.project_goal,
                     # 用户刚下达指令或刚回答完问题时，指令本身就是本轮目标，
                     # 不需要服务端再指派。只有模型自己决定下一步时才需要——
                     # 那正是过去它漫无目的地反复取证的地方。

@@ -201,6 +201,17 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .qc-custom:focus-within { border-color: var(--color-primary); border-style: solid; }
 .qc-custom .ant-input { font-size: 13px; }
 
+/* 开始建模前的目标确认卡：沿用提问卡外观 */
+.goal-confirm-text {
+  white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow-y: auto;
+  padding: 8px 10px; border-radius: 10px; background: var(--surface-subtle);
+  font-size: 13px; line-height: 1.6; color: var(--text-primary);
+}
+.goal-confirm-hint { margin-top: 8px; font-size: 12px; color: var(--text-tertiary); }
+/* antd 字数统计绝对定位在输入框下方，留出位置避免压住按钮 */
+.goal-confirm-card .ant-input-textarea-show-count { margin-bottom: 20px; }
+.goal-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+
 /* 助手侧内容淡入即可，避免流式→完整切换时的弹跳突兀 */
 @keyframes soft-in { from { opacity: 0; } to { opacity: 1; } }
 .msg-soft { animation: soft-in 0.18s ease both; }

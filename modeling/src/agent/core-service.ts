@@ -4668,6 +4668,17 @@ export class AgentCoreService {
   }
 
   private async claimCandidateWorkspace(context: AgentToolContext, args: Record<string, unknown> = {}) {
+    if (context.project.goalStatus === 'pending') {
+      throw new AgentCoreError(
+        'PROJECT_GOAL_CONFIRMATION_REQUIRED',
+        '请先确认建模目标',
+        ['在对话区的确认卡中确认或修改建模目标'],
+        409,
+        { retryable: false, requires_user_decision: true },
+      );
+    }
+    // 开始建模前确认过的创建目标，由建模助手注入目标访谈阶段的系统提示词
+    const projectGoal = context.project.goalStatus === 'confirmed' ? context.project.background : '';
     const resumePlanId = String(args.resume_plan_id ?? '').trim();
     const pausedPlan = this.changeControl.pausedPlanForProject(context.project.id);
     if (pausedPlan && !resumePlanId) {
@@ -4737,6 +4748,7 @@ export class AgentCoreService {
         supersededChanges,
         runCredential: issueAgentRunCredential(workspace.project_id, workspace.run_id, workspace.owner),
         packageContract: packageGenerationContract(),
+        projectGoal,
         packageDataSource: { dataSourceType: workspace.package_data_source_type },
         display: { text: '知识包版本已变化，已按当前内容重新准备修改' },
       };
@@ -4749,6 +4761,7 @@ export class AgentCoreService {
         resumed: Boolean(existing),
         runCredential: issueAgentRunCredential(workspace.project_id, workspace.run_id, workspace.owner),
         packageContract: packageGenerationContract(),
+        projectGoal,
         packageDataSource: { dataSourceType: workspace.package_data_source_type },
         display: { text: existing ? '已继续上次未完成的修改' : '已准备本次修改' },
       };
@@ -4811,6 +4824,7 @@ export class AgentCoreService {
       preservedChanges: this.changes(this.workspace(context.project.id)!).length,
       runCredential: issueAgentRunCredential(context.project.id, context.runId, context.username),
       packageContract: packageGenerationContract(),
+      projectGoal,
       packageDataSource: { dataSourceType: this.workspace(context.project.id)?.package_data_source_type ?? 'neo4j' },
       display: { text: resumedPlan ? '已恢复暂停计划和未完成任务' : '已继续上次未完成的修改' },
     };
