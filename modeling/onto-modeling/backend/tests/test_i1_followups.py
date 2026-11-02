@@ -104,3 +104,18 @@ def test_template_object_sections_are_not_out_of_template(tmp_path: Path):
     template = (Path(config.ASSETS_DIR) / "workspace-toolkit" / "templates" / "object-template.md").read_text(encoding="utf-8")
     review = studio_service.deterministic_check(tmp_path, "ontology/object/借阅证.md", template)["review"]
     assert not any("数据来源" in item or "查询边界" in item for item in review), review
+
+
+def test_template_placeholders_are_not_unresolved_links(tmp_path: Path):
+    """按模板新建的对象、操作、规则直接保存：模板占位 `[[{待填写：…}]]` 与行内代码里的写法示例不算指向不存在的文档。"""
+    from app.services import studio as studio_service
+
+    templates = Path(config.ASSETS_DIR) / "workspace-toolkit" / "templates"
+    for kind, folder in (("object", "object"), ("operation", "operation"), ("rule", "rule")):
+        text = (templates / f"{kind}-template.md").read_text(encoding="utf-8")
+        review = studio_service.deterministic_check(tmp_path, f"ontology/{folder}/合成.md", text)["review"]
+        assert not any("指向不存在的文档" in item for item in review), (kind, review)
+    # 真的写错了的链接照样转复核
+    text = (templates / "object-template.md").read_text(encoding="utf-8") + "\n见 [[不存在的对象]]\n"
+    review = studio_service.deterministic_check(tmp_path, "ontology/object/合成.md", text)["review"]
+    assert any("不存在的对象" in item for item in review)

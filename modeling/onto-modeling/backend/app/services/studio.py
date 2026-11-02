@@ -669,7 +669,14 @@ def deterministic_check(root: Path, rel_path: str, content: str) -> dict:
     # 链接目标存在性：指向不存在的文档 → 可能是要新建对象，转复核
     names = {d["name"] for d in _docs(root)}
     stem = Path(rel_path).stem
-    for link in metamodel.for_project(root).unresolved(content, names | {stem}):
+    # 模板里的填写指引（引用块）、行内代码里的写法示例、模板占位（`[[{待填写：对象A}]]`）不是链接：
+    # 按模板新建的条目保存时不因它们转复核（规则检查在确认生效、发布时照常查全文）
+    scanned = "\n".join(line for line in content.splitlines() if not line.lstrip().startswith(">"))
+    scanned = re.sub(r"`[^`\n]*`", "", scanned)
+    scanned = re.sub(r"\{待填写[^{}]*\}", "", scanned)
+    for link in metamodel.for_project(root).unresolved(scanned, names | {stem}):
+        if "{" in link.full_name or "待填写" in link.full_name:
+            continue
         review.append(f"[[{link.full_name}]] 指向不存在的文档")
 
     return {"errors": errors, "review": review}
