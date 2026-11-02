@@ -102,7 +102,13 @@ def read_file(project_id: str, request: Request, path: str = ""):
     root = deps.require_owner(project_id, request)
     rel = _guard_path(path)
     data = deps.workspaces.read_file(project_id, rel, TEXT_PREVIEW_BYTES)
-    return {**data, "last_change": last_change(root, rel), "lock": None}
+    from ..api.compat import entry_id_for_path
+    from ..kernel.changesets import service as changesets
+
+    scope = changesets.scope_lock(deps.workspaces, project_id)
+    entry = entry_id_for_path(rel, project_id)
+    locked = changesets.locked(scope, entry=entry if ":" in entry else None, path=rel)
+    return {**data, "last_change": last_change(root, rel), "lock": scope if locked else None}
 
 
 @router.put("/files/content")

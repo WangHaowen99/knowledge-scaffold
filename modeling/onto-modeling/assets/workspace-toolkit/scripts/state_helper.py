@@ -6,6 +6,8 @@ State helper — 单一文件管理所有命令的执行锁与进度快照。
     lock-{command}.json     每个正在执行的命令的锁（含开始时间、阶段、PID，
                             持有者为 owner（Web 后端托管的引擎实例）或 owner_pid）
     progress.json           各阶段完整进度快照（全体命令共用）
+另有 `.onto/run/active.json`：正在执行的命令所属节点与写入范围（节点声明的 produces、writes），
+acquire 时写、release 时删；内核守卫只放行这些路径（方案 D11）。
 
 锁的持有者：Web 后端每次连接引擎时把实例标识写进 `.onto/run/engine.json`，本进程是
 该后端的子孙时，持有者就是这个引擎实例——同一实例的多次 Bash 调用可续写锁，实例换了
@@ -45,6 +47,8 @@ STATE_DIR = Path('.ontology-state')
 PROGRESS_FILE = STATE_DIR / 'progress.json'
 # Web 后端写入的在线引擎实例标识（见模块说明）
 ENGINE_MARKER = Path('.onto') / 'run' / 'engine.json'
+# 正在执行的命令与它们的写入范围（节点声明的 produces、writes）：内核守卫只放行这些路径（方案 D11）
+ACTIVE_FILE = Path('.onto') / 'run' / 'active.json'
 ANCESTOR_SCAN_LIMIT = 32
 
 # Any lock older than this many hours is assumed to come from a crashed run.
@@ -313,14 +317,79 @@ def acquire(command: str, phase: str) -> int:
     else:
         payload['owner_pid'] = ppid
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    _mark_active(command, phase)
     print('ok')
     return 0
+
+
+# ---- 写入范围（方案 D11）----
+
+
+def _load_active() -> dict:
+    try:
+        data = json.loads(ACTIVE_FILE.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {'commands': {}}
+    if not isinstance(data, dict) or not isinstance(data.get('commands'), dict):
+        return {'commands': {}}
+    return data
+
+
+def _save_active(data: dict) -> None:
+    if not data['commands']:
+        ACTIVE_FILE.unlink(missing_ok=True)
+        return
+    ACTIVE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ACTIVE_FILE.with_name(f'.active.{os.getpid()}.tmp')
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+    os.replace(tmp, ACTIVE_FILE)
+
+
+def _command_scope(command: str) -> tuple:
+    """命令所属节点与它的写入范围（produces + writes）；不属于任何节点时为 (None, None)：不限范围。"""
+    try:
+        flow = _flow()
+    except (OSError, ValueError):
+        return None, None
+    node_id = flow_state.command_node(flow, command)
+    node = next((item for item in flow.get('nodes') or [] if item.get('id') == node_id), None)
+    if node is None:
+        return None, None
+    allow = []
+    for key in ('produces', 'writes'):
+        for item in node.get(key) or []:
+            pattern = str(item.get('path') if isinstance(item, dict) else item)
+            if pattern and pattern not in allow:
+                allow.append(pattern)
+    return node_id, allow
+
+
+def _mark_active(command: str, phase: str) -> None:
+    node_id, allow = _command_scope(command)
+    data = _load_active()
+    data['commands'][command] = {'node': node_id, 'allow': allow, 'phase': phase,
+                                 'since': time.strftime('%Y-%m-%d %H:%M:%S')}
+    try:
+        _save_active(data)
+    except OSError:
+        pass  # 写不了时守卫按不限范围处理，不挡命令
+
+
+def _clear_active(command: str) -> None:
+    data = _load_active()
+    if command in data['commands']:
+        data['commands'].pop(command)
+        try:
+            _save_active(data)
+        except OSError:
+            pass
 
 
 def force_release(command: str) -> int:
     path = _lock_path(command)
     if path.exists():
         path.unlink()
+    _clear_active(command)
     print('ok')
     return 0
 
@@ -335,6 +404,7 @@ def release(command: str) -> int:
     path = _lock_path(command)
     if path.exists():
         path.unlink()
+    _clear_active(command)
     data = _load_progress()
     data['last_command'] = command
     data['stage'] = _compute_stage()

@@ -45,6 +45,7 @@ nodes:
     placement: spine
     section: required
     done: [research_done]
+    produces: ["research/*"]
     entry: {command: /ontology-research}
     actions:
       - {label: 联网资料分析, command: "/ontology-research "}
@@ -59,6 +60,7 @@ nodes:
     section: required
     after: core.research
     done: [object]
+    produces: ["ontology/object/*"]
     entry: {command: /ontology-extract-object}
     actions:
       - {label: 提取对象, command: /ontology-extract-object}
@@ -69,6 +71,9 @@ nodes:
     section: required
     after: core.object
     done: [operation]
+    produces: ["ontology/operation/*"]
+    # 操作提取按资料分流：规则、指标随操作一起抽，也会补对象的关联（ADR-0012）
+    writes: ["ontology/logic/*", "ontology/object/*", "ontology/rule/*", "ontology/metric/*"]
     entry: {command: /ontology-extract-operation}
     actions:
       - {label: 提取操作, command: /ontology-extract-operation}
@@ -80,6 +85,8 @@ nodes:
     optional: true
     after: core.operation
     done: [rule_metric]
+    produces: ["ontology/rule/*", "ontology/metric/*"]
+    writes: ["ontology/operation/*", "ontology/logic/*", "ontology/object/*"]
     entry: {command: /ontology-extract-rule-metric}
     actions:
       - {label: 提取规则与指标, command: /ontology-extract-rule-metric}
@@ -90,6 +97,9 @@ nodes:
     section: required
     after: core.operation
     done: [validation_report, "!reports_pending"]
+    produces: ["reports/*-rule.md", "reports/*-semantic.md"]
+    # 修复型节点：校验后的修复可能改到任何条目
+    writes: ["ontology/*"]
     entry: {command: /ontology-validate}
     actions:
       - {label: 运行质量检查, command: /ontology-validate}
@@ -101,6 +111,7 @@ nodes:
     progress: false
     after: core.operation
     done: []
+    writes: ["ontology/*", "reports/*"]
     entry: {command: /ontology-update}
     actions:
       - {label: 增量更新, command: "/ontology-update "}

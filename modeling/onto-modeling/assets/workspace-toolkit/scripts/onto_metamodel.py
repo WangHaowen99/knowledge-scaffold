@@ -115,6 +115,8 @@ BY_KIND: dict[str, EntityType] = {entity.kind: entity for entity in ENTITY_TYPES
 INDEX_FILE = "index.md"
 # 旧章节名 → 现行章节名
 SECTION_ALIASES = {"与logic的关联": "与operation的关联"}
+# 对象之间的关系写在这个章节里（`[[A]] → 关系 → [[B]]`）
+RELATION_SECTION = "关联对象"
 
 
 def kind_dirs() -> tuple[tuple[str, str, str], ...]:
@@ -286,6 +288,90 @@ def references(text: str, name: str, names: Mapping | Iterable[str] | None = Non
 
 
 # ---------------------------------------------------------------------------
+# 条目文档结构：章节、表格行、关系（实体级差异与合入冲突检测用，方案 C9）
+# ---------------------------------------------------------------------------
+
+# 章节标题：一到三级标题，标题末尾的冒号不算（同 ontology_checker.extract_sections）
+_HEADING_RE = re.compile(r"^(#{1,3})[ \t]+(.+?)[ \t]*$")
+_TABLE_SPLIT_RE = re.compile(r"(?<!\\)\|")
+_TABLE_RULE_RE = re.compile(r"^\s*\|?[\s\-:|]+\|?\s*$")
+
+
+def _section_title(raw: str) -> str:
+    title = raw.strip().rstrip("：:").strip()
+    return SECTION_ALIASES.get(title, title)
+
+
+def split_sections(text: str) -> list[tuple[str, str]]:
+    """正文按标题切成 [(章节名, 正文)]，章节名去冒号并换成现行名；第一个标题之前的内容记在 "" 名下。
+
+    只有一个一级标题、下面是二级标题时，一级标题是文档名，不算章节（同 MCP 文档模型的口径）。
+    """
+    lines = (text or "").split("\n")
+    headings = [(index, len(match.group(1)), match.group(2)) for index, line in enumerate(lines)
+                if (match := _HEADING_RE.match(line))]
+    ones = [item for item in headings if item[1] == 1]
+    skip = {ones[0][0]} if len(ones) == 1 and any(item[1] == 2 for item in headings) else set()
+    starts = [item for item in headings if item[0] not in skip]
+    sections: list[tuple[str, str]] = []
+    first = starts[0][0] if starts else len(lines)
+    head = "\n".join(line for index, line in enumerate(lines[:first]) if index not in skip).strip()
+    if head:
+        sections.append(("", head))
+    for position, (index, _level, title) in enumerate(starts):
+        end = starts[position + 1][0] if position + 1 < len(starts) else len(lines)
+        sections.append((_section_title(title), "\n".join(lines[index + 1:end]).strip()))
+    return sections
+
+
+def table_rows(body: str) -> list[dict]:
+    """章节正文里的 Markdown 表格 → [{列名: 单元格}]（单元格里的 `\\|` 还原成 `|`）；没有表格返回 []。"""
+    rows = [line.strip() for line in (body or "").split("\n") if line.strip().startswith("|")]
+    if len(rows) < 2 or not _TABLE_RULE_RE.match(rows[1]):
+        return []
+
+    def cells(line: str) -> list[str]:
+        return [cell.strip().replace("\\|", "|") for cell in _TABLE_SPLIT_RE.split(line.strip().strip("|"))]
+
+    header = cells(rows[0])
+    return [dict(zip(header, cells(line))) for line in rows[2:]]
+
+
+def parse_document(kind: str, text: str) -> dict:
+    """条目文档 → {sections: {章节: 正文}, order: [章节], rows: {表格章节: {行键: 行}}, links: {章节: [链接全名]},
+    relations: [关系目标]}。
+
+    行键取第一列（去掉链接写法）；关系目标是关系章节（relation_syntax.section）里链接到的条目全名，按出现去重。
+    """
+    sections: dict[str, str] = {}
+    order: list[str] = []
+    for title, body in split_sections(text):
+        if title in sections:
+            sections[title] = f"{sections[title]}\n\n{body}".strip()
+        else:
+            sections[title] = body
+            order.append(title)
+    tables = {section.title for section in sections_of(kind) if section.kind == "table"}
+    rows: dict[str, dict[str, dict]] = {}
+    for title, body in sections.items():
+        parsed = table_rows(body) if title in tables or body.lstrip().startswith("|") else []
+        if parsed:
+            keyed: dict[str, dict] = {}
+            for row in parsed:
+                first = next(iter(row.values()), "")
+                key = strip_links(first, use_alias=False).strip() or f"#{len(keyed) + 1}"
+                keyed[key if key not in keyed else f"{key}#{len(keyed) + 1}"] = row
+            rows[title] = keyed
+    links = {title: [] for title in order}
+    for title in order:
+        for link in parse_links(sections[title]):
+            if link.name and link.name not in EMPTY_TARGETS and link.full_name not in links[title]:
+                links[title].append(link.full_name)
+    relations = list(links.get(RELATION_SECTION, []))
+    return {"sections": sections, "order": order, "rows": rows, "links": links, "relations": relations}
+
+
+# ---------------------------------------------------------------------------
 # 文件名编码（key 规则）
 # ---------------------------------------------------------------------------
 
@@ -357,7 +443,7 @@ def as_dict() -> dict:
             "empty_targets": sorted(EMPTY_TARGETS),
         },
         "relation_syntax": {
-            "section": "关联对象",
+            "section": RELATION_SECTION,
             "arrows": ["→", "->"],
             "current_object": "当前对象",
         },

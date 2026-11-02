@@ -8,6 +8,7 @@ nodes:
     section: required
     after: core.validate
     done: [mock]
+    produces: ["ontology/data-mock/*"]
     entry: {command: /ontology-mock}
     actions:
       - {label: 生成示例数据, command: /ontology-mock}
@@ -18,6 +19,8 @@ nodes:
     section: required
     after: trace.mock
     done: [testcase]
+    produces: ["ontology/testcase/*", "ext/trace/*"]
+    writes: ["ontology/data-mock/*"]
     entry: {command: /ontology-trace}
     actions:
       - {label: 批量验证, command: /ontology-trace 全部}

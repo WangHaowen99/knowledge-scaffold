@@ -54,10 +54,8 @@ ALLOWED_ONTOLOGY_DIRS = {
     "data-mock", "testcase", "scripts", "knowledge",
     "diagrams", "diagrams-summary", "mermaid", "excel",
 }
-# 知识包导出范围——只有这些目录送达 consumer
-PACKAGED_ONTOLOGY_DIRS = {"object", "operation", "logic", "rule", "metric", "scripts"}
-# 反馈演进期额外放行：改用例、对账素材
-EVOLUTION_EXTRA_DIRS = {"testcase", "data-mock"}
+# 正在执行的命令与它们的写入范围（state_helper acquire 时写，方案 D11）
+ACTIVE_REL = (".onto", "run", "active.json")
 # 求解契约受管目录：只能经求解模型面板 / 后端接口写入
 MANAGED_ONTOLOGY_DIRS = {"solver"}
 
@@ -523,7 +521,27 @@ def guard_lock(call: Call) -> str | None:
     return None
 
 
-def _ontology_kind(call: Call, path: Path, evolution: bool) -> str | None:
+def _active_scope(call: Call) -> tuple[list[str], list[str]] | None:
+    """正在执行的命令的写入范围 (命令名, 放行的路径模式)；没有在执行的命令、或有不属于任何节点的
+    命令（不限范围）时返回 None。文件读不出按没有处理（命令照常，只是不收窄）。"""
+    try:
+        data = json.loads(call.root.joinpath(*ACTIVE_REL).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    commands = data.get("commands") if isinstance(data, dict) else None
+    if not isinstance(commands, dict) or not commands:
+        return None
+    names, patterns = [], []
+    for name, spec in commands.items():
+        allow = spec.get("allow") if isinstance(spec, dict) else None
+        if not spec or not isinstance(spec, dict) or not spec.get("node") or not isinstance(allow, list):
+            return None
+        names.append(str(name))
+        patterns += [str(item).replace("**", "*") for item in allow if str(item) not in patterns]
+    return names, patterns
+
+
+def _ontology_kind(call: Call, path: Path, scope: tuple[list[str], list[str]] | None) -> str | None:
     if not _under(path, call.root):
         return None
     parts = path.relative_to(call.root).parts
@@ -534,18 +552,20 @@ def _ontology_kind(call: Call, path: Path, evolution: bool) -> str | None:
         return "managed"
     if sub not in ALLOWED_ONTOLOGY_DIRS:
         return "unknown"
-    if evolution and sub not in (PACKAGED_ONTOLOGY_DIRS | EVOLUTION_EXTRA_DIRS):
-        return "unpackaged"
+    if scope is not None:
+        rel = "/".join(parts)
+        if not any(fnmatch.fnmatchcase(rel, pattern) for pattern in scope[1]):
+            return "outside"
     return None
 
 
 def guard_scope(call: Call) -> str | None:
-    evolution = (call.root / ".ontology-state" / "lock-evolution.json").exists()
+    scope = _active_scope(call)
     found = []
     for target in call.targets:
         if target.path is None:
             continue
-        kind = _ontology_kind(call, target.path, evolution)
+        kind = _ontology_kind(call, target.path, scope)
         if kind:
             found.append((target.raw, kind))
     solver = call.root / "ontology" / "solver"
@@ -557,20 +577,22 @@ def guard_scope(call: Call) -> str | None:
         return None
     reasons = "; ".join(dict.fromkeys(raw for raw, _ in found))
     kinds = {kind for _, kind in found}
-    packaged_hint = (
-        "只有 ontology/{object,operation,rule,metric,scripts} 会进入知识包（consumer 可见）；"
-        "案例/方案类知识请建模为 ontology/rule/ 下的场景规则（触发特征 → 方案要点），并 wikilink 关联涉事对象。"
-    )
     if "managed" in kinds:
         return (
             f"ontology/solver/ 是求解契约受管目录，不允许直接写入：{reasons}。"
             "Decision Model、Schema 与 Presentation 须成组一致，请提示用户在求解模型面板中维护。"
         )
-    if "unpackaged" in kinds:
+    if "outside" in kinds and scope is not None:
+        names, patterns = scope
+        allowed = "、".join(patterns) or "（没有声明可写的路径）"
         return (
-            f"反馈演进进行中，知识修订只能落在会打包的目录，此次写入越界：{reasons}。"
-            f"{packaged_hint}写进不打包的目录（如 ontology/knowledge/）对反馈里的失分不会有任何改善。"
+            f"正在执行「{'、'.join(names)}」，这一步只能写它声明的范围：{allowed}；此次写入越界：{reasons}。"
+            "范围外的条目可能正被你在编辑器里修改；确实要改，先结束这条命令，或换用负责那部分内容的命令。"
         )
+    packaged_hint = (
+        "只有 ontology/{object,operation,rule,metric,scripts} 会进入知识包（consumer 可见）；"
+        "案例/方案类知识请建模为 ontology/rule/ 下的场景规则（触发特征 → 方案要点），并 wikilink 关联涉事对象。"
+    )
     return f"ontology/ 下不允许自创目录：{reasons}。允许的子目录以 ontology_checker 白名单为准；{packaged_hint}"
 
 

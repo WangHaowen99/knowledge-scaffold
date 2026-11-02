@@ -5,6 +5,8 @@ ST-07 草稿、ST-08 提交。条目按 entry_id（`<kind>:<key>`）定位；30 
 
 from __future__ import annotations
 
+import asyncio
+
 import re
 from pathlib import Path
 
@@ -84,10 +86,24 @@ def stats(project_id: str, request: Request):
     }
 
 
+def _scope(project_id: str) -> dict:
+    """写入范围锁（方案 C10）：条目在范围里就只读，图谱、表格、详情都标出来。"""
+    from ..kernel.changesets import service as changesets
+
+    return changesets.scope_lock(deps.workspaces, project_id)
+
+
+def _locked(scope: dict, entry_id: str, rel: str | None = None) -> bool:
+    from ..kernel.changesets import service as changesets
+
+    return changesets.locked(scope, entry=entry_id, path=rel)
+
+
 @router.get("/graph")
 def graph(project_id: str, request: Request, include_mentions: bool = True):
     root = deps.require_owner(project_id, request)
     data, by_name = _graph(root)
+    scope = _scope(project_id)
 
     def node_id(name: str) -> str:
         node = by_name[name]
@@ -96,7 +112,8 @@ def graph(project_id: str, request: Request, include_mentions: bool = True):
     nodes = [
         {
             "id": f"{node['kind']}:{node['id']}", "kind": node["kind"], "key": node["id"], "label": node["label"],
-            "description": node["description"], "status": "confirmed", "locked": False, "slice_ids": [],
+            "description": node["description"], "status": "confirmed",
+            "locked": _locked(scope, f"{node['kind']}:{node['id']}", node.get("path")), "slice_ids": [],
         }
         for node in data["nodes"]
     ]
@@ -126,6 +143,7 @@ def entries(
     root = deps.require_owner(project_id, request)
     data, _ = _graph(root)
     drafts = studio_service._load(project_id, "drafts")
+    scope = _scope(project_id)
     rows = []
     for node in data["nodes"]:
         rel = node["path"]
@@ -133,7 +151,7 @@ def entries(
             "id": f"{node['kind']}:{node['id']}", "kind": node["kind"], "key": node["id"], "name": node["label"],
             "refs_out": node["out"], "refs_in": node["in"],
             "status": "editing" if rel in drafts else "confirmed",
-            "needs_review": False, "locked": False, "plugin": None,
+            "needs_review": False, "locked": _locked(scope, f"{node['kind']}:{node['id']}", rel), "plugin": None,
         })
     counts = {"all": len(rows), **{kind_: sum(1 for row in rows if row["kind"] == kind_) for kind_ in KINDS}, "flowchart": None}
     kinds = set(filter(None, kind.split(",")))
@@ -210,6 +228,8 @@ def entry_detail(project_id: str, entry_id: str, request: Request):
         for item in node.get("fields") or []
     ]
     draft = studio_service.get_draft(project_id, rel)
+    scope = _scope(project_id)
+    backlinks = [{**item, "locked": _locked(scope, item["source"]["id"])} for item in backlinks]
     return {
         "id": f"{kind}:{key}", "kind": kind, "key": key, "name": element["label"], "path": rel,
         "description": node.get("description", ""),
@@ -223,7 +243,7 @@ def entry_detail(project_id: str, entry_id: str, request: Request):
         "counts": {"refs_out": node.get("out", 0), "refs_in": node.get("in", 0), "fields": len(fields), "evidence": 0},
         "revision": _content_revision(target.read_bytes()),
         "head": mainline.state(root)["head"],
-        "lock": None,
+        "lock": scope if _locked(scope, f"{kind}:{key}", rel) else None,
         "draft": _draft_view(draft),
     }
 
@@ -298,7 +318,11 @@ async def submit(project_id: str, entry_id: str, request: Request):
             "warnings": [{"code": "needs_review", "level": "warning", "message": text, "path": rel} for text in checks["review"]],
         }
     if checks["review"]:
-        staged = studio_service.stage_for_review(root, rel, draft["content"])
+        # 复核草稿放进助手的变更集副本（方案 C15）：放主线工作区助手看不到
+        from ..kernel.changesets import service as changesets
+
+        staging = await asyncio.to_thread(changesets.staging_dir, deps.workspaces, project_id)
+        staged = studio_service.stage_for_review(staging, rel, draft["content"])
         points = "；".join(checks["review"])
         session = await manager.send(
             project_id,

@@ -8,6 +8,7 @@ nodes:
     optional: true
     after: core.research
     done: [flowchart]
+    produces: ["ontology/diagrams/*", "ontology/diagrams-summary/*", "ontology/excel/*", "ontology/mermaid/*"]
     entry: {command: /ontology-flowchart}
     actions:
       - {label: 创建/打磨流程图, command: /ontology-flowchart}

@@ -321,6 +321,7 @@ class ChangeTx:
         self._paths: list[str] = []
         self._snapshots: dict[str, tuple[bool, bytes]] = {}
         self._lock = None
+        self._scope = None
         self._intent: Path | None = None
         self._tx_id = f"{int(time.time() * 1000)}-{os.getpid()}-{id(self) & 0xFFFF:x}"
 
@@ -333,6 +334,9 @@ class ChangeTx:
             self.root = self.manager.project_root(self.project_id)
             self.target = self._target or MainlineTarget(self.root)
             self.base_head = self.target.head()
+            from .scope import ScopeGuard
+
+            self._scope = ScopeGuard(self.manager, self.project_id, self.origin)
         except BaseException:
             self._lock.__exit__(None, None, None)
             raise
@@ -378,7 +382,13 @@ class ChangeTx:
             self._intent = _intent_path(self.project_id, self._tx_id)
         _write_intent(self._intent, data)
 
+    def _check_scope(self, rel: str) -> None:
+        """写入范围只读（方案 C10）：落在助手的写入范围里就 423，什么都还没写。"""
+        if self._scope is not None and rel not in self._paths:
+            self._scope.check([rel])
+
     def _remember(self, rel: str, path: Path) -> None:
+        self._check_scope(rel)
         if rel not in self._snapshots:
             self._snapshots[rel] = self.manager._snapshot(path) if not path.is_symlink() else (False, b"")
         if rel not in self._paths:
@@ -409,6 +419,7 @@ class ChangeTx:
             if snapshot and (target.is_file() or not target.exists()):
                 self._remember(rel, target)
             elif rel not in self._paths:
+                self._check_scope(rel)
                 self._paths.append(rel)
                 self._record_intent()
 

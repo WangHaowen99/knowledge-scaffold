@@ -1,7 +1,7 @@
 """插件运行时接到会话宿主与项目流（ADR-0045，`app/wiring.py`）：合并 B4c 后的五个衔接点。
 
 - S-20 的 `action` 由扩展项注册表换成包里的命令，包停用后 409 pack_not_enabled；
-- agent 一轮提交了产物文件，项目流 workspace.changed 的 artifacts 有值，并发 artifacts.updated；
+- agent 一轮提交了产物文件，确认生效后项目流 workspace.changed 的 artifacts 有值，并发 artifacts.updated；
 - 停用、启用带页面的包，extensions.updated.changed 只含变了的类；
 - assembly.updated 每次（锁文件提交、装配切换）只发一次；
 - 只有启用了知识沉淀包的项目注入知识信号，两个引擎一致。
@@ -123,11 +123,26 @@ def test_agent_round_commit_reports_artifacts_on_project_stream(host):
     FakeEngine.scripts = [[write_and_commit, result()]]
     client.post(f"/api/v1/projects/{project_id}/conversations/default/messages", json={"text": "补一个补货场景"})
 
+    # 助手在变更集副本里提交（B4b）：一轮结束后是待确认的变更集，主线还没动
+    def pending():
+        session = agent_sessions.manager.get(project_id)
+        if session is None or session.state != "idle":
+            return None
+        found = client.get(f"/api/v1/projects/{project_id}/changesets", params={"state": "pending_confirm"}).json()
+        return found["items"][0] if found["items"] else None
+
+    changeset = wait(pending)
+    assert not (root / SCENARIO_FILE).exists()
+    assert not [event for event in buffered(project_id, "workspace.changed") if event["data"]["source"] == "assistant"]
+    merged = client.post(f"/api/v1/projects/{project_id}/changesets/{changeset['id']}/merge", json={})
+    assert merged.status_code == 200, merged.text
+
     def agent_change():
         return next((event["data"] for event in buffered(project_id, "workspace.changed")
                      if event["data"]["source"] == "assistant"), None)
 
     data = wait(agent_change)
+    assert data["changeset_id"] == changeset["id"]
     assert SCENARIO_FILE in data["paths"]
     assert [(ref["type"], ref["key"]) for ref in data["artifacts"]] == [("trace.scenario", "补货编制主流程--1")]
     assert set(data["artifacts"][0]) == {"type", "key", "title"}

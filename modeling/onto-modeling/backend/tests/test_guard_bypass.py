@@ -182,11 +182,43 @@ def test_guard_bypass_scope(ws: Path, label, payload, expected):
     assert denied(run_guard(ws, "scope", payload)) is expected, label
 
 
+EVOLUTION_ALLOW = ["ontology/object/*", "ontology/operation/*", "ontology/logic/*", "ontology/rule/*",
+                   "ontology/metric/*", "ontology/scripts/*", "ontology/testcase/*", "ontology/data-mock/*"]
+
+
+def mark_active(ws: Path, commands: dict) -> None:
+    """state_helper acquire 写的 `.onto/run/active.json`：正在执行的命令与节点声明的写入范围（方案 D11）。"""
+    path = ws / ".onto" / "run" / "active.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"commands": commands}, ensure_ascii=False), encoding="utf-8")
+
+
 def test_scope_guard_evolution_only_allows_packaged_dirs(ws: Path):
-    (ws / ".ontology-state").mkdir(exist_ok=True)
-    (ws / ".ontology-state" / "lock-evolution.json").write_text("{}", encoding="utf-8")
-    assert denied(run_guard(ws, "scope", write("ontology/knowledge/条目.md")))
+    """原来守卫里反馈演进的特判，改成反馈演进节点声明的写入范围（方案 D11）。"""
+    mark_active(ws, {"evolution": {"node": "evo.evolution", "allow": EVOLUTION_ALLOW}})
+    reason = run_guard(ws, "scope", write("ontology/knowledge/条目.md"))
+    assert denied(reason) and "evolution" in reason
     assert not denied(run_guard(ws, "scope", write("ontology/rule/新规则.md")))
+
+
+def test_scope_guard_only_allows_the_running_nodes_scope(ws: Path):
+    mark_active(ws, {"extract-object": {"node": "core.object", "allow": ["ontology/object/*"]}})
+    assert not denied(run_guard(ws, "scope", write("ontology/object/订单.md")))
+    assert denied(run_guard(ws, "scope", write("ontology/operation/下单.md")))
+    assert denied(run_guard(ws, "scope", {"tool_name": "Bash", "tool_input": {"command": "rm ontology/rule/r.md"}}))
+    # 不在本体目录里的写入不收窄（报告、临时文件）
+    assert not denied(run_guard(ws, "scope", write("reports/r.md")))
+    # 两条命令同时在跑：放行两者范围的并集
+    mark_active(ws, {"extract-object": {"node": "core.object", "allow": ["ontology/object/*"]},
+                     "validate": {"node": "core.validate", "allow": ["ontology/*"]}})
+    assert not denied(run_guard(ws, "scope", write("ontology/operation/下单.md")))
+    # 有不属于任何节点的命令（如 /ontology 总控）：不收窄
+    mark_active(ws, {"extract-object": {"node": "core.object", "allow": ["ontology/object/*"]},
+                     "ontology": {"node": None, "allow": None}})
+    assert not denied(run_guard(ws, "scope", write("ontology/operation/下单.md")))
+    # 文件坏了按没有处理
+    (ws / ".onto" / "run" / "active.json").write_text("not json", encoding="utf-8")
+    assert not denied(run_guard(ws, "scope", write("ontology/operation/下单.md")))
 
 
 # ---- 出错即拒（D9）----

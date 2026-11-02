@@ -120,8 +120,18 @@ def contract_view(project_id: str) -> dict:
         ],
         "supported_profiles": data["supported_profiles"],
         "template": data["template"],
-        "lock": None,
+        "lock": _solver_lock(project_id),
     }
+
+
+def _solver_lock(project_id: str) -> dict | None:
+    """写入范围锁里有求解契约（受管目录 ontology/solver/）时给出整份锁（方案 C10）。"""
+    from ..kernel.changesets import service as changesets
+
+    scope = changesets.scope_lock(deps.workspaces, project_id)
+    hit = any(ref.get("type") == "codegen.solver_contract" for ref in scope.get("artifacts") or []) or any(
+        rel.startswith("ontology/solver/") for rel in scope.get("paths") or [])
+    return scope if hit else None
 
 
 def _operations(body: dict) -> list:

@@ -553,9 +553,7 @@ def schema_for(rel_path: str) -> list[dict] | None:
     return _schema(kind) if kind in ("object", "operation", "rule", "metric") else None
 
 
-# ---- 草稿区与租约 ----
-
-LEASE_SECONDS = 1800  # 30 分钟写锁（方案 7.2）
+# ---- 草稿区（30 分钟租约随写入范围锁取消，方案 C10） ----
 
 
 class StudioError(Exception):
@@ -587,7 +585,7 @@ def _save(project_id: str, name: str, data: dict) -> None:
 
 
 def purge_project(project_id: str) -> None:
-    """删除项目时清除其写锁与草稿。"""
+    """删除项目时清除其草稿（leases 是取消租约之前留下的文件，一并删）。"""
     for name in ("leases", "drafts"):
         try:
             _state_file(project_id, name).unlink(missing_ok=True)
@@ -595,44 +593,10 @@ def purge_project(project_id: str) -> None:
             pass
 
 
-def lease_status(project_id: str, rel_path: str) -> dict | None:
-    leases = _load(project_id, "leases")
-    lease = leases.get(rel_path)
-    if lease and lease["expires"] > time.time():
-        return lease
-    if lease:  # 过期租约顺手清理
-        leases.pop(rel_path, None)
-        _save(project_id, "leases", leases)
-    return None
-
-
-def acquire_lease(project_id: str, rel_path: str, user: str) -> dict:
-    current = lease_status(project_id, rel_path)
-    if current and current["owner"] != user:
-        raise StudioError(
-            f"该条目正由 {current['owner']} 编辑（租约剩余 "
-            f"{int((current['expires'] - time.time()) / 60)} 分钟），当前只读",
-            409,
-        )
-    leases = _load(project_id, "leases")
-    lease = {"owner": user, "expires": int(time.time()) + LEASE_SECONDS}
-    leases[rel_path] = lease
-    _save(project_id, "leases", leases)
-    return lease
-
-
-def release_lease(project_id: str, rel_path: str, user: str) -> None:
-    leases = _load(project_id, "leases")
-    lease = leases.get(rel_path)
-    if lease and lease["owner"] == user:
-        leases.pop(rel_path, None)
-        _save(project_id, "leases", leases)
-
-
 def save_draft(
     project_id: str, rel_path: str, content: str, base_revision: str, user: str
 ) -> dict:
-    acquire_lease(project_id, rel_path, user)  # 持有或续期租约
+    """自动暂存草稿。不再占租约：助手在改的条目由写入范围锁挡（提交时 ChangeTx 统一检查，423）。"""
     drafts = _load(project_id, "drafts")
     drafts[rel_path] = {
         "content": content,
@@ -653,7 +617,6 @@ def discard_draft(project_id: str, rel_path: str, user: str) -> None:
     if rel_path in drafts:
         drafts.pop(rel_path)
         _save(project_id, "drafts", drafts)
-    release_lease(project_id, rel_path, user)
 
 
 # ---- 确定性检查分流 ----
@@ -713,7 +676,9 @@ REVIEW_DIR = ".ontology-state/studio-review"
 
 
 def stage_for_review(root: Path, rel_path: str, content: str) -> str:
-    """把草稿放到 agent 可读的隐藏位置（不进产物树、不进 git），供复核。"""
+    """把草稿放到 agent 可读的隐藏位置（不进产物树、不进 git），供复核。
+
+    root 是助手的工作目录：变更集副本（方案 C15），建不了副本时是主线工作区。"""
     stem = Path(rel_path).stem
     directory = root / REVIEW_DIR
     directory.mkdir(parents=True, exist_ok=True)

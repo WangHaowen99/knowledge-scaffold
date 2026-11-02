@@ -67,8 +67,12 @@ def _load_defaults() -> None:
     from ..services import startup_report
     from ..services.session_host import recovery as session_recovery
 
+    from ..kernel.changesets import worktree as changeset_copies
+
     startup_report.register_steps(register)
     session_recovery.register_steps(register)
+    # 助手副本（方案 C7）：清残留锁、补登记、重建坏了的副本、补链接；在执行记录改判之前
+    register("changeset_copies", "助手副本", changeset_copies.repair_all, order=88)
 
 
 def _failed(step: Step, exc: Exception) -> dict:

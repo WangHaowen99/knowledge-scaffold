@@ -4,6 +4,7 @@
 Claude 引擎的 hook 语义逐字一致。
 """
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -133,13 +134,16 @@ def test_hooks_restrict_evolution_writes_to_packaged_dirs(tmp_path):
     loader = make_loader()
     entries = loader.pre_tool_use_hooks()
     ws = _git_workspace(tmp_path)
-    state = ws / ".ontology-state"
-    state.mkdir()
-    (state / "lock-evolution.json").write_text("{}", encoding="utf-8")
+    # 反馈演进节点声明的写入范围（state_helper acquire evolution 写进 .onto/run/active.json，方案 D11）
+    active = ws / ".onto" / "run" / "active.json"
+    active.parent.mkdir(parents=True)
+    active.write_text(json.dumps({"commands": {"evolution": {"node": "evo.evolution", "allow": [
+        "ontology/object/*", "ontology/operation/*", "ontology/logic/*", "ontology/rule/*", "ontology/metric/*",
+        "ontology/scripts/*", "ontology/testcase/*", "ontology/data-mock/*"]}}}), encoding="utf-8")
 
     for rel in ("ontology/knowledge/案例.md", "ontology/action/动作.md"):
         reason = run_hooks_sync(entries, "write_file", {"file_path": rel, "content": "x"}, ws)
-        assert reason and "只能落在会打包的目录" in reason, rel
+        assert reason and ("只能写它声明的范围" in reason or "不允许自创目录" in reason), rel
 
     for rel in ("ontology/rule/场景规则.md", "ontology/object/订单.md", "ontology/testcase/用例.md"):
         assert run_hooks_sync(

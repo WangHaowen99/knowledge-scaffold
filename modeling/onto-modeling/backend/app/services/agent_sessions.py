@@ -706,11 +706,14 @@ class SessionManager:
 
     async def _deliver(self, session: Session, cwd: Path, text: str, meta: dict | None = None) -> None:
         meta = meta or {}
-        session.cwd = cwd
         session.last_activity = time.time()
         running = session.state == "running"
         if not running:
-            session.round_base_commit = await asyncio.to_thread(_git_head, cwd)
+            # 助手在变更集副本里改（方案 C7）：一轮开始前建或修副本、跟上主线；建不了时退回主线工作区
+            session.cwd = await asyncio.to_thread(_agent_cwd, session.project_id, cwd)
+            session.round_base_commit = await asyncio.to_thread(_git_head, session.cwd)
+        elif session.cwd is None:
+            session.cwd = cwd
         # 会话配置指纹（模型、归属、装配、流程、MCP、权限模式）变了：断开重连（resume 续接上下文），
         # 让新配置、新装配目录在这条消息生效（方案 B2、详设 8.1 第 4 步）。正在跑的一轮不能切断：
         # 只记待重载，这条消息仍交给旧引擎，等手头的轮次都出 result 再断开（_read_loop）
@@ -1139,6 +1142,7 @@ class SessionManager:
         from .session_host import exec_records
 
         exec_records.purge(project_id)  # 执行记录与页面命令任务在同一目录
+        _purge_changesets(project_id)
         self._broadcast_queue_positions()
         if engine is not None:
             await _kill_engine(engine)
@@ -1381,8 +1385,16 @@ class SessionManager:
     # ---- 事件消费 ----
 
     async def _emit_workspace_changes(self, session: Session) -> None:
-        """一轮结束后广播本轮产物变更（对话内"产物变更卡"的数据源）。"""
-        if not session.cwd or not session.round_base_commit:
+        """一轮结束后：助手在副本里改的进变更集，放「这一轮改了什么」卡（方案 C12：基点是变更集基点，
+        在副本里算，不把你这段时间在 Studio 的保存算进来）；主线这时不变，确认生效才写主线。"""
+        if not session.cwd:
+            return
+        from ..kernel.changesets import worktree
+
+        if worktree.is_copy(session.cwd):
+            await self._observe_changeset(session)
+            return
+        if not session.round_base_commit:
             return
         try:
             head = await asyncio.to_thread(_git_head, session.cwd)
@@ -1419,6 +1431,41 @@ class SessionManager:
         except Exception:
             pass  # 变更卡是增强信息，失败不影响会话
 
+    async def _observe_changeset(self, session: Session, *, running: bool = False) -> None:
+        """看一眼副本里的改动（一轮结束时带检查、出卡；跑的过程中节流，只更新写入范围）。"""
+        from ..api import deps
+        from ..kernel.changesets import service as changesets
+        from .session_host import exec_records
+
+        try:
+            record_exec = exec_records.get(session.project_id, session.exec_id) if session.exec_id else None
+            head = await asyncio.to_thread(_git_head, session.cwd)
+            if not running and head and session.round_base_commit and head != session.round_base_commit:
+                # 审计：agent 这一轮在副本里的提交（不经 HTTP 的专项审计，方案 E4）
+                changes = await asyncio.to_thread(_git_changes, session.cwd, session.round_base_commit, head)
+                await asyncio.to_thread(audit.record_agent_commits, session.project_id, session.cwd,
+                                        session.round_base_commit, head, changes)
+            record = await asyncio.to_thread(
+                changesets.observe, deps.workspaces, session.project_id, running=running,
+                conversation_id=session.conversation_id, exec_record=record_exec, checks=not running,
+                throttle=running,
+            )
+            if not running:
+                session.round_base_commit = head
+            if running or record is None or record.get("card_tree") == record.get("tree"):
+                return
+            records = await asyncio.to_thread(changesets.card_records, deps.workspaces, session.project_id,
+                                              {**record, "conversation_id": session.conversation_id}, new_card=True)
+            await asyncio.to_thread(changesets.store.update, deps.workspaces.project_root(session.project_id),
+                                    record["id"], card_tree=record.get("tree"))
+            for conversation_id, item in records:
+                if conversation_id == session.conversation_id:
+                    session.broadcast(item)
+                else:
+                    self.append_record(session.project_id, conversation_id, item)
+        except Exception:  # noqa: BLE001 - 变更卡是增强信息，失败不影响会话
+            _log.warning("项目 %s 观察助手副本失败", session.project_id, exc_info=True)
+
     async def _read_loop(self, session: Session) -> None:
         engine = session.engine
         # 公共标签（详设 4.10.2）：读循环是独立任务，这里设的标签只作用于这一个会话的日志与指标
@@ -1454,6 +1501,12 @@ class SessionManager:
                 progress = await asyncio.to_thread(turns.observe, session)
                 if progress is not None:
                     session.broadcast(progress)
+                if kind == "tool_results" and session.cwd is not None:
+                    from ..kernel.changesets import worktree
+
+                    if worktree.is_copy(session.cwd):
+                        # 跑的过程中节流地看副本：副本里已改的实体随时进写入范围（方案 C10）
+                        await self._observe_changeset(session, running=True)
 
     async def _finish_turn(self, session: Session, event: dict, engine_name: str) -> bool:
         """一轮出 result：收起工作过程、记用量、产物变更卡、执行记录与任务收尾、下一步建议。
@@ -1602,15 +1655,40 @@ def _write_engine_marker(cwd: Path | None, engine: str, conversation_id: str, *,
                                 conversation_id=conversation_id, owner=owner)
 
 
+def _agent_cwd(project_id: str, root: Path) -> Path:
+    """这一轮助手的工作目录：变更集副本（方案 C7）；不是本体项目工作区（没有 git）时原样返回。"""
+    root = Path(root)
+    if not (root / ".git").is_dir():
+        return root
+    from ..api import deps
+    from ..kernel.changesets import service as changesets
+
+    return changesets.copy_for_turn(deps.workspaces, project_id, root)
+
+
 def _install_commit_hooks(cwd: Path | None) -> None:
     if cwd is None:
         return
+    from ..kernel.changesets import worktree
     from ..kernel.writepath import agent_commits
 
     try:
-        agent_commits.install(Path(cwd))
+        # 钩子装在主线仓库的配置里，副本（git worktree）共用
+        agent_commits.install(Path(worktree.main_root(Path(cwd))))
     except Exception:  # noqa: BLE001 - 装不上时提交检查退回 PreToolUse，不挡会话
         pass
+
+
+def _purge_changesets(project_id: str) -> None:
+    """删除项目：变更集记录与助手副本目录一起清掉。"""
+    from ..kernel.changesets import service as changesets
+
+    try:
+        from ..api import deps
+
+        changesets.purge(Path(deps.workspaces.workspaces_dir) / project_id)
+    except Exception:  # noqa: BLE001 - 清不干净的由启动核对兜底
+        _log.warning("清除项目 %s 的变更集失败", project_id, exc_info=True)
 
 
 def project_owner(project_id: str) -> str:

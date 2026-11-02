@@ -203,14 +203,19 @@ def head(root: Path) -> str:
 
 
 def saved(root: Path, base: str) -> dict:
-    """执行开始以来已经保存（提交）的内容：改动的文件数与当前主线版本。"""
+    """执行开始以来已经保存（提交）的内容：改动的文件数与当前主线版本。
+
+    助手在变更集副本里跑时（方案 C7），文件数按副本里的提交算，版本号取主线的（副本的提交要确认生效才进主线）。
+    """
+    from ...kernel.changesets import worktree
     from .. import mainline
 
     now = head(root)
     files = 0
     if base and now and base != now:
         files = len([line for line in _git(Path(root), "diff", "--name-only", f"{base}..{now}").splitlines() if line])
-    return {"files": files, "version_label": mainline.label(mainline.count(root)) if now else None}
+    main = worktree.main_root(Path(root))
+    return {"files": files, "version_label": mainline.label(mainline.count(main)) if now else None}
 
 
 def lock_phase(root: Path, command_name: str) -> str | None:

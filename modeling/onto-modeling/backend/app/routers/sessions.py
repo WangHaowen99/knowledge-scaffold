@@ -133,6 +133,16 @@ def _exec_view(project_id: str, record: dict | None) -> dict | None:
     return exec_records.view(record, root=root, flow=turns._flow(root))
 
 
+def _open_changeset(project_id: str, conversation_id: str) -> dict | None:
+    """S-05：这条对话里没确认的助手变更集（方案 C12）。"""
+    from ..kernel.changesets import service as changesets
+
+    record = changesets.current(deps.workspaces, project_id)
+    if record is None or record.get("conversation_id") not in (None, conversation_id):
+        return None
+    return changesets.view(record)
+
+
 @router.get("/conversations/{cid}")
 def conversation_state(project_id: str, cid: str, request: Request):
     deps.require_owner(project_id, request)
@@ -178,7 +188,7 @@ def conversation_state(project_id: str, cid: str, request: Request):
         "pending_permission": pending,
         "open_questions": questions,
         "active_exec": _exec_view(project_id, active),
-        "open_changeset": None,  # 变更集（B4b）
+        "open_changeset": _open_changeset(project_id, conversation_id),
         "config_pending": config_pending,
         "autobuild_run_id": None,  # 自主构建（P3）
         "pool": _pool(),

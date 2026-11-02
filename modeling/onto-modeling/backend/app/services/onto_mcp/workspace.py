@@ -65,12 +65,17 @@ def integrity(records):
 
 
 def editing_issue(project_id, path):
-    from ..agent_sessions import manager
-    state = manager.live_status(project_id)
-    if state and state.get("busy"):
-        return issue("PROJECT_EDITING_BUSY", "助手正在修改该项目，请等待当前任务结束", path)
-    if studio.lease_status(project_id, path) or studio.get_draft(project_id, path):
-        return issue("PROJECT_EDITING_BUSY", "条目存在 Studio 租约或未提交草稿，请先完成或放弃编辑", path)
+    """写入范围锁（方案 C10）：条目在助手的写入范围里就忙，附上范围里的实体；整项目忙与 Studio 租约已取消。"""
+    from ...api import deps
+    from ...kernel.changesets import service as changesets
+
+    lock, hits = changesets.paths_in_scope(deps.workspaces, project_id, [path])
+    if hits:
+        return issue("PROJECT_EDITING_BUSY", "助手正在改这部分内容，确认生效或撤回之前只读", path,
+                     entities=list(lock.get("entries") or []) + list(lock.get("artifacts") or []),
+                     scope_state=lock.get("state"), changeset_id=lock.get("changeset_id"))
+    if studio.get_draft(project_id, path):
+        return issue("PROJECT_EDITING_BUSY", "条目有未提交的 Studio 草稿，请先提交或放弃", path)
     return None
 
 
@@ -142,7 +147,8 @@ def persist(manager, project_id, root, before, after, identity, expected, userna
         raise McpError("REVISION_CONFLICT", "工作区内容已更新", 409)
     busy = editing_issue(project_id, record["path"])
     if busy:
-        raise McpError("PROJECT_EDITING_BUSY", busy["message"], 409)
+        raise McpError("PROJECT_EDITING_BUSY", busy["message"], 409,
+                       **{key: busy[key] for key in ("entities", "scope_state", "changeset_id") if key in busy})
     # 经写入事务：原子写入、只提交这一个文件并带来源 trailer，失败时恢复写入前的内容（方案 C1）。
     # agent 已暂存的其他改动不会被带进这次提交（临时索引），所以不再因为有暂存改动就回「项目忙」（方案 C10）
     from ...kernel.writepath import ChangeTx, Origin

@@ -8,6 +8,8 @@ nodes:
     optional: true
     after: [trace.trace, core.validate]
     done: [scripts]
+    produces: ["ontology/scripts/*"]
+    writes: ["ontology/operation/*", "ontology/data-mock/*"]
     entry: {command: /ontology-codegen-scan}
     actions:
       - {label: 扫描候选, command: /ontology-codegen-scan}
@@ -21,6 +23,7 @@ nodes:
     after: core.operation
     display_after: [codegen.codegen]
     done: [solver]
+    writes: ["ontology/scripts/*"]
     # 入口是「求解模型」面板，不走对话命令
     panel: true
     actions: []

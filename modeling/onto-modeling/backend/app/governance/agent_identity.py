@@ -138,7 +138,8 @@ def identity_for_cwd(cwd) -> dict[str, str]:
                 data = json.loads(marker.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 return {}
-            return run_identity(candidate.name, str(data.get("conversation_id") or ""),
+            # 助手副本的目录名是 assistant：项目 ID 以标记里记的为准（宿主写），没有时取目录名
+            return run_identity(str(data.get("project_id") or candidate.name), str(data.get("conversation_id") or ""),
                                 str(data.get("engine_id") or ""))
         if (candidate / ".git").exists():
             return {}
@@ -213,6 +214,21 @@ def share_read_only(path: Path) -> None:
     os.chmod(path, 0o755)
 
 
+def share_writable(path: Path) -> None:
+    """agent 要写的新目录（助手副本，kernel/changesets/worktree）：归 agent 组、组可写、目录 setgid。
+
+    只在切用户时做（root + 配置了 agent 用户）；数据目录下的 changesets/ 本身已是共享目录，新建的副本
+    继承组，这里补上组写与 setgid（后端 umask 007 建出的文件组可读写，但 git 检出的文件按仓库权限）。"""
+    if not agent_user() or os.getuid() != 0:
+        return
+    ids = _agent_ids()
+    if ids is None:
+        return
+    path = Path(path)
+    if path.is_dir() and not path.is_symlink():
+        _group_tree(path, ids[1])
+
+
 # agent 只读的目录：装配目录（插件运行时，见 services/packs/assembler）
 READ_ONLY_DIRS = ("assembled",)
 
@@ -220,7 +236,8 @@ READ_ONLY_DIRS = ("assembled",)
 def _shared_dirs() -> list[Path]:
     """agent 要读写的目录：项目工作区、Jiuwen 工件区、CLI 的 HOME。"""
     data = Path(config.DATA_DIR).resolve()
-    dirs = [data / "workspaces", data / "jiuwen"]
+    # changesets/：助手副本（方案 C7），agent 在里面改、提交
+    dirs = [data / "workspaces", data / "changesets", data / "jiuwen"]
     home = Path(os.environ.get("HOME") or "/").resolve()
     # 只认镜像里的布局（HOME 在数据卷上，与数据目录同级或在其下），不动别的家目录
     if home != Path("/") and (home.parent == data.parent or data in home.parents):

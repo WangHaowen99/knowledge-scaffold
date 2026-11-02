@@ -240,7 +240,9 @@ def suggestions(session, *, interrupted: dict | None = None) -> dict | None:
         if primary["id"] == "continue":
             secondary = secondary[1:]
         return {"mode": "interrupted", "primary": primary, "secondary": secondary, "all_commands": True}
-    root = session.cwd
+    from ...kernel.changesets import worktree
+
+    root = worktree.main_root(session.cwd)
     if root is None or not (Path(root) / ".claude").exists():
         return None
     from ..flow import view
@@ -269,7 +271,10 @@ def write_identity_marker(root: Path | None, *, engine: str, engine_id: str, con
     import time
 
     path = Path(root) / ".onto" / "run" / "engine.json"
+    from ...kernel.changesets import worktree
+
     payload = {
+        "project_id": worktree.project_id_of(Path(root)),
         "engine_id": engine_id,
         # state_helper 只认这个进程的子孙：工作区里人工跑的脚本不会冒用引擎的锁
         "host_pid": os.getpid(),

@@ -5,7 +5,10 @@
 - 提交改到的插件产物 → `workspace.changed.artifacts`：`services/project_events.register_artifact_mapper`；
 - 装配变了以后扩展项哪几类变了 → `extensions.updated.changed`：`register_extension_differ`；
 - 内核产物索引发的 `artifacts.updated` → 项目流：`kernel/event_port.register_sink`；
-- 包的提示规则（知识沉淀的纠错信号）→ 宿主注入：`session_host/injection.register_prompt_hint_provider`。
+- 包的提示规则（知识沉淀的纠错信号）→ 宿主注入：`session_host/injection.register_prompt_hint_provider`；
+- 变更集（B4b）：会话状态 → `kernel/changesets/service.register_activity_provider`，变更集变化 → 项目流
+  （`changeset.updated`、`scope.updated`、`flow.updated`），写入范围锁 → `project_events.register_scope_provider`
+  与插件产物的 `register_lock_provider`。
 
 登记的都是进程内的函数引用，不做 I/O，可以重复调。在建应用时（`app/main.py`）调，而不是在 lifespan 里：
 不开 lifespan 的 TestClient、uvicorn 起的服务看到的是同一套接线。工作区管理器一律调用时再取
@@ -52,6 +55,53 @@ def _prompt_hints(root: Path, user_text: str) -> list[str]:
     return registry.prompt_hints(_workspaces(), root, user_text)
 
 
+def _session_activity(project_id: str) -> dict:
+    """变更集一侧要的会话状态（ADR-0046）：助手在不在跑、哪条对话、正在执行的节点、决策卡改动预览。"""
+    from .services.agent_sessions import manager
+    from .services.session_host import exec_records
+
+    session = manager.get(project_id)
+    if session is None:
+        return {}
+    running = session.state == "running" or session.turns_in_flight > 0 or bool(session.sending)
+    record = exec_records.get(project_id, session.exec_id) if session.exec_id else None
+    affected = []
+    for request in list(session.pending_permissions.values()):
+        if request.future is not None and request.future.done():
+            continue
+        for question in request.questions or []:
+            for ref in question.get("affected") or []:
+                if ref not in affected:
+                    affected.append(ref)
+    return {"running": running, "conversation_id": session.conversation_id, "exec": record, "affected": affected}
+
+
+def _changeset_event(project_id: str, event: str, data: dict) -> None:
+    """变更集变了：EP-04 changeset.updated、EP-03 scope.updated，并重算流程（节点「待确认」）。"""
+    from .services import project_events, streams
+
+    if event == "changeset" and data:
+        merged = data.get("merged") or {}
+        streams.publish_project(project_id, "changeset.updated", {
+            "changeset_id": data["id"], "state": data["state"], "source": data.get("source") or "assistant",
+            "conversation_id": data.get("conversation_id"), "version_label": merged.get("version_label"),
+        })
+    project_events.scope_changed(project_id)
+    project_events.schedule_flow_refresh(project_id)
+
+
+def _scope_lock(project_id: str) -> dict:
+    from .kernel.changesets import service as changesets
+
+    return changesets.scope_lock(_workspaces(), project_id)
+
+
+def _artifact_lock(root: Path) -> dict | None:
+    from .kernel.changesets import service as changesets
+
+    return changesets.scope_lock(_workspaces(), root.name)
+
+
 _extension_differ = None
 
 
@@ -71,6 +121,17 @@ def install() -> None:
     project_events.register_extension_differ(_extension_differ)
     event_port.register_sink(_publish_kernel_event)
     injection.register_prompt_hint_provider(_prompt_hints)
+    # 变更集（B4b，ADR-0046、0047）：会话状态 → 变更集与写入范围；变更集变化 → 项目流；写入范围 → 项目流与插件产物
+    from .kernel.artifacts import service as artifact_service
+    from .kernel.changesets import service as changesets
+
+    from .kernel.writepath import scope as write_scope
+
+    changesets.register_activity_provider(_session_activity)
+    write_scope.register_checker(changesets.paths_in_scope)
+    changesets.subscribe(_changeset_event)
+    project_events.register_scope_provider(_scope_lock)
+    artifact_service.register_lock_provider(_artifact_lock)
 
 
 def install_worker(data_dir: Path, assets_dir: Path) -> None:

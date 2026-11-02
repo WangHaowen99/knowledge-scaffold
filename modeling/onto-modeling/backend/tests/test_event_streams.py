@@ -301,15 +301,15 @@ def test_registered_extension_differ_and_scope_provider(env, monkeypatch):
     # 换一张空的登记表：不清掉启动时登记的那份（别的用例还要用）
     monkeypatch.setattr(project_events, "_extension_differs", [])
     project_events.register_extension_differ(lambda pid, before, after: ["nav"])
+    # 写入范围的数据源同理：用完恢复启动时登记的那份（变更集一侧，ADR-0047）
+    monkeypatch.setattr(project_events, "_scope_provider", None)
     project_events.register_scope_provider(lambda pid: {**project_events.empty_scope(), "state": "assistant_running"})
-    try:
-        project_events.extensions_changed(project_id, "a", "b")
-        project_events.scope_changed(project_id)
-    finally:
-        project_events.register_scope_provider(None)
+    project_events.extensions_changed(project_id, "a", "b")
+    project_events.scope_changed(project_id)
     assert buffered(project_id, "extensions.updated")[-1]["data"]["changed"] == ["nav"]
     scope = buffered(project_id, "scope.updated")[-1]["data"]
     assert scope["state"] == "assistant_running"
+    project_events.register_scope_provider(None)
     project_events.scope_changed(project_id)
     assert buffered(project_id, "scope.updated")[-1]["data"] == project_events.empty_scope()
 
