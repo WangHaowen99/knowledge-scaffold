@@ -38,6 +38,7 @@ def _view(limits: dict) -> dict:
         "per_user": dict(limits["per_user"]),
         "per_project": dict(limits["per_project"]),
         "overrides": [_override_view(item) for item in limits["overrides"]],
+        "not_enforced": list(quota.NOT_ENFORCED),
     }
 
 

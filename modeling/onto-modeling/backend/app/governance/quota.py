@@ -42,6 +42,8 @@ LOCAL_USER = "local"  # 与 deps.LOCAL_USER 一致：本地模式的用户与无
 PER_USER_DEFAULTS = {"concurrent_sessions": 3, "daily_tokens": 2_000_000, "collections_per_source_per_hour": 6}
 PER_PROJECT_DEFAULTS = {"online_engines": 1, "monthly_tokens": 20_000_000, "snapshot_git_mb": 20}
 READ_ONLY_ITEMS = frozenset({"online_engines"})  # 一个项目只有一个在线引擎，由会话池保证，不可改
+# 证据源本期只留接口（ADR-0056）：这两项保留、能设，但没有地方检查（SY-15 的 not_enforced）
+NOT_ENFORCED = ("collections_per_source_per_hour", "snapshot_git_mb")
 ITEMS = {
     "user": tuple(PER_USER_DEFAULTS),
     "project": tuple(item for item in PER_PROJECT_DEFAULTS if item not in READ_ONLY_ITEMS),
@@ -600,7 +602,9 @@ class QuotaService:
             raise BudgetExceedsQuota(left["dimension"], requested_tokens, left["tokens"])
 
     def check_collection(self, source_id: str, username: str, record: bool = True) -> None:
-        """证据采集（EV-14）：同一用户对同一数据源每小时的次数；没超时默认记一次。"""
+        """证据采集（EV-14）：同一用户对同一数据源每小时的次数；没超时默认记一次。
+
+        本期证据源只留接口，EV-14 回 501，这里没有调用方（NOT_ENFORCED）。"""
         owner = username or LOCAL_USER
         limit = self.limit("collections_per_source_per_hour", "user", owner)
         now = self.clock()
