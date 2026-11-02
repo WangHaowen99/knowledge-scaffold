@@ -214,6 +214,9 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
         if not running:
             # 每轮收尾把副本里新出的验收回执带回主线：只跑了验证、没改文件的一轮也要带（审查第 11 条）
             worktree.collect_state(root, copy)
+            # 一轮结束：这一轮建的、指向工作区外的符号链接删掉，不进快照、不让后端的读接口跟着走
+            worktree.drop_escaping_links(copy)
+            worktree.drop_escaping_links(root)
         base = worktree.merge_base(root, copy)
         snap = worktree.snapshot(copy)
         changes = [(status, rel) for status, rel in (worktree.diff(root, base, snap) if base else [])
