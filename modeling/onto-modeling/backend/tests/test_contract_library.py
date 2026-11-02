@@ -67,8 +67,8 @@ def test_projects_load_their_locked_version_side_by_side(two_versions, tmp_path:
     assert lib_new.script_descriptor.ScriptContract is lib_new.script_contract.ScriptContract
     assert lib_old.script_contract.ScriptContract is not lib_new.script_contract.ScriptContract
     # 发布渲染用的也是项目锁定的那一份
-    src = ReleaseSource(project_id=new.name, commit="", tree=new, meta={}, version="0.1.0",
-                        state_root=new / ".ontology-state")
+    # state_root 就是项目工作区根目录（与 publish/service._source 一致，审查第 13 条）
+    src = ReleaseSource(project_id=new.name, commit="", tree=new, meta={}, version="0.1.0", state_root=new)
     script_contract, script_descriptor, _shape = _contract_modules(src)
     assert script_contract is lib_new.script_contract and script_descriptor is lib_new.script_descriptor
 

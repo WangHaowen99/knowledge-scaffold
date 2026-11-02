@@ -187,10 +187,17 @@ EVOLUTION_ALLOW = ["ontology/object/*", "ontology/operation/*", "ontology/logic/
 
 
 def mark_active(ws: Path, commands: dict) -> None:
-    """state_helper acquire 写的 `.onto/run/active.json`：正在执行的命令与节点声明的写入范围（方案 D11）。"""
+    """state_helper acquire 写的 `.onto/run/active.json`：正在执行的命令与节点声明的写入范围（方案 D11），
+    连同各命令的锁（守卫只认锁还在的命令，审查第 9 条；这里的锁不带持有者信息，按还在跑）。"""
     path = ws / ".onto" / "run" / "active.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"commands": commands}, ensure_ascii=False), encoding="utf-8")
+    state = ws / ".ontology-state"
+    state.mkdir(exist_ok=True)
+    for lock in state.glob("lock-*.json"):
+        lock.unlink()
+    for command in commands:
+        (state / f"lock-{command}.json").write_text(json.dumps({"command": command}), encoding="utf-8")
 
 
 def test_scope_guard_evolution_only_allows_packaged_dirs(ws: Path):
@@ -218,6 +225,10 @@ def test_scope_guard_only_allows_the_running_nodes_scope(ws: Path):
     assert not denied(run_guard(ws, "scope", write("ontology/operation/下单.md")))
     # 文件坏了按没有处理
     (ws / ".onto" / "run" / "active.json").write_text("not json", encoding="utf-8")
+    assert not denied(run_guard(ws, "scope", write("ontology/operation/下单.md")))
+    # 命令的锁没了（打断、重启没跑到 release）：它的范围不再算数
+    mark_active(ws, {"extract-object": {"node": "core.object", "allow": ["ontology/object/*"]}})
+    (ws / ".ontology-state" / "lock-extract-object.json").unlink()
     assert not denied(run_guard(ws, "scope", write("ontology/operation/下单.md")))
 
 

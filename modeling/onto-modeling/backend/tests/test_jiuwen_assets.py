@@ -140,6 +140,9 @@ def test_hooks_restrict_evolution_writes_to_packaged_dirs(tmp_path):
     active.write_text(json.dumps({"commands": {"evolution": {"node": "evo.evolution", "allow": [
         "ontology/object/*", "ontology/operation/*", "ontology/logic/*", "ontology/rule/*", "ontology/metric/*",
         "ontology/scripts/*", "ontology/testcase/*", "ontology/data-mock/*"]}}}), encoding="utf-8")
+    # 守卫只认锁还在的命令（审查第 9 条）：这把锁不带持有者信息，按还在跑
+    (ws / ".ontology-state").mkdir(exist_ok=True)
+    (ws / ".ontology-state" / "lock-evolution.json").write_text(json.dumps({"command": "evolution"}), encoding="utf-8")
 
     for rel in ("ontology/knowledge/案例.md", "ontology/action/动作.md"):
         reason = run_hooks_sync(entries, "write_file", {"file_path": rel, "content": "x"}, ws)
