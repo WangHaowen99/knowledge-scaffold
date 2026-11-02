@@ -55,9 +55,9 @@ def test_real_hub_accepts_snapshot_and_release_with_exact_mapping_scope(tmp_path
     snapshot=client.publish(owner,prep,'synthetic-user','snapshot_demo','evaluation_snapshot')
     release=client.publish(owner,prep,'synthetic-user','publish_demo','release')
     assert snapshot['version']!=release['version']
-    assert hub.listing(base['hub_package_id'],owner)['total']==2
-    assert hub.listing(base['hub_package_id'],owner,'evaluation_snapshot')['total']==1
-    assert hub.release(base['hub_package_id'],base['release_id'],owner)[1].read_bytes()==raw
+    assert hub.listing(base['ontology_id'],owner)['total']==2
+    assert hub.listing(base['ontology_id'],owner,'evaluation_snapshot')['total']==1
+    assert hub.release(base['ontology_id'],base['release_id'],owner)[1].read_bytes()==raw
     assert client.publish(owner,prep,'synthetic-user','publish_demo','release')==release
     assert 'project_id' not in str(release)
     store.db.close()

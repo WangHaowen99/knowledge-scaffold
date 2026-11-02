@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config
-from .routers import admin, auth_routes, projects, sessions, settings, onto_mcp, hub, hub_packages
+from .routers import admin, auth_routes, projects, sessions, settings, onto_mcp, hub_packages
 from .services import auth
 from .services.agent_sessions import SDK_AVAILABLE, SessionError
 from .services.auth import AuthError
@@ -57,7 +57,6 @@ app.include_router(projects.router)
 app.include_router(sessions.router)
 app.include_router(settings.router)
 app.include_router(admin.router)
-app.include_router(hub.router)
 app.include_router(hub_packages.router)
 
 @app.middleware("http")
@@ -81,8 +80,7 @@ AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/onto-mcp/")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
     is_non_api = not path.startswith("/api")
-    is_exempt = (path.startswith(AUTH_EXEMPT_PREFIXES) or path == "/api/health"
-                 or path == "/api/internal/hub/authorize")
+    is_exempt = (path.startswith(AUTH_EXEMPT_PREFIXES) or path == "/api/health")
     if (
         not auth.ENABLED
         or is_non_api

@@ -34,7 +34,7 @@
 | `POST /runs` | request_id、preparation_id、eval_set_id、可选 eval_set_revision；Neo4j 导入还需 graph_check_id，存在旧数据时必须显式传 replace_existing_graph=true。可选 concurrency（1 到 8，默认 4，同时发送给 consumer 的问题数）与 model_profile_id（`global:<id>`，consumer 全局模型池中已启用的模型，留空用 consumer 默认模型）。活动任务冲突、版本冲突和缺少确认在创建前拒绝，持久化后返回 202；所选模型在执行时已停用则轮次中断并提示 model_unavailable |
 | `GET /consumer-models` | consumer 全局模型池中已启用的模型（最多 100 个），字段 id、name、model、provider、is_default；consumer 不可用时返回 `available: false`，新轮次使用 consumer 默认模型 |
 | `GET /runs`、`/runs/{id}` | 摘要、进度和统计；新任务保留 eval_set_id、eval_set_name、data_source_name、created_at、started_at、updated_at、finished_at。`base_ref` 为用户选择的发布版本，`package_ref` 为实际运行的包（mapping 变化时为评测快照）；本字段之前创建的任务由其准备记录补出 `base_ref`，仅用于返回，不改写已存记录 |
-| `GET /modeling-projects` | 重复的 hub_package_id，每次 1 到 20 个；以当前用户登录向建模服务查询关联项目名称，仅供展示、不落盘。返回 `available` 与 `items[{hub_package_id,projects,total}]`，每包最多 5 个名称；建模不可用或拒绝时返回 `available: false`，不报错 |
+| `GET /modeling-projects` | 重复的 ontology_id，每次 1 到 20 个；以当前用户登录向建模服务查询关联项目名称，仅供展示、不落盘。返回 `available` 与 `items[{ontology_id,projects,total}]`，每包最多 5 个名称；建模不可用或拒绝时返回 `available: false`，不报错 |
 | `GET /runs/{id}/results` | 有界分页用例摘要；执行异常、判分异常的用例带 `error`（code、message，message 截断到 256 字符）。执行异常的原因取自 consumer 运行状态与错误码，如 `consumer 执行失败（错误码）：说明`、等待用户补充信息、完成但未返回回答 |
 | `GET /runs/{id}/results/{case_id}/answer` | 单用例完整答案、判分、改判历史及未获得答案时的完整原因（不超过 1000 字符） |
 | `GET /runs/{id}/results/{case_id}/evidence` | 从 consumer 按需读取有界执行事件索引，不复制完整工具报文 |

@@ -121,7 +121,7 @@ def preparation(client, name='prepare_graph'):
         'name': 'Synthetic graph', 'mode': 'connection', 'provider': 'neo4j', 'connection': connection,
         'import_data': True, 'input_ids': [uploaded['id']],
     }).json()
-    ref = {'hub_package_id': 'package_demo', 'release_id': 'release_demo'}
+    ref = {'ontology_id': 'knowledge_package_demo', 'release_id': 'release_demo'}
     response = client.post('/evaluation/api/package-preparations', json={
         'request_id': name, 'package_ref': ref, 'data_source_id': source['id'],
     })

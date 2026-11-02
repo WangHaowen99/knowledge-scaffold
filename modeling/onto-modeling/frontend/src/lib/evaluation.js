@@ -14,8 +14,8 @@ export function defaultEvaluationBase(here) {
 }
 
 export function evaluationUrl(release, base) {
-  if (!release?.hub_package_id || !release?.release_id) throw new Error('缺少 Hub 包版本引用');
-  const query = new URLSearchParams({ hub_package_id: release.hub_package_id, release_id: release.release_id });
+  if (!release?.ontology_id || !release?.release_id) throw new Error('缺少 Hub 包版本引用');
+  const query = new URLSearchParams({ ontology_id: release.ontology_id, release_id: release.release_id });
   if (release.package_digest) query.set('package_digest', release.package_digest);
   return `${base}?${query}`;
 }

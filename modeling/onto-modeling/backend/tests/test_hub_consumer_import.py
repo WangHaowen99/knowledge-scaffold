@@ -28,7 +28,7 @@ def test_hub_archive_is_accepted_by_consumer(tmp_path):
     with package.open('rb') as content:
         store.upload('request-a', actor, content, digest(package))
     committed = store.commit('request-a', actor)
-    _, archived = store.release(committed['hub_package_id'], committed['release_id'], actor.subject)
+    _, archived = store.release(committed['ontology_id'], committed['release_id'], actor.subject)
     assert archived.read_bytes() == package.read_bytes()
     extracted = tmp_path / 'extracted'
     with zipfile.ZipFile(archived) as archive:

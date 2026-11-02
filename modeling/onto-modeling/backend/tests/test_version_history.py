@@ -18,7 +18,7 @@ def iteration(version, moment):
 
 def release(version, moment):
     stamp = datetime.fromtimestamp(moment, timezone.utc).isoformat()
-    return {'release_id': f'release-{version}', 'hub_package_id': 'package-demo', 'version': version,
+    return {'release_id': f'release-{version}', 'ontology_id': 'package-demo', 'version': version,
             'package_digest': 'a' * 64, 'source_service': 'modeling', 'created_at': stamp, 'status': 'committed'}
 
 

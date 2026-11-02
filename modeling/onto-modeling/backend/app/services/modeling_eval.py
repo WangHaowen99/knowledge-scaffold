@@ -1479,9 +1479,9 @@ def _run_sync(
                 kind='evaluation_snapshot', binding=binding, graph=is_graph(data_source),
                 relation_report=relation_report, object_texts=object_texts,
             )
-            hub_packages.download(snapshot['hub_package_id'], snapshot['release_id'], tok(), zip_path)
+            hub_packages.download(snapshot['ontology_id'], snapshot['release_id'], tok(), zip_path)
             _write_state(root, hub_snapshot_id=snapshot['release_id'],
-                         hub_package_id=snapshot['hub_package_id'],
+                         ontology_id=snapshot['ontology_id'],
                          hub_snapshot_digest=snapshot['package_digest'])
         finally:
             if is_graph(data_source):

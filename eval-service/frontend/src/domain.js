@@ -51,7 +51,7 @@ export function canResume(run) {
   ].includes(run.error?.code);
 }
 export function packageName(run) {
-  return run.package_ref?.ontology_id || run.package_ref?.hub_package_id || '知识包';
+  return run.package_ref?.name || run.package_ref?.ontology_id || '知识包';
 }
 // The release the user chose, and the evaluation snapshot that actually ran when the mapping changed.
 // Runs created before base_ref was recorded only know the base release ID.
@@ -82,13 +82,13 @@ export function judgeMissingReason(judge) {
   return '当前没有可用的评测判分模型，评测回答将无法判分。请先在“评测判分模型配置”中填写你自己的判分模型，或请管理员配置默认判分模型，再开始评测。';
 }
 export function packageIds(runs) {
-  return [...new Set(runs.map((r) => r.package_ref?.hub_package_id).filter(Boolean))].sort();
+  return [...new Set(runs.map((r) => r.package_ref?.ontology_id).filter(Boolean))].sort();
 }
 // The modeling-projects endpoint accepts at most 20 packages per request.
 export function modelingProjectQueries(ids, size = 20) {
   const queries = [];
   for (let i = 0; i < ids.length; i += size) {
-    queries.push(ids.slice(i, i + size).map((id) => `hub_package_id=${encodeURIComponent(id)}`).join('&'));
+    queries.push(ids.slice(i, i + size).map((id) => `ontology_id=${encodeURIComponent(id)}`).join('&'));
   }
   return queries;
 }
@@ -215,7 +215,7 @@ export function sourcePayload(form) {
 }
 export function packageReference(ref) {
   return {
-    hub_package_id: ref.hub_package_id,
+    ontology_id: ref.ontology_id,
     release_id: ref.release_id,
     package_digest: ref.package_digest || '',
   };

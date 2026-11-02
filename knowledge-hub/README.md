@@ -1,8 +1,8 @@
 # Knowledge Package Hub
 
-Hub2 保存用户所属的不可变知识包，支持建模发布、无项目外部包接收、mapping 派生版本校验、查询和下载。建模侧已接入；独立评测在后续 eval1 实施，消费服务适配在后续阶段实施，本期不修改消费。
+Hub 按 ontology_id（manifest.yaml.id）保存不可变知识包版本和最新共享资料。用户授权集合覆盖全部版本；服务身份另外限制发布类型。建模和评测使用同一身份契约，消费端现有 ZIP 协议保持不变。
 
-无 Hub1 存量数据，旧项目包 API 和存储实现已移除，不提供迁移、复制或双链路兼容。项目最新资料仍是独立业务，按项目权限同步、下载和清理，不进入知识包。
+不迁移存量数据，不兼容旧包字段或项目资料接口。资料不依赖建模项目或权限回调，项目删除不级联删除 Hub 内容。
 
 ## 运行
 
@@ -17,10 +17,10 @@ python3 -m venv .venv
 
 - `HUB_DATA_DIR`：独立本地持久化卷，单实例跨进程写锁。
 - `HUB_AUTH_URL`：统一账号服务固定地址，Hub 请求其 `/userinfo` 验证签名、issuer、audience、类型及撤销状态。拒绝重定向，不持久化用户令牌。
-- `HUB_AUTH_ISSUER`：包所有权使用的稳定身份命名空间，未设置时等于 HUB_AUTH_URL。运行后不要随意改变，否则所有权键会变化。
-- `HUB_SERVICE_TOKEN`：与建模 `ONTO_HUB_SERVICE_TOKEN` 对应，是建模访问包 API、项目资料及授权回调的统一服务身份。沿用部署脚本已有的自动生成逻辑，不按开发阶段另设凭据。
+- `HUB_AUTH_ISSUER`：用户身份使用的稳定身份命名空间，未设置时等于 HUB_AUTH_URL。运行后不要随意改变，否则用户身份键会变化。
+- `HUB_SERVICE_TOKEN`：与建模 `ONTO_HUB_SERVICE_TOKEN` 对应，是建模访问包 API 和本体共享资料的统一服务身份。沿用部署脚本已有的自动生成逻辑，不按开发阶段另设凭据。
 - 评测、消费分别使用 `HUB_EVALUATION_SERVICE_TOKEN`、`HUB_CONSUMER_SERVICE_TOKEN`，两者与建模凭据必须不同。评测凭据由部署脚本缺失时生成，独立评测服务部署时沿用；消费服务未接入可不配置。
-- `ONTO_AUTHZ_URL`：项目资料的权限回调地址。包 API 直接使用统一用户鉴权；资料的开发免登录开关不适用于包 API。
+- HUB_AUTH_DIRECTORY_TOKEN：现有账号服务 /admin/users 的目录凭据，仅新增授权时需要。由受控环境注入；不配置时新增授权返回 503，其他包操作不受影响。该凭据具有账号管理权限，应限制 Hub 运行环境的访问。
 - 包上传默认 256 MiB，解压总量 1 GiB、单文件 256 MiB、成员数 10000；pending 默认保留 7 天。已占版本不会回收，已提交包不按 pending TTL 清理。
 
 建模服务通过 `ONTO_HUB_URL`、`ONTO_HUB_SERVICE_TOKEN` 访问 Hub，缺少统一服务身份时失败关闭。接入外部账号服务时同时设置 Hub 的可达地址及稳定 issuer 命名空间，不仅设置建模的认证地址。生产凭据由受控运行环境注入，不写入仓库。
@@ -38,21 +38,20 @@ Hub 是独立 compose 项目（[`deploy/docker-compose.knowledge-hub.yml`](deplo
 ## 数据与恢复
 
 ```text
-packages/<hub_package_id>/
+packages/<ontology_id>/
   metadata.json
   .git/
   releases/<release_id>/{receipt.json,package.zip}
   snapshots/<release_id>/{receipt.json,package.zip}
   pending/<internal_request_id>/
+  resources-current/{receipt.json,resource/...}
 publish-requests/<internal_request_id>.json
-projects/<project_id>/resources-current/
-cleanup/<project_id>.json
 .lock
 ```
 
 发布先保存预留请求，再上传校验。只有重新授权并持久化的 committing 意图能在恢复时完成归档；Git 成功后才公开 committed。仅 uploaded 的内容不会自动发布。ZIP 不变，下载校验原摘要；mapping 派生必须保留基础版本引用。当前支持 schema 0.1 / 0.2（operation-centric.v1），包根与 ontology_id（manifest.yaml.id） 一致。
 
-用户私有包不随项目或消费空间删除。项目清理只影响最新资料及建模本地关联。项目资料按 generation 全量替换并可靠重试，不保留历史资料版本。
+本体授权用户可读、写、授权、撤权和删除；禁止撤销最后一人。删除保留 metadata 墓碑。共享资料按 generation 全量替换或清空，仅建模可写、全部服务可按用户权限读，不保留历史资料。建模只同步显式选择的资料，不后台自动上传。
 
 ## 备份
 
@@ -60,10 +59,10 @@ cleanup/<project_id>.json
 cd knowledge-hub/backend
 python -m hub.backup backup /data/knowledge-hub /backup/hub-current
 python -m hub.backup restore /backup/hub-current /restore/knowledge-hub \
-  --deletion-records /restore/onto/hub-tasks/cleanup
+  --current-metadata /current-hub/packages
 ```
 
-备份持有全局写锁，包含包归档、请求日志、所有权、最新资料及清理记录。恢复目标必须为空，重放最新项目资料删除记录，校验请求索引、版本唯一性、基础引用和 ZIP 摘要。项目清理不得触及 `packages/`。建模本地包关联/冻结输入保存在 `hub-tasks/packages/`，导入任务在 `hub-tasks/package-imports/`，均随 `hub-tasks/` 备份，不保存 access/refresh token。
+备份持有全局写锁，包含原 ZIP、请求日志、授权集合、删除墓碑和最新资料。恢复目标必须为空；必须提供停写后的当前 Hub packages 元数据目录，以覆盖旧备份中的 ACL 和墓碑，避免恢复已撤销权限或已删除包。不要使用建模项目删除记录。恢复期间源目录必须保持不变；恢复前保管当前元数据副本。建模本地项目关联和用户请求缓存在 hub-tasks/packages/，不保存用户令牌。
 
 支持单实例本地卷，不支持多副本共享网络文件系统。监控容量和归档 Git 增长；空间不足或归档失败不得报告成功。
 

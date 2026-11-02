@@ -29,7 +29,7 @@ class Body(BaseModel):
 
 
 class Ref(Body):
-    hub_package_id: str = Field(min_length=1,max_length=128,pattern=r'^[A-Za-z0-9_-]+$')
+    ontology_id: str = Field(min_length=1,max_length=128,pattern=r'^[A-Za-z0-9_-]+$')
     release_id: str = Field(min_length=1,max_length=128,pattern=r'^[A-Za-z0-9_-]+$')
     package_digest: str = Field(default='',max_length=64,pattern=r'^(|[a-f0-9]{64})$')
 
@@ -84,7 +84,7 @@ class GraphInspection(SourcePreview):
 
 def release_ref(receipt):
     """Non-sensitive reference to the Hub release the user chose."""
-    return {k:receipt[k] for k in ('hub_package_id','release_id','ontology_id','version','package_digest') if k in receipt}
+    return {k:receipt[k] for k in ('ontology_id','release_id','name','version','package_digest') if k in receipt}
 
 
 def public(record):
@@ -377,7 +377,7 @@ def create_app(config=None,transport=None):
         prep=store.get(owner,body.preparation_id,'preparations') if body.preparation_id else None
         source=prep['source'] if prep else store.get(owner,body.data_source_id,'data-sources')
         if prep and (prep['status']!='ready' or source.get('id')!=body.data_source_id or
-                     any(body.package_ref.model_dump()[key]!=prep['base'][key] for key in ('hub_package_id','release_id'))):
+                     any(body.package_ref.model_dump()[key]!=prep['base'][key] for key in ('ontology_id','release_id'))):
             raise Failure('graph_check_stale','准备结果与当前数据源或知识包不一致，请重新准备',409,'data_import')
         _,receipt=packages.fetch(body.package_ref.model_dump(),token)
         return sources.graph.inspect(owner,source,receipt['ontology_id'],body.preparation_id)
@@ -589,10 +589,10 @@ def create_app(config=None,transport=None):
         return page
 
     @app.get(prefix+'/modeling-projects')
-    def modeling_projects(request:Request,hub_package_id:list[str]=Query(...)):
+    def modeling_projects(request:Request,ontology_id:list[str]=Query(...)):
         # Display only: names come from onto-modeling with the user's own login and are never stored.
         _,token=actor(request)
-        return linked_projects(config,http,token,hub_package_id)
+        return linked_projects(config,http,token,ontology_id)
 
     @app.get(prefix+'/consumer-models')
     def consumer_models(request:Request):

@@ -24,7 +24,7 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
   const [step, setStep] = useState(0),
     [packages, setPackages] = useState([]),
     [versions, setVersions] = useState([]);
-  const [packageId, setPackageId] = useState(query.get('hub_package_id') || ''),
+  const [packageId, setPackageId] = useState(query.get('ontology_id') || ''),
     [releaseId, setReleaseId] = useState(query.get('release_id') || '');
   const [sourceId, setSourceId] = useState(''),
     [setId, setSetId] = useState(''),
@@ -72,7 +72,7 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
         if (from) {
           const run = await api(`/runs/${encodeURIComponent(from)}`);
           if (!live) return;
-          setPackageId(run.package_ref.hub_package_id);
+          setPackageId(run.package_ref.ontology_id);
           setReleaseId(run.package_ref.release_id);
           setSourceId(
             sources.some((s) => s.id === run.summary.inputs.data_source_id)
@@ -186,10 +186,9 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
   }, [setId]);
   const ref = release
     ? {
-        hub_package_id: packageId,
+        ontology_id: packageId,
         release_id: releaseId,
         package_digest: release.package_digest,
-        ontology_id: release.ontology_id,
       }
     : null;
   async function editSource(id = '') {
@@ -210,7 +209,7 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
     if (caseDirty) throw new Error('请先保存当前评测集修改');
     const input = {
       package_ref: {
-        hub_package_id: packageId,
+        ontology_id: packageId,
         release_id: releaseId,
         package_digest: release.package_digest,
       },
@@ -374,8 +373,8 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
                     >
                       <option value="">选择知识包</option>
                       {packages.map((p) => (
-                        <option key={p.hub_package_id} value={p.hub_package_id}>
-                          {p.ontology_id || p.name || p.hub_package_id}
+                        <option key={p.ontology_id} value={p.ontology_id}>
+                          {p.name || p.ontology_id} · {p.version}
                         </option>
                       ))}
                     </select>
@@ -410,7 +409,7 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
                       <dt>知识包</dt>
                       <dd>
                         {release.ontology_id ||
-                          packages.find((p) => p.hub_package_id === packageId)?.ontology_id}
+                          packages.find((p) => p.ontology_id === packageId)?.ontology_id}
                       </dd>
                       <dt>版本标识</dt>
                       <dd>{release.release_id}</dd>
@@ -655,7 +654,7 @@ export function Wizard({ sets, sources, runs, session, refreshDefinitions, navig
               <dt>知识包</dt>
               <dd>
                 {release?.ontology_id ||
-                  packages.find((p) => p.hub_package_id === packageId)?.ontology_id ||
+                  packages.find((p) => p.ontology_id === packageId)?.ontology_id ||
                   '尚未选择'}
               </dd>
               <dt>固定版本</dt>

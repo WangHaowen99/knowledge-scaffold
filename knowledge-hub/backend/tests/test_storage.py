@@ -18,7 +18,7 @@ class ArchiveTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.store = Store(self.root / 'hub')
         self.payload = {'source_digest': 'a' * 64}
-        self.pid = 'project-alpha'
+        self.pid = 'ontology_demo'
         self.subject = 'operator_a'
 
     def tearDown(self):
@@ -46,7 +46,7 @@ class ArchiveTests(unittest.TestCase):
             self.sync(1, 'synthetic old')
         with self.assertRaises(HubError):
             self.sync(2, 'synthetic conflict')
-        root = self.store.project(self.pid)
+        root = (self.store.root / 'packages' / self.pid)
         self.assertEqual((root / 'resources-current/resource/others/demo.txt').read_text(), 'synthetic new')
         self.assertNotIn(b'resources', self.store.git(root, 'ls-files'))
         self.sync(3)
@@ -73,18 +73,19 @@ class ArchiveTests(unittest.TestCase):
         with self.assertRaises(HubError):
             self.store.copy_upload(io.BytesIO(b'1234'), self.root / 'upload')
 
-    def test_delete_blocks_late_commit_and_restore_replays_tombstones(self):
+    def test_clear_blocks_late_upload_and_restore_preserves_empty_generation(self):
         self.sync(1, 'synthetic current')
-        destination = backup(self.store.root, self.root / 'backup')
-        self.store.delete(self.pid)
-        self.store.delete(self.pid)
+        cleared = self.store.clear_resources(self.pid, 2)
+        self.assertEqual(self.store.clear_resources(self.pid, 2), cleared)
         with self.assertRaises(HubError):
-            self.sync(2, 'synthetic late')
-        restore(destination, self.root / 'restored', self.store.root / 'cleanup')
-        restored = Store(self.root / 'restored')
+            self.sync(1, 'synthetic late')
         with self.assertRaises(HubError):
-            restored.project(self.pid)
-        self.assertFalse((restored.root / 'projects' / self.pid).exists())
+            self.sync(2, 'synthetic conflict')
+        snapshot = backup(self.store.root, self.root / 'backup')
+        restored = restore(snapshot, self.root / 'restored', self.store.root / 'packages')
+        value = json.loads((restored / 'packages' / self.pid / 'resources-current/receipt.json').read_text())
+        self.assertTrue(value['empty'])
+        self.assertEqual(value['generation'], 2)
 
     def test_backup_restore_preserves_release_and_latest_materials(self):
         self.sync(1, 'synthetic current')
@@ -93,7 +94,7 @@ class ArchiveTests(unittest.TestCase):
         deletions.mkdir()
         restore(self.root / 'backup', self.root / 'restored', deletions)
         restored = Store(self.root / 'restored')
-        self.assertEqual((restored.project(self.pid) / 'resources-current/resource/others/demo.txt').read_text(), 'synthetic current')
+        self.assertEqual(((restored.root / 'packages' / self.pid) / 'resources-current/resource/others/demo.txt').read_text(), 'synthetic current')
 
 
 if __name__ == '__main__':

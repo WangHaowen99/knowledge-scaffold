@@ -449,7 +449,7 @@ def publish_release(project_id: str, body: ReleaseBody, request: Request):
     from .hub_packages import identity
     from ..services import hub_packages
     token, subject, _ = identity(request)
-    ensure_access(project_id, request)
+    ensure_access(project_id, request, write=True)
     return hub_packages.publish(workspaces, project_id, body.request_id, token, subject, body.allow_unbound)
 
 
@@ -473,7 +473,7 @@ def download_release(project_id: str, release_id: str, request: Request):
     linked = hub_packages.association(project_id, subject)
     if not linked:
         raise WorkspaceError('尚未关联个人 Hub 包', 404)
-    return download(linked['hub_package_id'], release_id, request)
+    return download(linked['ontology_id'], release_id, request)
 
 
 @router.get("/{project_id}/package/resources/status")
@@ -482,10 +482,24 @@ def hub_resource_status(project_id: str, request: Request):
     return knowledge_hub.resource_status(project_id, workspaces)
 
 
+class SharedResourcesBody(BaseModel):
+    model_config = {"extra": "forbid"}
+    paths: list[str] = Field(max_length=10000)
+    confirm_shared: bool
+
+
+@router.put("/{project_id}/package/resources")
+def share_hub_resources(project_id: str, body: SharedResourcesBody, request: Request):
+    ensure_access(project_id, request, write=True)
+    if not body.confirm_shared:
+        raise WorkspaceError('请确认所选资料可向全部 Hub 授权用户共享', 422)
+    return knowledge_hub.sync_resources(workspaces, project_id, knowledge_hub.token_of(request), body.paths)
+
+
 @router.get("/{project_id}/package/resources")
 def hub_resources(project_id: str, request: Request, offset: int = 0, limit: int = 20):
     ensure_access(project_id, request)
-    return knowledge_hub.call('GET', f'/api/projects/{project_id}/resources/current?offset={offset}&limit={limit}',
+    return knowledge_hub.call('GET', f'/api/packages/{hub_ontology_id(project_id)}/resources/current?offset={offset}&limit={limit}',
                               knowledge_hub.token_of(request))
 
 
@@ -498,7 +512,7 @@ def hub_resource_download(project_id: str, file_id: str, request: Request):
     directory = Path(tempfile.mkdtemp(prefix='onto-hub-resource-'))
     dest = directory / 'resource'
     try:
-        knowledge_hub.call('GET', f'/api/projects/{project_id}/resources/current/{file_id}',
+        knowledge_hub.call('GET', f'/api/packages/{hub_ontology_id(project_id)}/resources/current/{file_id}',
                            knowledge_hub.token_of(request), download=dest)
     except Exception:
         shutil.rmtree(directory)
@@ -738,7 +752,6 @@ async def upload_resource(
         purpose,
         reading_mode,
     )
-    background.add_task(knowledge_hub.attempt_resource_sync, workspaces, project_id)
     return result
 
 
@@ -764,7 +777,6 @@ def set_resource_meta(project_id: str, body: ResourceDirectiveBody, request: Req
     result = workspaces.set_resource_directive(
         project_id, body.path, body.purpose, body.reading_mode
     )
-    background.add_task(knowledge_hub.attempt_resource_sync, workspaces, project_id)
     return result
 
 
@@ -772,7 +784,6 @@ def set_resource_meta(project_id: str, body: ResourceDirectiveBody, request: Req
 def delete_resource(project_id: str, path: str, request: Request, background: BackgroundTasks):
     ensure_access(project_id, request, write=True)
     result = workspaces.delete_resource(project_id, path)
-    background.add_task(knowledge_hub.attempt_resource_sync, workspaces, project_id)
     return result
 
 
@@ -1555,3 +1566,11 @@ def tag_version(project_id: str, body: TagBody, request: Request):
 def delete_tag(project_id: str, tag_name: str, request: Request):
     ensure_access(project_id, request, write=True)
     return workspaces.delete_tag(project_id, tag_name)
+
+
+def hub_ontology_id(project_id):
+    from ..services.hub_packages import association
+    linked = association(project_id)
+    if not linked:
+        raise WorkspaceError('项目尚未发布到 Hub', 404)
+    return linked['ontology_id']

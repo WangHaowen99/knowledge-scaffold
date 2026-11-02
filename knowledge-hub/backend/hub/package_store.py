@@ -1,4 +1,4 @@
-"""User-owned packages with durable request intents and immutable ZIP archives.
+"""Ontology-scoped packages with durable request intents and immutable ZIP archives.
 
 All entry points run under the shared Store's global cross-process lock. A
 request is the recovery journal; only a durable committing intent can publish.
@@ -7,13 +7,12 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import uuid
 
 from .package_contract import PackageError, PublishBody, check_capability
-from .package_validation import validate_derivation
-from .storage import atomic, digest, identifier, read_json, sync_dir, write_json
+from .package_validation import inspect_package, validate_derivation
+from .storage import digest, identifier, read_json, sync_dir, write_json
 
 
 def now():
@@ -25,7 +24,7 @@ def request_key(subject, service, request_id):
     return hashlib.sha256(json.dumps([subject, service, request_id]).encode()).hexdigest()
 
 
-PUBLIC = ('request_id', 'hub_package_id', 'release_id', 'ontology_id', 'version', 'kind',
+PUBLIC = ('request_id', 'ontology_id', 'release_id', 'name', 'filename', 'existing', 'version', 'kind',
           'source_service', 'change_type', 'base_release_id', 'base_digest', 'status',
           'package_digest', 'size', 'created_at', 'expires_at', 'committed_at')
 SNAPSHOT = re.compile(r'^(?P<root>.+)-eval\.(?P<number>[0-9]{1,9})$')
@@ -51,6 +50,15 @@ def public(row):
     return result
 
 
+def package_filename(ontology_id, name, version):
+    safe = re.sub(r'[^\w. -]', '_', name, flags=re.UNICODE).strip(' .')[:80].strip(' .')
+    if not safe:
+        safe = 'knowledge_package'
+    while len(safe.encode('utf-8')) > 120:
+        safe = safe[:-1]
+    return f'{ontology_id.replace("-", "")[:12]}-{safe}-{version}.zip'
+
+
 class PackageStore:
     def __init__(self, store):
         self.io = store
@@ -69,39 +77,70 @@ class PackageStore:
         write_json(self.journal(row), row)
 
     def pending(self, row):
-        return self.root_of(row['hub_package_id']) / 'pending' / row['internal_request_id']
+        return self.root_of(row['ontology_id']) / 'pending' / row['internal_request_id']
 
     def archived(self, row):
-        return self.root_of(row['hub_package_id']) / (
+        return self.root_of(row['ontology_id']) / (
             'releases' if row['kind'] == 'release' else 'snapshots') / row['release_id']
 
     def ensure_metadata(self, row):
-        root = self.root_of(row['hub_package_id'])
+        # Only a durable commit decision establishes the initial authorization.
+        root = self.root_of(row['ontology_id'])
+        self.io.initialize(root)
         meta = read_json(root / 'metadata.json')
-        identity = {k: row[k] for k in ('hub_package_id', 'owner_subject', 'ontology_id')}
-        if meta and any(meta.get(k) != v for k, v in identity.items()):
-            raise PackageError('archive_integrity', 'Package identity mismatch', 503, 'recovery')
         if not meta:
-            write_json(root / 'metadata.json', dict(identity, state='active', created_at=row['created_at']))
-        if not (root / '.git').exists():
-            self.io.git(root, 'init', '-q')
-        atomic(root / '.gitignore', b'pending/\nmetadata.json\n.write-*\n')
+            write_json(root / 'metadata.json', dict(
+                ontology_id=row['ontology_id'],
+                authorized_users={row['owner_subject']: row['creator_identity']},
+                state='active', created_at=row['created_at']))
 
-    def owned(self, package_id, subject):
-        meta = read_json(self.root_of(package_id) / 'metadata.json')
-        if not meta or meta.get('owner_subject') != subject:
+    def owned(self, ontology_id, subject, *, allow_deleted=False):
+        meta = read_json(self.root_of(ontology_id) / 'metadata.json')
+        if not meta or subject not in meta.get('authorized_users', {}):
             raise PackageError('not_found', 'Package not found', 404, 'authorization')
-        if meta.get('state') != 'active':
-            raise PackageError('package_unavailable', 'Package is unavailable', 410)
+        if meta.get('state') != 'active' and not allow_deleted:
+            raise PackageError('package_deleted', 'Package has been deleted', 410)
         return meta
+
+    def authorize_request(self, row, identity):
+        if (self.root_of(row['ontology_id']) / 'metadata.json').exists():
+            self.owned(row['ontology_id'], identity.subject)
+
+    def authorized_users(self, ontology_id, subject, offset=0, limit=20):
+        meta = self.owned(ontology_id, subject)
+        rows = [dict(subject_id=key, **value) for key, value in sorted(meta['authorized_users'].items())]
+        return dict(ontology_id=ontology_id, **self.page(rows, offset, limit))
+
+    def grant(self, ontology_id, subject, users):
+        from .user_auth import subject_id
+        meta = self.owned(ontology_id, subject)
+        for user in users:
+            meta['authorized_users'][subject_id(user['issuer'], user['sub'])] = user
+        write_json(self.root_of(ontology_id) / 'metadata.json', meta)
+        return dict(ontology_id=ontology_id, granted=len(users))
+
+    def revoke(self, ontology_id, subject, target):
+        meta = self.owned(ontology_id, subject)
+        if target in meta['authorized_users']:
+            if len(meta['authorized_users']) == 1:
+                raise PackageError('last_authorized_user', 'Cannot revoke the last authorized user', 409)
+            del meta['authorized_users'][target]
+            write_json(self.root_of(ontology_id) / 'metadata.json', meta)
+        return dict(ontology_id=ontology_id, revoked=True)
+
+    def delete(self, ontology_id, subject):
+        meta = self.owned(ontology_id, subject, allow_deleted=True)
+        if meta['state'] != 'deleted':
+            meta.update(state='deleted', deleted_at=now().isoformat())
+            write_json(self.root_of(ontology_id) / 'metadata.json', meta)
+        return dict(ontology_id=ontology_id, state='deleted')
 
     def get_request(self, request_id, identity):
         key = request_key(identity.subject, identity.service, request_id)
         row = read_json(self.root / 'publish-requests' / (key + '.json'))
         if not row:
             raise PackageError('not_found', 'Publication request not found', 404)
-        self.ensure_metadata(row)
-        self.owned(row['hub_package_id'], identity.subject)
+        self.authorize_request(row, identity)
         check_capability(identity.service, row)
         self.recover_request(row)
         return row
@@ -117,23 +156,20 @@ class PackageStore:
             row = self.get_request(payload['request_id'], identity)
             self.require_live(row)
             return public(row), False
-        package_id = payload['hub_package_id']
-        if package_id:
-            meta = self.owned(package_id, identity.subject)
-            if meta['ontology_id'] != payload['ontology_id']:
-                raise PackageError('identity_conflict', 'Ontology identity changed', 409)
-        else:
-            package_id = uuid.uuid4().hex
+        package_id = payload['ontology_id']
+        if (self.root_of(package_id) / 'metadata.json').exists():
+            self.owned(package_id, identity.subject)
+            if payload['change_type'] == 'modeling_content' and not payload['base_release_id']:
+                raise PackageError('base_required', 'Modeling update requires a base version', 409)
         base = None
         if payload['base_release_id']:
             base, _ = self.release(package_id, payload['base_release_id'], identity.subject)
             if base['package_digest'] != payload['base_digest']:
                 raise PackageError('base_conflict', 'Base package digest mismatch', 409)
-        occupied = {r['version'] for r in self.requests() if r['hub_package_id'] == package_id}
+        occupied = {r['version'] for r in self.requests() if r['ontology_id'] == package_id}
         version = payload['version']
         if version:
-            if version in occupied:
-                raise PackageError('version_conflict', 'Package version already reserved', 409)
+            pass  # External uploads compare actual bytes with the committed version.
         elif payload['kind'] == 'evaluation_snapshot':
             version = snapshot_version(base['version'] if base else '', occupied)
         else:
@@ -142,14 +178,13 @@ class PackageStore:
             while version in occupied:
                 version = f'0.1.{int(version.split(".")[2]) + 1}'
         timestamp = now()
-        row = dict(payload, hub_package_id=package_id, version=version, release_id=uuid.uuid4().hex,
+        row = dict(payload, version=version, release_id=uuid.uuid4().hex,
                    input=payload, internal_request_id=key, owner_subject=identity.subject,
+                   creator_identity=dict(issuer=identity.issuer, sub=identity.sub),
                    source_service=identity.service, status='pending', created_at=timestamp.isoformat(),
                    expires_at=(timestamp + timedelta(seconds=self.io.pending_ttl)).isoformat())
-        # Persist allocation before metadata: a crash cannot allocate another package
-        # or reuse a version. Recovery recreates metadata from this authoritative intent.
         self.save(row)
-        self.ensure_metadata(row)
+        self.io.initialize(self.root_of(package_id))
         return public(row), True
 
     def require_live(self, row):
@@ -161,10 +196,12 @@ class PackageStore:
             raise PackageError('digest_conflict', 'Package digest mismatch', 409)
         base, base_path = None, None
         if row.get('base_release_id'):
-            base, base_path = self.release(row['hub_package_id'], row['base_release_id'], row['owner_subject'])
+            base, base_path = self.release_unchecked(row['ontology_id'], row['base_release_id'])
             if base['package_digest'] != row['base_digest']:
                 raise PackageError('base_conflict', 'Base package digest mismatch', 409)
         validate_derivation(self.io, path, row, base_path, base)
+        manifest, _ = inspect_package(self.io, path, row['ontology_id'], row['version'])
+        return manifest
 
     def upload(self, request_id, identity, stream, expected_digest):
         row = self.get_request(request_id, identity)
@@ -185,7 +222,13 @@ class PackageStore:
             if row['change_type'] == 'external_import' and actual != row['input_digest']:
                 raise PackageError('input_conflict', 'External input digest mismatch', 409)
             updated = dict(row, package_digest=actual, size=path.stat().st_size)
-            self.validate(updated, path)
+            manifest = self.validate(updated, path)
+            updated.update(name=manifest['name'])
+            updated['filename'] = package_filename(updated['ontology_id'], updated['name'], updated['version'])
+            duplicate = self.version_match(updated)
+            if duplicate:
+                updated['existing'] = True
+                updated['release_id'] = duplicate['release_id']
             os.replace(path, folder / 'package.zip')
             sync_dir(folder)
             updated['status'] = 'uploaded'
@@ -202,6 +245,14 @@ class PackageStore:
         if row['status'] != 'uploaded':
             raise PackageError('upload_incomplete', 'Package upload incomplete', 409, 'commit')
         self.validate(row, self.pending(row) / 'package.zip')
+        duplicate = self.version_match(row)
+        if duplicate:
+            row.update({k: duplicate[k] for k in ('name', 'filename', 'version', 'kind', 'release_id',
+                                                  'package_digest', 'size', 'committed_at')})
+            row.update(existing=True, status='committed')
+            self.save(row)
+            (self.pending(row) / 'package.zip').unlink(missing_ok=True)
+            return public(row)
         # The route has freshly authorized this actor. This durable decision is
         # the only state recovery is allowed to finish without a live user token.
         row.update(status='committing', committed_at=now().isoformat())
@@ -219,10 +270,11 @@ class PackageStore:
         self.validate(row, target / 'package.zip')
         receipt = public(dict(row, status='committed'))
         write_json(target / 'receipt.json', receipt)
-        root = self.root_of(row['hub_package_id'])
+        root = self.root_of(row['ontology_id'])
         self.io.git(root, 'add', '--', '.gitignore', target.relative_to(root).as_posix())
         if self.io.git(root, 'diff', '--cached', '--name-only'):
             self.io.git(root, 'commit', '-q', '-m', 'Archive knowledge package version')
+        self.ensure_metadata(row)
         row['status'] = 'committed'
         self.save(row)
 
@@ -238,9 +290,12 @@ class PackageStore:
 
     def release(self, package_id, release_id, subject):
         self.owned(package_id, subject)
+        return self.release_unchecked(package_id, release_id)
+
+    def release_unchecked(self, package_id, release_id):
         identifier(release_id)
-        row = next((r for r in self.requests() if r['hub_package_id'] == package_id
-                    and r['release_id'] == release_id and r['status'] == 'committed'), None)
+        row = next((r for r in self.requests() if r['ontology_id'] == package_id
+                    and r['release_id'] == release_id and r['status'] == 'committed' and not r.get('existing')), None)
         if not row:
             raise PackageError('not_found', 'Version not found', 404)
         path = self.archived(row) / 'package.zip'
@@ -250,18 +305,39 @@ class PackageStore:
 
     def listing(self, package_id, subject, kind='release', offset=0, limit=20):
         self.owned(package_id, subject)
-        rows = [public(r) for r in self.requests() if r['hub_package_id'] == package_id
-                and r['status'] == 'committed' and r['kind'] == kind]
+        rows = [public(r) for r in self.requests() if r['ontology_id'] == package_id
+                and r['status'] == 'committed' and not r.get('existing') and r['kind'] == kind]
         rows.sort(key=lambda r: (r['committed_at'], r['release_id']), reverse=True)
         return self.page(rows, offset, limit)
 
+    def version_match(self, row):
+        other = next((r for r in self.requests() if r['ontology_id'] == row['ontology_id']
+                      and r['version'] == row['version'] and r['status'] == 'committed'
+                      and not r.get('existing')), None)
+        if other and (other['package_digest'] != row['package_digest'] or other['kind'] != row['kind']):
+            raise PackageError('version_conflict', 'Package version conflict', 409)
+        return other
+
+    def summary(self, ontology_id, subject):
+        self.owned(ontology_id, subject)
+        rows = self.listing(ontology_id, subject)['items']
+        if not rows:
+            rows = self.listing(ontology_id, subject, 'evaluation_snapshot')['items']
+        if not rows:
+            raise PackageError('not_found', 'Package not found', 404)
+        return rows[0]
+
     def packages(self, subject, offset=0, limit=20):
-        visible = {}
-        for row in self.requests():
-            if row['owner_subject'] == subject and row['status'] == 'committed':
-                meta = self.owned(row['hub_package_id'], subject)
-                visible[row['hub_package_id']] = {k: meta[k] for k in ('hub_package_id', 'ontology_id', 'created_at')}
-        rows = sorted(visible.values(), key=lambda r: (r['created_at'], r['hub_package_id']), reverse=True)
+        rows = []
+        for path in (self.root / 'packages').glob('*/metadata.json'):
+            meta = read_json(path)
+            if meta['state'] == 'active' and subject in meta['authorized_users']:
+                try:
+                    rows.append(self.summary(meta['ontology_id'], subject))
+                except PackageError as exc:
+                    if exc.code != 'not_found':
+                        raise
+        rows.sort(key=lambda r: (r['committed_at'], r['ontology_id']), reverse=True)
         return self.page(rows, offset, limit)
 
     @staticmethod
@@ -277,19 +353,23 @@ class PackageStore:
     def recover_all(self):
         rows = self.requests()
         seen = set()
-        for row in rows:
+        for row in sorted(rows, key=lambda r: r['created_at']):
             key = request_key(row['owner_subject'], row['source_service'], row['request_id'])
             if key != row['internal_request_id'] or not self.journal(row).is_file():
                 raise PackageError('archive_integrity', 'Request index mismatch', 503, 'recovery')
-            unique = (row['hub_package_id'], row['version'])
-            if unique in seen:
-                raise PackageError('archive_integrity', 'Duplicate reserved version', 503, 'recovery')
-            seen.add(unique)
-            self.ensure_metadata(row)
-        for row in sorted(rows, key=lambda r: r['created_at']):
             self.recover_request(row)
             if row['status'] == 'committed':
+                if not row.get('existing'):
+                    key = (row['ontology_id'], row['version'])
+                    if key in seen:
+                        raise PackageError('archive_integrity', 'Duplicate committed version', 503, 'recovery')
+                    seen.add(key)
+                if not (self.root_of(row['ontology_id']) / 'metadata.json').exists():
+                    raise PackageError('archive_integrity', 'Package metadata missing', 503, 'recovery')
                 self.validate(row, self.archived(row) / 'package.zip')
-                if read_json(self.archived(row) / 'receipt.json') != public(row):
+                if not row.get('existing') and read_json(self.archived(row) / 'receipt.json') != public(row):
                     raise PackageError('archive_integrity', 'Archive receipt mismatch', 503, 'recovery')
             (self.pending(row) / 'upload.tmp').unlink(missing_ok=True)
+        for root in (self.root / 'packages').glob('*'):
+            self.io.recover(root)
+            self.io.validate_resources(root)

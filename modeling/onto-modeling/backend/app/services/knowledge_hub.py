@@ -62,7 +62,7 @@ def token_of(request):
     return header[7:] if header.lower().startswith('bearer ') else request.query_params.get('token', '')
 
 
-def call(method, path, token='', body=None, upload=None, headers=None, download=None):
+def call(method, path, token='', body=None, upload=None, headers=None, download=None, upload_name=None):
     """Bounded JSON responses; stream ZIP transfers without encoding them as JSON."""
     url = urllib.parse.urlsplit(os.environ.get('ONTO_HUB_URL', '').rstrip('/'))
     if url.scheme not in ('http', 'https') or not url.hostname or url.username or url.password:
@@ -79,7 +79,8 @@ def call(method, path, token='', body=None, upload=None, headers=None, download=
     prefix = suffix = b''
     if upload:
         boundary = uuid.uuid4().hex
-        prefix = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="archive.zip"\r\n'
+        filename = (upload_name or Path(upload).name).replace('"', '_').replace("\r", "_").replace("\n", "_")
+        prefix = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
                   'Content-Type: application/zip\r\n\r\n').encode()
         suffix = f'\r\n--{boundary}--\r\n'.encode()
         request_headers['Content-Type'] = f'multipart/form-data; boundary={boundary}'
@@ -103,8 +104,17 @@ def call(method, path, token='', body=None, upload=None, headers=None, download=
             conn.send(payload)
         response = conn.getresponse()
         if response.status >= 300:
-            response.read(65536)
-            raise WorkspaceError(f'知识包 Hub 请求失败（{response.status}）', response.status, 'hub_error')
+            raw_error = response.read(65536)
+            try:
+                code = json.loads(raw_error).get('code', 'hub_error')
+            except (ValueError, AttributeError):
+                code = 'hub_error'
+            messages = {'version_conflict': '包版本冲突：相同版本对应不同内容',
+                        'package_deleted': 'Hub 知识包已删除',
+                        'not_found': 'Hub 包不存在或当前用户无权访问',
+                        'last_authorized_user': '不能撤销最后一名授权用户'}
+            raise WorkspaceError(messages.get(code, f'知识包 Hub 请求失败（{response.status}）'),
+                                 response.status, code if code in messages else 'hub_error')
         if download is not None:
             target = Path(download)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -163,7 +173,7 @@ def source_state(manager, pid, allow_unbound, binding=None, graph=False):
     return value, digest
 
 
-def resources_archive(manager, pid, dest):
+def resources_archive(manager, pid, dest, selected):
     root = manager.project_root(pid)
     if (root / 'resource').is_symlink() or (root / 'resource/materials.json').is_symlink():
         raise WorkspaceError('资料目录和元数据不允许符号链接')
@@ -178,9 +188,11 @@ def resources_archive(manager, pid, dest):
                 raise WorkspaceError('资料不允许符号链接')
             if p.is_file():
                 files.append(p)
-    paths = {p.relative_to(root).as_posix() for p in files}
-    if any(rel not in paths for rel in directives):
-        raise WorkspaceError('资料用途清单引用了不存在的文件')
+    available = {p.relative_to(root).as_posix(): p for p in files}
+    if not isinstance(selected, list) or any(not isinstance(rel, str) or rel not in available for rel in selected):
+        raise WorkspaceError('请选择存在的共享资料')
+    files = [available[rel] for rel in sorted(set(selected))]
+    directives = {rel: value for rel, value in directives.items() if rel in selected}
     with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as z:
         for path in files:
             info = zipfile.ZipInfo(path.relative_to(root).as_posix())
@@ -191,76 +203,36 @@ def resources_archive(manager, pid, dest):
     return file_digest(dest)
 
 
-def sync_resources(manager, pid):
+def sync_resources(manager, pid, token, selected):
+    from .hub_packages import association
+    if not token:
+        raise WorkspaceError('共享资料需要登录身份', 401)
     with lock(pid):
-        manager.project_root(pid)
+        linked = association(pid)
+        if not linked:
+            raise WorkspaceError('请先发布知识包', 409)
+        path = f"/api/packages/{linked['ontology_id']}/resources/current"
+        current = call('GET', path, token)
         directory = state_dir() / pid
         directory.mkdir(exist_ok=True)
-        task_file = directory / 'resources.json'
-        task = load(task_file, {'generation': 0})
         with tempfile.TemporaryDirectory(prefix='onto-resources-') as temp:
             archive = Path(temp) / 'resources.zip'
-            current = resources_archive(manager, pid, archive)
-            second = Path(temp) / 'check.zip'
-            if resources_archive(manager, pid, second) != current:
-                raise WorkspaceError('资料发生变化，等待下次同步', 409)
-            if current != task.get('digest'):
-                task = {'generation': task['generation'] + 1, 'digest': current, 'pending': True}
-                save(task_file, task)
-            if task.get('pending'):
-                call('PUT', f'/api/projects/{pid}/resources/current', upload=archive,
-                     headers={'X-Resource-Generation': str(task['generation']), 'X-Resource-Digest': current})
-                task['pending'] = resources_archive(manager, pid, second) != current
-                save(task_file, task)
-        return task
+            digest = resources_archive(manager, pid, archive, selected)
+            receipt = call('PUT', path, token, upload=archive,
+                           headers={'X-Resource-Generation': str(current['generation'] + 1),
+                                    'X-Resource-Digest': digest})
+        save(directory / 'resources.json', dict(receipt, selected=selected, pending=False))
+        return receipt
 
 
 def resource_status(pid, manager=None):
-    task = load(state_dir() / identifier(pid) / 'resources.json', {'pending': True, 'generation': 0})
-    if manager is not None and not task.get('pending'):
-        try:
-            with tempfile.TemporaryDirectory(prefix='onto-resource-status-') as temp:
-                current = resources_archive(manager, pid, Path(temp) / 'resources.zip')
-                task = {**task, 'pending': current != task.get('digest')}
-        except (WorkspaceError, OSError):
-            task = {**task, 'pending': True}
-    return task
-
-
-def queue_delete(pid):
-    identifier(pid)
-    save(state_dir() / 'cleanup' / f'{pid}.json', {'project_id': pid})
+    return load(state_dir() / identifier(pid) / 'resources.json',
+                {'pending': False, 'generation': 0, 'selected': [], 'shared': False})
 
 
 def retry_tasks(manager):
     from . import hub_packages
     hub_packages.maintain(manager)
-    if not configured():
-        return
-    for path in (state_dir() / 'cleanup').glob('*.json'):
-        pid = path.stem
-        if load(path, {}).get('completed'):
-            continue
-        try:
-            manager.project_root(pid)
-            continue  # The local deletion did not complete; never erase a live project.
-        except WorkspaceError as exc:
-            if exc.status != 404:
-                continue
-        try:
-            call('DELETE', f'/api/internal/projects/{pid}/artifacts')
-            with lock(pid):
-                shutil.rmtree(state_dir() / pid, ignore_errors=True)
-                # Keep deletion records for recovery and authorization.
-                save(path, {'project_id': pid, 'completed': True})
-        except WorkspaceError:
-            pass
-    for meta in manager.list_projects():
-        try:
-            sync_resources(manager, meta['id'])
-        except (WorkspaceError, OSError, ValueError):
-            # Persisted tasks are retried; credentials never enter task files.
-            continue
 
 
 async def scheduler_loop(manager):
@@ -275,12 +247,12 @@ async def scheduler_loop(manager):
 
 def stage_delete(manager, pid):
     with lock(pid):
-        queue_delete(pid)
         return manager.stage_delete(pid)
 
 
-def attempt_resource_sync(manager, pid):
-    try:
-        sync_resources(manager, pid)
-    except (WorkspaceError, OSError, ValueError):
-        pass  # The periodic scan retries from the current workspace without a user token.
+def package_filename(ontology_id, name, version):
+    import re
+    safe = re.sub(r'[^\w. -]', '_', name).strip(' .')[:80].strip(' .') or 'knowledge_package'
+    while len(safe.encode('utf-8')) > 120:
+        safe = safe[:-1]
+    return f'{ontology_id.replace("-", "")[:12]}-{safe}-{version}.zip'

@@ -81,12 +81,6 @@ class Store:
             finally:
                 fcntl.flock(f, fcntl.LOCK_UN)
 
-    def project(self, pid):
-        identifier(pid)
-        if (self.root / 'cleanup' / f'{pid}.json').exists():
-            raise HubError('Project deleted', 410)
-        return self.root / 'projects' / pid
-
     def git(self, root, *args):
         result = subprocess.run(['git', '-c', 'user.name=knowledge-hub',
                                  '-c', 'user.email=user@example.com', *args],
@@ -159,8 +153,8 @@ class Store:
             out.flush()
             os.fsync(out.fileno())
 
-    def resources(self, pid, generation, stream, expected_digest):
-        root = self.project(pid)
+    def resources(self, ontology_id, generation, stream, expected_digest):
+        root = self.root / 'packages' / identifier(ontology_id)
         self.initialize(root)
         self.recover(root)
         current = root / 'resources-current'
@@ -205,7 +199,7 @@ class Store:
             paths = {f['path'] for f in files}
             if not isinstance(directives, dict) or any(p not in paths for p in directives):
                 raise HubError('Invalid material metadata references')
-            receipt = {'generation': generation, 'digest': expected_digest, 'files': files}
+            receipt = {'ontology_id': ontology_id, 'generation': generation, 'digest': expected_digest, 'files': files}
             write_json(target / 'receipt.json', receipt)
             if current.exists():
                 os.replace(current, root / '.resources-old')
@@ -217,13 +211,32 @@ class Store:
         finally:
             shutil.rmtree(upload, ignore_errors=True)
 
-    def delete(self, pid):
-        identifier(pid)
-        write_json(self.root / 'cleanup' / f'{pid}.json', {'project_id': pid, 'deleted': True})
-        root = self.root / 'projects' / pid
-        if root.exists():
-            shutil.rmtree(root)
-        sync_dir(self.root)
+    def clear_resources(self, ontology_id, generation):
+        root = self.root / 'packages' / identifier(ontology_id)
+        self.recover(root)
+        current = root / 'resources-current'
+        before = read_json(current / 'receipt.json', {'generation': 0})
+        if generation < 1:
+            raise HubError('Invalid resource generation')
+        if generation < before['generation']:
+            raise HubError('Stale resource generation', 409)
+        if generation == before['generation']:
+            if not before.get('empty'):
+                raise HubError('Resource generation conflict', 409)
+            return before
+        receipt = dict(ontology_id=ontology_id, generation=generation, digest=None, files=[], empty=True)
+        target = Path(tempfile.mkdtemp(prefix='.resources-upload-', dir=root))
+        try:
+            write_json(target / 'receipt.json', receipt)
+            if current.exists():
+                os.replace(current, root / '.resources-old')
+            os.replace(target, current)
+            sync_dir(root)
+            if (root / '.resources-old').exists():
+                shutil.rmtree(root / '.resources-old')
+        finally:
+            shutil.rmtree(target, ignore_errors=True)
+        return receipt
 
     def validate_resources(self, root):
         current = root / 'resources-current'
@@ -238,10 +251,5 @@ class Store:
                     raise HubError('Resource integrity failure', 503)
 
     def recover_all(self):
-        for tombstone in (self.root / 'cleanup').glob('*.json'):
-            self.delete(tombstone.stem)
-        for root in (self.root / 'projects').glob('*'):
-            self.recover(root)
-            self.validate_resources(root)
         from .package_store import PackageStore
         PackageStore(self).recover_all()

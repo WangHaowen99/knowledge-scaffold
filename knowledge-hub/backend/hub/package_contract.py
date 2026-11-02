@@ -22,7 +22,6 @@ class PackageError(HubError):
 class PublishBody(BaseModel):
     model_config = ConfigDict(extra='forbid')
     request_id: Identifier
-    hub_package_id: Identifier | None = None
     ontology_id: Identifier
     change_type: Literal['modeling_content', 'external_import', 'mapping_update']
     kind: Kind = 'release'
@@ -38,12 +37,8 @@ class PublishBody(BaseModel):
             raise ValueError('Version sequence exceeds supported range')
         if bool(self.base_release_id) != bool(self.base_digest):
             raise ValueError('Base version and digest must be supplied together')
-        if self.base_release_id and not self.hub_package_id:
-            raise ValueError('Base version requires an existing package')
         if self.change_type == 'mapping_update' and not self.base_release_id:
             raise ValueError('Mapping update requires a base version')
-        if self.change_type == 'modeling_content' and self.hub_package_id and not self.base_release_id:
-            raise ValueError('Modeling update requires a base version')
         if (self.change_type == 'external_import') != bool(self.version):
             raise ValueError('Only external import supplies a version')
         return self
@@ -54,3 +49,14 @@ def check_capability(service, payload):
     if expected.get(service) != payload['change_type'] or (
             service == 'consumer' and payload['kind'] != 'release'):
         raise PackageError('service_forbidden', 'Service capability denied', 403, 'authorization')
+
+
+class AuthorizedUser(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    issuer: Annotated[str, Field(min_length=1, max_length=2048)]
+    sub: Annotated[str, Field(min_length=1, max_length=256)]
+
+
+class GrantBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    users: Annotated[list[AuthorizedUser], Field(min_length=1, max_length=100)]

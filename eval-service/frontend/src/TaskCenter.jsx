@@ -29,7 +29,7 @@ function useModelingProjects(runs) {
       for (const query of modelingProjectQueries(ids)) {
         const page = await api(`/modeling-projects?${query}`);
         available = available && page.available;
-        for (const item of page.items) items[item.hub_package_id] = item;
+        for (const item of page.items) items[item.ontology_id] = item;
       }
       if (live) setProjects({ available, items });
     })().catch(() => live && setProjects({ available: false, items: {} }));
@@ -38,7 +38,7 @@ function useModelingProjects(runs) {
     };
   }, [key]);
   return (run) => {
-    const entry = projects.items[run.package_ref?.hub_package_id];
+    const entry = projects.items[run.package_ref?.ontology_id];
     const title = entry?.projects?.length
       ? entry.projects.join('、') + (entry.total > entry.projects.length ? ` 等 ${entry.total} 个` : '')
       : projects.available

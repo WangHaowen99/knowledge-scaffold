@@ -31,7 +31,7 @@ def synthetic_package():
 class Dependencies:
     def __init__(self):
         self.raw=synthetic_package()
-        self.receipt=dict(hub_package_id='package_demo',release_id='release_demo',ontology_id='knowledge_package_demo',version='0.1.1',kind='release',package_digest=digest(self.raw),status='committed')
+        self.receipt=dict(release_id='release_demo',ontology_id='knowledge_package_demo',version='0.1.1',kind='release',package_digest=digest(self.raw),status='committed')
         self.releases={'release_demo':(self.raw,self.receipt)}
         self.requests={}
         self.submissions={}
@@ -134,7 +134,7 @@ def environment(tmp_path):
 
 
 def preparation(client,request_id='prepare_demo'):
-    response=client.post('/evaluation/api/package-preparations',json={'request_id':request_id,'package_ref':{'hub_package_id':'package_demo','release_id':'release_demo'}})
+    response=client.post('/evaluation/api/package-preparations',json={'request_id':request_id,'package_ref':{'ontology_id':'knowledge_package_demo','release_id':'release_demo'}})
     assert response.status_code==200,response.text
     return response.json()
 
@@ -176,7 +176,7 @@ def test_mapping_publish_overwrite_and_hub_retry(environment):
     response=client.post('/evaluation/api/inputs',files={'file':('items.csv',b'id,value\nitem_0001,2\n','text/csv')})
     assert response.status_code==200,response.text
     source=client.post('/evaluation/api/data-sources',json={'name':'Synthetic dataset','mode':'dataset','input_ids':[response.json()['id']]}).json()
-    payload={'request_id':'mapped_demo','package_ref':{'hub_package_id':'package_demo','release_id':'release_demo'},'data_source_id':source['id']}
+    payload={'request_id':'mapped_demo','package_ref':{'ontology_id':'knowledge_package_demo','release_id':'release_demo'},'data_source_id':source['id']}
     deps.fail_commit_response=True
     assert client.post('/evaluation/api/package-preparations',json=payload).status_code==503
     response=client.post('/evaluation/api/package-preparations',json=payload)
@@ -289,7 +289,7 @@ def test_auth_and_request_validation_do_not_echo_secrets(environment):
 def test_exact_release_lookup_and_retired_project_inputs(environment):
     client,app,deps,cfg=environment
     assert client.get('/evaluation/api/packages/package_demo/releases/release_demo').json()['release_id']=='release_demo'
-    response=client.post('/evaluation/api/package-preparations',json={'request_id':'bad_project','project_id':'project_alpha','package_ref':{'hub_package_id':'package_demo','release_id':'release_demo'}})
+    response=client.post('/evaluation/api/package-preparations',json={'request_id':'bad_project','project_id':'project_alpha','package_ref':{'ontology_id':'knowledge_package_demo','release_id':'release_demo'}})
     assert response.status_code==422
     response=client.post('/evaluation/api/data-sources',json={'name':'Synthetic','mode':'connection','provider':'neo4j','connection':{'uri':'bolt://localhost:7687'},'tables':{'items':'not-an-array'}})
     assert response.status_code==422
@@ -305,7 +305,7 @@ def test_connection_data_source_failure_never_starts_question(environment,monkey
     monkeypatch.setattr(deps,'json',call)
     source=client.post('/evaluation/api/data-sources',json={'name':'Synthetic graph','mode':'connection','provider':'neo4j',
         'connection':{'uri':'bolt://localhost:7687','username':'operator_a','password':'synthetic-invalid'},'tables':{'items':['id','value']}}).json()
-    p=client.post('/evaluation/api/package-preparations',json={'request_id':'connection_demo','package_ref':{'hub_package_id':'package_demo','release_id':'release_demo'},'data_source_id':source['id']})
+    p=client.post('/evaluation/api/package-preparations',json={'request_id':'connection_demo','package_ref':{'ontology_id':'knowledge_package_demo','release_id':'release_demo'},'data_source_id':source['id']})
     assert p.status_code==200,p.text
     record=run(client,p.json())
     assert wait(client,record['id'])['status']=='interrupted'

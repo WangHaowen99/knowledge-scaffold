@@ -29,7 +29,7 @@ def identity(request):
 class ImportBody(BaseModel):
     model_config = ConfigDict(extra='forbid')
     request_id: str = Field(pattern=r'^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,127}$')
-    hub_package_id: str = Field(pattern=r'^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,127}$')
+    ontology_id: str = Field(pattern=r'^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,127}$')
     release_id: str = Field(pattern=r'^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,127}$')
     package_digest: str = Field(pattern=r'^[a-f0-9]{64}$')
     name: str = Field(min_length=1, max_length=128)
@@ -48,11 +48,11 @@ def releases(package_id: str, request: Request, offset: int = Query(0, ge=0), li
 
 
 @router.get('/package-projects')
-def package_projects(request: Request, hub_package_id: list[str] = Query(...)):
+def package_projects(request: Request, ontology_id: list[str] = Query(...)):
     """供独立评测展示：当前用户可访问、且由本人关联到这些 Hub 包的建模项目名称。"""
     _, subject, username = identity(request)
     is_admin = request.state.user.get('role') == 'admin'
-    return hub_packages.linked_projects(projects.workspaces, subject, username, is_admin, hub_package_id)
+    return hub_packages.linked_projects(projects.workspaces, subject, username, is_admin, ontology_id)
 
 
 @router.get('/packages/{package_id}/releases/{release_id}/download')
@@ -61,8 +61,8 @@ def download(package_id: str, release_id: str, request: Request):
     folder = Path(tempfile.mkdtemp(prefix='onto-hub-package-download-'))
     path = folder / 'package.zip'
     try:
-        hub_packages.download(package_id, release_id, token, path)
-        return FileResponse(path, filename='package.zip', media_type='application/zip',
+        receipt = hub_packages.download(package_id, release_id, token, path)
+        return FileResponse(path, filename=knowledge_hub.package_filename(receipt['ontology_id'], receipt['name'], receipt['version']), media_type='application/zip',
                             background=BackgroundTask(shutil.rmtree, folder))
     except Exception:
         shutil.rmtree(folder)

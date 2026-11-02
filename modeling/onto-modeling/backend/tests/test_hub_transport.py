@@ -54,26 +54,19 @@ def test_publish_list_download_and_revocation_over_http(tmp_path, monkeypatch):
                 break
             time.sleep(.02)
         assert server.started
-        # The deployment's single modeling credential also authenticates resource
-        # synchronization; project authorization remains a separate check.
-        resource_checks = []
-        def authorize_resource(request, project_id, operation):
-            resource_checks.append((project_id, operation))
-            return 'operator_a'
-        monkeypatch.setattr(main, 'authorize', authorize_resource)
-        knowledge_hub.sync_resources(manager, pid)
-        assert (pid, 'sync_resources') in resource_checks
         first = hub_packages.publish(manager, pid, 'request-a', 'synthetic', 'operator_a')
         second = hub_packages.publish(manager, pid, 'request-a', 'synthetic', 'operator_a')
         assert first == second
-        listing = hub_packages.call('GET', f"/api/packages/{first['hub_package_id']}/releases", 'synthetic')
+        resources = knowledge_hub.sync_resources(manager, pid, 'synthetic', [])
+        assert resources['ontology_id'] == first['ontology_id']
+        listing = hub_packages.call('GET', f"/api/packages/{first['ontology_id']}/releases", 'synthetic')
         assert listing['total'] == 1
         destination = tmp_path / 'download.zip'
-        hub_packages.download(first['hub_package_id'], first['release_id'], 'synthetic', destination)
+        hub_packages.download(first['ontology_id'], first['release_id'], 'synthetic', destination)
         assert knowledge_hub.file_digest(destination) == first['package_digest']
         allowed = False
         try:
-            hub_packages.download(first['hub_package_id'], first['release_id'], 'synthetic', destination)
+            hub_packages.download(first['ontology_id'], first['release_id'], 'synthetic', destination)
         except WorkspaceError as exc:
             assert exc.status == 401
         else:

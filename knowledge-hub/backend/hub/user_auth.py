@@ -20,6 +20,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 class Identity:
     subject: str
     service: str
+    issuer: str = ""
+    sub: str = ""
 
 
 def authenticate(request):
@@ -61,5 +63,37 @@ def authenticate(request):
     except (OSError, ValueError, urllib.error.URLError) as exc:
         raise PackageError('identity_unavailable', 'Identity verification unavailable', 503, 'authorization') from exc
     issuer = os.environ.get('HUB_AUTH_ISSUER', '').strip() or base
-    subject = hashlib.sha256(json.dumps([issuer, data['sub']], ensure_ascii=False).encode()).hexdigest()
-    return Identity(subject, service)
+    return Identity(subject_id(issuer, data['sub']), service, issuer, data['sub'])
+
+
+def subject_id(issuer, sub):
+    return hashlib.sha256(json.dumps([issuer, sub], ensure_ascii=False).encode()).hexdigest()
+
+
+def validate_targets(users):
+    """Resolve target accounts using the existing trusted admin directory API.
+
+    Only identity fields are retained. No credentials or directory response are persisted.
+    """
+    base = os.environ.get('HUB_AUTH_URL', '').rstrip('/')
+    issuer = os.environ.get('HUB_AUTH_ISSUER', '').strip() or base
+    token = os.environ.get('HUB_AUTH_DIRECTORY_TOKEN', '')
+    url = urllib.parse.urlsplit(base)
+    if (not token or url.scheme not in ('http', 'https') or not url.hostname
+            or url.username or url.password or url.query or url.fragment):
+        raise PackageError('directory_unavailable', 'Account directory is not configured', 503, 'authorization')
+    if any(user['issuer'] != issuer for user in users):
+        raise PackageError('invalid_target', 'Unknown account issuer', 422, 'authorization')
+    try:
+        req = urllib.request.Request(base + '/admin/users', headers={'X-Admin-Token': token})
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=8) as response:
+            raw = response.read(1024 * 1024 + 1)
+            if len(raw) > 1024 * 1024:
+                raise ValueError('Oversized directory')
+            data = json.loads(raw)
+        accounts = {row['username'] for row in data['users']}
+    except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError) as exc:
+        raise PackageError('directory_unavailable', 'Account verification unavailable', 503, 'authorization') from exc
+    if any(user['sub'] not in accounts for user in users):
+        raise PackageError('invalid_target', 'Account does not exist', 422, 'authorization')
+    return users

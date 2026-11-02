@@ -41,13 +41,14 @@ export default function PublishedVersionsDialog({ projectId, onClose }) {
       footer={<Button onClick={onClose}>关闭</Button>} destroyOnHidden>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         <Typography.Text type="secondary">当前账号拥有 {data.total} 个已发布版本。下载所选版本不会生成新版本。</Typography.Text>
-        {resources?.pending && <Alert type="warning" showIcon message="项目最新资料待同步" />}
+        {resources?.pending && <Alert type="warning" showIcon message="共享资料状态暂不可用" />}
         {error ? <Alert type="error" showIcon message={error}
           action={<Button size="small" onClick={() => setRevision((n) => n + 1)}>重试</Button>} /> : (
           <Table rowKey="release_id" loading={loading} dataSource={data.releases}
             locale={{ emptyText: <Empty description="暂无已发布版本" /> }}
             pagination={{ current: page, total: data.total, pageSize: 10, showSizeChanger: false, onChange: setPage }}
             columns={[
+              { title: '包名称', dataIndex: 'name', ellipsis: true },
               { title: '版本', dataIndex: 'version', render: (v, row, i) => <Space><strong>{v}</strong>{page === 1 && i === 0 && <Tag color="blue">最新</Tag>}</Space> },
               { title: '发布时间', dataIndex: 'created_at', render: (v) => new Date(v).toLocaleString() },
               { title: '来源', dataIndex: 'source_service' },
@@ -55,7 +56,7 @@ export default function PublishedVersionsDialog({ projectId, onClose }) {
                 onClick={() => download(row.release_id)}>下载知识包</Button><Button type="link" onClick={() => openEvaluation(row).catch((e) => message.error(e.message))}>评测</Button></Space> },
             ]} />
         )}
-        <Typography.Text type="secondary">原始资料仅保存项目最新状态，不提供资料历史版本。</Typography.Text>
+        <Typography.Text type="secondary">Hub 仅保存明确共享的最新资料集，不与历史包版本绑定；本地资料不会自动上传。</Typography.Text>
       </Space>
     </Modal>
   );

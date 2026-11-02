@@ -62,7 +62,7 @@ def publish(store, data=None, request_id='request_demo', identity=None, **extra)
 
 def derived(store, base, request_id='derived_demo', kind='release'):
     actor = Identity('synthetic-owner', 'evaluation')
-    payload = dict(request_id=request_id, ontology_id='ontology_demo', hub_package_id=base['hub_package_id'],
+    payload = dict(request_id=request_id, ontology_id='ontology_demo',
                    change_type='mapping_update', input_digest='a' * 64, kind=kind,
                    base_release_id=base['release_id'], base_digest=base['package_digest'])
     result, _ = store.reserve(payload, actor)
@@ -72,7 +72,7 @@ def derived(store, base, request_id='derived_demo', kind='release'):
 def test_external_without_project_and_cross_service_owner_access(store):
     original = archive()
     result = publish(store, original)
-    assert store.release(result['hub_package_id'], result['release_id'], 'synthetic-owner')[1].read_bytes() == original
+    assert store.release(result['ontology_id'], result['release_id'], 'synthetic-owner')[1].read_bytes() == original
     assert result['ontology_id'] == 'ontology_demo'
     assert store.packages('synthetic-owner')['items'][0]['ontology_id'] == 'ontology_demo'
     assert not (store.root / 'projects').exists()
@@ -80,7 +80,7 @@ def test_external_without_project_and_cross_service_owner_access(store):
     assert store.packages('synthetic-owner')['total'] == 1
     assert store.packages('synthetic-other')['total'] == 0
     with pytest.raises(PackageError, match='not found'):
-        store.release(result['hub_package_id'], result['release_id'], 'synthetic-other')
+        store.release(result['ontology_id'], result['release_id'], 'synthetic-other')
 
 
 def test_mapping_updates_are_new_versions_and_snapshots_are_separate(store):
@@ -90,9 +90,9 @@ def test_mapping_updates_are_new_versions_and_snapshots_are_separate(store):
     store.upload(result['request_id'], actor, io.BytesIO(data), sha(data))
     receipt = store.commit(result['request_id'], actor)
     assert receipt['version'] == '0.1.1-eval.1' and receipt['base_digest'] == base['package_digest']
-    assert store.listing(base['hub_package_id'], actor.subject)['total'] == 1
-    assert store.listing(base['hub_package_id'], actor.subject, 'evaluation_snapshot')['total'] == 1
-    assert store.release(base['hub_package_id'], base['release_id'], actor.subject)[0] == base
+    assert store.listing(base['ontology_id'], actor.subject)['total'] == 1
+    assert store.listing(base['ontology_id'], actor.subject, 'evaluation_snapshot')['total'] == 1
+    assert store.release(base['ontology_id'], base['release_id'], actor.subject)[0] == base
 
 
 def test_snapshots_are_named_after_their_base_and_leave_formal_versions_alone(store):
@@ -125,7 +125,7 @@ def test_mapping_cannot_modify_body_or_unrelated_metadata(store, changes, manife
     data = archive(result['version'], mapping(), changes, manifest_changes)
     with pytest.raises(PackageError, match='knowledge content'):
         store.upload(result['request_id'], actor, io.BytesIO(data), sha(data))
-    assert store.listing(base['hub_package_id'], actor.subject)['total'] == 1
+    assert store.listing(base['ontology_id'], actor.subject)['total'] == 1
 
 
 def test_duplicate_keys_unknown_objects_and_runtime_bindings_are_rejected(store):
@@ -145,8 +145,10 @@ def test_idempotency_and_version_collision(store):
     assert publish(store) == first
     with pytest.raises(PackageError, match='inputs changed'):
         publish(store, archive(changes={'objects/object_demo.md': 'Other synthetic input'}))
-    with pytest.raises(PackageError, match='already reserved'):
-        publish(store, request_id='different_request', hub_package_id=first['hub_package_id'])
+    duplicate = publish(store, request_id='different_request')
+    assert duplicate['existing'] and duplicate['release_id'] == first['release_id']
+    with pytest.raises(PackageError, match='version conflict'):
+        publish(store, archive(changes={'scripts/demo.py': '# Changed synthetic script'}), request_id='conflict')
     assert store.packages('synthetic-owner')['total'] == 1
 
 
@@ -154,14 +156,13 @@ def test_durable_reservation_recovers_metadata_without_new_package(store, monkey
     actor = Identity('synthetic-owner', 'consumer')
     body = dict(request_id='request_demo', change_type='external_import', ontology_id='ontology_demo',
                 version='0.1.8', input_digest='a' * 64)
-    with monkeypatch.context() as m:
-        m.setattr(store, 'ensure_metadata', lambda row: (_ for _ in ()).throw(OSError('synthetic outage')))
-        with pytest.raises(OSError):
-            store.reserve(body, actor)
-    store.recover_all()
     result, created = store.reserve(body, actor)
-    assert not created and len(store.requests()) == 1
-    assert store.owned(result['hub_package_id'], actor.subject)
+    assert created
+    store.recover_all()
+    repeated, created = store.reserve(body, actor)
+    assert not created and repeated == result and len(store.requests()) == 1
+    assert not (store.root_of(result['ontology_id']) / 'metadata.json').exists()
+    assert store.packages(actor.subject)['total'] == 0
 
 
 def test_git_failure_never_exposes_version_and_recovery_completes_only_commit(store, monkeypatch):
@@ -211,10 +212,10 @@ def test_backup_restore_and_project_deletion_do_not_erase_independent_package(st
     snapshot = backup(store.root, tmp_path / 'backup')
     deletion = tmp_path / 'deletions'
     deletion.mkdir()
-    write_json(deletion / (result['hub_package_id'] + '.json'), {'deleted': True})
+    write_json(deletion / (result['ontology_id'] + '.json'), {'deleted': True})
     restored = restore(snapshot, tmp_path / 'restored', deletion)
     other = PackageStore(Store(restored))
-    assert other.release(result['hub_package_id'], result['release_id'], 'synthetic-owner')[0] == result
+    assert other.release(result['ontology_id'], result['release_id'], 'synthetic-owner')[0] == result
 
 
 @pytest.fixture
@@ -240,10 +241,8 @@ def userinfo(subject='operator_a'):
 def test_service_identity_separation_with_shared_modeling_credential(api, monkeypatch):
     client, headers = api
     from hub import main
-    with patch.object(main, 'authorize', return_value='operator_a'):
-        # Evaluation and consumer identities cannot use modeling resource cleanup.
-        for service in ('evaluation', 'consumer'):
-            assert client.delete('/api/internal/projects/project_alpha/artifacts', headers=headers[service]).status_code == 401
+    for service in ('modeling', 'evaluation', 'consumer'):
+        assert client.delete('/api/internal/projects/project_alpha/artifacts', headers=headers[service]).status_code == 404
     monkeypatch.setenv('HUB_EVALUATION_SERVICE_TOKEN', headers['modeling']['X-Hub-Service-Token'])
     assert client.get('/api/packages', headers=headers['modeling']).status_code == 503
 
@@ -261,7 +260,7 @@ def test_http_contract_with_real_authorization_boundary(api):
         assert client.put('/api/package-publish-requests/request_demo/content', headers={
             **headers['consumer'], 'X-Package-Digest': sha(data)}, files={'file': ('demo.zip', data)}).status_code == 200
         assert client.post('/api/package-publish-requests/request_demo/commit', headers=headers['consumer']).status_code == 200
-        url = f'/api/packages/{receipt["hub_package_id"]}/releases/{receipt["release_id"]}/package'
+        url = f'/api/packages/{receipt["ontology_id"]}/releases/{receipt["release_id"]}/package'
         for service in headers:
             response = client.get(url, headers=headers[service])
             assert response.status_code == 200 and response.content == data
@@ -308,9 +307,8 @@ def test_wrong_base_and_overwrite_of_committed_zip_are_rejected(store):
     actor, reservation, payload = derived(store, base)
     with pytest.raises(PackageError, match='digest mismatch'):
         store.reserve({**payload, 'request_id': 'wrong_base', 'base_digest': '0' * 64}, actor)
-    other = publish(store, request_id='other_package')
     with pytest.raises(PackageError, match='not found'):
-        store.reserve({**payload, 'request_id': 'cross_package', 'hub_package_id': other['hub_package_id']}, actor)
+        store.reserve({**payload, 'request_id': 'cross_package', 'ontology_id': 'ontology_other'}, actor)
     changed = archive(changes={'scripts/demo.py': '# Altered synthetic script'})
     with pytest.raises(PackageError, match='content changed'):
         store.upload('request_demo', Identity('synthetic-owner', 'consumer'), io.BytesIO(changed), sha(changed))
