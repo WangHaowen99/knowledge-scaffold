@@ -37,7 +37,6 @@ function NotificationDrawer({ open, onClose, items, onReadAll }) {
       onClose={onClose}
       icon="bell"
       title="通知"
-      sub="自主构建进展与需要你处理的事"
       w={420}
       foot={<Button size="sm" kind="ghost" onClick={onReadAll}>全部标为已读</Button>}
     >
@@ -58,9 +57,6 @@ function NotificationDrawer({ open, onClose, items, onReadAll }) {
           </div>
         );
       }) : <div className="muted sm">暂时没有通知</div>}
-      <div className="xs muted mt8 row g4">
-        <Icon name="info" size={12} />离开页面时也会弹系统通知，可在<a className="link" href="#/me?section=noti">个人设置</a>里调整
-      </div>
     </Drawer>
   );
 }
@@ -151,7 +147,7 @@ function ProjectRail({ active }) {
       {kernel.map((x) => item(x, x.id === 'wb-l2' ? inboxCount : 0))}
       {shown.length ? (
         <>
-          <div className="pr-pl" data-pop="以下页面由已启用的插件带来，在项目设置里停用后会消失">插件</div>
+          <div className="pr-pl">插件</div>
           {shown.map((x) => item(x, 0))}
           {more.length ? (
             <a className={more.some((m) => m.id === act) ? 'on' : ''} onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setMoreAt({ left: r.right + 6, top: r.top }); }}>
@@ -178,7 +174,7 @@ function SubNav({ active }) {
   const { pid, extensions, inboxCount } = useProject();
   const grp = RAIL_OF[active] || active;
   const plugMark = (title) => (
-    <span className="sn-pl" data-pop={`由「${title}」插件提供，未启用时不显示`}><Icon name="puzzle" size={12} /></span>
+    <span className="sn-pl" data-pop={`由「${title}」插件提供`}><Icon name="puzzle" size={12} /></span>
   );
   let items = null;
   if (grp === 'wb-l2') items = [['wb-l2', '对话'], ['inbox', <>待处理{inboxCount ? <span className="sn-n">{inboxCount}</span> : null}</>]];

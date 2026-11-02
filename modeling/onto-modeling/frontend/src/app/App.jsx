@@ -1,6 +1,5 @@
 // 应用入口：启动（C-01、A-07、无感刷新）、登录态与角色、路由
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
-import { PAGE_TITLES } from '../shell/CommandPalette.jsx';
 import { ShellG, ShellP } from '../shell/Shell.jsx';
 import { Button, Empty } from '../ui/index.jsx';
 import { AppCtx } from './context.js';
@@ -88,11 +87,9 @@ function Pending({ project, page, projectId }) {
     <div className="card" style={{ padding: 30, maxWidth: 640, margin: '40px auto' }}>
       <Empty
         icon="layout"
-        title={PAGE_TITLES[page] || '页面'}
+        title="页面不存在"
         actions={<Button icon="arrowl" onClick={() => navigate(project ? pagePath('wb-l2', projectId) : '/projects')}>{project ? '回到工作台' : '回到我的项目'}</Button>}
-      >
-        这一页在后续版本接入。
-      </Empty>
+      />
     </div>
   );
   if (project) return <ShellP active={page}>{body}</ShellP>;

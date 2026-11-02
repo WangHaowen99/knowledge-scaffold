@@ -28,7 +28,7 @@ export function finishedTasks(prev, next) {
   return next.filter((t) => !isTaskActive(t) && isTaskActive(before.get(t.task_id)));
 }
 
-const STATE_TEXT = { queued: '排队中，前一步结束后开始', waiting_user: '等你在对话里回答' };
+const STATE_TEXT = { queued: '排队中', waiting_user: '等你在对话里回答' };
 
 // 进度条第二行：步骤说明（或排队、等回答）+ 页面补充的只读与结果去向说明
 export function taskDetail(task, suffix) {
@@ -43,4 +43,4 @@ export function taskPercent(task) {
 }
 
 // 按钮的悬浮说明（设计稿 mrSend）
-export const sendHint = (what) => `发到工作台对话里执行：${what}。页面上显示进度，跑完结果回到这里`;
+export const sendHint = (what) => `在对话里执行：${what}`;
