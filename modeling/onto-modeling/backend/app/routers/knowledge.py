@@ -289,6 +289,12 @@ async def create_knowledge(project_id: str, request: Request):
     root = deps.require_writable(project_id, request)
     fields = _validated(await deps.json_body(request))
     slug = _SLUG_UNSAFE.sub("-", fields["title"]).strip("-")[:60] or "entry"
+    # 和行业条目同名（标题或 slug 相同）时沿用行业条目的 slug：同 slug 才算覆盖，行业条目的 slug 是英文，
+    # 按中文标题生成的永远对不上；同名的有好几条时取类型也相同的
+    _, industry, _, _ = _layers(root)
+    same = [item for item in industry if item["title"].strip() == fields["title"] or item["_slug"] == slug]
+    if same:
+        slug = next((item for item in same if TYPES.get(item["type"]) == fields["type"]), same[0])["_slug"]
     entry_id = f"{fields['type']}-{slug}"
     if (root / KNOWLEDGE_DIR / f"{entry_id}.md").exists():
         raise ApiError("knowledge_duplicate", "已有同名的知识条目", 409, {"conflicts": [entry_id]})
@@ -403,6 +409,11 @@ async def submit_nomination(project_id: str, knowledge_id: str, request: Request
     if not 1 <= len(text) <= 4000:
         raise ApiError("invalid_argument", "提名内容须为 1–4000 个字符", 400, {"fields": {"sanitized_text": "length"}})
     _, pack = _nomination_target(root, knowledge_id, str(body.get("industry_pack") or ""))
+    # 脱敏是硬门槛（ADR-0044）：服务端按 K-07 同一套规则再查一遍，客户端改回去的不收
+    remaining = [item for item in knowledge_layers.sanitize(text)["checks"] if item["found"]]
+    if remaining:
+        raise ApiError("nomination_not_sanitized", "提名内容里还有要脱敏的信息，请按脱敏预览替换后再提交", 422,
+                       {"checks": remaining})
     record = knowledge_layers.submit_nomination(project_id, knowledge_id, pack.name, text, deps.actor(request))
     audit.log(deps.actor(request), request.method, request.url.path,
               {"action": "knowledge.nominate", "project_id": project_id, "knowledge_id": knowledge_id,
