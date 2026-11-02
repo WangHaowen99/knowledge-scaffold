@@ -11,11 +11,11 @@ import {
   Button, Card, Chip, Empty, Ev, Icon, Inp, Seg, Select, cx,
 } from '../../ui/index.jsx';
 import {
-  CommandRunBar, PluginEyebrow, PluginOff, ScopeLockBar, SendButton, useCommandTasks, usePageEnabled, useProjectEvent,
+  CommandRunBar, ExtraActions, PluginEyebrow, PluginOff, ScopeLockBar, SendButton, useCommandTasks, usePageEnabled, useProjectEvent,
 } from '../plugin/parts.jsx';
 import {
   CONFIDENCE, KN_TYPES, LAYER_BADGE, LAYER_CHIP, TYPE_FILTER, checkSub, conflictChip, conflictLine, emptyForm, entryLocked,
-  footText, formFromDetail, isEmptyProject, layerInfo, layerSeg, listQuery, lockCopy, overrideForm, overrideParts,
+  footText, formFromDetail, isEmptyProject, layerInfo, layerSeg, listQuery, lockCopy, materialsLine, overrideForm, overrideParts,
   quoteMeta, reviewCommand, richBlocks, scopeLabel, sourceMeta, totalFor, usedByLabel, usedByTarget,
 } from './knowledgeModel.js';
 import { ConflictsModal, DeleteModal, EntryFormModal, NominateModal } from './KnowledgeDialogs.jsx';
@@ -94,7 +94,6 @@ function Knowledge({ route }) {
 
   const info = layerInfo(resp);
   const industryPack = useMemo(() => (info.industry.pack ? { name: info.industry.pack, label: info.industry.label } : null), [info.industry.pack, info.industry.label]);
-  const chip = conflictChip(check);
   const empty = isEmptyProject(resp);
   const total = totalFor(resp?.counts, layer);
 
@@ -102,9 +101,9 @@ function Knowledge({ route }) {
   const onSaved = (r, mode) => {
     setDialog(null);
     const conflicts = r.conflicts || [];
-    if (mode === 'edit') toast(`已保存为版本 ${r.version_label}，后续建模会自动应用`, 'check');
-    else if (conflicts.length) toast(`已入库（版本 ${r.version_label}）；和「${conflicts[0].with}」口径不同，已按项目优先，助手正在对话里复核`, 'shield');
-    else toast(`已入库并保存为版本 ${r.version_label}，后续建模会自动应用`, 'check');
+    if (mode === 'edit') toast(`已保存为版本 ${r.version_label}`, 'check');
+    else if (conflicts.length) toast(`已入库（${r.version_label}）· 与「${conflicts[0].with}」口径不同，助手正在复核`, 'shield');
+    else toast(`已入库（${r.version_label}）`, 'check');
     if (r.entry?.id) setSel(r.entry.id);
     reload();
   };
@@ -128,27 +127,18 @@ function Knowledge({ route }) {
       <PageHead
         eyebrow={<PluginEyebrow pack="knowledge" label="知识沉淀" />}
         title="知识沉淀"
-        desc={(
-          <>
-            专家说过的纠错、惯例、术语和领域规则，后续建模自动带上；和行业包知识一起加载，同名条目以项目为准。
-            <span className="mr-plgd">本插件只管沉淀：对话里的纠错提示、入库前查重查冲突、提名进行业包。知识的存放和加载在 core 里，停用后已有条目仍然生效，只是不再新增，此页从左栏消失。</span>
-          </>
-        )}
         actions={(
           <>
-            <span className={cx('chip', chip.tone, 'kn-chk')} title="查看明细" onClick={() => setDialog({ kind: 'conflicts' })}>
-              <Icon name="shield" />{chip.text}<Icon name="chev" size={12} />
-            </span>
+            <ExtraActions page="knowledge" tasks={tasks} />
             <Button kind="primary" icon="plus" onClick={() => openAdd()}>新增条目</Button>
           </>
         )}
       />
       {tasks.active ? (
         <div className="mr-runrow" style={{ margin: '0 0 14px' }}>
-          <CommandRunBar task={tasks.active} detail="复核结论回到「知识冲突检查」" />
+          <CommandRunBar task={tasks.active} />
         </div>
       ) : null}
-      <LayerBar info={info} />
       {empty ? (
         <div className="card">
           <Empty
@@ -160,15 +150,13 @@ function Knowledge({ route }) {
                 <Button icon="msg" onClick={() => navigate(pagePath('wb-l2', pid))}>去对话里沉淀</Button>
               </>
             )}
-          >
-            对话中点助手消息旁的「沉淀知识」，或在这里新增。你说「不对，应该是……」「我们行业里通常……」时，助手也会提醒你沉淀。
-          </Empty>
+          />
         </div>
       ) : (
         <div className="mr-2c">
           <div>
             <div className="row mb12">
-              <Seg items={layerSeg(resp?.counts)} value={layer} onChange={setLayer} />
+              <Seg items={layerSeg(resp?.counts).map(([k, t, pop]) => [k, pop ? <span data-pop={pop}>{t}</span> : t])} value={layer} onChange={setLayer} />
               <Inp icon="search" w="220px" placeholder="搜索条目" value={q} onChange={(e) => setQ(e.target.value)} />
               <span className="sp" />
               <Select w="130px" icon="filter" options={TYPE_FILTER} value={type} onChange={setType} />
@@ -176,7 +164,7 @@ function Knowledge({ route }) {
             <div className="mr-kl">
               {items.map((e) => <Item key={e.id} entry={e} on={e.id === sel} lock={scope} onPick={() => setSel(e.id)} />)}
             </div>
-            {resp && !items.length ? <div className="card kn-none"><Empty icon="search" title="没有符合条件的条目">换个关键词，或者把类型改回「全部类型」。</Empty></div> : null}
+            {resp && !items.length ? <div className="card kn-none"><Empty icon="search" title="没有符合条件的条目" /></div> : null}
             {resp ? (
               <div className="row mt12 muted sm">
                 <Icon name="info" size={14} />{footText(items.length, total)}
@@ -197,7 +185,7 @@ function Knowledge({ route }) {
                 onOverride={() => openAdd(overrideForm(detail))}
               />
             ) : null}
-            <ConflictCard check={check} tasks={tasks} />
+            <ConflictCard check={check} tasks={tasks} onOpen={() => setDialog({ kind: 'conflicts' })} />
           </div>
         </div>
       )}
@@ -213,24 +201,6 @@ function Knowledge({ route }) {
       <NominateModal open={dialog?.kind === 'nominate'} detail={dialog?.detail} pack={industryPack} onClose={() => setDialog(null)} />
       <ConflictsModal open={dialog?.kind === 'conflicts'} check={check} onClose={() => setDialog(null)} onNominate={nominate} />
     </>
-  );
-}
-
-// 分层条：第 1 层行业包 → 第 2 层本项目（优先级最高）→ 加载规则
-function LayerBar({ info }) {
-  return (
-    <div className="mr-layer">
-      <div className="ly">
-        <span className="ix" style={{ background: '#E7F7EF', color: '#15803D' }}><Icon name="pkg" size={18} /></span>
-        <div><div className="xs muted">第 1 层 · 行业包</div><div className="row"><b>{info.industry.count}</b><span className="muted sm">{info.industry.label}</span></div></div>
-        <span className="arr"><Icon name="chev" size={12} /></span>
-      </div>
-      <div className="ly top">
-        <span className="ix" style={{ background: 'var(--blue)', color: '#fff' }}><Icon name="book" size={18} /></span>
-        <div><div className="xs muted">第 2 层 · 本项目（优先级最高）</div><div className="row"><b>{info.project.count}</b><span className="muted sm">{info.project.note}</span></div></div>
-      </div>
-      <div className="ly" style={{ flex: 1.3 }}><div className="sm muted">{info.rule}</div></div>
-    </div>
   );
 }
 
@@ -311,7 +281,7 @@ function Detail({ d, lock, convTitles, packLabel, onEdit, onDelete, onNominate, 
       {ov ? (
         <div className="note amber mt12">
           <Icon name="layers" />
-          <div>覆盖 <b>{ov.target}</b>{ov.note}。行业包升级时，这一条会出现在受影响清单里。</div>
+          <div>覆盖 <b>{ov.target}</b>{ov.note}</div>
         </div>
       ) : null}
       {d.used_by?.length ? (
@@ -339,7 +309,7 @@ function Detail({ d, lock, convTitles, packLabel, onEdit, onDelete, onNominate, 
         </div>
       ) : (
         <div className="row mt16">
-          <span className="xs muted grow">行业包条目只读；要改口径，在项目里写一条同名条目覆盖它</span>
+          <span className="sp" />
           <Button size="sm" icon="layers" kind="soft" onClick={onOverride}>写同名条目覆盖</Button>
         </div>
       )}
@@ -347,17 +317,18 @@ function Detail({ d, lock, convTitles, packLabel, onEdit, onDelete, onNominate, 
   );
 }
 
-// 知识冲突检查卡：口径冲突发到对话里复核；跑完结果回到这里
-function ConflictCard({ check, tasks }) {
+// 知识冲突检查卡：口径冲突发到对话里复核；跑完结果回到这里。右上的计数点开明细
+function ConflictCard({ check, tasks, onOpen }) {
   if (!check) return null;
   const conflicts = check.conflicts || [];
   const clean = !(check.duplicates || check.broken_refs);
+  const chip = conflictChip(check);
   return (
     <Card
       title="知识冲突检查"
       icon="shield"
       sub={checkSub(check)}
-      extra={conflicts.length ? <Chip tone="amber" sm>{conflicts.length} 处</Chip> : <Chip tone="teal" sm>没有冲突</Chip>}
+      extra={chip ? <Chip tone={chip.tone} sm className="kn-link" title="查看明细" onClick={onOpen}>{chip.text}<Icon name="chev" size={12} /></Chip> : null}
     >
       <div className="col" style={{ gap: 8 }}>
         {conflicts.map((c) => {
@@ -379,7 +350,7 @@ function ConflictCard({ check, tasks }) {
         })}
         <div className="row g12 sm">
           <span style={{ color: 'var(--blue)' }}><Icon name="check" size={14} /></span>
-          <div className="grow">与资料原文一致 {check.consistent_with_materials ?? 0} 条 · 找不到出处 {check.unsourced ?? 0} 条（对话沉淀）</div>
+          <div className="grow">{materialsLine(check)}</div>
         </div>
         <div className="row g12 sm">
           <span style={{ color: clean ? 'var(--blue)' : 'var(--amber2)' }}><Icon name={clean ? 'check' : 'alert'} size={14} /></span>

@@ -102,6 +102,15 @@ export function SendButton({
   );
 }
 
+// 包声明的附加操作（PL-12 entries，kind=extra_action、where=这一页）：放在页头操作区，和页面自己的按钮一样只发命令
+export function ExtraActions({ page, tasks }) {
+  const { extensions } = useProject();
+  const items = (extensions?.entries || []).filter((e) => e.kind === 'extra_action' && e.where === page && e.command);
+  return items.map((e) => (
+    <SendButton key={e.id} tasks={tasks} command={e.command} text={e.label} icon="sparkle" kind="soft">{e.label}</SendButton>
+  ));
+}
+
 // 进度条：助手在工作台跑这一页发的命令（设计稿 mrRun）；没有进行中的任务时不显示
 export function CommandRunBar({ task, detail, className, style }) {
   const { pid } = useProject();

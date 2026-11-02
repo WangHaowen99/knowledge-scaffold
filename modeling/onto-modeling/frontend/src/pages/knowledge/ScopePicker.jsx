@@ -68,7 +68,7 @@ export function ScopePicker({ value, onChange, disabled }) {
           <div className="inp kn-scope-q"><Icon name="search" size={14} /><input autoFocus placeholder="搜索对象、操作、规则" value={q} onChange={(e) => setQ(e.target.value)} /></div>
           <div className="kn-scope-list">
             <div className="mi" onClick={() => pick({ kind: 'global' })}>
-              <Icon name="globe" size={14} /><span>全局（每次抽取都加载）</span>
+              <Icon name="globe" size={14} /><span>全局</span>
               {value?.kind !== 'entries' ? <span className="k"><Icon name="check" size={12} /></span> : null}
             </div>
             {(items || []).map((e) => (

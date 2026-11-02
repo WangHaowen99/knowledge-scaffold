@@ -59,21 +59,16 @@ export function listQuery({ layer = 'all', type = '', q = '', cursor = null, lim
   return out;
 }
 
+// 分层筛选：[值, 文字, 悬停]；「项目优先」这层意思放在「项目」那一格的悬停里（R9，分层条整块去掉）
 export function layerSeg(counts) {
   const c = counts || {};
-  return [['all', `全部 ${c.all ?? 0}`], ['project', `项目 ${c.project ?? 0}`], ['industry', `行业包 ${c.industry ?? 0}`]];
+  return [['all', `全部 ${c.all ?? 0}`], ['project', `项目 ${c.project ?? 0}`, '同名时项目条目优先'], ['industry', `行业包 ${c.industry ?? 0}`]];
 }
 
-// 分层条：第 1 层行业包、第 2 层本项目
+// 行业包层：提名回流、覆盖说明要用行业包的名称与包名
 export function layerInfo(resp) {
-  const layers = resp?.layers || [];
-  const ind = layers.find((l) => l.layer === 'industry') || { count: 0, label: '', overridden: 0 };
-  const proj = layers.find((l) => l.layer === 'project') || { count: 0, overridden: 0 };
-  return {
-    industry: { count: ind.count, label: ind.label || '未启用行业包', pack: ind.packs?.[0] || null },
-    project: { count: proj.count, note: `同名条目覆盖行业包 · 已覆盖 ${proj.overridden ?? 0} 条` },
-    rule: resp?.loading_rule || '',
-  };
+  const ind = (resp?.layers || []).find((l) => l.layer === 'industry') || { count: 0, label: '' };
+  return { industry: { count: ind.count, label: ind.label || '未启用行业包', pack: ind.packs?.[0] || null } };
 }
 
 export function totalFor(counts, layer) {
@@ -82,8 +77,7 @@ export function totalFor(counts, layer) {
 }
 
 export function footText(shown, total) {
-  const tail = '行业包条目只读，可以在项目里写同名条目覆盖';
-  return shown < total ? `显示前 ${shown} 条 · 共 ${total} 条，${tail}` : `共 ${total} 条，${tail}`;
+  return shown < total ? `显示前 ${shown} 条 · 共 ${total} 条` : `共 ${total} 条`;
 }
 
 // 本项目还没有沉淀任何条目：显示空状态（行业包条目不算「沉淀」）
@@ -101,16 +95,13 @@ export function lockCopy(lock) {
   if (st === 'none') return null;
   const slice = lock.slice?.name ? `「${lock.slice.name}」这一片` : '这部分内容';
   if (st === 'pending_confirm') {
-    return {
-      pop: `这条知识在${slice}的写入范围里：修改还没确认，确认生效或撤回前不能编辑、删除`,
-      text: { pending: ['助手的修改还没确认：这条知识确认生效或撤回前只读', '「编辑」「删除」先停用；范围外的条目照常编辑，保存即生效'] },
-    };
+    return { pop: '修改待确认，暂不能编辑', text: { pending: ['助手的修改还没确认：这条知识确认生效或撤回前只读'] } };
   }
-  const running = st === 'autobuild_slice'
-    ? [`自主构建正在做${slice}：这条知识到这一片合入为止只读`, '「编辑」「删除」先停用；范围外的条目照常编辑，保存即生效']
-    : [`助手正在改${slice}：这条知识确认生效或撤回前只读`, '「编辑」「删除」先停用；范围外的条目照常编辑，保存即生效'];
-  const until = st === 'autobuild_slice' ? '这一片合入前' : '确认生效或撤回前';
-  return { pop: `这条知识在${slice}的写入范围里：${until}不能编辑、删除`, text: { running } };
+  if (st === 'autobuild_slice') {
+    const name = lock.slice?.name ? `「${lock.slice.name}」` : '这一片';
+    return { pop: '自主构建在改，暂不能编辑', text: { running: [`自主构建正在做${name}，这条知识暂时只读`] } };
+  }
+  return { pop: '助手在改，暂不能编辑', text: { running: [`助手正在改${slice}：这条知识确认生效或撤回前只读`] } };
 }
 
 // ---------- 新增 / 编辑表单 ----------
@@ -154,10 +145,11 @@ export function formBody(f, { base_revision, source } = {}) {
 const short = (t) => String(t || '').split(/[，,；;]/)[0];
 export { short as shortTitle };
 
+// 冲突检查卡右上的计数（点开明细）；还没检查过时不显示
 export function conflictChip(check) {
-  if (!check?.checked_at) return { text: '保存时自动查重', tone: 'line', n: 0 };
+  if (!check?.checked_at) return null;
   const n = check.conflicts?.length || 0;
-  return n ? { text: `保存时自动查重 · 最近一次：${n} 处冲突`, tone: 'amber', n } : { text: '保存时自动查重 · 最近一次：没有冲突', tone: 'line', n: 0 };
+  return n ? { text: `${n} 处`, tone: 'amber', n } : { text: '没有冲突', tone: 'teal', n: 0 };
 }
 
 export function conflictLine(c) {
@@ -182,19 +174,19 @@ export function reviewCommand(c) {
 }
 
 export function materialsLine(check) {
-  return `与资料原文一致：${check?.consistent_with_materials ?? 0} 条；无法在资料里找到出处：${check?.unsourced ?? 0} 条（对话沉淀，属正常）`;
+  return `与资料原文一致 ${check?.consistent_with_materials ?? 0} 条 · 找不到出处 ${check?.unsourced ?? 0} 条`;
 }
 
 export const countsLine = (check) => `重复条目 ${check?.duplicates ?? 0} · 失效引用 ${check?.broken_refs ?? 0}`;
 
 export function checkSub(check) {
-  if (!check?.checked_at) return '保存时先做确定性查重';
-  return `${mmddhhmm(check.checked_at)} · 保存时先做确定性查重`;
+  return check?.checked_at ? mmddhhmm(check.checked_at) : null;
 }
 
 export function checkModalSub(check) {
+  if (!check?.checked_at) return '还没有检查过';
   const sec = Math.max(1, Math.round((check?.duration_ms || 0) / 1000));
-  return `对 ${check?.total_entries ?? 0} 条知识、资料原文和产物做了一遍比对 · 用时 ${sec} 秒`;
+  return `${check?.total_entries ?? 0} 条 · 用时 ${sec} 秒`;
 }
 
 // ---------- 删除（K-05） ----------
