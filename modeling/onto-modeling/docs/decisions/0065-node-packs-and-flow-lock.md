@@ -38,7 +38,8 @@ B3a 起锁文件改动是一次 `Onto-Source: plugin` 的主线提交；B4b 的�
    - 变更集记录直接用 `kernel/changesets/store.create/update` 写，没有改变更集模块；`store.create` 会把 `current`
      指到新记录，所以只在没有没关闭的变更集时用（见 Consequences）。
 5. **节点状态上与包有关的部分**（`services/flow/overlay.py`，不改 `flow/state.py` 的算法）：
-   - 可补做：插件节点后面的主线节点已经在主线上完成、它自己还没完成，标 `backfill`，不计入进度分母（FL-01 与
+   - 可补做：插件的串入、关卡节点（主线位置 spine 的不算，场景走查这类从 core 拆出的包本来就在流程里）后面的主线节点
+     已经在主线上完成、它自己还没完成，标 `backfill`，不计入进度分母（FL-01 与
      项目列表 x/N 同一口径），`suggest` 把它放到第 5 级（「补做「X」」），不抢主线下一步；
    - 已停用：锁文件里 `enabled=false` 的包，节点不在组装后的流程里（挡不住任何节点），从包仓库读出它的声明，以
      `skipped` + `flags.disabled` 列出，不进进度、没有动作；前端进度条不显示已停用节点，只在建模步骤抽屉里；

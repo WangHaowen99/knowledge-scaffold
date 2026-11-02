@@ -61,12 +61,14 @@ def mark_broken(states: dict, broken: set[str]) -> None:
 
 
 def backfill_ids(flow: dict, hits: dict) -> set[str]:
-    """插件节点后面的主线节点已经在主线上完成、它自己还没完成：越过了插入位置。"""
+    """串入、关卡这类插件节点后面的主线节点已经在主线上完成、它自己还没完成：越过了插入位置。
+
+    主线位置（spine）的节点不算：它们随 core 或从 core 拆出的包（场景走查）本来就在流程里，没做就是没做，不是「新插进来的」。"""
     order = [node for node in flow.get("nodes") or []
              if node.get("placement", "spine") in MAINLINE and not node.get("optional")]
     out = set()
     for index, node in enumerate(order):
-        if node.get("pack", "core") == "core" or hits.get(node["id"]):
+        if node.get("pack", "core") == "core" or node.get("placement", "spine") == "spine" or hits.get(node["id"]):
             continue
         if any(hits.get(later["id"]) for later in order[index + 1:]):
             out.add(node["id"])

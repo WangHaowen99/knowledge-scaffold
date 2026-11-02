@@ -77,8 +77,10 @@ def problems(manifest: Manifest) -> list[str]:
                 out.append(f"{where} 的规则要有 field 和 {' / '.join(GATE_RULES)} 之一")
         ratio = gate.get("ratio")
         if ratio is not None and (not isinstance(ratio, dict) or not ratio.get("field") or not ratio.get("in")
-                                  or not 0 < float(ratio.get("at_least") or 0) <= 1):
+                                  or not 0 < _number(ratio.get("at_least")) <= 1):
             out.append(f"{where} 的 ratio 要有 field、in 和 0～1 之间的 at_least")
+        if gate.get("min_count") is not None and (not isinstance(gate["min_count"], int) or gate["min_count"] < 0):
+            out.append(f"{where} 的 min_count 要是非负整数")
         if (gate.get("min_count") is not None or ratio is not None) and "publish" not in scopes:
             out.append(f"{where} 的 min_count、ratio 只在发布前检查（on 要含 publish）")
     for choice in _declared(manifest, "view_choices"):
@@ -114,6 +116,13 @@ def problems(manifest: Manifest) -> list[str]:
         if str(item.get("mode") or "list") not in MCP_MODES:
             out.append(f"MCP 工具 {name} 的 mode 只能是 list 或 get（只读）")
     return out
+
+
+def _number(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def declares_any(manifest: Manifest) -> bool:
@@ -384,17 +393,17 @@ def _publish_results(gated: list, tree: Path, start_order: int) -> list[dict]:
         findings = _item_findings(Path(tree), view, gate, atype, rows)
         level = gate.get("level") if gate.get("level") in GATE_LEVELS else "error"
         label = str(gate.get("label") or gate.get("id") or "")
-        if gate.get("min_count") is not None and len(rows) < int(gate["min_count"]):
+        if isinstance(gate.get("min_count"), int) and len(rows) < gate["min_count"]:
             findings.append({"code": "pack_gate", "level": level, "gate": str(gate.get("id") or ""), "pack": view.name,
                              "message": f"{atype.title}至少要 {int(gate['min_count'])} 个，现在 {len(rows)} 个"})
         ratio = gate.get("ratio") if isinstance(gate.get("ratio"), dict) else None
         if ratio and rows:
             allowed = {str(item) for item in ratio.get("in") or []}
             hit = sum(1 for row in rows if str((row.get("fields") or {}).get(ratio["field"])) in allowed)
-            if hit / len(rows) < float(ratio.get("at_least") or 0):
+            if hit / len(rows) < _number(ratio.get("at_least")):
                 findings.append({"code": "pack_gate", "level": level, "gate": str(gate.get("id") or ""),
                                  "pack": view.name, "message": f"{label}：{hit}/{len(rows)}，"
-                                 f"要求至少 {round(float(ratio['at_least']) * 100)}%"})
+                                 f"要求至少 {round(_number(ratio.get('at_least')) * 100)}%"})
         failed = bool(findings)
         out.append({
             "id": f"{view.name}.{gate.get('id')}", "order": start_order + len(out), "title": label,
