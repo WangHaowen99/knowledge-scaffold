@@ -10,7 +10,7 @@ from __future__ import annotations
 from urllib.parse import quote
 
 from fastapi import APIRouter, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..api import deps
 from ..api.errors import ApiError
@@ -145,12 +145,23 @@ def version_files(project_id: str, commit: str, request: Request, prefix: str = 
     if ".." in prefix.split("/"):
         raise ApiError("path_forbidden", "路径越界", 403, {"path": prefix})
     if download:
+        # 下载只打知识包内容（ontology/）：别的目录（资料、.onto 等）不在下载范围
+        if not (prefix == "ontology" or prefix.startswith("ontology/")):
+            raise ApiError("invalid_argument", "只能下载 ontology/ 下的文件", 400, {"fields": {"prefix": "scope"}})
         label = mainline.label(mainline.count(root, target))
         name = f"{deps.workspaces._read_meta(root).get('name') or project_id}-{label}-ontology.zip"
-        return Response(
-            content=version_views.zip_files(root, target, prefix), media_type="application/zip",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"},
-        )
+        try:
+            archive = version_views.zip_files(root, target, prefix)
+        except WorkspaceError as exc:
+            raise ApiError(exc.code or "internal_error", str(exc), exc.status, exc.details) from exc
+
+        def chunks():
+            with archive:
+                while chunk := archive.read(1024 * 1024):
+                    yield chunk
+
+        return StreamingResponse(chunks(), media_type="application/zip",
+                                 headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
     return {"items": version_views.files(root, target, prefix)}
 
 

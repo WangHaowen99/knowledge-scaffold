@@ -7,10 +7,10 @@
 from __future__ import annotations
 
 import difflib
-import io
 import json
 import re
 import subprocess
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -21,6 +21,10 @@ from ..services.workspace.gitops import _EXCLUDE_STATE_PATHSPECS, _run_git
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 CHANGES_MAX = 500
 FILES_MAX = 5000
+# V-03 下载：未压缩内容上限、按批读 blob、超过多少落盘
+ZIP_BYTES_MAX = 256 * 1024 * 1024
+ZIP_BATCH = 200
+ZIP_SPOOL_BYTES = 16 * 1024 * 1024
 DIFF_BYTES_MAX = 512 * 1024
 # 版本里的系统文件：能力锁另列（回退预览的 packs_lock_changes），不当文件改动列出
 SYSTEM_PREFIXES = (".onto/",)
@@ -114,16 +118,29 @@ def files(root: Path, commit: str, prefix: str) -> list[dict]:
     return items[:FILES_MAX]
 
 
-def zip_files(root: Path, commit: str, prefix: str) -> bytes:
-    """某个版本 prefix 下的文件打成 zip（路径保持仓库相对路径）。"""
+def zip_files(root: Path, commit: str, prefix: str):
+    """某个版本 prefix 下的文件打成 zip（路径保持仓库相对路径），返回读到开头的临时文件（大了落盘，不整份放内存）。
+
+    按批读 blob；超过上限回 payload_too_large；有文件读不出来（git 超时等）回 service_unavailable，不给缺文件的 zip。"""
     listed = files(root, commit, prefix)
-    blobs = cat_files(root, commit, [item["path"] for item in listed])
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        for item in listed:
-            if item["path"] in blobs:
-                archive.writestr(item["path"], blobs[item["path"]])
-    return buffer.getvalue()
+    if sum(item["size"] for item in listed) > ZIP_BYTES_MAX:
+        raise WorkspaceError("这个版本的文件太多，不能一次下载", 413, "payload_too_large",
+                             {"limit_bytes": ZIP_BYTES_MAX})
+    out = tempfile.SpooledTemporaryFile(max_size=ZIP_SPOOL_BYTES)
+    try:
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+            for start in range(0, len(listed), ZIP_BATCH):
+                batch = [item["path"] for item in listed[start:start + ZIP_BATCH]]
+                blobs = cat_files(root, commit, batch)
+                if len(blobs) != len(batch):
+                    raise WorkspaceError("读不出这个版本的文件，稍后重试", 503, "service_unavailable")
+                for rel in batch:
+                    archive.writestr(rel, blobs[rel])
+    except BaseException:
+        out.close()
+        raise
+    out.seek(0)
+    return out
 
 
 # ---- V-04 ----
