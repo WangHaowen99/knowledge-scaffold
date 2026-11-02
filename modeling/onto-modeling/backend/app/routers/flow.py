@@ -133,6 +133,10 @@ async def answer_human_node(project_id: str, question_id: str, body: dict, actor
     """S-11 的退路：会话里没有这个问题时，看是不是人工节点的决策卡（routers/sessions 调）。"""
     from ..services.agent_sessions import manager
 
+    root = deps.workspaces.project_root(project_id)
+    if question_id in node_kinds.open_questions(root) and deps.workspaces.get_project(project_id).get("archived"):
+        # 回答会在主线写记录文件：已归档（只读）的项目不行（审查第 11 条；IN-03 本来就要求可写）
+        raise ApiError("project_archived", "项目已归档，只能查看", 409)
     try:
         found = await asyncio.to_thread(node_kinds.answer, deps.workspaces, project_id, question_id, body,
                                         actor=actor)

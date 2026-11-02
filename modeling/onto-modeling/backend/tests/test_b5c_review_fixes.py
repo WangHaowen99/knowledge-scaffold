@@ -510,3 +510,25 @@ def test_review_10_node_files_must_be_inside_the_pack(tmp_path, ref):
     manifest.contributes["nodes"] = [ref]  # 绕过清单校验也读不到包外
     with pytest.raises(AssemblyError):
         flow_declaration("naming", manifest, source)
+
+
+# ---- 审查第 11 条：已归档的项目不能回答人工节点的卡（会在主线写提交） ----
+
+def test_review_11_archived_project_cannot_answer_human_node_card(env):
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
+    install(manager, tmp_path, flow=kinds_flow(HUMAN_NODE, probes={"naming_signoff": {"files": ["reports"], "glob": "signoff-naming.md"}}))
+    enable_and_apply(client, manager, project_id)
+    question = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.signoff/start", json={}).json()["question"]
+    manager.set_archived(project_id, True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout
+    url = (f"/api/v1/projects/{project_id}/conversations/{question['conversation_id']}"
+           f"/questions/{question['question_id']}/answer")
+    answered = client.post(url, json={"option_id": "pass"})
+    assert answered.status_code == 409 and answered.json()["code"] == "project_archived"
+    inbox_url = f"/api/v1/projects/{project_id}/inbox/decision:{question['question_id']}/actions"
+    assert client.post(inbox_url, json={"action": "answer", "option_id": "pass"}).status_code == 409
+    assert subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout == head
+    manager.set_archived(project_id, False)
+    assert client.post(url, json={"option_id": "pass"}).status_code == 200
