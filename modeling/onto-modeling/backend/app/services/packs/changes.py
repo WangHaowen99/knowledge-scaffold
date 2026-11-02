@@ -5,10 +5,13 @@
 这类变更的门禁，过了就经写入事务合入主线，提交带 `Onto-Changeset`；变更集记录直接是已合入（`source="plugin"`），
 撤回用变更集的 `revert_merged`（在主线写反向提交，之后锁文件又被改过时不撤）。
 
-同一项目同一时刻只有一个没关闭的变更集。助手的修改还没确认或撤回时：
-- 这次切换会改流程节点（flow.lock 变了）——节点的写入范围、待确认节点都按流程算，换流程会让那组修改的
-  范围和状态对不上——回 `423 write_scope_locked`，先确认或撤回；
-- 不改流程的切换照常合入，只是不记变更集（锁文件提交仍带 `Onto-Source: plugin`，可以用 PL-10、PL-09 改回）。
+插件变更集不占「没关闭的变更集」那个位置（`store.record_closed`，不动 current）：提交前先记成已关闭、标
+`committing`，提交后改成已合入；没提交成就留在已撤回。崩在提交之后、改记录之前的，启动核对按 `Onto-Changeset`
+补记（`kernel/changesets/service.reconcile_committing`）。
+
+助手的修改还没确认或撤回时，这次切换会改流程节点（flow.lock 变了）——节点的写入范围、待确认节点都按流程算，
+换流程会让那组修改的范围和状态对不上——回 `423 write_scope_locked`，先确认或撤回；不改流程的切换照常合入、
+照常记变更集。
 """
 
 from __future__ import annotations
@@ -25,27 +28,25 @@ _log = logging.getLogger(__name__)
 
 
 def begin(manager, project_id: str, *, purpose: str, pack: str, kind: str, flow_changed: bool) -> dict | None:
-    """切换前占一个插件变更集（调用方持项目锁）；助手的变更集没关闭时见模块说明。"""
+    """切换前记一个插件变更集（调用方持项目锁）：编号要先有，提交的 trailer 带它；助手的变更集没关闭时见模块说明。"""
     from ...kernel.changesets import service as changesets
     from ...kernel.changesets import store
 
     root = manager.project_root(project_id)
     if not (root / ".git").is_dir():
         return None
-    if store.current(root) is not None:
-        if flow_changed:
-            raise PackError("write_scope_locked", "助手的修改还没确认生效或撤回，先处理完再改流程", 423,
-                            changesets.scope_lock(manager, project_id))
-        return None
+    if flow_changed and store.current(root) is not None:
+        raise PackError("write_scope_locked", "助手的修改还没确认生效或撤回，先处理完再改流程", 423,
+                        changesets.scope_lock(manager, project_id))
     from .. import mainline
 
-    return store.create(root, source="plugin", build_mode=None, purpose=purpose, state="open",
-                        base=mainline.state(root)["head"], pack=pack, switch=kind,
-                        paths=[lockfile.LOCK_REL])
+    return store.record_closed(root, source="plugin", build_mode=None, purpose=purpose, state="discarded",
+                               committing=True, base=mainline.state(root)["head"], pack=pack, switch=kind,
+                               paths=[lockfile.LOCK_REL])
 
 
 def finish(manager, project_id: str, record: dict | None, commit: str) -> dict | None:
-    """切换提交之后：变更集记成已合入；没有提交（锁文件没变）时关掉。"""
+    """切换提交之后：变更集记成已合入；没有提交（锁文件没变）时留在已撤回。"""
     from ...kernel.changesets import store
 
     if record is None:
@@ -53,12 +54,12 @@ def finish(manager, project_id: str, record: dict | None, commit: str) -> dict |
     root = manager.project_root(project_id)
     now = time.time()
     if not commit:
-        return store.update(root, record["id"], state="discarded", closed_at=now, empty=True)
+        return store.update(root, record["id"], state="discarded", closed_at=now, empty=True, committing=False)
     from .. import mainline
 
     paths = _changed(root, commit)
     label = mainline.label(mainline.count(root, commit))
-    return store.update(root, record["id"], state="merged", closed_at=now, paths=paths,
+    return store.update(root, record["id"], state="merged", closed_at=now, paths=paths, committing=False,
                         changes=[["M", rel] for rel in paths],
                         merged={"commit": commit, "version_label": label, "at": now})
 
@@ -67,7 +68,8 @@ def abort(manager, project_id: str, record: dict | None) -> None:
     from ...kernel.changesets import store
 
     if record is not None:
-        store.update(manager.project_root(project_id), record["id"], state="discarded", closed_at=time.time())
+        store.update(manager.project_root(project_id), record["id"], state="discarded", closed_at=time.time(),
+                     committing=False)
 
 
 def _changed(root: Path, commit: str) -> list[str]:

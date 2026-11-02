@@ -1,7 +1,7 @@
 """节点包的启用、生效、停用、升级（详设 6.9 第 2～6 步、13 章 P3 第一条验收；方案 D18；ADR-0065、0066）。
 
 - 启用即变更集：packs.lock 与 flow.lock 在同一个带 `Onto-Changeset` 的提交里，撤回用 `revert_merged` 恢复；
-- 助手的修改没确认时，会改流程的切换回 423；
+- 助手的修改没确认时，会改流程的切换回 423，不改流程的照常记成插件变更集；
 - 下一条消息生效、可补做、停用解除关卡、升级标需复核（见后面的用例）。
 
 节点包全部合成（tests/pack_helpers），用仓库里真实的 core 与官方包组装流程；假引擎不起真实 CLI。
@@ -125,11 +125,16 @@ def test_unconfirmed_assistant_changes_block_flow_changes_only(env):
     blocked = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "naming"})
     assert blocked.status_code == 423 and blocked.json()["code"] == "write_scope_locked"
     assert lockfile.read(root).get("naming") is None
-    # 不改流程的包照常启用（没有插件变更集，助手那组修改的位置不受影响）
+    # 不改流程的包照常启用，也记成插件变更集（store.record_closed），助手那组修改的位置不受影响
+    assistant = changesets.current(manager, project_id)["id"]
     plain = client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "websearch"})
     assert plain.status_code == 201, plain.text
-    assert plain.json()["changeset_id"] is None
-    assert changesets.current(manager, project_id)["state"] == "pending_confirm"
+    record = changesets.get(manager, project_id, plain.json()["changeset_id"])
+    assert record["source"] == "plugin" and record["state"] == "merged" and not record.get("committing")
+    assert record["merged"]["commit"] == git(root, "rev-parse", "HEAD").strip()
+    assert trailer(root, "Onto-Changeset") == record["id"]
+    current = changesets.current(manager, project_id)
+    assert current["id"] == assistant and current["state"] == "pending_confirm"
 
 
 # ---- 可补做、停用解除关卡、升级标需复核、熔断 ----

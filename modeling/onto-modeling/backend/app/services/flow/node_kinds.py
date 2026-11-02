@@ -4,7 +4,8 @@
 - script：内核把包里的脚本（本项目装配目录里哈希核对过的那份）连同节点声明的输入文件打包，经脚本验证网关放进
   jiuwenbox 一次性沙箱运行，标准输出写成节点声明的产出、经写入事务合入。网关或沙箱不可用时不在本机回退：
   脚本来自包作者，不能在主容器里跑；
-- human：只出一张决策卡（对话流 question.asked，S-11 回答），结论写进节点声明的记录文件；
+- human：只出一张决策卡（对话流 question.asked，也进待处理的「决策」，S-11 或 IN-03 回答），结论写进节点声明的
+  记录文件；
 - external：要经连接器网关调外部系统，需要对应的证据源提供方。本期证据源只留接口（ADR-0056），没有提供方，
   启用检查与开始节点都如实报「需要的提供方不可用」。
 """
@@ -209,6 +210,12 @@ def ask(project_id: str, root: Path, node: dict, conversation_id: str, append) -
         _save(root, data)
     append(conversation_id, {"type": "question_asked", "payload": question})
     return question
+
+
+def open_questions(root: Path) -> dict[str, dict]:
+    """还没回答的决策卡 {question_id: {node_id, question, asked_at, ...}}（待处理的决策来源）。"""
+    with _lock:
+        return {question_id: item for question_id, item in _load(root).items() if item.get("state") == "open"}
 
 
 def answer(manager, project_id: str, question_id: str, body: dict, *, actor: str) -> tuple[dict, dict] | None:

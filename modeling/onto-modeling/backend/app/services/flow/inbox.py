@@ -5,12 +5,12 @@
 
 | kind | 来源 |
 |---|---|
-| decision 决策 | 在线会话里没回答的决策卡 |
+| decision 决策 | 在线会话里没回答的决策卡；人工节点出的、没回答的决策卡（节点不在当前流程里的不列） |
 | resumable 续跑 | 中断、能续跑的执行记录 |
 | pending_changeset 修改待确认 | 没确认的助手变更集 |
 | changeset_conflict 合入冲突 | 合入时检测到实体冲突的变更集 |
-| stale 过期 | 过期的节点 |
-| review 需复核 | 节点升级、导入（自主构建那一种在 P3 由 `mark_needs_review` 带来） |
+| stale 过期 | 过期的节点（所属包版本被熔断的不列） |
+| review 需复核 | 节点升级、导入（自主构建那一种在 P3 由 `mark_needs_review` 带来）；熔断的同上 |
 | report 报告待处理 | 报告里还有没处理的 `[ ]` 条目，一份报告一项 |
 | format_migration 格式待迁移 | 插件产物的格式版本比包里登记的旧 |
 | feedback 外部反馈 | 评测服务回传的反馈批次 |
@@ -162,6 +162,26 @@ def _decisions(project_id: str) -> list[dict]:
     return items
 
 
+def _human_nodes(root: Path, flow: dict) -> list[dict]:
+    """人工节点（ADR-0066）的决策卡：FL-05 出过、还没回答的。包停用了、节点不在当前流程里的不列。"""
+    from . import node_kinds
+
+    by_id = {node["id"]: node for node in flow.get("nodes") or []}
+    items = []
+    for question_id, entry in node_kinds.open_questions(root).items():
+        node = by_id.get(entry.get("node_id"))
+        if node is None:
+            continue
+        question = entry["question"]
+        pack = node.get("pack") if node.get("pack") not in (None, "core") else None
+        items.append(_item("decision", question_id, question.get("title") or "需要你决定",
+                           meta=f"{len(question.get('options') or [])} 个选项", source="plugin", pack=pack,
+                           created_at=entry.get("asked_at"), batchable=False,
+                           extra={"question": question, "conversation_id": question.get("conversation_id"),
+                                  "human_node": node["id"]}))
+    return items
+
+
 def _resumables(project_id: str, root: Path, flow: dict) -> list[dict]:
     from ..session_host import exec_records
 
@@ -202,15 +222,19 @@ def _changesets(root: Path) -> list[dict]:
 
 
 def _node_items(root: Path, flow: dict) -> list[dict]:
-    from . import model
+    from . import model, overlay
     from . import state as node_state
 
     hits = model.flow_state(root).node_hits(flow, root)
-    states = node_state.compute(root, flow, hits)
+    # 所属包版本被熔断的节点在流程里算跳过、开始不了（FL-05 回 409）：不列，免得 IN-04 选中它
+    broken = overlay.broken_nodes(flow)
+    states = node_state.compute(root, overlay.released(flow, broken), hits)
     by_id = {node["id"]: node for node in flow.get("nodes") or []}
     reviews = {item["node_id"]: item for item in node_state.reviews(root)}
     items = []
     for node_id, info in states.items():
+        if node_id in broken:
+            continue
         node = by_id.get(node_id) or {}
         pack = node.get("pack") if node.get("pack") not in (None, "core") else None
         if info["state"] == "stale":
@@ -332,6 +356,7 @@ def collect(manager, project_id: str) -> list[dict]:
     flow = model.load_for(root)
     sources = [
         lambda: _decisions(project_id),
+        lambda: _human_nodes(root, flow),
         lambda: _changesets(root),
         lambda: _resumables(project_id, root, flow),
         lambda: _node_items(root, flow),

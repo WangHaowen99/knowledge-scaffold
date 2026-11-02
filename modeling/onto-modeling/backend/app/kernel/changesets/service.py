@@ -785,20 +785,56 @@ def reconcile_merged(manager, root: Path) -> str | None:
     record = store.current(root)
     if record is None:
         return None
+    commit = _commit_of(_recent_commits(root), record["id"])
+    if commit is None:
+        return None
+    copy = existing_copy(root)
+    if copy is not None:
+        worktree.collect_state(root, copy)
+        worktree.reset(root, copy, worktree.rev(root))
+    now = time.time()
+    store.update(root, record["id"], state="merged", closed_at=now, conflict=None,
+                 merged={"commit": commit, "version_label": _label(root, commit), "at": now})
+    _log.warning("项目 %s 的变更集 %s 已合入主线但没记下，启动时补记", root.name, record["id"])
+    return record["id"]
+
+
+def reconcile_committing(root: Path) -> list[str]:
+    """启动时核对先记成已关闭、再提交的变更集（插件变更集，带 `committing`）：主线上有它的提交就补记已合入，
+    没有就是没提交成，留在已撤回。返回补记成已合入的编号。"""
+    pending = [record for record in store.all_records(root) if record.get("committing")]
+    if not pending:
+        return []
+    commits = _recent_commits(root)
+    merged = []
+    for record in pending:
+        commit = _commit_of(commits, record["id"])
+        if commit is None:
+            store.update(root, record["id"], committing=False)
+            continue
+        now = time.time()
+        store.update(root, record["id"], state="merged", committing=False, closed_at=now,
+                     merged={"commit": commit, "version_label": _label(root, commit), "at": now})
+        _log.warning("项目 %s 的变更集 %s 已提交但没记成已合入，启动时补记", root.name, record["id"])
+        merged.append(record["id"])
+    return merged
+
+
+def _recent_commits(root: Path) -> list[tuple[str, str]]:
+    """主线最近 50 个提交（--first-parent）：[(提交, 说明)]。"""
     out = _run_git(root, ("log", "--first-parent", "-50", "--format=%H%x1f%B%x1e")).stdout
+    pairs = []
     for chunk in out.split("\x1e"):
         commit, _, body = chunk.strip("\n").partition("\x1f")
-        if commit and f"Onto-Changeset: {record['id']}" in body:
-            copy = existing_copy(root)
-            if copy is not None:
-                worktree.collect_state(root, copy)
-                worktree.reset(root, copy, worktree.rev(root))
-            now = time.time()
-            store.update(root, record["id"], state="merged", closed_at=now, conflict=None,
-                         merged={"commit": commit, "version_label": _label(root, commit), "at": now})
-            _log.warning("项目 %s 的变更集 %s 已合入主线但没记下，启动时补记", root.name, record["id"])
-            return record["id"]
-    return None
+        if commit:
+            pairs.append((commit, body))
+    return pairs
+
+
+def _commit_of(commits: list[tuple[str, str]], changeset_id: str) -> str | None:
+    """带这个变更集 trailer 的提交；按整行比，cs-1 不会认成 cs-12 的提交。"""
+    line = f"Onto-Changeset: {changeset_id}"
+    return next((commit for commit, body in commits if line in (item.strip() for item in body.splitlines())), None)
 
 
 def startup_repair(manager) -> dict | None:
@@ -811,6 +847,7 @@ def startup_repair(manager) -> dict | None:
             with manager._project_lock(root.name):
                 if reconcile_merged(manager, root):
                     reconciled.append(root.name)
+                reconcile_committing(root)
                 copy = existing_copy(root)
                 if copy is not None:
                     worktree.clear_run_state(copy)

@@ -123,6 +123,7 @@ async def _start_kernel_node(project_id: str, root, node: dict, kind: str, body:
         conversation_id = sessions._resolve(project_id, str(body.get("conversation_id") or "-"))
         question = node_kinds.ask(project_id, root, node, conversation_id,
                                   lambda cid, record: manager.append_record(project_id, cid, record))
+        _after_change(project_id)  # 决策卡也进待处理（inbox.updated）
         return {**await asyncio.to_thread(_node_view, root, node["id"]), "question": question}
     except node_kinds.NodeRunError as exc:
         raise ApiError(exc.code, str(exc), exc.status, exc.details) from exc

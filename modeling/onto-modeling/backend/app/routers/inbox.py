@@ -1,8 +1,8 @@
 """待处理（契约 3.13 IN-01～IN-04；详设 4.7）与变更点清单（契约 3.14 INC-01～INC-05）。
 
-处理事项（IN-03）一律转给等价接口：决策 → S-11，续跑 / 放弃 → S-16 / S-17，确认生效 / 撤回 → CS-04 / CS-05，
-合入冲突 → CS-07，刷新 / 重做 → FL-05，报告 → 以校验命令调 S-20，外部反馈 → 以反馈演进命令调 S-20，
-变更清单 → INC-03 / INC-02 / INC-04。忽略只记在主线工作区的 `.onto/run/`（不进 git）。
+处理事项（IN-03）一律转给等价接口：决策 → S-11（人工节点的卡走 S-11 同一个退路），续跑 / 放弃 → S-16 / S-17，
+确认生效 / 撤回 → CS-04 / CS-05，合入冲突 → CS-07，刷新 / 重做 → FL-05，报告 → 以校验命令调 S-20，
+外部反馈 → 以反馈演进命令调 S-20，变更清单 → INC-03 / INC-02 / INC-04。忽略只记在主线工作区的 `.onto/run/`（不进 git）。
 """
 
 from __future__ import annotations
@@ -111,6 +111,12 @@ async def _run_action(project_id: str, item: dict, action: str, request: Request
         return {}
     if action == "answer" and item["kind"] == "decision":
         answer = {key: body.get(key) for key in ("option_id", "custom_text") if body.get(key)}
+        if extra.get("human_node"):
+            # 人工节点的决策卡：和 S-11 同一个退路（结论写进节点声明的记录文件）
+            question = await flow_routes.answer_human_node(project_id, source_id, answer, actor)
+            if question is None:
+                raise ApiError("question_gone", "问题已回答、撤回或失效", 410, {"state": "gone"})
+            return {"question": question}
         from ..services.agent_sessions import SessionError
 
         try:

@@ -34,9 +34,10 @@ B3a 起锁文件改动是一次 `Onto-Source: plugin` 的主线提交；B4b 的�
    已合入；没有改动时关掉。撤回用变更集的 `revert_merged`（反向提交；之后锁文件又改过就不撤）。PL-10 撤销待生效的切换：
    这个包最近一次插件变更集仍是锁文件最后一次改动时走 `revert_merged`，否则按生效中的版本改回（原做法）。
    - 助手的变更集没关闭时：会改流程节点（`nodes_hash` 变）的切换回 `423 write_scope_locked`——流程定了写入范围和
-     待确认节点，换流程会让那组修改对不上；不改流程的切换照常提交、不记变更集（不能挤掉助手变更集的位置）。
-   - 变更集记录直接用 `kernel/changesets/store.create/update` 写，没有改变更集模块；`store.create` 会把 `current`
-     指到新记录，所以只在没有没关闭的变更集时用（见 Consequences）。
+     待确认节点，换流程会让那组修改对不上；不改流程的切换照常提交、照常记变更集。
+   - 变更集记录用 `kernel/changesets/store.record_closed`（只追加已关闭的记录、不动 `current`，B5c 合并时加）：
+     提交前记成已撤回并标 `committing`，提交后改成已合入。崩在提交之后的，启动核对（`startup_repair` 里的
+     `reconcile_committing`）按 `Onto-Changeset` 补记已合入。
 5. **节点状态上与包有关的部分**（`services/flow/overlay.py`，不改 `flow/state.py` 的算法）：
    - 可补做：插件的串入、关卡节点（主线位置 spine 的不算，场景走查这类从 core 拆出的包本来就在流程里）后面的主线节点
      已经在主线上完成、它自己还没完成，标 `backfill`，不计入进度分母（FL-01 与
@@ -60,6 +61,6 @@ B3a 起锁文件改动是一次 `Onto-Source: plugin` 的主线提交；B4b 的�
 ## Consequences
 
 - 每次插件切换多一条变更集记录（CS-01 按 `source` 能筛出来）；存量项目第一次切换时补上 `flow.lock`。
-- 变更集模块要加一个「记一个已关闭的变更集、不动 current」的函数，才能在助手变更集没关闭时也把不改流程的切换记成
-  变更集；现在这类切换没有变更集记录（交给主控合并时决定，见 `_plan/gaps.md` B5c）。
+- 助手的修改没确认时记下的插件变更集，要等那组修改确认或撤回后才能 `revert_merged`（撤回要在主线写反向提交，
+  回退类写入在助手变更集没关闭时一律 423）；这期间 PL-10 按生效中的版本改回。
 - `flow_state.py`（core 工具箱）改了建议算法，core 内容摘要随之变化，跟随通道的项目下一条消息前升级。
