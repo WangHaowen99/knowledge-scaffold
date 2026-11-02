@@ -8,6 +8,7 @@ import {
   formFromEntry, kindSegments, lockActionTarget, lockCopy, mergeFlowchartRows, rawNotices, rejectSummary, relationText, resolutionLabel,
   rowStatus, summarizeFormChanges,
 } from '../src/pages/studio/studioModel.js';
+import { boxHeight, erData, erLayout, hasErView } from '../src/pages/studio/erModel.js';
 
 const ref = (kind, key, name) => ({ kind, id: `${kind}:${key}`, key, name });
 const DISPLAY = ref('object', 'display_qty_std', '陈列量标准');
@@ -266,4 +267,40 @@ test('mock：新建重名、删除被引用的条目、证据被谁引用', asyn
   assert.ok(wu.body.items.some((x) => x.target.id === DISPLAY.id));
   const other = await call('GET', '/projects/bike-fleet-7b20e4a1/studio/entries');
   assert.equal(other.body.items.length, 0);
+});
+
+test('ER 视图：包选用了 er_view 才有；只画对象和对象之间的关系声明，属性最多列 8 个', () => {
+  assert.equal(hasErView({ view_choices: [{ id: 'er_view', pack: 'diagram' }] }), true);
+  assert.equal(hasErView({ view_choices: [{ id: 'schema_browser', pack: 'reverse' }] }), false);
+  assert.equal(hasErView({}), false);
+  assert.equal(hasErView(F.extensions(['trace', 'knowledge', 'solver', 'diagram'])), true);
+  assert.equal(hasErView(F.extensions(['trace'])), false);
+  const graph = {
+    nodes: [
+      { id: 'object:a', kind: 'object', label: '补货单' }, { id: 'object:b', kind: 'object', label: '门店' },
+      { id: 'object:c', kind: 'object', label: '品类' }, { id: 'operation:x', kind: 'operation', label: '提交补货' },
+    ],
+    edges: [
+      { id: 'd1', source: 'object:a', target: 'object:b', kind: 'declared', label: '关联门店' },
+      { id: 'd1b', source: 'object:a', target: 'object:b', kind: 'declared', label: '关联门店' },
+      { id: 'd2', source: 'operation:x', target: 'object:a', kind: 'declared', label: '输出' },
+      { id: 'm1', source: 'object:a', target: 'object:c', kind: 'mention', label: '提及' },
+    ],
+  };
+  const many = Array.from({ length: 11 }, (_, i) => ({ name: `属性${i}`, column: `col_${i}` }));
+  const data = erData(graph, { 'object:a': many, 'object:b': [{ name: '门店编号', column: 'store_code' }] });
+  assert.deepEqual(data.entities.map((e) => e.id), ['object:a', 'object:b', 'object:c']);
+  assert.deepEqual(data.relations, [{ id: 'd1', from: 'object:a', to: 'object:b', label: '关联门店' }]);
+  const a = data.entities[0];
+  assert.equal(a.fields.length, 8);
+  assert.equal(a.more, 3);
+  assert.equal(data.entities[2].fields.length, 0);
+  const lay = erLayout(data);
+  assert.equal(lay.boxes.length, 3);
+  const box = lay.boxes.find((b) => b.id === 'object:a');
+  assert.equal(box.h, boxHeight(a));
+  // 从左到右：关系的起点实体在终点左边，连线有路径
+  assert.ok(box.x < lay.boxes.find((b) => b.id === 'object:b').x);
+  assert.match(lay.edges[0].d, /^M\d+ \d+( L\d+ \d+)+$/);
+  assert.ok(lay.width >= 320 && lay.height >= 200);
 });

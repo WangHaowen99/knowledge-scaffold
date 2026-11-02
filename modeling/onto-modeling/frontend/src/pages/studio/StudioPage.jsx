@@ -1,12 +1,13 @@
 // Studio 图谱（设计稿 studio）：顶部工具条与统计（ST-01）、关系图（ST-02，画布复用原版 WebGL 图谱）、
 // 左上图例、底部操作流程面板（ST-05）、右侧选中详情：属性 / 关系 / 证据（ST-04、ST-06、EV-26），锁标记（CS-06）
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import LegacyStudioGraphHost from '../../components/studio/LegacyStudioGraphHost.jsx';
 import { ShellP } from '../../shell/Shell.jsx';
+import { evidenceInProject } from '../../state/evidence.js';
 import { Button, Chip, Icon, Inp, Seg, St, Tabs, Toggle } from '../../ui/index.jsx';
 import { inlineTokens } from '../workbench/md.js';
 import '../../styles/studio.css';
@@ -14,8 +15,11 @@ import { KindDot, LockIcon, LockMark, PlugMark, askAssistant, copyText, gotoEntr
 import {
   CONFIDENCE_CHIP, KIND_META, backlinkView, evidenceShortLabel, kindDotStyle, kindLabel, relationText,
 } from './studioModel.js';
+import { hasErView } from './erModel.js';
 
-const LEGEND_POP = '图例：● 对象　■ 操作　◆ 规则　● 指标。实线：关系声明（一级标题「关联对象」下）；虚线：正文里只是提及，不算关系';
+// 包选用了 ER 视图（R23）时才加载：页面 studio-er，或 studio?view=er
+const StudioErView = lazy(() => import('./StudioErView.jsx'));
+
 const SUM_KINDS = [['object', 'objects'], ['operation', 'operations'], ['rule', 'rules'], ['metric', 'metrics']];
 const STATE_KEY = { confirmed: 'confirmed', pending: 'pending', stale: 'stale', draft: 'draft' };
 
@@ -46,12 +50,12 @@ function StatsBar({ stats, pid }) {
   );
 }
 
-function Legend({ stats }) {
+function Legend() {
   return (
     <div className="sd-legend">
       <div className="b" style={{ fontSize: 12, marginBottom: 4 }}>图例</div>
-      {SUM_KINDS.map(([k, f]) => (
-        <div className="r" key={k}><span style={kindDotStyle(k, 10)} />{kindLabel(k)} {stats ? stats[f] : ''}</div>
+      {SUM_KINDS.map(([k]) => (
+        <div className="r" key={k}><span style={kindDotStyle(k, 10)} />{kindLabel(k)}</div>
       ))}
       <div className="r" style={{ marginTop: 6 }}><svg width="22" height="4"><line x1="0" y1="2" x2="22" y2="2" stroke="#9DB0CA" strokeWidth="1.6" /></svg>关系声明</div>
       <div className="r"><svg width="22" height="4"><line x1="0" y1="2" x2="22" y2="2" stroke="#B8C6DA" strokeWidth="1.4" strokeDasharray="4 3" /></svg>提及</div>
@@ -84,7 +88,6 @@ function FlowPanel({ flow, loading, onClose, onPickEntry, onPickName }) {
         <span style={{ color: 'var(--teal)' }}><Icon name="flow" size={14} /></span>
         <b className="sm">操作流程 · {flow?.operation?.name || '…'}</b>
         <Seg items={[['biz', '关联业务流程'], ['steps', '操作步骤']]} value={tab} onChange={setTab} />
-        <span className="xs muted"><Icon name="info" size={12} /> 展示操作所在的完整业务流程，引用节点已高亮</span>
         <span className="sp" />
         <div className="row g4">
           <Button size="xs" icon="zoomout" title="缩小流程图" onClick={() => setZoom((z) => Math.max(50, z - 10))} />
@@ -148,7 +151,7 @@ function EvidenceCard({ item, pid }) {
   const [used, setUsed] = useState(null);
   const db = item.scheme === 'db';
   // 证据浏览器与「被谁引用」（EV-26）随系统逆向建模包出现；证据源本期只留接口（ADR-0056）
-  const evidenceOn = !!project?.hasSubpage?.('schema');
+  const evidenceOn = evidenceInProject(project);
   const [conf, tone] = CONFIDENCE_CHIP[item.confidence] || [];
   const page = item.resolved?.page || (db ? 'schema' : 'resources');
   const whereUsed = async () => {
@@ -185,13 +188,6 @@ function EvidenceCard({ item, pid }) {
   );
 }
 
-function fmtCollected(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  const p = (n) => String(n).padStart(2, '0');
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
 // 右侧选中详情
 function SidePanel({ entry, evidence, loading, onClose, onSelect }) {
   const { pid } = useProject();
@@ -201,7 +197,7 @@ function SidePanel({ entry, evidence, loading, onClose, onSelect }) {
   if (!entry) {
     return (
       <aside className="sd-side">
-        <div className="sd-empty">{loading ? '正在读取…' : '点选图谱里的节点，查看它的属性、关系和证据'}</div>
+        <div className="sd-empty">{loading ? '正在读取…' : '点选节点查看详情'}</div>
       </aside>
     );
   }
@@ -212,12 +208,6 @@ function SidePanel({ entry, evidence, loading, onClose, onSelect }) {
   const mentions = entry.relations?.mentions || [];
   const backlinks = entry.backlinks || [];
   const evItems = evidence?.items || [];
-  const basis = evidence?.snapshot_basis || [];
-  // 快照的来源叫法取同一快照下证据的 source_label（「业务系统 ERP」），不显示数据源 id
-  const sourceLabel = (b) => {
-    const hit = evItems.find((x) => x.scheme === 'db' && x.resolved?.snapshot_id === b.snapshot_id);
-    return hit ? `${hit.resolved.source_label} ` : `${b.source_id} `;
-  };
   const openBacklink = (src) => {
     if (src.type === 'trace.scenario') navigate(pagePath('scenarios', pid), { key: src.key });
     else if (src.type) gotoEntry(pid, `flowchart:${src.key}`);
@@ -237,12 +227,6 @@ function SidePanel({ entry, evidence, loading, onClose, onSelect }) {
         </div>
         <div className="row mt4 xs muted"><span>Key</span><span className="mono">{entry.key}</span></div>
         {entry.description ? <p className="sm mt8" style={{ color: 'var(--ink2)' }}>{entry.description}</p> : null}
-        <div className="row g16 mt8 sm">
-          <span><b className="num">{c.refs_out ?? 0}</b> <span className="muted">引用</span></span>
-          <span><b className="num">{c.refs_in ?? 0}</b> <span className="muted">被引</span></span>
-          <span><b className="num">{c.fields ?? 0}</b> <span className="muted">属性</span></span>
-          <span><b className="num">{c.evidence ?? 0}</b> <span className="muted">证据</span></span>
-        </div>
         <div className="mt8">
           <Tabs items={[['attr', '属性', c.fields ?? 0], ['rel', '关系', backlinks.length + declared.length], ['ev', '证据', c.evidence ?? 0, 'quote']]} value={tab} onChange={setTab} />
         </div>
@@ -262,10 +246,10 @@ function SidePanel({ entry, evidence, loading, onClose, onSelect }) {
                 ))}
               </tbody>
             </table>
-          ) : <div className="xs muted">{entry.kind === 'object' ? '还没有属性' : `${kindLabel(entry.kind)}没有属性表，内容在「编辑条目」里`}</div>}
+          ) : <div className="xs muted">{entry.kind === 'object' ? '还没有属性' : '没有属性'}</div>}
           <div className="row mt12">
             <Button size="sm" kind="primary" icon="edit" onClick={() => gotoEntry(pid, entry.id)}>编辑条目</Button>
-            <Button size="sm" icon="sparkle" data-pop={`回到工作台，把「${entry.name}」作为引用带进对话`} onClick={() => askAssistant(pid, entry.id)}>问助手</Button>
+            <Button size="sm" icon="sparkle" onClick={() => askAssistant(pid, entry.id)}>问助手</Button>
           </div>
         </div>
       ) : null}
@@ -287,27 +271,19 @@ function SidePanel({ entry, evidence, loading, onClose, onSelect }) {
           <div className="sec-t mt12">关系声明 · {declared.length}</div>
           {declared.map((r, i) => (
             <div key={i} className="ov-li sm" style={{ cursor: 'pointer' }} onClick={() => onSelect(r.target.id)}>
-              <Icon name="link" size={14} /><span className="grow">{r.target.name} · {r.label}</span><Chip tone="line" sm>实线</Chip>
+              <Icon name="link" size={14} /><span className="grow">{r.target.name} · {r.label}</span>
             </div>
           ))}
           <div className="sec-t mt12">只是提及 · {mentions.length}</div>
           {mentions.map((r, i) => (
             <div key={i} className="ov-li sm muted" style={{ cursor: 'pointer' }} onClick={() => onSelect(r.target.id)}>
-              <Icon name="quote" size={14} /><span className="grow">{r.target.name} · {r.where}</span><Chip tone="gray" sm>虚线</Chip>
+              <Icon name="quote" size={14} /><span className="grow">{r.target.name} · {r.where}</span>
             </div>
           ))}
         </div>
       ) : null}
       {tab === 'ev' ? (
         <div className="bd">
-          <div className="note teal" style={{ marginBottom: 10 }}>
-            <Icon name="shieldok" />
-            <div>
-              {basis.length
-                ? `证据来自资料原文，以及${basis.map((b) => `${sourceLabel(b)}最近一次采集（${fmtCollected(b.collected_at)}）`).join('、')}`
-                : '证据来自资料原文'}
-            </div>
-          </div>
           {evidence ? evItems.map((it) => <EvidenceCard key={it.anchor + it.title} item={it} pid={pid} />) : <div className="xs muted">正在读取…</div>}
           {evidence && !evItems.length ? <div className="xs muted">还没有证据锚点</div> : null}
         </div>
@@ -317,6 +293,23 @@ function SidePanel({ entry, evidence, loading, onClose, onSelect }) {
 }
 
 export default function StudioPage({ route }) {
+  const { extensions } = useProject();
+  const er = hasErView(extensions) && (route.page === 'studio-er' || route.query?.view === 'er');
+  if (!er) return <StudioGraphPage route={route} />;
+  return (
+    <ShellP active={route.page === 'studio-er' ? 'studio-er' : 'studio'} flush>
+      <div className="sd">
+        <div className="sd-main">
+          <div className="sd-canvas">
+            <Suspense fallback={<div className="sd-empty">正在读取…</div>}><StudioErView /></Suspense>
+          </div>
+        </div>
+      </div>
+    </ShellP>
+  );
+}
+
+function StudioGraphPage({ route }) {
   const { api } = useApp();
   const { pid, subscribe } = useProject();
   const selectedId = route.query?.entry || '';
@@ -394,7 +387,6 @@ export default function StudioPage({ route }) {
           <label className="row sm" style={{ gap: 7 }}><Toggle on={mentions} onChange={setMentions} /><span>显示「提及」</span></label>
           <span className="sp" />
           <StatsBar stats={stats} pid={pid} />
-          <Button size="sm" kind="ghost" icon="info" data-pop={LEGEND_POP} aria-label="图例" />
           <Button size="sm" icon="maximize" title="全屏查看" onClick={fullscreen} />
         </div>
         <div className="sd-main">
@@ -402,12 +394,12 @@ export default function StudioPage({ route }) {
             {graph ? (
               <LegacyStudioGraphHost graph={graph} query={query} highlight={hl} selectedId={selectedId} onSelect={select} onOpen={open} />
             ) : null}
-            <Legend stats={stats} />
+            <Legend />
             {operationId && !flowClosed ? (
               <FlowPanel
                 flow={flow}
                 loading={flowLoading}
-                onClose={() => { setFlowClosed(true); toast('已关闭操作流程，选中操作节点可再次打开', 'flow'); }}
+                onClose={() => { setFlowClosed(true); toast('已关闭操作流程', 'flow'); }}
                 onPickEntry={(ref) => select(ref.id)}
                 onPickName={pickName}
               />

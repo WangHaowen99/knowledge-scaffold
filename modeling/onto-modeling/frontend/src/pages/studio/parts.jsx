@@ -7,7 +7,7 @@ import { Button, Chip, Icon, St } from '../../ui/index.jsx';
 import { KIND_META, flowPreviewLayout, kindDotStyle, lockActionTarget, lockCopy, rowStatus } from './studioModel.js';
 
 export function PlugMark({ label }) {
-  return <span className="sn-pl" data-pop={`由「${label}」插件提供，未启用时不显示`}><Icon name="puzzle" size={12} /></span>;
+  return <span className="sn-pl" data-pop={`由「${label}」插件提供`}><Icon name="puzzle" size={12} /></span>;
 }
 
 export function KindDot({ kind, size = 12 }) {
