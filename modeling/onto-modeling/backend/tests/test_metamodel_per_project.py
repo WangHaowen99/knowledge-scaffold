@@ -30,6 +30,9 @@ def _variant(**overrides) -> types.ModuleType:
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
+    from app import config
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     assets = tmp_path / "assets"
     (assets / "workspace-toolkit/templates").mkdir(parents=True)
     (assets / "workspace-rules.md").write_text("# synthetic rules")
