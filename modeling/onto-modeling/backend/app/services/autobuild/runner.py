@@ -1056,26 +1056,20 @@ class AutobuildRunner:
         project_events.card_changed(project_id)
 
     def _notify(self, run: dict, kind: str, *, count: int = 0) -> None:
-        """用户流 EU-01（通知中心 A-13 还没有，只推实时通知）。"""
-        from .. import streams
+        """进通知中心（A-13 落盘）并推用户流 EU-01。新增挂起按这次运行成组：没读的旧一条被替换，正文是还没回答的总数。"""
+        from .. import notifications
 
         owner = run.get("owner") or run.get("actor") or ""
         summary = views.summary(run)
         title, body = {
             "autobuild_finished": ("自主构建完成", f"需复核 {summary['needs_review']} 项"),
-            "autobuild_suspension": ("新增挂起问题", f"{count} 个"),
+            "autobuild_suspension": ("新增挂起问题", f"{summary.get('suspended') or count} 个"),
         }.get(kind, ("自主构建已停下", END_NOTICE.get(run["state"], "")))
-        try:
-            meta = _ws().get_project(run["project_id"]) or {}
-            streams.publish_user(owner, "notification", {
-                "id": f"nt-{uuid.uuid4().hex[:10]}", "kind": kind, "title": title, "body": body,
-                "project_id": run["project_id"], "project_name": meta.get("name"),
-                "action": {"label": "去复核", "page": "inbox", "params": {"filter": "autobuild_review"}}
-                if kind != "autobuild_stopped" else {"label": "查看", "page": "l4-run",
-                                                     "params": {"c": run["conversation_id"]}},
-                "created_at": views.iso(time.time()), "read": False}, project_id=run["project_id"])
-        except Exception:  # noqa: BLE001 - 通知是增强信息
-            _log.warning("自主构建通知发不出去", exc_info=True)
+        action = ({"label": "去复核", "page": "inbox", "params": {"filter": "autobuild_review"}}
+                  if kind != "autobuild_stopped" else
+                  {"label": "查看", "page": "l4-run", "params": {"c": run["conversation_id"]}})
+        group = f"{run['project_id']}:{run['run_id']}" if kind == "autobuild_suspension" else None
+        notifications.notify(owner, kind, title, body, project_id=run["project_id"], action=action, group=group)
 
     def _telemetry(self, run: dict) -> None:
         """可观测（详设 8.5）：运行次数、时长、费用、自动决定数；复核被改掉的比例在复核时记。"""
