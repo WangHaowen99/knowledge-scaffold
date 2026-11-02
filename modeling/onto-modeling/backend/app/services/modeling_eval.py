@@ -75,10 +75,13 @@ def launch(
     cases: list[dict],
     data_source: dict | None = None,
     eval_set_name: str = "",
-    allow_unbound: bool = False,
-    refresh_token: str = "",
+    **run_options,
 ) -> asyncio.Task:
-    """Reserve the project synchronously, then launch evaluation in the event loop."""
+    """Reserve the project synchronously, then launch evaluation in the event loop.
+
+    run_options (allow_unbound, refresh_token, model_profile_id, case_concurrency,
+    judge_model) are forwarded to run() unchanged.
+    """
     with _queue_lock:
         if project_id in _scheduled or project_id in _running or project_id in _queued:
             raise ValueError("该项目已有评测正在运行或排队")
@@ -100,8 +103,7 @@ def launch(
                 cases,
                 data_source,
                 eval_set_name,
-                allow_unbound,
-                refresh_token,
+                **run_options,
             )
         finally:
             _stop_requested.discard(project_id)
@@ -247,6 +249,11 @@ def reachable(timeout: float = 3.0) -> bool:
         return True  # 有 HTTP 响应即视为在线（401/404 都算活着）
     except Exception:
         return False
+
+
+def model_profiles(token: str) -> dict:
+    """Return the enabled global Consumer model pool through Modeling."""
+    return _http("GET", "/api/evaluation/model-profiles", token, timeout=15)
 
 
 def _http(
@@ -1467,7 +1474,8 @@ def _configure_connection(
 async def run(
     project_id: str, root: Path, token: str, cases: list[dict],
     data_source: dict | None = None, eval_set_name: str = "", allow_unbound: bool = False,
-    refresh_token: str = "",
+    refresh_token: str = "", model_profile_id: str = "", case_concurrency: int | None = None,
+    judge_model: dict | None = None,
 ) -> None:
     """后台评测编排；进度经 .ontology-state/eval.json 供前端轮询。"""
     if project_id in _running:
@@ -1479,7 +1487,7 @@ async def run(
         await _run_in_eval_pool(
             project_id, _run_sync,
             project_id, root, token, cases, data_source, eval_set_name, allow_unbound,
-            refresh_token,
+            refresh_token, model_profile_id, case_concurrency, judge_model,
         )
     finally:
         _running.discard(project_id)
@@ -1490,7 +1498,8 @@ async def run(
 def _run_sync(
     project_id: str, root: Path, token: str, cases: list[dict],
     data_source: dict | None = None, eval_set_name: str = "", allow_unbound: bool = False,
-    refresh_token: str = "",
+    refresh_token: str = "", model_profile_id: str = "", case_concurrency: int | None = None,
+    judge_model: dict | None = None,
 ) -> None:
     from .workspace import WorkspaceManager
 
@@ -1508,7 +1517,11 @@ def _run_sync(
             eval_import.prepare(root, data_source, graph=is_graph(data_source))
             if needs_import(data_source) else None
         )
-        if _try_resume(project_id, root, token, cases, object_fingerprint=object_fingerprint):
+        # Explicitly starting with a user's judge must not reuse a round launched
+        # with another user's credentials. The separate resume action still collects it.
+        if judge_model is None and _try_resume(
+            project_id, root, token, cases, object_fingerprint=object_fingerprint
+        ):
             return
         _check_stop(project_id)
         _write_state(
@@ -1520,6 +1533,7 @@ def _run_sync(
             object_fingerprint=object_fingerprint,
             data_source_name=data_source.get("name") or eval_data_sources.default_name(data_source),
             eval_set_name=eval_set_name,
+            judge_source="onto-modeling" if judge_model else "modeling",
         )
         manager = WorkspaceManager(config.DATA_DIR, config.ASSETS_DIR)
         import tempfile
@@ -1620,7 +1634,13 @@ def _run_sync(
         # refresh token 只经此请求体转交，不落状态、不写日志
         started = _http(
             "POST", f"/api/projects/{mp_project}/evaluate", tok(),
-            body={"refresh_token": refresh_token} if refresh_token else {},
+            body={
+                **({"refresh_token": refresh_token} if refresh_token else {}),
+                **({"model_profile_id": model_profile_id} if model_profile_id else {}),
+                **({"case_concurrency": case_concurrency} if case_concurrency else {}),
+                # Resolved server-side for the initiating user; never persisted.
+                **({"judge_model": judge_model} if judge_model is not None else {}),
+            },
         )
         round_id = started["roundId"]
         _write_state(root, round_id=round_id)

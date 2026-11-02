@@ -1053,6 +1053,7 @@ def test_evaluate_start_passes_refresh_token_only_in_request(tmp_path, monkeypat
 
 def test_eval_router_forwards_refresh_token_only_for_user_token(tmp_path, monkeypatch):
     from app.routers import projects
+    from app.services import eval_judge_config
     from app.services.workspace import WorkspaceManager
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
@@ -1060,12 +1061,13 @@ def test_eval_router_forwards_refresh_token_only_for_user_token(tmp_path, monkey
     monkeypatch.setattr(projects, "workspaces", manager)
     monkeypatch.setattr(modeling_eval, "enabled", lambda: True)
     monkeypatch.setattr(modeling_eval, "reachable", lambda: True)
+    monkeypatch.setattr(eval_judge_config, "resolve", lambda *args: {"model": "synthetic-judge-model"})
     pid = manager.create_project("凭据转交")["id"]
     request = SimpleNamespace(state=SimpleNamespace(user=None), headers={"authorization": "Bearer t"})
     captured: list = []
 
     async def fake_run(project_id, root_, token, cases, data_source, eval_set_name="",
-                       allow_unbound=False, refresh_token=""):
+                       allow_unbound=False, refresh_token="", judge_model=None):
         captured.append((token, refresh_token))
 
     monkeypatch.setattr(modeling_eval, "run", fake_run)

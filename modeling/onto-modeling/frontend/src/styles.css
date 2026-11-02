@@ -1698,6 +1698,8 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
   grid-column: 1 / -1; font-size: 11.5px; line-height: 1.6; color: var(--text-secondary);
 }
 .eval-set-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.eval-wizard-modal .ant-modal-content { min-height: min(680px, calc(100vh - 48px)); }
+.eval-wizard-modal .ant-modal-body { min-height: min(560px, calc(100vh - 180px)); }
 .eval-import-preview {
   display: flex; flex-direction: column; gap: 6px; padding: 10px 12px;
   border: 1px dashed var(--border-default); border-radius: 10px;

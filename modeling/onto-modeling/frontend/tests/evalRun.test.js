@@ -49,3 +49,13 @@ test('无鉴权部署没有 refresh token：请求体不带该字段', () => {
   assert.equal('refresh_token' in payload, false);
   assert.equal(payload.allow_unbound, true);
 });
+
+test('评测请求携带选定模型和受限并发数', () => {
+  const payload = evalRunPayload({
+    cases: [],
+    modelProfileId: 'global:synthetic-fast',
+    caseConcurrency: 12,
+  }, '');
+  assert.equal(payload.model_profile_id, 'global:synthetic-fast');
+  assert.equal(payload.case_concurrency, 12);
+});

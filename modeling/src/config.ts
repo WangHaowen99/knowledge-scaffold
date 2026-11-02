@@ -20,6 +20,17 @@ function boundedIntegerEnv(key: string, fallback: number, min: number, max: numb
   return Math.min(Math.max(value, min), max);
 }
 
+export const MAX_EVALUATION_CASE_CONCURRENCY = 16;
+
+export function normalizeEvaluationCaseConcurrency(value: unknown, fallback = 4): number {
+  const parsed = Number(value);
+  const safeFallback = Number.isSafeInteger(fallback) && fallback > 0 ? fallback : 4;
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    return Math.min(safeFallback, MAX_EVALUATION_CASE_CONCURRENCY);
+  }
+  return Math.min(parsed, MAX_EVALUATION_CASE_CONCURRENCY);
+}
+
 function normalizeMcpTransportEnv(key: string, fallback: 'both' | 'streamable-http' | 'sse'): 'both' | 'streamable-http' | 'sse' {
   const value = env(key, fallback).trim().toLowerCase();
   if (value === 'http') return 'streamable-http';
@@ -88,7 +99,12 @@ export const config = {
   consumerApiUrl: env('CONSUMER_API_URL', 'http://localhost:5055'),
   // 评测用例的并发条数。用例之间互相独立，串行跑时整轮耗时几乎全花在等模型出字上；
   // 设为 1 即恢复串行。上限 16，避免把共享的模型端点打到限流。
-  evaluationCaseConcurrency: boundedIntegerEnv('MODELING_EVALUATION_CASE_CONCURRENCY', 4, 1, 16),
+  evaluationCaseConcurrency: boundedIntegerEnv(
+    'MODELING_EVALUATION_CASE_CONCURRENCY',
+    4,
+    1,
+    MAX_EVALUATION_CASE_CONCURRENCY,
+  ),
   evaluationModelProfileRef: env('MODELING_EVALUATION_MODEL_PROFILE_REF'),
   evaluationManagedModelProfile: evaluationLlmModel ? {
     provider: env('MODELING_EVALUATION_LLM_PROVIDER', 'openai_compatible'),
