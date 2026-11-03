@@ -10,6 +10,7 @@ import { roundLockNote } from '../../state/readonly.js';
 import { Button, Chip, Ev, Icon, St, Table } from '../../ui/index.jsx';
 import { PluginEyebrow, useProjectEvent } from '../plugin/parts.jsx';
 import { roundState, useActions } from './cards.jsx';
+import { roundDiffLines } from './roundState.js';
 import { CC, DiffBlock, Inline, WbCtx, Wl } from './parts.jsx';
 import * as M from './incremental/model.js';
 import '../../styles/more.css';
@@ -274,10 +275,7 @@ function IncrementalRoundCard({ card, scope }) {
     if (!showDiff && !diff) {
       try {
         const r = await api.changesetDiff(pid, card.changeset_id);
-        setDiff(r.items.flatMap((it) => [
-          { kind: 'header', text: `${M.KIND_LABEL[it.target?.kind] || '产物'} ${M.refName(it.target)}` },
-          ...it.sections.flatMap((s) => s.lines),
-        ]));
+        setDiff(roundDiffLines(r.items));
       } catch (e) {
         toast(errorText(e), 'alert');
         return;
@@ -311,7 +309,7 @@ function IncrementalRoundCard({ card, scope }) {
         )}
       >
         <ul className="mr-done">
-          {M.roundLines(card).map((l, i) => <li key={i}><Icon name={l.icon} size={14} /><Inline text={`${l.verb} ${l.text}`} /></li>)}
+          {M.roundLines(card).map((l, i) => <li key={i}><Icon name={l.icon} size={14} /><Inline text={l.verb ? `${l.verb} ${l.text}` : l.text} /></li>)}
         </ul>
         {state === 'conflict' ? <div className="xs row g4 inc-lock"><Icon name="lock" size={12} />{roundLockNote(mine ? scope : null)}</div> : null}
         {showDiff && diff ? <DiffBlock lines={diff} style={{ marginTop: 10 }} /> : null}

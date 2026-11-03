@@ -3,7 +3,7 @@ import { createContext, Fragment, useContext, useEffect, useRef, useState } from
 import { useApp } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { roundLockNote } from '../../state/readonly.js';
-import { roundState } from './roundState.js';
+import { roundDiffLines, roundState } from './roundState.js';
 import { Button, Chip, Field, Icon, KV, Note, Ring, Seg, St, cx } from '../../ui/index.jsx';
 import {
   CC, DiffBlock, FlowThumb, Inline, Md, SrcRow, Tli, WbCtx, Wl, fmtDuration, hhmm,
@@ -125,7 +125,7 @@ export function RoundChangesCard({ card, scope }) {
     if (!showDiff && !diff) {
       try {
         const r = await api.changesetDiff(pid, card.changeset_id);
-        setDiff(r.items.flatMap((it) => it.sections.flatMap((s) => s.lines)));
+        setDiff(roundDiffLines(r.items));
       } catch (e) {
         actions.fail?.(e);
         return;
@@ -162,8 +162,9 @@ export function RoundChangesCard({ card, scope }) {
       >
         <div className="wx-chg">
           {rows.map((r, i) => {
-            const [cls, label] = CHANGE_LABEL[r.change] || CHANGE_LABEL.mod;
-            return <div className="r" key={i}><span className={cx('wx-v', cls)}>{label}</span><span><Inline text={r.text} /></span></div>;
+            // 「另有 N 处改动」那一行没有动词标签（change 为空）
+            const [cls, label] = r.change ? CHANGE_LABEL[r.change] || CHANGE_LABEL.mod : [];
+            return <div className="r" key={i}><span className={label ? cx('wx-v', cls) : undefined}>{label}</span><span><Inline text={r.text} /></span></div>;
           })}
         </div>
         {(card.hints || []).map((h, i) => (

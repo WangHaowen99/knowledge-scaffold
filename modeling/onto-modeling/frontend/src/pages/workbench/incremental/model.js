@@ -154,7 +154,7 @@ export function fixCommand(changeListId, scenarios, conversationId) {
 const VERB = { mod: ['edit', '修改'], add: ['plus', '新增'], del: ['trash', '删除'], test: ['flask', '刷新'] };
 export function roundLines(card) {
   return (card?.groups || []).flatMap((g) => g.items.map((it) => {
-    const [icon, verb] = VERB[it.change] || VERB.mod;
+    const [icon, verb] = it.change ? VERB[it.change] || VERB.mod : ['more', ''];
     return { icon, verb, text: it.text || '' };
   }));
 }

@@ -6,3 +6,15 @@ export function roundState(card) {
   if (card?.state === 'merged' || card?.state === 'conflict') return card.state;
   return 'pending';
 }
+
+// 「查看改动」（CS-03 items）→ 差异行：按条目分段，段首是后端下发的业务名（target.label）；
+// 认不出的文件合成最后一段「另有 N 处改动」，不出文件名和路径
+export function roundDiffLines(items = []) {
+  const body = (list) => list.flatMap((it) => (it.sections || []).flatMap((s) => s.lines || []));
+  const known = items.filter((it) => it.target?.label);
+  const rest = items.filter((it) => !it.target?.label);
+  return [
+    ...known.flatMap((it) => [{ kind: 'header', text: it.target.label }, ...body([it])]),
+    ...(rest.length ? [{ kind: 'header', text: `另有 ${rest.length} 处改动` }, ...body(rest)] : []),
+  ];
+}
