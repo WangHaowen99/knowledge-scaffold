@@ -78,8 +78,18 @@ export function applyEvent(state, env) {
     case 'session.reconnected':
       return upsert({ ...state, configPending: null }, `recon:${seq ?? ts}`, { ...at, ...d, kind: 'reconnected' });
 
-    case 'message.user':
-      return upsert(state, `msg:${d.message_id}`, { ...at, ...d, kind: 'user' });
+    case 'message.user': {
+      // 点发送时先显示的本地气泡：服务端的同一条到了就原地换掉；local_key 让界面沿用同一个元素，发送动画不被打断
+      const local = state.order.find((k) => {
+        const it = state.items[k];
+        return it?.local && (it.message_id ? it.message_id === d.message_id : it.text === d.text);
+      });
+      if (!local) return upsert(state, `msg:${d.message_id}`, { ...at, ...d, kind: 'user' });
+      const key = `msg:${d.message_id}`;
+      const items = { ...state.items, [key]: { ...at, ...d, kind: 'user', local_key: local } };
+      delete items[local];
+      return { ...state, items, order: state.order.filter((k) => k !== key).map((k) => (k === local ? key : k)) };
+    }
     case 'message.delta': {
       if (d.kind === 'thinking') return { ...state, thinking: `${state.thinking}${d.text || ''}`.slice(-THINKING_MAX) };
       if (d.kind && d.kind !== 'text') return state;
@@ -175,6 +185,26 @@ export function applyEvent(state, env) {
     default:
       return state;
   }
+}
+
+// 本地气泡：点发送立刻显示，不等服务端经对话流回传（S-07 返回 message_id 后用它对上）
+export function addLocalUser(state, localId, text, now = Date.now() / 1000) {
+  return upsert(state, `local:${localId}`, { kind: 'user', local: true, text, ts: now, attachments: [] });
+}
+
+export function ackLocalUser(state, localId, messageId) {
+  const key = `local:${localId}`;
+  if (!state.items[key]) return state;
+  if (!state.items[`msg:${messageId}`]) return patch(state, key, (it) => ({ ...it, message_id: messageId }));
+  return dropLocalUser(state, localId);
+}
+
+export function dropLocalUser(state, localId) {
+  const key = `local:${localId}`;
+  if (!state.items[key]) return state;
+  const items = { ...state.items };
+  delete items[key];
+  return { ...state, items, order: state.order.filter((k) => k !== key) };
 }
 
 export function applyEvents(state, events) {

@@ -1,0 +1,97 @@
+/* 动效：统一的缓动曲线与入场、弹层、控件动画。只动 transform / opacity（不触发重排）；
+   入场用 backwards 填充，播完不再占着 transform（否则悬停上浮、定位用的 transform 都失效），
+   只给新出现的内容播（打开页面时已有的历史不播），系统设置「减少动态效果」时全部关掉 */
+
+:root{
+  /* 带回弹（约 13% 过冲）：发送气泡、问题卡、弹窗；柔和弹簧（约 5%）：卡片、抽屉、开关；
+     无过冲：文字段落、页面切换；退场一律用 exit，比入场快 */
+  --ease-bounce:cubic-bezier(.34,1.45,.64,1);
+  --ease-spring:cubic-bezier(.3,1.2,.5,1);
+  --ease-soft:cubic-bezier(.22,1,.36,1);
+  --ease-exit:cubic-bezier(.4,0,1,1);
+}
+@supports (animation-timing-function:linear(0,1)){
+  :root{
+    /* 欠阻尼弹簧采样（ζ=0.55、ω=15 与 ζ=0.7、ω=12），比三次贝塞尔多一次回摆，更像实物 */
+    --ease-bounce:linear(0, 0.116, 0.368, 0.641, 0.869, 1.023, 1.104, 1.126, 1.112, 1.081, 1.046, 1.017, 0.997, 0.987, 0.984, 0.986, 0.990, 0.994, 0.998, 1.000, 1.002, 1.002, 1.002, 1.001, 1.001, 1.000, 1.000, 1.000, 1);
+    --ease-spring:linear(0, 0.075, 0.242, 0.436, 0.620, 0.772, 0.887, 0.965, 1.013, 1.037, 1.046, 1.044, 1.037, 1.028, 1.020, 1.012, 1.006, 1.002, 1.000, 0.998, 0.998, 0.998, 0.998, 0.999, 0.999, 0.999, 1.000, 1.000, 1);
+  }
+}
+
+@keyframes mo-send{from{opacity:0;transform:translate(14px,56px) scale(.78)}40%{opacity:1}to{opacity:1;transform:none}}
+@keyframes mo-send-tint{from{background:var(--blue);color:#fff}to{background:#EDF1F7;color:var(--ink0)}}
+@keyframes mo-up{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes mo-pop{from{opacity:0;transform:translateY(8px) scale(.94)}35%{opacity:1}to{opacity:1;transform:none}}
+@keyframes mo-fade{from{opacity:0}to{opacity:1}}
+@keyframes mo-fade-out{to{opacity:0}}
+@keyframes mo-modal-in{from{opacity:0;transform:translateY(12px) scale(.9)}30%{opacity:1}to{opacity:1;transform:none}}
+@keyframes mo-modal-out{to{opacity:0;transform:translateY(6px) scale(.96)}}
+@keyframes mo-drawer-in{from{opacity:.4;transform:translateX(48px)}to{opacity:1;transform:none}}
+@keyframes mo-drawer-out{to{opacity:0;transform:translateX(40px)}}
+@keyframes mo-menu-in{from{opacity:0;transform:translateY(-6px) scale(.96)}to{opacity:1;transform:none}}
+@keyframes mo-bump{0%{transform:scale(.6)}to{transform:none}}
+@keyframes mo-page{from{opacity:.4;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes mo-press{50%{transform:scale(.88)}to{transform:none}}
+
+/* ---- 对话时间线 ---- */
+/* 发送：气泡从输入框方向升起、缩放回弹，颜色由发送按钮的蓝渐变成气泡灰（iMessage 的「飞出」） */
+.m-u.mo-send>div{transform-origin:100% 100%;animation:mo-send .52s var(--ease-bounce) backwards}
+.m-u.mo-send .bub{animation:mo-send-tint .6s var(--ease-soft) backwards}
+/* 助手新出现的一段：正文上浮淡入；卡片（产物、权限、子任务、进展组）带弹性 */
+.mo-up{animation:mo-up .32s var(--ease-soft) backwards}
+.mo-pop{transform-origin:0 0;animation:mo-pop .46s var(--ease-spring) backwards}
+/* 需要决定的问题卡：回弹弹出，选项依次跟上 */
+.mo-ask .wb-dc{transform-origin:50% 0;animation:mo-pop .5s var(--ease-bounce) backwards}
+.mo-ask .wb-dc .opts>*{animation:mo-up .3s var(--ease-soft) backwards}
+.mo-ask .wb-dc .opts>:nth-child(1){animation-delay:.12s}
+.mo-ask .wb-dc .opts>:nth-child(2){animation-delay:.16s}
+.mo-ask .wb-dc .opts>:nth-child(3){animation-delay:.2s}
+.mo-ask .wb-dc .opts>:nth-child(4){animation-delay:.24s}
+.mo-ask .wb-dc .opts>:nth-child(n+5){animation-delay:.28s}
+.mo-fade{animation:mo-fade .24s var(--ease-soft) backwards}
+/* 包一层动画容器后，原来按直接子元素写的规则照常生效 */
+.m-a .bd>.mo-in>p{margin:0 0 10px}
+.m-a .bd>.mo-in>.g2-pol-note{margin:0 0 14px;line-height:1.75}
+.wx-send{transition:transform .2s var(--ease-spring),box-shadow .15s}
+.wx-send:hover{transform:scale(1.06)}
+.wx-send.mo-press{animation:mo-press .34s var(--ease-bounce)}
+
+/* ---- 弹层 ---- */
+.overlay{animation:mo-fade .18s var(--ease-soft) backwards}
+.overlay>.modal{animation:mo-modal-in .44s var(--ease-bounce) backwards}
+.overlay.mo-leave{animation:mo-fade-out .14s var(--ease-exit) both;pointer-events:none}
+.overlay.mo-leave>.modal{animation:mo-modal-out .14s var(--ease-exit) both}
+.drawer{animation:mo-drawer-in .42s var(--ease-spring) backwards}
+.drawer.mo-leave{animation:mo-drawer-out .14s var(--ease-exit) both;pointer-events:none}
+.menu,.g2-cmd,.wb-pop>.menu{transform-origin:50% 0;animation:mo-menu-in .2s var(--ease-soft) backwards}
+#palette.show{animation:mo-fade .16s var(--ease-soft) backwards}
+#palette.show .box{animation:mo-modal-in .4s var(--ease-spring) backwards}
+.pop{transition:opacity .14s,transform .32s var(--ease-spring)}
+#toast{transform:translate(-50%,-18px) scale(.94);transition:opacity .18s var(--ease-soft),transform .5s var(--ease-bounce)}
+#toast.show{transform:translate(-50%,0)}
+
+/* ---- 卡片与列表 ---- */
+.en-pc{animation:mo-pop .48s var(--ease-spring) backwards;animation-delay:calc(var(--mo-i,0) * 35ms);transition:border-color .15s,box-shadow .2s,transform .3s var(--ease-spring)}
+.en-pc:hover{transform:translateY(-3px)}
+.en-pc.arch:hover{transform:none}
+.prail a .bdg{animation:mo-bump .42s var(--ease-bounce)}
+.pg-body{animation:mo-page .2s var(--ease-soft) backwards}
+
+/* ---- 控件 ---- */
+.btn{transition:background .15s,border-color .15s,box-shadow .15s,transform .26s var(--ease-spring)}
+.btn:active:not(:disabled){transform:scale(.96);transition-duration:.08s}
+.tog::after{transition:left .34s var(--ease-bounce),width .2s var(--ease-soft)}
+.tog:active::after{width:21px}
+.tog.on:active::after{left:13px}
+.tog{transition:background .2s var(--ease-soft)}
+.prog>i{transition:width .6s var(--ease-spring)}
+.opt{transition:background .15s,border-color .15s,transform .26s var(--ease-spring)}
+.opt:active{transform:scale(.98)}
+
+@media (prefers-reduced-motion:reduce){
+  .m-u.mo-send>div,.m-u.mo-send .bub,.mo-up,.mo-pop,.mo-ask .wb-dc,.mo-ask .wb-dc .opts>*,.mo-fade,.overlay,.overlay>.modal,
+  .drawer,.menu,.g2-cmd,#palette.show,#palette.show .box,.en-pc,.prail a .bdg,.pg-body,.wx-send.mo-press{animation:none}
+  .overlay.mo-leave,.drawer.mo-leave{animation:none;opacity:0}
+  .pop,#toast,.btn,.tog,.tog::after,.prog>i,.opt,.en-pc,.wx-send{transition:none}
+  .en-pc:hover,.btn:active:not(:disabled),.opt:active,.wx-send:hover{transform:none}
+}

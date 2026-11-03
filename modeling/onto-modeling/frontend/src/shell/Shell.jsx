@@ -140,7 +140,8 @@ function ProjectRail({ active }) {
     <a key={x.id} className={act === x.id ? 'on' : ''} href={`#${pagePath(x.id, pid)}`}>
       <Icon name={x.icon} size={18} />
       <span>{x.title}</span>
-      {badge ? <span className="bdg">{badge > 99 ? '99+' : badge}</span> : null}
+      {/* 按数字换键：数变了重新挂载，播一次跳动 */}
+      {badge ? <span key={badge} className="bdg">{badge > 99 ? '99+' : badge}</span> : null}
     </a>
   );
   return (

@@ -17,7 +17,7 @@ function ModeChip({ mode }) {
     : <span className="chip blue sm" title="陪伴建模"><Icon name="hand" />陪伴</span>;
 }
 
-function ProjectCardView({ p, onMenu, onRestore }) {
+function ProjectCardView({ p, index = 0, onMenu, onRestore }) {
   const look = projectLook(p);
   const ab = p.autobuild;
   const live = ab && ['running', 'queued', 'pausing'].includes(ab.state);
@@ -29,7 +29,8 @@ function ProjectCardView({ p, onMenu, onRestore }) {
     return m >= 60 ? `${Math.floor(m / 60)} 小时 ${m % 60} 分` : `${m} 分`;
   };
   return (
-    <div className={cx('card en-pc', p.archived && 'arch', live && 'l4-border')} onClick={p.archived ? undefined : open}>
+    // --mo-i：前 8 张依次入场（motion.css），后面的同时出现
+    <div className={cx('card en-pc', p.archived && 'arch', live && 'l4-border')} style={{ '--mo-i': Math.min(index, 8) }} onClick={p.archived ? undefined : open}>
       <div className="row g12">
         <span className="pi" style={{ background: look.color }}><Icon name={look.icon} size={18} /></span>
         <div className="grow" style={{ minWidth: 0 }}>
@@ -182,8 +183,8 @@ export default function ProjectsPage() {
           </div>
           <div className="en-pgw" ref={wrapRef}>
             <div className="en-pg">
-              {items.map((p) => (
-                <ProjectCardView key={p.id} p={p} onMenu={openMenu} onRestore={(x) => act(() => api.archiveProject(x.id, false), '已恢复到项目列表', 'refresh')} />
+              {items.map((p, i) => (
+                <ProjectCardView key={p.id} p={p} index={i} onMenu={openMenu} onRestore={(x) => act(() => api.archiveProject(x.id, false), '已恢复到项目列表', 'refresh')} />
               ))}
               {filter !== 'archived' ? (
                 <div className="en-ghost" onClick={() => navigate('/projects/new')}>

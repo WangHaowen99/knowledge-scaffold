@@ -6,6 +6,7 @@ import './styles/shell.css';
 import './styles/entry.css';
 import './styles/workbench.css';
 import './styles/chat-states.css';
+import './styles/motion.css';
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>

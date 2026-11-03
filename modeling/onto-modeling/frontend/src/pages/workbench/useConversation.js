@@ -2,15 +2,21 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { take } from '../../app/earlyData.js';
-import { applyEvent, applyEvents, applySnapshot, initialConversation } from '../../state/conversation.js';
+import {
+  ackLocalUser, addLocalUser, applyEvent, applyEvents, applySnapshot, dropLocalUser, initialConversation,
+} from '../../state/conversation.js';
 
 function reducer(state, action) {
   switch (action.type) {
     case 'reset': return initialConversation();
-    case 'history': return applyEvents(initialConversation(), action.events);
+    // loaded：历史已到，时间线据此分出「打开时已有的」（不播入场动画）和之后新出现的
+    case 'history': return { ...applyEvents(initialConversation(), action.events), loaded: true };
     case 'event': return applyEvent(state, action.env);
     case 'events': return applyEvents(state, action.list);
     case 'snapshot': return applySnapshot(state, action.snap);
+    case 'local_user': return addLocalUser(state, action.id, action.text);
+    case 'local_ack': return ackLocalUser(state, action.id, action.messageId);
+    case 'local_drop': return dropLocalUser(state, action.id);
     default: return state;
   }
 }

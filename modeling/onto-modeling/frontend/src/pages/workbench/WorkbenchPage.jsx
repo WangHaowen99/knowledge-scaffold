@@ -362,11 +362,20 @@ function Composer({ pid, cid, apiRef, st, buildMode, modeLabel, onMode, onSend, 
     setAtts((x) => x.filter((y) => y.key !== a.key));
   };
   const uploading = atts.some((a) => !a.upload);
+  const [pressed, setPressed] = useState(0);
+  // 点发送就清空输入框（气泡同时出现在时间线上）；没发出去再把原文放回来，期间新敲的字不覆盖
   const send = async () => {
     if (st.disabled || uploading) return;
     if (!text.trim() && !atts.length) return;
+    const draft = { text, atts, refs };
+    setPressed((n) => n + 1);
+    setText(''); setAtts([]); setRefs([]);
     const ok = await onSend({ text: text.trim(), attachments: atts.map((a) => a.upload.upload_id), references: refs });
-    if (ok) { setText(''); setAtts([]); setRefs([]); }
+    if (!ok) {
+      setText((t) => t || draft.text);
+      setAtts((a) => (a.length ? a : draft.atts));
+      setRefs((r) => (r.length ? r : draft.refs));
+    }
   };
   const runCommand = async (c) => {
     setPop(null);
@@ -410,7 +419,7 @@ function Composer({ pid, cid, apiRef, st, buildMode, modeLabel, onMode, onSend, 
         <span className={cx('wx-mode', buildMode === 'L4' && 'l4')} onClick={() => !st.disabled && setPop(pop === 'mode' ? null : 'mode')}>
           <i />{modeLabel}
         </span>
-        <span className="wx-send" title="发送" onClick={send} style={st.disabled || uploading ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}><Icon name="arrow" size={16} /></span>
+        <span key={pressed} className={cx('wx-send', pressed && 'mo-press')} title="发送" onClick={send} style={st.disabled || uploading ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}><Icon name="arrow" size={16} /></span>
       </div>
       {pop === 'cmd' ? (
         <div className="g2-cmd wb-pop wb-cmd-pop">
@@ -652,11 +661,17 @@ export default function WorkbenchPage({ route }) {
   };
 
   const send = async (body) => {
+    const localId = `cm-${Date.now()}`;
+    // 纯文字消息先在本地显示气泡（带发送动画），服务端回传同一条后原地换掉；带附件的要等服务端存好附件名
+    const local = !!body.text && !body.attachments?.length;
+    if (local) conv.dispatch({ type: 'local_user', id: localId, text: body.text });
     try {
-      const r = await api.sendMessage(pid, cid, { ...body, client_message_id: `cm-${Date.now()}` });
+      const r = await api.sendMessage(pid, cid, { ...body, client_message_id: localId });
+      if (local) conv.dispatch({ type: 'local_ack', id: localId, messageId: r.message_id });
       if (r.delivery === 'queued') toast('已排队', 'clock');
       return true;
     } catch (e) {
+      if (local) conv.dispatch({ type: 'local_drop', id: localId });
       fail(e);
       return false;
     }

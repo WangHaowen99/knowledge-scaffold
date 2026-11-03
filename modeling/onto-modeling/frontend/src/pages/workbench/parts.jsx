@@ -63,13 +63,13 @@ export function Inline({ text, anchors }) {
   });
 }
 
-export function MDay({ label }) {
-  return <div className="wx-day">{label}</div>;
+export function MDay({ label, className }) {
+  return <div className={cx('wx-day', className)}>{label}</div>;
 }
 
-export function MSys({ children, left }) {
+export function MSys({ children, left, className }) {
   return (
-    <div className="m-sys" style={left ? { justifyContent: 'flex-start', margin: '6px 0' } : undefined}>
+    <div className={cx('m-sys', className)} style={left ? { justifyContent: 'flex-start', margin: '6px 0' } : undefined}>
       <span><span className="ck"><Icon name="check" /></span>{children}</span>
     </div>
   );
@@ -104,9 +104,9 @@ export function Orb() {
   );
 }
 
-export function MA({ time, children }) {
+export function MA({ time, children, className }) {
   return (
-    <div className="m-a">
+    <div className={cx('m-a', className)}>
       <div className="wx-who"><Orb /><b>建模助手</b>{time ? <span>{time}</span> : null}</div>
       <div className="bd">{children}</div>
     </div>

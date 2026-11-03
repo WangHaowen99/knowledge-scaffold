@@ -371,16 +371,38 @@ function OverlayPortal({ children }) {
   return children;
 }
 
-export function Modal({
-  open, onClose, icon, danger, title, sub, w, children, foot, sticky, className,
-}) {
-  useEscape(open, onClose);
-  if (!open) return null;
+// 弹层关掉时先播退场动画再卸载：关闭后的 LEAVE_MS 内保留最后一次打开时的内容（调用方此时多半已清空数据）
+const LEAVE_MS = 140;
+export function usePresence(open, props) {
+  const last = useRef(props);
+  if (open) last.current = props;
+  const [leaving, setLeaving] = useState(false);
+  const [prevOpen, setPrevOpen] = useState(open);
+  // 渲染时就切到退场（不等 effect），否则关闭那一帧会先卸掉再挂回来闪一下
+  if (prevOpen !== open) {
+    setPrevOpen(open);
+    setLeaving(!open);
+  }
+  useEffect(() => {
+    if (!leaving) return undefined;
+    const t = setTimeout(() => setLeaving(false), LEAVE_MS);
+    return () => clearTimeout(t);
+  }, [leaving]);
+  return open ? { shown: true, leaving: false, props } : { shown: leaving, leaving, props: last.current };
+}
+
+export function Modal(all) {
+  useEscape(all.open, all.onClose);
+  const { shown, leaving, props } = usePresence(all.open, all);
+  if (!shown) return null;
+  const {
+    onClose, icon, danger, title, sub, w, children, foot, sticky, className,
+  } = props;
   return (
     <OverlayPortal>
       <div
-        className={cx('overlay', className)}
-        onMouseDown={(e) => { if (e.target === e.currentTarget && !sticky) onClose?.(); }}
+        className={cx('overlay', className, leaving && 'mo-leave')}
+        onMouseDown={(e) => { if (e.target === e.currentTarget && !sticky && !leaving) onClose?.(); }}
       >
         <div className="modal" style={w ? { width: w } : undefined} role="dialog" aria-modal="true">
           <div className="modal-h">
@@ -408,12 +430,16 @@ export function Modal({
   );
 }
 
-export function Drawer({ open, onClose, icon, title, sub, w, children, foot }) {
-  useEscape(open, onClose);
-  if (!open) return null;
+export function Drawer(all) {
+  useEscape(all.open, all.onClose);
+  const { shown, leaving, props } = usePresence(all.open, all);
+  if (!shown) return null;
+  const {
+    onClose, icon, title, sub, w, children, foot,
+  } = props;
   return (
     <OverlayPortal>
-      <div className="drawer" style={w ? { width: w } : undefined} role="dialog">
+      <div className={cx('drawer', leaving && 'mo-leave')} style={w ? { width: w } : undefined} role="dialog">
         <div className="drawer-h">
           {icon ? <Icon name={icon} size={18} /> : null}
           <div className="grow">

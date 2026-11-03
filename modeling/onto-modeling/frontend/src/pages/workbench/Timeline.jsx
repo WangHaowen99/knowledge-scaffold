@@ -1,8 +1,8 @@
 // 对话时间线：把状态机分好的块渲染成设计稿的 m-u / m-a / m-sys / wx-day / 决策卡
-import { Fragment, memo, useState } from 'react';
+import { Fragment, memo, useRef, useState } from 'react';
 import { toast } from '../../app/toast.jsx';
 import { liveActivity, timelineBlocks } from '../../state/conversation.js';
-import { Button, Icon } from '../../ui/index.jsx';
+import { Button, Icon, cx } from '../../ui/index.jsx';
 import {
   CardItem, CompactedItem, ConfigPendingItem, ErrorItem, InterruptedItem, ReconnectedItem, useActions,
 } from './cards.jsx';
@@ -52,11 +52,11 @@ function ProgressItem({ item, running, onInterrupt }) {
   );
 }
 
-function UserMessage({ item }) {
+function UserMessage({ item, enter }) {
   const o = item.origin;
   const fromPage = o && o.page && o.page !== 'wb-l2' && o.label;
   return (
-    <div className="m-u">
+    <div className={cx('m-u', enter && 'mo-send')}>
       <div style={{ maxWidth: '76%', display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
         {item.attachments?.length ? <div className="att">{item.attachments.map((a) => <WxFile key={a.upload_id} name={a.filename} kind={a.kind} />)}</div> : null}
         <div className="bub">
@@ -100,8 +100,24 @@ function LiveTail({ activity, onInterrupt }) {
   );
 }
 
+// 卡片类的条目入场带弹性，文字类只上浮淡入
+const POP_KINDS = new Set(['card', 'permission', 'subagent', 'progress', 'error', 'interrupted']);
+
+// 入场动画只给打开之后新出现的条目：历史一到就记下当时已有的键，这些不播（切对话时随状态重置清空）
+function useFreshKeys(state) {
+  const seen = useRef(null);
+  if (!state.loaded) {
+    seen.current = null;
+    return () => false;
+  }
+  if (!seen.current) seen.current = new Set(state.order);
+  const known = seen.current;
+  return (key) => !known.has(key);
+}
+
 export function Timeline({ state, scope, onInterrupt, live = true }) {
   const blocks = timelineBlocks(state);
+  const fresh = useFreshKeys(state);
   const running = ['running', 'connecting'].includes(state.session.state);
   const lastOpenQ = [...blocks].reverse().find((b) => b.type === 'question');
   // 自主构建的运行对话里分段进展块已经在说正在做什么，不再加「思考中」
@@ -112,23 +128,30 @@ export function Timeline({ state, scope, onInterrupt, live = true }) {
   const tail = hasTail ? <LiveTail activity={activity} onInterrupt={tailInterrupt} /> : null;
   const rendered = blocks.map((b) => {
     switch (b.type) {
-      case 'day': return <MDay key={b.key} label={b.item.label} />;
-      case 'notice': return b.item.align === 'left' ? <MSys key={b.key} left>{b.item.text}</MSys> : <MSys key={b.key}>{b.item.text}</MSys>;
-      case 'user': return <UserMessage key={b.key} item={b.item} />;
+      case 'day': return <MDay key={b.key} label={b.item.label} className={fresh(b.key) ? 'mo-fade' : undefined} />;
+      case 'notice': return <MSys key={b.key} left={b.item.align === 'left'} className={fresh(b.key) ? 'mo-fade' : undefined}>{b.item.text}</MSys>;
+      case 'user': return <UserMessage key={b.item.local_key || b.key} item={b.item} enter={fresh(b.key)} />;
       case 'decided': return <DecidedRow key={b.key} item={b.item} />;
-      case 'withdrawn': return <MSys key={b.key} left>这个问题已失效：{b.item.withdrawn_reason || b.item.question.title}</MSys>;
-      case 'question': return <MA key={b.key}><QuestionCard q={b.item.question} active={b === lastOpenQ} /></MA>;
-      case 'assistant':
+      case 'withdrawn': return <MSys key={b.key} left className={fresh(b.key) ? 'mo-fade' : undefined}>这个问题已失效：{b.item.withdrawn_reason || b.item.question.title}</MSys>;
+      case 'question': return <MA key={b.key} className={fresh(b.key) ? 'mo-ask' : undefined}><QuestionCard q={b.item.question} active={b === lastOpenQ} /></MA>;
+      case 'assistant': {
+        // 新的一块整块上浮；已有的块里后到的条目各自入场
+        const blockFresh = fresh(b.items[0].key);
         return (
-          <MA key={b.key} time={hhmm(b.ts)}>
-            {b.items.map((it) => (
+          <MA key={b.key} time={hhmm(b.ts)} className={blockFresh ? 'mo-up' : undefined}>
+            {b.items.map((it, i) => (fresh(it.key) && (i > 0 || !blockFresh) ? (
+              <div key={it.key} className={cx('mo-in', POP_KINDS.has(it.kind) ? 'mo-pop' : 'mo-up')}>
+                <AssistantItem it={it} ctx={{ running, onInterrupt: null, scope }} />
+              </div>
+            ) : (
               <Fragment key={it.key}>
                 <AssistantItem it={it} ctx={{ running, onInterrupt: null, scope }} />
               </Fragment>
-            ))}
+            )))}
             {b === lastBlock ? tail : null}
           </MA>
         );
+      }
       default: return null;
     }
   });
