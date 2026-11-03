@@ -10,7 +10,7 @@ import { ToastProvider, useToast } from '../toast';
 import { Badge, Button, Spinner } from '../ui';
 import { channel, type Wire } from './channel';
 
-type Kb = { id: string; name: string; documents: number };
+type Kb = { id: string; name: string; documents: number; backend?: string };
 type Engine = { id: string; label: string; ready: boolean };
 type Tool = { id: string; name: string; arguments?: unknown; result?: unknown; done: boolean };
 type Ask = {
@@ -66,7 +66,16 @@ const DEFAULT_ENGINES: Engine[] = [{ id: 'deepanalyze', label: 'DeepAnalyze', re
 const ENGINE_LABELS: Record<string, string> = { deepanalyze: 'DeepAnalyze', loopforest: 'Loop Forest' };
 // each engine keeps its own conversation (a different provider and session); the
 // server keeps it running across page reloads, so remember it beyond this tab
-const sessionKey = (engine: string) => `da-analyst.host-session.${engine}`;
+const SESSION_PREFIX = 'da-analyst.host-session.';
+const sessionKey = (engine: string) => SESSION_PREFIX + engine;
+
+// A deleted conversation must not be reopened under its id: the engine would pick up its old context.
+function forgetSession(hostSessionId: string): void {
+  for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+    const key = localStorage.key(i);
+    if (key?.startsWith(SESSION_PREFIX) && localStorage.getItem(key) === hostSessionId) localStorage.removeItem(key);
+  }
+}
 // beyond this many knowledge bases the scope row folds the rest behind "+N"
 const KB_FOLD = 6;
 
@@ -98,30 +107,31 @@ function patchTurn(turns: Turn[], turnId: unknown, fn: (t: Turn) => Turn): Turn[
   return turns.map((t, i) => (i === pending ? fn({ ...t, turn_id: String(turnId) }) : t));
 }
 
-// Rebuild a conversation from the server transcript: the page's own inputs
-// (user / steer / answered / rejected) plus the recorded wire messages.
+// Page inputs (user / steer / answered / rejected) as the transcript keeps them; the
+// server also sends them live to the other pages showing the conversation.
+const INPUTS = new Set(['user', 'steer', 'answered', 'rejected']);
+
+function entryAction(e: Wire, engineLabel: string): Action {
+  if (e.t === 'user') {
+    return {
+      type: 'local',
+      turn: {
+        client_id: String(e.client_id || e.turn_id), turn_id: e.turn_id ? String(e.turn_id) : undefined,
+        engine: engineLabel, input: String(e.text ?? ''), steers: [], outputs: [], tools: [], asks: [],
+        status: 'queued',
+      },
+    };
+  }
+  if (e.t === 'rejected') return { type: 'rejected', client_id: String(e.client_id), message: String(e.message ?? '') };
+  if (e.t === 'steer') return { type: 'steer', text: String(e.text ?? '') };
+  if (e.t === 'answered') return { type: 'answered', request_id: String(e.request_id), label: String(e.label || '已回答') };
+  return { type: 'wire', msg: e };
+}
+
+// Rebuild a conversation from the server transcript through the same reducer.
 function replay(action: Extract<Action, { type: 'replay' }>): State {
   let state: State = { turns: [], running: false };
-  for (const e of action.events) {
-    if (e.t === 'user') {
-      state = reducer(state, {
-        type: 'local',
-        turn: {
-          client_id: String(e.client_id || e.turn_id), turn_id: e.turn_id ? String(e.turn_id) : undefined,
-          engine: action.engineLabel, input: String(e.text ?? ''), steers: [], outputs: [], tools: [], asks: [],
-          status: 'queued',
-        },
-      });
-    } else if (e.t === 'rejected') {
-      state = reducer(state, { type: 'rejected', client_id: String(e.client_id), message: String(e.message ?? '') });
-    } else if (e.t === 'steer') {
-      state = reducer(state, { type: 'steer', text: String(e.text ?? '') });
-    } else if (e.t === 'answered') {
-      state = reducer(state, { type: 'answered', request_id: String(e.request_id), label: String(e.label || '已回答') });
-    } else {
-      state = reducer(state, { type: 'wire', msg: e });
-    }
-  }
+  for (const e of action.events) state = reducer(state, entryAction(e, action.engineLabel));
   state = { ...state, running: action.running };
   if (action.live) return state; // the live event stream settles any open turn
   // the harness behind this transcript is gone: a turn without its end event was cut off
@@ -129,7 +139,12 @@ function replay(action: Extract<Action, { type: 'replay' }>): State {
     ...state,
     turns: state.turns.map((t) =>
       t.status === 'running' || t.status === 'queued'
-        ? { ...t, status: 'aborted', error: t.error ?? '分析已中断（会话在执行中被关闭）' }
+        ? {
+            ...t,
+            status: 'aborted',
+            error: t.error ?? '分析已中断（会话在执行中被关闭）',
+            asks: t.asks.map((a) => (a.answered ? a : { ...a, answered: '（已中断）' })),
+          }
         : t,
     ),
   };
@@ -142,6 +157,7 @@ function reducer(state: State, action: Action): State {
     case 'clear':
       return { turns: [], running: false };
     case 'local':
+      if (state.turns.some((t) => t.client_id === action.turn.client_id)) return state;
       return { ...state, turns: [...state.turns, action.turn] };
     case 'accepted':
       return {
@@ -466,6 +482,8 @@ function Shell() {
   const engineRef = useRef(engine);
   engineRef.current = engine;
   const [started, setStarted] = useState(false);
+  // label of the engine behind a conversation shown read-only because that engine is unavailable
+  const [readonlyEngine, setReadonlyEngine] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState('');
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyOpen, setHistoryOpen] = useState(() => localStorage.getItem(HISTORY_OPEN_KEY) !== '0');
@@ -474,6 +492,12 @@ function Shell() {
   const bottom = useRef<HTMLDivElement>(null);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
+  const kbsRef = useRef(kbs);
+  kbsRef.current = kbs;
+  // engine label of the open conversation, for questions other pages ask in it
+  const labelRef = useRef('');
+  // steers sent but not yet accepted (client_id -> text): shown once the server takes them
+  const pendingSteers = useRef(new Map<string, string>());
 
   useEffect(() => {
     const off = channel.onStatus(setConnected);
@@ -487,40 +511,71 @@ function Shell() {
       if (msg.t === 'hello') {
         const list = (msg.kbs as Kb[]) ?? [];
         setKbs(list);
+        kbsRef.current = list; // `started` may arrive before the next render
         const offered = (msg.engines as Engine[] | undefined)?.length
           ? (msg.engines as Engine[])
           : [{ ...DEFAULT_ENGINES[0], ready: Boolean(msg.da_ready) }];
         setEngines(offered);
         const chosen = offered.some((e) => e.id === engineRef.current) ? engineRef.current : offered[0].id;
         setEngine(chosen);
-        let ids = selectedRef.current.filter((id) => list.some((k) => k.id === id));
-        if (!ids.length && list.length) ids = list.map((k) => k.id);
+        // an empty selection stays "every knowledge base", including ones added later
+        const ids = selectedRef.current.filter((id) => list.some((k) => k.id === id));
         setSelected(ids);
         channel.send({
           type: 'start', engine: chosen, host_session_id: localStorage.getItem(sessionKey(chosen)) || '', kb_ids: ids,
         });
       } else if (msg.t === 'started') {
         const opened = String(msg.engine || engineRef.current);
-        localStorage.setItem(sessionKey(opened), String(msg.host_session_id));
-        localStorage.setItem(ENGINE_KEY, opened);
-        setEngine(opened);
-        setSessionId(String(msg.host_session_id));
         const label = enginesRef.current.find((e) => e.id === opened)?.label ?? ENGINE_LABELS[opened] ?? opened;
+        labelRef.current = label;
+        setSessionId(String(msg.host_session_id));
         dispatch({
           type: 'replay', events: (msg.transcript as Wire[]) ?? [], live: Boolean(msg.live), running: Boolean(msg.running),
           engineLabel: label,
         });
-        const kbIds = (msg.kb_ids as string[] | undefined) ?? [];
-        if (kbIds.length) setSelected(kbIds);
-        setStarted(true);
+        // a conversation that has questions brings back its selection ([] = every knowledge base)
+        if (Array.isArray(msg.kb_ids)) {
+          setSelected((msg.kb_ids as string[]).filter((id) => kbsRef.current.some((k) => k.id === id)));
+        }
+        if (msg.readonly) {
+          // its engine did not start: show it, keep this page's engine for new conversations
+          setReadonlyEngine(label);
+        } else {
+          localStorage.setItem(sessionKey(opened), String(msg.host_session_id));
+          localStorage.setItem(ENGINE_KEY, opened);
+          setEngine(opened);
+          setReadonlyEngine(null);
+          setStarted(true);
+        }
         channel.send({ type: 'history' });
       } else if (msg.t === 'history') {
         setHistory((msg.items as HistoryItem[]) ?? []);
       } else if (msg.t === 'accepted') {
-        if (msg.mode !== 'steer') dispatch({ type: 'accepted', client_id: String(msg.client_id), turn_id: String(msg.turn_id) });
+        const steer = pendingSteers.current.get(String(msg.client_id));
+        if (steer !== undefined) {
+          pendingSteers.current.delete(String(msg.client_id));
+          dispatch({ type: 'steer', text: steer });
+        } else if (msg.mode !== 'steer') {
+          dispatch({ type: 'accepted', client_id: String(msg.client_id), turn_id: String(msg.turn_id) });
+        }
       } else if (msg.t === 'error') {
         notify(String(msg.message), true);
-        if (msg.client_id) dispatch({ type: 'rejected', client_id: String(msg.client_id), message: String(msg.message) });
+        const steer = pendingSteers.current.get(String(msg.client_id));
+        if (steer !== undefined) {
+          pendingSteers.current.delete(String(msg.client_id));
+          setText((cur) => cur || steer); // not taken: give the text back
+        } else if (msg.client_id) {
+          dispatch({ type: 'rejected', client_id: String(msg.client_id), message: String(msg.message) });
+        }
+      } else if (msg.t === 'deleted') {
+        // deleted on another page: this one moves on to a new conversation
+        forgetSession(String(msg.host_session_id));
+        dispatch({ type: 'clear' });
+        setStarted(false);
+        setReadonlyEngine(null);
+        channel.send({ type: 'start', engine: engineRef.current, host_session_id: '', kb_ids: selectedRef.current });
+      } else if (INPUTS.has(msg.t)) {
+        dispatch(entryAction(msg, labelRef.current)); // put in from another page on this conversation
       } else {
         dispatch({ type: 'wire', msg });
         // a finished turn changes the history entry (title, time, running mark)
@@ -557,8 +612,9 @@ function Shell() {
     const value = text.trim();
     if (!value || !started) return;
     if (running) {
-      channel.send({ type: 'send', text: value, steer: true });
-      dispatch({ type: 'steer', text: value });
+      const client_id = `s-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+      pendingSteers.current.set(client_id, value);
+      channel.send({ type: 'send', text: value, steer: true, client_id });
     } else {
       const client_id = `c-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
       dispatch({
@@ -576,10 +632,10 @@ function Shell() {
   // server and stays in the history list.
   const open = (next: string, hostSessionId: string) => {
     if (started && next === engine && hostSessionId && hostSessionId === sessionId) return;
-    setEngine(next);
-    localStorage.setItem(ENGINE_KEY, next);
+    // the engine switches once the server has started the conversation (`started`)
     dispatch({ type: 'clear' });
     setStarted(false);
+    setReadonlyEngine(null);
     channel.send({ type: 'start', engine: next, host_session_id: hostSessionId, kb_ids: selected });
   };
 
@@ -595,7 +651,8 @@ function Shell() {
   const removeHistory = (item: HistoryItem) => {
     if (!window.confirm(`删除对话「${item.title || '未命名对话'}」？${item.running ? '正在进行的分析会被停止，' : ''}删除后不可恢复。`)) return;
     channel.send({ type: 'delete', host_session_id: item.id });
-    if (item.id === sessionId) newConversation();
+    forgetSession(item.id); // whichever engine remembered it
+    if (item.id === sessionId) open(engine, '');
   };
 
   const toggleKb = (id: string) =>
@@ -607,6 +664,7 @@ function Shell() {
   }, [kbs, selected]);
 
   const kbNames = kbs.filter((kb) => selected.includes(kb.id)).map((kb) => kb.name);
+  const manyBackends = new Set(kbs.map((kb) => kb.backend || '')).size > 1;
   // selected knowledge bases stay visible when the list is folded
   const shownKbs = showAllKbs || kbs.length <= KB_FOLD
     ? kbs
@@ -698,10 +756,11 @@ function Shell() {
               key={kb.id}
               className={`da-chip ${selected.includes(kb.id) ? 'da-chip-on' : ''}`}
               onClick={() => toggleKb(kb.id)}
-              title={`${kb.documents} 个已入库文档`}
+              title={`${kb.documents} 个已入库文档${kb.backend ? ` · ${kb.backend}` : ''}`}
             >
               <span className="da-chip-check"><Check size={11} /></span>
               {kb.name}
+              {manyBackends && kb.backend ? <span className="da-chip-backend">{kb.backend}</span> : null}
               <span className="da-chip-count">{kb.documents}</span>
             </button>
           ))}
@@ -759,7 +818,14 @@ function Shell() {
         <footer className="da-composer">
           <textarea
             className="textarea"
-            placeholder={running ? '输入补充指令，发送后注入到正在执行的分析' : '输入分析问题，Enter 发送，Shift+Enter 换行'}
+            disabled={Boolean(readonlyEngine)}
+            placeholder={
+              readonlyEngine
+                ? `${readonlyEngine} 当前不可用，这段对话只能查看`
+                : running
+                  ? '输入补充指令，发送后注入到正在执行的分析'
+                  : '输入分析问题，Enter 发送，Shift+Enter 换行'
+            }
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
@@ -771,11 +837,13 @@ function Shell() {
           />
           <div className="da-composer-foot">
             <span className="muted">
-              {running
-                ? '分析执行中，发送的内容会作为补充指令'
-                : kbNames.length
-                  ? `将在「${kbNames.join('」「')}」中检索`
-                  : '将在全部知识库中检索'}
+              {readonlyEngine
+                ? '引擎恢复后重新打开即可继续追问'
+                : running
+                  ? '分析执行中，发送的内容会作为补充指令'
+                  : kbNames.length
+                    ? `将在「${kbNames.join('」「')}」中检索`
+                    : '将在全部知识库中检索'}
             </span>
             <div className="da-composer-actions">
               {running ? (

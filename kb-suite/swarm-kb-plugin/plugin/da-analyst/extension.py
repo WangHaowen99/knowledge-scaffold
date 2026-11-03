@@ -23,6 +23,7 @@ Environment:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import json
 import logging
@@ -31,7 +32,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable, Coroutine
 
 import httpx
 
@@ -61,28 +62,43 @@ MAX_TRANSCRIPT_OUTPUT = 200000
 IDLE_STOP_S = 600
 HISTORY_LIMIT = 50
 TITLE_CHARS = 60
+FLUSH_DELAY_S = 1.0
+# the history list reads only this much of each transcript (the summary is written ahead of the events)
+SUMMARY_HEAD_BYTES = 65536
+CHECKPOINT_LIMIT = 200
 # wire messages the page's reducer uses to redraw a conversation
 RECORDED = frozenset({"output", "tool", "turn", "ask", "ask_cancelled", "state"})
-SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")  # used with fullmatch
 
 Send = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class CheckpointStore:
-    """In-process HarnessCheckpointSink keyed by host session id."""
+    """In-process HarnessCheckpointSink keyed by host session id, keeping the most recent ones.
 
-    def __init__(self) -> None:
+    Losing one only costs the resume hint: the DA session id is derived from
+    the host session id anyway.
+    """
+
+    def __init__(self, limit: int = CHECKPOINT_LIMIT) -> None:
         self.latest: dict[str, Any] = {}
+        self._limit = limit
 
     async def save(self, checkpoint: Any, *, reason: Any, expected_storage_revision: str | None = None) -> Any:
         from openjiuwen.harness_protocol import CheckpointSaveReceipt
 
         del reason, expected_storage_revision
+        self.latest.pop(checkpoint.host_session_id, None)
         self.latest[checkpoint.host_session_id] = checkpoint
+        while len(self.latest) > self._limit:
+            del self.latest[next(iter(self.latest))]
         return CheckpointSaveReceipt(
             checkpoint_id=checkpoint.checkpoint_id, sequence=checkpoint.sequence,
             storage_revision=str(checkpoint.sequence),
         )
+
+    def forget(self, host_session_id: str) -> None:
+        self.latest.pop(host_session_id, None)
 
 
 CHECKPOINTS = CheckpointStore()
@@ -153,6 +169,11 @@ class PageInteractions:
         self._send = send
         self._waiting: dict[str, tuple[asyncio.Future, Any]] = {}
 
+    @property
+    def pending(self) -> bool:
+        """A question or approval is waiting for the page."""
+        return any(not future.done() for future, _ in self._waiting.values())
+
     async def handle(self, request: Any) -> Any:
         from openjiuwen.harness_protocol import ToolApprovalRequest
 
@@ -196,15 +217,43 @@ class PageInteractions:
         return True
 
     async def cancel(self, request_id: str, *, reason: Any = None) -> None:
+        from openjiuwen.harness_protocol import (
+            InteractionResponseStatus, ToolApprovalDecision, ToolApprovalRequest, ToolApprovalResponse,
+            UserInputResponse,
+        )
+
         entry = self._waiting.pop(request_id, None)
         if entry and not entry[0].done():
-            entry[0].cancel()
+            # Answered as withdrawn, never cancelled: a CancelledError would escape the harness's
+            # turn (it catches Exception) and then its stop(), leaving the turn without an end.
+            future, request = entry
+            if isinstance(request, ToolApprovalRequest):
+                future.set_result(ToolApprovalResponse(request_id=request_id, decision=ToolApprovalDecision.ABORT))
+            else:
+                future.set_result(UserInputResponse(request_id=request_id, status=InteractionResponseStatus.CANCELLED))
         await self._send({"t": "ask_cancelled", "request_id": request_id,
                           "reason": getattr(reason, "value", str(reason))})
 
 
 def _history_dir() -> Path:
     return Path(os.getenv("DA_ANALYST_HISTORY_DIR") or Path.home() / ".jiuwenswarm" / "da-analyst" / "history")
+
+
+_BACKGROUND: set[asyncio.Task] = set()
+
+
+def _background(coro: Coroutine[Any, Any, Any]) -> None:
+    """Run a coroutine nobody awaits, keeping it referenced until it is done."""
+    task = asyncio.ensure_future(coro)
+    _BACKGROUND.add(task)
+    task.add_done_callback(_BACKGROUND.discard)
+
+
+def _write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 class Transcript:
@@ -214,7 +263,8 @@ class Transcript:
     ``rejected``) plus the recorded wire messages, in arrival order; the page
     replays them through the same reducer it uses live. Output deltas are
     folded into the first message of their output so a long answer stays one
-    entry.
+    entry. Files are written off the event loop, at most once per
+    ``FLUSH_DELAY_S``; once discarded, nothing writes the file again.
     """
 
     def __init__(self, host_session_id: str, engine: str, data: dict[str, Any] | None = None) -> None:
@@ -223,12 +273,15 @@ class Transcript:
         self.id = host_session_id
         self.engine = str(data.get("engine") or engine)
         self.title = str(data.get("title") or "")
+        # the page's selection for the latest question; [] means every knowledge base
         self.kb_ids: list[str] = list(data.get("kb_ids") or [])
         self.created_at = float(data.get("created_at") or now)
         self.updated_at = float(data.get("updated_at") or now)
         self.events: list[dict[str, Any]] = list(data.get("events") or [])
         self._outputs = {e["output_id"]: e for e in self.events if e.get("t") == "output" and e.get("output_id")}
         self._flush_handle: asyncio.TimerHandle | None = None
+        self._io = asyncio.Lock()
+        self._sealed = False  # after the last save or a delete nothing writes the file again
 
     @staticmethod
     def path_for(host_session_id: str) -> Path:
@@ -236,11 +289,16 @@ class Transcript:
 
     @classmethod
     def load(cls, host_session_id: str) -> Transcript | None:
+        """Blocking read; call it through ``asyncio.to_thread``."""
         try:
             data = json.loads(cls.path_for(host_session_id).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
         return cls(host_session_id, str(data.get("engine") or DEFAULT_ENGINE), data)
+
+    @property
+    def asked(self) -> bool:
+        return any(e.get("t") == "user" for e in self.events)
 
     def summary(self) -> dict[str, Any]:
         return {"id": self.id, "engine": self.engine, "title": self.title, "kb_ids": self.kb_ids,
@@ -277,36 +335,94 @@ class Transcript:
 
     def touch(self) -> None:
         self.updated_at = time.time()
-        if self._flush_handle is None:
-            try:
-                self._flush_handle = asyncio.get_running_loop().call_later(1.0, self.flush)
-            except RuntimeError:  # no loop (tests, shutdown): write now
-                self.flush()
+        if self._flush_handle is not None or self._sealed:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # no loop: whoever owns it saves explicitly
+            return
+        self._flush_handle = loop.call_later(FLUSH_DELAY_S, lambda: _background(self.save()))
 
-    def flush(self) -> None:
+    async def save(self, *, last: bool = False) -> None:
+        """Write the file now, unless nothing was asked yet or it is sealed; ``last`` seals it."""
         if self._flush_handle is not None:
             self._flush_handle.cancel()
             self._flush_handle = None
-        if not any(e.get("t") == "user" for e in self.events):
-            return  # nothing asked yet: not worth a history entry
-        path = self.path_for(self.id)
+        async with self._io:
+            if self._sealed or not self.asked:
+                self._sealed = self._sealed or last
+                return
+            self._sealed = last
+            # entries change in place (folded deltas, a question's turn id): copy them before leaving the loop
+            data = {**self.summary(), "events": [dict(e) for e in self.events]}
+            try:
+                await asyncio.to_thread(_write_json, self.path_for(self.id), data)
+            except OSError:
+                logger.warning("[da-analyst] saving transcript %s failed", self.id, exc_info=True)
+
+    async def discard(self) -> None:
+        """Delete the file; a save already under way finishes first and no later one writes it back."""
+        self._sealed = True
+        if self._flush_handle is not None:
+            self._flush_handle.cancel()
+            self._flush_handle = None
+        async with self._io:
+            await asyncio.to_thread(_delete_files, self.id)
+
+
+def _tombstone(host_session_id: str) -> Path:
+    return _history_dir() / f"{host_session_id}.deleted"
+
+
+def _delete_files(host_session_id: str) -> None:
+    """Remove the transcript and remember the id, so a page still holding it gets a new conversation."""
+    Transcript.path_for(host_session_id).unlink(missing_ok=True)
+    tombstone = _tombstone(host_session_id)
+    tombstone.parent.mkdir(parents=True, exist_ok=True)
+    tombstone.touch()
+
+
+def _read_summary(path: Path) -> dict[str, Any] | None:
+    """The fields ``Transcript.save`` writes ahead of ``events``, without parsing the events."""
+    try:
+        with path.open("rb") as file:
+            head = file.read(SUMMARY_HEAD_BYTES)
+            # a quote opening a key is never escaped, so this cannot match inside a string value
+            cut = head.find(b', "events": ')
+            data = json.loads(head[:cut] + b"}" if cut >= 0 else head + file.read())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _scan_history(limit: int) -> list[dict[str, Any]]:
+    """Summaries of the newest transcript files (blocking; run it in a thread)."""
+    found = []
+    for path in _history_dir().glob("*.json"):
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({**self.summary(), "events": self.events}, ensure_ascii=False, default=str),
-                           encoding="utf-8")
-            os.replace(tmp, path)
-        except OSError:
-            logger.warning("[da-analyst] saving transcript %s failed", self.id, exc_info=True)
-
-
-def list_history(limit: int = HISTORY_LIMIT) -> list[dict[str, Any]]:
+            found.append((path.stat().st_mtime, path))
+        except OSError:  # deleted meanwhile
+            continue
     items = []
-    for path in sorted(_history_dir().glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
-        transcript = Transcript.load(path.stem)
-        if transcript is not None:
-            live = LIVE.get(transcript.id)
-            items.append({**transcript.summary(), "live": live is not None, "running": bool(live and live.running)})
+    for _, path in sorted(found, reverse=True)[:limit]:
+        data = _read_summary(path)
+        if data is None:
+            continue
+        items.append({
+            "id": path.stem, "engine": str(data.get("engine") or DEFAULT_ENGINE), "title": str(data.get("title") or ""),
+            "kb_ids": list(data.get("kb_ids") or []), "created_at": float(data.get("created_at") or 0),
+            "updated_at": float(data.get("updated_at") or 0), "turns": int(data.get("turns") or 0),
+        })
+    return items
+
+
+async def list_history(limit: int = HISTORY_LIMIT) -> list[dict[str, Any]]:
+    items = []
+    for item in await asyncio.to_thread(_scan_history, limit):
+        live = LIVE.get(item["id"])
+        if live is not None:
+            item = {**item, **live.transcript.summary()}  # newer than the file
+        items.append({**item, "live": live is not None and not live.closed, "running": bool(live and live.running)})
     return items
 
 
@@ -322,10 +438,19 @@ class Conversation:
         self.subscribers: set[Send] = set()
         self.interactions = PageInteractions(self.emit)
         self.running = False
+        self.closed = False
+        self._closed = asyncio.Event()
         self._idle_timer: asyncio.TimerHandle | None = None
 
-    async def broadcast(self, payload: dict[str, Any]) -> None:
+    @property
+    def busy(self) -> bool:
+        """Still working; a turn waiting for an answer nobody may give does not count."""
+        return self.running and not self.interactions.pending
+
+    async def broadcast(self, payload: dict[str, Any], skip: Send | None = None) -> None:
         for send in list(self.subscribers):
+            if send is skip:
+                continue
             try:
                 await send(payload)
             except Exception:  # noqa: BLE001 - that page is gone; its socket handler detaches it
@@ -334,9 +459,9 @@ class Conversation:
     async def emit(self, wire: dict[str, Any]) -> None:
         if wire.get("t") == "state":
             self.running = wire.get("state") == "running"
-            if not self.running and not self.subscribers:
-                self.schedule_idle_stop()
         self.transcript.record(wire)
+        if not self.subscribers:
+            self.schedule_idle_stop()  # also when a turn starts waiting for a page that is not there
         await self.broadcast(wire)
 
     def attach(self, send: Send) -> None:
@@ -351,18 +476,18 @@ class Conversation:
             self.schedule_idle_stop()
 
     def schedule_idle_stop(self) -> None:
-        # a running analysis keeps going; the `state` event that ends it schedules the stop
-        if self.running or self._idle_timer is not None:
+        # a busy analysis keeps going; the event that ends it (or makes it wait for the page) schedules the stop
+        if self.closed or self.busy or self._idle_timer is not None:
             return
 
         def fire() -> None:
             self._idle_timer = None
-            if not self.subscribers and not self.running:
-                asyncio.ensure_future(self.close())
+            if not self.subscribers and not self.busy:
+                _background(self.close())
 
         self._idle_timer = asyncio.get_running_loop().call_later(IDLE_STOP_S, fire)
 
-    async def start(self, kb_ids: list[str]) -> None:
+    async def start(self) -> None:
         from openjiuwen.harness_protocol import HarnessContext, HostCapability, ResumePolicy
 
         engine = self.engine
@@ -389,7 +514,9 @@ class Conversation:
             checkpoint=checkpoint,
             checkpoint_sink=CHECKPOINTS,
             interactions=self.interactions,
-            metadata={"kb_ids": list(kb_ids)},
+            # no session-wide scope: each question carries its own, and one without a list
+            # ("every knowledge base", listing failed) leaves the choice to the harness's catalog
+            metadata={},
         )
         try:
             await self.harness.start(context)
@@ -409,84 +536,186 @@ class Conversation:
 
         self.pump = asyncio.create_task(pump())
 
-    async def send(self, text: str, kb_ids: list[str], client_id: str, steer: bool) -> Any:
+    async def send(self, text: str, kb_ids: list[str], client_id: str, steer: bool, origin: Send | None = None) -> Any:
+        """Deliver a page input; ``origin`` (the page that sent it) already shows it, the other pages are told."""
         from openjiuwen.harness_protocol import DeliveryMode, HarnessInput
 
         if self.harness is None:
             raise RuntimeError("会话尚未开始")
-        entry = None
+        metadata: dict[str, Any] = {}
+        if not steer:
+            # an empty selection means every knowledge base; without a list the harness uses its own catalog
+            scope = list(kb_ids) or [kb["id"] for kb in await _list_kbs()]
+            if scope:
+                metadata["kb_ids"] = scope
+        harness = self.harness
+        if harness is None:
+            raise RuntimeError("会话已结束")
         if steer:
-            self.transcript.add({"t": "steer", "text": text})
-        else:
-            entry = self.transcript.add_user(client_id, text, kb_ids)
-        content = HarnessInput(content=text, metadata={"kb_ids": list(kb_ids)})
+            # kept only once accepted: a steer that finds no running turn leaves no trace
+            receipt = await harness.send(HarnessInput(content=text), mode=DeliveryMode.STEER)
+            entry = {"t": "steer", "text": text}
+            self.transcript.add(entry)
+            await self.broadcast(entry, skip=origin)
+            return receipt
+        entry = self.transcript.add_user(client_id, text, kb_ids)
+        await self.broadcast(dict(entry), skip=origin)
         try:
-            receipt = await self.harness.send(content, mode=DeliveryMode.STEER if steer else DeliveryMode.AUTO)
+            receipt = await harness.send(HarnessInput(content=text, metadata=metadata), mode=DeliveryMode.AUTO)
         except Exception as exc:
-            if entry is not None:
-                self.transcript.add({"t": "rejected", "client_id": client_id, "message": str(exc)[:500]})
+            rejected = {"t": "rejected", "client_id": client_id, "message": str(exc)[:500]}
+            self.transcript.add(rejected)
+            await self.broadcast(rejected, skip=origin)
             raise
-        if entry is not None:
-            entry["turn_id"] = receipt.turn_id
+        entry["turn_id"] = receipt.turn_id
         return receipt
 
-    def answer(self, request_id: str, msg: dict[str, Any]) -> None:
+    async def answer(self, request_id: str, msg: dict[str, Any], origin: Send | None = None) -> None:
         if self.interactions.answer(request_id, msg):
-            self.transcript.add({"t": "answered", "request_id": request_id, "label": str(msg.get("label") or "")})
+            entry = {"t": "answered", "request_id": request_id, "label": str(msg.get("label") or "")}
+            self.transcript.add(entry)
+            await self.broadcast(entry, skip=origin)
 
     async def close(self) -> None:
-        if LIVE.get(self.host_session_id) is self:
-            del LIVE[self.host_session_id]
+        """Stop the harness and save the transcript; a second call waits for the first.
+
+        The conversation stays in ``LIVE`` until it is saved, so opening or
+        deleting it meanwhile waits here instead of racing the last write.
+        """
+        if self.closed:
+            await self._closed.wait()
+            return
+        self.closed = True
         if self._idle_timer is not None:
             self._idle_timer.cancel()
             self._idle_timer = None
         harness, self.harness = self.harness, None
-        if harness is not None:
+        try:
+            if harness is not None:
+                if self.running:
+                    # a stop only closes the stream; aborting first tells the engine to drop the task
+                    await _quietly(harness.abort, "abort")
+                await _quietly(harness.stop, "stop")
+        finally:
+            # whatever the stop did, the pump goes and the transcript gets its last save
+            pump, self.pump = self.pump, None
+            if pump is not None:
+                pump.cancel()
+            self.running = False
             try:
-                await harness.stop()
-            except Exception:  # noqa: BLE001
-                logger.warning("[da-analyst] harness stop failed", exc_info=True)
-        pump, self.pump = self.pump, None
-        if pump is not None:
-            pump.cancel()
-        self.running = False
-        self.transcript.flush()
+                await self.transcript.save(last=True)
+            finally:
+                if LIVE.get(self.host_session_id) is self:
+                    del LIVE[self.host_session_id]
+                self._closed.set()
+
+
+# opening or deleting a conversation waits for its close, so a stuck engine may not hold it forever
+CLOSE_STEP_TIMEOUT_S = 30
+
+
+async def _quietly(command: Callable[[], Awaitable[Any]], name: str) -> None:
+    """Run a harness command while closing; nothing it raises may skip the rest of the close."""
+    try:
+        await asyncio.wait_for(command(), CLOSE_STEP_TIMEOUT_S)
+    except asyncio.CancelledError:
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise  # this close itself is being cancelled
+        # raised inside the harness (e.g. by one of its turns), not a cancellation of ours
+        logger.warning("[da-analyst] harness %s was cut short", name, exc_info=True)
+    except Exception:  # noqa: BLE001
+        logger.warning("[da-analyst] harness %s failed", name, exc_info=True)
 
 
 LIVE: dict[str, Conversation] = {}
 
-_OPENING: dict[str, asyncio.Lock] = {}
+
+class KeyedLocks:
+    """One asyncio.Lock per key, dropped once nobody holds or waits for it."""
+
+    def __init__(self) -> None:
+        self._locks: dict[str, tuple[asyncio.Lock, int]] = {}
+
+    @contextlib.asynccontextmanager
+    async def hold(self, key: str) -> AsyncIterator[None]:
+        lock, users = self._locks.get(key) or (asyncio.Lock(), 0)
+        self._locks[key] = (lock, users + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            lock, users = self._locks[key]
+            if users > 1:
+                self._locks[key] = (lock, users - 1)
+            else:
+                del self._locks[key]
 
 
-async def open_conversation(host_session_id: str, engine: str, kb_ids: list[str]) -> tuple[Conversation, bool]:
+_OPENING = KeyedLocks()
+
+
+class ConversationUnavailable(Exception):
+    """The harness did not start; the transcript can still be shown."""
+
+    def __init__(self, transcript: Transcript, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.transcript = transcript
+
+
+async def open_conversation(host_session_id: str, engine: str) -> tuple[Conversation, bool]:
     """The live conversation for this id, or a new harness that continues its transcript.
 
     Returns the conversation and whether it was already live (its open turns are
     still going) rather than restarted from its transcript. The DA
     session id is derived from the host session id, so a restarted harness
-    keeps DA's context as long as DA still has it.
+    keeps DA's context as long as DA still has it; for the same reason a
+    deleted id is never reused. Raises ``ConversationUnavailable`` when the
+    engine does not start.
     """
-    if not SESSION_ID_RE.match(host_session_id or ""):
+    if not SESSION_ID_RE.fullmatch(host_session_id or ""):
         host_session_id = uuid.uuid4().hex
-    async with _OPENING.setdefault(host_session_id, asyncio.Lock()):
+    async with _OPENING.hold(host_session_id):
         live = LIVE.get(host_session_id)
-        if live is not None and live.harness is not None:
-            return live, True
-        transcript = Transcript.load(host_session_id) or Transcript(host_session_id, engine)
+        if live is not None:
+            if not live.closed:
+                return live, True
+            await live.close()  # still saving: continue from what it wrote
+        if await asyncio.to_thread(_tombstone(host_session_id).exists):
+            return await open_conversation("", engine)
+        transcript = await asyncio.to_thread(Transcript.load, host_session_id) or Transcript(host_session_id, engine)
         conversation = Conversation(transcript)
-        await conversation.start(kb_ids)
+        try:
+            await conversation.start()
+        except Exception as exc:
+            raise ConversationUnavailable(transcript, exc) from exc
         LIVE[host_session_id] = conversation
         conversation.schedule_idle_stop()  # unless a page attaches
         return conversation, False
 
 
 async def delete_conversation(host_session_id: str) -> None:
-    if not SESSION_ID_RE.match(host_session_id or ""):
+    if not SESSION_ID_RE.fullmatch(host_session_id or ""):
         return
-    live = LIVE.get(host_session_id)
-    if live is not None:
+    async with _OPENING.hold(host_session_id):
+        CHECKPOINTS.forget(host_session_id)
+        live = LIVE.get(host_session_id)
+        if live is None:
+            await asyncio.to_thread(_delete_files, host_session_id)
+            return
+        # other pages showing it move on to a new conversation
+        await live.broadcast({"t": "deleted", "host_session_id": host_session_id})
+        await live.transcript.discard()
         await live.close()
-    Transcript.path_for(host_session_id).unlink(missing_ok=True)
+
+
+def _started(transcript: Transcript) -> dict[str, Any]:
+    """What the page needs to show a conversation it opens."""
+    return {"t": "started", "host_session_id": transcript.id, "engine": transcript.engine,
+            "resumed": bool(transcript.events), "title": transcript.title,
+            # a new conversation keeps whatever the page has selected
+            "kb_ids": transcript.kb_ids if transcript.asked else None,
+            "transcript": transcript.events}
 
 
 def _provider_class(engine: str) -> Any:
@@ -520,7 +749,8 @@ async def _list_kbs() -> list[dict[str, Any]]:
         async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
             resp = await client.get(f"{base}/v1/kbs", headers={"Authorization": f"Bearer {key}"})
             resp.raise_for_status()
-            return [{"id": kb["id"], "name": kb["name"], "documents": kb["stats"]["completed"]}
+            return [{"id": kb["id"], "name": kb["name"], "documents": kb["stats"]["completed"],
+                     "backend": (kb.get("backend") or {}).get("label") or ""}
                     for kb in resp.json().get("items", [])]
     except (httpx.HTTPError, ValueError, KeyError):
         logger.warning("[da-analyst] listing knowledge bases failed", exc_info=True)
@@ -574,10 +804,15 @@ class DaAnalystPlugin(ApplicationPluginExtension):
     async def _serve(self, websocket: Any) -> None:
         await websocket.accept()
         lock = asyncio.Lock()
+        gone = False
 
         async def send(payload: dict[str, Any]) -> None:
+            if gone:
+                return
+            # serialized here, not once the socket is free: a snapshot must not pick up later changes
+            text = json.dumps(payload, ensure_ascii=False, default=str)
             async with lock:
-                await websocket.send_text(json.dumps(payload, ensure_ascii=False, default=str))
+                await websocket.send_text(text)
 
         convo: Conversation | None = None
         tasks: set[asyncio.Task] = set()
@@ -597,6 +832,12 @@ class DaAnalystPlugin(ApplicationPluginExtension):
                 raise RuntimeError("会话尚未开始")
             return convo
 
+        def leave() -> None:
+            nonlocal convo
+            if convo is not None:
+                convo.detach(send)
+                convo = None
+
         async def dispatch(msg: dict[str, Any]) -> None:
             nonlocal convo
             kind = msg.get("type")
@@ -606,43 +847,42 @@ class DaAnalystPlugin(ApplicationPluginExtension):
                     await send({"t": "hello", "kbs": await _list_kbs(), "engines": engines,
                                 "da_ready": any(e["ready"] for e in engines if e["id"] == DEFAULT_ENGINE)})
                 elif kind == "start":
-                    opened, was_live = await open_conversation(
-                        str(msg.get("host_session_id") or ""), str(msg.get("engine") or DEFAULT_ENGINE),
-                        list(msg.get("kb_ids") or []))
-                    if convo is not None and convo is not opened:
-                        convo.detach(send)
+                    try:
+                        opened, was_live = await open_conversation(
+                            str(msg.get("host_session_id") or ""), str(msg.get("engine") or DEFAULT_ENGINE))
+                    except ConversationUnavailable as exc:
+                        leave()
+                        if exc.transcript.events:
+                            # still readable; the page cannot send until the engine is back
+                            await send({**_started(exc.transcript), "live": False, "running": False, "readonly": True})
+                        raise
+                    if gone:
+                        return  # the page left meanwhile; the idle stop takes care of it
+                    if convo is not opened:
+                        leave()
                     convo = opened
                     # attach and snapshot without yielding, so every later event follows `started`
                     opened.attach(send)
-                    transcript = opened.transcript
-                    await send({"t": "started", "host_session_id": opened.host_session_id, "engine": opened.engine,
-                                "resumed": was_live or bool(transcript.events), "live": was_live,
-                                "provider_session_id": opened.harness.provider_session_id,
-                                "title": transcript.title, "kb_ids": transcript.kb_ids,
-                                "running": opened.running, "transcript": list(transcript.events)})
+                    await send({**_started(opened.transcript), "resumed": was_live or bool(opened.transcript.events),
+                                "live": was_live, "running": opened.running,
+                                "provider_session_id": opened.harness.provider_session_id})
                 elif kind == "send":
-                    steer = bool(msg.get("steer"))
-                    kb_ids = list(msg.get("kb_ids") or [])
-                    if not kb_ids and not steer:
-                        # the page shows an empty selection as "all knowledge bases"
-                        kb_ids = [kb["id"] for kb in await _list_kbs()]
-                    receipt = await current().send(str(msg.get("text") or ""), kb_ids,
-                                                   str(msg.get("client_id") or ""), steer)
+                    receipt = await current().send(str(msg.get("text") or ""), list(msg.get("kb_ids") or []),
+                                                   str(msg.get("client_id") or ""), bool(msg.get("steer")), send)
                     await send({"t": "accepted", "turn_id": receipt.turn_id, "mode": receipt.accepted_mode.value,
                                 "client_id": msg.get("client_id")})
                 elif kind == "abort":
                     await current().harness.abort()
                 elif kind == "answer":
-                    current().answer(str(msg.get("request_id") or ""), msg)
+                    await current().answer(str(msg.get("request_id") or ""), msg, send)
                 elif kind == "history":
-                    await send({"t": "history", "items": list_history()})
+                    await send({"t": "history", "items": await list_history()})
                 elif kind == "delete":
                     target = str(msg.get("host_session_id") or "")
                     if convo is not None and convo.host_session_id == target:
-                        convo.detach(send)
-                        convo = None
+                        leave()
                     await delete_conversation(target)
-                    await send({"t": "history", "items": list_history()})
+                    await send({"t": "history", "items": await list_history()})
                 elif kind == "reset":
                     if convo is not None:
                         await convo.close()
@@ -650,8 +890,9 @@ class DaAnalystPlugin(ApplicationPluginExtension):
                     await send({"t": "reset"})
             except Exception as exc:  # noqa: BLE001 - report to the page, keep the socket
                 logger.warning("[da-analyst] %s failed", kind, exc_info=True)
-                await send({"t": "error", "request": kind, "message": str(exc)[:500],
-                            "client_id": msg.get("client_id")})
+                with contextlib.suppress(Exception):
+                    await send({"t": "error", "request": kind, "message": str(exc)[:500],
+                                "client_id": msg.get("client_id")})
 
         try:
             while True:
@@ -666,11 +907,11 @@ class DaAnalystPlugin(ApplicationPluginExtension):
         except Exception:  # noqa: BLE001 - disconnect
             pass
         finally:
-            for task in tasks:
-                task.cancel()
-            # the conversation keeps running for whoever opens it next
-            if convo is not None:
-                convo.detach(send)
+            # What the page already asked for still completes (a question it sent, a
+            # delete); only replies are dropped. The conversation keeps running for
+            # whoever opens it next.
+            gone = True
+            leave()
 
 
 async def register_extensions(registry: Any) -> list[DaAnalystPlugin]:
