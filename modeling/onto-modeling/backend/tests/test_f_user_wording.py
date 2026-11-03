@@ -47,3 +47,12 @@ def test_rules_tell_assistant_how_to_talk_to_user():
     section = rules.split("## 对用户说话", 1)[1]
     for phrase in ("步骤编号", "命令锁", "已保存版本 N", "下一步建议", "建议条"):
         assert phrase in section
+
+
+def test_jiuwen_system_prompt_states_how_to_talk_to_user():
+    """真实模型（F 抽查）照样在工具调用之间写「先做前置检查」「获取执行锁」：内测引擎的系统提示里也写一句。"""
+    from tests.test_jiuwen_assets import make_loader
+
+    runtime = make_loader().system_prompt().split("# 运行时适配说明", 1)[1]
+    for phrase in ("前置检查", "锁", "下一步建议", "已保存版本"):
+        assert phrase in runtime
