@@ -841,3 +841,10 @@ merge 4e6ed10f + 衔接 ee03c022；B4d 节第 1～7 条（和 B5c 要接的点�
 9. **升级迁移一次排很多**：已有项目的 PDF、Word、Excel 在启动后后台排队，两个转换线程依次转；资料多的部署第一次启动后要等一阵，期间这些资料显示「转换中」。
 10. **测试部署的远端部署脚本没改**（测试部署只读）：网关靠 compose 的 `pull_policy: build` 随整栈构建，远端的镜像冒烟（非 root 能读代码）不覆盖网关镜像；网关镜像里代码权限按构建上下文（deploy.sh 已用 umask 022）。
 11. **离线包构建脚本改了但没实跑 `build.sh`**：网关目标单独 `docker build --target connector-gateway` 本机构建、`docker compose up --build` 起整栈都验证过。
+
+## 2026-11-03 · F4b-paths（界面上不出工作区路径和文件名）
+
+1. **F4b-research 管的文件没动**（避免冲突）：资料分析问题的正文 `text_md` 里直接写的资料路径（`research_view.py` 原样下发，报告页「资料分析」、资料地图弹窗、蓝图问题标题会露 `resource/…#p:3`）、资料地图与 `cards-materials.jsx` 的资料名带扩展名和路径悬浮、`anchor_label` 保留编号前缀。建议 F4b-research 合入后在 `research_view` 下发前用 `workspace_labels.humanize` / `material_name`。
+2. **Studio 证据锚点仍要手填**：EntryEditor 的锚点输入框占位写「file:resource/…#p:7.3」，用户要自己写路径。要改成「选资料 + 位置」的选择器，属于改设计（见回报）。
+3. **还会露文件名的低频处**：导入页的阻断原因（「缺少 ontology/ 目录」）、求解契约侧栏的文件角色名与检查信息、发布门禁明细里的条目路径、授权卡「查看技术细节」里的 JSON。均为开发者或包作者向，本次未改。
+4. **对话里已有的历史卡片、气泡不回填**：只影响新产生的；旧记录里的文件名照旧。

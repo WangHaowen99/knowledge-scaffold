@@ -1110,3 +1110,14 @@ ADR-0073。契约改动已写进 `docs/api-v1.md` 与 `_plan/api-v1.md`：
 8. **事件 EP-25** `materials.text.updated`：`{path, text: MaterialText}`，转换中、等待、失败这些不出提交的状态也推。
 9. **运维**：O-13 / 就绪检查的 `connector_gateway` 从占位改为真实探测（`已加载 N 个转换器`；没配网关地址为 warn「未部署」，不可达为 fail，不挡就绪）；O-35 启动报告多一步 `material_text`「资料文本版」（后台补转）；O-42 版本清单列出转换器（`category=provider`、`converter: true`）。
 10. **网关接口**（内核与网关之间，不在 `/api/v1`）：`GET /health`、`GET /v1/providers`、`POST /v1/convert`（请求体原文件，`Authorization: Bearer <Ed25519 JWT>`）；内核 `GET /api/v1/connector/issuer-key` 给网关取公钥，免鉴权。
+
+## 2026-11-03 · F4b-paths（界面上不出工作区路径和文件名）
+
+ADR-0074。契约改动已写进 `docs/api-v1.md`：
+
+1. **7.1 `EntryRef` / `ArtifactRef` 加 `label`**：后端按元模型、产物登记算好的业务名（对象「门店」、流程图「订单流程」、建模蓝图、资料分析报告、检查报告、资料「合同」）。变更里认不出的文件 `type="file"`、`title`、`label` 为空串，路径只在 `key`。CS-02、CS-03、V-02、冲突与撤回挡住时的 `entities` 都带它。
+2. **4.7 `round_changes` 卡**：行文只写业务名；认不出的文件合成 `other` 组最后一行 `{change: null, target: null, text: "另有 N 处改动", count: N}`，前端不出动词标签。`title`「改了 N 处」仍按路径数算。
+3. **7.1 `AnchorResolution`**：`source_label` 改为资料名（去扩展名；文本版 `resource/text/<分组>/<原文件名>.md` 映射回原资料）；新增 `material: {name, type, path}`；行号锚点 `L12`、`L12-L15` 的 `location_label` 按前面最近的位置标记（「第 3 页」「工作表 客户」）或小节标题算，都没有时为空，不再写「第 12 行」；`L起-L止` 区间整段高亮。`p:`、`table:`、`sheet:` 旧锚点照旧。
+4. **7.4 `Material` 加 `title`、`type_label`**；资料页不再按 `group` 分组（`group` 字段保留）。上传目录本来就由后端按扩展名定，界面不选目录。
+5. **S-20 加 `display_text`**：对话里只显示「命令 + 说明」，不带 `args`，说明里的工作区路径换成业务名；发给助手的不变。报告页「发给助手」、待处理「交给助手处理」、Studio 复核都给了 `display_text`。
+6. **其他下发文字**：版本说明（V-01 `summary`）去掉 `web:` 等来源前缀并把路径换成业务名；待处理报告事项标题用报告的一级标题；变更清单来源名、增量那一轮的对话标题用资料名；过期事项「上游（资料分析、对象）」；自主构建台账出处「资料名 §片段」（不写行号）、删除被挡的挂起原因按业务名；报告条目的位置标签按业务名；「工作过程」步骤「读取对象「门店」」「读取资料分析报告」。
