@@ -436,8 +436,21 @@ def _context_processor_rail(trigger_ratio: float):
     )
 
 
-def _call_usage_rail(on_call_usage: Callable[[int, int], None]):
-    """在 TokenTrackingRail 的累计之外，每次模型调用返回后把这次的（输入, 输出）交给回调。
+def _cache_tokens(ctx: Any) -> int:
+    """这次调用的缓存命中数（框架按 OpenAI 的 prompt_tokens_details.cached_tokens 等写法解析好的）。"""
+    response = getattr(getattr(ctx, "inputs", None), "response", None)
+    usage = getattr(response, "usage", None) or getattr(response, "usage_metadata", None)
+    for key in ("cache_tokens", "cache_read_tokens"):
+        value = getattr(usage, key, None)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            return int(value)
+    return 0
+
+
+def _call_usage_rail(on_call_usage: Callable[[int, int, int], None]):
+    """在 TokenTrackingRail 的累计之外，每次模型调用返回后把这次的（输入, 输出, 缓存命中）交给回调。
+
+    输入是 OpenAI 口径的 prompt_tokens，含缓存命中部分；拆成 Anthropic 口径由回调做。
 
     项目用量按这些逐次增量记账：长命令跑的过程中数字就会增长，打断超时、会话回收、进程重启
     也只丢在飞的那一次调用。子代理 spec 沿用同一个实例（没有 fork_for_agent），一并计入。
@@ -445,13 +458,17 @@ def _call_usage_rail(on_call_usage: Callable[[int, int], None]):
     from openjiuwen.harness.cli.rails import TokenTrackingRail
 
     class CallUsageRail(TokenTrackingRail):
+        total_cache_tokens = 0
+
         async def after_model_call(self, ctx: Any) -> None:
             input_before, output_before = self.total_input_tokens, self.total_output_tokens
             await super().after_model_call(ctx)
             input_tokens = self.total_input_tokens - input_before
             output_tokens = self.total_output_tokens - output_before
             if input_tokens or output_tokens:
-                on_call_usage(input_tokens, output_tokens)
+                cached = min(_cache_tokens(ctx), input_tokens)
+                self.total_cache_tokens += cached
+                on_call_usage(input_tokens, output_tokens, cached)
 
     return CallUsageRail()
 
@@ -878,17 +895,23 @@ class JiuwenEngine(ObservableEngine):
 
     def _usage_snapshot(self) -> dict:
         tracker = self._tracker
+        cached = int(getattr(tracker, "total_cache_tokens", 0) or 0)
         return {
-            "input_tokens": int(getattr(tracker, "total_input_tokens", 0) or 0),
+            "input_tokens": int(getattr(tracker, "total_input_tokens", 0) or 0) - cached,
+            "cache_read_input_tokens": cached,
             "output_tokens": int(getattr(tracker, "total_output_tokens", 0) or 0),
         }
 
-    def _record_call_usage(self, input_tokens: int, output_tokens: int) -> None:
-        """一次模型调用（含子代理）的用量即时下发，会话层落盘后就计入项目用量。"""
+    def _record_call_usage(self, input_tokens: int, output_tokens: int, cache_tokens: int = 0) -> None:
+        """一次模型调用（含子代理）的用量即时下发，会话层落盘后就计入项目用量。
+
+        口径同稳定引擎：input_tokens 不含缓存命中，命中记 cache_read_input_tokens（配额、计费、
+        项目用量都按「输入 + 缓存读 + 输出」算，总数和拆开前一样）。"""
         self._queue.put_nowait(
             {
                 "type": "model_usage",
-                "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+                "usage": {"input_tokens": input_tokens - cache_tokens, "cache_read_input_tokens": cache_tokens,
+                          "output_tokens": output_tokens},
             }
         )
 

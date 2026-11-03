@@ -409,7 +409,7 @@ def model_call(input_tokens, output_tokens):
 
 def test_call_usage_rail_reports_each_model_call():
     calls = []
-    rail = _call_usage_rail(lambda input_tokens, output_tokens: calls.append((input_tokens, output_tokens)))
+    rail = _call_usage_rail(lambda input_tokens, output_tokens, cache_tokens: calls.append((input_tokens, output_tokens)))
 
     async def scenario():
         await rail.after_model_call(model_call(1200, 80))
@@ -460,12 +460,12 @@ def test_interrupted_turn_reports_usage_recorded_so_far(tmp_path, monkeypatch):
     events = asyncio.run(scenario())
     # 每次调用返回就下发一条，进程中途退出也已落盘
     assert [e["usage"] for e in events if e["type"] == "model_usage"] == [
-        {"input_tokens": 1000, "output_tokens": 50},
-        {"input_tokens": 1200, "output_tokens": 30},
+        {"input_tokens": 1000, "cache_read_input_tokens": 0, "output_tokens": 50},
+        {"input_tokens": 1200, "cache_read_input_tokens": 0, "output_tokens": 30},
     ]
     result = events[-1]
     assert result["type"] == "result" and result["subtype"] == "interrupted"
-    assert result["usage"] == {"input_tokens": 2200, "output_tokens": 80}
+    assert result["usage"] == {"input_tokens": 2200, "cache_read_input_tokens": 0, "output_tokens": 80}
     assert result["usage_per_call"] is True
 
 
