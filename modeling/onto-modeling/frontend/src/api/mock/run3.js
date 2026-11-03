@@ -353,7 +353,7 @@ export function startCard() {
   return {
     card_id: 'ab3-start', card_type: 'autobuild_start', eyebrow: '', title: '自主构建 · 运行 #3', subtitle: '', status: null, plugin: null,
     open: { kind: 'page', target: 'proj-settings' }, run_id: RUN_ID, run_no: RUN_NO,
-    chips: [{ label: '范围', value: '未完成的 4 段' }, { label: '预算', value: '¥150 · 2 小时' }, { label: '生产库', value: '不采集' }, { label: '拿不准时', value: '采用保守选项并记为假设' }],
+    chips: [{ label: '范围', value: '未完成的 4 段' }, { label: '预算', value: '2 小时 · 6M token' }, { label: '生产库', value: '不采集' }, { label: '拿不准时', value: '先按最稳妥的做法往下做，做完列出来给你复核' }],
   };
 }
 

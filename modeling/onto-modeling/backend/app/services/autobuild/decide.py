@@ -197,7 +197,7 @@ def record(project_id: str, run_id: str, questions: list[dict], raws: list[dict]
                 "confidence": round(outcome["confidence"], 2), "threshold": threshold,
                 "assumption": outcome["assumption"], "anchors": found, "affected": question.get("affected") or [],
                 "review_state": "pending", "rejudged_to": None,
-                "reason_text": "低于阈值，采用保守选项并记为假设" if outcome["assumption"] else "达到阈值，采用推荐选项",
+                "reason_text": "没有把握，先按最稳妥的做法往下做，等你复核" if outcome["assumption"] else "有把握，按推荐的做法",
                 "summary": f"{slice_ref['name']}：{plain_label(chosen)}" if slice_ref["name"] else plain_label(chosen),
                 "step": step, "exec_id": exec_id, "option_id": chosen["id"],
             }

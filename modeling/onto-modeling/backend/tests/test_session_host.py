@@ -269,8 +269,11 @@ def test_command_turns_produce_contract_payloads_and_exec_lifecycle(host):
     assert user["data"]["command"] == "/ontology-extract-object"
     group = [item for item in envelopes if item["type"] == "progress.updated"][-1]["data"]
     assert group["title"] == "对象提取" and group["state"] == "done" and group["collapsed"] is True
-    texts = [step["text"] for step in group["steps"]]
+    # 派出子任务前做完的步骤收成一段，子任务单独成卡、不在组里占一步：步骤按组的最后一版合起来看
+    latest = {item["data"]["group_id"]: item["data"] for item in envelopes if item["type"].startswith("progress")}
+    texts = [step["text"] for data in latest.values() for step in data["steps"]]
     assert "读取资料分析报告" in texts and any("写入对象" in text for text in texts)
+    assert not any("派出子任务" in text for text in texts)
     assert all("research/" not in text for text in texts)  # 只给业务名，不给路径、文件名与命令原文
     completed = [item for item in envelopes if item["type"] == "turn.completed"]
     assert completed[0]["data"]["usage"] == {"input_tokens": 100, "output_tokens": 20, "cache_read_tokens": 5}

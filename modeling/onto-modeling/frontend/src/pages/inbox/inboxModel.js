@@ -198,8 +198,7 @@ const RUN_STATE_TEXT = {
 export function summarySub(s) {
   if (!s) return '';
   const span = s.ended_at ? `${hhmm(s.started_at)} – ${hhmm(s.ended_at)}` : `${hhmm(s.started_at)} 开始`;
-  const cost = s.cost?.amount != null ? `费用 ${s.cost.currency === 'USD' ? '$' : '¥'}${Math.round(s.cost.amount)}` : '';
-  return [span, RUN_STATE_TEXT[s.state] || '', cost].filter(Boolean).join(' · ');
+  return [span, RUN_STATE_TEXT[s.state] || ''].filter(Boolean).join(' · ');
 }
 
 // 「今天的进度」里列出来的几类：决策、自主构建复核、过期

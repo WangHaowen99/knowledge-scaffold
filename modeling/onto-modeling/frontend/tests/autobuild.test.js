@@ -4,7 +4,7 @@ import {
   ENDED, createRunStore, history, reportOf, runOf,
 } from '../src/api/mock/run3.js';
 import {
-  canInterrupt, fmtDur, fmtEst, fmtTok, matrixTone, miniMetrics, money, reportMetrics, reportSub, runFlags, sliceSegments, stripMetrics, stripTitle,
+  canInterrupt, fmtDur, fmtEst, fmtTok, matrixTone, miniMetrics, reportMetrics, reportSub, runFlags, sliceSegments, stripMetrics, stripTitle,
 } from '../src/pages/workbench/autobuildModel.js';
 import { composerState, readonlyInfo } from '../src/state/readonly.js';
 
@@ -19,7 +19,7 @@ test('运行状态分类：运行中、去往安全点、暂停、已结束', ()
   assert.equal(runFlags(null).state, null);
 });
 
-test('时长、token、费用的写法同设计稿', () => {
+test('时长、token 的写法同设计稿', () => {
   assert.equal(fmtDur(38 * 60000), '38 分');
   assert.equal(fmtDur(112 * 60000), '1 小时 52 分');
   assert.equal(fmtDur(120 * 60000), '2 小时');
@@ -27,15 +27,12 @@ test('时长、token、费用的写法同设计稿', () => {
   assert.equal(fmtTok(2100000), '2.1M');
   assert.equal(fmtTok(6000000), '6M');
   assert.equal(fmtTok(820000), '820k');
-  assert.equal(money({ amount: 31, currency: 'CNY' }), '¥31');
-  assert.equal(money({ amount: 2.6, currency: 'USD' }), '$3');
-  assert.equal(money(null), '—');
 });
 
 test('运行条：运行中显示已用时 / 预计，结束后显示用时 / 预算', () => {
   const run = runOf('running');
-  assert.deepEqual(stripMetrics(run).map((m) => m.slice(0, 3)), [['已用时', '38 分', '约 84 分'], ['token', '2.1M', '6M'], ['费用', '¥31', '¥150']]);
-  assert.deepEqual(stripMetrics(run).map((m) => m[3]), [45, 35, 21]);
+  assert.deepEqual(stripMetrics(run).map((m) => m.slice(0, 3)), [['已用时', '38 分', '约 84 分'], ['token', '2.1M', '6M']]);
+  assert.deepEqual(stripMetrics(run).map((m) => m[3]), [45, 35]);
   const done = runOf('completed');
   assert.deepEqual(stripMetrics(done)[0], ['用时', '1 小时 52 分', '2 小时', 93]);
   assert.equal(stripTitle(run).title, '自主构建中 · 运行 #3');
@@ -65,13 +62,14 @@ test('按段的进展块：连续步骤合成一段，自动决定、挂起按�
 });
 
 test('运行详情六格与报告卡八格', () => {
-  assert.deepEqual(miniMetrics(runOf('running')).map((x) => x[0]), ['38 分', '2.1M', '¥31', '0 / 3', '14 / 15', '1 / 2']);
+  assert.deepEqual(miniMetrics(runOf('running')).map((x) => x[0]), ['38 分', '2.1M', '0 / 3', '14 / 15', '1 / 2']);
   assert.equal(miniMetrics(runOf('running'))[0][1], '已用时 · 预计约 84 分');
   const r = reportOf('completed');
   const m = reportMetrics(r);
   assert.equal(m.length, 8);
   assert.deepEqual(m[1], ['分段', '5 / 5', '临期与损耗检查部分完成']);
   assert.deepEqual(m[5], ['自动决策', '17 项', '高置信 13 · 需看 4']);
+  assert.ok(!m.some(([label]) => label === '费用')); // 工作区不显示金额
   // 没有场景（真实运行没装或没生成）时不写「全部通过」
   const none = reportMetrics({ ...r, metrics: { ...r.metrics, scenarios: { passed: 0, total: 0, suspended_failures: 0 } } });
   assert.deepEqual(none[4], ['场景推演', '0 / 0', '']);

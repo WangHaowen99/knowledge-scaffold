@@ -385,7 +385,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | code | 状态 | 含义 | details |
 |---|---|---|---|
 | `conversation_not_found` | 404 | 对话不存在或已删除 | — |
-| `session_busy` | 409 | 另一条对话正在运行，或运行中不能切换、新建、删除 | `running_conversation_id` |
+| `session_busy` | 409 | 另一条对话正在运行，或运行中不能切换、新建、删除 | `running_conversation_id`；AB-04 另带 `waiting`（那条对话停在没回答的问题上） |
 | `message_empty` | 400 | 消息正文和附件都为空 | — |
 | `engine_not_installed` | 503 | 引擎运行时不可用 | `engine` |
 | `permission_request_gone` | 410 | 确认请求已处理、超时或会话已重启 | — |
@@ -3075,14 +3075,15 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - 生产库授权；
   - 低于阈值时怎么处理；
   - `warnings`，如「有 1 个未决决策会被按策略决定」；
-  - `queued`：平台同时运行数满了时为 true。
+  - `queued`：平台同时运行数满了时为 true；
+  - `busy`：别的对话正占着助手时为 `{conversation_id, waiting}`（`waiting` 为 true 表示它停在没回答的问题上），否则为 null。前端据此在开始前说明，并在 AB-04 带 `take_over`。
 - 错误：`blueprint_not_confirmed`、`budget_exceeds_quota`、`autobuild_running`。
 
 #### AB-04 开始自主构建
 
 `POST /api/v1/projects/{id}/autobuild/runs` · 所有者 · 旧：— · 审计：专项 `autobuild.start` · 依据：④、8.5 · 页面：l4-run、wb-blueprint、proj-settings、chat-states（对话里说「剩下的你自己做完」时由助手发起确认，用户确认后前端调本接口）
 
-- 请求：`{preview_token}`。
+- 请求：`{preview_token, take_over?: boolean}`。`take_over` 为 true 且别的对话正占着助手时，先把没回答的问题撤回（EC-34，`reason`「已交给自主构建，按「拿不准时」的策略处理」）、打断那一轮（EC-05），等它停下再开始；不带时照旧回 `session_busy`。
 - 响应 `201`：`AutobuildRun`（`state` 为 `queued` 或 `running`），加 `conversation_id`。
 - 错误：`preview_expired`、`autobuild_running`、`session_busy`、`quota_exceeded`、`maintenance_no_new_sessions`。
 
@@ -3998,11 +3999,11 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 |---|---|---|---|---|
 | EC-20 | `progress` | 是 | `ProgressGroup`：`{group_id, title, desc, state: "running"\|"done"\|"failed"\|"waiting"\|"interrupted", started_at, duration_ms: int\|null, collapsed: bool, steps: [{id, text, meta: string（耗时或状态文字）, state: "done"\|"running"\|"waiting"\|"failed"\|"info", duration_ms}]}` | 「工作过程」折叠块和时间线（wb-l2「已完成 3 步」，wb-materials 读资料进度，chat-states 第 3、4、15、17、19 项） |
 | EC-21 | `progress.updated` | 是 | 同 EC-20，同一 `group_id` 整体替换 | 运行中步骤逐条回填耗时 |
-| EC-22 | `subagent.updated` | 是 | `{task_id, group_id: string\|null, title: string（业务名，如「语义检查」）, status: "started"\|"running"\|"done"\|"failed", progress_text: string（如「第 6 / 11 个操作」）, summary: string\|null, step: {id, kind: "tool"\|"text", text: string\|null, state: "running"\|"done"\|"failed"}\|null}`（`step` 是子代理自己的一步，同一 `id` 后到的只改状态，`text` 为 null 时沿用先到的） | chat-states 第 3 项子任务面板 |
+| EC-22 | `subagent.updated` | 是 | `{task_id, group_id: string\|null, title: string（业务名，如「语义检查」）, status: "started"\|"running"\|"done"\|"failed", progress_text: string（如「第 6 / 11 个操作」）, summary: string\|null, step: {id, kind: "tool"\|"text", text: string\|null, state: "running"\|"done"\|"failed"}\|null}`（`step` 是子代理自己的一步，同一 `id` 后到的只改状态，`text` 为 null 时沿用先到的） | 时间线上的子任务卡（沿用旧版对话页样式：第二行是 `progress_text`，做完是 `summary`）；`group_id` 只记派出时在哪一段，前端不按它挂 |
 | EC-23 | `tool.activity` | 是 | `{tool_use_id, visibility: "internal", tool, summary, state: "started"\|"done"\|"failed"}` | 默认不渲染；内部步骤只进执行日志（第 9 章建议 4），留给排障 |
 
 内部步骤由执行记录的阶段（㊶）和子代理事件归并成业务话的 `progress`。工具调用原文不进用户可见的事件。
-一轮里的工作过程按时间分段：助手每说一段成段的话（`message.assistant`），之前做完的步骤收成一组（`state=done`、`collapsed=true`），之后的步骤另起一组（`group_id` 带段号），组和正文按发生的先后排列。和工具调用同在一条回复里的短话（不超过 160 字，没有清单、表格、标题、代码、出处角标；提问前的话除外）是过程话，作为 `state=info` 的一步进组，不发 `message.assistant`；它在流时的 `message.delta` 片段由前端在组到达时去掉。
+一轮里的工作过程按时间分段：助手每说一句话（`message.assistant`），之前做完的步骤收成一组（`state=done`、`collapsed=true`），之后的步骤另起一组（`group_id` 带段号），组和正文按发生的先后排列。助手的话一律发 `message.assistant`，不收进组里。派出子任务（Task）不在组里占一步：子任务的 `subagent.updated` 在时间线上单独成卡，排在派出它的那句话后面，派出之后的步骤另起一组。
 
 #### 确认、决策、问题
 
@@ -5338,6 +5339,7 @@ type AutobuildPreview = {
   slices: { id: string; name: string; current: string; included: boolean }[];
   budget: AutobuildPolicy["budget"]; production: string; below_threshold_text: string;
   warnings: string[]; queued: boolean; queue_position: number | null;
+  busy: { conversation_id: string; waiting: boolean } | null;
 };
 
 type AutobuildRunSummary = {

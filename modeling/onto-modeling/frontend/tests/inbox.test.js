@@ -74,7 +74,7 @@ test('出处短标签、汇总条副标题、今天的进度、变更点文字�
   assert.equal(anchorLabel('file:resource/others/02-门店补货规则.docx#p:9.2'), '§9.2');
   assert.equal(anchorLabel('file:resource/schema/06-商品品类表.xlsx#cell:品类表!D12'), '品类表 D12');
   assert.equal(anchorLabel('db:erp-prod/erp.replenish_std.max_qty'), '数据库');
-  assert.equal(summarySub({ started_at: at(1, 15, 10), ended_at: at(1, 17, 2), state: 'completed', cost: { amount: 86, currency: 'CNY' } }), '15:10 – 17:02 · 全部分段完成 · 费用 ¥86');
+  assert.equal(summarySub({ started_at: at(1, 15, 10), ended_at: at(1, 17, 2), state: 'completed', cost: { amount: 86, currency: 'CNY' } }), '15:10 – 17:02 · 全部分段完成');
   assert.equal(summarySub({ started_at: at(1, 15, 10), ended_at: null, state: 'running', cost: null }), '15:10 开始 · 运行中');
   // 只列有剩余的几类，每类只给剩余数
   assert.deepEqual(todayRows({ remaining_by_filter: { decision: 2, autobuild_review: 8, stale: 0 } }), [['决策', '2 剩余'], ['自主构建复核', '8 剩余']]);

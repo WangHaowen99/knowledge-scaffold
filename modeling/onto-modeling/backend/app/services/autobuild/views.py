@@ -256,8 +256,10 @@ def _card(card_id: str, card_type: str, title: str, open_=None) -> dict:
             "status": None, "plugin": None, "open": open_}
 
 
-def _money_text(amount, currency: str) -> str:
-    return f"{'$' if currency == 'USD' else '¥'}{amount:g}"
+def _tokens_text(tokens: int) -> str:
+    if tokens >= 1_000_000:
+        return f"{tokens / 1_000_000:g}M"
+    return f"{round(tokens / 1000)}k" if tokens >= 1000 else str(tokens)
 
 
 def _duration_text(minutes: int) -> str:
@@ -268,11 +270,11 @@ def start_card(run: dict) -> dict:
     pol = run.get("policy") or {}
     scope, limits = pol.get("scope") or {}, pol.get("budget") or {}
     slices = len(_units(run, "slice"))
-    cost = (limits.get("max_cost") or {}).get("amount") or 0
     chips = [
         {"label": "范围", "value": f"{'选中的' if scope.get('mode') == 'selected' else '未完成的'} {slices} 段"},
-        {"label": "预算", "value": f"{_money_text(cost, currency_of(run))} · "
-                                  f"{_duration_text(int(limits.get('max_duration_min') or 0))}"},
+        # 对话里不显示金额：预算只写时长与 token
+        {"label": "预算", "value": f"{_duration_text(int(limits.get('max_duration_min') or 0))} · "
+                                  f"{_tokens_text(int(limits.get('max_tokens') or 0))} token"},
         {"label": "拿不准时", "value": policy.BELOW_TEXT.get((pol.get("advanced") or {}).get("below_threshold"), "")},
     ]
     return {**_card(f"ab{run['run_no']}-start", "autobuild_start", f"自主构建 · 运行 #{run['run_no']}",

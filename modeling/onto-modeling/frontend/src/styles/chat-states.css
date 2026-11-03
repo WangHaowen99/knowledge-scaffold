@@ -15,9 +15,6 @@
 .g2-mm{border:1px solid var(--line);border-radius:14px;box-shadow:var(--sh-pop);background:#fff;padding:14px}
 .g2-mm h5{font-size:14px;display:flex;align-items:center;gap:8px}
 .g2-dim{background:linear-gradient(180deg,rgba(11,26,51,.05),rgba(11,26,51,.09));border-radius:12px;padding:18px 12px}
-.g2-sub{border:1px solid var(--line);border-radius:11px;padding:6px 10px;margin-top:8px;background:var(--panel2)}
-.g2-sub .r{display:flex;align-items:center;gap:8px;font-size:12px;padding:5px 0;border-bottom:1px dashed var(--line)}
-.g2-sub .r:last-child{border-bottom:0}
 .g2-drop{position:absolute;left:8px;right:8px;top:52px;bottom:142px;border:2px dashed var(--blue3);border-radius:12px;background:rgba(240,246,255,.94);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:var(--blue2);z-index:2;text-align:center;padding:10px}
 .g2-att{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 4px 0 6px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);font-size:12px}
 .g2-thumb{width:30px;height:20px;border-radius:5px;background:linear-gradient(135deg,#C3D8FD,#F0F6FF);border:1px solid var(--b200)}

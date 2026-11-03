@@ -8,7 +8,7 @@ import {
   Button, Chip, KV, Modal, Note,
 } from '../../../ui/index.jsx';
 import { evidenceInProject } from '../../../state/evidence.js';
-import { startErrorText } from '../autobuildModel.js';
+import { startErrorText, startLabel, takeOverText } from '../autobuildModel.js';
 import { budgetText } from './model.js';
 
 async function currentBlueprint(api, pid) {
@@ -30,7 +30,8 @@ export function AutobuildPreviewDialog({ preview: initial, onClose }) {
   const start = async () => {
     setBusy(true);
     try {
-      const run = await api.startAutobuild(pid, { preview_token: preview.preview_token });
+      // 预览时别的对话正占着助手：开始就接过来（撤回没回答的问题、打断那一轮），不再点了才报错
+      const run = await api.startAutobuild(pid, { preview_token: preview.preview_token, ...(preview.busy ? { take_over: true } : {}) });
       toast(run?.state === 'queued' ? `运行 #${run.run_no} 已排队，轮到时自动开始` : '自主构建已开始', 'rocket');
       onClose();
       // 运行在新开的运行对话里（AB-04 带 conversation_id）：直接切过去，运行条、进展都在那里
@@ -50,7 +51,7 @@ export function AutobuildPreviewDialog({ preview: initial, onClose }) {
         <>
           <a className="link xs grow" onClick={() => { onClose(); navigate(pagePath('proj-settings', pid), { section: 'autobuild' }); }}>调整策略</a>
           <Button onClick={onClose}>取消</Button>
-          <Button kind="l4" icon="rocket" disabled={busy} onClick={start}>{preview.queued ? '开始（排队）' : '开始自主构建'}</Button>
+          <Button kind="l4" icon="rocket" disabled={busy} onClick={start}>{startLabel(preview)}</Button>
         </>
       )}
     >
@@ -72,6 +73,7 @@ export function AutobuildPreviewDialog({ preview: initial, onClose }) {
         ]}
       />
       {(preview.warnings || []).map((w) => <Note key={w} tone="amber" className="mt12">{w}</Note>)}
+      {preview.busy ? <Note tone="amber" className="mt12">{takeOverText(preview.busy)}</Note> : null}
       {preview.queued ? <Note tone="gray" className="mt12">名额已满，开始后排队{preview.queue_position ? `（第 ${preview.queue_position} 位）` : ''}</Note> : null}
     </Modal>
   );

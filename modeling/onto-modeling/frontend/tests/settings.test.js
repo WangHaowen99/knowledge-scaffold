@@ -98,7 +98,7 @@ test('预算：写法同设计稿，下拉只给平台上限以内的，进度�
 
 test('高级设置：摘要、是否推荐值、阈值滑块、资料优先级排序', () => {
   const adv = { confidence_threshold: 0.8, below_threshold: 'conservative_assumption', source_priority: ['09 修订通知', '补货规则', '样例补货单', '数据库'], max_fix_rounds: 2 };
-  assert.equal(advancedSummary(adv), '阈值 0.80 · 低于阈值采用保守选项并记为假设 · 冲突时修订通知优先 · 修复最多 2 轮');
+  assert.equal(advancedSummary(adv), '阈值 0.80 · 拿不准时先按最稳妥的做法往下做 · 冲突时修订通知优先 · 修复最多 2 轮');
   assert.equal(isRecommended(adv), true);
   assert.equal(isRecommended({ ...adv, max_fix_rounds: 3 }), false);
   // 设了「一律挂起」的类型也算调整过（V 阶段：设了之后收起的高级设置仍写「已按推荐值设置」）
@@ -342,7 +342,7 @@ test('mock AB-01～AB-04、AB-18：保存的策略决定预览；开始后开一
   assert.deepEqual([conv.id, conv.title, conv.kind, conv.live], [run.body.conversation_id, '自主构建 · 运行 #4', 'autobuild', true]);
   const start = seeded.get(`${F.MAIN_PID}:${conv.id}`).find((e) => e.type === 'card').data;
   assert.equal(start.card_type, 'autobuild_start');
-  assert.deepEqual(start.chips.map((c) => c.value), ['选中的 2 段', '¥150 · 2 小时', '允许采集 ERP 生产库（22:00 – 06:00）', '采用保守选项并记为假设']);
+  assert.deepEqual(start.chips.map((c) => c.value), ['选中的 2 段', '2 小时 · 6M token', '允许采集 ERP 生产库（22:00 – 06:00）', '先按最稳妥的做法往下做，做完列出来给你复核']);
 
   const running = (await call('GET', `${P}/autobuild/runs?state=running`)).body.items;
   assert.deepEqual(running.map((r) => [r.run_no, r.state]), [[4, 'queued']]);

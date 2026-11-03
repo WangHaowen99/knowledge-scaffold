@@ -136,11 +136,11 @@ async def preview_run(project_id: str, request: Request):
 
 @router.post("/runs", status_code=201)
 async def start_run(project_id: str, request: Request):
-    """AB-04：开始（或排队）；运行在自己的对话里。"""
+    """AB-04：开始（或排队）；运行在自己的对话里。`take_over` 为真时先撤回没回答的问题、打断正在跑的那一轮。"""
     deps.require_writable(project_id, request)
     body = await deps.json_body(request)
     run = await runner.start(project_id, str(body.get("preview_token") or ""), actor=deps.actor(request),
-                             owner=owner_of(project_id))
+                             owner=owner_of(project_id), take_over=body.get("take_over") is True)
     _special_audit(request, project_id, "autobuild.start", f"运行 #{run['run_no']}", run_id=run["run_id"])
     return run
 

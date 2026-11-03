@@ -640,7 +640,23 @@ class SessionManager:
             "conversation_id": session.conversation_id,
             "state": session.state,
             "busy": _busy(session),
+            "waiting": bool(session.pending_permissions),
         }
+
+    async def take_over(self, project_id: str, reason: str) -> bool:
+        """自主构建要开始而引擎正忙：没回答的问题按 reason 撤回、这一轮打断，等它停下。返回是否已经空出来。"""
+        session = self._sessions.get(project_id)
+        if session is None or not _busy(session):
+            return True
+        # 先作答再打断：等回答的那次调用照常收尾，问题以 reason 撤回，不留一张永远「等你决定」的卡
+        for request in list(session.pending_permissions.values()):
+            if not request.future.done():
+                request.future.set_result({"behavior": "deny", "message": reason})
+        await self.interrupt(project_id, session.conversation_id)
+        deadline = time.monotonic() + INTERRUPT_TIMEOUT_SECONDS
+        while _busy(session) and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        return not _busy(session)
 
     def get_history(
         self, project_id: str, conversation_id: str | None = None

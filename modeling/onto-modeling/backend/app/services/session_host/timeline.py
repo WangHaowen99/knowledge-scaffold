@@ -128,7 +128,7 @@ class Turn:
     group_revision: int = 0
     steps: list = field(default_factory=list)
     hidden_steps: int = 0
-    open_steps: dict = field(default_factory=dict)  # 工具调用 / 子代理 ID → (步骤 ID, 开始时间)
+    open_steps: dict = field(default_factory=dict)  # 工具调用 ID → (步骤 ID, 开始时间)
     tool_names: dict = field(default_factory=dict)
     stream_message_id: str | None = None
     had_text: bool = False
@@ -246,21 +246,15 @@ def ingest(turn: Turn, event: dict) -> list[tuple[dict, bool]]:
         return records
     if kind == "subagent_started":
         tool_use_id = str(event.get("tool_use_id") or "")
-        # 子代理由一次 Task 调用派出：那一步已经在组里，不再另加一步
-        if tool_use_id and f"tool:{tool_use_id}" in turn.open_steps:
+        if not tool_use_id or tool_use_id in turn.tool_names:
             return [({**event, "group_id": turn.sub_group(event, attach=True)}, False)]
-        if tool_use_id:
-            # 内测引擎先报子代理开始、后报带派发调用的那条消息：等派发那一步进了工作过程再发，
-            # 子代理就挂在那一步所在的一段里（这条消息里的话在它之前）
-            turn.pending_subagents[tool_use_id] = event
-            return []
-        return _subagent_step(turn, event)
+        # 内测引擎先报子代理开始、后报带派发调用的那条消息：等那条消息到了再发，
+        # 子代理卡就排在这条消息里的话后面
+        turn.pending_subagents[tool_use_id] = event
+        return []
     if kind == "subagent_finished":
         records = _flush_subagent(turn, event.get("tool_use_id"))
         records.append(({**event, "group_id": turn.sub_group(event)}, False))
-        failed = _SUBAGENT_STATUS.get(str(event.get("status") or ""), "failed") == "failed"
-        if turn.close_step(f"task:{event.get('task_id')}", failed):
-            records.append((turn.progress_record(), False))
         return records
     if kind == "subagent_activity":
         records = _flush_subagent(turn, event.get("tool_use_id"))
@@ -268,17 +262,10 @@ def ingest(turn: Turn, event: dict) -> list[tuple[dict, bool]]:
     return [(event, False)]
 
 
-def _subagent_step(turn: Turn, event: dict) -> list[tuple[dict, bool]]:
-    """没有对应派发调用的子代理：在工作过程里自己占一步。"""
-    title = str(event.get("description") or event.get("agent_type") or "子任务")
-    turn.add_step(f"task:{event.get('task_id')}", f"子任务「{title[:40]}」")
-    return [({**event, "group_id": turn.sub_group(event, attach=True)}, False), (turn.progress_record(), False)]
-
-
 def _flush_subagent(turn: Turn, tool_use_id) -> list[tuple[dict, bool]]:
     """子代理的过程先于派发调用到了（不该发生的次序）：先把它的开始补上。"""
     started = turn.pending_subagents.pop(str(tool_use_id or ""), None)
-    return _subagent_step(turn, started) if started else []
+    return [({**started, "group_id": turn.sub_group(started, attach=True)}, False)] if started else []
 
 
 def _sub_step_text(turn: Turn, event: dict) -> str:
@@ -294,22 +281,11 @@ def _sub_step_text(turn: Turn, event: dict) -> str:
     return text
 
 
-_ASK_TOOLS = frozenset({ASK_TOOL, "ask_user"})
-NARRATION_MAX = 160
-_STRUCTURED = re.compile(r"(^|\n)\s*([-*+]\s|\d+[.、)]\s?|#|>|\||```)|\[\^\d")
-
-
-def narration(text: str) -> str | None:
-    """和工具调用同在一条回复里的短话（「先做前置检查」「获取执行锁」）算过程话，返回它在工作过程里的说法；
-    带清单、表格、标题、代码、出处角标或超过 NARRATION_MAX 字的成段说明不算，留在正文。"""
-    body = str(text or "").strip()
-    if not body or len(body) > NARRATION_MAX or _STRUCTURED.search(body):
-        return None
-    body = re.sub(r"\*\*|__|`|\[\[|\]\]", "", body)
-    return re.sub(r"\s*\n+\s*", " ", body).strip() or None
+_SUBAGENT_TOOLS = frozenset({"Task", "Agent"})
 
 
 def _assistant(turn: Turn, event: dict) -> list[tuple[dict, bool]]:
+    """助手的话一律进正文，前面做完的步骤收成一段；派出的子任务在时间线上单独成卡，不进工作过程。"""
     if event.get("subagent") or event.get("parent_tool_use_id"):
         return [(event, False)]  # 子代理的内部消息：只留档，不进用户可见的事件
     blocks = event.get("blocks") or []
@@ -317,27 +293,21 @@ def _assistant(turn: Turn, event: dict) -> list[tuple[dict, bool]]:
     tool_blocks = [block for block in blocks if block.get("kind") == "tool_use"]
     records: list[tuple[dict, bool]] = []
     has_text = any(block.get("kind") == "text" and str(block.get("text") or "").strip() for block in text_blocks)
-    asking = any(str(block.get("tool") or "") in _ASK_TOOLS for block in tool_blocks)
-    talk = narration("\n\n".join(str(block.get("text") or "") for block in text_blocks if block.get("kind") == "text")
-                     ) if has_text and tool_blocks and not asking else None
-    if has_text and talk is None:
+    dispatching = any(str(block.get("tool") or "") in _SUBAGENT_TOOLS for block in tool_blocks)
+    if has_text or dispatching:
         sealed = turn.seal()
         if sealed is not None:
             records.append((sealed, False))
     if text_blocks:
         record = {key: value for key, value in event.items() if key != "blocks"}
         record["blocks"] = text_blocks
-        if talk is not None:
-            # 过程话：原文留在历史里（续接回放要用），对话流里只作工作过程的一步
-            record["narration"] = True
-            turn.stream_message_id = None
-            turn.add_step(None, talk, state="info")
-        elif has_text:
+        if has_text:
             record["message_id"] = turn.stream_message_id or f"a-{uuid.uuid4().hex[:10]}"
             record["continued"] = turn.had_text
             turn.stream_message_id = None
             turn.had_text = True
         records.append((record, False))
+    stepped = False
     for block in tool_blocks:
         tool = str(block.get("tool") or "")
         tool_use_id = block.get("tool_use_id")
@@ -345,9 +315,10 @@ def _assistant(turn: Turn, event: dict) -> list[tuple[dict, bool]]:
         text = step_text(tool, block.get("input"))
         records.append(({"type": "tool_activity", "tool_use_id": tool_use_id, "tool": tool, "summary": text,
                          "state": "started"}, False))
-        if f"task:{tool_use_id}" not in turn.open_steps:  # 子代理已经自己占了一步
+        if tool not in _SUBAGENT_TOOLS:
             turn.add_step(f"tool:{tool_use_id}", text)
-    if tool_blocks:
+            stepped = True
+    if stepped:
         records.append((turn.progress_record(), False))
     for block in tool_blocks:
         started = turn.pending_subagents.pop(str(block.get("tool_use_id") or ""), None)
@@ -533,6 +504,7 @@ def payload(record: dict) -> tuple[str | None, dict | None]:
         return "message.delta", {"message_id": record.get("message_id") or "", "kind": record.get("kind") or "text",
                                  "text": record.get("text") or ""}
     if kind == "assistant_message":
+        # narration：旧版把工具调用之间的短话收进了工作过程，那一步已经在组里
         if record.get("subagent") or record.get("parent_tool_use_id") or record.get("narration"):
             return None, None
         text = "\n\n".join(str(block.get("text") or "") for block in record.get("blocks") or []

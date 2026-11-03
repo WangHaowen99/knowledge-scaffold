@@ -7,7 +7,7 @@ import {
   CardItem, CompactedItem, ConfigPendingItem, ErrorItem, InterruptedItem, ReconnectedItem, useActions,
 } from './cards.jsx';
 import {
-  LiveRow, MA, MDay, MSys, Md, SubagentRows, TimelineGroup, WxFile, WxProc, hhmm,
+  LiveRow, MA, MDay, MSys, Md, SubagentCard, TimelineGroup, WxFile, WxProc, hhmm,
 } from './parts.jsx';
 import { DecidedRow, PermissionCard, QuestionCard } from './questions.jsx';
 
@@ -81,7 +81,7 @@ export function AssistantItem({ it, ctx }) {
     case 'config_pending': return <ConfigPendingItem item={it} />;
     case 'reconnected': return <ReconnectedItem item={it} />;
     case 'compacted': return <CompactedItem item={it} />;
-    case 'subagents': return <SubagentRows list={it.subagents} ended={!ctx.running} />;
+    case 'subagent': return <SubagentCard s={it} ended={!ctx.running} />;
     default: return null;
   }
 }

@@ -26,17 +26,23 @@
 .wb-conv-menu>.g2-cmd{box-shadow:var(--sh-pop)}
 .wb-conv-menu>.mt8>.note{box-shadow:var(--sh-pop)}
 .wb-conv-menu>.g2-mm{box-shadow:var(--sh-pop)!important}
-/* F2：工作过程里的过程话、子代理自己的步骤、末尾的「思考中」 */
+/* F2：工作过程里的阶段提示、末尾的「思考中」；派出的子任务单独一张卡（沿用旧版对话页样式） */
 .wx-steps .r.say .t{color:var(--body)}
-.g2-sub .r.tg{cursor:pointer}
-.g2-sub .cv,.wb-live .cv{color:var(--faint);transition:transform .2s;flex:none}
-.g2-sub .cv.on,.wb-live .cv.on{transform:rotate(180deg)}
-.g2-sub-steps{margin:0 0 4px 6px;padding:2px 0 4px 16px;border-left:1px solid var(--hl2);max-height:220px;overflow:auto}
-.g2-sub-steps .r2{display:flex;gap:10px;padding:3px 0;font-size:12px;line-height:1.5;color:var(--sub)}
-.g2-sub-steps .r2 .t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.g2-sub-steps .r2.say .t{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;color:var(--body)}
-.g2-sub-steps .r2 .m{margin-left:auto;color:var(--red);flex:none}
-.g2-sub-steps .r2.run .t,.wb-live .hd .t{background:linear-gradient(90deg,#5D6B80 0%,#C9D3E2 45%,#5D6B80 90%);background-size:220% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:wxs 1.8s linear infinite}
+.wb-live .cv{color:var(--faint);transition:transform .2s;flex:none}
+.wb-live .cv.on{transform:rotate(180deg)}
+.wb-live .hd .t{background:linear-gradient(90deg,#5D6B80 0%,#C9D3E2 45%,#5D6B80 90%);background-size:220% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:wxs 1.8s linear infinite}
+.subagent-card{display:flex;align-items:flex-start;gap:10px;margin:6px 0;padding:9px 12px;border:1px solid var(--line);border-left:3px solid var(--indigo);border-radius:10px;background:linear-gradient(90deg,var(--i50),#fff 55%)}
+.subagent-card.done{border-left-color:var(--teal);background:#fff}
+.subagent-card.failed{border-left-color:var(--red);background:#fff}
+.subagent-card.interrupted{border-left-color:var(--muted);background:#fff}
+.subagent-card.interrupted .subagent-icon{color:var(--muted)}
+.subagent-icon{margin-top:2px;color:var(--indigo);flex:none;display:grid;place-items:center;width:14px;height:16px}
+.subagent-icon .spin{width:12px;height:12px;border-width:1.6px}
+.subagent-card.done .subagent-icon{color:var(--teal)}
+.subagent-card.failed .subagent-icon{color:var(--red)}
+.subagent-main{display:flex;flex-direction:column;gap:2px;min-width:0}
+.subagent-title{font-size:13px;font-weight:550;color:var(--ink)}
+.subagent-hint{font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wb-live{margin:2px 0 8px}
 .wb-live .hd{display:inline-flex;align-items:center;gap:9px;height:30px;font-size:13px}
 .wb-live .hd.tg{cursor:pointer}

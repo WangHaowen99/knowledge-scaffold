@@ -1,4 +1,4 @@
-// F2 第 2、5 条：子代理的每一步进工作过程；思考中有动静；过程话收进工作过程后流式片段不留在正文
+// F2 第 2、5 条：派出的子任务单独成卡（旧版对话页样式）；思考中有动静；工具调用之间的话照常进正文
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { applyEvent, applyEvents, initialConversation, liveActivity, timelineBlocks } from '../src/state/conversation.js';
@@ -10,31 +10,43 @@ const sub = (step, extra = {}) => ev('subagent.updated', {
   task_id: 'call-9', group_id: 'g1', title: '子任务', status: 'running', progress_text: step?.text || '', summary: null, step, ...extra,
 });
 
-test('子代理的步骤按 id 累积：收尾的只改状态，说法为 null 时沿用先到的', () => {
+test('子任务卡：后到的更新盖住先到的，空的进展说法不盖掉最近一步', () => {
   n = 0;
   const s = applyEvents(initialConversation(), [
-    ev('progress', { group_id: 'g1', title: '工作过程', state: 'running', steps: [{ id: 's1', text: '派出子任务', state: 'running' }] }),
     sub(null, { status: 'started' }),
     sub({ id: 'x1', kind: 'tool', text: '读取「a.md」', state: 'running' }),
-    sub({ id: 'x2', kind: 'tool', text: '读取表格结构', state: 'running' }),
     sub({ id: 'x1', kind: 'tool', text: null, state: 'done' }, { progress_text: '' }),
-    sub({ id: 'x3', kind: 'text', text: '两份都读完了', state: 'done' }),
+    sub(null, { status: 'done', summary: '两份都读完了', progress_text: '' }),
   ]);
-  const [agent] = s.items['progress:g1'].subagents;
-  assert.deepEqual(agent.steps.map((x) => [x.id, x.text, x.state]), [
-    ['x1', '读取「a.md」', 'done'], ['x2', '读取表格结构', 'running'], ['x3', '两份都读完了', 'done'],
-  ]);
-  assert.equal(agent.progress_text, '两份都读完了');
+  const card = s.items['sub:call-9'];
+  assert.equal(card.kind, 'subagent');
+  assert.equal(card.status, 'done');
+  assert.equal(card.summary, '两份都读完了');
+  assert.equal(card.progress_text, '读取「a.md」');
+  assert.equal(card.step, undefined);
 });
 
-test('进展组整体替换时子代理的步骤还在', () => {
+test('子任务卡排在第一次出现的位置，之后的工作过程排在它后面', () => {
+  n = 0;
+  const s = applyEvents(initialConversation(), [
+    ev('progress', { group_id: 'g1', title: '工作过程', state: 'done', steps: [{ id: 's1', text: '列出资料', state: 'done' }] }),
+    sub({ id: 'x1', kind: 'tool', text: '读取「a.md」', state: 'running' }),
+    ev('progress', { group_id: 'g1-1', title: '工作过程', state: 'running', steps: [{ id: 's1', text: '读取「b.md」', state: 'running' }] }),
+    sub(null, { status: 'done', progress_text: '' }),
+  ]);
+  assert.deepEqual(timelineBlocks(s)[0].items.map((x) => x.key), ['progress:g1', 'sub:call-9', 'progress:g1-1']);
+});
+
+test('子任务在跑时不另出「思考中」，做完了才出', () => {
   n = 0;
   let s = applyEvents(initialConversation(), [
-    ev('progress', { group_id: 'g1', title: '工作过程', state: 'running', steps: [] }),
-    sub({ id: 'x1', kind: 'tool', text: '读取「a.md」', state: 'running' }),
+    ev('session.state', { state: 'running' }),
+    ev('message.user', { message_id: 'm1', text: '开始' }),
+    sub(null, { status: 'running' }),
   ]);
-  s = applyEvent(s, ev('progress.updated', { group_id: 'g1', title: '工作过程', state: 'running', steps: [{ id: 's1', text: 'b', state: 'done' }] }));
-  assert.equal(s.items['progress:g1'].subagents[0].steps.length, 1);
+  assert.equal(liveActivity(s), null);
+  s = applyEvent(s, sub(null, { status: 'done' }));
+  assert.deepEqual(liveActivity(s), { kind: 'waiting', thinking: '' });
 });
 
 test('思考的流式片段攒成「思考中」，正文、步骤、回答到了就清掉', () => {
@@ -59,11 +71,10 @@ test('思考的片段只留最后一段，不无限增长', () => {
   assert.ok(s.thinking.length <= 2000);
 });
 
-test('过程话收进工作过程：没等到完整消息的流式片段在进展组到达时去掉', () => {
+test('工具调用之间的话照常进正文：进展组到达时在流的正文不被去掉', () => {
   n = 0;
   let s = applyEvents(initialConversation(), [ev('session.state', { state: 'running' }), delta('text', '先做前置检查。')]);
-  assert.equal(s.items['asst:a1'].streaming, true);
-  s = applyEvent(s, ev('progress', { group_id: 'g1', title: '工作过程', state: 'running', steps: [{ id: 's1', text: '先做前置检查。', state: 'info' }] }));
-  assert.equal(s.items['asst:a1'], undefined);
-  assert.deepEqual(timelineBlocks(s)[0].items.map((x) => x.kind), ['progress']);
+  s = applyEvent(s, ev('progress', { group_id: 'g1', title: '工作过程', state: 'running', steps: [{ id: 's1', text: '检查命令锁', state: 'running' }] }));
+  assert.equal(s.items['asst:a1'].text_md, '先做前置检查。');
+  assert.deepEqual(timelineBlocks(s)[0].items.map((x) => x.kind), ['assistant', 'progress']);
 });

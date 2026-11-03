@@ -30,7 +30,7 @@ test('流式片段拼接，完整消息到达后原位替换', () => {
   assert.equal(s.items['asst:a1'].text_md, '好。这一段要比较。');
 });
 
-test('卡片、进展组按 id 原位替换；子代理挂到进展组', () => {
+test('卡片、进展组、子任务卡按 id 原位替换；子任务单独成卡', () => {
   n = 0;
   let s = applyEvents(initialConversation(), [
     ev('progress', { group_id: 'g1', title: '正在修改', state: 'running', steps: [{ id: 's1', text: 'a', state: 'running' }] }),
@@ -40,12 +40,13 @@ test('卡片、进展组按 id 原位替换；子代理挂到进展组', () => {
     ev('card.updated', { card_id: 'c1', card_type: 'round_changes', state: 'merged', merged_version_label: 'v0.13' }),
     ev('subagent.updated', { task_id: 't1', group_id: 'g1', status: 'done' }),
   ]);
-  assert.deepEqual(s.order, ['progress:g1', 'card:c1']);
+  assert.deepEqual(s.order, ['progress:g1', 'card:c1', 'sub:t1']);
   assert.equal(s.items['progress:g1'].title, '已完成 3 步');
   assert.equal(s.items['progress:g1'].kind, 'progress');
-  assert.equal(s.items['progress:g1'].subagents.length, 1);
-  assert.equal(s.items['progress:g1'].subagents[0].status, 'done');
-  assert.equal(s.items['progress:g1'].subagents[0].title, '语义检查');
+  assert.equal(s.items['sub:t1'].kind, 'subagent');
+  assert.equal(s.items['sub:t1'].status, 'done');
+  assert.equal(s.items['sub:t1'].title, '语义检查');
+  assert.equal(s.items['sub:t1'].progress_text, '第 6 / 11 个操作');
   assert.equal(s.items['card:c1'].card.state, 'merged');
 });
 
@@ -131,7 +132,7 @@ test('S-05 快照校正会话状态', () => {
   assert.equal(s.context.pct, 10);
 });
 
-test('子任务先于它的进展组进时间线（历史窗口从组中间开始）：组出现后收进组里，不留一条一直「执行中」的（V 阶段截图）', () => {
+test('子任务先于进展组到达（历史窗口从组中间开始）：照样一张卡，做完不留「执行中」', () => {
   n = 0;
   const s = applyEvents(initialConversation(), [
     ev('subagent.updated', { task_id: 't1', group_id: 'g1', title: '子任务', status: 'running', progress_text: '读取资料' }),
@@ -139,13 +140,10 @@ test('子任务先于它的进展组进时间线（历史窗口从组中间开�
     ev('progress.updated', { group_id: 'g1', title: '校验与走查', state: 'done', steps: [] }),
     ev('subagent.updated', { task_id: 't1', group_id: 'g1', status: 'done', progress_text: '' }),
   ]);
-  const free = s.items['subagents:free'];
-  assert.ok(!free || !free.subagents.some((x) => x.task_id === 't1'));
-  const group = s.items['progress:g1'].subagents;
-  assert.equal(group.length, 1);
-  assert.equal(group[0].status, 'done');
-  assert.equal(group[0].title, '子任务');
-  assert.ok(!timelineBlocks(s).some((b) => b.item?.kind === 'subagents' && b.item.subagents.length === 0));
+  const cards = timelineBlocks(s).flatMap((b) => b.items || []).filter((x) => x.kind === 'subagent');
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].status, 'done');
+  assert.equal(cards[0].title, '子任务');
 });
 
 test('子任务行状态以终态为准：工作过程或会话结束后，没有终态的显示已中断（ADR-0009）', () => {
