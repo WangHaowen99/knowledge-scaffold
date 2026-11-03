@@ -98,7 +98,7 @@ test('423 写入范围锁：isLocked，提示按两态区分', () => {
   const pending = new ApiError({ status: 423, code: 'write_scope_locked', details: { state: 'pending_confirm' } });
   assert.ok(running.isLocked);
   assert.match(errorText(running), /助手正在改/);
-  assert.match(errorText(pending), /待确认/);
+  assert.match(errorText(pending), /有冲突/);
 });
 
 test('409 revision_conflict：提示带来源、相对时间和版本', () => {

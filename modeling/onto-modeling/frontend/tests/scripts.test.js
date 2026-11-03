@@ -263,7 +263,7 @@ test('修订标签、保存按钮、保存后发评估器命令', async () => {
   const items = draftOf(view);
   const key = draftKey(items);
   assert.deepEqual(saveState({ dirty: false, problems: [] }), { disabled: true, title: '没有要保存的修改' });
-  assert.equal(saveState({ dirty: true, locked: true }).title, '这份求解契约在助手写入范围里，确认生效或撤回后才能保存');
+  assert.equal(saveState({ dirty: true, locked: true }).title, '这份求解契约在助手写入范围里，这一轮结束后才能保存');
   assert.equal(saveState({ dirty: true, problems: [{ severity: 'error' }, { severity: 'warning' }] }).title, '还有 1 个问题要先改');
   assert.equal(saveState({ dirty: true, live: { key, rejected: [{ message: 'm' }] }, draftKey: key }).title, '保存会被拒绝：m');
   assert.deepEqual(saveState({ dirty: true, problems: [{ severity: 'warning' }] }), { disabled: false, title: '' });

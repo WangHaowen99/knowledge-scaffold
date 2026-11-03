@@ -16,7 +16,7 @@ const yesterday = () => { const d = new Date(Date.now() - 24 * 60 * MIN); d.setH
 
 export const KIND_LABEL = {
   decision: '决策', evidence_conflict: '证据冲突', change_list: '变更清单', review: '需复核', suspension: '挂起', stale: '过期',
-  resumable: '续跑', feedback: '外部反馈', report: '报告待处理', pending_changeset: '修改待确认', changeset_conflict: '合入冲突',
+  resumable: '续跑', feedback: '外部反馈', report: '报告待处理', changeset_conflict: '合入冲突',
   format_migration: '格式待迁移', notification: '通知',
 };
 const ACTIONS = {

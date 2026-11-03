@@ -107,8 +107,8 @@ export function ScenarioDrawer({ row, type, lock, tasks, onClose, onChanged }) {
           <ScopeLockBar
             lock={lock}
             text={{
-              running: ['助手正在改这个场景，确认生效或撤回前只读'],
-              pending: ['这个场景的修改还没确认：确认生效或撤回前只读'],
+              running: ['助手正在改这个场景，这一轮结束前只读'],
+              pending: ['这个场景和助手这一轮的修改有冲突：选好保留哪边前只读'],
             }}
           />
         ) : null}

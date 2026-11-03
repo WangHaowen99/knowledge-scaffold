@@ -9,7 +9,7 @@ import { errorText } from '../../api/errors.js';
 import { roundLockNote } from '../../state/readonly.js';
 import { Button, Chip, Ev, Icon, St, Table } from '../../ui/index.jsx';
 import { PluginEyebrow, useProjectEvent } from '../plugin/parts.jsx';
-import { useActions } from './cards.jsx';
+import { roundState, useActions } from './cards.jsx';
 import { CC, DiffBlock, Inline, WbCtx, Wl } from './parts.jsx';
 import * as M from './incremental/model.js';
 import '../../styles/more.css';
@@ -256,7 +256,7 @@ function ExternalFeedbackCard({ card }) {
   );
 }
 
-// ---------- 执行后的「这一轮改了什么」：逐行改动、查看改动（CS-03）、撤回（CS-05）、确认生效（CS-04） ----------
+// ---------- 执行后的「这一轮改了什么」：逐行改动、查看改动（CS-03）、撤回这一轮（CS-05）；一轮结束就合入（F3） ----------
 function IncrementalRoundCard({ card, scope }) {
   const { api } = useApp();
   const { pid } = useContext(WbCtx);
@@ -264,18 +264,11 @@ function IncrementalRoundCard({ card, scope }) {
   const [diff, setDiff] = useState(null);
   const [showDiff, setShowDiff] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [closed, setClosed] = useState(null);
   const ref = useRef(null);
-  // 在待处理等别处确认、撤回时（EP-04），卡片跟着变
-  useProjectEvent('changeset.updated', (d) => {
-    if (d.changeset_id === card.changeset_id && (d.state === 'merged' || d.state === 'discarded')) setClosed(d);
-  });
-  const state = card.state === 'pending_confirm' && closed ? closed.state : card.state;
+  const state = roundState(card);
   const merged = state === 'merged';
-  const discarded = state === 'discarded';
-  const pending = !merged && !discarded;
+  const reverted = state === 'reverted';
   const mine = scope && scope.changeset_id === card.changeset_id;
-  const running = mine && scope.state === 'assistant_running';
 
   const toggleDiff = async () => {
     if (!showDiff && !diff) {
@@ -304,27 +297,23 @@ function IncrementalRoundCard({ card, scope }) {
   return (
     <div ref={ref}>
       <CC
-        icon={discarded ? 'undo' : 'edit'} title={card.title || '这一轮改了什么'}
+        icon={reverted ? 'undo' : 'edit'} title={card.title || '这一轮改了什么'}
         foot={(
           <>
             <Button size="sm" icon="eye" onClick={toggleDiff}>{showDiff ? '收起改动' : '查看改动'}</Button>
-            {pending ? <Button size="sm" kind="ghost" icon="undo" disabled={busy || running} onClick={() => run(() => actions.discard(card.changeset_id))}>撤回这一轮</Button> : null}
+            {merged ? <Button size="sm" kind="ghost" icon="undo" disabled={busy} onClick={() => run(() => actions.discard(card.changeset_id))}>撤回这一轮</Button> : null}
             <span className="sp" />
-            {note && !discarded ? <span className="xs muted">{note}</span> : null}
-            {merged ? <Chip tone="blue" icon="check">已确认生效 · 版本 {card.merged_version_label || closed?.version_label}</Chip>
-              : discarded ? <span className="xs faint">已撤回</span>
-                : (
-                  <span title={running ? '助手运行中' : `确认后保存为版本 ${card.next_version_label}`}>
-                    <Button size="sm" kind="primary" icon="merge" disabled={busy || running} onClick={() => run(() => actions.merge(card.changeset_id))}>确认生效</Button>
-                  </span>
-                )}
+            {note && !reverted ? <span className="xs muted">{note}</span> : null}
+            {merged ? <Chip tone="blue" icon="check">{card.merged_version_label || card.status?.label}</Chip>
+              : state === 'conflict' ? <Button size="sm" kind="primary" icon="merge" onClick={() => actions.resolve?.()}>去处理</Button>
+                : <span className="xs faint">{card.status?.label || '已撤回'}</span>}
           </>
         )}
       >
         <ul className="mr-done">
           {M.roundLines(card).map((l, i) => <li key={i}><Icon name={l.icon} size={14} /><Inline text={`${l.verb} ${l.text}`} /></li>)}
         </ul>
-        {pending ? <div className="xs row g4 inc-lock"><Icon name="lock" size={12} />{roundLockNote(mine ? scope : null)}</div> : null}
+        {state === 'conflict' ? <div className="xs row g4 inc-lock"><Icon name="lock" size={12} />{roundLockNote(mine ? scope : null)}</div> : null}
         {showDiff && diff ? <DiffBlock lines={diff} style={{ marginTop: 10 }} /> : null}
       </CC>
     </div>

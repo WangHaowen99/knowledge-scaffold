@@ -23,8 +23,8 @@ import '../../styles/more.css';
 import '../../styles/publish.css';
 
 const LOCK_TEXT = {
-  running: ['助手正在改其中的对象，确认生效或撤回后才能改数据来源'],
-  pending: ['助手的修改还没确认，确认生效或撤回后才能改数据来源'],
+  running: ['助手正在改其中的对象，这一轮结束后才能改数据来源'],
+  pending: ['其中的对象和助手这一轮的修改有冲突，选好保留哪边后才能改数据来源'],
 };
 
 function GateChain({ check, onAction, busy }) {

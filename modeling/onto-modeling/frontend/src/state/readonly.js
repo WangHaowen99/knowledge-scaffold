@@ -1,10 +1,10 @@
 // 写入范围只读判定（详设 4.3、契约 1.7 / 7.6 ScopeLock）
-// 助手写入范围内的条目在确认生效或撤回前只读；两态：助手运行中 / 修改待确认；
+// 助手写入范围内的条目在这一轮结束前只读（F3：一轮结束就合入）；合入冲突时到选好保留哪边为止；
 // 自主构建下持续到这一片自动合入。范围外照常编辑。
 
 export const LOCK_LABEL = {
   assistant_running: '助手运行中',
-  pending_confirm: '修改待确认',
+  pending_confirm: '有冲突',
   autobuild_slice: '自主构建中',
 };
 
@@ -80,7 +80,7 @@ export function readonlyInfo(lock, target) {
     return {
       state: st,
       label: LOCK_LABEL[st],
-      text: lock.reason_text || '助手正在改这部分内容，确认生效或撤回后才能编辑',
+      text: lock.reason_text || '助手正在改这部分内容，这一轮结束后才能编辑',
       actions: [{ kind: 'interrupt', label: '回到对话里打断它' }],
     };
   }
@@ -88,8 +88,8 @@ export function readonlyInfo(lock, target) {
     return {
       state: st,
       label: LOCK_LABEL[st],
-      text: '助手的修改还没确认，确认生效或撤回后才能编辑',
-      actions: [{ kind: 'confirm', label: '去确认' }],
+      text: lock.reason_text || '这一轮和你的修改有冲突，在待处理里选好保留哪边后才能编辑',
+      actions: [{ kind: 'confirm', label: '去处理' }],
     };
   }
   return {
@@ -103,7 +103,7 @@ export function readonlyInfo(lock, target) {
 // 「这一轮改了什么」卡上的锁定说明
 export function roundLockNote(lock) {
   const st = lockState(lock);
-  if (st === 'pending_confirm' || st === 'none') return '确认生效或撤回前，这些条目只读';
+  if (st === 'pending_confirm' || st === 'none') return '选好保留哪边前，这些条目只读';
   if (st === 'assistant_running') return '助手运行中，这些条目只读';
   return '这一片完成前，这些条目只读';
 }

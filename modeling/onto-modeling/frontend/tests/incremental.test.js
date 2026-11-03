@@ -80,8 +80,9 @@ test('影响面、回归、这一轮的文字', () => {
   assert.equal(lines[0].verb, '修改');
   assert.equal(lines.at(-1).icon, 'flask');
   assert.equal(lines.at(-1).verb, '刷新');
-  assert.equal(M.remainingNote(round), '还有 1 个场景不通过，确认后它留在待处理');
-  assert.equal(M.remainingNote({ ...round, state: 'merged' }), '不通过的 1 个场景已留在待处理');
+  // F3：一轮结束就存成版本，没有「确认后」
+  assert.equal(round.state, 'merged');
+  assert.equal(M.remainingNote(round), '不通过的 1 个场景已留在待处理');
   assert.equal(M.remainingNote(D.roundCard({ csId: 'cs-1', nextVersion: 'v0.13', fixed: true })), '');
   assert.deepEqual(M.feedbackToAnalyze(D.feedbackCard()).map((x) => x.i), [1, 2], '和变更点对上的用例随这次执行一起回归');
   assert.equal(M.feedbackSource({ service: '评测服务', run: 'eval-1101-0910' }), '来自评测服务 · 运行 eval-1101-0910');
@@ -145,14 +146,14 @@ test('对话历史：等确认时有清单、影响面、外部反馈，建议�
   const post = D.incHistory({ pid: 'p', cl, impact, others: 17, phase: 'executed', csId: 'cs-9', version: 'v0.13' });
   const round = post.find((e) => e.type === 'card' && e.data.card_type === 'round_changes').data;
   assert.equal(round.change_list_id, 'cl-09');
-  assert.equal(round.state, 'pending_confirm');
+  // F3：执行那一轮结束就存成版本，建议条直接给下一步，没有确认生效
+  assert.equal(round.state, 'merged');
+  assert.equal(round.merged_version_label, 'v0.13');
   assert.equal(round.remaining_failures, 1);
   assert.equal(post.find((e) => e.type === 'card' && e.data.card_type === 'impact').data.executed, true);
-  assert.equal(post.at(-1).data.mode, 'pending_confirm');
-  assert.deepEqual(post.at(-1).data.primary.action, { type: 'merge_changeset', changeset_id: 'cs-9' });
-  const merged = D.incHistory({ pid: 'p', cl, impact, others: 17, phase: 'merged', csId: 'cs-9', version: 'v0.13' });
-  assert.ok(merged.some((e) => e.type === 'notice' && e.data.text === '这一轮已确认生效 · 版本 v0.13'));
-  assert.equal(merged.at(-1).data.secondary[0].action.params.v, 'v0.13');
+  assert.equal(post.at(-1).data.mode, 'normal');
+  assert.ok(!post.some((e) => e.type === 'suggestions.updated' && e.data.primary?.action?.type === 'merge_changeset'));
+  assert.equal(post.at(-1).data.secondary[0].action.params.v, 'v0.13');
 });
 
 test('执行时那句话带上改写过的条目；CS-03 可以只看一个条目', () => {
@@ -166,7 +167,7 @@ test('执行时那句话带上改写过的条目；CS-03 可以只看一个条�
   assert.ok(one[0].sections[0].lines.some((l) => l.kind === 'add'));
 });
 
-// ---------- 整个 mock 服务端：和待处理共用一份清单，确认 → 执行 → 回归 → 确认生效 ----------
+// ---------- 整个 mock 服务端：和待处理共用一份清单，确认 → 执行 → 回归 → 这一轮存成版本（F3） ----------
 const PID = 'retail-restock-3f9a1c2d';
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -185,7 +186,7 @@ async function server(mock) {
   return { s, call, conv };
 }
 
-test('mock：增量更新阶段从接受到确认生效走一遍', async () => {
+test('mock：增量更新阶段从接受到执行完存成版本走一遍', async () => {
   const { s, call, conv } = await server('stage:incremental');
   const convs = (await call('GET', '/conversations')).body;
   assert.equal(convs.items[0].id, D.INC_CID);
@@ -218,32 +219,28 @@ test('mock：增量更新阶段从接受到确认生效走一遍', async () => {
   const cs = ex.body.changeset_id;
   assert.equal((await call('GET', '/inbox')).body.counts.total, before - 1, '执行后清单不再算待处理');
   assert.equal((await call('GET', '/scope')).body.state, 'assistant_running');
-  assert.equal((await call('POST', `/changesets/${cs}/merge`)).body.code, 'changeset_closed', '还在跑不能确认');
+
   assert.ok(conv(D.INC_CID).some((e) => e.type === 'message.user' && e.data.text.startsWith('确认清单并执行（第 4 条已改写')));
 
   await pause(3700);
   const types = conv(D.INC_CID).filter((e) => e.type === 'card').map((e) => e.data.card_type);
   assert.ok(types.includes('regression') && types.includes('round_changes'));
-  assert.equal((await call('GET', '/scope')).body.state, 'pending_confirm');
-  assert.equal((await call('GET', `/changesets/${cs}`)).body.next_version_label, 'v0.13');
-  assert.equal((await call('GET', `/changesets/${cs}/diff`)).body.items.length, 6);
-
-  const merged = await call('POST', `/changesets/${cs}/merge`);
-  assert.equal(merged.status, 200);
-  assert.equal(merged.body.version_label, 'v0.13');
+  // 一轮结束就合入：不用确认，写入范围放开，卡片就是已存成的版本
   assert.equal((await call('GET', '/scope')).body.state, 'none');
-  const last = conv(D.INC_CID).filter((e) => e.type === 'card.updated' && e.data.card_type === 'round_changes').at(-1).data;
+  assert.equal((await call('GET', `/changesets/${cs}/diff`)).body.items.length, 6);
+  assert.equal((await call('POST', `/changesets/${cs}/merge`)).body.code, 'changeset_closed');
+  const last = conv(D.INC_CID).filter((e) => e.type === 'card' && e.data.card_type === 'round_changes').at(-1).data;
   assert.equal(last.state, 'merged');
   assert.equal(last.merged_version_label, 'v0.13');
   assert.equal(s.db.cards.find((c) => c.id === PID).version_label, 'v0.13');
   assert.equal(s.db.flows.get(PID).notices.length, 0, '新资料已经处理完');
 });
 
-test('mock：执行后撤回，清单回到可编辑并回到待处理；交给助手修会重跑场景', async () => {
-  const { call, conv } = await server('stage:incremental,inc:executed');
+test('mock：执行后撤回这一轮，清单回到可编辑并回到待处理；交给助手修会重跑场景', async () => {
+  const { s, call, conv } = await server('stage:incremental,inc:executed');
   const before = (await call('GET', '/inbox')).body.counts.total;
   assert.equal((await call('GET', '/change-lists/cl-09')).body.state, 'executed');
-  assert.equal((await call('GET', '/scope')).body.state, 'pending_confirm');
+  assert.equal((await call('GET', '/scope')).body.state, 'none');
   assert.equal((await call('PUT', '/change-lists/cl-09', { points: [] })).body.code, 'changeset_closed');
 
   const fix = await call('POST', '/commands', M.fixCommand('cl-09', D.SCENARIOS.affected[2], D.INC_CID));
@@ -252,10 +249,12 @@ test('mock：执行后撤回，清单回到可编辑并回到待处理；交给�
   await pause(2000);
   const reg = conv(D.INC_CID).filter((e) => e.data?.card_type === 'regression').at(-1).data;
   assert.equal(reg.passed, 6);
-  assert.equal((await call('GET', '/scope')).body.state, 'pending_confirm');
+  assert.equal((await call('GET', '/scope')).body.state, 'none');
 
   const d = await call('POST', '/changesets/cs-32/discard');
   assert.equal(d.status, 200);
+  assert.equal(d.body.state, 'reverted');
+  assert.equal(s.db.cards.find((c) => c.id === PID).version_label, d.body.version_label, '撤回也另存一个版本');
   const cl = (await call('GET', '/change-lists/cl-09')).body;
   assert.equal(cl.state, 'editing');
   assert.equal((await call('GET', '/inbox')).body.counts.total, before + 1);

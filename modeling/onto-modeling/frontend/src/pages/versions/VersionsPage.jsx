@@ -24,8 +24,8 @@ import '../../styles/more.css';
 import '../../styles/versions.css';
 
 const LOCK_TEXT = {
-  running: ['助手正在改这个文件，确认生效或撤回后才能在这里编辑'],
-  pending: ['助手的修改还没确认，确认生效或撤回后才能在这里编辑'],
+  running: ['助手正在改这个文件，这一轮结束后才能在这里编辑'],
+  pending: ['这个文件和助手这一轮的修改有冲突，选好保留哪边后才能在这里编辑'],
 };
 
 function VersionRow({ v, on, onSelect, onMenu, onDelTag }) {

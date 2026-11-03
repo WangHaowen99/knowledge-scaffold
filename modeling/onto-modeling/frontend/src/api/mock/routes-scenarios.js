@@ -289,8 +289,8 @@ export function register(ctx) {
   };
   const keysOf = (pid, pick) => stateOf(pid).scenarios.filter(pick).map((x) => x.key);
 
-  // 批量验证：开跑时推演范围进写入范围锁（助手运行中），跑完结果先写进一轮变更集（修改待确认），
-  // 对话里出「这一轮」卡，确认生效或撤回后解锁（CS-02～CS-05 见下）。开跑时项目已经有别的锁就不动锁，结果直接回到列表。
+  // 批量验证：开跑时推演范围进写入范围锁（助手运行中），跑完这一轮就合入成版本、解锁（F3），对话里出「这一轮」卡，
+  // 撤回这一轮回到跑之前的结果（CS-05 见下）。开跑时项目已经有别的锁就不动锁，结果直接回到列表。
   const batchLock = (pid, state, csId, cid) => ({
     state, changeset_id: csId, conversation_id: cid, run_id: null, slice: null, node: { id: 'trace.trace', version: 'trace@0.10.0' },
     entries: [], artifacts: stateOf(pid).scenarios.map((x) => ({ type: SCENARIO, key: x.key, title: x.title })), paths: [],
@@ -298,10 +298,10 @@ export function register(ctx) {
   });
   const roundCard = (csId, sum, state, version) => ({
     card_id: `card-trace-${csId}`, card_type: 'round_changes', eyebrow: '这一轮', title: `批量推演 ${sum.total} 个场景`, subtitle: '',
-    status: null, plugin: { name: 'trace', label: '场景走查' }, open: null, changeset_id: csId, option_key: null, checks: { errors: 0, warnings: 0 },
+    status: state === 'reverted' ? { key: 'skipped', label: '已撤回' } : { key: 'confirmed', label: version },
+    plugin: { name: 'trace', label: '场景走查' }, open: null, changeset_id: csId, option_key: null, checks: { errors: 0, warnings: 0, pending: 0 }, hints: [],
     groups: [{ kind: 'scenario', label: '场景', items: [{ change: 'test', target: null, text: `推演 ${sum.total} 个：通过 ${sum.pass} · 失败 ${sum.fail} · 过期 ${sum.stale}`, comparable: false }] }],
-    lock_note: '确认生效前，这些场景在场景走查里只读；撤回这一轮也会解除', next_version_label: version, state,
-    merged_version_label: state === 'merged' ? version : null, remaining_failures: 0,
+    state, merged_version_label: version,
   });
   const summaryOf = (pid) => {
     const list = stateOf(pid).scenarios;
@@ -320,17 +320,24 @@ export function register(ctx) {
       st.batch = { csId, cid: task.conversation_id, before: st.scenarios.map((x) => ({ ...x })) };
       setScope(pid, batchLock(pid, 'assistant_running', csId, task.conversation_id));
     },
-    doneText: (b) => `「${b.text || '批量推演'}」跑完了，结果在下面这一轮里：确认生效后写进场景走查，撤回就保持原样。`,
+    doneText: (b) => `「${b.text || '批量推演'}」跑完了，结果已写进场景走查。`,
     finish: (pid) => {
       // 过期的场景 3、6 补上了新口径的输入，推演通过；场景 4 还没有示例数据，仍过期；失败的那个照旧
       const keys = keysOf(pid, (x) => x.key !== 's-04');
       ran(pid, keys, (x) => { if (x.result === 'stale') Object.assign(x, { result: 'pass', stale_source: null, stale_reason: null }); });
       const b = stateOf(pid).batch;
       if (b) {
-        db.changesets?.set(b.csId, { owner: 'trace', state: 'pending_confirm', pid, cid: b.cid });
-        setScope(pid, batchLock(pid, 'pending_confirm', b.csId, b.cid));
-        emitConv?.(pid, b.cid, 'card', roundCard(b.csId, summaryOf(pid), 'pending_confirm', bump(cardOf(pid)?.version_label)));
-        emitProj(pid, 'changeset.updated', { changeset_id: b.csId, state: 'pending_confirm', source: 'assistant', conversation_id: b.cid, version_label: null });
+        // 一轮结束就合入成版本（F3）：趋势线把跑之前那一版的通过率记进历史，「比上一版」跟它比
+        const st = stateOf(pid);
+        const sum = summaryOf(pid);
+        db.changesets?.set(b.csId, { owner: 'trace', state: 'merged', pid, cid: b.cid });
+        const before = b.before || [];
+        if (before.length) st.trend = [...st.trend, [cardOf(pid)?.version_label || 'v0.12', Math.round((before.filter((x) => x.result === 'pass').length / before.length) * 100)]].slice(-6);
+        const out = commit(pid, SCENARIO, st.scenarios.map((x) => x.key), 'updated', `批量推演 ${sum.total} 个场景`);
+        b.version = out.version_label;
+        setScope(pid, noLock(pid));
+        emitConv?.(pid, b.cid, 'card', roundCard(b.csId, sum, 'merged', out.version_label));
+        emitProj(pid, 'changeset.updated', { changeset_id: b.csId, state: 'merged', source: 'assistant', conversation_id: b.cid, version_label: out.version_label });
       }
       emitProj(pid, 'artifacts.updated', { type: SCENARIO, change: 'updated', keys });
     },
@@ -365,32 +372,21 @@ export function register(ctx) {
     const pid = m[1];
     const cs = mine(m[2]);
     if (!cs) return undefined;
-    if (cs.state !== 'pending_confirm') return err(409, 'changeset_closed', '已关闭', { state: cs.state });
+    // CS-04：一轮结束已经合入，界面不再调；CS-05 撤回这一轮：回到跑之前的结果，另存一个版本
+    if (m[3] === 'merge' || cs.state !== 'merged') return err(409, 'changeset_closed', '这一轮的修改已经生效或撤回', { state: cs.state });
     const st = stateOf(pid);
-    const sum = summaryOf(pid);
     const keys = st.scenarios.map((x) => x.key);
-    if (m[3] === 'discard') {
-      cs.state = 'discarded';
-      if (st.batch?.before) st.scenarios = st.batch.before;
-      st.batch = null;
-      emitConv?.(pid, cs.cid, 'card.updated', roundCard(m[2], sum, 'discarded', null));
-      emitConv?.(pid, cs.cid, 'notice', { kind: 'discarded', text: '已撤回这一轮批量推演，场景走查保持原样', version_label: null, changeset_id: m[2], align: 'center' });
-      setScope(pid, noLock(pid));
-      emitProj(pid, 'changeset.updated', { changeset_id: m[2], state: 'discarded', source: 'assistant', conversation_id: cs.cid, version_label: null });
-      emitProj(pid, 'artifacts.updated', { type: SCENARIO, change: 'updated', keys });
-      return json(200, { state: 'discarded' });
-    }
-    cs.state = 'merged';
-    // 趋势线：跑之前那一版的通过率进历史，「比上一版」跟它比
-    const before = st.batch?.before || [];
-    if (before.length) st.trend = [...st.trend, [cardOf(pid)?.version_label || 'v0.12', Math.round((before.filter((x) => x.result === 'pass').length / before.length) * 100)]].slice(-6);
+    cs.state = 'reverted';
+    if (st.batch?.before) st.scenarios = st.batch.before;
+    const sum = summaryOf(pid);
+    const version = st.batch?.version || null;
     st.batch = null;
-    const out = commit(pid, SCENARIO, keys, 'updated', `批量推演 ${sum.total} 个场景`);
-    emitConv?.(pid, cs.cid, 'card.updated', roundCard(m[2], sum, 'merged', out.version_label));
-    emitConv?.(pid, cs.cid, 'notice', { kind: 'merged', text: `这一轮已确认生效 · 版本 ${out.version_label}`, version_label: out.version_label, changeset_id: m[2], align: 'center' });
-    setScope(pid, noLock(pid));
-    emitProj(pid, 'changeset.updated', { changeset_id: m[2], state: 'merged', source: 'assistant', conversation_id: cs.cid, version_label: out.version_label });
-    return json(200, { state: 'merged', commit: out.commit, version_label: out.version_label, merged_at: new Date().toISOString() });
+    const out = commit(pid, SCENARIO, keys, 'updated', '撤回批量推演');
+    emitConv?.(pid, cs.cid, 'card.updated', roundCard(m[2], sum, 'reverted', version));
+    emitConv?.(pid, cs.cid, 'notice', { kind: 'discarded', text: `已撤回这一轮 · 版本 ${out.version_label}`, version_label: out.version_label, changeset_id: m[2], align: 'center' });
+    emitProj(pid, 'changeset.updated', { changeset_id: m[2], state: 'merged', source: 'assistant', conversation_id: cs.cid, version_label: version });
+    emitProj(pid, 'artifacts.updated', { type: SCENARIO, change: 'updated', keys });
+    return json(200, { state: 'reverted', commit: out.commit, version_label: out.version_label });
   }); // CS-04 / CS-05
   commandHooks.push({
     // 补齐过期：后端同一条命令 /ontology-trace-batch，只带 keys（contract-changes B4c 映射表）

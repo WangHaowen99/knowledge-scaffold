@@ -322,7 +322,7 @@ function FeedbackBody({ d, act, busy }) {
   );
 }
 
-const ACTION_LABEL = { dismiss: '忽略', merge: '确认生效', discard: '撤回', migrate: '迁移', send_to_assistant: '交给助手处理', resolve: '去处理' };
+const ACTION_LABEL = { dismiss: '忽略', discard: '撤回这一轮', migrate: '迁移', send_to_assistant: '交给助手处理', resolve: '去处理' };
 function GenericBody({ item, act, busy }) {
   return (
     <div className="row mt16 wrap" style={{ gap: 8 }}>

@@ -159,12 +159,10 @@ export function roundLines(card) {
   }));
 }
 
-// 还有场景没通过时，确认生效旁边的提示（标注 incremental-006）
+// 还有场景没通过时，版本旁边的提示（标注 incremental-006；F3 起一轮结束就合入，没有「确认后」）
 export function remainingNote(card) {
   const n = card?.remaining_failures || 0;
-  if (!n) return '';
-  if (card.state === 'merged') return `不通过的 ${n} 个场景已留在待处理`;
-  return `还有 ${n} 个场景不通过，确认后它${n > 1 ? '们' : ''}留在待处理`;
+  return n ? `不通过的 ${n} 个场景已留在待处理` : '';
 }
 
 // ---------- 外部反馈 ----------

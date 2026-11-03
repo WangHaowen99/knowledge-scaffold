@@ -90,7 +90,7 @@ const PCS = [
   ['资料地图卡', 'map', 'blue', '双击打开资料地图弹窗：可以改资料用途、让助手补读漏掉的部分', '弹窗编辑', 'wb-materials'],
   ['建模蓝图卡', 'layers', 'blue', '双击打开蓝图弹窗：拖动排序、合并、拆分、改名切片，确认后开始建模', '弹窗编辑', 'wb-blueprint'],
   ['本步产出卡', 'cube', 'blue', '卡片只读；点条目名去 Studio 编辑，「查看改动」在卡内展开对比', '跳 Studio', 'wb-l2'],
-  ['流程图卡', 'branch', 'indigo', '双击打开流程图编辑弹窗，和 Studio 里是同一份；在助手写入范围内时，确认生效或撤回前只读', '弹窗编辑', 'flowchart'],
+  ['流程图卡', 'branch', 'indigo', '双击打开流程图编辑弹窗，和 Studio 里是同一份；在助手写入范围内时，这一轮结束前只读', '弹窗编辑', 'flowchart'],
   ['变更点清单卡', 'refresh', 'amber', '双击打开弹窗逐条改写、接受变更点，确认后才动手修改', '弹窗编辑', 'incremental'],
   ['运行报告卡', 'rocket', 'indigo', '自主构建结束时出现；只读汇总，按钮进入待处理逐条复核', '只读', 'l4-run'],
 ];
@@ -213,7 +213,7 @@ export default function ChatStatesPage() {
       </div>
       <div className="tl mt12">
         <Tli k="ok" t="读取 23 个场景和示例数据" m="22 秒" />
-        <div className="tl-i"><span className="tl-dot wait"><span className="spin" style={{ width: 10, height: 10 }} /></span><div><div className="tl-t">推演到第 9 个 · 超量与审批提示</div><div className="tl-m">进行中 · 推演到的场景在确认生效前只读</div></div></div>
+        <div className="tl-i"><span className="tl-dot wait"><span className="spin" style={{ width: 10, height: 10 }} /></span><div><div className="tl-t">推演到第 9 个 · 超量与审批提示</div><div className="tl-m">进行中 · 推演到的场景在这一轮结束前只读</div></div></div>
       </div>
       <div className="row xs muted g4 mt4"><Icon name="info" size={12} />页面上同时显示进度条和「去对话里看」；跑完结果回到场景走查页的列表</div>
     </Item>,

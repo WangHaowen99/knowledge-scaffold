@@ -228,14 +228,20 @@ export function createMockServer() {
           { id: 's3', text: '从样例补货单 A、B 生成 2 个验收场景，推演 2 / 2 通过', meta: '20 秒', state: 'done', duration_ms: 20000 },
         ],
       });
-      db.changesets.set(F.CHANGESET_ID, { opt: o.key, state: 'pending_confirm', pid, cid });
+      // 一轮结束就合入成版本 v0.13（F3），卡片只说改了什么，建议条直接给下一步
+      db.changesets.set(F.CHANGESET_ID, { opt: o.key, state: 'merged', pid, cid });
       emitConv(pid, cid, 'card', F.roundChangesCard(o.key));
+      emitConv(pid, cid, 'card.updated', F.stepOutputCard(true));
       emitConv(pid, cid, 'turn.completed', { turn_id: `t-${uid()}`, duration_ms: 34000, is_error: false, usage: { input_tokens: 18400, output_tokens: 1200, cache_read_tokens: 0 }, cost: { amount: 0.42, currency: 'CNY' } });
       emitConvTransient(pid, cid, 'context.usage', { used: 88000, window: 200000, pct: 44, compact_at_pct: 80, breakdown: null, last_call: { input: 18400, output: 1200, estimated: true } });
       setSession(pid, cid, 'idle');
-      setScope(pid, scopeLock('pending_confirm', cid));
-      emitProj(pid, 'changeset.updated', { changeset_id: F.CHANGESET_ID, state: 'pending_confirm', source: 'assistant', conversation_id: cid, version_label: null });
-      emitConv(pid, cid, 'suggestions.updated', F.suggestionsPendingConfirm());
+      setScope(pid, { ...scopeOf(pid), state: 'none', entries: [], artifacts: [], paths: [] });
+      const c = cardOf(pid);
+      if (c) c.version_label = 'v0.13';
+      emitProj(pid, 'changeset.updated', { changeset_id: F.CHANGESET_ID, state: 'merged', source: 'assistant', conversation_id: cid, version_label: 'v0.13' });
+      emitProj(pid, 'workspace.changed', { commit: 'c0ffee13', version_label: 'v0.13', source: 'assistant', changeset_id: F.CHANGESET_ID, by: 'zhangsan', entries: [F.REFS.op], artifacts: [], paths: [] });
+      if (c) emitProj(pid, 'project.updated', { fields: ['version_label'], meta: F.projectMeta(c) });
+      emitConv(pid, cid, 'suggestions.updated', F.suggestionsAfterMerge());
     });
   }
 
@@ -462,41 +468,30 @@ export function createMockServer() {
     if (!cs) return err(404, 'changeset_not_found', '变更集不存在');
     return json(200, { id: m[2], source: 'assistant', build_mode: 'L2', purpose: '超量与审批提示', state: cs.state, base: 'a71e03c9', conversation_id: cs.cid, run_id: null, slice_id: 's5', created_at: new Date().toISOString(), updated_at: new Date().toISOString(), merged: null, entity_count: 3, groups: [], checks: { errors: 0, warnings: 0, findings: [] }, next_version_label: 'v0.13' });
   });
-  on('POST', '/projects/([^/]+)/changesets/([^/]+)/merge', async ({ m }) => {
-    const pid = m[1];
+  // CS-04：F3 起界面不再调（一轮结束自动合入）；mock 里留着，遗留的待确认变更集照旧能合入
+  on('POST', '/projects/([^/]+)/changesets/([^/]+)/merge', ({ m }) => {
     const cs = db.changesets.get(m[2]);
     if (cs?.owner) return undefined;
     if (!cs) return err(404, 'changeset_not_found', '变更集不存在');
-    if (cs.state !== 'pending_confirm') return err(409, 'changeset_closed', '已关闭', { state: cs.state });
-    if (db.running.has(`${pid}:${cs.cid}`)) return err(409, 'changeset_in_progress', '助手还在跑', { conversation_id: cs.cid });
-    await wait(200);
-    cs.state = 'merged';
-    const merged = { state: 'merged', commit: 'c0ffee13', version_label: 'v0.13', merged_at: new Date().toISOString() };
-    emitConv(pid, cs.cid, 'card.updated', F.roundChangesCard(cs.opt, 'merged'));
-    emitConv(pid, cs.cid, 'card.updated', F.stepOutputCard(true));
-    emitConv(pid, cs.cid, 'notice', { kind: 'merged', text: '这一轮已确认生效 · 版本 v0.13', version_label: 'v0.13', changeset_id: m[2], align: 'center' });
-    emitConv(pid, cs.cid, 'suggestions.updated', F.suggestionsAfterMerge());
-    setScope(pid, { ...scopeOf(pid), state: 'none', entries: [], artifacts: [], paths: [] });
-    const c = cardOf(pid);
-    if (c) c.version_label = 'v0.13';
-    emitProj(pid, 'changeset.updated', { changeset_id: m[2], state: 'merged', source: 'assistant', conversation_id: cs.cid, version_label: 'v0.13' });
-    emitProj(pid, 'workspace.changed', { commit: merged.commit, version_label: 'v0.13', source: 'assistant', changeset_id: m[2], by: 'zhangsan', entries: [F.REFS.op], artifacts: [], paths: [] });
-    if (c) emitProj(pid, 'project.updated', { fields: ['version_label'], meta: F.projectMeta(c) });
-    return json(200, merged);
+    return err(409, 'changeset_closed', '这一轮的修改已经生效或撤回', { state: cs.state });
   });
+  // CS-05 撤回这一轮：合入过的回到上一个版本，另存一个版本
   on('POST', '/projects/([^/]+)/changesets/([^/]+)/discard', ({ m }) => {
     const pid = m[1];
     const cs = db.changesets.get(m[2]);
     if (cs?.owner) return undefined;
     if (!cs) return err(404, 'changeset_not_found', '变更集不存在');
-    if (cs.state !== 'pending_confirm') return err(409, 'changeset_closed', '已关闭', { state: cs.state });
-    cs.state = 'discarded';
-    emitConv(pid, cs.cid, 'card.updated', F.roundChangesCard(cs.opt, 'discarded'));
-    emitConv(pid, cs.cid, 'notice', { kind: 'discarded', text: '已撤回这一轮，主线没有变化', version_label: null, changeset_id: m[2], align: 'center' });
+    if (cs.state !== 'merged') return err(409, 'changeset_closed', '这一轮已经撤回过', { state: cs.state });
+    cs.state = 'reverted';
+    emitConv(pid, cs.cid, 'card.updated', F.roundChangesCard(cs.opt, 'reverted'));
+    emitConv(pid, cs.cid, 'notice', { kind: 'discarded', text: '已撤回这一轮 · 版本 v0.14', version_label: 'v0.14', changeset_id: m[2], align: 'center' });
     emitConv(pid, cs.cid, 'suggestions.updated', { mode: 'normal', primary: { id: 'sg-redo', label: '重新决定步骤 2', icon: 'hand', primary: true, disabled: false, reason: '', priority: 3, action: { type: 'send', text: '重新决定步骤 2 的取值口径' } }, secondary: [], all_commands: true });
-    setScope(pid, { ...scopeOf(pid), state: 'none', entries: [], artifacts: [], paths: [] });
-    emitProj(pid, 'changeset.updated', { changeset_id: m[2], state: 'discarded', source: 'assistant', conversation_id: cs.cid, version_label: null });
-    return json(200, { state: 'discarded' });
+    const c = cardOf(pid);
+    if (c) c.version_label = 'v0.14';
+    emitProj(pid, 'changeset.updated', { changeset_id: m[2], state: 'merged', source: 'assistant', conversation_id: cs.cid, version_label: 'v0.13' });
+    emitProj(pid, 'workspace.changed', { commit: 'c0ffee14', version_label: 'v0.14', source: 'revert', changeset_id: m[2], by: 'zhangsan', entries: [F.REFS.op], artifacts: [], paths: [] });
+    if (c) emitProj(pid, 'project.updated', { fields: ['version_label'], meta: F.projectMeta(c) });
+    return json(200, { state: 'reverted', commit: 'c0ffee14', version_label: 'v0.14' });
   });
 
   // ---------- 3.11 会话 ----------

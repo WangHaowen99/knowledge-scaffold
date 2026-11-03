@@ -119,15 +119,15 @@ export const ERROR_MESSAGES = {
   revision_conflict: (d) => describeConflict(d),
   // 2.4 写入路径、变更集、版本
   write_scope_locked: (d) => (d?.state === 'pending_confirm'
-    ? '这些条目有助手的修改待确认，确认生效或撤回后才能编辑'
+    ? '这些条目和助手这一轮的修改有冲突，在待处理里选好保留哪边后才能编辑'
     : d?.state === 'autobuild_slice'
       ? '自主构建正在改这一片，完成后才能编辑'
-      : '助手正在改这些条目，确认生效或撤回后才能编辑'),
+      : '助手正在改这些条目，这一轮结束后才能编辑'),
   check_rejected: '检查发现硬伤，没有保存',
   gate_failed: '门禁检查没有通过',
   changeset_not_found: '这组修改已不存在',
-  changeset_in_progress: '助手还在跑，先打断或等它停下来再确认',
-  changeset_closed: '这组修改已经确认或撤回过了',
+  changeset_in_progress: '助手还在跑，先打断或等它停下来',
+  changeset_closed: '这一轮已经撤回过了',
   merge_conflict: '确认时发现冲突，已放进待处理',
   head_moved: '内容已更新，请刷新后再确认',
   invalid_commit: '版本号不合法',

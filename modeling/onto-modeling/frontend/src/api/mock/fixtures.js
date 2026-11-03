@@ -576,28 +576,28 @@ export function decisionQuestion() {
   };
 }
 
-export function roundChangesCard(optionKey, state = 'pending_confirm') {
+// 一轮结束就合入成版本（F3）：state merged | reverted
+export function roundChangesCard(optionKey, state = 'merged') {
   const op = { kind: 'operation', label: '操作', items: [{ change: 'mod', target: REFS.op, text: '操作 [[超量与审批提示]] 的步骤 2', comparable: true }] };
   const rule = { kind: 'rule', label: '规则', items: [{ change: 'add', target: REFS.r09, text: '规则引用 [[R-09 门店申请取严]]', comparable: true }] };
   const sc = { kind: 'scenario', label: '场景', items: [{ change: 'test', target: { type: 'trace.scenario', key: 's-21', title: '门店更严 → 按门店执行' }, text: '新增 2 个验收场景，推演 2 / 2 通过', comparable: true }] };
   return {
     card_id: ROUND_CARD_ID,
     card_type: 'round_changes',
-    eyebrow: '这一轮',
-    title: '改了 3 处，检查全部通过',
+    eyebrow: '这一轮改了什么',
+    title: '改了 3 处',
     subtitle: '',
-    status: null,
+    status: state === 'reverted' ? { key: 'skipped', label: '已撤回' } : { key: 'confirmed', label: 'v0.13' },
     plugin: null,
     open: null,
     changeset_id: CHANGESET_ID,
     option_key: optionKey,
-    checks: { errors: 0, warnings: 0 },
+    checks: { errors: 0, warnings: 0, pending: 1 },
+    hints: [{ tone: 'info', text: '1 处指向第 4 段待建的内容' }],
     groups: [op, rule, sc],
-    lock_note: '确认生效前，这些条目在 Studio 和插件页里只读；撤回这一轮也会解除',
-    next_version_label: 'v0.13',
     state,
-    merged_version_label: state === 'merged' ? 'v0.13' : null,
-    remaining_failures: 0,
+    merged_version_label: 'v0.13',
+    reverted_version_label: state === 'reverted' ? 'v0.14' : null,
   };
 }
 
@@ -632,18 +632,6 @@ export function suggestionsWaiting() {
     mode: 'waiting_decision',
     primary: { id: 'sg-wait', label: '先做上面的决定', icon: 'hand', primary: true, disabled: true, reason: '有未回答的决策卡', priority: 1, action: { type: 'clear_input' } },
     secondary: [{ id: 'sg-inbox', label: '其他待处理 17', icon: 'inbox', primary: false, disabled: false, reason: '', priority: 3, action: { type: 'navigate', page: 'inbox' } }],
-    all_commands: true,
-  };
-}
-
-export function suggestionsPendingConfirm() {
-  return {
-    mode: 'pending_confirm',
-    primary: { id: 'sg-merge', label: '确认生效', icon: 'merge', primary: true, disabled: false, reason: '', priority: 2, action: { type: 'merge_changeset', changeset_id: CHANGESET_ID } },
-    secondary: [
-      { id: 'sg-see', label: '查看改动', icon: 'eye', primary: false, disabled: false, reason: '', priority: 2, action: { type: 'show_changes', changeset_id: CHANGESET_ID } },
-      { id: 'sg-discard', label: '撤回这一轮', icon: 'undo', primary: false, disabled: false, reason: '', priority: 2, action: { type: 'discard_changeset', changeset_id: CHANGESET_ID } },
-    ],
     all_commands: true,
   };
 }

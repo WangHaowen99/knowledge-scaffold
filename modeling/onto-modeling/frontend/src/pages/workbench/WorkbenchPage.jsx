@@ -450,13 +450,15 @@ function Composer({ pid, cid, apiRef, st, buildMode, modeLabel, onMode, onSend, 
   );
 }
 
-const INLINE_ALL = ['waiting_decision', 'pending_confirm'];
+const INLINE_ALL = ['waiting_decision'];
 // 包声明的快捷项（PL-12 entries，kind=quick_action）放在「全部命令」旁，点了发它的命令（R22）
 function SuggestionBar({ sug, quick = [], onAction, onAll, onQuick }) {
   if (!sug && !quick.length) return null;
   const items = [];
-  if (sug?.primary) items.push({ ...sug.primary, isPrimary: true });
-  (sug?.secondary || []).slice(0, 2).forEach((s) => items.push(s));
+  // 升级前留在历史里的建议条可能还带「确认生效」（F3 起一轮结束就合入）：不画
+  const live = (s) => s && s.action?.type !== 'merge_changeset';
+  if (live(sug?.primary)) items.push({ ...sug.primary, isPrimary: true });
+  (sug?.secondary || []).filter(live).slice(0, 2).forEach((s) => items.push(s));
   const inline = !sug || INLINE_ALL.includes(sug.mode);
   const quickEls = quick.map((q) => <span key={q.id} className="s" onClick={() => onQuick(q)}><Icon name="zap" size={12} />{q.label}</span>);
   return (
@@ -581,16 +583,14 @@ export default function WorkbenchPage({ route }) {
     fail,
     answer: async (qid, body) => { try { await api.answerQuestion(pid, cid, qid, body); } catch (e) { fail(e); } },
     later: () => navigate(pagePath('inbox', pid)),
-    merge: async (cs) => {
+    // 撤回这一轮（CS-05）：回到上一个版本，另存一个版本；之后又改过同一条时服务端说明原因、不撤
+    discard: async (cs) => {
       try {
-        const r = await api.mergeChangeset(pid, cs);
-        toast(`已确认生效，保存为版本 ${r.version_label}`, 'merge');
-      } catch (e) {
-        fail(e);
-        if (e.code === 'merge_conflict') navigate(pagePath('inbox', pid));
-      }
+        const r = await api.discardChangeset(pid, cs);
+        toast(r?.version_label ? `已撤回这一轮 · 版本 ${r.version_label}` : '已撤回这一轮', 'undo');
+      } catch (e) { fail(e); }
     },
-    discard: async (cs) => { try { await api.discardChangeset(pid, cs); toast('已撤回这一轮', 'undo'); } catch (e) { fail(e); } },
+    resolve: () => navigate(pagePath('inbox', pid)),
     permission: async (rid, behavior) => { try { await api.replyPermission(pid, cid, rid, { behavior }); } catch (e) { fail(e); } },
     resume: async (execId) => { try { await api.resumeExec(pid, execId, cid); } catch (e) { fail(e); } },
     abandon: async (execId) => { try { await api.abandonExec(pid, execId); toast('已放弃', 'undo'); } catch (e) { fail(e); } },
@@ -619,7 +619,6 @@ export default function WorkbenchPage({ route }) {
           else await api.sendMessage(pid, cid, { text: a.text, client_message_id: `cm-${Date.now()}` });
           break;
         case 'resume_exec': await actions.resume(a.exec_id); break;
-        case 'merge_changeset': await actions.merge(a.changeset_id); break;
         case 'discard_changeset': await actions.discard(a.changeset_id); break;
         case 'show_changes': rounds.current.get(a.changeset_id)?.(); break;
         case 'start_node': await api.startNode(pid, a.node_id, { slice_id: a.slice_id, origin: { page: 'wb-l2', label: '下一步建议' } }); break;

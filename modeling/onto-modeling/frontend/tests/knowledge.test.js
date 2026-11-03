@@ -86,8 +86,8 @@ test('写入范围只读：锁里的知识条目「编辑」「删除」停用�
   assert.equal(run.text.running.length, 1);
   assert.equal(run.pop, '助手在改，暂不能编辑');
   const pend = lockCopy(lockOf('pending_confirm'));
-  assert.match(pend.text.pending[0], /修改还没确认/);
-  assert.equal(pend.pop, '修改待确认，暂不能编辑');
+  assert.match(pend.text.pending[0], /有冲突/);
+  assert.equal(pend.pop, '有冲突，暂不能编辑');
   assert.equal(lockCopy({ state: 'none' }), null);
   const auto = lockCopy({ ...lockOf('autobuild_slice') });
   assert.equal(auto.pop, '自主构建在改，暂不能编辑');
