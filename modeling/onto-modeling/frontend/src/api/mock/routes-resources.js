@@ -1,11 +1,12 @@
-// mock · 3.6 资料区：R-01 列表、R-02 上传、R-04 删除、R-05 被谁引用、R-11 / R-12 外部反馈，
+// mock · 3.6 资料区：R-01 列表、R-02 上传、R-04 删除、R-05 被谁引用、R-11 / R-12 外部反馈、R-15 选出处的位置，
 // 另有 F-04 原文件（资料区的路径）、F-05 表格预览，以及资料页发出的命令（S-20）的进度。
 // R-03 改用途、R-06 原文预览仍登记在 routes-materials.js（资料分析也在用）；两边共用 ctx.materials 的资料状态，
 // 合成资料本身在 resources-data.js。
 // 地址参数：?mock=feedback:off（没启用反馈演进，没有外部反馈分组）、?mock=task:resources（一打开就有一个重读任务在跑）
+import * as F from './fixtures.js';
 import {
   CONVERTERS, DRAWIO, EMPTY_DRAWIO, HTML_REPORT, PURPOSES, PURPOSE_VALUES, UPLOAD_EXTS, UPLOAD_LIMIT,
-  anchorCount, feedbackSeed, fileRecord, groupOf, kindOf, materialView, referencesOf, tableOf, textMarkdown, textState, webCommit,
+  anchorCount, feedbackSeed, fileRecord, groupOf, kindOf, materialView, positionsOf, referencesOf, tableOf, textMarkdown, textState, webCommit,
 } from './resources-data.js';
 
 const ORIGIN = { page: 'resources', label: '资料区' };
@@ -149,6 +150,31 @@ export function register(ctx) {
     if (!f.text) return err(409, 'not_convertible', '这份资料没有文本版', { path });
     const markdown = f.text.state === 'converted' ? textMarkdown(f) : null;
     return json(200, { path, text: f.text, markdown, truncated: false });
+  });
+
+  // R-15 选出处的位置：逐行，q 按原文和位置筛，一页 limit 条（游标就是下标）；选中的锚点补进 EV-29 的解析表，悬停能看原文
+  on('GET', '/projects/([^/]+)/resources/positions', ({ m, query }) => {
+    const path = query.get('path') || '';
+    const f = state(m[1]).files.find((x) => x.path === path);
+    if (!f) return err(404, 'file_not_found', '资料不存在', { path });
+    if (!f.text) return err(409, 'not_convertible', '这份资料没有文本', { path });
+    const name = f.name.replace(/\.[^.]+$/, '');
+    const all = positionsOf(f);
+    if (!all) return json(200, { path, name, readable: false, items: [], next_cursor: null });
+    const q = (query.get('q') || '').trim().toLowerCase();
+    const hits = q ? all.filter((x) => x.text.toLowerCase().includes(q) || x.location.toLowerCase().includes(q)) : all;
+    const start = Number(query.get('cursor') || 0);
+    const end = start + Math.min(Number(query.get('limit') || 200), 1000);
+    const items = hits.slice(start, end);
+    items.forEach((x) => {
+      if (F.ANCHOR_RESOLUTIONS && !F.ANCHOR_RESOLUTIONS[x.anchor]) {
+        F.ANCHOR_RESOLUTIONS[x.anchor] = {
+          anchor: x.anchor, scheme: 'file', resolved: true, source_label: name, location_label: x.location, material: { name, path },
+          text: x.text, highlights: [{ start: 0, end: x.text.length }], confidence: null, snapshot_id: null, page: 'resources',
+        };
+      }
+    });
+    return json(200, { path, name, readable: true, items, next_cursor: end < hits.length ? String(end) : null });
   });
 
   // R-14 重新转换（失败后的重试也是它）

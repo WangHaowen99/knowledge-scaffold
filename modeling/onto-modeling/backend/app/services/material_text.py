@@ -7,6 +7,8 @@ Excel `sheet:表!B3`。抽取器读不了的格式（pdf、doc 等）没有文�
 锚点写法：`file:<工作区相对路径>[#<片段>]`（契约 1.10，名字里的特殊字符百分号编码）；资料分析报告和条目里
 不带 scheme 的 `resource/…#片段` 同样认。只解析资料区（`resource/`）里的文件，证据快照
 （`resource/systems/`）与资料用途清单不算资料。
+
+R-15 选出处（Studio 填证据）列的位置也从这里出：只读文本，和 EV-29 用同一份抽取结果，选中的锚点解析得回同一行。
 """
 
 from __future__ import annotations
@@ -20,13 +22,14 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from . import workspace_labels
-from .workspace.layout import RESOURCE_DIRECTIVES, is_resource_text
+from .workspace.layout import RESOURCE_DIRECTIVES, is_resource_text, resource_text_path
 
 SCHEME_FILE = "file"
 CONTEXT_CHARS = 300          # 前后各带一段上下文，每段最多这么多字
 TARGET_CHARS = 1500
 BLOCKS_DEFAULT = 200
 BLOCKS_MAX = 1000
+POSITION_CHARS = 160         # 选出处时每个位置带的一行原文
 _CACHE_MAX = 32
 _cache: OrderedDict = OrderedDict()
 _cache_lock = threading.Lock()
@@ -320,3 +323,81 @@ def blocks(root: Path, rel: str, *, around: str = "", limit: int = 0, cursor: st
         "next_cursor": _encode_cursor(end, rel) if end < len(segments) else None,
         "readable": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# R-15：选出处用的位置
+# ---------------------------------------------------------------------------
+
+_TABLE_RULE = re.compile(r"^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?$")
+_COMMENT = re.compile(r"^<!--.*-->$")
+_BULLET = re.compile(r"^[-*+]\s+")
+
+
+def _position_text(line: str) -> str:
+    """一行原文的预览：表格行去掉竖线、单元格用 · 隔开，列表去掉圆点。"""
+    text = line.strip()
+    if text.startswith("|"):
+        cells = (cell.strip().replace("\\|", "|") for cell in re.split(r"(?<!\\)\|", text.strip("|")))
+        text = " · ".join(cell for cell in cells if cell)
+    else:
+        text = _BULLET.sub("", text)
+    return _clip(text, POSITION_CHARS)
+
+
+def positions(root: Path, rel: str, *, q: str = "", limit: int = 0, cursor: str = "") -> dict:
+    """{name, readable, items: [{anchor, location, text}], next_cursor}：一份资料里能引用的位置，逐行列出。
+
+    只读文本（ADR-0076）：md、txt、csv 读原文件，PDF、Word、Excel 读当前修订的文本版；还没有文本版时 readable=false。
+    行和 source_extract 的 `L<n>` 一一对应（EV-29 解析得回同一行），location 和 EV-29 给的位置说法一致：文本版按它前面
+    最近的页、工作表标记，没有标记时（以及 md）按最近的小节标题。文件头、位置标记、小节标题本身和表格分隔行不列。
+    q 按原文和位置筛（不分大小写）。cursor 不对时抛 ValueError。"""
+    from . import material_conversion
+
+    root = Path(root)
+    name = workspace_labels.material_name(rel)
+    empty = {"name": name, "readable": False, "items": [], "next_cursor": None}
+    kind = material_conversion.kind_of(rel)
+    markers: dict[int, str] = {}
+    if kind == "native":
+        source = rel
+    elif kind == "document" and (text := material_conversion.text_file(root, rel)) is not None:
+        source = resource_text_path(rel)
+        from ..evidence import convert
+
+        markers = {item.line: item.label for item in convert.parse_locations(text)}
+    else:
+        return empty
+    result = extract(root, source)
+    if result.get("status") != "ok":
+        return empty
+    headings = is_resource_text(source) or source.lower().endswith((".md", ".markdown"))
+    marker, heading, items = "", "", []
+    for segment in result.get("segments") or []:
+        if not (lines := _LINES.fullmatch(segment["anchor"])):
+            continue
+        number = int(lines.group(1))
+        line = str(segment["text"]).strip()
+        if number in markers:
+            marker = markers[number]
+            continue
+        if headings and (match := _MD_HEADING.match(line)):
+            heading = match.group(2).strip().strip("#").strip()
+            continue
+        if _COMMENT.match(line) or _TABLE_RULE.match(line):
+            continue
+        text = _position_text(line)
+        if text:
+            items.append({"anchor": file_anchor(source, segment["anchor"]), "location": marker or heading, "text": text})
+    if q:
+        needle = q.casefold()
+        items = [item for item in items if needle in item["text"].casefold() or needle in item["location"].casefold()]
+    limit = max(1, min(int(limit or BLOCKS_DEFAULT), BLOCKS_MAX))
+    start = 0
+    if cursor:
+        start = _decode_cursor(cursor, source)
+        if start is None:
+            raise ValueError("cursor")
+    end = start + limit
+    return {"name": name, "readable": True, "items": items[start:end],
+            "next_cursor": _encode_cursor(end, source) if end < len(items) else None}

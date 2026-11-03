@@ -1270,6 +1270,24 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 - 响应 `202`：`{material: Material}`。
 - 错误：`file_not_found`、`path_forbidden`、`not_convertible`（本身就是文本、流程图、没有能转这种文件的转换器）、`project_archived`。
 
+#### R-15 选出处的位置
+
+`GET /api/v1/projects/{id}/resources/positions` · 所有者 · 旧：— · 审计：否 · 依据：ADR-0076、5.8.5 · 页面：studio-table（属性表证据列「补出处」：先选资料、再选位置）
+
+- 查询参数：`path`（原文件的路径，不收文本版本身）、`q?`（按原文和位置筛，不分大小写）、`limit?`（默认 200，最大 1000）、`cursor?`。
+- 只读文本：md、txt、csv 读原文件，PDF、Word、Excel 读当前修订的文本版（R-13），主容器不解析原件。逐行列出，和 `source_extract` 的 `L<n>` 一一对应；文件头、位置标记、小节标题本身和表格分隔行不列。
+- 响应 `200`：
+
+  | 字段 | 类型 | 说明 |
+  |---|---|---|
+  | `path` | string | — |
+  | `name` | string | 资料名（去扩展名） |
+  | `readable` | bool | 还没有文本版（转换中、暂不支持、转换失败、原文件换了还没重转）时为 false，`items` 为空 |
+  | `items` | `[{anchor, location, text}]` | `anchor` 是完整锚点，原样写进 Studio 表单的 `evidence_anchor`（如 `file:resource/text/others/合同.pdf.md#L40`），和助手写的一样；`location` 与 EV-29 对同一锚点给的 `location_label` 一致（「第 3 页」「工作表 客户」、小节标题，没有时空串）；`text` 是这一行的预览（表格行单元格用 ` · ` 隔开，最多 160 字） |
+  | `next_cursor` | string \| null | — |
+
+- 错误：`file_not_found`、`path_forbidden`、`not_convertible`（流程图）、`invalid_cursor`。
+
 ---
 
 ### 3.7 Studio 条目
@@ -4231,7 +4249,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `inbox` | 待处理与复核 | `IN-01`～`IN-04`、`AB-10`～`AB-17`、`INC-01`～`INC-04`、`S-11`、`S-16`、`S-17`、`R-11`、`V-02`、`EV-29` | EP-02、EP-09、EP-17 |
 | `chat-states` | 对话卡片与状态 | 见 4.8 | 见 4.8 |
 | `studio` | 图谱 | `ST-01`、`ST-02`、`ST-04`、`ST-05`、`ST-06`、`CS-06`、`EV-26`（证据卡「被谁引用」）、`AR-09`（场景通过率，已含在 `ST-01`） | EP-03、EP-05 |
-| `studio-table` | 表格与条目编辑 | `ST-03`、`ST-04`、`ST-07`、`ST-08`、`ST-09`、`ST-10`、`F-02`、`F-03`（编辑原文）、`F-04`（大文件下载）、`V-04`（刷新后对比）、`AR-02`、`AR-03`、`AR-07`、`AR-08`（流程图条目）、`CS-06`、`C-05`、`PL-12` | EP-03、EP-05、EP-06 |
+| `studio-table` | 表格与条目编辑 | `ST-03`、`ST-04`、`ST-07`、`ST-08`、`ST-09`、`ST-10`、`F-02`、`F-03`（编辑原文）、`F-04`（大文件下载）、`V-04`（刷新后对比）、`AR-02`、`AR-03`、`AR-07`、`AR-08`（流程图条目）、`R-01`、`R-15`（证据列选出处）、`EV-29`、`CS-06`、`C-05`、`PL-12` | EP-03、EP-05、EP-06 |
 | `reports` | 报告评审 | `RP-01`～`RP-06`、`S-11`（专家裁决）、`R-09`（资料分析报告核验） | EP-22、EP-10 |
 | `resources` | 资料区 | `R-01`～`R-06`、`R-11`、`R-12`、`F-04`、`F-05`、`F-03`（drawio 保存）、`F-02`（drawio、文本）、`PL-12`（子页） | EP-05、EP-07 |
 | `sources` | 业务系统数据源 | `EV-01`～`EV-12`、`PL-01`（去插件中心安装提供方） | — |

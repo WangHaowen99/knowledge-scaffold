@@ -21,6 +21,7 @@ from .service import (  # noqa: F401
     retry_waiting,
     start,
     stop,
+    text_file,
     text_markdown,
     view,
 )

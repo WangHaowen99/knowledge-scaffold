@@ -1142,6 +1142,11 @@ ADR-0076。
 4. **R-07 / RP-02 extras**：`MaterialMapItem.label`；`problems[].display_md`；R-09、R-08 的 `anchor_label` 改为「资料名 · 位置」。
 5. **BP-01、蓝图卡**：`questions[].title`、`background` 里的资料路径换成「资料名 · 位置」（蓝图文件原文不变）。
 
+## 2026-11-03 · F4d（Studio 填证据：先选资料、再选位置）
+
+1. **新增 R-15 `GET /resources/positions`**：一份资料里能引用的位置，逐行 `{anchor, location, text}`，只读文本（md、txt、csv 读原文件，PDF、Word、Excel 读文本版）；没有文本版时 `readable=false`。`anchor` 原样写进 `evidence_anchor`，EV-29 解析得回同一行、同一个位置说法。
+2. **Studio 属性表证据列**：去掉手写锚点输入框；「补出处或专家确认」打开一个菜单：先选资料（R-01 里有文本的资料，正在转换的列在后面、点不了；暂不支持、转换失败、流程图不列），再选位置（R-15）。ST-07 草稿表单的 `evidence_anchor` 写法不变。
+
 ## 2026-11-03 · 合入 develop（目标上限、CLI 后台任务与空闲判定）
 
 1. **P-01 / P-03**：`goal` 上限从 500 改为 2000 字符，与 modeling 创建页一致。超长时报 400，不截断；`background` 存全文，不再截到 200。
