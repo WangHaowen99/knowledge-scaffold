@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, allPages, TOKEN, REFRESH, clearLogin, saveLogin } from './api.js';
 import { receiveHandoff } from './handoff.js';
-import { ACTIVE, parseRoute, shortId, sourceSummary } from './domain.js';
+import { ACTIVE, parseRoute, shortId, sourceSummary, taskRows } from './domain.js';
 import { Alert, Badge, Breadcrumb, Button, Confirm, Empty, Heading, Icon, Skeleton, useAction } from './ui.jsx';
 import { TaskCenter } from './TaskCenter.jsx';
 import { Wizard } from './Wizard.jsx';
@@ -91,9 +91,9 @@ export default function App() {
     listLock.current = true;
     setLoading(true);
     try {
-      const items = await allPages('/runs');
+      const items = await allPages('/package-tasks');
       if (epoch === authEpoch.current) {
-        setRuns(items);
+        setRuns(taskRows(items));
         setLastSync(new Date());
         setSyncError('');
       }

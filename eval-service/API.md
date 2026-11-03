@@ -33,15 +33,22 @@
 | `GET /package-publications/{id}` | 本地持久发布任务状态；任务 ID 可由发布查询列表获得 |
 | `POST /runs` | request_id、preparation_id、eval_set_id、可选 eval_set_revision；Neo4j 导入还需 graph_check_id，存在旧数据时必须显式传 replace_existing_graph=true。可选 concurrency（1 到 8，默认 4，同时发送给 consumer 的问题数）与 model_profile_id（`global:<id>`，consumer 全局模型池中已启用的模型，留空用 consumer 默认模型）。活动任务冲突、版本冲突和缺少确认在创建前拒绝，持久化后返回 202；所选模型在执行时已停用则轮次中断并提示 model_unavailable |
 | `GET /consumer-models` | consumer 全局模型池中已启用的模型（最多 100 个），字段 id、name、model、provider、is_default；consumer 不可用时返回 `available: false`，新轮次使用 consumer 默认模型 |
-| `GET /runs`、`/runs/{id}` | 摘要、进度和统计；新任务保留 eval_set_id、eval_set_name、data_source_name、created_at、started_at、updated_at、finished_at。`base_ref` 为用户选择的发布版本，`package_ref` 为实际运行的包（mapping 变化时为评测快照）；本字段之前创建的任务由其准备记录补出 `base_ref`，仅用于返回，不改写已存记录 |
+| `GET /runs`、`/runs/{id}` | 摘要、进度和统计；列表按 offset 分页，可选 limit（1 到 20，默认 20），可选 ontology_id 只列该知识包的执行记录。新任务保留 eval_set_id、eval_set_name、data_source_name、created_at、started_at、updated_at、finished_at。`base_ref` 为用户选择的发布版本，`package_ref` 为实际运行的包（mapping 变化时为评测快照）；本字段之前创建的任务由其准备记录补出 `base_ref`，仅用于返回，不改写已存记录 |
 | `GET /modeling-projects` | 重复的 ontology_id，每次 1 到 20 个；以当前用户登录向建模服务查询关联项目名称，仅供展示、不落盘。返回 `available` 与 `items[{ontology_id,projects,total}]`，每包最多 5 个名称；建模不可用或拒绝时返回 `available: false`，不报错 |
-| `GET /runs/{id}/results` | 有界分页用例摘要；执行异常、判分异常的用例带 `error`（code、message，message 截断到 256 字符）。执行异常的原因取自 consumer 运行状态与错误码，如 `consumer 执行失败（错误码）：说明`、等待用户补充信息、完成但未返回回答 |
+| `GET /runs/{id}/results` | 有界分页用例摘要；执行异常、判分异常的用例带 `error`（code、message，message 截断到 256 字符）。执行异常的原因取自 consumer 运行状态与错误码，如 `consumer 执行失败（错误码）：说明`、等待用户补充信息、完成但未返回回答；`SESSION_PREPARE_FAILED` 会换新会话重试，最终仍失败时说明末尾注明“已换新会话重试 N 次” |
 | `GET /runs/{id}/results/{case_id}/answer` | 单用例完整答案、判分、改判历史及未获得答案时的完整原因（不超过 1000 字符） |
 | `GET /runs/{id}/results/{case_id}/evidence` | 从 consumer 按需读取有界执行事件索引，不复制完整工具报文 |
 | `GET /runs/{id}/report` | 可重建的统计投影、包与模型引用 |
-| `POST /runs/{id}/cancel`、`/resume`、`/credentials` | 取消意图、对账恢复或更新内存授权 |
+| `POST /runs/{id}/cancel`、`/resume`、`/credentials` | 取消意图、对账恢复或更新内存授权；恢复后立即返回准备中的轮次。与 `POST /runs` 一样可带请求头 `X-Refresh-Token`（不超过 8 KiB），执行引擎只在内存中保存，用于 access token 到期前自动续期；登录失效时轮次以 `login_expired`（401）进入待授权 |
 | `POST /runs/{id}/results/{case_id}/override` | verdict、reason、revision；保留审计，不允许无答案或活动任务改判 |
 | `DELETE /runs/{id}` | 删除评测记录并清理自有资源，清理任务可重试。已结束（completed / cancelled / failed）可删除；interrupted / waiting_auth 在没有 executing / unknown 用例时可删除；执行中或仍有未对账提交返回 run_active（409），须先停止评测 |
+| `GET /package-tasks` | 按知识包合并的任务列表：每个知识包的最新一次执行、执行次数及是否有执行中的评测，按 offset 分页 |
+| `GET /package-evaluations` | ontology_id；每个发布版本最近一次已生成报告的评测（最多 100 个版本）及该知识包执行中的评测，供建模服务对账；`owner` 为调用者的所有者标识，与完成通知中的 owner 相同，建模服务据此按用户存放评测状态 |
+| `GET /runs/{id}/artifacts`、`/runs/{id}/artifacts/{name}` | 报告与优化建议的状态、建模通知投递状态；name 为 report.md、answers.json、context.json、suggestions.md，只返回当前修订，响应头带 `X-Artifact-Revision` 与 `X-Artifact-Stem` |
+| `POST /runs/{id}/artifacts/regenerate` | 已停止且有用例结果的任务重新生成报告与优化建议，修订号加一；执行中返回 run_active（409） |
+| `POST /runs/{id}/notifications/retry` | 立即重发该任务最新一条完成通知（含已被拒收的）；未配置通知凭据返回 notification_disabled（409） |
+
+评测停止、人工改判或重新生成后，评测服务按修订号生成报告与优化建议（只保留最新修订），并向建模服务 `POST /api/internal/evaluation/notifications` 发送完成通知，服务凭据放在 `X-Evaluation-Service-Token` 头。通知先写入本地发件箱再投递，失败按指数退避重试（最长 1 小时），400/413/422 视为拒收不再自动重试；建模服务按 run_id 与 sequence 去重。通知只含版本、状态与得分汇总，不含报告正文，建模服务查看时以用户自己的登录读取。
 
 Hub 查询默认每页 20、最多 100；本地列表每页 20，按 next_offset 翻页。用例列表截短问题/理由，完整答案单独读取。映射预览最多 20 个对象，有 truncated 标志。consumer 单次响应最多 2 MiB、事件索引源最多 1 MiB/输出最多 100 项；超限明确失败，不伪装成完整结果。
 
@@ -55,7 +62,7 @@ Neo4j 导入使用配置的 Workspace 值与知识包 Ontology 值同时匹配�
 
 普通请求体最多 1 MiB，数据上传最多 50 MiB，实际接收大小也检查。Hub ZIP 最大 256 MiB、展开最大 1 GiB、成员最多 10000，拒绝路径穿越、符号链接、重复路径及过高压缩比。
 
-错误格式 `code,message,phase,retryable`；依赖原始错误、连接地址和秘密不回显。鉴权失败 401/403，不存在或无权访问本地记录 404，并发或幂等冲突 409，过期 410，超限 413，格式错误 422，依赖不可用 503。
+错误格式 `code,message,phase,retryable`；依赖原始错误、连接地址和秘密不回显。鉴权失败 401/403，不存在或无权访问本地记录 404，并发或幂等冲突 409，过期 410，超限 413，格式错误 422，依赖不可用 503。依赖的拒绝只按其错误码细分，不转述正文：消费服务因评测工作空间中已有同名但本体 ID 不同的知识包而拒绝安装时，任务以 `package_name_conflict`（409，阶段 `package_install`）中断，提示清理旧知识包或更换评测工作空间后恢复；评测服务不删除用户配置的工作空间中的内容。
 
 准备/发布/启动使用稳定 request_id，同键不同输入冲突；超时沿用原请求。Hub 发布与快照命名空间分开，服务不生成本地成功回执。数据库删除保留请求墓碑，不能通过重复请求重新创建已删轮次。
 

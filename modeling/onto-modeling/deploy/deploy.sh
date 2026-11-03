@@ -35,6 +35,14 @@ if ! grep -q '^ONTO_HUB_SERVICE_TOKEN=..*' .env; then
     unset HUB_GENERATED
 fi
 
+# 评测完成通知的入站凭据：整栈 deploy.sh 与安装脚本部署评测时沿用这里的值，这里只补缺失。
+if ! grep -q '^ONTO_EVALUATION_SERVICE_TOKEN=..*' .env; then
+    EVALUATION_GENERATED="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+    printf '\nONTO_EVALUATION_SERVICE_TOKEN=%s\n' "${EVALUATION_GENERATED}" >> .env
+    chmod 600 .env
+    unset EVALUATION_GENERATED
+fi
+
 # auth-server 零配置直连：首次部署自动生成初始管理员密码，写入 .env 并在结尾提示。
 # 已有用户数据的部署（卷非空）该变量不再生效，保留无害。
 BOOTSTRAP_GENERATED=""

@@ -1,17 +1,37 @@
 """Durable attempts, remote reconciliation and separate Judge retries."""
+import base64
 import json
+import random
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
+from .artifacts import clip, failed_first, redact
 from .core import Failure, digest
+from .judge_settings import connection_test_failure
 
 TERMINAL={'completed','failed','cancelled','awaiting_input'}
 SETTLED={'settled','execution_error','cancelled','manual'}
 # Questions of one run sent to consumer at the same time; chosen per run when it is created.
 DEFAULT_CONCURRENCY=4
 MAX_CONCURRENCY=8
+# Tool failures kept per case; each message is at most 1 KiB, as in the consumer's own traces.
+TRACE_FAILURES=20
+# Tool calls kept per case as evidence for optimization suggestions: at most 12 calls, each preview
+# 200 characters after redaction, so one case stays near 10k characters.
+EVIDENCE_CALLS=12
+EVIDENCE_PREVIEW=200
+# A run's login is checked with the account service at most this often, and renewed from its refresh
+# token this long before the access token expires (access tokens live 15 minutes by default).
+VERIFY_SECONDS=60
+RENEW_SECONDS=120
+LOGIN_EXPIRED='登录凭证已过期，请重新登录后点击“授权并继续”'
+# Consumer fails a run with SESSION_PREPARE_FAILED when it cannot set up the session before the question starts, e.g.
+# when concurrent cases in one workspace collide with session compaction. Nothing was answered, so the case is resubmitted
+# in a new session, at most this many submissions in all, as the earlier evaluation pipeline did.
+SESSION_ATTEMPTS=6
+SESSION_PREPARE_FAILED='会话运行状态准备失败'
 JUDGE_SYSTEM='''你是评测判分员，比较问题、参考答案和智能体回答。
 pass=关键结论与数值一致；partial=方向正确但遗漏；fail=关键结论错误。
 先对齐比较范围：整体、月度或汇总答案只和同层级汇总比较，不能拿单行局部值替代。
@@ -56,6 +76,17 @@ class Judge:
 
     def preflight(self,current=None,owner=None):
         self.score('合成协议检查：1 加 1 等于几？','2','2',current=current,owner=owner)
+
+
+def preview(value):
+    """One bounded, redacted line of a tool input, output or error preview."""
+    if value is None or value=='': return ''
+    text=value if isinstance(value,str) else json.dumps(value,ensure_ascii=False)
+    return clip(' '.join(redact(text).split()),EVIDENCE_PREVIEW)
+
+
+def error_text(error):
+    return str((error.get('message') or '') if isinstance(error,dict) else (error or '')).strip()
 
 
 class Consumer:
@@ -116,6 +147,55 @@ class Consumer:
             raise taken
         return workspace_id
 
+    def trace(self,token,ws,remote_id):
+        """Tool calls and failures of a finished consumer run, read from its bounded event replay.
+
+        The user token only lives for the run, so this evidence must be collected when a case settles.
+        It never fails the case: the report states that the trace was unavailable instead. ``calls`` are
+        numbered in call order and stored apart from the case as evidence for optimization suggestions.
+        """
+        try:
+            raw=self.http.request('GET',self.config.consumer_url,'/agentic/runs/'+quote(remote_id,safe='')+'/events?after_seq=0',
+                                  token=token,workspace=ws,limit=1024*1024,timeout=15)
+            calls,failures,items,open_calls=0,[],[],[]
+            for block in raw.decode('utf-8').split('\n\n'):
+                data='\n'.join(line[5:].strip() for line in block.splitlines() if line.startswith('data:'))
+                event=json.loads(data) if data else None
+                if not isinstance(event,dict): continue
+                payload=event.get('payload') if isinstance(event.get('payload'),dict) else {}
+                name=str(payload.get('name') or payload.get('tool_name') or '').strip()[:256]
+                key=str(payload.get('tool_call_id') or '')
+                if event.get('event_type')=='tool.started':
+                    calls+=1
+                    item={'n':len(items)+1,'tool':name[:64],'status':'started',
+                          'input':preview(payload.get('input_preview',payload.get('input')))}
+                    items.append(item)
+                    open_calls.append((key,item))
+                elif event.get('event_type')=='tool.finished':
+                    # Pair by call ID; without one, by the earliest unfinished call of the same tool.
+                    match=next((pair for pair in open_calls if (pair[0]==key if key else pair[1]['tool']==name[:64])),None)
+                    if match:
+                        open_calls.remove(match)
+                        item=match[1]
+                    else:
+                        item={'n':len(items)+1,'tool':name[:64],'status':'started','input':''}
+                        items.append(item)
+                    failed=str(payload.get('status') or '').strip().lower() in ('error','failed')
+                    item['status']='failed' if failed else 'completed'
+                    item['output']=preview(payload.get('output_preview'))
+                    if failed:
+                        error=error_text(payload.get('error'))
+                        item['error']=preview(error)
+                        item['code']=str(payload.get('error_code') or '')[:80]
+                        if name and error and len(failures)<TRACE_FAILURES:
+                            failures.append({'tool_name':name,'error':error[:1024]})
+            kept=failed_first([{k:v for k,v in item.items() if v!=''} for item in items],EVIDENCE_CALLS)
+            return {'status':'complete','tool_calls':calls,'tool_failures':failures,'calls':kept,'omitted_calls':len(items)-len(kept)}
+        except Failure as exc:
+            return {'status':'unavailable','error':exc.message}
+        except (ValueError,UnicodeError):
+            return {'status':'unavailable','error':'执行事件格式无法解析'}
+
     def global_models(self,token):
         """Enabled models of the consumer global pool, at most 100. Listing needs any workspace the user can open."""
         listing=self.call('GET','/workspaces',token)
@@ -140,12 +220,22 @@ class Consumer:
         return dict(id=selected,revision=digest(value),profiles=value)
 
     def install(self,token,ws,raw,receipt):
+        def upload(**extra):
+            try:
+                self.call('POST','/ontologies/import-zip',token,ws,files={'file':('package.zip',raw,'application/zip')},**extra)
+            except Failure as exc:
+                # Overwriting cannot help: consumer keeps one package per name and an ID other than this one holds it.
+                if exc.upstream_code=='ontology_name_conflict':
+                    raise Failure('package_name_conflict','评测工作空间中已有同名但本体 ID 不同的知识包（常见于知识包身份统一前导入的旧版本），'
+                                  '无法安装本次评测的版本。请在消费服务中删除该工作空间里的旧知识包，或在数据源中更换评测工作空间后恢复评测',
+                                  409,'package_install') from exc
+                raise
         try:
-            self.call('POST','/ontologies/import-zip',token,ws,files={'file':('package.zip',raw,'application/zip')})
+            upload()
         except Failure as exc:
-            if exc.status!=409: raise
+            if exc.status!=409 or exc.code=='package_name_conflict': raise
             # Retry the exact immutable Hub bytes of this version, also in a reused graph workspace.
-            self.call('POST','/ontologies/import-zip',token,ws,data={'action':'overwrite_version'},files={'file':('package.zip',raw,'application/zip')})
+            upload(data={'action':'overwrite_version'})
         result=self.call('PUT','/ontologies/'+quote(receipt['ontology_id'],safe='')+'/active-version',token,ws,
                          json={'version':receipt['version']})
         if result.get('active_version')!=receipt['version']:
@@ -177,6 +267,20 @@ def consumer_failure(remote):
             'message':f'consumer 执行失败（{code}）{suffix}','phase':'cases'}
 
 
+def prepare_failed(remote):
+    """Whether consumer failed the run before it started; older consumers report only the message."""
+    if remote.get('status')!='failed': return False
+    error=remote.get('error')
+    if isinstance(error,dict):
+        return error.get('error_code')=='SESSION_PREPARE_FAILED' or SESSION_PREPARE_FAILED in str(error.get('message') or '')
+    return SESSION_PREPARE_FAILED in str(error or '')
+
+
+def retry_delay(attempt):
+    """Seconds before the given retry: doubling from 2 up to 30, jittered so concurrent cases do not collide again."""
+    return min(2*2**(attempt-1),30)*random.uniform(.8,1.2)
+
+
 def report(run):
     counts={k:0 for k in ('pass','partial','fail','execution_error','judge_error','manual','cancelled','pending')}
     executed=0
@@ -198,6 +302,33 @@ def report(run):
                 reproducibility_note='外部连接数据可能变化，固定配置不保证数据完全复现' if run.get('source',{}).get('mode')=='connection' else '')
 
 
+class Credential:
+    """One run's login, only in memory: never stored, logged or returned."""
+
+    def __init__(self,access,refresh=''):
+        self.access,self.refresh,self.checked=access,refresh,0.0
+        self.lock=threading.Lock()
+
+    def due(self,now):
+        """Renew only a token whose expiry is known and near; an opaque token waits for its rejection."""
+        exp=expiry(self.access)
+        return bool(self.refresh) and 0<exp and exp-now<RENEW_SECONDS
+
+
+def expiry(token):
+    """The exp claim of a JWT access token, read without verification and only to decide when to renew."""
+    try:
+        part=token.split('.')[1]
+        return float(json.loads(base64.urlsafe_b64decode(part+'='*(-len(part)%4))).get('exp') or 0)
+    except (IndexError,ValueError,TypeError,AttributeError):
+        return 0.0
+
+
+def login_failure(exc):
+    """Any rejected login becomes one actionable message; other failures stay as they are."""
+    return Failure('login_expired',LOGIN_EXPIRED,401,'authorization') if exc.status==401 else exc
+
+
 class Engine:
     def __init__(self,store,identity,packages,data_sources,consumer,judge):
         self.store,self.identity,self.packages,self.data,self.consumer,self.judge=store,identity,packages,data_sources,consumer,judge
@@ -206,25 +337,58 @@ class Engine:
         self.tokens={}
         self.active=set()
         self.stopping=False
+        self.on_stop=None  # Called with (owner, run id, user token) whenever execution of a run ends.
 
-    def start(self,owner,rid,token):
+    def start(self,owner,rid,token,refresh=''):
         with self.guard:
             if self.stopping:
                 raise Failure('draining','服务正在停止',503)
+            previous=self.tokens.get((owner,rid))
+            # A client that sends no refresh token keeps the one handed over earlier for this run.
+            credential=Credential(token,refresh or (previous.refresh if previous else ''))
             if (owner,rid) not in self.active:
                 if len(self.active)>=16 or any(key[0]==owner for key in self.active):
                     raise Failure('evaluation_busy','已有活动评测或服务队列已满，请稍后恢复',409)
-                self.tokens[(owner,rid)]=token
+                run=self.store.get(owner,rid,'runs')
+                # Show the resumed run as working at once, not only after preflight and data checks finish.
+                if run['status'] in ('interrupted','waiting_auth') and not run.get('cancel_requested'):
+                    self.update(owner,rid,status='preparing',error=None)
+                self.tokens[(owner,rid)]=credential
                 self.active.add((owner,rid))
                 self.pool.submit(self.execute,owner,rid)
             else:
-                self.tokens[(owner,rid)]=token
+                self.tokens[(owner,rid)]=credential
 
     def token(self,owner,rid):
-        token=self.tokens.get((owner,rid),'')
-        if self.identity.verify(token)!=owner:
-            raise Failure('identity_changed','用户身份发生变化',403,'authorization')
-        return token
+        """The run's access token, renewed shortly before it expires and checked at most once a minute."""
+        credential=self.tokens.get((owner,rid))
+        if not credential:
+            raise Failure('login_expired',LOGIN_EXPIRED,401,'authorization')
+        with credential.lock:
+            now=time.time()
+            if credential.due(now):
+                self.renew(credential)
+            if now-credential.checked>=VERIFY_SECONDS:
+                try:
+                    subject=self.identity.verify(credential.access)
+                except Failure as exc:
+                    raise login_failure(exc) from exc
+                if subject!=owner:
+                    raise Failure('identity_changed','用户身份发生变化',403,'authorization')
+                credential.checked=now
+            return credential.access
+
+    def renew(self,credential):
+        """Best effort: on failure the current access token is used until it expires."""
+        try:
+            value=self.identity.renew(credential.refresh)
+        except Failure as exc:
+            if exc.upstream_status in (400,401) or exc.status==401:
+                credential.refresh=''  # Revoked or expired: wait for the user to authorize again.
+            return
+        credential.access=value['access_token']
+        credential.refresh=value.get('refresh_token') or credential.refresh
+        credential.checked=0.0  # The new token is checked against the owner before use.
 
     def update(self,owner,rid,**fields):
         with self.guard:
@@ -269,6 +433,7 @@ class Engine:
         try:
             self._execute(owner,rid)
         except Failure as exc:
+            exc=login_failure(exc)
             pending_cancel=self.store.get(owner,rid,'runs').get('cancel_requested',False)
             self.update(owner,rid,status='waiting_auth' if exc.status in (401,403) else 'cancelling' if pending_cancel else 'interrupted',error=exc.payload())
         except Exception:
@@ -277,7 +442,13 @@ class Engine:
         finally:
             with self.guard:
                 self.active.discard((owner,rid))
-                self.tokens.pop((owner,rid),None)
+                credential=self.tokens.pop((owner,rid),None)
+            if credential:
+                # Report generation reads the package right after this; hand it a token that is still valid.
+                with credential.lock:
+                    if credential.due(time.time()):
+                        self.renew(credential)
+            if self.on_stop and credential: self.on_stop(owner,rid,credential.access)
 
     def _execute(self,owner,rid):
         run=self.store.get(owner,rid,'runs')
@@ -289,7 +460,12 @@ class Engine:
         if not run.get('started_at'): run=self.update(owner,rid,started_at=time.time(),error=None)
         if run['judge']!=self.judge.profile(owner=owner):
             raise Failure('configuration_changed','Judge 配置已变化，请创建新轮次',409)
-        self.judge.preflight(owner=owner)
+        try:
+            self.judge.preflight(owner=owner)
+        except Failure as exc:
+            # A model gateway rejecting its API Key must not read as an expired user login.
+            if exc.code=='dependency_rejected': raise connection_test_failure(exc) from exc
+            raise
         if not run.get('workspace'):
             scope=self.configured_workspace(run)
             if scope:
@@ -354,39 +530,49 @@ class Engine:
             return
         token=self.token(owner,rid)
         if not case.get('answer'):
-            if not case.get('remote_id'):
-                # Consumer /runs persists the session fingerprint and idempotency key.
-                # Reconciliation resubmits the exact same request, never a new session.
-                if self.consumer.profile(token,ws,run.get('model_profile_id',''))!=run['model']:
-                    raise Failure('configuration_changed','问答模型发生变化',409)
-                case['status']='unknown'
-                self.save_case(owner,rid,index,case)
-                response=self.consumer.call('POST','/runs',token,ws,
-                    headers={'Idempotency-Key':rid+'-'+str(index)},json={
-                        'request':case['question'],'session_id':'eval-'+rid+'-'+str(index),
-                        'model_profile_id':run['model']['id'],'include_trace':True})
-                case['remote_id']=response['run_id']
-                case['status']='executing'
-                self.save_case(owner,rid,index,case)
-            deadline=time.monotonic()+900
             while True:
-                if self.stopping: return
-                if time.monotonic()>deadline:
-                    raise Failure('remote_timeout','消费运行尚未结束，请对账恢复',504,'cases')
+                if not case.get('remote_id'):
+                    if self.consumer.profile(token,ws,run.get('model_profile_id',''))!=run['model']:
+                        raise Failure('configuration_changed','问答模型发生变化',409)
+                    case['status']='unknown'
+                    self.save_case(owner,rid,index,case)
+                    case['remote_id']=self.submit(token,rid,run,index,case)
+                    case['status']='executing'
+                    self.save_case(owner,rid,index,case)
+                deadline=time.monotonic()+900
+                while True:
+                    if self.stopping: return
+                    if time.monotonic()>deadline:
+                        raise Failure('remote_timeout','消费运行尚未结束，请对账恢复',504,'cases')
+                    token=self.token(owner,rid)
+                    cancelling=self.store.get(owner,rid,'runs').get('cancel_requested',False)
+                    remote_path='/runs/'+quote(case['remote_id'],safe='')
+                    if cancelling:
+                        self.consumer.call('POST',remote_path+'/cancel',token,ws,json={})
+                    response=self.consumer.call('GET',remote_path,token,ws)
+                    if response['status'] in TERMINAL: break
+                    time.sleep(1)
+                attempt=case.get('attempt',0)+1
+                if not prepare_failed(response) or attempt>=SESSION_ATTEMPTS: break
+                # Nothing is in flight while waiting, so a stop or cancellation here simply leaves the case pending.
+                case.update(attempt=attempt,status='pending')
+                del case['remote_id']
+                self.save_case(owner,rid,index,case)
+                if not self.backoff(owner,rid,retry_delay(attempt)): return
                 token=self.token(owner,rid)
-                cancelling=self.store.get(owner,rid,'runs').get('cancel_requested',False)
-                remote_path='/runs/'+quote(case['remote_id'],safe='')
-                if cancelling:
-                    self.consumer.call('POST',remote_path+'/cancel',token,ws,json={})
-                response=self.consumer.call('GET',remote_path,token,ws)
-                if response['status'] in TERMINAL: break
-                time.sleep(1)
+            trace=self.consumer.trace(token,ws,case['remote_id'])
+            calls,omitted=trace.pop('calls',None),trace.pop('omitted_calls',0)
+            if calls is not None:
+                # Kept beside the run record: the run detail page reads the whole record every few seconds.
+                self.store.put_evidence(owner,rid,index,{'calls':calls,'omitted':omitted})
+            case['trace']=trace
             case['evidence']={'remote_run_id':case['remote_id'],'status':response['status'],
-                              'trace_status':'not_collected'}
+                              'trace_status':'collected' if trace['status']=='complete' else 'not_collected'}
             answer=final_answer(response)
             if response['status']!='completed' or not answer:
                 case['status']='cancelled' if response['status']=='cancelled' else 'execution_error'
                 case['error']=consumer_failure(response)
+                if case.get('attempt'): case['error']['message']+=f'（已换新会话重试 {case["attempt"]} 次）'
                 self.save_case(owner,rid,index,case)
                 return
             case['answer']=answer
@@ -403,6 +589,25 @@ class Engine:
                 case['error']=exc.payload()
         self.save_case(owner,rid,index,case)
 
+    def submit(self,token,rid,run,index,case):
+        """Consumer /runs persists the session fingerprint and idempotency key, so reconciliation resubmits the exact same
+        request of one attempt; only a retry after a failed session preparation starts a new session."""
+        suffix=str(index)+(f'-{case["attempt"]}' if case.get('attempt') else '')
+        response=self.consumer.call('POST','/runs',token,run['workspace'],
+            headers={'Idempotency-Key':rid+'-'+suffix},json={
+                'request':case['question'],'session_id':'eval-'+rid+'-'+suffix,
+                'model_profile_id':run['model']['id'],'include_trace':True})
+        return response['run_id']
+
+    def backoff(self,owner,rid,seconds):
+        """Wait before a retry; False as soon as the service stops or the run is being cancelled."""
+        until=time.monotonic()+seconds
+        while True:
+            if self.stopping or self.store.get(owner,rid,'runs').get('cancel_requested'): return False
+            left=until-time.monotonic()
+            if left<=0: return True
+            time.sleep(min(1,left))
+
     def _cancel(self,owner,rid,run):
         """Cancellation does not require Judge, mapping, database or model readiness."""
         for index,case in enumerate(run['cases']):
@@ -410,11 +615,7 @@ class Engine:
                 continue
             token=self.token(owner,rid)
             if not case.get('remote_id') and case['status']=='unknown':
-                response=self.consumer.call('POST','/runs',token,run['workspace'],
-                    headers={'Idempotency-Key':rid+'-'+str(index)},json={
-                        'request':case['question'],'session_id':'eval-'+rid+'-'+str(index),
-                        'model_profile_id':run['model']['id'],'include_trace':True})
-                case['remote_id']=response['run_id']
+                case['remote_id']=self.submit(token,rid,run,index,case)
                 self.update(owner,rid,cases=run['cases'])
             if case.get('remote_id'):
                 path='/runs/'+quote(case['remote_id'],safe='')

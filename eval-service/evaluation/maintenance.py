@@ -38,7 +38,9 @@ def main():
             if restored.execute('PRAGMA integrity_check').fetchone()[0]!='ok':
                 raise Failure('restore_corrupt','恢复数据校验失败',409)
     store=Store(args.data_dir)
-    try: store.recover()
+    try:
+        store.recover()
+        store.prune_orphans()
     finally: store.db.close()
 
 

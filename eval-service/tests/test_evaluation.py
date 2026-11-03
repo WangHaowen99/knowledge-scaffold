@@ -62,6 +62,7 @@ class Dependencies:
         self.lock=threading.Lock()
         self.workspaces={}
         self.submitted_models=[]
+        self.events=''
         self.profiles=[
             {'id':'global:synthetic','scope':'global','name':'Synthetic','model':'synthetic','provider':'openai','enabled':True,'is_default':True},
             {'id':'global:synthetic_alt','scope':'global','name':'Synthetic alternative','model':'synthetic-alt','provider':'openai','enabled':True,'is_default':False},
@@ -69,6 +70,8 @@ class Dependencies:
         ]
 
     def request(self,method,base,path,**kwargs):
+        if path.startswith('/agentic/runs/'):
+            return self.events.encode()
         rid=path.split('/')[-2]
         return self.releases[rid][0]
 
@@ -239,6 +242,97 @@ def test_unknown_submission_reconciles_same_id(environment):
     time.sleep(.05)
     assert wait(client,record['id'])['status']=='completed'
     assert len(deps.submissions)==1
+
+
+def rejecting_imports(deps,code):
+    """Consumer answers package imports with 409 and the given error code: every time for a name conflict, only
+    the first time for an existing version. Returns the form data of each import and a function restoring deps."""
+    original,attempts=deps.json,[]
+    def json_call(method,base,path,**kwargs):
+        if path.endswith('/import-zip'):
+            attempts.append(kwargs.get('data'))
+            if code or len(attempts)==1:
+                raise Failure('dependency_rejected','依赖服务拒绝请求',409,'dependency',upstream_status=409,upstream_code=code)
+        return original(method,base,path,**kwargs)
+    deps.json=json_call
+    return attempts,lambda: setattr(deps,'json',original)
+
+
+def test_package_name_conflict_interrupts_with_its_reason(environment):
+    client,app,deps,cfg=environment
+    attempts,restore=rejecting_imports(deps,'ontology_name_conflict')
+    record=run(client,preparation(client))
+    result=wait(client,record['id'])
+    assert result['status']=='interrupted' and result['error']['code']=='package_name_conflict'
+    assert '同名但本体 ID 不同的知识包' in result['error']['message'] and result['error']['retryable'] is False
+    # Overwriting cannot resolve a name held by another ontology, so it is not attempted.
+    assert attempts==[None] and not deps.submissions
+    restore()
+    client.post('/evaluation/api/runs/'+record['id']+'/resume',json={})
+    time.sleep(.05)
+    assert wait(client,record['id'])['status']=='completed'
+
+
+def test_resume_shows_the_run_as_working_at_once(environment):
+    client,app,deps,cfg=environment
+    deps.judge_fail=True
+    record=run(client,preparation(client))
+    assert wait(client,record['id'])['status']=='interrupted'
+    deps.judge_fail=False
+    resumed=client.post('/evaluation/api/runs/'+record['id']+'/resume',json={}).json()
+    # Without waiting for preflight and data checks, the page no longer shows the old interruption.
+    assert resumed['status']=='preparing' and resumed['error'] is None
+    assert wait(client,record['id'])['status']=='completed'
+
+
+def rejecting(deps,matches,status):
+    original=deps.json
+    def json_call(method,base,path,**kwargs):
+        if matches(path,kwargs):
+            raise Failure('dependency_rejected','依赖服务拒绝请求',status,'dependency',upstream_status=status)
+        return original(method,base,path,**kwargs)
+    deps.json=json_call
+
+
+def test_a_rejected_login_waits_for_authorization_with_its_reason(environment):
+    client,app,deps,cfg=environment
+    rejecting(deps,lambda path,kwargs: path=='/agentic/runs',401)
+    result=wait(client,run(client,preparation(client))['id'])
+    assert result['status']=='waiting_auth' and result['error']['code']=='login_expired'
+    assert result['error']['message']=='登录凭证已过期，请重新登录后点击“授权并继续”'
+
+
+def test_a_rejected_model_api_key_is_not_an_expired_login(environment):
+    client,app,deps,cfg=environment
+    rejecting(deps,lambda path,kwargs: path=='/chat/completions' and '合成协议检查' in kwargs['json']['messages'][1]['content'],401)
+    result=wait(client,run(client,preparation(client))['id'])
+    assert result['status']=='interrupted' and result['error']['code']=='judge_test_authentication'
+    assert 'API Key' in result['error']['message']
+
+
+def test_the_refresh_token_is_handed_to_the_engine_and_never_stored(environment):
+    client,app,deps,cfg=environment
+    handed=[]
+    start=app.state.engine.start
+    app.state.engine.start=lambda owner,rid,token,refresh='': (handed.append(refresh),start(owner,rid,token,refresh))[1]
+    prep=preparation(client)
+    cases=client.post('/evaluation/api/eval-sets',json={'name':'Synthetic set','cases':[{'question':'Synthetic question','reference':'2'}]}).json()
+    response=client.post('/evaluation/api/runs',json={'request_id':'run_refresh','preparation_id':prep['id'],'eval_set_id':cases['id']},
+                         headers={'X-Refresh-Token':'synthetic-refresh-secret'})
+    assert response.status_code==202,response.text
+    assert wait(client,response.json()['id'])['status']=='completed'
+    assert handed==['synthetic-refresh-secret']
+    tables=[row[0] for row in app.state.store.db.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+    dump=' '.join(str(row) for table in tables for row in app.state.store.db.execute(f'SELECT * FROM {table}'))
+    assert 'synthetic-refresh-secret' not in dump
+
+
+def test_existing_version_is_overwritten_with_the_same_bytes(environment):
+    client,app,deps,cfg=environment
+    attempts,_=rejecting_imports(deps,'')
+    record=run(client,preparation(client))
+    assert wait(client,record['id'])['status']=='completed'
+    assert attempts==[None,{'action':'overwrite_version'}]
 
 
 def test_cancel_confirms_remote_terminal(environment):

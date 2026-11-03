@@ -13,7 +13,9 @@ for parent in Path(__file__).resolve().parents:
 
 @pytest.fixture(autouse=True)
 def evaluation_hub_archive(request, tmp_path, monkeypatch):
-    if request.module.__name__.split('.')[-1] not in ('test_modeling_eval', 'test_publish_binding_gate'):
+    if request.module.__name__.split('.')[-1] not in (
+        'test_modeling_eval', 'test_publish_binding_gate', 'test_eval_import', 'test_eval_presets'
+    ):
         return
     from hub.storage import Store
     from hub.package_store import PackageStore

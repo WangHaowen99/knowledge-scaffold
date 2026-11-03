@@ -391,12 +391,14 @@ stage_evaluation_package() {
 
 deploy_evaluation() {
     [ -n "${EVALUATION_PACKAGE}" ] || return 0
-    local dir="${INSTALL_ROOT}/eval-service" network hub_token consumer_token
+    local dir="${INSTALL_ROOT}/eval-service" network hub_token consumer_token modeling_token
     [ -f "${dir}/deploy/deploy.sh" ] || die "评测服务发布目录缺少 deploy/deploy.sh：${dir}"
     network="$(detect_consumer_network)"
     [ -n "${network}" ] || die '无法探测 Consumer 容器网络，请确认 onto-agent-backend 已在运行'
     hub_token="$(env_get "${INSTALL_ROOT}/knowledge-hub/.env" HUB_EVALUATION_SERVICE_TOKEN)"
     consumer_token="$(env_get "${CONSUMER_DIR:-${INSTALL_ROOT}/onto-agent}/backend/.env" EVALUATION_SERVICE_TOKEN)"
+    # Onto Modeling 的 deploy.sh 生成入站凭据；未部署时留空，评测只告警、不发完成通知
+    modeling_token="$(env_get "${INSTALL_ROOT}/onto-modeling/.env" ONTO_EVALUATION_SERVICE_TOKEN)"
     [ -n "${hub_token}" ] || [ -n "${EVAL_ENV_FILE:-}" ] \
         || die 'Hub 缺少评测凭据，请先更新知识包 Hub'
     log "部署独立评测服务：${dir}（网络 ${network}）"
@@ -404,9 +406,10 @@ deploy_evaluation() {
         && CONSUMER_NETWORK="${network}" \
         HUB_EVALUATION_SERVICE_TOKEN="${hub_token}" \
         EVALUATION_SERVICE_TOKEN="${consumer_token}" \
+        EVAL_MODELING_SERVICE_TOKEN="${modeling_token}" \
         bash ./deploy/deploy.sh) \
         || die "独立评测服务部署失败；修复后可单独执行 bash ${dir}/deploy/deploy.sh"
-    unset hub_token consumer_token
+    unset hub_token consumer_token modeling_token
     local elapsed=0
     until docker exec knowledge-evaluation python -c \
         "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/evaluation/api/health', timeout=3)" \

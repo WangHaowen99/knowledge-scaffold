@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { api, allPages, requestId, TOKEN } from '../src/api.js';
+import { api, allPages, requestId, REFRESH, TOKEN } from '../src/api.js';
 function storage() {
   const values = new Map();
   return {
@@ -55,4 +55,26 @@ test('paginated task loading includes activity beyond the first page and rejects
   );
   globalThis.fetch = async () => ({ ok: true, json: async () => ({ items: [], next_offset: 0 }) });
   await assert.rejects(allPages('/runs'), /分页响应重复/);
+});
+test('only starting, resuming or stopping a run hands over the refresh token', async () => {
+  globalThis.localStorage = storage();
+  localStorage.setItem(TOKEN, 'synthetic-access');
+  localStorage.setItem(REFRESH, 'synthetic-refresh');
+  const sent = [];
+  globalThis.fetch = async (url, init) => {
+    sent.push([url.replace('/evaluation/api', ''), init.method, init.headers['X-Refresh-Token'] || '']);
+    return { ok: true, json: async () => ({}) };
+  };
+  await api('/runs', { request_id: 'synthetic-request' });
+  await api('/runs/run_demo/resume', {});
+  await api('/runs/run_demo/cancel', {});
+  await api('/runs/run_demo/results/1/override', { verdict: 'pass' });
+  await api('/runs/run_demo');
+  assert.deepEqual(sent, [
+    ['/runs', 'POST', 'synthetic-refresh'],
+    ['/runs/run_demo/resume', 'POST', 'synthetic-refresh'],
+    ['/runs/run_demo/cancel', 'POST', 'synthetic-refresh'],
+    ['/runs/run_demo/results/1/override', 'POST', ''],
+    ['/runs/run_demo', 'GET', ''],
+  ]);
 });

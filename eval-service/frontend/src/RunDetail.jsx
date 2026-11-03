@@ -27,6 +27,8 @@ import {
   Skeleton,
   useAction,
 } from './ui.jsx';
+import { useModelingProjects } from './modelingProjects.js';
+import { RunArtifacts, RunHistory } from './RunOutputs.jsx';
 
 export function RunDetail({ id, navigate, onAction, onChanged }) {
   const [run, setRun] = useState(null),
@@ -45,6 +47,7 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
   const generation = useRef(0),
     lock = useRef(false),
     rowRefs = useRef(new Map());
+  const modelingProject = useModelingProjects(run ? [run] : []);
   async function refresh() {
     if (lock.current) return;
     lock.current = true;
@@ -156,7 +159,15 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
     );
   const phaseIndex = run.phase === 'finished' ? 4 : PHASES.findIndex(([key]) => key === run.phase);
   const current = cases.find((c) => ['executing', 'unknown', 'answer_ready'].includes(c.status));
-  const versions = packageVersions(run);
+  const versions = packageVersions(run),
+    project = modelingProject(run);
+  const facts = [
+    ['知识包 ID', packageName(run)],
+    ['知识包版本', `${versions.base || '—'}${versions.snapshot ? `（评测快照 ${versions.snapshot}）` : ''}`],
+    ['建模项目', project.label, project.title],
+    ['数据源', run.data_source_name || '数据源配置快照'],
+    ['评测集', run.eval_set_name || '评测集快照'],
+  ];
   return (
     <>
       {breadcrumb}
@@ -184,10 +195,14 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
           </>
         }
       >
-        {packageName(run)} / {versions.base || '—'}
-        {versions.snapshot && `（评测快照 ${versions.snapshot}）`} ·{' '}
-        {run.data_source_name || '数据源配置快照'} ·{' '}
-        {run.eval_set_name || '评测集快照'}
+        {facts.map(([label, value, title], i) => (
+          <React.Fragment key={label}>
+            {i > 0 && ' / '}
+            <span title={title}>
+              {label}：{value}
+            </span>
+          </React.Fragment>
+        ))}
       </Heading>
       {copyMessage && <Alert>{copyMessage}</Alert>}
       <div className="sync-status">
@@ -284,6 +299,10 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
             {hint && <small>{hint}</small>}
           </button>
         ))}
+      </div>
+      <div className="run-outputs-grid">
+        <RunArtifacts run={run} onChanged={refresh} />
+        <RunHistory run={run} navigate={navigate} />
       </div>
       <div className="run-grid">
         <section className="panel table-panel">

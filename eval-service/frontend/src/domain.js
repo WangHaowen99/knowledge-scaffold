@@ -65,6 +65,55 @@ export function packageVersions(run) {
   };
 }
 // Runs still queued have no started_at yet, so they show when they were created.
+// One row per knowledge package: its newest run, plus how many runs the package has.
+export function taskRows(items) {
+  return items.map((item) => ({ ...item.latest, run_count: item.run_count, package_executing: item.executing }));
+}
+function clock(seconds) {
+  const at = runStartTime({ created_at: seconds });
+  return at ? `${at.date} ${at.time}` : '';
+}
+// Which batch the judge model is working on and how long this generation has waited, for a page refreshed every few seconds.
+function generationProgress(progress, now) {
+  if (!progress) return '';
+  const step = progress.merging ? '合并各批结果' : progress.batches > 1 ? `第 ${progress.batch}/${progress.batches} 批` : '';
+  const minutes = Math.floor(Math.max(0, now - progress.started_at) / 60);
+  return [step, minutes < 1 ? '已等待不到 1 分钟' : `已等待 ${minutes} 分钟`].filter(Boolean).join(' · ');
+}
+// What the run detail can show of the report and optimization suggestions.
+export function artifactState(run, now = Date.now() / 1000) {
+  const a = run.artifacts,
+    stopped = !ACTIVE.has(run.status);
+  if (!stopped)
+    return { label: '评测进行中', tone: 'blue', hint: '评测结束后生成评测报告与优化建议', report: false, suggestions: false };
+  if (!a)
+    return { label: '未生成', tone: 'neutral', hint: '评测结束且有用例结果后自动生成', report: false, suggestions: false, canRegenerate: true };
+  const report = a.report === 'ready',
+    base = { report, suggestions: a.suggestions === 'ready', canRegenerate: a.status !== 'generating' };
+  if (a.status === 'generating') {
+    const hint = report ? ['评测报告已生成，优化建议生成中', generationProgress(a.progress, now)].filter(Boolean).join(' · ') : '';
+    return { ...base, label: '生成中', tone: 'blue', hint };
+  }
+  if (a.status === 'failed') return { ...base, label: '优化建议生成失败', tone: 'amber', hint: report ? '评测报告可查看' : '' };
+  // revision counts generations of this run's outputs, not knowledge package versions.
+  const at = clock(a.generated_at),
+    hint = [at && `生成于 ${at}`, a.revision > 1 && `第 ${a.revision} 次生成`].filter(Boolean).join(' · ');
+  return { ...base, label: '已生成', tone: 'green', hint };
+}
+// Delivery of the completion notification to onto-modeling.
+export function notificationState(n) {
+  if (!n || n.status === 'none') return null;
+  if (n.status === 'disabled') return { label: '未配置', tone: 'neutral', hint: '未配置建模通知凭据，建模服务打开页面时自行同步' };
+  if (n.status === 'delivered') return { label: '已送达', tone: 'green', hint: clock(n.delivered_at) };
+  if (n.status === 'rejected') return { label: '被拒绝', tone: 'red', hint: n.last_error || '', canRetry: true };
+  if (!n.attempts) return { label: '发送中', tone: 'blue', hint: '' };
+  return {
+    label: '重试中',
+    tone: 'amber',
+    hint: `已尝试 ${n.attempts} 次（${n.last_error || '未送达'}）${n.next_attempt ? `，下次 ${clock(n.next_attempt)}` : ''}`,
+    canRetry: true,
+  };
+}
 export function runStartTime(run) {
   const seconds = run?.started_at || run?.created_at;
   if (!seconds) return null;
@@ -123,14 +172,17 @@ export function parseRoute(hash = '') {
   return { page: 'tasks' };
 }
 export function parseCases(text) {
-  let items;
+  let value;
   try {
-    items = JSON.parse(text);
+    value = JSON.parse(text);
   } catch {
     throw new Error('文件不是有效的 JSON，请检查格式');
   }
-  if (!Array.isArray(items) || !items.length || items.length > 500)
-    throw new Error('评测集需要 1-500 条用例');
+  const items = Array.isArray(value) ? value : value?.cases;
+  if (!Array.isArray(items))
+    throw new Error('文件格式不正确：最外层应为用例数组，或包含 cases 数组的对象');
+  if (!items.length || items.length > 500)
+    throw new Error(`评测集需要 1-500 条用例，当前文件有 ${items.length} 条`);
   return items.map((item, i) => {
     if (typeof item?.question !== 'string' || !item.question.trim())
       throw new Error(`用例 ${i + 1} 缺少问题`);
@@ -150,7 +202,7 @@ export const GRAPH_SCOPE_DEFAULTS = { workspace_property: 'd2o_workspace_id', on
 export function emptySource() {
   return {
     name: '',
-    mode: 'dataset',
+    mode: 'connection',
     provider: 'nl2sql_http',
     input_ids: [],
     inputs: [],

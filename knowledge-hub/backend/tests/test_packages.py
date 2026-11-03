@@ -256,12 +256,22 @@ def test_http_contract_with_real_authorization_boundary(api):
         result = client.post('/api/package-publish-requests', headers=headers['consumer'], json=payload)
         assert result.status_code == 201, result.text
         receipt = result.json()
+        creator = dict(issuer='https://service.example.net', sub='operator_a')
+        assert receipt['creator'] == creator
+        assert client.post('/api/package-publish-requests', headers=headers['consumer'],
+                           json={**payload, 'creator': creator}).status_code == 422
         assert client.post('/api/package-publish-requests', headers=headers['consumer'], json=payload).status_code == 200
         assert client.put('/api/package-publish-requests/request_demo/content', headers={
             **headers['consumer'], 'X-Package-Digest': sha(data)}, files={'file': ('demo.zip', data)}).status_code == 200
         assert client.post('/api/package-publish-requests/request_demo/commit', headers=headers['consumer']).status_code == 200
         url = f'/api/packages/{receipt["ontology_id"]}/releases/{receipt["release_id"]}/package'
         for service in headers:
+            package_url = '/api/packages/ontology_demo'
+            assert client.get('/api/packages', headers=headers[service]).json()['items'][0]['creator'] == creator
+            assert client.get(package_url, headers=headers[service]).json()['creator'] == creator
+            assert client.get(package_url + '/releases', headers=headers[service]).json()['items'][0]['creator'] == creator
+            assert client.get(package_url + '/releases/' + receipt['release_id'],
+                              headers=headers[service]).json()['creator'] == creator
             response = client.get(url, headers=headers[service])
             assert response.status_code == 200 and response.content == data
             assert response.headers['x-package-digest'] == sha(data)

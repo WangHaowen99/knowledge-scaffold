@@ -36,7 +36,8 @@ def _prepare(tmp_path, mode='upgrade'):
     env.update(EVALUATION_CONFIG_SNAPSHOT=str(tmp_path / 'evaluation-config.snapshot'),
                CONSUMER_TOKEN_SNAPSHOT=str(tmp_path / 'consumer-token.snapshot'),
                EVALUATION_DOCKER_CALLS=str(tmp_path / 'evaluation-docker-calls.txt'),
-               STUB_HUB_EVALUATION_TOKEN=secrets.token_hex(32), STUB_CONSUMER_DIR=str(consumer))
+               STUB_HUB_EVALUATION_TOKEN=secrets.token_hex(32), STUB_CONSUMER_DIR=str(consumer),
+               STUB_ONTO_EVALUATION_TOKEN=secrets.token_hex(32))
     package = tmp_path / 'evaluation-v-test'
     (package / 'deploy').mkdir(parents=True)
     for name in ('deploy.sh', 'docker-compose.eval-service.yml'):
@@ -66,6 +67,12 @@ fi
     with hub_script.open('a') as stream:
         stream.write('\nprintf "HUB_EVALUATION_SERVICE_TOKEN=%s\\n" "$STUB_HUB_EVALUATION_TOKEN" >> .env\n')
     _repack(hub_package)
+    # Like the real Onto Modeling deploy.sh, the substitute keeps an inbound notification credential in .env.
+    onto_package = setup['packages'][2]
+    onto_script = onto_package.parent / (onto_package.name + '.stage') / 'onto-modeling/deploy.sh'
+    with onto_script.open('a') as stream:
+        stream.write('\nprintf "ONTO_EVALUATION_SERVICE_TOKEN=%s\\n" "$STUB_ONTO_EVALUATION_TOKEN" >> .env\n')
+    _repack(onto_package)
 
     # Exercise the real evaluation deployer without starting containers or using real credentials.
     docker = tmp_path / 'bin/docker'
@@ -166,6 +173,13 @@ def test_evaluation_uses_dependencies_after_consumer_restart(tmp_path, mode, int
     assert (setup['target'] / 'eval-service/deploy/.env').stat().st_mode & 0o777 == 0o600
     for key in ('EVAL_ENCRYPTION_KEY', 'EVAL_HUB_SERVICE_TOKEN', 'EVAL_CONSUMER_SERVICE_TOKEN'):
         assert config[key] not in output
+    if mode == 'legacy':
+        # Legacy migration in this flow skips Onto Modeling: notifications stay disabled with a warning.
+        assert 'EVAL_MODELING_SERVICE_TOKEN' not in config
+        assert 'EVAL_MODELING_SERVICE_TOKEN is empty' in output
+    else:
+        assert config['EVAL_MODELING_SERVICE_TOKEN'] == setup['env']['STUB_ONTO_EVALUATION_TOKEN']
+        assert config['EVAL_MODELING_SERVICE_TOKEN'] not in output
     assert 'up -d --no-build' in (tmp_path / 'evaluation-docker-calls.txt').read_text()
     assert 'evaluation-health' in (tmp_path / 'evaluation-docker-calls.txt').read_text()
     assert '独立评测服务已就绪' in output
