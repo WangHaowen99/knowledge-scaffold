@@ -189,7 +189,7 @@ async def _search_group(backend: Backend, request: Request, scope: list[str], id
     results = []
     for hit in hits:
         is_wiki = hit.get("chunk_type") == "wiki_page"
-        if (is_wiki and not want_wiki) or (not is_wiki and not want_chunks):
+        if not (want_wiki if is_wiki else want_chunks):
             continue
         result = _result(hit)
         if is_wiki and page_types and result["pageType"] not in page_types:

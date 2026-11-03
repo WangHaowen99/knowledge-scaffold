@@ -225,7 +225,9 @@ def test_a_failing_linked_from_keeps_the_search_results(client, providers):
 
 def test_search_wiki_stays_within_the_contract_top_k(client, providers):
     _run(mcp_server.search_wiki("泵", limit=20), Principal("mcp", frozenset({"retrieve"})))
-    sent = [meta["body"]["top_k"] for p in providers.values() for _, path, meta in p.calls if path == "/v1/search"]
+    sent = []
+    for provider in providers.values():
+        sent.extend(meta["body"]["top_k"] for _, path, meta in provider.calls if path == "/v1/search")
     assert sent and max(sent) <= 50
 
 

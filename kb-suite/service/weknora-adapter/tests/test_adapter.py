@@ -53,7 +53,8 @@ class FakeWeKnora:
             return ok([self.kb, {"id": "faq1", "type": "faq"}])
         if path == "/knowledge-bases" and request.method == "POST":
             return httpx.Response(201, json={"success": True, "data": {**self.kb, "id": "kb2", "name": body["name"]}})
-        if m := re.match(r"^/knowledge-bases/([^/]+)$", path):
+        m = re.match(r"^/knowledge-bases/([^/]+)$", path)
+        if m:
             if request.method == "PUT":
                 return ok(self.kb)
             return ok({**self.kb, "id": m.group(1)})

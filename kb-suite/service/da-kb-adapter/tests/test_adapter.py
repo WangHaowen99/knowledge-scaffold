@@ -37,7 +37,8 @@ class FakeDa:
             return httpx.Response(201, json={"id": "k2", "name": body["name"]})
         if path == "/kbs/k1/documents":
             return httpx.Response(200, json={"documents": self.docs})
-        if m := re.match(r"^/kbs/k1/documents/([^/]+)/status$", path):
+        m = re.match(r"^/kbs/k1/documents/([^/]+)/status$", path)
+        if m:
             if any(d["id"] == m.group(1) for d in self.docs):
                 return httpx.Response(200, json={"docId": m.group(1), "status": "ready"})
             return httpx.Response(404, json={"error": "Document not found"})
@@ -48,7 +49,8 @@ class FakeDa:
             if level == "L0":
                 return httpx.Response(200, json={"content": "泵房规程摘要", "level": "L0", "pageId": "p-l0"})
             return httpx.Response(404, json={"error": "No page found"})
-        if m := re.match(r"^/kbs/k1/pages/([^/]+)$", path):
+        m = re.match(r"^/kbs/k1/pages/([^/]+)$", path)
+        if m:
             if request.url.params.get("level") == "L2":
                 return httpx.Response(200, json={"id": "p-l2", "level": "L2", "pageType": "fulltext", "content": FULLTEXT})
             page_type = "structure_md" if self.structured else "overview"

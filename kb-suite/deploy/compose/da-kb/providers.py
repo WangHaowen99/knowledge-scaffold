@@ -13,15 +13,20 @@ never appears on a command line). DA's vector column is fixed at 1024 dimensions
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 
 
-def main() -> None:
+class MissingSettings(RuntimeError):
+    pass
+
+
+def provider_sql() -> str:
     base = os.environ.get("KBS_LLM_BASE_URL", "").rstrip("/")
     key = os.environ.get("KBS_LLM_API_KEY", "")
     if not base or not key:
-        sys.exit("KBS_LLM_BASE_URL and KBS_LLM_API_KEY must be set")
+        raise MissingSettings("KBS_LLM_BASE_URL and KBS_LLM_API_KEY must be set")
     chat = os.environ.get("DA_KB_CHAT_MODEL", "qwen-plus")
     embed = os.environ.get("DA_KB_EMBED_MODEL", "text-embedding-v4")
     value = {
@@ -36,11 +41,16 @@ def main() -> None:
                      "video_understand": ""},
     }
     literal = json.dumps(value, ensure_ascii=False).replace("'", "''")
-    sys.stdout.write(
-        "INSERT INTO settings (key, value) VALUES ('providers', '" + literal + "'::jsonb)\n"
-        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;\n"
-    )
+    return ("INSERT INTO settings (key, value) VALUES ('providers', '" + literal + "'::jsonb)\n"
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        sql = provider_sql()
+    except MissingSettings as exc:
+        sys.exit(str(exc))
+    # the SQL is this script's output, handed to psql through the pipe
+    output = logging.Logger("providers.sql", logging.INFO)
+    output.addHandler(logging.StreamHandler(sys.stdout))
+    output.info(sql)

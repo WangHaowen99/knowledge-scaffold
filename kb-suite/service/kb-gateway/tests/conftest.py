@@ -66,9 +66,11 @@ class FakeProvider:
         if path == "/v1/kbs" and request.method == "POST":
             kb = {"id": f"{next(iter(self.kbs))[:-3]}kb9", "name": body["name"], "description": "", "config": {}, "stats": {}}
             return self._json(kb, 201)
-        if m := re.match(r"^/v1/kbs/([^/]+)$", path):
+        m = re.match(r"^/v1/kbs/([^/]+)$", path)
+        if m:
             return self._json(self.kbs[m.group(1)]) if m.group(1) in self.kbs else self._json({"error": {"code": "not_found", "message": "no"}}, 404)
-        if m := re.match(r"^/v1/kbs/([^/]+)/documents$", path):
+        m = re.match(r"^/v1/kbs/([^/]+)/documents$", path)
+        if m:
             if request.method == "POST":
                 self.uploads.append({"kb": m.group(1), "content": request.content})
                 return self._json({"id": "new", "kb_id": m.group(1), "parse_status": "pending"}, 201)
@@ -125,7 +127,8 @@ class FakeProvider:
         if path == "/v1/uploads":
             self.uploads.append({"begin": body})
             return self._json({"upload_id": f"{self.prefix}up1", "part_size": 1024, "part_count": 1}, 201)
-        if m := re.match(r"^/v1/uploads/([^/]+)/parts/(\d+)$", path):
+        m = re.match(r"^/v1/uploads/([^/]+)/parts/(\d+)$", path)
+        if m:
             self.parts[int(m.group(2))] = request.content
             return self._json({"upload_id": m.group(1), "index": int(m.group(2))})
         if re.match(r"^/v1/uploads/[^/]+/complete$", path):
@@ -146,7 +149,8 @@ class FakeProvider:
             if body.get("trace"):
                 out["trace"] = {"counts": {"fused": len(hits), "returned": len(hits)}, "reranked": False, "variants": []}
             return self._json(out)
-        if m := re.match(r"^/v1/kbs/([^/]+)/wiki/(.+)$", path):
+        m = re.match(r"^/v1/kbs/([^/]+)/wiki/(.+)$", path)
+        if m:
             if m.group(2) == "page":
                 return self._json({"id": "w1", "slug": request.url.params.get("slug"), "title": "离心泵",
                                    "page_type": "entity", "summary": "泵", "content": "离心泵正文",
@@ -192,9 +196,8 @@ def make_client(env, providers, tmp_path, monkeypatch, extra_backends: list[dict
     from kb_gateway import config
 
     config.get_settings.cache_clear()
-    hosts = {"kbs.example.com": providers["kbs"], "wk.example.com": providers["wk"], **{
-        f"{b['id']}.example.com": providers[b["id"]] for b in (extra_backends or [])
-    }}
+    # each test backend "x" is served by providers["x"] at https://x.example.com
+    hosts = {f"{name}.example.com": provider for name, provider in providers.items()}
     transport = httpx.MockTransport(lambda request: hosts[request.url.host].handle(request))
     backends = parse_backends({"backends": [
         {"id": "kbs", "base_url": "https://kbs.example.com", "credential_env": "KBS_CRED", "tools_credential_env": "KBS_TOOLS_CRED",

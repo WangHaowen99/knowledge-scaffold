@@ -47,6 +47,10 @@ def _append(path: Path, key: str, value: str) -> None:
     path.chmod(0o600)
 
 
+class BootstrapError(RuntimeError):
+    """Setting WeKnora up cannot continue; main() reports it and exits non-zero."""
+
+
 def _wait(client: httpx.Client) -> None:
     for _ in range(90):
         try:
@@ -55,7 +59,7 @@ def _wait(client: httpx.Client) -> None:
         except httpx.HTTPError:
             pass
         time.sleep(2)
-    sys.exit("WeKnora did not become healthy")
+    raise BootstrapError("WeKnora did not become healthy")
 
 
 def _token(client: httpx.Client, email: str, password: str) -> tuple[str, int]:
@@ -69,7 +73,7 @@ def _token(client: httpx.Client, email: str, password: str) -> tuple[str, int]:
     body = login.json()
     tenant = (body.get("active_tenant") or {}).get("id") or (body.get("user") or {}).get("tenant_id")
     if tenant is None:
-        sys.exit("WeKnora login returned no tenant")
+        raise BootstrapError("WeKnora login returned no tenant")
     return body["token"], int(tenant)
 
 
@@ -133,18 +137,21 @@ def run(client: httpx.Client, out: Path, env: dict[str, str]) -> int:
     return written
 
 
-def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(message)s")  # NOSONAR(S4792)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    if len(sys.argv) != 2:
-        sys.exit("usage: bootstrap.py <env file>")
+def main(argv: list[str]) -> None:
+    if len(argv) != 2:
+        raise BootstrapError("usage: bootstrap.py <env file>")
     missing = [k for k in ("WEKNORA_URL", "WEKNORA_ADMIN_EMAIL", "WEKNORA_ADMIN_PASSWORD") if not os.environ.get(k)]
     if missing:
-        sys.exit(f"{', '.join(missing)} must be set")
+        raise BootstrapError(f"{', '.join(missing)} must be set")
     with httpx.Client(base_url=os.environ["WEKNORA_URL"], timeout=60, trust_env=False) as client:
-        written = run(client, Path(sys.argv[1]), dict(os.environ))
+        written = run(client, Path(argv[1]), dict(os.environ))
     logger.info("WeKnora ready for the adapter (%d new values written)", written)
 
 
 if __name__ == "__main__":
-    main()
+    logging.basicConfig(level=logging.INFO, format="%(message)s")  # NOSONAR(S4792)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    try:
+        main(sys.argv)
+    except BootstrapError as exc:
+        sys.exit(str(exc))

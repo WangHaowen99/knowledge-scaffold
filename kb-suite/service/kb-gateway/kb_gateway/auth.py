@@ -61,7 +61,7 @@ def parse_keys(spec: str, env: Mapping[str, str] | None = None) -> list[_Key]:
         name, var = name.strip(), var.strip()
         capabilities = frozenset(c.strip() for c in caps.split(",") if c.strip())
         unknown = capabilities - CAPABILITIES
-        if not name or not var or not capabilities or unknown:
+        if not all((name, var, capabilities)) or unknown:
             raise ValueError(f"bad KBGW_KEYS entry {entry!r} (unknown capabilities: {sorted(unknown)})")
         value = env.get(var, "")
         if not value:

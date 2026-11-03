@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import secrets
 from pathlib import Path
 
 import httpx
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[3] / "deploy" / "compose" / "weknora" / "bootstrap.py"
-ENV = {"WEKNORA_ADMIN_EMAIL": "owner@example.com", "WEKNORA_ADMIN_PASSWORD": "synthetic",
-       "KBS_LLM_BASE_URL": "https://llm.example.com/v1", "KBS_LLM_API_KEY": "synthetic"}
+FAKE_SECRET = secrets.token_hex(8)
+ENV = {"WEKNORA_ADMIN_EMAIL": "owner@example.com", "WEKNORA_ADMIN_PASSWORD": FAKE_SECRET,
+       "KBS_LLM_BASE_URL": "https://llm.example.com/v1", "KBS_LLM_API_KEY": FAKE_SECRET}
 
 
 @pytest.fixture(scope="module")
@@ -87,6 +89,5 @@ def test_weknora_url_is_required(bootstrap, monkeypatch, tmp_path):
     monkeypatch.delenv("WEKNORA_URL", raising=False)
     for key, value in ENV.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr("sys.argv", ["bootstrap.py", str(tmp_path / "weknora.env")])
-    with pytest.raises(SystemExit, match="WEKNORA_URL"):
-        bootstrap.main()
+    with pytest.raises(bootstrap.BootstrapError, match="WEKNORA_URL"):
+        bootstrap.main(["bootstrap.py", str(tmp_path / "weknora.env")])
