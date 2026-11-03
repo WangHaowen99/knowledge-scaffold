@@ -4,8 +4,8 @@ import { useApp } from '../app/context.js';
 import { navigate, pagePath } from '../app/router.js';
 import { toast } from '../app/toast.jsx';
 import { errorText } from '../api/errors.js';
-import { can } from '../state/roles.js';
 import { Icon, Kbd } from '../ui/index.jsx';
+import { contentHits, paletteList, staticItems } from './paletteModel.js';
 
 const listeners = new Set();
 export function openPalette() { listeners.forEach((fn) => fn()); }
@@ -18,32 +18,6 @@ export const PAGE_TITLES = {
   knowledge: '知识沉淀', scripts: '代码生成', plugins: '插件中心', me: '个人设置', ops: '运维中心', projects: '我的项目',
   create: '新建项目', import: '导入项目',
 };
-
-function staticItems({ projectId, inboxCount, hasPlugin, hasSubpage, user }) {
-  const canOps = can(user, 'ops.read');
-  if (!projectId) {
-    return [
-      ['跳转', '我的项目', 'grid', 'projects'], ['跳转', '新建项目…', 'plus', 'create'], ['跳转', '导入项目…', 'download', 'import'],
-      ['插件', '安装插件 / 能力包…', 'puzzle', 'plugins'], ['设置', '我的模型配置', 'key', 'me', { section: 'model' }],
-      ...(can(user, 'admin') ? [['设置', '系统设置', 'gear', 'sys']] : []),
-      ...(canOps ? [['运维', '查看运行状态', 'activity', 'ops']] : []),
-    ];
-  }
-  return [
-    ['跳转', '打开 Studio 图谱', 'graph', 'studio'], ['跳转', `待处理（${inboxCount ?? 0}）`, 'inbox', 'inbox'],
-    ...(hasSubpage('schema') ? [['跳转', '证据浏览器', 'db', 'schema']] : []), ['跳转', 'Studio 报告', 'filetext', 'reports'],
-    ['建模', '发起增量更新…', 'refresh', 'incremental'], ['建模', '调整业务切片…', 'layers', 'wb-blueprint', { dialog: 'blueprint' }],
-    // 开始自主构建走项目设置的开始入口（AB-03 预览 → 确认 → AB-04，契约 5.0）
-    ['建模', '开始自主构建…', 'rocket', 'proj-settings', { section: 'autobuild', dialog: 'start' }], ['建模', '自主构建设置', 'gear', 'proj-settings', { section: 'autobuild' }],
-    ...(hasPlugin('scenarios') ? [['建模', '补齐过期场景', 'flask', 'scenarios']] : []),
-    ['资料', '上传资料…', 'upload', 'resources'],
-    ...(hasSubpage('sources') ? [['资料', '连接业务系统…', 'plug', 'sources'], ['资料', '采集一次快照', 'scan', 'snapshots']] : []),
-    ['发布', '发布检查与发布…', 'upload', 'publish'], ['发布', '标记一个版本…', 'tag', 'versions'],
-    ['插件', '安装插件 / 能力包…', 'puzzle', 'plugins'], ['插件', '本项目已启用的能力', 'layers', 'proj-settings', { section: 'plugins' }],
-    ['设置', '我的模型配置', 'key', 'me', { section: 'model' }], ['设置', '对外 MCP 与 Token', 'link', 'proj-settings', { section: 'mcp' }],
-    ...(canOps ? [['运维', '查看运行状态', 'activity', 'ops']] : []),
-  ];
-}
 
 export function CommandPalette({ projectId, inboxCount, extensions, conversationId }) {
   const { api, user } = useApp();
@@ -74,13 +48,7 @@ export function CommandPalette({ projectId, inboxCount, extensions, conversation
         const cmds = q ? catalog.current.groups.flatMap((g) => g.items).filter((c) => c.available && (c.label.includes(q) || c.description.includes(q))) : [];
         const res = q ? await api.search(projectId, q) : null;
         if (!alive) return;
-        const hits = [];
-        (res?.term_summary || []).forEach((t2) => {
-          const b = t2.by_group;
-          hits.push({ label: `「${t2.term}」· 知识包 ${b.entries} 处、资料 ${b.materials} 处、报告 ${b.reports} 处`, icon: 'search', page: 'studio' });
-        });
-        (res?.groups || []).forEach((g) => g.items.forEach((h) => hits.push({ label: `${h.title} · ${h.snippet}`, icon: 'link', page: h.page })));
-        setRemote({ hits: hits.slice(0, 6), commands: cmds.slice(0, 6) });
+        setRemote({ hits: contentHits(res), commands: cmds.slice(0, 6) });
       } catch {
         if (alive) setRemote({ hits: [], commands: [] });
       }
@@ -91,15 +59,9 @@ export function CommandPalette({ projectId, inboxCount, extensions, conversation
   const hasPlugin = useCallback((id) => (extensions?.nav || []).some((n) => n.id === id), [extensions]);
   const hasSubpage = useCallback((id) => (extensions?.subpages || []).some((n) => n.id === id), [extensions]);
 
-  const list = useMemo(() => {
-    const items = [];
-    remote.hits.forEach((h) => items.push({ group: '内容', label: h.label, icon: h.icon, page: h.page }));
-    remote.commands.forEach((c) => items.push({ group: '命令', label: c.label, icon: 'cmd', command: c, desc: c.description }));
-    staticItems({ projectId, inboxCount, hasPlugin, hasSubpage, user })
-      .filter(([g, t]) => !q || t.includes(q) || g.includes(q))
-      .forEach(([g, t, i, page, params]) => items.push({ group: g, label: t, icon: i, page, params }));
-    return items;
-  }, [remote, projectId, inboxCount, hasPlugin, hasSubpage, user, q]);
+  const list = useMemo(() => paletteList({
+    q, hits: remote.hits, commands: remote.commands, statics: staticItems({ projectId, inboxCount, hasPlugin, hasSubpage, user }),
+  }), [remote, projectId, inboxCount, hasPlugin, hasSubpage, user, q]);
 
   const pick = async (it) => {
     setOpen(false);
