@@ -72,6 +72,9 @@ test('运行详情六格与报告卡八格', () => {
   assert.equal(m.length, 8);
   assert.deepEqual(m[1], ['切片', '5 / 5', '临期与损耗检查部分完成']);
   assert.deepEqual(m[5], ['自动决策', '17 项', '高置信 13 · 需看 4']);
+  // 没有场景（真实运行没装或没生成）时不写「全部通过」
+  const none = reportMetrics({ ...r, metrics: { ...r.metrics, scenarios: { passed: 0, total: 0, suspended_failures: 0 } } });
+  assert.deepEqual(none[4], ['场景推演', '0 / 0', '']);
   assert.match(reportSub({ ...r, started_at: at(15, 10), ended_at: at(17, 2) }), /^15:10 – 17:02 · 服务重启 1 次，已自动续跑$/);
 });
 
