@@ -18,7 +18,7 @@
 | da-engine | `kb-suite/deepanalyze-java:current` | 127.0.0.1:5197 → 8192 | DA-java，三个开发分支的源码构建，知识库工具接 kb-service |
 | kbs-redis | `redis:7` | — | DA 的任务状态和 Todolist |
 | lf-engine | `kb-suite/loop-forest:current` | 127.0.0.1:5196 → 8193 | Loop Forest 服务（第二个分析引擎），见下文 |
-| weknora-app 等 | `wechatopenai/weknora-*` | — | profile `weknora`：独立的 WeKnora 实例和 `weknora-adapter`，见下文 |
+| weknora-app 等 | `wechatopenai/weknora-*` | — | 默认知识后端：独立的 WeKnora 实例和 `weknora-adapter`（profile `weknora`，`up` 会一并启动），见下文 |
 | da-kb 等 | `kb-suite/da-kb:current` | — | profile `da-kb`：DA 原版知识管线和 `da-kb-adapter`，见下文 |
 
 **模型**：都走阿里云 MaaS 的 OpenAI 兼容接口。向量模型用 `text-embedding-v4`（1024 维），重排用 `qwen3-rerank`；摘要、Swarm 主 agent 和 DA 都用 `qwen-plus`。知识库设置里可以给摘要、问题生成、Wiki、描述分别换模型，可选列表来自 `KBS_CHAT_MODELS`（compose 默认 `qwen-plus,qwen-max,qwen-turbo`）。
@@ -39,7 +39,7 @@
 
   密钥绑定的租户取 `DA_TENANT_ID`（默认 `default`），gateway、DA 和 Loop Forest 也用同一个值。第一次 `up` 之后再改它，要先删掉 `keys.env` 重新生成，否则 kb-service 会拒绝 gateway 的请求。
 - **`gateway.env`**：`up` 时生成，`KBGW_WEKNORA_ADAPTER_KEY`、`KBGW_DA_ADAPTER_KEY` 是 gateway 访问两个适配服务的密钥。
-- **`weknora.env`**：`up-weknora` 生成 WeKnora 实例的数据库、Redis、加密密钥和管理员密码，初始化后再写入 `WEKNORA_API_KEY` 和两个模型 id。
+- **`weknora.env`**：`up`（或单独的 `up-weknora`）生成 WeKnora 实例的数据库、Redis、加密密钥和管理员密码，初始化后再写入 `WEKNORA_API_KEY` 和两个模型 id。
 - **`da-kb.env`**：`up-da-kb` 生成 DA 知识管线的数据库密码。DA 的模型地址和密钥写在它自己的数据库里（`da-kb/providers.py`）。
 
 ## 操作
@@ -51,7 +51,7 @@
 | 变量 | 仓库 | 用到的命令 |
 |---|---|---|
 | `SWARM_REPO` | jiuwenswarm | `build`、`build-swarm-dev` |
-| `WEKNORA_REPO` | WeKnora | `build`、`build-docreader` |
+| `WEKNORA_REPO` | WeKnora | `build`、`build-docreader`、`build-weknora-config` |
 | `DA_CORE_REPO`、`DA_RUNTIME_REPO`、`DA_SOLUTION_REPO` | agent-core-java、agent-runtime-java、agent-solution | `build-da`（`build-lf` 只用 `DA_SOLUTION_REPO`） |
 | `AGENT_CORE_REPO` | agent-core | `harness/da-harness/e2e/run_contract.sh` |
 
@@ -83,22 +83,22 @@ export PATH=/usr/bin:$PATH      # 让 docker 指向 /usr/bin/docker（Docker Des
 设计和取舍见 `docs/decisions/knowledge-gateway.md`，后端要实现的接口见 `contracts/knowledge-provider/v1/README.md`。
 
 - **谁连 gateway**：Swarm 的两个插件（`KB_SERVICE_URL`）、主 agent 的 MCP 连接器（`KBS_MCP_URL`）、DA-java 的知识服务插槽（`da/kbs-tools.yml`）、Loop Forest（`LF_KB_MCP_URL`），以及 DA、Loop Forest 作为团队成员时取知识库清单的地址，都指向 `kb-gateway:8080`。
-- **后端清单**：`gateway/backends.yaml`，静态配置。kb-service 是默认后端，ID 不带前缀；WeKnora 的 ID 以 `wk_` 开头，DA 知识管线以 `da_` 开头。WeKnora 和 DA 知识管线标了 `optional: true`：没部署时不出现在页面上；部署后只要连上过一次，之后再断开就会在知识库页提示「暂不可用」。
+- **后端清单**：`gateway/backends.yaml`，静态配置。WeKnora 是默认后端：新建知识库不选后端时建在 WeKnora，页面上也默认选它。kb-service 的 ID 不带前缀，换默认后端不影响它已有的知识库；WeKnora 的 ID 以 `wk_` 开头，DA 知识管线以 `da_` 开头。DA 知识管线标了 `optional: true`：没部署时不出现在页面上；部署后只要连上过一次，之后再断开就会在知识库页提示「暂不可用」。
 - **跨后端**：知识库页新建知识库时可以选后端；「知识求索」页和 MCP 可以同时选不同后端的知识库，检索时 gateway 并行查询、按排名融合，某个后端失败时其余结果照常返回。
 - **gateway 不读正文**：逐行查找、按标题取章节和锚点、分块上传都由各后端实现（统一接口集的 `grep`、`content.structure`、`uploads`），gateway 只转发、换算数据格式、合并多个后端的结果。
 - **前端按能力显示**：每个知识库带 `backend` 和 `features`。不支持的页签（如 Wiki）、按钮（如取消、问题生成、导入网页）不显示；上传提示和可选文件类型取自后端声明；非 kb-service 后端的设置页按它的 `config_schema` 生成。
 
-### WeKnora 后端（profile `weknora`）
+### WeKnora 后端（默认，profile `weknora`）
 
-起一个独立的 WeKnora 实例，不接已在使用的 WeKnora 实例。镜像直接用本机已有的 `wechatopenai/weknora-*`（`WEKNORA_VERSION` 指定标签，默认 `latest`）。适配服务用到了较新的接口（按知识库授权的 API key、`/wiki-search`、取消解析），验证过的是 2026-09-24 构建的镜像（revision `3e8b0bf`）；换版本后先在测试环境跑一遍再上线。
+起一个独立的 WeKnora 实例，不接已在使用的 WeKnora 实例。`./kbsuite.sh up` 会一并启动并初始化它，所以 `up` 之前要先导出它的配置（`build` 已包含这一步）。镜像直接用本机已有的 `wechatopenai/weknora-*`（`WEKNORA_VERSION` 指定标签，默认 `latest`）。适配服务用到了较新的接口（按知识库授权的 API key、`/wiki-search`、取消解析），验证过的是 2026-09-24 构建的镜像（revision `3e8b0bf`）；换版本后先在测试环境跑一遍再上线。
 
 ```bash
 WEKNORA_REPO=<WeKnora 克隆> ./kbsuite.sh build-weknora-config   # 导出 WeKnora 的 config/config.yaml
 ./kbsuite.sh build-gateway                                     # gateway 和两个适配服务
-./kbsuite.sh up-weknora
+./kbsuite.sh up-weknora                                        # 只启动或重新初始化 WeKnora（up 已包含）
 ```
 
-`up-weknora` 只通过 HTTP 完成初始化（`weknora/bootstrap.py`）：注册一个管理员（`kbgw-owner@example.com`），建一把 full-access 的 API key，注册对话模型 `qwen-plus` 和向量模型 `text-embedding-v4`（1024 维），然后关闭自助注册。可以重复执行，已有的值会保留。重置了 WeKnora 的数据卷时，先删掉 `weknora.env` 再执行：里面的密码、API key、模型 id 和关闭注册的开关都属于旧实例。
+初始化只通过 HTTP 完成（`weknora/bootstrap.py`）：注册一个管理员（`kbgw-owner@example.com`），建一把 full-access 的 API key，注册对话模型 `qwen-plus` 和向量模型 `text-embedding-v4`（1024 维），然后关闭自助注册。可以重复执行，已有的值会保留。重置了 WeKnora 的数据卷时，先删掉 `weknora.env` 再执行：里面的密码、API key、模型 id 和关闭注册的开关都属于旧实例。
 
 适配方式（`service/weknora-adapter`）：
 - 文档状态 `finalizing`（已可检索、摘要等还在生成）算作已完成；摘要取 WeKnora 文档的 `description`。
@@ -137,7 +137,7 @@ export KBS_TAG=gwtest KBGW_TAG=gwtest DA_KB_TAG=gwtest
 export KBS_API_PORT=5288 KBS_EDGE_PORT=5289 KBGW_PORT=5285 DA_ENGINE_PORT=5287 LF_ENGINE_PORT=5286
 # 只构建带 gwtest 标签的镜像。不要跑 build：swarm:dev、docreader:current 两边共用，会被覆盖
 ./kbsuite.sh build-kbs && ./kbsuite.sh build-gateway && DA_TS_SRC=<DeepAnalyze 源码目录> ./kbsuite.sh build-da-kb
-./kbsuite.sh up && ./kbsuite.sh up-weknora && ./kbsuite.sh up-da-kb
+./kbsuite.sh up && ./kbsuite.sh up-da-kb
 ./kbsuite.sh down    # 结束后清掉（卷用 docker volume rm 删除）
 ```
 

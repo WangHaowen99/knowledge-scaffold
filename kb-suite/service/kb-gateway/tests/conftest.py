@@ -186,7 +186,8 @@ def providers():
     return {"kbs": kbs, "wk": wk}
 
 
-def make_client(env, providers, tmp_path, monkeypatch, extra_backends: list[dict] | None = None) -> TestClient:
+def make_client(env, providers, tmp_path, monkeypatch, extra_backends: list[dict] | None = None, *,
+                default: str = "kbs", kbs_prefix: str = "") -> TestClient:
     monkeypatch.setenv("KBGW_UPLOAD_DIR", str(tmp_path / "uploads"))
     from kb_gateway import config
 
@@ -197,8 +198,9 @@ def make_client(env, providers, tmp_path, monkeypatch, extra_backends: list[dict
     transport = httpx.MockTransport(lambda request: hosts[request.url.host].handle(request))
     backends = parse_backends({"backends": [
         {"id": "kbs", "base_url": "https://kbs.example.com", "credential_env": "KBS_CRED", "tools_credential_env": "KBS_TOOLS_CRED",
-         "default": True},
-        {"id": "wk", "label": "WeKnora", "base_url": "https://wk.example.com", "credential_env": "WK_CRED", "id_prefix": "wk_"},
+         "default": default == "kbs", "id_prefix": kbs_prefix},
+        {"id": "wk", "label": "WeKnora", "base_url": "https://wk.example.com", "credential_env": "WK_CRED", "id_prefix": "wk_",
+         "default": default == "wk"},
         *(extra_backends or []),
     ]})
     state = State(registry=Registry.from_configs(backends, transport=transport), keys=KeyRing(parse_keys(KEYS)))

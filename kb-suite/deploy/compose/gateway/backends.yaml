@@ -1,11 +1,13 @@
 # Knowledge backends behind kb-gateway (contracts/knowledge-provider/v1).
 #
 # Exactly one backend is the default: knowledge bases created without a backend
-# go there, and its ids carry no prefix (existing kb-service ids stay valid).
-# Every other backend needs a unique id_prefix; its adapter puts it on all ids.
+# go there, and the knowledge-base page preselects it. At most one backend has no
+# id_prefix: it owns every id without a known prefix (kb-service, so its existing
+# ids stay valid whichever backend is the default). Every other backend needs a
+# unique id_prefix; its adapter puts it on all ids.
 # Credentials are env var names; the values come from keys.env / gateway.env.
-# optional: true marks a backend that is deployed only on demand (up-weknora,
-# up-da-kb): until it has answered once it is neither listed nor reported unavailable.
+# optional: true marks a backend that is deployed only on demand (up-da-kb):
+# until it has answered once it is neither listed nor reported unavailable.
 backends:
   - id: kbs
     label: kb-service
@@ -13,13 +15,13 @@ backends:
     credential_env: KBS_PLUGIN_KEY
     # DA tool calls forwarded to kb-service need reprocess and tenant assertion
     tools_credential_env: KBS_DA_KEY
-    default: true
   - id: weknora
     label: WeKnora
     base_url: http://weknora-adapter:8080
     credential_env: KBGW_WEKNORA_ADAPTER_KEY
     id_prefix: wk_
-    optional: true
+    # started by ./kbsuite.sh up
+    default: true
   - id: da
     label: DA 知识管线
     base_url: http://da-kb-adapter:8080

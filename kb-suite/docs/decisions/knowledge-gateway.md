@@ -13,7 +13,7 @@ kb-service 原来同时对外提供三套协议：知识库页的管理接口、
    - MCP：7 个工具都基于统一接口集实现。
    - 分块上传：会话建在知识库所属的后端上（`upload_id` 带该后端的前缀），gateway 只把每个分块原样转过去。
    - gateway 不存数据：后端列表是静态的 `backends.yaml`，服务密钥沿用调用方现有的 kb-service 密钥（按环境变量名引用），后端凭据也按环境变量名引用。
-3. **按 ID 前缀路由**：每个非默认后端配置唯一前缀（`wk_`、`da_`），由它的适配服务负责给所有出参 ID 加前缀、给入参去前缀；默认后端（kb-service）不带前缀，已有的知识库 ID 继续有效。前缀不能含 `:`、`,`、`/`，以免和 DA 的 pageId、锚点、`X-Kb-Scope` 冲突。
+3. **按 ID 前缀路由**：每个适配后端配置唯一前缀（`wk_`、`da_`），由它的适配服务负责给所有出参 ID 加前缀、给入参去前缀；kb-service 不带前缀，已有的知识库 ID 继续有效。「默认后端」只决定新建知识库建在哪里，和谁不带前缀无关，所以换默认后端（现在是 WeKnora）不会改动任何已有 ID。前缀不能含 `:`、`,`、`/`，以免和 DA 的 pageId、锚点、`X-Kb-Scope` 冲突。
 4. **多个后端并存**：一个知识库只属于一个后端。跨后端检索由 gateway 并行查询，按排名融合（RRF，k=60），不比较各后端的分数；某个后端失败时返回其余结果，并在 `failed_backends` 里注明。
 5. **适配服务**：`service/weknora-adapter`、`service/da-kb-adapter` 把各自后端的接口转换成统一接口集；共用的鉴权、ID 前缀、错误格式和分块上传会话放在 `service/provider-kit`。L1 窗口、锚点、目录和逐行查找的实现在 kb-service 的 `kb_service.text_structure`（只依赖标准库），kb-service 自己的接口和两个适配服务共用这一份，适配服务按无依赖方式安装 kb-service 后引用。DA 原版是 TypeScript 源码，文件头有个人署名，所以不进本仓库：镜像从外部源码目录（`DA_TS_SRC`）构建，仓库里只放 Dockerfile 和适配层。
 6. **前端**：知识库页和「知识求索」页复用同一套插件，按每个知识库的 `features` 显示页签和按钮。kb-service 的知识库继续用原来手写的设置表单；其他后端的私有设置按 capabilities 里的 `config_schema` 自动生成表单。

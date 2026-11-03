@@ -89,12 +89,16 @@ def parse_backends(data: dict) -> list[BackendConfig]:
     ids = [b.id for b in backends]
     if len(set(ids)) != len(ids):
         raise ConfigError(f"duplicate backend ids: {ids}")
+    # "default" is where a knowledge base created without a backend goes; the backend
+    # without an id_prefix owns every id that carries no known prefix (kb-service's
+    # UUIDs). They need not be the same backend, so the default can change without
+    # renaming any existing id.
     defaults = [b for b in backends if b.default]
     if len(defaults) != 1:
         raise ConfigError("exactly one backend must be marked default: true")
     unprefixed = [b.id for b in backends if not b.id_prefix]
-    if unprefixed != [defaults[0].id]:
-        raise ConfigError(f"only the default backend may have an empty id_prefix (unprefixed: {unprefixed})")
+    if len(unprefixed) > 1:
+        raise ConfigError(f"at most one backend may have an empty id_prefix (unprefixed: {unprefixed})")
     prefixes = [b.id_prefix for b in backends if b.id_prefix]
     if len(set(prefixes)) != len(prefixes):
         raise ConfigError(f"duplicate id prefixes: {prefixes}")

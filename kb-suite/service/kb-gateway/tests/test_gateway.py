@@ -22,7 +22,7 @@ def _backend(**kw):
     "backends, message",
     [
         ([_backend(default=True), _backend(id="b", default=True, id_prefix="b_")], "exactly one"),
-        ([_backend(default=True), _backend(id="b")], "empty id_prefix"),
+        ([_backend(default=True), _backend(id="b")], "at most one backend may have an empty id_prefix"),
         ([_backend(default=True), _backend(id="b", id_prefix="b:")], "ending in '_'"),
         # a bare hex character would capture the default backend's UUIDs
         ([_backend(default=True), _backend(id="b", id_prefix="a")], "ending in '_'"),
@@ -250,3 +250,21 @@ def test_file_download_is_relayed(client):
     r = client.get("/v1/documents/wk_d1/file", headers=auth())
     assert r.status_code == 200 and r.content == b"%PDF-synthetic"
     assert r.headers["content-disposition"] == 'attachment; filename="a.pdf"'
+
+
+def test_default_backend_need_not_own_the_unprefixed_ids(env, providers, tmp_path, monkeypatch):
+    # WeKnora as the default: new knowledge bases go there, kb-service keeps its unprefixed ids
+    with make_client(env, providers, tmp_path, monkeypatch, default="wk") as c:
+        backends = {b["id"]: b for b in c.get("/v1/backends", headers=auth()).json()["items"]}
+        assert backends["wk"]["default"] and not backends["kbs"]["default"]
+        kb = c.post("/v1/kbs", headers=auth(), json={"name": "新库"}).json()
+        assert kb["backend"]["id"] == "wk" and kb["id"].startswith("wk_")
+        assert c.get("/v1/kbs/kb1", headers=auth()).json()["backend"]["id"] == "kbs"
+        assert c.get("/v1/documents/d1", headers=auth()).json()["title"] == "kb-service 文档"
+        kb = c.post("/v1/kbs", headers=auth(), json={"name": "旧式", "backend": "kbs"}).json()
+        assert kb["backend"]["id"] == "kbs"
+
+
+def test_without_an_unprefixed_backend_unknown_ids_are_not_found(env, providers, tmp_path, monkeypatch):
+    with make_client(env, providers, tmp_path, monkeypatch, default="wk", kbs_prefix="kbs_") as c:
+        assert c.get("/v1/kbs/kb1", headers=auth()).status_code == 404

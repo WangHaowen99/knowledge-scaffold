@@ -184,9 +184,12 @@ class Registry:
     def __init__(self, backends: list[Backend]) -> None:
         self.backends = backends
         self.by_id = {b.id: b for b in backends}
+        # where new knowledge bases go
         self.default = next(b for b in backends if b.config.default)
         # longest prefix first so "da2_" is not taken for "da_"
         self._prefixed = sorted((b for b in backends if b.config.id_prefix), key=lambda b: -len(b.config.id_prefix))
+        # owner of ids without a known prefix; with none configured the default answers (its adapter says 404)
+        self._unprefixed = next((b for b in backends if not b.config.id_prefix), self.default)
         self._task: asyncio.Task | None = None
 
     @classmethod
@@ -201,7 +204,7 @@ class Registry:
         for backend in self._prefixed:
             if backend.owns(item_id):
                 return backend
-        return self.default
+        return self._unprefixed
 
     def get(self, backend_id: str | None) -> Backend:
         if not backend_id:

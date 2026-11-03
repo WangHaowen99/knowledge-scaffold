@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Manage the kb-suite stack with Docker Compose.
 #
-#   ./kbsuite.sh build      build kb-service, kb-gateway + adapters, plugin frontend, docreader and Swarm (develop; SWARM_TAG=0.2.7 for PyPI)
+#   ./kbsuite.sh build      build kb-service, kb-gateway + adapters, plugin frontend, docreader, WeKnora config and Swarm (develop; SWARM_TAG=0.2.7 for PyPI)
 #   ./kbsuite.sh build-kbs         kb-service image only
 #   ./kbsuite.sh build-plugin      plugin pages only (frontend/dist, picked up on the next swarm restart)
 #   ./kbsuite.sh build-docreader   docreader overlay from $WEKNORA_REPO@$WEKNORA_REF
@@ -12,8 +12,8 @@
 #   ./kbsuite.sh build-gateway     kb-gateway and the WeKnora / DA knowledge-pipeline adapters
 #   ./kbsuite.sh build-da-kb       DA knowledge pipeline image from $DA_TS_SRC (a DeepAnalyze source tree)
 #   ./kbsuite.sh build-weknora-config   WeKnora config.yaml from $WEKNORA_REPO@$WEKNORA_REF
-#   ./kbsuite.sh up         start everything (bootstraps keys on first run)
-#   ./kbsuite.sh up-weknora        start the WeKnora backend and set it up for the adapter
+#   ./kbsuite.sh up         start everything, WeKnora (the default knowledge backend) included; bootstraps keys on first run
+#   ./kbsuite.sh up-weknora        start only the WeKnora backend and set it up for the adapter
 #   ./kbsuite.sh up-da-kb          start the DA knowledge-pipeline backend and point it at the models
 #   ./kbsuite.sh status | logs [service] | restart [service] | down
 #
@@ -219,6 +219,7 @@ case "$cmd" in
     build_gateway
     build_plugin
     build_docreader
+    build_weknora_config
     # compose defaults to the develop Swarm; SWARM_TAG=0.2.7 builds the PyPI one.
     if [ "${SWARM_TAG:-dev}" = 0.2.7 ]; then build_swarm; else build_swarm_dev; fi
     ;;
@@ -232,7 +233,8 @@ case "$cmd" in
     wait_healthy kbs-api
     if ! grep -q '^KBS_MCP_KEY=' "$KEYS" 2>/dev/null; then bootstrap; fi
     gen_env gateway.env KBGW_WEKNORA_ADAPTER_KEY KBGW_DA_ADAPTER_KEY
-    compose up -d kb-gateway
+    # WeKnora is the default knowledge backend (gateway/backends.yaml); this also (re)starts kb-gateway
+    up_weknora
     wait_healthy kb-gateway
     compose up -d swarm edge
     if docker image inspect kb-suite/deepanalyze-java:"${DA_TAG:-current}" >/dev/null 2>&1; then

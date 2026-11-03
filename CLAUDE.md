@@ -233,7 +233,7 @@ Commands for kb-suite (`kb-suite/`, Python 3.11+):
 - Run knowledge backend adapter tests: `cd kb-suite/service && pip install --no-deps ./kb-service && pip install -e ./provider-kit -e './weknora-adapter[dev]' -e './da-kb-adapter[dev]'`, then `python -m pytest -q` in `weknora-adapter/` and `da-kb-adapter/`
 - Run harness provider tests: `cd kb-suite/harness/da-harness && python -m pytest -q tests`, `cd kb-suite/harness/lf-harness && python -m pytest -q tests`
 - Build and run the stack: `cd kb-suite/deploy/compose && ./kbsuite.sh build && ./kbsuite.sh up` (see `kb-suite/deploy/compose/README.md` for secrets and required `*_REPO` variables)
-- Add knowledge backends behind kb-gateway: `./kbsuite.sh up-weknora` (after `build-weknora-config`), `./kbsuite.sh up-da-kb` (after `DA_TS_SRC=<path> ./kbsuite.sh build-da-kb`); the provider contract is `kb-suite/contracts/knowledge-provider/v1/`
+- Knowledge backends behind kb-gateway: WeKnora is the default backend and `./kbsuite.sh up` starts it (needs `WEKNORA_REPO=<path> ./kbsuite.sh build-weknora-config` first, included in `build`); add the DA knowledge pipeline with `./kbsuite.sh up-da-kb` (after `DA_TS_SRC=<path> ./kbsuite.sh build-da-kb`); the provider contract is `kb-suite/contracts/knowledge-provider/v1/`
 
 After initializing the project, Claude must update this section with real commands.
 
