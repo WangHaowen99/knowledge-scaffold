@@ -26,7 +26,9 @@ def unpack(raw):
             roots = set()
             for info in archive.infolist():
                 path = PurePosixPath(info.filename)
-                if not path.parts or path.is_absolute() or '..' in path.parts or '\\' in info.filename or ':' in info.filename:
+                if not path.parts or path.is_absolute() or '..' in path.parts:
+                    raise ValueError()
+                if '\\' in info.filename or ':' in info.filename:
                     raise ValueError()
                 if str(path) != info.filename.rstrip('/') or stat.S_ISLNK(info.external_attr >> 16):
                     raise ValueError()
@@ -42,7 +44,7 @@ def unpack(raw):
                 files[name] = archive.read(info)
             if len(roots) != 1 or len(files.get('manifest.yaml', b'')) > 65536:
                 raise ValueError()
-        manifest = yaml.safe_load(files['manifest.yaml'])
+        manifest = yaml.safe_load(files.get('manifest.yaml', b''))
         if manifest['id'] != next(iter(roots)) or manifest['kind'] != 'ontology-package' or str(manifest['schema_version']) not in ('0.1','0.2'):
             raise ValueError()
         if not isinstance(manifest.get('version'), str):
@@ -98,17 +100,17 @@ class Packages:
 
     def fetch(self, ref, token):
         from urllib.parse import quote
-        path='/api/packages/'+quote(ref['ontology_id'],safe='')+'/releases/'+quote(ref['release_id'],safe='')
+        path=f"/api/packages/{quote(ref['ontology_id'],safe='')}/releases/{quote(ref['release_id'],safe='')}"
         receipt=self.call('GET',path,token)
         if ref.get('package_digest') and ref['package_digest'] != receipt['package_digest']:
             raise Failure('package_changed','知识包摘要不一致',409,'package_fetch')
-        raw=self.http.request('GET',self.config.hub_url,path+'/package',token=token,
+        raw=self.http.request('GET',self.config.hub_url,f'{path}/package',token=token,
                               service=self.config.hub_token,limit=MAX_ZIP)
         if digest(raw)!=receipt['package_digest']:
             raise Failure('digest_mismatch','知识包校验失败',409,'package_fetch')
         _,manifest=unpack(raw)
-        if (receipt['ontology_id'] != ref['ontology_id'] or receipt['release_id'] != ref['release_id']
-                or manifest['id']!=receipt['ontology_id'] or manifest['version']!=receipt['version']):
+        same_release=receipt['ontology_id']==ref['ontology_id'] and receipt['release_id']==ref['release_id']
+        if not same_release or manifest['id']!=receipt['ontology_id'] or manifest['version']!=receipt['version']:
             raise Failure('manifest_mismatch','包版本与回执不一致',409,'package_fetch')
         return raw, receipt
 
@@ -125,12 +127,12 @@ class Packages:
         if task['status']=='committed':
             return task['receipt']
         reservation=self.call('POST','/api/package-publish-requests',token,json=intent)
-        path='/api/package-publish-requests/'+request_id
+        path=f'/api/package-publish-requests/{request_id}'
         if reservation.get('status')!='committed':
             package=derive(raw,mapping,reservation['version'])
-            self.call('PUT',path+'/content',token,headers={'X-Package-Digest':digest(package)},
+            self.call('PUT',f'{path}/content',token,headers={'X-Package-Digest':digest(package)},
                       files={'file':(package_filename(base['ontology_id'], unpack(raw)[1]['name'], reservation['version']),package,'application/zip')})
-            reservation=self.call('POST',path+'/commit',token)
+            reservation=self.call('POST',f'{path}/commit',token)
         if reservation.get('status')!='committed':
             raise Failure('publish_pending','Hub 尚未确认发布完成',409,'publication')
         self.store.save(owner,task['id'],dict(status='committed',intent=intent,receipt=reservation))

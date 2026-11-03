@@ -260,9 +260,8 @@ def test_hub_deploy_rejects_a_short_token(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "至少需要 32 个字符" in result.stderr
-    assert not any(call.startswith(("build", "compose --env-file")) for call in _lines(
-        tmp_path / "docker-calls.txt"
-    ))
+    calls = _lines(tmp_path / "docker-calls.txt")
+    assert not any(call.startswith(("build", "compose --env-file")) for call in calls)
 
 
 @pytest.mark.parametrize("network", ["", "missing-net"])
@@ -273,9 +272,8 @@ def test_hub_deploy_requires_an_existing_shared_network(tmp_path: Path, network:
 
     assert result.returncode != 0
     assert ("未指定共享 Docker 网络" if not network else "Docker 网络不存在") in result.stderr
-    assert not any(call.startswith(("build", "compose --env-file")) for call in _lines(
-        tmp_path / "docker-calls.txt"
-    ))
+    calls = _lines(tmp_path / "docker-calls.txt")
+    assert not any(call.startswith(("build", "compose --env-file")) for call in calls)
 
 
 def test_hub_deploy_from_package_loads_only_the_release_image(tmp_path: Path) -> None:

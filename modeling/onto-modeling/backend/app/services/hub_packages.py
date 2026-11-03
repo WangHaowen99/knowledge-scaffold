@@ -21,6 +21,7 @@ def directory(pid, subject):
 
 # Fixed protocol namespace; never regenerate per deployment or user.
 ONTOLOGY_NAMESPACE = uuid.UUID('787d64cc-2e75-5dab-8e72-56dcfa9029a3')
+ASSOCIATION_FIELDS = ('ontology_id', 'release_id', 'package_digest', 'version', 'committed_at')
 
 
 def ontology_id(pid):
@@ -66,14 +67,14 @@ def call(method, path, token, **kwargs):
 
 
 def reference_path(package_id, release_id=''):
-    base = '/api/packages/' + transport.identifier(package_id) + '/releases'
+    base = f'/api/packages/{transport.identifier(package_id)}/releases'
     return base + ('/' + transport.identifier(release_id) if release_id else '')
 
 
 def download(package_id, release_id, token, dest):
     base = reference_path(package_id, release_id)
     receipt = call('GET', base, token)
-    call('GET', base + '/package', token, download=dest)
+    call('GET', f'{base}/package', token, download=dest)
     if receipt.get('ontology_id') != package_id or receipt.get('release_id') != release_id or (
             transport.file_digest(dest) != receipt.get('package_digest')):
         Path(dest).unlink(missing_ok=True)
@@ -144,7 +145,7 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
             transport.save(task_file, task)
         payload = task['payload']
         receipt = call('POST', '/api/package-publish-requests', token, body=payload)
-        base_path = '/api/package-publish-requests/' + payload['request_id']
+        base_path = f"/api/package-publish-requests/{payload['request_id']}"
         archive = folder / 'package.zip'
         if receipt['status'] == 'pending':
             if not archive.exists():
@@ -160,11 +161,11 @@ def publish(manager, pid, request_id, token, subject, allow_unbound=False, *,
                 with temporary.open('rb') as handle:
                     os.fsync(handle.fileno())
                 os.replace(temporary, archive)
-            call('PUT', base_path + '/content', token, upload=archive,
+            call('PUT', f'{base_path}/content', token, upload=archive,
                  headers={'X-Package-Digest': transport.file_digest(archive)},
                  upload_name=transport.package_filename(payload['ontology_id'], task['name'], receipt['version']))
         if receipt['status'] != 'committed':
-            receipt = call('POST', base_path + '/commit', token)
+            receipt = call('POST', f'{base_path}/commit', token)
         transport.save(folder / 'receipt.json', receipt)
         try:
             record(manager, pid, subject, receipt)
@@ -244,8 +245,7 @@ def maintain(manager):
                 for receipt_path in (user_scope / 'requests').glob('*/receipt.json'):
                     receipt = transport.load(receipt_path)
                     if receipt['committed_at'] >= current.get('committed_at', ''):
-                        current = {k: receipt[k] for k in ('ontology_id', 'release_id',
-                                                          'package_digest', 'version', 'committed_at')}
+                        current = {k: receipt[k] for k in ASSOCIATION_FIELDS}
                         transport.save(association_path, current)
                 for task_path in user_scope.glob('*/*/task.json'):
                     if (task_path.parent / 'receipt.json').exists() or time.time() - task_path.stat().st_mtime > ttl:

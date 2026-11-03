@@ -58,8 +58,11 @@ class Clock:
 
 
 class Gateway:
-    """Synthetic judge gateway that rejects requests above ``capacity`` characters, as a small model would, and does
-    not answer requests above ``patience`` characters in time, as a slow reasoning model would."""
+    """Synthetic judge gateway standing in for a small or slow model.
+
+    It rejects requests above ``capacity`` characters, as a small model would, and does not answer requests
+    above ``patience`` characters in time, as a slow reasoning model would.
+    """
 
     def __init__(self, capacity=10 ** 9, fail=(), merge_drops=False, patience=10 ** 9, clock=None, cost=0):
         self.capacity, self.fail, self.merge_drops, self.requests = capacity, list(fail), merge_drops, []
@@ -70,7 +73,8 @@ class Gateway:
         self.requests.append((system, len(content), json.loads(content)))
         self.timeouts.append(kwargs['timeout'])
         self.clock.now += self.cost
-        if self.fail and (error := self.fail.pop(0)):
+        error = self.fail.pop(0) if self.fail else None
+        if error:
             raise error
         if len(content) > self.patience:
             self.clock.now += kwargs['timeout']
@@ -103,8 +107,8 @@ def run_of(count, answer_chars=600):
     return {'id': 'a' * 32, 'status': 'completed', 'base_ref': {'version': '0.1.1'}, 'package_ref': {'version': '0.1.1'}, 'cases': cases}
 
 
-def generate(gateway, run, request_chars=suggestions.REQUEST_CHARS, evidence=None, docs=DOCS, progress=None):
-    service = Suggestions(Judge(), Packages(package(docs)), gateway, request_chars, gateway.clock)
+def generate(gateway, run, request_chars=suggestions.REQUEST_CHARS, evidence=None, docs=None, progress=None):
+    service = Suggestions(Judge(), Packages(package(DOCS if docs is None else docs)), gateway, request_chars, gateway.clock)
     text, profile = service.generate('owner_a', run, 'synthetic-user-a', STEM, 1793500000, {}, evidence, progress)
     assert profile['model'] == 'synthetic-model'
     return text
@@ -178,7 +182,12 @@ def test_transport_classifies_rejections_without_relaying_the_body(monkeypatch):
               '/other': (400, b'{"error":{"message":"invalid tool schema"}}'), '/large': (413, b''),
               '/conflict': (409, '{"error":"知识包名称「合成包」已存在","error_code":"ontology_name_conflict"}'.encode())}
     client = httpx.Client
-    handler = httpx.MockTransport(lambda request: httpx.Response(bodies[request.url.path][0], content=bodies[request.url.path][1]))
+
+    def respond(request):
+        status, content = bodies.get(request.url.path)
+        return httpx.Response(status, content=content)
+
+    handler = httpx.MockTransport(respond)
     monkeypatch.setattr(core.httpx, 'Client', lambda **kwargs: client(transport=handler, **kwargs))
     flags, codes = {}, {}
     for path in bodies:

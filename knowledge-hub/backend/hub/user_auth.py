@@ -42,12 +42,13 @@ def authenticate(request):
         raise PackageError('unauthenticated', 'User and service authentication required', 401, 'authorization')
     base = os.environ.get('HUB_AUTH_URL', '').rstrip('/')
     url = urllib.parse.urlsplit(base)
-    if url.scheme not in ('http', 'https') or not url.hostname or url.username or url.password or url.query or url.fragment:
+    has_extras = any((url.username, url.password, url.query, url.fragment))
+    if url.scheme not in ('http', 'https') or not url.hostname or has_extras:
         raise PackageError('auth_configuration', 'Account service is not configured', 503, 'authorization')
     # /userinfo verifies signature, issuer, audience, access type and current token
     # version in the existing auth-server. No positive authorization cache is used.
     try:
-        req = urllib.request.Request(base + '/userinfo', headers={'Authorization': 'Bearer ' + header[7:].strip()})
+        req = urllib.request.Request(f'{base}/userinfo', headers={'Authorization': f'Bearer {header[7:].strip()}'})
         with urllib.request.build_opener(NoRedirect()).open(req, timeout=8) as response:
             raw = response.read(16385)
             if len(raw) > 16384:
@@ -60,7 +61,8 @@ def authenticate(request):
     except urllib.error.HTTPError as exc:
         status = 401 if exc.code in (401, 403) else 503
         raise PackageError('identity_unavailable', 'Identity verification failed', status, 'authorization') from exc
-    except (OSError, ValueError, urllib.error.URLError) as exc:
+    # URLError is an OSError.
+    except (OSError, ValueError) as exc:
         raise PackageError('identity_unavailable', 'Identity verification unavailable', 503, 'authorization') from exc
     issuer = os.environ.get('HUB_AUTH_ISSUER', '').strip() or base
     return Identity(subject_id(issuer, data['sub']), service, issuer, data['sub'])

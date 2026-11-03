@@ -26,8 +26,8 @@ def _endpoint():
     if not config.EVAL_URL:
         raise WorkspaceError('未配置评测服务地址', 503, 'eval_unconfigured')
     url = urllib.parse.urlsplit(config.EVAL_URL)
-    if url.scheme not in ('http', 'https') or not url.hostname or url.username or url.password \
-            or url.query or url.fragment:
+    has_extras = any((url.username, url.password, url.query, url.fragment))
+    if url.scheme not in ('http', 'https') or not url.hostname or has_extras:
         raise WorkspaceError('评测服务地址配置无效', 503, 'eval_unconfigured')
     return url
 
@@ -43,9 +43,11 @@ def _failure(status, raw):
             value = json.loads(raw)
         except ValueError:
             value = None
-        if isinstance(value, dict) and isinstance(value.get('code'), str) and _CONFLICT_CODE.fullmatch(value['code']) \
-                and isinstance(value.get('message'), str) and value['message'].strip():
-            return WorkspaceError(value['message'].strip()[:300], 409, value['code'])
+        detail = value if isinstance(value, dict) else {}
+        code, message = detail.get('code'), detail.get('message')
+        valid_code = isinstance(code, str) and _CONFLICT_CODE.fullmatch(code)
+        if valid_code and isinstance(message, str) and message.strip():
+            return WorkspaceError(message.strip()[:300], 409, code)
         return WorkspaceError('评测服务拒绝了请求，请刷新后重试', 409, 'eval_conflict')
     return WorkspaceError('评测服务不可用，请稍后重试', 503, 'eval_unavailable')
 

@@ -37,7 +37,9 @@ def merge(iterations, iterations_more, releases, releases_more, limit):
     items, i, r = [], 0, 0
     while len(items) < limit:
         iteration_ready, release_ready = i < len(iterations), r < len(releases)
-        if (not iteration_ready and iterations_more) or (not release_ready and releases_more):
+        iteration_unread = not iteration_ready and iterations_more
+        release_unread = not release_ready and releases_more
+        if iteration_unread or release_unread:
             break
         if release_ready and (not iteration_ready or releases[r]['time'] >= iterations[i]['time']):
             items.append(releases[r])

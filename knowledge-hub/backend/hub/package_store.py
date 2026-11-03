@@ -27,6 +27,8 @@ def request_key(subject, service, request_id):
 PUBLIC = ('request_id', 'ontology_id', 'release_id', 'name', 'filename', 'existing', 'version', 'kind',
           'source_service', 'creator', 'change_type', 'base_release_id', 'base_digest', 'status',
           'package_digest', 'size', 'created_at', 'expires_at', 'committed_at')
+# Fields a re-publication of an already archived version takes over from the original commit.
+DUPLICATE_FIELDS = ('name', 'filename', 'version', 'kind', 'release_id', 'package_digest', 'size', 'committed_at')
 SNAPSHOT = re.compile(r'^(?P<root>.+)-eval\.(?P<number>[0-9]{1,9})$')
 
 
@@ -66,6 +68,12 @@ class PackageStore:
 
     def requests(self):
         return [read_json(path) for path in (self.root / 'publish-requests').glob('*.json')]
+
+    def committed(self, package_id):
+        """Committed requests of a package that archived a version themselves, not re-publications of one."""
+        for r in self.requests():
+            if r['ontology_id'] == package_id and r['status'] == 'committed' and not r.get('existing'):
+                yield r
 
     def root_of(self, package_id):
         return self.root / 'packages' / identifier(package_id)
@@ -250,8 +258,7 @@ class PackageStore:
         duplicate = self.version_match(row)
         if duplicate:
             row['creator'] = duplicate.get('creator')
-            row.update({k: duplicate[k] for k in ('name', 'filename', 'version', 'kind', 'release_id',
-                                                  'package_digest', 'size', 'committed_at')})
+            row.update({k: duplicate[k] for k in DUPLICATE_FIELDS})
             row.update(existing=True, status='committed')
             self.save(row)
             (self.pending(row) / 'package.zip').unlink(missing_ok=True)
@@ -297,8 +304,7 @@ class PackageStore:
 
     def release_unchecked(self, package_id, release_id):
         identifier(release_id)
-        row = next((r for r in self.requests() if r['ontology_id'] == package_id
-                    and r['release_id'] == release_id and r['status'] == 'committed' and not r.get('existing')), None)
+        row = next((r for r in self.committed(package_id) if r['release_id'] == release_id), None)
         if not row:
             raise PackageError('not_found', 'Version not found', 404)
         path = self.archived(row) / 'package.zip'
@@ -308,15 +314,12 @@ class PackageStore:
 
     def listing(self, package_id, subject, kind='release', offset=0, limit=20):
         self.owned(package_id, subject)
-        rows = [public(r) for r in self.requests() if r['ontology_id'] == package_id
-                and r['status'] == 'committed' and not r.get('existing') and r['kind'] == kind]
+        rows = [public(r) for r in self.committed(package_id) if r['kind'] == kind]
         rows.sort(key=lambda r: (r['committed_at'], r['release_id']), reverse=True)
         return self.page(rows, offset, limit)
 
     def version_match(self, row):
-        other = next((r for r in self.requests() if r['ontology_id'] == row['ontology_id']
-                      and r['version'] == row['version'] and r['status'] == 'committed'
-                      and not r.get('existing')), None)
+        other = next((r for r in self.committed(row['ontology_id']) if r['version'] == row['version']), None)
         if other and (other['package_digest'] != row['package_digest'] or other['kind'] != row['kind']):
             raise PackageError('version_conflict', 'Package version conflict', 409)
         return other

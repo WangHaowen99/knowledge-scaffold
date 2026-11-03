@@ -176,7 +176,10 @@ class Package:
     def named(self, text):
         """Non-index documents a case's tool calls refer to by file name or by a table their object reads."""
         words = {word.lower() for word in re.findall(r'[A-Za-z0-9_]+', text)}
-        mentioned = lambda value: value.lower() in words if value.isascii() else value in text
+
+        def mentioned(value):
+            return value.lower() in words if value.isascii() else value in text
+
         found = {name for name in self.docs if not name.endswith('/index.md') and mentioned(stem(name))}
         found.update(name for name, tables in self.tables.items() if name in self.docs and any(map(mentioned, tables)))
         return found
@@ -393,7 +396,9 @@ class Suggestions:
                   'suggestion': clip(item.get('suggestion'), 600), 'targets': [str(t) for t in (item.get('targets') or [])[:5]]}
                  for numbers, value in results for item in valid_items(value, numbers)]
         summaries = [' '.join(clip(value.get('summary'), 600).split()) for _, value in results]
-        notes = [note for _, value in results for note in value.get('notes') or [] if isinstance(note, str)]
+        notes = []
+        for _, value in results:
+            notes += [note for note in value.get('notes') or [] if isinstance(note, str)]
         joined = {'summary': '；'.join(s for s in summaries if s), 'items': items, 'notes': notes}
         payload = {'batch_summaries': summaries, 'items': items}
         if spare < 1 or timeout < MIN_REQUEST_SECONDS or size(payload) > limit:
@@ -455,13 +460,14 @@ class Suggestions:
                 value = self.ask(current, profile, SYSTEM, payload, min(TIMEOUT, remaining))
             except Failure as exc:
                 timed_out = exc.code == 'dependency_timeout'
+                needs_smaller = exc.context_overflow or timed_out
                 # Too long for the model, or it did not finish thinking in time: send these cases in smaller requests.
-                if (exc.context_overflow or timed_out) and limit > MIN_REQUEST_CHARS:
+                if needs_smaller and limit > MIN_REQUEST_CHARS:
                     limit = max(MIN_REQUEST_CHARS, min(limit, size(payload)) // 2)
                     queue[:0] = plan([entry for entry, _ in batch], limit, evidence)
                     slow = slow or timed_out
                     continue
-                if not exc.context_overflow and not timed_out and exc.status in (429, 502, 503) and numbers not in retried:
+                if not needs_smaller and exc.status in (429, 502, 503) and numbers not in retried:
                     retried.add(numbers)
                     queue.insert(0, batch)
                     continue

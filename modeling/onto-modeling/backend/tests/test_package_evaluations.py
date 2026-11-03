@@ -25,8 +25,8 @@ PACKAGE = 'pkg_demo'
 # Evaluation-service owners of two users sharing the package; synthetic digests.
 OWNER = 'a' * 64
 OTHER_OWNER = 'b' * 64
-RUN = '0123456789abcdef0123456789abcdef'
-OTHER_RUN = 'fedcba9876543210fedcba9876543210'
+RUN = 'c' * 32
+OTHER_RUN = 'd' * 32
 STEM = 'eval-20261031-101010-abc123'
 SUMMARY = {'total': 2, 'pass': 1, 'partial': 0, 'fail': 1, 'error': 0, 'manual': 0, 'valid': 2,
            'score': 50, 'result_status': 'complete'}
@@ -45,7 +45,7 @@ def entry(release='release_one', run=RUN, finished=1000.0, **changes):
 
 def notification(sequence=1, owner=OWNER, **changes):
     value = {**entry(**changes), 'sequence': sequence, 'owner': owner, 'ontology_id': PACKAGE}
-    value['event_id'] = f"{value['run_id']}:{sequence}"
+    value['event_id'] = f"{value.get('run_id')}:{sequence}"
     return value
 
 

@@ -42,11 +42,24 @@ def digest(value):
     return hashlib.sha256(value if isinstance(value, bytes) else canonical(value).encode()).hexdigest()
 
 
+def plain_http_url(url):
+    """A split http(s) URL with a host and without credentials, query or fragment."""
+    extras = (url.username, url.password, url.query, url.fragment)
+    return url.scheme in ('http', 'https') and bool(url.hostname) and not any(extras)
+
+
 def endpoint(value):
-    url = urlsplit(value)
-    if url.scheme not in ('http', 'https') or not url.hostname or url.username or url.password or url.query or url.fragment:
+    if not plain_http_url(urlsplit(value)):
         raise Failure('configuration_missing', '依赖服务地址未正确配置', 503, 'configuration')
     return value.rstrip('/')
+
+
+# Environment variables of the Config fields after data_dir, in field order.
+ENVIRONMENT = ('EVAL_AUTH_URL', 'EVAL_AUTH_ISSUER', 'EVAL_HUB_URL', 'EVAL_HUB_SERVICE_TOKEN',
+               'EVAL_CONSUMER_API_URL', 'EVAL_CONSUMER_SERVICE_TOKEN', 'EVAL_ENCRYPTION_KEY',
+               'EVAL_JUDGE_BASE_URL', 'EVAL_JUDGE_API_KEY', 'EVAL_JUDGE_MODEL',
+               'EVAL_JUDGE_CONFIG_REVISION', 'EVAL_SQL_CONFIG', 'EVAL_NL2SQL_URL', 'EVAL_TRUSTED_ORIGINS',
+               'EVAL_MODELING_URL', 'EVAL_MODELING_SERVICE_TOKEN')
 
 
 @dataclass
@@ -73,12 +86,7 @@ class Config:
     @classmethod
     def environment(cls):
         return cls(Path(os.environ.get('EVAL_DATA_DIR', '.runtime')),
-                   *[os.environ.get(name, '') for name in (
-                       'EVAL_AUTH_URL', 'EVAL_AUTH_ISSUER', 'EVAL_HUB_URL', 'EVAL_HUB_SERVICE_TOKEN',
-                       'EVAL_CONSUMER_API_URL', 'EVAL_CONSUMER_SERVICE_TOKEN', 'EVAL_ENCRYPTION_KEY',
-                       'EVAL_JUDGE_BASE_URL', 'EVAL_JUDGE_API_KEY', 'EVAL_JUDGE_MODEL',
-                       'EVAL_JUDGE_CONFIG_REVISION', 'EVAL_SQL_CONFIG', 'EVAL_NL2SQL_URL', 'EVAL_TRUSTED_ORIGINS',
-                       'EVAL_MODELING_URL', 'EVAL_MODELING_SERVICE_TOKEN')])
+                   *[os.environ.get(name, '') for name in ENVIRONMENT])
 
 
 def trusted_origins(value):
@@ -86,8 +94,7 @@ def trusted_origins(value):
     result = []
     for item in value.split(','):
         url = urlsplit(item.strip())
-        if url.scheme not in ('http', 'https') or not url.hostname or url.path.strip('/') or url.query \
-                or url.fragment or url.username or url.password:
+        if not plain_http_url(url) or url.path.strip('/'):
             continue
         host = f'[{url.hostname}]' if ':' in url.hostname else url.hostname
         default = 80 if url.scheme == 'http' else 443
@@ -131,7 +138,7 @@ class Transport:
     def json(self, method, base, path, **kwargs):
         try:
             return json.loads(self.request(method, base, path, **kwargs))
-        except (ValueError, UnicodeError) as exc:
+        except ValueError as exc:  # also UnicodeDecodeError
             raise Failure('invalid_response', '依赖响应格式错误', 502, 'dependency') from exc
 
 

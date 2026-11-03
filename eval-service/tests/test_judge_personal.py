@@ -44,7 +44,7 @@ def test_personal_key_is_never_borrowed_from_the_shared_default(environment):
     client, app, deps, cfg = environment
     rejected = client.put(ME, json={'base_url': 'https://judge.example.com', 'model': 'synthetic-other', 'api_key': ''})
     assert rejected.status_code == 422 and rejected.json()['code'] == 'judge_key_required'
-    assert client.post(ME + '/test', json={**PERSONAL, 'api_key': ''}).status_code == 422
+    assert client.post(f'{ME}/test', json={**PERSONAL, 'api_key': ''}).status_code == 422
     client.put(ME, json=PERSONAL)
     # Re-saving with an empty key keeps the user's own key and revision for the same gateway.
     first = client.get(ME).json()['personal']['revision']
@@ -56,7 +56,7 @@ def test_personal_key_is_never_borrowed_from_the_shared_default(environment):
 def test_any_user_can_test_a_personal_configuration_without_saving(environment):
     client, app, deps, cfg = environment
     deps.judge_calls.clear()
-    assert client.post(ME + '/test', json=PERSONAL, headers=OTHER).json() == {'ok': True}
+    assert client.post(f'{ME}/test', json=PERSONAL, headers=OTHER).json() == {'ok': True}
     assert deps.judge_calls == [('https://judge-mine.example.com/v1', 'synthetic-mine-key', 'synthetic-mine')]
     assert client.get(ME, headers=OTHER).json()['personal'] is None
 
@@ -91,11 +91,11 @@ def test_admin_can_disable_the_default_for_users_without_a_personal_configuratio
     deps.roles['synthetic-user-b'] = 'admin'
     url = '/evaluation/api/judge-settings'
     assert client.get(url).json()['enabled'] is True
-    assert client.put(url + '/enabled', json={'enabled': False}).status_code == 403
+    assert client.put(f'{url}/enabled', json={'enabled': False}).status_code == 403
     owner = client.get('/evaluation/api/session').json()['subject']
     expected = app.state.engine.judge.profile(owner=owner)
 
-    off = client.put(url + '/enabled', json={'enabled': False}, headers=OTHER)
+    off = client.put(f'{url}/enabled', json={'enabled': False}, headers=OTHER)
     assert off.status_code == 200 and off.json()['enabled'] is False
     assert client.get(url).json()['enabled'] is False
     assert client.get(ME).json()['active'] == {'source': 'disabled', 'model': '', 'revision': '', 'configured': False}
@@ -117,6 +117,6 @@ def test_admin_can_disable_the_default_for_users_without_a_personal_configuratio
     assert client.get(ME, headers=OTHER).json()['active']['source'] == 'personal'
 
     # Re-enabling keeps the revision, so stopped runs can resume.
-    on = client.put(url + '/enabled', json={'enabled': True}, headers=OTHER).json()
+    on = client.put(f'{url}/enabled', json={'enabled': True}, headers=OTHER).json()
     assert on['enabled'] is True and on['revision'] == expected['revision']
     assert app.state.engine.judge.score('Synthetic', '2', '2', expected=expected, owner=owner)['verdict'] == 'pass'

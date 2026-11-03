@@ -26,6 +26,8 @@ INHERITED = ('EVAL_ENV_FILE', 'CONSUMER_NETWORK', 'HUB_EVALUATION_SERVICE_TOKEN'
              'EVAL_ENCRYPTION_KEY', 'EVAL_HUB_SERVICE_TOKEN', 'EVAL_CONSUMER_SERVICE_TOKEN',
              'EVAL_MODELING_SERVICE_TOKEN', 'ONTO_EVALUATION_SERVICE_TOKEN',
              'PIP_INDEX_URL', 'NPM_REGISTRY', 'EVAL_PIP_INDEX_URL', 'EVAL_NPM_REGISTRY')
+# Scripts run through an absolute interpreter path resolved once, not a per-call PATH lookup.
+BASH = shutil.which('bash') or '/bin/bash'
 MIRRORS = {'EVAL_PIP_INDEX_URL': 'https://pypi.example.com/simple',
            'EVAL_NPM_REGISTRY': 'https://npm.example.com'}
 
@@ -64,7 +66,7 @@ def deployment():
 
 
 def run(root, env, *args):
-    return subprocess.run(['bash', str(root / 'deploy/deploy.sh'), *args],
+    return subprocess.run([BASH, str(root / 'deploy/deploy.sh'), *args],
                           env=env, capture_output=True, text=True, timeout=15)
 
 
@@ -186,7 +188,7 @@ def check_evaluation_build_embeds_offline_service_in_full_bundle(deployment):
     env['RELEASE_BUNDLE_DIR'] = str(root / 'bundle')
     env['DOCKER_CALLS_FILE'] = str(root / 'docker-calls.txt')
     env.update(MIRRORS)
-    result = subprocess.run(['bash', str(service / 'build.sh'), 'v-test', 'amd'],
+    result = subprocess.run([BASH, str(service / 'build.sh'), 'v-test', 'amd'],
                             env=env, capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stdout + result.stderr
     assert ('build --platform linux/amd64 --build-arg PIP_INDEX_URL=https://pypi.example.com/simple '
@@ -209,7 +211,7 @@ def check_standalone_evaluation_build_produces_tar_package(deployment):
     script(root / 'bin/docker', 'if [ "$1" = save ]; then printf synthetic > "$3"; fi')
     env['PATH'] = str(root / 'bin') + os.pathsep + os.environ['PATH']
     env.pop('RELEASE_BUNDLE_DIR', None)
-    result = subprocess.run(['bash', str(service / 'build.sh'), 'v-test', 'amd'],
+    result = subprocess.run([BASH, str(service / 'build.sh'), 'v-test', 'amd'],
                             env=env, capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stdout + result.stderr
     package = service / 'dist/evaluation-v-test-linux-amd64.tar.gz'
@@ -254,7 +256,7 @@ def evaluation_service():
 
 
 def run_service(deploy_dir, env):
-    return subprocess.run(['bash', str(deploy_dir / 'deploy.sh')], env=env,
+    return subprocess.run([BASH, str(deploy_dir / 'deploy.sh')], env=env,
                           capture_output=True, text=True, timeout=15)
 
 

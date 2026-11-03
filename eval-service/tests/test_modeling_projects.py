@@ -20,7 +20,7 @@ def modeling(deps, handler):
 
 def test_names_come_from_modeling_with_the_callers_login(environment):
     client, app, deps, cfg = environment
-    cfg.modeling_url = 'http://modeling.example.com:8100'
+    cfg.modeling_url = 'https://modeling.example.com:8100'
     calls = []
 
     def handler(base, path, kwargs):
@@ -35,13 +35,13 @@ def test_names_come_from_modeling_with_the_callers_login(environment):
     assert response.status_code == 200, response.text
     assert response.json() == {'available': True, 'items': [
         {'ontology_id': 'package_demo', 'projects': ['project_alpha', 'x' * 128], 'total': 7}]}
-    assert calls == [('http://modeling.example.com:8100', ['package_demo'], 'synthetic-user-a')]
+    assert calls == [('https://modeling.example.com:8100', ['package_demo'], 'synthetic-user-a')]
 
 
 def test_modeling_failures_only_hide_names(environment):
     client, app, deps, cfg = environment
     assert client.get(URL + '?ontology_id=package_demo').json() == {'available': False, 'items': []}
-    cfg.modeling_url = 'http://modeling.example.com:8100'
+    cfg.modeling_url = 'https://modeling.example.com:8100'
     for failure in (Failure('dependency_rejected', 'Synthetic rejection', 401, 'dependency'),
                     Failure('dependency_unavailable', 'Synthetic outage', 503, 'dependency')):
         def handler(base, path, kwargs, failure=failure):
@@ -55,7 +55,7 @@ def test_modeling_failures_only_hide_names(environment):
 
 def test_lookup_requires_login_and_bounded_package_ids(environment):
     client, app, deps, cfg = environment
-    cfg.modeling_url = 'http://modeling.example.com:8100'
+    cfg.modeling_url = 'https://modeling.example.com:8100'
     modeling(deps, lambda base, path, kwargs: {'items': []})
     assert client.get(URL + '?ontology_id=package_demo', headers={'Authorization': ''}).status_code == 401
     assert client.get(URL + '?ontology_id=bad/id').status_code == 422

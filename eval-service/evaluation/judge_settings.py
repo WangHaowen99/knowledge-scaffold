@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 from cryptography.fernet import InvalidToken
 
-from .core import Failure
+from .core import Failure, plain_http_url
 
 KEY = 'judge'
 ENABLED_KEY = 'judge:default-enabled'
@@ -54,8 +54,7 @@ def connection_test_failure(error):
 def gateway(value):
     value = (value or '').strip().rstrip('/')
     url = urlsplit(value)
-    if len(value) > 2048 or url.scheme not in ('http', 'https') or not url.hostname or url.username \
-            or url.password or url.query or url.fragment:
+    if len(value) > 2048 or not plain_http_url(url):
         raise Failure('judge_settings_invalid', '判分模型网关须为不含账号和查询参数的 http(s) 地址', 422)
     return value
 

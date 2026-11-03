@@ -64,9 +64,9 @@ app.include_router(package_evaluations.router)
 @app.middleware("http")
 async def retired_evaluation_mutations(request: Request, call_next):
     path = request.url.path
-    if (path.startswith("/api/projects/") and "/eval/" in path
-            and request.method in {"POST", "PUT", "PATCH", "DELETE"}
-            and not path.endswith(("/eval/stop", "/eval/resume"))):
+    eval_path = path.startswith("/api/projects/") and "/eval/" in path
+    mutation = request.method in {"POST", "PUT", "PATCH", "DELETE"}
+    if eval_path and mutation and not path.endswith(("/eval/stop", "/eval/resume")):
         return JSONResponse({"code": "evaluation_moved",
                              "message": "请在独立评测页面管理数据源和新评测", "url": "/evaluation/"},
                             status_code=410)

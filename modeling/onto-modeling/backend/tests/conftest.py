@@ -7,7 +7,7 @@ import pytest
 for parent in Path(__file__).resolve().parents:
     hub_backend = parent / 'knowledge-hub' / 'backend'
     if hub_backend.exists():
-        sys.path.insert(0, str(hub_backend))
+        sys.path.append(str(hub_backend))
         break
 
 

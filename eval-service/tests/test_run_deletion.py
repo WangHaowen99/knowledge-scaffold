@@ -19,8 +19,8 @@ def test_interrupted_run_without_consumer_submissions_can_be_deleted(environment
     deps.json = dependency
     record = run(client, preparation(client))
     assert wait(client, record['id'])['status'] == 'interrupted'
-    assert client.delete('/evaluation/api/runs/' + record['id']).json() == {'deleted': True}
-    assert client.get('/evaluation/api/runs/' + record['id']).status_code == 404
+    assert client.delete(f"/evaluation/api/runs/{record['id']}").json() == {'deleted': True}
+    assert client.get(f"/evaluation/api/runs/{record['id']}").status_code == 404
 
 
 def test_unreconciled_submissions_must_be_stopped_before_deletion(environment):
@@ -32,12 +32,12 @@ def test_unreconciled_submissions_must_be_stopped_before_deletion(environment):
     current['status'] = 'interrupted'
     current['cases'][0]['status'] = 'executing'
     store.save(owner, record['id'], {k: v for k, v in current.items() if k not in ('id', 'revision')})
-    rejected = client.delete('/evaluation/api/runs/' + record['id'])
+    rejected = client.delete(f"/evaluation/api/runs/{record['id']}")
     assert rejected.status_code == 409 and '先停止评测' in rejected.json()['message']
     current = store.get(owner, record['id'], 'runs')
     current['cases'][0]['status'] = 'answer_ready'
     store.save(owner, record['id'], {k: v for k, v in current.items() if k not in ('id', 'revision')})
-    assert client.delete('/evaluation/api/runs/' + record['id']).json() == {'deleted': True}
+    assert client.delete(f"/evaluation/api/runs/{record['id']}").json() == {'deleted': True}
 
 
 def test_running_evaluation_cannot_be_deleted(environment):
@@ -45,7 +45,7 @@ def test_running_evaluation_cannot_be_deleted(environment):
     deps.running = True
     record = run(client, preparation(client))
     wait(client, record['id'], statuses=('running',))
-    rejected = client.delete('/evaluation/api/runs/' + record['id'])
+    rejected = client.delete(f"/evaluation/api/runs/{record['id']}")
     assert rejected.status_code == 409 and '先停止评测' in rejected.json()['message']
     deps.running = False
     assert wait(client, record['id'])['status'] == 'completed'

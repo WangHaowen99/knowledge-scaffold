@@ -205,7 +205,7 @@ def test_failed_import_rolls_back_old_data_then_can_resume(environment, graph):
     assert result['status'] == 'interrupted' and result['error']['code'] == 'graph_import_unavailable'
     assert graph.nodes == old_nodes and graph.edges == old_edges and graph.marker is None
     graph.fail_import = False
-    assert client.post('/evaluation/api/runs/' + started['id'] + '/resume').status_code == 200
+    assert client.post(f"/evaluation/api/runs/{started['id']}/resume").status_code == 200
     assert wait(client, started['id'], statuses=('completed',))['status'] == 'completed'
     assert graph.commits == 1
 
@@ -221,7 +221,7 @@ def test_lost_commit_acknowledgement_reuses_receipt_without_deleting_new_data(en
     assert result['status'] == 'interrupted'
     assert graph.marker['run_id'] == started['id'] and graph.commits == 1
     writes = len([sql for sql, _ in graph.calls if 'DELETE' in sql or sql.startswith('UNWIND')])
-    client.post('/evaluation/api/runs/' + started['id'] + '/resume')
+    client.post(f"/evaluation/api/runs/{started['id']}/resume")
     assert wait(client, started['id'], statuses=('completed',))['status'] == 'completed'
     assert graph.commits == 1
     assert len([sql for sql, _ in graph.calls if 'DELETE' in sql or sql.startswith('UNWIND')]) == writes
@@ -242,7 +242,7 @@ def test_changed_graph_after_confirmation_stops_before_delete(environment, graph
     assert result['status'] == 'interrupted' and result['error']['code'] == 'graph_scope_changed'
     assert 'old_a' in graph.nodes and 'old_edge' in graph.edges
     assert graph.commits == 0 and not any('DELETE' in sql for sql, _ in graph.calls)
-    response = client.post('/evaluation/api/runs/' + started['id'] + '/resume')
+    response = client.post(f"/evaluation/api/runs/{started['id']}/resume")
     assert response.status_code == 409 and response.json()['code'] == 'graph_confirmation_required'
 
 
@@ -359,9 +359,9 @@ def test_resuming_after_a_later_import_refuses_to_query_replaced_graph_data(envi
     app.state.store.save(owner, started['id'], {**run, 'status': 'interrupted'})
     graph.marker['run_id'] = 'later_run_demo'
     count = len(deps.submissions)
-    assert client.post('/evaluation/api/runs/' + started['id'] + '/resume').status_code == 200
+    assert client.post(f"/evaluation/api/runs/{started['id']}/resume").status_code == 200
     for _ in range(100):
-        state = client.get('/evaluation/api/runs/' + started['id']).json()
+        state = client.get(f"/evaluation/api/runs/{started['id']}").json()
         if (state.get('error') or {}).get('code') == 'graph_scope_changed': break
         time.sleep(.02)
     assert state['error']['code'] == 'graph_scope_changed'

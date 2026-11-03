@@ -108,7 +108,7 @@ def until(check, message=''):
 
 def settled(client, rid, suggestions=('ready', 'failed')):
     def done():
-        run = client.get('/evaluation/api/runs/' + rid).json()
+        run = client.get(f'/evaluation/api/runs/{rid}').json()
         artifacts = run.get('artifacts') or {}
         return run if run['status'] not in ('queued', 'preparing', 'running') and artifacts.get('suggestions') in suggestions else None
     return until(done, 'artifacts were not generated')
@@ -136,7 +136,7 @@ def test_report_keeps_the_legacy_layout_and_score():
     assert '- **问题**：Synthetic partial' in report
     assert '`execute_script` · 退出码 2' in report and 'token=***' in report and 'synthetic-invalid' not in report
     assert '本用例未执行（轮次已结束）' in report
-    questions = [m.group(2) for line in report.splitlines() if (m := CASE_FIELD.match(line))]
+    questions = [m.group(2) for m in map(CASE_FIELD.match, report.splitlines()) if m]
     assert questions == ['Synthetic pass', 'Synthetic partial', 'Synthetic error', 'Synthetic manual', 'Synthetic pending']
 
 
@@ -212,8 +212,12 @@ def test_all_passing_run_needs_no_model_and_override_regenerates(service):
     response = client.post(f"/evaluation/api/runs/{record['id']}/results/0/override",
                            json={'verdict': 'fail', 'reason': 'Synthetic manual review', 'revision': run['revision']})
     assert response.status_code == 200, response.text
-    regenerated = until(lambda: (r := client.get('/evaluation/api/runs/' + record['id']).json())['artifacts']['revision'] == 2
-                        and r['artifacts']['suggestions'] == 'ready' and r)
+    def regenerated_run():
+        current = client.get(f"/evaluation/api/runs/{record['id']}").json()
+        ready = current['artifacts']['revision'] == 2 and current['artifacts']['suggestions'] == 'ready'
+        return current if ready else None
+
+    regenerated = until(regenerated_run)
     report = client.get(f"/evaluation/api/runs/{record['id']}/artifacts/report.md").text
     assert '❌ fail' in report and 'Synthetic manual review（人工改判）' in report
     assert regenerated['summary']['counts']['fail'] == 1
@@ -222,7 +226,7 @@ def test_all_passing_run_needs_no_model_and_override_regenerates(service):
     owner = app.state.store.db.execute('SELECT owner FROM records WHERE id=?', (record['id'],)).fetchone()[0]
     app.state.engine.on_stop(owner, record['id'], 'synthetic-user-a')
     time.sleep(.1)
-    assert client.get('/evaluation/api/runs/' + record['id']).json()['artifacts']['revision'] == 2
+    assert client.get(f"/evaluation/api/runs/{record['id']}").json()['artifacts']['revision'] == 2
 
 
 def test_package_groups_history_lock_and_release_view(service):
@@ -254,14 +258,14 @@ def test_package_groups_history_lock_and_release_view(service):
         return original(method, base, path, **kwargs)
     deps.json = failing_judge
     third = start(client, preparation(client, 'prepare_third'), [('Synthetic passing question', '2')], 'run_third')
-    until(lambda: client.get('/evaluation/api/runs/' + third['id']).json()['status'] == 'interrupted')
+    until(lambda: client.get(f"/evaluation/api/runs/{third['id']}").json()['status'] == 'interrupted')
     deps.json = original
     eval_set = client.get('/evaluation/api/eval-sets').json()['items'][0]['id']
     deps.running = True
     fourth = client.post('/evaluation/api/runs', json={'request_id': 'run_fourth', 'preparation_id': preparation(client, 'prepare_fourth')['id'],
                                                        'eval_set_id': eval_set})
     assert fourth.status_code == 202, fourth.text
-    until(lambda: client.get('/evaluation/api/runs/' + fourth.json()['id']).json()['status'] == 'running')
+    until(lambda: client.get(f"/evaluation/api/runs/{fourth.json()['id']}").json()['status'] == 'running')
     assert client.get('/evaluation/api/package-tasks').json()['items'][0]['executing'] is True
     # An executing run blocks a new run and the resumption of an older run of the same package.
     blocked = client.post('/evaluation/api/runs', json={'request_id': 'run_fifth', 'preparation_id': preparation(client, 'prepare_fifth')['id'],
@@ -271,7 +275,7 @@ def test_package_groups_history_lock_and_release_view(service):
     assert resumed.status_code == 409 and resumed.json()['code'] == 'package_run_active', resumed.text
     client.post(f"/evaluation/api/runs/{fourth.json()['id']}/cancel")
     deps.running = False
-    until(lambda: client.get('/evaluation/api/runs/' + fourth.json()['id']).json()['status'] == 'cancelled')
+    until(lambda: client.get(f"/evaluation/api/runs/{fourth.json()['id']}").json()['status'] == 'cancelled')
 
 
 def test_notification_retries_backs_off_and_stops_on_rejection(service):
@@ -280,7 +284,11 @@ def test_notification_retries_backs_off_and_stops_on_rejection(service):
     record = start(client, preparation(client), [('Synthetic passing question', '2')], 'run_notify')
     settled(client, record['id'])
     rid = record['id']
-    status = until(lambda: (s := client.get(f'/evaluation/api/runs/{rid}/artifacts').json()['notification'])['attempts'] >= 1 and s)
+    def attempted():
+        notification = client.get(f'/evaluation/api/runs/{rid}/artifacts').json()['notification']
+        return notification if notification['attempts'] >= 1 else None
+
+    status = until(attempted)
     assert status['status'] == 'pending' and status['last_error'] == '建模服务返回 503' and status['next_attempt'] > time.time() + 20
     assert 'modeling.example.com' not in json.dumps(status)
     modeling.status = 200
@@ -328,12 +336,12 @@ def test_restart_reports_abandoned_suggestions_and_resends_pending(tmp_path, ser
     meta.update(status='generating', suggestions='generating')
     app.state.store.put_artifacts(owner, rid, meta['revision'], {'meta': json.dumps(meta)})
     app.state.jobs.recover()
-    current = client.get('/evaluation/api/runs/' + rid).json()['artifacts']
+    current = client.get(f'/evaluation/api/runs/{rid}').json()['artifacts']
     assert current['status'] == 'failed' and current['suggestions'] == 'failed' and '重新生成' in current['suggestions_error']
     assert client.get(f'/evaluation/api/runs/{rid}/artifacts/suggestions.md').status_code == 404
     regenerated = client.post(f'/evaluation/api/runs/{rid}/artifacts/regenerate').json()
     assert regenerated['status'] == 'generating'
-    assert until(lambda: client.get('/evaluation/api/runs/' + rid).json()['artifacts']['suggestions'] == 'ready')
+    assert until(lambda: client.get(f'/evaluation/api/runs/{rid}').json()['artifacts']['suggestions'] == 'ready')
 
 
 def test_regenerate_rejects_active_and_empty_runs(service):
@@ -347,7 +355,7 @@ def test_regenerate_rejects_active_and_empty_runs(service):
     assert view['active']['run_id'] == record['id'] and view['active']['release_id'] == 'release_demo'
     client.post(f"/evaluation/api/runs/{record['id']}/cancel")
     deps.running = False
-    until(lambda: client.get('/evaluation/api/runs/' + record['id']).json()['status'] == 'cancelled')
+    until(lambda: client.get(f"/evaluation/api/runs/{record['id']}").json()['status'] == 'cancelled')
     response = client.post(f"/evaluation/api/runs/{record['id']}/artifacts/regenerate")
     assert response.status_code == 409 and response.json()['code'] == 'artifacts_unavailable'
 
@@ -356,7 +364,7 @@ def test_deleting_a_run_removes_its_artifacts_and_notifications(service):
     client, app, deps, modeling, verdicts = service
     record = start(client, preparation(client), [('Synthetic passing question', '2')], 'run_deleted')
     settled(client, record['id'])
-    assert client.delete('/evaluation/api/runs/' + record['id']).status_code == 200
+    assert client.delete(f"/evaluation/api/runs/{record['id']}").status_code == 200
     db = app.state.store.db
     assert db.execute('SELECT count(*) FROM artifacts WHERE run_id=?', (record['id'],)).fetchone()[0] == 0
     assert db.execute('SELECT count(*) FROM notifications WHERE run_id=?', (record['id'],)).fetchone()[0] == 0
@@ -407,7 +415,10 @@ def test_case_input_trims_tool_calls_to_fit_its_share():
     case = {'question': 'Synthetic one', 'reference': 'r' * 1000, 'answer': 'a' * 1000, 'status': 'settled'}
     calls = [{'n': n, 'tool': 'business_data_search', 'status': 'failed' if n == 8 else 'completed', 'input': 'x' * 60}
              for n in range(1, 9)]
-    item = lambda stored, limit: suggestions.case_input(1, case, 'fail', 'Synthetic', stored, limit)
+
+    def item(stored, limit):
+        return suggestions.case_input(1, case, 'fail', 'Synthetic', stored, limit)
+
     base = suggestions.size(item(None, 10 ** 6))
     # Six calls at most, the failed one kept, while they fit; then failed calls only; then none.
     roomy = item({'calls': calls, 'omitted': 2}, 10 ** 6)

@@ -1,5 +1,5 @@
 """Single-volume archive with process locks, durable intents and Git recovery."""
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path, PurePosixPath
 import fcntl
 import hashlib
@@ -51,7 +51,20 @@ def atomic(path, data):
         os.replace(name, path)
         sync_dir(path.parent)
     finally:
-        Path(name).unlink(missing_ok=True)
+        with suppress(FileNotFoundError):
+            os.unlink(name)
+
+
+def unsafe_member(info, name, parts):
+    """Member names that could escape or alias the extraction root, and non-regular members."""
+    if not name or len(name) > 1024 or len(parts) > 32:
+        return True
+    if name.startswith('/') or '\\' in name or ':' in name:
+        return True
+    if any(p in ('', '.', '..') for p in name.split('/')):
+        return True
+    mode = info.external_attr >> 16
+    return stat.S_ISLNK(mode) or stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)
 
 
 def write_json(path, value):
@@ -118,11 +131,7 @@ class Store:
                     name = i.filename.rstrip('/')
                     parts = PurePosixPath(name).parts
                     canonical = unicodedata.normalize('NFC', name).casefold()
-                    mode = i.external_attr >> 16
-                    if (not name or len(name) > 1024 or len(parts) > 32 or name.startswith('/') or '\\' in name or ':' in name
-                        or any(p in ('', '.', '..') for p in name.split('/'))
-                        or stat.S_ISLNK(mode) or (stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR))
-                        or canonical in seen or i.flag_bits & 1):
+                    if unsafe_member(i, name, parts) or canonical in seen or i.flag_bits & 1:
                         raise HubError('Unsafe archive member')
                     seen.add(canonical)
                     total += i.file_size
@@ -145,7 +154,10 @@ class Store:
     def copy_upload(self, stream, path):
         total = 0
         with path.open('wb') as out:
-            while chunk := stream.read(1024 * 1024):
+            while True:
+                chunk = stream.read(1024 * 1024)
+                if not chunk:
+                    break
                 total += len(chunk)
                 if total > self.max_bytes:
                     raise HubError('Upload exceeds limit', 413)
@@ -246,8 +258,8 @@ class Store:
                 raise HubError('Resource receipt unavailable', 503)
             for row in resource_receipt.get('files', []):
                 path = current / row['path']
-                if (not path.resolve().is_relative_to(current.resolve()) or path.is_symlink()
-                        or not path.is_file() or digest(path) != row['digest']):
+                contained = path.resolve().is_relative_to(current.resolve()) and not path.is_symlink()
+                if not contained or not path.is_file() or digest(path) != row['digest']:
                     raise HubError('Resource integrity failure', 503)
 
     def recover_all(self):
