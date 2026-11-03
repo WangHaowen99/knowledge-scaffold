@@ -1,4 +1,4 @@
-"""项目生命周期扩展、成员角色、乐观并发写入、版本标记与知识包导出的测试。"""
+"""项目生命周期扩展、乐观并发写入、版本标记与知识包导出的测试。"""
 
 import io
 import json
@@ -8,8 +8,10 @@ from pathlib import Path
 
 import pytest
 
+from app.services import publish as publish_service
 from app.services.workspace import WorkspaceError, WorkspaceManager
 from app.services.workspace import ScriptContractError, _script_header_meta
+from tests.text_versions import write_text_versions
 
 
 def test_script_header_meta_uses_declared_kebab_case_flag():
@@ -89,7 +91,7 @@ parser.add_argument("--has-jet-fuel", action="store_true")
     assert params[0]["required"] == "否"
 
 
-def _write_eval_table(root: Path, sheet: str, columns: list[str]) -> None:
+def _write_schema_table(root: Path, sheet: str, columns: list[str]) -> None:
     """写一张 schema 数据表：对象靠它拿到真实表名与列名。"""
     openpyxl = pytest.importorskip("openpyxl")
 
@@ -99,9 +101,10 @@ def _write_eval_table(root: Path, sheet: str, columns: list[str]) -> None:
     worksheet = workbook.active
     worksheet.title = sheet
     worksheet.append(columns)
-    workbook.save(excel / "评测数据.xlsx")
+    workbook.save(excel / "业务数据.xlsx")
+    write_text_versions(root)  # 资料区的 Excel 只读文本版（F4c）
     (root / "resource" / "materials.json").write_text(
-        json.dumps({"resource/excel/评测数据.xlsx": {"purpose": "schema"}}, ensure_ascii=False),
+        json.dumps({"resource/excel/业务数据.xlsx": {"purpose": "schema"}}, ensure_ascii=False),
         encoding="utf-8",
     )
 
@@ -129,31 +132,10 @@ def test_clone_copies_content_but_not_history(manager: WorkspaceManager):
 
     clone = manager.clone_project(meta["id"], owner="alice")
     clone_root = manager.project_root(clone["id"])
-    assert clone["name"] == "原始项目-副本"
+    assert clone["name"] == "原始项目（副本）"  # 契约 P-08 的缺省名
     assert clone["owner"] == "alice"
     assert (clone_root / "ontology" / "object" / "订单.md").read_text(encoding="utf-8") == "# 订单\n"
     assert not (clone_root / ".onto-web.json").read_text(encoding="utf-8").count(meta["id"])
-
-
-def test_role_of_and_write_permission():
-    meta = {"owner": "alice", "members": {"bob": "editor", "carol": "viewer"}}
-    assert WorkspaceManager.role_of(meta, "alice", False) == "owner"
-    assert WorkspaceManager.role_of(meta, "bob", False) == "editor"
-    assert WorkspaceManager.role_of(meta, "carol", False) == "viewer"
-    assert WorkspaceManager.role_of(meta, "dave", False) is None
-    assert WorkspaceManager.role_of(meta, "dave", True) == "admin"
-    assert WorkspaceManager.can_write(meta, "carol", False) is False
-    assert WorkspaceManager.can_write(meta, "bob", False) is True
-    # 无主历史项目对所有人开放为 editor
-    assert WorkspaceManager.role_of({"owner": ""}, "anyone", False) == "editor"
-
-
-def test_set_members_validates_roles(manager: WorkspaceManager):
-    meta = manager.create_project("成员")
-    updated = manager.set_members(meta["id"], {"bob": "viewer"})
-    assert updated["members"] == {"bob": "viewer"}
-    with pytest.raises(WorkspaceError):
-        manager.set_members(meta["id"], {"bob": "boss"})
 
 
 def test_write_file_creates_commit_and_returns_revision(manager: WorkspaceManager):
@@ -222,7 +204,7 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         "| 加急标识 | URGENT_FLAG | 标识 | 否 | 布尔 | 无 | 取值：0 / 1 |\n",
         encoding="utf-8",
     )
-    _write_eval_table(root, "ORDER_TABLE", ["ORDER_ID", "DELIVERY_FLAG"])
+    _write_schema_table(root, "ORDER_TABLE", ["ORDER_ID", "DELIVERY_FLAG"])
     (root / "ontology" / "logic").mkdir(exist_ok=True)  # 旧目录：验证兼容读取
     (root / "ontology" / "logic" / "创建订单.md").write_text(
         "---\nold: front\n---\n\n生成[[订单]]\n", encoding="utf-8"
@@ -258,7 +240,7 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         encoding="utf-8",
     )
     dest = tmp_path / "pkg.zip"
-    manager.export_package_zip(meta["id"], dest)
+    publish_service.export_package_zip(manager, meta["id"], dest)
     with zipfile.ZipFile(dest) as zf:
         names = set(zf.namelist())
         pid = meta["id"]
@@ -339,7 +321,7 @@ def test_export_package_zip_script_entrypoint_is_ascii_filename(manager: Workspa
     library = "def helper():\n    return 1\n"
     (root / "ontology" / "scripts" / "shared_math.py").write_text(library, encoding="utf-8")
     dest = tmp_path / "pkg.zip"
-    manager.export_package_zip(meta["id"], dest)
+    publish_service.export_package_zip(manager, meta["id"], dest)
     pid = meta["id"]
     with zipfile.ZipFile(dest) as zf:
         for key, code in sources.items():
@@ -353,7 +335,7 @@ def test_export_package_zip_script_entrypoint_is_ascii_filename(manager: Workspa
         assert f"{pid}/scripts/shared_math.md" not in zf.namelist()
     # 同一脚本多次导出文件名不变，版本间 diff 与 consumer 升级不会把它当成新脚本
     again = tmp_path / "again.zip"
-    manager.export_package_zip(meta["id"], again)
+    publish_service.export_package_zip(manager, meta["id"], again)
     with zipfile.ZipFile(dest) as first, zipfile.ZipFile(again) as second:
         doc = f"{pid}/scripts/计算折扣.md"
         assert first.read(doc) == second.read(doc)
@@ -374,7 +356,7 @@ def test_export_package_zip_keeps_helper_scripts_as_source_only(manager: Workspa
             f'"""\n关联operation：{bound}\n"""\ndef run():\n    return 1\n', encoding="utf-8",
         )
     dest = tmp_path / "pkg.zip"
-    manager.export_package_zip(meta["id"], dest)
+    publish_service.export_package_zip(manager, meta["id"], dest)
     pid = meta["id"]
     with zipfile.ZipFile(dest) as zf:
         names = set(zf.namelist())
@@ -418,6 +400,8 @@ def test_ensure_package_layout_migrates_logic_and_indexes(
     legacy.mkdir()
     (legacy / "创建订单.md").write_text("# 创建订单\n\n步骤若干\n", encoding="utf-8")
     (legacy / "index.md").write_text("旧占位\n", encoding="utf-8")
+    (root / "ontology" / "object").mkdir(parents=True, exist_ok=True)
+    (root / "ontology" / "object" / "订单.md").write_text("# 订单\n", encoding="utf-8")
 
     assert manager.ensure_package_layout(meta["id"]) is True
     assert not legacy.exists()
@@ -426,7 +410,7 @@ def test_ensure_package_layout_migrates_logic_and_indexes(
     assert "| 创建订单.md | 创建订单 |" in index
     # 幂等：第二次无变化，也不产生新提交
     assert manager.ensure_package_layout(meta["id"]) is False
-    # index.md 不计入进度探针与实体计数：只有迁移来的 operation 阶段算完成
+    # index.md 不计入进度探针与实体计数：对象加上迁移来的操作，建模这一步算完成
     progress = manager._project_progress(root)
     assert progress["stages_done"] == 1
     assert progress["operations"] == 1

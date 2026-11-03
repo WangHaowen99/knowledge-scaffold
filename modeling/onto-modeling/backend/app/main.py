@@ -2,131 +2,84 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import config
-from .routers import admin, auth_routes, projects, sessions, settings, onto_mcp
-from .services import auth
-from .services.agent_sessions import SDK_AVAILABLE, SessionError
-from .services.auth import AuthError
-from .services.conversation_store import ConversationError
-from .services.workspace import WorkspaceError
+from . import config, wiring
+from .api import deps, v1
+from .routers import auth_routes
+from .static_assets import PrecompressedStaticFiles
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     import asyncio
 
-    from .routers.admin import backup_scheduler_loop
+    from .governance import startup as governance_startup
+    from .governance import startup_recovery
+    from .services import background_jobs, backup, solver_validation
     from .services.agent_sessions import manager
     from .services.model_context_presets import write_example
-    from .services.modeling_eval import sweep_interrupted
-    from .services.modeling_cleanup import retry_due, scheduler_loop
-    from .services.solver_validation_run import sweep_interrupted as sweep_solver_validations
 
+    # 治理平面（方案 E5、E6、E10）：结构化日志、配置校验、会话池覆盖、密钥目录与告警，最先做
+    await asyncio.to_thread(governance_startup.before_recovery)
+    # 后台任务只活在进程内：重启后仍标 running 的记录改判中断（启动恢复的「中断的执行」一步统一跑）
+    background_jobs.register_startup_sweep(
+        "solver_validation",
+        lambda: solver_validation.sweep_interrupted(deps.workspaces.workspaces_dir),
+    )
+    # 启动恢复（详设 8.3、方案 B8）：任何会话开始之前，按登记顺序跑完各模块的恢复步骤——清残留锁、
+    # 补提交写入意图、存量迁移、核对装配目录、修对话历史、把没结束的执行改判中断——并留存报告（O-35）
+    await asyncio.to_thread(startup_recovery.run, deps.workspaces, include_background=False)
     manager.start_background()  # 空闲会话回收（方案 4.1.1）
+    from .services import material_conversion
+
+    # 资料转文本（ADR-0073）：资料变了就排队，后台线程经连接器网关转换，等待中的网关恢复后补转
+    material_conversion.install()
+    material_conversion.start()
+    from .services.autobuild.runner import runner as autobuild_runner
+
+    await autobuild_runner.resume_after_restart()  # 停机时在跑的自主构建从检查点接着跑（AB-09）
     write_example()  # 内置推荐表副本，供管理员复制成自定义表
-    # 评测编排只活在进程内：重启后仍标 running 的工作区改判中断，否则前端永久锁死
-    sweep_interrupted()
-    sweep_solver_validations()
-    backup_task = asyncio.create_task(backup_scheduler_loop())  # workspace 定期备份
-    modeling_cleanup_task = asyncio.create_task(scheduler_loop())
-    # 上次删除项目时没删净的目录（文件被占用、删到一半停机）在后台清扫掉
-    purge_task = asyncio.create_task(asyncio.to_thread(projects.workspaces.purge_leftovers))
+    # 定期备份：距上次已超过间隔时启动即补跑
+    backup_task = asyncio.create_task(backup.scheduler_loop(deps.workspaces))
+    # 耗时、不挡就绪的恢复步骤（清扫删到一半的目录、探测外部依赖）放后台，做完补进报告
+    recovery_task = asyncio.create_task(startup_recovery.run_background(deps.workspaces))
+    # 启动恢复做完才就绪（C-04）；运维管理面在同一事件循环起第二个监听（E8）
+    ops_listener = await governance_startup.after_recovery()
     try:
         yield
     finally:
+        await governance_startup.shutdown(ops_listener)
         backup_task.cancel()
-        modeling_cleanup_task.cancel()
-        purge_task.cancel()
-        await asyncio.gather(
-            backup_task, modeling_cleanup_task, purge_task, return_exceptions=True
-        )
+        recovery_task.cancel()
+        await asyncio.gather(backup_task, recovery_task, return_exceptions=True)
+        await autobuild_runner.shutdown()  # 运行停在检查点，下次启动接着跑
+        await asyncio.to_thread(material_conversion.stop)
         await manager.shutdown()
+        from .services.engines import jiuwen_remote
+
+        await jiuwen_remote.stop()  # Jiuwen worker（方案 B11）：会话都断开之后再停
+        governance_startup.stopped()
 
 
 app = FastAPI(title="Onto Modeling", version="0.1.0", lifespan=_lifespan)
-app.include_router(auth_routes.router)
-app.include_router(onto_mcp.router)
-app.include_router(onto_mcp.transport_router)
-app.include_router(projects.router)
-app.include_router(sessions.router)
-app.include_router(settings.router)
-app.include_router(admin.router)
-
-# 白名单外的 /api 路由要求有效 access token；token 可来自
-# Authorization 头或 ?token=（EventSource / 导出下载链接无法带头）
-AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/onto-mcp/")
-
-
-@app.middleware("http")
-async def auth_middleware(request: Request, call_next):
-    path = request.url.path
-    is_non_api = not path.startswith("/api")
-    is_exempt = path.startswith(AUTH_EXEMPT_PREFIXES) or path == "/api/health"
-    if (
-        not auth.ENABLED
-        or is_non_api
-        or is_exempt
-    ):
-        return await call_next(request)
-    token = ""
-    header = request.headers.get("authorization", "")
-    if header.lower().startswith("bearer "):
-        token = header[7:]
-    if not token:
-        token = request.query_params.get("token", "")
-    claims = auth.verify_access_token(token) if token else None
-    if claims is None:
-        return JSONResponse(status_code=401, content={"error": "未登录或登录已过期"})
-    request.state.user = claims
-    auth.touch(claims.get("sub", ""))
-    if request.method in ("POST", "PUT", "DELETE", "PATCH"):
-        from .services import audit
-
-        audit.log(claims.get("sub", ""), request.method, path)
-    return await call_next(request)
-
-
-@app.exception_handler(AuthError)
-async def auth_error_handler(request: Request, exc: AuthError):
-    return JSONResponse(status_code=exc.status, content={"error": str(exc)})
-
-
-@app.exception_handler(WorkspaceError)
-async def workspace_error_handler(request: Request, exc: WorkspaceError):
-    content = {"error": str(exc), "code": exc.code}
-    conflict = getattr(exc, "conflict", None)  # 同名冲突：候选名随错误带给前端
-    if conflict:
-        content["conflict"] = conflict
-    return JSONResponse(status_code=exc.status, content=content)
-
-
-@app.exception_handler(SessionError)
-@app.exception_handler(ConversationError)
-async def session_error_handler(request: Request, exc: SessionError | ConversationError):
-    return JSONResponse(status_code=exc.status, content={"error": str(exc)})
-
-
-@app.get("/api/health")
-def health():
-    return {"ok": True, "agent_sdk": SDK_AVAILABLE, "drawio": _drawio_available}
+# 健康检查（/api/health、/live、/ready）由 governance/health 的路由提供，两个监听都挂
+v1.install(app)
+# 插件运行时接到会话宿主与项目流（页面按钮、产物、扩展项、事件、提示规则；ADR-0045）
+wiring.install()
 
 
 # drawio 编辑器（官方 webapp 静态部署，iframe embed 协议接入；缺席时前端只读降级）
-_drawio_dir = Path(
-    os.environ.get(
-        "ONTO_WEB_DRAWIO_DIR", str(config.PACKAGE_ROOT / "vendor" / "drawio" / "webapp")
-    )
-)
-_drawio_available = (_drawio_dir / "index.html").is_file()
+_drawio_available = auth_routes.drawio_available()
 if _drawio_available:
-    app.mount("/drawio", StaticFiles(directory=_drawio_dir, html=True), name="drawio")
+    app.mount("/drawio", StaticFiles(directory=auth_routes.drawio_dir(), html=True), name="drawio")
 
-# 部署形态：前端构建产物与 API 同端口服务；开发时用 vite dev + 代理，不走这里
+# 部署形态：前端构建产物与 API 同端口服务；开发时用 vite dev + 代理，不走这里。
+# 预压缩的 .br / .gz 按 Accept-Encoding 发，带哈希的代码块长缓存（F2：第一次切换页面白屏几秒）
+STATIC_FILES_CLASS = PrecompressedStaticFiles
 _static_dir = Path(
     os.environ.get("ONTO_WEB_STATIC_DIR", str(config.PACKAGE_ROOT / "frontend" / "dist"))
 )
 if _static_dir.is_dir():
-    app.mount("/", StaticFiles(directory=_static_dir, html=True), name="static")
+    app.mount("/", STATIC_FILES_CLASS(directory=_static_dir, html=True), name="static")

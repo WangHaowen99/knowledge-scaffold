@@ -1,0 +1,12 @@
+# 扫描报告：/ontology-codegen-scan 写到 reports/ 的只读报告（md-report，内核按候选表解析）
+type: codegen.scan_report
+title: 扫描报告
+path: reports/*-codegen-candidates.md
+format: md-report
+key: filename
+readonly: report
+schema:
+  version: "1"
+  fields:
+    - {name: title, type: text, label: 报告, required: false}
+derive: {title: h1}

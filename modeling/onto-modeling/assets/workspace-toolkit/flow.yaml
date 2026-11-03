@@ -1,0 +1,241 @@
+# 主流程定义（详设 6.1、6.8、第 9 章；方案 D12）：阶段、完成判定、命令前置、下一步建议的唯一来源。
+#
+# 读它的地方（原来散在 5 处，各写一份）：
+# - 后端项目进度（项目列表上的 x/N，原 workspace.STAGES）；
+# - state_helper.py 的 detect-stage / check-prereq / next-step（原 STAGE_ORDER、COMMAND_PREREQS）；
+# - 会话开始的阶段提示（session_start_hook 与宿主注入都经 detect-stage 取阶段）；
+# - /ontology 命令里各阶段的「下一步建议」（经 state_helper.py next-step）；
+# - GET /api/v1/projects/{id}/flow（前端进度条、建模步骤与建议条改读它，原 LeftPane / ChatPane）。
+# 探针怎么算在 scripts/flow_state.py（只用标准库），后端与 state_helper 共用同一份实现。
+# 装配时组装成装配目录里的 flow.yaml（JSON 写法，也是合法 YAML）。
+#
+# 主线（详设 6.8，0.3.0 起）：资料分析（含分段规划）→ 建模（按段：对象、操作、规则、写入即查，装了场景走查
+# 再加「场景」）→ 校验（与走查）→ 全局一致性 → 发布；指标、流程图是旁支，增量更新按需。
+# 分段来自建模蓝图（research/blueprint.json，scripts/blueprint.py）；没有蓝图或只有一段时是全量模式。
+#
+# 节点状态由后端按执行记录、变更集、产物指纹算（详设 6.6；方案 D13）。节点上与之相关的声明：
+# - produces：本节点的输出（组装时检查两节点不能声明同一路径）；writes：运行期间还会改、但不归它产出的路径；
+#   两者合起来是节点运行期间的写入范围——守卫只放行这些路径，编辑器里这些条目只读（方案 C10、D11）；
+#   按段的节点落到当前这一段的条目上（详设 4.3）；
+# - stale_on：这些类别的产物在主线上变了，已确认的节点退回「过期」（research、object、operation、rule、
+#   metric、script、mock、testcase、diagram、solver、knowledge）；
+# - per_slice + steps：按段算状态的节点和段里的步骤（详设 6.6），包可以用 hooks 往段里加步骤；
+# - blocks：没确认就挡住的节点（关卡挂在发布前面）；blocks_in: sliced 表示只在按段模式下挡。
+flow_api: 1
+title: 主流程
+
+# 命名探针：节点的完成判定与旧版线性阶段都由它们组合（`!名字` 表示取反）
+probes:
+  research_report: {files: [research], glob: "*.md", recursive: true}
+  research_accepted: {research: accepted}
+  # 资料分析算完成：有报告且验收通过；对象已经提取时验收没过只留提醒、不再挡（issue #362）
+  research_done: {research: done, objects: object}
+  flowchart: {files: [ontology/diagrams], glob: "*.drawio"}
+  object: {files: [ontology/object], glob: "*.md", recursive: true}
+  # ontology/logic 是 operation 的旧目录（ADR-0004）
+  operation: {files: [ontology/operation, ontology/logic], glob: "*.md", recursive: true}
+  rule_metric: {files: [ontology/rule, ontology/metric], glob: "*.md", recursive: true}
+  # 「质量检查完成」统一口径：有校验报告（规则或语义检查，示例数据与流程图的检查报告不算），
+  # 且 reports/ 下没有未处理的 `[ ]` 条目。原来后端与前端看 reports/ 有没有文件，
+  # state_helper 看 validate_last_run，三处各算各的。
+  validation_report:
+    files: [reports]
+    glob: ["*-rule.md", "*-semantic.md"]
+    exclude: ["*-mock-rule.md", "*-diagrams-*.md"]
+  reports_pending: {pending: [reports], glob: "*.md"}
+  mock: {files: [ontology/data-mock]}
+  testcase: {files: [ontology/testcase]}
+  scripts: {files: [ontology/scripts]}
+  solver: {files: [ontology/solver]}
+  rule: {files: [ontology/rule], glob: "*.md", recursive: true}
+  metric: {files: [ontology/metric], glob: "*.md", recursive: true}
+  # 全局一致性的报告放在 reports/consistency/ 下：不算进质量检查的 reports_pending（那个只看 reports/ 第一层）
+  consistency_report: {files: [reports/consistency], glob: "*.md"}
+  consistency_pending: {pending: [reports/consistency], glob: "*.md"}
+  # 发布过：工作区里有 release/* 标签（发布流程打的，PB-03）
+  released: {tags: "release/*"}
+
+# 0.2 的节点编号 → 现在的节点：没升级的包里写的锚点照样认（对象提取、操作提取并进建模，规则与指标成了指标旁支）
+aliases:
+  core.object: core.model
+  core.operation: core.model
+  core.rule_metric: core.metric
+
+nodes:
+  - id: core.research
+    title: 资料分析
+    kind: agent
+    placement: spine
+    section: required
+    done: [research_done]
+    produces: ["research/*"]
+    entry: {command: /ontology-research}
+    actions:
+      - {label: 联网资料分析, command: "/ontology-research ", pack: websearch}
+      - {label: 仅本地资料, command: "/ontology-research 仅基于本地文档 "}
+      - {label: 追加分析, command: "/ontology-research 追加"}
+      - {label: 分段规划, command: "/ontology-research phase=blueprint"}
+      # 报告挡着后续阶段时，这个入口排到最前
+      - {label: 核验报告, verify: true, command: "运行 python3 .claude/scripts/research_checker.py 核验资料分析报告，逐条列出错误项与来源位置"}
+  # 建模按段走（详设 6.6、6.8）：每段依次是对象、操作、规则、写入即查；规则按资料出现，没有就跳过、不挡这一段。
+  # 写入即查由每轮合入时的检查完成（ADR-0046；F3 起只提示不拦），不单独跑命令。全量模式（没有蓝图或只有一段）就是原来的对象、操作提取。
+  - id: core.model
+    title: 建模
+    kind: agent
+    placement: spine
+    section: required
+    after: core.research
+    per_slice: true
+    done: [object, operation]
+    stale_on: [research]
+    produces: ["ontology/object/*", "ontology/operation/*", "ontology/rule/*"]
+    # 操作提取按资料分流：规则、指标随操作一起抽，也会补对象的关联（ADR-0012）
+    writes: ["ontology/logic/*", "ontology/metric/*"]
+    entry: {command: /ontology-extract-object}
+    steps:
+      - {id: object, label: 对象, title: 对象提取, command: /ontology-extract-object, action: 提取对象, kinds: [object], done: [object], stale_on: [research]}
+      - {id: operation, label: 操作, title: 操作提取, command: /ontology-extract-operation, action: 提取操作, kinds: [operation], done: [operation], stale_on: [object]}
+      - {id: rule, label: 规则, title: 规则提取, command: /ontology-extract-rule-metric, action: 提取规则, kinds: [rule], done: [rule], stale_on: [object, operation], optional: true}
+      - {id: check, label: 写入即查, derived: true}
+    actions:
+      - {label: 提取对象, command: /ontology-extract-object}
+      - {label: 提取操作, command: /ontology-extract-operation}
+  - id: core.metric
+    title: 指标
+    kind: agent
+    placement: branch
+    section: optional
+    optional: true
+    after: core.model
+    done: [metric]
+    stale_on: [object, operation]
+    produces: ["ontology/metric/*"]
+    writes: ["ontology/rule/*", "ontology/operation/*", "ontology/logic/*", "ontology/object/*"]
+    entry: {command: /ontology-extract-rule-metric}
+    actions:
+      - {label: 提取规则与指标, command: /ontology-extract-rule-metric}
+  - id: core.validate
+    title: 校验
+    kind: agent
+    placement: spine
+    section: required
+    after: core.model
+    done: [validation_report, "!reports_pending"]
+    stale_on: [object, operation, rule, metric]
+    produces: ["reports/*-rule.md", "reports/*-semantic.md"]
+    # 修复型节点：校验后的修复可能改到任何条目
+    writes: ["ontology/*"]
+    entry: {command: /ontology-validate}
+    actions:
+      - {label: 运行质量检查, command: /ontology-validate}
+  # 全局一致性（详设 6.8 新增）：关系、口径、跨分段衔接；按段建模时挡住发布，全量模式下只提醒
+  - id: core.consistency
+    title: 全局一致性
+    kind: agent
+    placement: spine
+    section: required
+    after: [trace.trace, core.validate]
+    done: [consistency_report, "!consistency_pending"]
+    stale_on: [object, operation, rule, metric]
+    produces: ["reports/consistency/*"]
+    writes: ["ontology/*"]
+    blocks: [core.publish]
+    blocks_in: sliced
+    entry: {command: /ontology-consistency}
+    actions:
+      - {label: 全局一致性检查, command: /ontology-consistency}
+  # 发布（详设 6.8 新增）：主线终点，关卡都挂在它前面；就是发布页那套流程（PB-01～PB-03），不另写一套
+  - id: core.publish
+    title: 发布
+    kind: human
+    placement: spine
+    section: required
+    after: core.consistency
+    done: [released]
+    stale_on: [object, operation, rule, metric, script]
+    actions:
+      - {label: 去发布, page: publish}
+  - id: core.update
+    title: 增量更新
+    kind: agent
+    placement: on_demand
+    section: on_demand
+    progress: false
+    after: core.model
+    done: []
+    writes: ["ontology/*", "reports/*"]
+    entry: {command: /ontology-update}
+    actions:
+      - {label: 增量更新, command: "/ontology-update "}
+
+# state_helper 的 8 级线性阶段（detect-stage 的输出）：命令模板按这些字面量分支，名字不能改。
+# 从低到高排列；判定时从高往低找第一个 when 全部满足的。
+stages:
+  - {name: 未开始, when: []}
+  - {name: 资料分析待核验, when: [research_report]}
+  - {name: 资料分析完成, when: [research_report, research_accepted]}
+  - {name: 流程图就绪, when: [flowchart]}
+  - {name: 对象已提取, when: [object]}
+  - {name: 逻辑已提取, when: [operation]}
+  - {name: 校验待审阅, when: [operation, reports_pending]}
+  - {name: 完成, when: [operation, validation_report, "!reports_pending"]}
+
+# 命令 → 所属节点与前置阶段（check-prereq：每个前置阶段都要已到达，输出 ok 或 missing:…）
+# 带 slice=<分段> 的命令按节点的 steps 归到按段的节点（extract-rule-metric 带分段是「规则」一步，不带是指标旁支）。
+# lock_waits：命令停下来等用户在对话里回复时锁切到的阶段（STEP0_TEMPLATE 第 4 步）。声明了表示命令遵守
+# 「等回复切 confirm、收尾先释放锁」的约定：一轮正常结束、这次保存过、没有没提交的改动、锁却不在这些阶段时，
+# 平台代为释放锁（助手做完了忘了放）；没声明的命令只在建议条上主推「继续」
+commands:
+  research: {node: core.research, requires: [], lock_waits: [confirm]}
+  extract-object: {node: core.model, requires: [资料分析完成], lock_waits: [confirm]}
+  extract-operation: {node: core.model, requires: [对象已提取], lock_waits: [confirm]}
+  extract-rule-metric: {node: core.metric, requires: [], lock_waits: [confirm]}
+  validate: {node: core.validate, requires: [逻辑已提取, 对象已提取], lock_waits: [confirm]}
+  consistency: {node: core.consistency, requires: [逻辑已提取, 对象已提取], lock_waits: [confirm]}
+  update: {node: core.update, requires: [逻辑已提取, 对象已提取], lock_waits: [confirm]}
+  overview: {requires: [对象已提取]}
+  impact: {requires: [对象已提取]}
+  query: {requires: [对象已提取]}
+
+# /ontology 各阶段「下一步建议」的条目（state_helper.py next-step 原样输出，命令文档不再各写一份）
+next_steps:
+  未开始:
+    - {reply: 资料分析, command: /ontology-research, text: 先做资料分析}
+    - {reply: 流程图, command: /ontology-flowchart, text: 直接创建流程图}
+    - {line: "或输入 `/ontology <领域名称>` 一键启动（如 `/ontology 电商`）"}
+  资料分析待核验:
+    - {reply: 修正, text: 按错误项修改报告后重新核验}
+    - {reply: 人工确认, text: 你逐条给出结论，我据此补充报告再核验}
+    - {reply: 重新做资料分析, command: /ontology-research, text: 重做本轮资料分析}
+    - {after: 验收通过前不建议提取对象：错误的字段或 ID 会被后续映射、规则与追溯继续沿用。}
+  资料分析完成:
+    - {reply: 分段规划, command: /ontology-research, text: 把业务切成几段、出建模蓝图（资料多、业务链路多时推荐）}
+    - {reply: 流程图, command: /ontology-flowchart, text: 创建业务流程图（流程复杂或多子流程交叉时推荐）}
+    - {reply: 提取对象, command: /ontology-extract-object, text: 跳过流程图，直接从资料分析报告提取对象（概念清晰、流程线性时推荐）}
+    - {reply: 追加资料分析, command: /ontology-research, text: 补充分析方向}
+  流程图就绪:
+    - {reply: 提取对象, command: /ontology-extract-object, text: 开始提取业务对象}
+    - {reply: 校验流程图, command: /ontology-validate-diagrams, text: 先打磨流程图}
+  对象已提取:
+    - {reply: 提取逻辑, command: /ontology-extract-operation, text: 提取业务逻辑}
+  逻辑已提取:
+    - {reply: 校验, command: /ontology-validate, text: 开始校验}
+    - {reply: 规则与指标, command: /ontology-extract-rule-metric, text: 补抽规则/指标：有资料分析报告的项目在逻辑提取阶段已按分类分流，这里用于从存量 operation 文档与 object 属性规则列补抽遗漏（可选）}
+    - {reply: 整体视图, command: /ontology-overview, text: 先看全局关系}
+    - {reply: 更新, command: /ontology-update, text: 按新的参考内容增量更新已有 ontology}
+  校验待审阅:
+    - {reply: 继续校验, command: /ontology-validate, text: 继续处理问题清单}
+  完成:
+    - {reply: 全局一致性, command: /ontology-consistency, text: 检查关系、口径与分段之间的衔接（发布前做）}
+    - {reply: 测试数据, command: /ontology-mock, text: 生成测试数据}
+    - {reply: 追踪, command: /ontology-trace, text: 场景追踪验证}
+    - {reply: 交互走查, command: /ontology-trace 交互, text: 逐个分支由你选方向，AI 辅助构造 testcase 和正常 mock 数据}
+    - {reply: 扫描候选, command: /ontology-codegen-scan, text: 看哪些逻辑适合转脚本（推荐先扫一遍）}
+    - {reply: 代码生成, command: /ontology-codegen, text: 生成 Python 代码}
+    - {reply: 整体视图, command: /ontology-overview, text: 查看对象/逻辑全局关系}
+    - {reply: 再校验, command: /ontology-validate, text: 重新校验}
+    - {reply: 更新, command: /ontology-update, text: 按新的参考内容更新已有 ontology}
+    - {reply: 补充对象, command: /ontology-extract-object, text: 增量补充对象}
+    - {reply: 补充逻辑, command: /ontology-extract-operation, text: 增量补充逻辑}
+    - {reply: 追加资料分析, command: /ontology-research, text: 追加资料分析}
+    - {reply: 版本历史, command: /version, text: 查看历史}

@@ -1,25 +1,28 @@
 """ontology_checker 对「# 数据来源」的检查：首行格式提示、存储属性英文名与真实表头逐列对账。
 
-与 package_mapping 的解析、评测导入的绑定同一口径。
+与 package_mapping 的解析、发布包的数据绑定同一口径。
 """
 
 import dataclasses
 import importlib
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from app import config
+from tests.text_versions import write_text_versions
 
 SCRIPTS = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts"
 
 
 @pytest.fixture
 def toolkit(monkeypatch):
-    """工具箱脚本按同目录互相 import（ontology_checker → check_eval_data），在进程内直接调用。"""
+    """工具箱脚本按同目录互相 import（ontology_checker → table_profile），在进程内直接调用。"""
     monkeypatch.syspath_prepend(str(SCRIPTS))
-    return importlib.import_module("ontology_checker"), importlib.import_module("check_eval_data")
+    return importlib.import_module("ontology_checker"), importlib.import_module("table_profile")
 
 OBJECT_DOC = """# 对象描述
 合成订单。
@@ -97,8 +100,9 @@ Order
 """
 
 
-def columns_workspace(tmp_path: Path, uploaded: bool = True) -> Path:
-    """一张合成数据表 T_ORDER(ORDER_ID, name, AMOUNT)：评测数据源上传的文件，或 schema 资料。"""
+def columns_workspace(tmp_path: Path, uploaded: bool = False) -> Path:
+    """一张合成数据表 T_ORDER(ORDER_ID, name, AMOUNT)：schema 资料；uploaded=True 时放在旧版
+    上传目录（.ontology-state 下），评测移出后（ADR-0020）它不再是表来源。"""
     workbook = openpyxl.Workbook()
     workbook.active.title = "T_ORDER"
     workbook.active.append(["ORDER_ID", "name", "AMOUNT"])
@@ -112,6 +116,7 @@ def columns_workspace(tmp_path: Path, uploaded: bool = True) -> Path:
         )
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(path)
+    write_text_versions(tmp_path)  # 资料区的 Excel 只读文本版（F4c）
     (tmp_path / "ontology" / "object").mkdir(parents=True)
     return tmp_path / "ontology"
 
@@ -126,12 +131,19 @@ def column_issues(toolkit, ontology: Path, rows: list[str], source: str = "T_ORD
 KEY_ROW = "| 订单号 | ORDER_ID | 合成订单号 | 是 | 字符串 | 无 | 无 |"
 
 
-@pytest.mark.parametrize("uploaded", [True, False])
-def test_real_column_hidden_in_alias_is_an_error(toolkit, tmp_path: Path, uploaded: bool):
-    ontology = columns_workspace(tmp_path, uploaded=uploaded)
+def test_real_column_hidden_in_alias_is_an_error(toolkit, tmp_path: Path):
+    ontology = columns_workspace(tmp_path)
     issues = column_issues(toolkit, ontology, [KEY_ROW, "| 订单名称 | order_name | 合成名称 | 否 | 字符串 | name | 无 |"])
     assert [i["severity"] for i in issues] == ["错误"]
     assert "order_name" in issues[0]["message"] and "英文名称改为 name" in issues[0]["message"]
+
+
+def test_leftover_upload_is_not_a_table_source(toolkit, tmp_path: Path):
+    """旧版上传目录里残留的表不参与列名对账：只剩「无可核对的数据表」提示。"""
+    ontology = columns_workspace(tmp_path, uploaded=True)
+    issues = column_issues(toolkit, ontology, [KEY_ROW, "| 订单名称 | order_name | 合成名称 | 否 | 字符串 | name | 无 |"])
+    assert [i["severity"] for i in issues] == ["警告"]
+    assert "还没有可核对的数据表" in issues[0]["message"]
 
 
 def test_missing_column_warns_unless_marked_derived_or_non_stored(toolkit, tmp_path: Path):
@@ -218,10 +230,44 @@ def test_field_alias_conflict_matches_evaluation_rule(toolkit, tmp_path: Path):
     assert "禁止删除别名" in issues[0]["message"]
 
 
-def test_headers_flag_lists_uploaded_and_schema_tables(toolkit, tmp_path: Path, monkeypatch, capsys):
-    _, check_eval_data = toolkit
+def test_headers_flag_lists_schema_tables(toolkit, tmp_path: Path, monkeypatch, capsys):
+    _, table_profile = toolkit
     columns_workspace(tmp_path)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("sys.argv", ["check_eval_data.py", "--headers"])
-    assert check_eval_data.main() == 0
+    monkeypatch.setattr("sys.argv", ["table_profile.py", "--headers"])
+    assert table_profile.main() == 0
     assert json.loads(capsys.readouterr().out) == {"T_ORDER": ["ORDER_ID", "name", "AMOUNT"]}
+
+
+def test_old_script_name_forwards_for_one_release(tmp_path: Path):
+    """旧名 check_eval_data.py 保留一版转发：同一份输出，stderr 提示改名。"""
+    columns_workspace(tmp_path)
+    old = subprocess.run(
+        [sys.executable, str(SCRIPTS / "check_eval_data.py"), "--headers"],
+        cwd=tmp_path, capture_output=True, text=True, timeout=60,
+    )
+    new = subprocess.run(
+        [sys.executable, str(SCRIPTS / "table_profile.py"), "--headers"],
+        cwd=tmp_path, capture_output=True, text=True, timeout=60,
+    )
+    assert old.returncode == new.returncode == 0
+    assert old.stdout == new.stdout and json.loads(old.stdout) == {"T_ORDER": ["ORDER_ID", "name", "AMOUNT"]}
+    assert "table_profile.py" in old.stderr
+
+
+def test_reconcile_given_tables(tmp_path: Path):
+    """三方对账只对命令行给出的数据表；不给时提示用法，不报差异。"""
+    ontology = columns_workspace(tmp_path)
+    (ontology / "object" / "订单.md").write_text(
+        COLUMNS_DOC.format(source="T_ORDER", rows=KEY_ROW), encoding="utf-8"
+    )
+    script = str(SCRIPTS / "table_profile.py")
+    idle = subprocess.run([sys.executable, script, "--json"], cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    assert idle.returncode == 0 and json.loads(idle.stdout)["status"] == "no_files"
+    checked = subprocess.run(
+        [sys.executable, script, "--json", "resource/excel/结构.xlsx"],
+        cwd=tmp_path, capture_output=True, text=True, timeout=60,
+    )
+    result = json.loads(checked.stdout)
+    assert checked.returncode == 1 and result["status"] == "warn"
+    assert result["files"][0]["sheets"][0]["attr_unmatched"] == ["AMOUNT", "name"]

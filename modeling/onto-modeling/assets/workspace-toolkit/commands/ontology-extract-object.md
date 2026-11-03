@@ -7,7 +7,7 @@ This command is the object-only half of extraction. It reads flowchart summaries
 遵循 `.claude/STEP0_TEMPLATE.md`，COMMAND_NAME = `extract-object`。简述：
 
 1. `python3 .claude/scripts/state_helper.py check-lock extract-object`
-   - `locked:{ts}:{phase}` → 按 **错误恢复类** 提示；phase 可能是 `source` / `objects`，**续执**时跳到对应阶段。
+   - `locked:{ts}:{phase}` → `python3 .claude/scripts/state_helper.py recover extract-object` 由平台定（不问用户）：`resume:{phase}` 跳到对应阶段接着做，`restart` 已清理、重新开始；工作过程里说一句业务话（phase 可能是 `source` / `objects`）。
 2. `python3 .claude/scripts/state_helper.py check-prereq extract-object`
    - `missing:资料分析完成` → 先 `python3 .claude/scripts/state_helper.py detect-stage` 区分两种情况：
      - `未开始` → 按 **跳步守卫** 提示："当前既无资料分析报告也无流程图，提取无源。" 选项 **先做 资料分析**（/ontology-research）/ **先做 流程图**（/ontology-flowchart）。
@@ -33,6 +33,10 @@ python3 .claude/scripts/state_helper.py acquire extract-object objects
 
 命令结束前 `release extract-object`。
 
+## 分段建模
+
+Step 0 之后读 `.claude/SLICE_MODE.md` 并照做：`python3 .claude/scripts/blueprint.py brief` 不是「全量模式」时，这一次只做 brief 里的那一段（派子代理时把 brief 原样放进 prompt），做完这一步就停下（这一轮结束自动存成版本）。
+
 ## 业务知识识别（贯穿整个命令）
 
 整个命令期间始终遵循 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md`。
@@ -55,13 +59,12 @@ python3 .claude/scripts/research_checker.py status
 与字段还没对过账——有流程图不代表报告可用，阶段前置只看得到"有流程图"：
 
 - `SUMMARIES` 非空 → 置 `REPORTS = empty`，按模式 B 只用流程图继续，并告诉用户：
-  "资料分析报告（`research/{文件名列表}`）尚未通过内容验收，本次只基于流程图提取。
-  用 `python3 .claude/scripts/research_checker.py check` 核验通过后，可再以增量模式
-  补充报告里的内容。"
+  "资料分析报告「{报告名}」还没通过内容核验，这次只按流程图提取对象；核验通过后再补充报告里的内容。"
 - `SUMMARIES` 为空（报告是唯一来源）→ 用户已在 Step 0 的跳步守卫里选过 **继续** 时，
-  保留 `REPORTS` 并在本轮摘要里标注"来源报告未通过内容验收"；否则按
+  保留 `REPORTS` 并在本轮摘要里标注"来源报告未通过内容验收"；否则先
+  `python3 .claude/scripts/state_helper.py acquire extract-object confirm`，按
   `.claude/STEP0_TEMPLATE.md` 的 **跳步守卫** 给出同样的后果说明与选项
-  （**先做 核验** / **继续** / **取消**），用户选 **继续** 才保留 `REPORTS`，
+  （**先做 核验** / **继续** / **取消**），用户选 **继续** 才保留 `REPORTS`（切回 `acquire extract-object source`），
   选 **取消** 时先 `python3 .claude/scripts/state_helper.py release extract-object` 再 stop。
 
 根据存在情况分四种模式：
@@ -82,17 +85,17 @@ python3 .claude/scripts/state_helper.py release extract-object
 Set `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = empty`。Proceed to Step 2。
 
 **模式 C — 仅有资料分析报告（`SUMMARIES` 空，`REPORTS` 非空）：**
-Tell user:
-"未找到流程图摘要，将仅基于资料分析报告提取对象（`research/{文件名列表}`）。流程图是可选步骤，概念明确时可跳过。
+`python3 .claude/scripts/state_helper.py acquire extract-object confirm`，then tell user:
+"未找到流程图摘要，将仅基于资料分析报告「{报告名}」提取对象。流程图是可选步骤，概念明确时可跳过。
 - 回复 **继续** → 仅基于资料分析报告提取对象
 - 回复 **先做流程图** → 转入 /ontology-flowchart 创建流程图后再回来
 "
-- **继续**: set `SUMMARY_PATHS = empty`, `REPORT_PATHS = REPORTS`，进入 Step 2。
-- **先做流程图**: 先 `python3 .claude/scripts/state_helper.py release extract-object`；再读取 `.claude/commands/ontology-flowchart.md` 并执行；完成后 Claude 重新运行本命令。
+- **继续**: `acquire extract-object source`；set `SUMMARY_PATHS = empty`, `REPORT_PATHS = REPORTS`，进入 Step 2。
+- **先做流程图**: 先 `python3 .claude/scripts/state_helper.py release extract-object`；再读取 `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） 并执行；完成后 Claude 重新运行本命令。
 - **取消**: `python3 .claude/scripts/state_helper.py release extract-object`，stop。
 
 **模式 D — 两者都有：**
-Tell user:
+`python3 .claude/scripts/state_helper.py acquire extract-object confirm`，then tell user（回复后 `acquire extract-object source`）:
 "已发现流程图摘要 {N} 份和资料分析报告 {M} 份。
 - 回复 **两者结合**（推荐）→ 流程图为主，资料分析报告补充细节
 - 回复 **跳过资料分析** → 只用流程图摘要
@@ -119,17 +122,17 @@ python3 .claude/scripts/excel_context.py --summary {逐个 SUMMARY_PATHS} --exce
 
 Set `EXCEL_CONTEXT` = 脚本 stdout。若 stdout 为空，置为 `（无同名 Excel 补充表）`。
 
-若 `ORPHAN_EXCEL_PATHS` 非空，提取前提示用户：
+若 `ORPHAN_EXCEL_PATHS` 非空，提取前先 `python3 .claude/scripts/state_helper.py acquire extract-object confirm`，再提示用户：
 
-"发现未匹配流程图摘要的 Excel：{ORPHAN_EXCEL_PATHS}。孤立 Excel 不作为全局提取来源，避免把其他流程 sheet 的细节串入本次提取。
+"发现没有对应流程图的 Excel：{这些 Excel 的文件名}。它们不作为这次提取的来源，避免把其他流程的细节串进来。
 - 回复 **继续** → 忽略这些孤立 Excel，继续提取
 - 回复 **校验流程图** → 先检查流程图与 Excel 是否对齐
-- 回复 **刷新** → 从 resource 重新刷新拆分后的流程图/Excel/摘要
+- 回复 **刷新** → 从资料区重新刷新流程图、Excel 和流程图摘要
 "
 
-- **继续**（或默认）: 忽略 `ORPHAN_EXCEL_PATHS`，继续 Step 2。
-- **校验流程图**: `python3 .claude/scripts/state_helper.py release extract-object`；read `.claude/commands/ontology-validate-diagrams.md` and follow it；Stop this command。
-- **刷新**: `python3 .claude/scripts/state_helper.py release extract-object`；read `.claude/commands/ontology-flowchart.md` and follow refresh branch；Stop this command。
+- **继续**（或默认）: `acquire extract-object source`；忽略 `ORPHAN_EXCEL_PATHS`，继续 Step 2。
+- **校验流程图**: `python3 .claude/scripts/state_helper.py release extract-object`；read `.claude/commands/ontology-validate-diagrams.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it；Stop this command。
+- **刷新**: `python3 .claude/scripts/state_helper.py release extract-object`；read `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow refresh branch；Stop this command。
 
 若 `SUMMARY_PATHS` 为空：`PAIRED_EXCEL_PATHS = empty`，`ORPHAN_EXCEL_PATHS = empty`，`EXCEL_CONTEXT = （无流程图摘要，Excel 不参与本次提取）`。
 
@@ -142,27 +145,25 @@ Set `EXCEL_CONTEXT` = 脚本 stdout。若 stdout 为空，置为 `（无同名 E
 - 存在 `purpose=schema` 的表格时，这些表是对象与属性的**事实来源**：
   - 每个 Sheet 对应一个候选对象，属性英文名称必须逐列取自真实表头，不得虚构、改名或合并列；
   - 类型与主键候选只能标注为"推断"；样例行只用于类型判断，不得据此编造业务含义或必填性；
-  - 空表头、重名列、主键歧义 → 用业务化的选项询问用户，不自行决断。
+  - 空表头、重名列、主键歧义 → 先 `acquire extract-object confirm`，用业务化的选项询问用户，不自行决断；回复后切回 `source`。
 - 存在 `purpose=term` 的术语表时，对象命名、别名、属性中文名必须与术语表对齐；冲突时以术语表为准并在文档"来源"处标注。
 - 需要全文读取的资料（`reading_mode=full`，或没有写 `reading_mode` 的文档类资料，规则见 CLAUDE.md 8.1）在提取前必须已全文读取。
-- 运行 `python3 .claude/scripts/check_eval_data.py --headers`，stdout（JSON：`{Sheet 名: [表头列]}`，来自 schema 资料与评测数据源上传的数据表）记为 `TABLE_HEADERS`；为空（`{}`）时记为 `（无）`。
+- 运行 `python3 .claude/scripts/table_profile.py --headers`，stdout（JSON：`{Sheet 名: [表头列]}`，来自 schema 资料）记为 `TABLE_HEADERS`；为空（`{}`）时记为 `（无）`。
   `TABLE_HEADERS` 非空时，它是表名与列名的**唯一依据**：对象「# 数据来源」取其中的 Sheet 名，对不上任何 Sheet 的对象填「无」；从库里读取的属性英文名称逐字取自该 Sheet 的表头；数据字典类文档、资料分析报告里的字段名与之冲突时以 `TABLE_HEADERS` 为准，冲突清单写进返回摘要的注意事项。提取后的规则检查会按对象逐列对账：声明的表不存在、一列都对不上、或属性别名里才是真实列名，均判为错误并阻止提交（发布时同样会被阻断）。
   `TABLE_HEADERS` 为 `（无）` 时，先看 `resource/` 下有没有像数据库表的表格资料（首行是英文列名）：有的话按 CLAUDE.md 8.1 请用户在资料列表把它标为「数据 Schema」，标好后重跑上面的命令；用户确认没有数据表时，所有对象的「# 数据来源」填「无」，不得臆造表名；规则检查会对声明了表名的对象给出警告。
-- `TABLE_HEADERS` 非空时再运行 `python3 .claude/scripts/check_eval_data.py --profile`，stdout 记为 `TABLE_PROFILE`（每列取值形态的计数与推断类型，不含单元格原值，每表最多读 2000 行）。`omitted_tables` 非空时用 `--profile --tables {这些表名}` 分批补读，合并后再传给 agent。`TABLE_HEADERS` 为 `（无）` 时 `TABLE_PROFILE` 也记为 `（无）`。它是属性「类型」的取值证据：类型与取值矛盾、数值列无依据地写成字符串，提取后的规则检查会报「类型冲突」「类型待确认」。
+- `TABLE_HEADERS` 非空时再运行 `python3 .claude/scripts/table_profile.py --profile`，stdout 记为 `TABLE_PROFILE`（每列取值形态的计数与推断类型，不含单元格原值，每表最多读 2000 行）。`omitted_tables` 非空时用 `--profile --tables {这些表名}` 分批补读，合并后再传给 agent。`TABLE_HEADERS` 为 `（无）` 时 `TABLE_PROFILE` 也记为 `（无）`。它是属性「类型」的取值证据：类型与取值矛盾、数值列无依据地写成字符串，提取后的规则检查会报「类型冲突」「类型待确认」。
 
 ## Step 2: Determine object mode
 
 List `ontology/object/*.md`.
 
-If object files already exist and MODE is not pre-set:
+If object files already exist and MODE is not pre-set, `python3 .claude/scripts/state_helper.py acquire extract-object confirm` 后问（Step 3 的 `acquire extract-object objects` 会切回）:
 
 ```
 已发现对象文档 {M} 个。
 
-**下一步建议：**
 - 回复 **增量** → 只补充缺失对象，不覆盖已有对象
-- 回复 **重做** → 清空 `ontology/object/` 后重新提取对象
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
+- 回复 **重做** → 清空已有对象后重新提取
 ```
 
 Handle user choice:
@@ -227,7 +228,7 @@ OBJECTS_DIR: ontology/object/
 CHECK_TYPE: object
 ```
 
-Display coverage results. Handle gaps（全部补充 / 选择性补充 / 跳过），with one-retry limit.
+Display coverage results. Handle gaps（全部补充 / 选择性补充 / 跳过），with one-retry limit；问用户前 `acquire extract-object confirm`，回复后切回 `objects`。
 
 **BFO 参考提醒（可选）**：按 `.claude/reference/BFO_MODELING_GUIDE.md` §10 评估是否触发：
 - 用 §10.2 的对象关键词列表对本批次对象文件名做子串匹配，得到 `matched_keywords`（去重，最多取 5 个）。
@@ -255,18 +256,18 @@ Display coverage results. Handle gaps（全部补充 / 选择性补充 / 跳过�
 - 类型验收 `failed` 时不进入确认：按下方候选修订流程修正后重新核验。`pending` 时逐条列给用户，由用户决定修正或保留（保留时在属性规则写明 `文本保留：原因`、`混合标识：归一化规则` 或布尔取值含义），不得自行补零、去零、改大小写。
 - `items` 只列前 80 条；`omitted` 非零时注明「另有 N 条未列出」。
 
-Ask: "对象产物已生成，共 {N} 个，验收结果如上。如需修改请直接说明；确认无误请回复 **确认**。"
+`python3 .claude/scripts/state_helper.py acquire extract-object confirm`，then ask: "对象产物已生成，共 {N} 个，验收结果如上。如需修改请直接说明；确认无误请回复 **确认**。"
 
 **修改已生成或已确认的对象文档（候选修订，不直接覆盖）：**
 用户要求修改时，不直接编辑 `ontology/object/` 下的文件：
 1. `python3 .claude/scripts/candidate_revision.py start --plan {要改的文档路径，逐项加引号} --note "{修正说明}"`，只修改输出里的 `candidate` 路径（新文档在该路径新建）。
 2. `python3 .claude/scripts/candidate_revision.py diff`，把每个文件的增删行数与关键改动展示给用户。
 3. `python3 .claude/scripts/candidate_revision.py check`：在临时副本里叠加候选跑整计划规则检查。退出码 0 通过；1 候选引入新错误（展示 `new_errors`，继续改候选后重新 check）或确认版本已被改动（`stale`，reject 后重新 start）；2 无法核验（展示 reason，不得接受）。
-4. 用户同意后 `python3 .claude/scripts/candidate_revision.py accept` 写回；不同意时 `python3 .claude/scripts/candidate_revision.py reject --reason "{原因}"`，工作区文件不动。校验后候选又改过、确认版本被改动或资料与数据表有变化时 accept 会拒绝，按提示重新 check。
+4. 问用户是否接受前 `acquire extract-object confirm`，回复后切回 `objects`。用户同意后 `python3 .claude/scripts/candidate_revision.py accept` 写回；不同意时 `python3 .claude/scripts/candidate_revision.py reject --reason "{原因}"`，工作区文件不动。校验后候选又改过、确认版本被改动或资料与数据表有变化时 accept 会拒绝，按提示重新 check。
 5. accept 后重新运行上面的 `verify_artifacts.py` 与 `field_semantics.py types`，不复用旧回执与旧结论。
 6. 存量对象里的 `字符串`、`数字` 类型不自动改写；要改时同样走本流程，由用户确认差异后接受。
 
-When user confirms（回复 **确认** 或等价的肯定词，如"好的"、"可以"、"没问题"、"继续"、"是"）:
+When user confirms（回复 **确认** 或等价的肯定词，如"好的"、"可以"、"没问题"、"继续"、"是"）: `acquire extract-object objects`，then
 
 Determine TOPIC from flowchart summary filenames, research report filenames, or ask user.
 
@@ -275,11 +276,8 @@ git add ontology/object/
 git commit -m "extract: {TOPIC} objects"
 ```
 
-Display:
-"**下一步建议：**
-- 回复 **检验对象**（/ontology-validate）→ 先对已确认对象做规则和语义检验
-- 回复 **提取逻辑**（/ontology-extract-operation）→ 基于已确认对象提取业务逻辑
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
+先 `python3 .claude/scripts/state_helper.py release extract-object`，再用两三句话小结：提取了多少对象、还有什么要用户定；不列下一步菜单（界面的建议条会给出）。
+用户之后在对话里说「检验对象」「提取逻辑」，按下面的分支做。
 
 内部执行时，`{OBJECT_STEMS}` 为当前 `ontology/object/*.md` 的文件名 stem，空格分隔。不要在用户可见提示中展开这些对象名称。
 

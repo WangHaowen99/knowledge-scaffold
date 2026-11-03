@@ -10,12 +10,15 @@ from pathlib import Path
 
 import pytest
 
+from app.services import publish as publish_service
 from app.services import package_archive
+from app.services.flow import model as flow_model
 from app.services.workspace import (
     IMPORTED_PACKAGE_DIR,
     WorkspaceError,
     WorkspaceManager,
 )
+from tests.text_versions import write_text_versions
 
 
 @pytest.fixture()
@@ -57,7 +60,7 @@ def _seed_project(manager: WorkspaceManager, name: str = "外卖订单") -> dict
 
 
 def _export_package(manager: WorkspaceManager, project_id: str, dest: Path) -> Path:
-    manager.export_package_zip(project_id, dest)
+    publish_service.export_package_zip(manager, project_id, dest)
     return dest
 
 
@@ -99,9 +102,10 @@ def test_published_package_import_restores_entities(
     assert overview["objects"] == 2
     assert overview["operations"] == 1
     # 已发布知识包只有交付物、没有过程资产：research/ 等必选阶段不命中，但不截断后续，
-    # 对象、操作、规则与指标、代码生成四个阶段各自计入（与前端 stageStatuses 一致）
-    assert overview["stages_done"] == 4
-    assert overview["stages_total"] == len(WorkspaceManager.STAGES)
+    # 建模（对象与操作）、指标、代码生成三个节点各自计入（与前端 stageStatuses 一致）
+    assert overview["stages_done"] == 3
+    # 按需节点（增量更新、反馈演进、迁移复用）不计进度
+    assert overview["stages_total"] == sum(1 for node in flow_model.image_flow()["nodes"] if node.get("progress", True))
 
     # 工作区文档不带包契约 frontmatter，正文原样
     body = (root / "ontology" / "operation" / "创建订单.md").read_text(encoding="utf-8")
@@ -242,6 +246,7 @@ def test_object_data_mapping_survives_import(manager: WorkspaceManager, tmp_path
     workbook.active.title = "ORDER_TABLE"
     workbook.active.append(["ORDER_ID"])
     workbook.save(excel / "数据表.xlsx")
+    write_text_versions(root)  # 资料区的 Excel 只读文本版（F4c）
     (root / "resource" / "materials.json").write_text(
         json.dumps({"resource/excel/数据表.xlsx": {"purpose": "schema"}}, ensure_ascii=False),
         encoding="utf-8",
@@ -392,7 +397,7 @@ def test_business_name_survives_repeated_package_roundtrip(manager, tmp_path, bu
 
     for cycle in range(2):
         archive = tmp_path / f"synthetic_{cycle}.zip"
-        manager.export_package_zip(source["id"], archive, allow_unbound=True)
+        publish_service.export_package_zip(manager, source["id"], archive, allow_unbound=True)
         with zipfile.ZipFile(archive) as zf:
             for kind, (stem, original) in identities.items():
                 text = zf.read(f"{source['id']}/{kind}s/{stem}.md").decode("utf-8")
@@ -428,4 +433,4 @@ def test_invalid_business_name_blocks_export_and_import(manager, tmp_path, metad
     path = manager.project_root(source["id"]) / "ontology/operation/synthetic_plain.md"
     path.write_text(raw, encoding="utf-8")
     with pytest.raises(WorkspaceError):
-        manager.export_package_zip(source["id"], tmp_path / "synthetic_invalid.zip", allow_unbound=True)
+        publish_service.export_package_zip(manager, source["id"], tmp_path / "synthetic_invalid.zip", allow_unbound=True)

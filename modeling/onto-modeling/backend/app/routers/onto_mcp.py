@@ -1,79 +1,186 @@
-"""Onto-local MCP management and HTTP/SSE transport."""
+"""项目级 MCP：管理接口（M-01～M-04，所有者）与 HTTP/SSE 传输（M-05～M-07，MCP token）。
+
+管理接口走契约错误体；传输层保留 JSON-RPC 信封与 MCP 大写错误码（契约 2.12）。
+"""
 import asyncio
 import json
+import math
 import secrets
 import time
+from urllib.parse import urlsplit
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+
 from .. import config
+from ..api import deps
 from ..services.onto_mcp import tokens
 from ..services.onto_mcp import workspace as tools
-from ..services.onto_mcp.definitions import TOOLS
+from ..services.onto_mcp.definitions import SCOPES, TOOLS
 from ..services.onto_mcp.errors import McpError
 from ..services.workspace import WorkspaceError
 
-router = APIRouter(prefix="/api/projects")
-transport_router = APIRouter(prefix="/api/onto-mcp")
+router = APIRouter(prefix="/api/v1/projects")
+# M-05～M-07：v1 路径与永久保留的旧路径，行为完全相同（契约 1.2 第 5 条）
+transport_router = APIRouter(prefix="/api/v1/onto-mcp")
+legacy_transport_router = APIRouter(prefix="/api/onto-mcp")
 _sessions = {}
 MAX_BODY = 1024 * 1024
+MAX_LISTED_TOKENS = 100
+TOKEN_POLICY = {"min_ttl_s": 300, "default_ttl_s": 86400, "max_ttl_s": 2592000, "supports_non_expiring": True}
+SCOPE_LABELS = dict(zip(SCOPES, ("读取本体", "校验修改", "保存修改")))
+TOOLSET_SCOPES = {"read": SCOPES[:1], "change": SCOPES[1:]}
+# 客户端配置里的服务器名沿用旧版，已配好的客户端不用改名
+CLIENT_SERVER_NAMES = {"read": "modeling-read", "change": "modeling-change"}
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 
 
 def manager():
-    from .projects import workspaces
-    return workspaces
+    return deps.workspaces
 
 
-def access(project_id, request, write=False):
-    from .projects import ensure_access
-    ensure_access(project_id, request, write=write)
+def access(project_id, request):
+    """项目级 MCP 管理（状态、Token 签发与吊销）只归项目所有者。"""
+    deps.require_owner(project_id, request)
     return manager().get_project(project_id)
 
 
-def management_error(exc):
-    if isinstance(exc, (McpError, WorkspaceError)):
-        return JSONResponse(status_code=exc.status, content={"error": str(exc), "code": exc.code})
-    raise exc
+def public_base(request) -> str:
+    return config.ONTO_MCP_PUBLIC_BASE_URL or str(request.base_url).rstrip("/")
 
 
-@router.get("/{project_id}/modeling-mcp")
+def endpoints(project_id: str, base: str) -> list[dict]:
+    return [
+        {"toolset": group, "transport": transport, "url": f"{base}/api/v1/onto-mcp/{project_id}/{group}/{suffix}"}
+        for group in ("read", "change")
+        for transport, suffix in (("streamable-http", "mcp"), ("sse", "sse"))
+    ]
+
+
+def client_configs(project_id: str, base: str, tokens_by_toolset: dict[str, str]) -> dict:
+    """MCP 客户端配置 JSON（字符串）：read、change 各一份，full 两个工具集都配上。"""
+    def server(group, token):
+        url = f"{base}/api/v1/onto-mcp/{project_id}/{group}/mcp"
+        return {"type": "http", "url": url, "headers": {"Authorization": f"Bearer {token}"}}
+
+    servers = {group: server(group, token) for group, token in tokens_by_toolset.items() if token}
+
+    def dump(groups):
+        selected = {CLIENT_SERVER_NAMES[g]: servers[g] for g in groups if g in servers}
+        return json.dumps({"mcpServers": selected}, ensure_ascii=False, indent=2) if selected else ""
+
+    return {"read": dump(["read"]), "change": dump(["change"]), "full": dump(["read", "change"])}
+
+
+def remaining_text(created: float | None, expires: float | None, now: float | None = None) -> str:
+    """「30 天 · 剩 21 天」「永不过期」「已过期」。"""
+    if expires is None:
+        return "永不过期"
+    now = time.time() if now is None else now
+    if expires <= now:
+        return "已过期"
+
+    def span(seconds):
+        return f"{max(1, math.ceil(seconds / 86400))} 天" if seconds >= 86400 else f"{max(1, math.ceil(seconds / 3600))} 小时"
+
+    total = span(expires - (created if created is not None else now))
+    return f"{total} · 剩 {span(expires - now)}"
+
+
+def token_summary(raw: dict) -> dict:
+    """McpTokenSummary（契约 7.16）。"""
+    created = deps.parse_time(raw["createdAt"], "created_at") if raw.get("createdAt") else None
+    expires = deps.parse_time(raw["expiresAt"], "expires_at") if raw.get("expiresAt") else None
+    return {
+        "id": raw["id"],
+        "name": raw["name"],
+        "scopes": raw["scopes"],
+        "subject": raw["subjectUsername"],
+        "issued_by": raw["issuedBy"],
+        "created_at": deps.iso(created),
+        "expires_at": deps.iso(expires),
+        "last_used_at": deps.iso(raw.get("lastUsedAt")),
+        "remaining_text": remaining_text(created, expires),
+    }
+
+
+@router.get("/{project_id}/mcp")
 def status(project_id: str, request: Request):
-    try:
-        access(project_id, request)
-        base = config.ONTO_MCP_PUBLIC_BASE_URL or str(request.base_url).rstrip("/")
-        return {"runtime": tokens.status(project_id, base), "workspace": {"source": "onto"}}
-    except (McpError, WorkspaceError) as exc:
-        return management_error(exc)
+    """M-01：对外 MCP 概况。"""
+    access(project_id, request)
+    base = public_base(request)
+    host = (urlsplit(base).hostname or "").lower()
+    return {
+        "status": "running",
+        "base_url": base,
+        "local_only": host in LOCAL_HOSTS,
+        "endpoints": endpoints(project_id, base),
+        "toolsets": [
+            {
+                "name": group,
+                "scope_requirement": "all" if group == "read" else "any",
+                "accepted_scopes": list(TOOLSET_SCOPES[group]),
+                "tools": [name for name, tool in TOOLS.items() if tool["toolset"] == group],
+            }
+            for group in ("read", "change")
+        ],
+        "pack_tools": [],
+        "scope_catalog": [{"scope": scope, "description": label} for scope, label in SCOPE_LABELS.items()],
+        "token_policy": dict(TOKEN_POLICY),
+        "protocol_versions": list(tokens.VERSIONS),
+        "client_config_templates": client_configs(
+            project_id, base, {"read": "<READ_TOKEN>", "change": "<CHANGE_TOKEN>"}
+        ),
+    }
 
 
-@router.get("/{project_id}/modeling-mcp/tokens")
+@router.get("/{project_id}/mcp/tokens")
 def list_tokens(project_id: str, request: Request):
-    try:
-        access(project_id, request, write=True)
-        return tokens.listing(manager(), project_id)
-    except (McpError, WorkspaceError) as exc:
-        return management_error(exc)
+    """M-02：未吊销的 token，按签发时间倒序，不分页，上限 100。"""
+    access(project_id, request)
+    listed = tokens.listing(manager(), project_id)["tokens"][:MAX_LISTED_TOKENS]
+    return {"items": [token_summary(item) for item in listed]}
 
 
-@router.post("/{project_id}/modeling-mcp/tokens")
+@router.post("/{project_id}/mcp/tokens")
 async def create_token(project_id: str, request: Request):
-    try:
-        meta = access(project_id, request, write=True)
-        body = await request.json()
-        if not isinstance(body, dict):
-            raise McpError("INVALID_INPUT", "请求必须是对象")
-        user = getattr(request.state, "user", None) or {"sub": meta.get("owner", "")}
-        return JSONResponse(status_code=201, content=tokens.issue(manager(), meta, body, user))
-    except (McpError, WorkspaceError) as exc:
-        return management_error(exc)
+    """M-03：签发 token，明文与填好 token 的客户端配置只在这次响应里出现一次。"""
+    meta = access(project_id, request)
+    body = await deps.json_body(request, MAX_BODY)
+    issue_body = {"name": body.get("name", ""), "scopes": body.get("scopes", [SCOPES[0]])}
+    issue_body["expires_in_seconds"] = body["expires_in_s"] if "expires_in_s" in body else TOKEN_POLICY["default_ttl_s"]
+    # 鉴权关闭时没有登录用户，以项目所有者的名义签发
+    user = deps.user(request) or {"sub": meta.get("owner", "")}
+    issued = tokens.issue(manager(), meta, issue_body, user)
+    summary = token_summary(issued["token_summary"])
+    scopes = set(summary["scopes"])
+    token = issued["token"]
+    by_toolset = {group: token for group, accepted in TOOLSET_SCOPES.items() if scopes & set(accepted)}
+    return JSONResponse(status_code=201, content={
+        "token": token,
+        "summary": summary,
+        "client_config": client_configs(project_id, public_base(request), by_toolset),
+    })
 
 
-@router.delete("/{project_id}/modeling-mcp/tokens/{token_id}")
+@router.delete("/{project_id}/mcp/tokens/{token_id}", status_code=204)
 def delete_token(project_id: str, token_id: str, request: Request):
+    """M-04：吊销。"""
+    access(project_id, request)
     try:
-        access(project_id, request, write=True)
-        return tokens.revoke(manager(), project_id, token_id)
-    except (McpError, WorkspaceError) as exc:
-        return management_error(exc)
+        tokens.revoke(manager(), project_id, token_id)
+    except McpError as exc:
+        if exc.status == 404:
+            from ..api.errors import ApiError
+
+            raise ApiError("not_found", "Token 不存在或已吊销", 404) from exc
+        raise
+    return Response(status_code=204)
+
+
+def transport_error(exc):
+    """SSE 建连前的鉴权失败：传输层沿用 MCP 大写错误码（契约 2.12）。"""
+    return JSONResponse(status_code=exc.status, content={"error": str(exc), "code": exc.code})
 
 
 def bearer(request):
@@ -115,6 +222,13 @@ def version(rpc, request):
     return (body if body in tokens.VERSIONS else header) or "2025-11-25"
 
 
+def _pack_tools(project_id: str) -> list[dict]:
+    """本项目生效中的包声明的只读工具（详设 5.6；ADR-0068），跟着装配走。"""
+    from ..services.packs import extensions
+
+    return extensions.mcp_tools(manager(), project_id)
+
+
 async def dispatch(rpc, group, principal, protocol):
     method, params = rpc["method"], rpc.get("params", {})
     if method.startswith("notifications/"):
@@ -128,21 +242,29 @@ async def dispatch(rpc, group, principal, protocol):
                 "capabilities": {"tools": {"listChanged": False}}, "ttlMs": 300000, "cacheScope": "private",
                 "_meta": {"io.modelcontextprotocol/serverInfo": tokens.SERVER}}
     if method == "tools/list":
+        listed = [*TOOLS.values(), *(await asyncio.to_thread(_pack_tools, principal["project_id"]))]
         available = [{**{k: tool[k] for k in ("name", "title", "description", "inputSchema")},
                       "annotations": {"readOnlyHint": tool["scope"] != "ontology.change.apply"}}
-                     for tool in TOOLS.values() if tool["toolset"] == group and tool["scope"] in principal["scopes"]]
+                     for tool in listed if tool["toolset"] == group and tool["scope"] in principal["scopes"]]
         return {"tools": available, **({"resultType": "complete", "ttlMs": 300000, "cacheScope": "private"}
                                       if protocol == "2026-07-28" else {})}
     if method != "tools/call":
         raise McpError("METHOD_NOT_FOUND", "不支持的 MCP 方法", 404)
     tool = TOOLS.get(params.get("name")) if isinstance(params.get("name"), str) else None
+    if tool is None and isinstance(params.get("name"), str):
+        tool = next((item for item in await asyncio.to_thread(_pack_tools, principal["project_id"])
+                     if item["name"] == params["name"]), None)
     if tool is None or tool["toolset"] != group:
         raise McpError("MCP_TOOL_NOT_FOUND", "当前工具集不支持该工具", 404)
     if tool["scope"] not in principal["scopes"]:
         raise McpError("MCP_SCOPE_FORBIDDEN", "Token 缺少工具所需 scope", 403)
     try:
-        result = await asyncio.to_thread(tools.execute, manager(), principal["project_id"], tool["name"],
-                                         params.get("arguments", {}), principal["username"])
+        if tool.get("pack"):
+            result = await asyncio.to_thread(tools.execute_pack_tool, manager(), principal["project_id"], tool,
+                                             params.get("arguments", {}))
+        else:
+            result = await asyncio.to_thread(tools.execute, manager(), principal["project_id"], tool["name"],
+                                             params.get("arguments", {}), principal["username"])
         return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
                 "structuredContent": result, "isError": False}
     except (McpError, WorkspaceError) as exc:
@@ -185,25 +307,28 @@ async def call(project_id, toolset, request, session_id=None):
 
 
 @transport_router.post("/{project_id}/{toolset}/mcp")
+@legacy_transport_router.post("/{project_id}/{toolset}/mcp")
 async def mcp(project_id: str, toolset: str, request: Request):
     return await call(project_id, toolset, request)
 
 
 @transport_router.get("/{project_id}/{toolset}/sse")
+@legacy_transport_router.get("/{project_id}/{toolset}/sse")
 async def sse(project_id: str, toolset: str, request: Request):
     try:
         principal = await asyncio.to_thread(tokens.verify, manager(), project_id, bearer(request), toolset)
         if len(_sessions) >= 128:
             raise McpError("SESSION_LIMIT", "SSE 连接数已达上限", 429)
     except (McpError, WorkspaceError) as exc:
-        return management_error(exc)
+        return transport_error(exc)
     sid = secrets.token_urlsafe(32)
     queue = asyncio.Queue(maxsize=64)
     _sessions[sid] = {"project": project_id, "group": toolset, "token": principal["token_id"], "queue": queue}
 
     async def events():
         try:
-            endpoint = f"/api/onto-mcp/{project_id}/{toolset}/sse/messages?session_id={sid}"
+            prefix = "/api/v1/onto-mcp" if request.url.path.startswith("/api/v1/") else "/api/onto-mcp"
+            endpoint = f"{prefix}/{project_id}/{toolset}/sse/messages?session_id={sid}"
             yield "event: endpoint\ndata: " + endpoint + "\n\n"
             while not await request.is_disconnected():
                 try:
@@ -221,5 +346,7 @@ async def sse(project_id: str, toolset: str, request: Request):
 
 @transport_router.post("/{project_id}/{toolset}/sse/messages")
 @transport_router.post("/{project_id}/{toolset}/sse/messages/")
+@legacy_transport_router.post("/{project_id}/{toolset}/sse/messages")
+@legacy_transport_router.post("/{project_id}/{toolset}/sse/messages/")
 async def sse_message(project_id: str, toolset: str, request: Request, session_id: str = ""):
     return await call(project_id, toolset, request, session_id)

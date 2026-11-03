@@ -14,33 +14,30 @@ import time
 from pathlib import Path
 
 from .. import config
+from ..kernel import metamodel
+from ..kernel.artifacts import index as artifact_index
+from ..kernel.metamodel import mm
 from . import package_mapping
 from .document_metadata import name_frontmatter, report_name
 
-WIKILINK = re.compile(r"\[\[([^\]|#]+)")
 SECTION = re.compile(r"^(#{1,2})\s+(.+)$", re.MULTILINE)
 NUMBERED_STEP = re.compile(r"^\s*\d+[.)、．]\s*(.+)$")
 
-# 五元组元模型（对齐 modeling 知识包，ADR-0004）；ontology/logic 为旧目录兼容
-KIND_DIRS = (
-    ("object", "ontology/object", "*.md"),
-    ("operation", "ontology/operation", "*.md"),
-    ("operation", "ontology/logic", "*.md"),
-    ("rule", "ontology/rule", "*.md"),
-    ("metric", "ontology/metric", "*.md"),
-    ("script", "ontology/scripts", "*.py"),
-)
+# 实体类型与目录取元模型（含 ontology/logic 只读别名，ADR-0004）
+KIND_DIRS = mm.kind_dirs()
 
 
 def _docs(root: Path) -> list[dict]:
     docs = []
     for kind, rel_dir, pattern in KIND_DIRS:
         directory = root / rel_dir
-        if not directory.is_dir():
-            continue
+        if not directory.is_dir() or artifact_index.inside_no_links(root, rel_dir) is None:
+            continue  # 目录本身是符号链接：不读
         for path in sorted(directory.glob(pattern)):
-            if path.name == "index.md":  # 工作区占位 index 不是本体元素
+            if path.name == mm.INDEX_FILE:  # 工作区占位 index 不是本体元素
                 continue
+            if not path.is_file() or artifact_index.inside_no_links(root, path.relative_to(root).as_posix()) is None:
+                continue  # 符号链接（可以指到工作区外）、设备文件不读
             docs.append(
                 {
                     "name": path.stem,
@@ -156,6 +153,8 @@ def graph(root: Path) -> dict:
         in_degree[target] += 1
 
     script_names = [d["name"] for d in docs if d["kind"] == "script"]
+    # 链接解析按本项目锁定版本的元模型（和 agent 在工作区里用的同一份）
+    meta = metamodel.for_project(root)
     for doc in docs:
         text = texts[doc["name"]]
         section = ""
@@ -166,9 +165,9 @@ def graph(root: Path) -> dict:
                 raw_section = heading.group(2).strip()
                 section = SECTION_ALIASES.get(raw_section, raw_section)
                 continue
-            for raw_target in WIKILINK.findall(line):
-                target = raw_target.strip()
-                if target not in by_name:
+            for link in meta.parse_links(line):
+                target = meta.resolve(link, by_name)
+                if target is None:
                     continue
                 target_doc = by_name[target]
                 # 操作与对象的关系只认操作条目的「与object的关联」章节；
@@ -278,7 +277,7 @@ def _plain_summary(text: str) -> str:
         if not line or line.startswith(("|", "```", "{待填写", ">")):
             continue
         line = re.sub(r"^[-*+]\s+", "", line)
-        line = re.sub(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]", r"\1", line)
+        line = mm.strip_links(line, use_alias=False)
         line = re.sub(r"[`*_]", "", line).strip()
         if line:
             return line[:500]
@@ -454,7 +453,9 @@ def element(root: Path, rel_path: str) -> dict:
     intro = _intro_of(body)
 
     all_docs = _docs(root)
-    links = {t.strip() for t in WIKILINK.findall(text) if t.strip() != name}
+    names = {doc["name"] for doc in all_docs}
+    meta = metamodel.for_project(root)
+    links = {target for target in meta.link_names(text, names) if target != name}
     if target.suffix.lower() == ".md":
         for doc in all_docs:
             if doc["kind"] == "script" and f"{doc['name']}.py" in text:
@@ -469,7 +470,7 @@ def element(root: Path, rel_path: str) -> dict:
             other = doc["file"].read_text(encoding="utf-8")
         except OSError:
             continue
-        hit = f"[[{name}" in other or (is_script and f"{name}.py" in other)
+        hit = meta.references(other, name, names) or (is_script and f"{name}.py" in other)
         if hit:
             backlinks.append({
                 "name": doc["name"],
@@ -536,74 +537,26 @@ def serialize_sections(sections: list[dict]) -> str:
 # ---- schema：对准工具集五元组模板（assets templates，ADR-0004） ----
 
 # 章节名随范式升级迁移；旧文档章节读取时归一为新名
-SECTION_ALIASES = {"与logic的关联": "与operation的关联"}
-
-OBJECT_SCHEMA = [
-    {"title": "对象描述", "kind": "text", "required": True},
-    {"title": "对象别名", "kind": "text", "required": False},
-    {"title": "英文名称", "kind": "text", "required": False},
-    {
-        "title": "对象属性清单",
-        "kind": "table",
-        "required": True,
-        "columns": ["中文名称", "英文名称", "描述", "主键", "类型", "属性别名", "属性规则"],
-    },
-    {"title": "关联对象", "kind": "text", "required": True},
-]
-
-OPERATION_SCHEMA = [
-    {"title": "业务描述", "kind": "text", "required": True},
-    {"title": "与operation的关联", "kind": "text", "required": True},
-    {"title": "与object的关联", "kind": "text", "required": True},
-    {
-        "title": "与object的语义关联",
-        "kind": "table",
-        "required": False,
-        "columns": ["业务对象", "语义关联关系"],
-    },
-    {"title": "触发条件", "kind": "text", "required": False},
-    {"title": "输入", "kind": "table", "required": True, "columns": ["参数名称", "描述", "输入源"]},
-    {"title": "输出", "kind": "table", "required": True, "columns": ["参数名称", "描述"]},
-    {"title": "逻辑描述", "kind": "text", "required": True},
-]
+SECTION_ALIASES = mm.SECTION_ALIASES
 
 
-RULE_SCHEMA = [
-    {"title": "规则描述", "kind": "text", "required": True},
-    {"title": "规则类型", "kind": "text", "required": False},
-    {"title": "适用对象", "kind": "text", "required": True},
-    {"title": "触发条件", "kind": "text", "required": False},
-    {"title": "约束表达", "kind": "text", "required": True},
-    {"title": "违反处置", "kind": "text", "required": False},
-    {"title": "来源", "kind": "text", "required": False},
-    {"title": "例外情况", "kind": "text", "required": False},
-]
+def _schema(kind: str) -> list[dict]:
+    return [section.as_dict() for section in mm.sections_of(kind)]
 
-METRIC_SCHEMA = [
-    {"title": "指标描述", "kind": "text", "required": True},
-    {"title": "计算公式", "kind": "text", "required": True},
-    {"title": "数据来源", "kind": "text", "required": True},
-    {"title": "维度与粒度", "kind": "text", "required": False},
-    {"title": "单位", "kind": "text", "required": False},
-    {"title": "更新频率", "kind": "text", "required": False},
-]
+
+# 各类条目的章节结构取元模型
+OBJECT_SCHEMA = _schema("object")
+OPERATION_SCHEMA = _schema("operation")
+RULE_SCHEMA = _schema("rule")
+METRIC_SCHEMA = _schema("metric")
 
 
 def schema_for(rel_path: str) -> list[dict] | None:
-    if rel_path.startswith("ontology/object/"):
-        return OBJECT_SCHEMA
-    if rel_path.startswith(("ontology/operation/", "ontology/logic/")):
-        return OPERATION_SCHEMA
-    if rel_path.startswith("ontology/rule/"):
-        return RULE_SCHEMA
-    if rel_path.startswith("ontology/metric/"):
-        return METRIC_SCHEMA
-    return None
+    kind = mm.kind_of_path(rel_path)
+    return _schema(kind) if kind in ("object", "operation", "rule", "metric") else None
 
 
-# ---- 草稿区与租约 ----
-
-LEASE_SECONDS = 1800  # 30 分钟写锁（方案 7.2）
+# ---- 草稿区（30 分钟租约随写入范围锁取消，方案 C10） ----
 
 
 class StudioError(Exception):
@@ -635,7 +588,7 @@ def _save(project_id: str, name: str, data: dict) -> None:
 
 
 def purge_project(project_id: str) -> None:
-    """删除项目时清除其写锁与草稿。"""
+    """删除项目时清除其草稿（leases 是取消租约之前留下的文件，一并删）。"""
     for name in ("leases", "drafts"):
         try:
             _state_file(project_id, name).unlink(missing_ok=True)
@@ -643,47 +596,16 @@ def purge_project(project_id: str) -> None:
             pass
 
 
-def lease_status(project_id: str, rel_path: str) -> dict | None:
-    leases = _load(project_id, "leases")
-    lease = leases.get(rel_path)
-    if lease and lease["expires"] > time.time():
-        return lease
-    if lease:  # 过期租约顺手清理
-        leases.pop(rel_path, None)
-        _save(project_id, "leases", leases)
-    return None
-
-
-def acquire_lease(project_id: str, rel_path: str, user: str) -> dict:
-    current = lease_status(project_id, rel_path)
-    if current and current["owner"] != user:
-        raise StudioError(
-            f"该条目正由 {current['owner']} 编辑（租约剩余 "
-            f"{int((current['expires'] - time.time()) / 60)} 分钟），当前只读",
-            409,
-        )
-    leases = _load(project_id, "leases")
-    lease = {"owner": user, "expires": int(time.time()) + LEASE_SECONDS}
-    leases[rel_path] = lease
-    _save(project_id, "leases", leases)
-    return lease
-
-
-def release_lease(project_id: str, rel_path: str, user: str) -> None:
-    leases = _load(project_id, "leases")
-    lease = leases.get(rel_path)
-    if lease and lease["owner"] == user:
-        leases.pop(rel_path, None)
-        _save(project_id, "leases", leases)
-
-
 def save_draft(
-    project_id: str, rel_path: str, content: str, base_revision: str, user: str
+    project_id: str, rel_path: str, content: str, base_revision: str, user: str, form: dict | None = None
 ) -> dict:
-    acquire_lease(project_id, rel_path, user)  # 持有或续期租约
+    """自动暂存草稿。不再占租约：助手在改的条目由写入范围锁挡（提交时 ChangeTx 统一检查，423）。
+
+    结构化编辑器存的草稿另带表单原样（form），重新打开时编辑器按它还原；content 是按表单渲染好的原文。"""
     drafts = _load(project_id, "drafts")
     drafts[rel_path] = {
         "content": content,
+        "form": form,
         "base_revision": base_revision,
         "author": user,
         "updated_at": int(time.time()),
@@ -701,20 +623,21 @@ def discard_draft(project_id: str, rel_path: str, user: str) -> None:
     if rel_path in drafts:
         drafts.pop(rel_path)
         _save(project_id, "drafts", drafts)
-    release_lease(project_id, rel_path, user)
 
 
 # ---- 确定性检查分流 ----
 
 
 def deterministic_check(root: Path, rel_path: str, content: str) -> dict:
-    """结构性检查（不经 LLM）：errors = 硬伤拒绝；review = 超范围转 agent 复核。"""
+    """结构性检查（不经 LLM）：errors = 解析不了的结构，拒绝；review = 超范围转 agent 复核；
+    hints = 链接、主键这类质量问题，只提示、照常保存（F3：建模过程中检查只提示不拦，发布时才拦）。"""
     errors: list[str] = []
     review: list[str] = []
+    hints: list[str] = []
     schema = schema_for(rel_path)
     if schema is None:
         review.append("非对象/逻辑文档，Studio 无法做确定性判定")
-        return {"errors": errors, "review": review}
+        return {"errors": errors, "review": review, "hints": hints}
 
     sections = parse_sections(content)
     titles = {s["title"] for s in sections}
@@ -746,23 +669,31 @@ def deterministic_check(root: Path, rel_path: str, content: str) -> dict:
         body = by_title["对象属性清单"]["content"]
         data_rows = [l for l in body.splitlines() if "|" in l][2:]
         if data_rows and not any("是" in r for r in data_rows):
-            review.append("对象属性清单没有任何主键行（主键列均非「是」）")
+            hints.append("对象属性清单没有任何主键行（主键列均非「是」）")
 
-    # 链接目标存在性：指向不存在的文档 → 可能是要新建对象，转复核
+    # 链接目标存在性：指向不存在的文档只提示（可能是还没建的对象），不转复核
     names = {d["name"] for d in _docs(root)}
     stem = Path(rel_path).stem
-    for target in {t.strip() for t in WIKILINK.findall(content)}:
-        if target and target != stem and target not in names:
-            review.append(f"[[{target}]] 指向不存在的文档")
+    # 模板里的填写指引（引用块）、行内代码里的写法示例、模板占位（`[[{待填写：对象A}]]`）不是链接：
+    # 按模板新建的条目保存时不因它们提示（规则检查在每轮合入、发布时照常查全文）
+    scanned = "\n".join(line for line in content.splitlines() if not line.lstrip().startswith(">"))
+    scanned = re.sub(r"`[^`\n]*`", "", scanned)
+    scanned = re.sub(r"\{待填写[^{}]*\}", "", scanned)
+    for link in metamodel.for_project(root).unresolved(scanned, names | {stem}):
+        if "{" in link.full_name or "待填写" in link.full_name:
+            continue
+        hints.append(f"[[{link.full_name}]] 指向不存在的文档")
 
-    return {"errors": errors, "review": review}
+    return {"errors": errors, "review": review, "hints": hints}
 
 
 REVIEW_DIR = ".ontology-state/studio-review"
 
 
 def stage_for_review(root: Path, rel_path: str, content: str) -> str:
-    """把草稿放到 agent 可读的隐藏位置（不进产物树、不进 git），供复核。"""
+    """把草稿放到 agent 可读的隐藏位置（不进产物树、不进 git），供复核。
+
+    root 是助手的工作目录：变更集副本（方案 C15），建不了副本时是主线工作区。"""
     stem = Path(rel_path).stem
     directory = root / REVIEW_DIR
     directory.mkdir(parents=True, exist_ok=True)

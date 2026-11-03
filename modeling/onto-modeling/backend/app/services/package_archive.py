@@ -18,11 +18,13 @@ from pathlib import Path
 
 from . import solver_contract
 from .document_metadata import name_frontmatter, report_name
-from .workspace import (
+# 只依赖工作区的叶子模块（布局常量、错误类型），不依赖工作区管理器：工作区导入时反过来用本模块
+from .workspace.errors import WorkspaceError
+from .workspace.layout import (
+    EXPORT_ONTOLOGY_DIRS,
+    IMPORT_SKIP_TOP,
     IMPORTED_PACKAGE_DIR,
     META_FILE,
-    WorkspaceError,
-    WorkspaceManager,
     _strip_frontmatter,
 )
 
@@ -128,7 +130,7 @@ def detect_kind(names: set[str]) -> str:
         if any(name.startswith(entity_prefixes) for name in names):
             return KIND_KNOWLEDGE_PACKAGE
     if any(
-        name.split("/")[0] in WorkspaceManager.EXPORT_ONTOLOGY_DIRS for name in names
+        name.split("/")[0] in EXPORT_ONTOLOGY_DIRS for name in names
     ):
         return KIND_WORKSPACE_ONTOLOGY
     return KIND_UNKNOWN
@@ -190,7 +192,7 @@ def _blockers(kind: str, root: str, counts: dict[str, int], tops: list[str]) -> 
         listed = "、".join(tops) or "（空）"
         return [
             f"无法识别的压缩包：既没有知识包清单（{MANIFEST_NAME}），也没有 "
-            f"{'、'.join(WorkspaceManager.EXPORT_ONTOLOGY_DIRS)} 等工作区目录。"
+            f"{'、'.join(EXPORT_ONTOLOGY_DIRS)} 等工作区目录。"
             f"实际顶层内容：{listed}。"
         ]
     if kind == KIND_KNOWLEDGE_PACKAGE and counts["objects"] == 0:
@@ -204,7 +206,7 @@ def _blockers(kind: str, root: str, counts: dict[str, int], tops: list[str]) -> 
 
 def inspect_archive(archive_path: Path) -> dict:
     """导入向导第二步的内容摘要，同时是正式导入的判别与门禁依据。"""
-    skip_top = WorkspaceManager.IMPORT_SKIP_TOP
+    skip_top = IMPORT_SKIP_TOP
     top_dirs: dict[str, int] = {}
     skipped: list[str] = []
     names: set[str] = set()

@@ -137,20 +137,21 @@ def test_table_entries_are_consistent_and_saveable(monkeypatch):
 
 
 def test_preset_routes_require_admin(monkeypatch):
+    from app.api.errors import ApiError
     from app.routers import settings as settings_router
     from app.services import auth
-    from app.services.auth import AuthError
 
     monkeypatch.setattr(auth, "ENABLED", True)
-    with pytest.raises(AuthError):
-        settings_router.get_model_context_presets(MODELER)
-    with pytest.raises(AuthError):
-        settings_router.match_model_context_preset(MODELER, model="glm-5")
+    with pytest.raises(ApiError) as exc:
+        settings_router.get_context_presets(MODELER)
+    assert (exc.value.status, exc.value.code) == (403, "forbidden")
+    with pytest.raises(ApiError):
+        settings_router.match_context_preset(MODELER, model="glm-5")
 
-    assert settings_router.get_model_context_presets(ADMIN)["presets"]
-    hit = settings_router.match_model_context_preset(ADMIN, model="glm-5")
-    assert hit["preset"]["max_context_tokens"] == 200000
-    assert settings_router.match_model_context_preset(ADMIN, model="unknown-model")["preset"] is None
+    assert settings_router.get_context_presets(ADMIN)["rows"]
+    hit = settings_router.match_context_preset(ADMIN, model="glm-5")
+    assert hit["preset"]["window"] == 200000
+    assert settings_router.match_context_preset(ADMIN, model="unknown-model")["preset"] is None
 
 
 def test_custom_table_overrides_builtin_and_appends(tmp_path):
@@ -359,27 +360,53 @@ def test_save_custom_keeps_other_top_level_fields(tmp_path):
 
 
 def test_custom_preset_routes(tmp_path, monkeypatch):
+    from app.api.errors import ApiError
     from app.routers import settings as settings_router
     from app.services import auth
-    from app.services.auth import AuthError
 
     monkeypatch.setattr(auth, "ENABLED", True)
-    body = settings_router.CustomPresetsBody(version="", presets=[_entry("example-model-pro")])
-    with pytest.raises(AuthError):
-        settings_router.put_custom_model_context_presets(body, MODELER)
-    with pytest.raises(AuthError):
-        settings_router.disable_custom_model_context_presets(MODELER)
+    row = settings_router.PresetRow(model="example-model-pro", window=200000, max_output=32000)
+    body = settings_router.CustomPresetsBody(version="", presets=[row])
+    with pytest.raises(ApiError) as exc:
+        settings_router.put_custom_context_presets(body, MODELER)
+    assert exc.value.status == 403
+    with pytest.raises(ApiError):
+        settings_router.disable_custom_context_presets(MODELER)
     assert not (tmp_path / CUSTOM_FILE_NAME).exists()
 
-    saved = settings_router.put_custom_model_context_presets(body, ADMIN)
-    assert saved["custom"]["count"] == 1
+    saved = settings_router.put_custom_context_presets(body, ADMIN)
+    assert saved["custom"]["added"] == 1 and saved["custom"]["status"] == "ok"
     # 带着旧版本号再存：文件已被改过
-    assert settings_router.put_custom_model_context_presets(body, ADMIN).status_code == 409
+    with pytest.raises(ApiError) as exc:
+        settings_router.put_custom_context_presets(body, ADMIN)
+    assert (exc.value.status, exc.value.code) == (409, "revision_conflict")
     invalid = settings_router.CustomPresetsBody(
-        version=saved["custom"]["version"], presets=[_entry("example-model-pro", 128000, 128000)]
+        version=saved["custom"]["version"],
+        presets=[settings_router.PresetRow(model="example-model-pro", window=128000, max_output=128000)],
     )
-    assert settings_router.put_custom_model_context_presets(invalid, ADMIN).status_code == 400
+    with pytest.raises(ApiError) as exc:
+        settings_router.put_custom_context_presets(invalid, ADMIN)
+    assert (exc.value.status, exc.value.code) == (400, "invalid_argument")
 
-    disabled = settings_router.disable_custom_model_context_presets(ADMIN)
-    assert disabled["disabled_backup"]
+    disabled = settings_router.disable_custom_context_presets(ADMIN)
+    assert disabled["custom"]["status"] == "disabled" and disabled["custom"]["backup_available"]
     assert not (tmp_path / CUSTOM_FILE_NAME).exists()
+
+
+def test_custom_preset_rows_keep_aliases_and_sources(tmp_path, monkeypatch):
+    """页面不编辑别名与来源链接：保存时沿用已存的同名条目，不会被整份替换冲掉。"""
+    from app.routers import settings as settings_router
+
+    monkeypatch.setattr(model_context_presets, "_snapshot", None)
+    model_context_presets.save_custom(
+        [_entry("example-model-pro", aliases=["example-pro"], sources=["https://example.com/model"])], ""
+    )
+    version = model_context_presets.presets()["custom"]["version"]
+    body = settings_router.CustomPresetsBody(
+        version=version,
+        presets=[settings_router.PresetRow(model="example-model-pro", window=256000, max_output=32000)],
+    )
+    saved = settings_router.put_custom_context_presets(body, ADMIN)
+    row = next(row for row in saved["rows"] if row["model"] == "example-model-pro")
+    assert row["window"] == 256000 and row["aliases"] == ["example-pro"]
+    assert row["sources"] == ["https://example.com/model"] and row["origin"] == "custom"

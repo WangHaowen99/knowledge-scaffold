@@ -1,5 +1,8 @@
 # 评测优化闭环并入 onto-modeling 进度流程（方案）
 
+> 历史文档：评测已移出 onto-modeling（[ADR-0020](decisions/0020-eval-removal-and-contracts.md)），
+> 本文描述的阶段、接口与配置都已删除，保留作背景参考。
+
 状态：方案待拍板（2026-09-21 起草）。拍板后补 ADR。
 
 ## 0. 背景与目标

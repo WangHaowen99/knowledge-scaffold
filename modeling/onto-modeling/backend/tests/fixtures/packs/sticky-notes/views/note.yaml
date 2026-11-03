@@ -1,0 +1,4 @@
+artifact: sticky-notes.note
+list: {columns: [title, topic, color], filters: [color]}
+card: {title: title, subtitle: topic, chips: [color]}
+detail: {layout: sections, side: [topic], editor: note}

@@ -43,6 +43,9 @@ if [ "${NO_BUILD}" -eq 0 ]; then
     # docker 用相对路径调用：WSL 下 docker 可能是 Windows 侧 docker.exe（interop），
     # 不认 /mnt/* 绝对路径（与 build_release.sh 同约定）
     (cd "${PROJECT_ROOT}" && ${BUILD_CMD} -t "onto-modeling:${VERSION}" -f Dockerfile .)
+    # 连接器网关（ADR-0073）：同一个 Dockerfile 的另一个目标，随主服务一起换
+    (cd "${PROJECT_ROOT}" && ${BUILD_CMD} --target connector-gateway \
+        -t "onto-modeling-connector-gateway:${VERSION}" -f Dockerfile .)
     if [ "${WITH_AUTH}" -eq 1 ]; then
         (cd "${REPOSITORY_ROOT}/auth-server" && ${BUILD_CMD} -t "onto-modeling-auth-server:${VERSION}" .)
     fi
@@ -56,6 +59,11 @@ fi
 # 更新部署目录镜像清单；auth-server 仅在 --with-auth 时跟进
 sed -i "s|^ONTO_WEB_IMAGE=.*|ONTO_WEB_IMAGE=onto-modeling:${VERSION}|" "${DEPLOY_DIR}/images.env"
 sed -i "s|^RELEASE_VERSION=.*|RELEASE_VERSION=${VERSION}|" "${DEPLOY_DIR}/images.env"
+if grep -q '^CONNECTOR_GATEWAY_IMAGE=' "${DEPLOY_DIR}/images.env"; then
+    sed -i "s|^CONNECTOR_GATEWAY_IMAGE=.*|CONNECTOR_GATEWAY_IMAGE=onto-modeling-connector-gateway:${VERSION}|" "${DEPLOY_DIR}/images.env"
+else
+    echo "CONNECTOR_GATEWAY_IMAGE=onto-modeling-connector-gateway:${VERSION}" >> "${DEPLOY_DIR}/images.env"
+fi
 if [ "${WITH_AUTH}" -eq 1 ]; then
     sed -i "s|^AUTH_SERVER_IMAGE=.*|AUTH_SERVER_IMAGE=onto-modeling-auth-server:${VERSION}|" "${DEPLOY_DIR}/images.env"
 fi
@@ -73,6 +81,8 @@ COMPOSE_FILES=(-f docker-compose.release.yml)
 # 脚本验证网关与 onto-modeling 同一镜像，一起替换（旧部署目录的 compose 没有网关时跳过）
 SERVICES=(onto-modeling)
 grep -q '^  sandbox-gateway:' "${DEPLOY_DIR}/docker-compose.release.yml" && SERVICES+=(sandbox-gateway)
+# 连接器网关：部署目录的 compose 里有它（新版 compose）才一起起
+grep -q '^  connector-gateway:' "${DEPLOY_DIR}/docker-compose.release.yml" && SERVICES+=(connector-gateway)
 [ "${WITH_AUTH}" -eq 1 ] && SERVICES+=(auth-server)
 
 (cd "${DEPLOY_DIR}" && ${COMPOSE} --env-file .env --env-file images.env \

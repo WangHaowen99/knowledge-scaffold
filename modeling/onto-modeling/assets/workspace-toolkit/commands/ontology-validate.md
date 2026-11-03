@@ -207,7 +207,7 @@ Wait for it to return a JSON array `APPLY_RESULTS`，按 `issue_id` 索引。
 
 If no complex issues, skip to A5.5.
 
-Show a numbered list in the terminal — no file-based checkbox interaction:
+先 `python3 .claude/scripts/state_helper.py acquire validate confirm`，再 show a numbered list in the terminal — no file-based checkbox interaction（用户回复后 `acquire validate start`；逐条处理时每次等回复同样先切 `confirm`）:
 
 ```
 还有 {M} 个需要业务判断的问题：
@@ -273,10 +273,10 @@ git add ontology/ reports/
 git commit -m "fix: address rule check issues"
 ```
 
-Display:
+`python3 .claude/scripts/state_helper.py acquire validate confirm`，then display:
 "**下一步：进行语义检查。** 是否现在开始？"
 
-Wait for confirmation (好/可以/继续/是 etc.) before proceeding to Phase B.
+Wait for confirmation (好/可以/继续/是 etc.) before proceeding to Phase B；确认后 `acquire validate start`。
 
 ---
 
@@ -363,7 +363,7 @@ If no issues (N=0): write "（无问题，本体文档通过全部语义检查�
 
 ### B3: Prompt user for review
 
-Show a numbered summary list in the terminal, **grouped by confidence tier**. The numbering here must exactly match the report.
+先 `python3 .claude/scripts/state_helper.py acquire validate confirm`，再 show a numbered summary list in the terminal, **grouped by confidence tier**（用户选好后 `acquire validate start`）. The numbering here must exactly match the report.
 
 Example (low-confidence group is default-collapsed — show only header + count, expand only on request):
 
@@ -383,7 +383,7 @@ Example (low-confidence group is default-collapsed — show only header + count,
 ```
 
 Tell the user:
-"语义检查完成，共 {N} 个问题，已保存至 `reports/{filename}`。
+"语义检查完成，共 {N} 个问题，已记入语义检查报告。
 
 我已按置信度分组列出。建议先处理 🔴 高置信档。请回复 **全部**、**高置信**、**展开低置信** 或具体编号如 **1,3**，或回复 **跳过**。"
 
@@ -442,13 +442,13 @@ Wait for it to return a JSON array of apply results。把返回结果按 `issue_
 | 2 | 7    | operation/支付流程.md | {message 摘要} | ⏸ 未应用（{reason}）：{proposed_change} |
 | 3 | ...  | ... | ... | ... |
 
-**下一步建议：**
-- 回复 **确认** → 保留全部已应用修复，进入回归检查（B5）
-- 回复 **逐条复审** → 对每条已应用修复查看 diff，选择 保留/撤销/改写
+- 回复 **确认** → 保留全部已应用修复，进入回归检查
+- 回复 **逐条复审** → 逐条查看已应用修复的改动，选择 保留/撤销/改写
 - 回复 **全部撤销** → 撤销全部已应用修复，改为逐条人工处理
-- 未应用条目会进入下一步「逐条人工处理」环节，无需在此选择
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
+- 未应用条目会进入「逐条人工处理」环节，无需在此选择
 ```
+
+展示这张表前先 `python3 .claude/scripts/state_helper.py acquire validate confirm`；用户回复后 `acquire validate start`。
 
 #### B4c: Handle the reply
 
@@ -463,7 +463,7 @@ Wait for it to return a JSON array of apply results。把返回结果按 `issue_
     问题：{message}
     实际改动：{change_summary}
     ```
-    展示 `git diff -- {file}` 的关键片段，让用户回 **保留** / **撤销** / **我来重写**。
+    展示 `git diff -- {file}` 的关键片段，让用户回 **保留** / **撤销** / **我来重写**（等回复前 `acquire validate confirm`，回复后切回 `start`）。
     - 保留: `issue_id` 进 `B4_FIXED`，files 进 `B4_MODIFIED`。
     - 撤销: 用 `git checkout -- {files_changed}` 还原；`issue_id` 进 `B4_SKIPPED`。
     - 我来重写: 撤销 agent 的改动，进入 B4d 让用户为该条提供方案。
@@ -474,7 +474,7 @@ Wait for it to return a JSON array of apply results。把返回结果按 `issue_
 
 #### B4d: 逐条人工处理（fallback）
 
-对需要逐条处理的 issue（来自 B4c 的 "我来重写" / `applied:false` / "全部撤销"），按原流程一条条交互：
+对需要逐条处理的 issue（来自 B4c 的 "我来重写" / `applied:false` / "全部撤销"），按原流程一条条交互（每条等回复前 `acquire validate confirm`，回复后切回 `start`）：
 
 ```
 [语义修改 {n}/{TOTAL}]
@@ -523,10 +523,10 @@ Append them to `reports/{semantic-filename}` under a new section:
 {next_id+1}. ⚠️ [{category}] {message}
 ```
 
-Tell the user:
+先 `python3 .claude/scripts/state_helper.py acquire validate confirm`，再 tell the user（用户回复后 `acquire validate start`）:
 "语义修复后发现 {N} 个新问题（可能由本次修改引入），已追加至报告。
 
-我已在终端列出新增问题编号。请直接回复 **全部**、**{id1},{id2}** 这样的编号列表，或回复 **跳过** 直接提交。"
+我已在下面列出新增问题编号。请直接回复 **全部**、**{id1},{id2}** 这样的编号列表，或回复 **跳过** 直接提交。"
 
 - Show the regression issues in the terminal using the same numbered summary format as B3, and ensure the numbers match the appended report entries exactly.
 - If user selects issues: set `B4_SELECTED` to those regression issue IDs, go back to B4（重新进入 B4a 批量修复路径，未应用的会经 B4d 逐条处理），then repeat B5.
@@ -561,38 +561,31 @@ git commit -m "fix: address semantic check issues"
 - 命中 → 在 "**校验全部完成**" 文案前**单独一行**按 §10.3「校验报告触发形式」输出提示。本命令本次执行只触发一次。
 - 未命中 → 不输出。
 
+提交后先 `python3 .claude/scripts/state_helper.py release validate` 与 `update-progress validate_last_run {timestamp}`，再写收尾小结。
+
 **Operation 范式 / 断言驱动测试参考提醒（可选）**：按 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §七「校验完成或 trace 场景确认前」与 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §十一「校验完成后」输出提示；若用户本会话已表达"不需要 / 知道了 / 已判别 / 已按断言型补充"，本次不再提示。本命令本次执行只触发一次。
 
 Tell user:
 "💡 可选参考：现有校验/追踪默认更适合 SOP 流程型；若本次 Operation 包含规则引擎、红线拦截、连续阈值、多判定器组合或审计链，可先对照 Operation 范式。
 可参阅 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §三 / §四核对范式；若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §六 / §七，人工核对审计链贯通、规则不冲突、写入器前置审计与边界值口径。无需中断当前流程。
 
-**校验全部完成。下一步建议：**
-- 回复 **测试数据**（/ontology-mock）→ 生成 mock 测试数据
-- 回复 **追踪**（/ontology-trace）→ 用场景走查进一步检验逻辑
-- 回复 **交互走查**（/ontology-trace 交互）→ 逐个分支由你选方向，AI 辅助构造 testcase 和正常 mock 数据
-- 回复 **整体视图**（/ontology-overview）→ 查看对象/逻辑全局关系
-- 回复 **扫描候选**（/ontology-codegen-scan）→ 看哪些逻辑适合转脚本
-- 回复 **代码生成**（/ontology-codegen）→ 选定 operation 后生成 Python 脚本（不支持一键全部）
-- 回复 **增量对象**（/ontology-extract-object）→ 补充提取缺失对象
-- 回复 **增量逻辑**（/ontology-extract-operation）→ 补充提取缺失逻辑
-- 回复 **补充资料分析**（/ontology-research）→ 定向补充资料分析后增量提取
-- 回复 **再校验** → 重新执行完整校验流程
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
+**校验全部完成。**{两三句话：修了哪些、跳过和没处理的还剩几条要用户定}"
 
-> 锁释放说明：除 **再校验**（在本命令内重启 Step 1，锁可继续持有）外，任一选项都会离开本命令。在 read 下游命令文件或 Stop 之前，先 `python3 .claude/scripts/state_helper.py release validate`。
+不列下一步菜单（界面的建议条会给出）。用户之后在对话里说「测试数据」「追踪」「交互走查」「整体视图」「扫描候选」「代码生成」「增量对象」「增量逻辑」「补充资料分析」「再校验」，按下面的分支做；「再校验」从本命令 Step 0 重新开始。
 
-**If user replies 测试数据:** release validate，然后 read `.claude/commands/ontology-mock.md` and follow its instructions.
+> 锁已在小结前释放；下面分支里的 release 再调一次无害。
 
-**If user replies 追踪:** ask "请输入要追踪的逻辑文件路径（如 ontology/operation/创建订单.md），或回复 **全部** 追踪所有逻辑：". Then release validate 并 read `.claude/commands/ontology-trace.md` and follow its instructions with the user's chosen path.
+**If user replies 测试数据:** release validate，然后 read `.claude/commands/ontology-mock.md`（场景走查能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions.
 
-**If user replies 交互走查:** ask "请输入要交互走查的逻辑文件路径（如 ontology/operation/创建订单.md），或直接回复 **选择** 让我列出逻辑文件：". Then release validate 并 read `.claude/commands/ontology-trace.md` and follow it with `交互 {用户选择}`（如果用户回复 **选择**，传 `交互`）。
+**If user replies 追踪:** ask "要追踪哪个逻辑（如「创建订单」）？或回复 **全部** 追踪所有逻辑：". Then release validate 并 read `.claude/commands/ontology-trace.md`（场景走查能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions with `ontology/operation/{用户说的逻辑}.md`（用户回复 **全部** 时传 `全部`）.
+
+**If user replies 交互走查:** ask "要交互走查哪个逻辑（如「创建订单」）？或回复 **选择** 让我列出所有逻辑：". Then release validate 并 read `.claude/commands/ontology-trace.md`（场景走查能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it with `交互 ontology/operation/{用户说的逻辑}.md`（如果用户回复 **选择**，传 `交互`）。
 
 **If user replies 整体视图:** release validate，然后 read `.claude/commands/ontology-overview.md` and follow its instructions.
 
-**If user replies 扫描候选:** release validate，然后 read `.claude/commands/ontology-codegen-scan.md` and follow its instructions.
+**If user replies 扫描候选:** release validate，然后 read `.claude/commands/ontology-codegen-scan.md`（代码生成与求解能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions.
 
-**If user replies 代码生成:** release validate，然后 read `.claude/commands/ontology-codegen.md` and follow its instructions.
+**If user replies 代码生成:** release validate，然后 read `.claude/commands/ontology-codegen.md`（代码生成与求解能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow its instructions.
 
 **If user replies 增量对象:** release validate，然后 Read `.claude/commands/ontology-extract-object.md` and follow its instructions with these overrides: MODE = incremental; collect EXISTING_FILES from current `ontology/object/` contents before dispatching the agent. After the agent returns its summary, ask: "增量对象完成。是否重新校验？回复 **是** 或 **否**。" — if yes, restart from Step 1 of this command.
 

@@ -1,0 +1,101 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git rev-list *)",
+      "Bash(git log *)",
+      "Bash(git tag *)",
+      "Bash(git revert *)",
+      "Bash(git push:*)"
+    ],
+    "deny": [
+      "Edit(/.claude/**)",
+      "Edit(/CLAUDE.md)",
+      "Edit(/README.md)",
+      "Edit(/.onto/**)",
+      "Write(/.claude/**)",
+      "Write(/CLAUDE.md)",
+      "Write(/README.md)",
+      "Write(/.onto/**)",
+      "Bash(git tag release/*)",
+      "Bash(git tag -a release/*)",
+      "Bash(git tag -d release/*)",
+      "Bash(git push --tags*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/pre_commit_check.sh\" || exit 2"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/toolset_write_guard.sh\" || exit 2"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/resource_write_guard.sh\" || exit 2"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/lock_file_guard.sh\" || exit 2"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/ontology_scope_guard.sh\" || exit 2"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/resource_read_guard.sh\" || exit 2"
+          }
+        ]
+      },
+      {
+        "matcher": "Read|NotebookRead",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/resource_read_guard.sh\" || exit 2"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/lock_file_guard.sh\" || exit 2"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/toolset_write_guard.sh\" || exit 2"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/resource_write_guard.sh\" || exit 2"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/ontology_scope_guard.sh\" || exit 2"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/post_commit_hook.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

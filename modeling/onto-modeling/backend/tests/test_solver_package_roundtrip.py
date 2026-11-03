@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from app.services import publish as publish_service
 from app.services import package_archive, solver_contract
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 
@@ -198,7 +199,7 @@ def test_ordinary_project_still_exports_v01_without_solver_projection(
     (root / "ontology" / "operation" / "查询站点.md").write_text(
         "# 查询站点\n\n读取[[站点]]\n", encoding="utf-8"
     )
-    files = _read_zip(manager.export_package_zip(meta["id"], tmp_path / "out.zip"))
+    files = _read_zip(publish_service.export_package_zip(manager, meta["id"], tmp_path / "out.zip"))
     pid = meta["id"]
     manifest = files[f"{pid}/manifest.yaml"].decode()
     assert "schema_version: '0.1'\n" in manifest
@@ -336,7 +337,7 @@ def test_operation_file_name_differing_from_key_becomes_workspace_identity(
     )
     assert binding["operation"] == "规划路线" and binding["solver_key"] == "plan_route"
     assert (root / "ontology" / "operation" / "规划路线.md").is_file()
-    files = _read_zip(manager.export_package_zip(meta["id"], tmp_path / "out.zip"))
+    files = _read_zip(publish_service.export_package_zip(manager, meta["id"], tmp_path / "out.zip"))
     assert _frontmatter(files[f"{meta['id']}/operations/plan_route.md"]) == OPERATION_FRONTMATTER
 
 
@@ -353,7 +354,7 @@ def test_legacy_v02_directories_are_accepted_and_canonicalized(
         "operations/plan_route.input.schema.json"
     )
     meta = manager.import_package_zip("旧布局任务", _write_zip(tmp_path / "legacy.zip", members))
-    files = _read_zip(manager.export_package_zip(meta["id"], tmp_path / "out.zip"))
+    files = _read_zip(publish_service.export_package_zip(manager, meta["id"], tmp_path / "out.zip"))
     pid = meta["id"]
     assert files[f"{pid}/operations/plan_route.model.yaml"] == MODEL_YAML
     assert files[f"{pid}/operations/plan_route.input.schema.json"] == INPUT_SCHEMA
@@ -368,7 +369,7 @@ def test_import_export_roundtrip_is_semantically_lossless(
 ):
     meta, _root = _import(manager, tmp_path)
     pid = meta["id"]
-    files = _read_zip(manager.export_package_zip(pid, tmp_path / "out.zip"))
+    files = _read_zip(publish_service.export_package_zip(manager, pid, tmp_path / "out.zip"))
 
     manifest = yaml.safe_load(files[f"{pid}/manifest.yaml"])
     assert manifest["schema_version"] == "0.2"
@@ -400,8 +401,8 @@ def test_import_export_roundtrip_is_semantically_lossless(
 def test_repeated_export_is_deterministic(manager: WorkspaceManager, tmp_path: Path):
     """REQ-BLD-010：同一工作区重复导出逐字节相同（成员顺序、时间戳、权限都固定）。"""
     meta, _root = _import(manager, tmp_path)
-    first = manager.export_package_zip(meta["id"], tmp_path / "a.zip")
-    second = manager.export_package_zip(meta["id"], tmp_path / "b.zip")
+    first = publish_service.export_package_zip(manager, meta["id"], tmp_path / "a.zip")
+    second = publish_service.export_package_zip(manager, meta["id"], tmp_path / "b.zip")
     assert _read_zip(first) == _read_zip(second)
     assert first.read_bytes() == second.read_bytes()
     with zipfile.ZipFile(first) as zf:
@@ -443,7 +444,7 @@ def test_chinese_operation_is_renamed_to_solver_key_on_export(
     )
     _workspace_solver(root, solver_key="plan_route", operation="规划路线")
     pid = meta["id"]
-    files = _read_zip(manager.export_package_zip(pid, tmp_path / "out.zip"))
+    files = _read_zip(publish_service.export_package_zip(manager, pid, tmp_path / "out.zip"))
 
     assert f"{pid}/operations/规划路线.md" not in files
     front = _frontmatter(files[f"{pid}/operations/plan_route.md"])
@@ -490,7 +491,7 @@ def test_solver_evaluator_ships_source_without_script_descriptor(
     (scripts / "site_evaluator.py").write_text(evaluator, encoding="utf-8")
     _workspace_solver(root, solver_key="plan_route", operation="规划路线")
     pid = meta["id"]
-    files = _read_zip(manager.export_package_zip(pid, tmp_path / "out.zip"))
+    files = _read_zip(publish_service.export_package_zip(manager, pid, tmp_path / "out.zip"))
 
     assert files[f"{pid}/scripts/site_evaluator.py"] == evaluator.encode("utf-8")
     assert f"{pid}/scripts/site_evaluator.md" not in files
@@ -518,7 +519,7 @@ def test_package_with_only_evaluator_script_has_no_script_index(
     )
     _workspace_solver(root, solver_key="plan_route", operation="规划路线")
     pid = meta["id"]
-    files = _read_zip(manager.export_package_zip(pid, tmp_path / "out.zip"))
+    files = _read_zip(publish_service.export_package_zip(manager, pid, tmp_path / "out.zip"))
 
     assert f"{pid}/scripts/site_evaluator.py" in files
     assert not any(
@@ -535,7 +536,7 @@ def test_disabled_solver_operation_is_left_out_of_solver_indexes(
     (root / "ontology" / "operation" / "plan_route.md").write_text("# 规划路线\n", encoding="utf-8")
     _workspace_solver(root, solver_key="plan_route", operation="plan_route", enabled=False)
     pid = meta["id"]
-    files = _read_zip(manager.export_package_zip(pid, tmp_path / "out.zip"))
+    files = _read_zip(publish_service.export_package_zip(manager, pid, tmp_path / "out.zip"))
     assert solver_contract.INDEX_BLOCK_START not in files[f"{pid}/index.md"].decode()
     assert "| plan_route | plan_route | 无 | 无 |  |" in (
         files[f"{pid}/operations/index.md"].decode()
@@ -578,7 +579,7 @@ def test_broken_workspace_contract_blocks_export(
     _workspace_solver(root, solver_key="plan_route", operation="规划路线")
     mutate(root / solver_contract.SOLVER_DIR / "plan_route")
     with pytest.raises(WorkspaceError) as exc:
-        manager.export_package_zip(meta["id"], tmp_path / "out.zip")
+        publish_service.export_package_zip(manager, meta["id"], tmp_path / "out.zip")
     assert exc.value.code == code
 
 
@@ -592,7 +593,7 @@ def test_solver_key_colliding_with_another_operation_blocks_export(
         (root / "ontology" / "operation" / f"{stem}.md").write_text(f"# {stem}\n", encoding="utf-8")
     _workspace_solver(root, solver_key="plan_route", operation="规划路线")
     with pytest.raises(WorkspaceError, match="同名"):
-        manager.export_package_zip(meta["id"], tmp_path / "out.zip")
+        publish_service.export_package_zip(manager, meta["id"], tmp_path / "out.zip")
 
 
 # ---- 受管目录 ----
@@ -609,7 +610,7 @@ def test_solver_directory_is_not_writable_through_file_editor(
 
 
 def test_scope_guard_denies_agent_writes_to_solver_directory(tmp_path: Path):
-    guard = TOOLKIT_SCRIPTS / "ontology_scope_guard.sh"
+    guard = Path(__file__).resolve().parents[1] / "app" / "kernel_guards" / "ontology_scope_guard.sh"
     _git(tmp_path, "init", "-q")
 
     def decide(rel: str) -> str:
@@ -682,7 +683,7 @@ def test_exported_package_passes_consumer_import_contract(
     )
     (root / "ontology" / "operation" / "查询站点.md").write_text("# 查询站点\n", encoding="utf-8")
     _workspace_solver(root, solver_key="plan_route", operation="规划路线")
-    archive = manager.export_package_zip(meta["id"], tmp_path / "out.zip")
+    archive = publish_service.export_package_zip(manager, meta["id"], tmp_path / "out.zip")
     extracted = tmp_path / "extracted"
     with zipfile.ZipFile(archive) as zf:
         zf.extractall(extracted)

@@ -1,0 +1,59 @@
+/* 插件中心与设置 5 页（设计稿 pages-60-plugins.js 的 addCSS 原样移植，pl-*） */
+.pl-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.pl-card{padding:14px 14px 12px;display:flex;flex-direction:column;gap:9px;min-height:186px;transition:border-color .15s,box-shadow .15s}
+.pl-card:hover{border-color:var(--b200);box-shadow:0 10px 24px -16px rgba(37,99,235,.45)}
+.pl-card.on{border-color:var(--b200);background:linear-gradient(180deg,#FBFDFF,#fff)}
+.pl-ico{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;flex:none}
+.pl-ico.cap{background:var(--b50);color:var(--blue)}.pl-ico.node{background:var(--i50);color:var(--indigo)}
+.pl-ico.ind,.pl-ico.sys{background:var(--t50);color:var(--teal)}.pl-ico.prov{background:var(--a50);color:var(--amber)}
+.pl-ico.exp,.pl-ico.eng{background:var(--panel3);color:var(--ink2)}
+.pl-name{font-weight:650;font-size:13.5px}
+.pl-desc{font-size:12px;color:var(--ink3);line-height:1.5;flex:1;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.pl-foot{display:flex;align-items:center;gap:6px;padding-top:9px;border-top:1px dashed var(--line)}
+.pl-sec{display:flex;align-items:baseline;gap:10px;margin:22px 0 10px}
+.pl-sec h3{font-size:14.5px;font-weight:700}
+.pl-sec span{font-size:12px;color:var(--ink3)}
+.pl-rec{border:1px solid var(--b100);border-radius:16px;padding:14px 16px;background:linear-gradient(120deg,#EEF5FF 0%,#F7FBFF 55%,#ECFAFD 100%);display:flex;gap:14px;align-items:stretch}
+.pl-rec .it{flex:1;background:rgba(255,255,255,.85);border:1px solid #DCE8FB;border-radius:12px;padding:10px 12px;display:flex;gap:10px;align-items:center}
+.pl-bar{display:flex;align-items:center;gap:10px;margin-top:2px}
+.pl-hero{display:flex;gap:16px;align-items:flex-start;padding:18px 20px}
+.pl-hero .big{width:54px;height:54px;border-radius:16px;display:grid;place-items:center;background:linear-gradient(140deg,#DCE8FF,#EFF5FF);color:var(--blue2);flex:none}
+.pl-hero h1{font-size:21px;font-weight:700;display:flex;align-items:center;gap:10px}
+.pl-cg{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.pl-cg .card{padding:12px 14px}
+.pl-cg h5{font-size:12.5px;font-weight:650;display:flex;align-items:center;gap:7px;margin-bottom:8px}
+.pl-cg h5 .n{margin-left:auto;font-size:11px;color:var(--ink3);background:var(--panel3);border-radius:6px;padding:0 6px}
+.pl-cg .tag{margin:0 4px 4px 0}
+.pl-yaml .k{color:#1D4ED8}.pl-yaml .s{color:#0F766E}.pl-yaml .c{color:#93A1B5}
+.pl-chk{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px dashed var(--line)}
+.pl-chk:last-child{border-bottom:0}
+.pl-chk .d{width:20px;height:20px;border-radius:7px;display:grid;place-items:center;flex:none;margin-top:1px}
+.pl-chk .d.ok{background:var(--b50);color:var(--blue)}.pl-chk .d.warn{background:var(--a50);color:var(--amber2)}.pl-chk .d.bad{background:var(--r50);color:var(--red)}
+.pl-chk .d svg.i{width:12px;height:12px;stroke-width:2.4}
+.pl-ver{display:flex;gap:14px;padding:12px 0;border-bottom:1px solid var(--line)}
+.pl-ver:last-child{border-bottom:0}
+.pl-ver .vv{width:120px;flex:none}
+.pl-drop{border:1.5px dashed var(--b300);border-radius:14px;background:linear-gradient(180deg,#F7FAFF,#fff);padding:18px;display:flex;gap:16px;align-items:center}
+.pl-file{display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px solid var(--line);border-radius:11px;background:#fff}
+.pl-pane{max-width:940px}
+.pl-swatch{width:46px;height:46px;border-radius:14px;cursor:pointer;position:relative;border:2px solid #fff;box-shadow:0 0 0 1px var(--line)}
+.pl-swatch.on{box-shadow:0 0 0 2px var(--blue)}
+.pl-swatch.on::after{content:"";position:absolute;left:16px;top:12px;width:9px;height:15px;border-right:2.5px solid #fff;border-bottom:2.5px solid #fff;transform:rotate(45deg)}
+.pl-theme{border:1px solid var(--line);border-radius:14px;padding:10px;cursor:pointer;flex:1;min-width:0}
+.pl-theme.on{border-color:var(--blue3);box-shadow:0 0 0 3px rgba(59,130,246,.12)}
+.pl-theme .pv{height:92px;border-radius:9px;display:grid;grid-template-columns:30px 1fr;gap:5px;padding:6px}
+.pl-noti{width:330px;border-radius:16px;background:rgba(246,248,252,.95);border:1px solid var(--line);box-shadow:var(--sh-pop);padding:11px 13px;display:flex;gap:10px}
+.pl-eng{position:relative}
+.pl-eng.off .pl-engb{opacity:.45;pointer-events:none;filter:grayscale(.4)}
+.pl-radio{display:flex;flex-direction:column;gap:8px}
+.pl-radio.c3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}
+.pl-radio .opt{padding:9px 12px}
+.pl-kvro{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:11px;background:var(--panel2)}
+.pl-sw{display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px dashed var(--line)}
+.pl-sw:last-child{border-bottom:0}
+.pl-src{font-size:11px;font-weight:650;padding:2px 7px;border-radius:6px}
+.pl-src.env{background:#EEF1F6;color:#475569}.pl-src.data{background:var(--b50);color:var(--blue2)}.pl-src.def{background:var(--panel3);color:var(--ink3)}.pl-src.pkg{background:var(--i50);color:var(--indigo)}
+.pl-gauge{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:#fff}
+/* 插件详情「已启用到本项目」的下拉菜单（R14） */
+.pd-menu{position:relative;display:inline-flex}
+.pd-menu .menu{position:absolute;right:0;top:42px;z-index:30;min-width:260px;text-align:left}

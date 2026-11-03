@@ -19,8 +19,8 @@ import secrets
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .. import config
 from . import auth
+from .credential_store import write_private_json
 
 ENGINES = ("claude", "jiuwen")
 _GATEWAY_SCHEMES = ("http", "https")
@@ -44,7 +44,10 @@ def _master_key() -> bytes:
         if len(configured.encode("utf-8")) < _MIN_MASTER_KEY_BYTES:
             raise PersonalConfigError("ONTO_WEB_MODEL_SECRET_KEY 至少 32 字节", 503)
         return hashlib.sha256(configured.encode("utf-8")).digest()
-    path = Path(config.DATA_DIR) / _MANAGED_KEY_FILE
+    from ..governance import secrets as secret_store
+
+    # 只在没配主密钥时自动生成，放密钥目录（agent 读不到），备份里不带（方案第 6 章第 5 项）
+    path = secret_store.path(_MANAGED_KEY_FILE)
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -95,7 +98,9 @@ def _decrypt(token: str, username: str, engine: str) -> str:
 
 
 def _file() -> Path:
-    return Path(config.DATA_DIR) / "user-model-settings.json"
+    from ..governance import secrets as secret_store
+
+    return secret_store.path(secret_store.PERSONAL_SETTINGS)
 
 
 def _load() -> dict:
@@ -110,10 +115,7 @@ def _load() -> dict:
 
 
 def _write(data: dict) -> None:
-    path = _file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    path.chmod(0o600)
+    write_private_json(_file(), data)
 
 
 def _section(username: str, engine: str) -> dict:

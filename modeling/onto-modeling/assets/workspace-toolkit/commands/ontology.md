@@ -22,19 +22,26 @@ If the user passed a domain name (e.g. `/ontology 电商`), treat it as starting
 
 ## Step 3: Act based on detected state
 
+每个状态块里的 `{next-step}` 来自主流程定义（`.claude/flow.yaml`），不要自己编：用 Step 1
+检测到的阶段名运行
+
+```bash
+python3 .claude/scripts/state_helper.py next-step <阶段名>
+```
+
+把输出逐行原样放在 `{next-step}` 的位置，不增不减、不改措辞（输出为空时整行省略）。
+
 **未开始:**
 ```
 欢迎使用 Ontology Toolset。
 
 **开始方式：**
-- 回复 **资料分析**（/ontology-research）→ 先做资料分析
-- 回复 **流程图**（/ontology-flowchart）→ 直接创建流程图
-- 或输入 `/ontology <领域名称>` 一键启动（如 `/ontology 电商`）
+{next-step}
 ```
 
 After showing, listen for the user's next reply:
 - **资料分析** → read `.claude/commands/ontology-research.md` and follow it (ask for TOPIC if not given)
-- **流程图** → read `.claude/commands/ontology-flowchart.md` and follow it
+- **流程图** → read `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it
 - other → treat as normal input
 
 **资料分析待核验:**
@@ -48,15 +55,12 @@ python3 .claude/scripts/research_checker.py check
 
 ```
 当前状态：资料分析待核验 ⏳
-报告：research/{latest_filename}
-{退出码 0：确定性检查已通过，阶段随即变为「资料分析完成」}
-{退出码 1：逐条列出错误项与待人工确认条目}
+报告：{报告名}
+{检查通过：说明核验已通过，阶段随即变为「资料分析完成」}
+{没通过：逐条列出错误项与待人工确认条目}
 
 **下一步建议：**
-- 回复 **修正** → 按错误项修改报告后重新核验
-- 回复 **人工确认** → 你逐条给出结论，我据此补充报告再核验
-- 回复 **重新做资料分析**（/ontology-research）→ 重做本轮资料分析
-验收通过前不建议提取对象：错误的字段或 ID 会被后续映射、规则与追溯继续沿用。
+{next-step}
 ```
 
 Handle reply:
@@ -70,17 +74,14 @@ Handle reply:
 Find the latest file in `research/`. Show:
 ```
 当前状态：资料分析完成 ✅
-报告：research/{latest_filename}
+报告：{报告名}
 
 **下一步建议：**
-- 回复 **流程图**（/ontology-flowchart）→ 创建业务流程图（流程复杂或多子流程交叉时推荐）
-- 回复 **提取对象**（/ontology-extract-object）→ 跳过流程图，直接从资料分析报告提取对象（概念清晰、流程线性时推荐）
-- 回复 **追加资料分析**（/ontology-research）→ 补充分析方向
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
+{next-step}
 ```
 
 Handle reply:
-- **流程图** → read `.claude/commands/ontology-flowchart.md` and follow it
+- **流程图** → read `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it
 - **提取对象** → read `.claude/commands/ontology-extract-object.md` and follow it（Step 1 会识别到只有研究报告，进入模式 C）
 - **追加资料分析** → read `.claude/commands/ontology-research.md` (it will detect existing report and prompt for append mode)
 - **完成** → stop
@@ -90,17 +91,15 @@ Handle reply:
 Count .drawio files in `ontology/diagrams/`. Show:
 ```
 当前状态：流程图就绪 ✅
-流程图：{N} 个（ontology/diagrams/）
+流程图：{N} 个
 
 **下一步建议：**
-- 回复 **提取对象**（/ontology-extract-object）→ 开始提取业务对象
-- 回复 **校验流程图**（/ontology-validate-diagrams）→ 先打磨流程图
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
+{next-step}
 ```
 
 Handle reply:
 - **提取对象** → read `.claude/commands/ontology-extract-object.md` and follow it
-- **校验流程图** → read `.claude/commands/ontology-validate-diagrams.md` and follow it
+- **校验流程图** → read `.claude/commands/ontology-validate-diagrams.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it
 - **完成** → stop
 
 **对象已提取:**
@@ -108,11 +107,10 @@ Handle reply:
 Count .md files in `ontology/object/`. Show:
 ```
 当前状态：对象已提取 ✅
-对象：{M} 个（ontology/object/）
+对象：{M} 个
 
 **下一步建议：**
-- 回复 **提取逻辑**（/ontology-extract-operation）→ 提取业务逻辑
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
+{next-step}
 ```
 
 Handle reply:
@@ -127,11 +125,7 @@ Count .md files in `ontology/object/`、`ontology/operation/`、`ontology/rule/`
 对象：{M} 个  |  逻辑：{K} 个  |  规则：{R} 条  |  指标：{P} 个
 
 **下一步建议：**
-- 回复 **校验**（/ontology-validate）→ 开始校验
-- 回复 **规则与指标**（/ontology-extract-rule-metric）→ 补抽规则/指标：有资料分析报告的项目在逻辑提取阶段已按分类分流，这里用于从存量 operation 文档与 object 属性规则列补抽遗漏（可选）
-- 回复 **整体视图**（/ontology-overview）→ 先看全局关系
-- 回复 **更新**（/ontology-update）→ 按新的参考内容增量更新已有 ontology
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
+{next-step}
 ```
 
 Handle reply:
@@ -146,11 +140,10 @@ Handle reply:
 Find the latest file in `reports/`. Count remaining `[ ]` items. Show:
 ```
 当前状态：校验待审阅 ⏳
-问题清单：reports/{latest_filename}（{N} 个问题待处理）
+问题清单：{报告名}（{N} 个问题待处理）
 
 **下一步建议：**
-- 回复 **继续校验**（/ontology-validate）→ 继续处理问题清单
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
+{next-step}
 ```
 
 Handle reply:
@@ -159,29 +152,17 @@ Handle reply:
 
 **完成:**
 
-Count all docs. Get last git log line. Show:
+Count all docs. Get the last commit message (`git log -1 --format=%s`). Show:
 ```
 当前建模状态：完成 ✅
 
-  对象：{M} 个（ontology/object/）
-  逻辑：{K} 个（ontology/operation/）
-  规则：{R} 条（ontology/rule/）  指标：{P} 个（ontology/metric/）
-  上次提交：{git log --oneline -1}
+  对象：{M} 个
+  逻辑：{K} 个
+  规则：{R} 条  指标：{P} 个
+  最近一次修改：{最近一次提交的说明}
 
 **可选操作：**
-- 回复 **测试数据**（/ontology-mock）→ 生成测试数据
-- 回复 **追踪**（/ontology-trace）→ 场景追踪验证
-- 回复 **交互走查**（/ontology-trace 交互）→ 逐个分支由你选方向，AI 辅助构造 testcase 和正常 mock 数据
-- 回复 **扫描候选**（/ontology-codegen-scan）→ 看哪些逻辑适合转脚本（推荐先扫一遍）
-- 回复 **代码生成**（/ontology-codegen）→ 生成 Python 代码
-- 回复 **整体视图**（/ontology-overview）→ 查看对象/逻辑全局关系
-- 回复 **再校验**（/ontology-validate）→ 重新校验
-- 回复 **更新**（/ontology-update）→ 按新的参考内容更新已有 ontology
-- 回复 **补充对象**（/ontology-extract-object）→ 增量补充对象
-- 回复 **补充逻辑**（/ontology-extract-operation）→ 增量补充逻辑
-- 回复 **追加资料分析**（/ontology-research）→ 追加资料分析
-- 回复 **版本历史**（/version）→ 查看历史
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
+{next-step}
 ```
 
 Handle reply by reading the corresponding command file and following it.

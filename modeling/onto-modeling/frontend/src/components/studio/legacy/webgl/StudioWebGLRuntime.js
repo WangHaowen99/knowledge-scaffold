@@ -1257,7 +1257,6 @@ export class WebGLGraphRuntime {
         || this.forceStatus === 'settled' || this.forceStatus === 'paused';
       if (!view.title && mayCreateText) this.attachNodeTexts(view);
       if (!view.title) return;
-      view.metaText.visible = zoom >= 0.68 && (!largeGraph || zoom >= 0.86 || priority);
       view.title.visible = true;
       const desiredBoost = Math.max(1, MIN_TITLE_SCREEN_SCALE / zoom);
       const widthLimit = view.item.width * 0.82;
@@ -1845,14 +1844,11 @@ function drawMiniNode(context, item, center, scale) {
   context.restore();
 }
 
-function createNodeTexts(item, meta, color, relationCount) {
-  const metaText = createText({
-    text: `${meta.label} · ${relationCount}条关系`,
-    size: 10,
-    color,
-    weight: '600',
-  });
+// 节点上只写名称：类型看颜色和形状，关系数看连线；metaText 留空，调用方不用改
+function createNodeTexts(item, meta, color) {
+  const metaText = createText({ text: '', size: 10, color, weight: '600' });
   metaText.anchor.set(0.5);
+  metaText.visible = false;
   const title = createText({
     text: item.label,
     size: 15,
@@ -1862,10 +1858,7 @@ function createNodeTexts(item, meta, color, relationCount) {
     wrap: true,
   });
   title.anchor.set(0.5);
-  const textGap = 4;
-  const textBlockHeight = metaText.height + textGap + title.height;
-  metaText.position.set(0, -textBlockHeight / 2 + metaText.height / 2);
-  title.position.set(0, -textBlockHeight / 2 + metaText.height + textGap + title.height / 2);
+  title.position.set(0, 0);
   return { metaText, title };
 }
 

@@ -1,0 +1,355 @@
+#!/usr/bin/env bash
+# Pre-commit rule check — runs ontology_checker on staged ontology/ files.
+# Blocks the commit (decision=block) only on ERROR severity; warnings and
+# suggestions are surfaced via stderr so the user still sees them.
+
+# --- Hook self-guard ---------------------------------------------------------
+# 两种调用方式：
+# 1. git 的 pre-commit 钩子（内核钩子 <数据目录>/githooks/pre-commit，设 ONTO_COMMIT_HOOK=1，方案 C11）：
+#    在提交那一刻跑，看到的是真实暂存区，直接往下做检查；
+# 2. PreToolUse hook（stdin 是工具调用 JSON）：Claude Code 对每条 Bash 都触发，这里先认出是不是
+#    `git commit`（含 `git -C 目录 commit`、`git -c 键=值 commit`、绝对路径调用，方案 D10）：
+#    - 带 `--no-verify` / `-n`，或改提交钩子路径（core.hooksPath）的一律拒绝——那是绕过提交检查；
+#    - 提交钩子已就绪（有会话身份，项目的 hooksPath 指向内核钩子）时放行，检查交给 git 钩子
+#      （PreToolUse 在整条命令执行之前，`git add -A && git commit` 写在一行时看到的是旧暂存区）；
+#    - 钩子没就绪时退回在这里检查（看到的是执行前的暂存区）。
+#    读不出命令按拒绝处理（出错即拒，方案 D9）。手工在终端里跑（TTY）时直接做检查。
+if [ -z "${ONTO_COMMIT_HOOK:-}" ] && [ ! -t 0 ]; then
+    HOOK_INPUT=$(cat 2>/dev/null || true)
+    IS_COMMIT=$(printf '%s' "${HOOK_INPUT:-}" | python3 -c '
+import json, re, shlex, sys
+try:
+    data = json.loads(sys.stdin.read())
+    command = str((data.get("tool_input") or {}).get("command") or "")
+except Exception:
+    print("error")
+    sys.exit(0)
+if re.search(r"(?i)git\b.*hookspath|GIT_CONFIG_(?:COUNT|KEY|VALUE|PARAMETERS)", command):
+    print("bypass")
+    sys.exit(0)
+option = r"(?:-C\s+\S+|-c\s+\S+|--git-dir(?:=|\s+)\S+|--work-tree(?:=|\s+)\S+|--no-pager|-P|--no-optional-locks)"
+pattern = re.compile(r"(^|[;&|(`$\s])(?:\S*/)?git(?:\s+" + option + r")*\s+commit($|[\s;&|)])")
+match = pattern.search(command)
+if not match:
+    print("no")
+    sys.exit(0)
+try:
+    words = shlex.split(command[match.end() - 1:], posix=True)
+except ValueError:
+    words = command[match.end() - 1:].split()
+for word in words:
+    if word in (";", "&&", "||", "|", "&"):
+        break
+    if word == "--no-verify" or word == "-n":
+        print("bypass")
+        sys.exit(0)
+    if word.startswith("-") and not word.startswith("--"):
+        flags = word[1:]
+        cut = flags.find("m")
+        if "n" in (flags[:cut] if cut >= 0 else flags):
+            print("bypass")
+            sys.exit(0)
+print("yes")
+' 2>/dev/null || echo error)
+    case "$IS_COMMIT" in
+        no) exit 0 ;;
+        yes) ;;
+        bypass)
+            echo '{"decision":"block","reason":"不能跳过提交检查（--no-verify / -n）或改提交钩子（core.hooksPath）。请去掉这些参数后重新提交；检查没通过就按提示修改。"}'
+            exit 0
+            ;;
+        *)
+            echo '{"decision":"block","reason":"提交检查读不出这次调用的命令，按拒绝处理。请重试；持续出现请反馈给维护者。"}'
+            exit 0
+            ;;
+    esac
+    # 提交钩子就绪：检查在 git 提交那一刻做（看得到同一行里刚 add 的内容）
+    HOOKS_PATH=$(git config --local --get core.hooksPath 2>/dev/null || true)
+    if [ -n "${ONTO_RUN_ENGINE:-}" ] && [ -n "$HOOKS_PATH" ] \
+        && [ -x "$HOOKS_PATH/pre-commit" ] && [ -x "$HOOKS_PATH/commit-msg" ]; then
+        exit 0
+    fi
+fi
+# -----------------------------------------------------------------------------
+
+set -u
+block_error() {
+    python3 -c 'import json,sys; print(json.dumps({"decision":"block","reason":sys.argv[1]},ensure_ascii=False))' "$1" \
+        || echo '{"decision":"block","reason":"提交检查执行出错，按拒绝处理。"}'
+    exit 0
+}
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || block_error "提交检查找不到项目根目录，按拒绝处理。"
+cd "$ROOT" || block_error "提交检查进不了项目根目录，按拒绝处理。"
+
+# --- Resource guard ----------------------------------------------------------
+# resource/ is user-managed source material. Agent commits must never include
+# created, modified, moved, or deleted files under any resource directory.
+RESOURCE_STAGED=$(git diff --cached --name-only -z 2>/dev/null | tr '\0' '\n' \
+    | grep -E '(^|/)resource(/|$)' || true)
+if [ -n "$RESOURCE_STAGED" ]; then
+    REASON=$(printf 'resource/ 是用户维护的源材料，模型禁止提交对任意 resource 目录的改动：\n%s\n\n请取消暂存这些文件；若源材料需要调整，请由用户手工修改。' "$RESOURCE_STAGED")
+    python3 -c '
+import json, sys
+print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))
+' "$REASON"
+    exit 0
+fi
+
+# --- Protected paths（受保护目录第 3 层：提交时拦，改动进不了版本）-------------
+# .claude、CLAUDE.md、README.md 是装配出来的能力包，.onto 是能力包锁文件，只能由平台改。
+PROTECTED_STAGED=$(git diff --cached --name-only -z 2>/dev/null | tr '\0' '\n' \
+    | grep -E '^(\.claude|\.onto)(/|$)|^(CLAUDE|README)\.md$' || true)
+if [ -n "$PROTECTED_STAGED" ]; then
+    REASON=$(printf '能力包与锁文件只能由平台修改，模型禁止提交这些路径的改动：\n%s\n\n请取消暂存这些文件（git restore --staged <文件>）。' "$PROTECTED_STAGED")
+    block_error "$REASON"
+fi
+
+# --- 符号链接：助手的提交里不能有（链接可以指到工作区外，进了版本，检出、回退、导出都会带着它）---------
+LINKS_STAGED=$(git -c core.quotePath=false diff --cached --raw --no-renames --diff-filter=ACMT 2>/dev/null \
+    | awk -F '\t' '{ split($1, m, " "); if (m[2] == "120000") print $2 }' || true)
+if [ -n "$LINKS_STAGED" ]; then
+    REASON=$(printf '提交里不能有符号链接：\n%s\n\n请取消暂存并删掉这些链接，需要的内容复制成普通文件。' "$LINKS_STAGED")
+    block_error "$REASON"
+fi
+
+# --- Toolchain check：lint .claude/scripts/*.py and *.sh ----------------------
+# 这部分检查的对象是工具自身（hooks、state_helper、checker 等）。任何工具脚本
+# 在提交时存在语法错误都直接 block — 工具坏了下一次 commit 会连 hook 都跑不起来。
+STAGED_TOOLS=$(git diff --cached --name-only -z 2>/dev/null | tr '\0' '\n' \
+    | grep -E '^\.claude/(scripts|agents|commands)/' || true)
+
+# Generated executable scripts are part of the package contract, not ordinary docs.
+# 脚本描述符（同名 .md）由 script_descriptor.py 生成，与 .py 一起受契约检查。
+STAGED_SCRIPTS=$(git diff --cached --name-only -z 2>/dev/null | tr '\0' '\n' \
+    | grep -E '^ontology/scripts/.*\.(py|md)$' || true)
+
+TOOL_ERRORS=""
+if [ -n "$STAGED_TOOLS" ]; then
+    while IFS= read -r path; do
+        [ -z "$path" ] && continue
+        [ -f "$path" ] || continue
+        case "$path" in
+            *.py)
+                if ! python3 -m py_compile "$path" 2>/dev/null; then
+                    err=$(python3 -m py_compile "$path" 2>&1 | head -3)
+                    TOOL_ERRORS="${TOOL_ERRORS}${path}: Python 语法错误 — ${err}\n"
+                fi
+                ;;
+            *.sh)
+                if ! bash -n "$path" 2>/dev/null; then
+                    err=$(bash -n "$path" 2>&1 | head -3)
+                    TOOL_ERRORS="${TOOL_ERRORS}${path}: Shell 语法错误 — ${err}\n"
+                fi
+                ;;
+        esac
+    done <<< "$STAGED_TOOLS"
+fi
+
+if [ -n "$TOOL_ERRORS" ]; then
+    # Tool scripts have syntax errors — block immediately, ignoring the rest.
+    REASON=$(printf '工具脚本存在语法错误，已阻止提交（继续提交会让后续 hook 失效）：\n%b\n请修复后重新 git add 并提交。' "$TOOL_ERRORS")
+    python3 -c '
+import json, sys
+print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))
+' "$REASON"
+    exit 0
+fi
+
+if [ -n "$STAGED_SCRIPTS" ]; then
+    SCRIPT_OUTPUT=$(python3 .claude/scripts/ontology_checker.py ontology --json --include-scripts 2>/dev/null || echo '[]')
+    SCRIPT_ERRORS=$(printf '%s' "$SCRIPT_OUTPUT" | python3 -c '
+import json, sys
+try:
+    print(sum(1 for item in json.loads(sys.stdin.read() or "[]") if item.get("severity") == "错误" and item.get("category") in ("脚本契约", "脚本安全", "脚本绑定")))
+except Exception:
+    print(1)
+' 2>/dev/null || echo 1)
+    if [ "$SCRIPT_ERRORS" -gt 0 ]; then
+        REASON='ontology/scripts 中存在脚本契约、安全或绑定错误：请运行 python3 .claude/scripts/ontology_checker.py ontology --include-scripts 查看；描述符缺失或过期时运行 python3 .claude/scripts/script_descriptor.py render ontology 重新生成并 git add，修复后再提交。'
+        python3 -c '
+import json, sys
+print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))
+' "$REASON"
+        exit 0
+    fi
+fi
+
+# --- Script run verification -------------------------------------------------
+# 新增或修改的脚本必须用 script_verify.py 跑通（jiuwenbox 沙箱优先，不可用时在容器内），
+# 有与当前源码一致的通过记录才能提交。
+VERIFY_TARGETS=$(git diff --cached --name-only --diff-filter=ACMR -z 2>/dev/null | tr '\0' '\n' \
+    | grep -E '^ontology/scripts/[^/]+\.py$' || true)
+if [ -n "$VERIFY_TARGETS" ]; then
+    mapfile -t VERIFY_FILES <<< "$VERIFY_TARGETS"
+    if ! VERIFY_OUTPUT=$(python3 .claude/scripts/script_verify.py check "${VERIFY_FILES[@]}" 2>&1); then
+        REASON=$(printf '以下脚本还没有通过当前版本的运行验证，已阻止提交：\n%s\n\n按 /ontology-codegen Step 4.6 编写用例，运行 python3 .claude/scripts/script_verify.py run <脚本> --cases <用例文件>，全部通过后再提交。' "$VERIFY_OUTPUT")
+        python3 -c '
+import json, sys
+print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))
+' "$REASON"
+        exit 0
+    fi
+fi
+
+# --- Research report check ---------------------------------------------------
+# 资料分析报告的内容验收。"报告已保存"不等于内容已通过：只要暂存了 research/ 下的
+# 报告，就必须过 research_checker 的确定性检查（计数、ID、字段、来源），
+# 否则错误报告会被下游的对象提取直接当成事实来源。
+RESEARCH_STAGED=$(git diff --cached --name-only -z 2>/dev/null | tr '\0' '\n' \
+    | grep -E '^research/.*\.md$' | grep -v '/index\.md$' || true)
+if [ -n "$RESEARCH_STAGED" ]; then
+    RESEARCH_OUTPUT=$(python3 .claude/scripts/research_checker.py check 2>&1)
+    RESEARCH_CODE=$?
+    RESEARCH_OUTPUT=$(printf '%s' "$RESEARCH_OUTPUT" | head -40)
+    # 1=有确定性错误或人工待决未完成 → 阻止；2=已无报告可核验（如删除报告）→ 放过
+    if [ "$RESEARCH_CODE" -eq 1 ]; then
+        REASON=$(printf '资料分析报告未通过内容验收，已阻止提交：\n\n%s\n\n修正报告后重新 git add 并提交；需人工判断的条目请先确认再在报告中勾选。' "$RESEARCH_OUTPUT")
+        python3 -c '
+import json, sys
+print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))
+' "$REASON"
+        exit 0
+    fi
+fi
+
+# --- Ontology rule check（原逻辑） -------------------------------------------
+# 流程图生成收尾和提交复用同一修订回执；不调用语义 Agent。
+declare -a DIAGRAMS=()
+while IFS= read -r path; do
+    [ -f "$path" ] && DIAGRAMS+=("$path")
+done < <(git diff --cached --name-only --diff-filter=ACMR -- 'ontology/diagrams/*.drawio')
+if [ "${#DIAGRAMS[@]}" -gt 0 ]; then
+    if [ -n "$(git diff --name-only -- "${DIAGRAMS[@]}")" ]; then
+        echo '{"decision":"block","reason":"流程图暂存版本与当前文件不同，请先将核验版本完整暂存。"}'
+        exit 0
+    fi
+    DIAGRAM_OUTPUT=$(python3 .claude/scripts/verify_artifacts.py diagrams --files "${DIAGRAMS[@]}" 2>&1)
+    if [ "$?" -ne 0 ]; then
+        python3 -c 'import json,sys; print(json.dumps({"decision":"block","reason":"流程图轻量核验未通过："+sys.argv[1]},ensure_ascii=False))' "${DIAGRAM_OUTPUT:0:4000}"
+        exit 0
+    fi
+fi
+
+# Only relevant when staged files include ontology docs. Use -z for NUL-safe parsing.
+# rule / metric 有意不在范围内：从知识包导入的规则、指标是知识包契约的格式（规则内容 /
+# 判断条件 / 知识证据 …），与工具箱模板不同，结构检查会把它们整篇判为缺章节。两套
+# 格式对齐之前在这里拦，导入项目里任何改到规则、指标的提交都会被挡住。
+STAGED=$(git diff --cached --name-only -z 2>/dev/null | tr '\0' '\n' \
+    | grep -E '^ontology/(object|operation|action|data-mock|knowledge)/.*\.md$' || true)
+if [ -z "$STAGED" ]; then
+    exit 0
+fi
+
+# Collect unique stems, filtering out anything that would confuse argparse
+# (stems starting with `-`). CLAUDE.md rule 3 keeps legitimate filenames
+# alphanumeric/Chinese, so a leading `-` indicates a malformed filename.
+declare -a STEMS=()
+declare -a SKIPPED=()
+# Staged ontology docs may live in nested object/operation folders; ontology_checker
+# accepts bare stems, so strip directories before passing --files.
+while IFS= read -r staged_path; do
+    stem=$(basename "$staged_path" .md)
+    [ -n "$stem" ] || continue
+    case "$stem" in
+        -*) SKIPPED+=("$stem"); continue ;;
+    esac
+    already=0
+    if [ "${#STEMS[@]}" -gt 0 ]; then
+        for existing in "${STEMS[@]}"; do
+            if [ "$existing" = "$stem" ]; then already=1; break; fi
+        done
+    fi
+    [ "$already" -eq 0 ] && STEMS+=("$stem")
+done < <(echo "$STAGED")
+
+if [ "${#SKIPPED[@]}" -gt 0 ]; then
+    echo "⚠️ 跳过异常文件名（以 - 开头）：${SKIPPED[*]}" >&2
+fi
+
+if [ "${#STEMS[@]}" -eq 0 ]; then
+    exit 0
+fi
+
+# 数据样例/知识由各自检查器处理，不作为本体产物的存在证明。
+declare -a VERIFY_FILES=()
+while IFS= read -r path; do
+    [ -f "$path" ] && VERIFY_FILES+=("$path")
+done < <(printf '%s\n' "$STAGED" | grep -E '^ontology/(object|operation|action)/' | grep -vi '/index\.md$' || true)
+if [ "${#VERIFY_FILES[@]}" -gt 0 ]; then
+    if [ -n "$(git diff --name-only -- "${VERIFY_FILES[@]}")" ]; then
+        echo '{"decision":"block","reason":"本体暂存版本与当前文件不同，请先将核验版本完整暂存。"}'
+        exit 0
+    fi
+    OUTPUT=$(python3 .claude/scripts/verify_artifacts.py ontology --issues-json --files "${VERIFY_FILES[@]}" 2>/dev/null)
+    CHECK_CODE=$?
+else
+    OUTPUT=$(python3 .claude/scripts/ontology_checker.py ontology --json --include-mock --files "${STEMS[@]}" 2>/dev/null)
+    CHECK_CODE=$?
+fi
+if [ "$CHECK_CODE" -gt 1 ]; then
+    echo '{"decision":"block","reason":"轻量核验执行失败，不能按通过处理。请运行 verify_artifacts.py 查看错误。"}'
+    exit 0
+fi
+
+COUNTS=$(echo "$OUTPUT" | python3 -c '
+import json, sys
+try:
+    issues = json.loads(sys.stdin.read())
+    if not isinstance(issues, list) or not all(isinstance(i, dict) and i.get("severity") in ("错误", "警告", "建议") for i in issues):
+        raise ValueError("invalid result")
+except Exception:
+    print("1 0 0")
+    sys.exit(0)
+def c(s): return sum(1 for i in issues if i.get("severity") == s)
+print(c("错误"), c("警告"), c("建议"))
+' 2>/dev/null || echo '1 0 0')
+
+ERRORS=$(echo "$COUNTS" | awk '{print $1+0}')
+if [ "$CHECK_CODE" -ne 0 ] && [ "$ERRORS" -eq 0 ]; then
+    echo '{"decision":"block","reason":"核验退出状态与结果不一致，不能按通过处理。"}'
+    exit 0
+fi
+WARNINGS=$(echo "$COUNTS" | awk '{print $2+0}')
+SUGGESTIONS=$(echo "$COUNTS" | awk '{print $3+0}')
+
+if [ "$WARNINGS" -gt 0 ] || [ "$SUGGESTIONS" -gt 0 ]; then
+    echo "⚠️ 待提交文档含 ${WARNINGS} 条警告 / ${SUGGESTIONS} 条建议（不阻止提交）。运行 /ontology-validate 查看详情。" >&2
+fi
+
+if [ "$ERRORS" -gt 0 ]; then
+    FILES_LIST=$(printf '%s ' "${STEMS[@]}")
+    REASON=$(printf '待提交的文档含 %d 个规则错误，已阻止提交。\n\n排查方式（任选其一）：\n1. 在 Claude 对话中运行 /ontology-validate 走完整修复流程；\n2. 直接跑 python3 .claude/scripts/ontology_checker.py ontology --include-mock --files %s 看具体问题；\n3. /ontology-impact <文件> 查看该文件的下游影响面。\n\n修复后 git add + commit 即可。' "${ERRORS}" "${FILES_LIST}")
+    python3 -c '
+import json, sys
+print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))
+' "$REASON"
+fi
+
+# Knowledge files have a different schema; run a dedicated check.
+KNOWLEDGE_STAGED=$(echo "$STAGED" | grep -E '^ontology/knowledge/' || true)
+if [ -n "$KNOWLEDGE_STAGED" ]; then
+    K_OUTPUT=$(python3 .claude/scripts/ontology_checker.py ontology --json --include-knowledge 2>/dev/null || echo '[]')
+    K_COUNTS=$(echo "$K_OUTPUT" | python3 -c '
+import json, sys
+try:
+    issues = [i for i in json.loads(sys.stdin.read() or "[]") if i.get("category","").startswith("知识")]
+except Exception:
+    issues = []
+def c(s): return sum(1 for i in issues if i.get("severity") == s)
+print(c("错误"), c("警告"))
+' 2>/dev/null || echo '0 0')
+    K_ERRORS=$(echo "$K_COUNTS" | awk '{print $1+0}')
+    K_WARNINGS=$(echo "$K_COUNTS" | awk '{print $2+0}')
+    if [ "$K_WARNINGS" -gt 0 ]; then
+        echo "⚠️ 业务知识：${K_WARNINGS} 条警告（不阻止提交）。" >&2
+    fi
+    if [ "$K_ERRORS" -gt 0 ]; then
+        REASON="待提交的业务知识含 ${K_ERRORS} 个错误。运行 python3 .claude/scripts/ontology_checker.py ontology --include-knowledge 查看详情。"
+        python3 -c '
+import json, sys
+print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))
+' "$REASON"
+    fi
+fi
+
+exit 0

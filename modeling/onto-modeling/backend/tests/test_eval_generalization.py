@@ -1,4 +1,4 @@
-"""评测演进的泛化性校验测试：应试痕迹检测（原文雷同 / 考核措辞）。
+"""反馈演进的泛化性校验测试：应试痕迹检测（原文雷同 / 考核措辞）。
 
 脚本走真实 subprocess 执行，与 /ontology-evolution Step 4 的调用方式一致。
 """
@@ -9,7 +9,8 @@ from pathlib import Path
 
 from app import config
 
-SCRIPTS = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts"
+# 泛化检查随反馈演进包拆出了 core（方案 D7 后半）
+SCRIPTS = Path(config.ASSETS_DIR) / "packs" / "evo" / "scripts"
 
 GROUND_TRUTH = (
     "冷链配送场景下，温控超标的判定依据是车厢温度连续超出阈值十五分钟以上，"
@@ -132,25 +133,35 @@ def test_only_checks_packaged_dirs(tmp_path):
     assert "无需校验" in proc.stdout
 
 
-def test_reads_cases_from_eval_state(tmp_path):
-    """没有报告时退回 .ontology-state/eval.json 取用例语料。"""
+def write_feedback(ws: Path, name: str, expected: str) -> Path:
+    """反馈入口写入的批次文件（onto-feedback/v1，ADR-0020）。"""
+    path = ws / "feedback" / name
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(json.dumps({
+        "format": "onto-feedback/v1", "feedback_id": path.stem, "source": {"service": "合成评测服务", "run": "r1"},
+        "items": [{"case_id": "c1", "question": QUESTION, "expected": expected, "actual": "", "verdict": "fail"}],
+    }, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def test_reads_cases_from_latest_feedback_batch(tmp_path):
+    """有反馈批次时取最新一批的问题与标准答案，旧版报告不再参与。"""
     ws = make_workspace(tmp_path)
     (ws / "reports" / "eval-20260101-000000.md").unlink()
-    (ws / ".ontology-state").mkdir()
-    (ws / ".ontology-state" / "eval.json").write_text(
-        json.dumps({"cases": [{"question": QUESTION, "groundTruth": GROUND_TRUTH}]},
-                   ensure_ascii=False),
-        encoding="utf-8",
-    )
+    write_feedback(ws, "20260101-000000-old.json", "旧批次的合成标准答案，与修订文档毫无关系，只用来确认取的是最新一批。")
+    write_feedback(ws, "20260102-000000-new.json", GROUND_TRUTH)
     write_rule(ws, "抄答案.md", f"# 规则描述\n\n{GROUND_TRUTH}\n")
 
     proc = run_script(ws, "--json")
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert json.loads(proc.stdout)[0]["category"] == "应试痕迹"
 
+    older = run_script(ws, "--json", "--feedback", "feedback/20260101-000000-old.json")
+    assert older.returncode == 0, older.stdout + older.stderr
+
 
 def test_skips_without_case_corpus(tmp_path):
-    """既无报告也无 eval.json —— 跳过而非误报。"""
+    """既无反馈批次也无旧版报告 —— 跳过而非误报。"""
     ws = make_workspace(tmp_path)
     (ws / "reports" / "eval-20260101-000000.md").unlink()
     write_rule(ws, "任意规则.md", f"# 规则描述\n\n{GROUND_TRUTH}\n")

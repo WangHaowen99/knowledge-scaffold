@@ -18,9 +18,16 @@ def make_workspace(tmp_path: Path, sheets: dict[str, list[str]]) -> Path:
     workbook.remove(workbook.active)
     for name, columns in sheets.items():
         workbook.create_sheet(name).append(columns)
-    workbook.save(root / "resource" / "excel" / "评测数据.xlsx")
+    workbook.save(root / "resource" / "excel" / "业务数据.xlsx")
+    # 资料区的 Excel 由数据接入转成文本版（F4a），表头从文本版读、不解析原件（F4c）
+    from app.evidence.convert import md_table, sheet_marker
+
+    text = root / "resource" / "text" / "excel" / "业务数据.xlsx.md"
+    text.parent.mkdir(parents=True)
+    text.write_text("\n\n".join(f"{sheet_marker(name)}\n## {name}\n\n{md_table([columns])}"
+                                for name, columns in sheets.items()) + "\n", encoding="utf-8")
     (root / "resource" / "materials.json").write_text(
-        json.dumps({"resource/excel/评测数据.xlsx": {"purpose": "schema"}}, ensure_ascii=False),
+        json.dumps({"resource/excel/业务数据.xlsx": {"purpose": "schema"}}, ensure_ascii=False),
         encoding="utf-8",
     )
     return root
@@ -141,7 +148,7 @@ def test_template_placeholder_and_none_are_not_table_names(tmp_path):
     root = make_workspace(tmp_path, {"T_ORDER": ["ORDER_ID", "AMOUNT"]})
     write_object(
         root, "订单", [("订单号", "ORDER_ID"), ("金额", "AMOUNT")],
-        source="{待填写：该对象对应的真实数据表名，即 eval_data/schema 表格资料里的 Sheet 名，\n逐字相同}",
+        source="{待填写：该对象对应的真实数据表名，即 schema 表格资料里的 Sheet 名，\n逐字相同}",
     )
     # 占位符不当成声明 → 回落到推断，且不报"声明的表不存在"
     result = package_mapping.resolve_object_tables(root)
@@ -280,7 +287,7 @@ def test_rewrite_object_body_replaces_section_and_drops_guidance(tmp_path):
 
 
 def test_no_source_tables_binds_nothing(tmp_path):
-    """没有 eval_data/schema 资料时不报错、不瞎绑——纯概念建模阶段的正常状态。"""
+    """没有 schema 资料时不报错、不瞎绑——纯概念建模阶段的正常状态。"""
     root = tmp_path / "ws"
     (root / "ontology" / "object").mkdir(parents=True)
     write_object(root, "订单", [("订单号", "ORDER_ID")])
@@ -483,9 +490,7 @@ def test_evaluation_rejects_only_matching_join_field_pairs_across_formats():
     assert "首次声明于" in problems[0]
 
 
-def test_evaluation_accepts_self_relations_with_different_join_fields(tmp_path):
-    from app.services import modeling_eval
-
+def test_strict_relations_accept_self_relations_with_different_join_fields(tmp_path):
     texts = _self_object(
         "- 当前对象 → references（manager_id → employee_id） → 当前对象\n"
         "- 当前对象 → references（employee_id → manager_id） → 当前对象\n"
@@ -495,7 +500,9 @@ def test_evaluation_accepts_self_relations_with_different_join_fields(tmp_path):
     for key, text in texts.items():
         (directory / f"{key}.md").write_text(text, encoding="utf-8")
 
-    assert modeling_eval.evaluation_object_snapshot(tmp_path) == texts
+    assert package_mapping.read_object_texts(tmp_path, strict=True) == texts
+    _, problems = package_mapping.package_relations(texts, reject_duplicate_relations=True)
+    assert problems == []
 
 
 def test_standard_relation_table_keeps_graph_join_fields_and_evidence():

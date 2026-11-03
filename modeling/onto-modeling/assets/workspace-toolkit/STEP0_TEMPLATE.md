@@ -13,6 +13,8 @@
 
 下面所有提示语（错误恢复、跳步守卫等）一律是对 INTERACTION_CONVENTIONS.md 中相应话术段的引用，不是另立标准；如果两边出现冲突，**改 STEP0_TEMPLATE 让它对齐 INTERACTION_CONVENTIONS，不要反过来**。
 
+本模板的步骤、脚本、锁和输出值都不对用户说（不写「执行 Step 0」「锁检查通过」「锁已获取」）；用户只看到需要他回答的提示。
+
 ## 输入
 
 - `COMMAND_NAME`：命令短名（如 `extract-object`）
@@ -27,25 +29,18 @@ python3 .claude/scripts/state_helper.py check-lock {COMMAND_NAME}
 ```
 
 - 输出 `ok` → 继续下一步。
-- 输出 `stale:{started_at}:{phase}` → 一天以上的锁视为上次已崩溃，**自动调用 `force-release` 并继续下一步**，同时告知用户："清理了上次（{started_at}）的残留记录。"
-- 输出 `locked:{started_at}:{phase}` → 按 `.claude/INTERACTION_CONVENTIONS.md` 的 **错误恢复类** 话术提示：
+- 输出 `own:{started_at}:{phase}` → 这把锁是你自己在这次对话里拿的（比如上下文压缩后记不清了）：**不要清理，不要问用户**。正在做这条命令就按 phase 接着做；是新开始的同名命令就继续第 2 步，第 3 步的 `acquire` 会覆盖它。
+- 输出 `stale:{started_at}:{phase}` → 持有者已经不在或超过一天，视为上次已崩溃，**自动调用 `force-release` 并继续下一步**，不用告诉用户。
+- 输出 `locked:{started_at}:{phase}` → 上次的同名命令没做完。**不问用户**，由平台按状态定：
 
-  ```
-  ⚠️ 发现上次未完成的 {COMMAND_NAME}：
-  - 起始时间：{started_at}
-  - 中断阶段：{phase}
-
-  - 回复 **续执** → 从中断处继续
-  - 回复 **清理重来** → 清理残留并重新开始
+  ```bash
+  python3 .claude/scripts/state_helper.py recover {COMMAND_NAME}
   ```
 
-  - **续执**：读取 `.ontology-state/lock-{COMMAND_NAME}.json` 的 phase 字段，跳转到命令中对应阶段继续执行；跳过 Step 0 其余内容。
-  - **清理重来**：
-    ```bash
-    python3 .claude/scripts/state_helper.py force-release {COMMAND_NAME}
-    ```
-    继续第 2 步。
-  - **取消**：立即 stop。
+  - 输出 `resume:{phase}` → 锁已归你，跳到命令里对应阶段接着做，跳过 Step 0 其余内容；工作过程里说一句业务话，
+    如「上次的对象提取没做完，接着做」。
+  - 输出 `restart` → 残留已清理，继续第 2 步；工作过程里说一句「上次的对象提取没做完，已清理，重新开始」。
+  - 输出 `ok` → 锁已经没了，继续第 2 步。
 
 ### 2) 检查阶段前置
 
@@ -102,7 +97,17 @@ python3 .claude/scripts/state_helper.py acquire {COMMAND_NAME} {新阶段标签}
 
 即 `acquire` 幂等——重复调用直接覆盖 phase 字段，不需要先 force-release。
 
+**停下来等用户回复时切到 `confirm`**：需要用户确认或选择（展示清单等确认、在几个做法里选、等他补充信息）时，先
+
+```bash
+python3 .claude/scripts/state_helper.py acquire {COMMAND_NAME} confirm
+```
+
+再提问；用户回复后切回接下来的阶段。平台据此区分「命令在等你回复」和「做完了忘了释放锁」：一轮结束时锁不在 `confirm`、这次又保存过内容，平台会代为释放，记为做完。
+
 ### 5) 命令结束前释放锁（任何形式的结束都要 release）
+
+**先 release，再写给用户的收尾小结。** 小结两三句：做了什么、还有什么要用户定。不列「下一步建议」等用户回复关键词——下一步由界面的建议条给出；这一轮的修改结束时自动存成版本，撤回在界面上的卡片里。
 
 ```bash
 python3 .claude/scripts/state_helper.py release {COMMAND_NAME}
@@ -138,6 +143,6 @@ python3 .claude/scripts/knowledge_helper.py load --scope global \
 ## 注意
 
 - 只读命令（overview/impact/query/version/codegen-scan）：跳过第 1、3、4、5 步，**仅做第 2 步（阶段前置）**；若希望记录"上次查询时间"可调用 `update-progress <key> <timestamp>`，无需 release/acquire。
-- `force-release` 不保证安全性，只是清理残留文件；非 stale 场景下调用前必须确认用户已同意"清理重来"。
+- `force-release` 只是清理残留文件；`locked` 时不要直接调它，用 `recover`，由平台按锁的阶段定续做还是重来。
 - lock 文件存在超过一天会自动判定为 stale，`check-lock` 输出 `stale:...` 时命令可直接清理继续，无需再问用户。
 - 业务知识加载（步骤 6）只读命令也可调用——通常 `query` 不加载，`overview` 加载用于统计。

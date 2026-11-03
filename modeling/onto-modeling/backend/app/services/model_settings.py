@@ -13,6 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from .. import config
+from .credential_store import write_private_json
 
 _log = logging.getLogger(__name__)
 
@@ -22,7 +23,10 @@ class ModelConfigError(Exception):
 
 
 def _file() -> Path:
-    return Path(config.DATA_DIR) / "model-settings.json"
+    """管理员模型 Key 明文（0600）放在密钥目录，agent 读不到（方案 E10）。"""
+    from ..governance import secrets
+
+    return secrets.path(secrets.MODEL_SETTINGS)
 
 
 def load() -> dict:
@@ -37,6 +41,14 @@ def load() -> dict:
 
 def _mask(key: str) -> str:
     return (key[:6] + "…" + key[-4:]) if len(key) > 12 else ("已设置" if key else "")
+
+
+def deploy_config(engine: str) -> dict:
+    """界面没配时引擎在用的部署环境变量：只给有没有、模型名（SY-01 deploy、健康检查用），不含网关地址与 Key。"""
+    if engine == "claude":
+        configured = any(os.environ.get(name) for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"))
+        return {"configured": bool(configured), "model": os.environ.get("ANTHROPIC_MODEL", "")}
+    return {"configured": bool(config.JIUWEN_BASE_URL or config.JIUWEN_API_KEY), "model": config.JIUWEN_MODEL or ""}
 
 
 def masked() -> dict:
@@ -86,17 +98,14 @@ def save(base_url: str, api_key: str, model: str, context: dict | None = None) -
     if context_section is not None:
         data.pop("claude_context", None)
         data["context"] = context_section
-    path = _file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    path.chmod(0o600)
+    write_private_json(_file(), data)
     return masked()
 
 
 def clear_key() -> dict:
     data = load()
     data.pop("api_key", None)
-    _file().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_private_json(_file(), data)
     return masked()
 
 
@@ -121,10 +130,7 @@ def save_jiuwen(base_url: str, api_key: str, model: str, context: dict | None = 
         section["api_key"] = api_key
     if context_section is not None:
         section["context"] = context_section
-    path = _file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    path.chmod(0o600)
+    write_private_json(_file(), data)
     return masked()
 
 
@@ -153,10 +159,7 @@ def save_default_engine(name: str) -> dict:
         raise ModelConfigError("该引擎在当前部署不可用")
     data = load()
     data["default_engine"] = name
-    path = _file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    path.chmod(0o600)
+    write_private_json(_file(), data)
     return masked()
 
 
@@ -377,10 +380,7 @@ def save_context(values: dict) -> dict:
     data = load()
     data.pop("claude_context", None)
     data["context"] = section
-    path = _file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    path.chmod(0o600)
+    write_private_json(_file(), data)
     return masked()
 
 
@@ -391,10 +391,7 @@ def personal_override_allowed() -> bool:
 def save_personal_policy(allow: bool) -> dict:
     data = load()
     data["allow_personal"] = bool(allow)
-    path = _file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    path.chmod(0o600)
+    write_private_json(_file(), data)
     return masked()
 
 

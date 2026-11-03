@@ -1,0 +1,4 @@
+artifact: trace.mock
+list: {columns: [object, scenarios, rows, mode], filters: [mode]}
+detail: {layout: table, side: []}
+card: {title: object, chips: []}

@@ -1,0 +1,3 @@
+#!/bin/sh
+# agent 执行的 bash 命令与 hook：经 agent_exec 去掉凭据类变量、切到 agent 用户后执行（方案 E10）
+exec "${ONTO_AGENT_PYTHON:-python3}" -I "$(dirname "$0")/../agent_exec.py" shell "$@"

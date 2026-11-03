@@ -1,0 +1,562 @@
+"""B5c 独立审查查出的缺陷（12 条 + 1 条推断），每条一个修复前会失败的用例（「审查第 N 条」）。
+
+包全部合成（tests/pack_helpers）；脚本节点用本机执行器模拟脚本验证网关（同 test_node_pack_lifecycle）。
+"""
+
+from __future__ import annotations
+
+import copy
+import subprocess
+from pathlib import Path
+
+import pytest
+import yaml
+
+from app.kernel.writepath import ChangeTx, Origin
+from app.services.packs import checks
+from app.services.workspace.errors import WorkspaceError
+from tests.pack_helpers import NODE_PACK_FLOW, make_node_pack, make_pack
+from tests.test_changesets import main_write, obj
+from tests.test_node_pack_lifecycle import (HUMAN_NODE, SCRIPT_NODE, enable_and_apply, env, fake_sandbox,  # noqa: F401
+                                            install, kinds_flow, nodes_of)
+
+
+def failed(items: list[dict]) -> dict[str, str]:
+    return {item["id"]: item["detail"] for item in items if item["result"] == "fail"}
+
+
+def git_status(root: Path) -> None:
+    subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, timeout=30)
+
+
+# ---- 审查第 1 条：脚本、人工节点的输出路径越过 produces / 受保护目录 ----
+
+def fsmonitor_script(marker: Path) -> str:
+    config = ('[core]\\n\\trepositoryformatversion = 0\\n\\tbare = false\\n'
+              f'\\tfsmonitor = "touch {marker}; false"')
+    return f"print('{config}')\n"
+
+
+def escape_flow(output: str, produces: list[str], kind: str = "script") -> dict:
+    flow = copy.deepcopy(NODE_PACK_FLOW)
+    flow["probes"]["escape_done"] = {"files": ["reports"], "glob": "escape.md"}
+    node = {"id": "naming.lint", "title": "命名格式检查", "kind": kind, "placement": "branch", "after": "core.object",
+            "done": ["escape_done"], "produces": produces}
+    if kind == "script":
+        node["script"] = {"name": "naming_lint.py", "inputs": [], "output": output}
+    else:
+        node["decision"] = {"title": "会签", "options": [{"id": "pass", "label": "已签署"}, {"id": "fail", "label": "未通过"}],
+                            "record": output}
+    flow["nodes"].append(node)
+    return flow
+
+
+@pytest.mark.parametrize("output,produces", [
+    ("ext/../.git/config", ["ext/../.git/config"]),
+    (".git/config", [".git/config"]),
+    ("reports/escape/../../.onto/packs.lock", ["reports/escape/*"]),
+])
+def test_review_1_static_check_normalizes_paths_for_every_pack(tmp_path, env, output, produces):
+    """审查第 1 条：静态检查按规范化后的完整路径判受保护目录，输出路径要落在 produces 里——能力包也一样。"""
+    _client, manager, _pid, _tmp = env
+    flow = escape_flow(output, produces)
+    node_pack = make_node_pack(tmp_path / "node", flow=flow, tenant=True,
+                               files={"commands/naming-check.md": "检查 $ARGUMENTS\n",
+                                      "scripts/naming_lint.py": "print('x')\n"})
+    assert failed(checks.run(node_pack, manager.packs.repository, tenant=True)[1])
+    files = {"commands/naming-check.md": "检查 $ARGUMENTS\n", "scripts/naming_lint.py": "print('x')\n",
+             "flow.yaml": yaml.safe_dump(flow, allow_unicode=True, sort_keys=False)}
+    capability = make_pack(tmp_path / "cap", "naming", "0.1.0", files=files, tenant=True,
+                           contributes={"flow": "flow.yaml"})
+    assert failed(checks.run(capability, manager.packs.repository, tenant=True)[1])
+    loose = escape_flow(".git/config", ["reports/escape.md"])
+    files["flow.yaml"] = yaml.safe_dump(loose, allow_unicode=True, sort_keys=False)
+    capability = make_pack(tmp_path / "cap2", "naming", "0.1.0", files=files, tenant=True,
+                           contributes={"flow": "flow.yaml"})
+    detail = failed(checks.run(capability, manager.packs.repository, tenant=True)[1])
+    assert detail and any("script.output" in text or ".git" in text for text in detail.values())
+
+
+@pytest.mark.parametrize("output,produces", [
+    ("ext/../.git/config", ["ext/../.git/config"]),
+    (".git/config", ["reports/escape.md"]),
+    ("reports/escape/../../.git/config", ["reports/escape/*"]),
+])
+def test_review_1_script_node_cannot_write_git_config(env, fake_sandbox, tmp_path, output, produces):
+    """审查第 1 条：绕过静态检查入库的包，脚本节点也写不了 .git/config，git status 不会执行包作者的命令。"""
+    client, manager, project_id, _tmp = env
+    root = manager.project_root(project_id)
+    marker = tmp_path / "PWNED"
+    files = {"commands/naming-check.md": "检查 $ARGUMENTS\n", "scripts/naming_lint.py": fsmonitor_script(marker),
+             "flow.yaml": yaml.safe_dump(escape_flow(output, produces), allow_unicode=True, sort_keys=False)}
+    source = make_pack(tmp_path / "src", "naming", "0.1.0", files=files, contributes={"flow": "flow.yaml"})
+    manager.packs.repository.install(source, origin="upload", by="admin")
+    manager.packs.repository.set_channel("naming", "stable", "0.1.0", by="admin")
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
+    enable_and_apply(client, manager, project_id)
+    config_before = (root / ".git" / "config").read_text(encoding="utf-8")
+    started = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.lint/start", json={})
+    assert started.status_code in (403, 409, 422), started.text
+    assert (root / ".git" / "config").read_text(encoding="utf-8") == config_before
+    git_status(root)
+    assert not marker.exists()
+
+
+def test_review_1_human_node_record_cannot_escape(env, tmp_path):
+    client, manager, project_id, _tmp = env
+    root = manager.project_root(project_id)
+    flow = escape_flow("reports/escape/../../.onto/flow.lock", ["reports/escape/*"], kind="human")
+    source = make_pack(tmp_path / "src", "naming", "0.1.0", contributes={"flow": "flow.yaml"},
+                       files={"commands/naming-check.md": "检查 $ARGUMENTS\n",
+                              "flow.yaml": yaml.safe_dump(flow, allow_unicode=True, sort_keys=False)})
+    manager.packs.repository.install(source, origin="upload", by="admin")
+    manager.packs.repository.set_channel("naming", "stable", "0.1.0", by="admin")
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
+    enable_and_apply(client, manager, project_id)
+    started = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.lint/start", json={})
+    assert started.status_code in (403, 409, 422), started.text
+
+
+@pytest.mark.parametrize("rel", [".git/config", ".git/hooks/pre-commit", "ontology/../.git/config"])
+def test_review_1_change_tx_refuses_git_dir(env, rel):
+    """审查第 1 条：写入事务的路径解析一律拒绝 .git/ 下的路径（所有写入入口的最后一道兜底）。"""
+    _client, manager, project_id, _tmp = env
+    root = manager.project_root(project_id)
+    before = (root / ".git" / "config").read_text(encoding="utf-8")
+    with pytest.raises(WorkspaceError) as exc:
+        with ChangeTx(manager, project_id, Origin("web", "local")) as tx:
+            tx.write(rel, "[core]\n\tfsmonitor = \"false\"\n")
+            tx.commit("web: 越界")
+    assert exc.value.status == 403
+    assert (root / ".git" / "config").read_text(encoding="utf-8") == before
+
+
+# ---- 审查第 2 条：发布门禁的 ref_exists 在只导出产物目录的临时树里永远找不到本体条目 ----
+
+@pytest.fixture()
+def checklist_env(tmp_path: Path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app import config
+    from app.api import deps
+    from app.kernel import event_port
+    from app.main import app
+    from app.services import auth
+    from app.services.packs import builtin
+    from app.services.packs import service as pack_service
+    from app.services.workspace import WorkspaceManager
+    from tests.pack_helpers import make_assets
+    from tests.test_extensions_artifacts import CHECKLIST_CONTRIBUTES, _checklist_files
+
+    builtin.clear_cache()
+    event_port.clear()
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    manager = WorkspaceManager(tmp_path / "data", make_assets(tmp_path))
+    monkeypatch.setattr(deps, "workspaces", manager)
+    monkeypatch.setattr(auth, "ENABLED", False)
+    client = TestClient(app)
+    project_id = client.post("/api/v1/projects", json={"name": "引用门禁", "goal": "合成"}).json()["id"]
+    gates = [{"id": "ref-ok", "label": "关联操作要存在", "artifact": "checklist.item", "on": ["publish"],
+              "rules": [{"field": "operation", "ref_exists": True}]}]
+    source = make_pack(tmp_path / "src", "checklist", "1.0.0", files=_checklist_files(),
+                       contributes={**CHECKLIST_CONTRIBUTES, "gates": gates})
+    manager.packs.repository.install(source, origin="upload", by="admin")
+    manager.packs.repository.set_channel("checklist", "stable", "1.0.0", by="admin")
+    pack_service.enable(manager, project_id, "checklist")
+    pack_service.prepare_for_message(manager, project_id)
+    yield client, manager, project_id
+    builtin.clear_cache()
+
+
+def test_review_2_publish_ref_gate_sees_ontology_entries(checklist_env):
+    from tests.test_pack_extensions import item_md
+
+    client, manager, project_id = checklist_env
+
+    def save(rel: str, text: str) -> None:
+        with ChangeTx(manager, project_id, Origin("web", "local")) as tx:
+            tx.write(rel, text)
+            tx.commit(f"web: {rel}")
+
+    def gate() -> dict:
+        body = client.get(f"/api/v1/projects/{project_id}/publish/check").json()
+        return next(item for item in body["gates"] if item["id"] == "checklist.ref-ok")
+
+    save("ontology/operation/借书.md", "# 借书\n\n合成操作\n")
+    save("ext/checklist/items/借阅检查.md", item_md("借阅检查", "high").replace("result: pass", "result: pass\noperation: 借书"))
+    assert gate()["status"] == "pass"
+    save("ext/checklist/items/还书检查.md", item_md("还书检查", "high").replace("result: pass", "result: pass\noperation: 还书"))
+    missing = gate()
+    assert missing["status"] == "fail" and "引用的条目不存在" in missing["summary"]
+
+
+# ---- 审查第 3、4 条：灰度与禁用 ----
+
+@pytest.fixture()
+def ops_env(tmp_path: Path, monkeypatch):
+    """同 tests/test_pack_ops 的 env：最小镜像资产 + 运维面客户端。"""
+    from fastapi.testclient import TestClient
+
+    from app import config
+    from app.api import deps
+    from app.ops_app import ops_app
+    from app.services import auth
+    from app.services.packs import builtin, governance
+    from app.services.workspace import WorkspaceManager
+    from tests.pack_helpers import make_assets
+    from tests.test_pack_ops import TOKENS
+
+    builtin.clear_cache()
+    governance.record_reconcile({})
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    manager = WorkspaceManager(tmp_path / "data", make_assets(tmp_path))
+    monkeypatch.setattr(deps, "workspaces", manager)
+    monkeypatch.setattr(auth, "ENABLED", True)
+    monkeypatch.setattr(auth, "verify_access_token", lambda token: TOKENS.get(token))
+    monkeypatch.setattr(auth, "check_access_token", lambda token: (TOKENS.get(token), "" if token in TOKENS else "invalid"))
+    yield TestClient(ops_app), manager, tmp_path
+    builtin.clear_cache()
+    governance.record_reconcile({})
+
+
+def test_review_3_stale_beta_never_downgrades_stable_followers(ops_env):
+    from app.services.packs import lockfile
+    from tests.test_pack_ops import project_with_lint, publish
+
+    _client, manager, tmp_path = ops_env
+    publish(manager, tmp_path, "0.1.0")
+    publish(manager, tmp_path, "0.2.0", channel="beta", rollout={"percent": 100, "by": "project", "targets": []})
+    publish(manager, tmp_path, "0.3.0")  # 0.2.0 灰度完，直接发 0.3.0 到 stable
+    _project_id, root = project_with_lint(manager)
+    assert lockfile.read(root).get("lint").version == "0.3.0"
+    beta = manager.packs.repository.channel_entry("lint")["beta"]
+    assert beta["percent"] == 0 and beta["targets"] == []  # stable 追上 beta 后放量清零
+
+
+def test_review_3_stable_rollback_reaches_beta_bucket(ops_env):
+    from app.services.packs import lockfile
+    from app.services.packs import service as pack_service
+    from tests.test_pack_ops import OPS, project_with_lint, publish
+
+    client, manager, tmp_path = ops_env
+    publish(manager, tmp_path, "0.1.0")
+    project_id, root = project_with_lint(manager)
+    publish(manager, tmp_path, "0.2.0-rc.1", channel="beta", rollout={"percent": 100, "by": "project", "targets": []})
+    pack_service.prepare_for_message(manager, project_id)
+    assert lockfile.read(root).get("lint").version == "0.2.0-rc.1"
+    publish(manager, tmp_path, "0.2.0")
+    pack_service.prepare_for_message(manager, project_id)
+    assert lockfile.read(root).get("lint").version == "0.2.0"
+    rolled = client.post("/api/v1/ops/packs/lint/rollback", headers=OPS, json={"channel": "stable", "to_version": "0.1.0"})
+    assert rolled.status_code == 200
+    pack_service.prepare_for_message(manager, project_id)
+    assert lockfile.read(root).get("lint").version == "0.1.0"
+
+
+def test_review_4_disabling_stable_falls_back_to_previous_stable(ops_env):
+    from app.services.packs import lockfile
+    from app.services.packs import service as pack_service
+    from tests.test_pack_ops import OPS, project_with_lint, publish
+
+    client, manager, tmp_path = ops_env
+    publish(manager, tmp_path, "0.1.0")
+    publish(manager, tmp_path, "0.2.0")
+    projects = [project_with_lint(manager, f"项目{index}") for index in range(4)]
+    publish(manager, tmp_path, "0.3.0-rc.1", channel="beta", rollout={"percent": 0, "by": "project", "targets": []})
+    assert client.post("/api/v1/ops/packs/lint/0.2.0/disable", headers=OPS, json={"reason": "合成故障"}).status_code == 200
+    assert manager.packs.repository.latest("lint", "stable") == "0.1.0"
+    for project_id, root in projects:
+        pack_service.prepare_for_message(manager, project_id)
+        assert lockfile.read(root).get("lint").version == "0.1.0"
+
+
+# ---- 审查第 5 条：跟随通道升级要过启用检查、助手修改没确认时推迟、记成插件变更集；PL-10 撤回也查 ----
+
+def pending_assistant_changes(manager, project_id: str, root: Path) -> None:
+    from app.kernel.changesets import service as changesets
+    from tests.test_changesets import agent_write
+
+    copy_dir = changesets.copy_for_turn(manager, project_id, root)
+    agent_write(copy_dir, "ontology/object/借书人.md", obj("借书人", "合成"), commit="agent: 借书人")
+    changesets.observe(manager, project_id, running=False, conversation_id="default")
+    assert changesets.current(manager, project_id)["state"] == "pending_confirm"
+
+
+def flow_with_extra_node(extra: dict) -> dict:
+    flow = copy.deepcopy(NODE_PACK_FLOW)
+    flow["nodes"].append(extra)
+    return flow
+
+
+def test_review_5_follow_skips_versions_needing_missing_providers(env):
+    from app.services.packs import lockfile
+    from app.services.packs import service as pack_service
+    from tests.test_node_pack_lifecycle import EXTERNAL_NODE, node_ids
+
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
+    install(manager, tmp_path, "0.1.0")
+    enable_and_apply(client, manager, project_id)
+    gate = {**EXTERNAL_NODE, "placement": "gate", "after": "core.research", "blocks": ["core.model"]}
+    install(manager, tmp_path, "0.2.0", flow=flow_with_extra_node(gate))
+    pack_service.prepare_for_message(manager, project_id)
+    assert lockfile.read(root).get("naming").version == "0.1.0"
+    assert "naming.fetch" not in node_ids(root)
+    assert nodes_of(root)["core.model"]["state"] != "blocked"
+
+
+def test_review_5_follow_waits_for_unconfirmed_assistant_changes_and_is_a_changeset(env):
+    from app.kernel.changesets import service as changesets
+    from app.services.packs import lockfile
+    from app.services.packs import service as pack_service
+    from tests.test_node_pack_lifecycle import node_ids
+
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    install(manager, tmp_path, "0.1.0")
+    enable_and_apply(client, manager, project_id)
+    pending_assistant_changes(manager, project_id, root)
+    extra = {"id": "naming.extra", "title": "命名复核", "kind": "agent", "placement": "branch", "after": "core.model",
+             "done": [], "entry": {"command": "/naming-check"}}
+    install(manager, tmp_path, "0.2.0", flow=flow_with_extra_node(extra))
+    pack_service.prepare_for_message(manager, project_id)
+    assert lockfile.read(root).get("naming").version == "0.1.0"  # 会改流程节点：等助手那组确认或撤回
+    assert "naming.extra" not in node_ids(root)
+
+    current = changesets.current(manager, project_id)
+    changesets.discard(manager, project_id, current["id"], actor="local")
+    pack_service.prepare_for_message(manager, project_id)
+    assert lockfile.read(root).get("naming").version == "0.2.0"
+    record = changesets.records(manager, project_id, sources=["plugin"])[0]
+    assert record["state"] == "merged" and record["switch"] == "follow"
+    head = subprocess.run(["git", "log", "-1", "--format=%(trailers:key=Onto-Changeset,valueonly)"], cwd=root,
+                          capture_output=True, text=True).stdout.strip()
+    assert head == record["id"]
+
+
+def test_review_5_cancel_pending_respects_unconfirmed_assistant_changes(env):
+    from app.services.packs import lockfile
+
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    install(manager, tmp_path, "0.1.0")
+    assert client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "naming"}).status_code == 201
+    pending_assistant_changes(manager, project_id, root)
+    cancelled = client.post(f"/api/v1/projects/{project_id}/packs/naming/cancel-pending")
+    assert cancelled.status_code == 423 and cancelled.json()["code"] == "write_scope_locked"
+    assert lockfile.read(root).get("naming").enabled
+
+
+# ---- 审查第 6 条：脚本输出超过执行器上限时不能静默截断后判通过 ----
+
+BIG_SCRIPT = '''print("# 命名格式检查")
+for i in range(400):
+    print(f"- 对象{i:03d}：通过")
+print("（完）")
+'''
+
+
+def test_review_6_truncated_script_output_is_refused(env, fake_sandbox):
+    client, manager, project_id, _tmp = env
+    root = manager.project_root(project_id)
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
+    install(manager, _tmp, flow=kinds_flow(SCRIPT_NODE, probes={"naming_lint": {"files": ["reports"], "glob": "lint-naming.md"}}),
+            files={"commands/naming-check.md": "检查 $ARGUMENTS\n", "scripts/naming_lint.py": BIG_SCRIPT})
+    enable_and_apply(client, manager, project_id)
+    started = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.lint/start", json={})
+    assert started.status_code == 422 and started.json()["code"] == "node_run_failed", started.text
+    assert started.json()["details"]["truncated"] is True
+    assert not (root / "reports" / "lint-naming.md").exists()
+    assert nodes_of(root)["naming.lint"]["state"] != "confirmed"
+
+
+def test_review_6_runner_reports_truncation(fake_sandbox):
+    client, _calls = fake_sandbox
+    import base64
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("big.py", "print('x' * 5000)\n")
+        archive.writestr("ok.py", "print('ok')\n")
+    bundle = base64.b64encode(buffer.getvalue()).decode("ascii")
+    big = client.run_in_gateway(bundle, "big.py", [[]])[0]
+    ok = client.run_in_gateway(bundle, "ok.py", [[]])[0]
+    assert big["stdout_truncated"] is True and ok["stdout_truncated"] is False
+
+
+# ---- 审查第 7 条：同一条消息前切换了两次，PL-10 撤销要回到生效中的版本 ----
+
+def test_review_7_cancel_pending_undoes_stacked_switches(env):
+    from app.services.packs import lockfile
+    from tests.test_node_pack_lifecycle import node_ids
+
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    install(manager, tmp_path, "0.1.0")
+    install(manager, tmp_path, "0.2.0")
+    manager.packs.repository.set_channel("naming", "stable", "0.1.0", by="admin")
+    assert client.post(f"/api/v1/projects/{project_id}/packs", json={"name": "naming"}).status_code == 201
+    upgraded = client.post(f"/api/v1/projects/{project_id}/packs/naming/upgrade", json={"to_version": "0.2.0"})
+    assert upgraded.status_code == 200, upgraded.text
+    cancelled = client.post(f"/api/v1/projects/{project_id}/packs/naming/cancel-pending")
+    assert cancelled.status_code == 200
+    entry = lockfile.read(root).get("naming")
+    assert entry is None or not entry.enabled
+    assert client.get(f"/api/v1/projects/{project_id}/assembly").json()["state"] == "applied"
+    assert "naming.check" not in node_ids(root)
+    assert cancelled.json()["pack"]["status"] == "disabled"
+
+
+# ---- 审查第 8、9 条：包的 MCP 工具名、指标名不能和内置或别的包撞名 ----
+
+def typed_pack(base: Path, name: str, extra: dict) -> Path:
+    from tests.test_extensions_artifacts import ITEM_TYPE, ITEM_VIEW
+
+    item = {**copy.deepcopy(ITEM_TYPE), "type": f"{name}.item", "path": f"ext/{name}/items/{{key}}.md",
+            "index": f"ext/{name}/index/items.jsonl"}
+    view = {**copy.deepcopy(ITEM_VIEW), "artifact": f"{name}.item"}
+    # 文件名带包名：几个包一起装配时 artifacts/、views/ 下的文件不能同名
+    files = {f"commands/{name}-run.md": "运行 $ARGUMENTS\n",
+             f"artifacts/{name}-item.yaml": yaml.safe_dump(item, allow_unicode=True),
+             f"views/{name}-item.yaml": yaml.safe_dump(view, allow_unicode=True)}
+    return make_pack(base / name, name, "1.0.0", files=files, tenant=True,
+                     contributes={"artifacts": [f"artifacts/{name}-item.yaml"], "views": [f"views/{name}-item.yaml"],
+                                  **extra})
+
+
+def publish_typed(manager, source: Path) -> dict[str, str]:
+    name = yaml.safe_load((source / "manifest.yaml").read_text(encoding="utf-8"))["name"]
+    result = failed(checks.run(source, manager.packs.repository, tenant=True)[1])
+    if not result:
+        manager.packs.repository.install(source, origin="upload", by="admin")
+        manager.packs.repository.set_channel(name, "stable", "1.0.0", by="admin")
+    return result
+
+
+def test_review_8_pack_mcp_tool_names_never_collide(ops_env, tmp_path):
+    import asyncio
+    from collections import Counter
+
+    from app.routers import onto_mcp
+    from app.services.packs import service as pack_service
+
+    _client, manager, _tmp = ops_env
+    project_id = manager.create_project("工具名", owner="employee_0001")["id"]
+    tools = lambda *pairs: {"mcp_tools": [{"name": tool, "title": tool, "artifact": art, "mode": "list"}  # noqa: E731
+                                         for tool, art in pairs]}
+    assert publish_typed(manager, typed_pack(tmp_path / "a", "artifact", tools(("list", "artifact.item")))) == {}
+    assert publish_typed(manager, typed_pack(tmp_path / "b", "ab", tools(("x-y", "ab.item")))) == {}
+    assert publish_typed(manager, typed_pack(tmp_path / "c", "ab-x", tools(("y", "ab-x.item")))) == {}
+    bad = publish_typed(manager, typed_pack(tmp_path / "d", "dup", tools(("a__b", "dup.item"))))
+    assert "extensions" in bad
+    for name in ("artifact", "ab", "ab-x"):
+        pack_service.enable(manager, project_id, name)
+    pack_service.prepare_for_message(manager, project_id)
+    principal = {"project_id": project_id, "scopes": ["ontology.read"], "username": "local"}
+    listed = asyncio.run(onto_mcp.dispatch({"method": "tools/list"}, "read", principal, "2025-06-18"))["tools"]
+    counts = Counter(tool["name"] for tool in listed)
+    assert all(count == 1 for count in counts.values()), counts
+    assert {"artifact__list", "ab__x-y", "ab-x__y"} <= set(counts)
+
+
+def test_review_9_metrics_exposition_has_one_family_per_name(checklist_env, tmp_path):
+    from app.governance import telemetry
+    from app.services.packs import governance
+
+    _client, manager, _pid = checklist_env
+    a = typed_pack(tmp_path / "a", "artifact", {"metrics": [{"name": "x_runs", "help": "A", "type": "counter"}]})
+    assert publish_typed(manager, a) == {}
+    b = make_pack(tmp_path / "b", "artifact-x", "1.0.0", tenant=True, files={"commands/artifact-x-run.md": "运行\n"},
+                  contributes={"metrics": [{"name": "runs", "help": "B", "type": "gauge"}]})
+    publish_typed(manager, b)
+    c = make_pack(tmp_path / "c", "metrics-dup", "1.0.0", tenant=True, files={"commands/metrics-dup-run.md": "运行\n"},
+                  contributes={"metrics": [{"name": "a__b", "help": "C"}]})
+    assert "extensions" in publish_typed(manager, c)
+    governance.install(manager)
+    telemetry.reset_metrics()
+    names = [metric["name"] for metric in governance._declared_metrics()]
+    assert len(names) == len(set(names))
+    full = next(name for name in names if name.endswith("x_runs"))
+    telemetry.count(full)
+    text = telemetry.prometheus_text()
+    for name in set(names):
+        assert sum(1 for line in text.splitlines() if line.startswith(f"# TYPE {name} ")) == 1, name
+        assert sum(1 for line in text.splitlines() if line.startswith(f"# HELP {name} ")) == 1, name
+    telemetry.reset_metrics()
+
+
+# ---- 审查第 10 条：contributes.nodes 里的节点文件只能在包内 ----
+
+@pytest.mark.parametrize("ref", ["{outside}", "../outside-node.yaml", "nodes/../../outside-node.yaml"])
+def test_review_10_node_files_must_be_inside_the_pack(tmp_path, ref):
+    from app.services.packs import manifest as mf
+    from app.services.packs.assembler import AssemblyError, flow_declaration
+
+    outside = tmp_path / "outside-node.yaml"
+    outside.write_text(yaml.safe_dump({"id": "naming.check", "title": "命名检查", "kind": "agent",
+                                       "placement": "on_demand", "entry": {"command": "/naming-check"}, "done": []},
+                                      allow_unicode=True), encoding="utf-8")
+    ref = ref.format(outside=outside)
+    source = make_pack(tmp_path / "src", "naming", "1.0.0", kind="node", tenant=True,
+                       files={"commands/naming-check.md": "检查\n"}, contributes={"nodes": [ref]})
+    items = checks.run(source, None, tenant=True)[1]
+    assert "manifest" in failed(items)
+    data = yaml.safe_load((source / "manifest.yaml").read_text(encoding="utf-8"))
+    data["contributes"]["nodes"] = ["placeholder"]
+    manifest = mf.parse(data)
+    manifest.contributes["nodes"] = [ref]  # 绕过清单校验也读不到包外
+    with pytest.raises(AssemblyError):
+        flow_declaration("naming", manifest, source)
+
+
+# ---- 审查第 11 条：已归档的项目不能回答人工节点的卡（会在主线写提交） ----
+
+def test_review_11_archived_project_cannot_answer_human_node_card(env):
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
+    install(manager, tmp_path, flow=kinds_flow(HUMAN_NODE, probes={"naming_signoff": {"files": ["reports"], "glob": "signoff-naming.md"}}))
+    enable_and_apply(client, manager, project_id)
+    question = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.signoff/start", json={}).json()["question"]
+    manager.set_archived(project_id, True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout
+    url = (f"/api/v1/projects/{project_id}/conversations/{question['conversation_id']}"
+           f"/questions/{question['question_id']}/answer")
+    answered = client.post(url, json={"option_id": "pass"})
+    assert answered.status_code == 409 and answered.json()["code"] == "project_archived"
+    inbox_url = f"/api/v1/projects/{project_id}/inbox/decision:{question['question_id']}/actions"
+    assert client.post(inbox_url, json={"action": "answer", "option_id": "pass"}).status_code == 409
+    assert subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout == head
+    manager.set_archived(project_id, False)
+    assert client.post(url, json={"option_id": "pass"}).status_code == 200
+
+
+# ---- 审查第 12 条：脚本节点的提交也要过 commit 门禁（F3b 起只提示） ----
+
+def test_review_12_script_node_output_goes_through_commit_gates(env, fake_sandbox):
+    from tests.test_extensions_artifacts import CHECKLIST_CONTRIBUTES, _checklist_files
+
+    client, manager, project_id, tmp_path = env
+    root = manager.project_root(project_id)
+    gates = [{"id": "level-set", "label": "检查项要有级别", "artifact": "checklist.item", "on": ["commit"],
+              "rules": [{"field": "level", "required": True}]}]
+    checklist = make_pack(tmp_path / "checklist", "checklist", "1.0.0", files=_checklist_files(),
+                          contributes={**CHECKLIST_CONTRIBUTES, "gates": gates})
+    manager.packs.repository.install(checklist, origin="upload", by="admin")
+    manager.packs.repository.set_channel("checklist", "stable", "1.0.0", by="admin")
+    enable_and_apply(client, manager, project_id, "checklist")
+    writer = "".join(f"print({line!r})\n" for line in ("---", "title: 借阅检查", "result: pass", "---", "", "## 说明", "", "合成"))
+    node = {**SCRIPT_NODE, "produces": ["ext/checklist/items/*"],
+            "script": {"name": "naming_lint.py", "inputs": [], "output": "ext/checklist/items/借阅检查.md"}}
+    install(manager, tmp_path, flow=kinds_flow(node, probes={"naming_lint": {"files": ["ext/checklist/items"]}}),
+            files={"commands/naming-check.md": "检查 $ARGUMENTS\n", "scripts/naming_lint.py": writer})
+    main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
+    enable_and_apply(client, manager, project_id)
+    started = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.lint/start", json={})
+    # F3b：脚本节点的输出也过提交门禁，但只提示——照常写进版本，没过的规则带在结果的 warnings 里
+    assert started.status_code == 200, started.text
+    assert (root / "ext" / "checklist" / "items" / "借阅检查.md").is_file()
+    assert [item["gate"] for item in started.json()["run"]["warnings"]] == ["level-set"]

@@ -1,13 +1,10 @@
 """对象 ↔ 真实数据表绑定：发布包「来源Sheet」与 object-data-mappings.json 的单一来源。
 
 对象文档承载业务语义（「对象属性清单」的英文名称列就是真实列名），真实表名来自打了
-schema 标签的表格资料与评测数据源上传的业务数据表（一个 Sheet = 一张表）。两者在这里
-对齐一次，两处共用：
-
-- 发布包导出：objects/index.md 的「来源Sheet」列、对象文档的 `# 字段` 段，以及
-  mappings/object-data-mappings.json —— modeling 导入后据此生成 sourceRefs 与 sourceColumn，
-  nl2sql 才有表名和列名可用；
-- 评测前置门禁：数据集模式下没有任何对象绑定真实表时直接拦下，避免跑出"一次库都没查"的分数。
+schema 标签的表格资料（一个 Sheet = 一张表）。两者在这里对齐一次，供发布包导出使用：
+objects/index.md 的「来源Sheet」列、对象文档的 `# 字段` 段，以及
+mappings/object-data-mappings.json —— modeling 导入后据此生成 sourceRefs 与 sourceColumn，
+nl2sql 才有表名和列名可用。
 
 发布门禁只拦"有数据表可核对、但声明对不上"的对象（issues 里 blocking=True）；当前没有任何
 可核对的数据表时，声明无从验证，只提示不阻断。阻断项可在发布前逐个修复（set_declared_source），
@@ -18,8 +15,7 @@ schema 标签的表格资料与评测数据源上传的业务数据表（一个 
 够不着就留空（来源Sheet 写 UNBOUND），不猜。
 首行写「无」是显式声明不落库（如只作为输出的单据），不再按重合度推断。
 
-评测导入时数据表来源换成「本轮实际导入的工作簿」（eval_import），mapping 与导入库同源；
-Neo4j 图导入的包按 modeling 图模式契约导出（object_data_mappings(graph=True)）。
+图模式变体按 modeling 图导入契约导出（object_data_mappings(graph=True)），留作发布适配器的变体。
 """
 
 from __future__ import annotations
@@ -31,9 +27,11 @@ import re
 import unicodedata
 from pathlib import Path
 
+from ..kernel import metamodel
+
 # modeling 契约：来源Sheet 为 "—" 表示该对象不绑定物理表（package-import 按此跳过）
 UNBOUND = "—"
-# 包内部逻辑数据源别名，不是项目评测数据源的 provider；取 modeling 草稿同款默认值
+# 包内部逻辑数据源别名，不是外部数据源的 provider；取 modeling 草稿同款默认值
 PROVIDER_ALIAS = "data"
 # 推断绑定的最低列命中数：低于此宁可不绑，错绑比不绑更难发现
 MIN_INFERRED_COLUMNS = 2
@@ -204,9 +202,28 @@ def parse_object_doc(text: str) -> dict:
     }
 
 
+def _resource_text(path: Path) -> Path | None:
+    """资料区里的 Excel 原件 → 它的文本版（数据接入转出，resource/text/<分组>/<原文件名>.md）；不在资料区返回 None。"""
+    for parent in path.parents:
+        if parent.name == "resource":
+            rel = path.relative_to(parent)
+            return None if rel.parts[:1] == ("text",) else parent / "text" / f"{rel.as_posix()}.md"
+    return None
+
+
 def read_table_headers(path: Path) -> dict[str, list[str]]:
-    """表格文件 → {Sheet 名: 表头列}。口径与工具箱 check_eval_data.py 一致：
-    一个 Sheet = 一张表，首行 = 字段名。"""
+    """表格文件 → {Sheet 名: 表头列}。口径与工具箱 table_profile.py 一致：
+    一个 Sheet = 一张表，首行 = 字段名。资料区里的 Excel 读文本版，不解析原件（F4c，ADR-0076）。"""
+    text = _resource_text(path) if path.suffix.lower() != ".csv" else None
+    if text is not None:
+        from ..evidence.convert import md_tables
+
+        try:
+            sheets = md_tables(text.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            return {}
+        return {name: headers for name, rows in sheets.items()
+                if (headers := [cell.strip() for cell in rows[0] if cell.strip()])}
     if path.suffix.lower() == ".csv":
         try:
             with open(path, encoding="utf-8-sig", newline="") as handle:
@@ -235,20 +252,8 @@ def read_table_headers(path: Path) -> dict[str, list[str]]:
     return tables
 
 
-def _uploaded_eval_tables(root: Path) -> list[Path]:
-    """评测数据源里保存的上传数据表（只算被配置引用的，表单里未保存的上传不算）。"""
-    from . import eval_data_files, eval_data_sources
-
-    try:
-        referenced = eval_data_sources.referenced_file_ids(root.name, root)
-    except eval_data_sources.DataSourceError:
-        return []
-    paths = [eval_data_files.path_of(root, file_id) for file_id in sorted(referenced)]
-    return [p for p in paths if p is not None]
-
-
 def read_source_tables(root: Path) -> dict[str, list[str]]:
-    """schema 标签的表格资料 + 评测数据源上传的数据表 → {表名: 列头}。"""
+    """schema 标签的表格资料 → {表名: 列头}。同名 Sheet 以先读到的为准。"""
     tables: dict[str, list[str]] = {}
     directives_path = root / "resource" / "materials.json"
     try:
@@ -265,9 +270,6 @@ def read_source_tables(root: Path) -> dict[str, list[str]]:
         path = (root / str(rel)).resolve()
         if not str(path).startswith(str(root.resolve())) or not path.is_file():
             continue
-        for name, headers in read_table_headers(path).items():
-            tables.setdefault(name, headers)
-    for path in _uploaded_eval_tables(root):
         for name, headers in read_table_headers(path).items():
             tables.setdefault(name, headers)
     return tables
@@ -334,7 +336,7 @@ def _declared_binding(
         return "", "", {
             "kind": "declared_unverifiable",
             "message": f"对象「{key}」声明的来源表「{declared}」无法核对：项目里还没有数据表"
-                       "（schema 表格资料或评测数据源的上传表），发布包暂不绑定该对象",
+                       "（schema 表格资料），发布包暂不绑定该对象",
             "candidates": [],
         }
     table = by_lower.get(declared.lower(), "")
@@ -348,7 +350,7 @@ def _declared_binding(
         ), None
     return "", "", {
         "kind": "declared_missing",
-        "message": f"对象「{key}」声明的来源表「{declared}」在评测数据表里不存在"
+        "message": f"对象「{key}」声明的来源表「{declared}」在数据表里不存在"
                    f"（现有表：{'、'.join(sorted(tables))}）；"
                    "「# 数据来源」首行只写表名（Sheet 名，逐字相同）或「无」，说明另起一行",
         "candidates": _candidates(field_keys, declared, tables),
@@ -365,13 +367,11 @@ def _may_infer(tables: dict[str, list[str]], parsed: dict) -> bool:
 def resolve_object_tables(
     root: Path,
     tables: dict[str, list[str]] | None = None,
-    hints: dict[str, str] | None = None,
     strict_declared: bool = True,
 ) -> dict:
     """对象文档 × 数据表 → 绑定结果。problems 为阻断级问题，warnings 只提示。
 
-    tables 缺省取 schema 表格资料与评测数据源上传的数据表；评测导入传入本轮实际导入的表，
-    hints 为已知的对象→表对应（mock 种子按对象生成，一张表就是一个对象）。
+    tables 缺省取 schema 表格资料；发布按提交导出的只读树算好后传入。
     strict_declared=False 时，声明的表不在本轮数据里、或一列都对不上，只提示不阻断——
     该对象不进 mapping，与导入库依然一致。没有任何数据表时声明无从核对，恒为提示。
     「# 数据来源」首行写成说明句时，按句中反引号标出、且真实存在的第一个表名绑定并提示改写。
@@ -381,7 +381,6 @@ def resolve_object_tables(
     declared, table, candidates[{table, matched}]}。
     """
     tables = read_source_tables(root) if tables is None else tables
-    hints = hints or {}
     by_lower = {name.lower(): name for name in tables}
     objects: dict[str, dict] = {}
     problems: list[str] = []
@@ -408,8 +407,6 @@ def resolve_object_tables(
             if issue:
                 report(key, issue, declared)
                 reported = True
-        elif hints.get(key) in tables:
-            table, matched_by = hints[key], "seed"
         elif _may_infer(tables, parsed):
             table = _match_table(field_keys, tables, [f["key"] for f in fields if f["primary"]])
             matched_by = "inferred" if table else ""
@@ -449,7 +446,7 @@ def resolve_object_tables(
 
     bound_tables = {item["table"] for item in objects.values() if item["table"]}
     for name in sorted(set(tables) - bound_tables):
-        warnings.append(f"数据表「{name}」没有任何对象绑定，评测时不会被查询")
+        warnings.append(f"数据表「{name}」没有任何对象绑定，问答时不会被查询")
     return {
         "tables": {name: list(columns) for name, columns in tables.items()},
         "objects": objects,
@@ -543,7 +540,7 @@ def object_data_mappings(resolution: dict, graph: bool = False) -> dict:
                 # 省略同名列会让 nl2sql 拿不到列绑定
                 "fields": {f["key"]: {"source_column": f["column"]} for f in matched},
             }],
-            # 评测与问答只读，行数上限对齐 modeling 渲染器的保守默认
+            # 问答只读，行数上限对齐 modeling 渲染器的保守默认
             "policy": {"read_only": True, "max_rows": 1000, "require_user_filter": []},
         }
     # schema_version 在契约里是字符串；写成数字会被 modeling 当成非法版本
@@ -591,10 +588,18 @@ def rewrite_object_body(body: str, fields: list[dict]) -> str:
 
 
 def _relation_node(value: str) -> str:
-    """关系端点：`[[对象]]`（可带别名/锚点）取对象名，「当前对象名」归一为「当前对象」，其余原样。"""
-    link = re.fullmatch(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]", value)
-    name = link.group(1).strip() if link else value
+    """关系端点：`[[对象]]`（可带别名）取对象全名，「当前对象名」归一为「当前对象」，其余原样。
+
+    按元模型解析；端点带 `#` 时保留全名，存量文件名里带 `#` 的对象（如 `1#油泵`）才连得上。
+    """
+    link = metamodel.current().parse_link(value)
+    name = link.full_name if link else value
     return CURRENT_OBJECT if name in _CURRENT_OBJECT_ALIASES else name
+
+
+def _endpoint(name: str, object_texts) -> str:
+    """关系端点全名 → 对象 key：先按全名，再去掉 `#锚点` 按名称（元模型 resolve）；都对不上时原样。"""
+    return metamodel.current().resolve(name, object_texts) or name
 
 
 def _split_relation_arrows(value: str) -> list[str]:
@@ -842,7 +847,7 @@ def package_relations(
     object_texts: dict[str, str], *, allow_self_relations: bool = True,
     reject_duplicate_relations: bool = False,
 ) -> tuple[dict[str, list], list[str]]:
-    """检查包内关系结构；评测拒绝规范化后的重复声明，其他调用方可归并双端声明。"""
+    """检查包内关系结构；严格模式拒绝规范化后的重复声明，默认归并双端声明。"""
     relations: dict[str, list] = {}
     problems: list[str] = []
     seen: dict[tuple, dict] = {}
@@ -855,8 +860,8 @@ def package_relations(
         path = f"ontology/object/{key}.md"
         problems.extend(f"{path} {problem}" for problem in diagnostics)
         for item in items:
-            source_id = _relation_identity(key if item["source"] == CURRENT_OBJECT else item["source"])
-            target_id = _relation_identity(key if item["target"] == CURRENT_OBJECT else item["target"])
+            source_id = _relation_identity(key if item["source"] == CURRENT_OBJECT else _endpoint(item["source"], object_texts))
+            target_id = _relation_identity(key if item["target"] == CURRENT_OBJECT else _endpoint(item["target"], object_texts))
             label = f"{path} 第 {item['line']} 行"
             missing = sorted({source_id, target_id} - objects_by_identity.keys())
             if missing:
@@ -866,7 +871,7 @@ def package_relations(
                 problems.append(f"{label}：关系两端不包含当前对象")
                 continue
             if not allow_self_relations and source_id == target_id:
-                problems.append(f"{label}：评测不允许自关联「{item['relation']}」")
+                problems.append(f"{label}：不允许自关联「{item['relation']}」")
                 continue
             source, target = objects_by_identity[source_id], objects_by_identity[target_id]
             relation = {field: value for field, value in item.items() if field not in ("line", "source")}
@@ -921,7 +926,7 @@ def graph_relations(
     未声明字段视为空字段对，不与显式字段对混同，也不从其他声明猜字段。
 
     每条关系只影响自己：写错或端点没绑数据表（概念对象数据来源写「无」是正常结论）时只跳过
-    这一条并记原因，评测与发布照常进行，原因进 report["notes"] 给用户看。
+    这一条并记原因，发布照常进行，原因进 report["notes"] 给用户看。
     """
     fields, names = _relation_object_context(object_texts)
     # 概念对象（数据来源写「无」）：端点未绑定时提示里点明原因，免得被当成绑定出错
@@ -947,8 +952,8 @@ def graph_relations(
             source = item["source"] or ""
             name = item["relation"] or ""
             target = item["target"] or ""
-            source = key if source == CURRENT_OBJECT else source
-            target = key if target == CURRENT_OBJECT else target
+            source = key if source == CURRENT_OBJECT else _endpoint(source, object_texts)
+            target = key if target == CURRENT_OBJECT else _endpoint(target, object_texts)
             triple = (source, name, target)
             label = f"对象「{key}」第 {item['line']} 行"
             if key not in (source, target):

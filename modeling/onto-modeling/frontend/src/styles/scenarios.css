@@ -1,0 +1,13 @@
+/* 场景走查页：设计稿 mr-* 之外、产品才有的补充样式 */
+.sc-tbl .sc-row{cursor:pointer}
+.sc-tbl .sc-row.on td{background:var(--b50)}
+.sc-tbl .sc-row.on:hover td{background:var(--b50)}
+.sc-lk{display:inline-flex;margin-left:6px;color:#B45309;vertical-align:-1px;cursor:help}
+.sc-mrow{cursor:pointer}
+.sc-mrow.on td{background:var(--b50)}
+.sc-sec{white-space:pre-wrap;color:var(--ink2)}
+.sc-hist{padding:6px 0;border-bottom:1px dashed var(--line)}
+.sc-hist:last-child{border-bottom:0}
+/* ?key= 定位到的行：进来时闪一下 */
+.sc-tbl .sc-row.hit td{animation:sc-hit 1.8s ease-out}
+@keyframes sc-hit{0%,35%{background:#DBEAFE}100%{background:var(--b50)}}

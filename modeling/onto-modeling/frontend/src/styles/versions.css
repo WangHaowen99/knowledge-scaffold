@@ -1,0 +1,16 @@
+/* 版本历史与对比（versions）：设计稿 mr-* 之外产品补的样式 */
+/* 来源「回退」：设计稿没有这一种，取青色，和其他七种区分开 */
+.mr-src.r{background:#E6F7FA;color:#0E7490}
+.vr-menu{position:fixed;z-index:60;min-width:190px}
+.vr-rel{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;border-radius:6px;background:var(--t50);color:var(--teal);font-size:11px;font-weight:600}
+.vr-sel~.menu{max-height:320px;overflow:auto}
+.vr-more{padding:8px 14px;border-bottom:1px solid var(--line);text-align:center}
+.vr-click{cursor:pointer}
+.vr-click:hover td{background:#FAFCFF}
+.vr-cur td{background:var(--b50)}
+.vr-cur:hover td{background:var(--b50)}
+.vr-ed{min-width:0}
+.vr-file{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--ink2)}
+.vr-file:hover{background:var(--panel2)}
+.vr-pre{font-family:var(--mono);font-size:12px;line-height:1.7;white-space:pre-wrap;word-break:break-word;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;margin:0}
+.chip.vr-del{text-decoration:line-through;color:var(--ink3)}

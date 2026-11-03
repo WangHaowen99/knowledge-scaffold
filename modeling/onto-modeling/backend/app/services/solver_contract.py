@@ -30,10 +30,8 @@ from __future__ import annotations
 import ast
 import copy
 import hashlib
-import importlib.util
 import json
 import re
-import sys
 import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -43,7 +41,6 @@ from typing import Any
 import yaml
 from jsonschema import Draft202012Validator
 
-from .. import config
 from . import package_mapping
 
 SOLVER_DIR = "ontology/solver"
@@ -86,6 +83,8 @@ FACT_SOURCE_KEYS = frozenset({"kind", "fail_closed", "evaluator_path"})
 # 公开问题类型，导入的旧包可保留），能力即 OR-Tools 服务能力里该问题类型的 features
 PROBLEM_FAMILY_CATALOG = {
     "candidate_selection.v1": {
+        # 界面上的名字（契约 SV-01 problem_families[].label）
+        "label": "候选方案二选一",
         "capabilities": ("domain_candidate_evaluation", "lexicographic_objective"),
         "aliases": ("binary_ordered_route.v1",),
     },
@@ -125,16 +124,13 @@ _BINDER_SCHEMA_TYPES = frozenset({"string", "integer", "number", "boolean", "obj
 
 
 def _load_evaluator_contract():
-    """评估器规则以 workspace-toolkit/scripts/solver_evaluator_contract.py 为单一事实源。
+    """评估器规则以工具箱的 solver_evaluator_contract.py 为单一事实源，经共享契约库加载（方案 A16）。
 
     /ontology-solver-evaluator 的自检与这里的契约检查共用同一份实现，避免两处规则漂移。
     """
-    path = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts" / "solver_evaluator_contract.py"
-    spec = importlib.util.spec_from_file_location("onto_workspace_solver_evaluator_contract", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    from .packs import contracts
+
+    return contracts.default().load("solver_evaluator_contract")
 
 
 _evaluator_contract = _load_evaluator_contract()
@@ -685,13 +681,13 @@ def load_workspace_solver(
 ) -> tuple[list[WorkspaceSolverContract], list[SolverContractError]]:
     """读取工作区全部求解契约；问题逐个收集，供导出与发布检查共用。"""
     base = Path(root) / SOLVER_DIR
-    if not base.is_dir():
+    if not base.is_dir() or base.is_symlink():
         return [], []
     stems = set(operation_stems)
     contracts: list[WorkspaceSolverContract] = []
     problems: list[SolverContractError] = []
     for directory in sorted(base.iterdir(), key=lambda item: item.name):
-        if not directory.is_dir() or directory.name.startswith("."):
+        if not directory.is_dir() or directory.is_symlink() or directory.name.startswith("."):
             continue
         try:
             contracts.append(_load_contract(directory, stems))
@@ -1031,7 +1027,8 @@ def registered_problem_family(name: str) -> str:
 def problem_family_catalog() -> list[dict]:
     """注册目录的对外视图：求解模型面板据此提供可选项与即时提示。"""
     return [
-        {"id": family, "capabilities": list(entry["capabilities"]), "aliases": list(entry["aliases"])}
+        {"id": family, "label": entry.get("label") or family, "capabilities": list(entry["capabilities"]),
+         "aliases": list(entry["aliases"])}
         for family, entry in PROBLEM_FAMILY_CATALOG.items()
     ]
 
@@ -1845,6 +1842,7 @@ def _stage_files(
                 path=f"{SOLVER_DIR}/{solver_key}/{BINDING_FILE}", field="solver_key",
             ))
             continue
+        binding = dict(binding)
         if template is not None:
             params, template_problems = normalize_template_params(template, f"{SOLVER_DIR}/{solver_key}")
             if template_problems:
@@ -1857,10 +1855,24 @@ def _stage_files(
                 sidecar.role: sidecars[sidecar.role].encode("utf-8")
                 for sidecar in SIDECARS if isinstance(sidecars.get(sidecar.role), str)
             }
+        if not str(binding.get("decision_model") or "").strip():
+            # 面板不再让用户填 Decision Model ID：取 Decision Model 文档里的 id，没有时按新建契约的默认命名补上（与前端一致）
+            binding["decision_model"] = _model_document_id(data) or f"{solver_key}_model"
         files = {BINDING_FILE: _dump_yaml(dict(binding))}
         files.update({SIDECAR_BY_ROLE[role].filename: value for role, value in data.items()})
         staged[solver_key] = files
     return staged, problems, rendered
+
+
+def _model_document_id(data: Mapping[str, bytes]) -> str:
+    entry = data.get("entry")
+    if entry is None:
+        return ""
+    try:
+        document = parse_sidecar(entry, SIDECAR_BY_ROLE["entry"].filename, SIDECAR_BY_ROLE["entry"].filename)
+    except SolverContractError:
+        return ""
+    return str(document.get("id") or "").strip() if isinstance(document, Mapping) else ""
 
 
 def _load_staged(
@@ -1885,6 +1897,31 @@ def stage_contracts(items: Iterable[Mapping], operation_stems: Iterable[str]) ->
     if problems:
         raise SolverContractRejected(problems)
     return staged
+
+
+def evaluator_summary(path: Path | None) -> dict | None:
+    """评估器的种类与约束数（契约 SV-01 evaluator.kind、SV-03 evaluator）：只解析不执行。
+
+    声明式评估器给 declarative，旧式（自带计算的脚本）给 script；约束数是声明的日处理能力上限
+    （RULE_DAILY_CAPACITIES）条数。读不到或不是评估器返回 None。
+    """
+    source = _read_evaluator(path) if path is not None else None
+    kind = _evaluator_contract.evaluator_kind(source)
+    if kind is None:
+        return None
+    return {
+        "kind": "declarative" if kind == _evaluator_contract.DECLARATIVE_KIND else "script",
+        "constraints": len(_evaluator_dict_keys(path, "RULE_DAILY_CAPACITIES")),
+    }
+
+
+def draft_evaluators(
+    items: Iterable[Mapping], operation_stems: Iterable[str], root: Path, scripts: Mapping[str, Path]
+) -> dict[str, str]:
+    """面板草稿里各求解契约按发现规则找到的评估器（solver_key → 工作区路径），不落盘。"""
+    staged, _problems, _rendered = _stage_files(items)
+    contracts, _load_problems = _load_staged(staged, operation_stems)
+    return _check_contracts(Path(root), contracts, scripts)[1]
 
 
 def check_draft(

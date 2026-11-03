@@ -75,16 +75,27 @@ def pool_env(tmp_path: Path, monkeypatch):
     return manager, created, tmp_path
 
 
-async def _settle(manager: SessionManager, project_id: str):
-    """等连接后台任务跑完。"""
+async def _settle(manager: SessionManager, project_id: str, timeout: float = 10.0):
+    """等连接后台任务跑完：按条件等（负载高时固定几次让步不够），最多 timeout 秒。"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
     session = manager.get(project_id)
-    for _ in range(20):
+    while loop.time() < deadline:
+        session = manager.get(project_id) or session
         if session and session.connect_task:
             await session.connect_task
-        await asyncio.sleep(0)
         if session and (session.client is not None or session.state in ("queued", "error")):
             return session
+        await asyncio.sleep(0.01)
     return session
+
+
+async def _until(predicate, timeout: float = 10.0) -> None:
+    """按条件等（驱逐、关闭是另起的任务），等不到就让后面的断言去失败。"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate() and loop.time() < deadline:
+        await asyncio.sleep(0.01)
 
 
 def test_send_connects_and_flushes_prompt(pool_env, tmp_path):
@@ -112,6 +123,7 @@ def test_pool_evicts_oldest_idle_session(pool_env, tmp_path):
 
         await manager.send("p2", tmp_path / "w2", "开始")
         second = await _settle(manager, "p2")
+        await _until(lambda: manager.get("p1") is None and first.client is None)
 
         assert manager.get("p1") is None  # 空闲会话被驱逐让位
         assert first.client is None
@@ -633,10 +645,15 @@ class ScriptedClient(FakeClient):
     def __init__(self, options):
         super().__init__(options)
         self.inbox: asyncio.Queue = asyncio.Queue()
+        # 读循环回来要下一条时为真：此前的消息（含一轮收尾的线程往返）都已处理完
+        self.waiting = False
 
     async def receive_messages(self):
         while True:
-            yield await self.inbox.get()
+            self.waiting = True
+            message = await self.inbox.get()
+            self.waiting = False
+            yield message
 
 
 @pytest.fixture()
@@ -669,10 +686,10 @@ def _turn_result(origin=None):
 
 
 async def _feed(client, *messages):
+    """放入消息并等读循环处理完：按条件等，一轮收尾要跨几次线程往返，负载高时固定让步次数不够。"""
     for message in messages:
         client.inbox.put_nowait(message)
-    for _ in range(20):
-        await asyncio.sleep(0)
+    await _until(lambda: client.inbox.empty() and client.waiting)
 
 
 async def _running_session(manager, tmp_path):

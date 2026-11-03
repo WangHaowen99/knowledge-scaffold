@@ -66,19 +66,18 @@ def test_raw_error_detection():
 
 
 def test_project_visibility_rules():
-    from app.services.workspace import WorkspaceManager
+    from app.services import ownership
 
     projects = [
         {"id": "a", "owner": "alice"},
         {"id": "b", "owner": "bob"},
         {"id": "c", "owner": ""},  # 历史无主项目
     ]
-    visible = WorkspaceManager.visible_to(projects, "alice", is_admin=False)
-    assert {p["id"] for p in visible} == {"a", "c"}
-    assert len(WorkspaceManager.visible_to(projects, "alice", is_admin=True)) == 3
-    assert WorkspaceManager.can_access({"owner": "bob"}, "alice", False) is False
-    assert WorkspaceManager.can_access({"owner": "bob"}, "alice", True) is True
-    assert WorkspaceManager.can_access({"owner": ""}, "alice", False) is True
+    alice = {"sub": "alice", "role": "user"}
+    assert [p["id"] for p in ownership.list_view(projects, alice)] == ["a"]
+    assert len(ownership.list_view(projects, {"sub": "root", "role": "admin"})) == 3
+    assert ownership.owns({"owner": "bob"}, "alice") is False
+    assert ownership.owns({"owner": ""}, "") is False  # 无主项目谁都不是所有者
 
 
 def test_coverage_metrics_parse(tmp_path: Path):
@@ -118,8 +117,9 @@ def test_audit_log_roundtrip(tmp_path: Path, monkeypatch):
     audit.log("alice", "POST", "/api/projects")
     audit.log("bob", "DELETE", "/api/projects/x")
     entries = audit.read()
-    assert entries[0]["user"] == "bob"  # 最新在前
+    assert entries[0]["actor"] == "bob"  # 最新在前
     assert entries[1]["method"] == "POST"
+    assert entries[0]["type"] == "write" and entries[0]["action"] == "http.delete"
 
 
 def test_model_settings_roundtrip(tmp_path: Path, monkeypatch):
@@ -360,7 +360,8 @@ def test_model_context_ignores_legacy_saved_compaction(tmp_path, monkeypatch):
     from app.services import model_settings
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    (tmp_path / "model-settings.json").write_text(
+    (tmp_path / "secrets").mkdir()  # 管理员模型配置在密钥目录（方案 E10）
+    (tmp_path / "secrets" / "model-settings.json").write_text(
         json.dumps(
             {
                 "context": {
@@ -404,7 +405,8 @@ def test_model_context_reads_legacy_section_and_migrates_on_save(tmp_path, monke
     from app.services import model_settings
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    path = tmp_path / "model-settings.json"
+    path = tmp_path / "secrets" / "model-settings.json"
+    path.parent.mkdir()
     path.write_text(json.dumps({"claude_context": {"max_context_tokens": 128000}}), encoding="utf-8")
 
     assert model_settings.context_config()["max_context_tokens"] == 128000
@@ -443,47 +445,50 @@ def test_model_settings_save_with_invalid_context_saves_nothing(tmp_path, monkey
     from types import SimpleNamespace
 
     from app import config
+    from app.api.errors import ApiError
     from app.routers import settings as settings_router
     from app.services import model_settings
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     request = SimpleNamespace(state=SimpleNamespace(user={"role": "admin"}))
-    body = settings_router.ClaudeModelBody(
+    body = settings_router.ModelUpdateBody(
         base_url="https://gateway.example.com",
         model="some-model",
-        context=settings_router.ContextBody(max_context_tokens=128000, max_output_tokens=128000),
+        context=settings_router.ContextUpdate(window=128000, max_output=128000),
     )
-    response = settings_router.put_model_settings(body, request)
-    assert response.status_code == 400
+    with pytest.raises(ApiError) as exc:
+        settings_router.put_engine_model("claude", body, request)
+    assert (exc.value.status, exc.value.code) == (400, "invalid_argument")
     assert model_settings.load() == {}
 
-    body.context.max_output_tokens = 16000
-    saved = settings_router.put_model_settings(body, request)
+    body.context.max_output = 16000
+    saved = settings_router.put_engine_model("claude", body, request)
     assert saved["model"] == "some-model"
-    assert saved["context"] == {"max_context_tokens": 128000, "max_output_tokens": 16000}
+    assert saved["context"]["window"] == 128000 and saved["context"]["max_output"] == 16000
+    assert model_settings.context_config() == {"max_context_tokens": 128000, "max_output_tokens": 16000}
 
 
 def test_model_context_route_requires_admin(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from app import config
+    from app.api.errors import ApiError
     from app.routers import settings as settings_router
     from app.services import auth, model_settings
-    from app.services.auth import AuthError
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(auth, "ENABLED", True)
-    body = settings_router.ContextBody(max_context_tokens=128000)
+    body = settings_router.ModelUpdateBody(context=settings_router.ContextUpdate(window=128000))
 
     modeler = SimpleNamespace(state=SimpleNamespace(user={"role": "modeler"}))
-    with pytest.raises(AuthError) as exc:
-        settings_router.put_model_context_settings(body, modeler)
+    with pytest.raises(ApiError) as exc:
+        settings_router.put_engine_model("claude", body, modeler)
     assert exc.value.status == 403
     assert model_settings.context_config()["max_context_tokens"] is None
 
     admin = SimpleNamespace(state=SimpleNamespace(user={"role": "admin"}))
-    saved = settings_router.put_model_context_settings(body, admin)
-    assert saved["context"]["max_context_tokens"] == 128000
+    saved = settings_router.put_engine_model("claude", body, admin)
+    assert saved["context"]["window"] == 128000
 
 
 def test_jiuwen_context_settings_saved_separately(tmp_path, monkeypatch):
@@ -547,25 +552,28 @@ def test_jiuwen_route_rejects_invalid_context_and_saves_nothing(tmp_path, monkey
     from types import SimpleNamespace
 
     from app import config
+    from app.api.errors import ApiError
     from app.routers import settings as settings_router
     from app.services import model_settings
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(config, "JIUWEN_MAX_TOKENS", 8192)
     request = SimpleNamespace(state=SimpleNamespace(user={"role": "admin"}))
-    body = settings_router.JiuwenModelBody(
+    body = settings_router.ModelUpdateBody(
         base_url="https://api.example.com/v1",
         model="some-model",
-        context=settings_router.ContextBody(max_context_tokens=8000),
+        context=settings_router.ContextUpdate(window=8000),
     )
-    response = settings_router.put_jiuwen_model_settings(body, request)
-    assert response.status_code == 400
-    assert "8192" in response.body.decode("utf-8")  # 留空的最大输出按内测引擎默认校验
+    with pytest.raises(ApiError) as exc:
+        settings_router.put_engine_model("jiuwen", body, request)
+    assert exc.value.status == 400
+    assert "8192" in str(exc.value)  # 留空的最大输出按内测引擎默认校验
     assert model_settings.load() == {}
 
-    body.context.max_output_tokens = 4000
-    saved = settings_router.put_jiuwen_model_settings(body, request)
-    assert saved["jiuwen"]["context"] == {"max_context_tokens": 8000, "max_output_tokens": 4000}
+    body.context.max_output = 4000
+    saved = settings_router.put_engine_model("jiuwen", body, request)
+    assert saved["context"]["window"] == 8000 and saved["context"]["max_output"] == 4000
+    assert model_settings.jiuwen_context_config() == {"max_context_tokens": 8000, "max_output_tokens": 4000}
 
 
 def test_expire_orphan_permissions_broadcasts_expired():

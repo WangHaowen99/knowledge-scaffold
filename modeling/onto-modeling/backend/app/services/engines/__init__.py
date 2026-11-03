@@ -8,7 +8,8 @@
 设计见 docs/openjiuwen-engine-migration.md §3.1。
 """
 
-from .base import CONFIG_ERROR, FRIENDLY_ERROR, AgentEngine, EngineContext
+from ... import config
+from .base import CONFIG_ERROR, FRIENDLY_ERROR, AgentEngine, EngineContext, ObservableEngine
 
 DEFAULT_ENGINE = "claude"
 # 可选引擎名的唯一来源：接口校验、默认引擎设置与可用性探测都以此为准
@@ -32,6 +33,11 @@ def get_engine_class(name: str = DEFAULT_ENGINE):
         from .jiuwen import JiuwenEngine
 
         registry["jiuwen"] = JiuwenEngine
+        if config.JIUWEN_WORKER:
+            # 方案 B11：会话放在独立 worker 子进程里，内核这边是同协议的客户端
+            from .jiuwen_remote import RemoteJiuwenEngine
+
+            registry["jiuwen"] = RemoteJiuwenEngine
     except ImportError:  # pragma: no cover - 取决于部署环境
         pass
     return registry.get(name or DEFAULT_ENGINE, ClaudeEngine)
@@ -40,6 +46,7 @@ def get_engine_class(name: str = DEFAULT_ENGINE):
 __all__ = [
     "AgentEngine",
     "EngineContext",
+    "ObservableEngine",
     "FRIENDLY_ERROR",
     "CONFIG_ERROR",
     "DEFAULT_ENGINE",

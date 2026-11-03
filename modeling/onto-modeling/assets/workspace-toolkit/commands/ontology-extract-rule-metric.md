@@ -15,6 +15,10 @@
    否则提示先运行 `/ontology-extract-operation`，stop。
 3. `python3 .claude/scripts/state_helper.py acquire extract-rule-metric rule-metric`
 
+## 分段建模
+
+Step 0 之后读 `.claude/SLICE_MODE.md` 并照做：`python3 .claude/scripts/blueprint.py brief` 不是「全量模式」时，这一次只做 brief 里的那一段（派子代理时把 brief 原样放进 prompt），做完这一步就停下（这一轮结束自动存成版本）。
+
 ## 业务知识识别（贯穿整个命令）
 
 请阅读并遵循 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md` 的「业务知识识别守则」。
@@ -39,7 +43,7 @@ Wait for the agent to return a JSON summary:
 
 ## Step 2: 呈现摘要 + 用户确认
 
-输出：
+先 `python3 .claude/scripts/state_helper.py acquire extract-rule-metric confirm`，再输出：
 
 ```
 规则与指标抽取完成：
@@ -49,8 +53,8 @@ Wait for the agent to return a JSON summary:
 - 跳过：{skipped 摘要，无则省略}
 ```
 
-- 回复 **确认** → 进入 Step 3 提交
-- 回复 **删除 名称1,名称2** → 删除指定实体文档及其回链后重新汇总
+- 回复 **确认** → `acquire extract-rule-metric rule-metric`，进入 Step 3 提交
+- 回复 **删除 名称1,名称2** → `acquire extract-rule-metric rule-metric`，删除指定实体文档及其回链后重新汇总
 - 回复 **取消** → `git checkout -- ontology/ && python3 .claude/scripts/state_helper.py release extract-rule-metric`，stop
 
 ## Step 3: 校验并提交
@@ -64,7 +68,9 @@ git commit -m "rule-metric: 抽取规则与指标实体"
 python3 .claude/scripts/state_helper.py release extract-rule-metric
 ```
 
-校验存在「错误」级问题时先向用户逐条展示，用户回复 **仍然提交** 才允许提交。
+校验存在「错误」级问题时先 `acquire extract-rule-metric confirm`，向用户逐条展示，用户回复 **仍然提交** 才允许提交（回复后切回 `rule-metric`）。
+
+释放锁后用两三句话小结：抽了多少规则和指标、还有什么要用户定；不列下一步菜单（界面的建议条会给出）。
 
 ## Note
 

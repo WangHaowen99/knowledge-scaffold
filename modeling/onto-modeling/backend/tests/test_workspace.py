@@ -74,12 +74,13 @@ def test_project_progress_counts_stages_after_missing_required(manager: Workspac
     root = manager.project_root(meta["id"])
     _write(root, "ontology/object/订单.md", "# 订单")
     _write(root, "ontology/operation/创建订单.md", "# 创建订单")
-    _write(root, "reports/quality.md", "# 质量检查")
+    # 质量检查完成的统一口径（flow.yaml）：有校验报告且没有未处理的 [ ]
+    _write(root, "reports/20260101-120000-all-rule.md", "# 质量检查")
     _write(root, "ontology/testcase/下单.md", "# 下单")
 
     overview = next(p for p in manager.list_projects() if p["id"] == meta["id"])
-    assert overview["stages_done"] == 4
-    assert overview["stages_total"] == 11
+    assert overview["stages_done"] == 3  # 建模、校验与走查、全量回归
+    assert overview["stages_total"] == 10
 
 
 def test_project_progress_counts_solver_stage(manager: WorkspaceManager):
@@ -96,21 +97,24 @@ def test_project_progress_full_chain_reaches_total(manager: WorkspaceManager):
     root = manager.project_root(meta["id"])
     for rel in (
         "research/资料.md",
-        "ontology/diagrams/流程.md",
+        "ontology/diagrams/流程.drawio",
         "ontology/object/订单.md",
         "ontology/logic/创建订单.md",  # 旧目录别名同样命中操作阶段
         "ontology/metric/客单价.md",
-        "reports/quality.md",
+        "reports/20260101-120000-all-semantic.md",
         "ontology/data-mock/订单.json",
         "ontology/testcase/下单.md",
         "ontology/scripts/calc.py",
         "ontology/solver/route_choice/contract.json",
-        "reports/eval-001.md",
+        "reports/consistency/consistency.md",  # 全局一致性：有报告、没有未处理的条目
     ):
         _write(root, rel)
+    # 发布：工作区里有发布标签
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "tag", "release/0.1.0"],
+                   cwd=root, check=True, capture_output=True)
 
     progress = manager._project_progress(root)
-    assert progress["stages_done"] == progress["stages_total"] == 11
+    assert progress["stages_done"] == progress["stages_total"] == 10
 
 
 def test_project_progress_ignores_index_only_directories(manager: WorkspaceManager):
@@ -120,7 +124,7 @@ def test_project_progress_ignores_index_only_directories(manager: WorkspaceManag
 
     progress = manager._project_progress(root)
     assert progress["stages_done"] == 0
-    assert progress["stages_total"] == 11
+    assert progress["stages_total"] == 10
 
 def test_file_tree_skips_git_and_symlinks(manager: WorkspaceManager):
     meta = manager.create_project("t")
@@ -343,5 +347,6 @@ def test_versions_numbering(manager: WorkspaceManager):
 
     versions = manager.versions(meta["id"])
     assert len(versions) == 2
-    assert versions[0]["version"] == 2  # 最新在前
-    assert versions[-1]["version"] == 1
+    # 主线版本号（--first-parent，契约 3.9）：最新在前，基线提交是 v0.1
+    assert versions[0]["n"] == 2 and versions[0]["source"] == "assistant"
+    assert versions[-1]["n"] == 1 and versions[-1]["source"] == "plugin"

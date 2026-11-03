@@ -1,6 +1,6 @@
 """ontology_checker 对「# 关联对象」关联字段的检查。
 
-与后端 package_mapping._relation_join、评测图导入 eval_import.graph_relation_mapping
+与后端 package_mapping._relation_join、图模式导入
 同一口径：同表按同一数据行关联不需要关联字段，跨表没声明又推断不出就是问题。
 """
 
@@ -65,7 +65,7 @@ def join_issues(checker, ontology: Path) -> list[str]:
 
 
 def test_cross_table_relation_without_join_is_flagged(checker, tmp_path: Path):
-    """跨表、无括注、两端没有同名主键：评测会被拦，建模阶段就该报出来。"""
+    """跨表、无括注、两端没有同名主键：图模式导入会丢掉这条关系，建模阶段就该报出来。"""
     ontology = tmp_path / "ontology"
     write(ontology, "订单", "订单表", ORDER_ROWS, "- 当前对象 → 属于 → [[客户]]")
     write(ontology, "客户", "客户表", CUSTOMER_ROWS, "- [[订单]] → 属于 → 当前对象")

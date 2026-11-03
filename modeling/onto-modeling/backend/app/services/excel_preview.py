@@ -65,6 +65,7 @@ def preview(path: Path) -> dict:
                     "name": ws.title,
                     "rows": rows,
                     "merges": merges,
+                    "total_rows": ws.max_row or 0,
                     "truncated": truncated,
                 }
             )

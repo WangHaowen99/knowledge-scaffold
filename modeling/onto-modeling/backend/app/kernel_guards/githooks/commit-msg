@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# 来源 trailer（方案 C11；详设 4.3；契约 7.17）：agent 的每个提交都带 Onto-Source: agent、
+# Onto-Author（项目所有者）、Onto-Packs（生效中的能力包）、Onto-Node（正在执行的节点）。
+# agent 自己写在说明里的 Onto-* 行一律去掉，以宿主记下的为准。只管 agent 的提交（同 pre-commit）。
+[ -n "${ONTO_RUN_ENGINE:-}" ] || exit 0
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "写来源 trailer 找不到项目根目录，按拒绝处理。" >&2; exit 1; }
+python3 - "$1" "$ROOT" <<'PY' || { echo "写来源 trailer 失败，按拒绝处理。" >&2; exit 1; }
+import json
+import re
+import sys
+from pathlib import Path
+
+message_path, root = Path(sys.argv[1]), Path(sys.argv[2])
+
+
+def load(rel):
+    try:
+        data = json.loads((root / rel).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+engine = load(".onto/run/engine.json")
+running = load(".onto/run/exec.json")
+manifest = load(".claude/MANIFEST.json")
+lines = message_path.read_text(encoding="utf-8").splitlines()
+body = "\n".join(line for line in lines if not re.match(r"(?i)^onto-[a-z]+\s*:", line)).rstrip()
+if not body.strip():
+    sys.exit(0)  # 空说明由 git 自己拒绝
+values = {"Onto-Source": "agent", "Onto-Author": str(engine.get("owner") or "agent")}
+packs = ", ".join(f"{item['name']}@{item['version']}" for item in manifest.get("packs") or []
+                  if isinstance(item, dict) and item.get("name") and item.get("version"))
+if packs:
+    values["Onto-Packs"] = packs
+node = str(running.get("node") or "")
+if node and running.get("conversation_id") in (None, "", engine.get("conversation_id")):
+    version = str(running.get("node_version") or "").rpartition("@")[2]
+    values["Onto-Node"] = f"{node}@{version}" if version else node
+message_path.write_text(body + "\n\n" + "".join(f"{key}: {value}\n" for key, value in values.items()),
+                        encoding="utf-8")
+PY

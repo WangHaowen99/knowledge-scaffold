@@ -36,18 +36,19 @@ if ! grep -q "^AUTH_BOOTSTRAP_ADMIN_PASSWORD=..*" .env; then
     chmod 600 .env
 fi
 
+# auth-server 管理 API 令牌（运维中心「用户与审计」要它）：没设时生成一个，auth-server 与后端读同一个值
+if ! grep -q "^ONTO_WEB_AUTH_ADMIN_TOKEN=..*" .env; then
+    sed -i '/^ONTO_WEB_AUTH_ADMIN_TOKEN=/d' .env
+    printf 'ONTO_WEB_AUTH_ADMIN_TOKEN=%s\n' "$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)" >> .env
+    chmod 600 .env
+fi
+
 if grep -q "replace-with-real-token-at-runtime" .env; then
     echo "提示：.env 未填模型网关令牌；部署后可在管理员「配置中心」里配置 Base URL / API Key。"
 fi
 
 COMPOSE="docker compose"
 docker compose version >/dev/null 2>&1 || COMPOSE="docker-compose"
-
-if [ -f "${SCRIPT_DIR}/configure-modeling-association.sh" ]; then
-    bash "${SCRIPT_DIR}/configure-modeling-association.sh" "${SCRIPT_DIR}"
-else
-    echo "Warning: Modeling association helper not present; preserving legacy deployment"
-fi
 
 # 外接账号中心：.env 声明外部 auth 网络时，停用自带 auth-server 并加入该网络
 # （consumer 栈的服务名同为 auth-server，容器网络内地址无需变化）

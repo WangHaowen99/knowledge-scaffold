@@ -16,13 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ... import config
-from .base import (
-    FRIENDLY_ERROR,
-    EngineContext,
-    config_error_for,
-    project_goal_section,
-    safe_json,
-)
+from .base import FRIENDLY_ERROR, EngineContext, ObservableEngine, config_error_for, safe_json
 
 _RAW_ERROR_PATTERN = None  # 延迟编译
 _CONFIG_ERROR_PATTERN = None
@@ -97,6 +91,7 @@ try:
         AssistantMessage,
         ClaudeAgentOptions,
         ClaudeSDKClient,
+        HookMatcher,
         PermissionResultAllow,
         PermissionResultDeny,
         ResultMessage,
@@ -139,6 +134,16 @@ def _permission_mode() -> str:
         return runtime_settings.permission_mode()
     except Exception:
         return config.PERMISSION_MODE
+
+
+def mcp_fingerprint_source(project_id: str) -> dict:
+    """会话指纹的 MCP 部分（只取摘要，不落盘、不外传）。"""
+    return _mcp_servers(project_id)
+
+
+def current_permission_mode() -> str:
+    """会话指纹的权限模式部分。"""
+    return _permission_mode()
 
 
 def _env_fingerprint(owner: str = "") -> str:
@@ -434,7 +439,7 @@ def _tool_result_excerpt(content: Any, limit: int = 400) -> str:
     return text[:limit] + ("…" if len(text) > limit else "")
 
 
-class ClaudeEngine:
+class ClaudeEngine(ObservableEngine):
     """Claude Agent SDK 引擎实现（AgentEngine 协议）。"""
 
     name = "claude"
@@ -445,9 +450,13 @@ class ClaudeEngine:
         return SDK_AVAILABLE
 
     def __init__(self, ctx: EngineContext):
+        from ..session_host import injection
+
         self._ctx = ctx
         self.client: Any = None
         self.resume_attempted = False
+        # 宿主注入（方案 B4）：经 SDK 的 UserPromptSubmit 回调在后端进程里算，替代原来的两个 shell hook
+        self._injector = ctx.injector or injection.Injector(ctx.cwd, ctx.conversation_id)
         self._received_any = False
         self._sdk_session_id: str | None = None
         self._fingerprint = ""
@@ -530,7 +539,11 @@ class ClaudeEngine:
             self._limits_task.cancel()
         self._limits_task = None
 
-    async def send(self, text: str) -> None:
+    async def send(self, text: str, context: str | None = None) -> None:
+        if context:
+            from ..session_host import injection
+
+            text = injection.compose_query(text, context)
         await self.client.query(text)
 
     async def interrupt(self) -> None:
@@ -563,10 +576,11 @@ class ClaudeEngine:
         except Exception:
             pass
 
+    def model_fingerprint(self) -> str:
+        return _env_fingerprint(self._ctx.model_owner)
+
     def config_stale(self) -> bool:
-        return bool(self._fingerprint) and self._fingerprint != _env_fingerprint(
-            self._ctx.model_owner
-        )
+        return bool(self._fingerprint) and self._fingerprint != self.model_fingerprint()
 
     def context_limits(self) -> tuple[int | None, int | None]:
         return self._context_window, self._compact_at
@@ -574,6 +588,11 @@ class ClaudeEngine:
     # ---- 事件流 ----
 
     async def events(self):
+        async for event in self._events():
+            self._notify(event)
+            yield event
+
+    async def _events(self):
         try:
             async for message in self.client.receive_messages():
                 self._received_any = True
@@ -692,6 +711,22 @@ class ClaudeEngine:
 
     # ---- 权限回调（SDK 契约 → 中立决策 dict）----
 
+    async def _on_prompt(self, input_data: Any, tool_use_id: Any = None, context: Any = None) -> dict:
+        """UserPromptSubmit 回调：消息进模型之前附上宿主注入的阶段、下一步与包的提示规则。
+
+        CLI 把 additionalContext 作为系统提示放在这条消息前面；斜杠命令照常展开（不改用户原文）。
+        注入出错只留档，照常发送。
+        """
+        prompt = str((input_data or {}).get("prompt") or "") if isinstance(input_data, dict) else ""
+        try:
+            text = await asyncio.to_thread(self._injector.context_for, prompt)
+        except Exception as exc:  # noqa: BLE001
+            self._ctx.log_error("injection", str(exc))
+            return {}
+        if not text:
+            return {}
+        return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}
+
     def _build_options(self, resume_id: str | None) -> Any:
         async def can_use_tool(tool_name: str, tool_input: dict, context) -> Any:
             decision = await self._ctx.request_permission(
@@ -708,13 +743,9 @@ class ClaudeEngine:
                 message=decision.get("message") or "用户拒绝了该操作"
             )
 
-        system_prompt: dict[str, str] = {"type": "preset", "preset": "claude_code"}
-        goal_section = project_goal_section(self._ctx.project_goal)
-        if goal_section:
-            system_prompt["append"] = goal_section
         kwargs: dict[str, Any] = dict(
             cwd=str(self._ctx.cwd),
-            system_prompt=system_prompt,
+            system_prompt={"type": "preset", "preset": "claude_code"},
             # user 级设置承载部署机的模型网关配置（~/.claude/settings.json 的 env）
             setting_sources=["user", "project"],
             # bypassPermissions 下 can_use_tool 不会被触发；切回 default 即恢复确认卡
@@ -723,6 +754,7 @@ class ClaudeEngine:
             include_partial_messages=True,
             mcp_servers=_mcp_servers(self._ctx.project_id),
             env=_owner_env(self._ctx.model_owner),
+            hooks={"UserPromptSubmit": [HookMatcher(hooks=[self._on_prompt])]},
         )
         if self._ctx.model_owner:
             # 部署机 ~/.claude/settings.json 的 env 会盖过上面的 env 参数（实测），
@@ -740,4 +772,11 @@ class ClaudeEngine:
         if config.CLI_PATH:
             # 降级兼容包（无 AVX 环境）：指向外部 JS 版 CLI，见部署文档
             kwargs["cli_path"] = config.CLI_PATH
+        # 方案 E10：CLI 经包装启动，只给最小环境、以 agent 用户运行，bash 里没有凭据变量；
+        # 方案 B7：agent 的命令能认出自己属于哪个项目、哪条对话、哪个引擎实例（git 钩子用）
+        from ...governance import agent_identity
+
+        kwargs["env"] = {**kwargs["env"], **agent_identity.run_identity(
+            self._ctx.project_id, self._ctx.conversation_id, self._ctx.engine_instance)}
+        kwargs.update(agent_identity.claude_options(kwargs["env"]))
         return ClaudeAgentOptions(**kwargs)

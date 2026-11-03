@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Deterministic, bounded UTF-8 source extraction shared by agents and research checks.
 
-CLI: source_extract.py FILE [--offset N] [--limit N]
-Anchors: text L1; DOCX p:1 or table:1/row:1/cell:1; XLSX sheet:Sheet1!A1.
+CLI（工作区根目录执行）：
+  source_extract.py --sources          列出资料和各自要读的文本：md/txt/csv 等读原文件，PDF、Word、Excel
+                                       读数据接入转出的文本版 resource/text/<分组>/<原文件名>.md，没有文本版的标 missing
+  source_extract.py FILE [--offset N] [--limit N]
+                                       只读文本：FILE 是 PDF、Word 这类原件时不解析，回 use_text_version（附文本版路径）
+                                       或 no_text_version，退出码 2（资料分析只读文本，F4b）
+Anchors: text L1; DOCX p:1 or table:1/row:1/cell:1; XLSX sheet:Sheet1!A1（后两种只给旧报告核验用，extract() 照常支持）.
 No generated summaries, formulas evaluated by us, or lossy encoding fallback.
 """
 from __future__ import annotations
@@ -98,7 +103,7 @@ def extract(path: Path) -> dict:
         if not segments:
             raise ValueError('未抽取到正文，无法核验来源')
         result.update(status='ok', segments=segments)
-    except (OSError, ValueError, KeyError, ImportError, ET.ParseError, zipfile.BadZipFile) as exc:
+    except Exception as exc:  # 坏文件：解析库会抛各种异常（如 lxml 的 XMLSyntaxError），一律按无法核验
         result['reason'] = f'无法核验：{type(exc).__name__}：{str(exc)[:160]}'
     return result
 
@@ -115,16 +120,68 @@ def located_text(result: dict, anchor: str = '') -> str:
     return '\n'.join(matches)
 
 
+TEXT_DIR = 'resource/text'
+SKIP = {'resource/materials.json'}
+
+
+def text_version(rel: str) -> str:
+    """资料的文本版路径（数据接入转出，ADR-0073）：resource/others/合同.pdf → resource/text/others/合同.pdf.md"""
+    return f"{TEXT_DIR}/{rel.removeprefix('resource/')}.md"
+
+
+def sources(root: Path) -> list[dict]:
+    """资料清单：每份资料要读哪个文本。kind：native 原文件就是文本；converted 读文本版；missing 还没有文本版
+    （转换中、暂不支持或转换失败，资料区能看到原因），资料分析把它记为未读，不去解析原件。"""
+    items = []
+    resource = root / 'resource'
+    if not resource.is_dir():
+        return items
+    for path in sorted(resource.rglob('*')):
+        rel = path.relative_to(root).as_posix()
+        if not path.is_file() or rel in SKIP or rel.startswith(f'{TEXT_DIR}/') \
+                or any(part.startswith('.') for part in path.relative_to(resource).parts):
+            continue
+        if path.suffix.lower() in TEXT_SUFFIXES:
+            items.append({'material': rel, 'read': rel, 'kind': 'native'})
+        elif (root / text_version(rel)).is_file():
+            items.append({'material': rel, 'read': text_version(rel), 'kind': 'converted'})
+        else:
+            items.append({'material': rel, 'read': None, 'kind': 'missing'})
+    return items
+
+
+def _print_json(data: dict) -> None:
+    # Keep the CLI JSON protocol independent of application logging configuration.
+    output = logging.Logger('source_extract.json', logging.INFO)
+    output.addHandler(logging.StreamHandler(sys.stdout))
+    output.info(json.dumps(data, ensure_ascii=False))
+
+
 def main() -> int:
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('file', type=Path)
+    parser.add_argument('file', type=Path, nargs='?')
+    parser.add_argument('--sources', action='store_true')
     parser.add_argument('--offset', type=int, default=0)
     parser.add_argument('--limit', type=int, default=20)
     parser.add_argument('--anchor', default='')
     parser.add_argument('--text-offset', type=int, default=0)
     args = parser.parse_args()
+    if args.sources:
+        _print_json({'materials': sources(Path('.'))})
+        return 0
+    if args.file is None:
+        parser.error('要给资料路径，或用 --sources 列出资料')
+    if args.file.suffix.lower() not in TEXT_SUFFIXES:
+        # 资料分析只读文本（F4b）：原件交给数据接入转换，这里不解析
+        rel = args.file.as_posix().removeprefix('./')
+        if Path(text_version(rel)).is_file():
+            _print_json({'status': 'use_text_version', 'text': text_version(rel)})
+        else:
+            _print_json({'status': 'no_text_version',
+                         'reason': '这份资料还没有文本版（转换中、暂不支持或转换失败），按未读记下，不要自己解析'})
+        return 2
     result = extract(args.file)
     segments = result.pop('segments')
     if args.anchor:
@@ -140,10 +197,7 @@ def main() -> int:
                              'truncated': start > 0 or len(s['text']) > start + 1000,
                              'next_text_offset': start + 1000 if len(s['text']) > start + 1000 else None} for s in page],
                   next_offset=offset + limit if offset + limit < len(segments) else None)
-    # Keep the CLI JSON protocol independent of application logging configuration.
-    output = logging.Logger('source_extract.json', logging.INFO)
-    output.addHandler(logging.StreamHandler(sys.stdout))
-    output.info(json.dumps(result, ensure_ascii=False))
+    _print_json(result)
     return 0 if result['status'] == 'ok' else 2
 
 

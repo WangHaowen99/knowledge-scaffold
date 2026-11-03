@@ -3,20 +3,39 @@
 State helper — 单一文件管理所有命令的执行锁与进度快照。
 
 所有状态保存在 `.ontology-state/` 下：
-    lock-{command}.json     每个正在执行的命令的锁（含开始时间、阶段、PID、owner_pid）
+    lock-{command}.json     每个正在执行的命令的锁（含开始时间、阶段、PID，
+                            持有者为 owner（Web 后端托管的引擎实例）或 owner_pid）
     progress.json           各阶段完整进度快照（全体命令共用）
+另有 `.onto/run/active.json`：正在执行的命令所属节点与写入范围（节点声明的 produces、writes），
+acquire 时写、release 时删；内核守卫只放行这些路径（方案 D11）。分段建模时（后端在
+`.onto/run/exec.json` 记了这一段）另记 `protect`：这一段以外、已经有了的条目，守卫不让改（详设 4.3）。
+
+锁的持有者：Web 后端每次连接引擎时把实例标识写进 `.onto/run/engine.json`，本进程是
+该后端的子孙时，持有者就是这个引擎实例——同一实例的多次 Bash 调用可续写锁，实例换了
+（回收、重启、改配置、切引擎）旧锁即过期，与后端是不是 1 号进程、引擎是 CLI 子进程
+还是进程内运行都无关。不在后端托管下（终端里直接跑 CLI）时退回按长寿祖先进程号判断。
 
 子命令：
-    check-lock <command>                查询锁状态；输出 ok / locked:{ts}:{phase} /
-                                        stale:{ts}:{phase}（owner 进程已死或锁超 24h）
-    acquire <command> <phase>           写入锁；同会话（owner_pid 相同）覆盖以支持
+    check-lock <command>                查询锁状态；输出 ok / own:{ts}:{phase}（本会话自己拿的）/
+                                        locked:{ts}:{phase} /
+                                        stale:{ts}:{phase}（持有者已不在或锁超 24h）
+    acquire <command> <phase>           写入锁；同会话（持有者相同）覆盖以支持
                                         阶段切换；若另一活跃会话已持有则输出
                                         conflict:{ts}:{phase} 并退出码 2
-    force-release <command>             强制删除锁（用户"清理重来"时使用）
+    recover <command>                   check-lock 输出 locked 时由平台定续做还是重来（不问用户）：
+                                        resume:{phase}（锁归本会话，从该阶段接着做）/ restart（已清理）/ ok
+    force-release <command>             强制删除锁（清理残留）
     release <command>                   正常结束时释放锁
     update-progress <key> <value> …     键值对更新 progress.json
     show-progress                       打印 progress.json
-    detect-stage                        扫描 ontology/ 目录，推断当前建模阶段
+    detect-stage                        按主流程定义推断当前建模阶段
+    check-prereq <command>              命令前置：ok 或 missing:{阶段},{阶段}
+    next-step [阶段]                    /ontology 的「下一步建议」条目（缺省取当前阶段）
+    suggest                             统一下一步（JSON：mode、primary、最多 2 个 secondary），与界面
+                                        建议条、宿主注入同一份（后端写的 .onto/run/flow-state.json）
+
+阶段、命令前置与下一步建议都来自主流程定义 `.claude/flow.yaml`（flow_state.py 解释），
+本文件不再自带阶段表（方案 D12；命令模板按 detect-stage 的 8 个阶段名分支，名字不变）。
 """
 
 import json
@@ -28,10 +47,19 @@ import time
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent))
-import research_review
+import blueprint
+import flow_state
+import onto_metamodel
 
 STATE_DIR = Path('.ontology-state')
 PROGRESS_FILE = STATE_DIR / 'progress.json'
+# Web 后端写入的在线引擎实例标识（见模块说明）
+ENGINE_MARKER = Path('.onto') / 'run' / 'engine.json'
+# Web 后端开始执行一条命令时写的标记（节点、分段、步骤）
+EXEC_MARKER = Path('.onto') / 'run' / 'exec.json'
+# 正在执行的命令与它们的写入范围（节点声明的 produces、writes）：内核守卫只放行这些路径（方案 D11）
+ACTIVE_FILE = Path('.onto') / 'run' / 'active.json'
+ANCESTOR_SCAN_LIMIT = 32
 
 # Any lock older than this many hours is assumed to come from a crashed run.
 STALE_LOCK_HOURS = 24
@@ -122,6 +150,96 @@ def _get_session_pid() -> int:
     return shell_pid
 
 
+def _parent_pid(pid: int):
+    """父进程号；取不到返回 None。Linux 读 /proc（不起子进程），其余平台用 ps。"""
+    try:
+        stat = Path(f'/proc/{pid}/stat').read_text(encoding='utf-8')
+        # 第 2 列进程名可能含空格和括号：从最后一个 ')' 之后取
+        return int(stat.rsplit(')', 1)[1].split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        result = subprocess.run(
+            [shutil.which('ps') or '/bin/ps', '-o', 'ppid=', '-p', str(pid)],
+            capture_output=True, text=True, timeout=2
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return int(result.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+
+def _ancestor_pids() -> list:
+    pids = []
+    pid = os.getpid()
+    for _ in range(ANCESTOR_SCAN_LIMIT):
+        parent = _parent_pid(pid)
+        if not parent or parent in pids:
+            break
+        pids.append(parent)
+        if parent <= 1:
+            break
+        pid = parent
+    return pids
+
+
+def _read_engine_marker():
+    try:
+        data = json.loads(ENGINE_MARKER.read_text(encoding='utf-8'))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not data.get('engine_id'):
+        return None
+    return data
+
+
+def _live_engine_owner():
+    """工作区当前在线引擎实例的持有者标识；没有返回 None。"""
+    data = _read_engine_marker()
+    return f"engine:{data['engine_id']}" if data else None
+
+
+def _session_owner():
+    """本次调用所属会话：返回 (owner, owner_pid)，二者只有一个非空。
+
+    本进程是写下 ENGINE_MARKER 的后端的子孙时，持有者是该引擎实例；在同一工作区里
+    人工跑的脚本不是后端子孙，不会冒用引擎的锁，退回按长寿祖先进程号判断。
+    """
+    data = _read_engine_marker()
+    if data:
+        try:
+            host = int(data.get('host_pid'))
+        except (TypeError, ValueError):
+            host = None
+        if host and host in _ancestor_pids():
+            return f"engine:{data['engine_id']}", None
+    return None, _get_session_pid()
+
+
+def _owner_alive(data: dict):
+    """锁的持有者是否还在：True / False；不带持有者信息的旧锁返回 None。"""
+    owner = data.get('owner')
+    if owner:
+        return owner == _live_engine_owner()
+    owner_pid = data.get('owner_pid')
+    if owner_pid is None:
+        return None
+    try:
+        owner_pid = int(owner_pid)
+    except (TypeError, ValueError):
+        return False
+    # 1 号进程从来不是会话：要么是 init/tini，要么是没加 init 的容器里的后端自己
+    # （那时 Jiuwen 引擎写下的锁持有者就是 1，按孤儿锁处理）
+    if owner_pid <= 1:
+        return False
+    return _is_pid_alive(owner_pid)
+
+
+def _owner_label(data: dict) -> str:
+    return data.get('owner') or f"owner_pid={data.get('owner_pid')}"
+
+
 def _read_lock(path: Path):
     """Return parsed lock dict or None if missing/corrupt."""
     if not path.exists():
@@ -145,11 +263,15 @@ def check_lock(command: str) -> int:
         return 0
     ts = data.get('started_at', 'unknown')
     phase = data.get('phase', 'unknown')
-    owner_pid = data.get('owner_pid')
     age = _lock_age_hours(ts)
-    # Owner process gone → lock is orphaned regardless of age.
-    if owner_pid is not None and not _is_pid_alive(owner_pid):
+    # Owner gone → lock is orphaned regardless of age.
+    if _owner_alive(data) is False:
         print(f'stale:{ts}:{phase}')
+        return 0
+    owner, _ = _session_owner()
+    if owner and data.get('owner') == owner:
+        # 本会话自己拿的锁（上下文压缩后记不清了再查到的就是它）：接着做，不当残留清掉
+        print(f'own:{ts}:{phase}')
         return 0
     if age is not None and age > STALE_LOCK_HOURS:
         print(f'stale:{ts}:{phase}')
@@ -163,11 +285,12 @@ def acquire(command: str, phase: str) -> int:
 
     Behavior:
     - No existing lock → create one.
-    - Same session (owner_pid matches the long-lived ancestor returned by
+    - Same session (same engine instance under the Web backend, otherwise
+      owner_pid matches the long-lived ancestor returned by
       `_get_session_pid()`, typically the Claude process) → overwrite to
       update the phase in place (supports phase transitions across the
       multiple Bash calls that make up a single command run).
-    - Existing lock from a dead owner / no owner_pid (legacy lock) / corrupt
+    - Existing lock from a dead owner / no owner info (legacy lock) / corrupt
       JSON → treat as stale and overwrite (auto-recover from crashes).
     - Existing lock from a different LIVE session → refuse with
       `conflict:{ts}:{phase}` on stdout, recovery hint on stderr, exit code 2.
@@ -176,12 +299,15 @@ def acquire(command: str, phase: str) -> int:
     """
     _ensure_dir()
     path = _lock_path(command)
-    ppid = _get_session_pid()
+    owner, ppid = _session_owner()
     existing = _read_lock(path)
     if existing is not None:
-        existing_owner = existing.get('owner_pid')
+        same_session = (
+            existing.get('owner') == owner if owner
+            else not existing.get('owner') and existing.get('owner_pid') == ppid
+        )
         # Same-session re-acquire (phase transition) is always permitted.
-        if existing_owner is None or existing_owner == ppid or not _is_pid_alive(existing_owner):
+        if same_session or _owner_alive(existing) is not True:
             pass  # fall through to overwrite
         else:
             ts = existing.get('started_at', 'unknown')
@@ -189,7 +315,7 @@ def acquire(command: str, phase: str) -> int:
             print(f'conflict:{ts}:{existing_phase}')
             print(
                 f'另一活跃会话正在持有 {command} 锁'
-                f'（owner_pid={existing_owner}, phase={existing_phase}, started={ts}）。\n'
+                f'（{_owner_label(existing)}, phase={existing_phase}, started={ts}）。\n'
                 f'若确认无其他会话在跑，执行：'
                 f'python3 .claude/scripts/state_helper.py force-release {command}',
                 file=sys.stderr,
@@ -200,10 +326,184 @@ def acquire(command: str, phase: str) -> int:
         'phase': phase,
         'started_at': time.strftime('%Y-%m-%d %H:%M:%S'),
         'pid': os.getpid(),
-        'owner_pid': ppid,
     }
+    if owner:
+        payload['owner'] = owner
+    else:
+        payload['owner_pid'] = ppid
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    _mark_active(command, phase)
     print('ok')
+    return 0
+
+
+# ---- 写入范围（方案 D11）----
+
+
+def _load_active() -> dict:
+    try:
+        data = json.loads(ACTIVE_FILE.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {'commands': {}}
+    if not isinstance(data, dict) or not isinstance(data.get('commands'), dict):
+        return {'commands': {}}
+    return data
+
+
+def _save_active(data: dict) -> None:
+    if not data['commands']:
+        ACTIVE_FILE.unlink(missing_ok=True)
+        return
+    ACTIVE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ACTIVE_FILE.with_name(f'.active.{os.getpid()}.tmp')
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+    os.replace(tmp, ACTIVE_FILE)
+
+
+def _node_patterns(node: dict) -> list:
+    allow = []
+    for key in ('produces', 'writes'):
+        for item in node.get(key) or []:
+            pattern = str(item.get('path') if isinstance(item, dict) else item)
+            if pattern and pattern not in allow:
+                allow.append(pattern)
+    return allow
+
+
+def _slice_node(flow: dict, command: str):
+    """后端开始执行时记的是按段的节点、这条命令是它的一步（如带分段的规则提取、场景走查）时返回那个节点。"""
+    try:
+        marker = json.loads(EXEC_MARKER.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    node = next((item for item in flow.get('nodes') or [] if item.get('id') == (marker or {}).get('node')), None)
+    if node is None or not node.get('per_slice'):
+        return None
+    commands = {str(step.get('command') or '').lstrip('/').removeprefix('ontology-') for step in node.get('steps') or []}
+    return node if command in commands else None
+
+
+def _command_scope(command: str) -> tuple:
+    """命令所属节点与它的写入范围（produces + writes）；不属于任何节点时为 (None, None)：不限范围。
+
+    这一次是按段的节点的一步时，节点取按段的那个、范围是两者的并集（规则提取还会写指标，场景走查写场景文件）。"""
+    try:
+        flow = _flow()
+    except (OSError, ValueError):
+        return None, None
+    node_id = flow_state.command_node(flow, command)
+    node = next((item for item in flow.get('nodes') or [] if item.get('id') == node_id), None)
+    sliced = _slice_node(flow, command)
+    if sliced is not None:
+        allow = _node_patterns(node) if node is not None else []
+        allow += [pattern for pattern in _node_patterns(sliced) if pattern not in allow]
+        return sliced['id'], allow
+    if node is None:
+        return None, None
+    return node_id, _node_patterns(node)
+
+
+def _changed_here() -> set:
+    """这份副本里相对主线分叉点改过的文件（含没提交、没跟踪的）：这一轮自己建的、改的不算段外。"""
+    try:
+        head = str(json.loads(FLOW_STATE_FILE.read_text(encoding='utf-8')).get('mainline_head') or '')
+    except (OSError, ValueError):
+        head = ''
+    base = ((_git_quiet('merge-base', 'HEAD', head) or '').strip() if head else '') or 'HEAD'
+    changed = (_git_quiet('-c', 'core.quotepath=false', 'diff', '--name-only', base) or '').splitlines()
+    changed += (_git_quiet('-c', 'core.quotepath=false', 'ls-files', '--others', '--exclude-standard') or '').splitlines()
+    return {line.strip() for line in changed if line.strip()}
+
+
+def _slice_protect(node_id: str, allow: list) -> tuple:
+    """分段建模：(分段, 段外已有的条目)。不是按段的节点、全量模式、不知道哪一段时 (None, [])。"""
+    slice_id = blueprint.current_slice()
+    if not slice_id or slice_id == blueprint.FULL_SLICE_ID:
+        return None, []
+    try:
+        flow = _flow()
+        node = next((item for item in flow.get('nodes') or [] if item.get('id') == node_id), None)
+        doc = blueprint.load(Path('.'))
+    except (OSError, ValueError):
+        return None, []
+    item = blueprint.find_slice(doc, slice_id)
+    if node is None or not node.get('per_slice') or blueprint.mode(doc) != 'sliced' or item is None:
+        return None, []
+    own = set(blueprint.member_paths(item))
+    # 这一段的场景（一个操作一份）也是这一段的
+    own |= {f'ontology/testcase/{onto_metamodel.encode_filename(name)}.md' for name in item.get('operations') or []}
+    changed = _changed_here()
+    protect = []
+    for pattern in allow:
+        directory = pattern.rsplit('/', 1)[0] if pattern.endswith('/*') else ''
+        if not directory.startswith('ontology/') or not Path(directory).is_dir():
+            continue
+        for path in sorted(Path(directory).glob('*.md')):
+            rel = path.as_posix()
+            if path.name.lower() != 'index.md' and rel not in own and rel not in changed and rel not in protect:
+                protect.append(rel)
+    return slice_id, protect
+
+
+def _mark_active(command: str, phase: str) -> None:
+    node_id, allow = _command_scope(command)
+    data = _load_active()
+    spec = {'node': node_id, 'allow': allow, 'phase': phase, 'since': time.strftime('%Y-%m-%d %H:%M:%S')}
+    if node_id and allow:
+        slice_id, protect = _slice_protect(node_id, allow)
+        if slice_id:
+            spec.update(slice=slice_id, protect=protect)
+    data['commands'][command] = spec
+    try:
+        _save_active(data)
+    except OSError:
+        pass  # 写不了时守卫按不限范围处理，不挡命令
+
+
+def _clear_active(command: str) -> None:
+    data = _load_active()
+    if command in data['commands']:
+        data['commands'].pop(command)
+        try:
+            _save_active(data)
+        except OSError:
+            pass
+
+
+# 停在这些阶段的锁看不出做到哪一步（刚开始、在等用户回复、旧锁），续不了，只能清理重来
+RESTART_PHASES = {'start', 'default', 'confirm', 'unknown', ''}
+
+
+def recover(command: str) -> int:
+    """上次没做完的同名命令（check-lock 输出 locked 时）怎么办，由平台按状态定、不问用户（F4c）：
+    锁停在有名字的阶段 → 续做，锁归这次调用的会话，输出 `resume:{phase}`；
+    看不出做到哪 → 清理重来，输出 `restart`；没有锁 → `ok`。"""
+    path = _lock_path(command)
+    data = _read_lock(path)
+    if data is None:
+        if path.exists():
+            path.unlink()
+            _clear_active(command)
+            print('restart')
+        else:
+            print('ok')
+        return 0
+    phase = str(data.get('phase') or '')
+    if phase in RESTART_PHASES:
+        path.unlink()
+        _clear_active(command)
+        print('restart')
+        return 0
+    owner, ppid = _session_owner()
+    payload = {key: value for key, value in data.items() if key not in ('owner', 'owner_pid')}
+    payload['pid'] = os.getpid()
+    if owner:
+        payload['owner'] = owner
+    else:
+        payload['owner_pid'] = ppid
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    _mark_active(command, phase)
+    print(f'resume:{phase}')
     return 0
 
 
@@ -211,6 +511,7 @@ def force_release(command: str) -> int:
     path = _lock_path(command)
     if path.exists():
         path.unlink()
+    _clear_active(command)
     print('ok')
     return 0
 
@@ -225,6 +526,7 @@ def release(command: str) -> int:
     path = _lock_path(command)
     if path.exists():
         path.unlink()
+    _clear_active(command)
     data = _load_progress()
     data['last_command'] = command
     data['stage'] = _compute_stage()
@@ -261,117 +563,28 @@ def show_progress() -> int:
     return 0
 
 
-# 阶段推断
-# 资料分析（research）保持启用，是常规建模起点之一。提取已拆为 object / operation
-# 两个命令，阶段终点以 operation 文档存在为准。
+# 阶段推断：全部按主流程定义（flow.yaml）计算，见 flow_state.py。
 # `资料分析待核验`：报告已落盘但没通过 research_checker 的内容验收。报告存在不等于
 # 内容可用，所以它独立成一个阶段，不并入 `资料分析完成`（见 research_review.py）。
-STAGE_ORDER = [
-    ('未开始', '未开始'),
-    ('资料分析待核验', '资料分析待核验'),
-    ('资料分析完成', '资料分析完成'),
-    ('流程图就绪', '流程图就绪'),
-    ('对象已提取', '对象已提取'),
-    ('逻辑已提取', '逻辑已提取'),
-    ('校验待审阅', '校验待审阅'),
-    ('完成', '完成'),
-]
+_FLOW = None
 
 
-def _has_md_files(path: Path) -> bool:
-    return path.exists() and any(f for f in path.rglob('*.md') if f.name.lower() != 'index.md')
-
-
-def _has_drawio_files(path: Path) -> bool:
-    return path.exists() and any(path.glob('*.drawio'))
-
-
-# 每个命令的前置阶段要求。
-# 注意：
-# - extract-object 只要求"有资料分析报告或流程图之一"。`未开始` 状态会触发
-#   跳步守卫，提示用户先画流程图或显式做资料分析（/ontology-research）。
-# - extract-operation 要求对象已提取；逻辑提取完成即可校验、生成代码。
-COMMAND_PREREQS = {
-    'research': [],
-    'flowchart': [],
-    'extract-object': ['资料分析完成'],
-    'extract-operation': ['对象已提取'],
-    'validate': ['逻辑已提取', '对象已提取'],
-    'mock': ['对象已提取'],
-    'trace': ['逻辑已提取'],
-    'codegen': ['逻辑已提取'],
-    'codegen-scan': ['逻辑已提取'],
-    'solver-evaluator': ['对象已提取'],
-    'overview': ['对象已提取'],
-    'impact': ['对象已提取'],
-    'query': ['对象已提取'],
-    'update': ['逻辑已提取', '对象已提取'],
-    'evolution': ['对象已提取'],
-}
-
-STAGE_SORT = {
-    '未开始': 0,
-    '资料分析待核验': 1,
-    '资料分析完成': 2,
-    '流程图就绪': 3,
-    '对象已提取': 4,
-    '逻辑已提取': 5,
-    '校验待审阅': 6,
-    '完成': 7,
-}
-
-STAGE_NEXT_COMMAND = {
-    '未开始': ('/ontology-research 或 /ontology-flowchart', '资料分析或直接画流程图'),
-    '资料分析待核验': ('python3 .claude/scripts/research_checker.py', '核验资料分析报告内容后才能提取对象'),
-    '资料分析完成': ('/ontology-flowchart 或 /ontology-extract-object', '可选画流程图或直接提取对象'),
-    '流程图就绪': ('/ontology-extract-object', '提取业务对象'),
-    '对象已提取': ('/ontology-extract-operation', '继续提取业务逻辑'),
-    '逻辑已提取': ('/ontology-validate', '进入校验'),
-}
+def _flow() -> dict:
+    global _FLOW
+    if _FLOW is None:
+        _FLOW = flow_state.load_flow()
+    return _FLOW
 
 
 def _compute_stage() -> str:
-    research_has = _has_md_files(Path('research'))
-    diagrams_has = _has_drawio_files(Path('ontology/diagrams'))
-    objects_has = _has_md_files(Path('ontology/object'))
-    operation_has = _has_md_files(Path('ontology/operation')) or _has_md_files(Path('ontology/logic'))
-    reports_path = Path('reports')
-    reports_has_pending = False
-    if reports_path.exists():
-        for f in reports_path.glob('*.md'):
-            if '[ ]' in f.read_text(encoding='utf-8', errors='ignore'):
-                reports_has_pending = True
-                break
-    progress = _load_progress()
-    validate_done = bool(progress.get('validate_last_run'))
     # 高阶段优先：即便上游产物被删（/ontology-update 中断、用户手动清理），
     # 已抵达的最高阶段仍可见，状态机不再误退回 '未开始'。
-    if operation_has and reports_has_pending:
-        return '校验待审阅'
-    if operation_has and validate_done:
-        return '完成'
-    if operation_has:
-        return '逻辑已提取'
-    if objects_has:
-        return '对象已提取'
-    if diagrams_has:
-        return '流程图就绪'
-    if research_has:
-        # 报告以内容验收为准：没有有效回执时只到 `资料分析待核验`，不放行对象提取。
-        return '资料分析完成' if research_review.accepted(Path('.')) else '资料分析待核验'
-    return '未开始'
+    return flow_state.legacy_stage(_flow(), Path('.'))
 
 
 def check_prereq(command: str) -> int:
     """输出 ok 或 missing:{阶段},{阶段}"""
-    reqs = COMMAND_PREREQS.get(command, [])
-    stage = _compute_stage()
-    current_level = STAGE_SORT.get(stage, 0)
-    missing = []
-    for req in reqs:
-        req_level = STAGE_SORT.get(req, 0)
-        if current_level < req_level:
-            missing.append(req)
+    missing = flow_state.missing_prereqs(_flow(), command, _compute_stage())
     if missing:
         print(f'missing:{",".join(missing)}')
         return 0
@@ -379,8 +592,78 @@ def check_prereq(command: str) -> int:
     return 0
 
 
+def next_step(stage: str | None = None) -> int:
+    """逐行打印某阶段的「下一步建议」条目（/ontology 原样展示）。"""
+    for line in flow_state.next_step_lines(_flow(), stage or _compute_stage()):
+        print(line)
+    return 0
+
+
 def detect_stage() -> int:
     print(_compute_stage())
+    return 0
+
+
+# ---- 统一下一步（方案 D15、D16；详设 6.10）----
+
+FLOW_STATE_FILE = Path('.onto') / 'run' / 'flow-state.json'
+
+
+def _git_quiet(*args) -> str | None:
+    try:
+        result = subprocess.run(['git', *args], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def _local_changes(mainline_head: str) -> bool:
+    """这份副本里有这一轮还没合入的改动（含没提交的、没跟踪的文件）。
+
+    和副本与主线的分叉点比，不和主线最新比：这一轮里你在网页上的保存让主线前进了，副本没有那些改动，
+    不能当成副本改了东西。资料区与锁文件不算。"""
+    if not mainline_head:
+        return False
+    base = (_git_quiet('merge-base', 'HEAD', mainline_head) or '').strip() or mainline_head
+    diff = _git_quiet('diff', '--name-only', base, '--', '.', ':(exclude).onto')
+    untracked = _git_quiet('ls-files', '--others', '--exclude-standard')
+    return bool((diff or '').strip() or (untracked or '').strip())
+
+
+def _locked_nodes(flow: dict) -> set:
+    nodes = set()
+    for path in STATE_DIR.glob('lock-*.json') if STATE_DIR.is_dir() else []:
+        node = flow_state.command_node(flow, path.name[len('lock-'):-len('.json')])
+        if node:
+            nodes.add(node)
+    return nodes
+
+
+def suggest_payload() -> dict:
+    """下一步建议（契约 7.8 Suggestions）：节点状态取后端写的 `.onto/run/flow-state.json`（执行记录、变更集、
+    指纹算出的那份），再叠上这份副本里这一轮还没合入的改动；算法与后端、宿主注入是同一个 flow_state.suggest。"""
+    flow = _flow()
+    try:
+        data = json.loads(FLOW_STATE_FILE.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        data = {}
+    states = {key: dict(value) for key, value in (data.get('nodes') or {}).items() if isinstance(value, dict)}
+    context = dict(data.get('context') or {})
+    root = Path('.')
+    probes = flow_state.evaluate(flow, root)
+    hits = flow_state.node_hits(flow, root, probes)
+    context['stage'] = flow_state.legacy_stage(flow, root, probes)
+    changed = _local_changes(str(data.get('mainline_head') or ''))
+    flow_state.overlay_pending(flow, states, hits if changed else {}, _locked_nodes(flow))
+    if changed:
+        changeset = context.get('changeset') or {'id': 'current'}
+        context['changeset'] = {**changeset, 'state': 'pending_confirm'}
+    return flow_state.suggest(flow, states, context)
+
+
+def suggest() -> int:
+    """输出 JSON（1 个主推，最多 2 个次选）；命令收尾按它渲染「下一步建议」，最多 3 条。"""
+    print(json.dumps(suggest_payload(), ensure_ascii=False))
     return 0
 
 
@@ -409,6 +692,9 @@ def main():
     if cmd == 'force-release':
         name = need('force-release <command>')
         return 1 if name is None else force_release(name)
+    if cmd == 'recover':
+        name = need('recover <command>')
+        return 1 if name is None else recover(name)
     if cmd == 'update-progress':
         return update_progress(args)
     if cmd == 'show-progress':
@@ -418,6 +704,10 @@ def main():
     if cmd == 'check-prereq':
         name = need('check-prereq <command>')
         return 1 if name is None else check_prereq(name)
+    if cmd == 'next-step':
+        return next_step(args[0] if args else None)
+    if cmd == 'suggest':
+        return suggest()
     print(f'unknown subcommand: {cmd}', file=sys.stderr)
     return 1
 

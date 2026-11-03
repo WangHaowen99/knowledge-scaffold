@@ -45,7 +45,7 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent))
-import check_eval_data
+import table_profile
 import ontology_checker
 import verify_artifacts
 
@@ -307,7 +307,7 @@ def check(root: Path, revision_id: str | None) -> tuple[dict, int]:
         report.update(status='no_changes', reason='候选与确认版本相同，没有可接受的修改')
     else:
         try:
-            tables, profiles = check_eval_data.load_registered_tables(root)
+            tables, profiles = table_profile.load_registered_tables(root)
         except ValueError as error:
             report.update(status='unverifiable', reason=f'无法核验：{error}')
             _write_json(folder / 'check.json', report)

@@ -4,6 +4,7 @@
 Claude 引擎的 hook 语义逐字一致。
 """
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -13,8 +14,18 @@ from app.services.engines.jiuwen_assets import JiuwenAssetLoader, run_hooks_sync
 ASSETS_DIR = Path(config.ASSETS_DIR)
 
 
+_ASSEMBLED: dict[str, Path] = {}
+
+
 def make_loader() -> JiuwenAssetLoader:
-    return JiuwenAssetLoader(ASSETS_DIR)
+    """读真实的装配目录（core 包 + 内核守卫），与项目工作区 .claude 指向的同构。"""
+    import tempfile
+
+    from tests.pack_helpers import assemble_real
+
+    if "dir" not in _ASSEMBLED:
+        _ASSEMBLED["dir"] = assemble_real(Path(tempfile.mkdtemp(prefix="onto-jiuwen-assets-")))
+    return JiuwenAssetLoader(dotclaude=_ASSEMBLED["dir"])
 
 
 def test_expand_command_substitutes_arguments():
@@ -41,8 +52,8 @@ def _git_workspace(tmp_path: Path) -> Path:
     ws = tmp_path / "ws"
     ws.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
-    # 守卫脚本经 .claude 相对路径自定位（与真实工作区同构：符号链接到资产）
-    (ws / ".claude").symlink_to(ASSETS_DIR / "workspace-toolkit")
+    # 守卫脚本经 .claude 相对路径自定位（与真实工作区同构：符号链接到装配目录）
+    (ws / ".claude").symlink_to(make_loader().toolkit)
     (ws / "resource").mkdir()
     (ws / "resource" / "材料.md").write_text("源材料", encoding="utf-8")
     return ws
@@ -119,17 +130,23 @@ def test_hooks_deny_self_invented_ontology_dir(tmp_path):
 
 
 def test_hooks_restrict_evolution_writes_to_packaged_dirs(tmp_path):
-    """评测演进期：写入必须落在会进知识包的目录，否则 consumer 看不到。"""
+    """反馈演进期：写入必须落在会进知识包的目录，否则 consumer 看不到。"""
     loader = make_loader()
     entries = loader.pre_tool_use_hooks()
     ws = _git_workspace(tmp_path)
-    state = ws / ".ontology-state"
-    state.mkdir()
-    (state / "lock-evolution.json").write_text("{}", encoding="utf-8")
+    # 反馈演进节点声明的写入范围（state_helper acquire evolution 写进 .onto/run/active.json，方案 D11）
+    active = ws / ".onto" / "run" / "active.json"
+    active.parent.mkdir(parents=True)
+    active.write_text(json.dumps({"commands": {"evolution": {"node": "evo.evolution", "allow": [
+        "ontology/object/*", "ontology/operation/*", "ontology/logic/*", "ontology/rule/*", "ontology/metric/*",
+        "ontology/scripts/*", "ontology/testcase/*", "ontology/data-mock/*"]}}}), encoding="utf-8")
+    # 守卫只认锁还在的命令（审查第 9 条）：这把锁不带持有者信息，按还在跑
+    (ws / ".ontology-state").mkdir(exist_ok=True)
+    (ws / ".ontology-state" / "lock-evolution.json").write_text(json.dumps({"command": "evolution"}), encoding="utf-8")
 
     for rel in ("ontology/knowledge/案例.md", "ontology/action/动作.md"):
         reason = run_hooks_sync(entries, "write_file", {"file_path": rel, "content": "x"}, ws)
-        assert reason and "只能落在会打包的目录" in reason, rel
+        assert reason and ("只能写它声明的范围" in reason or "不允许自创目录" in reason), rel
 
     for rel in ("ontology/rule/场景规则.md", "ontology/object/订单.md", "ontology/testcase/用例.md"):
         assert run_hooks_sync(

@@ -19,7 +19,7 @@ import tempfile
 import time
 
 import check_diagrams
-import check_eval_data
+import table_profile
 import ontology_checker
 
 VERSION = 1
@@ -32,7 +32,8 @@ RECEIPT_DIR = Path('.ontology-state/artifact-reviews')
 
 
 def _contained(root: Path, path: Path) -> Path:
-    if not path.resolve().is_relative_to(root.resolve()):
+    # 助手副本里 resource 是平台挂的链接，按链接目标判断（同 table_profile.within_workspace）
+    if not table_profile.within_workspace(root, path):
         raise ValueError('核验路径越出工作区')
     return path
 
@@ -74,7 +75,6 @@ def input_digest(root: Path, mode: str) -> str:
                 raise ValueError('资料用途配置不可解析')
             paths += [root / rel for rel, value in directives.items()
                       if isinstance(value, dict) and value.get('purpose') == 'schema']
-        paths += [root / rel for rel in check_eval_data.uploaded_eval_files(root)]
     digest = hashlib.sha256(f'{VERSION}:{mode}'.encode())
     for path in sorted(set(paths)):
         _contained(root, path)
@@ -89,6 +89,9 @@ def input_digest(root: Path, mode: str) -> str:
     # Checker upgrades invalidate earlier receipts without touching project data.
     for path in sorted(Path(__file__).parent.glob('*.py')):
         digest.update(path.name.encode() + b'\0' + path.read_bytes())
+    if mode == 'diagrams' and not (root / check_diagrams.DEFAULT_LEGEND).is_file():
+        packaged = Path(check_diagrams.PACKAGED_LEGEND)
+        digest.update(b'legend\0' + (packaged.read_bytes() if packaged.is_file() else b'<missing>'))
     return digest.hexdigest()
 
 
@@ -96,7 +99,7 @@ def _check(root: Path, mode: str, paths: list[Path]) -> list[dict]:
     if mode == 'diagrams':
         issues = []
         for path in paths:
-            report = check_diagrams.check_diagram(path, root / check_diagrams.DEFAULT_LEGEND)
+            report = check_diagrams.check_diagram(path, check_diagrams.find_legend(root))
             for message in report['issues']:
                 issues.append(dict(file=path.relative_to(root).as_posix(), severity='错误',
                                    category='流程图结构', message=message, source='规则检查'))
@@ -105,7 +108,7 @@ def _check(root: Path, mode: str, paths: list[Path]) -> list[dict]:
     # The existing duplicate-stem check prevents ambiguous path/stem identities passing.
     # A supplied but unreadable table is not the same as having no table.
     # Load once (headers and value profiles) and reuse in the checker instead of silently skipping field checks.
-    tables, profiles = check_eval_data.load_registered_tables(root)
+    tables, profiles = table_profile.load_registered_tables(root)
     issues = ontology_checker.run_checks(
         root / 'ontology', target_files=[p.stem for p in paths], include_mock=True,
         tables=tables, strict_targets=True, profiles=profiles)

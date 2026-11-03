@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -21,11 +23,14 @@ from pathlib import Path
 from typing import Any
 
 from .. import config
-from . import conversation_store, error_log, personal_model_settings
+from ..governance import context, telemetry
+from . import audit, conversation_store, error_log, notifications, personal_model_settings, project_events
 from .conversation_store import DEFAULT_ID as DEFAULT_CONVERSATION
 from .engines import EngineContext, get_engine_class
 from .engines.base import CONFIG_ERROR, FRIENDLY_ERROR, safe_json as _safe_json
-from .workspace import confirmed_goal
+from .session_host import fingerprint as _fingerprint
+from .session_host import injection, timeline, turns
+from .session_host.views import iso as views_iso
 
 # 兼容重导出：既有测试与调用方从本模块取这些符号（引擎实现已移至 engines/claude.py）
 from .engines.claude import (  # noqa: F401
@@ -35,6 +40,8 @@ from .engines.claude import (  # noqa: F401
     _tool_result_excerpt,
     normalize_message,
 )
+
+_log = logging.getLogger(__name__)
 
 
 def _history_path(project_id: str, conversation_id: str = DEFAULT_CONVERSATION) -> Path:
@@ -104,6 +111,15 @@ def visible_history_start(events: list[dict], limit: int = VISIBLE_HISTORY_TAIL)
     return oldest_visible
 
 
+def _interrupt_events(reason: str, message: str) -> list[dict]:
+    """中断标记：中断事件 + idle 终态（重启自愈与停机共用同一格式）。"""
+    now = time.time()
+    return [
+        {"type": "session_interrupted", "reason": reason, "message": message, "ts": now},
+        {"type": "session_state", "state": "idle", "ts": now},
+    ]
+
+
 def _reconcile_stale_history(
     project_id: str, conversation_id: str = DEFAULT_CONVERSATION
 ) -> list[dict] | None:
@@ -118,17 +134,9 @@ def _reconcile_stale_history(
             break
     if state not in ("running", "queued", "connecting"):
         return None
-    now = time.time()
-    patch = [
-        {
-            "type": "session_interrupted",
-            "reason": "stale",
-            "message": "会话进程已重启，上一轮未正常结束，已标记为中断",
-            "ts": now,
-            "seq": len(events),
-        },
-        {"type": "session_state", "state": "idle", "ts": now, "seq": len(events) + 1},
-    ]
+    patch = _interrupt_events("stale", "会话进程已重启，上一轮未正常结束，已标记为中断")
+    for offset, event in enumerate(patch):
+        event["seq"] = len(events) + offset
     try:
         with open(_history_path(project_id, conversation_id), "a", encoding="utf-8") as f:
             for event in patch:
@@ -136,6 +144,48 @@ def _reconcile_stale_history(
     except OSError:
         return None
     return events + patch
+
+
+def repair_history(project_id: str, conversation_id: str) -> int:
+    """启动时（没有在线会话）修一条对话的历史：尾部停在运行中的补中断与空闲，
+    没回复的确认卡、决策卡补失效。返回补了几处。"""
+    count = 1 if _reconcile_stale_history(project_id, conversation_id) is not None else 0
+    events = load_history(project_id, conversation_id)
+    resolved = {e.get("request_id") for e in events if e.get("type") == "permission_resolved"}
+    for event in events:
+        if event.get("type") == "permission_request" and event.get("request_id") not in resolved:
+            resolved.add(event.get("request_id"))
+            append_history(project_id, conversation_id, {"type": "permission_resolved",
+                                                         "request_id": event.get("request_id"), "behavior": "expired"})
+            count += 1
+    closed = {(e.get("payload") or {}).get("question_id") for e in events
+              if e.get("type") in ("question_answered", "question_withdrawn")}
+    for event in events:
+        question_id = (event.get("payload") or {}).get("question_id") if event.get("type") == "question_asked" else None
+        if question_id and question_id not in closed:
+            closed.add(question_id)
+            append_history(project_id, conversation_id, {
+                "type": "question_withdrawn",
+                "payload": {"question_id": question_id, "reason": "服务重启"},
+            })
+            count += 1
+    return count
+
+
+def append_history(project_id: str, conversation_id: str, record: dict, watchers=()) -> dict:
+    """不经在线会话往历史追加一条记录（序号 = 当前行数）；写不了时只推给在线订阅者。"""
+    events = load_history(project_id, conversation_id)
+    record = {**record, "ts": record.get("ts") or time.time(), "seq": len(events)}
+    try:
+        path = _history_path(project_id, conversation_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    for queue in list(watchers):
+        queue.put_nowait(record)
+    return record
 
 
 def _meta_path(project_id: str, conversation_id: str = DEFAULT_CONVERSATION) -> Path:
@@ -186,7 +236,17 @@ def clear_resume_id(project_id: str, conversation_id: str = DEFAULT_CONVERSATION
 
 
 def purge_history(project_id: str) -> None:
-    """删除项目时清除全部会话的事件历史与续接点：永久删除不留可回放的对话。"""
+    """删除项目时清除全部会话的事件历史与续接点：永久删除不留可回放的对话。
+
+    删之前先把历史里还没入账的用量记进配额台账（台账在数据目录 governance/ 下，不随项目删除），
+    否则最后一轮的用量随历史一起没了，删项目就能绕开 token 上限。
+    """
+    from ..governance import quota
+
+    try:
+        quota.service().sync()
+    except Exception:  # noqa: BLE001 - 入账失败不挡删除
+        _log.warning("删除项目 %s 前用量入账失败", project_id, exc_info=True)
     conversation_store.purge(project_id)
 
 
@@ -194,6 +254,10 @@ def purge_history(project_id: str) -> None:
 # 超时即硬终止引擎（续接点保留，下一条消息 resume）——保证"停止"按钮总能停
 INTERRUPT_TIMEOUT_SECONDS = 10
 KILL_TIMEOUT_SECONDS = 5
+# 停机时回收全部引擎的总时长上限。docker 停机宽限期 30 秒，uvicorn 先等连接关闭最多
+# 3 秒（run.py），这里再留 20 秒，合计控制在 25 秒内，不被宽限期后的 SIGKILL 截断
+SHUTDOWN_BUDGET_SECONDS = 20
+SHUTDOWN_INTERRUPT_MESSAGE = "服务停机，本轮未正常结束，已标记为中断"
 
 
 class SessionError(Exception):
@@ -210,6 +274,12 @@ class PendingPermission:
     title: str | None
     description: str | None
     future: asyncio.Future = field(repr=False, default=None)
+    # 决策卡（AskUserQuestion）：拆成的问题与已收到的回答（问题 ID → 回答）
+    questions: list = field(default_factory=list)
+    answers: dict = field(default_factory=dict)
+    # 资料分析里拿掉的流程走向问题（F3）：原始提问与已定的回答（原问题 → 回答），交回引擎时合进去
+    full_input: dict | None = None
+    preset: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -229,18 +299,52 @@ class Session:
     resume_attempted: bool = False
     last_activity: float = field(default_factory=time.time)
     round_base_commit: str = ""  # 本轮起点 HEAD，用于 result 后产出"产物变更"事件
+    # 本轮起点助手副本的树（含没提交的文件，跟上主线之后取）：产物卡只按助手这一轮的改动出
+    round_base_tree: str = ""
+    # 引擎连接时的工作目录：和这一轮的工作目录（副本或退回的主线工作区）不同就重连（审查第 7 条）
+    engine_cwd: Path | None = None
     discarded: bool = False  # 项目已删除：事件不再落盘，也不再申请槽位
     # 引擎绑定的会话：决定事件历史写到哪份文件、续接哪个 token
     conversation_id: str = DEFAULT_CONVERSATION
     sending: int = 0  # 处理中的 send() 数；期间不可回收或换绑，否则消息会落到已丢弃的会话上
     # 引擎使用谁的模型配置：用户名 = 该用户的个人 Key；"" = 管理员配置（原行为）
     model_owner: str = ""
+    # 已交给引擎、还没等到 result 的消息数（引擎内积压的也算）
+    turns_in_flight: int = 0
+    # 运行中模型配置变了：等手头的轮次都出 result 再断开，下一条消息按新配置重连
+    reload_pending: bool = False
+    # 你正在打断：等引擎停下期间这一轮可能先出 result，收尾时工作过程记为打断、执行记录留给打断处理
+    interrupting: bool = False
     # Claude CLI 自报的会话状态（running / idle / requires_action）；None = 该引擎不上报
     cli_state: str | None = None
     # 主轮已结束但 CLI 仍在运行（后台子代理未结束、接续轮次未处理）：等它报 idle 再置空闲
     awaiting_cli_idle: bool = False
     # 用户点了停止：之后的 result 直接置空闲，不再等 CLI
     interrupt_requested: bool = False
+    # 引擎连上时的会话配置指纹（session_host/fingerprint.py）与等待生效的变化项
+    fingerprint: Any = None
+    pending_changes: list = field(default_factory=list)
+    # 会话宿主（session_host/turns.py、timeline.py）：引擎实例 ID、这一轮、这条对话里开着的执行
+    engine_instance: str = ""
+    turn: Any = None
+    turn_title: str = ""
+    turn_started_at: float | None = None
+    exec_id: str | None = None
+    # 运行中收下、要等前一步结束才开始的消息（原文、页面命令任务 ID）：前一轮出 result 时接上
+    deferred: list = field(default_factory=list)
+    # 出错卡（EC-04）：最近一次留档的错误编号、连续重试次数、出错那一轮的消息（S-14 重试用）
+    last_error_id: str | None = None
+    retries: int = 0
+    last_prompt: str = ""
+    last_day: str = ""
+    # 刚被打断：这一轮随后出的 result 不覆盖「打断之后」的建议条
+    keep_suggestions: bool = False
+    # 自主构建（方案 B13）：这条对话正在跑的运行；运行中不驱逐、不回收，确认卡由策略作答，不出续跑卡
+    run_id: str | None = None
+    # 状态变了通知会话池（自主构建的运行器按条件等这一轮结束）
+    on_change: Any = field(default=None, repr=False)
+    # 一轮出了 result、收尾（执行记录、变更集）还没做完：这期间状态已是 idle，等它的不能当成这一轮结束了
+    finishing: bool = False
 
     @property
     def client(self) -> Any:
@@ -265,11 +369,24 @@ class Session:
                 pass  # 落盘失败不阻断会话
         for queue in list(self.subscribers):
             queue.put_nowait(event)
+        if event.get("type") in notifications.SESSION_EVENT_TYPES and not self.discarded:
+            # 通知中心（A-13）：一轮跑完、要你回答、出错，发给项目所有者
+            notifications.session_event(self.project_id, self.conversation_id, event,
+                                        owner=project_owner(self.project_id))
 
-    def set_state(self, state: str) -> None:
+    def set_state(self, state: str, reason: str | None = None) -> None:
         if self.state != state:
             self.state = state
-            self.broadcast({"type": "session_state", "state": state})
+            if state == "running":
+                self.turn_started_at = self.turn_started_at or time.time()
+            elif state in ("idle", "closed", "error"):
+                self.turn_started_at = None
+            self.broadcast({"type": "session_state", "state": state, "turn_started_at": self.turn_started_at,
+                            "reason": reason})
+            if not self.discarded:
+                project_events.conversation_changed(self.project_id, self.conversation_id)
+            if self.on_change is not None:
+                self.on_change()
 
     def on_turn_result(self) -> None:
         """主轮结束。CLI 不上报状态、已报 idle 或用户点了停止时置空闲；
@@ -291,6 +408,15 @@ class Session:
             # CLI 自行开始了接续轮次（如用户停止后，后台子代理结束触发接续）
             self.set_state("running")
 
+    def show_state(self, state: str) -> None:
+        """只给界面看的状态（等你回答 waiting_user）：不改会话池调度用的 state。"""
+        self.broadcast({"type": "session_state", "state": state, "turn_started_at": self.turn_started_at})
+
+    def current_turn(self) -> Any:
+        if self.turn is None:
+            self.turn = timeline.Turn.new(self.turn_title)
+        return self.turn
+
     def is_connecting(self) -> bool:
         return self.connect_task is not None and not self.connect_task.done()
 
@@ -303,7 +429,35 @@ def _recyclable(session: "Session") -> bool:
         and not session.pending_permissions
         and not session.pending_prompts
         and not session.sending
+        and not session.run_id
     )
+
+
+def _unfinished(session: "Session") -> bool:
+    """有没跑完的轮：在跑、排队，或消息已收下但引擎还没接走。"""
+    return session.state in ("running", "queued") or bool(session.pending_prompts)
+
+
+# 会话层中断原因 → 执行记录的中断原因
+_EXEC_REASONS = {"shutdown": "shutdown", "ops_disconnect": "ops", "stale": "restart", "user": "user",
+                 "engine_exit": "engine_exit", "recycled": "recycled"}
+
+
+def _mark_interrupted(session: "Session", reason: str, message: str) -> None:
+    """停机、运维断开：这一轮写中断标记；开着的执行记为中断，并在对话里放续跑卡。"""
+    if session.turn is not None and session.turn.steps:
+        session.turn.finish("interrupted")
+        session.broadcast(session.turn.progress_record())
+    session.turn = None
+    record, card = turns.interrupt_exec(session, _EXEC_REASONS.get(reason, "engine_exit"), card=not session.run_id)
+    now = time.time()
+    session.broadcast({"type": "session_interrupted", "reason": reason, "message": message, "ts": now,
+                       **turns.interrupted_fields(record)})
+    if card is not None:
+        session.broadcast(card)
+    session.broadcast({"type": "session_state", "state": "idle", "ts": now})
+    session.state = "idle"
+    session.turn_started_at = None
 
 
 def _bound_to(session: "Session | None", conversation_id: str) -> bool:
@@ -322,11 +476,6 @@ def _busy(session: "Session") -> bool:
         or bool(session.pending_permissions)
         or session.sending > 0
     )
-
-
-def _busy_for_owner_switch(session: "Session") -> bool:
-    """本轮未结束（含积压待发的消息）：不能换模型配置，否则别人的消息会用你的 Key 发出。"""
-    return _busy(session) or bool(session.pending_prompts)
 
 
 def _expire_orphan_permissions(session: "Session") -> None:
@@ -352,6 +501,20 @@ def _expire_orphan_permissions(session: "Session") -> None:
                 "behavior": "expired",
             }
         )
+    # 决策卡同理：问题撤回（契约 EC-34）
+    closed = {
+        (e.get("payload") or {}).get("question_id")
+        for e in session.events
+        if e.get("type") in ("question_answered", "question_withdrawn")
+    }
+    for event in list(session.events):
+        if event.get("type") != "question_asked":
+            continue
+        question_id = (event.get("payload") or {}).get("question_id")
+        if question_id and question_id not in closed:
+            closed.add(question_id)
+            session.broadcast({"type": "question_withdrawn",
+                               "payload": {"question_id": question_id, "reason": "会话已重启"}})
 
 
 async def _stop_engine(engine: Any) -> None:
@@ -382,11 +545,43 @@ class SessionManager:
         # 各（项目, 会话）打开着的事件流队列：会话新建时直接挂上（首条消息、
         # 空闲回收后再发、切换会话后再发）
         self._watchers: dict[tuple[str, str], set[asyncio.Queue]] = {}
+        # 最近一次被你打断的执行（S-08 的响应带它）
+        self.interrupted_execs: dict[tuple[str, str], dict | None] = {}
+        # 自主构建（方案 B13）：项目 → 正在跑的运行；各项目一个信号，状态变了、一轮结束时置位
+        self._runs: dict[str, str] = {}
+        self._signals: dict[str, asyncio.Event] = {}
 
     def _spawn(self, coro) -> None:
         task = asyncio.create_task(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    # ---- 自主构建（方案 B13）----
+
+    def set_run(self, project_id: str, run_id: str | None) -> None:
+        """项目进入或离开自主构建：运行中的会话不驱逐、不回收，确认卡由策略作答。"""
+        if run_id:
+            self._runs[project_id] = run_id
+        else:
+            self._runs.pop(project_id, None)
+        session = self._sessions.get(project_id)
+        if session is not None:
+            session.run_id = run_id or None
+
+    def run_of(self, project_id: str) -> str | None:
+        return self._runs.get(project_id)
+
+    def signal(self, project_id: str) -> asyncio.Event:
+        """这个项目的会话状态变了、一轮结束时置位（运行器清掉后按条件等）。"""
+        event = self._signals.get(project_id)
+        if event is None:
+            event = self._signals[project_id] = asyncio.Event()
+        return event
+
+    def _wake(self, project_id: str) -> None:
+        event = self._signals.get(project_id)
+        if event is not None:
+            event.set()
 
     # ---- 事件流订阅 ----
 
@@ -460,6 +655,16 @@ class SessionManager:
             return reconciled
         return load_history(project_id, conversation_id)
 
+    def append_record(self, project_id: str, conversation_id: str, record: dict) -> dict:
+        """往某条对话的历史追加一条宿主记录（续跑卡、卡片更新）：引擎正绑着它时照常广播，
+        否则直接追加到 JSONL（序号接着行号）并推给已打开的事件流。只在事件循环线程或启动时调用。"""
+        session = self._sessions.get(project_id)
+        if _bound_to(session, conversation_id):
+            session.broadcast(record)
+            return record
+        return append_history(project_id, conversation_id, record,
+                              self._watchers.get((project_id, conversation_id), ()))
+
     def active_count(self) -> int:
         """占用槽位的会话数：引擎已连接的 + 正在连接的。"""
         return sum(
@@ -491,10 +696,20 @@ class SessionManager:
         text: str,
         conversation_id: str | None = None,
         username: str = "",
+        *,
+        meta: dict | None = None,
     ) -> Session:
+        """发一条消息。meta 是界面上显示的内容（契约 EC-10）：display_text（用户原话，text 是发给模型的
+        全文）、attachments、references、origin，以及页面命令任务 task_id。
+
+        模型配置固定用项目所有者的（方案 B3）：谁发的消息都一样，Studio 复核等后端内部发的消息也是。
+        username 只用于审计口径，不再决定用谁的 Key。
+        """
         text = (text or "").strip()
         if not text:
             raise SessionError("消息不能为空")
+        autobuild_run = (meta or {}).get("autobuild_run")
+        _ensure_no_autobuild(project_id, autobuild_run)
         engine_cls = self._engine_class_for(project_id)
         if engine_cls.name == "claude":
             # Claude 引擎沿用模块级开关（测试可 monkeypatch SDK_AVAILABLE）
@@ -506,13 +721,21 @@ class SessionManager:
             )
         # 换绑要回收旧引擎（await 断开，且第一步就把旧 Session 移出字典）：不加锁时
         # 并发的 send 会各建一个 Session，被覆盖的那个带着引擎却不在字典里，无人回收
-        owner = personal_model_settings.model_owner(username, engine_cls.name)
+        owner = personal_model_settings.model_owner(project_owner(project_id), engine_cls.name)
+        # 配额（ADR-0043）：发起一轮的入口都经这里（S-07、S-20、重试、续跑、Studio 转复核）。token 先查；
+        # 并发会话和绑定会话在同一把锁里，两个同时发起的发送不会都过（sending 计入占用）
+        from ..governance import quota
+
+        await asyncio.to_thread(quota.check_before_turn, project_id, username, "tokens")
         async with self._lock:
+            if not autobuild_run:
+                # 自主构建的会话不算用户的并发会话（审查 F）：同时运行数由平台限制（SY-17）管
+                await asyncio.to_thread(quota.check_before_turn, project_id, username, "concurrency", self._sessions)
             session = await self._bind_session(project_id, conversation_id)
-            await self._bind_model_owner(session, owner, engine_cls.name)
+            self._bind_model_owner(session, owner, engine_cls.name)
             session.sending += 1
         try:
-            await self._deliver(session, cwd, text)
+            await self._deliver(session, cwd, text, meta or {})
         finally:
             session.sending -= 1
         return session
@@ -533,62 +756,133 @@ class SessionManager:
                 id=uuid.uuid4().hex[:12],
                 project_id=project_id,
                 conversation_id=conversation_id,
+                run_id=self._runs.get(project_id),
+                on_change=lambda: self._wake(project_id),
             )
             # 续接历史，seq 连续
             session.events = load_history(project_id, conversation_id)
+            session.last_day = next(
+                (e.get("day") or "" for e in reversed(session.events) if e.get("type") == "day_marker"), ""
+            )
             # 这条会话已打开的事件流在广播任何事件之前挂上，本轮过程即时推送
             session.subscribers.extend(self._watchers.get((project_id, conversation_id), ()))
             self._sessions[project_id] = session
             _expire_orphan_permissions(session)
         return session
 
-    async def _bind_model_owner(self, session: Session, owner: str, engine: str) -> None:
-        """让引擎使用发送人的模型配置（调用方持有 _lock）。
+    @staticmethod
+    def _bind_model_owner(session: Session, owner: str, engine: str) -> None:
+        """引擎用项目所有者的模型配置（方案 B3；调用方持有 _lock）。
 
-        项目会话由成员共用：谁发消息就用谁的配置。换人且配置来源不同时断开重连
-        （resume 续接）；本轮没结束就拒绝，免得别人的消息花掉你的 Key。
+        归属计入会话指纹：所有者设了或清了个人 Key、项目移交给别人，下一条消息前按新归属重连
+        （运行中的一轮跑完再切，同其他配置变化）。
         """
-        if owner != session.model_owner:
-            if _busy_for_owner_switch(session):
-                raise SessionError(
-                    "本项目会话正在使用其他成员的模型配置运行，请等本轮结束后再发送", 409
-                )
-            if session.engine is not None:
-                if session.reader_task:
-                    session.reader_task.cancel()
-                await session.engine.disconnect()
-                session.engine = None
-            session.model_owner = owner
+        # 引擎实例自己记着连接时的归属（ctx.model_owner）；这里记的是应当生效的归属，
+        # 两者不同时指纹的 owner 部分不同，_deliver 按配置变化处理
+        session.model_owner = owner
         if owner:
             try:
                 personal_model_settings.resolve(owner, engine)
             except personal_model_settings.PersonalConfigError as exc:
                 raise SessionError(str(exc), exc.status) from exc
 
-    async def _deliver(self, session: Session, cwd: Path, text: str) -> None:
-        session.cwd = cwd
+    async def _deliver(self, session: Session, cwd: Path, text: str, meta: dict | None = None) -> None:
+        meta = meta or {}
         session.last_activity = time.time()
-        if session.state != "running":
-            session.round_base_commit = await asyncio.to_thread(_git_head, cwd)
-        # 管理员更新模型配置后，旧引擎实例仍带着旧环境：配置指纹不一致时
-        # 断开重连（resume 续接上下文），让新网关/Key 立即生效
-        if session.engine is not None and session.engine.config_stale():
+        running = session.state == "running"
+        if not running:
+            # 助手在变更集副本里改（方案 C7）：一轮开始前先合入上一轮遗留的修改（F3），建或修副本、跟上主线；
+            # 建不了时退回主线工作区
+            if not session.run_id:
+                await self._settle_leftover(session)
+            session.cwd = await asyncio.to_thread(_agent_cwd, session.project_id, cwd)
+            session.round_base_commit, session.round_base_tree = await asyncio.to_thread(_round_start, session.cwd)
+        elif session.cwd is None:
+            session.cwd = cwd
+        if not running and session.engine is not None and session.engine_cwd != session.cwd:
+            # 这一轮的工作目录换了（建副本失败退回主线、或副本恢复了）：引擎还在旧目录里改，改动就进不了
+            # 变更集。断开，这条消息按新目录重连（resume 续接上下文）
             if session.reader_task:
                 session.reader_task.cancel()
             await session.engine.disconnect()
             session.engine = None
-        session.broadcast({"type": "user_message", "text": text})
+        # 会话配置指纹（模型、归属、装配、流程、MCP、权限模式）变了：断开重连（resume 续接上下文），
+        # 让新配置、新装配目录在这条消息生效（方案 B2、详设 8.1 第 4 步）。正在跑的一轮不能切断：
+        # 只记待重载，这条消息仍交给旧引擎，等手头的轮次都出 result 再断开（_read_loop）
+        if session.engine is not None:
+            if session.state != "running":
+                # 没有正在跑的一轮：先跟随通道、按锁文件装配并切换 .claude（只动纯数据包时不必重连）
+                await asyncio.to_thread(_fingerprint.prepare, session.project_id)
+            changes = await asyncio.to_thread(
+                _fingerprint.changes, session.engine, session.project_id, session.model_owner, session.fingerprint
+            )
+            if changes:
+                telemetry.count("onto_reconnects_total", project=session.project_id)
+                session.pending_changes = changes
+                if session.state == "running":
+                    if not session.reload_pending:
+                        session.broadcast({
+                            "type": "session_config_pending",
+                            "changes": _fingerprint.describe(changes),
+                            "effective": "next_message",
+                            "detail_link": None,
+                        })
+                    session.reload_pending = True
+                else:
+                    if session.reader_task:
+                        session.reader_task.cancel()
+                    await session.engine.disconnect()
+                    session.engine = None
+        self._user_message(session, text, meta, deferred=running)
         if not session.discarded:  # 已删除项目再写标题会重建出会话索引
             conversation_store.note_message(
-                session.project_id, session.conversation_id, text
+                session.project_id, session.conversation_id, meta.get("display_text") or text
             )
-        session.interrupt_requested = False  # 新一轮开始，上一轮的停止不再生效
+        # 执行记录与这一轮：运行中收下的消息等前一步结束再开始（_finish_turn 接上）
+        if running:
+            session.deferred.append((text, meta.get("task_id")))
+        else:
+            await asyncio.to_thread(turns.begin, session, text, task_id=meta.get("task_id"),
+                                    resume_exec=meta.get("resume_exec"))
+            session.turn = timeline.Turn.new(session.turn_title)
+            session.last_prompt = text
+            project_events.scope_changed(session.project_id)
         if session.engine is not None:
-            await session.engine.send(text)
+            await self._send_turn(session, session.engine, text)
             session.set_state("running")
             return
         session.pending_prompts.append(text)
         await self._request_slot(session)
+
+    @staticmethod
+    def _user_message(session: Session, text: str, meta: dict, *, deferred: bool) -> None:
+        """用户气泡（EC-10）：界面显示原话，发给模型的全文另存（Jiuwen 回放历史用）；新的一天先放日期分隔。"""
+        today = time.strftime("%Y-%m-%d")
+        if not session.last_day and session.events:
+            ts = session.events[-1].get("ts")
+            session.last_day = time.strftime("%Y-%m-%d", time.localtime(ts)) if isinstance(ts, (int, float)) else ""
+        if session.last_day and session.last_day != today:
+            # 跨天才放日期分隔（同一天里接着聊不放；对话的第一条前面也不放）
+            month, day = int(today[5:7]), int(today[8:10])
+            session.broadcast({"type": "day_marker", "payload": {"label": f"{month}月{day}日"}, "day": today})
+        session.last_day = today
+        display = meta.get("display_text") or text
+        record = {
+            "type": "user_message",
+            "text": display,
+            "message_id": f"m-{len(session.events) + 1}",
+            "attachments": meta.get("attachments") or [],
+            "references": meta.get("references") or [],
+            "origin": meta.get("origin"),
+            "delivery": "deferred" if deferred else "immediate",
+        }
+        if meta.get("command"):
+            record["command"] = meta["command"]
+        if meta.get("hidden"):
+            record["hidden"] = True  # 自主构建运行器发的步骤：不进对话流，只留给续接回放
+        if display != text:
+            record["prompt"] = text
+        session.broadcast(record)
 
     async def _request_slot(self, session: Session) -> None:
         """为无引擎的会话申请槽位：够用直接连，可驱逐则驱逐，否则排队。"""
@@ -598,7 +892,8 @@ class SessionManager:
             if self.active_count() < config.MAX_ACTIVE_SESSIONS:
                 self._start_connect(session)
                 return
-            victim = self._pick_idle_victim()
+            # 池满：先驱逐空闲会话再排队；运维把策略改成只排队（O-16）时不驱逐
+            victim = self._pick_idle_victim() if config.SESSION_OVERFLOW_POLICY != "queue_only" else None
             if victim is not None:
                 await self._recycle(victim)
                 if not session.discarded:  # 驱逐期间项目被删除：不再为它连接
@@ -608,6 +903,17 @@ class SessionManager:
                 self._waiters.append(session.project_id)
             session.set_state("queued")
             self._broadcast_queue_positions()
+
+    @staticmethod
+    async def _send_turn(session: Session, engine: Any, text: str) -> None:
+        # 先计数再发送：发送期间读循环可能收到上一轮的 result，计数为零就会触发待重载断开
+        session.turns_in_flight += 1
+        session.interrupt_requested = False  # 新一轮开始，上一轮的停止不再生效
+        try:
+            await engine.send(text)
+        except BaseException:
+            session.turns_in_flight -= 1
+            raise
 
     def _pick_idle_victim(self) -> Session | None:
         candidates = [s for s in self._sessions.values() if _recyclable(s)]
@@ -620,27 +926,23 @@ class SessionManager:
 
     # ---- 引擎装配 ----
 
-    @staticmethod
-    def _project_meta(project_id: str) -> dict:
+    def _engine_class_for(self, project_id: str):
+        """按项目 meta 的 engine 字段路由（无字段回落 claude；灰度开关）。"""
         meta_path = (
             Path(config.DATA_DIR) / "workspaces" / project_id / ".onto-web.json"
         )
+        name = ""
         try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            name = json.loads(meta_path.read_text(encoding="utf-8")).get("engine") or ""
         except (OSError, json.JSONDecodeError):
-            return {}
-        return meta if isinstance(meta, dict) else {}
-
-    def _engine_class_for(self, project_id: str):
-        """按项目 meta 的 engine 字段路由（无字段回落 claude；灰度开关）。"""
-        return get_engine_class(self._project_meta(project_id).get("engine") or "")
+            pass
+        return get_engine_class(name)
 
     def _make_engine(self, session: Session):
         project_id = session.project_id
         # 构造时定住会话 id：续接 token 的存取必须跟着这个引擎实例绑定的会话走
         conversation_id = session.conversation_id
-        meta = self._project_meta(project_id)
-        engine_cls = get_engine_class(meta.get("engine") or "")
+        engine_cls = self._engine_class_for(project_id)
         engine_name = engine_cls.name
 
         def save_token(token: str) -> None:
@@ -665,18 +967,41 @@ class SessionManager:
             ),
             save_resume_token=save_token,
             clear_resume_token=lambda: clear_resume_id(project_id, conversation_id),
-            log_error=lambda kind, text: error_log.log(project_id, kind, text),
-            load_history=lambda: list(session.events),
+            log_error=lambda kind, text: self._log_error(session, kind, text),
+            load_history=lambda: _since_context_reset(session.events),
             conversation_id=conversation_id,
             model_owner=session.model_owner,
-            project_goal=confirmed_goal(meta),
+            assembly_dir=_assembly_dir(session.cwd),
+            # 宿主注入（方案 B4）：每个引擎实例一份注入状态，两个引擎同一份内容
+            injector=injection.Injector(session.cwd, conversation_id) if session.cwd is not None else None,
+            engine_instance=session.engine_instance,
         )
         return engine_cls(ctx)
 
+    @staticmethod
+    def _log_error(session: Session, kind: str, text: str) -> str:
+        """运维错误留档（O-50），带错误编号；出错卡（EC-04）引用同一个编号。"""
+        error_id = f"err-{uuid.uuid4().hex[:6]}"
+        error_log.log(session.project_id, kind, f"[{error_id}] {text}")
+        session.last_error_id = error_id
+        return error_id
+
     async def _connect(self, session: Session) -> None:
         project_id = session.project_id
+        started_at = time.monotonic()
         try:
+            # 连接前（没有正在跑的一轮）按锁文件装配并原子切换 .claude，新实例读到的就是新版本
+            await asyncio.to_thread(_fingerprint.prepare, project_id)
+            # agent 提交收口（方案 C11）：这个项目的 git 指向内核提交钩子（新建、导入的项目在这里补上）
+            await asyncio.to_thread(_install_commit_hooks, session.cwd)
+            session.engine_instance = uuid.uuid4().hex
             engine = self._make_engine(session)
+            session.engine_cwd = session.cwd
+            # 连接前写：state_helper 按新实例认锁，agent 的 git 钩子按它写来源 trailer
+            _write_engine_marker(
+                session.cwd, getattr(engine, "name", ""), session.conversation_id,
+                engine_id=session.engine_instance, owner=project_owner(project_id),
+            )
             resumed = await engine.connect()
             if self._sessions.get(project_id) is not session:
                 # 连接期间会话已被关闭、换绑或删除项目：晚到的引擎没人认领，不当场断开就成了
@@ -685,15 +1010,31 @@ class SessionManager:
                 return
             session.resume_attempted = resumed
             session.engine = engine
+            session.turns_in_flight = 0
+            session.reload_pending = False
             # 新的 CLI 进程：上一个进程报告的状态作废
             session.cli_state = None
             session.awaiting_cli_idle = False
             session.interrupt_requested = False
+            session.fingerprint = await asyncio.to_thread(
+                _fingerprint.compute, engine, project_id, session.model_owner
+            )
             session.reader_task = asyncio.create_task(self._read_loop(session))
+            if session.pending_changes:
+                # 配置变化后的这次重连：告诉前端已切到新版本（契约 EC-07）
+                session.broadcast({
+                    "type": "session_reconnected",
+                    "reason": "config_changed",
+                    "changes": list(session.pending_changes),
+                    "context_kept": bool(resumed),
+                    "duration_ms": int((time.monotonic() - started_at) * 1000),
+                })
+                session.pending_changes = []
             started = {
                 "type": "session_started",
                 "session_id": session.id,
                 "resumed": resumed,
+                "engine": getattr(engine, "name", ""),
             }
             # 连接时已知的窗口与触发点随之下发：切换引擎或改配置后，第一轮进行中
             # 用量圈就按新值显示，不必等本轮结束的 context_usage
@@ -703,19 +1044,18 @@ class SessionManager:
             session.broadcast(started)
             prompts, session.pending_prompts = session.pending_prompts, []
             if prompts and session.cwd:
-                session.round_base_commit = await asyncio.to_thread(
-                    _git_head, session.cwd
+                session.round_base_commit, session.round_base_tree = await asyncio.to_thread(
+                    _round_start, session.cwd
                 )
             for prompt in prompts:
-                await engine.send(prompt)
+                await self._send_turn(session, engine, prompt)
             session.set_state("running" if prompts else "idle")
         except Exception as exc:
             if session.discarded:  # 项目已删除，工作区没了连接失败是预期内的，不报错
                 return
-            error_log.log(project_id, "session_connect", str(exc))
+            error_id = self._log_error(session, "session_connect", str(exc))
             session.engine = None
-            session.broadcast({"type": "session_error", "error": FRIENDLY_ERROR})
-            session.set_state("error")
+            self._turn_failed(session, error_id, FRIENDLY_ERROR)
         finally:
             session.connect_task = None
             await self._drain_waiters()
@@ -736,20 +1076,29 @@ class SessionManager:
             self._broadcast_queue_positions()
 
     def _broadcast_queue_positions(self) -> None:
+        """排队位次（EC-02，持久）：排队卡显示前面还有几个、池子占用。"""
         total = len(self._waiters)
+        pool = {"active": self.active_count(), "max": config.MAX_ACTIVE_SESSIONS}
         for index, project_id in enumerate(self._waiters):
             session = self._sessions.get(project_id)
             if session:
-                session.broadcast(
-                    {"type": "queue_position", "position": index + 1, "waiting": total},
-                    transient=True,
-                )
+                session.broadcast({
+                    "type": "queue_position", "position": index + 1, "waiting": total, "pool": pool,
+                    "progress_pct": round(100 * (1 - index / total)) if total else 0,
+                })
 
     # ---- 回收与关闭 ----
 
-    async def _recycle(self, session: Session) -> None:
-        """回收引擎但保留续接点：resume token 已随消息流落盘，下次消息重连恢复上下文。"""
+    async def _recycle(self, session: Session, reason: str = "recycled") -> None:
+        """回收引擎但保留续接点：resume token 已随消息流落盘，下次消息重连恢复上下文。
+
+        这条对话里还在等的执行（命令跨几轮问答，正等你的下一句）记为中断，对话里放续跑卡。
+        """
         self._sessions.pop(session.project_id, None)
+        if session.exec_id and not session.discarded:
+            _, card = turns.interrupt_exec(session, reason, card=not session.run_id)
+            if card is not None:
+                session.broadcast(card)
         session.set_state("closed")
         if session.reader_task:
             session.reader_task.cancel()
@@ -799,16 +1148,45 @@ class SessionManager:
             self._reaper_task = asyncio.create_task(self._reaper_loop())
 
     async def shutdown(self) -> None:
-        """服务停机：停后台回收并断开全部引擎（resume 点已落盘）。"""
+        """服务停机：先给没跑完的轮写中断标记，再并发断开全部引擎（resume 点已落盘）。
+
+        中断标记先写：断开可能超时，进程随时会被宽限期后的 SIGKILL 打断。
+        不排 _lock：持锁的操作若卡在悬死的 CLI 上，排锁会吃掉停机预算；
+        摘除会话是同步代码，事件循环不会在中途切走。
+        """
         if self._reaper_task:
             self._reaper_task.cancel()
             self._reaper_task = None
         for task in list(self._tasks):
             task.cancel()
         self._waiters.clear()
-        for session in list(self._sessions.values()):
-            async with self._lock:
-                await self._recycle(session)
+        sessions = list(self._sessions.values())
+        for session in sessions:
+            if _unfinished(session):
+                _mark_interrupted(session, "shutdown", SHUTDOWN_INTERRUPT_MESSAGE)
+            elif session.exec_id and not session.discarded:
+                # 命令还在等你的下一句：停机后续不上，记为中断并放续跑卡（自主构建的由运行器续跑，不放）
+                _, card = turns.interrupt_exec(session, "shutdown", card=not session.run_id)
+                if card is not None:
+                    session.broadcast(card)
+        engines = []
+        for session in sessions:
+            self._sessions.pop(session.project_id, None)
+            session.set_state("closed")
+            if session.reader_task:
+                session.reader_task.cancel()
+            engine, session.engine = session.engine, None
+            if engine is not None:
+                engines.append(engine)
+        if not engines:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(_stop_engine(e) for e in engines), return_exceptions=True),
+                timeout=SHUTDOWN_BUDGET_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            pass  # 单个引擎的断开另有超时硬杀，这里只兜总时长
 
     async def close(
         self,
@@ -832,7 +1210,7 @@ class SessionManager:
                 self._waiters.remove(project_id)
             if bound:
                 session.pending_prompts.clear()
-                await self._recycle(session)
+                await self._recycle(session, reason="user")
         if all_conversations:
             conversation_store.clear_all_resume_tokens(project_id)
         else:
@@ -861,6 +1239,10 @@ class SessionManager:
             engine, session.engine = session.engine, None
             session.set_state("closed")  # 在线订阅者收到终态；discarded 后不落盘
         purge_history(project_id)
+        from .session_host import exec_records
+
+        exec_records.purge(project_id)  # 执行记录与页面命令任务在同一目录
+        _purge_changesets(project_id)
         self._broadcast_queue_positions()
         if engine is not None:
             await _kill_engine(engine)
@@ -903,7 +1285,7 @@ class SessionManager:
             updated_input = None
             if answers:
                 # AskUserQuestion：答案经 updated_input.answers 回填（问题文本 → 选项文本）
-                updated_input = {**request.tool_input, "answers": answers}
+                updated_input = {**(request.full_input or request.tool_input), "answers": {**request.preset, **answers}}
             request.future.set_result(
                 {"behavior": "allow", "updated_input": updated_input}
             )
@@ -933,6 +1315,7 @@ class SessionManager:
                 session.set_state("idle")
             return False
         engine = session.engine
+        session.interrupting = True
         session.interrupt_requested = True
         try:
             await asyncio.wait_for(engine.interrupt(), timeout=INTERRUPT_TIMEOUT_SECONDS)
@@ -943,12 +1326,36 @@ class SessionManager:
                 session.reader_task.cancel()
             await _kill_engine(engine)
             session.engine = None
-            session.broadcast({"type": "session_interrupted"})
+            self._settle_after_failure(session)
+            await self._mark_user_interrupt(session)
             session.set_state("idle")
             await self._drain_waiters()
             return False
-        session.broadcast({"type": "session_interrupted"})
+        await self._mark_user_interrupt(session)
         return False
+
+    async def _mark_user_interrupt(self, session: Session) -> None:
+        """你打断了这一步（EC-05）：执行记为中断（不放续跑卡，建议条给「从打断处继续」），工作过程收起。"""
+        from .session_host import command_tasks
+
+        session.interrupting = False
+        if session.turn is not None and session.turn.steps:
+            session.turn.finish("interrupted")
+            session.broadcast(session.turn.progress_record())
+        session.turn = None
+        session.deferred.clear()
+        record, _ = await asyncio.to_thread(turns.interrupt_exec, session, "user", card=False)
+        self.interrupted_execs[(session.project_id, session.conversation_id)] = record
+        session.broadcast({"type": "session_interrupted", "reason": "user", "by": "user",
+                           **turns.interrupted_fields(record)})
+        suggestions = turns.suggestions_record(session, interrupted=record or {})
+        if suggestions is not None:
+            session.broadcast(suggestions)
+            session.keep_suggestions = True
+        try:
+            await asyncio.to_thread(command_tasks.on_interrupt, session.project_id, session.conversation_id)
+        except Exception:  # noqa: BLE001 - 任务收尾是增强信息
+            pass
 
     # ---- 确认卡（引擎权限回调 → 前端待确认事件 → 中立决策）----
 
@@ -960,6 +1367,35 @@ class SessionManager:
         title: str | None,
         description: str | None,
     ) -> dict:
+        """确认卡（EC-30）与决策卡（AskUserQuestion → EC-32 question.asked）。等待期间界面显示「等你回答」。
+
+        自主构建运行中（方案 B13）：交给登记的策略立即作答并记台账，不等人；自主构建项目开始前的资料分析同样由策略
+        代答（autobuild/prerun）。登记的策略自己判断归不归它管，不归时返回 None。
+        资料分析里「接下来怎么建」这类流程走向的问题（任何构建方式）不出卡、不代答，回答「停在蓝图确认」（F3）。
+        """
+        full_input, preset = None, {}
+        if tool_name == timeline.ASK_TOOL and session.exec_id and isinstance(tool_input, dict):
+            from .autobuild import prerun
+            from .session_host import exec_records
+
+            record = await asyncio.to_thread(exec_records.get, session.project_id, session.exec_id)
+            stripped, preset = prerun.flow_stops(record, tool_input)
+            if preset:
+                full_input, tool_input = tool_input, stripped
+                if not stripped.get("questions"):
+                    return {"behavior": "allow", "updated_input": {**full_input, "answers": preset}}
+        if _policy_responder is not None:
+            try:
+                decision = await _policy_responder(session, tool_name, tool_input, title, description)
+            except Exception:  # noqa: BLE001 - 策略作答失败按原流程等人
+                _log.exception("项目 %s 的自主构建代答失败", session.project_id)
+                decision = None
+            if decision is not None:
+                if preset and decision.get("behavior") == "allow":
+                    given = decision.get("updated_input") or {}
+                    decision = {**decision, "updated_input": {**full_input, "answers": {
+                        **preset, **(given.get("answers") or {})}}}
+                return decision
         request = PendingPermission(
             id=uuid.uuid4().hex[:12],
             tool_name=tool_name,
@@ -967,40 +1403,134 @@ class SessionManager:
             title=title,
             description=description,
             future=asyncio.get_running_loop().create_future(),
+            full_input=full_input,
+            preset=preset,
         )
         session.pending_permissions[request.id] = request
-        session.broadcast(
-            {
-                "type": "permission_request",
-                "request_id": request.id,
-                "tool_name": tool_name,
-                "tool_input": _safe_json(tool_input),
-                "title": request.title,
-                "description": request.description,
-            }
-        )
-        try:
-            decision = await asyncio.wait_for(
-                request.future, timeout=config.PERMISSION_TIMEOUT_SECONDS
+        timeout = config.PERMISSION_TIMEOUT_SECONDS
+        if tool_name == timeline.ASK_TOOL:
+            phase = ""
+            if session.exec_id:
+                from .session_host import exec_records
+
+                record = exec_records.get(session.project_id, session.exec_id) or {}
+                phase = (record.get("phase") or {}).get("label") or ""
+            request.questions = timeline.build_questions(
+                request.id, _safe_json(tool_input) if isinstance(tool_input, dict) else {},
+                conversation_id=session.conversation_id, exec_id=session.exec_id, step_label=phase,
             )
+            for question in request.questions:
+                session.broadcast({"type": "question_asked", "payload": question})
+                project_events.schedule_flow_refresh(session.project_id)  # 待处理里多一项决策
+        else:
+            session.broadcast(
+                {
+                    "type": "permission_request",
+                    "request_id": request.id,
+                    "tool_name": tool_name,
+                    "tool_input": _safe_json(tool_input),
+                    "title": request.title,
+                    "description": request.description,
+                    "timeout_s": timeout,
+                    "expires_at": time.time() + timeout,
+                }
+            )
+        session.show_state("waiting_user")
+        by = "user"
+        try:
+            decision = await asyncio.wait_for(request.future, timeout=timeout)
         except asyncio.TimeoutError:
             decision = {"behavior": "deny", "message": "等待确认超时，已自动拒绝"}
+            by = "timeout"
         finally:
             session.pending_permissions.pop(request.id, None)
-        session.broadcast(
-            {
-                "type": "permission_resolved",
-                "request_id": request.id,
-                "behavior": decision.get("behavior"),
-            }
-        )
+        if request.questions:
+            answered = {item.get("question_id") for item in request.answers.values()}
+            for question in request.questions:
+                if question["question_id"] in answered:
+                    continue
+                if decision.get("behavior") == "allow":  # 旧接口（S-10 带 answers）一次答完
+                    session.broadcast({"type": "question_answered", "payload": {
+                        "question_id": question["question_id"], "answer": {}, "by": "user", "summary": "已回答",
+                        "answered_at": views_iso(time.time())}})
+                    continue
+                reason = "等待回答超时" if by == "timeout" else (decision.get("message") or "问题已失效")
+                session.broadcast({"type": "question_withdrawn",
+                                   "payload": {"question_id": question["question_id"], "reason": reason}})
+        else:
+            session.broadcast(
+                {
+                    "type": "permission_resolved",
+                    "request_id": request.id,
+                    "behavior": decision.get("behavior"),
+                    "by": by,
+                    "message": decision.get("message") or "",
+                }
+            )
+        if session.state == "running":
+            session.show_state("running")
         return decision
+
+    def answer_question(self, project_id: str, question_id: str, answer: dict) -> dict:
+        """回答决策卡（S-11）：一个提问里的问题都答完才把答案交给引擎。返回回答后的 Question。
+
+        answer 是 {option_id?, option_ids?, custom_text?}；选项不存在抛 SessionError(400)，问题已不在抛 410。
+        """
+        session = self._sessions.get(project_id)
+        request, question = None, None
+        for pending in (session.pending_permissions.values() if session else ()):
+            question = next((item for item in pending.questions if item["question_id"] == question_id), None)
+            if question is not None:
+                request = pending
+                break
+        if request is None or request.future.done() or question_id in request.answers:
+            raise SessionError("问题已回答、撤回或失效", 410)
+        chosen = [answer["option_id"]] if answer.get("option_id") else list(answer.get("option_ids") or [])
+        custom = str(answer.get("custom_text") or "").strip()
+        by_id = {option["id"]: option for option in question["options"]}
+        if not chosen and not custom:
+            raise SessionError("没有选择任何选项", 400)
+        if any(option not in by_id for option in chosen):
+            raise SessionError("选项不存在", 400)
+        if any(by_id[option].get("custom") for option in chosen) and not custom:
+            raise SessionError("选了「其他」要写上你的说法", 400)
+        labels = [by_id[option]["label"] for option in chosen if not by_id[option].get("custom")]
+        if custom:
+            labels.append(custom)
+        record = {"question_id": question_id, "text": "、".join(labels),
+                  "answer": {key: answer[key] for key in ("option_id", "option_ids", "custom_text") if answer.get(key)}}
+        request.answers[question_id] = record
+        summary = timeline.answer_summary(question, answer)
+        now = time.time()
+        session.broadcast({"type": "question_answered", "payload": {
+            "question_id": question_id, "answer": record["answer"], "by": "user", "summary": summary,
+            "answered_at": views_iso(now),
+        }})
+        project_events.schedule_flow_refresh(project_id)
+        if len(request.answers) == len(request.questions):
+            raw = (request.tool_input or {}).get("questions") or []
+            texts = {}
+            for index, item in enumerate(request.questions):
+                original = raw[index].get("question", item["title"]) if index < len(raw) and isinstance(raw[index], dict) else item["title"]
+                texts[original] = request.answers[item["question_id"]]["text"]
+            request.future.set_result({"behavior": "allow", "updated_input": {
+                **(request.full_input or request.tool_input), "answers": {**request.preset, **texts}}})
+        return {**question, "state": "answered", "answer": record["answer"]}
 
     # ---- 事件消费 ----
 
     async def _emit_workspace_changes(self, session: Session) -> None:
-        """一轮结束后广播本轮产物变更（对话内"产物变更卡"的数据源）。"""
-        if not session.cwd or not session.round_base_commit:
+        """一轮结束后：助手在副本里改的进变更集并合入成一个版本（F3），放「这一轮改了什么」卡（方案 C12：基点是
+        变更集基点，在副本里算，不把你这段时间在 Studio 的保存算进来）和这一轮改到的插件产物卡。
+        没有副本（不是 git 仓库、建不了副本）时按主线这一轮的提交出卡。"""
+        if not session.cwd:
+            return
+        from ..kernel.changesets import worktree
+
+        if worktree.is_copy(session.cwd):
+            await self._observe_changeset(session)
+            return
+        if not session.round_base_commit:
             return
         try:
             head = await asyncio.to_thread(_git_head, session.cwd)
@@ -1009,37 +1539,145 @@ class SessionManager:
             changes = await asyncio.to_thread(
                 _git_changes, session.cwd, session.round_base_commit, head
             )
+            # 审计：agent 这一轮的提交（不经 HTTP 的专项审计，方案 E4）
+            await asyncio.to_thread(audit.record_agent_commits, session.project_id, session.cwd,
+                                    session.round_base_commit, head, changes)
             if any(changes.values()):
+                from . import mainline
+
+                version_label = await asyncio.to_thread(
+                    lambda: mainline.label(mainline.count(session.cwd, head)))
                 session.broadcast(
                     {
                         "type": "workspace_changes",
                         **changes,
                         "from": session.round_base_commit,
                         "to": head,
+                        "card_id": f"rc-{uuid.uuid4().hex[:10]}",
+                        "version_label": version_label,
                     }
+                )
+                # 改到的插件产物各出一张卡（按包的 card 声明，ADR-0055；登记在 app/wiring.py）
+                for card in await asyncio.to_thread(
+                        project_events.round_cards, session.project_id, changes, session.round_base_commit, head):
+                    session.broadcast({"type": "card", "payload": card})
+                # 项目流 EP-05：agent 的提交不经写入事务，由宿主在这一轮结束时补发
+                paths = [path for bucket in ("added", "modified", "deleted") for path in changes.get(bucket) or []]
+                await asyncio.to_thread(
+                    project_events.workspace_changed, session.project_id, commit=head, source="agent",
+                    by=project_owner(session.project_id), paths=paths,
                 )
             session.round_base_commit = head
         except Exception:
             pass  # 变更卡是增强信息，失败不影响会话
 
+    async def _observe_changeset(self, session: Session, *, running: bool = False, force: bool = False) -> None:
+        """看一眼副本里的改动（跑的过程中节流，只更新写入范围）；一轮结束时合入成一个版本、出卡（F3）。
+
+        force：这一轮出错、被硬杀（引擎已不在，没有别的轮次在跑），不看引擎里还排着几条。"""
+        from ..api import deps
+        from ..kernel.changesets import service as changesets
+        from .session_host import exec_records
+
+        start_tree = session.round_base_tree
+        try:
+            record_exec = exec_records.get(session.project_id, session.exec_id) if session.exec_id else None
+            head = await asyncio.to_thread(_git_head, session.cwd)
+            if not running and head and session.round_base_commit and head != session.round_base_commit:
+                # 审计：agent 这一轮在副本里的提交（不经 HTTP 的专项审计，方案 E4）
+                changes = await asyncio.to_thread(_git_changes, session.cwd, session.round_base_commit, head)
+                await asyncio.to_thread(audit.record_agent_commits, session.project_id, session.cwd,
+                                        session.round_base_commit, head, changes)
+            record = await asyncio.to_thread(
+                changesets.observe, deps.workspaces, session.project_id, running=running,
+                conversation_id=session.conversation_id, exec_record=record_exec, checks=False,
+                throttle=running,
+            )
+            if not running:
+                session.round_base_commit = head
+                session.round_base_tree = (record or {}).get("tree") or ""
+                # 只做了影响分析（只写了不进版本的 update-plan.json）的一轮也收清单，变更集编号之后补上（审查第 8 条）
+                record = await asyncio.to_thread(_capture_change_list, session, record) or record
+            if running or record is None or session.run_id:
+                # 自主构建的一段不出「这一轮改了什么」卡：运行器按段合入，进展在段进展块里
+                return
+            if session.turns_in_flight and not force:
+                return  # 引擎里还排着下一条：等它收尾时一起合入、出卡
+            settled = await asyncio.to_thread(changesets.settle, deps.workspaces, session.project_id,
+                                              actor=project_owner(session.project_id), turn_over=True)
+            record = (settled or {}).get("record") or record
+            if record.get("cards") and record.get("card_tree") == record.get("tree"):
+                return  # 冲突没解决、这一轮又没改东西：卡片不动
+            await self._post_round_card(session, record)
+            # 改到的插件产物各出一张卡（按包的 card 声明，ADR-0055；登记在 app/wiring.py）：
+            # 路径是这一轮助手在副本里的增删改，内容从这一轮的树读
+            start = start_tree or record.get("base") or ""
+            seed = f"rc-{record['id']}-1"
+            for card in await asyncio.to_thread(_round_artifact_cards, session, start, record.get("tree") or "", seed):
+                session.broadcast({"type": "card", "payload": {**card, "changeset_id": record["id"]}})
+        except Exception:  # noqa: BLE001 - 变更卡是增强信息，失败不影响会话
+            _log.warning("项目 %s 观察助手副本失败", session.project_id, exc_info=True)
+
+    async def _post_round_card(self, session: Session, record: dict) -> None:
+        """这一轮的卡：一个变更集一张，没有就放一张，有了原地更新。"""
+        from ..api import deps
+        from ..kernel.changesets import service as changesets
+
+        records = await asyncio.to_thread(changesets.card_records, deps.workspaces, session.project_id,
+                                          {**record, "conversation_id": record.get("conversation_id")
+                                           or session.conversation_id}, new_card=True)
+        await asyncio.to_thread(changesets.store.update, deps.workspaces.project_root(session.project_id),
+                                record["id"], card_tree=record.get("tree"))
+        for conversation_id, item in records:
+            if conversation_id == session.conversation_id:
+                session.broadcast(item)
+            else:
+                self.append_record(session.project_id, conversation_id, item)
+
+    async def _settle_leftover(self, session: Session) -> None:
+        """一轮开始前：上一轮没走到收尾的修改（引擎被硬杀、会话被回收、服务停了）先合入，卡片放回它的对话。"""
+        from ..api import deps
+        from ..kernel.changesets import service as changesets
+
+        try:
+            settled = await asyncio.to_thread(changesets.settle, deps.workspaces, session.project_id,
+                                              actor=project_owner(session.project_id), turn_over=True)
+            if settled and settled.get("record") and settled["record"].get("conversation_id"):
+                await self._post_round_card(session, settled["record"])
+        except Exception:  # noqa: BLE001 - 合不进去的留在变更集里（下一次再试），不挡这一轮
+            _log.warning("项目 %s 上一轮遗留的修改没合入", session.project_id, exc_info=True)
+
+    def _settle_after_failure(self, session: Session) -> None:
+        """这一轮出错、被硬杀：副本里已有的修改照样合入成一个版本（F3）。"""
+        if session.cwd is None or session.run_id:
+            return
+        from ..kernel.changesets import worktree
+
+        if worktree.is_copy(session.cwd):
+            self._spawn(self._observe_changeset(session, force=True))
+
     async def _read_loop(self, session: Session) -> None:
         engine = session.engine
+        # 公共标签（详设 4.10.2）：读循环是独立任务，这里设的标签只作用于这一个会话的日志与指标
+        context.set_label("project", session.project_id)
+        context.set_label("session", session.conversation_id)
         # 不加 try：本任务只被 cancel 结束，引擎侧的错误走 _engine_end 事件
         async for event in engine.events():
             session.last_activity = time.time()
             kind = event.get("type")
             if kind == "_engine_end":
-                # 引擎终止：closed（重启/终止）静默收尾，error 给用户横幅
+                # 引擎终止：closed（重启/终止）静默收尾，error 给用户出错卡
                 if event.get("reason") == "closed":
+                    self._settle_after_failure(session)
+                    _, card = await asyncio.to_thread(turns.interrupt_exec, session, "engine_exit",
+                                                      card=not session.run_id)
+                    if card is not None:
+                        session.broadcast(card)
                     session.set_state("closed")
                 else:
-                    session.broadcast(
-                        {
-                            "type": "session_error",
-                            "error": event.get("error") or FRIENDLY_ERROR,
-                        }
-                    )
-                    session.set_state("error")
+                    error_id = session.last_error_id or self._log_error(
+                        session, "session", event.get("error") or FRIENDLY_ERROR)
+                    self._turn_failed(session, error_id, event.get("error") or FRIENDLY_ERROR)
                 # 引擎已自断开：释放槽位并唤醒排队者
                 session.engine = None
                 await self._drain_waiters()
@@ -1047,10 +1685,145 @@ class SessionManager:
             if kind == "_cli_state":
                 session.on_cli_state(event.get("state"))
                 continue
-            session.broadcast(event, transient=kind == "stream_delta")
             if kind == "result":
-                await self._emit_workspace_changes(session)
-                session.on_turn_result()
+                try:
+                    if await self._finish_turn(session, event, getattr(engine, "name", "")):
+                        return
+                finally:
+                    session.finishing = False
+                    self._wake(session.project_id)
+                continue
+            # 宿主拆开引擎事件：助手正文、每个工具调用、「工作过程」组各一条记录（session_host/timeline）
+            for record, transient in timeline.ingest(session.current_turn(), event):
+                session.broadcast(record, transient=transient)
+            if kind in ("assistant_message", "tool_results"):
+                progress = await asyncio.to_thread(turns.observe, session)
+                if progress is not None:
+                    session.broadcast(progress)
+                if kind == "tool_results" and session.cwd is not None:
+                    from ..kernel.changesets import worktree
+
+                    if worktree.is_copy(session.cwd):
+                        # 跑的过程中节流地看副本：副本里已改的实体随时进写入范围（方案 C10）
+                        await self._observe_changeset(session, running=True)
+
+    async def _finish_turn(self, session: Session, event: dict, engine_name: str) -> bool:
+        """一轮出 result：收起工作过程、记用量、产物变更卡、执行记录与任务收尾、下一步建议。
+
+        返回 True 表示待重载的会话已断开，读循环结束。
+        """
+        failed = bool(event.get("is_error")) or str(event.get("subtype") or "").startswith("error")
+        session.finishing = True
+        turn = session.turn
+        if turn is not None and turn.steps and turn.state == "running":
+            turn.finish("interrupted" if session.interrupting else "failed" if failed else "done")
+            session.broadcast(turn.progress_record())
+        session.broadcast({**event, "turn_id": turn.turn_id if turn is not None else f"t-{uuid.uuid4().hex[:10]}"})
+        session.turn = None
+        telemetry.record_turn(session.project_id, event, engine_name)
+        session.turns_in_flight = max(0, session.turns_in_flight - 1)
+        await self._emit_workspace_changes(session)
+        session.retries = 0 if not failed else session.retries
+        session.on_turn_result()
+        # 待重载的会话先断开旧引擎（手头的轮次都出了 result），收尾的记账放在后面
+        reload = session.reload_pending and session.turns_in_flight == 0
+        if reload:
+            await self._reload_after_turn(session)
+        # 运行中收下的下一条消息：引擎接着跑它，这里开它的执行记录与这一轮（与收尾同一次线程往返）
+        deferred = session.deferred.pop(0) if session.deferred else None
+        for record in await asyncio.to_thread(self._after_turn, session, failed, deferred):
+            if record.get("type") == "suggestions" and session.keep_suggestions:
+                continue
+            session.broadcast(record)
+        session.keep_suggestions = False
+        if deferred is not None:
+            session.turn = timeline.Turn.new(session.turn_title)
+            session.last_prompt = deferred[0]
+        return reload
+
+    @staticmethod
+    def _after_turn(session: Session, failed: bool, deferred: tuple | None) -> list[dict]:
+        """线程里做的收尾：执行记录、任务、下一步建议；接着开下一条（运行中收下的）消息。"""
+        records = turns.end_turn(session, failed=failed, waiting_user=bool(session.pending_permissions))
+        if deferred is not None:
+            text, task_id = deferred
+            turns.begin(session, text, task_id=task_id)
+        return records
+
+    def _turn_failed(self, session: Session, error_id: str, message: str) -> None:
+        """这一轮出错（引擎异常结束、连不上）：工作过程收成出错，执行记为中断并放续跑卡，出错卡带错误编号。"""
+        if session.turn is not None and session.turn.steps:
+            session.turn.finish("failed")
+            session.broadcast(session.turn.progress_record())
+        session.turn = None
+        session.deferred.clear()
+        self._settle_after_failure(session)
+        record, card = turns.interrupt_exec(session, "engine_exit", card=not session.run_id)
+        if card is not None:
+            session.broadcast(card)
+            # 和你打断时一样主推「从打断处继续」（原来建议条还是出错前那一份）；续跑卡上的按钮照旧
+            suggestions = turns.suggestions_record(session, interrupted=record, reason="出错中断")
+            if suggestions is not None:
+                session.broadcast(suggestions)
+        from .session_host import command_tasks
+
+        try:
+            command_tasks.on_turn_end(session.project_id, session.conversation_id, failed=True, exec_bound=set())
+        except Exception:  # noqa: BLE001 - 任务收尾是增强信息
+            pass
+        session.broadcast({
+            "type": "session_error", "error": message, "error_id": error_id, "retries": session.retries,
+            "retryable": bool(session.last_prompt), "actions": ["retry", "redirect"] if session.last_prompt else ["redirect"],
+        })
+        session.set_state("error", reason=message)
+
+    async def _reload_after_turn(self, session: Session) -> None:
+        """待重载的会话在本轮收尾后断开旧引擎；下一条消息按新配置 resume 重连。
+
+        在读循环自己里调用，不能 cancel reader_task（那是当前任务），断开后由调用方返回。
+        引擎内若还积压着没出 result 的消息，计数不为零，不会走到这里。
+        """
+        session.reload_pending = False
+        engine, session.engine = session.engine, None
+        if engine is not None:
+            # 断开期间读循环可能被回收（close 等）取消：断开放进独立任务，不被一起打断
+            stop = asyncio.ensure_future(_stop_engine(engine))
+            self._tasks.add(stop)
+            stop.add_done_callback(self._tasks.discard)
+            await asyncio.shield(stop)
+        await self._drain_waiters()
+
+
+def _ensure_no_autobuild(project_id: str, exempt_run: str | None) -> None:
+    """自主构建没结束时（契约 2.10），发起一轮的入口都在这里拦：只有运行器自己发的步骤（meta 带 `autobuild_run`）
+    放行。路由层的检查（S-07、S-20……）是提前拦；Studio 转助手复核等内部入口也走到这里。"""
+    from ..api.errors import ApiError
+    from .autobuild import store as autobuild_store
+
+    run = autobuild_store.active(project_id)
+    if run is not None and run["run_id"] != exempt_run:
+        raise ApiError("autobuild_running", "自主构建运行中", 409, {"run_id": run["run_id"]})
+
+
+_policy_responder = None
+
+
+def register_policy_responder(responder) -> None:
+    """自主构建（方案 B13）：运行中的确认卡、决策卡由它立即作答——
+    `await responder(session, tool_name, tool_input, title, description)` 返回给引擎的决定，None 表示照常等人。"""
+    global _policy_responder
+    _policy_responder = responder
+
+
+CONTEXT_RESET = "context_reset"
+
+
+def _since_context_reset(events: list[dict]) -> list[dict]:
+    """历史回放续接（Jiuwen）只从最近一次「新开上下文」之后取：自主构建每段新开上下文，不把前几段的对话塞回去。"""
+    for index in range(len(events) - 1, -1, -1):
+        if events[index].get("type") == CONTEXT_RESET:
+            return list(events[index + 1:])
+    return list(events)
 
 
 def usage_summary(project_id: str) -> dict:
@@ -1093,6 +1866,136 @@ def usage_summary(project_id: str) -> dict:
         "input_tokens": input_tokens,
         "last_activity": last_activity,
     }
+
+
+# 工作区里当前在线引擎实例的标识。工具箱 state_helper 据此把执行锁绑定到引擎实例，
+# 而不是进程号：后端是不是 1 号进程（容器加不加 init）、引擎是 CLI 子进程还是进程内
+# 运行，都不影响「同一会话可续写锁、换了实例旧锁即过期」的判断
+ENGINE_MARKER = Path(".onto") / "run" / "engine.json"
+
+
+def _assembly_dir(cwd: Path | None) -> Path | None:
+    """项目 .claude 指向的装配目录（<数据目录>/assembled/<哈希>）；不是装配目录返回 None。"""
+    if cwd is None:
+        return None
+    link = Path(cwd) / ".claude"
+    if not os.path.lexists(link):
+        return None
+    real = Path(os.path.realpath(link))
+    return real if real.parent.name == "assembled" and (real / "MANIFEST.json").is_file() else None
+
+
+def _write_engine_marker(cwd: Path | None, engine: str, conversation_id: str, *, engine_id: str = "",
+                         owner: str = "") -> None:
+    # 工作区已不在（项目刚被删除）时不写：mkdir 会在原处重建出残留目录
+    turns.write_identity_marker(cwd, engine=engine, engine_id=engine_id or uuid.uuid4().hex,
+                                conversation_id=conversation_id, owner=owner)
+
+
+def _agent_cwd(project_id: str, root: Path) -> Path:
+    """这一轮助手的工作目录：变更集副本（方案 C7）；不是本体项目工作区（没有 git）时原样返回。"""
+    root = Path(root)
+    if not (root / ".git").is_dir():
+        return root
+    from ..api import deps
+    from ..kernel.changesets import service as changesets
+    from .flow import view
+
+    copy = changesets.copy_for_turn(deps.workspaces, project_id, root)
+    try:
+        # 节点状态与下一步写进副本的 flow-state.json：这一轮的宿主注入、助手收尾的 suggest 都读它（方案 D15）
+        view.build(root)
+    except Exception:  # noqa: BLE001 - 算不出流程不挡消息
+        _log.warning("项目 %s 一轮开始前算流程失败", project_id, exc_info=True)
+    return copy
+
+
+def _install_commit_hooks(cwd: Path | None) -> None:
+    if cwd is None:
+        return
+    from ..kernel.changesets import worktree
+    from ..kernel.writepath import agent_commits
+
+    try:
+        # 钩子装在主线仓库的配置里，副本（git worktree）共用
+        agent_commits.install(Path(worktree.main_root(Path(cwd))))
+    except Exception:  # noqa: BLE001 - 装不上时提交检查退回 PreToolUse，不挡会话
+        pass
+
+
+def _capture_change_list(session: Session, record: dict | None) -> dict | None:
+    """增量更新的影响分析（副本里的 update-plan.json）收成变更清单，记下所在对话与变更集（契约 3.14、F3 补充）。
+
+    这一轮还没有变更集时清单先不挂编号，之后这条对话开了变更集再补上（`change_lists.link`，接在变更集事件上）。
+    """
+    from ..api import deps
+    from ..kernel.changesets import store
+    from .flow import change_lists
+
+    root = deps.workspaces.project_root(session.project_id)
+    captured = change_lists.capture(root, session.cwd, conversation_id=session.conversation_id,
+                                    changeset_id=(record or {}).get("id"))
+    if captured is None or record is None:
+        return None
+    return store.update(root, record["id"], change_list_id=captured["id"])
+
+
+def _purge_changesets(project_id: str) -> None:
+    """删除项目：变更集记录与助手副本目录、节点与分段状态、变更清单、人工节点的问题、蓝图卡登记、
+    自主构建的运行记录一起清掉。"""
+    from ..kernel.changesets import service as changesets
+
+    try:
+        from ..api import deps
+        from .autobuild.runner import runner as autobuild_runner
+        from .flow import blueprint, change_lists, node_kinds
+        from .flow import state as node_state
+
+        root = Path(deps.workspaces.workspaces_dir) / project_id
+        changesets.purge(root)
+        node_state.purge(root)
+        change_lists.purge(root)
+        node_kinds.purge(root)
+        blueprint.purge(root)
+        autobuild_runner.forget(project_id)
+    except Exception:  # noqa: BLE001 - 清不干净的由启动核对兜底
+        _log.warning("清除项目 %s 的变更集失败", project_id, exc_info=True)
+
+
+def project_owner(project_id: str) -> str:
+    """项目所有者（方案 B3：会话的模型配置归属、agent 提交的 Onto-Author）；读不出时为空串。"""
+    meta_path = Path(config.DATA_DIR) / "workspaces" / project_id / ".onto-web.json"
+    try:
+        return str(json.loads(meta_path.read_text(encoding="utf-8")).get("owner") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def _round_start(cwd: Path) -> tuple[str, str]:
+    """一轮起点：HEAD，以及（助手副本里）当前文件的树。树含没提交的文件、在跟上主线之后取，
+    一轮结束时和它比，得到的就只是助手这一轮的改动（不含上一轮的、同步进来的主线保存）。"""
+    from ..kernel.changesets import worktree
+
+    head = _git_head(cwd)
+    if not worktree.is_copy(Path(cwd)):
+        return head, ""
+    try:
+        return head, worktree.snapshot(Path(cwd))
+    except Exception:  # noqa: BLE001 - 取不到时一轮结束退回上一张卡时的树
+        return head, ""
+
+
+def _round_artifact_cards(session: Session, start: str, end: str, seed: str) -> list[dict]:
+    """副本里这一轮（起点树 → 终点树）改到的插件产物 → 产物卡。"""
+    from ..kernel.changesets import worktree
+
+    if not start or not end or start == end:
+        return []
+    buckets = {"A": "added", "D": "deleted"}
+    changes: dict[str, list[str]] = {"added": [], "modified": [], "deleted": []}
+    for status, rel in worktree.diff(Path(session.cwd), start, end):
+        changes[buckets.get(status, "modified")].append(rel)
+    return project_events.round_cards(session.project_id, changes, start, seed, root=Path(session.cwd))
 
 
 def _git_head(cwd: Path) -> str:

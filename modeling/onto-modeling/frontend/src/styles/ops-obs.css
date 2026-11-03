@@ -1,0 +1,20 @@
+/* 可观测（ops-obs）在设计稿 op-* 之外补的样式：标签的移除 / 加入、添加标签输入框、出错的瀑布条、
+   日志里可点的 trace、停用的规则行、导出器弹窗里的配置区、链路检索（没挂载的组件） */
+.op-tg.rm,.op-tg.rm-add{cursor:pointer}
+.op-tg.rm:hover b{text-decoration:line-through;color:var(--ink3)}
+.op-tg.rm-add:hover{border-color:var(--b300)}
+.op-tg.op-tg-in{border-color:var(--blue3)}
+.op-tg.op-tg-in.bad{border-color:var(--red)}
+.op-tg.op-tg-in input{border:0;outline:0;background:transparent;font-family:var(--mono);font-size:11px;padding:0 7px;width:170px;color:var(--ink2)}
+.op-wf .bar i.err{background:linear-gradient(90deg,#FCA5A5,#DC2626)}
+.op-log .tr{cursor:pointer}
+.op-log .tr:hover{color:var(--blue);text-decoration:underline}
+.tbl tr.op-off td{opacity:.55}
+.op-exp-ed{margin-top:12px;padding-top:12px;border-top:1px dashed var(--line);display:flex;flex-direction:column;gap:10px}
+.op-ts-row{cursor:pointer}
+.op-ts-row:hover td{background:var(--b50)}
+.op-rule .inp:has(input:disabled){background:var(--panel2);color:var(--ink2)}
+.op-rb p{margin:0 0 6px}
+.op-rb p:last-child{margin-bottom:0}
+.op-rb ol,.op-rb ul{margin:0 0 6px;padding-left:20px}
+.op-rb > :last-child{margin-bottom:0}

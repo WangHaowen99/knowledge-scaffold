@@ -1,0 +1,17 @@
+# 数据接入：PDF（文字版）转文本（ADR-0073）。转换器随连接器网关镜像交付，跑在网关的子进程里，内核不导入它。
+name: convert-pdf
+version: 1.0.0
+kind: provider
+category: provider
+label: PDF 转换
+description: 把文字版 PDF 转成带页码的文本，表格转成表格；扫描件暂不支持。
+publisher: {kind: official, label: 平台}
+kernel_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {}
+converter:
+  entry: converter.py
+  types: [".pdf"]
+  license: pdfplumber（MIT）、pdfminer.six（MIT）
+changelog: 首版。
+checksums: checksums.sha256

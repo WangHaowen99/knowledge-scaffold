@@ -1,7 +1,8 @@
 """任务名称同名校验：新建任务、导入已有知识包、导入项目（迁移包）、重命名、克隆五个入口。
 
 与知识包建模工具同一口径：去首尾空白、全角半角与大小写差异都算同名；查重范围是
-当前用户可见的任务；冲突返回 409 与至多 3 个候选名，前端选名后重新提交。
+当前用户在列表里看得到的任务（自己的；管理员是全部）；冲突返回 409 与至多 3 个候选名，
+前端选名后重新提交。
 """
 
 import io
@@ -16,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from app import config
 from app.main import app
+from app.api import deps
 from app.routers import projects
 from app.services import auth
 from app.services.name_conflict import (
@@ -35,8 +37,7 @@ from app.services.workspace import (
 @pytest.fixture()
 def manager(tmp_path, monkeypatch) -> WorkspaceManager:
     workspaces = WorkspaceManager(tmp_path / "data", tmp_path / "assets")
-    monkeypatch.setattr(projects, "workspaces", workspaces)
-    monkeypatch.setattr(config, "MODELING_URL", "")  # 不开通 modeling 侧项目
+    monkeypatch.setattr(deps, "workspaces", workspaces)
     return workspaces
 
 
@@ -46,16 +47,27 @@ def client(manager, monkeypatch) -> TestClient:
     return TestClient(app)
 
 
-def _seed(manager, project_id, name, owner="", members=None) -> None:
+def _seed(manager, project_id, name, owner="") -> None:
     """手写元数据代替建项目流程：查重只看名称与归属。"""
     root = manager.workspaces_dir / project_id
     root.mkdir()
-    meta = {"id": project_id, "name": name, "owner": owner, "members": members or {}}
+    meta = {"id": project_id, "name": name, "owner": owner}
     (root / META_FILE).write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
 
 def _request(user):
     return SimpleNamespace(state=SimpleNamespace(user=user), headers={})
+
+
+def _json(response) -> dict:
+    return json.loads(response.body)
+
+
+def _create(name: str, user) -> dict:
+    return _json(projects.create_project(_request(user), {"name": name, "goal": "合成目标"}))
+
+
+GOAL = {"goal": "合成目标"}
 
 
 def _taken(manager, name, viewer) -> bool:
@@ -74,16 +86,29 @@ def _zip(entries: dict[str, str]) -> bytes:
     return buffer.getvalue()
 
 
+def _upload(client, archive, filename="package.zip") -> str:
+    files = {"file": (filename, archive, "application/zip")}
+    response = client.post("/api/v1/uploads", data={"purpose": "project_import"}, files=files)
+    assert response.status_code == 201
+    return response.json()["upload_id"]
+
+
 def _import(client, name, archive, *, dry_run=False):
-    data = {"name": name, **({"dry_run": "true"} if dry_run else {})}
-    files = {"file": ("package.zip", archive, "application/zip")}
-    return client.post("/api/projects/import", data=data, files=files)
+    """导入向导：先暂存（U-01），再检查（P-10）或导入（P-11）。"""
+    upload_id = _upload(client, archive)
+    if dry_run:
+        return client.post("/api/v1/projects/import/inspect", json={"upload_id": upload_id, "name": name})
+    return client.post("/api/v1/projects/import", json={"upload_id": upload_id, "name": name})
 
 
 def _transfer(client, archive, project_name=None):
-    data = {} if project_name is None else {"project_name": project_name}
-    files = {"file": ("transfer.zip", archive, "application/zip")}
-    return client.post("/api/projects/transfer-import", data=data, files=files)
+    """迁移包：名称缺省取检查结果里的建议名（迁移包里记录的原名）。"""
+    upload_id = _upload(client, archive, "transfer.zip")
+    if project_name is None:
+        inspected = client.post("/api/v1/projects/import/inspect", json={"upload_id": upload_id}).json()
+        assert inspected["kind"] == "transfer"
+        project_name = inspected["suggested_name"]
+    return client.post("/api/v1/projects/import", json={"upload_id": upload_id, "name": project_name})
 
 
 # ---- 判定口径与候选名 ----
@@ -131,17 +156,16 @@ def test_candidates_respect_name_length_limit():
     "viewer, name, taken",
     [
         (("alice", False), "订单建模", True),  # 自己的任务
-        (("alice", False), "共享任务", True),  # 作为成员可见
-        (("alice", False), "历史任务", True),  # 无主历史任务对所有人可见
-        (("alice", False), "库存建模", False),  # 别人的私有任务看不到，不算重名
-        (("alice", True), "库存建模", True),  # 管理员看全部
+        (("alice", False), "库存建模", False),  # 别人的任务看不到，不算重名
+        (("alice", False), "历史任务", False),  # 无主任务普通用户看不到
+        (("alice", True), "库存建模", True),  # 管理员在列表里看得到全部任务
+        (("alice", True), "历史任务", True),
         (None, "库存建模", True),  # 鉴权关闭：全部任务都算
     ],
 )
 def test_scope_is_tasks_visible_to_current_user(manager, viewer, name, taken):
     _seed(manager, "p-alice", "订单建模", owner="alice")
     _seed(manager, "p-bob", "库存建模", owner="bob")
-    _seed(manager, "p-shared", "共享任务", owner="carol", members={"alice": "viewer"})
     _seed(manager, "p-legacy", "历史任务")
 
     assert _taken(manager, name, viewer) is taken
@@ -183,35 +207,35 @@ def test_conflict_error_and_length_limit(manager):
 
 
 def test_create_rejects_duplicate_name_with_candidates(client, manager):
-    assert client.post("/api/projects", json={"name": "电商订单建模"}).status_code == 200
+    assert client.post("/api/v1/projects", json={"name": "电商订单建模", **GOAL}).status_code == 201
 
-    response = client.post("/api/projects", json={"name": " 电商订单建模 "})
+    response = client.post("/api/v1/projects", json={"name": " 电商订单建模 ", **GOAL})
 
     assert response.status_code == 409
     body = response.json()
     assert body["code"] == "project_name_conflict"
-    assert body["conflict"] == {
+    assert body["details"]["conflict"] == {
         "original_name": "电商订单建模",
         "attempted_name": "电商订单建模",
         "candidates": ["电商订单建模（2）", "电商订单建模（3）", "电商订单建模（4）"],
     }
     assert len(manager.list_projects()) == 1  # 冲突时不落盘
 
-    retried = client.post("/api/projects", json={"name": "电商订单建模（2）"})
+    retried = client.post("/api/v1/projects", json={"name": "电商订单建模（2）", **GOAL})
 
-    assert retried.status_code == 200 and retried.json()["name"] == "电商订单建模（2）"
+    assert retried.status_code == 201 and retried.json()["name"] == "电商订单建模（2）"
+    # 名称可用检查（P-3）与新建同一口径
+    check = client.get("/api/v1/projects/name-check", params={"name": "电商订单建模"}).json()
+    assert check["available"] is False and check["reason"] == "conflict"
+    assert check["conflict"]["candidates"][0] == "电商订单建模（3）"
 
 
 def test_create_checks_only_tasks_visible_to_user(manager):
     _seed(manager, "p-alice", "订单建模", owner="alice")
 
     with pytest.raises(NameConflictError):
-        projects.create_project(
-            projects.CreateProjectBody(name="订单建模"), _request({"sub": "alice"})
-        )
-    created = projects.create_project(
-        projects.CreateProjectBody(name="订单建模"), _request({"sub": "bob"})
-    )
+        _create("订单建模", {"sub": "alice"})
+    created = _create("订单建模", {"sub": "bob"})
 
     assert created["owner"] == "bob"
 
@@ -231,7 +255,7 @@ def test_concurrent_same_name_creates_only_one(manager, monkeypatch):
     def submit():
         barrier.wait()
         try:
-            projects.create_project(projects.CreateProjectBody(name="并发任务"), _request(None))
+            _create("并发任务", None)
             outcomes.append("created")
         except NameConflictError:
             outcomes.append("conflict")
@@ -255,22 +279,23 @@ def test_import_checks_name_at_preview_and_again_on_confirm(client, manager):
 
     preview = _import(client, "订单知识包", archive, dry_run=True)
 
-    assert preview.status_code == 409
-    assert preview.json()["code"] == "project_name_conflict"
-    assert "不可重复导入" in preview.json()["error"]
-    assert _import(client, "订单知识包（2）", archive, dry_run=True).status_code == 200
+    # 检查导入包（P-10）不报错，名称检查结果随摘要返回
+    assert preview.status_code == 200
+    assert preview.json()["name_check"]["reason"] == "conflict"
+    assert _import(client, "订单知识包（2）", archive, dry_run=True).json()["name_check"]["available"] is True
 
     # 预览通过后、确认导入前被别人抢先用了这个名字：确认时再拦一次
     _seed(manager, "p2", "订单知识包（2）")
     confirm = _import(client, "订单知识包（2）", archive)
 
     assert confirm.status_code == 409
-    assert confirm.json()["conflict"]["candidates"][0] == "订单知识包（3）"
+    assert "不可重复导入" in confirm.json()["message"]
+    assert confirm.json()["details"]["conflict"]["candidates"][0] == "订单知识包（3）"
     assert len(manager.list_projects()) == 2  # 冲突时不建任务
 
     imported = _import(client, "订单知识包（3）", archive)
 
-    assert imported.status_code == 200 and imported.json()["name"] == "订单知识包（3）"
+    assert imported.status_code == 201 and imported.json()["name"] == "订单知识包（3）"
 
 
 def test_import_preview_shows_blockers_before_name_conflict(client, manager):
@@ -280,6 +305,7 @@ def test_import_preview_shows_blockers_before_name_conflict(client, manager):
     preview = _import(client, "订单知识包", _zip({"misc/readme.txt": "说明"}), dry_run=True)
 
     assert preview.status_code == 200 and preview.json()["blockers"]
+    assert preview.json()["kind"] == "unknown"
 
 
 # ---- 导入项目（迁移包） ----
@@ -294,7 +320,7 @@ def test_transfer_import_conflict_then_rename(client, manager, tmp_path):
     conflicted = _transfer(client, archive)
 
     assert conflicted.status_code == 409
-    assert conflicted.json()["conflict"] == {
+    assert conflicted.json()["details"]["conflict"] == {
         "original_name": "迁移源",
         "attempted_name": "迁移源",
         "candidates": ["迁移源（2）", "迁移源（3）", "迁移源（4）"],
@@ -303,13 +329,13 @@ def test_transfer_import_conflict_then_rename(client, manager, tmp_path):
 
     renamed = _transfer(client, archive, "迁移源（2）")
 
-    assert renamed.status_code == 200 and renamed.json()["name"] == "迁移源（2）"
+    assert renamed.status_code == 201 and renamed.json()["name"] == "迁移源（2）"
 
     # 改名后仍重名：候选名仍以迁移包里的原名为基础编号
     again = _transfer(client, archive, "迁移源（2）")
 
     assert again.status_code == 409
-    assert again.json()["conflict"] == {
+    assert again.json()["details"]["conflict"] == {
         "original_name": "迁移源",
         "attempted_name": "迁移源（2）",
         "candidates": ["迁移源（3）", "迁移源（4）", "迁移源（5）"],
@@ -323,18 +349,18 @@ def test_rename_conflict_then_rename_with_candidate(client, manager):
     _seed(manager, "p1", "订单建模")
     _seed(manager, "p2", "库存建模")
 
-    conflicted = client.patch("/api/projects/p1", json={"name": " 库存建模 "})
+    conflicted = client.patch("/api/v1/projects/p1", json={"name": " 库存建模 "})
 
     assert conflicted.status_code == 409
     assert conflicted.json()["code"] == "project_name_conflict"
-    assert conflicted.json()["conflict"] == {
+    assert conflicted.json()["details"]["conflict"] == {
         "original_name": "库存建模",
         "attempted_name": "库存建模",
         "candidates": ["库存建模（2）", "库存建模（3）", "库存建模（4）"],
     }
     assert manager.get_project("p1")["name"] == "订单建模"  # 冲突时不改名
 
-    renamed = client.patch("/api/projects/p1", json={"name": "库存建模（2）"})
+    renamed = client.patch("/api/v1/projects/p1", json={"name": "库存建模（2）"})
 
     assert renamed.status_code == 200 and renamed.json()["name"] == "库存建模（2）"
     assert manager.get_project("p1")["name"] == "库存建模（2）"
@@ -346,8 +372,8 @@ def test_rename_does_not_conflict_with_the_task_itself(client, manager):
     _seed(manager, "p2", "历史重名")
     _seed(manager, "p3", "历史重名")
 
-    variant = client.patch("/api/projects/p1", json={"name": "ＯＲＤＥＲ建模"})
-    unchanged = client.patch("/api/projects/p2", json={"name": " 历史重名 "})
+    variant = client.patch("/api/v1/projects/p1", json={"name": "ＯＲＤＥＲ建模"})
+    unchanged = client.patch("/api/v1/projects/p2", json={"name": " 历史重名 "})
 
     assert variant.status_code == 200 and variant.json()["name"] == "ＯＲＤＥＲ建模"
     assert unchanged.status_code == 200 and unchanged.json()["name"] == "历史重名"
@@ -355,17 +381,18 @@ def test_rename_does_not_conflict_with_the_task_itself(client, manager):
 
 def test_rename_checks_only_tasks_visible_to_user(manager):
     _seed(manager, "p-alice", "订单建模", owner="alice")
+    _seed(manager, "p-alice-2", "库存草稿", owner="alice")
     _seed(manager, "p-bob", "库存建模", owner="bob")
-    _seed(manager, "p-shared", "共享任务", owner="carol", members={"alice": "viewer"})
+    _seed(manager, "p-root", "运维任务", owner="root")
 
-    def rename(name, user):
-        return projects.rename_project("p-alice", projects.RenameBody(name=name), _request(user))
+    def rename(project_id, name, user):
+        return projects.update_project(project_id, _request(user), {"name": name})
 
     with pytest.raises(NameConflictError):
-        rename("共享任务", {"sub": "alice"})  # 作为成员可见
-    with pytest.raises(NameConflictError):
-        rename("库存建模", {"sub": "root", "role": "admin"})  # 管理员看全部
-    renamed = rename("库存建模", {"sub": "alice"})  # 别人的私有任务看不到，不算重名
+        rename("p-alice-2", "订单建模", {"sub": "alice"})  # 与自己的项目重名
+    # 名称只在同一用户下唯一（契约 P-02）：管理员也只和自己的项目比
+    assert rename("p-root", "库存建模", {"sub": "root", "role": "admin"})["name"] == "库存建模"
+    renamed = rename("p-alice", "库存建模", {"sub": "alice"})  # 别人的任务看不到，不算重名
 
     assert renamed["name"] == "库存建模"
 
@@ -374,7 +401,7 @@ def test_rename_rejects_too_long_name(client, manager):
     _seed(manager, "p1", "订单建模")
 
     response = client.patch(
-        "/api/projects/p1", json={"name": "长" * (MAX_DISPLAY_NAME_LENGTH + 1)}
+        "/api/v1/projects/p1", json={"name": "长" * (MAX_DISPLAY_NAME_LENGTH + 1)}
     )
 
     assert response.status_code == 400 and response.json()["code"] == "project_name_too_long"
@@ -386,52 +413,57 @@ def test_rename_rejects_too_long_name(client, manager):
 def test_clone_conflict_then_clone_with_new_name(client, manager):
     _seed(manager, "p1", "订单建模")
 
-    first = client.post("/api/projects/p1/clone")
+    first = client.post("/api/v1/projects/p1/clone")
 
-    assert first.status_code == 200 and first.json()["name"] == "订单建模-副本"
+    assert first.status_code == 201 and first.json()["name"] == "订单建模（副本）"
 
     # 再克隆一次：默认名称已被上一个副本占用
-    conflicted = client.post("/api/projects/p1/clone", json={"name": ""})
+    conflicted = client.post("/api/v1/projects/p1/clone", json={"name": ""})
 
     assert conflicted.status_code == 409
     assert conflicted.json()["code"] == "project_name_conflict"
-    assert conflicted.json()["conflict"] == {
-        "original_name": "订单建模-副本",
-        "attempted_name": "订单建模-副本",
-        "candidates": ["订单建模-副本（2）", "订单建模-副本（3）", "订单建模-副本（4）"],
+    assert conflicted.json()["details"]["conflict"] == {
+        "original_name": "订单建模（副本）",
+        "attempted_name": "订单建模（副本）",
+        "candidates": ["订单建模（副本）（2）", "订单建模（副本）（3）", "订单建模（副本）（4）"],
     }
     assert len(manager.list_projects()) == 2  # 冲突时不建任务
 
-    renamed = client.post("/api/projects/p1/clone", json={"name": "订单建模-副本（2）"})
+    renamed = client.post("/api/v1/projects/p1/clone", json={"name": "订单建模（副本）（2）"})
 
-    assert renamed.status_code == 200 and renamed.json()["name"] == "订单建模-副本（2）"
+    assert renamed.status_code == 201 and renamed.json()["name"] == "订单建模（副本）（2）"
 
     # 改名后仍重名：候选名仍以默认的副本名为基础编号
-    again = client.post("/api/projects/p1/clone", json={"name": "订单建模"})
+    again = client.post("/api/v1/projects/p1/clone", json={"name": "订单建模"})
 
     assert again.status_code == 409
-    assert again.json()["conflict"] == {
-        "original_name": "订单建模-副本",
+    assert again.json()["details"]["conflict"] == {
+        "original_name": "订单建模（副本）",
         "attempted_name": "订单建模",
-        "candidates": ["订单建模-副本（3）", "订单建模-副本（4）", "订单建模-副本（5）"],
+        "candidates": ["订单建模（副本）（3）", "订单建模（副本）（4）", "订单建模（副本）（5）"],
     }
 
 
+def _clone(project_id: str, user) -> dict:
+    import asyncio
+
+    return _json(asyncio.run(projects.clone_project(project_id, _request(user), {})))
+
+
 def test_clone_checks_only_tasks_visible_to_user(manager):
-    _seed(manager, "p-legacy", "历史任务")
-    _seed(manager, "p-alice", "历史任务-副本", owner="alice")
+    _seed(manager, "p-alice", "订单建模", owner="alice")
+    _seed(manager, "p-bob", "订单建模（副本）", owner="bob")
 
+    cloned = _clone("p-alice", {"sub": "alice"})  # 看不到 bob 的同名任务
+    assert (cloned["name"], cloned["owner"]) == ("订单建模（副本）", "alice")
     with pytest.raises(NameConflictError):
-        projects.clone_project("p-legacy", _request({"sub": "alice"}))
-    cloned = projects.clone_project("p-legacy", _request({"sub": "bob"}))
-
-    assert (cloned["name"], cloned["owner"]) == ("历史任务-副本", "bob")
+        _clone("p-alice", {"sub": "alice"})  # 与自己的副本重名
 
 
 def test_clone_default_name_respects_length_limit(manager):
     """原名已到长度上限时截断原名再加后缀，一键克隆不会因超长被拒。"""
     _seed(manager, "p1", "长" * MAX_DISPLAY_NAME_LENGTH)
 
-    cloned = projects.clone_project("p1", _request(None))
+    cloned = _clone("p1", None)
 
-    assert len(cloned["name"]) == MAX_DISPLAY_NAME_LENGTH and cloned["name"].endswith("-副本")
+    assert len(cloned["name"]) == MAX_DISPLAY_NAME_LENGTH and cloned["name"].endswith("（副本）")

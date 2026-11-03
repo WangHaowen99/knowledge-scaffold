@@ -7,7 +7,7 @@ Update an already-built ontology based on a reference (free-form prompt text or 
 遵循 `.claude/STEP0_TEMPLATE.md`，COMMAND_NAME = `update`。简述：
 
 1. `python3 .claude/scripts/state_helper.py check-lock update`
-   - `locked:{ts}:{phase}` → 按 **错误恢复类** 提示；phase 可能是 `analyze` / `confirm` / `apply` / `validate`，**续执**时跳到对应阶段。
+   - `locked:{ts}:{phase}` → `python3 .claude/scripts/state_helper.py recover update` 由平台定（不问用户）：`resume:{phase}` 跳到对应阶段接着做，`restart` 已清理、重新开始；工作过程里说一句业务话（phase 可能是 `analyze` / `apply` / `validate`；停在 `confirm` 时平台按重来处理）。
 2. `python3 .claude/scripts/state_helper.py check-prereq update`
    - `missing:逻辑已提取,...` → 按 **跳步守卫** 提示："当前缺少 {阶段列表}，没有可更新的 ontology。" 选项 **先做 逻辑提取**（/ontology-extract-operation）。
 3. `python3 .claude/scripts/state_helper.py acquire update analyze`
@@ -38,11 +38,23 @@ update-impact-agent / update-apply-agent 的 prompt 都需 transclude 该文件�
 
 ---
 
+## 按已确认的变更清单执行（页面发来的 `change_list_id=…`）
+
+`$ARGUMENTS` 里带 `change_list_id=<清单>` 时，是用户在页面上逐条确认过的变更点清单（平台写在
+`.onto/run/change-lists/<清单>.json`，字段：`points[]` 的 `scope`（要改的文件）、`value`（变更说明）、`condition`
+（依据）、`state`（`accepted` 照原说明改，`rewritten` 按 `rewritten_text` 改）、`impact`（会连带影响的条目））：
+
+1. 读这份清单，**跳过 Step 1～3**（影响分析与确认已经在页面上做完），把每个变更点当成 Step 4 的一个直接变更条目；
+   `acquire update apply` 后进入 Step 4，`UPDATE_BASE=$(git rev-parse HEAD)`；
+2. 同时带了 `fix_scenarios=[…]`（回归结果卡上「交给助手修」）：清单已经执行过，只针对这些场景的回归失败修改相关条目，
+   改完对这些场景重新推演（若启用了场景走查能力），然后进入 Step 5 只校验本次改动；
+3. 收尾同 Step 6。清单文件由平台管理，不要修改它。
+
 ## Step 1: 解析参考内容 $ARGUMENTS
 
 `$ARGUMENTS` 的几种情况：
 
-- **空** → 提示用户：
+- **空** → `python3 .claude/scripts/state_helper.py acquire update confirm` 后提示用户（Step 2 的 `acquire update analyze` 会切回）：
   ```
   请输入参考内容（更新依据），任选一种：
   - 直接粘贴提示词文本（如"客户对象增加手机号字段，必填"）
@@ -54,7 +66,7 @@ update-impact-agent / update-apply-agent 的 prompt 都需 transclude 该文件�
   1. 若把 `$ARGUMENTS` 当作路径调用 `test -f`，文件存在 → `REFERENCE_KIND = file`，`REFERENCE_PATH = $ARGUMENTS`，读取整份文件作为 `REFERENCE_CONTENT`。
   2. 否则 → `REFERENCE_KIND = inline`，`REFERENCE_CONTENT = $ARGUMENTS` 原文。
 
-如果 `REFERENCE_KIND = file` 但路径在 `ontology/`、`reports/`、`.claude/`、`.ontology-state/` 之下，弹一个警告：
+如果 `REFERENCE_KIND = file` 但路径在 `ontology/`、`reports/`、`.claude/`、`.ontology-state/` 之下，`acquire update confirm` 后弹一个警告（Step 2 会切回 `analyze`）：
 ```
 ⚠️ 参考路径位于工具目录内部 ({REFERENCE_PATH})，确认这是更新依据而不是要改的文档？
 - 回复 **继续** → 继续把它当参考
@@ -62,7 +74,7 @@ update-impact-agent / update-apply-agent 的 prompt 都需 transclude 该文件�
 
 向用户回显一行摘要：
 ```
-更新依据：{REFERENCE_KIND}  |  长度：{N} 字符  |  {若 file，附路径}
+更新依据：{若 file：文件「{文件名}」；若 inline：你输入的文字}（{N} 字）
 ```
 
 ---
@@ -260,28 +272,15 @@ EOF
 
 `release update`。
 
-最后展示：
+再用两三句话小结：改了哪些、校验结果、还有什么要用户定（逻辑变化较大或本次跳过了脚本修改时，说一句对应脚本可能要重新生成）；不列下一步菜单（界面的建议条会给出）。
 
-```
-已保存版本 {N}: update {简短描述}
-如需回退到上一版本，回复"回退"
-
-**下一步建议：**
-- 回复 **追踪**（/ontology-trace）→ 对受影响的 operation 重新走场景
-- 回复 **测试数据**（/ontology-mock）→ 若影响了对象结构，重新生成 mock
-- 回复 **代码生成**（/ontology-codegen）→ 若 operation 变化较大或 update 跳过了脚本修改（change_summary 过于宽泛），重新生成对应脚本
-- 回复 **整体视图**（/ontology-overview）→ 看更新后的全局
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
-```
-
-Handle reply by reading the corresponding command file.
+用户之后在对话里说「追踪」「测试数据」「代码生成」「整体视图」，分别读 `.claude/commands/ontology-trace.md`、`ontology-mock.md`、`ontology-codegen.md`、`ontology-overview.md` 照做。
 
 ---
 
 ## Note on 续执（resume）
 
-若 Step 0 检查到 `locked:{ts}:{phase}` 且用户选了 **续执**：
+若 Step 0 的 `recover update` 输出 `resume:{phase}`（停在 `confirm` 的由平台按重来处理，不会走到这里）：
 - `phase = analyze` → 重新跑 Step 2（agent 是无状态的，重做一次即可）
-- `phase = confirm` → 读 `.ontology-state/update-plan.json`，重新展示清单等用户确认
 - `phase = apply` → 读 plan，跳过已成功执行的条目（按 git status 推断），继续剩余条目；`UPDATE_BASE` 取 plan 的 `base_commit`，不要重新取 HEAD
 - `phase = validate` → 直接读 plan 中的 changed stems 进 ontology-validate，同样带上 `--since {base_commit}`

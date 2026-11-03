@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from app.services import auth
 from app.services.workspace import WorkspaceManager, _git
 from app.services.onto_mcp import tokens
 from app.services.onto_mcp import workspace as mcp
@@ -136,19 +137,76 @@ def test_invalid_preview_and_write_do_not_mutate(env):
         call(env, "create_ontology_rule", expected_revision=rev, key="../escape", title="synthetic", content="text")
 
 
-def test_management_status_is_onto_local_without_modeling(env, monkeypatch):
-    manager, meta, _ = env
+def _management_app(manager, monkeypatch):
+    from app.api import errors
+
     monkeypatch.setattr(routes, "manager", lambda: manager)
-    monkeypatch.setattr(routes, "access", lambda project_id, request, write=False: manager.get_project(project_id))
-    monkeypatch.setattr(routes.config, "MODELING_URL", "https://example.invalid")
+    monkeypatch.setattr(routes, "access", lambda project_id, request: manager.get_project(project_id))
     app = FastAPI()
     app.include_router(routes.router)
-    request = TestClient(app, base_url="https://testserver")
-    response = request.get(f"/api/projects/{meta['id']}/modeling-mcp")
+    errors.install(app)
+    return TestClient(app, base_url="https://testserver")
+
+
+def test_management_status_is_onto_local_without_modeling(env, monkeypatch):
+    manager, meta, _ = env
+    request = _management_app(manager, monkeypatch)
+    response = request.get(f"/api/v1/projects/{meta['id']}/mcp")
     assert response.status_code == 200
     body = response.json()
-    assert body["workspace"]["source"] == "onto" and body["runtime"]["project_id"] == meta["id"]
-    assert body["runtime"]["base_url"] == "https://testserver"
+    assert body["status"] == "running" and body["base_url"] == "https://testserver"
+    assert body["local_only"] is False and body["pack_tools"] == []
+    assert {item["url"] for item in body["endpoints"]} >= {
+        f"https://testserver/api/v1/onto-mcp/{meta['id']}/read/mcp",
+        f"https://testserver/api/v1/onto-mcp/{meta['id']}/change/sse",
+    }
+    assert body["token_policy"] == {"min_ttl_s": 300, "default_ttl_s": 86400, "max_ttl_s": 2592000, "supports_non_expiring": True}
+    assert [toolset["name"] for toolset in body["toolsets"]] == ["read", "change"]
+    # 读工具集：6 个本体读工具 + 插件产物的 artifact_list、artifact_get（契约 M-08）
+    assert len(body["toolsets"][0]["tools"]) == 8
+    assert {"artifact_list", "artifact_get"} <= set(body["toolsets"][0]["tools"])
+    templates = body["client_config_templates"]
+    assert "<READ_TOKEN>" in templates["read"] and "<CHANGE_TOKEN>" in templates["change"]
+    assert json.loads(templates["full"])["mcpServers"].keys() == {"modeling-read", "modeling-change"}
+    # 连接顺序与协议细节不再下发（UI 文案口径 ⑤，契约补充 UI 文案第 15 条）
+    assert "recommended_order" not in body and "limits" not in body
+
+
+def test_management_token_lifecycle_shapes(env, monkeypatch):
+    manager, meta, _ = env
+    client = _management_app(manager, monkeypatch)
+    base = f"/api/v1/projects/{meta['id']}/mcp/tokens"
+    created = client.post(base, json={"name": "synthetic", "scopes": ["ontology.read"], "expires_in_s": 30 * 86400})
+    assert created.status_code == 201
+    body = created.json()
+    summary = body["summary"]
+    assert body["token"] and summary["subject"] == "operator_a"
+    assert set(summary) == {"id", "name", "scopes", "subject", "issued_by", "created_at", "expires_at", "last_used_at", "remaining_text"}
+    assert summary["created_at"].endswith("Z") and summary["remaining_text"] == "30 天 · 剩 30 天"
+    assert body["token"] in body["client_config"]["read"] and body["client_config"]["change"] == ""
+
+    forever = client.post(base, json={"name": "synthetic_forever", "scopes": ["ontology.change.validate"], "expires_in_s": None}).json()
+    assert forever["summary"]["expires_at"] is None and forever["summary"]["remaining_text"] == "永不过期"
+    assert forever["client_config"]["read"] == "" and forever["token"] in forever["client_config"]["change"]
+
+    invalid = client.post(base, json={"name": "synthetic", "expires_in_s": 10})
+    assert invalid.status_code == 400 and invalid.json()["code"] == "invalid_argument"
+    assert "error" not in invalid.json()
+
+    listed = client.get(base).json()["items"]
+    assert [item["name"] for item in listed] == ["synthetic_forever", "synthetic"]
+    assert body["token"] not in json.dumps(listed)
+    assert client.delete(f"{base}/{summary['id']}").status_code == 204
+    again = client.delete(f"{base}/{summary['id']}")
+    assert again.status_code == 404 and again.json()["code"] == "not_found"
+    assert [item["name"] for item in client.get(base).json()["items"]] == ["synthetic_forever"]
+
+
+def test_remaining_text_formats():
+    assert routes.remaining_text(0, None, now=10) == "永不过期"
+    assert routes.remaining_text(0, 5, now=10) == "已过期"
+    assert routes.remaining_text(0, 30 * 86400, now=9 * 86400) == "30 天 · 剩 21 天"
+    assert routes.remaining_text(0, 3600, now=0) == "1 小时 · 剩 1 小时"
 
 
 @pytest.mark.parametrize("body", [
@@ -238,8 +296,9 @@ def test_cursor_error_codes_are_preserved(cursor, code):
     assert exc.value.code == code
 
 
-def test_tokens_scope_revocation_acl_and_project_isolation(env):
+def test_tokens_scope_revocation_acl_and_project_isolation(env, monkeypatch):
     manager, meta, root = env
+    monkeypatch.setattr(auth, "ENABLED", True)
     issued = tokens.issue(manager, meta, {"name": "synthetic", "scopes": ["ontology.change.validate"], "expires_in_seconds": None}, {"sub": "operator_a"})
     assert tokens.verify(manager, meta["id"], issued["token"], "change")["scopes"] == ["ontology.change.validate"]
     assert issued["token"] not in json.dumps(tokens.listing(manager, meta["id"]))
@@ -249,7 +308,7 @@ def test_tokens_scope_revocation_acl_and_project_isolation(env):
     with pytest.raises(McpError):
         tokens.verify(manager, meta["id"], issued["token"], "change")
     issued = tokens.issue(manager, meta, {"name": "synthetic"}, {"sub": "operator_a"})
-    manager._update_meta(meta["id"], owner="operator_b", members={})
+    manager._update_meta(meta["id"], owner="operator_b")
     with pytest.raises(McpError) as exc:
         tokens.verify(manager, meta["id"], issued["token"], "read")
     assert exc.value.status == 403
@@ -260,19 +319,24 @@ def test_http_protocol_and_scope_enforcement(env, monkeypatch):
     monkeypatch.setattr(routes, "manager", lambda: manager)
     app = FastAPI()
     app.include_router(routes.transport_router)
+    app.include_router(routes.legacy_transport_router)
     client = TestClient(app)
     raw = tokens.issue(manager, meta, {"name": "synthetic", "scopes": ["ontology.read"]}, {"sub": "operator_a"})["token"]
     headers = {"Authorization": "Bearer " + raw}
-    url = f"/api/onto-mcp/{meta['id']}/read/mcp"
-    def rpc(method, params=None, **kwargs):
-        return client.post(url, headers=headers, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}, **kwargs)
-    assert rpc("initialize").json()["result"]["serverInfo"]["name"] == tokens.SERVER["name"]
-    assert rpc("server/discover").status_code == 200
-    assert len(rpc("tools/list").json()["result"]["tools"]) == 6
-    result = rpc("tools/call", {"name": "list_ontology_objects"}).json()["result"]
-    assert result["structuredContent"]["total"] == 2 and not result["isError"]
-    assert rpc("tools/call", {"name": "delete_ontology_rule"}).status_code == 404
-    assert client.post(url, json={"jsonrpc": "2.0", "id": 1, "method": "ping"}).status_code == 401
+    # v1 路径与永久保留的旧路径行为完全相同（契约 M-05）
+    for url in (f"/api/v1/onto-mcp/{meta['id']}/read/mcp", f"/api/onto-mcp/{meta['id']}/read/mcp"):
+        def rpc(method, params=None, **kwargs):
+            return client.post(url, headers=headers, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}, **kwargs)
+        assert rpc("initialize").json()["result"]["serverInfo"]["name"] == tokens.SERVER["name"]
+        assert rpc("server/discover").status_code == 200
+        assert len(rpc("tools/list").json()["result"]["tools"]) == 8
+        result = rpc("tools/call", {"name": "list_ontology_objects"}).json()["result"]
+        assert result["structuredContent"]["total"] == 2 and not result["isError"]
+        missing = rpc("tools/call", {"name": "delete_ontology_rule"})
+        assert missing.status_code == 404 and missing.json()["error"]["data"]["code"] == "MCP_TOOL_NOT_FOUND"
+        unauthenticated = client.post(url, json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+        assert unauthenticated.status_code == 401
+        assert unauthenticated.json()["error"]["data"]["code"] == "MCP_AUTH_REQUIRED"
 
 
 
@@ -280,7 +344,7 @@ def test_validation_only_token_cannot_apply(env, monkeypatch):
     manager, meta, _ = env
     monkeypatch.setattr(routes, "manager", lambda: manager)
     app = FastAPI()
-    app.include_router(routes.transport_router)
+    app.include_router(routes.legacy_transport_router)
     raw = tokens.issue(manager, meta, {"name": "synthetic", "scopes": ["ontology.change.validate"]}, {"sub": "operator_a"})["token"]
     with TestClient(app) as client:
         response = client.post(f"/api/onto-mcp/{meta['id']}/change/mcp", headers={"Authorization": "Bearer " + raw},
@@ -297,12 +361,15 @@ def test_persist_failure_rolls_back_and_keeps_unrelated_changes(env, monkeypatch
     target = root / "ontology/object/synthetic_a.md"
     before = target.read_bytes()
     rev = mcp.revision(root)
-    original = mcp._git
-    def fail_commit(root, *args):
-        if args[0] == "commit":
+    # 提交经写入事务（kernel/writepath）在临时索引上生成：让生成提交那一步失败
+    from app.kernel.writepath import tx as writepath_tx
+
+    original = writepath_tx._git
+    def fail_commit(root, *args, **kwargs):
+        if args[0] == "commit-tree":
             raise RuntimeError("synthetic commit failure")
-        return original(root, *args)
-    monkeypatch.setattr(mcp, "_git", fail_commit)
+        return original(root, *args, **kwargs)
+    monkeypatch.setattr(writepath_tx, "_git", fail_commit)
     with pytest.raises(RuntimeError):
         call(env, "update_ontology_object", object_id="object:synthetic_a", expected_revision=rev,
              metadata={"description": "synthetic changed description"})
@@ -339,6 +406,7 @@ def test_real_sse_transport_delivers_rpc_and_rejects_wrong_principal(env, monkey
     monkeypatch.setattr(routes, "manager", lambda: manager)
     app = FastAPI()
     app.include_router(routes.transport_router)
+    app.include_router(routes.legacy_transport_router)
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]

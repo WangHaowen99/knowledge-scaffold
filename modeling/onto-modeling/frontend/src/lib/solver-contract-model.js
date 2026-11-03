@@ -327,6 +327,8 @@ function normalizeBinding(binding) {
   for (const key of ['solver_key', 'operation', 'decision_model']) {
     if (typeof out[key] === 'string') out[key] = out[key].trim();
   }
+  // 表单上没有 Decision Model ID：缺了按求解标识补齐（与 newDraftItem 的默认命名一致），不让用户看到改不了的报错
+  if (!out.decision_model && out.solver_key) out.decision_model = `${out.solver_key}_model`;
   if ('units' in out) out.units = normalizeUnits(out.units);
   return out;
 }
@@ -386,7 +388,7 @@ function templateProblems(params) {
   // 口径同后端 _check_text_presentation：只填一项时 Consumer 会拒收整个求解结果
   const names = TEXT_PRESENTATION_FIELDS.map((name) => normalized[name]);
   if (names.some(Boolean) && !names.every(Boolean)) {
-    problems.push(['text_presentation', '结果文字的工艺名称与物流名称须同时填写，或都留空']);
+    problems.push(['text_presentation', '结果文字两项须同时填写，或都留空']);
   } else if (names.some((name) => charLength(name) > MAX_TEMPLATE_TEXT || hasControlChar(name))) {
     problems.push(['text_presentation', `结果文字的名称不能超过 ${MAX_TEMPLATE_TEXT} 个字符，也不能含换行等控制字符`]);
   }
@@ -414,12 +416,11 @@ export function localProblems(items, availableOperations = [], problemFamilies =
     } else if (keyCount.get(key) > 1) {
       add(item, 'solver_key', `求解标识「${key}」重复`);
     } else if (key !== operation && stems.has(key)) {
-      add(item, 'solver_key', `求解标识「${key}」与另一个 Operation 同名，导出后会互相覆盖`);
+      add(item, 'solver_key', `求解标识「${key}」与另一个操作同名，导出后会互相覆盖`);
     }
-    if (!operation) add(item, 'operation', '未选择绑定的 Operation');
-    else if (!stems.has(operation)) add(item, 'operation', `Operation「${operation}」不存在`);
-    else if (operationCount.get(operation) > 1) add(item, 'operation', `Operation「${operation}」被多个求解契约绑定`);
-    if (!binding.decision_model) add(item, 'decision_model', '未填写 Decision Model ID');
+    if (!operation) add(item, 'operation', '未选择绑定的操作');
+    else if (!stems.has(operation)) add(item, 'operation', `操作「${operation}」不存在`);
+    else if (operationCount.get(operation) > 1) add(item, 'operation', `操作「${operation}」被多个求解契约绑定`);
     for (const [field, message] of familyProblems(binding, problemFamilies)) add(item, field, message, 'warning');
     const units = Array.isArray(binding.units) ? binding.units : [];
     const fields = new Set();

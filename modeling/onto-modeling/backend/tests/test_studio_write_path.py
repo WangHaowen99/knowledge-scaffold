@@ -1,4 +1,4 @@
-"""Studio 写路径（草稿/租约/确定性分流）、报告条目解析与回收站的测试。"""
+"""Studio 写路径（草稿/确定性分流）、报告条目解析与回收站的测试。"""
 
 import shutil
 import time
@@ -37,18 +37,14 @@ def env(tmp_path: Path, monkeypatch):
     return root
 
 
-def test_lease_conflict_and_expiry(env, monkeypatch):
-    studio.acquire_lease("p1", "ontology/object/订单.md", "alice")
-    with pytest.raises(studio.StudioError) as exc:
-        studio.acquire_lease("p1", "ontology/object/订单.md", "bob")
-    assert exc.value.status == 409
-    # 同人可续期
-    studio.acquire_lease("p1", "ontology/object/订单.md", "alice")
-    # 过期后他人可取得
-    leases = studio._load("p1", "leases")
-    leases["ontology/object/订单.md"]["expires"] = int(time.time()) - 1
-    studio._save("p1", "leases", leases)
-    assert studio.acquire_lease("p1", "ontology/object/订单.md", "bob")["owner"] == "bob"
+def test_drafts_no_longer_take_a_lease(env):
+    """30 分钟硬租约随写入范围锁取消（方案 C10）：存草稿不占锁，助手在改的条目由写入范围锁挡
+    （见 test_write_scope.py）；只是存草稿不会让别处的写入失败。"""
+    studio.save_draft("p1", "ontology/object/订单.md", "甲的草稿", "", "alice")
+    studio.save_draft("p1", "ontology/object/订单.md", "乙的草稿", "", "bob")
+    assert studio.get_draft("p1", "ontology/object/订单.md")["content"] == "乙的草稿"
+    assert studio._load("p1", "leases") == {}
+    assert not hasattr(studio, "acquire_lease")
 
 
 def test_draft_roundtrip_and_discard(env):
@@ -57,7 +53,6 @@ def test_draft_roundtrip_and_discard(env):
     assert draft["content"] == "内容" and draft["base_revision"] == "rev1"
     studio.discard_draft("p2", "ontology/object/订单.md", "alice")
     assert studio.get_draft("p2", "ontology/object/订单.md") is None
-    assert studio.lease_status("p2", "ontology/object/订单.md") is None
 
 
 def test_deterministic_check_pass(env):
@@ -77,7 +72,9 @@ def test_deterministic_check_routes_to_review(env):
     checks = studio.deterministic_check(env, "ontology/object/订单.md", content)
     assert checks["errors"] == []
     assert any("自定义章节" in r for r in checks["review"])
-    assert any("不存在的对象" in r for r in checks["review"])
+    # F3：链接只提示
+    assert any("不存在的对象" in r for r in checks["hints"])
+    assert not any("不存在的对象" in r for r in checks["review"])
 
 
 def test_sections_serialize_roundtrip():

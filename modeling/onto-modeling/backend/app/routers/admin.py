@@ -1,38 +1,50 @@
+"""管理员接口（API 契约 3.24 AD-01～AD-07）：用户管理（代理 auth-server Admin API）、项目所有者。
+
+用户管理的写操作只有 admin；ops 能看用户列表（契约 1.3）。auth-server 现在只有 admin、user
+两种角色（ops 角色属于 E3/P1），改成 ops 时由 auth-server 拒绝。
+"""
+
+from __future__ import annotations
+
 import json
 import os
-import shutil
-import tarfile
+import secrets
+import string
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import config
-from ..services import audit, auth, conversation_store, error_log, modeling_cleanup
-from ..services.agent_sessions import manager, usage_summary
-from ..services.auth import AuthError
-from .projects import workspaces
+from ..api import deps
+from ..api.deps import workspaces  # noqa: F401  旧测试仍 monkeypatch admin.workspaces，路由一律用 deps.workspaces
+from ..api.errors import ApiError
+from ..api.views import project_meta_view
+from ..services import audit, auth, ownership
 
-router = APIRouter(prefix="/api/admin", tags=["admin"])
+router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
 ONLINE_WINDOW_SECONDS = 600
 MAX_SIZE_SCAN_FILES = 20000
+ROLES = ("user", "admin", "ops")
+
+# auth-server 密码策略的违规项 → 契约 weak_password 的 failed_rules（2.2）
+PASSWORD_RULES = {
+    "min_length": "len",
+    "max_length": "max",
+    "character_classes": "classes",
+    "contains_username": "contains_username",
+    "common_password": "common",
+    "surrounding_whitespace": "edge_space",
+    "same_as_old": "same_as_old",
+}
 
 
-def _require_admin(request: Request) -> None:
-    if not auth.ENABLED:
-        return  # 本地开发未开鉴权时放开
-    user = getattr(request.state, "user", None)
-    if not user or user.get("role") != "admin":
-        raise AuthError("需要管理员权限", 403)
-
-
-def _workspace_size(root: Path) -> int:
+def workspace_size(root: Path) -> int:
+    """工作区占用（不含 .git），文件数超过上限时返回已统计的部分。"""
     total = 0
     count = 0
     for dirpath, dirnames, filenames in os.walk(root):
@@ -49,273 +61,17 @@ def _workspace_size(root: Path) -> int:
     return total
 
 
-@router.get("/overview")
-def overview(request: Request):
-    _require_admin(request)
-    now = time.time()
-
-    disk = shutil.disk_usage(config.DATA_DIR)
-    try:
-        load = os.getloadavg()
-    except OSError:
-        load = (0, 0, 0)
-
-    recent_users = sorted(auth.LAST_SEEN.items(), key=lambda item: -item[1])
-    users = [
-        {
-            "username": username,
-            "last_seen": last_seen,
-            "online": now - last_seen < ONLINE_WINDOW_SECONDS,
-        }
-        for username, last_seen in recent_users
-    ]
-
-    sessions = [
-        {
-            "project_id": pid,
-            "conversation_id": s.conversation_id,
-            "state": s.state,
-            "events": len(s.events),
-            "connected": s.client is not None,
-            "last_activity": s.last_activity,
-        }
-        for pid, s in manager._sessions.items()
-    ]
-
-    projects = []
-    total_cost = 0.0
-    for meta in workspaces.list_projects():
-        usage = usage_summary(meta["id"])
-        total_cost += usage["total_cost_usd"]
-        root = workspaces.project_root(meta["id"])
-        projects.append(
-            {
-                **meta,
-                "usage": usage,
-                "size_bytes": _workspace_size(root),
-            }
-        )
-
-    try:
-        from importlib.metadata import version as pkg_version
-
-        sdk_version = pkg_version("claude-agent-sdk")
-    except Exception:
-        sdk_version = ""
-
-    return {
-        "system": {
-            "disk_total": disk.total,
-            "disk_free": disk.free,
-            "load": load,
-            "sdk_version": sdk_version,
-        },
-        "users": users,
-        "online_count": sum(1 for u in users if u["online"]),
-        "sessions": sessions,
-        "session_pool": manager.pool_status(),
-        "projects": projects,
-        "total_cost_usd": round(total_cost, 4),
-        "errors": error_log.read(100),
-        "usage_daily": _usage_daily(),
-        "backups": _list_backups(),
-        "user_admin_available": bool(config.AUTH_ADMIN_TOKEN and auth.ENABLED),
-    }
+# ---- 代理 auth-server Admin API ----
 
 
-def _usage_daily(days: int = 14) -> list[dict]:
-    """按日聚合全部项目的模型用量（读会话事件历史）。"""
-    buckets: dict[str, dict] = {}
-    sessions_dir = Path(config.DATA_DIR) / "sessions"
-    if sessions_dir.is_dir():
-        # 递归：多会话的历史与已删除会话留存的用量都在 sessions/{项目}/ 下
-        for history_file in sessions_dir.rglob("*.jsonl"):
-            try:
-                lines = history_file.read_text(encoding="utf-8").splitlines()
-            except OSError:
-                continue
-            for line in lines:
-                if '"result"' not in line and '"model_usage"' not in line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                usage = conversation_store.counted_usage(event)
-                if usage is None or not event.get("ts"):
-                    continue
-                day = datetime.fromtimestamp(event["ts"]).strftime("%Y-%m-%d")
-                bucket = buckets.setdefault(
-                    day, {"date": day, "cost": 0.0, "output_tokens": 0, "calls": 0}
-                )
-                if event.get("type") == "result":
-                    bucket["cost"] += event.get("total_cost_usd") or 0
-                    bucket["calls"] += 1
-                bucket["output_tokens"] += usage.get("output_tokens") or 0
-    series = sorted(buckets.values(), key=lambda b: b["date"], reverse=True)[:days]
-    for bucket in series:
-        bucket["cost"] = round(bucket["cost"], 4)
-    return series
+def auth_admin_available() -> bool:
+    return bool(config.AUTH_ADMIN_TOKEN and auth.ENABLED)
 
 
-BACKUP_KEEP = 3
-
-
-def _backups_dir() -> Path:
-    return Path(config.DATA_DIR) / "backups"
-
-
-def _list_backups() -> list[dict]:
-    directory = _backups_dir()
-    if not directory.is_dir():
-        return []
-    return [
-        {"name": p.name, "size": p.stat().st_size, "ts": p.stat().st_mtime}
-        for p in sorted(directory.glob("*.tar.gz"), reverse=True)
-    ]
-
-
-def run_backup() -> str:
-    """打包全部 workspace（保留最近 BACKUP_KEEP 份）；手动按钮与定时调度共用。"""
-    directory = _backups_dir()
-    directory.mkdir(parents=True, exist_ok=True)
-    dest = directory / f"workspaces-{time.strftime('%Y%m%d-%H%M%S')}.tar.gz"
-    with tarfile.open(dest, "w:gz") as tar:
-        tar.add(workspaces.workspaces_dir, arcname="workspaces")
-    for old in sorted(directory.glob("*.tar.gz"), reverse=True)[BACKUP_KEEP:]:
-        old.unlink(missing_ok=True)
-    return dest.name
-
-
-async def backup_scheduler_loop():
-    """定期备份（ONTO_WEB_BACKUP_INTERVAL_HOURS，0 关闭）；打包放线程避免卡事件循环。"""
-    import asyncio
-
-    interval = config.BACKUP_INTERVAL_HOURS
-    if interval <= 0:
-        return
-    while True:
-        await asyncio.sleep(interval * 3600)
-        try:
-            await asyncio.to_thread(run_backup)
-        except Exception:
-            pass  # 单次失败不终止调度
-
-
-@router.post("/backup")
-def backup(request: Request):
-    _require_admin(request)
-    return {"created": run_backup(), "backups": _list_backups()}
-
-
-@router.post("/sessions/{project_id}/recycle")
-async def recycle_session(project_id: str, request: Request):
-    """手动回收某项目的会话子进程（续接点保留，用户下次发消息自动恢复）。"""
-    _require_admin(request)
-    recycled = await manager.recycle_project(project_id)
-    return {"recycled": recycled, "pool": manager.pool_status()}
-
-
-_cli_version_cache: str | None = None
-
-
-def _cli_version() -> str:
-    global _cli_version_cache
-    if _cli_version_cache is not None:
-        return _cli_version_cache
-    import subprocess
-
-    cli = config.CLI_PATH
-    if not cli:
-        try:
-            import claude_agent_sdk
-
-            bundled = Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude"
-            cli = str(bundled) if bundled.is_file() else ""
-        except ImportError:
-            cli = ""
-    if not cli:
-        _cli_version_cache = ""
-        return ""
-    try:
-        result = subprocess.run(
-            [cli, "--version"], capture_output=True, text=True, timeout=15
-        )
-        _cli_version_cache = result.stdout.strip()[:80] if result.returncode == 0 else ""
-    except Exception:
-        _cli_version_cache = ""
-    return _cli_version_cache
-
-
-@router.get("/health")
-def health_detail(request: Request):
-    """健康页：SDK/CLI 版本、磁盘水位（含告警）、负载、会话池、备份调度。"""
-    _require_admin(request)
-    disk = shutil.disk_usage(config.DATA_DIR)
-    free_pct = disk.free / disk.total * 100 if disk.total else 0
-    try:
-        load = os.getloadavg()
-    except OSError:
-        load = (0, 0, 0)
-    try:
-        from importlib.metadata import version as pkg_version
-
-        sdk_version = pkg_version("claude-agent-sdk")
-    except Exception:
-        sdk_version = ""
-    backups = _list_backups()
-    return {
-        "sdk_version": sdk_version,
-        "cli_version": _cli_version(),
-        "disk": {
-            "total": disk.total,
-            "free": disk.free,
-            "free_pct": round(free_pct, 1),
-            # 磁盘水位告警：可用低于 15% 或 10G
-            "warn": free_pct < 15 or disk.free < 10 * 1024**3,
-        },
-        "load": load,
-        "pool": manager.pool_status(),
-        "backup": {
-            "interval_hours": config.BACKUP_INTERVAL_HOURS,
-            "last": backups[0] if backups else None,
-        },
-    }
-
-
-@router.get("/trash")
-def list_trash(request: Request):
-    _require_admin(request)
-    return {"entries": workspaces.list_trash()}
-
-
-class RestoreBody(BaseModel):
-    name: str
-
-
-@router.post("/trash/restore")
-def restore_trash(request: Request, body: RestoreBody):
-    _require_admin(request)
-    return workspaces.restore_trash(body.name)
-
-
-@router.get("/audit")
-def audit_log(request: Request):
-    _require_admin(request)
-    return {"entries": audit.read(200)}
-
-
-# ---- 用户管理（代理 auth-server Admin API）----
-
-
-class UserUpdateBody(BaseModel):
-    password: str | None = None
-    role: str | None = None
-
-
-def _auth_admin_request(method: str, path: str, payload: dict | None = None):
-    if not config.AUTH_ADMIN_TOKEN:
-        raise AuthError("未配置认证服务管理令牌", 503)
+def _auth_admin_request(method: str, path: str, payload: dict | None = None) -> tuple[int, dict]:
+    """调 auth-server 管理接口，返回 (状态码, 响应体)；没配管理令牌或不可达时抛契约错误。"""
+    if not auth_admin_available():
+        raise ApiError("user_admin_unavailable", "未配置认证服务管理令牌，用户管理不可用", 503)
     data = json.dumps(payload).encode() if payload is not None else None
     request = urllib.request.Request(
         f"{auth.AUTH_URL}{path}",
@@ -332,49 +88,315 @@ def _auth_admin_request(method: str, path: str, payload: dict | None = None):
             return response.status, json.loads(response.read() or b"{}")
     except urllib.error.HTTPError as exc:
         try:
-            return exc.code, json.loads(exc.read())
+            body = json.loads(exc.read())
         except Exception:
-            return exc.code, {"error": "认证服务返回异常"}
+            body = {}
+        return exc.code, body if isinstance(body, dict) else {}
     except (urllib.error.URLError, TimeoutError) as exc:
-        raise AuthError("认证服务不可达", 502) from exc
+        raise ApiError("upstream_unavailable", "认证服务不可达", 502, {"upstream": "auth_server"}) from exc
+
+
+def auth_admin_error(status: int, data: dict) -> ApiError:
+    """auth-server 的错误响应 → 契约错误码（auth-server 只给中文消息，按消息归类）。"""
+    message = str(data.get("error") or "认证服务返回异常")
+    if data.get("code") == "PASSWORD_POLICY_FAILED":
+        rules = [PASSWORD_RULES.get(item, item) for item in data.get("violations") or []]
+        return ApiError("weak_password", "密码不满足规则", 400, {"failed_rules": rules})
+    if status in (401, 503):
+        # 401 是管理令牌不被认（两边配置不一致），对调用方同样是用户管理不可用
+        return ApiError("user_admin_unavailable", "认证服务管理接口不可用", 503)
+    if status == 429:
+        return ApiError("rate_limited", "请求过于频繁，请稍后再试", 429, {"retry_after_s": None})
+    if status >= 500:
+        return ApiError("upstream_unavailable", "认证服务异常", 502, {"upstream": "auth_server"})
+    if "不存在" in message:
+        return ApiError("user_not_found", message, 404)
+    if "已存在" in message:
+        return ApiError("username_taken", message, 409)
+    if message == "原密码错误":
+        return ApiError("old_password_incorrect", "旧密码不正确", 400)
+    return ApiError("invalid_argument", message, 400)
+
+
+def _call(method: str, path: str, payload: dict | None = None) -> dict:
+    status, data = _auth_admin_request(method, path, payload)
+    if not 200 <= status < 300:
+        raise auth_admin_error(status, data)
+    return data
+
+
+def list_auth_users() -> list[dict]:
+    users = _call("GET", "/admin/users").get("users")
+    return [user for user in users or [] if isinstance(user, dict) and user.get("username")]
+
+
+def _auth_user(username: str) -> dict:
+    for user in list_auth_users():
+        if user["username"] == username:
+            return user
+    raise ApiError("user_not_found", f"用户 {username} 不存在", 404)
+
+
+def admin_user_view(user: dict, project_counts: dict[str, int], now: float | None = None) -> dict:
+    """AdminUser（契约 7.2）：auth-server 没有显示名和锁定状态，显示名取用户名，锁定给 null。"""
+    now = time.time() if now is None else now
+    username = user["username"]
+    last_seen = auth.LAST_SEEN.get(username)
+    return {
+        "username": username,
+        "display_name": user.get("display_name") or username,
+        "role": user.get("role") or "user",
+        "online": bool(last_seen) and now - last_seen < ONLINE_WINDOW_SECONDS,
+        "last_seen_at": deps.iso(last_seen),
+        "project_count": project_counts.get(username, 0),
+        "locked_until": None,
+    }
+
+
+def project_counts() -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for meta in deps.workspaces.list_projects():
+        owner = str(meta.get("owner") or "")
+        if owner:
+            counts[owner] = counts.get(owner, 0) + 1
+    return counts
+
+
+_registration_cache: tuple[float, bool | None] | None = None
+REGISTRATION_CACHE_SECONDS = 60
+
+
+def registration_enabled() -> bool | None:
+    """auth-server 是否开放注册（/capabilities，公开接口），缓存 60 秒；读不到为 None。
+
+    C-01 每次打开页面都会调，auth-server 不可达时不能每次都等满超时。
+    """
+    global _registration_cache
+    if not auth.ENABLED:
+        return False
+    if _registration_cache and time.time() - _registration_cache[0] < REGISTRATION_CACHE_SECONDS:
+        return _registration_cache[1]
+    try:
+        with urllib.request.urlopen(f"{auth.AUTH_URL}/capabilities", timeout=3) as response:
+            value = json.loads(response.read() or b"{}").get("registration_enabled")
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        value = None
+    value = value if isinstance(value, bool) else None
+    _registration_cache = (time.time(), value)
+    return value
+
+
+def _owned_projects(username: str) -> list[dict]:
+    return [meta for meta in deps.workspaces.list_projects() if str(meta.get("owner") or "") == username]
+
+
+def _meta_views(metas: list[dict]) -> list[dict]:
+    return [project_meta_view(meta, deps.workspaces.project_root(meta["id"])) for meta in metas]
+
+
+# ---- AD-01～AD-04 用户 ----
 
 
 @router.get("/users")
-def list_users(request: Request):
-    _require_admin(request)
-    status_code, data = _auth_admin_request("GET", "/admin/users")
-    return JSONResponse(status_code=status_code, content=data)
+def list_users(request: Request, q: str = "", cursor: str = "", limit: int = 0):
+    """AD-01：用户列表。没配管理令牌时 available=false、items 为空，页面据此提示。"""
+    deps.require_role(request, "admin", "ops")
+    stats = {
+        "accounts": 0,
+        "by_role": {role: 0 for role in ROLES},
+        "new_7d": None,  # auth-server 不记账号创建时间
+        "locked": None,  # auth-server 没有登录锁定
+        "registration_enabled": registration_enabled(),
+        "auth": {"alg": "RS256", "issuer_checked": True},
+    }
+    if not auth_admin_available():
+        return {"items": [], "next_cursor": None, "total": 0, "stats": stats, "available": False}
+    users = list_auth_users()
+    stats["accounts"] = len(users)
+    for user in users:
+        role = user.get("role") or "user"
+        stats["by_role"][role] = stats["by_role"].get(role, 0) + 1
+    counts, now = project_counts(), time.time()
+    needle = q.strip().lower()
+    items = [
+        admin_user_view(user, counts, now)
+        for user in sorted(users, key=lambda item: item["username"])
+        if not needle or needle in user["username"].lower()
+    ]
+    return {**deps.page(items, cursor, limit, {"q": needle}), "stats": stats, "available": True}
 
 
-@router.put("/users/{username}")
-def update_user(username: str, body: UserUpdateBody, request: Request):
-    _require_admin(request)
-    status_code, data = _auth_admin_request(
-        "PUT", f"/admin/users/{username}", body.model_dump(exclude_none=True)
+class RoleBody(BaseModel):
+    role: str
+
+
+@router.patch("/users/{username}")
+def update_user_role(username: str, body: RoleBody, request: Request):
+    """AD-02：改角色。不能把最后一个管理员降级。"""
+    deps.require_role(request, "admin")
+    if body.role not in ROLES:
+        raise ApiError("invalid_argument", "角色只能是 user、admin 或 ops", 400, {"fields": {"role": "enum"}})
+    users = list_auth_users()
+    target = next((user for user in users if user["username"] == username), None)
+    if target is None:
+        raise ApiError("user_not_found", f"用户 {username} 不存在", 404)
+    admins = [user for user in users if user.get("role") == "admin"]
+    if target.get("role") == "admin" and body.role != "admin" and len(admins) <= 1:
+        raise ApiError("forbidden", "不能降级最后一个管理员", 403, {"reason": "last_admin"})
+    previous = target.get("role") or "user"
+    user = _call("PUT", f"/admin/users/{username}", {"role": body.role}).get("user") or {**target, "role": body.role}
+    audit.log(
+        deps.actor(request), "PATCH", request.url.path,
+        detail={"action": "user.role", "username": username, "from": previous, "to": body.role},
     )
-    return JSONResponse(status_code=status_code, content=data)
+    return admin_user_view(user, project_counts())
+
+
+class ResetPasswordBody(BaseModel):
+    password: str | None = Field(default=None, max_length=128)
+    generate: bool = False
+    require_change: bool = False
+
+
+def generate_password(length: int = 16) -> str:
+    """服务端生成的临时密码：大小写字母、数字、符号各至少一个，满足 auth-server 密码规则。"""
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*-_=+"
+    pools = (string.ascii_lowercase, string.ascii_uppercase, string.digits, "!@#$%^&*-_=+")
+    while True:
+        value = "".join(secrets.choice(alphabet) for _ in range(length))
+        if all(any(ch in pool for ch in value) for pool in pools):
+            return value
+
+
+@router.post("/users/{username}/reset-password")
+def reset_password(username: str, body: ResetPasswordBody, request: Request):
+    """AD-03：重置密码。generate=true 时服务端生成，明文只在这次响应里出现一次。
+
+    require_change（下次登录强制改密）auth-server 不支持，见 gaps。
+    """
+    deps.require_role(request, "admin")
+    if body.generate:
+        password = generate_password()
+    elif body.password:
+        password = body.password
+    else:
+        raise ApiError("invalid_argument", "请填写新密码或选择自动生成", 400, {"fields": {"password": "required"}})
+    _call("PUT", f"/admin/users/{username}", {"password": password})
+    audit.log(
+        deps.actor(request), "POST", request.url.path,
+        detail={"action": "user.password_reset", "username": username, "generated": body.generate},
+    )
+    return {"generated_password": password} if body.generate else {}
+
+
+class DeleteUserBody(BaseModel):
+    projects: str | None = None  # transfer | trash；用户名下没有项目时可省略
+    transfer_to: str | None = None
+
+
+def revoke_mcp_tokens_of(username: str) -> int:
+    """吊销该用户签发的全部 MCP token（用户删除时，契约 AD-04）。"""
+    from ..services.onto_mcp import tokens
+
+    with tokens.database(deps.workspaces) as conn:
+        return conn.execute(
+            "UPDATE tokens SET revoked=? WHERE subject=? AND revoked IS NULL", (time.time(), username)
+        ).rowcount
 
 
 @router.delete("/users/{username}")
-def delete_user(username: str, request: Request):
-    _require_admin(request)
-    status_code, data = _auth_admin_request("DELETE", f"/admin/users/{username}")
-    if 200 <= status_code < 300:
-        from ..services import personal_model_settings
+def delete_user(username: str, request: Request, body: DeleteUserBody | None = None):
+    """AD-04：删除用户。名下项目移交给另一个用户；移入回收站暂不支持（删除已改为永久删除）。"""
+    deps.require_role(request, "admin")
+    body = body or DeleteUserBody()
+    if not auth_admin_available():
+        raise ApiError("user_admin_unavailable", "未配置认证服务管理令牌，用户管理不可用", 503)
+    owned = _owned_projects(username)
+    target = ""
+    if owned or body.projects:
+        if body.projects == "trash":
+            raise ApiError(
+                "invalid_argument", "暂不支持把项目移入回收站，请移交给其他用户", 400,
+                {"fields": {"projects": "trash_unsupported"}},
+            )
+        if body.projects != "transfer":
+            raise ApiError(
+                "invalid_argument", "请选择名下项目的去向", 400, {"fields": {"projects": "required"}},
+            )
+        target = (body.transfer_to or "").strip()
+        if not target or target == username or not ownership.OWNER_NAME_RE.fullmatch(target):
+            raise ApiError("transfer_target_invalid", "移交对象不存在或不合法", 400)
+    users = {user["username"] for user in list_auth_users()}
+    if username not in users:
+        raise ApiError("user_not_found", f"用户 {username} 不存在", 404)
+    if target and target not in users:
+        raise ApiError("transfer_target_invalid", "移交对象不存在或不合法", 400)
+    _call("DELETE", f"/admin/users/{username}")
+    transferred = 0
+    from ..services import project_events
 
-        personal_model_settings.delete_user(username)
-    return JSONResponse(status_code=status_code, content=data)
+    for meta in owned:
+        deps.workspaces.set_owner(meta["id"], target)
+        transferred += 1
+        project_events.project_removed(username, meta["id"], "transferred")
+        project_events.card_changed(meta["id"])
+    revoked = revoke_mcp_tokens_of(username)
+    from ..services import notifications, personal_model_settings
+
+    personal_model_settings.delete_user(username)
+    notifications.forget_user(username)
+    audit.log(
+        deps.actor(request), "DELETE", request.url.path,
+        detail={
+            "action": "user.delete", "username": username, "transfer_to": target or None,
+            "transferred": transferred, "mcp_tokens_revoked": revoked,
+        },
+    )
+    return {"deleted": username, "transferred": transferred, "trashed": 0}
 
 
-@router.get("/modeling-cleanups")
-def list_modeling_cleanups(request: Request):
-    _require_admin(request)
-    return {"tasks": modeling_cleanup.list_tasks()}
+@router.get("/users/{username}/projects")
+def user_projects(username: str, request: Request):
+    """AD-05：用户名下的项目（删除用户弹窗用），只给元数据视图。"""
+    deps.require_role(request, "admin")
+    return {"items": _meta_views(_owned_projects(username))}
 
 
-@router.post("/modeling-cleanups/{task_id}/retry")
-def retry_modeling_cleanup(task_id: str, request: Request):
-    _require_admin(request)
-    if not modeling_cleanup.retry_task(task_id):
-        return JSONResponse(status_code=404, content={"error": "清理任务不存在"})
-    return {"queued": True, "id": task_id}
+# ---- AD-06、AD-07 项目所有者 ----
+
+
+@router.get("/projects/unowned")
+def unowned_projects(request: Request):
+    """AD-06：无主项目，等管理员指定所有者。"""
+    deps.require_role(request, "admin")
+    metas = [meta for meta in deps.workspaces.list_projects() if not str(meta.get("owner") or "")]
+    return {"items": _meta_views(metas)}
+
+
+class OwnerBody(BaseModel):
+    owner: str
+
+
+@router.put("/projects/{project_id}/owner")
+def set_project_owner(project_id: str, body: OwnerBody, request: Request):
+    """AD-07：指定项目所有者。改成自己即可读项目内容，所以每次都记审计（原值与新值）。"""
+    deps.require_role(request, "admin")
+    owner = ownership.validate_owner_name(body.owner)
+    previous, meta = deps.workspaces.set_owner(project_id, owner)
+    audit.log(
+        deps.actor(request), "PUT", request.url.path,
+        detail={"action": "project.set_owner", "project": project_id, "from": previous, "to": owner},
+    )
+    return project_meta_view(meta, deps.workspaces.project_root(project_id))
+
+
+@router.get("/config-registry")
+def config_registry_view(request: Request, effect: str = "", q: str = ""):
+    """SY-14：配置注册表（admin；ops 只读可看）。只读，配置项在各自的设置页修改；密钥只给引用。"""
+    from ..governance import config_registry
+
+    deps.require_role(request, "admin", "ops")
+    if effect and effect not in config_registry.EFFECTS:
+        raise ApiError("invalid_argument", "effect 取值不合法", 400, {"fields": {"effect": "enum"}})
+    return {"precedence": list(config_registry.DEFAULT_PRECEDENCE),
+            "items": config_registry.items(effect or None, q or None)}

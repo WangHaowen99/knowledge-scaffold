@@ -246,6 +246,14 @@ def _load(path: Path, file_key: tuple) -> _Snapshot:
     return _build(file_key, custom, verified_at, time.time(), _version(content))
 
 
+def _invalidate() -> None:
+    """页面保存或停用后丢掉缓存：文件修改时间粒度粗（如容器绑定挂载）时，同大小的两次写入
+    按 (mtime, size) 认不出变化，下一次查表会读到旧内容。"""
+    global _snapshot, _error
+    with _lock:
+        _snapshot, _error = None, None
+
+
 def _current() -> tuple[_Snapshot, str | None]:
     global _snapshot, _error
     path = _custom_file()
@@ -314,6 +322,7 @@ def disable_custom() -> dict:
             target = path.with_name(f"{_BACKUP_PREFIX}{stamp}-{suffix}")
         path.rename(target)
         _log.info("已停用自定义模型上下文推荐表 %s，备份为 %s", path, target)
+    _invalidate()
     return {**presets(), "disabled_backup": str(target) if target else None}
 
 
@@ -388,6 +397,7 @@ def save_custom(entries: list, version: str, verified_at: str | None = None, use
         mode = path.stat().st_mode & 0o777 if content is not None else 0o644
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(path, json.dumps(document, ensure_ascii=False, indent=2) + "\n", mode)
+    _invalidate()
     added, changed, removed = _changed_ids(before, custom)
     _log.info(
         "%s 在页面修改了自定义模型上下文推荐表 %s：新增 %s，修改 %s，删除 %s",

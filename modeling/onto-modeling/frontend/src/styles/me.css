@@ -1,0 +1,6 @@
+/* 个人设置（设计稿 me）：pl-* 在 plugins.css；这里是产品补充 */
+.me-rule-bad{color:var(--red);font-size:11px;margin-left:4px}
+.me-off{opacity:.45}
+.me-eng-acts{align-items:flex-end;justify-content:flex-end;gap:8px}
+.me-ctx{padding-bottom:10px;line-height:1.4}
+.pl-eng.off .pl-engb .opt{cursor:default}

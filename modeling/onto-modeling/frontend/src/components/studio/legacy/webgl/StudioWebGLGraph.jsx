@@ -147,7 +147,6 @@ const StudioWebGLGraph = forwardRef(({
   return (
     <div className="studio-webgl-graph" data-renderer={rendererName} data-layout-mode={layoutMode}>
       <div ref={hostRef} className="studio-webgl-stage" />
-      <span className="studio-webgl-renderer-badge"><i />{rendererName}</span>
       <div className="studio-webgl-navigation" aria-label="WebGL 图谱导航">
         {layoutMode === 'force' && selectedId && (
           <button type="button" title={pinned ? '取消固定选中节点' : '固定选中节点'} aria-label={pinned ? '取消固定选中节点' : '固定选中节点'} aria-pressed={pinned} onClick={togglePin}>

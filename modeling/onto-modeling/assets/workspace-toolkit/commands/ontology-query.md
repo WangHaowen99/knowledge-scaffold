@@ -57,13 +57,6 @@ Print the script's markdown output directly.
 
 ## Step 4: Suggest next step
 
-If results contain any items:
+有结果时用一两句话点出要紧的发现；没有结果时直说没查到。不列下一步菜单（界面的建议条会给出）。
 
-```
-**下一步建议：**
-- 回复 **影响 <名称>**（/ontology-impact）→ 查看某个文档的修改影响
-- 回复 **再查询** → 用其他关键词继续查
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
-```
-
-If no results: just prompt 再查询/完成.
+用户之后在对话里说「影响 <名称>」，读 `.claude/commands/ontology-impact.md` 照做；说「再查询」或给出新的关键词，回到 Step 1。

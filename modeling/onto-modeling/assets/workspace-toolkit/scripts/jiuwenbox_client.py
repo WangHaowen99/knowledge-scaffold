@@ -104,6 +104,7 @@ try:
             "timed_out": timed_out,
             "stdout_is_json": single_json(stdout),
             "stdout": stdout[:limit],
+            "stdout_truncated": len(stdout) > limit,
             "stderr": stderr[-limit:],
             "duration_ms": int((time.monotonic() - started) * 1000),
         })
@@ -494,6 +495,28 @@ def run_cases(script: Path, argv_cases: list[list[str]], *, gateway: str | None 
         "fallback_reason": reason,
         "results": _parse_results(done.stdout, len(argv_cases)),
     }
+
+
+def run_in_gateway(bundle: str, entry: str, argv_cases: list[list[str]], *, gateway: str | None = None) -> list[dict]:
+    """经网关在 jiuwenbox 沙箱里跑一个已打包的脚本，不在本机回退：内核跑包里的脚本节点用（详设 6.5）。
+
+    脚本来自包作者，不能在主容器里执行；网关没配、不可达或 jiuwenbox 不可用时抛 SandboxUnavailable。
+    """
+    if len(bundle) > MAX_ARGUMENT_BYTES:
+        raise BundleError(f"脚本及其输入打包后超过沙箱参数上限 {MAX_ARGUMENT_BYTES // 1024}KB")
+    encoded_cases = _encode_cases(argv_cases)
+    gateway = gateway if gateway is not None else gateway_url()
+    if not gateway:
+        raise SandboxUnavailable(f"未配置脚本验证网关（{GATEWAY_URL_ENV}）")
+    response = _gateway_call(gateway, "POST", "/v1/verify", {
+        "bundle": bundle, "entry": entry, "cases": encoded_cases, "case_count": len(argv_cases),
+    }, timeout=exec_timeout(len(argv_cases)) + GATEWAY_OVERHEAD_SECONDS)
+    results = response.get("results")
+    if not isinstance(results, list) or len(results) != len(argv_cases) or not all(
+        isinstance(item, dict) and RESULT_FIELDS <= set(item) for item in results
+    ):
+        raise SandboxError("脚本验证网关返回的用例结果不完整")
+    return results
 
 
 def gateway_status(gateway: str | None = None) -> dict:

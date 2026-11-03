@@ -1,6 +1,6 @@
 #查数脚本（涉及mindsdb查数的脚本才会加这个标签）
 """
-关联operation：{本脚本对应的operation名称，即 ontology/operation/ 下已存在的文件名；一个operation只对应一个脚本，子操作并入主操作脚本；要被评测或 consumer 执行的脚本必须填。“无”只用于被其他脚本 import 复用的库模块，它不会被单独导出执行}
+关联operation：{本脚本对应的operation名称，即 ontology/operation/ 下已存在的文件名；一个operation只对应一个脚本，子操作并入主操作脚本；要被 modeling 或 consumer 执行的脚本必须填。“无”只用于被其他脚本 import 复用的库模块，它不会被单独导出执行}
 
 功能描述：{一句话描述脚本功能；主脚本写明覆盖了哪些子操作}
 

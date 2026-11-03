@@ -1,6 +1,7 @@
-import { AimOutlined, MinusOutlined, PlusOutlined } from '@ant-design/icons';
-import { Alert, Button, Select, Spin, Tooltip } from 'antd';
+// drawio 只读预览：用 /drawio/js/viewer-static.min.js 渲染（后端挂载的官方 webapp 自带），可平移、缩放、翻页
 import { useEffect, useRef, useState } from 'react';
+import { Button, Note, Select } from '../ui/index.jsx';
+import '../styles/flowchart.css';
 
 let viewerScriptPromise;
 function loadViewer() {
@@ -8,16 +9,17 @@ function loadViewer() {
   if (!viewerScriptPromise) {
     viewerScriptPromise = new Promise((resolve, reject) => {
       const script = document.createElement('script');
-      const timeout = setTimeout(() => finish(new Error('timeout')), 20000);
       const finish = (error) => {
         clearTimeout(timeout);
-        script.onload = script.onerror = null;
+        script.onload = null;
+        script.onerror = null;
         if (error) {
           script.remove();
           viewerScriptPromise = null;
           reject(error);
         } else resolve();
       };
+      const timeout = setTimeout(() => finish(new Error('timeout')), 20000);
       script.src = '/drawio/js/viewer-static.min.js';
       script.onload = () => finish(window.GraphViewer ? null : new Error('unavailable'));
       script.onerror = () => finish(new Error('unavailable'));
@@ -27,7 +29,7 @@ function loadViewer() {
   return viewerScriptPromise;
 }
 
-export default function DrawioPreview({ xml }) {
+export default function DrawioPreview({ xml, hint = '拖动画布查看 · 点击「编辑流程图」修改节点和连线' }) {
   const holderRef = useRef(null);
   const viewerRef = useRef(null);
   const fitRef = useRef(() => {});
@@ -46,19 +48,18 @@ export default function DrawioPreview({ xml }) {
     loadViewer().then(() => {
       if (!active) return;
       const el = document.createElement('div');
-      el.className = 'drawio-canvas';
+      el.className = 'dio-canvas';
       el.style.width = '100%';
       el.style.height = '100%';
       el.dataset.mxgraph = JSON.stringify({
-        xml, nav: true, resize: false, responsive: false,
-        'auto-fit': false, 'auto-crop': false, center: true, border: 24,
+        xml, nav: true, resize: false, responsive: false, 'auto-fit': false, 'auto-crop': false, center: true, border: 24,
       });
       holder.replaceChildren(el);
       window.GraphViewer.createViewerForElement(el, (viewer) => {
         if (!active) { viewer.graph?.destroy(); return; }
         viewerRef.current = viewer;
-        const graph = viewer.graph;
-        // The viewport owns its size. Zooming must not grow the parent column.
+        const { graph } = viewer;
+        // 视口大小由外层决定，缩放不能把父容器撑大
         graph.resizeContainer = false;
         graph.setPanning(true);
         graph.panningHandler.useLeftButtonForPanning = true;
@@ -78,9 +79,7 @@ export default function DrawioPreview({ xml }) {
         observer.observe(holder);
         viewer.addListener('pageSelected', scheduleFit);
         const diagrams = Array.from(viewer.diagrams || []);
-        setPages(diagrams.map((diagram, index) => ({
-          value: index, label: diagram.getAttribute('name') || `第 ${index + 1} 页`,
-        })));
+        setPages(diagrams.map((d, i) => ({ value: i, label: d.getAttribute('name') || `第 ${i + 1} 页` })));
         setPage(viewer.currentPage || 0);
         setState('ready');
         scheduleFit();
@@ -104,36 +103,35 @@ export default function DrawioPreview({ xml }) {
     graph.center(true, true);
     setScale(Math.round(graph.view.scale * 100));
   };
+  const ready = state === 'ready';
 
   return (
-    <div className="drawio-preview">
-      <div className="drawio-preview-toolbar">
-        <span className="drawio-mode-label">预览</span>
-        {pages.length > 1 && <Select size="small" value={page} options={pages}
-          className="drawio-page-picker" onChange={(value) => {
-            viewerRef.current?.selectPage(value);
-            setPage(value);
-            fitRef.current();
-          }} />}
-        <span className="drawio-toolbar-spacer" />
-        <Tooltip title="缩小"><Button size="small" type="text" aria-label="缩小"
-          icon={<MinusOutlined />} disabled={state !== 'ready'} onClick={() => zoom(scale / 120)} /></Tooltip>
-        <Button size="small" type="text" className="drawio-scale" title="恢复实际大小"
-          disabled={state !== 'ready'} onClick={() => zoom(1)}>{scale}%</Button>
-        <Tooltip title="放大"><Button size="small" type="text" aria-label="放大"
-          icon={<PlusOutlined />} disabled={state !== 'ready'} onClick={() => zoom(scale * 1.2 / 100)} /></Tooltip>
-        <Button size="small" icon={<AimOutlined />} disabled={state !== 'ready'}
-          onClick={() => fitRef.current()}>适应窗口</Button>
+    <div className="dio-preview">
+      <div className="dio-ptb">
+        <span className="xs muted b">预览</span>
+        {pages.length > 1 ? (
+          <Select
+            w={180} value={page} options={pages}
+            onChange={(v) => { viewerRef.current?.selectPage(v); setPage(v); fitRef.current(); }}
+          />
+        ) : null}
+        <span className="sp" />
+        <Button size="sm" kind="ghost" icon="zoomout" title="缩小" disabled={!ready} onClick={() => zoom(scale / 120)} />
+        <Button size="sm" kind="ghost" className="num" title="恢复实际大小" disabled={!ready} onClick={() => zoom(1)}>{scale}%</Button>
+        <Button size="sm" kind="ghost" icon="zoomin" title="放大" disabled={!ready} onClick={() => zoom((scale * 1.2) / 100)} />
+        <Button size="sm" icon="maximize" disabled={!ready} onClick={() => fitRef.current()}>适应窗口</Button>
       </div>
-      <div className="drawio-viewport">
-        <div ref={holderRef} className="drawio-viewer" />
-        {state !== 'ready' && <div className="drawio-loading" role="status">
-          {state === 'error' ? <Alert type="warning" showIcon message="流程图预览加载失败"
-            action={<Button size="small" onClick={() => setAttempt(attempt + 1)}>重试</Button>} />
-            : <><Spin />正在加载流程图…</>}
-        </div>}
+      <div className="dio-viewport">
+        <div ref={holderRef} className="dio-viewer" />
+        {!ready ? (
+          <div className="dio-mask" role="status">
+            {state === 'error' ? (
+              <Note tone="amber">流程图预览加载失败。<Button size="xs" kind="ghost" icon="refresh" onClick={() => setAttempt((v) => v + 1)}>重试</Button></Note>
+            ) : <><span className="spin" />正在加载流程图…</>}
+          </div>
+        ) : null}
       </div>
-      <div className="drawio-hint">拖动画布查看 · 点击「编辑流程图」修改节点和连线</div>
+      {hint ? <div className="dio-hint">{hint}</div> : null}
     </div>
   );
 }

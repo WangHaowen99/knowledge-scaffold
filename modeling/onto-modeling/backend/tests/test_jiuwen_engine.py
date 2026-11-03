@@ -366,6 +366,44 @@ def test_run_turn_reports_context_usage_before_result(tmp_path, monkeypatch):
     }
 
 
+def test_context_usage_follows_each_model_call_within_a_long_turn(tmp_path, monkeypatch):
+    """F2 第 6 条（测试部署现场）：资料分析一轮跑了 30 多分钟、上下文涨到 14.4 万，环一直是 0%——用量只在一轮结束时报。
+    每次模型调用后用量变了就报一次（宿主落盘，刷新页面也能读到），轮末用量没变不重复报。"""
+    from openjiuwen.core.runner import Runner
+
+    def fake_stream(agent, inputs, session=None):
+        async def gen():
+            yield chunk("llm_output", {"content": "先读资料"})
+            yield chunk("llm_usage", {"usage_metadata": {"input_tokens": 14000, "output_tokens": 136}})
+            yield chunk("tool_call", {"tool_name": "read_file", "tool_args": {"path": "a.md"}, "tool_use_id": "c1"})
+            yield chunk("tool_result", {"tool_use_id": "c1", "tool_result": "内容"})
+            yield chunk("llm_output", {"content": "读完了"})
+            yield chunk("llm_usage", {"usage_metadata": {"input_tokens": 40000, "output_tokens": 500}})
+
+        return gen()
+
+    monkeypatch.setattr(Runner, "run_agent_streaming", staticmethod(fake_stream))
+    engine = JiuwenEngine(make_ctx(tmp_path))
+    engine.client = object()
+    engine._context_window, engine._compact_at = 200000, 148000
+
+    async def scenario():
+        await engine._run_turn("开始")
+        events = []
+        while not engine._queue.empty():
+            events.append(engine._queue.get_nowait())
+        return events
+
+    events = asyncio.run(scenario())
+    types = [e["type"] for e in events]
+    usages = [e for e in events if e["type"] == "context_usage"]
+    assert [e["used"] for e in usages] == [14136, 40500]
+    # 第一次在工具调用之前就报了，不等一轮结束
+    assert types.index("context_usage") < types.index("tool_results")
+    assert types[-2:] == ["context_usage", "result"]
+    assert usages[0] == {"type": "context_usage", "used": 14136, "window": 200000, "compact_at": 148000}
+
+
 def test_run_turn_error_emits_engine_end(tmp_path, monkeypatch):
     from openjiuwen.core.runner import Runner
 
@@ -409,7 +447,7 @@ def model_call(input_tokens, output_tokens):
 
 def test_call_usage_rail_reports_each_model_call():
     calls = []
-    rail = _call_usage_rail(lambda input_tokens, output_tokens: calls.append((input_tokens, output_tokens)))
+    rail = _call_usage_rail(lambda input_tokens, output_tokens, cache_tokens: calls.append((input_tokens, output_tokens)))
 
     async def scenario():
         await rail.after_model_call(model_call(1200, 80))
@@ -460,12 +498,12 @@ def test_interrupted_turn_reports_usage_recorded_so_far(tmp_path, monkeypatch):
     events = asyncio.run(scenario())
     # 每次调用返回就下发一条，进程中途退出也已落盘
     assert [e["usage"] for e in events if e["type"] == "model_usage"] == [
-        {"input_tokens": 1000, "output_tokens": 50},
-        {"input_tokens": 1200, "output_tokens": 30},
+        {"input_tokens": 1000, "cache_read_input_tokens": 0, "output_tokens": 50},
+        {"input_tokens": 1200, "cache_read_input_tokens": 0, "output_tokens": 30},
     ]
     result = events[-1]
     assert result["type"] == "result" and result["subtype"] == "interrupted"
-    assert result["usage"] == {"input_tokens": 2200, "output_tokens": 80}
+    assert result["usage"] == {"input_tokens": 2200, "cache_read_input_tokens": 0, "output_tokens": 80}
     assert result["usage_per_call"] is True
 
 
@@ -696,7 +734,12 @@ def test_engine_routing_by_project_meta(tmp_path, monkeypatch):
     (meta_dir / ".onto-web.json").write_text(
         json.dumps({"engine": "jiuwen"}), encoding="utf-8"
     )
+    monkeypatch.setattr(config, "JIUWEN_WORKER", False)  # 进程内运行
     assert manager._engine_class_for("p9") is JiuwenEngine
+    monkeypatch.setattr(config, "JIUWEN_WORKER", True)  # 默认：独立 worker（方案 B11）
+    from app.services.engines.jiuwen_remote import RemoteJiuwenEngine
+
+    assert manager._engine_class_for("p9") is RemoteJiuwenEngine
     (meta_dir / ".onto-web.json").write_text(
         json.dumps({"engine": "claude"}), encoding="utf-8"
     )

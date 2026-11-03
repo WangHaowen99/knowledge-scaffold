@@ -1,0 +1,4 @@
+artifact: core.knowledge
+list: {columns: [name, type, confidence, scopes], filters: [type, confidence]}
+detail: {layout: sections, side: [type, confidence, scopes, source]}
+card: {title: name, chips: [type]}

@@ -412,9 +412,9 @@ def test_status_command_reports_gateway(workspace, capsys):
 
 def test_sandbox_status_route_is_admin_only(monkeypatch):
     pytest.importorskip("fastapi")
+    from app.api.errors import ApiError
     from app.routers import settings as settings_router
     from app.services import auth, sandbox_status
-    from app.services.auth import AuthError
 
     monkeypatch.setattr(sandbox_status.client, "gateway_url", lambda: "")
     monkeypatch.setattr(auth, "ENABLED", True)
@@ -422,9 +422,11 @@ def test_sandbox_status_route_is_admin_only(monkeypatch):
     admin = SimpleNamespace(state=SimpleNamespace(user={"sub": "admin", "role": "admin"}))
     status = settings_router.get_sandbox_status(admin)
     assert status["connected"] is False and status["packages"] == [] and status["checked_at"]
+    assert status["isolation"]["network"] == "denied" and status["isolation"]["non_root"] is True
+    assert settings_router.probe_sandbox(admin)["connected"] is False
 
     user = SimpleNamespace(state=SimpleNamespace(user={"sub": "alice", "role": "user"}))
-    with pytest.raises(AuthError) as exc:
+    with pytest.raises(ApiError) as exc:
         settings_router.get_sandbox_status(user)
     assert exc.value.status == 403
 
@@ -458,10 +460,13 @@ def _git(root: Path, *args: str) -> None:
 def test_pre_commit_blocks_unverified_scripts(workspace, capsys):
     from app.services.engines.jiuwen_assets import JiuwenAssetLoader, run_hooks_sync
 
+    from tests.pack_helpers import link_assembled
+
     _git(workspace, "init", "-q")
-    (workspace / ".claude").symlink_to(SCRIPTS.parent)
+    # 与真实项目同构：.claude 指向装配目录（core 包 + 内核守卫）
+    link_assembled(workspace, workspace.parent / "data")
     _git(workspace, "add", "ontology")
-    entries = JiuwenAssetLoader(Path(config.ASSETS_DIR)).pre_tool_use_hooks()
+    entries = JiuwenAssetLoader.for_workspace(workspace).pre_tool_use_hooks()
     commit = {"command": "git commit -m codegen"}
 
     reason = run_hooks_sync(entries, "bash", commit, workspace)

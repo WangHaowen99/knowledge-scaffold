@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# 内核提交检查（方案 C11）：agent 的 `git commit` 在提交那一刻由 git 调用，看到的是真实暂存区。
+# PreToolUse 守卫在整条命令执行之前跑，`git add -A && git commit` 写在一行时它看到的是旧暂存区，
+# 等于没查；检查本体（.claude/scripts/pre_commit_check.sh，内核守卫）因此挪到这里，出错即拒。
+# 只管 agent 的提交：宿主给 agent 的命令带会话身份 ONTO_RUN_ENGINE（方案 B7），人工与后端的提交不经这里。
+[ -n "${ONTO_RUN_ENGINE:-}" ] || exit 0
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "提交检查找不到项目根目录，按拒绝处理。" >&2; exit 1; }
+CHECK="$ROOT/.claude/scripts/pre_commit_check.sh"
+if [ ! -f "$CHECK" ]; then
+    echo "提交检查脚本缺失（.claude/scripts/pre_commit_check.sh），按拒绝处理。" >&2
+    exit 1
+fi
+OUT=$(cd "$ROOT" && ONTO_COMMIT_HOOK=1 bash "$CHECK" </dev/null) || {
+    echo "提交检查执行出错，按拒绝处理。" >&2
+    exit 1
+}
+REASON=$(printf '%s' "$OUT" | python3 -c '
+import json, sys
+for line in sys.stdin.read().splitlines():
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        data = json.loads(line)
+    except ValueError:
+        continue
+    if isinstance(data, dict) and data.get("decision") == "block":
+        print(data.get("reason") or "提交检查未通过")
+        break
+') || { echo "提交检查的结果读不出来，按拒绝处理。" >&2; exit 1; }
+if [ -n "$REASON" ]; then
+    printf '%s\n' "$REASON" >&2
+    exit 1
+fi
+exit 0

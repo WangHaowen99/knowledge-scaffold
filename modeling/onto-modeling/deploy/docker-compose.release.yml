@@ -14,6 +14,8 @@ services:
     environment:
       # 首次启动（auth 数据卷为空）必须在 .env 里设初始管理员密码；已有用户数据后可移除
       - AUTH_BOOTSTRAP_ADMIN_PASSWORD=${AUTH_BOOTSTRAP_ADMIN_PASSWORD:-}
+      # 管理 API 令牌：与 onto-modeling 的 ONTO_WEB_AUTH_ADMIN_TOKEN 同一个值（.env 里设），运维中心的用户管理靠它
+      - AUTH_SERVER_ADMIN_TOKEN=${ONTO_WEB_AUTH_ADMIN_TOKEN:-}
     volumes:
       - onto-web-auth-data:/data
     mem_limit: 512m
@@ -26,6 +28,9 @@ services:
     # 固定开销 + 会话上限 × 单进程峰值 规划（方案 4.1.1），默认对应 8G 主机
     mem_limit: ${ONTO_WEB_MEM_LIMIT:-6500m}
     stop_grace_period: 30s
+    # 后端不当 1 号进程：孤儿进程有人回收、信号正常转发。执行锁按引擎实例认持有者
+    # （state_helper），不依赖后端是不是 1 号进程
+    init: true
     ports:
       - "${ONTO_WEB_PORT:-5100}:8100"
     env_file:
@@ -41,8 +46,16 @@ services:
       - ONTO_WEB_PORT=8100
       # 代码生成脚本的运行验证经网关进 jiuwenbox 沙箱；本容器不挂 jiuwenbox socket
       - ONTO_WEB_SANDBOX_GATEWAY_URL=http://sandbox-gateway:8110
+      # 运维中心（/api/v1/ops）默认经业务端口访问：没有反代的单端口部署不打开就用不了，运维接口仍要
+      # 登录令牌与 ops 角色。有反代时在 .env 设 false，由反代把 /api/v1/ops/ 转到容器内 8101（见 deploy/README）
+      - ONTO_WEB_OPS_ON_MAIN=${ONTO_WEB_OPS_ON_MAIN:-true}
+      # 资料转文本经连接器网关（ADR-0073）；网关只在 connector 内部网络上
+      - ONTO_WEB_CONNECTOR_GATEWAY_URL=http://connector-gateway:8120
     volumes:
       - onto-web-data:/data
+    networks:
+      - default
+      - connector
     depends_on:
       auth-server:
         condition: service_healthy
@@ -76,6 +89,42 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+
+  # 连接器网关（ADR-0073）：第一版只做文档转换（PDF、Word、Excel 转文本，转换器随本镜像交付）。单独的镜像，只接
+  # internal 网络（没有出口、不接业务网络），不挂数据卷、不读 .env、不存凭据、不发布端口；非 root、只读根文件系统、
+  # 无 capability；每个转换一个子进程，有超时和内存上限
+  connector-gateway:
+    image: ${CONNECTOR_GATEWAY_IMAGE:-onto-modeling-connector-gateway:latest}
+    container_name: onto-modeling-connector-gateway
+    restart: unless-stopped
+    user: "65534:65534"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1536m
+    pids_limit: 64
+    expose:
+      - "8120"
+    environment:
+      - ONTO_CONNECTOR_GATEWAY_PORT=8120
+      # 内核签票据的公钥从这里取（网关自己不存任何能签票据的东西）
+      - ONTO_CONNECTOR_ISSUER_KEY_URL=http://onto-modeling:8100/api/v1/connector/issuer-key
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8120/health', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - connector
+
+networks:
+  connector:
+    internal: true
 
 volumes:
   onto-web-data:

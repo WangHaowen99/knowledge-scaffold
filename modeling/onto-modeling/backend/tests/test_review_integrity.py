@@ -1,4 +1,4 @@
-"""Synthetic regression cases for input, source and evaluation integrity."""
+"""Synthetic regression cases for input and source integrity."""
 import importlib
 import io
 import json
@@ -8,13 +8,14 @@ from pathlib import Path
 import pytest
 
 from app import config
-from app.services import modeling_eval
 from artifact_process_policy import child_environment
 
 
 @pytest.fixture
 def scripts(monkeypatch):
     monkeypatch.syspath_prepend(str(Path(config.ASSETS_DIR) / 'workspace-toolkit/scripts'))
+    # trace_inputs 随场景走查拆进了 trace 包（B4c）：单独跑这个文件时也要找得到，不靠别的用例先导入过
+    monkeypatch.syspath_prepend(str(Path(config.ASSETS_DIR) / 'packs/trace/scripts'))
     return importlib.import_module('trace_inputs'), importlib.import_module('source_extract')
 
 
@@ -147,41 +148,6 @@ def test_source_cli_long_segment_continuation_is_lossless(tmp_path, scripts):
     assert ''.join(parts) == original
 
 
-@pytest.mark.parametrize('results,score,valid', [
-    ([{'verdict': 'error', 'finalAnswer': ''}], None, 0),
-    ([{'verdict': 'pass', 'finalAnswer': '正常'}, {'verdict': 'error'}], 100, 1),
-    ([{'verdict': 'pass', 'finalAnswer': ''}], None, 0),
-    ([{'verdict': 'unknown', 'finalAnswer': '异常'}], None, 0),
-    ([], None, 0),
-])
-def test_technical_errors_are_not_business_zero(tmp_path, results, score, valid):
-    rel = modeling_eval._write_report(tmp_path, {'id': 'synthetic'}, results)
-    state = modeling_eval.read_state(tmp_path)
-    assert state['status'] == 'failed'
-    assert state['summary']['score'] == score
-    assert state['summary']['valid'] == valid
-    assert state['summary']['result_status'] == ('partial' if valid else 'unavailable')
-    assert '技术异常不计为业务答错' in (tmp_path / rel).read_text(encoding='utf-8')
-
-
-def test_real_wrong_answer_still_scores_zero(tmp_path):
-    modeling_eval._write_report(tmp_path, {'id': 'synthetic'}, [
-        {'verdict': 'fail', 'finalAnswer': '不符合标准的合成回答'}])
-    state = modeling_eval.read_state(tmp_path)
-    assert state['status'] == 'done'
-    assert state['summary']['score'] == 0
-
-
-def test_missing_result_is_not_silently_completed(tmp_path):
-    modeling_eval._write_report(tmp_path, {'id': 'synthetic'}, [
-        {'question': 'Q1', 'verdict': 'pass', 'finalAnswer': 'A1'}],
-        cases=[{'question': 'Q1'}, {'question': 'Q2'}])
-    state = modeling_eval.read_state(tmp_path)
-    assert state['status'] == 'failed'
-    assert state['summary']['total'] == 2
-    assert state['summary']['error'] == 1
-
-
 def test_trace_verifies_actual_result_receipts(tmp_path, scripts):
     trace, _ = scripts
     payload = trace.parse_source(scenario_file(tmp_path))
@@ -199,8 +165,9 @@ def test_utf8_cli_in_isolated_ascii_environment(tmp_path, scripts):
     import subprocess
     import sys
     trace, source = scripts
-    path = tmp_path / '说明.docx'
-    docx(path)
+    # 命令行只读文本（F4b：Word、PDF 这类原件读数据接入转出的文本版），用一份中文 md 测输出编码
+    path = tmp_path / '说明.md'
+    path.write_text('合成说明：门店每天提交补货申请。\n', encoding='utf-8')
     for module, args in [(source, [str(path)]), (trace, [str(scenario_file(tmp_path))])]:
         env = child_environment(tmp_path)
         env['PYTHONIOENCODING'] = 'ascii'
@@ -222,24 +189,3 @@ def test_source_limits_never_return_partial_success(tmp_path, scripts, monkeypat
     assert source.extract(path)['status'] == 'unverifiable'
     monkeypatch.setattr(source, 'MAX_BYTES', 1)
     assert source.extract(path)['status'] == 'unverifiable'
-
-
-def test_done_poll_with_missing_results_is_technical_failure(tmp_path, monkeypatch):
-    monkeypatch.setattr(modeling_eval, 'POLL_INTERVAL_SECONDS', 0)
-    monkeypatch.setattr(modeling_eval, '_http', lambda *a, **k: {
-        'round': {'id': 'r1', 'status': 'done'},
-        'results': [{'question': 'Q10', 'finalAnswer': 'A', 'verdict': 'pass'}]})
-    monkeypatch.setattr(modeling_eval, '_git_commit', lambda *a: None)
-    modeling_eval._poll_round('synthetic', tmp_path, '', 'p', 'r1', [{'question': 'Q1'}, {'question': 'Q10'}])
-    state = modeling_eval.read_state(tmp_path)
-    assert state['summary']['total'] == 2
-    assert state['summary']['error'] == 1
-    assert state['status'] == 'failed'
-
-
-def test_collected_technical_failure_does_not_trap_rerun(tmp_path, monkeypatch):
-    modeling_eval._write_state(tmp_path, modeling_project='p', round_id='r1', report_round='r1', status='failed')
-    def unexpected(*args, **kwargs):
-        pytest.fail('不能再次收取已完成失败轮代替重跑')
-    monkeypatch.setattr(modeling_eval, '_http', unexpected)
-    assert not modeling_eval._try_resume('synthetic', tmp_path, '', [{'question': 'Q1'}])

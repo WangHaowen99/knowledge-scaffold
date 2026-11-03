@@ -1,0 +1,41 @@
+# 知识沉淀（详设 5.3：v1.1 从 core 拆出沉淀这一段；第 14 章第 15 项）。
+# 知识条目的存放与加载（knowledge_helper、ontology/knowledge/）留在 core，停用本包后已有条目照常加载，
+# 只是不再新增。纠错与惯例的信号改成提示规则（prompts），由会话宿主在两轮之间注入，两个引擎都拿得到。
+name: knowledge
+version: 0.2.1
+kind: capability
+category: capability
+label: 知识沉淀
+description: 把对话里的纠错与惯例沉淀成业务知识：入库前查重、查冲突，复核口径冲突，提名进行业包。
+publisher: {kind: official, label: 平台}
+split_from_core: true
+default_on: true
+batch: first
+kernel_api: ">=1.0 <2.0"
+page_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {core: ">=0.2"}  # 拆分后的 core（0.2.0 起）：拆出去的命令、行业知识分层都要它
+changelog: 从基础建模能力拆出；新增记录、复核、提名三个命令与知识沉淀页。
+contributes:
+  commands: [knowledge-record, knowledge-review, knowledge-nominate]
+  agents: [knowledge-conflict-agent]
+  docs: [KNOWLEDGE_SEDIMENTATION.md]
+  pages:
+    - id: knowledge
+      page_api: ">=1.0 <2.0"
+      nav: {title: 知识沉淀, icon: book, order: 2}
+      badge: inbox
+      data: {artifacts: [core.knowledge], reports: [], nodes: []}
+      actions:
+        - {id: record, label: 去对话里沉淀, command: /knowledge-record}
+        - {id: review, label: 在对话里复核, command: /knowledge-review}
+        - {id: nominate, label: 提名进行业包, command: /knowledge-nominate}
+  prompts:
+    - id: knowledge-signal
+      # 与 BUSINESS_KNOWLEDGE_SNIPPET 的两类信号词一致：纠错、业务常识/规范
+      match: ["不对|你弄错了|应该是|其实|实际上", "我们公司|我们这边|规则是|通常|必须|行业里|标准做法"]
+      text: >-
+        【业务知识信号】用户这条消息里有纠错或业务惯例的说法。请对照 .claude/KNOWLEDGE_SEDIMENTATION.md
+        评估是否需要沉淀为业务知识：若是，按 .claude/INTERACTION_CONVENTIONS.md 的「业务知识确认类」模板向用户确认；
+        用户已用「记一下：…」「记下这条规则」等明确指令时，按守则查重后直接落盘。
+checksums: checksums.sha256

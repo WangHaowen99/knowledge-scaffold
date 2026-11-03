@@ -1,16 +1,15 @@
-"""发布 / 评测前的数据绑定门禁（ADR-0007）：问题分级、修复入口、降级发布与审计。"""
+"""发布前的数据绑定门禁（ADR-0007）：问题分级、修复入口、降级发布与审计。"""
 
-import asyncio
 import json
 import zipfile
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from app import config
-from app.services import modeling_eval, package_mapping
-from app.services.workspace import WorkspaceError, WorkspaceManager
+from app.services import publish as publish_service
+from app.services import package_mapping
+from app.services.workspace import WorkspaceError, WorkspaceManager, _git
+from tests.text_versions import write_text_versions
 
 openpyxl = pytest.importorskip("openpyxl")
 
@@ -34,6 +33,7 @@ def write_schema(root: Path, sheets: dict[str, list[str]], purpose: str = "schem
         workbook.create_sheet(name).append(columns)
     (root / "resource" / "excel").mkdir(parents=True, exist_ok=True)
     workbook.save(root / "resource" / "excel" / "结构.xlsx")
+    write_text_versions(root)  # 资料区的 Excel 由数据接入转成文本版，表头从文本版读（F4c）
     (root / "resource" / "materials.json").write_text(
         json.dumps({"resource/excel/结构.xlsx": {"purpose": purpose}}, ensure_ascii=False), encoding="utf-8"
     )
@@ -123,8 +123,14 @@ def manager(tmp_path: Path, monkeypatch) -> WorkspaceManager:
     (assets / "resource-template" / "others").mkdir(parents=True)
     instance = WorkspaceManager(tmp_path / "data", assets)
     # 绑定门禁不依赖交互式资产链接，也能在无符号链接权限的环境验证。
-    monkeypatch.setattr(instance, "_mount_assets", lambda root: None)
+    monkeypatch.setattr(instance, "_mount_assets", lambda root, packs=None: None)
     return instance
+
+
+def commit_all(root: Path) -> None:
+    """发布与体检都基于 HEAD 提交：测试里直接写盘的内容先提交（相当于 agent 的阶段提交）。"""
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "test: synthetic fixture")
 
 
 def gated_project(manager: WorkspaceManager) -> tuple[str, Path]:
@@ -136,12 +142,13 @@ def gated_project(manager: WorkspaceManager) -> tuple[str, Path]:
     (root / "resource" / "others" / "附表.csv").write_text("A,B\n", encoding="utf-8")
     write_object(root, "订单", "T_ORDER", ["ORDER_ID", "AMOUNT"])
     write_object(root, "客户", "T_CLIENT", ["CUSTOMER_ID", "NAME"])
+    commit_all(root)
     return pid, root
 
 
 def test_binding_check_returns_fix_handles(manager):
     pid, root = gated_project(manager)
-    check = manager.package_binding_check(pid)
+    check = publish_service.package_binding_check(manager, pid)
     assert check["blocking"] == 1 and check["objects"] == 2 and check["bound_objects"] == 1
     [issue] = check["issues"]
     assert issue["object"] == "客户" and issue["path"] == "ontology/object/客户.md"
@@ -154,11 +161,12 @@ def test_binding_check_returns_fix_handles(manager):
 def test_strict_publish_blocks_and_degraded_publish_is_audited(manager, tmp_path):
     pid, _ = gated_project(manager)
     with pytest.raises(WorkspaceError) as blocked:
-        manager.publish_package(pid, tmp_path / "strict.zip", author="alice")
+        publish_service.publish_package(manager, pid, tmp_path / "strict.zip", author="alice")
     assert blocked.value.code == "binding_problems" and "T_CLIENT" in str(blocked.value)
     assert manager.get_project(pid).get("last_package_publish") is None
 
-    dest = manager.publish_package(pid, tmp_path / "degraded.zip", allow_unbound=True, author="alice")
+    dest = tmp_path / "degraded.zip"
+    publish_service.publish_package(manager, pid, dest, allow_unbound=True, author="alice")
     with zipfile.ZipFile(dest) as zf:
         mapping_name = next(n for n in zf.namelist() if n.endswith("object-data-mappings.json"))
         mappings = json.loads(zf.read(mapping_name))
@@ -166,7 +174,7 @@ def test_strict_publish_blocks_and_degraded_publish_is_audited(manager, tmp_path
     audit = manager.get_project(pid)["last_package_publish"]
     assert audit["by"] == "alice" and audit["degraded"] is True
     assert audit["unbound_count"] == 1 and audit["unbound_objects"] == ["客户"]
-    assert manager.package_binding_check(pid)["last_publish"]["degraded"] is True
+    assert publish_service.package_binding_check(manager, pid)["last_publish"]["degraded"] is True
 
 
 def test_degraded_publish_still_enforces_script_contract(manager, tmp_path):
@@ -180,251 +188,41 @@ def test_degraded_publish_still_enforces_script_contract(manager, tmp_path):
         "parser.add_argument('--other-id', required=True)\n",
         encoding="utf-8",
     )
+    commit_all(root)
     with pytest.raises(WorkspaceError, match="契约无效"):
-        manager.publish_package(pid, tmp_path / "pkg.zip", allow_unbound=True)
+        publish_service.publish_package(manager, pid, tmp_path / "pkg.zip", allow_unbound=True)
     assert manager.get_project(pid).get("last_package_publish") is None
 
 
 def test_publish_without_any_table_is_not_degraded(manager, tmp_path):
     pid = manager.create_project("纯概念")["id"]
     write_object(manager.project_root(pid), "订单", "T_ORDER", ["ORDER_ID"])
-    manager.publish_package(pid, tmp_path / "pkg.zip")
+    commit_all(manager.project_root(pid))
+    publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
     audit = manager.get_project(pid)["last_package_publish"]
     assert audit["degraded"] is False and audit["unbound_count"] == 0
 
 
 def test_set_object_data_source_fixes_the_gate(manager, tmp_path):
     pid, root = gated_project(manager)
-    issue = manager.package_binding_check(pid)["issues"][0]
-    manager.set_object_data_source(pid, "客户", "t_customer", base_revision=issue["revision"], author="alice")
+    issue = publish_service.package_binding_check(manager, pid)["issues"][0]
+    publish_service.set_object_data_source(manager, pid, "客户", "t_customer", base_revision=issue["revision"], author="alice")
     assert "# 数据来源\nT_CUSTOMER\n" in (root / "ontology" / "object" / "客户.md").read_text(encoding="utf-8")
-    assert manager.package_binding_check(pid)["blocking"] == 0
-    manager.publish_package(pid, tmp_path / "pkg.zip")
+    assert publish_service.package_binding_check(manager, pid)["blocking"] == 0
+    publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
     assert manager.get_project(pid)["last_package_publish"]["degraded"] is False
 
 
 def test_set_object_data_source_guards(manager):
     pid, root = gated_project(manager)
     with pytest.raises(WorkspaceError) as stale:
-        manager.set_object_data_source(pid, "客户", "", base_revision="stale")
+        publish_service.set_object_data_source(manager, pid, "客户", "", base_revision="stale")
     assert stale.value.status == 409
-    with pytest.raises(WorkspaceError, match="不在 schema 资料或评测数据源里"):
-        manager.set_object_data_source(pid, "客户", "T_UNKNOWN")
+    with pytest.raises(WorkspaceError, match="不在 schema 资料里"):
+        publish_service.set_object_data_source(manager, pid, "客户", "T_UNKNOWN")
     for key in ("不存在", "../客户", ""):
         with pytest.raises(WorkspaceError) as missing:
-            manager.set_object_data_source(pid, key, "")
+            publish_service.set_object_data_source(manager, pid, key, "")
         assert missing.value.status == 404
-    manager.set_object_data_source(pid, "客户", "")
+    publish_service.set_object_data_source(manager, pid, "客户", "")
     assert "# 数据来源\n无\n" in (root / "ontology" / "object" / "客户.md").read_text(encoding="utf-8")
-
-
-# ---- 评测：同一门禁，确认后可降级继续 ----
-
-
-def eval_router(tmp_path, monkeypatch):
-    from app.routers import projects
-    from app.services import eval_judge_config
-
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
-    monkeypatch.setattr(config, "MODELING_TOKEN", "")
-    manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
-    monkeypatch.setattr(manager, "_mount_assets", lambda root: None)
-    monkeypatch.setattr(projects, "workspaces", manager)
-    monkeypatch.setattr(modeling_eval, "enabled", lambda: True)
-    monkeypatch.setattr(modeling_eval, "reachable", lambda: True)
-    monkeypatch.setattr(eval_judge_config, "resolve", lambda *args: {"model": "synthetic-judge-model"})
-    pid = manager.create_project("评测门禁")["id"]
-    root = manager.project_root(pid)
-    write_schema(root, {"T_ORDER": ["ORDER_ID", "AMOUNT"]})
-    write_object(root, "订单", "T_ORDR", ["ORDER_ID", "AMOUNT"])
-    request = SimpleNamespace(state=SimpleNamespace(user=None), headers={"authorization": "Bearer t"})
-    return projects, pid, request
-
-
-def test_eval_run_reports_binding_problems_until_user_allows_unbound(tmp_path, monkeypatch):
-    projects, pid, request = eval_router(tmp_path, monkeypatch)
-    captured = {}
-
-    async def fake_run(project_id, root_, token, cases, data_source, eval_set_name="", allow_unbound=False, refresh_token="", judge_model=None):
-        captured["allow_unbound"] = allow_unbound
-
-    monkeypatch.setattr(modeling_eval, "run", fake_run)
-    cases = [{"question": "Q1", "groundTruth": "G1"}]
-
-    blocked = asyncio.run(projects.eval_run(pid, projects.EvalRunBody(cases=cases), request))
-    payload = json.loads(blocked.body)
-    assert blocked.status_code == 400 and payload["code"] == "binding_problems"
-    assert payload["issues"][0]["object"] == "订单"
-    assert payload["issues"][0]["candidates"][0]["table"] == "T_ORDER"
-
-    async def call():
-        result = await projects.eval_run(pid, projects.EvalRunBody(cases=cases, allow_unbound=True), request)
-        await asyncio.sleep(0)
-        return result
-
-    assert asyncio.run(call())["started"] is True
-    assert captured["allow_unbound"] is True
-
-
-@pytest.mark.parametrize(
-    ("relation", "expected"),
-    [
-        ("- 当前对象 → references → [[missing_object]]", "missing_object"),
-    ],
-)
-@pytest.mark.parametrize("data_source", [
-    {"mode": "none"},
-    {"mode": "dataset"},
-    {"mode": "connection", "provider": "nl2sql_template"},
-    {"mode": "connection", "provider": "neo4j"},
-])
-@pytest.mark.parametrize("allow_unbound", [False, True])
-def test_eval_run_blocks_invalid_relations_before_background_task(
-    tmp_path, monkeypatch, relation, expected, data_source, allow_unbound,
-):
-    projects, pid, request = eval_router(tmp_path, monkeypatch)
-    root = projects.workspaces.project_root(pid)
-    path = root / "ontology" / "object" / "订单.md"
-    path.write_text(
-        path.read_text(encoding="utf-8") + f"\n# 关联对象\n{relation}\n",
-        encoding="utf-8",
-    )
-    started = []
-
-    async def fake_run(*args, **kwargs):
-        started.append((args, kwargs))
-
-    monkeypatch.setattr(modeling_eval, "run", fake_run)
-    result = asyncio.run(projects.eval_run(
-        pid,
-        projects.EvalRunBody(
-            cases=[{"question": "Q1", "groundTruth": "G1"}],
-            data_source=data_source, allow_unbound=allow_unbound,
-        ),
-        request,
-    ))
-    payload = json.loads(result.body)
-
-    assert result.status_code == 422
-    assert payload["code"] == "EVALUATION_PACKAGE_INVALID"
-    assert expected in payload["error"]
-    assert started == []
-
-
-def test_eval_run_allows_normal_relation_with_legacy_name(tmp_path, monkeypatch):
-    projects, pid, request = eval_router(tmp_path, monkeypatch)
-    root = projects.workspaces.project_root(pid)
-    object_dir = root / "ontology" / "object"
-    (object_dir / "客户.md").write_text(object_doc(None, ["CUSTOMER_ID"]), encoding="utf-8")
-    path = object_dir / "订单.md"
-    path.write_text(
-        path.read_text(encoding="utf-8")
-        + "\n# 关联对象\n- 当前对象 → 属于客户 → [[客户]]\n",
-        encoding="utf-8",
-    )
-    started = []
-
-    async def fake_run(*args, **kwargs):
-        started.append((args, kwargs))
-
-    monkeypatch.setattr(modeling_eval, "run", fake_run)
-
-    async def call():
-        result = await projects.eval_run(
-            pid,
-            projects.EvalRunBody(
-                cases=[{"question": "Q1", "groundTruth": "G1"}], allow_unbound=True,
-            ),
-            request,
-        )
-        await asyncio.sleep(0)
-        return result
-
-    result = asyncio.run(call())
-
-    assert result["started"] is True
-    assert len(started) == 1
-
-
-@pytest.mark.parametrize("data_source", [
-    {"mode": "none"},
-    {"mode": "dataset"},
-    {"mode": "connection", "provider": "nl2sql_template"},
-    {"mode": "connection", "provider": "neo4j"},
-])
-@pytest.mark.parametrize("allow_unbound", [False, True])
-@pytest.mark.parametrize("cross_file", [False, True])
-def test_eval_run_rejects_duplicate_relations_with_both_locations(
-    tmp_path, monkeypatch, data_source, allow_unbound, cross_file,
-):
-    projects, pid, request = eval_router(tmp_path, monkeypatch)
-    object_dir = projects.workspaces.project_root(pid) / "ontology" / "object"
-    source = "# 关联对象\n- 当前对象 → references → [[object_b]]\n"
-    target = "# 关联对象\n- [[object_a]] → references → 当前对象\n" if cross_file else ""
-    if not cross_file:
-        source += "- 当前对象名 -> references -> [[object_b|合成别名]]\n"
-    (object_dir / "object_a.md").write_text(source, encoding="utf-8")
-    (object_dir / "object_b.md").write_text(target, encoding="utf-8")
-    started = []
-
-    async def fake_run(*args, **kwargs):
-        started.append((args, kwargs))
-
-    monkeypatch.setattr(modeling_eval, "run", fake_run)
-
-    async def call():
-        result = await projects.eval_run(
-            pid,
-            projects.EvalRunBody(
-                cases=[{"question": "synthetic question", "groundTruth": "synthetic answer"}],
-                data_source=data_source, allow_unbound=allow_unbound,
-            ),
-            request,
-        )
-        await asyncio.sleep(0)
-        return result
-
-    result = asyncio.run(call())
-    assert result.status_code == 422
-    payload = json.loads(result.body)
-    assert payload["code"] == "EVALUATION_PACKAGE_INVALID"
-    assert len(payload["problems"]) == 1
-    problem = payload["problems"][0]
-    assert "重复关系" in problem
-    assert "首次声明于 ontology/object/object_a.md 第 2 行" in problem
-    duplicate_location = "object_b.md 第 2 行" if cross_file else "object_a.md 第 3 行"
-    assert f"ontology/object/{duplicate_location}" in problem
-    assert started == []
-
-
-@pytest.mark.parametrize("self_relation", [False, True])
-def test_eval_run_allows_same_name_different_fields_and_self_relations(tmp_path, monkeypatch, self_relation):
-    projects, pid, request = eval_router(tmp_path, monkeypatch)
-    root = projects.workspaces.project_root(pid)
-    directory = root / "ontology" / "object"
-    target = "object_a" if self_relation else "object_b"
-    body = object_doc(None, ["id", "parent_id", "other_parent_id"])
-    (directory / "object_a.md").write_text(
-        body + "\n# 关联对象\n"
-        f"- 当前对象 → references（parent_id → id） → [[{target}]]\n"
-        f"- 当前对象 → references（other_parent_id → id） → [[{target}]]\n",
-        encoding="utf-8",
-    )
-    if not self_relation:
-        (directory / "object_b.md").write_text(body, encoding="utf-8")
-    started = []
-
-    async def fake_run(*args, **kwargs):
-        started.append(True)
-
-    monkeypatch.setattr(modeling_eval, "run", fake_run)
-
-    async def call():
-        result = await projects.eval_run(pid, projects.EvalRunBody(
-            cases=[{"question": "synthetic question", "groundTruth": "synthetic answer"}], allow_unbound=True,
-        ), request)
-        await asyncio.sleep(0)
-        return result
-
-    assert asyncio.run(call())["started"] is True
-    assert started == [True]

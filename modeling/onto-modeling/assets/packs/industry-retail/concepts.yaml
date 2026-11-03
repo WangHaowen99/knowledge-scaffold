@@ -1,0 +1,66 @@
+# 零售连锁行业标准概念与别名（合成内容，仅作通用示例）
+concepts_api: 1
+concepts:
+  - name: 门店
+    aliases: [店铺, 网点, 分店, 营业网点]
+    description: 直接面向顾客销售的经营单元，是补货的收货方。
+  - name: 商品
+    aliases: [单品, 货品, 品项]
+    description: 门店可售的最小管理单元，按商品编码区分。
+  - name: 品类
+    aliases: [商品类别, 类目, 商品大类]
+    description: 按用途或经营方式对商品的分组，常用于配额和陈列管理。
+  - name: 计量单位
+    aliases: [单位, 包装单位, 销售单位]
+    description: 数量的计量口径，零售补货中常见件和箱两级。
+  - name: 补货单
+    aliases: [要货单, 订货单, 补货申请单]
+    description: 门店向配送中心或供应商申请补充商品的单据，一行对应一个门店的一个商品。
+  - name: 补货台账
+    aliases: [补货记录, 补货明细账]
+    description: 按门店、商品、日期累计的补货历史记录，用于追溯和复盘。
+  - name: 库存
+    aliases: [存货, 在库量, 库存量, 现存量]
+    description: 某一时点门店持有的商品数量，补货测算时还要计入在途量。
+  - name: 安全库存
+    aliases: [保险库存, 安全存量, 缓冲库存]
+    description: 为覆盖到货等待期间的销售和波动而保留的最低库存量。
+  - name: 陈列
+    aliases: [上架, 排面, 货架陈列]
+    description: 商品在门店货架上的摆放方式和数量。
+  - name: 陈列量标准
+    aliases: [陈列标准, 排面标准, 满陈列量]
+    description: 按门店等级和商品规定的陈列面数及陈列量上下限。
+  - name: 到货周期
+    aliases: [到货天数, 补货提前期, 交货期]
+    description: 从补货单下达到商品到店可售所需的天数。
+  - name: 配送中心
+    aliases: [物流中心, 中心仓, 配送仓]
+    description: 集中收货、存储并向门店配送商品的仓储节点。
+  - name: 供应商
+    aliases: [供货商, 厂商, 货源单位]
+    description: 向企业供应商品的外部单位，部分商品由供应商直送门店。
+  - name: 门店等级
+    aliases: [门店分级, 店级, 门店类别]
+    description: 按销售规模、面积等维度对门店的分级，决定陈列量标准和配额。
+  - name: 区域配额
+    aliases: [区域额度, 区域限额, 片区配额]
+    description: 在一个周期内分配给某个区域某个品类的补货数量上限。
+  - name: 审批
+    aliases: [审核, 核准, 批复]
+    description: 超出规则或配额的补货需要由指定岗位确认后才能生效的环节。
+  - name: 临期商品
+    aliases: [近效期商品, 临保商品, 临期品]
+    description: 剩余保质期低于规定比例的商品，需要单独处理。
+  - name: 促销
+    aliases: [促销活动, 营销活动, 促销档期]
+    description: 在限定时间内通过降价、赠品等方式拉动销售的活动。
+  - name: 销量
+    aliases: [销售数量, 售出量, 动销量]
+    description: 一段时间内门店售出的商品数量，是测算补货的主要依据。
+  - name: 门店特殊需求
+    aliases: [门店特需, 特殊要货, 临时加单]
+    description: 门店因团购、临时活动等原因在常规补货之外提出的数量要求。
+  - name: 盘点
+    aliases: [库存盘点, 实盘, 清点]
+    description: 对门店实物库存进行清点并与系统库存核对的作业。

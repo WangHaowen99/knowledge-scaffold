@@ -48,7 +48,7 @@ def test_without_personal_config_admin_env_is_unchanged(data_dir, auth_on):
     assert personal_model_settings.model_owner("employee_0001", "claude") == ""
     assert model_settings.session_env("") == before
     assert before["ANTHROPIC_AUTH_TOKEN"] == ADMIN_KEY
-    assert not (data_dir / "user-model-settings.json").exists()
+    assert not (data_dir / "secrets" / "user-model-settings.json").exists()
 
 
 def test_other_users_personal_key_does_not_change_admin_env(data_dir, auth_on):
@@ -125,11 +125,11 @@ def test_personal_config_requires_own_key(data_dir, auth_on):
 
 def test_personal_key_encrypted_at_rest_and_bound_to_user(data_dir, auth_on):
     personal_model_settings.save("employee_0001", "claude", "", USER_KEY, "")
-    path = data_dir / "user-model-settings.json"
+    path = data_dir / "secrets" / "user-model-settings.json"
     raw = path.read_text(encoding="utf-8")
     assert USER_KEY not in raw
     assert path.stat().st_mode & 0o777 == 0o600
-    assert (data_dir / ".model-secret-key").stat().st_mode & 0o777 == 0o600
+    assert (data_dir / "secrets" / ".model-secret-key").stat().st_mode & 0o777 == 0o600
 
     masked = personal_model_settings.masked("employee_0001")
     assert USER_KEY not in json.dumps(masked)
@@ -147,7 +147,7 @@ def test_personal_key_encrypted_at_rest_and_bound_to_user(data_dir, auth_on):
 def test_explicit_master_key_is_used(data_dir, auth_on, monkeypatch):
     monkeypatch.setenv("ONTO_WEB_MODEL_SECRET_KEY", "x" * 40)
     personal_model_settings.save("employee_0001", "claude", "", USER_KEY, "")
-    assert not (data_dir / ".model-secret-key").exists()
+    assert not (data_dir / "secrets" / ".model-secret-key").exists()
     assert personal_model_settings.resolve("employee_0001", "claude")["api_key"] == USER_KEY
 
     monkeypatch.setenv("ONTO_WEB_MODEL_SECRET_KEY", "y" * 40)
@@ -278,12 +278,21 @@ def test_members_without_personal_key_share_one_engine(pool, tmp_path):
     asyncio.run(scenario())
 
 
-def test_sender_personal_key_used_and_switch_back(pool, tmp_path):
+def _own(data_dir: Path, project_id: str, owner: str) -> None:
+    """项目元数据里的所有者（会话的模型配置归属看它，方案 B3）。"""
+    meta = data_dir / "workspaces" / project_id / ".onto-web.json"
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text(json.dumps({"id": project_id, "owner": owner}), encoding="utf-8")
+
+
+def test_owner_personal_key_used_whoever_sends(pool, data_dir, tmp_path):
+    """模型配置固定用项目所有者的（方案 B3）：别人（或后端内部）发消息也用所有者的 Key，不换人、不 409。"""
     manager, created = pool
+    _own(data_dir, "p1", "employee_0001")
     personal_model_settings.save("employee_0001", "claude", "", USER_KEY, "")
 
     async def scenario():
-        await manager.send("p1", tmp_path, "一", username="employee_0001")
+        await manager.send("p1", tmp_path, "一", username="employee_0002")
         session = await _settle(manager, "p1")
         assert session.model_owner == "employee_0001"
         assert created[0].options.env["ANTHROPIC_AUTH_TOKEN"] == USER_KEY
@@ -292,14 +301,28 @@ def test_sender_personal_key_used_and_switch_back(pool, tmp_path):
         assert flag_env["ANTHROPIC_AUTH_TOKEN"] == USER_KEY
         assert all(name.startswith("ANTHROPIC_") for name in flag_env)
 
-        # 本轮没结束，另一成员发消息：拒绝，不能让他的消息花 employee_0001 的 Key
-        with pytest.raises(SessionError) as exc:
-            await manager.send("p1", tmp_path, "插话", username="employee_0002")
-        assert exc.value.status == 409
-        assert created[0].queries == ["一"]
+        # 本轮没结束时再发：仍是所有者的配置，消息排在这一步后面送达，不重连
+        await manager.send("p1", tmp_path, "补充", username="")
+        assert len(created) == 1
+        assert created[0].queries == ["一", "补充"]
+        await manager.shutdown()
 
+    asyncio.run(scenario())
+
+
+def test_owner_clearing_personal_key_reconnects_with_admin_config(pool, data_dir, tmp_path):
+    """所有者清掉个人 Key：归属计入会话指纹，下一条消息前按管理员配置重连。"""
+    manager, created = pool
+    _own(data_dir, "p1", "employee_0001")
+    personal_model_settings.save("employee_0001", "claude", "", USER_KEY, "")
+
+    async def scenario():
+        await manager.send("p1", tmp_path, "一", username="employee_0001")
+        session = await _settle(manager, "p1")
+        assert created[0].options.env["ANTHROPIC_AUTH_TOKEN"] == USER_KEY
         session.state = "idle"
-        await manager.send("p1", tmp_path, "二", username="employee_0002")
+        personal_model_settings.clear("employee_0001", "claude")
+        await manager.send("p1", tmp_path, "二", username="employee_0001")
         session = await _settle(manager, "p1")
         assert session.model_owner == ""
         assert len(created) == 2
@@ -311,15 +334,16 @@ def test_sender_personal_key_used_and_switch_back(pool, tmp_path):
     asyncio.run(scenario())
 
 
-def test_send_with_undecryptable_personal_key_fails_fast(pool, tmp_path, monkeypatch):
+def test_send_with_undecryptable_personal_key_fails_fast(pool, data_dir, tmp_path, monkeypatch):
     manager, created = pool
+    _own(data_dir, "p1", "employee_0001")
     monkeypatch.setenv("ONTO_WEB_MODEL_SECRET_KEY", "x" * 40)
     personal_model_settings.save("employee_0001", "claude", "", USER_KEY, "")
     monkeypatch.setenv("ONTO_WEB_MODEL_SECRET_KEY", "y" * 40)
 
     async def scenario():
         with pytest.raises(SessionError) as exc:
-            await manager.send("p1", tmp_path, "一", username="employee_0001")
+            await manager.send("p1", tmp_path, "一", username="employee_0002")
         assert exc.value.status == 409
         assert created == []
         await manager.shutdown()
@@ -351,35 +375,43 @@ def _h(token):
 
 def test_personal_routes(client):
     # 普通用户仍然不能读写管理员配置
-    assert client.get("/api/settings/model", headers=_h("user-token")).status_code == 403
+    denied = client.get("/api/v1/admin/settings/model", headers=_h("user-token"))
+    assert denied.status_code == 403 and denied.json()["code"] == "forbidden"
     assert (
         client.put(
-            "/api/settings/model/personal-policy", json={"allow": False}, headers=_h("user-token")
+            "/api/v1/admin/settings/personal-key-policy", json={"allow": False}, headers=_h("user-token")
         ).status_code
         == 403
     )
 
     res = client.put(
-        "/api/settings/model/me/claude",
-        json={"base_url": "", "api_key": USER_KEY, "model": ""},
+        "/api/v1/me/model-settings/claude",
+        json={"source": "personal", "base_url": "", "api_key": USER_KEY, "model": ""},
         headers=_h("user-token"),
     )
     assert res.status_code == 200
-    assert res.json()["claude"]["active"] is True
+    assert res.json()["source"] == "personal"
     assert USER_KEY not in res.text
 
-    mine = client.get("/api/settings/model/me", headers=_h("user-token")).json()
-    assert mine["claude"]["api_key_masked"] == "已设置"
+    mine = client.get("/api/v1/me/model-settings", headers=_h("user-token")).json()
+    assert mine["engines"]["claude"]["api_key_set"] is True
     # 管理员看自己的个人配置：互不可见
-    theirs = client.get("/api/settings/model/me", headers=_h("admin-token")).json()
-    assert theirs["claude"]["active"] is False
+    theirs = client.get("/api/v1/me/model-settings", headers=_h("admin-token")).json()
+    assert theirs["engines"]["claude"]["source"] != "personal"
 
     res = client.put(
-        "/api/settings/model/me/claude",
-        json={"base_url": USER_URL, "api_key": "", "model": ""},
+        "/api/v1/me/model-settings/claude",
+        json={"source": "personal", "base_url": USER_URL, "model": ""},
         headers=_h("admin-token"),
     )
     assert res.status_code == 400  # 没有自己的 Key 不能只改地址
+    assert res.json()["code"] == "invalid_argument"
 
-    res = client.delete("/api/settings/model/me/claude", headers=_h("user-token"))
-    assert res.json()["claude"]["active"] is False
+    res = client.delete("/api/v1/me/model-settings/claude", headers=_h("user-token"))
+    assert res.json()["source"] != "personal"
+    assert personal_model_settings.model_owner("employee_0001", "claude") == ""
+
+    # 旧路径经兼容中间件改写到 v1，响应即 v1 形状
+    legacy = client.get("/api/settings/model/me", headers=_h("user-token"))
+    assert legacy.status_code == 200 and legacy.headers["Deprecation"] == "true"
+    assert legacy.json()["engines"]["claude"]["api_key_set"] is False

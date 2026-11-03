@@ -95,3 +95,11 @@ CLI 从未上报（旧版 CLI、九问引擎）或已报 idle 才置空闲；CLI
 恢复运行中。这样开关失效、子代理走后台时，顶部状态、构建通知仍与真实进度一致，运行中的会话也不会被
 空闲回收、槽位挤占或换绑会话断开。没有采用平台自行跟踪在途子任务或计时兜底：是否还有后续轮次由 CLI
 判断最准。
+
+## 插件化前端（合入 develop 时补记）
+
+插件化重写前端后，`frontend/src/lib/subagentEvents.js` 和 `ChatPane.jsx` 已删除。子代理状态改由会话宿主
+按生命周期事件下发（`session_host/timeline.py` 的 `subagent.updated`），派遣回执不再参与判定，因此不需要区分
+同步结果和后台启动回执。上面「已中断」这条兜底规则移到 `frontend/src/state/conversation.js` 的
+`subagentStatus`：所在的工作过程已经结束，或者会话已经停下，而子任务还没有终态时，显示「已中断」。
+会话层的 `_cli_state` 与空闲判定照旧，在 `services/agent_sessions.py`。

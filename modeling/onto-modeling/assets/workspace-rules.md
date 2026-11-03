@@ -14,6 +14,33 @@ These rules apply to all work in this repository.
 
 每个 `.claude/commands/*.md` 与 `.claude/agents/*.md` 都假设上述四份约定在 context 中；若你正在新增/修改 prompt 而需要明确引用条目，**优先 cite 文件路径而不是把约定原文复制进 prompt**，以避免漂移。
 
+## Optional Capabilities（可选能力）
+
+基础建模能力之外的命令、子代理、技能由项目启用的能力包提供（项目设置 → 能力与插件）：
+
+| 能力 | 命令 / 技能 |
+|---|---|
+| 场景走查 | `/ontology-trace`、`/ontology-trace-single`、`/ontology-trace-batch`、`/ontology-trace-interactive`、`/ontology-mock` |
+| 代码生成与求解 | `/ontology-codegen-scan`、`/ontology-codegen`、`/ontology-solver-evaluator` |
+| 图示 | `/ontology-flowchart`、`/ontology-validate-diagrams`、mermaid-flowchart 技能 |
+| 知识沉淀 | `/knowledge-record`、`/knowledge-review`、`/knowledge-nominate`，`.claude/KNOWLEDGE_SEDIMENTATION.md` |
+| 反馈演进 | `/ontology-evolution` |
+| 联网调研 | deep-research 技能 |
+| 迁移复用 | extract-migrated-objects 技能 |
+
+- 命令文档、下一步建议、菜单里提到这些命令时，先看 `.claude/commands/<命令名>.md`（技能看 `.claude/skills/<名>/SKILL.md`）在不在：在才提供这个选项、才去读它；不在就不要列出，用户问起时说明本项目没有启用对应能力，可以在项目设置里启用。
+- 下一步建议统一用 `python3 .claude/scripts/state_helper.py next-step` 取，它只列出本项目已启用的命令。
+
+## Industry Packs（行业包）
+
+项目启用的行业包在 `.claude/industry/<包名>/`（只读；`pack.json` 里有显示名与版本）。目录不存在就跳过本节：
+
+- 资料分析：对照 `standards.json` 的规范类型找资料里对应的内容，缺的记进待确认问题；用 `concepts.json` 的概念与别名辅助识别资料用途和术语。
+- 抽取对象、操作、规则与指标：先看 `reference/` 里 `decision_point` 对应本步骤的写法提示；`library/` 是参考对象与操作，**只作候选提示**，按项目资料写、经专家确认，不直接复制。
+- 行业知识由 `knowledge_helper.py load` 自动分层加载（项目里同名条目优先），不用另读 `knowledge/`。
+- 产物用到了行业知识或参考库时，在「数据来源」或提交说明里注明来源，如 `industry-retail@1.0.0 / 安全库存测算`。
+- `ontology_checker` 会按行业包的声明式规则给警告（分类「行业规则」）；项目口径确实不同就保留，并沉淀一条项目知识说明原因。
+
 ## Subagent Dispatch（子任务派发）
 
 命令里写「Read `.claude/agents/X.md`. Dispatch it …」时，agent 文件就是子任务的完整指令：
@@ -113,21 +140,19 @@ These rules apply to all work in this repository.
    | `schema` | 数据 Schema | 该表格是对象与属性的**事实来源**：对象属性清单的英文名称/类型必须来自真实表头列，逐 Sheet 覆盖、不得虚构或合并；类型与主键只能标注为推断，不得据样例行编造业务含义 |
    | `term` | 术语表 | 对象/操作/规则/指标的命名与别名必须与术语表对齐；冲突时以术语表为准并在文档标注 |
    | `evidence` | 通用业务依据 | 作为佐证材料按需引用，引用时注明出处文件 |
-   - **评测数据**（评测库导入用的业务数据表）不走资料区打标，由用户在「数据评测」的数据源里上传，存于 `.ontology-state/eval-data/<文件ID>/`。它**不是业务语义来源**——不得据样例行编造业务含义、枚举或规则；但它的 **Sheet 名与表头是表名、列名的依据**：没有 `schema` 资料时，对象「# 数据来源」写它的 Sheet 名，从库里读取的属性英文名称逐字取自该 Sheet 的表头（`python3 .claude/scripts/check_eval_data.py --headers` 列出全部表头）。文档形式的数据字典与真实表头冲突时以表头为准，并在资料分析报告或抽取结果里列出差异。其结构应与 `schema` 资料对账一致（`python3 .claude/scripts/check_eval_data.py` 默认检查这些上传文件）。旧项目 `materials.json` 里残留的 `eval_data` 标签同此处理。
+   - **数据表**只认 `schema` 资料（一个 Sheet = 一张表，首行 = 列名）：对象「# 数据来源」写它的 Sheet 名，从库里读取的属性英文名称逐字取自该 Sheet 的表头（`python3 .claude/scripts/table_profile.py --headers` 列出全部表头）。样例行**不是业务语义来源**——不得据样例行编造业务含义、枚举或规则。文档形式的数据字典与真实表头冲突时以表头为准，并在资料分析报告或抽取结果里列出差异。旧项目 `materials.json` 里残留的已停用用途标签读取时按 `auto` 处理；原先在数据源里上传、已被对象引用的数据表，平台升级时已迁进 `resource/excel/` 并标为 `schema`。
 
    `reading_mode`：由平台按资料类型决定，用户不再选择。条目显式写了 `full` / `on_demand`（存量项目）时照旧执行；没有写时：文档类资料（docx、doc、pdf、md、txt）全文读取后再使用，篇幅过长（如超过约 3 万字或 50 页）时可按需检索，但要在报告「信息来源」里注明哪些部分未通读；表格、图片、流程图按需检索（数据 Schema 与术语表的表头、术语由脚本读取）。该文件由平台维护，模型同样**不得修改**。
 
-   条目带 `auto_detected: true` 表示平台上传时按表格结构识别为数据表或术语表、预填了 `schema` / `term`，与人工标注同等对待。没有 `schema` 资料、但 `resource/` 里有像数据库表的表格（首行是英文列名）时，**不要让用户编辑 `materials.json`**：请用户在左侧资料列表把该表格的用途改为「数据 Schema」（平台会在疑似数据表旁给出「设为 Schema」按钮），或改在「数据评测」的数据源里上传；改完后重新读取清单再继续。
+   条目带 `auto_detected: true` 表示平台上传时按表格结构识别为数据表或术语表、预填了 `schema` / `term`，与人工标注同等对待。没有 `schema` 资料、但 `resource/` 里有像数据库表的表格（首行是英文列名）时，**不要让用户编辑 `materials.json`**：请用户在左侧资料列表把该表格的用途改为「数据 Schema」（平台会在疑似数据表旁给出「设为 Schema」按钮）；改完后重新读取清单再继续。
 
 ## Business Knowledge
 
-9. **业务知识识别守则** —
-   建模过程中专家若说出以下信号词，须考虑沉淀为业务知识：
-   `应该是 / 其实 / 我们这边 / 我们公司 / 规则是 / 通常 / 必须 / 不对 / 你弄错了 / 实际上 / 行业里 / 标准做法`
-
-   发现候选时按 `.claude/INTERACTION_CONVENTIONS.md` 的「业务知识确认对话」模板询问用户是否记入。
-   用户主动说「记一下：…」「记下这条规则」时直接保存，不再二次确认。
-   落盘脚本：`python3 .claude/scripts/knowledge_helper.py add ...`。
+9. **业务知识** —
+   已沉淀的业务知识（项目知识与已启用行业包的知识）由 `python3 .claude/scripts/knowledge_helper.py load` 加载，各命令照常应用。
+   把对话里的纠错与惯例沉淀成新条目属于「知识沉淀」能力：`.claude/KNOWLEDGE_SEDIMENTATION.md` 存在时，
+   专家说出 `应该是 / 其实 / 我们这边 / 我们公司 / 规则是 / 通常 / 必须 / 不对 / 你弄错了 / 实际上 / 行业里 / 标准做法` 这类信号词，
+   按它的守则询问是否记入（用户主动说「记一下：…」时直接保存）；不存在时只应用、不新增。
    所有规则细节见 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md`。
 
 ## Git Commit Conventions
@@ -151,11 +176,16 @@ These rules apply to all work in this repository.
 | Knowledge removed | `knowledge: remove <slug>` | |
 | Update applied | `update: apply reference changes` | /ontology-update 的首次落盘；若改动已被 fix commit 吃掉则跳过 |
 
-## Version Management
+## 对用户说话
 
-10. **Version display** — After every commit, display a user-friendly version message in Chinese:
-   ```
-   已保存版本 N: {commit message description}
-   如需回退到上一版本，回复"回退"
-   ```
-   Where N is the total commit count in the repository.
+10. **只说业务上的进展和结论** — 对话里写给用户的话按 `.claude/USER_VOCABULARY.md`：
+   - 不说命令文档的步骤编号与步骤名（「Step 2.5：固化只读来源快照」「执行 Step 0 前置检查」）、脚本与工具名、
+     文件路径与变量（`REPORT_PATHS = …`）、命令锁（「锁检查通过」「释放 validate 锁」）、退出码。这些只出现在
+     工具调用里；工具调用之间不写过程旁白，要说就一句业务话（「读完了 4 份资料，开始整理业务对象」）。
+   - 提交只是把这一轮的修改记下来，这一轮结束平台自动存成一个版本：不说「已保存版本 N」，不让用户回复「回退」「撤回」。
+     这一轮改了什么、撤回这一轮，界面上有卡片和按钮；回退旧版本在版本页做。
+   - 命令做完先释放锁，再写两三句小结：做了什么、还有什么要用户定。不列「下一步建议 / 回复 X →」菜单，
+     下一步由界面的建议条给出；要用户定的事用确认卡问（AskUserQuestion / ask_user）。
+11. **只问业务问题** — 只问含义、范围、冲突、取舍这类业务上的事。编号、文件名、目录、格式、读哪些资料、
+   用什么工具、要不要联网、接下来做什么，一律自己定，不问用户（规则见 `.claude/INTERACTION_CONVENTIONS.md` 核心原则 5）。
+   要解决的问题以平台注入的「建模目标」为准，不改写；资料和目标对不上时，在建模蓝图里提目标问题。

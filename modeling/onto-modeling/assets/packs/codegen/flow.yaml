@@ -1,0 +1,34 @@
+# 代码生成与求解包的节点（详设 6.8：codegen.codegen、codegen.solver 旁支，入口在「代码生成与求解」页）
+nodes:
+  - id: codegen.codegen
+    title: 代码生成
+    kind: agent
+    placement: branch
+    section: optional
+    optional: true
+    after: [trace.trace, core.validate]
+    done: [scripts]
+    stale_on: [operation]
+    produces: ["ontology/scripts/*"]
+    writes: ["ontology/operation/*", "ontology/data-mock/*"]
+    entry: {command: /ontology-codegen-scan}
+    actions:
+      - {label: 扫描候选, command: /ontology-codegen-scan}
+      - {label: 生成脚本, command: "/ontology-codegen "}
+  - id: codegen.solver
+    title: 求解适配
+    kind: agent
+    placement: branch
+    section: optional
+    optional: true
+    after: core.model
+    display_after: [codegen.codegen]
+    done: [solver]
+    writes: ["ontology/scripts/*"]
+    # 入口是「求解模型」面板，不走对话命令
+    panel: true
+    actions: []
+commands:
+  codegen: {node: codegen.codegen, requires: [逻辑已提取], lock_waits: [confirm]}
+  codegen-scan: {node: codegen.codegen, requires: [逻辑已提取]}
+  solver-evaluator: {node: codegen.solver, requires: [对象已提取], lock_waits: [confirm]}

@@ -1,0 +1,21 @@
+/* 知识沉淀页：设计稿 mr-* 之外、产品才有的补充样式 */
+.kn-lk{display:inline-flex;align-items:center;gap:3px;color:#B45309;font-weight:600;cursor:help}
+.kn-mark{background:#FEF3C7}
+.kn-err{color:var(--red)}
+.kn-rich p{margin:0}
+.kn-rich p+p,.kn-rich p+.kn-li,.kn-li+p{margin-top:4px}
+.kn-li{position:relative;padding-left:14px}
+.kn-li::before{content:"";position:absolute;left:4px;top:.72em;width:4px;height:4px;border-radius:50%;background:var(--ink3)}
+.kn-link{cursor:pointer}
+.kn-link:hover{border-color:var(--b200);color:var(--blue2)}
+.kn-none{margin-top:0}
+/* 适用范围选择 */
+.kn-scope{position:relative}
+.kn-scope .inp.sel{cursor:pointer}
+.kn-scope .inp.sel.kn-dis{cursor:not-allowed;opacity:.6}
+.kn-scope-menu{position:absolute;top:40px;left:0;right:0;z-index:120;padding:6px}
+.kn-scope-q{height:32px;margin-bottom:4px}
+.kn-scope-list{max-height:240px;overflow:auto}
+.kn-scope-k{flex:none;font-size:10.5px;font-weight:650;color:var(--ink3);background:var(--panel3);border-radius:5px;padding:1px 6px}
+.kn-scope-none{padding:8px 10px}
+.kn-form input::placeholder,.kn-form textarea::placeholder{color:var(--muted)}

@@ -6,7 +6,6 @@ import re
 from pathlib import Path
 
 from .. import studio
-from ..workspace import _git
 from . import documents as doc
 from .definitions import TOOLS, OPERATION, RULE, validate_input
 from .errors import McpError
@@ -39,15 +38,20 @@ def issue(code, message, target="", **extra):
     return {"code": code, "message": message, "level": "blocking", "target": target, **extra}
 
 
+def warning(code, message, target="", **extra):
+    """链接、引用这类质量问题：只提示，不挡写入（F3：建模过程中检查只提示，发布时才拦）。"""
+    return {"code": code, "message": message, "level": "warning", "target": target, **extra}
+
+
 def integrity(records):
-    """Compare before/after problems; existing unrelated incomplete modeling is not a gate."""
+    """Compare before/after reference problems (warnings only); existing unrelated incomplete modeling is ignored."""
     issues = {}
     by_key = {r["key"]: r for r in records.values()}
     for identity, record in records.items():
-        for target in doc.links(record["text"]):
+        for target in doc.links(record["text"], by_key):
             if target not in by_key:
                 key = (identity, "REFERENCE_NOT_FOUND", target)
-                issues[key] = issue("REFERENCE_NOT_FOUND", "引用的本体元素不存在", record["path"], resource_id=target)
+                issues[key] = warning("REFERENCE_NOT_FOUND", "引用的本体元素不存在", record["path"], resource_id=target)
         kind = record["kind"]
         if kind not in ("object", "operation", "rule"):
             continue
@@ -57,21 +61,26 @@ def integrity(records):
         for field, target_kind in relationships.items():
             for target in value.get(field, []):
                 if f"{target_kind}:{target}" not in records:
-                    issues[(identity, field, target)] = issue("REFERENCE_TYPE_INVALID", f"{field} 的引用类型不匹配", record["path"])
+                    issues[(identity, field, target)] = warning("REFERENCE_TYPE_INVALID", f"{field} 的引用类型不匹配", record["path"])
         if kind == "object":
             for relation in value["relations"]:
                 if not relation["target_exists"]:
-                    issues[(identity, "relation", relation["target_key"])] = issue("RELATION_TARGET_INVALID", "关系目标对象不存在", record["path"])
+                    issues[(identity, "relation", relation["target_key"])] = warning("RELATION_TARGET_INVALID", "关系目标对象不存在", record["path"])
     return issues
 
 
 def editing_issue(project_id, path):
-    from ..agent_sessions import manager
-    state = manager.live_status(project_id)
-    if state and state.get("busy"):
-        return issue("PROJECT_EDITING_BUSY", "助手正在修改该项目，请等待当前任务结束", path)
-    if studio.lease_status(project_id, path) or studio.get_draft(project_id, path):
-        return issue("PROJECT_EDITING_BUSY", "条目存在 Studio 租约或未提交草稿，请先完成或放弃编辑", path)
+    """写入范围锁（方案 C10）：条目在助手的写入范围里就忙，附上范围里的实体；整项目忙与 Studio 租约已取消。"""
+    from ...api import deps
+    from ...kernel.changesets import service as changesets
+
+    lock, hits = changesets.paths_in_scope(deps.workspaces, project_id, [path])
+    if hits:
+        return issue("PROJECT_EDITING_BUSY", "助手正在改这部分内容，这一轮结束后才能编辑", path,
+                     entities=list(lock.get("entries") or []) + list(lock.get("artifacts") or []),
+                     scope_state=lock.get("state"), changeset_id=lock.get("changeset_id"))
+    if studio.get_draft(project_id, path):
+        return issue("PROJECT_EDITING_BUSY", "条目有未提交的 Studio 草稿，请先提交或放弃", path)
     return None
 
 
@@ -100,7 +109,7 @@ def analyze(project_id, records, current, name, args):
             text = patch_resource(seed, payload)
             next_records[identity] = {**seed, "text": text}
         elif action == "delete":
-            references = [r for rid, r in records.items() if rid != identity and key in doc.links(r["text"])]
+            references = [r for rid, r in records.items() if rid != identity and key in doc.links(r["text"], {key})]
             if references:
                 raise McpError("RESOURCE_REFERENCED", "资源仍被其他文档引用", 422,
                                references=[r["path"] for r in references])
@@ -113,7 +122,7 @@ def analyze(project_id, records, current, name, args):
         baseline = integrity(records)
         after = integrity(next_records)
         result["historical_problem_count"] = len(baseline)
-        result["issues"].extend(value for key, value in after.items() if key not in baseline)
+        result["warnings"].extend(value for key, value in after.items() if key not in baseline)
         # Field removal/rename cannot invalidate explicit field references in other documents.
         if kind == "object" and action == "update" and "field_ops" in payload:
             before = {f["key"] for f in doc.public(old, records)["fields"]}
@@ -121,7 +130,7 @@ def analyze(project_id, records, current, name, args):
             for removed in before - after_fields:
                 pattern = re.compile(r"(?<![\w])" + re.escape(key + "." + removed) + r"(?![\w])")
                 if any(pattern.search(r["text"]) for rid, r in records.items() if rid != identity):
-                    result["issues"].append(issue("FIELD_REFERENCED", "字段仍被其他文档引用，不能移除或改名", removed))
+                    result["warnings"].append(warning("FIELD_REFERENCED", "字段仍被其他文档引用，引用会失效", removed))
         result["changed_paths"] = [path]
         if action != "delete":
             result["next_" + kind] = doc.public(next_records[identity], next_records)
@@ -143,23 +152,18 @@ def persist(manager, project_id, root, before, after, identity, expected, userna
         raise McpError("REVISION_CONFLICT", "工作区内容已更新", 409)
     busy = editing_issue(project_id, record["path"])
     if busy:
-        raise McpError("PROJECT_EDITING_BUSY", busy["message"], 409)
-    # Do not include staged edits belonging to the user/agent in this commit.
-    if _git(root, "diff", "--cached", "--name-only").strip():
-        raise McpError("PROJECT_EDITING_BUSY", "项目有正在暂存的修改，请稍后重试", 409)
-    previous = manager._snapshot(path)
-    try:
+        raise McpError("PROJECT_EDITING_BUSY", busy["message"], 409,
+                       **{key: busy[key] for key in ("entities", "scope_state", "changeset_id") if key in busy})
+    # 经写入事务：原子写入、只提交这一个文件并带来源 trailer，失败时恢复写入前的内容（方案 C1）。
+    # agent 已暂存的其他改动不会被带进这次提交（临时索引），所以不再因为有暂存改动就回「项目忙」（方案 C10）
+    from ...kernel.writepath import ChangeTx, Origin
+
+    with ChangeTx(manager, project_id, Origin("mcp", username), summary=f"更新 {identity}") as tx:
         if identity in after:
-            manager._atomic_write_text(path, after[identity]["text"])
+            tx.write(record["path"], after[identity]["text"])
         else:
-            path.unlink()
-        _git(root, "add", "--", record["path"])
-        _git(root, "commit", "--only", "-m", f"mcp: 更新 {identity}", "--", record["path"])
-    except Exception:
-        manager._restore_snapshot(path, previous)
-        # Reset only our index entry; leave unrelated staged/worktree changes intact.
-        _git(root, "reset", "HEAD", "--", record["path"])
-        raise
+            tx.remove(record["path"])
+        tx.commit(f"mcp: 更新 {identity}")
     from .. import audit
     audit.log(username, "MCP", f"/projects/{project_id}/ontology/{identity}")
 
@@ -197,10 +201,42 @@ def list_resources(records, kind, args, current):
             "display": {"text": f"已返回 {len(page)}/{len(values)} 个本体元素"}}
 
 
+def _artifact_tool(manager, project_id, name, args):
+    """插件产物只读工具：不碰本体 revision，按产物索引读（结果上限见 kernel.artifacts.service）。"""
+    from ...api import deps
+    from ...kernel.artifacts import service as artifacts
+
+    try:
+        if name == "artifact_list":
+            return artifacts.mcp_list(manager, project_id, args, page=deps.page, iso=deps.iso)
+        return artifacts.mcp_get(manager, project_id, args, iso=deps.iso)
+    except artifacts.ArtifactError as exc:
+        code = {"artifact_type_unknown": "ARTIFACT_TYPE_UNKNOWN", "artifact_not_found": "RESOURCE_NOT_FOUND"}.get(
+            exc.code, "INVALID_INPUT")
+        raise McpError(code, str(exc), exc.status) from exc
+
+
+def execute_pack_tool(manager, project_id, tool, args):
+    """包声明的只读工具：固定在本包的一种产物类型上，list 列表、get 取一项（同 artifact_list / artifact_get 的上限）。"""
+    validate_input(args, tool["inputSchema"])
+    name = "artifact_list" if tool["mode"] == "list" else "artifact_get"
+    return _artifact_tool(manager, project_id, name, {**args, "type": tool["artifact"]})
+
+
 def execute(manager, project_id, name, args, username):
     if name not in TOOLS:
         raise McpError("MCP_TOOL_NOT_FOUND", "未知工具", 404)
     validate_input(args, TOOLS[name]["inputSchema"])
+    if name in ("artifact_list", "artifact_get"):
+        return _artifact_tool(manager, project_id, name, args)
+    from ...kernel import metamodel
+
+    # 文档模型按本项目锁定版本的元模型解析（B3 合并遗留：原来一律用镜像版本）
+    with metamodel.using(manager.project_root(project_id)):
+        return _execute(manager, project_id, name, args, username)
+
+
+def _execute(manager, project_id, name, args, username):
     # Shared with web writes, protects the revision check and persistence as one operation.
     with manager._project_lock(project_id):
         root = manager.project_root(project_id)

@@ -1,0 +1,28 @@
+# 场景走查包往主流程上挂的（详设 6.8，0.10.0 起按段）：
+# - 段内「场景」一步（`slice_steps`，挂在建模节点的分段里）：示例数据按场景需要生成，不单独占一步；
+# - 全量回归 trace.trace 串在校验之后，这时主线上的「校验」显示为「校验与走查」（`node_titles`）。
+# 完成判定用 core 的探针（testcase）。
+slice_steps:
+  - node: core.model
+    step: {id: scenario, label: 场景, title: 场景走查, command: /ontology-trace, action: 场景走查, kinds: [testcase], done: [testcase], stale_on: [object, operation], after: check}
+node_titles:
+  core.validate: 校验与走查
+nodes:
+  - id: trace.trace
+    title: 全量回归
+    kind: agent
+    # 串在校验之后；随 core 拆出、本来就在主线上，按主线位置（spine）算，不当成新插进来的可补做节点（ADR-0066）
+    placement: spine
+    section: required
+    after: core.validate
+    done: [testcase]
+    stale_on: [object, operation]
+    produces: ["ontology/testcase/*", "ext/trace/*", "ontology/data-mock/*"]
+    entry: {command: /ontology-trace}
+    actions:
+      - {label: 批量验证, command: /ontology-trace 全部}
+      - {label: 交互走查, command: /ontology-trace 交互}
+      - {label: 生成示例数据, command: /ontology-mock}
+commands:
+  mock: {node: trace.trace, requires: [对象已提取], lock_waits: [confirm]}
+  trace: {node: trace.trace, requires: [逻辑已提取], lock_waits: [confirm]}

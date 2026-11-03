@@ -39,11 +39,6 @@ If the script reports **无任何下游引用**, add a line: "修改这个文档
 
 ## Step 4: Suggest next step
 
-```
-**下一步建议：**
-- 回复 **校验** → 修改后跑一次 /ontology-validate 确认无残留问题
-- 回复 **追踪** → 若改的是逻辑/对象，用 /ontology-trace 重走场景
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
-```
+用一两句话说明改这个文档会牵连哪些地方；不列下一步菜单（界面的建议条会给出）。
 
-Handle the reply by reading the corresponding command file and following it.
+用户之后在对话里说「校验」「追踪」，分别读 `.claude/commands/ontology-validate.md`、`.claude/commands/ontology-trace.md` 照做。
