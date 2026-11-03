@@ -205,10 +205,10 @@ def test_blueprint_read_save_and_revision_conflict_on_mainline(env):
     _write_mainline(root, bp().from_draft(DRAFT))
     got = client.get(base).json()
     assert got["version_label"] == "草案 v1" and got["state"] == "draft" and len(got["revision"]) == 16
-    assert set(got) >= {"version_no", "version_label", "state", "goal_md", "goal_anchor", "out_of_scope", "slices",
+    assert set(got) >= {"version_no", "version_label", "state", "goal_md", "goal_anchor", "slices",
                         "terms", "questions", "research", "evidence_hint", "revision", "updated_at"}
     assert got["research"] == {"verified": False, "report_id": None}
-    stale = client.put(base, json={"base_revision": "0" * 16, "mode": "draft", "out_of_scope": ["x"]})
+    stale = client.put(base, json={"base_revision": "0" * 16, "mode": "draft"})
     assert stale.status_code == 409 and stale.json()["code"] == "revision_conflict"
     assert stale.json()["details"]["actual"] == got["revision"]
     slices = [{"id": item["id"], "name": item["name"], "core_flow": item["core_flow"],
@@ -341,15 +341,15 @@ def test_saving_while_the_assistant_runs_is_423(env, monkeypatch):
     # 助手又开始改蓝图（这一轮还在跑）：蓝图在副本里，调整回 423
     copy = changesets.copy_for_turn(workspaces, project_id, root)
     draft = json.loads((copy / "research" / "blueprint.json").read_text(encoding="utf-8"))
-    draft["out_of_scope"] = ["助手正在改"]
+    draft["slices"][0]["name"] = "助手正在改"
     (copy / "research" / "blueprint.json").write_text(json.dumps(draft, ensure_ascii=False), encoding="utf-8")
     changesets.observe(workspaces, project_id, running=True, conversation_id="default")
     got = client.get(f"/api/v1/projects/{project_id}/blueprint").json()
-    assert got["out_of_scope"] == ["助手正在改"]
+    assert got["slices"][0]["name"] == "助手正在改"
     monkeypatch.setattr(changesets, "_activity_provider",
                         lambda pid: {"running": True, "conversation_id": "default", "exec": None, "affected": []})
     locked = client.put(f"/api/v1/projects/{project_id}/blueprint",
-                        json={"base_revision": got["revision"], "mode": "draft", "out_of_scope": ["x"]})
+                        json={"base_revision": got["revision"], "mode": "draft"})
     assert locked.status_code == 423 and locked.json()["code"] == "write_scope_locked"
 
 

@@ -302,9 +302,11 @@ def test_silent_id_rename_fails_until_declared(workspace, toolkit):
     assert result["status"] == review.FAILED
     assert categories(result) == {"ID变更", "ID溯源"}
 
+    # 声明了改名也不行：RULE-02-NEW 写得像资料里的编号，资料里却没有（F4b 起不转人工确认，直接算错）
     write_report(workspace, make_report(
         renamed, changes=f"| RULE-02 | RULE-02-NEW | 改名 | {SOURCE} |"))
-    assert checker.run_check(workspace)['manual_pending']
+    result = checker.run_check(workspace)
+    assert categories(result) == {"ID溯源"} and not result["manual_pending"]
     assert not review.accepted(workspace)
 
 
@@ -359,25 +361,17 @@ def test_accepted_baseline_survives_later_failure(workspace, toolkit):
     assert snapshot["captured_from"] == ["research/报告.md"]
 
 
-def test_new_id_requires_verifiable_source_and_manual_confirmation(workspace, toolkit):
-    """声明只解释变更，不能充当来源及人工确认。"""
+def test_self_numbered_new_ids_pass_without_manual_confirmation(workspace, toolkit):
+    """资料里没有的 ITEM-/RULE- 编号是助手自编的：首轮直接通过，不转人工确认（F4b：编号不问人）。"""
     checker, review = toolkit
     rows = [row("ITEM-01", "RULE-01"), row("ITEM-99", "RULE-99", "订单表.AMOUNT")]
     write_report(workspace, make_report(rows))
-    assert checker.run_check(workspace)["status"] == review.FAILED
-
-    write_report(workspace, make_report(rows, changes=(
-        f"| 无 | ITEM-99 | 新增 | {SOURCE} |\n| 无 | RULE-99 | 新增 | {SOURCE} |")))
     result = checker.run_check(workspace)
-    assert len(result['manual_pending']) == 2
-    assert not review.accepted(workspace)
-    assert checker.capture(workspace)['rule_ids'] == []
-    write_report(workspace, make_report(rows, changes=(
-        f"| 无 | ITEM-99 | 新增 | {SOURCE} |\n| 无 | RULE-99 | 新增 | {SOURCE} |"),
-        gaps='- [x] 新增ID确认：ITEM-99、RULE-99'))
-    assert checker.check_exit_code(checker.run_check(workspace)) == 0
+    assert checker.check_exit_code(result) == 0, result
+    assert result['manual_pending'] == []
     evidence = review.load_review(workspace)['source_evidence'][SOURCE]['ids']
-    assert {e['id'] for e in evidence if e['kind'] == 'manual_new_id'} == {'ITEM-99', 'RULE-99'}
+    assert {e['id'] for e in evidence if e['kind'] == 'assigned'} == {'ITEM-99', 'RULE-99'}
+    assert {e['id'] for e in evidence if e['kind'] == 'source_id'} == {'ITEM-01', 'RULE-01'}
 
 
 def test_manual_pending_blocks_acceptance(workspace, toolkit):

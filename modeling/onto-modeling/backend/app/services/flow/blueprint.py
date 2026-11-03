@@ -139,8 +139,18 @@ def view(manager, project_id: str, loaded: dict | None = None) -> dict:
         raise WorkspaceError("还没有建模蓝图", 404, "blueprint_not_found")
     root = loaded["root"]
     data = script(root).view(loaded["doc"])
-    data.update(revision=loaded["revision"], research=_research(loaded["base"]), evidence_hint=None)
+    data.update(revision=loaded["revision"], research=_research(loaded["base"]), evidence_hint=None,
+                goal_md=project_goal(manager, project_id) or data["goal_md"])
     return data
+
+
+def project_goal(manager, project_id: str) -> str:
+    """要解决的问题只有一份：建项目时写的建模目标（F4b）。旧项目没写 goal 时退回背景说明。"""
+    try:
+        meta = manager.get_project(project_id) or {}
+    except WorkspaceError:
+        return ""
+    return str(meta.get("goal") or meta.get("background") or "").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +201,8 @@ def _write(manager, project_id: str, loaded: dict, doc: dict, *, actor: str, sum
 
 def _edit(body: dict) -> dict:
     edit = {"mode": body.get("mode")}
-    for key in ("out_of_scope", "slices", "term_choices", "answers"):
+    # out_of_scope 已取消（F4b）：旧前端还带着也不报错，忽略
+    for key in ("slices", "term_choices", "answers"):
         if body.get(key) is not None:
             edit[key] = body[key]
     for key in ("term_choices", "answers"):
@@ -212,7 +223,22 @@ def save(manager, project_id: str, body: dict, *, actor: str) -> dict:
     except module.BlueprintError as exc:
         raise _invalid(exc) from exc
     _write(manager, project_id, loaded, doc, actor=actor, summary="调整建模蓝图")
+    _adopt_goal(manager, project_id, module, loaded["doc"], doc)
     return view(manager, project_id)
+
+
+def _adopt_goal(manager, project_id: str, module, before: dict, after: dict) -> None:
+    """这次刚回答的目标问题选了「改成：…」或写了新目标：改项目信息里的建模目标（目标只有一份）。"""
+    answered_before = {item["id"] for item in before.get("questions") or [] if item.get("answer")}
+    for question in after.get("questions") or []:
+        if question["id"] in answered_before:
+            continue
+        goal = module.adopted_goal(question)
+        if goal:
+            from .. import project_events
+
+            manager._update_meta(project_id, goal=goal[:500])
+            project_events.project_changed(project_id, ["goal"])
 
 
 def answer(manager, project_id: str, question_id: str, reply: dict, *, actor: str) -> dict:
@@ -228,6 +254,7 @@ def answer(manager, project_id: str, question_id: str, reply: dict, *, actor: st
     except module.BlueprintError as exc:
         raise _invalid(exc) from exc
     _write(manager, project_id, loaded, doc, actor=actor, summary="回答建模蓝图的问题")
+    _adopt_goal(manager, project_id, module, loaded["doc"], doc)
     return view(manager, project_id)
 
 
@@ -262,6 +289,11 @@ def prepare_confirm(manager, project_id: str, body: dict) -> dict:
     if loaded is None:
         raise WorkspaceError("还没有建模蓝图", 404, "blueprint_not_found")
     _check_revision(loaded, body.get("base_revision", ""))
+    pending = script(loaded["root"]).pending_goal_question(loaded["doc"])
+    if pending is not None:
+        # 资料和建模目标对不上：要建什么还没定，先在蓝图上回答（任何构建方式都不由策略代答）
+        raise WorkspaceError("先回答蓝图里关于建模目标的问题", 409, "blueprint_question_pending",
+                             {"question_id": pending["id"]})
     record = loaded["record"] if loaded["where"] == "changeset" else None
     if record is not None and record["state"] == "conflict":
         raise WorkspaceError("建模蓝图所在的这一轮和你的修改有冲突，先在待处理里选好保留哪边", 409, "merge_conflict",
@@ -395,15 +427,19 @@ def purge(root: Path) -> None:
         pass
 
 
-def blueprint_card(module, doc: dict, card_id: str, *, research_verified: bool) -> dict:
+def blueprint_card(module, doc: dict, card_id: str, *, research_verified: bool, goal: str | None = None) -> dict:
     data = module.view(doc)
+    goal_question = next((item for item in data["questions"] if item.get("kind") == "goal"), None)
     return {
         "card_id": card_id, "card_type": "blueprint", "eyebrow": "", "title": f"建模蓝图 · {data['version_label']}",
         "subtitle": "", "status": {"key": "confirmed", "label": "已确认"} if data["state"] == "confirmed" else None,
         "plugin": None, "open": {"kind": "dialog", "target": "blueprint"},
-        "version_label": data["version_label"], "state": data["state"], "goal_md": data["goal_md"],
-        "goal_anchor": data["goal_anchor"], "goal_anchor_label": data["goal_anchor_label"],
-        "out_of_scope": data["out_of_scope"], "slices": data["slices"],
+        "version_label": data["version_label"], "state": data["state"], "goal_md": goal or data["goal_md"],
+        "goal_anchor": None, "goal_anchor_label": None,
+        # 资料和建模目标对不上时的那个问题：没答之前不能确认蓝图
+        "goal_question": {"id": goal_question["id"], "title": goal_question["title"],
+                          "answered": bool(goal_question.get("answer"))} if goal_question else None,
+        "slices": data["slices"],
         "terms": {"aligned": len(data["terms"]["aligned"]), "ambiguous": len(data["terms"]["ambiguous"])},
         "questions_pending": sum(1 for item in data["questions"] if not item.get("answer")),
         "research_verified": research_verified,
@@ -476,7 +512,8 @@ def round_cards(manager, project_id: str, changes: dict, seed: str, root: Path |
         if summary:
             cards.append(summary)
     research = _research(base)
-    card = blueprint_card(module, doc, f"{seed}-blueprint", research_verified=research["verified"])
+    card = blueprint_card(module, doc, f"{seed}-blueprint", research_verified=research["verified"],
+                          goal=project_goal(manager, project_id))
     cards.append(card)
     if conversation_id:
         _register(main, conversation_id, card["card_id"])
@@ -492,6 +529,8 @@ def card_updates(manager, project_id: str) -> list[tuple[str, dict]]:
     loaded_base = locate(manager, project_id)[0]
     module = script(root)
     verified = _research(loaded_base)["verified"]
+    goal = project_goal(manager, project_id)
     return [(item["conversation_id"], {"type": "card_updated",
-                                       "payload": blueprint_card(module, doc, item["card_id"], research_verified=verified)})
+                                       "payload": blueprint_card(module, doc, item["card_id"], research_verified=verified,
+                                                                 goal=goal)})
             for item in _registered(root) if item.get("conversation_id") and item.get("card_id")]
