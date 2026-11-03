@@ -221,18 +221,22 @@ export function undoneText(labels) {
   return `${l[0]}～${l[l.length - 1]}`;
 }
 
-// 回退弹窗里的文件标签：条目文件写文件名，场景合成「场景 ×N」；最多 5 个，多出来的写「另 N 个」
+// 回退弹窗里的文件标签：条目文件写文件名，同名的（几个 index.md）写相对路径，场景合成「场景 ×N」；
+// 最多 5 个，多出来的写「另 N 个」
 export function revertChips(files, max = 5) {
   const out = [];
   let scenes = 0;
+  const base = (path) => String(path || '').split('/').pop();
+  const names = (files || []).map((f) => base(f.path));
+  const dup = new Set(names.filter((n, i) => names.indexOf(n) !== i));
   // 恢复的在前，删掉的（目标版本时还没有的文件）在后
   [...(files || [])].sort((a, b) => (a.change === 'delete') - (b.change === 'delete')).forEach((f) => {
     if (/^ext\/trace\/scenarios\//.test(f.path)) { scenes += 1; return; }
-    out.push({ label: f.path.split('/').pop(), del: f.change === 'delete' });
+    out.push({ key: f.path, label: dup.has(base(f.path)) ? f.path : base(f.path), del: f.change === 'delete' });
   });
-  if (scenes) out.push({ label: `场景 ×${scenes}`, del: false });
+  if (scenes) out.push({ key: 'scenes', label: `场景 ×${scenes}`, del: false });
   if (out.length <= max) return out;
-  return [...out.slice(0, max - 1), { label: `另 ${out.length - max + 1} 个`, del: false, more: true }];
+  return [...out.slice(0, max - 1), { key: 'more', label: `另 ${out.length - max + 1} 个`, del: false, more: true }];
 }
 
 // 「将恢复 6 个文件，删除 2 个之后才有的文件」

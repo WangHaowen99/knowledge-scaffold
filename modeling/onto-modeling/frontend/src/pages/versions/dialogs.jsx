@@ -181,7 +181,7 @@ export function RevertModal({ version, onClose, onDone }) {
             </div>
             {chips.length ? (
               <div className="row wrap g4">
-                {chips.map((c) => <Chip key={c.label} tone="line" sm className={c.del ? 'vr-del' : undefined} title={c.del ? '这个文件在那时还没有，回退后会删掉' : undefined}>{c.label}</Chip>)}
+                {chips.map((c) => <Chip key={c.key} tone="line" sm className={c.del ? 'vr-del' : undefined} title={c.del ? '这个文件在那时还没有，回退后会删掉' : undefined}>{c.label}</Chip>)}
               </div>
             ) : null}
             <Note tone="gray" icon="layers">
