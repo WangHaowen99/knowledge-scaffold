@@ -231,7 +231,7 @@ function SnapshotsBody({ route }) {
         <Stat label="被引用的快照" value={s?.snapshots?.referenced ?? '—'} icon="lock" />
         <Stat label="本月采集" value={s?.jobs_this_month?.total ?? '—'} unit="次" icon="scan" desc={monthText(s?.jobs_this_month) || '本月还没有采集'} />
         <Stat label="进行中" value={s?.running_jobs ?? '—'} unit="个" icon="activity" desc={`排队 ${s?.queued_jobs ?? 0} 个`} />
-        <Stat label="连接器网关" value={<span style={{ fontSize: 18, color: gwColor || undefined }}>{gwText}</span>} icon="server" desc={`已加载 ${s?.gateway?.providers_loaded ?? 0} 个提供方`} />
+        <Stat label="连接器网关" value={<span style={{ fontSize: 18, color: gwColor || undefined }}>{gwText}</span>} icon="server" desc={`已加载 ${s?.gateway?.providers_loaded ?? 0} 个数据接入插件`} />
       </div>
       <div className="evd-top">
         <Card title="发起采集" icon="scan">

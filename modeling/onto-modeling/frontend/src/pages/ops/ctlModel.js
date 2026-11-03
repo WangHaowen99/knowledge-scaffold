@@ -344,7 +344,7 @@ export function maintErrorText(e, fallback) {
 
 // ---------- 插件运维（O-25～O-29） ----------
 export const PACK_KIND = {
-  capability: '能力包', industry: '行业包', system: '系统知识包', provider: '证据源提供方', node: '能力包', exporter: '导出器', tenant: '租户包',
+  capability: '能力包', industry: '行业包', system: '系统知识包', provider: '数据接入', node: '能力包', exporter: '导出器', tenant: '租户包',
 };
 export const CHANNEL = {
   stable: { label: 'stable', tone: 'line' },
@@ -489,7 +489,7 @@ export function taskActionToast(op, task, e) {
 
 // ---------- 版本清单（O-42） ----------
 export const INV_CATEGORY = {
-  kernel: '内核', capability: '能力包', industry: '行业包', system: '系统知识包', provider: '提供方', exporter: '导出器',
+  kernel: '内核', capability: '能力包', industry: '行业包', system: '系统知识包', provider: '数据接入', exporter: '导出器',
   engine: '引擎', data_format: '数据格式', lockfile: '锁文件',
 };
 
@@ -509,7 +509,8 @@ export function visiblePacks(items, { evidenceOn = false } = {}) {
   return (items || []).filter((p) => evidenceOn || (p.kind !== 'provider' && !isEvidencePack(p.name)));
 }
 export function visibleInventory(items, { evidenceOn = false } = {}) {
-  return (items || []).filter((r) => evidenceOn || (r.category !== 'provider' && !isEvidencePack(r.component) && !/^evidence/.test(r.component || '')));
+  // 数据接入里的转换器（ADR-0073）照常列
+  return (items || []).filter((r) => evidenceOn || r.converter || (r.category !== 'provider' && !isEvidencePack(r.component) && !/^evidence/.test(r.component || '')));
 }
 export function visibleTasks(items, { evidenceOn = false } = {}) {
   return (items || []).filter((t) => evidenceOn || t.type !== 'collection');

@@ -310,6 +310,11 @@ def test_catalog_lists_data_access_converters(env):
     assert providers["convert-pdf"]["project_status"] == "platform_installed"
     assert providers["convert-pdf"]["converter"]["default_for"] == [".pdf"]
     assert client.get("/api/v1/packs").json()["counts"]["provider"] == 3
+    # 运维的版本清单也列转换器，标上 converter（前端在证据采集不可用时照样显示它们）
+    from app.services.packs import governance
+
+    rows = [row for row in governance.versions(_ws) if row["category"] == "provider"]
+    assert {row["component"] for row in rows} == set(providers) and all(row["converter"] for row in rows)
 
 
 def test_health_and_issuer_key(env, monkeypatch):

@@ -8,10 +8,10 @@ import { compatibilityOf, register as registerPlugins } from '../src/api/mock/ro
 import { register as registerSettings } from '../src/api/mock/routes-settings.js';
 import {
   blockedView, bringsView, cardFoot, cardTags, catOf, categoryOf, compatRows, compatView, effectiveNote, enableToast, impactText, matchCard, recView,
-  sectionsOf, uiChip, uiEffectText, updateRoute, updateToast, versionOf, visibleCatalog,
+  PACK_CATEGORIES, sectionsOf, uiChip, uiEffectText, updateRoute, updateToast, versionOf, visibleCatalog,
 } from '../src/pages/plugins/catalogModel.js';
 import {
-  changelogView, configText, contentGroups, contentTotal, dependsText, disableConfirm, flowCaption, flowLayout, fmtSize, heroActions, heroFacts, heroMenu,
+  changelogView, configText, contentGroups, contentTotal, converterDefaults, dependsText, disableConfirm, flowCaption, flowLayout, fmtSize, heroActions, heroFacts, heroMenu,
   insertionAt, rangeText, statCards,
 } from '../src/pages/plugins/detailModel.js';
 
@@ -56,6 +56,34 @@ test('证据源不可用时：提供方和系统逆向建模不出现，计数�
   assert.deepEqual(off.recommendations.map((r) => r.pack.name), ['migrate']);
   assert.equal(visibleCatalog(data, true), data);
   assert.equal(visibleCatalog(null, false), null);
+});
+
+test('数据接入里的转换器（ADR-0073）：证据采集不可用时照样出现，分类叫「数据接入」', () => {
+  const data = {
+    items: [
+      card({ name: 'convert-pdf', category: 'provider', project_status: 'platform_installed', converter: { types: ['.pdf'], default_for: ['.pdf'] } }),
+      card({ name: 'db-mysql', category: 'provider', project_status: 'platform_installed' }),
+    ],
+    counts: { all: 2, provider: 2 },
+    recommendations: [],
+  };
+  const off = visibleCatalog(data, false);
+  assert.deepEqual(off.items.map((p) => p.name), ['convert-pdf']);
+  assert.equal(off.counts.provider, 1);
+  assert.equal(PACK_CATEGORIES.provider[0], '数据接入');
+  assert.deepEqual(cardFoot(off.items[0]).left, { type: 'chip', text: '平台已安装', tone: 'teal', icon: 'check' });
+});
+
+test('转换器默认（PL-20 / PL-21）：只有一个转换器的类型不出；有别的时默认的标出来，管理员能改', () => {
+  const d = { name: 'pdf-alt', converter: { types: ['.pdf'] } };
+  const one = { types: [{ type: '.pdf', label: 'PDF', default: 'pdf-alt', converters: ['pdf-alt'] }] };
+  assert.deepEqual(converterDefaults(d, one, { admin: true }), []);
+  const two = { types: [{ type: '.pdf', label: 'PDF', default: 'convert-pdf', converters: ['convert-pdf', 'pdf-alt'] }] };
+  assert.deepEqual(converterDefaults(d, two, { admin: true }), [{ type: '.pdf', label: 'PDF', isDefault: false, canSet: true }]);
+  assert.deepEqual(converterDefaults(d, two, { admin: false }), [{ type: '.pdf', label: 'PDF', isDefault: false, canSet: false }]);
+  assert.deepEqual(converterDefaults({ ...d, name: 'convert-pdf' }, two, { admin: true }), [{ type: '.pdf', label: 'PDF', isDefault: true, canSet: false }]);
+  assert.deepEqual(converterDefaults({ name: 'trace' }, two), []);
+  assert.equal(heroActions({ project_status: 'platform_installed', category: 'provider', converter: {} }, { hasProject: true }).hint, '');
 });
 
 test('节点包归进能力包：不单列分类，旧数据里的 node 分类也算能力包', () => {
@@ -295,7 +323,8 @@ test('mock PL-01 不带项目：新建向导的结果不变（名字、版本、
   assert.deepEqual(r.body.items.map(pick), F.packs().map(pick));
   assert.equal(r.body.recommendations, undefined);
   const all = await api('GET', '/api/v1/packs');
-  assert.equal(all.body.counts.provider, 9);
+  assert.equal(all.body.counts.provider, 12); // 9 个采集类（设计对照用）+ 3 个转换器（ADR-0073）
+  assert.equal(all.body.items.find((p) => p.name === 'convert-pdf').project_status, 'platform_installed');
   assert.deepEqual([all.body.counts.enabled, all.body.counts.updatable], [0, 0]);
   assert.ok(!all.body.items.some((p) => p.name === 'property-compliance'));
   assert.equal((await api('GET', '/api/v1/packs?category=bogus')).status, 400);
@@ -316,7 +345,9 @@ test('mock PL-01 带项目：状态按项目设置的能力表算，计数、推
   assert.equal(st['db-mysql'], 'platform_installed');
   assert.equal(r.body.items.find((p) => p.name === 'db-mysql').usage_note, 'erp-prod 在用');
   assert.equal(st['rea-binary'], 'platform_available');
-  assert.deepEqual(r.body.counts, { all: 25, capability: 9, industry: 4, system: 3, provider: 9, node: 0, exporter: 0, enabled: 9, updatable: 1 });
+  assert.equal(st['convert-pdf'], 'platform_installed');
+  assert.equal(r.body.items.find((p) => p.name === 'convert-pdf').usage_note, null);
+  assert.deepEqual(r.body.counts, { all: 28, capability: 9, industry: 4, system: 3, provider: 12, node: 0, exporter: 0, enabled: 9, updatable: 1 });
   assert.deepEqual(r.body.recommendations.map((x) => [x.pack.name, x.action]), [['migrate', 'enable'], ['diagram', 'upgrade']]);
   const inst = await api('GET', `/api/v1/packs?project_id=${P}&installed_only=true&q=走查`);
   assert.deepEqual(inst.body.items.map((p) => p.name), ['trace']);

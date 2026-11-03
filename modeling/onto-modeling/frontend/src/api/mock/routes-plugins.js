@@ -213,9 +213,9 @@ export function register(ctx) {
   const providerCheck = (name) => {
     const card = catalogCards(flags).find((c) => c.name === name);
     if (!card) return { error: err(404, 'pack_not_found', `包 ${name} 不存在`) };
-    if (card.category !== 'provider') return { error: err(400, 'invalid_argument', '只有证据源提供方装在平台上', { fields: { name: 'not_provider' } }) };
+    if (card.category !== 'provider') return { error: err(400, 'invalid_argument', '只有数据接入插件装在平台上', { fields: { name: 'not_provider' } }) };
     if (card.project_status === 'offline') return { error: err(409, 'pack_unavailable', '离线部署不可用', { reason: 'offline' }) };
-    if (db.plugins.installed.has(name)) return { error: err(409, 'pack_already_enabled', '平台已经装了这个提供方') };
+    if (db.plugins.installed.has(name)) return { error: err(409, 'pack_already_enabled', '平台已经装了这个数据接入插件') };
     return { card };
   };
   on('POST', '/packs/([^/]+)/install-requests', ({ m, body, user }) => {

@@ -98,8 +98,8 @@ export function segUploads(items, selectedId, max = 3) {
 
 // ---------- 清单摘要（kind、贡献、生效时机） ----------
 
-const KIND_LABEL = { capability: '能力包', knowledge: '行业包', node: '能力包', provider: '证据源提供方', exporter: '导出器' };
-const CATEGORY_LABEL = { capability: '能力包', industry: '行业包', system: '系统知识包', provider: '证据源提供方', node: '能力包', exporter: '导出器' };
+const KIND_LABEL = { capability: '能力包', knowledge: '行业包', node: '能力包', provider: '数据接入', exporter: '导出器' };
+const CATEGORY_LABEL = { capability: '能力包', industry: '行业包', system: '系统知识包', provider: '数据接入', node: '能力包', exporter: '导出器' };
 /** 「knowledge（行业包）」：清单带 category 时按它，否则按后端的缺省类别（knowledge → 行业包） */
 export function kindText(m) {
   if (!m?.kind) return '';
@@ -305,7 +305,7 @@ export function requestMeta(r, { nameOf = (x) => x, now = Date.now() } = {}) {
 export function approveHint(r) {
   if (r?.kind === 'source_registration') return '通过前先在数据源登记里写入凭据并测试连接；申请里不带密钥。';
   if (r?.kind === 'knowledge_nomination') return `通过后进入${r.payload?.industry_pack_label ? `「${r.payload.industry_pack_label}」` : '对应行业包'}下一个版本的待发布内容，原文已脱敏。`;
-  if (r?.kind === 'pack_install') return '通过后在插件中心把这个提供方安装到平台，装好后申请人就能启用。';
+  if (r?.kind === 'pack_install') return '通过后在插件中心把这个数据接入插件安装到平台，装好后申请人就能启用。';
   return '';
 }
 

@@ -167,7 +167,7 @@ export function metrics({ range = '24h', labels = '', p1 = false } = {}) {
         card('guard_denies', '守卫拒绝', n(23), '次', '', ''),
         card('check_failures', '检查失败', n(41), '次', '', ''),
         { ...card('merges', '合入', 0, '次', '', '变更集在 P2'), series: Array(12).fill(0), unavailable: true },
-        { ...card('collections', '证据采集', 0, '次', '', '证据源在 P3'), series: Array(12).fill(0) },
+        { ...card('collections', '证据采集', 0, '次', '', '业务系统的数据接入在 P3'), series: Array(12).fill(0) },
         card('reconnects', '热更新与重连', n(14), '次', '', ''),
       ],
     };

@@ -52,9 +52,9 @@ export const APPLIES_TO = { 'property-compliance': { pack: 'industry-property', 
 const PROVIDER_INFO = {
   file: ['文件资料', '读工作区资料区，产出段落、表格、单元格与术语记录；由 source_extract 改造。', 'first'],
   'db-mysql': ['数据库 · MySQL', '表、视图、字段、外键与推断关系、约束、数据画像、脱敏样本；三重只读。', 'first'],
-  'db-postgres': ['数据库 · PostgreSQL', '同 MySQL 提供方，支持 schema 级范围白名单。', 'first'],
-  'db-oracle': ['数据库 · Oracle', '同 MySQL 提供方，按用户（schema）划定读取范围。', 'first'],
-  'db-dm': ['数据库 · 达梦', '同 MySQL 提供方，适配达梦的系统表与只读会话。', 'first'],
+  'db-postgres': ['数据库 · PostgreSQL', '同 MySQL，支持 schema 级范围白名单。', 'first'],
+  'db-oracle': ['数据库 · Oracle', '同 MySQL，按用户（schema）划定读取范围。', 'first'],
+  'db-dm': ['数据库 · 达梦', '同 MySQL，适配达梦的系统表与只读会话。', 'first'],
   'code-repo': ['代码仓库', '只读 token 浅克隆并固定提交：实体类、service 方法、校验规则、状态机。', 'second'],
   'api-openapi': ['OpenAPI', '端点对应操作、schema 对应实体；只读文档，不调用接口。', 'second'],
   'rea-binary': ['REA 逆向', '旁路容器运行 REA，分析闭源客户端；登记数据源时必须附授权说明。', 'third'],
@@ -86,6 +86,20 @@ function providerCards() {
   });
 }
 
+// 数据接入里的转换器（ADR-0073）：随连接器网关交付，平台已安装，不按项目启用
+const CONVERTER_CARDS = [
+  ['convert-pdf', 'PDF 转换', '把文字版 PDF 转成带页码的文本，表格转成表格；扫描件暂不支持。', ['.pdf'], 'pdfplumber（MIT）、pdfminer.six（MIT）'],
+  ['convert-docx', 'Word 转换', '把 Word 文档转成文本，保留标题层级、列表和表格。', ['.docx'], 'python-docx（MIT）'],
+  ['convert-xlsx', 'Excel 转换', '把 Excel 的每个工作表转成一张表格；大表只转前 2000 行。', ['.xlsx', '.xlsm'], 'openpyxl（MIT）'],
+];
+function converterCards() {
+  return CONVERTER_CARDS.map(([name, label, description, types, license]) => ({
+    name, label, description, category: 'provider', version: '1.0.0', latest: '1.0.0', channel: 'stable', publisher: { kind: 'official', label: '平台' },
+    ui: null, batch: null, badges: [], meta: null, project_status: 'platform_installed', locked_version: null, usage_note: null, default_on: false,
+    converter: { types, default_for: types, license },
+  }));
+}
+
 /**
  * 整个目录（不带项目视角）。flags 见 routes-plugins.js 顶部：ind = 零售连锁 1.1.0 已发布到 stable。
  * packs() 的项保持原样，只补 meta、badges。
@@ -95,7 +109,7 @@ export function catalogCards(flags = new Set()) {
     ...p, meta: p.meta ?? META[p.name] ?? null, badges: [...new Set([...(p.badges || []), ...(BADGES[p.name] || [])])],
     ...(flags.has('ind') && p.name === 'industry-retail' ? { version: '1.1.0', latest: '1.1.0' } : null),
   }));
-  return [...base, ...TENANT_PACKS.map((p) => ({ ...p, badges: [...p.badges] })), ...providerCards()];
+  return [...base, ...TENANT_PACKS.map((p) => ({ ...p, badges: [...p.badges] })), ...converterCards(), ...providerCards()];
 }
 
 const INSTALLED = ['required', 'enabled', 'update', 'pending'];
@@ -107,6 +121,7 @@ export const isInstalledStatus = (s) => INSTALLED.includes(s);
  * @param o {project: bool, installed: Set（平台已装的提供方）, enabledNames: string[]（本项目生效中的包）}
  */
 export function projectStatusOf(card, pp, o) {
+  if (card.converter) return 'platform_installed';
   if (card.category === 'provider') {
     if (card.project_status === 'offline') return 'offline';
     return o.installed.has(card.name) ? 'platform_installed' : 'platform_available';
@@ -127,7 +142,7 @@ export function projectCard(card, pp, o) {
   const out = { ...card, project_status: status, locked_version: pp && pp.status !== 'disabled' ? pp.locked_version : null };
   if (status === 'update' && compareVersions(pp.latest_available, card.latest) > 0) out.latest = pp.latest_available;
   if (status === 'not_applicable') out.usage_note = `适用于${APPLIES_TO[card.name].label}项目`;
-  if (status === 'platform_installed') out.usage_note = providerUsage(card.name);
+  if (status === 'platform_installed' && !card.converter) out.usage_note = providerUsage(card.name);
   return out;
 }
 
@@ -411,7 +426,7 @@ export function detailOf(card, flags = new Set()) {
     files: d.files ?? 8,
     kernel: !!d.kernel,
     flow_insertions: d.flow_insertions || [],
-    flow_note: d.flow_note ?? (card.category === 'provider' ? '提供方不往流程里加步骤，证据由「系统取证」读取' : null),
+    flow_note: d.flow_note ?? (card.category === 'provider' && !card.converter ? '不往流程里加步骤，证据由「系统取证」读取' : null),
     contents: d.contents || (card.category === 'provider' ? PROVIDER_CONTENTS[kind] || [] : []),
     config: d.config || [],
     changelog,
