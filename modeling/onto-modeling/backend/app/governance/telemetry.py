@@ -57,6 +57,30 @@ def redact(text: str) -> str:
     return text
 
 
+# 外部服务地址（模型网关、对象存储等）：第三方库（httpx、openai、openjiuwen）的日志与内测引擎的原始错误里会带出来，
+# 整个地址换掉（部署的网关地址不进日志）；我们自己的日志不在这里处理
+_ENDPOINT = re.compile(r"(?i)\b(?:https?|wss?)://[^\s'\"<>]+")
+_ENDPOINT_LOGGERS = ("httpx", "httpcore", "openai", "anthropic", "openjiuwen")
+
+
+def redact_endpoints(text: str) -> str:
+    return _ENDPOINT.sub("<地址>", redact(text))
+
+
+class RedactingFilter(logging.Filter):
+    """挂在第三方日志器上：消息里的地址、密钥换掉（不经我们根日志器、自己写 stdout 的也管得到）。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 - 格式化不了的照原样放过
+            return True
+        clean = redact_endpoints(message)
+        if clean != message:
+            record.msg, record.args = clean, None
+        return True
+
+
 def redact_fields(fields: dict) -> dict:
     return {
         key: ("***" if _SECRET_KEYS.search(str(key)) and value not in (None, "") else redact(value)
@@ -84,7 +108,7 @@ class JsonFormatter(logging.Formatter):
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(record.created)) + f".{int(record.msecs):03d}Z",
             "level": _LEVELS.get(record.levelno, record.levelname),
             "event": getattr(record, "event", None) or record.name,
-            "message": redact(message),
+            "message": redact_endpoints(message) if record.name.split(".")[0] in _ENDPOINT_LOGGERS else redact(message),
             "logger": record.name,
             "fields": redact_fields(fields),
         }

@@ -30,6 +30,7 @@ import asyncio
 import hashlib
 import importlib.util
 import json
+import logging
 import time
 import uuid
 from collections import deque
@@ -38,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from ... import config
+from ...governance.telemetry import redact_endpoints
 from ..session_host import injection
 from .base import FRIENDLY_ERROR, EngineContext, ObservableEngine, config_error_for, safe_json
 from .jiuwen_progress import JiuwenProgressTracker, build_progress_rail, progress_scope
@@ -159,7 +161,7 @@ async def _ensure_runner_started(log_error: Callable[[str, str], None]) -> None:
             await Runner.start()
         except Exception as exc:
             # 持久化存档装配失败（如缺 aiosqlite）：退回内存版，续接降级为历史回放，不阻断会话
-            log_error("checkpoint", f"持久化存档不可用，已退回内存存档：{exc}")
+            log_error("checkpoint", redact_endpoints(f"持久化存档不可用，已退回内存存档：{exc}"))
             set_runner_config(
                 get_runner_config().model_copy(update={"checkpointer_config": None})
             )
@@ -627,6 +629,33 @@ def _history_to_messages(events: list[dict], char_budget: int = _REPLAY_CHAR_BUD
     ]
 
 
+# openjiuwen 自己的日志器（LogManager.get_logger 的类型名）：不经根日志器、自己写 stdout，
+# 有的以 INFO 打出 api_base（ImageModalityProbe）。挂脱敏过滤器，不改包本身
+_OPENJIUWEN_LOGGERS = (
+    "common", "interface", "prompt_builder", "performance", "agent", "agent_builder", "auto_research", "candidates",
+    "context_engine", "controller", "execution", "graph", "harness_providers", "llm", "mcp", "memory", "multi_agent",
+    "operator", "probe", "prompt", "provision", "puct", "restore", "retrieval", "runner", "script", "server",
+    "session", "store", "sys_operation", "team", "tool", "workflow",
+)
+
+
+def install_log_redaction() -> None:
+    """给 openjiuwen 的日志器挂上地址、密钥脱敏（重复调用不重复挂）；进程内与 worker 子进程都调。"""
+    from ...governance.telemetry import RedactingFilter
+
+    names = set(_OPENJIUWEN_LOGGERS)
+    try:
+        from openjiuwen.core.common.logging.manager import LogManager
+
+        names |= set(getattr(LogManager, "_loggers", {}) or {})
+    except Exception:  # noqa: BLE001 - 取不到运行时登记的就按上面的名单
+        pass
+    for name in names:
+        target = logging.getLogger(name)
+        if not any(isinstance(item, RedactingFilter) for item in target.filters):
+            target.addFilter(RedactingFilter())
+
+
 class JiuwenEngine(ObservableEngine):
     """openjiuwen DeepAgent 引擎实现（AgentEngine 协议）。"""
 
@@ -634,6 +663,7 @@ class JiuwenEngine(ObservableEngine):
     UNAVAILABLE_MESSAGE = UNAVAILABLE_MESSAGE
 
     def __init__(self, ctx: EngineContext):
+        install_log_redaction()
         self._ctx = ctx
         self.client: Any = None  # DeepAgent 实例（协议观察点：None = 未连接）
         self.resume_attempted = False
@@ -845,7 +875,7 @@ class JiuwenEngine(ObservableEngine):
         try:
             context = await asyncio.to_thread(self._injector.context_for, text)
         except Exception as exc:
-            self._ctx.log_error("injection", str(exc))
+            self._ctx.log_error("injection", redact_endpoints(str(exc)))
             return expanded
         return injection.compose_query(expanded, context)
 
@@ -1084,7 +1114,7 @@ class JiuwenEngine(ObservableEngine):
             await self._progress_tracker.finish_all("failed")
             if self._closed:
                 return
-            self._ctx.log_error("session", str(exc))
+            self._ctx.log_error("session", redact_endpoints(str(exc)))
             friendly = (
                 config_error_for(self._ctx.model_owner)
                 if any(
