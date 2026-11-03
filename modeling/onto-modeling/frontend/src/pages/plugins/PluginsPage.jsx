@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { errorText } from '../../api/errors.js';
+import { can } from '../../state/roles.js';
 import { PageHead, ShellG } from '../../shell/Shell.jsx';
 import {
   Button, Empty, Inp, Note, Select,
@@ -14,7 +15,7 @@ import { catOf, sectionsOf, visibleCatalog } from './catalogModel.js';
 import { PluginsNav, useEvidenceOn, usePluginProject } from './parts.jsx';
 
 export default function PluginsPage({ route }) {
-  const { api } = useApp();
+  const { api, user } = useApp();
   const { projectId, setProjectId, projects, ready } = usePluginProject(route);
   const cat = catOf(route.query);
   // ?pack= 来自助手推荐卡：搜索框先填上这个包
@@ -60,7 +61,11 @@ export default function PluginsPage({ route }) {
 
   return (
     <ShellG active="plugins" side={<PluginsNav active={cat} counts={data?.counts || {}} onCat={pickCat} projectId={projectId} />}>
-      <PageHead title="插件中心" />
+      {/* 装入平台（上传离线包、过检查、发布）只有管理员能做（F2 第 4 条：原来只在左栏底部「管理员」分组里） */}
+      <PageHead
+        title="插件中心"
+        actions={can(user, 'admin') ? <Button kind="primary" icon="upload" onClick={() => navigate(pagePath('plugin-upload'))}>安装插件</Button> : null}
+      />
       <div className="pl-bar">
         <Inp w={300} icon="search" placeholder="搜索插件名称、ID 或用途…" value={q} onChange={(e) => setQ(e.target.value)} />
         <span className="sp" />
