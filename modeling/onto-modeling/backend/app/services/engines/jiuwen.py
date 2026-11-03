@@ -340,6 +340,12 @@ class _ChunkBridge:
         if ctype == "context.compression_state":
             return self._compaction_events(payload), None
 
+        if ctype == "answer" and isinstance(payload, dict) and payload.get("stop_reason") == TRUNCATED_STOP_REASON:
+            # 主 agent 截断兜底结束（见 _truncation_rail）：answer 平时不展示，这里要让用户知道这一步没产出；
+            # 截断前流出的残片（如只有一个字）不留
+            self._text[:] = [TRUNCATION_USER_TEXT]
+            return self._flush_blocks(), None
+
         # answer 是 llm_output 的汇总（避免重复）；其余运行时噪音一律忽略
         return [], None
 
@@ -481,6 +487,65 @@ def _call_usage_rail(on_call_usage: Callable[[int, int, int], None], on_activity
                 on_call_usage(input_tokens, output_tokens, cached)
 
     return CallUsageRail()
+
+
+# 输出被长度截断、又没调工具、正文几乎为空：思考把 max_tokens 用光了（内测引擎实测一次空等约 8 分钟，
+# 子代理只回一个字）。框架把这种回复当正常完成，这里先带提示续一次，连续两次就按失败结束
+_TRUNCATED_FINISH = frozenset({"length", "max_tokens"})
+_TRUNCATED_TEXT_MAX = 80
+_TRUNCATION_STATE = "_onto_truncation"
+TRUNCATED_STOP_REASON = "OutputTruncated"
+TRUNCATION_NUDGE = "上一次输出因长度截断、思考过长，请直接调用工具写结果，不要再长篇推理。"
+TRUNCATION_FAILURE = (
+    "连续两次模型输出都因长度截断（思考过长）而没有产出结果，已按失败结束。"
+    "请缩小这次任务的范围后重新派发，或直接完成。"
+)
+TRUNCATION_USER_TEXT = "这一步模型的输出被截断（思考过长），没有产出结果。可以发「继续」让助手接着做。"
+
+
+def is_truncated_empty(response: Any) -> bool:
+    finish = str(getattr(response, "finish_reason", "") or "").strip().lower()
+    if finish not in _TRUNCATED_FINISH or getattr(response, "tool_calls", None):
+        return False
+    content = getattr(response, "content", "")
+    text = content if isinstance(content, str) else str(content or "")
+    return len(text.strip()) < _TRUNCATED_TEXT_MAX
+
+
+def _truncation_rail():
+    """截断兜底 Rail。主 agent 与子代理共用一个实例（同 _call_usage_rail），计数放在每次调用
+    自己的 ctx.extra 里；只数连续的截断，中间有一次正常回复就清零。"""
+    from openjiuwen.core.foundation.llm import UserMessage
+    from openjiuwen.harness.rails.base import DeepAgentRail
+
+    class TruncationRail(DeepAgentRail):
+        async def before_model_call(self, ctx: Any) -> None:
+            state = ctx.extra.get(_TRUNCATION_STATE)
+            if not state or not state.get("nudge"):
+                return
+            state["nudge"] = False
+            # 截断的那条回复已经进了上下文，提示要排在它后面，只能等下一次调用前加
+            model_context = getattr(ctx.inputs, "model_context", None) or ctx.context
+            await model_context.add_messages(UserMessage(content=TRUNCATION_NUDGE))
+
+        async def after_model_call(self, ctx: Any) -> None:
+            if not is_truncated_empty(getattr(ctx.inputs, "response", None)):
+                ctx.extra.pop(_TRUNCATION_STATE, None)
+                return
+            state = ctx.extra.setdefault(_TRUNCATION_STATE, {"count": 0, "nudge": False})
+            state["count"] += 1
+            if state["count"] == 1:
+                logging.getLogger(__name__).warning("模型输出因长度截断且没有产出，带提示续一次")
+                state["nudge"] = True
+                ctx.request_model_continue()
+                return
+            logging.getLogger(__name__).warning("模型输出连续两次因长度截断且没有产出，按失败结束")
+            # 子代理：task_tool 见 result_type=error 抛错，主 agent 拿到的是失败的工具结果
+            ctx.request_force_finish(
+                {"output": TRUNCATION_FAILURE, "result_type": "error", "stop_reason": TRUNCATED_STOP_REASON}
+            )
+
+    return TruncationRail()
 
 
 def _req_get(request: Any, key: str, default: Any = None) -> Any:
@@ -815,6 +880,7 @@ class JiuwenEngine(ObservableEngine):
         subagent_root = shadow / "sub_agents"
         rails = [
             tracker,
+            _truncation_rail(),
             progress_rail,
             SysOperationRail(),
             AskUserRail(),
