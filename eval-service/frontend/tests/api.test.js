@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { api, allPages, requestId, REFRESH, TOKEN } from '../src/api.js';
+import { api, allPages, randomId, requestId, REFRESH, TOKEN } from '../src/api.js';
 function storage() {
   const values = new Map();
   return {
@@ -17,6 +17,20 @@ test('request IDs survive retry and are separated by subject', () => {
   assert.equal(first.id, requestId('run', 'synthetic-input').id);
   sessionStorage.setItem('evaluation-subject', 'synthetic-user-b');
   assert.notEqual(first.id, requestId('run', 'synthetic-input').id);
+});
+test('IDs are generated on plain HTTP pages, where crypto.randomUUID is missing', (t) => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  Object.defineProperty(globalThis, 'crypto', {
+    configurable: true,
+    value: { getRandomValues: (bytes) => original.get.call(globalThis).getRandomValues(bytes) },
+  });
+  t.after(() => Object.defineProperty(globalThis, 'crypto', original));
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  const first = randomId();
+  assert.match(first, uuid);
+  assert.notEqual(first, randomId());
+  globalThis.sessionStorage = storage();
+  assert.match(requestId('run', 'synthetic-input').id, uuid);
 });
 test('late result from previous login is rejected', async () => {
   globalThis.localStorage = storage();

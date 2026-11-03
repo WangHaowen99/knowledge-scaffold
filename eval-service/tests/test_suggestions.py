@@ -266,3 +266,15 @@ def test_progress_names_the_batch_being_waited_for_and_the_merge():
     generate(Gateway(), run_of(12), request_chars=8000, progress=seen.append)
     assert seen == [{'batch': 1, 'batches': 3}, {'batch': 2, 'batches': 3}, {'batch': 3, 'batches': 3},
                     {'batch': 3, 'batches': 3, 'merging': True}]
+
+
+def test_suggestions_markdown_has_no_html_line_breaks():
+    # The viewer renders markdown without raw HTML, so <br> would show as text.
+    value = {'summary': 'Synthetic summary<br>second line', 'notes': ['Synthetic note<BR/>more'], 'items': [{
+        'cases': [1], 'category': 'C', 'evidence': 'Synthetic evidence<br />detail', 'suggestion': 'Synthetic revision<br>step',
+        'targets': ['objects/order.md', 'objects/missing.md']}]}
+    text = suggestions.render(run_of(1), STEM, 1793500000, value, [1], {'objects/order.md'}, 'synthetic-model')
+    assert '<br' not in text.lower()
+    assert 'Synthetic summary second line' in text and '- Synthetic note more' in text
+    assert ('| 1 | 1 | C 数据映射 | Synthetic evidence detail | Synthetic revision step | '
+            '`ontology/object/order.md`、`ontology/object/missing.md`（新建） |') in text
