@@ -45,3 +45,13 @@
 .rs-case .chip.rs-go{cursor:pointer}
 .rs-case .chip.rs-go:hover{border-color:var(--b300);color:var(--blue2)}
 .evd-pmenu .auto{margin-left:6px;font-size:10px;color:var(--teal);font-weight:700}
+/* 文本版（ADR-0073）：Markdown 渲染，位置标记画成分隔条 */
+.rs-text h1,.rs-text h2,.rs-text h3,.rs-text h4{font-size:13.5px;color:var(--ink);margin:12px 0 4px}
+.rs-text p{margin:0 0 8px}
+.rs-text ul,.rs-text ol{margin:0 0 8px;padding-left:20px}
+.rs-text table{border-collapse:collapse;margin:4px 0 10px;font-size:12px}
+.rs-text th,.rs-text td{border:1px solid var(--line);padding:3px 8px;text-align:left;vertical-align:top}
+.rs-text th{background:var(--panel2);color:var(--ink)}
+.rs-loc{display:flex;align-items:center;gap:8px;margin:14px 0 8px;font-size:11px;color:var(--muted)}
+.rs-loc:first-child{margin-top:0}
+.rs-loc::after{content:"";flex:1;border-top:1px dashed var(--line)}

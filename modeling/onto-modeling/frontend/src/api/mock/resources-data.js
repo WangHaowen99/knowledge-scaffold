@@ -42,6 +42,27 @@ const previewOfKind = (kind) => ({ xls: 'xls', csv: 'csv', drawio: 'drawio', htm
 export const UPLOAD_EXTS = ['md', 'markdown', 'doc', 'docx', 'xls', 'xlsx', 'xlsm', 'csv', 'pdf', 'drawio', 'txt', 'html', 'htm'];
 export const UPLOAD_LIMIT = 20 * 1024 * 1024;
 
+// 文本版状态（契约 7.4 MaterialText，ADR-0073）：md、txt、csv 本身是文本；流程图没有；其余按转换器判
+export const CONVERTERS = [
+  { id: 'convert-pdf', label: 'PDF 转换', version: '1.0.0', types: ['.pdf'], license: 'pdfplumber（MIT）、pdfminer.six（MIT）', official: true },
+  { id: 'convert-docx', label: 'Word 转换', version: '1.0.0', types: ['.docx'], license: 'python-docx（MIT）', official: true },
+  { id: 'convert-xlsx', label: 'Excel 转换', version: '1.0.0', types: ['.xlsx', '.xlsm'], license: 'openpyxl（MIT）', official: true },
+];
+export function textState(name, kind, { scanned = false, state = null } = {}) {
+  const ext = `.${(String(name).split('.').pop() || '').toLowerCase()}`;
+  const base = { state: 'native', reason: null, note: null, converter: null, updated_at: null, has_text: true };
+  if (kind === 'drawio') return null;
+  if (kind === 'text' || kind === 'csv') return base;
+  const conv = CONVERTERS.find((c) => c.types.includes(ext));
+  const unsupported = (reason) => ({ ...base, state: 'unsupported', reason, has_text: false });
+  if (kind === 'image') return unsupported('图片暂不支持');
+  if (!conv) return unsupported(ext === '.doc' || ext === '.xls' ? '老版 Office 格式暂不支持' : '这种格式暂不支持');
+  if (scanned) return { ...unsupported('扫描件或图片型 PDF，暂不支持'), converter: { id: conv.id, label: conv.label, version: conv.version } };
+  const s = state || 'converted';
+  return { ...base, state: s, has_text: s === 'converted', converter: { id: conv.id, label: conv.label, version: conv.version },
+    reason: s === 'failed' ? '文件损坏，打不开' : null, updated_at: new Date().toISOString() };
+}
+
 let seq = 0;
 // 清单里的一份资料：Material 的字段，另带 mock 自用的 scanned、sections（读全时的范围说法）
 export function fileRecord(o) {
@@ -54,6 +75,7 @@ export function fileRecord(o) {
     is_revision: !!o.is_revision, revision_task: o.revision_task || null, is_template: !!o.is_template,
     referenced: o.referenced || 0, coverage: o.coverage === undefined ? { read_pct: 100, label: o.sections || '全文' } : o.coverage,
     preview: previewOfKind(kind), revision: `r-${seq.toString(16)}`,
+    text: o.text !== undefined ? o.text : textState(o.name, kind, { scanned: o.scanned, state: o.text_state }),
     scanned: !!o.scanned, sections: o.sections || null,
   };
 }
@@ -246,6 +268,26 @@ export function previewBlocks(path, around, f) {
     const start = b.text.indexOf(mark);
     return start >= 0 ? { ...b, highlights: [{ start, end: start + mark.length }] } : b;
   });
+}
+
+// ---------- 文本版（R-13）：PDF 每 3 段一页、带页码标记；Word 按标题和段落；Excel 每个工作表一张表 ----------
+export function textMarkdown(f) {
+  if (f.kind === 'xls') {
+    return tableOf(f).map((sh) => {
+      const rows = sh.rows || [];
+      const line = (r) => `| ${r.map((c) => String(c ?? '').replace(/\|/g, '\\|')).join(' | ')} |`;
+      const table = rows.length ? [line(rows[0]), `|${'---|'.repeat(rows[0].length)}`, ...rows.slice(1).map(line)].join('\n') : '（空表）';
+      return `<!-- 工作表：${sh.name} -->\n## ${sh.name}\n\n${table}`;
+    }).join('\n\n');
+  }
+  const blocks = previewBlocks(f.path, null, { ...f, scanned: false, preview: 'doc' });
+  const md = (b) => (b.kind === 'heading' ? `${'#'.repeat(Math.min(b.level || 2, 4))} ${b.text}` : b.text);
+  if (f.kind === 'pdf') {
+    const pages = [];
+    for (let i = 0; i < blocks.length; i += 3) pages.push(blocks.slice(i, i + 3));
+    return pages.map((pg, i) => `<!-- 第 ${i + 1} 页 -->\n${pg.map(md).join('\n\n')}`).join('\n\n');
+  }
+  return blocks.map(md).join('\n\n');
 }
 
 // ---------- 表格（F-05） ----------

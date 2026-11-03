@@ -61,6 +61,41 @@ export function metaText(m, now = Date.now()) {
   return parts.join(' · ');
 }
 
+// ---------- 文本版（ADR-0073，契约 7.4 MaterialText） ----------
+// 列表行上的状态标：只标还没转好或转不了的；转好了、本身就是文本的不标
+const TEXT_CHIPS = {
+  converting: ['转换中', 'blue', 'refresh'],
+  waiting: ['等待转换', 'gray', 'clock'],
+  unsupported: ['暂不支持', 'gray', 'ban'],
+  failed: ['转换失败', 'red', 'alert'],
+};
+export function textChip(m) {
+  const c = TEXT_CHIPS[m?.text?.state];
+  return c ? { text: c[0], tone: c[1], icon: c[2], title: m.text.reason || undefined } : null;
+}
+// 要转的文档（PDF、Word、Excel、图片等），不含本身就是文本的和流程图
+export const isConvertible = (m) => !!m?.text && m.text.state !== 'native';
+// 预览卡多一个「文本」页签：原文另有预览（Word 段落、Excel 表格）且有文本版或转换状态可看；PDF 的预览就是文本
+export const hasTextTab = (m) => isConvertible(m) && m.kind !== 'pdf' && m.kind !== 'image';
+
+/**
+ * 文本版按位置标记切段（<!-- 第 3 页 -->、<!-- 工作表：客户 -->），每段画一条分隔再画正文。
+ * 标记前没有内容时不出空段；没有标记时整篇一段。
+ */
+export function textSections(markdown) {
+  const out = [];
+  let cur = { label: null, lines: [] };
+  for (const line of String(markdown || '').split('\n')) {
+    const m = /^<!-- (?:第 (\d+) 页|工作表：(.+)) -->$/.exec(line.trim());
+    if (m) {
+      if (cur.label || cur.lines.join('').trim()) out.push(cur);
+      cur = { label: m[1] ? `第 ${m[1]} 页` : `工作表 ${m[2]}`, lines: [] };
+    } else cur.lines.push(line);
+  }
+  if (cur.label || cur.lines.join('').trim()) out.push(cur);
+  return out.map((s) => ({ label: s.label, body: s.lines.join('\n').trim() }));
+}
+
 // 用途按钮上的文字；「自动识别」只在上传时自动判出来、用户没改过时显示（「由助手判断」本身不标）
 export function purposeView(m, purposes = PURPOSE_FALLBACK) {
   const p = purposes.find((x) => x.value === m.purpose) || PURPOSE_FALLBACK.find((x) => x.value === m.purpose);

@@ -8,7 +8,7 @@ import { DRAWIO, RES_PATHS } from '../src/api/mock/resources-data.js';
 import {
   blockBody, blockLabel, cellPos, checkUpload, columnLetter, coverageChip, csvText, drawioLayout, feedbackView, fmtSize, metaText,
   parseDrawio, parseFileAnchor, parseFragment, pickDefault, purposeView, refCount, refRows, refSentence, refTarget, replaceName,
-  revisionBanner, routeTarget, scaleText, sheetView, shortTime, splitHighlights,
+  revisionBanner, routeTarget, scaleText, sheetView, shortTime, splitHighlights, textChip, textSections, hasTextTab,
 } from '../src/pages/resources/resourcesModel.js';
 
 const R02 = 'resource/others/02-门店补货规则.docx';
@@ -341,4 +341,51 @@ test('md / txt 资料（R-01 preview=text）按文档预览：R-06 的块、锚�
   assert.equal(isDocPreview({ preview: 'doc' }), true);
   assert.equal(isDocPreview({ preview: 'xls' }), false);
   assert.equal(isDocPreview(null), false);
+});
+
+// ---------- 文本版（ADR-0073） ----------
+
+test('文本版：列表行只标没转好或转不了的；PDF 的预览就是文本，Word、Excel 多一个「文本」页签', () => {
+  assert.equal(textChip({ text: { state: 'converted' } }), null);
+  assert.equal(textChip({ text: { state: 'native' } }), null);
+  assert.equal(textChip({ text: null }), null);
+  assert.deepEqual(textChip({ text: { state: 'waiting' } }), { text: '等待转换', tone: 'gray', icon: 'clock', title: undefined });
+  assert.deepEqual(textChip({ text: { state: 'failed', reason: '转换超时' } }), { text: '转换失败', tone: 'red', icon: 'alert', title: '转换超时' });
+  assert.equal(textChip({ text: { state: 'unsupported' } }).text, '暂不支持');
+  assert.equal(textChip({ text: { state: 'converting' } }).text, '转换中');
+  assert.equal(hasTextTab({ kind: 'doc', text: { state: 'converted' } }), true);
+  assert.equal(hasTextTab({ kind: 'xls', text: { state: 'failed' } }), true);
+  assert.equal(hasTextTab({ kind: 'pdf', text: { state: 'converted' } }), false);
+  assert.equal(hasTextTab({ kind: 'text', text: { state: 'native' } }), false);
+  assert.equal(hasTextTab({ kind: 'drawio', text: null }), false);
+});
+
+test('文本版按位置标记切段：页码、工作表各成一段，标记前的空白不出空段', () => {
+  const md = '<!-- 第 1 页 -->\n甲\n\n<!-- 第 2 页 -->\n乙\n';
+  assert.deepEqual(textSections(md), [{ label: '第 1 页', body: '甲' }, { label: '第 2 页', body: '乙' }]);
+  assert.deepEqual(textSections('<!-- 工作表：客户 -->\n## 客户\n\n| a |\n|---|'), [{ label: '工作表 客户', body: '## 客户\n\n| a |\n|---|' }]);
+  assert.deepEqual(textSections('# 标题\n\n正文'), [{ label: null, body: '# 标题\n\n正文' }]);
+  assert.deepEqual(textSections(''), []);
+});
+
+test('mock R-02 → 后台转换 → EP-25；R-13 查看文本；R-14 重新转换；扫描件暂不支持', async () => {
+  const s = fakeServer();
+  const r = s.call('GET', '/resources');
+  const scan = all(r).find((x) => x.name === '07-门店C特殊需求.pdf');
+  assert.equal(scan.text.state, 'unsupported');
+  assert.equal(scan.text.reason, '扫描件或图片型 PDF，暂不支持');
+  const word = all(r).find((x) => x.name === '09-修订通知.docx');
+  assert.equal(word.text.state, 'converted');
+  assert.equal(all(r).find((x) => x.kind === 'drawio').text, null);
+  const text = s.call('GET', '/resources/text', { query: `path=${encodeURIComponent(word.path)}` });
+  assert.equal(text.status, 200);
+  assert.ok(text.body.markdown.length > 0 && text.body.truncated === false);
+  const re = s.call('POST', '/resources/convert', { body: { path: word.path } });
+  assert.equal(re.status, 202);
+  assert.equal(re.body.material.text.state, 'converting');
+  const native = all(r).find((x) => x.text?.state === 'native');
+  assert.equal(s.call('POST', '/resources/convert', { body: { path: native.path } }).status, 409);
+  await new Promise((done) => setTimeout(done, 1300));
+  const pushed = s.events.filter((e) => e.type === 'materials.text.updated' && e.data.path === word.path);
+  assert.deepEqual(pushed.map((e) => e.data.text.state), ['converting', 'converted']);
 });

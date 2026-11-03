@@ -14,7 +14,7 @@ import { CommandRunBar, useCommandTasks, useProjectEvent } from '../plugin/parts
 import { FeedbackPreview, MaterialPreview, useFullscreen } from './ResourcePreview.jsx';
 import {
   GROUP_ICON, PURPOSE_FALLBACK, UPLOAD_ACCEPT, checkUpload, extOf, feedbackView, fileIcon, findMaterial, fmtSize, metaText,
-  pickDefault, purposeView, refSentence, replaceName, revisionBanner, routeTarget, targetKey,
+  pickDefault, purposeView, refSentence, replaceName, revisionBanner, routeTarget, targetKey, textChip,
 } from './resourcesModel.js';
 import '../../styles/evidence.css';
 import '../../styles/resources.css';
@@ -71,6 +71,7 @@ function PurposeMenu({ value, auto, purposes, onPick, onClose }) {
 function FileRow({ m, picked, purposes, menuOpen, onPick, onMenu, onPurpose, onReplace, onDelete, onRevision }) {
   const ic = fileIcon(m.kind);
   const p = purposeView(m, purposes);
+  const tc = textChip(m);
   const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
   return (
     <div className={cx('evd-f', picked && 'pick')} data-path={m.path} onClick={() => onPick(m)}>
@@ -79,6 +80,7 @@ function FileRow({ m, picked, purposes, menuOpen, onPick, onMenu, onPurpose, onR
         <div className="row g4">
           <span className="b ell" title={m.name}>{m.name}</span>
           {m.is_revision ? <Chip tone="amber" sm icon="refresh">修订资料</Chip> : null}
+          {tc ? <Chip tone={tc.tone} sm icon={tc.icon} title={tc.title} data-text-state={m.text.state}>{tc.text}</Chip> : null}
         </div>
         <div className="xs muted ell">
           {metaText(m)}
@@ -232,6 +234,14 @@ export default function ResourcesPage({ route }) {
   useProjectEvent(['workspace.changed', 'extensions.updated', 'materials.updated'], (d, env) => {
     if (env.type === 'workspace.changed' && (d.paths || []).length && !d.paths.some((x) => x.startsWith('resource/'))) return;
     load();
+  });
+  // 文本版状态（EP-25）：转换中、等待、失败这些不出提交，只改那一份的状态
+  useProjectEvent('materials.text.updated', (d) => {
+    if (!d?.path) return;
+    setData((cur) => (cur?.groups ? {
+      ...cur,
+      groups: cur.groups.map((g) => ({ ...g, items: (g.items || []).map((x) => (x.path === d.path ? { ...x, text: d.text } : x)) })),
+    } : cur));
   });
 
   // 别处跳来：按地址参数选中资料或反馈，并把那一行滚进视野

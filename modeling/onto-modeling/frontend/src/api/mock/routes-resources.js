@@ -4,8 +4,8 @@
 // 合成资料本身在 resources-data.js。
 // 地址参数：?mock=feedback:off（没启用反馈演进，没有外部反馈分组）、?mock=task:resources（一打开就有一个重读任务在跑）
 import {
-  DRAWIO, EMPTY_DRAWIO, HTML_REPORT, PURPOSES, PURPOSE_VALUES, UPLOAD_EXTS, UPLOAD_LIMIT,
-  anchorCount, feedbackSeed, fileRecord, groupOf, kindOf, materialView, referencesOf, tableOf, webCommit,
+  CONVERTERS, DRAWIO, EMPTY_DRAWIO, HTML_REPORT, PURPOSES, PURPOSE_VALUES, UPLOAD_EXTS, UPLOAD_LIMIT,
+  anchorCount, feedbackSeed, fileRecord, groupOf, kindOf, materialView, referencesOf, tableOf, textMarkdown, textState, webCommit,
 } from './resources-data.js';
 
 const ORIGIN = { page: 'resources', label: '资料区' };
@@ -108,8 +108,9 @@ export function register(ctx) {
     const purpose_auto = given ? false : existing ? existing.purpose_auto : purpose !== 'auto';
     const rec = fileRecord({
       path, name, kind, size, uploaded_at: nowIso(), purpose, purpose_auto, reading_mode: body.reading_mode || existing?.reading_mode,
-      is_template: existing?.is_template, coverage: null,
+      is_template: existing?.is_template, coverage: null, text_state: 'converting',
     });
+    convertLater(pid, path);
     if (existing) Object.assign(existing, rec, { referenced: existing.referenced }); else s.files.push(rec);
     const f = existing || rec;
     if (kind === 'drawio') db.files.set(path, { content: db.files.get(path)?.content || EMPTY_DRAWIO, revision: `r-${uid()}` });
@@ -121,6 +122,67 @@ export function register(ctx) {
       command_task = revisionTask(pid, f, body.batch_id);
     }
     return json(201, { material: view(s, f), replaced: !!existing, commit, version_label, detected: { purpose, tables: [] }, command_task });
+  });
+
+  // 文本版（ADR-0073）：上传、重新转换后在「后台」转，1.2 秒后经项目流推 materials.text.updated（EP-25）
+  function convertLater(pid, path) {
+    setTimeout(() => {
+      const f = state(pid).files.find((x) => x.path === path);
+      if (!f || f.text?.state !== 'converting') return;
+      f.text = textState(f.name, f.kind, { scanned: f.scanned, state: /坏|损坏/.test(f.name) ? 'failed' : 'converted' });
+      if (f.text?.converter) f.text.converter = converterOf(f.name) || f.text.converter;
+      emitProj(pid, 'materials.text.updated', { path, text: f.text });
+    }, 1200);
+  }
+  const converterOf = (name) => {
+    const ext = `.${(name.split('.').pop() || '').toLowerCase()}`;
+    const id = defaults[ext] || CONVERTERS.find((c) => c.types.includes(ext))?.id;
+    const c = CONVERTERS.find((x) => x.id === id);
+    return c ? { id: c.id, label: c.label, version: c.version } : null;
+  };
+
+  // R-13 查看文本
+  on('GET', '/projects/([^/]+)/resources/text', ({ m, query }) => {
+    const path = query.get('path') || '';
+    const f = state(m[1]).files.find((x) => x.path === path);
+    if (!f) return err(404, 'file_not_found', '资料不存在', { path });
+    if (!f.text) return err(409, 'not_convertible', '这份资料没有文本版', { path });
+    const markdown = f.text.state === 'converted' ? textMarkdown(f) : null;
+    return json(200, { path, text: f.text, markdown, truncated: false });
+  });
+
+  // R-14 重新转换（失败后的重试也是它）
+  on('POST', '/projects/([^/]+)/resources/convert', ({ m, body }) => {
+    const pid = m[1];
+    const s = state(pid);
+    const f = s.files.find((x) => x.path === body?.path);
+    if (!f) return err(404, 'file_not_found', '资料不存在', { path: body?.path });
+    if (!f.text || f.text.state === 'native' || !converterOf(f.name)) return err(409, 'not_convertible', '这份资料不能转成文本', { path: f.path });
+    f.text = { ...f.text, state: 'converting', reason: null };
+    emitProj(pid, 'materials.text.updated', { path: f.path, text: f.text });
+    convertLater(pid, f.path);
+    return json(202, { material: view(s, f) });
+  });
+
+  // PL-20 转换器与默认、PL-21 管理员设默认
+  const defaults = {};
+  const convertersView = () => {
+    const types = [...new Set(CONVERTERS.flatMap((c) => c.types))].sort();
+    const rows = types.map((t) => {
+      const ids = CONVERTERS.filter((c) => c.types.includes(t)).map((c) => c.id);
+      return { type: t, label: { '.pdf': 'PDF', '.docx': 'Word', '.xlsx': 'Excel', '.xlsm': 'Excel（启用宏）' }[t] || t, default: defaults[t] || ids[0], chosen_by_admin: !!defaults[t], converters: ids };
+    });
+    return {
+      gateway: { status: 'ok', detail: null },
+      items: CONVERTERS.map((c) => ({ ...c, loaded: true, default_for: rows.filter((r) => r.default === c.id).map((r) => r.type) })),
+      types: rows,
+    };
+  };
+  on('GET', '/converters', () => json(200, convertersView()));
+  on('PUT', '/admin/converters/defaults', ({ body }) => {
+    if (!CONVERTERS.some((c) => c.id === body?.converter && c.types.includes(body?.type))) return err(400, 'invalid_argument', '这种文件没有这个转换器', { fields: { converter: 'enum' } });
+    defaults[body.type] = body.converter;
+    return json(200, convertersView());
   });
 
   // R-04 删除资料：保存为新版本；引用它的出处变成「来源无法核验」

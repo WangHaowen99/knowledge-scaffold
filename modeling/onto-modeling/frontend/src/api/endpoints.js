@@ -77,6 +77,8 @@ export function createApi(client) {
     deleteResource: (id, path) => client.del(`${P(id)}/resources`, undefined, { query: { path } }), // R-04
     resourceReferences: (id, path) => client.get(`${P(id)}/resources/references`, { query: { path } }), // R-05
     resourcePreview: (id, path, around) => client.get(`${P(id)}/resources/preview`, { query: { path, around } }), // R-06
+    resourceText: (id, path) => client.get(`${P(id)}/resources/text`, { query: { path } }), // R-13
+    reconvertResource: (id, path) => client.post(`${P(id)}/resources/convert`, { path }), // R-14
     materialMap: (id) => client.get(`${P(id)}/materials/map`), // R-07
     materialCandidates: (id, query) => client.get(`${P(id)}/materials/candidates`, { query }), // R-08
     materialVerification: (id) => client.get(`${P(id)}/materials/verification`), // R-09
@@ -205,6 +207,8 @@ export function createApi(client) {
     publishPackUpload: (uploadId, body) => client.post(`/admin/packs/uploads/${enc(uploadId)}/publish`, body), // PL-17
     rejectPackUpload: (uploadId, body) => client.post(`/admin/packs/uploads/${enc(uploadId)}/reject`, body || {}), // PL-18
     installPack: (name, body) => client.post(`/admin/packs/${enc(name)}/install`, body || {}), // PL-19
+    converters: () => client.get('/converters'), // PL-20
+    setConverterDefault: (body) => client.put('/admin/converters/defaults', body), // PL-21
 
     // 3.17 插件产物
     artifactTypes: (id) => client.get(`${P(id)}/artifact-types`), // AR-01
@@ -230,7 +234,7 @@ export function createApi(client) {
 
     // 3.19 证据源
     evidenceSources: (query) => (client.features?.evidence === false
-      ? Promise.reject(new ApiError({ status: 501, code: 'evidence_not_available', message: '证据源本期未开放' }))
+      ? Promise.reject(new ApiError({ status: 501, code: 'evidence_not_available', message: '这一版没有开放业务系统的数据接入' }))
       : client.get('/evidence/sources', { query })), // EV-01
     registerEvidenceSource: (body) => client.post('/admin/evidence/sources', body), // EV-02
     requestEvidenceSource: (body) => client.post('/evidence/source-requests', body), // EV-03
