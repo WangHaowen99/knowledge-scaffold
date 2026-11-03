@@ -163,8 +163,9 @@ export function RoundChangesCard({ card, scope }) {
         <div className="wx-chg">
           {rows.map((r, i) => {
             // 「另有 N 处改动」那一行没有动词标签（change 为空）
-            const [cls, label] = r.change ? CHANGE_LABEL[r.change] || CHANGE_LABEL.mod : [];
-            return <div className="r" key={i}><span className={label ? cx('wx-v', cls) : undefined}>{label}</span><span><Inline text={r.text} /></span></div>;
+            if (!r.change) return <div className="r" key={i}><span className="muted">{r.text}</span></div>;
+            const [cls, label] = CHANGE_LABEL[r.change] || CHANGE_LABEL.mod;
+            return <div className="r" key={i}><span className={cx('wx-v', cls)}>{label}</span><span><Inline text={r.text} /></span></div>;
           })}
         </div>
         {(card.hints || []).map((h, i) => (
