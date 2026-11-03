@@ -1,6 +1,6 @@
 import { FullscreenExitOutlined, FullscreenOutlined } from '@ant-design/icons';
 import { Alert, Button, Segmented, Spin, Tooltip, message } from 'antd';
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import '@xyflow/react/dist/style.css';
 import { api } from '../../lib/api.js';
 import { setWorkspaceDirty } from '../../lib/workspaceDirty.js';
@@ -19,28 +19,39 @@ const RECOMMEND_FLOWCHART_COMMAND = '/ontology-flowchart 补充流程图';
 export default function FlowchartView({ project, path, drawioAvailable, onWorkspaceChanged, onCommand }) {
   const [mode, setMode] = useState('standard'); // standard | drawio
   const [state, setState] = useState({ loading: true });
+  const revisionRef = useRef('');
+  const loadGenerationRef = useRef(0);
+  const editorStateRef = useRef(null);
   // 标准编辑器全屏：铺满视口，Esc 退出（drawio 高级编辑自带全屏按钮）
   const [fullscreen, setFullscreen] = useState(false);
 
   const load = useCallback(() => {
-    setState({ loading: true });
+    const generation = ++loadGenerationRef.current;
+    editorStateRef.current = null;
     api
       .readFile(project.id, path)
       .then((data) => {
+        if (generation !== loadGenerationRef.current) return;
+        if (data.truncated) throw new Error('流程图超过读取大小限制，请下载文件后编辑');
         try {
           const doc = parseDrawioToDocument(data.content, path.split('/').pop());
+          revisionRef.current = data.revision;
           setState({ loading: false, doc, revision: data.revision });
         } catch {
           setState({ loading: false, fallback: true });
         }
       })
-      .catch((error) => setState({ loading: false, error: error.message }));
+      .catch((error) => {
+        if (generation === loadGenerationRef.current) setState({ loading: false, error: error.message });
+      });
   }, [project.id, path]);
 
   useEffect(() => {
     setMode('standard');
     setFullscreen(false);
+    setState({ loading: true });
     load();
+    return () => { loadGenerationRef.current += 1; };
   }, [load]);
 
   useEffect(() => () => setWorkspaceDirty('flowchart-editor', false), []);
@@ -54,16 +65,27 @@ export default function FlowchartView({ project, path, drawioAvailable, onWorksp
     return () => window.removeEventListener('keydown', onKey);
   }, [fullscreen]);
 
+  useEffect(() => {
+    const guard = (event) => {
+      if (!editorStateRef.current?.dirty) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', guard);
+    return () => window.removeEventListener('beforeunload', guard);
+  }, []);
+
   const save = useCallback(
     async (doc) => {
       const xml = serializeDocumentToDrawio(doc);
-      const saved = await api.writeFile(project.id, path, xml, state.revision || '');
+      const saved = await api.writeFile(project.id, path, xml, revisionRef.current);
+      revisionRef.current = saved.revision;
       setState((prev) => ({ ...prev, revision: saved.revision }));
       message.success('流程图已保存');
       onWorkspaceChanged?.();
       return { savedRevision: saved.revision };
     },
-    [project.id, path, state.revision, onWorkspaceChanged],
+    [project.id, path, onWorkspaceChanged],
   );
 
   if (state.loading) return <Spin style={{ margin: 48 }} />;
@@ -71,21 +93,30 @@ export default function FlowchartView({ project, path, drawioAvailable, onWorksp
 
   const useDrawio = mode === 'drawio' || state.fallback;
   const expanded = fullscreen && !useDrawio;
+  const switchEditor = (next) => {
+    if (next === mode && !state.fallback) return;
+    if (next === 'drawio' && (editorStateRef.current?.dirty || editorStateRef.current?.saveStatus === 'saving')
+      && !window.confirm('当前流程图有未保存修改。切换到原生 drawio 编辑器会丢弃这些修改，确定继续吗？')) return;
+    if (state.fallback && next === 'standard') {
+      message.info('该文件使用压缩存储，暂只支持 drawio 编辑器打开');
+      return;
+    }
+    setMode(next);
+    editorStateRef.current = null;
+    setWorkspaceDirty('flowchart-editor', false);
+    setFullscreen(false);
+    if (next === 'standard') {
+      setState({ loading: true });
+      load();
+    }
+  };
   return (
     <div className={`flowchart-host${expanded ? ' fullscreen' : ''}`}>
       <div className="flowchart-host-bar">
         <Segmented
           size="small"
           value={useDrawio ? 'drawio' : 'standard'}
-          onChange={(next) => {
-            if (state.fallback && next === 'standard') {
-              message.info('该文件使用压缩存储，暂只支持 drawio 编辑器打开');
-              return;
-            }
-            setMode(next);
-            setFullscreen(false);
-            if (next === 'standard') load(); // 从 drawio 切回时重读（可能已被保存）
-          }}
+          onChange={switchEditor}
           options={[
             { label: '标准编辑器', value: 'standard' },
             { label: 'drawio 高级编辑', value: 'drawio' },
@@ -119,16 +150,17 @@ export default function FlowchartView({ project, path, drawioAvailable, onWorksp
         </Suspense>
       ) : (
         <FlowchartEditor
-          key={`${path}:${state.revision}`}
+          key={path}
           document={state.doc}
           savedRevision={state.revision}
           onSave={save}
-          onStateChange={(next) =>
+          onStateChange={(nextState) => {
+            editorStateRef.current = nextState;
             setWorkspaceDirty(
               'flowchart-editor',
-              next.dirty || next.saveStatus === 'saving',
-            )
-          }
+              nextState.dirty || nextState.saveStatus === 'saving',
+            );
+          }}
           onRecommendDiagram={onCommand ? () => onCommand(RECOMMEND_FLOWCHART_COMMAND) : undefined}
         />
       )}
