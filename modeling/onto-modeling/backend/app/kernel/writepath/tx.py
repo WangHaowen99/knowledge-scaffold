@@ -256,14 +256,14 @@ def recover_intents(manager) -> dict:
             dropped += 1
             continue
         if data.get("rollback"):
-            # 整片写入（确认生效、撤回已合入的变更集）：没提交完就整片回到主线，不补提交半片（审查第 6 条）
+            # 整批写入（一轮的合入、撤回已合入的变更集）：没提交完就整批回到主线，不补提交半截（审查第 6 条）
             try:
                 with manager._project_lock(project_id):
                     _restore_from_head(root, data.get("paths") or [])
                 dropped += 1
             except Exception as exc:
                 failed.append(project_id)
-                _log.warning("回滚中断的整片写入失败（%s）：%s", project_id, exc)
+                _log.warning("回滚中断的整批写入失败（%s）：%s", project_id, exc)
                 continue
             path.unlink(missing_ok=True)
             continue
@@ -354,6 +354,8 @@ class TxResult:
     commit: str
     previous: str
     paths: list[str] = field(default_factory=list)
+    # hint_gates 时插件声明的提交门禁没过的问题（只提示，F3）
+    findings: list[dict] = field(default_factory=list)
 
 
 class ChangeTx:
@@ -364,15 +366,17 @@ class ChangeTx:
 
     def __init__(self, manager, project_id: str, origin: Origin, *, summary: str = "",
                  target: ChangeTarget | None = None, expected_head: str | None = None,
-                 rollback_on_crash: bool = False):
+                 rollback_on_crash: bool = False, hint_gates: bool = False):
         self.manager = manager
         self.project_id = project_id
         self.origin = origin
         self.summary = summary
         self._target = target
         self.expected_head = expected_head
-        # 整片写入（确认生效）：崩溃后启动恢复整片回滚，而不是把已落盘的部分补提交
+        # 整批写入（一轮的合入）：崩溃后启动恢复整批回滚，而不是把已落盘的部分补提交
         self.rollback_on_crash = rollback_on_crash
+        # 助手一轮的合入、自主构建按段合入：插件声明的提交门禁只提示，问题放进 TxResult.findings（F3）
+        self.hint_gates = hint_gates
         self.root: Path | None = None
         self.base_head = ""
         self.result: TxResult | None = None
@@ -530,14 +534,14 @@ class ChangeTx:
 
         self._derive()
         errors = _gate_errors(self.manager, self.project_id, self.root, list(self._paths), self.origin)
-        if errors:
+        if errors and not self.hint_gates:
             raise WorkspaceError(f"没有通过插件声明的门禁：{errors[0]['message']}", 422, "gate_failed",
                                  {"findings": errors[:50]})
         values = trailers(self.origin, self.root)
         with telemetry.span("commit", "commit", source=self.origin.source, target=self.target.kind,
                             paths=len(self._paths)):
             commit, previous, changed = self.target.commit(self._paths, message, values, self.expected_head)
-        self.result = TxResult(commit, previous, changed)
+        self.result = TxResult(commit, previous, changed, errors[:50] if self.hint_gates else [])
         if commit:
             telemetry.count("onto_commits_total", source=self.origin.source, target=self.target.kind)
             events.publish(events.WorkspaceChanged(

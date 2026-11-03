@@ -274,7 +274,7 @@ function DrawioPane({ m, full, onFull, onSaved }) {
   return (
     <>
       <div className="row mb8">
-        <Button size="sm" kind="soft" icon="edit" disabled={!doc || !!doc.error || locked} title={locked ? '在助手的写入范围里，确认生效或撤回后才能编辑' : undefined} onClick={() => { latest.current = draft; setEditing(true); }}>编辑</Button>
+        <Button size="sm" kind="soft" icon="edit" disabled={!doc || !!doc.error || locked} title={locked ? '在助手的写入范围里，这一轮结束后才能编辑' : undefined} onClick={() => { latest.current = draft; setEditing(true); }}>编辑</Button>
         <Button size="sm" icon="refresh" title="刷新预览" onClick={() => setTick((t) => t + 1)} />
         <Button size="sm" icon="download" title="下载原文件" onClick={download} />
         <Button size="sm" icon="maximize" title={full ? '退出全屏' : '全屏'} onClick={onFull} />

@@ -72,7 +72,9 @@ def test_deterministic_check_routes_to_review(env):
     checks = studio.deterministic_check(env, "ontology/object/订单.md", content)
     assert checks["errors"] == []
     assert any("自定义章节" in r for r in checks["review"])
-    assert any("不存在的对象" in r for r in checks["review"])
+    # F3：链接只提示
+    assert any("不存在的对象" in r for r in checks["hints"])
+    assert not any("不存在的对象" in r for r in checks["review"])
 
 
 def test_sections_serialize_roundtrip():

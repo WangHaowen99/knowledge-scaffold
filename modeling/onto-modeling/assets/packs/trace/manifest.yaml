@@ -15,8 +15,8 @@ badges: [recommended]
 kernel_api: ">=1.0 <2.0"
 page_api: ">=1.0 <2.0"
 engines: [claude, jiuwen]
-depends: {core: ">=0.3"}  # 0.3.0 起建模按切片（core.model），「场景」挂在切片里
-changelog: 场景挂进建模的每一片；全量回归串在校验之后，示例数据按场景生成。
+depends: {core: ">=0.3"}  # 0.3.0 起建模按段（core.model），「场景」挂在分段里
+changelog: 场景挂进建模的每一段；全量回归串在校验之后，示例数据按场景生成。
 contributes:
   commands: [ontology-mock, ontology-trace, ontology-trace-single, ontology-trace-batch, ontology-trace-interactive]
   agents: [trace-agent, mock-data-agent]

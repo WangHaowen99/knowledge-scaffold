@@ -109,11 +109,11 @@ export function DeleteTagModal({ tag, onClose, onDone }) {
   );
 }
 
-// 回退被挡住时（有未确认的修改、助手在跑、自主构建中）的去处
+// 回退被挡住时（合入冲突、助手在跑、自主构建中）的去处
 function BlockAction({ action, lock }) {
   const { pid } = useProject();
   const conv = lock?.conversation_id ? { c: lock.conversation_id } : undefined;
-  if (action === 'confirm') return <Button size="xs" kind="primary" icon="merge" onClick={() => navigate(pagePath('wb-l2', pid), conv)}>去确认</Button>;
+  if (action === 'confirm') return <Button size="xs" kind="primary" icon="merge" onClick={() => navigate(pagePath('inbox', pid))}>去处理</Button>;
   if (action === 'run') return <Button size="xs" onClick={() => navigate(pagePath('l4-run', pid))}>查看运行</Button>;
   return <Button size="xs" onClick={() => navigate(pagePath('wb-l2', pid), conv)}>回到对话</Button>;
 }

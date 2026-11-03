@@ -18,7 +18,7 @@ test('项目卡片时间：运行中、归档、几分钟前、几小时前、�
   assert.equal(activityText({ last_activity_at: new Date(2026, 9, 29, 15, 30).toISOString() }, NOW), '3 天前');
 });
 
-test('切片格子样式与卡片图标', () => {
+test('分段格子样式与卡片图标', () => {
   assert.deepEqual(['confirmed', 'pending', 'stale', 'not_ready', 'running', 'needs_review'].map(cellClass), ['ok', 'pending', 'stale', '', 'run', 'review']);
   assert.equal(projectLook({ archived: true, package_name: 'x' }).icon, 'archive');
   assert.deepEqual(projectLook({ package_name: 'a' }), projectLook({ package_name: 'a' }));

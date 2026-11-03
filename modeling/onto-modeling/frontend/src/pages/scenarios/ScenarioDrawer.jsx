@@ -107,8 +107,8 @@ export function ScenarioDrawer({ row, type, lock, tasks, onClose, onChanged }) {
           <ScopeLockBar
             lock={lock}
             text={{
-              running: ['助手正在改这个场景，确认生效或撤回前只读'],
-              pending: ['这个场景的修改还没确认：确认生效或撤回前只读'],
+              running: ['助手正在改这个场景，这一轮结束前只读'],
+              pending: ['这个场景和助手这一轮的修改有冲突：选好保留哪边前只读'],
             }}
           />
         ) : null}
@@ -116,7 +116,7 @@ export function ScenarioDrawer({ row, type, lock, tasks, onClose, onChanged }) {
           w="88px"
           pairs={[
             ['状态', <span key="s" data-pop={st === 'fail' ? failHint(row) : undefined}><St k={st} sm /></span>],
-            ['切片', enumLabel(type, 'slice', f.slice)],
+            ['分段', enumLabel(type, 'slice', f.slice)],
             ['推演的操作', f.operation ? <span key="o" className="wl" onClick={() => navigate(pagePath('studio-table', pid), { entry: f.operation.id })}>{f.operation.name}</span> : '—'],
             ['来源', f.source ? <Ev key="e" anchor={f.source} label={f.source_label} /> : '—'],
             ['输入', <Chip key="i" tone={inputTone} sm>{inputLabel}</Chip>],

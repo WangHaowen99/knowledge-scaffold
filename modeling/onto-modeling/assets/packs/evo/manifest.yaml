@@ -1,7 +1,7 @@
 # 反馈演进（详设 5.3、第 14 章第 3 项：留在 onto，输入改为外部反馈契约）。没有页面：
 # 反馈进资料区「外部反馈」分组，在对话里用 /ontology-evolution 处理。
 name: evo
-version: 0.3.2
+version: 0.3.3
 kind: capability
 category: capability
 label: 反馈演进
@@ -12,8 +12,8 @@ default_on: false
 batch: second
 kernel_api: ">=1.0 <2.0"
 engines: [claude, jiuwen]
-depends: {core: ">=0.3"}  # 0.3.0 起建模按切片（反馈演进挂在 core.model 后面）
-changelog: 跟随按切片建模的主流程。
+depends: {core: ">=0.3"}  # 0.3.0 起建模按段（反馈演进挂在 core.model 后面）
+changelog: 跟随分段建模的主流程；界面叫法「片」改成「段」。
 contributes:
   commands: [ontology-evolution]
   scripts: [check_eval_generalization.py]

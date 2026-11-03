@@ -113,9 +113,9 @@ def test_template_placeholders_are_not_unresolved_links(tmp_path: Path):
     templates = Path(config.ASSETS_DIR) / "workspace-toolkit" / "templates"
     for kind, folder in (("object", "object"), ("operation", "operation"), ("rule", "rule")):
         text = (templates / f"{kind}-template.md").read_text(encoding="utf-8")
-        review = studio_service.deterministic_check(tmp_path, f"ontology/{folder}/合成.md", text)["review"]
-        assert not any("指向不存在的文档" in item for item in review), (kind, review)
-    # 真的写错了的链接照样转复核
+        checks = studio_service.deterministic_check(tmp_path, f"ontology/{folder}/合成.md", text)
+        assert not any("指向不存在的文档" in item for item in checks["review"] + checks["hints"]), (kind, checks)
+    # 真的写错了的链接照样提示（F3：只提示，不转复核）
     text = (templates / "object-template.md").read_text(encoding="utf-8") + "\n见 [[不存在的对象]]\n"
-    review = studio_service.deterministic_check(tmp_path, "ontology/object/合成.md", text)["review"]
-    assert any("不存在的对象" in item for item in review)
+    hints = studio_service.deterministic_check(tmp_path, "ontology/object/合成.md", text)["hints"]
+    assert any("不存在的对象" in item for item in hints)

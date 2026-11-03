@@ -10,7 +10,7 @@ schema:
   version: "1"
   fields:
     - {name: title, type: text, label: 场景, required: true}
-    - {name: slice, type: text, label: 切片, required: false}
+    - {name: slice, type: text, label: 分段, required: false}
     - {name: operation, type: ref, label: 推演的操作, required: false}
     - {name: source, type: anchor, label: 来源, required: false}
     - {name: source_label, type: text, label: 来源名称, required: false}

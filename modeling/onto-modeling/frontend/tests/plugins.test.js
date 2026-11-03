@@ -20,7 +20,7 @@ const card = (o) => ({ name: 'x', label: 'X', category: 'capability', version: '
 // ---------- 筛选、分组、计数 ----------
 test('筛选：分类、已启用（含待生效）、可更新，搜索名称 / ID / 说明不分大小写', () => {
   const items = [
-    card({ name: 'trace', label: '场景走查', project_status: 'update', description: '每片多一步' }),
+    card({ name: 'trace', label: '场景走查', project_status: 'update', description: '每段多一步' }),
     card({ name: 'migrate', label: '迁移复用', project_status: 'available' }),
     card({ name: 'knowledge', label: '知识沉淀', project_status: 'pending' }),
     card({ name: 'industry-retail', label: '零售连锁', category: 'industry', project_status: 'enabled' }),
@@ -29,7 +29,7 @@ test('筛选：分类、已启用（含待生效）、可更新，搜索名称 /
   assert.deepEqual(items.filter((p) => matchCard(p, { cat: 'inst' })).map((p) => p.name), ['trace', 'knowledge', 'industry-retail']);
   assert.deepEqual(items.filter((p) => matchCard(p, { cat: 'upd' })).map((p) => p.name), ['trace']);
   assert.deepEqual(items.filter((p) => matchCard(p, { q: 'MYSQL' })).map((p) => p.name), ['db-mysql']);
-  assert.deepEqual(items.filter((p) => matchCard(p, { q: '每片' })).map((p) => p.name), ['trace']);
+  assert.deepEqual(items.filter((p) => matchCard(p, { q: '每段' })).map((p) => p.name), ['trace']);
   const secs = sectionsOf(items, { cat: 'all', q: '' });
   assert.deepEqual(secs.map((s) => [s.key, s.items.length]), [['capability', 3], ['industry', 1], ['provider', 1]]);
   assert.deepEqual(sectionsOf(items, { cat: 'industry', q: '走查' }), []);
@@ -157,7 +157,7 @@ test('会带来什么、界面、生效时机、影响、提示语', () => {
 // ---------- 详情 ----------
 test('主线图：插入点挂到对应的段，同一段竖排，图下那句话居中在插入点之间', () => {
   const L = flowLayout([
-    { id: 'trace.scenario', title: '每片多一步「场景」', at: 'model', note: '节点钩子' },
+    { id: 'trace.scenario', title: '每段多一步「场景」', at: 'model', note: '节点钩子' },
     { id: 'trace.trace', title: '全量回归', at: 'validate' },
   ]);
   assert.equal(L.width, 944);
@@ -239,7 +239,7 @@ test('英雄区：依赖、大小、日期；按钮与菜单随状态变', () =>
 
 test('统计卡：project_stats 为 null 时显示「—」；更新记录标记', () => {
   // 「加进流程」那格和主线图重复，只留两格
-  const s = statCards({ category: 'capability', project_status: 'enabled', flow_insertions: [{ short: '片内「场景」' }, { title: '全量回归' }], project_stats: null }, { hasProject: true });
+  const s = statCards({ category: 'capability', project_status: 'enabled', flow_insertions: [{ short: '段内「场景」' }, { title: '全量回归' }], project_stats: null }, { hasProject: true });
   assert.deepEqual(s.map((x) => [x.label, x.value]), [['在本项目产出', '—'], ['运行情况', '—']]);
   assert.equal(s[0].desc, '暂时没有统计');
   const withStats = statCards({ project_status: 'enabled', project_stats: { produced: { value: 23, unit: '个场景', note: 'n' }, metric: { label: '推演通过率', value: '83%', note: 'm' } } }, { hasProject: true });

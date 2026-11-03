@@ -4,7 +4,7 @@
 
 // 主线 5 段（详设 6.8；core 的 flow.yaml 定义）
 export const MAINLINE = [
-  ['research', '资料分析'], ['model', '建模（按切片）'], ['validate', '校验与走查'], ['consistency', '全局一致性'], ['publish', '发布'],
+  ['research', '资料分析'], ['model', '建模（按段）'], ['validate', '校验与走查'], ['consistency', '全局一致性'], ['publish', '发布'],
 ];
 const MAIN_IDS = MAINLINE.map(([id]) => id);
 
@@ -83,7 +83,7 @@ const GROUP_ICON = {
   参考对象: 'cube', 示例项目: 'folder', 表字典: 'table', 状态码: 'tag', 证据类型: 'db', 只读保障: 'shieldok', 凭据字段: 'key', 登记要求: 'filetext',
 };
 
-/** 可调设置一项的说法：字符串原样；{label, value} →「每片最多场景数 6」；清单原样给的 {id, default} 也认 */
+/** 可调设置一项的说法：字符串原样；{label, value} →「每段最多场景数 6」；清单原样给的 {id, default} 也认 */
 export function configText(item) {
   if (item == null) return '';
   if (typeof item !== 'object') return String(item);

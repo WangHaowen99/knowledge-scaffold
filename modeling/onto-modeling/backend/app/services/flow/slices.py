@@ -1,28 +1,28 @@
-"""按切片的节点状态（详设 6.6「按切片的状态」、6.8、4.3；方案 D13；契约 FL-01 `slices`、`slice_stages`、7.8）。
+"""按段的节点状态（详设 6.6「按段的状态」、6.8、4.3；方案 D13；契约 FL-01 `slices`、`slice_stages`、7.8）。
 
-建模节点（`per_slice: true`，现在是 `core.model`）在建模蓝图的每一片上各算一份状态。片里的步骤来自节点声明的
+建模节点（`per_slice: true`，现在是 `core.model`）在建模蓝图的每一段上各算一份状态。段里的步骤来自节点声明的
 `steps`（core 的对象、操作、规则、写入即查）加上包的钩子（场景走查的「场景」）。
 
-一片一步的状态：
+一段一步的状态：
 
 | 状态 | 怎么算 |
 |---|---|
-| running | 有没结束的执行记录，切片与步骤是这一片这一步 |
-| pending_confirm | 没确认的变更集里执行过这一片这一步，或改到了这一片这一步的条目 |
-| confirmed | 这一片这一步的条目在主线上都有了，或这一步的变更集确认生效过（记下了）；需复核（自主构建）显示 auto |
-| stale | 确认之后，这一步 `stale_on` 的上游（这一片的条目、资料分析）在主线上变了 |
-| skipped | 可选步骤（规则）被跳过，或按片模式下这一片没规划规则（资料里没有就跳过，不挡这一片确认） |
+| running | 有没结束的执行记录，分段与步骤是这一段这一步 |
+| pending_confirm | 没确认的变更集里执行过这一段这一步，或改到了这一段这一步的条目 |
+| confirmed | 这一段这一步的条目在主线上都有了，或这一步的变更集合入过（记下了）；需复核（自主构建）显示 auto |
+| stale | 确认之后，这一步 `stale_on` 的上游（这一段的条目、资料分析）在主线上变了 |
+| skipped | 可选步骤（规则）被跳过，或按段模式下这一段没规划规则（资料里没有就跳过，不挡这一段确认） |
 | ready / not_ready | 前面的必经步骤都做了就可开始 |
 
-「写入即查」不单独跑命令：确认生效时的门禁（ADR-0046）就是写入时的检查，前面的步骤都确认了它就确认；
-这一片还没确认的修改有新错误时是 draft。
+「写入即查」不单独跑命令：每轮合入时的检查（ADR-0046，F3 起只提示）就是写入时的检查，前面的步骤都确认了它就确认；
+这一段还没确认的修改有新错误时是 draft。
 
-条目归属：按片模式下取蓝图里这一片的对象、操作、规则（一轮结束时这一片新建的条目由后端记进这一片）；
-全量模式（没有蓝图或只有一片）是一片「全部」，条目就是整类目录。
+条目归属：按段模式下取蓝图里这一段的对象、操作、规则（一轮结束时这一段新建的条目由后端记进这一段）；
+全量模式（没有蓝图或只有一段）是一段「全部」，条目就是整类目录。
 
 依据存在节点状态同一份文件（`flow-state/<项目>.json`）的 `slices`、`slice_skips` 两项；第一次看到已经满足的
 步骤（存量项目）直接记基线，不算过期。0.2 的节点（对象提取、操作提取、规则与指标）上的已确认状态在第一次算时
-映射到全量模式那一片（`migrate_legacy`），进度不往回退。
+映射到全量模式那一段（`migrate_legacy`），进度不往回退。
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ class _Inputs:
     # ---- 条目 ----
 
     def _entity_paths(self, item: dict, kind: str) -> list[list[str]]:
-        """一片里某一类的条目，每个条目可能的路径（操作在新旧两个目录）。"""
+        """一段里某一类的条目，每个条目可能的路径（操作在新旧两个目录）。"""
         from ...kernel import metamodel
 
         model = metamodel.mm
@@ -120,7 +120,7 @@ class _Inputs:
         return any(self._entity_paths(item, kind) for kind in step.get("kinds") or [])
 
     def touches(self, item: dict, step: dict) -> bool:
-        """没确认的变更集改到了这一片这一步的条目。"""
+        """没确认的变更集改到了这一段这一步的条目。"""
         if not self.changed:
             return False
         kinds = list(step.get("kinds") or [])
@@ -129,7 +129,7 @@ class _Inputs:
         return any(rel in self.changed for kind in kinds for paths in self._entity_paths(item, kind) for rel in paths)
 
     def fingerprint(self, item: dict, step: dict) -> str:
-        """这一步上游（stale_on）在主线上的摘要：按片模式下对象、操作、规则只取这一片的条目。
+        """这一步上游（stale_on）在主线上的摘要：按段模式下对象、操作、规则只取这一段的条目。
 
         行按 ls-tree 的顺序取：全量模式下和节点的输入指纹（`state.fingerprint`）算法相同，0.2 的记录能接着用。"""
         kinds = [str(kind) for kind in step.get("stale_on") or []]
@@ -172,7 +172,7 @@ def _open_changeset(root: Path) -> dict | None:
 
 
 def migrate_legacy(stored: dict, flow: dict) -> bool:
-    """0.2 的对象提取、操作提取、规则与指标上的记录 → 建模节点与全量模式那一片（只做一次）。"""
+    """0.2 的对象提取、操作提取、规则与指标上的记录 → 建模节点与全量模式那一段（只做一次）。"""
     if stored.get("legacy_migrated") or "core.model" not in {node["id"] for node in flow.get("nodes") or []}:
         return False
     nodes = stored.setdefault("nodes", {})
@@ -199,7 +199,7 @@ def migrate_legacy(stored: dict, flow: dict) -> bool:
 
 
 def _step_state(inputs: _Inputs, item: dict, step: dict, stored: dict, cells: dict, now: float) -> tuple[str, bool]:
-    """一片一步的状态；返回 (状态, 依据有没有改)。"""
+    """一段一步的状态；返回 (状态, 依据有没有改)。"""
     slice_id = item["id"]
     records = stored.setdefault("slices", {}).setdefault(slice_id, {})
     if (slice_id, step["id"]) in inputs.running:
@@ -228,7 +228,7 @@ def _step_state(inputs: _Inputs, item: dict, step: dict, stored: dict, cells: di
 
 
 def _check_state(inputs: _Inputs, step_id: str, cells: dict) -> str:
-    """写入即查：这一片没确认的修改有新错误是 draft；排在它前面的必经步骤都确认了就确认。"""
+    """写入即查：这一段没确认的修改有新错误是 draft；排在它前面的必经步骤都确认了就确认。"""
     before = []
     for step in inputs.steps:
         if step["id"] == step_id:
@@ -277,7 +277,7 @@ def _summary(inputs: _Inputs, item: dict, cells: dict) -> dict:
 
 
 def _next_step(inputs: _Inputs, summaries: list[dict]) -> dict | None:
-    """主线下一步：按顺序第一片没做完的下一步（过期的先刷新；规则只在这一片规划了规则时推荐）。"""
+    """主线下一步：按顺序第一段没做完的下一步（过期的先刷新；规则只在这一段规划了规则时推荐）。"""
     if inputs.running:
         return None
     by_id = {item["id"]: item for item in inputs.slices}
@@ -294,13 +294,13 @@ def _next_step(inputs: _Inputs, summaries: list[dict]) -> dict | None:
             return {"slice_id": item["id"], "slice_name": item["name"], "step": step["id"],
                     "label": step.get("action") or step["label"], "command": step["command"], "sliced": inputs.sliced}
         if summary["_pending"]:
-            return None  # 这一片还有修改等你确认，先不推荐别的片
+            return None  # 这一段还有修改等你确认，先不推荐别的段
     return None
 
 
 def compute(root: Path, flow: dict, *, doc: dict | None, project_id: str | None = None,
             persist: bool = True) -> dict | None:
-    """建模节点按切片的状态：{node_id, stages, slices, state, progress, hit, slice_next, sliced}；没有按切片的节点时 None。"""
+    """建模节点按段的状态：{node_id, stages, slices, state, progress, hit, slice_next, sliced}；没有按段的节点时 None。"""
     node = per_slice_node(flow)
     if node is None or not node.get("steps"):
         return None
@@ -348,21 +348,21 @@ def compute(root: Path, flow: dict, *, doc: dict | None, project_id: str | None 
         "node_id": node["id"], "sliced": inputs.sliced, "stages": stage_defs(node),
         "slices": [{key: value for key, value in item.items() if not key.startswith("_")} for item in summaries],
         "state": state, "hit": bool(total) and done == total, "running_exec": bool(inputs.running),
-        "progress": {"done": done, "total": total, "label": f"{done}/{total} 片"},
+        "progress": {"done": done, "total": total, "label": f"{done}/{total} 段"},
         "slice_next": _next_step(inputs, summaries),
-        # 过期的那几片那几步与上游现在的指纹：待处理「过期」一项的来源指纹（又一次过期就重新出现）
+        # 过期的那几段那几步与上游现在的指纹：待处理「过期」一项的来源指纹（又一次过期就重新出现）
         "stale_key": hashlib.sha256(json.dumps(stale, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
         if stale else "",
     }
 
 
 # ---------------------------------------------------------------------------
-# 确认生效、跳过
+# 合入、跳过
 # ---------------------------------------------------------------------------
 
 
 def confirm(root: Path, flow: dict, pairs: list, *, doc: dict | None, needs_review: dict | None = None) -> None:
-    """变更集确认生效后：这一片这一步记为确认过（按主线现状记输入指纹）；自主构建合入的带需复核标记。"""
+    """变更集合入后：这一段这一步记为确认过（按主线现状记输入指纹）；自主构建合入的带需复核标记。"""
     node = per_slice_node(flow)
     if node is None or not pairs:
         return
@@ -386,7 +386,7 @@ def confirm(root: Path, flow: dict, pairs: list, *, doc: dict | None, needs_revi
 
 
 def forget(root: Path, slice_id: str, step_ids: list[str]) -> None:
-    """这一片这几步的确认记录作废（自主构建按片撤回之后）：按主线现状重算，条目没了就回到可开始。"""
+    """这一段这几步的确认记录作废（自主构建按段撤回之后）：按主线现状重算，条目没了就回到可开始。"""
     with node_state._lock:
         stored = node_state.load(root)
         records = (stored.get("slices") or {}).get(slice_id) or {}
@@ -396,12 +396,12 @@ def forget(root: Path, slice_id: str, step_ids: list[str]) -> None:
 
 
 def records_of(root: Path, slice_id: str) -> dict:
-    """这一片各步的确认记录（自主构建开始做这一片前记下，按片撤回时放回去）。"""
+    """这一段各步的确认记录（自主构建开始做这一段前记下，按段撤回时放回去）。"""
     return copy.deepcopy((node_state.load(root).get("slices") or {}).get(slice_id) or {})
 
 
 def put_back(root: Path, slice_id: str, step_ids: list[str], before: dict) -> None:
-    """这一片这几步的确认记录放回成 before 里的（按片撤回，审查 K）：原来过期的仍按原来的指纹算过期，
+    """这一段这几步的确认记录放回成 before 里的（按段撤回，审查 K）：原来过期的仍按原来的指纹算过期，
     原来没有的去掉（按主线现状重算）。"""
     with node_state._lock:
         stored = node_state.load(root)
@@ -433,8 +433,8 @@ def restore(root: Path, slice_id: str, step_id: str) -> bool:
 
 
 def slice_for_command(root: Path, flow: dict, step_id: str, explicit: str | None) -> dict | None:
-    """建模命令执行在哪一片 {id, name}：带了切片就是它（不存在或已排除时 None）；没带时取这一步还没做完的
-    第一片，都做完了取第一片没做完的；全量模式是「全部」。root 可以是助手副本（蓝图按副本里的读）。"""
+    """建模命令执行在哪一段 {id, name}：带了分段就是它（不存在或已排除时 None）；没带时取这一步还没做完的
+    第一段，都做完了取第一段没做完的；全量模式是「全部」。root 可以是助手副本（蓝图按副本里的读）。"""
     from ...kernel.changesets import worktree
     from . import blueprint
 

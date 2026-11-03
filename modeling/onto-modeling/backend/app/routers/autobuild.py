@@ -32,7 +32,7 @@ def _special_audit(request: Request, project_id: str, action: str, summary: str,
 
 
 def _policy_inputs(project_id: str) -> tuple[list[str], list[str]]:
-    """策略校验要的：切片编号、流程节点编号。"""
+    """策略校验要的：分段编号、流程节点编号。"""
     root = deps.workspaces.project_root(project_id)
     slice_ids = [row["id"] for row in plan.slice_rows(deps.workspaces, project_id)]
     return slice_ids, plan.node_ids(plan.flow(root))
@@ -181,13 +181,13 @@ async def pause_run(project_id: str, run_id: str, request: Request):
 
 @router.post("/runs/{run_id}/stop-at-safe-point")
 async def stop_run(project_id: str, run_id: str, request: Request):
-    """AB-07：做完这一片再停。"""
+    """AB-07：做完这一段再停。"""
     return await _control(project_id, run_id, request, "stop")
 
 
 @router.post("/runs/{run_id}/convert-to-l2")
 async def convert_run(project_id: str, run_id: str, request: Request):
-    """AB-08：这一片做完后转为陪伴；项目默认构建方式不变。"""
+    """AB-08：这一段做完后转为陪伴；项目默认构建方式不变。"""
     return await _control(project_id, run_id, request, "convert")
 
 
@@ -197,7 +197,7 @@ async def resume_run(project_id: str, run_id: str, request: Request):
     return await _control(project_id, run_id, request, "resume")
 
 
-# ---- AB-10～AB-17 台账、挂起、报告、按片撤回 ----
+# ---- AB-10～AB-17 台账、挂起、报告、按段撤回 ----
 
 
 def _refresh(project_id: str) -> None:
@@ -296,7 +296,7 @@ def get_report(project_id: str, run_id: str, request: Request):
 
 @router.post("/runs/{run_id}/slices/{slice_id}/revert")
 async def revert_slice(project_id: str, run_id: str, slice_id: str, request: Request):
-    """AB-17：反向提交，只动这一片。"""
+    """AB-17：反向提交，只动这一段。"""
     from ..services.agent_sessions import manager
     from ..services.autobuild import review
 

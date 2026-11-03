@@ -117,14 +117,14 @@ export function lockBarText(lock, lockedRows) {
   const slice = lock?.slice?.name ? `「${lock.slice.name}」` : '这部分内容';
   return {
     running: batch ? [`助手正在推演 ${n} 个场景，暂时只读`] : [`助手正在改${slice}，${n} 个场景暂时只读`],
-    pending: batch ? [`批量推演结果待确认，${n} 个场景暂时只读`, sum] : [`助手的修改待确认，${n} 个场景暂时只读`, sum],
+    pending: [`和助手这一轮的修改有冲突，${n} 个场景暂时只读`, sum],
   };
 }
 
 // 锁住的行上那把锁的悬浮说明
 export function rowLockPop(lock) {
   const st = lockState(lock);
-  if (st === 'pending_confirm') return '修改待确认，暂时只读';
+  if (st === 'pending_confirm') return '有冲突，暂时只读';
   if (st === 'autobuild_slice') return '自主构建在改，暂时只读';
   return '助手在改，暂时只读';
 }

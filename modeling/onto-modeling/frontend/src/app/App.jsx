@@ -63,7 +63,7 @@ const GLOBAL_PAGE_COMPONENTS = {
   me: routePage(() => import('../pages/me/MePage.jsx')),
   sys: routePage(() => import('../pages/sys/SysPage.jsx')),
 };
-// 工作台的几个阶段（资料分析、切片规划、陪伴、流程图弹窗、自主构建、增量更新）是同一个对话页，显示什么由对话和流程数据决定
+// 工作台的几个阶段（资料分析、分段规划、陪伴、流程图弹窗、自主构建、增量更新）是同一个对话页，显示什么由对话和流程数据决定
 const PROJECT_PAGES = {
   'wb-l2': WorkbenchPage,
   'wb-materials': WorkbenchPage,

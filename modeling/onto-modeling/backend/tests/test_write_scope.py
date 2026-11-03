@@ -191,7 +191,7 @@ def test_state_helper_records_the_running_nodes_scope(env):
     assert active["commands"]["extract-object"]["node"] == "core.model"
     assert active["commands"]["extract-object"]["allow"] == ["ontology/object/*", "ontology/operation/*", "ontology/rule/*",
                                                              "ontology/logic/*", "ontology/metric/*"]
-    assert "protect" not in active["commands"]["extract-object"]  # 全量模式不按片收窄
+    assert "protect" not in active["commands"]["extract-object"]  # 全量模式不按段收窄
     run("acquire", "overview", "start")  # 不属于任何节点的命令：守卫不收窄
     assert json.loads((copy / ".onto/run/active.json").read_text())["commands"]["overview"]["node"] is None
     run("release", "overview")

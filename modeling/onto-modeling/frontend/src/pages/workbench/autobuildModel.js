@@ -1,4 +1,4 @@
-// 自主构建（l4-run）的纯函数：运行状态分类、运行条文案与指标、流水线格子、按切片进展块的分段
+// 自主构建（l4-run）的纯函数：运行状态分类、运行条文案与指标、流水线格子、按段进展块的分段
 
 export const RUNNING_STATES = ['queued', 'running', 'pausing', 'stopping', 'converting'];
 export const ENDED_STATES = ['completed', 'stopped', 'converted', 'budget_exhausted', 'failed'];
@@ -68,7 +68,7 @@ export function stripMetrics(run) {
 }
 
 const ENDED_TEXT = {
-  completed: ['已完成', '全部切片完成'],
+  completed: ['已完成', '全部分段完成'],
   stopped: ['已停下', '在安全点停下'],
   converted: ['已转为陪伴', '剩下的逐个确认'],
   budget_exhausted: ['预算用完', '在安全点停下'],
@@ -84,8 +84,8 @@ export function stripTitle(run) {
     case 'queued': return { title: `排队中 · ${n}`, sub: '' };
     case 'running': return { title: `自主构建中 · ${n}`, sub: cur ? `当前：${cur}` : '' };
     case 'pausing': return { title: `正在暂停 · ${n}`, sub: '当前步骤做完后暂停' };
-    case 'stopping': return { title: `停在安全点 · ${n}`, sub: run.current ? `「${run.current.slice_name}」做完后停下` : '这一片做完后停下' };
-    case 'converting': return { title: `转为陪伴 · ${n}`, sub: run.current ? `「${run.current.slice_name}」做完后转为逐个确认` : '这一片做完后转为逐个确认' };
+    case 'stopping': return { title: `停在安全点 · ${n}`, sub: run.current ? `「${run.current.slice_name}」做完后停下` : '这一段做完后停下' };
+    case 'converting': return { title: `转为陪伴 · ${n}`, sub: run.current ? `「${run.current.slice_name}」做完后转为逐个确认` : '这一段做完后转为逐个确认' };
     case 'paused': return { title: `已暂停 · ${n}`, sub: cur ? `停在：${cur}` : '' };
     case 'interrupted': return { title: `${n} 中断了`, sub: '服务重启' };
     default: {
@@ -114,7 +114,7 @@ export function matrixTone(row) {
   return 'indigo';
 }
 
-// 按切片的进展块：把时间线拆成「连续的步骤 / 自动决定 / 挂起」几段，按原顺序渲染
+// 按段的进展块：把时间线拆成「连续的步骤 / 自动决定 / 挂起」几段，按原顺序渲染
 export function sliceSegments(timeline) {
   const out = [];
   (timeline || []).forEach((x, i) => {
@@ -152,7 +152,7 @@ export function reportMetrics(r) {
   const partial = m.slices?.partial?.length ? `${m.slices.partial.join('、')}部分完成` : '全部完成';
   return [
     ['用时', fmtDur(m.duration_ms), `预算 ${fmtDur(m.budget_duration_ms)}`],
-    ['切片', `${m.slices.done} / ${m.slices.total}`, partial],
+    ['分段', `${m.slices.done} / ${m.slices.total}`, partial],
     ['产出', `+${m.produced.objects} / +${m.produced.operations} / +${m.produced.rules}`, '对象 / 操作 / 规则'],
     ['检查', `${m.checks.errors} 错误`, `${m.checks.warnings} 个提醒`],
     ['场景推演', `${m.scenarios.passed} / ${m.scenarios.total}`, m.scenarios.suspended_failures ? `${m.scenarios.suspended_failures} 个未通过已挂起` : m.scenarios.total ? '全部通过' : ''],
@@ -170,10 +170,10 @@ export function reportSub(r) {
   return [span, rec].filter(Boolean).join(' · ');
 }
 
-export const REPORT_CHIP = { completed: ['全部切片完成', 'blue'], stopped: ['在安全点停下', 'amber'], converted: ['已转为陪伴', 'indigo'], budget_exhausted: ['预算用完', 'amber'], failed: ['出错停下', 'red'] };
+export const REPORT_CHIP = { completed: ['全部分段完成', 'blue'], stopped: ['在安全点停下', 'amber'], converted: ['已转为陪伴', 'indigo'], budget_exhausted: ['预算用完', 'amber'], failed: ['出错停下', 'red'] };
 
 // AB-04 开始自主构建失败的说法：有没确认的助手修改（changeset_in_progress）时说清是哪件事，其余按通用错误文案
 export function startErrorText(e, fallback) {
-  if (e?.code === 'changeset_in_progress') return '这一轮的修改还没确认生效或撤回';
+  if (e?.code === 'changeset_in_progress') return '助手这一轮还没结束';
   return fallback(e);
 }

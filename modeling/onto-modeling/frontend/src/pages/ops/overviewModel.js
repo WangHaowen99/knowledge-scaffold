@@ -245,7 +245,7 @@ export function runRow(r) {
     owner: r.project?.owner || null,
     elapsed: fmtDur(r.elapsed_ms),
     pct: p.pct ?? (p.total ? Math.round(((p.done || 0) / p.total) * 100) : 0),
-    slices: p.total ? `${p.done ?? 0} / ${p.total} 片` : DASH,
+    slices: p.total ? `${p.done ?? 0} / ${p.total} 段` : DASH,
     budgetPct: r.budget_used_pct ?? 0,
     budget: moneyPair(r.cost, r.budget),
     state: runStateView(r.state),

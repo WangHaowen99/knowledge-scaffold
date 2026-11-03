@@ -43,7 +43,7 @@ function Track({ flow, onOpen }) {
             {i ? <span className={cx('wx-ln', prevOk && 'ok')} /> : null}
             <span className={cx('wx-st', k)}>
               <span className="dt">{k === 'ok' ? <Icon name="check" /> : k === 'blocked' ? <Icon name="lock" /> : null}</span>
-              {n.title.replace('（按切片）', '')}
+              {n.title.replace('（按段）', '')}
               {n.progress?.label ? <span className="x">{n.progress.label}</span> : null}
             </span>
           </span>
@@ -53,7 +53,7 @@ function Track({ flow, onOpen }) {
   );
 }
 
-// 建模步骤抽屉：切片 × 步骤（P2 起有）、按 sections 分组的节点；节点动作的执行方式见 nodeActionKind
+// 建模步骤抽屉：分段 × 步骤（P2 起有）、按 sections 分组的节点；节点动作的执行方式见 nodeActionKind
 function StepsDrawer({ open, onClose, flow, cid }) {
   const { api } = useApp();
   const { pid, reloadFlow } = useProject();
@@ -136,8 +136,8 @@ function StepsDrawer({ open, onClose, flow, cid }) {
     <Drawer open={open} onClose={onClose} icon="branch" title="建模步骤" w={440}>
       {flow.slices.length ? (
         <>
-          <div className="sec-t"><Icon name="layers" size={14} />业务切片 {flow.slices.length}<span className="sp" /><Button size="xs" kind="ghost" icon="layers" onClick={adjustSlices}>调整切片</Button></div>
-          {/* 小进度条的列头：和每格对齐（同运行详情「切片流水线」的表头） */}
+          <div className="sec-t"><Icon name="layers" size={14} />业务分段 {flow.slices.length}<span className="sp" /><Button size="xs" kind="ghost" icon="layers" onClick={adjustSlices}>调整分段</Button></div>
+          {/* 小进度条的列头：和每格对齐（同运行详情「分段流水线」的表头） */}
           <div className="wb-sr wb-sr-h">
             <span className="ix" />
             <span className="grow" />
@@ -450,13 +450,15 @@ function Composer({ pid, cid, apiRef, st, buildMode, modeLabel, onMode, onSend, 
   );
 }
 
-const INLINE_ALL = ['waiting_decision', 'pending_confirm'];
+const INLINE_ALL = ['waiting_decision'];
 // 包声明的快捷项（PL-12 entries，kind=quick_action）放在「全部命令」旁，点了发它的命令（R22）
 function SuggestionBar({ sug, quick = [], onAction, onAll, onQuick }) {
   if (!sug && !quick.length) return null;
   const items = [];
-  if (sug?.primary) items.push({ ...sug.primary, isPrimary: true });
-  (sug?.secondary || []).slice(0, 2).forEach((s) => items.push(s));
+  // 升级前留在历史里的建议条可能还带「确认生效」（F3 起一轮结束就合入）：不画
+  const live = (s) => s && s.action?.type !== 'merge_changeset';
+  if (live(sug?.primary)) items.push({ ...sug.primary, isPrimary: true });
+  (sug?.secondary || []).filter(live).slice(0, 2).forEach((s) => items.push(s));
   const inline = !sug || INLINE_ALL.includes(sug.mode);
   const quickEls = quick.map((q) => <span key={q.id} className="s" onClick={() => onQuick(q)}><Icon name="zap" size={12} />{q.label}</span>);
   return (
@@ -581,16 +583,14 @@ export default function WorkbenchPage({ route }) {
     fail,
     answer: async (qid, body) => { try { await api.answerQuestion(pid, cid, qid, body); } catch (e) { fail(e); } },
     later: () => navigate(pagePath('inbox', pid)),
-    merge: async (cs) => {
+    // 撤回这一轮（CS-05）：回到上一个版本，另存一个版本；之后又改过同一条时服务端说明原因、不撤
+    discard: async (cs) => {
       try {
-        const r = await api.mergeChangeset(pid, cs);
-        toast(`已确认生效，保存为版本 ${r.version_label}`, 'merge');
-      } catch (e) {
-        fail(e);
-        if (e.code === 'merge_conflict') navigate(pagePath('inbox', pid));
-      }
+        const r = await api.discardChangeset(pid, cs);
+        toast(r?.version_label ? `已撤回这一轮 · 版本 ${r.version_label}` : '已撤回这一轮', 'undo');
+      } catch (e) { fail(e); }
     },
-    discard: async (cs) => { try { await api.discardChangeset(pid, cs); toast('已撤回这一轮', 'undo'); } catch (e) { fail(e); } },
+    resolve: () => navigate(pagePath('inbox', pid)),
     permission: async (rid, behavior) => { try { await api.replyPermission(pid, cid, rid, { behavior }); } catch (e) { fail(e); } },
     resume: async (execId) => { try { await api.resumeExec(pid, execId, cid); } catch (e) { fail(e); } },
     abandon: async (execId) => { try { await api.abandonExec(pid, execId); toast('已放弃', 'undo'); } catch (e) { fail(e); } },
@@ -619,7 +619,6 @@ export default function WorkbenchPage({ route }) {
           else await api.sendMessage(pid, cid, { text: a.text, client_message_id: `cm-${Date.now()}` });
           break;
         case 'resume_exec': await actions.resume(a.exec_id); break;
-        case 'merge_changeset': await actions.merge(a.changeset_id); break;
         case 'discard_changeset': await actions.discard(a.changeset_id); break;
         case 'show_changes': rounds.current.get(a.changeset_id)?.(); break;
         case 'start_node': await api.startNode(pid, a.node_id, { slice_id: a.slice_id, origin: { page: 'wb-l2', label: '下一步建议' } }); break;
@@ -671,7 +670,7 @@ export default function WorkbenchPage({ route }) {
     const f = withoutEvidence(flow, evidenceOn);
     return overlayRunning(f, commandNode(f, runningCmd));
   }, [flow, evidenceOn, runningCmd]);
-  // 自主构建正在做的那一片由运行条和运行详情说明，顶栏不再放锁标记
+  // 自主构建正在做的那一段由运行条和运行详情说明，顶栏不再放锁标记
   const lockInfo = scope && scope.state !== 'none' && !(ab.active && scope.state === 'autobuild_slice') ? readonlyInfo(scope) : null;
   // 运行中、排队时顶栏多了状态，「新资料」先收起，避免挤出顶栏；自主构建的状态在运行条上
   const busyHead = !ab.active && ['running', 'connecting', 'queued', 'error'].includes(state.session.state);
@@ -679,7 +678,7 @@ export default function WorkbenchPage({ route }) {
   const ctxPct = Math.round(ctx?.pct ?? 0);
   const notice = (flow?.notices || []).find((n) => n.kind === 'new_materials');
   const convTitle = list?.items?.find((c) => c.id === cid)?.title || '对话';
-  // 资料分析节点没确认：蓝图待确认时是切片规划，其余是读资料（含还没传资料）
+  // 资料分析节点没确认：蓝图待确认时是分段规划，其余是读资料（含还没传资料）
   const research = (flow?.nodes || []).find((n) => n.id === 'core.research');
   const researching = !research || ['confirmed', 'skipped'].includes(research.state) ? false : research.state === 'pending_confirm' ? 'blueprint' : 'materials';
   const st = composerState({ sessionState: state.session.state, archived: meta?.archived, maintenance, autobuildRunning: !!state.session.autobuild || ab.running, researching });

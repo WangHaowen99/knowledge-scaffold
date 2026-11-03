@@ -64,7 +64,7 @@
 
 ## 2026-11-01 · B2 · 项目级接口、发布与会话
 
-接口编号见 `api-v1.md`。没写的字段与契约一致；契约里依赖以后阶段能力的字段（切片、自主构建、变更集、写入范围锁、执行记录、命令任务、证据、包）给 null、0 或空列表。
+接口编号见 `api-v1.md`。没写的字段与契约一致；契约里依赖以后阶段能力的字段（分段、自主构建、变更集、写入范围锁、执行记录、命令任务、证据、包）给 null、0 或空列表。
 
 1. **ReleaseRecord 按第 7.14 节对齐**（B1 第 5 条的临时形状作废）：`{version, version_label, commit, tag, at, by, format, format_label, gates: {all_passed, degraded, unbound_objects}, manifest_attached, pulls: [{at, by_token, variant}], feedback_count, size, sha256}`，另带 `project_id`、`manifest_url`、`download_url`（三份契约的下游直接用）。没有留存包的旧标签 `manifest_attached=false`、`format`/`size`/`sha256` 为 null。PB-04 响应只有 `{items, next_cursor}`。
 2. **ReleaseManifest（PB-06）**：7.14 的字段之外保留 B1 的 `format`、`sha256`、`size`、`manifest`（manifest.yaml 全文）、`truncated`；`files[]` 只有 `{path, size}`（没有逐文件 sha256）；`packs`、`flow_hash`、`solver` 在插件运行时（P1）前为空。
@@ -96,7 +96,7 @@
 接口编号见 `api-v1.md`。没写的字段与契约一致；依赖 P2 以后能力的字段给 null、0 或空列表。
 
 1. **FL-01 `GET /flow`（P1 只读）**：
-   - 节点就是现有 10 个阶段加按需的「增量更新」（`core.research`、`core.flowchart`、`core.object`、`core.operation`、`core.rule_metric`、`core.validate`、`core.mock`、`core.trace`、`core.codegen`、`core.solver`、`core.update`）；按切片的建模节点、全局一致性、发布节点在 P2 按详设 6.8 重排。
+   - 节点就是现有 10 个阶段加按需的「增量更新」（`core.research`、`core.flowchart`、`core.object`、`core.operation`、`core.rule_metric`、`core.validate`、`core.mock`、`core.trace`、`core.codegen`、`core.solver`、`core.update`）；按段的建模节点、全局一致性、发布节点在 P2 按详设 6.8 重排。
    - `state` 只有 `confirmed`（完成判定满足）、`running`（有这个节点命令的执行锁）、`ready`、`not_ready`；`flags` 全 false，`progress` 为 null，`slices`、`slice_stages`、`notices` 为空。
    - 额外字段：`stage`（state_helper 的旧版阶段名）、`progress: {done, total}`（项目列表的 x/N 同一口径）、`commands: {命令名: 节点 ID}`（前端「运行中的命令属于哪个阶段」用，替代 `stageForCommand`）；节点多 `optional`、`panel`（入口在面板、不走对话）、`counts_in_progress`；`actions[]` 是 `{kind: "start", label, target: 命令文本, verify?}`；`sections[]` 是 `{id, title, nodes: 节点 ID[]}`。
    - `version` 是 `core@<锁定版本>`；没有装配目录的旧工作区是 `core@image`。
@@ -143,14 +143,14 @@
 ### 待处理与自主构建（F2-C）
 
 9. **`slice_progress.timeline` 里可以穿插 `{type: "auto_decision"|"suspension", card: <同名卡片结构>}`**，`decision_ids`、`suspension_ids` 保留。
-   - 原因：设计稿把自动决定和挂起按时间画在切片块里，只给 id 排不出顺序。
+   - 原因：设计稿把自动决定和挂起按时间画在分段块里，只给 id 排不出顺序。
 10. **`AutobuildRun`、`AutobuildReport` 加 `base_version_label`（运行前版本）**，报告的 `slices[]` 加 `reverted`。用于「回退到运行前 · v0.12」和已回退的行。
 11. **IN-02 的 `review` 详情加 `base_version_label`、`slice_version_label`。**
 12. **高置信合并项**：同一次运行里还没复核、置信度 ≥ 阈值的自动决定合成一项。
     - id 为 `review:<run_id>:high`，带 `high_confidence: true`；
     - `detail` 为 `{group: "high_confidence", run_id, threshold, entries: LedgerEntry[]}`；
     - 对它发 IN-03 `accept` 等价于 AB-13；单条改判走 AB-11 / AB-12。
-13. **`LedgerEntry` 加 `summary`**：切片简称加决定，一句话。
+13. **`LedgerEntry` 加 `summary`**：分段简称加决定，一句话。
 14. **IN-01 的 `autobuild_summary` 加 `high_confidence_pending`**，「一键接受高置信 N 项」用它。
 15. **`ConflictDetail.sides[]` 加可选的 `highlight`（原文里标黄的片段）和 `anchor_label`（「出处：…」）。**
 16. **IN-02 的 `feedback` 详情加 `items: [{question, expected, actual, loss_reason}]`。**
@@ -229,7 +229,7 @@
 
 ### F3-D 版本与发布
 
-19. `Version.run` 与 V-02 的 `run` 统一成 `{run_id, run_no, slice_id, slice_name}`。原因：7.6 只有 `slice_name`，V-02 只有 `slice_id`；「查看改动」要按切片 id 对上，界面要显示切片名。
+19. `Version.run` 与 V-02 的 `run` 统一成 `{run_id, run_no, slice_id, slice_name}`。原因：7.6 只有 `slice_name`，V-02 只有 `slice_id`；「查看改动」要按段 id 对上，界面要显示分段名。
 20. V-04：文件在某一侧不存在时那一侧给 `''`；WORKTREE 一侧文件不存在时 `right_revision` 为 null，前端据此把右侧设为只读。
 21. `BindingIssue.message` 放在状态标下面那行解释；状态标文字由前端按 `kind` 决定。
 

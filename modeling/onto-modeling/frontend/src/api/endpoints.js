@@ -209,7 +209,7 @@ export function createApi(client) {
     // 3.17 插件产物
     artifactTypes: (id) => client.get(`${P(id)}/artifact-types`), // AR-01
     artifacts: (id, type, query) => client.get(`${P(id)}/artifacts/${enc(type)}`, { query }), // AR-02
-    // AR-03；query.changeset：读这个变更集（助手副本）里的版本，确认生效前双击产物卡用
+    // AR-03；query.changeset：读这个变更集（助手副本）里的版本，这一轮还没合入时双击产物卡用
     artifact: (id, type, key, query) => client.get(`${P(id)}/artifacts/${enc(type)}/${enc(key)}`, query ? { query } : undefined), // AR-03
     artifactHistory: (id, type, key) => client.get(`${P(id)}/artifacts/${enc(type)}/${enc(key)}/history`), // AR-04
     saveArtifact: (id, type, key, body) => client.put(`${P(id)}/artifacts/${enc(type)}/${enc(key)}`, body), // AR-05

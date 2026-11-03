@@ -1,5 +1,5 @@
 // mock 数据 · 场景走查页（插件产物 trace.scenario、trace.mock，全部合成）：
-// 23 个场景（通过 19 / 失败 1 / 过期 3），示例数据 6 组。切片、操作、资料取自 scenario.js；
+// 23 个场景（通过 19 / 失败 1 / 过期 3），示例数据 6 组。分段、操作、资料取自 scenario.js；
 // 场景 3、4、6 的 key 与 Studio、增量更新里引用的一致（s-03、s-04、s-06），s-21 是工作台本轮卡里新增的场景。
 import { ANCHORS } from './fixtures.js';
 import { entryRef } from './scenario.js';
@@ -56,7 +56,7 @@ export const SC_RESOLUTIONS = [
   res(A.n63, '09-修订通知.docx', '§6.3', '新增 6.3：<mark>门店指定标准时以门店为准</mark>，临时加量另行审批。'),
 ];
 
-// s(key, 标题, 切片, 操作, 出处, 出处名, 输入类型, 上次推演, 结果, 输入, 预期, 另外的字段)
+// s(key, 标题, 分段, 操作, 出处, 出处名, 输入类型, 上次推演, 结果, 输入, 预期, 另外的字段)
 const s = (key, title, slice, op, anchor, label, input, run, result, inputText, expect, extra = {}) => ({
   key, title, slice, operation: entryRef(op), source: anchor, source_label: label, input_kind: input,
   last_run_at: run, result, input_text: inputText, expect_text: expect, ...extra,

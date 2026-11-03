@@ -7,8 +7,8 @@
   宿主注入、助手命令收尾的 `state_helper.py suggest` 三处同一份算法、同一份输入——后端每算一次就把节点状态
   与上下文写进助手副本的 `.onto/run/flow-state.json`，`state_helper suggest` 读它。
 
-建模节点按切片算（`slices.py`）：`slice_stages` 是片里的步骤，`slices` 是每片每步的状态；没有蓝图或只有一片时是
-全量模式，只有一片「全部」。建模蓝图草案等你确认时资料分析显示「待确认」、下一步主推「确认蓝图」。
+建模节点按段算（`slices.py`）：`slice_stages` 是段里的步骤，`slices` 是每段每步的状态；没有蓝图或只有一段时是
+全量模式，只有一段「全部」。建模蓝图草案等你确认时资料分析显示「待确认」、下一步主推「确认蓝图」。
 """
 
 from __future__ import annotations
@@ -174,7 +174,7 @@ def _blueprint(root: Path) -> tuple[dict | None, dict]:
 
 
 def _apply_slices(states: dict, sliced: dict | None) -> None:
-    """建模节点的状态按各片汇总：全部片确认才算确认，任何一片过期就是过期，其余显示进行中（详设 6.6）。"""
+    """建模节点的状态按各段汇总：全部段确认才算确认，任何一段过期就是过期，其余显示进行中（详设 6.6）。"""
     if not sliced or sliced["node_id"] not in states:
         return
     item = states[sliced["node_id"]]
@@ -186,13 +186,13 @@ def _apply_slices(states: dict, sliced: dict | None) -> None:
 
 
 def node_states(root: Path, flow: dict, hits: dict) -> tuple[dict, dict | None, dict | None, dict, set[str]]:
-    """节点状态（含建模节点按切片的汇总）：(states, 按切片的结果, 蓝图, 蓝图上下文, 熔断的节点)。FL-01 与待处理同一份。
+    """节点状态（含建模节点按段的汇总）：(states, 按段的结果, 蓝图, 蓝图上下文, 熔断的节点)。FL-01 与待处理同一份。
 
     熔断的节点（O-29）不再挡别的节点：按拿掉它们 `blocks` 的流程算；熔断、可补做的标记由调用方在算完之后补。"""
     doc, blueprint_context = _blueprint(root)
     sliced = slices.compute(root, flow, doc=doc)
     if sliced is not None and sliced["sliced"]:
-        hits[sliced["node_id"]] = sliced["hit"]  # 按片模式：全部片做完建模节点才算完成
+        hits[sliced["node_id"]] = sliced["hit"]  # 按段模式：全部段做完建模节点才算完成
     broken = overlay.broken_nodes(flow)
     states = node_state.compute(root, overlay.released(flow, broken), hits, sliced=bool(sliced and sliced["sliced"]))
     _apply_slices(states, sliced)
@@ -223,7 +223,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     script_runs = node_kinds.last_runs(root)
     research = states.get("core.research")
     if research and blueprint_context["state"] == "draft" and research["state"] in ("confirmed", "stale"):
-        # 资料分析含切片规划：蓝图草案没确认之前，这一步等你确认（详设 6.8）
+        # 资料分析含分段规划：蓝图草案没确认之前，这一步等你确认（详设 6.8）
         research["state"] = "pending_confirm"
         research["display_state"] = node_state.display("pending_confirm", research["flags"])
     nodes = []
@@ -300,14 +300,14 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
         "nodes": nodes,
         "edges": [edge for edge in flow.get("edges") or [] if not hidden & {edge.get("from"), edge.get("to")}],
         "sections": sections,
-        # 有没有建模蓝图：没有时建模步骤抽屉的「调整切片」改为发起切片规划（设计调整，gaps B4d 合并）
+        # 有没有建模蓝图：没有时建模步骤抽屉的「调整分段」改为发起分段规划（设计调整，gaps B4d 合并）
         "blueprint": {"state": blueprint_context["state"]},
         "slice_stages": (sliced or {}).get("stages") or [],
         "slices": (sliced or {}).get("slices") or [],
         "suggestions": suggestions,
         "notices": _notices(suggest_context) + _assembly_notice(root),
         "stage": stage,
-        # 进度：主线上满足完成判定的节点（已确认与过期都算做过）；助手副本里的改动要确认生效才算
+        # 进度：主线上满足完成判定的节点（已确认与过期都算做过）；助手副本里的改动要这一轮合入才算
         "progress": {
             "done": sum(1 for node in progress_nodes if hits.get(node["id"])),
             "total": len(progress_nodes),
@@ -383,9 +383,10 @@ def _actions(node: dict, state: str, hooks: list[dict] | None = None, *, bluepri
 
 def _notices(context: dict) -> list[dict]:
     changeset = context.get("changeset")
-    if changeset and changeset.get("state") in ("pending_confirm", "conflict"):
-        return [{"kind": "pending_changeset", "count": 1, "text": "这一轮的修改还没确认",
-                 "action": {"type": "show_changes", "changeset_id": changeset["id"]}}]
+    if changeset and changeset.get("state") == "conflict":
+        # 一轮结束就合入（F3）：只剩合入冲突要你处理
+        return [{"kind": "changeset_conflict", "count": 1, "text": "这一轮和你的修改有冲突",
+                 "action": {"type": "navigate", "page": "inbox"}}]
     return []
 
 
@@ -432,7 +433,7 @@ PUBLISH_NODE = "core.publish"
 
 def publish_gates(root: Path) -> list[dict]:
     """发布前的流程关卡（契约 PB-01 `gates` 里 `source.kind=flow` 的几道，7.14 GateResult）：`blocks` 指向发布节点
-    的节点；声明 `blocks_in: sliced` 的（全局一致性）只在按片建模时挡。没确认就挡住发布，动作是去做这一步。"""
+    的节点；声明 `blocks_in: sliced` 的（全局一致性）只在按段建模时挡。没确认就挡住发布，动作是去做这一步。"""
     root = Path(root)
     flow = model.load_for(root)
     declared = {node["id"]: node for node in flow.get("nodes") or []

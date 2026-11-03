@@ -36,7 +36,7 @@ def begin(manager, project_id: str, *, purpose: str, pack: str, kind: str, flow_
     if not (root / ".git").is_dir():
         return None
     if flow_changed and store.current(root) is not None:
-        raise PackError("write_scope_locked", "助手的修改还没确认生效或撤回，先处理完再改流程", 423,
+        raise PackError("write_scope_locked", "助手这一轮还没结束或有冲突没处理，先处理完再改流程", 423,
                         changesets.scope_lock(manager, project_id))
     from .. import mainline
 

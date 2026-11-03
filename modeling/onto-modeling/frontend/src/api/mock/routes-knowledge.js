@@ -1,7 +1,7 @@
 // mock · 3.8 知识（K-01～K-08）：知识沉淀页、对话里「沉淀为业务知识」（K-03、K-06 GET 两处共用，改时保持兼容）。
 // 演示参数：?mock=knowledge:empty 本项目还没有沉淀的条目（行业包条目照常加载）；
 // ?mock=task:knowledge 一打开就有一个「在对话里复核」的进行中任务；
-// ?mock=scope:running|pending 时，「超量与审批提示」这一片范围内的 2 条知识（lockScope）只读：编辑、删除返回 423。
+// ?mock=scope:running|pending 时，「超量与审批提示」这一段范围内的 2 条知识（lockScope）只读：编辑、删除返回 423。
 // 写入范围锁里的知识条目用 ArtifactRef 表示：{ type: 'core.knowledge', key: <知识条目 id> }。
 import { isLocked } from '../../state/readonly.js';
 import * as K from './knowledge-data.js';
@@ -54,7 +54,7 @@ export function register(ctx) {
   };
   const find = (st, id) => st.project.find((e) => e.id === id) || st.industry.find((e) => e.id === id);
   const lockedErr = (pid, id) => (isLocked(scopeOf(pid), { type: KNOWLEDGE_TYPE, key: id })
-    ? err(423, 'write_scope_locked', '这条知识在助手的写入范围里，确认生效或撤回前只读', scopeOf(pid)) : null);
+    ? err(423, 'write_scope_locked', '这条知识在助手的写入范围里，这一轮结束前只读', scopeOf(pid)) : null);
 
   // 保存一次 = 一个版本：项目版本号 +1，推 workspace.changed 和 knowledge.updated
   function commit(pid, ids, change) {

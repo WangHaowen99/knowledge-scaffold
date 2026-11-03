@@ -1,7 +1,7 @@
 """待处理（契约 3.13 IN-01～IN-04；详设 4.7）与变更点清单（契约 3.14 INC-01～INC-05）。
 
 处理事项（IN-03）一律转给等价接口：决策 → S-11（人工节点的卡走 S-11 同一个退路），续跑 / 放弃 → S-16 / S-17，
-确认生效 / 撤回 → CS-04 / CS-05，合入冲突 → CS-07，刷新 / 重做 → FL-05，报告 → 以校验命令调 S-20，
+合入冲突 → CS-07（选好保留哪边）或 CS-05（撤回这一轮），刷新 / 重做 → FL-05，报告 → 以校验命令调 S-20，
 外部反馈 → 以反馈演进命令调 S-20，变更清单 → INC-03 / INC-02 / INC-04。忽略只记在主线工作区的 `.onto/run/`（不进 git）。
 """
 
@@ -65,8 +65,6 @@ def _detail(project_id: str, item: dict) -> dict | None:
         return extra.get("question")
     if kind == "resumable":
         return extra.get("exec")
-    if kind == "pending_changeset":
-        return changesets.detail(deps.workspaces, project_id, extra["changeset"]["id"])
     if kind == "changeset_conflict":
         record = extra["changeset"]
         return {"changeset": changesets.view(record), "entities": (record.get("conflict") or {}).get("entities") or []}
@@ -168,8 +166,6 @@ async def _run_action(project_id: str, item: dict, action: str, request: Request
         return _json(response)
     if action == "abandon":
         return await session_routes.abandon_exec(project_id, source_id, request)
-    if action == "merge":
-        return await changeset_routes.merge_and_announce(project_id, source_id, actor=actor)
     if action == "discard":
         return await changeset_routes.discard_and_announce(project_id, source_id, actor=actor)
     if action == "resolve":
@@ -225,7 +221,7 @@ async def _run_action(project_id: str, item: dict, action: str, request: Request
 
 
 async def _autobuild_review(project_id: str, item: dict, action: str, request: Request, body: dict) -> dict:
-    """自主构建复核：接受（AB-11 / 高置信合并项 = AB-13）、改判（AB-12）、回退这一片（AB-17）。"""
+    """自主构建复核：接受（AB-11 / 高置信合并项 = AB-13）、改判（AB-12）、回退这一段（AB-17）。"""
     from ..services.autobuild import review
 
     extra = item.get("_extra") or {}
@@ -308,7 +304,7 @@ async def batch(project_id: str, request: Request):
              and (not body.get("item_ids") or item["id"] in body["item_ids"])]
     if not stale:
         return {"accepted": 0, "skipped": [], "command_task": None}
-    # 一次只能跑一条命令：刷新最上游的那一个（按流程里的节点顺序，审查第 18 条），其余等它确认生效后再刷新
+    # 一次只能跑一条命令：刷新最上游的那一个（按流程里的节点顺序，审查第 18 条），其余等它做完再刷新
     from ..services.flow import model as flow_model
     from . import flow as flow_routes
 
@@ -316,7 +312,7 @@ async def batch(project_id: str, request: Request):
     stale.sort(key=lambda item: order.get(item["id"].split(":", 1)[1], len(order)))
     first, rest = stale[0], stale[1:]
     response = await flow_routes.start_node(project_id, first["id"].split(":", 1)[1], request)
-    return {"accepted": 1, "skipped": [{"id": item["id"], "reason": "一次只跑一条命令，等前一个确认生效后再刷新"}
+    return {"accepted": 1, "skipped": [{"id": item["id"], "reason": "一次只跑一条命令，等前一个做完再刷新"}
                                        for item in rest],
             "command_task": _json(response).get("task")}
 

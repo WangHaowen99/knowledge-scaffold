@@ -2,8 +2,8 @@
 // 变更清单就是待处理里的 cl-09（routes-inbox.js 的同一个对象）：这里接受、改写、执行，待处理那边同步变化，反之亦然。
 // 阶段（主示例项目）：
 //   ?mock=stage:incremental                 「09 修订通知」对话在第一位，等你确认变更点清单（设计稿默认态）
-//   ?mock=stage:incremental,inc:executed    已按清单执行，回归 5 / 6，这一轮待确认生效
-//   ?mock=stage:incremental,inc:merged      已确认生效
+//   ?mock=stage:incremental,inc:executed    已按清单执行，回归 5 / 6，这一轮已存成版本（F3：一轮结束就合入）
+//   ?mock=stage:incremental,inc:merged      同 executed（F3 起一轮结束就合入）
 // 其他阶段打开 incremental 路由：页面经 IN-01 找到 cl-09、经 INC-01 取到它所在的对话；这条对话第一次被问到时才放进对话列表。
 // 这一轮的变更集记在 db.changesets（owner: 'incremental'），CS-02～CS-05 由这里处理（index.js 的同路径处理者让过来）。
 import * as D from './incremental-data.js';
@@ -109,7 +109,7 @@ export function register(ctx) {
     return sh && sh.detail.id === id ? sh : null;
   };
 
-  // ?mock=stage:incremental,inc:executed|merged：一打开就在执行后 / 确认生效后
+  // ?mock=stage:incremental,inc:executed|merged：一打开就在执行后（已存成版本）
   if (stageOf(F.MAIN_PID) === 'incremental' && ['executed', 'merged'].includes(sc.inc)) {
     const pid = F.MAIN_PID;
     const sh = shared(pid);
@@ -123,13 +123,12 @@ export function register(ctx) {
     Object.assign(sh.detail, { state: 'executed', changeset_id: st.csId });
     sh.s.gone.add(sh.item.id);
     sh.s.handled += 1;
-    db.changesets.set(st.csId, { owner: 'incremental', state: sc.inc === 'merged' ? 'merged' : 'pending_confirm', pid, cid });
-    if (sc.inc === 'executed') db.scope.set(pid, lockOf('pending_confirm', st.csId));
-    else if (c) c.version_label = st.version;
+    db.changesets.set(st.csId, { owner: 'incremental', state: 'merged', pid, cid });
+    if (c) c.version_label = st.version;
     const f = flowOf(pid);
     const n = (f.nodes || []).find((x) => /incremental|update$/.test(x.id));
-    if (n) Object.assign(n, sc.inc === 'merged' ? { state: 'confirmed', display_state: 'confirmed' } : { state: 'pending_confirm', display_state: 'pending' });
-    if (sc.inc === 'merged') f.notices = (f.notices || []).filter((x) => x.kind !== 'new_materials');
+    if (n) Object.assign(n, { state: 'confirmed', display_state: 'confirmed' });
+    f.notices = (f.notices || []).filter((x) => x.kind !== 'new_materials');
   }
   // 增量更新阶段：现在就生成对话列表和历史（stages.history 读的是 current，也就是正在登记的这个服务端）
   if (stageOf(F.MAIN_PID) === 'incremental') convsOf(F.MAIN_PID);
@@ -235,16 +234,13 @@ export function register(ctx) {
       putTask(pid, { ...task, percent: Math.round((n / 3) * 100), step_label: ['按清单修改', '只查改动', '自动回归'][n] || '自动回归' }, { transient: true });
       if (n < 3) { step(n + 1); return; }
       st.phase = 'executed';
-      db.changesets.get(csId).state = 'pending_confirm';
       emitConv(pid, cid, 'card', D.regressionCard());
-      emitConv(pid, cid, 'card', D.roundCard({ csId, nextVersion: st.version }));
+      emitConv(pid, cid, 'card', D.roundCard({ csId, nextVersion: st.version, mergedVersion: st.version }));
       emitConv(pid, cid, 'turn.completed', { turn_id: `t-${uid()}`, duration_ms: 211000, is_error: false, usage: { input_tokens: 26400, output_tokens: 3100, cache_read_tokens: 0 }, cost: { amount: 0.86, currency: 'CNY' } });
       setSession(pid, cid, 'idle');
-      setScope(pid, lockOf('pending_confirm', csId));
-      emitProj(pid, 'changeset.updated', { changeset_id: csId, state: 'pending_confirm', source: 'assistant', conversation_id: cid, version_label: null });
-      setNode(pid, 'pending_confirm');
-      putTask(pid, { ...task, state: 'done', percent: 100, step_label: '自动回归', finished_at: new Date().toISOString(), result: { summary: '回归 5 / 6 通过，这一轮待确认', refs: [] } });
-      emitConv(pid, cid, 'suggestions.updated', D.postSuggestions(csId));
+      // 一轮结束就合入成版本（F3）
+      settleRound(pid, csId);
+      putTask(pid, { ...task, state: 'done', percent: 100, step_label: '自动回归', finished_at: new Date().toISOString(), result: { summary: `回归 5 / 6 通过 · 版本 ${st.version}`, refs: [] } });
     });
     step(1);
     return json(202, { command_task: task, changeset_id: csId });
@@ -272,39 +268,41 @@ export function register(ctx) {
       checks: { errors: 0, warnings: 1, findings: [] }, next_version_label: st.version,
     });
   }); // CS-02
-  on('POST', '/projects/([^/]+)/changesets/([^/]+)/merge', ({ m }) => {
-    const pid = m[1];
-    const cs = mine(m[2]);
-    if (!cs) return undefined;
-    if (cs.state !== 'pending_confirm') return err(409, 'changeset_closed', '已关闭', { state: cs.state });
-    if (db.running.has(`${pid}:${cs.cid}`)) return err(409, 'changeset_in_progress', '助手还在跑', { conversation_id: cs.cid });
+  // 一轮结束就合入成版本（F3）：清单记已执行、流程节点已确认、项目版本跟着涨
+  function settleRound(pid, csId) {
+    const cs = db.changesets.get(csId);
     const st = stateOf(pid);
     cs.state = 'merged';
-    st.phase = 'merged';
     const c = cardOf(pid);
     if (c) c.version_label = st.version;
-    const merged = { state: 'merged', commit: 'c0ffee14', version_label: st.version, merged_at: new Date().toISOString() };
-    emitConv(pid, cid, 'card.updated', D.roundCard({ csId: m[2], nextVersion: st.version, state: 'merged', mergedVersion: st.version, fixed: st.fixed }));
-    emitConv(pid, cid, 'notice', { kind: 'merged', text: `这一轮已确认生效 · 版本 ${st.version}`, version_label: st.version, changeset_id: m[2], align: 'center' });
     emitConv(pid, cid, 'suggestions.updated', D.mergedSuggestions(st.version, othersOf(pid), st.fixed));
     setScope(pid, noLock());
     setNode(pid, 'confirmed', true);
-    emitProj(pid, 'changeset.updated', { changeset_id: m[2], state: 'merged', source: 'assistant', conversation_id: cid, version_label: st.version });
+    emitProj(pid, 'changeset.updated', { changeset_id: csId, state: 'merged', source: 'assistant', conversation_id: cid, version_label: st.version });
     emitProj(pid, 'workspace.changed', {
-      commit: merged.commit, version_label: st.version, source: 'assistant', changeset_id: m[2], by: 'zhangsan',
+      commit: 'c0ffee14', version_label: st.version, source: 'assistant', changeset_id: csId, by: 'zhangsan',
       entries: D.impactOf().stale.map((s) => s.target), artifacts: D.SCENARIOS.affected, paths: ['resource/others/09-修订通知.docx'],
     });
     if (c) emitProj(pid, 'project.updated', { fields: ['version_label'], meta: F.projectMeta(c) });
-    return json(200, merged);
+  }
+  // CS-04：F3 起界面不再调
+  on('POST', '/projects/([^/]+)/changesets/([^/]+)/merge', ({ m }) => {
+    const cs = mine(m[2]);
+    if (!cs) return undefined;
+    return err(409, 'changeset_closed', '这一轮的修改已经生效或撤回', { state: cs.state });
   }); // CS-04
   on('POST', '/projects/([^/]+)/changesets/([^/]+)/discard', ({ m }) => {
     const pid = m[1];
     const cs = mine(m[2]);
     if (!cs) return undefined;
-    if (cs.state !== 'pending_confirm') return err(409, 'changeset_closed', '已关闭', { state: cs.state });
+    // 撤回这一轮（F3）：合入过的回到上一个版本，另存一个版本
+    if (cs.state !== 'merged') return err(409, 'changeset_closed', '这一轮已经撤回过', { state: cs.state });
     if (db.running.has(`${pid}:${cs.cid}`)) return err(409, 'changeset_in_progress', '助手还在跑', { conversation_id: cs.cid });
     const st = stateOf(pid);
-    cs.state = 'discarded';
+    cs.state = 'reverted';
+    const reverted = bump(st.version);
+    const c = cardOf(pid);
+    if (c) c.version_label = reverted;
     Object.assign(st, { phase: 'editing', csId: null, fixed: false });
     // 撤回后清单回到可编辑，回到待处理里
     const sh = shared(pid);
@@ -312,15 +310,16 @@ export function register(ctx) {
     if (sh.s.gone.delete(sh.item.id)) sh.s.handled = Math.max(0, sh.s.handled - 1);
     db.emitInbox?.(pid, [], [sh.item.id]);
     const cl = D.overlay(sh.detail);
-    emitConv(pid, cid, 'card.updated', D.roundCard({ csId: m[2], nextVersion: st.version, state: 'discarded' }));
+    emitConv(pid, cid, 'card.updated', D.roundCard({ csId: m[2], nextVersion: st.version, state: 'reverted' }));
     emitConv(pid, cid, 'card.updated', D.listCard(cl));
     emitConv(pid, cid, 'card.updated', D.impactCard(cl, D.impactOf(st.impactMs), false));
-    emitConv(pid, cid, 'notice', { kind: 'discarded', text: '已撤回这一轮；清单可以改了再执行', version_label: null, changeset_id: m[2], align: 'center' });
+    emitConv(pid, cid, 'notice', { kind: 'discarded', text: `已撤回这一轮 · 版本 ${reverted}`, version_label: reverted, changeset_id: m[2], align: 'center' });
     emitConv(pid, cid, 'suggestions.updated', D.preSuggestions(othersOf(pid)));
     setScope(pid, noLock());
     setNode(pid, 'ready');
-    emitProj(pid, 'changeset.updated', { changeset_id: m[2], state: 'discarded', source: 'assistant', conversation_id: cid, version_label: null });
-    return json(200, { state: 'discarded' });
+    emitProj(pid, 'changeset.updated', { changeset_id: m[2], state: 'merged', source: 'assistant', conversation_id: cid, version_label: st.version });
+    if (c) emitProj(pid, 'project.updated', { fields: ['version_label'], meta: F.projectMeta(c) });
+    return json(200, { state: 'reverted', commit: 'c0ffee15', version_label: reverted });
   }); // CS-05
 
   // ---------- 「交给助手修」：S-20 /ontology-update 带 fix_scenarios，修完重跑这个场景 ----------
@@ -330,19 +329,16 @@ export function register(ctx) {
     steps: ['补上步骤 4 的规则引用', '重跑场景 6'],
     start: (pid) => {
       const st = stateOf(pid);
-      if (st.csId && db.changesets.get(st.csId)?.state === 'pending_confirm') setScope(pid, lockOf('assistant_running', st.csId));
+      if (st.csId) setScope(pid, lockOf('assistant_running', st.csId));
     },
     doneText: () => '修好了：操作 [[超量与审批提示]] 的步骤 4 已引用改写后的 R-11，场景 6 重跑通过。',
     finish: (pid) => {
       const st = stateOf(pid);
       st.fixed = true;
       emitConv(pid, cid, 'card.updated', D.regressionCard(true));
-      const cs = st.csId && db.changesets.get(st.csId);
-      if (cs?.state === 'pending_confirm') {
-        emitConv(pid, cid, 'card.updated', D.roundCard({ csId: st.csId, nextVersion: st.version, fixed: true }));
-        setScope(pid, lockOf('pending_confirm', st.csId));
-        emitConv(pid, cid, 'suggestions.updated', D.postSuggestions(st.csId, true));
-      } else emitConv(pid, cid, 'suggestions.updated', D.mergedSuggestions(st.version || 'v0.13', othersOf(pid), true));
+      // 修复这一轮结束也合入（F3）
+      setScope(pid, noLock());
+      emitConv(pid, cid, 'suggestions.updated', D.mergedSuggestions(st.version || 'v0.13', othersOf(pid), true));
     },
   });
 }

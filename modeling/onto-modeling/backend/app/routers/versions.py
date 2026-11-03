@@ -29,7 +29,7 @@ LABEL_MAX = 120
 
 
 def _autobuild_slices(project_id: str) -> dict[str, dict]:
-    """自主构建合入的片：变更集 → {run, needs_review}（契约 7.6 Version.run，F3 补充第 19 条）。"""
+    """自主构建合入的段：变更集 → {run, needs_review}（契约 7.6 Version.run，F3 补充第 19 条）。"""
     from ..services.autobuild import store, views
 
     index = {}

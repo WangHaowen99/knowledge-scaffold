@@ -388,6 +388,7 @@ def _item_findings(root: Path, view, gate: dict, atype, rows: list[dict]) -> lis
             problem = rule_problem(root, atype, rule, row.get("fields") or {})
             if problem:
                 out.append({"code": "pack_gate", "level": level, "gate": str(gate.get("id") or ""), "pack": view.name,
+                            "gate_label": str(gate.get("label") or gate.get("id") or ""),
                             "message": str(rule.get("message") or f"{row.get('title') or row['key']}：{problem}"),
                             "target": {"kind": "artifact", "type": atype.type, "key": row["key"]}, "path": row["rel"]})
     return out

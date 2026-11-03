@@ -3,7 +3,7 @@
 - 助手副本：固定路径、`resource/` 稀疏排除后挂链接、`.claude` 链到主线、续用与跟上主线、崩溃后修复；
 - 确认生效：一个 squash 提交、trailer 写在合入提交上、主线版本只 +1（`--first-parent`）；
   实体冲突进 conflict、选好一边再合入；门禁只看新增错误；
-- 撤回这一轮、撤回已合入的变更集（P3 按片撤回用）、助手在跑时不能确认；
+- 撤回这一轮、撤回已合入的变更集（P3 按段撤回用）、助手在跑时不能确认；
 - 接口形状（CS-01～CS-06）、对话里的「这一轮改了什么」卡与 S-05 的 open_changeset、Studio 复核草稿进副本。
 
 测试数据全部为合成内容；假引擎不起真实 CLI。
@@ -220,22 +220,22 @@ def test_same_change_on_both_sides_is_not_a_conflict(project):
     assert service.merge(workspaces, project_id, record["id"], actor="employee_0001")["state"] == "merged"
 
 
-def test_gate_blocks_only_new_errors(project):
+def test_checks_record_only_new_errors_and_do_not_block(project):
+    """F3：合入时的检查只记新增问题、不挡合入（发布时才拦）。"""
     workspaces, project_id, root = project
-    # 主线上已有的错误（缺章节的对象）不挡
+    # 主线上已有的错误（缺章节的对象）不算这一轮的
     main_write(root, "ontology/object/旧对象.md", "# 旧对象\n\n## 对象描述\n\n存量\n")
     copy, record = _pending(workspaces, project_id, root)
     assert service.merge(workspaces, project_id, record["id"], actor="employee_0001")["state"] == "merged"
-    # 新增的错误挡住合入
+    assert store.get(root, record["id"])["checks"]["errors"] == 0
+    # 新增的错误记下来，照样合入
     _copy, bad = _pending(workspaces, project_id, root, rel="ontology/object/坏对象.md",
                           text="# 坏对象\n\n## 对象描述\n\n缺了必需章节\n")
-    with pytest.raises(WorkspaceError) as exc:
-        service.merge(workspaces, project_id, bad["id"], actor="employee_0001")
-    assert exc.value.code == "gate_failed" and exc.value.status == 422
-    assert exc.value.details["findings"] and all(item["level"] == "error" and item["path"] == "ontology/object/坏对象.md"
-                                                 for item in exc.value.details["findings"])
-    assert not (root / "ontology/object/坏对象.md").exists()
-    assert store.get(root, bad["id"])["state"] == "pending_confirm"
+    assert service.merge(workspaces, project_id, bad["id"], actor="employee_0001")["state"] == "merged"
+    checks = store.get(root, bad["id"])["checks"]
+    assert checks["errors"] and all(item["path"] == "ontology/object/坏对象.md" for item in checks["findings"]
+                                    if item["level"] == "error")
+    assert (root / "ontology/object/坏对象.md").is_file()
 
 
 def test_merge_refused_while_the_assistant_is_running(project, monkeypatch):
@@ -412,25 +412,28 @@ def test_round_card_open_changeset_and_merge_notice(api, monkeypatch):
              and event["payload"].get("card_type") == "round_changes"]
     assert len(cards) == 1
     card = cards[0]
-    assert card["state"] == "pending_confirm" and card["changeset_id"] == "cs-1"
+    # F3：这一轮结束就合入成一个版本，卡片只说改了什么
+    assert card["state"] == "merged" and card["changeset_id"] == "cs-1" and card["merged_version_label"]
     assert card["groups"][0]["items"][0]["target"]["id"] == "object:门店"
     # 只读说明不再下发（UI 文案口径 ⑤，前端按写入范围算）
-    assert card["checks"] == {"errors": 0, "warnings": 0} and "lock_note" not in card
-    assert not (root / "ontology/object/门店.md").exists()
+    assert card["checks"] == {"errors": 0, "warnings": 0, "pending": 0} and card["hints"] == []
+    assert "lock_note" not in card
+    assert (root / "ontology/object/门店.md").is_file()
     state = client.get(f"/api/v1/projects/{project_id}/conversations/default").json()
-    assert state["open_changeset"]["id"] == "cs-1" and state["open_changeset"]["state"] == "pending_confirm"
-    merged = client.post(f"/api/v1/projects/{project_id}/changesets/cs-1/merge", json={})
-    assert merged.status_code == 200, merged.text
+    assert state["open_changeset"] is None
+    # 撤回这一轮：回到上一个版本，卡片原地更新，对话里一条提示行
+    reverted = client.post(f"/api/v1/projects/{project_id}/changesets/cs-1/discard", json={})
+    assert reverted.status_code == 200, reverted.text
+    assert not (root / "ontology/object/门店.md").exists()
     history = manager.get_history(project_id, "default")
     updated = [event["payload"] for event in history if event.get("type") == "card_updated"]
-    assert updated and updated[-1]["state"] == "merged" and updated[-1]["merged_version_label"]
+    assert updated and updated[-1]["state"] == "reverted" and updated[-1]["status"]["label"] == "已撤回"
     notices = [event["payload"] for event in history if event.get("type") == "notice"]
-    assert notices[-1]["kind"] == "merged" and notices[-1]["changeset_id"] == "cs-1"
-    # 确认生效之后建议条跟着换（I1：不再停在「确认生效 / 撤回这一轮」）
+    assert notices[-1]["kind"] == "discarded" and notices[-1]["changeset_id"] == "cs-1"
+    assert notices[-1]["version_label"] == reverted.json()["version_label"]
     bars = [event["payload"] for event in history if event.get("type") == "suggestions"]
     assert bars and bars[-1]["mode"] != "pending_confirm"
     assert (bars[-1].get("primary") or {}).get("action", {}).get("type") != "merge_changeset"
-    assert client.get(f"/api/v1/projects/{project_id}/conversations/default").json()["open_changeset"] is None
     asyncio.run(manager.shutdown())
 
 
@@ -460,11 +463,11 @@ def test_studio_review_draft_is_staged_in_the_copy(api, monkeypatch):
 
 
 def test_autobuild_slice_changeset_merges_with_its_own_source(project):
-    """给 P3 的接口：每片先占一个变更集，观察后自动合入，trailer 记 autobuild，标「需复核」。"""
+    """给 P3 的接口：每段先占一个变更集，观察后自动合入，trailer 记 autobuild，标「需复核」。"""
     workspaces, project_id, root = project
     copy = service.copy_for_turn(workspaces, project_id, root)
     record = service.open_changeset(workspaces, project_id, source="autobuild", build_mode="L4", run_id="run-1",
-                                    slice_id="s1", purpose="自主构建 · 门店一片")
+                                    slice_id="s1", purpose="自主构建 · 门店一段")
     assert service.open_changeset(workspaces, project_id, source="autobuild")["id"] == record["id"]
     agent_write(copy, "ontology/object/门店.md", obj("门店", "合成门店"), commit="agent: 门店")
     observed = service.observe(workspaces, project_id, running=False)

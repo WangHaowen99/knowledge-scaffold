@@ -16,7 +16,7 @@ const yesterday = () => { const d = new Date(Date.now() - 24 * 60 * MIN); d.setH
 
 export const KIND_LABEL = {
   decision: '决策', evidence_conflict: '证据冲突', change_list: '变更清单', review: '需复核', suspension: '挂起', stale: '过期',
-  resumable: '续跑', feedback: '外部反馈', report: '报告待处理', pending_changeset: '修改待确认', changeset_conflict: '合入冲突',
+  resumable: '续跑', feedback: '外部反馈', report: '报告待处理', changeset_conflict: '合入冲突',
   format_migration: '格式待迁移', notification: '通知',
 };
 const ACTIONS = {
@@ -61,7 +61,7 @@ function mainStatic() {
       writes_to: entryRef('display_qty_std'),
     }],
     [item('change_list:cl-09', 'change_list', '09 修订通知：5 个变更点待确认', {
-      slice: sl('s3', '陈列量核定 等 3 片'), meta: '影响 6 个产物 · 4 个场景', source: 'materials', created_at: ago(32 * MIN),
+      slice: sl('s3', '陈列量核定 等 3 段'), meta: '影响 6 个产物 · 4 个场景', source: 'materials', created_at: ago(32 * MIN),
       impact: imp(['对象', '陈列量标准、检查项目'], ['操作', '陈列量核定、临期损耗编制'], ['规则', 'R-06、R-11'], ['场景', '4 个']),
     }), changeList()],
   ];
@@ -173,7 +173,7 @@ export function runItems(store) {
   const out = [];
   const low = store.pendingLow();
   REVIEW_ORDER.map((id) => low.find((l) => l.id === id)).filter(Boolean).concat(low.filter((l) => !REVIEW_LOOK[l.id])).forEach((l) => {
-    const [title, impact] = REVIEW_LOOK[l.id] || [l.summary, imp(['切片', l.slice.name])];
+    const [title, impact] = REVIEW_LOOK[l.id] || [l.summary, imp(['分段', l.slice.name])];
     out.push([item(`review:${l.id}`, 'review', title, {
       slice: l.slice, run: run(l.at), source: 'autobuild', confidence: l.confidence, meta: `置信度 ${l.confidence.toFixed(2)} · 记为假设`,
       created_at: l.at, impact, batchable: false,
@@ -184,9 +184,9 @@ export function runItems(store) {
     const slices = [...new Set(high.map((l) => l.slice.id))];
     const short = slices.filter((x) => x !== 'core.consistency').map((x) => SHORT[x]);
     out.push([item(`review:${RUN_ID}:high`, 'review', `高置信的 ${high.length} 个自动决定，可以一起接受`, {
-      slice: { id: null, name: `${short.length} 个切片` }, run: run(null), source: 'autobuild', high_confidence: true, confidence: Math.min(...high.map((l) => l.confidence)),
+      slice: { id: null, name: `${short.length} 段` }, run: run(null), source: 'autobuild', high_confidence: true, confidence: Math.min(...high.map((l) => l.confidence)),
       meta: `置信度都 ≥${THRESHOLD.toFixed(2)}`, created_at: high[high.length - 1].at, actions: ['accept', 'dismiss'],
-      impact: imp(['切片', short.join('、')], ['产物', `${high.length} 处标「需复核」`]),
+      impact: imp(['分段', short.join('、')], ['产物', `${high.length} 处标「需复核」`]),
     }), { group: 'high_confidence', run_id: RUN_ID, threshold: THRESHOLD, entries: high }]);
   }
   const open = store.openSuspensions();
@@ -283,7 +283,7 @@ export function riderReport() {
       s('t5', '排班求解', 'done', '完成', '+2 对象 +3 操作 +4 规则', 5, 5, 'v0.9'),
       s('t6', '结果校验', 'skipped', '未开始', '—', 0, 0, 'v0.7'),
     ],
-    note: '产出已确认生效并标「需复核」；复核完之前，发布检查会提醒你',
+    note: '产出已生效并标「需复核」；复核完之前，发布检查会提醒你',
   };
 }
 

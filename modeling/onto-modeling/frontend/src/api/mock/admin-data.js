@@ -41,7 +41,7 @@ export const platformMetaViews = (now) => platformProjects(now).map(metaView);
 export function seedUnowned(now) {
   return [
     { id: 'stock-count-5b7e2c10', name: '仓库盘点差异分析', owner: null, stage_label: '资料分析', build_mode: 'L2', archived: false, created_at: iso(now - 210 * DAY), last_activity_at: iso(now - 96 * DAY), disk_bytes: 64e6 },
-    { id: 'room-booking-8d3f1a27', name: '会议室预订规则', owner: null, stage_label: '建模（按切片）', build_mode: 'L2', archived: false, created_at: iso(now - 260 * DAY), last_activity_at: iso(now - 140 * DAY), disk_bytes: 132e6 },
+    { id: 'room-booking-8d3f1a27', name: '会议室预订规则', owner: null, stage_label: '建模（按段）', build_mode: 'L2', archived: false, created_at: iso(now - 260 * DAY), last_activity_at: iso(now - 140 * DAY), disk_bytes: 132e6 },
   ];
 }
 
@@ -209,7 +209,7 @@ export function seedErrors(now, total = 100) {
 export function seedTrash(now, { legacy = false } = {}) {
   const rows = [
     ['trash-parcel-sort-old', 'parcel-sort-0d4b7a12', '快递分拣异常处理（旧）', 'wanggong', '资料分析', 4, 420],
-    ['trash-retail-restock-r2', 'retail-restock-r2-6e19c3b8', '门店补货单编制 r2', 'zhangsan', '建模（按切片）', 8, 612],
+    ['trash-retail-restock-r2', 'retail-restock-r2-6e19c3b8', '门店补货单编制 r2', 'zhangsan', '建模（按段）', 8, 612],
     ['trash-canteen-pilot-a', 'canteen-pilot-2f7e5a90', '食堂菜单试点 A', 'sunyu', '校验与走查', 17, 188],
     ['trash-test-0919', 'test-0919-9a1c4e63', '测试项目 0919', 'liming', '资料分析', 25, 402],
   ];

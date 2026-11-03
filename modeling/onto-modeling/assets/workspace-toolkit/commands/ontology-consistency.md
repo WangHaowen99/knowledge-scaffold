@@ -1,4 +1,4 @@
-全局一致性检查：各片建完之后，看关系、口径和切片之间的衔接。参数：$ARGUMENTS
+全局一致性检查：各段建完之后，看关系、口径和分段之间的衔接。参数：$ARGUMENTS
 
 ## Step 0: 前置检查
 
@@ -30,7 +30,7 @@ python3 .claude/scripts/consistency_check.py --json
 - `dangling_link`：链接写错了就改成已有条目的名字；确实缺条目时列出来，问用户要不要补（补的话走对应的建模命令）。
 - `orphan_object`：先看资料里它是不是确实没人用；没用就问用户删不删，有用就补上关联。
 - `term_variant`：按蓝图里统一的叫法改正文（`[[链接]]` 的显示名也一起改）。
-- `undeclared_dependency`：问用户是要在蓝图里加上这层依赖（建模蓝图页「调整切片」），还是改成不引用那一片的对象。
+- `undeclared_dependency`：问用户是要在蓝图里加上这层依赖（建模蓝图页「调整分段」），还是改成不引用那一段的对象。
 - `unassigned`、`planned_missing`：列出来给用户看，按用户的决定补建、改归属或在蓝图里去掉。
 
 需要用户拍板的，先 `python3 .claude/scripts/state_helper.py acquire consistency confirm`，再按 `INTERACTION_CONVENTIONS.md` 发单选卡，一次一个问题，不要默认选第一个；用户回复后 `acquire consistency check`。

@@ -3,8 +3,9 @@
 蓝图是工作区里的 `research/blueprint.json`，格式、校验、调整都在 core 的 `blueprint.py`（契约库按项目锁定
 版本加载，与助手在工作区里跑的是同一份）。这里只管它放在哪、怎么写进去：
 
-- 资料分析那一轮助手在变更集副本里写出草案，确认生效之前蓝图只在副本里：这时读、调整都对副本
-  （调整写进同一个变更集，助手在跑时 423）；确认蓝图（BP-03）先把这个变更集确认生效，再在主线上标已确认；
+- 资料分析那一轮助手在变更集副本里写出草案，这一轮结束就合入主线（F3）；只有这一轮还在跑、或合入冲突还没解决时
+  蓝图在副本里：读、调整对副本（助手在跑时 423），确认蓝图回 409（等这一轮结束 / 先在待处理里选好）；
+  升级前留下的待确认变更集，确认蓝图时先合入（不再等「确认生效」，也不再被检查拦）；
 - 蓝图已经在主线上时，调整与确认经写入事务提交（范围锁照常检查）。
 
 BP-03 选「按蓝图一路建完」（L4）时返回自主构建的开始前预览：由自主构建（B5b）经
@@ -158,7 +159,7 @@ def _check_revision(loaded: dict, base_revision) -> None:
 
 
 def _invalid(exc) -> WorkspaceError:
-    """脚本的校验错误 → 契约错误：切片编辑不合法是 slice_invalid（带 reason），其余是字段错误。"""
+    """脚本的校验错误 → 契约错误：分段编辑不合法是 slice_invalid（带 reason），其余是字段错误。"""
     fields = {"term_invalid": "term_choices", "answer_invalid": "answers"}
     if exc.reason in fields:
         return WorkspaceError(str(exc), 400, "invalid_argument", {"fields": {fields[exc.reason]: "invalid"}})
@@ -250,7 +251,8 @@ def add_question(manager, project_id: str, title: str, *, actor: str, background
 
 
 def prepare_confirm(manager, project_id: str, body: dict) -> dict:
-    """BP-03 第一步（不改任何东西）：核对版本号、构建方式；蓝图在没确认的变更集里时返回要先确认生效的变更集。"""
+    """BP-03 第一步（不改任何东西）：核对版本号、构建方式。蓝图还在助手这一轮里（在跑）或合入冲突里时 409；
+    在升级前留下的待确认变更集里时 settle=True（先合入）。"""
     next_mode = body.get("next") or (manager.get_project(project_id) or {}).get("build_mode") or "L2"
     if next_mode not in ("L2", "L4"):
         raise WorkspaceError("next 只能是 L2 或 L4", 400, "invalid_argument", {"fields": {"next": "enum"}})
@@ -260,16 +262,24 @@ def prepare_confirm(manager, project_id: str, body: dict) -> dict:
     if loaded is None:
         raise WorkspaceError("还没有建模蓝图", 404, "blueprint_not_found")
     _check_revision(loaded, body.get("base_revision", ""))
-    return {"next": next_mode, "changeset_id": loaded["record"]["id"] if loaded["where"] == "changeset" else None}
+    record = loaded["record"] if loaded["where"] == "changeset" else None
+    if record is not None and record["state"] == "conflict":
+        raise WorkspaceError("建模蓝图所在的这一轮和你的修改有冲突，先在待处理里选好保留哪边", 409, "merge_conflict",
+                             {"entities": (record.get("conflict") or {}).get("entities") or [],
+                              "inbox_item_id": f"changeset_conflict:{record['id']}"})
+    if record is not None and record["state"] == "open":
+        raise WorkspaceError("助手正在改这个项目，等这一轮结束再确认", 409, "changeset_in_progress",
+                             {"conversation_id": record.get("conversation_id")})
+    return {"next": next_mode, "settle": record is not None}
 
 
 def mark_confirmed(manager, project_id: str, *, actor: str) -> dict:
-    """BP-03 第二步：蓝图已在主线上（变更集已确认生效），标已确认；已确认的不再写。返回蓝图视图。"""
+    """BP-03 第二步：蓝图已在主线上，标已确认；已确认的不再写。返回蓝图视图。"""
     loaded = read(manager, project_id)
     if loaded is None:
         raise WorkspaceError("还没有建模蓝图", 404, "blueprint_not_found")
     if loaded["where"] == "changeset":
-        raise WorkspaceError("这一轮的修改还没确认生效", 409, "changeset_in_progress",
+        raise WorkspaceError("助手正在改这个项目，等这一轮结束再确认", 409, "changeset_in_progress",
                              {"conversation_id": (loaded["record"] or {}).get("conversation_id")})
     module = script(loaded["root"])
     if loaded["doc"].get("state") != "confirmed":
@@ -278,7 +288,7 @@ def mark_confirmed(manager, project_id: str, *, actor: str) -> dict:
 
 
 def first_command(manager, project_id: str) -> tuple[str, dict]:
-    """「开始第一个切片」：第一片（全量模式不带切片）的对象提取。"""
+    """「开始第一段」：第一段（全量模式不带分段）的对象提取。"""
     doc = load_doc(manager.project_root(project_id))
     module = script(manager.project_root(project_id))
     live = module.live_slices(doc)
@@ -288,10 +298,10 @@ def first_command(manager, project_id: str) -> tuple[str, dict]:
 
 
 def run_slices(manager, project_id: str) -> list[dict]:
-    """按片执行用的切片列表（自主构建 B5b）：按建议顺序、没排除的片，带依赖、这一片的说明与现在的进度。
+    """按段执行用的分段列表（自主构建 B5b）：按建议顺序、没排除的段，带依赖、这一段的说明与现在的进度。
 
-    [{id, name, core_flow, depends_on, brief, group, stages}]；没有蓝图或全量模式时是一片「全部」。
-    说明（brief）与建模命令在工作区里 `blueprint.py brief <片>` 输出的是同一份。"""
+    [{id, name, core_flow, depends_on, brief, group, stages}]；没有蓝图或全量模式时是一段「全部」。
+    说明（brief）与建模命令在工作区里 `blueprint.py brief <段>` 输出的是同一份。"""
     from . import model, slices
 
     root = manager.project_root(project_id)
@@ -311,7 +321,7 @@ def run_slices(manager, project_id: str) -> list[dict]:
 
 def drop_added_members(root: Path, slice_id: str, parent: bytes | None, merged: bytes | None,
                        current: bytes | None) -> bytes | None:
-    """按片撤回（审查 L）：这一片合入时新记进蓝图的条目（合入提交比它的上一版多出来的）从现在的蓝图里去掉，
+    """按段撤回（审查 L）：这一段合入时新记进蓝图的条目（合入提交比它的上一版多出来的）从现在的蓝图里去掉，
     别的不动。没有要去掉的、蓝图读不出时返回 None（蓝图不动）。"""
     if not merged or not current:
         return None
@@ -321,7 +331,7 @@ def drop_added_members(root: Path, slice_id: str, parent: bytes | None, merged: 
         after = module.find_slice(module.parse(merged.decode("utf-8")), slice_id)
         doc = module.parse(current.decode("utf-8"))
     except (AttributeError, UnicodeDecodeError, module.BlueprintError):
-        _log.warning("撤回切片 %s 时蓝图读不出，蓝图不动", slice_id, exc_info=True)
+        _log.warning("撤回分段 %s 时蓝图读不出，蓝图不动", slice_id, exc_info=True)
         return None
     target = module.find_slice(doc, slice_id)
     if after is None or target is None:
@@ -403,10 +413,10 @@ def blueprint_card(module, doc: dict, card_id: str, *, research_verified: bool) 
 
 
 def confirm_options(state: str) -> list[dict]:
-    """蓝图卡底部的确认按钮（BP-03 的 next）：草案时「确认，一片一片来」，自主构建可用时再加「确认，一路建完…」。"""
+    """蓝图卡底部的确认按钮（BP-03 的 next）：草案时「确认，一段一段来」，自主构建可用时再加「确认，一路建完…」。"""
     if state == "confirmed":
         return []
-    options = [{"mode": "L2", "label": "确认，一片一片来"}]
+    options = [{"mode": "L2", "label": "确认，一段一段来"}]
     if autobuild_available():
         options.append({"mode": "L4", "label": "确认，一路建完…"})
     return options
@@ -454,7 +464,10 @@ def round_cards(manager, project_id: str, changes: dict, seed: str, root: Path |
         return []
     if doc is None:
         return []
-    record = _open_record(main) or {}
+    from ...kernel.changesets import store
+
+    # 这一轮的变更集：一轮结束就合入（F3），出卡时多半已经关了，取最近的一个
+    record = _open_record(main) or next(iter(store.all_records(main)), None) or {}
     conversation_id = record.get("conversation_id")
     seed = str(seed or "")[:24] or "bp"
     cards = []

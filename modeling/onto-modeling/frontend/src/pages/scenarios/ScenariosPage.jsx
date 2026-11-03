@@ -127,7 +127,7 @@ function Scenarios({ route }) {
   const refresh = refreshCommand(stale);
   const skip = skippedNote(mocks.skipped);
   const mockType = types[MOCK];
-  const sliceOptions = [{ value: '', label: '全部切片' }, ...enumOptions(sType, 'slice')];
+  const sliceOptions = [{ value: '', label: '全部分段' }, ...enumOptions(sType, 'slice')];
   const openRow = all.find((r) => r.key === openKey) || null;
 
   return (
@@ -179,7 +179,7 @@ function Scenarios({ route }) {
               <table className="tbl compact sc-tbl">
                 <thead>
                   <tr>
-                    <th>场景</th><th style={{ width: 150 }}>切片</th><th style={{ width: 150 }}>来源</th><th style={{ width: 110 }}>输入</th>
+                    <th>场景</th><th style={{ width: 150 }}>分段</th><th style={{ width: 150 }}>来源</th><th style={{ width: 110 }}>输入</th>
                     <th style={{ width: 100 }}>上次推演</th><th style={{ width: 90 }}>状态</th><th style={{ width: 70 }} />
                   </tr>
                 </thead>

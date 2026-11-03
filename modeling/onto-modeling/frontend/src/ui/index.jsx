@@ -45,7 +45,7 @@ export function Chip({ children, tone, sm, icon, dot, className, ...rest }) {
   );
 }
 
-// 节点 / 切片 / 条目的显示态：键与契约 DisplayState 一致，取值来自设计稿 ST 表
+// 节点 / 分段 / 条目的显示态：键与契约 DisplayState 一致，取值来自设计稿 ST 表
 export const DISPLAY_STATES = {
   not_ready: ['未就绪', 'gray', null],
   ready: ['可开始', 'line', 'play'],

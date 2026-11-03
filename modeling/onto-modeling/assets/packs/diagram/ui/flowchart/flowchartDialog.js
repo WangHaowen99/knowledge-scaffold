@@ -7,16 +7,16 @@ export function initialSelection(model) {
   return n ? { type: 'node', id: n.id } : null;
 }
 
-// 锁定条（设计稿 fcm-lock）：只说哪一片、到什么时候只读；右侧按钮给出下一步
+// 锁定条（设计稿 fcm-lock）：只说哪一段、到什么时候只读；右侧按钮给出下一步
 export function lockBarText(lock, info) {
   const slice = lock?.slice?.name;
   switch (lockState(lock)) {
     case 'assistant_running':
-      return { title: slice ? `助手正在改「${slice}」，确认生效或撤回前只读` : info?.text || '' };
+      return { title: slice ? `助手正在改「${slice}」，这一轮结束前只读` : info?.text || '' };
     case 'pending_confirm':
-      return { title: slice ? `「${slice}」的修改待确认，确认生效或撤回前只读` : info?.text || '' };
+      return { title: slice ? `「${slice}」和助手这一轮的修改有冲突，选好保留哪边前只读` : info?.text || '' };
     case 'autobuild_slice':
-      return { title: slice ? `自主构建正在做「${slice}」，这一片完成前只读` : info?.text || '' };
+      return { title: slice ? `自主构建正在做「${slice}」，这一段完成前只读` : info?.text || '' };
     default:
       return null;
   }

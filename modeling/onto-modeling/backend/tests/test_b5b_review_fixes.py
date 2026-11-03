@@ -175,7 +175,7 @@ def test_C_shutdown_right_after_a_merge_keeps_the_slice_linked(ab, monkeypatch):
 
     def merge(*args, **kwargs):
         result = real(*args, **kwargs)
-        if "「合成片2」" in (kwargs.get("message") or "") and not fired:
+        if "「合成段2」" in (kwargs.get("message") or "") and not fired:
             fired.update(cs=result["record"]["id"], commit=result["commit"])
             _cancel_driver(project_id)  # 停机时取消运行任务：合入已写进主线，运行记录还没记
         return result
@@ -272,7 +272,7 @@ def test_finish_always_reaches_an_end_state(ab, monkeypatch):
 
 
 def test_stop_without_a_driver_and_stop_racing_resume(ab, monkeypatch):
-    """推断：没有驱动任务的「在跑」运行，停在安全点直接收尾；停止收尾时来了续跑，不再多做一片。"""
+    """推断：没有驱动任务的「在跑」运行，停在安全点直接收尾；停止收尾时来了续跑，不再多做一段。"""
     from app.services.autobuild.runner import runner
 
     client, _workspaces, project_id, _root = ab
@@ -283,7 +283,7 @@ def test_stop_without_a_driver_and_stop_racing_resume(ab, monkeypatch):
         result = await real(project_id_, run_id_, unit)
         if not fired:
             fired["done"] = True
-            raise asyncio.CancelledError()  # 驱动任务在两片之间没了
+            raise asyncio.CancelledError()  # 驱动任务在两段之间没了
         return result
 
     monkeypatch.setattr(runner, "_safe_point", safe_point)
@@ -365,7 +365,7 @@ def test_D_confidence_parsing_and_tags():
 
 
 # ---------------------------------------------------------------------------
-# G、I、K、L 与推断：复核、挂起、按片撤回
+# G、I、K、L 与推断：复核、挂起、按段撤回
 # ---------------------------------------------------------------------------
 
 ASK_TWO = [{"question": "临期按几级分", "header": "置信度 0.6", "options": [{"label": "四级（推荐）"},
@@ -406,7 +406,7 @@ def test_I_defer_to_next_run_keeps_the_answer_and_the_next_run_uses_it(ab):
     inbox = client.get(f"/api/v1/projects/{project_id}/inbox", params={"filter": "autobuild_review"}).json()
     assert f"suspension:{item['id']}" in [entry["id"] for entry in inbox["items"]]
     AutoEngine.hints.clear()
-    # 下一次运行：这一片做完了，也为它补做挂起的那一步，注入里带上回答
+    # 下一次运行：这一段做完了，也为它补做挂起的那一步，注入里带上回答
     second = start(client, project_id, scope=ONE["scope"], budget=ONE["budget"])
     wait_state(client, project_id, second["run_id"], "completed")
     assert any("审批交给谁" in hint and "门店" in hint for hint in AutoEngine.hints)
@@ -443,7 +443,7 @@ def test_L_revert_drops_the_blueprint_members_this_slice_added(ab):
     client, _workspaces, project_id, root = ab
 
     def extra(ctx):
-        (Path(ctx.cwd) / "ontology/object/额外对象.md").write_text(obj("额外对象", "这一片顺手建的"), encoding="utf-8")
+        (Path(ctx.cwd) / "ontology/object/额外对象.md").write_text(obj("额外对象", "这一段顺手建的"), encoding="utf-8")
 
     AutoEngine.hooks["/ontology-extract-object:s1"] = [extra]
     run = start(client, project_id, **ONE)
@@ -513,7 +513,7 @@ def test_revert_interrupted_before_the_changeset_is_marked_is_finished_on_retry(
 
 
 def test_revert_interrupted_by_a_shutdown_is_finished_at_startup(ab, monkeypatch):
-    """推断：撤回写完反向提交就停了机——启动恢复按主线上的反向提交补记，这一片记为已撤回、不再提供撤回。"""
+    """推断：撤回写完反向提交就停了机——启动恢复按主线上的反向提交补记，这一段记为已撤回、不再提供撤回。"""
     from app.kernel.changesets import store as changeset_store
     from app.services.autobuild import runner as runner_module
 
@@ -532,7 +532,7 @@ def test_revert_interrupted_by_a_shutdown_is_finished_at_startup(ab, monkeypatch
         client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/s1/revert")
     monkeypatch.setattr(changeset_store, "update", real)
     report = runner_module.startup_sweep(workspaces)
-    assert report is not None and "补完 1 片撤回" in report["detail"], report
+    assert report is not None and "补完 1 段撤回" in report["detail"], report
     info = store.get(project_id, run["run_id"])["slices"]["s1"]
     assert info["reverted"]["commit"] == git(root, "log", "-1", "--format=%H", "--grep", "^revert: 撤回").strip()
     assert runner_module.startup_sweep(workspaces) is None

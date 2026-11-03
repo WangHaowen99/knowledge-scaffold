@@ -48,7 +48,7 @@ export function kindSegments(counts, { flowchartEnabled } = {}) {
 }
 
 // ---------- 写入范围锁（详设 4.3、契约 7.6 ScopeLock） ----------
-const SHORT = { assistant_running: '运行中', pending_confirm: '待确认', autobuild_slice: '自主构建中' };
+const SHORT = { assistant_running: '运行中', pending_confirm: '有冲突', autobuild_slice: '自主构建中' };
 
 /**
  * 条目在写入范围里时的各处说法；不在范围里返回 null。
@@ -57,23 +57,24 @@ const SHORT = { assistant_running: '运行中', pending_confirm: '待确认', au
 export function lockCopy(lock, target, name, { affected = [] } = {}) {
   if (!target || !isLocked(lock, target)) return null;
   const state = lockState(lock);
-  const scope = lock.slice?.name ? `「${lock.slice.name}」` : '这一片';
+  const scope = lock.slice?.name ? `「${lock.slice.name}」` : '这一段';
   const decided = !!target.id && affected.includes(target.id);
-  const until = state === 'assistant_running' || state === 'pending_confirm' ? '确认生效或撤回前只读' : '这一片完成前只读';
+  const until = state === 'assistant_running' ? '这一轮结束前只读' : state === 'pending_confirm' ? '选好保留哪边前只读' : '这一段完成前只读';
   const pop = decided ? '等你决定的口径会改到它，决定前只读' : `在${scope}的写入范围里，${until}`;
   if (state === 'assistant_running') {
-    return { state, chip: SHORT[state], pop, title: '助手正在改这一片，确认生效或撤回前只读', sub: '', action: { kind: 'conversation', label: '回到对话' } };
+    return { state, chip: SHORT[state], pop, title: '助手正在改这一段，这一轮结束前只读', sub: '', action: { kind: 'conversation', label: '回到对话' } };
   }
   if (state === 'pending_confirm') {
-    return { state, chip: SHORT[state], pop, title: '这一片的修改待确认，确认生效或撤回前只读', sub: '', action: { kind: 'confirm', label: '去确认' } };
+    return { state, chip: SHORT[state], pop, title: '这一段和助手这一轮的修改有冲突，选好保留哪边前只读', sub: '', action: { kind: 'confirm', label: '去处理' } };
   }
-  return { state, chip: SHORT[state] || '只读', pop, title: '自主构建正在做这一片，完成前只读', sub: '', action: { kind: 'run', label: '查看运行' } };
+  return { state, chip: SHORT[state] || '只读', pop, title: '自主构建正在做这一段，完成前只读', sub: '', action: { kind: 'run', label: '查看运行' } };
 }
 
-// 锁定条按钮去哪：运行中回到对话；待确认去工作台对话里的本轮卡（wb-l2）；自主构建去运行页
+// 锁定条按钮去哪：运行中回到对话；合入冲突去待处理选保留哪边（F3）；自主构建去运行页
 export function lockActionTarget(action, lock) {
   if (!action) return null;
   if (action.kind === 'run') return { page: 'l4-run', query: lock?.run_id ? { run: lock.run_id } : undefined };
+  if (action.kind === 'confirm') return { page: 'inbox' };
   return { page: 'wb-l2', query: lock?.conversation_id ? { c: lock.conversation_id } : undefined };
 }
 

@@ -1,10 +1,10 @@
 """B4d 合进交付分支后的衔接（gaps B4d 第 1～7 条；decisions-log「B4d 合并」）。
 
-B4d（建模蓝图、按切片的主流程）与 B5c（节点包：可补做、已停用、熔断、人工节点、节点钩子、包的发布门禁）都改了流程
+B4d（建模蓝图、按段的主流程）与 B5c（节点包：可补做、已停用、熔断、人工节点、节点钩子、包的发布门禁）都改了流程
 运行时的同一条计算链，这里证明两边的行为同时成立：
 
-- 按片建模的项目里，节点包的关卡挡住建模（做了一部分也显示被挡住）、熔断解除关卡，切片照常按片算；
-- 可补做在按片的新流程里照样成立：不计进度分母、不抢主线下一步，主推仍是这一片的下一步；
+- 按段建模的项目里，节点包的关卡挡住建模（做了一部分也显示被挡住）、熔断解除关卡，分段照常按段算；
+- 可补做在按段的新流程里照样成立：不计进度分母、不抢主线下一步，主推仍是这一段的下一步；
 - 待处理里人工节点的决策卡和建模蓝图的待答问题并存，各自回答各自消失；
 - 发布页的节点（发布）开始时回「在页面里操作」，人工节点照常出卡；
 - 发布门禁链：平台门禁在前，流程关卡（全局一致性、包的关卡节点）在后。
@@ -70,14 +70,14 @@ def test_pack_gate_and_breaker_in_the_sliced_flow(env):
     built = view.build(root)
     nodes = {node["id"]: node for node in built["nodes"]}
     assert nodes["core.model"]["state"] == "blocked" and nodes["naming.check"]["state"] == "ready"
-    assert [item["id"] for item in built["slices"]] == ["s1", "s2"]  # 切片照常按片算
+    assert [item["id"] for item in built["slices"]] == ["s1", "s2"]  # 分段照常按段算
     assert built["slices"][0]["stages"]["object"] == "confirmed"
     ops_state.set_breaker("naming", "0.1.0", "open", "ops")
     try:
         nodes = nodes_of(root)
         assert nodes["naming.check"]["state"] == "skipped" and nodes["naming.check"]["actions"] == []
-        assert nodes["core.model"]["state"] == "running"  # 关卡解除，按各片汇总（第一片做了一部分）
-        assert nodes["core.model"]["progress"]["label"] == "0/2 片"
+        assert nodes["core.model"]["state"] == "running"  # 关卡解除，按各段汇总（第一段做了一部分）
+        assert nodes["core.model"]["progress"]["label"] == "0/2 段"
     finally:
         ops_state.set_breaker("naming", "0.1.0", "close", "ops")
         ops_state.set_breaker("naming", "0.1.0", "close", "ops")
@@ -101,7 +101,7 @@ def test_backfill_keeps_out_of_the_way_of_the_slice_next_step(env):
     assert check["flags"]["backfill"] is True and check["counts_in_progress"] is False
     assert built["progress"] == before["progress"] and flow_model.progress(root)["total"] == total_before
     model = next(node for node in built["nodes"] if node["id"] == "core.model")
-    assert model["progress"]["label"] == "1/2 片"
+    assert model["progress"]["label"] == "1/2 段"
     primary = built["suggestions"]["primary"]
     assert primary["id"] == "core.model:s2:operation" and primary["action"]["args"] == {"slice": "s2"}
     assert not any(item["id"].startswith("backfill:") for item in [primary])
@@ -119,7 +119,7 @@ def test_progress_combines_slices_and_backfill(env):
     install(manager, tmp_path)
     enable_and_apply(client, manager, project_id)
     info = flow_model.progress(root)
-    assert info["hits"]["core.model"] is False  # 按片：第二片还没做
+    assert info["hits"]["core.model"] is False  # 按段：第二段还没做
     built = view.build(root)
     assert info["done"] == built["progress"]["done"] and info["total"] == built["progress"]["total"]
     _slice_done(root, "图书", "还书")

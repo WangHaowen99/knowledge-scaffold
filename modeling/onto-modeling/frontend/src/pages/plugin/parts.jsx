@@ -141,14 +141,14 @@ export function ScopeLockBar({ lock, targets, text, className, style }) {
   const [title, desc] = (st === 'pending_confirm' ? text?.pending : text?.running) || [];
   const conv = lock.conversation_id ? { c: lock.conversation_id } : undefined;
   let action;
-  if (st === 'pending_confirm') action = <Button size="xs" kind="primary" icon="merge" onClick={() => navigate(pagePath('wb-l2', pid), conv)}>去确认</Button>;
+  if (st === 'pending_confirm') action = <Button size="xs" kind="primary" icon="merge" onClick={() => navigate(pagePath('inbox', pid))}>去处理</Button>;
   else if (st === 'autobuild_slice') action = <Button size="xs" onClick={() => navigate(pagePath('l4-run', pid))}>查看运行</Button>;
   else action = <Button size="xs" onClick={() => navigate(pagePath('wb-l2', pid), conv)}>回到对话</Button>;
   return (
     <div className={cx('mr-lock', className)} style={style}>
       <Icon name="lock" size={14} />
       <div className="grow">
-        <b>{title || (st === 'pending_confirm' ? '助手的修改还没确认，确认生效或撤回后才能编辑' : '助手正在改这部分内容，确认生效或撤回后才能编辑')}</b>
+        <b>{title || (st === 'pending_confirm' ? '和助手这一轮的修改有冲突，选好保留哪边后才能编辑' : '助手正在改这部分内容，这一轮结束后才能编辑')}</b>
         {desc ? <div className="xs" style={{ marginTop: 3, color: '#92400E' }}>{desc}</div> : null}
       </div>
       {action}

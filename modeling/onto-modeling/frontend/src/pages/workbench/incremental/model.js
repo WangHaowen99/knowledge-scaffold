@@ -159,12 +159,10 @@ export function roundLines(card) {
   }));
 }
 
-// 还有场景没通过时，确认生效旁边的提示（标注 incremental-006）
+// 还有场景没通过时，版本旁边的提示（标注 incremental-006；F3 起一轮结束就合入，没有「确认后」）
 export function remainingNote(card) {
   const n = card?.remaining_failures || 0;
-  if (!n) return '';
-  if (card.state === 'merged') return `不通过的 ${n} 个场景已留在待处理`;
-  return `还有 ${n} 个场景不通过，确认后它${n > 1 ? '们' : ''}留在待处理`;
+  return n ? `不通过的 ${n} 个场景已留在待处理` : '';
 }
 
 // ---------- 外部反馈 ----------
@@ -187,8 +185,8 @@ export function changeListIdFromInbox(items) {
   return hit ? hit.id.slice('change_list:'.length) : null;
 }
 
-// 已执行、还没确认生效的清单不在待处理里（IN-01 只列没执行的）：它的修改是一个待确认的助手变更集，
-// 落到那个变更集所在的对话（CS-01 state=pending_confirm 的 conversation_id，还在对话列表里的）
+// 已执行的清单不在待处理里（IN-01 只列没执行的）；升级前留下的、还没合入的变更集（F3 起一轮结束就合入）
+// 落到它所在的对话（CS-01 state=pending_confirm 的 conversation_id，还在对话列表里的）
 export function pendingChangesetConversation(changesets, conversations) {
   const ids = new Set((conversations || []).map((c) => c.id));
   const hit = (changesets || []).find((cs) => cs.source === 'assistant' && cs.conversation_id && ids.has(cs.conversation_id));

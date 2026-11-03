@@ -164,13 +164,13 @@ export function checkPolicy(p, sourceIds) {
   if (t != null && !(t >= 0.5 && t <= 1)) return [400, 'invalid_argument', '阈值在 0.5～1.0 之间', { fields: { 'advanced.confidence_threshold': 'out_of_range' } }];
   const bad = (p.production_collection || []).find((x) => !sourceIds.includes(x.source_id));
   if (bad) return [422, 'source_not_authorized', '本项目没有获授权使用这个数据源', { source_id: bad.source_id }];
-  if (p.scope?.mode === 'selected' && !(p.scope.slice_ids || []).length) return [400, 'invalid_argument', '至少选一片', { fields: { 'scope.slice_ids': 'required' } }];
+  if (p.scope?.mode === 'selected' && !(p.scope.slice_ids || []).length) return [400, 'invalid_argument', '至少选一段', { fields: { 'scope.slice_ids': 'required' } }];
   return null;
 }
 
-const BELOW = { conservative_assumption: '采用保守选项并记为假设', suspend: '挂起这一项，跳到下一片' };
+const BELOW = { conservative_assumption: '采用保守选项并记为假设', suspend: '挂起这一项，跳到下一段' };
 
-// AB-03：按策略算这次的范围（flow 里没完成的切片）、生产库、警告
+// AB-03：按策略算这次的范围（flow 里没完成的分段）、生产库、警告
 export function previewOf(policy, flowSlices, sourceName = (id) => id) {
   const scope = policy.scope || {};
   const slices = (flowSlices || []).map((s) => {

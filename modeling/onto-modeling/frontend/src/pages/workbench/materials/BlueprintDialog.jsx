@@ -1,5 +1,5 @@
-// 调整建模蓝图（设计稿 wb-blueprint #enBpM）：目标、范围外、切片规划（拖动排序、合并、拆分、排除、改名、新增）、术语口径、待你回答
-// BP-01 读、BP-02 整份切片列表保存；按章节拆分要读资料，走 S-20 命令
+// 调整建模蓝图（设计稿 wb-blueprint #enBpM）：目标、范围外、分段规划（拖动排序、合并、拆分、排除、改名、新增）、术语口径、待你回答
+// BP-01 读、BP-02 整份分段列表保存；按章节拆分要读资料，走 S-20 命令
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../../app/context.js';
 import { toast } from '../../../app/toast.jsx';
@@ -84,21 +84,21 @@ export function BlueprintDialog({ onClose }) {
     toast('已合并', 'merge');
   };
   const split = () => {
-    if (sel.length !== 1) { toast('选一片后按章节拆分', 'info'); return; }
+    if (sel.length !== 1) { toast('选一段后按章节拆分', 'info'); return; }
     const s = slices.find((x) => x.id === sel[0]);
     pageCommand(api, pid, {
-      command: '/ontology-research', args: { split_slice: s.id, by: 'chapter' }, text: `把切片「${s.name}」按章节拆分`,
+      command: '/ontology-research', args: { split_slice: s.id, by: 'chapter' }, text: `把分段「${s.name}」按章节拆分`,
       page: 'wb-blueprint', label: '调整建模蓝图', done: '已发给助手',
     });
   };
   const exclude = () => {
-    if (!sel.length) { toast('先勾选要排除的切片', 'info'); return; }
+    if (!sel.length) { toast('先勾选要排除的分段', 'info'); return; }
     const restoring = slices.filter((s) => sel.includes(s.id)).every((s) => s.excluded);
     setSlices((l) => toggleExcluded(l, sel));
     toast(restoring ? '已恢复' : '已排除', 'ban');
   };
   const rename = () => {
-    if (sel.length !== 1) { toast('勾选一片再改名', 'info'); return; }
+    if (sel.length !== 1) { toast('勾选一段再改名', 'info'); return; }
     const s = slices.find((x) => x.id === sel[0]);
     setRenaming({ id: s.id, value: s.name, original: s.name });
   };
@@ -194,14 +194,14 @@ export function BlueprintDialog({ onClose }) {
 
           <div className="en-bp-sec">
             <h4>
-              <Icon name="layers" size={14} />切片规划 <span className="n">{live} 片</span><span className="sp" />
-              <Button size="xs" icon="merge" disabled={sel.length < 2} onClick={merge}>{sel.length >= 2 ? `合并 ${sel.length} 片` : '合并'}</Button>
+              <Icon name="layers" size={14} />分段规划 <span className="n">{live} 段</span><span className="sp" />
+              <Button size="xs" icon="merge" disabled={sel.length < 2} onClick={merge}>{sel.length >= 2 ? `合并 ${sel.length} 段` : '合并'}</Button>
               <Button size="xs" icon="split" onClick={split}>拆分</Button>
               <Button size="xs" icon="ban" onClick={exclude}>排除</Button>
               <Button size="xs" icon="edit" onClick={rename}>改名</Button>
               <Button size="xs" icon="plus" kind="ghost" onClick={add}>新增</Button>
             </h4>
-            <div className="en-sl hd"><span /><span /><span>切片</span><span>中心流程</span><span>规模</span><span>依赖 · 顺序</span><span /></div>
+            <div className="en-sl hd"><span /><span /><span>分段</span><span>中心流程</span><span>规模</span><span>依赖 · 顺序</span><span /></div>
             {slices.map((s, i) => {
               const on = sel.includes(s.id);
               const isRen = renaming?.id === s.id;
@@ -234,7 +234,7 @@ export function BlueprintDialog({ onClose }) {
                           <Button icon="check" size="xs" kind="primary" title="确定" disabled={!renaming.value.trim()} onClick={commitRename} />
                           <Button icon="x" size="xs" kind="ghost" title="取消" onClick={() => setRenaming(null)} />
                         </div>
-                        <div className="xs muted mt4">{renaming.fresh ? '新切片' : `改名中 · 原名「${renaming.original}」`}</div>
+                        <div className="xs muted mt4">{renaming.fresh ? '新分段' : `改名中 · 原名「${renaming.original}」`}</div>
                       </>
                     ) : <div className="nm b ell" onDoubleClick={() => setRenaming({ id: s.id, value: s.name, original: s.name })} title="双击改名">{s.name}</div>}
                   </div>
@@ -245,7 +245,7 @@ export function BlueprintDialog({ onClose }) {
                   <div className="col" style={{ gap: 3, alignItems: 'flex-start' }}>
                     <span className="xs muted">
                       依赖 <b style={{ color: 'var(--ink)' }}>{depLabel(s, slices)}</b>
-                      {depAfter(s, slices) ? <span title="依赖的切片排在后面" style={{ color: 'var(--amber)', marginLeft: 4 }}><Icon name="alert" size={12} /></span> : null}
+                      {depAfter(s, slices) ? <span title="依赖的分段排在后面" style={{ color: 'var(--amber)', marginLeft: 4 }}><Icon name="alert" size={12} /></span> : null}
                     </span>
                     <OrderTag slice={s} index={i} />
                   </div>

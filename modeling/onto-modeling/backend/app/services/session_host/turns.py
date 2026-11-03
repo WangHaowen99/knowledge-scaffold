@@ -58,7 +58,7 @@ def _write_marker(root: Path | None, record: dict | None) -> None:
         tmp.write_text(json.dumps({"exec_id": record["id"], "node": node.get("id") or "",
                                    "node_version": node.get("version") or "",
                                    "conversation_id": record.get("conversation_id") or "",
-                                   # 按切片的命令：当前这一片（blueprint.py brief、state_helper acquire 读它）
+                                   # 按段的命令：当前这一段（blueprint.py brief、state_helper acquire 读它）
                                    "slice": record.get("slice"), "step": record.get("step")}), encoding="utf-8")
         os.replace(tmp, path)
     except OSError:

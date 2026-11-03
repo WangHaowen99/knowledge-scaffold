@@ -1,9 +1,9 @@
 """建模蓝图（详设第 9 章建议 2、6.8；契约 BP-01～BP-03、4.7 blueprint 卡、7.8 Blueprint；ADR-0050）。
 
-- 蓝图文件由 core 的 blueprint.py 写入与校验：草稿编号、依赖解析、全量模式（只有一片）；
-- 调整（BP-02）：合并、排除、改名、调序、新增都是整份切片列表；草案 / 调整两种保存、revision 冲突；
-- 蓝图在资料分析那一轮的修改里时：读、调整都对副本，确认蓝图先确认生效这一轮再标已确认；
-- 确认（BP-03）：L2 往对话发「开始第一个切片」，L4 在自主构建（B5b）登记前 409、蓝图不动；
+- 蓝图文件由 core 的 blueprint.py 写入与校验：草稿编号、依赖解析、全量模式（只有一段）；
+- 调整（BP-02）：合并、排除、改名、调序、新增都是整份分段列表；草案 / 调整两种保存、revision 冲突；
+- 蓝图在资料分析那一轮的修改里（助手在跑）时：读、调整都对副本；F3 起那一轮结束就合入，确认蓝图只标已确认；
+- 确认（BP-03）：L2 往对话发「开始第一段」，L4 在自主构建（B5b）登记前 409、蓝图不动；
 - 一轮写出蓝图时对话里出蓝图卡，调整后卡片跟着更新；没答的问题进待处理。
 
 测试数据全部为合成内容；假引擎不起真实 CLI。
@@ -70,11 +70,11 @@ def test_draft_gets_ids_dependencies_and_full_mode_for_one_slice():
     assert view["version_label"] == "草案 v1"
     assert [item["order_label"] for item in view["slices"]] == ["推荐先做", "第 2 个", "第 3 个", "建议最后做"]
     assert view["slices"][0]["scale"] == {"objects": 2, "rules": 0}
-    # 重新规划：草案号加 1，同名切片沿用旧编号
-    again = module.from_draft({**DRAFT, "slices": DRAFT["slices"][:2] + [{"name": "新的一片", "depends_on": ["s1"]}]},
+    # 重新规划：草案号加 1，同名分段沿用旧编号
+    again = module.from_draft({**DRAFT, "slices": DRAFT["slices"][:2] + [{"name": "新的一段", "depends_on": ["s1"]}]},
                               doc)
     assert again["version_no"] == 2 and [item["id"] for item in again["slices"]] == ["s1", "s2", "s5"]
-    # 只有一片就是全量模式
+    # 只有一段就是全量模式
     single = module.from_draft({"goal_md": "小项目", "slices": [{"name": "全部"}]})
     assert single["slices"][0]["id"] == "all" and module.mode(single) == "full"
     assert module.mode(None) == "full"
@@ -94,7 +94,7 @@ def _inputs(doc):
 def test_slice_edits_merge_exclude_rename_reorder_and_add():
     module = bp()
     doc = module.from_draft(DRAFT)
-    # 合并「安全库存」「陈列量」：条目取并集，依赖它们的片改指新片，被合并的片去掉
+    # 合并「安全库存」「陈列量」：条目取并集，依赖它们的段改指新段，被合并的段去掉
     items = _inputs(doc)
     merged = {"id": "new-1", "name": "库存与陈列", "core_flow": "", "depends_on": ["s1"], "excluded": False,
               "merged_from": ["s2", "s3"]}
@@ -109,12 +109,12 @@ def test_slice_edits_merge_exclude_rename_reorder_and_add():
     items = _inputs(result)
     items[2] = {**items[2], "excluded": True}
     items[1] = {**items[1], "name": "库存陈列"}
-    items.append({"id": "new-2", "name": "补充一片", "core_flow": "", "depends_on": ["s1"], "excluded": False})
+    items.append({"id": "new-2", "name": "补充一段", "core_flow": "", "depends_on": ["s1"], "excluded": False})
     edited = module.apply_edit(result, {"mode": "draft", "slices": items})
     assert edited["version_no"] == 2 and edited["slices"][1]["name"] == "库存陈列"
     assert edited["slices"][2]["excluded"] and edited["slices"][3]["id"] == "s6"
     assert module.view(edited)["slices"][2]["order_label"] == ""
-    # 调序：依赖的片排到后面就拒绝
+    # 调序：依赖的段排到后面就拒绝
     swapped = _inputs(edited)
     swapped[0], swapped[1] = swapped[1], swapped[0]
     with pytest.raises(module.BlueprintError) as caught:
@@ -151,12 +151,12 @@ def test_cli_writes_checks_and_briefs_a_slice(tmp_path):
         return subprocess.run([*cli, *args], cwd=tmp_path, capture_output=True, text=True)
 
     written = run("write", "draft.json")
-    assert written.returncode == 0 and written.stdout.startswith("ok:research/blueprint.json:草案 v1:4 片")
+    assert written.returncode == 0 and written.stdout.startswith("ok:research/blueprint.json:草案 v1:4 段")
     assert run("check").returncode == 0
     (tmp_path / ".onto" / "run").mkdir(parents=True)
     (tmp_path / ".onto" / "run" / "exec.json").write_text(json.dumps({"slice": {"id": "s2", "name": "安全库存"}}))
     brief = run("brief").stdout
-    assert "切片：安全库存（s2）" in brief and "依赖：补货申请" in brief and "门店、商品品类" in brief
+    assert "分段：安全库存（s2）" in brief and "依赖：补货申请" in brief and "门店、商品品类" in brief
     assert run("assign", "s2", "object:补货台账", "object:门店").stdout.strip() == "ok:1"
     doc = json.loads((tmp_path / "research" / "blueprint.json").read_text(encoding="utf-8"))
     assert doc["slices"][1]["objects"] == ["安全库存标准", "补货台账"]
@@ -282,10 +282,11 @@ def _research_turn(manager, project_id, root):
     asyncio.run(turn())
 
 
-def test_blueprint_in_the_research_changeset_is_edited_in_the_copy_and_confirm_merges_it(env):
+def test_blueprint_from_the_research_turn_is_on_mainline_and_confirm_only_marks_it(env):
+    """F3：资料分析那一轮结束就合入，蓝图在主线上；调整、回答经写入事务写主线，确认蓝图不再先确认生效。"""
     client, workspaces, manager, project_id, root = env
     _research_turn(manager, project_id, root)
-    assert not (root / "research" / "blueprint.json").exists()
+    assert (root / "research" / "blueprint.json").is_file()
     history = manager.get_history(project_id, "default")
     cards = [event["payload"] for event in history if event.get("type") == "card"]
     kinds = [card["card_type"] for card in cards]
@@ -294,7 +295,7 @@ def test_blueprint_in_the_research_changeset_is_edited_in_the_copy_and_confirm_m
     card = next(card for card in cards if card["card_type"] == "blueprint")
     assert card["title"] == "建模蓝图 · 草案 v1" and card["open"] == {"kind": "dialog", "target": "blueprint"}
     assert card["questions_pending"] == 1 and card["terms"] == {"aligned": 1, "ambiguous": 1}
-    assert card["confirm_options"] == [{"mode": "L2", "label": "确认，一片一片来"}]  # 一路建完等 B5b
+    assert card["confirm_options"] == [{"mode": "L2", "label": "确认，一段一段来"}]  # 一路建完等 B5b
     rc = next(card for card in cards if card["card_type"] == "round_changes")
     assert rc["groups"][0]["items"][0]["target"]["title"] == "建模蓝图"
     base = f"/api/v1/projects/{project_id}/blueprint"
@@ -304,7 +305,7 @@ def test_blueprint_in_the_research_changeset_is_edited_in_the_copy_and_confirm_m
     items = client.get(f"/api/v1/projects/{project_id}/inbox").json()["items"]
     question = next(item for item in items if item["id"] == "decision:bq-q1")
     assert question["kind"] == "decision"
-    # 调整写进副本（这一轮的修改的一部分），主线不动；蓝图卡跟着更新
+    # 调整写主线；蓝图卡跟着更新
     slices = [{"id": item["id"], "name": item["name"], "core_flow": item["core_flow"],
                "depends_on": item["depends_on"], "excluded": item["excluded"]} for item in got["slices"]]
     slices[2]["excluded"] = True
@@ -312,35 +313,39 @@ def test_blueprint_in_the_research_changeset_is_edited_in_the_copy_and_confirm_m
     saved = client.put(base, json={"base_revision": got["revision"], "mode": "adjust", "slices": slices})
     assert saved.status_code == 200, saved.text
     assert saved.json()["version_label"] == "草案 v2"
-    assert not (root / "research" / "blueprint.json").exists()
-    copy = changesets.existing_copy(root)
-    assert json.loads((copy / "research" / "blueprint.json").read_text(encoding="utf-8"))["version_no"] == 2
+    assert json.loads((root / "research" / "blueprint.json").read_text(encoding="utf-8"))["version_no"] == 2
     updated = [event["payload"] for event in manager.get_history(project_id, "default")
                if event.get("type") == "card_updated" and event["payload"].get("card_type") == "blueprint"]
     assert updated and updated[-1]["version_label"] == "草案 v2"
-    # 回答问题（待处理 IN-03）也写进副本
+    # 回答问题（待处理 IN-03）
     answered = client.post(f"/api/v1/projects/{project_id}/inbox/decision:bq-q1/actions",
                            json={"action": "answer", "option_id": "A"})
     assert answered.status_code == 200, answered.text
     assert client.get(base).json()["questions"][0]["answer"] == {"option_id": "A"}
-    # 确认蓝图：先把这一轮确认生效，再在主线上标已确认
+    # 确认蓝图：只在主线上标已确认
     confirmed = client.post(f"{base}/confirm", json={"base_revision": client.get(base).json()["revision"],
                                                      "next": "L2"})
     assert confirmed.status_code == 200, confirmed.text
     on_main = json.loads((root / "research" / "blueprint.json").read_text(encoding="utf-8"))
     assert on_main["state"] == "confirmed" and on_main["version_no"] == 2 and on_main["slices"][2]["excluded"]
-    assert changesets.current(workspaces, project_id) is None or \
-        changesets.current(workspaces, project_id)["state"] in ("open", "pending_confirm")
-    assert "Onto-Changeset: cs-1" in git(root, "log", "--format=%B", "-4")
+    assert changesets.current(workspaces, project_id) is None
+    assert "Onto-Changeset: cs-1" in git(root, "log", "--format=%B", "-6")
     # I1 合并：确认之后蓝图卡所在对话的建议条跟着换，不再停在「确认蓝图」
     bars = [event["payload"] for event in manager.get_history(project_id, "default") if event.get("type") == "suggestions"]
     assert bars and (bars[-1].get("primary") or {}).get("id") != "confirm_blueprint"
 
 
 def test_saving_while_the_assistant_runs_is_423(env, monkeypatch):
-    client, _workspaces, manager, project_id, root = env
+    client, workspaces, manager, project_id, root = env
     _research_turn(manager, project_id, root)
+    # 助手又开始改蓝图（这一轮还在跑）：蓝图在副本里，调整回 423
+    copy = changesets.copy_for_turn(workspaces, project_id, root)
+    draft = json.loads((copy / "research" / "blueprint.json").read_text(encoding="utf-8"))
+    draft["out_of_scope"] = ["助手正在改"]
+    (copy / "research" / "blueprint.json").write_text(json.dumps(draft, ensure_ascii=False), encoding="utf-8")
+    changesets.observe(workspaces, project_id, running=True, conversation_id="default")
     got = client.get(f"/api/v1/projects/{project_id}/blueprint").json()
+    assert got["out_of_scope"] == ["助手正在改"]
     monkeypatch.setattr(changesets, "_activity_provider",
                         lambda pid: {"running": True, "conversation_id": "default", "exec": None, "affected": []})
     locked = client.put(f"/api/v1/projects/{project_id}/blueprint",
@@ -354,7 +359,7 @@ def test_blueprint_card_offers_build_all_once_autobuild_registers(env, monkeypat
     monkeypatch.setattr(blueprint_service, "_autobuild_preview", lambda *args, **kwargs: {})
     cards = blueprint_service.round_cards(workspaces, project_id, {"added": ["research/blueprint.json"]}, "seed")
     assert [card["card_type"] for card in cards] == ["blueprint"]
-    assert cards[0]["confirm_options"] == [{"mode": "L2", "label": "确认，一片一片来"},
+    assert cards[0]["confirm_options"] == [{"mode": "L2", "label": "确认，一段一段来"},
                                            {"mode": "L4", "label": "确认，一路建完…"}]
     confirmed = blueprint_service.blueprint_card(bp(), bp().confirm(bp().from_draft(DRAFT)), "c", research_verified=True)
     assert confirmed["confirm_options"] == []

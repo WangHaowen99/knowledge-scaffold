@@ -36,7 +36,7 @@ test('顺序标签：没动过用服务端推荐，动过写「第 n 个」，�
   assert.deepEqual(orderLabel({ ...list[1], excluded: true }, 1), { text: '已排除', tone: 'faint' });
 });
 
-test('合并：放在第一片的位置，依赖取并集并改指向新片，记下 merged_from', () => {
+test('合并：放在第一段的位置，依赖取并集并改指向新段，记下 merged_from', () => {
   const list = editableSlices(bp().slices);
   const { list: next, merged } = mergeSlices(list, ['s3', 's4']);
   assert.equal(next.length, 4);
@@ -49,7 +49,7 @@ test('合并：放在第一片的位置，依赖取并集并改指向新片，�
   assert.equal(mergeSlices(list, ['s1']).merged, null);
 });
 
-test('排除再点一次就恢复；改名去空格、空名不改；新增一片', () => {
+test('排除再点一次就恢复；改名去空格、空名不改；新增一段', () => {
   const list = editableSlices(bp().slices);
   const ex = toggleExcluded(list, ['s2']);
   assert.equal(ex[1].excluded, true);
@@ -58,10 +58,10 @@ test('排除再点一次就恢复；改名去空格、空名不改；新增一�
   assert.equal(renameSlice(list, 's3', '   '), list);
   const { list: added, added: s } = addSlice(list);
   assert.equal(added.length, 6);
-  assert.equal(s.name, '新切片');
+  assert.equal(s.name, '新分段');
 });
 
-test('BP-02 请求体：只带改过的部分；切片按数组顺序给整份列表', () => {
+test('BP-02 请求体：只带改过的部分；分段按数组顺序给整份列表', () => {
   const b = bp();
   const edit = editOf(b);
   assert.equal(isDirty(blueprintPayload(b, edit, 'adjust')), false);
@@ -131,14 +131,14 @@ test('BP-02：版本号冲突 409、依赖顺序不对 400、保存调整草案�
   assert.equal(draft.body.version_label, '草案 v3');
 });
 
-test('BP-03：L2 发「开始第一个切片」并把资料分析标为已确认；L4 返回自主构建预览', () => {
+test('BP-03：L2 发「开始第一段」并把资料分析标为已确认；L4 返回自主构建预览', () => {
   const s = fakeServer('blueprint');
   const cur = s.call('GET', '/blueprint').body;
   const l2 = s.call('POST', '/blueprint/confirm', { base_revision: cur.revision, next: 'L2' });
   assert.equal(l2.body.blueprint.state, 'confirmed');
-  assert.match(l2.body.command_task.title, /开始第一个切片「补货申请与门店需求」/);
+  assert.match(l2.body.command_task.title, /开始第一段「补货申请与门店需求」/);
   assert.equal(s.flow.nodes.find((x) => x.id === 'core.research').state, 'confirmed');
-  assert.equal(s.flow.nodes.find((x) => x.id === 'core.model').progress.label, '0/5 片');
+  assert.equal(s.flow.nodes.find((x) => x.id === 'core.model').progress.label, '0/5 段');
   assert.ok(s.events.some((e) => e.type === 'message.user' && e.data.origin.page === 'wb-blueprint'));
   const s2 = fakeServer('blueprint');
   const c2 = s2.call('GET', '/blueprint').body;

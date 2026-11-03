@@ -40,7 +40,7 @@ test('运行条：运行中显示已用时 / 预计，结束后显示用时 / �
   assert.deepEqual(stripMetrics(done)[0], ['用时', '1 小时 52 分', '2 小时', 93]);
   assert.equal(stripTitle(run).title, '自主构建中 · 运行 #3');
   assert.equal(stripTitle(run).sub, '当前：临期与损耗检查 › 提取规则');
-  assert.equal(stripTitle({ ...done, started_at: at(15, 10), ended_at: at(17, 2) }).sub, '15:10 – 17:02 · 全部切片完成');
+  assert.equal(stripTitle({ ...done, started_at: at(15, 10), ended_at: at(17, 2) }).sub, '15:10 – 17:02 · 全部分段完成');
   assert.equal(stripTitle({ ...run, state: 'paused' }).title, '已暂停 · 运行 #3');
   // 暂停在两步之间（真实运行：当前步骤为空）不留「›」
   assert.equal(stripTitle({ ...run, state: 'paused', current: { ...run.current, step_label: '' } }).sub, '停在：临期与损耗检查');
@@ -56,7 +56,7 @@ test('流水线结果列的颜色', () => {
   assert.equal(matrixTone(row(['confirmed', 'auto', 'auto', 'auto', 'auto'], '已刷新过期 3 项')), 'indigo');
 });
 
-test('按切片的进展块：连续步骤合成一段，自动决定、挂起按原顺序穿插', () => {
+test('按段的进展块：连续步骤合成一段，自动决定、挂起按原顺序穿插', () => {
   const s = (id) => ({ id, text: id, meta: '', state: 'done' });
   const segs = sliceSegments([s('a'), s('b'), { type: 'auto_decision', card: { card_id: 'd1' } }, s('c'), { type: 'suspension', card: { card_id: 'p1' } }, s('e')]);
   assert.deepEqual(segs.map((x) => x.kind), ['steps', 'auto_decision', 'steps', 'suspension', 'steps']);
@@ -70,7 +70,7 @@ test('运行详情六格与报告卡八格', () => {
   const r = reportOf('completed');
   const m = reportMetrics(r);
   assert.equal(m.length, 8);
-  assert.deepEqual(m[1], ['切片', '5 / 5', '临期与损耗检查部分完成']);
+  assert.deepEqual(m[1], ['分段', '5 / 5', '临期与损耗检查部分完成']);
   assert.deepEqual(m[5], ['自动决策', '17 项', '高置信 13 · 需看 4']);
   // 没有场景（真实运行没装或没生成）时不写「全部通过」
   const none = reportMetrics({ ...r, metrics: { ...r.metrics, scenarios: { passed: 0, total: 0, suspended_failures: 0 } } });
@@ -78,7 +78,7 @@ test('运行详情六格与报告卡八格', () => {
   assert.match(reportSub({ ...r, started_at: at(15, 10), ended_at: at(17, 2) }), /^15:10 – 17:02 · 服务重启 1 次，已自动续跑$/);
 });
 
-test('运行中的输入框：补充说明不打断运行；正在做的这一片完成前只读', () => {
+test('运行中的输入框：补充说明不打断运行；正在做的这一段完成前只读', () => {
   const st = composerState({ sessionState: 'running', autobuildRunning: true });
   // 文案由外壳的只读口径定（state/readonly.js），这里只认「补充说明、不打断运行」与送达方式
   assert.match(st.placeholder, /^补充说明，不打断运行/);
@@ -106,7 +106,7 @@ test('mock 运行 #3：运行中停在 15:48，结束后台账 17 项、挂起 3
   assert.ok(ENDED.has('converted'));
 });
 
-test('mock 运行对话：开始卡、按切片的进展块、结束后的报告卡', () => {
+test('mock 运行对话：开始卡、按段的进展块、结束后的报告卡', () => {
   const types = (h) => h.filter((e) => e.type === 'card').map((e) => e.data.card_type);
   assert.deepEqual(types(history('running')), ['autobuild_start', 'slice_progress', 'slice_progress', 'slice_progress', 'slice_progress']);
   assert.deepEqual(types(history('completed')).slice(-2), ['slice_progress', 'run_report']);

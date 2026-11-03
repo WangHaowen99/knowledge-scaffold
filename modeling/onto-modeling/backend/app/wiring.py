@@ -13,7 +13,7 @@
   一轮写出建模蓝图 → 蓝图卡（B4d，ADR-0050）同一个登记点。
 - 包声明的门禁 → 写入事务的门禁链（ADR-0068）：`kernel/writepath.register_gate_checker`。
 - 自主构建（B5b，ADR-0060～0062）：运行中确认卡、决策卡由策略作答（`agent_sessions.register_policy_responder`）；
-  片说明与台账摘要注入（`injection.register_autobuild_hint_provider`）；BP-03 `next=L4` 的开始前预览
+  段说明与台账摘要注入（`injection.register_autobuild_hint_provider`）；BP-03 `next=L4` 的开始前预览
   （`blueprint.register_autobuild_preview`）；运行期间建议条换成运行控制（`view.register_autobuild_context`）；
   启动恢复的「自主构建」一步。
 
@@ -102,9 +102,9 @@ def _changeset_event(project_id: str, event: str, data: dict) -> None:
     """变更集变了：EP-04 changeset.updated、EP-03 scope.updated，并重算流程（节点「待确认」）。"""
     from .services import project_events, streams
 
-    if event == "changeset" and data and data.get("state") == "merged":
-        # 确认生效：变更集里执行过的节点按主线现状重记基线（不再过期；完成判定满足即已确认），人确认过的
-        # 需复核标记去掉；自主构建自动合入的片改标「需复核（自主构建）」
+    if event == "changeset" and data and data.get("state") == "merged" and not data.get("reverted"):
+        # 合入：变更集里执行过的节点按主线现状重记基线（不再过期；完成判定满足即已确认），人确认过的
+        # 需复核标记去掉；自主构建自动合入的段改标「需复核（自主构建）」
         _confirm_nodes(project_id, data.get("nodes") or [], data)
     if event == "changeset" and data:
         _sync_change_lists(project_id, data)
@@ -116,6 +116,19 @@ def _changeset_event(project_id: str, event: str, data: dict) -> None:
         })
     project_events.scope_changed(project_id)
     project_events.schedule_flow_refresh(project_id)
+
+
+def _announce_round(project_id: str, record: dict) -> None:
+    """启动时合入遗留的变更集（F3 升级迁移）：这一轮的卡片放回它的对话（有卡的原地更新，没卡的补一张）。"""
+    from .services.agent_sessions import manager
+
+    from .kernel.changesets import service as changesets
+
+    for conversation_id, item in changesets.card_records(_workspaces(), project_id, record, new_card=True):
+        try:
+            manager.append_record(project_id, conversation_id, item)
+        except Exception:  # noqa: BLE001 - 对话已删除：卡片不补
+            continue
 
 
 def _confirm_nodes(project_id: str, node_ids: list[str], record: dict | None = None) -> None:
@@ -136,13 +149,13 @@ def _confirm_nodes(project_id: str, node_ids: list[str], record: dict | None = N
                   "slice_id": record.get("slice_id")}
         node_state.mark_needs_review(root, node_ids, "autobuild", run_id=record.get("run_id"),
                                      slice_id=record.get("slice_id"), note=record.get("purpose") or "")
-    # 按切片的节点：这个变更集做过的那几片那几步记为确认过（B4d）
+    # 按段的节点：这个变更集做过的那几段那几步记为确认过（B4d）
     slices.confirm(root, flow, (record or {}).get("slice_steps") or [], doc=blueprint.load_doc(root),
                    needs_review=review)
 
 
 def _sync_change_lists(project_id: str, record: dict) -> None:
-    """变更点清单跟着变更集走（审查第 8、12 条）：开了变更集挂上编号，确认生效记已执行，撤回回到编辑中。"""
+    """变更点清单跟着变更集走（审查第 8、12 条）：开了变更集挂上编号，合入记已执行，撤回回到编辑中。"""
     from .kernel.changesets import store
     from .services.flow import change_lists
 
@@ -234,6 +247,7 @@ def install() -> None:
     write_scope.register_checker(changesets.paths_in_scope)
     registry.register_badge_provider(_badge)
     changesets.subscribe(_changeset_event)
+    changesets.register_announcer(_announce_round)
     project_events.register_scope_provider(_scope_lock)
     artifact_service.register_lock_provider(_artifact_lock)
     # 自主构建（B5b）

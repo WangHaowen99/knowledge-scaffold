@@ -1,6 +1,6 @@
 // 流程（契约 FL-01 / EP-01）的前端视图计算。
 // 阶段定义只有一处：core 包的 flow.yaml，前端不自带阶段表，节点、分组、命令归属都从 GET /flow 读（ADR 0025）。
-// P1 的 /flow 只给 4 种状态、命令文本形式的 actions、顶层 sections 与 commands；P2 起给全量的 8 种状态与切片。
+// P1 的 /flow 只给 4 种状态、命令文本形式的 actions、顶层 sections 与 commands；P2 起给全量的 8 种状态与分段。
 // normalizeFlow 把两种形状收成同一份视图数据，页面只认归一后的字段。
 
 import { isEvidenceNode } from './evidence.js';
@@ -146,7 +146,7 @@ export function suggestionCommand(action) {
   return { command: action.command, ...(action.args ? { args: action.args } : {}), text };
 }
 
-// 没有蓝图时（FL-01 blueprint.state = none）「调整切片」改为发切片规划（contract-changes B4d 合并第 2 条）
+// 没有蓝图时（FL-01 blueprint.state = none）「调整分段」改为发分段规划（contract-changes B4d 合并第 2 条）
 export const planSlicesCommand = (flow) => (flow?.blueprint?.state === 'none'
   ? { command: '/ontology-research', args: { phase: 'blueprint' }, text: '' }
   : null);
@@ -195,7 +195,7 @@ export function withoutEvidence(flow, evidenceOn) {
   };
 }
 
-// 切片小进度条每一格的悬停：「规则 · 已跳过」
+// 分段小进度条每一格的悬停：「规则 · 已跳过」
 const SLICE_STAGE_TEXT = {
   not_ready: '未开始', ready: '可开始', running: '进行中', pending_confirm: '待确认', confirmed: '已确认',
   stale: '已过期', skipped: '已跳过', blocked: '被挡住', draft: '草稿', auto: '自主完成',

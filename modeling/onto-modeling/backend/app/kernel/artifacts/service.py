@@ -278,7 +278,7 @@ def detail(manager, project_id: str, art_type: str, key: str, *, rows_limit: int
 
 def detail_in_changeset(manager, project_id: str, art_type: str, key: str, changeset_id: str, *,
                         rows_limit: int = 0, iso) -> dict:
-    """AR-03 `?changeset=`：确认生效前双击这一轮的产物卡，读助手副本里这一轮的版本（副本里新增的也读得到）。
+    """AR-03 `?changeset=`：这一轮还没合入时双击它的产物卡，读助手副本里这一轮的版本（副本里新增的也读得到）。
 
     变更集还没关闭（开着、待确认、合入冲突）且副本在、副本里有这份产物时读副本；否则（已确认、已撤回、
     不存在、副本里没有）读当前版本。响应多 `from_changeset`：读的是哪个变更集，读当前版本时为 null。
@@ -579,7 +579,7 @@ def _check_format_version(atype: ArtifactType, fields: dict) -> None:
 def _locked_or_raise(root: Path, atype: ArtifactType, key: str, rel: str) -> None:
     lock = _scope_lock(root)
     if _locked(lock, atype.type, key, rel):
-        raise ArtifactError("write_scope_locked", "助手正在改这一片，确认或撤回之前只读", 423, lock)
+        raise ArtifactError("write_scope_locked", "助手正在改这一段，确认或撤回之前只读", 423, lock)
 
 
 def save(manager, project_id: str, art_type: str, key: str, body: dict, *, actor: str, iso) -> dict:

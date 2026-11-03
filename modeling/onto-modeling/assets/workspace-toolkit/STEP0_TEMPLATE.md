@@ -113,7 +113,7 @@ python3 .claude/scripts/state_helper.py acquire {COMMAND_NAME} confirm
 
 ### 5) 命令结束前释放锁（任何形式的结束都要 release）
 
-**先 release，再写给用户的收尾小结。** 小结两三句：做了什么、还有什么要用户定。不列「下一步建议」等用户回复关键词——下一步由界面的建议条给出；这一轮的修改由界面上的卡片确认生效或撤回。
+**先 release，再写给用户的收尾小结。** 小结两三句：做了什么、还有什么要用户定。不列「下一步建议」等用户回复关键词——下一步由界面的建议条给出；这一轮的修改结束时自动存成版本，撤回在界面上的卡片里。
 
 ```bash
 python3 .claude/scripts/state_helper.py release {COMMAND_NAME}

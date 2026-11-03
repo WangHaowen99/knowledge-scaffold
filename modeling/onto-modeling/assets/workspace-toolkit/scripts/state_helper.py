@@ -7,8 +7,8 @@ State helper — 单一文件管理所有命令的执行锁与进度快照。
                             持有者为 owner（Web 后端托管的引擎实例）或 owner_pid）
     progress.json           各阶段完整进度快照（全体命令共用）
 另有 `.onto/run/active.json`：正在执行的命令所属节点与写入范围（节点声明的 produces、writes），
-acquire 时写、release 时删；内核守卫只放行这些路径（方案 D11）。按切片建模时（后端在
-`.onto/run/exec.json` 记了这一片）另记 `protect`：这一片以外、已经有了的条目，守卫不让改（详设 4.3）。
+acquire 时写、release 时删；内核守卫只放行这些路径（方案 D11）。分段建模时（后端在
+`.onto/run/exec.json` 记了这一段）另记 `protect`：这一段以外、已经有了的条目，守卫不让改（详设 4.3）。
 
 锁的持有者：Web 后端每次连接引擎时把实例标识写进 `.onto/run/engine.json`，本进程是
 该后端的子孙时，持有者就是这个引擎实例——同一实例的多次 Bash 调用可续写锁，实例换了
@@ -53,7 +53,7 @@ STATE_DIR = Path('.ontology-state')
 PROGRESS_FILE = STATE_DIR / 'progress.json'
 # Web 后端写入的在线引擎实例标识（见模块说明）
 ENGINE_MARKER = Path('.onto') / 'run' / 'engine.json'
-# Web 后端开始执行一条命令时写的标记（节点、切片、步骤）
+# Web 后端开始执行一条命令时写的标记（节点、分段、步骤）
 EXEC_MARKER = Path('.onto') / 'run' / 'exec.json'
 # 正在执行的命令与它们的写入范围（节点声明的 produces、writes）：内核守卫只放行这些路径（方案 D11）
 ACTIVE_FILE = Path('.onto') / 'run' / 'active.json'
@@ -369,7 +369,7 @@ def _node_patterns(node: dict) -> list:
 
 
 def _slice_node(flow: dict, command: str):
-    """后端开始执行时记的是按切片的节点、这条命令是它的一步（如带切片的规则提取、场景走查）时返回那个节点。"""
+    """后端开始执行时记的是按段的节点、这条命令是它的一步（如带分段的规则提取、场景走查）时返回那个节点。"""
     try:
         marker = json.loads(EXEC_MARKER.read_text(encoding='utf-8'))
     except (OSError, ValueError):
@@ -384,7 +384,7 @@ def _slice_node(flow: dict, command: str):
 def _command_scope(command: str) -> tuple:
     """命令所属节点与它的写入范围（produces + writes）；不属于任何节点时为 (None, None)：不限范围。
 
-    这一次是按切片的节点的一步时，节点取按切片的那个、范围是两者的并集（规则提取还会写指标，场景走查写场景文件）。"""
+    这一次是按段的节点的一步时，节点取按段的那个、范围是两者的并集（规则提取还会写指标，场景走查写场景文件）。"""
     try:
         flow = _flow()
     except (OSError, ValueError):
@@ -402,7 +402,7 @@ def _command_scope(command: str) -> tuple:
 
 
 def _changed_here() -> set:
-    """这份副本里相对主线分叉点改过的文件（含没提交、没跟踪的）：这一轮自己建的、改的不算片外。"""
+    """这份副本里相对主线分叉点改过的文件（含没提交、没跟踪的）：这一轮自己建的、改的不算段外。"""
     try:
         head = str(json.loads(FLOW_STATE_FILE.read_text(encoding='utf-8')).get('mainline_head') or '')
     except (OSError, ValueError):
@@ -414,7 +414,7 @@ def _changed_here() -> set:
 
 
 def _slice_protect(node_id: str, allow: list) -> tuple:
-    """按切片建模：(切片, 片外已有的条目)。不是按切片的节点、全量模式、不知道哪一片时 (None, [])。"""
+    """分段建模：(分段, 段外已有的条目)。不是按段的节点、全量模式、不知道哪一段时 (None, [])。"""
     slice_id = blueprint.current_slice()
     if not slice_id or slice_id == blueprint.FULL_SLICE_ID:
         return None, []
@@ -428,7 +428,7 @@ def _slice_protect(node_id: str, allow: list) -> tuple:
     if node is None or not node.get('per_slice') or blueprint.mode(doc) != 'sliced' or item is None:
         return None, []
     own = set(blueprint.member_paths(item))
-    # 这一片的场景（一个操作一份）也是这一片的
+    # 这一段的场景（一个操作一份）也是这一段的
     own |= {f'ontology/testcase/{onto_metamodel.encode_filename(name)}.md' for name in item.get('operations') or []}
     changed = _changed_here()
     protect = []
@@ -579,7 +579,7 @@ def _git_quiet(*args) -> str | None:
 
 
 def _local_changes(mainline_head: str) -> bool:
-    """这份副本里有没确认生效的改动（含没提交的、没跟踪的文件）。
+    """这份副本里有这一轮还没合入的改动（含没提交的、没跟踪的文件）。
 
     和副本与主线的分叉点比，不和主线最新比：这一轮里你在网页上的保存让主线前进了，副本没有那些改动，
     不能当成副本改了东西。资料区与锁文件不算。"""
@@ -602,7 +602,7 @@ def _locked_nodes(flow: dict) -> set:
 
 def suggest_payload() -> dict:
     """下一步建议（契约 7.8 Suggestions）：节点状态取后端写的 `.onto/run/flow-state.json`（执行记录、变更集、
-    指纹算出的那份），再叠上这份副本里还没确认的改动；算法与后端、宿主注入是同一个 flow_state.suggest。"""
+    指纹算出的那份），再叠上这份副本里这一轮还没合入的改动；算法与后端、宿主注入是同一个 flow_state.suggest。"""
     flow = _flow()
     try:
         data = json.loads(FLOW_STATE_FILE.read_text(encoding='utf-8'))

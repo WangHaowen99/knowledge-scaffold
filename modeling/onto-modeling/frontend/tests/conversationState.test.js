@@ -19,14 +19,14 @@ test('按 seq 去重：回放的旧事件不重复进时间线', () => {
 test('流式片段拼接，完整消息到达后原位替换', () => {
   let s = initialConversation();
   s = applyEvent(s, { type: 'message.delta', data: { message_id: 'a1', kind: 'text', text: '好。' } });
-  s = applyEvent(s, { type: 'message.delta', data: { message_id: 'a1', kind: 'text', text: '这一片' } });
+  s = applyEvent(s, { type: 'message.delta', data: { message_id: 'a1', kind: 'text', text: '这一段' } });
   s = applyEvent(s, { type: 'message.delta', data: { message_id: 'a1', kind: 'thinking', text: '内部' } });
-  assert.equal(s.items['asst:a1'].text_md, '好。这一片');
+  assert.equal(s.items['asst:a1'].text_md, '好。这一段');
   assert.equal(s.items['asst:a1'].streaming, true);
-  s = applyEvent(s, ev('message.assistant', { message_id: 'a1', text_md: '好。这一片要比较。', anchors: [], continued: false }, 9));
+  s = applyEvent(s, ev('message.assistant', { message_id: 'a1', text_md: '好。这一段要比较。', anchors: [], continued: false }, 9));
   assert.equal(s.order.length, 1);
   assert.equal(s.items['asst:a1'].streaming, false);
-  assert.equal(s.items['asst:a1'].text_md, '好。这一片要比较。');
+  assert.equal(s.items['asst:a1'].text_md, '好。这一段要比较。');
 });
 
 test('卡片、进展组按 id 原位替换；子代理挂到进展组', () => {
@@ -71,7 +71,7 @@ test('连续的助手侧内容合成一块，用户消息和系统提示切开',
   n = 0;
   const s = applyEvents(initialConversation(), [
     ev('day.marker', { label: '今天' }),
-    ev('notice', { kind: 'merged', text: '切片已确认生效 · 版本 v0.12', align: 'center' }),
+    ev('notice', { kind: 'merged', text: '分段已确认生效 · 版本 v0.12', align: 'center' }),
     ev('message.user', { message_id: 'u1', text: '继续' }),
     ev('message.assistant', { message_id: 'a1', text_md: '好', anchors: [] }),
     ev('progress', { group_id: 'g', title: '已完成 3 步', state: 'done', steps: [] }),

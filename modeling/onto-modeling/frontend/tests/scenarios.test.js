@@ -101,15 +101,15 @@ test('写入范围只读：按产物或场景目录判定，两态的只读条�
   assert.equal(rowLocked({ state: 'none' }, row('s-21', 'pass', { locked: true }), type), false);
   const all = [row('a', 'pass'), row('b', 'pass'), row('c', 'fail'), row('d', 'stale')];
   const batch = lockBarText(byPath, all);
-  assert.equal(batch.pending[0], '批量推演结果待确认，4 个场景暂时只读');
+  assert.equal(batch.pending[0], '和助手这一轮的修改有冲突，4 个场景暂时只读');
   assert.equal(batch.pending[1], '通过 2 · 失败 1 · 过期 1');
   assert.equal(batch.running[0], '助手正在推演 4 个场景，暂时只读');
   assert.equal(batch.running[1], undefined);
   const part = lockBarText({ ...byPath, node: { id: 'core.model' } }, all.slice(0, 2));
-  assert.equal(part.pending[0], '助手的修改待确认，2 个场景暂时只读');
+  assert.equal(part.pending[0], '和助手这一轮的修改有冲突，2 个场景暂时只读');
   assert.equal(part.pending[1], '通过 2 · 失败 0 · 过期 0');
   assert.equal(lockBarText(byRef, all.slice(0, 1)).running[0], '助手正在改「超量与审批提示」，1 个场景暂时只读');
-  assert.equal(rowLockPop(byPath), '修改待确认，暂时只读');
+  assert.equal(rowLockPop(byPath), '有冲突，暂时只读');
   assert.equal(rowLockPop(byRef), '助手在改，暂时只读');
   assert.equal(rowLockPop({ state: 'autobuild_slice', artifacts: [], entries: [], paths: [] }), '自主构建在改，暂时只读');
 });
@@ -203,7 +203,7 @@ test('?mock=trace:batch 把开场的锁标成批量推演（只读条用「批�
   assert.equal(untouched.get(F.MAIN_PID).node.id, 'core.model');
 });
 
-test('批量验证的两态：开跑进锁（助手运行中）→ 跑完修改待确认、对话里出这一轮卡 → 确认生效解锁；撤回恢复原结果', async () => {
+test('批量验证：开跑进锁（助手运行中）→ 跑完这一轮就存成版本、解锁、对话里出这一轮卡（F3）；撤回这一轮恢复原结果', async () => {
   const origin = { page: 'scenarios', label: '场景走查' };
   const body = { command: '/ontology-trace-batch', origin, text: '批量推演 23 个场景' };
   const s1 = server();
@@ -213,21 +213,19 @@ test('批量验证的两态：开跑进锁（助手运行中）→ 跑完修改�
   assert.equal(s1.lockBox.lock.node.id, 'trace.trace');
   assert.equal(s1.lockBox.lock.artifacts.length, 23);
   assert.ok((await s1.call('GET', `${P}/artifacts/${SC}`)).body.items.every((r) => r.locked));
-  assert.match(hook.doneText(body), /确认生效后写进场景走查/);
+  assert.match(hook.doneText(body), /已写进场景走查/);
+  const csId = s1.lockBox.lock.changeset_id;
   hook.finish(F.MAIN_PID, body);
-  const lock = s1.lockBox.lock;
-  assert.equal(lock.state, 'pending_confirm');
+  assert.equal(s1.lockBox.lock.state, 'none');
   const card = s1.events.find((e) => e.type === 'conv:card').data;
   assert.equal(card.card_type, 'round_changes');
+  assert.equal(card.state, 'merged');
   assert.equal(card.groups[0].items[0].text, '推演 23 个：通过 21 · 失败 1 · 过期 1');
   const rows = (await s1.call('GET', `${P}/artifacts/${SC}`)).body.items;
-  assert.equal(lockBarText(lock, rows.filter((r) => r.locked)).pending[0], '批量推演结果待确认，23 个场景暂时只读');
-  const diff = await s1.call('GET', `${P}/changesets/${lock.changeset_id}/diff`);
+  assert.ok(rows.every((r) => !r.locked));
+  const diff = await s1.call('GET', `${P}/changesets/${csId}/diff`);
   assert.deepEqual(diff.body.items.map((x) => x.target.key), ['s-03', 's-06']);
-  const merged = await s1.call('POST', `${P}/changesets/${lock.changeset_id}/merge`);
-  assert.equal(merged.body.state, 'merged');
-  assert.equal(s1.lockBox.lock.state, 'none');
-  assert.equal((await s1.call('POST', `${P}/changesets/${lock.changeset_id}/merge`)).status, 409);
+  assert.equal((await s1.call('POST', `${P}/changesets/${csId}/merge`)).status, 409);
   const sum = await s1.call('GET', `${P}/artifacts/${SC}/summary`);
   assert.equal(sum.body.trend.at(-1).value_pct, 91);
   assert.equal(sum.body.delta_vs_previous_pct, 8);
@@ -235,9 +233,9 @@ test('批量验证的两态：开跑进锁（助手运行中）→ 跑完修改�
   const s2 = server();
   const h2 = s2.hooks.find((h) => h.match(body));
   h2.start(F.MAIN_PID, body, { conversation_id: 'c1' });
-  h2.finish(F.MAIN_PID, body);
   const cs = s2.lockBox.lock.changeset_id;
-  assert.equal((await s2.call('POST', `${P}/changesets/${cs}/discard`)).body.state, 'discarded');
+  h2.finish(F.MAIN_PID, body);
+  assert.equal((await s2.call('POST', `${P}/changesets/${cs}/discard`)).body.state, 'reverted');
   assert.equal(s2.lockBox.lock.state, 'none');
   assert.deepEqual(countRows((await s2.call('GET', `${P}/artifacts/${SC}`)).body.items), { total: 23, pass: 19, fail: 1, stale: 3, none: 0 });
 

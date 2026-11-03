@@ -55,7 +55,7 @@ SCENARIOS = {
     "empty": ({}, "未开始", 0),
     "research_pending": ({"research/20260101-订单.md": "# 报告\n"}, "资料分析待核验", 0),
     "diagram": ({"research/r.md": "# 报告\n", "ontology/diagrams/下单.drawio": "<mxfile/>"}, "流程图就绪", 1),
-    # 只有对象：建模还没做完（全量模式那一片停在「操作」）
+    # 只有对象：建模还没做完（全量模式那一段停在「操作」）
     "objects": ({"ontology/object/订单.md": "# 订单\n"}, "对象已提取", 0),
     "operations": ({"ontology/object/订单.md": "# 订单\n", "ontology/operation/下单.md": "# 下单\n"}, "逻辑已提取", 1),
     # 只有场景验证报告：不算质量检查完成（统一口径前后端会算完成）

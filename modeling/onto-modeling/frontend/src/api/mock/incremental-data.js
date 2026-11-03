@@ -122,7 +122,8 @@ export function regressionCard(fixed = false) {
 }
 
 const item = (change, target, text) => ({ change, target, text, comparable: change !== 'test' });
-export function roundCard({ csId, nextVersion, state = 'pending_confirm', mergedVersion = null, fixed = false }) {
+// 一轮结束就合入成版本（F3）：state merged | reverted
+export function roundCard({ csId, nextVersion, state = 'merged', mergedVersion = null, fixed = false }) {
   const n = SCENARIOS.affected.length + SCENARIOS.guard.length;
   const op = [
     item('mod', entryRef('display_qty_check'), '操作 [[陈列量核定]]（按新上限核定）'),
@@ -130,9 +131,10 @@ export function roundCard({ csId, nextVersion, state = 'pending_confirm', merged
   ];
   if (fixed) op.push(item('mod', REFS.op, '操作 [[超量与审批提示]] 的步骤 4（引用改写后的 R-11）'));
   return {
-    card_id: CARD.round, card_type: 'round_changes', eyebrow: '', title: '这一轮改了什么', subtitle: '本次增量用时 9 分钟 · 确认后保存为一个版本',
-    status: null, plugin: null, open: null,
-    changeset_id: csId, change_list_id: CL_ID, checks: { errors: 0, warnings: 1 },
+    card_id: CARD.round, card_type: 'round_changes', eyebrow: '', title: '这一轮改了什么', subtitle: '本次增量用时 9 分钟',
+    status: state === 'reverted' ? { key: 'skipped', label: '已撤回' } : { key: 'confirmed', label: mergedVersion || nextVersion },
+    plugin: null, open: null,
+    changeset_id: csId, change_list_id: CL_ID, checks: { errors: 0, warnings: 1, pending: 0 }, hints: [],
     groups: [
       { kind: 'object', label: '对象', items: [
         item('mod', entryRef('display_qty_std'), '对象 [[陈列量标准]]（乳制品上限 120 → 150 箱，日均销量 ≥80 箱时适用）'),
@@ -145,8 +147,7 @@ export function roundCard({ csId, nextVersion, state = 'pending_confirm', merged
       { kind: 'operation', label: '操作', items: op },
       { kind: 'scenario', label: '场景', items: [item('test', SCENARIOS.affected[0], `场景 ${SCENARIOS.affected.length} 个，回归 ${fixed ? n : n - 1} / ${n} 通过`)] },
     ],
-    lock_note: '确认生效前，这些条目在 Studio 和插件页里只读；撤回这一轮也会解除',
-    next_version_label: nextVersion, state, merged_version_label: mergedVersion, remaining_failures: fixed ? 0 : 1,
+    state, merged_version_label: mergedVersion || nextVersion, remaining_failures: fixed ? 0 : 1,
     entry_links: entryLinks(),
   };
 }
@@ -184,22 +185,7 @@ export function preSuggestions(others) {
   };
 }
 
-// 执行后、确认前：确认生效、修复不通过的场景、撤回这一轮
-export function postSuggestions(csId, fixed = false) {
-  return {
-    mode: 'pending_confirm',
-    primary: sg('sg-merge', '确认生效', 'merge', { type: 'merge_changeset', changeset_id: csId }, { primary: true, priority: 2 }),
-    secondary: [
-      fixed
-        ? sg('sg-see', '查看改动', 'eye', { type: 'show_changes', changeset_id: csId })
-        : sg('sg-inc-fix', '修复不通过的场景', 'sparkle', fixAction('修复不通过的场景 6')),
-      sg('sg-discard', '撤回这一轮', 'undo', { type: 'discard_changeset', changeset_id: csId }),
-    ],
-    all_commands: true,
-  };
-}
-
-// 确认生效后：修复留下的场景、看这个版本、其他待处理
+// 执行完（这一轮已经存成版本）：修复留下的场景、看这个版本、其他待处理
 export function mergedSuggestions(version, others, fixed = false) {
   const see = sg('sg-version', `看版本 ${version}`, 'history', { type: 'navigate', page: 'versions', params: { v: version } });
   return {
@@ -230,7 +216,7 @@ export function runProgress(done) {
 }
 
 /**
- * 「09 修订通知」这条对话的历史。phase：editing（等你确认清单，设计稿默认态）、executed（执行完、待确认生效）、merged（已确认生效）。
+ * 「09 修订通知」这条对话的历史。phase：editing（等你确认清单，设计稿默认态）、executed（执行完、已存成版本）、merged（同 executed，F3 起一轮结束就合入）。
  */
 export function incHistory({ pid, cl, impact, others, phase = 'editing', csId = null, version = null }) {
   let seq = 4000;
@@ -239,7 +225,7 @@ export function incHistory({ pid, cl, impact, others, phase = 'editing', csId = 
   const executed = phase !== 'editing';
   const out = [
     e('day.marker', { label: '今天' }, t.merged),
-    e('notice', { kind: 'merged', text: `${stamp(t.merged)} · 切片「补货申请与门店需求」已确认生效，保存为版本 v0.12`, version_label: 'v0.12', changeset_id: 'cs-29', align: 'center' }, t.merged),
+    e('notice', { kind: 'merged', text: `${stamp(t.merged)} · 分段「补货申请与门店需求」已存成版本 v0.12`, version_label: 'v0.12', changeset_id: 'cs-29', align: 'center' }, t.merged),
     e('message.user', {
       message_id: 'm-inc-u1', text: '修订通知到了，按这个更新', references: [], origin: null, delivery: 'immediate',
       attachments: [{ upload_id: 'up-09', filename: '09-修订通知.docx', size: 46000, kind: 'doc' }],
@@ -269,14 +255,9 @@ export function incHistory({ pid, cl, impact, others, phase = 'editing', csId = 
     e('message.user', { message_id: 'm-inc-u2', text: executeText(cl), attachments: [], references: [], origin: null, delivery: 'immediate' }, t.exec),
     e('progress', { ...runProgress(3), started_at: t.exec }, t.exec),
     e('card', regressionCard(), t.done),
-    e('card', roundCard({ csId, nextVersion: version, state: phase === 'merged' ? 'merged' : 'pending_confirm', mergedVersion: phase === 'merged' ? version : null }), t.done),
+    e('card', roundCard({ csId, nextVersion: version, mergedVersion: version }), t.done),
+    e('suggestions.updated', mergedSuggestions(version, others), t.done),
   );
-  if (phase === 'merged') {
-    out.push(
-      e('notice', { kind: 'merged', text: `这一轮已确认生效 · 版本 ${version}`, version_label: version, changeset_id: csId, align: 'center' }, t.done),
-      e('suggestions.updated', mergedSuggestions(version, others), t.done),
-    );
-  } else out.push(e('suggestions.updated', postSuggestions(csId), t.done));
   return out;
 }
 

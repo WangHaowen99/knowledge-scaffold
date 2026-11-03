@@ -90,7 +90,7 @@ export const rangeOptions = (items) => byNewest(items).map((v) => ({ value: v.co
 
 /**
  * 从别的页跳过来时选中哪个版本：
- * - ?v=v0.14&run=run-3&slice=s2（待处理、自主构建报告、运行矩阵的「查看改动」）：先按版本号找，对不上运行和切片时改按运行 + 切片找；
+ * - ?v=v0.14&run=run-3&slice=s2（待处理、自主构建报告、运行矩阵的「查看改动」）：先按版本号找，对不上运行和分段时改按运行 + 分段找；
  * - ?path=&from=<commit>&to=WORKTREE（原文编辑器的「刷新后对比」）：按提交找。
  * 返回 { commit, note }；找不到时 commit 为当前版本，note 说明原因。
  */
@@ -112,11 +112,11 @@ export function pickLanding(items, query = {}) {
   if (byLabel && (!run || !byLabel.run || sameRun(byLabel))) return { commit: byLabel.commit, note: '' };
   const bySlice = run ? list.find(sameRun) : null;
   if (bySlice) return { commit: bySlice.commit, note: '' };
-  if (byLabel) return { commit: byLabel.commit, note: `${byLabel.version_label} 不是这一片生成的，这一片可能还没完成` };
+  if (byLabel) return { commit: byLabel.commit, note: `${byLabel.version_label} 不是这一段生成的，这一段可能还没完成` };
   return { commit: head.commit, note: `没有找到版本 ${v || ''}，可能已被回退或还没有生成` };
 }
 
-// 这一片的名字（落地说明用）：从版本列表里找运行 + 切片
+// 这一段的名字（落地说明用）：从版本列表里找运行 + 分段
 export function sliceNameOf(items, run, slice) {
   const hit = (items || []).find((x) => x.run && x.run.run_id === run && x.run.slice_id === slice);
   return hit?.run?.slice_name || '';

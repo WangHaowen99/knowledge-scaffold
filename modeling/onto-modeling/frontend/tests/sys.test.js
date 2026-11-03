@@ -580,10 +580,10 @@ test('mock X-06：明文只在创建响应里出现一次（占位串），列�
   assert.equal((await call('DELETE', `${A}/service-tokens/${r.body.summary.id}`)).status, 404);
 });
 
-test('开始自主构建被没确认的修改挡住时说清是哪件事（AB-04 changeset_in_progress）', async () => {
+test('开始自主构建被助手这一轮挡住时说清是哪件事（AB-04 changeset_in_progress）', async () => {
   const { startErrorText } = await import('../src/pages/workbench/autobuildModel.js');
   const { errorText } = await import('../src/api/errors.js');
-  assert.equal(startErrorText({ code: 'changeset_in_progress' }, errorText), '这一轮的修改还没确认生效或撤回');
+  assert.equal(startErrorText({ code: 'changeset_in_progress' }, errorText), '助手这一轮还没结束');
   assert.equal(startErrorText({ code: 'slice_reverted' }, errorText), errorText({ code: 'slice_reverted' }));
 });
 

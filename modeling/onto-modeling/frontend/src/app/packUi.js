@@ -124,7 +124,7 @@ export function editorReadonly(scope, type, artifact) {
 }
 
 /**
- * 确认生效前双击产物卡要读这一轮的版本（gaps「B5 合并」第 1 条）：卡上的变更集还没关闭（写入范围锁指着它）时，
+ * 这一轮还没合入（助手在跑、合入冲突）时双击产物卡要读这一轮的版本（gaps「B5 合并」第 1 条）：卡上的变更集还没关闭（写入范围锁指着它）时，
  * 打开时带上它，AR-03 按 ?changeset= 从助手副本读；确认或撤回之后照常读当前版本。
  */
 export function pendingChangeset(scope, changesetId) {

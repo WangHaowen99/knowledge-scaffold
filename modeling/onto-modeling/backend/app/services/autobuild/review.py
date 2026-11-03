@@ -3,9 +3,9 @@
 - 台账（AB-10）；接受（AB-11）、改判（AB-12：往运行对话发重做受影响部分的命令，运行还没结束就排到结束后）、
   一键接受高置信（AB-13）；
 - 挂起的问题（AB-14）与回答（AB-15：陪伴模式下助手马上补上；也可以留到下一次自主构建）；
-- 按片撤回（AB-17）：在主线上写这一片的反向提交，别的片不动；合入之后这一片的条目又被改过就不撤；
-- 「需复核」标记：一片里的自动决定都复核过（没有决定的片，整次运行都复核完）就去掉这一片的标记，
-  建模节点的标记在没有片还需复核时去掉；
+- 按段撤回（AB-17）：在主线上写这一段的反向提交，别的段不动；合入之后这一段的条目又被改过就不撤；
+- 「需复核」标记：一段里的自动决定都复核过（没有决定的段，整次运行都复核完）就去掉这一段的标记，
+  建模节点的标记在没有段还需复核时去掉；
 - 复核被改掉的比例记进可观测（`onto_autobuild_reviews_total{outcome}`）。
 """
 
@@ -39,7 +39,7 @@ def _threshold(run: dict) -> float:
 
 
 def ledger(project_id: str, run_id: str, *, review_state: str = "", below_threshold: bool | None = None) -> dict:
-    """AB-10：撤回了的片上的决定不列。"""
+    """AB-10：撤回了的段上的决定不列。"""
     run = _run(project_id, run_id)
     entries = views.live_ledger(run)
     threshold = _threshold(run)
@@ -60,10 +60,10 @@ def _entry(project_id: str, entry_id: str) -> tuple[dict, dict]:
 
 
 def _ensure_live(run: dict, slice_ref: dict | None) -> None:
-    """撤回了的片上的决定与挂起问题不再接受、改判、回答（审查 G）：改判与补上会把撤掉的内容又做回来。"""
+    """撤回了的段上的决定与挂起问题不再接受、改判、回答（审查 G）：改判与补上会把撤掉的内容又做回来。"""
     slice_id = (slice_ref or {}).get("id")
     if slice_id and ((run.get("slices") or {}).get(slice_id) or {}).get("reverted"):
-        raise ApiError("slice_reverted", "这一片已经撤回", 409, {"slice_id": slice_id})
+        raise ApiError("slice_reverted", "这一段已经撤回", 409, {"slice_id": slice_id})
 
 
 def _count(outcome: str, project_id: str, count: int = 1) -> None:
@@ -74,7 +74,7 @@ def _count(outcome: str, project_id: str, count: int = 1) -> None:
 
 
 def accept(project_id: str, entry_id: str) -> dict:
-    """AB-11：接受这个决定；受影响产物的「需复核」随之去掉（这一片都复核过时）。"""
+    """AB-11：接受这个决定；受影响产物的「需复核」随之去掉（这一段都复核过时）。"""
     run, found = _entry(project_id, entry_id)
     _ensure_live(run, found.get("slice"))
 
@@ -126,7 +126,7 @@ def _unit(run: dict, unit_id: str | None) -> dict | None:
 
 
 def _command_for(run: dict, slice_ref: dict, step_id: str | None) -> str:
-    """重做受影响部分用的命令：这一片这一步的命令（带切片）；不知道哪一步时用这一片的第一步。"""
+    """重做受影响部分用的命令：这一段这一步的命令（带分段）；不知道哪一步时用这一段的第一步。"""
     unit = _unit(run, (slice_ref or {}).get("id"))
     if unit is None:
         return "/ontology-extract-object"
@@ -207,14 +207,14 @@ async def send_rejudge(project_id: str, run_id: str, entry_id: str, *, task_id: 
 
 
 def suspensions(project_id: str, run_id: str) -> dict:
-    """AB-14：撤回了的片上的不列；上限 200。"""
+    """AB-14：撤回了的段上的不列；上限 200。"""
     run = _run(project_id, run_id)
     return {"items": [views.suspension(item) for item in views.live_suspensions(run)][:200]}
 
 
 async def answer(project_id: str, suspension_id: str, body: dict) -> dict:
-    """AB-15：回答挂起的问题。陪伴模式下马上补上（往运行对话发这一片这一步的命令；有运行没结束时排到它结束后）；
-    `defer_to_next_run` 留到下一次：带着的回答记下，下一次自主构建做到这一片时补做这一步、把回答注入给助手，
+    """AB-15：回答挂起的问题。陪伴模式下马上补上（往运行对话发这一段这一步的命令；有运行没结束时排到它结束后）；
+    `defer_to_next_run` 留到下一次：带着的回答记下，下一次自主构建做到这一段时补做这一步、把回答注入给助手，
     做完才算回答过（审查 I）。留到下一次的还可以现在回答。"""
     from ..session_host import command_tasks
 
@@ -242,7 +242,7 @@ async def answer(project_id: str, suspension_id: str, body: dict) -> dict:
     if state == "answered":
         active = store.active(project_id)
         if active is not None:
-            # 运行还没结束：补做排到它结束之后（同改判），这一片的写入范围这时归运行器
+            # 运行还没结束：补做排到它结束之后（同改判），这一段的写入范围这时归运行器
             queued = command_tasks.create(project_id, origin=ANSWER_PAGE, title=f"补上：{item.get('title')}",
                                           conversation_id=run["conversation_id"],
                                           command=_command_for(run, item["slice"], item.get("step")).split()[0])
@@ -255,7 +255,7 @@ async def answer(project_id: str, suspension_id: str, body: dict) -> dict:
 
 
 async def send_answer(project_id: str, run_id: str, suspension_id: str, *, task_id: str | None = None) -> dict:
-    """挂起的问题回答之后（陪伴模式）：往运行对话发这一片这一步的命令，把跳过的部分补上。"""
+    """挂起的问题回答之后（陪伴模式）：往运行对话发这一段这一步的命令，把跳过的部分补上。"""
     run = _run(project_id, run_id)
     item = next(entry for entry in run["suspensions"] if entry["id"] == suspension_id)
     _ensure_live(run, item.get("slice"))
@@ -266,14 +266,14 @@ async def send_answer(project_id: str, run_id: str, suspension_id: str, *, task_
 
 
 # ---------------------------------------------------------------------------
-# 按片撤回
+# 按段撤回
 # ---------------------------------------------------------------------------
 
 
 def revert_slice(project_id: str, run_id: str, slice_id: str, *, actor: str) -> dict:
-    """AB-17：只动这一片——反向提交，恢复成运行开始前的样子，另存为新版本，其他切片不受影响。
+    """AB-17：只动这一段——反向提交，恢复成运行开始前的样子，另存为新版本，其他分段不受影响。
 
-    蓝图里这一片在这次合入时新记进去的条目一起去掉（审查 L），别的片合入时对蓝图的修改不动；这一片各步的确认记录
+    蓝图里这一段在这次合入时新记进去的条目一起去掉（审查 L），别的段合入时对蓝图的修改不动；这一段各步的确认记录
     恢复成运行开始前的（原来过期的仍是过期，审查 K）。反向提交已经写进主线、后面几步没做完时，再撤一次把它们补上，
     不再写一次（审查推断）。"""
     from ...kernel.changesets import service as changesets
@@ -289,11 +289,11 @@ def revert_slice(project_id: str, run_id: str, slice_id: str, *, actor: str) -> 
     info = (run.get("slices") or {}).get(slice_id)
     unit = _unit(run, slice_id)
     if info is None or unit is None or unit["kind"] != "slice":
-        raise ApiError("slice_not_revertible", "这一片不能撤回", 409, {"reason": "not_in_run"})
+        raise ApiError("slice_not_revertible", "这一段不能撤回", 409, {"reason": "not_in_run"})
     if info.get("reverted"):
-        raise ApiError("slice_not_revertible", "这一片已经撤回过", 409, {"reason": "already_reverted"})
+        raise ApiError("slice_not_revertible", "这一段已经撤回过", 409, {"reason": "already_reverted"})
     if not info.get("commit") or not info.get("changeset_id"):
-        raise ApiError("slice_not_revertible", "这一片没有生效过", 409, {"reason": "not_merged"})
+        raise ApiError("slice_not_revertible", "这一段没有生效过", 409, {"reason": "not_merged"})
     ws = _ws()
     root = ws.project_root(project_id)
     done = (changeset_store.get(root, info["changeset_id"]) or {}).get("reverted")
@@ -309,11 +309,11 @@ def revert_slice(project_id: str, run_id: str, slice_id: str, *, actor: str) -> 
                                               rewrite={blueprint.BLUEPRINT_REL: members})
         except WorkspaceError as exc:
             if exc.code == "merge_conflict":
-                raise ApiError("slice_not_revertible", "后面的修改改到了这一片的条目，不能单独撤回", 409,
+                raise ApiError("slice_not_revertible", "后面的修改改到了这一段的条目，不能单独撤回", 409,
                                {"reason": "later_changes",
                                 "entities": (exc.details or {}).get("entities") or []}) from exc
             if exc.code == "changeset_closed":
-                raise ApiError("slice_not_revertible", "这一片不能撤回", 409, {"reason": "not_merged"}) from exc
+                raise ApiError("slice_not_revertible", "这一段不能撤回", 409, {"reason": "not_merged"}) from exc
             raise
     run = _after_revert(project_id, run_id, unit, result, actor)
     return {"commit": result["commit"], "version_label": result["version_label"],
@@ -321,8 +321,8 @@ def revert_slice(project_id: str, run_id: str, slice_id: str, *, actor: str) -> 
 
 
 def repair_reverts(project_id: str) -> int:
-    """启动时（审查推断）：按片撤回的反向提交已经在主线上、记录没补完就停了机——按反向提交把变更集与运行记录补上。
-    返回补上的片数。"""
+    """启动时（审查推断）：按段撤回的反向提交已经在主线上、记录没补完就停了机——按反向提交把变更集与运行记录补上。
+    返回补上的段数。"""
     from ...kernel.changesets import service as changesets
     from ...kernel.changesets import store as changeset_store
 
@@ -349,7 +349,7 @@ def repair_reverts(project_id: str) -> int:
 
 
 def _after_revert(project_id: str, run_id: str, unit: dict, result: dict, actor: str) -> dict:
-    """反向提交之后：这一片的确认记录恢复成运行开始前的、运行里记下撤回、去掉这一片的「需复核」。"""
+    """反向提交之后：这一段的确认记录恢复成运行开始前的、运行里记下撤回、去掉这一段的「需复核」。"""
     from ..flow import slices
 
     root = _ws().project_root(project_id)
@@ -379,8 +379,8 @@ def _after_revert(project_id: str, run_id: str, unit: dict, result: dict, actor:
 
 
 def clear_reviews(project_id: str, run: dict) -> list[str]:
-    """一片里的自动决定都复核过（没有决定的片：整次运行都复核过）就去掉这一片的「需复核」；建模节点、主线上
-    几步的标记在这次运行没有还需复核的片时去掉。返回去掉标记的片。"""
+    """一段里的自动决定都复核过（没有决定的段：整次运行都复核过）就去掉这一段的「需复核」；建模节点、主线上
+    几步的标记在这次运行没有还需复核的段时去掉。返回去掉标记的段。"""
     from ..flow import model as flow_model
     from ..flow import state as node_state
 
@@ -420,7 +420,7 @@ def clear_reviews(project_id: str, run: dict) -> list[str]:
 
 
 def _flagged(run: dict) -> list[dict]:
-    """这次运行里还标着「需复核」的片（与 clear_reviews 同一口径）。"""
+    """这次运行里还标着「需复核」的段（与 clear_reviews 同一口径）。"""
     entries = views.live_ledger(run)
     pending = {(entry.get("slice") or {}).get("id") for entry in entries if entry.get("review_state") == "pending"}
     decided = {(entry.get("slice") or {}).get("id") for entry in entries}
@@ -434,7 +434,7 @@ def _flagged(run: dict) -> list[dict]:
 
 
 def entry_marks(project_id: str) -> dict[str, dict]:
-    """条目 → 「需复核（自主构建）」标记 {source, run_id}：还标着需复核的片生效时改到的条目（Studio 表格与详情）。"""
+    """条目 → 「需复核（自主构建）」标记 {source, run_id}：还标着需复核的段生效时改到的条目（Studio 表格与详情）。"""
     from ...kernel.changesets import store as changeset_store
 
     root = Path(_ws().project_root(project_id))

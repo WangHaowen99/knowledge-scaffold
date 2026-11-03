@@ -63,14 +63,14 @@ def test_states_follow_exec_records_changesets_and_mainline(env, monkeypatch):
     _client, workspaces, _manager, project_id, root = env
     first = states(root)
     assert first["core.research"] == "ready" and first["core.model"] == "not_ready"
-    # 进行中：有没结束的执行记录（建模命令记在建模节点、全量模式那一片上）
+    # 进行中：有没结束的执行记录（建模命令记在建模节点、全量模式那一段上）
     flow = flow_model.load_for(root)
     record = exec_records.start(project_id, "default", root=root, flow=flow, command="/ontology-extract-object",
                                 command_name="extract-object")
     assert record["slice"] == {"id": "all", "name": "全部"} and record["step"] == "object"
     assert states(root)["core.model"] == "running"
     exec_records.update(project_id, record["id"], state="done")
-    # 待确认：节点的改动在没确认的变更集里；主线上还没有，进度不打勾
+    # 待确认：节点的改动在这一轮还没合入的变更集里（合入前的一瞬）；主线上还没有，进度不打勾
     copy = changesets.copy_for_turn(workspaces, project_id, root)
     agent_write(copy, "ontology/object/门店.md", obj("门店", "合成门店"), commit="agent: 门店")
     agent_write(copy, "ontology/operation/补货.md", "# 补货\n\n## 业务描述\n\n合成\n", commit="agent: 补货")
@@ -79,10 +79,11 @@ def test_states_follow_exec_records_changesets_and_mainline(env, monkeypatch):
     node = next(item for item in built["nodes"] if item["id"] == "core.model")
     assert node["state"] == "pending_confirm" and node["display_state"] == "pending"
     progress_before = built["progress"]["done"]
-    assert built["notices"][0]["kind"] == "pending_changeset"
-    assert built["suggestions"]["mode"] == "pending_confirm"
-    assert built["suggestions"]["primary"]["action"] == {"type": "merge_changeset", "changeset_id": "cs-1"}
-    # 已确认：确认生效之后主线满足完成判定，进度才打勾
+    # F3：没有「修改待确认」的提示，建议条也不出「确认生效」
+    assert not [item for item in built["notices"] if item["kind"] in ("pending_changeset", "changeset_conflict")]
+    assert built["suggestions"]["mode"] != "pending_confirm"
+    assert (built["suggestions"].get("primary") or {}).get("action", {}).get("type") != "merge_changeset"
+    # 已确认：合入之后主线满足完成判定，进度才打勾
     monkeypatch.setattr(changesets.gates, "compare", lambda *args, **kwargs: {"errors": 0, "warnings": 0, "findings": []})
     changesets.merge(workspaces, project_id, "cs-1", actor="employee_0001")
     from app import wiring
@@ -193,7 +194,8 @@ def test_state_helper_suggest_matches_flow_and_host_injection(env):
     from_ui = client.get(f"/api/v1/projects/{project_id}/flow/suggestions").json()
     from_helper = next_steps.suggest(copy)
     assert from_helper == from_ui
-    assert from_ui["mode"] == "pending_confirm" and from_ui["primary"]["label"] == "确认生效"
+    # F3：这一轮结束已经合入，建议条直接给下一步
+    assert from_ui["mode"] == "normal" and from_ui["primary"]["label"] != "确认生效"
     assert len([from_ui["primary"], *from_ui["secondary"]]) <= 3
     hint = injection.next_step_hint(copy)
     labels = [item["label"] for item in [from_ui["primary"], *from_ui["secondary"]]]

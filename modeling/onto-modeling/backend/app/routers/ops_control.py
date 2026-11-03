@@ -377,7 +377,7 @@ async def enter_maintenance(request: Request):
         raise _maintenance_error(exc) from None
     _ops_audit(request, "ops.maintenance_enter", mode=state["mode"])
     if body.get("autobuild", "pause_at_safe_point") == "pause_at_safe_point":
-        # 自主构建（O-21 autobuild）：在跑的做完这一片就暂停，排队的等维护结束
+        # 自主构建（O-21 autobuild）：在跑的做完这一段就暂停，排队的等维护结束
         from ..services.autobuild.runner import runner as autobuild_runner
 
         autobuild_runner.pause_all_at_safe_point()

@@ -80,7 +80,7 @@ def round_cards(project_id: str, changes: dict, base: str, head: str, root: Path
     """一轮结束后要放进对话的产物卡；出错只记日志（卡片是增强信息）。
 
     base 是这一轮起点的提交或树（一个文件多项的格式按项比较），head 用作卡片编号的种子；
-    root 缺省读项目工作区，助手在变更集副本里改时传副本（ADR-0046：确认生效前改动只在副本里）。"""
+    root 缺省读项目工作区，助手在变更集副本里改时传副本（ADR-0046：这一轮合入前改动只在副本里）。"""
     cards: list[dict] = []
     for provider in list(_round_card_providers):
         try:
@@ -269,7 +269,7 @@ def ensure_baseline(project_id: str) -> None:
 
 
 def refresh_flow(project_id: str) -> dict | None:
-    """重算流程，和上次比：节点状态、切片、建议有变化就发 flow.updated（只含变化的部分）。"""
+    """重算流程，和上次比：节点状态、分段、建议有变化就发 flow.updated（只含变化的部分）。"""
     flow = _flow_view(project_id)
     if flow is None:
         return None

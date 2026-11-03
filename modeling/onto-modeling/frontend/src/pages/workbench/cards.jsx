@@ -3,6 +3,7 @@ import { createContext, Fragment, useContext, useEffect, useRef, useState } from
 import { useApp } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { roundLockNote } from '../../state/readonly.js';
+import { roundState } from './roundState.js';
 import { Button, Chip, Field, Icon, KV, Note, Ring, Seg, St, cx } from '../../ui/index.jsx';
 import {
   CC, DiffBlock, FlowThumb, Inline, Md, SrcRow, Tli, WbCtx, Wl, fmtDuration, hhmm,
@@ -107,6 +108,8 @@ export function FlowchartCard({ card, locked }) {
 // ---------- 这一轮改了什么 ----------
 const CHANGE_LABEL = { mod: ['mod', '修改'], add: ['add', '新增'], del: ['mod', '删除'], test: ['tst', '场景'] };
 
+export { roundState };
+
 export function RoundChangesCard({ card, scope }) {
   const { api } = useApp();
   const { pid } = useContext(WbCtx);
@@ -115,8 +118,8 @@ export function RoundChangesCard({ card, scope }) {
   const [showDiff, setShowDiff] = useState(false);
   const [busy, setBusy] = useState(false);
   const ref = useRef(null);
-  const merged = card.state === 'merged';
-  const discarded = card.state === 'discarded';
+  // F3：一轮结束就合入成版本；卡片只说改了什么，按钮只留撤回这一轮（合入冲突时去待处理）
+  const st = roundState(card);
 
   const toggleDiff = async () => {
     if (!showDiff && !diff) {
@@ -140,23 +143,20 @@ export function RoundChangesCard({ card, scope }) {
     try { await fn(); } finally { setBusy(false); }
   };
   const rows = (card.groups || []).flatMap((g) => g.items);
+  const undone = st === 'reverted';
   return (
     <div ref={ref}>
       <CC
-        icon={discarded ? 'undo' : 'check'} tone={discarded ? undefined : 'green'} eyebrow={card.eyebrow || '这一轮'} title={card.title}
+        icon={undone ? 'undo' : st === 'conflict' ? 'merge' : 'check'} tone={undone ? undefined : st === 'conflict' ? 'amber' : 'green'}
+        eyebrow={card.eyebrow || '这一轮'} title={card.title}
         foot={(
           <>
             <Button size="sm" kind="ghost" icon="eye" onClick={toggleDiff}>{showDiff ? '收起改动' : '查看改动'}</Button>
-            {!merged && !discarded ? <Button size="sm" kind="ghost" icon="undo" disabled={busy} onClick={() => run(() => actions.discard(card.changeset_id))}>撤回这一轮</Button> : null}
+            {st === 'merged' ? <Button size="sm" kind="ghost" icon="undo" disabled={busy} onClick={() => run(() => actions.discard(card.changeset_id))}>撤回这一轮</Button> : null}
             <span className="sp" />
-            {merged ? <span className="wx-ok"><Icon name="check" size={14} />已确认生效 · 版本 {card.merged_version_label}</span>
-              : discarded ? <span className="xs" style={{ color: 'var(--faint)' }}>已撤回</span>
-                : (
-                  <>
-                    <span className="xs" style={{ color: 'var(--faint)' }}>确认后保存为版本 {card.next_version_label}</span>
-                    <span><Button size="sm" kind="primary" icon="merge" disabled={busy} onClick={() => run(() => actions.merge(card.changeset_id))}>确认生效</Button></span>
-                  </>
-                )}
+            {st === 'merged' ? <span className="wx-ok"><Icon name="check" size={14} />{card.merged_version_label || card.status?.label}</span>
+              : st === 'conflict' ? <Button size="sm" kind="primary" icon="merge" onClick={() => actions.resolve?.()}>去处理</Button>
+                : <span className="xs" style={{ color: 'var(--faint)' }}>{card.status?.label || '已撤回'}</span>}
           </>
         )}
       >
@@ -166,10 +166,14 @@ export function RoundChangesCard({ card, scope }) {
             return <div className="r" key={i}><span className={cx('wx-v', cls)}>{label}</span><span><Inline text={r.text} /></span></div>;
           })}
         </div>
-        {!merged && !discarded ? (
+        {(card.hints || []).map((h, i) => (
+          <div key={i} className="xs row g4 mt8" style={{ color: h.tone === 'warn' ? 'var(--amber)' : 'var(--faint)' }}>
+            <Icon name={h.tone === 'warn' ? 'alert' : 'layers'} size={12} />{h.text}
+          </div>
+        ))}
+        {st === 'conflict' ? (
           <div className="xs row g4" style={{ color: 'var(--faint)', marginTop: 8 }}><Icon name="lock" size={12} />{roundLockNote(scope)}</div>
         ) : null}
-        {card.remaining_failures ? <Note tone="amber" className="mt8">还有 {card.remaining_failures} 项检查没通过</Note> : null}
         {showDiff && diff ? <DiffBlock lines={diff} style={{ marginTop: 10 }} /> : null}
       </CC>
     </div>
@@ -195,12 +199,9 @@ export function RoundChangesDetail({ card, onCollapse }) {
           ))}
         </Fragment>
       ))}
-      {card.state === 'pending_confirm' ? <div className="xs faint mt8 row g4"><Icon name="lock" size={12} />确认或撤回前，这些条目只读</div> : null}
-      {card.state === 'pending_confirm' ? (
+      {roundState(card) === 'merged' ? (
         <div className="row mt8">
           <Button size="sm" icon="undo" onClick={() => actions.discard?.(card.changeset_id)}>撤回这一轮</Button>
-          <span className="sp" />
-          <Button size="sm" kind="primary" icon="merge" onClick={() => actions.merge?.(card.changeset_id)}>确认生效</Button>
         </div>
       ) : null}
     </div>

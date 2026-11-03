@@ -1,8 +1,11 @@
-"""合入门禁（详设 8.2「把变更集叠到最新主线上重新校验」；方案 C8）：在合成树上跑规则检查，只看新增错误。
+"""合入时的检查（详设 8.2「把变更集叠到最新主线上重新校验」；方案 C8；F3）：在合成树上跑规则检查，只看新增问题。
 
 主线树与合成树各导出 `ontology/`、`research/` 到临时目录（资料目录挂主线工作区的那份），用本项目锁定版本的
 `ontology_checker.py`（装配目录里哈希核对过的，方案 D19）各跑一遍；两边结果用 `candidate_revision._minus`
-相减（同一问题挪了行号不算新问题），新增的错误挡住合入，新增的警告只提示。主线那一份按树对象缓存。
+相减（同一问题挪了行号不算新问题）。主线那一份按树对象缓存。
+
+建模过程中检查只提示、不挡合入（F3，用户 11-03 定）；发布时由发布门禁链拦。按段建模时，链接指向蓝图里已规划、
+还没建的对象或操作记为「待建」（`pending_links`，带第几段），不算问题；没有蓝图或全量模式时照常算问题。
 """
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import tarfile
 import tempfile
@@ -23,6 +27,9 @@ _log = logging.getLogger(__name__)
 
 CHECK_TIMEOUT_SECONDS = 180
 EXPORT_DIRS = ("ontology", "research")
+LINK_CATEGORY = "链接失效"
+BLUEPRINT_REL = "research/blueprint.json"
+_LINK = re.compile(r"\[\[([^\]]+)\]\]")
 _cache: dict[tuple[str, str], list[dict]] = {}
 _cache_lock = threading.Lock()
 _CACHE_MAX = 64
@@ -108,14 +115,65 @@ def finding(issue: dict) -> dict:
 
 
 def compare(root: Path, main_tree: str, candidate_tree: str) -> dict:
-    """合成树相对主线新增的问题：{errors, warnings, findings: Finding[]}（只含新增的，错误在前）。"""
+    """合成树相对主线新增的问题：{errors, warnings, findings: Finding[], pending, pending_links}。
+
+    findings 只含新增的、不含待建的，错误在前；pending_links 是指向蓝图里已规划、还没建的内容的链接
+    [{target, path, slice_id, slice_name, slice_no}]（一处一条），不计进 errors、warnings。"""
     before = run(root, main_tree)
     after = run(root, candidate_tree)
     new = _minus(root)([_normalized(item) for item in after], [_normalized(item) for item in before])
-    errors = [item for item in new if item.get("severity") == "错误"]
-    warnings = [item for item in new if item.get("severity") == "警告"]
+    planned = _planned(root, candidate_tree)
+    pending, kept = [], []
+    for item in new:
+        target = link_target(item)
+        hit = planned.get(target) if target else None
+        if hit is not None:
+            # 一处链接一条（同一个目标被几个条目引用就是几处）
+            pending.append({"target": target, "path": finding(item)["path"], **hit})
+            continue
+        kept.append(item)
+    errors = [item for item in kept if item.get("severity") == "错误"]
+    warnings = [item for item in kept if item.get("severity") == "警告"]
     return {"errors": len(errors), "warnings": len(warnings),
-            "findings": [finding(item) for item in [*errors, *warnings]][:200]}
+            "findings": [finding(item) for item in [*errors, *warnings]][:200],
+            "pending": len(pending), "pending_links": pending[:200]}
+
+
+def link_target(issue: dict) -> str | None:
+    """链接失效的问题指向的条目名（去掉路径、别名、锚点、扩展名）；不是链接失效时 None。"""
+    if (issue.get("category") or issue.get("code")) != LINK_CATEGORY:
+        return None
+    found = _LINK.search(str(issue.get("message") or ""))
+    if not found:
+        return None
+    name = found.group(1).split("|", 1)[0].split("#", 1)[0].strip().rsplit("/", 1)[-1]
+    return name[:-3] if name.endswith(".md") else name or None
+
+
+def _planned(root: Path, tree: str) -> dict[str, dict]:
+    """合成树上的蓝图里按段规划的条目名 → {slice_id, slice_name, slice_no}（第几段按没排除的段的顺序）。
+    没有蓝图、读不出、全量模式时为空：链接失效照常算问题。"""
+    from . import worktree
+
+    data = worktree.read_blob(root, tree, BLUEPRINT_REL)
+    if not data:
+        return {}
+    try:
+        from ...services.flow import blueprint
+
+        module = blueprint.script(root)
+        doc = module.parse(data.decode("utf-8"))
+        if module.mode(doc) != "sliced":
+            return {}
+        out: dict[str, dict] = {}
+        for number, item in enumerate(module.live_slices(doc), 1):
+            for names in module.members(item).values():
+                for name in names:
+                    out.setdefault(str(name), {"slice_id": item["id"], "slice_name": item["name"], "slice_no": number})
+        return out
+    except Exception:  # noqa: BLE001 - 蓝图读不出时不区分待建
+        _log.warning("项目 %s 合成树上的蓝图读不出，链接失效不区分待建", Path(root).name, exc_info=True)
+        return {}
 
 
 def _normalized(issue: dict) -> dict:

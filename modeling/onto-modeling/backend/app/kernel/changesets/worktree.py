@@ -512,7 +512,7 @@ def sync(root: Path, copy: Path) -> str:
 
 
 def commit_pending(copy: Path, message: str) -> str:
-    """副本里没提交的改动收成一个提交（确认生效之前）；没有改动返回空串。"""
+    """副本里没提交的改动收成一个提交（合入之前）；没有改动返回空串。"""
     if not dirty(copy):
         return ""
     git(copy, "add", "-A")

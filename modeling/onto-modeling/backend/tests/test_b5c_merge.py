@@ -4,7 +4,7 @@
 - 人工节点的决策卡进待处理的「决策」，回答后消失；
 - 节点状态：升级标的需复核在人确认后清除、跳过的可选插件节点补做后不再算跳过、IN-04 按流程顺序选过期节点且不选
   熔断了的节点；
-- 包声明的提交门禁也挡助手变更集的确认生效。
+- 包声明的提交门禁在助手一轮的合入里只提示（F3）。
 
 测试数据全部为合成内容；假引擎不起真实 CLI。
 """
@@ -257,7 +257,7 @@ def test_refresh_stale_follows_flow_order_and_skips_broken_nodes(env, monkeypatc
     ops_state.set_breaker("naming", "0.1.0", "open", "ops")
     try:
         ids = [item["id"] for item in inbox.collect(manager, project_id) if not item.get("_dismissed")]
-        assert "stale:naming.check" not in ids and "stale:core.model" in ids  # 建模按片汇总：操作那一步过期
+        assert "stale:naming.check" not in ids and "stale:core.model" in ids  # 建模按段汇总：操作那一步过期
         client.post(batch, json={"action": "refresh_stale"})
         assert started[-1] == "core.model"
     finally:
@@ -265,10 +265,10 @@ def test_refresh_stale_follows_flow_order_and_skips_broken_nodes(env, monkeypatc
         ops_state.set_breaker("naming", "0.1.0", "close", "ops")
 
 
-# ---- 包声明的提交门禁挡确认生效（B5c 的登记点在 B4b 改过的 ChangeTx.commit 里） ----
+# ---- 包声明的提交门禁：助手一轮的合入只提示（F3），问题记进变更集、卡片上说 ----
 
 
-def test_commit_gate_blocks_merging_an_assistant_changeset(ext_env, monkeypatch):
+def test_commit_gate_only_hints_when_merging_an_assistant_changeset(ext_env, monkeypatch):
     _client, manager, project_id, _tmp = ext_env
     monkeypatch.setattr(changesets, "_activity_provider", None)
     root = manager.project_root(project_id)
@@ -276,15 +276,10 @@ def test_commit_gate_blocks_merging_an_assistant_changeset(ext_env, monkeypatch)
     copy_dir = changesets.copy_for_turn(manager, project_id, root)
     agent_write(copy_dir, rel, item_md("借阅检查", None), commit="agent: 检查项")
     record = changesets.observe(manager, project_id, running=False, conversation_id="default")
-    head = git(root, "rev-parse", "HEAD").strip()
-    with pytest.raises(WorkspaceError) as exc:
-        changesets.merge(manager, project_id, record["id"], actor="local")
-    assert exc.value.code == "gate_failed" and exc.value.details["findings"][0]["gate"] == "level-set"
-    assert git(root, "rev-parse", "HEAD").strip() == head and not (root / rel).exists()
-    assert changesets.current(manager, project_id)["state"] == "pending_confirm"
-
-    agent_write(copy_dir, rel, item_md("借阅检查", "high"), commit="agent: 补上级别")
-    changesets.observe(manager, project_id, running=False, conversation_id="default")
     merged = changesets.merge(manager, project_id, record["id"], actor="local")
     assert merged["commit"] and (root / rel).is_file()
+    checks = changesets.get(manager, project_id, record["id"])["checks"]
+    assert checks["errors"] == 1 and checks["findings"][0]["code"] == "level-set"
+    card = changesets.round_card(manager, project_id, changesets.get(manager, project_id, record["id"]), "rc-x")
+    assert [hint["tone"] for hint in card["hints"]] == ["warn"] and card["hints"][0]["text"].startswith("1 处")
     assert trailer(root, "Onto-Changeset") == record["id"]

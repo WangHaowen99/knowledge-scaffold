@@ -152,7 +152,7 @@ export function StartDialog({ preview: initial, evidenceOn, onClose }) {
         pairs={[
           ['范围', (
             <div>
-              <div>{included.length} 片{included.length < all.length ? `（另有 ${all.length - included.length} 片不在范围）` : ''}</div>
+              <div>{included.length} 段{included.length < all.length ? `（另有 ${all.length - included.length} 段不在范围）` : ''}</div>
               <div className="row wrap mt4" style={{ gap: 6 }}>
                 {all.map((s) => <Chip key={s.id} tone={s.included ? 'line' : 'gray'} sm>{s.name}{s.current ? ` · ${s.current}` : ''}</Chip>)}
               </div>
@@ -314,8 +314,8 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
           <div className="g2s">
             <Card title="范围" icon="layers">
               <div className="row g16 mb12">
-                <span className="g2s-r"><Radio on={all} label={`全部未完成的切片（${pendingIds.length} 片）`} onChange={() => !locked && setScope({ mode: 'all_pending', slice_ids: pendingIds })} /></span>
-                <span className="g2s-r"><Radio on={!all} label="只跑选中的切片" onChange={() => !locked && setScope({ mode: 'selected', slice_ids: all ? pendingIds : scope.slice_ids })} /></span>
+                <span className="g2s-r"><Radio on={all} label={`全部未完成的分段（${pendingIds.length} 段）`} onChange={() => !locked && setScope({ mode: 'all_pending', slice_ids: pendingIds })} /></span>
+                <span className="g2s-r"><Radio on={!all} label="只跑选中的分段" onChange={() => !locked && setScope({ mode: 'selected', slice_ids: all ? pendingIds : scope.slice_ids })} /></span>
               </div>
               {rows.length ? (
                 <div className={cx('g2s-sl', (all || locked) && 'g2-off')}>
@@ -327,7 +327,7 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
                     </div>
                   ))}
                 </div>
-              ) : <div className="sm muted">切片还没规划</div>}
+              ) : <div className="sm muted">分段还没规划</div>}
               {errors.scope ? <div className="xs mt8" style={{ color: 'var(--red)' }}>{errors.scope}</div> : null}
               <div className="row wrap mt12" style={{ gap: 18 }}>
                 <span className="row sm"><Toggle on={scope.refresh_stale_first} disabled={locked} onChange={(v) => setScope({ refresh_stale_first: v })} />先处理过期的内容</span>
@@ -398,7 +398,7 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
                     <div className="grid2" style={{ gap: 8 }}>
                       {[
                         ['conservative_assumption', 'A', '采用保守选项，记为假设'],
-                        ['suspend', 'B', '挂起这一项，跳到下一片'],
+                        ['suspend', 'B', '挂起这一项，跳到下一段'],
                       ].map(([k, key, t]) => (
                         <div key={k} className={cx('opt', a.below_threshold === k && 'on')} onClick={() => !locked && setAdvanced({ below_threshold: k })}>
                           <span className="k">{key}</span><div><div className="t">{t}</div></div>

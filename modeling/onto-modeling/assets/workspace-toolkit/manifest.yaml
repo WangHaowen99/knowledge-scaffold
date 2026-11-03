@@ -11,8 +11,8 @@ version: 0.3.0
 kind: capability
 category: capability
 label: 基础建模能力
-description: 资料分析与切片规划、按切片建模、指标、校验、全局一致性、发布、增量更新、影响分析、业务知识的存放与加载、共享契约库。
-changelog: 建模按切片走（建模蓝图）；新增全局一致性与发布节点。
+description: 资料分析与分段规划、分段建模、指标、校验、全局一致性、发布、增量更新、影响分析、业务知识的存放与加载、共享契约库。
+changelog: 建模按段走（建模蓝图）；新增全局一致性与发布节点。
 publisher:
   kind: official
   label: 平台

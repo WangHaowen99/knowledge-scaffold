@@ -291,7 +291,7 @@ export function fieldProblem(problems, uid, field) {
 export function saveState({ dirty, locked, problems = [], live, draftKey, saving }) {
   if (saving) return { disabled: true, title: '正在保存…' };
   if (!dirty) return { disabled: true, title: '没有要保存的修改' };
-  if (locked) return { disabled: true, title: '这份求解契约在助手写入范围里，确认生效或撤回后才能保存' };
+  if (locked) return { disabled: true, title: '这份求解契约在助手写入范围里，这一轮结束后才能保存' };
   const errors = problems.filter((p) => p.severity !== 'warning');
   if (errors.length) return { disabled: true, title: `还有 ${errors.length} 个问题要先改` };
   if (live && live.key === draftKey && live.rejected?.length) return { disabled: true, title: `保存会被拒绝：${live.rejected[0].message}` };
@@ -325,7 +325,7 @@ export function saveErrorView(e, now = Date.now()) {
   if (code === 'solver_contract_rejected' || code === 'solver_contract_invalid') {
     return { kind: 'rejected', text: '检查没通过，没有保存：', findings: d.findings || [] };
   }
-  if (code === 'write_scope_locked') return { kind: 'locked', text: '这份求解契约刚进了助手的写入范围，确认生效或撤回后才能保存。' };
+  if (code === 'write_scope_locked') return { kind: 'locked', text: '这份求解契约刚进了助手的写入范围，这一轮结束后才能保存。' };
   return { kind: 'error', text: e?.message || '保存失败' };
 }
 

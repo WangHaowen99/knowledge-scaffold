@@ -22,7 +22,7 @@ function seed() {
   const rule = {
     id: 'rp-rule', name: '规则检查报告 · 超量与审批提示', type: 'rule', type_label: '规则', at: at(10, 31, 21, 52), summary: '错误 1 · 警告 2',
     path: 'reports/rule/超量与审批提示.md',
-    scope_text: '切片「超量与审批提示」', mode: 'regression', duration_ms: 3200,
+    scope_text: '分段「超量与审批提示」', mode: 'regression', duration_ms: 3200,
     previous: { at: at(10, 31, 21, 31), summary: '错误 2' },
     progress: { handled: 2, total: 5, note: '没有错误后，节点「校验与走查」才能确认，发布关卡才会放行。' },
     repair: { rounds: [{ n: 1, count: 4 }, { n: 2, count: 2 }, { n: 3, count: 1 }], limit: 2, exhausted: true },
@@ -36,7 +36,7 @@ function seed() {
     raw: (y) => [
       '# 规则检查报告 · 超量与审批提示',
       `生成时间：${y}-10-31 21:52`,
-      '范围：切片「超量与审批提示」（回归模式，只查改动）',
+      '范围：分段「超量与审批提示」（回归模式，只查改动）',
       '',
       '## 错误（1）',
       '- [ ] E-ROUTE-01 操作「超量与审批提示」的输出「审批提示」没有交接对象',
@@ -113,7 +113,7 @@ function seed() {
   });
   return [
     rule, link, research,
-    simple('rp-semantic', '语义检查报告', 'semantic', '语义', at(10, 31, 21, 50), '警告 2', '切片「超量与审批提示」', [
+    simple('rp-semantic', '语义检查报告', 'semantic', '语义', at(10, 31, 21, 50), '警告 2', '分段「超量与审批提示」', [
       item('si1', 'W-SEM-02', 'warning', '规则 R-09「门店申请取严」和操作步骤 2 的说法不一致', loc('规则 · R-09', 'r09_store_stricter'), 'pending', '待处理'),
       item('si2', 'W-SEM-04', 'warning', '对象「审批提示」的描述没有说明交给谁', loc('对象 · 审批提示', 'approval_hint'), 'pending', '待处理'),
     ], { handled: 0, total: 2, note: '语义检查只给提醒，不挡发布。' }),

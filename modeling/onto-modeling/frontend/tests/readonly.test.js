@@ -26,14 +26,14 @@ test('范围内的条目、产物、路径只读，范围外照常编辑', () =>
   assert.equal(readonlyInfo(l, { id: 'object:hardness_limit' }), null);
 });
 
-test('两态：助手运行中给「回到对话里打断它」，修改待确认给「去确认」', () => {
-  const a = readonlyInfo(lock('assistant_running', { reason_text: '助手正在改「超量与审批提示」这一片' }), { id: 'operation:overage' });
+test('两态：助手运行中给「回到对话里打断它」，合入冲突给「去处理」（F3：没有修改待确认）', () => {
+  const a = readonlyInfo(lock('assistant_running', { reason_text: '助手正在改「超量与审批提示」这一段' }), { id: 'operation:overage' });
   assert.equal(a.label, '助手运行中');
-  assert.equal(a.text, '助手正在改「超量与审批提示」这一片');
+  assert.equal(a.text, '助手正在改「超量与审批提示」这一段');
   assert.equal(a.actions[0].kind, 'interrupt');
   const p = readonlyInfo(lock('pending_confirm'), { id: 'operation:overage' });
-  assert.equal(p.label, '修改待确认');
-  assert.equal(p.actions[0].label, '去确认');
+  assert.equal(p.label, '有冲突');
+  assert.equal(p.actions[0].label, '去处理');
   const r = readonlyInfo(lock('autobuild_slice'));
   assert.match(r.text, /超量与审批提示/);
 });
@@ -59,9 +59,9 @@ test('写入范围路径按 Python fnmatch 判断：* 跨目录、[seq] 字符�
 });
 
 test('这一轮卡片的锁定说明随状态变', () => {
-  assert.match(roundLockNote(lock('pending_confirm')), /确认生效或撤回前/);
+  assert.match(roundLockNote(lock('pending_confirm')), /选好保留哪边前/);
   assert.match(roundLockNote(lock('assistant_running')), /助手运行中/);
-  assert.match(roundLockNote(lock('autobuild_slice')), /这一片完成前/);
+  assert.match(roundLockNote(lock('autobuild_slice')), /这一段完成前/);
   assert.notEqual(roundLockNote(lock('pending_confirm')), roundLockNote(lock('autobuild_slice')));
 });
 

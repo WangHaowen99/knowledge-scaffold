@@ -1,7 +1,7 @@
 // 代码生成与求解（插件页，设计稿 scripts）：脚本（SC-01～SC-03、ST-04 / F-02 只读预览）与求解契约（SV-01～SV-04）两个页签。
 // 插件页只发命令、不跑助手（S-20）：扫描、生成脚本、修复、重新生成、按模板重新生成、生成评估器都发到工作台对话，
 // 页面显示进度条和「去对话里看」，跑完列表刷新（S-19 恢复、EP-10 进度、EP-06 刷新）。
-// 求解契约在助手写入范围里（CS-06 / EP-03）时只读到确认生效或撤回，不再有覆盖保存的冲突框。
+// 求解契约在助手写入范围里（CS-06 / EP-03）时只读到这一轮结束，不再有覆盖保存的冲突框。
 import { useCallback, useEffect, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { toast } from '../../app/toast.jsx';

@@ -139,9 +139,9 @@ export function projectCards() {
 
 export function notifications() {
   return [
-    { id: 'n1', kind: 'autobuild_finished', title: '自主构建完成，需复核 4 项', body: '外卖骑手排班求解 · 1 小时 52 分 · 5/6 片完成，挂起 2 个问题', project_id: 'rider-shifts-52c9d0f3', project_name: '外卖骑手排班求解', action: { label: '去复核', page: 'inbox' }, created_at: ago(HOUR), read: false },
+    { id: 'n1', kind: 'autobuild_finished', title: '自主构建完成，需复核 4 项', body: '外卖骑手排班求解 · 1 小时 52 分 · 5/6 段完成，挂起 2 个问题', project_id: 'rider-shifts-52c9d0f3', project_name: '外卖骑手排班求解', action: { label: '去复核', page: 'inbox' }, created_at: ago(HOUR), read: false },
     { id: 'n2', kind: 'evidence_conflict', title: '需要你处理：证据冲突', body: '门店补货单编制 · 牛奶陈列上限：文档写 150 箱，数据库快照是 140', project_id: MAIN_PID, project_name: '门店补货单编制', action: { label: '去处理', page: 'inbox' }, created_at: ago(26 * MIN), read: false },
-    { id: 'n3', kind: 'autobuild_progress', title: '自主构建中', body: '共享单车故障诊断 · 第 3/5 片 · 预计 25 分钟后完成', project_id: 'bike-fleet-7b20e4a1', project_name: '共享单车故障诊断', action: { label: '查看', page: 'l4-run' }, created_at: ago(10 * MIN), read: true },
+    { id: 'n3', kind: 'autobuild_progress', title: '自主构建中', body: '共享单车故障诊断 · 第 3/5 段 · 预计 25 分钟后完成', project_id: 'bike-fleet-7b20e4a1', project_name: '共享单车故障诊断', action: { label: '查看', page: 'l4-run' }, created_at: ago(10 * MIN), read: true },
     { id: 'n4', kind: 'publish_done', title: '发布完成', body: '图书借阅管理 v1.3 已发布，包清单已交给评测服务', project_id: 'library-desk-1e8f6a07', project_name: '图书借阅管理', action: { label: '查看', page: 'publish' }, created_at: yesterdayAt(18, 20), read: true },
   ];
 }
@@ -198,7 +198,7 @@ export function packs({ offline = true } = {}) {
     pack({ name: 'sys-wms-generic', label: 'WMS（仓储）', category: 'system', latest: '0.4.0', description: '库位与库存表结构' }),
     pack({ name: 'sys-pos-generic', label: 'POS 收银', category: 'system', latest: '0.2.1', description: '常用表结构' }),
     pack({ name: 'core', label: '基础建模', category: 'capability', latest: '1.4.2', description: '资料分析、对象 / 操作 / 规则抽取、校验、增量更新、版本', ui: ui.kernel, project_status: 'required', default_on: true }),
-    pack({ name: 'trace', label: '场景走查', category: 'capability', latest: '0.9.1', description: '每片多出「场景」一步；全量回归串在「校验与走查」里', ui: ui.page('scenarios', '场景走查'), badges: ['recommended'], default_on: true }),
+    pack({ name: 'trace', label: '场景走查', category: 'capability', latest: '0.9.1', description: '每段多出「场景」一步；全量回归串在「校验与走查」里', ui: ui.page('scenarios', '场景走查'), badges: ['recommended'], default_on: true }),
     pack({ name: 'knowledge', label: '知识沉淀', category: 'capability', latest: '0.6.0', description: '把对话里的纠错、惯例沉淀成条目，可提名进行业包；已有知识不装也会加载', ui: ui.page('knowledge', '知识沉淀'), default_on: true }),
     pack({ name: 'codegen', label: '代码生成与求解', category: 'capability', latest: '0.9.2', description: '脚本生成、沙箱验证、求解契约', ui: ui.page('scripts', '代码生成'), default_on: true }),
     pack({ name: 'reverse', label: '系统逆向建模', category: 'capability', latest: '0.3.0', description: '连接数据源、采集快照、三方对账', ui: ui.subpages, default_on: true }),
@@ -280,7 +280,7 @@ export function flow({ trace = true } = {}) {
   const nodes = [
     node({ id: 'core.research', title: '资料分析', state: 'confirmed', display_state: 'confirmed' }),
     node({ id: 'rev.evidence', title: '系统取证', placement: 'step', state: 'confirmed', display_state: 'confirmed', version: 'rev@0.3.0', note: '登记了业务系统数据源才有这一步', plugin: { name: 'reverse', label: '系统逆向建模' } }),
-    node({ id: 'core.model', title: '建模', state: 'running', display_state: 'running', progress: { done: 3, total: 5, label: '3/5 片' }, per_slice: true }),
+    node({ id: 'core.model', title: '建模', state: 'running', display_state: 'running', progress: { done: 3, total: 5, label: '3/5 段' }, per_slice: true }),
     node({ id: 'core.validate', title: trace ? '校验与走查' : '校验', note: trace ? '场景走查插件把全量回归串在这一步里' : null }),
     // 全量回归随 core 拆出、串在校验之后（spine，contract-changes B4d 合并第 4 条）
     ...(trace ? [node({ id: 'trace.trace', title: '全量回归', state: 'stale', display_state: 'stale', version: 'trace@0.10.0', note: '场景走查 · 09 修订通知改了陈列量标准，3 个场景过期', actions: [{ kind: 'refresh', label: '刷新', target: 'scenarios' }], plugin: { name: 'trace', label: '场景走查' } })] : []),
@@ -314,7 +314,7 @@ export function flow({ trace = true } = {}) {
       ...(trace ? [{ id: 'scenario', label: '场景', plugin: 'trace' }] : []),
     ],
     slices: [
-      { id: 's1', name: '补货申请与门店需求', core_flow: '受理三道校验', group: 'done', stages: st(['confirmed', 'confirmed', 'skipped', 'confirmed', 'confirmed']), note: '已确认生效 · 资料里没有规则，已跳过', no_rules: true },
+      { id: 's1', name: '补货申请与门店需求', core_flow: '受理三道校验', group: 'done', stages: st(['confirmed', 'confirmed', 'skipped', 'confirmed', 'confirmed']), note: '已生效 · 资料里没有规则，已跳过', no_rules: true },
       { id: 's2', name: '安全库存测算', core_flow: '按类取标准再取严', group: 'wait', stages: st(['confirmed', 'confirmed', 'pending_confirm', 'confirmed', 'ready']), note: '2 条规则待确认', no_rules: false },
       { id: 's3', name: '陈列量核定', core_flow: '到货周期 × 陈列上限', group: 'wait', stages: st(['confirmed', 'stale', 'stale', 'not_ready', 'stale']), note: '3 项过期 · 来自 09 修订通知', no_rules: false },
       { id: 's4', name: '临期与损耗检查', core_flow: '临期损耗限值', group: 'todo', stages: st(['ready', 'not_ready', 'not_ready', 'not_ready', 'not_ready']), note: '未开始 · 推荐下一个做', no_rules: false },
@@ -532,7 +532,7 @@ export const OPTION_PREVIEWS = {
     diff('header', '新增对象'),
     diff('add', '+ 对象「区域统一配额」'),
     diff('header', '影响'),
-    diff('add', '  安全库存测算、陈列量核定、临期与损耗检查 3 个切片需要补数据来源'),
+    diff('add', '  安全库存测算、陈列量核定、临期与损耗检查 3 段需要补数据来源'),
   ],
   C: [
     diff('header', '操作「超量与审批提示」· 输入'),
@@ -562,7 +562,7 @@ export function decisionQuestion() {
     anchors: [{ n: 2, anchor: A.e92 }, { n: 5, anchor: A.eb }],
     options: [
       opt('A', '按适用标准逐类取上限，再和门店申请取严', '复用已确认的「安全库存标准」「陈列量标准」，不新增对象', { recommended: true }),
-      opt('B', '一律用区域统一配额', '要新增对象「区域统一配额」，另外 3 个切片要补数据来源'),
+      opt('B', '一律用区域统一配额', '要新增对象「区域统一配额」，另外 3 段要补数据来源'),
       opt('C', '每次补货时由店长提供', '操作多一个输入；场景要人工填值，不能自动推演'),
       opt('D', '其他，我来说', '先复述你的方向，再给改动预览', { custom: true }),
     ],
@@ -576,28 +576,28 @@ export function decisionQuestion() {
   };
 }
 
-export function roundChangesCard(optionKey, state = 'pending_confirm') {
+// 一轮结束就合入成版本（F3）：state merged | reverted
+export function roundChangesCard(optionKey, state = 'merged') {
   const op = { kind: 'operation', label: '操作', items: [{ change: 'mod', target: REFS.op, text: '操作 [[超量与审批提示]] 的步骤 2', comparable: true }] };
   const rule = { kind: 'rule', label: '规则', items: [{ change: 'add', target: REFS.r09, text: '规则引用 [[R-09 门店申请取严]]', comparable: true }] };
   const sc = { kind: 'scenario', label: '场景', items: [{ change: 'test', target: { type: 'trace.scenario', key: 's-21', title: '门店更严 → 按门店执行' }, text: '新增 2 个验收场景，推演 2 / 2 通过', comparable: true }] };
   return {
     card_id: ROUND_CARD_ID,
     card_type: 'round_changes',
-    eyebrow: '这一轮',
-    title: '改了 3 处，检查全部通过',
+    eyebrow: '这一轮改了什么',
+    title: '改了 3 处',
     subtitle: '',
-    status: null,
+    status: state === 'reverted' ? { key: 'skipped', label: '已撤回' } : { key: 'confirmed', label: 'v0.13' },
     plugin: null,
     open: null,
     changeset_id: CHANGESET_ID,
     option_key: optionKey,
-    checks: { errors: 0, warnings: 0 },
+    checks: { errors: 0, warnings: 0, pending: 1 },
+    hints: [{ tone: 'info', text: '1 处指向第 4 段待建的内容' }],
     groups: [op, rule, sc],
-    lock_note: '确认生效前，这些条目在 Studio 和插件页里只读；撤回这一轮也会解除',
-    next_version_label: 'v0.13',
     state,
-    merged_version_label: state === 'merged' ? 'v0.13' : null,
-    remaining_failures: 0,
+    merged_version_label: 'v0.13',
+    reverted_version_label: state === 'reverted' ? 'v0.14' : null,
   };
 }
 
@@ -608,9 +608,9 @@ export function wbHistory() {
   const e = (type, data, ts = t1) => ({ id: String(++seq), type, ts, project_id: MAIN_PID, conversation_id: 'c7a1e2f03b44', data });
   return [
     e('day.marker', { label: '今天' }, t0),
-    e('notice', { kind: 'merged', text: '切片「临期与损耗检查」已确认生效 · 版本 v0.12', version_label: 'v0.12', changeset_id: 'cs-30', align: 'center' }, t0),
+    e('notice', { kind: 'merged', text: '分段「临期与损耗检查」已生效 · 版本 v0.12', version_label: 'v0.12', changeset_id: 'cs-30', align: 'center' }, t0),
     e('message.user', { message_id: 'm-u-41', text: '继续做「超量与审批提示」', attachments: [], references: [], origin: null, delivery: 'immediate' }, todayAt(15, 20)),
-    e('message.assistant', { message_id: 'm-a-42', text_md: '好。这一片要把门店申请和标准逐项比较，生成超量清单和审批提示。', anchors: [], entry_links: [], continued: false }),
+    e('message.assistant', { message_id: 'm-a-42', text_md: '好。这一段要把门店申请和标准逐项比较，生成超量清单和审批提示。', anchors: [], entry_links: [], continued: false }),
     e('progress', {
       group_id: 'pg-42', title: '已完成 3 步', desc: '读全资料 · 抽出操作 · 写入即查', state: 'done', started_at: t1, duration_ms: 62000, collapsed: true,
       steps: [
@@ -636,22 +636,10 @@ export function suggestionsWaiting() {
   };
 }
 
-export function suggestionsPendingConfirm() {
-  return {
-    mode: 'pending_confirm',
-    primary: { id: 'sg-merge', label: '确认生效', icon: 'merge', primary: true, disabled: false, reason: '', priority: 2, action: { type: 'merge_changeset', changeset_id: CHANGESET_ID } },
-    secondary: [
-      { id: 'sg-see', label: '查看改动', icon: 'eye', primary: false, disabled: false, reason: '', priority: 2, action: { type: 'show_changes', changeset_id: CHANGESET_ID } },
-      { id: 'sg-discard', label: '撤回这一轮', icon: 'undo', primary: false, disabled: false, reason: '', priority: 2, action: { type: 'discard_changeset', changeset_id: CHANGESET_ID } },
-    ],
-    all_commands: true,
-  };
-}
-
 export function suggestionsAfterMerge() {
   return {
     mode: 'normal',
-    // 建模的下一步（contract-changes B4d 第 14 条）：send 的 text 为空串，命令与切片在 command、args 里
+    // 建模的下一步（contract-changes B4d 第 14 条）：send 的 text 为空串，命令与分段在 command、args 里
     primary: { id: 'core.model:s2:rule', label: '提取规则', icon: 'scale', primary: true, disabled: false, reason: '', priority: 4, action: { type: 'send', text: '', command: '/ontology-extract-rule-metric', args: { slice: 's2' } } },
     secondary: [
       { id: 'sg-sc', label: '看场景推演', icon: 'flask', primary: false, disabled: false, reason: '', priority: 4, action: { type: 'navigate', page: 'scenarios' } },
@@ -679,12 +667,12 @@ export function commandCatalog() {
     groups: [
       { id: 'model', label: '建模', items: [
         item('guide', '引导式建模', '从头带你走一遍', '/ontology'),
-        item('research', '资料分析', '读全资料，提出切片', '/ontology-research'),
+        item('research', '资料分析', '读全资料，提出分段', '/ontology-research'),
         item('objects', '提取对象', '从资料里抽出业务对象', '/ontology-extract-object'),
         item('operations', '提取操作', '抽出业务流程和步骤', '/ontology-extract-operation'),
         item('rules', '规则与指标', '抽出判断规则和统计口径', '/ontology-extract-rule-metric'),
         item('check', '校验', '规则检查 + 语义检查', '/ontology-validate'),
-        item('consistency', '全局一致性', '关系、口径与切片衔接', '/ontology-consistency'),
+        item('consistency', '全局一致性', '关系、口径与分段衔接', '/ontology-consistency'),
         item('incremental', '增量更新', '资料变了，只改受影响的部分', '/ontology-update'),
       ] },
       { id: 'optional', label: '可选能力', items: [

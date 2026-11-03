@@ -71,7 +71,7 @@ def flow_state(root: Path):
 
 
 def progress(root: Path) -> dict:
-    """项目列表上的阶段进度：{done, total, hits, stage, probes}。按切片建模时建模节点要全部片做完才算（同 FL-01）。"""
+    """项目列表上的阶段进度：{done, total, hits, stage, probes}。分段建模时建模节点要全部段做完才算（同 FL-01）。"""
     flow = load_for(root)
     state = flow_state(root)
     probes = state.evaluate(flow, root)
@@ -82,7 +82,7 @@ def progress(root: Path) -> dict:
         info["hits"][sliced["node_id"]] = sliced["hit"]
         counted = any(node["id"] == sliced["node_id"] for node in state.progress_nodes(flow))
         info["done"] += (int(sliced["hit"]) - int(before)) if counted else 0
-    # 越过插入位置的插件节点（可补做）做完之前不计入分母，和 FL-01 的进度同一口径（按片覆盖之后再判越没越过）
+    # 越过插入位置的插件节点（可补做）做完之前不计入分母，和 FL-01 的进度同一口径（按段覆盖之后再判越没越过）
     from .overlay import backfill_ids
 
     progress_ids = {node["id"] for node in state.progress_nodes(flow)}
@@ -93,7 +93,7 @@ def progress(root: Path) -> dict:
 
 
 def _sliced(root: Path, flow: dict) -> dict | None:
-    """按片模式时建模节点按切片的汇总；全量模式（没有蓝图或只有一片）时 None。"""
+    """按段模式时建模节点按段的汇总；全量模式（没有蓝图或只有一段）时 None。"""
     from . import blueprint, slices
 
     doc = blueprint.load_doc(root)
@@ -109,8 +109,8 @@ _CELLS = {"done": "confirmed", "now": "running", "wait": "pending", "todo": "rea
 
 
 def slice_summary(root: Path) -> dict | None:
-    """项目卡片上的切片进度（契约 7.3 ProjectCard.slices）：按片建模时 {total, confirmed, cells}，每片一格；
-    全量模式（没有蓝图或只有一片）时 None（切片待规划）。"""
+    """项目卡片上的分段进度（契约 7.3 ProjectCard.slices）：按段建模时 {total, confirmed, cells}，每段一格；
+    全量模式（没有蓝图或只有一段）时 None（分段待规划）。"""
     flow = load_for(root)
     sliced = _sliced(root, flow)
     if sliced is None:
