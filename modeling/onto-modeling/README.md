@@ -155,6 +155,8 @@ resume 续接模型上下文，界面无感。
 
 内测引擎的会话默认放在独立的 worker 子进程里（`ONTO_WEB_JIUWEN_WORKER`，默认 `true`）：它出错不拖垮
 后端，同时在线的内测引擎会话一起结束、下一条消息重拉；设 `false` 退回在后端进程内运行（ADR-0038）。
+一轮里超过 `ONTO_WEB_JIUWEN_STALL_SECONDS`（默认 900 秒，0 关闭）没有任何动静（流事件、模型调用、子任务进展；
+等确认卡不算）时按出错结束这一轮，执行记为中断，建议条主推「从打断处继续」。
 
 agent 自己的 `git commit` 经内核发布的 git 钩子（数据目录 `githooks/`，各项目 `core.hooksPath` 指向它）：
 提交那一刻检查真实暂存区（`git add -A && git commit` 写在一行也查得到），提交说明带 `Onto-Source: agent`、

@@ -354,6 +354,8 @@ declare(
       description="内测引擎单次输出上限"),
     C("ONTO_WEB_JIUWEN_MAX_ITERATIONS", "60", "int", minimum=1, maximum=1000, effect="new_session",
       description="内测引擎单轮最大迭代"),
+    C("ONTO_WEB_JIUWEN_STALL_SECONDS", "900", "int", minimum=0, maximum=86_400, effect="new_session",
+      description="内测引擎一轮里多久没有任何动静按出错收尾（0 关闭）"),
     C("ONTO_WEB_JIUWEN_WORKER", "true", "bool", effect="restart",
       description="内测引擎会话放在独立 worker 进程（出错不拖垮内核，方案 B11）；false 退回进程内"),
     # 上下文参数（配置页 > .env > 内置默认）

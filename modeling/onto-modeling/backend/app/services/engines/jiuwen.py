@@ -447,18 +447,26 @@ def _cache_tokens(ctx: Any) -> int:
     return 0
 
 
-def _call_usage_rail(on_call_usage: Callable[[int, int, int], None]):
+def _call_usage_rail(on_call_usage: Callable[[int, int, int], None], on_activity: Callable[[], None] | None = None):
     """在 TokenTrackingRail 的累计之外，每次模型调用返回后把这次的（输入, 输出, 缓存命中）交给回调。
 
     输入是 OpenAI 口径的 prompt_tokens，含缓存命中部分；拆成 Anthropic 口径由回调做。
 
     项目用量按这些逐次增量记账：长命令跑的过程中数字就会增长，打断超时、会话回收、进程重启
     也只丢在飞的那一次调用。子代理 spec 沿用同一个实例（没有 fork_for_agent），一并计入。
+    on_activity：每次模型调用开始时调，引擎据此判断一轮有没有挂住。
     """
     from openjiuwen.harness.cli.rails import TokenTrackingRail
 
     class CallUsageRail(TokenTrackingRail):
         total_cache_tokens = 0
+
+        async def before_model_call(self, ctx: Any) -> None:
+            if on_activity is not None:
+                on_activity()
+            parent = getattr(super(), "before_model_call", None)
+            if parent is not None:
+                await parent(ctx)
 
         async def after_model_call(self, ctx: Any) -> None:
             input_before, output_before = self.total_input_tokens, self.total_output_tokens
@@ -655,6 +663,10 @@ class JiuwenEngine(ObservableEngine):
         self._context_used: int | None = None
         self._context_window: int | None = None
         self._compact_at: int | None = None
+        # 挂起兜底：最近一次动静、是否在等用户回答确认卡、是否是兜底掐断的这一轮
+        self._last_activity = time.monotonic()
+        self._awaiting_user = False
+        self._stalled = False
 
     @classmethod
     def available(cls) -> bool:
@@ -763,7 +775,7 @@ class JiuwenEngine(ObservableEngine):
                 )
             )
         sys_operation = Runner.resource_mgr.get_sys_operation(sysop_id)
-        tracker = _call_usage_rail(self._record_call_usage)
+        tracker = _call_usage_rail(self._record_call_usage, on_activity=self._touch)
         progress_rail = build_progress_rail(_TOOL_NAME_MAP)
         system_prompt = self._loader.system_prompt()
         subagent_root = shadow / "sub_agents"
@@ -902,11 +914,39 @@ class JiuwenEngine(ObservableEngine):
             "output_tokens": int(getattr(tracker, "total_output_tokens", 0) or 0),
         }
 
+    def _touch(self) -> None:
+        self._last_activity = time.monotonic()
+
+    async def _progress_put(self, event: dict) -> None:
+        self._touch()
+        await self._queue.put(event)
+
+    async def _watch_stall(self, turn: asyncio.Task) -> None:
+        """一轮里超过 JIUWEN_STALL_SECONDS 没有动静：停掉 agent、取消这一轮，由 _run_turn 按出错收尾。"""
+        limit = float(config.JIUWEN_STALL_SECONDS or 0)
+        if limit <= 0:
+            return
+        while not turn.done():
+            await asyncio.sleep(min(limit / 4, 15.0))
+            if self._awaiting_user or time.monotonic() - self._last_activity < limit:
+                continue
+            self._stalled = True
+            agent = self.client
+            try:
+                result = agent.abort() if agent is not None else None
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:  # noqa: BLE001 - 停不掉也照样取消这一轮
+                pass
+            turn.cancel()
+            return
+
     def _record_call_usage(self, input_tokens: int, output_tokens: int, cache_tokens: int = 0) -> None:
         """一次模型调用（含子代理）的用量即时下发，会话层落盘后就计入项目用量。
 
         口径同稳定引擎：input_tokens 不含缓存命中，命中记 cache_read_input_tokens（配额、计费、
         项目用量都按「输入 + 缓存读 + 输出」算，总数和拆开前一样）。"""
+        self._touch()
         self._queue.put_nowait(
             {
                 "type": "model_usage",
@@ -951,9 +991,18 @@ class JiuwenEngine(ObservableEngine):
         }
 
     async def _put_turn_events(self, events: list[dict]) -> None:
+        self._touch()
         for event in events:
             self._track_context(event)
             await self._queue.put(event)
+
+    async def _end_stalled_turn(self, started: float, before: dict) -> None:
+        self._stalled = False
+        self._injector.forget()
+        await self._progress_tracker.finish_all("failed")
+        self._ctx.log_error("session", f"模型请求 {config.JIUWEN_STALL_SECONDS} 秒没有响应，这一轮按出错结束")
+        await self._queue.put(self._turn_result("error_during_execution", started, before, is_error=True))
+        await self._queue.put({"type": "_engine_end", "reason": "error", "error": FRIENDLY_ERROR})
 
     async def _run_turn(self, text: str) -> None:
         from openjiuwen.core.runner import Runner
@@ -962,7 +1011,10 @@ class JiuwenEngine(ObservableEngine):
         started = time.time()
         before = self._usage_snapshot()
         if self._progress_tracker is None:
-            self._progress_tracker = JiuwenProgressTracker(self._queue.put)
+            self._progress_tracker = JiuwenProgressTracker(self._progress_put)
+        self._touch()
+        self._stalled = False
+        watchdog = asyncio.create_task(self._watch_stall(asyncio.current_task()))
         try:
             queries: list[str] = [text]
             while queries:
@@ -989,12 +1041,17 @@ class JiuwenEngine(ObservableEngine):
                     # 此刻存档带着挂起中断：等确认期间若进程重启，下次连接不能用它续接
                     self._ctx.clear_resume_token()
                     ii = InteractiveInput()
-                    for iid, request in pending:
-                        tool_name, tool_input = _interaction_to_permission(request)
-                        decision = await self._ctx.request_permission(
-                            tool_name, tool_input, None, None
-                        )
-                        _fill_interactive_input(ii, iid, request, decision)
+                    self._awaiting_user = True  # 等用户回答的时间不算挂起
+                    try:
+                        for iid, request in pending:
+                            tool_name, tool_input = _interaction_to_permission(request)
+                            decision = await self._ctx.request_permission(
+                                tool_name, tool_input, None, None
+                            )
+                            _fill_interactive_input(ii, iid, request, decision)
+                    finally:
+                        self._awaiting_user = False
+                        self._touch()
                     round_query = ii
                 # 本轮正常收尾，Runner 已把会话状态落盘
                 self._ctx.save_resume_token(self._resume_token)
@@ -1007,6 +1064,13 @@ class JiuwenEngine(ObservableEngine):
                 if self._buffered:
                     queries.append(self._buffered.pop(0))
         except asyncio.CancelledError:
+            if self._stalled:
+                # 挂起兜底掐断的这一轮：按出错收尾（执行记为中断、出续跑卡），不是用户打断
+                task = asyncio.current_task()
+                if task is not None and hasattr(task, "uncancel"):
+                    task.uncancel()
+                await self._end_stalled_turn(started, before)
+                return
             # 被打断的这轮未必进了存档，模型不一定看到了这次的阶段提示：下一条重新带上
             self._injector.forget()
             await self._progress_tracker.finish_all("stopped")
@@ -1037,4 +1101,5 @@ class JiuwenEngine(ObservableEngine):
                 {"type": "_engine_end", "reason": "error", "error": friendly}
             )
         finally:
+            watchdog.cancel()
             await self._progress_tracker.finish_all("stopped")

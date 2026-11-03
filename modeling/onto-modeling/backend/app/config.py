@@ -49,6 +49,9 @@ JIUWEN_API_KEY = _env("ONTO_WEB_JIUWEN_API_KEY")
 JIUWEN_MODEL = _env("ONTO_WEB_JIUWEN_MODEL")
 JIUWEN_MAX_TOKENS = _env("ONTO_WEB_JIUWEN_MAX_TOKENS")
 JIUWEN_MAX_ITERATIONS = _env("ONTO_WEB_JIUWEN_MAX_ITERATIONS")
+# 一轮里这么久没有任何动静（流事件、模型调用开始与返回、子任务进展；等确认卡不算）按出错收尾、走续跑。
+# 框架自己有首帧与帧间超时，这一道兜它没管到的挂起（V 阶段一次请求挂了 32 分钟）
+JIUWEN_STALL_SECONDS = _env("ONTO_WEB_JIUWEN_STALL_SECONDS")
 # Jiuwen 会话放在独立 worker 子进程里（方案 B11）：出错不拖垮内核；false 退回进程内运行
 JIUWEN_WORKER = _env("ONTO_WEB_JIUWEN_WORKER")
 
