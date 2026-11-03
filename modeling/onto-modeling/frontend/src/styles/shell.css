@@ -19,7 +19,7 @@
 @keyframes rp-run{from{transform:translateX(-100%)}to{transform:translateX(290%)}}
 /* 直接打开或刚进项目、页面代码块还没到时的骨架（外壳照常画） */
 .pg-skel{display:flex;flex-direction:column;gap:14px;max-width:960px}
-.pg-skel i{display:block;height:18px;border-radius:8px;background:linear-gradient(90deg,var(--panel3),#fff,var(--panel3));background-size:200% 100%;animation:shimmer 1.4s linear infinite}
+.pg-skel i{display:block;height:18px;border-radius:8px;background:linear-gradient(90deg,var(--line),var(--panel2),var(--line));background-size:200% 100%;animation:shimmer 1.4s linear infinite}
 .pg-skel i:first-child{width:220px;height:26px}
 .pg-skel i:nth-child(2){height:140px}
 .pg-skel i:nth-child(3){height:220px}
