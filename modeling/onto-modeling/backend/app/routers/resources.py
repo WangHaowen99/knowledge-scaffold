@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 
 from ..api import deps
 from ..api.errors import ApiError
-from ..services import mainline, material_conversion, material_refs, material_text, research_view, uploads
+from ..services import mainline, material_conversion, material_refs, material_text, research_view, uploads, workspace_labels
 from ..services.workspace.layout import (
     RESOURCE_DIRECTIVES, RESOURCE_SUBDIRS, _content_revision, is_auto_detected, is_resource_text,
 )
@@ -44,6 +44,8 @@ def _material(project_id: str, root: Path, rel: str, directives: dict, reference
     return {
         "path": rel,
         "name": path.name,
+        "title": workspace_labels.material_name(rel),
+        "type_label": workspace_labels.material_type(rel),
         "group": rel.split("/")[1],
         "kind": kind,
         "size": len(data),
