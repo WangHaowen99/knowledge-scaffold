@@ -183,8 +183,8 @@ def view(project_id: str, root: Path, rel: str, data: bytes | None = None, *, he
     return out
 
 
-def text_markdown(root: Path, rel: str) -> str | None:
-    """文本版正文（去掉第一行文件头）；没有或对不上原文件时 None。"""
+def text_file(root: Path, rel: str) -> str | None:
+    """文本版全文，含第一行文件头（行号和工作区里的文件一致，出处 `#L<n>` 按它数）；没有或对不上原文件时 None。"""
     path = Path(root) / resource_text_path(rel)
     try:
         text = path.read_text(encoding="utf-8")
@@ -193,6 +193,14 @@ def text_markdown(root: Path, rel: str) -> str | None:
         return None
     head = convert.parse_header(text)
     if not head or head["sha"] != _content_revision(data):
+        return None
+    return text
+
+
+def text_markdown(root: Path, rel: str) -> str | None:
+    """文本版正文（去掉第一行文件头）；没有或对不上原文件时 None。"""
+    text = text_file(root, rel)
+    if text is None:
         return None
     return text.split("\n", 1)[1].lstrip("\n") if "\n" in text else ""
 
