@@ -4,7 +4,7 @@ core 包的内容就是 `assets/workspace-toolkit`（原样迁过来，命令名
 `workspace-rules.md` 与说明 `workspace-readme.md`。守卫与 hooks 基线不在包里，由内核注入
 （app/kernel_guards）。
 
-版本号是清单里的版本加内容摘要（如 0.1.0+3f9a1c2d）：镜像里的工具箱内容变了就是一个新版本，
+版本号是清单里的版本加内容摘要（如 0.1.0+3f9a1c2d，摘要算清单与全部文件）：镜像里的工具箱内容变了就是一个新版本，
 包仓库里已有的版本目录永不改写。新镜像第一次启动时把 stable 通道指向它，跟随通道的项目在
 下一条消息前升级；同一镜像重启不动通道指针，运维回滚过的通道不会被改回去。
 
@@ -17,6 +17,7 @@ core 包的内容就是 `assets/workspace-toolkit`（原样迁过来，命令名
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import tempfile
 import threading
@@ -68,8 +69,12 @@ def synthesize_manifest(directory: Path, *, version: str = "0.0.0") -> dict:
     }
 
 
-def _content_hash(directory: Path) -> str:
+def _content_hash(directory: Path, manifest: dict) -> str:
+    """内容摘要：清单（去掉版本号）加清单以外的全部文件。只改清单里的说明、依赖也换一个版本（F3b）：原来不算清单，
+    摘要不变、版本号不变，入库时撞上「已在包仓库里且内容不同」。"""
     hasher = hashlib.sha256()
+    meta = {key: value for key, value in (manifest or {}).items() if key != "version"}
+    hasher.update(b"manifest\0" + json.dumps(meta, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8"))
     for rel in pack_files(directory):
         if rel == mf.MANIFEST_FILE:
             continue
@@ -93,7 +98,7 @@ def stage(source: Path, dest: Path, *, extras_from: Path | None = None, base_ver
     else:
         data = synthesize_manifest(dest)
     base = base_version or str(data.get("version") or "0.0.0").split("+", 1)[0]
-    data["version"] = f"{base}+{_content_hash(dest)}"
+    data["version"] = f"{base}+{_content_hash(dest, data)}"
     manifest_path.write_text(mf.dump(data), encoding="utf-8")
     write_checksums(dest)
     return mf.load(dest)

@@ -113,8 +113,8 @@ def prepare_for_message(manager, project_id: str, *, follow: bool = True) -> dic
 
 
 def _follow_channels(manager, project_id: str, root) -> str:
-    """跟随通道升级（审查第 5 条）：和手动切换一样记成插件变更集；助手的修改还没确认、这次升级又会改流程节点时
-    推迟到那组修改确认或撤回之后（不回 423：这是系统发起的，下一条消息前再试）。返回提交号，没提交为空串。"""
+    """跟随通道升级（审查第 5 条）：和手动切换一样记成插件变更集；助手这一轮还没合入（合入冲突没处理）、这次升级又会
+    改流程节点时推迟（不回 423：这是系统发起的，下一条消息前再试）。返回提交号，没提交为空串。"""
     from ...kernel.changesets import store
     from . import changes
 
@@ -127,7 +127,7 @@ def _follow_channels(manager, project_id: str, root) -> str:
     except AssemblyError:
         flow_changed = False
     if flow_changed and store.current(root) is not None:
-        _log.info("项目 %s 的助手修改还没确认，推迟跟随通道升级 %s", project_id, "、".join(packs))
+        _log.info("项目 %s 的助手修改还没合入，推迟跟随通道升级 %s", project_id, "、".join(packs))
         return ""
     names = "、".join(packs) or "能力包"
     record = changes.begin(manager, project_id, purpose=f"跟随通道升级 {names}", pack=",".join(packs), kind="follow",
