@@ -46,6 +46,8 @@ import {
   buildSubagentFlow,
   buildSubagentLifecycle,
   isSubagentCardMessage,
+  lastSessionEndIndex,
+  resolveSubagentState,
 } from '../lib/subagentEvents.js';
 import { FileChip, Markdown } from './CenterPane.jsx';
 import ConversationSwitcher from './ConversationSwitcher.jsx';
@@ -440,19 +442,24 @@ function SubagentCard({ item }) {
   const stateText = item.done
     ? item.failed
       ? '失败'
-      : stopped
-        ? '已停止'
-        : '完成'
-    : '运行中';
+      : item.interrupted
+        ? '已中断'
+        : stopped
+          ? '已停止'
+          : '完成'
+    : item.background
+      ? '后台运行中'
+      : '运行中';
   const duration = item.done ? formatSubagentDuration(item.durationMs) : '';
   const hasDetail = steps.length > 0 || !!item.excerpt;
 
   let preview = '';
   if (item.done) {
-    preview = item.summary || '';
+    preview = item.summary || (item.interrupted ? '已中断，没有收到子代理的结果' : '');
   } else {
     const latest = steps[steps.length - 1];
-    if (!latest) preview = '已启动，等待子代理反馈';
+    if (!latest)
+      preview = item.background ? '已在后台启动，等待子代理反馈' : '已启动，等待子代理反馈';
     else if (latest.kind === 'text')
       preview = latest.text.length > 60 ? `${latest.text.slice(0, 60)}…` : latest.text;
     else {
@@ -1423,12 +1430,13 @@ export default function ChatPane({
     const list = [];
     const fingerprints = new Map(); // 相同确认要求跨轮重复计数（防挂卡死循环，方案风险#4）
     let traceCount = 0;
+    const sessionEndAt = lastSessionEndIndex(events);
     const pushTool = (tool) => {
       const last = list[list.length - 1];
       if (last?.role === 'toolgroup') last.tools.push(tool);
       else list.push({ key: `tg-${tool.key}`, role: 'toolgroup', tools: [tool] });
     };
-    for (const event of events) {
+    for (const [position, event] of events.entries()) {
       if (event.type === 'user_message') {
         list.push({ key: event.seq, role: 'user', content: event.text, ts: event.ts });
       } else if (event.type === 'assistant_message') {
@@ -1441,16 +1449,19 @@ export default function ChatPane({
             if (['Task', 'Agent'].includes(block.tool) && !event.subagent) {
               // 子代理派遣：独立卡片呈现运行状态与可展开的执行过程
               const progress = subagentLifecycle.get(block.tool_use_id);
-              const terminalStatus = progress?.status;
+              const state = resolveSubagentState({
+                lifecycle: progress,
+                result,
+                sessionEnded: sessionEndAt > position,
+              });
               list.push({
                 key,
                 role: 'subagent',
                 description: progress?.description || block.input?.description || '子任务',
                 agentType: block.input?.subagent_type || progress?.agentType || '',
-                done: result !== undefined || progress?.done === true,
-                failed: result?.isError || terminalStatus === 'failed',
-                stopped: terminalStatus === 'stopped' || terminalStatus === 'killed',
-                excerpt: result?.excerpt,
+                ...state,
+                // 后台启动回执是 CLI 内部元数据，不作为子任务结果展示
+                excerpt: state.background ? undefined : result?.excerpt,
                 summary: progress?.summary || '',
                 durationMs: progress?.durationMs ?? null,
                 steps: subagentFlow.steps.get(block.tool_use_id) || [],

@@ -13,6 +13,7 @@ from claude_agent_sdk import (
     TextBlock,
 )
 
+from app import config
 from app.services.agent_sessions import _is_visible_chat_event
 from app.services.engines import claude as claude_engine
 from app.services.engines.base import EngineContext, FRIENDLY_ERROR
@@ -522,3 +523,57 @@ def test_disconnect_cancels_pending_context_limits_task(tmp_path, monkeypatch):
 
     # 取消不能被兜底的 except Exception 吞成"取不到用量"
     assert task.cancelled()
+
+
+def test_session_env_disables_cli_background_tasks(tmp_path, monkeypatch):
+    """CLI 默认后台派遣子代理，平台以主轮结束判定空闲：子代理必须同步执行。"""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+
+    assert claude_engine._session_env()["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+
+
+def test_cli_options_carry_background_tasks_switch(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(claude_engine, "_mcp_servers", lambda project_id="": {})
+    monkeypatch.setattr(claude_engine, "_permission_mode", lambda: "default")
+    ctx = EngineContext(
+        project_id="p1",
+        cwd=tmp_path,
+        request_permission=None,
+        load_resume_token=lambda: None,
+        save_resume_token=lambda token: None,
+        clear_resume_token=lambda: None,
+        log_error=lambda kind, text: None,
+    )
+
+    options = ClaudeEngine(ctx)._build_options(None)
+
+    assert options.env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+
+
+def test_session_env_asks_cli_to_report_session_state(tmp_path, monkeypatch):
+    """会话层以 CLI 自报的 idle 判定空闲；旧版 CLI 须显式要求后台工作期间保持 running。"""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+
+    env = claude_engine._session_env()
+
+    assert env["CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"] == "1"
+    assert env["CLAUDE_CODE_BG_TASKS_REPORT_RUNNING"] == "1"
+
+
+def test_cli_session_state_becomes_internal_event():
+    message = SystemMessage(subtype="session_state_changed", data={"state": "idle"})
+
+    assert normalize_message(message) == {"type": "_cli_state", "state": "idle"}
+
+
+def test_cli_state_before_failed_result_keeps_text_pending(tmp_path):
+    """状态事件可能先于 result 到达：待定文字仍要等 result 判定成败后再放出。"""
+    text = "The request stopped before the answer was complete."
+    state = SystemMessage(subtype="session_state_changed", data={"state": "idle"})
+    logged = []
+
+    events = collect(make_engine(tmp_path, [assistant(text), state, result(True)], logged))
+
+    assert [event["type"] for event in events] == ["_cli_state", "assistant_message", "result"]
+    assert events[1]["blocks"][0]["text"] == FRIENDLY_ERROR
