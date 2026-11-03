@@ -1,5 +1,6 @@
 """F 第一批（V 修复审查第 1、2 条）：命令这一轮结束时锁还在，分清「等你回复」和「忘了收尾」。
 
+- 第 1 条：一轮结束推给界面的建议条（turns.suggestions → view.build）也要主推「继续」，不只 FL-02；
 - 第 2 条：命令停下来等你回复（锁切到 `confirm`）不是没收尾，不主推「继续」。
 """
 from __future__ import annotations
@@ -49,6 +50,17 @@ def _session(project_id: str, root: Path) -> SimpleNamespace:
 
 def _finish(project_id: str, record: dict, root: Path) -> dict:
     return exec_records.finish_turn(project_id, record["id"], root)
+
+
+def test_turn_end_suggestions_push_continue_like_fl02(env):
+    project_id, root = env
+    record = _start(project_id, root, "extract-operation")
+    _lock(root, "extract-operation", "operation")
+    assert _finish(project_id, record, root)["state"] == "waiting"
+    fl02 = view.build(root, conversation_id="default")["suggestions"]
+    pushed = turns.suggestions(_session(project_id, root))
+    assert fl02["primary"]["action"] == CONTINUE
+    assert pushed["primary"]["action"] == CONTINUE
 
 
 def test_waiting_for_reply_is_not_unfinished(env):

@@ -252,7 +252,8 @@ def suggestions(session, *, interrupted: dict | None = None) -> dict | None:
         return None
     from ..flow import view
 
-    result = dict(view.build(root)["suggestions"])
+    # 带上对话：「没收尾主推继续」、打断后的建议都按这条对话算，和 FL-02 同一份（界面以推来的这份为准）
+    result = dict(view.build(root, conversation_id=session.conversation_id)["suggestions"])
     if session.pending_permissions:
         result["mode"] = "waiting_decision"
         if result.get("primary"):
