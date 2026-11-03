@@ -13,11 +13,15 @@ CONTENT_GROUPS = (("commands", "命令"), ("agents", "子代理"), ("skills", "�
 
 
 def _latest(repository, name: str) -> tuple[str | None, str]:
+    """目录与详情显示的版本与通道：stable 通道设了就是它；只发布到 beta 的包显示 beta（原来 stable 没设时
+    退回「最新的正式版本」，只在 beta 上的 0.1.0 也显示成 stable）。"""
     stable = repository.latest(name, "stable")
-    if stable:
-        return stable, "stable"
     beta = repository.channel(name, "beta")
-    return beta, "beta"
+    if stable and (repository.channel_entry(name).get("stable") or not beta):
+        return stable, "stable"
+    if beta:
+        return beta, "beta"
+    return stable, "stable"
 
 
 def _publisher(repository, name: str, version: str, manifest) -> dict:

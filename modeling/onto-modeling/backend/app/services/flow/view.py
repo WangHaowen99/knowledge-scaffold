@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -243,7 +244,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
                                                               blueprint_draft=blueprint_context["state"] == "draft"),
             "hooks": [{key: hook[key] for key in ("id", "title", "when", "command", "pack")}
                       for hook in hooks.get(node["id"], [])],
-            "plugin": None if node.get("pack", "core") == "core" else {"name": node["pack"], "label": node["pack"]},
+            "plugin": None if node.get("pack", "core") == "core" else _plugin_ref(node),
             "optional": bool(node.get("optional")),
             "panel": bool(node.get("panel")),
             # 可补做的节点做完之前不计入进度：越过插入位置的项目，主线进度不往回退（详设 6.9 第 4 步）
@@ -310,6 +311,27 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     return result
 
 
+@functools.lru_cache(maxsize=256)
+def _pack_label(data_dir: str, pack: str, version: str) -> str:
+    """包清单里的显示名（包仓库里的版本目录不改写，按版本缓存）；读不到用包名。"""
+    from ...api import deps
+
+    try:
+        return deps.workspaces.packs.repository.manifest(pack, version).label or pack
+    except Exception:  # noqa: BLE001 - 包仓库里没有这一版（测试、旧装配）
+        return pack
+
+
+def _plugin_ref(node: dict) -> dict:
+    """节点来自哪个包：节点上显示清单里的名字，不是包名。"""
+    pack = node["pack"]
+    version = str(node.get("version") or "").partition("@")[2]
+    from ...api import deps
+
+    data_dir = str(getattr(deps.workspaces, "data_dir", ""))
+    return {"name": pack, "label": _pack_label(data_dir, pack, version) if version else pack}
+
+
 def _disabled_view(node: dict) -> dict:
     """停用了的包的节点：产物保留，列出来标「已停用」，不进进度、没有动作（详设 6.9 第 5 步）。"""
     flags = {"needs_review": False, "disabled": True, "backfill": False}
@@ -318,7 +340,7 @@ def _disabled_view(node: dict) -> dict:
         "placement": node.get("placement", "step"), "section": node.get("section", "optional"),
         "state": "skipped", "flags": flags, "display_state": node_state.display("skipped", flags),
         "progress": None, "version": node.get("version") or "", "per_slice": False, "blocks": [],
-        "actions": [], "plugin": {"name": node["pack"], "label": node["pack"]}, "optional": True, "panel": False,
+        "actions": [], "plugin": _plugin_ref(node), "optional": True, "panel": False,
         "counts_in_progress": False,
     }
 

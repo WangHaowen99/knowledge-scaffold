@@ -169,7 +169,8 @@ def test_publish_node_is_a_page_and_flow_gates_follow_platform_gates(env):
     kinds = [item["source"]["kind"] for item in gates]
     flow_gates = [item for item in gates if item["source"]["kind"] == "flow"]
     assert [item["id"] for item in flow_gates] == ["flow:core.consistency", "flow:naming.check"]
-    assert flow_gates[1]["source"] == {"kind": "flow", "label": "naming", "pack": "naming"}
+    # 关卡来源写包清单里的名字（F 第 10 条：原来写包名）
+    assert flow_gates[1]["source"] == {"kind": "flow", "label": "naming 包", "pack": "naming"}
     assert kinds.index("flow") == len(kinds) - len(flow_gates)  # 流程关卡排在最后
     assert [item["order"] for item in gates] == list(range(1, len(gates) + 1))
     assert nodes_of(root)["core.publish"]["state"] == "blocked"  # 两道流程关卡都没过
