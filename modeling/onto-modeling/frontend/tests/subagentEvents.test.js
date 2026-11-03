@@ -7,6 +7,8 @@ import {
   buildSubagentFlow,
   buildSubagentLifecycle,
   isSubagentCardMessage,
+  lastSessionEndIndex,
+  resolveSubagentState,
 } from '../src/lib/subagentEvents.js';
 
 const dispatch = (seq, id, description) => ({
@@ -174,4 +176,128 @@ test('折叠进子任务卡的子代理消息不计入主对话新消息', () =>
   for (const seq of foldedSeqs) {
     assert.equal(isSubagentCardMessage(events.find((event) => event.seq === seq)), true);
   }
+});
+
+// 与 ChatPane 构造子任务卡时的取值一致：生命周期、派遣回执、派遣之后会话是否已结束
+const cardState = (events, id, toolResults = new Map()) => {
+  const position = events.findIndex(
+    (event) =>
+      event.type === 'assistant_message' &&
+      event.blocks.some((block) => block.tool_use_id === id),
+  );
+  return resolveSubagentState({
+    lifecycle: buildSubagentLifecycle(events).get(id),
+    result: toolResults.get(id),
+    sessionEnded: lastSessionEndIndex(events) > position,
+  });
+};
+const started = (seq, id) => ({ seq, type: 'subagent_started', task_id: `task-${id}`, tool_use_id: id });
+const finished = (seq, id, status = 'completed') => ({
+  seq, type: 'subagent_finished', task_id: `task-${id}`, tool_use_id: id, status,
+});
+const backgroundReceipt = { isError: false, excerpt: 'Async agent launched successfully. agentId: a1' };
+
+test('同步派遣：回执与终态同时到达，按终态显示完成', () => {
+  const events = [started(1, 'T1'), dispatch(2, 'T1', '分析资料'), finished(3, 'T1')];
+  const results = new Map([['T1', { isError: false, excerpt: '报告正文' }]]);
+
+  assert.deepEqual(cardState(events, 'T1', results), {
+    done: true, failed: false, stopped: false, interrupted: false, background: false,
+  });
+});
+
+test('后台派遣：启动回执不算完成，等到终态才显示完成', () => {
+  const running = [started(1, 'T1'), dispatch(2, 'T1', '分析资料')];
+  const results = new Map([['T1', backgroundReceipt]]);
+
+  const state = cardState(running, 'T1', results);
+  assert.equal(state.done, false);
+  assert.equal(state.background, true);
+
+  const ended = [...running, { seq: 3, type: 'session_state', state: 'idle' }, finished(4, 'T1')];
+  assert.equal(cardState(ended, 'T1', results).done, true);
+});
+
+test('尚无终态而会话已关闭或被打断：显示已中断，不再一直运行中', () => {
+  const base = [started(1, 'T1'), dispatch(2, 'T1', '分析资料')];
+  const results = new Map([['T1', backgroundReceipt]]);
+
+  // 空闲回收：引擎关闭，后台子代理随进程丢失
+  const recycled = [...base, { seq: 3, type: 'session_state', state: 'closed' }];
+  assert.deepEqual(cardState(recycled, 'T1', results), {
+    done: true, failed: false, stopped: true, interrupted: true, background: true,
+  });
+  // 同步派遣途中服务重启：没有回执也没有终态，补写的中断标记让卡片停止转圈
+  const restarted = [...base, { seq: 3, type: 'session_interrupted', reason: 'stale' }];
+  assert.equal(cardState(restarted, 'T1').interrupted, true);
+});
+
+test('有开始事件但终态缺失时，同步结果即算结束', () => {
+  const events = [started(1, 'T1'), dispatch(2, 'T1', '分析资料'), dispatch(3, 'T2', '核对指标')];
+  const results = new Map([
+    ['T1', { isError: false, excerpt: '报告正文' }],
+    ['T2', { isError: true, excerpt: '执行出错' }],
+  ]);
+
+  assert.deepEqual(cardState(events, 'T1', results), {
+    done: true, failed: false, stopped: false, interrupted: false, background: false,
+  });
+  assert.equal(cardState(events, 'T2', results).failed, true);
+});
+
+test('已有同步结果时会话随后关闭，仍显示完成而不是已中断', () => {
+  const events = [
+    started(1, 'T1'),
+    dispatch(2, 'T1', '分析资料'),
+    { seq: 3, type: 'session_state', state: 'closed' },
+  ];
+  const results = new Map([['T1', { isError: false, excerpt: '报告正文' }]]);
+
+  const state = cardState(events, 'T1', results);
+
+  assert.deepEqual({ done: state.done, interrupted: state.interrupted }, { done: true, interrupted: false });
+});
+
+test('终态为停止或被终止时按终态显示已停止', () => {
+  const events = [started(1, 'T1'), dispatch(2, 'T1', '分析资料'), finished(3, 'T1', 'killed')];
+
+  assert.deepEqual(cardState(events, 'T1'), {
+    done: true, failed: false, stopped: true, interrupted: false, background: false,
+  });
+});
+
+test('会话结束发生在派遣之前时不影响之后的派遣', () => {
+  const events = [
+    { seq: 1, type: 'session_state', state: 'closed' },
+    started(2, 'T1'),
+    dispatch(3, 'T1', '分析资料'),
+  ];
+
+  const state = cardState(events, 'T1');
+
+  assert.equal(lastSessionEndIndex(events), 0);
+  assert.deepEqual({ done: state.done, interrupted: state.interrupted }, { done: false, interrupted: false });
+});
+
+test('没有生命周期事件的旧记录：有回执即按回执判定', () => {
+  const events = [dispatch(1, 'T1', '分析资料'), dispatch(2, 'T2', '核对指标')];
+  const results = new Map([
+    ['T1', { isError: false, excerpt: '报告正文' }],
+    ['T2', { isError: true, excerpt: '执行出错' }],
+  ]);
+
+  assert.deepEqual(
+    [cardState(events, 'T1', results).done, cardState(events, 'T2', results).failed],
+    [true, true],
+  );
+  // 还没有回执：运行中
+  assert.equal(cardState(events, 'T1').done, false);
+});
+
+test('只有打断、引擎关闭或出错算会话结束', () => {
+  const states = ['running', 'idle', 'queued'].map((state) => ({ type: 'session_state', state }));
+
+  assert.equal(lastSessionEndIndex(states), -1);
+  assert.equal(lastSessionEndIndex([...states, { type: 'session_state', state: 'error' }]), 3);
+  assert.equal(lastSessionEndIndex([...states, { type: 'session_error', error: '出错' }]), 3);
 });
