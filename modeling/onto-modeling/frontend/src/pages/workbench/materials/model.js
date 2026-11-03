@@ -240,7 +240,6 @@ export function sameSlices(a = [], b = []) {
 // 整份调整请求：只带改过的部分
 export function blueprintPayload(bp, edit, mode) {
   const body = { base_revision: bp.revision, mode };
-  if (JSON.stringify(edit.out_of_scope) !== JSON.stringify(bp.out_of_scope || [])) body.out_of_scope = edit.out_of_scope;
   if (!sameSlices(edit.slices, bp.slices)) body.slices = sliceInputs(edit.slices);
   const terms = (bp.terms?.ambiguous || []).filter((t) => edit.terms[t.id] && edit.terms[t.id] !== t.chosen).map((t) => ({ term_id: t.id, chosen: edit.terms[t.id] }));
   if (terms.length) body.term_choices = terms;
@@ -249,7 +248,11 @@ export function blueprintPayload(bp, edit, mode) {
   return body;
 }
 
-export const isDirty = (body) => ['out_of_scope', 'slices', 'term_choices', 'answers'].some((k) => body[k] !== undefined);
+export const isDirty = (body) => ['slices', 'term_choices', 'answers'].some((k) => body[k] !== undefined);
+
+// 资料和建模目标对不上时的那个问题（kind=goal）：没答之前不能确认蓝图（F4b）
+export const goalQuestion = (questions = []) => questions.find((q) => q.kind === 'goal') || null;
+export const goalPending = (card) => Boolean(card?.goal_question && !card.goal_question.answered);
 
 // ---------- 自主构建预览（AB-03 / BP-03 next=L4） ----------
 const fmtCount = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(n % 1e6 ? 1 : 0)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n ?? 0));

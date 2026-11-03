@@ -89,6 +89,24 @@ class InjectionResult:
     prompt_hint: str = ""  # 本条命中的包提示规则（如知识沉淀的纠错信号），没命中为空
 
 
+def goal_hint(project_root: Path) -> str:
+    """建项目时用户写的建模目标（F4b）：蓝图「要解决的问题」以它为准。从主线工作区的项目信息读，
+    助手的副本里没有这份文件，也改不了它；读不到时返回空串。"""
+    import json
+
+    from ...kernel.changesets import worktree
+    from ..workspace.layout import META_FILE
+
+    try:
+        meta = json.loads((worktree.main_root(Path(project_root)) / META_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    goal = str((meta or {}).get("goal") or "").strip() if isinstance(meta, dict) else ""
+    if not goal:
+        return ""
+    return f"建模目标（建项目时用户写的，以它为准；不要改写，也不要另拟一份）：{goal}"
+
+
 def build_context(
     project_root: Path,
     *,
@@ -104,12 +122,18 @@ def build_context(
     脚本超时）时本条不带阶段提示，digest 原样传回。
     """
     hint = stage_hint(project_root)
+    goal = goal_hint(project_root)
     digest = last_injected
     stage_part = ""
-    if hint is not None:
-        next_steps = next_step_hint(project_root)
-        if next_steps:
-            hint = f"{hint}\n{next_steps}"
+    if hint is not None or goal:
+        parts = [hint] if hint is not None else []
+        if hint is not None:
+            next_steps = next_step_hint(project_root)
+            if next_steps:
+                parts.append(next_steps)
+        if goal:
+            parts.append(goal)
+        hint = "\n".join(parts)
         digest = _digest(hint)
         if session_start or digest != last_injected:
             stage_part = hint

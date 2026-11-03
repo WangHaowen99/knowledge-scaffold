@@ -1111,9 +1111,19 @@ ADR-0073。契约改动已写进 `docs/api-v1.md` 与 `_plan/api-v1.md`：
 9. **运维**：O-13 / 就绪检查的 `connector_gateway` 从占位改为真实探测（`已加载 N 个转换器`；没配网关地址为 warn「未部署」，不可达为 fail，不挡就绪）；O-35 启动报告多一步 `material_text`「资料文本版」（后台补转）；O-42 版本清单列出转换器（`category=provider`、`converter: true`）。
 10. **网关接口**（内核与网关之间，不在 `/api/v1`）：`GET /health`、`GET /v1/providers`、`POST /v1/convert`（请求体原文件，`Authorization: Bearer <Ed25519 JWT>`）；内核 `GET /api/v1/connector/issuer-key` 给网关取公钥，免鉴权。
 
+## 2026-11-03 · F4b-research（蓝图目标只存一份、去掉不在范围、资料分析只读文本、编号不问人）
+
+ADR-0074。
+
+1. **BP-01 / `Blueprint`**：`goal_md` 取项目信息里的建模目标（P-05 `goal`），`goal_anchor`、`goal_anchor_label` 恒为 null；`out_of_scope` 不再返回。`questions[]` 多 `kind?: "goal"`、`suggested_goal?`，最多一个目标问题，选项固定为「改成：…」「保持原目标」。
+2. **BP-02**：`out_of_scope` 取消，带了也忽略。回答目标问题选「改成：…」或写 `custom_text` 时同时改项目目标并推 `project.updated`。待处理里回答（IN-03）同样处理。
+3. **BP-03**：目标问题没答时 409 `blueprint_question_pending`，`details.question_id`。错误码表新增这一项。
+4. **蓝图卡**：`goal_md` 为项目目标，去掉 `out_of_scope`，新增 `goal_question: {id, title, answered} | null`。
+5. **工作区脚本**：`source_extract.py --sources` 输出 `{materials: [{material, read, kind: native|converted|missing}]}`；命令行给原件时退出码 2，输出 `{status: "use_text_version", text}` 或 `{status: "no_text_version", reason}`。`research_checker.py` 不再产生「新增ID确认」待人工条目；自编编号在回执的 `source_evidence` 里记为 `kind: "assigned"`；出处指向有文本版的原件时多一条「出处」警告。
+
 ## 2026-11-03 · F4b-paths（界面上不出工作区路径和文件名）
 
-ADR-0074。契约改动已写进 `docs/api-v1.md`：
+ADR-0075。契约改动已写进 `docs/api-v1.md`：
 
 1. **7.1 `EntryRef` / `ArtifactRef` 加 `label`**：后端按元模型、产物登记算好的业务名（对象「门店」、流程图「订单流程」、建模蓝图、资料分析报告、检查报告、资料「合同」）。变更里认不出的文件 `type="file"`、`title`、`label` 为空串，路径只在 `key`。CS-02、CS-03、V-02、冲突与撤回挡住时的 `entities` 都带它。
 2. **4.7 `round_changes` 卡**：行文只写业务名；认不出的文件合成 `other` 组最后一行 `{change: null, target: null, text: "另有 N 处改动", count: N}`，前端不出动词标签。`title`「改了 N 处」仍按路径数算。

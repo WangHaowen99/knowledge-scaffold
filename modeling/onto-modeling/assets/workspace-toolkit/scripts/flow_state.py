@@ -266,8 +266,14 @@ def _slice_step(next_step: dict) -> dict:
 def _blueprint_candidates(context: dict) -> list:
     """蓝图草案等你确认：确认蓝图、调整分段，再加重新划分（还在资料分析那一轮里时换成撤回这一轮）。"""
     blueprint = context.get('blueprint') or {}
-    confirm = _item('confirm_blueprint', '确认蓝图', {'type': 'confirm_blueprint', 'next': blueprint.get('next') or 'L2'},
-                    reason='建模蓝图等你确认', priority=4, icon='check')
+    if blueprint.get('goal_pending'):
+        # 资料和建模目标对不上的那个问题没答：确认会被拦（blueprint_question_pending），先去回答（F4b）
+        confirm = _item('answer_goal', '回答目标问题',
+                        {'type': 'navigate', 'page': 'wb-blueprint', 'params': {'dialog': 'blueprint'}},
+                        reason='资料和建模目标对不上，先定以哪个为准', priority=4, icon='target')
+    else:
+        confirm = _item('confirm_blueprint', '确认蓝图', {'type': 'confirm_blueprint', 'next': blueprint.get('next') or 'L2'},
+                        reason='建模蓝图等你确认', priority=4, icon='check')
     adjust = _item('adjust_blueprint', '调整分段',
                    {'type': 'navigate', 'page': 'wb-blueprint', 'params': {'dialog': 'blueprint'}},
                    reason='建模蓝图等你确认', priority=4, icon='layers')

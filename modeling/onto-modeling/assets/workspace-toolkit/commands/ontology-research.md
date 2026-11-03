@@ -30,16 +30,12 @@ research-agent 的 dispatch prompt 顶部必须注入 `KNOWLEDGE_BLOCK`（若非
 
 List files in `research/`. Check if a report for this domain already exists (filename contains the topic keywords).
 
-**If a report exists:**
-- Read the first 400 words to summarize it
-- `python3 .claude/scripts/state_helper.py acquire research confirm`
-- Tell the user: "已有资料分析报告「{报告名}」，请选择：[1] 继续使用现有报告 [2] 追加资料分析 [3] 重新做资料分析"
-- Wait for user response（回复后 `acquire research start`）:
-  - **[1]**: 先跑一次 Step 4.5 的内容验收（旧项目的报告没有回执，默认是「资料分析待核验」）。
-    通过 → `release research` 后用两三句话总结要点；未通过 → 按 Step 4.5 的未通过
-    话术展示错误项，不建议提取对象。两种情况都 Stop（不重新做资料分析、不改写报告内容）。
-  - **[3]**: Proceed as new research (treat as no existing report). Skip to Step 1.5.
-  - **[2]**: Go to Step 1b.
+**If a report exists:** 按 `$ARGUMENTS` 判断，不问用户（接下来做什么由你定，只问业务问题）：
+- 含「追加」或给了补充方向 → Go to Step 1b；
+- 含「重做」「重新」→ Proceed as new research (treat as no existing report). Skip to Step 1.5；
+- 其余 → 先跑一次 Step 4.5 的内容验收（旧项目的报告没有回执，默认是「资料分析待核验」）。
+  通过 → 有蓝图就 `release research` 后用两三句话总结要点，没有蓝图就到 Step 6；未通过 → 按 Step 4.5 修正。
+  不重新做资料分析。
 
 **If no report exists:** skip to Step 1.5.
 
@@ -66,32 +62,30 @@ d) 自定义方向...
 - `purpose=schema` / `term` 的表格 → 资料分析报告中列入"数据与术语来源"清单，供后续对象提取直接引用；
 - 其余按 `auto` 处理。
 
-## Step 1.5: Check for local domain documents
+## Step 1.5: 资料与联网方式（不问用户）
 
-先 `python3 .claude/scripts/state_helper.py acquire research confirm`，再 ask the user（回复后 `acquire research start`）:
-"是否有本地领域文档（如业务说明书、流程规范、数据字典等 Markdown 文件）可作为资料分析素材？
-- 如有，请提供文件路径，多个路径用逗号分隔（如 `docs/业务说明.md, docs/流程规范.md`）
-- 如无，直接回复 **无**"
+资料就是资料区里的全部资料，不问用户还有没有别的文档、在哪个路径：
 
-Wait for response.
+```bash
+python3 .claude/scripts/source_extract.py --sources
+```
 
-**If user provides paths:**
-- Set LOCAL_DOCS_PATHS = list of provided paths
-- 本项目没启用联网调研能力（`.claude/skills/deep-research/SKILL.md` 不存在）时不问，直接 set WEB_RESEARCH_MODE = skip。
-- Ask: "是否同时联网检索资料以补充本地文档未覆盖的内容？[是] [否，仅基于本地文档]"
-  - **是**: set WEB_RESEARCH_MODE = supplement
-  - **否**: set WEB_RESEARCH_MODE = skip
+只读文本：每份资料读它的 `read`（md、txt、csv 是原文件，PDF、Word、Excel 是数据接入转出的文本版
+`resource/text/…`）；`read` 为空的资料还没有文本版（转换中、暂不支持或转换失败），记为未读，不要自己解析原件。
+一份可读的文本都没有时停下（`acquire research confirm`），告诉用户先在资料区上传资料或等资料转成文本。
 
-**If user replies "无" or empty:** set LOCAL_DOCS_PATHS = empty (do not pass WEB_RESEARCH_MODE to agent — agent proceeds normally by default).
+联网方式按 `$ARGUMENTS` 和项目能力定，也不问：含「仅基于本地」或项目没启用联网调研
+（`.claude/skills/deep-research/SKILL.md` 不存在）→ WEB_RESEARCH_MODE = skip；否则 supplement。
 
-**Note for append mode:** local documents are read by the research agent alongside the focused research directions. They do not affect the gap analysis in Step 1b, which is based solely on the existing report.
+**Note for append mode:** materials are read by the research agent alongside the focused research directions. They do not affect the gap analysis in Step 1b, which is based solely on the existing report.
 
 ---
 
 ## Step 2: Confirm topic
 
-If $ARGUMENTS is empty, `acquire research confirm` 后 ask: "请输入要分析的领域名称：" and wait for response（回复后 `acquire research start`）. Use it as TOPIC.
-Otherwise TOPIC = $ARGUMENTS.
+要解决的问题以平台注入的「建模目标」为准（建项目时用户写的），不要改写，也不要从资料里另找一份当目标。
+TOPIC 取建模目标里的业务领域（几个字，用于报告文件名），不问用户。`$ARGUMENTS` 里的「仅基于本地文档」「追加」
+这类说明不是领域名。
 
 资料区「把资料读完」发来的是 `path=<资料路径> reading_mode=full`：沿用已有资料分析的 TOPIC，只把这份资料按全文读取补进分析（Step 1.5 的全文规则），不重做其他资料。
 
@@ -121,7 +115,7 @@ Dispatch a general-purpose subagent (Agent tool) with:
 - The full contents of `.claude/agents/research-agent.md` as the base prompt
 - Append: `\n\nResearch topic: {TOPIC}`
 - If append mode, also append: `\n\nAppend focus directions: {FOCUS_DIRECTIONS}\n\nExisting report summary (first 400 words):\n{SUMMARY}`
-- If LOCAL_DOCS_PATHS is non-empty, also append: `\n\nLocal document paths: {LOCAL_DOCS_PATHS}\nWeb research mode: {WEB_RESEARCH_MODE}`
+- Always append: `\n\n建模目标：{建模目标}\nWeb research mode: {WEB_RESEARCH_MODE}`
 
 Wait for the subagent to complete and return the full structured report.
 
@@ -173,18 +167,9 @@ commit 前置 hook 会再跑一次同一检查；未通过时提交会被阻止�
 **Step 4.5 已验收（退出码 0）时：** 直接进 Step 6 做分段规划。
 
 
-**Step 4.5 未通过时**（不要提议提取对象）：先 `python3 .claude/scripts/state_helper.py acquire research confirm`，再说：
-
-"资料分析报告「{报告名}」已保存，但**未通过内容验收**，当前阶段是「资料分析待核验」。
-
-待处理：{逐条列出错误项与待人工确认条目}
-
-- 回复 **修正** → 我按上面的错误项修改报告后重新核验
-- 回复 **人工确认** → 你逐条给出结论，我据此补充报告再核验
-验收通过前不要进入对象提取：错误的字段或 ID 会被后续映射、规则与追溯继续沿用。"
-
-If user replies **修正** or **人工确认**: `acquire research start`，回到 Step 4.5 按对应分支处理，通过后进 Step 6。
-If user wants other changes first: handle them, then ask again.
+**Step 4.5 修正两轮仍未通过时**（不要提议提取对象）：先 `python3 .claude/scripts/state_helper.py acquire research confirm`，
+用业务话说明报告还差什么（哪些出处对不上、哪些字段在表头里找不到），只把需要用户给业务结论的条目问出来，
+不列「修正 / 人工确认」这类菜单——怎么改报告是你的事。用户回复后 `acquire research start`，回到 Step 4.5，通过后进 Step 6。
 
 ## Step 6: 分段规划（建模蓝图）
 
@@ -199,16 +184,20 @@ If user wants other changes first: handle them, then ask again.
 2. 写草稿 `.ontology-state/blueprint-draft.json`（字段名照写，名称用资料里的业务叫法，不编造）：
 
    ```json
-   {"goal_md": "一句话的建模目标", "goal_anchor": "出处锚点或 null", "goal_anchor_label": "出处短标签或 null",
-    "out_of_scope": ["明确不建的内容"],
-    "slices": [{"name": "段名（≤20 字）", "core_flow": "核心链路（≤30 字）", "depends_on": ["依赖的段名"],
+   {"slices": [{"name": "段名（≤20 字）", "core_flow": "核心链路（≤30 字）", "depends_on": ["依赖的段名"],
                 "objects": ["对象名"], "operations": ["操作名"], "rules": ["规则名"],
                 "sources": [{"anchor": "出处锚点", "label": "出处短标签"}]}],
     "terms": {"aligned": ["已经统一的叫法"], "ambiguous": [{"variants": ["叫法一", "叫法二"]}]},
-    "questions": [{"title": "需要用户回答的问题", "background": "为什么要问（一句）", "options": ["选项一", "选项二"]}]}
+    "questions": [{"title": "需要用户回答的业务问题", "background": "为什么要问（一句）", "options": ["选项一", "选项二"]}]}
    ```
 
    对象、操作、规则的名字就是之后条目的文件名，不能带 `/ \ # ? & | [ ]`。资料里没有规则的段，`rules` 留空。
+   要解决的问题就是平台注入的「建模目标」，草稿里不写目标；读不了的资料由资料区显示，草稿里也不写「不在范围」。
+   **资料和建模目标对不上、或目标太笼统**（比如目标说补货单，资料讲的是盘点）时，在 `questions` 里加一个目标问题，
+   不要用 AskUserQuestion 问（自主构建时那会被策略代答）：
+   `{"kind": "goal", "title": "资料讲的是…，和目标里的…对不上，以哪个为准？", "background": "一句依据",
+   "suggested_goal": "按资料改写的一句目标（必写：用户选它，项目目标就改成这句）"}`。选项由脚本生成；用户在蓝图上回答，选了改写或自己改了目标才改项目目标。
+   这类业务取舍（以哪个为准、要不要建）放进 `questions`；编号、文件名、格式这些你自己定，不问。
 3. 落盘：
 
    ```bash

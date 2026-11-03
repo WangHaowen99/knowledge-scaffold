@@ -407,6 +407,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `flow_assembly_failed` | 422 | 流程组装不通过（锚点、环、输出冲突、版本） | `problems[]` |
 | `blueprint_not_found` | 404 | 还没有建模蓝图 | — |
 | `blueprint_not_confirmed` | 409 | 蓝图还没确认（启动自主构建等操作需要） | — |
+| `blueprint_question_pending` | 409 | 资料和建模目标对不上的那个问题还没答，不能确认蓝图（F4b） | `question_id` |
 | `slice_invalid` | 400 | 分段编辑不合法（合并少于 2 段、依赖成环、名称重复等） | `reason` |
 | `low_confidence_batch` | 422 | 把握低的变更点不能批量接受，必须单独确认 | `point_ids` |
 
@@ -1922,7 +1923,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `GET /api/v1/projects/{id}/blueprint` · 所有者 · 旧：— · 审计：否 · 依据：第 9 章建议 2、6.8（`core.research` 含分段规划） · 页面：wb-blueprint（蓝图卡、调整弹窗）、chat-states（产物卡）、proj-settings（自主构建范围的分段清单）
 
-- 响应：`Blueprint`，即目标、范围外、分段、术语口径、待答问题、草案版本、状态、`revision`。
+- 响应：`Blueprint`，即要解决的问题、分段、术语口径、待答问题、草案版本、状态、`revision`。
+- F4b：要解决的问题（`goal_md`）就是项目信息里的建模目标（`P-05` 的 `goal`），蓝图不另存一份；`goal_anchor` 恒为 null。「范围外」已取消，不再返回。
 - 错误：`blueprint_not_found`。
 
 #### BP-02 保存蓝图调整
@@ -1935,13 +1937,13 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 |---|---|---|---|
 | `base_revision` | string | 是 | — |
 | `mode` | string | 是 | `draft`：保存为草案，草案号不变；`adjust`：保存调整，草案号加 1 |
-| `out_of_scope` | string[] | 否 | — |
 | `slices` | `BlueprintSliceInput[]` | 否 | 完整分段列表，按数组顺序排。合并、排除、改名、调顺序、新增都表达为对这份列表的修改。合并时 `merged_from` 写原分段 ID，`excluded: true` 表示排除 |
 | `term_choices` | `{term_id, chosen}[]` | 否 | 统一叫法 |
 | `answers` | `{question_id, option_id?, custom_text?}[]` | 否 | 待你回答 |
 
 - 「按章节拆分」需要读资料，不在这里做，前端用 `S-20` 发命令「把分段 X 按章节拆分」。
 - 保存后助手按新蓝图继续（下一条消息读取）。
+- F4b：`out_of_scope` 已取消，旧前端带着也忽略。回答目标问题（`kind: "goal"`）时选了「改成：…」或写了 `custom_text`，同时改项目信息里的建模目标（推 `project.updated`）；选「保持原目标」不改。
 - 响应：`Blueprint`。
 - 错误：`revision_conflict`、`slice_invalid`、`write_scope_locked`、`blueprint_not_found`。
 
@@ -1955,7 +1957,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 响应：
   - `next="L2"`：返回 `{blueprint, command_task}`，往对话发「开始第一段」；
   - `next="L4"`：返回 `{blueprint, autobuild_preview: AutobuildPreview}`，前端展示范围和预算后再调 `AB-04`（详设 8.5：开始前展示、确认后才跑）。
-- 错误：`revision_conflict`、`blueprint_not_found`；`merge_conflict`（蓝图所在的那一轮和你的修改冲突，`details.inbox_item_id` 指向待处理）；`changeset_in_progress`（助手还在改，等这一轮结束）。
+- 错误：`revision_conflict`、`blueprint_not_found`；`merge_conflict`（蓝图所在的那一轮和你的修改冲突，`details.inbox_item_id` 指向待处理）；`changeset_in_progress`（助手还在改，等这一轮结束）；`blueprint_question_pending`（F4b：资料和建模目标对不上的那个问题还没答，`details.question_id`；任何构建方式都不由策略代答）。
 
 ---
 
@@ -4132,7 +4134,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `upload_prompt` | 欢迎与上传卡 | `{accept: string[], max_bytes, sources_available: int, actions: ("upload"\|"connect_system"\|"import_package")[]}` | wb-materials（还没传资料） |
 | `material_map` | 资料地图卡 | `{total, read_pct, items: MaterialMapItem[≤8], unverifiable: int, problems: {contradiction, missing}}`；`open={dialog, "material_map"}` | wb-materials、chat-states 产物卡 |
 | `research_summary` | 资料分析小结卡 | `{files, coverage_pct, verified_anchors: int, problems_carried: int, verified: bool, report_id}` | wb-blueprint |
-| `blueprint` | 建模蓝图卡 | `{version_label: "草案 v2", state: "draft"\|"confirmed", goal_md, goal_anchor, out_of_scope: string[], slices: BlueprintSlice[], terms: {aligned: int, ambiguous: int}, questions_pending: int, research_verified: bool}`；`open={dialog, "blueprint"}` | wb-blueprint、chat-states |
+| `blueprint` | 建模蓝图卡 | `{version_label: "草案 v2", state: "draft"\|"confirmed", goal_md（项目的建模目标）, goal_anchor（恒为 null）, goal_question: {id, title, answered} \| null（F4b：没答时确认按钮置灰）, slices: BlueprintSlice[], terms: {aligned: int, ambiguous: int}, questions_pending: int, research_verified: bool}`；`open={dialog, "blueprint"}` | wb-blueprint、chat-states |
 | `build_choice` | 确认后怎么建 | `{options: [{mode: "L2", label}, {mode: "L4", label}], policy_link: true}` | wb-blueprint |
 | `step_output` | 本步产出卡 | `{entry: EntryRef, eyebrow: "操作 · 本轮新抽出", state: "pending"\|"confirmed", inputs: (EntryRef\|{text})[], steps: [{n, text_md, anchors, awaiting_question_id: string\|null}], outputs: (EntryRef\|{text})[], rules: [{ref: EntryRef, state}], sources: [{n, anchor, label, scheme}]}` | wb-l2、chat-states；点条目名去 Studio |
 | `flowchart` | 流程图卡 | `{artifact: ArtifactRef, state: "draft"\|"confirmed", summary: "8 个节点、1 个判断", thumbnail: {nodes: [{id, type, label, pending: bool}], edges: [{from, to, label}]}, locked: bool}`；`open={dialog, "flowchart"}` | wb-l2、flowchart、chat-states；只在图示包启用时出现 |
@@ -4446,7 +4448,7 @@ type EntryKind = "object" | "operation" | "rule" | "metric" | "script";
 type EntryId = string;            // "<kind>:<key>"，如 "object:hardness_limit"
 type EntryRef = { kind: EntryKind | "flowchart"; id: EntryId; key: string; name: string; label?: string };
 type ArtifactRef = { type: string; key: string; title: string; label?: string };   // type 如 "trace.scenario"
-// label（F4b-paths，ADR-0074）：后端按元模型、产物登记算好的业务名，界面直接显示，不再按路径猜：
+// label（F4b-paths，ADR-0075）：后端按元模型、产物登记算好的业务名，界面直接显示，不再按路径猜：
 // 对象「门店」、流程图「订单流程」、建模蓝图、资料分析报告、检查报告、资料「合同」。
 // 变更里认不出的文件 type="file"、title 与 label 为空串，界面合成一行「另有 N 处改动」；路径只在 key 里。
 type PackRef = { name: string; version: string; label: string };
@@ -4898,12 +4900,14 @@ type BlueprintSliceInput = Omit<BlueprintSlice, "order" | "order_label" | "scale
 type Blueprint = {
   version_no: number; version_label: string;   // 「草案 v2」
   state: "draft" | "confirmed";
-  goal_md: string; goal_anchor: string | null;
-  out_of_scope: string[];
+  goal_md: string;                // 项目的建模目标（P-05 goal），蓝图不另存（F4b）
+  goal_anchor: null;              // F4b 起恒为 null；out_of_scope 已取消
   slices: BlueprintSlice[];
   terms: { aligned: string[];
            ambiguous: { id: string; variants: string[]; chosen: string | null }[] };
   questions: { id: string; title: string; background: string;
+               kind?: "goal";             // 资料和建模目标对不上时的目标问题，最多一个
+               suggested_goal?: string | null;   // 目标问题的建议改写；选项为「改成：…」「保持原目标」
                options: { id: string; label: string }[];
                answer: { option_id?: string; custom_text?: string } | null }[];
   research: { verified: boolean; report_id: string | null };
