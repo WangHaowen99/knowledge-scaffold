@@ -17,7 +17,8 @@ export default function PluginsPage({ route }) {
   const { api } = useApp();
   const { projectId, setProjectId, projects, ready } = usePluginProject(route);
   const cat = catOf(route.query);
-  const [q, setQ] = useState('');
+  // ?pack= 来自助手推荐卡：搜索框先填上这个包
+  const [q, setQ] = useState(route.query?.pack || '');
   const [raw, setData] = useState(null);
   const evidenceOn = useEvidenceOn();
   const data = visibleCatalog(raw, evidenceOn);

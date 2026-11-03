@@ -234,6 +234,7 @@ export function ResumeCard({ card }) {
 
 // ---------- 助手推荐插件（第 16 项） ----------
 export function PackRecommendationCard({ card }) {
+  const { pid } = useContext(WbCtx);
   const [hidden, setHidden] = useState(false);
   if (hidden) return null;
   return (
@@ -246,7 +247,7 @@ export function PackRecommendationCard({ card }) {
       <div className="row mt8">
         <Button size="sm" kind="ghost" onClick={() => setHidden(true)}>暂时不用</Button>
         <span className="sp" />
-        <Button size="sm" kind="soft" icon="puzzle" onClick={() => navigate('/plugins', card.pack ? { pack: card.pack.name } : undefined)}>去插件中心看看</Button>
+        <Button size="sm" kind="soft" icon="puzzle" onClick={() => navigate('/plugins', card.pack ? { pack: card.pack.name, project: pid } : { project: pid })}>去插件中心看看</Button>
       </div>
     </div>
   );

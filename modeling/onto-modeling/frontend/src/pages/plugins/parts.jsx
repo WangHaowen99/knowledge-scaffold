@@ -35,6 +35,14 @@ export function usePluginProject(route, { enabled = true } = {}) {
   const [chosen, setChosen] = useState(() => {
     try { return route?.query?.project || window.localStorage.getItem(PROJECT_KEY) || ''; } catch { return route?.query?.project || ''; }
   });
+  // 从项目里带着 ?project= 进来（项目设置「添加能力」、⌘K、助手推荐）：「启用到」就是这个项目，并记下来，
+  // 之后从详情页回来、从顶栏进来都还是它（F2 第 4 条：原来按上次选的或最近的项目，可能装到别的项目）
+  const wanted = route?.query?.project;
+  useEffect(() => {
+    if (!wanted) return;
+    setChosen(wanted);
+    try { window.localStorage.setItem(PROJECT_KEY, wanted); } catch { /* 存储不可用时只在本页生效 */ }
+  }, [wanted]);
   useEffect(() => {
     if (!enabled) return undefined;
     let alive = true;

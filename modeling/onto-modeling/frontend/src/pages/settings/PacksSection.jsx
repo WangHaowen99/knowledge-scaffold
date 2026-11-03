@@ -84,7 +84,7 @@ export function PacksSection({ d, reload, archived }) {
           <MoreMenu
             items={[
               ...acts.more.map((b) => ({ label: b.label, icon: b.op === 'disable' ? 'ban' : undefined, onClick: () => run(b.op, p) })),
-              { label: '插件详情', icon: 'info', onClick: () => navigate(pagePath('plugin-detail'), { pack: p.name }) },
+              { label: '插件详情', icon: 'info', onClick: () => navigate(pagePath('plugin-detail'), { pack: p.name, project: pid }) },
             ]}
           />
         ) : null}
@@ -96,7 +96,7 @@ export function PacksSection({ d, reload, archived }) {
     <div className="card" data-sec="plugins">
       <div className="card-h">
         <h3>能力与插件</h3><span className="sp" />
-        <Button size="sm" kind="primary" icon="plus" onClick={() => navigate(pagePath('plugins'))}>添加能力</Button>
+        <Button size="sm" kind="primary" icon="plus" onClick={() => navigate(pagePath('plugins'), { project: pid })}>添加能力</Button>
       </div>
       <div className="card-b">
         {summary ? <div className="row mb12 wrap" style={{ gap: 8 }}><Chip tone="amber" icon="clock">{summary}</Chip></div> : null}
