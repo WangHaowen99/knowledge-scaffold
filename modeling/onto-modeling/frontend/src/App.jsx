@@ -550,7 +550,6 @@ export default function App() {
           <div className="logo"><span className="mk">知</span>知识工程建模工作台</div>
           <span className="crumb">项目</span>
           <div className="right">
-            <button className="tb-btn" onClick={() => setHubPackagesOpen(true)}>我的 Hub 知识包</button>
             <button
               className="tb-btn"
               disabled={transferBusy}
@@ -581,13 +580,27 @@ export default function App() {
                 }
               }}
             />
-            <button
-              className="tb-btn"
-              title="导入已发布知识包或建模任务工作区内容（格式自动识别）"
-              onClick={() => importInputRef.current?.click()}
+            <Dropdown
+              trigger={['click']}
+              menu={{
+                items: [
+                  { key: 'published', label: '已发布知识包' },
+                  { key: 'local', label: '本地知识包' },
+                ],
+                onClick: ({ key }) => {
+                  if (key === 'published') setHubPackagesOpen(true);
+                  if (key === 'local') importInputRef.current?.click();
+                },
+              }}
             >
-              导入已有知识包
-            </button>
+              <button
+                type="button"
+                className="tb-btn"
+                title="选择已发布知识包或本地知识包"
+              >
+                导入已有知识包 ▾
+              </button>
+            </Dropdown>
             <input
               ref={importInputRef}
               type="file"

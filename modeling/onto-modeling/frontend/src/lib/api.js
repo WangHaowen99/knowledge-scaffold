@@ -141,11 +141,15 @@ function filenameOf(response, fallback) {
   return plain ? plain[1] : fallback;
 }
 
+function createRequestId() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 async function stableHubRequest(path, body) {
   const key = `onto-hub:${authStore.username}:${path}:${JSON.stringify(body)}`;
   let requestId = localStorage.getItem(key);
   if (!requestId) {
-    requestId = crypto.randomUUID();
+    requestId = createRequestId();
     localStorage.setItem(key, requestId);
   }
   try {
@@ -290,7 +294,7 @@ export const api = {
     const key = `onto-publish:${authStore.username || 'local-dev'}:${pid}:${allowUnbound}`;
     let requestId = localStorage.getItem(key);
     if (!requestId) {
-      requestId = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('');
+      requestId = createRequestId();
       localStorage.setItem(key, requestId);
     }
     let receipt;

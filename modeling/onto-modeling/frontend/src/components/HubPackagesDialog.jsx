@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Input, Modal, Space, Table, Typography, message } from 'antd';
 import { api } from '../lib/api.js';
-import { openEvaluation, prefetchEvaluationEntry } from '../lib/evaluation.js';
 
 export default function HubPackagesDialog({ open, onClose, onImported }) {
   const [packages, setPackages] = useState({ items: [], total: 0 });
@@ -16,8 +15,6 @@ export default function HubPackagesDialog({ open, onClose, onImported }) {
   const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0);
 
-  // 失败不阻断：点击“评测”时会重新读取并给出原因
-  useEffect(() => { if (open) prefetchEvaluationEntry().catch(() => {}); }, [open]);
   useEffect(() => {
     if (!open) return undefined;
     let active = true;
@@ -53,7 +50,7 @@ export default function HubPackagesDialog({ open, onClose, onImported }) {
     finally { setBusy(false); }
   };
 
-  return <Modal title="我的 Hub 知识包" open={open} onCancel={busy ? undefined : onClose} width={900}
+  return <Modal title="导入已发布知识包" open={open} onCancel={busy ? undefined : onClose} width={900}
     footer={<Space><Button disabled={busy} onClick={onClose}>关闭</Button>
       <Button type="primary" loading={busy} disabled={!release || !name.trim()} onClick={importPackage}>导入并继续建模</Button></Space>}>
     <Space direction="vertical" style={{ width: '100%' }}>
@@ -72,8 +69,7 @@ export default function HubPackagesDialog({ open, onClose, onImported }) {
         rowSelection={{ type: 'radio', selectedRowKeys: release ? [release.release_id] : [], onChange: (_, rows) => setRelease(rows[0]) }}
         pagination={{ current: versionPage, pageSize: 20, total: versions.total, showSizeChanger: false, onChange: setVersionPage }}
         columns={[{ title: '版本', dataIndex: 'version' }, { title: '来源', dataIndex: 'source_service' },
-          { title: '摘要', dataIndex: 'package_digest', ellipsis: true },
-          { title: '操作', render: (_, row) => <Button onClick={() => openEvaluation({ ...row, ontology_id: selected.ontology_id }).catch((e) => message.error(e.message))}>评测</Button> }]} />}
+          { title: '摘要', dataIndex: 'package_digest', ellipsis: true }]} />}
       <Input aria-label="新建模项目名称" placeholder="新建模项目名称" value={name} maxLength={128} disabled={busy} onChange={(e) => setName(e.target.value)} />
     </Space>
   </Modal>;
