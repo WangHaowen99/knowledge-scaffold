@@ -155,6 +155,11 @@ def capture(root: Path, copy: Path, *, conversation_id: str | None, changeset_id
         existing = next((item for item in all_lists(root) if item.get("plan_digest") == digest), None)
         if existing is not None:
             return None
+        # 这条对话正在按已确认的清单执行（INC-04 发出、还没确认生效）：命令第 4 步把计划连同 base_commit
+        # 再写一遍，内容是同一份，不另收一份清单（V 阶段平台多收了一份）
+        if conversation_id and any(item.get("state") == "confirmed" and item.get("conversation_id") == conversation_id
+                                   for item in all_lists(root)):
+            return None
         now = time.time()
         record = {
             "id": f"cl-{uuid.uuid4().hex[:8]}", "source": {"path": reference, "label": Path(reference).name if reference
