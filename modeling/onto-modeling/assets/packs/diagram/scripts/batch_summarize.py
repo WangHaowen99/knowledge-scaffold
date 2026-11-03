@@ -12,10 +12,9 @@ import os
 import sys
 
 sys.path.append(os.path.dirname(__file__))
-from summarize_diagram import summarize
+from summarize_diagram import find_legend, summarize
 
 DEFAULT_DIR = "ontology/diagrams"
-DEFAULT_LEGEND = "resource/diagrams/图示说明定义.drawio"
 SUMMARY_DIR = "ontology/diagrams-summary"
 
 
@@ -39,7 +38,7 @@ def resolve_paths(args):
 
 def main(target_paths, legend_path=None):
     if legend_path is None:
-        legend_path = DEFAULT_LEGEND
+        legend_path = str(find_legend())
 
     os.makedirs(SUMMARY_DIR, exist_ok=True)
 

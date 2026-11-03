@@ -14,8 +14,19 @@ import sys
 import os
 import xml.etree.ElementTree as ET
 from collections import Counter
+from pathlib import Path
 
-DEFAULT_LEGEND = "resource/diagrams/图示说明定义.drawio"
+LEGEND_NAME = "图示说明定义.drawio"
+# 资料区里的图例：存量项目建项目时从资料区模板复制来的（模板里已去掉），有就用它
+DEFAULT_LEGEND = "resource/diagrams/" + LEGEND_NAME
+# 随 core 包的图例（装配目录 reference/，图示包依赖 core）
+PACKAGED_LEGEND = Path(os.path.realpath(__file__)).parent.parent / "reference" / LEGEND_NAME
+
+
+def find_legend(root="."):
+    """图例：资料区里有的用资料区的，没有用随包的。"""
+    own = Path(root) / DEFAULT_LEGEND
+    return own if own.is_file() else PACKAGED_LEGEND
 
 
 def clean_html(s):
@@ -334,6 +345,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     diagram_file = sys.argv[1]
-    legend_file = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_LEGEND
+    legend_file = sys.argv[2] if len(sys.argv) > 2 else str(find_legend())
 
     print(summarize(diagram_file, legend_file))

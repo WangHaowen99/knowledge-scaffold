@@ -17,7 +17,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 sys.path.append(os.path.dirname(__file__))
-from summarize_diagram import summarize  # noqa: E402
+from summarize_diagram import find_legend, summarize  # noqa: E402
 
 
 LEGEND_FILE = "图示说明定义.drawio"
@@ -188,7 +188,7 @@ def _generate_summaries(diagrams: list[Path], root: Path) -> list[Path]:
         return []
     summary_dir = root / DERIVED_SUMMARIES
     summary_dir.mkdir(parents=True, exist_ok=True)
-    legend_path = root / RESOURCE_DIAGRAMS / LEGEND_FILE
+    legend_path = find_legend(root)
     outputs = []
     for diagram in diagrams:
         out_path = summary_dir / f"{diagram.stem}.md"

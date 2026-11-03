@@ -108,7 +108,7 @@ operation / rule 文档的正文逐行扫描（不含标题与 frontmatter）：
 - 孤立节点、死路节点
 - 悬空连线
 - 判断节点有效出边数 < 2（分类判断允许多于 2 个分支）
-- 图例 `resource/diagrams/图示说明定义.drawio` 中标为"虚拟项"的样式不作为真实流程节点；`offPageConnector` 是透传虚拟项，按输入输出直接相连理解
+- 图例 `.claude/reference/图示说明定义.drawio`（资料区 `resource/diagrams/` 里有同名文件时以它为准）中标为"虚拟项"的样式不作为真实流程节点；`offPageConnector` 是透传虚拟项，按输入输出直接相连理解
 - 流程图与 Excel 对齐时，Excel「业务活动」列覆盖 drawio 中所有非虚拟有标签节点，而不是只覆盖"业务活动"矩形节点
 
 所有以上检查在 **Python 层输出确定性结论**，必要时直接分类为"简单问题（可自动修复）"。

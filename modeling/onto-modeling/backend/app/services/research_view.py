@@ -39,11 +39,15 @@ _CANDIDATE_KINDS = {"对象": "object", "规则": "rule"}
 _ITEM_KINDS = {"对象": "object", "规则": "rule"}
 
 
+# 存量项目建项目时从资料区模板复制来的图例（F2 起模板里不再放，随 core 包在 .claude/reference/）
+LEGACY_TEMPLATES = frozenset({"resource/diagrams/图示说明定义.drawio"})
+
+
 def is_template(rel: str) -> bool:
-    """资源模板（建项目时从 assets/resource-template 复制来的，如图示说明定义）：不是用户的资料，不进资料地图。"""
+    """资源模板（建项目时从 assets/resource-template 复制来的）：不是用户的资料，不进资料地图。"""
     from .. import config
 
-    return (Path(config.ASSETS_DIR) / "resource-template" / rel.removeprefix("resource/")).is_file()
+    return rel in LEGACY_TEMPLATES or (Path(config.ASSETS_DIR) / "resource-template" / rel.removeprefix("resource/")).is_file()
 
 
 def kind_of(rel: str) -> tuple[str, str | None]:

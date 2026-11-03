@@ -26,7 +26,14 @@ REPORT_TZ = ZoneInfo("Asia/Shanghai")
 DEFAULT_DIAGRAM_DIR = Path("ontology/diagrams")
 DEFAULT_EXCEL_DIR = Path("ontology/excel")
 DEFAULT_REPORTS_DIR = Path("reports")
+# 资料区里的图例（存量项目建项目时从资料区模板复制来的，模板里已去掉），有就用它；没有用随 core 包的
 DEFAULT_LEGEND = Path("resource/diagrams/图示说明定义.drawio")
+PACKAGED_LEGEND = Path(os.path.realpath(__file__)).parent.parent / "reference" / DEFAULT_LEGEND.name
+
+
+def find_legend(root: Path | str = ".") -> Path:
+    own = Path(root) / DEFAULT_LEGEND
+    return own if own.is_file() else PACKAGED_LEGEND
 
 
 def _clean_text(value: object) -> str:
@@ -66,7 +73,8 @@ def _style_tokens(style: str) -> set[str]:
     }
 
 
-def _virtual_style_signatures(legend_path: Path = DEFAULT_LEGEND) -> list[set[str]]:
+def _virtual_style_signatures(legend_path: Path | None = None) -> list[set[str]]:
+    legend_path = Path(legend_path) if legend_path else find_legend()
     if not legend_path.is_file():
         return []
 
