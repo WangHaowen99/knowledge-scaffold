@@ -5,7 +5,7 @@ Generate mock test data for all business objects. Topic (if any): $ARGUMENTS
 遵循 `.claude/STEP0_TEMPLATE.md`，COMMAND_NAME = `mock`。简述：
 
 1. `python3 .claude/scripts/state_helper.py check-lock mock`
-   - `locked:...` → **错误恢复** 提示。
+   - `locked:...` → `python3 .claude/scripts/state_helper.py recover mock` 由平台定（不问用户）：`resume:{phase}` 跳到对应阶段接着做，`restart` 已清理、重新开始；工作过程里说一句业务话。
 2. `python3 .claude/scripts/state_helper.py check-prereq mock`
    - `missing:对象已提取` → **跳步守卫**："继续会导致没有对象定义可生成测试数据"。选项 **继续** / **先做 对象提取**（/ontology-extract-object）。
 3. `python3 .claude/scripts/state_helper.py acquire mock start`

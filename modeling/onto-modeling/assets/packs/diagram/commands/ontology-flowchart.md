@@ -5,7 +5,7 @@ Create, initialize, or refresh business process flowcharts in ontology/diagrams/
 遵循 `.claude/STEP0_TEMPLATE.md`，COMMAND_NAME = `flowchart`。简述：
 
 1. `python3 .claude/scripts/state_helper.py check-lock flowchart`
-   - `locked:...` → 按 **错误恢复类** 让用户选 **续执** / **清理重来** / **取消**
+   - `locked:...` → `python3 .claude/scripts/state_helper.py recover flowchart` 由平台定（不问用户）：`resume:{phase}` 跳到对应阶段接着做，`restart` 已清理、重新开始；工作过程里说一句业务话
 2. `python3 .claude/scripts/state_helper.py check-prereq flowchart`（无硬前置，若已有 `research/` 则会在下方 Mode A 自动使用）
 3. `python3 .claude/scripts/state_helper.py acquire flowchart start`
 4. 加载已沉淀业务知识（仅 global 范围；流程图阶段对象尚未提取）：

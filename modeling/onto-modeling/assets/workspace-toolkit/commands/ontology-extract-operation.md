@@ -7,7 +7,7 @@ This command is the non-object half of extraction. It requires existing `ontolog
 遵循 `.claude/STEP0_TEMPLATE.md`，COMMAND_NAME = `extract-operation`。简述：
 
 1. `python3 .claude/scripts/state_helper.py check-lock extract-operation`
-   - `locked:{ts}:{phase}` → 按 **错误恢复类** 提示；phase 可能是 `source` / `operation`，**续执**时跳到对应阶段。
+   - `locked:{ts}:{phase}` → `python3 .claude/scripts/state_helper.py recover extract-operation` 由平台定（不问用户）：`resume:{phase}` 跳到对应阶段接着做，`restart` 已清理、重新开始；工作过程里说一句业务话（phase 可能是 `source` / `operation`）。
 2. `python3 .claude/scripts/state_helper.py check-prereq extract-operation`
    - `missing:对象已提取` → 按 **跳步守卫** 提示："当前没有已确认对象，逻辑中的对象引用无从对齐。" 选项 **先做 对象提取**（/ontology-extract-object）。
 3. `python3 .claude/scripts/state_helper.py acquire extract-operation source`

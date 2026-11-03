@@ -7,7 +7,7 @@ Update an already-built ontology based on a reference (free-form prompt text or 
 遵循 `.claude/STEP0_TEMPLATE.md`，COMMAND_NAME = `update`。简述：
 
 1. `python3 .claude/scripts/state_helper.py check-lock update`
-   - `locked:{ts}:{phase}` → 按 **错误恢复类** 提示；phase 可能是 `analyze` / `confirm` / `apply` / `validate`，**续执**时跳到对应阶段。
+   - `locked:{ts}:{phase}` → `python3 .claude/scripts/state_helper.py recover update` 由平台定（不问用户）：`resume:{phase}` 跳到对应阶段接着做，`restart` 已清理、重新开始；工作过程里说一句业务话（phase 可能是 `analyze` / `apply` / `validate`；停在 `confirm` 时平台按重来处理）。
 2. `python3 .claude/scripts/state_helper.py check-prereq update`
    - `missing:逻辑已提取,...` → 按 **跳步守卫** 提示："当前缺少 {阶段列表}，没有可更新的 ontology。" 选项 **先做 逻辑提取**（/ontology-extract-operation）。
 3. `python3 .claude/scripts/state_helper.py acquire update analyze`
@@ -280,8 +280,7 @@ EOF
 
 ## Note on 续执（resume）
 
-若 Step 0 检查到 `locked:{ts}:{phase}` 且用户选了 **续执**：
+若 Step 0 的 `recover update` 输出 `resume:{phase}`（停在 `confirm` 的由平台按重来处理，不会走到这里）：
 - `phase = analyze` → 重新跑 Step 2（agent 是无状态的，重做一次即可）
-- `phase = confirm` → 读 `.ontology-state/update-plan.json`，重新展示清单等用户确认
 - `phase = apply` → 读 plan，跳过已成功执行的条目（按 git status 推断），继续剩余条目；`UPDATE_BASE` 取 plan 的 `base_commit`，不要重新取 HEAD
 - `phase = validate` → 直接读 plan 中的 changed stems 进 ontology-validate，同样带上 `--since {base_commit}`

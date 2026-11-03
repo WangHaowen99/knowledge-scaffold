@@ -6,7 +6,7 @@ Conduct domain research for an ontology modeling project. The domain is: $ARGUME
 
 1. `python3 .claude/scripts/state_helper.py check-lock research`
    - `ok` → 继续
-   - `locked:{ts}:{phase}` → 按 **错误恢复类** 话术，让用户选 **续执** / **清理重来** / **取消**
+   - `locked:{ts}:{phase}` → `python3 .claude/scripts/state_helper.py recover research` 由平台定（不问用户）：`resume:{phase}` 跳到对应阶段接着做，`restart` 已清理、重新开始；工作过程里说一句业务话
 2. `python3 .claude/scripts/state_helper.py check-prereq research`（research 无前置，应始终返回 ok）
 3. `python3 .claude/scripts/state_helper.py acquire research start`
 
