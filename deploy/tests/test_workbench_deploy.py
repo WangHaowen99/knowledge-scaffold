@@ -14,6 +14,7 @@ from deploy_synthetic_credentials import (
     BOOTSTRAP_ADMIN_SECRET,
     MODELING_SERVICE_TOKEN,
 )
+from test_knowledge_hub_deploy import _run as _run_script
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_ROOT = REPO_ROOT / "deploy"
@@ -371,21 +372,17 @@ def test_source_deploy_generates_a_distinct_evaluation_service_token(tmp_path: P
     inherited = {key: value for key, value in os.environ.items() if key != "EVALUATION_SERVICE_TOKEN"}
 
     def ensure(extra: dict[str, str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
+        return _run_script(
             [
-                _bash_executable(),
                 "-c",
                 'source "$DEPLOY_STACK" >/dev/null; CONSUMER_DIR="$TEST_CONSUMER_DIR"; ensure_evaluation_service_token',
             ],
-            env={
+            {
                 **inherited,
                 "DEPLOY_STACK": str(DEPLOY_ROOT / "deploy-stack.sh"),
                 "TEST_CONSUMER_DIR": str(consumer_root),
                 **extra,
             },
-            text=True,
-            capture_output=True,
-            check=False,
         )
 
     result = ensure({})

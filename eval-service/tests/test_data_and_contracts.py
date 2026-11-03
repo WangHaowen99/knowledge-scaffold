@@ -3,8 +3,6 @@ import ast
 import io
 import json
 from pathlib import Path
-import shutil
-import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -76,13 +74,9 @@ def test_consumer_evaluation_auth_requires_distinct_service_and_user_dependency(
     assert 'owner=user.username' in ast.unparse(route)
 
 
-def test_independent_deploy_dispatch(tmp_path):
+def test_independent_deploy_compose():
+    # Root deploy flag combinations are covered by deploy/tests/test_knowledge_hub_deploy.py.
     root=Path(__file__).resolve().parents[2]
-    script=root/'deploy/deploy.sh'
-    bash=shutil.which('bash') or '/bin/bash'
-    result=subprocess.run([bash,str(script),'--eval-only','--onto-modeling-only'],capture_output=True,text=True)
-    assert result.returncode!=0
-    assert 'cannot be combined' in result.stderr
     compose=(root/'eval-service/deploy/docker-compose.eval-service.yml').read_text()
     assert 'container_name: knowledge-evaluation' in compose
     assert 'name: ${CONSUMER_NETWORK:?' in compose and 'external: true' in compose

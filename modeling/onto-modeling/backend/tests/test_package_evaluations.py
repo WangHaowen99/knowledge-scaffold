@@ -6,7 +6,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib
 import json
 from pathlib import Path
-import subprocess
 import threading
 
 import pytest
@@ -16,7 +15,7 @@ from app import config
 from app.main import app
 from app.routers import projects
 from app.services import auth, eval_client, hub_packages, package_evaluations
-from app.services.workspace import WorkspaceError, WorkspaceManager
+from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 
 SERVICE_TOKEN = 'synthetic-evaluation-service-token-000000'
 USER = {'sub': 'operator_a', 'iss': 'https://example.com'}
@@ -274,8 +273,7 @@ def test_optimization_imports_artifacts_once(env, monkeypatch):
     tables = root / '.ontology-state' / 'eval-data' / 'eval-service'
     assert sorted(p.name for p in tables.iterdir()) == ['订单表.csv']
     assert (tables / '订单表.csv').read_text(encoding='utf-8') == 'order_id,金额\n'
-    log = subprocess.run(['git', 'log', '-1', '--name-only', '--format=%s'], cwd=root,
-                         capture_output=True, text=True, check=True).stdout
+    log = _git(root, 'log', '-1', '--name-only', '--format=%s')
     assert f'导入独立评测报告 {STEM}' in log and '.ontology-state' not in log
     downloads = len(stub.calls)
     again = client.post(f'/api/projects/{pid}/package/evaluations/{RUN}/optimization', json={})

@@ -449,10 +449,13 @@ def test_onto_modeling_only_does_not_redeploy_the_hub(tmp_path: Path) -> None:
     _evaluation_token(_lines(tmp_path / "modeling" / "onto-modeling" / ".env"))
 
 
-def test_only_flags_cannot_be_combined(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "flags", [("--knowledge-hub-only", "--onto-modeling-only"), ("--eval-only", "--onto-modeling-only")]
+)
+def test_only_flags_cannot_be_combined(tmp_path: Path, flags: tuple[str, str]) -> None:
     deploy_dir, env = _source_checkout(tmp_path)
 
-    result = _run([str(deploy_dir / "deploy.sh"), "--knowledge-hub-only", "--onto-modeling-only"], env)
+    result = _run([str(deploy_dir / "deploy.sh"), *flags], env)
 
     assert result.returncode != 0
     assert "cannot be combined" in result.stderr

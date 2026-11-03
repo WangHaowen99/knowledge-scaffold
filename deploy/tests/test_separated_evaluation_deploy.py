@@ -4,23 +4,21 @@ import os
 from pathlib import Path
 import secrets
 import shutil
-import subprocess
-import tarfile
 
 import pytest
 
+from test_knowledge_hub_deploy import _run as _run_script
 from test_workbench_deploy import (
-    DEPLOY_ROOT, REPO_ROOT, _bash_executable, _calls, _drive_tty, _interactive_upgrade_answers,
+    DEPLOY_ROOT, REPO_ROOT, _calls, _drive_tty, _interactive_upgrade_answers,
     _legacy_answers, _prepare_legacy_upgrade, _prepare_separated_upgrade,
-    _write_executable,
+    _write_executable, _write_release_package,
 )
 
 
 def _repack(package):
     stage = package.parent / (package.name + '.stage')
-    with tarfile.open(package, 'w:gz') as archive:
-        top = next(stage.iterdir())
-        archive.add(top, arcname=top.name)
+    # Without files, the package helper archives its stage directory as edited by the test.
+    _write_release_package(package, next(stage.iterdir()).name, {})
 
 
 def _prepare(tmp_path, mode='upgrade'):
@@ -105,7 +103,7 @@ def _run(setup, *, package=None, hub=True, scope='3', interactive=True, **overri
     package = setup['evaluation_package'] if package is None else package
     mode = setup['mode']
     if not interactive:
-        args = [_bash_executable(), str(DEPLOY_ROOT / 'install-consumer-modeling.sh')]
+        args = [str(DEPLOY_ROOT / 'install-consumer-modeling.sh')]
         if mode == 'upgrade':
             args.append('upgrade')
         elif mode == 'legacy':
@@ -118,8 +116,7 @@ def _run(setup, *, package=None, hub=True, scope='3', interactive=True, **overri
             args.extend(['--knowledge-hub-package', str(setup['hub_package'])])
         if package:
             args.extend(['--evaluation-package', str(package)])
-        result = subprocess.run(args, env={**setup['env'], 'INSTALL_ROOT': str(setup['target']), **overrides},
-                                capture_output=True, text=True, timeout=30)
+        result = _run_script(args, {**setup['env'], 'INSTALL_ROOT': str(setup['target']), **overrides})
         return result.returncode, result.stdout + result.stderr
     if mode == 'legacy':
         script = DEPLOY_ROOT / 'upgrade-consumer-modeling-legacy-interactive.sh'
@@ -295,11 +292,13 @@ def _tar_package(setup, *, top='eval-service', skip=()):
     """Evaluation release as built by eval-service/build.sh: a tar.gz whose top directory is eval-service."""
     package = setup['evaluation_package']
     archive_path = package.parent / 'evaluation-v-test-linux-amd64.tar.gz'
-    with tarfile.open(archive_path, 'w:gz') as archive:
-        for relative in ('deploy/deploy.sh', 'deploy/docker-compose.eval-service.yml', 'evaluation-image.tar', 'IMAGE'):
-            if relative not in skip:
-                archive.add(package / relative, arcname=f'{top}/{relative}')
-    return archive_path
+    stage = package.parent / f'{archive_path.name}.stage'
+    shutil.rmtree(stage, ignore_errors=True)
+    for relative in ('deploy/deploy.sh', 'deploy/docker-compose.eval-service.yml', 'evaluation-image.tar', 'IMAGE'):
+        if relative not in skip:
+            (stage / top / relative).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(package / relative, stage / top / relative)
+    return _write_release_package(archive_path, top, {})
 
 
 @pytest.mark.parametrize('interactive', [True, False], ids=['interactive', 'noninteractive'])
@@ -331,7 +330,7 @@ def test_invalid_evaluation_tar_package_fails_before_changes(tmp_path, problem, 
 
 def _attach(setup, *, modeling=False, **overrides):
     """Install Hub, Onto Modeling and evaluation beside an already running Consumer."""
-    args = [_bash_executable(), str(DEPLOY_ROOT / 'install-consumer-modeling.sh')]
+    args = [str(DEPLOY_ROOT / 'install-consumer-modeling.sh')]
     if modeling:
         args.extend(['--modeling-package', str(setup['packages'][1])])
     args.extend(['--knowledge-hub-package', str(setup['hub_package']),
@@ -340,7 +339,7 @@ def _attach(setup, *, modeling=False, **overrides):
     env = {key: value for key, value in setup['env'].items() if key != 'INSTALL_ROOT'}
     env.update(STUB_CONSUMER_RUNNING='true')
     env.update(overrides)
-    result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
+    result = _run_script(args, env)
     return result.returncode, result.stdout + result.stderr
 
 
