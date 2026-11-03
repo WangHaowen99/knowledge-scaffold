@@ -13,6 +13,7 @@ from app import config
 from app.services import error_log, eval_retirement, package_mapping
 from app.services.workspace import META_FILE, WorkspaceManager, _git
 from tests.test_publish_binding_gate import write_object, write_schema
+from tests.text_versions import write_text_versions
 
 openpyxl = pytest.importorskip("openpyxl")
 
@@ -100,6 +101,7 @@ def test_referenced_upload_moves_into_resource_and_state_is_purged(manager):
     assert (root / ".ontology-state" / "solver-validations.json").exists()  # 回执门禁记录保留
     assert not config_file.parent.exists() and not (manager.data_dir / "modeling-cleanup-tasks.json").exists()
     assert not set(eval_retirement.LEGACY_META_FIELDS) & set(manager.get_project(pid))
+    write_text_versions(root)  # 迁进资料区后由数据接入转出文本版，表头从文本版读（ADR-0076）
     binding = package_mapping.resolve_object_tables(root)
     assert binding["objects"]["订单"]["table"] == "T_ORDER" and not binding["problems"]
 
@@ -118,6 +120,7 @@ def test_half_finished_migration_resumes_without_duplicate_commit(manager):
     pid, root = committed_project(manager)
     upload(root, FILE_A, "业务表.xlsx", {"T_ORDER": ["ORDER_ID", "AMOUNT"]})
     eval_retirement.migrate(manager)
+    write_text_versions(root, commit=True)  # 数据接入已转出文本版
     head = _git(root, "rev-parse", "HEAD")
     upload(root, FILE_A, "业务表.xlsx", {"T_ORDER": ["ORDER_ID", "AMOUNT"]})  # 模拟没删掉
 

@@ -9,6 +9,7 @@ import pytest
 from app.services import publish as publish_service
 from app.services import package_mapping
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
+from tests.text_versions import write_text_versions
 
 openpyxl = pytest.importorskip("openpyxl")
 
@@ -32,6 +33,7 @@ def write_schema(root: Path, sheets: dict[str, list[str]], purpose: str = "schem
         workbook.create_sheet(name).append(columns)
     (root / "resource" / "excel").mkdir(parents=True, exist_ok=True)
     workbook.save(root / "resource" / "excel" / "结构.xlsx")
+    write_text_versions(root)  # 资料区的 Excel 由数据接入转成文本版，表头从文本版读（F4c）
     (root / "resource" / "materials.json").write_text(
         json.dumps({"resource/excel/结构.xlsx": {"purpose": purpose}}, ensure_ascii=False), encoding="utf-8"
     )

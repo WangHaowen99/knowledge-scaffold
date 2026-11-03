@@ -147,6 +147,14 @@ def test_schema_without_a_text_version_is_reported_not_parsed(tmp_path, table_pr
     assert package_mapping.read_source_tables(root) == {}
 
 
+def test_release_tree_carries_the_text_version_of_tables():
+    """发布从提交导出只读树再读表头：表格的文本版要跟着导出，PDF 的文本版不用。"""
+    from app.services.publish.tree import is_package_source
+
+    assert is_package_source("resource/text/excel/结构.xlsx.md")
+    assert not is_package_source("resource/text/others/说明.pdf.md")
+
+
 # ---------------------------------------------------------------------------
 # 资料分析核验：旧报告指向原件的出处按文本版核对，不解析原件
 # ---------------------------------------------------------------------------

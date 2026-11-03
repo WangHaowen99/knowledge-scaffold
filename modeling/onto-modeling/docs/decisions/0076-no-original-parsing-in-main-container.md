@@ -42,5 +42,8 @@ ADR-0073 把 PDF、Word、Excel 的转换放进连接器网关，ADR-0074 让资
 ## Consequences
 
 - 内核守卫多一个脚本、settings 基线多两处，所有项目重新装配一次。
-- 后端还有三处在主容器里解析原件，不在本 ADR 范围：资料页的 Excel 预览（`excel_preview`）、上传时的用途识别
-  （`material_detect`）、出处解析遇到旧格式锚点时的抽取（`material_text.extract`）。建议都改成读文本版。
+- 发布从提交导出只读树，表格的文本版跟着导出（`publish.tree.is_package_source`）；刚上传的 Excel 要等数据接入转出
+  文本版，才能参与数据绑定。
+- 后端还有四处在主容器里解析原件，不在本 ADR 范围：资料页的 Excel 预览（`excel_preview`）、上传时的用途识别
+  （`material_detect`）、出处解析遇到旧格式锚点时的抽取（`material_text.extract`）、评测移出的启动迁移读旧评测
+  上传表的表头（`eval_retirement`，一次性，下个大版本删）。前三处建议改成读文本版。

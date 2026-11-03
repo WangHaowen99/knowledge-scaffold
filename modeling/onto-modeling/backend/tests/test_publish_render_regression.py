@@ -24,6 +24,7 @@ from app.services.publish.ontology_package import ADAPTER
 from app.services.publish.spi import ReleaseSource
 from app.services.publish.tree import release_tree
 from app.services.workspace import WorkspaceManager, _git
+from tests.text_versions import write_text_versions
 
 openpyxl = pytest.importorskip("openpyxl")
 
@@ -78,6 +79,7 @@ def _write_schema(root: Path, sheets: dict[str, list[str]]) -> None:
         workbook.create_sheet(name).append(columns)
     (root / "resource" / "excel").mkdir(parents=True, exist_ok=True)
     workbook.save(root / "resource" / "excel" / "结构.xlsx")
+    write_text_versions(root)  # 资料区的 Excel 只读文本版（F4c）
     _write(root, "resource/materials.json", json.dumps({"resource/excel/结构.xlsx": {"purpose": "schema"}}))
 
 

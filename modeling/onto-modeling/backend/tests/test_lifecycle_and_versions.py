@@ -11,6 +11,7 @@ import pytest
 from app.services import publish as publish_service
 from app.services.workspace import WorkspaceError, WorkspaceManager
 from app.services.workspace import ScriptContractError, _script_header_meta
+from tests.text_versions import write_text_versions
 
 
 def test_script_header_meta_uses_declared_kebab_case_flag():
@@ -101,6 +102,7 @@ def _write_schema_table(root: Path, sheet: str, columns: list[str]) -> None:
     worksheet.title = sheet
     worksheet.append(columns)
     workbook.save(excel / "业务数据.xlsx")
+    write_text_versions(root)  # 资料区的 Excel 只读文本版（F4c）
     (root / "resource" / "materials.json").write_text(
         json.dumps({"resource/excel/业务数据.xlsx": {"purpose": "schema"}}, ensure_ascii=False),
         encoding="utf-8",

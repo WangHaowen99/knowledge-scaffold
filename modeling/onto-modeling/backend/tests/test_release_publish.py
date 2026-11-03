@@ -18,6 +18,7 @@ from app.services import auth
 from app.services.publish.tree import release_tree
 from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 from tests.test_publish_binding_gate import object_doc, write_object, write_schema
+from tests.text_versions import write_text_versions
 
 openpyxl = pytest.importorskip("openpyxl")
 
@@ -318,7 +319,8 @@ def test_upload_commits_only_its_own_paths(manager, tmp_path):
     assert git_paths(root, "diff", "--cached", "--name-only").split() == ["research/分析.md"]
     assert "ontology/object/订单.md" in git_paths(root, "diff", "--name-only")
 
-    # 刚上传的表立刻能被发布读到：对象绑上它
+    # 数据接入把它转成文本版（这里直接调转换器）后，发布就能读到：对象绑上它
+    write_text_versions(root, commit=True)
     manager.write_file(pid, "ontology/object/客户.md", object_doc("T_CUSTOMER", ["CUSTOMER_ID", "NAME"]))
     publish_service.publish_package(manager, pid, tmp_path / "pkg.zip")
     mappings = json.loads(package_files(tmp_path / "pkg.zip")[f"{pid}/mappings/object-data-mappings.json"])
@@ -327,7 +329,10 @@ def test_upload_commits_only_its_own_paths(manager, tmp_path):
     manager.set_resource_directive(pid, "resource/excel/客户[1].xlsx", "evidence", author="operator_a")
     assert _head_files(root) == {"resource/materials.json"}
     manager.delete_resource(pid, "resource/excel/客户[1].xlsx", author="operator_a")
-    assert _head_files(root) == {"resource/excel/客户[1].xlsx", "resource/materials.json"}
+    # 删资料连同它的文本版一起删（ADR-0073）
+    assert _head_files(root) == {
+        "resource/excel/客户[1].xlsx", "resource/materials.json", "resource/text/excel/客户[1].xlsx.md",
+    }
     assert _git(root, "log", "-1", "--format=%s").strip().startswith("web: 删除资料 resource/excel/客户[1].xlsx")
     assert git_paths(root, "diff", "--cached", "--name-only").split() == ["research/分析.md"]
 

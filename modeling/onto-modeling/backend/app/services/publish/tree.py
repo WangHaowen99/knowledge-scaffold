@@ -15,9 +15,12 @@ from .layout import PACKAGE_SOURCE_DIRS, PACKAGE_SOURCE_PATHS
 
 
 def is_package_source(path: str) -> bool:
-    """仓库相对路径是否会被发布读取：PACKAGE_SOURCE_DIRS 下的文件，资料区只算用途清单和表格。"""
+    """仓库相对路径是否会被发布读取：PACKAGE_SOURCE_DIRS 下的文件，资料区只算用途清单、表格和表格的文本版
+    （Excel 表头从文本版读，ADR-0076）。"""
     if path == RESOURCE_DIRECTIVES:
         return True
+    if path.startswith("resource/text/") and path.endswith(".md"):
+        return Path(path[:-3]).suffix.lower() in package_mapping.TABLE_SUFFIXES
     if path.startswith("resource/"):
         return Path(path).suffix.lower() in package_mapping.TABLE_SUFFIXES
     return any(path.startswith(f"{directory}/") for directory in PACKAGE_SOURCE_DIRS)

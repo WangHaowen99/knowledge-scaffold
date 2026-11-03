@@ -18,6 +18,7 @@ from app.services.workspace import (
     WorkspaceError,
     WorkspaceManager,
 )
+from tests.text_versions import write_text_versions
 
 
 @pytest.fixture()
@@ -245,6 +246,7 @@ def test_object_data_mapping_survives_import(manager: WorkspaceManager, tmp_path
     workbook.active.title = "ORDER_TABLE"
     workbook.active.append(["ORDER_ID"])
     workbook.save(excel / "数据表.xlsx")
+    write_text_versions(root)  # 资料区的 Excel 只读文本版（F4c）
     (root / "resource" / "materials.json").write_text(
         json.dumps({"resource/excel/数据表.xlsx": {"purpose": "schema"}}, ensure_ascii=False),
         encoding="utf-8",
