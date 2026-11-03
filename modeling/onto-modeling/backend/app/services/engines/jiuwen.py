@@ -651,8 +651,9 @@ class JiuwenEngine(ObservableEngine):
         self._tracker: Any = None
         self._closed = False
         self._progress_tracker: JiuwenProgressTracker | None = None
-        # 上下文用量：每轮结束前以 context_usage 下发（与稳定引擎同一事件）
+        # 上下文用量：以 context_usage 下发（与稳定引擎同一事件），每次模型调用后变了就报，轮末没变不重复
         self._context_used: int | None = None
+        self._context_reported: int | None = None
         self._context_window: int | None = None
         self._compact_at: int | None = None
 
@@ -940,9 +941,13 @@ class JiuwenEngine(ObservableEngine):
             self._context_used = event["post_tokens"]
 
     def _context_usage_event(self) -> dict | None:
-        """本轮结束（result 之前）的上下文用量事件，格式与稳定引擎一致；还没有用量时不发。"""
-        if not self._context_used:
+        """上下文用量事件，格式与稳定引擎一致；还没有用量、和上次报的一样时不发。
+
+        一轮里每次模型调用后都看一次，不等一轮结束：资料分析一轮常跑半小时以上，只在轮末报的话
+        上下文环一直是 0%（F2 第 6 条）。"""
+        if not self._context_used or self._context_used == self._context_reported:
             return None
+        self._context_reported = self._context_used
         return {
             "type": "context_usage",
             "used": self._context_used,
@@ -954,6 +959,10 @@ class JiuwenEngine(ObservableEngine):
         for event in events:
             self._track_context(event)
             await self._queue.put(event)
+            if event.get("type") in ("assistant_message", "context_compacted"):
+                context_usage = self._context_usage_event()
+                if context_usage:
+                    await self._queue.put(context_usage)
 
     async def _run_turn(self, text: str) -> None:
         from openjiuwen.core.runner import Runner

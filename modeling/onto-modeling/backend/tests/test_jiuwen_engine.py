@@ -366,6 +366,44 @@ def test_run_turn_reports_context_usage_before_result(tmp_path, monkeypatch):
     }
 
 
+def test_context_usage_follows_each_model_call_within_a_long_turn(tmp_path, monkeypatch):
+    """F2 第 6 条（hc 现场）：资料分析一轮跑了 30 多分钟、上下文涨到 14.4 万，环一直是 0%——用量只在一轮结束时报。
+    每次模型调用后用量变了就报一次（宿主落盘，刷新页面也能读到），轮末用量没变不重复报。"""
+    from openjiuwen.core.runner import Runner
+
+    def fake_stream(agent, inputs, session=None):
+        async def gen():
+            yield chunk("llm_output", {"content": "先读资料"})
+            yield chunk("llm_usage", {"usage_metadata": {"input_tokens": 14000, "output_tokens": 136}})
+            yield chunk("tool_call", {"tool_name": "read_file", "tool_args": {"path": "a.md"}, "tool_use_id": "c1"})
+            yield chunk("tool_result", {"tool_use_id": "c1", "tool_result": "内容"})
+            yield chunk("llm_output", {"content": "读完了"})
+            yield chunk("llm_usage", {"usage_metadata": {"input_tokens": 40000, "output_tokens": 500}})
+
+        return gen()
+
+    monkeypatch.setattr(Runner, "run_agent_streaming", staticmethod(fake_stream))
+    engine = JiuwenEngine(make_ctx(tmp_path))
+    engine.client = object()
+    engine._context_window, engine._compact_at = 200000, 148000
+
+    async def scenario():
+        await engine._run_turn("开始")
+        events = []
+        while not engine._queue.empty():
+            events.append(engine._queue.get_nowait())
+        return events
+
+    events = asyncio.run(scenario())
+    types = [e["type"] for e in events]
+    usages = [e for e in events if e["type"] == "context_usage"]
+    assert [e["used"] for e in usages] == [14136, 40500]
+    # 第一次在工具调用之前就报了，不等一轮结束
+    assert types.index("context_usage") < types.index("tool_results")
+    assert types[-2:] == ["context_usage", "result"]
+    assert usages[0] == {"type": "context_usage", "used": 14136, "window": 200000, "compact_at": 148000}
+
+
 def test_run_turn_error_emits_engine_end(tmp_path, monkeypatch):
     from openjiuwen.core.runner import Runner
 
