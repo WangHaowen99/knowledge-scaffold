@@ -451,3 +451,651 @@
 9. **PL-05** `rollback_to` 只给换上后本项目还能装配的版本，一个都没有时为 null、`actions` 不含 `rollback`。
 10. **PL-01** `publisher.kind` 只有镜像内置的包是 `official`；上传的包清单里写了 official 也给 `tenant`（`label` 为空）。
 11. **AR-05 流程图**：标准编辑器与高级编辑器保存都只改第一页里的节点、连线与流程元数据，其他单元格与其他页保留；第一页是压缩格式时写回成明文。
+
+## 2026-11-02 · B5a（包的界面、证据源只留接口）
+
+接口编号见 `api-v1.md`。没写的字段与契约一致。分支 `feat/onto-modeling-plugin-p3-ext`，ADR 0055、0056。
+
+### 包的界面（ADR-0055，修订详设决策 17 与 5.9.1、5.9.5）
+
+1. **1.1 加「界面接口版本」`UI_API = "1.0"`**：上传包 iframe 编辑器与平台之间 postMessage 协议的版本，与页面接口 `page_api` 并列。
+   编辑器在清单里声明需要的范围 `ui_api`（如 `">=1.0 <2.0"`），不满足时平台不打开它（退回专用组件或通用详情）。
+2. **1.2 免鉴权前缀加 `/api/v1/pack-ui/`**（PL-21：路径里的短期票据即授权）。
+3. **新增 PL-20 打开上传包编辑器** `POST /api/v1/projects/{id}/packs/{name}/ui-sessions` · 所有者 · 审计：写请求通用审计。
+   - 请求：`{editor: string}`（清单 `contributes.editors[].id`）。
+   - 响应 `201`：`{url, expires_at, ui_api: "1.0", pack: {name, version, label}, editor: {id, title}}`；`url` 形如
+     `/api/v1/pack-ui/<票据>/<editor>/index.html`，前端直接作 iframe 的 `src`。
+   - 错误：`pack_not_enabled`（409，`details.pack`，本项目没启用或已停用）、`not_found`（404，没有这个编辑器或缺入口文件）、
+     `invalid_argument`（400，`details.mode="bundled"`：官方包的编辑器随平台加载，不用申请）、`page_api_unsupported`
+     （409，`details: {required, platform}`，编辑器要的界面接口版本平台不满足）。
+4. **新增 PL-21 上传包界面的静态资源** `GET /api/v1/pack-ui/{ticket}/{path}` · 免登录（票据即授权） · 审计：否。
+   - 只发包仓库里这个版本 `ui/` 下的文件，后缀限静态资源（同静态检查 `ui` 项的白名单）；票据 2 小时有效、存在后端进程内存，
+     重启后作废。每次读都按项目锁文件重查：包停用、换了版本回 `404 pack_not_enabled`；票据不对、过期、路径越界回 `404 not_found`。
+   - 响应头：`Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';
+     img-src 'self' data: blob:; font-src 'self'; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'`，
+     `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store`。
+5. **窄接口协议（新增一节，界面接口 1.0）**：iframe `sandbox="allow-scripts"`（不给 `allow-same-origin`），只经 postMessage 和平台通信。
+   - 请求 `{onto_ui: "1.0", id: string(≤64), method, params: object}`；回应 `{onto_ui, id, ok: true, result}` 或
+     `{onto_ui, id, ok: false, error: {code, message, status?, details?}}`；平台主动推 `{onto_ui, event, data}`，
+     `event` 取 `artifact.changed`（`data: {type, key}`，助手或别处改了这份产物）、`readonly.changed`（`data: {readonly}`）。
+   - 方法：`context.get` → `{ui_api, pack: {name, version, label}, editor: {id, title}, artifact: ArtifactRef, readonly}`；
+     `artifact.read {type?, key?}` → `Artifact`（AR-03）；`artifact.save {type?, key?, base_revision, fields?, sections?, content?, summary?}`
+     → AR-05 的响应；`chat.command {command, args?, text?}` → S-20 的响应（`origin.page="artifact"`）；`theme.get` →
+     `{mode: "light", vars: {"--ink": …}}`（只给设计系统的颜色、圆角、字体变量）。`type`、`key` 缺省是打开的那份。
+   - 限制：读写只限本包登记的产物类型（类型前缀等于包名）；命令只能是 `/<包名>-…`；`args` 只能是简单键值；保存只认上面的字段。
+   - 拒绝时的 `error.code`：`invalid_message`（没有 id）、`ui_api_unsupported`（主版本不同）、`method_unknown`、`forbidden`
+     （越权的类型、命令）、`invalid_argument`；接口出错原样带回 `code`、`message`、`status`、`details`（如写入范围锁的
+     `423 write_scope_locked`、`409 revision_conflict`）。不是窄接口的消息（没有 `onto_ui` 字段）忽略不回。
+6. **清单 `contributes.editors: [{id, title, ui_api?}]`**：`id` 小写字母开头，字母、数字、连字符，包内唯一。入口按约定：
+   官方包（入库来源 builtin）`ui/<id>/index.jsx`（随平台编译），上传包 `ui/<id>/index.html`（iframe）。
+7. **视图声明**：`views/<类型>.yaml` 的 `detail.editor: <编辑器 id>`；`card` 认 `title`、`subtitle`（字段名）、`chips`、`fields`
+   （各最多 4 个字段名）与 `component`（平台卡片组件）。
+8. **`ArtifactType.view`（AR-01）**：`card: {title, chips, subtitle?, fields?, component?}`（不认得的键去掉）；`detail` 加
+   `editor?: {id, title, pack, version, mode: "bundled" | "iframe", ui_api, entry}`（引用的编辑器包里没声明时没有这个键）。
+   旧版图示包的 `detail.component: "flowchart"` 保留兼容，前端映射到同一个编辑器。
+9. **`ManifestSummary.contributes` 加 `editors: string[]`**（编辑器 id）。
+10. **PL-15 静态检查**：`frontend` 项改为「页面只选用平台内置，前端代码只在 ui/ 下」（`ui/` 之外的前端代码仍判失败）；
+    新增 `ui` 项「包自带界面：上传包只能是静态资源、经隔离 iframe 加载」——编辑器入口要在、视图引用的编辑器要声明、
+    `ui_api` 要满足；上传包 `ui/` 只能是 html、htm、js、mjs、css、json、map、txt、png、jpg、jpeg、gif、svg、webp、ico、
+    woff、woff2、ttf，拒绝要编译的源码、`package.json`、`node_modules`、点文件与服务端可执行内容；有 `ui/` 没有编辑器给警告。
+    凭据扫描加上 js、mjs、jsx、css。
+11. **4.7 新增 `card_type: artifact`（通用产物卡）**：一轮结束时宿主给每个新增或修改的插件产物出一张（一轮最多 8 张，新增在前；
+    一个文件多项的格式只出真变了的那几项；删除的不出卡）。特有字段：
+    `{artifact: ArtifactRef, change: "add"|"mod", component: string|null, chips: [{field, label, value, text, tone}],
+    fields: [{field, label, text}], detail: {kind: "generic", layout} | {kind: "component", component} | {kind: "editor", editor},
+    locked: bool}`；共有字段 `eyebrow` 是「<类型标题> · 本轮新增|本轮修改」，`plugin` 是 `{name, label}`，
+    `open` 是 `{kind: "dialog", target: "artifact", ref: ArtifactRef}`，`status` 为 null（状态在 chips 里）。
+    `component: "flowchart"` 时另带 `flowchart` 卡的 `state`、`summary`、`thumbnail`（节点最多 40 个，数据对象不画）。
+    `card_type: flowchart` 保留兼容，前端两种都认。
+12. **图示包 0.6.0**：流程图编辑器在 `ui/flowchart/`；视图 `detail.editor: flowchart`、`card.component: flowchart`。
+
+### 证据源只留接口（ADR-0056）
+
+13. **2.8 加错误码 `evidence_not_available`（501）**，`details: {api: "EV-14"}`（接口编号）。
+14. **3.19 全部接口（EV-01～EV-30，含 EV-11 的 GET/PUT、EV-17 的 cancel/resume/retry、EV-29 的 GET/POST）与 PL-04、PL-19
+    一律回 `501 evidence_not_available`**，不校验权限、不读请求体。EV-29 的 `file` 锚点同样 501（见 gaps B5a）。
+15. **SY-15 响应加 `not_enforced: string[]`**：本期不生效的配额项（`collections_per_source_per_hour`、`snapshot_git_mb`），能存、不检查；
+    前端不显示这两项。
+16. **`upload_prompt` 卡**：`actions` 不含 `connect_system`、`sources_available` 为 0（服务端现在不出这张卡，以后出时照此）。
+17. **AB-01/AB-02**：策略里的生产库采集授权与 `platform_limits.allow_production_collection` 保留，本期不生效（B5b 实现时照此）。
+18. **M-08**：工具目录没有 `evidence_*`；P-14 的项目级只读服务器不列 evidence。
+
+## 2026-11-02 · B4b（变更集、确认生效与撤回、写入范围只读、节点状态、统一下一步、待处理）
+
+接口编号见 `api-v1.md`。没写的字段与契约一致。主线 2fee09d8..0a009a5c，ADR-0046～0049。
+
+### 变更集（CS-01～CS-07、EP-04、4.7 round_changes、S-05）
+
+1. **Changeset**：`source` 现在只有 `assistant`（自主构建 `autobuild` 在 P3）；`build_mode` 助手为 `L2`；`purpose` 是
+   「助手执行「<命令业务名>」的修改」或「助手的修改」；`state` 的 `open` 表示助手还在跑、`pending_confirm` 表示这一轮结束、
+   改动等你确认。Studio、MCP、导入、插件变更「接口上不可见」，不出现在 CS-01。
+2. **CS-02** `groups[].kind` 另有 `other`（不是条目、也不是登记过的插件产物的文件，`target` 是
+   `{type: "file", key: 路径, title: 文件名}`，与 B4a 第 25 条同一口径）；`checks` 是相对变更集基准**新增**的问题
+   （一轮结束时在副本的树上跑规则检查算的）；`items[].detail` 是实体级差异的一句话（「改了「对象属性清单」：新增 1 行」）。
+3. **CS-03** `target` 认 `EntryId`、`<artifact_type>/<key>` 或文件路径；`sections[].title` 为空串表示整份文本（不是条目的文件）。
+4. **CS-04** 另有 `503 service_unavailable`（`details.dependency="gate"`）：门禁脚本跑不起来时不合入。`gate_failed` 的
+   `findings` 只列新增的错误。确认生效后对话里这个变更集的全部卡片发 `card.updated`（`state=merged`），再加一条
+   `notice`（`kind=merged`、`text`「这一轮的修改已确认生效 · 版本 v0.n」）。撤回同理（`kind=discarded`）。
+5. **CS-05** 撤回时副本里没提交的文件一并丢掉。**CS-07** `choices[].target` 认冲突里给的 `entities[].id`（条目 ID；
+   不是条目的文件是路径），没选全仍是 `409 merge_conflict`。
+6. **round_changes 卡**：一轮有改动就放一张新卡，`card_id` 为 `rc-<变更集>-<序号>`，同一变更集之前的卡跟着发
+   `card.updated`（内容都是变更集的全部改动，按钮作用于同一个变更集）；`status.key` 取 `pending` / `confirmed` /
+   `skipped`（撤回）；`subtitle` 是变更集的 `purpose`；`remaining_failures` 是新增错误数；增量更新这一轮带
+   `change_list_id`。旧历史里的 `workspace_changes` 记录仍按 B4a 的口径投影成 `state=merged`。
+7. **EP-05**：助手在副本里的提交不再发 `workspace.changed`（主线没变），确认生效时由写入事务发一条
+   （`source=assistant`、带 `changeset_id`）。
+8. **S-05 `open_changeset`**：这条对话里（或不属于任何对话的）没确认的变更集。
+
+### 写入范围（CS-06、EP-03、2.4 write_scope_locked）
+
+9. **ScopeLock**：`paths` 是 fnmatch 模式，含正在执行与执行过的节点声明的 `produces`、`writes`（`**` 写成 `*`），也含
+   变更集改动的文件路径（`[`、`]`、`*`、`?` 转义成字面量）；`slice` 取执行记录的分段（分段规划前为 null）；
+   `node` 只在助手在跑时给；`run_id` 在 P3 前为 null。助手在跑但没执行有声明的节点、也还没改动时，`state=assistant_running`
+   且范围为空。
+10. **CS-06 `?target=`** 认 `EntryId` 与 `<artifact_type>/<key>`；锁住时给整份锁，没锁给空锁。
+11. **V-06 回退**：有没确认的助手变更集、或助手正在跑时一律 `423 write_scope_locked`（整树恢复会碰到范围里的条目）。
+12. **MCP `PROJECT_EDITING_BUSY`** 的 `details`（与 issue）另带 `entities`（范围里的条目与插件产物）、`scope_state`、
+    `changeset_id`；「助手在跑就整项目忙」「条目有 Studio 租约」两条取消，「条目有你没提交的 Studio 草稿」保留。
+13. **ST-07 存草稿不再占 30 分钟租约**（旧接口 `studio/lease` 早已 410）；ST-02 节点、ST-03 行的 `locked`，ST-04、F-02 的
+    `lock`，SV-01 的 `lock`（范围里有求解契约时）按写入范围锁给。
+14. **节点声明多一个可选字段 `writes`**：本节点运行期间还会改、但不归它产出的路径（修复型节点、跨类改动），与 `produces`
+    合起来是写入范围；组装时只查 `produces` 不重叠。`.onto/run/active.json`（state_helper 写）为
+    `{commands: {命令: {node, allow, phase, since}}}`。
+
+### 流程（FL-01～FL-05、EP-01）
+
+15. **FlowNode.state** 按 8 种状态给（P1 的四种作废），`flags.review_source` 取 `upgrade` / `import`（`autobuild` 在 P3）；
+    `display_state`：已确认 + 需复核为 `needs_review`、自主构建的为 `auto`。`actions` 里过期节点第一项 `kind=refresh`，
+    可选节点多一项 `skip` 或 `restore`（`target` 省略）。
+16. **progress（x/N）** 仍只数主线上满足完成判定的节点（已确认与过期都算做过，待确认不算）；P-01/P-04 同口径。
+17. **notices** 现在只有 `pending_changeset`（`action` 是 `show_changes`）。`slices`、`slice_stages` 在分段规划（建模蓝图）
+    前为空。
+18. **Suggestions**：`mode=pending_confirm` 时主推 `{type: "merge_changeset"}`「确认生效」，次选是主线下一步与
+    `{type: "discard_changeset"}`「撤回这一轮」；`waiting_decision` 时主推是禁用的「先做上面的决定」
+    （`action` 为 `{type: "navigate", page: "wb-l2"}`）；过期刷新的 `id` 为 `refresh:<节点>`、优先级 2。
+    `state_helper.py suggest` 输出同一结构（JSON）。
+19. **FL-03** 只有可选节点能跳过（必经节点 `node_not_skippable`）；`reason` 截 200 字。**FL-05** 用节点的
+    `entry.command`（没有时取第一个斜杠命令动作），`slice_id` 作为命令参数 `slice=` 带上，`origin` 缺省
+    `{page: "flow", label: 节点标题}`；没有对话入口（面板节点）`400 invalid_argument`。
+
+### 待处理（IN-01～IN-04、EP-02）与变更点清单（INC-01～INC-05）
+
+20. **IN-01** `autobuild_summary` 恒为 null（P3）；`today.eta_minutes` 按每项 2 分钟估；`pack` 只有插件节点的过期 /
+    需复核、插件产物的格式迁移、外部反馈（`evo`）有值。
+21. **InboxItem**：续跑项 `source` 在服务重启中断时为 `restart`；需复核项的 `run` 在 P3 前为 null；`impact` 只有修改待确认
+    （「涉及」）与决策（「改动预览」）给。决策、修改待确认、合入冲突、变更清单 `batchable=false`。
+22. **IN-02 `detail`**：`review` 为 `{source, at, note, node: {id, title}, options: [{id: "accept"|"rejudge", label}]}`；
+    `report` 为 `{path, pending}`；`format_migration` 为 `{type, key, from, to}`；`changeset_conflict` 为
+    `{changeset: Changeset, entities}`；`stale` 的 `upstream_diff.lines` 为空（只给说明）。
+23. **IN-03**：`keep_stale` 等同忽略；`rejudge` 重做这一步（FL-05）；`send_to_assistant` 以 `/ontology-validate` 发出、
+    带上报告路径；`migrate` 在包提供迁移命令之前 `409 pack_not_enabled`；`revert_slice`、`use_generic`、`arbitrate` 在
+    P3 的事项出现之前不会出现在 `actions` 里。
+24. **IN-04** `refresh_stale` 一次只刷新最上游的那一个（同一项目同一时刻一条命令），其余进 `skipped`；
+    `accept_high_confidence` 在 P3 前恒为 0。
+25. **ChangePoint** 由助手的影响分析条目映射：`condition` 取理由、`value` 取变更说明、`scope` 取文件、`anchor` 为空、
+    `confidence` 按改动类型（修改 high、新建 medium、删除 low）；`impact` 是这条与需要跟着改的级联条目。
+    **ChangeList** 多 `conversation_id`（F3 第 15 条）；`impact_summary.scenarios` 与 **Impact** 的 `regression` 在场景索引
+    接上之前为 0 / 空。**INC-04** 响应的 `changeset_id` 是当前没确认的变更集（还没开始改时为 null）；之前的变更集还开着时
+    发命令照常（同一对话里接着改）。
+
+### 其他
+
+26. **O-35** 多一项 `changeset_copies`（助手副本：清残留锁、补登记、重建、补链接），只在修过或修不了时出现。
+27. **O-36** 备份范围加 `changeset-state`、`flow-state`、`change-lists`（助手副本按分支重建，不备）。
+
+### B5a 审查修复（同日，修订上面几条）
+
+19. **PL-20 响应加 `commands: string[]`**：本包清单 `contributes.commands` 里的命令（带 `/`）。窄接口 `chat.command` 只认这些，不再按
+    「/包名-」前缀判断（第 5 条的限制作废）。PL-20 新错误 `429 rate_limited`（`details.limit`）：同一用户同时有效的票据最多 50 张、全平台 5000 张，
+    满了拒绝新申请，不淘汰别人的；同一个人重开同一个编辑器沿用原票据、顺延有效期。
+20. **窄接口握手改走 MessagePort**（第 5 条修订）：iframe 先往父窗口发 `{onto_ui: "1.0", connect: true}`，平台回
+    `{onto_ui, event: "connected", data: {ui_api}}` 并转交一个端口；之后的请求、回应、推送都走端口，窗口级的请求不理。每个 iframe 只握手一次；
+    iframe 第二次 load（导航离开）时平台拆掉桥接、卸掉 iframe。
+21. **`chat.command` 的参数**：`args` 最多 10 个键（`^[A-Za-z_][A-Za-z0-9_-]{0,39}$`），值是不超过 200 字、不带换行与控制字符的文字，或数字、布尔；
+    `text` 不超过 500 字；同一个编辑器 5 秒最多一条（`rate_limited`）。
+22. **S-20 `origin.pack`**：包界面发来的命令，前端在 `origin` 里带包名；服务端据此再校验——包要启用中（否则 `409 pack_not_enabled`），命令要是
+    本包清单里的、不带别的参数文字（否则 `403 forbidden`，`details.reason="not_pack_command"`），参数限制同第 21 条（否则 `400 invalid_argument`，
+    `details.fields`），同一项目同一包 3 秒一条（否则 `429 rate_limited`，`details.retry_after_s`）。
+23. **PL-21 响应头加 `Allow-CSP-From: *`**；平台的 iframe 带 `csp` 属性（来源写平台完整地址的那份 CSP）。
+24. **PL-15**：新增 `views` 检查项「视图声明格式正确」（每份视图能解析、是映射、`artifact` 是本包登记的类型、三段是映射、各键是字段名或字段名列表、
+    `detail.layout` 合法）；`names` 检查加上保留包名（`ontology`、`onto`、`kernel`、`platform`；租户另不能用 `core`）和与包仓库里别的包（任何版本）的
+    命令重名；检查本身出错时上传记为 `failed`，检查项 `internal`。
+25. **`card_type: artifact` 去掉 `locked`**（第 11 条修订）：卡片在对话历史里，只读与否由前端按实时的写入范围（CS-06）判断；
+    `flowchart` 卡的 `locked` 前端也不再看。
+26. **AR-01 的视图**：运行时形状不对的段、键丢掉回到缺省，坏的产物登记只跳过它自己，一个包读不出来不影响别的包。
+
+## 2026-11-02 · B5 合并（B5a 合进交付分支后的衔接）
+
+1. **4.7 `card_type: artifact`**（B5a 第 11 条补充）：助手在变更集副本里改时，产物卡在这一轮的 `round_changes` 卡之后出；
+   「这一轮的改动」是这一轮开始时副本的树到结束时的树（含没提交的文件，不含上一轮改的、跟上主线时并进副本的网页保存），
+   卡片内容按副本里的文件；`card_id` 的种子是这一轮 `round_changes` 卡的编号。确认生效前双击打开仍读主线（AR-03，见 gaps「B5 合并」第 1 条）。
+2. **窄接口 `context.get` 的 `readonly` 与 `readonly.changed`**（B5a 第 5 条补充）：按写入范围锁判断——锁里有这份产物，或产物所在文件
+   落在锁的 `paths` 里（助手正在跑的节点声明的范围也算），和 AR-05 回 `423 write_scope_locked` 同一口径；锁随 EP-03 `scope.updated` 变。
+
+## 2026-11-02 · B4b 审查修复
+
+1. **CS-04 / CS-07**：合成结果和主线一样（冲突全选「保留主线」、两边改成一样）时不写提交，响应 `commit` 为 null，
+   `version_label` 是当前主线版本；Changeset `merged.commit` 同样为 null。
+2. **INC-04**：清单已确认（已发出执行）或已执行时 `409 changeset_closed`（`details.state`）。清单随所属变更集：确认生效后
+   `state=executed`，撤回后回到 `editing`、`changeset_id` 为 null；只做了影响分析的一轮也会收成清单（`changeset_id` 先为 null）。
+3. **IN-01**：全部通过的外部反馈批次不列；`review` 事项只有自主构建的段带 `revert_slice`；忽略过的事项在来源变了之后重新出现。
+4. **O-35 `changeset_copies`** 的 `detail` 另有「补记了 n 个已合入的变更集」（崩溃后启动核对）。
+
+## 2026-11-02 · B5c（节点包、扩展项补齐、插件运维登记点）
+
+接口编号见 `api-v1.md`。没写的字段与契约一致。ADR 0065～0068。
+
+### 插件与节点包
+
+1. **PL-01**：节点包（清单 `kind: node`）的 `category` 一律是 `capability`（清单写 `category: node` 也一样），`counts.node` 恒为 0。用户 11-02 定：节点包是能力包的特例，不单列分类。
+2. **PL-06～PL-09** 响应多 `changeset_id: string|null`：这次切换记成的插件变更集（已合入，`source="plugin"`）；助手的修改还没确认、这次切换又不改流程节点时不记变更集，为 null。
+3. **PL-06、PL-07** 的 `write_scope_locked`（423，details 是 `ScopeLock`）只在「助手的变更集没关闭」且「这次切换会改流程节点（flow.lock 的节点变了）」时出现。
+4. **PL-06、PL-07** 包里有外部节点、需要的证据源提供方不可用（本期恒不可用）时回 `409 pack_unavailable`，`details: {reason: "not_installed", providers: string[]}`；**PL-03** 的 `depends` 检查同时不通过，`detail` 写缺哪个提供方。
+5. **PL-03** `impact.needs_review_after_upgrade` 给真实值：换成这一版后完成判定签名变了的已确认节点个数（与节点状态同一判据）。
+6. **PL-10** 撤销的是第一次启用时（锁文件里原来没有这个包），`pack` 给一项 `status="disabled"`、`actions=["enable"]` 的 ProjectPack（锁文件里已经没有它）。
+7. **PL-12** 的 `entries` 只有 `quick_action`、`extra_action`，`command` 一定有且是本包的命令；`source_wizard` 随证据源留空不出现。`gates[]` 多 `on: ("save"|"commit"|"publish")[]`。`config[].key` 写成 `<包名>.<key>`（与配置注册表同一个键）。新增 `view_choices: [{id: "er_view"|"schema_browser"|"evidence_sidebar", pack}]`，依赖证据源的两种本期不出现。`extensions.updated.changed` 可能含 `view_choices`。
+8. **PL-15** 检查项：`kind: node` 的包多 `node_pack`；声明了 entries / gates / view_choices / config / metrics / alerts / mcp_tools 的包多 `extensions`。
+
+### 流程
+
+9. **FL-01**：
+   - `flags.backfill`、`flags.disabled` 给真实值。可补做的节点不计入 `progress.total`（`counts_in_progress=false`），P-01 的 x/N 同一口径；
+   - 停用了的包的节点也列在 `nodes` 里：`state="skipped"`、`display_state="disabled"`、`actions=[]`、`counts_in_progress=false`，没有连线；
+   - 所属包版本被熔断（O-29）的节点 `state="skipped"`、`actions=[]`，它的 `blocks` 不生效；
+   - 节点多 `hooks: [{id, title, when: "before"|"after", command, pack}]`（节点钩子），`actions[]` 里钩子那一项带 `hook: <钩子编号>`；
+   - `notices` 多一种 `{kind: "assembly_pending", count, text: "插件变更下一条消息生效", action: {type: "navigate", page: "proj-settings"}}`：锁文件改了、装配还没切换时给。
+10. **FL-05** 按节点类型：
+    - script：同步跑完回 `200 {node, flow_hash, run: {state: "passed", output, commit, version_label, duration_ms, runtime: "jiuwenbox"}}`；错误 `node_run_failed`（422，新错误码，`details: {exit_code, timed_out, stderr}`）、`service_unavailable`（503，`dependency: "sandbox_gateway"`，不在本机回退）、`payload_too_large`（413）、`upstream_unavailable`（502）；
+    - human：回 `200 {node, flow_hash, question: Question}`，对话里出一张 `question.asked`（kind `decision`，不带「其他，我来说」）；同一节点有没回答的卡时沿用它；
+    - external：`409 pack_unavailable`（`reason: "not_installed"`、`providers`）；
+    - 节点所属包版本被熔断：`409 pack_unavailable`（`reason: "breaker"`）。
+11. **S-11** 也回答人工节点的决策卡：结论写进节点声明的记录文件；没选或选项不存在回 `answer_invalid`，回答过再答回 410 `question_gone`。
+
+### 写入路径与发布
+
+12. 所有写入（网页、Studio、MCP、变更集合入）可能回 `422 gate_failed`，`details.findings: Finding[]`：包声明的门禁 `on` 含 `commit` 时在写入事务提交前查。回退、撤回、插件变更、导入不查。
+13. **PB-01** `gates[]` 在平台三道之后接包声明的门禁（`on` 含 `publish`）：`id` 为 `<包名>.<门禁>`，`source: {kind: "pack", label, pack}`，`level: warning` 的门禁 `status="warn"`、不阻断。
+
+### 运维
+
+14. **O-25** 已实现：每个包的 stable、beta、项目在用的、禁用的版本各一行，带 F4 第 3 条的 `rollback_to`；禁用的版本 `channel="retired"`、`rollout_pct=0`（F4 第 4 条）。`error_rate_pct` 恒为 null。
+15. **O-26** 只做 `by: "project"`，只能调 beta 通道上的版本（调 stable 的回 `400 invalid_argument`）；`by: "tenant"` 回 **`501 rollout_not_available`**（新错误码）。跟随 stable 的项目按项目编号稳定分桶，落在比例里或在 `targets` 里就跟 beta。
+16. **O-27** 响应是 `to_version` 那一项；core 的 stable 同 O-32 先备份包仓库。
+17. **O-28** `reason` 必填（空的回 400）；core 的默认版本不能禁用（`409 pack_required`）；禁用后通道指着它时改取最新的可用版本。「已锁定它的项目进待处理」未做。
+18. **O-42** 多 `{category: "lockfile", component: "flow.lock", version: "1", note: "组装后的流程节点"}`。
+19. **O-08～O-10** 已实现：运维新建的规则 `source="kernel"`；包声明的规则 `id` 为 `<包名>.<规则>`、`source` 为 `<包名>@<版本>`，只能 `PUT {enabled}`，改别的字段或删除回 `403 forbidden`。规则本期只登记不评估：`state` 恒为 `ok`，`firing` 恒为 0。
+
+### MCP
+
+20. 读工具集多出本项目生效中的包声明的只读工具，名字 `<包名>_<工具名>`（连字符换成下划线），输入同 `artifact_list`（list）或 `{key}`（get），类型固定为声明的那一种。
+
+## 2026-11-02 · B5c 合并（B5c 合进交付分支后的衔接）
+
+1. **PL-06～PL-09 `changeset_id`**（修订 B5c 第 2 条）：切换写了提交就有值，助手的修改没确认时也一样（插件变更集不占
+   「没关闭的变更集」位置）；只有锁文件没变、没写提交时为 null。会改流程节点的切换在助手变更集没关闭时仍回 423（B5c 第 3 条不变）。
+   这期间记下的插件变更集要等助手那组修改确认或撤回后才能撤回，PL-10 在这之前按生效中的版本改回。
+2. **IN-01 `decision`** 多一个来源：人工节点（FL-05）出的、没回答的决策卡。`source="plugin"`，`pack` 是节点所属的包（算进
+   插件页角标），`meta`「n 个选项」，`batchable=false`，`actions=["answer","dismiss"]`；IN-02 `detail` 就是那张 `Question`；
+   IN-03 `answer` 与 S-11 同一个退路（要带 `option_id`，`custom_text` 记成补充说明），回答后这一项消失。包停用了、节点不在当前
+   流程里的卡不列。FL-05 出卡后推 `inbox.updated`。
+3. **IN-01 `stale`、`review`** 不列所属包版本被熔断（O-29）的节点（流程里算跳过、FL-05 回 409）；IN-04 `refresh_stale` 也就不会选到它。
+
+## 2026-11-02 · B4d（建模蓝图、分段、按详设 6.8 重排主流程）
+
+接口编号见 `api-v1.md`。没写的字段与契约一致。分支 `feat/onto-modeling-plugin-p2-blueprint`，ADR-0050～0052。
+
+### 建模蓝图（BP-01～BP-03、4.7 卡片）
+
+1. **Blueprint** 多 `mode`（`full` | `sliced`：没排除的段多于一段才是按段）；`research.report_id` 恒为 null（资料分析报告在
+   `research/`，RP-02 只读 `reports/`）；`evidence_hint` 恒为 null（证据源只留接口）；`revision` 是文件内容 sha256 前 16 位。
+   `goal_anchor_label` 见 F2 第 20 条。`order_label` 由位置算（第一段「推荐先做」、依赖多段的最后一段「建议最后做」、其余
+   「第 n 个」、只有一段或排除的为空）；`scale` 是这一段规划的对象数、规则数。
+2. **BP-02**：
+   - 新段与合并出来的段（前端给临时编号）一律换成 `s<n>`，响应里是新编号；别的段对它和对被合并段的依赖跟着换。
+   - `slice_invalid.details.reason` 取 `empty`、`missing`（原有的段不在列表里也没被合并：排除要用 `excluded`）、`duplicate_id`、
+     `duplicate_name`、`name_required`、`name_too_long`、`dependency_order`、`dependency_excluded`、`dependency_cycle`（依赖自己）、
+     `unknown_dependency`、`merge_too_few`、`merge_unknown`、`merge_invalid`（被合并的段还留在列表里、或给已有的段加 merged_from），
+     另带 `slice_id`。
+   - `mode` 缺失或不对、`term_choices`（不存在的术语、空的叫法）、`answers`（不存在的问题或选项）回 `400 invalid_argument`
+     （`details.fields`）。`base_revision` 必填，空串表示不检查。
+   - 蓝图还在没确认的变更集里（资料分析那一轮）时写进副本，是这一轮修改的一部分；只有助手在跑时 `423 write_scope_locked`。
+     蓝图在主线上时经写入事务提交，范围锁照常（资料分析的变更集没确认时 `research/*` 在范围里，也是 423）。
+   - 保存后对话里登记过的蓝图卡全部 `card.updated`，流程重算。
+3. **BP-03**：
+   - 请求多可选 `conversation_id`（L2 发命令的对话，缺省当前对话）。`next` 缺省取 P-13 的构建方式。
+   - 蓝图还在没确认的变更集里时，先把这一轮确认生效（同 CS-04），再在主线上标已确认：因此另有 CS-04 的错误
+     `422 gate_failed`、`409 merge_conflict`、`409 changeset_in_progress`、`503 service_unavailable`。已确认的再调不重复写。
+   - `next=L2`：往对话发 `/ontology-extract-object slice=<第一段>`（全量模式不带分段），`command_task` 同 S-20 的 `task`。
+   - `next=L4`：自主构建（B5b）登记开始前预览之前回 **`409 autobuild_not_available`（新错误码）**，在改任何东西之前回，蓝图不动。
+4. **卡片**：一轮写出或改了蓝图时，在「这一轮改了什么」之后出：
+   - `research_summary`（这一轮也改了资料分析报告时）：`files` 是验收回执里读过的资料数，`coverage_pct` 是其中读得出文字的比例，
+     `verified_anchors` 是核对过的出处数，`problems_carried` 是人工待决与错误项数；`report_id` 恒为 null、`open` 为 null；
+   - `blueprint`：`subtitle` 为空串，`card_id` 为 `<这一轮的卡片种子>-blueprint`；
+   - `build_choice`：**只在自主构建可用时出**（只能一段一段来时，确认蓝图就是一段一段来，不出这张卡）。
+   - 「这一轮改了什么」里 `research/blueprint.json` 的 `target.title` 是「建模蓝图」。
+5. **待处理**：蓝图里没回答的问题是 `decision` 项，`id` 为 `decision:bq-<问题>`，`detail` 是 Question 的形状（`question_id`
+   为 `bq-<问题>`、`allow_custom: true`）；IN-03 `answer` 写回蓝图（同 BP-02 只带 answers），错误为 `400 answer_invalid`。
+
+### 流程（FL-01～FL-05、EP-01、P-01）
+
+6. **节点**（core 0.3.0，详设 6.8）：`core.research`、`core.model`（建模，`per_slice: true`）、`core.metric`（指标，旁支）、
+   `core.validate`（校验；启用场景走查是「校验与走查」）、`core.consistency`（全局一致性）、`core.publish`（发布）、`core.update`；
+   场景走查 0.10.0 只有 `trace.trace`（全量回归，串在校验之后，`placement: step`），`trace.mock` 去掉。`core.object`、
+   `core.operation`、`core.rule_metric` 不再出现。`commands` 里 `extract-object`、`extract-operation` 归 `core.model`，
+   `extract-rule-metric` 归 `core.metric`（带分段的命令按步骤归建模）。
+7. **`slice_stages`**：`[{id, label, plugin?}]`，core 的是 object 对象、operation 操作、rule 规则、check 写入即查，场景走查加
+   `{id: "scenario", label: "场景", plugin: "trace"}`。
+8. **`slices[]`**：`{id, name, core_flow, group, stages, note, no_rules}`。没有蓝图或只有一段时是一段 `{id: "all", name: "全部"}`
+   （全量模式）。`stages` 取 NodeState 与 `draft`（这一段没确认的修改有新错误，只出现在 check）、`auto`；`group` 取 now（在跑或
+   做了一部分）/ wait（待确认、过期）/ done / todo；`note` 只写「正在做「X」」「待确认」「检查没通过」「n 步过期」「停在「X」」或空串
+   （空串时前端显示 core_flow）。`no_rules`：按段模式下这一段没规划规则，规则一步为 skipped。
+9. **`core.model`**：`progress` 只在按段模式给「n/m 段」；状态由各段汇总（全部段确认 → confirmed；任一段过期 → stale；在跑 →
+   running；待确认 → pending_confirm；做了一部分 → running）。按段模式下进度 x/N（含 P-01、P-04）里建模要全部段做完才算。
+10. **`core.research`**：蓝图是草案时 `state=pending_confirm`，`actions` 第一项 `{kind: "confirm", label: "去确认", target: "wb-blueprint"}`。
+11. **`core.publish`**：`kind: human`，`actions` 是 `{kind: "start", label: "去发布", target: "publish"}`（target 是页面 id）；完成判定是
+   有 `release/*` 标签，发布之后改了内容显示过期。按段建模时 `core.consistency` 挡住发布（`state=blocked`）。
+12. **FL-03 / FL-04**：对 `core.model` 带 `slice_id` 时跳过 / 恢复这一段的可选步骤，请求多可选 `step`（缺省 `rule`）；不是可选
+   步骤 `409 node_not_skippable`。不带 `slice_id` 仍按节点（`core.model` 不能跳过）。
+13. **FL-05**：对 `core.model`：请求多可选 `step`；带 `slice_id` 取这一段还没做完的第一个必经步骤的命令；都不带取主线下一步
+   （过期的先刷新），命令带 `slice=`（全量模式不带）。
+14. **Suggestions**：
+   - 蓝图草案：主推 `{id: "confirm_blueprint", action: {type: "confirm_blueprint", next}}`「确认蓝图」，次选「调整分段」
+     （`navigate` wb-blueprint、`params.dialog=blueprint`）、「重新划分」（`send` `/ontology-research phase=blueprint`）；蓝图就在这一轮的
+     修改里时 `mode=pending_confirm`，次选换成「撤回这一轮」，不单列「确认生效」。
+   - 建模的下一步：`id` 为 `core.model:<段>:<步骤>`，`action` 为 `{type: "send", text: "", command, args: {slice}}`（全量模式没有 args），
+     `label` 是「提取对象 / 提取操作 / 提取规则 / 场景走查」。建模过期时 `refresh:core.model` 的 `label` 是「刷新「<段名>」」、动作是过期的那一步。
+   - 没有蓝图、资料分析做完：次选多一个 `plan_slices`「分段规划」（`send` `/ontology-research phase=blueprint`）。
+15. **P-01 `ProjectCard.slices`**：按段模式时 `{total, confirmed, cells}`，每段一格：done → `confirmed`、now → `running`、wait →
+   `pending`（有过期步骤时 `stale`）、todo → `ready`；全量模式为 null。
+16. **ExecRecord.slice** 现在有值：建模命令带 `slice=` 时是那一段（不存在或已排除时 null），不带时是这一步还没做完的第一段，
+   全量模式是 `{id: "all", name: "全部"}`；`command_label` 取这一步的业务名（对象提取、操作提取、规则提取、场景走查）。
+17. **Changeset.slice_id**：陪伴建模下是这个变更集做的第一段。
+
+### 写入范围（CS-06、EP-03、2.4）
+
+18. **ScopeLock**：建模节点在按段模式下 `paths` 是这几段包含的条目路径（转义成字面量；操作含 `ontology/logic/` 同名路径，
+   另加这几段操作的场景文件 `ontology/testcase/<操作>.md`），
+   `entries` 含这几段规划的条目（还没建的也在里面），不再是整类模式；`slice` 给 `{id, name}`（全量模式为 null），助手在跑时
+   `reason_text` 是「助手正在改「X」这一段，确认生效或撤回之前这些内容只读」。全量模式仍按节点声明的整类。
+
+### 发布（PB-01、PB-03）
+
+19. **PB-01 `gates`** 在平台门禁（与 B5c 的包门禁）之后加流程关卡：`blocks` 指向发布节点的节点（按段建模时的全局一致性、包的
+   关卡节点）：`{id: "flow:<节点>", title: 节点名, source: {kind: "flow", label: "主流程"|包名, pack?}, status: pass|fail（过期）|
+   not_run, summary: ""|"过期"|"还没运行", blocking, degradable: false, findings: [], action: {type: "start_node", node_id}|null}`。
+   PB-03 同样按它挡（`422 gate_blocked`）。
+
+### 命令
+
+20. 新命令 `/ontology-consistency`（core）；`/ontology-research` 认 `phase=blueprint`（`phase=slices` 同义）只做分段规划；
+   `/ontology-extract-object`、`/ontology-extract-operation`、`/ontology-extract-rule-metric`、`/ontology-trace` 认 `slice=<段>`。
+
+## 2026-11-02 · B5c 审查修复
+
+1. **FL-05** 脚本节点：输出路径或输入路径不在节点声明的范围里（含 `..`、受保护目录、`.git`）回 `403 path_forbidden`（`details.path`）；脚本输出超过执行器上限回 `422 node_run_failed`，`details: {truncated: true, limit_chars}`，不写产出。人工节点的记录路径同样，出卡时就回 403。
+2. **所有写入**：路径落在 `.git/` 下的回 `403 path_forbidden`（写入事务兜底）。
+3. **S-11** 回答人工节点的卡：项目已归档回 `409 project_archived`。
+4. **MCP** 包声明的只读工具名改成 `<包名>__<工具名>`（原 B5c 第 20 条的 `<包名>_<工具名>` 作废）；**/metrics** 包指标全名改成 `onto_pack_<包名，连字符换下划线>__<指标名>`，每个指标名只出一组 HELP、TYPE。
+5. **PL-15** 的 `extensions` 检查：工具名、指标名里不许写 `__`，和内置工具、包仓库里别的包重名时不通过；`write_scope` 检查对所有类型的包核对脚本输出、决策记录在不在写入范围里；清单的 `contributes.nodes` 只能写节点编号或包内相对路径（`manifest` 检查）。
+6. **O-25** `rollback_to` 取通道历史里上一个还在、没禁用的版本；**O-28** 禁用 stable 指着的版本后，跟随通道的项目退回这个通道上一个可用版本（不取只在 beta 上的预发布）。**O-27**、O-31/O-32、发布到 stable：stable 追上或超过 beta、或往回退时，beta 的 `rollout_pct` 归零、名单清空。
+
+## 2026-11-02 · UI 文案（前端不再显示的下发字段）
+
+分支 `feat/onto-modeling-plugin-ui-copy`（起点 0c5c0eaa）。用户定的口径 ⑤：后端下发的说明文字契约里不再下发；前端已经不显示，后端在 I1 去掉。
+证据源相关的数据（口径「证据源本期不开放」）前端已按 `state/evidence.js` 统一过滤，后端同样不该下发，清单在 gaps「UI 文案」第 2 条。
+下面列的是「前端已不显示、I1 停止下发」的字段；没列的字段与契约一致。
+
+### 对话流卡片（契约 4.7）与工作台
+
+1. 卡片 `subtitle`：`upload_prompt`、`material_map`、`blueprint`、`build_choice` 四种卡，以及增量更新那一轮（带 `change_list_id`）的 `round_changes` 卡。
+2. `run_report` 卡的 `note`；`round_changes` 卡的 `lock_note`（锁定说明由前端按写入范围算，`roundLockNote`）。
+3. **R3**：`build_choice` 卡前端不再单独画，「确认，一路建完…」并进蓝图卡底部。建议蓝图卡带 `build_options: ("L2"|"L4")[]`（自主构建登记了才有 L4），之后不再发 `build_choice` 卡；前端现在两种都认（有 `build_choice` 卡就当 L4 可选）。
+4. AB-05 运行的 `scope_lock_text`；增量影响面卡的 `semantic_scope_text`。
+5. FL-01 `nodes[].note`（建模步骤抽屉不再显示节点说明，含带状态的那几句）。
+
+### 待处理、Studio、报告
+
+6. IN-01 / IN-02 事项的 `meta`（如「4 个选项 · 推荐 A」、人工节点卡的「n 个选项」）。
+7. RP-01 `items[].type_label`：列表不显示，只在前端不认识这个类型时给「这份报告」卡的「检查类型」兜底；RP-02 `progress.note`。
+8. ST-06 `snapshot_basis`（证据页签顶部「以及某数据源最近一次采集」，证据源相关）。
+
+### 资料、发布、版本、插件页
+
+9. R-01 `purposes[]` 里「由助手判断」的 `description`；`files[].is_template`（不再显示「资源模板」）。
+10. PB-01 `gates[].source.label`（门禁卡的来源行）。
+11. PB-04 发布记录的 `tag`、V-01 发布标签的 `release/…`、PB-06 包清单的 `source_commit`、`flow_hash`、`sha256` 不再显示（manifest.yaml 原文里仍有）；「源版本」现在取 PB-04 的 `version_label`，建议 PB-06 加 `source_version_label`。
+12. K-01 `loading_rule`、`layers[].overridden`（R9 分层条去掉）；K-06 `conflicts[].note`。
+13. AR-02（trace.mock）`skipped[].reason`。
+
+### 项目设置、插件中心
+
+14. AB-01 `boundary_text`（自主构建边界说明）。
+15. M-01 `recommended_order`、`limits`（对外 MCP 的连接顺序与协议细节整块删了）。
+16. PL-01 `items[].meta`（插件卡元信息，如「22 命令 · 18 子代理」）；`items[].ui.note` 新建向导不再显示（只给带页面的标「带页面：xx」），插件中心、插件详情只作界面标记的悬停。
+17. PL-02 `flow_insertions[].note`（插入点下的小字）、`flow_insertions[].short`（只给删掉的统计卡用）。
+
+### 运维中心
+
+18. O-02 `cards[].note`（如「变更集在 P2」「证据源在 P3」）。`merges` 卡在没有计数来源之前带 `unavailable: true` 或不返回（前端两种都不画）；`collections` 卡本期不返回。
+19. O-03 `reruns`、`first_accept_pct` 没有数据来源时可以不返回（整列为空前端不出这一列）。
+
+### 前端新认的字段（建议 I1 补）
+
+20. FL-01 `nodes[]` 里 `kind="script"` 的加 `last_run: {state: "passed"|"failed", summary: string, at: string} | null`（R24：建模步骤抽屉展开脚本节点看最近一次结果；没有时只用本次会话里 FL-05 的同步返回，刷新后就没了）。
+21. AR-01 `view.detail.editor` 加包的显示名 `pack_label`（iframe 编辑器头部的插件标记悬停「由「xx」插件提供」，现在只能显示包名）。
+22. PL-12 `entries[].where`：`quick_action` 写 `"composer"`（输入框「全部命令」旁，R22），`extra_action` 写页面 id（`scenarios`、`knowledge`、`scripts`，放在该插件页页头）。`view_choices` 里有 `er_view` 时 Studio 视图切换多「ER 视图」（R23，页面 id `studio-er`，前端按条目画，每个对象一次 ST-04；对象多时可以加批量接口，非必须）。
+
+## 2026-11-02 · B4d 合并（B4d 合进交付分支后的衔接）
+
+merge 4e6ed10f，衔接 ee03c022。修订 B4d 节的几条：
+
+1. **`build_choice` 卡不再发**（设计调整 R3，用户已批准）：`blueprint` 卡多 `confirm_options: [{mode: "L2", label: "确认，一段一段来"},
+   {mode: "L4", label: "确认，一路建完…"}]`，草案时给，L4 只在自主构建（B5b）登记后出现，已确认时为空；按钮调 BP-03 `next=mode`。
+   契约 4.7 的 `build_choice` 作废，B4d 第 4 条里「`build_choice` 只在自主构建可用时出」一并作废。
+2. **FL-01 多 `blueprint: {state: "none" | "draft" | "confirmed"}`**：没有蓝图（`none`）时，建模步骤抽屉的「调整分段」改为用 S-20 发
+   `/ontology-research phase=blueprint`（按钮文字不变）。
+3. **FL-05 对 `core.publish`**（在发布页里做的节点）回 `400 invalid_argument`，`details` 为 `{fields: {node_id: "no_entry"}, page: "publish"}`；
+   B5c 的人工节点（声明了 `decision` 的）照常出决策卡。
+4. **`trace.trace` 的 `placement` 是 `spine`**（B4d 第 6 条写的是 step）：随 core 拆出、本来就在主线上，不算新插进来的可补做节点（B5c 口径）。
+5. **IN-01 的 `decision`** 同时含会话里的决策卡、人工节点的卡（`source: plugin`，B5c 合并）与蓝图的待答问题（`decision:bq-<问题>`，`source: assistant`）。
+6. **PB-01 `gates`** 顺序：平台门禁 → 包声明的门禁（`source.kind=pack`，B5c）→ 流程关卡（`source.kind=flow`，B4d 第 19 条），`order` 连续。
+7. **`hooks` 的宿主节点**认 core 的 `aliases`（挂在 `core.object` 上的钩子挂到 `core.model`）；`after` 与 `before` 映射到同一节点时去掉 `before`。
+
+## 2026-11-02 · B5b（自主构建：运行器、会话池、预算、决策台账与复核）
+
+分支 `feat/onto-modeling-plugin-p3-autobuild`，ADR-0060～0063。接口编号见 `api-v1.md`，没写的字段与契约一致。
+
+### 策略、平台限制、单价（AB-01、AB-02、SY-17、SY-18）
+
+1. **AB-01** 不带 `boundary_text`（UI 文案第 14 条）；多 `not_enforced: ["production_collection"]`（生产库授权原样存取、本期不生效）；
+   `quota_remaining.tokens` 不限时为 null，`quota_remaining.cost.amount` 恒为 null（配额没有费用维度）；`last_run.duration_ms` 是跑着的时间。
+2. **AB-02**：给了哪组改哪组（`scope`、`budget`、`advanced`、`production_collection`），组内给了哪项改哪项；整份策略再校验：
+   `400 invalid_argument`（`details.fields`：`scope.mode`、`scope.slice_ids`（`unknown`/`required`）、`scope.until_node`（`unknown`，发布、资料分析、
+   增量更新不能作终点）、`budget.*`（`positive`）、`advanced.confidence_threshold`（`out_of_range`，0.5～1.0）、`advanced.below_threshold`、
+   `advanced.max_fix_rounds`（1～3）、`advanced.must_suspend_kinds` / `source_priority`（`list`，各 ≤20 项、每项 ≤60 字））；
+   `422 budget_exceeds_quota {dimension: duration|tokens|cost, max}`，token 的 `max` 是平台上限与剩余配额的较小者；
+   `revision_conflict` 的 `details` 是 `{target: "autobuild_policy", expected, actual}`。`production_collection` 不对照授权，
+   不回 `source_not_authorized`（证据源只留接口）。
+3. **SY-17** 多 `not_enforced: ["allow_production_collection", "night_priority"]`；`max_cost.currency` 跟 SY-18 的币种；
+   `max_concurrent_runs` 取 1～16，**不允许 0**（主控定）：收到 0 或负数回 `422 invalid_argument`（`details: {fields: {max_concurrent_runs: "min"}, min: 1}`），
+   超过 16 仍是 `400 invalid_argument`；环境变量 `ONTO_WEB_AUTOBUILD_MAX_RUNS=0` 报配置错误（启动日志告警、SY-14 问题清单）并回落；ops 能读。同时运行数也是配置项 `ONTO_WEB_AUTOBUILD_MAX_RUNS`（SY-14 可见）。
+4. **SY-18** 默认 `{currency: "USD", items: []}`；PUT 校验币种（USD|CNY）、引擎、模型（≤120 字、同一引擎不重复）、单价（≥0，
+   `cache_read_per_mtok` 可为 null），不合法 `400 invalid_argument`（`fields: {"items.<n>": ...}`）；`model="*"` 是这个引擎的兜底单价；ops 能读。
+
+### 运行（AB-03～AB-09、AB-18）
+
+5. **AB-03**：不带 `production`（UI 文案 gaps 第 2 条）；`slices[].current` 取「已确认 / 未开始 / 做了一部分 / 待确认 / 有过期」；
+   范围里没有要做的段 `400 invalid_argument {fields: {scope: "empty"}}`；`warnings` 现在只有「这一轮的修改还没确认生效或撤回」；
+   `queue_position` = 排队中的运行数 + 1。蓝图没有或是草案 `409 blueprint_not_confirmed`。
+6. **AB-04**：多错误 **`409 changeset_in_progress {changeset_id, conversation_id}`**（有没确认的助手修改时不能开始）；
+   预览只认开始前 10 分钟内、本项目的（否则 `410 preview_expired`；服务重启后预览失效）。新对话 `kind: "autobuild"`、`run_id`、
+   标题「自主构建 · 运行 #n」，`run_id` 为 `run-<n>`。
+7. **AB-05**：`scenarios` 恒为 `{passed: 0, total: 0}`（场景推演通过数没有数据来源）；`scope_lock_text` 恒为空串（UI 文案第 4 条）；
+   `tail_text` 为「跑完全部分段后：校验 → 全量回归 → 全局一致性」这样（按这次要做的几步，发布不在里面）；`matrix` 含运行前就做完的段
+   （`result` 为「运行前已完成」），`cells` 取 `confirmed|auto|running|queued|skipped`（没生效的部分完成为 `skipped`），`result` 取
+   「进行中 / 排队 / 完成 / 部分完成 / 完成 · 挂起 n 项 / 检查没通过 / 未开始 / 已回退到运行前 · v0.x」；`current.step_label` 是步骤的动作名
+   （「提取操作」）；多 `base_version_label`（F2 第 10 条）。
+8. **AB-06～AB-09**：暂停在当前这一步做完后生效；停在安全点、转为陪伴在这一段生效后生效；还在排队、或已经停在安全点
+   （暂停在两段之间）时直接结束；从暂停直接停在安全点、转为陪伴会先把这一段做完（返回 `stopping` / `converting`）；
+   续跑返回 `queued` 或 `running`（有名额才开始）。排队中的运行也可以暂停（直接 `paused`）。
+9. **AB-18**：`state=running` 取没结束、还在跑的（`queued`、`running`、`pausing`、`stopping`、`converting`），其余取值按状态精确匹配。
+10. **EP-15**：预算用完时 `next` 为 `stopped`；**EP-17** 在运行报告进 git、对话里的报告卡放好之后才发。
+
+### 台账、挂起、报告、撤回（AB-10～AB-17）
+
+11. **AB-10**：`below_threshold` 取 `true|false`；撤回了的段上的决定不列；`LedgerEntry` 带 `summary`（F2 第 13 条）、`reason_text`
+    取「达到阈值，采用推荐选项」或「低于阈值，采用保守选项并记为假设」；`options` 里采用的那一项 `recommended: true`。
+12. **AB-12**：202；运行没结束时改判排到结束后（`command_task.state=queued`），之后往运行对话发「这一段这一步的命令 + 改判说明」；
+    任务标题「改判：<summary>」。
+13. **AB-15**：`action` 只认 `use_generic`、`defer_to_next_run`；回答后往运行对话发这一段这一步的命令补上（任务标题「补上：<问题>」）；
+    有运行没结束时任务 `queued`，排到它结束后发（同 AB-12）；门禁没过挂起的那一段（`title`「「段名」检查没通过」、`options: []`）同样可以回答。
+    AB-12 在有别的运行没结束时同样排队。
+14. **AB-16**：运行没结束 `409 autobuild_running`；`note` 恒为空串（UI 文案第 2 条）；`slices` 只含分段（不含分段之后的几步），
+    `scenarios` 恒为 0/0，多 `reverted`（F2 第 10 条）与 `base_version_label`。
+15. **AB-17**：`409 slice_not_revertible` 的 `reason` 取 `not_in_run`、`already_reverted`、`not_merged`、`later_changes`（另带 `entities`）；
+    有任何运行没结束时 `409 autobuild_running`（不只本次运行）。撤回时蓝图不跟着撤。
+
+### 会话、对话、写入范围、流程
+
+16. **S-01 / EP-21 Conversation** 的 `kind`、`run_id` 有值；**S-05** `autobuild_run_id` 是这条对话所属的运行（不论是否结束）。
+17. **S-07**：运行对话里发消息回 202，`delivery: "deferred"`、`state: "running"`、`queue_position: null`（不交给引擎，下一步开始前带给助手）；
+    别的对话回 `409 autobuild_running {run_id}`。**S-14、S-16、S-20**（含经 S-20 的 FL-05、BP-03 `next=L2`、RP-05/06、IN-03 的发命令动作）
+    在运行没结束时一律 409 `autobuild_running`；**S-08、S-09、S-04** 对运行对话 409 `autobuild_running`。运行没结束包括暂停、中断。
+18. **运行器发的步骤消息**不进对话流（S-06、S-13 都没有对应的 `message.user`）；运行对话里只有开始卡、分段进展块、报告卡、
+    提示行、建议条与助手自己的输出。**EC-31** `permission.resolved.by=autobuild_policy`（工具确认由策略放行）；自动决定不出 `question.asked`。
+19. **ScopeLock**：自主构建这一段的变更集没生效之前 `state="autobuild_slice"`、`run_id` 有值，`reason_text` 为「自主构建正在做「段名」这一段」
+    （分段之后的几步为「自主构建正在做这一步」）。
+20. **CS-04、CS-05** 对运行中那一段的变更集回 `409 autobuild_running`。
+21. **FL-01 / FL-02 / EC-53**：运行在跑（含排队、正在去安全点）时 `mode="autobuild_controls"`，主推「暂停」、次选「在安全点停下」「转为陪伴」；
+    暂停、中断时 `primary: null`、`secondary` 只有「运行详情」（`{type: "autobuild", op: "details"}`）；运行对话里结束时的建议条主推「去复核」
+    （`navigate` inbox `filter=autobuild_review`），其余按流程。FL-01 没有单独的 `autobuild` 字段（契约 3.12 的说明由 `suggestions` 承担）。
+22. **ExecRecord.run_id** 对自主构建的步骤有值；这些执行重启时不放续跑卡、待处理不列「续跑」。
+
+### 待处理（IN-01～IN-04）
+
+23. **IN-01**：自主构建复核按台账出——低于阈值的一条一项（`id` 为 `review:<条目>`，`title` 是 `summary`，`high_confidence: false`，
+    运行结束且这一段生效过时 `actions` 含 `revert_slice`）；同一次运行里高置信、还没复核的合成一项（F2 第 12 条，`actions` 只有 `accept`）；
+    挂起的问题一个一项（`suspension:<问题>`；读不出的资料只有 `use_generic`）。节点级的「需复核（自主构建）」不再出（节点升级、导入的照旧）。
+    运行中那一段的变更集不列「修改待确认」。`autobuild_summary` 带 `high_confidence_pending`（F2 第 14 条），`run_id` 参数可以指定哪一次。
+24. **IN-02**：`review`（台账条目）的 `detail` 是 LedgerEntry 加 `base_version_label`、`slice_version_label`；合并项是
+    `{group: "high_confidence", run_id, threshold, entries}`；`suspension` 是 Suspension。
+25. **IN-03**：台账条目 `accept` = AB-11、`rejudge` = AB-12（结果 `{entry, command_task}`）、`revert_slice` = AB-17；合并项 `accept` = AB-13；
+    挂起 `answer`（只认 `option_id`、`custom_text`）、`use_generic` = AB-15。**IN-04** `accept_high_confidence` 可带 `run_id`（不存在 `404 run_not_found`），
+    不带时接受全部运行的高置信决定。
+
+### 项目、运维、可观测
+
+26. **P-01 ProjectCard**：没结束的运行，或结束了还有要复核的那次，给 `autobuild`；`state` 按卡片的 6 个取值归并（`stopping`、`converting`
+    → `running`，`interrupted` → `paused`，`budget_exhausted`、`failed` → `stopped`，`converted` → `completed`）；`status` 加 `autobuild`（没结束）或
+    `autobuild_done`（结束了、还有要复核的）；没结束时 `landing_page` 为 `l4-run`；`counts.autobuild` 有值。
+27. **P-06、P-07（归档）、P-12、V-06** 在运行没结束时 `409 autobuild_running`；**P-13** GET 的 `autobuild_running`、`run_id` 有值。
+28. **O-01** `stats.autobuild = {running, limit}`、`autobuild_runs`（排队与在跑的）、`autobuild_today`（UTC 当天结束的）有值；
+    **O-15** `items[].autobuild` 有值；**O-21** `autobuild=pause_at_safe_point` 生效；**O-35** 停机时有运行在跑才多一项 `autobuild_runs`。
+29. **/metrics**：`onto_autobuild_runs_total{state}`、`onto_autobuild_run_seconds`、`onto_autobuild_cost_total{currency}`、
+    `onto_autobuild_decisions_total`、`onto_autobuild_reviews_total{outcome}`，即时值 `onto_autobuild_running`、`onto_autobuild_rejudge_ratio`。
+30. **EU-01** 推 `notification`（`autobuild_finished`、`autobuild_suspension`、`autobuild_stopped`），不落盘（A-13 没做）。
+31. **V-01** 自主构建生效的段 `run = {run_id, run_no, slice_id, slice_name}`（F3 第 19 条）、`needs_review` 是这一段还没复核的决定数；
+    报告那一次提交（`autobuild: 自主构建运行 #n 报告`）`run` 为 null。
+32. **ST-03** `needs_review`、**ST-04** `needs_review: {source: "autobuild", run_id}`：还标着「需复核」的段生效时改到的条目。
+
+## 2026-11-02 · I1（前后端联调）
+
+分支 `feat/onto-modeling-plugin-i1`（起点 c76c236d）。接口编号见 `api-v1.md`，没写的字段与契约一致。核对方法与结果见 `i1-checklist.md` 第 1 节。
+
+### 契约增补
+
+1. **C-01 `features.evidence: bool`**：证据源本期为 false。前端据此不再调 EV-01 探测（501 会在浏览器控制台留错误），`evidenceSources` 直接按 `501 evidence_not_available` 失败，调用处照旧走失败分支；后端不给这个键时照常请求。
+2. **4.2 `message.assistant.anchors`**：助手正文末尾的出处定义行 `[^n]: <锚点>`（锚点带 scheme 或以 `resource/` 开头）由宿主收成 `[{n, anchor}]` 并从 `text_md` 里去掉，正文里的 `[^n]` 留给前端画角标；不是锚点的脚注原样保留。工作区约定（`INTERACTION_CONVENTIONS.md` 呈现约定）加一行教助手这么写。
+3. **EP-19 `release.updated`**：PB-03 发布后、评测服务经 PB-07 拉取后各发一条（`{release: ReleaseRecord}`）。原先不发。
+4. **EC-53 `suggestions.updated`**：CS-04 确认生效、CS-05 撤回（含 CS-07、待处理里的确认）之后，对这个变更集所在的对话再发一条（与 FL-02 同一份）。原先只在一轮结束与打断后发，确认后建议条停在「确认生效 / 撤回这一轮」。
+5. **AR-03 查询参数 `changeset`**（变更集 id）：这个变更集还没关闭（开着、待确认、合入冲突）且副本里有这份产物时读副本里这一轮的版本（新增的也读得到）；其余情况读当前版本。响应多 `from_changeset: string|null`（读的是哪个变更集）。`card_type: artifact`、`flowchart` 卡（以及同处广播的蓝图卡）带 `changeset_id`（B5 合并第 1 条）。
+6. **ST-07 PUT `form`**（按契约补实现）：服务端以当前文件为底，只改表单里变了的部分（名称、描述、属性表、数据来源、关联、章节），没动的部分逐字节保留；GET 草稿、ST-04 的 `draft.form` 带回存下的表单（原文方式存的草稿仍为 null）。新错误（都是 `400 invalid_argument`）：改 key `details.fields.key="rename_unsupported"`；「# 文档名 + ## 章节」写法的对象改数据来源 `data_source="unsupported"`；表达不了的关联（如关联脚本）`relations="unsupported"`；字段类型不对 `<字段>="invalid"`。表单缺的键按当前版本补。
+7. **V-05 `packs_lock_changes[]`** 为 `{pack, label, from, to}`：`label` 是能力的显示名；`from` 是当前锁定版本、`to` 是目标版本，没启用的一侧为 null。
+8. **PL-02 `flow_insertions[]`** 为 `{id, title, at?}`：`title` 取包的流程声明里的节点标题，`at` 按 `after` / `before` 指向的 core 节点算段（research / model / validate / consistency / publish，指标归 model）。`note`、`short`、`kind`、`flow_note` 不下发（UI 文案第 17 条）。
+9. **O-11 每项多 `required: bool`**（不能关，如本地日志文件）；内置项（`implementation="builtin"`）地址与信号固定。只列本部署真有的 `prometheus`、`file`，OTel 与外部平台不出现。**O-12** `effective` 是 `"immediate"`（契约写 `rolling_restart`；现在改完立即生效），关 `file` 回 `400`（`details.fields.file="required"`）。
+10. **流程声明的动作可带 `pack`**：要某个包才能做的动作（如 core 资料分析的「联网资料分析」要联网调研包 `websearch`），这次装配里没有这个包时组装时去掉（FL-01 节点动作、FL-02 建议同时少这一项）。
+11. **元模型（core `onto_metamodel.py`）对象章节**加「数据来源」「查询边界」两节（可选）：条目模板本来就有，Studio 保存时不再算模板外章节。
+
+### 资料、出处、报告（R-*、EV-29、ST-06、RP-*）
+
+12. **EV-29** 不再整体 501：`file:` 锚点（及不带 scheme 的 `resource/…#片段`）按上传资料解析，返回前后各一段原文与高亮区间；其余 scheme 每项 `resolved=false`。`AnchorResolution.reason` 多三个取值：`not_found`（片段定位不到）、`unreadable`（抽取器读不了这种格式）、`not_available`（业务系统锚点本期不开放）。
+13. **R-06**：pdf、doc 等 core 抽取器读不了的格式返回空块（不回 `preview_unavailable`）；`coverage.read_sections` 恒为空串。md / txt 的 `Material.preview` 是 `text`（契约本有，前端补认）。
+14. **R-01**：`PurposeOption` 不再带 `description`；`Material.coverage.label` 取「已读」「未读」；`feedback_group.count` 按真实数量。
+15. **R-07**：`read_pct` 只有 0 与 100，`status` 只有 `done` / `queued`；`position`、`queue_reason`、`blocked` 恒为 null，`counts.terms` 恒为 0；资源模板（图示说明定义等）不进资料地图。「读过」= 资料分析报告引用过它，资料分析验收通过之后才算读全。
+16. **R-08**：对象、规则取资料分析报告的候选段，术语取蓝图里已统一的叫法，出处取业务项清单里同名的那一行。项目流 `materials.candidate` 不发（没有实时来源）。
+17. **R-10**：项目还没有蓝图时 `404 blueprint_not_found`；`ask_me` 与 `blueprint_question` 都生成同一个蓝图待答问题（因此都进待处理的「决策」，编号 `decision:bq-qN`），区别只在是否返回 `inbox_item_id`。
+18. **R-11**：`summary` 写「失分用例 n 条」，`related` 恒为 null；`state=handled` 的筛选也包括已忽略的。处理状态存 `.onto/run/feedback-state.json`（不进 git）。待处理只列 `open` 的反馈；「交给反馈演进」同时把这批标成已处理。
+19. **`materials.updated`**：资料或 `research/` 的改动生效后发，只带变了的条目；助手在变更集副本里跑的那一轮不发（确认生效后发）。
+20. **ST-06**：只给条目正文里 `file:` 锚点的出处，属性表行带 `used_for`；`snapshot_basis` 恒为空列表。ST-04 属性的 `evidence` 仍为 null。
+21. **报告编号**：`reports/x.md` → `x`，`research/x.md` → `research:x`，内核算的链接检查 → `link`（结果记 `.onto/run/link-report.json`）。RP-01 不列各目录的占位索引 `index.md`。`ReportItem.status` 只有 `pending` / `fixed`，`status_note` 为空；`Report` 的 `scope_text` 为空，`duration_ms`、`previous`（链接检查有）、`repair`、`arbitration` 为 null。RP-05、RP-06 走 S-20：rule、semantic、coverage 发 `/ontology-validate`，diagram 发 `/ontology-validate-diagrams`；RP-06 的 regression 只在命令里附「只查改动」。助手这一轮写的报告还没确认生效时从副本读。
+22. **`research_summary` 卡** `report_id` 有值，`open` 是 `{kind: "page", target: "reports", ref: {report}}`；BP-01 `research.report_id` 有值（B4d 第 1、4 条里的「恒为 null」作废）。
+
+### 版本、条目、个人、运维（V-*、ST-09/10、A-08/13/14、O-*）
+
+23. **V-02**：和主线上一个版本比，条目与产物的认法同变更集明细；`review`、`run` 恒为 null（B5b 前）；`.onto/` 下的系统文件不列。**V-03** 缺省 `prefix=ontology/`，`download=1` 打成 zip（「项目名-版本-ontology.zip」）。**V-04** `to` 缺省 `WORKTREE`（这时带 `right_revision`），文本截 512 KB。**V-05** `files` 不含 `.onto/`，能力锁变化只在 `packs_lock_changes`。
+24. **ST-09**：正文用项目锁定的 core 条目模板，走写入事务（`Onto-Source: studio`）；`key` 不填用名称，`key` 与名称不同时名称写进文档头 `report_name`；重名跨所有类型判（`409 revision_conflict`，`details.kind="name"`）；`flowchart` 走 AR-06，图示包没启用 `409 pack_not_enabled`（`details.pack="diagram"`）。**ST-10** 被别的条目引用时 `409 entry_referenced`（脚本不算），流程图走 AR-07。
+25. **A-13 通知来源**：一轮跑完（`step_done`）、要回答或确认（`needs_input`）、会话出错（`session_error`）发给项目所有者，同一对话里没读的同类只留最新一条；PL-18 退回时通知上传者（自己退回自己的不通知）。`autobuild_*`、`nomination_reviewed`、`request_pending`、`evidence_conflict`、`publish_done` 还没有来源。
+26. **O-38 / O-39**：从备份里只解出抽检的项目到临时目录，检查元数据、版本历史与 `git fsck`；O-36 `last_drill` 有值。**O-40** 记备份（手动、定时，定时的发起人 `system`）、包仓库备份、恢复演练三类，任务号带类型前缀；服务重启时还在跑的改判失败。**O-41** `cancel` 只对还在跑的演练，`retry` 对失败的备份或演练、开一个新任务并返回新任务，`resume` 一律 `409 task_state_invalid`。**O-43** 六项：结构化日志、备份、诊断包、通知可改；审计日志（365 天，只是声明）、回收站（不自动清，与 O-52 `retention_days=null` 一致）不可改；证据快照、会话历史不返回。备份范围加 `data/me/`、`data/ops/` 下的设置与记录。
+
+### UI 文案的后端部分（contract-changes「UI 文案」第 1～19 条的落实）
+
+27. 说明槽位是**删键**，不是给空值；卡片共有字段 `subtitle` 保留为空串。删掉的：round_changes（增量那一轮）`subtitle`、`lock_note`；INC-05 `semantic_scope_text`；FL-01 `nodes[].note`；IN-01 / IN-02 `meta`；RP-02 `progress.note`；R-01 `purposes[].description`；K-01 `loading_rule`；K-06、K-03 / K-04 `conflicts[].note`；M-01 `recommended_order`、`limits`；PL-01 `items[].meta`；O-02 `cards[].note`；O-03 `reruns`、`first_accept_pct`。
+28. **数据字段保留**（口径 ⑤ 针对说明句；API 客户端与 agent 会用）：PB-04 `tag`、V-01 发布标签、PB-06 `source_commit` / `flow_hash` / `sha256`、R-01 `is_template`、RP-01 `type_label`、K-01 `layers[].overridden`、PB-01 `gates[].source.label`（来源名）、PL-01 `ui.note`（插件中心悬停在用）。AR-02 本来就不下发 `skipped`。
+29. 知识冲突用数据代替说明句：同名冲突带 `duplicate_of: {id, title}`，失效引用带 `missing: string[]`；K-03 / K-04 的 `conflicts[]` 为 `{kind, with}`。
+30. **O-02 `merges` 卡**给真实计数（每次确认生效记 `onto_merges_total`），不带 `unavailable`；`collections` 卡不返回。
+31. **证据源数据不下发**：IN-01 计数没有 `evidence_conflict`（筛选参数照常接受）；PL-01 `counts` 没有 `provider`、目录里不列提供方包（`?category=provider` 返回空）；FL-01、O-25、O-42 不列外部节点与提供方包。FL-02、BP-01、P-10、P-14、M-01、PB-01 核对后本来就不下发。
+32. **新字段**：FL-01 `kind=script` 节点 `last_run: {state: "passed"|"failed", summary, at}|null`（只记真跑起来的结果，存 `.onto/run/script-runs.json`）；AR-01 `view.detail.editor.pack_label`（产物卡里的编辑器引用同样带）；PL-12 `entries[].where`（快捷项 `"composer"`；附加操作取声明的插件页 id，没写或不是插件页时取本包第一个插件页，包没有插件页时不下发这个入口）；PB-06 `source_version_label`；SV-02 / SV-03 缺 `decision_model` 时先取 Decision Model 文档里的 `id`，没有才补 `<solver_key>_model`（文档 id 与绑定不一致会被拒，不能一律补默认值）。
+33. **口径 ③**：项目内的错误提示、撤回通知（「这一轮的修改已撤回」）、待处理的「合入冲突」（改「冲突」）、建议条 reason（「主线下一步」改「下一步」，在 core `flow_state.py`）不再说「合入」「主线」「提交」；运维中心（O-02 合入卡、O-20、O-35）、包静态检查、MCP issue 按口径保留。
+
+## 2026-11-02 · B5b 审查修复
+
+交付分支 c7afa68d..0dab01f0，ADR-0060～0063「审查修复」一节。只列对外可见的变化，其余见 decisions-log 同名节。
+
+1. **2.10 运行中拦截补全**：ST-08 转助手复核、S-12 取消运行对话的排队、S-17 放弃执行在有运行没结束时回 `409 autobuild_running {run_id}`；
+   会话池里发起一轮的入口都按这个口径（只放行运行器自己发的步骤）。
+2. **自主构建合入删除已确认内容**：内部 `merge(source="autobuild")` 回 `422 delete_forbidden {paths}`；运行器把这一段撤回、记一个挂起问题
+   （`title`「「段名」要删除已确认的内容」、`options: []`、`handled_as`「这一段没生效，先做下一段」（分段之后的几步为「这一步没生效，接着做下一步」）），
+   AB-05 `matrix[].result`、AB-16 `slices[].result_text` 为「要删除已确认的内容」。
+3. **EC-31**：运行中删除类、打 `release/*` 标签的工具确认由策略拒绝（`permission.resolved` 的结果是拒绝，`by=autobuild_policy`），助手收到
+   「自主构建不能删除内容，也不能打发布标签」。
+4. **助手不能打发布标签**（陪伴建模同样）：守卫拒绝 `git tag|push|update-ref` 带 `release/`、`git push --tags`；发布只走 PB-*。
+5. **并发会话配额**：运行会话不计入用户的并发会话（配额里数在线会话时也不数它），运行不会再因为并发会话配额以 `budget_exhausted` 结束。
+6. **AB-06～AB-09**：运行正在收尾时回 `409 autobuild_not_running`；没有驱动任务的运行（进程里的任务没了）「停止」直接结束。
+   AB-04 同一项目同时两次开始，只有一次成功，另一次 `409 autobuild_running`。
+7. **AB-11、AB-12、AB-15** 新错误 **`409 slice_reverted {slice_id}`**：这一段已经撤回。排到运行结束后的改判、补上，发之前这一段撤回了就不发，
+   页面命令任务记为 `cancelled`（`result.summary`「这一段已经撤回」）。
+8. **AB-15 `defer_to_next_run`** 可以同时带 `option_id` 或 `custom_text`（不带也行）：回答记下，`Suspension.state="deferred"`，
+   `command_task: null`；`deferred` 的问题 IN-01 照样列（`suspension:<问题>`，动作同 `open`），AB-15 还能再回答（改成现在补上）；
+   下一次自主构建做到这一段时补做，做完变 `answered`。AB-03 预览里这样的段 `included: true`（范围是选定时要选了它）。
+   AB-05 `suspended`、AB-16 `metrics.suspended` 含 `deferred`。
+9. **AB-17**：撤回时蓝图里这一段这次新记进去的条目一起去掉（同一个版本），取代 B5b 第 15 条「撤回时蓝图不跟着撤」；这一段的格子回到
+   运行前（原来过期的仍是过期）。上次撤回写完提交就出错的，再调一次返回那次撤回的 `commit`、`version_label`（不再生成新版本）；
+   停机的由启动恢复补完，O-35 / 启动报告 `autobuild_runs` 一项的 `detail` 可能是「补完 n 段撤回」。
+
+## 2026-11-02 · I1 审查修复
+
+1. **EU-01 `notification`** 多 `replaces: string[]`：这一条替换掉的同组未读通知编号（前端从列表拿掉、未读数不重复算）。A-13 列表不变。
+2. **V-03 `download=1`** 只接受 `prefix` 在 `ontology/` 下（其余 `400 invalid_argument`，`details.fields.prefix="scope"`）；未压缩超过 256 MB `413 payload_too_large`（`details.limit_bytes`）；读不出文件 `503 service_unavailable`（不再返回缺文件的 zip）。
+3. **ST-09**：没给 key 时名称不能以「.」开头（`400`，`fields.name="pattern"`）；名称（或 key）超过 UTF-8 200 字节 `400`（`fields.<name|key>="too_long"`）。
+4. **F-02 / F-04 / F-05 / V-04**：路径含 `..` 一律 `403 path_forbidden`（先去掉 `.` 段再判受保护目录）；解析后落进受保护目录（根内的符号链接指到 `.git`、`.onto` 等）同样 403；路径含 NUL `400 invalid_argument`。R-05 / R-06 路径含 NUL 也是 400。
+5. **EV-29**：锚点含 NUL（含 `%00`）这一项 `resolved=false`、`reason="invalid"`；批量里某一项出错只判这一项。
+6. **R-02**：坏的 xlsx 照常上传成功，`detected` 为 null；R-06 / EV-29 / R-07 / R-09 对坏文件按不可核验处理。
+7. 报告、资料分析报告、知识条目、Studio 条目、资料列表、求解契约、蓝图、外部反馈：路径上有符号链接的不列、不读（当不存在）。
+
+## 2026-11-02 · I1 合并（I1 合进交付分支后的衔接）
+
+1. **EU-01 / A-13**：自主构建的三类通知（`autobuild_finished`、`autobuild_suspension`、`autobuild_stopped`）进通知中心（落盘，A-13 能列、能标已读）；「新增挂起问题」按运行成组，同一次运行没读的旧一条被替换（事件带 `replaces`），`body` 是这次运行还没回答的挂起总数。取代 B5b 第 30 条「不落盘」。
+2. **EC-53 `suggestions.updated`**：另在两处发——蓝图卡更新时（BP-02 保存、BP-03 确认）发给蓝图卡所在的对话；自主构建暂停、续跑后发给运行对话（暂停时 `mode="autobuild_controls"`、`primary: null`、`secondary` 只有「运行详情」，在跑时是三个控制，与 FL-02 同一份）。
+3. **ST-09**：新建的条目只有章节骨架（标题行；`from_template` 时表格章节留表头），不带条目模板里的 `{待填写…}` 与填写指引。
+
+## 2026-11-03 · V 阶段（栈 c）
+
+1. **SY-01** 每个引擎多 `deploy: {configured, model}`：界面没配、只靠部署环境变量接模型时，模型接入页原来两种引擎都显示「未配置 · 用部署默认值」、Key 框写「还没有设置 Key」，管理员看不出内测引擎其实已经接上、稳定引擎才是真没配。现在没配界面时按 `deploy.configured` 显示「用部署配置」或「未配置」，Key 框占位「用部署配置里的 Key」，模型框占位部署的模型名。只给有没有和模型名，网关地址、Key 不出接口。
+
+## 2026-11-03 · F 第一批
+
+1. **flow.yaml 命令前置多一个可选字段 `lock_waits: [<阶段>…]`**（包作者契约）：声明这条命令在等用户回复时把锁切到这些阶段（约定用 `confirm`），收尾先释放锁。声明了的命令，一轮正常结束、这次保存过、副本里没有没提交的改动、锁却不在这些阶段时，平台代为释放（ADR-0070）。没声明的命令行为不变。接口字段没有变化；执行记录内部多记一个 `released_by`，不进 ExecRecord。
+2. **EC-53 建议条**：引擎出错、模型流超时把执行记为中断时，也推一份 `mode=interrupted` 的建议条（主推 `resume_exec`，`reason`「出错中断」），与用户打断时同形。
+3. **FL-01 节点 `plugin.label`、PB-01 流程关卡 `source.label`**：取包清单里的 `label`，原来是包名；字段不变。
+4. **PL-01 / PL-02 `channel`**：只发布到 beta 的包为 `beta`（原来 stable 通道没设时退回「最新的正式版本」并标 `stable`）。
+
+## 2026-11-03 · F2-chat（对话页进展）
+
+1. **EC-22 `subagent.updated`** 多 `step: {id, kind: "tool"|"text", text: string|null, state: "running"|"done"|"failed"} | null`：子代理自己的一步（读了哪份资料、跑了什么、说了什么）。同一 `id` 后到的只改状态，`text` 为 null 时沿用先到的（F2 之前写进历史的收尾事件没有说法）。`progress_text` 改为最近一步的说法（原来收尾事件会退成「读取资料」「运行脚本」）。
+2. **EC-20/21 工作过程按时间分段**：助手每说一段成段的话，之前做完的步骤收成一组（done、折叠），之后另起一组（`group_id` 形如 `g-<轮>-<段号>`）。形状不变，一轮可以有多组。
+3. **过程话不发 `message.assistant`**：和工具调用同在一条回复里的短话（≤160 字，没有清单、表格、标题、代码、出处角标，且不是提问前的话）作为 `state=info` 的一步进组；它的 `message.delta` 片段照发，前端在组到达时去掉。宿主历史里原文保留（`narration: true`），续接回放照用。
+
+## 2026-11-03 · F3（去掉确认生效、检查只提示、资料分析停在蓝图、叫法改成「段」）
+
+用户 11-03 定，推翻详设 v1.1 8.2「检查通过后用户点确认生效」（ADR-0072）。`docs/api-v1.md` 与本目录 `api-v1.md` 已同步改。
+
+1. **变更集的生命周期**：陪伴建模一个变更集就是助手的一轮。一轮结束（成功、出错、被打断）自动合入成一个版本；下一轮开始前、服务启动时补合上一轮没走到收尾的；引擎里还排着下一条消息时并到下一轮。`pending_confirm` 只在合入前的一瞬与升级前遗留的数据里出现。实体冲突照旧记 `conflict` 进待处理。
+2. **CS-04** 界面不再调，保留给遗留的待确认变更集；不再回 `gate_failed`（检查只记进 `checks`）。
+3. **CS-05 撤回这一轮**：合入过的写反向提交，响应 `{state: "reverted", commit, version_label}`；之后又改过同一条时 `409 merge_conflict`，`message` 写出是哪几条、`details.entities` 列出；冲突中还没合入的照旧 `{state: "discarded", commit: null, version_label: null}`。审计 `changeset.revert`。
+4. **round_changes 卡**：去掉 `lock_note`、`next_version_label`、`remaining_failures`；`title` 只写「改了 N 处」；`state` 取 `merged|reverted|conflict|pending`；新增 `hints: [{tone: info|warn, text}]`、`checks.pending`、`reverted_version_label`、`inbox_item_id`。一个变更集一张卡（`rc-<cs>-1`），之后只发 `card.updated`。
+5. **合入检查**（CS-02 `checks`、卡片 `checks`）：按段建模时链接失效的目标在蓝图里已规划就记进 `pending_links: [{target, path, slice_id, slice_name, slice_no}]`（一处一条），不计进 `errors`、`warnings`；包声明的提交门禁在助手合入里只提示，问题以 `{code: 门禁 id, level, label, message, path}` 进 `findings`。
+6. **IN-01** 没有 `pending_changeset`；`changeset_conflict` 的动作是 `resolve`、`discard`（撤回这一轮）。IN-03 不再接受 `merge`。
+7. **FL-01 / FL-02**：建议条没有 `pending_confirm` 模式；合入冲突时主推 `{id: "resolve", label: "处理冲突", action: {type: "navigate", page: "inbox"}}`。`notices` 的 `pending_changeset` 换成 `changeset_conflict`（`action` 去待处理）。
+8. **CS-06 ScopeLock**：`pending_confirm` 只表示合入冲突（`reason_text`「这一轮和你的修改有冲突，在待处理里选好保留哪边后才能编辑」）；助手在跑时的 `reason_text` 改成「……这一轮结束后才能编辑」。
+9. **BP-03**：不再先合入资料分析那一轮；遗留的待确认变更集先合入（检查不拦）；蓝图所在那一轮冲突时 `409 merge_conflict`（`details.inbox_item_id`），助手还在改时 `409 changeset_in_progress`。
+10. **ST-08** `committed` 多 `warnings: Finding[]`（`code=check_hint`）：链接指向不存在的文档、没有主键只提示，不再转助手复核。
+11. **MCP 写工具**：`REFERENCE_NOT_FOUND`、`REFERENCE_TYPE_INVALID`、`RELATION_TARGET_INVALID`、`FIELD_REFERENCED` 进 `warnings`（`level: "warning"`），不挡写入；`RESOURCE_REFERENCED`（删除仍被引用的）照旧拒绝。
+12. **AB-03 / AB-04**：开始前先合入遗留的一轮；只有合入冲突时 AB-04 回 `409 changeset_in_progress`（「有一轮的修改和你的修改冲突……」），AB-03 的 `warnings` 同一句。
+13. **策略代答**：资料分析里（任何构建方式、没有运行）决定流程走向的问题（问题里说「接下来 / 下一步……建、做、提取」，或至少两个选项是流程动作）不出卡、不代答，从提问里拿掉，回给引擎的答案是「停在蓝图确认」；同一次提问里的业务问题照常。
+14. **叫法**：契约 1.13 新增「叫法」一节：`slice` 等字段界面叫「段」，变更集界面不出现。原 1.13 维护模式改为 1.14。
+15. **内置包版本**：codegen 0.9.3、evo 0.3.3（只改了清单说明，见 gaps F3 第 4 条）。
+
+## 2026-11-03 · F4a（连接器网关第一版：文档转换、资料的文本版、「数据接入」）
+
+ADR-0073。契约改动已写进 `docs/api-v1.md` 与 `_plan/api-v1.md`：
+
+1. **叫法**：「怎么读」与 3.16、3.19 加「界面叫法：数据接入」；接口路径、字段、错误码里的 `evidence`、`provider` 不变。
+2. **3.6 资料**：文本版在 `resource/text/<分组>/<原文件名>.md`，不在资料列表里、不能单独删除或改用途（R-03、R-04 回 `path_forbidden`）；替换、删除原文件时同一个提交里删掉旧文本版。R-02 上传立即返回，`material.text.state` 为 `converting`（网关没部署时 `waiting`）。
+3. **7.4 Material** 加 `text: MaterialText | null`（流程图为 null）；新增 `MaterialText`：`state`（native / converting / converted / unsupported / failed / waiting）、`reason`、`note`、`converter`、`updated_at`、`has_text`。
+4. **新增 R-13 查看文本**（`GET …/resources/text?path=`，回 `{path, text, markdown, truncated}`，一次最多 30 万字）、**R-14 重新转换**（`POST …/resources/convert {path}`，202，失败后的重试也是它）。
+5. **新增 PL-20 转换器与默认**（`GET /api/v1/converters`）、**PL-21 设默认转换器**（`PUT /api/v1/admin/converters/defaults {type, converter}`，admin，只能在已有的里选）。PL-04、PL-19 仍回 501（第三方转换器的安装方式待定）。
+6. **PL-01**：数据接入（`category=provider`）只列文档转换器；`PackCard` 加 `converter: {types, default_for, license} | null`；转换器的 `project_status` 不论带不带项目都是 `platform_installed`；`counts` 带 `provider`。
+7. **错误码** `not_convertible`（409，`details.path`）。
+8. **事件 EP-25** `materials.text.updated`：`{path, text: MaterialText}`，转换中、等待、失败这些不出提交的状态也推。
+9. **运维**：O-13 / 就绪检查的 `connector_gateway` 从占位改为真实探测（`已加载 N 个转换器`；没配网关地址为 warn「未部署」，不可达为 fail，不挡就绪）；O-35 启动报告多一步 `material_text`「资料文本版」（后台补转）；O-42 版本清单列出转换器（`category=provider`、`converter: true`）。
+10. **网关接口**（内核与网关之间，不在 `/api/v1`）：`GET /health`、`GET /v1/providers`、`POST /v1/convert`（请求体原文件，`Authorization: Bearer <Ed25519 JWT>`）；内核 `GET /api/v1/connector/issuer-key` 给网关取公钥，免鉴权。
