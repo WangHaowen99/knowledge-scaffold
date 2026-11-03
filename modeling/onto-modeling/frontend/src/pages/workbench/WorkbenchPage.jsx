@@ -14,6 +14,7 @@ import {
 import { FLOWCHART_TYPE, latestFlowchartArtifact, pendingChangeset } from '../../app/packUi.js';
 import { cellClass } from '../projects/projectCard.js';
 import { AutobuildBar, AutobuildCtx, useAutobuild } from './autobuild.jsx';
+import { useModeSwitch } from './buildMode.jsx';
 import { canInterrupt } from './autobuildModel.js';
 import { ActionsCtx, ContextPanel, QueueCard } from './cards.jsx';
 import { WbCtx } from './parts.jsx';
@@ -314,7 +315,8 @@ function KnowledgeDialog({ item, onClose }) {
   );
 }
 
-function Composer({ pid, cid, apiRef, st, buildMode, autobuild, modeLabel, onSend, catalog }) {
+const MODES = [['L2', 'users', '陪伴建模'], ['L4', 'rocket', '自主构建']];
+function Composer({ pid, cid, apiRef, st, buildMode, modeLabel, onMode, onSend, catalog }) {
   const { api, services } = useApp();
   const [text, setText] = useState('');
   const [atts, setAtts] = useState([]);
@@ -405,8 +407,8 @@ function Composer({ pid, cid, apiRef, st, buildMode, autobuild, modeLabel, onSen
         <span className="wx-tb" title="引用知识包里的条目" onClick={() => setPop(pop === 'ref' ? null : 'ref')}><Icon name="at" size={16} /></span>
         <span className="wx-tb" title="命令" onClick={() => setPop(pop === 'cmd' ? null : 'cmd')}><Icon name="cmd" size={16} /></span>
         <span className="sp" />
-        <span className={cx('wx-mode', buildMode === 'L4' && 'l4')} onClick={() => navigate(pagePath('proj-settings', pid), { section: 'build-mode' })} data-pop="在项目设置里改">
-          <i />{modeLabel || (buildMode === 'L4' ? (autobuild ? '自主构建中' : '自主构建') : '陪伴建模')}
+        <span className={cx('wx-mode', buildMode === 'L4' && 'l4')} onClick={() => !st.disabled && setPop(pop === 'mode' ? null : 'mode')}>
+          <i />{modeLabel}
         </span>
         <span className="wx-send" title="发送" onClick={send} style={st.disabled || uploading ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}><Icon name="arrow" size={16} /></span>
       </div>
@@ -423,6 +425,15 @@ function Composer({ pid, cid, apiRef, st, buildMode, autobuild, modeLabel, onSen
             </div>
           ))}
           <div className="row xs muted" style={{ padding: '6px 6px 0', borderTop: '1px solid var(--line)', marginTop: 4 }}>共 {catalog?.total ?? 0} 条</div>
+        </div>
+      ) : null}
+      {pop === 'mode' ? (
+        <div className="menu wb-pop wb-mode-pop">
+          {MODES.map(([k, icon, label]) => (
+            <div key={k} className="mi" onClick={() => { setPop(null); onMode(k); }}>
+              <Icon name={icon} size={14} /><span>{label}</span>{buildMode === k ? <Icon name="check" size={14} className="k" /> : null}
+            </div>
+          ))}
         </div>
       ) : null}
       {pop === 'ref' ? (
@@ -487,8 +498,9 @@ export default function WorkbenchPage({ route }) {
   const [opened, setOpened] = useState(null);
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
-  const [mDialog, setMDialog] = useState(null);
   const ab = useAutobuild({ pid, cid, list });
+  const [mDialog, setMDialog] = useState(null);
+  const modeSw = useModeSwitch({ ab, openDialog: (d) => setMDialog(typeof d === 'string' ? { kind: d } : d) });
   const mainRef = useRef(null);
   const inc = useIncremental({ route, target: incTarget, conv, state, flow, mainRef });
   const headRef = useRef(null);
@@ -746,7 +758,7 @@ export default function WorkbenchPage({ route }) {
             <div className="wbc-foot">
               <div className="in">
                 <SuggestionBar sug={sug} quick={quickActions} onAction={onSuggestion} onQuick={runQuick} onAll={() => comp.current.setText?.('/')} />
-                <Composer pid={pid} cid={cid} apiRef={comp} st={st} buildMode={ab.active ? 'L4' : meta?.build_mode} autobuild={ab.running} modeLabel={ab.active ? (ab.ended ? '自主构建 · 已结束' : ab.paused ? '自主构建 · 已暂停' : '自主构建中') : null} onSend={send} catalog={catalog} />
+                <Composer pid={pid} cid={cid} apiRef={comp} st={st} buildMode={modeSw.mode} modeLabel={modeSw.label} onMode={modeSw.switchTo} onSend={send} catalog={catalog} />
               </div>
             </div>
             {drag ? <div className="wb-dropmask"><Icon name="upload" size={24} /><b>松开以添加附件</b><span className="xs muted">Markdown、Word、Excel、PDF、Drawio、TXT · 单个不超过 20 MB</span></div> : null}
@@ -766,6 +778,7 @@ export default function WorkbenchPage({ route }) {
           ) : null}
           {mDialog ? <Suspense fallback={null}><MaterialsDialogs dialog={mDialog} onClose={closeMDialog} /></Suspense> : null}
           {inc.element}
+          {modeSw.guideEl}
         </WbCtx.Provider>
         </AutobuildCtx.Provider>
       </ActionsCtx.Provider>
