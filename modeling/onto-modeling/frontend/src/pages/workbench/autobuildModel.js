@@ -79,7 +79,7 @@ const ENDED_TEXT = {
 export function stripTitle(run) {
   if (!run) return { title: '', sub: '' };
   const n = `运行 #${run.run_no}`;
-  const cur = run.current ? `${run.current.slice_name} › ${run.current.step_label}` : '';
+  const cur = run.current ? [run.current.slice_name, run.current.step_label].filter(Boolean).join(' › ') : '';
   switch (run.state) {
     case 'queued': return { title: `排队中 · ${n}`, sub: '' };
     case 'running': return { title: `自主构建中 · ${n}`, sub: cur ? `当前：${cur}` : '' };

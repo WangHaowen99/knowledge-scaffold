@@ -42,6 +42,8 @@ test('运行条：运行中显示已用时 / 预计，结束后显示用时 / �
   assert.equal(stripTitle(run).sub, '当前：临期与损耗检查 › 提取规则');
   assert.equal(stripTitle({ ...done, started_at: at(15, 10), ended_at: at(17, 2) }).sub, '15:10 – 17:02 · 全部切片完成');
   assert.equal(stripTitle({ ...run, state: 'paused' }).title, '已暂停 · 运行 #3');
+  // 暂停在两步之间（真实运行：当前步骤为空）不留「›」
+  assert.equal(stripTitle({ ...run, state: 'paused', current: { ...run.current, step_label: '' } }).sub, '停在：临期与损耗检查');
   assert.match(stripTitle({ ...run, state: 'stopping' }).sub, /「临期与损耗检查」做完后停下/);
 });
 
