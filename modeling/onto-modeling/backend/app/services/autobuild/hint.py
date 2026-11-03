@@ -13,6 +13,7 @@ from . import store
 INSTRUCTIONS = (
     "自主构建：不要停下来等人确认。拿不准时照常用 AskUserQuestion 提问，平台按策略立即代答——推荐项放第一个、"
     "label 末尾写「（推荐）」，保守的选项写「（保守）」；header 里写「置信度 0.xx」，问题里写依据的出处（如 resource/资料.docx#p:3）。"
+    "命令里「确认无误请回复确认」这类产物确认不用问，按已确认往下做。"
     "回答以「挂起」开头时，这一项先跳过，继续做能做的部分。只改这一片的内容；不发布、不删已确认的内容、不改资料区。"
 )
 
@@ -33,7 +34,8 @@ def clear(project_id: str) -> None:
 
 
 def for_engine(project_root: Path, conversation_id: str | None) -> str:
-    """宿主注入的登记点（`injection.register_autobuild_hint_provider`）：这条对话正在自主构建时返回注入文本。"""
+    """宿主注入的登记点（`injection.register_autobuild_hint_provider`）：这条对话正在自主构建时返回注入文本；
+    没有运行时，自主构建项目开始前的资料分析给 prerun 的说明。"""
     from ...kernel.changesets import worktree
 
     try:
@@ -41,7 +43,11 @@ def for_engine(project_root: Path, conversation_id: str | None) -> str:
     except Exception:  # noqa: BLE001 - 不是项目工作区
         return ""
     data = store.read_json(_path(project_id)) if project_id else None
-    if not data or (conversation_id and data.get("conversation_id") != conversation_id):
+    if not data:
+        from . import prerun
+
+        return prerun.hint(project_root, conversation_id)
+    if conversation_id and data.get("conversation_id") != conversation_id:
         return ""
     return str(data.get("text") or "")
 

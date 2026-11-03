@@ -6,6 +6,10 @@
   假设，或挂起；`must_suspend_kinds` 里写到的类型一律挂起；没有选项可选的问题也挂起。自动决定记一条台账，挂起记一个
   挂起的问题（进待处理），答案交回给助手；
 - 工具确认卡（权限模式不是全放行时才有）：放行。发布、删除已确认内容、改资料区由守卫与写入路径挡，不靠这里。
+- 命令模板自带的产物确认（「确认无误请回复确认」，只有「确认」和「要改」两种回答）：按确认往下做，不进台账、不挂起
+  （V 报告需要改设计第 10 条：没写置信度就记成假设进复核；挂起它时片末照样合入，事后回答「确认」没有意义）。
+
+还没开始运行、构建方式是自主构建的项目，资料分析里的提问见 prerun.py。
 
 置信度、依据怎么来：自主构建注入里要求助手把置信度写在问题的 header 里（「置信度 0.85」），问题里写出处锚点；
 推荐项、保守项在选项 label 里标「（推荐）」「（保守）」。没写置信度按 0.5 算（总是低于阈值）。
@@ -79,11 +83,27 @@ def anchors(text: str) -> list[dict]:
     return out
 
 
+# 产物确认里表示「确认」的选项（去掉「（推荐）」等标记、标点后整句相同）；另一个选项得是要改的说法
+_CONFIRM_LABELS = frozenset({"确认", "确认无误", "无误", "确认继续", "确认，继续", "确认并继续", "确认提交", "没问题"})
+_CONFIRM_PUNCT = re.compile(r"[\s。.!！]")
+_AMEND = re.compile(r"修改|调整|改动|要改|有问题|不对|补充")
+
+
+def template_confirm(question: dict) -> dict | None:
+    """命令模板自带的产物确认 → 「确认」那个选项；不是这类问题返回 None。"""
+    options = _options(question)
+    yes = [option for option in options if _CONFIRM_PUNCT.sub("", plain_label(option)) in _CONFIRM_LABELS]
+    if len(yes) != 1 or len(options) > 2:
+        return None
+    rest = [option for option in options if option is not yes[0]]
+    return yes[0] if all(_AMEND.search(plain_label(option)) for option in rest) else None
+
+
 def _options(question: dict) -> list[dict]:
     return [option for option in question.get("options") or [] if not option.get("custom")]
 
 
-def _label(option: dict) -> str:
+def plain_label(option: dict) -> str:
     return _TAG.sub("", option.get("label") or "").strip()
 
 
@@ -130,6 +150,10 @@ def record(project_id: str, run_id: str, questions: list[dict], raws: list[dict]
         now = time.time()
         for question, raw in zip(questions, raws):
             original = str(raw.get("question") or question.get("title") or "")
+            confirmed = template_confirm(question)
+            if confirmed is not None:
+                answers[original] = confirmed.get("label") or ""
+                continue
             outcome = decide(question, raw, advanced)
             options = [{**option, "recommended": False} for option in _options(question)]
             found = anchors(outcome["text"])
@@ -149,12 +173,12 @@ def record(project_id: str, run_id: str, questions: list[dict], raws: list[dict]
             options = [{**option, "recommended": option["id"] == chosen["id"]} for option in options]
             entry = {
                 "id": f"led-{uuid.uuid4().hex[:8]}", "run_id": run["run_id"], "at": now, "slice": slice_ref,
-                "question": question.get("title") or "", "chosen": _label(chosen), "options": options,
+                "question": question.get("title") or "", "chosen": plain_label(chosen), "options": options,
                 "confidence": round(outcome["confidence"], 2), "threshold": threshold,
                 "assumption": outcome["assumption"], "anchors": found, "affected": question.get("affected") or [],
                 "review_state": "pending", "rejudged_to": None,
                 "reason_text": "低于阈值，采用保守选项并记为假设" if outcome["assumption"] else "达到阈值，采用推荐选项",
-                "summary": f"{slice_ref['name']}：{_label(chosen)}" if slice_ref["name"] else _label(chosen),
+                "summary": f"{slice_ref['name']}：{plain_label(chosen)}" if slice_ref["name"] else plain_label(chosen),
                 "step": step, "exec_id": exec_id, "option_id": chosen["id"],
             }
             run.setdefault("ledger", []).append(entry)
@@ -168,28 +192,20 @@ def record(project_id: str, run_id: str, questions: list[dict], raws: list[dict]
 
 
 async def respond(session, tool_name: str, tool_input: dict, title: str | None, description: str | None) -> dict | None:
-    """会话宿主的登记点：返回给引擎的决定；不是运行中的会话返回 None（照常等人）。"""
+    """会话宿主的登记点：返回给引擎的决定；不归策略管的会话返回 None（照常等人）。"""
     from ..session_host import timeline
+    from . import prerun
     from .runner import runner
 
     run_id = getattr(session, "run_id", None)
     if not run_id:
-        return None
+        return await prerun.respond(session, tool_name, tool_input, title, description)
     run = await asyncio.to_thread(store.get, session.project_id, run_id)
     if run is None or run.get("state") not in store.ACTIVE:
         return None
-    request_id = uuid.uuid4().hex[:12]
     if tool_name != ASK_TOOL:
-        refused = forbidden(tool_name, tool_input)
-        session.broadcast({"type": "permission_request", "request_id": request_id, "tool_name": tool_name,
-                           "tool_input": tool_input if isinstance(tool_input, dict) else {}, "title": title,
-                           "description": description, "timeout_s": 0, "expires_at": time.time()})
-        session.broadcast({"type": "permission_resolved", "request_id": request_id,
-                           "behavior": "deny" if refused else "allow", "by": "autobuild_policy",
-                           "message": FORBIDDEN_MESSAGE if refused else ""})
-        if refused:
-            return {"behavior": "deny", "message": FORBIDDEN_MESSAGE}
-        return {"behavior": "allow", "updated_input": None}
+        return permit(session, tool_name, tool_input, title, description)
+    request_id = uuid.uuid4().hex[:12]
     raws = [item if isinstance(item, dict) else {"question": str(item)} for item in (tool_input or {}).get("questions") or []]
     questions = timeline.build_questions(request_id, tool_input if isinstance(tool_input, dict) else {},
                                          conversation_id=session.conversation_id, exec_id=session.exec_id)
@@ -199,3 +215,18 @@ async def respond(session, tool_name: str, tool_input: dict, title: str | None, 
                                                             session.exec_id)
     await runner.on_decisions(session.project_id, run_id, entries, suspensions)
     return {"behavior": "allow", "updated_input": {**(tool_input or {}), "answers": answers}}
+
+
+def permit(session, tool_name: str, tool_input, title: str | None, description: str | None) -> dict:
+    """工具确认卡由策略处理：删除、发布标签拒绝，其余放行；对话里留一行已处理，不发「需要你确认」通知（auto）。"""
+    request_id = uuid.uuid4().hex[:12]
+    refused = forbidden(tool_name, tool_input)
+    session.broadcast({"type": "permission_request", "request_id": request_id, "tool_name": tool_name,
+                       "tool_input": tool_input if isinstance(tool_input, dict) else {}, "title": title,
+                       "description": description, "timeout_s": 0, "expires_at": time.time(), "auto": True})
+    session.broadcast({"type": "permission_resolved", "request_id": request_id,
+                       "behavior": "deny" if refused else "allow", "by": "autobuild_policy",
+                       "message": FORBIDDEN_MESSAGE if refused else ""})
+    if refused:
+        return {"behavior": "deny", "message": FORBIDDEN_MESSAGE}
+    return {"behavior": "allow", "updated_input": None}

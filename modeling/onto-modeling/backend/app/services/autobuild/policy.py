@@ -85,6 +85,12 @@ def load(project_id: str, owner: str) -> dict:
     return policy
 
 
+def advanced(project_id: str) -> dict:
+    """决定策略（高级设置）；没存过时是空的，按 decide 里的默认值（阈值 0.8、保守项记为假设）。"""
+    stored = store.read_json(_path(project_id)) or {}
+    return dict(stored.get("advanced") or {})
+
+
 def _last_run(project_id: str) -> dict | None:
     from ...api.deps import iso
 

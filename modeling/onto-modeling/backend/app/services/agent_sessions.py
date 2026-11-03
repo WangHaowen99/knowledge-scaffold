@@ -1330,9 +1330,10 @@ class SessionManager:
     ) -> dict:
         """确认卡（EC-30）与决策卡（AskUserQuestion → EC-32 question.asked）。等待期间界面显示「等你回答」。
 
-        自主构建运行中（方案 B13）：交给登记的策略立即作答并记台账，不等人。
+        自主构建运行中（方案 B13）：交给登记的策略立即作答并记台账，不等人；自主构建项目开始前的资料分析同样由策略
+        代答（autobuild/prerun）。登记的策略自己判断归不归它管，不归时返回 None。
         """
-        if session.run_id and _policy_responder is not None:
+        if _policy_responder is not None:
             try:
                 decision = await _policy_responder(session, tool_name, tool_input, title, description)
             except Exception:  # noqa: BLE001 - 策略作答失败按原流程等人
