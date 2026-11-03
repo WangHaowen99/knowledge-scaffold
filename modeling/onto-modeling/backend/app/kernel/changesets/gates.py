@@ -118,7 +118,7 @@ def compare(root: Path, main_tree: str, candidate_tree: str) -> dict:
     """合成树相对主线新增的问题：{errors, warnings, findings: Finding[], pending, pending_links}。
 
     findings 只含新增的、不含待建的，错误在前；pending_links 是指向蓝图里已规划、还没建的内容的链接
-    [{target, slice_id, slice_name, slice_no}]，不计进 errors、warnings。"""
+    [{target, path, slice_id, slice_name, slice_no}]（一处一条），不计进 errors、warnings。"""
     before = run(root, main_tree)
     after = run(root, candidate_tree)
     new = _minus(root)([_normalized(item) for item in after], [_normalized(item) for item in before])
@@ -128,8 +128,8 @@ def compare(root: Path, main_tree: str, candidate_tree: str) -> dict:
         target = link_target(item)
         hit = planned.get(target) if target else None
         if hit is not None:
-            if not any(entry["target"] == target for entry in pending):
-                pending.append({"target": target, **hit})
+            # 一处链接一条（同一个目标被几个条目引用就是几处）
+            pending.append({"target": target, "path": finding(item)["path"], **hit})
             continue
         kept.append(item)
     errors = [item for item in kept if item.get("severity") == "错误"]
