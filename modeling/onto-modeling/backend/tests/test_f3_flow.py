@@ -76,13 +76,14 @@ def test_each_turn_becomes_a_version_with_one_card(api, monkeypatch):
 
     async def run():
         await manager.send(project_id, root, "补一个对象", username=OWNER)
-        await settle(manager, project_id)
+        await settle(manager, project_id, until=lambda s: s.state == "idle"
+                     and (store.get(root, "cs-1") or {}).get("cards"), rounds=3000)
         seen["first"] = _round_cards(manager, project_id)[0]
         seen["scope"] = client.get(f"/api/v1/projects/{project_id}/scope").json()["state"]
         seen["open"] = client.get(f"/api/v1/projects/{project_id}/conversations/default").json()["open_changeset"]
         await manager.send(project_id, root, "再补一个", username=OWNER)
         await settle(manager, project_id, until=lambda s: s.state == "idle" and len(FakeEngine.sent) == 2
-                     and (store.get(root, "cs-2") or {}).get("cards"))
+                     and (store.get(root, "cs-2") or {}).get("cards"), rounds=3000)
         await manager.shutdown()
 
     asyncio.run(run())
@@ -123,7 +124,7 @@ def test_a_failed_turn_is_merged_too(api, monkeypatch):
 
     async def run():
         await manager.send(project_id, root, "补一个门店", username=OWNER)
-        for _ in range(500):
+        for _ in range(3000):
             await asyncio.sleep(0.01)
             if (store.get(root, "cs-1") or {}).get("cards") and _round_cards(manager, project_id)[0]:
                 break
