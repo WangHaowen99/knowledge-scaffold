@@ -61,3 +61,6 @@ export function opsListenLabel(opsBaseUrl) {
     return null;
   }
 }
+
+/** 项目详情是不是所有者视图：admin、ops 看别人的项目只拿到 ProjectMetaView（没有 package_name），不再拉项目内的接口 */
+export const isOwnedMeta = (meta) => !!meta && meta.package_name !== undefined;

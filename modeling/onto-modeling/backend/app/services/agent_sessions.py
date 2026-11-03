@@ -166,7 +166,7 @@ def repair_history(project_id: str, conversation_id: str) -> int:
             closed.add(question_id)
             append_history(project_id, conversation_id, {
                 "type": "question_withdrawn",
-                "payload": {"question_id": question_id, "reason": "服务重启，这个问题已失效"},
+                "payload": {"question_id": question_id, "reason": "服务重启"},
             })
             count += 1
     return count
@@ -485,7 +485,7 @@ def _expire_orphan_permissions(session: "Session") -> None:
         if question_id and question_id not in closed:
             closed.add(question_id)
             session.broadcast({"type": "question_withdrawn",
-                               "payload": {"question_id": question_id, "reason": "会话已重启，这个问题已失效"}})
+                               "payload": {"question_id": question_id, "reason": "会话已重启"}})
 
 
 async def _stop_engine(engine: Any) -> None:

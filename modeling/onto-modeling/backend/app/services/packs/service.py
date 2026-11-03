@@ -212,8 +212,11 @@ def _rollback_target(runtime, lock: PackLock, name: str, locked: str) -> str | N
     older = [version for version in repository.versions(name)
              if version not in disabled and mf.version_key(version) < mf.version_key(locked)]
     if not older:
-        # 同一基础版本的内容摘要不同（镜像自带的 core）：按入库时间取上一个
-        older = [version for version in repository.versions(name) if version != locked and version not in disabled]
+        # 同一基础版本的内容摘要不同（镜像自带的 core）：按入库时间取上一个，后入库的是新版本、不算回滚
+        locked_at = repository.meta(name, locked).get("released_at", 0)
+        older = [version for version in repository.versions(name)
+                 if version != locked and version not in disabled
+                 and repository.meta(name, version).get("released_at", 0) < locked_at]
     for version in older:
         trial = lock.copy()
         entry = trial.get(name)

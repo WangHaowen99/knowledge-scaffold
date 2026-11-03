@@ -174,11 +174,12 @@ async def _run_action(project_id: str, item: dict, action: str, request: Request
         return await changeset_routes.discard_and_announce(project_id, source_id, actor=actor)
     if action == "resolve":
         return await changeset_routes.resolve_conflicts(project_id, source_id, request)
+    if item["kind"] == "review" and item.get("source") == "autobuild":
+        # 自主构建的决定改判走 AB-12，不是流程节点的「重做这一步」（V 阶段：原来回 404 node_not_found）
+        return await _autobuild_review(project_id, item, action, request, body)
     if action in ("refresh", "rejudge"):
         response = await flow_routes.start_node(project_id, source_id, request)
         return {"command_task": _json(response).get("task")}
-    if item["kind"] == "review" and item.get("source") == "autobuild":
-        return await _autobuild_review(project_id, item, action, request, body)
     if item["kind"] == "suspension":
         from ..services.autobuild import review
 

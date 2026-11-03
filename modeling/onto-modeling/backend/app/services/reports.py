@@ -121,6 +121,9 @@ def _read(where: Path, rel: str) -> tuple[str, bool]:
 
 
 def _title(text: str, rel: str) -> str:
+    if rel.startswith("research/"):
+        # 资料分析报告按模板第一节就是「# 分析主题」，文件名才是主题
+        return Path(rel).stem[:120]
     match = re.search(r"^#\s+(.+)$", text, re.M)
     return (match.group(1).strip() if match else Path(rel).stem)[:120]
 

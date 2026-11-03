@@ -4,7 +4,7 @@ import {
   ENDED, createRunStore, history, reportOf, runOf,
 } from '../src/api/mock/run3.js';
 import {
-  fmtDur, fmtEst, fmtTok, matrixTone, miniMetrics, money, reportMetrics, reportSub, runFlags, sliceSegments, stripMetrics, stripTitle,
+  canInterrupt, fmtDur, fmtEst, fmtTok, matrixTone, miniMetrics, money, reportMetrics, reportSub, runFlags, sliceSegments, stripMetrics, stripTitle,
 } from '../src/pages/workbench/autobuildModel.js';
 import { composerState, readonlyInfo } from '../src/state/readonly.js';
 
@@ -42,6 +42,8 @@ test('运行条：运行中显示已用时 / 预计，结束后显示用时 / �
   assert.equal(stripTitle(run).sub, '当前：临期与损耗检查 › 提取规则');
   assert.equal(stripTitle({ ...done, started_at: at(15, 10), ended_at: at(17, 2) }).sub, '15:10 – 17:02 · 全部切片完成');
   assert.equal(stripTitle({ ...run, state: 'paused' }).title, '已暂停 · 运行 #3');
+  // 暂停在两步之间（真实运行：当前步骤为空）不留「›」
+  assert.equal(stripTitle({ ...run, state: 'paused', current: { ...run.current, step_label: '' } }).sub, '停在：临期与损耗检查');
   assert.match(stripTitle({ ...run, state: 'stopping' }).sub, /「临期与损耗检查」做完后停下/);
 });
 
@@ -70,6 +72,9 @@ test('运行详情六格与报告卡八格', () => {
   assert.equal(m.length, 8);
   assert.deepEqual(m[1], ['切片', '5 / 5', '临期与损耗检查部分完成']);
   assert.deepEqual(m[5], ['自动决策', '17 项', '高置信 13 · 需看 4']);
+  // 没有场景（真实运行没装或没生成）时不写「全部通过」
+  const none = reportMetrics({ ...r, metrics: { ...r.metrics, scenarios: { passed: 0, total: 0, suspended_failures: 0 } } });
+  assert.deepEqual(none[4], ['场景推演', '0 / 0', '']);
   assert.match(reportSub({ ...r, started_at: at(15, 10), ended_at: at(17, 2) }), /^15:10 – 17:02 · 服务重启 1 次，已自动续跑$/);
 });
 
@@ -109,4 +114,11 @@ test('mock 运行对话：开始卡、按切片的进展块、结束后的报告
   assert.equal(sug.type, 'suggestions.updated');
   assert.equal(sug.data.mode, 'autobuild_controls');
   assert.deepEqual(sug.data.secondary.map((x) => x.label), ['运行详情', '挂起的问题 2']);
+});
+
+test('运行对话在自主构建运行中不给「打断」（S-08 回 409 autobuild_running，用运行条暂停）', () => {
+  assert.equal(canInterrupt(true, { running: true }), false);
+  assert.equal(canInterrupt(true, { running: false }), true);
+  assert.equal(canInterrupt(true, null), true);
+  assert.equal(canInterrupt(false, { running: false }), false);
 });

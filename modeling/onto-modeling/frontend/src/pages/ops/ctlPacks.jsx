@@ -8,7 +8,7 @@ import {
 } from '../../ui/index.jsx';
 import { ConfirmModal, Missing, ViewChip } from './ctlParts.jsx';
 import {
-  BREAKER, CHANNEL, PACK_KIND, ROLLOUT_PRESETS, coreRows, errorRateView, fmtBytes, fmtDateTime, packActions, rolloutProblem, visiblePacks,
+  BREAKER, CHANNEL, PACK_KIND, ROLLOUT_PRESETS, coreRows, errorRateView, fmtBytes, fmtDateTime, packActions, rolloutProblem, startReloads, visiblePacks,
 } from './ctlModel.js';
 import { useEvidenceOn } from './parts.jsx';
 
@@ -93,7 +93,7 @@ export function PacksSection({
   }).then(after('packs'));
   const promote = (v) => run('core', () => api.ops.promoteCore({ version: v }), { ok: `已推广 core ${v} 到 stable` }).then(after('core', 'packs', 'versions'));
   const rollbackCore = (v) => run('core', () => api.ops.rollbackCore({ version: v }), { ok: '已回滚默认版本' }).then(after('core', 'packs', 'versions', 'repoBackups'));
-  const backupRepo = () => run('repo', () => api.ops.backupPackRepo(), { ok: '已开始备份包仓库', icon: 'archive' }).then(after('tasks'));
+  const backupRepo = () => run('repo', () => api.ops.backupPackRepo(), { ok: '已开始备份包仓库', icon: 'archive' }).then(after(...startReloads('pack_repo_backup')));
   const deny = perm.opsWrite ? null : perm.hint('ops.write');
   const evidenceOn = useEvidenceOn();
 

@@ -9,7 +9,7 @@ import {
 } from '../../ui/index.jsx';
 import { FieldErr, LoadNote, Loading, SysHead, useLoad } from './parts.jsx';
 import {
-  ENGINE_META, compactHint, contextSummary, defaultPlaceholder, engineBody, engineForm, engineProblems, engineSavedText, installChip,
+  ENGINE_META, compactHint, contextSummary, defaultPlaceholder, engineBody, engineForm, engineProblems, engineSavedText, installChip, keyPlaceholder, sourceChip,
 } from './sysModel.js';
 
 // 填模型名时查推荐表：只在改了模型名时把推荐值带进表单
@@ -49,6 +49,7 @@ function EngineCard({ id, e, onSaved, onGo, className }) {
   const body = engineBody(e, f);
   const meta = ENGINE_META[id] || ENGINE_META.jiuwen;
   const chip = installChip(e);
+  const src = sourceChip(e);
   const d = e.context_defaults || {};
   const stable = id === 'claude';
 
@@ -85,7 +86,7 @@ function EngineCard({ id, e, onSaved, onGo, className }) {
   const keyField = (
     <Field label="API Key" hint={hint('api_key', '留空表示不修改')}>
       <Inp mono icon="key" type="password" autoComplete="new-password" value={f.api_key} error={!!problems.api_key}
-        placeholder={e.api_key_set ? e.api_key_masked || 'sk-••••' : '还没有设置 Key'} onChange={set('api_key')} />
+        placeholder={keyPlaceholder(e)} onChange={set('api_key')} />
     </Field>
   );
   const urlField = (
@@ -104,7 +105,7 @@ function EngineCard({ id, e, onSaved, onGo, className }) {
       icon="cpu"
       extra={(
         <span className="row g4">
-          {e.installed && !e.configured ? <Chip tone="gray" sm>未配置 · 用部署默认值</Chip> : null}
+          {src ? <Chip tone={src.tone} sm>{src.text}</Chip> : null}
           <Chip tone={chip.tone} icon={chip.icon} sm>{chip.text}</Chip>
         </span>
       )}
@@ -116,7 +117,7 @@ function EngineCard({ id, e, onSaved, onGo, className }) {
               <div className="grid2">{urlField}{keyField}</div>
               <div className="grid2 mt12">
                 <Field label="模型（可选）" hint={filled && preset ? '已按推荐表填入' : null}>
-                  <Inp mono value={f.model} placeholder="留空使用网关默认模型" onChange={set('model')} />
+                  <Inp mono value={f.model} placeholder={e.deploy?.model || '留空使用网关默认模型'} onChange={set('model')} />
                 </Field>
                 <div />
               </div>
@@ -134,7 +135,7 @@ function EngineCard({ id, e, onSaved, onGo, className }) {
                 {urlField}
                 {keyField}
                 <Field label="模型" hint={filled && preset ? '已按推荐表填入' : null}>
-                  <Inp mono value={f.model} placeholder="model-standard" onChange={set('model')} />
+                  <Inp mono value={f.model} placeholder={e.deploy?.model || 'model-standard'} onChange={set('model')} />
                 </Field>
               </div>
               {override ? <div className="mt12">{ctxFields}</div> : null}

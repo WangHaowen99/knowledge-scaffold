@@ -626,13 +626,15 @@ def command_catalog(root: Path) -> dict:
         names = sorted(path.stem for path in commands_dir.glob("*.md"))
     except OSError:
         names = []
+    # 节点包只在节点上写入口命令（entry.command），没有 commands 映射
+    entries = {str((node.get("entry") or {}).get("command") or "").strip(): node for node in nodes.values()}
     groups: dict[str, list] = {key: [] for key, _ in _SECTION_GROUPS}
     groups["other"] = []
     for name in names:
         command = f"/{name}"
         short = name[len("ontology-"):] if name.startswith("ontology-") else name
         spec = (flow.get("commands") or {}).get(short) or {}
-        node = nodes.get(spec.get("node") or "")
+        node = nodes.get(spec.get("node") or "") or entries.get(command)
         label = labels.get(command) or (node or {}).get("title") or short
         item = {
             "id": short, "label": label,

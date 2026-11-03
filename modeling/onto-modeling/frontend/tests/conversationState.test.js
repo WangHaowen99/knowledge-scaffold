@@ -129,3 +129,20 @@ test('S-05 快照校正会话状态', () => {
   assert.equal(s.queue.ahead, 2);
   assert.equal(s.context.pct, 10);
 });
+
+test('子任务先于它的进展组进时间线（历史窗口从组中间开始）：组出现后收进组里，不留一条一直「执行中」的（V 阶段截图）', () => {
+  n = 0;
+  const s = applyEvents(initialConversation(), [
+    ev('subagent.updated', { task_id: 't1', group_id: 'g1', title: '子任务', status: 'running', progress_text: '读取资料' }),
+    ev('subagent.updated', { task_id: 't1', group_id: 'g1', status: 'running', progress_text: '汇总结果' }),
+    ev('progress.updated', { group_id: 'g1', title: '校验与走查', state: 'done', steps: [] }),
+    ev('subagent.updated', { task_id: 't1', group_id: 'g1', status: 'done', progress_text: '' }),
+  ]);
+  const free = s.items['subagents:free'];
+  assert.ok(!free || !free.subagents.some((x) => x.task_id === 't1'));
+  const group = s.items['progress:g1'].subagents;
+  assert.equal(group.length, 1);
+  assert.equal(group[0].status, 'done');
+  assert.equal(group[0].title, '子任务');
+  assert.ok(!timelineBlocks(s).some((b) => b.item?.kind === 'subagents' && b.item.subagents.length === 0));
+});

@@ -448,3 +448,10 @@ test('版本比较与范围', () => {
   assert.ok(satisfies('1.2.0', '>=1.0 <2.0'));
   assert.ok(!satisfies('2.0.0', '>=1.0 <2.0'));
 });
+
+test('publisherChip：上传时没填租户名的包只标「租户」（V 阶段：卡片上是「租户 ·」）', async () => {
+  const { publisherChip } = await import('../src/pages/plugins/catalogModel.js');
+  assert.equal(publisherChip({ publisher: { kind: 'tenant', label: '' } }).text, '租户');
+  assert.equal(publisherChip({ publisher: { kind: 'tenant', label: '示例租户' } }).text, '租户 · 示例租户');
+  assert.equal(publisherChip({ publisher: { kind: 'tenant', label: '租户 A' } }).text, '租户 A');
+});

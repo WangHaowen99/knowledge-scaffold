@@ -467,6 +467,10 @@ export function taskProgress(task) {
 
 // 任务从进行中变成结束时，要刷新哪几块
 const TASK_RELOAD = { backup: ['backups'], drill: ['backups', 'drills'], pack_repo_backup: ['repoBackups'] };
+// 发起任务后马上刷新的块：任务可能在下一次拉取前就做完了（备份通常一两秒），轮询看不到它从进行中变成结束
+export function startReloads(type) {
+  return ['tasks', ...(TASK_RELOAD[type] || [])];
+}
 export function reloadsAfter(prev, next) {
   const was = new Map((prev || []).map((t) => [t.id, t.state]));
   const keys = new Set();

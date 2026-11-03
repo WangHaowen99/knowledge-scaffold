@@ -194,8 +194,14 @@ def _git(root: Path, *args: str) -> str:
 
 
 def input_fingerprint(root: Path, flow: dict, node_id: str | None) -> str:
-    """输入目录在主线上的提交树摘要；读不出（没有提交）时为空串。"""
-    listing = _git(Path(root), "ls-tree", "-r", "HEAD", "--", *_input_dirs(flow, node_id))
+    """输入目录在主线上的提交树摘要；读不出（没有提交）时为空串。
+
+    助手在副本里跑时也按主线算：副本只在一轮开始时同步主线，跑着时用户在资料区的改动不进副本，
+    按副本算会和重启后按主线算的说法不一致（续跑卡说能续、点了又说输入改过）。"""
+    from ...kernel.changesets import worktree
+
+    root = worktree.main_root(Path(root)) or Path(root)
+    listing = _git(root, "ls-tree", "-r", "HEAD", "--", *_input_dirs(flow, node_id))
     return hashlib.sha256(listing.encode("utf-8")).hexdigest()[:16] if listing else ""
 
 

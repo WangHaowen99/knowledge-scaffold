@@ -37,6 +37,25 @@ function patch(state, key, fn) {
   return { ...state, items: { ...state.items, [key]: fn(cur) } };
 }
 
+const FREE = 'subagents:free';
+
+// 同一个子任务的更新按到达顺序合并（后到的字段盖住先到的）
+function mergeSub(list, sub) {
+  const i = list.findIndex((s) => s.task_id === sub.task_id);
+  return i >= 0 ? list.map((s, j) => (j === i ? { ...s, ...sub } : s)) : [...list, sub];
+}
+
+// 从「无组」那一栏去掉这些子任务；空了就整栏去掉
+function dropFree(state, taskIds) {
+  const free = state.items[FREE];
+  if (!free || !taskIds.length) return state;
+  const rest = free.subagents.filter((s) => !taskIds.includes(s.task_id));
+  if (rest.length === free.subagents.length) return state;
+  if (rest.length) return { ...state, items: { ...state.items, [FREE]: { ...free, subagents: rest } } };
+  const { [FREE]: _gone, ...items } = state.items;
+  return { ...state, items, order: state.order.filter((k) => k !== FREE) };
+}
+
 // 一个事件 → 新状态
 export function applyEvent(state, env) {
   if (!env || !env.type) return state;
@@ -94,21 +113,19 @@ export function applyEvent(state, env) {
     case 'progress.updated': {
       const key = `progress:${d.group_id}`;
       const cur = state.items[key];
-      return upsert(state, key, {
-        ...d, ts: cur?.ts || ts, seq: cur?.seq ?? seq, subagents: cur?.subagents || [], kind: 'progress',
+      // 历史窗口从组中间开始时，子任务先于组到达、进了「无组」那一栏：组出现后收回组里
+      const adopted = (state.items[FREE]?.subagents || []).filter((s) => s.group_id && s.group_id === d.group_id);
+      const merged = adopted.reduce((list, s) => mergeSub(list, s), cur?.subagents || []);
+      return upsert(dropFree(state, adopted.map((s) => s.task_id)), key, {
+        ...d, ts: cur?.ts || ts, seq: cur?.seq ?? seq, subagents: merged, kind: 'progress',
       });
     }
     case 'subagent.updated': {
       const gkey = d.group_id ? `progress:${d.group_id}` : null;
       if (gkey && state.items[gkey]) {
-        return patch(state, gkey, (g) => {
-          const list = g.subagents || [];
-          const i = list.findIndex((s) => s.task_id === d.task_id);
-          const next = i >= 0 ? list.map((s, j) => (j === i ? { ...s, ...d } : s)) : [...list, d];
-          return { ...g, subagents: next };
-        });
+        return patch(dropFree(state, [d.task_id]), gkey, (g) => ({ ...g, subagents: mergeSub(g.subagents || [], d) }));
       }
-      const key = 'subagents:free';
+      const key = FREE;
       const cur = state.items[key];
       const list = cur?.subagents || [];
       const i = list.findIndex((s) => s.task_id === d.task_id);

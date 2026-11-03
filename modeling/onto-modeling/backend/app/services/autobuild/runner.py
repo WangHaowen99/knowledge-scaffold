@@ -461,7 +461,9 @@ class AutobuildRunner:
             session = manager.get(project_id)
             if session is None or session.conversation_id != conversation_id or session.state == "closed":
                 return "gone"
-            if session.state == "error":
+            starting = session.sending or session.is_connecting() or manager.queue_position(project_id) is not None
+            if session.state == "error" and not starting:
+                # 刚发出的续跑还在重连：会话仍停在上一轮的 error，不能再记一次出错（V 阶段真实模型）
                 return "error"
             busy = (session.sending or session.finishing or session.pending_prompts or session.is_connecting()
                     or manager.queue_position(project_id) is not None or session.state in ("running", "queued")

@@ -41,7 +41,7 @@ function ProgressItem({ item, running, onInterrupt }) {
   return (
     <>
       {item.title ? <WxProc group={item} /> : <TimelineGroup group={item} />}
-      {item.state === 'running' && running ? (
+      {item.state === 'running' && running && onInterrupt ? (
         <div className="row mt8">
           <Button size="sm" kind="danger" icon="stop" title="打断（Esc）" onClick={onInterrupt}>打断</Button>
         </div>

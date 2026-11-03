@@ -275,3 +275,9 @@ test('mock：其他阶段打开 incremental，第一次取清单时把它所在�
   assert.equal((await call('GET', '/change-lists/cl-09/impact')).body.stale.length, 6);
   assert.equal((await call('GET', '/change-lists/nope')).status, 404);
 });
+
+test('增量更新页：这一轮的修改还等你确认时，不把「开始增量更新」顶到主推（V 阶段截图：主推是开始增量更新、确认生效退到次选）', () => {
+  const server = { mode: 'pending_confirm', primary: { id: 'merge', label: '确认生效', primary: true, action: { type: 'merge_changeset', changeset_id: 'cs-13' } }, secondary: [], all_commands: true };
+  const s = M.withStartSuggestion(server, null);
+  assert.equal(s.primary.id, 'merge');
+});

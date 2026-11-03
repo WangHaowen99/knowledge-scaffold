@@ -515,3 +515,11 @@ test('mock 版本清单、数据保留、诊断包', async () => {
   assert.match(dl.headers.get('Content-Disposition'), /diag-/);
   assert.equal((await call('GET', `${O}/diagnostics/nope/download`)).status, 404);
 });
+
+test('startReloads：发起备份、演练后连同结果块一起刷新（V 阶段：备份 1 秒就做完，轮询看不到「进行中」，列表不刷新、「发起演练」一直灰着）', async () => {
+  const { startReloads } = await import('../src/pages/ops/ctlModel.js');
+  assert.deepEqual(startReloads('backup'), ['tasks', 'backups']);
+  assert.deepEqual(startReloads('drill'), ['tasks', 'backups', 'drills']);
+  assert.deepEqual(startReloads('pack_repo_backup'), ['tasks', 'repoBackups']);
+  assert.deepEqual(startReloads('other'), ['tasks']);
+});

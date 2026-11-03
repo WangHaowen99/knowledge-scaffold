@@ -354,7 +354,6 @@ def details_text(tool: str, data) -> str:
 _GROUP_LABELS = {"object": "对象", "operation": "操作", "rule": "规则", "metric": "指标", "script": "脚本",
                  "other": "其他文件"}
 _CHANGE = {"added": "add", "modified": "mod", "deleted": "del"}
-_VERB = {"add": "新增", "mod": "修改", "del": "删除"}
 
 
 def round_changes_card(record: dict) -> dict:
@@ -374,8 +373,10 @@ def round_changes_card(record: dict) -> dict:
                 kind = "other"
                 name = _base(path)
                 target = {"type": "file", "key": path, "title": name}
+            label = _GROUP_LABELS.get(kind) if entry else None
             groups.setdefault(kind, []).append({
-                "change": change, "target": target, "text": f"{_VERB[change]}「{name}」", "comparable": change == "mod",
+                "change": change, "target": target, "text": f"{label} [[{name}]]" if label else f"「{name}」",
+                "comparable": change == "mod",
             })
             total += 1
     order = list(_GROUP_LABELS)

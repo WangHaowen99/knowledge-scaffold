@@ -3234,6 +3234,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `GET /api/v1/admin/settings/model` · admin · 旧：`GET /api/settings/model` · 审计：否 · 依据：⑧ · 页面：sys（模型接入）
 
 - 响应：`{engines: {[engine]: {label, channel, installed, runtime_version, base_url, api_key_masked, api_key_set: bool, model, context: {window, max_output, compact_at_pct}, context_defaults: {...}}}, default_engine, personal_key_allowed: bool}`。
+  - `deploy: {configured: bool, model: string}`：界面没配时在用的部署环境变量（稳定引擎看 `ANTHROPIC_BASE_URL`／`ANTHROPIC_AUTH_TOKEN`／`ANTHROPIC_API_KEY`，内测引擎看 `ONTO_WEB_JIUWEN_BASE_URL`／`ONTO_WEB_JIUWEN_API_KEY`）；只给有没有和模型名，网关地址与 Key 不出接口。
 
 #### SY-02 保存引擎模型配置
 

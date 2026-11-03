@@ -81,6 +81,15 @@ export function installChip(e) {
   if (!e?.installed) return { text: '当前部署未安装', tone: 'amber', icon: 'alert' };
   return { text: '已安装', tone: 'teal', icon: 'check' };
 }
+/** 引擎卡右上角的配置来源：界面没配时看部署环境变量（SY-01 deploy），都没有才是「未配置」 */
+export function sourceChip(e) {
+  if (!e?.installed || e.configured) return null;
+  return e.deploy?.configured ? { text: '用部署配置', tone: 'gray' } : { text: '未配置', tone: 'amber' };
+}
+export function keyPlaceholder(e) {
+  if (e?.api_key_set) return e.api_key_masked || 'sk-••••';
+  return e?.deploy?.configured ? '用部署配置里的 Key' : '还没有设置 Key';
+}
 const SOURCE_TEXT = { env: '.env', default: '内置默认', derived: '按窗口与最大输出推算' };
 /** context_defaults 一项的来源说法（B2 第 8 条：env / default，没有值时交给引擎默认） */
 export function defaultSourceText(d) {

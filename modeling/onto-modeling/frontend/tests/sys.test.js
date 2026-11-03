@@ -586,3 +586,16 @@ test('开始自主构建被没确认的修改挡住时说清是哪件事（AB-04
   assert.equal(startErrorText({ code: 'changeset_in_progress' }, errorText), '这一轮的修改还没确认生效或撤回');
   assert.equal(startErrorText({ code: 'slice_reverted' }, errorText), errorText({ code: 'slice_reverted' }));
 });
+
+test('引擎卡：界面没配时按部署环境变量显示来源（V 阶段：只配了环境变量的内测引擎显示「未配置」，管理员会以为没接模型）', async () => {
+  const { sourceChip, keyPlaceholder } = await import('../src/pages/sys/sysModel.js');
+  const base = { installed: true, configured: false, api_key_set: false, api_key_masked: '' };
+  assert.deepEqual(sourceChip({ ...base, deploy: { configured: true, model: 'm1' } }), { text: '用部署配置', tone: 'gray' });
+  assert.deepEqual(sourceChip({ ...base, deploy: { configured: false, model: '' } }), { text: '未配置', tone: 'amber' });
+  assert.equal(sourceChip({ ...base }).text, '未配置');
+  assert.equal(sourceChip({ ...base, configured: true, deploy: { configured: true } }), null);
+  assert.equal(sourceChip({ ...base, installed: false }), null);
+  assert.equal(keyPlaceholder({ ...base, deploy: { configured: true } }), '用部署配置里的 Key');
+  assert.equal(keyPlaceholder({ ...base }), '还没有设置 Key');
+  assert.equal(keyPlaceholder({ ...base, api_key_set: true, api_key_masked: 'sk-abc…wxyz' }), 'sk-abc…wxyz');
+});

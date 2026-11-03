@@ -128,7 +128,7 @@ def _row(run: dict, unit: dict, stage_ids: list[str]) -> dict:
             cells[stage] = "skipped" if value == "auto" and steps[stage] == "partial" and not merged else value
         elif before.get(stage) in ("confirmed", "auto"):
             cells[stage] = "confirmed"
-        elif before.get(stage) == "skipped":
+        elif before.get(stage) == "skipped" or stage in (unit.get("left_out") or ()):
             cells[stage] = "skipped"
         elif merged:
             cells[stage] = "auto"

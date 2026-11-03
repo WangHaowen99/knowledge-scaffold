@@ -138,6 +138,13 @@ def build(manager, project_id: str, policy: dict) -> tuple[list[dict], list[dict
         if steps:
             unit = {"id": row["id"], "name": row["name"], "kind": "slice", "steps": steps,
                     "before": dict(row.get("stages") or {})}
+            # 策略里不做的步骤（不生成场景、不刷新过期、不含可选）：运行详情里不能算「自主完成」
+            chosen = {step["id"] for step in steps}
+            left_out = [step["id"] for step in node.get("steps") or []
+                        if not step.get("derived") and step.get("command") and step["id"] not in chosen
+                        and (row.get("stages") or {}).get(step["id"]) not in (*DONE_STATES, "skipped")]
+            if left_out:
+                unit["left_out"] = left_out
             if row["id"] in held:
                 unit["carried"] = [{"run_id": item["run_id"], "id": item["id"]} for item in held[row["id"]]]
             units.append(unit)

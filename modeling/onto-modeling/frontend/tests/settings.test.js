@@ -101,6 +101,9 @@ test('高级设置：摘要、是否推荐值、阈值滑块、资料优先级�
   assert.equal(advancedSummary(adv), '阈值 0.80 · 低于阈值采用保守选项并记为假设 · 冲突时修订通知优先 · 修复最多 2 轮');
   assert.equal(isRecommended(adv), true);
   assert.equal(isRecommended({ ...adv, max_fix_rounds: 3 }), false);
+  // 设了「一律挂起」的类型也算调整过（V 阶段：设了之后收起的高级设置仍写「已按推荐值设置」）
+  assert.equal(isRecommended({ ...adv, must_suspend_kinds: ['时限'] }), false);
+  assert.equal(isRecommended({ ...adv, must_suspend_kinds: [] }), true);
   assert.equal(thresholdPos(0.8), 60);
   assert.equal(thresholdAt(61), 0.8);
   assert.equal(thresholdAt(-5), 0.5);

@@ -105,6 +105,8 @@ def engine_view(engine: str, masked: dict | None = None) -> dict:
         "api_key_set": bool(section.get("api_key_masked")),
         "model": section.get("model", ""),
         "configured": bool(section.get("configured")),
+        # 界面没配时实际在用的部署环境变量：只给有没有、模型名，网关地址与 Key 不出接口
+        "deploy": model_settings.deploy_config(engine),
         "context": {
             "window": saved.get("max_context_tokens"),
             "max_output": saved.get("max_output_tokens"),

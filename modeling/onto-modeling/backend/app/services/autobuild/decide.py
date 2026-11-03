@@ -7,7 +7,7 @@
   挂起的问题（进待处理），答案交回给助手；
 - 工具确认卡（权限模式不是全放行时才有）：放行。发布、删除已确认内容、改资料区由守卫与写入路径挡，不靠这里。
 
-置信度、依据怎么来：自主构建注入里要求助手把置信度写在问题的 header 里（「置信度 0.85」），依据写出处锚点；
+置信度、依据怎么来：自主构建注入里要求助手把置信度写在问题的 header 里（「置信度 0.85」），问题里写出处锚点；
 推荐项、保守项在选项 label 里标「（推荐）」「（保守）」。没写置信度按 0.5 算（总是低于阈值）。
 """
 
@@ -31,7 +31,8 @@ SUSPEND_ANSWER = "挂起：这个问题先不定，等用户回答。跳过和�
 # 数字后面不能再接数字、小数点、百分号、斜杠（「12%」「15」「1/3」不能读成 1.0，审查 D）；百分数单独处理
 _CONFIDENCE = re.compile(r"(?:置信度|confidence)\s*[:：=]?\s*(\d+(?:\.\d+)?|\.\d+)(?:\s*(%))?(?![\d./%])", re.IGNORECASE)
 _TAG = re.compile(r"\s*[（(](推荐|保守)[)）]\s*$")
-_ANCHOR = re.compile(r"((?:file|ev|snap|db|url):[^\s，。；、,;)）\]】]+)")
+# 资料区路径不带 scheme 的也认（真实模型按对话里的出处写法写 `resource/资料.docx#p:3`），记成 `file:` 锚点
+_ANCHOR = re.compile(r"((?:file|ev|snap|db|url):[^\s，。；、,;)）\]】]+|(?<![\w/:.])resource/[^\s，。；、,;)）\]】]+)")
 
 
 def forbidden(tool_name: str, tool_input) -> bool:
@@ -64,12 +65,14 @@ def anchors(text: str) -> list[dict]:
     out = []
     for match in _ANCHOR.finditer(text or ""):
         anchor = match.group(1)
+        if anchor.startswith("resource/"):
+            anchor = f"file:{anchor}"
         if any(item["anchor"] == anchor for item in out):
             continue
         path, _, fragment = anchor.partition("#")
         label = path.rsplit("/", 1)[-1].split(":", 1)[-1]
         if fragment:
-            label += f" §{fragment.split(':', 1)[-1]}"
+            label += " §" + re.sub(r"(^|~)[a-z]+:", r"\1", fragment)  # 区间两端都去掉片段类型（p:10~p:11 → 10~11）
         out.append({"n": len(out) + 1, "anchor": anchor, "label": label})
         if len(out) >= 5:
             break
@@ -94,10 +97,13 @@ def decide(question: dict, raw: dict, advanced: dict) -> dict:
     value = UNSTATED_CONFIDENCE if value is None else value
     threshold = float(advanced.get("confidence_threshold") or 0.8)
     options = _options(question)
-    must = any(kind and kind in text for kind in advanced.get("must_suspend_kinds") or [])
+    must = next((kind for kind in advanced.get("must_suspend_kinds") or [] if kind and kind in text), None)
     below = value < threshold
     if must or not options or (below and advanced.get("below_threshold") == "suspend"):
-        return {"kind": "suspension", "confidence": value, "text": text}
+        # 挂起的原因给人看（待处理「原因」），不放问题的 header
+        reason = (f"涉及「{must}」，按策略一律挂起" if must else "没有可选的选项" if not options
+                  else f"置信度 {value:.2f}，低于阈值 {threshold:.2f}")
+        return {"kind": "suspension", "confidence": value, "text": text, "reason": reason}
     recommended = next((option for option in options if tag(option) == "推荐"), None)
     conservative = next((option for option in options if tag(option) == "保守"), None)
     chosen = (conservative or recommended or options[0]) if below else (recommended or options[0])
@@ -129,7 +135,7 @@ def record(project_id: str, run_id: str, questions: list[dict], raws: list[dict]
             found = anchors(outcome["text"])
             if outcome["kind"] == "suspension":
                 item = {"id": f"sp-{uuid.uuid4().hex[:8]}", "run_id": run["run_id"], "at": now, "slice": slice_ref,
-                        "title": question.get("title") or "", "reason": str(raw.get("header") or "").strip(),
+                        "title": question.get("title") or "", "reason": outcome["reason"],
                         "handled_as": "跳过这一项，先做下一步", "kind": "question", "options": options,
                         "allow_custom": True, "actions": [], "state": "open", "step": step, "exec_id": exec_id,
                         "confidence": outcome["confidence"], "anchors": found}

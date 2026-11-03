@@ -15,6 +15,9 @@ export function runFlags(run) {
   };
 }
 
+// 这一轮能不能打断：运行对话里自主构建在跑时由运行条暂停、停在安全点控制（S-08 回 409 autobuild_running）
+export const canInterrupt = (sessionRunning, ab) => !!sessionRunning && !ab?.running;
+
 const pad2 = (n) => String(n).padStart(2, '0');
 export function hhmm(iso) {
   if (!iso) return '';
@@ -76,7 +79,7 @@ const ENDED_TEXT = {
 export function stripTitle(run) {
   if (!run) return { title: '', sub: '' };
   const n = `运行 #${run.run_no}`;
-  const cur = run.current ? `${run.current.slice_name} › ${run.current.step_label}` : '';
+  const cur = run.current ? [run.current.slice_name, run.current.step_label].filter(Boolean).join(' › ') : '';
   switch (run.state) {
     case 'queued': return { title: `排队中 · ${n}`, sub: '' };
     case 'running': return { title: `自主构建中 · ${n}`, sub: cur ? `当前：${cur}` : '' };
@@ -152,7 +155,7 @@ export function reportMetrics(r) {
     ['切片', `${m.slices.done} / ${m.slices.total}`, partial],
     ['产出', `+${m.produced.objects} / +${m.produced.operations} / +${m.produced.rules}`, '对象 / 操作 / 规则'],
     ['检查', `${m.checks.errors} 错误`, `${m.checks.warnings} 个提醒`],
-    ['场景推演', `${m.scenarios.passed} / ${m.scenarios.total}`, m.scenarios.suspended_failures ? `${m.scenarios.suspended_failures} 个未通过已挂起` : '全部通过'],
+    ['场景推演', `${m.scenarios.passed} / ${m.scenarios.total}`, m.scenarios.suspended_failures ? `${m.scenarios.suspended_failures} 个未通过已挂起` : m.scenarios.total ? '全部通过' : ''],
     ['自动决策', `${m.decisions.total} 项`, `高置信 ${m.decisions.high_confidence} · 需看 ${m.decisions.needs_look}`],
     ['挂起', `${m.suspended} 项`, m.suspended ? '已放进待处理' : '没有挂起'],
     ['费用', money(m.cost), `token ${fmtTok(m.tokens)} · 预算 ${money(m.budget)}`],
