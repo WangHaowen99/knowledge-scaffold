@@ -95,7 +95,7 @@ class Store:
                 fcntl.flock(f, fcntl.LOCK_UN)
 
     def git(self, root, *args):
-        result = subprocess.run(['git', '-c', 'user.name=knowledge-hub',
+        result = subprocess.run(['git', '-c', 'user.name=knowledge-hub',  # NOSONAR(S4721)
                                  '-c', 'user.email=user@example.com', *args],
                                 cwd=root, capture_output=True, shell=False, timeout=120)
         if result.returncode:
