@@ -1,5 +1,5 @@
 // 对话时间线：把状态机分好的块渲染成设计稿的 m-u / m-a / m-sys / wx-day / 决策卡
-import { Fragment, useState } from 'react';
+import { Fragment, memo, useState } from 'react';
 import { toast } from '../../app/toast.jsx';
 import { liveActivity, timelineBlocks } from '../../state/conversation.js';
 import { Button, Icon } from '../../ui/index.jsx';
@@ -11,7 +11,9 @@ import {
 } from './parts.jsx';
 import { DecidedRow, PermissionCard, QuestionCard } from './questions.jsx';
 
-function AssistantText({ item }) {
+// 正文按内容记忆：流式片段到达时只重画在流的那一条，不重新解析前面的 Markdown
+const sameText = (a, b) => a.item.text_md === b.item.text_md && a.item.streaming === b.item.streaming && a.item.anchors === b.item.anchors;
+const AssistantText = memo(function AssistantText({ item }) {
   const actions = useActions();
   const [copied, setCopied] = useState(false);
   const copy = async () => {
@@ -35,7 +37,7 @@ function AssistantText({ item }) {
       ) : null}
     </div>
   );
-}
+}, sameText);
 
 function ProgressItem({ item, running, onInterrupt }) {
   return (

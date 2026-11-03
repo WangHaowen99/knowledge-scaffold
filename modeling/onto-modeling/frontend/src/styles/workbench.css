@@ -56,7 +56,7 @@
 .m-sys .ck{width:18px;height:18px;border-radius:50%;background:rgba(37,99,235,.11);color:var(--blue);display:grid;place-items:center;flex:none}
 .m-sys .ck svg{width:10px;height:10px;stroke-width:3}
 .m-u{display:flex;justify-content:flex-end;margin:28px 0 10px}
-.m-u .bub{background:#EDF1F7;color:var(--ink0);border-radius:20px 20px 6px 20px;padding:10px 16px;font-size:14.5px;line-height:1.7}
+.m-u .bub{background:#EDF1F7;color:var(--ink0);border-radius:20px 20px 6px 20px;padding:10px 16px;font-size:14px;line-height:1.7}
 .m-u .att{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-bottom:8px}
 .wx-file{display:flex;align-items:center;gap:10px;width:204px;height:48px;padding:0 12px 0 8px;border-radius:12px;background:#fff;box-shadow:inset 0 0 0 1px var(--hl2)}
 .wx-file .fi{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;font-size:9px;font-weight:800;letter-spacing:.4px;color:#fff;flex:none;background:linear-gradient(160deg,#9AA6B8,#6B778A)}
@@ -73,7 +73,7 @@
 .wx-orb svg{display:block}
 .wx-who b{font-size:13px;font-weight:650;color:var(--ink0)}
 .wx-who span{font-size:12px;color:var(--faint)}
-.m-a .bd{font-size:14.5px;line-height:1.75;color:var(--body);min-width:0}
+.m-a .bd{font-size:14px;line-height:1.7;color:#1F2937;min-width:0}
 .m-a .bd>p{margin:0 0 10px}
 .wx-proc{margin:2px 0 12px}
 .wx-proc>summary{list-style:none;display:flex;align-items:center;gap:9px;height:36px;padding:0 10px;margin:0 -10px;border-radius:10px;cursor:pointer;font-size:13px;color:var(--sub)}

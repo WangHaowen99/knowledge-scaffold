@@ -544,8 +544,9 @@ export default function WorkbenchPage({ route }) {
   const stick = useRef(true);
   useEffect(() => {
     const m = mainRef.current;
-    if (m && stick.current) m.scrollTop = m.scrollHeight;
-  }, [state.order.length, state.items]);
+    // 跟到底不走平滑滚动：流式输出时每帧都在追，平滑动画会一直落在后面
+    if (m && stick.current) m.scrollTo({ top: m.scrollHeight, behavior: 'instant' });
+  }, [state.order.length, state.items, state.thinking]);
   const onScroll = () => {
     const m = mainRef.current;
     if (m) stick.current = m.scrollHeight - m.scrollTop - m.clientHeight < 120;
