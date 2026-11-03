@@ -158,6 +158,10 @@ def register_steps(register) -> None:
     # 耗时、不挡就绪的放后台
     register("dependencies", "外部依赖", _dependencies_item, order=300, background=True)
     register("purge", "删到一半的项目", _purge_item, order=310, background=True)
+    # 资料的文本版（ADR-0073）：升级后补转还没有文本版的资料，上次没转完的接着转；只排队，转换在后台线程
+    from . import material_conversion
+
+    register("material_text", "资料文本版", material_conversion.migrate, order=320, background=True)
 
 
 def run(manager) -> dict:

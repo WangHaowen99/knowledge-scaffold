@@ -15,6 +15,19 @@ PURGE_MARKER = ".onto-web.purging"  # 原地清除兜底：顶替 META_FILE，�
 SKIP_DIRS = {".git", ".ontology-state", ".obsidian"}
 RESOURCE_SUBDIRS = {"diagrams", "excel", "others"}
 RESOURCE_DIRECTIVES = "resource/materials.json"
+# 资料的文本版（ADR-0073）：数据接入插件把 PDF、Word、Excel 转成的 Markdown，和原文件一一对应、随版本走；
+# 不是资料分组，资料列表里不出现，只由内核写
+RESOURCE_TEXT_DIR = "resource/text"
+
+
+def resource_text_path(rel: str) -> str:
+    """resource/others/合同.pdf → resource/text/others/合同.pdf.md"""
+    return f"{RESOURCE_TEXT_DIR}/{rel.removeprefix('resource/')}.md"
+
+
+def is_resource_text(rel: str) -> bool:
+    return (rel or "").strip("/").startswith(f"{RESOURCE_TEXT_DIR}/")
+
 # 已发布知识包导入时的原包留底区：随 git 版本化（跨环境迁移要带走），
 # 但不是用户可编辑内容（隐藏目录，不进文件树）。
 IMPORTED_PACKAGE_DIR = ".imported-package"

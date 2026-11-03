@@ -117,7 +117,13 @@ def _probe_sandbox():
 
 
 def _probe_connector_gateway():
-    return "ok", "未部署（证据源连接器网关在 P3）"
+    """连接器网关（ADR-0073）：资料转文本靠它；不可用时资料等待转换、恢复后补转，不挡就绪。"""
+    from ..services.material_conversion import gateway
+
+    status = gateway.health(force=True)
+    if status["status"] == "ok":
+        return "ok", f"已加载 {status['converters']} 个转换器"
+    return ("warn" if status["status"] == "not_configured" else "fail"), status.get("detail")
 
 
 def _probe_assembly():

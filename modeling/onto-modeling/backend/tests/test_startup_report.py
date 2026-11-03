@@ -64,9 +64,9 @@ def test_clean_start_reports_ok(manager):
     results = [(item["id"], item["result"]) for item in report["items"]]
     assert [item_id for item_id, _ in results] == [
         "index_lock", "write_intents", "uncommitted", "assembly", "history_repair", "interrupted_execs",
-        "dependencies", "purge",
+        "dependencies", "purge", "material_text",
     ]
-    assert [result for item_id, result in results if item_id != "dependencies"] == ["ok"] * 7
+    assert [result for item_id, result in results if item_id != "dependencies"] == ["ok"] * 8
 
 
 def test_startup_runs_self_check_and_ops_endpoint_returns_it(manager, monkeypatch):

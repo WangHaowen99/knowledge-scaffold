@@ -755,7 +755,7 @@ def test_startup_report(client, manager):
     body = client.get("/api/v1/ops/startup-report", headers=_h("ops-token")).json()
     assert RFC3339.match(body["at"]) and [item["id"] for item in body["items"]] == [
         "index_lock", "write_intents", "uncommitted", "assembly", "history_repair", "interrupted_execs",
-        "dependencies", "purge",
+        "dependencies", "purge", "material_text",
     ]
 
 
