@@ -323,7 +323,7 @@ test('mock PL-01 不带项目：新建向导的结果不变（名字、版本、
   assert.deepEqual(r.body.items.map(pick), F.packs().map(pick));
   assert.equal(r.body.recommendations, undefined);
   const all = await api('GET', '/api/v1/packs');
-  assert.equal(all.body.counts.provider, 12); // 9 个采集类（设计对照用）+ 3 个转换器（ADR-0073）
+  assert.equal(all.body.counts.provider, 11); // 8 个采集类（设计对照用）+ 3 个转换器（ADR-0073，取代原「文件资料」提供方）
   assert.equal(all.body.items.find((p) => p.name === 'convert-pdf').project_status, 'platform_installed');
   assert.deepEqual([all.body.counts.enabled, all.body.counts.updatable], [0, 0]);
   assert.ok(!all.body.items.some((p) => p.name === 'property-compliance'));
@@ -347,7 +347,7 @@ test('mock PL-01 带项目：状态按项目设置的能力表算，计数、推
   assert.equal(st['rea-binary'], 'platform_available');
   assert.equal(st['convert-pdf'], 'platform_installed');
   assert.equal(r.body.items.find((p) => p.name === 'convert-pdf').usage_note, null);
-  assert.deepEqual(r.body.counts, { all: 28, capability: 9, industry: 4, system: 3, provider: 12, node: 0, exporter: 0, enabled: 9, updatable: 1 });
+  assert.deepEqual(r.body.counts, { all: 27, capability: 9, industry: 4, system: 3, provider: 11, node: 0, exporter: 0, enabled: 9, updatable: 1 });
   assert.deepEqual(r.body.recommendations.map((x) => [x.pack.name, x.action]), [['migrate', 'enable'], ['diagram', 'upgrade']]);
   const inst = await api('GET', `/api/v1/packs?project_id=${P}&installed_only=true&q=走查`);
   assert.deepEqual(inst.body.items.map((p) => p.name), ['trace']);

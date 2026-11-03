@@ -50,7 +50,6 @@ export const APPLIES_TO = { 'property-compliance': { pack: 'industry-property', 
 
 // 提供方：名称、说明、批次（设计稿 PL_PKGS 的 prov）；版本、是否装好取 EV-10
 const PROVIDER_INFO = {
-  file: ['文件资料', '读工作区资料区，产出段落、表格、单元格与术语记录；由 source_extract 改造。', 'first'],
   'db-mysql': ['数据库 · MySQL', '表、视图、字段、外键与推断关系、约束、数据画像、脱敏样本；三重只读。', 'first'],
   'db-postgres': ['数据库 · PostgreSQL', '同 MySQL，支持 schema 级范围白名单。', 'first'],
   'db-oracle': ['数据库 · Oracle', '同 MySQL，按用户（schema）划定读取范围。', 'first'],

@@ -107,13 +107,21 @@ function DocPane({ m, fragment, onCoverage, onUploadText, tasks }) {
 }
 
 // ---------- 文本版（R-13 查看文本、R-14 重新转换；ADR-0073） ----------
-function TextPane({ m, onUploadText }) {
+function TextPane({ m, onUploadText, onCoverage }) {
   const { api } = useApp();
   const { pid } = useProject();
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
   const t = m.text || {};
   const converted = t.state === 'converted';
+
+  // PDF 的预览就是文本版：资料分析读到哪（R-06 的 coverage）照旧显示在标题下
+  useEffect(() => {
+    if (!onCoverage) return undefined;
+    let alive = true;
+    api.resourcePreview(pid, m.path).then((r) => alive && onCoverage(r.coverage || null)).catch(() => {});
+    return () => { alive = false; };
+  }, [api, pid, m.path, m.revision, onCoverage]);
 
   useEffect(() => {
     if (!converted) { setData(null); return undefined; }
@@ -477,7 +485,7 @@ export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, 
 
   let pane;
   // PDF 没有原样预览，预览就是它的文本版；Word、Excel 另有「文本」页签
-  if (m.kind === 'pdf' && m.text) pane = <TextPane m={m} onUploadText={onUploadText} />;
+  if (m.kind === 'pdf' && m.text) pane = <TextPane m={m} onUploadText={onUploadText} onCoverage={onCoverage} />;
   else if (isDocPreview(m)) pane = <DocPane m={m} fragment={focus} onCoverage={onCoverage} onUploadText={onUploadText} tasks={tasks} />;
   else if (m.preview === 'xls') pane = <SheetPane key={`${m.path}:${focus || ''}`} m={m} fragment={focus} />;
   else if (m.preview === 'csv') pane = <CsvPane m={m} />;
