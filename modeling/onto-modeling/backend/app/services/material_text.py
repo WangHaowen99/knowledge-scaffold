@@ -30,9 +30,11 @@ _CACHE_MAX = 32
 _cache: OrderedDict = OrderedDict()
 _cache_lock = threading.Lock()
 
-# 正文里的出处：file: 锚点，或资料分析报告、条目里直接写的资料路径（可带 #片段）
-ANCHOR_RE = re.compile(r"(?:file:)?(resource/[^\s|`'\"<>（）()，。；、\]]+?\.[A-Za-z0-9]{1,6})(#[^\s|`'\"<>（）()，。；、\]]+)?"
-                       r"(?=$|[\s|`'\"<>（）()，。；、\]])")
+# 正文里的出处：file: 锚点，或资料分析报告、条目里直接写的资料路径（可带 #片段）。
+# 片段在收尾的标点、引号、括号、粗体记号前结束（`「…#p:6」`、`**…#p:6**`、`…#p:6？`）；资料名里可以有「」【】
+_ANCHOR_END = "\\s|`'\"<>（）()，。；、\\]「」『』【】“”‘’？！：*,;"
+ANCHOR_RE = re.compile(rf"(?:file:)?(resource/[^\s|`'\"<>（）()，。；、\]]+?\.[A-Za-z0-9]{{1,6}})(#[^{_ANCHOR_END}]+)?"
+                       rf"(?=$|[{_ANCHOR_END}])")
 _MD_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 _MD_LIST = re.compile(r"^\s*(?:[-*+]|\d+[.)、])\s+")
 

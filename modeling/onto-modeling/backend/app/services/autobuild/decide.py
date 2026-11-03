@@ -18,6 +18,7 @@ import re
 import time
 import uuid
 
+from .. import material_text
 from . import store
 
 ASK_TOOL = "AskUserQuestion"
@@ -31,8 +32,9 @@ SUSPEND_ANSWER = "挂起：这个问题先不定，等用户回答。跳过和�
 # 数字后面不能再接数字、小数点、百分号、斜杠（「12%」「15」「1/3」不能读成 1.0，审查 D）；百分数单独处理
 _CONFIDENCE = re.compile(r"(?:置信度|confidence)\s*[:：=]?\s*(\d+(?:\.\d+)?|\.\d+)(?:\s*(%))?(?![\d./%])", re.IGNORECASE)
 _TAG = re.compile(r"\s*[（(](推荐|保守)[)）]\s*$")
-# 资料区路径不带 scheme 的也认（真实模型按对话里的出处写法写 `resource/资料.docx#p:3`），记成 `file:` 锚点
-_ANCHOR = re.compile(r"((?:file|ev|snap|db|url):[^\s，。；、,;)）\]】]+|(?<![\w/:.])resource/[^\s，。；、,;)）\]】]+)")
+# 资料出处（带不带 `file:` 都认，真实模型按对话里的写法写 `resource/资料.docx#p:3`）与对话、Studio 用同一套抽取规则
+# （material_text.find_anchors）；其余 scheme 的锚点在这里认
+_OTHER_ANCHOR = re.compile(r"(?<![\w/])(?:ev|snap|db|url):[^\s，。；、,;)）\]】「」『』“”‘’？！：*`]+")
 
 
 def forbidden(tool_name: str, tool_input) -> bool:
@@ -62,11 +64,14 @@ def tag(option: dict) -> str | None:
 
 
 def anchors(text: str) -> list[dict]:
+    text = text or ""
+    others = [(match.start(), match.end(), match.group(0)) for match in _OTHER_ANCHOR.finditer(text)]
+    found = [(start, anchor) for start, _, anchor in others]
+    for path, fragment, start in material_text.find_anchors(text):
+        if not any(begin <= start < end for begin, end, _ in others):  # `snap:resource/…` 里的资料路径不另算
+            found.append((start, material_text.file_anchor(path, fragment)))
     out = []
-    for match in _ANCHOR.finditer(text or ""):
-        anchor = match.group(1)
-        if anchor.startswith("resource/"):
-            anchor = f"file:{anchor}"
+    for _, anchor in sorted(found):
         if any(item["anchor"] == anchor for item in out):
             continue
         path, _, fragment = anchor.partition("#")
