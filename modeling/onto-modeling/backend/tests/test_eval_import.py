@@ -935,7 +935,9 @@ def test_neo4j_one_click_import_orchestration(tmp_path, monkeypatch):
         assert b"eval-data.xlsx" in GraphStub.uploaded_workbook
         start = GraphStub.uploaded_package.index(b"PK")
         with zipfile.ZipFile(io.BytesIO(GraphStub.uploaded_package[start:])) as archive:
-            mapping = json.loads(archive.read(f"{pid}/mappings/object-data-mappings.json"))
+            # Hub 发布的评测快照以 ontology_id 为根目录，不再是项目 ID
+            mapping_name = next(n for n in archive.namelist() if n.endswith("/mappings/object-data-mappings.json"))
+            mapping = json.loads(archive.read(mapping_name))
         assert mapping["objects"]["订单"]["resource"] == "订单"
     finally:
         server.shutdown()

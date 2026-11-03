@@ -88,6 +88,23 @@ def test_onto_modeling_compose_no_longer_defines_the_hub(compose_path: Path) -> 
     assert "ONTO_HUB_SERVICE_TOKEN=${ONTO_HUB_SERVICE_TOKEN:?" in content
 
 
+@pytest.mark.parametrize("compose_path", ONTO_COMPOSE_FILES, ids=lambda path: path.name)
+def test_onto_modeling_compose_reaches_the_evaluation_service(compose_path: Path) -> None:
+    content = compose_path.read_text(encoding="utf-8")
+
+    # 评测服务按固定容器名访问；通知凭据可缺省，不能让单独部署的 onto-modeling 因此起不来
+    assert "ONTO_WEB_EVAL_URL=${ONTO_WEB_EVAL_URL:-http://knowledge-evaluation:8090}" in content
+    assert "ONTO_EVALUATION_SERVICE_TOKEN=${ONTO_EVALUATION_SERVICE_TOKEN:-}" in content
+
+
+_EVALUATION_TOKEN = re.compile(r"^ONTO_EVALUATION_SERVICE_TOKEN=([0-9a-f]{64})$")
+
+
+def _evaluation_token(lines: list[str]) -> str:
+    matches = [match.group(1) for match in map(_EVALUATION_TOKEN.match, lines) if match]
+    assert len(matches) == 1, lines
+    return matches[0]
+
 def test_onto_modeling_external_auth_override_does_not_reference_the_hub() -> None:
     script = (REPO_ROOT / "modeling" / "onto-modeling" / "deploy" / "deploy.sh").read_text(
         encoding="utf-8"
@@ -321,7 +338,7 @@ def _stack_env(tmp_path: Path) -> dict[str, str]:
     )
     return {
         **{key: value for key, value in os.environ.items()
-           if key not in ("HUB_SERVICE_TOKEN", "CONSUMER_NETWORK")},
+           if key not in ("HUB_SERVICE_TOKEN", "CONSUMER_NETWORK", "ONTO_EVALUATION_SERVICE_TOKEN")},
         "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
         "EVAL_ENV_FILE": str(config),
         "CALLS_FILE": str(tmp_path / "calls.txt"),
@@ -362,9 +379,18 @@ def test_source_full_stack_deploys_hub_before_onto_modeling_and_aligns_the_token
     onto_env = tmp_path / "modeling" / "onto-modeling" / ".env"
     assert f"ONTO_HUB_SERVICE_TOKEN={env['STUB_HUB_TOKEN']}" in _lines(onto_env)
     assert onto_env.stat().st_mode & 0o777 == 0o600
+    # 评测完成通知的入站凭据：首次部署生成，独立于 Hub 凭据，不输出
+    evaluation_token = _evaluation_token(_lines(onto_env))
+    assert evaluation_token != env["STUB_HUB_TOKEN"]
+    assert evaluation_token not in result.stdout + result.stderr
     override = (tmp_path / "modeling" / "onto-modeling" / "docker-compose.stack.yml").read_text()
     assert "knowledge-hub" not in override.split("services:", 1)[1]
     assert env["STUB_HUB_TOKEN"] not in result.stdout + result.stderr
+
+    # 重新部署沿用已有凭据，评测侧无需重新对齐
+    rerun = _run([str(deploy_dir / "deploy.sh")], env)
+    assert rerun.returncode == 0, rerun.stdout + rerun.stderr
+    assert _evaluation_token(_lines(onto_env)) == evaluation_token
 
 
 def test_source_hub_reuses_the_existing_onto_modeling_token(tmp_path: Path) -> None:
@@ -378,7 +404,22 @@ def test_source_hub_reuses_the_existing_onto_modeling_token(tmp_path: Path) -> N
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"RECEIVED_TOKEN={existing}" in _lines(tmp_path / "hub-snapshot.txt")
     assert f"HUB_SERVICE_TOKEN={existing}" in _lines(tmp_path / "knowledge-hub" / "deploy" / ".env")
-    assert _lines(onto_env) == ["ONTO_WEB_PORT=5100", f"ONTO_HUB_SERVICE_TOKEN={existing}"]
+    assert _lines(onto_env)[:2] == ["ONTO_WEB_PORT=5100", f"ONTO_HUB_SERVICE_TOKEN={existing}"]
+    assert _evaluation_token(_lines(onto_env)[2:]) != existing
+
+
+def test_source_rejects_an_evaluation_token_equal_to_the_hub_token(tmp_path: Path) -> None:
+    deploy_dir, env = _source_checkout(tmp_path)
+    shared = secrets.token_hex(32)
+    onto_env = tmp_path / "modeling" / "onto-modeling" / ".env"
+    onto_env.write_text(f"ONTO_HUB_SERVICE_TOKEN={shared}\nONTO_EVALUATION_SERVICE_TOKEN={shared}\n")
+
+    result = _run([str(deploy_dir / "deploy.sh"), "--onto-modeling-only"], env)
+
+    assert result.returncode != 0
+    assert "must differ from ONTO_HUB_SERVICE_TOKEN" in result.stderr
+    assert shared not in result.stdout + result.stderr
+    assert _ONTO_SOURCE_UP not in _lines(tmp_path / "calls.txt")
 
 
 def test_knowledge_hub_only_touches_nothing_else(tmp_path: Path) -> None:
@@ -406,6 +447,8 @@ def test_onto_modeling_only_does_not_redeploy_the_hub(tmp_path: Path) -> None:
     assert f"ONTO_HUB_SERVICE_TOKEN={hub_token}" in _lines(
         tmp_path / "modeling" / "onto-modeling" / ".env"
     )
+    # 不部署评测，但仍补齐 onto-modeling 的评测通知凭据
+    _evaluation_token(_lines(tmp_path / "modeling" / "onto-modeling" / ".env"))
 
 
 def test_only_flags_cannot_be_combined(tmp_path: Path) -> None:
@@ -451,6 +494,24 @@ def test_release_deploys_hub_as_its_own_bundle_before_onto_modeling(tmp_path: Pa
     # .env.example 先落地，再对齐 Hub 凭据，Onto 原有默认值不丢
     assert "ONTO_WEB_PORT=5100" in onto_env
     assert f"ONTO_HUB_SERVICE_TOKEN={env['STUB_HUB_TOKEN']}" in onto_env
+    # 发布包同样在 onto-modeling 部署前补齐评测通知凭据
+    assert _evaluation_token(onto_env) not in result.stdout + result.stderr
+
+
+def test_release_reuses_the_installed_evaluation_notification_token(tmp_path: Path) -> None:
+    """暂存目录里的发布包没有 .env 时沿用安装目录的入站凭据，单独升级 onto-modeling 后评测侧仍匹配。"""
+    deploy_dir, env = _release_bundle(tmp_path)
+    installed = secrets.token_hex(32)
+    (tmp_path / "installation" / "onto-modeling").mkdir(parents=True)
+    (tmp_path / "installation" / "onto-modeling" / ".env").write_text(
+        f"ONTO_EVALUATION_SERVICE_TOKEN={installed}\n", encoding="utf-8"
+    )
+
+    result = _run([str(deploy_dir / "deploy.sh"), "--onto-modeling-only"], env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _evaluation_token(_lines(tmp_path / "onto-env-snapshot.txt")) == installed
+    assert installed not in result.stdout + result.stderr
 
 
 def test_release_knowledge_hub_only_requires_the_hub_bundle(tmp_path: Path) -> None:

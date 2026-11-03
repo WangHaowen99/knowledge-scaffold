@@ -1470,6 +1470,7 @@ def _run_sync(
         relation_report: dict = {}
         try:
             from . import hub_packages, auth
+            from .workspace import WorkspaceError
             claims = auth.verify_access_token(tok()) if auth.ENABLED else None
             if not claims or not claims.get('sub'):
                 raise WorkspaceError('Hub 评测快照需要有效用户身份', 401)

@@ -89,7 +89,7 @@ async function responseError(response) {
   let body = {};
   try {
     body = await response.json();
-    detail = body.error || body.detail || detail;
+    detail = body.error || body.message || body.detail || detail;
     // FastAPI 校验错误是对象数组，转成可读文本（否则 toast 渲染为空，表现为"无反应"）
     if (typeof detail !== 'string') detail = JSON.stringify(detail).slice(0, 200);
   } catch { /* keep status text */ }
@@ -243,6 +243,17 @@ export const api = {
   packageReleases: (pid, { offset = 0, limit = 20 } = {}) =>
     request(`/api/projects/${pid}/package/releases?offset=${offset}&limit=${limit}`),
   packageResourcesStatus: (pid) => request(`/api/projects/${pid}/package/resources/status`),
+  // 独立评测的版本状态与产物：reconcile 时由后端向评测服务对账，否则只读通知索引
+  packageEvaluations: (pid, { reconcile = false } = {}) =>
+    request(`/api/projects/${pid}/package/evaluations?reconcile=${reconcile ? 1 : 0}`),
+  packageEvaluationReport: (pid, runId) =>
+    request(`/api/projects/${pid}/package/evaluations/${encodeURIComponent(runId)}/report`),
+  packageEvaluationSuggestions: (pid, runId) =>
+    request(`/api/projects/${pid}/package/evaluations/${encodeURIComponent(runId)}/suggestions`),
+  regeneratePackageEvaluation: (pid, runId) =>
+    request(`/api/projects/${pid}/package/evaluations/${encodeURIComponent(runId)}/regenerate`, { method: 'POST', body: '{}' }),
+  optimizePackageEvaluation: (pid, runId) =>
+    request(`/api/projects/${pid}/package/evaluations/${encodeURIComponent(runId)}/optimization`, { method: 'POST', body: '{}' }),
   downloadRelease: async (pid, releaseId) => {
     const send = () => fetch(`/api/projects/${pid}/package/releases/${releaseId}/download`, { headers: authHeaders() });
     let response = await send();

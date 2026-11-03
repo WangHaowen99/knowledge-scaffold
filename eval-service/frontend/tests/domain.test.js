@@ -16,6 +16,9 @@ import {
   DEFAULT_CONCURRENCY,
   modelOptionLabel,
   packageVersions,
+  taskRows,
+  artifactState,
+  notificationState,
 } from '../src/domain.js';
 
 // Package identifiers and project names are synthetic.
@@ -61,8 +64,23 @@ test('case imports validate questions and preserve optional references', () => {
     { question: 'Synthetic question', reference: '2' },
   ]);
   assert.throws(() => parseCases('[{"question":" "}]'), /用例 1/);
-  assert.throws(() => parseCases('{}'), /1-500/);
   assert.throws(() => parseCases('[{"question":"Synthetic","reference":5}]'), /格式/);
+});
+test('case imports accept a bare array or a cases wrapper', () => {
+  const expected = [{ question: 'Synthetic question', reference: '2' }];
+  assert.deepEqual(parseCases('{"cases":[{"question":"Synthetic question","groundTruth":"2"}]}'), expected);
+  assert.deepEqual(parseCases('{"cases":[{"question":"Synthetic question","reference":"2"}]}'), expected);
+  assert.throws(() => parseCases('{"cases":[{"question":" "}]}'), /用例 1/);
+});
+test('case imports report wrong structure and wrong count separately', () => {
+  for (const text of ['{}', 'null', '"text"', '5', '{"cases":{}}', '{"items":[]}'])
+    assert.throws(() => parseCases(text), /最外层应为用例数组/, text);
+  const cases = (count) => JSON.stringify(Array.from({ length: count }, () => ({ question: 'Synthetic question' })));
+  assert.throws(() => parseCases('[]'), /1-500 条用例，当前文件有 0 条/);
+  assert.throws(() => parseCases('{"cases":[]}'), /1-500 条用例，当前文件有 0 条/);
+  assert.throws(() => parseCases(cases(501)), /1-500 条用例，当前文件有 501 条/);
+  assert.equal(parseCases(cases(500)).length, 500);
+  assert.throws(() => parseCases('not json'), /不是有效的 JSON/);
 });
 test('human override wins and interrupted configuration changes cannot resume', () => {
   assert.equal(
@@ -100,6 +118,7 @@ test('source forms only submit the selected provider and never reconstruct saved
   const dataset = sourcePayload({
     ...emptySource(),
     name: 'Synthetic dataset',
+    mode: 'dataset',
     provider: 'neo4j',
     input_ids: ['input_demo'],
   });
@@ -108,8 +127,9 @@ test('source forms only submit the selected provider and never reconstruct saved
   assert.ok(!('connection' in dataset));
 });
 
-test('new Neo4j sources default to the consumer graph scope properties', () => {
-  const { connection } = emptySource();
+test('new sources default to an external connection with the consumer graph scope properties', () => {
+  const { mode, connection } = emptySource();
+  assert.equal(mode, 'connection');
   assert.equal(connection.workspace_property, 'd2o_workspace_id');
   assert.equal(connection.ontology_property, 'd2o_ontology_id');
 });
@@ -147,4 +167,43 @@ test('starting without a judge explains why instead of only disabling the button
   assert.match(judgeMissingReason({ source: 'disabled', configured: false }), /管理员已停用默认判分模型/);
   assert.match(judgeMissingReason({ source: 'deployment', configured: false }), /没有可用的评测判分模型/);
   assert.match(judgeMissingReason(undefined), /没有可用的评测判分模型/);
+});
+
+// Package task rows and run outputs; identifiers are synthetic.
+test('package tasks become rows of their newest run', () => {
+  const rows = taskRows([{ ontology_id: 'package_demo', run_count: 3, executing: true, latest: { id: 'run_c', status: 'running' } }]);
+  assert.deepEqual(rows, [{ id: 'run_c', status: 'running', run_count: 3, package_executing: true }]);
+});
+
+test('artifact state follows the run and generation status', () => {
+  assert.equal(artifactState({ status: 'running' }).report, false);
+  assert.equal(artifactState({ status: 'completed' }).canRegenerate, true);
+  const generating = artifactState({ status: 'completed', artifacts: { status: 'generating', report: 'ready', suggestions: 'generating' } });
+  assert.deepEqual([generating.report, generating.suggestions, generating.canRegenerate], [true, false, false]);
+  const failed = artifactState({ status: 'failed', artifacts: { status: 'failed', report: 'ready', suggestions: 'failed' } });
+  assert.deepEqual([failed.label, failed.report, failed.suggestions, failed.canRegenerate], ['优化建议生成失败', true, false, true]);
+  const ready = artifactState({ status: 'completed', artifacts: { status: 'ready', report: 'ready', suggestions: 'ready', revision: 2, generated_at: 1793500000 } });
+  assert.equal(ready.suggestions, true);
+  assert.match(ready.hint, /^生成于 \S+ \S+ · 第 2 次生成$/);
+  const first = artifactState({ status: 'completed', artifacts: { status: 'ready', report: 'ready', suggestions: 'ready', revision: 1, generated_at: 1793500000 } });
+  assert.match(first.hint, /^生成于 \S+ \S+$/);
+  // While generating, the card says which batch is being waited for and for how long.
+  const waiting = (progress) =>
+    artifactState({ status: 'completed', artifacts: { status: 'generating', report: 'ready', suggestions: 'generating', progress } }, 1793500000).hint;
+  assert.equal(waiting(null), '评测报告已生成，优化建议生成中');
+  assert.equal(waiting({ batch: 1, batches: 1, started_at: 1793499990 }), '评测报告已生成，优化建议生成中 · 已等待不到 1 分钟');
+  assert.equal(waiting({ batch: 2, batches: 3, started_at: 1793499790 }), '评测报告已生成，优化建议生成中 · 第 2/3 批 · 已等待 3 分钟');
+  assert.equal(waiting({ batch: 3, batches: 3, merging: true, started_at: 1793499400 }), '评测报告已生成，优化建议生成中 · 合并各批结果 · 已等待 10 分钟');
+});
+
+test('notification state explains delivery and when it can be resent', () => {
+  assert.equal(notificationState(undefined), null);
+  assert.equal(notificationState({ status: 'none' }), null);
+  assert.equal(notificationState({ status: 'disabled' }).canRetry, undefined);
+  assert.equal(notificationState({ status: 'pending', attempts: 0 }).label, '发送中');
+  const retrying = notificationState({ status: 'pending', attempts: 2, last_error: '建模服务返回 503', next_attempt: 1793500000 });
+  assert.equal(retrying.canRetry, true);
+  assert.match(retrying.hint, /已尝试 2 次（建模服务返回 503）/);
+  assert.equal(notificationState({ status: 'rejected', last_error: '建模服务返回 422' }).canRetry, true);
+  assert.equal(notificationState({ status: 'delivered', delivered_at: 1793500000 }).label, '已送达');
 });

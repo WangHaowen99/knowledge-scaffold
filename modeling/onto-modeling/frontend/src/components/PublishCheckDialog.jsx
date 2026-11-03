@@ -472,7 +472,7 @@ export function usePackagePublish(dialogExtras = {}) {
 
   const dialog = (
     <>
-    <PublishedVersionsDialog projectId={versionsProject} onClose={() => setVersionsProject('')} />
+    <PublishedVersionsDialog projectId={versionsProject} onClose={() => setVersionsProject('')} onCommand={dialogExtras.onCommand} />
     <PublishCheckDialog
       {...dialogExtras}
       open={!!projectId}

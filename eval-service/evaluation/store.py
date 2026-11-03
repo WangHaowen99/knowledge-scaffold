@@ -31,6 +31,18 @@ class Store:
           PRIMARY KEY(owner,operation,request_id));
         CREATE TABLE IF NOT EXISTS tombstones(id TEXT PRIMARY KEY, deleted REAL);
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, body TEXT NOT NULL, updated REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS artifacts(
+          run_id TEXT NOT NULL, owner TEXT NOT NULL, name TEXT NOT NULL,
+          revision INTEGER NOT NULL, body TEXT NOT NULL, updated REAL NOT NULL, PRIMARY KEY(run_id,name));
+        CREATE TABLE IF NOT EXISTS notifications(
+          id TEXT PRIMARY KEY, run_id TEXT NOT NULL, owner TEXT NOT NULL, sequence INTEGER NOT NULL,
+          body TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL, next_attempt REAL NOT NULL,
+          last_error TEXT, created REAL NOT NULL, delivered REAL);
+        CREATE INDEX IF NOT EXISTS notifications_due ON notifications(status,next_attempt);
+        CREATE INDEX IF NOT EXISTS notifications_run ON notifications(run_id,sequence);
+        CREATE TABLE IF NOT EXISTS evidence(
+          run_id TEXT NOT NULL, owner TEXT NOT NULL, case_index INTEGER NOT NULL,
+          body TEXT NOT NULL, updated REAL NOT NULL, PRIMARY KEY(run_id,case_index));
         ''')
         self.db.commit()
 
@@ -126,6 +138,90 @@ class Store:
             # Keep idempotency tombstones: a deleted request must never start again.
             self.db.execute('INSERT OR IGNORE INTO tombstones VALUES(?,?)',(rid,time.time()))
             self.db.execute('DELETE FROM records WHERE id=? AND owner=?',(rid,owner))
+            self.db.execute('DELETE FROM artifacts WHERE run_id=?',(rid,))
+            self.db.execute('DELETE FROM notifications WHERE run_id=?',(rid,))
+            self.db.execute('DELETE FROM evidence WHERE run_id=?',(rid,))
+
+    def prune_orphans(self):
+        """Drop artifacts, notifications and evidence of runs that no longer exist, e.g. after a restore replayed deletions."""
+        with self.transaction():
+            for table in ('artifacts','notifications','evidence'):
+                self.db.execute(f"DELETE FROM {table} WHERE run_id NOT IN (SELECT id FROM records WHERE kind='runs')")
+
+    # Runs are grouped by the Hub package they evaluate; evaluation snapshots keep the package ID.
+    PACKAGE="json_extract(body,'$.package_ref.ontology_id')"
+    CREATED="json_extract(body,'$.created_at')"
+
+    def package_groups(self, owner, offset=0, limit=20):
+        """One entry per evaluated package, newest run first: (package, run count, latest run)."""
+        with self.lock:
+            where=f"FROM records WHERE owner=? AND kind='runs'"
+            total=self.db.execute(f'SELECT count(DISTINCT {self.PACKAGE}) {where}',(owner,)).fetchone()[0]
+            rows=self.db.execute(f'SELECT {self.PACKAGE} AS package,count(*) AS runs,max({self.CREATED}) AS latest {where} '
+                                 'GROUP BY package ORDER BY latest DESC LIMIT ? OFFSET ?',(owner,limit,offset)).fetchall()
+            items=[]
+            for row in rows:
+                latest=self.db.execute(f"SELECT id {where} AND {self.PACKAGE}=? ORDER BY {self.CREATED} DESC LIMIT 1",
+                                       (owner,row['package'])).fetchone()
+                items.append(dict(ontology_id=row['package'],run_count=row['runs'],latest=self.get(owner,latest['id'])))
+            return dict(items=items,total=total,offset=offset,
+                        next_offset=offset+len(rows) if offset+len(rows)<total else None)
+
+    def package_runs(self, owner, package, offset=0, limit=20):
+        with self.lock:
+            where=f"FROM records WHERE owner=? AND kind='runs' AND {self.PACKAGE}=?"
+            total=self.db.execute('SELECT count(*) '+where,(owner,package)).fetchone()[0]
+            rows=self.db.execute(f'SELECT id {where} ORDER BY {self.CREATED} DESC LIMIT ? OFFSET ?',
+                                 (owner,package,limit,offset)).fetchall()
+            return dict(items=[self.get(owner,r['id']) for r in rows],total=total,offset=offset,
+                        next_offset=offset+len(rows) if offset+len(rows)<total else None)
+
+    def package_run_in_status(self, owner, package, statuses, exclude=''):
+        """ID of another run of this package in one of the given statuses, if any."""
+        with self.lock:
+            marks=','.join('?'*len(statuses))
+            row=self.db.execute(f"SELECT id FROM records WHERE owner=? AND kind='runs' AND {self.PACKAGE}=? AND id!=? "
+                                f"AND json_extract(body,'$.status') IN ({marks}) LIMIT 1",(owner,package,exclude,*statuses)).fetchone()
+            return row['id'] if row else None
+
+    def package_run_rows(self, owner, package, limit=1000):
+        """Small fields of a package's runs, newest first, without loading their cases."""
+        with self.lock:
+            rows=self.db.execute(f"SELECT id,json_extract(body,'$.status') AS status,json_extract(body,'$.base_ref') AS base_ref,"
+                                 f"json_extract(body,'$.package_ref') AS package_ref,json_extract(body,'$.preparation_id') AS preparation_id,"
+                                 f"{self.CREATED} AS created_at,json_extract(body,'$.finished_at') AS finished_at "
+                                 f"FROM records WHERE owner=? AND kind='runs' AND {self.PACKAGE}=? ORDER BY {self.CREATED} DESC LIMIT ?",
+                                 (owner,package,limit)).fetchall()
+            return [dict(id=r['id'],status=r['status'],base_ref=json.loads(r['base_ref']) if r['base_ref'] else None,
+                         package_ref=json.loads(r['package_ref']) if r['package_ref'] else None,preparation_id=r['preparation_id'],
+                         created_at=r['created_at'],finished_at=r['finished_at']) for r in rows]
+
+    def artifact(self, owner, run_id, name):
+        with self.lock:
+            row=self.db.execute('SELECT revision,body FROM artifacts WHERE run_id=? AND owner=? AND name=?',(run_id,owner,name)).fetchone()
+            return (row['revision'],row['body']) if row else (None,None)
+
+    def put_artifacts(self, owner, run_id, revision, values):
+        """Write several artifacts of one revision atomically, so readers never see a mixed set."""
+        with self.transaction():
+            if not self.db.execute("SELECT 1 FROM records WHERE id=? AND owner=? AND kind='runs'",(run_id,owner)).fetchone():
+                raise Failure('not_found','记录不存在或无权访问',404)
+            for name,body in values.items():
+                self.db.execute('INSERT OR REPLACE INTO artifacts VALUES(?,?,?,?,?,?)',(run_id,owner,name,revision,body,time.time()))
+
+    def put_evidence(self, owner, run_id, case_index, value):
+        """Bounded tool-call evidence of one settled case; a reconciled case replaces its earlier evidence."""
+        with self.transaction():
+            if not self.db.execute("SELECT 1 FROM records WHERE id=? AND owner=? AND kind='runs'",(run_id,owner)).fetchone():
+                raise Failure('not_found','记录不存在或无权访问',404)
+            self.db.execute('INSERT OR REPLACE INTO evidence VALUES(?,?,?,?,?)',
+                            (run_id,owner,case_index,canonical(value),time.time()))
+
+    def evidence(self, owner, run_id):
+        """Evidence of a run by zero-based case index; cases settled before evidence was kept are absent."""
+        with self.lock:
+            rows=self.db.execute('SELECT case_index,body FROM evidence WHERE run_id=? AND owner=?',(run_id,owner)).fetchall()
+            return {row['case_index']:json.loads(row['body']) for row in rows}
 
     def recover(self):
         with self.transaction():
