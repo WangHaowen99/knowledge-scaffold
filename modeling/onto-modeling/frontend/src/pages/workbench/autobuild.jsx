@@ -123,7 +123,8 @@ export function AutobuildBar({ ab }) {
   return (
     <>
       <div className="wx-run">
-        <div className="l4-hero g2-rs">
+        {/* 别的对话里多一个「回到运行对话」：放不下时指标只留用量（上限在运行详情里） */}
+        <div className={cx('l4-hero g2-rs', !ab.inConversation && (ab.state === 'running' || ab.state === 'queued') && 'many')}>
           {live ? <i className="g2-live" /> : <span className="g2-rs-tile"><Icon name={ab.ended ? 'check' : ab.paused ? 'pause' : 'clock'} size={14} /></span>}
           <div className="g2-rs-t"><b>{title}</b><span>{sub}</span></div>
           <div className="g2-rs-m">

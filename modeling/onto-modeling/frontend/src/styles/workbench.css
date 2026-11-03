@@ -43,6 +43,7 @@
 .wx-run .g2-rs-m{gap:20px;flex:0 1 auto;min-width:0}
 .wx-run .g2-rs-m .m{flex:0 1 auto;min-width:0;overflow:hidden;white-space:nowrap}
 .wx-run .g2-rs-m .m .bar{min-width:92px}
+.wx-run .g2-rs.many .g2-rs-m .m small{display:none}
 .wx-run .g2-wbtn{height:30px;padding:0 11px;background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.14);font-weight:600}
 .wx-run .g2-wbtn.w{background:#fff;color:#0B1736;border-color:#fff}
 .wbc-main{flex:1;min-height:0;overflow:auto;scroll-behavior:smooth}
