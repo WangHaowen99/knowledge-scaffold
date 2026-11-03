@@ -13,7 +13,7 @@ import { Button, Check, Chip, Empty, Icon, Modal, Note, Prog, cx } from '../../u
 import { CommandRunBar, useCommandTasks, useProjectEvent } from '../plugin/parts.jsx';
 import { FeedbackPreview, MaterialPreview, useFullscreen } from './ResourcePreview.jsx';
 import {
-  GROUP_ICON, PURPOSE_FALLBACK, UPLOAD_ACCEPT, checkUpload, extOf, feedbackView, fileIcon, findMaterial, fmtSize, metaText,
+  PURPOSE_FALLBACK, UPLOAD_ACCEPT, checkUpload, extOf, feedbackView, fileIcon, findMaterial, fmtSize, materialTitle, metaText, sortMaterials,
   pickDefault, purposeView, refSentence, replaceName, revisionBanner, routeTarget, targetKey, textChip,
 } from './resourcesModel.js';
 import '../../styles/evidence.css';
@@ -78,7 +78,7 @@ function FileRow({ m, picked, purposes, menuOpen, onPick, onMenu, onPurpose, onR
       <span className={cx('fi', ic.cls)}><Icon name={ic.icon} size={14} /></span>
       <div style={{ minWidth: 0 }}>
         <div className="row g4">
-          <span className="b ell" title={m.name}>{m.name}</span>
+          <span className="b ell" title={materialTitle(m)}>{materialTitle(m)}</span>
           {m.is_revision ? <Chip tone="amber" sm icon="refresh">修订资料</Chip> : null}
           {tc ? <Chip tone={tc.tone} sm icon={tc.icon} title={tc.title} data-text-state={m.text.state}>{tc.text}</Chip> : null}
         </div>
@@ -181,7 +181,7 @@ function DeleteDialog({ m, onClose, onDeleted }) {
   };
   return (
     <Modal
-      open onClose={onClose} danger icon="trash" title={`删除 ${m.name}？`} sub="可以从版本历史恢复"
+      open onClose={onClose} danger icon="trash" title={`删除 ${materialTitle(m)}？`} sub="可以从版本历史恢复"
       foot={<><Button onClick={onClose}>取消</Button><Button kind="danger" className="fill" icon="trash" disabled={busy} onClick={del}>删除资料</Button></>}
     >
       {refs == null ? <div className="xs muted">正在查引用…</div> : refs.length ? <Note tone="amber">{refSentence(refs)}</Note> : null}
@@ -259,14 +259,15 @@ export default function ResourcesPage({ route }) {
     el?.scrollIntoView({ block: 'center' });
   }, [data, tkey, feedback]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const groups = useMemo(() => (data?.groups || []).filter((g) => (g.items || []).length), [data]);
+  // 不按工作区目录分组（F4b-paths）：一张表按资料名排，类型写在第二行
+  const materials = useMemo(() => sortMaterials(data?.groups), [data]);
   const purposes = data?.purposes?.length ? data.purposes : PURPOSE_FALLBACK;
   const fbOn = !!data?.feedback_group?.enabled;
   const selFeedback = sel?.kind === 'feedback' ? feedback.find((x) => x.id === sel.id) || (sel.id ? null : feedback[0]) : null;
   const selPath = sel?.kind === 'file' ? sel.path : sel?.kind === 'feedback' ? null : pickDefault(data?.groups);
   const selected = selPath ? findMaterial(data?.groups, selPath) : null;
   const banner = revisionBanner(data?.groups);
-  const total = groups.reduce((n, g) => n + g.items.length, 0);
+  const total = materials.length;
 
   const pickFile = (m, toPreview) => {
     setSel({ kind: 'file', path: m.path, fragment: null, n: toPreview ? Date.now() : undefined });
@@ -310,7 +311,7 @@ export default function ResourcesPage({ route }) {
     }
     if (!done.length) return;
     const last = done[done.length - 1];
-    if (replaceOf) toast(`已替换 ${replaceOf.name}，保存为新版本 ${last.version_label}`, 'upload');
+    if (replaceOf) toast(`已替换 ${materialTitle(replaceOf)}，保存为新版本 ${last.version_label}`, 'upload');
     else toast(`已上传 ${done.length} 份资料（${last.version_label}）${revision ? '；已发起增量更新' : ''}`, 'upload');
     if (revision) setRev(false);
     setSel({ kind: 'file', path: last.material.path, fragment: null });
@@ -393,7 +394,7 @@ export default function ResourcesPage({ route }) {
       {banner ? (
         <div className="evd-banner">
           <span className="ic"><Icon name="refresh" size={14} /></span>
-          <div className="grow"><b>{banner.name}</b><span className="muted">：{banner.revision_task.label}</span></div>
+          <div className="grow"><b>{materialTitle(banner)}</b><span className="muted">：{banner.revision_task.label}</span></div>
           <Button size="sm" kind="primary" icon="arrow" onClick={() => goIncremental(banner)}>去对话里确认</Button>
         </div>
       ) : null}
@@ -426,11 +427,10 @@ export default function ResourcesPage({ route }) {
             </div>
           ) : null}
 
-          {groups.map((g) => (
-            <div className="evd-grp" key={g.key}>
-              <h4><Icon name={GROUP_ICON[g.key] || 'filetext'} size={14} />{g.label} <span className="faint" style={{ fontWeight: 500 }}>{g.items.length}</span></h4>
+          {total ? (
+            <div className="evd-grp">
               <div className="card">
-                {g.items.map((m) => (
+                {materials.map((m) => (
                   <FileRow
                     key={m.path} m={m} picked={!!selected && selected.path === m.path && sel?.kind !== 'feedback'} purposes={purposes} menuOpen={menu === m.path}
                     onPick={pickFile} onMenu={setMenu} onPurpose={setPurpose} onReplace={(x) => choose({ replaceOf: x })} onDelete={setDel} onRevision={goIncremental}
@@ -438,7 +438,7 @@ export default function ResourcesPage({ route }) {
                 ))}
               </div>
             </div>
-          ))}
+          ) : null}
 
           {fbOn ? (
             <div className="evd-grp rs-fbgrp">

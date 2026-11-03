@@ -412,8 +412,12 @@ function res(anchor, source_label, location_label, marked, confidence = null) {
     } else text += part;
   });
   const scheme = anchor.split(':')[0];
+  // F4b-paths：出处只说资料名（原文件名去扩展名）和位置，不出路径
+  const file = scheme === 'file';
+  const name = file ? source_label.replace(/\.[^.]+$/, '') : source_label;
+  const material = file ? { name, type: /\.docx?$/.test(source_label) ? 'Word' : /\.xlsx?$/.test(source_label) ? 'Excel' : '文件', path: anchor.slice(5).split('#')[0] } : null;
   return {
-    anchor, scheme, resolved: true, source_label, location_label, text: text.replace(/<br>/g, '\n'), highlights, confidence,
+    anchor, scheme, resolved: true, source_label: name, location_label, material, text: text.replace(/<br>/g, '\n'), highlights, confidence,
     snapshot_id: scheme === 'db' ? '20261030-221500-9c1d' : null, page: scheme === 'db' ? 'schema' : 'resources',
   };
 }
@@ -427,7 +431,8 @@ export const ANCHOR_RESOLUTIONS = {
 };
 
 // ---------- 工作台对话：wb-l2 设计稿那一屏 ----------
-const ref = (kind, key, name) => ({ kind, id: `${kind}:${key}`, key, name });
+const KIND_NAME = { object: '对象', operation: '操作', rule: '规则', metric: '指标' };
+const ref = (kind, key, name) => ({ kind, id: `${kind}:${key}`, key, name, label: `${KIND_NAME[kind]}「${name}」` });
 export const REFS = {
   order: ref('object', 'replenish_order', '补货单'),
   request: ref('object', 'store_request', '门店特殊需求'),
@@ -581,11 +586,16 @@ export function roundChangesCard(optionKey, state = 'merged') {
   const op = { kind: 'operation', label: '操作', items: [{ change: 'mod', target: REFS.op, text: '操作 [[超量与审批提示]] 的步骤 2', comparable: true }] };
   const rule = { kind: 'rule', label: '规则', items: [{ change: 'add', target: REFS.r09, text: '规则引用 [[R-09 门店申请取严]]', comparable: true }] };
   const sc = { kind: 'scenario', label: '场景', items: [{ change: 'test', target: { type: 'trace.scenario', key: 's-21', title: '门店更严 → 按门店执行' }, text: '新增 2 个验收场景，推演 2 / 2 通过', comparable: true }] };
+  // F4b-paths：不是条目的文件按业务名列，认不出的合成「另有 N 处改动」（没有动词标签）
+  const other = { kind: 'other', label: '其他', items: [
+    { change: 'mod', target: { type: 'file', key: 'research/blueprint.json', title: '建模蓝图', label: '建模蓝图' }, text: '建模蓝图', comparable: true },
+    { change: null, target: null, text: '另有 2 处改动', comparable: false, count: 2 },
+  ] };
   return {
     card_id: ROUND_CARD_ID,
     card_type: 'round_changes',
     eyebrow: '这一轮改了什么',
-    title: '改了 3 处',
+    title: '改了 6 处',
     subtitle: '',
     status: state === 'reverted' ? { key: 'skipped', label: '已撤回' } : { key: 'confirmed', label: 'v0.13' },
     plugin: null,
@@ -594,7 +604,7 @@ export function roundChangesCard(optionKey, state = 'merged') {
     option_key: optionKey,
     checks: { errors: 0, warnings: 0, pending: 1 },
     hints: [{ tone: 'info', text: '1 处指向第 4 段待建的内容' }],
-    groups: [op, rule, sc],
+    groups: [op, rule, sc, other],
     state,
     merged_version_label: 'v0.13',
     reverted_version_label: state === 'reverted' ? 'v0.14' : null,

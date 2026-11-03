@@ -15,7 +15,7 @@ import { useProjectEvent } from '../plugin/parts.jsx';
 import {
   PREVIEW_ICON, blockBody, isDocPreview, blockLabel, coverageChip, csvText, diamondPoints, drawioLayout, feedbackView, fmtSize,
   parseDrawio, parseFragment, purposeView, refRows, refTarget, scaleText, sheetView, splitHighlights, tableTruncated, cellPos,
-  hasTextTab, textSections,
+  hasTextTab, materialTitle, textSections,
 } from './resourcesModel.js';
 
 const enc = encodeURIComponent;
@@ -96,7 +96,7 @@ function DocPane({ m, fragment, onCoverage, onUploadText, tasks }) {
           <span className="sp" />
           <Button
             size="xs" kind="soft" icon="sparkle" disabled={tasks.sending}
-            onClick={() => tasks.send({ command: '/ontology-research', args: { path: m.path, reading_mode: 'full' }, text: `把「${m.name}」没读的部分读完` })}
+            onClick={() => tasks.send({ command: '/ontology-research', args: { path: m.path, reading_mode: 'full' }, text: `把「${materialTitle(m)}」没读的部分读完` })}
           >
             让助手读完
           </Button>
@@ -324,7 +324,7 @@ function DrawioPane({ m, full, onFull, onSaved }) {
   const persist = async (xml) => {
     setSaving(true);
     try {
-      const r = await api.saveFileContent(pid, { path: m.path, content: xml, base_revision: doc.revision, summary: `编辑 ${m.name}` });
+      const r = await api.saveFileContent(pid, { path: m.path, content: xml, base_revision: doc.revision, summary: `编辑 ${materialTitle(m)}` });
       setDoc({ ...doc, content: xml, revision: r.revision });
       latest.current = null;
       setDraft(null);
@@ -378,7 +378,7 @@ function DrawioPane({ m, full, onFull, onSaved }) {
             : <DrawioSvg xml={doc.content} full={full} />}
       </div>
       <Modal
-        open={editing} onClose={closeEditor} icon="flow" title={`编辑 ${m.name}`} w={1080}
+        open={editing} onClose={closeEditor} icon="flow" title={`编辑 ${materialTitle(m)}`} w={1080}
         foot={(
           <>
             <span className="xs muted grow">{drawioStateText(edState)}</span>
@@ -497,7 +497,7 @@ export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, 
     <div className="card">
       <div className="card-h">
         <span style={{ color: 'var(--blue)' }}><Icon name={PREVIEW_ICON[m.preview] || 'filetext'} /></span>
-        <h3 className="ell" title={m.name}>{m.name}</h3>
+        <h3 className="ell" title={materialTitle(m)}>{materialTitle(m)}</h3>
         <span className="sp" />
         <Button size="sm" kind="ghost" icon="download" title="下载原文件" onClick={download} />
         <Button size="sm" kind="ghost" icon="maximize" title={full ? '退出全屏' : '全屏'} onClick={onFull} />
