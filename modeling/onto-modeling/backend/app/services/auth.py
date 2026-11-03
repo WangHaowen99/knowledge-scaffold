@@ -19,6 +19,18 @@ AUTH_URL = os.environ.get("ONTO_WEB_AUTH_URL", "").rstrip("/")
 ISSUER = os.environ.get("ONTO_WEB_AUTH_ISSUER", AUTH_URL)
 AUDIENCE = os.environ.get("ONTO_WEB_AUTH_AUDIENCE", "knowledge-scaffold")
 
+# 产品由 meta-wise 改名为 knowledge-scaffold：Consumer 升级会把 auth-server 签发的 audience
+# 迁到新名（只迁仍等于旧默认值的部署），这里的配置却可能仍是旧名，两边一错开登录后所有请求都 401。
+# 两个名字是同一产品的新旧称呼，配置为其中之一时都接受；其他自定义取值仍严格匹配。
+_PRODUCT_AUDIENCES = ("knowledge-scaffold", "meta-wise")
+
+
+def accepted_audiences(configured: str) -> list[str]:
+    return list(_PRODUCT_AUDIENCES) if configured in _PRODUCT_AUDIENCES else [configured]
+
+
+ACCEPTED_AUDIENCES = accepted_audiences(AUDIENCE)
+
 ENABLED = bool(AUTH_URL)
 _jwks_client = PyJWKClient(f"{AUTH_URL}/jwks.json") if ENABLED else None
 
@@ -53,7 +65,7 @@ def verify_access_token(token: str) -> dict | None:
             token,
             key,
             algorithms=["RS256"],
-            audience=AUDIENCE,
+            audience=ACCEPTED_AUDIENCES,
             issuer=ISSUER,
             leeway=CLOCK_SKEW_LEEWAY_SECONDS,
         )

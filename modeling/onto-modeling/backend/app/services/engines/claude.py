@@ -16,7 +16,13 @@ from pathlib import Path
 from typing import Any
 
 from ... import config
-from .base import FRIENDLY_ERROR, EngineContext, config_error_for, safe_json
+from .base import (
+    FRIENDLY_ERROR,
+    EngineContext,
+    config_error_for,
+    project_goal_section,
+    safe_json,
+)
 
 _RAW_ERROR_PATTERN = None  # 延迟编译
 _CONFIG_ERROR_PATTERN = None
@@ -151,6 +157,13 @@ def _owner_env(owner: str) -> dict:
 def _session_env(owner: str = "") -> dict:
     """owner 为空 = 管理员配置（原行为）；非空 = 该用户的个人 Key。"""
     env = {}
+    # 子代理与 Shell 命令一律同步执行，为规则 8.04 提供机制保证：CLI 2.x 默认后台派遣子代理，
+    # 平台以主轮结束判定空闲，后台任务会被误示完成，还可能随空闲回收静默丢失
+    env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
+    # CLI 自报会话状态（session_state_changed），会话层据此判定空闲：开关失效、子代理走后台时，
+    # 主轮结束不代表任务结束。2.1.269 之前的 CLI 每轮结束都报 idle，须设 1 才在后台工作期间保持 running
+    env["CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"] = "1"
+    env["CLAUDE_CODE_BG_TASKS_REPORT_RUNNING"] = "1"
     if config.MAX_THINKING_TOKENS:
         env["MAX_THINKING_TOKENS"] = config.MAX_THINKING_TOKENS
     from .. import model_settings
@@ -164,6 +177,11 @@ def _session_env(owner: str = "") -> dict:
     except Exception:
         pass
     return env
+
+
+def _is_session_state(message: Any) -> bool:
+    """CLI 自报的会话状态（running / idle / requires_action）。"""
+    return isinstance(message, SystemMessage) and message.subtype == "session_state_changed"
 
 
 def normalize_message(message: Any) -> dict | None:
@@ -220,6 +238,9 @@ def normalize_message(message: Any) -> dict | None:
     if lifecycle_event:
         return lifecycle_event
     if isinstance(message, SystemMessage):
+        if _is_session_state(message):
+            # 仅供会话层判定空闲，不进事件历史，也不推给前端
+            return {"type": "_cli_state", "state": (message.data or {}).get("state")}
         if message.subtype == "compact_boundary":
             metadata = (message.data or {}).get("compact_metadata") or {}
             return {
@@ -585,7 +606,8 @@ class ClaudeEngine:
                                     else FRIENDLY_ERROR
                                 )
                         yield pending
-                    else:
+                    elif not _is_session_state(message):
+                        # 状态事件可能先于 result 到达，不能让它提前放出待定文字
                         yield self._pending_assistant
                         self._pending_assistant = None
 
@@ -686,9 +708,13 @@ class ClaudeEngine:
                 message=decision.get("message") or "用户拒绝了该操作"
             )
 
+        system_prompt: dict[str, str] = {"type": "preset", "preset": "claude_code"}
+        goal_section = project_goal_section(self._ctx.project_goal)
+        if goal_section:
+            system_prompt["append"] = goal_section
         kwargs: dict[str, Any] = dict(
             cwd=str(self._ctx.cwd),
-            system_prompt={"type": "preset", "preset": "claude_code"},
+            system_prompt=system_prompt,
             # user 级设置承载部署机的模型网关配置（~/.claude/settings.json 的 env）
             setting_sources=["user", "project"],
             # bypassPermissions 下 can_use_tool 不会被触发；切回 default 即恢复确认卡

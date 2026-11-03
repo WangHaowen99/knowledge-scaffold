@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS projects (
   -- 当前项目是否由用户明确要求先完成产品/规则大清单台账。
   -- 该标志独立于全局 advisory/enforce 配置，作为计划和写入门禁的事实来源。
   product_ledger_required INTEGER NOT NULL DEFAULT 0 CHECK (product_ledger_required IN (0, 1)),
+  -- 创建时填写的建模目标：pending 待用户在开始建模前确认，confirmed 已确认；
+  -- 空串表示未填目标、未要求确认或存量项目，不出确认卡也不注入助手提示词。
+  goal_status   TEXT NOT NULL DEFAULT '',
   workflow_profile_json TEXT NOT NULL DEFAULT '{"enabledSteps":[],"requiredSteps":["scenario","data_source"],"releaseRequested":true,"externalResearch":false}',
   stage         TEXT NOT NULL DEFAULT 'project_setup',
   created_at    TEXT NOT NULL,

@@ -733,7 +733,7 @@ class JiuwenEngine:
         sys_operation = Runner.resource_mgr.get_sys_operation(sysop_id)
         tracker = _call_usage_rail(self._record_call_usage)
         progress_rail = build_progress_rail(_TOOL_NAME_MAP)
-        system_prompt = self._loader.system_prompt()
+        system_prompt = self._loader.system_prompt(self._ctx.project_goal)
         subagent_root = shadow / "sub_agents"
         rails = [
             tracker,

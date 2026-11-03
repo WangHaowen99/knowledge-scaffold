@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from ..services import conversation_store
 from ..services.agent_sessions import VISIBLE_HISTORY_TAIL, manager, visible_history_start
-from .projects import ensure_access
+from .projects import ensure_access, ensure_goal_confirmed
 
 router = APIRouter(prefix="/api/projects/{project_id}/session", tags=["session"])
 
@@ -94,6 +94,7 @@ async def delete_conversation(project_id: str, conversation_id: str, request: Re
 @router.post("/messages")
 async def send_message(project_id: str, body: MessageBody, request: Request):
     cwd = ensure_access(project_id, request, write=True)
+    ensure_goal_confirmed(project_id)
     user = getattr(request.state, "user", None) or {}
     session = await manager.send(
         project_id, cwd, body.text, body.conversation_id, username=user.get("sub", "")

@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from claude_agent_sdk import ResultMessage, SystemMessage
 
 from app import config
 from app.services import agent_sessions
@@ -621,3 +622,155 @@ def test_unwatch_forgets_project_without_open_streams(pool_env):
     manager.watch("p1", queue)
     manager.unwatch("p1", queue)
     assert ("p1", "default") not in manager._watchers
+
+
+# ---- 会话状态以 CLI 自报的 idle 为准（主轮结束不代表任务结束） ----
+
+
+class ScriptedClient(FakeClient):
+    """按步骤推送 SDK 消息：测试逐条放入，读循环逐条消费。"""
+
+    def __init__(self, options):
+        super().__init__(options)
+        self.inbox: asyncio.Queue = asyncio.Queue()
+
+    async def receive_messages(self):
+        while True:
+            yield await self.inbox.get()
+
+
+@pytest.fixture()
+def scripted_env(pool_env, monkeypatch):
+    manager, created, tmp_path = pool_env
+
+    def create_client(self, options):
+        client = ScriptedClient(options)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(ClaudeEngine, "_create_client", create_client)
+    return manager, created, tmp_path
+
+
+def _cli_state(state):
+    return SystemMessage(subtype="session_state_changed", data={"state": state})
+
+
+def _turn_result(origin=None):
+    return ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=1,
+        session_id="synthetic-session",
+        origin=origin,
+    )
+
+
+async def _feed(client, *messages):
+    for message in messages:
+        client.inbox.put_nowait(message)
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
+async def _running_session(manager, tmp_path):
+    await manager.send("p1", tmp_path / "w1", "你好")
+    session = await _settle(manager, "p1")
+    assert session.state == "running"
+    return session
+
+
+def _states(session):
+    return [event["state"] for event in session.events if event["type"] == "session_state"]
+
+
+def test_cli_without_state_reports_turns_idle_on_result(scripted_env):
+    """旧版 CLI、九问引擎不上报状态：result 后即置空闲，与原行为一致。"""
+    manager, created, tmp_path = scripted_env
+
+    async def scenario():
+        session = await _running_session(manager, tmp_path)
+        await _feed(created[0], _turn_result())
+        assert session.state == "idle"
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_turn_result_waits_for_cli_idle(scripted_env):
+    """同步派遣：result 后 CLI 随即报 idle，此时才置空闲；状态只切换一次，CLI 状态不进历史。"""
+    manager, created, tmp_path = scripted_env
+
+    async def scenario():
+        session = await _running_session(manager, tmp_path)
+        await _feed(created[0], _cli_state("running"), _turn_result())
+        assert session.state == "running"
+
+        await _feed(created[0], _cli_state("idle"))
+        assert session.state == "idle"
+        assert _states(session) == ["running", "idle"]
+        assert not any(event["type"] == "_cli_state" for event in session.events)
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_background_work_keeps_session_running_until_cli_idle(scripted_env):
+    """后台派遣：主轮与接续轮次之间 CLI 一直报 running，会话保持运行中、不被回收。"""
+    manager, created, tmp_path = scripted_env
+
+    async def scenario():
+        session = await _running_session(manager, tmp_path)
+        await _feed(created[0], _cli_state("running"), _turn_result())
+        session.last_activity = time.time() - 10_000
+        assert await manager.reap_idle() == 0
+
+        await _feed(created[0], _turn_result(origin={"kind": "task-notification"}))
+        assert session.state == "running"
+
+        await _feed(created[0], _cli_state("idle"))
+        assert session.state == "idle"
+        assert _states(session) == ["running", "idle"]
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_cli_idle_before_result_turns_idle_on_result(scripted_env):
+    """CLI 的 idle 先于 result 到达：等 result 广播后再置空闲，前端先收到结果。"""
+    manager, created, tmp_path = scripted_env
+
+    async def scenario():
+        session = await _running_session(manager, tmp_path)
+        await _feed(created[0], _cli_state("running"), _cli_state("idle"))
+        assert session.state == "running"
+
+        await _feed(created[0], _turn_result())
+        assert session.state == "idle"
+        kinds = [event["type"] for event in session.events]
+        assert kinds.index("result") < len(kinds) - 1
+        assert kinds[-1] == "session_state"
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_stop_turns_idle_even_if_cli_still_running(scripted_env):
+    """用户点了停止：之后的 result 直接置空闲；CLI 随后开始接续轮次时恢复运行中。"""
+    manager, created, tmp_path = scripted_env
+
+    async def scenario():
+        session = await _running_session(manager, tmp_path)
+        await _feed(created[0], _cli_state("running"))
+        await manager.interrupt("p1")
+        await _feed(created[0], _turn_result())
+        assert created[0].interrupted
+        assert session.state == "idle"
+
+        await _feed(created[0], _cli_state("idle"), _cli_state("running"))
+        assert session.state == "running"
+        await manager.shutdown()
+
+    asyncio.run(scenario())

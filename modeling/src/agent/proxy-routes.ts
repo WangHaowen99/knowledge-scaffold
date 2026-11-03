@@ -6,13 +6,22 @@ import { config } from '../config.js';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { MaterialPurposeReviewStore } from '../documents/material-purpose-review.js';
 import { sendHttpError } from '../http-error.js';
-import { canReadProject, canWriteProject } from '../projects/repo.js';
+import { canReadProject, canWriteProject, getProject } from '../projects/repo.js';
 import { getDb } from '../db/index.js';
 import { ChangeControlStore } from './change-control.js';
 import { deliverAgentProjectEvents } from './project-event-outbox.js';
 import { takeAcceptanceFault } from '../acceptance/faults.js';
 
 const AGENT_REQUEST_TIMEOUT_MS = 30_000;
+const GOAL_CONFIRMATION_REQUIRED = {
+  code: 'PROJECT_GOAL_CONFIRMATION_REQUIRED',
+  error: '请先确认建模目标',
+};
+
+// 创建时填了目标的项目要先在确认卡里确认，确认前不启动助手
+function goalConfirmationPending(projectId: string): boolean {
+  return getProject(projectId)?.goalStatus === 'pending';
+}
 
 export function registerAgentProxyRoutes(app: FastifyInstance): void {
   const artifacts = getPackageArtifactStore();
@@ -32,6 +41,7 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
   app.post('/api/projects/:id/agent/runs', async (request, reply) => {
     const id = projectId(request);
     if (!canWriteProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
+    if (goalConfirmationPending(id)) return reply.code(409).send(GOAL_CONFIRMATION_REQUIRED);
     const pausedPlan = new ChangeControlStore(getDb()).pausedPlanSnapshot(id);
     const resumePlanId = String((request.body as any)?.resumePlanId ?? '').trim();
     if (pausedPlan && resumePlanId !== pausedPlan.id) {
@@ -86,6 +96,7 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
   app.post('/api/projects/:id/agent/steer', async (request, reply) => {
     const id = projectId(request);
     if (!canWriteProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
+    if (goalConfirmationPending(id)) return reply.code(409).send(GOAL_CONFIRMATION_REQUIRED);
     const pausedPlan = new ChangeControlStore(getDb()).pausedPlanSnapshot(id);
     if (pausedPlan) return reply.code(409).send(pausedPlanDecision(pausedPlan));
     const acceptanceFailure = takeAcceptanceMessageFailure(request, reply, id);

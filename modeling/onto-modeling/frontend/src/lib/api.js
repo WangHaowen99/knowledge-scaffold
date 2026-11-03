@@ -103,7 +103,15 @@ async function responseError(response) {
 // 评测轮在 modeling 侧后台执行，常超 access token 有效期：带上 refresh token，
 // 由 modeling 为本轮续期凭据。未登录（无鉴权部署）时不带该字段。
 export function evalRunPayload(
-  { cases, dataSource, dataSourceId = '', evalSetId = '', allowUnbound = false },
+  {
+    cases,
+    dataSource,
+    dataSourceId = '',
+    evalSetId = '',
+    allowUnbound = false,
+    modelProfileId = '',
+    caseConcurrency,
+  },
   refreshToken = authStore.refreshToken,
 ) {
   const payload = {
@@ -113,6 +121,10 @@ export function evalRunPayload(
     eval_set_id: evalSetId,
     allow_unbound: allowUnbound,
   };
+  if (modelProfileId) payload.model_profile_id = modelProfileId;
+  if (Number.isSafeInteger(caseConcurrency) && caseConcurrency >= 1) {
+    payload.case_concurrency = caseConcurrency;
+  }
   if (refreshToken) payload.refresh_token = refreshToken;
   return payload;
 }
@@ -190,6 +202,12 @@ export const api = {
   },
   renameProject: (pid, name) =>
     request(`/api/projects/${pid}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  // 开始建模前的目标确认卡：background 省略 = 确认原目标；给出 = 提交改写后的新目标
+  confirmProjectGoal: (pid, background) =>
+    request(`/api/projects/${pid}/goal`, {
+      method: 'PUT',
+      body: JSON.stringify(background === undefined ? {} : { background }),
+    }),
   // 显式确认体：request() 一律带 application/json，空体在严格服务端/网关会被判为非法 JSON；
   // 同时与 modeling 侧删除接口的 confirmed 契约保持一致
   deleteProject: (pid) =>
@@ -490,11 +508,28 @@ export const api = {
   },
   // {cases, dataSourceId, evalSetId}；dataSource 为不落库的内联配置（none / dataset）；
   // allowUnbound：用户已确认数据绑定对不上的对象按未绑定处理
-  evalRun: (pid, { cases, dataSource, dataSourceId = '', evalSetId = '', allowUnbound = false }) =>
+  evalRun: (pid, {
+    cases,
+    dataSource,
+    dataSourceId = '',
+    evalSetId = '',
+    allowUnbound = false,
+    modelProfileId = '',
+    caseConcurrency,
+  }) =>
     request(`/api/projects/${pid}/eval/run`, {
       method: 'POST',
-      body: JSON.stringify(evalRunPayload({ cases, dataSource, dataSourceId, evalSetId, allowUnbound })),
+      body: JSON.stringify(evalRunPayload({
+        cases,
+        dataSource,
+        dataSourceId,
+        evalSetId,
+        allowUnbound,
+        modelProfileId,
+        caseConcurrency,
+      })),
     }),
+  evalModelProfiles: (pid) => request(`/api/projects/${pid}/eval/model-profiles`),
   evalDataSources: (pid) => request(`/api/projects/${pid}/eval/data-sources`),
   // 数据源表单上传业务数据表（Excel）→ { file: { id, name, size } }
   uploadEvalDataFile: (pid, file, onProgress) => {

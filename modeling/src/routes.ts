@@ -103,6 +103,7 @@ import {
   cancelEvaluationsForProject,
   startCurrentEvaluation,
 } from './evaluation/engine.js';
+import { parseJudgeModelConfig } from './evaluation/judge-model.js';
 import { getProjectDataSource } from './evaluation/data-source-repo.js';
 import { configureProjectDataSource } from './evaluation/data-source-service.js';
 import type { DataSourceConnectionTester } from './evaluation/data-source-connection-test.js';
@@ -184,7 +185,11 @@ import {
   LlmDefaultSyncError,
   syncUserLlmToPlatformDefault,
 } from './settings/llm-default-sync.js';
-import { modelingServiceFetch, testConsumerConnectivity } from './consumer/client.js';
+import {
+  getConsumerGlobalModelProfiles,
+  modelingServiceFetch,
+  testConsumerConnectivity,
+} from './consumer/client.js';
 import { config } from './config.js';
 import type { AnalysisResult, DataDictTable } from './types.js';
 import type { DocumentRecord } from './types.js';
@@ -829,6 +834,16 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       return testConsumerConnectivity(token, url);
     });
 
+    r.get('/api/evaluation/model-profiles', async (req, reply) => {
+      const token = (req.headers.authorization ?? '').slice(7);
+      try {
+        return await getConsumerGlobalModelProfiles(token);
+      } catch (error) {
+        const status = Number((error as { statusCode?: number })?.statusCode) || 502;
+        return reply.code(status).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+
     // ---- 项目（节点 1）----
     r.get('/api/projects', async (req) => ({
       projects: await Promise.all(listProjects(req.user!.username).map(async (project) => {
@@ -948,6 +963,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           owner, name: b.name, externalId, domain: b.domain,
           background: b.background, targetUsers: b.targetUsers, glossaryPrefs: b.glossaryPrefs,
           runtime: b.runtime === 'agent' ? 'agent' : 'legacy',
+          requireGoalConfirmation: b.requireGoalConfirmation === true,
         });
         return reply.code(201).send({ project });
       } catch (error) {
@@ -1112,6 +1128,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.post('/api/projects/:id/documents', async (req, reply) => {
       const p = getProject((req.params as any).id);
       if (!p || p.owner !== req.user!.username) return reply.code(404).send({ error: '项目不存在' });
+      // 资料上传会触发助手续跑；创建时填写的目标确认前不开工
+      if (p.goalStatus === 'pending') {
+        return reply.code(409).send({ code: 'PROJECT_GOAL_CONFIRMATION_REQUIRED', error: '请先确认建模目标' });
+      }
       const replacementOf = String((req.query as any)?.replacementOf ?? '').trim();
       const autoContinue = String((req.query as any)?.agentFollowUp ?? '1') !== '0';
       const uploadBatchId = String((req.query as any)?.uploadBatchId ?? '').trim().slice(0, 200);
@@ -2977,10 +2997,29 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (blocked) return blocked;
       const token = (req.headers.authorization ?? '').slice(7);
       const { refresh_token: refreshToken } = (req.body ?? {}) as { refresh_token?: string };
+      const body = (req.body ?? {}) as {
+        model_profile_id?: unknown;
+        case_concurrency?: unknown;
+        refresh_token?: string;
+        judge_model?: unknown;
+      };
+      const modelProfileId = String(body.model_profile_id ?? '').trim();
+      const caseConcurrency = Number(body.case_concurrency);
+      if (modelProfileId) {
+        try {
+          const available = await getConsumerGlobalModelProfiles(token);
+          if (!available.profiles.some((profile) => profile.id === modelProfileId)) {
+            return reply.code(409).send({ error: '所选模型配置不存在或已停用，请刷新后重新选择' });
+          }
+        } catch (error) {
+          return reply.code(502).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+      }
       const authSession = refreshToken
         ? backgroundAuthSessions.remember(req.user!.username, token, refreshToken)
         : backgroundAuthSessions.get(req.user!.username);
       try {
+        const judgeModel = Object.hasOwn(body, 'judge_model') ? parseJudgeModelConfig(body.judge_model) : undefined;
         const acceptanceRunId = `evaluation:${c.p.id}:${Date.now()}`;
         const holdUntilStopped = takeAcceptanceFault(req.user!.username, 'F13', acceptanceRunId);
         const environmentFailure = holdUntilStopped
@@ -3021,6 +3060,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           token,
           refreshToken,
           authSession,
+          modelProfileId,
+          caseConcurrency: Number.isSafeInteger(caseConcurrency) ? caseConcurrency : undefined,
+          judgeModel,
         }, acceptanceDependencies);
         setProjectStage(c.p.id, 'evaluate');
         return { roundId };

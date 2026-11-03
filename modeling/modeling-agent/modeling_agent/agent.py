@@ -35,6 +35,9 @@ from .tools import ToolContext, build_core_tools, build_tools, contract_governed
 # 待遇，长阶段中途方法不再被工具返回值挤出窗口。
 # 情形形 skill（package-merge、failure-repair）由事件而非阶段触发，
 # 保留 list_skill 按需加载，不在此表。
+# 创建项目时确认过的目标只在这些阶段注入系统提示词
+PROJECT_GOAL_PHASES = frozenset({"intake", "goal"})
+
 PHASE_SKILLS = {
     "intake": "material-analysis",
     "goal": "material-analysis",
@@ -197,6 +200,7 @@ def build_agent(
     package_contract: dict[str, Any] | None = None,
     turn_goal: str = "",
     constraints: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
+    project_goal: str = "",
 ) -> AgentBundle:
     resolved_model = model or build_model(settings)
     workspace = settings.data_dir / "runtime-workspaces" / context.run_id
@@ -266,6 +270,8 @@ def build_agent(
             package_contract or {},
             turn_goal,
             phase_method=phase_method,
+            # 创建目标只在目标访谈阶段相关；goal.md 定稿后由它接替成为事实源
+            project_goal=project_goal if context.phase in PROJECT_GOAL_PHASES else "",
             constraints=tuple(constraints),
             contract_active=contract_governed_tool_exposed(
                 context.phase,
@@ -299,12 +305,13 @@ def _system_prompt(
     turn_goal: str = "",
     *,
     phase_method: str = "",
+    project_goal: str = "",
     constraints: tuple[dict[str, Any], ...] = (),
     contract_active: bool = True,
 ) -> str:
     # system 段按指令寿命分槽位：契约（项目寿命，随管辖工具出现）→ 主手册
-    # （跨阶段通则）→ 本阶段方法（阶段寿命）→ 专家约束（撤销前有效）→
-    # 本轮目标（一轮寿命）。准入标准是「当下相关」，不是「重要」——按
+    # （跨阶段通则）→ 本阶段方法（阶段寿命）→ 初始建模目标（目标访谈阶段）→
+    # 专家约束（撤销前有效）→ 本轮目标（一轮寿命）。准入标准是「当下相关」，不是「重要」——按
     # 「重要」收容，特权区会装下一切，然后所有常驻指令一起被稀释。
     if contract_active:
         contract = json.dumps(package_contract, ensure_ascii=False, sort_keys=True, indent=2)
@@ -323,6 +330,7 @@ def _system_prompt(
         f"# 本阶段方法（服务端按当前阶段提供）\n\n{phase_method}\n\n"
         if phase_method.strip() else ""
     )
+    project_goal_section = _project_goal_section(project_goal)
     constraint_lines = "\n".join(
         f"{index}. [约束 #{item['id']}] {item['text']}"
         for index, item in enumerate(constraints, start=1)
@@ -343,9 +351,29 @@ def _system_prompt(
         f"{contract_section}"
         f"# 建模方法 Skill\n\n{leader_skill}\n\n"
         f"{method_section}"
+        f"{project_goal_section}"
         f"{constraints_section}"
     )
     return body.rstrip("\n") + goal_section
+
+
+def _project_goal_section(goal: str) -> str:
+    # 与 onto-modeling 引擎注入的同名段保持同一份措辞，另加本应用的证据与 goal.md 约定。
+    text = (goal or "").strip()
+    if not text:
+        return ""
+    quoted = "\n".join(f"> {line}" if line.strip() else ">" for line in text.splitlines())
+    return (
+        "# 用户确认的初始建模目标\n"
+        "以下是用户创建项目时填写、并在开始建模前通过确认卡确认的目标原文：\n"
+        f"{quoted}\n"
+        "- 以它为起点，结合资料补全范围、约束和产出；其中已写明的内容不得再要求用户重新说明，"
+        "只追问缺口或与资料冲突之处。\n"
+        "- 命令文档要求确认建模目标或询问领域范围时，先以此为准，只就未写明的部分提问。\n"
+        "- 用户在对话中调整目标后，以对话中的最新说法为准。\n"
+        "- 目标草稿引用这段原文作为证据时，使用 `user-decision:开始建模前确认的初始目标`；"
+        "已有经确认的 .modeling/goal.md 时以 goal.md 为准。\n\n"
+    )
 
 
 def _subagents(settings: Settings, context: ToolContext, model: Any) -> list[SubAgentConfig]:
