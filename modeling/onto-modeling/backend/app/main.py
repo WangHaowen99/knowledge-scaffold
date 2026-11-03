@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from . import config, wiring
 from .api import deps, v1
 from .routers import auth_routes
+from .static_assets import PrecompressedStaticFiles
 
 
 @asynccontextmanager
@@ -68,9 +69,11 @@ _drawio_available = auth_routes.drawio_available()
 if _drawio_available:
     app.mount("/drawio", StaticFiles(directory=auth_routes.drawio_dir(), html=True), name="drawio")
 
-# 部署形态：前端构建产物与 API 同端口服务；开发时用 vite dev + 代理，不走这里
+# 部署形态：前端构建产物与 API 同端口服务；开发时用 vite dev + 代理，不走这里。
+# 预压缩的 .br / .gz 按 Accept-Encoding 发，带哈希的代码块长缓存（F2：第一次切换页面白屏几秒）
+STATIC_FILES_CLASS = PrecompressedStaticFiles
 _static_dir = Path(
     os.environ.get("ONTO_WEB_STATIC_DIR", str(config.PACKAGE_ROOT / "frontend" / "dist"))
 )
 if _static_dir.is_dir():
-    app.mount("/", StaticFiles(directory=_static_dir, html=True), name="static")
+    app.mount("/", STATIC_FILES_CLASS(directory=_static_dir, html=True), name="static")

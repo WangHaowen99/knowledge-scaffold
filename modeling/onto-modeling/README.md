@@ -57,7 +57,8 @@ VITE_API_MOCK=1 npm run dev     # 或把 VITE_API_MOCK=1 写进 frontend/.env.lo
 cd ../../auth-server && python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
 AUTH_SERVER_DATA_DIR=/tmp/onto-auth AUTH_SERVER_ISSUER=http://127.0.0.1:5056 \
   AUTH_BOOTSTRAP_ADMIN_PASSWORD='<初始密码>' AUTH_SERVER_ADMIN_TOKEN='<管理令牌>' ./venv/bin/python run.py
-# 2. 前端构建产物由后端直接发（frontend/dist）
+# 2. 前端构建产物由后端直接发（frontend/dist）：构建时给 js、css 各写一份 .br / .gz，后端按 Accept-Encoding 发；
+#    assets/ 下带哈希的文件缓存一年，index.html 每次向服务端确认。前面再加反向代理时不要重复压缩、别改这两种缓存头
 cd frontend && npm ci && npm run build
 # 3. 后端：登录、用户管理、运维中心经业务端口
 cd backend && ONTO_WEB_AUTH_URL=http://127.0.0.1:5056 ONTO_WEB_AUTH_ISSUER=http://127.0.0.1:5056 \
