@@ -202,9 +202,28 @@ def parse_object_doc(text: str) -> dict:
     }
 
 
+def _resource_text(path: Path) -> Path | None:
+    """资料区里的 Excel 原件 → 它的文本版（数据接入转出，resource/text/<分组>/<原文件名>.md）；不在资料区返回 None。"""
+    for parent in path.parents:
+        if parent.name == "resource":
+            rel = path.relative_to(parent)
+            return None if rel.parts[:1] == ("text",) else parent / "text" / f"{rel.as_posix()}.md"
+    return None
+
+
 def read_table_headers(path: Path) -> dict[str, list[str]]:
     """表格文件 → {Sheet 名: 表头列}。口径与工具箱 table_profile.py 一致：
-    一个 Sheet = 一张表，首行 = 字段名。"""
+    一个 Sheet = 一张表，首行 = 字段名。资料区里的 Excel 读文本版，不解析原件（F4c，ADR-0076）。"""
+    text = _resource_text(path) if path.suffix.lower() != ".csv" else None
+    if text is not None:
+        from ..evidence.convert import md_tables
+
+        try:
+            sheets = md_tables(text.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            return {}
+        return {name: headers for name, rows in sheets.items()
+                if (headers := [cell.strip() for cell in rows[0] if cell.strip()])}
     if path.suffix.lower() == ".csv":
         try:
             with open(path, encoding="utf-8-sig", newline="") as handle:

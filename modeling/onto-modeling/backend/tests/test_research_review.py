@@ -395,17 +395,14 @@ def test_manual_pending_blocks_acceptance(workspace, toolkit):
 def test_same_source_ids_across_formats(workspace, toolkit, suffix):
     checker, review = toolkit
     path = workspace / 'resource' / 'others' / f'规范.{suffix}'
-    if suffix == 'docx':
-        from test_review_integrity import docx
-        docx(path)
-    elif suffix == 'xlsx':
-        import openpyxl
-        book = openpyxl.Workbook()
-        book.active.title = '规则'
-        book.active.append(['ITEM-01', 'RULE-01'])
-        book.save(path)
-    else:
+    if suffix == 'md':
         path.write_text('合成规范 ITEM-01 RULE-01', encoding='utf-8')
+    else:
+        # F4c：Word、Excel 原件不解析，按数据接入转出的文本版核对（ADR-0076）
+        path.write_bytes(b'PK synthetic')
+        text = workspace / 'resource' / 'text' / 'others' / f'规范.{suffix}.md'
+        text.parent.mkdir(parents=True, exist_ok=True)
+        text.write_text('合成规范 ITEM-01 RULE-01\n', encoding='utf-8')
     location = path.relative_to(workspace).as_posix()
     write_report(workspace, make_report([row('ITEM-01', 'RULE-01', location=location)]))
     assert checker.check_exit_code(checker.run_check(workspace)) == 0

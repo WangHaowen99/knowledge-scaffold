@@ -38,10 +38,13 @@ _HOOK_TOOL_NAME = {
     "powershell": "Bash",
     "write_file": "Write",
     "edit_file": "Edit",
+    # 读文件也过守卫（F4c）：openjiuwen 的 read_file 遇到 PDF 会用 pdfplumber 在后端进程里解析，资料原件要拦下、
+    # 改读数据接入转出的文本版
+    "read_file": "Read",
 }
 # 只读或不碰文件的工具：不过守卫
 _READ_ONLY_TOOLS = {
-    "read_file", "list_files", "glob", "grep", "task_tool", "todo", "web_search", "web_fetch",
+    "list_files", "glob", "grep", "task_tool", "todo", "web_search", "web_fetch",
     "ask_user", "list_skill", "load_skill", "read_memory", "search_memory",
 }
 # 名字像写文件的未知工具：默认拒绝（方案 D9）

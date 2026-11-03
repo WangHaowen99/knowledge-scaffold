@@ -409,20 +409,28 @@ class CheckContext:
         self._corpus = None
 
     def source_text(self, rel: str, anchor: str = '') -> str:
+        """出处所在文本。资料区里的原件（PDF、Word、Excel 等）不解析（F4c，ADR-0076）：旧报告指向原件的，
+        按它的文本版整篇核对；还没有文本版就核对不了。"""
         if rel not in self._sources:
             path = self.root / rel
             if not within_workspace(self.root, path):
                 raise ValueError('来源必须位于当前工作区内')
-            self._sources[rel] = source_extract.extract(path)
-        return source_extract.located_text(self._sources[rel], anchor)
+            read = rel
+            if path.suffix.lower() not in source_extract.TEXT_SUFFIXES and rel.startswith('resource/'):
+                read = source_extract.text_version(rel)
+                if not (self.root / read).is_file():
+                    raise ValueError('出处指向资料原件，它还没有文本版（转换中、暂不支持或转换失败），这里不解析原件，核对不了')
+            self._sources[rel] = {**source_extract.extract(self.root / read), 'read_rel': read}
+        data = self._sources[rel]
+        return source_extract.located_text(data, '' if data['read_rel'] != rel else anchor)
 
     def sources_read(self) -> list[str]:
-        """ID 溯源时实际读过的来源文档。
+        """ID 溯源时实际读过的来源文档（原件读的是文本版，记文本版）。
 
         回执要把它们记进输入指纹：规范 ID 就取自这些文档，文档里的 ID 改了而回执
         不失效的话，报告会带着已经对不上的 ID 继续算作已验收。
         """
-        return sorted(self._sources)
+        return sorted({data['read_rel'] for data in self._sources.values()})
 
     def corpus(self) -> str:
         """resource/ 下的全部文本资料。不含任何报告，避免报告自证。有文本版的原件读文本版，不解析原件。"""
@@ -431,11 +439,8 @@ class CheckContext:
             resource = self.root / 'resource'
             if resource.is_dir():
                 for path in sorted(resource.rglob('*')):
-                    rel = path.relative_to(self.root).as_posix()
-                    if path.suffix.lower() not in source_extract.TEXT_SUFFIXES \
-                            and (self.root / source_extract.text_version(rel)).is_file():
-                        continue
-                    if path.is_file() and path.suffix.lower() in source_extract.SUPPORTED:
+                    # 只读文本（含 resource/text 下的文本版），原件一律不解析
+                    if path.is_file() and path.suffix.lower() in source_extract.TEXT_SUFFIXES:
                         try:
                             parts.append(self.source_text(path.relative_to(self.root).as_posix()))
                         except ValueError:
@@ -701,7 +706,7 @@ def run_check(root: Path) -> dict:
         tracked.append(research_review.INVENTORY_FILE.as_posix())
     inputs = research_review.file_revisions(root, tracked)
     for rel, data in ctx._sources.items():
-        if data['source_sha256'] and inputs.get(rel) != data['source_sha256'][:16]:
+        if data['source_sha256'] and inputs.get(data['read_rel']) != data['source_sha256'][:16]:
             issues.append(_issue(rel, ERROR, '来源无法核验', '抽取后原文件修订发生变化，请重新核验'))
     errors = [issue for issue in issues if issue['severity'] == ERROR]
     status = (research_review.UNVERIFIABLE if any(i['category'] == '来源无法核验' for i in errors)

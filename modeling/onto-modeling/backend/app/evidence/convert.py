@@ -199,6 +199,50 @@ def md_table(rows: list[list]) -> str:
     return "\n".join(lines)
 
 
+def _md_row(line: str) -> list[str]:
+    """一行 Markdown 表格 → 单元格（md_cell 的逆：反斜杠转义、<br> 换行）。"""
+    body = line.strip()
+    body = body[1:] if body.startswith("|") else body
+    cells, current, escaped = [], [], False
+    for char in body:
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == "|":
+            cells.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    if current and "".join(current).strip():
+        cells.append("".join(current))
+    return [cell.strip().replace("<br>", "\n") for cell in cells]
+
+
+def md_tables(markdown: str) -> dict[str, list[list[str]]]:
+    """Excel 文本版 → {工作表名: 行}（每个工作表标记后面第一张表，表头在第一行）。md_table 的逆，
+    给 schema 表头与取值画像用（F4c：不再解析 Excel 原件）。工作区里的 table_profile.py 有同口径的一份。"""
+    tables: dict[str, list[list[str]]] = {}
+    sheet, rows, done = None, [], set()
+    for line in str(markdown or "").splitlines() + [""]:
+        stripped = line.strip()
+        marker = _SHEET_RE.match(stripped)
+        if marker or not stripped.startswith("|"):
+            if sheet is not None and rows and sheet not in done:
+                tables[sheet] = rows
+                done.add(sheet)
+            rows = []
+            if marker:
+                sheet = marker.group(1)
+            continue
+        cells = _md_row(stripped)
+        if cells and all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
+            continue
+        rows.append(cells)
+    return tables
+
+
 def check_ooxml(data: bytes, limits: ConvertLimits) -> None:
     """Word、Excel 是 zip：打开前先看成员数和解压后的总大小，挡住 zip 炸弹。"""
     try:

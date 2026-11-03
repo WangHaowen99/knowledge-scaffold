@@ -226,7 +226,7 @@ def test_anchor_on_an_original_with_a_text_version_is_a_warning_and_corpus_skips
     warnings = [issue for issue in result["issues"] if issue["severity"] == "警告"]
     assert any(issue["category"] == "出处" and "文本版" in issue["message"] for issue in warnings), result["issues"]
     checker.CheckContext(workspace, {}).corpus()
-    assert read.count("规范.docx") == 1  # 只有报告指名的那一次；语料按文本版读
+    assert read.count("规范.docx") == 0  # F4c：报告指名的原件也按文本版核对，原件一次都不解析
 
 
 # ---------------------------------------------------------------------------
