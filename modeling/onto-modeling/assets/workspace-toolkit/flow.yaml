@@ -182,14 +182,17 @@ stages:
 
 # 命令 → 所属节点与前置阶段（check-prereq：每个前置阶段都要已到达，输出 ok 或 missing:…）
 # 带 slice=<切片> 的命令按节点的 steps 归到按切片的节点（extract-rule-metric 带切片是「规则」一步，不带是指标旁支）。
+# lock_waits：命令停下来等用户在对话里回复时锁切到的阶段（STEP0_TEMPLATE 第 4 步）。声明了表示命令遵守
+# 「等回复切 confirm、收尾先释放锁」的约定：一轮正常结束、这次保存过、没有没提交的改动、锁却不在这些阶段时，
+# 平台代为释放锁（助手做完了忘了放）；没声明的命令只在建议条上主推「继续」
 commands:
-  research: {node: core.research, requires: []}
-  extract-object: {node: core.model, requires: [资料分析完成]}
-  extract-operation: {node: core.model, requires: [对象已提取]}
-  extract-rule-metric: {node: core.metric, requires: []}
-  validate: {node: core.validate, requires: [逻辑已提取, 对象已提取]}
-  consistency: {node: core.consistency, requires: [逻辑已提取, 对象已提取]}
-  update: {node: core.update, requires: [逻辑已提取, 对象已提取]}
+  research: {node: core.research, requires: [], lock_waits: [confirm]}
+  extract-object: {node: core.model, requires: [资料分析完成], lock_waits: [confirm]}
+  extract-operation: {node: core.model, requires: [对象已提取], lock_waits: [confirm]}
+  extract-rule-metric: {node: core.metric, requires: [], lock_waits: [confirm]}
+  validate: {node: core.validate, requires: [逻辑已提取, 对象已提取], lock_waits: [confirm]}
+  consistency: {node: core.consistency, requires: [逻辑已提取, 对象已提取], lock_waits: [confirm]}
+  update: {node: core.update, requires: [逻辑已提取, 对象已提取], lock_waits: [confirm]}
   overview: {requires: [对象已提取]}
   impact: {requires: [对象已提取]}
   query: {requires: [对象已提取]}

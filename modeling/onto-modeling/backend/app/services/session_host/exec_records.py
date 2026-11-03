@@ -52,7 +52,7 @@ PHASE_LABELS = {
     "analyze": "影响分析", "apply": "执行更新", "check": "检查", "confirm": "等你确认", "awaiting_user": "等你回复",
 }
 # 命令停下来等你在对话里回复时锁切到的阶段（STEP0_TEMPLATE 第 4 步）：这时锁在是正常的，不算没收尾。
-# 命令在流程里声明了 lock_waits 的以声明为准
+# 命令在流程里声明了 lock_waits 的以声明为准，声明了就表示这条命令遵守这个约定（平台可以代为收尾）
 WAITING_PHASES = ("confirm", "awaiting_user")
 STATE_HELPER_PREFIX = "/ontology-"
 
@@ -264,6 +264,20 @@ def unfinished(root: Path, flow: dict | None, command_name: str) -> bool:
     return phase is not None and not waiting_for_reply(phase, flow, command_name)
 
 
+def _wrapped_up(root: Path, record: dict, flow: dict | None, phase: str | None) -> bool:
+    """做完了没放锁：命令声明了等回复的阶段（遵守约定）、锁不在那些阶段、这次执行保存过、副本里没有没提交的改动。
+
+    没保存过（可能一轮被迭代上限截断、还在半路）、有没提交的改动（还在写）都不算，留给「继续」。"""
+    from ...kernel.changesets import worktree
+
+    command = record.get("command_name") or ""
+    if phase is None or _declared_waits(flow, command) is None or waiting_for_reply(phase, flow, command):
+        return False
+    if not (record.get("saved") or {}).get("files"):
+        return False
+    return not worktree.dirty(Path(root))
+
+
 # ---------------------------------------------------------------------------
 # 生命周期
 # ---------------------------------------------------------------------------
@@ -381,19 +395,29 @@ def observe_phase(project_id: str, exec_id: str, root: Path) -> tuple[dict | Non
         return record, True
 
 
-def finish_turn(project_id: str, exec_id: str, root: Path, *, waiting_user: bool = False) -> dict | None:
+def finish_turn(project_id: str, exec_id: str, root: Path, *, waiting_user: bool = False, flow: dict | None = None,
+                wrap_up: bool = False) -> dict | None:
     """一轮结束：命令锁还在（或在等你回答）记为等待，否则记为完成。
 
+    wrap_up：这一轮正常结束（没出错、没被打断）。这时命令做完了却没放锁（`_wrapped_up`），平台代为释放，记为完成。
     整个判断持锁做：打断（interrupt）可能在别的线程同时改这份记录，已经中断的不能被改回等待。
     """
+    from ...kernel.changesets import worktree
+
     with _lock:
         record, _ = observe_phase(project_id, exec_id, root)
         if record is None or record.get("state") not in OPEN_STATES:
             return None
-        still_open = waiting_user or lock_phase(root, record.get("command_name") or "") is not None
+        command = record.get("command_name") or ""
+        phase = lock_phase(root, command)
         now = time.time()
         record["heartbeat_at"] = now
         record["saved"] = saved(root, record.get("base_commit") or "")
+        if wrap_up and not waiting_user and _wrapped_up(root, record, flow, phase):
+            worktree.clear_run_state(Path(root), [command])
+            record["released_by"] = "platform"
+            phase = None
+        still_open = waiting_user or phase is not None
         if still_open:
             record["state"] = "waiting"
         else:

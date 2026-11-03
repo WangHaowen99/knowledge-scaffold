@@ -179,7 +179,7 @@ def end_turn(session, *, failed: bool, waiting_user: bool = False) -> list[dict]
     bound: set[str] = set()
     if session.exec_id and not session.interrupting:  # 打断中先出的 result：执行记录由打断记为中断
         record = _safe("执行记录收尾", exec_records.finish_turn, session.project_id, session.exec_id, session.cwd,
-                       waiting_user=waiting_user)
+                       waiting_user=waiting_user, flow=_flow(session.cwd), wrap_up=not failed)
         if record is not None:
             if record.get("task_id"):
                 bound.add(record["task_id"])
