@@ -51,7 +51,9 @@ export function ScenarioDrawer({ row, type, lock, tasks, onClose, onChanged }) {
       const r = await api.saveArtifact(pid, SCENARIO, key, {
         base_revision: d.revision, fields: { title: form.title.trim() }, sections: Object.fromEntries(EDITABLE.map((s) => [s, form[s]])), summary: `修改场景「${form.title.trim()}」`,
       });
-      toast(`已保存为版本 ${r.version_label}`, 'check');
+      // 包声明的检查只提示（F3b）：照常保存，没过的说一句
+      const warn = r.warnings?.[0]?.message;
+      toast(`已保存为版本 ${r.version_label}${warn ? ` · ${warn}` : ''}`, warn ? 'alert' : 'check');
       setForm(null);
       setDetail(r.artifact);
       onChanged?.();

@@ -755,7 +755,7 @@ def _write_merge(manager, project_id: str, root: Path, record: dict, main: str, 
     origin_source = source or ("autobuild" if record.get("source") == "autobuild" else "agent")
     origin = Origin(origin_source, owner, changeset=record["id"], node=record.get("node_trailer"))
     with ChangeTx(manager, project_id, origin, summary=f"合入 {record['id']}", expected_head=main,
-                  rollback_on_crash=True, hint_gates=True) as tx:
+                  rollback_on_crash=True) as tx:
         for status, rel in changes:
             if status == "D":
                 tx.remove(rel)

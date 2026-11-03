@@ -288,20 +288,27 @@ def test_save_versions_history_schema_and_gates(env):
     invalid = client.put(f"{base}/shelf-limit", json={"base_revision": current, "fields": {"level": "medium"}})
     assert invalid.status_code == 422 and invalid.json()["code"] == "artifact_schema_invalid"
     assert invalid.json()["details"]["errors"][0]["field"] == "level"
-    gated = client.put(f"{base}/shelf-limit", json={"base_revision": current, "fields": {"title": "很" * 30}})
-    assert gated.status_code == 422 and gated.json()["code"] == "gate_failed"
-    assert gated.json()["details"]["failed"][0]["id"] == "title-short"
+    assert saved.json()["warnings"] == []
     check = client.post(f"{base}/shelf-limit/validate", json={}).json()
     assert check == {"ok": True, "errors": [], "warnings": []}
+    # 包声明的保存门禁只提示（F3b）：照常保存，没过的规则在 warnings 里；校验也只给警告
+    gated = client.put(f"{base}/shelf-limit", json={"base_revision": current, "fields": {"title": "很" * 30}})
+    assert gated.status_code == 200, gated.text
+    assert [(item["code"], item["gate"], item["level"]) for item in gated.json()["warnings"]] == [
+        ("pack_gate", "title-short", "warning")]
+    assert gated.json()["artifact"]["fields"]["title"] == "很" * 30
+    check = client.post(f"{base}/shelf-limit/validate", json={}).json()
+    assert check["ok"] is True and check["errors"] == [] and check["warnings"][0]["gate"] == "title-short"
 
     history = client.get(f"{base}/shelf-limit/history").json()["items"]
-    assert [item["source"] for item in history] == ["web", "web"]
+    assert [item["source"] for item in history] == ["web", "web", "web"]
     assert history[0]["version_label"] and history[0]["summary"].startswith("web: 保存检查项")
 
-    deleted = client.request("DELETE", f"{base}/shelf-limit", json={"base_revision": current})
+    deleted = client.request("DELETE", f"{base}/shelf-limit",
+                             json={"base_revision": gated.json()["artifact"]["revision"]})
     assert deleted.status_code == 200 and not (root / "ext/checklist/items/shelf-limit.md").exists()
     assert [event["data"]["change"] for event in event_port.recent(project_id, "artifacts.updated")] == [
-        "created", "updated", "deleted"]
+        "created", "updated", "updated", "deleted"]
 
 
 def test_new_artifact_must_stay_in_pack_directory_and_types_in_registration():

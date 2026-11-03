@@ -34,7 +34,6 @@ from app.services.flow import view
 from app.services.packs import builtin, checks, extensions, registry
 from app.services.packs import service as pack_service
 from app.services.workspace import WorkspaceManager
-from app.services.workspace.errors import WorkspaceError
 from tests.pack_helpers import NODE_PACK_FLOW, make_assets, make_node_pack, make_pack
 from tests.test_extensions_artifacts import CHECKLIST_CONTRIBUTES, _checklist_files
 
@@ -132,23 +131,24 @@ def test_config_items_land_in_the_registry(env):
     assert item["effect"] == "next_message"
 
 
-def test_commit_gate_blocks_writes_but_not_reverts(env):
+def test_commit_gate_only_hints_on_writes(env):
+    """F3b：包声明的提交门禁在建模过程中只提示（结果的 findings），照常提交；发布时由发布门禁链拦。"""
     _client, manager, project_id, _tmp = env
     rel = "ext/checklist/items/借阅检查.md"
-    with pytest.raises(WorkspaceError) as exc:
-        with ChangeTx(manager, project_id, Origin("web", "local")) as tx:
-            tx.write(rel, item_md("借阅检查", None))
-            tx.commit("web: 保存检查项")
-    assert exc.value.code == "gate_failed" and exc.value.status == 422
-    assert exc.value.details["findings"][0]["gate"] == "level-set"
+    with ChangeTx(manager, project_id, Origin("web", "local")) as tx:
+        tx.write(rel, item_md("借阅检查", None))
+        hinted = tx.commit("web: 保存检查项")
+    assert hinted.commit and hinted.findings[0]["gate"] == "level-set"
     root = manager.project_root(project_id)
-    assert not (root / rel).exists()  # 门禁不过，写入回滚
+    assert (root / rel).is_file()
     with ChangeTx(manager, project_id, Origin("web", "local")) as tx:
         tx.write(rel, item_md("借阅检查", "high"))
-        assert tx.commit("web: 保存检查项").commit
+        clean = tx.commit("web: 保存检查项")
+    assert clean.commit and clean.findings == []
     with ChangeTx(manager, project_id, Origin("revert", "local")) as tx:
         tx.write(rel, item_md("借阅检查", None))
-        assert tx.commit("revert: 回到以前").commit
+        reverted = tx.commit("revert: 回到以前")
+    assert reverted.commit and reverted.findings == []  # 回退不查门禁
 
 
 def test_publish_gates_join_the_chain(env):

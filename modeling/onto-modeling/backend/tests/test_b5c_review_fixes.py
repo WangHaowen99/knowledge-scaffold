@@ -534,7 +534,7 @@ def test_review_11_archived_project_cannot_answer_human_node_card(env):
     assert client.post(url, json={"option_id": "pass"}).status_code == 200
 
 
-# ---- 审查第 12 条：脚本节点的提交也要过 commit 门禁 ----
+# ---- 审查第 12 条：脚本节点的提交也要过 commit 门禁（F3b 起只提示） ----
 
 def test_review_12_script_node_output_goes_through_commit_gates(env, fake_sandbox):
     from tests.test_extensions_artifacts import CHECKLIST_CONTRIBUTES, _checklist_files
@@ -556,5 +556,7 @@ def test_review_12_script_node_output_goes_through_commit_gates(env, fake_sandbo
     main_write(root, "ontology/object/读者.md", obj("读者", "合成读者"))
     enable_and_apply(client, manager, project_id)
     started = client.post(f"/api/v1/projects/{project_id}/flow/nodes/naming.lint/start", json={})
-    assert started.status_code == 422 and started.json()["code"] == "gate_failed", started.text
-    assert not (root / "ext" / "checklist" / "items" / "借阅检查.md").exists()
+    # F3b：脚本节点的输出也过提交门禁，但只提示——照常写进版本，没过的规则带在结果的 warnings 里
+    assert started.status_code == 200, started.text
+    assert (root / "ext" / "checklist" / "items" / "借阅检查.md").is_file()
+    assert [item["gate"] for item in started.json()["run"]["warnings"]] == ["level-set"]

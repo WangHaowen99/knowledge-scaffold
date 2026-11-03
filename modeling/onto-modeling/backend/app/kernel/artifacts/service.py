@@ -540,13 +540,18 @@ def _write_text(atype: ArtifactType, root: Path, rel: str, body: dict, previous:
     return text, fields
 
 
-def _check(manager, root: Path, atype: ArtifactType, fields: dict) -> None:
+def _check(manager, root: Path, atype: ArtifactType, fields: dict) -> list[dict]:
+    """字段定义（解析不了、类型不对）照旧拦；包声明的保存门禁只提示，返回 warnings（F3b，发布时才拦）。"""
     errors = schema_errors(atype, fields)
     if errors:
         raise ArtifactError("artifact_schema_invalid", errors[0]["message"], 422, {"errors": errors})
-    failed = gate_findings(manager, root, atype, fields)
-    if failed:
-        raise ArtifactError("gate_failed", failed[0]["message"], 422, {"failed": failed})
+    return [_gate_warning(item) for item in gate_findings(manager, root, atype, fields)]
+
+
+def _gate_warning(item: dict) -> dict:
+    return {"code": "pack_gate", "level": "warning", "message": str(item.get("message") or ""),
+            "field": str(item.get("field") or ""), "gate": str(item.get("id") or item.get("gate") or ""),
+            "gate_label": str(item.get("label") or item.get("gate_label") or "")}
 
 
 def _commit(manager, project_id: str, rel: str, text: str | None, message: str, actor: str) -> dict:
@@ -566,7 +571,8 @@ def _commit(manager, project_id: str, rel: str, text: str | None, message: str, 
     finally:
         _SELF_REPORTED.reset(marker)
     state = mainline.state(manager.project_root(project_id))
-    return {"commit": result.commit or state["head"], "version_label": state["version_label"]}
+    return {"commit": result.commit or state["head"], "version_label": state["version_label"],
+            "warnings": [_gate_warning(item) for item in result.findings]}
 
 
 def _check_format_version(atype: ArtifactType, fields: dict) -> None:
@@ -579,7 +585,7 @@ def _check_format_version(atype: ArtifactType, fields: dict) -> None:
 def _locked_or_raise(root: Path, atype: ArtifactType, key: str, rel: str) -> None:
     lock = _scope_lock(root)
     if _locked(lock, atype.type, key, rel):
-        raise ArtifactError("write_scope_locked", "助手正在改这一段，确认或撤回之前只读", 423, lock)
+        raise ArtifactError("write_scope_locked", "助手正在改这一段，这一轮结束前只读", 423, lock)
 
 
 def save(manager, project_id: str, art_type: str, key: str, body: dict, *, actor: str, iso) -> dict:
@@ -600,13 +606,14 @@ def save(manager, project_id: str, art_type: str, key: str, body: dict, *, actor
         _locked_or_raise(root, atype, key, row["rel"])
         previous = (root / row["rel"]).read_text(encoding="utf-8")
         text, fields = _write_text(atype, root, row["rel"], body, previous, key, row["fields"])
-        _check(manager, root, atype, fields)
+        warnings = _check(manager, root, atype, fields)
         summary = str(body.get("summary") or "").strip()[:80]
         note = f"：{summary}" if summary else ""
         outcome = _commit(manager, project_id, row["rel"], text, f"web: 保存{atype.title}「{row['title']}」{note} by {actor}", actor)
     event_port.emit(project_id, "artifacts.updated", {"type": art_type, "change": "updated", "keys": [key]})
     saved = _find(manager, root, atype, key) if atype.format != "md-sections" else _find_by_file(manager, root, atype, row["rel"], key)
-    return {"artifact": _detail_view(atype, root, saved, rows_limit=0, iso=iso), **outcome}
+    return {"artifact": _detail_view(atype, root, saved, rows_limit=0, iso=iso), **outcome,
+            "warnings": warnings + outcome["warnings"]}
 
 
 def _find_by_file(manager, root: Path, atype: ArtifactType, rel: str, key: str) -> dict:
@@ -655,11 +662,12 @@ def create(manager, project_id: str, art_type: str, body: dict, *, actor: str, i
             if atype.format in ("md-frontmatter", "md-report") and atype.schema_version and "format_version" in {
                     spec["name"] for spec in atype.fields}:
                 fields.setdefault("format_version", atype.schema_version)
-        _check(manager, root, atype, fields)
+        warnings = _check(manager, root, atype, fields)
         outcome = _commit(manager, project_id, rel, text, f"web: 新建{atype.title}「{key}」 by {actor}", actor)
     event_port.emit(project_id, "artifacts.updated", {"type": art_type, "change": "created", "keys": [key]})
     row = _find(manager, root, atype, key)
-    return {"artifact": _detail_view(atype, root, row, rows_limit=0, iso=iso), **outcome}
+    return {"artifact": _detail_view(atype, root, row, rows_limit=0, iso=iso), **outcome,
+            "warnings": warnings + outcome["warnings"]}
 
 
 def delete(manager, project_id: str, art_type: str, key: str, body: dict, *, actor: str) -> dict:
@@ -724,7 +732,7 @@ def validate(manager, project_id: str, art_type: str, key: str, body: dict) -> d
         errors.append({"code": "artifact_schema_invalid", "level": "error", "message": problem["message"],
                        "field": problem["field"]})
     for problem in gate_findings(manager, root, atype, fields):
-        errors.append({"code": "gate_failed", "level": "error", "message": problem["message"], "field": problem["field"]})
+        warnings.append(_gate_warning(problem))  # 包声明的门禁只提示（F3b），保存不会被它拒绝
     if row.get("stale"):
         warnings.append({"code": "artifact_stale", "level": "warning", "message": row.get("stale_reason") or "已过期"})
     return {"ok": not errors, "errors": errors, "warnings": warnings}

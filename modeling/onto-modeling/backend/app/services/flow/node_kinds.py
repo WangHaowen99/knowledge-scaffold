@@ -220,9 +220,13 @@ def _run_script(manager, project_id: str, node: dict, *, actor: str) -> tuple[di
     from .. import mainline
 
     commit = committed.commit or ""
+    # 包声明的提交门禁只提示（F3b）：脚本的输出照常写进版本，没过的规则带在结果里
+    warnings = [{"code": "pack_gate", "level": "warning", "message": str(item.get("message") or ""),
+                 "gate": str(item.get("gate") or ""), "path": str(item.get("path") or "")}
+                for item in committed.findings]
     return {"state": "passed", "output": output, "commit": commit or None,
             "version_label": mainline.state(root)["version_label"], "duration_ms": duration,
-            "runtime": "jiuwenbox"}, text
+            "runtime": "jiuwenbox", "warnings": warnings}, text
 
 
 # ---------------------------------------------------------------------------

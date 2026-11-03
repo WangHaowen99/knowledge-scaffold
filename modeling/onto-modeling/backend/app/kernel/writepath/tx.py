@@ -73,7 +73,7 @@ def register_trailer_provider(provider: Callable[[Path], dict]) -> None:
 
 
 # 门禁链里包声明的规则（详设 4.3 第 3 步、㉖）：插件运行时登记，checker(manager, 项目, 根目录, 路径, Origin)
-# → Finding[]，有 level=error 的就不提交（422 gate_failed）。检查本身出错只记日志，不挡写入
+# → Finding[]；level=error 的放进 TxResult.findings 只提示、照常提交（F3b），发布时由发布门禁链拦。检查本身出错只记日志
 _gate_checkers: list[Callable] = []
 
 
@@ -354,7 +354,7 @@ class TxResult:
     commit: str
     previous: str
     paths: list[str] = field(default_factory=list)
-    # hint_gates 时插件声明的提交门禁没过的问题（只提示，F3）
+    # 插件声明的提交门禁没过的问题（只提示，F3b）
     findings: list[dict] = field(default_factory=list)
 
 
@@ -366,7 +366,7 @@ class ChangeTx:
 
     def __init__(self, manager, project_id: str, origin: Origin, *, summary: str = "",
                  target: ChangeTarget | None = None, expected_head: str | None = None,
-                 rollback_on_crash: bool = False, hint_gates: bool = False):
+                 rollback_on_crash: bool = False):
         self.manager = manager
         self.project_id = project_id
         self.origin = origin
@@ -375,8 +375,6 @@ class ChangeTx:
         self.expected_head = expected_head
         # 整批写入（一轮的合入）：崩溃后启动恢复整批回滚，而不是把已落盘的部分补提交
         self.rollback_on_crash = rollback_on_crash
-        # 助手一轮的合入、自主构建按段合入：插件声明的提交门禁只提示，问题放进 TxResult.findings（F3）
-        self.hint_gates = hint_gates
         self.root: Path | None = None
         self.base_head = ""
         self.result: TxResult | None = None
@@ -533,15 +531,13 @@ class ChangeTx:
         from ...governance import telemetry
 
         self._derive()
+        # 包声明的提交门禁只提示（F3b：建模过程中检查不拦，发布时由发布门禁链拦），问题随结果交给调用方
         errors = _gate_errors(self.manager, self.project_id, self.root, list(self._paths), self.origin)
-        if errors and not self.hint_gates:
-            raise WorkspaceError(f"没有通过插件声明的门禁：{errors[0]['message']}", 422, "gate_failed",
-                                 {"findings": errors[:50]})
         values = trailers(self.origin, self.root)
         with telemetry.span("commit", "commit", source=self.origin.source, target=self.target.kind,
                             paths=len(self._paths)):
             commit, previous, changed = self.target.commit(self._paths, message, values, self.expected_head)
-        self.result = TxResult(commit, previous, changed, errors[:50] if self.hint_gates else [])
+        self.result = TxResult(commit, previous, changed, errors[:50])
         if commit:
             telemetry.count("onto_commits_total", source=self.origin.source, target=self.target.kind)
             events.publish(events.WorkspaceChanged(

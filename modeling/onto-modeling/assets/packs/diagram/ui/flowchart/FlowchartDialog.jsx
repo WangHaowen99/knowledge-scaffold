@@ -115,7 +115,9 @@ export default function FlowchartDialog({ artifact, onClose }) {
       setArt(r.artifact);
       dispatch({ type: 'mark-saved', model: r.artifact?.content, savedRevision: r.artifact?.revision });
       setSavedVersion(r.version_label || null);
-      toast(r.version_label ? `已保存为版本 ${r.version_label}` : '已保存', 'check');
+      // 包声明的检查只提示（F3b）：照常保存，没过的说一句
+      const warn = r.warnings?.[0]?.message;
+      toast(`${r.version_label ? `已保存为版本 ${r.version_label}` : '已保存'}${warn ? ` · ${warn}` : ''}`, warn ? 'alert' : 'check');
       return r;
     } catch (e) {
       dispatch({ type: 'mark-save-failed', message: errorText(e) });
