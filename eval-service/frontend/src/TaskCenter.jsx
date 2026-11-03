@@ -1,51 +1,55 @@
 import React, { useEffect, useState } from 'react';
-import { api } from './api.js';
 import {
   ACTIVE,
   STATUS,
-  modelingProjectLabel,
-  modelingProjectQueries,
   needsAttention,
-  packageIds,
   packageName,
   packageVersions,
   phaseName,
   runStartTime,
   shortId,
 } from './domain.js';
+import { useModelingProjects } from './modelingProjects.js';
 import { Badge, Button, Empty, Heading, Icon, Progress, Skeleton } from './ui.jsx';
 
-// Display-only names from onto-modeling, fetched again only when the listed packages change.
-function useModelingProjects(runs) {
-  const [projects, setProjects] = useState({ available: true, items: {} });
-  const ids = packageIds(runs),
-    key = ids.join(',');
+// The table scrolls inside a clipped panel, so an open row menu is placed against the window instead, opening
+// upwards when there is no room below; scrolling or resizing closes it rather than leaving it behind.
+function RowMenu({ label, children }) {
+  const [place, setPlace] = useState(null);
   useEffect(() => {
-    if (!ids.length) return undefined;
-    let live = true;
-    (async () => {
-      const items = {};
-      let available = true;
-      for (const query of modelingProjectQueries(ids)) {
-        const page = await api(`/modeling-projects?${query}`);
-        available = available && page.available;
-        for (const item of page.items) items[item.ontology_id] = item;
-      }
-      if (live) setProjects({ available, items });
-    })().catch(() => live && setProjects({ available: false, items: {} }));
-    return () => {
-      live = false;
+    if (!place) return undefined;
+    const close = () => {
+      place.menu.open = false;
+      setPlace(null);
     };
-  }, [key]);
-  return (run) => {
-    const entry = projects.items[run.package_ref?.ontology_id];
-    const title = entry?.projects?.length
-      ? entry.projects.join('、') + (entry.total > entry.projects.length ? ` 等 ${entry.total} 个` : '')
-      : projects.available
-        ? '当前账号没有关联该知识包的建模项目'
-        : '建模服务暂不可用，无法显示项目名称';
-    return { label: modelingProjectLabel(entry), title };
-  };
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [place]);
+  function toggle(event) {
+    const menu = event.currentTarget;
+    if (!menu.open) return setPlace(null);
+    const anchor = menu.firstElementChild.getBoundingClientRect(),
+      height = menu.lastElementChild.offsetHeight,
+      upward = window.innerHeight - anchor.bottom < height + 8 && anchor.top > height + 8;
+    setPlace({
+      menu,
+      style: {
+        position: 'fixed',
+        right: window.innerWidth - anchor.right,
+        ...(upward ? { top: 'auto', bottom: window.innerHeight - anchor.top + 4 } : { top: anchor.bottom + 4 }),
+      },
+    });
+  }
+  return (
+    <details className="action-menu" onToggle={toggle}>
+      <summary aria-label={label}>···</summary>
+      <div style={place?.style}>{children}</div>
+    </details>
+  );
 }
 
 function ModelingProjectCell({ label, title }) {
@@ -128,7 +132,7 @@ export function TaskCenter({
           </>
         }
       >
-        查看每一次评测，随时回到执行现场。
+        同一知识包的评测合并为一项，执行详情中可查看历史执行记录。
       </Heading>
       {active && (
         <div className="active-task">
@@ -259,7 +263,10 @@ export function TaskCenter({
                       <button className="run-link" onClick={() => navigate(`/runs/${run.id}`)}>
                         {shortId(run.id)}
                       </button>
-                      <small>{packageName(run)}</small>
+                      <small>
+                        {packageName(run)}
+                        {run.run_count > 1 && ` · 共 ${run.run_count} 次执行`}
+                      </small>
                     </td>
                     <ModelingProjectCell {...modelingProject(run)} />
                     <PackageVersionCell run={run} />
@@ -283,20 +290,17 @@ export function TaskCenter({
                               ? '查看并处理'
                               : '查看结果'}
                         </Button>
-                        <details className="action-menu">
-                          <summary aria-label={`任务 ${shortId(run.id)} 的更多操作`}>···</summary>
-                          <div>
-                            <button onClick={() => navigate(`/new?from=${run.id}`)}>再次评测</button>
-                            {!['completed', 'cancelled', 'failed', 'cancelling'].includes(run.status) && (
-                              <button onClick={() => onAction('cancel', run)}>停止评测</button>
-                            )}
-                            {!ACTIVE.has(run.status) && (
-                              <button className="danger" onClick={() => onAction('delete', run)}>
-                                删除评测记录
-                              </button>
-                            )}
-                          </div>
-                        </details>
+                        <RowMenu label={`任务 ${shortId(run.id)} 的更多操作`}>
+                          <button onClick={() => navigate(`/new?from=${run.id}`)}>再次评测</button>
+                          {!['completed', 'cancelled', 'failed', 'cancelling'].includes(run.status) && (
+                            <button onClick={() => onAction('cancel', run)}>停止评测</button>
+                          )}
+                          {!ACTIVE.has(run.status) && (
+                            <button className="danger" onClick={() => onAction('delete', run)}>
+                              删除评测记录
+                            </button>
+                          )}
+                        </RowMenu>
                       </div>
                     </td>
                   </tr>

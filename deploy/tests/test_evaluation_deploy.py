@@ -18,11 +18,12 @@ EVAL_DEPLOY_DIR = ROOT / 'eval-service/deploy'
 EVAL_COMPOSE = 'docker-compose.eval-service.yml'
 # Stub that records what the root deploy script hands to the evaluation deployer.
 EVAL_STUB = ('printf "evaluation\\n" >> "$DEPLOY_CALLS_FILE"\n'
-             'printf "ENV_FILE=%s\\nNETWORK=%s\\nHUB=%s\\nCONSUMER=%s\\n" "${EVAL_ENV_FILE:-}" '
+             'printf "ENV_FILE=%s\\nNETWORK=%s\\nHUB=%s\\nCONSUMER=%s\\nMODELING=%s\\n" "${EVAL_ENV_FILE:-}" '
              '"${CONSUMER_NETWORK:-}" "${HUB_EVALUATION_SERVICE_TOKEN:-}" "${EVALUATION_SERVICE_TOKEN:-}"'
-             ' > "$EVAL_SNAPSHOT"')
+             ' "${EVAL_MODELING_SERVICE_TOKEN:-}" > "$EVAL_SNAPSHOT"')
 INHERITED = ('EVAL_ENV_FILE', 'CONSUMER_NETWORK', 'HUB_EVALUATION_SERVICE_TOKEN', 'EVALUATION_SERVICE_TOKEN',
              'EVAL_ENCRYPTION_KEY', 'EVAL_HUB_SERVICE_TOKEN', 'EVAL_CONSUMER_SERVICE_TOKEN',
+             'EVAL_MODELING_SERVICE_TOKEN', 'ONTO_EVALUATION_SERVICE_TOKEN',
              'PIP_INDEX_URL', 'NPM_REGISTRY', 'EVAL_PIP_INDEX_URL', 'EVAL_NPM_REGISTRY')
 MIRRORS = {'EVAL_PIP_INDEX_URL': 'https://pypi.example.com/simple',
            'EVAL_NPM_REGISTRY': 'https://npm.example.com'}
@@ -140,7 +141,18 @@ def check_stack_hands_dependency_credentials_to_evaluation(deployment):
     assert result.returncode == 0, result.stdout + result.stderr
     snapshot = lines(root / 'evaluation-snapshot.txt')
     assert 'ENV_FILE=' in snapshot and f'HUB={hub}' in snapshot and f'CONSUMER={consumer}' in snapshot
+    # Onto Modeling is not deployed yet: evaluation receives no notification credential.
+    assert 'MODELING=' in snapshot
     assert hub not in result.stdout + result.stderr and consumer not in result.stdout + result.stderr
+
+    # Once Onto Modeling holds its inbound credential, evaluation reuses the same value.
+    modeling = secrets.token_hex(32)
+    (root / 'modeling/onto-modeling').mkdir(parents=True)
+    (root / 'modeling/onto-modeling/.env').write_text(f'ONTO_EVALUATION_SERVICE_TOKEN={modeling}\n')
+    result = run(root, env, '--eval-only')
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f'MODELING={modeling}' in lines(root / 'evaluation-snapshot.txt')
+    assert modeling not in result.stdout + result.stderr
 
 
 def check_release_generates_the_consumer_evaluation_token(deployment):
@@ -230,9 +242,9 @@ def compose_calls(root):
 class EvaluationServiceDeployTests(unittest.TestCase):
     def test_local_configuration_is_generated_and_reused(self):
         with evaluation_service() as (root, deploy_dir, env):
-            hub, consumer = secrets.token_hex(32), secrets.token_hex(32)
+            hub, consumer, modeling = secrets.token_hex(32), secrets.token_hex(32), secrets.token_hex(32)
             env.update(CONSUMER_NETWORK='synthetic-network', HUB_EVALUATION_SERVICE_TOKEN=hub,
-                       EVALUATION_SERVICE_TOKEN=consumer)
+                       EVALUATION_SERVICE_TOKEN=consumer, EVAL_MODELING_SERVICE_TOKEN=modeling)
             result = run_service(deploy_dir, env)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             config = deploy_dir / '.env'
@@ -244,10 +256,12 @@ class EvaluationServiceDeployTests(unittest.TestCase):
                 self.assertNotIn(key, values)
             self.assertEqual(values['EVAL_HUB_SERVICE_TOKEN'], hub)
             self.assertEqual(values['EVAL_CONSUMER_SERVICE_TOKEN'], consumer)
+            self.assertEqual(values['EVAL_MODELING_SERVICE_TOKEN'], modeling)
             self.assertEqual(values['CONSUMER_NETWORK'], 'synthetic-network')
             output = result.stdout + result.stderr
-            for secret in (values['EVAL_ENCRYPTION_KEY'], hub, consumer):
+            for secret in (values['EVAL_ENCRYPTION_KEY'], hub, consumer, modeling):
                 self.assertNotIn(secret, output)
+            self.assertNotIn('EVAL_MODELING_SERVICE_TOKEN is empty', output)
             self.assertIn('EVAL_JUDGE_BASE_URL is not configured', result.stderr)
             self.assertIn('EVAL_JUDGE_CONFIG_REVISION is not configured', result.stderr)
             # Mirrors are not passed unless configured, so the Dockerfile defaults apply.
@@ -264,6 +278,21 @@ class EvaluationServiceDeployTests(unittest.TestCase):
             again = dict(line.split('=', 1) for line in lines(config))
             self.assertEqual(again['EVAL_ENCRYPTION_KEY'], values['EVAL_ENCRYPTION_KEY'])
             self.assertEqual(again['EVAL_HUB_SERVICE_TOKEN'], rotated)
+
+            # A later run without an injected modeling credential keeps the stored one.
+            env.pop('EVAL_MODELING_SERVICE_TOKEN')
+            kept = run_service(deploy_dir, env)
+            self.assertEqual(kept.returncode, 0, kept.stdout + kept.stderr)
+            self.assertEqual(dict(line.split('=', 1) for line in lines(config))['EVAL_MODELING_SERVICE_TOKEN'], modeling)
+
+    def test_missing_modeling_notification_token_only_warns(self):
+        with evaluation_service() as (root, deploy_dir, env):
+            env.update(CONSUMER_NETWORK='synthetic-network')
+            result = run_service(deploy_dir, env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('EVAL_MODELING_SERVICE_TOKEN is empty', result.stderr)
+            self.assertNotIn('EVAL_MODELING_SERVICE_TOKEN', (deploy_dir / '.env').read_text())
+            self.assertEqual(len(compose_calls(root)), 1)
 
     def test_configured_mirrors_reach_the_compose_build(self):
         with evaluation_service() as (root, deploy_dir, env):

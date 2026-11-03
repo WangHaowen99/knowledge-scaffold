@@ -4,17 +4,30 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 from urllib.parse import urlsplit
 
 import httpx
 
+# Provider wording for a request beyond the model's context window (OpenAI-compatible gateways and common
+# Chinese gateways); matched against the error body, which itself is never relayed.
+CONTEXT_OVERFLOW = re.compile(
+    r'context[_ ]length|maximum context|context window|too many tokens|prompt is too long|input is too long'
+    r'|reduce the length|exceeds? the (?:model|maximum)|上下文长度|超出.{0,8}(?:上下文|长度)|输入过长', re.IGNORECASE)
+# A dependency's machine-readable error code, e.g. consumer's ontology_name_conflict; only a bare identifier is kept.
+UPSTREAM_CODE = re.compile(r'"error_code"\s*:\s*"([a-z][a-z0-9_]{2,63})"')
+
 
 class Failure(Exception):
-    def __init__(self, code, message, status=400, phase='input', *, upstream_status=None):
+    def __init__(self, code, message, status=400, phase='input', *, upstream_status=None, context_overflow=False,
+                 upstream_code=''):
         super().__init__(message)
         self.code, self.message, self.status, self.phase = code, message, status, phase
         # Available for contextual diagnostics, never included in the public payload.
         self.upstream_status = upstream_status
+        # The provider said the request exceeds its model's context window; callers may send less and retry.
+        self.context_overflow = context_overflow
+        self.upstream_code = upstream_code
 
     def payload(self):
         return dict(code=self.code, message=self.message, phase=self.phase,
@@ -54,6 +67,8 @@ class Config:
     nl2sql_url: str = ''
     trusted_origins: str = ''
     modeling_url: str = ''
+    # Sent with completion notifications to onto-modeling; empty disables them.
+    modeling_service_token: str = ''
 
     @classmethod
     def environment(cls):
@@ -63,7 +78,7 @@ class Config:
                        'EVAL_CONSUMER_API_URL', 'EVAL_CONSUMER_SERVICE_TOKEN', 'EVAL_ENCRYPTION_KEY',
                        'EVAL_JUDGE_BASE_URL', 'EVAL_JUDGE_API_KEY', 'EVAL_JUDGE_MODEL',
                        'EVAL_JUDGE_CONFIG_REVISION', 'EVAL_SQL_CONFIG', 'EVAL_NL2SQL_URL', 'EVAL_TRUSTED_ORIGINS',
-                       'EVAL_MODELING_URL')])
+                       'EVAL_MODELING_URL', 'EVAL_MODELING_SERVICE_TOKEN')])
 
 
 def trusted_origins(value):
@@ -81,7 +96,7 @@ def trusted_origins(value):
 
 
 class Transport:
-    def request(self, method, base, path, *, token='', service='', workspace='', limit=2*1024*1024, **kwargs):
+    def request(self, method, base, path, *, token='', service='', workspace='', limit=2*1024*1024, timeout=30, **kwargs):
         headers = kwargs.pop('headers', {})
         if token:
             headers['Authorization'] = 'Bearer ' + token
@@ -90,7 +105,7 @@ class Transport:
         if workspace:
             headers['X-Workspace-Id'] = workspace
         try:
-            with httpx.Client(timeout=30, follow_redirects=False, trust_env=False) as client:
+            with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
                 with client.stream(method, endpoint(base) + path, headers=headers, **kwargs) as response:
                     raw = bytearray()
                     for chunk in response.iter_bytes():
@@ -98,10 +113,15 @@ class Transport:
                         if len(raw) > limit:
                             raise Failure('response_limit', '依赖响应超过限制', 502, 'dependency')
                     if not 200 <= response.status_code < 300:
-                        # Do not relay provider errors, URLs, headers or secret-bearing bodies.
+                        # Do not relay provider errors, URLs, headers or secret-bearing bodies; only whether the
+                        # input was too long for the model and a bare error code leave this function.
+                        text = bytes(raw[:16384]).decode('utf-8', 'ignore')
+                        overflow = response.status_code == 413 or bool(CONTEXT_OVERFLOW.search(text))
+                        code = UPSTREAM_CODE.search(text)
                         raise Failure('dependency_rejected', '依赖服务拒绝请求', response.status_code
                                       if response.status_code in (401,403,404,409,410,413,422,429) else 503, 'dependency',
-                                      upstream_status=response.status_code)
+                                      upstream_status=response.status_code, context_overflow=overflow,
+                                      upstream_code=code.group(1) if code else '')
                     return bytes(raw)
         except httpx.TimeoutException as exc:
             raise Failure('dependency_timeout', '依赖服务响应超时，请稍后重试', 504, 'dependency') from exc
@@ -138,3 +158,11 @@ class Identity:
 
     def verify(self, token):
         return self.account(token)[0]
+
+    def renew(self, refresh_token):
+        """A new token pair for a refresh token; the account service refuses revoked or expired ones."""
+        value = self.transport.json('POST', self.config.auth_url, '/token', limit=16384,
+                                    json={'grant_type': 'refresh_token', 'refresh_token': refresh_token})
+        if not isinstance(value, dict) or not isinstance(value.get('access_token'), str) or not value['access_token']:
+            raise Failure('invalid_identity', '身份验证失败', 401, 'authorization')
+        return value

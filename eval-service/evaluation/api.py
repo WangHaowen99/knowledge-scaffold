@@ -22,6 +22,11 @@ from .modeling_projects import linked_projects
 from .nl2sql import QueryService
 from .source_config import SourceConfig
 from .graph_import import scope_target
+from .artifact_jobs import ArtifactJobs
+from .notifications import Notifier
+from .suggestions import Suggestions
+from .artifacts import ACTIVE
+from . import package_routes
 
 
 class Body(BaseModel):
@@ -115,6 +120,9 @@ def create_app(config=None,transport=None):
     judge_settings=JudgeSettings(config,store)
     judge=Judge(judge_settings,http)
     engine=Engine(store,identity,packages,sources,consumer,judge)
+    notifier=Notifier(config,store,http)
+    jobs=ArtifactJobs(store,Suggestions(judge,packages,http),notifier)
+    engine.on_stop=jobs.schedule
 
     @asynccontextmanager
     async def lifespan(app):
@@ -123,6 +131,9 @@ def create_app(config=None,transport=None):
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             store.recover()
             store.prune_inputs()
+            store.prune_orphans()
+            jobs.recover()
+            notifier.start()
             import asyncio
             async def maintenance():
                 while True:
@@ -136,11 +147,13 @@ def create_app(config=None,transport=None):
                 await asyncio.gather(sweeper,return_exceptions=True)
         finally:
             engine.close()
+            jobs.close()
+            notifier.stop()
             store.db.close()
             lock.close()
 
     app=FastAPI(title='Evaluation service',lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
-    app.state.store,app.state.engine=store,engine
+    app.state.store,app.state.engine,app.state.jobs=store,engine,jobs
     prefix='/evaluation/api'
 
     @app.exception_handler(Failure)
@@ -181,6 +194,11 @@ def create_app(config=None,transport=None):
         header=request.headers.get('authorization','')
         token=header[7:] if header.startswith('Bearer ') else ''
         return identity.verify(token),token
+
+    def refresh_of(request):
+        """Refresh token handed over so a long run can renew its login; kept in engine memory only."""
+        value=request.headers.get('x-refresh-token','')
+        return value if len(value)<=8192 else ''
 
     def account(request):
         header=request.headers.get('authorization','')
@@ -540,6 +558,7 @@ def create_app(config=None,transport=None):
             raise Failure('revision_conflict','评测集已变更，请返回上一步重新加载并确认',409)
         if prep['status']!='ready': raise Failure('not_ready','包准备尚未完成',409)
         with engine.guard:
+            package_idle(owner,prep['package_ref']['ontology_id'])
             if any(key[0]==owner for key in engine.active): raise Failure('evaluation_busy','已有活动评测，请先查看或停止当前任务',409)
             if len(engine.active)>=16: raise Failure('evaluation_busy','服务队列已满，请稍后再试',409)
             source=dict(prep['source'])
@@ -556,8 +575,13 @@ def create_app(config=None,transport=None):
                 concurrency=body.concurrency,model_profile_id=body.model_profile_id,
                 created_at=time.time(),case_revision=cases['revision'],cases=[dict(**c,status='pending') for c in cases['cases']]),
                 body.request_id,identity=intent)
-            engine.start(owner,run['id'],token)
+            engine.start(owner,run['id'],token,refresh_of(request))
         return public(run)
+
+    def package_idle(owner, package, current_run=''):
+        # Only an executing run blocks its package; completed, stopped, interrupted or waiting runs do not.
+        if store.package_run_in_status(owner,package,ACTIVE,exclude=current_run):
+            raise Failure('package_run_active','该知识包已有正在执行的评测任务，请等待其结束或先停止后再发起',409)
 
     def graph_available(source, ontology_id, current_run=''):
         if source.get('provider')!='neo4j' or not source.get('import_data'): return
@@ -581,11 +605,15 @@ def create_app(config=None,transport=None):
             return run
         return dict(run,base_ref=release_ref(base)) if isinstance(base,dict) else run
 
+    def run_view(owner,run):
+        return dict(**public(with_base(owner,run)),summary=report(run),artifacts=jobs.view(owner,run['id']),
+                    notification=notifier.status(run['id']))
+
     @app.get(prefix+'/runs')
-    def runs(request:Request,offset:int=Query(0,ge=0)):
+    def runs(request:Request,offset:int=Query(0,ge=0),limit:int=Query(20,ge=1,le=20),ontology_id:str=Query('',max_length=128)):
         owner,_=actor(request)
-        page=store.list(owner,'runs',offset)
-        page['items']=[dict(**public(with_base(owner,r)),summary=report(r)) for r in page['items']]
+        page=store.package_runs(owner,ontology_id,offset,limit) if ontology_id else store.list(owner,'runs',offset,limit)
+        page['items']=[run_view(owner,r) for r in page['items']]
         return page
 
     @app.get(prefix+'/modeling-projects')
@@ -606,8 +634,7 @@ def create_app(config=None,transport=None):
     @app.get(prefix+'/runs/{rid}')
     def run(rid:str,request:Request):
         owner,_=actor(request)
-        item=store.get(owner,rid,'runs')
-        return dict(**public(with_base(owner,item)),summary=report(item))
+        return run_view(owner,store.get(owner,rid,'runs'))
 
     @app.get(prefix+'/runs/{rid}/results')
     def results(rid:str,request:Request,offset:int=Query(0,ge=0)):
@@ -615,7 +642,7 @@ def create_app(config=None,transport=None):
         cases=store.get(owner,rid,'runs')['cases']
         items=[]
         for c in cases[offset:offset+20]:
-            item={k:v for k,v in c.items() if k not in ('answer','reference','overrides','judgement','override')}
+            item={k:v for k,v in c.items() if k not in ('answer','reference','overrides','judgement','override','trace')}
             item['question']=c['question'][:256]
             for key in ('judgement','override'):
                 if c.get(key): item[key]={**c[key],'reason':c[key]['reason'][:256]}
@@ -666,7 +693,7 @@ def create_app(config=None,transport=None):
     def cancel(rid:str,request:Request):
         owner,token=actor(request)
         value=engine.stop(owner,rid)
-        engine.start(owner,rid,token)
+        engine.start(owner,rid,token,refresh_of(request))
         return public(value)
 
     @app.post(prefix+'/runs/{rid}/resume')
@@ -679,13 +706,16 @@ def create_app(config=None,transport=None):
             raise Failure('graph_confirmation_required','请重新创建评测并确认当前图数据范围',409,'data_import')
         if run['status'] in ('completed','cancelled','failed'): raise Failure('run_state','此任务当前无需恢复',409)
         with engine.guard:
-            if not run.get('cancel_requested'): graph_available(run['source'],run['package_ref']['ontology_id'],rid)
-            engine.start(owner,rid,token)
-        return public(run)
+            if not run.get('cancel_requested'):
+                package_idle(owner,run['package_ref']['ontology_id'],rid)
+                graph_available(run['source'],run['package_ref']['ontology_id'],rid)
+            engine.start(owner,rid,token,refresh_of(request))
+            # The engine marks a resumed run as preparing before it works; return that, not the state read above.
+            return public(store.get(owner,rid,'runs'))
 
     @app.post(prefix+'/runs/{rid}/results/{cid}/override')
     def override(rid:str,cid:int,body:dict,request:Request):
-        owner,_=actor(request)
+        owner,token=actor(request)
         with engine.guard:
             run=store.get(owner,rid,'runs')
             if (owner,rid) in engine.active: raise Failure('run_active','运行中不能改判',409)
@@ -697,7 +727,9 @@ def create_app(config=None,transport=None):
             value=dict(verdict=body['verdict'],reason=body['reason'],source='human',actor=owner,time=time.time())
             case.setdefault('overrides',[]).append(value)
             case['override']=value
-            return public(store.save(owner,rid,run,body['revision']))
+            saved=public(store.save(owner,rid,run,body['revision']))
+        jobs.schedule(owner,rid,token)  # The verdict changed: rebuild the report and tell onto-modeling.
+        return saved
 
     @app.delete(prefix+'/runs/{rid}')
     def delete_run(rid:str,request:Request):
@@ -724,6 +756,8 @@ def create_app(config=None,transport=None):
                 task=store.save(owner,task['id'],task)
             store.delete(owner,rid)
             return {'deleted':True}
+
+    package_routes.register(app,prefix,actor,store,engine,jobs,notifier,run_view)
 
     assets=Path(__file__).parents[1]/'frontend'/'dist'
     if assets.exists(): app.mount('/evaluation',StaticFiles(directory=assets,html=True),name='evaluation')

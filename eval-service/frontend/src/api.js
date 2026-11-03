@@ -1,6 +1,9 @@
 export const TOKEN = 'onto-access-token';
 export const REFRESH = 'onto-refresh-token';
 const prefix = '/evaluation/api';
+// Starting, resuming or stopping a run hands over the refresh token, so a run longer than one access token
+// keeps its login; the service keeps it in memory only.
+const DELEGATED = /^\/runs(\/[^/]+\/(resume|credentials|cancel))?$/;
 export function saveLogin(data) {
   localStorage.setItem(TOKEN, data.access_token);
   if (data.refresh_token) localStorage.setItem(REFRESH, data.refresh_token);
@@ -29,24 +32,27 @@ async function refresh(original) {
   };
   return navigator.locks ? navigator.locks.request('onto-auth-refresh', action) : action();
 }
-export async function api(path, body, method = body === undefined ? 'GET' : 'POST', retry = true) {
+// read 'text' returns the body as text, for markdown artifacts; errors are still JSON.
+export async function api(path, body, method = body === undefined ? 'GET' : 'POST', retry = true, read = 'json') {
   const token = localStorage.getItem(TOKEN) || '';
+  const delegated = method === 'POST' && DELEGATED.test(path) ? localStorage.getItem(REFRESH) : '';
   const upload = body instanceof FormData;
   const response = await fetch(prefix + path, {
     method,
     headers: {
       ...(upload ? {} : { 'Content-Type': 'application/json' }),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(delegated ? { 'X-Refresh-Token': delegated } : {}),
     },
     body: body === undefined ? undefined : upload ? body : JSON.stringify(body),
   });
   if (!path.startsWith('/auth/') && (localStorage.getItem(TOKEN) || '') !== token)
     throw new Error('登录身份已变化，请刷新');
   if (response.status === 401 && retry && !path.startsWith('/auth/')) {
-    if (await refresh(token)) return api(path, body, method, false);
+    if (await refresh(token)) return api(path, body, method, false, read);
     window.dispatchEvent(new Event('evaluation-auth-required'));
   }
-  const data = await response.json().catch(() => ({}));
+  const data = read === 'text' && response.ok ? await response.text() : await response.json().catch(() => ({}));
   if (!response.ok)
     throw Object.assign(new Error(data.message || `请求失败 (${response.status})`), {
       code: data.code,

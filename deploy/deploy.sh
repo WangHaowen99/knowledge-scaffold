@@ -13,8 +13,9 @@ Onto Modeling and evaluation — from either a source checkout or an extracted
 release package. Knowledge Package Hub and Onto Modeling are independent
 compose projects; --onto-modeling-only does not touch the Hub.
 Evaluation keeps its runtime configuration in eval-service/deploy/.env and
-reuses the evaluation credentials of the Hub and consumer; set EVAL_ENV_FILE
-to use a protected configuration file outside the repository instead.
+reuses the evaluation credentials of the Hub and consumer, plus Onto Modeling's
+notification credential; set EVAL_ENV_FILE to use a protected configuration
+file outside the repository instead.
 EOF
 }
 
@@ -280,6 +281,21 @@ adopt_hub_service_token() { # <Hub .env> <onto-modeling .env>
     [ -z "${token}" ] || env_set "$2" ONTO_HUB_SERVICE_TOKEN "${token}"
 }
 
+# onto-modeling 接收评测完成通知的入站凭据：已有值保留（发布包解压到暂存目录时沿用安装目录的值，否则
+# 单独升级 onto-modeling 会与评测侧失配），缺失时生成；评测部署时沿用它作为 EVAL_MODELING_SERVICE_TOKEN。
+# 不得与 Hub 服务凭据相同，值不输出。
+ensure_onto_evaluation_service_token() { # <onto-modeling .env>
+    local secret
+    secret="${ONTO_EVALUATION_SERVICE_TOKEN:-$(first_env_value ONTO_EVALUATION_SERVICE_TOKEN \
+        "$1" "${INSTALL_DIR}/onto-modeling/.env")}"
+    [ -n "${secret}" ] || secret="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+    [ "${#secret}" -ge 32 ] || die "ONTO_EVALUATION_SERVICE_TOKEN must contain at least 32 characters"
+    [ "${secret}" != "$(env_get "$1" ONTO_HUB_SERVICE_TOKEN)" ] \
+        || die "ONTO_EVALUATION_SERVICE_TOKEN must differ from ONTO_HUB_SERVICE_TOKEN"
+    env_set "$1" ONTO_EVALUATION_SERVICE_TOKEN "${secret}"
+    log "Onto Modeling evaluation notification token is ready (value is not printed)"
+}
+
 # consumer 的评测服务凭据：已有值保留，缺失时生成；consumer 拒绝与 MODELING_SERVICE_TOKEN 相同的值。
 ensure_evaluation_service_token() { # <consumer backend/.env>
     local secret
@@ -358,8 +374,8 @@ if [ "${ONLY_FLAGS}" = "0" ]; then
     fi
 fi
 
-# 评测沿用 Hub 与 consumer 实际生效的评测凭据，按源码、发布包、安装目录的布局依次查找；
-# 值只经子进程环境传递。consumer 网络必填，探测不到时由评测部署脚本在改动配置前报错。
+# 评测沿用 Hub 与 consumer 实际生效的评测凭据，以及 onto-modeling 接收完成通知的凭据，按源码、
+# 发布包、安装目录的布局依次查找；值只经子进程环境传递。consumer 网络必填，探测不到时由评测部署脚本在改动配置前报错。
 deploy_evaluation() {
     local root="${SCRIPT_DIR}/.."
     [ "$DEPLOY_EVALUATION" = "1" ] || return 0
@@ -369,6 +385,8 @@ deploy_evaluation() {
         "${root}/knowledge-hub/deploy/.env" "${root}/knowledge-hub/.env" "${INSTALL_DIR}/knowledge-hub/.env")" \
     EVALUATION_SERVICE_TOKEN="$(first_env_value EVALUATION_SERVICE_TOKEN \
         "${root}/consumer/backend/.env" "${root}/backend/.env" "${INSTALL_DIR}/backend/.env")" \
+    EVAL_MODELING_SERVICE_TOKEN="$(first_env_value ONTO_EVALUATION_SERVICE_TOKEN \
+        "${root}/modeling/onto-modeling/.env" "${root}/onto-modeling/.env" "${INSTALL_DIR}/onto-modeling/.env")" \
         bash "$SCRIPT_DIR/../eval-service/deploy/deploy.sh"
 }
 
@@ -390,6 +408,7 @@ deploy_bundle_hub_and_onto_modeling() {
         log "Deploying Onto Modeling (guided modeling workbench)"
         seed_onto_modeling_bundle_env "${onto_dir}"
         adopt_hub_service_token "${hub_dir}/.env" "${onto_dir}/.env"
+        ensure_onto_evaluation_service_token "${onto_dir}/.env"
         bash "${onto_dir}/deploy.sh"
     elif [ "${ONTO_MODELING_ONLY}" = "1" ]; then
         die "Onto Modeling deploy script not found: ${onto_dir}/deploy.sh"
@@ -485,6 +504,7 @@ elif [ -f "${SCRIPT_DIR}/deploy-stack.sh" ]; then
             if [ -d "${ONTO_MODELING_SOURCE}" ]; then
                 log "Deploying Onto Modeling (source, docker compose, joined to consumer stack)"
                 adopt_hub_service_token "${SCRIPT_DIR}/../knowledge-hub/deploy/.env" "${ONTO_MODELING_SOURCE}/.env"
+                ensure_onto_evaluation_service_token "${ONTO_MODELING_SOURCE}/.env"
                 write_onto_modeling_stack_override "${ONTO_MODELING_SOURCE}" "http://mw-modeling:5100"
                 # --remove-orphans 清掉旧版本随 onto-modeling 部署的 Hub 容器，避免与独立 Hub 抢同一服务名
                 (cd "${ONTO_MODELING_SOURCE}" \

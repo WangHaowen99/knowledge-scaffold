@@ -704,6 +704,48 @@ def test_onto_modeling_deploy_mounts_jiuwenbox_socket_only_when_volume_exists(
     assert "未挂载 jiuwenbox 沙箱" in result.stdout
 
 
+def test_onto_modeling_deploy_generates_the_evaluation_notification_token_once(tmp_path: Path) -> None:
+    """发布包 deploy.sh：缺少评测完成通知的入站凭据时生成，已有值原样保留，值不输出。"""
+    bundle = tmp_path / "onto-modeling"
+    bundle.mkdir()
+    shutil.copy2(ONTO_MODELING_DEPLOY, bundle / "deploy.sh")
+    _write_executable(bundle / "preflight.sh", "exit 0")
+    bin_dir = tmp_path / "bin"
+    _write_executable(bin_dir / "docker", _ONTO_DEPLOY_DOCKER_STUB)
+    env = {
+        **{key: value for key, value in os.environ.items() if key != "ONTO_EVALUATION_SERVICE_TOKEN"},
+        "DOCKER_CALLS_FILE": str(tmp_path / "docker-calls.txt"),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "STUB_EXISTING_VOLUME": "",
+    }
+    hub_token = secrets.token_hex(32)
+    # 末行没有换行符：追加的凭据不能拼到上一行
+    (bundle / ".env").write_text(f"ONTO_WEB_PORT=5100\nONTO_HUB_SERVICE_TOKEN={hub_token}", encoding="utf-8")
+
+    def deploy() -> subprocess.CompletedProcess:
+        # 安全审查：argv 是解析出的 bash 路径加复制到 tmp_path 的发布包 deploy.sh，以序列传入、
+        # 不经 shell 解析；它调用的 docker 是本测试写入的替身。
+        return subprocess.run(  # NOSONAR(S4721)
+            [_bash_executable(), str(bundle / "deploy.sh")],
+            env=env, text=True, capture_output=True, check=False, shell=False, timeout=60,
+        )
+
+    result = deploy()
+    assert result.returncode == 0, result.stdout + result.stderr
+    content = (bundle / ".env").read_text(encoding="utf-8")
+    assert f"ONTO_HUB_SERVICE_TOKEN={hub_token}\n" in content
+    tokens = re.findall(r"^ONTO_EVALUATION_SERVICE_TOKEN=([0-9a-f]{64})$", content, re.MULTILINE)
+    assert len(tokens) == 1 and tokens[0] != hub_token
+    assert tokens[0] not in result.stdout + result.stderr
+    assert (bundle / ".env").stat().st_mode & 0o777 == 0o600
+
+    result = deploy()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert re.findall(
+        r"^ONTO_EVALUATION_SERVICE_TOKEN=([0-9a-f]{64})$", (bundle / ".env").read_text(encoding="utf-8"), re.MULTILINE
+    ) == tokens
+
+
 def _compose_service_block(compose_text: str, service: str) -> str:
     """compose 文本里某个服务的配置段（到下一个服务或顶层键为止）。"""
     block = compose_text.split(f"\n  {service}:\n", 1)[1]
