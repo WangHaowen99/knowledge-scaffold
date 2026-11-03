@@ -18,7 +18,7 @@ import {
 } from './dialogs.jsx';
 import {
   SOURCES, SOURCE_FILTERS, byNewest, changeText, compareFromOf, compareOptions, defaultCompare, diffLines, editBlocks, entryPath,
-  fmtStamp, pathLocked, syncMeta, pickLanding, rangeOptions, reviewView, srcClass, srcLabel, targetLabel, versionMenu, versionSub,
+  fmtStamp, pathLocked, syncMeta, pickLanding, rangeOptions, reviewView, srcClass, srcLabel, targetLabel, versionMenu, changeRows, pathLabel, versionSub,
 } from './versionsModel.js';
 import '../../styles/more.css';
 import '../../styles/versions.css';
@@ -84,7 +84,7 @@ function ChangesCard({ detail, onPick, current }) {
           <table className="tbl compact">
             <thead><tr><th>内容</th><th>改动</th><th>复核</th></tr></thead>
             <tbody>
-              {changes.map((c, i) => {
+              {changeRows(changes).map((c, i) => {
                 const p = entryPath(c.target);
                 const r = reviewView(c.review);
                 return (
@@ -258,7 +258,7 @@ export default function VersionsPage({ route }) {
   const save = async () => {
     setSaving(true);
     try {
-      const r = await api.saveFileContent(pid, { path: diff.path, content: text, base_revision: diff.right_revision, summary: `版本对比里编辑 ${diff.path.split('/').pop()}` });
+      const r = await api.saveFileContent(pid, { path: diff.path, content: text, base_revision: diff.right_revision, summary: `版本对比里编辑 ${pathLabel(diff.path)}` });
       toast(`已保存为版本 ${r.version_label}`, 'check');
       await loadItems();
       await loadDiff(cmp);

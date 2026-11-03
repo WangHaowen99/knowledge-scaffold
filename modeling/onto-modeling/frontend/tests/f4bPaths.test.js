@@ -43,3 +43,21 @@ test('出处标签：只说资料名，文本版映射回原资料名；解析�
   assert.equal(anchorChipLabel('resource/others/说明.md#L3'), '说明');
   assert.equal(resolutionLabel({ resolved: true, scheme: 'file', source_label: '旧.docx', material: { name: '04-合成手册' }, location_label: '第 3 页' }), '04 合成手册 第 3 页');
 });
+
+test('版本页：改动表认不出的合成一行；文件抽屉按业务类型分组、按业务名列，不出目录和文件名', async () => {
+  const { changeRows, fileGroups, pathLabel, targetLabel } = await import('../src/pages/versions/versionsModel.js');
+  const rows = changeRows([
+    { target: { kind: 'object', name: '门店', label: '对象「门店」' }, change: 'mod' },
+    { target: { type: 'file', key: 'notes/a.txt', title: '', label: '' }, change: 'add' },
+    { target: { type: 'file', key: 'notes/b.txt', title: '', label: '' }, change: 'add' },
+  ]);
+  assert.deepEqual(rows.map((r) => targetLabel(r.target)), ['对象「门店」', '另有 2 处改动']);
+  assert.equal(pathLabel('resource/others/02-合同.pdf'), '资料「02-合同」');
+  assert.equal(pathLabel('notes/草稿.md'), '其他文件');
+  const groups = fileGroups([
+    { path: 'ontology/object/门店.md', size: 1 }, { path: 'resource/others/合同.pdf', size: 1 },
+    { path: 'resource/text/others/合同.pdf.md', size: 1 }, { path: 'research/blueprint.json', size: 1 },
+    { path: 'resource/materials.json', size: 1 }, { path: '.gitignore', size: 1 },
+  ]);
+  assert.deepEqual(groups.map((g) => [g.label, g.items.map((f) => f.name)]), [['对象', ['门店']], ['资料', ['合同']], ['资料分析', ['建模蓝图']]]);
+});
