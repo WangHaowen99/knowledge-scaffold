@@ -55,9 +55,9 @@ python3 .claude/scripts/research_checker.py check
 
 ```
 当前状态：资料分析待核验 ⏳
-报告：research/{latest_filename}
-{退出码 0：确定性检查已通过，阶段随即变为「资料分析完成」}
-{退出码 1：逐条列出错误项与待人工确认条目}
+报告：{报告名}
+{检查通过：说明核验已通过，阶段随即变为「资料分析完成」}
+{没通过：逐条列出错误项与待人工确认条目}
 
 **下一步建议：**
 {next-step}
@@ -74,11 +74,10 @@ Handle reply:
 Find the latest file in `research/`. Show:
 ```
 当前状态：资料分析完成 ✅
-报告：research/{latest_filename}
+报告：{报告名}
 
 **下一步建议：**
 {next-step}
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
 ```
 
 Handle reply:
@@ -92,11 +91,10 @@ Handle reply:
 Count .drawio files in `ontology/diagrams/`. Show:
 ```
 当前状态：流程图就绪 ✅
-流程图：{N} 个（ontology/diagrams/）
+流程图：{N} 个
 
 **下一步建议：**
 {next-step}
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
 ```
 
 Handle reply:
@@ -109,11 +107,10 @@ Handle reply:
 Count .md files in `ontology/object/`. Show:
 ```
 当前状态：对象已提取 ✅
-对象：{M} 个（ontology/object/）
+对象：{M} 个
 
 **下一步建议：**
 {next-step}
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
 ```
 
 Handle reply:
@@ -129,7 +126,6 @@ Count .md files in `ontology/object/`、`ontology/operation/`、`ontology/rule/`
 
 **下一步建议：**
 {next-step}
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
 ```
 
 Handle reply:
@@ -144,11 +140,10 @@ Handle reply:
 Find the latest file in `reports/`. Count remaining `[ ]` items. Show:
 ```
 当前状态：校验待审阅 ⏳
-问题清单：reports/{latest_filename}（{N} 个问题待处理）
+问题清单：{报告名}（{N} 个问题待处理）
 
 **下一步建议：**
 {next-step}
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
 ```
 
 Handle reply:
@@ -157,18 +152,17 @@ Handle reply:
 
 **完成:**
 
-Count all docs. Get last git log line. Show:
+Count all docs. Get the last commit message (`git log -1 --format=%s`). Show:
 ```
 当前建模状态：完成 ✅
 
-  对象：{M} 个（ontology/object/）
-  逻辑：{K} 个（ontology/operation/）
-  规则：{R} 条（ontology/rule/）  指标：{P} 个（ontology/metric/）
-  上次提交：{git log --oneline -1}
+  对象：{M} 个
+  逻辑：{K} 个
+  规则：{R} 条  指标：{P} 个
+  最近一次修改：{最近一次提交的说明}
 
 **可选操作：**
 {next-step}
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
 ```
 
 Handle reply by reading the corresponding command file and following it.

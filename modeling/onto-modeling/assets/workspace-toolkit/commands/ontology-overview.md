@@ -139,7 +139,7 @@ If $ARGUMENTS provided as a keyword: filter all views to only include items whos
 
 Show in terminal:
 
-"整体视图已生成：`reports/{filename}`（HTML 报告，含交互式对象关系图与逻辑调用图）
+"整体视图已生成，含交互式对象关系图与逻辑调用图。
 
 **规模：** 对象 {M} / 逻辑 {K}
 **问题：** 孤立对象 {x} / 缺失引用 {z}
@@ -149,15 +149,10 @@ Show in terminal:
 
 **BFO 参考提醒（可选）**：按 `.claude/reference/BFO_MODELING_GUIDE.md` §10 评估：
 - 用 §10.2 的对象/逻辑关键词列表对当前所有对象与逻辑文件名做子串匹配，得到 `matched_keywords`（去重，最多取 5 个）。
-- 命中 → 按 §10.3「带匹配项的形式」输出提示，作为"下一步建议"之前的独立一行。本命令本次执行只触发一次。
-- 未命中 → 不输出。
+- 命中 → 按 §10.3「带匹配项的形式」输出提示，作为小结末尾的独立一行。本命令本次执行只触发一次。
+- 未命中 → 不输出。"
 
-**下一步建议：**
-- 回复 **打开** → 在浏览器打开报告
-- 回复 **修复**（/ontology-validate）→ 进入校验处理问题
-- 回复 **问题视图** → 生成业务用户可提问清单 + 能力边界（独立报告，业务用户视角）
-- 回复 **积木视图** → 生成规则积木与可组合性分析（独立报告，实现视角）
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
+不列下一步菜单（界面的建议条会给出）。用户之后在对话里说「打开」「修复」「问题视图」「积木视图」，按下面的分支做。
 
 On **打开**: 执行 `open reports/{filename}` （macOS 会用默认浏览器打开 HTML）。
 
@@ -189,7 +184,7 @@ On **问题视图**:
     <iframe src="{YYYYMMDD}-{HHMMSS}-questions.html" style="width:100%; height:calc(100vh - 240px); min-height:600px; border:1px solid var(--border); border-radius:var(--radius-md); background:var(--surface);" title="可响应业务问题清单"></iframe>
   </section>
   ```
-- Tell user: "业务问题视图已生成：`reports/{filename}`，并嵌入到 overview 的「可响应问题」tab。回复 **打开问题视图** 单独打开，或 **打开** 回到 overview。"
+- Tell user: "业务问题视图已生成，放进了整体视图的「可响应问题」页。"
 - If user replies **打开问题视图**: 执行 `open reports/{filename}`。
 
 On **积木视图**:
@@ -218,7 +213,7 @@ On **积木视图**:
     <iframe src="{YYYYMMDD}-{HHMMSS}-composition.html" style="width:100%; height:calc(100vh - 240px); min-height:600px; border:1px solid var(--border); border-radius:var(--radius-md); background:var(--surface);" title="规则积木与可组合性分析"></iframe>
   </section>
   ```
-- Tell user: "积木视图已生成：`reports/{filename}`，并嵌入到 overview 的「积木分析」tab。回复 **打开积木视图** 单独打开，或 **打开** 回到 overview。"
+- Tell user: "积木视图已生成，放进了整体视图的「积木分析」页。"
 - If user replies **打开积木视图**: 执行 `open reports/{filename}`。
 
 ## Note

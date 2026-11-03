@@ -33,7 +33,7 @@ python3 .claude/scripts/consistency_check.py --json
 - `undeclared_dependency`：问用户是要在蓝图里加上这层依赖（建模蓝图页「调整切片」），还是改成不引用那一片的对象。
 - `unassigned`、`planned_missing`：列出来给用户看，按用户的决定补建、改归属或在蓝图里去掉。
 
-需要用户拍板的，按 `INTERACTION_CONVENTIONS.md` 发单选卡，一次一个问题，不要默认选第一个。
+需要用户拍板的，先 `python3 .claude/scripts/state_helper.py acquire consistency confirm`，再按 `INTERACTION_CONVENTIONS.md` 发单选卡，一次一个问题，不要默认选第一个；用户回复后 `acquire consistency check`。
 用户决定「就这样」的条目，在报告里把那一行改成 `- [x]` 并在行尾补一句结论。
 
 ## Step 3: 复查
@@ -48,4 +48,4 @@ git commit -m "consistency: 全局一致性检查"
 python3 .claude/scripts/state_helper.py release consistency
 ```
 
-最后按 `python3 .claude/scripts/state_helper.py suggest` 的结果给出下一步建议（最多 3 条）。
+释放锁后用两三句话小结：查出几条、改了哪些、还有哪些要用户定；不列下一步菜单（界面的建议条会给出）。

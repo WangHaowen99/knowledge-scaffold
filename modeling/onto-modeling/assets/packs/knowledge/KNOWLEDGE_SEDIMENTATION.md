@@ -82,20 +82,26 @@ BODY
    ```
    发现 {N} 条相关业务知识：
 
-   1. ❌ [知识冲突] {existing_name}（slug: {existing_slug}）
+   1. ❌ [知识冲突] {existing_name}
       依据：{evidence}
-      建议：{suggestion}
+      建议：{按 suggestion 写成一句业务话：用这条替换 / 合成一条 / 请你定以哪条为准 / 互相关联}
    2. ⚠️ [知识重复] ...
    3. 💡 [知识相关] ...
 
    请选择：
-   - **覆盖** → 仅 relation=duplicate 且 suggestion=overwrite_or_revise 时可用，改走 `knowledge_helper.py revise` 替换既有条目
-   - **合并** → main agent 撰写合并后的 body，仍走 `revise` 落盘到既有 slug
-   - **仍新增** → 新增本条；若 agent 报告 `related`，把对方 slug 写进 candidate.related 做双向链接；add 时按主关系传 `--after-conflict-check duplicate-suggested` / `conflict-suggested` / `relations-only`
-   - **取消** → 放弃本次 add，不落盘
+   - **覆盖** → 用这条替换已有的那条
+   - **合并** → 合成一条
+   - **仍新增** → 另记一条，和已有的互相关联
+   - **取消** → 这次不记
    ```
 
-- 用户选定后再执行对应命令（`add` / `revise` / 取消）。
+   **覆盖** 只在 relation=duplicate 且 suggestion=overwrite_or_revise 时列出。
+
+- 用户选定后再执行对应命令：
+  - **覆盖** → `knowledge_helper.py revise` 替换既有条目；
+  - **合并** → main agent 撰写合并后的 body，仍走 `revise` 落盘到既有 slug；
+  - **仍新增** → 新增本条；若 agent 报告 `related`，把对方 slug 写进 candidate.related 做双向链接；add 时按主关系传 `--after-conflict-check duplicate-suggested` / `conflict-suggested` / `relations-only`；
+  - **取消** → 放弃本次 add，不落盘。
 
 > ⚠ 任何绕过此前置检查的 add 调用都视为流程缺陷。`knowledge-conflict-agent` 报告为空时也要执行 — 这是 add 路径的常规步骤,不是异常分支。
 >

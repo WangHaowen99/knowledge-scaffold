@@ -37,7 +37,7 @@ List files in `ontology/object/`. If empty: "未找到业务对象文档，请�
 List files in `ontology/data-mock/`.
 
 **If some exist:**
-Show counts and ask:
+`python3 .claude/scripts/state_helper.py acquire mock confirm`，show counts and ask（回复后 `acquire mock start`）:
 "发现 {M} 个对象文档，其中 {E} 个已有测试数据。
 
 - 回复 **全部** → 全部重新生成（覆盖现有数据）
@@ -97,32 +97,31 @@ Write the mock rule report to `reports/{YYYYMMDD}-{HHMMSS}-mock-rule.md` using o
 
 If no mock issues, write "（无问题，测试数据通过 mock 规则检查。）".
 
-If any mock issues:
+If any mock issues, `python3 .claude/scripts/state_helper.py acquire mock confirm` 后展示:
 
 ```
-⚠️ 测试数据存在引用问题（{N} 条）：
-
-校验报告：`reports/{YYYYMMDD}-{HHMMSS}-mock-rule.md`
+⚠️ 测试数据存在引用问题（{N} 条），已记入校验报告：
 
 - {data-mock/X.md} → {message}
 ...
 
 - 回复 **自动修复** → 让我尝试调整引用值使其对齐
-- 回复 **保留** → 保留现状（此版本仍可保存）
-- 回复 **重新生成** → 让测试数据代理重新跑一次
+- 回复 **保留** → 保留现状，照样保存
+- 回复 **重新生成** → 重新生成一次测试数据
 ```
 
-Handle reply:
+Handle reply（先 `acquire mock start`）:
 - **自动修复**: for each `外键缺失` issue, locate the row in the mock file and replace the bad reference with a valid PK value from the target's 正常 mock data. Re-run Step 3.5 and regenerate the mock rule report for the latest data.
 - **保留**: proceed to Step 4 with a note appended to the commit message.
 - **重新生成**: go back to Step 3.
 
-If no mock issues, tell user "测试数据引用完整性已通过检查。校验报告已保存：`reports/{YYYYMMDD}-{HHMMSS}-mock-rule.md`。" and proceed.
+If no mock issues, tell user "测试数据引用完整性已通过检查。" and proceed.
 
 ## Step 4: User review
 
+`python3 .claude/scripts/state_helper.py acquire mock confirm`，then:
+
 "测试数据生成完成，共 {N} 个对象的数据。
-校验报告：`reports/{YYYYMMDD}-{HHMMSS}-mock-rule.md`
 如需修改请直接说明；确认无误请回复 **确认**。"
 
 Allow user to modify specific mock data files before saving the version. If mock data files are modified, return to Step 3.5 before asking for final confirmation so the report matches the latest data.
@@ -135,7 +134,7 @@ Allow user to modify specific mock data files before saving the version. If mock
 
 ## Step 5: Commit
 
-When user confirms (回复 **确认** 或等价的肯定词，如"好的"、"可以"、"没问题"、"继续"、"是"):
+When user confirms (回复 **确认** 或等价的肯定词，如"好的"、"可以"、"没问题"、"继续"、"是"): `acquire mock start`，then
 
 Determine TOPIC:
 - If $ARGUMENTS provided: use it
@@ -148,10 +147,6 @@ git commit -m "mock: {TOPIC} test data"
 
 ## Step 6: Suggest next step
 
-"测试数据已就绪。
+先 `python3 .claude/scripts/state_helper.py release mock` 与 `update-progress`，再用两三句话小结：生成了哪些对象的测试数据、还有什么要用户定；不列下一步菜单（界面的建议条会给出）。
 
-**下一步建议：**
-- 回复 **追踪**（/ontology-trace）→ 使用测试数据进行场景追踪
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
-
-If user replies **追踪**: ask "请输入要追踪的逻辑文件路径（如 ontology/operation/创建订单.md），或回复 **全部** 追踪所有逻辑：", then read `.claude/commands/ontology-trace.md` and follow it with the user's choice.
+If user later replies **追踪**: ask "要追踪哪个逻辑（如「创建订单」）？或回复 **全部** 追踪所有逻辑：", then read `.claude/commands/ontology-trace.md` and follow it with `ontology/operation/{用户说的逻辑}.md`（用户回复 **全部** 时传 `全部`）.

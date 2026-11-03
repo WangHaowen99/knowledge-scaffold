@@ -101,7 +101,7 @@ python3 .claude/scripts/ontology_checker.py ontology/ --files {written_object_st
 
 Do not use `ontology_checker.py`'s default `report_YYYYMMDD_HHMMSS.md` output name, and do not use `--json` for this post-migration report. The focused validation report must be saved under `reports/` using the project-wide Markdown report naming convention: `reports/{YYYYMMDD}-{HHMMSS}-objects-rule.md`. The timestamp in the filename and any timestamp shown in the report use `Asia/Shanghai`.
 
-If validation cannot run, state why. Return a concise migration report and include the saved validation report path:
+If validation cannot run, state why. Return a concise migration report（给用户看：说校验结果，不写报告路径）:
 
 ```markdown
 对象迁移提取完成。
@@ -118,8 +118,7 @@ If validation cannot run, state why. Return a concise migration report and inclu
 新增（N 个）：
 - ...
 
-校验报告：
-- reports/YYYYMMDD-HHMMSS-objects-rule.md
+校验结果：{错误 E 条 / 警告 W 条，或「无问题」}，详见对象校验报告
 
 需要确认 / 假设：
 - ...

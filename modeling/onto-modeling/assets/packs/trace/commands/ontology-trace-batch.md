@@ -13,7 +13,7 @@ List `.md` files in `ontology/operation/`. Let `OPERATION_FILES` = this list.
 
 If empty: "未找到任何逻辑文档。" 然后 `python3 .claude/scripts/state_helper.py release trace`，Stop.
 
-Show: "将对 {N} 个逻辑文档进行批量追踪：{file names}。
+`python3 .claude/scripts/state_helper.py acquire trace confirm`，then show: "将对 {N} 个逻辑文档进行批量追踪：{逻辑名}。
 
 💡 可选参考：现有批量追踪默认更适合 SOP 流程型；若本批 Operation 包含规则引擎、红线拦截、连续阈值、多判定器组合或审计链，可先对照 Operation 范式。
 可参阅 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §三 / §四核对范式；若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §三 / §八，补充规则覆盖、约束边界、退化逻辑和跳过审计的负面 Case。无需中断当前流程。
@@ -23,7 +23,7 @@ Show: "将对 {N} 个逻辑文档进行批量追踪：{file names}。
 
 上述参考提醒按 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §七与 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §十一执行；若用户本会话已表达"不需要 / 知道了 / 已判别 / 已按断言型补充"，本次不再提示。本命令本次执行只触发一次。
 
-Wait for confirmation. On **取消**, `python3 .claude/scripts/state_helper.py release trace`，stop.
+Wait for confirmation（确认后 `acquire trace start`）. On **取消**, `python3 .claude/scripts/state_helper.py release trace`，stop.
 
 ### Step B2: Pre-check mock data (once)
 
@@ -47,7 +47,7 @@ If `KNOWLEDGE_BLOCK` equals `（暂无相关业务知识）`, set it to an empty
 
 List `ontology/data-mock/`. Compute `MISSING_MOCK` = objects in `ALL_REF_OBJECTS` without corresponding mock files.
 
-If `MISSING_MOCK` not empty:
+If `MISSING_MOCK` not empty, `acquire trace confirm` 后（回复后 `acquire trace start`）:
 
 "以下对象尚无测试数据，批量追踪需要它们：
 {list}
@@ -62,7 +62,7 @@ Handle accordingly. On **生成**, call `ontology-mock.md` to generate only miss
 
 检查 `ontology/testcase/` 下与 `OPERATION_FILES` 对应的已保存场景文件。设 `WITH_SAVED` 为已有保存文件的逻辑集合，`WITHOUT_SAVED` 为其余。
 
-If `WITH_SAVED` 非空，询问用户：
+If `WITH_SAVED` 非空，`acquire trace confirm` 后询问用户（回复后 `acquire trace start`）：
 
 ```
 以下 {k} 个逻辑已有保存的追踪场景：
@@ -95,7 +95,7 @@ For each `OPERATION_PATH` in `OPERATION_FILES`:
 
 Append all entries into `OPERATION_JOBS`。
 
-告诉用户："准备批量追踪 {N} 个逻辑（其中 {k} 个复用已保存场景，{N-k} 个由 agent 自动生成），请稍候。"
+告诉用户："准备批量追踪 {N} 个逻辑（其中 {k} 个复用已保存场景，{N-k} 个自动生成场景），请稍候。"
 
 #### B3.2 单次 dispatch
 
@@ -188,7 +188,7 @@ Also write a combined summary to `reports/{BATCH_TS}-trace-batch.md`：
 
 ### Step B5: Present summary
 
-Show only the combined summary in terminal:
+先 `python3 .claude/scripts/state_helper.py release trace` 与 `update-progress`，再 show only the combined summary in terminal:
 
 "批量追踪完成。
 - 已追踪：{N} 个逻辑，{scenario_total} 个场景
@@ -197,19 +197,13 @@ Show only the combined summary in terminal:
 
 ⚠️ 未发现缺项不代表逻辑正确；推演通过率低意味着逻辑或数据有缺陷。
 
-汇总报告：`reports/{batch-filename}`
-逐个详细报告见汇总中的链接。
-测试场景已落盘：{M} 个文件保存到 `ontology/testcase/`（已 commit；{M} = JOB_SUMMARIES 中 `generated_testcase: true` 的数量，若为 0 则省略本行）
+逐个逻辑的详细结果见批量追踪汇总报告。
+新保存了 {M} 个逻辑的测试场景，下次追踪自动复用。（{M} = JOB_SUMMARIES 中 `generated_testcase: true` 的数量，若为 0 则省略本行）"
 
-**下一步建议：**
-- 回复 **修复 {逻辑名}** → 选择某个逻辑逐条处理
-- 回复 **再追踪 {逻辑名}** → 单独重新追踪某个逻辑
-- 回复 **扫描候选**（/ontology-codegen-scan）→ 看哪些逻辑适合转脚本
-- 回复 **代码生成**（/ontology-codegen）→ 选定 operation 后生成 Python 脚本（不支持一键全部）
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
+不列下一步菜单（界面的建议条会给出）。用户之后在对话里说「修复 {逻辑名}」「再追踪 {逻辑名}」「扫描候选」「代码生成」，按下面的分支做。
 
 **If user replies 完成:** `python3 .claude/scripts/state_helper.py release trace`，Stop.
-（**修复** / **再追踪** 仍在本命令内继续，不必 release）
+（**修复** / **再追踪** 仍在本命令内继续：先 `acquire trace start`，处理完再 release 并小结）
 
 **If user replies 扫描候选:** `python3 .claude/scripts/state_helper.py release trace`，然后 read `.claude/commands/ontology-codegen-scan.md` and follow its instructions.
 

@@ -54,14 +54,7 @@ Create, initialize, or refresh business process flowcharts in ontology/diagrams/
 
 ### 刷新后的反馈
 
-执行脚本后读取命令输出，向用户说明：
-- 刷新的流程图数量和位置：`ontology/diagrams/`
-- 刷新的 Excel 表数量和位置：`ontology/excel/`
-- 刷新的摘要数量和位置：`ontology/diagrams-summary/`
-
-然后结束命令并提示：
-
-> 刷新已完成，尚未做结构/语义校验。下一步建议运行 `/ontology-validate-diagrams`。
+执行脚本后读取命令输出，先 `python3 .claude/scripts/state_helper.py release flowchart`，再向用户说明刷新了几个流程图、几张 Excel 表、几份流程图摘要，并说一句还没做结构和语义校验；不列下一步菜单（界面的建议条会给出）。
 
 ## Step 1: Assess current state
 
@@ -81,17 +74,17 @@ Check these locations to determine mode:
 3. `ontology/diagrams/` empty BUT `resource/diagrams/` has .drawio files → Mode B (init from source)
 4. Both empty → Mode A (create from scratch)
 
-Display detected mode to user.
+用一句业务话告诉用户接下来做什么（如「从资料区的流程图初始化」），不说 Mode 名。
 
 ## Step 2: Execute mode
 
 ### Mode A — Create from scratch
 
 1. Check for research reports in `research/`. If found, read them to identify key business processes.
-2. If no research reports, ask user: "未找到资料分析报告或现有流程图。请选择：
+2. If no research reports, `python3 .claude/scripts/state_helper.py acquire flowchart confirm` 后 ask user（回复后 `acquire flowchart start`）: "未找到资料分析报告或现有流程图。请选择：
    - 描述你的业务流程，我来生成流程图
    - 先运行 `/ontology-research <领域>` 进行资料分析"
-3. Once business processes are identified (from research or user description), list them and ask user to confirm which ones to create flowcharts for.
+3. Once business processes are identified (from research or user description), `acquire flowchart confirm`，list them and ask user to confirm which ones to create flowcharts for（回复后 `acquire flowchart start`）.
 4. For each confirmed process, generate a .drawio XML file:
    - Read `resource/diagrams/图示说明定义.drawio` (if exists) to understand node type conventions
    - Generate well-formed draw.io XML with proper node types (开始/结束, 业务活动, 判断, 子流程, 子流程判断, 动作, 说明, 递归)
@@ -124,7 +117,7 @@ Display detected mode to user.
 用户在流程图编辑器里点「AI 推荐新流程」时进入本分支：在已有流程图之外补画还没有覆盖的业务流程，已有流程图一律不动。
 
 1. 读 `research/` 下的资料分析报告与 `ontology/diagrams-summary/` 下已有流程图的摘要，找出报告里有、但还没有流程图的业务流程。
-2. 用业务语言列出候选（每条一句话说明它是什么流程、为什么值得单独画），请用户确认要补画哪些；没有候选时说明「资料分析报告里的业务流程都已有流程图」，并询问用户是否要描述新的流程。
+2. 先 `python3 .claude/scripts/state_helper.py acquire flowchart confirm`，用业务语言列出候选（每条一句话说明它是什么流程、为什么值得单独画），请用户确认要补画哪些（回复后 `acquire flowchart start`）；没有候选时说明「资料分析报告里的业务流程都已有流程图」，并询问用户是否要描述新的流程。
 3. 对确认的流程按 Mode A 第 4～6 步生成 `.drawio` 与摘要，只写新文件。
 4. Proceed to Step 3 (commit).
 
@@ -144,7 +137,7 @@ Display detected mode to user.
 Determine TOPIC:
 - If $ARGUMENTS was provided: use $ARGUMENTS
 - Else if research reports exist: infer from research report filename
-- Else: ask user for a topic name
+- Else: ask user for a topic name（问之前 `acquire flowchart confirm`，回复后切回 `start`）
 
 ```bash
 git add ontology/diagrams/ ontology/diagrams-summary/ ontology/excel/
@@ -153,12 +146,7 @@ git commit -m "flowchart: {TOPIC} initial diagrams"
 
 ## Step 4: Suggest next step
 
-"流程图已就绪。
-
-**下一步建议：**
-- 回复 **校验**（/ontology-validate-diagrams）→ 对流程图进行校验和打磨
-- 回复 **提取对象**（/ontology-extract-object）→ 从流程图提取业务对象
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
+先 `python3 .claude/scripts/state_helper.py release flowchart`，再用两三句话小结：画了或初始化了哪些流程图、还有什么要用户定；不列下一步菜单（界面的建议条会给出）。用户之后在对话里说「校验」「提取对象」，按下面的分支做。
 
 If user replies **校验**: read `.claude/commands/ontology-validate-diagrams.md` and follow its instructions.
 If user replies **提取对象**: read `.claude/commands/ontology-extract-object.md` and follow its instructions.

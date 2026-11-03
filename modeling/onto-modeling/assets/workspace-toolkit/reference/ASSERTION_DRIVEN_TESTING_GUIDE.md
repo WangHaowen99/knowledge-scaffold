@@ -202,7 +202,7 @@
 
 以下节点可软提示本文件；提示不阻塞当前流程，用户忽略即继续：
 
-1. `/ontology-extract-operation` 完成 Operation 提取、即将展示"下一步建议"前：与 `OPERATION_PARADIGM_GUIDE.md` 的范式提醒合并出现，仅提醒"若判定为断言驱动型或混合型，再参考本文"。
+1. `/ontology-extract-operation` 完成 Operation 提取、写收尾小结时：与 `OPERATION_PARADIGM_GUIDE.md` 的范式提醒合并出现，仅提醒"若判定为断言驱动型或混合型，再参考本文"。
 2. `/ontology-validate` 完成全部校验、即将建议测试数据/追踪前：提醒用户在断言驱动型或混合型业务中，除自动校验结果外，还要人工核对"审计链贯通"和"规则不冲突"。
 3. `/ontology-trace` 的场景设计确认前，包括单条追踪、批量追踪和交互走查：提醒用户在确认场景前补充"规则覆盖 + 约束边界 + 退化逻辑 + 跳过审计的负面测试"四类 Case。
 

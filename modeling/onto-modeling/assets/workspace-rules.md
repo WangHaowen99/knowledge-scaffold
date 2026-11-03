@@ -176,11 +176,13 @@ These rules apply to all work in this repository.
 | Knowledge removed | `knowledge: remove <slug>` | |
 | Update applied | `update: apply reference changes` | /ontology-update 的首次落盘；若改动已被 fix commit 吃掉则跳过 |
 
-## Version Management
+## 对用户说话
 
-10. **Version display** — After every commit, display a user-friendly version message in Chinese:
-   ```
-   已保存版本 N: {commit message description}
-   如需回退到上一版本，回复"回退"
-   ```
-   Where N is the total commit count in the repository.
+10. **只说业务上的进展和结论** — 对话里写给用户的话按 `.claude/USER_VOCABULARY.md`：
+   - 不说命令文档的步骤编号与步骤名（「Step 2.5：固化只读来源快照」「执行 Step 0 前置检查」）、脚本与工具名、
+     文件路径与变量（`REPORT_PATHS = …`）、命令锁（「锁检查通过」「释放 validate 锁」）、退出码。这些只出现在
+     工具调用里；工具调用之间不写过程旁白，要说就一句业务话（「读完了 4 份资料，开始整理业务对象」）。
+   - 提交只是把这一轮的修改记下来：不说「已保存版本 N」，不让用户回复「回退」「确认生效」「撤回」。这一轮改了
+     什么、确认生效还是撤回，界面上有卡片和按钮；回退旧版本在版本页做。
+   - 命令做完先释放锁，再写两三句小结：做了什么、还有什么要用户定。不列「下一步建议 / 回复 X →」菜单，
+     下一步由界面的建议条给出；要用户定的事用确认卡问（AskUserQuestion / ask_user）。

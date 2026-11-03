@@ -29,8 +29,8 @@
    `tool_failures`——每行是 `工具名 · 错误码 · 问题：问题码 字段路径 · 退出码 · 详情`，取自评测侧的执行轨迹，
    是判断运行异常根因的一手证据。`release_version` 非空时，归因以该版本的知识包为准（`git show release/{版本}:路径`
    可对照当时的文档）。
-3. 若这批反馈没有条目（只有 summary）：告知"这批反馈没有失分项，无需演进"，可选提议（不强制）："要不要我基于反馈
-   做一次预防性审视（别名覆盖、描述清晰度）？" 用户拒绝则释放锁结束。
+3. 若这批反馈没有条目（只有 summary）：先 `python3 .claude/scripts/state_helper.py acquire evolution confirm`，告知"这批反馈没有失分项，无需演进"，可选提议（不强制）："要不要我基于反馈
+   做一次预防性审视（别名覆盖、描述清晰度）？" 用户同意则 `acquire evolution start` 继续；拒绝则释放锁结束。
 
 ## Step 2: 失分归因（诊断矩阵）
 
@@ -66,7 +66,7 @@ stopped after a repeated failure."之类只说明运行被中止，真正原因�
 | 1 | 配送单 D002 是否已送达？ | fail | C 数据映射 | 配送单.md `# 数据来源` 补真实表名 |
 ```
 
-然后用 AskUserQuestion 卡请专家确认处理范围。**卡片被拒绝或超时未应答时：不做任何修订，
+然后先 `python3 .claude/scripts/state_helper.py acquire evolution confirm`，再用 AskUserQuestion 卡请专家确认处理范围（专家选定后 `acquire evolution start`）。**卡片被拒绝或超时未应答时：不做任何修订，
 按 Step 6 释放锁后正常结束（严禁留下 lock-evolution）**。选项：
 - **全部修复**：按归因表逐条实施（E 类只给指引不改文件）；
 - **自选编号**：专家回复编号列表（如 `1 3`），只处理选中项；
@@ -160,7 +160,7 @@ stopped after a repeated failure."之类只说明运行被中止，真正原因�
 1. `git add -A && git commit`（Conventional Commits，如 `fix(ontology): 反馈演进——补配送单别名与来源Sheet 映射`）。
 2. `python3 .claude/scripts/state_helper.py update-progress evolution_last_run {timestamp}`
 3. `python3 .claude/scripts/state_helper.py release evolution`
-4. 结束语（用户词表话术）："演进完成：修订 {N} 处，报告见 reports/evolution-*.md。
+4. 结束语（用户词表话术，两三句，不列下一步菜单）："演进完成：修订 {N} 处，详见这次的演进报告。
    发布新版本后请评测侧重跑验证效果——分数以实测为准。"
 
 ## 边界与守则

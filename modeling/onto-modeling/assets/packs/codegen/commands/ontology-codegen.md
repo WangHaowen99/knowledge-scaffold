@@ -40,7 +40,7 @@ Generate Python scripts from verified operation documents. Scope (if any): $ARGU
 本命令以 main agent 直接执行为主（无 sub-agent dispatch）。Step 3-4 生成 Python 代码时，**必须**先扫描 Step 0 加载的 `KNOWLEDGE_BLOCK`：
 - 置信度 `高` → **硬约束**：SQL/字段处理/枚举/分隔符/单位等实现细节必须符合（如 `';'` 边界匹配、双轨 plain+JSON 过滤等）；
 - 置信度 `中` / `低` → 在脚本注释中显式标注以便后续核对；
-- 若 operation 文档与高置信知识条目冲突，停下来汇报冲突给用户裁决，不要静默照搬 operation 文档。
+- 若 operation 文档与高置信知识条目冲突，先 `acquire codegen confirm`，停下来汇报冲突给用户裁决（裁决后切回 `start`），不要静默照搬 operation 文档。
 
 ## Step 1: Check prerequisites
 
@@ -70,10 +70,10 @@ consumer 只按 operation 调用脚本：选中哪个 operation，就执行绑�
 再把每个目标换算成实际要写的脚本：
 
 1. 目标是子操作、「可单独调用」为否，且它的某个上级已有脚本或也在本次目标里 → 改为生成（或更新）那个上级的脚本，告诉用户"「{子操作}」并入「{上级}」的脚本"。
-2. 目标是子操作、「可单独调用」为否，上级都没有脚本也不在目标里 → 先问用户：
+2. 目标是子操作、「可单独调用」为否，上级都没有脚本也不在目标里 → 先 `acquire codegen confirm` 再问用户（回复后切回 `start`）：
    - **生成上级流程「{上级}」的脚本**（上级能脚本化时推荐）；
    - **只为「{子操作}」生成脚本**（上级含人工判断等、不能脚本化时）。
-3. 目标是子操作、「可单独调用」为是，而父流程在调用它之前有停止条件（`ontology_checker.py` 对这类子操作给出「流程关联不完整」警告）→ 先问用户：
+3. 目标是子操作、「可单独调用」为是，而父流程在调用它之前有停止条件（`ontology_checker.py` 对这类子操作给出「流程关联不完整」警告）→ 先 `acquire codegen confirm` 再问用户（回复后切回 `start`）：
    - **改为「可单独调用 > 否」，并入「{上级}」的脚本**（推荐：用户只问这一步时由主脚本的 `steps` 作答）；
    - **保留单独脚本**：把父流程在它之前的检查写进库模块，主脚本和它的脚本都先执行这些检查（见 Step 4「可单独调用的子操作」）。
 4. 目标是主操作 → 生成主脚本；它下面「可单独调用」为否的子操作已有的脚本要删除并把逻辑并入主脚本（告诉用户将删除哪些文件）；「可单独调用」为是的子操作还没有脚本的一并生成（主脚本要 import 它；父流程在调用它之前有停止条件的，按第 3 条先问用户）。
@@ -83,7 +83,7 @@ consumer 只按 operation 调用脚本：选中哪个 operation，就执行绑�
 > 若 `$ARGUMENTS` 仅包含 `全部` / `all` / `*` 等通配词，**拒绝并提示**："代码生成不接受全量目标，请改用 `/ontology-codegen 逻辑1 逻辑2` 形式，或先跑 `/ontology-codegen-scan` 评估候选。"
 
 **If $ARGUMENTS empty:**
-List all operation files and ask:
+List all operation files，`python3 .claude/scripts/state_helper.py acquire codegen confirm` 后 ask（「选择 …」回复后切回 `start`）:
 "发现 {N} 个逻辑文档。请指定要生成代码的范围（不支持一键全部）：
 
 - 回复 **扫描**（/ontology-codegen-scan）→ 先扫一遍候选清单挑（推荐）
@@ -356,7 +356,7 @@ Wait for it to return a JSON array.
 - `流程覆盖` → 按 Step 4「主体结构」把「可单独调用」为否的子操作写成主脚本里的函数、按顺序与停止条件调用并补齐 `steps`（含每一步的中间结果，以及停止时的最终结论）；「可单独调用」为是的子操作改为 import 它脚本里的函数
 - `业务知识冲突` → 按 KNOWLEDGE_BLOCK 中对应高置信条目调整脚本（如 `';'` 边界匹配 SQL）
 
-修复后先重跑 Step 4.4 的契约检查，再**重新 dispatch codegen-review-agent**（同 TARGET_SCRIPTS / RELATED_OPERATIONS）做一次回归。若回归后仍有 `severity=错误` 且与上一轮相同（按 `file + message` 精确配对），停下来汇报：
+修复后先重跑 Step 4.4 的契约检查，再**重新 dispatch codegen-review-agent**（同 TARGET_SCRIPTS / RELATED_OPERATIONS）做一次回归。若回归后仍有 `severity=错误` 且与上一轮相同（按 `file + message` 精确配对），先 `acquire codegen confirm`，停下来汇报（用户回复后切回 `start`）：
 
 ```
 自动修复未能消除以下错误，需人工介入：
@@ -371,7 +371,7 @@ Wait for it to return a JSON array.
 
 ### 4.5.2: 处理警告/建议级 issue
 
-若 4.5.1 后仅剩 `警告` / `建议`，照搬 `.claude/commands/ontology-validate.md` A5 的交互：
+若 4.5.1 后仅剩 `警告` / `建议`，照搬 `.claude/commands/ontology-validate.md` A5 的交互（每次等回复前 `acquire codegen confirm`，回复后切回 `start`）：
 
 ```
 代码复审还有 {M} 个建议/警告：
@@ -421,7 +421,7 @@ Wait for it to return a JSON array.
    - 经脚本验证网关（`ONTO_WEB_SANDBOX_GATEWAY_URL`）在 jiuwenbox 沙箱中执行；网关或 jiuwenbox 不可用时自动改在 onto-modeling 容器内执行，此时结果里 `runtime` 为 `local`，`fallback_reason` 写明原因；
    - 退出码 0 = 全部通过且已记录；1 = 有用例失败（看 `cases[].reason` 和 `stderr`）；2 = 用例文件或参数写错；3 = 执行器本身失败。
 
-3. 有失败就修脚本（或修正写错的用例），重跑 Step 4.4 的契约检查和本步，直到全部通过。同一用例连续两轮因相同原因失败，停下来把失败用例和 stderr 汇报给用户。
+3. 有失败就修脚本（或修正写错的用例），重跑 Step 4.4 的契约检查和本步，直到全部通过。同一用例连续两轮因相同原因失败，先 `acquire codegen confirm`，停下来用业务话把失败用例和原因汇报给用户。
 
 > 改了脚本或它 import 的同目录模块，之前的验证记录自动失效，需要重跑本步。
 
@@ -429,7 +429,7 @@ Wait for it to return a JSON array.
 
 ## Step 5: Present results
 
-Show list of generated files（每个脚本旁有同名描述符）：
+`python3 .claude/scripts/state_helper.py acquire codegen confirm`，then show list of generated files（每个脚本旁有同名描述符；用户确认后切回 `start` 再提交）：
 "代码生成完成：
 - ontology/scripts/order_review.py + order_review.md        ← 订单审核（覆盖子操作：库存校验）
 - ontology/scripts/discount_calc.py + discount_calc.md      ← 折扣计算（可单独调用，订单审核 import 它）
@@ -451,10 +451,6 @@ git commit -m "codegen: {TOPIC}"
 
 ## Step 7: Suggest next step
 
-"代码生成完成，已保存至 `ontology/scripts/`。
+先 `python3 .claude/scripts/state_helper.py release codegen` 与 `update-progress`，再用两三句话小结：生成了哪些脚本、还有什么要用户定；不列下一步菜单（界面的建议条会给出）。
 
-**下一步建议：**
-- 回复 **追踪**（/ontology-trace）→ 用场景进一步验证逻辑
-- 回复 **整体视图**（/ontology-overview）→ 查看全局关系
-- 回复 **扫描候选**（/ontology-codegen-scan）→ 看还有哪些逻辑没生成
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
+用户之后在对话里说「追踪」「整体视图」「扫描候选」，分别读 `.claude/commands/ontology-trace.md`、`ontology-overview.md`、`ontology-codegen-scan.md` 照做。

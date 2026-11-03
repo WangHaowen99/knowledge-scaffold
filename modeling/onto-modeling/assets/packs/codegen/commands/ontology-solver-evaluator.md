@@ -23,6 +23,8 @@ Generate or update the declarative solver evaluator for a solver contract. Solve
 
 命令结束前（含中途停止）执行 `python3 .claude/scripts/state_helper.py release solver-evaluator`。
 
+中途每次停下来问用户（选契约、选评估器处理方式、补参数取值、裁决冲突、确认提交）前，先 `python3 .claude/scripts/state_helper.py acquire solver-evaluator confirm`；用户回复后 `acquire solver-evaluator start`。
+
 整个命令期间遵循 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md`：置信度 `高` 的知识条目是硬约束；与本体文档冲突时停下来请用户裁决。
 
 ## Step 1: 确定契约与目标文件（只读）
@@ -41,12 +43,12 @@ Generate or update the declarative solver evaluator for a solver contract. Solve
      - 一个都没有 → TARGET = `ontology/scripts/{solver_key}_evaluator.py`（新建）。
      - 恰好一个 → TARGET = 该文件。
      - 多个 → 停止并说明："发现多个评估器（{列表}），Consumer 无法自动选择。请在「求解模型」面板为契约指定评估器路径，或删除多余的评估器后重新运行。"
-4. **TARGET 是旧式评估器**（`kind` 为 `legacy`，包内自带计算公式）时，本命令不改写它。停下来询问：
+4. **TARGET 是旧式评估器**（`kind` 为 `legacy`，包内自带计算公式）时，本命令不改写它。先 `acquire solver-evaluator confirm`，停下来询问：
 
    ```
    当前契约使用旧式评估器 {TARGET}（包内自带计算代码）。本命令不会改写旧式评估器。
 
-   - 回复 **新建替换** → 新建声明式评估器 ontology/scripts/{solver_key}_evaluator.py，提交时用 git rm 删除旧式评估器
+   - 回复 **新建替换** → 新建声明式评估器 {solver_key}_evaluator.py，提交时删除旧式评估器
    - 回复 **新建保留** → 只新建声明式评估器；两者并存时需你在「求解模型」面板把评估器路径改为新文件
    - 回复 **取消** → 不做修改
    ```
@@ -82,7 +84,7 @@ Generate or update the declarative solver evaluator for a solver contract. Solve
    - `ATMOS_DIESEL_FEED`、`ATMOS_HC_FEED`、`SOLVER_CONTEXT.route_stream_products` 三组产品名互不重叠，且每个名字在收率表里都要有对应行。
    - `CORRECTION_FACTORS` 每个来源的系数名必须与修正前缀对应，见模板注释。
    - docstring 的「关联operation」「输入参数」保持「无」：评估器由求解契约引用，不是 operation 调用的脚本。可以在「功能描述」中注明对应的 solver_key。
-3. 文档和业务知识里都找不到的值，汇总成**一个编号列表一次性问用户**，注明每项的用途和取值形式（如"二次加工单元在 vgo_ht_unit 表中的 VGOUnitID 取值"）。用户回答前，对应位置保留占位符。
+3. 文档和业务知识里都找不到的值，先 `acquire solver-evaluator confirm`，汇总成**一个编号列表一次性问用户**，注明每项的用途和取值形式（如"二次加工单元在 vgo_ht_unit 表中的 VGOUnitID 取值"）。用户回答前，对应位置保留占位符。
 
 ## Step 4: 自检（确定性，必做）
 
@@ -104,7 +106,7 @@ Generate or update the declarative solver evaluator for a solver contract. Solve
 
 ## Step 5: 确认与提交
 
-展示：
+`python3 .claude/scripts/state_helper.py acquire solver-evaluator confirm`，then 展示（用户确认后切回 `start` 再提交）：
 
 ```
 求解评估器已生成：{TARGET}（契约 {solver_key}）
@@ -127,6 +129,6 @@ git rm {旧式评估器}   # 仅 新建替换
 git commit -m "solver-evaluator: {solver_key}"
 ```
 
-提交后执行 `release solver-evaluator`，并提示：
+提交后执行 `release solver-evaluator`，并提示（不列下一步菜单）：
 
 "评估器已保存。下一步请到「求解模型」面板对契约 {solver_key} 重新发起**验证**：评估器或它引用的对象文档（含 lookup 关联对象）改动后，已有的验证结果会过期，发布前需要重新验证。{若为 新建保留：请同时在面板中把评估器路径改为 {TARGET}。}"

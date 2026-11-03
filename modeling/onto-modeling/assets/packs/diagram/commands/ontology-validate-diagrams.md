@@ -78,11 +78,11 @@ python3 .claude/scripts/check_diagram_excel_alignment.py
 - Excel 缺少「业务活动」列
 - drawio 非虚拟节点与 Excel「业务活动」列不一致
 
-展示完毕后，向用户发送以下消息（替换 N 和文件路径为实际值）：
+展示完毕后，向用户发送以下消息（替换 N 为实际值）：
 
-> 共发现 **N** 个流程图/Excel 对齐问题，详细报告已保存到 `reports/{YYYYMMDD}-{HHMMSS}-diagrams-excel.md`。
+> 共发现 **N** 个流程图/Excel 对齐问题，已记入校验报告。
 >
-> - 回复 **继续** → 在 `resource/` 中修正原始 drawio/xlsx 并刷新后重新校验
+> - 回复 **继续** → 在资料区修正原始流程图或 Excel 并刷新后重新校验
 > - 回复 **跳过** → 直接进入结构校验
 
 **在此等待用户回复，不要自动继续。**
@@ -140,11 +140,11 @@ python3 .claude/scripts/check_diagrams.py
 
 **记录有问题的流程图名称列表**，供后续增量校验使用。
 
-展示完毕后，向用户发送以下消息（替换 N 和文件路径为实际值）：
+展示完毕后，向用户发送以下消息（替换 N 为实际值）：
 
-> 共发现 **N** 个流程图存在结构问题，详细报告已保存到 `reports/{YYYYMMDD}-{HHMMSS}-diagrams-rule.md`。
+> 共发现 **N** 个流程图存在结构问题，已记入校验报告。
 >
-> - 回复 **继续** → 在 `resource/` 中修正原始 drawio 并刷新后重新增量校验
+> - 回复 **继续** → 在资料区修正原始流程图并刷新后，只重新校验这几个流程图
 > - 回复 **跳过** → 直接进入语义校验
 
 **在此等待用户回复，不要自动继续。**
@@ -190,7 +190,7 @@ python3 .claude/scripts/check_diagrams.py ontology/diagrams/图名1.drawio ontol
 如果存在新增图、孤立摘要或摘要过期：
 
 - 向用户列出具体文件
-- 告知用户："语义校验依赖最新摘要。请先按下方刷新模式回复，例如 `刷新流程图 图名...` 或 `全量刷新`，由代理内部更新派生产物，然后重新校验。"
+- 告知用户："语义校验依赖最新的流程图摘要。请先按下方刷新方式回复，例如 `刷新流程图 图名...` 或 `全量刷新`，我更新后再重新校验。"
 - **停止 Phase B，不要生成、删除或修改任何摘要文件**
 
 读取 `ontology/diagrams-summary/` 下的所有 `.md` 文件内容。每个文件对应一个流程图的摘要。
@@ -296,12 +296,12 @@ python3 .claude/scripts/check_diagrams.py ontology/diagrams/图名1.drawio ontol
 
 **有问题时：**
 
-> 语义分析发现 **X** 个严重问题、**Y** 个警告和 **Z** 个建议。报告已保存到 `reports/{YYYYMMDD}-{HHMMSS}-diagrams-semantic.md`。
+> 语义分析发现 **X** 个严重问题、**Y** 个警告和 **Z** 个建议，已记入语义分析报告。
 >
-> 请在 `resource/` 中修改原始 drawio/xlsx，再按"刷新模式速查"回复刷新选项，由代理内部更新 `ontology/diagrams/`、`ontology/excel/`、`ontology/diagrams-summary/`，最后重新校验。
+> 请在资料区修改原始流程图或 Excel，再按上面的刷新方式回复，我更新流程图、Excel 和流程图摘要后重新校验。
 
 **无任何语义问题时：**
 
-> 语义分析完成，所有流程图均未发现问题。报告已保存到 `reports/{YYYYMMDD}-{HHMMSS}-diagrams-semantic.md`。
+> 语义分析完成，所有流程图均未发现问题。
 
 3. **在此结束本轮校验，不要自动继续刷新或修改任何文件。**

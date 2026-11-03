@@ -11,6 +11,8 @@ Trace interactive walkthrough mode. Loaded by `.claude/commands/ontology-trace.m
 
 交互走查用于 **Operation 语义还不够确定、需要人逐个分支定方向** 的场景。它不替代普通 trace；它先帮助用户构造可复用 testcase / 正常 mock 数据，再回到普通 trace 执行推演。
 
+本模式里每次停下来等用户（选入口、选分支、确认场景、决定缺陷怎么处理、确认保存）前，先 `python3 .claude/scripts/state_helper.py acquire trace confirm`；用户回复后 `acquire trace start`。
+
 ### 适用与触发
 
 显性告知用户：
@@ -20,13 +22,13 @@ Trace interactive walkthrough mode. Loaded by `.claude/commands/ontology-trace.m
 
 用法：
 - `/ontology-trace 交互`：先列出逻辑，让你选择入口
-- `/ontology-trace 交互 ontology/operation/创建订单.md`：直接走查指定逻辑
+- `/ontology-trace 交互 创建订单`：直接走查指定逻辑
 - 也可以直接描述业务场景，例如：`交互 1 个订单，库存不足，优惠券已过期`
 
 规则：
 - 每个分支点由你选择方向；我不会替你默认选分支
-- 我根据你给的业务特征补具体输入、testcase 和必要的正常 mock 数据
-- 边界/异常场景写入 testcase 的自定义输入，不写入 data-mock 的边界/异常分区
+- 我根据你给的业务特征补具体输入、测试场景和必要的正常测试数据
+- 边界/异常场景写入测试场景的自定义输入，不写入测试数据的边界/异常分区
 
 💡 可选参考：交互走查默认围绕分支选择展开；若本次 Operation 包含规则引擎、红线拦截、连续阈值、多判定器组合或审计链，可先对照 Operation 范式。
 可参阅 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §三 / §四核对范式；若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §三 / §八，补充规则覆盖、约束边界、退化逻辑和跳过审计的负面 Case。无需中断当前流程。
@@ -36,7 +38,7 @@ Trace interactive walkthrough mode. Loaded by `.claude/commands/ontology-trace.m
 
 ### I1: Choose Entry
 
-- If the optional target is a operation file path, set `OPERATION_PATH` to it.
+- If the optional target is a operation file path, set `OPERATION_PATH` to it; if it is an operation name and `ontology/operation/{名称}.md` exists, set `OPERATION_PATH` to that file.
 - If the optional target is a scenario description, keep it as `USER_SCENARIO_HINT` and list candidate operation files from `ontology/operation/` for the user to choose.
 - If no target is provided, list operation files from `ontology/operation/` and ask the user which one to walk through.
 - If no operation files exist, tell user "未找到任何逻辑文档，请先运行 `/ontology-extract-operation`。" Then `python3 .claude/scripts/state_helper.py release trace` and stop.
@@ -66,7 +68,7 @@ Read `OPERATION_PATH` and its direct sub-operation calls. For the current operat
   - 可选分支
   - 走该分支需要哪些输入或对象字段
   - 会进入哪个子流程（如有）
-- Ask the user to choose one branch or provide a business assumption.
+- Ask the user to choose one branch or provide a business assumption（先切 `confirm`）.
 
 Never treat "继续" as choosing a default branch. If the next branch is not explicit, ask again with the branch options.
 
@@ -80,7 +82,7 @@ For each user-selected branch:
 - Non-critical unknown attributes may be blank/`无` only when the object definition allows it. Primary keys, foreign keys, and branch-dependent fields must not be blank.
 - Record the source for each generated value: existing mock row, user assumption, or AI-filled concrete value.
 
-Show the constructed scenario and any mock row changes, then ask:
+Show the constructed scenario and any mock row changes, then ask（先切 `confirm`）:
 
 ```
 请确认这个走查场景：
@@ -106,7 +108,7 @@ Show:
 - suggested fix
 - impact on generated scenario/data
 
-Then ask:
+Then ask（先切 `confirm`）:
 
 ```
 - 回复 **记录** → 只记录缺陷，继续或结束走查
@@ -130,18 +132,14 @@ After the user stops or all desired branches are covered:
 - Commit testcase files separately with `git commit -m "trace: {OPERATION_NAME} interactive testcases"` after user confirms.
 - If mock data files changed, commit them separately with `git commit -m "mock: {OPERATION_NAME} walkthrough data"` after user confirms.
 
-Final prompt:
+Final prompt（先 `python3 .claude/scripts/state_helper.py release trace` 与 `update-progress`；不列下一步菜单，界面的建议条会给出）:
 
 ```
 交互走查已完成。
-- 测试场景：`ontology/testcase/{OPERATION_NAME}.md`
-- 测试数据：{data-mock files or "未改动"}
-- 走查报告：`reports/{filename}`
-
-下一步建议：
-- 回复 **执行追踪** → 用刚保存的 testcase 运行 `/ontology-trace {OPERATION_PATH}`
-- 回复 **继续走查** → 回到分支选择，补更多场景
-- 回复 **修复缺陷** → 处理语义缺陷
+- 测试场景：已保存 {N} 个，下次追踪自动复用
+- 测试数据：{改动了哪些对象的测试数据，或"未改动"}
+- 详细过程见走查报告
+{有没处理的语义缺陷或待定假设时补一句}
 ```
 
-If user replies **执行追踪**, continue with normal single-file mode using `OPERATION_PATH`; saved testcases should be reused at Step 2.5.
+用户之后在对话里说「执行追踪」「继续走查」「修复缺陷」时先 `acquire trace start`：执行追踪按单个逻辑模式用 `OPERATION_PATH` 继续（Step 2.5 会复用刚保存的场景）；继续走查回到 I2；修复缺陷按 I5 的「修复」处理。

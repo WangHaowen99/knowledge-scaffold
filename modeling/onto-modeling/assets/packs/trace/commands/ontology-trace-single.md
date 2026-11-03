@@ -37,7 +37,7 @@ If `KNOWLEDGE_BLOCK` equals `（暂无相关业务知识）`, set it to an empty
 List `ontology/data-mock/`. Extract the object names referenced by this operation from the `与object的关联` section.
 
 **If mock data is missing for any referenced object:**
-Show: "该逻辑引用了以下对象，但尚无对应测试数据：
+`python3 .claude/scripts/state_helper.py acquire trace confirm`，then show（回复后 `acquire trace start`）: "该逻辑引用了以下对象，但尚无对应测试数据：
 {list of objects without mock data}
 
 - 回复 **生成**（/ontology-mock）→ 现在生成缺失的测试数据
@@ -58,10 +58,10 @@ Derive `OPERATION_NAME` from `OPERATION_PATH`（取 basename 去掉 `.md`）。�
 **If `TESTCASE_PATH` exists:**
 
 使用 `python3 .claude/scripts/trace_inputs.py "{TESTCASE_PATH}" --output "tmp/trace-inputs.json"` 解析，禁止另写临时正则转换器。非零退出立即记录输入错误，不进入推演。解析规则（与 `.claude/templates/testcase-template.md` 对齐）：
-- H1 首行 `# 测试场景：{OPERATION_NAME}` 验证逻辑名一致（不一致时提示用户并让其确认是否继续）。
+- H1 首行 `# 测试场景：{OPERATION_NAME}` 验证逻辑名一致（不一致时先 `acquire trace confirm`，提示用户并让其确认是否继续；回复后切回 `start`）。
 - 每个 `## 场景 N：{name}` 段落提取 `输入`、`预期路径`、`数据来源` 三项，构造 `SAVED_SCENARIOS` 列表。
 
-Show user:
+`python3 .claude/scripts/state_helper.py acquire trace confirm`，then show user（回复后 `acquire trace start`）:
 
 ```
 找到已保存的 {N} 个测试场景（{YYYY-MM-DD} 更新）：
@@ -104,7 +104,7 @@ Each scenario format:
 
 Aim for 3–6 scenarios depending on operation complexity.
 
-**Supplement mode（仅当 Step 2.5 选 补充）**：比对 `EXISTING_SCENARIOS` 已经覆盖的分支，仅针对未覆盖的判断节点或边界补充新场景。最终 `SCENARIOS = EXISTING_SCENARIOS + 新增场景`。若已有场景已覆盖所有分支，直接告知用户"已有场景已覆盖全部分支，无需补充"，并让用户在"直接执行追踪"或"补一个自定义场景"中选择。
+**Supplement mode（仅当 Step 2.5 选 补充）**：比对 `EXISTING_SCENARIOS` 已经覆盖的分支，仅针对未覆盖的判断节点或边界补充新场景。最终 `SCENARIOS = EXISTING_SCENARIOS + 新增场景`。若已有场景已覆盖所有分支，先 `acquire trace confirm`，直接告知用户"已有场景已覆盖全部分支，无需补充"，并让用户在"直接执行追踪"或"补一个自定义场景"中选择（回复后切回 `start`）。
 
 ## Step 4: 设计阶段确认（设计与执行的硬隔离）
 
@@ -118,7 +118,7 @@ Step 1 已解析逻辑中所有判断节点的分支列表，记总分支数为 
 
 **Operation 范式 / 断言驱动测试参考提醒（可选）**：在展示场景并请求确认前，按 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §七「校验完成或 trace 场景确认前」与 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §十一「trace 场景确认前」输出提示；若用户本会话已表达"不需要 / 知道了 / 已判别 / 已按断言型补充"，本次不再提示。本命令本次执行只触发一次。
 
-Show all generated scenarios and ask:
+`python3 .claude/scripts/state_helper.py acquire trace confirm`，then show all generated scenarios and ask:
 
 "以上是 {N} 个测试场景。
 
@@ -138,7 +138,7 @@ Show all generated scenarios and ask:
 - 回复 **删除 N** → 删除第 N 个场景
 - 回复 **修改 N {内容}** → 修改第 N 个场景"
 
-Repeat until user confirms。**未确认不得 dispatch trace-agent**。
+Repeat until user confirms（确认后 `acquire trace start`）。**未确认不得 dispatch trace-agent**。
 
 ## Step 4.5: Save testcases for reuse
 
@@ -172,7 +172,7 @@ User 确认后（无论是 复用、补充 还是 重新生成 路径汇合到�
    git commit -m "trace: {OPERATION_NAME} testcases"
    ```
 
-5. Tell user: "场景已保存到 `ontology/testcase/{OPERATION_NAME}.md`，下次追踪 **{OPERATION_NAME}** 会自动复用。"
+5. Tell user: "场景已保存，下次追踪 **{OPERATION_NAME}** 会自动复用。"
 
 > 特例：若 `REUSE_MODE = true` 且文件内容未发生变化（即用户选 **复用** 后没做任何修改），跳过写入与 commit。
 
@@ -234,7 +234,7 @@ Write the full trace results to the report file。报告**必须**包含以下�
 
 ## Step 7: Present summary
 
-Show only the summary in terminal:
+先 `python3 .claude/scripts/state_helper.py release trace` 与 `update-progress`，再 show only the summary in terminal:
 
 "**追踪总结：**
 
@@ -254,18 +254,13 @@ Show only the summary in terminal:
   - 隐式兜底：{n}
   - 规则定义与执行脱节：{n}
 
-追踪报告已保存至 `reports/{filename}`，详细步骤见报告。
-测试场景：`ontology/testcase/{OPERATION_NAME}.md`（已落盘，下次追踪自动复用）"
+详细步骤见追踪报告；测试场景已保存，下次追踪自动复用。
+{有问题时补一句：哪些问题需要用户定}"
 
-If issues were found, ask:
-"**下一步建议：**
-- 回复 **修复** → 逐个处理（与 validate 流程类似，逐条提出修改方案）
-- 回复 **再追踪** → 修改场景后重新执行
-- 回复 **补充资料分析**（/ontology-research）→ 定向补充资料分析后增量提取并重新追踪
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
+不列下一步菜单（界面的建议条会给出）。用户之后在对话里说「修复」（逐条提出修改方案，同校验流程）、「再追踪」（改场景后重新执行）或「补充资料分析」，按下面的分支做。
 
 **If user replies 补充资料分析:** Ask: "请描述要补充的分析方向（例如：「XX子流程的详细逻辑」「YY业务规则的边界条件」）：". Then `python3 .claude/scripts/state_helper.py release trace`，再 read `.claude/commands/ontology-research.md` and follow it using **追加资料分析（append）mode** with the user's direction as FOCUS_DIRECTIONS; **skip research's Step 5 next-step prompt**. After research completes, ask: "资料分析完成。要增量提取哪一类？回复 **对象**、**逻辑** 或 **否**。" — if object, read `.claude/commands/ontology-extract-object.md` and follow it using **incremental mode**; if operation, read `.claude/commands/ontology-extract-operation.md` and follow it using **incremental mode**. After extract summary, ask: "是否重新追踪？回复 **是** 或 **否**。" — if yes, restart this command from Step 1（restart 时新一轮 Step 0 会重新 acquire）.
 
 **If user replies 完成:** `python3 .claude/scripts/state_helper.py release trace`，Stop.
 
-**If user replies 修复 / 再追踪:** 仍在本命令内继续，不必 release（继续走到下一轮处理）。
+**If user replies 修复 / 再追踪:** 仍在本命令内继续：先 `acquire trace start`，处理完再按 Step 7 release 并小结。

@@ -59,13 +59,11 @@ python3 .claude/scripts/research_checker.py status
 字段与分类还没对过账——Step 1.6 的分流正是按它的分类列做的：
 
 - `SUMMARIES` 非空 → 置 `REPORTS = empty`，按模式 B 只用流程图继续，并告诉用户：
-  "资料分析报告（`research/{文件名列表}`）尚未通过内容验收，本次只基于流程图提取。
-  用 `python3 .claude/scripts/research_checker.py check` 核验通过后，可再以增量模式
-  补充报告里的内容。"
-- `SUMMARIES` 为空（报告是唯一来源）→ 按 `.claude/STEP0_TEMPLATE.md` 的 **跳步守卫**
+  "资料分析报告「{报告名}」还没通过内容核验，这次只按流程图提取逻辑；核验通过后再补充报告里的内容。"
+- `SUMMARIES` 为空（报告是唯一来源）→ 先 `python3 .claude/scripts/state_helper.py acquire extract-operation confirm`，按 `.claude/STEP0_TEMPLATE.md` 的 **跳步守卫**
   提示："资料分析报告的计数、ID、引用字段或分类尚未对账，直接提取会把错误内容带进逻辑、
   规则与指标，并可能分流到错误目录。" 选项 **先做 核验** / **继续** / **取消**。
-  用户选 **继续** 才保留 `REPORTS`，并在本轮摘要里标注"来源报告未通过内容验收"；
+  用户选 **继续** 才保留 `REPORTS`（切回 `acquire extract-operation source`），并在本轮摘要里标注"来源报告未通过内容验收"；
   选 **取消** 时先 `python3 .claude/scripts/state_helper.py release extract-operation` 再 stop。
 
 根据存在情况分四种模式：
@@ -86,17 +84,17 @@ python3 .claude/scripts/state_helper.py release extract-operation
 Set `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = empty`。Proceed to Step 2。
 
 **模式 C — 仅有资料分析报告（`SUMMARIES` 空，`REPORTS` 非空）：**
-Tell user:
-"未找到流程图摘要，将仅基于资料分析报告提取逻辑（`research/{文件名列表}`）。流程图是可选步骤，概念明确时可跳过。
+`python3 .claude/scripts/state_helper.py acquire extract-operation confirm`，then tell user:
+"未找到流程图摘要，将仅基于资料分析报告「{报告名}」提取逻辑。流程图是可选步骤，概念明确时可跳过。
 - 回复 **继续** → 仅基于资料分析报告提取逻辑
 - 回复 **先做流程图** → 转入 /ontology-flowchart 创建流程图后再回来
 "
-- **继续**: set `SUMMARY_PATHS = empty`, `REPORT_PATHS = REPORTS`，进入 Step 2。
+- **继续**: `acquire extract-operation source`；set `SUMMARY_PATHS = empty`, `REPORT_PATHS = REPORTS`，进入 Step 2。
 - **先做流程图**: 先 `python3 .claude/scripts/state_helper.py release extract-operation`；再读取 `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） 并执行；完成后 Claude 重新运行本命令。
 - **取消**: `python3 .claude/scripts/state_helper.py release extract-operation`，stop。
 
 **模式 D — 两者都有：**
-Tell user:
+`python3 .claude/scripts/state_helper.py acquire extract-operation confirm`，then tell user（回复后 `acquire extract-operation source`）:
 "已发现流程图摘要 {N} 份和资料分析报告 {M} 份。
 - 回复 **两者结合**（推荐）→ 报告里的操作、规则、指标全部生成，流程图提供步骤与数据流；报告没收录的流程图作为补充单独成文，提取后对账标明来源
 - 回复 **跳过资料分析** → 只用流程图摘要
@@ -123,15 +121,15 @@ python3 .claude/scripts/excel_context.py --summary {逐个 SUMMARY_PATHS} --exce
 
 Set `EXCEL_CONTEXT` = 脚本 stdout。若 stdout 为空，置为 `（无同名 Excel 补充表）`。
 
-若 `ORPHAN_EXCEL_PATHS` 非空，提取前提示用户：
+若 `ORPHAN_EXCEL_PATHS` 非空，提取前先 `python3 .claude/scripts/state_helper.py acquire extract-operation confirm`，再提示用户：
 
-"发现未匹配流程图摘要的 Excel：{ORPHAN_EXCEL_PATHS}。孤立 Excel 不作为全局提取来源，避免把其他流程 sheet 的细节串入本次提取。
+"发现没有对应流程图的 Excel：{这些 Excel 的文件名}。它们不作为这次提取的来源，避免把其他流程的细节串进来。
 - 回复 **继续** → 忽略这些孤立 Excel，继续提取
 - 回复 **校验流程图** → 先检查流程图与 Excel 是否对齐
-- 回复 **刷新** → 从 resource 重新刷新拆分后的流程图/Excel/摘要
+- 回复 **刷新** → 从资料区重新刷新流程图、Excel 和流程图摘要
 "
 
-- **继续**（或默认）: 忽略 `ORPHAN_EXCEL_PATHS`，继续 Step 2。
+- **继续**（或默认）: `acquire extract-operation source`；忽略 `ORPHAN_EXCEL_PATHS`，继续 Step 2。
 - **校验流程图**: `python3 .claude/scripts/state_helper.py release extract-operation`；read `.claude/commands/ontology-validate-diagrams.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow it；Stop this command。
 - **刷新**: `python3 .claude/scripts/state_helper.py release extract-operation`；read `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） and follow refresh branch；Stop this command。
 
@@ -151,9 +149,8 @@ Set `EXCEL_CONTEXT` = 脚本 stdout。若 stdout 为空，置为 `（无同名 E
 python3 .claude/scripts/report_reconcile.py plan --json --reports {REPORT_PATHS，空格分隔} --summaries {SUMMARY_PATHS，空格分隔；为空时只写 --summaries}
 ```
 
-- 退出码 2：报告清单没有「分类」列或分类取值非法，说明报告还是旧契约或没过验收。把脚本给出的
-  原因告诉用户，提示先跑 `python3 .claude/scripts/research_checker.py` 核验、补齐分类后再回到
-  本命令，**不要自行推断分类**；先 `python3 .claude/scripts/state_helper.py release extract-operation`
+- 退出码 2：报告清单没有「分类」列或分类取值非法，说明报告还是旧契约或没过验收。用业务话把
+  原因告诉用户，提示先核验资料分析报告、补齐分类后再回到本命令，**不要自行推断分类**；先 `python3 .claude/scripts/state_helper.py release extract-operation`
   再 stop。
 - 其余情况按 JSON 取值：
   - `OPERATION_CANDIDATES` = `candidates.operation`；`RULE_CANDIDATES` = `candidates.rule`；
@@ -169,7 +166,7 @@ python3 .claude/scripts/report_reconcile.py plan --json --reports {REPORT_PATHS�
   - `category_conflicts`：多份报告给同一名称不同的分类。告诉用户统一报告里的分类并重新核验后
     再提取；先 release 再 stop。
   - `flowchart_conflicts`：流程图名称在报告里是规则、指标或对象，流程图把它当操作、报告不是。
-    逐条问用户：
+    先 `acquire extract-operation confirm`，逐条问用户（问完切回 `source`）：
 
     "流程图「{name}」在资料分析报告里是{对应类型}，不能直接按操作生成。
     - 回复 **改报告** → 把报告里这一条的分类改成「操作」并重新核验后再提取
@@ -193,17 +190,15 @@ Step 1.6 已按分类拆出候选）时才清空，这时规则与指标以报�
 没有的旧规则。本轮没用报告时，这两个目录里的文档本轮生成不回来（可能是从知识包导入的，
 也可能是 /ontology-extract-rule-metric 补抽的），一律保留。
 
-If any of the three directories already has documents and MODE is not pre-set:
+If any of the three directories already has documents and MODE is not pre-set, `python3 .claude/scripts/state_helper.py acquire extract-operation confirm` 后问（Step 3 的 `acquire extract-operation operation` 会切回）:
 
 ```
 已发现逻辑文档 {K} 个、规则 {R} 条、指标 {P} 个。
 
-**下一步建议：**
 - 回复 **增量** → 只补充缺失的逻辑、规则与指标，不覆盖已有文档
-- 回复 **重做** → 清空 {REPORT_PATHS 非空：`ontology/operation/`、`ontology/rule/`、`ontology/metric/`；REPORT_PATHS 为空：`ontology/operation/`} 后重新提取
+- 回复 **重做** → 清空 {REPORT_PATHS 非空：已有逻辑、规则和指标；REPORT_PATHS 为空：已有逻辑} 后重新提取
 {若 REPORT_PATHS 为空且 R+P > 0，追加一行：
-"注意：本轮没有使用资料分析报告，重做只清空 `ontology/operation/`，现有的 {R} 条规则与 {P} 个指标保留不动。"}
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
+"注意：本轮没有使用资料分析报告，重做只清空逻辑，现有的 {R} 条规则与 {P} 个指标保留不动。"}
 ```
 
 Handle user choice:
@@ -307,7 +302,7 @@ METRIC_DIR: ontology/metric/
 CHECK_TYPE: {本轮有规则或指标候选时写 operation,rule,metric；否则写 operation}
 ```
 
-Handle gaps（全部补充 / 选择性补充 / 跳过），with one-retry limit.
+Handle gaps（全部补充 / 选择性补充 / 跳过），with one-retry limit；问用户前 `acquire extract-operation confirm`，回复后切回 `operation`。
 
 **对账（资料分析报告 ↔ 本轮产物）：** 仅当 `REPORT_PATHS` 非空时执行。覆盖率检查是模型判断，
 报告条目有没有落地以这里的确定性对账为准：
@@ -324,7 +319,7 @@ python3 .claude/scripts/report_reconcile.py check --reports {REPORT_PATHS，空�
   用户明确说不生成的，逐条记下原因。
 - **生成在错误目录**（报告里是规则或指标，却写成了操作）：按报告分类和对应模板重写到
   `ontology/rule/` 或 `ontology/metric/`，删掉 operation 目录里的那份。
-- **[需说明] 报告与流程图都没有、本轮新增或改动的文档**：问用户是删除，还是保留并说明来源。
+- **[需说明] 报告与流程图都没有、本轮新增或改动的文档**：问用户是删除，还是保留并说明来源（问之前 `acquire extract-operation confirm`，回复后切回 `operation`）。
 - **没有同名操作文档的流程图**：应能在逻辑提取 agent 返回的「合并」一栏里找到（并进了报告里
   的某个操作），或在 `FLOWCHART_SKIPPED` 里。两处都没有的，补提或请用户说明。
 
@@ -347,7 +342,7 @@ python3 .claude/scripts/report_reconcile.py check --reports {REPORT_PATHS，空�
 覆盖检查只按名称比对来源，展示时写明「覆盖（按名称）」，不代表逻辑条件与字段关联正确；没有运行的检查不得写成通过，
 脚本退出码 2 时写「无法核验：{原因}」。
 
-Ask: "逻辑产物已生成：操作 {N} 个、规则 {R} 条、指标 {M} 个。
+`python3 .claude/scripts/state_helper.py acquire extract-operation confirm`，then ask: "逻辑产物已生成：操作 {N} 个、规则 {R} 条、指标 {M} 个。
 覆盖（按名称）：{结果}；轻量核验：{status}；字段关联：错误 {E} 条、待确认 {W} 条。
 {REPORT_PATHS 非空时附上对账结果；有流程图补充或合并时逐条列出}
 如需修改请直接说明；确认无误请回复 **确认**。"
@@ -357,10 +352,10 @@ Ask: "逻辑产物已生成：操作 {N} 个、规则 {R} 条、指标 {M} 个�
 1. `python3 .claude/scripts/candidate_revision.py start --plan {要改的文档路径，逐项加引号} --note "{修正说明}"`，只修改输出里的 `candidate` 路径。
 2. `python3 .claude/scripts/candidate_revision.py diff`，把每个文件的增删行数与关键改动展示给用户。
 3. `python3 .claude/scripts/candidate_revision.py check`：叠加候选后跑整计划规则检查（含字段关联）。退出码 0 通过；1 候选引入新错误（展示 `new_errors`，继续改候选后重新 check）或确认版本已被改动（`stale`，reject 后重新 start）；2 无法核验（展示 reason，不得接受）。
-4. 用户同意后 `python3 .claude/scripts/candidate_revision.py accept` 写回；不同意时 `python3 .claude/scripts/candidate_revision.py reject --reason "{原因}"`，工作区文件不动。
+4. 问用户是否接受前 `acquire extract-operation confirm`，回复后切回 `operation`。用户同意后 `python3 .claude/scripts/candidate_revision.py accept` 写回；不同意时 `python3 .claude/scripts/candidate_revision.py reject --reason "{原因}"`，工作区文件不动。
 5. accept 后重新运行上面的 `verify_artifacts.py`，不复用旧回执。
 
-When user confirms（回复 **确认** 或等价的肯定词，如"好的"、"可以"、"没问题"、"继续"、"是"）:
+When user confirms（回复 **确认** 或等价的肯定词，如"好的"、"可以"、"没问题"、"继续"、"是"）: `acquire extract-operation operation`，then
 
 Determine TOPIC from flowchart summary filenames, research report filenames, or ask user.
 
@@ -369,18 +364,15 @@ git add ontology/operation/ ontology/rule/ ontology/metric/
 git commit -m "extract: {TOPIC} operation{本轮产出规则或指标时追加 /rule/metric}" {REPORT_PATHS 非空时追加 -m "对账：{对账结果的逐类计数，一行}"；有 RECONCILE_NOTES 时再追加 -m "差异说明：{逐条原因}"}
 ```
 
+提交后先 `python3 .claude/scripts/state_helper.py release extract-operation`，再写下面的小结；不列下一步菜单（界面的建议条会给出）。用户之后在对话里说「校验」「整体视图」，按下面的分支做。
+
 **Operation 范式参考提醒（可选）**：按 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §七「逻辑提取完成后」输出提示；若用户本会话已表达"不需要 / 知道了 / 已判别"，本次不再提示。该提醒与 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §十一的逻辑提取完成后提醒合并输出。
 
 "**提取完成。** 对象：{M} 个，操作：{K} 个，规则：{R} 条，指标：{P} 个。
-{若 K 为 0 且 R+P 大于 0，追加一行："本轮没有识别出操作，阶段仍停在「对象已提取」——校验、追踪与代码生成都依赖 operation 文档。"}
+{若 K 为 0 且 R+P 大于 0，追加一行："本轮没有识别出操作，阶段仍停在「对象已提取」——校验、追踪与代码生成都依赖逻辑文档。"}
 
 💡 可选参考：逻辑提取已完成，进入校验/追踪前可先判别 Operation 范式。
-可参阅 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §三 / §四，判断当前业务更适合 SOP 流程型、断言驱动型或混合型验证策略。若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §三补充测试场景。无需中断当前流程。
-
-**下一步建议：**
-- 回复 **校验**（/ontology-validate）→ 立即开始校验
-- 回复 **整体视图**（/ontology-overview）→ 查看对象/逻辑全局关系
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
+可参阅 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §三 / §四，判断当前业务更适合 SOP 流程型、断言驱动型或混合型验证策略。若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §三补充测试场景。无需中断当前流程。"
 
 If user replies **校验**: `python3 .claude/scripts/state_helper.py release extract-operation`，read `.claude/commands/ontology-validate.md` and follow it. Stop this command.
 If user replies **整体视图**: `python3 .claude/scripts/state_helper.py release extract-operation`，read `.claude/commands/ontology-overview.md` and follow it. Stop this command.

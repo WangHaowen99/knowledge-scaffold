@@ -405,8 +405,8 @@ MES / ERP / WMS 里能看见的工单、报工、检验单、入库单 → 全�
 |---|---|---|
 | 对象提取完成、等待用户确认时 | `/ontology-extract-object` | 列出对象数量、请求 **确认** 之前 |
 | 逻辑提取完成、等待用户确认时 | `/ontology-extract-operation` | 列出逻辑数量、请求 **确认** 之前 |
-| 校验完成、给出下一步建议之前 | `/ontology-validate` B6 末尾 | "校验全部完成" 文案之前 |
-| 整体视图报告生成后 | `/ontology-overview` Step 5 | "下一步建议" 之前 |
+| 校验完成、写收尾小结时 | `/ontology-validate` B6 末尾 | "校验全部完成" 文案之前 |
+| 整体视图报告生成后 | `/ontology-overview` Step 5 | 收尾小结末尾 |
 
 > 每个时机**最多出现一次**，避免连续阶段重复打断。
 

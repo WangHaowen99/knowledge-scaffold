@@ -54,7 +54,7 @@ update-impact-agent / update-apply-agent 的 prompt 都需 transclude 该文件�
 
 `$ARGUMENTS` 的几种情况：
 
-- **空** → 提示用户：
+- **空** → `python3 .claude/scripts/state_helper.py acquire update confirm` 后提示用户（Step 2 的 `acquire update analyze` 会切回）：
   ```
   请输入参考内容（更新依据），任选一种：
   - 直接粘贴提示词文本（如"客户对象增加手机号字段，必填"）
@@ -66,7 +66,7 @@ update-impact-agent / update-apply-agent 的 prompt 都需 transclude 该文件�
   1. 若把 `$ARGUMENTS` 当作路径调用 `test -f`，文件存在 → `REFERENCE_KIND = file`，`REFERENCE_PATH = $ARGUMENTS`，读取整份文件作为 `REFERENCE_CONTENT`。
   2. 否则 → `REFERENCE_KIND = inline`，`REFERENCE_CONTENT = $ARGUMENTS` 原文。
 
-如果 `REFERENCE_KIND = file` 但路径在 `ontology/`、`reports/`、`.claude/`、`.ontology-state/` 之下，弹一个警告：
+如果 `REFERENCE_KIND = file` 但路径在 `ontology/`、`reports/`、`.claude/`、`.ontology-state/` 之下，`acquire update confirm` 后弹一个警告（Step 2 会切回 `analyze`）：
 ```
 ⚠️ 参考路径位于工具目录内部 ({REFERENCE_PATH})，确认这是更新依据而不是要改的文档？
 - 回复 **继续** → 继续把它当参考
@@ -74,7 +74,7 @@ update-impact-agent / update-apply-agent 的 prompt 都需 transclude 该文件�
 
 向用户回显一行摘要：
 ```
-更新依据：{REFERENCE_KIND}  |  长度：{N} 字符  |  {若 file，附路径}
+更新依据：{若 file：文件「{文件名}」；若 inline：你输入的文字}（{N} 字）
 ```
 
 ---
@@ -272,21 +272,9 @@ EOF
 
 `release update`。
 
-最后展示：
+再用两三句话小结：改了哪些、校验结果、还有什么要用户定（逻辑变化较大或本次跳过了脚本修改时，说一句对应脚本可能要重新生成）；不列下一步菜单（界面的建议条会给出）。
 
-```
-已保存版本 {N}: update {简短描述}
-如需回退到上一版本，回复"回退"
-
-**下一步建议：**
-- 回复 **追踪**（/ontology-trace）→ 对受影响的 operation 重新走场景
-- 回复 **测试数据**（/ontology-mock）→ 若影响了对象结构，重新生成 mock
-- 回复 **代码生成**（/ontology-codegen）→ 若 operation 变化较大或 update 跳过了脚本修改（change_summary 过于宽泛），重新生成对应脚本
-- 回复 **整体视图**（/ontology-overview）→ 看更新后的全局
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
-```
-
-Handle reply by reading the corresponding command file.
+用户之后在对话里说「追踪」「测试数据」「代码生成」「整体视图」，分别读 `.claude/commands/ontology-trace.md`、`ontology-mock.md`、`ontology-codegen.md`、`ontology-overview.md` 照做。
 
 ---
 
