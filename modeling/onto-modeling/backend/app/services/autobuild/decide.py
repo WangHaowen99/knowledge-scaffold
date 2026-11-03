@@ -72,7 +72,7 @@ def anchors(text: str) -> list[dict]:
         path, _, fragment = anchor.partition("#")
         label = path.rsplit("/", 1)[-1].split(":", 1)[-1]
         if fragment:
-            label += f" §{fragment.split(':', 1)[-1]}"
+            label += " §" + re.sub(r"(^|~)[a-z]+:", r"\1", fragment)  # 区间两端都去掉片段类型（p:10~p:11 → 10~11）
         out.append({"n": len(out) + 1, "anchor": anchor, "label": label})
         if len(out) >= 5:
             break

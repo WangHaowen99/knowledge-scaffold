@@ -99,3 +99,12 @@ def test_matrix_does_not_mark_steps_left_out_as_done(ab):
     assert "scenario" in cells and stages["scenario"] not in ("auto", "confirmed")
     assert cells["scenario"] == "skipped"
     assert cells["object"] == "auto"
+
+
+def test_ledger_anchor_label_for_ranges():
+    """真实模型写区间出处 `#p:10~p:11`，台账出处标签原来是「§10~p:11」。"""
+    from app.services.autobuild import decide
+
+    found = decide.anchors("依据：resource/others/合成制度.docx#p:10~p:11、resource/excel/合成清单.xlsx#sheet:备件")
+    assert [item["label"] for item in found] == ["合成制度.docx §10~11", "合成清单.xlsx §备件"]
+    assert found[0]["anchor"] == "file:resource/others/合成制度.docx#p:10~p:11"
