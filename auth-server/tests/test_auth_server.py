@@ -23,7 +23,7 @@ from auth_server_synthetic_credentials import (
 from authlib.jose import JsonWebKey, JsonWebToken
 
 ISSUER = "https://service.example.net"
-AUDIENCE = "meta-wise"
+AUDIENCE = "knowledge-scaffold"
 
 
 def make_config(tmp_path, **overrides):

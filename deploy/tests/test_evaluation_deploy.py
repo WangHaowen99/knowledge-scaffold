@@ -7,6 +7,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import tarfile
 from tempfile import TemporaryDirectory
 
 from contextlib import contextmanager
@@ -198,6 +199,28 @@ def check_evaluation_build_embeds_offline_service_in_full_bundle(deployment):
         assert (bundle / 'deploy' / name).is_file(), name
 
 
+def check_standalone_evaluation_build_produces_tar_package(deployment):
+    root, _, env = deployment
+    service = root / 'eval-service'
+    shutil.copy2(ROOT / 'eval-service/build.sh', service / 'build.sh')
+    shutil.copy2(EVAL_DEPLOY_DIR / EVAL_COMPOSE, service / 'deploy' / EVAL_COMPOSE)
+    for name in ['README.md', '.env.example']:
+        (service / name).write_text('# Synthetic build fixture\n')
+    script(root / 'bin/docker', 'if [ "$1" = save ]; then printf synthetic > "$3"; fi')
+    env['PATH'] = str(root / 'bin') + os.pathsep + os.environ['PATH']
+    env.pop('RELEASE_BUNDLE_DIR', None)
+    result = subprocess.run(['bash', str(service / 'build.sh'), 'v-test', 'amd'],
+                            env=env, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr
+    package = service / 'dist/evaluation-v-test-linux-amd64.tar.gz'
+    with tarfile.open(package) as archive:
+        names = set(archive.getnames())
+    assert all(name == 'eval-service' or name.startswith('eval-service/') for name in names)
+    for relative in ['deploy/deploy.sh', 'deploy/' + EVAL_COMPOSE, 'evaluation-image.tar', 'IMAGE']:
+        assert 'eval-service/' + relative in names, relative
+    assert not (service / 'dist/release-v-test-amd64').exists()
+
+
 # ---------- eval-service/deploy/deploy.sh ----------
 
 DOCKER_STUB = '''printf '%s\\n' "$*" >> "$DOCKER_CALLS_FILE"
@@ -371,6 +394,10 @@ class EvaluationDeploymentTests(unittest.TestCase):
     def test_offline_bundle(self):
         with deployment() as fixture:
             check_evaluation_build_embeds_offline_service_in_full_bundle(fixture)
+
+    def test_standalone_package(self):
+        with deployment() as fixture:
+            check_standalone_evaluation_build_produces_tar_package(fixture)
 
 
 if __name__ == '__main__':

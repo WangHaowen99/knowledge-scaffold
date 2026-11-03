@@ -134,7 +134,7 @@ def _run(setup, *, package=None, hub=True, scope='3', interactive=True, **overri
             ('请输入 Modeling 发布包路径', str(setup['packages'][1])),
             ('请输入 Onto Modeling 发布包路径', str(setup['packages'][2])),
             ('请输入知识包 Hub 发布包路径', str(setup['hub_package']) if hub else ''),
-            ('请输入独立评测服务发布目录', str(package)),
+            ('请输入独立评测服务发布包', str(package)),
         ]
     else:
         script = DEPLOY_ROOT / 'install-consumer-modeling-interactive.sh'
@@ -288,4 +288,154 @@ def test_evaluation_blank_directory_keeps_original_flow(tmp_path, interactive):
     rc, output = _run(setup, interactive=interactive, package='')
     assert rc == 0, output
     assert 'evaluation-compose' not in _calls(setup)
+    assert not (setup['target'] / 'eval-service').exists()
+
+
+def _tar_package(setup, *, top='eval-service', skip=()):
+    """Evaluation release as built by eval-service/build.sh: a tar.gz whose top directory is eval-service."""
+    package = setup['evaluation_package']
+    archive_path = package.parent / 'evaluation-v-test-linux-amd64.tar.gz'
+    with tarfile.open(archive_path, 'w:gz') as archive:
+        for relative in ('deploy/deploy.sh', 'deploy/docker-compose.eval-service.yml', 'evaluation-image.tar', 'IMAGE'):
+            if relative not in skip:
+                archive.add(package / relative, arcname=f'{top}/{relative}')
+    return archive_path
+
+
+@pytest.mark.parametrize('interactive', [True, False], ids=['interactive', 'noninteractive'])
+@pytest.mark.parametrize('mode', ['install', 'upgrade', 'legacy'])
+def test_evaluation_tar_package_is_unpacked_like_other_components(tmp_path, mode, interactive):
+    setup = _prepare(tmp_path, mode)
+    rc, output = _run(setup, interactive=interactive, package=_tar_package(setup))
+    assert rc == 0, output
+    assert _calls(setup)[-1] == 'evaluation-compose'
+    target = setup['target'] / 'eval-service'
+    for relative in ('deploy/deploy.sh', 'deploy/docker-compose.eval-service.yml', 'evaluation-image.tar', 'IMAGE'):
+        assert (target / relative).is_file(), relative
+    assert '独立评测服务已就绪' in output
+
+
+@pytest.mark.parametrize('interactive', [True, False], ids=['interactive', 'noninteractive'])
+@pytest.mark.parametrize('problem', ['wrong-top', 'missing-image'])
+def test_invalid_evaluation_tar_package_fails_before_changes(tmp_path, problem, interactive):
+    setup = _prepare(tmp_path)
+    before = (setup['target'] / 'onto-agent/backend/.env').read_bytes()
+    package = (_tar_package(setup, top='evaluation') if problem == 'wrong-top'
+               else _tar_package(setup, skip=('evaluation-image.tar',)))
+    rc, output = _run(setup, interactive=interactive, package=package)
+    assert rc != 0, output
+    assert all(call == 'onto-preflight' for call in _calls(setup))
+    assert (setup['target'] / 'onto-agent/backend/.env').read_bytes() == before
+    assert not (setup['target'] / 'eval-service').exists()
+
+
+def _attach(setup, *, modeling=False, **overrides):
+    """Install Hub, Onto Modeling and evaluation beside an already running Consumer."""
+    args = [_bash_executable(), str(DEPLOY_ROOT / 'install-consumer-modeling.sh')]
+    if modeling:
+        args.extend(['--modeling-package', str(setup['packages'][1])])
+    args.extend(['--knowledge-hub-package', str(setup['hub_package']),
+                 '--onto-modeling-package', str(setup['packages'][2]),
+                 '--evaluation-package', str(_tar_package(setup))])
+    env = {key: value for key, value in setup['env'].items() if key != 'INSTALL_ROOT'}
+    env.update(STUB_CONSUMER_RUNNING='true')
+    env.update(overrides)
+    result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
+    return result.returncode, result.stdout + result.stderr
+
+
+def _with_consumer_evaluation_token(setup):
+    token = secrets.token_hex(32)
+    with (setup['target'] / 'onto-agent/backend/.env').open('a') as stream:
+        stream.write(f'EVALUATION_SERVICE_TOKEN={token}\n')
+    return token
+
+
+def test_running_consumer_is_reused_without_consumer_package(tmp_path):
+    setup = _prepare(tmp_path)
+    token = _with_consumer_evaluation_token(setup)
+    consumer_env = setup['target'] / 'onto-agent/backend/.env'
+    before = consumer_env.read_bytes()
+    rc, output = _attach(setup)
+    assert rc == 0, output
+    assert _calls(setup) == ['onto-preflight', 'hub-deploy', 'onto-deploy', 'evaluation-compose']
+    assert consumer_env.read_bytes() == before
+    # Without INSTALL_ROOT the components sit beside the running Consumer's install directory.
+    for component in ('knowledge-hub', 'onto-modeling', 'eval-service'):
+        assert (setup['target'] / component).is_dir(), component
+    config = _configuration(tmp_path)
+    assert config['CONSUMER_NETWORK'] == 'onto-agent_default'
+    assert config['EVAL_CONSUMER_SERVICE_TOKEN'] == token
+    assert config['EVAL_HUB_SERVICE_TOKEN'] == setup['env']['STUB_HUB_EVALUATION_TOKEN']
+    assert token not in output
+
+
+@pytest.mark.parametrize('problem', ['consumer-stopped', 'modeling-package', 'missing-token', 'old-consumer'])
+def test_reusing_consumer_checks_before_changes(tmp_path, problem):
+    setup = _prepare(tmp_path)
+    if problem != 'missing-token':
+        _with_consumer_evaluation_token(setup)
+    consumer_env = setup['target'] / 'onto-agent/backend/.env'
+    before = consumer_env.read_bytes()
+    overrides = {'consumer-stopped': {'STUB_CONSUMER_RUNNING': 'false'},
+                 'old-consumer': {'STUB_EVALUATION_ROUTE_STATUS': '404'}}.get(problem, {})
+    rc, output = _attach(setup, modeling=problem == 'modeling-package', **overrides)
+    assert rc != 0, output
+    assert not {'hub-deploy', 'onto-deploy', 'evaluation-compose'} & set(_calls(setup))
+    assert not {'consumer-install', 'consumer-upgrade', 'modeling-install'} & set(_calls(setup))
+    assert consumer_env.read_bytes() == before
+    assert not (setup['target'] / 'eval-service').exists()
+
+
+def _attach_interactively(setup, *, extra=(), **overrides):
+    """Interactive mode 3: Hub, Onto Modeling and evaluation beside an already running Consumer."""
+    answers = [('请选择模式', '3'), ('组件安装根目录', '1'),
+               ('请输入 Onto Modeling 发布包路径', str(setup['packages'][2])),
+               ('请输入知识包 Hub 发布包路径', str(setup['hub_package'])),
+               ('请输入独立评测服务发布包路径', str(_tar_package(setup))), *extra]
+    env = {**setup['env'], 'STUB_CONSUMER_RUNNING': 'true', **overrides}
+    return _drive_tty(DEPLOY_ROOT / 'install-consumer-modeling-interactive.sh', answers, env)
+
+
+def test_interactive_mode_reuses_running_consumer(tmp_path):
+    setup = _prepare(tmp_path)
+    token = _with_consumer_evaluation_token(setup)
+    consumer_env = setup['target'] / 'onto-agent/backend/.env'
+    before = consumer_env.read_bytes()
+    rc, output = _attach_interactively(setup)
+    assert rc == 0, output
+    assert _calls(setup) == ['onto-preflight', 'hub-deploy', 'onto-deploy', 'evaluation-compose']
+    assert consumer_env.read_bytes() == before
+    for component in ('knowledge-hub', 'onto-modeling', 'eval-service'):
+        assert (setup['target'] / component).is_dir(), component
+    config = _configuration(tmp_path)
+    assert config['EVAL_CONSUMER_SERVICE_TOKEN'] == token
+    assert config['EVAL_HUB_SERVICE_TOKEN'] == setup['env']['STUB_HUB_EVALUATION_TOKEN']
+    assert token not in output
+    assert '交互部署完成' in output
+
+
+def test_interactive_mode_moves_onto_modeling_off_a_published_port(tmp_path):
+    setup = _prepare(tmp_path)
+    _with_consumer_evaluation_token(setup)
+    rc, output = _attach_interactively(setup, extra=[('请输入 Onto Modeling 宿主端口', '5300')], STUB_BUSY_PORT='5100')
+    assert rc == 0, output
+    assert '已被容器 synthetic-other-service 占用' in output
+    assert 'ONTO_WEB_PORT=5300' in (tmp_path / 'onto-modeling.env').read_text()
+
+
+@pytest.mark.parametrize('problem', ['consumer-stopped', 'missing-token', 'old-consumer'])
+def test_interactive_mode_checks_before_changes(tmp_path, problem):
+    setup = _prepare(tmp_path)
+    if problem != 'missing-token':
+        _with_consumer_evaluation_token(setup)
+    consumer_env = setup['target'] / 'onto-agent/backend/.env'
+    before = consumer_env.read_bytes()
+    overrides = {'consumer-stopped': {'STUB_CONSUMER_RUNNING': 'false'},
+                 'old-consumer': {'STUB_EVALUATION_ROUTE_STATUS': '404'}}.get(problem, {})
+    rc, output = _attach_interactively(setup, **overrides)
+    assert rc != 0, output
+    assert not {'hub-deploy', 'onto-deploy', 'evaluation-compose'} & set(_calls(setup))
+    assert not {'consumer-install', 'consumer-upgrade', 'modeling-install'} & set(_calls(setup))
+    assert consumer_env.read_bytes() == before
     assert not (setup['target'] / 'eval-service').exists()

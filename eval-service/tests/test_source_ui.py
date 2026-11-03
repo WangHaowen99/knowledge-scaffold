@@ -2,7 +2,7 @@
 import json
 import time
 
-from test_evaluation import environment, preparation, run, wait
+from test_evaluation import consumer_data_source, environment, preparation, run, wait
 
 
 def sql_connection():
@@ -71,7 +71,7 @@ def test_neo4j_no_import_needs_no_handwritten_schema_and_binds_ontology(environm
     original=deps.json
     def dependency(method,base,path,**kwargs):
         if path.endswith('/data-source'):
-            captured.append(kwargs['json']); return {'success':True}
+            captured.append(kwargs['json']); return consumer_data_source(kwargs['json'])
         if path.endswith('/data-source/test'): return {'success':True}
         return original(method,base,path,**kwargs)
     deps.json=dependency

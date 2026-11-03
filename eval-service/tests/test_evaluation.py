@@ -16,6 +16,22 @@ from evaluation.packages import derive, generate_mapping, unpack
 from evaluation.execution import report
 from evaluation.store import Store
 
+# Provider fields consumer accepts for PUT /agentic/ontologies/{id}/data-source; it rejects any other key.
+CONSUMER_PROVIDER_FIELDS={
+    'nl2sql_http':{'url','token','scene','timeout_seconds','max_retries'},
+    'nl2sql_template':{'url','token','scene','timeout_seconds','max_retries'},
+    'neo4j':{'uri','database','username','password','timeout_seconds','max_retries','max_result_rows','max_iterations',
+             'graph_connect_timeout_seconds','graph_query_timeout_seconds','graph_agent_timeout_seconds',
+             'workspace_property','workspace_value','ontology_property','ontology_value'},
+}
+
+
+def consumer_data_source(body):
+    """Mirror consumer validation so tests fail when evaluation sends fields consumer would reject."""
+    if body.get('mode')!='direct_provider' or set(body['config'])-CONSUMER_PROVIDER_FIELDS[body['provider']]:
+        raise Failure('dependency_rejected','Unsupported provider field',503,'dependency',upstream_status=400)
+    return {'success':True}
+
 
 def synthetic_package():
     files={'manifest.yaml':yaml.safe_dump(dict(id='knowledge_package_demo',name='Synthetic package',description='Synthetic data',kind='ontology-package',schema_version='0.1',version='0.1.1')),
@@ -101,6 +117,8 @@ class Dependencies:
         if path=='/agentic/model-profiles': return {'default_profile_id':'global:synthetic','profiles':self.profiles}
         if path.endswith('/import-zip'): return {'success':True}
         if path.endswith('/active-version'): return {'active_version':kwargs['json']['version']}
+        if path.endswith('/data-source'): return consumer_data_source(kwargs['json'])
+        if path.endswith('/data-source/test'): return {'success':True}
         if path=='/agentic/runs':
             key=kwargs['headers']['Idempotency-Key']
             with self.lock:

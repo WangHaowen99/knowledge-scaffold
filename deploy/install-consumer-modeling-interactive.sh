@@ -17,6 +17,7 @@ MODELING_PACKAGE=""
 ONTO_MODELING_PACKAGE=""
 KNOWLEDGE_HUB_PACKAGE=""
 EVALUATION_PACKAGE=""
+CONSUMER_DIR=""
 PORT_MODE="default"
 scope=""
 OLD_MODELING_RUNNING=""
@@ -112,9 +113,19 @@ validate_package() {
     ' || die "${label}目录结构非法"
 }
 
+# 评测交付物：发布包（顶层目录 eval-service），或完整离线包中的 eval-service 目录
 validate_evaluation_package() {
-    local package="$1" label="$2" relative
-    [ -d "${package}" ] || die "${label}目录不存在：${package}"
+    local package="$1" label="$2" relative entry
+    if [ -f "${package}" ]; then
+        validate_package "${package}" eval-service "${label}"
+        for relative in deploy/deploy.sh deploy/docker-compose.eval-service.yml evaluation-image.tar IMAGE; do
+            entry="$(tar -tvzf "${package}" "eval-service/${relative}" 2>/dev/null || true)"
+            [ "${entry#-}" != "${entry}" ] || die "${label}缺少普通文件 eval-service/${relative}"
+        done
+        EVALUATION_PACKAGE="$(cd "$(dirname "${package}")" && pwd)/$(basename "${package}")"
+        return 0
+    fi
+    [ -d "${package}" ] || die "${label}不存在：${package}"
     [ ! -L "${package}" ] || die "${label}不能是符号链接：${package}"
     [ ! -L "${package}/deploy" ] || die "${label}的 deploy 不能是符号链接"
     for relative in deploy/deploy.sh deploy/docker-compose.eval-service.yml evaluation-image.tar IMAGE; do
@@ -197,6 +208,60 @@ detect_consumer_network() {
     docker container inspect onto-agent-backend \
         --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' \
         2>/dev/null | head -n 1
+}
+
+# 模式 3 沿用已运行的 Consumer：不安装、不升级、不重启 Consumer，也不修改其配置
+attach_running_consumer() {
+    local running default_root root_choice
+    running="$(docker container inspect onto-agent-backend --format '{{.State.Running}}' 2>/dev/null || true)"
+    [ "${running}" = true ] || die '需要已运行的 Consumer（容器 onto-agent-backend）；Consumer 未部署时请选择首次部署'
+    CONSUMER_DIR="$(container_working_dir onto-agent-backend)"
+    [ -n "${CONSUMER_DIR}" ] && [ -f "${CONSUMER_DIR}/backend/.env" ] \
+        || die "无法定位运行中 Consumer 的安装目录：${CONSUMER_DIR:-未知}"
+    log "沿用运行中的 Consumer：${CONSUMER_DIR}"
+    default_root=/opt/onto-agent-stack
+    [ "$(basename "${CONSUMER_DIR}")" != onto-agent ] || default_root="$(dirname "${CONSUMER_DIR}")"
+    root_choice="$(ask_choice "组件安装根目录（1=${default_root}，2=自定义，默认1）：" 1 '1 2')"
+    if [ "${root_choice}" = 1 ]; then INSTALL_ROOT="${default_root}"; else INSTALL_ROOT="$(ask '请输入自定义安装根目录：')"; fi
+    ONTO_WEB_PORT="$(env_get "${INSTALL_ROOT}/onto-modeling/.env" ONTO_WEB_PORT)"; ONTO_WEB_PORT="${ONTO_WEB_PORT:-5100}"
+}
+
+# 模式 3 不知道其他服务的端口配置，按实际发布了该宿主端口的容器判断冲突
+ensure_attached_onto_port_free() {
+    local owner
+    while owner="$(docker ps --filter "publish=${ONTO_WEB_PORT}" --format '{{.Names}}' 2>/dev/null \
+            | grep -vx onto-modeling | head -n 1)" && [ -n "${owner}" ]; do
+        printf 'Onto Modeling 宿主端口 %s 已被容器 %s 占用，请换一个端口。\n' "${ONTO_WEB_PORT}" "${owner}" >/dev/tty
+        ONTO_WEB_PORT="$(ask_port '请输入 Onto Modeling 宿主端口：')"
+    done
+}
+
+# 评测工作空间接口的 HTTP 状态：接口存在时未登录请求返回 401，旧版 Consumer 返回 404；无法探测时为空
+consumer_evaluation_route_status() {
+    docker exec -i onto-agent-backend python - 2>/dev/null <<'PY' || true
+import urllib.error
+import urllib.request
+
+request = urllib.request.Request("http://127.0.0.1:5055/agentic/internal/evaluation/workspaces", data=b"{}",
+                                 method="POST", headers={"Content-Type": "application/json"})
+try:
+    print(urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=5).status)
+except urllib.error.HTTPError as error:
+    print(error.code)
+except Exception:
+    print("")
+PY
+}
+
+# 模式 3 不写 Consumer 配置：评测凭据和接口必须已由 Consumer 自身部署提供
+precheck_attached_evaluation() {
+    local status
+    [ -n "${EVALUATION_PACKAGE}" ] && [ -z "${EVAL_ENV_FILE:-}" ] || return 0
+    [ -n "$(env_get "${CONSUMER_DIR}/backend/.env" EVALUATION_SERVICE_TOKEN)" ] \
+        || die '运行中的 Consumer 未配置 EVALUATION_SERVICE_TOKEN：请先升级 Consumer，再部署评测'
+    status="$(consumer_evaluation_route_status)"
+    [ "${status}" != 404 ] || die '运行中的 Consumer 版本不支持独立评测（缺少评测工作空间接口）：请先升级 Consumer'
+    [ -n "${status}" ] || log '警告：无法确认 Consumer 是否支持独立评测，继续部署'
 }
 
 deploy_onto_modeling() {
@@ -307,6 +372,15 @@ stage_evaluation_package() {
     local dir="${INSTALL_ROOT}/eval-service" relative
     [ ! -L "${dir}" ] && [ ! -L "${dir}/deploy" ] || die '评测安装目录不能是符号链接'
     mkdir -p "${dir}/deploy" || die '无法创建评测安装目录'
+    if [ -f "${EVALUATION_PACKAGE}" ]; then
+        for relative in deploy/deploy.sh deploy/docker-compose.eval-service.yml evaluation-image.tar IMAGE; do
+            [ ! -L "${dir}/${relative}" ] || die "评测目标文件不能是符号链接：${relative}"
+        done
+        tar -xzf "${EVALUATION_PACKAGE}" -C "${dir}" --strip-components=1 eval-service/deploy/deploy.sh \
+            eval-service/deploy/docker-compose.eval-service.yml eval-service/evaluation-image.tar eval-service/IMAGE \
+            || die "无法解压评测发布包：${EVALUATION_PACKAGE}"
+        return 0
+    fi
     [ "${EVALUATION_PACKAGE}" != "$(cd "${dir}" && pwd)" ] || return 0
     # 仅覆盖交付物，保留 deploy/.env 中的数据加密密钥、端口和其他运行配置。
     for relative in deploy/deploy.sh deploy/docker-compose.eval-service.yml evaluation-image.tar IMAGE; do
@@ -322,7 +396,7 @@ deploy_evaluation() {
     network="$(detect_consumer_network)"
     [ -n "${network}" ] || die '无法探测 Consumer 容器网络，请确认 onto-agent-backend 已在运行'
     hub_token="$(env_get "${INSTALL_ROOT}/knowledge-hub/.env" HUB_EVALUATION_SERVICE_TOKEN)"
-    consumer_token="$(env_get "${INSTALL_ROOT}/onto-agent/backend/.env" EVALUATION_SERVICE_TOKEN)"
+    consumer_token="$(env_get "${CONSUMER_DIR:-${INSTALL_ROOT}/onto-agent}/backend/.env" EVALUATION_SERVICE_TOKEN)"
     # Onto Modeling 的 deploy.sh 生成入站凭据；未部署时留空，评测只告警、不发完成通知
     modeling_token="$(env_get "${INSTALL_ROOT}/onto-modeling/.env" ONTO_EVALUATION_SERVICE_TOKEN)"
     [ -n "${hub_token}" ] || [ -n "${EVAL_ENV_FILE:-}" ] \
@@ -571,8 +645,11 @@ run_consumer_preflight() {
     fi
 }
 
-mode="$(ask_choice '请选择模式（1=首次部署，2=升级部署，默认1）：' 1 '1 2')"
-if [ "${mode}" = 1 ]; then
+mode="$(ask_choice '请选择模式（1=首次部署，2=升级部署，3=只部署或升级 Hub、Onto Modeling、评测（沿用已运行的 Consumer），默认1）：' 1 '1 2 3')"
+if [ "${mode}" = 3 ]; then
+    MODE="attach"
+    attach_running_consumer
+elif [ "${mode}" = 1 ]; then
     MODE="install"
     root_choice="$(ask_choice '安装根目录（1=/opt/onto-agent-stack，2=自定义，默认1）：' 1 '1 2')"
     if [ "${root_choice}" = 1 ]; then INSTALL_ROOT=/opt/onto-agent-stack; else INSTALL_ROOT="$(ask '请输入自定义安装根目录：')"; fi
@@ -595,7 +672,18 @@ if [ "${MODE}" = install ]; then
     KNOWLEDGE_HUB_PACKAGE="$(ask_optional '请输入知识包 Hub 发布包路径（留空跳过）：')"
     [ -z "${KNOWLEDGE_HUB_PACKAGE}" ] \
         || KNOWLEDGE_HUB_PACKAGE="$(resolve_package "${KNOWLEDGE_HUB_PACKAGE}" '知识包 Hub发布包')"
-    EVALUATION_PACKAGE="$(ask_optional '请输入独立评测服务发布目录（留空跳过）：')"
+    EVALUATION_PACKAGE="$(ask_optional '请输入独立评测服务发布包路径（留空跳过）：')"
+elif [ "${MODE}" = attach ]; then
+    ONTO_MODELING_PACKAGE="$(ask_optional '请输入 Onto Modeling 发布包路径（留空跳过）：')"
+    [ -z "${ONTO_MODELING_PACKAGE}" ] \
+        || ONTO_MODELING_PACKAGE="$(resolve_package "${ONTO_MODELING_PACKAGE}" 'Onto Modeling发布包')"
+    KNOWLEDGE_HUB_PACKAGE="$(ask_optional '请输入知识包 Hub 发布包路径（留空跳过）：')"
+    [ -z "${KNOWLEDGE_HUB_PACKAGE}" ] \
+        || KNOWLEDGE_HUB_PACKAGE="$(resolve_package "${KNOWLEDGE_HUB_PACKAGE}" '知识包 Hub发布包')"
+    EVALUATION_PACKAGE="$(ask_optional '请输入独立评测服务发布包路径（留空跳过）：')"
+    [ -n "${ONTO_MODELING_PACKAGE}${KNOWLEDGE_HUB_PACKAGE}${EVALUATION_PACKAGE}" ] \
+        || die '至少需要一个 Onto Modeling、知识包 Hub 或独立评测服务发布包'
+    [ -z "${ONTO_MODELING_PACKAGE}" ] || ensure_attached_onto_port_free
 else
     # 升级部署始终沿用已安装配置中的端口，不重新询问或覆盖端口。
     load_upgrade_ports
@@ -612,7 +700,7 @@ else
     KNOWLEDGE_HUB_PACKAGE="$(ask_optional '请输入知识包 Hub 发布包路径（留空跳过）：')"
     [ -z "${KNOWLEDGE_HUB_PACKAGE}" ] \
         || KNOWLEDGE_HUB_PACKAGE="$(resolve_package "${KNOWLEDGE_HUB_PACKAGE}" '知识包 Hub发布包')"
-    EVALUATION_PACKAGE="$(ask_optional '请输入独立评测服务发布目录（留空跳过）：')"
+    EVALUATION_PACKAGE="$(ask_optional '请输入独立评测服务发布包路径（留空跳过）：')"
 fi
 [ -z "${ONTO_MODELING_PACKAGE}" ] || ensure_onto_web_port_free
 check_dependencies
@@ -623,7 +711,9 @@ check_dependencies
 [ -z "${KNOWLEDGE_HUB_PACKAGE}" ] \
     || validate_package "${KNOWLEDGE_HUB_PACKAGE}" knowledge-hub '知识包 Hub发布包'
 [ -z "${EVALUATION_PACKAGE}" ] \
-    || validate_evaluation_package "${EVALUATION_PACKAGE}" '独立评测服务发布目录'
+    || EVALUATION_PACKAGE="$(resolve_package "${EVALUATION_PACKAGE}" '独立评测服务发布包')"
+[ -z "${EVALUATION_PACKAGE}" ] \
+    || validate_evaluation_package "${EVALUATION_PACKAGE}" '独立评测服务发布包'
 if [ "${MODE}" = upgrade ] && [ "${scope}" != 1 ]; then
     validate_modeling_installation
 fi
@@ -632,6 +722,7 @@ TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/separated-interactive.XXXXXX")"
 [ -z "${ONTO_MODELING_PACKAGE}" ] || precheck_onto_modeling
 [ -z "${KNOWLEDGE_HUB_PACKAGE}" ] || precheck_knowledge_hub
 [ -z "${EVALUATION_PACKAGE}" ] || precheck_evaluation
+[ "${MODE}" != attach ] || precheck_attached_evaluation
 if [ "${MODE}" = install ]; then
     mkdir -p "${INSTALL_ROOT}"
     tar -xzf "${CONSUMER_PACKAGE}" -C "${INSTALL_ROOT}"
@@ -659,6 +750,19 @@ if [ "${MODE}" = install ]; then
         bash "${INSTALL_ROOT}/modeling/deploy/install.sh"
     [ -z "${KNOWLEDGE_HUB_PACKAGE}" ] || deploy_knowledge_hub
     [ -z "${ONTO_MODELING_PACKAGE}" ] || deploy_onto_modeling
+    deploy_evaluation
+elif [ "${MODE}" = attach ]; then
+    mkdir -p "${INSTALL_ROOT}"
+    [ -z "${EVALUATION_PACKAGE}" ] || stage_evaluation_package
+    # 与升级部署相同：解包覆盖交付物后重跑各组件的 deploy.sh，数据卷和 .env 保持不变
+    if [ -n "${KNOWLEDGE_HUB_PACKAGE}" ]; then
+        tar -xzf "${KNOWLEDGE_HUB_PACKAGE}" -C "${INSTALL_ROOT}"
+        deploy_knowledge_hub
+    fi
+    if [ -n "${ONTO_MODELING_PACKAGE}" ]; then
+        tar -xzf "${ONTO_MODELING_PACKAGE}" -C "${INSTALL_ROOT}"
+        deploy_onto_modeling
+    fi
     deploy_evaluation
 else
     mkdir -p "${TMP_ROOT}/consumer" "${TMP_ROOT}/modeling"

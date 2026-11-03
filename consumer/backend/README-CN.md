@@ -171,7 +171,7 @@ PYTHONPATH=backend /tmp/knowledge-consumer-tests/bin/python -m pytest backend/te
 | `AUTH_SERVER_URL` | 独立 auth-server 地址（必填，未配置后端启动报错），如 `http://auth-server:5056` | 空 |
 | `AUTH_SERVER_ADMIN_TOKEN` | auth-server Admin API 共享管理令牌（用户管理必填） | 空 |
 | `AUTH_BOOTSTRAP_ADMIN_PASSWORD` | 首次创建 auth-server 用户文件时使用的管理员初始强密码 | 空 |
-| `AUTH_SERVER_AUDIENCE` | JWT 本地验签 audience | `meta-wise` |
+| `AUTH_SERVER_AUDIENCE` | JWT 本地验签 audience | `knowledge-scaffold` |
 | `AUTH_SERVER_ISSUER` | JWT issuer，留空 = 使用 `AUTH_SERVER_URL` | 空 |
 | `AUTH_USERS_FILE` | 用户凭据文件 | `<consumer>/.onto-runtime/users.json` |
 | `AUTH_SECRET` | JWT 签名密钥 | 未设置时使用开发默认值 |
