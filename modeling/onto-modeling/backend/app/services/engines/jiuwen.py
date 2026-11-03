@@ -689,8 +689,9 @@ class JiuwenEngine(ObservableEngine):
         self._tracker: Any = None
         self._closed = False
         self._progress_tracker: JiuwenProgressTracker | None = None
-        # 上下文用量：每轮结束前以 context_usage 下发（与稳定引擎同一事件）
+        # 上下文用量：以 context_usage 下发（与稳定引擎同一事件），每次模型调用后变了就报，轮末没变不重复
         self._context_used: int | None = None
+        self._context_reported: int | None = None
         self._context_window: int | None = None
         self._compact_at: int | None = None
         # 挂起兜底：最近一次动静、是否在等用户回答确认卡、是否是兜底掐断的这一轮
@@ -765,10 +766,13 @@ class JiuwenEngine(ObservableEngine):
         from openjiuwen.harness.workspace.workspace import Workspace
 
         from ...governance import agent_identity
+        from . import jiuwen_sandbox
         from .jiuwen_assets import build_hooks_rail
 
         # 方案 E10：agent 执行的命令只给最小环境、以 agent 用户运行（进程内引擎，包一层命令执行）
         agent_identity.install_jiuwen_shell_isolation()
+        # 助手副本顶层的 resource 链接（指向主线资料区）文件工具只读放行（F2 第 9 条）
+        jiuwen_sandbox.install()
         context = cfg["context"]
         model = init_model(
             provider="OpenAI",
@@ -1010,9 +1014,13 @@ class JiuwenEngine(ObservableEngine):
             self._context_used = event["post_tokens"]
 
     def _context_usage_event(self) -> dict | None:
-        """本轮结束（result 之前）的上下文用量事件，格式与稳定引擎一致；还没有用量时不发。"""
-        if not self._context_used:
+        """上下文用量事件，格式与稳定引擎一致；还没有用量、和上次报的一样时不发。
+
+        一轮里每次模型调用后都看一次，不等一轮结束：资料分析一轮常跑半小时以上，只在轮末报的话
+        上下文环一直是 0%（F2 第 6 条）。"""
+        if not self._context_used or self._context_used == self._context_reported:
             return None
+        self._context_reported = self._context_used
         return {
             "type": "context_usage",
             "used": self._context_used,
@@ -1025,6 +1033,10 @@ class JiuwenEngine(ObservableEngine):
         for event in events:
             self._track_context(event)
             await self._queue.put(event)
+            if event.get("type") in ("assistant_message", "context_compacted"):
+                context_usage = self._context_usage_event()
+                if context_usage:
+                    await self._queue.put(context_usage)
 
     async def _end_stalled_turn(self, started: float, before: dict) -> None:
         self._stalled = False

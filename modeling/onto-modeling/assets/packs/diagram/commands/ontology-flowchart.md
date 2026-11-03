@@ -86,7 +86,7 @@ Check these locations to determine mode:
    - 先运行 `/ontology-research <领域>` 进行资料分析"
 3. Once business processes are identified (from research or user description), `acquire flowchart confirm`，list them and ask user to confirm which ones to create flowcharts for（回复后 `acquire flowchart start`）.
 4. For each confirmed process, generate a .drawio XML file:
-   - Read `resource/diagrams/图示说明定义.drawio` (if exists) to understand node type conventions
+   - Read the legend `.claude/reference/图示说明定义.drawio` (older projects may have their own copy at `resource/diagrams/图示说明定义.drawio`, which takes precedence) to understand node type conventions
    - Generate well-formed draw.io XML with proper node types (开始/结束, 业务活动, 判断, 子流程, 子流程判断, 动作, 说明, 递归)
    - Do not generate semantic flow nodes from legend entries marked "虚拟项"; `offPageConnector` is only a passthrough view helper
    - Include start/end nodes, clear input/output annotations

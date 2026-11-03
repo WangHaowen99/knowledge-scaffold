@@ -22,7 +22,11 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 DEFAULT_DIR = "ontology/diagrams"
-DEFAULT_LEGEND = "resource/diagrams/图示说明定义.drawio"
+LEGEND_NAME = "图示说明定义.drawio"
+# 资料区里的图例：存量项目建项目时从资料区模板复制来的（模板里已去掉），有就用它
+DEFAULT_LEGEND = "resource/diagrams/" + LEGEND_NAME
+# 随 core 包的图例（装配目录 reference/）
+PACKAGED_LEGEND = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "reference", LEGEND_NAME)
 try:
     REPORT_TZ = ZoneInfo("Asia/Shanghai")
 except ZoneInfoNotFoundError:
@@ -98,7 +102,14 @@ def style_tokens(style):
     }
 
 
-def virtual_style_signatures(legend_path=DEFAULT_LEGEND):
+def find_legend(root="."):
+    """图例：资料区里有的用资料区的，没有用随包的。"""
+    own = os.path.join(root, DEFAULT_LEGEND)
+    return own if os.path.isfile(own) else PACKAGED_LEGEND
+
+
+def virtual_style_signatures(legend_path=None):
+    legend_path = legend_path or find_legend()
     if not os.path.isfile(legend_path):
         return []
 
@@ -172,7 +183,7 @@ def is_annotation_target(cid, cells):
 
 # ── 结构检查（共享引擎） ─────────────────────────────────────────────────────
 
-def check_diagram(filepath, legend_path=DEFAULT_LEGEND):
+def check_diagram(filepath, legend_path=None):
     try:
         cells, _ = parse_diagram(filepath)
     except (ET.ParseError, ValueError, OSError) as exc:

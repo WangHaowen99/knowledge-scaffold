@@ -89,6 +89,9 @@ def input_digest(root: Path, mode: str) -> str:
     # Checker upgrades invalidate earlier receipts without touching project data.
     for path in sorted(Path(__file__).parent.glob('*.py')):
         digest.update(path.name.encode() + b'\0' + path.read_bytes())
+    if mode == 'diagrams' and not (root / check_diagrams.DEFAULT_LEGEND).is_file():
+        packaged = Path(check_diagrams.PACKAGED_LEGEND)
+        digest.update(b'legend\0' + (packaged.read_bytes() if packaged.is_file() else b'<missing>'))
     return digest.hexdigest()
 
 
@@ -96,7 +99,7 @@ def _check(root: Path, mode: str, paths: list[Path]) -> list[dict]:
     if mode == 'diagrams':
         issues = []
         for path in paths:
-            report = check_diagrams.check_diagram(path, root / check_diagrams.DEFAULT_LEGEND)
+            report = check_diagrams.check_diagram(path, check_diagrams.find_legend(root))
             for message in report['issues']:
                 issues.append(dict(file=path.relative_to(root).as_posix(), severity='错误',
                                    category='流程图结构', message=message, source='规则检查'))

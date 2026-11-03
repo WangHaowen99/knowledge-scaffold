@@ -189,7 +189,8 @@ def seed(root: str) -> int:
         sys.path.append(str(script_dir))
         try:
             from summarize_diagram import summarize  # type: ignore
-            legend = Path('resource/diagrams/图示说明定义.drawio')
+            from check_diagrams import find_legend  # type: ignore
+            legend = Path(find_legend())
             for f in diagrams_dir.glob('*.drawio'):
                 summary_path = summary_dir / (f.stem + '.md')
                 if summary_path.exists():

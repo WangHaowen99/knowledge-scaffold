@@ -212,8 +212,10 @@ _SESSION_KINDS = {
 
 
 def session_event(project_id: str, conversation_id: str, event: dict, *, owner: str) -> None:
-    """会话宿主每条持久事件调一次：只挑通知要的几类。"""
+    """会话宿主每条持久事件调一次：只挑通知要的几类。自主构建的策略已经代答的（auto）不用人处理，不发。"""
     kind_type = event.get("type")
+    if event.get("auto"):
+        return
     if kind_type == "result":
         if event.get("is_error") or event.get("subtype") not in (None, "success"):
             return
