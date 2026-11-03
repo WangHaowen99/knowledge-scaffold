@@ -45,5 +45,5 @@
   不再参与阶段判定（命令仍会写它，无害）。流程图阶段只认 `.drawio`。
 - 加一个阶段只改 flow.yaml（和对应命令）；`test_flow_definition.py` 逐处核对后端、state_helper、会话提示、
   `/ontology` 下一步、`/flow` 与 flow.yaml 一致。
-- 节点状态的完整计算、按切片的建模节点、跳过 / 恢复 / 开始节点、`flow.updated` 事件与 MCP `flow_get`
+- 节点状态的完整计算、按段的建模节点、跳过 / 恢复 / 开始节点、`flow.updated` 事件与 MCP `flow_get`
   在 P2 做；`post_commit_hook.sh` 按提交前缀给的提示仍在，P2 随宿主注入退役。

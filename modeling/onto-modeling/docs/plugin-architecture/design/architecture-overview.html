@@ -305,7 +305,7 @@
     <div class="hd" style="font-size:21px"><span class="ic">🔀</span><b>流程运行时</b><span class="new-tag">新增</span><span class="lv">H3</span></div>
     <ul style="font-size:13.8px;line-height:1.36">
       <li>组装节点声明 → 流程图 → <code>flow.lock</code></li>
-      <li>节点与切片状态，按确认与指纹算，不看目录</li>
+      <li>节点与分段状态，按确认与指纹算，不看目录</li>
       <li>命令开始前按 requires 守门</li>
       <li>下一步 1 主推 + 2 次选 · 汇总待处理</li>
       <li>当前节点的写入范围交给守卫</li>
@@ -416,7 +416,7 @@
 
   <!-- ================= notes below K11 ================= -->
   <div class="note n-g" id="N3" style="left:500px;top:1360px;width:344px;height:236px;--r:-1.6deg;font-size:15.5px"><b>热更新的边界</b><br>切换锁文件 → 下一条消息时换软链、断开重连、resume 续上下文；进行中的那一轮跑完旧版本。<br>行业包和系统知识包是纯数据，最“热”。</div>
-  <div class="note n-b" id="N4" style="left:500px;top:1650px;width:344px;height:236px;--r:1.2deg;font-size:15.5px"><b>变更集（单人项目）</b><br>助手的改动先进独立副本：陪伴建模点“确认生效”才合入，自主构建检查通过自动合入并标“需复核”；随时可以撤回这一轮。<br><br><b>自主构建（L4）</b><br>在设定的范围和预算内一路建完：自动决定记进台账，拿不准的挂起进待处理，每片合入后是安全点。</div>
+  <div class="note n-b" id="N4" style="left:500px;top:1650px;width:344px;height:236px;--r:1.2deg;font-size:15.5px"><b>变更集（单人项目）</b><br>助手的改动先进独立副本：陪伴建模点“确认生效”才合入，自主构建检查通过自动合入并标“需复核”；随时可以撤回这一轮。<br><br><b>自主构建（L4）</b><br>在设定的范围和预算内一路建完：自动决定记进台账，拿不准的挂起进待处理，每段合入后是安全点。</div>
   <div class="note n-o" id="N6" style="left:500px;top:1966px;width:344px;height:206px;--r:-1.2deg;font-size:15.5px"><b>系统证据先当候选</b><br>从业务系统抽出的对象、规则一律先当候选进变更集，由用户确认；文档 × 数据库 × 代码三方对账，冲突进待处理。</div>
 
   <!-- ================= bottom: seams & contract lib ================= -->
@@ -623,7 +623,7 @@ const ARROWS = [
  {n:36, c:'indigo', a:'K9', b:'U5', p:[[3310,460],[3310,360]], t:.5, lab:'导出', lx:-22, ly:5, anc:'end', ft:'可观测 → 监控告警平台', d:'导出器 seam：OTel / Prometheus / 本地文件 / 客户平台'},
  {n:37, c:'indigo', a:'U4', b:'K10', p:[[3005,360],[3005,460]], t:.45, lab:'运维管理面', lx:-22, ly:5, anc:'end', ft:'运维人员 → 运维管控', d:'独立端口或内网的运维管理面；所有运维操作都审计'},
  {n:38, c:'indigo', a:'K9', b:'K10', p:[[3170,700],[3150,700]], t:.5, ft:'可观测 → 运维管控', d:'健康 · 指标 · 告警 → 运维动作（如熔断出错的包、排空后升级）'},
- {n:39, nodraw:1, a:'K1', b:'K12', ft:'对外接口 ⇄ 流程运行时', d:'流程图、节点和切片状态、下一步建议、待处理汇总（GET /api/v1/projects/{id}/flow，SSE flow.updated）；启用 / 跳过 / 补做节点'},
+ {n:39, nodraw:1, a:'K1', b:'K12', ft:'对外接口 ⇄ 流程运行时', d:'流程图、节点和分段状态、下一步建议、待处理汇总（GET /api/v1/projects/{id}/flow，SSE flow.updated）；启用 / 跳过 / 补做节点'},
  {n:40, c:'green', a:'K3', b:'K12', p:[[2000,990],[2000,1020],[2110,1020],[2110,1050]], t:.9, hop:1, ft:'插件运行时 → 流程运行时', d:'装配后的节点声明，组装结果写 flow.lock，哈希计入配置指纹'},
  {n:41, nodraw:1, a:'K12', b:'K2', ft:'流程运行时 ⇄ 会话宿主', d:'执行记录（开始 / 阶段 / 结束 / 中断）上报；两轮对话之间注入当前阶段与下一步，两个引擎通用'},
  {n:42, nodraw:1, a:'K5', b:'K12', ft:'写入路径、元模型 → 流程运行时', d:'变更集被接受、产物指纹变化 → 重算节点状态并向下游传播“过期”'},

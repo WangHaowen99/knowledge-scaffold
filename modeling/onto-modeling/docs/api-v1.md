@@ -153,7 +153,7 @@
 - `base_revision` 为空串或省略时不做冲突检查。只有新建文件，或明确要覆盖时才这样传。
 - **写入范围锁**（详设 4.3、方案 C10）：
   - 写到助手写入范围内的条目，所有写接口统一返回 `423 write_scope_locked`，`details` 为 `ScopeLock`；
-  - 锁的状态有两态：`assistant_running`（助手运行中）、`pending_confirm`（修改待确认）。自主构建下是 `autobuild_slice`，持续到这一片自动合入；
+  - 锁的状态有两态：`assistant_running`（助手运行中，到这一轮结束合入为止）、`pending_confirm`（F3 起只在这一轮和你的修改合入冲突时出现，到在待处理里选好为止；界面叫「有冲突」）。自主构建下是 `autobuild_slice`，持续到这一段自动合入；
   - 范围外照常写，保存即合入主线。
 - 网页、Studio、MCP、导入的写入都经内核写入路径（⑤），成功响应带 `commit` 和 `version_label`。
 
@@ -266,7 +266,16 @@ data: {"id":"1532","type":"question.asked","ts":"2026-11-01T07:21:03.120Z","proj
   - `专项：<type>`：额外写一条该类型的专项审计；
   - `否`：不记。
 
-### 1.13 维护模式
+### 1.13 叫法
+
+接口字段、文件路径、代码标识符沿用英文，界面与助手说的话用下面的叫法（F3，用户 11-03 定）：
+
+| 字段 / 概念 | 界面叫法 |
+|---|---|
+| `slice`、`slice_id`、`slices`、`per_slice`、`slice_steps`、`slice_stages` | 段（分段、第 N 段、分段规划、分段建模）；不说「片」「切片」 |
+| `changeset`（变更集） | 不出现在界面上：助手每一轮结束自动合入成一个版本，界面说「这一轮」；只有合入冲突时在待处理里出现 |
+
+### 1.14 维护模式
 
 运维开启维护模式后（`O-21`）：
 
@@ -396,7 +405,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `flow_assembly_failed` | 422 | 流程组装不通过（锚点、环、输出冲突、版本） | `problems[]` |
 | `blueprint_not_found` | 404 | 还没有建模蓝图 | — |
 | `blueprint_not_confirmed` | 409 | 蓝图还没确认（启动自主构建等操作需要） | — |
-| `slice_invalid` | 400 | 切片编辑不合法（合并少于 2 片、依赖成环、名称重复等） | `reason` |
+| `slice_invalid` | 400 | 分段编辑不合法（合并少于 2 段、依赖成环、名称重复等） | `reason` |
 | `low_confidence_batch` | 422 | 把握低的变更点不能批量接受，必须单独确认 | `point_ids` |
 
 ### 2.7 插件与产物
@@ -476,7 +485,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `budget_exceeds_quota` | 422 | 预算超出平台上限或剩余配额 | `dimension, max` |
 | `ledger_entry_not_found` | 404 | 台账条目不存在 | — |
 | `suspension_not_found` | 404 | 挂起问题不存在或已回答 | — |
-| `slice_not_revertible` | 409 | 这一片不能撤回（未合入、已撤回，或后续片依赖它的改动） | `reason` |
+| `slice_not_revertible` | 409 | 这一段不能撤回（未合入、已撤回，或后续段依赖它的改动） | `reason` |
 | `preview_expired` | 410 | 开始前预览已过期（10 分钟），要重新预览 | — |
 
 ### 2.11 运维
@@ -1263,7 +1272,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   | `head` | string | 主线提交 |
   | `nodes` | `[{id: EntryId, kind, key, label, description, status, locked: bool, slice_ids: string[]}]` | — |
   | `edges` | `[{id, source, target, kind: "declared"\|"mention", relation: string, label}]` | `declared` 是一级标题「关联对象」下的关系声明（实线）；`mention` 是正文里的提及（虚线） |
-  | `clusters` | `[{id, label, slice_id, node_ids}]` | 按切片分组的关系簇 |
+  | `clusters` | `[{id, label, slice_id, node_ids}]` | 按段分组的关系簇 |
   | `chains` | `{rule: EntryId[], metric: EntryId[]}` | 规则链、指标链高亮用 |
 
 - `relation` 沿用现有取值：`object_relation\|calls_operation\|operation_input_object\|operation_output_object\|operation_support_object\|uses_rule\|uses_metric\|applies_to_object\|uses_object\|script_uses_object\|uses_script\|references`。
@@ -1329,8 +1338,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
   | `result` | 其他字段 | 含义 |
   |---|---|---|
-  | `committed` | `entry: Entry, revision, commit, version_label` | 检查通过，直接保存为新版本（`Onto-Source: studio`），草稿删除 |
-  | `rejected` | `errors: Finding[], warnings: Finding[]` | 有硬伤，草稿保留 |
+  | `committed` | `entry: Entry, revision, commit, version_label, warnings: Finding[]` | 检查通过，直接保存为新版本（`Onto-Source: studio`），草稿删除；链接指向不存在的文档、没有主键这类质量问题只在 `warnings` 里提示（F3，`code=check_hint`），不再转助手复核 |
+  | `rejected` | `errors: Finding[], warnings: Finding[]` | 解析不了的结构（缺必需章节、表头缺列），草稿保留 |
   | `needs_review` | `review_points: string[], conversation_id, command_task: CommandTask` | 超出确定性检查范围。草稿移进助手变更集副本，往工作台对话发一条复核命令，结果在对话里 |
 
 - 错误：`not_found`（没有草稿）、`revision_conflict`、`write_scope_locked`、`project_archived`。
@@ -1461,7 +1470,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### V-02 版本详情
 
-`GET /api/v1/projects/{id}/versions/{commit}` · 所有者 · 旧：— · 审计：否 · 依据：4.3 · 页面：versions（「v0.11 改了什么」）、inbox（查看这一片的改动）、l4-run
+`GET /api/v1/projects/{id}/versions/{commit}` · 所有者 · 旧：— · 审计：否 · 依据：4.3 · 页面：versions（「v0.11 改了什么」）、inbox（查看这一段的改动）、l4-run
 
 - 响应：`Version`，加 `changes: [{target: EntryRef|ArtifactRef, change: "add"|"mod"|"del", detail: string, review: "needs_review"|"accepted"|null}], run: {run_id, run_no, slice_id}|null`。
 
@@ -1518,7 +1527,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 ### 3.10 变更集与写入范围
 
-依据详设 8.2、4.3、方案 C7～C12。陪伴建模下一个变更集从助手开始改起，到用户确认生效或撤回为止，中间可以跨好几轮。自主构建下一片一个变更集，自动合入。Studio、MCP、导入、插件变更各自的「一次保存」也是变更集，校验通过即合入，接口上不可见。
+依据详设 8.2、4.3、方案 C7～C12；F3（用户 11-03 定）修订：陪伴建模下一个变更集就是助手的一轮修改，这一轮结束（成功、出错、被打断）自动合入成一个版本，没有「确认生效」；下一轮开始前、服务启动时补合上一轮没走到收尾的；升级前留下的待确认变更集启动时自动合入。合入时按实体检测冲突，冲突的进待处理，这是用户唯一会看到变更集的情况。合入时的检查（规则检查、包声明的提交门禁）只记录、在卡片上提示，不挡合入，发布门禁链（PB-01）照拦。自主构建下一段一个变更集，自动合入。Studio、MCP、导入、插件变更各自的「一次保存」也是变更集，校验通过即合入，接口上不可见。
 
 #### CS-01 变更集列表
 
@@ -1533,7 +1542,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 响应：`Changeset`，加：
   - `groups: [{kind: "object"|"operation"|"rule"|"metric"|"script"|"scenario"|"artifact", items: [{target: EntryRef|ArtifactRef, change: "add"|"mod"|"del", detail, checks: "passed"|"warning"|"failed"}]}]`；
-  - `checks: {errors, warnings, findings: Finding[]}`；
+  - `checks: {errors, warnings, findings: Finding[]}`（只提示；指向蓝图里已规划、还没建的内容的链接不在这里，记在卡片的 `checks.pending`）；
   - `next_version_label`。
 - 用户在 Studio 或文件里另外保存的改动不算在这里（方案 C12）。
 
@@ -1546,15 +1555,15 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - `DiffLine` 是 `{kind: "header"|"del"|"add"|"ctx"|"note", text}`。
   - 渲染时去掉 `[[ ]]` 由前端做。
 
-#### CS-04 确认生效
+#### CS-04 合入（F3 起界面不再调）
 
-`POST /api/v1/projects/{id}/changesets/{cs}/merge` · 所有者 · 旧：— · 审计：专项 `changeset.merge` · 依据：8.2、14#7 · 页面：wb-l2、chat-states、incremental、inbox
+`POST /api/v1/projects/{id}/changesets/{cs}/merge` · 所有者 · 旧：— · 审计：专项 `changeset.merge` · 依据：8.2、14#7 · 页面：—（F3：一轮结束由会话宿主自动合入；保留给升级前遗留的待确认变更集）
 
 - 请求：`{expected_head?: string}`。
-- 合入步骤：
+- 合入步骤（自动合入同一套）：
   1. 叠到最新主线上重新校验；
   2. 按实体检测冲突；
-  3. 跑门禁链；
+  3. 跑检查（规则检查、包声明的提交门禁），只记进变更集的 `checks`，不挡合入（F3）；
   4. 写 squash 提交，trailer 记 `Onto-Changeset`、`Onto-Source`、构建方式、包版本。
 - 响应 `200`：`{state: "merged", commit, version_label, merged_at}`。同时：
   - 写入范围锁解除（`scope.updated`）；
@@ -1564,17 +1573,21 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - `changeset_in_progress`：助手还在跑，先打断或等它停；
   - `changeset_closed`；
   - `merge_conflict`：已进待处理，由用户选保留哪一边；
-  - `gate_failed`；
   - `head_moved`。
+  - F3 起不再回 `gate_failed`。
 
 #### CS-05 撤回这一轮
 
-`POST /api/v1/projects/{id}/changesets/{cs}/discard` · 所有者 · 旧：— · 审计：专项 `changeset.discard` · 依据：8.2 · 页面：wb-l2、chat-states、incremental
+`POST /api/v1/projects/{id}/changesets/{cs}/discard` · 所有者 · 旧：— · 审计：专项 `changeset.revert`（合入过的）/ `changeset.discard`（冲突中的） · 依据：8.2；F3 · 页面：wb-l2、chat-states、incremental、inbox（冲突项）
 
 - 请求：`{}`。
-- 丢弃整个变更集，主线不受影响，助手副本重置，写入范围锁解除。
-- 响应：`{state: "discarded"}`。
-- 错误：`changeset_in_progress`、`changeset_closed`。
+- 合入过的（一轮结束已存成版本）：在主线上写这一轮的反向提交，回到这一轮之前的内容，另存一个版本；之后在别处的修改保留。按段建模的一轮记进蓝图这一段的新条目一起去掉，蓝图别的修改不动；这一轮记过的段、步骤作废，按主线现状重算。
+- 冲突中还没合入的：丢弃整个变更集，主线不受影响，助手副本重置，写入范围锁解除。
+- 响应：合入过的 `{state: "reverted", commit, version_label}`；冲突中的 `{state: "discarded", commit: null, version_label: null}`。对话里这一轮的卡片原地更新为已撤回，加一条 `notice`。
+- 错误：
+  - `merge_conflict`：这一轮之后又改过同一条，撤回会连同后来的修改一起撤掉，不撤；`message` 写出是哪几条，`details.entities` 列出；
+  - `changeset_in_progress`：助手还在跑；
+  - `changeset_closed`：已经撤回过。
 
 #### CS-06 写入范围锁
 
@@ -1808,7 +1821,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### FL-01 流程
 
-`GET /api/v1/projects/{id}/flow` · 所有者 · 旧：— · 审计：否 · 依据：㊴、6.6、6.7 · 页面：全部工作台页（主线进度条、建模步骤抽屉）、projects（卡片切片进度，经 `P-01`）
+`GET /api/v1/projects/{id}/flow` · 所有者 · 旧：— · 审计：否 · 依据：㊴、6.6、6.7 · 页面：全部工作台页（主线进度条、建模步骤抽屉）、projects（卡片分段进度，经 `P-01`）
 
 - 查询参数：`conversation_id?`（带上时 `suggestions` 按这条对话的打断状态计算）。
 - 响应：`Flow`，即
@@ -1816,7 +1829,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - `nodes`：`FlowNode[]`，建模节点带 `slices`；
   - `edges`；
   - `sections`：抽屉分组「必经步骤 / 发布前检查 / 可选步骤 / 有需要时」；
-  - `slices`：切片 × 步骤；
+  - `slices`：分段 × 步骤；
   - `suggestions`；
   - `notices`：如「1 份新资料」；
   - `autobuild`：运行中时给运行控制。
@@ -1827,7 +1840,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 {"flow_hash": "b41e09…",
  "nodes": [{"id": "core.model", "title": "建模", "kind": "agent", "placement": "spine",
             "state": "running", "flags": {"needs_review": false, "disabled": false, "backfill": false},
-            "progress": {"done": 3, "total": 5, "label": "3/5 片"}, "version": "core@1.4.2",
+            "progress": {"done": 3, "total": 5, "label": "3/5 段"}, "version": "core@1.4.2",
             "section": "required", "actions": [], "per_slice": true}],
  "edges": [{"from": "core.research", "to": "core.model"}],
  "slice_stages": [{"id": "object", "label": "对象"}, {"id": "operation", "label": "操作"},
@@ -1881,9 +1894,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### BP-01 建模蓝图
 
-`GET /api/v1/projects/{id}/blueprint` · 所有者 · 旧：— · 审计：否 · 依据：第 9 章建议 2、6.8（`core.research` 含切片规划） · 页面：wb-blueprint（蓝图卡、调整弹窗）、chat-states（产物卡）、proj-settings（自主构建范围的切片清单）
+`GET /api/v1/projects/{id}/blueprint` · 所有者 · 旧：— · 审计：否 · 依据：第 9 章建议 2、6.8（`core.research` 含分段规划） · 页面：wb-blueprint（蓝图卡、调整弹窗）、chat-states（产物卡）、proj-settings（自主构建范围的分段清单）
 
-- 响应：`Blueprint`，即目标、范围外、切片、术语口径、待答问题、草案版本、状态、`revision`。
+- 响应：`Blueprint`，即目标、范围外、分段、术语口径、待答问题、草案版本、状态、`revision`。
 - 错误：`blueprint_not_found`。
 
 #### BP-02 保存蓝图调整
@@ -1897,25 +1910,26 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `base_revision` | string | 是 | — |
 | `mode` | string | 是 | `draft`：保存为草案，草案号不变；`adjust`：保存调整，草案号加 1 |
 | `out_of_scope` | string[] | 否 | — |
-| `slices` | `BlueprintSliceInput[]` | 否 | 完整切片列表，按数组顺序排。合并、排除、改名、调顺序、新增都表达为对这份列表的修改。合并时 `merged_from` 写原切片 ID，`excluded: true` 表示排除 |
+| `slices` | `BlueprintSliceInput[]` | 否 | 完整分段列表，按数组顺序排。合并、排除、改名、调顺序、新增都表达为对这份列表的修改。合并时 `merged_from` 写原分段 ID，`excluded: true` 表示排除 |
 | `term_choices` | `{term_id, chosen}[]` | 否 | 统一叫法 |
 | `answers` | `{question_id, option_id?, custom_text?}[]` | 否 | 待你回答 |
 
-- 「按章节拆分」需要读资料，不在这里做，前端用 `S-20` 发命令「把切片 X 按章节拆分」。
+- 「按章节拆分」需要读资料，不在这里做，前端用 `S-20` 发命令「把分段 X 按章节拆分」。
 - 保存后助手按新蓝图继续（下一条消息读取）。
 - 响应：`Blueprint`。
 - 错误：`revision_conflict`、`slice_invalid`、`write_scope_locked`、`blueprint_not_found`。
 
 #### BP-03 确认蓝图
 
-`POST /api/v1/projects/{id}/blueprint/confirm` · 所有者 · 旧：— · 审计：是 · 依据：1.6#2、8.5 · 页面：wb-blueprint（「确认蓝图，开始第一个切片」「一片一片来」「按蓝图一路建完」）
+`POST /api/v1/projects/{id}/blueprint/confirm` · 所有者 · 旧：— · 审计：是 · 依据：1.6#2、8.5 · 页面：wb-blueprint（「确认蓝图，开始第一段」「一段一段来」「按蓝图一路建完」）
 
 - 请求：`{base_revision, next: "L2"|"L4"}`。缺省取项目的构建方式。
 - 没答的问题留在待处理。
+- F3：资料分析那一轮结束就合入，蓝图在主线上，确认只标已确认，不再先合入变更集；升级前留下的待确认变更集先合入（检查不拦）。
 - 响应：
-  - `next="L2"`：返回 `{blueprint, command_task}`，往对话发「开始第一个切片」；
+  - `next="L2"`：返回 `{blueprint, command_task}`，往对话发「开始第一段」；
   - `next="L4"`：返回 `{blueprint, autobuild_preview: AutobuildPreview}`，前端展示范围和预算后再调 `AB-04`（详设 8.5：开始前展示、确认后才跑）。
-- 错误：`revision_conflict`、`blueprint_not_found`。
+- 错误：`revision_conflict`、`blueprint_not_found`；`merge_conflict`（蓝图所在的那一轮和你的修改冲突，`details.inbox_item_id` 指向待处理）；`changeset_in_progress`（助手还在改，等这一轮结束）。
 
 ---
 
@@ -1936,8 +1950,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `resumable` | 续跑 | 中断的执行 | `resume`、`abandon` |
 | `feedback` | 外部反馈 | 评测服务回传（㉔） | `send_to_evolution`、`dismiss` |
 | `report` | 报告待处理 | 某份报告里还没处理的条目，一份报告合成一项 | `send_to_assistant` |
-| `pending_changeset` | 修改待确认 | 没确认的助手变更集（详设 8.2 风险应对） | `merge`、`discard` |
-| `changeset_conflict` | 合入冲突 | 合入时检测到实体冲突 | `resolve` |
+| `changeset_conflict` | 合入冲突 | 这一轮合入时和你的修改改到同一条（F3 起唯一会出现的变更集事项；没有「修改待确认」） | `resolve`、`discard`（撤回这一轮） |
 | `format_migration` | 格式待迁移 | 插件升级改了产物格式（5.9.4） | `migrate` |
 | `notification` | 通知 | 提名审核结果等 | `dismiss` |
 
@@ -2011,7 +2024,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `resume`、`abandon` | — | `S-16`、`S-17` |
 | `send_to_evolution` | — | 以反馈演进命令调 `S-20` |
 | `send_to_assistant` | — | 以报告修复命令调 `S-20` |
-| `merge`、`discard` | — | `CS-04`、`CS-05` |
+| `discard` | — | `CS-05` |
 | `resolve` | `choices` | `CS-07` |
 | `migrate` | — | 包的迁移命令 |
 | `dismiss` | — | 忽略 |
@@ -2183,7 +2196,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   |---|---|---|
   | `items` | `PackCard[]` | — |
   | `counts` | object | `{all, capability, industry, system, provider, node, exporter, enabled, updatable}` |
-  | `recommendations` | `[{pack: PackRef, reason: string, action: "enable"\|"upgrade"}]` | 只在带 `project_id` 时有，按资料、已登记的数据源和切片进度推荐，最多 3 条 |
+  | `recommendations` | `[{pack: PackRef, reason: string, action: "enable"\|"upgrade"}]` | 只在带 `project_id` 时有，按资料、已登记的数据源和分段进度推荐，最多 3 条 |
 
 - `PackCard.project_status` 取值：
 
@@ -2959,8 +2972,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 依据详设 8.5、1.6#2、方案 B12～B14、C8。
 
-- 运行由会话宿主托管，每片一个变更集，检查通过自动合入，产出标「需复核」。
-- 每片合入之后是安全点。
+- 运行由会话宿主托管，每段一个变更集，检查通过自动合入，产出标「需复核」。
+- 每段合入之后是安全点。
 - 运行在自己的对话里进行（会话名「自主构建 · 运行 #n」）。
 - 运行中用户发的消息按 `deferred` 处理，下一步开始前读取。
 
@@ -2990,7 +3003,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 请求：`{policy_overrides?: Partial<AutobuildPolicy>}`。开始前可以临时改。
 - 响应：`AutobuildPreview`，即：
   - `preview_token`（10 分钟有效）；
-  - 范围：切片列表、每片现状；
+  - 范围：分段列表、每段现状；
   - 预算；
   - 生产库授权；
   - 低于阈值时怎么处理；
@@ -3011,9 +3024,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `GET /api/v1/projects/{id}/autobuild/runs/{run_id}` · 所有者 · 旧：— · 审计：否 · 依据：8.5 · 页面：l4-run（运行条、运行详情抽屉、流水线矩阵）
 
 - 响应：`AutobuildRun`，包括：
-  - 状态、当前切片与步骤；
+  - 状态、当前分段与步骤；
   - 指标：用时与预计、token、费用、写入即查错误与提醒、场景通过、修复轮次；
-  - `slices`：每片状态、摘要、版本、矩阵单元格；
+  - `slices`：每段状态、摘要、版本、矩阵单元格；
   - 自动决定数、挂起数；
   - `recovered_from_checkpoint: int`（崩溃后自动续跑次数）；
   - `report_available`。
@@ -3031,7 +3044,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `POST /api/v1/projects/{id}/autobuild/runs/{run_id}/stop-at-safe-point` · 所有者 · 旧：— · 审计：专项 `autobuild.control` · 依据：8.5 · 页面：l4-run（「停在安全点」）
 
-- 做完这一片再停。
+- 做完这一段再停。
 - 响应：`AutobuildRun`（`state="stopping"`）。
 
 #### AB-08 转为陪伴
@@ -3094,19 +3107,19 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 #### AB-16 运行报告
 
-`GET /api/v1/projects/{id}/autobuild/runs/{run_id}/report` · 所有者 · 旧：— · 审计：否 · 依据：8.5「运行报告卡」 · 页面：l4-run（报告卡）、inbox（「按片结果」弹窗）
+`GET /api/v1/projects/{id}/autobuild/runs/{run_id}/report` · 所有者 · 旧：— · 审计：否 · 依据：8.5「运行报告卡」 · 页面：l4-run（报告卡）、inbox（「按段结果」弹窗）
 
 - 响应：`AutobuildReport`，即：
   - 起止时间、重启续跑说明；
-  - 指标：用时与预算、切片、产出（对象 / 操作 / 规则）、检查、场景推演、自动决策、挂起、费用与 token；
-  - 按片结果：结果、产出、场景、运行后版本、能否撤回；
+  - 指标：用时与预算、分段、产出（对象 / 操作 / 规则）、检查、场景推演、自动决策、挂起、费用与 token；
+  - 按段结果：结果、产出、场景、运行后版本、能否撤回；
   - 提示文案。
 
-#### AB-17 按片撤回
+#### AB-17 按段撤回
 
-`POST /api/v1/projects/{id}/autobuild/runs/{run_id}/slices/{slice_id}/revert` · 所有者 · 旧：— · 审计：专项 `autobuild.revert_slice` · 依据：8.5、方案 C8（反向提交） · 页面：inbox（「回退到运行前」）、l4-run（报告卡「回退这一片」）
+`POST /api/v1/projects/{id}/autobuild/runs/{run_id}/slices/{slice_id}/revert` · 所有者 · 旧：— · 审计：专项 `autobuild.revert_slice` · 依据：8.5、方案 C8（反向提交） · 页面：inbox（「回退到运行前」）、l4-run（报告卡「回退这一段」）
 
-- 只动这一片：恢复成运行开始前的样子，另存为新版本，其他切片不受影响。
+- 只动这一段：恢复成运行开始前的样子，另存为新版本，其他分段不受影响。
 - 响应：`{commit, version_label, reverted_to_version_label}`。
 - 错误：`slice_not_revertible`、`autobuild_running`（本次运行还在跑）。
 
@@ -3205,7 +3218,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 写工具改为经内核写入路径（⑤）：
 
 - 写入范围内的条目返回 `PROJECT_EDITING_BUSY`，`details.entities` 列出锁定的条目；
-- 提交带 trailer `Onto-Source: mcp`。
+- 提交带 trailer `Onto-Source: mcp`；
+- 引用、关系目标找不到、字段被别处引用（`REFERENCE_NOT_FOUND`、`REFERENCE_TYPE_INVALID`、`RELATION_TARGET_INVALID`、`FIELD_REFERENCED`）只放进 `warnings`（`level: "warning"`），不挡写入（F3：建模过程中质量检查只提示，发布时才拦）；删除仍被引用的资源（`RESOURCE_REFERENCED`）照旧拒绝。
 
 **新增只读工具（read 工具集）：**
 
@@ -3908,7 +3922,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | EC-10 | `message.user` | 是 | `{message_id, text, attachments: AttachmentRef[], references: (EntryRef\|ArtifactRef\|{kind: "anchor", anchor})[], origin: {kind: "page"\|"inbox"\|"studio"\|"report", page, label, task_id}\|null, delivery: "immediate"\|"deferred"\|"queued"}` | 用户气泡；带 `origin` 时显示「来自「场景走查」页」（第 19 项） |
 | EC-11 | `message.delta` | 否 | `{message_id, kind: "text"\|"thinking", text}` | 流式输出 |
 | EC-12 | `message.assistant` | 是 | `{message_id, text_md, anchors: [{n: int, anchor}], entry_links: EntryRef[], continued: bool}` | 助手正文。正文里 `[[名称]]` 渲染成去 Studio 的链接，出处角标按 `anchors` 编号悬停看原文。`continued=true` 表示与上一条连续，不重复署名 |
-| EC-13 | `notice` | 是 | `{kind: "merged"\|"discarded"\|"decided"\|"info"\|"warning", text, version_label: string\|null, changeset_id: string\|null, align: "center"\|"left"}` | 系统提示行，如「切片「订单与配送时限」已确认生效 · 版本 v0.12」「步骤 2 选了 A：…」 |
+| EC-13 | `notice` | 是 | `{kind: "merged"\|"discarded"\|"decided"\|"info"\|"warning", text, version_label: string\|null, changeset_id: string\|null, align: "center"\|"left"}` | 系统提示行，如「分段「订单与配送时限」已确认生效 · 版本 v0.12」「步骤 2 选了 A：…」 |
 | EC-14 | `day.marker` | 是 | `{label: string}` | 日期分隔（「今天」） |
 
 #### 进展与子代理
@@ -3955,9 +3969,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 | 编号 | type | 载荷 | 用在哪 | 依据 |
 |---|---|---|---|---|
-| EP-01 | `flow.updated` | `{flow_hash, nodes: [{id, state, flags, progress}], slices: [{id, stages, note}], suggestions_changed: bool}`，只含变化的节点和切片 | 主线进度条、建模步骤抽屉、projects 卡片 | ㊴ |
+| EP-01 | `flow.updated` | `{flow_hash, nodes: [{id, state, flags, progress}], slices: [{id, stages, note}], suggestions_changed: bool}`，只含变化的节点和分段 | 主线进度条、建模步骤抽屉、projects 卡片 | ㊴ |
 | EP-02 | `inbox.updated` | `{counts: {total, by_filter, by_pack}, added: string[], removed: string[], changed: string[]}` | 左栏工作台角标、「待处理 N」、inbox 列表、插件页角标 | ㊴ |
-| EP-03 | `scope.updated` | `ScopeLock` | Studio、流程图弹窗、场景走查、代码生成、知识沉淀页的锁定条和只读；两态「助手运行中 / 修改待确认」，自主构建下是「这一片自动合入为止」 | 4.3、方案 C10 |
+| EP-03 | `scope.updated` | `ScopeLock` | Studio、流程图弹窗、场景走查、代码生成、知识沉淀页的锁定条和只读；两态「助手运行中 / 修改待确认」，自主构建下是「这一段自动合入为止」 | 4.3、方案 C10 |
 | EP-04 | `changeset.updated` | `{changeset_id, state: "open"\|"pending_confirm"\|"merged"\|"discarded"\|"conflict", source, conversation_id, version_label: string\|null}` | wb-l2「这一轮」卡、inbox | 8.2 |
 | EP-05 | `workspace.changed` | `{commit, version_label, source: "assistant"\|"web"\|"studio"\|"mcp"\|"autobuild"\|"import"\|"plugin"\|"revert", changeset_id, by, entries: EntryRef[], artifacts: ArtifactRef[], paths: string[≤200]}` | 外壳知识包版本、Studio 表格与图谱刷新、编辑器「文件已被助手修改」提示 | 方案 C2 |
 | EP-06 | `artifacts.updated` | `{type, change: "created"\|"updated"\|"deleted"\|"stale"\|"fresh", keys: string[]}` | 场景走查、代码生成、知识沉淀页列表；Studio 流程图行 | 4.1、5.9.4 |
@@ -4075,7 +4089,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `build_choice` | 确认后怎么建 | `{options: [{mode: "L2", label}, {mode: "L4", label}], policy_link: true}` | wb-blueprint |
 | `step_output` | 本步产出卡 | `{entry: EntryRef, eyebrow: "操作 · 本轮新抽出", state: "pending"\|"confirmed", inputs: (EntryRef\|{text})[], steps: [{n, text_md, anchors, awaiting_question_id: string\|null}], outputs: (EntryRef\|{text})[], rules: [{ref: EntryRef, state}], sources: [{n, anchor, label, scheme}]}` | wb-l2、chat-states；点条目名去 Studio |
 | `flowchart` | 流程图卡 | `{artifact: ArtifactRef, state: "draft"\|"confirmed", summary: "8 个节点、1 个判断", thumbnail: {nodes: [{id, type, label, pending: bool}], edges: [{from, to, label}]}, locked: bool}`；`open={dialog, "flowchart"}` | wb-l2、flowchart、chat-states；只在图示包启用时出现 |
-| `round_changes` | 这一轮改了什么 | `{changeset_id, title: "改了 3 处，检查全部通过", checks: {errors, warnings}, groups: [{kind, label, items: [{change: "mod"\|"add"\|"del"\|"test", target: EntryRef\|ArtifactRef, text, comparable: bool}]}], lock_note: string, next_version_label, state: "pending_confirm"\|"merged"\|"discarded", merged_version_label: string\|null, remaining_failures: int}` | wb-l2、chat-states 第 8 项、incremental；按钮：查看改动（`CS-03`）、撤回这一轮（`CS-05`）、确认生效（`CS-04`） |
+| `round_changes` | 这一轮改了什么 | `{changeset_id, title: "改了 3 处", checks: {errors, warnings, pending}, hints: [{tone: "info"\|"warn", text}]（如「3 处指向第 2 段待建的内容」「1 处链接找不到对象」「2 处结构缺失」）, groups: [{kind, label, items: [{change: "mod"\|"add"\|"del"\|"test", target: EntryRef\|ArtifactRef, text, comparable: bool}]}], state: "merged"\|"reverted"\|"conflict"\|"pending", merged_version_label: string\|null, reverted_version_label: string\|null, inbox_item_id: string\|null}`；一个变更集（一轮）一张卡，之后原地更新（F3） | wb-l2、chat-states 第 8 项、incremental；按钮：查看改动（`CS-03`）、撤回这一轮（`CS-05`）；冲突时「去处理」到待处理 |
 | `change_list` | 变更点清单卡 | `{change_list_id, source: {path, label}, count, low_confidence: int, rows: ChangePoint[≤10], state: "editing"\|"confirmed"\|"executed"}`；`open={dialog, "change_list"}` | incremental、chat-states |
 | `impact` | 影响面卡 | `Impact` 加 `{change_list_id, executed: bool}` | incremental |
 | `regression` | 回归结果卡 | `{passed, total, rows: [{scenario: ArtifactRef, type: "affected"\|"guard", result: "pass"\|"fail", reason: string\|null}]}` | incremental |
@@ -4083,7 +4097,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `pack_recommendation` | 助手推荐插件 | `{pack: PackRef, category_label, description, reason}` | chat-states 第 16 项 |
 | `resume` | 中断续跑卡 | `{exec_id, title: "上次没做完：操作提取在步骤 3 / 4 中断", reason, position: {step, total, label}, saved: {files, version_label}, resumable: bool, not_resumable_reason: string\|null}` | chat-states 第 5 项；按钮：`S-16`、`S-17` |
 | `autobuild_start` | 自主构建开始时的策略说明 | `{run_id, run_no, chips: [{label, value}]}`（范围、预算、生产库、拿不准时） | l4-run |
-| `slice_progress` | 按切片的进展块 | `{run_id, slice: {id, name}, state: "done"\|"running"\|"queued"\|"partial", summary, version_label: string\|null, timeline: ProgressStep[], decision_ids: string[], suspension_ids: string[]}` | l4-run |
+| `slice_progress` | 按段的进展块 | `{run_id, slice: {id, name}, state: "done"\|"running"\|"queued"\|"partial", summary, version_label: string\|null, timeline: ProgressStep[], decision_ids: string[], suspension_ids: string[]}` | l4-run |
 | `auto_decision` | 自动决定卡 | `{run_id, ledger_id, at, question, chosen, anchors, confidence: number, threshold: number, assumption: bool, review_state: "pending"\|"accepted"\|"rejudged", recorded: true}` | l4-run；「改判」去 inbox |
 | `suspension` | 挂起卡 | `{run_id, suspension_id, title, reason, inbox_item_id}` | l4-run；「现在回答」去 inbox |
 | `run_report` | 运行报告卡 | `AutobuildReport` 摘要：`{run_id, run_no, state, started_at, ended_at, recovered_restarts: int, metrics: [...], slices: [...]}` | l4-run、chat-states 产物卡；按钮「去复核」「转为陪伴继续」 |
@@ -4101,7 +4115,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | 5 中断续跑卡 | EC-40 `resume`、EP-09 | `S-16`、`S-17` |
 | 6 权限确认卡（允许 / 拒绝，超时按拒绝） | EC-30、EC-31 | `S-10` |
 | 7 走查分支选择、请专家确认 | EC-32 `branch`、`expert`；EC-33 | `S-11` |
-| 8 本轮改了什么（展开明细、对比） | EC-40/41 `round_changes`、EP-03、EP-04 | `CS-02`、`CS-03`、`CS-04`、`CS-05` |
+| 8 本轮改了什么（展开明细、对比） | EC-40/41 `round_changes`、EP-03、EP-04 | `CS-02`、`CS-03`、`CS-05` |
 | 9 排队中 | EC-01（`queued`）、EC-02 | `S-12` |
 | 10 上下文占用与自动压缩、项目累计用量 | EC-51、EC-52 | `S-05`、`P-16` |
 | 11 重启会话 | EC-01（`closed`） | `S-09` |
@@ -4120,16 +4134,16 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | 界面元素 | 事件 | 接口 |
 |---|---|---|
 | 顶栏会话名、主线进度条、「1 份新资料」、「待处理 18」、上下文环 | EP-01、EP-02、EC-51 | `S-01`、`FL-01`、`IN-01`、`S-05` |
-| 系统提示行「切片已确认生效 · 版本 v0.12」 | EC-13 | — |
+| 系统提示行「分段已确认生效 · 版本 v0.12」 | EC-13 | — |
 | 用户消息、助手消息、出处角标 | EC-10、EC-12 | `EV-29`（悬停看原文） |
 | 工作过程（已完成 3 步） | EC-20/21 | — |
 | 本步产出卡（条目名去 Studio） | EC-40 `step_output` | `ST-04` |
 | 流程图卡（双击打开编辑） | EC-40 `flowchart` | `AR-03`、`AR-05` |
 | 决策卡（单选 + 后果 + 改动预览，稍后决定，确认这个方向） | EC-32、EC-33、EC-13 | `S-11`；「稍后决定」去 inbox |
-| 写入范围只读（助手运行中 / 修改待确认） | EP-03 | `CS-06` |
-| 这一轮改了什么卡（查看改动、撤回这一轮、确认生效） | EC-40/41 `round_changes`、EP-04 | `CS-03`、`CS-05`、`CS-04` |
-| 建议条三态（先做上面的决定 / 确认生效 / 提取本切片的规则） | EC-53 | `FL-02` |
-| 建模步骤抽屉（切片、必经、发布前检查、可选、有需要时；开始、跳过、恢复、调整切片） | EP-01 | `FL-01`、`FL-03`、`FL-04`、`FL-05` |
+| 写入范围只读（助手运行中 / 有冲突） | EP-03 | `CS-06` |
+| 这一轮改了什么卡（查看改动、撤回这一轮） | EC-40/41 `round_changes`、EP-04 | `CS-03`、`CS-05` |
+| 建议条三态（先做上面的决定 / 确认生效 / 提取这一段的规则） | EC-53 | `FL-02` |
+| 建模步骤抽屉（分段、必经、发布前检查、可选、有需要时；开始、跳过、恢复、调整分段） | EP-01 | `FL-01`、`FL-03`、`FL-04`、`FL-05` |
 | 输入框（拖入文件、粘贴截图、@ 引用条目、命令、发送；模式胶囊） | EC-10 | `U-01`、`S-07`、`S-18`、`F-07`（@ 搜条目）、`P-13` |
 
 ---
@@ -4155,11 +4169,11 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | 页面 id | 页面 | 接口 | 事件 |
 |---|---|---|---|
 | `login` | 登录与注册 | `C-01`、`A-01`、`A-02`、`A-03`、`A-04` | — |
-| `projects` | 我的项目 | `P-01`、`P-03`（重命名弹窗实时检查）、`P-05`、`P-06`、`P-07`、`P-08`、`P-09`、`A-13`、`A-14`、`FL-01`（卡片切片进度已含在 `ProjectCard`，不单独调） | EU-01、EU-02、EU-03 |
+| `projects` | 我的项目 | `P-01`、`P-03`（重命名弹窗实时检查）、`P-05`、`P-06`、`P-07`、`P-08`、`P-09`、`A-13`、`A-14`、`FL-01`（卡片分段进度已含在 `ProjectCard`，不单独调） | EU-01、EU-02、EU-03 |
 | `import` | 导入项目 | `U-01`（`project_import`）、`U-03`、`P-10`、`P-03`、`P-11` | — |
 | `create` | 新建项目 | `P-03`、`U-01`（`material`）、`U-03`、`EV-01`（已登记数据源数）、`PL-01`（`category=industry,system,capability`）、`C-06`、`A-09`、`P-02` | — |
 | `wb-materials` | 建模初期 · 资料分析 | `S-01`、`S-05`、`S-06`、`S-07`、`S-08`、`S-11`、`U-01`、`R-02`、`R-03`、`R-06`、`R-07`、`R-08`、`R-09`、`R-10`、`P-05`（联网 / 仅本地）、`S-20`（追加分析、继续读取、让助手逐条修正）、`EV-01`、`FL-01`、`FL-02` | EC-01、EC-10、EC-12、EC-20/21、EC-32/33、EC-40/41（`upload_prompt`、`material_map`）、EC-51、EC-53；EP-01、EP-11、EP-12 |
-| `wb-blueprint` | 建模初期 · 切片规划 | `BP-01`、`BP-02`、`BP-03`、`RP-02`（资料分析小结）、`AB-03`、`AB-04`、`EV-01`（数据源提示）、`S-07`、`S-20`（重新划分、按章节拆分）、`FL-01`、`FL-02` | EC-40/41（`research_summary`、`blueprint`、`build_choice`）、EC-20、EC-53；EP-01 |
+| `wb-blueprint` | 建模初期 · 分段规划 | `BP-01`、`BP-02`、`BP-03`、`RP-02`（资料分析小结）、`AB-03`、`AB-04`、`EV-01`（数据源提示）、`S-07`、`S-20`（重新划分、按章节拆分）、`FL-01`、`FL-02` | EC-40/41（`research_summary`、`blueprint`、`build_choice`）、EC-20、EC-53；EP-01 |
 | `wb-l2` | 建模中 · 陪伴（L2） | 见 4.9：`S-01`、`S-05`、`S-06`、`S-07`、`S-11`、`ST-04`、`AR-03`、`CS-02`～`CS-06`、`FL-01`～`FL-05`、`IN-01`、`EV-29`、`U-01`、`F-07`、`S-18`、`P-13` | 对话流全部；EP-01～EP-05 |
 | `flowchart` | 流程图编辑弹窗 | `AR-03`、`AR-05`、`AR-08`、`CS-06`、`PL-12`（图示插件标记）、`S-08`（锁定条「回到对话里打断它」） | EC-40 `flowchart`、EP-03、EP-05、EP-06 |
 | `l4-run` | 建模中 · 自主构建（L4） | `AB-01`、`AB-03`、`AB-04`、`AB-05`～`AB-10`、`AB-14`、`AB-16`、`AB-17`、`V-02`（查看改动）、`S-05`、`S-06`、`S-07`（补充说明，`deferred`）、`CS-06`、`FL-01`、`FL-02` | EC-40/41（`autobuild_start`、`slice_progress`、`auto_decision`、`suspension`、`run_report`）、EC-53（`autobuild_controls`）；EP-03、EP-14～EP-17 |
@@ -4178,7 +4192,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `scenarios` | 场景走查（插件） | `AR-01`、`AR-02`、`AR-03`、`AR-04`、`AR-05`、`AR-06`、`AR-07`、`AR-09`（类型 `trace.scenario`、`trace.mock`）、`S-20`（批量验证、交互走查、补齐过期场景、按场景补生成、行内 ▶）、`S-19`、`CS-06`、`IN-01`（`pack=trace` 角标）、`PL-12` | EP-03、EP-06、EP-10 |
 | `knowledge` | 知识沉淀（插件） | `K-01`～`K-08`、`S-20`（在对话里复核）、`CS-06` | EP-23、EP-03 |
 | `scripts` | 代码生成与求解（插件） | `SC-01`、`SC-02`、`SC-03`、`SV-01`～`SV-04`、`ST-04`（脚本只读预览）、`S-20`（扫描、生成脚本、修复、重新生成、按模板重新生成）、`S-19`、`CS-06` | EP-03、EP-06、EP-10 |
-| `proj-settings` | 项目设置 | `P-04`、`P-05`、`P-06`、`P-07`、`P-12`、`P-13`、`P-14`、`C-06`、`A-09`、`AB-01`、`AB-02`、`AB-03`、`AB-18`、`BP-01`（范围里的切片清单）、`EV-01`（生产库授权行）、`PL-05`～`PL-11`、`M-01`～`M-04` | EP-08、EP-20 |
+| `proj-settings` | 项目设置 | `P-04`、`P-05`、`P-06`、`P-07`、`P-12`、`P-13`、`P-14`、`C-06`、`A-09`、`AB-01`、`AB-02`、`AB-03`、`AB-18`、`BP-01`（范围里的分段清单）、`EV-01`（生产库授权行）、`PL-05`～`PL-11`、`M-01`～`M-04` | EP-08、EP-20 |
 | `plugins` | 插件中心 | `PL-01`、`PL-03`、`PL-04`、`PL-06`、`PL-07`、`PL-19`（管理员） | EU-01 |
 | `plugin-detail` | 插件详情 | `PL-02`、`PL-03`、`PL-07`、`PL-09`、`PL-05` | — |
 | `plugin-upload` | 上传与审核插件 | `PL-13`～`PL-18` | — |
@@ -4480,7 +4494,7 @@ type ProjectMeta = {
 // admin、ops 看到的元数据视图（1.4），不含目标、资料、产物
 type ProjectMetaView = {
   id: string; name: string; owner: string | null;
-  stage_label: string;            // 如 "建模 3/5 片"、"校验与走查"、"可发布"
+  stage_label: string;            // 如 "建模 3/5 段"、"校验与走查"、"可发布"
   build_mode: "L2" | "L4";
   archived: boolean; created_at: time; last_activity_at: time | null;
   disk_bytes?: number;
@@ -4488,7 +4502,7 @@ type ProjectMetaView = {
 
 type ProjectCard = ProjectMeta & {
   industry_label: string | null;
-  slices: { total: number; confirmed: number; cells: DisplayState[] } | null;   // null = 切片待规划
+  slices: { total: number; confirmed: number; cells: DisplayState[] } | null;   // null = 分段待规划
   inbox_count: number;
   status: ("active" | "autobuild" | "autobuild_done" | "publishable" | "archived")[];
   autobuild: {
@@ -4667,12 +4681,12 @@ type ScopeLock = {
   entries: EntryRef[];            // 范围内的本体条目
   artifacts: ArtifactRef[];       // 范围内的插件产物（场景、求解契约、流程图……）
   paths: string[];                // produces 声明的路径模式
-  reason_text: string;            // 「助手正在改「超量与审批提示」这一片……」
+  reason_text: string;            // 「助手正在改「超量与审批提示」这一段……」
   since: time | null;
 };
 ```
 
-`ScopeLock` 的范围按详设 4.3 计算：当前节点 `produces` 落到当前切片的条目，加这一轮已经改过的条目，加等用户决定的决策卡在改动预览里列出的条目。节点不按切片执行时，范围是 `produces` 声明的整类条目。
+`ScopeLock` 的范围按详设 4.3 计算：当前节点 `produces` 落到当前分段的条目，加这一轮已经改过的条目，加等用户决定的决策卡在改动预览里列出的条目。节点不按段执行时，范围是 `produces` 声明的整类条目。
 
 ### 7.7 会话、执行记录、命令
 
@@ -4762,7 +4776,7 @@ type FlowNode = {
   state: NodeState;
   flags: { needs_review: boolean; review_source?: "autobuild" | "upgrade" | "import"; disabled: boolean; backfill: boolean };
   display_state: DisplayState;
-  progress: { done: number; total: number; label: string } | null;   // 「3/5 片」
+  progress: { done: number; total: number; label: string } | null;   // 「3/5 段」
   version: string;                // "core@1.4.2"
   per_slice: boolean;
   note: string | null;            // 「登记了业务系统数据源才有这一步」
@@ -4783,7 +4797,7 @@ type Flow = {
             stages: Record<string, SliceStageState>;
             note: string; no_rules: boolean }[];
   suggestions: Suggestions;
-  notices: { kind: "new_materials" | "pending_changeset" | "assembly_pending"; count?: number; files?: string[];
+  notices: { kind: "new_materials" | "changeset_conflict" | "assembly_pending"; count?: number; files?: string[];
              text: string; action: SuggestionAction }[];
 };
 
@@ -4800,7 +4814,7 @@ type Suggestion = { id: string; label: string; icon?: string; primary: boolean; 
                     reason: string; priority: 1 | 2 | 3 | 4 | 5; action: SuggestionAction };
 
 type Suggestions = {
-  mode: "normal" | "interrupted" | "waiting_decision" | "pending_confirm" | "autobuild_controls";
+  mode: "normal" | "interrupted" | "waiting_decision" | "autobuild_controls";   // F3 起没有 pending_confirm；历史里留下的前端不画「确认生效」
   primary: Suggestion | null;
   secondary: Suggestion[];        // 最多 2 个
   all_commands: true;             // 末尾固定有「全部命令」
@@ -4839,7 +4853,7 @@ type Blueprint = {
 type InboxItem = {
   id: string;                     // "<kind>:<来源ID>"
   kind: "decision" | "evidence_conflict" | "change_list" | "review" | "suspension" | "stale" | "resumable"
-      | "feedback" | "report" | "pending_changeset" | "changeset_conflict" | "format_migration" | "notification";
+      | "feedback" | "report" | "changeset_conflict" | "format_migration" | "notification";
   kind_label: string;
   title: string; meta: string;    // 「4 个选项 · 推荐 A」「置信度 0.72 · 记为假设」
   slice: { id: string; name: string } | null;
@@ -5256,7 +5270,7 @@ type AutobuildRun = AutobuildRunSummary & {
   matrix: { slice_id: string; slice_name: string;
             cells: Record<"object" | "operation" | "rule" | "check" | "scenario", "confirmed" | "auto" | "running" | "queued" | "skipped">;
             result: string }[];
-  tail_text: string;              // 「跑完全部切片后：全局一致性检查 → 合规检查（发布前，留给你）」
+  tail_text: string;              // 「跑完全部分段后：全局一致性检查 → 合规检查（发布前，留给你）」
   scope_lock_text: string;
   recovered_from_checkpoint: number;
   report_available: boolean;
@@ -5446,8 +5460,8 @@ type ErrorRecord = {
 **流程、蓝图、待处理**
 
 35. **节点状态只用详设 6.6 的 8 种，加 `flags`（`needs_review`、`disabled`、`backfill`），另给 `display_state` 对应设计稿的 17 种显示态。** 理由见 9.1#3。
-36. **蓝图保存是整份切片列表替换；「按章节拆分」走命令。** 拆分要读资料，不是确定性操作。
-37. **待处理在设计稿 8 种之外，再加 `report`、`pending_changeset`、`changeset_conflict`、`format_migration`、`notification`，计入「全部」。** 详设 4.7、8.2、5.9.4 列了这些来源，设计稿的筛选只是子集。
+36. **蓝图保存是整份分段列表替换；「按章节拆分」走命令。** 拆分要读资料，不是确定性操作。
+37. **待处理在设计稿 8 种之外，再加 `report`、`changeset_conflict`、`format_migration`、`notification`，计入「全部」**（F3 去掉了 `pending_changeset`）。 详设 4.7、8.2、5.9.4 列了这些来源，设计稿的筛选只是子集。
 38. **报告里的待处理条目，一份报告合成一项。** 逐条计数会把待处理撑爆；设计稿示例总数 18 也不含逐条报告条目。
 39. **待处理的「忽略」记录存 `.onto/run/`，不进 git。** 详设 4.7 规定待处理不另存状态，「忽略」是唯一的界面偏好例外。
 40. **变更点清单在执行前可编辑，不受写入范围锁约束。** 清单是这一轮的输入；设计稿要求用户在助手等待时逐条改。
@@ -5506,7 +5520,7 @@ type ErrorRecord = {
 |---|---|---|---|---|
 | 1 | 运维、管理员能看到多少项目信息 | 1.6、4.10.1：只看元数据（名称、所有者、阶段、占用） | ops-users 审计「内容」列有文件名、对象名、表名；错误留档有表名、凭据引用、规则文件行号 | 详设。只保留路径、条目 key 这类定位标识，不含正文；错误原文脱敏 |
 | 2 | 流程图归在哪 | 4.4「插件不能新增实体类型」；5.9.3 规则 3「本体条目只在 Studio 编辑，插件产物在插件页面编辑」 | 流程图是 Studio 的「条目类型」：表格筛选、新建、删除、编辑器面板，图示插件决定它出不出现 | 两边都保住。流程图是图示包登记的插件产物 `diagram.flowchart`（5.9.5 把流程图列为专用组件），不算本体实体，不进知识包；Studio 和流程图弹窗经通用产物接口读写 |
-| 3 | 节点状态有几种 | 6.6：8 种状态 + 需复核、已停用 2 个标记；6.9 又用了「可补做」 | core.js 状态表有 17 种：多了冲突、草稿、未开始、可补做、自主完成、失败、通过 | 详设。API 只用 8 种加 `flags`；`display_state` 给出设计稿的显示态。「可补做」是 `ready` 加 `backfill` 标记，「自主完成」是切片步骤的 `auto` |
+| 3 | 节点状态有几种 | 6.6：8 种状态 + 需复核、已停用 2 个标记；6.9 又用了「可补做」 | core.js 状态表有 17 种：多了冲突、草稿、未开始、可补做、自主完成、失败、通过 | 详设。API 只用 8 种加 `flags`；`display_state` 给出设计稿的显示态。「可补做」是 `ready` 加 `backfill` 标记，「自主完成」是分段步骤的 `auto` |
 | 4 | evidence 工具有几个 | 5.8.7：search、show、where-used、lineage、diff 共 5 个 | proj-settings 写「evidence.*（6）」，同页 MCP 表列了 5 个 | 详设，5 个 |
 | 5 | 待处理有哪些类型 | 4.7 列了「报告里的待处理条目」，8.2 有未确认的变更集提示 | inbox 筛选只有 8 类，没有报告条目 | 详设。保留这些类型，计入「全部」，不单设筛选 |
 | 6 | 自主构建预算有哪些维度 | 8.5：费用和时长上限 | 有时长、token、费用三项 | 设计稿。加上 token，与配额口径一致 |

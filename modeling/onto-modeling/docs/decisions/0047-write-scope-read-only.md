@@ -15,9 +15,9 @@ ChangeTx 统一检查（命中 423）、MCP 继续回 `PROJECT_EDITING_BUSY` 并
    - 当前变更集里已改的条目、插件产物（`entries`、`artifacts`）和改动文件的路径（转义后放进 `paths`）；
      变更集里执行过的节点的声明范围也一直算，直到确认生效或撤回；
    - 等你决定的决策卡在改动预览里列出的条目（`Question.affected`，会话宿主登记的数据源给）；
-   - `state`：助手在跑是 `assistant_running`，这一轮结束、修改待确认是 `pending_confirm`；自主构建一片的
-     `autobuild_slice` 在 P3。按切片收窄（`produces` 落到当前切片的条目）要等切片规划（见 gaps）；现在节点不按
-     切片执行，范围就是声明的整类条目（详设 4.3 原文）。
+   - `state`：助手在跑是 `assistant_running`，这一轮结束、修改待确认是 `pending_confirm`；自主构建一段的
+     `autobuild_slice` 在 P3。按段收窄（`produces` 落到当前分段的条目）要等分段规划（见 gaps）；现在节点不按
+     分段执行，范围就是声明的整类条目（详设 4.3 原文）。
 2. **一处检查（`kernel/writepath/scope.py`）**：写入事务登记要写的路径时问一次锁（同一事务复用），落在范围里就
    `423 write_scope_locked`（details 是 ScopeLock），什么都还没写。网页、Studio、MCP、插件产物、知识、求解契约的
    保存都经写入事务，不用各自再查。合入变更集本身（`Origin.changeset` 就是锁住范围的那个）不受限；回退（V-06，
@@ -66,7 +66,7 @@ ChangeTx 统一检查（命中 423）、MCP 继续回 `PROJECT_EDITING_BUSY` 并
 
 ## Consequences
 
-- 助手执行对象提取时，所有对象在编辑器里只读，直到这一轮确认生效或撤回；按切片收窄后会小很多。
+- 助手执行对象提取时，所有对象在编辑器里只读，直到这一轮确认生效或撤回；按段收窄后会小很多。
 - 节点包（P3）声明 `produces` / `writes` 后，守卫与只读自动跟上，不用改内核。
 - 旧的 Studio 租约文件（`studio/<项目>.leases.json`）不再读写，删除项目时一并清掉。
 - 守卫只看本体目录，助手仍能写报告、临时文件；越界拒绝的提示会列出这一步能写的路径。
@@ -80,4 +80,4 @@ ChangeTx 统一检查（命中 423）、MCP 继续回 `PROJECT_EDITING_BUSY` 并
 
 ## 补充（B4d）
 
-切片规划落地后，建模节点的范围按片收窄、守卫不让助手改别的片已有的条目，见 ADR-0052。
+分段规划落地后，建模节点的范围按段收窄、守卫不让助手改别的段已有的条目，见 ADR-0052。

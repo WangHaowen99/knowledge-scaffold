@@ -1,5 +1,8 @@
 # 0046 助手变更集：副本、确认生效与撤回、实体级差异
 
+> 2026-11-03 修订：「确认生效」去掉，每一轮结束自动合入成版本、检查只提示，见 ADR-0072。下面第 3 条的门禁拦截、
+> 「一个变更集可以跨好几轮」不再成立。
+
 ## Context
 
 详设 1.6、8.2 把变更集定为内核机制：单人项目里用来「确认生效 / 撤回这一轮」、隔离助手的改动、崩溃恢复。
@@ -67,12 +70,12 @@ git worktree 副本、`merge-tree --write-tree` 合成、按实体检测冲突�
 
 | 用途 | 函数 | 说明 |
 |---|---|---|
-| 一片的副本 | `copy_for_turn(manager, project_id, root)` | 每片开始前调；返回助手工作目录 |
-| 每片先占一个变更集 | `open_changeset(manager, project_id, source="autobuild", build_mode="L4", run_id=..., slice_id=..., purpose=...)` | 已有没关闭的就返回它 |
-| 观察一片的改动 | `observe(manager, project_id, running=..., conversation_id=..., exec_record=..., checks=True)` | 往当前变更集里记改动，返回记录 |
+| 一段的副本 | `copy_for_turn(manager, project_id, root)` | 每段开始前调；返回助手工作目录 |
+| 每段先占一个变更集 | `open_changeset(manager, project_id, source="autobuild", build_mode="L4", run_id=..., slice_id=..., purpose=...)` | 已有没关闭的就返回它 |
+| 观察一段的改动 | `observe(manager, project_id, running=..., conversation_id=..., exec_record=..., checks=True)` | 往当前变更集里记改动，返回记录 |
 | 自动合入 | `merge(manager, project_id, cs_id, actor=..., source="autobuild", needs_review=True)` | 门禁不过抛 `gate_failed`，冲突抛 `merge_conflict`（进待处理）；`needs_review` 记在变更集上 |
-| 撤回已合入的一片 | `revert_merged(manager, project_id, cs_id, actor=..., source="revert")` | 在主线写反向提交；合入后同一实体又被改过时 `409 merge_conflict`，不撤 |
-| 撤回未合入的一片 | `discard(manager, project_id, cs_id, actor=...)` | 副本重置 |
+| 撤回已合入的一段 | `revert_merged(manager, project_id, cs_id, actor=..., source="revert")` | 在主线写反向提交；合入后同一实体又被改过时 `409 merge_conflict`，不撤 |
+| 撤回未合入的一段 | `discard(manager, project_id, cs_id, actor=...)` | 副本重置 |
 | 会话状态 | `register_activity_provider(fn)` | 已由 `app/wiring.py` 接会话池；自主构建的 run_id 由运行器写进变更集 |
 
 ## Alternatives considered
@@ -106,7 +109,7 @@ git worktree 副本、`merge-tree --write-tree` 合成、按实体检测冲突�
 - **副本不在副本分支上**：收住改动接回副本分支，分叉合不上留 `refs/onto/rescued/<时间>`；目录真坏了挪到
   `assistant.broken-<时间>`（只留最近 3 份），不删。
 - **合入**：全程持项目锁，锁内重读变更集；git 报文本冲突的路径一律算冲突；合成结果和主线一样时不写提交
-  （`merged.commit` 为 null，不能 `revert_merged`）；写入意图标成整片回滚，崩溃后启动恢复回到合入前；启动时按
+  （`merged.commit` 为 null，不能 `revert_merged`）；写入意图标成整批回滚，崩溃后启动恢复回到合入前；启动时按
   `Onto-Changeset` 补记已合入、没记下的变更集（`startup_repair`）。
 - **撤回已合入的变更集**：派生文件（`index.md`、脚本描述符）不比对、由写入事务重新生成；其余文件后来有任何改动就不撤。
 - **先占的变更集**（`open_changeset`）没改过之前不当成空的关掉；`open_changeset`、`revert_merged` 签名不变。

@@ -149,7 +149,7 @@ class PublishAdapter(Protocol):
 | C5 | 文件名编码 | `report_reconcile.py:131` 不转义 `#&` | 编码搬进元模型；导入遇到非法 key 进待处理 | S | P1 |
 | C6 | 索引副作用 | `_refresh_indexes:502`；GET /files 经 `:537` 无锁提交 | `index.md` 当派生物在 ChangeTx 里刷新；GET 去掉写副作用 | S | P1 |
 | C7 | 变更集副本 | agent 工作目录就是项目根（`sessions.py:94` → `agent_sessions.py:542`） | `git worktree` 建副本，路径每个项目固定（`DATA_DIR/changesets/<pid>/assistant`），否则 Claude 的续接记录会丢；`.claude` 单独挂；`resource/` 用 sparse-checkout 排除后挂只读链接 | L | P2 |
-| C8 | 确认生效 / 撤回 | `candidate_revision` 的 check:291、accept:356 | 合入：`merge-tree --write-tree` → 实体冲突检测（C9）→ 在合成树上跑门禁（复用 `_minus:179` 只看新增错误）→ ChangeTx 写 squash 提交。撤回：删分支、重置副本。自主构建撤回单片用反向提交 | L | P2（自主构建部分 P3） |
+| C8 | 确认生效 / 撤回 | `candidate_revision` 的 check:291、accept:356 | 合入：`merge-tree --write-tree` → 实体冲突检测（C9）→ 在合成树上跑门禁（复用 `_minus:179` 只看新增错误）→ ChangeTx 写 squash 提交。撤回：删分支、重置副本。自主构建撤回单段用反向提交 | L | P2（自主构建部分 P3） |
 | C9 | 实体级差异 | `documents.public`、`integrity:41` | 新增 entity_diff：把树解析成 {实体: 章节、字段、关系}；主线和变更集改到同一实体即冲突 | M | P2 |
 | C10 | 运行中只读 | Studio 租约 `studio.py:606-707`、`projects.py:1255-1307`；MCP 整项目忙 `onto_mcp/workspace.py:68`；网页 PUT /file 不查租约 | 范围 = 声明范围 ∪ 副本里已改的实体 ∪ 决策卡预览列出的实体，持续到确认生效或撤回。ChangeTx 统一检查，命中返回 423；MCP 继续回 `PROJECT_EDITING_BUSY` 并附实体列表。删租约和整项目忙判断；加 `GET /scope` 和 SSE | M | P2 |
 | C11 | agent 提交收口（⑩） | `pre_commit_check.sh` 是 Claude 的 PreToolUse hook | 助手在副本里照常提交（有隔离就不需要项目锁）；检查逻辑搬进内核门禁链，脚本只调本机接口，出错即拒；trailer 写在合入提交上 | M | P2 |
@@ -182,7 +182,7 @@ class PublishAdapter(Protocol):
 | D10 | 补绕过写法（目标 3） | 4 个守卫各自的 `extract_bash_write_targets` | 共享解析：跟踪 `cd X &&`；`python/perl/node -e` 代码里出现受保护路径就拒；`find -delete/-exec`、`git checkout/restore/rm/clean` 带路径拒；路径含变量且出现受保护目录名拒；commit 正则补 `-C`、`-c` 和绝对路径调用；`git add -A && git commit` 的检查挪到提交接口（现在 PreToolUse 时检查的是旧暂存区，等于没查） | M | P1 |
 | D11 | 写入范围守卫（㊹） | `ontology_scope_guard.sh:83-105` 已有反馈演进锁的特判 | 泛化：读 `.onto/run/active.json`（由 acquire 写入节点和 produces），只放行 produces；删评测特判。**从 P3 提到 P2**，C10 依赖它 | S | P2 |
 | D12 | 流程定义 | 7 处阶段定义 | core 包提供 `nodes/*.yaml` 组装成 flow.yaml；`flow/assemble.py` 做锚点、环、输入输出冲突检查；P1 先保持现有行为，`_project_progress` 和前端 `LeftPane` 改读它；统一"质量检查完成"口径 | M | P1 |
-| D13 | 节点状态 | 无 | `flow/state.py`：执行记录 + 变更集是否接受 + 产物指纹 → 8 种状态，建模节点按切片算 | L | P2 |
+| D13 | 节点状态 | 无 | `flow/state.py`：执行记录 + 变更集是否接受 + 产物指纹 → 8 种状态，建模节点按段算 | L | P2 |
 | D14 | `/flow` 接口 | 前端 `buildSuggestions:108-200` | `GET /api/v1/projects/{id}/flow`，SSE `flow.updated` 复用会话事件流；前端只渲染返回的建议 | M | P1 / P2 |
 | D15 | state_helper 兼容层（㊸） | `state_helper.py:269-384` | check-prereq、detect-stage 仍输出 8 个旧阶段名和 `ok/missing:`（命令模板按这些字面量分支）；新增 `suggest`（JSON，最多 3 条）；数据走文件（flow.yaml + 后端写的 flow-state.json），不调 HTTP | M | P2 |
 | D16 | 下一步统一 | `ontology.md` 6 个建议块、19 个命令文件、两个提示 hook | 命令收尾调 `suggest`；约定文档加"最多 3 条"；两个 hook 退役，提示改由宿主注入（B4） | M | P2 |
@@ -198,14 +198,14 @@ class PublishAdapter(Protocol):
 | B2 | 指纹模块 | 引擎各算各的 | 新增 `fingerprint.py` 由宿主统一算：模型、owner、装配哈希、flow.lock、MCP、权限模式（后两项只对 Claude）；变化时发事件，说明变了哪项 | S | P1 |
 | B3 | owner 固定 | `:300`、`:518-539`（换人发消息 409） | owner 固定为项目所有者并计入指纹，删掉换人逻辑；Studio 复核、自主构建等后端内部发消息也带 owner，否则会掉回管理员 Key 并触发重连 | S | P2 |
 | B4 | 两轮之间注入（㊶） | 靠 shell hook | 新增 `injection.py`：阶段与下一步、未结束的执行、业务知识信号（probe 移植成 Python）、自主构建指令。协议改为 `send(text, context)`：Jiuwen 拼进 query（`:781`，积压的消息也要带上）；Claude 用 SDK 的 UserPromptSubmit 回调或前缀。`_deliver:558` 和 `_connect:672` 两条发送路径都走；内容不变不重复注入 | M | P0 先做 Jiuwen，P2 两引擎都做 |
-| B5 | 执行记录（8.4） | `state_helper.py:95-234` 进程号锁 | 新增 `exec_records.py`，存 `DATA_DIR/exec/<pid>/`：执行 ID、会话、引擎实例、节点与版本、输入指纹、阶段、状态、心跳、运行号和片；心跳由宿主在 `:991` 更新；state_helper 有会话 token 时走本机接口，否则退回文件锁 | M | P2（最小版提前到 P0，见第 0 章问题 7） |
+| B5 | 执行记录（8.4） | `state_helper.py:95-234` 进程号锁 | 新增 `exec_records.py`，存 `DATA_DIR/exec/<pid>/`：执行 ID、会话、引擎实例、节点与版本、输入指纹、阶段、状态、心跳、运行号和段；心跳由宿主在 `:991` 更新；state_helper 有会话 token 时走本机接口，否则退回文件锁 | M | P2（最小版提前到 P0，见第 0 章问题 7） |
 | B6 | 中断与等待 | 无 | 一轮结束时执行没结束记为"等待"（陪伴建模一个命令常跨几轮问答，不能一律标中断）；打断、引擎结束、停机、启动扫描记为"中断"，发 `exec_interrupted`；续跑卡调 `execs/{id}/resume` 或 `abandon` | M | P2 |
 | B7 | 会话身份注入 | `claude.py:151` | Claude 在 env 里加项目、会话和会话 token。Jiuwen 在进程内共用 `os.environ`，不能用环境变量，要靠 rail 给 bash 加前缀，或等 B11 的 worker | S | P2 |
 | B8 | 启动恢复注册表 | `main.py:28-36` 只做两个 sweep 和 purge | 新增启动恢复注册表，收编：清理残留目录、扫描历史末尾、把未结束的执行和运行标为中断、清 `index.lock`（超龄才删并记日志）、报告未提交改动；耗时步骤放后台，接就绪探针 | M | P0 / P1 |
 | B9 | 停机 | `:764` 串行回收，最长可超 30 秒宽限期 | 先给正在跑的轮写中断，再并发回收，总时长控制在 25 秒内 | S | P0 |
 | B10 | init 进程 | compose、`Dockerfile:70` | 加 `init: true`，镜像装 tini 兜底；**先做 B5 最小版或给 state_helper 打补丁** | S | P0 |
 | B11 | Jiuwen 独立 worker | `jiuwen.py:132` 全局 Runner | 新增 `jiuwen_worker.py` 和 `jiuwen_remote.py`，stdio JSON-lines 通信；单 worker 承载多会话，崩溃后重拉，并给其上所有会话发结束事件 | L | P2 |
-| B12 | 自主构建运行器 | 无 | `autobuild/runner.py`，每片：新开上下文（`:776`，避免长上下文自动压缩丢掉台账）→ 注入片说明和台账摘要 → 带 owner 发送 → 等 result → 查执行记录，没做完也没挂起就说"继续"（限次数）→ 检查 → 合入 → 到安全点检查暂停、转陪伴等标志；台账写 `reports/autobuild/<运行号>/` | L | P3 |
+| B12 | 自主构建运行器 | 无 | `autobuild/runner.py`，每段：新开上下文（`:776`，避免长上下文自动压缩丢掉台账）→ 注入段说明和台账摘要 → 带 owner 发送 → 等 result → 查执行记录，没做完也没挂起就说"继续"（限次数）→ 检查 → 合入 → 到安全点检查暂停、转陪伴等标志；台账写 `reports/autobuild/<运行号>/` | L | P3 |
 | B13 | 自主构建与会话池 | `:271`、`:584`、`:917` | Session 加 run_id：运行中不驱逐、不回收；确认卡由策略立即作答并记台账；运行中用户发消息返回 409；限制同时运行的自主构建数 | M | P3 |
 | B14 | 预算 | `:1016` 每次全量扫历史 | `budget.py`：token 用 counted_usage；费用 = token × 单价表（模型配置里新增，Jiuwen 现在没有费用）；时长用墙钟；80% 提醒，100% 停在安全点 | M | P3 |
 | B15 | 引擎协议 | `base.py:92` 漏了 `kill()`，`agent_sessions.py:343` 在用 | 补 `kill`、`available`、`send(context)`、`model_fingerprint`；加 `add_observer()` 作为插件观察会话的入口 | S | P1 |
@@ -322,8 +322,8 @@ backend/connector_gateway/{server,tickets,secrets,policy,runner}.py、providers/
 |---|---|---|
 | **P0 移出评测与止血** | 1. gitignore 修复与迁移（A13）<br>2. 单人所有权：无主项目指定所有者、删成员、管理员不读内容（A11、A12）<br>3. 发布按提交打包、打标签、版本号单调（A8、A9）<br>4. 先抽出凭据存储和后台任务公共件，再移出评测（A1～A7）<br>5. `/api/v1` 和兼容中间件（A14），拆 `projects.py`（A15）<br>6. 止血：运行中不切断（B1）、停机标中断（B9）、`index.lock`（E1）、备份（E2）、state_helper 补丁或执行记录最小版后再加 init（B5、B10）、后端跑脚本清环境（D19）、Jiuwen 补阶段提示和知识信号（B4 的 Jiuwen 部分） | 第 4 项依赖第 1、3 项 |
 | **P1 声明化与插件运行时最小集** | 包仓库、锁文件、装配器、启动核对、契约库（D1～D6）；工具箱原样迁成 core 包 + 内核守卫（D7 前半、D8）；守卫出错即拒、补绕过（D9、D10）；flow.yaml 与 `/flow`（D12、D14）；元模型与链接解析（C3～C6）；统一变更事务（C1、C2）；指纹模块与引擎协议（B2、B15）；求解契约搬迁（A10）；配置注册表、可观测、健康检查、审计、角色（E3～E7）；密钥移出（E10）；运维管理面起步（E8） | 装配器先于指纹；ChangeTx 先于变更集 |
-| **P2 内核能力** | 执行记录与续跑卡（B5、B6、B7）；两引擎注入（B4）；变更集副本、确认生效与撤回、实体差异（C7～C9、C12、C14、C15）；运行中只读和写入范围守卫（C10、D11）；agent 提交收口（C11）；节点和切片状态、suggest、待处理（D13、D15、D16）；扩展项注册表与页面（D17）；插件产物登记（C13）；拆可选包（D7 后半）；配额（E9）；Jiuwen worker（B11）；owner 固定（B3） | 变更集依赖 gitignore 修复；节点状态依赖执行记录和变更集 |
-| **P3 开放扩展** | 节点包（D18）；自主构建（B12～B14，C8 的按片撤回）；证据源首版与连接器网关、网络隔离（E11～E16） | 自主构建依赖执行记录、变更集、注入、节点状态 |
+| **P2 内核能力** | 执行记录与续跑卡（B5、B6、B7）；两引擎注入（B4）；变更集副本、确认生效与撤回、实体差异（C7～C9、C12、C14、C15）；运行中只读和写入范围守卫（C10、D11）；agent 提交收口（C11）；节点和分段状态、suggest、待处理（D13、D15、D16）；扩展项注册表与页面（D17）；插件产物登记（C13）；拆可选包（D7 后半）；配额（E9）；Jiuwen worker（B11）；owner 固定（B3） | 变更集依赖 gitignore 修复；节点状态依赖执行记录和变更集 |
+| **P3 开放扩展** | 节点包（D18）；自主构建（B12～B14，C8 的按段撤回）；证据源首版与连接器网关、网络隔离（E11～E16） | 自主构建依赖执行记录、变更集、注入、节点状态 |
 | **P4 闭环** | 包和节点版本归因、灰度；评测反馈接入；更多提供方；系统知识包；按项目隔离 agent 的进程和读取 | — |
 
 主要依赖链：
