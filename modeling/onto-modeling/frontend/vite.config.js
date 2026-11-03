@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
 import { defineConfig, loadEnv } from 'vite';
+import precompress from './build/precompress.js';
 
 const SRC = fileURLToPath(new URL('./src', import.meta.url));
 // 官方包自带的界面代码（ADR-0055）：assets/packs/<包>/ui/，随平台一起编译、按包懒加载
@@ -25,7 +26,8 @@ export default defineConfig(({ mode }) => {
   // mock 只在开发 / 测试构建里生效：生产构建恒为 false，mock 模块被摇掉，不进产物
   const apiMock = mode !== 'production' && (env.VITE_API_MOCK || process.env.VITE_API_MOCK) === '1';
   return {
-    plugins: [packUi(), react()],
+    // precompress：构建产物各写一份 .br、.gz，后端按 Accept-Encoding 发（F2：第一次切换页面白屏几秒）
+    plugins: [packUi(), react(), precompress()],
     define: { __API_MOCK__: JSON.stringify(apiMock) },
     resolve: {
       // @onto/：包界面代码引用平台模块；@packs/：平台引用包界面代码

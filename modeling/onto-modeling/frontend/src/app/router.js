@@ -1,5 +1,5 @@
 // 哈希路由：#/login、#/projects、#/projects/new、#/projects/import、#/p/<项目>/<页面>、#/<全局页>
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useTransition } from 'react';
 
 export function parseHash(hash) {
   const raw = (hash || '').replace(/^#/, '') || '/';
@@ -31,12 +31,18 @@ export function navigate(path, query) {
   window.location.hash = hrefFor(path, query);
 }
 
-export function useRoute() {
+// 换页放进 transition：新页面的代码块没下载完之前保留上一页（已显示的 Suspense 不退回 fallback），pending 为 true
+export function useRouteState() {
   const [route, setRoute] = useState(() => parseHash(window.location.hash));
+  const [pending, startTransition] = useTransition();
   useEffect(() => {
-    const h = () => setRoute(parseHash(window.location.hash));
+    const h = () => startTransition(() => setRoute(parseHash(window.location.hash)));
     window.addEventListener('hashchange', h);
     return () => window.removeEventListener('hashchange', h);
   }, []);
-  return route;
+  return [route, pending];
+}
+
+export function useRoute() {
+  return useRouteState()[0];
 }
