@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { api } from './api.js';
+import { api, randomId } from './api.js';
 import { GRAPH_SCOPE_DEFAULTS, emptySource, packageReference, sourceFromRecord, sourcePayload } from './domain.js';
 import { Alert, Badge, Breadcrumb, Button, Confirm, Field, Heading, Icon, useAction } from './ui.jsx';
 
@@ -195,30 +195,34 @@ export function SourceEditor({ record, packageRef, onSaved, onClose, onDirty, pa
       return;
     }
     uploadLock.current = true;
-    for (const value of files) {
-      if (!/\.(csv|xlsx)$/i.test(value.name)) {
-        setUploads((u) => [...u, { name: value.name, state: 'error', error: '仅支持 CSV / XLSX' }]);
-        continue;
+    try {
+      for (const value of files) {
+        if (!/\.(csv|xlsx)$/i.test(value.name)) {
+          setUploads((u) => [...u, { name: value.name, state: 'error', error: '仅支持 CSV / XLSX' }]);
+          continue;
+        }
+        const key = randomId();
+        setUploads((u) => [...u, { key, name: value.name, state: 'uploading' }]);
+        try {
+          const data = new FormData();
+          data.append('file', value);
+          const item = await api('/inputs', data);
+          if (!mounted.current) break;
+          setForm((f) => ({ ...f, input_ids: [...f.input_ids, item.id], inputs: [...f.inputs, item] }));
+          setDirty(true);
+          setPreview(null);
+          setGraphCheck(null);
+          revision.current += 1;
+          setUploads((u) => u.filter((f) => f.key !== key));
+        } catch (e) {
+          if (mounted.current)
+            setUploads((u) => u.map((f) => (f.key === key ? { ...f, state: 'error', error: e.message } : f)));
+        }
       }
-      const key = crypto.randomUUID();
-      setUploads((u) => [...u, { key, name: value.name, state: 'uploading' }]);
-      try {
-        const data = new FormData();
-        data.append('file', value);
-        const item = await api('/inputs', data);
-        if (!mounted.current) break;
-        setForm((f) => ({ ...f, input_ids: [...f.input_ids, item.id], inputs: [...f.inputs, item] }));
-        setDirty(true);
-        setPreview(null);
-        setGraphCheck(null);
-        revision.current += 1;
-        setUploads((u) => u.filter((f) => f.key !== key));
-      } catch (e) {
-        if (mounted.current)
-          setUploads((u) => u.map((f) => (f.key === key ? { ...f, state: 'error', error: e.message } : f)));
-      }
+    } finally {
+      // The editor's buttons read this lock; an unexpected error must not leave them disabled.
+      uploadLock.current = false;
     }
-    uploadLock.current = false;
   }
   async function save(makePreview = false) {
     if (!form.name.trim()) throw new Error('请填写数据源名称');

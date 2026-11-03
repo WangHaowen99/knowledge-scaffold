@@ -53,6 +53,7 @@ CATEGORIES = {'A': 'A 知识缺失', 'B': 'B 语义模糊', 'C': 'C 数据映射
 WORKSPACE_DIRS = {'objects/': 'ontology/object/', 'operations/': 'ontology/operation/', 'rules/': 'ontology/rule/',
                   'metrics/': 'ontology/metric/', 'testcase/': 'ontology/testcase/'}
 SEVERITY = {'fail': 0, 'error': 1, 'partial': 2}
+LINE_BREAK = re.compile(r'<br\s*/?>', re.IGNORECASE)
 SYSTEM = '''你是知识包评测优化分析员。输入是一轮知识包评测中未通过的用例（问题、参考答案、智能体回答、判分理由、工具失败、工具调用记录）、本轮总体统计 overview 和该知识包的相关文档节选；用例较多时分批输入，本批只含其中一部分。
 逐条归因并给出修订建议，用 submit_suggestions 提交。归因类别：
 A 知识缺失：问题涉及的对象、属性、操作或规则在知识包中不存在或不完整；
@@ -320,8 +321,13 @@ def workspace_path(target, known):
     return ''
 
 
+def flat(text, limit):
+    """Model text on one line: the viewer shows raw HTML as text, so line breaks a model wrote as <br> become spaces."""
+    return ' '.join(clip(LINE_BREAK.sub(' ', str(text or '')), limit).split())
+
+
 def cell(text, limit):
-    return ' '.join(clip(text, limit).replace('|', '\\|').split())
+    return flat(text, limit).replace('|', '\\|')
 
 
 def render(run, stem, now, value, analysed, known, model, traced=0, batches=1, skipped=(), failed=(), slow=False):
@@ -338,18 +344,18 @@ def render(run, stem, now, value, analysed, known, model, traced=0, batches=1, s
         lines.append(f'> 未纳入：用例 {numbered(failed)} 所在批次'
                      + ('判分模型响应超时（思考时间过长），可点击“重新生成”重试，或换用响应更快的判分模型' if slow
                         else '生成失败，可点击“重新生成”重试'))
-    lines += ['', '## 总体判断', '', ' '.join(clip(value.get('summary'), 1500).split()) or '（无）', '',
+    lines += ['', '## 总体判断', '', flat(value.get('summary'), 1500) or '（无）', '',
               '## 失分归因与修订建议', '', '| # | 用例 | 归因 | 依据 | 建议修订 | 落点 |', '|---|---|---|---|---|---|']
     count = 0
     for item in valid_items(value, numbers)[:MAX_ITEMS]:
         targets = [path for path in (workspace_path(str(t), known) for t in (item.get('targets') or [])[:5]) if path]
         count += 1
         lines.append(f"| {count} | {'、'.join(map(str, item['cases'])) or '—'} | {CATEGORIES[item['category']]} | "
-                     f"{cell(item.get('evidence'), 400)} | {cell(item.get('suggestion'), 600)} | {'<br>'.join(targets) or '—'} |")
+                     f"{cell(item.get('evidence'), 400)} | {cell(item.get('suggestion'), 600)} | {'、'.join(targets) or '—'} |")
     if not count:
         raise Failure('suggestions_protocol', '判分模型未返回有效的优化建议', 422, 'suggestions')
     lines += ['', '## 说明', '']
-    lines += [f"- {' '.join(clip(note, 300).split())}" for note in (value.get('notes') or [])[:10] if isinstance(note, str) and note.strip()]
+    lines += [f"- {flat(note, 300)}" for note in (value.get('notes') or [])[:10] if isinstance(note, str) and note.strip()]
     lines += ['- 用例编号对应评测报告「逐用例明细」中的序号。',
               '- 落点为建模工作区路径，由知识包路径换算（objects/ → ontology/object/ 等）；标“新建”的文件当前包内不存在，属于结构性缺口，建议先走对应提取命令。',
               '- 修订须遵守泛化红线：只写普适业务知识，不得照抄用例问题或标准答案。', '']
