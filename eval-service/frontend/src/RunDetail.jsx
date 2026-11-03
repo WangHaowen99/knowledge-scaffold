@@ -27,7 +27,6 @@ import {
   Skeleton,
   useAction,
 } from './ui.jsx';
-import { useModelingProjects } from './modelingProjects.js';
 import { RunArtifacts, RunHistory } from './RunOutputs.jsx';
 
 export function RunDetail({ id, navigate, onAction, onChanged }) {
@@ -47,7 +46,6 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
   const generation = useRef(0),
     lock = useRef(false),
     rowRefs = useRef(new Map());
-  const modelingProject = useModelingProjects(run ? [run] : []);
   async function refresh() {
     if (lock.current) return;
     lock.current = true;
@@ -159,12 +157,11 @@ export function RunDetail({ id, navigate, onAction, onChanged }) {
     );
   const phaseIndex = run.phase === 'finished' ? 4 : PHASES.findIndex(([key]) => key === run.phase);
   const current = cases.find((c) => ['executing', 'unknown', 'answer_ready'].includes(c.status));
-  const versions = packageVersions(run),
-    project = modelingProject(run);
+  const versions = packageVersions(run);
   const facts = [
-    ['知识包 ID', packageName(run)],
+    ['知识包 ID', run.package_ref?.ontology_id || '—'],
     ['知识包版本', `${versions.base || '—'}${versions.snapshot ? `（评测快照 ${versions.snapshot}）` : ''}`],
-    ['建模项目', project.label, project.title],
+    ['知识包名称', packageName(run)],
     ['数据源', run.data_source_name || '数据源配置快照'],
     ['评测集', run.eval_set_name || '评测集快照'],
   ];

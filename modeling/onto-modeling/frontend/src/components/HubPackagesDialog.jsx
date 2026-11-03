@@ -63,7 +63,11 @@ export default function HubPackagesDialog({ open, onClose, onImported }) {
         rowSelection={{ type: 'radio', selectedRowKeys: selected ? [selected.ontology_id] : [],
           onChange: (_, rows) => { setSelected(rows[0]); setVersionPage(1); setName(''); } }}
         pagination={{ current: packagePage, pageSize: 20, total: packages.total, showSizeChanger: false, onChange: setPackagePage }}
-        columns={[{ title: '包名称', dataIndex: 'name', ellipsis: true }, { title: '版本', dataIndex: 'version' }, { title: '本体标识', dataIndex: 'ontology_id', ellipsis: true }]} />
+        columns={[
+          { title: '知识包名称', dataIndex: 'name', width: '33%', ellipsis: true },
+          { title: '版本', dataIndex: 'version', width: '17%' },
+          { title: '知识包 ID', dataIndex: 'ontology_id', width: '50%', ellipsis: true },
+        ]} />
       {selected && <Table size="small" rowKey="release_id" dataSource={versions.items}
         rowSelection={{ type: 'radio', selectedRowKeys: release ? [release.release_id] : [], onChange: (_, rows) => setRelease(rows[0]) }}
         pagination={{ current: versionPage, pageSize: 20, total: versions.total, showSizeChanger: false, onChange: setVersionPage }}

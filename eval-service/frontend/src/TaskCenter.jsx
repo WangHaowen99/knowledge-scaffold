@@ -9,7 +9,6 @@ import {
   runStartTime,
   shortId,
 } from './domain.js';
-import { useModelingProjects } from './modelingProjects.js';
 import { Badge, Button, Empty, Heading, Icon, Progress, Skeleton } from './ui.jsx';
 
 // The table scrolls inside a clipped panel, so an open row menu is placed against the window instead, opening
@@ -52,10 +51,11 @@ function RowMenu({ label, children }) {
   );
 }
 
-function ModelingProjectCell({ label, title }) {
+function PackageNameCell({ run }) {
+  const name = packageName(run);
   return (
-    <td data-label="建模项目" className="modeling-project" title={title}>
-      {label}
+    <td data-label="知识包名称" className="package-name" title={name}>
+      {name}
     </td>
   );
 }
@@ -99,8 +99,7 @@ export function TaskCenter({
 }) {
   const { tab, search, packageFilter } = searchState;
   const active = runs.find((r) => ACTIVE.has(r.status)),
-    [more, setMore] = useState(20),
-    modelingProject = useModelingProjects(runs);
+    [more, setMore] = useState(20);
   const visible = runs.filter(
     (r) =>
       (tab === 'active'
@@ -111,7 +110,7 @@ export function TaskCenter({
             ? ['completed', 'failed', 'cancelled'].includes(r.status)
             : true) &&
       (!packageFilter || packageName(r) === packageFilter) &&
-      `${r.id} ${packageName(r)} ${r.eval_set_name || ''}`.toLowerCase().includes(search.toLowerCase()),
+      `${r.id} ${r.package_ref?.ontology_id || ''} ${packageName(r)} ${r.eval_set_name || ''}`.toLowerCase().includes(search.toLowerCase()),
   );
   const update = (value) => {
     setSearchState({ ...searchState, ...value });
@@ -246,8 +245,8 @@ export function TaskCenter({
             <table className="task-table">
               <thead>
                 <tr>
-                  <th>任务 / 知识包</th>
-                  <th>建模项目名称</th>
+                  <th>任务 ID / 知识包 ID</th>
+                  <th>知识包名称</th>
                   <th>知识包版本</th>
                   <th>启动时间</th>
                   <th>状态</th>
@@ -259,16 +258,16 @@ export function TaskCenter({
               <tbody>
                 {visible.slice(0, more).map((run) => (
                   <tr key={run.id}>
-                    <td data-label="任务">
+                    <td data-label="任务 ID / 知识包 ID">
                       <button className="run-link" onClick={() => navigate(`/runs/${run.id}`)}>
-                        {shortId(run.id)}
+                        {run.id}
                       </button>
                       <small>
-                        {packageName(run)}
+                        {run.package_ref?.ontology_id || '—'}
                         {run.run_count > 1 && ` · 共 ${run.run_count} 次执行`}
                       </small>
                     </td>
-                    <ModelingProjectCell {...modelingProject(run)} />
+                    <PackageNameCell run={run} />
                     <PackageVersionCell run={run} />
                     <StartTimeCell run={run} />
                     <td data-label="状态">
