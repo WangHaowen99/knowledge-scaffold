@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
-from .. import auth, db, documents, jobs, kb_config, profile, questions, retrieval, storage
+from .. import __version__, auth, db, documents, jobs, kb_config, profile, questions, retrieval, storage, text_structure
 from ..config import get_settings
 from ..parsing import SUPPORTED_TYPES, docreader_client
 from ..wiki import jobs as wiki_jobs
@@ -112,6 +112,29 @@ async def config_meta(caller: Caller = Depends(need(auth.CAP_RETRIEVE))) -> dict
     meta["parser_engines"] = await docreader_client.list_engines()
     meta["file_types"] = sorted(SUPPORTED_TYPES)
     return meta
+
+
+CAPABILITY_FEATURES = (
+    "kbs.write", "kbs.reprocess", "ingest.file", "ingest.text", "ingest.url",
+    "documents.delete", "documents.reprocess", "documents.cancel", "documents.file", "content.L2",
+    "wiki.read", "wiki.write", "questions", "profile", "config.meta", "tools.da",
+    "grep", "content.structure", "uploads",
+)
+
+
+@router.get("/capabilities")
+async def capabilities(caller: Caller = Depends(need(auth.CAP_RETRIEVE))) -> dict:
+    """knowledge-provider/v1 declaration (contracts/knowledge-provider/v1)."""
+
+    return {
+        "contract": "knowledge-provider/v1",
+        "role": "base",
+        "provider": {"type": "kb-service", "version": __version__, "label": "kb-service"},
+        "features": list(CAPABILITY_FEATURES),
+        "file_types": sorted(SUPPORTED_TYPES),
+        "limits": {"max_upload_mb": get_settings().max_upload_mb, "max_top_k": 50},
+        "config_schema": None,
+    }
 
 
 @router.get("/me")
@@ -417,6 +440,23 @@ async def get_content(
     return PlainTextResponse(text, media_type=f"{media}; charset=utf-8")
 
 
+@router.get("/documents/{doc_id}/structure")
+async def get_structure(
+    doc_id: str,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(30000, ge=0, le=200000),
+    heading: str | None = None,
+    caller: Caller = Depends(need(auth.CAP_RETRIEVE)),
+) -> dict:
+    """A window of the L1 markdown with its anchors and the outline (contract feature ``content.structure``)."""
+
+    doc = await _doc_for(caller, doc_id)
+    win = text_structure.window(retrieval.read_l1(doc), doc_id, offset=offset, limit=limit, heading=heading)
+    if win is None:
+        raise documents.DocumentError(404, "not_found", f"没有找到章节：{heading}")
+    return win
+
+
 @router.get("/documents/{doc_id}/file")
 async def get_file(doc_id: str, caller: Caller = Depends(need(auth.CAP_RETRIEVE))) -> FileResponse:
     doc = await _doc_for(caller, doc_id)
@@ -548,6 +588,37 @@ async def complete_upload(upload_id: str, caller: Caller = Depends(need(auth.CAP
     await db.pool().execute("UPDATE upload_sessions SET status = 'completed' WHERE id = $1", upload_id)
     shutil.rmtree(folder, ignore_errors=True)
     return _doc_view(doc)
+
+
+# ---- grep -----------------------------------------------------------------
+
+
+class GrepBody(BaseModel):
+    pattern: str
+    kb_ids: list[str] | None = None
+    max_results: int = Field(default=50, ge=1, le=200)
+    max_lines_per_doc: int = Field(default=10, ge=1, le=100)
+
+
+@router.post("/grep")
+async def grep(body: GrepBody, caller: Caller = Depends(need(auth.CAP_RETRIEVE))) -> dict:
+    """Line grep over the L1 text (contract feature ``grep``)."""
+
+    kb_ids = await caller.kb_scope(body.kb_ids)
+    try:
+        found = await retrieval.grep(caller.tenant_id, kb_ids, body.pattern, max_results=body.max_results,
+                                     max_lines_per_doc=body.max_lines_per_doc)
+    except text_structure.PatternError as exc:
+        raise documents.DocumentError(400, "bad_pattern", str(exc)) from exc
+    return {
+        "pattern": found["pattern"], "search_mode": found["searchMode"], "total_matches": found["totalMatches"],
+        "total_documents": found["totalDocuments"], "has_more": found["hasMore"],
+        "matches": [
+            {"doc_id": m["docId"], "kb_id": m["kbId"], "title": m["title"], "file_name": m["fileName"],
+             "lines": [{"line_number": x["lineNumber"], "text": x["text"]} for x in m["lines"]]}
+            for m in found["matches"]
+        ],
+    }
 
 
 # ---- search test ----------------------------------------------------------

@@ -12,7 +12,7 @@ import logging
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from .. import auth, retrieval
+from .. import auth, retrieval, text_structure
 from ..auth import AuthError, Principal
 
 logger = logging.getLogger(__name__)
@@ -214,7 +214,10 @@ async def grep_documents(ctx: Context, pattern: str, kb_ids: list[str] | None = 
 
     principal, tenant = await _caller(ctx)
     scope = await auth.resolve_kb_scope(principal, tenant, kb_ids, allow_all_when_empty=True)
-    result = await retrieval.grep(tenant, scope, pattern, max_results=max(1, min(int(max_results), 50)))
+    try:
+        result = await retrieval.grep(tenant, scope, pattern, max_results=max(1, min(int(max_results), 50)))
+    except text_structure.PatternError as exc:
+        return f"查找条件无效：{exc}"
     return json.dumps(result, ensure_ascii=False)
 
 

@@ -1,6 +1,7 @@
 import { rpc } from './rpc';
 import type { DocumentItem } from './types';
 
+// the page's own cap; a backend behind kb-gateway may advertise its own (limits.max_upload_mb)
 export const MAX_FILE_MB = 200;
 
 export const ACCEPT =
@@ -31,8 +32,9 @@ export async function uploadFile(
   file: File,
   onProgress: (ratio: number) => void,
   overrides?: ProcessOverrides | null,
+  maxMb = MAX_FILE_MB,
 ): Promise<DocumentItem> {
-  if (file.size > MAX_FILE_MB * 1024 * 1024) throw new Error(`文件超过 ${MAX_FILE_MB}MB`);
+  if (file.size > maxMb * 1024 * 1024) throw new Error(`文件超过 ${maxMb}MB`);
   if (file.size === 0) throw new Error('文件为空');
   const sha256 = await sha256Hex(file);
   const begin = await rpc.call<{ upload_id: string; part_size: number; part_count: number }>('upload.begin', {

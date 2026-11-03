@@ -10,13 +10,16 @@
 |---|---|---|---|
 | edge | `nginx:alpine` | 5199 → 8080 | 对外入口，反代到 swarm:5173；加 gzip，插件页带哈希的资源改长缓存（见下文「切换插件页」） |
 | swarm | `kb-suite/swarm:dev`（或 `:0.2.7`） | 只在 compose 网络内（5173） | Swarm 的 Web、Gateway、AgentServer；镜像里带 `deepanalyze-harness`、`loopforest-harness` |
-| kbs-api | `kb-suite/kb-service:dev` | 127.0.0.1:5198 → 8080 | 管理 API、DA 工具接口 `/v1/tools/*`、MCP `/mcp/` |
+| kb-gateway | `kb-suite/kb-gateway:dev` | 127.0.0.1:5195 → 8080 | 对外的知识接口：管理 API、DA 工具接口 `/v1/tools/*`、MCP `/mcp/`，按知识库路由到各知识后端，见下文「知识网关」 |
+| kbs-api | `kb-suite/kb-service:dev` | 127.0.0.1:5198 → 8080 | 默认知识后端（knowledge-provider/v1），另有原生的 DA 工具接口和 MCP |
 | kbs-worker | 同上 | — | 解析、切分、向量化，以及摘要、问题生成、Wiki、知识库描述等增强任务 |
 | kbs-docreader | `kb-suite/docreader:current` | — | 以 WeKnora 发布镜像为底，覆盖了 WeKnora main 的解析源码，用来拿原文定位 |
 | kbs-postgres | `paradedb/paradedb:v0.25.11-pg17` | — | pgvector + 中文 BM25 |
 | da-engine | `kb-suite/deepanalyze-java:current` | 127.0.0.1:5197 → 8192 | DA-java，三个开发分支的源码构建，知识库工具接 kb-service |
 | kbs-redis | `redis:7` | — | DA 的任务状态和 Todolist |
 | lf-engine | `kb-suite/loop-forest:current` | 127.0.0.1:5196 → 8193 | Loop Forest 服务（第二个分析引擎），见下文 |
+| weknora-app 等 | `wechatopenai/weknora-*` | — | profile `weknora`：独立的 WeKnora 实例和 `weknora-adapter`，见下文 |
+| da-kb 等 | `kb-suite/da-kb:current` | — | profile `da-kb`：DA 原版知识管线和 `da-kb-adapter`，见下文 |
 
 **模型**：都走阿里云 MaaS 的 OpenAI 兼容接口。向量模型用 `text-embedding-v4`（1024 维），重排用 `qwen3-rerank`；摘要、Swarm 主 agent 和 DA 都用 `qwen-plus`。知识库设置里可以给摘要、问题生成、Wiki、描述分别换模型，可选列表来自 `KBS_CHAT_MODELS`（compose 默认 `qwen-plus,qwen-max,qwen-turbo`）。
 
@@ -31,6 +34,13 @@
   - `KBS_PLUGIN_KEY`：能力 manage、ingest、retrieve；
   - `KBS_MCP_KEY`：能力 retrieve；
   - `KBS_DA_KEY`：能力 retrieve、reprocess，可以通过 `X-Tenant-Id` 指定租户。
+
+  这三把密钥同时是调用 kb-gateway 的密钥（`KBGW_KEYS` 按变量名引用，能力相同）；gateway 调 kb-service 时用 `KBS_PLUGIN_KEY`，原样转发 DA 工具时用 `KBS_DA_KEY`。
+
+  密钥绑定的租户取 `DA_TENANT_ID`（默认 `default`），gateway、DA 和 Loop Forest 也用同一个值。第一次 `up` 之后再改它，要先删掉 `keys.env` 重新生成，否则 kb-service 会拒绝 gateway 的请求。
+- **`gateway.env`**：`up` 时生成，`KBGW_WEKNORA_ADAPTER_KEY`、`KBGW_DA_ADAPTER_KEY` 是 gateway 访问两个适配服务的密钥。
+- **`weknora.env`**：`up-weknora` 生成 WeKnora 实例的数据库、Redis、加密密钥和管理员密码，初始化后再写入 `WEKNORA_API_KEY` 和两个模型 id。
+- **`da-kb.env`**：`up-da-kb` 生成 DA 知识管线的数据库密码。DA 的模型地址和密钥写在它自己的数据库里（`da-kb/providers.py`）。
 
 ## 操作
 
@@ -66,6 +76,69 @@ export PATH=/usr/bin:$PATH      # 让 docker 指向 /usr/bin/docker（Docker Des
 ./kbsuite.sh build-kbs && docker compose -p kb-suite --env-file ~/.config/kb-suite/secrets.env -f compose.yaml \
   up -d --no-deps --force-recreate kbs-api kbs-worker      # 迁移在 kbs-api 启动时自动执行
 ./kbsuite.sh build-plugin && docker restart kb-suite-swarm-1
+```
+
+## 知识网关（kb-gateway）与多个知识后端
+
+设计和取舍见 `docs/decisions/knowledge-gateway.md`，后端要实现的接口见 `contracts/knowledge-provider/v1/README.md`。
+
+- **谁连 gateway**：Swarm 的两个插件（`KB_SERVICE_URL`）、主 agent 的 MCP 连接器（`KBS_MCP_URL`）、DA-java 的知识服务插槽（`da/kbs-tools.yml`）、Loop Forest（`LF_KB_MCP_URL`），以及 DA、Loop Forest 作为团队成员时取知识库清单的地址，都指向 `kb-gateway:8080`。
+- **后端清单**：`gateway/backends.yaml`，静态配置。kb-service 是默认后端，ID 不带前缀；WeKnora 的 ID 以 `wk_` 开头，DA 知识管线以 `da_` 开头。WeKnora 和 DA 知识管线标了 `optional: true`：没部署时不出现在页面上；部署后只要连上过一次，之后再断开就会在知识库页提示「暂不可用」。
+- **跨后端**：知识库页新建知识库时可以选后端；「知识求索」页和 MCP 可以同时选不同后端的知识库，检索时 gateway 并行查询、按排名融合，某个后端失败时其余结果照常返回。
+- **gateway 不读正文**：逐行查找、按标题取章节和锚点、分块上传都由各后端实现（统一接口集的 `grep`、`content.structure`、`uploads`），gateway 只转发、换算数据格式、合并多个后端的结果。
+- **前端按能力显示**：每个知识库带 `backend` 和 `features`。不支持的页签（如 Wiki）、按钮（如取消、问题生成、导入网页）不显示；上传提示和可选文件类型取自后端声明；非 kb-service 后端的设置页按它的 `config_schema` 生成。
+
+### WeKnora 后端（profile `weknora`）
+
+起一个独立的 WeKnora 实例，不接已在使用的 WeKnora 实例。镜像直接用本机已有的 `wechatopenai/weknora-*`（`WEKNORA_VERSION` 指定标签，默认 `latest`）。适配服务用到了较新的接口（按知识库授权的 API key、`/wiki-search`、取消解析），验证过的是 2026-09-24 构建的镜像（revision `3e8b0bf`）；换版本后先在测试环境跑一遍再上线。
+
+```bash
+WEKNORA_REPO=<WeKnora 克隆> ./kbsuite.sh build-weknora-config   # 导出 WeKnora 的 config/config.yaml
+./kbsuite.sh build-gateway                                     # gateway 和两个适配服务
+./kbsuite.sh up-weknora
+```
+
+`up-weknora` 只通过 HTTP 完成初始化（`weknora/bootstrap.py`）：注册一个管理员（`kbgw-owner@example.com`），建一把 full-access 的 API key，注册对话模型 `qwen-plus` 和向量模型 `text-embedding-v4`（1024 维），然后关闭自助注册。可以重复执行，已有的值会保留。重置了 WeKnora 的数据卷时，先删掉 `weknora.env` 再执行：里面的密码、API key、模型 id 和关闭注册的开关都属于旧实例。
+
+适配方式（`service/weknora-adapter`）：
+- 文档状态 `finalizing`（已可检索、摘要等还在生成）算作已完成；摘要取 WeKnora 文档的 `description`。
+- L1 正文由文本分块按 `start_at`/`end_at` 拼回，去掉相邻分块的重叠部分；偏移对不上时用空行拼接。
+- 粘贴文本以 `publish` 状态入库（WeKnora 默认是草稿，不会建索引）。
+- 检索用 `/knowledge-search`；开了 Wiki 的知识库另外查 `/wiki-search`，结果追加在后面。
+- 设置项只有分块大小、分块重叠和 Wiki 开关。WeKnora 的 PUT 接口改不了模型，所以模型固定为初始化时注册的那两个。
+
+### DA 知识管线后端（profile `da-kb`）
+
+DeepAnalyze 原版（TypeScript）的源码不在本仓库，镜像从外部源码目录构建，只跑后端：
+
+```bash
+DA_TS_SRC=<DeepAnalyze 源码目录> ./kbsuite.sh build-da-kb
+./kbsuite.sh up-da-kb
+```
+
+`up-da-kb` 等 DA 建好库表后，把模型配置写进它的 `settings` 表（对话 `qwen-plus`，向量 `text-embedding-v4`），再重启一次。DA 只在启动时读模型配置，改了配置要重启。
+
+- **认证**：DA 后端以 `DA_AUTH_MODE=none` 运行，只挂在 `da-kb` 网络上，这个网络里只有它的数据库和适配服务。
+- **格式**：不带 docling 和 MinerU，只能解析 txt、md、html、xlsx、csv、json、xml、yaml；pdf、docx、pptx 会处理失败。要支持它们，在 DA 里配置一个 MinerU 服务，再用 `DA_KB_EXTRA_FILE_TYPES=pdf,docx,pptx` 告诉适配服务。
+
+适配方式（`service/da-kb-adapter`）：
+- L1 取 DA 的结构化正文页（`structure_md`）；没有时（不经 docling 的文档，DA 的 L1 只是模型写的概览）取 L2 全文，保证读取和逐行查找看到的是完整正文。L0 是 DA 的摘要页。
+- DA 没有分块和单文档接口：分块由适配服务按段落切分 L1；查单个文档时按知识库列出文档后查找，并缓存文档所属的知识库；列表里的摘要按文档版本缓存。
+- 粘贴文本转成 `.md` 文件上传；DA 不支持导入网页和取消处理，这两项不声明。
+- 检索用 `/api/knowledge/search`，DA 的锚点（`{docId}:{type}:{index}`）会加上 `da_` 前缀。
+
+### 在旁边起一套测试环境
+
+`KBS_PROJECT` 和各个端口变量可以让第二套环境与线上的 5199 并存，镜像用另外的标签以免覆盖：
+
+```bash
+export KBS_PROJECT=kbgw-test KBS_SECRETS_DIR=~/.config/kbgw-test   # secrets.env 从线上那份复制
+export KBS_TAG=gwtest KBGW_TAG=gwtest DA_KB_TAG=gwtest
+export KBS_API_PORT=5288 KBS_EDGE_PORT=5289 KBGW_PORT=5285 DA_ENGINE_PORT=5287 LF_ENGINE_PORT=5286
+# 只构建带 gwtest 标签的镜像。不要跑 build：swarm:dev、docreader:current 两边共用，会被覆盖
+./kbsuite.sh build-kbs && ./kbsuite.sh build-gateway && DA_TS_SRC=<DeepAnalyze 源码目录> ./kbsuite.sh build-da-kb
+./kbsuite.sh up && ./kbsuite.sh up-weknora && ./kbsuite.sh up-da-kb
+./kbsuite.sh down    # 结束后清掉（卷用 docker volume rm 删除）
 ```
 
 ## 知识库增强（问题生成、检索后处理、Wiki）
@@ -201,6 +274,10 @@ agent-solution 里的 `loop-forest` 是一个 Java 库：在 agent-core 的 ReAc
 - 集群模式下让 leader 用 `spawn_teammate` 时把 `cli_agent` 填成 `loopforest`。Swarm 侧的变量是 `LF_BASE_URL`、`LF_ENGINE_SECRET`、`LF_TENANT_ID`、`LF_KB_CATALOG_URL`、`LF_KB_CATALOG_KEY_ENV`、`LF_MCP_BRIDGE_HOST`，compose 已经配好。
 
 ## 已知限制
+
+- 非 kb-service 后端上的 DA 工具由各后端的统一接口能力拼出：没有生成问题召回；`linkedFrom` 只支持 Wiki 页面；DA 原版的 `timeline_build`、`graph_build` 没有 HTTP 接口，没有接入。
+- WeKnora 知识库的分块数取自 WeKnora 自己的统计，文档列表里每篇的分块数显示为「—」。
+- 增强服务只预留了接口字段（契约第 8 节），gateway 还不会注册它们。
 
 - Word 的命中没有页码，原因见上文 docreader 一节。
 - 图片要接入 OCR 或 VLM 才能入库，目前会直接拒绝图片文件；所以 WeKnora 的多模态、图片向量、ASR 相关设置都没有做。

@@ -8,6 +8,7 @@ import { rpc } from './rpc';
 import WikiGraphView from './WikiGraph';
 import { errorText, useToast } from './toast';
 import type { KnowledgeBase, WikiPage, WikiPageItem, WikiPageType, WikiStatus } from './types';
+import { has } from './backend';
 import { Badge, Button, Empty, Field, Spinner, Tabs } from './ui';
 
 const TYPE_LABEL: Record<WikiPageType, string> = { index: '索引', summary: '文档', entity: '实体', concept: '概念' };
@@ -66,12 +67,14 @@ function PageView({
   onOpen,
   onDoc,
   onChanged,
+  canEdit = true,
 }: {
   kbId: string;
   slug: string;
   onOpen: (slug: string) => void;
   onDoc: (docId: string) => void;
   onChanged?: () => void;
+  canEdit?: boolean;
 }) {
   const notify = useToast();
   const [page, setPage] = useState<WikiPage | null>(null);
@@ -141,12 +144,13 @@ function PageView({
           </div>
           <div className="drawer-meta">
             <code>{page.slug}</code>
-            <span>v{page.version}</span>
+            {page.version ? <span>v{page.version}</span> : null}
             <span>{page.last_edit_source === 'user' ? '人工编辑' : '自动生成'}</span>
             <span>更新于 {formatTime(page.updated_at)}</span>
             {page.aliases.length ? <span>别名：{page.aliases.join('、')}</span> : null}
           </div>
         </div>
+        {canEdit ? (
         <div className="row-inline">
           {!editing ? (
             <Button
@@ -164,6 +168,7 @@ function PageView({
             删除
           </Button>
         </div>
+        ) : null}
       </div>
       {editing ? (
         <div>
@@ -229,7 +234,19 @@ function PageView({
   );
 }
 
-export function WikiPageDrawer({ kbId, slug, onClose }: { kbId: string; slug: string; onClose: () => void }) {
+export function WikiPageDrawer({
+  kbId,
+  slug,
+  onClose,
+  canEdit = true,
+  features,
+}: {
+  kbId: string;
+  slug: string;
+  onClose: () => void;
+  canEdit?: boolean;
+  features?: string[];
+}) {
   const [current, setCurrent] = useState(slug);
   const [doc, setDoc] = useState<string | null>(null);
   return (
@@ -242,10 +259,10 @@ export function WikiPageDrawer({ kbId, slug, onClose }: { kbId: string; slug: st
           </button>
         </div>
         <div className="drawer-body">
-          <PageView kbId={kbId} slug={current} onOpen={setCurrent} onDoc={setDoc} />
+          <PageView kbId={kbId} slug={current} onOpen={setCurrent} onDoc={setDoc} canEdit={canEdit} />
         </div>
       </aside>
-      {doc ? <DocDrawer docId={doc} onClose={() => setDoc(null)} onChanged={() => undefined} /> : null}
+      {doc ? <DocDrawer docId={doc} features={features} onClose={() => setDoc(null)} onChanged={() => undefined} /> : null}
     </>
   );
 }
@@ -253,6 +270,7 @@ export function WikiPageDrawer({ kbId, slug, onClose }: { kbId: string; slug: st
 type Filter = 'all' | WikiPageType;
 
 export default function WikiTab({ kb, onOpenSettings }: { kb: KnowledgeBase; onOpenSettings: () => void }) {
+  const canEdit = has(kb, 'wiki.write');
   const notify = useToast();
   const [status, setStatus] = useState<WikiStatus | null>(null);
   const [pages, setPages] = useState<WikiPageItem[] | null>(null);
@@ -264,18 +282,20 @@ export default function WikiTab({ kb, onOpenSettings }: { kb: KnowledgeBase; onO
   const [working, setWorking] = useState(false);
 
   const load = useCallback(async () => {
-    try {
-      const [st, list] = await Promise.all([
-        rpc.call<WikiStatus>('wiki.status', { kb_id: kb.id }),
-        rpc.call<{ items: WikiPageItem[] }>('wiki.pages', { kb_id: kb.id, type: filter === 'all' ? undefined : filter, q: q.trim() || undefined, limit: 500 }),
-      ]);
-      setStatus(st);
-      setPages(list.items);
-      setCurrent((cur) => cur ?? list.items[0]?.slug ?? null);
-    } catch (err) {
+    const [st, list] = await Promise.allSettled([
+      rpc.call<WikiStatus>('wiki.status', { kb_id: kb.id }),
+      rpc.call<{ items: WikiPageItem[] }>('wiki.pages', { kb_id: kb.id, type: filter === 'all' ? undefined : filter, q: q.trim() || undefined, limit: 500 }),
+    ]);
+    if (st.status === 'fulfilled') setStatus(st.value);
+    if (list.status === 'fulfilled') {
+      setPages(list.value.items);
+      setCurrent((cur) => cur ?? list.value.items[0]?.slug ?? null);
+    } else {
       setPages((cur) => cur ?? []);
-      notify(errorText(err), true);
     }
+    // with Wiki off a backend may refuse to list pages; the "not enabled" state below says enough
+    const failed = st.status === 'rejected' ? st.reason : list.status === 'rejected' && st.value.enabled ? list.reason : null;
+    if (failed) notify(errorText(failed), true);
   }, [kb.id, filter, q, notify]);
 
   useEffect(() => {
@@ -346,12 +366,16 @@ export default function WikiTab({ kb, onOpenSettings }: { kb: KnowledgeBase; onO
           <Button size="sm" icon={view === 'graph' ? <BookOpen size={13} /> : <Network size={13} />} onClick={() => setView(view === 'graph' ? 'page' : 'graph')}>
             {view === 'graph' ? '页面' : '图谱'}
           </Button>
-          <Button size="sm" icon={<RefreshCw size={13} />} disabled={working || !status?.enabled} onClick={() => void rebuild(false)}>
-            重建
-          </Button>
-          <Button size="sm" variant="ghost" disabled={working || !status?.enabled} onClick={() => void rebuild(true)}>
-            清空重建
-          </Button>
+          {canEdit ? (
+            <>
+              <Button size="sm" icon={<RefreshCw size={13} />} disabled={working || !status?.enabled} onClick={() => void rebuild(false)}>
+                重建
+              </Button>
+              <Button size="sm" variant="ghost" disabled={working || !status?.enabled} onClick={() => void rebuild(true)}>
+                清空重建
+              </Button>
+            </>
+          ) : null}
         </div>
       </div>
       {status?.errors.length ? (
@@ -410,14 +434,14 @@ export default function WikiTab({ kb, onOpenSettings }: { kb: KnowledgeBase; onO
           </aside>
           <section className="wiki-main">
             {current ? (
-              <PageView kbId={kb.id} slug={current} onOpen={setCurrent} onDoc={setDoc} onChanged={() => void load()} />
+              <PageView kbId={kb.id} slug={current} onOpen={setCurrent} onDoc={setDoc} onChanged={() => void load()} canEdit={canEdit} />
             ) : (
               <Empty icon={<BookOpen size={32} />} title={active ? 'Wiki 生成中' : '选择左侧的页面'} hint={active ? '文档摘要完成后会逐篇生成，几分钟后刷新看看。' : undefined} />
             )}
           </section>
         </div>
       )}
-      {doc ? <DocDrawer docId={doc} onClose={() => setDoc(null)} onChanged={() => undefined} /> : null}
+      {doc ? <DocDrawer docId={doc} features={kb.features} onClose={() => setDoc(null)} onChanged={() => undefined} /> : null}
     </div>
   );
 }

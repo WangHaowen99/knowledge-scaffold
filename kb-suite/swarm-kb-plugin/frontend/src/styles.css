@@ -66,6 +66,11 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .kb-item-active .kb-item-icon { color: var(--color-action-primary); }
 .kb-item-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kb-item-meta { color: var(--color-text-secondary); font-size: var(--font-size-xs); margin-top: 2px; }
+.kb-backend-tag {
+  display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 4px; font-size: 10px; line-height: 16px;
+  background: var(--color-surface-muted); color: var(--color-text-secondary); vertical-align: 1px;
+}
+.sidebar-warn { color: var(--color-feedback-warning); font-size: var(--font-size-xs); padding: 6px 12px; }
 .sidebar-foot {
   border-top: 1px solid var(--color-border-default); padding: 10px 14px;
   font-size: var(--font-size-xs); color: var(--color-text-secondary); display: flex; align-items: center; gap: 6px;
@@ -126,6 +131,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .field-label { font-size: var(--font-size-sm); font-weight: 500; }
 .field-hint { font-size: var(--font-size-xs); color: var(--color-text-secondary); }
+.field-error { color: var(--color-feedback-danger); }
 .row { display: flex; gap: 12px; }
 .row > * { flex: 1; }
 

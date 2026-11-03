@@ -11,3 +11,7 @@ deploy/compose/da/build/
 harness/da-harness/logs/
 deploy/compose/swarm/build/
 service/lf-service/target/
+deploy/compose/weknora/build/
+*.egg-info/
+service/*/build/
+harness/*/build/

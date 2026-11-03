@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ENRICH_LABEL, enrichBusy, enrichItems, formatBytes, formatTime, locatorText, sourceLabel, statusOf, summaryBusy } from './format';
+import { has } from './backend';
 import { rpc } from './rpc';
 import { errorText, useToast } from './toast';
 import type { ChunkItem, DocumentItem } from './types';
@@ -25,7 +26,7 @@ function Markdown({ text }: { text: string }) {
   );
 }
 
-function ChunkCard({ chunk, onSaved }: { chunk: ChunkItem; onSaved: (questions: string[]) => void }) {
+function ChunkCard({ chunk, onSaved, editable }: { chunk: ChunkItem; onSaved: (questions: string[]) => void; editable: boolean }) {
   const notify = useToast();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -51,7 +52,7 @@ function ChunkCard({ chunk, onSaved }: { chunk: ChunkItem; onSaved: (questions: 
       <div className="chunk-head">
         <Badge>#{chunk.seq}</Badge>
         {chunk.chunk_type !== 'text' ? <Badge tone="info">{chunk.chunk_type}</Badge> : null}
-        <span>第 {chunk.line_start} 行</span>
+        {chunk.line_start != null ? <span>第 {chunk.line_start} 行</span> : null}
         {where ? <span>· {where}</span> : null}
         {chunk.context_header ? <span className="chunk-header">· {chunk.context_header}</span> : null}
       </div>
@@ -73,7 +74,7 @@ function ChunkCard({ chunk, onSaved }: { chunk: ChunkItem; onSaved: (questions: 
             </Button>
           </div>
         </div>
-      ) : chunk.questions.length ? (
+      ) : chunk.questions?.length ? (
         <div className="chunk-questions">
           {chunk.questions.map((q) => (
             <div key={q} className="chunk-question">
@@ -81,22 +82,35 @@ function ChunkCard({ chunk, onSaved }: { chunk: ChunkItem; onSaved: (questions: 
               {q}
             </div>
           ))}
-          <button
-            className="link-btn"
-            onClick={() => {
-              setDraft(chunk.questions.join('\n'));
-              setEditing(true);
-            }}
-          >
-            <Pencil size={11} /> 编辑问题
-          </button>
+          {editable ? (
+            <button
+              className="link-btn"
+              onClick={() => {
+                setDraft(chunk.questions.join('\n'));
+                setEditing(true);
+              }}
+            >
+              <Pencil size={11} /> 编辑问题
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>
   );
 }
 
-export default function DocDrawer({ docId, onClose, onChanged }: { docId: string; onClose: () => void; onChanged: () => void }) {
+export default function DocDrawer({
+  docId,
+  onClose,
+  onChanged,
+  features,
+}: {
+  docId: string;
+  onClose: () => void;
+  onChanged: () => void;
+  features?: string[];
+}) {
+  const can = (feature: string) => has({ features }, feature);
   const notify = useToast();
   const [doc, setDoc] = useState<DocumentItem | null>(null);
   const [view, setView] = useState<View>('summary');
@@ -229,34 +243,38 @@ export default function DocDrawer({ docId, onClose, onChanged }: { docId: string
                 </div>
               ) : null}
               <div className="drawer-actions">
-                {doc.source_type === 'file' ? (
+                {doc.source_type === 'file' && can('documents.file') ? (
                   <Button size="sm" icon={<Download size={13} />} onClick={download}>
                     下载原文件
                   </Button>
                 ) : null}
-                <Button size="sm" icon={<RotateCcw size={13} />} onClick={() => void act('docs.reprocess', '已重新排队')}>
-                  重新解析
-                </Button>
-                {completed ? (
+                {can('documents.reprocess') ? (
+                  <Button size="sm" icon={<RotateCcw size={13} />} onClick={() => void act('docs.reprocess', '已重新排队')}>
+                    重新解析
+                  </Button>
+                ) : null}
+                {completed && can('questions') ? (
                   <Button size="sm" icon={<MessageSquareText size={13} />} onClick={() => void act('docs.questions_regenerate', '已排队生成问题')}>
                     重新生成问题
                   </Button>
                 ) : null}
-                {st?.busy && doc.parse_status !== 'deleting' ? (
+                {st?.busy && doc.parse_status !== 'deleting' && can('documents.cancel') ? (
                   <Button size="sm" icon={<Square size={13} />} onClick={() => void act('docs.cancel', '已取消')}>
                     取消处理
                   </Button>
                 ) : null}
-                <Button
-                  size="sm"
-                  variant="danger"
-                  icon={<Trash2 size={13} />}
-                  onClick={() => {
-                    if (window.confirm(`删除「${doc.title}」？删除后不可恢复。`)) void act('docs.delete', '已删除', true);
-                  }}
-                >
-                  删除
-                </Button>
+                {can('documents.delete') ? (
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    icon={<Trash2 size={13} />}
+                    onClick={() => {
+                      if (window.confirm(`删除「${doc.title}」？删除后不可恢复。`)) void act('docs.delete', '已删除', true);
+                    }}
+                  >
+                    删除
+                  </Button>
+                ) : null}
               </div>
               <Tabs<View>
                 value={view}
@@ -306,6 +324,7 @@ export default function DocDrawer({ docId, onClose, onChanged }: { docId: string
                       <ChunkCard
                         key={c.id}
                         chunk={c}
+                        editable={can('questions')}
                         onSaved={(questions) => setChunks((cur) => cur.map((x) => (x.id === c.id ? { ...x, questions } : x)))}
                       />
                     ))}

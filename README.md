@@ -31,7 +31,7 @@
 | 知识消费与推理 | [`consumer/`](consumer/) | React 控制台、Flask API、openJiuwen Agent Runtime、MCP、SDK 和部署脚本 |
 | 知识包建模 | [`modeling/`](modeling/) | 从业务资料生成、检查、评测、优化和导出知识包，并支持 Neo4j 图数据导入 |
 | 统一鉴权 | [`auth-server/`](auth-server/) | 独立 OAuth2/OIDC 子集服务，供 consumer 与 modeling 共用账号体系 |
-| 知识服务与 Swarm 集成 | [`kb-suite/`](kb-suite/) | kb-service 知识库服务、JiuwenSwarm 插件、DeepAnalyze / Loop Forest harness provider 和 Compose 部署 |
+| 知识服务与 Swarm 集成 | [`kb-suite/`](kb-suite/) | kb-gateway 统一知识接口（可接 kb-service、WeKnora、DA 知识管线等多个后端）、JiuwenSwarm 插件、DeepAnalyze / Loop Forest harness provider 和 Compose 部署 |
 
 ## 核心能力
 

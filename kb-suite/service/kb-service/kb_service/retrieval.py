@@ -25,7 +25,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from . import db, kb_config, models_client, postprocess, storage
+from . import db, kb_config, models_client, postprocess, storage, text_structure
 from .chunking import parse_blocks
 from .config import get_settings
 from .pipeline import vector_literal
@@ -722,12 +722,7 @@ async def grep(
     max_lines_per_doc: int = 10,
     max_docs: int = 300,
 ) -> dict:
-    try:
-        regex = re.compile(pattern, re.IGNORECASE)
-        mode = "regex"
-    except re.error:
-        regex = re.compile(re.escape(pattern), re.IGNORECASE)
-        mode = "literal"
+    regex, mode = text_structure.compile_pattern(pattern)
     rows = await db.pool().fetch(
         "SELECT id, kb_id, title, file_name, l1_key FROM documents WHERE tenant_id = $1"
         " AND kb_id = ANY($2::text[]) AND deleted_at IS NULL AND parse_status = 'completed'"
@@ -736,6 +731,11 @@ async def grep(
         kb_ids,
         max_docs,
     )
+    # file reads and a caller-supplied regex over every document: keep them off the event loop
+    return await asyncio.to_thread(_grep_rows, rows, regex, mode, pattern, max_results, max_lines_per_doc)
+
+
+def _grep_rows(rows: list, regex: re.Pattern[str], mode: str, pattern: str, max_results: int, max_lines_per_doc: int) -> dict:
     matches = []
     total = 0
     docs_hit = 0
@@ -743,12 +743,9 @@ async def grep(
     for row in rows:
         if not row["l1_key"]:
             continue
-        lines_hit = []
-        for number, line in enumerate(storage.get_text(row["l1_key"]).split("\n"), start=1):
-            if regex.search(line):
-                total += 1
-                if len(lines_hit) < max_lines_per_doc:
-                    lines_hit.append({"lineNumber": number, "text": line[:500]})
+        hits, found = text_structure.grep_lines(storage.get_text(row["l1_key"]), regex, max_lines_per_doc)
+        total += hits
+        lines_hit = [{"lineNumber": x["line_number"], "text": x["text"]} for x in found]
         if lines_hit:
             docs_hit += 1
             if len(matches) < max_results:

@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 
 from .. import __version__, auth, db, documents, retrieval
 from ..auth import AuthError
-from ..chunking import parse_blocks
+from .. import text_structure
 from ..wiki import links as wiki_links
 from ..wiki import store as wiki_store
 from .common import Caller, caller_from_request, error_body
@@ -23,6 +23,7 @@ router = APIRouter(prefix="/v1/tools")
 
 REQUIRED_HEADERS = ("x-session-id", "x-tenant-id", "x-request-id")
 L1_PAGE_CHARS = 30000
+MAX_ANCHORS = 200
 STRUCTURE_TYPES = {"structure", "structure_md", "structure_dt", "fulltext"}
 # kb-service wiki page types -> DA page types
 WIKI_PAGE_TYPES = {"entity": "entity", "concept": "concept", "summary": "overview", "index": "overview"}
@@ -191,49 +192,9 @@ async def kb_search(request: Request) -> JSONResponse:
     return JSONResponse(results)
 
 
-def _section(markdown: str, heading: str) -> str | None:
-    blocks = parse_blocks(markdown)
-    target = heading.strip().lstrip("#").strip()
-    for i, block in enumerate(blocks):
-        if block.kind != "heading":
-            continue
-        title = markdown[block.start : block.end].lstrip("#").strip()
-        if title == target or target in title:
-            end = len(markdown)
-            for later in blocks[i + 1 :]:
-                if later.kind == "heading" and later.level <= block.level:
-                    end = later.start
-                    break
-            return markdown[block.start : end]
-    return None
-
-
-def _anchors(markdown: str, doc_id: str, start: int, end: int) -> list[dict]:
-    out = []
-    for block in parse_blocks(markdown, doc_id):
-        if block.end <= start or block.start >= end:
-            continue
-        line_start = markdown.count("\n", 0, block.start) + 1
-        out.append(
-            {
-                "id": block.anchor_id,
-                "type": block.anchor_id.split(":")[-2] if block.anchor_id else block.kind,
-                "lineStart": line_start,
-                "preview": markdown[block.start : block.end][:80],
-                "sectionTitle": block.header_path[-1] if block.header_path else None,
-            }
-        )
-    return out
-
-
-def _outline(markdown: str) -> list[str]:
-    heads = []
-    for block in parse_blocks(markdown):
-        if block.kind == "heading":
-            heads.append("  " * (block.level - 1) + markdown[block.start : block.end].lstrip("#").strip())
-            if len(heads) >= 40:
-                break
-    return heads
+def _da_anchor(anchor: dict) -> dict:
+    return {"id": anchor["id"], "type": anchor["type"], "lineStart": anchor["line_start"],
+            "preview": anchor["preview"], "sectionTitle": anchor["section_title"]}
 
 
 @router.post("/expand")
@@ -258,7 +219,7 @@ async def expand(request: Request) -> JSONResponse:
                     "level": "L1",
                     "pageId": _page_id(doc_id, "L1"),
                     "summary": doc.get("summary"),
-                    "outline": _outline(l1),
+                    "outline": text_structure.outline(l1),
                     "tokenCount": _tokens(l1),
                 }
             )
@@ -298,40 +259,26 @@ async def expand(request: Request) -> JSONResponse:
         return JSONResponse({**base, "content": content, "tokenCount": _tokens(content), "format": "json"})
 
     markdown = retrieval.read_l1(doc)
-    if body.get("heading"):
-        section = _section(markdown, str(body["heading"]))
-        if section is None:
-            return JSONResponse({"error": f'Section "{body["heading"]}" not found in page {base["pageId"]}'})
-        start = markdown.find(section)
-        return JSONResponse(
-            {
-                **base,
-                "content": section,
-                "tokenCount": _tokens(section),
-                "anchors": _anchors(markdown, doc_id, start, start + len(section)),
-            }
-        )
-    offset = max(0, int(body.get("offset") or 0))
+    heading = str(body["heading"]) if body.get("heading") else None
     limit = L1_PAGE_CHARS
     if body.get("tokenBudget"):
         limit = max(1000, int(float(body["tokenBudget"]) * 1.5))
-    end = min(len(markdown), offset + limit)
-    if end < len(markdown):
-        cut = markdown.rfind("\n", offset, end)
-        if cut > offset + limit // 2:
-            end = cut + 1
-    content = markdown[offset:end]
-    payload = {
-        **base,
-        "content": content,
-        "tokenCount": _tokens(content),
-        "totalChars": len(markdown),
-        "offset": offset,
-        "hasMore": end < len(markdown),
-        "anchors": _anchors(markdown, doc_id, offset, end),
-    }
-    if end < len(markdown):
-        payload["nextOffset"] = end
+    win = text_structure.window(markdown, doc_id, offset=int(body.get("offset") or 0), limit=limit, heading=heading)
+    if win is None:
+        return JSONResponse({"error": f'Section "{heading}" not found in page {base["pageId"]}'})
+    content = win["content"]
+    anchors = [_da_anchor(a) for a in win["anchors"]]
+    payload = {**base, "content": content[:limit], "tokenCount": _tokens(content[:limit]), "anchors": anchors}
+    if heading and len(content) > limit:
+        # a heading returns its whole section; cap it like an offset window, with the anchors that point into it
+        last_line = (anchors[0].get("lineStart") or 0) + content[:limit].count("\n") if anchors else 0
+        payload["anchors"] = [a for a in anchors if (a.get("lineStart") or 0) <= last_line][:MAX_ANCHORS]
+        payload["truncated"] = True
+        payload["message"] = f"该节超过 {limit} 字，已截断；可去掉 heading 按 offset 分页读取"
+    if not heading:
+        payload.update(totalChars=win["total_chars"], offset=win["offset"], hasMore=win["has_more"])
+        if "next_offset" in win:
+            payload["nextOffset"] = win["next_offset"]
     return JSONResponse(payload)
 
 
@@ -504,14 +451,17 @@ async def doc_grep(request: Request) -> JSONResponse:
     kb_ids, warning = _narrow(scope, body.get("kbIds"))
     if not kb_ids:
         return JSONResponse({"pattern": pattern, "total": 0, "matches": [], "message": warning})
-    max_lines = int(body.get("maxLinesPerPage") or 10)
-    result = await retrieval.grep(
-        caller.tenant_id,
-        kb_ids,
-        pattern,
-        max_results=int(body.get("maxResults") or 50),
-        max_lines_per_doc=max_lines,
-    )
+    max_lines = max(1, min(int(body.get("maxLinesPerPage") or 10), 100))
+    try:
+        result = await retrieval.grep(
+            caller.tenant_id,
+            kb_ids,
+            pattern,
+            max_results=max(1, min(int(body.get("maxResults") or 50), 200)),
+            max_lines_per_doc=max_lines,
+        )
+    except text_structure.PatternError as exc:
+        return JSONResponse({"error": f"查找条件无效：{exc}"})
     result.update(
         {
             "totalPages": result["totalDocuments"],

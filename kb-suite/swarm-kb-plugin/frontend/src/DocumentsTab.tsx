@@ -3,11 +3,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import DocDrawer from './DocDrawer';
 import { FILE_GROUPS } from './KbConfigForm';
 import { ENRICH_LABEL, enrichBusy, enrichItems, formatBytes, formatTime, sourceLabel, statusOf } from './format';
+import { has, nativeConfig, useBackends } from './backend';
 import { useConfigMeta } from './meta';
 import { rpc } from './rpc';
 import { errorText, useToast } from './toast';
 import type { DocumentItem, KnowledgeBase } from './types';
-import { ACCEPT, uploadFile, type ProcessOverrides } from './upload';
+import { ACCEPT, MAX_FILE_MB, uploadFile, type ProcessOverrides } from './upload';
 import { Badge, Button, Empty, Field, Modal, NumberField, Spinner } from './ui';
 
 type Tri = 'inherit' | 'on' | 'off';
@@ -36,7 +37,7 @@ function UploadOptionsModal({
   onClose: () => void;
   onSave: (v: ProcessOverrides | null) => void;
 }) {
-  const meta = useConfigMeta();
+  const meta = useConfigMeta(nativeConfig(kb) ? kb.backend?.id ?? '' : null);
   const cfg = kb.config;
   const v = value ?? {};
   const [chunkSize, setChunkSize] = useState<number>(Number(v.chunking?.chunk_size ?? cfg.chunking.chunk_size));
@@ -263,6 +264,14 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
     return () => window.clearInterval(timer);
   }, [busy, load, onChanged]);
 
+  // a backend behind kb-gateway declares its own file types and size limit
+  const backend = useBackends()?.find((b) => b.id === kb.backend?.id);
+  const accept = backend?.file_types.length ? backend.file_types.map((t) => `.${t}`).join(',') : ACCEPT;
+  const maxMb = backend?.limits.max_upload_mb || MAX_FILE_MB;
+  const uploadHint = backend?.file_types.length
+    ? `支持 ${backend.file_types.map((t) => t.toUpperCase()).join('、')}，单个不超过 ${maxMb}MB`
+    : `支持 PDF、Word、PPT、Excel、CSV、Markdown、TXT、HTML，单个不超过 ${maxMb}MB`;
+
   const startUploads = async (files: FileList | File[]) => {
     const list = Array.from(files);
     for (const file of list) {
@@ -274,6 +283,7 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
           file,
           (ratio) => setUploads((cur) => cur.map((u) => (u.id === id ? { ...u, progress: ratio } : u))),
           overrides,
+          maxMb,
         );
         setUploads((cur) => cur.map((u) => (u.id === id ? { ...u, progress: 1, done: true } : u)));
         window.setTimeout(() => setUploads((cur) => cur.filter((u) => u.id !== id)), 2500);
@@ -306,22 +316,30 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
       onDrop={(e) => {
         e.preventDefault();
         setDragging(false);
-        if (e.dataTransfer.files.length) void startUploads(e.dataTransfer.files);
+        if (e.dataTransfer.files.length && has(kb, 'ingest.file')) void startUploads(e.dataTransfer.files);
       }}
     >
       <div className="toolbar">
-        <Button variant="primary" icon={<Upload size={14} />} onClick={() => fileInput.current?.click()}>
-          上传文件
-        </Button>
-        <Button icon={<Globe size={14} />} onClick={() => setModal('url')}>
-          导入网页
-        </Button>
-        <Button icon={<Type size={14} />} onClick={() => setModal('text')}>
-          粘贴文本
-        </Button>
-        <Button variant={overrides ? 'secondary' : 'ghost'} icon={<Settings2 size={14} />} onClick={() => setModal('options')}>
-          上传选项{overrides ? '（已自定义）' : ''}
-        </Button>
+        {has(kb, 'ingest.file') ? (
+          <Button variant="primary" icon={<Upload size={14} />} onClick={() => fileInput.current?.click()}>
+            上传文件
+          </Button>
+        ) : null}
+        {has(kb, 'ingest.url') ? (
+          <Button icon={<Globe size={14} />} onClick={() => setModal('url')}>
+            导入网页
+          </Button>
+        ) : null}
+        {has(kb, 'ingest.text') ? (
+          <Button icon={<Type size={14} />} onClick={() => setModal('text')}>
+            粘贴文本
+          </Button>
+        ) : null}
+        {nativeConfig(kb) ? (
+          <Button variant={overrides ? 'secondary' : 'ghost'} icon={<Settings2 size={14} />} onClick={() => setModal('options')}>
+            上传选项{overrides ? '（已自定义）' : ''}
+          </Button>
+        ) : null}
         <span className="grow" />
         <div className="search-box">
           <Search size={14} />
@@ -339,7 +357,7 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
           ref={fileInput}
           type="file"
           multiple
-          accept={ACCEPT}
+          accept={accept}
           hidden
           onChange={(e) => {
             if (e.target.files?.length) void startUploads(e.target.files);
@@ -348,9 +366,11 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
         />
       </div>
 
-      <div className={`dropzone ${dragging ? 'dropzone-active' : ''}`}>
-        把文件拖到这里上传 · 支持 PDF、Word、PPT、Excel、CSV、Markdown、TXT、HTML，单个不超过 200MB
-      </div>
+      {has(kb, 'ingest.file') ? (
+        <div className={`dropzone ${dragging ? 'dropzone-active' : ''}`}>
+          把文件拖到这里上传 · {uploadHint}
+        </div>
+      ) : null}
 
       {uploads.length ? (
         <div className="uploads">
@@ -440,22 +460,26 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
                     <td className="muted">{formatTime(doc.processed_at ?? doc.created_at)}</td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <div className="actions">
-                        <button
-                          className="icon-btn"
-                          title="重新解析"
-                          onClick={() => void act('docs.reprocess', doc, '已重新排队')}
-                        >
-                          <RotateCcw size={14} />
-                        </button>
-                        <button
-                          className="icon-btn"
-                          title="删除"
-                          onClick={() => {
-                            if (window.confirm(`删除「${doc.title}」？删除后不可恢复。`)) void act('docs.delete', doc, '已删除');
-                          }}
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        {has(kb, 'documents.reprocess') ? (
+                          <button
+                            className="icon-btn"
+                            title="重新解析"
+                            onClick={() => void act('docs.reprocess', doc, '已重新排队')}
+                          >
+                            <RotateCcw size={14} />
+                          </button>
+                        ) : null}
+                        {has(kb, 'documents.delete') ? (
+                          <button
+                            className="icon-btn"
+                            title="删除"
+                            onClick={() => {
+                              if (window.confirm(`删除「${doc.title}」？删除后不可恢复。`)) void act('docs.delete', doc, '已删除');
+                            }}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
@@ -505,6 +529,7 @@ export default function DocumentsTab({ kb, onChanged }: { kb: KnowledgeBase; onC
       {openDoc ? (
         <DocDrawer
           docId={openDoc}
+          features={kb.features}
           onClose={() => setOpenDoc(null)}
           onChanged={() => {
             void load();

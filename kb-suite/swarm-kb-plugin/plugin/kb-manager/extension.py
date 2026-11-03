@@ -129,12 +129,14 @@ class KbManagerPlugin(ApplicationPluginExtension):
             return {"health": health, "me": me}
         if method == "kbs.list":
             return await self._call("GET", "/v1/kbs")
+        if method == "backends.list":
+            return await self._call("GET", "/v1/backends")
         if method == "kbs.get":
             return await self._call("GET", f"/v1/kbs/{kb()}")
         if method == "kbs.create":
             body = {
                 k: params.get(k)
-                for k in ("name", "description", "chunk_size", "chunk_overlap", "config")
+                for k in ("name", "description", "chunk_size", "chunk_overlap", "config", "backend")
                 if params.get(k) not in (None, "")
             }
             return await self._call("POST", "/v1/kbs", json=body)
@@ -149,7 +151,8 @@ class KbManagerPlugin(ApplicationPluginExtension):
         if method == "kbs.profile_apply":
             return await self._call("POST", f"/v1/kbs/{kb()}/profile/apply")
         if method == "config.meta":
-            return await self._call("GET", "/v1/config/meta")
+            query = {"backend": params["backend"]} if params.get("backend") else None
+            return await self._call("GET", "/v1/config/meta", params=query)
         if method == "kbs.delete":
             return await self._call("DELETE", f"/v1/kbs/{kb()}")
         if method == "docs.list":

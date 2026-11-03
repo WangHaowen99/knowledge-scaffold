@@ -2,6 +2,7 @@ import { BookOpen, Search, SlidersHorizontal } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import DocDrawer from './DocDrawer';
 import { RetrievalSection } from './KbConfigForm';
+import { has, nativeConfig } from './backend';
 import { locatorText } from './format';
 import { useConfigMeta } from './meta';
 import { rpc } from './rpc';
@@ -51,7 +52,7 @@ function Content({ hit }: { hit: SearchHit }) {
 
 export default function SearchTab({ kb }: { kb: KnowledgeBase }) {
   const notify = useToast();
-  const meta = useConfigMeta();
+  const meta = useConfigMeta(nativeConfig(kb) ? kb.backend?.id ?? '' : null);
   const [query, setQuery] = useState('');
   const [topK, setTopK] = useState(8);
   const [hits, setHits] = useState<SearchHit[] | null>(null);
@@ -62,9 +63,11 @@ export default function SearchTab({ kb }: { kb: KnowledgeBase }) {
   const [showParams, setShowParams] = useState(false);
   const [overrides, setOverrides] = useState<Partial<RetrievalConfig>>({});
   const [includeWiki, setIncludeWiki] = useState(true);
-  const params = useMemo(() => ({ ...kb.config.retrieval, ...overrides }), [kb.config.retrieval, overrides]);
+  const native = nativeConfig(kb);
+  const baseRetrieval = native ? kb.config.retrieval : undefined;
+  const params = useMemo(() => ({ ...baseRetrieval, ...overrides }) as RetrievalConfig, [baseRetrieval, overrides]);
   const changed = Object.keys(overrides).filter(
-    (k) => overrides[k as keyof RetrievalConfig] !== kb.config.retrieval[k as keyof RetrievalConfig],
+    (k) => overrides[k as keyof RetrievalConfig] !== baseRetrieval?.[k as keyof RetrievalConfig],
   );
 
   const run = async () => {
@@ -121,8 +124,14 @@ export default function SearchTab({ kb }: { kb: KnowledgeBase }) {
               恢复知识库设置
             </Button>
           </div>
-          {kb.config.wiki.enabled ? <Switch checked={includeWiki} onChange={setIncludeWiki} label="包含 Wiki 页面" /> : null}
-          <RetrievalSection value={params} onChange={(v) => setOverrides((cur) => ({ ...cur, ...v }))} rerankModel={meta?.models.rerank} />
+          {has(kb, 'wiki.read') && (!native || kb.config.wiki.enabled) ? (
+            <Switch checked={includeWiki} onChange={setIncludeWiki} label="包含 Wiki 页面" />
+          ) : null}
+          {native ? (
+            <RetrievalSection value={params} onChange={(v) => setOverrides((cur) => ({ ...cur, ...v }))} rerankModel={meta?.models.rerank} />
+          ) : (
+            <div className="field-hint">检索参数由 {kb.backend?.label ?? '知识后端'} 自己的设置决定。</div>
+          )}
         </div>
       ) : null}
 
@@ -158,31 +167,40 @@ export default function SearchTab({ kb }: { kb: KnowledgeBase }) {
                 <Badge tone="info" title="排序分">
                   {hit.score.toFixed(3)}
                 </Badge>
-                {hit.matched_by.map((m) => (
+                {(hit.matched_by ?? []).map((m) => (
                   <Badge key={m}>{MATCH_LABEL[m] ?? m}</Badge>
                 ))}
               </div>
               <div className="hit-where">
                 {wiki
                   ? [hit.context_header, `整理自 ${hit.wiki_sources?.length ?? 0} 篇文档`].join(' · ')
-                  : [hit.context_header, where, `第 ${hit.line_start} 行`, hit.merged_chunk_ids.length ? `合并了 ${hit.merged_chunk_ids.length} 个分块` : '']
+                  : [
+                      hit.context_header,
+                      where,
+                      hit.line_start != null ? `第 ${hit.line_start} 行` : '',
+                      hit.merged_chunk_ids?.length ? `合并了 ${hit.merged_chunk_ids.length} 个分块` : '',
+                    ]
                       .filter(Boolean)
                       .join(' · ')}
               </div>
-              <div className="score-row">
-                <span>相关度 {fmt(hit.relevance)}</span>
-                <span>向量 {fmt(hit.scores.vector)}</span>
-                <span>关键词 {fmt(hit.scores.keyword)}</span>
-                <span>重排 {fmt(hit.scores.rerank)}</span>
-              </div>
+              {hit.scores ? (
+                <div className="score-row">
+                  <span>相关度 {fmt(hit.relevance)}</span>
+                  <span>向量 {fmt(hit.scores.vector)}</span>
+                  <span>关键词 {fmt(hit.scores.keyword)}</span>
+                  <span>重排 {fmt(hit.scores.rerank)}</span>
+                </div>
+              ) : null}
               {hit.matched_question ? <div className="hit-question">命中问题：{hit.matched_question}</div> : null}
               <Content hit={hit} />
             </div>
           );
         })
       )}
-      {openDoc ? <DocDrawer docId={openDoc} onClose={() => setOpenDoc(null)} onChanged={() => undefined} /> : null}
-      {openWiki ? <WikiPageDrawer kbId={kb.id} slug={openWiki} onClose={() => setOpenWiki(null)} /> : null}
+      {openDoc ? <DocDrawer docId={openDoc} features={kb.features} onClose={() => setOpenDoc(null)} onChanged={() => undefined} /> : null}
+      {openWiki ? (
+        <WikiPageDrawer kbId={kb.id} slug={openWiki} canEdit={has(kb, 'wiki.write')} features={kb.features} onClose={() => setOpenWiki(null)} />
+      ) : null}
     </div>
   );
 }

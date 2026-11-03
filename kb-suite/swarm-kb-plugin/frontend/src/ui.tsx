@@ -74,12 +74,12 @@ export function Modal({
   );
 }
 
-export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+export function Field({ label, hint, error, children }: { label: string; hint?: string; error?: string | null; children: ReactNode }) {
   return (
     <label className="field">
       <span className="field-label">{label}</span>
       {children}
-      {hint ? <span className="field-hint">{hint}</span> : null}
+      {error ? <span className="field-hint field-error">{error}</span> : hint ? <span className="field-hint">{hint}</span> : null}
     </label>
   );
 }
@@ -154,9 +154,11 @@ export function NumberField({
   max,
   step = 1,
   disabled,
+  error,
 }: {
   label: string;
   hint?: string;
+  error?: string | null;
   value: number;
   onChange: (value: number) => void;
   min?: number;
@@ -165,7 +167,7 @@ export function NumberField({
   disabled?: boolean;
 }) {
   return (
-    <Field label={label} hint={hint}>
+    <Field label={label} hint={hint} error={error}>
       <input
         className="input"
         type="number"

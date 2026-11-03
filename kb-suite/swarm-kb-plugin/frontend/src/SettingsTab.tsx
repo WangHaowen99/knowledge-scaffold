@@ -39,7 +39,7 @@ export default function SettingsTab({
   onDeleted: () => void;
 }) {
   const notify = useToast();
-  const meta = useConfigMeta();
+  const meta = useConfigMeta(kb.backend?.id ?? '');
   const [section, setSection] = useState<Section>('basic');
   const [name, setName] = useState(kb.name);
   const [description, setDescription] = useState(kb.description);

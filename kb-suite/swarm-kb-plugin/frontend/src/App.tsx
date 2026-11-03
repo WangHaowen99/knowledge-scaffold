@@ -1,10 +1,13 @@
 import { Database, Library, Plus } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import DocumentsTab from './DocumentsTab';
+import GenericSettings from './GenericSettings';
 import { EnrichSection, ParsingSection, WikiSection } from './KbConfigForm';
+import SchemaForm, { schemaDefaults, schemaProblems } from './SchemaForm';
 import SearchTab from './SearchTab';
 import SettingsTab, { useConfigDraft } from './SettingsTab';
 import WikiTab from './WikiTab';
+import { has, nativeConfig, useBackends, type BackendInfo } from './backend';
 import { useConfigMeta } from './meta';
 import { rpc } from './rpc';
 import { ToastProvider, errorText, useToast } from './toast';
@@ -14,9 +17,39 @@ import { Button, Empty, Field, Modal, Spinner, Switch, Tabs } from './ui';
 type Tab = 'docs' | 'wiki' | 'search' | 'settings';
 type CreateSection = 'parsing' | 'enrich' | 'wiki';
 
+function BackendPicker({ backends, value, onChange }: { backends: BackendInfo[]; value: string; onChange: (id: string) => void }) {
+  if (backends.length < 2) return null;
+  return (
+    <Field label="知识后端" hint="知识库建在哪个后端上，之后不能更换。">
+      <select className="select" value={value} onChange={(e) => onChange(e.target.value)}>
+        {backends.map((b) => (
+          <option key={b.id} value={b.id} disabled={!b.healthy}>
+            {b.label}
+            {b.healthy ? '' : '（不可用）'}
+          </option>
+        ))}
+      </select>
+    </Field>
+  );
+}
+
 function CreateKbModal({ onClose, onCreated }: { onClose: () => void; onCreated: (kb: KnowledgeBase) => void }) {
-  const meta = useConfigMeta();
-  if (!meta) {
+  const all = useBackends();
+  const backends = useMemo(() => (all ?? []).filter((b) => b.features.includes('kbs.write')), [all]);
+  const [picked, setPicked] = useState('');
+  const backend = backends.find((b) => b.id === picked) ?? backends.find((b) => b.default && b.healthy) ?? backends.find((b) => b.healthy);
+  // talking to kb-service directly (no gateway) there is no backend list and kb-service's own form applies
+  const native = all !== null && (all.length === 0 || backend?.features.includes('config.meta'));
+  const meta = useConfigMeta(native ? backend?.id ?? '' : null);
+  const picker = <BackendPicker backends={backends} value={backend?.id ?? ''} onChange={setPicked} />;
+  if (all !== null && all.length > 0 && !backend) {
+    return (
+      <Modal title="新建知识库" onClose={onClose}>
+        <div className="empty-hint">没有可以新建知识库的知识后端。</div>
+      </Modal>
+    );
+  }
+  if (all === null || (native && !meta)) {
     return (
       <Modal title="新建知识库" onClose={onClose}>
         <div className="empty">
@@ -25,10 +58,86 @@ function CreateKbModal({ onClose, onCreated }: { onClose: () => void; onCreated:
       </Modal>
     );
   }
-  return <CreateKbForm meta={meta} onClose={onClose} onCreated={onCreated} />;
+  if (!native && backend) {
+    return <CreateGenericForm key={backend.id} backend={backend} picker={picker} onClose={onClose} onCreated={onCreated} />;
+  }
+  return <CreateKbForm key={backend?.id ?? ''} meta={meta as ConfigMeta} backend={backend?.id} picker={picker} onClose={onClose} onCreated={onCreated} />;
 }
 
-function CreateKbForm({ meta, onClose, onCreated }: { meta: ConfigMeta; onClose: () => void; onCreated: (kb: KnowledgeBase) => void }) {
+function CreateGenericForm({
+  backend,
+  picker,
+  onClose,
+  onCreated,
+}: {
+  backend: BackendInfo;
+  picker: ReactNode;
+  onClose: () => void;
+  onCreated: (kb: KnowledgeBase) => void;
+}) {
+  const notify = useToast();
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [config, setConfig] = useState<Record<string, unknown>>(() => schemaDefaults(backend.config_schema));
+  const [busy, setBusy] = useState(false);
+  const invalid = schemaProblems(backend.config_schema, config).length > 0;
+  const submit = async () => {
+    if (!name.trim() || invalid) return;
+    setBusy(true);
+    try {
+      const kb = await rpc.call<KnowledgeBase>('kbs.create', {
+        name: name.trim(),
+        description,
+        backend: backend.id,
+        ...(backend.config_schema ? { config } : {}),
+      });
+      notify('知识库已创建');
+      onCreated(kb);
+    } catch (err) {
+      notify(errorText(err), true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      title="新建知识库"
+      width={560}
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>取消</Button>
+          <Button variant="primary" disabled={!name.trim() || invalid || busy} onClick={submit}>
+            {busy ? <Spinner /> : null}创建
+          </Button>
+        </>
+      }
+    >
+      {picker}
+      <Field label="名称">
+        <input className="input" autoFocus value={name} maxLength={100} onChange={(e) => setName(e.target.value)} />
+      </Field>
+      <Field label="说明" hint="写清楚这个知识库装了什么，agent 会据此判断要不要检索它。">
+        <textarea className="textarea" style={{ minHeight: 90 }} value={description} onChange={(e) => setDescription(e.target.value)} />
+      </Field>
+      {backend.config_schema ? <SchemaForm schema={backend.config_schema} value={config} onChange={setConfig} /> : null}
+    </Modal>
+  );
+}
+
+function CreateKbForm({
+  meta,
+  backend,
+  picker,
+  onClose,
+  onCreated,
+}: {
+  meta: ConfigMeta;
+  backend?: string;
+  picker: ReactNode;
+  onClose: () => void;
+  onCreated: (kb: KnowledgeBase) => void;
+}) {
   const notify = useToast();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -39,7 +148,7 @@ function CreateKbForm({ meta, onClose, onCreated }: { meta: ConfigMeta; onClose:
     if (!name.trim()) return;
     setBusy(true);
     try {
-      const kb = await rpc.call<KnowledgeBase>('kbs.create', { name: name.trim(), description, config });
+      const kb = await rpc.call<KnowledgeBase>('kbs.create', { name: name.trim(), description, config, backend });
       notify('知识库已创建');
       onCreated(kb);
     } catch (err) {
@@ -62,6 +171,7 @@ function CreateKbForm({ meta, onClose, onCreated }: { meta: ConfigMeta; onClose:
         </>
       }
     >
+      {picker}
       <Field label="名称">
         <input className="input" autoFocus value={name} maxLength={100} onChange={(e) => setName(e.target.value)} />
       </Field>
@@ -103,6 +213,8 @@ function Shell() {
   const [tab, setTab] = useState<Tab>('docs');
   const [creating, setCreating] = useState(false);
   const [connected, setConnected] = useState(rpc.connected);
+  const [unavailable, setUnavailable] = useState<{ id: string; label: string; error: string | null }[]>([]);
+  const backends = useBackends();
 
   useEffect(() => {
     const off = rpc.onStatus(setConnected);
@@ -113,8 +225,11 @@ function Shell() {
 
   const loadKbs = useCallback(async () => {
     try {
-      const res = await rpc.call<{ items: KnowledgeBase[] }>('kbs.list');
+      const res = await rpc.call<{ items: KnowledgeBase[]; unavailable_backends?: { id: string; label: string; error: string | null }[] }>(
+        'kbs.list',
+      );
       setKbs(res.items);
+      setUnavailable(res.unavailable_backends ?? []);
       setSelected((cur) => (cur && res.items.some((k) => k.id === cur) ? cur : res.items[0]?.id ?? null));
     } catch (err) {
       setKbs((cur) => cur ?? []);
@@ -127,6 +242,9 @@ function Shell() {
   }, [loadKbs]);
 
   const kb = useMemo(() => kbs?.find((k) => k.id === selected) ?? null, [kbs, selected]);
+  const manyBackends = (backends?.length ?? 0) > 1;
+  const shownTab: Tab = tab === 'wiki' && !has(kb, 'wiki.read') ? 'docs' : tab;
+  const native = nativeConfig(kb);
 
   return (
     <div className="app">
@@ -158,15 +276,23 @@ function Shell() {
               >
                 <Library size={16} className="kb-item-icon" />
                 <span style={{ minWidth: 0 }}>
-                  <div className="kb-item-name">{item.name}</div>
+                  <div className="kb-item-name">
+                    {item.name}
+                    {manyBackends && item.backend ? <span className="kb-backend-tag">{item.backend.label}</span> : null}
+                  </div>
                   <div className="kb-item-meta">
-                    {item.stats.documents} 个文档 · {item.stats.chunks} 个分块
+                    {item.stats.documents} 个文档{item.stats.chunks !== undefined ? ` · ${item.stats.chunks} 个分块` : ''}
                   </div>
                 </span>
               </button>
             ))
           )}
         </div>
+        {unavailable.length ? (
+          <div className="sidebar-warn" title={unavailable.map((u) => `${u.label}：${u.error ?? ''}`).join('\n')}>
+            {unavailable.map((u) => u.label).join('、')} 暂不可用，其上的知识库未列出
+          </div>
+        ) : null}
         <div className="sidebar-foot" title="插件后端连接状态">
           <span className={`dot ${connected ? '' : 'dot-off'}`} />
           {connected ? '知识服务已连接' : '正在连接…'}
@@ -190,7 +316,10 @@ function Shell() {
             <div className="main-head">
               <div className="main-title-row">
                 <div style={{ minWidth: 0 }}>
-                  <h1 className="main-title">{kb.name}</h1>
+                  <h1 className="main-title">
+                    {kb.name}
+                    {manyBackends && kb.backend ? <span className="kb-backend-tag">{kb.backend.label}</span> : null}
+                  </h1>
                   {kb.description ? <div className="main-desc">{kb.description}</div> : null}
                 </div>
               </div>
@@ -200,9 +329,9 @@ function Shell() {
                   ['已完成', kb.stats.completed],
                   ['处理中', kb.stats.processing],
                   ['失败', kb.stats.failed],
-                  ['分块', kb.stats.chunks],
-                  ...(kb.config.questions.enabled || kb.stats.questions ? [['生成问题', kb.stats.questions]] : []),
-                  ...(kb.config.wiki.enabled || kb.stats.wiki_pages ? [['Wiki 页', kb.stats.wiki_pages]] : []),
+                  ...(kb.stats.chunks !== undefined ? [['分块', kb.stats.chunks]] : []),
+                  ...((native && kb.config.questions.enabled) || kb.stats.questions ? [['生成问题', kb.stats.questions ?? 0]] : []),
+                  ...((native && kb.config.wiki.enabled) || kb.stats.wiki_pages ? [['Wiki 页', kb.stats.wiki_pages ?? 0]] : []),
                   ...(kb.stats.enriching ? [['增强处理中', kb.stats.enriching]] : []),
                 ].map(([label, value]) => (
                   <div key={label as string}>
@@ -212,21 +341,34 @@ function Shell() {
                 ))}
               </div>
               <Tabs<Tab>
-                value={tab}
+                value={shownTab}
                 onChange={setTab}
                 items={[
                   { key: 'docs', label: '文档' },
-                  { key: 'wiki', label: 'Wiki' },
+                  ...(has(kb, 'wiki.read') ? [{ key: 'wiki' as const, label: 'Wiki' }] : []),
                   { key: 'search', label: '检索测试' },
                   { key: 'settings', label: '设置' },
                 ]}
               />
             </div>
             <div className="main-body">
-              {tab === 'docs' ? <DocumentsTab key={kb.id} kb={kb} onChanged={loadKbs} /> : null}
-              {tab === 'wiki' ? <WikiTab key={kb.id} kb={kb} onOpenSettings={() => setTab('settings')} /> : null}
-              {tab === 'search' ? <SearchTab key={kb.id} kb={kb} /> : null}
-              {tab === 'settings' ? (
+              {shownTab === 'docs' ? <DocumentsTab key={kb.id} kb={kb} onChanged={loadKbs} /> : null}
+              {shownTab === 'wiki' ? <WikiTab key={kb.id} kb={kb} onOpenSettings={() => setTab('settings')} /> : null}
+              {shownTab === 'search' ? <SearchTab key={kb.id} kb={kb} /> : null}
+              {shownTab === 'settings' && !native ? (
+                <GenericSettings
+                  // remounted once the backend's schema arrives, so its defaults fill the form
+                  key={`${kb.id}:${Boolean(backends?.find((b) => b.id === kb.backend?.id)?.config_schema)}`}
+                  kb={kb}
+                  backend={backends?.find((b) => b.id === kb.backend?.id)}
+                  onSaved={loadKbs}
+                  onDeleted={async () => {
+                    setSelected(null);
+                    await loadKbs();
+                  }}
+                />
+              ) : null}
+              {shownTab === 'settings' && native ? (
                 <SettingsTab
                   key={kb.id}
                   kb={kb}

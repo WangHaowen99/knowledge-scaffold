@@ -27,6 +27,7 @@ const DAMPING = 0.6;
 const ALPHA_MIN = 0.005;
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 4;
+const CLICK_SLOP_PX = 4; // a press that moves less than this is a click, not a drag
 const FIT_MAX_ZOOM = 1.2;
 const LABEL_ZOOM = 1.25; // above this zoom every label shows
 const LABEL_SHARE = 0.35; // below it, only the best-linked share of nodes is labelled
@@ -361,8 +362,8 @@ export default function WikiGraphView({ kbId, onOpen }: { kbId: string; onOpen: 
   }
 
   const drag = useRef<
-    | { kind: 'node'; node: SimNode; dx: number; dy: number; wasPinned: boolean; moved: boolean }
-    | { kind: 'pan'; sx: number; sy: number; moved: boolean }
+    | { kind: 'node'; node: SimNode; dx: number; dy: number; wasPinned: boolean; px: number; py: number; moved: boolean }
+    | { kind: 'pan'; sx: number; sy: number; px: number; py: number; moved: boolean }
     | null
   >(null);
 
@@ -377,12 +378,16 @@ export default function WikiGraphView({ kbId, onOpen }: { kbId: string; onOpen: 
     const node = nodeFromEvent(e.target);
     if (node) {
       const w = toWorld(e.clientX, e.clientY);
-      drag.current = { kind: 'node', node, dx: node.x - w.x, dy: node.y - w.y, wasPinned: node.pinned, moved: false };
+      drag.current = {
+        kind: 'node', node, dx: node.x - w.x, dy: node.y - w.y, wasPinned: node.pinned, px: e.clientX, py: e.clientY, moved: false,
+      };
       node.pinned = true;
       alphaTarget.current = 0.3;
       reheat(0.3);
     } else {
-      drag.current = { kind: 'pan', sx: e.clientX - view.current.x, sy: e.clientY - view.current.y, moved: false };
+      drag.current = {
+        kind: 'pan', sx: e.clientX - view.current.x, sy: e.clientY - view.current.y, px: e.clientX, py: e.clientY, moved: false,
+      };
       svgRef.current?.classList.add('graph-panning');
     }
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -395,7 +400,10 @@ export default function WikiGraphView({ kbId, onOpen }: { kbId: string; onOpen: 
       setHover(node?.slug ?? null);
       return;
     }
-    d.moved = true;
+    if (!d.moved) {
+      if (Math.hypot(e.clientX - d.px, e.clientY - d.py) < CLICK_SLOP_PX) return;
+      d.moved = true;
+    }
     if (d.kind === 'pan') {
       view.current = { ...view.current, x: e.clientX - d.sx, y: e.clientY - d.sy };
       applyView();
@@ -406,19 +414,20 @@ export default function WikiGraphView({ kbId, onOpen }: { kbId: string; onOpen: 
     }
   };
 
-  const onPointerUp = () => {
+  // `click` is false when the browser takes the pointer away (pointercancel, lost capture)
+  const endDrag = (click: boolean) => {
     const d = drag.current;
     drag.current = null;
     if (!d) return;
     if (d.kind === 'pan') {
       svgRef.current?.classList.remove('graph-panning');
-      if (!d.moved) setSelected(null);
+      if (!d.moved && click) setSelected(null);
       return;
     }
     alphaTarget.current = 0;
     if (!d.moved) {
       d.node.pinned = d.wasPinned; // a click selects without pinning
-      setSelected(d.node.slug);
+      if (click) setSelected(d.node.slug);
     }
     setPinTick((t) => t + 1);
   };
@@ -497,7 +506,9 @@ export default function WikiGraphView({ kbId, onOpen }: { kbId: string; onOpen: 
         aria-label="Wiki 链接图谱"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
+        onPointerUp={() => endDrag(true)}
+        onPointerCancel={() => endDrag(false)}
+        onLostPointerCapture={() => endDrag(false)}
         onPointerLeave={() => !drag.current && setHover(null)}
         onDoubleClick={(e) => {
           const node = nodeFromEvent(e.target);

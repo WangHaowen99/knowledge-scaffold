@@ -3,10 +3,10 @@ export interface KbStats {
   completed: number;
   processing: number;
   failed: number;
-  chunks: number;
-  questions: number;
-  enriching: number;
-  wiki_pages: number;
+  chunks?: number;
+  questions?: number;
+  enriching?: number;
+  wiki_pages?: number;
 }
 
 export interface ChunkingConfig {
@@ -128,6 +128,9 @@ export interface KnowledgeBase {
   created_at: string;
   updated_at: string;
   stats: KbStats;
+  /** set by kb-gateway: which knowledge backend holds this base and what it supports */
+  backend?: { id: string; label: string; type: string };
+  features?: string[];
 }
 
 export interface DocumentItem {
@@ -174,7 +177,7 @@ export interface ChunkItem {
   chunk_type: string;
   content: string;
   context_header: string;
-  line_start: number;
+  line_start: number | null;
   anchor_id: string | null;
   source_locators: Locator[];
   questions: string[];
@@ -191,17 +194,20 @@ export interface SearchHit {
   context_header: string;
   content: string;
   score: number;
-  line_start: number;
+  line_start: number | null;
   anchor_id: string | null;
   locators: Locator[];
-  matched_by: string[];
+  // kb-service's breakdown of how a hit was found; other backends may leave these out
+  matched_by?: string[];
   matched_question: string | null;
-  questions: string[];
-  merged_chunk_ids: string[];
-  expanded: boolean;
-  core: [number, number] | null;
-  relevance: number;
-  scores: { vector: number | null; keyword: number | null; rerank: number | null; base: number | null };
+  questions?: string[];
+  merged_chunk_ids?: string[];
+  expanded?: boolean;
+  core?: [number, number] | null;
+  relevance: number | null;
+  scores?: { vector: number | null; keyword: number | null; rerank: number | null; base: number | null };
+  /** backend id, set by kb-gateway */
+  backend?: string;
   wiki_slug?: string;
   wiki_type?: string;
   wiki_sources?: string[];
