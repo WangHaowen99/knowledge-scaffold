@@ -201,6 +201,8 @@ export function conversationTitleFor(path) {
 
 // 没有进行中的变更清单时，建议条的主推换成「开始增量更新」，服务端给的建议退到次选
 export function withStartSuggestion(sug, notice) {
+  // 这一轮的修改还没确认：先确认或撤回，不另起一轮增量更新
+  if (sug?.mode === 'pending_confirm' || sug?.mode === 'autobuild_controls') return sug;
   const file = notice?.files?.[0] || null;
   const start = {
     id: 'sg-inc-start', label: '开始增量更新', icon: 'refresh', primary: true, disabled: false, priority: 2,
