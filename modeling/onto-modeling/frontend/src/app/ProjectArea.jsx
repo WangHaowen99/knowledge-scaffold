@@ -1,6 +1,8 @@
 // 项目页的公共数据：元数据（P-04）、扩展项（PL-12）、待处理计数（IN-01）、流程（FL-01）、写入范围锁（CS-06），
 // 加项目流（P-15）实时更新；断档时按 stream.reset 的 resync 重拉快照。
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  startTransition, useCallback, useEffect, useMemo, useRef, useState,
+} from 'react';
 import { errorText } from '../api/errors.js';
 import { mergeFlow, normalizeFlow } from '../state/flow.js';
 import { isOwnedMeta } from '../state/roles.js';
@@ -21,12 +23,14 @@ export function ProjectArea({ pid, children }) {
   const [recentProjects, setRecent] = useState([]);
   const subs = useRef(new Set());
 
-  // take：首次挂载时接着用启动阶段已经发出的同一请求（earlyData），之后的重拉照常请求
-  const loadMeta = useCallback(() => take(`project:${pid}`, () => api.project(pid)).then((m) => { setMeta(m); return m; }), [api, pid]);
-  const loadExt = useCallback(() => take(`extensions:${pid}`, () => api.extensions(pid)).then(setExtensions).catch(() => {}), [api, pid]);
-  const loadInbox = useCallback(() => take(`inbox:${pid}`, () => api.inbox(pid, { limit: 1 })).then((r) => setInboxCount(r.counts?.total || 0)).catch(() => {}), [api, pid]);
-  const loadFlow = useCallback(() => take(`flow:${pid}`, () => api.flow(pid)).then((f) => setFlow(normalizeFlow(f))).catch(() => {}), [api, pid]);
-  const loadScope = useCallback(() => take(`scope:${pid}`, () => api.scope(pid)).then(setScope).catch(() => {}), [api, pid]);
+  // take：首次挂载时接着用启动阶段已经发出的同一请求（earlyData），之后的重拉照常请求。
+  // 结果放进 transition：几份数据前后脚到达时整页要重画，分片渲染，不在一个长任务里卡住输入
+  const later = (fn) => (v) => { startTransition(() => fn(v)); return v; };
+  const loadMeta = useCallback(() => take(`project:${pid}`, () => api.project(pid)).then(later(setMeta)), [api, pid]);
+  const loadExt = useCallback(() => take(`extensions:${pid}`, () => api.extensions(pid)).then(later(setExtensions)).catch(() => {}), [api, pid]);
+  const loadInbox = useCallback(() => take(`inbox:${pid}`, () => api.inbox(pid, { limit: 1 })).then(later((r) => setInboxCount(r.counts?.total || 0))).catch(() => {}), [api, pid]);
+  const loadFlow = useCallback(() => take(`flow:${pid}`, () => api.flow(pid)).then(later((f) => setFlow(normalizeFlow(f)))).catch(() => {}), [api, pid]);
+  const loadScope = useCallback(() => take(`scope:${pid}`, () => api.scope(pid)).then(later(setScope)).catch(() => {}), [api, pid]);
 
   useEffect(() => {
     setMeta(null);

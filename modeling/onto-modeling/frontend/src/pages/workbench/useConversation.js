@@ -1,9 +1,11 @@
 // 对话数据：S-01 对话列表、S-05 状态快照、S-06 历史，再带 after=<最后 seq> 接 S-13 对话流
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import {
+  startTransition, useCallback, useEffect, useReducer, useRef, useState,
+} from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { take } from '../../app/earlyData.js';
 import {
-  ackLocalUser, addLocalUser, applyEvent, applyEvents, applySnapshot, dropLocalUser, initialConversation,
+  ackLocalUser, addLocalUser, applyEvent, applyEvents, applySnapshot, dropLocalUser, initialConversation, prependHistory,
 } from '../../state/conversation.js';
 
 function reducer(state, action) {
@@ -14,12 +16,17 @@ function reducer(state, action) {
     case 'event': return applyEvent(state, action.env);
     case 'events': return applyEvents(state, action.list);
     case 'snapshot': return applySnapshot(state, action.snap);
+    case 'prepend': return prependHistory(state, action.events);
     case 'local_user': return addLocalUser(state, action.id, action.text);
     case 'local_ack': return ackLocalUser(state, action.id, action.messageId);
     case 'local_drop': return dropLocalUser(state, action.id);
     default: return state;
   }
 }
+
+// 打开时取最近 200 条持久事件（S-06），往上滚再每页 200 条往前翻
+const HISTORY_FIRST = 200;
+const HISTORY_PAGE = 200;
 
 export function useConversation(preferredId, { preferAutobuild = false } = {}) {
   const { api, services } = useApp();
@@ -31,6 +38,12 @@ export function useConversation(preferredId, { preferAutobuild = false } = {}) {
   const [loadError, setLoadError] = useState(null);
   const lastSeq = useRef(0);
   lastSeq.current = state.lastSeq;
+  // 往前翻页：firstSeq 是已加载的最早一条
+  const [older, setOlder] = useState({ hasMore: false, firstSeq: null, loading: false });
+  const olderRef = useRef(older);
+  olderRef.current = older;
+  const cidRef = useRef(cid);
+  cidRef.current = cid;
 
   const loadList = useCallback(async () => {
     const r = await take(`conversations:${pid}`, () => api.conversations(pid));
@@ -65,12 +78,17 @@ export function useConversation(preferredId, { preferAutobuild = false } = {}) {
       if (!frame) frame = (window.requestAnimationFrame || ((f) => setTimeout(f, 16)))(flush);
     };
     dispatch({ type: 'reset' });
+    setOlder({ hasMore: false, firstSeq: null, loading: false });
     (async () => {
       try {
-        const [hist, snap] = await Promise.all([api.messages(pid, cid, { limit: 200 }), api.conversationState(pid, cid)]);
+        const [hist, snap] = await Promise.all([api.messages(pid, cid, { limit: HISTORY_FIRST }), api.conversationState(pid, cid)]);
         if (!alive) return;
-        dispatch({ type: 'history', events: hist.items || [] });
-        dispatch({ type: 'snapshot', snap });
+        // 历史一次画一整条时间线（Markdown 解析占大头）：放进 transition 分片渲染，不在一个长任务里卡住输入
+        startTransition(() => {
+          dispatch({ type: 'history', events: hist.items || [] });
+          setOlder({ hasMore: !!hist.has_more, firstSeq: hist.first_seq ?? null, loading: false });
+          dispatch({ type: 'snapshot', snap });
+        });
         stop = services.openStream({
           kind: 'conversation',
           url: (q) => api.conversationEventsUrl(pid, cid, q),
@@ -90,5 +108,21 @@ export function useConversation(preferredId, { preferAutobuild = false } = {}) {
     if (env.type === 'conversation.updated') loadList().catch(() => {});
   }), [subscribe, loadList]);
 
-  return { list, cid, setCid, state, dispatch, stream, loadError, reloadList: loadList };
+  const loadEarlier = useCallback(async () => {
+    const cur = olderRef.current;
+    if (!cid || !cur.hasMore || cur.loading || cur.firstSeq == null) return;
+    setOlder({ ...cur, loading: true });
+    try {
+      const r = await api.messages(pid, cid, { limit: HISTORY_PAGE, before_seq: cur.firstSeq });
+      if (cidRef.current !== cid) return;
+      startTransition(() => dispatch({ type: 'prepend', events: r.items || [] }));
+      setOlder({ hasMore: !!r.has_more, firstSeq: r.first_seq ?? cur.firstSeq, loading: false });
+    } catch {
+      if (cidRef.current === cid) setOlder({ ...cur, loading: false });
+    }
+  }, [api, pid, cid]);
+
+  return {
+    list, cid, setCid, state, dispatch, stream, loadError, reloadList: loadList, older, loadEarlier,
+  };
 }

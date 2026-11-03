@@ -1,5 +1,7 @@
 // 组件库：与设计稿 core.js 的组件函数一一对应，类名沿用 base.css
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import {
+  createContext, useCallback, useContext, useEffect, useRef, useState,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { ICONS } from './icons.js';
 
@@ -391,9 +393,32 @@ export function usePresence(open, props) {
   return open ? { shown: true, leaving: false, props } : { shown: leaving, leaving, props: last.current };
 }
 
+// 调用方直接卸掉弹层（`{x ? <Modal open … /> : null}`、组件里 `if (!x) return null`）时 usePresence 拦不住：
+// 卸载那一刻把弹层的 DOM 拷一份留在原处播退场，播完删掉。拷贝只是画面，不响应任何操作
+function leaveGhost(el, parent) {
+  if (!parent || el.classList.contains('mo-leave')) return;
+  const ghost = el.cloneNode(true);
+  ghost.classList.add('mo-leave');
+  ghost.setAttribute('aria-hidden', 'true');
+  ghost.inert = true;
+  parent.appendChild(ghost);
+  const from = el.querySelectorAll('.modal-b,.drawer-b');
+  ghost.querySelectorAll('.modal-b,.drawer-b').forEach((box, i) => { box.scrollTop = from[i]?.scrollTop || 0; });
+  setTimeout(() => ghost.remove(), LEAVE_MS + 40);
+}
+
+function useLeaveGhost() {
+  return useCallback((el) => {
+    if (!el) return undefined;
+    const parent = el.parentNode;
+    return () => leaveGhost(el, parent);
+  }, []);
+}
+
 export function Modal(all) {
   useEscape(all.open, all.onClose);
   const { shown, leaving, props } = usePresence(all.open, all);
+  const ghostRef = useLeaveGhost();
   if (!shown) return null;
   const {
     onClose, icon, danger, title, sub, w, children, foot, sticky, className,
@@ -401,6 +426,7 @@ export function Modal(all) {
   return (
     <OverlayPortal>
       <div
+        ref={ghostRef}
         className={cx('overlay', className, leaving && 'mo-leave')}
         onMouseDown={(e) => { if (e.target === e.currentTarget && !sticky && !leaving) onClose?.(); }}
       >
@@ -433,13 +459,14 @@ export function Modal(all) {
 export function Drawer(all) {
   useEscape(all.open, all.onClose);
   const { shown, leaving, props } = usePresence(all.open, all);
+  const ghostRef = useLeaveGhost();
   if (!shown) return null;
   const {
     onClose, icon, title, sub, w, children, foot,
   } = props;
   return (
     <OverlayPortal>
-      <div className={cx('drawer', leaving && 'mo-leave')} style={w ? { width: w } : undefined} role="dialog">
+      <div ref={ghostRef} className={cx('drawer', leaving && 'mo-leave')} style={w ? { width: w } : undefined} role="dialog">
         <div className="drawer-h">
           {icon ? <Icon name={icon} size={18} /> : null}
           <div className="grow">

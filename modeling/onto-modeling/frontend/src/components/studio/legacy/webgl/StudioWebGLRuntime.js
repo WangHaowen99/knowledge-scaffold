@@ -123,18 +123,24 @@ export class WebGLGraphRuntime {
        的 getter 会抛。切走视图（比如从 Studio 切到评测）正好落在窗口里，
        destroy() 抛出的异常会中断 React 的卸载提交，目标面板就渲染不出来。
        所以两边都持局部引用，并按 renderer 是否就绪判断能不能碰画布。 */
-    const app = new Application();
+    const reused = takeSpareApp();
+    const app = reused || new Application();
     this.app = app;
-    await app.init({
-      preference: 'webgl',
-      width: Math.max(1, host.clientWidth),
-      height: Math.max(1, host.clientHeight),
-      antialias: true,
-      autoDensity: true,
-      resolution: Math.min(window.devicePixelRatio || 1, 2),
-      background: '#f3f5f7',
-      powerPreference: 'high-performance',
-    });
+    if (reused) {
+      app.renderer.resize(Math.max(1, host.clientWidth), Math.max(1, host.clientHeight));
+      app.start();
+    } else {
+      await app.init({
+        preference: 'webgl',
+        width: Math.max(1, host.clientWidth),
+        height: Math.max(1, host.clientHeight),
+        antialias: true,
+        autoDensity: true,
+        resolution: Math.min(window.devicePixelRatio || 1, 2),
+        background: '#f3f5f7',
+        powerPreference: 'high-performance',
+      });
+    }
     if (this.destroyed) {
       app.destroy(true, { children: true });
       if (this.app === app) this.app = null;
@@ -224,6 +230,7 @@ export class WebGLGraphRuntime {
 
   handleContextLost(event) {
     event.preventDefault();
+    this.contextLost = true;
     if (!this.destroyed) this.callbacks.onContextLost?.();
   }
 
@@ -1612,9 +1619,35 @@ export class WebGLGraphRuntime {
       app.canvas.removeEventListener('webglcontextlost', this.handleContextLost);
       app.canvas.removeEventListener('wheel', this.handleWheel);
       app.ticker.remove(this.tick);
-      app.destroy(true, { children: true });
+      if (this.contextLost || !keepSpareApp(app)) app.destroy(true, { children: true });
     }
   }
+}
+
+/* 离开 Studio 时留一个画布应用给下次进来用：新建一次要申请 WebGL 上下文、编译着色器，
+   每次进 Studio 都重建是切页慢的主要原因。只留一个；留着时停掉渲染循环、清空舞台，画布摘出页面。
+   上下文丢过的不留。 */
+let spareApp = null;
+
+function keepSpareApp(app) {
+  if (spareApp) return false;
+  app.stop();
+  app.stage.removeAllListeners();
+  app.stage.removeChildren().forEach((child) => child.destroy({ children: true }));
+  app.stage.hitArea = null;
+  app.canvas.remove();
+  spareApp = app;
+  return true;
+}
+
+function takeSpareApp() {
+  const app = spareApp;
+  spareApp = null;
+  if (app && app.renderer?.context?.gl?.isContextLost?.()) {
+    app.destroy(true, { children: true });
+    return null;
+  }
+  return app;
 }
 
 function emptyInteractionState() {

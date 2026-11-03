@@ -1,5 +1,7 @@
 // 工作台 · 对话（设计稿 wb-l2）：一条顶栏、无气泡正文、产物卡、决策卡、悬浮输入框，全部由对话流事件驱动
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState,
+} from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
@@ -19,7 +21,7 @@ import { canInterrupt } from './autobuildModel.js';
 import { ActionsCtx, ContextPanel, QueueCard } from './cards.jsx';
 import { WbCtx } from './parts.jsx';
 import { ScopePicker } from '../knowledge/ScopePicker.jsx';
-import { Timeline } from './Timeline.jsx';
+import { EarlierHistory, Timeline } from './Timeline.jsx';
 import { useConversation } from './useConversation.js';
 import { MATERIAL_DIALOGS } from './materials/model.js';
 import { useIncremental, useIncrementalTarget } from './incremental/useIncremental.jsx';
@@ -565,15 +567,37 @@ export default function WorkbenchPage({ route }) {
 
   // 新内容到达时，停在底部附近就跟着滚到底
   const stick = useRef(true);
+  // 推到下一帧再滚：同一帧里的多次更新只滚一次，读 scrollHeight 引起的整页排版也不和提交挤在同一个长任务里
+  const stickFrame = useRef(0);
   useEffect(() => {
-    const m = mainRef.current;
-    // 跟到底不走平滑滚动：流式输出时每帧都在追，平滑动画会一直落在后面
-    if (m && stick.current) m.scrollTo({ top: m.scrollHeight, behavior: 'instant' });
+    if (!stick.current || stickFrame.current) return undefined;
+    stickFrame.current = requestAnimationFrame(() => {
+      stickFrame.current = 0;
+      const m = mainRef.current;
+      // 跟到底不走平滑滚动：流式输出时每帧都在追，平滑动画会一直落在后面
+      if (m && stick.current) m.scrollTo({ top: m.scrollHeight, behavior: 'instant' });
+    });
+    return undefined;
   }, [state.order.length, state.items, state.thinking]);
+  useEffect(() => () => cancelAnimationFrame(stickFrame.current), []);
   const onScroll = () => {
     const m = mainRef.current;
     if (m) stick.current = m.scrollHeight - m.scrollTop - m.clientHeight < 120;
   };
+  // 往前翻页（S-06）后保持视线不动：记下最上面那一块的位置，旧记录插到前面后把它挪回原处
+  const earlierAnchor = useRef(null);
+  const { loadEarlier } = conv;
+  const onLoadEarlier = useCallback(() => {
+    const el = mainRef.current?.querySelector('.wb-earlier + *');
+    earlierAnchor.current = el ? { el, top: el.getBoundingClientRect().top } : null;
+    loadEarlier();
+  }, [loadEarlier]);
+  useLayoutEffect(() => {
+    const a = earlierAnchor.current;
+    const m = mainRef.current;
+    earlierAnchor.current = null;
+    if (a && m && a.el.isConnected) m.scrollTop += a.el.getBoundingClientRect().top - a.top;
+  }, [state.historyGen]);
 
   const running = ['running', 'connecting'].includes(state.session.state);
   const interrupt = useCallback(async () => {
@@ -765,6 +789,7 @@ export default function WorkbenchPage({ route }) {
             <div className="wbc-main" ref={mainRef} onScroll={onScroll}>
               <div className="wbc-col">
                 {conv.loadError ? <div className="note red mt16"><Icon name="alert" /><div className="grow">{errorText(conv.loadError)}</div></div> : null}
+                {inc.hideTimeline ? null : <EarlierHistory older={conv.older} onLoad={onLoadEarlier} rootRef={mainRef} />}
                 {inc.hideTimeline ? null : <Timeline state={state} scope={scope} onInterrupt={canInterrupt(running, ab) ? interrupt : null} live={!ab.running} />}
                 {state.session.state === 'queued' && state.queue ? <QueueCard queue={state.queue} onCancel={() => api.cancelQueue(pid, cid).catch(fail)} /> : null}
               </div>

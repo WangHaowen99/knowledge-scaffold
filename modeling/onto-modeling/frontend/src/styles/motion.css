@@ -22,6 +22,7 @@
 @keyframes mo-send-tint{from{background:var(--blue);color:#fff}to{background:#EDF1F7;color:var(--ink0)}}
 @keyframes mo-up{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @keyframes mo-pop{from{opacity:0;transform:translateY(8px) scale(.94)}35%{opacity:1}to{opacity:1;transform:none}}
+@keyframes mo-card{from{opacity:.55;transform:translateY(8px) scale(.96)}to{opacity:1;transform:none}}
 @keyframes mo-fade{from{opacity:0}to{opacity:1}}
 @keyframes mo-fade-out{to{opacity:0}}
 @keyframes mo-modal-in{from{opacity:0;transform:translateY(12px) scale(.9)}30%{opacity:1}to{opacity:1;transform:none}}
@@ -56,6 +57,8 @@
 .wx-send:hover{transform:scale(1.06)}
 .wx-send.mo-press{animation:mo-press .34s var(--ease-bounce)}
 
+.wb-earlier{display:flex;justify-content:center;padding:6px 0 2px;font-size:12px;min-height:26px}
+
 /* ---- 弹层 ---- */
 .overlay{animation:mo-fade .18s var(--ease-soft) backwards}
 .overlay>.modal{animation:mo-modal-in .44s var(--ease-bounce) backwards}
@@ -71,7 +74,8 @@
 #toast.show{transform:translate(-50%,0)}
 
 /* ---- 卡片与列表 ---- */
-.en-pc{animation:mo-pop .48s var(--ease-spring) backwards;animation-delay:calc(var(--mo-i,0) * 35ms);transition:border-color .15s,box-shadow .2s,transform .3s var(--ease-spring)}
+/* 项目卡片不从全透明起步：浏览器不把透明元素算作已绘制，最大内容绘制（LCP）会被入场动画推迟 */
+.en-pc{animation:mo-card .44s var(--ease-spring) backwards;animation-delay:calc(var(--mo-i,0) * 22ms);transition:border-color .15s,box-shadow .2s,transform .3s var(--ease-spring)}
 .en-pc:hover{transform:translateY(-3px)}
 .en-pc.arch:hover{transform:none}
 .prail a .bdg{animation:mo-bump .42s var(--ease-bounce)}

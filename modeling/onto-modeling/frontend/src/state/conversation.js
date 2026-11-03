@@ -187,6 +187,24 @@ export function applyEvent(state, env) {
   }
 }
 
+// 往前翻页（S-06 before_seq）：更早的一页单独归并，再接到现有时间线前面。两边都有的键（卡片、进展组
+// 在旧页第一次出现、新页里更新过）用新的内容、放在旧页的位置——和整段一次性归并的结果一致。
+// prependedKeys 给界面用：这些是翻出来的旧记录，不播入场动画
+export function prependHistory(state, olderEvents) {
+  const older = applyEvents(initialConversation(), olderEvents);
+  const fresh = older.order.filter((k) => !Object.prototype.hasOwnProperty.call(state.items, k));
+  const items = { ...state.items };
+  fresh.forEach((k) => { items[k] = older.items[k]; });
+  const moved = new Set(older.order);
+  return {
+    ...state,
+    order: [...older.order, ...state.order.filter((k) => !moved.has(k))],
+    items,
+    prependedKeys: fresh,
+    historyGen: (state.historyGen || 0) + 1,
+  };
+}
+
 // 本地气泡：点发送立刻显示，不等服务端经对话流回传（S-07 返回 message_id 后用它对上）
 export function addLocalUser(state, localId, text, now = Date.now() / 1000) {
   return upsert(state, `local:${localId}`, { kind: 'user', local: true, text, ts: now, attachments: [] });

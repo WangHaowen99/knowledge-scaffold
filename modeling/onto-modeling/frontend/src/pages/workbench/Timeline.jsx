@@ -1,5 +1,7 @@
 // 对话时间线：把状态机分好的块渲染成设计稿的 m-u / m-a / m-sys / wx-day / 决策卡
-import { Fragment, memo, useRef, useState } from 'react';
+import {
+  Fragment, memo, useEffect, useRef, useState,
+} from 'react';
 import { toast } from '../../app/toast.jsx';
 import { liveActivity, timelineBlocks } from '../../state/conversation.js';
 import { Button, Icon, cx } from '../../ui/index.jsx';
@@ -103,19 +105,60 @@ function LiveTail({ activity, onInterrupt }) {
 // 卡片类的条目入场带弹性，文字类只上浮淡入
 const POP_KINDS = new Set(['card', 'permission', 'subagent', 'progress', 'error', 'interrupted']);
 
-// 入场动画只给打开之后新出现的条目：历史一到就记下当时已有的键，这些不播（切对话时随状态重置清空）
+// 入场动画只给打开之后新出现的条目：历史一到就记下当时已有的键，往前翻出来的旧记录也记下，这些不播
+// （切对话时随状态重置清空）
 function useFreshKeys(state) {
   const seen = useRef(null);
   if (!state.loaded) {
     seen.current = null;
     return () => false;
   }
-  if (!seen.current) seen.current = new Set(state.order);
-  const known = seen.current;
+  if (!seen.current) seen.current = { known: new Set(state.order), gen: state.historyGen || 0 };
+  if ((state.historyGen || 0) !== seen.current.gen) {
+    (state.prependedKeys || []).forEach((k) => seen.current.known.add(k));
+    seen.current.gen = state.historyGen || 0;
+  }
+  const { known } = seen.current;
   return (key) => !known.has(key);
 }
 
-export function Timeline({ state, scope, onInterrupt, live = true }) {
+// 时间线顶部：还有更早的记录时，用户往上滚到这里自动往前翻一页（也可以点）。
+// 打开页面时不自动翻：内容不满一屏时感应条一直可见，会接连翻好几页、反复重画，拖慢首屏
+export function EarlierHistory({ older, onLoad, rootRef }) {
+  const ref = useRef(null);
+  const [armed, setArmed] = useState(false);
+  const { hasMore, loading } = older || {};
+  useEffect(() => {
+    const root = rootRef?.current;
+    if (!root || armed) return undefined;
+    let last = root.scrollTop;
+    const onScroll = () => {
+      if (root.scrollTop < last - 4) setArmed(true);
+      last = root.scrollTop;
+    };
+    root.addEventListener('scroll', onScroll, { passive: true });
+    return () => root.removeEventListener('scroll', onScroll);
+  }, [rootRef, armed]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !armed || !hasMore || loading || typeof IntersectionObserver === 'undefined') return undefined;
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) onLoad();
+    }, { root: rootRef?.current || null, rootMargin: '600px 0px 0px 0px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [armed, hasMore, loading, onLoad, rootRef]);
+  if (!hasMore) return null;
+  return (
+    <div ref={ref} className="wb-earlier">
+      {loading ? <span className="spin" /> : <span className="link" onClick={onLoad}>更早的记录</span>}
+    </div>
+  );
+}
+
+export function Timeline({
+  state, scope, onInterrupt, live = true,
+}) {
   const blocks = timelineBlocks(state);
   const fresh = useFreshKeys(state);
   const running = ['running', 'connecting'].includes(state.session.state);
@@ -127,13 +170,14 @@ export function Timeline({ state, scope, onInterrupt, live = true }) {
   const lastBlock = blocks[blocks.length - 1];
   const tail = hasTail ? <LiveTail activity={activity} onInterrupt={tailInterrupt} /> : null;
   const rendered = blocks.map((b) => {
+    const enter = (cls) => (fresh(b.key) ? cls : undefined);
     switch (b.type) {
-      case 'day': return <MDay key={b.key} label={b.item.label} className={fresh(b.key) ? 'mo-fade' : undefined} />;
-      case 'notice': return <MSys key={b.key} left={b.item.align === 'left'} className={fresh(b.key) ? 'mo-fade' : undefined}>{b.item.text}</MSys>;
+      case 'day': return <MDay key={b.key} label={b.item.label} className={enter('mo-fade')} />;
+      case 'notice': return <MSys key={b.key} left={b.item.align === 'left'} className={enter('mo-fade')}>{b.item.text}</MSys>;
       case 'user': return <UserMessage key={b.item.local_key || b.key} item={b.item} enter={fresh(b.key)} />;
       case 'decided': return <DecidedRow key={b.key} item={b.item} />;
-      case 'withdrawn': return <MSys key={b.key} left className={fresh(b.key) ? 'mo-fade' : undefined}>这个问题已失效：{b.item.withdrawn_reason || b.item.question.title}</MSys>;
-      case 'question': return <MA key={b.key} className={fresh(b.key) ? 'mo-ask' : undefined}><QuestionCard q={b.item.question} active={b === lastOpenQ} /></MA>;
+      case 'withdrawn': return <MSys key={b.key} left className={enter('mo-fade')}>这个问题已失效：{b.item.withdrawn_reason || b.item.question.title}</MSys>;
+      case 'question': return <MA key={b.key} className={enter('mo-ask')}><QuestionCard q={b.item.question} active={b === lastOpenQ} /></MA>;
       case 'assistant': {
         // 新的一块整块上浮；已有的块里后到的条目各自入场
         const blockFresh = fresh(b.items[0].key);
