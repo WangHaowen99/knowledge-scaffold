@@ -1,0 +1,17 @@
+# 数据接入：Word（docx）转文本（ADR-0073）。转换器随连接器网关镜像交付，跑在网关的子进程里，内核不导入它。
+name: convert-docx
+version: 1.0.0
+kind: provider
+category: provider
+label: Word 转换
+description: 把 Word 文档转成文本，保留标题层级、列表和表格。
+publisher: {kind: official, label: 平台}
+kernel_api: ">=1.0 <2.0"
+engines: [claude, jiuwen]
+depends: {}
+converter:
+  entry: converter.py
+  types: [".docx"]
+  license: python-docx（MIT）
+changelog: 首版。
+checksums: checksums.sha256

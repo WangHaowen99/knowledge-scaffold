@@ -1,0 +1,219 @@
+"""文档转换协议（ADR-0073；详设 5.8.3「文件资料」）：数据接入插件里的转换器接口、结果、位置标记。
+
+转换器跑在连接器网关的子进程里，内核不导入转换器代码。这里只有协议、数据结构和纯函数（位置标记的写法与解析、
+Markdown 表格、OOXML 解压上限），网关、转换器、内核三边共用，只依赖标准库。
+
+一个转换器 = 一个数据接入包（`kind: provider`）：清单里的 `converter` 段声明入口、文件类型、许可证，入口模块提供
+`convert(data, filename, limits) -> Conversion`。
+"""
+
+from __future__ import annotations
+
+import io
+import re
+import zipfile
+from dataclasses import asdict, dataclass, field
+from typing import Literal, Protocol, runtime_checkable
+
+FORMAT = "markdown-locations/1"
+# 转换结果的状态：converted 转成了文本；unsupported 暂不支持（扫描件、图片、加密、老格式），不是错
+ResultState = Literal["converted", "unsupported"]
+# 转换失败的原因码（网关回 state=failed 时带上）；文案给用户看，短
+FAILURES = {
+    "corrupt": "文件损坏，打不开",
+    "too_large": "解压后内容超过上限",
+    "timeout": "转换超时",
+    "memory": "转换时内存超限",
+    "output_too_large": "转换结果超过上限",
+    "crashed": "转换出错",
+}
+# 本身就是文本、不经网关的资料
+NATIVE_TEXT_TYPES = (".md", ".markdown", ".txt", ".csv")
+
+
+@dataclass(frozen=True)
+class ConverterInfo:
+    """转换器的描述，来自包清单（详设 5.8.3「提供方清单要声明的内容」里和转换相关的几项）。"""
+
+    id: str                          # 包名，如 convert-pdf
+    version: str
+    label: str
+    types: tuple[str, ...]           # 能转的扩展名，小写带点，如 (".pdf",)
+    license_note: str
+    runtime: Literal["subprocess"] = "subprocess"
+    output_format: str = FORMAT
+
+    def to_dict(self) -> dict:
+        return {**asdict(self), "types": list(self.types)}
+
+
+@dataclass(frozen=True)
+class ConvertLimits:
+    """单次转换的上限：网关按票据预算与自身上限取小的，交给子进程。"""
+
+    max_pages: int = 1000            # PDF 只转前这么多页
+    max_rows: int = 2000             # Excel 每个工作表只转前这么多行
+    max_columns: int = 50
+    max_sheets: int = 50
+    max_output_chars: int = 4_000_000
+    max_expanded_bytes: int = 100 * 1024 * 1024   # OOXML 解压后的总大小
+    max_zip_members: int = 5000
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "ConvertLimits":
+        known = {key: int(value) for key, value in (data or {}).items() if key in cls.__dataclass_fields__}
+        return cls(**known)
+
+
+@dataclass(frozen=True)
+class Location:
+    """位置对照的一项：Markdown 第 line 行（从 1 起）是一个位置标记。"""
+
+    line: int
+    kind: Literal["page", "sheet"]
+    value: str
+    label: str                       # 「第 3 页」「工作表 客户」
+
+
+@dataclass
+class Conversion:
+    state: ResultState
+    markdown: str = ""
+    locations: list[Location] = field(default_factory=list)
+    reason: str | None = None        # 暂不支持的原因
+    note: str | None = None          # 转换时的说明，如「只转了前 1000 页（共 1200 页）」
+    stats: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {"state": self.state, "markdown": self.markdown, "locations": [asdict(item) for item in self.locations],
+                "reason": self.reason, "note": self.note, "stats": dict(self.stats)}
+
+
+class ConvertError(Exception):
+    """转换失败（不是「暂不支持」）：code 取 FAILURES 的键。"""
+
+    def __init__(self, code: str, message: str | None = None):
+        super().__init__(message or FAILURES.get(code, FAILURES["crashed"]))
+        self.code = code if code in FAILURES else "crashed"
+
+
+@runtime_checkable
+class DocumentConverter(Protocol):
+    """网关把清单和入口模块包成这个接口；内核只经网关调用。"""
+
+    def describe(self) -> ConverterInfo: ...
+
+    def convert(self, data: bytes, filename: str, limits: ConvertLimits) -> Conversion: ...
+
+
+def unsupported(reason: str, **stats) -> Conversion:
+    return Conversion(state="unsupported", reason=reason, stats=stats)
+
+
+# ---------------------------------------------------------------------------
+# 位置标记：PDF 每页前一行、Excel 每个工作表前一行（HTML 注释，渲染时不显示，助手读得到）
+# ---------------------------------------------------------------------------
+
+_PAGE_RE = re.compile(r"^<!-- 第 (\d+) 页 -->$")
+_SHEET_RE = re.compile(r"^<!-- 工作表：(.+) -->$")
+HEADER_PREFIX = "<!-- onto:text "
+_HEADER_RE = re.compile(r'^<!-- onto:text source="(?P<source>[^"]*)" sha256="(?P<sha>[0-9a-f]{16,64})" '
+                        r'converter="(?P<converter>[^"]*)" -->$')
+
+
+def _clean(text: str) -> str:
+    """标记里不能出现提前结束注释的字符。"""
+    return re.sub(r"\s+", " ", str(text).replace("--", "—").replace(">", "＞").replace('"', "'")).strip()
+
+
+def page_marker(number: int) -> str:
+    return f"<!-- 第 {int(number)} 页 -->"
+
+
+def sheet_marker(name: str) -> str:
+    return f"<!-- 工作表：{_clean(name) or '未命名'} -->"
+
+
+def parse_locations(markdown: str) -> list[Location]:
+    found = []
+    for number, line in enumerate(str(markdown or "").splitlines(), 1):
+        stripped = line.strip()
+        page = _PAGE_RE.match(stripped)
+        if page:
+            found.append(Location(number, "page", page.group(1), f"第 {page.group(1)} 页"))
+            continue
+        sheet = _SHEET_RE.match(stripped)
+        if sheet:
+            found.append(Location(number, "sheet", sheet.group(1), f"工作表 {sheet.group(1)}"))
+    return found
+
+
+def location_at(markdown: str, line: int) -> Location | None:
+    """第 line 行属于哪个位置：它前面最近的那个标记。"""
+    current = None
+    for item in parse_locations(markdown):
+        if item.line > line:
+            break
+        current = item
+    return current
+
+
+def header(source: str, sha256: str, converter: str) -> str:
+    """文本版第一行：原文件名、原文件修订、转换器与版本（内核写，转换器不写）。"""
+    return f'{HEADER_PREFIX}source="{_clean(source)}" sha256="{sha256}" converter="{_clean(converter)}" -->'
+
+
+def parse_header(markdown: str) -> dict | None:
+    first = str(markdown or "").split("\n", 1)[0].strip()
+    match = _HEADER_RE.match(first)
+    return match.groupdict() if match else None
+
+
+def strip_forged_headers(markdown: str) -> str:
+    """转换器的输出里不许有内核的文件头（不然能冒充原文件修订）。"""
+    return "\n".join(line for line in str(markdown).splitlines() if not line.strip().startswith(HEADER_PREFIX))
+
+
+# ---------------------------------------------------------------------------
+# 转换器共用的小工具
+# ---------------------------------------------------------------------------
+
+
+def md_cell(value) -> str:
+    text = "" if value is None else str(value)
+    return text.replace("\\", "\\\\").replace("|", "\\|").replace("\r\n", "\n").replace("\n", "<br>").strip()
+
+
+def md_table(rows: list[list]) -> str:
+    """第一行当表头；列数按最宽的一行补齐。空表返回空串。"""
+    rows = [[md_cell(cell) for cell in row] for row in rows if any(str(cell or "").strip() for cell in row)]
+    if not rows:
+        return ""
+    width = max(len(row) for row in rows)
+    rows = [row + [""] * (width - len(row)) for row in rows]
+    lines = ["| " + " | ".join(rows[0]) + " |", "|" + "---|" * width]
+    lines += ["| " + " | ".join(row) + " |" for row in rows[1:]]
+    return "\n".join(lines)
+
+
+def check_ooxml(data: bytes, limits: ConvertLimits) -> None:
+    """Word、Excel 是 zip：打开前先看成员数和解压后的总大小，挡住 zip 炸弹。"""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            members = archive.infolist()
+    except (zipfile.BadZipFile, OSError, ValueError) as exc:
+        raise ConvertError("corrupt") from exc
+    if len(members) > limits.max_zip_members:
+        raise ConvertError("too_large")
+    if sum(max(item.file_size, 0) for item in members) > limits.max_expanded_bytes:
+        raise ConvertError("too_large")
+
+
+def cap_output(markdown: str, limits: ConvertLimits) -> tuple[str, bool]:
+    if len(markdown) <= limits.max_output_chars:
+        return markdown, False
+    cut = markdown.rfind("\n", 0, limits.max_output_chars)
+    return markdown[: cut if cut > 0 else limits.max_output_chars], True

@@ -82,7 +82,8 @@ if command -v pip3 >/dev/null 2>&1; then
         | sed -n 's/.*(python \([0-9][0-9]*\.[0-9][0-9]*\)).*/\1/p' || true)"
     if python_version_at_least "${HOST_PIP_PYTHON}" "${TARGET_PYTHON_VERSION}"; then
         echo "Vendoring Python wheels for ${PLATFORM} into vendor/wheels"
-        pip3 download -r "${PROJECT_ROOT}/backend/requirements.txt" -d "${VENDOR_DIR}" \
+        pip3 download -r "${PROJECT_ROOT}/backend/requirements.txt" \
+            -r "${PROJECT_ROOT}/backend/connector-requirements.txt" -d "${VENDOR_DIR}" \
             --only-binary=:all: "${PIP_PLATFORMS[@]}" \
             --python-version "${TARGET_PYTHON_VERSION}" --implementation cp \
             --abi "cp${TARGET_PYTHON_VERSION//./}" --abi abi3 --abi none \
@@ -126,6 +127,11 @@ fi
 (cd "${PROJECT_ROOT}" && ${BUILD_CMD} --build-arg "PIP_INDEX_URL=${PIP_INDEX_URL}" \
     -t "onto-modeling:${VERSION}" -f Dockerfile .)
 (cd "${IMAGES_DIR}" && docker save -o "onto-modeling-${VERSION}.tar" "onto-modeling:${VERSION}")
+# 连接器网关（ADR-0073）：同一个 Dockerfile 的 connector-gateway 目标，单独的镜像（转换库不进主服务镜像）
+(cd "${PROJECT_ROOT}" && ${BUILD_CMD} --build-arg "PIP_INDEX_URL=${PIP_INDEX_URL}" --target connector-gateway \
+    -t "onto-modeling-connector-gateway:${VERSION}" -f Dockerfile .)
+(cd "${IMAGES_DIR}" && docker save -o "onto-modeling-connector-gateway-${VERSION}.tar" \
+    "onto-modeling-connector-gateway:${VERSION}")
 
 AUTH_SERVER_SRC="${REPOSITORY_ROOT}/auth-server"
 [ -d "${AUTH_SERVER_SRC}" ] || {
@@ -147,6 +153,7 @@ chmod +x "${BUNDLE_DIR}/deploy.sh" "${BUNDLE_DIR}/preflight.sh" \
 cat > "${BUNDLE_DIR}/images.env" <<EOF
 ONTO_WEB_IMAGE=onto-modeling:${VERSION}
 AUTH_SERVER_IMAGE=onto-modeling-auth-server:${VERSION}
+CONNECTOR_GATEWAY_IMAGE=onto-modeling-connector-gateway:${VERSION}
 RELEASE_VERSION=${VERSION}
 RELEASE_ARCH=${RELEASE_ARCH}
 EOF

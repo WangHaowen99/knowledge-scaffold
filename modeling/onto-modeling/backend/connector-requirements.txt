@@ -1,0 +1,8 @@
+# 连接器网关镜像的依赖（ADR-0073）：只装进网关镜像，不进主服务镜像——解析不可信文件的库不放在助手所在的容器里。
+# 许可证：pdfplumber、pdfminer.six、python-docx、openpyxl 都是 MIT；pypdfium2（pdfplumber 依赖）Apache-2.0 / BSD-3；
+# 不用 PyMuPDF（AGPL）。
+pdfplumber>=0.11,<0.12
+python-docx>=1.1,<2
+openpyxl>=3.1
+pyyaml>=6
+pyjwt[crypto]>=2.8
