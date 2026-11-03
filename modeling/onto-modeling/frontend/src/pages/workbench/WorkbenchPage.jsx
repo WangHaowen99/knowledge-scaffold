@@ -751,7 +751,7 @@ export default function WorkbenchPage({ route }) {
             <div className="wbc-main" ref={mainRef} onScroll={onScroll}>
               <div className="wbc-col">
                 {conv.loadError ? <div className="note red mt16"><Icon name="alert" /><div className="grow">{errorText(conv.loadError)}</div></div> : null}
-                {inc.hideTimeline ? null : <Timeline state={state} scope={scope} onInterrupt={canInterrupt(running, ab) ? interrupt : null} />}
+                {inc.hideTimeline ? null : <Timeline state={state} scope={scope} onInterrupt={canInterrupt(running, ab) ? interrupt : null} live={!ab.running} />}
                 {state.session.state === 'queued' && state.queue ? <QueueCard queue={state.queue} onCancel={() => api.cancelQueue(pid, cid).catch(fail)} /> : null}
               </div>
             </div>
