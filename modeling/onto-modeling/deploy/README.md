@@ -144,6 +144,23 @@ capability 运行，不读 `.env`、不挂数据卷、不发布端口；它只�
   容器内执行。
 - 管理员可在「配置中心 → 沙箱」查看是否已连接、沙箱内 Python 版本与包列表，并重新检测。
 
+## 连接器网关（资料转文本）
+
+用户上传的 PDF（文字版）、Word、Excel 在后台转成 Markdown 文本版，供资料分析和助手读（ADR-0073）。转换不在
+onto-modeling 容器里做：上传的文件不可信，解析可能卡死、吃满内存，解析库也不该出现在助手所在的容器里。
+
+- 服务 `connector-gateway`（容器 `onto-modeling-connector-gateway`）用**单独的镜像**
+  `onto-modeling-connector-gateway:<版本>`（同一个 Dockerfile 的 `connector-gateway` 目标），离线包里多一个
+  镜像 tar，`deploy.sh` 一起加载；`redeploy-app.sh` 一起重建、替换（旧部署目录的 compose 没有这个服务时跳过）。
+- 只接 `internal: true` 的 `connector` 网络（和 onto-modeling 互通，没有出口），不挂数据卷、不读 `.env`、
+  不存凭据、不发布端口；非 root、只读根文件系统、无 capability，内存 1.5G、最多 64 个进程。
+- 每个转换一个子进程：120 秒超时、768 MiB 内存、16 MiB 输出上限，同时最多 2 个；
+  可用 `ONTO_CONNECTOR_JOB_TIMEOUT_S`、`ONTO_CONNECTOR_JOB_MEMORY_MB`、`ONTO_CONNECTOR_MAX_CONCURRENT` 调（网关容器的环境变量）。
+- onto-modeling 经 `ONTO_WEB_CONNECTOR_GATEWAY_URL=http://connector-gateway:8120` 调它，每次带一张内核签的一次性
+  票据；网关从 `http://onto-modeling:8100/api/v1/connector/issuer-key` 取公钥验签。
+- 网关停了不丢活：资料标「等待转换」，网关恢复后 30 秒内自动补转；升级后已有项目里还没有文本版的资料在后台补转一次。
+- 健康状态在运维中心「健康与依赖」的「连接器网关」一行和启动自检报告里。
+
 ## 从原 modeling 服务迁移数据
 
 deploy.sh 部署完成后会自动检测 `mw-modeling` 容器（可用

@@ -68,6 +68,10 @@ cd backend && ONTO_WEB_AUTH_URL=http://127.0.0.1:5056 ONTO_WEB_AUTH_ISSUER=http:
 - 打开 `http://127.0.0.1:8100`，用 `admin` 和初始密码登录；模型网关在「系统设置 → 模型接入」或 `.env` 里配。
 - 脚本验证与脚本节点要沙箱网关（`ONTO_WEB_SANDBOX_GATEWAY_URL`），本机没有时这两项报沙箱不可用，其余不受影响；
   要全套（含网关）用 `docker compose up --build`。
+- PDF、Word、Excel 转文本要连接器网关（`ONTO_WEB_CONNECTOR_GATEWAY_URL`，ADR-0073），本机没有时这些资料停在「等待转换」；
+  本机单独起网关：`cd backend && pip install -r connector-requirements.txt && ONTO_CONNECTOR_CONVERTERS_DIR=../assets/packs
+  ONTO_CONNECTOR_ISSUER_KEY_URL=http://127.0.0.1:8100/api/v1/connector/issuer-key python -m app.connector_gateway`，
+  再给后端设 `ONTO_WEB_CONNECTOR_GATEWAY_URL=http://127.0.0.1:8120`。
 
 模型接入通过环境变量注入（见 `.env.example`），不落盘、不进仓库。
 
@@ -540,12 +544,18 @@ cd backend && ./venv/bin/python -m pytest tests/
 cd frontend && npm test && npm run build
 ```
 
+转换器与连接器网关的测试要转换库（`backend/connector-requirements.txt`，只装进网关镜像）：没装时 `test_f4a_converters.py` 和网关测试里用真转换器的那条跳过，
+Linux 全量用装了它的测试镜像。
+
 ## 构建与部署
 
 ```bash
 ./build.sh <version> [amd|arm]     # 产出 dist/onto-modeling-<version>-linux-<arch>.tar.gz
-docker compose up --build          # 本地从源码起全栈（onto-modeling + auth-server）验证
+docker compose up --build          # 本地从源码起全栈（onto-modeling + auth-server + 两个网关）验证
 ```
+
+离线包里有三个镜像：onto-modeling、auth-server、连接器网关（`onto-modeling-connector-gateway`，同一个 Dockerfile 的
+`connector-gateway` 目标，只装 `backend/connector-requirements.txt` 里的转换库，见 ADR-0073）。
 
 依赖复用（需 BuildKit，Docker Desktop / buildx 默认开启）：
 
