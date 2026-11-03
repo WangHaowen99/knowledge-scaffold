@@ -3,14 +3,13 @@ import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
 import { mockData, register, stages } from '../src/api/mock/routes-materials.js';
 import {
-  addSlice, blueprintPayload, budgetText, depAfter, depLabel, editableSlices, isDirty, mergeSlices, moveSlice, orderLabel,
-  renameSlice, sliceInputs, toggleExcluded,
+  addSlice, blueprintPayload, budgetText, depAfter, depLabel, editableSlices, goalPending, goalQuestion, isDirty,
+  mergeSlices, moveSlice, orderLabel, renameSlice, sliceInputs, toggleExcluded,
 } from '../src/pages/workbench/materials/model.js';
 
 const bp = () => mockData.blueprintOf();
 const editOf = (b) => ({
   slices: editableSlices(b.slices),
-  out_of_scope: [...b.out_of_scope],
   terms: Object.fromEntries(b.terms.ambiguous.map((t) => [t.id, t.chosen])),
   answers: Object.fromEntries(b.questions.map((q) => [q.id, null])),
 });
@@ -66,10 +65,12 @@ test('BP-02 请求体：只带改过的部分；分段按数组顺序给整份�
   const edit = editOf(b);
   assert.equal(isDirty(blueprintPayload(b, edit, 'adjust')), false);
   const { list } = mergeSlices(edit.slices, ['s3', 's4']);
-  const body = blueprintPayload(b, { ...edit, slices: list, out_of_scope: ['采购价格'], terms: { ...edit.terms, 't-expiry': '临期' }, answers: { ...edit.answers, 'bq-ledger': 'A' } }, 'adjust');
+  const body = blueprintPayload(b, { ...edit, slices: list, terms: { ...edit.terms, 't-expiry': '临期' }, answers: { ...edit.answers, 'bq-ledger': 'A' } }, 'adjust');
   assert.equal(body.base_revision, b.revision);
   assert.equal(body.mode, 'adjust');
-  assert.deepEqual(body.out_of_scope, ['采购价格']);
+  // 「不在范围」已取消（F4b），请求体里不再有这一项
+  assert.equal(body.out_of_scope, undefined);
+  assert.equal(b.out_of_scope, undefined);
   assert.equal(body.slices.length, 4);
   assert.deepEqual(body.slices[2].merged_from, ['s3', 's4']);
   assert.equal(body.slices[0].merged_from, undefined);
@@ -127,8 +128,17 @@ test('BP-02：版本号冲突 409、依赖顺序不对 400、保存调整草案�
   assert.deepEqual(r.body.slices[2].scale, { objects: 5, rules: 4 });
   const card = s.events.filter((e) => e.type === 'card.updated').at(-1).data;
   assert.equal(card.title, '建模蓝图 · 草案 v3');
-  const draft = s.call('PUT', '/blueprint', { base_revision: r.body.revision, mode: 'draft', out_of_scope: ['采购价格'] });
+  const draft = s.call('PUT', '/blueprint', { base_revision: r.body.revision, mode: 'draft', term_choices: [] });
   assert.equal(draft.body.version_label, '草案 v3');
+});
+
+test('目标问题：没答之前卡片不能确认；目标问题放在目标下面答（F4b）', () => {
+  assert.equal(goalPending({ goal_question: { id: 'q1', title: '以哪个为准？', answered: false } }), true);
+  assert.equal(goalPending({ goal_question: { id: 'q1', title: '以哪个为准？', answered: true } }), false);
+  assert.equal(goalPending({ goal_question: null }), false);
+  const goal = { id: 'q2', kind: 'goal', title: '以哪个为准？', options: [{ id: 'A', label: '改成：按盘点生成补货单' }, { id: 'B', label: '保持原目标' }] };
+  assert.equal(goalQuestion([{ id: 'q1', title: '台账要不要建成对象？' }, goal]), goal);
+  assert.equal(goalQuestion([{ id: 'q1', title: '台账要不要建成对象？' }]), null);
 });
 
 test('BP-03：L2 发「开始第一段」并把资料分析标为已确认；L4 返回自主构建预览', () => {

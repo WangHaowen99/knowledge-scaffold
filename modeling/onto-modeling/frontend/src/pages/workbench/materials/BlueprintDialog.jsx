@@ -1,15 +1,16 @@
-// 调整建模蓝图（设计稿 wb-blueprint #enBpM）：目标、范围外、分段规划（拖动排序、合并、拆分、排除、改名、新增）、术语口径、待你回答
-// BP-01 读、BP-02 整份分段列表保存；按章节拆分要读资料，走 S-20 命令
+// 调整建模蓝图（设计稿 wb-blueprint #enBpM）：要解决的问题、分段规划（拖动排序、合并、拆分、排除、改名、新增）、术语口径、待你回答
+// BP-01 读、BP-02 整份分段列表保存；按章节拆分要读资料，走 S-20 命令。
+// 要解决的问题就是项目的建模目标（F4b）：在这里改目标走 P-05；资料和目标对不上的那个问题放在目标下面答
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../../app/context.js';
 import { toast } from '../../../app/toast.jsx';
 import { errorText } from '../../../api/errors.js';
 import {
-  Button, Ev, Icon, Menu, Modal, Note, cx, useOutside,
+  Button, Icon, Menu, Modal, Note, cx, useOutside,
 } from '../../../ui/index.jsx';
 import { pageCommand } from './parts.jsx';
 import {
-  addSlice, anchorLabel, blueprintPayload, depAfter, depLabel, editableSlices, isDirty, mergeSlices, moveSlice, orderLabel,
+  addSlice, blueprintPayload, depAfter, depLabel, editableSlices, goalQuestion, isDirty, mergeSlices, moveSlice, orderLabel,
   renameSlice, toggleExcluded,
 } from './model.js';
 import '../../../styles/materials.css';
@@ -17,7 +18,6 @@ import '../../../styles/materials.css';
 function initEdit(bp) {
   return {
     slices: editableSlices(bp.slices),
-    out_of_scope: [...(bp.out_of_scope || [])],
     terms: Object.fromEntries((bp.terms?.ambiguous || []).map((t) => [t.id, t.chosen])),
     answers: Object.fromEntries((bp.questions || []).map((q) => [q.id, q.answer?.option_id || null])),
   };
@@ -51,7 +51,7 @@ export function BlueprintDialog({ onClose }) {
   const [edit, setEdit] = useState(null);
   const [sel, setSel] = useState([]);
   const [renaming, setRenaming] = useState(null);
-  const [adding, setAdding] = useState(null);
+  const [goalDraft, setGoalDraft] = useState(null);
   const [drag, setDrag] = useState(null);
   const [over, setOver] = useState(null);
   const [grip, setGrip] = useState(null);
@@ -109,6 +109,23 @@ export function BlueprintDialog({ onClose }) {
   };
   const move = (from, to) => setSlices((l) => moveSlice(l, from, to));
 
+  // 改目标就是改项目的建模目标（P-05）；蓝图里不另存一份
+  const saveGoal = async () => {
+    const goal = (goalDraft || '').trim();
+    if (!goal || busy) return;
+    setBusy(true);
+    try {
+      await api.patchProject(pid, { goal });
+      setGoalDraft(null);
+      toast('建模目标已更新', 'check');
+      await load();
+    } catch (e) {
+      toast(errorText(e), 'alert');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const save = async (mode) => {
     if (!bp || busy) return;
     let current = edit;
@@ -141,7 +158,9 @@ export function BlueprintDialog({ onClose }) {
 
   const live = slices.filter((s) => !s.excluded).length;
   const terms = bp?.terms || { aligned: [], ambiguous: [] };
-  const questions = bp?.questions || [];
+  // 目标问题放在「要解决的问题」下面答，其余问题照旧在「待你回答」
+  const goalAsk = goalQuestion(bp?.questions || []);
+  const questions = (bp?.questions || []).filter((q) => q !== goalAsk);
   return (
     <Modal
       open onClose={onClose} icon="layers" title="调整建模蓝图" w={1100}
@@ -160,36 +179,41 @@ export function BlueprintDialog({ onClose }) {
       {bp && edit ? (
         <div style={{ marginTop: -20 }}>
           <div className="en-bp-sec">
-            <h4><Icon name="target" size={14} />要解决的问题</h4>
-            <div className="sm" style={{ lineHeight: 1.7, color: 'var(--ink2)' }}>
-              {bp.goal_md}{bp.goal_anchor ? <Ev anchor={bp.goal_anchor} label={bp.goal_anchor_label || anchorLabel(bp.goal_anchor)} /> : null}。
-            </div>
-          </div>
-
-          <div className="en-bp-sec">
-            <h4><Icon name="ban" size={14} />不在范围内</h4>
-            <div className="row wrap" style={{ gap: 6 }}>
-              {edit.out_of_scope.map((t) => (
-                <span key={t} className="chip line en-chip-x">{t}<span style={{ display: 'flex', cursor: 'pointer' }} title="移出" onClick={() => setEdit((e) => ({ ...e, out_of_scope: e.out_of_scope.filter((x) => x !== t) }))}><Icon name="x" size={12} /></span></span>
-              ))}
-              {adding != null ? (
-                <div className="inp focus" style={{ height: 28, width: 180, padding: '0 8px' }}>
+            <h4>
+              <Icon name="target" size={14} />要解决的问题<span className="sp" />
+              {goalDraft == null ? <Button size="xs" kind="ghost" icon="edit" onClick={() => setGoalDraft(bp.goal_md || '')}>修改</Button> : null}
+            </h4>
+            {goalDraft == null ? (
+              <div className="sm" style={{ lineHeight: 1.7, color: 'var(--ink2)' }}>{bp.goal_md}</div>
+            ) : (
+              <div className="row g8">
+                <div className="inp focus grow" style={{ height: 32, padding: '0 8px' }}>
                   <input
-                    autoFocus value={adding} placeholder="比如：促销定价" maxLength={40}
-                    onChange={(e) => setAdding(e.target.value)}
-                    onBlur={() => setAdding(null)}
+                    autoFocus value={goalDraft} maxLength={500}
+                    onChange={(e) => setGoalDraft(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Escape') { e.stopPropagation(); setAdding(null); }
-                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-                        const v = adding.trim();
-                        if (v && !edit.out_of_scope.includes(v)) setEdit((x) => ({ ...x, out_of_scope: [...x.out_of_scope, v] }));
-                        setAdding(null);
-                      }
+                      if (e.key === 'Escape') { e.stopPropagation(); setGoalDraft(null); }
+                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) saveGoal();
                     }}
                   />
                 </div>
-              ) : <span className="chip gray" style={{ height: 28, cursor: 'pointer' }} onClick={() => setAdding('')}><Icon name="plus" />添加</span>}
-            </div>
+                <Button size="sm" onClick={() => setGoalDraft(null)}>取消</Button>
+                <Button size="sm" kind="primary" disabled={busy || !goalDraft.trim()} onClick={saveGoal}>保存</Button>
+              </div>
+            )}
+            {goalAsk ? (
+              <div className="en-q mt8" key={goalAsk.id}>
+                <div className="b sm">{goalAsk.title}</div>
+                {goalAsk.background ? <div className="xs muted mt4">{goalAsk.background}</div> : null}
+                <div className="os">
+                  {goalAsk.options.map((o, k) => (
+                    <span key={o.id} className={cx(edit.answers[goalAsk.id] === o.id && 'on')} onClick={() => setEdit((e) => ({ ...e, answers: { ...e.answers, [goalAsk.id]: e.answers[goalAsk.id] === o.id ? null : o.id } }))}>
+                      <b>{String.fromCharCode(65 + k)}</b>{o.label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="en-bp-sec">
