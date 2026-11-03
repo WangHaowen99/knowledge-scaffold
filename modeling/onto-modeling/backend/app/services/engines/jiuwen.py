@@ -724,10 +724,13 @@ class JiuwenEngine(ObservableEngine):
         from openjiuwen.harness.workspace.workspace import Workspace
 
         from ...governance import agent_identity
+        from . import jiuwen_sandbox
         from .jiuwen_assets import build_hooks_rail
 
         # 方案 E10：agent 执行的命令只给最小环境、以 agent 用户运行（进程内引擎，包一层命令执行）
         agent_identity.install_jiuwen_shell_isolation()
+        # 助手副本顶层的 resource 链接（指向主线资料区）文件工具只读放行（F2 第 9 条）
+        jiuwen_sandbox.install()
         context = cfg["context"]
         model = init_model(
             provider="OpenAI",
