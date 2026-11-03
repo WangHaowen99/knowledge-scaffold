@@ -141,7 +141,18 @@ def view(manager, project_id: str, loaded: dict | None = None) -> dict:
     data = script(root).view(loaded["doc"])
     data.update(revision=loaded["revision"], research=_research(loaded["base"]), evidence_hint=None,
                 goal_md=project_goal(manager, project_id) or data["goal_md"])
+    _humanize_questions(data["questions"], manager.project_root(project_id))
     return data
+
+
+def _humanize_questions(questions: list[dict], main: Path) -> None:
+    """问题标题、背景里助手写的资料路径换成「资料名 · 位置」（F4c）；蓝图文件里的原文不变，助手照旧读原文。"""
+    from .. import research_view
+
+    for item in questions:
+        for key in ("title", "background"):
+            if item.get(key):
+                item[key] = research_view.humanize(main, item[key])
 
 
 def project_goal(manager, project_id: str) -> str:
@@ -427,8 +438,11 @@ def purge(root: Path) -> None:
         pass
 
 
-def blueprint_card(module, doc: dict, card_id: str, *, research_verified: bool, goal: str | None = None) -> dict:
+def blueprint_card(module, doc: dict, card_id: str, *, research_verified: bool, goal: str | None = None,
+                   main: Path | None = None) -> dict:
     data = module.view(doc)
+    if main is not None:
+        _humanize_questions(data["questions"], main)
     goal_question = next((item for item in data["questions"] if item.get("kind") == "goal"), None)
     return {
         "card_id": card_id, "card_type": "blueprint", "eyebrow": "", "title": f"建模蓝图 · {data['version_label']}",
@@ -513,7 +527,7 @@ def round_cards(manager, project_id: str, changes: dict, seed: str, root: Path |
             cards.append(summary)
     research = _research(base)
     card = blueprint_card(module, doc, f"{seed}-blueprint", research_verified=research["verified"],
-                          goal=project_goal(manager, project_id))
+                          goal=project_goal(manager, project_id), main=main)
     cards.append(card)
     if conversation_id:
         _register(main, conversation_id, card["card_id"])
@@ -532,5 +546,5 @@ def card_updates(manager, project_id: str) -> list[tuple[str, dict]]:
     goal = project_goal(manager, project_id)
     return [(item["conversation_id"], {"type": "card_updated",
                                        "payload": blueprint_card(module, doc, item["card_id"], research_verified=verified,
-                                                                 goal=goal)})
+                                                                 goal=goal, main=root)})
             for item in _registered(root) if item.get("conversation_id") and item.get("card_id")]

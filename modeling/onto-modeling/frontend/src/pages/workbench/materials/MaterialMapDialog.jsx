@@ -53,7 +53,7 @@ function MaterialCard({
       <div className="row g12">
         <MatIcon kind={item.kind} boxed />
         <div className="grow" style={{ minWidth: 0 }}>
-          <div className="nm ell" title={item.path}>{item.name}</div>
+          <div className="nm ell" title={item.label || item.name}>{item.label || item.name}</div>
           <div className="mt4">
             <span className={cx('role', ai && 'ai')} onMouseDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onMenu(); }}>
               {ai ? <Icon name="sparkle" size={12} /> : null}{purposeLabel(item.purpose)}<Icon name="chevd" size={12} />
@@ -100,7 +100,7 @@ function SideBySide({ problem, onClose }) {
     return () => { alive = false; };
   }, [api, pid, problem]);
   return (
-    <Modal open onClose={onClose} icon="filetext" title="并排看原文" sub={<AnchorText text={problem.text_md} anchors={problem.anchors} />} w={960} foot={<Button onClick={onClose}>关闭</Button>}>
+    <Modal open onClose={onClose} icon="filetext" title="并排看原文" sub={<AnchorText text={problem.display_md || problem.text_md} anchors={problem.anchors} />} w={960} foot={<Button onClick={onClose}>关闭</Button>}>
       {!docs ? <div className="muted sm">正在读取原文…</div> : (
         <div className="en-side">
           {docs.map((d) => (
@@ -282,7 +282,7 @@ export function MaterialMapDialog({ onClose, initialVerify = false }) {
                   return (
                     <div className="en-iss" key={p.id}>
                       <div className="tp" style={{ color: p.kind === 'contradiction' ? 'var(--amber)' : 'var(--indigo)' }}>{p.kind === 'contradiction' ? '资料矛盾' : '疑似缺失'}</div>
-                      <div className="sm mt4"><AnchorText text={p.text_md} anchors={p.anchors} /></div>
+                      <div className="sm mt4"><AnchorText text={p.display_md || p.text_md} anchors={p.anchors} /></div>
                       <div className="row mt8">
                         {p.kind === 'contradiction' ? (
                           <>

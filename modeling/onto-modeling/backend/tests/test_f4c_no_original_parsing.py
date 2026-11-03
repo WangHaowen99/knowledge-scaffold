@@ -22,6 +22,7 @@ import pytest
 from app import config, kernel_guards
 from app.services import package_mapping
 from app.services.engines.jiuwen_assets import run_hooks_sync
+from tests.test_blueprint import env  # noqa: F401 - 夹具
 from tests.test_jiuwen_assets import _git_workspace, make_loader
 from tests.test_research_review import make_report, row, toolkit, workspace, write_report  # noqa: F401 - 夹具
 
@@ -171,6 +172,40 @@ def test_legacy_anchor_on_an_original_without_a_text_version_cannot_be_verified(
     result = checker.run_check(workspace)
     assert result["status"] == review.UNVERIFIABLE
     assert any("文本版" in issue["message"] for issue in result["issues"])
+
+
+# ---------------------------------------------------------------------------
+# 4. 资料分析给人看的地方不露路径：「资料名 · 位置」
+# ---------------------------------------------------------------------------
+
+
+def test_research_texts_show_material_name_and_place_not_paths(tmp_path):
+    from app.services import research_view
+
+    _materials(tmp_path)  # 通知.pdf 的文本版：第 1 行文件头、第 2 行「第 1 页」标记、第 3 行正文
+    (tmp_path / "resource" / "others" / "说明.md").write_text("# 受理\n\n超过 30 天不受理\n", encoding="utf-8")
+    assert research_view.anchor_label(tmp_path, "resource/text/others/通知.pdf.md", "L3") == "通知 · 第 1 页"
+    assert research_view.anchor_label(tmp_path, "resource/others/说明.md", "L3") == "说明 · 受理"
+    assert research_view.anchor_label(tmp_path, "resource/others/规范.docx", "p:2") == "规范 · 第 2 段"
+    text = "资料 resource/text/others/通知.pdf.md#L3 和 resource/others/说明.md#L3 对不上，见 research/报告.md"
+    shown = research_view.humanize(tmp_path, text)
+    assert "通知 · 第 1 页" in shown and "说明 · 受理" in shown
+    assert "resource/" not in shown and ".md" not in shown and ".pdf" not in shown
+
+
+def test_blueprint_question_titles_hide_paths(env):
+    from tests.test_blueprint import DRAFT, _write_mainline
+    from app.services.packs import contracts
+
+    client, _workspaces, _manager, project_id, root = env
+    _materials(root)
+    question = {"title": "resource/text/others/通知.pdf.md#L3 说的额度是累计还是单笔？",
+                "background": "见 resource/others/说明.md", "options": ["累计", "单笔"]}
+    _write_mainline(root, contracts.default().load("blueprint").from_draft({**DRAFT, "questions": [question]}))
+    got = client.get(f"/api/v1/projects/{project_id}/blueprint").json()["questions"][0]
+    assert got["title"].startswith("通知 · 第 1 页") and "resource/" not in got["title"] + got["background"]
+    on_disk = json.loads((root / "research" / "blueprint.json").read_text(encoding="utf-8"))["questions"][0]
+    assert on_disk["title"].startswith("resource/text/others/通知.pdf.md#L3")  # 助手读的原文不变
 
 
 # ---------------------------------------------------------------------------

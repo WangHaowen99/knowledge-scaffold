@@ -126,7 +126,9 @@ def test_map_candidates_verification_from_the_report(env):
     assert statuses["ITEM-04 门店等级"] == ("unverifiable", "没有来源位置")
     assert verification["total"] == 4 and verification["passed"] == 1 and verification["problems"] == 3
     first = verification["items"][0]
-    assert first["anchor"] == "file:resource/others/01-补货说明.md#L3" and first["anchor_label"] == "01-补货说明 第 3 行"
+    # F4c：给人看的出处是「资料名 · 位置」，行号换成它所在的小节标题（ADR-0075）
+    assert first["anchor"] == "file:resource/others/01-补货说明.md#L3"
+    assert first["anchor_label"] == "01-补货说明 · 合成补货说明"
     assert first["kind"] == "object"
     candidates = client.get(f"{base}/materials/candidates").json()
     assert [(item["kind"], item["name"]) for item in candidates["items"]] == [("object", "门店"), ("rule", "超量规则")]
