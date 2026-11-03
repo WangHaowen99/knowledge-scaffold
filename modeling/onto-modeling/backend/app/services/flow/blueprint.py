@@ -159,7 +159,7 @@ def _check_revision(loaded: dict, base_revision) -> None:
 
 
 def _invalid(exc) -> WorkspaceError:
-    """脚本的校验错误 → 契约错误：切片编辑不合法是 slice_invalid（带 reason），其余是字段错误。"""
+    """脚本的校验错误 → 契约错误：分段编辑不合法是 slice_invalid（带 reason），其余是字段错误。"""
     fields = {"term_invalid": "term_choices", "answer_invalid": "answers"}
     if exc.reason in fields:
         return WorkspaceError(str(exc), 400, "invalid_argument", {"fields": {fields[exc.reason]: "invalid"}})
@@ -288,7 +288,7 @@ def mark_confirmed(manager, project_id: str, *, actor: str) -> dict:
 
 
 def first_command(manager, project_id: str) -> tuple[str, dict]:
-    """「开始第一个切片」：第一片（全量模式不带切片）的对象提取。"""
+    """「开始第一段」：第一段（全量模式不带分段）的对象提取。"""
     doc = load_doc(manager.project_root(project_id))
     module = script(manager.project_root(project_id))
     live = module.live_slices(doc)
@@ -298,10 +298,10 @@ def first_command(manager, project_id: str) -> tuple[str, dict]:
 
 
 def run_slices(manager, project_id: str) -> list[dict]:
-    """按片执行用的切片列表（自主构建 B5b）：按建议顺序、没排除的片，带依赖、这一片的说明与现在的进度。
+    """按段执行用的分段列表（自主构建 B5b）：按建议顺序、没排除的段，带依赖、这一段的说明与现在的进度。
 
-    [{id, name, core_flow, depends_on, brief, group, stages}]；没有蓝图或全量模式时是一片「全部」。
-    说明（brief）与建模命令在工作区里 `blueprint.py brief <片>` 输出的是同一份。"""
+    [{id, name, core_flow, depends_on, brief, group, stages}]；没有蓝图或全量模式时是一段「全部」。
+    说明（brief）与建模命令在工作区里 `blueprint.py brief <段>` 输出的是同一份。"""
     from . import model, slices
 
     root = manager.project_root(project_id)
@@ -321,7 +321,7 @@ def run_slices(manager, project_id: str) -> list[dict]:
 
 def drop_added_members(root: Path, slice_id: str, parent: bytes | None, merged: bytes | None,
                        current: bytes | None) -> bytes | None:
-    """按片撤回（审查 L）：这一片合入时新记进蓝图的条目（合入提交比它的上一版多出来的）从现在的蓝图里去掉，
+    """按段撤回（审查 L）：这一段合入时新记进蓝图的条目（合入提交比它的上一版多出来的）从现在的蓝图里去掉，
     别的不动。没有要去掉的、蓝图读不出时返回 None（蓝图不动）。"""
     if not merged or not current:
         return None
@@ -331,7 +331,7 @@ def drop_added_members(root: Path, slice_id: str, parent: bytes | None, merged: 
         after = module.find_slice(module.parse(merged.decode("utf-8")), slice_id)
         doc = module.parse(current.decode("utf-8"))
     except (AttributeError, UnicodeDecodeError, module.BlueprintError):
-        _log.warning("撤回切片 %s 时蓝图读不出，蓝图不动", slice_id, exc_info=True)
+        _log.warning("撤回分段 %s 时蓝图读不出，蓝图不动", slice_id, exc_info=True)
         return None
     target = module.find_slice(doc, slice_id)
     if after is None or target is None:
@@ -413,10 +413,10 @@ def blueprint_card(module, doc: dict, card_id: str, *, research_verified: bool) 
 
 
 def confirm_options(state: str) -> list[dict]:
-    """蓝图卡底部的确认按钮（BP-03 的 next）：草案时「确认，一片一片来」，自主构建可用时再加「确认，一路建完…」。"""
+    """蓝图卡底部的确认按钮（BP-03 的 next）：草案时「确认，一段一段来」，自主构建可用时再加「确认，一路建完…」。"""
     if state == "confirmed":
         return []
-    options = [{"mode": "L2", "label": "确认，一片一片来"}]
+    options = [{"mode": "L2", "label": "确认，一段一段来"}]
     if autobuild_available():
         options.append({"mode": "L4", "label": "确认，一路建完…"})
     return options

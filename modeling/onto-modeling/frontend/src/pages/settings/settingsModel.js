@@ -144,7 +144,7 @@ export function budgetPct(value, limit) {
   return Math.max(0, Math.min(100, Math.round((value / limit) * 100)));
 }
 
-// 范围里的切片：BP-01 给清单，FL-01 给现状；group 取 flow 的 done | wait | now | todo
+// 范围里的分段：BP-01 给清单，FL-01 给现状；group 取 flow 的 done | wait | now | todo
 export function sliceRows(blueprintSlices, flowSlices) {
   const fl = new Map((flowSlices || []).map((s) => [s.id, s]));
   const base = (blueprintSlices && blueprintSlices.length ? blueprintSlices : flowSlices || []);
@@ -215,14 +215,14 @@ export const runStateText = (run) => (run ? `运行 #${run.run_no} ${RUN_STATE[r
 export function startBlocker({ archived, active, rows }) {
   if (archived) return '项目已归档，不能开始自主构建';
   if (active) return `${runStateText(active)}，结束后才能开始下一次`;
-  if (rows && !rows.some((r) => !r.done)) return '没有未完成的切片';
+  if (rows && !rows.some((r) => !r.done)) return '没有未完成的分段';
   return null;
 }
 
 // 保存前：把生产库授权里正在编辑的时间窗口、采集范围文字并进表单；返回 { form, problems }
 export function finalizePolicy(form, drafts = {}) {
   const problems = {};
-  if (form?.scope?.mode === 'selected' && !(form.scope.slice_ids || []).length) problems.scope = '至少选一片';
+  if (form?.scope?.mode === 'selected' && !(form.scope.slice_ids || []).length) problems.scope = '至少选一段';
   const rows = (form?.production_collection || []).map((row) => {
     const d = drafts[row.source_id];
     if (!d) return row;

@@ -75,7 +75,7 @@ test('策略表单：只读字段不提交；生产库的时间窗口、采集�
   assert.deepEqual(ok.form.production_collection[0].scope, ['补货标准表', '商品品类表']);
   const bad = finalizePolicy(on, { 'erp-prod': { window: '晚上' } });
   assert.match(bad.problems['window:erp-prod'], /22:00 – 06:00/);
-  assert.deepEqual(finalizePolicy({ ...form, scope: { mode: 'selected', slice_ids: [] } }).problems, { scope: '至少选一片' });
+  assert.deepEqual(finalizePolicy({ ...form, scope: { mode: 'selected', slice_ids: [] } }).problems, { scope: '至少选一段' });
   assert.deepEqual(parseWindow('8:00-9:00'), { error: '写成「22:00 – 06:00」这样的起止时间' });
   assert.deepEqual(parseWindow('22:00-06:00'), { value: { start: '22:00', end: '06:00' } });
   assert.equal(windowText({ start: '22:00', end: '06:00' }), '22:00 – 06:00');
@@ -112,7 +112,7 @@ test('高级设置：摘要、是否推荐值、阈值滑块、资料优先级�
   assert.equal(moveItem(adv.source_priority, 1, 9), adv.source_priority);
 });
 
-test('范围与开始：切片现状取流程，已确认的不进范围；运行中、归档时不能开始', () => {
+test('范围与开始：分段现状取流程，已确认的不进范围；运行中、归档时不能开始', () => {
   const rows = sliceRows([{ id: 's1', name: '补货申请与门店需求' }, { id: 's2', name: '安全库存测算' }], F.flow().slices);
   assert.deepEqual(rows.map((r) => [r.id, r.group, r.done]), [['s1', 'done', true], ['s2', 'wait', false]]);
   assert.equal(rows[1].note, '2 条规则待确认');
@@ -120,7 +120,7 @@ test('范围与开始：切片现状取流程，已确认的不进范围；运�
   assert.equal(startBlocker({ archived: false, active: null, rows }), null);
   assert.equal(startBlocker({ archived: true, active: null, rows }), '项目已归档，不能开始自主构建');
   assert.equal(startBlocker({ active: { run_no: 4, state: 'queued' }, rows }), '运行 #4 排队中，结束后才能开始下一次');
-  assert.equal(startBlocker({ rows: [rows[0]] }), '没有未完成的切片');
+  assert.equal(startBlocker({ rows: [rows[0]] }), '没有未完成的分段');
   assert.equal(lastRunText({ run_no: 3, ended_at: '2026-11-01T09:02:00Z', duration_ms: 112 * 60000, reviewed: false }), `上次运行 #3 · 11-01 · 1 小时 52 分 · 待复核`);
   assert.equal(lastRunText(null), '还没有运行过自主构建');
 });
@@ -342,7 +342,7 @@ test('mock AB-01～AB-04、AB-18：保存的策略决定预览；开始后开一
   assert.deepEqual([conv.id, conv.title, conv.kind, conv.live], [run.body.conversation_id, '自主构建 · 运行 #4', 'autobuild', true]);
   const start = seeded.get(`${F.MAIN_PID}:${conv.id}`).find((e) => e.type === 'card').data;
   assert.equal(start.card_type, 'autobuild_start');
-  assert.deepEqual(start.chips.map((c) => c.value), ['选中的 2 片', '¥150 · 2 小时', '允许采集 ERP 生产库（22:00 – 06:00）', '采用保守选项并记为假设']);
+  assert.deepEqual(start.chips.map((c) => c.value), ['选中的 2 段', '¥150 · 2 小时', '允许采集 ERP 生产库（22:00 – 06:00）', '采用保守选项并记为假设']);
 
   const running = (await call('GET', `${P}/autobuild/runs?state=running`)).body.items;
   assert.deepEqual(running.map((r) => [r.run_no, r.state]), [[4, 'queued']]);

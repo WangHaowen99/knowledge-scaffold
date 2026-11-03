@@ -528,7 +528,7 @@ def payload(record: dict) -> tuple[str | None, dict | None]:
         return ("progress" if int(record.get("revision") or 1) <= 1 else "progress.updated"), record.get("group") or {}
     if kind == "user_message":
         if record.get("hidden"):
-            return None, None  # 自主构建运行器发的步骤（进展在切片进展块里）
+            return None, None  # 自主构建运行器发的步骤（进展在分段进展块里）
         return "message.user", {
             "message_id": message_id(record), "text": record.get("text") or "",
             "attachments": record.get("attachments") or [], "references": record.get("references") or [],

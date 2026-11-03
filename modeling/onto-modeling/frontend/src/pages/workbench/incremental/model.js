@@ -185,8 +185,8 @@ export function changeListIdFromInbox(items) {
   return hit ? hit.id.slice('change_list:'.length) : null;
 }
 
-// 已执行、还没确认生效的清单不在待处理里（IN-01 只列没执行的）：它的修改是一个待确认的助手变更集，
-// 落到那个变更集所在的对话（CS-01 state=pending_confirm 的 conversation_id，还在对话列表里的）
+// 已执行的清单不在待处理里（IN-01 只列没执行的）；升级前留下的、还没合入的变更集（F3 起一轮结束就合入）
+// 落到它所在的对话（CS-01 state=pending_confirm 的 conversation_id，还在对话列表里的）
 export function pendingChangesetConversation(changesets, conversations) {
   const ids = new Set((conversations || []).map((c) => c.id));
   const hit = (changesets || []).find((cs) => cs.source === 'assistant' && cs.conversation_id && ids.has(cs.conversation_id));

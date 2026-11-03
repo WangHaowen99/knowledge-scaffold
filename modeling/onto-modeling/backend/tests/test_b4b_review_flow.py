@@ -148,12 +148,12 @@ def test_21_confirming_a_redone_node_clears_its_review_flag(env):
 
 
 def test_21_autobuild_merges_keep_their_review_flag(project):
-    """自主构建自动合入的片：确认生效时不去掉，而是标「需复核（自主构建）」。"""
+    """自主构建自动合入的段：确认生效时不去掉，而是标「需复核（自主构建）」。"""
     workspaces, project_id, root = project
     copy = service.copy_for_turn(workspaces, project_id, root)
     slot = service.open_changeset(workspaces, project_id, source="autobuild", build_mode="L4", run_id="run-1",
                                   slice_id="s-1")
-    agent_write(copy, "ontology/object/门店.md", obj("门店", "片里写的门店"))
+    agent_write(copy, "ontology/object/门店.md", obj("门店", "段里写的门店"))
     service.observe(workspaces, project_id, running=False, exec_record={
         "id": "ex-1", "node": {"id": "core.object", "version": "core@0.2.0"}})
     service.merge(workspaces, project_id, slot["id"], actor="employee_0001", needs_review=True)
@@ -185,7 +185,7 @@ def test_22_feedback_review_actions_and_change_list_metamodel(env, monkeypatch):
     handled = client.post(f"/api/v1/projects/{project_id}/inbox/feedback:fb-2/actions",
                           json={"action": "send_to_evolution"}).json()
     assert handled["resolved"] is True
-    # 不是自主构建的需复核项没有「撤回这一片」
+    # 不是自主构建的需复核项没有「撤回这一段」
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
     main_write(root, "ontology/operation/补货.md", "# 补货\n\n## 业务描述\n\n合成\n")
     node_state.mark_needs_review(root, ["core.model"], "import")

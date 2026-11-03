@@ -1,9 +1,9 @@
-"""写入范围收窄到当前切片（详设 4.3「落到当前切片」；契约 7.6 ScopeLock、CS-06、2.4；ADR-0052）。
+"""写入范围收窄到当前分段（详设 4.3「落到当前分段」；契约 7.6 ScopeLock、CS-06、2.4；ADR-0052）。
 
-- 助手在跑：建模节点只锁这一片的条目（加上这一轮改过的、决策卡预览列出的），别的片照常能改；
-- 这一轮结束、修改待确认：锁变更集里做过的那几片；
-- 全量模式（没有蓝图或只有一片）：仍按节点声明的整类条目；
-- 守卫一侧：state_helper acquire 按这一片记下片外已有的条目（protect），守卫不让助手改它们，新建的照常。
+- 助手在跑：建模节点只锁这一段的条目（加上这一轮改过的、决策卡预览列出的），别的段照常能改；
+- 这一轮结束、修改待确认：锁变更集里做过的那几段；
+- 全量模式（没有蓝图或只有一段）：仍按节点声明的整类条目；
+- 守卫一侧：state_helper acquire 按这一段记下段外已有的条目（protect），守卫不让助手改它们，新建的照常。
 
 测试数据全部为合成内容。
 """
@@ -47,20 +47,20 @@ def test_running_slice_locks_only_its_entries(env, monkeypatch):
     lock = service.scope_lock(workspaces, project_id)
     assert lock["state"] == "assistant_running" and lock["slice"] == {"id": "s1", "name": "订单受理"}
     assert "ontology/object/*" not in lock["paths"] and "ontology/object/订单.md" in lock["paths"]
-    assert "ontology/testcase/受理订单.md" in lock["paths"]  # 这一片的场景也在范围里
+    assert "ontology/testcase/受理订单.md" in lock["paths"]  # 这一段的场景也在范围里
     assert {ref["id"] for ref in lock["entries"]} >= {"object:订单", "operation:受理订单"}
     assert "「订单受理」这一段" in lock["reason_text"]
     with pytest.raises(WorkspaceError) as exc:
         workspaces.write_file(project_id, "ontology/object/订单.md", obj("订单", "你在网页上改"), author="employee_0001")
     assert exc.value.status == 423
-    # 别的片的条目照常改，不再锁整类
-    saved = workspaces.write_file(project_id, "ontology/object/客户.md", obj("客户", "别的片照常改"),
+    # 别的段的条目照常改，不再锁整类
+    saved = workspaces.write_file(project_id, "ontology/object/客户.md", obj("客户", "别的段照常改"),
                                   author="employee_0001")
     assert saved["commit"]
     base = f"/api/v1/projects/{project_id}/scope"
     assert client.get(base, params={"target": "object:订单"}).json()["state"] == "assistant_running"
     assert client.get(base, params={"target": "object:客户"}).json()["state"] == "none"
-    # 决策卡预览列出的片外条目也进范围
+    # 决策卡预览列出的段外条目也进范围
     affected = [{"kind": "object", "id": "object:客户", "key": "客户", "name": "客户"}]
     monkeypatch.setattr(service, "_activity_provider", running({"id": "s1", "name": "订单受理"}, affected))
     assert client.get(base, params={"target": "object:客户"}).json()["state"] == "assistant_running"
@@ -79,7 +79,7 @@ def test_pending_changeset_locks_the_slices_it_worked_on(env, monkeypatch):
     lock = service.scope_lock(workspaces, project_id)
     assert lock["state"] == "pending_confirm" and lock["slice"] == {"id": "s1", "name": "订单受理"}
     assert "ontology/operation/受理订单.md" in lock["paths"] and "ontology/object/*" not in lock["paths"]
-    workspaces.write_file(project_id, "ontology/object/客户.md", obj("客户", "片外照常改"), author="employee_0001")
+    workspaces.write_file(project_id, "ontology/object/客户.md", obj("客户", "段外照常改"), author="employee_0001")
     with pytest.raises(WorkspaceError):
         workspaces.write_file(project_id, "ontology/operation/受理订单.md", "# 受理订单\n", author="employee_0001")
 
@@ -98,7 +98,7 @@ def test_guard_keeps_the_assistant_inside_its_slice(env):
     _client, workspaces, project_id, root = env
     _blueprint(root)
     copy = service.copy_for_turn(workspaces, project_id, root)
-    agent_write(copy, "ontology/object/新对象.md", obj("新对象", "这一轮新建"))  # 这一轮自己建的不算片外
+    agent_write(copy, "ontology/object/新对象.md", obj("新对象", "这一轮新建"))  # 这一轮自己建的不算段外
     (copy / ".onto" / "run").mkdir(parents=True, exist_ok=True)
     (copy / ".onto" / "run" / "exec.json").write_text(json.dumps({"exec_id": "ex-1", "node": "core.model",
                                                                   "slice": {"id": "s1", "name": "订单受理"}}))
@@ -122,11 +122,11 @@ def test_guard_keeps_the_assistant_inside_its_slice(env):
             "permissionDecision") == "deny"
 
     assert denied(guard("ontology/object/客户.md"))
-    assert "别的片已有的条目只读" in guard("ontology/object/客户.md")
+    assert "别的段已有的条目只读" in guard("ontology/object/客户.md")
     assert not denied(guard("ontology/object/订单.md"))
     assert not denied(guard("ontology/object/又一个新对象.md"))
     subprocess.run([*helper, "release", "extract-object"], cwd=copy, check=True, capture_output=True)
-    # 带切片的规则提取：命令本来归指标旁支，这一次是建模的「规则」一步，按这一片收窄
+    # 带分段的规则提取：命令本来归指标旁支，这一次是建模的「规则」一步，按这一段收窄
     (copy / ".onto" / "run" / "exec.json").write_text(json.dumps({"exec_id": "ex-2", "node": "core.model",
                                                                   "slice": {"id": "s1", "name": "订单受理"},
                                                                   "step": "rule"}))

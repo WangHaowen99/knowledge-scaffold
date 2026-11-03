@@ -1,5 +1,5 @@
 // mock 主示例项目「门店补货单编制」的业务设定（全部合成）。
-// F2 各页的 mock 数据都从这里取名称、Key、切片和资料，保证 Studio、报告、待处理、自主构建、资料分析讲的是同一件事。
+// F2 各页的 mock 数据都从这里取名称、Key、分段和资料，保证 Studio、报告、待处理、自主构建、资料分析讲的是同一件事。
 //
 // 业务：店长一句话说明门店、品类、库存和到货周期，智能体查基础数据，按补货规则生成补货单；
 // 门店申请量严于（不超过）品类标准时按门店执行，超出标准时生成审批提示，挂到补货台账，交区域审批。
@@ -26,7 +26,7 @@ export const LATE_MATERIALS = [
 // ---------- 业务系统数据源（证据） ----------
 export const DB_SOURCE = { id: 'erp-prod', label: '业务系统 ERP', short: 'ERP', table: 'replenish_std', table_label: '补货标准表' };
 
-// ---------- 切片（与 fixtures.flow() 的 slices 一致） ----------
+// ---------- 分段（与 fixtures.flow() 的 slices 一致） ----------
 export const SLICES = [
   { id: 's1', name: '补货申请与门店需求', core_flow: '受理三道校验' },
   { id: 's2', name: '安全库存测算', core_flow: '按类取标准再取严' },

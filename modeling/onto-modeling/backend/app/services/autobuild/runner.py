@@ -1,19 +1,19 @@
 """自主构建运行器（方案 B12、B13；详设 8.5、8.4；契约 AB-03～AB-09、7.15、EP-14～EP-17）。
 
-按蓝图逐片执行，每片：
+按蓝图逐段执行，每段：
 
 1. 新开上下文（关掉这条对话的模型上下文、历史里记一个分界），长上下文自动压缩不会丢掉台账；
-2. 先占一个变更集（`source=autobuild`、`build_mode=L4`），注入片说明与台账摘要，以项目所有者的身份发这一片的
-   每一步命令（`/ontology-extract-object slice=<片>` 等），按条件等这一轮出 result；
+2. 先占一个变更集（`source=autobuild`、`build_mode=L4`），注入段说明与台账摘要，以项目所有者的身份发这一段的
+   每一步命令（`/ontology-extract-object slice=<段>` 等），按条件等这一轮出 result；
 3. 查执行记录：做完了就下一步；没做完也没挂起就说「继续」，最多 `CONTINUE_LIMIT` 次；出错按执行记录续跑；
 4. 自动合入（`changesets.merge(source="autobuild", needs_review=True)`）；合入前检查有新错误时让助手修，最多策略
    里的轮数，还有就照样合入（F3：检查只提示，发布时才拦），这一段标需复核；要删除已确认的内容时挂起这一段、撤回
    这一段的修改；合入冲突停下（冲突进待处理）；
 5. 合入之后是安全点：停在安全点、转为陪伴、预算用完在这里结束；暂停在一步做完之后生效。
 
-切片之后主线上的几步（校验、走查、全局一致性）各算一个单元，同样一步一个变更集、自动合入。运行状态与台账在
+分段之后主线上的几步（校验、走查、全局一致性）各算一个单元，同样一步一个变更集、自动合入。运行状态与台账在
 数据目录（`store`），结束时台账与运行报告写进工作区 `reports/autobuild/<运行号>/`（进 git）。运行在自己的
-对话里（「自主构建 · 运行 #n」），进展、自动决定、挂起都显示成切片进展块。
+对话里（「自主构建 · 运行 #n」），进展、自动决定、挂起都显示成分段进展块。
 
 重启：运行记录里的进度是检查点；启动恢复把在跑的运行改判中断（`register_steps`），启动后自动续跑
 （`resume_after_restart`），每一步按执行记录接着做。
@@ -111,11 +111,11 @@ class AutobuildRunner:
             raise ApiError("blueprint_not_confirmed", "建模蓝图还没确认", 409)
         units, rows = plan.build(ws, project_id, policy_doc)
         if not units:
-            raise ApiError("invalid_argument", "范围里没有要做的切片", 400, {"fields": {"scope": "empty"}})
+            raise ApiError("invalid_argument", "范围里没有要做的分段", 400, {"fields": {"scope": "empty"}})
         warnings = []
         pending = changeset_store.current(ws.project_root(project_id))
-        if pending is not None and pending.get("state") in ("open", "pending_confirm", "conflict"):
-            warnings.append("这一轮的修改还没确认生效或撤回")
+        if pending is not None and pending.get("state") == "conflict":
+            warnings.append("有一轮的修改和你的修改冲突，先在待处理里选好保留哪边")
         now = time.time()
         for token, item in list(self._previews.items()):
             if item["expires"] < now:
@@ -159,16 +159,20 @@ class AutobuildRunner:
                            {"running_conversation_id": live["conversation_id"]})
         ws = _ws()
         root = ws.project_root(project_id)
+        # 上一轮遗留的修改先合入成版本（F3）；只有合入冲突要你先处理
+        from ...kernel.changesets import service as changesets
+
+        await asyncio.to_thread(changesets.settle, ws, project_id, actor=owner, turn_over=True)
         pending = changeset_store.current(root)
         if pending is not None and pending.get("state") in ("open", "pending_confirm", "conflict"):
-            raise ApiError("changeset_in_progress", "这一轮的修改还没确认生效或撤回", 409,
+            raise ApiError("changeset_in_progress", "有一轮的修改和你的修改冲突，先在待处理里选好保留哪边", 409,
                            {"changeset_id": pending["id"], "conversation_id": pending.get("conversation_id")})
         await asyncio.to_thread(quota.check_before_turn, project_id, owner, "tokens")
         self._previews.pop(token, None)
         policy_doc = item["policy"]
         units, rows = await asyncio.to_thread(plan.build, ws, project_id, policy_doc)
         if not units:
-            raise ApiError("invalid_argument", "范围里没有要做的切片", 400, {"fields": {"scope": "empty"}})
+            raise ApiError("invalid_argument", "范围里没有要做的分段", 400, {"fields": {"scope": "empty"}})
         run_no = store.next_run_no(project_id)
         run_id = f"run-{run_no}"
         conversation = conversation_store.create(project_id, kind="autobuild", run_id=run_id,
@@ -266,7 +270,7 @@ class AutobuildRunner:
                 fresh = unit is not None and (run.get("slices") or {}).get(unit["id"], {}).get("state") in (None, "queued")
                 ending = self._ending(run)
                 if unit is None or (fresh and ending):
-                    # 做完了；或者已经在安全点（这一片还没开始）又要停
+                    # 做完了；或者已经在安全点（这一段还没开始）又要停
                     await self._finish(project_id, run_id, ending or "completed")
                     return
                 if fresh and run.get("flags", {}).get("pause"):
@@ -317,7 +321,7 @@ class AutobuildRunner:
         return None
 
     # ------------------------------------------------------------------
-    # 一片
+    # 一段
     # ------------------------------------------------------------------
 
     async def _run_unit(self, project_id: str, run_id: str, unit: dict) -> str:
@@ -328,7 +332,7 @@ class AutobuildRunner:
         if fresh:
             from ..flow import slices
 
-            # 这一片各步运行前的确认记录：按片撤回时放回去（原来过期的仍是过期，审查 K）
+            # 这一段各步运行前的确认记录：按段撤回时放回去（原来过期的仍是过期，审查 K）
             before = (await asyncio.to_thread(slices.records_of, _ws().project_root(project_id), unit["id"])
                       if unit["kind"] == "slice" else {})
 
@@ -345,7 +349,7 @@ class AutobuildRunner:
         else:
             merged = self._merged_already(project_id, run, unit)
             if merged is not None:
-                # 合入刚做完就停了机（审查 C）：这一片已经在主线上，接回它的合入提交，不再另开变更集
+                # 合入刚做完就停了机（审查 C）：这一段已经在主线上，接回它的合入提交，不再另开变更集
                 return self._unit_done(project_id, run_id, unit, record=merged,
                                        merged={"commit": (merged.get("merged") or {}).get("commit"),
                                                "version_label": (merged.get("merged") or {}).get("version_label")})
@@ -395,7 +399,7 @@ class AutobuildRunner:
         return record if record and record.get("state") == "merged" and record.get("run_id") == run["run_id"] else None
 
     async def _new_context(self, run: dict, unit: dict) -> None:
-        """每片新开上下文（方案 B12 第 1 步）：关掉模型上下文、历史里记分界（Jiuwen 回放从这里起）。"""
+        """每段新开上下文（方案 B12 第 1 步）：关掉模型上下文、历史里记分界（Jiuwen 回放从这里起）。"""
         from ..agent_sessions import CONTEXT_RESET
 
         manager = _manager()
@@ -417,7 +421,7 @@ class AutobuildRunner:
                 doc = blueprint.effective_doc(_ws(), run["project_id"])
                 module = blueprint.script(_ws().project_root(run["project_id"]))
                 brief = module.brief(doc, unit["id"]) if doc is not None and unit["id"] != "all" else ""
-            except Exception:  # noqa: BLE001 - 片说明是增强信息
+            except Exception:  # noqa: BLE001 - 段说明是增强信息
                 brief = ""
         notes = [item["text"] for item in run.get("notes") or [] if not item.get("read")]
         carried = [found[1] for found in (store.find_suspension(run["project_id"], ref["id"])
@@ -434,7 +438,7 @@ class AutobuildRunner:
         return run
 
     async def _send(self, project_id: str, run_id: str, unit: dict, text: str, *, resume_exec: str | None = None) -> str | None:
-        """以项目所有者的身份发一步（不进对话流：进展在切片进展块里）；返回这一步的执行记录编号。"""
+        """以项目所有者的身份发一步（不进对话流：进展在分段进展块里）；返回这一步的执行记录编号。"""
         from ...governance.quota import QuotaExceeded
         from ..agent_sessions import SessionError
 
@@ -597,7 +601,7 @@ class AutobuildRunner:
     # ------------------------------------------------------------------
 
     async def _merge(self, project_id: str, run_id: str, unit: dict) -> str:
-        """自动合入这一片；门禁不过让助手修（最多策略里的轮数）。返回 merged、failed。"""
+        """自动合入这一段；门禁不过让助手修（最多策略里的轮数）。返回 merged、failed。"""
         from ...kernel.changesets import service as changesets
         from ...services.workspace.errors import WorkspaceError
         from ..session_host import exec_records
@@ -609,12 +613,12 @@ class AutobuildRunner:
         owner = run.get("owner") or run.get("actor") or ""
         records = exec_records.query(project_id, conversation_id=run["conversation_id"])
         last_exec = records[0] if records else None
-        # 这一片最后的样子再看一次（带检查）：一轮收尾时会话宿主已经看过，补上之后在副本里的改动
+        # 这一段最后的样子再看一次（带检查）：一轮收尾时会话宿主已经看过，补上之后在副本里的改动
         await asyncio.to_thread(changesets.observe, ws, project_id, running=False,
                                 conversation_id=run["conversation_id"], exec_record=last_exec, checks=True)
         current = changesets.current(ws, project_id)
         if current is None or current["id"] != changeset_id or not current.get("tree"):
-            # 这一片没改出东西：先占的变更集关掉，版本不变
+            # 这一段没改出东西：先占的变更集关掉，版本不变
             if current is not None and current["id"] == changeset_id:
                 await asyncio.to_thread(changesets.discard, ws, project_id, changeset_id, actor=owner)
             return self._unit_done(project_id, run_id, unit, record=None)
@@ -662,7 +666,7 @@ class AutobuildRunner:
         from ...kernel.changesets import service as changesets
 
         await asyncio.to_thread(changesets.discard, _ws(), project_id, changeset_id, actor=owner)
-        handled = "这一片没生效，先做下一片" if unit["kind"] == "slice" else "这一步没生效，接着做下一步"
+        handled = "这一段没生效，先做下一段" if unit["kind"] == "slice" else "这一步没生效，接着做下一步"
 
         def change(record: dict) -> None:
             item = {"id": f"sp-{uuid.uuid4().hex[:8]}", "run_id": run_id, "at": time.time(),
@@ -713,7 +717,7 @@ class AutobuildRunner:
 
     @staticmethod
     def _consume_carried(project_id: str, run_id: str, unit: dict) -> None:
-        """之前留到这一次的挂起问题：这一片做完（带着回答补做过）就算回答过，待处理里不再列（审查 I）。"""
+        """之前留到这一次的挂起问题：这一段做完（带着回答补做过）就算回答过，待处理里不再列（审查 I）。"""
         for ref in unit.get("carried") or []:
             def change(record: dict, ref=ref) -> None:
                 for item in record.get("suspensions") or []:
@@ -723,7 +727,7 @@ class AutobuildRunner:
             store.update(project_id, ref["run_id"], change)
 
     async def _safe_point(self, project_id: str, run_id: str, unit: dict) -> str:
-        """一片合入之后：EP-15；停在安全点、转为陪伴、预算用完、在安全点暂停（维护）在这里生效。"""
+        """一段合入之后：EP-15；停在安全点、转为陪伴、预算用完、在安全点暂停（维护）在这里生效。"""
         await self._account(project_id, run_id)
         run = store.get(project_id, run_id)
         flags = run.get("flags") or {}
@@ -980,7 +984,7 @@ class AutobuildRunner:
         run = store.update(project_id, run_id, change)
         self._updated(run)
         if was_idle:
-            # 停在一片中间：接着把这一片做完，到安全点再停
+            # 停在一段中间：接着把这一段做完，到安全点再停
             def queue(record: dict) -> None:
                 record["resume_state"] = record["state"]
                 record["state"] = "queued"
@@ -994,7 +998,7 @@ class AutobuildRunner:
         return any(info.get("state") == "running" for info in (run.get("slices") or {}).values())
 
     def pause_all_at_safe_point(self) -> int:
-        """进入维护模式（O-21 `autobuild=pause_at_safe_point`）：在跑的运行做完这一片就暂停。"""
+        """进入维护模式（O-21 `autobuild=pause_at_safe_point`）：在跑的运行做完这一段就暂停。"""
         runs = store.all_runs(store.RUNNING)
         for run in runs:
             store.update(run["project_id"], run["run_id"],
@@ -1018,7 +1022,7 @@ class AutobuildRunner:
         return posted
 
     async def on_decisions(self, project_id: str, run_id: str, entries: list, suspensions: list) -> None:
-        """策略刚答了一组问题：切片进展块更新，挂起的进待处理。"""
+        """策略刚答了一组问题：分段进展块更新，挂起的进待处理。"""
         from ...governance import telemetry
 
         run = store.get(project_id, run_id)
@@ -1132,9 +1136,9 @@ class AutobuildRunner:
             except ApiError as exc:
                 if exc.code != "slice_reverted":
                     _log.exception("改判发不出去（%s %s）", project_id, item.get("entry_id"))
-                # 排队期间这一片撤回了：不再发，任务记为取消（审查 G）
+                # 排队期间这一段撤回了：不再发，任务记为取消（审查 G）
                 command_tasks.update(project_id, item.get("task_id") or "", state="cancelled",
-                                     result={"summary": "这一片已经撤回", "refs": []})
+                                     result={"summary": "这一段已经撤回", "refs": []})
             except Exception:  # noqa: BLE001 - 一条改判发不出去不挡别的
                 _log.exception("改判发不出去（%s %s）", project_id, item.get("entry_id"))
 
@@ -1176,7 +1180,7 @@ runner = AutobuildRunner()
 
 
 def _restore_state(record: dict) -> str:
-    """暂停中（pausing）重启：直接算暂停；停在安全点、转为陪伴的接着把这一片做完。"""
+    """暂停中（pausing）重启：直接算暂停；停在安全点、转为陪伴的接着把这一段做完。"""
     return {"pausing": "paused"}.get(record["state"], record["state"])
 
 
@@ -1210,13 +1214,13 @@ def startup_sweep(manager) -> dict:
     resumed = sum(1 for run in changed if run.get("resume_pending"))
     detail = f"{len(changed)} 次运行停在检查点，{resumed} 次启动后自动续跑" if changed else ""
     if reverted:
-        detail = "，".join(filter(None, [detail, f"补完 {sum(reverted.values())} 片撤回"]))
+        detail = "，".join(filter(None, [detail, f"补完 {sum(reverted.values())} 段撤回"]))
     return {"id": "autobuild_runs", "title": "自主构建", "result": "cleared", "tone": "fix", "detail": detail,
             "projects": [{"project_id": pid, "count": count, "paths": []} for pid, count in sorted(per_project.items())]}
 
 
 def _repair_reverts() -> dict[str, int]:
-    """撤回到一半停了机的片（审查推断）：{项目: 补完的片数}；一个项目出错不挡别的。"""
+    """撤回到一半停了机的段（审查推断）：{项目: 补完的段数}；一个项目出错不挡别的。"""
     from . import review
 
     out = {}

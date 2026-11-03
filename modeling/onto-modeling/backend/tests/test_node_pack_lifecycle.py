@@ -178,7 +178,7 @@ def test_backfill_when_project_already_passed_the_insertion_point(env):
     assert node["counts_in_progress"] is False and node["plugin"]["name"] == "naming"
     # 主线状态不往回退：做过的照旧已确认，进度分母不变
     assert next(item for item in built["nodes"] if item["id"] == "core.model")["state"] == "confirmed"
-    assert built["slices"][0]["stages"]["operation"] == "confirmed"  # 全量模式那一片照旧
+    assert built["slices"][0]["stages"]["operation"] == "confirmed"  # 全量模式那一段照旧
     assert built["progress"] == before["progress"]
     from app.services.flow import model as flow_model
 
@@ -209,7 +209,7 @@ def test_disable_keeps_artifacts_marks_disabled_and_releases_gate(env):
     assert client.post(f"/api/v1/projects/{project_id}/packs/naming/disable").status_code == 200
     pack_service.prepare_for_message(manager, project_id)
     nodes = nodes_of(root)
-    assert nodes["core.model"]["state"] == "running"  # 关卡解除：建模按各片汇总（做了一部分）
+    assert nodes["core.model"]["state"] == "running"  # 关卡解除：建模按各段汇总（做了一部分）
     gate = nodes["naming.check"]
     assert gate["flags"]["disabled"] is True and gate["display_state"] == "disabled"
     assert gate["actions"] == [] and gate["counts_in_progress"] is False

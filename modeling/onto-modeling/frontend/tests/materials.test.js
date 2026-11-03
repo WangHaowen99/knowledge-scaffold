@@ -70,7 +70,7 @@ test('核验：有问题的排前面，通过的默认只露两条；说明里�
   assert.equal(verificationNote(mockData.verificationItems(false)), '');
 });
 
-test('输入框占位：读资料和切片规划不同；运行中仍是「补充说明、这一步结束后送达」', () => {
+test('输入框占位：读资料和分段规划不同；运行中仍是「补充说明、这一步结束后送达」', () => {
   assert.equal(composerState({ sessionState: 'idle', researching: 'materials' }).placeholder, '给助手补充说明，或者继续拖入资料…');
   assert.equal(composerState({ sessionState: 'idle', researching: true }).placeholder, '给助手补充说明，或者继续拖入资料…');
   assert.match(composerState({ sessionState: 'idle', researching: 'blueprint' }).placeholder, /^对蓝图有意见直接说/);
@@ -97,7 +97,7 @@ test('mock 阶段 materials：资料地图卡、资料用途问题卡、建议�
   assert.equal(first.display_state, 'running');
   assert.equal(first.progress.label, '读资料 5/7');
   assert.ok(trackNodes(stages.materials.flow(F.flow())).slice(1).every((n) => n.display_state === 'not_ready'));
-  // 没有蓝图时后端给一片「全部」（全量模式），blueprint.state = none
+  // 没有蓝图时后端给一段「全部」（全量模式），blueprint.state = none
   assert.deepEqual(stages.materials.flow(F.flow()).slices.map((x) => x.id), ['all']);
   assert.equal(stages.materials.flow(F.flow()).blueprint.state, 'none');
 });
@@ -185,8 +185,8 @@ test('还没传资料的项目：资料地图为空，没有蓝图', () => {
   assert.equal(s.call('GET', `${PID}/blueprint`).body.code, 'blueprint_not_found');
 });
 
-test('蓝图卡底部的确认按钮按 confirm_options：草案给两项或一项，已确认没有，旧卡没有字段只给一片一片来', () => {
-  assert.deepEqual(confirmOptions({ state: 'draft', confirm_options: [{ mode: 'L2', label: '确认，一片一片来' }] }).map((o) => o.mode), ['L2']);
+test('蓝图卡底部的确认按钮按 confirm_options：草案给两项或一项，已确认没有，旧卡没有字段只给一段一段来', () => {
+  assert.deepEqual(confirmOptions({ state: 'draft', confirm_options: [{ mode: 'L2', label: '确认，一段一段来' }] }).map((o) => o.mode), ['L2']);
   assert.deepEqual(confirmOptions({ state: 'draft', confirm_options: [{ mode: 'L2' }, { mode: 'L4' }] }).map((o) => o.mode), ['L2', 'L4']);
   assert.deepEqual(confirmOptions({ state: 'confirmed', confirm_options: [{ mode: 'L2' }] }), []);
   assert.deepEqual(confirmOptions({ state: 'draft' }).map((o) => o.mode), ['L2']);

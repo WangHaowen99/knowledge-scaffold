@@ -56,7 +56,7 @@ def _meta(project_id: str) -> dict:
 
 
 def _slices(root) -> dict | None:
-    """按片建模的进度；全量模式（切片待规划）或算不出时 None。"""
+    """按段建模的进度；全量模式（分段待规划）或算不出时 None。"""
     from ..services.flow import model as flow_model
 
     try:

@@ -1,4 +1,4 @@
-// 资料分析与建模蓝图的纯逻辑：资料地图的状态文案、出处标记、核验排序、蓝图切片列表的编辑（契约 R-07、R-09、BP-01、BP-02）
+// 资料分析与建模蓝图的纯逻辑：资料地图的状态文案、出处标记、核验排序、蓝图分段列表的编辑（契约 R-07、R-09、BP-01、BP-02）
 
 // 工作台地址里 ?dialog= 能直接打开的弹窗（next 只给 build 用：L2 / L4）
 export const MATERIAL_DIALOGS = ['material_map', 'verification', 'blueprint', 'build'];
@@ -143,7 +143,7 @@ export function verificationNote(items = []) {
 }
 
 // ---------- 建模蓝图（BP-01 / BP-02） ----------
-// 编辑用的切片：带上原始顺序，判断位置是否动过
+// 编辑用的分段：带上原始顺序，判断位置是否动过
 export function editableSlices(slices = []) {
   return slices.map((s, i) => ({ ...s, depends_on: [...(s.depends_on || [])], origin: i, merged_from: s.merged_from || undefined }));
 }
@@ -159,7 +159,7 @@ export function moveSlice(list, from, to) {
 let seq = 0;
 const newId = () => `new-${Date.now().toString(36)}-${(seq += 1)}`;
 
-// 合并：在第一片的位置放一片新的，依赖取并集（去掉被合并的片），其他片对被合并片的依赖改指向新片
+// 合并：在第一段的位置放一段新的，依赖取并集（去掉被合并的段），其他段对被合并段的依赖改指向新段
 export function mergeSlices(list, ids) {
   const picked = list.filter((s) => ids.includes(s.id));
   if (picked.length < 2) return { list, merged: null };
@@ -198,7 +198,7 @@ export function renameSlice(list, id, name) {
   return list.map((s) => (s.id === id ? { ...s, name: n } : s));
 }
 
-export function addSlice(list, name = '新切片') {
+export function addSlice(list, name = '新分段') {
   const s = { id: newId(), name, core_flow: '', scale: { objects: 0, rules: 0 }, depends_on: [], excluded: false, order_label: '', origin: -1 };
   return { list: [...list, s], added: s };
 }
@@ -209,7 +209,7 @@ export function depLabel(slice, list) {
   return deps.length ? deps.join('、') : '无';
 }
 
-// 依赖的片排在了后面（保存时服务端会拒绝：slice_invalid）
+// 依赖的段排在了后面（保存时服务端会拒绝：slice_invalid）
 export function depAfter(slice, list) {
   const at = list.findIndex((s) => s.id === slice.id);
   return (slice.depends_on || []).some((d) => list.findIndex((s) => s.id === d) > at);
@@ -224,7 +224,7 @@ export function orderLabel(slice, index) {
   return { text, tone: 'faint' };
 }
 
-// BP-02 的切片列表（BlueprintSliceInput）：顺序就是数组顺序
+// BP-02 的分段列表（BlueprintSliceInput）：顺序就是数组顺序
 export function sliceInputs(list) {
   return list.map((s) => {
     const x = { id: s.id, name: s.name, core_flow: s.core_flow || '', depends_on: s.depends_on || [], excluded: !!s.excluded };
@@ -267,6 +267,6 @@ export function budgetText(budget) {
 }
 
 // 「确认后怎么建」（R3）并进蓝图卡底部：按卡上的 confirm_options 画（草案时给，自主构建登记了才有 L4，已确认时为空）；
-// 早于 B4d 合并的旧卡没有这个字段，只给「一片一片来」
-const DEFAULT_CONFIRM = [{ mode: 'L2', label: '确认，一片一片来' }];
+// 早于 B4d 合并的旧卡没有这个字段，只给「一段一段来」
+const DEFAULT_CONFIRM = [{ mode: 'L2', label: '确认，一段一段来' }];
 export const confirmOptions = (card) => (card?.state === 'confirmed' ? [] : (Array.isArray(card?.confirm_options) ? card.confirm_options : DEFAULT_CONFIRM));

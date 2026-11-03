@@ -10,8 +10,8 @@
 - 主流程的下一步建议（`next_steps`）里指向没启用的包的命令去掉，只列本项目能用的命令。
 节点钩子（详设 6.4，B5c）：包在 flow.yaml 的 `hooks` 里给某个节点之前或之后追加一步检查或补充，不新增节点：
 `{id: <包>.<名>, title, node: <宿主节点>, when: before|after, command: /<本包命令>}`；宿主节点要存在、命令要在本次装配里。
-按切片的节点（详设 6.6，B4d）：`per_slice: true` 的节点带 `steps`（切片里的步骤）；包用 `slice_steps` 往这类节点的
-切片里加步骤（`[{node, step}]`，如场景走查的「场景」），用 `node_titles` 改主线节点的显示名（`{节点: 名称}`，如
+按段的节点（详设 6.6，B4d）：`per_slice: true` 的节点带 `steps`（分段里的步骤）；包用 `slice_steps` 往这类节点的
+分段里加步骤（`[{node, step}]`，如场景走查的「场景」），用 `node_titles` 改主线节点的显示名（`{节点: 名称}`，如
 「校验与走查」）。这两项和节点钩子（`hooks`）分开声明，各管各的。
 core 的 `aliases` 把旧版节点编号映射到现在的节点：没升级的包写的锚点、钩子宿主、命令归属照样认。
 """
@@ -278,7 +278,7 @@ STEP_KEYS = ("id", "label")
 
 
 def _apply_slice_steps(contributions: list[tuple[str, str, dict]], nodes: list[dict]) -> list[str]:
-    """包往按切片的节点里加步骤（`slice_steps`，step.after 指定放在哪一步后面），改节点的显示名（`node_titles`）。"""
+    """包往按段的节点里加步骤（`slice_steps`，step.after 指定放在哪一步后面），改节点的显示名（`node_titles`）。"""
     problems: list[str] = []
     by_id = {node["id"]: node for node in nodes}
     for node in nodes:
@@ -286,7 +286,7 @@ def _apply_slice_steps(contributions: list[tuple[str, str, dict]], nodes: list[d
             steps = node.get("steps") or []
             if not steps or not all(isinstance(step, dict) and all(step.get(key) for key in STEP_KEYS)
                                     for step in steps):
-                problems.append(f"按切片的节点 {node['id']} 要声明 steps（每一步有 id、label）")
+                problems.append(f"按段的节点 {node['id']} 要声明 steps（每一步有 id、label）")
             node["steps"] = [{**step, "pack": node["pack"]} for step in steps if isinstance(step, dict)]
     for pack, _version, declared in contributions[1:]:
         titles = declared.get("node_titles") or {}
@@ -305,7 +305,7 @@ def _apply_slice_steps(contributions: list[tuple[str, str, dict]], nodes: list[d
                 continue
             step = item.get("step")
             if not target.get("per_slice") or not isinstance(step, dict) or not all(step.get(k) for k in STEP_KEYS):
-                problems.append(f"{pack} 只能往按切片的节点里加步骤（要有 id、label）")
+                problems.append(f"{pack} 只能往按段的节点里加步骤（要有 id、label）")
                 continue
             steps = target["steps"]
             if any(existing["id"] == step["id"] for existing in steps):

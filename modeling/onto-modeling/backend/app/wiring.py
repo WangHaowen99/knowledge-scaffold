@@ -13,7 +13,7 @@
   一轮写出建模蓝图 → 蓝图卡（B4d，ADR-0050）同一个登记点。
 - 包声明的门禁 → 写入事务的门禁链（ADR-0068）：`kernel/writepath.register_gate_checker`。
 - 自主构建（B5b，ADR-0060～0062）：运行中确认卡、决策卡由策略作答（`agent_sessions.register_policy_responder`）；
-  片说明与台账摘要注入（`injection.register_autobuild_hint_provider`）；BP-03 `next=L4` 的开始前预览
+  段说明与台账摘要注入（`injection.register_autobuild_hint_provider`）；BP-03 `next=L4` 的开始前预览
   （`blueprint.register_autobuild_preview`）；运行期间建议条换成运行控制（`view.register_autobuild_context`）；
   启动恢复的「自主构建」一步。
 
@@ -149,13 +149,13 @@ def _confirm_nodes(project_id: str, node_ids: list[str], record: dict | None = N
                   "slice_id": record.get("slice_id")}
         node_state.mark_needs_review(root, node_ids, "autobuild", run_id=record.get("run_id"),
                                      slice_id=record.get("slice_id"), note=record.get("purpose") or "")
-    # 按切片的节点：这个变更集做过的那几片那几步记为确认过（B4d）
+    # 按段的节点：这个变更集做过的那几段那几步记为确认过（B4d）
     slices.confirm(root, flow, (record or {}).get("slice_steps") or [], doc=blueprint.load_doc(root),
                    needs_review=review)
 
 
 def _sync_change_lists(project_id: str, record: dict) -> None:
-    """变更点清单跟着变更集走（审查第 8、12 条）：开了变更集挂上编号，确认生效记已执行，撤回回到编辑中。"""
+    """变更点清单跟着变更集走（审查第 8、12 条）：开了变更集挂上编号，合入记已执行，撤回回到编辑中。"""
     from .kernel.changesets import store
     from .services.flow import change_lists
 

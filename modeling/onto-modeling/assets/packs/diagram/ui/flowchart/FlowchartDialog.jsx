@@ -1,7 +1,7 @@
 // 流程图编辑弹窗（设计稿 flowchart）：图示包自带的编辑器（ADR-0055，随平台编译），编辑图示包登记的插件产物
 // diagram.flowchart，经 AR-03 读、AR-05 存（带 base_revision）、AR-08 校验。
 // artifact：{type, key, title?}；key 为空时打开 AR-02 的第一张。工作台的流程图卡和 Studio 表格的「打开编辑」打开的是同一个弹窗。
-// 只读两态由写入范围锁（CS-06）决定：助手运行中 → 「回到对话」；修改待确认 → 「去确认」；编辑区变灰、保存禁用。
+// 只读两态由写入范围锁（CS-06）决定：助手运行中 → 「回到对话」；合入冲突 → 去待处理；编辑区变灰、保存禁用。
 import {
   useCallback, useContext, useEffect, useReducer, useRef, useState,
 } from 'react';

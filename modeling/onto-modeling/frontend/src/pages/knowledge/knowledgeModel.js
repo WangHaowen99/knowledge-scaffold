@@ -93,12 +93,12 @@ export function entryLocked(lock, entry) {
 export function lockCopy(lock) {
   const st = lockState(lock);
   if (st === 'none') return null;
-  const slice = lock.slice?.name ? `「${lock.slice.name}」这一片` : '这部分内容';
+  const slice = lock.slice?.name ? `「${lock.slice.name}」这一段` : '这部分内容';
   if (st === 'pending_confirm') {
     return { pop: '有冲突，暂不能编辑', text: { pending: ['这条知识和助手这一轮的修改有冲突：选好保留哪边前只读'] } };
   }
   if (st === 'autobuild_slice') {
-    const name = lock.slice?.name ? `「${lock.slice.name}」` : '这一片';
+    const name = lock.slice?.name ? `「${lock.slice.name}」` : '这一段';
     return { pop: '自主构建在改，暂不能编辑', text: { running: [`自主构建正在做${name}，这条知识暂时只读`] } };
   }
   return { pop: '助手在改，暂不能编辑', text: { running: [`助手正在改${slice}：这条知识这一轮结束前只读`] } };

@@ -32,7 +32,7 @@ function AutobuildStartCard({ card }) {
   );
 }
 
-// 自动决定（对话里单独出现，或嵌在按切片的进展块里）
+// 自动决定（对话里单独出现，或嵌在按段的进展块里）
 export function AutoDecision({ card }) {
   const { pid } = useContext(WbCtx);
   const review = card.review_state || 'pending';
@@ -71,7 +71,7 @@ export function Suspended({ card }) {
 const SG = { done: ['done', 'bot'], running: ['run', null], queued: ['queue', 'clock'], partial: ['part', 'pause'] };
 const STEP_K = { done: 'ok', running: 'running', waiting: 'waiting', failed: 'failed', info: 'info', interrupted: 'interrupted' };
 
-// 按切片的进展块：可展开，带版本标签
+// 按段的进展块：可展开，带版本标签
 function SliceProgressCard({ card }) {
   const [cls, icon] = SG[card.state] || SG.done;
   const segs = sliceSegments(card.timeline);
@@ -117,14 +117,14 @@ function ReportRow({ row, card, onRevert, busy }) {
       <td>
         <span className="row g4">
           <Button size="xs" onClick={() => navigate(pagePath('versions', pid), { v: row.version_label, run: card.run_id, slice: row.slice_id })}>查看改动</Button>
-          <Button size="xs" kind="ghost" disabled={!row.revertible || busy} title={row.revertible ? '回退到运行前，另存新版本' : '这一片不能撤回'} onClick={() => onRevert(row)}>回退这一片</Button>
+          <Button size="xs" kind="ghost" disabled={!row.revertible || busy} title={row.revertible ? '回退到运行前，另存新版本' : '这一段不能撤回'} onClick={() => onRevert(row)}>回退这一段</Button>
         </span>
       </td>
     </tr>
   );
 }
 
-// 运行报告卡：产出汇总、按片结果、去复核
+// 运行报告卡：产出汇总、按段结果、去复核
 function RunReportCard({ card }) {
   const { api } = useApp();
   const { pid } = useContext(WbCtx);
@@ -169,7 +169,7 @@ function RunReportCard({ card }) {
       </div>
       <div className="tbl-wrap mt12">
         <table className="tbl compact">
-          <thead><tr><th>切片</th><th>结果</th><th>产出</th><th>场景</th><th>版本</th><th /></tr></thead>
+          <thead><tr><th>分段</th><th>结果</th><th>产出</th><th>场景</th><th>版本</th><th /></tr></thead>
           <tbody>{(card.slices || []).map((row) => <ReportRow key={row.slice_id} row={row} card={card} onRevert={revert} busy={busy} />)}</tbody>
         </table>
       </div>

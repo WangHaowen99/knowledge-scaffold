@@ -1,9 +1,9 @@
-"""自主构建的复核、挂起与按片撤回（详设 8.5、4.7、13 章 P3 验收；契约 AB-10～AB-17、IN-01～IN-04）。
+"""自主构建的复核、挂起与按段撤回（详设 8.5、4.7、13 章 P3 验收；契约 AB-10～AB-17、IN-01～IN-04）。
 
 - 挂起的问题与需复核的产出都进待处理（自主构建复核）：低于阈值的一条一项，高置信的合成一项，挂起的一个一项；
-- 接受、一键接受高置信、改判、回答挂起问题；复核完的片去掉「需复核」；
-- 撤回其中一片：反向提交，别的片不受影响；合入之后又被改过的片不能单独撤回；
-- 门禁修了几轮还不过：这一片的修改撤回、挂起，接着做下一片。
+- 接受、一键接受高置信、改判、回答挂起问题；复核完的段去掉「需复核」；
+- 撤回其中一段：反向提交，别的段不受影响；合入之后又被改过的段不能单独撤回；
+- 门禁修了几轮还不过：这一段的修改撤回、挂起，接着做下一段。
 
 假引擎按消息现做（tests/autobuild_helpers.py），等待一律按条件。测试数据全部为合成内容。
 """
@@ -45,7 +45,7 @@ def test_suspensions_and_reviews_go_to_the_inbox_and_get_resolved(ab):
     low, = [item for item in by_kind["review"] if not item["high_confidence"]]
     high, = [item for item in by_kind["review"] if item["high_confidence"]]
     suspended, = by_kind["suspension"]
-    assert low["title"] == "合成片2：三级" and low["source"] == "autobuild" and low["slice"]["id"] == "s2"
+    assert low["title"] == "合成段2：三级" and low["source"] == "autobuild" and low["slice"]["id"] == "s2"
     assert low["actions"] == ["accept", "rejudge", "revert_slice", "dismiss"]
     assert high["id"] == f"review:{run['run_id']}:high" and high["actions"] == ["accept", "dismiss"]
     assert suspended["title"] == "审批提示交给谁" and suspended["actions"] == ["answer", "use_generic", "dismiss"]
@@ -61,7 +61,7 @@ def test_suspensions_and_reviews_go_to_the_inbox_and_get_resolved(ab):
     sus = client.get(f"/api/v1/projects/{project_id}/inbox/{suspended['id']}").json()["detail"]
     assert sus["kind"] == "question" and [option["label"] for option in sus["options"]] == [
         "新增区域审批单（推荐）", "挂到补货台账"]
-    # 切片「自主完成」：复核之前 s2 的格子是 auto
+    # 分段「自主完成」：复核之前 s2 的格子是 auto
     flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
     assert {item["id"]: item for item in flow["slices"]}["s2"]["stages"]["operation"] == "auto"
     rows = {row["name"]: row for row in client.get(f"/api/v1/projects/{project_id}/studio/entries").json()["items"]}
@@ -81,7 +81,7 @@ def test_suspensions_and_reviews_go_to_the_inbox_and_get_resolved(ab):
     assert model["flags"]["needs_review"] is False
     rows = {row["name"]: row for row in client.get(f"/api/v1/projects/{project_id}/studio/entries").json()["items"]}
     assert not any(row["needs_review"] for row in rows.values())
-    # 回答挂起的问题（IN-03 → AB-15）：运行结束了，往运行对话发这一片这一步的命令补上
+    # 回答挂起的问题（IN-03 → AB-15）：运行结束了，往运行对话发这一段这一步的命令补上
     answered = client.post(f"/api/v1/projects/{project_id}/inbox/{suspended['id']}/actions",
                            json={"action": "answer", "option_id": sus["options"][1]["id"]}).json()
     assert answered["resolved"] is True and answered["result"]["suspension"]["state"] == "answered"
@@ -136,7 +136,7 @@ def test_reverting_one_slice_leaves_the_others_alone(ab):
     assert body["reverted_to_version_label"] == run["base_version_label"] and body["commit"]
     assert int(git(root, "rev-list", "--first-parent", "--count", "HEAD").strip()) == int(before) + 1
     assert git(root, "log", "-1", "--format=%s").startswith("revert: 撤回")
-    # 只动这一片：s3 的条目没了，别的片都在
+    # 只动这一段：s3 的条目没了，别的段都在
     assert not (root / "ontology" / "object" / "对象3.md").exists()
     assert not (root / "ontology" / "operation" / "操作3.md").exists()
     assert not (root / "ontology" / "testcase" / "操作3.md").exists()
@@ -152,7 +152,7 @@ def test_reverting_one_slice_leaves_the_others_alone(ab):
     assert row["reverted"] is True and row["revertible"] is False and row["result_text"].startswith("已回退到运行前")
     again = client.post(f"{base}/slices/s3/revert")
     assert again.status_code == 409 and again.json()["details"]["reason"] == "already_reverted"
-    # 合入之后这一片的条目又被改过：不能单独撤回
+    # 合入之后这一段的条目又被改过：不能单独撤回
     main_write(root, "ontology/object/对象2.md", obj("对象2", "人改过的合成对象"))
     blocked = client.post(f"{base}/slices/s2/revert")
     assert blocked.status_code == 409 and blocked.json()["details"]["reason"] == "later_changes"

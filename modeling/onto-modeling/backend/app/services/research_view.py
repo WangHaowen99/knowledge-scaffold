@@ -8,7 +8,7 @@
 
 助手只在一轮里读资料，不记「读到哪」：一份资料在报告里被引用过（路径或文件名）就算读过（100%），
 没引用过的算排队中；资料分析在跑（`lock-research`）时排队中的那些显示「正在读」不准确，统一算排队。
-资料分析那一轮还没确认生效时报告与回执在变更集副本里，读副本；资料文件本身一律读项目工作区（副本里是链接）。
+资料分析那一轮还没合入（助手在跑、合入冲突）时报告与回执在变更集副本里，读副本；资料文件本身一律读项目工作区（副本里是链接）。
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ def material_paths(root: Path) -> list[str]:
 
 
 def base(manager, project_id: str) -> Path:
-    """报告与回执在哪：资料分析那一轮还没确认生效（变更集改过 research/）时在副本里。"""
+    """报告与回执在哪：资料分析那一轮还没合入（变更集改过 research/）时在副本里。"""
     from ..kernel.changesets import service as changesets, store
 
     root = manager.project_root(project_id)

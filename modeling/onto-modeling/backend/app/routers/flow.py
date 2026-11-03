@@ -2,7 +2,7 @@
 
 节点状态由内核算（执行记录、变更集、产物指纹），下一步与 `state_helper suggest`、宿主注入同一份。
 跳过与恢复只对可选节点；开始节点等价于用节点声明的入口命令调 S-20。
-按切片的节点（建模）带 `slice_id` 时：跳过、恢复的是这一片的可选步骤（缺省「规则」），开始的是这一片的下一步。
+按段的节点（建模）带 `slice_id` 时：跳过、恢复的是这一段的可选步骤（缺省「规则」），开始的是这一段的下一步。
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def _after_change(project_id: str) -> None:
 
 
 def _slice_step(node: dict, body: dict, *, optional: bool) -> tuple[str, str] | None:
-    """按切片的节点带了 slice_id：(切片, 步骤)；步骤缺省「规则」（可选步骤）。"""
+    """按段的节点带了 slice_id：(分段, 步骤)；步骤缺省「规则」（可选步骤）。"""
     if not node.get("per_slice") or not body.get("slice_id"):
         return None
     step_id = str(body.get("step") or "rule")
@@ -66,7 +66,7 @@ def _slice_step(node: dict, body: dict, *, optional: bool) -> tuple[str, str] | 
 
 @router.post("/nodes/{node_id}/skip")
 async def skip_node(project_id: str, node_id: str, request: Request):
-    """FL-03：跳过可选节点（主线与必经节点不能跳过）；建模节点带 slice_id 时跳过这一片的规则。"""
+    """FL-03：跳过可选节点（主线与必经节点不能跳过）；建模节点带 slice_id 时跳过这一段的规则。"""
     from ..services.flow import slices
 
     root = deps.require_writable(project_id, request)
@@ -182,8 +182,8 @@ async def answer_human_node(project_id: str, question_id: str, body: dict, actor
 
 
 def _slice_command(root, node: dict, slice_id: str, step_id, fallback: str) -> tuple[str, str]:
-    """建模节点开始：给了步骤用它的命令；给了切片取这一片还没做完的第一步；都没给取主线下一步（过期的先刷新）。
-    返回 (命令, 切片)；全量模式不带切片。"""
+    """建模节点开始：给了步骤用它的命令；给了分段取这一段还没做完的第一步；都没给取主线下一步（过期的先刷新）。
+    返回 (命令, 分段)；全量模式不带分段。"""
     from ..services.flow import blueprint, slices
 
     steps = [item for item in node.get("steps") or [] if item.get("command")]
@@ -200,7 +200,7 @@ def _slice_command(root, node: dict, slice_id: str, step_id, fallback: str) -> t
         return following["command"], following["slice_id"] if following.get("sliced") else ""
     summary = next((item for item in result.get("slices") or [] if item["id"] == slice_id), None)
     if summary is None:
-        raise ApiError("invalid_argument", "切片不存在或已排除", 400, {"fields": {"slice_id": "unknown"}})
+        raise ApiError("invalid_argument", "分段不存在或已排除", 400, {"fields": {"slice_id": "unknown"}})
     found = next((item for item in steps if not item.get("optional")
                   and summary["stages"].get(item["id"]) not in ("confirmed", "auto")), None)
     return (found["command"] if found else fallback), (slice_id if result.get("sliced") else "")

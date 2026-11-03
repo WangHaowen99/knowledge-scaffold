@@ -114,7 +114,7 @@ def card_for(atype: ArtifactType, root: Path, row: dict, *, change: str, pack_la
         "chips": chips,
         "fields": shown,
         "detail": _detail(atype),
-        # 这一轮所属的变更集：会话宿主出卡时填（确认生效前双击按它读副本，AR-03 ?changeset=）
+        # 这一轮所属的变更集：会话宿主出卡时填（这一轮还没合入时双击按它读副本，AR-03 ?changeset=）
         "changeset_id": None,
     }
     if spec.get("component") == "flowchart" and atype.format == "drawio":

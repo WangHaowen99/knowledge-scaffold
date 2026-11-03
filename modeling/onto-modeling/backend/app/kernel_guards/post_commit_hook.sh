@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Post-commit message dispatcher.
 # Invoked by the PostToolUse hook after a git commit Bash tool call.
-# 给助手看的一两行：提交记进了这一轮的修改（确认生效后才是版本），以及产物核验状态。
-# 不给版本号、不提「回退」、不推荐下一条命令：版本由界面确认生效产生，下一步由建议条给出。
+# 给助手看的一两行：提交记进了这一轮的修改（这一轮结束合入后才是版本），以及产物核验状态。
+# 不给版本号、不提「回退」、不推荐下一条命令：版本在每一轮结束合入时产生，下一步由建议条给出。
 
 # --- Hook self-guard ---------------------------------------------------------
 # PostToolUse hooks fire on every Bash; settings.json's `if` clause is
@@ -43,7 +43,7 @@ last=$(git -C "$ROOT" log --oneline -1 2>/dev/null) || exit 0
 MSG=$(echo "$last" | sed 's/^[0-9a-f]* //')
 
 print_header() {
-    echo "已记进这一轮的修改：$MSG（用户在界面上确认生效后才成为新版本；不要对用户说版本号，也不要让用户回复「回退」「确认生效」）"
+    echo "已记进这一轮的修改：$MSG（这一轮结束平台自动存成新版本；不要对用户说版本号，也不要让用户回复「回退」「撤回」）"
 }
 
 verified_hint() {

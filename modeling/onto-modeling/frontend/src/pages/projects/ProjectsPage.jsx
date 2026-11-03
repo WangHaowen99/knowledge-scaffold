@@ -45,8 +45,8 @@ function ProjectCardView({ p, onMenu, onRestore }) {
       <div className="mt12">
         <SegBar states={cells} />
         <div className="row xs muted mt4">
-          <span>切片进度</span><span className="sp" />
-          <span>{p.slices ? `已确认 ${p.slices.confirmed}/${p.slices.total} 片` : '切片待规划'}</span>
+          <span>分段进度</span><span className="sp" />
+          <span>{p.slices ? `已确认 ${p.slices.confirmed}/${p.slices.total} 段` : '分段待规划'}</span>
         </div>
       </div>
       {live ? (
@@ -54,7 +54,7 @@ function ProjectCardView({ p, onMenu, onRestore }) {
           <div className="row xs">
             <span className="row g4" style={{ color: 'var(--blue2)', fontWeight: 650 }}><i className="ld" />自主构建中</span>
             <span className="sp" />
-            <span className="muted">第 {Math.min(ab.slice_total, ab.slice_done + 1)}/{ab.slice_total} 片{ab.eta_ms ? ` · 预计 ${Math.round(ab.eta_ms / 60000)} 分钟` : ''}</span>
+            <span className="muted">第 {Math.min(ab.slice_total, ab.slice_done + 1)}/{ab.slice_total} 段{ab.eta_ms ? ` · 预计 ${Math.round(ab.eta_ms / 60000)} 分钟` : ''}</span>
           </div>
           <div className="mt8"><Prog p={ab.progress_pct} tone="l4" thin /></div>
           <div className="xs muted mt4">已自动决定 {ab.decisions} 项 · 挂起 {ab.suspended} 个问题 · 预算用了 {ab.budget_used_pct}%</div>
@@ -63,7 +63,7 @@ function ProjectCardView({ p, onMenu, onRestore }) {
       {done ? (
         <div className="note amber mt8" style={{ padding: '8px 10px' }}>
           <Icon name="bot" />
-          <div className="grow xs"><b>自主构建完成 · 需复核 {ab.needs_review} 项</b><br />{durText(ab.duration_ms)} · {ab.slice_done}/{ab.slice_total} 片完成</div>
+          <div className="grow xs"><b>自主构建完成 · 需复核 {ab.needs_review} 项</b><br />{durText(ab.duration_ms)} · {ab.slice_done}/{ab.slice_total} 段完成</div>
         </div>
       ) : null}
       {p.publishable && !p.archived ? (

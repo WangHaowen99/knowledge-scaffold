@@ -2,8 +2,8 @@
 
 - 项目卡片带运行进度、落地页是运行对话；运维总览、会话池标出自主构建；
 - 同时运行数上限：超出的排队，前一个结束后接着开始；
-- 维护模式：在跑的做完这一片就暂停；
-- 运行中改引擎、回退版本、删项目、手动确认这一片的修改都 409；
+- 维护模式：在跑的做完这一段就暂停；
+- 运行中改引擎、回退版本、删项目、手动确认这一段的修改都 409；
 - 蓝图卡出现「一路建完」，BP-03 `next=L4` 返回开始前预览；
 - 删项目清掉运行记录；启动自检报告有「自主构建」一项；/metrics 有运行数与复核改判比例。
 
@@ -46,7 +46,7 @@ def test_cards_ops_views_and_guards_while_running(ab, monkeypatch):
     assert overview["autobuild_runs"][0]["run_no"] == 1 and overview["autobuild_runs"][0]["state"] == "running"
     pool = client.get("/api/v1/ops/sessions").json()["items"]
     assert any(item["autobuild"] for item in pool)
-    # 运行中：回退版本、删项目、手动确认这一片都 409
+    # 运行中：回退版本、删项目、手动确认这一段都 409
     head = changesets.current(workspaces, project_id)
     assert client.post(f"/api/v1/projects/{project_id}/versions/revert", json={"commit": "HEAD"}).json()["code"] == \
         "autobuild_running"
@@ -87,7 +87,7 @@ def test_concurrency_limit_queues_and_maintenance_pauses_at_the_safe_point(ab):
     release.set()
     wait_state(client, project_id, first["run_id"], "completed")
     wait_state(client, second, queued.json()["run_id"], "completed")
-    # 维护模式：在跑的做完这一片就暂停（O-21 autobuild=pause_at_safe_point）
+    # 维护模式：在跑的做完这一段就暂停（O-21 autobuild=pause_at_safe_point）
     assert client.put("/api/v1/admin/autobuild-limits", json={"max_concurrent_runs": 2}).status_code == 200
     release2 = gate("/ontology-extract-object:s2")
     run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s2", "s3"], "until_node": "core.model"},

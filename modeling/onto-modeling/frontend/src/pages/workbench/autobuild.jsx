@@ -16,8 +16,8 @@ export const useAutobuildCtx = () => useContext(AutobuildCtx);
 
 const OP = {
   pause: ['pauseAutobuild', '当前步骤做完后暂停', 'pause'],
-  stop_at_safe_point: ['stopAutobuildAtSafePoint', '会在当前切片的安全点停下', 'stop'],
-  convert_to_l2: ['convertAutobuildToL2', '这一片做完后转为陪伴', 'hand'],
+  stop_at_safe_point: ['stopAutobuildAtSafePoint', '会在当前分段的安全点停下', 'stop'],
+  convert_to_l2: ['convertAutobuildToL2', '这一段做完后转为陪伴', 'hand'],
   resume: ['resumeAutobuild', '继续运行', 'play'],
 };
 const DIMENSION = { duration: '时长', tokens: 'token', cost: '费用' };
@@ -200,7 +200,7 @@ export function RunDrawer({ ab }) {
     api.autobuildSuspensions(pid, runId).then((r) => setSus((r.items || []).filter((x) => x.state === 'open'))).catch(() => setSus([]));
   }, [api, pid, runId, drawer]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!run) return null;
-  // 切片步骤的列由 FL-01 的 slice_stages 决定（场景走查未启用时没有「场景」列）；流程还没给切片步骤时按矩阵里出现的步骤排
+  // 分段步骤的列由 FL-01 的 slice_stages 决定（场景走查未启用时没有「场景」列）；流程还没给分段步骤时按矩阵里出现的步骤排
   const stageDefs = flow?.slice_stages?.length ? flow.slice_stages : Object.keys(run.matrix?.[0]?.cells || {}).map((id) => ({ id, label: id }));
   const keys = stageDefs.map((s) => [s.id, s.label]);
   const [tail1, tail2] = (run.tail_text || '').split(' → ');
@@ -215,7 +215,7 @@ export function RunDrawer({ ab }) {
         {miniMetrics(run).map(([b, t]) => <div key={t}><b>{b}</b><span>{t}</span></div>)}
       </div>
       <div className="sec-t mt16">
-        <Icon name="layers" size={14} />切片流水线
+        <Icon name="layers" size={14} />分段流水线
       </div>
       <div className="g2-pipe" style={{ gridTemplateColumns: `150px repeat(${keys.length},1fr) 128px` }}>
         <span />

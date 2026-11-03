@@ -1,6 +1,6 @@
 // mock：主示例项目的自主构建运行 #3（设计稿 l4-run 与 inbox 共用的同一次运行，合成场景）。
-// 运行范围是未完成的 4 片：安全库存测算、陈列量核定、临期与损耗检查、超量与审批提示；运行前版本 v0.12。
-// running：停在 15:48「临期与损耗检查 › 提取规则」；completed：17:02 全部切片完成。
+// 运行范围是未完成的 4 段：安全库存测算、陈列量核定、临期与损耗检查、超量与审批提示；运行前版本 v0.12。
+// running：停在 15:48「临期与损耗检查 › 提取规则」；completed：17:02 全部分段完成。
 import { ANCHORS, MAIN_PID } from './fixtures.js';
 import { entryRef } from './scenario.js';
 
@@ -214,8 +214,8 @@ export function runOf(state = 'running', { led = ledger().filter(upTo(state)), s
     scenarios: done ? { passed: 16, total: 18 } : { passed: 14, total: 15 },
     fix_rounds: { used: 1, limit: 2 },
     matrix,
-    tail_text: '跑完全部切片后：全局一致性检查 → 合规检查（发布前，留给你）',
-    scope_lock_text: '正在做的这一片，写入范围内的条目在 Studio 和插件页里只读，到这一片自动合入为止；其他条目照常编辑，保存即生效',
+    tail_text: '跑完全部分段后：全局一致性检查 → 合规检查（发布前，留给你）',
+    scope_lock_text: '正在做的这一段，写入范围内的条目在 Studio 和插件页里只读，到这一段自动合入为止；其他条目照常编辑，保存即生效',
     recovered_from_checkpoint: done ? 1 : 0,
     report_available: ended,
     base_version_label: BASE_VERSION,
@@ -254,16 +254,16 @@ export function reportOf(state = 'completed') {
       slice(SL.s4, 'partial', done ? '部分完成 · 挂起 2 项' : '部分完成 · 挂起 1 项', '+3 对象 +1 操作 +3 规则', 3, 4, 'v0.17'),
       done ? slice(SL.s5, 'done', '完成', '+2 对象 +1 操作 +2 规则', 3, 4, 'v0.19') : slice(SL.s5, 'skipped', '未开始', '—', 0, 0, BASE_VERSION),
     ],
-    note: '产出已确认生效并标「需复核」；复核完之前，发布检查会提醒你',
+    note: '产出已生效并标「需复核」；复核完之前，发布检查会提醒你',
   };
 }
 
-// 写入范围锁：正在做的这一片（autobuild_slice）
+// 写入范围锁：正在做的这一段（autobuild_slice）
 export function sliceLock(conversation_id = RUN_CONV_ID) {
   return {
     state: 'autobuild_slice', changeset_id: 'cs-ab3-s4', conversation_id, run_id: RUN_ID, slice: SL.s4, node: { id: 'core.model', version: 'core@1.4.2' },
     entries: ['expiry_loss_std', 'check_item', 'expiry_check', 'r08_expiry_grade'].map(entryRef), artifacts: [], paths: [],
-    reason_text: '自主构建正在做「临期与损耗检查」这一片', since: hm('15:36'),
+    reason_text: '自主构建正在做「临期与损耗检查」这一段', since: hm('15:36'),
   };
 }
 
@@ -330,7 +330,7 @@ export function sliceCard(sid, state) {
     });
   }
   if (sid === 's5') {
-    if (state === 'queued') return base(SL.s5, { state: 'queued', summary: '排队中 · 下一片' });
+    if (state === 'queued') return base(SL.s5, { state: 'queued', summary: '排队中 · 下一段' });
     if (state === 'skipped') return base(SL.s5, { state: 'queued', summary: '没有开始 · 运行已停下' });
     return base(SL.s5, {
       state: 'done', summary: '自主完成 · +2 对象 +1 操作 +2 规则 · 场景 3/4', version_label: 'v0.19',
@@ -353,7 +353,7 @@ export function startCard() {
   return {
     card_id: 'ab3-start', card_type: 'autobuild_start', eyebrow: '', title: '自主构建 · 运行 #3', subtitle: '', status: null, plugin: null,
     open: { kind: 'page', target: 'proj-settings' }, run_id: RUN_ID, run_no: RUN_NO,
-    chips: [{ label: '范围', value: '未完成的 4 片' }, { label: '预算', value: '¥150 · 2 小时' }, { label: '生产库', value: '不采集' }, { label: '拿不准时', value: '采用保守选项并记为假设' }],
+    chips: [{ label: '范围', value: '未完成的 4 段' }, { label: '预算', value: '¥150 · 2 小时' }, { label: '生产库', value: '不采集' }, { label: '拿不准时', value: '采用保守选项并记为假设' }],
   };
 }
 
@@ -384,7 +384,7 @@ export function history(state = 'running') {
   const done = state === 'completed';
   const out = [
     e('day.marker', { label: '今天' }, '15:08'),
-    e('notice', { kind: 'merged', text: '15:08 · 切片「补货申请与门店需求」已确认生效，保存为版本 v0.12', version_label: BASE_VERSION, changeset_id: 'cs-29', align: 'center' }, '15:08'),
+    e('notice', { kind: 'merged', text: '15:08 · 分段「补货申请与门店需求」已存成版本 v0.12', version_label: BASE_VERSION, changeset_id: 'cs-29', align: 'center' }, '15:08'),
     e('message.user', { message_id: 'm-u-ab3', text: '剩下的你自己做完，预算 150 以内', attachments: [], references: [], origin: null, delivery: 'immediate' }, '15:09'),
     e('message.assistant', { message_id: 'm-a-ab3', text_md: '好，转为自主构建，按「项目设置 › 构建方式」里的策略跑：', anchors: [], entry_links: [], continued: false }, '15:10'),
     e('card', startCard(), '15:10'),
@@ -396,8 +396,8 @@ export function history(state = 'running') {
   if (done) {
     out.push(
       e('card', sliceCard('gc'), '16:38'),
-      e('notice', { kind: 'info', text: '17:02 · 运行 #3 结束：全部切片完成', version_label: 'v0.19', changeset_id: null, align: 'center' }, '17:02'),
-      e('message.assistant', { message_id: 'm-a-ab3-end', text_md: '5 片都跑完了。高置信的 13 个决定可以一键接受，另外 4 项低于阈值、记为假设，3 个问题挂起等你回答。', anchors: [], entry_links: [], continued: false }, '17:02'),
+      e('notice', { kind: 'info', text: '17:02 · 运行 #3 结束：全部分段完成', version_label: 'v0.19', changeset_id: null, align: 'center' }, '17:02'),
+      e('message.assistant', { message_id: 'm-a-ab3-end', text_md: '5 段都跑完了。高置信的 13 个决定可以一键接受，另外 4 项低于阈值、记为假设，3 个问题挂起等你回答。', anchors: [], entry_links: [], continued: false }, '17:02'),
       e('card', reportCard('completed'), '17:02'),
     );
   }
@@ -412,7 +412,7 @@ export function runConversation(state = 'running') {
   };
 }
 
-// ---------- 一次运行的可变状态：台账复核、挂起回答、按片撤回（AB-11～AB-17 与待处理共用） ----------
+// ---------- 一次运行的可变状态：台账复核、挂起回答、按段撤回（AB-11～AB-17 与待处理共用） ----------
 export function createRunStore(initial) {
   const s = { state: initial, ledger: ledger(), suspensions: suspensions(), reverted: new Map(), version: 19 };
   const visibleLedger = () => s.ledger.filter(upTo(s.state)).filter((l) => !s.reverted.has(l.slice.id));

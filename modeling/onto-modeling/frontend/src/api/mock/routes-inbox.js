@@ -14,7 +14,7 @@ const FILTERS = {
 };
 const RESOLVED_TEXT = {
   answer: '已回答', arbitrate: '已裁决', execute: '清单已确认，开始修改', accept: '已接受', rejudge: '已改判，助手会重做受影响的部分',
-  revert_slice: '已回退这一片', use_generic: '先按通用要求处理', refresh: '已刷新', keep_stale: '保持过期', resume: '已续跑', abandon: '已放弃',
+  revert_slice: '已回退这一段', use_generic: '先按通用要求处理', refresh: '已刷新', keep_stale: '保持过期', resume: '已续跑', abandon: '已放弃',
   send_to_evolution: '已交给反馈演进处理', dismiss: '已忽略',
 };
 
@@ -169,7 +169,7 @@ export function register(ctx) {
         }
         if (a === 'revert_slice') {
           if (['running', 'pausing', 'stopping', 'converting', 'queued'].includes(store.state)) return err(409, 'autobuild_running', '本次运行还在跑', { run_id: detail.run_id });
-          if (store.isReverted(detail.slice.id)) return err(409, 'slice_not_revertible', '这一片已经回退过了', { reason: 'already_reverted' });
+          if (store.isReverted(detail.slice.id)) return err(409, 'slice_not_revertible', '这一段已经回退过了', { reason: 'already_reverted' });
           const r = store.revert(detail.slice.id);
           const c = cardOf(pid);
           if (c) c.version_label = r.version_label;
@@ -206,7 +206,7 @@ export function register(ctx) {
       s.gone.add(it.id);
       s.handled += 1;
     }
-    // revert_slice 会连带去掉这一片的其他复核项
+    // revert_slice 会连带去掉这一段的其他复核项
     const after = allOf(pid).map(([x]) => x.id);
     const next = list.slice(i + 1).map(([x]) => x.id).find((id) => after.includes(id)) || after[0] || null;
     db.emitInbox(pid, out.resolved ? [it.id] : [], out.resolved ? [] : [it.id]);

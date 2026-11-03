@@ -14,7 +14,7 @@ const SLICE_FLOW = {
     s2: { group: 'done', note: '自主完成 · 1 项需复核', stages: ['confirmed', 'confirmed', 'needs_review', 'needs_review', 'needs_review'] },
     s3: { group: 'done', note: '自主完成 · 已刷新过期 3 项', stages: ['confirmed', 'needs_review', 'needs_review', 'needs_review', 'needs_review'] },
     s4: { group: 'now', note: '自主构建正在做 · 规则 2 / 3', stages: ['needs_review', 'needs_review', 'running', 'not_ready', 'not_ready'] },
-    s5: { group: 'todo', note: '排队中 · 下一片', stages: ['not_ready', 'not_ready', 'not_ready', 'not_ready', 'not_ready'] },
+    s5: { group: 'todo', note: '排队中 · 下一段', stages: ['not_ready', 'not_ready', 'not_ready', 'not_ready', 'not_ready'] },
   },
   completed: {
     s2: { group: 'done', note: '自主完成 · 1 项需复核', stages: ['confirmed', 'confirmed', 'needs_review', 'needs_review', 'needs_review'] },
@@ -30,7 +30,7 @@ function l4Flow(base, state) {
   return {
     ...base,
     nodes: base.nodes.map((n) => (n.id === 'core.model' && state === 'completed'
-      ? { ...n, state: 'confirmed', display_state: 'confirmed', flags: { ...n.flags, needs_review: true }, progress: { done: 5, total: 5, label: '5/5 片' } }
+      ? { ...n, state: 'confirmed', display_state: 'confirmed', flags: { ...n.flags, needs_review: true }, progress: { done: 5, total: 5, label: '5/5 段' } }
       : n)),
     slices: base.slices.map((s) => {
       const x = map[s.id];
@@ -75,7 +75,7 @@ export function register(ctx) {
   };
   db.autobuildOf = storeOf;
 
-  // 运行中：正在做的那一片在写入范围锁里；项目卡跟着显示自主构建中
+  // 运行中：正在做的那一段在写入范围锁里；项目卡跟着显示自主构建中
   [F.MAIN_PID, 'bike-fleet-7b20e4a1'].forEach((pid) => {
     if (stageOf(pid) !== 'l4' || stageRunState() !== 'running') return;
     db.scope.set(pid, R.sliceLock());
@@ -105,7 +105,7 @@ export function register(ctx) {
   const timers = new Map();
   const after = (pid, ms, fn) => { clearTimeout(timers.get(pid)); timers.set(pid, setTimeout(fn, ms)); };
 
-  // 停在安全点 / 转为陪伴：这一片做完生效后停下
+  // 停在安全点 / 转为陪伴：这一段做完生效后停下
   function finishAtSafePoint(pid, st, next) {
     st.state = next;
     emitProj(pid, 'autobuild.safe_point', { run_id: R.RUN_ID, slice_id: 's4', slice_name: R.RUN_SLICES.s4.name, version_label: 'v0.17', next });
@@ -172,7 +172,7 @@ export function register(ctx) {
     const bad = S.checkPolicy(policy, sourceIds());
     if (bad) return err(...bad);
     const pv = S.previewOf(policy, ctx.flowOf(pid).slices, sourceName);
-    if (!pv.slices.some((s) => s.included)) return err(422, 'invalid_argument', '范围里没有要跑的切片', { fields: { scope: 'empty' } });
+    if (!pv.slices.some((s) => s.included)) return err(422, 'invalid_argument', '范围里没有要跑的分段', { fields: { scope: 'empty' } });
     const token = `pv-${uid()}`;
     db.abPreview = { token, pid, policy };
     return json(200, { preview_token: token, expires_at: new Date(Date.now() + 10 * 60000).toISOString(), ...pv });
@@ -200,7 +200,7 @@ export function register(ctx) {
       ev(2, 'card', {
         ...R.startCard(), card_id: `ab${n}-start`, title: `自主构建 · 运行 #${n}`, run_id: run.run_id, run_no: n,
         chips: [
-          { label: '范围', value: `${policy.scope.mode === 'selected' ? '选中的' : '未完成的'} ${included.length} 片` },
+          { label: '范围', value: `${policy.scope.mode === 'selected' ? '选中的' : '未完成的'} ${included.length} 段` },
           { label: '预算', value: `¥${b.max_cost.amount} · ${b.max_duration_min % 60 ? `${b.max_duration_min} 分钟` : `${b.max_duration_min / 60} 小时`}` },
           { label: '生产库', value: pv.production }, { label: '拿不准时', value: pv.below_threshold_text },
         ],
@@ -267,7 +267,7 @@ export function register(ctx) {
     if (!st) return err(404, 'run_not_found', '运行不存在');
     if (RUNNING.has(st.state)) return err(409, 'autobuild_running', '本次运行还在跑', { run_id: runId });
     const row = st.report().slices.find((x) => x.slice_id === sliceId);
-    if (!row || !row.revertible) return err(409, 'slice_not_revertible', '这一片不能撤回', { reason: row?.reverted ? 'already_reverted' : 'not_merged' });
+    if (!row || !row.revertible) return err(409, 'slice_not_revertible', '这一段不能撤回', { reason: row?.reverted ? 'already_reverted' : 'not_merged' });
     const r = st.revert(sliceId);
     const c = cardOf(pid);
     if (c) c.version_label = r.version_label;

@@ -1,4 +1,4 @@
-/* 自主构建（设计稿 l4-run）：运行条、开始时的策略说明、按切片的进展块、自动决定卡、挂起卡、运行详情抽屉、运行报告卡。
+/* 自主构建（设计稿 l4-run）：运行条、开始时的策略说明、按段的进展块、自动决定卡、挂起卡、运行详情抽屉、运行报告卡。
    移植自设计稿 pages-20-l2l4.js 的 l4-run 样式；运行条在工作台里的尺寸覆盖（.wx-run …）在 workbench.css */
 .g2-rs{display:flex;align-items:center;gap:18px;padding:10px 12px 10px 16px;border-radius:14px}
 .g2-live{width:9px;height:9px;border-radius:50%;background:#22C3EE;animation:pulse 1.6s infinite;flex:none}

@@ -392,16 +392,16 @@ def test_17_revert_ignores_derived_index_and_catches_any_later_edit(project):
     assert exc.value.code == "merge_conflict"
 
 
-# ---- 20 open_changeset 先占的片被第一次观察关掉 ----
+# ---- 20 open_changeset 先占的段被第一次观察关掉 ----
 
 
 def test_20_reserved_changeset_survives_an_empty_observe(project):
     workspaces, project_id, root = project
     copy = service.copy_for_turn(workspaces, project_id, root)
     slot = service.open_changeset(workspaces, project_id, source="autobuild", build_mode="L4", run_id="run-1",
-                                  slice_id="s-1", purpose="第一片")
+                                  slice_id="s-1", purpose="第一段")
     service.observe(workspaces, project_id, running=True)
     assert store.get(root, slot["id"])["state"] == "open"
-    agent_write(copy, "ontology/object/门店.md", obj("门店", "片里写的门店"))
+    agent_write(copy, "ontology/object/门店.md", obj("门店", "段里写的门店"))
     record = service.observe(workspaces, project_id, running=True)
     assert record["id"] == slot["id"] and record["run_id"] == "run-1" and record["slice_id"] == "s-1"

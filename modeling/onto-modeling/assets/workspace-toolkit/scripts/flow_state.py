@@ -255,7 +255,7 @@ def _node_actions(node: dict, *, verify_first: bool = False) -> list:
 
 
 def _slice_step(next_step: dict) -> dict:
-    """按切片的下一步：这一片下一步的命令带上切片（全量模式不带）。"""
+    """按段的下一步：这一段下一步的命令带上分段（全量模式不带）。"""
     args = {'slice': next_step['slice_id']} if next_step.get('slice_id') and next_step.get('sliced') else {}
     action = {'type': 'send', 'text': '', 'command': next_step['command']}
     if args:
@@ -264,11 +264,11 @@ def _slice_step(next_step: dict) -> dict:
 
 
 def _blueprint_candidates(context: dict) -> list:
-    """蓝图草案等你确认：确认蓝图、调整切片，再加重新划分（还在资料分析那一轮里时换成撤回这一轮）。"""
+    """蓝图草案等你确认：确认蓝图、调整分段，再加重新划分（还在资料分析那一轮里时换成撤回这一轮）。"""
     blueprint = context.get('blueprint') or {}
     confirm = _item('confirm_blueprint', '确认蓝图', {'type': 'confirm_blueprint', 'next': blueprint.get('next') or 'L2'},
                     reason='建模蓝图等你确认', priority=4, icon='check')
-    adjust = _item('adjust_blueprint', '调整切片',
+    adjust = _item('adjust_blueprint', '调整分段',
                    {'type': 'navigate', 'page': 'wb-blueprint', 'params': {'dialog': 'blueprint'}},
                    reason='建模蓝图等你确认', priority=4, icon='layers')
     redo = _item('replan', '重新划分', _send('/ontology-research phase=blueprint'), reason='建模蓝图等你确认',
@@ -282,7 +282,7 @@ def _candidates(flow: dict, states: dict, context: dict) -> list:
     state_of = {node_id: (item or {}).get('state') for node_id, item in states.items()}
     stage = context.get('stage') or ''
     out = []
-    # 2. 过期的节点：刷新（按切片的节点刷新过期的那一片那一步）
+    # 2. 过期的节点：刷新（按段的节点刷新过期的那一段那一步）
     slice_next = context.get('slice_next')
     for node in nodes:
         if state_of.get(node['id']) == 'stale':
@@ -306,7 +306,7 @@ def _candidates(flow: dict, states: dict, context: dict) -> list:
             for index, action in enumerate(_node_actions(node)[:1]):
                 out.append(_item(f"gate:{node['id']}", action['label'], _action(action),
                                  reason='挡住发布的关卡还没通过', priority=3))
-    # 4. 主线下一步：第一个没完成的必经步骤；建模蓝图草案等你确认时先确认蓝图；按切片的节点给这一片的下一步；
+    # 4. 主线下一步：第一个没完成的必经步骤；建模蓝图草案等你确认时先确认蓝图；按段的节点给这一段的下一步；
     # 已经越过插入位置的插件节点（可补做）不抢主线，放到第 5 级
     flags_of = {node_id: (item or {}).get('flags') or {} for node_id, item in states.items()}
     backfill = [node for node in nodes if flags_of.get(node['id'], {}).get('backfill')]
@@ -328,7 +328,7 @@ def _candidates(flow: dict, states: dict, context: dict) -> list:
                 out.append(_item(f"{current['id']}#{index}", action['label'], _action(action),
                                  reason='下一步', priority=4))
         if blueprint.get('state') == 'none' and state_of.get('core.research') in ('confirmed', 'stale'):
-            out.append(_item('plan_slices', '切片规划', _send('/ontology-research phase=blueprint'),
+            out.append(_item('plan_slices', '分段规划', _send('/ontology-research phase=blueprint'),
                              reason='可选步骤', priority=5, icon='layers'))
     else:
         out.append(_item('overview', '整体视图', _send('/ontology-overview'), reason='必经步骤都已完成', priority=5))
@@ -369,7 +369,7 @@ def suggest(flow: dict, states: dict, context: dict | None = None) -> dict:
     - changeset：当前的变更集 {id, state}：合入冲突时主推去待处理选保留哪边（助手每一轮结束自动合入，没有「确认生效」）；
     - stage：旧版线性阶段（资料分析待核验时核验排第一、校验待审阅时继续校验）；report_pending：报告有待处理项；
     - blueprint：建模蓝图 {state: none|draft|confirmed, where: mainline|changeset, next}，草案时主推「确认蓝图」；
-    - slice_next：按切片的节点这一片的下一步 {slice_id, slice_name, step, label, command, sliced}。
+    - slice_next：按段的节点这一段的下一步 {slice_id, slice_name, step, label, command, sliced}。
     """
     context = context or {}
     if context.get('autobuild'):

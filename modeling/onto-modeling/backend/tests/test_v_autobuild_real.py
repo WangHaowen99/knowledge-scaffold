@@ -85,7 +85,7 @@ def test_wait_turn_does_not_count_old_error_while_reconnecting(monkeypatch):
 
 
 def test_matrix_does_not_mark_steps_left_out_as_done(ab):
-    """策略关了「生成场景」：这一片合入后，运行详情的流水线把没做的「场景」也标成「自主完成」（流程里这一步还是 ready）。"""
+    """策略关了「生成场景」：这一段合入后，运行详情的流水线把没做的「场景」也标成「自主完成」（流程里这一步还是 ready）。"""
     from tests.autobuild_helpers import start, wait_state
 
     client, _workspaces, project_id, _root = ab

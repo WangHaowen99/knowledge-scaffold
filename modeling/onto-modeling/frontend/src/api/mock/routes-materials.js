@@ -277,7 +277,7 @@ function blueprintCard(bp) {
     subtitle: '',
     status: bp.state === 'confirmed' ? { key: 'confirmed', label: '已确认' } : null, plugin: null,
     // 后端口径（contract-changes B4d 合并第 1 条）：草案时给，L4 只在自主构建登记后出现，已确认时为空
-    confirm_options: bp.state === 'confirmed' ? [] : [{ mode: 'L2', label: '确认，一片一片来' }, ...(autobuildOff() ? [] : [{ mode: 'L4', label: '确认，一路建完…' }])],
+    confirm_options: bp.state === 'confirmed' ? [] : [{ mode: 'L2', label: '确认，一段一段来' }, ...(autobuildOff() ? [] : [{ mode: 'L4', label: '确认，一路建完…' }])],
     open: { kind: 'dialog', target: 'blueprint' },
     version_label: bp.version_label, state: bp.state, goal_md: bp.goal_md, goal_anchor: bp.goal_anchor, goal_anchor_label: bp.goal_anchor_label,
     out_of_scope: bp.out_of_scope, slices: bp.slices,
@@ -340,14 +340,14 @@ export function emptySuggestions() {
     all_commands: true,
   };
 }
-// 设计稿画了 4 个（确认蓝图、调整切片、重新划分、一路建完）；契约 FL-02 是 1 个主推 + 最多 2 个次选，「一路建完」在上面的卡片里
+// 设计稿画了 4 个（确认蓝图、调整分段、重新划分、一路建完）；契约 FL-02 是 1 个主推 + 最多 2 个次选，「一路建完」在上面的卡片里
 export function blueprintSuggestions() {
   return {
     mode: 'normal',
     primary: sg('sg-confirm', '确认蓝图', 'check', { type: 'confirm_blueprint', next: 'L2' }, { primary: true, priority: 2 }),
     secondary: [
-      sg('sg-adjust', '调整切片', 'layers', { type: 'navigate', page: 'wb-blueprint', params: { dialog: 'blueprint' } }),
-      sg('sg-redo', '重新划分', 'refresh', { type: 'send', text: '重新划分切片', command: '/ontology-research', args: { phase: 'slices', redo: true } }),
+      sg('sg-adjust', '调整分段', 'layers', { type: 'navigate', page: 'wb-blueprint', params: { dialog: 'blueprint' } }),
+      sg('sg-redo', '重新划分', 'refresh', { type: 'send', text: '重新划分分段', command: '/ontology-research', args: { phase: 'slices', redo: true } }),
     ],
     all_commands: true,
   };
@@ -369,7 +369,7 @@ function welcome(e, { name, goal, at }) {
     e('notice', { kind: 'project_created', text: `${stamp(at)} · 项目「${name}」已创建`, version_label: null, changeset_id: null, align: 'center' }, at),
     e('message.assistant', {
       message_id: 'm-welcome',
-      text_md: `你好，我是建模助手。目标我记下了：**${goal}**。\n\n先把业务资料给我。我会通读全文、给每条结论标出处，读完画一张资料地图给你看，再一起把业务切成几片来建。`,
+      text_md: `你好，我是建模助手。目标我记下了：**${goal}**。\n\n先把业务资料给我。我会通读全文、给每条结论标出处，读完画一张资料地图给你看，再一起把业务切成几段来建。`,
       anchors: [], entry_links: [], continued: false,
     }, at),
     e('card', uploadCard(), at),
@@ -402,7 +402,7 @@ function materialsHistory() {
         { id: 'r2', text: '读完场景说明和两份样例补货单，覆盖 100%', meta: '1 分 12 秒', state: 'done', duration_ms: 72000 },
         { id: 'r3', text: '读完门店清单 3 个工作表，找到 12 个字段', meta: '9 秒', state: 'done', duration_ms: 9000 },
         { id: 'r4', text: '正在读补货规则第 10 章「临期损耗」', meta: '78% · 预计还要 1 分钟', state: 'running', duration_ms: null },
-        { id: 'r5', text: '接下来：读商品陈列说明，然后提出业务切片和建模蓝图', meta: '', state: 'dot', duration_ms: null },
+        { id: 'r5', text: '接下来：读商品陈列说明，然后提出业务分段和建模蓝图', meta: '', state: 'dot', duration_ms: null },
       ],
     }, t1),
     e('card', materialMapCard(makeMap('reading')), t1),
@@ -423,14 +423,14 @@ function blueprintHistory() {
     e('progress', {
       group_id: 'pg-bp', title: '', desc: '', state: 'waiting', started_at: t1, duration_ms: null, collapsed: false,
       steps: [
-        { id: 'b1', text: '按补货规则的章节和业务项，提出 5 个切片', meta: '规则第 4、6、7、10、11 章各对应一条业务链路', state: 'done', duration_ms: 21000 },
-        { id: 'b2', text: '「超量与审批提示」要用到另外 3 片的标准，排在最后', meta: '依赖分析 · 2 秒', state: 'done', duration_ms: 2000 },
+        { id: 'b1', text: '按补货规则的章节和业务项，提出 5 段', meta: '规则第 4、6、7、10、11 章各对应一条业务链路', state: 'done', duration_ms: 21000 },
+        { id: 'b2', text: '「超量与审批提示」要用到另外 3 段的标准，排在最后', meta: '依赖分析 · 2 秒', state: 'done', duration_ms: 2000 },
         { id: 'b3', text: '等你确认蓝图', meta: '3 个问题、2 个口径待定', state: 'waiting', duration_ms: null },
       ],
     }, t1),
     e('message.assistant', {
       message_id: 'm-a-bp',
-      text_md: '每片是一条能单独讲清楚、单独验证的业务链路：1 个主操作、3–8 个对象、几条规则，约半天能走完一圈。「商品品类」三片都会用到，先在第 1 片建好，其他片引用。',
+      text_md: '每段是一条能单独讲清楚、单独验证的业务链路：1 个主操作、3–8 个对象、几条规则，约半天能走完一圈。「商品品类」三段都会用到，先在第 1 段建好，其他段引用。',
       anchors: [], entry_links: [], continued: true,
     }, t1),
     // ?mock=autobuild:off：自主构建没登记（BP-03 409 autobuild_not_available），蓝图卡的 confirm_options 没有 L4
@@ -450,7 +450,7 @@ function stageFlow(base, research, slices = []) {
     if (n.section === 'optional') return { ...reset, actions: [{ kind: 'skip', label: '跳过' }] };
     return reset;
   });
-  // 没有蓝图时后端给一片「全部」（全量模式）与 blueprint.state=none（contract-changes B4d 第 8 条、B4d 合并第 2 条）
+  // 没有蓝图时后端给一段「全部」（全量模式）与 blueprint.state=none（contract-changes B4d 第 8 条、B4d 合并第 2 条）
   const draft = slices.length > 0;
   const all = [{ id: 'all', name: '全部', core_flow: '', group: 'todo', stages: Object.fromEntries(base.slice_stages.map((x) => [x.id, 'not_ready'])), note: '', no_rules: false }];
   return { ...base, flow_hash: `${base.flow_hash.slice(0, 6)}m${slices.length}`, nodes, slices: draft ? slices : all, blueprint: { state: draft ? 'draft' : 'none' }, notices: [], suggestions: null };
@@ -694,7 +694,7 @@ export function register(ctx) {
     return bp ? json(200, bp) : err(404, 'blueprint_not_found', '还没有建模蓝图');
   });
 
-  // BP-02 保存蓝图调整：整份切片列表替换
+  // BP-02 保存蓝图调整：整份分段列表替换
   on('PUT', '/projects/([^/]+)/blueprint', ({ m, body }) => {
     const pid = m[1];
     const s = st(pid);
@@ -702,10 +702,10 @@ export function register(ctx) {
     if (!bp) return err(404, 'blueprint_not_found', '还没有建模蓝图');
     if (body.base_revision !== bp.revision) return err(409, 'revision_conflict', '蓝图已被改过', { current_revision: bp.revision });
     if (body.slices) {
-      if (!body.slices.some((x) => !x.excluded)) return err(400, 'slice_invalid', '至少留一片', { reason: 'empty' });
+      if (!body.slices.some((x) => !x.excluded)) return err(400, 'slice_invalid', '至少留一段', { reason: 'empty' });
       const ids = body.slices.map((x) => x.id);
       const bad = body.slices.find((x, i) => (x.depends_on || []).some((d) => ids.indexOf(d) > i));
-      if (bad) return err(400, 'slice_invalid', '依赖的切片排在后面', { slice_id: bad.id, reason: 'dependency_order' });
+      if (bad) return err(400, 'slice_invalid', '依赖的分段排在后面', { slice_id: bad.id, reason: 'dependency_order' });
       const prev = new Map(bp.slices.map((x) => [x.id, x]));
       const live = body.slices.filter((x) => !x.excluded);
       bp.slices = body.slices.map((x) => {
@@ -730,7 +730,7 @@ export function register(ctx) {
     return json(200, bp);
   });
 
-  // BP-03 确认蓝图：L2 往对话发「开始第一个切片」；L4 返回自主构建预览，前端确认后再调 AB-04
+  // BP-03 确认蓝图：L2 往对话发「开始第一段」；L4 返回自主构建预览，前端确认后再调 AB-04
   on('POST', '/projects/([^/]+)/blueprint/confirm', ({ m, body }) => {
     const pid = m[1];
     const s = st(pid);
@@ -746,12 +746,12 @@ export function register(ctx) {
       setResearch(pid, { state: 'confirmed', display_state: 'confirmed', progress: null, actions: [] });
       const f = flowOf(pid);
       const model = f.nodes.find((x) => x.id === 'core.model');
-      Object.assign(model, { state: 'ready', display_state: 'ready', progress: { done: 0, total: live.length, label: `0/${live.length} 片` } });
+      Object.assign(model, { state: 'ready', display_state: 'ready', progress: { done: 0, total: live.length, label: `0/${live.length} 段` } });
       emitProj(pid, 'flow.updated', { flow_hash: f.flow_hash, nodes: [{ id: model.id, state: model.state, display_state: model.display_state, flags: model.flags, progress: model.progress }], slices: [], suggestions_changed: true });
     }
     const first = bp.slices.find((x) => !x.excluded);
     if ((body.next || 'L2') === 'L2') {
-      const t = command(pid, { page: 'wb-blueprint', label: '建模蓝图' }, `确认蓝图，开始第一个切片「${first?.name || ''}」`);
+      const t = command(pid, { page: 'wb-blueprint', label: '建模蓝图' }, `确认蓝图，开始第一段「${first?.name || ''}」`);
       emitConv(pid, cidOf(pid), 'suggestions.updated', { mode: 'normal', primary: null, secondary: [], all_commands: true });
       return json(200, { blueprint: bp, command_task: t });
     }

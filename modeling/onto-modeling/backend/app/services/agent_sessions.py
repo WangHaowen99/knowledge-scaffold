@@ -1784,7 +1784,7 @@ CONTEXT_RESET = "context_reset"
 
 
 def _since_context_reset(events: list[dict]) -> list[dict]:
-    """历史回放续接（Jiuwen）只从最近一次「新开上下文」之后取：自主构建每片新开上下文，不把前几片的对话塞回去。"""
+    """历史回放续接（Jiuwen）只从最近一次「新开上下文」之后取：自主构建每段新开上下文，不把前几段的对话塞回去。"""
     for index in range(len(events) - 1, -1, -1):
         if events[index].get("type") == CONTEXT_RESET:
             return list(events[index + 1:])
@@ -1906,7 +1906,7 @@ def _capture_change_list(session: Session, record: dict | None) -> dict | None:
 
 
 def _purge_changesets(project_id: str) -> None:
-    """删除项目：变更集记录与助手副本目录、节点与切片状态、变更清单、人工节点的问题、蓝图卡登记、
+    """删除项目：变更集记录与助手副本目录、节点与分段状态、变更清单、人工节点的问题、蓝图卡登记、
     自主构建的运行记录一起清掉。"""
     from ..kernel.changesets import service as changesets
 

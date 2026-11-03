@@ -1,6 +1,6 @@
 """自主构建测试共用的假引擎、项目与等待（测试数据全部为合成内容）。
 
-假引擎按收到的消息现做：对象提取写这一片规划的对象、操作提取写操作、场景走查写场景文件，命令锁开、放都按
+假引擎按收到的消息现做：对象提取写这一段规划的对象、操作提取写操作、场景走查写场景文件，命令锁开、放都按
 工具箱的样子；测试可以往 `AutoEngine.hooks` 里放「在某条命令里先做的动作」（提问、等测试放行）。不起真实 CLI。
 """
 
@@ -31,7 +31,7 @@ from tests.test_changesets import main_write, obj
 
 SLICES = 5
 DRAFT = {"goal_md": "合成目标", "slices": [
-    {"name": f"合成片{n}", "objects": [f"对象{n}"], "operations": [f"操作{n}"]} for n in range(1, SLICES + 1)]}
+    {"name": f"合成段{n}", "objects": [f"对象{n}"], "operations": [f"操作{n}"]} for n in range(1, SLICES + 1)]}
 COMMANDS = {"/ontology-extract-object": "extract-object", "/ontology-extract-operation": "extract-operation",
             "/ontology-trace": "trace", "/ontology-validate": "validate", "/ontology-consistency": "consistency"}
 
@@ -136,7 +136,7 @@ class AutoEngine:
         return [*steps, result()]
 
     def _marker_slice(self) -> str:
-        """续跑指令不带切片：命令按执行标记里的这一片做（与工具箱 blueprint.py brief 一样）。"""
+        """续跑指令不带分段：命令按执行标记里的这一段做（与工具箱 blueprint.py brief 一样）。"""
         try:
             marker = json.loads((Path(self.ctx.cwd) / ".onto" / "run" / "exec.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -233,7 +233,7 @@ def _no_gate(*args, **kwargs):
 
 @pytest.fixture()
 def ab(tmp_path: Path, monkeypatch):
-    """一个有 5 片已确认蓝图的项目；门禁放行（合成文档不全，门禁另有用例）。"""
+    """一个有 5 段已确认蓝图的项目；门禁放行（合成文档不全，门禁另有用例）。"""
     from app import wiring
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")

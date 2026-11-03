@@ -169,7 +169,7 @@ test('运行中的 L4 与启动自检摘要', () => {
   const r = runRow(D.overview().autobuild_runs[0]);
   assert.equal(r.name, '共享单车故障诊断');
   assert.equal(r.elapsed, '38 分');
-  assert.equal(r.slices, '2 / 5 片');
+  assert.equal(r.slices, '2 / 5 段');
   assert.equal(r.pct, 58);
   assert.equal(r.budget, '¥ 25 / 60');
   assert.deepEqual(r.state, { k: 'running', label: '运行中' });

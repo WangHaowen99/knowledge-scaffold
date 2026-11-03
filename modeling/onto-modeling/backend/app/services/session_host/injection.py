@@ -12,7 +12,7 @@
   （原 `knowledge_signal_probe.sh`），没启用这个包的项目不提示。规则由登记的数据源算
   （`register_prompt_hint_provider`，启动时在 `app/wiring.py` 登记；Jiuwen worker 进程自己登记一份）。
 
-- 自主构建（方案 B12）：运行中给这条对话注入片说明、台账摘要与用户补充，每条都带（`register_autobuild_hint_provider`）。
+- 自主构建（方案 B12）：运行中给这条对话注入段说明、台账摘要与用户补充，每条都带（`register_autobuild_hint_provider`）。
 
 宿主给每个引擎实例建一个 `Injector`（经 EngineContext 交给引擎）：引擎在消息真正送到模型的那一刻
 调 `context_for(原文)`——Claude 在 send() 时，Jiuwen 在轮内积压的消息开始跑时——阶段与下一步按
@@ -270,7 +270,7 @@ _autobuild_hint_provider: "Callable[[Path, str | None], str] | None" = None
 
 
 def register_autobuild_hint_provider(provider: "Callable[[Path, str | None], str] | None") -> None:
-    """自主构建的注入：(助手工作目录, 对话) → 片说明与台账摘要；不在运行中返回空串。"""
+    """自主构建的注入：(助手工作目录, 对话) → 段说明与台账摘要；不在运行中返回空串。"""
     global _autobuild_hint_provider
     _autobuild_hint_provider = provider
 

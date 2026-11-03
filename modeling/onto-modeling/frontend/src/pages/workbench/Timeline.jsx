@@ -104,7 +104,7 @@ export function Timeline({ state, scope, onInterrupt, live = true }) {
   const blocks = timelineBlocks(state);
   const running = ['running', 'connecting'].includes(state.session.state);
   const lastOpenQ = [...blocks].reverse().find((b) => b.type === 'question');
-  // 自主构建的运行对话里切片进展块已经在说正在做什么，不再加「思考中」
+  // 自主构建的运行对话里分段进展块已经在说正在做什么，不再加「思考中」
   const activity = live ? liveActivity(state) : null;
   const tailInterrupt = running ? onInterrupt : null;
   const hasTail = !!(activity || tailInterrupt);

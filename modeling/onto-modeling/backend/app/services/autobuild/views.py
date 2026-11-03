@@ -1,7 +1,7 @@
 """运行记录 → 契约形状（7.15 AutobuildRunSummary / AutobuildRun / AutobuildReport / LedgerEntry / Suspension）与
-对话里的四种卡片（4.7 autobuild_start、slice_progress、run_report；自动决定、挂起嵌在切片进展块的时间线里）。
+对话里的四种卡片（4.7 autobuild_start、slice_progress、run_report；自动决定、挂起嵌在分段进展块的时间线里）。
 
-界面文字只给功能必需的：状态标签、数字、片名、问题与选择本身。
+界面文字只给功能必需的：状态标签、数字、段名、问题与选择本身。
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ def currency_of(run: dict) -> str:
 
 
 def live_ledger(run: dict) -> list[dict]:
-    """撤回了的片上的决定不再算。"""
+    """撤回了的段上的决定不再算。"""
     reverted = {unit_id for unit_id, info in (run.get("slices") or {}).items() if info.get("reverted")}
     return [entry for entry in run.get("ledger") or [] if (entry.get("slice") or {}).get("id") not in reverted]
 
@@ -177,7 +177,7 @@ def run_view(run: dict, stage_ids: list[str], now: float | None = None) -> dict:
         "fix_rounds": {"used": sum(int(item.get("fix_rounds") or 0) for item in info),
                        "limit": int(((run.get("policy") or {}).get("advanced") or {}).get("max_fix_rounds") or 0)},
         "matrix": rows,
-        "tail_text": f"跑完全部切片后：{' → '.join(tail)}" if tail else "",
+        "tail_text": f"跑完全部分段后：{' → '.join(tail)}" if tail else "",
         "scope_lock_text": "",
         "recovered_from_checkpoint": int(run.get("recovered") or 0),
         "report_available": bool(run.get("report")),
@@ -196,7 +196,7 @@ def produced_text(produced: dict) -> str:
 
 
 def report(run: dict, now: float | None = None) -> dict:
-    """AutobuildReport：按片结果、能否撤回随复核与撤回变化，每次现算。"""
+    """AutobuildReport：按段结果、能否撤回随复核与撤回变化，每次现算。"""
     currency = currency_of(run)
     limits = (run.get("policy") or {}).get("budget") or {}
     ledger = live_ledger(run)
@@ -270,7 +270,7 @@ def start_card(run: dict) -> dict:
     slices = len(_units(run, "slice"))
     cost = (limits.get("max_cost") or {}).get("amount") or 0
     chips = [
-        {"label": "范围", "value": f"{'选中的' if scope.get('mode') == 'selected' else '未完成的'} {slices} 片"},
+        {"label": "范围", "value": f"{'选中的' if scope.get('mode') == 'selected' else '未完成的'} {slices} 段"},
         {"label": "预算", "value": f"{_money_text(cost, currency_of(run))} · "
                                   f"{_duration_text(int(limits.get('max_duration_min') or 0))}"},
         {"label": "拿不准时", "value": policy.BELOW_TEXT.get((pol.get("advanced") or {}).get("below_threshold"), "")},

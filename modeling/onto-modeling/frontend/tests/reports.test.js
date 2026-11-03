@@ -22,14 +22,14 @@ test('时间与耗时的写法', () => {
 });
 
 const RULE = {
-  id: 'rp-rule', type: 'rule', type_label: '规则', at: at(10, 31, 21, 52), scope_text: '切片「超量与审批提示」', mode: 'regression', duration_ms: 3200,
+  id: 'rp-rule', type: 'rule', type_label: '规则', at: at(10, 31, 21, 52), scope_text: '分段「超量与审批提示」', mode: 'regression', duration_ms: 3200,
   previous: { at: at(10, 31, 21, 31), summary: '错误 2' }, progress: { handled: 2, total: 5, note: 'n' },
 };
 
 test('「这份报告」（范围、模式只在这里出，报告头不再重复）、处理进度', () => {
   assert.deepEqual(infoPairs({ ...RULE, scope_text: '全知识包', mode: 'full' }).slice(1, 3), [['范围', '全知识包'], ['模式', '全量']]);
   assert.deepEqual(infoPairs({ type: 'link', scope_text: '全知识包 · 34 个元素', mode: 'full' }).slice(0, 2), [['检查类型', '链接检查'], ['范围', '全知识包 · 34 个元素']]);
-  assert.deepEqual(infoPairs(RULE), [['检查类型', '规则检查'], ['范围', '切片「超量与审批提示」'], ['模式', '回归 · 只查改动'], ['耗时', '3.2 秒'], ['上一份', '21:31 · 错误 2']]);
+  assert.deepEqual(infoPairs(RULE), [['检查类型', '规则检查'], ['范围', '分段「超量与审批提示」'], ['模式', '回归 · 只查改动'], ['耗时', '3.2 秒'], ['上一份', '21:31 · 错误 2']]);
   assert.equal(infoPairs({ ...RULE, type: 'research', mode: 'research', extras: { total: 7 }, previous: null })[1][1], '资料区 7 份');
   // 服务端的 progress.note 是说明槽位，不再带出来
   assert.deepEqual(progressView(RULE), { text: '已处理 2 / 5', pct: 40 });

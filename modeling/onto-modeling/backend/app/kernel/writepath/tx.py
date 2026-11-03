@@ -256,14 +256,14 @@ def recover_intents(manager) -> dict:
             dropped += 1
             continue
         if data.get("rollback"):
-            # 整片写入（确认生效、撤回已合入的变更集）：没提交完就整片回到主线，不补提交半片（审查第 6 条）
+            # 整批写入（一轮的合入、撤回已合入的变更集）：没提交完就整批回到主线，不补提交半截（审查第 6 条）
             try:
                 with manager._project_lock(project_id):
                     _restore_from_head(root, data.get("paths") or [])
                 dropped += 1
             except Exception as exc:
                 failed.append(project_id)
-                _log.warning("回滚中断的整片写入失败（%s）：%s", project_id, exc)
+                _log.warning("回滚中断的整批写入失败（%s）：%s", project_id, exc)
                 continue
             path.unlink(missing_ok=True)
             continue
@@ -373,7 +373,7 @@ class ChangeTx:
         self.summary = summary
         self._target = target
         self.expected_head = expected_head
-        # 整片写入（确认生效）：崩溃后启动恢复整片回滚，而不是把已落盘的部分补提交
+        # 整批写入（一轮的合入）：崩溃后启动恢复整批回滚，而不是把已落盘的部分补提交
         self.rollback_on_crash = rollback_on_crash
         # 助手一轮的合入、自主构建按段合入：插件声明的提交门禁只提示，问题放进 TxResult.findings（F3）
         self.hint_gates = hint_gates

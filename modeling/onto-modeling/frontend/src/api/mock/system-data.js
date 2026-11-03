@@ -128,7 +128,7 @@ export function registryItems(state) {
     item('ANTHROPIC_API_KEY', 'cred://data_dir/ANTHROPIC_API_KEY', 'data_dir', '非空，只存引用', 'next_message', { secret: true, edit_page: 'sys', precedence: UI_FIRST, description: '稳定引擎模型 Key' }),
     item('ONTO_WEB_PERMISSION_MODE', state.permissionMode, 'data_dir', '枚举 4 选 1', 'new_session', { edit_page: 'sys', precedence: UI_FIRST, description: '会话权限模式' }),
     item('context.presets', state.presetsText, 'data_dir', '表结构 + 数值', 'immediate', { edit_page: 'sys', description: '模型上下文推荐表（只做推荐，不参与运行时取值）' }),
-    item('trace.max_cases_per_slice', '6', 'pack', '整数 1–20', 'next_message', { pack: 'trace@0.9.1', description: '每个切片最多推演的场景数' }),
+    item('trace.max_cases_per_slice', '6', 'pack', '整数 1–20', 'next_message', { pack: 'trace@0.9.1', description: '每段最多推演的场景数' }),
     item('l4.max_concurrent_runs', String(state.maxRuns), 'data_dir', '整数 0–16', 'immediate', { edit_page: 'sys', description: '自主构建同时运行上限' }),
     item('evidence.snapshot.max_git_mb', String(state.snapshotMb), state.snapshotMb === 20 ? 'default' : 'data_dir', '整数 MB', 'immediate', { edit_page: 'sys', description: '单份快照在 git 里的上限' }),
     item('backup.keep', '3', 'default', '整数 ≥ 1', 'immediate', { description: '保留的备份份数' }),

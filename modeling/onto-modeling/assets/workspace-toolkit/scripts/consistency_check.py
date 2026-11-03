@@ -2,12 +2,12 @@
 """
 全局一致性检查（详设 6.8 `core.consistency`、第 9 章建议 2「全部做完后再做一次全局一致性检查」）。
 
-各片建完之后看三件事，确定性检查、不调用模型：
+各段建完之后看三件事，确定性检查、不调用模型：
 
 1. 关系：链接指不到任何条目；对象没有任何操作、规则、别的对象用到（孤立）；
 2. 口径：建模蓝图里统一了叫法的术语，条目里还在用别的叫法；
-3. 跨切片衔接（按片建模时）：一片的条目链接到另一片的对象，却没声明依赖那一片；条目不属于任何一片；
-   规划在某一片里、主线上却没有的条目。
+3. 跨分段衔接（按段建模时）：一段的条目链接到另一段的对象，却没声明依赖那一段；条目不属于任何一段；
+   规划在某一段里、主线上却没有的条目。
 
 结果写进 `reports/consistency/consistency.md`（覆盖上一份；上一份里已勾掉的同一条结论保留勾选，便于你对某条
 说「就这样」），每条一行 `- [ ] … (C-xxxxxxxx)`。没有未处理的条目时全局一致性这一步完成（flow.yaml 的
@@ -60,7 +60,7 @@ def _finding(code: str, level: str, text: str, target: str) -> dict:
 
 
 def _depends(doc: dict) -> dict:
-    """每片（传递地）依赖的片。"""
+    """每段（传递地）依赖的段。"""
     direct = {item['id']: set(item.get('depends_on') or []) for item in blueprint.live_slices(doc)}
     closure = {}
     for slice_id in direct:
@@ -127,14 +127,14 @@ def _cross_slice(doc: dict, entries: dict, names: set) -> list:
         item = owner.get((kind, name))
         if item is None:
             if kind in blueprint.MEMBER_FIELDS:
-                findings.append(_finding('unassigned', 'warning', f'「{name}」不属于任何一片', f'{kind}:{name}'))
+                findings.append(_finding('unassigned', 'warning', f'「{name}」不属于任何一段', f'{kind}:{name}'))
             continue
         for target in onto_metamodel.link_names(text, names):
             other = object_owner.get(target)
             if other is None or other['id'] == item['id'] or other['id'] in closure.get(item['id'], set()):
                 continue
             findings.append(_finding('undeclared_dependency', 'warning',
-                                     f'「{item["name"]}」的「{name}」用到了「{other["name"]}」的对象「{target}」，没声明依赖这一片',
+                                     f'「{item["name"]}」的「{name}」用到了「{other["name"]}」的对象「{target}」，没声明依赖这一段',
                                      f'{kind}:{name}'))
     return findings
 
@@ -160,7 +160,7 @@ def write_report(root: Path, findings: list) -> tuple[Path, int]:
     if not findings:
         lines.append('没有发现问题。')
     groups = (('关系', ('dangling_link', 'orphan_object')), ('口径', ('term_variant',)),
-              ('跨切片衔接', ('undeclared_dependency', 'unassigned', 'planned_missing')))
+              ('跨分段衔接', ('undeclared_dependency', 'unassigned', 'planned_missing')))
     for title, codes in groups:
         items = [item for item in findings if item['code'] in codes]
         if not items:

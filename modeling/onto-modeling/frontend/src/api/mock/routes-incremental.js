@@ -3,7 +3,7 @@
 // 阶段（主示例项目）：
 //   ?mock=stage:incremental                 「09 修订通知」对话在第一位，等你确认变更点清单（设计稿默认态）
 //   ?mock=stage:incremental,inc:executed    已按清单执行，回归 5 / 6，这一轮已存成版本（F3：一轮结束就合入）
-//   ?mock=stage:incremental,inc:merged      已确认生效
+//   ?mock=stage:incremental,inc:merged      同 executed（F3 起一轮结束就合入）
 // 其他阶段打开 incremental 路由：页面经 IN-01 找到 cl-09、经 INC-01 取到它所在的对话；这条对话第一次被问到时才放进对话列表。
 // 这一轮的变更集记在 db.changesets（owner: 'incremental'），CS-02～CS-05 由这里处理（index.js 的同路径处理者让过来）。
 import * as D from './incremental-data.js';
@@ -109,7 +109,7 @@ export function register(ctx) {
     return sh && sh.detail.id === id ? sh : null;
   };
 
-  // ?mock=stage:incremental,inc:executed|merged：一打开就在执行后 / 确认生效后
+  // ?mock=stage:incremental,inc:executed|merged：一打开就在执行后（已存成版本）
   if (stageOf(F.MAIN_PID) === 'incremental' && ['executed', 'merged'].includes(sc.inc)) {
     const pid = F.MAIN_PID;
     const sh = shared(pid);

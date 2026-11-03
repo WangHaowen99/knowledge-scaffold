@@ -3,7 +3,7 @@
 - 助手副本：固定路径、`resource/` 稀疏排除后挂链接、`.claude` 链到主线、续用与跟上主线、崩溃后修复；
 - 确认生效：一个 squash 提交、trailer 写在合入提交上、主线版本只 +1（`--first-parent`）；
   实体冲突进 conflict、选好一边再合入；门禁只看新增错误；
-- 撤回这一轮、撤回已合入的变更集（P3 按片撤回用）、助手在跑时不能确认；
+- 撤回这一轮、撤回已合入的变更集（P3 按段撤回用）、助手在跑时不能确认；
 - 接口形状（CS-01～CS-06）、对话里的「这一轮改了什么」卡与 S-05 的 open_changeset、Studio 复核草稿进副本。
 
 测试数据全部为合成内容；假引擎不起真实 CLI。
@@ -463,11 +463,11 @@ def test_studio_review_draft_is_staged_in_the_copy(api, monkeypatch):
 
 
 def test_autobuild_slice_changeset_merges_with_its_own_source(project):
-    """给 P3 的接口：每片先占一个变更集，观察后自动合入，trailer 记 autobuild，标「需复核」。"""
+    """给 P3 的接口：每段先占一个变更集，观察后自动合入，trailer 记 autobuild，标「需复核」。"""
     workspaces, project_id, root = project
     copy = service.copy_for_turn(workspaces, project_id, root)
     record = service.open_changeset(workspaces, project_id, source="autobuild", build_mode="L4", run_id="run-1",
-                                    slice_id="s1", purpose="自主构建 · 门店一片")
+                                    slice_id="s1", purpose="自主构建 · 门店一段")
     assert service.open_changeset(workspaces, project_id, source="autobuild")["id"] == record["id"]
     agent_write(copy, "ontology/object/门店.md", obj("门店", "合成门店"), commit="agent: 门店")
     observed = service.observe(workspaces, project_id, running=False)

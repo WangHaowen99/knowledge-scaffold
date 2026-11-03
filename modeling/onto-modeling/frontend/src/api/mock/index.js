@@ -2,7 +2,7 @@
 // 只在 VITE_API_MOCK=1 的开发 / 测试构建里加载。
 // 演示状态用地址参数切换：?mock=login:fail,projects:empty,auth:local,maint:readonly,engine:missing,import:conflict,role:user,scope:running|pending
 // ?mock=evidence:off：证据源按本期后端不可用（EV-01 回 501、没有系统逆向建模包）
-// ?mock=flow:p1：/flow 按 P1 后端（B3a）的形状返回（4 种状态、命令文本 actions、没有切片），核对前端归一处理
+// ?mock=flow:p1：/flow 按 P1 后端（B3a）的形状返回（4 种状态、命令文本 actions、没有分段），核对前端归一处理
 // 项目所处阶段（工作台显示什么）：?mock=stage:materials 等，见 stageOf；各阶段的对话、流程由 routes-*.js 的 stages 提供。
 // F2、F3 各页的接口按分组放在 routes-*.js，每个文件导出 register(ctx)、可选的 stages、projectStages、lockScope、taskSeeds。
 import * as F from './fixtures.js';
@@ -194,7 +194,7 @@ export function createMockServer() {
     // 各页 mock 导出的 lockScope（场景、求解契约等插件产物）一起并进来
     entries: [F.REFS.op, F.REFS.r09, F.REFS.safety, F.REFS.display, ...LOCK_EXTRAS.entries],
     artifacts: [{ type: 'diagram.flowchart', key: 'overage-flow', title: '超量处理流程' }, ...LOCK_EXTRAS.artifacts],
-    paths: ['ext/trace/scenarios/**', ...LOCK_EXTRAS.paths], reason_text: '助手正在改「超量与审批提示」这一片', since: new Date().toISOString(),
+    paths: ['ext/trace/scenarios/**', ...LOCK_EXTRAS.paths], reason_text: '助手正在改「超量与审批提示」这一段', since: new Date().toISOString(),
   });
   // ?mock=scope:running / scope:pending：主示例项目一打开就处在写入范围锁的两态之一（Studio、流程图弹窗、插件页的只读对照用）
   if (sc.scope === 'running' || sc.scope === 'pending') {
@@ -359,7 +359,7 @@ export function createMockServer() {
     const c = cardOf(m[1]);
     if (!c) return err(404, 'project_not_found', '项目不存在');
     if (sc.owner === 'other' && user.role !== 'user') {
-      return json(200, { id: c.id, name: c.name, owner: 'modeler01', stage_label: '建模 3/5 片', build_mode: c.build_mode, archived: c.archived, created_at: c.created_at, last_activity_at: c.last_activity_at });
+      return json(200, { id: c.id, name: c.name, owner: 'modeler01', stage_label: '建模 3/5 段', build_mode: c.build_mode, archived: c.archived, created_at: c.created_at, last_activity_at: c.last_activity_at });
     }
     return json(200, F.projectMeta(c));
   });

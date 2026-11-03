@@ -48,20 +48,20 @@ test('条目说法与路径：对象「陈列量标准」 ↔ ontology/object/�
 
 const LIST = mainHistory().map((v, i, all) => ({ ...v, current: i === all.length - 1 }));
 
-test('落地：查看改动按版本号选中，对不上运行和切片时改按运行 + 切片找', () => {
+test('落地：查看改动按版本号选中，对不上运行和分段时改按运行 + 分段找', () => {
   const at = (q) => LIST.find((v) => v.commit === pickLanding(LIST, q).commit)?.version_label;
   assert.equal(at({ v: 'v0.15', run: 'run-3', slice: 's3' }), 'v0.15');
   assert.equal(pickLanding(LIST, { v: 'v0.15', run: 'run-3', slice: 's3' }).note, '');
-  // 版本号对不上（比如运行中还没生成），按运行 + 切片找最新的那一版
+  // 版本号对不上（比如运行中还没生成），按运行 + 分段找最新的那一版
   assert.equal(at({ v: '', run: 'run-3', slice: 's4' }), 'v0.17');
   assert.equal(at({ v: 'v0.99', run: 'run-3', slice: 's2' }), 'v0.14');
   assert.equal(at({ v: 'v0.14', run: 'run-3', slice: 's5' }), 'v0.19');
-  // 运行没做的那一片（报告里写的是运行前版本 v0.12，它不带运行信息）：就选 v0.12
+  // 运行没做的那一段（报告里写的是运行前版本 v0.12，它不带运行信息）：就选 v0.12
   assert.equal(at({ v: 'v0.12', run: 'run-3', slice: 's5' }), 'v0.12');
-  // 版本号找到了但属于别的切片：还有这一片的版本就改选它，没有就仍选中并说明
+  // 版本号找到了但属于别的分段：还有这一段的版本就改选它，没有就仍选中并说明
   const q = pickLanding(LIST.filter((v) => v.n <= 16), { v: 'v0.14', run: 'run-3', slice: 's5' });
   assert.equal(LIST.find((v) => v.commit === q.commit).version_label, 'v0.14');
-  assert.match(q.note, /不是这一片生成的/);
+  assert.match(q.note, /不是这一段生成的/);
   // 版本没带运行信息（P1 后端）：只认版本号，不提示
   const bare = LIST.map((v) => ({ ...v, run: null }));
   assert.deepEqual(pickLanding(bare, { v: 'v0.15', run: 'run-3', slice: 's3' }), { commit: '8d3f6a10', note: '' });
@@ -222,10 +222,10 @@ test('V-01：自主构建运行中（stage:l4）只有到 v0.16 的版本；别�
   const r = await call('GET', `${P}/versions`);
   assert.equal(r.body.items[0].version_label, 'v0.20');
   assert.equal(r.body.items[0].source, 'assistant');
-  assert.match(r.body.items[0].summary, /^确认生效：/);
+  assert.match(r.body.items[0].summary, /^助手修改：/);
 });
 
-test('V-02：「改了什么」带复核状态与运行切片', async () => {
+test('V-02：「改了什么」带复核状态与运行分段', async () => {
   const { call } = mockServer();
   const r = await call('GET', `${P}/versions/8d3f6a10`);
   assert.equal(r.body.version_label, 'v0.15');
@@ -340,7 +340,7 @@ test('V-07 / V-08：标记版本与删除标记（发布标签不能删）', asy
   assert.equal((await call('DELETE', `${P}/versions/tags/${t.body.name}`)).body.code, 'tag_not_found');
 });
 
-test('V-03：某版本的文件（v0.15 还没有临期那一片的条目）与 zip 下载；其他项目用通用历史', async () => {
+test('V-03：某版本的文件（v0.15 还没有临期那一段的条目）与 zip 下载；其他项目用通用历史', async () => {
   const { call } = mockServer();
   const files = await call('GET', `${P}/versions/8d3f6a10/files`);
   const paths = files.body.items.map((f) => f.path);

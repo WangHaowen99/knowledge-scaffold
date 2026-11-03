@@ -43,7 +43,7 @@ function Track({ flow, onOpen }) {
             {i ? <span className={cx('wx-ln', prevOk && 'ok')} /> : null}
             <span className={cx('wx-st', k)}>
               <span className="dt">{k === 'ok' ? <Icon name="check" /> : k === 'blocked' ? <Icon name="lock" /> : null}</span>
-              {n.title.replace('（按切片）', '')}
+              {n.title.replace('（按段）', '')}
               {n.progress?.label ? <span className="x">{n.progress.label}</span> : null}
             </span>
           </span>
@@ -53,7 +53,7 @@ function Track({ flow, onOpen }) {
   );
 }
 
-// 建模步骤抽屉：切片 × 步骤（P2 起有）、按 sections 分组的节点；节点动作的执行方式见 nodeActionKind
+// 建模步骤抽屉：分段 × 步骤（P2 起有）、按 sections 分组的节点；节点动作的执行方式见 nodeActionKind
 function StepsDrawer({ open, onClose, flow, cid }) {
   const { api } = useApp();
   const { pid, reloadFlow } = useProject();
@@ -136,8 +136,8 @@ function StepsDrawer({ open, onClose, flow, cid }) {
     <Drawer open={open} onClose={onClose} icon="branch" title="建模步骤" w={440}>
       {flow.slices.length ? (
         <>
-          <div className="sec-t"><Icon name="layers" size={14} />业务切片 {flow.slices.length}<span className="sp" /><Button size="xs" kind="ghost" icon="layers" onClick={adjustSlices}>调整切片</Button></div>
-          {/* 小进度条的列头：和每格对齐（同运行详情「切片流水线」的表头） */}
+          <div className="sec-t"><Icon name="layers" size={14} />业务分段 {flow.slices.length}<span className="sp" /><Button size="xs" kind="ghost" icon="layers" onClick={adjustSlices}>调整分段</Button></div>
+          {/* 小进度条的列头：和每格对齐（同运行详情「分段流水线」的表头） */}
           <div className="wb-sr wb-sr-h">
             <span className="ix" />
             <span className="grow" />
@@ -670,7 +670,7 @@ export default function WorkbenchPage({ route }) {
     const f = withoutEvidence(flow, evidenceOn);
     return overlayRunning(f, commandNode(f, runningCmd));
   }, [flow, evidenceOn, runningCmd]);
-  // 自主构建正在做的那一片由运行条和运行详情说明，顶栏不再放锁标记
+  // 自主构建正在做的那一段由运行条和运行详情说明，顶栏不再放锁标记
   const lockInfo = scope && scope.state !== 'none' && !(ab.active && scope.state === 'autobuild_slice') ? readonlyInfo(scope) : null;
   // 运行中、排队时顶栏多了状态，「新资料」先收起，避免挤出顶栏；自主构建的状态在运行条上
   const busyHead = !ab.active && ['running', 'connecting', 'queued', 'error'].includes(state.session.state);
@@ -678,7 +678,7 @@ export default function WorkbenchPage({ route }) {
   const ctxPct = Math.round(ctx?.pct ?? 0);
   const notice = (flow?.notices || []).find((n) => n.kind === 'new_materials');
   const convTitle = list?.items?.find((c) => c.id === cid)?.title || '对话';
-  // 资料分析节点没确认：蓝图待确认时是切片规划，其余是读资料（含还没传资料）
+  // 资料分析节点没确认：蓝图待确认时是分段规划，其余是读资料（含还没传资料）
   const research = (flow?.nodes || []).find((n) => n.id === 'core.research');
   const researching = !research || ['confirmed', 'skipped'].includes(research.state) ? false : research.state === 'pending_confirm' ? 'blueprint' : 'materials';
   const st = composerState({ sessionState: state.session.state, archived: meta?.archived, maintenance, autobuildRunning: !!state.session.autobuild || ab.running, researching });

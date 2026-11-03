@@ -18,7 +18,7 @@ export function projectLook(p) {
   return { icon, color };
 }
 
-// DisplayState → 切片小进度条的格子样式（设计稿 segbar）
+// DisplayState → 分段小进度条的格子样式（设计稿 segbar）
 const CELL = {
   confirmed: 'ok', pending: 'pending', pending_confirm: 'pending', stale: 'stale', running: 'run', draft: 'draft',
   skipped: 'skip', conflict: 'conflict', needs_review: 'review', auto: 'review',

@@ -216,7 +216,7 @@ export function runProgress(done) {
 }
 
 /**
- * 「09 修订通知」这条对话的历史。phase：editing（等你确认清单，设计稿默认态）、executed（执行完、待确认生效）、merged（已确认生效）。
+ * 「09 修订通知」这条对话的历史。phase：editing（等你确认清单，设计稿默认态）、executed（执行完、已存成版本）、merged（同 executed，F3 起一轮结束就合入）。
  */
 export function incHistory({ pid, cl, impact, others, phase = 'editing', csId = null, version = null }) {
   let seq = 4000;
@@ -225,7 +225,7 @@ export function incHistory({ pid, cl, impact, others, phase = 'editing', csId = 
   const executed = phase !== 'editing';
   const out = [
     e('day.marker', { label: '今天' }, t.merged),
-    e('notice', { kind: 'merged', text: `${stamp(t.merged)} · 切片「补货申请与门店需求」已确认生效，保存为版本 v0.12`, version_label: 'v0.12', changeset_id: 'cs-29', align: 'center' }, t.merged),
+    e('notice', { kind: 'merged', text: `${stamp(t.merged)} · 分段「补货申请与门店需求」已存成版本 v0.12`, version_label: 'v0.12', changeset_id: 'cs-29', align: 'center' }, t.merged),
     e('message.user', {
       message_id: 'm-inc-u1', text: '修订通知到了，按这个更新', references: [], origin: null, delivery: 'immediate',
       attachments: [{ upload_id: 'up-09', filename: '09-修订通知.docx', size: 46000, kind: 'doc' }],

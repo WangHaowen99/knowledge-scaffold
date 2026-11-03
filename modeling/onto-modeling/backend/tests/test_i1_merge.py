@@ -1,5 +1,5 @@
 """I1 合回交付分支的衔接：I1 新加的发命令入口经会话池同一道运行中拦截；自主构建的通知进通知中心（落盘、同组替换）；
-自主构建的写入（台账、报告、按片撤回的反向提交）与 I1 的符号链接防护（每轮核对、提交检查）互不误伤。"""
+自主构建的写入（台账、报告、按段撤回的反向提交）与 I1 的符号链接防护（每轮核对、提交检查）互不误伤。"""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def test_autobuild_writes_and_symlink_guards_coexist(ab, tmp_path):
     run_no = run["run_id"].rsplit("-", 1)[-1]
     assert f"reports/autobuild/{run_no}/report.json" in report_files and f"reports/autobuild/{run_no}/ledger.json" in report_files
     assert all(info.get("commit") for info in record["slices"].values() if info.get("state") == "merged")
-    # 按片撤回写反向提交：不被提交检查当成链接拦下
+    # 按段撤回写反向提交：不被提交检查当成链接拦下
     reverted = client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/slices/s2/revert")
     assert reverted.status_code == 200, reverted.text
     assert git(root, "log", "-1", "--format=%s").startswith("revert: 撤回")

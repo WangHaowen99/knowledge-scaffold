@@ -43,6 +43,6 @@ class ScopeGuard:
         if self.origin.changeset and self.origin.changeset == lock.get("changeset_id"):
             return
         if self.origin.source == "revert":
-            raise WorkspaceError("助手的修改还没确认生效或撤回，先处理完再回退版本", 423, "write_scope_locked", lock)
+            raise WorkspaceError("助手这一轮还没结束或有冲突没处理，先处理完再回退版本", 423, "write_scope_locked", lock)
         if hits:
-            raise WorkspaceError("这些内容在助手的写入范围里，确认生效或撤回之前只读", 423, "write_scope_locked", lock)
+            raise WorkspaceError("这些内容在助手的写入范围里，这一轮结束前只读", 423, "write_scope_locked", lock)

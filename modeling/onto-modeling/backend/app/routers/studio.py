@@ -140,7 +140,7 @@ def graph(project_id: str, request: Request, include_mentions: bool = True):
 
 
 def _review_marks(project_id: str) -> dict:
-    """自主构建生效、还没复核完的片改到的条目（ST-03 `needs_review`、ST-04 `needs_review`）。"""
+    """自主构建生效、还没复核完的段改到的条目（ST-03 `needs_review`、ST-04 `needs_review`）。"""
     from ..services.autobuild import review
 
     try:

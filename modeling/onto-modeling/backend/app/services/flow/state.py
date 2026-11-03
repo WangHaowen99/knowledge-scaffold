@@ -13,10 +13,10 @@
 | ready 可开始 | 输入都已确认（锚点链上的上游节点已确认或过期） |
 | not_ready 未就绪 | 其余 |
 
-完成判定只看主线：助手在副本里改的文件要确认生效才进主线，进度不再因为文件落盘就打勾。
+完成判定只看主线：助手在副本里改的文件要这一轮合入才进主线，进度不再因为文件落盘就打勾。
 
 附加标记 `needs_review`（需复核）：节点升级后完成判定变了（记下的判定签名对不上，`upgrade`）、导入已发布的
-知识包带进来的产物（`import`）、自主构建自动合入的片（`autobuild`，P3 经 `mark_needs_review` 标）。专家接受
+知识包带进来的产物（`import`）、自主构建自动合入的段（`autobuild`，P3 经 `mark_needs_review` 标）。专家接受
 （待处理 `accept`）后去掉。
 
 状态的依据存在数据目录 `flow-state/<项目>.json`（不进 git）：每个已确认节点记下确认时的输入指纹与完成判定签名、
@@ -103,7 +103,7 @@ def purge(root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-# 不算进上游指纹的文件：建模蓝图在 research/ 下，调整切片不该让对象提取过期
+# 不算进上游指纹的文件：建模蓝图在 research/ 下，调整分段不该让对象提取过期
 FINGERPRINT_EXCLUDE = ("research/blueprint.json",)
 
 
@@ -120,7 +120,7 @@ def _ls_tree(root: Path, dirs: list[str]) -> str:
 
 
 def tree_listing(root: Path) -> list[str]:
-    """主线上 ontology/、research/ 的 ls-tree 行（一次读出，按切片的指纹从里面挑）。"""
+    """主线上 ontology/、research/ 的 ls-tree 行（一次读出，按段的指纹从里面挑）。"""
     return _ls_tree(root, ["ontology", "research"]).splitlines()
 
 
@@ -169,7 +169,7 @@ def compute(root: Path, flow: dict, hits: dict[str, bool], *, project_id: str | 
             persist: bool = True, sliced: bool = False) -> dict[str, dict]:
     """全部节点 → {state, flags, display_state}。persist=False 时只算不记（预览、测试）。
 
-    sliced：项目按切片建模（建模蓝图多于一片）；声明 `blocks_in: sliced` 的关卡只在这时挡。"""
+    sliced：项目分段建模（建模蓝图多于一段）；声明 `blocks_in: sliced` 的关卡只在这时挡。"""
     root = Path(root)
     project_id = project_id or root.name
     nodes = flow.get("nodes") or []
@@ -263,7 +263,7 @@ def display(state: str, flags: dict) -> str:
 
 
 def confirm(root: Path, flow: dict, node_ids: list[str]) -> None:
-    """变更集确认生效后：这几个节点按主线现状重新记基线（输入指纹、判定签名），不再过期。"""
+    """变更集合入后：这几个节点按主线现状重新记基线（输入指纹、判定签名），不再过期。"""
     root = Path(root)
     by_id = {node["id"]: node for node in flow.get("nodes") or []}
     with _lock:
@@ -281,7 +281,7 @@ def confirm(root: Path, flow: dict, node_ids: list[str]) -> None:
 
 def mark_needs_review(root: Path, node_ids: list[str], source: str, *, run_id: str | None = None,
                       slice_id: str | None = None, note: str = "") -> None:
-    """标「需复核」（自主构建自动合入的片、导入、节点升级）；P3 自主构建合入一片后调。"""
+    """标「需复核」（自主构建自动合入的段、导入、节点升级）；P3 自主构建合入一段后调。"""
     if source not in REVIEW_SOURCES:
         raise ValueError(f"需复核的来源只能是 {REVIEW_SOURCES}")
     root = Path(root)

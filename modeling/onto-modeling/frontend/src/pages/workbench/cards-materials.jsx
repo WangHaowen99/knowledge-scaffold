@@ -160,12 +160,12 @@ function BlueprintCard({ card }) {
       dbl onDoubleClick={() => open('blueprint')}
       foot={(
         <>
-          <Button size="sm" icon="layers" onClick={() => open('blueprint')}>调整切片…</Button>
+          <Button size="sm" icon="layers" onClick={() => open('blueprint')}>调整分段…</Button>
           <span className="sp" />
           {confirmed ? <span className="wx-ok"><Icon name="check" size={14} />蓝图已确认 · {card.version_label}</span> : (
             <>
               {l4 ? <Button size="sm" icon="rocket" onClick={() => open({ kind: 'build', next: 'L4' })}>{l4.label || '确认，一路建完…'}</Button> : null}
-              {l2 ? <Button size="sm" kind="primary" icon="hand" onClick={() => open({ kind: 'build', next: 'L2' })}>{l2.label || '确认，一片一片来'}</Button> : null}
+              {l2 ? <Button size="sm" kind="primary" icon="hand" onClick={() => open({ kind: 'build', next: 'L2' })}>{l2.label || '确认，一段一段来'}</Button> : null}
             </>
           )}
         </>
@@ -176,7 +176,7 @@ function BlueprintCard({ card }) {
         <div>{card.goal_md}{card.goal_anchor ? <Ev anchor={card.goal_anchor} label={card.goal_anchor_label || anchorLabel(card.goal_anchor)} /> : null}</div>
       </div>
       <div className="mt12">
-        <div className="en-bps hd"><span /><span>切片</span><span>中心流程</span><span>规模</span><span>依赖 · 顺序</span></div>
+        <div className="en-bps hd"><span /><span>分段</span><span>中心流程</span><span>规模</span><span>依赖 · 顺序</span></div>
         {slices.map((s, i) => {
           const dep = depLabel(s, slices);
           return (
@@ -186,7 +186,7 @@ function BlueprintCard({ card }) {
               <span className="muted ell">{s.core_flow}</span>
               <span className="xs num muted">对象 ≈{s.scale?.objects ?? '—'} · 规则 ≈{s.scale?.rules ?? '—'}</span>
               <span className="row g8">
-                {dep === '无' ? <span className="xs faint">不依赖其他片</span> : <span className="xs muted">依赖 {dep}</span>}
+                {dep === '无' ? <span className="xs faint">不依赖其他段</span> : <span className="xs muted">依赖 {dep}</span>}
                 <OrderTag slice={s} index={i} />
               </span>
             </div>

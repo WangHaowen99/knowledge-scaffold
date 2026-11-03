@@ -190,10 +190,10 @@ test('窄接口保存：只认 AR-05 的字段，要带 base_revision；写入�
   await rejects(handle(parseRequest(req('artifact.save', { sections: { 正文: 'x' } })), ctx, deps), 'invalid_argument');
   await rejects(handle(parseRequest(req('artifact.save', { base_revision: 'r1', path: 'resource/a.md' })), ctx, deps), 'invalid_argument');
   await rejects(handle(parseRequest(req('artifact.save', { base_revision: 'r1', sections: { 正文: 1 } })), ctx, deps), 'invalid_argument');
-  const locked = { ...deps, saveArtifact: async () => { throw Object.assign(new Error('助手正在改这一片'), { code: 'write_scope_locked', status: 423, details: { state: 'assistant_running' } }); } };
+  const locked = { ...deps, saveArtifact: async () => { throw Object.assign(new Error('助手正在改这一段'), { code: 'write_scope_locked', status: 423, details: { state: 'assistant_running' } }); } };
   await assert.rejects(handle(parseRequest(req('artifact.save', { base_revision: 'r1' })), ctx, locked), (e) => {
     const out = errorResponse('r1', e);
-    assert.deepEqual(out, { onto_ui: UI_API, id: 'r1', ok: false, error: { code: 'write_scope_locked', message: '助手正在改这一片', status: 423, details: { state: 'assistant_running' } } });
+    assert.deepEqual(out, { onto_ui: UI_API, id: 'r1', ok: false, error: { code: 'write_scope_locked', message: '助手正在改这一段', status: 423, details: { state: 'assistant_running' } } });
     return true;
   });
 });

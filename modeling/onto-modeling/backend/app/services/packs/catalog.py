@@ -88,7 +88,7 @@ def catalog(manager, *, category: str = "", q: str = "", project_id: str = "",
     ]
     body = {"items": items, "counts": counts}
     if project_id:
-        # 按资料、数据源与切片进度推荐要等流程运行时的状态计算（P2）
+        # 按资料、数据源与分段进度推荐要等流程运行时的状态计算（P2）
         body["recommendations"] = []
     return body
 

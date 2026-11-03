@@ -6,7 +6,7 @@
 //   ?mock=scope:running|pending   写入范围锁两态：场景目录 ext/trace/scenarios/** 在锁里，23 个场景全部只读
 //   ?mock=scope:pending,trace:batch  这把锁来自批量推演（node=trace.trace）：只读条写「批量推演跑完了，结果还没确认」
 // 批量验证走完整的两态：开跑时 23 个场景进写入范围锁（助手运行中），跑完结果放进一轮变更集（修改待确认，对话里出「这一轮」卡），
-// 在对话里确认生效或撤回后解锁；开跑时项目已经有别的锁（如 scope 参数）就不动锁，结果直接回到列表。
+// 这一轮结束就合入、解锁（F3）；开跑时项目已经有别的锁（如 scope 参数）就不动锁，结果直接回到列表。
 import { isLocked } from '../../state/readonly.js';
 import { SLICES } from './scenario.js';
 import * as D from './scenarios-data.js';
@@ -29,7 +29,7 @@ export const SCENARIO_TYPE = {
     version: '1',
     fields: [
       { name: 'title', type: 'text', label: '场景', required: true },
-      { name: 'slice', type: 'enum', label: '切片', required: true, enum: SLICES.map((x) => ({ value: x.id, label: x.name })) },
+      { name: 'slice', type: 'enum', label: '分段', required: true, enum: SLICES.map((x) => ({ value: x.id, label: x.name })) },
       { name: 'operation', type: 'ref', label: '推演的操作', required: false },
       { name: 'source', type: 'anchor', label: '来源', required: true },
       { name: 'source_label', type: 'text', label: '来源名称', required: false },
@@ -72,7 +72,7 @@ export const MOCK_TYPE = {
   studio: false,
 };
 
-// 「超量与审批提示」这一片的场景：并进写入范围锁（场景目录本来就在锁的 paths 里，这里给出具体的产物）
+// 「超量与审批提示」这一段的场景：并进写入范围锁（场景目录本来就在锁的 paths 里，这里给出具体的产物）
 export const lockScope = {
   artifacts: D.scenarios().filter((x) => x.slice === 's5').map((x) => ({ type: SCENARIO, key: x.key, title: x.title })),
 };

@@ -1,9 +1,9 @@
-"""一次自主构建做哪些事（详设 8.5「范围」）：按蓝图的切片顺序，每片要跑的步骤；切片之后主线上的几步（校验、走查、
+"""一次自主构建做哪些事（详设 8.5「范围」）：按蓝图的分段顺序，每段要跑的步骤；分段之后主线上的几步（校验、走查、
 全局一致性）各算一个单元，做到策略里的 `until_node` 为止。发布是硬性不做的，不在里面。
 
-单元：`{id, name, kind: "slice"|"node", steps: [{id, label, title, command, args}], carried?}`；切片的步骤来自建模
+单元：`{id, name, kind: "slice"|"node", steps: [{id, label, title, command, args}], carried?}`；分段的步骤来自建模
 节点的 `steps`（对象、操作、规则，装了场景走查再加「场景」），已确认的不再做，过期的按 `refresh_stale_first` 决定要不要重做。
-之前的运行里「留到下一次」的挂起问题（`carried`）：那一片在范围里时补做问题所在的那一步，即使已经做完（审查 I）。
+之前的运行里「留到下一次」的挂起问题（`carried`）：那一段在范围里时补做问题所在的那一步，即使已经做完（审查 I）。
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def per_slice_node(flow_doc: dict) -> dict | None:
 
 
 def slice_rows(manager, project_id: str) -> list[dict]:
-    """蓝图里按建议顺序、没排除的片（`blueprint.run_slices`）。"""
+    """蓝图里按建议顺序、没排除的段（`blueprint.run_slices`）。"""
     from ..flow import blueprint
 
     return blueprint.run_slices(manager, project_id)
@@ -74,7 +74,7 @@ def _slice_steps(row: dict, node: dict, policy: dict, carried: list[dict] = ()) 
 
 
 def carried(project_id: str) -> dict[str, list[dict]]:
-    """之前的运行里留到下一次的挂起问题，按片：{片: [{run_id, id, step}]}；撤回了的片上的不算。"""
+    """之前的运行里留到下一次的挂起问题，按段：{段: [{run_id, id, step}]}；撤回了的段上的不算。"""
     from . import store, views
 
     out: dict[str, list[dict]] = {}
@@ -96,7 +96,7 @@ def included(row: dict, policy: dict) -> bool:
 
 
 def _tail(root: Path, flow_doc: dict, policy: dict) -> list[dict]:
-    """切片之后主线上的几步：按流程顺序，到 `until_node` 为止（含）；已确认的、可选的（不含可选时）、人工与面板节点不做。"""
+    """分段之后主线上的几步：按流程顺序，到 `until_node` 为止（含）；已确认的、可选的（不含可选时）、人工与面板节点不做。"""
     from ..flow import view
 
     node = per_slice_node(flow_doc)
@@ -125,7 +125,7 @@ def _tail(root: Path, flow_doc: dict, policy: dict) -> list[dict]:
 
 
 def build(manager, project_id: str, policy: dict) -> tuple[list[dict], list[dict]]:
-    """(要做的单元, 预览用的全部切片 [{id, name, current, included}])。"""
+    """(要做的单元, 预览用的全部分段 [{id, name, current, included}])。"""
     root = manager.project_root(project_id)
     flow_doc = flow(root)
     node = per_slice_node(flow_doc) or {}

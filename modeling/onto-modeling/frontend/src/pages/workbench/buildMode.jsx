@@ -65,7 +65,7 @@ export function useModeSwitch({ ab, openDialog }) {
   return { mode, label: modeChipLabel({ mode, runState }), switchTo, busy, guideEl };
 }
 
-// 切到自主构建时蓝图还没确认：先看一眼切片再确认，确认后接着开始前预览（BP-03 next=L4）
+// 切到自主构建时蓝图还没确认：先看一眼分段再确认，确认后接着开始前预览（BP-03 next=L4）
 function BlueprintGuide({ bp, onClose, onAdjust, onConfirm }) {
   const slices = (bp.slices || []).filter((s) => !s.excluded);
   return (
@@ -73,7 +73,7 @@ function BlueprintGuide({ bp, onClose, onAdjust, onConfirm }) {
       open onClose={onClose} icon="layers" title="先确认建模蓝图" w={540}
       foot={(
         <>
-          <a className="link xs grow" onClick={onAdjust}>调整切片…</a>
+          <a className="link xs grow" onClick={onAdjust}>调整分段…</a>
           <Button onClick={onClose}>取消</Button>
           <Button kind="primary" icon="check" onClick={onConfirm}>确认蓝图</Button>
         </>

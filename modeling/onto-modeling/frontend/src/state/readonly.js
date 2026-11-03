@@ -1,6 +1,6 @@
 // 写入范围只读判定（详设 4.3、契约 1.7 / 7.6 ScopeLock）
 // 助手写入范围内的条目在这一轮结束前只读（F3：一轮结束就合入）；合入冲突时到选好保留哪边为止；
-// 自主构建下持续到这一片自动合入。范围外照常编辑。
+// 自主构建下持续到这一段自动合入。范围外照常编辑。
 
 export const LOCK_LABEL = {
   assistant_running: '助手运行中',
@@ -95,7 +95,7 @@ export function readonlyInfo(lock, target) {
   return {
     state: st,
     label: LOCK_LABEL[st],
-    text: lock.slice ? `自主构建正在做「${lock.slice.name}」，这一片完成前只读` : '自主构建正在改这部分内容，这一片完成前只读',
+    text: lock.slice ? `自主构建正在做「${lock.slice.name}」，这一段完成前只读` : '自主构建正在改这部分内容，这一段完成前只读',
     actions: [{ kind: 'run', label: '查看运行' }],
   };
 }
@@ -105,7 +105,7 @@ export function roundLockNote(lock) {
   const st = lockState(lock);
   if (st === 'pending_confirm' || st === 'none') return '选好保留哪边前，这些条目只读';
   if (st === 'assistant_running') return '助手运行中，这些条目只读';
-  return '这一片完成前，这些条目只读';
+  return '这一段完成前，这些条目只读';
 }
 
 /**
@@ -124,7 +124,7 @@ export function composerState({ sessionState, archived, maintenance, autobuildRu
   if (maintenance?.active && maintenance.mode === 'reject_new_sessions' && sessionState !== 'running') {
     return { disabled: false, placeholder: maintenance.message || '平台正在维护，暂停新会话', warn: true };
   }
-  // researching：'blueprint' 蓝图待确认（切片规划）；其余真值是读资料
+  // researching：'blueprint' 蓝图待确认（分段规划）；其余真值是读资料
   if (researching === 'blueprint') return { disabled: false, placeholder: '对蓝图有意见直接说…' };
   if (researching) return { disabled: false, placeholder: '给助手补充说明，或者继续拖入资料…' };
   return { disabled: false, placeholder: '给助手补充说明，可拖入文件或粘贴截图…' };

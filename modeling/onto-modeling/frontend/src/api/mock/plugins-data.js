@@ -31,7 +31,7 @@ export function pluginFlags(sc) {
 
 // ---------- 目录 ----------
 const META = {
-  core: '22 命令 · 18 子代理', trace: '5 命令 · 片内 1 步 + 回归', knowledge: '3 命令 · 1 子代理 · 纠错提示', codegen: '3 命令 · 旁支节点',
+  core: '22 命令 · 18 子代理', trace: '5 命令 · 段内 1 步 + 回归', knowledge: '3 命令 · 1 子代理 · 纠错提示', codegen: '3 命令 · 旁支节点',
   reverse: '5 命令 · 串入节点', diagram: '2 命令 · 1 skill', websearch: '1 skill', migrate: '1 skill · 按需节点', evo: '按需节点',
   'industry-retail': '附「合规检查」', 'industry-property': '参考对象 22 个', 'industry-workorder': '参考对象 9 个',
   'sys-erp-generic': '表 126 · 状态码 48', 'sys-wms-generic': '表 64', 'sys-pos-generic': '表 38',
@@ -149,11 +149,11 @@ export function filterCatalog(cards, { category = [], q = '', installedOnly = fa
     && (!updatableOnly || c.project_status === 'update'));
 }
 
-// 推荐（契约 PL-01：按资料、已登记的数据源和切片进度，最多 3 条）。只给主示例项目，理由对得上它的切片
+// 推荐（契约 PL-01：按资料、已登记的数据源和分段进度，最多 3 条）。只给主示例项目，理由对得上它的分段
 const REC_REASON = {
-  'industry-retail': '新增临期损耗规则 3 条，正好对应还没开始的切片「临期与损耗检查」',
+  'industry-retail': '新增临期损耗规则 3 条，正好对应还没开始的分段「临期与损耗检查」',
   migrate: '你完成过「门店补货单编制（2025）」，有 6 个对象可以作为候选复用',
-  diagram: '流程图支持泳道和审批分支，「超量与审批提示」这一片画图时用得上',
+  diagram: '流程图支持泳道和审批分支，「超量与审批提示」这一段画图时用得上',
 };
 export function recommendationsOf(cards, { limit = 2 } = {}) {
   const want = [['industry-retail', 'update', 'upgrade'], ['migrate', 'available', 'enable'], ['diagram', 'update', 'upgrade']];
@@ -204,15 +204,15 @@ const DETAILS = {
     ],
   },
   trace: {
-    description: '从样例资料生成验收场景，逐条推演操作是否走得通；示例数据按场景需要生成。装上后每片多出「场景」一步，全量回归串在「校验与走查」里；不装就都没有。',
+    description: '从样例资料生成验收场景，逐条推演操作是否走得通；示例数据按场景需要生成。装上后每段多出「场景」一步，全量回归串在「校验与走查」里；不装就都没有。',
     size: 186 * KB, files: 23,
     flow_insertions: [
-      { id: 'trace.scenario', kind: '节点钩子', title: '每片多一步「场景」', at: 'model', note: '节点钩子 · 写入即查之后', short: '片内「场景」' },
+      { id: 'trace.scenario', kind: '节点钩子', title: '每段多一步「场景」', at: 'model', note: '节点钩子 · 写入即查之后', short: '段内「场景」' },
       { id: 'trace.trace', kind: '串入节点', title: '全量回归', at: 'validate', note: '串入「校验与走查」', short: '全量回归' },
     ],
     flow_note: '示例数据按场景需要生成，不单独占一步',
     contents: [
-      { group: '加进流程', items: ['每片的「场景」', '全量回归'], note: '「场景」挂在每片「写入即查」之后；全量回归串在「校验与走查」里。对象或操作改了，相关场景会标为过期' },
+      { group: '加进流程', items: ['每段的「场景」', '全量回归'], note: '「场景」挂在每段「写入即查」之后；全量回归串在「校验与走查」里。对象或操作改了，相关场景会标为过期' },
       { group: '命令', items: ['场景走查', '单个场景走查', '批量验证', '交互走查', '生成示例数据'] },
       { group: '助手角色', items: ['场景推演', '示例数据生成'] },
       { group: '模板', items: ['验收场景', '示例数据'] },
@@ -220,7 +220,7 @@ const DETAILS = {
       { group: '界面入口', items: [`${MAIN_UI}「场景走查」`, '对话快捷操作：批量验证', '对话快捷操作：交互走查'], note: '启用后项目左栏「插件」分组出现「场景走查」页面；停用后页面消失，已产生的场景留在知识包里' },
       { group: '报告格式', items: ['走查报告'], note: '报告审阅里逐条展示' },
     ],
-    config: [{ id: 'max_per_slice', label: '每片最多场景数', value: 6 }, { id: 'regression_mode', label: '回归模式', value: '开' }],
+    config: [{ id: 'max_per_slice', label: '每段最多场景数', value: 6 }, { id: 'regression_mode', label: '回归模式', value: '开' }],
     changelog: [
       log('0.10.0', '2026-10-28', '场景输入写明类型，推演时显式传入；回归时自动加上「守护老路径」的场景'),
       log('0.9.1', '2026-10-12', '默认回归模式（107 秒对 360 秒）；示例数据跳过「数据来源：无」的对象'),
@@ -347,7 +347,7 @@ const DETAILS = {
       log('1.0.2', '2026-09-20', '修订到货周期的取值口径'),
       log('1.0.0', '2026-09-01', '首个版本'),
     ],
-    upgrade_brings: '- 临期损耗规则 3 条，对应你还没开始的切片「临期与损耗检查」\n- 样例补货单 2 份（乳制品陈列标准 2024 版），可作场景来源\n- 「陈列量标准」参考对象新增到货周期维度',
+    upgrade_brings: '- 临期损耗规则 3 条，对应你还没开始的分段「临期与损耗检查」\n- 样例补货单 2 份（乳制品陈列标准 2024 版），可作场景来源\n- 「陈列量标准」参考对象新增到货周期维度',
     upgrade_impact: { needs_review_after_upgrade: 0, affected_artifacts: 4, note: '「合规检查」节点的完成判定没有变化，已确认的产物不会被标为需复核。用到行业知识的 4 个产物会在下次校验时按新规则检查。' },
   },
   'industry-property': {
@@ -403,7 +403,7 @@ export function detailOf(card, flags = new Set()) {
     changelog = [log('1.1.0', '2026-10-30', '新增临期损耗规则 3 条；样例补货单 2 份；「陈列量标准」参考对象新增到货周期维度'), ...changelog];
   }
   if (flags.has('held') && card.name === 'core') {
-    changelog = [log(CORE_BETA, '2026-10-29', 'beta 通道小范围试用：节点完成判定按切片计算；场景走查 0.10.0 依赖这一版'), ...changelog];
+    changelog = [log(CORE_BETA, '2026-10-29', 'beta 通道小范围试用：节点完成判定按段计算；场景走查 0.10.0 依赖这一版'), ...changelog];
   }
   return {
     description: d.description || card.description,
@@ -426,7 +426,7 @@ export function projectStatsOf(name, { entries, knowledge, scripts, flowcharts, 
   const S = {
     core: {
       produced: { value: entries.total, unit: '个条目', note: entries.note },
-      metric: { label: '切片进度', value: '1/5', note: '已确认 1 片 · 进行中 1 片' },
+      metric: { label: '分段进度', value: '1/5', note: '已确认 1 段 · 进行中 1 段' },
     },
     trace: {
       produced: { value: 23, unit: '个场景', note: '推演通过 19 · 过期 3' },

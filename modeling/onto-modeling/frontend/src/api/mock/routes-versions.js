@@ -1,7 +1,7 @@
 // mock · 3.9 版本与标签（V-01～V-08）、读历史版本文件（F-06）
 //
-// 版本列表 = versions-data.js 的静态历史 + 项目流里出现过的 workspace.changed（Studio 保存、流程图保存、确认生效、
-// 自主构建按片回退、本页的保存与回退……），所以别的页做的修改会自动出现在这里。新版本号和已有的冲突时顺延。
+// 版本列表 = versions-data.js 的静态历史 + 项目流里出现过的 workspace.changed（Studio 保存、流程图保存、助手一轮合入、
+// 自主构建按段回退、本页的保存与回退……），所以别的页做的修改会自动出现在这里。新版本号和已有的冲突时顺延。
 // 历史文件不存快照：当前内容取 F-02（Studio 分组的条目文件，经 ctx.self 转调一次），
 // 再按 versions-data.js 里每条改动的 undo 往回推。回退把恢复后的内容记在 overlay 里（Studio 自己的条目数据不跟着变，见报告）。
 // 主线版本号：打开本页或发布页时，项目卡的 version_label / head 对齐到历史的最新版本（F1 的卡片还停在 v0.12）。
@@ -15,7 +15,7 @@ import { ENTRIES, entryRef } from './scenario.js';
 
 const zip = () => new Blob(['PK\u0005\u0006'.padEnd(22, '\u0000')]);
 const majorOf = (label) => Number(/^v(\d+)\./.exec(label || '')?.[1] || 0);
-const VERB = { studio: 'Studio 编辑', web: '网页编辑', assistant: '确认生效', mcp: 'MCP 写入', autobuild: '自主构建', import: '导入', plugin: '能力变更', revert: '回退' };
+const VERB = { studio: 'Studio 编辑', web: '网页编辑', assistant: '助手修改', mcp: 'MCP 写入', autobuild: '自主构建', import: '导入', plugin: '能力变更', revert: '回退' };
 
 export function register(ctx) {
   const { on, json, err, db, sc, F, cardOf, hub, projKey, emitProj, scopeOf, stageOf, uid } = ctx;

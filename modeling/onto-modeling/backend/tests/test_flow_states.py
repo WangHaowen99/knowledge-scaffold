@@ -63,7 +63,7 @@ def test_states_follow_exec_records_changesets_and_mainline(env, monkeypatch):
     _client, workspaces, _manager, project_id, root = env
     first = states(root)
     assert first["core.research"] == "ready" and first["core.model"] == "not_ready"
-    # 进行中：有没结束的执行记录（建模命令记在建模节点、全量模式那一片上）
+    # 进行中：有没结束的执行记录（建模命令记在建模节点、全量模式那一段上）
     flow = flow_model.load_for(root)
     record = exec_records.start(project_id, "default", root=root, flow=flow, command="/ontology-extract-object",
                                 command_name="extract-object")

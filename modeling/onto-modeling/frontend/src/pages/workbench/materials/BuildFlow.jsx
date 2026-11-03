@@ -1,4 +1,4 @@
-// 确认蓝图后怎么建：一片一片来（BP-03 next=L2 → wb-l2）；按蓝图一路建完（BP-03 next=L4 拿预览，已确认过就 AB-03，确认后 AB-04 → l4-run）
+// 确认蓝图后怎么建：一段一段来（BP-03 next=L2 → wb-l2）；按蓝图一路建完（BP-03 next=L4 拿预览，已确认过就 AB-03，确认后 AB-04 → l4-run）
 import { useEffect, useRef, useState } from 'react';
 import { useApp, useProject } from '../../../app/context.js';
 import { navigate, pagePath } from '../../../app/router.js';
@@ -59,7 +59,7 @@ export function AutobuildPreviewDialog({ preview: initial, onClose }) {
         pairs={[
           ['范围', (
             <div>
-              <div>{included.length} 片{included.length < (preview.slices || []).length ? `（另有 ${(preview.slices || []).length - included.length} 片不在范围）` : ''}</div>
+              <div>{included.length} 段{included.length < (preview.slices || []).length ? `（另有 ${(preview.slices || []).length - included.length} 段不在范围）` : ''}</div>
               <div className="row wrap mt4" style={{ gap: 6 }}>
                 {(preview.slices || []).map((s) => <Chip key={s.id} tone={s.included ? 'line' : 'gray'} sm>{s.name}{s.current ? ` · ${s.current}` : ''}</Chip>)}
               </div>
@@ -98,12 +98,12 @@ export function BuildFlow({ next = 'L2', onClose }) {
         }
         if (draft) {
           await api.confirmBlueprint(pid, { base_revision: bp.revision, next: 'L2' });
-          toast('蓝图已确认，开始第一个切片', 'check');
+          toast('蓝图已确认，开始第一段', 'check');
         }
         onClose();
         navigate(pagePath('wb-l2', pid));
       } catch (e) {
-        // 蓝图还在这一轮的修改里时 BP-03 先确认生效（同 CS-04）：错误按确认生效同样处理，冲突去待处理
+        // 蓝图所在的那一轮和你的修改冲突时 BP-03 回 409 merge_conflict（F3）：去待处理选保留哪边
         toast(errorText(e), 'alert');
         onClose();
         if (e.code === 'merge_conflict') navigate(pagePath('inbox', pid));

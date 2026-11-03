@@ -82,7 +82,7 @@ test('写入范围只读：锁里的知识条目「编辑」「删除」停用�
   assert.equal(entryLocked(lockOf('pending_confirm'), { id: 'kn-p01' }), false);
   assert.equal(entryLocked(lockOf('pending_confirm'), { id: 'kn-p99', locked: true }), true);
   const run = lockCopy(lockOf('assistant_running'));
-  assert.match(run.text.running[0], /助手正在改「超量与审批提示」这一片/);
+  assert.match(run.text.running[0], /助手正在改「超量与审批提示」这一段/);
   assert.equal(run.text.running.length, 1);
   assert.equal(run.pop, '助手在改，暂不能编辑');
   const pend = lockCopy(lockOf('pending_confirm'));

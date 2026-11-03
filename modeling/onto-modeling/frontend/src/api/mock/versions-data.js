@@ -1,6 +1,6 @@
 // mock · 版本历史的静态部分（合成场景）。
-// 主示例项目「门店补货单编制」：v0.1 导入 → v0.12 第一片确认生效（a71e03c9，F1 的主线）→ 自主构建运行 #3 的各片（v0.13～v0.19，
-// 与 run3.js 的按片结果一致：安全库存测算 v0.14、陈列量核定 v0.15、临期与损耗检查 v0.17、超量与审批提示 v0.19），
+// 主示例项目「门店补货单编制」：v0.1 导入 → v0.12 第一段生效（a71e03c9，F1 的主线）→ 自主构建运行 #3 的各段（v0.13～v0.19，
+// 与 run3.js 的按段结果一致：安全库存测算 v0.14、陈列量核定 v0.15、临期与损耗检查 v0.17、超量与审批提示 v0.19），
 // 运行中途用户在 Studio 给「陈列量标准」加了属性「到货周期」（v0.18，版本对比的示例）。
 // 每条改动可带 undo：从「这个版本之后」的内容推回「这个版本之前」的写法，mock 用它按需还原历史文件（不存整份快照）。
 import { RUN_ID, RUN_NO, todayAt } from './run3.js';
@@ -37,19 +37,19 @@ function rows() {
     [2, '6d20a8c1', dayAt(5, 10, 12), 'assistant', '资料分析确认：7 份资料，2 份作为建模目标依据', [
       ch({ type: 'file', key: 'research/material-map.json', title: '资料地图' }, 'add', '新增'),
     ], { changeset_id: 'cs-21' }],
-    [3, '91c47e2a', dayAt(5, 16, 40), 'assistant', '建模蓝图确认：5 个切片，先做「补货申请与门店需求」', [
+    [3, '91c47e2a', dayAt(5, 16, 40), 'assistant', '建模蓝图确认：5 段，先做「补货申请与门店需求」', [
       ch({ type: 'file', key: 'research/blueprint.json', title: '建模蓝图' }, 'add', '新增'),
     ], { changeset_id: 'cs-22' }],
-    [4, 'b5e0d913', dayAt(4, 11, 5), 'assistant', '确认生效：对象「补货单」「门店」，新增「门店特殊需求」', [
+    [4, 'b5e0d913', dayAt(4, 11, 5), 'assistant', '助手：对象「补货单」「门店」，新增「门店特殊需求」', [
       ch(R('store_request'), 'add', '新增', null, { add: true }), ch(R('replenish_order'), 'mod', '修改 · 2 处'), ch(R('store'), 'mod', '修改 · 1 处'),
     ], { changeset_id: 'cs-23' }],
     [5, '2fa6c7d8', dayAt(4, 15, 30), 'studio', 'Studio 编辑：补货单 增加属性「申请量」', [
       ch(R('replenish_order'), 'mod', '修改 · 1 处', null, { row: '申请量' }),
     ]],
-    [6, '7c1e5b02', dayAt(3, 10, 20), 'assistant', '确认生效：操作「受理三道校验」，规则 R-01、R-02', [
+    [6, '7c1e5b02', dayAt(3, 10, 20), 'assistant', '助手：操作「受理三道校验」，规则 R-01、R-02', [
       ch(R('intake_checks'), 'add', '新增', null, { add: true }), ch(R('r01_intake_scope'), 'add', '新增', null, { add: true }), ch(R('r02_required'), 'add', '新增', null, { add: true }),
     ], { changeset_id: 'cs-24' }],
-    [7, 'e48d0a6f', dayAt(3, 16, 8), 'assistant', '质量检查 0 错误，确认生效', [
+    [7, 'e48d0a6f', dayAt(3, 16, 8), 'assistant', '质量检查 0 错误', [
       ch(R('r03_required_hint'), 'add', '新增', null, { add: true }),
     ], { changeset_id: 'cs-25', tags: [{ name: 'mark-1761811680-3a7c', label: '校验通过的里程碑' }] }],
     [8, '0a9f3c71', dayAt(2, 17, 32), 'mcp', 'MCP 写入：新增对象 补货台账（Token「业务 Agent 读写联调」）', [
@@ -62,7 +62,7 @@ function rows() {
       ch(R('store_request'), 'mod', '恢复到 v0.8', null, { append: COLD_CHAIN }),
     ]],
     [11, 'f07c2d96', dayAt(1, 11, 5), 'plugin', '能力升级：零售行业包更新到 1.0.3', [], { packs: 'industry-retail@1.0.3', packs_from: '1.0.2' }],
-    [12, 'a71e03c9', todayAt(15, 8), 'assistant', '确认生效：切片「补货申请与门店需求」，3 个验收场景通过', [
+    [12, 'a71e03c9', todayAt(15, 8), 'assistant', '助手：分段「补货申请与门店需求」，3 个验收场景通过', [
       ch(R('intake_checks'), 'mod', '修改 · 2 处'), ch(R('replenish_order'), 'mod', '修改 · 1 处'),
       ch(SCN('s-01', '场景 1'), 'add', '新增'), ch(SCN('s-02', '场景 2'), 'add', '新增'),
     ], { changeset_id: 'cs-29' }],
@@ -139,7 +139,7 @@ export function genericHistory(card) {
     let source = n === 1 ? (card.created_from === 'import' ? 'import' : 'plugin') : cycle[(n - 2) % cycle.length];
     if (n === total && card.build_mode === 'L4' && n > 1) source = 'autobuild';
     const summary = n === 1 ? `新建项目：${card.name}` : {
-      assistant: `确认生效：第 ${n - 1} 轮修改`, studio: 'Studio 编辑：调整对象属性', web: '网页编辑：补充说明', autobuild: '自主构建：一片自主完成',
+      assistant: `助手：第 ${n - 1} 轮修改`, studio: 'Studio 编辑：调整对象属性', web: '网页编辑：补充说明', autobuild: '自主构建：一段自主完成',
     }[source];
     return {
       commit: hex8(`${card.id}:${n}`),

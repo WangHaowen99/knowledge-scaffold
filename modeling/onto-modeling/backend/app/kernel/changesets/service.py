@@ -228,14 +228,14 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
         changes = [(status, rel) for status, rel in (worktree.diff(root, base, snap) if base else [])
                    if not worktree.is_protected(rel)]
         if not running and changes and _assign_to_slice(copy, exec_record, changes):
-            # 这一片新建的条目记进蓝图的这一片（B4d）：蓝图也改了，重新取一次快照
+            # 这一段新建的条目记进蓝图的这一段（B4d）：蓝图也改了，重新取一次快照
             snap = worktree.snapshot(copy)
             changes = [(status, rel) for status, rel in worktree.diff(root, base, snap)
                        if not worktree.is_protected(rel)]
         record = store.current(root)
         if not changes:
             if record is not None and record["state"] in ("open", "pending_confirm") and record.get("tree"):
-                # 助手把改动又改回去了：这个变更集是空的，悄悄关掉。先占着、还没改过的（自主构建的一片）不关
+                # 助手把改动又改回去了：这个变更集是空的，悄悄关掉。先占着、还没改过的（自主构建的一段）不关
                 closed = store.update(root, record["id"], state="discarded", closed_at=time.time(), empty=True)
                 _notify(project_id, "changeset", closed)
             return None
@@ -269,7 +269,7 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
                 updates["purpose"] = _purpose(exec_record)
             slice_ref, step = exec_record.get("slice"), exec_record.get("step")
             if isinstance(slice_ref, dict) and slice_ref.get("id") and step:
-                # 按切片的节点：记下这个变更集做了哪一片哪一步（确认生效时这一片这一步记为确认过）
+                # 按段的节点：记下这个变更集做了哪一段哪一步（合入时这一段这一步记为确认过）
                 pairs = [list(pair) for pair in record.get("slice_steps") or []]
                 if [slice_ref["id"], step] not in pairs:
                     pairs.append([slice_ref["id"], step])
@@ -290,7 +290,7 @@ def observe(manager, project_id: str, *, running: bool, conversation_id: str | N
 
 
 def _assign_to_slice(copy: Path, exec_record: dict | None, changes: list[tuple[str, str]]) -> bool:
-    """按切片建模时，这一轮新建、还不属于任何一片的对象、操作、规则记进这一片（副本里的蓝图）。"""
+    """分段建模时，这一轮新建、还不属于任何一段的对象、操作、规则记进这一段（副本里的蓝图）。"""
     slice_ref = (exec_record or {}).get("slice")
     if not isinstance(slice_ref, dict) or not slice_ref.get("id") or slice_ref["id"] == "all":
         return False
@@ -315,14 +315,14 @@ def _assign_to_slice(copy: Path, exec_record: dict | None, changes: list[tuple[s
             module.save(copy, doc)
         return bool(added)
     except (OSError, module.BlueprintError):
-        _log.warning("新条目记进切片 %s 失败", slice_ref.get("id"), exc_info=True)
+        _log.warning("新条目记进分段 %s 失败", slice_ref.get("id"), exc_info=True)
         return False
 
 
 def open_changeset(manager, project_id: str, *, source: str = "assistant", build_mode: str = "L2",
                    purpose: str = "", conversation_id: str | None = None, run_id: str | None = None,
                    slice_id: str | None = None) -> dict:
-    """先占一个变更集（P3 自主构建每片开始前调：source="autobuild"、build_mode="L4"、run_id、slice_id）。
+    """先占一个变更集（P3 自主构建每段开始前调：source="autobuild"、build_mode="L4"、run_id、slice_id）。
 
     已有没关闭的变更集时返回它（同一项目同一时刻只有一个）；之后 `observe` 往里记改动。
     """
@@ -590,7 +590,7 @@ def _require_open(manager, project_id: str, changeset_id: str, *, allow_conflict
     if record["state"] in ("merged", "discarded"):
         raise WorkspaceError("这一轮的修改已经生效或撤回", 409, "changeset_closed", {"state": record["state"]})
     if record["state"] == "conflict" and not allow_conflict:
-        raise WorkspaceError("确认生效时有冲突，先选好保留哪一边", 409, "merge_conflict",
+        raise WorkspaceError("这一轮和你的修改有冲突，先选好保留哪一边", 409, "merge_conflict",
                              {"entities": (record.get("conflict") or {}).get("entities") or [],
                               "inbox_item_id": f"changeset_conflict:{record['id']}"})
     state = activity(project_id) if check_running else {}
@@ -726,7 +726,7 @@ def _merged_tree(manager, project_id: str, root: Path, record: dict, main: str, 
             picks[rel] = main
     merged_tree = _tree_with(root, merged_tree, picks)
     if forbid_deletes:
-        # 自主构建硬性不做「删除已确认的内容」（详设 1.6 #2、8.5）：主线上已有的本体文件被删、被改名，这一片不合入
+        # 自主构建硬性不做「删除已确认的内容」（详设 1.6 #2、8.5）：主线上已有的本体文件被删、被改名，这一段不合入
         removed = [rel for status, rel in worktree.diff(root, main, merged_tree)
                    if status == "D" and rel.startswith("ontology/") and not _derived(rel)]
         if removed:
@@ -940,7 +940,7 @@ def discard(manager, project_id: str, changeset_id: str, *, actor: str) -> dict:
     """撤回还没合入的修改（合入冲突时、自主构建放弃一段）：副本分支与副本重置到主线，主线不受影响。"""
     root = manager.project_root(project_id)
     with manager._project_lock(project_id):
-        record = _require_open(manager, project_id, changeset_id)  # 锁里重读：确认生效可能刚做完（审查第 5 条）
+        record = _require_open(manager, project_id, changeset_id)  # 锁里重读：合入可能刚做完（审查第 5 条）
         copy = existing_copy(root)
         if copy is not None:
             worktree.reset(root, copy)
@@ -957,10 +957,10 @@ REVERT_PREFIX = "revert: 撤回 "
 
 def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, source: str = "revert",
                   keep: tuple[str, ...] = (), rewrite: dict | None = None) -> dict:
-    """撤回一个已经合入的变更集（P3 自主构建「按片撤回」）：在主线上写它的反向提交。
+    """撤回一个已经合入的变更集（P3 自主构建「按段撤回」）：在主线上写它的反向提交。
 
     合入之后别的提交又改到了同一实体时不撤（`merge_conflict`，details 列出实体），免得把后来的修改一起撤掉。
-    keep 里的路径不整个撤（自主构建撤回一片时的建模蓝图：后面的片合入时也会改它）；rewrite 给这类路径算撤回后的内容
+    keep 里的路径不整个撤（自主构建撤回一段时的建模蓝图：后面的段合入时也会改它）；rewrite 给这类路径算撤回后的内容
     （`{路径: f(合入前, 合入后, 现在) -> bytes | None}`，None 表示不动），写在同一个反向提交里。
     反向提交已经在主线上、记录还没标撤回（写完提交就出错）时补标，不再写一次。返回 {commit, version_label}。
     """
@@ -1050,7 +1050,7 @@ def reconcile_merged(manager, root: Path) -> str | None:
         worktree.collect_state(root, copy)
         worktree.reset(root, copy, worktree.rev(root))
     now = time.time()
-    # 自主构建的一片：合入时本该带的「需复核」一起补上，并照常通知（节点、切片记成确认过并标需复核，审查 C）
+    # 自主构建的一段：合入时本该带的「需复核」一起补上，并照常通知（节点、分段记成确认过并标需复核，审查 C）
     updated = store.update(root, record["id"], state="merged", closed_at=now, conflict=None,
                            needs_review=record.get("source") == "autobuild",
                            merged={"commit": commit, "version_label": _label(root, commit), "at": now})
@@ -1193,9 +1193,9 @@ def node_patterns(root: Path, node_ids: list[str]) -> list[str]:
 
 
 def _slice_scope(manager, project_id: str, root: Path, node_ids: list[str], slice_ids: dict[str, set]) -> tuple:
-    """按切片的节点落到这几片的条目上（详设 4.3）：返回 (仍按声明范围的节点, 片的路径模式, 片的条目, 蓝图)。
+    """按段的节点落到这几段的条目上（详设 4.3）：返回 (仍按声明范围的节点, 段的路径模式, 段的条目, 蓝图)。
 
-    全量模式（没有蓝图或只有一片）、或不知道在哪一片时，按节点声明的整类条目。"""
+    全量模式（没有蓝图或只有一段）、或不知道在哪一段时，按节点声明的整类条目。"""
     from ...services.flow import blueprint, model as flow_model
 
     wanted = {node_id: ids - {"all"} for node_id, ids in slice_ids.items() if ids - {"all"}}
@@ -1222,7 +1222,7 @@ def _slice_scope(manager, project_id: str, root: Path, node_ids: list[str], slic
             if item is None:
                 continue
             paths += [_escape(rel) for rel in module.member_paths(item)]
-            # 这一片的场景（场景走查一个操作一份，片里的「场景」一步写它们）
+            # 这一段的场景（场景走查一个操作一份，段里的「场景」一步写它们）
             paths += [_escape(f"ontology/testcase/{model.encode_filename(name)}.md") for name in item.get("operations") or []]
             for kind, names in module.members(item).items():
                 entries += [{**_entry_ref(kind, model.encode_filename(name)), "name": name} for name in names]
@@ -1232,8 +1232,8 @@ def _slice_scope(manager, project_id: str, root: Path, node_ids: list[str], slic
 def scope_lock(manager, project_id: str) -> dict:
     """当前的写入范围锁；没有助手变更集、助手也没在跑时是 state="none" 的空锁。
 
-    按切片的节点（建模）只锁这一片的条目，不再锁整类（详设 4.3「落到当前切片」）：助手在跑时取执行记录的切片，
-    这一轮结束后取变更集里做过的那几片；再加上这一轮已经改过的、等你决定的决策卡预览列出的。"""
+    按段的节点（建模）只锁这一段的条目，不再锁整类（详设 4.3「落到当前分段」）：助手在跑时取执行记录的分段，
+    这一轮结束后取变更集里做过的那几段；再加上这一轮已经改过的、等你决定的决策卡预览列出的。"""
     try:
         root = manager.project_root(project_id)
     except Exception:  # noqa: BLE001 - 项目不在
@@ -1282,7 +1282,7 @@ def scope_lock(manager, project_id: str) -> dict:
         lock_state = "pending_confirm"
     if record is not None and record.get("source") == "autobuild" and record.get("state") in ("open", "pending_confirm") \
             and _run_active(project_id, record.get("run_id")):
-        # 自主构建的一片（契约 2.4、EP-03）：锁到这一片自动合入为止
+        # 自主构建的一段（契约 2.4、EP-03）：锁到这一段自动合入为止
         lock_state = "autobuild_slice"
         name = (current_slice or {}).get("name") or (node.get("title") if running else "") or ""
         reason = f"自主构建正在做「{name}」这一段" if sliced else "自主构建正在做这一步"

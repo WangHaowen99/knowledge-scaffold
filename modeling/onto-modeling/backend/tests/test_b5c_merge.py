@@ -4,7 +4,7 @@
 - 人工节点的决策卡进待处理的「决策」，回答后消失；
 - 节点状态：升级标的需复核在人确认后清除、跳过的可选插件节点补做后不再算跳过、IN-04 按流程顺序选过期节点且不选
   熔断了的节点；
-- 包声明的提交门禁也挡助手变更集的确认生效。
+- 包声明的提交门禁在助手一轮的合入里只提示（F3）。
 
 测试数据全部为合成内容；假引擎不起真实 CLI。
 """
@@ -257,7 +257,7 @@ def test_refresh_stale_follows_flow_order_and_skips_broken_nodes(env, monkeypatc
     ops_state.set_breaker("naming", "0.1.0", "open", "ops")
     try:
         ids = [item["id"] for item in inbox.collect(manager, project_id) if not item.get("_dismissed")]
-        assert "stale:naming.check" not in ids and "stale:core.model" in ids  # 建模按片汇总：操作那一步过期
+        assert "stale:naming.check" not in ids and "stale:core.model" in ids  # 建模按段汇总：操作那一步过期
         client.post(batch, json={"action": "refresh_stale"})
         assert started[-1] == "core.model"
     finally:

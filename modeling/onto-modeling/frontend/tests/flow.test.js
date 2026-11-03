@@ -53,7 +53,7 @@ test('缺 display_state 时按 state 补；待确认显示为 pending', () => {
   assert.deepEqual(sectionGroups(flow).map((g) => g.id), ['required']);
 });
 
-test('P2 形状原样保留切片与节点分组', () => {
+test('P2 形状原样保留分段与节点分组', () => {
   const flow = normalizeFlow(F.flow({ trace: true }));
   assert.equal(flow.slices.length, 5);
   assert.equal(flow.slice_stages.at(-1).id, 'scenario');
@@ -114,7 +114,7 @@ test('证据源不可用：系统取证节点从进度条与抽屉分组里去�
   assert.ok(!sectionGroups(withoutEvidence(normalizeFlow(raw), false)).flatMap((g) => g.nodes).some((n) => n.id === 'x.ext'));
 });
 
-test('切片小进度条每格的悬停：步骤名 · 状态', () => {
+test('分段小进度条每格的悬停：步骤名 · 状态', () => {
   assert.equal(sliceStageTitle({ id: 'rule', label: '规则' }, 'skipped'), '规则 · 已跳过');
   assert.equal(sliceStageTitle({ id: 'scenario', label: '场景' }, 'stale'), '场景 · 已过期');
   assert.equal(sliceStageTitle({ id: 'object', label: '对象' }, 'pending_confirm'), '对象 · 待确认');
@@ -138,7 +138,7 @@ test('节点动作的命令文本拆成 S-20 的 command / args / text；不以�
   assert.deepEqual(commandFromTarget('运行 python3 .claude/scripts/research_checker.py 核验'), { text: '运行 python3 .claude/scripts/research_checker.py 核验' });
 });
 
-test('没有蓝图时「调整切片」改发切片规划；有蓝图时打开蓝图弹窗（返回 null）', () => {
+test('没有蓝图时「调整分段」改发分段规划；有蓝图时打开蓝图弹窗（返回 null）', () => {
   assert.deepEqual(planSlicesCommand({ blueprint: { state: 'none' } }), { command: '/ontology-research', args: { phase: 'blueprint' }, text: '' });
   assert.equal(planSlicesCommand({ blueprint: { state: 'draft' } }), null);
   assert.equal(planSlicesCommand({ blueprint: { state: 'confirmed' } }), null);
@@ -153,6 +153,6 @@ test('B4d 新流程的页面动作：发布去发布页、资料分析「去确�
 test('建议条 send 动作：text 为空串时只发 command + args；整段命令文本拆成 args；普通消息不走 S-20', () => {
   assert.deepEqual(suggestionCommand({ type: 'send', text: '', command: '/ontology-extract-rule-metric', args: { slice: 's2' } }), { command: '/ontology-extract-rule-metric', args: { slice: 's2' }, text: '' });
   assert.deepEqual(suggestionCommand({ type: 'send', text: '/ontology-research phase=blueprint', command: '/ontology-research' }), { command: '/ontology-research', args: { phase: 'blueprint' }, text: '' });
-  assert.deepEqual(suggestionCommand({ type: 'send', text: '提取本切片的规则', command: '/ontology-extract-rule-metric' }), { command: '/ontology-extract-rule-metric', text: '提取本切片的规则' });
+  assert.deepEqual(suggestionCommand({ type: 'send', text: '提取这一段的规则', command: '/ontology-extract-rule-metric' }), { command: '/ontology-extract-rule-metric', text: '提取这一段的规则' });
   assert.equal(suggestionCommand({ type: 'send', text: '继续刚才的任务' }), null);
 });
