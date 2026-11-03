@@ -59,7 +59,7 @@ F2 已接线、删掉的旧代码：流程图多图侧栏（`FlowchartView`、`A
 1. 插件与项目页：知识、场景走查、代码生成、增量更新、版本、发布、资料与证据源、快照、schema、项目设置（含自主构建策略 AB-01/AB-02，设计稿 `L4_SET_*`）。
 2. F2 留下的跳转目标都在 F3：versions（查看改动、刷新后对比）、resources / schema（查看原文）、proj-settings（调整自主构建策略）。
 3. 新页面照 F2 的写法：路由在 `App.jsx` 懒加载登记；接口补进 `endpoints.js`；mock 每组一个 `routes-*.js`，名称数据取 `scenario.js`；示例只用合成场景，交付前跑安全 grep。
-4. 视觉对照脚本：`/tmp/ks-f2/shotx.mjs`（设计稿）、`shotapp.mjs`（本地 mock）、`diff.mjs`（像素差）。
+4. 视觉对照脚本：`本机临时目录`（设计稿）、`shotapp.mjs`（本地 mock）、`diff.mjs`（像素差）。
 
 ## 后端 B3a 带来的前端改动（2026-11-01 记）
 
@@ -120,7 +120,7 @@ mock 状态（地址参数 `?mock=`，逗号分隔）：
 
 1. 运维与管理：运维中心、可观测、管控、用户、插件目录 / 详情 / 上传、个人设置、系统设置。插件详情的跳转参数是 `plugin-detail?pack=<包名>`（F3 的插件标识、项目设置的能力表都这样跳）；个人设置 `me` 由项目设置「改我的模型配置」跳过去。
 2. 新页面照 F2、F3 的写法：路由在 `App.jsx` 懒加载登记；接口补进 `endpoints.js`；mock 每组一个 `routes-*.js`，同一路径可以有几个处理者（返回 `undefined` 交给下一个）；示例只用合成场景，交付前跑安全 grep。
-3. 视觉对照脚本：`/tmp/ks-f3/shotx.mjs`（设计稿，自动隐藏原型导航条）、`shotapp.mjs`（本地 mock）、`diff.mjs`（像素差）。
+3. 视觉对照脚本：`本机临时目录`（设计稿，自动隐藏原型导航条）、`shotapp.mjs`（本地 mock）、`diff.mjs`（像素差）。
 
 ## F4（2026-11-02）提交 bfee56bc..8bdf8b63
 
