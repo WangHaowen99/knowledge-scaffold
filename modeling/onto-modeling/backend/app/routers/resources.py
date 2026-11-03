@@ -1,5 +1,5 @@
 """资料（API 契约 3.6）：R-01 列表、R-02 上传、R-03 改用途、R-04 删除、R-05 被谁引用、R-06 原文预览、
-R-11 / R-12 外部反馈；R-13 查看文本、R-14 重新转换（资料的文本版，ADR-0073）。
+R-11 / R-12 外部反馈；R-13 查看文本、R-14 重新转换（资料的文本版，ADR-0073）；R-15 选出处的位置。
 
 资料区对 agent 只读，只能由用户上传、替换、删除，每次都保存版本。资料分析（R-07～R-10）在 `materials.py`。
 """
@@ -241,6 +241,22 @@ def text(project_id: str, request: Request, path: str = ""):
         cut = markdown.rfind("\n", 0, TEXT_VIEW_CHARS)
         markdown = markdown[: cut if cut > 0 else TEXT_VIEW_CHARS]
     return {"path": rel, "text": state, "markdown": markdown, "truncated": truncated}
+
+
+@router.get("/positions")
+def positions(project_id: str, request: Request, path: str = "", q: str = "", limit: int = 0, cursor: str = ""):
+    """R-15 选出处（Studio 填证据）：一份资料里能引用的位置，逐行带一行原文，锚点直接写进 evidence_anchor。
+
+    只读文本（ADR-0076）：PDF、Word、Excel 列文本版里的行，还没有文本版时 readable=false；流程图没有文本，409。"""
+    root = deps.require_owner(project_id, request)
+    rel = _document(root, path)
+    if material_conversion.kind_of(rel) is None:
+        raise ApiError("not_convertible", "这份资料没有文本", 409, {"path": rel})
+    try:
+        data = material_text.positions(root, rel, q=q.strip(), limit=limit, cursor=cursor)
+    except ValueError:
+        raise ApiError("invalid_cursor", "游标无法解析", 400) from None
+    return {"path": rel, **data}
 
 
 @router.post("/convert")

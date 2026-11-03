@@ -294,6 +294,46 @@ export function textMarkdown(f) {
   return blocks.map(md).join('\n\n');
 }
 
+// ---------- 选出处的位置（R-15）：和后端一样逐行列——本身是文本的读原文件，要转的读文本版（第一行是文件头）；
+// 位置标记、小节标题、注释和表格分隔行不列，用来给下面的行定位置（文本版按页、工作表，没有时按小节标题） ----------
+const POSITION_CHARS = 160;
+function textSourceOf(f) {
+  if (!f?.text) return null;
+  if (f.text.state === 'native') {
+    const text = f.kind === 'csv' ? (tableOf(f)[0]?.rows || []).map((r) => r.join(',')).join('\n') : textMarkdown(f);
+    return { source: f.path, text, markers: false, headings: /\.(md|markdown)$/i.test(f.path) };
+  }
+  if (!f.text.has_text) return null;
+  const header = `<!-- onto:text source="${f.name}" sha256="0000000000000000" converter="mock@1" -->`;
+  return { source: `resource/text/${f.path.replace(/^resource\//, '')}.md`, text: `${header}\n${textMarkdown(f)}`, markers: true, headings: true };
+}
+function positionText(line) {
+  const text = line.startsWith('|')
+    ? line.replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|')).filter(Boolean).join(' · ')
+    : line.replace(/^[-*+]\s+/, '');
+  return text.length > POSITION_CHARS ? `${text.slice(0, POSITION_CHARS)}…` : text;
+}
+export function positionsOf(f) {
+  const src = textSourceOf(f);
+  if (!src) return null;
+  let marker = '';
+  let heading = '';
+  const items = [];
+  src.text.split('\n').forEach((raw, i) => {
+    const line = raw.trim();
+    if (!line) return;
+    const page = src.markers && /^<!-- 第 (\d+) 页 -->$/.exec(line);
+    const sheetMark = src.markers && /^<!-- 工作表：(.+) -->$/.exec(line);
+    if (page || sheetMark) { marker = page ? `第 ${page[1]} 页` : `工作表 ${sheetMark[1]}`; return; }
+    const h = src.headings && /^(#{1,6})\s+(.*)$/.exec(line);
+    if (h) { heading = h[2].replace(/#/g, '').trim(); return; }
+    if (/^<!--.*-->$/.test(line) || /^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?$/.test(line)) return;
+    const text = positionText(line);
+    if (text) items.push({ anchor: `file:${src.source}#L${i + 1}`, location: marker || heading, text });
+  });
+  return items;
+}
+
 // ---------- 表格（F-05） ----------
 const sheet = (name, rows, total_rows) => ({ name, rows, merges: [], total_rows, truncated: total_rows > 500 });
 const TABLES = {
