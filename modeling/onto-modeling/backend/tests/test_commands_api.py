@@ -92,6 +92,22 @@ def test_page_command_returns_task_and_tracks_exec_until_done(api):
     assert user["data"]["origin"] == {"kind": "page", "page": "reports", "label": "报告", "task_id": task_id}
     assert user["data"]["command"] == "/ontology-validate"
     assert user["data"]["message_id"] == body["message_id"]
+    # 对话里显示的那条不带参数（F4b-paths）：只有命令和说明文字
+    assert user["data"]["text"] == "/ontology-validate\n\n只看规则"
+
+
+def test_page_command_display_text_has_no_workspace_paths(api):
+    client, _manager, project_id, _ = api
+    FakeEngine.scripts = [[result()]]
+    response = client.post(f"/api/v1/projects/{project_id}/commands", json={
+        "command": "/ontology-validate", "args": {"path": "resource/others/合成说明.docx"},
+        "text": "修复报告 reports/rule-check.md 里的条目，出处 resource/others/合成说明.docx#p:3",
+        "origin": {"page": "reports", "label": "报告"}})
+    assert response.status_code == 202, response.text
+    assert "resource/" in wait(lambda: FakeEngine.sent)[0]  # 发给助手的照旧带路径
+    messages = client.get(f"/api/v1/projects/{project_id}/conversations/{response.json()['conversation_id']}/messages")
+    user = next(item for item in messages.json()["items"] if item["type"] == "message.user")
+    assert user["data"]["text"] == "/ontology-validate\n\n修复报告 检查报告 里的条目，出处 资料「合成说明」"
 
 
 @pytest.mark.parametrize("body,code", [

@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from ..api import deps
 from ..api.errors import ApiError
 from ..kernel.metamodel import mm
-from ..services import mainline
+from ..services import mainline, workspace_labels
 from ..services.workspace.versions import version_source
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}", tags=["files"])
@@ -421,8 +421,10 @@ async def report_fix(project_id: str, report_id: str, request: Request):
         raise ApiError("invalid_argument", "没有要修复的条目", 400, {"fields": {"item_ids": "fixed"}})
     rel = reports.rel_of(report_id) if report_id != reports.LINK_ID else "链接检查报告"
     lines = "\n".join(f"{n}. {item['code'] + ' ' if item['code'] else ''}{item['text']}" for n, item in enumerate(targets, 1))
+    shown = rel if report_id == reports.LINK_ID else workspace_labels.path_label(rel) or "检查报告"
     payload = {"command": "/ontology-validate", "origin": {"page": "reports", "label": "发给助手"},
-               "text": f"修复报告 {rel} 里的这些条目，改完重新检查：\n{lines}", "conversation_id": "-"}
+               "text": f"修复报告 {rel} 里的这些条目，改完重新检查：\n{lines}", "conversation_id": "-",
+               "display_text": f"修复{shown}里的这些条目，改完重新检查：\n{lines}"}
     return await session_routes.dispatch_command(project_id, root, request, payload)
 
 

@@ -18,7 +18,7 @@ from ..api.errors import ApiError
 from ..kernel.artifacts import index as artifact_index
 from ..governance import telemetry
 from ..kernel.metamodel import mm
-from ..services import mainline
+from ..services import mainline, workspace_labels
 from ..services import studio as studio_service
 from ..services.workspace.layout import _content_revision
 
@@ -296,7 +296,7 @@ def entry_evidence(project_id: str, entry_id: str, request: Request):
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")] if line.lstrip().startswith("|") else []
         for path, fragment, _ in material_text.find_anchors(line):
             anchor = material_text.file_anchor(path, fragment)
-            item = items.setdefault(anchor, {"anchor": anchor, "scheme": "file", "title": path.rsplit("/", 1)[-1],
+            item = items.setdefault(anchor, {"anchor": anchor, "scheme": "file", "title": workspace_labels.material_name(path),
                                              "confidence": None, "used_for": []})
             # 属性表里的出处：这一行的第一格是属性名
             if cells and cells[0] and cells[0] not in item["used_for"]:
@@ -389,6 +389,7 @@ async def submit(project_id: str, entry_id: str, request: Request):
             f"请对照现有文档评估草稿：合理则把草稿内容合并进正式文档并保存版本，"
             f"有问题则说明原因；缺失的关联文档如确有必要可一并创建。",
             username=deps.username(request),
+            meta={"display_text": f"请复核{workspace_labels.path_label(rel) or '这次修改'}的修改：{points}"},
         )
         return {
             "result": "needs_review",

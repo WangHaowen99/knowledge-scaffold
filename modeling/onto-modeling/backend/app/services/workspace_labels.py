@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import PurePosixPath
 
 from .workspace.layout import RESOURCE_DIRECTIVES, RESOURCE_TEXT_DIR, is_resource_text
@@ -21,6 +22,9 @@ MATERIAL_TYPES = {
     ".jpeg": "图片", ".md": "Markdown", ".markdown": "Markdown", ".txt": "文本",
 }
 ENTRY_LABELS = {"object": "对象", "operation": "操作", "rule": "规则", "metric": "指标", "script": "脚本"}
+# 流程节点 stale_on 的产物类别（flow/state.KIND_DIRS）→ 说法
+KIND_LABELS = {**ENTRY_LABELS, "research": "资料分析", "mock": "模拟数据", "testcase": "测试用例", "diagram": "流程图",
+               "solver": "求解契约", "knowledge": "知识"}
 
 
 def material_source(rel: str) -> str:
@@ -102,3 +106,21 @@ def path_label(rel: str, model=None, types=()) -> str:
     """一处路径的业务名；认不出时空串（调用方不显示或合成「另有 N 处」）。"""
     info = describe(rel, model, types)
     return info["target"]["label"] if info else ""
+
+
+# 正文里的工作区路径（可带 file: 和 #片段）：在标点、引号、括号前结束
+_STOP = "\\s，。；、`'\"<>（）()「」【】\\[\\]"
+_PATH_RE = re.compile(rf"(?:file:)?((?:resource|ontology|research|reports|scripts|ext)/[^{_STOP}]+?\.[A-Za-z0-9]{{1,8}})"
+                      rf"(?:#[^{_STOP}]+)?(?=$|[{_STOP}])")
+
+
+def humanize(text: str, model=None, types=()) -> str:
+    """给人看的一段话里的工作区路径换成业务名（资料出处只说资料名）；认不出的换成「相关文件」。"""
+    def swap(match: re.Match) -> str:
+        rel = match.group(1)
+        label = path_label(rel, model, types)
+        if not label and rel.startswith("resource/"):
+            label = f"{MATERIAL}「{material_name(rel)}」"
+        return label or "相关文件"
+
+    return _PATH_RE.sub(swap, str(text or ""))

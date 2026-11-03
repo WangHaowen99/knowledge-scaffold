@@ -20,6 +20,8 @@ import time
 import uuid
 from pathlib import Path
 
+from .. import workspace_labels
+
 PLAN_REL = Path(".ontology-state") / "update-plan.json"
 EXPORT_DIR = Path(".onto") / "run" / "change-lists"
 _KIND_CONFIDENCE = {"create": "medium", "delete": "low", "modify": "high"}
@@ -162,8 +164,9 @@ def capture(root: Path, copy: Path, *, conversation_id: str | None, changeset_id
             return None
         now = time.time()
         record = {
-            "id": f"cl-{uuid.uuid4().hex[:8]}", "source": {"path": reference, "label": Path(reference).name if reference
-                                                           else "这一轮的参考内容"},
+            "id": f"cl-{uuid.uuid4().hex[:8]}",
+            "source": {"path": reference,
+                       "label": workspace_labels.material_name(reference) if reference else "这一轮的参考内容"},
             "points": _points(entries, model), "state": "editing", "changeset_id": changeset_id,
             "conversation_id": conversation_id, "plan_digest": digest, "created_at": now,
         }

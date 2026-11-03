@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -372,7 +373,9 @@ def _reports(root: Path) -> list[dict]:
         report_id = path.stem
         import hashlib
 
-        items.append(_item("report", report_id, f"报告「{path.name}」还有 {pending} 条待处理",
+        heading = re.search(r"^#\s+(.+)$", text, re.M)
+        title = heading.group(1).strip()[:60] if heading else "检查报告"
+        items.append(_item("report", report_id, f"「{title}」还有 {pending} 条待处理",
                            source="assistant",
                            created_at=path.stat().st_mtime, extra={"path": f"reports/{path.name}", "pending": pending},
                            fingerprint=hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]))
