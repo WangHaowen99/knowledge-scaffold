@@ -38,7 +38,22 @@ _CONFIDENCE = re.compile(r"(?:置信度|confidence)\s*[:：=]?\s*(\d+(?:\.\d+)?|
 _TAG = re.compile(r"\s*[（(](推荐|保守)[)）]\s*$")
 # 资料出处（带不带 `file:` 都认，真实模型按对话里的写法写 `resource/资料.docx#p:3`）与对话、Studio 用同一套抽取规则
 # （material_text.find_anchors）；其余 scheme 的锚点在这里认
+# 决定流程走向的问题（接下来做什么、先建哪一段）：问的是平台流程而不是业务，资料分析里不代答、不出卡（F3）
+_FLOW_TEXT = re.compile(r"(?:接下来|下一步|接着|然后|从哪)[^，。；？?\n]{0,12}?(?:建|做|提取|开始|进入|画|校验)"
+                        r"|先(?:做|建|提取|画|从)哪|先做.{0,8}还是")
+_FLOW_OPTION = re.compile(r"提取(?:对象|操作|规则|指标)|对象提取|操作提取|画流程图|先画|流程图|开始建模|开始第|确认蓝图|"
+                          r"先看蓝图|查看蓝图|看蓝图|进入校验|开始校验")
 _OTHER_ANCHOR = re.compile(r"(?<![\w/])(?:ev|snap|db|url):[^\s，。；、,;)）\]】「」『』“”‘’？！：*`]+")
+
+
+def flow_direction(question: dict) -> bool:
+    """问的是接下来走哪一步（提取对象还是先画流程图、先建哪一段），不是业务歧义：问题里说「接下来 / 下一步…建」，
+    或至少两个选项是流程里的动作。question 取原始提问（question、options）或拆好的问题（title、options）。"""
+    text = str(question.get("question") or question.get("title") or "")
+    if _FLOW_TEXT.search(text):
+        return True
+    labels = [str(item.get("label") if isinstance(item, dict) else item) for item in question.get("options") or []]
+    return sum(1 for label in labels if _FLOW_OPTION.search(label)) >= 2
 
 
 def forbidden(tool_name: str, tool_input) -> bool:

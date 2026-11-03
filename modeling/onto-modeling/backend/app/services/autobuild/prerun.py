@@ -11,6 +11,10 @@
 - 产物确认（decide.template_confirm）直接按确认，不出那一行；工具确认按运行中的规矩（decide.permit）。
 
 只管资料分析：之后不在运行里的步骤是用户自己点的，照常等人。
+
+只代答业务歧义（F3 修 F2 第 7 条引入的回归）：「资料分析和蓝图都完成了，接下来怎么建？」这类决定流程走向的问题不代答
+——测试部署上它被代答成「提取对象」，助手在蓝图还是草案时就把第 1 段的对象建了出来。资料分析里（任何构建方式）这类问题从
+提问里拿掉，回答一律是 STOP_ANSWER：停在蓝图确认，下一步由用户在界面上点（`flow_stops`，会话宿主在出卡、代答之前调）。
 """
 
 from __future__ import annotations
@@ -28,8 +32,11 @@ INSTRUCTIONS = (
     "自主构建（开始前的资料分析）：不要停下来等人确认。拿不准时照常用 AskUserQuestion 提问，平台按策略立即代答——"
     "推荐项放第一个、label 末尾写「（推荐）」，保守的选项写「（保守）」；header 里写「置信度 0.xx」。"
     "命令里「确认无误请回复确认」这类产物确认不用问，按已确认往下做。"
+    "只问业务上的歧义；接下来做什么、先建哪一段不要问——蓝图写好就 release 停下，等用户确认蓝图。"
 )
 OPEN_ANSWER = "自主构建：这个问题不等人回答。按资料能确定的往下做，拿不准的写成假设并在报告里注明。"
+STOP_ANSWER = ("停在这里：资料分析到建模蓝图为止，下一步由用户在界面上确认建模蓝图后开始。不要开始建模，也不要再问接下来"
+               "做什么；先 release research，再用一两句小结结束这一轮。")
 _TITLE_MAX = 40
 
 
@@ -52,6 +59,27 @@ def applies(project_root: Path, record: dict | None) -> bool:
         return False
     project_id, meta = _project(project_root)
     return meta.get("build_mode") == "L4" and store.active(project_id) is None
+
+
+def flow_stops(record: dict | None, tool_input) -> tuple[dict, dict]:
+    """资料分析里（任何构建方式、没有运行）决定流程走向的问题：从这次提问里拿掉，回答一律 STOP_ANSWER。
+
+    返回 (剩下的 tool_input, {原问题: STOP_ANSWER})；不是资料分析、没有这类问题时原样返回和 {}。"""
+    if not record or (record.get("node") or {}).get("id") != RESEARCH_NODE or record.get("run_id") \
+            or not isinstance(tool_input, dict):
+        return tool_input, {}
+    from . import decide
+
+    kept, stops = [], {}
+    for item in tool_input.get("questions") or []:
+        raw = item if isinstance(item, dict) else {"question": str(item)}
+        if decide.flow_direction(raw):
+            stops[str(raw.get("question") or "")] = STOP_ANSWER
+        else:
+            kept.append(item)
+    if not stops:
+        return tool_input, {}
+    return {**tool_input, "questions": kept}, stops
 
 
 def hint(project_root: Path, conversation_id: str | None) -> str:

@@ -277,6 +277,9 @@ class PendingPermission:
     # 决策卡（AskUserQuestion）：拆成的问题与已收到的回答（问题 ID → 回答）
     questions: list = field(default_factory=list)
     answers: dict = field(default_factory=dict)
+    # 资料分析里拿掉的流程走向问题（F3）：原始提问与已定的回答（原问题 → 回答），交回引擎时合进去
+    full_input: dict | None = None
+    preset: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -1251,7 +1254,7 @@ class SessionManager:
             updated_input = None
             if answers:
                 # AskUserQuestion：答案经 updated_input.answers 回填（问题文本 → 选项文本）
-                updated_input = {**request.tool_input, "answers": answers}
+                updated_input = {**(request.full_input or request.tool_input), "answers": {**request.preset, **answers}}
             request.future.set_result(
                 {"behavior": "allow", "updated_input": updated_input}
             )
@@ -1336,7 +1339,19 @@ class SessionManager:
 
         自主构建运行中（方案 B13）：交给登记的策略立即作答并记台账，不等人；自主构建项目开始前的资料分析同样由策略
         代答（autobuild/prerun）。登记的策略自己判断归不归它管，不归时返回 None。
+        资料分析里「接下来怎么建」这类流程走向的问题（任何构建方式）不出卡、不代答，回答「停在蓝图确认」（F3）。
         """
+        full_input, preset = None, {}
+        if tool_name == timeline.ASK_TOOL and session.exec_id and isinstance(tool_input, dict):
+            from .autobuild import prerun
+            from .session_host import exec_records
+
+            record = await asyncio.to_thread(exec_records.get, session.project_id, session.exec_id)
+            stripped, preset = prerun.flow_stops(record, tool_input)
+            if preset:
+                full_input, tool_input = tool_input, stripped
+                if not stripped.get("questions"):
+                    return {"behavior": "allow", "updated_input": {**full_input, "answers": preset}}
         if _policy_responder is not None:
             try:
                 decision = await _policy_responder(session, tool_name, tool_input, title, description)
@@ -1344,6 +1359,10 @@ class SessionManager:
                 _log.exception("项目 %s 的自主构建代答失败", session.project_id)
                 decision = None
             if decision is not None:
+                if preset and decision.get("behavior") == "allow":
+                    given = decision.get("updated_input") or {}
+                    decision = {**decision, "updated_input": {**full_input, "answers": {
+                        **preset, **(given.get("answers") or {})}}}
                 return decision
         request = PendingPermission(
             id=uuid.uuid4().hex[:12],
@@ -1352,6 +1371,8 @@ class SessionManager:
             title=title,
             description=description,
             future=asyncio.get_running_loop().create_future(),
+            full_input=full_input,
+            preset=preset,
         )
         session.pending_permissions[request.id] = request
         timeout = config.PERMISSION_TIMEOUT_SECONDS
@@ -1460,7 +1481,8 @@ class SessionManager:
             for index, item in enumerate(request.questions):
                 original = raw[index].get("question", item["title"]) if index < len(raw) and isinstance(raw[index], dict) else item["title"]
                 texts[original] = request.answers[item["question_id"]]["text"]
-            request.future.set_result({"behavior": "allow", "updated_input": {**request.tool_input, "answers": texts}})
+            request.future.set_result({"behavior": "allow", "updated_input": {
+                **(request.full_input or request.tool_input), "answers": {**request.preset, **texts}}})
         return {**question, "state": "answered", "answer": record["answer"]}
 
     # ---- 事件消费 ----

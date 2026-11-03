@@ -220,7 +220,8 @@ If user wants other changes first: handle them, then ask again.
 4. 提交：`git add research/blueprint.json && git commit -m "research: 建模蓝图"`。
 
 界面会出建模蓝图卡和「确认后怎么建」，回复里不要重复整份蓝图。先 `python3 .claude/scripts/state_helper.py release research`，
-再用一两句说明划了几片、哪一片推荐先做、有几个问题等用户回答；不列下一步菜单（界面的建议条会给出）。
+再用一两句说明划了几片、哪一片推荐先做、有几个问题等用户回答；不列下一步菜单（界面的建议条会给出），
+也**不要用提问（AskUserQuestion / ask_user）问「接下来怎么建」「先做哪一片」**——说完就 Stop，不开始建模。
 蓝图在界面上确认，用户在对话里说「确认」时提醒他点「确认蓝图」。
 
 用户要调整切片（合并、排除、改名、调顺序）时，请他在建模蓝图里直接改；要「把某一片按章节拆分」时，重读那一片的
