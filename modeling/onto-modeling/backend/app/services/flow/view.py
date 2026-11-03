@@ -93,8 +93,10 @@ def _session_context(project_id: str, conversation_id: str | None) -> dict:
             if kind == "suggestions":
                 payload = event.get("payload") or {}
                 if payload.get("mode") == "interrupted":
-                    action = (payload.get("primary") or {}).get("action") or {}
+                    primary = payload.get("primary") or {}
+                    action = primary.get("action") or {}
                     context["interrupted"] = {"id": action.get("exec_id")} if action.get("type") == "resume_exec" else {}
+                    context["interrupted_reason"] = primary.get("reason") or ""
                 break
     return context
 
@@ -285,6 +287,11 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
     suggestions = suggester.suggest(flow, simple_states, suggest_context)
     if suggestions.get("mode") == "normal" and _unfinished_step(root.name, conversation_id, [copy, root], flow):
         suggestions = _with_continue(suggestions)
+    if suggestions.get("mode") == "interrupted" and suggest_context.get("interrupted_reason"):
+        # 出错中断推过去的是「出错中断」，刷新后（FL-02）同一个说法（flow_state 只会写「刚被打断」）
+        reason = suggest_context["interrupted_reason"]
+        suggestions = {**suggestions, "primary": suggestions.get("primary") and {**suggestions["primary"], "reason": reason},
+                       "secondary": [{**item, "reason": reason} for item in suggestions.get("secondary") or []]}
     if suggest_context.get("autobuild_paused"):
         suggestions = _paused_controls()
     progress_nodes = [node for node in nodes if node["counts_in_progress"]]

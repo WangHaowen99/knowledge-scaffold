@@ -39,6 +39,7 @@ def test_engine_error_offers_resume_like_user_interrupt(host):  # noqa: F811
     # 刷新页面（FL-02）看到的是同一份
     again = view.build(root, conversation_id="default")["suggestions"]
     assert again["primary"]["action"] == suggestions["primary"]["action"]
+    assert again["primary"]["reason"] == "出错中断"  # 真实环境抽查：刷新后原来写成「刚被打断」
 
 
 def test_error_without_running_command_keeps_suggestions(host):  # noqa: F811
