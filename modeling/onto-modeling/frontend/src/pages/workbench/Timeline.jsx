@@ -1,13 +1,13 @@
 // 对话时间线：把状态机分好的块渲染成设计稿的 m-u / m-a / m-sys / wx-day / 决策卡
 import { Fragment, useState } from 'react';
 import { toast } from '../../app/toast.jsx';
-import { timelineBlocks } from '../../state/conversation.js';
+import { liveActivity, timelineBlocks } from '../../state/conversation.js';
 import { Button, Icon } from '../../ui/index.jsx';
 import {
   CardItem, CompactedItem, ConfigPendingItem, ErrorItem, InterruptedItem, ReconnectedItem, useActions,
 } from './cards.jsx';
 import {
-  MA, MDay, MSys, Md, SubagentRows, TimelineGroup, WxFile, WxProc, hhmm,
+  LiveRow, MA, MDay, MSys, Md, SubagentRows, TimelineGroup, WxFile, WxProc, hhmm,
 } from './parts.jsx';
 import { DecidedRow, PermissionCard, QuestionCard } from './questions.jsx';
 
@@ -84,11 +84,30 @@ export function AssistantItem({ it, ctx }) {
   }
 }
 
+// 时间线末尾：助手在跑时的「思考中」和打断（打断放在最后，不随某一段工作过程走）
+function LiveTail({ activity, onInterrupt }) {
+  return (
+    <>
+      {activity ? <LiveRow thinking={activity.thinking} /> : null}
+      {onInterrupt ? (
+        <div className="row mt8">
+          <Button size="sm" kind="danger" icon="stop" title="打断（Esc）" onClick={onInterrupt}>打断</Button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 export function Timeline({ state, scope, onInterrupt }) {
   const blocks = timelineBlocks(state);
   const running = ['running', 'connecting'].includes(state.session.state);
   const lastOpenQ = [...blocks].reverse().find((b) => b.type === 'question');
-  return blocks.map((b) => {
+  const activity = liveActivity(state);
+  const tailInterrupt = running ? onInterrupt : null;
+  const hasTail = !!(activity || tailInterrupt);
+  const lastBlock = blocks[blocks.length - 1];
+  const tail = hasTail ? <LiveTail activity={activity} onInterrupt={tailInterrupt} /> : null;
+  const rendered = blocks.map((b) => {
     switch (b.type) {
       case 'day': return <MDay key={b.key} label={b.item.label} />;
       case 'notice': return b.item.align === 'left' ? <MSys key={b.key} left>{b.item.text}</MSys> : <MSys key={b.key}>{b.item.text}</MSys>;
@@ -101,13 +120,17 @@ export function Timeline({ state, scope, onInterrupt }) {
           <MA key={b.key} time={hhmm(b.ts)}>
             {b.items.map((it) => (
               <Fragment key={it.key}>
-                <AssistantItem it={it} ctx={{ running, onInterrupt, scope }} />
+                <AssistantItem it={it} ctx={{ running, onInterrupt: null, scope }} />
               </Fragment>
             ))}
+            {b === lastBlock ? tail : null}
           </MA>
         );
       default: return null;
     }
   });
+  // 最后一块不是助手的（刚发出消息）：「思考中」另起一块
+  if (hasTail && lastBlock?.type !== 'assistant') rendered.push(<MA key="live-tail">{tail}</MA>);
+  return rendered;
 }
 

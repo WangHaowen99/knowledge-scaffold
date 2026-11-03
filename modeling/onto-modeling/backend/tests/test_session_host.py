@@ -43,7 +43,7 @@ CONTRACT = {
     "day.marker": {"label"},
     "progress": {"group_id", "title", "desc", "state", "started_at", "duration_ms", "collapsed", "steps"},
     "progress.updated": {"group_id", "title", "desc", "state", "started_at", "duration_ms", "collapsed", "steps"},
-    "subagent.updated": {"task_id", "group_id", "title", "status", "progress_text", "summary"},
+    "subagent.updated": {"task_id", "group_id", "title", "status", "progress_text", "summary", "step"},
     "tool.activity": {"tool_use_id", "visibility", "tool", "summary", "state"},
     "permission.requested": {"request_id", "title", "description", "details_text", "timeout_s", "expires_at"},
     "permission.resolved": {"request_id", "behavior", "by", "message"},

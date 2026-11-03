@@ -1,7 +1,7 @@
 // 对话里的基本件：与设计稿 pages-00-main.js 的 mU / mA / mSys / mDay / cc / wxProc / ct / srcRow / sl 对应
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { createContext, useContext, useState } from 'react';
+import { createContext, useContext, useLayoutEffect, useRef, useState } from 'react';
 import { navigate, pagePath } from '../../app/router.js';
 import { Icon, cx } from '../../ui/index.jsx';
 import { inlineTokens, preprocessMd, stripLinks } from './md.js';
@@ -163,7 +163,7 @@ export function WxProc({ group }) {
       </summary>
       <div className="wx-steps">
         {(group.steps || []).map((s) => (
-          <div key={s.id} className={cx('r', s.state === 'running' && 'run')}>
+          <div key={s.id} className={cx('r', s.state === 'running' && 'run', s.state === 'info' && 'say')}>
             <span className="t">{s.text}</span>
             <span className="m">{s.meta || ''}</span>
           </div>
@@ -192,21 +192,75 @@ export function Tli({ k, t, m, children }) {
   );
 }
 
+// 一段可滚动的列表：新内容到达时，停在底部附近就跟到底
+function useStickBottom(dep) {
+  const ref = useRef(null);
+  const stick = useRef(true);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [dep]);
+  const onScroll = () => {
+    const el = ref.current;
+    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  };
+  return { ref, onScroll };
+}
+
 const SUB_STATUS = { started: ['已启动', 'gray'], running: ['执行中', 'blue'], done: ['完成', 'blue'], failed: ['失败', 'red'] };
+const subEnded = (s) => s.status === 'done' || s.status === 'failed';
+
+// 子代理一行：名称 · 正在做的那一步；下面是它自己的步骤（在跑时展开，做完收起，点这一行切换）
+function SubagentRow({ s }) {
+  const [open, setOpen] = useState(null);
+  const steps = (s.steps || []).filter((x) => x.text);
+  const isOpen = steps.length > 0 && (open ?? !subEnded(s));
+  const [label, tone] = SUB_STATUS[s.status] || ['', 'gray'];
+  // 正在做的那一步：最后一个还在跑的；都做完了就是最近的一步
+  const current = subEnded(s) ? '' : ([...steps].reverse().find((x) => x.state === 'running') || steps[steps.length - 1])?.text || s.progress_text || '';
+  const list = useStickBottom(steps.length);
+  return (
+    <>
+      <div className={cx('r', steps.length && 'tg')} onClick={steps.length ? () => setOpen(!isOpen) : undefined}>
+        {s.status === 'running' ? <span className="spin" /> : <Icon name={s.status === 'done' ? 'check' : s.status === 'failed' ? 'alert' : 'dot'} size={14} />}
+        <span className="grow ell">{s.title}{current ? ` · ${current}` : ''}</span>
+        {s.summary ? <span className="xs muted">{s.summary}</span> : null}
+        <span className={cx('chip sm', tone)}>{label}</span>
+        {steps.length ? <Icon name="chevd" size={12} className={cx('cv', isOpen && 'on')} /> : null}
+      </div>
+      {isOpen ? (
+        <div className="g2-sub-steps" ref={list.ref} onScroll={list.onScroll}>
+          {steps.map((x) => (
+            <div key={x.id} className={cx('r2', x.state === 'running' && 'run', x.kind === 'text' && 'say')}>
+              <span className="t">{x.text}</span>
+              {x.state === 'failed' ? <span className="m">出错</span> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 export function SubagentRows({ list }) {
   return (
     <div className="g2-sub">
-      {list.map((s) => {
-        const [label, tone] = SUB_STATUS[s.status] || ['', 'gray'];
-        return (
-          <div className="r" key={s.task_id}>
-            {s.status === 'running' ? <span className="spin" /> : <Icon name={s.status === 'done' ? 'check' : s.status === 'failed' ? 'alert' : 'dot'} size={14} />}
-            <span className="grow">{s.title}{s.progress_text ? ` · ${s.progress_text}` : ''}</span>
-            {s.summary ? <span className="xs muted">{s.summary}</span> : null}
-            <span className={cx('chip sm', tone)}>{label}</span>
-          </div>
-        );
-      })}
+      {list.map((s) => <SubagentRow key={s.task_id} s={s} />)}
+    </div>
+  );
+}
+
+// 助手在跑、别的都没动时的一行「思考中」；有思考片段时可以展开看
+export function LiveRow({ thinking }) {
+  const [open, setOpen] = useState(false);
+  const box = useStickBottom(thinking);
+  return (
+    <div className="wb-live">
+      <div className={cx('hd', thinking && 'tg')} onClick={thinking ? () => setOpen(!open) : undefined}>
+        <span className="spin" /><span className="t">思考中</span>
+        {thinking ? <Icon name="chevd" size={12} className={cx('cv', open && 'on')} /> : null}
+      </div>
+      {open && thinking ? <div className="bd" ref={box.ref} onScroll={box.onScroll}>{thinking}</div> : null}
     </div>
   );
 }
