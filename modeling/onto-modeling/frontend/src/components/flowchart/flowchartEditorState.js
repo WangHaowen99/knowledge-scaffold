@@ -23,7 +23,7 @@ function normalizeDiagram(diagram, fallbackId) {
       ...node,
       id,
       kind: node.kind || 'action',
-      label: node.label || '未命名节点',
+      label: node.label ?? '未命名节点',
     };
   });
 
@@ -100,7 +100,11 @@ export function createFlowchartEditorSession(document, { savedRevision = null, a
 
 export function reduceFlowchartEditorSession(session, action) {
   if (action.type === 'replace-document') {
-    if (session.dirty && !action.force) return session;
+    if ((session.dirty || session.saveInFlight) && !action.force) return session;
+    if (action.savedRevision != null && session.savedRevision === action.savedRevision
+      && !action.force) return session;
+    if (action.savedRevision != null && session.savedRevision != null
+      && action.savedRevision < session.savedRevision && !action.force) return session;
     const replacement = createFlowchartEditorSession(action.document, {
       savedRevision: action.savedRevision ?? session.savedRevision,
       activeDiagramId: action.activeDiagramId || session.activeDiagramId,
