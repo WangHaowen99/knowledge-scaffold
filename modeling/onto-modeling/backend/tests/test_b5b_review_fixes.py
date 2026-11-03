@@ -92,7 +92,7 @@ def test_B_autobuild_never_deletes_confirmed_content(ab):
     assert record["slices"]["core.validate"]["state"] == "skipped"
     titles = [item["title"] for item in record["suspensions"]]
     assert titles == ["「校验与走查」要删除已确认的内容"]
-    assert "ontology/object/门店.md" in record["suspensions"][0]["reason"]
+    assert record["suspensions"][0]["reason"] == "对象「门店」"  # 按业务名说，不出路径（F4b-paths）
 
 
 def test_B_policy_refuses_deletes_and_release_tags(ab):

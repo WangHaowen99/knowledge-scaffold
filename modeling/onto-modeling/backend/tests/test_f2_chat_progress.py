@@ -50,12 +50,12 @@ def test_steps_after_assistant_text_start_a_new_segment_below_it():
               if item["type"].startswith("progress")]
     assert before[-1]["data"]["group_id"] == first
     assert before[-1]["data"]["state"] == "done" and before[-1]["data"]["collapsed"] is True
-    assert [step["text"] for step in before[-1]["data"]["steps"]] == ["读取「a.md」"]
+    assert [step["text"] for step in before[-1]["data"]["steps"]] == ["读取资料「a」"]
     after = [group for kind, group in kinds[text_at:] if kind.startswith("progress")]
     assert after and all(group != first for group in after)
     second = [item for item in envelopes if item["type"].startswith("progress") and item["data"]["group_id"] == after[0]]
     assert second[0]["type"] == "progress"  # 新一段的第一条是 progress，不是 progress.updated
-    assert [step["text"] for step in second[-1]["data"]["steps"]] == ["读取「b.md」"]
+    assert [step["text"] for step in second[-1]["data"]["steps"]] == ["读取资料「b」"]
     assert second[-1]["data"]["state"] == "running"
 
 
@@ -100,14 +100,14 @@ def test_jiuwen_subagent_hangs_under_its_dispatch_step_without_a_duplicate_step(
     order = [item["type"] for item in envelopes]
     assert order.index("message.assistant") < order.index("subagent.updated")
     steps = [item["step"] for item in subs if item["step"]]
-    assert steps[0] == {"id": "s-a", "kind": "tool", "text": "读取「临期与报损管理办法.md」", "state": "running"}
+    assert steps[0] == {"id": "s-a", "kind": "tool", "text": "读取资料「临期与报损管理办法」", "state": "running"}
     assert steps[1]["text"] == "读取表格结构" and steps[1]["state"] == "running"
     # 收尾的事件不带参数，照样带着开始时的说法，不退成「读取资料」「运行脚本」
-    assert steps[2] == {"id": "s-a", "kind": "tool", "text": "读取「临期与报损管理办法.md」", "state": "done"}
+    assert steps[2] == {"id": "s-a", "kind": "tool", "text": "读取资料「临期与报损管理办法」", "state": "done"}
     assert steps[3]["text"] == "读取表格结构" and steps[3]["state"] == "failed"
     assert steps[4] == {"id": "call-9-say-3", "kind": "text", "text": "两份都读完了\n要点如下", "state": "done"}
     assert [item["progress_text"] for item in subs[1:6]] == [
-        "读取「临期与报损管理办法.md」", "读取表格结构", "读取「临期与报损管理办法.md」", "读取表格结构", "两份都读完了"]
+        "读取资料「临期与报损管理办法」", "读取表格结构", "读取资料「临期与报损管理办法」", "读取表格结构", "两份都读完了"]
     assert subs[-1]["status"] == "done"
 
 
@@ -136,7 +136,7 @@ def test_legacy_subagent_records_project_with_unknown_step_text():
          "kind": "tool", "tool": "Read", "status": "ok", "group_id": "g-1", "seq": 4},
     ]
     start, end = (timeline.project(record, "p1", "c1")["data"] for record in records)
-    assert start["step"] == {"id": "s1", "kind": "tool", "text": "读取「a.md」", "state": "running"}
+    assert start["step"] == {"id": "s1", "kind": "tool", "text": "读取资料「a」", "state": "running"}
     assert end["step"] == {"id": "s1", "kind": "tool", "text": None, "state": "done"}
     assert end["progress_text"] == ""
 

@@ -81,8 +81,12 @@ export function fileRecord(o) {
 }
 
 // 给接口用的 Material：去掉 mock 自用字段；资料地图里有这份时，读取进度以资料地图为准
+// 同后端 workspace_labels：资料名是原文件名去扩展名，类型按扩展名
+const TYPE_LABEL = { pdf: 'PDF', doc: 'Word', docx: 'Word', xls: 'Excel', xlsx: 'Excel', xlsm: 'Excel', csv: 'CSV', drawio: '流程图', html: '网页', htm: '网页', png: '图片', jpg: '图片', jpeg: '图片', md: 'Markdown', markdown: 'Markdown', txt: '文本' };
 export function materialView(f, mapItem) {
-  const { scanned, sections, ...m } = f;
+  const { scanned, sections, ...rest } = f;
+  const ext = (/\.([^.]+)$/.exec(rest.name || '') || [])[1]?.toLowerCase();
+  const m = { ...rest, title: (rest.name || '').replace(/\.[^.]+$/, ''), type_label: TYPE_LABEL[ext] || '文件' };
   if (!mapItem) return m;
   const done = mapItem.read_pct >= 100;
   return {

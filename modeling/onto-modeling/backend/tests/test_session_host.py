@@ -270,8 +270,8 @@ def test_command_turns_produce_contract_payloads_and_exec_lifecycle(host):
     group = [item for item in envelopes if item["type"] == "progress.updated"][-1]["data"]
     assert group["title"] == "对象提取" and group["state"] == "done" and group["collapsed"] is True
     texts = [step["text"] for step in group["steps"]]
-    assert "读取「资料分析.md」" in texts and any("写入对象" in text for text in texts)
-    assert all("research/" not in text for text in texts)  # 只给文件名，不给路径与命令原文
+    assert "读取资料分析报告" in texts and any("写入对象" in text for text in texts)
+    assert all("research/" not in text for text in texts)  # 只给业务名，不给路径、文件名与命令原文
     completed = [item for item in envelopes if item["type"] == "turn.completed"]
     assert completed[0]["data"]["usage"] == {"input_tokens": 100, "output_tokens": 20, "cache_read_tokens": 5}
     assert completed[0]["data"]["cost"] == {"amount": 0.01, "currency": "USD"}

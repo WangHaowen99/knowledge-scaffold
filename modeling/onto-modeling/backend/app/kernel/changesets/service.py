@@ -30,6 +30,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from ...services import workspace_labels
 from ...services.workspace.errors import WorkspaceError
 from ...services.workspace.gitops import _git, _run_git
 from . import entity_diff, gates, store, worktree
@@ -38,11 +39,9 @@ _log = logging.getLogger(__name__)
 
 CHANGES_MAX = 500
 GROUP_LABELS = {"object": "对象", "operation": "操作", "rule": "规则", "metric": "指标", "script": "脚本",
-                "scenario": "场景", "artifact": "插件产物", "other": "其他文件"}
+                "scenario": "场景", "artifact": "插件产物", "other": "其他"}
 GROUP_ORDER = tuple(GROUP_LABELS)
 OBSERVE_EVERY_SECONDS = 5.0
-# 不是条目、也不是插件产物、但用户认得的文件：卡片上按业务名显示
-FILE_TITLES = {"research/blueprint.json": "建模蓝图"}
 _last_observed: dict[str, float] = {}
 
 
@@ -137,7 +136,13 @@ def _model(root: Path):
 
 
 def _entry_ref(kind: str, key: str) -> dict:
-    return {"kind": kind, "id": f"{kind}:{key}", "key": key, "name": key}
+    return {"kind": kind, "id": f"{kind}:{key}", "key": key, "name": key, "label": workspace_labels.entry_label(kind, key)}
+
+
+def _file_ref(rel: str) -> dict:
+    """冲突、撤回挡住时列出的非条目文件：名字用业务名，认不出的写「其他文件」，不出文件名。"""
+    name = workspace_labels.file_label(rel) or "其他文件"
+    return {"kind": "file", "id": rel, "key": rel, "name": name, "label": name}
 
 
 def _artifact_types(manager, root: Path) -> list:
@@ -157,27 +162,20 @@ def describe(manager, root: Path, changes: list[tuple[str, str]]) -> dict:
     seen_entries, seen_artifacts = set(), set()
     for status, rel in changes[:CHANGES_MAX]:
         change = {"A": "add", "D": "del"}.get(status, "mod")
-        entry = model.entry_key(rel)
-        if entry:
-            kind, _, key = entry.partition(":")
-            ref = _entry_ref(kind, key)
-            if entry not in seen_entries:
-                seen_entries.add(entry)
-                entries.append(ref)
-            items.append({"group": kind, "change": change, "target": ref, "path": rel})
+        info = workspace_labels.describe(rel, model, types)
+        if info is None:
+            # 认不出的文件：不出文件名（界面上合成「另有 N 处改动」），路径只留在 path 里
+            items.append({"group": "other", "change": change, "path": rel,
+                          "target": {"type": "file", "key": rel, "title": "", "label": ""}})
             continue
-        atype = next((item for item in types if item.key_from_path(rel)), None)
-        if atype is not None:
-            key = atype.key_from_path(rel)
-            ref = {"type": atype.type, "key": key, "title": key}
-            if (atype.type, key) not in seen_artifacts:
-                seen_artifacts.add((atype.type, key))
-                artifacts.append(ref)
-            group = "scenario" if atype.type.endswith(".scenario") else "artifact"
-            items.append({"group": group, "change": change, "target": ref, "path": rel})
-            continue
-        items.append({"group": "other", "change": change, "path": rel,
-                      "target": {"type": "file", "key": rel, "title": FILE_TITLES.get(rel) or rel.rsplit("/", 1)[-1]}})
+        group, ref = info["group"], info["target"]
+        if "kind" in ref and ref["id"] not in seen_entries:
+            seen_entries.add(ref["id"])
+            entries.append(ref)
+        elif ref.get("type") != "file" and "kind" not in ref and (ref["type"], ref["key"]) not in seen_artifacts:
+            seen_artifacts.add((ref["type"], ref["key"]))
+            artifacts.append(ref)
+        items.append({"group": group, "change": change, "target": ref, "path": rel})
     return {"entries": entries, "artifacts": artifacts, "paths": [rel for _status, rel in changes[:CHANGES_MAX]],
             "items": items}
 
@@ -482,21 +480,32 @@ def entity_diff_view(manager, project_id: str, changeset_id: str, target: str = 
     return {"items": items}
 
 
+def round_rows(items: list[dict]) -> tuple[dict[str, list], int]:
+    """describe 的 items → 卡片上按组的行、改动总数。动词由前端的「新增 / 修改 / 删除」标签表示：条目写类型和链接
+    （契约示例「对象 [[门店]]」），其余写业务名；认不出的文件合成最后一行「另有 N 处改动」（change 为空，不出文件名）。"""
+    groups: dict[str, list] = {}
+    more = 0
+    for item in items:
+        ref = item["target"]
+        if not ref.get("label"):
+            more += 1
+            continue
+        label = GROUP_LABELS.get(item["group"]) if ref.get("kind") and "type" not in ref else None
+        groups.setdefault(item["group"], []).append({
+            "change": item["change"], "target": ref, "text": f"{label} [[{ref['name']}]]" if label else ref["label"],
+            "comparable": item["change"] == "mod",
+        })
+    if more:
+        groups.setdefault("other", []).append({"change": None, "target": None, "text": workspace_labels.more_text(more),
+                                               "comparable": False, "count": more})
+    return groups, len(items)
+
+
 def round_card(manager, project_id: str, record: dict, card_id: str) -> dict:
     """「这一轮改了什么」卡（契约 4.7 round_changes，F3）：这一轮改了什么、存成的版本、检查提示；按钮只有撤回这一轮
     与查看改动（前端）。检查只提示：待建的链接单独说，其余按「几处什么问题」说，不出「检查有 N 个新错误」。"""
     root = manager.project_root(project_id)
-    groups: dict[str, list] = {}
-    for item in _changes_of(manager, root, record):
-        ref = item["target"]
-        name = ref.get("name") or ref.get("title") or ref.get("key")
-        # 动词由前端的「新增 / 修改 / 删除」标签表示，行文只写类型和链接（契约示例「对象 [[门店]]」）
-        label = GROUP_LABELS.get(item["group"]) if ref.get("kind") and "type" not in ref else None
-        groups.setdefault(item["group"], []).append({
-            "change": item["change"], "target": ref, "text": f"{label} [[{name}]]" if label else f"「{name}」",
-            "comparable": item["change"] == "mod",
-        })
-    total = sum(len(items) for items in groups.values())
+    groups, total = round_rows(_changes_of(manager, root, record))
     checks = record.get("checks") or {}
     state = record["state"]
     reverted = record.get("reverted") or {}
@@ -652,7 +661,7 @@ def _conflict_check(manager, root: Path, base: str, main: str, head: str,
             kind, _, key = entry.partition(":")
             targets.append(_entry_ref(kind, key))
         else:
-            targets.append({"kind": "file", "id": rel, "key": rel, "name": rel.rsplit("/", 1)[-1]})
+            targets.append(_file_ref(rel))
     return sorted(conflicted), targets
 
 
@@ -988,8 +997,7 @@ def revert_merged(manager, project_id: str, changeset_id: str, *, actor: str, so
             # 合入之后这个文件又被改过（哪怕只是标题、空行）：反向提交会把后来的修改一起盖掉，不撤（审查第 17 条）
             if rel in later and worktree.read_blob(root, commit, rel) != worktree.read_blob(root, tx.base_head, rel):
                 entry = model.entry_key(rel)
-                kind, _, key = (entry or f"file:{rel}").partition(":")
-                clashes.append(_entry_ref(kind, key))
+                clashes.append(_entry_ref(*entry.split(":", 1)) if entry else _file_ref(rel))
         if clashes:
             raise WorkspaceError("生效之后这些条目又被改过，不能单独撤回", 409, "merge_conflict",
                                  {"entities": clashes, "inbox_item_id": None})

@@ -7,6 +7,7 @@ V-06 回退、V-07 标记、V-08 删除标记。
 
 from __future__ import annotations
 
+import re
 from urllib.parse import quote
 
 from fastapi import APIRouter, Request, Response
@@ -14,7 +15,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..api import deps
 from ..api.errors import ApiError
-from ..services import mainline, version_views
+from ..services import mainline, version_views, workspace_labels
 from ..services.workspace.errors import WorkspaceError
 from ..services.workspace.layout import _content_revision
 
@@ -49,6 +50,13 @@ def _autobuild_slices(project_id: str) -> dict[str, dict]:
     return index
 
 
+def _summary(message: str) -> str:
+    """版本说明给人看的那份（F4b-paths）：来源另有一栏，去掉提交信息里的来源前缀；路径换成业务名。"""
+    text = re.sub(r"^(?:revert|web|knowledge|studio|mcp|import|clone|init|chore|feedback|autobuild|agent):\s*", "",
+                  message or "")
+    return workspace_labels.humanize(text) or message
+
+
 def _version(entry: dict, head: str, autobuild: dict | None = None) -> dict:
     trailer = entry["trailer"]
     slice_run = (autobuild or {}).get(trailer.get("Onto-Changeset") or "") if entry["source"] == "autobuild" else None
@@ -60,7 +68,7 @@ def _version(entry: dict, head: str, autobuild: dict | None = None) -> dict:
         "source": entry["source"],
         "source_label": SOURCE_LABELS.get(entry["source"], entry["source"]),
         "author": entry["author"],
-        "summary": entry["message"],
+        "summary": _summary(entry["message"]),
         "tags": entry["tags"],
         "release": entry["release"],
         "current": entry["commit"] == head,

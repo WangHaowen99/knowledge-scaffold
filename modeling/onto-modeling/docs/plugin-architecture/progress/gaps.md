@@ -847,3 +847,10 @@ merge 4e6ed10f + 衔接 ee03c022；B4d 节第 1～7 条（和 B5c 要接的点�
 1. **内测引擎的读文件工具仍能在进程内解析 PDF、Word**：pdfplumber、python-docx 是内测引擎库的依赖，主服务镜像里可以直接 import；引擎自带的读文件工具遇到 PDF 会在进程内解析。资料分析的说明已不让助手这样读，但没有硬拦。建议在引擎的文件工具守卫上拦截 `resource/` 下有文本版的原件，回提示指向文本版（是否做待定）。
 2. **schema 表头仍读 Excel 原件**：对象提取、字段核对用的 `table_profile` 读 `purpose=schema` 的 xlsx 原件（openpyxl），不在本任务范围；要做到「只读文本」需要改成读文本版里的 Markdown 表。
 3. **共用的锁恢复提问没改**：各命令 Step 0 遇到命令锁时让用户选「续执 / 清理重来 / 取消」，属于内部机制，但 `STEP0_TEMPLATE.md` 所有命令共用，本任务没动。
+
+## 2026-11-03 · F4b-paths（界面上不出工作区路径和文件名）
+
+1. **F4b-research 管的文件没动**（避免冲突）：资料分析问题的正文 `text_md` 里直接写的资料路径（`research_view.py` 原样下发，报告页「资料分析」、资料地图弹窗、蓝图问题标题会露 `resource/…#p:3`）、资料地图与 `cards-materials.jsx` 的资料名带扩展名和路径悬浮、`anchor_label` 保留编号前缀。建议 F4b-research 合入后在 `research_view` 下发前用 `workspace_labels.humanize` / `material_name`。
+2. **Studio 证据锚点仍要手填**：EntryEditor 的锚点输入框占位写「file:resource/…#p:7.3」，用户要自己写路径。要改成「选资料 + 位置」的选择器，属于改设计（见回报）。
+3. **还会露文件名的低频处**：导入页的阻断原因（「缺少 ontology/ 目录」）、求解契约侧栏的文件角色名与检查信息、发布门禁明细里的条目路径、授权卡「查看技术细节」里的 JSON。均为开发者或包作者向，本次未改。
+4. **对话里已有的历史卡片、气泡不回填**：只影响新产生的；旧记录里的文件名照旧。

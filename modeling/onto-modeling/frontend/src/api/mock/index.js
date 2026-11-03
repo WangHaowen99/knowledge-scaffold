@@ -460,7 +460,13 @@ export function createMockServer() {
     const cs = db.changesets.get(m[2]);
     if (cs?.owner) return undefined;
     const lines = F.OPTION_PREVIEWS[cs?.opt || 'A'];
-    return json(200, { items: [{ target: F.REFS.op, change: 'mod', sections: [{ title: '', lines }] }] });
+    const file = (key, label, text) => ({ target: { type: 'file', key, title: label, label }, change: 'mod', sections: [{ title: '', lines: [{ kind: 'add', text }] }] });
+    return json(200, { items: [
+      { target: F.REFS.op, change: 'mod', sections: [{ title: '', lines }] },
+      file('research/blueprint.json', '建模蓝图', '+ 第 4 段：审批提示'),
+      file('notes/a.txt', '', '+ 草稿一行'),
+      file('notes/b.txt', '', '+ 草稿两行'),
+    ] });
   });
   on('GET', '/projects/([^/]+)/changesets/([^/]+)', ({ m }) => {
     const cs = db.changesets.get(m[2]);

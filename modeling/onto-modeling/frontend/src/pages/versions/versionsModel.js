@@ -33,6 +33,7 @@ const KIND_LABEL = { object: '对象', operation: '操作', rule: '规则', metr
 const ARTIFACT_LABEL = { 'trace.scenario': '场景', 'trace.mock': '模拟数据', 'diagram.flowchart': '流程图', 'codegen.solver_contract': '求解契约' };
 export function targetLabel(t) {
   if (!t) return '';
+  if (typeof t.label === 'string' && t.label) return t.label; // 后端按元模型、产物登记算好的业务名（F4b-paths）
   if (t.type) return `${ARTIFACT_LABEL[t.type] || '产物'}「${t.title || t.key}」`;
   return `${KIND_LABEL[t.kind] || '条目'}「${t.name || t.key}」`;
 }
@@ -43,13 +44,51 @@ export function entryPath(ref) {
   return ref.kind === 'script' ? `scripts/${ref.name}` : `ontology/${ref.kind}/${ref.name}.md`;
 }
 
-// 路径的说法：ontology/object/陈列量标准.md → 对象「陈列量标准」；其他文件取文件名
+// 改动表（V-02）：认不出的文件（后端 label 为空）合成最后一行「另有 N 处改动」，不出文件名（F4b-paths）
+export function changeRows(changes = []) {
+  const known = changes.filter((c) => c.target?.label !== '');
+  const n = changes.length - known.length;
+  return n ? [...known, { target: { label: `另有 ${n} 处改动` }, change: '', detail: '', review: null, more: true }] : known;
+}
+
+// 路径的说法：ontology/object/陈列量标准.md → 对象「陈列量标准」；资料按资料名，蓝图、资料分析报告按固定叫法；
+// 认不出的不出文件名（F4b-paths）
 export function pathLabel(path) {
-  const m = /^ontology\/(object|operation|rule|metric)\/(.+)\.md$/.exec(path || '');
+  const p = path || '';
+  const idx = /^ontology\/(object|operation|rule|metric)\/index\.md$/.exec(p);
+  if (idx) return `${KIND_LABEL[idx[1]]}清单`;
+  const m = /^ontology\/(object|operation|rule|metric)\/(.+)\.md$/.exec(p);
   if (m) return `${KIND_LABEL[m[1]]}「${m[2]}」`;
-  const s = /^scripts\/(.+)$/.exec(path || '');
+  const s = /^scripts\/(.+)$/.exec(p);
   if (s) return `脚本「${s[1]}」`;
-  return (path || '').split('/').pop();
+  if (p === 'research/blueprint.json') return '建模蓝图';
+  if (/^research\/.+\.md$/.test(p)) return '资料分析报告';
+  if (/^reports\/.+\.md$/.test(p)) return '检查报告';
+  if (/^resource\/(?!text\/|systems\/|materials\.json$)/.test(p)) return `资料「${p.split('/').pop().replace(/\.[^.]+$/, '')}」`;
+  return '其他文件';
+}
+
+// 某个版本的文件（V-03 抽屉）：按业务类型分组、按业务名列，不出目录和文件名（F4b-paths）；
+// 认不出的文件不列，下载的 zip 里照有
+const FILE_GROUPS = [
+  ['object', '对象', /^ontology\/object\/(.+)\.md$/],
+  ['operation', '操作', /^ontology\/operation\/(.+)\.md$/],
+  ['rule', '规则', /^ontology\/rule\/(.+)\.md$/],
+  ['metric', '指标', /^ontology\/metric\/(.+)\.md$/],
+  ['script', '脚本', /^scripts\/(.+)$/],
+  ['material', '资料', /^resource\/(?!text\/|systems\/)(?:[^/]+\/)*([^/]+?)(?:\.[^./]+)?$/],
+  ['research', '资料分析', /^research\/(blueprint\.json|.+\.md)$/],
+];
+export function fileGroups(files = []) {
+  const groups = FILE_GROUPS.map(([key, label]) => ({ key, label, items: [] }));
+  (files || []).forEach((f) => {
+    const i = FILE_GROUPS.findIndex(([, , re]) => re.test(f.path) && f.path !== 'resource/materials.json');
+    if (i < 0) return;
+    const hit = FILE_GROUPS[i][2].exec(f.path)[1];
+    const name = FILE_GROUPS[i][0] === 'research' ? pathLabel(f.path) : hit;
+    groups[i].items.push({ ...f, name });
+  });
+  return groups.filter((g) => g.items.length);
 }
 
 export const CHANGE_TEXT = { add: '新增', mod: '修改', del: '删除' };
@@ -226,13 +265,14 @@ export function undoneText(labels) {
 export function revertChips(files, max = 5) {
   const out = [];
   let scenes = 0;
-  const base = (path) => String(path || '').split('/').pop();
-  const names = (files || []).map((f) => base(f.path));
-  const dup = new Set(names.filter((n, i) => names.indexOf(n) !== i));
-  // 恢复的在前，删掉的（目标版本时还没有的文件）在后
+  const seen = new Set();
+  // 恢复的在前，删掉的（目标版本时还没有的文件）在后；按业务名说，同名的只列一次（F4b-paths：不出路径）
   [...(files || [])].sort((a, b) => (a.change === 'delete') - (b.change === 'delete')).forEach((f) => {
     if (/^ext\/trace\/scenarios\//.test(f.path)) { scenes += 1; return; }
-    out.push({ key: f.path, label: dup.has(base(f.path)) ? f.path : base(f.path), del: f.change === 'delete' });
+    const label = pathLabel(f.path);
+    if (seen.has(label)) return;
+    seen.add(label);
+    out.push({ key: f.path, label, del: f.change === 'delete' });
   });
   if (scenes) out.push({ key: 'scenes', label: `场景 ×${scenes}`, del: false });
   if (out.length <= max) return out;

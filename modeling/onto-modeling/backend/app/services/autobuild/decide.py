@@ -22,7 +22,7 @@ import re
 import time
 import uuid
 
-from .. import material_text
+from .. import material_text, workspace_labels
 from . import store
 
 ASK_TOOL = "AskUserQuestion"
@@ -94,8 +94,8 @@ def anchors(text: str) -> list[dict]:
         if any(item["anchor"] == anchor for item in out):
             continue
         path, _, fragment = anchor.partition("#")
-        label = path.rsplit("/", 1)[-1].split(":", 1)[-1]
-        if fragment:
+        label = workspace_labels.material_name(path.split(":", 1)[-1])  # 只说资料名，不出路径和扩展名
+        if fragment and not re.fullmatch(r"L\d+(?:-L?\d+)?", fragment):  # 行号不是给人看的位置，不写
             label += " §" + re.sub(r"(^|~)[a-z]+:", r"\1", fragment)  # 区间两端都去掉片段类型（p:10~p:11 → 10~11）
         out.append({"n": len(out) + 1, "anchor": anchor, "label": label})
         if len(out) >= 5:

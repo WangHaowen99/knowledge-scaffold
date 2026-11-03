@@ -118,7 +118,6 @@ export default function RawEditor({ entry, lockInfo, lock, onBack, onSaved }) {
     <div className="stt-raw">
       <div className="fl-ptb">
         <span>{chip}</span>
-        <span className="xs muted mono ell" style={{ maxWidth: 260 }}>{file.path}</span>
         <span className="sp" />
         <Button size="sm" kind="ghost" icon="copy" title="复制内容" onClick={async () => toast((await copyText(text)) ? '已复制全文' : '复制失败，请手动选择', 'copy')} />
         <Button size="sm" onClick={() => (modified || draft ? setCancelOpen(true) : onBack())}>取消</Button>

@@ -29,6 +29,7 @@ import time
 import uuid
 
 from ...api.errors import ApiError
+from .. import workspace_labels
 from . import budget, hint, limits, plan, store, views
 
 _log = logging.getLogger(__name__)
@@ -644,7 +645,8 @@ class AutobuildRunner:
                 if exc.code == "delete_forbidden":
                     return await self._give_up(project_id, run_id, unit, changeset_id, owner,
                                                title=f"「{unit['name']}」要删除已确认的内容", flag="delete_forbidden",
-                                               reason="、".join((exc.details or {}).get("paths") or []))
+                                               reason="、".join(workspace_labels.path_label(rel) or "其他文件"
+                                                               for rel in (exc.details or {}).get("paths") or []))
                 if exc.code == "changeset_closed":
                     return self._unit_done(project_id, run_id, unit, record=None)
                 self._fail(project_id, run_id, exc.code or "merge")

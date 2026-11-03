@@ -10,6 +10,9 @@ import { PageHead, ShellP } from '../../shell/Shell.jsx';
 import { evidenceInProject } from '../../state/evidence.js';
 import { isLocked } from '../../state/readonly.js';
 import { ScopeLockBar, useProjectEvent } from '../plugin/parts.jsx';
+import { fileGroups } from '../versions/versionsModel.js';
+
+const listed = (groups) => groups.reduce((n, g) => n + g.items.length, 0);
 import {
   Button, Card, Chip, Drawer, Icon, KV, Modal, Note, Select, St, cx,
 } from '../../ui/index.jsx';
@@ -188,6 +191,7 @@ function ManifestDrawer({ rec, onClose, onDownload }) {
     api.releaseManifest(pid, rec.version).then((x) => alive && setM(x)).catch((e) => alive && setError(errorText(e)));
     return () => { alive = false; };
   }, [api, pid, rec]);
+  const groups = fileGroups(m?.files);
   return (
     <Drawer
       open={!!rec}
@@ -221,11 +225,13 @@ function ManifestDrawer({ rec, onClose, onDownload }) {
               ['大小', formatBytes(m.size)],
             ]}
           />
-          <div className="sec-t mt16"><Icon name="file" size={14} />包里的文件<span className="sp" /><span className="faint">{m.files.length}</span></div>
+          {/* 包里的内容按业务类型列名字，不出目录和文件名（F4b-paths）；清单、说明这类文件只计数 */}
+          <div className="sec-t mt16"><Icon name="file" size={14} />包里的内容<span className="sp" /><span className="faint">{m.files.length}</span></div>
           <div className="pb-files">
-            {m.files.map((f) => (
-              <div key={f.path} className="row"><span className="grow ell mono">{f.path}</span><span className="xs faint num">{formatBytes(f.size)}</span></div>
+            {groups.map((g) => (
+              <div key={g.key} className="row"><span className="b" style={{ flex: 'none', marginRight: 8 }}>{g.label}</span><span className="grow ell">{g.items.map((f) => f.name).join('、')}</span><span className="xs faint num">{g.items.length}</span></div>
             ))}
+            {m.files.length > listed(groups) ? <div className="row"><span className="grow faint">另有 {m.files.length - listed(groups)} 个文件</span></div> : null}
           </div>
           {m.manifest ? (
             <details className="mt12">

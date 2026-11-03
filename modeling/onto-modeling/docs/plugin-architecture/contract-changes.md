@@ -1120,3 +1120,14 @@ ADR-0074。
 3. **BP-03**：目标问题没答时 409 `blueprint_question_pending`，`details.question_id`。错误码表新增这一项。
 4. **蓝图卡**：`goal_md` 为项目目标，去掉 `out_of_scope`，新增 `goal_question: {id, title, answered} | null`。
 5. **工作区脚本**：`source_extract.py --sources` 输出 `{materials: [{material, read, kind: native|converted|missing}]}`；命令行给原件时退出码 2，输出 `{status: "use_text_version", text}` 或 `{status: "no_text_version", reason}`。`research_checker.py` 不再产生「新增ID确认」待人工条目；自编编号在回执的 `source_evidence` 里记为 `kind: "assigned"`；出处指向有文本版的原件时多一条「出处」警告。
+
+## 2026-11-03 · F4b-paths（界面上不出工作区路径和文件名）
+
+ADR-0075。契约改动已写进 `docs/api-v1.md`：
+
+1. **7.1 `EntryRef` / `ArtifactRef` 加 `label`**：后端按元模型、产物登记算好的业务名（对象「门店」、流程图「订单流程」、建模蓝图、资料分析报告、检查报告、资料「合同」）。变更里认不出的文件 `type="file"`、`title`、`label` 为空串，路径只在 `key`。CS-02、CS-03、V-02、冲突与撤回挡住时的 `entities` 都带它。
+2. **4.7 `round_changes` 卡**：行文只写业务名；认不出的文件合成 `other` 组最后一行 `{change: null, target: null, text: "另有 N 处改动", count: N}`，前端不出动词标签。`title`「改了 N 处」仍按路径数算。
+3. **7.1 `AnchorResolution`**：`source_label` 改为资料名（去扩展名；文本版 `resource/text/<分组>/<原文件名>.md` 映射回原资料）；新增 `material: {name, type, path}`；行号锚点 `L12`、`L12-L15` 的 `location_label` 按前面最近的位置标记（「第 3 页」「工作表 客户」）或小节标题算，都没有时为空，不再写「第 12 行」；`L起-L止` 区间整段高亮。`p:`、`table:`、`sheet:` 旧锚点照旧。
+4. **7.4 `Material` 加 `title`、`type_label`**；资料页不再按 `group` 分组（`group` 字段保留）。上传目录本来就由后端按扩展名定，界面不选目录。
+5. **S-20 加 `display_text`**：对话里只显示「命令 + 说明」，不带 `args`，说明里的工作区路径换成业务名；发给助手的不变。报告页「发给助手」、待处理「交给助手处理」、Studio 复核都给了 `display_text`。
+6. **其他下发文字**：版本说明（V-01 `summary`）去掉 `web:` 等来源前缀并把路径换成业务名；待处理报告事项标题用报告的一级标题；变更清单来源名、增量那一轮的对话标题用资料名；过期事项「上游（资料分析、对象）」；自主构建台账出处「资料名 §片段」（不写行号）、删除被挡的挂起原因按业务名；报告条目的位置标签按业务名；「工作过程」步骤「读取对象「门店」」「读取资料分析报告」。

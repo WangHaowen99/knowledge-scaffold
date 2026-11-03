@@ -8,7 +8,7 @@ import {
   Button, Chip, Drawer, Field, Icon, Inp, Modal, Note, Select,
 } from '../../ui/index.jsx';
 import {
-  fmtStamp, pathLabel, revertBlock, revertChips, revertCountText, revertErrorText, tagLabelError, undoneText,
+  fileGroups, fmtStamp, pathLabel, revertBlock, revertChips, revertCountText, revertErrorText, tagLabelError, undoneText,
 } from './versionsModel.js';
 
 const PACK_LABEL = { 'industry-retail': '零售行业包', core: '内核' };
@@ -230,11 +230,8 @@ export function FilesDrawer({ version, onClose, onCompare }) {
       toast(errorText(e), 'alert');
     }
   };
-  const groups = {};
-  (files || []).forEach((f) => {
-    const dir = f.path.split('/').slice(0, -1).join('/');
-    (groups[dir] = groups[dir] || []).push(f);
-  });
+  const groups = fileGroups(files);
+  const shown = groups.reduce((n, g) => n + g.items.length, 0);
   return (
     <Drawer
       open={!!version}
@@ -242,7 +239,7 @@ export function FilesDrawer({ version, onClose, onCompare }) {
       icon="eye"
       w={520}
       title={open ? pathLabel(open.path) : `${version?.version_label || ''} 的文件`}
-      sub={open ? `${open.version_label} · 只读` : `${files ? `${files.length} 个文件 · ` : ''}只读，${version ? fmtStamp(version.at) : ''}`}
+      sub={open ? `${open.version_label} · 只读` : `${files ? `${shown} 项 · ` : ''}只读，${version ? fmtStamp(version.at) : ''}`}
       foot={open ? (
         <>
           <Button size="sm" icon="arrowl" onClick={() => setOpen(null)}>返回列表</Button>
@@ -261,19 +258,19 @@ export function FilesDrawer({ version, onClose, onCompare }) {
       {!files && !error ? <div className="muted sm">正在读取文件列表…</div> : null}
       {open ? (
         <pre className="vr-pre">{open.content}{open.truncated ? '\n…（只显示前 512 KB）' : ''}</pre>
-      ) : Object.entries(groups).map(([dir, list]) => (
-        <div key={dir} className="mb12">
-          <div className="sec-t"><Icon name="folder" size={14} />{dir || '根目录'}<span className="sp" /><span className="faint">{list.length}</span></div>
-          {list.map((f) => (
+      ) : groups.map((g) => (
+        <div key={g.key} className="mb12">
+          <div className="sec-t">{g.label}<span className="sp" /><span className="faint">{g.items.length}</span></div>
+          {g.items.map((f) => (
             <div key={f.path} className="vr-file" onClick={() => show(f.path)}>
               <Icon name="file" size={14} />
-              <span className="grow ell">{f.path.split('/').pop()}</span>
+              <span className="grow ell">{f.name}</span>
               <span className="xs faint num">{formatBytes(f.size)}</span>
             </div>
           ))}
         </div>
       ))}
-      {files && !files.length ? <div className="muted sm">这个版本里没有知识包条目文件。</div> : null}
+      {files && !shown ? <div className="muted sm">这个版本里没有知识包条目文件。</div> : null}
     </Drawer>
   );
 }

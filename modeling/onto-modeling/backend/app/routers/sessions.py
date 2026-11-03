@@ -20,7 +20,7 @@ from ..api import deps
 from ..api.compat import CURRENT_CONVERSATION
 from ..api.errors import ApiError
 from ..governance.http import reject_new_session
-from ..services import conversation_store, project_events, streams, uploads
+from ..services import conversation_store, project_events, streams, uploads, workspace_labels
 from ..services.agent_sessions import SessionError, manager
 from ..services.autobuild import store as autobuild_store
 from ..services.session_host import command_tasks, exec_records, timeline, turns
@@ -735,7 +735,10 @@ async def dispatch_command(project_id: str, root: Path, request: Request, body: 
     label = known[name]["label"]
     task = command_tasks.create(project_id, origin=origin, title=f"助手正在执行「{label}」",
                                 conversation_id=conversation_id, command=name)
-    meta = {"display_text": text, "origin": {"kind": "page", "page": str(origin.get("page")),
+    # 对话里显示的那条不带参数、不出路径（F4b-paths）：页面可另给 display_text，没给时用说明文字
+    shown = str(body.get("display_text") or body.get("text") or "").strip()
+    display = f"{command}\n\n{workspace_labels.humanize(shown)}" if shown else command
+    meta = {"display_text": display, "origin": {"kind": "page", "page": str(origin.get("page")),
                                              "label": str(origin.get("label") or ""), "task_id": task["task_id"]},
             "task_id": task["task_id"], "command": name}
     try:

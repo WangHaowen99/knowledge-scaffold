@@ -19,7 +19,8 @@ from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import unquote
 
-from .workspace.layout import RESOURCE_DIRECTIVES
+from . import workspace_labels
+from .workspace.layout import RESOURCE_DIRECTIVES, is_resource_text
 
 SCHEME_FILE = "file"
 CONTEXT_CHARS = 300          # 前后各带一段上下文，每段最多这么多字
@@ -142,10 +143,39 @@ def location_label(fragment: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _unresolved(anchor: str, scheme: str, reason: str, source_label: str = "", location: str = "") -> dict:
+_LINES = re.compile(r"L(\d+)(?:-L?(\d+))?")
+
+
+def _unresolved(anchor: str, scheme: str, reason: str, source_label: str = "", location: str = "",
+                material: dict | None = None) -> dict:
     return {"anchor": anchor, "scheme": scheme, "resolved": False, "reason": reason, "source_label": source_label,
-            "location_label": location, "text": "", "highlights": [], "confidence": None, "snapshot_id": None,
-            "page": "resources" if scheme == SCHEME_FILE else None}
+            "location_label": location, "material": material, "text": "", "highlights": [], "confidence": None,
+            "snapshot_id": None, "page": "resources" if scheme == SCHEME_FILE else None}
+
+
+def _heading_before(lines: list[str], line: int) -> str:
+    found = ""
+    for text in lines[:line]:
+        if match := _MD_HEADING.match(text.strip()):
+            found = match.group(2).strip().strip("#").strip()
+    return found
+
+
+def line_location(root: Path, rel: str, line: int) -> str:
+    """行号锚点在资料里的位置（F4b-paths）：文本版按它前面最近的位置标记（「第 3 页」「工作表 客户」），没有标记、
+    或是用户直接上传的 md 时用最近的小节标题；都没有给空串（界面上不显示行号）。"""
+    if not is_resource_text(rel) and not rel.lower().endswith((".md", ".markdown")):
+        return ""
+    try:
+        text = (Path(root) / rel).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    if is_resource_text(rel):
+        from ..evidence import convert
+
+        if (found := convert.location_at(text, line)) is not None:
+            return found.label
+    return _heading_before(text.splitlines(), line)
 
 
 def resolve(root: Path, anchor: str) -> dict:
@@ -160,30 +190,48 @@ def resolve(root: Path, anchor: str) -> dict:
     if parsed["scheme"] != SCHEME_FILE:
         return _unresolved(anchor, scheme, "not_available" if parsed["scheme"] == scheme else "invalid")
     rel, fragment = parsed["path"], parsed["fragment"]
-    name = rel.rsplit("/", 1)[-1]
-    location = location_label(fragment)
+    # 界面上只说资料名和位置（F4b-paths）：文本版映射回原资料；行号不是给人看的位置，换成页、工作表或小节标题
+    lines = _LINES.fullmatch(fragment)
+    location = "" if lines else location_label(fragment)
     if not is_material(rel):
-        return _unresolved(anchor, SCHEME_FILE, "invalid", name, location)
+        return _unresolved(anchor, SCHEME_FILE, "invalid", workspace_labels.path_label(rel), location)
+    material = workspace_labels.material(rel)
+    name = material["name"]
     root = Path(root)
     target = (root / rel).resolve()
     if not target.is_relative_to(root.resolve()) or not target.is_file():
-        return _unresolved(anchor, SCHEME_FILE, "file_missing", name, location)
+        return _unresolved(anchor, SCHEME_FILE, "file_missing", name, location, material)
+    if lines:
+        location = line_location(root, rel, int(lines.group(1)))
     result = extract(root, rel)
     if result.get("status") != "ok":
-        return _unresolved(anchor, SCHEME_FILE, "unreadable", name, location)
+        return _unresolved(anchor, SCHEME_FILE, "unreadable", name, location, material)
     segments = result.get("segments") or []
     if not fragment:
         text, highlights = _join([seg["text"] for seg in segments[:3]], None)
     else:
-        index = next((i for i, seg in enumerate(segments) if seg["anchor"] == fragment), None)
-        if index is None:
-            return _unresolved(anchor, SCHEME_FILE, "not_found", name, location)
-        before = segments[index - 1]["text"] if index > 0 else None
-        after = segments[index + 1]["text"] if index + 1 < len(segments) else None
-        text, highlights = _join([before, segments[index]["text"], after], 1)
+        found = _span(segments, fragment, lines)
+        if found is None:
+            return _unresolved(anchor, SCHEME_FILE, "not_found", name, location, material)
+        start, end = found
+        before = segments[start - 1]["text"] if start > 0 else None
+        after = segments[end + 1]["text"] if end + 1 < len(segments) else None
+        hit = "\n".join(seg["text"] for seg in segments[start:end + 1])
+        text, highlights = _join([before, hit, after], 1)
     return {"anchor": anchor, "scheme": SCHEME_FILE, "resolved": True, "source_label": name,
-            "location_label": location, "text": text, "highlights": highlights, "confidence": None,
-            "snapshot_id": None, "page": "resources"}
+            "location_label": location, "material": material, "text": text, "highlights": highlights,
+            "confidence": None, "snapshot_id": None, "page": "resources"}
+
+
+def _span(segments: list[dict], fragment: str, lines) -> tuple[int, int] | None:
+    """片段命中的段落下标 [起, 止]：行号范围 L12-L15 取范围里的各行，其余按片段原样找。"""
+    if lines and lines.group(2):
+        low, high = int(lines.group(1)), int(lines.group(2))
+        hits = [i for i, seg in enumerate(segments)
+                if (m := re.fullmatch(r"L(\d+)", seg["anchor"])) and low <= int(m.group(1)) <= high]
+        return (hits[0], hits[-1]) if hits else None
+    index = next((i for i, seg in enumerate(segments) if seg["anchor"] == fragment), None)
+    return None if index is None else (index, index)
 
 
 def _clip(text: str, limit: int) -> str:

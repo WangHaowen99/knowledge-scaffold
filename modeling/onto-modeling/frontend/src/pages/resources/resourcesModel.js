@@ -9,7 +9,12 @@ export const PURPOSE_FALLBACK = [
   { value: 'auto', label: '由助手判断', description: '' },
 ];
 
-export const GROUP_ICON = { diagrams: 'flow', excel: 'table', others: 'filetext' };
+// 资料名：后端下发的 title（原文件名去扩展名）；旧接口没有时用文件名
+export const materialTitle = (m) => m?.title || m?.name || '';
+// 资料列表不按工作区目录分组（F4b-paths）：所有资料按资料名排成一张表
+export function sortMaterials(groups = []) {
+  return allMaterials(groups).slice().sort((a, b) => materialTitle(a).localeCompare(materialTitle(b), 'zh-Hans-CN'));
+}
 
 // 行首图标：设计稿 .evd-f .fi 的三种底色（d 流程图、x 表格、w 文档）
 export function fileIcon(kind) {
@@ -54,9 +59,9 @@ export function scaleText(m) {
   return fmtSize(m.size);
 }
 
-// 行的第二行：规模 · 上传时间 · 被引用（修订资料的「去对话里确认 →」由页面另画）
+// 行的第二行：类型 · 规模 · 上传时间 · 被引用（修订资料的「去对话里确认 →」由页面另画）
 export function metaText(m, now = Date.now()) {
-  const parts = [scaleText(m), `${shortTime(m.uploaded_at, now)} 上传`];
+  const parts = [...(m.type_label ? [m.type_label] : []), scaleText(m), `${shortTime(m.uploaded_at, now)} 上传`];
   if (m.referenced) parts.push(`被引用 ${m.referenced} 处`);
   return parts.join(' · ');
 }
