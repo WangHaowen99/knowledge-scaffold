@@ -1131,3 +1131,13 @@ ADR-0075。契约改动已写进 `docs/api-v1.md`：
 4. **7.4 `Material` 加 `title`、`type_label`**；资料页不再按 `group` 分组（`group` 字段保留）。上传目录本来就由后端按扩展名定，界面不选目录。
 5. **S-20 加 `display_text`**：对话里只显示「命令 + 说明」，不带 `args`，说明里的工作区路径换成业务名；发给助手的不变。报告页「发给助手」、待处理「交给助手处理」、Studio 复核都给了 `display_text`。
 6. **其他下发文字**：版本说明（V-01 `summary`）去掉 `web:` 等来源前缀并把路径换成业务名；待处理报告事项标题用报告的一级标题；变更清单来源名、增量那一轮的对话标题用资料名；过期事项「上游（资料分析、对象）」；自主构建台账出处「资料名 §片段」（不写行号）、删除被挡的挂起原因按业务名；报告条目的位置标签按业务名；「工作过程」步骤「读取对象「门店」」「读取资料分析报告」。
+
+## 2026-11-03 · F4c（主容器里不解析资料原件、锁恢复不问人、资料分析不露路径）
+
+ADR-0076。
+
+1. **内核守卫**：新增 `resource_read_guard.sh`（`_guard_common.py resource_read`），settings 基线 `Read|NotebookRead` 与 `Bash` 两处挂上；内测引擎 `read_file` 映射为 `Read`。拒绝理由里给文本版路径或「没有文本版，按未读处理」。
+2. **工作区脚本**：`table_profile.py` 读资料区 Excel 的文本版（`resource_text`、`text_sheets`），没有文本版时严格读取抛「还没有文本版」；`research_checker.py` 出处指向原件时按文本版整篇核对，语料只读文本；`state_helper.py recover <命令>` 输出 `resume:{phase}` / `restart` / `ok`。
+3. **后端**：`app/evidence/convert.md_tables`（Excel 文本版 → 工作表行）；`package_mapping.read_table_headers` 资料区 Excel 读文本版。
+4. **R-07 / RP-02 extras**：`MaterialMapItem.label`；`problems[].display_md`；R-09、R-08 的 `anchor_label` 改为「资料名 · 位置」。
+5. **BP-01、蓝图卡**：`questions[].title`、`background` 里的资料路径换成「资料名 · 位置」（蓝图文件原文不变）。
