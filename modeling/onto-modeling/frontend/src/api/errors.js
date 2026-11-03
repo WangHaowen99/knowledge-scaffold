@@ -74,7 +74,10 @@ export const ERROR_MESSAGES = {
   unsupported_media_type: (d) => (d?.allowed?.length ? `不支持这种文件类型，可以上传：${d.allowed.join(' ')}` : '不支持这种文件类型'),
   confirmation_required: '这个操作需要先确认',
   rate_limited: (d) => `请求过于频繁，请稍后再试${d?.retry_after_s != null ? `（${fmtSeconds(d.retry_after_s)}）` : ''}。`,
-  quota_exceeded: (d) => (d?.limit != null ? `已超出配额（上限 ${d.limit}，已用 ${d.used ?? '—'}）` : '已超出配额'),
+  // 服务端的说法带「今天 / 本月」和千分位（V 阶段 toast 是「已超出配额（上限 2000000，已用 3314435）」）
+  quota_exceeded: (d, message) => message || (d?.limit != null
+    ? `已超出配额（上限 ${Number(d.limit).toLocaleString('en-US')}，已用 ${d.used != null ? Number(d.used).toLocaleString('en-US') : '—'}）`
+    : '已超出配额'),
   too_many_streams: '同时打开的页面太多，请关掉一些再试',
   internal_error: (d) => `服务出了点问题${d?.error_id ? `，错误编号 ${d.error_id}` : ''}，请稍后再试`,
   upstream_unavailable: '依赖的服务暂时连不上，请稍后再试',
@@ -224,7 +227,7 @@ export function errorText(err) {
   if (!err) return '';
   if (!(err instanceof ApiError)) return err.message || BY_STATUS[0];
   const entry = ERROR_MESSAGES[err.code];
-  if (typeof entry === 'function') return entry(err.details);
+  if (typeof entry === 'function') return entry(err.details, err.serverMessage);
   if (entry) return entry;
   return err.serverMessage || BY_STATUS[err.status] || BY_STATUS[500];
 }

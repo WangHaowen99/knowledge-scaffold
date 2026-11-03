@@ -150,3 +150,11 @@ test('withToken 只给下载和 SSE 地址加 token 参数', () => {
   assert.equal(client.url('/projects', { q: 'x' }), '/api/v1/projects?q=x');
   assert.equal(client.url('/health', null, { ops: true }), '/api/v1/ops/health');
 });
+
+test('超出配额：用服务端的说法（今天 / 本月、千分位），没有说法时数字也带千分位', () => {
+  const server = new ApiError({ status: 429, code: 'quota_exceeded', message: '今天的模型用量已到上限（2,000,000 token），明天再试或请管理员调整配额',
+    details: { quota: 'daily_tokens', limit: 2000000, used: 3314435 } });
+  assert.equal(errorText(server), '今天的模型用量已到上限（2,000,000 token），明天再试或请管理员调整配额');
+  const bare = new ApiError({ status: 429, code: 'quota_exceeded', details: { quota: 'daily_tokens', limit: 2000000, used: 3314435 } });
+  assert.equal(errorText(bare), '已超出配额（上限 2,000,000，已用 3,314,435）');
+});
