@@ -73,6 +73,18 @@
 .stt-rel{position:relative}
 .stt-rel .menu{position:absolute;top:30px;left:0;z-index:30;width:260px;max-height:240px;overflow:auto}
 .stt-rel .menu .inp{margin:4px 4px 6px}
+/* 填证据：先选资料、再选位置（EvidencePicker，挂在 body 上固定定位） */
+.stt-evp{position:fixed;z-index:80;width:340px;max-height:360px;display:flex;flex-direction:column}
+.stt-evp .inp{margin:2px 2px 6px;flex:none}
+.stt-evp .lst{flex:1;min-height:0;overflow:auto}
+.stt-evp .hd{display:flex;align-items:center;gap:6px;padding:2px 6px 6px 2px;font-size:13px;font-weight:600;color:var(--ink)}
+.stt-evp .bk{width:24px;height:24px;border-radius:6px;display:grid;place-items:center;color:var(--ink2);flex:none}
+.stt-evp .bk:hover{background:var(--panel3)}
+.stt-evp .loc{padding:8px 10px 2px;font-size:11.5px;color:var(--muted)}
+.stt-evp .mi.off{cursor:default;color:var(--muted)}
+.stt-evp .mi.off:hover{background:none;color:var(--muted)}
+.stt-evp .mi.more{justify-content:center;color:var(--blue)}
+.stt-evp .tip{padding:6px 10px;font-size:12px;color:var(--muted)}
 
 /* ---- 原文编辑（Studio 表格页「编辑原文」） ---- */
 .fl-ptb{display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--line)}

@@ -8,6 +8,7 @@ import { errorText, relativeTime } from '../../api/errors.js';
 import {
   Area, Button, Chip, Field, Icon, Inp, Modal, Note, cx, useOutside,
 } from '../../ui/index.jsx';
+import EvidencePicker from './EvidencePicker.jsx';
 import { KindChip, KindDot, LockBar, askAssistant, useLockCopy } from './parts.jsx';
 import {
   CONFIDENCE_CHIP, anchorChipLabel, commitSummary, fieldErrorMap, formFromEntry, hhmm, kindLabel,
@@ -18,11 +19,9 @@ const AUTOSAVE_MS = 2000;
 // 编辑原文带 CodeMirror，用到时再加载
 const RawEditor = lazy(() => import('./RawEditor.jsx'));
 
-function EvidenceInput({ field, cell, label: resolved, onChange, err }) {
-  const [mode, setMode] = useState(null);
-  const [text, setText] = useState('');
+function EvidenceInput({ field, cell, label: resolved, onChange, onPick, err }) {
+  const [open, setOpen] = useState(false);
   const ref = useRef(null);
-  useOutside(ref, () => setMode(null), mode === 'menu');
   if (field.expert_confirmed) {
     return (
       <div className="stt-evc" onClick={() => onChange({ expert_confirmed: false })} title="点一下取消专家确认">
@@ -43,32 +42,18 @@ function EvidenceInput({ field, cell, label: resolved, onChange, err }) {
       </div>
     );
   }
-  if (mode === 'input') {
-    return (
-      <input
-        className={cx('cell mono', err && 'err')}
-        autoFocus
-        placeholder="锚点，如 file:resource/…#p:7.3"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onBlur={() => setMode(null)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && text.trim()) { onChange({ evidence_anchor: text.trim() }); setMode(null); }
-          if (e.key === 'Escape') setMode(null);
-        }}
-      />
-    );
-  }
   return (
-    <div ref={ref} style={{ position: 'relative' }}>
-      <div className={cx('cell add', err && 'err')} onClick={() => setMode(mode === 'menu' ? null : 'menu')}>+ 补出处或专家确认</div>
-      {mode === 'menu' ? (
-        <div className="menu" style={{ position: 'absolute', top: 32, left: 0, zIndex: 30, width: 200 }}>
-          <div className="mi" onClick={() => { setText(''); setMode('input'); }}><Icon name="quote" size={14} /><span>填写证据锚点</span></div>
-          <div className="mi" onClick={() => { onChange({ expert_confirmed: true }); setMode(null); }}><Icon name="user" size={14} /><span>标为专家确认</span></div>
-        </div>
+    <>
+      <div ref={ref} className={cx('cell add', err && 'err')} onClick={() => setOpen((v) => !v)}>+ 补出处或专家确认</div>
+      {open ? (
+        <EvidencePicker
+          anchorRef={ref}
+          onClose={() => setOpen(false)}
+          onPick={(anchor, label) => { setOpen(false); onPick(anchor, label); }}
+          onExpert={() => { setOpen(false); onChange({ expert_confirmed: true }); }}
+        />
       ) : null}
-    </div>
+    </>
   );
 }
 
@@ -357,7 +342,11 @@ export default function EntryEditor({ id, rows, onChanged, tick }) {
                             </td>
                             <td><input className="cell" value={f.type} onChange={(e) => setField(i, { type: e.target.value })} /></td>
                             <td style={{ position: 'relative' }}>
-                              <EvidenceInput field={f} cell={fieldsByCol.get(f.column)} label={anchorLabels[f.evidence_anchor]} err={evErr} onChange={(p) => setField(i, p)} />
+                              <EvidenceInput
+                                field={f} cell={fieldsByCol.get(f.column)} label={anchorLabels[f.evidence_anchor]} err={evErr}
+                                onChange={(p) => setField(i, p)}
+                                onPick={(anchor, label) => { setAnchorLabels((m) => ({ ...m, [anchor]: label })); setField(i, { evidence_anchor: anchor }); }}
+                              />
                               <button type="button" className="rm" title="删除这个属性" style={{ position: 'absolute', right: 2, top: 10 }} onClick={() => change({ fields: form.fields.filter((_, j) => j !== i) })}><Icon name="x" size={12} /></button>
                             </td>
                           </tr>

@@ -334,3 +334,33 @@ export function resolutionLabel(res) {
   const doc = String(res.material?.name || res.source_label || '').replace(/\.\w+$/, '').replace(/^(\d+)-/, '$1 ');
   return `${doc} ${res.location_label || ''}`.trim();
 }
+
+// ---------- 填证据：先选资料、再选位置（R-01 → R-15） ----------
+// 能引用的资料要有文本：本身是文本，或文本版已转好；正在转的列在后面、点不了；暂不支持、转换失败、流程图不列
+const PENDING_TEXT = new Set(['converting', 'waiting']);
+export function evidenceMaterials(groups, q = '') {
+  const all = (groups || []).flatMap((g) => g.items || []).filter((m) => m.text);
+  const title = (m) => m.title || String(m.name || m.path).replace(/\.[^.]+$/, '');
+  const ready = (m) => m.text.state === 'native' || !!m.text.has_text;
+  const needle = q.trim().toLowerCase();
+  const rows = all
+    .filter((m) => ready(m) || PENDING_TEXT.has(m.text.state))
+    .map((m) => ({ path: m.path, title: title(m), type: m.type_label || '', ready: ready(m) }))
+    .filter((m) => !needle || m.title.toLowerCase().includes(needle));
+  const byTitle = (a, b) => a.title.localeCompare(b.title, 'zh');
+  return [...rows.filter((m) => m.ready).sort(byTitle), ...rows.filter((m) => !m.ready).sort(byTitle)];
+}
+
+// R-15 的位置按「位置」连续分组（页、工作表、小节标题）；没有位置说法的一组不带标题
+export function positionGroups(items) {
+  const out = [];
+  (items || []).forEach((it) => {
+    const last = out[out.length - 1];
+    if (last && last.location === (it.location || '')) last.items.push(it);
+    else out.push({ location: it.location || '', items: [it] });
+  });
+  return out;
+}
+
+// 选中后单元格里的说法，和 EV-29 解析出来的一样（resolutionLabel），不用再等一次解析
+export const evidencePickLabel = (name, location) => resolutionLabel({ resolved: true, scheme: 'file', material: { name }, location_label: location });
