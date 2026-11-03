@@ -1657,9 +1657,13 @@ class SessionManager:
             session.broadcast(session.turn.progress_record())
         session.turn = None
         session.deferred.clear()
-        _, card = turns.interrupt_exec(session, "engine_exit", card=not session.run_id)
+        record, card = turns.interrupt_exec(session, "engine_exit", card=not session.run_id)
         if card is not None:
             session.broadcast(card)
+            # 和你打断时一样主推「从打断处继续」（原来建议条还是出错前那一份）；续跑卡上的按钮照旧
+            suggestions = turns.suggestions_record(session, interrupted=record, reason="出错中断")
+            if suggestions is not None:
+                session.broadcast(suggestions)
         from .session_host import command_tasks
 
         try:

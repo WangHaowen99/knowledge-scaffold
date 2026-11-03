@@ -221,25 +221,25 @@ def interrupted_fields(record: dict | None) -> dict:
             "saved": record.get("saved")}
 
 
-def suggestions_record(session, *, interrupted: dict | None = None) -> dict | None:
-    """EC-53：这一轮结束或被打断后，输入框上方的建议条（与 FL-02 同一份；打断时换成打断后的三项）。"""
-    data = _safe("算下一步建议", suggestions, session, interrupted=interrupted)
+def suggestions_record(session, *, interrupted: dict | None = None, reason: str = "刚被打断") -> dict | None:
+    """EC-53：这一轮结束或被打断后，输入框上方的建议条（与 FL-02 同一份；打断、出错时换成打断后的三项）。"""
+    data = _safe("算下一步建议", suggestions, session, interrupted=interrupted, reason=reason)
     return {"type": "suggestions", "payload": data} if data is not None else None
 
 
-def suggestions(session, *, interrupted: dict | None = None) -> dict | None:
+def suggestions(session, *, interrupted: dict | None = None, reason: str = "刚被打断") -> dict | None:
     if interrupted is not None:
         primary = {
             "id": "resume", "label": "从打断处继续", "icon": "redo", "primary": True, "disabled": False,
-            "reason": "刚被打断", "priority": 1, "action": {"type": "resume_exec", "exec_id": interrupted["id"]},
+            "reason": reason, "priority": 1, "action": {"type": "resume_exec", "exec_id": interrupted["id"]},
         } if interrupted.get("id") else {
-            "id": "continue", "label": "继续", "primary": True, "disabled": False, "reason": "刚被打断",
+            "id": "continue", "label": "继续", "primary": True, "disabled": False, "reason": reason,
             "priority": 1, "action": {"type": "send", "text": "继续"},
         }
         secondary = [
-            {"id": "continue", "label": "继续", "primary": False, "disabled": False, "reason": "刚被打断",
+            {"id": "continue", "label": "继续", "primary": False, "disabled": False, "reason": reason,
              "priority": 1, "action": {"type": "send", "text": "继续"}},
-            {"id": "redirect", "label": "换个方向", "primary": False, "disabled": False, "reason": "刚被打断",
+            {"id": "redirect", "label": "换个方向", "primary": False, "disabled": False, "reason": reason,
              "priority": 1, "action": {"type": "clear_input"}},
         ]
         if primary["id"] == "continue":
