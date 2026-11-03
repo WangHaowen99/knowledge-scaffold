@@ -176,3 +176,12 @@ def test_narration_record_keeps_text_for_history_replay_but_is_not_projected():
     record = {"type": "assistant_message", "narration": True, "seq": 2,
               "blocks": [{"kind": "text", "text": "先做前置检查。"}]}
     assert timeline.project(record, "p1", "c1") is None
+
+
+def test_subagent_text_step_drops_markdown_marks():
+    """真实模型：子代理最后的回答以「## 资料要点汇总」开头，工作过程里不显示 Markdown 记号。"""
+    record = {"type": "subagent_activity", "task_id": "c1", "tool_use_id": "c1", "description": "子任务", "step_id": "c1-say",
+              "kind": "text", "text": "## 资料要点汇总\n\n---\n- **门店补货作业规范**：`docx`，规定补货流程", "group_id": "g-1", "seq": 5}
+    data = timeline.project(record, "p1", "c1")["data"]
+    assert data["step"]["text"] == "资料要点汇总\n门店补货作业规范：docx，规定补货流程"
+    assert data["progress_text"] == "资料要点汇总"

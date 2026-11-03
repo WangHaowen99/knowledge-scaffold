@@ -636,11 +636,20 @@ def payload(record: dict) -> tuple[str | None, dict | None]:
     return None, None
 
 
+_MD_LINE = re.compile(r"^\s*(?:#{1,6}\s+|>\s*|[-*+]\s+|\d+[.、)]\s*)")
+
+
+def _plain(text: str) -> str:
+    """工作过程里一行一句：去掉标题、引用、列表记号与粗体、代码记号，空行和分隔线不要。"""
+    lines = (_MD_LINE.sub("", line).replace("**", "").replace("`", "").strip() for line in text.splitlines())
+    return "\n".join(line for line in lines if line and not re.fullmatch(r"[-*_=|: ]{3,}", line))
+
+
 def _sub_step(record: dict) -> dict:
     """子代理的一步（契约 EC-22 `step`，F2 补充）：同一个 id 后到的只改状态；说法为 null 时沿用先到的。"""
     step_id = str(record.get("step_id") or "")
     if record.get("kind") == "text":
-        return {"id": step_id, "kind": "text", "text": str(record.get("text") or "").strip()[:300], "state": "done"}
+        return {"id": step_id, "kind": "text", "text": _plain(str(record.get("text") or ""))[:300], "state": "done"}
     text = record.get("step_text")
     if text is None and not record.get("status"):  # F2 之前的历史：开始的那条按参数说，收尾的不知道
         text = step_text(str(record.get("tool") or ""), record.get("input"))
