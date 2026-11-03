@@ -17,7 +17,6 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
 
 from .views import STATE, iso
 
@@ -61,21 +60,31 @@ def message_id(record: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _base(path) -> str:
-    text = str(path or "").strip()
-    return PurePosixPath(text.replace("\\", "/")).name or text
+def _target_label(path) -> str:
+    """工具调用里的路径（绝对或相对）→ 业务名；认不出、在隐藏目录（助手的说明、运行目录）里的给空串。"""
+    from .. import workspace_labels
+
+    parts = [part for part in str(path or "").replace("\\", "/").split("/") if part]
+    if any(part.startswith(".") for part in parts[:-1]):
+        return ""
+    for index in range(len(parts)):
+        label = workspace_labels.path_label("/".join(parts[index:]))
+        if label:
+            return label
+    return ""
 
 
 def step_text(tool: str, data) -> str:
-    """一次工具调用在「工作过程」里的说法；只给文件名，不给命令原文。"""
+    """一次工具调用在「工作过程」里的说法：按业务名说（读取对象「门店」、读取资料分析报告），不出路径、文件名和命令原文。"""
     data = data if isinstance(data, dict) else {}
-    target = _base(data.get("file_path") or data.get("path") or data.get("notebook_path") or "")
+    path = data.get("file_path") or data.get("path") or data.get("notebook_path") or ""
+    target = _target_label(path)
     if tool == "Read":
-        return f"读取「{target}」" if target else "读取资料"
+        return f"读取{target}" if target else "读取文件" if path else "读取资料"
     if tool == "Write":
-        return f"写入「{target}」" if target else "写入文件"
+        return f"写入{target}" if target else "写入文件"
     if tool in ("Edit", "MultiEdit", "NotebookEdit"):
-        return f"修改「{target}」" if target else "修改文件"
+        return f"修改{target}" if target else "修改文件"
     if tool == "Bash":
         description = str(data.get("description") or "").strip()
         return description[:60] if description else "运行脚本"
@@ -436,35 +445,20 @@ def details_text(tool: str, data) -> str:
 # 这一轮改了什么（workspace_changes → round_changes 卡）
 # ---------------------------------------------------------------------------
 
-_GROUP_LABELS = {"object": "对象", "operation": "操作", "rule": "规则", "metric": "指标", "script": "脚本",
-                 "other": "其他文件"}
 _CHANGE = {"added": "add", "modified": "mod", "deleted": "del"}
 
 
 def round_changes_card(record: dict) -> dict:
-    from ...kernel import metamodel
+    from ...kernel.changesets import service as changesets
+    from .. import workspace_labels
 
-    groups: dict[str, list] = {}
-    total = 0
+    items = []
     for bucket in ("added", "modified", "deleted"):
         for path in record.get(bucket) or []:
-            change = _CHANGE[bucket]
-            entry = metamodel.mm.entry_key(path)
-            if entry:
-                kind, _, key = entry.partition(":")
-                target = {"kind": kind, "id": entry, "key": key, "name": key}
-                name = key
-            else:
-                kind = "other"
-                name = _base(path)
-                target = {"type": "file", "key": path, "title": name}
-            label = _GROUP_LABELS.get(kind) if entry else None
-            groups.setdefault(kind, []).append({
-                "change": change, "target": target, "text": f"{label} [[{name}]]" if label else f"「{name}」",
-                "comparable": change == "mod",
-            })
-            total += 1
-    order = list(_GROUP_LABELS)
+            info = workspace_labels.describe(path) or {"group": "other", "target": {"type": "file", "key": path,
+                                                                                      "title": "", "label": ""}}
+            items.append({**info, "change": _CHANGE[bucket], "path": path})
+    groups, total = changesets.round_rows(items)
     seq = external_id(record) or 0
     version_label = record.get("version_label")
     return {
@@ -479,8 +473,8 @@ def round_changes_card(record: dict) -> dict:
         "changeset_id": record.get("changeset_id"),
         "change_list_id": record.get("change_list_id"),  # 契约 F3 补充：增量更新的清单
         "checks": {"errors": 0, "warnings": 0},
-        "groups": [{"kind": kind, "label": _GROUP_LABELS[kind], "items": groups[kind]}
-                   for kind in sorted(groups, key=order.index)],
+        "groups": [{"kind": kind, "label": changesets.GROUP_LABELS[kind], "items": groups[kind]}
+                   for kind in changesets.GROUP_ORDER if kind in groups],
         "next_version_label": version_label,
         "state": "merged",
         "merged_version_label": version_label,

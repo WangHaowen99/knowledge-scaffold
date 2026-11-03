@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 from ..api import deps
 from ..api.errors import ApiError
+from ..services import workspace_labels
 from ..services.flow import change_lists, inbox
 from ..services.flow import state as node_state
 
@@ -70,7 +71,8 @@ def _detail(project_id: str, item: dict) -> dict | None:
         return {"changeset": changesets.view(record), "entities": (record.get("conflict") or {}).get("entities") or []}
     if kind == "stale":
         node = extra.get("node") or {}
-        return {"upstream_diff": {"title": f"上游（{'、'.join(node.get('stale_on') or [])}）在确认之后改过", "lines": []},
+        kinds = [workspace_labels.KIND_LABELS.get(str(kind), "上游内容") for kind in node.get("stale_on") or []]
+        return {"upstream_diff": {"title": f"上游（{'、'.join(dict.fromkeys(kinds))}）在确认之后改过", "lines": []},
                 "impact": {"expected_before": "已确认", "now": "过期", "action": f"重新执行「{node.get('title')}」",
                            "eta_ms": 0},
                 "siblings": 0}
@@ -187,7 +189,8 @@ async def _run_action(project_id: str, item: dict, action: str, request: Request
         return {"accepted": True}
     if action == "send_to_assistant":
         payload = {"command": "/ontology-validate", "origin": {"page": "inbox", "label": "发给助手修复"},
-                   "text": f"处理报告 {extra.get('path')} 里还没处理的 [ ] 条目", "conversation_id": "-"}
+                   "text": f"处理报告 {extra.get('path')} 里还没处理的 [ ] 条目", "conversation_id": "-",
+                   "display_text": f"处理{workspace_labels.path_label(str(extra.get('path') or '')) or '检查报告'}里还没处理的条目"}
         response = await session_routes.dispatch_command(project_id, root, request, payload)
         return {"command_task": _json(response).get("task")}
     if action == "send_to_evolution":

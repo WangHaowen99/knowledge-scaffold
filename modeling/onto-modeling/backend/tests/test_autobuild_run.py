@@ -68,7 +68,7 @@ def test_five_slice_project_runs_to_the_end_with_policy_answers(ab):
     assert ledger["counts"] == {"total": 2, "high_confidence": 1, "below_threshold": 1, "assumptions": 1}
     first = next(item for item in ledger["items"] if item["question"] == "促销备货要不要单列")
     assert first["chosen"] == "不单列" and first["confidence"] == 0.9 and first["assumption"] is False
-    assert first["anchors"] == [{"n": 1, "anchor": "file:resource/合成规则.docx#p:7.5", "label": "合成规则.docx §7.5"}]
+    assert first["anchors"] == [{"n": 1, "anchor": "file:resource/合成规则.docx#p:7.5", "label": "合成规则 §7.5"}]
     assert first["slice"] == {"id": "s2", "name": "合成段2"} and first["review_state"] == "pending"
     assert [option["recommended"] for option in first["options"]] == [True, False]
     # 台账与报告进 git

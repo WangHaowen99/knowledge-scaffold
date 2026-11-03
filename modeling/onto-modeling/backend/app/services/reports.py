@@ -17,7 +17,7 @@ import subprocess
 import time
 from pathlib import Path, PurePosixPath
 
-from . import report_items, research_view
+from . import report_items, research_view, workspace_labels
 
 RESEARCH_PREFIX = "research:"
 LINK_ID = "link"
@@ -179,7 +179,8 @@ def items_of(root: Path, text: str) -> list[dict]:
             target = _entry_by_name(root, match.group(1))
         out.append({
             "id": str(raw.get("id")), "code": code, "level": level, "text": content,
-            "location": {"label": raw.get("group") or "", "target": target, "page": "studio-table" if target else None},
+            # 小节标题可能是条目文件路径（按文件分组的报告）：界面上换成业务名（F4b-paths）
+            "location": {"label": workspace_labels.humanize(raw.get("group") or ""), "target": target, "page": "studio-table" if target else None},
             "status": status, "status_note": "",
         })
     return out

@@ -9,7 +9,7 @@ import pytest
 from app.services import material_text
 from app.services.autobuild import decide
 
-EXPECTED = [{"n": 1, "anchor": "file:resource/others/合成制度.docx#p:6", "label": "合成制度.docx §6"}]
+EXPECTED = [{"n": 1, "anchor": "file:resource/others/合成制度.docx#p:6", "label": "合成制度 §6"}]
 
 
 @pytest.mark.parametrize("text", [

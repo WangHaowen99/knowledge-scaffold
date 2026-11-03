@@ -8,7 +8,7 @@
 //
 // mock 参数：stage:l4（自主构建运行 #3 还在跑，历史到 v0.16，回退返回 409 autobuild_running）；
 //           scope:running / scope:pending（回退返回 423 write_scope_locked，对比右侧只读）
-import { diffLines, entryPath, undoneText } from '../../pages/versions/versionsModel.js';
+import { diffLines, entryPath, pathLabel, undoneText } from '../../pages/versions/versionsModel.js';
 import * as D from './versions-data.js';
 import { releasesOf } from './publish-data.js';
 import { ENTRIES, entryRef } from './scenario.js';
@@ -266,7 +266,7 @@ export function register(ctx) {
       source: 'revert', mine: true, by: user?.username || 'zhangsan', entries: refs, paths: fileChanges.map((f) => f.path),
       summary: `回退到 ${target.version_label}${p.undone_versions.length ? `：撤回 ${undoneText(p.undone_versions)} 的改动` : ''}`,
       changes: fileChanges.map((f) => ({
-        target: entryByPath(f.path) ? entryRef(entryByPath(f.path).key) : { type: 'file', key: f.path, title: f.path.split('/').pop() },
+        target: entryByPath(f.path) ? entryRef(entryByPath(f.path).key) : { type: 'file', key: f.path, title: pathLabel(f.path), label: pathLabel(f.path) === '其他文件' ? '' : pathLabel(f.path) },
         change: f.change === 'delete' ? 'del' : 'mod', detail: f.change === 'delete' ? '删除' : `恢复到 ${target.version_label}`, review: null,
       })),
     }, init);

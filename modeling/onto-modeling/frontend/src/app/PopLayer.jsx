@@ -84,7 +84,7 @@ export function PopLayer() {
       <>
         <div className="src">
           <Icon name={db ? 'db' : 'filetext'} size={12} />
-          <b style={{ color: 'var(--ink2)' }}>{r.source_label}</b>
+          <b style={{ color: 'var(--ink2)' }}>{r.material?.name || r.source_label}</b>
           {r.location_label ? <span>· {r.location_label}</span> : null}
         </div>
         <div style={{ whiteSpace: 'pre-line' }}>

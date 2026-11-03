@@ -203,7 +203,8 @@ def test_same_entity_changed_on_both_sides_is_a_conflict_until_resolved(project)
     with pytest.raises(WorkspaceError) as exc:
         service.merge(workspaces, project_id, record["id"], actor="employee_0001")
     assert exc.value.code == "merge_conflict" and exc.value.status == 409
-    assert exc.value.details["entities"] == [{"kind": "object", "id": "object:订单", "key": "订单", "name": "订单"}]
+    assert exc.value.details["entities"] == [{"kind": "object", "id": "object:订单", "key": "订单", "name": "订单",
+                                             "label": "对象「订单」"}]
     assert exc.value.details["inbox_item_id"] == f"changeset_conflict:{record['id']}"
     assert store.get(root, record["id"])["state"] == "conflict"
     out = service.resolve(workspaces, project_id, record["id"], [{"target": "object:订单", "keep": "changeset"}],

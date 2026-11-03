@@ -195,7 +195,10 @@ export function anchorChipLabel(anchor) {
   const p = a.match(/#p:([\d.]+)$/);
   if (p) return /\./.test(p[1]) ? `§${p[1]}` : `第 ${p[1]} 节`;
   if (a.startsWith('db:')) return a.split('/').pop().split('.').slice(-2).join('.');
-  return a.split('/').pop() || a;
+  // 其余只说资料名（F4b-paths）：去掉目录、片段和扩展名，文本版（resource/text/…/合同.pdf.md）映射回原资料名
+  const path = a.replace(/^file:/, '').split('#')[0];
+  const name = path.split('/').pop().replace(/\.md$/, (m) => (path.startsWith('resource/text/') ? '' : m));
+  return name.replace(/\.[^.]+$/, '') || name || a;
 }
 
 // ---------- 原文编辑 ----------
@@ -328,6 +331,6 @@ export function resolutionLabel(res) {
     const src = String(res.source_label || '').replace(/^业务系统\s*/, '');
     return `${src} · ${String(res.location_label || '').split(' · ').pop()}`;
   }
-  const doc = String(res.source_label || '').replace(/\.\w+$/, '').replace(/^(\d+)-/, '$1 ');
+  const doc = String(res.material?.name || res.source_label || '').replace(/\.\w+$/, '').replace(/^(\d+)-/, '$1 ');
   return `${doc} ${res.location_label || ''}`.trim();
 }

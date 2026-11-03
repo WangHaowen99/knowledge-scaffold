@@ -10,12 +10,12 @@ def test_ledger_anchor_without_scheme():
 
     text = "置信度 0.9 · 依据：resource/others/合成制度.docx#p:6，另见 resource/others/合成细则.md#L3。"
     assert decide.anchors(text) == [
-        {"n": 1, "anchor": "file:resource/others/合成制度.docx#p:6", "label": "合成制度.docx §6"},
-        {"n": 2, "anchor": "file:resource/others/合成细则.md#L3", "label": "合成细则.md §L3"},
+        {"n": 1, "anchor": "file:resource/others/合成制度.docx#p:6", "label": "合成制度 §6"},
+        {"n": 2, "anchor": "file:resource/others/合成细则.md#L3", "label": "合成细则"},
     ]
     # 带 scheme 的照旧；同一处写了两种写法只记一次
     assert decide.anchors("file:resource/a.docx#p:1 与 resource/a.docx#p:1") == [
-        {"n": 1, "anchor": "file:resource/a.docx#p:1", "label": "a.docx §1"}]
+        {"n": 1, "anchor": "file:resource/a.docx#p:1", "label": "a §1"}]
     # 不是资料区的路径、不是出处的文字不算
     assert decide.anchors("依据：research_checker status=passed；见 ontology/object/报修单.md") == []
 
@@ -106,7 +106,7 @@ def test_ledger_anchor_label_for_ranges():
     from app.services.autobuild import decide
 
     found = decide.anchors("依据：resource/others/合成制度.docx#p:10~p:11、resource/excel/合成清单.xlsx#sheet:备件")
-    assert [item["label"] for item in found] == ["合成制度.docx §10~11", "合成清单.xlsx §备件"]
+    assert [item["label"] for item in found] == ["合成制度 §10~11", "合成清单 §备件"]
     assert found[0]["anchor"] == "file:resource/others/合成制度.docx#p:10~p:11"
 
 

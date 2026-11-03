@@ -92,7 +92,7 @@ export function useIncremental({ route, target, conv, state, flow, mainRef }) {
   const start = useCallback(async (reference) => {
     try {
       const c = await api.createConversation(pid, M.conversationTitleFor(reference));
-      const name = reference ? reference.split('/').pop() : null;
+      const name = reference ? reference.split('/').pop().replace(/\.[^.]+$/, '') : null; // 资料名，不带扩展名
       await api.sendCommand(pid, {
         command: '/ontology-update', args: reference ? { reference } : undefined, text: name ? `${name} 到了，按它增量更新` : '增量更新',
         origin: { page: 'wb-l2', label: '增量更新' }, conversation_id: c.id,

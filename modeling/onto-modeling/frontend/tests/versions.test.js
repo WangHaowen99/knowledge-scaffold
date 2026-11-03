@@ -99,7 +99,7 @@ test('回退说明：撤回哪些版本、文件标签、被挡住时的说法',
     { path: 'ext/trace/scenarios/s-07.yaml', change: 'delete' }, { path: 'ontology/rule/R-08 临期分级.md', change: 'delete' },
     { path: 'ontology/object/陈列量标准.md', change: 'restore' }, { path: 'ext/trace/scenarios/s-08.yaml', change: 'delete' },
   ]);
-  assert.deepEqual(chips.map((c) => c.label), ['陈列量标准.md', 'R-08 临期分级.md', '场景 ×2']);
+  assert.deepEqual(chips.map((c) => c.label), ['对象「陈列量标准」', '规则「R-08 临期分级」', '场景 ×2']);
   assert.equal(chips[1].del, true);
   const many = revertChips(Array.from({ length: 8 }, (_, i) => ({ path: `ontology/object/o${i}.md`, change: 'restore' })));
   assert.equal(many.length, 5);
@@ -354,11 +354,11 @@ test('V-03：某版本的文件（v0.15 还没有临期那一段的条目）与 
   assert.equal(lib.body.total, 3);
 });
 
-test('回退预览：同名文件（四个 index.md）写出相对路径，分得清', () => {
+test('回退预览：同名文件（四个 index.md）按业务名分得清，不出路径', () => {
   const chips = revertChips([
     { path: 'ontology/object/index.md', change: 'restore' }, { path: 'ontology/operation/index.md', change: 'restore' },
     { path: 'ontology/rule/index.md', change: 'delete' }, { path: 'ontology/object/门店.md', change: 'restore' },
   ]);
-  assert.deepEqual(chips.map((c) => c.label), ['ontology/object/index.md', 'ontology/operation/index.md', '门店.md', 'ontology/rule/index.md']);
+  assert.deepEqual(chips.map((c) => c.label), ['对象清单', '操作清单', '对象「门店」', '规则清单']);
   assert.equal(new Set(chips.map((c) => c.key)).size, chips.length);
 });

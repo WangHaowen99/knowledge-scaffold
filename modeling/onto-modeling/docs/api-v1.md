@@ -1577,6 +1577,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 查询参数：`target?`（`EntryId` 或 `<artifact_type>/<key>`）。不传时返回全部。
 - 响应：`{items: [{target, change, sections: [{title, lines: DiffLine[]}]}]}`。
   - `DiffLine` 是 `{kind: "header"|"del"|"add"|"ctx"|"note", text}`。
+  - 界面按条目分段，段首用 `target.label`；`label` 为空的（认不出的文件）合成最后一段「另有 N 处改动」（F4b-paths）。
   - 渲染时去掉 `[[ ]]` 由前端做。
 
 #### CS-04 合入（F3 起界面不再调）
@@ -1828,6 +1829,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `command` | string | 与 `action` 二选一 | 内核或包的命令名，如 `/ontology-trace-batch` |
 | `args` | object | 否 | 命令参数，如 `{scenario: "s-03"}`、`{report_item: "RI-12"}` |
 | `text` | string | 否 | 附带的自然语言说明 |
+| `display_text` | string | 否 | 对话里显示的说明（F4b-paths）；不给时用 `text`。对话里只显示「命令 + 说明」，不带 `args`，说明里的工作区路径换成业务名；发给助手的仍是命令、参数和 `text` 原文 |
 | `origin` | `{page, label}` | 是 | 对话里显示「来自「场景走查」页」用 |
 | `conversation_id` | string | 否 | 缺省：引擎当前绑定的对话，没有就取最近更新的一条 |
 
@@ -4136,7 +4138,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `build_choice` | 确认后怎么建 | `{options: [{mode: "L2", label}, {mode: "L4", label}], policy_link: true}` | wb-blueprint |
 | `step_output` | 本步产出卡 | `{entry: EntryRef, eyebrow: "操作 · 本轮新抽出", state: "pending"\|"confirmed", inputs: (EntryRef\|{text})[], steps: [{n, text_md, anchors, awaiting_question_id: string\|null}], outputs: (EntryRef\|{text})[], rules: [{ref: EntryRef, state}], sources: [{n, anchor, label, scheme}]}` | wb-l2、chat-states；点条目名去 Studio |
 | `flowchart` | 流程图卡 | `{artifact: ArtifactRef, state: "draft"\|"confirmed", summary: "8 个节点、1 个判断", thumbnail: {nodes: [{id, type, label, pending: bool}], edges: [{from, to, label}]}, locked: bool}`；`open={dialog, "flowchart"}` | wb-l2、flowchart、chat-states；只在图示包启用时出现 |
-| `round_changes` | 这一轮改了什么 | `{changeset_id, title: "改了 3 处", checks: {errors, warnings, pending}, hints: [{tone: "info"\|"warn", text}]（如「3 处指向第 2 段待建的内容」「1 处链接找不到对象」「2 处结构缺失」；包声明的提交门禁没过时按门禁名说「1 处<门禁名>」，F3b）, groups: [{kind, label, items: [{change: "mod"\|"add"\|"del"\|"test", target: EntryRef\|ArtifactRef, text, comparable: bool}]}], state: "merged"\|"reverted"\|"conflict"\|"pending", merged_version_label: string\|null, reverted_version_label: string\|null, inbox_item_id: string\|null}`；一个变更集（一轮）一张卡，之后原地更新（F3） | wb-l2、chat-states 第 8 项、incremental；按钮：查看改动（`CS-03`）、撤回这一轮（`CS-05`）；冲突时「去处理」到待处理 |
+| `round_changes` | 这一轮改了什么 | `{changeset_id, title: "改了 3 处", checks: {errors, warnings, pending}, hints: [{tone: "info"\|"warn", text}]（如「3 处指向第 2 段待建的内容」「1 处链接找不到对象」「2 处结构缺失」；包声明的提交门禁没过时按门禁名说「1 处<门禁名>」，F3b）, groups: [{kind, label, items: [{change: "mod"\|"add"\|"del"\|"test"\|null, target: EntryRef\|ArtifactRef\|null, text, comparable: bool, count?}]}]（`text` 只写业务名：条目「对象 [[门店]]」，其余用 `target.label`；认不出的文件合成 `other` 组最后一行 `{change: null, target: null, text: "另有 N 处改动", count: N}`，F4b-paths）, state: "merged"\|"reverted"\|"conflict"\|"pending", merged_version_label: string\|null, reverted_version_label: string\|null, inbox_item_id: string\|null}`；一个变更集（一轮）一张卡，之后原地更新（F3） | wb-l2、chat-states 第 8 项、incremental；按钮：查看改动（`CS-03`）、撤回这一轮（`CS-05`）；冲突时「去处理」到待处理 |
 | `change_list` | 变更点清单卡 | `{change_list_id, source: {path, label}, count, low_confidence: int, rows: ChangePoint[≤10], state: "editing"\|"confirmed"\|"executed"}`；`open={dialog, "change_list"}` | incremental、chat-states |
 | `impact` | 影响面卡 | `Impact` 加 `{change_list_id, executed: bool}` | incremental |
 | `regression` | 回归结果卡 | `{passed, total, rows: [{scenario: ArtifactRef, type: "affected"\|"guard", result: "pass"\|"fail", reason: string\|null}]}` | incremental |
@@ -4444,8 +4446,11 @@ type Money = { amount: number | null; currency: "CNY" | "USD" };
 
 type EntryKind = "object" | "operation" | "rule" | "metric" | "script";
 type EntryId = string;            // "<kind>:<key>"，如 "object:hardness_limit"
-type EntryRef = { kind: EntryKind | "flowchart"; id: EntryId; key: string; name: string };
-type ArtifactRef = { type: string; key: string; title: string };   // type 如 "trace.scenario"
+type EntryRef = { kind: EntryKind | "flowchart"; id: EntryId; key: string; name: string; label?: string };
+type ArtifactRef = { type: string; key: string; title: string; label?: string };   // type 如 "trace.scenario"
+// label（F4b-paths，ADR-0075）：后端按元模型、产物登记算好的业务名，界面直接显示，不再按路径猜：
+// 对象「门店」、流程图「订单流程」、建模蓝图、资料分析报告、检查报告、资料「合同」。
+// 变更里认不出的文件 type="file"、title 与 label 为空串，界面合成一行「另有 N 处改动」；路径只在 key 里。
 type PackRef = { name: string; version: string; label: string };
 type AttachmentRef = { upload_id: string; filename: string; size: number; kind: "doc" | "xls" | "pdf" | "image" | "file" };
 
@@ -4476,8 +4481,10 @@ type AnchorResolution = {
   scheme: "file" | "db" | "code" | "bin" | "ui" | "api" | "cli" | "log";
   resolved: boolean;
   reason?: string;                // resolved=false 时：not_in_snapshot | file_missing | invalid
-  source_label: string;           // 如 "02-配送规则说明.docx" 或 "业务系统 订单库"
-  location_label: string;         // 如 "§9.2 超量处理" 或 "补货标准表 · 标准上限"
+  source_label: string;           // 资料名（原文件名去扩展名，文本版映射回原资料）如 "02-配送规则说明"，或 "业务系统 订单库"
+  location_label: string;         // 如 "第 3 页"、"工作表 客户"、"§9.2 超量处理"、"补货标准表 · 标准上限"；
+                                  // 行号锚点 L12[-L15] 按前面最近的位置标记（文本版）或小节标题（md 资料）算，都没有时为空串，不显示行号
+  material?: { name: string; type: string; path: string } | null;   // file 锚点：原资料（F4b-paths）；type 如 "PDF"、"Word"
   text: string;                   // 原文或记录摘要
   highlights: { start: number; end: number }[];
   confidence: "declared" | "observed" | "inferred" | null;   // 界面叫法：系统元数据 / 数据观察 / 推断
@@ -4581,6 +4588,7 @@ type PurposeOption = { value: "goal" | "schema" | "term" | "evidence" | "auto"; 
 
 type Material = {
   path: string; name: string; group: "diagrams" | "excel" | "others";
+  title: string; type_label: string;   // 资料名（去扩展名）与类型（PDF、Word、Excel…），资料列表按它们列、不按 group 分组（F4b-paths）
   kind: "doc" | "xls" | "csv" | "pdf" | "drawio" | "html" | "image" | "text";
   size: number; uploaded_at: time;
   sheets?: number; rows?: number;

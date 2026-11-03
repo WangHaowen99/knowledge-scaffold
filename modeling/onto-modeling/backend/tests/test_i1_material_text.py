@@ -103,17 +103,18 @@ def test_file_anchor_resolves_with_context_and_highlight(env):
     items = got.json()["items"]
     first = items[0]
     assert first["resolved"] and first["scheme"] == "file" and first["page"] == "resources"
-    assert first["source_label"] == "02-配送说明.docx" and first["location_label"] == "第 2 段"
+    assert first["source_label"] == "02-配送说明" and first["location_label"] == "第 2 段"
+    assert first["material"] == {"name": "02-配送说明", "type": "Word", "path": "resource/others/02-配送说明.docx"}
     assert first["text"] == "配送说明\n隔日到货的门店按 1.5 倍备货。\n冷链品单独配送。"
     start, end = first["highlights"][0]["start"], first["highlights"][0]["end"]
     assert first["text"][start:end] == "隔日到货的门店按 1.5 倍备货。"
-    assert items[1]["resolved"] and items[1]["location_label"] == "第 5 行" and "门店按周补货。" in items[1]["text"]
+    assert items[1]["resolved"] and items[1]["location_label"] == "第一章 总则" and "门店按周补货。" in items[1]["text"]
     assert items[2]["resolved"] and items[2]["location_label"] == "表 1 · 第 2 行 · 第 2 列"
     assert [item["reason"] for item in items[3:]] == ["not_found", "file_missing", "unreadable", "invalid",
                                                       "not_available", "invalid"]
     assert items[7]["scheme"] == "db" and items[7]["page"] is None
-    assert set(first) == {"anchor", "scheme", "resolved", "source_label", "location_label", "text", "highlights",
-                          "confidence", "snapshot_id", "page"}
+    assert set(first) == {"anchor", "scheme", "resolved", "source_label", "location_label", "material", "text",
+                          "highlights", "confidence", "snapshot_id", "page"}
     single = client.get(f"{base}/anchors/resolve", params={"anchor": "file:resource/others/01-补货规则.md"}).json()
     assert single["items"][0]["resolved"] and single["items"][0]["highlights"] == []
     assert client.get(f"{base}/anchors/resolve").json()["code"] == "invalid_argument"
