@@ -45,12 +45,12 @@ PAGE_DEFAULTS = {
 NAV_VISIBLE = 5
 PLUGIN_ORDER_BASE = 10
 
-# 左栏角标的数据来源（待处理里属于本包的事项数）：待处理汇总落地后由它登记
-_badge_provider: Callable[[str, str], int] | None = None
+# 左栏角标的数据来源（待处理里各包的事项数）：待处理汇总落地后由它登记
+_badge_provider: Callable[[str], dict[str, int]] | None = None
 
 
-def register_badge_provider(provider: Callable[[str, str], int]) -> None:
-    """登记角标计数 `provider(project_id, pack) -> int`（待处理汇总按包计数）。"""
+def register_badge_provider(provider: Callable[[str], dict[str, int]]) -> None:
+    """登记角标计数 `provider(project_id) -> {包名: 事项数}`：一次汇总给全部包，不按包各算一遍。"""
     global _badge_provider
     _badge_provider = provider
 
@@ -155,13 +155,13 @@ def nav_item(view: PackView, page: dict, index: int) -> dict:
     }
 
 
-def _badge(project_id: str, pack: str) -> int:
+def _badge_counts(project_id: str) -> dict[str, int]:
     if _badge_provider is None:
-        return 0
+        return {}
     try:
-        return int(_badge_provider(project_id, pack) or 0)
+        return dict(_badge_provider(project_id) or {})
     except Exception:  # noqa: BLE001 - 角标取不到不影响左栏
-        return 0
+        return {}
 
 
 def extensions(manager, project_id: str) -> dict:
@@ -185,6 +185,7 @@ def extensions(manager, project_id: str) -> dict:
     config: list[dict] = []
     view_choices: list[dict] = []
     seen_pages: set[str] = set()
+    badges: dict[str, int] | None = None
     for view in desired:
         pending = (view.name, view.version) not in active
         for index, page in enumerate(view.manifest.pages()):
@@ -193,7 +194,9 @@ def extensions(manager, project_id: str) -> dict:
             seen_pages.add(page["id"])
             item = nav_item(view, page, index)
             if item.pop("badge_source", None):
-                item["badge"] = {"source": "inbox", "count": _badge(project_id, view.name)}
+                if badges is None:
+                    badges = _badge_counts(project_id)
+                item["badge"] = {"source": "inbox", "count": int(badges.get(view.name) or 0)}
             plugin_nav.append(item)
             pages.append(page_view(view, page, pending=pending))
         for sub in view.manifest.subpages():

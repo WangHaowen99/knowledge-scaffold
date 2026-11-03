@@ -11,6 +11,7 @@ import { ProjectArea } from './ProjectArea.jsx';
 import { prefetchWhenIdle } from './prefetch.js';
 import { navigate, pagePath, parseHash, useRouteState } from './router.js';
 import { routePage } from './routeChunks.js';
+import { primeProject } from './earlyData.js';
 import { createServices } from './services.js';
 import { ToastHost } from './toast.jsx';
 // 这几份样式原来随工作台一起进主入口；工作台拆包后仍留在主入口，先后不变（层叠顺序不变，别的页面也用到其中的类）
@@ -132,6 +133,19 @@ class PageBoundary extends Component {
   }
 }
 
+// 首屏页面的代码块和启动请求同时下载，不等登录态确认完再取
+function preloadInitialRoute() {
+  if (typeof window === 'undefined') return;
+  const r = parseHash(window.location.hash);
+  let P;
+  if (r.name === 'project') P = PROJECT_PAGES[r.page];
+  else if (r.name === 'login') P = LoginPage;
+  else if (GLOBAL_PAGES.includes(r.name)) P = GLOBAL_PAGE_COMPONENTS[r.name];
+  else P = ENTRY_PAGES[r.name] || ENTRY_PAGES.projects;
+  P?.preload?.().catch(() => {});
+}
+preloadInitialRoute();
+
 function Pending({ project, page, projectId }) {
   const body = (
     <div className="card" style={{ padding: 30, maxWidth: 640, margin: '40px auto' }}>
@@ -160,6 +174,7 @@ export default function App() {
   useEffect(() => {
     let alive = true;
     (async () => {
+      let me = null;
       const s = await createServices({
         onAuthRequired: () => {
           s.tokens.clear();
@@ -170,6 +185,11 @@ export default function App() {
       });
       if (!alive) return;
       setServices(s);
+      // 带着令牌就和 C-01 同时取 A-07，省掉一次往返；令牌失效时客户端照常无感刷新
+      if (s.tokens.access) {
+        me = s.api.me();
+        me.catch(() => {});
+      }
       let cfg;
       try {
         cfg = await s.api.clientConfig();
@@ -184,7 +204,11 @@ export default function App() {
       if (!localMode && s.tokens.localMode) s.tokens.clear();
       if ((localMode && s.tokens.localMode) || (!localMode && s.tokens.access)) {
         try {
-          setUser(await s.api.me());
+          const u = await (me || s.api.me());
+          // 登录态一确认就把项目首屏的请求发出去，不等页面渲染完再由各组件自己取（这两个轻请求先回来，不和它们挤）
+          const r = parseHash(window.location.hash);
+          if (r.name === 'project') primeProject(s.api, r.projectId);
+          setUser(u);
           return;
         } catch {
           s.tokens.clear();

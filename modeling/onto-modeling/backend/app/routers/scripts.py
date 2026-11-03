@@ -32,9 +32,9 @@ def _entry(kind: str, key: str) -> dict:
 def _sandbox_summary() -> dict:
     from ..services import sandbox_status
 
-    status = sandbox_status.status()
+    status = sandbox_status.cached_status()
     return {"available": bool(status.get("connected")), "network": "denied", "python": status.get("python") or None,
-            "checked_at": deps.iso(datetime.now().timestamp())}
+            "checked_at": deps.iso(status.get("checked_at") or datetime.now().timestamp())}
 
 
 def _latest_scan(root: Path) -> tuple[Path | None, dict]:

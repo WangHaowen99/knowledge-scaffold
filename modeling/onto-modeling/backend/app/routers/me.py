@@ -55,10 +55,11 @@ def me(request: Request):
     claims = deps.user(request)
     profile = user_profile(claims)
     username = profile["username"]
+    # 只数名下项目，不算各项目的阶段进度（list_projects 会逐个项目跑流程探针）
     owned = {
-        meta["id"]
-        for meta in deps.workspaces.list_projects()
-        if claims is None or str(meta.get("owner") or "") == username
+        meta.get("id")
+        for meta in deps.workspaces._project_metas()
+        if meta.get("id") and (claims is None or str(meta.get("owner") or "") == username)
     }
     return {
         **profile,

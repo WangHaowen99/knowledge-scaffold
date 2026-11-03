@@ -1,6 +1,7 @@
 // 对话数据：S-01 对话列表、S-05 状态快照、S-06 历史，再带 after=<最后 seq> 接 S-13 对话流
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
+import { take } from '../../app/earlyData.js';
 import { applyEvent, applyEvents, applySnapshot, initialConversation } from '../../state/conversation.js';
 
 function reducer(state, action) {
@@ -26,7 +27,7 @@ export function useConversation(preferredId, { preferAutobuild = false } = {}) {
   lastSeq.current = state.lastSeq;
 
   const loadList = useCallback(async () => {
-    const r = await api.conversations(pid);
+    const r = await take(`conversations:${pid}`, () => api.conversations(pid));
     setList(r);
     return r;
   }, [api, pid]);

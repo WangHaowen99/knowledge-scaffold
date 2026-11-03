@@ -7,7 +7,9 @@ import test from 'node:test';
 import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 import { MIN_SIZE, precompressFiles } from '../build/precompress.js';
 import { prefetchWhenIdle } from '../src/app/prefetch.js';
-import { reloadOnce } from '../src/app/routeChunks.js';
+import { createElement } from 'react';
+import { renderToString } from 'react-dom/server';
+import { reloadOnce, routePage } from '../src/app/routeChunks.js';
 
 // ---------- 构建产物预压缩 ----------
 
@@ -97,4 +99,12 @@ test('代码块加载失败（重新部署后旧地址没了）：刷新一次�
   assert.equal(reloads, 1);
   reloadOnce(err, { storage, now: 1000000 + 60000, reload });
   assert.equal(reloads, 2);
+});
+
+// ---------- 代码块已到时同步渲染 ----------
+
+test('路由页：代码块预加载过就直接渲染，不经 Suspense（React 19 揭示节流 300ms）', async () => {
+  const Page = routePage(() => Promise.resolve({ default: ({ who }) => createElement('b', null, `你好 ${who}`) }));
+  await Page.preload();
+  assert.equal(renderToString(createElement(Page, { who: '工具负责人' })), '<b>你好 工具负责人</b>');
 });

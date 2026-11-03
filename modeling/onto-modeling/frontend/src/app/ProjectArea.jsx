@@ -7,6 +7,7 @@ import { isOwnedMeta } from '../state/roles.js';
 import { Button, Empty, KV } from '../ui/index.jsx';
 import { ShellG } from '../shell/Shell.jsx';
 import { ProjectCtx, useApp } from './context.js';
+import { take } from './earlyData.js';
 import { anchorResolver } from './PopLayer.jsx';
 
 export function ProjectArea({ pid, children }) {
@@ -20,22 +21,22 @@ export function ProjectArea({ pid, children }) {
   const [recentProjects, setRecent] = useState([]);
   const subs = useRef(new Set());
 
-  const loadMeta = useCallback(() => api.project(pid).then((m) => { setMeta(m); return m; }), [api, pid]);
-  const loadExt = useCallback(() => api.extensions(pid).then(setExtensions).catch(() => {}), [api, pid]);
-  const loadInbox = useCallback(() => api.inbox(pid, { limit: 1 }).then((r) => setInboxCount(r.counts?.total || 0)).catch(() => {}), [api, pid]);
-  const loadFlow = useCallback(() => api.flow(pid).then((f) => setFlow(normalizeFlow(f))).catch(() => {}), [api, pid]);
-  const loadScope = useCallback(() => api.scope(pid).then(setScope).catch(() => {}), [api, pid]);
+  // take：首次挂载时接着用启动阶段已经发出的同一请求（earlyData），之后的重拉照常请求
+  const loadMeta = useCallback(() => take(`project:${pid}`, () => api.project(pid)).then((m) => { setMeta(m); return m; }), [api, pid]);
+  const loadExt = useCallback(() => take(`extensions:${pid}`, () => api.extensions(pid)).then(setExtensions).catch(() => {}), [api, pid]);
+  const loadInbox = useCallback(() => take(`inbox:${pid}`, () => api.inbox(pid, { limit: 1 })).then((r) => setInboxCount(r.counts?.total || 0)).catch(() => {}), [api, pid]);
+  const loadFlow = useCallback(() => take(`flow:${pid}`, () => api.flow(pid)).then((f) => setFlow(normalizeFlow(f))).catch(() => {}), [api, pid]);
+  const loadScope = useCallback(() => take(`scope:${pid}`, () => api.scope(pid)).then(setScope).catch(() => {}), [api, pid]);
 
   useEffect(() => {
     setMeta(null);
     setError(null);
-    loadMeta().then((m) => {
-      if (!isOwnedMeta(m)) return;
-      loadExt();
-      loadInbox();
-      loadFlow();
-      loadScope();
-    }).catch((e) => setError(e));
+    // 和元数据同时取，不等归属确认（多数是自己的项目，省一次往返）；不是自己的项目时这几个返回 403，已各自吞掉
+    loadMeta().catch((e) => setError(e));
+    loadExt();
+    loadInbox();
+    loadFlow();
+    loadScope();
     api.projects({ limit: 8 }).then((r) => setRecent(r.items || [])).catch(() => {});
     anchorResolver.current = async (anchor) => {
       const r = await api.resolveAnchors(pid, [anchor]);

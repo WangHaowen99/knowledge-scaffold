@@ -73,6 +73,50 @@ def _pct_change(current: float, previous: float) -> float | None:
 # ---- 模型用量（读会话事件历史） ----
 
 
+# 每个历史文件解析出的用量行，按 (路径, 修改时间, 大小) 缓存：A-07 每次进页面都要算本月用量，
+# 历史只增不改，文件没变就不必再逐行解析
+_usage_file_cache: dict[str, tuple[int, int, list[tuple]]] = {}
+_usage_cache_lock = threading.Lock()
+
+
+def _file_usage_rows(history_file: Path) -> list[tuple]:
+    try:
+        stat = history_file.stat()
+    except OSError:
+        return []
+    key = str(history_file)
+    with _usage_cache_lock:
+        cached = _usage_file_cache.get(key)
+    if cached and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
+        return cached[2]
+    try:
+        lines = history_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    rows = []
+    for line in lines:
+        if '"result"' not in line and '"model_usage"' not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        usage = conversation_store.counted_usage(event)
+        if usage is None or not event.get("ts"):
+            continue
+        is_call = event.get("type") == "result"
+        rows.append((
+            event["ts"],
+            is_call,
+            (event.get("total_cost_usd") or 0) if is_call else 0,
+            usage.get("output_tokens") or 0,
+            (usage.get("input_tokens") or 0) + (usage.get("cache_read_input_tokens") or 0),
+        ))
+    with _usage_cache_lock:
+        _usage_file_cache[key] = (stat.st_mtime_ns, stat.st_size, rows)
+    return rows
+
+
 def usage_events(project_ids: set[str] | None = None):
     """遍历会话事件历史里的用量事件，产出 (项目, 时间, 是否一轮, 费用, 输出 token, 输入 token)。
 
@@ -86,29 +130,8 @@ def usage_events(project_ids: set[str] | None = None):
         project = rel.parts[0] if len(rel.parts) > 1 else history_file.stem
         if project_ids is not None and project not in project_ids:
             continue
-        try:
-            lines = history_file.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            continue
-        for line in lines:
-            if '"result"' not in line and '"model_usage"' not in line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            usage = conversation_store.counted_usage(event)
-            if usage is None or not event.get("ts"):
-                continue
-            is_call = event.get("type") == "result"
-            yield (
-                project,
-                event["ts"],
-                is_call,
-                (event.get("total_cost_usd") or 0) if is_call else 0,
-                usage.get("output_tokens") or 0,
-                (usage.get("input_tokens") or 0) + (usage.get("cache_read_input_tokens") or 0),
-            )
+        for row in _file_usage_rows(history_file):
+            yield (project, *row)
 
 
 def _usage_buckets(project_ids: set[str] | None = None) -> dict[str, dict]:

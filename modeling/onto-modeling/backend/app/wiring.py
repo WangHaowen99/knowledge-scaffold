@@ -175,11 +175,11 @@ def _next_steps(root: Path) -> dict | None:
     return next_steps.suggest(root)
 
 
-def _badge(project_id: str, pack: str) -> int:
-    """左栏插件页角标（B4c 的登记点）：待处理里属于这个包的事项数。"""
+def _badge(project_id: str) -> dict[str, int]:
+    """左栏插件页角标（B4c 的登记点）：待处理里各包的事项数。"""
     from .services.flow import inbox
 
-    return inbox.badge(_workspaces(), project_id, pack)
+    return inbox.badges(_workspaces(), project_id)
 
 
 def _scope_lock(project_id: str) -> dict:

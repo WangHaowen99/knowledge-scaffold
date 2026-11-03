@@ -552,9 +552,9 @@ def refresh(manager, project_id: str) -> dict | None:
     return streams.publish_project(project_id, "inbox.updated", data)
 
 
-def badge(manager, project_id: str, pack: str) -> int:
-    """左栏插件页角标（B4c 的 register_badge_provider）：待处理里属于这个包的事项数。"""
-    return counts(collect(manager, project_id))["by_pack"].get(pack, 0)
+def badges(manager, project_id: str) -> dict[str, int]:
+    """左栏插件页角标（B4c 的 register_badge_provider）：待处理里各包的事项数，汇总一次给全部包。"""
+    return dict(counts(collect(manager, project_id))["by_pack"])
 
 
 def forget(project_id: str) -> None:

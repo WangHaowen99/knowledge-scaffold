@@ -30,6 +30,7 @@ readonly: managed                 # 可选：只读产物的原因（求解契�
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -126,14 +127,28 @@ class ArtifactType:
         }
 
 
+# 包里的登记文件很少变，但左栏、待处理、流程每次请求都要读：按 (路径, 修改时间, 大小) 缓存解析结果，
+# 文件一改就失效；返回深拷贝，调用方改动不会污染缓存
+_YAML_CACHE: dict[tuple[str, int, int], dict] = {}
+_YAML_CACHE_MAX = 512
+_YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
 def _load_yaml(path: Path) -> dict:
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        stat = path.stat()
+        key = (str(path), stat.st_mtime_ns, stat.st_size)
+        data = _YAML_CACHE.get(key)
+        if data is None:
+            data = yaml.load(path.read_text(encoding="utf-8"), Loader=_YAML_LOADER) or {}
+            if len(_YAML_CACHE) >= _YAML_CACHE_MAX:
+                _YAML_CACHE.clear()
+            _YAML_CACHE[key] = data
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
         raise RegistrationError(f"{path.name} 无法解析：{exc}") from exc
     if not isinstance(data, dict):
         raise RegistrationError(f"{path.name} 必须是映射")
-    return data
+    return copy.deepcopy(data)
 
 
 def _enum(values, status_map: dict | None) -> list[dict]:
