@@ -126,3 +126,25 @@ def test_suspension_reason_says_why():
     assert outcome("置信度 0.85", {"must_suspend_kinds": ["规则"]})["reason"] == "涉及「规则」，按策略一律挂起"
     assert outcome("置信度 0.6", {"below_threshold": "suspend"})["reason"] == "置信度 0.60，低于阈值 0.80"
     assert outcome("置信度 0.9", {}, labels=())["reason"] == "没有可选的选项"
+
+
+def test_inbox_rejudge_of_an_autobuild_decision(ab):
+    """待处理里对自主构建的决定点「改判为选中的选项」（IN-03 action=rejudge）原来走到流程节点的「重做这一步」，
+    回 404 node_not_found（「这一步不存在」）。"""
+    from tests.autobuild_helpers import AutoEngine, ask, start, wait_state, wait_until
+
+    client, _workspaces, project_id, _root = ab
+    AutoEngine.hooks["/ontology-extract-object:s1"] = [ask([
+        {"question": "报修单号几位", "header": "置信度 0.6", "options": [{"label": "八位（推荐）"}, {"label": "十位（保守）"}]}])]
+    run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s1"], "until_node": "core.model"},
+                budget={"max_tokens": 500_000})
+    wait_state(client, project_id, run["run_id"], "completed")
+    items = client.get(f"/api/v1/projects/{project_id}/inbox", params={"filter": "autobuild_review"}).json()["items"]
+    item = next(entry for entry in items if entry["kind"] == "review" and entry["title"].endswith("十位"))
+    detail = client.get(f"/api/v1/projects/{project_id}/inbox/{item['id']}").json()["detail"]
+    other = next(option for option in detail["options"] if option["label"].startswith("八位"))
+    done = client.post(f"/api/v1/projects/{project_id}/inbox/{item['id']}/actions",
+                       json={"action": "rejudge", "option_id": other["id"]})
+    assert done.status_code == 200, done.text
+    assert done.json()["result"]["entry"]["review_state"] == "rejudged"
+    wait_until(lambda: any(text.startswith("/ontology-extract-object slice=s1\n\n改判：「报修单号几位」") for text in AutoEngine.sent))
