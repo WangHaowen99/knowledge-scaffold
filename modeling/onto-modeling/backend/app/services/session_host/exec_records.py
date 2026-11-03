@@ -49,7 +49,11 @@ HEARTBEAT_EVERY_SECONDS = 10
 PHASE_LABELS = {
     "start": "开始", "source": "读取资料", "objects": "写入对象", "operation": "写入操作",
     "rule-metric": "写入规则与指标", "validate": "校验", "fix": "修复", "commit": "保存版本",
+    "analyze": "影响分析", "apply": "执行更新", "check": "检查", "confirm": "等你确认", "awaiting_user": "等你回复",
 }
+# 命令停下来等你在对话里回复时锁切到的阶段（STEP0_TEMPLATE 第 4 步）：这时锁在是正常的，不算没收尾。
+# 命令在流程里声明了 lock_waits 的以声明为准
+WAITING_PHASES = ("confirm", "awaiting_user")
 STATE_HELPER_PREFIX = "/ontology-"
 
 _lock = threading.RLock()
@@ -239,6 +243,25 @@ def lock_phase(root: Path, command_name: str) -> str | None:
 
 def phase_label(phase: str) -> str:
     return PHASE_LABELS.get(phase, phase)
+
+
+def _declared_waits(flow: dict | None, command_name: str) -> list[str] | None:
+    spec = ((flow or {}).get("commands") or {}).get(command_name) or {}
+    waits = spec.get("lock_waits") if isinstance(spec, dict) else None
+    return [str(item) for item in waits] if isinstance(waits, list) else None
+
+
+def waiting_for_reply(phase: str | None, flow: dict | None, command_name: str) -> bool:
+    """锁在「等你回复」的阶段。"""
+    if phase is None:
+        return False
+    return phase in (_declared_waits(flow, command_name) or WAITING_PHASES)
+
+
+def unfinished(root: Path, flow: dict | None, command_name: str) -> bool:
+    """锁还在、又不是在等你回复：助手没收尾（正文说做完了没释放锁，或者一轮被截断）。"""
+    phase = lock_phase(root, command_name)
+    return phase is not None and not waiting_for_reply(phase, flow, command_name)
 
 
 # ---------------------------------------------------------------------------

@@ -281,3 +281,10 @@ test('增量更新页：这一轮的修改还等你确认时，不把「开始�
   const s = M.withStartSuggestion(server, null);
   assert.equal(s.primary.id, 'merge');
 });
+
+test('增量更新页：助手没收尾（主推「继续」）、打断或出错后（从打断处继续）时，不把「开始增量更新」顶到主推', () => {
+  const cont = { mode: 'normal', primary: { id: 'continue', label: '继续', primary: true, reason: '这一步还没收尾', action: { type: 'send', text: '继续' } }, secondary: [], all_commands: true };
+  assert.equal(M.withStartSuggestion(cont, null).primary.id, 'continue');
+  const resume = { mode: 'interrupted', primary: { id: 'resume', label: '从打断处继续', primary: true, action: { type: 'resume_exec', exec_id: 'ex-1' } }, secondary: [], all_commands: true };
+  assert.equal(M.withStartSuggestion(resume, null).primary.id, 'resume');
+});

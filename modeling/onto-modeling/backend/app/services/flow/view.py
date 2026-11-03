@@ -125,9 +125,9 @@ def _paused_controls() -> dict:
     return {"mode": "autobuild_controls", "primary": None, "secondary": [details], "all_commands": True}
 
 
-def _unfinished_step(project_id: str, conversation_id: str | None, roots: list[Path]) -> bool:
-    """这条对话里的命令这一轮结束了、命令锁却还在（执行记录「等待」，又没有等你回答的问题）：
-    助手没收尾（真实模型常见：正文说做完了，没释放锁），节点一直显示进行中。"""
+def _unfinished_step(project_id: str, conversation_id: str | None, roots: list[Path], flow: dict) -> bool:
+    """这条对话里的命令这一轮结束了、命令锁却还在（执行记录「等待」，又没有等你回答的问题），锁也不在「等你回复」
+    的阶段：助手没收尾（真实模型常见：正文说做完了，没释放锁），节点一直显示进行中。"""
     if not conversation_id:
         return False
     from ..session_host import exec_records
@@ -136,7 +136,7 @@ def _unfinished_step(project_id: str, conversation_id: str | None, roots: list[P
     if record is None or record.get("state") != "waiting":
         return False
     command = record.get("command_name") or ""
-    return any(exec_records.lock_phase(root, command) is not None for root in roots if Path(root).is_dir())
+    return any(exec_records.unfinished(root, flow, command) for root in roots if Path(root).is_dir())
 
 
 def _with_continue(suggestions: dict) -> dict:
@@ -282,7 +282,7 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
                        "slice_next": (sliced or {}).get("slice_next"),
                        **_session_context(root.name, conversation_id), **_run_context(root.name), **(context or {})}
     suggestions = suggester.suggest(flow, simple_states, suggest_context)
-    if suggestions.get("mode") == "normal" and _unfinished_step(root.name, conversation_id, [copy, root]):
+    if suggestions.get("mode") == "normal" and _unfinished_step(root.name, conversation_id, [copy, root], flow):
         suggestions = _with_continue(suggestions)
     if suggest_context.get("autobuild_paused"):
         suggestions = _paused_controls()
