@@ -246,9 +246,12 @@ def versions(manager) -> list[dict]:
             if not version:
                 continue
             manifest = repository.manifest(name, version)
-            if manifest.category == "provider":
-                continue  # 证据源提供方本期不开放（ADR-0056）
-            items.append({"category": manifest.category, "component": name, "version": version, "note": manifest.label})
+            if manifest.category == "provider" and not isinstance(manifest.raw.get("converter"), dict):
+                continue  # 数据接入只列转换器（ADR-0073）；证据采集这类本期不开放（ADR-0056）
+            item = {"category": manifest.category, "component": name, "version": version, "note": manifest.label}
+            if isinstance(manifest.raw.get("converter"), dict):
+                item["converter"] = True
+            items.append(item)
     except Exception as exc:  # noqa: BLE001 - 版本清单取不到包时只给锁文件格式
         _log.warning("版本清单读取包仓库失败：%s", exc)
     return items

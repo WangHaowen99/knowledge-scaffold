@@ -188,7 +188,7 @@ export default function ChatStatesPage() {
       <ErrorItem item={S.ERROR_ITEM} />
     </Item>,
     <Item key={16} n={16} title="助手推荐插件" feat="插件安装入口之一" head={false}>
-      <div className="g2-msg">资料区有 3 份表结构（06-商品品类表.xlsx 等）。启用「数据库证据源」后，可以直接从 erp 系统取真实表名、字段和外键，对象和数据表的对应会更准。</div>
+      <div className="g2-msg">资料区有 3 份表结构（06-商品品类表.xlsx 等）。启用「业务数据库」后，可以直接从 erp 系统取真实表名、字段和外键，对象和数据表的对应会更准。</div>
       <PackRecommendationCard card={S.PACK_CARD} />
     </Item>,
     <Item

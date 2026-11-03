@@ -1,5 +1,5 @@
 """资料（API 契约 3.6）：R-01 列表、R-02 上传、R-03 改用途、R-04 删除、R-05 被谁引用、R-06 原文预览、
-R-11 / R-12 外部反馈。
+R-11 / R-12 外部反馈；R-13 查看文本、R-14 重新转换（资料的文本版，ADR-0073）。
 
 资料区对 agent 只读，只能由用户上传、替换、删除，每次都保存版本。资料分析（R-07～R-10）在 `materials.py`。
 """
@@ -13,8 +13,10 @@ from fastapi.responses import JSONResponse
 
 from ..api import deps
 from ..api.errors import ApiError
-from ..services import mainline, material_refs, material_text, research_view, uploads
-from ..services.workspace.layout import RESOURCE_DIRECTIVES, RESOURCE_SUBDIRS, _content_revision, is_auto_detected
+from ..services import mainline, material_conversion, material_refs, material_text, research_view, uploads
+from ..services.workspace.layout import (
+    RESOURCE_DIRECTIVES, RESOURCE_SUBDIRS, _content_revision, is_auto_detected, is_resource_text,
+)
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/resources", tags=["resources"])
 
@@ -28,9 +30,12 @@ PURPOSES = (
     {"value": "auto", "label": "由助手判断"},
 )
 MAX_MATERIALS = 500
+# 查看文本一次最多给这么多字（全文在工作区里，助手读全文）
+TEXT_VIEW_CHARS = 300_000
 
 
-def _material(root: Path, rel: str, directives: dict, referenced: int = 0, coverage: dict | None = None) -> dict:
+def _material(project_id: str, root: Path, rel: str, directives: dict, referenced: int = 0,
+              coverage: dict | None = None) -> dict:
     path = root / rel
     kind, preview = research_view.kind_of(rel)
     directive = directives.get(rel)
@@ -53,6 +58,7 @@ def _material(root: Path, rel: str, directives: dict, referenced: int = 0, cover
         "coverage": coverage,
         "preview": preview,
         "revision": _content_revision(data),
+        "text": material_conversion.view(project_id, root, rel, data),
     }
 
 
@@ -67,7 +73,7 @@ def list_resources(project_id: str, request: Request):
     paths = _material_paths(root)
     referenced = material_refs.counts(root, paths)
     coverage = research_view.material_coverage(deps.workspaces, project_id)
-    items = [_material(root, rel, directives, referenced.get(rel, 0), coverage.get(rel)) for rel in paths]
+    items = [_material(project_id, root, rel, directives, referenced.get(rel, 0), coverage.get(rel)) for rel in paths]
     groups = [
         {"key": key, "label": label, "items": [item for item in items if item["group"] == key]}
         for key, label in GROUP_LABELS
@@ -117,7 +123,7 @@ async def upload_resource(project_id: str, request: Request):
     directives = deps.workspaces.resource_directives(project_id)
     detected = saved.get("detected")
     return JSONResponse(status_code=201, content={
-        "material": _material(root, saved["path"], directives,
+        "material": _material(project_id, root, saved["path"], directives,
                               material_refs.counts(root, [saved["path"]]).get(saved["path"], 0)),
         "replaced": saved["replaced"],
         "commit": saved["commit"] or state["head"],
@@ -133,7 +139,8 @@ async def set_purpose(project_id: str, request: Request):
     root = deps.require_writable(project_id, request)
     body = await deps.json_body(request)
     path = str(body.get("path") or "")
-    if not path.startswith("resource/") or path == RESOURCE_DIRECTIVES or path.startswith("resource/systems/"):
+    if not path.startswith("resource/") or path == RESOURCE_DIRECTIVES or path.startswith("resource/systems/") \
+            or is_resource_text(path):
         raise ApiError("path_forbidden", "只能为资料区的资料设置用途", 403, {"path": path})
     if not (root / path).is_file():
         raise ApiError("file_not_found", "文件不存在", 404, {"path": path})
@@ -143,7 +150,7 @@ async def set_purpose(project_id: str, request: Request):
     )
     state = mainline.state(root)
     return {
-        "material": _material(root, path, deps.workspaces.resource_directives(project_id),
+        "material": _material(project_id, root, path, deps.workspaces.resource_directives(project_id),
                               material_refs.counts(root, [path]).get(path, 0)),
         "commit": state["head"],
         "version_label": state["version_label"],
@@ -155,7 +162,8 @@ async def set_purpose(project_id: str, request: Request):
 def delete_resource(project_id: str, request: Request, path: str = ""):
     """删除保存为新版本，可从版本历史恢复。"""
     root = deps.require_writable(project_id, request)
-    if path == RESOURCE_DIRECTIVES or path.startswith("resource/systems/") or not path.startswith("resource/"):
+    if path == RESOURCE_DIRECTIVES or path.startswith("resource/systems/") or not path.startswith("resource/") \
+            or is_resource_text(path):
         raise ApiError("path_forbidden", "只能删除资料区的资料", 403, {"path": path})
     # 引用它的出处删除后变成「来源无法核验」：删之前数一遍
     broken = material_refs.counts(root, [path]).get(path, 0) if material_text.is_material(path) else 0
@@ -206,3 +214,42 @@ def references(project_id: str, request: Request, path: str = ""):
     """R-05：本体条目、插件产物里引用这份资料的地方（出处路径或文件名）。"""
     root = deps.require_owner(project_id, request)
     return material_refs.references(root, _material_target(root, path))
+
+
+def _document(root: Path, path: str) -> str:
+    """R-13、R-14 的资料：资料分组里的原文件（不收文本版本身）。"""
+    rel = _material_target(root, path)
+    if is_resource_text(rel) or rel.split("/")[1] not in RESOURCE_SUBDIRS:
+        raise ApiError("path_forbidden", "只能查看资料区的资料", 403, {"path": rel})
+    return rel
+
+
+@router.get("/text")
+def text(project_id: str, request: Request, path: str = ""):
+    """R-13 查看文本：资料的文本版（Markdown，位置标记是 HTML 注释），太长时截断；没转好时 markdown 为 null。"""
+    root = deps.require_owner(project_id, request)
+    rel = _document(root, path)
+    state = material_conversion.view(project_id, root, rel)
+    if state is None:
+        raise ApiError("not_convertible", "这份资料没有文本版", 409, {"path": rel})
+    markdown = (root / rel).read_text(encoding="utf-8", errors="replace") if state["state"] == "native" \
+        else material_conversion.text_markdown(root, rel)
+    truncated = bool(markdown) and len(markdown) > TEXT_VIEW_CHARS
+    if truncated:
+        cut = markdown.rfind("\n", 0, TEXT_VIEW_CHARS)
+        markdown = markdown[: cut if cut > 0 else TEXT_VIEW_CHARS]
+    return {"path": rel, "text": state, "markdown": markdown, "truncated": truncated}
+
+
+@router.post("/convert")
+async def reconvert(project_id: str, request: Request):
+    """R-14 重新转换（也是失败后的重试）：用当前默认的转换器再转一次，后台执行，状态经 EP-25 推送。"""
+    root = deps.require_writable(project_id, request)
+    body = await deps.json_body(request)
+    rel = _document(root, str(body.get("path") or ""))
+    if material_conversion.kind_of(rel) != "document" or not material_conversion.reconvert(project_id, rel):
+        raise ApiError("not_convertible", "这份资料不能转成文本", 409, {"path": rel})
+    return JSONResponse(status_code=202, content={
+        "material": _material(project_id, root, rel, deps.workspaces.resource_directives(project_id),
+                              material_refs.counts(root, [rel]).get(rel, 0)),
+    })

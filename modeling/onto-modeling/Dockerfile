@@ -13,6 +13,31 @@ COPY frontend/ ./
 COPY assets/packs /build/assets/packs
 RUN npm run build
 
+# 连接器网关（ADR-0073）：单独的镜像，`docker build --target connector-gateway`。只有转换库、网关代码与数据接入协议，
+# 不带 git、助手 CLI 和后端其余代码；转换器在只读目录 /opt/connector/converters，跑在非 root 的子进程里。
+# 放在主服务这一段前面：不带 --target 构建时仍是主服务镜像，也不会构建这一段
+FROM python:3.11-slim AS connector-gateway
+WORKDIR /app
+COPY backend/connector-requirements.txt ./
+ARG PIP_INDEX_URL=https://repo.huaweicloud.com/repository/pypi/simple
+RUN --mount=type=bind,source=vendor/wheels,target=/tmp/wheels \
+    --mount=type=cache,target=/root/.cache/pip \
+    pip install --find-links=/tmp/wheels -i "${PIP_INDEX_URL}" -r connector-requirements.txt
+COPY backend/app/__init__.py ./app/__init__.py
+COPY backend/app/evidence ./app/evidence
+COPY backend/app/connector_gateway ./app/connector_gateway
+COPY assets/packs/convert-pdf /opt/connector/converters/convert-pdf
+COPY assets/packs/convert-docx /opt/connector/converters/convert-docx
+COPY assets/packs/convert-xlsx /opt/connector/converters/convert-xlsx
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    ONTO_CONNECTOR_CONVERTERS_DIR=/opt/connector/converters \
+    ONTO_CONNECTOR_GATEWAY_PORT=8120
+USER 65534:65534
+EXPOSE 8120
+# 健康检查写在 compose 里（与 sandbox-gateway 一致）
+CMD ["python", "-m", "app.connector_gateway"]
+
 # python:3.11-slim 与 auth-server / consumer backend 同基础镜像，复用已拉取的层
 FROM python:3.11-slim
 WORKDIR /app

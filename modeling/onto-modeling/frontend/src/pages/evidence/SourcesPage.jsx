@@ -187,7 +187,7 @@ function SourcesBody() {
         extra={<Seg items={FILTERS} value={filter} onChange={setFilter} />}
       >
         {rows === null ? <div className="sm muted">正在读取…</div> : rows.length ? (
-          <Table compact cols={['数据源', '提供方', '环境', '连接参数', '凭据引用', '范围与访问窗口', '最近采集', '授权本项目使用', '']} rows={tableRows} />
+          <Table compact cols={['数据源', '数据接入', '环境', '连接参数', '凭据引用', '范围与访问窗口', '最近采集', '授权本项目使用', '']} rows={tableRows} />
         ) : <div className="sm muted" style={{ padding: '18px 4px' }}>{filter === 'all' ? '还没有登记的数据源。' : '没有符合筛选的数据源。'}</div>}
       </Card>
       <div className="mt16">

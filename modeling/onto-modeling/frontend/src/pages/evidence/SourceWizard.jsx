@@ -115,7 +115,7 @@ export function SourceWizard({ open, mode, source, focus, providers, admin, onCl
   const types = useMemo(() => items.filter((p) => p.kind !== 'file'), [items]);
   const pickType = (p) => {
     if (editing) return;
-    if (!p.installed) { toast(`「${p.label}」提供方未安装`, 'puzzle'); return; }
+    if (!p.installed) { toast(`「${p.label}」未安装`, 'puzzle'); return; }
     if (p.id === form.provider) return;
     set({ provider: p.id, conn: {}, port_db: '' });
   };

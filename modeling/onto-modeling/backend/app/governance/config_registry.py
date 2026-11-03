@@ -371,6 +371,8 @@ declare(
     C("ONTO_WEB_MCP_PUBLIC_BASE_URL", "", "url", effect="immediate", description="项目级 MCP 的公开地址"),
     C("ONTO_WEB_SANDBOX_GATEWAY_URL", "", "url", effect="immediate", description="脚本验证沙箱网关"),
     C("ONTO_WEB_SANDBOX_GATEWAY_PORT", "8110", "int", minimum=1, maximum=65535, description="沙箱网关监听端口"),
+    C("ONTO_WEB_CONNECTOR_GATEWAY_URL", "", "url", effect="immediate",
+      description="连接器网关（资料转文本，ADR-0073）；没配时资料停在等待转换"),
     # 备份
     C("ONTO_WEB_BACKUP_INTERVAL_HOURS", "24", "int", minimum=1, maximum=720, allow_zero=True,
       description="定期备份间隔（小时），0 关闭"),

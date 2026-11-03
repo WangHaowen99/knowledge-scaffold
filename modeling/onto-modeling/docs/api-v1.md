@@ -15,6 +15,7 @@
 - 接口块里的「依据」写详设章节或接口编号（①～㊹），「页面」写设计稿页面 id。
 - 对象类型名（如 `ProjectCard`、`ScopeLock`）在第 7 章定义；接口里只写引用。
 - 只写契约，不写实现。实现位置以改造方案第 3 章为准。
+- 界面叫法：插件里的「证据源」「证据源提供方」在界面上叫「数据接入」（F4a）；采回来的仍叫证据（证据快照、证据浏览器）。接口路径、字段、错误码里的 `evidence`、`provider` 不变。
 
 ---
 
@@ -358,6 +359,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `file_not_found` | 404 | 文件不存在 | `path` |
 | `binary_not_previewable` | 415 | 二进制文件不能按文本预览 | — |
 | `preview_unavailable` | 501 | 服务端缺预览依赖 | `reason` |
+| `not_convertible` | 409 | 这份资料不能转成文本（本身是文本、流程图、没有能转的转换器） | `path` |
 | `invalid_filename` | 400 | 文件名不合法（含路径、以 `.` 开头） | — |
 | `revision_conflict` | 409 | 版本号不一致 | `target, expected, actual, changed_by, changed_at, version_label, kind` |
 
@@ -1121,6 +1123,8 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 
 资料区对 agent 只读，只能由用户上传、替换、删除，每次都保存版本（详设 4.5、4.8）。`resource/systems/`（证据快照）不出现在资料接口里。
 
+资料的文本版（F4a，ADR-0073）：PDF、Word、Excel 上传后在后台经连接器网关转成 Markdown，放在 `resource/text/<分组>/<原文件名>.md`（第一行记原文件修订与转换器），走写入路径提交（`Onto-Source: plugin`），不在资料列表里出现、不能单独删除或改用途；替换、删除原文件时同一个提交里删掉旧的文本版。状态见 7.4 `MaterialText`，变化经 EP-25 推送；md、txt、csv 本身就是文本。
+
 #### R-01 资料列表
 
 `GET /api/v1/projects/{id}/resources` · 所有者 · 旧：`GET /api/projects/{id}/resource-meta` + `GET /files` · 审计：否 · 依据：4.5、ADR 0017 · 页面：resources、wb-materials
@@ -1146,6 +1150,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
   | `batch_id` | string | 否 | 同一批多个文件共用；`is_revision=true` 时整批只发起一次增量更新 |
 
 - 同名文件直接替换（`replaced=true`）。上传即经写入路径提交，`Onto-Source: web`。
+- 上传立即返回，`material.text.state` 是 `converting`（网关没部署时 `waiting`）；转换在后台做，结果经 EP-25 推送。
 - `is_revision=true` 时，整批上传完成后往工作台对话发一条增量更新命令（`core.update`），响应里带 `command_task`。
 - 响应 `201`：`{material: Material, replaced: bool, commit, version_label, detected: {purpose, tables[]}|null, command_task: CommandTask|null}`。
 - 错误：`payload_too_large`、`unsupported_media_type`、`invalid_filename`、`project_archived`、`upload_expired`。
@@ -1166,7 +1171,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 - 查询参数：`path`。
 - 删除保存为新版本，可从版本历史恢复。引用它的出处变为「来源无法核验」，派生产物不自动删除。
 - 响应 `200`：`{deleted: path, commit, version_label, broken_references: int}`。
-- 错误：`file_not_found`、`path_forbidden`（含 `resource/materials.json`、`resource/systems/`）。
+- 错误：`file_not_found`、`path_forbidden`（含 `resource/materials.json`、`resource/systems/`、`resource/text/`）。
 
 #### R-05 资料被谁引用
 
@@ -1180,7 +1185,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 `GET /api/v1/projects/{id}/resources/preview` · 所有者 · 旧：— · 审计：否 · 依据：5.8.3（文件提供方）、5.8.5 · 页面：resources（文档预览）、全部页面（锚点悬停的「看原文」）
 
 - 查询参数：`path`、`around?: string`（锚点片段，如 `p:9.2`，定位到该段前后）、`limit?: int`（块数，默认 200，最大 1000）、`cursor?`。
-- 文档类资料（docx、pdf、md、txt）经文件提供方抽取成带锚点的块，片段格式沿用 `source_extract`：`L12`、`p:3`、`table:1/row:2/cell:3`。
+- 文档类资料（docx、md、txt）经 `source_extract` 抽取成带锚点的块（PDF 的文字看文本版，R-13），片段格式沿用 `source_extract`：`L12`、`p:3`、`table:1/row:2/cell:3`。
 - 表格和 drawio 分别用 `F-05` 和 `F-04`。
 - 响应：
 
@@ -1244,6 +1249,24 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 - 请求：`{state: "open"|"handled"|"dismissed"}`。
 - 响应：`Feedback`。
 - 「交给反馈演进处理」「在对话里处理」用 `S-20` 发命令，不经这里。
+
+#### R-13 查看文本
+
+`GET /api/v1/projects/{id}/resources/text` · 所有者 · 旧：— · 审计：否 · 依据：ADR-0073 · 页面：resources（PDF 的预览、Word / Excel 的「文本」页签）
+
+- 查询参数：`path`（原文件的路径，不收文本版本身）。
+- 响应 `200`：`{path, text: MaterialText, markdown: string | null, truncated: bool}`。
+  - `markdown` 是文本版去掉第一行文件头后的正文；位置标记是 HTML 注释 `<!-- 第 3 页 -->`、`<!-- 工作表：客户 -->`；没转好时为 null；
+  - 一次最多 30 万字，超出时 `truncated=true`（全文在工作区里）。
+- 错误：`file_not_found`、`path_forbidden`、`not_convertible`（流程图）。
+
+#### R-14 重新转换
+
+`POST /api/v1/projects/{id}/resources/convert` · 所有者 · 旧：— · 审计：是 · 依据：ADR-0073 · 页面：resources（「重新转换」「重试」）
+
+- 请求：`{path}`。用当前默认的转换器再转一次（失败后的重试也是它），后台执行，状态经 EP-25 推送；转出来的文本变了就是一次资料变化（资料分析回执里记的文件修订对不上，退回待核验）。
+- 响应 `202`：`{material: Material}`。
+- 错误：`file_not_found`、`path_forbidden`、`not_convertible`（本身就是文本、流程图、没有能转这种文件的转换器）、`project_archived`。
 
 ---
 
@@ -2175,7 +2198,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 依据详设 4.6、5.2、5.3、5.6、5.9、8.1、方案 D1～D7、D17。
 
-- 包有 6 类：能力包、行业包、系统知识包、证据源提供方、节点包、导出器。
+- 包有 6 类：能力包、行业包、系统知识包、数据接入（`category=provider`，旧称证据源提供方）、节点包、导出器。
+- 数据接入里本期只列文档转换器（`PackCard.converter` 不为空，ADR-0073）；采集类仍按 ADR-0056 不出现。
 - 包仓库里每个版本的目录不可修改。项目用 `.onto/packs.lock` 锁定版本。
 - 切换从下一条消息开始生效；正在进行的一轮按旧版本跑完；自主构建运行中时，在下一个安全点之后生效。
 
@@ -2208,8 +2232,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   | `available` | — | 启用到本项目 |
   | `offline` | 离线部署不可用 | 启用（禁用） |
   | `not_applicable` | 本项目不适用 | 详情 |
-  | `platform_installed` | 平台已安装（提供方） | 详情 |
-  | `platform_available` | 未安装（提供方） | 安装到平台 |
+  | `platform_installed` | 平台已安装（数据接入；转换器不论带不带项目都是这个） | 详情 |
+  | `platform_available` | 未安装（数据接入） | 安装到平台 |
   | `pending` | 已启用 · 下一条消息生效 | 详情 |
 
 #### PL-02 插件详情
@@ -2387,8 +2411,25 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `POST /api/v1/admin/packs/{name}/install` · admin · 旧：— · 审计：专项 `pack.install` · 依据：5.8.3、H2 · 页面：plugins（管理员点「安装到平台」）
 
-- 请求：`{version}`。证据源提供方和导出器装进网关或旁路容器，H2 级生效。
+- 请求：`{version}`。数据接入插件和导出器装进网关或旁路容器，H2 级生效。
 - 响应 `202`：`{task_id}`，进度在 `O-40` 任务列表。
+- 本期 PL-04、PL-19 仍回 `501`：第三方转换器怎么装待定（不能有主容器往网关放代码的通道，ADR-0073 待定项）。
+
+#### PL-20 转换器与默认
+
+`GET /api/v1/converters` · 登录 · 旧：— · 审计：否 · 依据：ADR-0073 · 页面：plugin-detail（转换器详情的默认标记）
+
+- 响应 `200`：`{gateway: {status: "ok"|"down"|"not_configured", detail}, items: [{id, label, version, types: string[], license, official, loaded: bool|null, default_for: string[]}], types: [{type: ".pdf", label: "PDF", default: string|null, chosen_by_admin: bool, converters: string[]}]}`。
+  - `loaded`：网关里加载了没有，网关不可用时为 null；
+  - 没指定默认时用唯一的那个，有多个时优先官方的。
+
+#### PL-21 设默认转换器
+
+`PUT /api/v1/admin/converters/defaults` · admin · 旧：— · 审计：是 · 依据：ADR-0073 · 页面：plugin-detail（「设为 PDF 默认」，同一种文件有多个转换器时才出现）
+
+- 请求：`{type: ".pdf", converter: "convert-pdf"}`，只能在已有的转换器之间选。换了默认不重转旧资料，资料上用 R-14。
+- 响应 `200`：同 PL-20。
+- 错误：`invalid_argument`（这种文件没有这个转换器）。
 
 ---
 
@@ -2556,6 +2597,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 凭据只写不读，明文只在连接器网关。
 - 采集由内核签发一次性票据，经网关只读执行，全程审计。
 - 资料页的 3 个子页（数据源、采集与快照、证据浏览器）由系统逆向建模包带来。包没启用时，项目侧接口返回 `pack_not_enabled`。
+- 界面叫法：「证据源」「证据源提供方」叫「数据接入」，单个插件按它接什么起名（「PDF 转换」「业务数据库」）；本节接口路径不变。
 
 #### EV-01 数据源列表
 
@@ -3993,6 +4035,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | EP-22 | `report.updated` | `{report_id, type, items_changed: bool}` | reports 条目状态（修复中 → 已修复） | 5.9.4 |
 | EP-23 | `knowledge.updated` | `{ids: string[], change: "created"\|"updated"\|"deleted"}` | 知识沉淀页 | 5.5 |
 | EP-24 | `maintenance.updated` | `MaintenanceState` | 全局横幅 | 4.10.3 |
+| EP-25 | `materials.text.updated` | `{path, text: MaterialText}` | resources（列表行状态、预览） | ADR-0073 |
 
 ### 4.4 用户流
 
@@ -4545,6 +4588,18 @@ type Material = {
   coverage: { read_pct: number; label: string } | null;
   preview: "doc" | "xls" | "csv" | "drawio" | "html" | "text" | null;
   revision: string;
+  text: MaterialText | null;      // 流程图为 null
+};
+
+// 资料的文本版（ADR-0073）
+type MaterialText = {
+  state: "native" | "converting" | "converted" | "unsupported" | "failed" | "waiting";
+  // native 本身是文本；converting 转换中（含排队）；waiting 连接器网关不可用，恢复后自动补转
+  reason: string | null;          // 暂不支持、失败的原因：「扫描件或图片型 PDF，暂不支持」「转换超时」
+  note: string | null;            // 转换说明：「只转了前 1000 页（共 1200 页）」「第 12–23 页的图片里的文字没有转」
+  converter: { id: string; label: string; version: string } | null;
+  updated_at: number | null;
+  has_text: boolean;              // 工作区里有对得上原文件的文本版
 };
 
 type MaterialMapItem = {
@@ -4962,6 +5017,7 @@ type PackCard = {
   project_status: string | null;  // 见 PL-01
   locked_version: string | null;
   usage_note: string | null;      // 「mes-prod 在用」
+  converter: { types: string[]; default_for: string[]; license: string } | null;   // 数据接入里的文档转换器（ADR-0073）
 };
 
 type CompatCheck = { id: "kernel_api" | "engines" | "depends" | "names" | "flow" | "page_api";

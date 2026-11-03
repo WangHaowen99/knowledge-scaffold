@@ -38,10 +38,10 @@ def test_kernel_steps_are_registered_in_order():
     ids = [step.id for step in startup_recovery.steps()]
     expected = ["index_lock", "write_intents", "uncommitted", "state_tracking", "single_owner", "pending_uploads",
                 "eval_retirement", "assembly", "agent_commit_hooks", "history_repair", "interrupted_execs",
-                "dependencies", "purge"]
+                "dependencies", "purge", "material_text"]
     assert [step_id for step_id in ids if step_id in expected] == expected
     background = {step.id for step in startup_recovery.steps() if step.background}
-    assert background == {"dependencies", "purge"}
+    assert background == {"dependencies", "purge", "material_text"}
 
 
 def test_registered_steps_run_in_order_and_failures_do_not_stop_others(manager, extra_steps):
@@ -62,9 +62,9 @@ def test_registered_steps_run_in_order_and_failures_do_not_stop_others(manager, 
 def test_background_steps_are_added_to_report_when_done(manager):
     startup_recovery.run(manager, include_background=False)
     done = asyncio.run(startup_recovery.run_background(manager))
-    assert [item["id"] for item in done] == ["dependencies", "purge"]
+    assert [item["id"] for item in done] == ["dependencies", "purge", "material_text"]
     ids = [item["id"] for item in startup_report.latest()["items"]]
-    assert ids[-2:] == ["dependencies", "purge"]
+    assert ids[-3:] == ["dependencies", "purge", "material_text"]
     # 再跑一次后台步骤：同 ID 替换，不重复
     asyncio.run(startup_recovery.run_background(manager))
     assert [item["id"] for item in startup_report.latest()["items"]].count("purge") == 1

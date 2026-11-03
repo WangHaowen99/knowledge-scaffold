@@ -183,7 +183,8 @@ export function heroActions(d, o = {}) {
       return { primary: { label: '启用到本项目', icon: 'plus', action: 'enable' } };
     case 'offline': return { primary: { label: '启用', disabled: true, title: '离线部署不可用', kind: '' }, hint: '离线部署不可用：这个包要联网。' };
     case 'not_applicable': return { primary: { label: '本项目不适用', disabled: true, kind: '' }, hint: d.usage_note || '本项目不适用这个包。' };
-    case 'platform_installed': return { primary: { label: '平台已安装', icon: 'check', disabled: true, kind: 'soft' }, hint: '提供方装在连接器网关里；登记数据源在项目的资料页里。' };
+    case 'platform_installed':
+      return { primary: { label: '平台已安装', icon: 'check', disabled: true, kind: 'soft' }, hint: d.converter ? '' : '装在连接器网关里；登记数据源在项目的资料页里。' };
     case 'platform_available':
       if (o.requested) return { primary: { label: '已申请安装', icon: 'check', disabled: true, kind: '' }, hint: '已发送安装申请，等管理员处理。' };
       return {
@@ -219,6 +220,17 @@ export function disableConfirm(d) {
   if (ui?.kind === 'page') what = `左栏${ui.pages.map((p) => `「${p.title}」`).join('')}页面会消失，`;
   else if (ui?.kind === 'subpages') what = `资料页的 ${ui.subpages.length} 个子页会消失，`;
   return { title: `停用${d?.label || ''}？`, body: `${what}已有产物保留。` };
+}
+
+/**
+ * 转换器的默认（PL-20、PL-21，ADR-0073）：只看这个转换器能转、又有不止一个转换器的文件类型；只有一个时不出。
+ * 返回 [{type, label, isDefault, canSet}]；canSet 只给管理员
+ */
+export function converterDefaults(d, converters, { admin = false } = {}) {
+  if (!d?.converter || !converters?.types) return [];
+  return converters.types
+    .filter((row) => d.converter.types.includes(row.type) && (row.converters || []).length > 1)
+    .map((row) => ({ type: row.type, label: row.label, isDefault: row.default === d.name, canSet: admin && row.default !== d.name }));
 }
 
 // ---------- 统计卡 ----------

@@ -32,6 +32,11 @@ async def _lifespan(app: FastAPI):
     # 补提交写入意图、存量迁移、核对装配目录、修对话历史、把没结束的执行改判中断——并留存报告（O-35）
     await asyncio.to_thread(startup_recovery.run, deps.workspaces, include_background=False)
     manager.start_background()  # 空闲会话回收（方案 4.1.1）
+    from .services import material_conversion
+
+    # 资料转文本（ADR-0073）：资料变了就排队，后台线程经连接器网关转换，等待中的网关恢复后补转
+    material_conversion.install()
+    material_conversion.start()
     from .services.autobuild.runner import runner as autobuild_runner
 
     await autobuild_runner.resume_after_restart()  # 停机时在跑的自主构建从检查点接着跑（AB-09）
@@ -50,6 +55,7 @@ async def _lifespan(app: FastAPI):
         recovery_task.cancel()
         await asyncio.gather(backup_task, recovery_task, return_exceptions=True)
         await autobuild_runner.shutdown()  # 运行停在检查点，下次启动接着跑
+        await asyncio.to_thread(material_conversion.stop)
         await manager.shutdown()
         from .services.engines import jiuwen_remote
 

@@ -15,7 +15,7 @@ import { UiChip } from './catalogCards.jsx';
 import { usePackActions } from './catalogDialogs.jsx';
 import { PACK_CATEGORIES, packIcon, publisherChip, versionOf } from './catalogModel.js';
 import {
-  contentGroups, contentTotal, disableConfirm, flowCaption, flowLayout, heroActions, heroFacts, heroMenu, statCards,
+  contentGroups, contentTotal, converterDefaults, disableConfirm, flowCaption, flowLayout, heroActions, heroFacts, heroMenu, statCards,
 } from './detailModel.js';
 import { Changelog, ContentsGrid, FlowMap } from './detailParts.jsx';
 import { usePluginProject } from './parts.jsx';
@@ -28,6 +28,38 @@ function NoPack({ title, children }) {
         <Empty icon="puzzle" title={title} actions={<Button icon="arrowl" onClick={() => navigate(pagePath('plugins'))}>去插件中心</Button>}>{children || null}</Empty>
       </div>
     </ShellG>
+  );
+}
+
+// 转换器的默认（PL-20 / PL-21）：同一种文件有别的转换器时才出现
+function ConverterDefaults({ d, admin }) {
+  const { api } = useApp();
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    if (d?.converter) api.converters().then((r) => alive && setData(r)).catch(() => {});
+    return () => { alive = false; };
+  }, [api, d?.name, d?.converter]);
+  const rows = converterDefaults(d, data, { admin });
+  if (!rows.length) return null;
+  const setDefault = async (row) => {
+    setBusy(true);
+    try {
+      setData(await api.setConverterDefault({ type: row.type, converter: d.name }));
+      toast(`${row.label} 以后用「${d.label}」转换`, 'check');
+    } catch (e) {
+      toast(errorText(e), 'alert');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="row wrap g4 mt8">
+      {rows.map((row) => (row.isDefault
+        ? <Chip key={row.type} tone="teal" icon="check">{row.label} 默认</Chip>
+        : row.canSet ? <Button key={row.type} size="xs" kind="soft" disabled={busy} onClick={() => setDefault(row)}>设为 {row.label} 默认</Button> : null))}
+    </div>
   );
 }
 
@@ -131,6 +163,7 @@ export default function PluginDetailPage({ route }) {
                 {d.category === 'capability' ? <UiChip ui={d.ui} sm={false} /> : null}
               </div>
               <div className="muted mt8" style={{ maxWidth: 640 }}>{d.description}</div>
+              <ConverterDefaults d={d} admin={can(user, 'admin')} />
               <div className="row g16 mt12 sm muted">
                 {heroFacts(d).map(([k, v]) => <span key={k}>{k} <b style={{ color: 'var(--ink2)' }}>{v}</b></span>)}
               </div>

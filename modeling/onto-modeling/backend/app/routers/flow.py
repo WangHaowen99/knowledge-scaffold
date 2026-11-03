@@ -144,7 +144,7 @@ async def _start_kernel_node(project_id: str, root, node: dict, kind: str, body:
     try:
         if kind == "external":
             missing = node_kinds.missing_providers([node])
-            raise node_kinds.NodeRunError("pack_unavailable", "需要的证据源提供方不可用", 409,
+            raise node_kinds.NodeRunError("pack_unavailable", "需要的数据接入插件不可用", 409,
                                           {"reason": "not_installed", "providers": missing})
         if kind == "script":
             run = await asyncio.to_thread(node_kinds.run_script, deps.workspaces, project_id, node,

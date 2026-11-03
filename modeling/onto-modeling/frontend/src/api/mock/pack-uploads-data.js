@@ -126,8 +126,8 @@ export function seedRequests(now = Date.now()) {
   return [
     {
       id: 'req-5d21c8', kind: 'pack_install', state: 'pending', requested_by: 'wanggong', requested_at: iso(now - 25 * MIN),
-      project_id: 'parcel-sort-6c1f2a90', summary: 'HTTP 接口提供方 0.3.0',
-      payload: { pack: { name: 'provider-http-api', label: 'HTTP 接口提供方' }, version: '0.3.0', project_name: '快递分拣异常处理', note: '要从分拣系统的接口拉异常件记录，平台上还没有装这个提供方' },
+      project_id: 'parcel-sort-6c1f2a90', summary: 'HTTP 接口数据接入 0.3.0',
+      payload: { pack: { name: 'provider-http-api', label: 'HTTP 接口数据接入' }, version: '0.3.0', project_name: '快递分拣异常处理', note: '要从分拣系统的接口拉异常件记录，平台上还没有装这个数据接入插件' },
     },
     {
       id: 'req-9a47e3', kind: 'source_registration', state: 'pending', requested_by: 'liming', requested_at: iso(now - 2 * HOUR),

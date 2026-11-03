@@ -1,6 +1,8 @@
 // 资料区右侧的预览卡（设计稿 .evd-prev）：文档（R-06，带出处编号、定位到锚点）、表格与 CSV（F-05）、
 // drawio（F-02 读、F-03 存）、HTML 报告（F-04，沙箱 iframe）；「被引用」页签（R-05）；外部反馈的逐条查看（R-11）
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
@@ -13,6 +15,7 @@ import { useProjectEvent } from '../plugin/parts.jsx';
 import {
   PREVIEW_ICON, blockBody, isDocPreview, blockLabel, coverageChip, csvText, diamondPoints, drawioLayout, feedbackView, fmtSize,
   parseDrawio, parseFragment, purposeView, refRows, refTarget, scaleText, sheetView, splitHighlights, tableTruncated, cellPos,
+  hasTextTab, textSections,
 } from './resourcesModel.js';
 
 const enc = encodeURIComponent;
@@ -99,6 +102,84 @@ function DocPane({ m, fragment, onCoverage, onUploadText, tasks }) {
           </Button>
         </div>
       ) : null}
+    </>
+  );
+}
+
+// ---------- 文本版（R-13 查看文本、R-14 重新转换；ADR-0073） ----------
+function TextPane({ m, onUploadText, onCoverage }) {
+  const { api } = useApp();
+  const { pid } = useProject();
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const t = m.text || {};
+  const converted = t.state === 'converted';
+
+  // PDF 的预览就是文本版：资料分析读到哪（R-06 的 coverage）照旧显示在标题下
+  useEffect(() => {
+    if (!onCoverage) return undefined;
+    let alive = true;
+    api.resourcePreview(pid, m.path).then((r) => alive && onCoverage(r.coverage || null)).catch(() => {});
+    return () => { alive = false; };
+  }, [api, pid, m.path, m.revision, onCoverage]);
+
+  useEffect(() => {
+    if (!converted) { setData(null); return undefined; }
+    let alive = true;
+    setData(null);
+    api.resourceText(pid, m.path)
+      .then((r) => alive && setData(r))
+      .catch((e) => alive && setData({ error: errorText(e) }));
+    return () => { alive = false; };
+  }, [api, pid, m.path, m.revision, converted, t.updated_at, t.converter?.id]);
+
+  const reconvert = async () => {
+    setBusy(true);
+    try {
+      await api.reconvertResource(pid, m.path);
+    } catch (e) {
+      toast(errorText(e), 'alert');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (t.state === 'converting') return <div className="evd-paper rs-loading"><span className="spin" />正在转成文本…</div>;
+  if (t.state === 'waiting') return <Note tone="gray" icon="clock">等待转换</Note>;
+  if (t.state === 'unsupported') {
+    return (
+      <Note tone="gray" icon="ban">
+        {t.reason || '暂不支持'}
+        {m.kind === 'pdf' && onUploadText ? <div className="row mt8"><Button size="xs" icon="upload" onClick={onUploadText}>上传文本版</Button></div> : null}
+      </Note>
+    );
+  }
+  if (t.state === 'failed') {
+    return (
+      <Note tone="red" icon="alert">
+        {t.reason || '转换失败'}
+        <div className="row mt8"><Button size="xs" icon="refresh" disabled={busy} onClick={reconvert}>重试</Button></div>
+      </Note>
+    );
+  }
+  if (!data) return <div className="evd-paper rs-loading"><span className="spin" />正在读取文本…</div>;
+  if (data.error) return <Note tone="red">{data.error}</Note>;
+  return (
+    <>
+      {t.note ? <Note tone="amber" className="mb8">{t.note}</Note> : null}
+      <div className="evd-paper rs-text">
+        {textSections(data.markdown).map((s, i) => (
+          <div key={`${s.label || ''}-${i}`}>
+            {s.label ? <div className="rs-loc">{s.label}</div> : null}
+            {s.body ? <Markdown remarkPlugins={[remarkGfm]}>{s.body}</Markdown> : null}
+          </div>
+        ))}
+      </div>
+      <div className="row mt8">
+        {data.truncated ? <span className="xs muted">只显示前一部分</span> : null}
+        <span className="sp" />
+        <Button size="xs" kind="ghost" icon="refresh" disabled={busy} onClick={reconvert}>重新转换</Button>
+      </div>
     </>
   );
 }
@@ -403,7 +484,9 @@ export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, 
   const scale = isDocPreview(m) || m.preview === 'drawio' || m.preview === 'html' ? fmtSize(m.size) : scaleText(m);
 
   let pane;
-  if (isDocPreview(m)) pane = <DocPane m={m} fragment={focus} onCoverage={onCoverage} onUploadText={onUploadText} tasks={tasks} />;
+  // PDF 没有原样预览，预览就是它的文本版；Word、Excel 另有「文本」页签
+  if (m.kind === 'pdf' && m.text) pane = <TextPane m={m} onUploadText={onUploadText} onCoverage={onCoverage} />;
+  else if (isDocPreview(m)) pane = <DocPane m={m} fragment={focus} onCoverage={onCoverage} onUploadText={onUploadText} tasks={tasks} />;
   else if (m.preview === 'xls') pane = <SheetPane key={`${m.path}:${focus || ''}`} m={m} fragment={focus} />;
   else if (m.preview === 'csv') pane = <CsvPane m={m} />;
   else if (m.preview === 'drawio') pane = <DrawioPane key={m.path} m={m} full={full} onFull={onFull} onSaved={onSaved} />;
@@ -427,9 +510,9 @@ export function MaterialPreview({ m, purposes, fragment, full, onFull, onSaved, 
             {cov ? <Chip tone={cov.tone} icon={cov.icon}>{cov.text}</Chip> : null}
           </span>
           <span className="sp" />
-          <Seg items={[['pv', '预览'], ['ref', '被引用']]} value={tab} onChange={setTab} />
+          <Seg items={hasTextTab(m) ? [['pv', '预览'], ['txt', '文本'], ['ref', '被引用']] : [['pv', '预览'], ['ref', '被引用']]} value={tab} onChange={setTab} />
         </div>
-        {tab === 'pv' ? pane : <RefsPane m={m} onLocate={(a) => { setFocus(a); setTab('pv'); }} />}
+        {tab === 'pv' ? pane : tab === 'txt' && hasTextTab(m) ? <TextPane m={m} /> : <RefsPane m={m} onLocate={(a) => { setFocus(a); setTab('pv'); }} />}
       </div>
     </div>
   );

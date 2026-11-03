@@ -140,11 +140,14 @@ def test_release_manifest_gives_source_version_label(manager, monkeypatch):
     assert body["source_version_label"] == record["version_label"] and body["source_commit"] == record["commit"]
 
 
-def test_pack_catalog_has_no_meta_line_or_provider_category(env):
+def test_pack_catalog_has_no_meta_line_and_data_access_only_converters(env):
+    """数据接入分类里只有转换器（F4a，ADR-0073）；数据库采集这类证据源仍不出现（ADR-0056，见下一条）。"""
     client, _manager, project_id, _tmp = env
     body = client.get("/api/v1/packs", params={"project_id": project_id}).json()
     assert body["items"] and all("meta" not in item for item in body["items"])
-    assert "provider" not in body["counts"] and all(item["category"] != "provider" for item in body["items"])
+    providers = [item for item in body["items"] if item["category"] == "provider"]
+    assert providers and all(item["converter"] for item in providers)
+    assert body["counts"]["provider"] == len(providers)
 
 
 def test_editor_reference_carries_pack_label(env):

@@ -51,6 +51,9 @@ def card(manager, name: str, project: dict | None) -> dict | None:
             status = "update"
         else:
             status = item["status"]
+    converter = _converter(name, manifest)
+    if converter is not None:
+        status = "platform_installed"  # 转换器随连接器网关镜像交付，平台级，不按项目启用（ADR-0073）
     return {
         "name": name, "version": latest, "label": manifest.label, "description": manifest.description,
         "category": manifest.category, "publisher": _publisher(repository, name, latest, manifest), "ui": _ui(manifest),
@@ -58,7 +61,24 @@ def card(manager, name: str, project: dict | None) -> dict | None:
         "latest": latest, "channel": channel,
         "project_status": status, "locked_version": locked, "usage_note": None,
         "default_on": bool(manifest.raw.get("default_on") or manifest.required),
+        "converter": converter,
     }
+
+
+def _converter(name: str, manifest) -> dict | None:
+    """数据接入里的转换器（清单 `converter` 段）：能转的文件类型、现在是哪几种的默认。"""
+    spec = manifest.raw.get("converter")
+    if manifest.kind != "provider" or not isinstance(spec, dict):
+        return None
+    from .. import material_conversion
+
+    types = [str(item).lower() for item in spec.get("types") or []]
+    default_for = []
+    for file_type in types:
+        chosen = material_conversion.pick(file_type)
+        if chosen and chosen["id"] == name:
+            default_for.append(file_type)
+    return {"types": types, "default_for": default_for, "license": str(spec.get("license") or "")}
 
 
 def catalog(manager, *, category: str = "", q: str = "", project_id: str = "",
@@ -71,10 +91,10 @@ def catalog(manager, *, category: str = "", q: str = "", project_id: str = "",
     if wanted - set(CATEGORY_KEYS):
         raise PackError("invalid_argument", f"category 只能取 {'|'.join(CATEGORY_KEYS)}", 400,
                         {"fields": {"category": "enum"}})
-    # 证据源提供方本期不开放（ADR-0056）：目录里不列，计数里也不出这一类
+    # 数据接入里只列转换器（ADR-0073）；数据库采集这类证据源本期不开放（ADR-0056），目录和计数里都没有
     cards = [item for item in (card(manager, name, project) for name in repository.names()[:500])
-             if item and item["category"] != "provider"]
-    counts = {key: sum(1 for item in cards if item["category"] == key) for key in CATEGORY_KEYS if key != "provider"}
+             if item and (item["category"] != "provider" or item["converter"] is not None)]
+    counts = {key: sum(1 for item in cards if item["category"] == key) for key in CATEGORY_KEYS}
     counts.update(all=len(cards),
                   enabled=sum(1 for item in cards if item["project_status"] in ("required", "enabled", "update", "pending")),
                   updatable=sum(1 for item in cards if item["project_status"] == "update"))

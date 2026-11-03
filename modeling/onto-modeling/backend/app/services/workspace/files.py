@@ -20,6 +20,7 @@ from .layout import (
     _first_heading,
     _is_script_descriptor,
     is_auto_detected as _is_auto_detected,
+    resource_text_path,
 )
 
 
@@ -279,6 +280,10 @@ class FilesMixin:
             (root / "resource" / subdir).mkdir(parents=True, exist_ok=True)
             replaced = (root / rel).exists()
             tx.write(rel, data)
+            # 换了原文件，旧的文本版作废（ADR-0073）：同一个提交里删掉，不让助手读到过期文本，数据接入再转
+            stale_text = resource_text_path(rel)
+            if (root / stale_text).is_file():
+                tx.remove(stale_text)
             tx.touch(RESOURCE_DIRECTIVES)
             detected = self._update_upload_directive(project_id, rel, purpose, reading_mode)
             # 变更提醒依据：前端对比该时间与派生产物版本，提示"资料已更新，可让助手增量刷新"
@@ -461,6 +466,8 @@ class FilesMixin:
             if not target.is_file():
                 raise WorkspaceError("文件不存在", 404, "file_not_found", {"path": rel_path})
             tx.remove(rel_posix)
+            if (root / resource_text_path(rel_posix)).is_file():
+                tx.remove(resource_text_path(rel_posix))
             tx.touch(RESOURCE_DIRECTIVES)
             directives = self.resource_directives(project_id)
             if directives.pop(rel_posix, None) is not None:
