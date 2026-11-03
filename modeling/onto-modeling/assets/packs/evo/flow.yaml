@@ -15,4 +15,4 @@ nodes:
     actions:
       - {label: 按外部反馈演进, command: "/ontology-evolution "}
 commands:
-  evolution: {node: evo.evolution, requires: [对象已提取]}
+  evolution: {node: evo.evolution, requires: [对象已提取], lock_waits: [confirm]}

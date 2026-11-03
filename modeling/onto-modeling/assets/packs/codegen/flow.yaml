@@ -29,6 +29,6 @@ nodes:
     panel: true
     actions: []
 commands:
-  codegen: {node: codegen.codegen, requires: [逻辑已提取]}
+  codegen: {node: codegen.codegen, requires: [逻辑已提取], lock_waits: [confirm]}
   codegen-scan: {node: codegen.codegen, requires: [逻辑已提取]}
-  solver-evaluator: {node: codegen.solver, requires: [对象已提取]}
+  solver-evaluator: {node: codegen.solver, requires: [对象已提取], lock_waits: [confirm]}

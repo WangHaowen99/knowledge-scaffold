@@ -16,5 +16,5 @@ nodes:
       - {label: 全量刷新, command: /ontology-flowchart 全量刷新}
       - {label: 校验流程图, command: /ontology-validate-diagrams}
 commands:
-  flowchart: {node: diagram.flowchart, requires: []}
+  flowchart: {node: diagram.flowchart, requires: [], lock_waits: [confirm]}
   validate-diagrams: {node: diagram.flowchart, requires: []}
