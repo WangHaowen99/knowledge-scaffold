@@ -156,7 +156,7 @@ export default function ChangeListDialog({ id, onClose }) {
                     <td>{cell(r, 'condition')}</td>
                     <td>{cell(r, 'value')}</td>
                     <td>{cell(r, 'scope')}</td>
-                    <td>{r.anchor ? <Ev anchor={r.anchor} label={M.shortAnchor(r.anchor_label)} /> : <span className="xs faint">{r.anchor_label || '手动补充'}</span>}</td>
+                    <td>{M.sourceCell(r) ? <Ev anchor={r.anchor} label={M.sourceCell(r).label} /> : null}</td>
                     <td>{r.confidence ? <Confidence p={r} mark={false} /> : <span className="xs faint">—</span>}</td>
                     <td>{act(r)}</td>
                   </tr>

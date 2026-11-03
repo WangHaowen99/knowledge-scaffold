@@ -288,3 +288,9 @@ test('增量更新页：助手没收尾（主推「继续」）、打断或出�
   const resume = { mode: 'interrupted', primary: { id: 'resume', label: '从打断处继续', primary: true, action: { type: 'resume_exec', exec_id: 'ex-1' } }, secondary: [], all_commands: true };
   assert.equal(M.withStartSuggestion(resume, null).primary.id, 'resume');
 });
+
+test('变更点清单弹窗：没有锚点的条目「出处」一栏空着，不写「手动补充」', () => {
+  assert.equal(M.sourceCell({ anchor: '', anchor_label: '' }), null);
+  assert.equal(M.sourceCell({ anchor: '', anchor_label: '手动补充' }), null);
+  assert.deepEqual(M.sourceCell({ anchor: 'file:resource/a.docx#p:3', anchor_label: 'a.docx §3' }), { anchor: 'file:resource/a.docx#p:3', label: '§3' });
+});

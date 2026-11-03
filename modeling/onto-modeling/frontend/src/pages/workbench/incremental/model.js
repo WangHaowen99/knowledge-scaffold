@@ -47,6 +47,9 @@ export function pointCells(p) {
 // 出处列只放节号：清单整份都来自同一份资料，「09 §2」→「§2」
 export const shortAnchor = (label) => String(label || '').replace(/^\S+\s+(?=§)/, '');
 
+// 清单「出处」一栏：有锚点才画证据角标，没有就空着（没带参考资料时影响分析的条目都没有锚点，不是「手动补充」）
+export const sourceCell = (row) => (row?.anchor ? { anchor: row.anchor, label: shortAnchor(row.anchor_label) } : null);
+
 // ---------- 弹窗：逐条修改清单 ----------
 let draftSeq = 0;
 // 弹窗里可编辑的行：key 稳定，新增行没有 id

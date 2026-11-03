@@ -158,7 +158,7 @@ export function register(ctx) {
       const fields = { condition: inp.condition.trim(), value: (inp.value || '').trim(), scope: (inp.scope || '').trim() };
       if (!old) {
         return {
-          id: `cp-${uid()}`, n: i + 1, ...fields, anchor: inp.anchor || '', anchor_label: '手动补充', confidence: 'high', confidence_note: null,
+          id: `cp-${uid()}`, n: i + 1, ...fields, anchor: inp.anchor || '', anchor_label: '', confidence: 'high', confidence_note: null,
           state: 'accepted', rewritten_text: null, impact: [],
         };
       }
