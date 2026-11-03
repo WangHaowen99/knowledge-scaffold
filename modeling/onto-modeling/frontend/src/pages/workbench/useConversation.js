@@ -8,6 +8,7 @@ function reducer(state, action) {
     case 'reset': return initialConversation();
     case 'history': return applyEvents(initialConversation(), action.events);
     case 'event': return applyEvent(state, action.env);
+    case 'events': return applyEvents(state, action.list);
     case 'snapshot': return applySnapshot(state, action.snap);
     default: return state;
   }
@@ -48,6 +49,14 @@ export function useConversation(preferredId, { preferAutobuild = false } = {}) {
     if (!cid) return undefined;
     let alive = true;
     let stop = null;
+    // 同一帧里到的事件（流式片段一秒几十个）攒成一次更新，时间线一帧只重画一次
+    let pending = [];
+    let frame = 0;
+    const flush = () => { frame = 0; const list = pending; pending = []; if (alive && list.length) dispatch({ type: 'events', list }); };
+    const onEvent = (env) => {
+      pending.push(env);
+      if (!frame) frame = (window.requestAnimationFrame || ((f) => setTimeout(f, 16)))(flush);
+    };
     dispatch({ type: 'reset' });
     (async () => {
       try {
@@ -59,14 +68,14 @@ export function useConversation(preferredId, { preferAutobuild = false } = {}) {
           kind: 'conversation',
           url: (q) => api.conversationEventsUrl(pid, cid, q),
           lastId: hist.last_seq || 0,
-          onEvent: (env) => dispatch({ type: 'event', env }),
+          onEvent,
           onStatus: setStream,
         });
       } catch (e) {
         if (alive) setLoadError(e);
       }
     })();
-    return () => { alive = false; stop?.(); };
+    return () => { alive = false; stop?.(); if (frame) (window.cancelAnimationFrame || clearTimeout)(frame); };
   }, [api, services, pid, cid]);
 
   // 项目流里的对话列表变化（EP-21）

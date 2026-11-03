@@ -3917,10 +3917,11 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 |---|---|---|---|---|
 | EC-20 | `progress` | 是 | `ProgressGroup`：`{group_id, title, desc, state: "running"\|"done"\|"failed"\|"waiting"\|"interrupted", started_at, duration_ms: int\|null, collapsed: bool, steps: [{id, text, meta: string（耗时或状态文字）, state: "done"\|"running"\|"waiting"\|"failed"\|"info", duration_ms}]}` | 「工作过程」折叠块和时间线（wb-l2「已完成 3 步」，wb-materials 读资料进度，chat-states 第 3、4、15、17、19 项） |
 | EC-21 | `progress.updated` | 是 | 同 EC-20，同一 `group_id` 整体替换 | 运行中步骤逐条回填耗时 |
-| EC-22 | `subagent.updated` | 是 | `{task_id, group_id: string\|null, title: string（业务名，如「语义检查」）, status: "started"\|"running"\|"done"\|"failed", progress_text: string（如「第 6 / 11 个操作」）, summary: string\|null}` | chat-states 第 3 项子任务面板 |
+| EC-22 | `subagent.updated` | 是 | `{task_id, group_id: string\|null, title: string（业务名，如「语义检查」）, status: "started"\|"running"\|"done"\|"failed", progress_text: string（如「第 6 / 11 个操作」）, summary: string\|null, step: {id, kind: "tool"\|"text", text: string\|null, state: "running"\|"done"\|"failed"}\|null}`（`step` 是子代理自己的一步，同一 `id` 后到的只改状态，`text` 为 null 时沿用先到的） | chat-states 第 3 项子任务面板 |
 | EC-23 | `tool.activity` | 是 | `{tool_use_id, visibility: "internal", tool, summary, state: "started"\|"done"\|"failed"}` | 默认不渲染；内部步骤只进执行日志（第 9 章建议 4），留给排障 |
 
 内部步骤由执行记录的阶段（㊶）和子代理事件归并成业务话的 `progress`。工具调用原文不进用户可见的事件。
+一轮里的工作过程按时间分段：助手每说一段成段的话（`message.assistant`），之前做完的步骤收成一组（`state=done`、`collapsed=true`），之后的步骤另起一组（`group_id` 带段号），组和正文按发生的先后排列。和工具调用同在一条回复里的短话（不超过 160 字，没有清单、表格、标题、代码、出处角标；提问前的话除外）是过程话，作为 `state=info` 的一步进组，不发 `message.assistant`；它在流时的 `message.delta` 片段由前端在组到达时去掉。
 
 #### 确认、决策、问题
 

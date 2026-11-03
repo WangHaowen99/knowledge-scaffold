@@ -74,8 +74,10 @@ export function useAutobuild({ pid, cid, list }) {
       const r = await api[spec[0]](pid, run.run_id);
       setRun((x) => ({ ...x, ...r }));
       toast(spec[1], spec[2]);
+      return true;
     } catch (e) {
       toast(errorText(e), 'alert');
+      return false;
     } finally {
       setBusy(null);
     }

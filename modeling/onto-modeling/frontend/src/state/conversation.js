@@ -14,8 +14,11 @@ export function initialConversation() {
     usage: { input_tokens: 0, output_tokens: 0, cost: null, turns: 0 },
     configPending: null,
     engineLabel: null,
+    thinking: '', // 这一次模型调用到目前的思考片段（瞬时，只给「思考中」看）
   };
 }
+
+const THINKING_MAX = 2000;
 
 const seqOf = (env) => {
   const n = Number(env?.id);
@@ -39,10 +42,30 @@ function patch(state, key, fn) {
 
 const FREE = 'subagents:free';
 
-// 同一个子任务的更新按到达顺序合并（后到的字段盖住先到的）
+// 子代理的一步（EC-22 step）：同一个 id 后到的只改状态；说法为 null 时沿用先到的
+function mergeStep(steps, step) {
+  if (!step) return steps;
+  const i = steps.findIndex((x) => x.id === step.id);
+  if (i < 0) return [...steps, step];
+  return steps.map((x, j) => (j === i ? { ...x, ...step, text: step.text ?? x.text } : x));
+}
+
+// 同一个子任务的更新按到达顺序合并（后到的字段盖住先到的）；步骤累积，空的进展说法不盖掉先到的
 function mergeSub(list, sub) {
   const i = list.findIndex((s) => s.task_id === sub.task_id);
-  return i >= 0 ? list.map((s, j) => (j === i ? { ...s, ...sub } : s)) : [...list, sub];
+  const prev = i >= 0 ? list[i] : {};
+  const { step, ...rest } = sub;
+  const next = { ...prev, ...rest, progress_text: sub.progress_text || prev.progress_text || '', steps: mergeStep(prev.steps || [], step) };
+  return i >= 0 ? list.map((s, j) => (j === i ? next : s)) : [...list, next];
+}
+
+// 过程话收进了工作过程（宿主不再发它的完整消息）：还在流的片段随进展组到达去掉
+function dropStreaming(state) {
+  const gone = state.order.filter((k) => state.items[k]?.kind === 'assistant' && state.items[k].streaming);
+  if (!gone.length) return state;
+  const items = { ...state.items };
+  gone.forEach((k) => { delete items[k]; });
+  return { ...state, items, order: state.order.filter((k) => !gone.includes(k)) };
 }
 
 // 从「无组」那一栏去掉这些子任务；空了就整栏去掉
@@ -71,6 +94,7 @@ export function applyEvent(state, env) {
     case 'session.state':
       return {
         ...state,
+        thinking: d.state === 'running' ? state.thinking : '',
         session: { state: d.state, since: d.since || ts, turn_started_at: d.turn_started_at ?? null, reason: d.reason ?? null },
         queue: d.state === 'queued' ? state.queue : null,
       };
@@ -90,11 +114,12 @@ export function applyEvent(state, env) {
     case 'message.user':
       return upsert(state, `msg:${d.message_id}`, { ...at, ...d, kind: 'user' });
     case 'message.delta': {
+      if (d.kind === 'thinking') return { ...state, thinking: `${state.thinking}${d.text || ''}`.slice(-THINKING_MAX) };
       if (d.kind && d.kind !== 'text') return state;
       const key = `asst:${d.message_id}`;
       const cur = state.items[key];
       if (cur && !cur.streaming) return state;
-      return upsert(state, key, {
+      return upsert({ ...state, thinking: '' }, key, {
         kind: 'assistant', ts: cur?.ts || ts, message_id: d.message_id,
         text_md: `${cur?.text_md || ''}${d.text || ''}`, anchors: cur?.anchors || [], streaming: true,
       });
@@ -102,7 +127,7 @@ export function applyEvent(state, env) {
     case 'message.assistant': {
       const key = `asst:${d.message_id}`;
       const cur = state.items[key];
-      return upsert(state, key, { ...at, ...d, ts: cur?.ts || ts, streaming: false, kind: 'assistant' });
+      return upsert({ ...state, thinking: '' }, key, { ...at, ...d, ts: cur?.ts || ts, streaming: false, kind: 'assistant' });
     }
     case 'notice':
       return upsert(state, `notice:${seq ?? ts}:${d.text}`, { ...at, ...d, notice_kind: d.kind, kind: 'notice' });
@@ -116,7 +141,7 @@ export function applyEvent(state, env) {
       // 历史窗口从组中间开始时，子任务先于组到达、进了「无组」那一栏：组出现后收回组里
       const adopted = (state.items[FREE]?.subagents || []).filter((s) => s.group_id && s.group_id === d.group_id);
       const merged = adopted.reduce((list, s) => mergeSub(list, s), cur?.subagents || []);
-      return upsert(dropFree(state, adopted.map((s) => s.task_id)), key, {
+      return upsert(dropStreaming({ ...dropFree(state, adopted.map((s) => s.task_id)), thinking: '' }), key, {
         ...d, ts: cur?.ts || ts, seq: cur?.seq ?? seq, subagents: merged, kind: 'progress',
       });
     }
@@ -127,22 +152,19 @@ export function applyEvent(state, env) {
       }
       const key = FREE;
       const cur = state.items[key];
-      const list = cur?.subagents || [];
-      const i = list.findIndex((s) => s.task_id === d.task_id);
-      const next = i >= 0 ? list.map((s, j) => (j === i ? { ...s, ...d } : s)) : [...list, d];
-      return upsert(state, key, { kind: 'subagents', ts: cur?.ts || ts, subagents: next });
+      return upsert(state, key, { kind: 'subagents', ts: cur?.ts || ts, subagents: mergeSub(cur?.subagents || [], d) });
     }
     case 'tool.activity':
       return state; // 内部步骤只进执行日志，不渲染
 
     case 'permission.requested':
-      return upsert(state, `perm:${d.request_id}`, { ...at, ...d, resolved: null, kind: 'permission' });
+      return upsert({ ...state, thinking: '' }, `perm:${d.request_id}`, { ...at, ...d, resolved: null, kind: 'permission' });
     case 'permission.resolved':
       return patch(state, `perm:${d.request_id}`, (p) => ({ ...p, resolved: d }));
     case 'question.asked': {
       const key = `q:${d.question_id}`;
       const cur = state.items[key];
-      return upsert(state, key, {
+      return upsert({ ...state, thinking: '' }, key, {
         ts: cur?.ts || ts, seq: cur?.seq ?? seq, question_id: d.question_id, state: d.state || 'open',
         summary: d.state === 'answered' ? cur?.summary : undefined, question: d, kind: 'question',
       });
@@ -240,6 +262,24 @@ export function timelineBlocks(state) {
     blocks.push({ type: it.kind, key, item: it });
   }
   return blocks;
+}
+
+/**
+ * 助手在跑、却没有别的东西在动时（刚发出消息、两次工具调用之间模型在想），时间线末尾显示「思考中」：
+ * 正文在流、有在跑的步骤、在等你回答时不显示。返回 null 或 {kind: 'waiting'|'thinking', thinking}。
+ */
+export function liveActivity(state) {
+  if (state.session.state !== 'running') return null;
+  for (let i = state.order.length - 1; i >= 0; i -= 1) {
+    const it = state.items[state.order[i]];
+    if (!it || it.kind === 'notice' || it.kind === 'day') continue;
+    if (it.kind === 'assistant' && it.streaming) return null;
+    if (it.kind === 'question' && it.state === 'open') return null;
+    if (it.kind === 'permission' && !it.resolved) return null;
+    if (it.kind === 'progress' && it.state === 'running' && (it.steps || []).some((s) => s.state === 'running')) return null;
+    if (it.kind === 'progress' || it.kind === 'assistant' || it.kind === 'user' || it.kind === 'card') break;
+  }
+  return { kind: state.thinking ? 'thinking' : 'waiting', thinking: state.thinking };
 }
 
 // 等你决定的问题：输入框上方的建议条要禁用主推
