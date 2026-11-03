@@ -57,7 +57,19 @@ def test_engine_owned_lock_is_shared_across_calls(workspace):
     result = run_helper(workspace, "acquire", "extract-object", "objects")
     assert result.returncode == 0 and result.stdout.strip() == "ok"
     assert read_lock(workspace)["phase"] == "objects"
-    assert run_helper(workspace, "check-lock", "extract-object").stdout.startswith("locked:")
+    # 本会话自己拿的锁：查到的是 own（上下文压缩后再查，不能当成残留清掉，F 第 5 条）
+    assert run_helper(workspace, "check-lock", "extract-object").stdout.startswith("own:")
+
+
+def test_other_caller_still_sees_engine_lock_as_locked(workspace):
+    write_marker(workspace, "engine_a")
+    run_helper(workspace, "acquire", "extract-object", "objects")
+    bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        write_marker(workspace, "engine_a", host_pid=bystander.pid)
+        assert run_helper(workspace, "check-lock", "extract-object").stdout.strip().startswith("locked:")
+    finally:
+        bystander.kill()
 
 
 def test_new_engine_instance_makes_old_lock_stale(workspace):

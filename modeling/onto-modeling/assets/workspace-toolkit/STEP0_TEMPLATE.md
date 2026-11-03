@@ -13,6 +13,8 @@
 
 下面所有提示语（错误恢复、跳步守卫等）一律是对 INTERACTION_CONVENTIONS.md 中相应话术段的引用，不是另立标准；如果两边出现冲突，**改 STEP0_TEMPLATE 让它对齐 INTERACTION_CONVENTIONS，不要反过来**。
 
+本模板的步骤、脚本、锁和输出值都不对用户说（不写「执行 Step 0」「锁检查通过」「锁已获取」）；用户只看到需要他回答的提示。
+
 ## 输入
 
 - `COMMAND_NAME`：命令短名（如 `extract-object`）
@@ -27,16 +29,15 @@ python3 .claude/scripts/state_helper.py check-lock {COMMAND_NAME}
 ```
 
 - 输出 `ok` → 继续下一步。
-- 输出 `stale:{started_at}:{phase}` → 一天以上的锁视为上次已崩溃，**自动调用 `force-release` 并继续下一步**，同时告知用户："清理了上次（{started_at}）的残留记录。"
-- 输出 `locked:{started_at}:{phase}` → 按 `.claude/INTERACTION_CONVENTIONS.md` 的 **错误恢复类** 话术提示：
+- 输出 `own:{started_at}:{phase}` → 这把锁是你自己在这次对话里拿的（比如上下文压缩后记不清了）：**不要清理，不要问用户**。正在做这条命令就按 phase 接着做；是新开始的同名命令就继续第 2 步，第 3 步的 `acquire` 会覆盖它。
+- 输出 `stale:{started_at}:{phase}` → 持有者已经不在或超过一天，视为上次已崩溃，**自动调用 `force-release` 并继续下一步**，不用告诉用户。
+- 输出 `locked:{started_at}:{phase}` → 另一个会话正在做这条命令，按 `.claude/INTERACTION_CONVENTIONS.md` 的 **错误恢复类** 用确认卡问用户：
 
   ```
-  ⚠️ 发现上次未完成的 {COMMAND_NAME}：
-  - 起始时间：{started_at}
-  - 中断阶段：{phase}
+  ⚠️ 「{命令的中文名}」上次没做完（{started_at} 开始）
 
-  - 回复 **续执** → 从中断处继续
-  - 回复 **清理重来** → 清理残留并重新开始
+  - **续执** → 从中断处继续
+  - **清理重来** → 清理残留并重新开始
   ```
 
   - **续执**：读取 `.ontology-state/lock-{COMMAND_NAME}.json` 的 phase 字段，跳转到命令中对应阶段继续执行；跳过 Step 0 其余内容。
@@ -102,7 +103,17 @@ python3 .claude/scripts/state_helper.py acquire {COMMAND_NAME} {新阶段标签}
 
 即 `acquire` 幂等——重复调用直接覆盖 phase 字段，不需要先 force-release。
 
+**停下来等用户回复时切到 `confirm`**：需要用户确认或选择（展示清单等确认、在几个做法里选、等他补充信息）时，先
+
+```bash
+python3 .claude/scripts/state_helper.py acquire {COMMAND_NAME} confirm
+```
+
+再提问；用户回复后切回接下来的阶段。平台据此区分「命令在等你回复」和「做完了忘了释放锁」：一轮结束时锁不在 `confirm`、这次又保存过内容，平台会代为释放，记为做完。
+
 ### 5) 命令结束前释放锁（任何形式的结束都要 release）
+
+**先 release，再写给用户的收尾小结。** 小结两三句：做了什么、还有什么要用户定。不列「下一步建议」等用户回复关键词——下一步由界面的建议条给出；这一轮的修改由界面上的卡片确认生效或撤回。
 
 ```bash
 python3 .claude/scripts/state_helper.py release {COMMAND_NAME}

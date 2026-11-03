@@ -16,7 +16,8 @@ acquire 时写、release 时删；内核守卫只放行这些路径（方案 D11
 还是进程内运行都无关。不在后端托管下（终端里直接跑 CLI）时退回按长寿祖先进程号判断。
 
 子命令：
-    check-lock <command>                查询锁状态；输出 ok / locked:{ts}:{phase} /
+    check-lock <command>                查询锁状态；输出 ok / own:{ts}:{phase}（本会话自己拿的）/
+                                        locked:{ts}:{phase} /
                                         stale:{ts}:{phase}（持有者已不在或锁超 24h）
     acquire <command> <phase>           写入锁；同会话（持有者相同）覆盖以支持
                                         阶段切换；若另一活跃会话已持有则输出
@@ -264,6 +265,11 @@ def check_lock(command: str) -> int:
     # Owner gone → lock is orphaned regardless of age.
     if _owner_alive(data) is False:
         print(f'stale:{ts}:{phase}')
+        return 0
+    owner, _ = _session_owner()
+    if owner and data.get('owner') == owner:
+        # 本会话自己拿的锁（上下文压缩后记不清了再查到的就是它）：接着做，不当残留清掉
+        print(f'own:{ts}:{phase}')
         return 0
     if age is not None and age > STALE_LOCK_HOURS:
         print(f'stale:{ts}:{phase}')
