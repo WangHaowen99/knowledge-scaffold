@@ -120,6 +120,17 @@ def test_writing_a_new_goal_as_the_answer_sets_the_project_goal_and_unblocks_con
     blueprint_service.prepare_confirm(workspaces, project_id, {"base_revision": saved.json()["revision"], "next": "L2"})
 
 
+def test_suggestion_points_to_the_goal_question_instead_of_confirm(monkeypatch):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    import flow_state
+
+    pending = flow_state._blueprint_candidates({"blueprint": {"state": "draft", "goal_pending": True}})
+    assert pending[0]["id"] == "answer_goal" and pending[0]["action"]["params"] == {"dialog": "blueprint"}
+    assert all(item["id"] != "confirm_blueprint" for item in pending)
+    normal = flow_state._blueprint_candidates({"blueprint": {"state": "draft", "next": "L2"}})
+    assert normal[0]["id"] == "confirm_blueprint"
+
+
 def test_keeping_the_goal_leaves_it_unchanged(env):
     client, workspaces, _manager, project_id, root = env
     workspaces._update_meta(project_id, goal="合成目标：按规则生成补货单")
