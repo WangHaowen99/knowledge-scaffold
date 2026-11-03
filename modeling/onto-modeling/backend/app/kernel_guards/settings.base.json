@@ -48,6 +48,19 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/ontology_scope_guard.sh\" || exit 2"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/resource_read_guard.sh\" || exit 2"
+          }
+        ]
+      },
+      {
+        "matcher": "Read|NotebookRead",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/resource_read_guard.sh\" || exit 2"
           }
         ]
       },

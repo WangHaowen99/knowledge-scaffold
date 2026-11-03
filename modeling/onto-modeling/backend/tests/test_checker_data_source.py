@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from app import config
+from tests.text_versions import write_text_versions
 
 SCRIPTS = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts"
 
@@ -115,6 +116,7 @@ def columns_workspace(tmp_path: Path, uploaded: bool = False) -> Path:
         )
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(path)
+    write_text_versions(tmp_path)  # 资料区的 Excel 只读文本版（F4c）
     (tmp_path / "ontology" / "object").mkdir(parents=True)
     return tmp_path / "ontology"
 

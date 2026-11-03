@@ -72,7 +72,7 @@ function MiniMaterial({ m }) {
   else line = <span className="muted">{s.icon ? <Icon name={s.icon} size={12} /> : null}{s.text}</span>;
   return (
     <div className={cx('en-mt', st === 'reading' && 'run', m.blocked && 'blk')}>
-      <div className="row g8"><MatIcon kind={m.kind} size={14} /><span className="nm ell grow" title={m.name}>{m.name}</span></div>
+      <div className="row g8"><MatIcon kind={m.kind} size={14} /><span className="nm ell grow" title={m.label || m.name}>{m.label || m.name}</span></div>
       <div className="row g8 mt8">
         <span className="xs ell" style={{ color: ai ? 'var(--indigo)' : 'var(--ink3)' }}>{ai ? <Icon name="sparkle" size={12} /> : null}{purposeLabel(m.purpose)}</span>
         <span className="sp" /><span className="xs num muted">{m.read_pct}%</span>

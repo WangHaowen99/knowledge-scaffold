@@ -1223,6 +1223,7 @@ MCP 传输接口（`M-05`～`M-07`）保留现有大写错误码和 JSON-RPC 信
 `GET /api/v1/projects/{id}/materials/verification` · 所有者 · 旧：— · 审计：否 · 依据：ADR 0011（research_checker） · 页面：wb-materials（核验抽屉）、reports（资料分析报告）
 
 - 响应：`{checked_at, total, passed, problems, items: [{subject: string, kind: "rule"|"term"|"object"|"item", anchor, anchor_label, status: "passed"|"unverifiable"|"pending", reason: string|null}]}`。
+- F4c：`anchor_label` 是「资料名 · 位置」（页、工作表或小节标题；文本版映射回原资料名，不显示行号和扩展名）。
 - 不分页，上限 1000。
 
 #### R-10 把资料问题记为待答问题
@@ -4615,7 +4616,9 @@ type MaterialText = {
 };
 
 type MaterialMapItem = {
-  path: string; name: string; kind: Material["kind"];
+  path: string; name: string;     // 路径与文件名照留（给发命令、定位用）
+  label: string;                  // F4c：界面上显示的资料名（不带扩展名，文本版映射回原资料）
+  kind: Material["kind"];
   purpose: PurposeOption["value"]; purpose_auto: boolean;
   read_pct: number;
   status: "done" | "reading" | "queued" | "partial";
@@ -4630,8 +4633,9 @@ type MaterialMap = {
   total: number; read_pct: number;
   analysis_mode: "web" | "local"; web_available: boolean;
   items: MaterialMapItem[];
-  problems: { id: string; kind: "contradiction" | "missing"; text_md: string; anchors: string[];
-              state: "open" | "promoted" | "resolved" }[];
+  problems: { id: string; kind: "contradiction" | "missing"; text_md: string;
+              display_md: string;  // F4c：给人看的正文，资料路径换成「资料名 · 位置」，其余路径换业务名
+              anchors: string[]; state: "open" | "promoted" | "resolved" }[];
   verification: { total: number; passed: number; unverifiable: number; pending: number; checked_at: time | null };
   can_generate_blueprint: boolean;
 };

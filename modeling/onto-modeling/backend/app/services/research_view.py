@@ -20,7 +20,7 @@ import re
 import time
 from pathlib import Path
 
-from . import material_text
+from . import material_text, workspace_labels
 from .workspace.layout import RESOURCE_SUBDIRS, is_auto_detected
 
 KINDS = {
@@ -183,10 +183,25 @@ def _locate(where: Path, main: Path, location: str) -> tuple[str, str]:
     return rel, location.partition("#")[2].strip().strip("`")
 
 
-def anchor_label(rel: str, fragment: str) -> str:
-    stem = Path(rel).stem
-    location = material_text.location_label(fragment)
-    return f"{stem} {location}".strip()
+def anchor_label(main: Path, rel: str, fragment: str) -> str:
+    """出处给人看的写法：「资料名 · 位置」（F4c，ADR-0075）。文本版映射回原资料名；行号换成它所在的页、工作表或
+    小节标题，算不出来就只写资料名。接口里的路径、锚点照留。"""
+    name = workspace_labels.material_name(rel)
+    lines = re.fullmatch(r"L(\d+)(?:-L?\d+)?", fragment or "")
+    location = (material_text.line_location(main, rel, int(lines.group(1))) if lines
+                else material_text.location_label(fragment))
+    return f"{name} · {location}" if location else name
+
+
+def humanize(main: Path, text: str) -> str:
+    """给人看的一段话：资料出处换成「资料名 · 位置」，其余工作区路径换成业务名。发给助手的原文不走这里。"""
+    text = str(text or "")
+    out, last = [], 0
+    for match in material_text.ANCHOR_RE.finditer(text):
+        out += [text[last:match.start()], anchor_label(main, match.group(1), (match.group(2) or "").lstrip("#"))]
+        last = match.end()
+    out.append(text[last:])
+    return workspace_labels.humanize("".join(out))
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +224,7 @@ def verification(manager, project_id: str, parsed: dict | None = None) -> dict:
         kind = _ITEM_KINDS.get(row["category"], "item")
         rel, fragment = _locate(where, main, row["location"]) if row["location"] else ("", "")
         anchor = material_text.file_anchor(rel, fragment) if rel else ""
-        item = {"subject": subject, "kind": kind, "anchor": anchor, "anchor_label": anchor_label(rel, fragment) if rel else "",
+        item = {"subject": subject, "kind": kind, "anchor": anchor, "anchor_label": anchor_label(main, rel, fragment) if rel else "",
                 "status": "passed", "reason": None}
         if not row["location"]:
             item.update(status="unverifiable", reason="没有来源位置")
@@ -279,7 +294,8 @@ def problems(main: Path, parsed: dict, promoted: dict | None = None) -> list[dic
         anchors = [material_text.file_anchor(path, fragment) for path, fragment, _ in material_text.find_anchors(gap["text"])]
         state = "resolved" if gap["done"] else "promoted" if problem_id in promoted else "open"
         out.append({"id": problem_id, "kind": "contradiction" if "矛盾" in gap["text"] else "missing",
-                    "text_md": gap["text"], "anchors": anchors, "state": state})
+                    "text_md": gap["text"], "display_md": humanize(main, gap["text"]), "anchors": anchors,
+                    "state": state})
     return out
 
 
@@ -331,7 +347,8 @@ def map_items(manager, project_id: str, parsed: dict, found_problems: list[dict]
         contradictions = sum(1 for item in found_problems if item["kind"] == "contradiction" and item["state"] == "open"
                              and (rel in item["text_md"] or name in item["text_md"]))
         items.append({
-            "path": rel, "name": name, "kind": kind_of(rel)[0], "purpose": purpose,
+            "path": rel, "name": name, "label": workspace_labels.material_name(rel), "kind": kind_of(rel)[0],
+            "purpose": purpose,
             "purpose_auto": directive is None or is_auto_detected(directive) or purpose == "auto",
             "read_pct": 100 if read else 0, "status": "done" if read else "queued",
             "position": None, "queue_reason": None,
@@ -446,7 +463,7 @@ def candidates(manager, project_id: str, *, after: str = "", limit: int = 0) -> 
             created = None
         items.append({"id": candidate_id, "kind": kind, "name": name,
                       "anchor": material_text.file_anchor(rel, fragment) if rel else "",
-                      "anchor_label": anchor_label(rel, fragment) if rel else "", "created_at": _iso(created)})
+                      "anchor_label": anchor_label(main, rel, fragment) if rel else "", "created_at": _iso(created)})
     start = 0
     if after:
         index = next((i for i, item in enumerate(items) if item["id"] == after), None)

@@ -7,7 +7,7 @@ This command is the object-only half of extraction. It reads flowchart summaries
 遵循 `.claude/STEP0_TEMPLATE.md`，COMMAND_NAME = `extract-object`。简述：
 
 1. `python3 .claude/scripts/state_helper.py check-lock extract-object`
-   - `locked:{ts}:{phase}` → 按 **错误恢复类** 提示；phase 可能是 `source` / `objects`，**续执**时跳到对应阶段。
+   - `locked:{ts}:{phase}` → `python3 .claude/scripts/state_helper.py recover extract-object` 由平台定（不问用户）：`resume:{phase}` 跳到对应阶段接着做，`restart` 已清理、重新开始；工作过程里说一句业务话（phase 可能是 `source` / `objects`）。
 2. `python3 .claude/scripts/state_helper.py check-prereq extract-object`
    - `missing:资料分析完成` → 先 `python3 .claude/scripts/state_helper.py detect-stage` 区分两种情况：
      - `未开始` → 按 **跳步守卫** 提示："当前既无资料分析报告也无流程图，提取无源。" 选项 **先做 资料分析**（/ontology-research）/ **先做 流程图**（/ontology-flowchart）。

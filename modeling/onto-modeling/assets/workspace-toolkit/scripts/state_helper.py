@@ -22,7 +22,9 @@ acquire 时写、release 时删；内核守卫只放行这些路径（方案 D11
     acquire <command> <phase>           写入锁；同会话（持有者相同）覆盖以支持
                                         阶段切换；若另一活跃会话已持有则输出
                                         conflict:{ts}:{phase} 并退出码 2
-    force-release <command>             强制删除锁（用户"清理重来"时使用）
+    recover <command>                   check-lock 输出 locked 时由平台定续做还是重来（不问用户）：
+                                        resume:{phase}（锁归本会话，从该阶段接着做）/ restart（已清理）/ ok
+    force-release <command>             强制删除锁（清理残留）
     release <command>                   正常结束时释放锁
     update-progress <key> <value> …     键值对更新 progress.json
     show-progress                       打印 progress.json
@@ -468,6 +470,43 @@ def _clear_active(command: str) -> None:
             pass
 
 
+# 停在这些阶段的锁看不出做到哪一步（刚开始、在等用户回复、旧锁），续不了，只能清理重来
+RESTART_PHASES = {'start', 'default', 'confirm', 'unknown', ''}
+
+
+def recover(command: str) -> int:
+    """上次没做完的同名命令（check-lock 输出 locked 时）怎么办，由平台按状态定、不问用户（F4c）：
+    锁停在有名字的阶段 → 续做，锁归这次调用的会话，输出 `resume:{phase}`；
+    看不出做到哪 → 清理重来，输出 `restart`；没有锁 → `ok`。"""
+    path = _lock_path(command)
+    data = _read_lock(path)
+    if data is None:
+        if path.exists():
+            path.unlink()
+            _clear_active(command)
+            print('restart')
+        else:
+            print('ok')
+        return 0
+    phase = str(data.get('phase') or '')
+    if phase in RESTART_PHASES:
+        path.unlink()
+        _clear_active(command)
+        print('restart')
+        return 0
+    owner, ppid = _session_owner()
+    payload = {key: value for key, value in data.items() if key not in ('owner', 'owner_pid')}
+    payload['pid'] = os.getpid()
+    if owner:
+        payload['owner'] = owner
+    else:
+        payload['owner_pid'] = ppid
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    _mark_active(command, phase)
+    print(f'resume:{phase}')
+    return 0
+
+
 def force_release(command: str) -> int:
     path = _lock_path(command)
     if path.exists():
@@ -653,6 +692,9 @@ def main():
     if cmd == 'force-release':
         name = need('force-release <command>')
         return 1 if name is None else force_release(name)
+    if cmd == 'recover':
+        name = need('recover <command>')
+        return 1 if name is None else recover(name)
     if cmd == 'update-progress':
         return update_progress(args)
     if cmd == 'show-progress':

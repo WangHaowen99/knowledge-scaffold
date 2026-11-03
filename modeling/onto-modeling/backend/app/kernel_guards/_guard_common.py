@@ -542,6 +542,87 @@ def guard_resource(call: Call) -> str | None:
     )
 
 
+# ---- 资料原件只读文本版（F4c；ADR-0073、0076）----
+
+# 要经数据接入转成文本版才读的资料原件：PDF、Office、图片等。主容器里不解析它们——内测引擎跑在后端进程里，
+# 它自带的读文件工具遇到 PDF 会用 pdfplumber 在进程内解析（openjiuwen 依赖 pdfplumber，镜像里卸不掉）
+BINARY_ORIGINALS = (".pdf", ".doc", ".docx", ".docm", ".dot", ".dotx", ".xls", ".xlsx", ".xlsm", ".xlsb", ".ppt",
+                    ".pptx", ".pptm", ".odt", ".ods", ".odp", ".rtf", ".wps", ".et", ".dps", ".png", ".jpg", ".jpeg",
+                    ".gif", ".bmp", ".tif", ".tiff", ".webp", ".heic")
+_IMAGES = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp", ".heic")
+# 只看文件元信息、不解析内容的命令：碰到原件也放行
+_META_COMMANDS = {"ls", "stat", "file", "wc", "du", "sha256sum", "sha1sum", "md5sum", "shasum", "cksum", "git", "echo",
+                  "printf", "test", "[", "cd", "pwd", "realpath", "readlink", "basename", "dirname", "true", "false"}
+_ORIGINAL_RE = re.compile(r"[^\s'\"`;|&()<>=]+?(?:" + "|".join(re.escape(s) for s in BINARY_ORIGINALS) + r")(?![\w.])",
+                          re.IGNORECASE)
+
+
+def _text_version(call: Call, path: Path) -> str | None:
+    """资料原件 → 文本版的工作区相对路径（resource/text/<分组>/<原文件名>.md）；不在资料区里返回 None。"""
+    for base in _resource_dirs(call)[:2]:
+        if _under(path, base) and path != base:
+            rel = path.relative_to(base).as_posix()
+            return None if rel.startswith("text/") else f"resource/text/{rel}.md"
+    return None
+
+
+def _original_reason(call: Call, path: Path, shown: str) -> str:
+    text = _text_version(call, path)
+    if path.suffix.lower() in _IMAGES:
+        return f"图片资料「{shown}」暂不支持读取，按未读处理。"
+    if text and (call.root / text).is_file():
+        return f"资料原件「{shown}」不在这里解析，改读它的文本版 {text}（数据接入转出的 Markdown，带页码、工作表标记）。"
+    return (f"资料原件「{shown}」还没有文本版（转换中、暂不支持或转换失败），这里不解析原件；"
+            "这份资料按未读处理，资料区能看到原因。")
+
+
+def _originals_in_command(call: Call) -> list[tuple[Path, str]]:
+    """命令（含 heredoc、内联代码）里提到的资料原件：路径直接在资料区下，或只写了文件名、资料区里有同名原件。"""
+    found = []
+    names = {}
+    for base in _resource_dirs(call)[:1]:
+        if base.is_dir():
+            for path in base.rglob("*"):
+                if path.suffix.lower() in BINARY_ORIGINALS and "text" not in path.relative_to(base).parts[:1]:
+                    names.setdefault(path.name, path)
+    for raw in _ORIGINAL_RE.findall(call.command):
+        candidate = raw.strip("'\"")
+        for path in (_lexical(call.cwd, candidate), _lexical(call.root, candidate)):
+            if _text_version(call, path) is not None:
+                found.append((path, candidate))
+                break
+        else:
+            if Path(candidate).name in names:
+                found.append((names[Path(candidate).name], candidate))
+    return found
+
+
+def _only_metadata(command: str) -> bool:
+    for words, _joiner in _segments(_tokens(command)):
+        words = [word for word in words if not _ASSIGN_RE.match(word)]
+        while words and words[0] in PREFIX_COMMANDS:
+            words = words[1:]
+        if words and Path(words[0]).name not in _META_COMMANDS:
+            return False
+    return True
+
+
+def guard_resource_read(call: Call) -> str | None:
+    """读资料原件：Read / 内测引擎 read_file 直接读，或 Bash 里拿解析库、转换命令碰原件，一律拒绝并指向文本版。"""
+    if call.tool == "Bash":
+        if not call.command:
+            return None
+        hits = _originals_in_command(call)
+        if not hits or _only_metadata(call.command):
+            return None
+        return _original_reason(call, *hits[0])
+    for target in call.targets:
+        if target.path is not None and target.path.suffix.lower() in BINARY_ORIGINALS \
+                and _text_version(call, target.path) is not None:
+            return _original_reason(call, target.path, target.raw)
+    return None
+
+
 def _toolset_dirs(call: Call) -> list[Path]:
     root = call.root
     dirs = [root / ".claude", root / "CLAUDE.md", root / "README.md", root / ".onto", root / ".git"]
@@ -741,6 +822,7 @@ def guard_scope(call: Call) -> str | None:
 
 GUARDS = {
     "resource": guard_resource,
+    "resource_read": guard_resource_read,
     "toolset": guard_toolset,
     "lock": guard_lock,
     "scope": guard_scope,

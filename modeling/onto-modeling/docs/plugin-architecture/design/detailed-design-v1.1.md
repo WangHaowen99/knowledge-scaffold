@@ -490,6 +490,7 @@ dsh 能在循环里挂中间件，onto 做不到。ADR 0001 写明，可用的�
    - 匹配 `Edit|Write|MultiEdit` 时依次执行：`lock_file_guard`、`toolset_write_guard`、`resource_write_guard`、`ontology_scope_guard`；
    - 匹配 `Bash` 时依次执行：`pre_commit_check`、`toolset_write_guard`、`resource_write_guard`、`ontology_scope_guard`；
    - Jiuwen 引擎通过 `ClaudeHooksRail` 按同样的协议执行同一批脚本，超时 15 秒。
+   - F4c（ADR-0076）：加 `resource_read_guard`，匹配 `Read|NotebookRead` 与 `Bash`，读资料原件（PDF、Office、图片等）一律拒绝、指向文本版；Jiuwen 的 `read_file` 映射成 `Read` 走同一个守卫（openjiuwen 的 read_file 会在进程内用 pdfplumber 解析 PDF，依赖卸不掉，只能在调用前拦）。
 3. **提交关：** `pre_commit_check` 遇到 ERROR 就阻断提交。
 4. **进程隔离：** jiuwenbox 的管理 socket 不挂进主容器，只交给一个无特权的网关容器。
 5. **导入安全：** zip 包里的符号链接和 `..` 路径一律拒绝。
@@ -2113,3 +2114,10 @@ BFO_MODELING_GUIDE、OBJECT_EXTRACTION_HEURISTICS、OPERATION_PARADIGM_GUIDE、O
 |---|---|
 | 9 建议 2 | 蓝图确认的是要解决的问题、分段规划、术语与口径；要解决的问题就是项目的建模目标、只存一份；资料和目标对不上时在蓝图里提目标问题，没答之前不能确认、不由策略代答；取消"不在范围" |
 | 9 建议 5 | 资料分析只读文本（原件读数据接入转出的文本版，出处指向文本版加行号，没有文本版记为未读）；资料里没有编号时助手自编，编号不问用户 |
+
+**2026-11-03 · F4c（主容器里不解析资料原件、锁恢复不问人，ADR-0076）**：
+
+| 章节 | 改动 |
+|---|---|
+| 4.8 | 守卫 hooks 加 `resource_read_guard`：两个引擎读资料原件、Bash 里解析原件一律拒绝，指向文本版 |
+| 9 建议 5 | schema 表头、发布时的数据绑定、资料分析核验都读文本版，不解析 Excel、Word 原件；命令开头的锁恢复由 `state_helper recover` 按锁的阶段定续做或重来，不问用户 |

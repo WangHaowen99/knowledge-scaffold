@@ -45,8 +45,75 @@ def load_directives(root: Path) -> dict:
         return {}
 
 
+NO_TEXT_MESSAGE = "Excel「{}」还没有文本版（转换中、暂不支持或转换失败），字段核验未完成"
+_SHEET_RE = re.compile(r"^<!-- 工作表：(.+) -->$")
+
+
+def resource_text(path: Path) -> Path | None:
+    """资料区里的 Excel 原件 → 数据接入转出的文本版（resource/text/<分组>/<原文件名>.md）；不在资料区返回 None。
+    资料区的 Excel 不在这里解析（F4c，ADR-0076：解析不可信文件不在主容器里做），只读文本版里的 Markdown 表。"""
+    if path.suffix.lower() == ".csv":
+        return None
+    for parent in path.parents:
+        if parent.name == "resource":
+            rel = path.relative_to(parent)
+            return None if rel.parts[:1] == ("text",) else parent / "text" / f"{rel.as_posix()}.md"
+    return None
+
+
+def _md_row(line: str) -> list[str]:
+    body = line.strip()
+    body = body[1:] if body.startswith("|") else body
+    cells, current, escaped = [], [], False
+    for char in body:
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == "|":
+            cells.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    if current and "".join(current).strip():
+        cells.append("".join(current))
+    return [cell.strip().replace("<br>", "\n") for cell in cells]
+
+
+def text_sheets(text_path: Path) -> dict[str, list[list[str]]] | None:
+    """文本版 → {工作表名: 行}（每个工作表标记后第一张表，表头在第一行）。没有文本版返回 None。
+    与后端 app/evidence/convert.py 的 md_tables 同口径（那份在后端，这里只能用标准库另写一份）。"""
+    try:
+        markdown = text_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    tables: dict[str, list[list[str]]] = {}
+    sheet, rows = None, []
+    for line in markdown.splitlines() + [""]:
+        stripped = line.strip()
+        marker = _SHEET_RE.match(stripped)
+        if marker or not stripped.startswith("|"):
+            if sheet is not None and rows and sheet not in tables:
+                tables[sheet] = rows
+            rows = []
+            if marker:
+                sheet = marker.group(1)
+            continue
+        cells = _md_row(stripped)
+        if cells and all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
+            continue
+        rows.append(cells)
+    return tables
+
+
 def read_tables(path: Path) -> dict[str, list[str]]:
-    """表格文件 → {表名: [表头列]}。csv 的表名取文件名（去扩展名）。"""
+    """表格文件 → {表名: [表头列]}。csv 的表名取文件名（去扩展名）；资料区的 Excel 读文本版，没有文本版返回空。"""
+    text = resource_text(path)
+    if text is not None:
+        sheets = text_sheets(text) or {}
+        return {name: headers for name, rows in sheets.items()
+                if (headers := [cell.strip() for cell in rows[0] if cell.strip()])}
     if path.suffix.lower() == ".csv":
         try:
             with open(path, encoding="utf-8-sig", newline="") as f:
@@ -90,7 +157,7 @@ def table_headers(root: Path) -> dict[str, list[str]]:
         path = root / rel
         if not (str(rel).lower().endswith(TABLE_SUFFIXES) and path.is_file()):
             continue
-        if path.suffix.lower() != ".csv" and not excel_ok:
+        if path.suffix.lower() != ".csv" and resource_text(path) is None and not excel_ok:
             continue
         for name, headers in read_tables(path).items():
             tables.setdefault(name, headers)
@@ -100,8 +167,15 @@ def table_headers(root: Path) -> dict[str, list[str]]:
 def read_profiles(path: Path) -> dict[str, dict]:
     """表格文件 → {表名: 取值画像}。每表最多读 PROFILE_ROW_LIMIT 行，画像只含计数、不含原值。
 
-    缺 openpyxl 时抛 ValueError：读不了的表不能当作没有取值证据而放过。
+    缺 openpyxl 时抛 ValueError：读不了的表不能当作没有取值证据而放过。资料区的 Excel 读文本版。
     """
+    text = resource_text(path)
+    if text is not None:
+        sheets = text_sheets(text)
+        if sheets is None:
+            raise ValueError(NO_TEXT_MESSAGE.format(path.name))
+        return {name: profile for name, rows in sheets.items()
+                if (profile := field_semantics.profile_table(rows))}
     if path.suffix.lower() == ".csv":
         try:
             with open(path, encoding="utf-8-sig", newline="") as f:
@@ -167,7 +241,10 @@ def load_registered_tables(root: Path) -> tuple[dict, dict]:
             raise ValueError("核验路径越出工作区")
         if not path.is_file():
             raise ValueError("已登记的数据表不存在，字段核验未完成")
-        if path.suffix.lower() != ".csv" and importlib.util.find_spec("openpyxl") is None:
+        text = resource_text(path)
+        if text is not None and not text.is_file():
+            raise ValueError(NO_TEXT_MESSAGE.format(path.name))
+        if path.suffix.lower() != ".csv" and text is None and importlib.util.find_spec("openpyxl") is None:
             raise ValueError(EXCEL_DEPENDENCY_MESSAGE)
         headers = read_tables(path)
         if not headers:
@@ -184,7 +261,7 @@ def table_profiles(root: Path) -> dict[str, dict]:
     profiles: dict[str, dict] = {}
     for rel in registered_table_files(root):
         path = root / rel
-        if not path.is_file() or (path.suffix.lower() != ".csv" and not excel_ok):
+        if not path.is_file() or (path.suffix.lower() != ".csv" and resource_text(path) is None and not excel_ok):
             continue
         try:
             _merge_profiles(profiles, read_profiles(path))

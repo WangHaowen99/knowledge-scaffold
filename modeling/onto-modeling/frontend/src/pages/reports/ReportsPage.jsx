@@ -172,14 +172,14 @@ function ResearchBody({ report }) {
       {(x.items || []).map((m) => (
         <div key={m.path} className="ov-li sm">
           <span style={{ color: 'var(--blue)' }}><Icon name={m.kind === 'xls' || m.kind === 'csv' ? 'table' : 'filetext'} size={14} /></span>
-          <span className="grow ell b" style={{ fontWeight: 600 }}>{m.name}</span>
+          <span className="grow ell b" style={{ fontWeight: 600 }}>{m.label || m.name}</span>
           <span className="xs muted" style={{ width: 150 }}>{materialCounts(m.counts)}</span>
           <Chip tone="line" sm>{PURPOSE_LABEL[m.purpose] || m.purpose}</Chip>
           <span className="num xs muted" style={{ width: 38, textAlign: 'right' }}>{m.read_pct}%</span>
         </div>
       ))}
       {(x.problems || []).map((p) => (
-        <div key={p.id} className="row mt12 xs muted"><Icon name="quote" size={12} /><span><RichText text={p.text_md} /></span></div>
+        <div key={p.id} className="row mt12 xs muted"><Icon name="quote" size={12} /><span><RichText text={p.display_md || p.text_md} /></span></div>
       ))}
     </div>
   );
