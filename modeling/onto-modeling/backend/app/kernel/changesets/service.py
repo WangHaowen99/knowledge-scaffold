@@ -483,9 +483,11 @@ def round_card(manager, project_id: str, record: dict, card_id: str) -> dict:
     for item in _changes_of(manager, root, record):
         ref = item["target"]
         name = ref.get("name") or ref.get("title") or ref.get("key")
-        verb = {"add": "新增", "mod": "修改", "del": "删除"}[item["change"]]
+        # 动词由前端的「新增 / 修改 / 删除」标签表示，行文只写类型和链接（契约示例「对象 [[门店]]」）
+        label = GROUP_LABELS.get(item["group"]) if ref.get("kind") and "type" not in ref else None
         groups.setdefault(item["group"], []).append({
-            "change": item["change"], "target": ref, "text": f"{verb}「{name}」", "comparable": item["change"] == "mod",
+            "change": item["change"], "target": ref, "text": f"{label} [[{name}]]" if label else f"「{name}」",
+            "comparable": item["change"] == "mod",
         })
     total = sum(len(items) for items in groups.values())
     checks = record.get("checks") or {}
