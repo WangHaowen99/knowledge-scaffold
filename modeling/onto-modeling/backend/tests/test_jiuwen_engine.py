@@ -367,7 +367,7 @@ def test_run_turn_reports_context_usage_before_result(tmp_path, monkeypatch):
 
 
 def test_context_usage_follows_each_model_call_within_a_long_turn(tmp_path, monkeypatch):
-    """F2 第 6 条（hc 现场）：资料分析一轮跑了 30 多分钟、上下文涨到 14.4 万，环一直是 0%——用量只在一轮结束时报。
+    """F2 第 6 条（测试部署现场）：资料分析一轮跑了 30 多分钟、上下文涨到 14.4 万，环一直是 0%——用量只在一轮结束时报。
     每次模型调用后用量变了就报一次（宿主落盘，刷新页面也能读到），轮末用量没变不重复报。"""
     from openjiuwen.core.runner import Runner
 

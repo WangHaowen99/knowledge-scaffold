@@ -6,7 +6,7 @@
 （`kernel/changesets/worktree._ensure_links`）。内测引擎的文件沙箱只有三根：项目区（副本）、私有工件区、装配目录；
 openjiuwen 按 resolve 之后的路径判定，链接目标在主线工作区，于是 read_file、list、glob 读 `resource/` 都报
 「Path … outside sandbox」，Grep 拼出的命令也因引用了沙箱外的绝对路径被拒。真实模型的资料分析一开始就读不了资料，
-助手改用 bash 跑脚本才读到（hc 现场容器日志 9 次越界）。
+助手改用 bash 跑脚本才读到（测试部署现场容器日志 9 次越界）。
 
 ## Decision
 

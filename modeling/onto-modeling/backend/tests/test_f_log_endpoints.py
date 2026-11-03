@@ -1,4 +1,4 @@
-"""F 第一批第 12 条（hc 部署时发现）：模型网关地址进了容器日志。
+"""F 第一批第 12 条（测试部署时发现）：模型网关地址进了容器日志。
 
 openjiuwen 的 ImageModalityProbe 以 INFO 级别打出 `api_base=<网关地址>`；它的日志器不经过我们的根日志器，
 直接写 stdout。不改 openjiuwen 包：在它的日志器上挂脱敏过滤器。顺带：httpx、openai 等经根日志器出来的
