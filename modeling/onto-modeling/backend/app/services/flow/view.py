@@ -170,7 +170,8 @@ def _blueprint(root: Path) -> tuple[dict | None, dict]:
         doc, where, build_mode = blueprint.load_doc(root), "mainline", "L2"
     if doc is None:
         return None, {"state": "none"}
-    return doc, {"state": doc.get("state") or "draft", "where": where, "next": build_mode}
+    goal_pending = any(item.get("kind") == "goal" and not item.get("answer") for item in doc.get("questions") or [])
+    return doc, {"state": doc.get("state") or "draft", "where": where, "next": build_mode, "goal_pending": goal_pending}
 
 
 def _apply_slices(states: dict, sliced: dict | None) -> None:

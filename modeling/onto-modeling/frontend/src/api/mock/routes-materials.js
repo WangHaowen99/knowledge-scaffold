@@ -237,9 +237,8 @@ function blueprintOf(confirmed = false) {
     version_label: confirmed ? 'v2' : '草案 v2',
     state: confirmed ? 'confirmed' : 'draft',
     goal_md: '店长一句话说明门店、品类、库存和到货周期，智能体查基础数据，按补货规则生成补货单，并列出与标准不一致的地方',
-    goal_anchor: ANC.goal,
-    goal_anchor_label: '场景说明 §1',
-    out_of_scope: ['采购价格', '门店排班'],
+    goal_anchor: null,
+    goal_anchor_label: null,
     slices: [
       bs(SLICES[0], { objects: 4, rules: 2 }, [], 1, '推荐先做'),
       bs(SLICES[1], { objects: 3, rules: 3 }, ['s1'], 2, '第 2 个'),
@@ -279,8 +278,8 @@ function blueprintCard(bp) {
     // 后端口径（contract-changes B4d 合并第 1 条）：草案时给，L4 只在自主构建登记后出现，已确认时为空
     confirm_options: bp.state === 'confirmed' ? [] : [{ mode: 'L2', label: '确认，一段一段来' }, ...(autobuildOff() ? [] : [{ mode: 'L4', label: '确认，一路建完…' }])],
     open: { kind: 'dialog', target: 'blueprint' },
-    version_label: bp.version_label, state: bp.state, goal_md: bp.goal_md, goal_anchor: bp.goal_anchor, goal_anchor_label: bp.goal_anchor_label,
-    out_of_scope: bp.out_of_scope, slices: bp.slices,
+    version_label: bp.version_label, state: bp.state, goal_md: bp.goal_md, goal_anchor: null, goal_anchor_label: null,
+    goal_question: null, slices: bp.slices,
     terms: { aligned: bp.terms.aligned.length, ambiguous: bp.terms.ambiguous.length },
     questions_pending: bp.questions.filter((q) => !q.answer).length,
     research_verified: !!bp.research?.verified,
@@ -717,7 +716,6 @@ export function register(ctx) {
         return { id: x.id, name: x.name, core_flow: x.core_flow || '', scale, depends_on: x.depends_on || [], order: k + 1, order_label: label, excluded: !!x.excluded };
       });
     }
-    if (body.out_of_scope) bp.out_of_scope = body.out_of_scope;
     (body.term_choices || []).forEach((t) => { const x = bp.terms.ambiguous.find((y) => y.id === t.term_id); if (x) x.chosen = t.chosen; });
     (body.answers || []).forEach((a) => { const q = bp.questions.find((y) => y.id === a.question_id); if (q) q.answer = { option_id: a.option_id, custom_text: a.custom_text }; });
     if (body.mode === 'adjust') {

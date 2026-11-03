@@ -158,6 +158,7 @@ export const ERROR_MESSAGES = {
   flow_assembly_failed: '流程组装没有通过',
   blueprint_not_found: '还没有建模蓝图',
   blueprint_not_confirmed: '建模蓝图还没确认',
+  blueprint_question_pending: '先回答蓝图里关于建模目标的问题',
   slice_invalid: '分段调整不合法',
   low_confidence_batch: '把握低的变更点不能批量接受，请单独确认',
   // 2.7 插件与产物

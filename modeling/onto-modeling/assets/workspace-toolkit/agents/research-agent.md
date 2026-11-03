@@ -12,15 +12,20 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
 
 完整守则见 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md`。
 
-## Step 1: Read local domain documents (if provided)
+## Step 1: 读资料区的资料
 
-If `Local document paths` is specified in your task prompt:
+任务提示里的「建模目标」是建项目时用户写的，分析围绕它展开，不要改写它。
 
-For local text, DOCX and XLSX, use `python3 .claude/scripts/source_extract.py "{path}" --offset 0 --limit 20`.
+只读文本：先 `python3 .claude/scripts/source_extract.py --sources` 拿资料清单，每份资料读它的 `read`：
+md、txt、csv 读原文件；PDF、Word、Excel 读数据接入转出的文本版 `resource/text/<分组>/<原文件名>.md`
+（里面的 `<!-- 第 3 页 -->`、`<!-- 工作表：客户 -->` 是位置标记）。`read` 为空（`kind: missing`）的资料
+还没有文本版（转换中、暂不支持或转换失败），在「信息来源」里记为「未读：没有文本版」，不要自己解析原件，
+不要写临时脚本抽 PDF、Word 或图片里的文字。
+
+读一份文本用 `python3 .claude/scripts/source_extract.py "{read}" --offset 0 --limit 20`。
 Follow next_offset until the required scope is read; retain source_sha256, extractor_version and the returned anchors.
 For long segments, continue with `--anchor "{anchor}" --text-offset {next_text_offset}` until that segment is complete.
-Do not read compressed Office bytes as UTF-8 or write ad hoc extraction scripts. `unverifiable`, truncated output,
-unsupported formats and decode failures are not evidence of missing rules. Record the exact gap and do not claim source verification.
+`unverifiable`, truncated output and decode failures are not evidence of missing rules. Record the exact gap and do not claim source verification.
 For each document, extract and record:
 - Business entities / objects mentioned (names, attributes, business rules)
 - Business processes / operations (trigger conditions, operation steps, inputs/outputs)
@@ -37,9 +42,7 @@ Check `Web research mode`:
 - **supplement**: Proceed to Step 2 and Step 3 normally, but in Step 3 focus searches only on areas not covered by LOCAL_KNOWLEDGE.
 - **skip**: Skip Step 2 (methodology) and Step 3 (web research) entirely. Proceed directly to Step 4 using only LOCAL_KNOWLEDGE.
 
-In the 信息来源 section of your report, list local documents first under "**本地文档**", followed by web sources under "**网络来源**" (if any).
-
-If `Local document paths` is not specified: proceed normally.
+In the 信息来源 section of your report, list local documents first under "**本地文档**"（读的文本版写原资料名，没有文本版的写「未读：没有文本版」）, followed by web sources under "**网络来源**" (if any).
 
 ---
 
@@ -174,17 +177,18 @@ dispatching command 会在你 prompt 顶部注入 `# 只读来源快照（自动
 3. **先列清单，再数数，最后填数字。** 「合计」必须等于「业务项清单」里不重复
    业务项 ID 的个数；「分类小计」每行的条数必须等于清单里该分类的实际行数，各行
    之和等于合计。不要先写一个估计值再去凑清单。
-4. **ID 不重复、不静默变化、能溯源。** 同一报告内业务项 ID、规则 ID 均不得重复；
-   每个 ID 必须**逐字出现在它「来源位置」所指的那个文件里**（规范 ID 来自用户上传的
-   资料，不是你起的名）。快照里已有的 ID 必须仍出现在清单里。确实是本轮新造的 ID，
-   在「ID变更对照」写一行「无 → 新ID / 新增 / 原始资料路径#锚点」。新增声明不替代来源核验；
-   检查器返回「新增ID确认」时需真实人工确认后在「缺口与待决」记 `- [x] 新增ID确认：ID1、ID2`。
-   不得自行勾选，不得把源资料原有 ID 当作新造；新增到本清单但源中已存在的编号用「沿用来源ID」。
+4. **ID 不重复、不静默变化、能溯源。** 同一报告内业务项 ID、规则 ID 均不得重复。
+   资料里有自己的编号（条款号、制度编号等）就逐字引用，它必须出现在「来源位置」所指的那份文本里；
+   资料里没有编号时自己编，业务项写 `ITEM-01`、规则写 `RULE-01` 这种格式，不要编成像资料编号的样子。
+   编号是内部机制，不问用户、不写进「缺口与待决」。快照里已有的 ID 必须仍出现在清单里；本轮新出现的
+   ID（有快照时）在「ID变更对照」写一行「无 → 新ID / 新增 / 资料文本路径#锚点」。
+   资料里已有的编号不能登记为新增，用「沿用来源ID」。
 5. **字段逐字取自真实表头。** 「引用字段」里的每个字段都要能在快照的表头里找到；
    找不到就填 `无` 并把这个缺口写进「缺口与待决」。
-6. **来源位置必须可定位。** 写工作区内的真实相对路径（如
-   `resource/others/业务说明.md#L12`、`resource/others/规则.docx#p:2` 或
-   `resource/others/表.xlsx#sheet:规则!B3`），逐字使用抽取器返回的位置，不要编造锚点或写"见资料"。
+6. **来源位置必须可定位。** 写你读的那份文本的相对路径加行号：用户上传的 md 写它自己（如
+   `resource/others/业务说明.md#L12`），PDF、Word、Excel 写文本版（如
+   `resource/text/others/管理办法.pdf.md#L40` 或 `#L40-L46`），逐字使用抽取器返回的位置，
+   不要编造锚点或写"见资料"。
 7. **缺失就是缺失。** 缺系数、价格、数量等数据时不要隐式补 1 或 0；只把受这项
    缺失影响的条目标为待决，不要因此阻塞其他条目。
 8. **不要自己宣布通过。** 报告里不写"资料分析完成""检查无问题"之类的结论——

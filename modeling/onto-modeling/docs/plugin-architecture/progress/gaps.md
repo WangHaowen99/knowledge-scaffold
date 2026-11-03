@@ -841,3 +841,9 @@ merge 4e6ed10f + 衔接 ee03c022；B4d 节第 1～7 条（和 B5c 要接的点�
 9. **升级迁移一次排很多**：已有项目的 PDF、Word、Excel 在启动后后台排队，两个转换线程依次转；资料多的部署第一次启动后要等一阵，期间这些资料显示「转换中」。
 10. **测试部署的远端部署脚本没改**（测试部署只读）：网关靠 compose 的 `pull_policy: build` 随整栈构建，远端的镜像冒烟（非 root 能读代码）不覆盖网关镜像；网关镜像里代码权限按构建上下文（deploy.sh 已用 umask 022）。
 11. **离线包构建脚本改了但没实跑 `build.sh`**：网关目标单独 `docker build --target connector-gateway` 本机构建、`docker compose up --build` 起整栈都验证过。
+
+## 2026-11-03 · F4b-research（蓝图目标、资料分析只读文本、编号不问人）
+
+1. **内测引擎的读文件工具仍能在进程内解析 PDF、Word**：pdfplumber、python-docx 是内测引擎库的依赖，主服务镜像里可以直接 import；引擎自带的读文件工具遇到 PDF 会在进程内解析。资料分析的说明已不让助手这样读，但没有硬拦。建议在引擎的文件工具守卫上拦截 `resource/` 下有文本版的原件，回提示指向文本版（是否做待定）。
+2. **schema 表头仍读 Excel 原件**：对象提取、字段核对用的 `table_profile` 读 `purpose=schema` 的 xlsx 原件（openpyxl），不在本任务范围；要做到「只读文本」需要改成读文本版里的 Markdown 表。
+3. **共用的锁恢复提问没改**：各命令 Step 0 遇到命令锁时让用户选「续执 / 清理重来 / 取消」，属于内部机制，但 `STEP0_TEMPLATE.md` 所有命令共用，本任务没动。

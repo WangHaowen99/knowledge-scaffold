@@ -4,7 +4,7 @@ import { useContext, useState } from 'react';
 import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import {
-  Button, Chip, Ev, Icon, Prog, cx,
+  Button, Chip, Icon, Prog, cx,
 } from '../../ui/index.jsx';
 import { evidenceInProject } from '../../state/evidence.js';
 import { CC, WbCtx } from './parts.jsx';
@@ -12,7 +12,7 @@ import {
   MatIcon, pageCommand, useMaterialUpload, useOpenDialog,
 } from './materials/parts.jsx';
 import {
-  acceptLabel, anchorLabel, confirmOptions, depLabel, miniStatus, orderLabel, purposeLabel, readState,
+  acceptLabel, confirmOptions, depLabel, goalPending, miniStatus, orderLabel, purposeLabel, readState,
 } from './materials/model.js';
 import '../../styles/materials.css';
 
@@ -147,12 +147,17 @@ function OrderTag({ slice, index }) {
 
 function BlueprintCard({ card }) {
   const open = useOpenDialog();
+  const project = useProject();
   const slices = card.slices || [];
   const confirmed = card.state === 'confirmed';
   const terms = card.terms || {};
   const options = confirmOptions(card);
   const l4 = options.find((o) => o.mode === 'L4');
   const l2 = options.find((o) => o.mode === 'L2');
+  // 要解决的问题只有一份：项目的建模目标（改了目标，卡片跟着变）；旧卡片退回卡上的文字
+  const goal = project?.meta?.goal || card.goal_md;
+  const asking = goalPending(card);
+  const blocked = asking ? '先回答关于建模目标的问题' : undefined;
   return (
     <CC
       icon="layers" title={card.title || `建模蓝图 · ${card.version_label}`}
@@ -164,8 +169,8 @@ function BlueprintCard({ card }) {
           <span className="sp" />
           {confirmed ? <span className="wx-ok"><Icon name="check" size={14} />蓝图已确认 · {card.version_label}</span> : (
             <>
-              {l4 ? <Button size="sm" icon="rocket" onClick={() => open({ kind: 'build', next: 'L4' })}>{l4.label || '确认，一路建完…'}</Button> : null}
-              {l2 ? <Button size="sm" kind="primary" icon="hand" onClick={() => open({ kind: 'build', next: 'L2' })}>{l2.label || '确认，一段一段来'}</Button> : null}
+              {l4 ? <Button size="sm" icon="rocket" disabled={asking} title={blocked} onClick={() => open({ kind: 'build', next: 'L4' })}>{l4.label || '确认，一路建完…'}</Button> : null}
+              {l2 ? <Button size="sm" kind="primary" icon="hand" disabled={asking} title={blocked} onClick={() => open({ kind: 'build', next: 'L2' })}>{l2.label || '确认，一段一段来'}</Button> : null}
             </>
           )}
         </>
@@ -173,7 +178,10 @@ function BlueprintCard({ card }) {
     >
       <div className="en-kv">
         <span>要解决的问题</span>
-        <div>{card.goal_md}{card.goal_anchor ? <Ev anchor={card.goal_anchor} label={card.goal_anchor_label || anchorLabel(card.goal_anchor)} /> : null}</div>
+        <div>
+          {goal}
+          {asking ? <div className="xs mt4" style={{ color: 'var(--amber)' }}>{card.goal_question.title} <a className="link" onClick={() => open('blueprint')}>去回答</a></div> : null}
+        </div>
       </div>
       <div className="mt12">
         <div className="en-bps hd"><span /><span>分段</span><span>中心流程</span><span>规模</span><span>依赖 · 顺序</span></div>
@@ -193,13 +201,7 @@ function BlueprintCard({ card }) {
           );
         })}
       </div>
-      {card.out_of_scope?.length ? (
-        <div className="en-kv mt12">
-          <span>不在范围</span>
-          <div className="row wrap" style={{ gap: 6 }}>{card.out_of_scope.map((t) => <span key={t} className="chip line sm">{t}</span>)}</div>
-        </div>
-      ) : null}
-      <div className="en-kv mt8">
+      <div className="en-kv mt12">
         <span>术语与口径</span>
         <div>
           {terms.aligned ?? 0} 条已对齐

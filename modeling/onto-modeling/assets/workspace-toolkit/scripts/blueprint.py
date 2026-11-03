@@ -10,8 +10,7 @@
 格式（`format: onto-blueprint/1`）：
 
     version_no / state           草案号与状态（draft | confirmed）；界面显示「草案 v2」或「v2」
-    goal_md / goal_anchor(_label) 建模目标与出处
-    out_of_scope                 范围外
+    goal_md                      旧版留下的目标文字（只读兼容）；要解决的问题以项目信息里的建模目标为准，蓝图不另存
     slices[]                     数组顺序就是建议顺序：
         id                       s<n>（全量模式只有一段 all「全部」）
         name / core_flow         段名、核心链路
@@ -21,7 +20,8 @@
         objects / operations / rules   这一段包含的条目（业务名，即条目文件名解码后的名字）
         sources[]                {anchor, label}：这一段依据的资料位置
     terms                        {aligned: [叫法], ambiguous: [{id, variants, chosen}]}
-    questions[]                  {id, title, background, options: [{id, label}], answer}
+    questions[]                  {id, title, background, options: [{id, label}], answer}；目标问题另带
+                                 kind=goal、suggested_goal（资料和建模目标对不上时问，只留一个）
     next_ids                     下一个编号 {slice, term, question}
     updated_at / confirmed_at
 
@@ -105,8 +105,11 @@ def load(root: Path) -> dict | None:
     return parse(text)
 
 
-_KEY_ORDER = ('format', 'version_no', 'state', 'goal_md', 'goal_anchor', 'goal_anchor_label', 'out_of_scope',
-              'slices', 'terms', 'questions', 'next_ids', 'updated_at', 'confirmed_at')
+# 旧文件里的 goal_anchor、goal_anchor_label、out_of_scope 照常能读，写回时不再带（F4b）
+_KEY_ORDER = ('format', 'version_no', 'state', 'goal_md', 'slices', 'terms', 'questions', 'next_ids', 'updated_at',
+              'confirmed_at')
+GOAL_KIND = 'goal'
+GOAL_KEEP = '保持原目标'
 _SLICE_ORDER = ('id', 'name', 'core_flow', 'depends_on', 'excluded', 'merged_from', 'objects', 'operations',
                 'rules', 'sources')
 
@@ -175,6 +178,35 @@ def _option_id(index: int) -> str:
     return chr(ord('A') + index) if index < 26 else f'O{index + 1}'
 
 
+def goal_question(question_id: str, item: dict) -> dict:
+    """目标问题：资料和建模目标对不上（或目标太笼统）时问；选项固定，有建议改写时多一个「改成：…」。"""
+    suggested = _text(item.get('suggested_goal'), 500)
+    options = [{'id': _option_id(0), 'label': f'改成：{suggested}'}] if suggested else []
+    options.append({'id': _option_id(len(options)), 'label': GOAL_KEEP})
+    return {'id': question_id, 'kind': GOAL_KIND, 'title': _text(item.get('title'), 200),
+            'background': _text(item.get('background'), 400), 'suggested_goal': suggested or None,
+            'options': options, 'answer': None}
+
+
+def adopted_goal(question: dict) -> str | None:
+    """目标问题的回答要不要改项目目标：选了「改成：…」返回建议的目标，写了自己的回答返回那段话；保持原目标返回 None。"""
+    answer = question.get('answer') or {}
+    if question.get('kind') != GOAL_KIND or not answer:
+        return None
+    if answer.get('custom_text'):
+        return answer['custom_text']
+    chosen = next((option for option in question.get('options') or [] if option['id'] == answer.get('option_id')), None)
+    if chosen and chosen['label'] != GOAL_KEEP and question.get('suggested_goal'):
+        return question['suggested_goal']
+    return None
+
+
+def pending_goal_question(doc: dict | None) -> dict | None:
+    """还没回答的目标问题（确认蓝图前要先答）。"""
+    return next((item for item in (doc or {}).get('questions') or []
+                 if item.get('kind') == GOAL_KIND and not item.get('answer')), None)
+
+
 def _next(doc: dict, kind: str) -> int:
     ids = doc.setdefault('next_ids', {})
     value = int(ids.get(kind) or 1)
@@ -184,8 +216,8 @@ def _next(doc: dict, kind: str) -> int:
 
 def empty(goal_md: str = '') -> dict:
     return {
-        'format': FORMAT, 'version_no': 1, 'state': 'draft', 'goal_md': _text(goal_md), 'goal_anchor': None,
-        'goal_anchor_label': None, 'out_of_scope': [], 'slices': [], 'terms': {'aligned': [], 'ambiguous': []},
+        'format': FORMAT, 'version_no': 1, 'state': 'draft', 'goal_md': _text(goal_md),
+        'slices': [], 'terms': {'aligned': [], 'ambiguous': []},
         'questions': [], 'next_ids': {'slice': 1, 'term': 1, 'question': 1}, 'updated_at': _now(),
         'confirmed_at': None,
     }
@@ -211,19 +243,17 @@ def _slice(slice_id: str, name: str, **fields) -> dict:
 def from_draft(draft: dict, previous: dict | None = None) -> dict:
     """助手写的草稿 → 蓝图：编号、去重、依赖按名字或编号解析；有旧蓝图时草案号加 1，同名分段沿用旧编号。
 
-    草稿字段：goal_md、goal_anchor、goal_anchor_label、out_of_scope、slices[{name, core_flow, depends_on,
-    objects, operations, rules, sources}]、terms{aligned, ambiguous[{variants, chosen}]}、
-    questions[{title, background, options}]。
+    草稿字段：slices[{name, core_flow, depends_on, objects, operations, rules, sources}]、
+    terms{aligned, ambiguous[{variants, chosen}]}、questions[{title, background, options}]；
+    资料和建模目标对不上时加一个目标问题 {kind: goal, title, background, suggested_goal}。
+    目标以项目信息为准，草稿里的 goal_md、out_of_scope 不再收（旧草稿带了也忽略）。
     """
     if not isinstance(draft, dict):
         raise BlueprintError('format', '草稿要是一个 JSON 对象')
-    doc = empty(draft.get('goal_md') or draft.get('goal') or '')
+    doc = empty((previous or {}).get('goal_md') or '')
     if previous:
         doc['version_no'] = int(previous.get('version_no') or 0) + 1
         doc['next_ids'] = {key: int(value) for key, value in (previous.get('next_ids') or {}).items()}
-    doc['goal_anchor'] = _text(draft.get('goal_anchor'), 400) or None
-    doc['goal_anchor_label'] = _text(draft.get('goal_anchor_label'), NAME_MAX * 2) or None
-    doc['out_of_scope'] = _names(draft.get('out_of_scope'))
     old_ids = {item['name']: item['id'] for item in (previous or {}).get('slices') or []}
     raw_slices = [item for item in draft.get('slices') or [] if isinstance(item, dict)][:SLICES_MAX]
     by_ref: dict[str, str] = {}
@@ -268,6 +298,11 @@ def from_draft(draft: dict, previous: dict | None = None) -> dict:
                                           'chosen': chosen if chosen in variants else None})
     for item in draft.get('questions') or []:
         if not isinstance(item, dict) or not _text(item.get('title')):
+            continue
+        if item.get('kind') == GOAL_KIND:
+            if any(question.get('kind') == GOAL_KIND for question in doc['questions']):
+                continue
+            doc['questions'].append(goal_question(f"q{_next(doc, 'question')}", item))
             continue
         options = []
         for index, option in enumerate(item.get('options') or []):
@@ -457,10 +492,6 @@ def apply_edit(doc: dict, edit: dict) -> dict:
     if edit.get('mode') not in ('draft', 'adjust'):
         raise BlueprintError('format', 'mode 只能是 draft 或 adjust', field='mode')
     result = copy.deepcopy(doc)
-    if 'out_of_scope' in edit:
-        if not isinstance(edit['out_of_scope'], list):
-            raise BlueprintError('format', 'out_of_scope 要是文字列表', field='out_of_scope')
-        result['out_of_scope'] = _names(edit['out_of_scope'])
     if edit.get('slices') is not None:
         result = apply_slices(result, edit['slices'])
     terms = {item['id']: item for item in (result.get('terms') or {}).get('ambiguous') or []}
@@ -598,9 +629,8 @@ def view(doc: dict) -> dict:
         'state': doc.get('state') or 'draft',
         'mode': mode(doc),
         'goal_md': doc.get('goal_md') or '',
-        'goal_anchor': doc.get('goal_anchor'),
-        'goal_anchor_label': doc.get('goal_anchor_label'),
-        'out_of_scope': list(doc.get('out_of_scope') or []),
+        'goal_anchor': None,
+        'goal_anchor_label': None,
         'slices': slice_views(doc),
         'terms': {'aligned': list((doc.get('terms') or {}).get('aligned') or []),
                   'ambiguous': [dict(item) for item in (doc.get('terms') or {}).get('ambiguous') or []]},
@@ -628,8 +658,6 @@ def brief(doc: dict | None, slice_id: str | None) -> str:
         lines.append(f"{label}：{'、'.join(values) if values else '（无）'}")
     if item.get('sources'):
         lines.append('依据：' + '；'.join(source.get('label') or source['anchor'] for source in item['sources']))
-    if doc.get('out_of_scope'):
-        lines.append('范围外：' + '、'.join(doc['out_of_scope']))
     chosen = [f"{term['chosen']}（不用 {'、'.join(v for v in term['variants'] if v != term['chosen'])}）"
               for term in (doc.get('terms') or {}).get('ambiguous') or [] if term.get('chosen')]
     if chosen:
