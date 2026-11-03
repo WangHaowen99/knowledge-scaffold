@@ -1,6 +1,8 @@
 """V 阶段真实模型下自主构建的发现（栈 b，内测引擎）。"""
 from __future__ import annotations
 
+from tests.autobuild_helpers import ab  # noqa: F401 - 自主构建用例的项目夹具
+
 
 def test_ledger_anchor_without_scheme():
     """真实模型按对话里的出处写法写依据（`resource/资料.docx#p:6`，不带 `file:`），台账里原来一个出处都没有。"""
@@ -80,3 +82,20 @@ def test_wait_turn_does_not_count_old_error_while_reconnecting(monkeypatch):
     # 连不上（重连结束仍是 error）：照常记出错
     session.state = "error"
     assert asyncio.run(runner_module.AutobuildRunner()._wait_turn("p1", "run-1", "c1")) == "error"
+
+
+def test_matrix_does_not_mark_steps_left_out_as_done(ab):
+    """策略关了「生成场景」：这一片合入后，运行详情的流水线把没做的「场景」也标成「自主完成」（流程里这一步还是 ready）。"""
+    from tests.autobuild_helpers import start, wait_state
+
+    client, _workspaces, project_id, _root = ab
+    run = start(client, project_id, scope={"until_node": "core.model", "generate_scenarios": False,
+                                            "mode": "selected", "slice_ids": ["s1"]},
+                budget={"max_tokens": 500_000})
+    done = wait_state(client, project_id, run["run_id"], "completed")
+    cells = done["matrix"][0]["cells"]
+    flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
+    stages = next(item for item in flow["slices"] if item["id"] == "s1")["stages"]
+    assert "scenario" in cells and stages["scenario"] not in ("auto", "confirmed")
+    assert cells["scenario"] == "skipped"
+    assert cells["object"] == "auto"
