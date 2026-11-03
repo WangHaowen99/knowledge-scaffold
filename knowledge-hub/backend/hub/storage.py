@@ -97,7 +97,7 @@ class Store:
     def git(self, root, *args):
         result = subprocess.run(['git', '-c', 'user.name=knowledge-hub',
                                  '-c', 'user.email=user@example.com', *args],
-                                cwd=root, capture_output=True, timeout=120)
+                                cwd=root, capture_output=True, shell=False, timeout=120)
         if result.returncode:
             raise HubError('Archive journal unavailable', 503)
         return result.stdout
