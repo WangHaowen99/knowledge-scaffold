@@ -105,6 +105,21 @@ def test_goal_question_blocks_confirm_until_answered_and_adopting_updates_the_go
     blueprint_service.prepare_confirm(workspaces, project_id, {"base_revision": saved.json()["revision"], "next": "L2"})
 
 
+def test_writing_a_new_goal_as_the_answer_sets_the_project_goal_and_unblocks_confirm(env):
+    """没有建议改写时，用户在蓝图上直接改目标：前端把新目标作为这个问题的回答（custom_text）一起存。"""
+    client, workspaces, _manager, project_id, root = env
+    workspaces._update_meta(project_id, goal="合成目标：按规则生成补货单")
+    _write_mainline(root, bp().from_draft({**DRAFT, "questions": [{**GOAL_QUESTION, "suggested_goal": ""}]}))
+    base = f"/api/v1/projects/{project_id}/blueprint"
+    got = client.get(base).json()
+    question = got["questions"][0]
+    saved = client.put(base, json={"base_revision": got["revision"], "mode": "draft",
+                                   "answers": [{"question_id": question["id"], "custom_text": "店长处理到店退款"}]})
+    assert saved.status_code == 200, saved.text
+    assert workspaces.get_project(project_id)["goal"] == "店长处理到店退款"
+    blueprint_service.prepare_confirm(workspaces, project_id, {"base_revision": saved.json()["revision"], "next": "L2"})
+
+
 def test_keeping_the_goal_leaves_it_unchanged(env):
     client, workspaces, _manager, project_id, root = env
     workspaces._update_meta(project_id, goal="合成目标：按规则生成补货单")

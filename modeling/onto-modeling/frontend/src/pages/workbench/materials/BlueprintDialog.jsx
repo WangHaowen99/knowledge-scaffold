@@ -116,6 +116,10 @@ export function BlueprintDialog({ onClose }) {
     setBusy(true);
     try {
       await api.patchProject(pid, { goal });
+      // 目标问题还没答：改了目标就是答了它（新目标作为回答），蓝图才能确认
+      if (goalAsk && !goalAsk.answer) {
+        await api.saveBlueprint(pid, { base_revision: bp.revision, mode: 'draft', answers: [{ question_id: goalAsk.id, custom_text: goal }] });
+      }
       setGoalDraft(null);
       toast('建模目标已更新', 'check');
       await load();
@@ -211,6 +215,10 @@ export function BlueprintDialog({ onClose }) {
                       <b>{String.fromCharCode(65 + k)}</b>{o.label}
                     </span>
                   ))}
+                  {/* 助手没给建议改写时，另一个选择就是自己改目标 */}
+                  {!goalAsk.suggested_goal && !goalAsk.answer ? (
+                    <span onClick={() => setGoalDraft(bp.goal_md || '')}><b>{String.fromCharCode(65 + goalAsk.options.length)}</b>改目标</span>
+                  ) : null}
                 </div>
               </div>
             ) : null}
