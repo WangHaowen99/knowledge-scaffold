@@ -629,13 +629,15 @@ def discard_draft(project_id: str, rel_path: str, user: str) -> None:
 
 
 def deterministic_check(root: Path, rel_path: str, content: str) -> dict:
-    """结构性检查（不经 LLM）：errors = 硬伤拒绝；review = 超范围转 agent 复核。"""
+    """结构性检查（不经 LLM）：errors = 解析不了的结构，拒绝；review = 超范围转 agent 复核；
+    hints = 链接、主键这类质量问题，只提示、照常保存（F3：建模过程中检查只提示不拦，发布时才拦）。"""
     errors: list[str] = []
     review: list[str] = []
+    hints: list[str] = []
     schema = schema_for(rel_path)
     if schema is None:
         review.append("非对象/逻辑文档，Studio 无法做确定性判定")
-        return {"errors": errors, "review": review}
+        return {"errors": errors, "review": review, "hints": hints}
 
     sections = parse_sections(content)
     titles = {s["title"] for s in sections}
@@ -667,22 +669,22 @@ def deterministic_check(root: Path, rel_path: str, content: str) -> dict:
         body = by_title["对象属性清单"]["content"]
         data_rows = [l for l in body.splitlines() if "|" in l][2:]
         if data_rows and not any("是" in r for r in data_rows):
-            review.append("对象属性清单没有任何主键行（主键列均非「是」）")
+            hints.append("对象属性清单没有任何主键行（主键列均非「是」）")
 
-    # 链接目标存在性：指向不存在的文档 → 可能是要新建对象，转复核
+    # 链接目标存在性：指向不存在的文档只提示（可能是还没建的对象），不转复核
     names = {d["name"] for d in _docs(root)}
     stem = Path(rel_path).stem
     # 模板里的填写指引（引用块）、行内代码里的写法示例、模板占位（`[[{待填写：对象A}]]`）不是链接：
-    # 按模板新建的条目保存时不因它们转复核（规则检查在确认生效、发布时照常查全文）
+    # 按模板新建的条目保存时不因它们提示（规则检查在每轮合入、发布时照常查全文）
     scanned = "\n".join(line for line in content.splitlines() if not line.lstrip().startswith(">"))
     scanned = re.sub(r"`[^`\n]*`", "", scanned)
     scanned = re.sub(r"\{待填写[^{}]*\}", "", scanned)
     for link in metamodel.for_project(root).unresolved(scanned, names | {stem}):
         if "{" in link.full_name or "待填写" in link.full_name:
             continue
-        review.append(f"[[{link.full_name}]] 指向不存在的文档")
+        hints.append(f"[[{link.full_name}]] 指向不存在的文档")
 
-    return {"errors": errors, "review": review}
+    return {"errors": errors, "review": review, "hints": hints}
 
 
 REVIEW_DIR = ".ontology-state/studio-review"

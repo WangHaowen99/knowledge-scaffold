@@ -7,8 +7,7 @@
 |---|---|
 | decision 决策 | 在线会话里没回答的决策卡；人工节点出的、没回答的决策卡（节点不在当前流程里的不列）；建模蓝图里没回答的问题 |
 | resumable 续跑 | 中断、能续跑的执行记录 |
-| pending_changeset 修改待确认 | 没确认的助手变更集 |
-| changeset_conflict 合入冲突 | 合入时检测到实体冲突的变更集 |
+| changeset_conflict 合入冲突 | 合入时检测到实体冲突的变更集（F3 起助手每轮自动合入，这是用户唯一会看到变更集的情况） |
 | stale 过期 | 过期的节点（所属包版本被熔断的不列） |
 | review 需复核 | 节点升级、导入；熔断的同上。自主构建的按决策台账出：低于阈值的一条一项，高置信的同一次运行合成一项 |
 | suspension 挂起 | 自主构建挂起的问题（撤回了的片上的不列） |
@@ -33,15 +32,15 @@ from pathlib import Path
 KIND_LABELS = {
     "decision": "决策", "evidence_conflict": "证据冲突", "change_list": "变更清单", "review": "需复核",
     "suspension": "挂起", "stale": "过期", "resumable": "续跑", "feedback": "外部反馈", "report": "报告待处理",
-    "pending_changeset": "修改待确认", "changeset_conflict": "冲突", "format_migration": "格式待迁移",
+    "changeset_conflict": "冲突", "format_migration": "格式待迁移",
     "notification": "通知",
 }
 ACTIONS = {
     "decision": ["answer"], "evidence_conflict": ["arbitrate"],
     "change_list": ["accept_points", "rewrite_point", "execute"], "review": ["accept", "rejudge", "revert_slice"],
     "suspension": ["answer", "use_generic"], "stale": ["refresh", "keep_stale"], "resumable": ["resume", "abandon"],
-    "feedback": ["send_to_evolution"], "report": ["send_to_assistant"], "pending_changeset": ["merge", "discard"],
-    "changeset_conflict": ["resolve"], "format_migration": ["migrate"], "notification": [],
+    "feedback": ["send_to_evolution"], "report": ["send_to_assistant"],
+    "changeset_conflict": ["resolve", "discard"], "format_migration": ["migrate"], "notification": [],
 }
 FILTERS = {
     "all": None, "autobuild_review": ("review", "suspension"), "decision": ("decision",),
@@ -229,30 +228,20 @@ def _resumables(project_id: str, root: Path, flow: dict) -> list[dict]:
 
 
 def _changesets(root: Path) -> list[dict]:
+    """合入冲突的变更集（F3：没有「修改待确认」，助手每一轮结束就合入）。"""
     from ...kernel.changesets import store
 
     record = store.current(root)
-    if record is None or record.get("state") not in ("pending_confirm", "conflict"):
+    if record is None or record.get("state") != "conflict":
         return []
-    if record.get("source") == "autobuild" and record.get("state") != "conflict":
-        from ..autobuild import store as runs
-
-        active = runs.active(Path(root).name)
-        if active is not None and active["run_id"] == record.get("run_id"):
-            return []  # 运行中的一片由运行器自动合入
     names = [ref.get("name") or ref.get("title") or ref.get("key") for ref in
              (record.get("entries") or []) + (record.get("artifacts") or [])]
     impact = [{"label": "涉及", "items": names[:20]}] if names else []
-    if record["state"] == "conflict":
-        conflict = record.get("conflict") or {}
-        return [_item("changeset_conflict", record["id"], "确认生效时有冲突，选好保留哪一边",
-                      created_at=conflict.get("at"),
-                      impact=impact, batchable=False, extra={"changeset": record},
-                      fingerprint=f"{record['id']}:{conflict.get('at')}")]
-    return [_item("pending_changeset", record["id"], record.get("purpose") or "助手的修改等你确认",
-                  created_at=record.get("updated_at"),
+    conflict = record.get("conflict") or {}
+    return [_item("changeset_conflict", record["id"], "这一轮和你的修改有冲突，选好保留哪一边",
+                  created_at=conflict.get("at"),
                   impact=impact, batchable=False, extra={"changeset": record},
-                  fingerprint=f"{record['id']}:{record.get('tree')}")]
+                  fingerprint=f"{record['id']}:{conflict.get('at')}")]
 
 
 def _node_items(root: Path, flow: dict) -> list[dict]:

@@ -265,10 +265,10 @@ def test_refresh_stale_follows_flow_order_and_skips_broken_nodes(env, monkeypatc
         ops_state.set_breaker("naming", "0.1.0", "close", "ops")
 
 
-# ---- 包声明的提交门禁挡确认生效（B5c 的登记点在 B4b 改过的 ChangeTx.commit 里） ----
+# ---- 包声明的提交门禁：助手一轮的合入只提示（F3），问题记进变更集、卡片上说 ----
 
 
-def test_commit_gate_blocks_merging_an_assistant_changeset(ext_env, monkeypatch):
+def test_commit_gate_only_hints_when_merging_an_assistant_changeset(ext_env, monkeypatch):
     _client, manager, project_id, _tmp = ext_env
     monkeypatch.setattr(changesets, "_activity_provider", None)
     root = manager.project_root(project_id)
@@ -276,15 +276,10 @@ def test_commit_gate_blocks_merging_an_assistant_changeset(ext_env, monkeypatch)
     copy_dir = changesets.copy_for_turn(manager, project_id, root)
     agent_write(copy_dir, rel, item_md("借阅检查", None), commit="agent: 检查项")
     record = changesets.observe(manager, project_id, running=False, conversation_id="default")
-    head = git(root, "rev-parse", "HEAD").strip()
-    with pytest.raises(WorkspaceError) as exc:
-        changesets.merge(manager, project_id, record["id"], actor="local")
-    assert exc.value.code == "gate_failed" and exc.value.details["findings"][0]["gate"] == "level-set"
-    assert git(root, "rev-parse", "HEAD").strip() == head and not (root / rel).exists()
-    assert changesets.current(manager, project_id)["state"] == "pending_confirm"
-
-    agent_write(copy_dir, rel, item_md("借阅检查", "high"), commit="agent: 补上级别")
-    changesets.observe(manager, project_id, running=False, conversation_id="default")
     merged = changesets.merge(manager, project_id, record["id"], actor="local")
     assert merged["commit"] and (root / rel).is_file()
+    checks = changesets.get(manager, project_id, record["id"])["checks"]
+    assert checks["errors"] == 1 and checks["findings"][0]["code"] == "level-set"
+    card = changesets.round_card(manager, project_id, changesets.get(manager, project_id, record["id"]), "rc-x")
+    assert [hint["tone"] for hint in card["hints"]] == ["warn"] and card["hints"][0]["text"].startswith("1 处")
     assert trailer(root, "Onto-Changeset") == record["id"]

@@ -161,7 +161,8 @@ def test_reverting_one_slice_leaves_the_others_alone(ab):
     assert next(row for row in report_card["slices"] if row["slice_id"] == "s3")["reverted"] is True
 
 
-def test_gate_failures_are_fixed_or_the_slice_is_suspended(ab, monkeypatch):
+def test_check_errors_are_fixed_a_few_rounds_then_merged_anyway(ab, monkeypatch):
+    """F3：检查只提示不拦——合入前有新错误先让助手修（最多策略里的轮数），还有就照样合入、标需复核，不再挂起这一段。"""
     client, _workspaces, project_id, root = ab
     finding = {"level": "error", "code": "RULE-01", "message": "合成错误", "path": "ontology/object/对象1.md"}
     calls = {"n": 0}
@@ -178,28 +179,37 @@ def test_gate_failures_are_fixed_or_the_slice_is_suspended(ab, monkeypatch):
     run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s1", "s2"], "until_node": "core.model"},
                 budget={"max_tokens": 500_000}, advanced={"max_fix_rounds": 2})
     done = wait_state(client, project_id, run["run_id"], "completed")
-    fixes = [text for text in AutoEngine.sent if text.startswith("确认生效前的检查发现 1 个新错误")]
+    fixes = [text for text in AutoEngine.sent if text.startswith("合入前的检查发现 1 个新问题")]
     assert len(fixes) == 2 and "合成错误" in fixes[0]
-    assert done["matrix"][0]["result"] == "检查没通过" and done["slices"] == {"done": 1, "total": 2}
-    assert not (root / "ontology" / "object" / "对象1.md").exists() and (root / "ontology" / "object" / "对象2.md").is_file()
+    assert done["slices"] == {"done": 2, "total": 2}
+    assert (root / "ontology" / "object" / "对象1.md").is_file() and (root / "ontology" / "object" / "对象2.md").is_file()
     suspensions = client.get(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/suspensions").json()["items"]
-    assert [item["title"] for item in suspensions] == ["「合成片1」检查没通过"]
-    assert suspensions[0]["handled_as"] == "这一片没生效，先做下一片"
+    assert suspensions == []
 
 
-def test_a_failed_run_leaves_the_slice_for_the_user_to_confirm(ab, monkeypatch):
-    client, workspaces, project_id, _root = ab
+def test_a_failed_run_does_not_leave_the_slice_waiting_for_confirmation(ab, monkeypatch):
+    """F3：停在一段中间时这一段照样合入；合不进去（这里是合入本身出错）的留在变更集里，下一次收尾时合入，
+    不进待处理的「修改待确认」。"""
+    client, workspaces, project_id, root = ab
     from app.services.workspace.errors import WorkspaceError
 
     def unavailable(*args, **kwargs):
         raise WorkspaceError("门禁跑不起来", 503, "service_unavailable", {"dependency": "gate"})
 
+    from app.kernel.changesets import service as changeset_service
+
+    real_merge = changeset_service.merge
     monkeypatch.setattr("app.kernel.changesets.service.merge", unavailable)
     run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s1"], "until_node": "core.model"},
                 budget={"max_tokens": 500_000})
     failed = wait_state(client, project_id, run["run_id"], "failed")
     assert failed["matrix"][0]["result"] in ("未开始", "部分完成")
-    # 这一片的修改留给用户：待处理里「修改待确认」，之后的对话照常
-    pending = [item for item in _inbox(client, project_id)["items"] if item["kind"] == "pending_changeset"]
-    assert len(pending) == 1
-    assert client.get(f"/api/v1/projects/{project_id}/scope").json()["state"] == "pending_confirm"
+    assert not [item for item in _inbox(client, project_id)["items"] if item["kind"] == "pending_changeset"]
+    from app.kernel.changesets import service as changesets
+
+    monkeypatch.setattr(changesets, "merge", real_merge)
+
+    out = changesets.settle(workspaces, project_id, actor="employee_0001")
+    assert out["state"] == "merged" and out["record"]["needs_review"] is True
+    assert (root / "ontology" / "object" / "对象1.md").is_file()
+    assert client.get(f"/api/v1/projects/{project_id}/scope").json()["state"] == "none"

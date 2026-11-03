@@ -354,6 +354,8 @@ class TxResult:
     commit: str
     previous: str
     paths: list[str] = field(default_factory=list)
+    # hint_gates 时插件声明的提交门禁没过的问题（只提示，F3）
+    findings: list[dict] = field(default_factory=list)
 
 
 class ChangeTx:
@@ -364,7 +366,7 @@ class ChangeTx:
 
     def __init__(self, manager, project_id: str, origin: Origin, *, summary: str = "",
                  target: ChangeTarget | None = None, expected_head: str | None = None,
-                 rollback_on_crash: bool = False):
+                 rollback_on_crash: bool = False, hint_gates: bool = False):
         self.manager = manager
         self.project_id = project_id
         self.origin = origin
@@ -373,6 +375,8 @@ class ChangeTx:
         self.expected_head = expected_head
         # 整片写入（确认生效）：崩溃后启动恢复整片回滚，而不是把已落盘的部分补提交
         self.rollback_on_crash = rollback_on_crash
+        # 助手一轮的合入、自主构建按段合入：插件声明的提交门禁只提示，问题放进 TxResult.findings（F3）
+        self.hint_gates = hint_gates
         self.root: Path | None = None
         self.base_head = ""
         self.result: TxResult | None = None
@@ -530,14 +534,14 @@ class ChangeTx:
 
         self._derive()
         errors = _gate_errors(self.manager, self.project_id, self.root, list(self._paths), self.origin)
-        if errors:
+        if errors and not self.hint_gates:
             raise WorkspaceError(f"没有通过插件声明的门禁：{errors[0]['message']}", 422, "gate_failed",
                                  {"findings": errors[:50]})
         values = trailers(self.origin, self.root)
         with telemetry.span("commit", "commit", source=self.origin.source, target=self.target.kind,
                             paths=len(self._paths)):
             commit, previous, changed = self.target.commit(self._paths, message, values, self.expected_head)
-        self.result = TxResult(commit, previous, changed)
+        self.result = TxResult(commit, previous, changed, errors[:50] if self.hint_gates else [])
         if commit:
             telemetry.count("onto_commits_total", source=self.origin.source, target=self.target.kind)
             events.publish(events.WorkspaceChanged(

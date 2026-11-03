@@ -75,6 +75,14 @@ def pending(workspaces, project_id, root, rel="ontology/object/门店.md", text=
     return changesets.observe(workspaces, project_id, running=False, conversation_id="default")
 
 
+def conflicted(workspaces, project_id, root, rel="ontology/object/客户.md", name="客户"):
+    """这一轮和你在 Studio 的修改改到同一条：合入时冲突，进待处理（F3 起唯一会出现的变更集事项）。"""
+    main_write(root, rel, obj(name, "原来的"))
+    pending(workspaces, project_id, root, rel=rel, text=obj(name, "助手改的"))
+    main_write(root, rel, obj(name, "你改的"))
+    assert changesets.settle(workspaces, project_id, actor="employee_0001")["state"] == "conflict"
+
+
 def test_sources_counts_and_detail_shapes(env):
     client, workspaces, _manager, project_id, root = env
     # 过期的场景验证节点（场景走查包的节点，计进它的角标）、需复核的对象节点、报告、外部反馈、续跑
@@ -92,7 +100,7 @@ def test_sources_counts_and_detail_shapes(env):
     record = exec_records.start(project_id, "default", root=root, flow=flow, command="/ontology-research",
                                 command_name="research")
     exec_records.interrupt(project_id, record["id"], "restart", root=root, flow=flow)
-    pending(workspaces, project_id, root, rel="ontology/object/客户.md", text=obj("客户", "合成客户"))
+    conflicted(workspaces, project_id, root)
 
     body = client.get(f"/api/v1/projects/{project_id}/inbox").json()
     found = {item["id"]: item for item in body["items"]}
@@ -102,7 +110,8 @@ def test_sources_counts_and_detail_shapes(env):
     assert found["report:20261102-rule"]["title"].endswith("1 条待处理")
     assert found["feedback:fb1"]["source"] == "external"
     assert found[f"resumable:{record['id']}"]["actions"] == ["resume", "abandon", "dismiss"]
-    assert found["pending_changeset:cs-1"]["actions"] == ["merge", "discard", "dismiss"]
+    assert found["changeset_conflict:cs-1"]["actions"] == ["resolve", "discard", "dismiss"]
+    assert not [key for key in found if key.startswith("pending_changeset:")]
     # 说明槽位 meta 不再下发（UI 文案口径 ⑤）
     item_keys = {"id", "kind", "kind_label", "title", "slice", "run", "source", "confidence",
                  "high_confidence", "pack", "impact", "created_at", "actions", "batchable"}
@@ -117,8 +126,8 @@ def test_sources_counts_and_detail_shapes(env):
     assert set(kinds(client, project_id, filter="stale")) == {key for key in found if key.startswith("stale:")}
     assert client.get(f"/api/v1/projects/{project_id}/inbox", params={"filter": "bogus"}).status_code == 400
     # 详情按 kind
-    detail = client.get(f"/api/v1/projects/{project_id}/inbox/pending_changeset:cs-1").json()["detail"]
-    assert detail["id"] == "cs-1" and detail["groups"]
+    detail = client.get(f"/api/v1/projects/{project_id}/inbox/changeset_conflict:cs-1").json()["detail"]
+    assert detail["changeset"]["id"] == "cs-1" and detail["entities"][0]["id"] == "object:客户"
     stale = client.get(f"/api/v1/projects/{project_id}/inbox/stale:trace.trace").json()["detail"]
     assert set(stale) == {"upstream_diff", "impact", "siblings"}
     assert client.get(f"/api/v1/projects/{project_id}/inbox/nope:1").json()["code"] == "not_found"
@@ -131,12 +140,14 @@ def test_sources_counts_and_detail_shapes(env):
 def test_actions_go_to_the_equivalent_endpoints(env):
     client, workspaces, _manager, project_id, root = env
     base = f"/api/v1/projects/{project_id}/inbox"
-    pending(workspaces, project_id, root)
-    merged = client.post(f"{base}/pending_changeset:cs-1/actions", json={"action": "merge"})
+    conflicted(workspaces, project_id, root)
+    merged = client.post(f"{base}/changeset_conflict:cs-1/actions",
+                         json={"action": "resolve", "choices": [{"target": "object:客户", "keep": "changeset"}]})
     assert merged.status_code == 200, merged.text
     assert merged.json()["resolved"] is True and merged.json()["result"]["state"] == "merged"
-    assert (root / "ontology/object/门店.md").is_file()
-    assert client.post(f"{base}/pending_changeset:cs-1/actions", json={"action": "merge"}).json()["code"] == "not_found"
+    assert "助手改的" in (root / "ontology/object/客户.md").read_text(encoding="utf-8")
+    assert client.post(f"{base}/changeset_conflict:cs-1/actions",
+                       json={"action": "resolve", "choices": []}).json()["code"] == "not_found"
     # 需复核：接受后去掉
     main_write(root, "ontology/operation/补货.md", "# 补货\n\n## 业务描述\n\n合成\n")
     node_state.mark_needs_review(root, ["core.model"], "upgrade")
@@ -212,25 +223,27 @@ def test_change_list_is_captured_with_its_conversation_and_executed(env):
         state = Path(ctx.cwd) / ".ontology-state"
         state.mkdir(exist_ok=True)
         (state / "update-plan.json").write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+
+    def execute(ctx):
         agent_write(Path(ctx.cwd), "ontology/object/门店.md", obj("门店", "合成门店（加营业面积）"), commit="agent: 改")
 
-    FakeEngine.scripts = [[analyse, result()]]
+    FakeEngine.scripts = [[analyse, result()], [execute, result()]]
     client.post(f"/api/v1/projects/{project_id}/conversations/default/messages", json={"text": "/ontology-update 修订通知"})
 
     def round_card():
         return [event["payload"] for event in manager.get_history(project_id, "default")
-                if event.get("type") == "card" and event["payload"].get("card_type") == "round_changes"]
+                if event.get("type") in ("card", "card_updated") and event["payload"].get("card_type") == "round_changes"]
 
-    wait(round_card)
+    wait(lambda: change_lists.all_lists(root))
     idle(manager, project_id)
     lists = change_lists.all_lists(root)
     assert len(lists) == 1
     listed = change_lists.view(lists[0])
-    assert listed["conversation_id"] == "default" and listed["changeset_id"] == "cs-1"
+    # 只做了影响分析的一轮没有改动、没有变更集：清单先不挂编号，等执行那一轮
+    assert listed["conversation_id"] == "default" and listed["changeset_id"] is None
     assert [point["confidence"] for point in listed["points"]] == ["high", "low"]
     assert listed["points"][0]["impact"][0]["id"] == "object:门店"
-    # 这一轮的「改了什么」卡带上清单
-    assert round_card()[-1]["change_list_id"] == listed["id"]
+    assert round_card() == []
     base = f"/api/v1/projects/{project_id}/change-lists/{listed['id']}"
     assert client.get(base).json()["id"] == listed["id"]
     assert kinds(client, project_id, filter="change_list")[f"change_list:{listed['id']}"]["kind"] == "change_list"
@@ -241,14 +254,16 @@ def test_change_list_is_captured_with_its_conversation_and_executed(env):
     saved = client.put(base, json={"base_revision": client.get(base).json()["revision"], "points": [
         {"id": "p1"}, {"id": "p2", "rewritten_text": "保留旧门店，只标停用"}]})
     assert saved.status_code == 200 and saved.json()["change_list"]["points"][1]["state"] == "rewritten"
-    assert client.get(f"{base}/impact").json()["stale"]
     stale_revision = client.put(base, json={"base_revision": "old", "points": []})
     assert stale_revision.json()["code"] == "revision_conflict"
-    # 确认生效之前助手的变更集还开着：执行要等这一轮确认或撤回；先撤回再执行
-    changesets.discard(workspaces, project_id, "cs-1", actor="employee_0001")
     executed = client.post(f"{base}/execute", json={"base_revision": client.get(base).json()["revision"]})
     assert executed.status_code == 202, executed.text
     assert "change_list_id=" in FakeEngine.sent[-1]
     exported = changesets.existing_copy(root) / ".onto" / "run" / "change-lists" / f"{listed['id']}.json"
     assert json.loads(exported.read_text(encoding="utf-8"))["id"] == listed["id"]
     idle(manager, project_id)
+    # 执行那一轮结束就合入（F3）：清单挂上这一轮的变更集、记为已执行，卡片带上清单
+    wait(round_card)
+    assert change_lists.view(change_lists.get(root, listed["id"]))["state"] == "executed"
+    assert round_card()[-1]["change_list_id"] == listed["id"] and round_card()[-1]["state"] == "merged"
+    assert "营业面积" in (root / "ontology/object/门店.md").read_text(encoding="utf-8")

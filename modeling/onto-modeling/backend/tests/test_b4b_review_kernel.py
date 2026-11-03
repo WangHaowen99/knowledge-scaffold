@@ -285,8 +285,9 @@ def test_06_crash_while_writing_a_merge_leaves_mainline_untouched(tmp_path, monk
     assert git(root, "rev-parse", "HEAD").strip() == head  # 没有补提交半个合入
     assert git(root, "status", "--porcelain", "--", "ontology") == ""  # 写了一半的文件恢复原样
     assert store.get(root, changeset_id)["state"] == "pending_confirm"
+    # F3：启动时遗留的这一轮自动合入（不再等人确认生效）
     service.startup_repair(workspaces)
-    assert service.merge(workspaces, project_id, changeset_id, actor="employee_0001")["state"] == "merged"
+    assert store.get(root, changeset_id)["state"] == "merged"
     assert all((root / f"ontology/object/{name}.md").is_file() for name in ("仓库", "客户", "门店"))
 
 

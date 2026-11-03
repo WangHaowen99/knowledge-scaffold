@@ -383,9 +383,10 @@ def _actions(node: dict, state: str, hooks: list[dict] | None = None, *, bluepri
 
 def _notices(context: dict) -> list[dict]:
     changeset = context.get("changeset")
-    if changeset and changeset.get("state") in ("pending_confirm", "conflict"):
-        return [{"kind": "pending_changeset", "count": 1, "text": "这一轮的修改还没确认",
-                 "action": {"type": "show_changes", "changeset_id": changeset["id"]}}]
+    if changeset and changeset.get("state") == "conflict":
+        # 一轮结束就合入（F3）：只剩合入冲突要你处理
+        return [{"kind": "changeset_conflict", "count": 1, "text": "这一轮和你的修改有冲突",
+                 "action": {"type": "navigate", "page": "inbox"}}]
     return []
 
 

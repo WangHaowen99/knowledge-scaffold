@@ -6,8 +6,9 @@
 2. 先占一个变更集（`source=autobuild`、`build_mode=L4`），注入片说明与台账摘要，以项目所有者的身份发这一片的
    每一步命令（`/ontology-extract-object slice=<片>` 等），按条件等这一轮出 result；
 3. 查执行记录：做完了就下一步；没做完也没挂起就说「继续」，最多 `CONTINUE_LIMIT` 次；出错按执行记录续跑；
-4. 自动合入（`changesets.merge(source="autobuild", needs_review=True)`）；门禁不过让助手修，最多策略里的轮数，
-   还不过就挂起这一片、撤回这一片的修改；合入冲突停下（冲突进待处理）；
+4. 自动合入（`changesets.merge(source="autobuild", needs_review=True)`）；合入前检查有新错误时让助手修，最多策略
+   里的轮数，还有就照样合入（F3：检查只提示，发布时才拦），这一段标需复核；要删除已确认的内容时挂起这一段、撤回
+   这一段的修改；合入冲突停下（冲突进待处理）；
 5. 合入之后是安全点：停在安全点、转为陪伴、预算用完在这里结束；暂停在一步做完之后生效。
 
 切片之后主线上的几步（校验、走查、全局一致性）各算一个单元，同样一步一个变更集、自动合入。运行状态与台账在
@@ -618,6 +619,17 @@ class AutobuildRunner:
                 await asyncio.to_thread(changesets.discard, ws, project_id, changeset_id, actor=owner)
             return self._unit_done(project_id, run_id, unit, record=None)
         limit = int(((run.get("policy") or {}).get("advanced") or {}).get("max_fix_rounds") or 0)
+        # 合入前检查有新错误（不含指向待建内容的链接）：让助手修，最多策略里的轮数；还有就照样合入，只提示（F3）
+        while True:
+            checks = (changesets.current(ws, project_id) or {}).get("checks") or {}
+            findings = [item for item in checks.get("findings") or [] if item.get("level") == "error"]
+            rounds = int(store.get(project_id, run_id)["slices"][unit["id"]].get("fix_rounds") or 0)
+            if not findings or rounds >= limit:
+                break
+            store.update(project_id, run_id, lambda record: record["slices"][unit["id"]].update(fix_rounds=rounds + 1))
+            await self._fix(project_id, run_id, unit, findings)
+            await asyncio.to_thread(changesets.observe, ws, project_id, running=False,
+                                    conversation_id=run["conversation_id"], checks=True)
         while True:
             try:
                 result = await asyncio.to_thread(
@@ -625,20 +637,6 @@ class AutobuildRunner:
                     message=f"autobuild: 自主构建运行 #{run['run_no']}「{unit['name']}」（{changeset_id}）")
                 break
             except WorkspaceError as exc:
-                if exc.code == "gate_failed":
-                    rounds = int(store.get(project_id, run_id)["slices"][unit["id"]].get("fix_rounds") or 0)
-                    if rounds < limit:
-                        store.update(project_id, run_id,
-                                     lambda record: record["slices"][unit["id"]].update(fix_rounds=rounds + 1))
-                        await self._fix(project_id, run_id, unit, (exc.details or {}).get("findings") or [])
-                        await asyncio.to_thread(changesets.observe, ws, project_id, running=False,
-                                                conversation_id=run["conversation_id"], checks=True)
-                        continue
-                    findings = (exc.details or {}).get("findings") or []
-                    return await self._give_up(project_id, run_id, unit, changeset_id, owner,
-                                               title=f"「{unit['name']}」检查没通过", flag="gate_failed",
-                                               reason="；".join(str(item.get("message") or item.get("code") or "")
-                                                               for item in findings[:3]))
                 if exc.code == "delete_forbidden":
                     return await self._give_up(project_id, run_id, unit, changeset_id, owner,
                                                title=f"「{unit['name']}」要删除已确认的内容", flag="delete_forbidden",
@@ -651,7 +649,7 @@ class AutobuildRunner:
 
     async def _fix(self, project_id: str, run_id: str, unit: dict, findings: list[dict]) -> None:
         lines = [f"- {item.get('message') or item.get('code')}（{item.get('path') or ''}）" for item in findings[:10]]
-        text = (f"确认生效前的检查发现 {len(findings)} 个新错误。只改「{unit['name']}」这一片的内容，把它们修好：\n"
+        text = (f"合入前的检查发现 {len(findings)} 个新问题。只改「{unit['name']}」这一段的内容，把它们修好：\n"
                 + "\n".join(lines))
         run = store.get(project_id, run_id)
         await self._send(project_id, run_id, unit, text)
@@ -660,8 +658,7 @@ class AutobuildRunner:
 
     async def _give_up(self, project_id: str, run_id: str, unit: dict, changeset_id: str, owner: str, *,
                        title: str, flag: str, reason: str) -> str:
-        """这一片合入不了（门禁修了几轮还不过、要删除已确认的内容）：这一片的修改撤回，挂起一个问题（进待处理），
-        接着做下一片。"""
+        """这一段合入不了（要删除已确认的内容）：这一段的修改撤回，挂起一个问题（进待处理），接着做下一段。"""
         from ...kernel.changesets import service as changesets
 
         await asyncio.to_thread(changesets.discard, _ws(), project_id, changeset_id, actor=owner)
@@ -862,19 +859,32 @@ class AutobuildRunner:
 
     @staticmethod
     def _settle_changeset(run: dict) -> None:
-        """出错停在一片中间：这一片的变更集有改动就留给用户确认（修改待确认），没改动就关掉，不挡之后的对话。"""
+        """停在一段中间（出错、停下）：这一段已有的改动照样合入成一个版本、标需复核（F3：不再留给用户确认）；
+        没改动就关掉；要删除已确认的内容时撤回这一段；合入冲突进待处理。都不挡之后的对话。"""
         from ...kernel.changesets import service as changesets
+        from ...services.workspace.errors import WorkspaceError
 
         ws = _ws()
         record = changesets.current(ws, run["project_id"])
-        if record is None or record.get("run_id") != run["run_id"] or record.get("state") != "open":
+        if record is None or record.get("run_id") != run["run_id"] or record.get("state") not in ("open", "pending_confirm"):
             return
+        owner = run.get("owner") or run.get("actor") or "system"
         try:
             observed = changesets.observe(ws, run["project_id"], running=False, conversation_id=run["conversation_id"],
-                                          checks=True)
-            if observed is None and (changesets.current(ws, run["project_id"]) or {}).get("id") == record["id"]:
-                changesets.discard(ws, run["project_id"], record["id"], actor=run.get("owner") or "system")
-        except Exception:  # noqa: BLE001 - 收不了尾时变更集留着，用户在待处理里处理
+                                          checks=False)
+            if observed is None:
+                if (changesets.current(ws, run["project_id"]) or {}).get("id") == record["id"]:
+                    changesets.discard(ws, run["project_id"], record["id"], actor=owner)
+                return
+            try:
+                changesets.merge(ws, run["project_id"], record["id"], actor=owner, source="autobuild", needs_review=True,
+                                 auto=True, message=f"autobuild: 自主构建运行 #{run.get('run_no')} 停下时的这一段（{record['id']}）")
+            except WorkspaceError as exc:
+                if exc.code == "delete_forbidden":
+                    changesets.discard(ws, run["project_id"], record["id"], actor=owner)
+                elif exc.code != "merge_conflict":
+                    raise
+        except Exception:  # noqa: BLE001 - 收不了尾时变更集留着，下一轮开始前、重启时再合入
             _log.warning("自主构建结束时整理变更集失败（%s）", run["project_id"], exc_info=True)
 
     def _write_report(self, run: dict) -> None:

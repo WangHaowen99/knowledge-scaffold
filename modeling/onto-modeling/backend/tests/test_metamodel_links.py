@@ -150,7 +150,9 @@ def test_backend_and_toolkit_resolve_links_identically(workspace, checker):
 
 def test_studio_check_flags_only_unresolved_links(workspace):
     result = studio.deterministic_check(workspace, "ontology/operation/下单.md", OPERATION)
-    assert [item for item in result["review"] if "指向不存在的文档" in item] == ["[[不存在的对象]] 指向不存在的文档"]
+    # F3：链接问题只提示，不转复核
+    assert [item for item in result["hints"] if "指向不存在的文档" in item] == ["[[不存在的对象]] 指向不存在的文档"]
+    assert not [item for item in result["review"] if "指向不存在的文档" in item]
 
 
 def test_relation_endpoints_agree_between_backend_and_checker(checker):

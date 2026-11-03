@@ -579,7 +579,7 @@ def _git_quiet(*args) -> str | None:
 
 
 def _local_changes(mainline_head: str) -> bool:
-    """这份副本里有没确认生效的改动（含没提交的、没跟踪的文件）。
+    """这份副本里有这一轮还没合入的改动（含没提交的、没跟踪的文件）。
 
     和副本与主线的分叉点比，不和主线最新比：这一轮里你在网页上的保存让主线前进了，副本没有那些改动，
     不能当成副本改了东西。资料区与锁文件不算。"""
@@ -602,7 +602,7 @@ def _locked_nodes(flow: dict) -> set:
 
 def suggest_payload() -> dict:
     """下一步建议（契约 7.8 Suggestions）：节点状态取后端写的 `.onto/run/flow-state.json`（执行记录、变更集、
-    指纹算出的那份），再叠上这份副本里还没确认的改动；算法与后端、宿主注入是同一个 flow_state.suggest。"""
+    指纹算出的那份），再叠上这份副本里这一轮还没合入的改动；算法与后端、宿主注入是同一个 flow_state.suggest。"""
     flow = _flow()
     try:
         data = json.loads(FLOW_STATE_FILE.read_text(encoding='utf-8'))

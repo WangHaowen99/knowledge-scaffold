@@ -1,7 +1,8 @@
-"""变更集与写入范围（契约 3.10 CS-01～CS-07；详设 8.2、4.3；方案 C7～C12）。
+"""变更集与写入范围（契约 3.10 CS-01～CS-07；详设 8.2、4.3；方案 C7～C12；F3）。
 
-确认生效、撤回、解决冲突在线程里做（git 与门禁检查），对话里的卡片更新与提示行回到事件循环再追加
-（会话的订阅队列不是线程安全的）。
+F3 起助手每一轮结束就合入成一个版本，变更集是内部机制：用户只在两处碰到它——「撤回这一轮」（CS-05）与合入冲突
+（CS-07）。CS-04 只留给遗留的待确认变更集（升级前留下的、自动合入没成的），界面不再调。
+撤回、解决冲突在线程里做（git 与检查），对话里的卡片更新与提示行回到事件循环再追加（会话的订阅队列不是线程安全的）。
 """
 
 from __future__ import annotations
@@ -67,7 +68,7 @@ def changeset_diff(project_id: str, changeset_id: str, request: Request, target:
 
 
 async def after_close(project_id: str, record: dict, kind: str, text: str) -> None:
-    """确认生效、撤回之后：这个变更集的卡片更新、对话里一条提示行（EC-13）。"""
+    """合入、撤回之后：这个变更集的卡片更新、对话里一条提示行（EC-13）。"""
     from ..services.agent_sessions import manager
 
     records = await asyncio.to_thread(service.card_records, deps.workspaces, project_id, record)
@@ -79,7 +80,7 @@ async def after_close(project_id: str, record: dict, kind: str, text: str) -> No
             manager.append_record(project_id, conversation_id, item)
         except Exception:  # noqa: BLE001 - 对话已删除：卡片不更新，不影响合入结果
             continue
-    # 建议条（EC-53）跟着换：确认生效、撤回之后不再是「确认生效 / 撤回这一轮」，和 FL-02 同一份
+    # 建议条（EC-53）跟着换，和 FL-02 同一份
     conversations = {conversation_id for conversation_id, _item in records}
     if record.get("conversation_id"):
         conversations.add(record["conversation_id"])
@@ -102,25 +103,34 @@ def _suggestions_after_close(project_id: str) -> dict | None:
 
 async def merge_and_announce(project_id: str, changeset_id: str, *, actor: str, expected_head: str | None = None,
                              choices: dict | None = None) -> dict:
-    """CS-04 / CS-07 / 待处理里「确认生效」共用：合入并更新对话里的卡片。"""
+    """CS-04 / CS-07 共用：合入并更新对话里的卡片。"""
     result = await asyncio.to_thread(service.merge, deps.workspaces, project_id, changeset_id, actor=actor,
                                      expected_head=expected_head, choices=choices)
     record = result.pop("record")
-    await after_close(project_id, record, "merged",
-                      f"这一轮的修改已确认生效 · 版本 {result['version_label']}")
+    await after_close(project_id, record, "merged", f"这一轮的修改已生效 · 版本 {result['version_label']}")
+    return result
+
+
+async def settle_and_announce(project_id: str, *, actor: str) -> dict | None:
+    """遗留的待确认变更集（升级前留下的）合入成一个版本，并更新对话里的卡片（BP-03 用）。"""
+    result = await asyncio.to_thread(service.settle, deps.workspaces, project_id, actor=actor)
+    if result and result["state"] == "merged":
+        await after_close(project_id, result["record"], "merged", f"这一轮的修改已生效 · 版本 {result['version_label']}")
     return result
 
 
 async def discard_and_announce(project_id: str, changeset_id: str, *, actor: str) -> dict:
-    result = await asyncio.to_thread(service.discard, deps.workspaces, project_id, changeset_id, actor=actor)
+    """撤回这一轮：合入过的回到上一个版本（另存一个版本），冲突中还没合入的撤回副本。"""
+    result = await asyncio.to_thread(service.revert_round, deps.workspaces, project_id, changeset_id, actor=actor)
     record = result.pop("record")
-    await after_close(project_id, record, "discarded", "这一轮的修改已撤回")
+    text = f"已撤回这一轮 · 版本 {result['version_label']}" if result["state"] == "reverted" else "已撤回这一轮"
+    await after_close(project_id, record, "discarded", text)
     return result
 
 
 @router.post("/changesets/{changeset_id}/merge")
 async def merge_changeset(project_id: str, changeset_id: str, request: Request):
-    """CS-04 确认生效。"""
+    """CS-04 合入遗留的待确认变更集（F3 起界面不再调；一轮结束自动合入）。"""
     deps.require_writable(project_id, request)
     body = await deps.json_body(request)
     expected = body.get("expected_head")
@@ -132,7 +142,7 @@ async def merge_changeset(project_id: str, changeset_id: str, request: Request):
 
 @router.post("/changesets/{changeset_id}/discard")
 async def discard_changeset(project_id: str, changeset_id: str, request: Request):
-    """CS-05 撤回这一轮。"""
+    """CS-05 撤回这一轮（F3：合入过的写反向提交，回到上一个版本）。"""
     deps.require_writable(project_id, request)
     _not_in_run(project_id, changeset_id)
     return await discard_and_announce(project_id, changeset_id, actor=deps.actor(request))

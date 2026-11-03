@@ -282,10 +282,11 @@ def _research_turn(manager, project_id, root):
     asyncio.run(turn())
 
 
-def test_blueprint_in_the_research_changeset_is_edited_in_the_copy_and_confirm_merges_it(env):
+def test_blueprint_from_the_research_turn_is_on_mainline_and_confirm_only_marks_it(env):
+    """F3：资料分析那一轮结束就合入，蓝图在主线上；调整、回答经写入事务写主线，确认蓝图不再先确认生效。"""
     client, workspaces, manager, project_id, root = env
     _research_turn(manager, project_id, root)
-    assert not (root / "research" / "blueprint.json").exists()
+    assert (root / "research" / "blueprint.json").is_file()
     history = manager.get_history(project_id, "default")
     cards = [event["payload"] for event in history if event.get("type") == "card"]
     kinds = [card["card_type"] for card in cards]
@@ -304,7 +305,7 @@ def test_blueprint_in_the_research_changeset_is_edited_in_the_copy_and_confirm_m
     items = client.get(f"/api/v1/projects/{project_id}/inbox").json()["items"]
     question = next(item for item in items if item["id"] == "decision:bq-q1")
     assert question["kind"] == "decision"
-    # 调整写进副本（这一轮的修改的一部分），主线不动；蓝图卡跟着更新
+    # 调整写主线；蓝图卡跟着更新
     slices = [{"id": item["id"], "name": item["name"], "core_flow": item["core_flow"],
                "depends_on": item["depends_on"], "excluded": item["excluded"]} for item in got["slices"]]
     slices[2]["excluded"] = True
@@ -312,35 +313,39 @@ def test_blueprint_in_the_research_changeset_is_edited_in_the_copy_and_confirm_m
     saved = client.put(base, json={"base_revision": got["revision"], "mode": "adjust", "slices": slices})
     assert saved.status_code == 200, saved.text
     assert saved.json()["version_label"] == "草案 v2"
-    assert not (root / "research" / "blueprint.json").exists()
-    copy = changesets.existing_copy(root)
-    assert json.loads((copy / "research" / "blueprint.json").read_text(encoding="utf-8"))["version_no"] == 2
+    assert json.loads((root / "research" / "blueprint.json").read_text(encoding="utf-8"))["version_no"] == 2
     updated = [event["payload"] for event in manager.get_history(project_id, "default")
                if event.get("type") == "card_updated" and event["payload"].get("card_type") == "blueprint"]
     assert updated and updated[-1]["version_label"] == "草案 v2"
-    # 回答问题（待处理 IN-03）也写进副本
+    # 回答问题（待处理 IN-03）
     answered = client.post(f"/api/v1/projects/{project_id}/inbox/decision:bq-q1/actions",
                            json={"action": "answer", "option_id": "A"})
     assert answered.status_code == 200, answered.text
     assert client.get(base).json()["questions"][0]["answer"] == {"option_id": "A"}
-    # 确认蓝图：先把这一轮确认生效，再在主线上标已确认
+    # 确认蓝图：只在主线上标已确认
     confirmed = client.post(f"{base}/confirm", json={"base_revision": client.get(base).json()["revision"],
                                                      "next": "L2"})
     assert confirmed.status_code == 200, confirmed.text
     on_main = json.loads((root / "research" / "blueprint.json").read_text(encoding="utf-8"))
     assert on_main["state"] == "confirmed" and on_main["version_no"] == 2 and on_main["slices"][2]["excluded"]
-    assert changesets.current(workspaces, project_id) is None or \
-        changesets.current(workspaces, project_id)["state"] in ("open", "pending_confirm")
-    assert "Onto-Changeset: cs-1" in git(root, "log", "--format=%B", "-4")
+    assert changesets.current(workspaces, project_id) is None
+    assert "Onto-Changeset: cs-1" in git(root, "log", "--format=%B", "-6")
     # I1 合并：确认之后蓝图卡所在对话的建议条跟着换，不再停在「确认蓝图」
     bars = [event["payload"] for event in manager.get_history(project_id, "default") if event.get("type") == "suggestions"]
     assert bars and (bars[-1].get("primary") or {}).get("id") != "confirm_blueprint"
 
 
 def test_saving_while_the_assistant_runs_is_423(env, monkeypatch):
-    client, _workspaces, manager, project_id, root = env
+    client, workspaces, manager, project_id, root = env
     _research_turn(manager, project_id, root)
+    # 助手又开始改蓝图（这一轮还在跑）：蓝图在副本里，调整回 423
+    copy = changesets.copy_for_turn(workspaces, project_id, root)
+    draft = json.loads((copy / "research" / "blueprint.json").read_text(encoding="utf-8"))
+    draft["out_of_scope"] = ["助手正在改"]
+    (copy / "research" / "blueprint.json").write_text(json.dumps(draft, ensure_ascii=False), encoding="utf-8")
+    changesets.observe(workspaces, project_id, running=True, conversation_id="default")
     got = client.get(f"/api/v1/projects/{project_id}/blueprint").json()
+    assert got["out_of_scope"] == ["助手正在改"]
     monkeypatch.setattr(changesets, "_activity_provider",
                         lambda pid: {"running": True, "conversation_id": "default", "exec": None, "affected": []})
     locked = client.put(f"/api/v1/projects/{project_id}/blueprint",

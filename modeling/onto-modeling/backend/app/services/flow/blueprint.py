@@ -3,8 +3,9 @@
 蓝图是工作区里的 `research/blueprint.json`，格式、校验、调整都在 core 的 `blueprint.py`（契约库按项目锁定
 版本加载，与助手在工作区里跑的是同一份）。这里只管它放在哪、怎么写进去：
 
-- 资料分析那一轮助手在变更集副本里写出草案，确认生效之前蓝图只在副本里：这时读、调整都对副本
-  （调整写进同一个变更集，助手在跑时 423）；确认蓝图（BP-03）先把这个变更集确认生效，再在主线上标已确认；
+- 资料分析那一轮助手在变更集副本里写出草案，这一轮结束就合入主线（F3）；只有这一轮还在跑、或合入冲突还没解决时
+  蓝图在副本里：读、调整对副本（助手在跑时 423），确认蓝图回 409（等这一轮结束 / 先在待处理里选好）；
+  升级前留下的待确认变更集，确认蓝图时先合入（不再等「确认生效」，也不再被检查拦）；
 - 蓝图已经在主线上时，调整与确认经写入事务提交（范围锁照常检查）。
 
 BP-03 选「按蓝图一路建完」（L4）时返回自主构建的开始前预览：由自主构建（B5b）经
@@ -250,7 +251,8 @@ def add_question(manager, project_id: str, title: str, *, actor: str, background
 
 
 def prepare_confirm(manager, project_id: str, body: dict) -> dict:
-    """BP-03 第一步（不改任何东西）：核对版本号、构建方式；蓝图在没确认的变更集里时返回要先确认生效的变更集。"""
+    """BP-03 第一步（不改任何东西）：核对版本号、构建方式。蓝图还在助手这一轮里（在跑）或合入冲突里时 409；
+    在升级前留下的待确认变更集里时 settle=True（先合入）。"""
     next_mode = body.get("next") or (manager.get_project(project_id) or {}).get("build_mode") or "L2"
     if next_mode not in ("L2", "L4"):
         raise WorkspaceError("next 只能是 L2 或 L4", 400, "invalid_argument", {"fields": {"next": "enum"}})
@@ -260,16 +262,24 @@ def prepare_confirm(manager, project_id: str, body: dict) -> dict:
     if loaded is None:
         raise WorkspaceError("还没有建模蓝图", 404, "blueprint_not_found")
     _check_revision(loaded, body.get("base_revision", ""))
-    return {"next": next_mode, "changeset_id": loaded["record"]["id"] if loaded["where"] == "changeset" else None}
+    record = loaded["record"] if loaded["where"] == "changeset" else None
+    if record is not None and record["state"] == "conflict":
+        raise WorkspaceError("建模蓝图所在的这一轮和你的修改有冲突，先在待处理里选好保留哪边", 409, "merge_conflict",
+                             {"entities": (record.get("conflict") or {}).get("entities") or [],
+                              "inbox_item_id": f"changeset_conflict:{record['id']}"})
+    if record is not None and record["state"] == "open":
+        raise WorkspaceError("助手正在改这个项目，等这一轮结束再确认", 409, "changeset_in_progress",
+                             {"conversation_id": record.get("conversation_id")})
+    return {"next": next_mode, "settle": record is not None}
 
 
 def mark_confirmed(manager, project_id: str, *, actor: str) -> dict:
-    """BP-03 第二步：蓝图已在主线上（变更集已确认生效），标已确认；已确认的不再写。返回蓝图视图。"""
+    """BP-03 第二步：蓝图已在主线上，标已确认；已确认的不再写。返回蓝图视图。"""
     loaded = read(manager, project_id)
     if loaded is None:
         raise WorkspaceError("还没有建模蓝图", 404, "blueprint_not_found")
     if loaded["where"] == "changeset":
-        raise WorkspaceError("这一轮的修改还没确认生效", 409, "changeset_in_progress",
+        raise WorkspaceError("助手正在改这个项目，等这一轮结束再确认", 409, "changeset_in_progress",
                              {"conversation_id": (loaded["record"] or {}).get("conversation_id")})
     module = script(loaded["root"])
     if loaded["doc"].get("state") != "confirmed":
@@ -454,7 +464,10 @@ def round_cards(manager, project_id: str, changes: dict, seed: str, root: Path |
         return []
     if doc is None:
         return []
-    record = _open_record(main) or {}
+    from ...kernel.changesets import store
+
+    # 这一轮的变更集：一轮结束就合入（F3），出卡时多半已经关了，取最近的一个
+    record = _open_record(main) or next(iter(store.all_records(main)), None) or {}
     conversation_id = record.get("conversation_id")
     seed = str(seed or "")[:24] or "bp"
     cards = []

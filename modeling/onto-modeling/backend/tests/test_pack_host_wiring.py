@@ -123,19 +123,16 @@ def test_agent_round_commit_reports_artifacts_on_project_stream(host):
     FakeEngine.scripts = [[write_and_commit, result()]]
     client.post(f"/api/v1/projects/{project_id}/conversations/default/messages", json={"text": "补一个补货场景"})
 
-    # 助手在变更集副本里提交（B4b）：一轮结束后是待确认的变更集，主线还没动
-    def pending():
+    # 助手在变更集副本里提交（B4b）；F3 起一轮结束就合入成一个版本
+    def merged():
         session = agent_sessions.manager.get(project_id)
         if session is None or session.state != "idle":
             return None
-        found = client.get(f"/api/v1/projects/{project_id}/changesets", params={"state": "pending_confirm"}).json()
+        found = client.get(f"/api/v1/projects/{project_id}/changesets", params={"state": "merged"}).json()
         return found["items"][0] if found["items"] else None
 
-    changeset = wait(pending)
-    assert not (root / SCENARIO_FILE).exists()
-    assert not [event for event in buffered(project_id, "workspace.changed") if event["data"]["source"] == "assistant"]
-    merged = client.post(f"/api/v1/projects/{project_id}/changesets/{changeset['id']}/merge", json={})
-    assert merged.status_code == 200, merged.text
+    changeset = wait(merged)
+    assert (root / SCENARIO_FILE).is_file()
 
     def agent_change():
         return next((event["data"] for event in buffered(project_id, "workspace.changed")

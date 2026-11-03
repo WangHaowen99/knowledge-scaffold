@@ -762,7 +762,10 @@ class SessionManager:
         session.last_activity = time.time()
         running = session.state == "running"
         if not running:
-            # 助手在变更集副本里改（方案 C7）：一轮开始前建或修副本、跟上主线；建不了时退回主线工作区
+            # 助手在变更集副本里改（方案 C7）：一轮开始前先合入上一轮遗留的修改（F3），建或修副本、跟上主线；
+            # 建不了时退回主线工作区
+            if not session.run_id:
+                await self._settle_leftover(session)
             session.cwd = await asyncio.to_thread(_agent_cwd, session.project_id, cwd)
             session.round_base_commit, session.round_base_tree = await asyncio.to_thread(_round_start, session.cwd)
         elif session.cwd is None:
@@ -1288,6 +1291,7 @@ class SessionManager:
                 session.reader_task.cancel()
             await _kill_engine(engine)
             session.engine = None
+            self._settle_after_failure(session)
             await self._mark_user_interrupt(session)
             session.set_state("idle")
             await self._drain_waiters()
@@ -1462,9 +1466,9 @@ class SessionManager:
     # ---- 事件消费 ----
 
     async def _emit_workspace_changes(self, session: Session) -> None:
-        """一轮结束后：助手在副本里改的进变更集，放「这一轮改了什么」卡（方案 C12：基点是变更集基点，
-        在副本里算，不把你这段时间在 Studio 的保存算进来）和这一轮改到的插件产物卡；主线这时不变，
-        确认生效才写主线。没有副本（不是 git 仓库、建不了副本）时按主线这一轮的提交出卡。"""
+        """一轮结束后：助手在副本里改的进变更集并合入成一个版本（F3），放「这一轮改了什么」卡（方案 C12：基点是
+        变更集基点，在副本里算，不把你这段时间在 Studio 的保存算进来）和这一轮改到的插件产物卡。
+        没有副本（不是 git 仓库、建不了副本）时按主线这一轮的提交出卡。"""
         if not session.cwd:
             return
         from ..kernel.changesets import worktree
@@ -1513,8 +1517,10 @@ class SessionManager:
         except Exception:
             pass  # 变更卡是增强信息，失败不影响会话
 
-    async def _observe_changeset(self, session: Session, *, running: bool = False) -> None:
-        """看一眼副本里的改动（一轮结束时带检查、出卡；跑的过程中节流，只更新写入范围）。"""
+    async def _observe_changeset(self, session: Session, *, running: bool = False, force: bool = False) -> None:
+        """看一眼副本里的改动（跑的过程中节流，只更新写入范围）；一轮结束时合入成一个版本、出卡（F3）。
+
+        force：这一轮出错、被硬杀（引擎已不在，没有别的轮次在跑），不看引擎里还排着几条。"""
         from ..api import deps
         from ..kernel.changesets import service as changesets
         from .session_host import exec_records
@@ -1530,7 +1536,7 @@ class SessionManager:
                                         session.round_base_commit, head, changes)
             record = await asyncio.to_thread(
                 changesets.observe, deps.workspaces, session.project_id, running=running,
-                conversation_id=session.conversation_id, exec_record=record_exec, checks=not running,
+                conversation_id=session.conversation_id, exec_record=record_exec, checks=False,
                 throttle=running,
             )
             if not running:
@@ -1538,28 +1544,63 @@ class SessionManager:
                 session.round_base_tree = (record or {}).get("tree") or ""
                 # 只做了影响分析（只写了不进版本的 update-plan.json）的一轮也收清单，变更集编号之后补上（审查第 8 条）
                 record = await asyncio.to_thread(_capture_change_list, session, record) or record
-            if running or record is None or record.get("card_tree") == record.get("tree") or session.run_id:
-                # 自主构建的一片不出「这一轮改了什么」卡：自动合入，进展在切片进展块里
+            if running or record is None or session.run_id:
+                # 自主构建的一段不出「这一轮改了什么」卡：运行器按段合入，进展在段进展块里
                 return
-            # 这一轮的起点：一轮开始时取的树；取不到时退回上一张卡时的树、变更集基点
-            start = start_tree or record.get("card_tree") or record.get("base") or ""
-            records = await asyncio.to_thread(changesets.card_records, deps.workspaces, session.project_id,
-                                              {**record, "conversation_id": session.conversation_id}, new_card=True)
-            await asyncio.to_thread(changesets.store.update, deps.workspaces.project_root(session.project_id),
-                                    record["id"], card_tree=record.get("tree"))
-            for conversation_id, item in records:
-                if conversation_id == session.conversation_id:
-                    session.broadcast(item)
-                else:
-                    self.append_record(session.project_id, conversation_id, item)
+            if session.turns_in_flight and not force:
+                return  # 引擎里还排着下一条：等它收尾时一起合入、出卡
+            settled = await asyncio.to_thread(changesets.settle, deps.workspaces, session.project_id,
+                                              actor=project_owner(session.project_id), turn_over=True)
+            record = (settled or {}).get("record") or record
+            if record.get("cards") and record.get("card_tree") == record.get("tree"):
+                return  # 冲突没解决、这一轮又没改东西：卡片不动
+            await self._post_round_card(session, record)
             # 改到的插件产物各出一张卡（按包的 card 声明，ADR-0055；登记在 app/wiring.py）：
-            # 路径是这一轮助手在副本里的增删改，内容从副本读（确认生效前主线上还没有）
-            seed = next((item["payload"]["card_id"] for _cid, item in records if item.get("type") == "card"),
-                        record.get("tree") or "")
+            # 路径是这一轮助手在副本里的增删改，内容从这一轮的树读
+            start = start_tree or record.get("base") or ""
+            seed = f"rc-{record['id']}-1"
             for card in await asyncio.to_thread(_round_artifact_cards, session, start, record.get("tree") or "", seed):
                 session.broadcast({"type": "card", "payload": {**card, "changeset_id": record["id"]}})
         except Exception:  # noqa: BLE001 - 变更卡是增强信息，失败不影响会话
             _log.warning("项目 %s 观察助手副本失败", session.project_id, exc_info=True)
+
+    async def _post_round_card(self, session: Session, record: dict) -> None:
+        """这一轮的卡：一个变更集一张，没有就放一张，有了原地更新。"""
+        from ..api import deps
+        from ..kernel.changesets import service as changesets
+
+        records = await asyncio.to_thread(changesets.card_records, deps.workspaces, session.project_id,
+                                          {**record, "conversation_id": record.get("conversation_id")
+                                           or session.conversation_id}, new_card=True)
+        await asyncio.to_thread(changesets.store.update, deps.workspaces.project_root(session.project_id),
+                                record["id"], card_tree=record.get("tree"))
+        for conversation_id, item in records:
+            if conversation_id == session.conversation_id:
+                session.broadcast(item)
+            else:
+                self.append_record(session.project_id, conversation_id, item)
+
+    async def _settle_leftover(self, session: Session) -> None:
+        """一轮开始前：上一轮没走到收尾的修改（引擎被硬杀、会话被回收、服务停了）先合入，卡片放回它的对话。"""
+        from ..api import deps
+        from ..kernel.changesets import service as changesets
+
+        try:
+            settled = await asyncio.to_thread(changesets.settle, deps.workspaces, session.project_id,
+                                              actor=project_owner(session.project_id), turn_over=True)
+            if settled and settled.get("record") and settled["record"].get("conversation_id"):
+                await self._post_round_card(session, settled["record"])
+        except Exception:  # noqa: BLE001 - 合不进去的留在变更集里（下一次再试），不挡这一轮
+            _log.warning("项目 %s 上一轮遗留的修改没合入", session.project_id, exc_info=True)
+
+    def _settle_after_failure(self, session: Session) -> None:
+        """这一轮出错、被硬杀：副本里已有的修改照样合入成一个版本（F3）。"""
+        if session.cwd is None or session.run_id:
+            return
+        from ..kernel.changesets import worktree
+
+        if worktree.is_copy(session.cwd):
+            self._spawn(self._observe_changeset(session, force=True))
 
     async def _read_loop(self, session: Session) -> None:
         engine = session.engine
@@ -1573,6 +1614,7 @@ class SessionManager:
             if kind == "_engine_end":
                 # 引擎终止：closed（重启/终止）静默收尾，error 给用户出错卡
                 if event.get("reason") == "closed":
+                    self._settle_after_failure(session)
                     _, card = await asyncio.to_thread(turns.interrupt_exec, session, "engine_exit",
                                                       card=not session.run_id)
                     if card is not None:
@@ -1658,6 +1700,7 @@ class SessionManager:
             session.broadcast(session.turn.progress_record())
         session.turn = None
         session.deferred.clear()
+        self._settle_after_failure(session)
         record, card = turns.interrupt_exec(session, "engine_exit", card=not session.run_id)
         if card is not None:
             session.broadcast(card)

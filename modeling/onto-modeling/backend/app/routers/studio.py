@@ -409,6 +409,9 @@ async def submit(project_id: str, entry_id: str, request: Request):
         "revision": saved["revision"],
         "commit": saved["commit"] or state["head"],
         "version_label": state["version_label"],
+        # 链接、主键这类质量问题只提示（F3）
+        "warnings": [{"code": "check_hint", "level": "warning", "message": text, "path": rel}
+                     for text in checks.get("hints") or []],
     }
 
 

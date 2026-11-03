@@ -344,7 +344,7 @@ def _candidates(flow: dict, states: dict, context: dict) -> list:
 
 
 def overlay_pending(flow: dict, states: dict, local_hits: dict, locked: set | None = None) -> dict:
-    """助手副本里还没确认生效的改动叠到节点状态上（后端与 state_helper 同一份规则）。
+    """助手副本里这一轮还没合入的改动叠到节点状态上（后端与 state_helper 同一份规则）。
 
     - 副本里满足完成判定、主线上还没做的节点 → 待确认；
     - locked 给出时（state_helper 在副本里跑）：记为进行中、但命令锁已经释放的节点，命令做完了 → 有改动
@@ -366,7 +366,7 @@ def suggest(flow: dict, states: dict, context: dict | None = None) -> dict:
     - interrupted：刚被打断的执行 {id}（没有执行记录时给 {}）→ 打断后的三项；
     - autobuild：自主构建在跑 → 运行控制；
     - waiting_decision：有没回答的决策卡 → 主推禁用「先做上面的决定」；
-    - changeset：没确认的变更集 {id, state} → 主推「确认生效」，次选「撤回这一轮」与下一步；
+    - changeset：当前的变更集 {id, state}：合入冲突时主推去待处理选保留哪边（助手每一轮结束自动合入，没有「确认生效」）；
     - stage：旧版线性阶段（资料分析待核验时核验排第一、校验待审阅时继续校验）；report_pending：报告有待处理项；
     - blueprint：建模蓝图 {state: none|draft|confirmed, where: mainline|changeset, next}，草案时主推「确认蓝图」；
     - slice_next：按切片的节点这一片的下一步 {slice_id, slice_name, step, label, command, sliced}。
@@ -393,17 +393,11 @@ def suggest(flow: dict, states: dict, context: dict | None = None) -> dict:
     candidates = _candidates(flow, states, context)
     changeset = context.get('changeset')
     mode = 'normal'
-    if changeset and changeset.get('state') in ('pending_confirm', 'conflict'):
-        mode = 'pending_confirm'
-        merge = _item('merge', '确认生效', {'type': 'merge_changeset', 'changeset_id': changeset['id']},
-                      reason='这一轮的修改等你确认', priority=1, icon='merge')
-        discard = _item('discard', '撤回这一轮', {'type': 'discard_changeset', 'changeset_id': changeset['id']},
-                        reason='这一轮的修改等你确认', priority=1, icon='undo')
-        if (context.get('blueprint') or {}).get('where') == 'changeset' and changeset.get('state') != 'conflict':
-            # 蓝图草案就在这一轮的修改里：确认蓝图会先确认生效这一轮，不再单列「确认生效」
-            candidates = [*_blueprint_candidates(context)[:2], discard]
-        else:
-            candidates = [merge, *candidates[:1], discard]
+    if changeset and changeset.get('state') == 'conflict':
+        # 一轮结束就合入，只有和你的修改冲突时停下来等你选（待处理）
+        resolve = _item('resolve', '处理冲突', {'type': 'navigate', 'page': 'inbox'},
+                        reason='这一轮和你的修改有冲突', priority=1, icon='merge')
+        candidates = [resolve, *candidates[:SUGGESTIONS_MAX - 1]]
     if context.get('waiting_decision'):
         mode = 'waiting_decision'
         waiting = _item('decide', '先做上面的决定', {'type': 'navigate', 'page': 'wb-l2'},

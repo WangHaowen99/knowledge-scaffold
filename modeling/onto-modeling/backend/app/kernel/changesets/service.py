@@ -1,18 +1,19 @@
 """变更集服务（详设 8.2、4.3；方案 C7～C12；契约 3.10 CS-01～CS-07、EP-03、EP-04）。
 
-陪伴建模下一个变更集从助手开始改起，到用户确认生效或撤回为止，中间可以跨好几轮：
+陪伴建模下一个变更集是助手的一轮修改（F3 起不再等用户确认生效，用户 11-03 定；变更集是用户看不到的内部机制）：
 
-    （副本里有了改动）──→ open（助手在跑）⇄ pending_confirm（这一轮结束）
-    pending_confirm ──确认生效──→ merged        ──撤回这一轮──→ discarded
-    pending_confirm ──合入时实体冲突──→ conflict ──选好保留哪一边──→ merged
+    （副本里有了改动）──→ open（助手在跑）──→ pending_confirm（这一轮结束，合入前的一瞬）──自动合入──→ merged
+    pending_confirm ──合入时实体冲突──→ conflict（进待处理）──选好保留哪一边──→ merged
+    merged ──撤回这一轮──→ merged + reverted（主线上写反向提交，回到上一个版本）
 
 - 观察（`observe`）：一轮结束（和跑的过程中节流地）看一眼副本，有改动就开或更新当前变更集；
-- 合入（`merge`）：`merge-tree --write-tree` 叠到最新主线 → 按实体检测冲突 → 合成树上跑门禁（只看新增错误）
-  → 经写入事务（ChangeTx）在主线写一个 squash 提交，trailer 写在这个合入提交上；
-- 撤回（`discard`）：副本分支与副本重置到主线，主线不受影响；
-- 撤回已合入的变更集（`revert_merged`，给 P3 自主构建撤回单片）：在主线上写反向提交；
+- 收尾（`settle`）：一轮结束（成功、出错、被打断）、下一轮开始前、启动时把没关闭的变更集合入成一个版本；
+- 合入（`merge`）：`merge-tree --write-tree` 叠到最新主线 → 按实体检测冲突 → 合成树上跑检查（只看新增问题，
+  只记录不拦，发布时才拦）→ 经写入事务（ChangeTx）在主线写一个 squash 提交，trailer 写在这个合入提交上；
+- 撤回这一轮（`revert_round`）：合入过的写反向提交（之后又被改过的不硬撤）；冲突中还没合入的重置副本；
+- 撤回已合入的变更集（`revert_merged`，也给 P3 自主构建撤回单段）：在主线上写反向提交；
 - 写入范围锁（`scope_lock`）：助手在跑时节点声明的 `produces`，加副本里已改的实体与产物，加等你决定的
-  决策卡改动预览里列出的条目，持续到确认生效或撤回。
+  决策卡改动预览里列出的条目，持续到这一轮合入（冲突时到选好保留哪边）。
 
 会话侧的状态（助手在不在跑、哪条对话、正在执行的节点、决策卡预览）由宿主登记的数据源给
 （`register_activity_provider`），内核不依赖会话池。对话里的卡片与提示行由调用方在事件循环里追加
@@ -90,11 +91,16 @@ def _notify(project_id: str, event: str, data: dict) -> None:
 
 
 def copy_for_turn(manager, project_id: str, root: Path) -> Path:
-    """一轮开始前：建或修副本、让它跟上主线，返回助手的工作目录。
+    """一轮开始前：上一轮没走到收尾的修改先合入（引擎被硬杀、会话被回收），建或修副本、让它跟上主线，
+    返回助手的工作目录。
 
     建不了副本（不是 git 仓库、git 出错）时退回主线工作区并记日志：助手照旧能用，只是没有隔离。
     """
     root = Path(root)
+    try:
+        settle(manager, project_id)
+    except Exception:  # noqa: BLE001 - 合不进去的留在变更集里，不挡这一轮
+        _log.warning("项目 %s 上一轮遗留的修改没合入", project_id, exc_info=True)
     try:
         with manager._project_lock(project_id):
             copy = worktree.ensure(root)
@@ -477,7 +483,8 @@ def entity_diff_view(manager, project_id: str, changeset_id: str, target: str = 
 
 
 def round_card(manager, project_id: str, record: dict, card_id: str) -> dict:
-    """「这一轮改了什么」卡（契约 4.7 round_changes）：变更集的全部改动、检查结论、确认后的版本号。"""
+    """「这一轮改了什么」卡（契约 4.7 round_changes，F3）：这一轮改了什么、存成的版本、检查提示；按钮只有撤回这一轮
+    与查看改动（前端）。检查只提示：待建的链接单独说，其余按「几处什么问题」说，不出「检查有 N 个新错误」。"""
     root = manager.project_root(project_id)
     groups: dict[str, list] = {}
     for item in _changes_of(manager, root, record):
@@ -491,83 +498,102 @@ def round_card(manager, project_id: str, record: dict, card_id: str) -> dict:
         })
     total = sum(len(items) for items in groups.values())
     checks = record.get("checks") or {}
-    errors, warnings = int(checks.get("errors") or 0), int(checks.get("warnings") or 0)
     state = record["state"]
-    card_state = "merged" if state == "merged" else "discarded" if state == "discarded" else "pending_confirm"
-    title = f"改了 {total} 处，" + ("检查全部通过" if not errors and not warnings else
-                                   f"检查有 {errors} 个新错误" if errors else f"检查有 {warnings} 个新警告")
+    reverted = record.get("reverted") or {}
+    card_state = ("reverted" if reverted else state if state in ("merged", "discarded", "conflict") else "pending")
     merged = record.get("merged") or {}
-    # 说明槽位不下发（UI 文案口径 ⑤）：只读说明由前端按写入范围算；增量更新那一轮不带副标题
+    labels = {"merged": merged.get("version_label") or "", "reverted": "已撤回", "discarded": "已撤回",
+              "conflict": "有冲突", "pending": "未生效"}
+    keys = {"merged": "confirmed", "reverted": "skipped", "discarded": "skipped", "conflict": "conflict",
+            "pending": "pending"}
+    # 说明槽位不下发（UI 文案口径 ⑤）；增量更新那一轮不带副标题
     return {
         "card_id": card_id,
         "card_type": "round_changes",
         "eyebrow": "这一轮改了什么",
-        "title": title,
+        "title": f"改了 {total} 处",
         "subtitle": "" if record.get("change_list_id") else record.get("purpose") or "",
-        "status": {"key": {"merged": "confirmed", "discarded": "skipped"}.get(card_state, "pending"),
-                   "label": {"merged": "已确认生效", "discarded": "已撤回"}.get(card_state, "待确认")},
+        "status": {"key": keys[card_state], "label": labels[card_state]},
         "plugin": None,
         "open": None,
         "changeset_id": record["id"],
         "change_list_id": record.get("change_list_id"),
-        "checks": {"errors": errors, "warnings": warnings},
+        "checks": {"errors": int(checks.get("errors") or 0), "warnings": int(checks.get("warnings") or 0),
+                   "pending": int(checks.get("pending") or 0)},
+        "hints": check_hints(checks),
         "groups": [{"kind": kind, "label": GROUP_LABELS[kind], "items": groups[kind]}
                    for kind in GROUP_ORDER if kind in groups],
-        "next_version_label": merged.get("version_label") or _next_label(root),
         "state": card_state,
         "merged_version_label": merged.get("version_label"),
-        "remaining_failures": errors,
+        "reverted_version_label": reverted.get("version_label"),
+        "inbox_item_id": f"changeset_conflict:{record['id']}" if card_state == "conflict" else None,
         "from": record.get("base"),
         "to": record.get("head"),
     }
 
 
+def check_hints(checks: dict) -> list[dict]:
+    """检查结果 → 卡片上的提示 [{tone: info|warn, text}]：待建的链接（info）、找不到对象的链接、其余按类别数错误。"""
+    hints = []
+    pending = checks.get("pending_links") or []
+    if pending:
+        numbers = sorted({int(item.get("slice_no") or 0) for item in pending if item.get("slice_no")})
+        where = f"第 {'、'.join(str(number) for number in numbers)} 段" if numbers else ""
+        hints.append({"tone": "info", "text": f"{len(pending)} 处指向{where}待建的内容"})
+    findings = checks.get("findings") or []
+    links = [item for item in findings if item.get("code") == gates.LINK_CATEGORY]
+    if links:
+        hints.append({"tone": "warn", "text": f"{len(links)} 处链接找不到对象"})
+    counts: dict[str, int] = {}
+    for item in findings:
+        if item.get("level") == "error" and item.get("code") != gates.LINK_CATEGORY:
+            label = str(item.get("label") or item.get("code") or "检查")
+            counts[label] = counts.get(label, 0) + 1
+    hints += [{"tone": "warn", "text": f"{count} 处{label}"} for label, count in counts.items()]
+    return hints
+
+
 def card_records(manager, project_id: str, record: dict, *, new_card: bool = False) -> list[tuple[str, dict]]:
-    """要追加到对话里的卡片记录 [(对话, 记录)]：new_card 时这一轮放一张新卡，并把这个变更集之前的卡更新到
-    最新内容（card.updated），按钮按同一个变更集作用。卡片编号记进变更集。"""
+    """要追加到对话里的卡片记录 [(对话, 记录)]：一个变更集（一轮）只有一张卡——还没有卡且 new_card 时放一张新卡，
+    已有的卡原地更新（card.updated）。卡片编号记进变更集。"""
     conversation_id = record.get("conversation_id")
     if not conversation_id:
         return []
     root = manager.project_root(project_id)
     cards = list(record.get("cards") or [])
-    out = []
-    if new_card:
-        card_id = f"rc-{record['id']}-{len(cards) + 1}"
-        cards.append(card_id)
-        record = store.update(root, record["id"], cards=cards) or record
-        out.append((conversation_id, {"type": "card", "payload": round_card(manager, project_id, record, card_id)}))
-        previous = cards[:-1]
-    else:
-        previous = cards
-    for card_id in previous:
-        out.append((conversation_id, {"type": "card_updated", "payload": round_card(manager, project_id, record, card_id)}))
-    return out
+    if new_card and not cards:
+        card_id = f"rc-{record['id']}-1"
+        record = store.update(root, record["id"], cards=[card_id]) or record
+        return [(conversation_id, {"type": "card", "payload": round_card(manager, project_id, record, card_id)})]
+    return [(conversation_id, {"type": "card_updated", "payload": round_card(manager, project_id, record, card_id)})
+            for card_id in cards]
 
 
 def notice_record(record: dict, kind: str, text: str) -> tuple[str, dict] | None:
     conversation_id = record.get("conversation_id")
     if not conversation_id:
         return None
-    merged = record.get("merged") or {}
+    version = (record.get("reverted") if kind == "discarded" else None) or record.get("merged") or {}
     return conversation_id, {"type": "notice", "payload": {
-        "kind": kind, "text": text, "version_label": merged.get("version_label"), "changeset_id": record["id"],
+        "kind": kind, "text": text, "version_label": version.get("version_label"), "changeset_id": record["id"],
         "align": "center"}}
 
 
 # ---------------------------------------------------------------------------
-# 确认生效、撤回、解决冲突
+# 合入、撤回、解决冲突
 # ---------------------------------------------------------------------------
 
 
-def _require_open(manager, project_id: str, changeset_id: str, *, allow_conflict: bool = True) -> dict:
+def _require_open(manager, project_id: str, changeset_id: str, *, allow_conflict: bool = True,
+                  check_running: bool = True) -> dict:
     record = get(manager, project_id, changeset_id)
     if record["state"] in ("merged", "discarded"):
-        raise WorkspaceError("这一轮的修改已经确认生效或撤回", 409, "changeset_closed", {"state": record["state"]})
+        raise WorkspaceError("这一轮的修改已经生效或撤回", 409, "changeset_closed", {"state": record["state"]})
     if record["state"] == "conflict" and not allow_conflict:
         raise WorkspaceError("确认生效时有冲突，先选好保留哪一边", 409, "merge_conflict",
                              {"entities": (record.get("conflict") or {}).get("entities") or [],
                               "inbox_item_id": f"changeset_conflict:{record['id']}"})
-    state = activity(project_id)
+    state = activity(project_id) if check_running else {}
     if state.get("running") and record.get("source", "assistant") == "assistant":
         raise WorkspaceError("助手还在跑，先打断或等它停下", 409, "changeset_in_progress",
                              {"conversation_id": state.get("conversation_id") or record.get("conversation_id")})
@@ -632,10 +658,12 @@ def _conflict_check(manager, root: Path, base: str, main: str, head: str,
 
 def merge(manager, project_id: str, changeset_id: str, *, actor: str, expected_head: str | None = None,
           choices: dict[str, str] | None = None, source: str | None = None, needs_review: bool = False,
-          message: str | None = None) -> dict:
-    """确认生效（CS-04）；自主构建（P3）检查通过后也调它自动合入（source="autobuild"、needs_review=True）。
+          message: str | None = None, auto: bool = False) -> dict:
+    """合入：一轮结束时的自动合入（`settle`，auto=True：会话宿主在这一轮收尾时调，不再查助手在不在跑）、
+    选好冲突后重试（CS-07）、自主构建按段自动合入（source="autobuild"、needs_review=True）。
 
     choices：合入冲突时用户选的 {路径或条目 ID: "mainline"|"changeset"}（CS-07）。
+    检查（规则检查、插件声明的提交门禁）只记进变更集的 checks，不挡合入（F3）。
     全程持项目锁（审查第 5 条）：拿到锁后重读变更集确认仍没关闭，合成、门禁、提交、重置副本、记 merged 都在
     这把锁里，和撤回、另一次确认、一轮开始（`copy_for_turn`）互斥。
     合成结果和主线一样时不写提交，`commit` 为 None（审查第 3、10 条）。
@@ -643,7 +671,7 @@ def merge(manager, project_id: str, changeset_id: str, *, actor: str, expected_h
     """
     root = manager.project_root(project_id)
     with manager._project_lock(project_id):
-        record = _require_open(manager, project_id, changeset_id)
+        record = _require_open(manager, project_id, changeset_id, check_running=not auto)
         copy = existing_copy(root)
         if copy is None:
             raise WorkspaceError("助手副本不在了，这一轮的修改没法生效", 409, "changeset_closed", {"state": record["state"]})
@@ -654,8 +682,12 @@ def merge(manager, project_id: str, changeset_id: str, *, actor: str, expected_h
         head = worktree.rev(copy)
         merged_tree, result = _merged_tree(manager, project_id, root, record, main, head, choices,
                                            forbid_deletes=source == "autobuild")
-        commit = _write_merge(manager, project_id, root, record, main, merged_tree, actor=actor, source=source,
-                              message=message)
+        commit, hinted = _write_merge(manager, project_id, root, record, main, merged_tree, actor=actor,
+                                      source=source, message=message)
+        if hinted:
+            result = {**result, "errors": int(result.get("errors") or 0)
+                      + sum(1 for item in hinted if item["level"] == "error"),
+                      "findings": [*hinted, *(result.get("findings") or [])][:200]}
         version_label = _label(root, commit or main)
         worktree.collect_state(root, copy)
         worktree.reset(root, copy, worktree.rev(root))
@@ -685,7 +717,7 @@ def _merged_tree(manager, project_id: str, root: Path, record: dict, main: str, 
                          conflict={"paths": conflicted, "entities": targets, "main": main, "head": head,
                                    "at": time.time()})
             _notify(project_id, "changeset", store.get(root, record["id"]))
-            raise WorkspaceError("确认生效时有冲突，已放进待处理，选好保留哪一边再确认", 409, "merge_conflict",
+            raise WorkspaceError("这一轮和你的修改有冲突，已放进待处理，选好保留哪一边", 409, "merge_conflict",
                                  {"entities": targets, "inbox_item_id": f"changeset_conflict:{record['id']}"})
         picks = {rel: (main if keep == "mainline" else head) for rel, keep in chosen.items()}
     # 资料区、锁文件不采用副本的版本（审查第 1 条）：副本里关了稀疏规则时 git 会把资料当成删了
@@ -701,31 +733,29 @@ def _merged_tree(manager, project_id: str, root: Path, record: dict, main: str, 
             raise WorkspaceError("自主构建不能删除已确认的内容", 422, "delete_forbidden", {"paths": removed[:50]})
     try:
         result = gates.compare(root, worktree.tree_of(root, main), merged_tree)
-    except gates.GateUnavailable as exc:
-        raise WorkspaceError(f"门禁跑不起来：{exc}", 503, "service_unavailable", {"dependency": "gate"}) from exc
-    if result["errors"]:
-        store.update(root, record["id"], checks={**result, "tree": record.get("tree")})
-        raise WorkspaceError(f"这一轮有 {result['errors']} 个新的错误，先修好再确认", 422, "gate_failed",
-                             {"findings": [item for item in result["findings"] if item["level"] == "error"]})
+    except Exception:  # noqa: BLE001 - 检查跑不起来不挡合入（只提示），记一笔
+        _log.warning("项目 %s 合入 %s 时检查没跑起来", project_id, record["id"], exc_info=True)
+        result = {"errors": 0, "warnings": 0, "findings": [], "pending": 0, "pending_links": [], "unavailable": True}
     return merged_tree, result
 
 
 def _write_merge(manager, project_id: str, root: Path, record: dict, main: str, merged_tree: str, *,
-                 actor: str, source: str | None, message: str | None) -> str | None:
-    """把合成树写成主线上的一个 squash 提交（经写入事务，trailer 在这个提交上）；和主线一样时不写，返回 None。
+                 actor: str, source: str | None, message: str | None) -> tuple[str | None, list[dict]]:
+    """把合成树写成主线上的一个 squash 提交（经写入事务，trailer 在这个提交上）；和主线一样时不写，提交号为 None。
+    返回 (提交, 插件声明的提交门禁的问题)：门禁只提示（F3），问题按 Finding 记进变更集。
 
-    写入意图标成整片回滚（审查第 6 条）：写到一半崩溃，启动恢复把这些路径回到主线，不补提交半片。
+    写入意图标成整段回滚（审查第 6 条）：写到一半崩溃，启动恢复把这些路径回到主线，不补提交半段。
     """
     from ..writepath import ChangeTx, Origin
 
     changes = worktree.diff(root, main, merged_tree)
     if not changes:
-        return None
+        return None, []
     owner = str((manager.get_project(project_id) or {}).get("owner") or "") or actor
     origin_source = source or ("autobuild" if record.get("source") == "autobuild" else "agent")
     origin = Origin(origin_source, owner, changeset=record["id"], node=record.get("node_trailer"))
-    with ChangeTx(manager, project_id, origin, summary=f"确认生效 {record['id']}", expected_head=main,
-                  rollback_on_crash=True) as tx:
+    with ChangeTx(manager, project_id, origin, summary=f"合入 {record['id']}", expected_head=main,
+                  rollback_on_crash=True, hint_gates=True) as tx:
         for status, rel in changes:
             if status == "D":
                 tx.remove(rel)
@@ -738,7 +768,11 @@ def _write_merge(manager, project_id: str, root: Path, record: dict, main: str, 
         from ...governance import telemetry
 
         telemetry.count("onto_merges_total", source=origin_source)  # 运维可观测「合入」卡（O-02）
-    return committed.commit or None
+    hinted = [{"code": str(item.get("gate") or item.get("code") or "gate"), "level": item.get("level") or "error",
+               "label": str(item.get("gate_label") or item.get("label") or item.get("gate") or "插件检查"),
+               "message": str(item.get("message") or "")[:500], "path": str(item.get("path") or "")}
+              for item in committed.findings]
+    return committed.commit or None, hinted
 
 
 def _normalize_choices(paths: list[str], targets: list[dict], choices: dict[str, str]) -> dict[str, str]:
@@ -767,8 +801,143 @@ def resolve(manager, project_id: str, changeset_id: str, choices: list[dict], *,
     return merge(manager, project_id, changeset_id, actor=actor, choices=mapping)
 
 
+# 一轮收尾、启动时合入之后由宿主登记的通告方把卡片更新进对话：announcer(项目, 变更集记录)
+_announcer: Callable[[str, dict], None] | None = None
+
+
+def register_announcer(announcer: Callable[[str, dict], None] | None) -> None:
+    global _announcer
+    _announcer = announcer
+
+
+def settle(manager, project_id: str, *, actor: str | None = None, announce: bool = False,
+           turn_over: bool = False) -> dict | None:
+    """把没关闭的变更集合入成一个版本（F3：一轮结束、出错、被打断都合入，下一轮开始前、启动时补合遗留的）。
+
+    只管助手的变更集，和自主构建已经结束的运行留下的那一段（按段合入的口径：需复核、不许删已确认的内容）；运行没结束
+    的一段归运行器。冲突时记 conflict（进待处理）、不抛。返回 {state, record, version_label}；没有要合入的返回 None。
+    announce 时合入后交给登记的通告方更新对话里的卡片（启动时用；会话宿主自己出卡）。
+    turn_over：调用方知道这一轮已经结束（会话宿主收尾、下一轮开始前）；否则助手还在跑时不动（Studio 复核、执行清单
+    这类入口也会经 `copy_for_turn` 走到这里，不能把跑到一半的修改合进去）。
+    """
+    root = manager.project_root(project_id)
+    record = store.current(root)
+    if record is None:
+        return None
+    if not turn_over and record.get("source", "assistant") == "assistant" and activity(project_id).get("running"):
+        return None
+    if record["state"] == "conflict":
+        return {"state": "conflict", "record": record, "version_label": None}
+    autobuild = record.get("source") == "autobuild"
+    if autobuild and _run_active(project_id, record.get("run_id")):
+        return None
+    if not record.get("tree"):
+        # 先占着、还没改出东西（自主构建的一段）：关掉，版本不变
+        if autobuild:
+            store.update(root, record["id"], state="discarded", closed_at=time.time(), empty=True)
+        return None
+    owner = actor or str((manager.get_project(project_id) or {}).get("owner") or "") or "system"
+    try:
+        result = merge(manager, project_id, record["id"], actor=owner, auto=True,
+                       source="autobuild" if autobuild else None, needs_review=autobuild)
+    except WorkspaceError as exc:
+        if exc.code == "merge_conflict":
+            found = store.get(root, record["id"]) or record
+            _announce(project_id, found, announce)
+            return {"state": "conflict", "record": found, "version_label": None}
+        if exc.code == "changeset_closed":
+            return None
+        raise
+    _announce(project_id, result["record"], announce)
+    return {"state": "merged", "record": result["record"], "version_label": result["version_label"]}
+
+
+def _announce(project_id: str, record: dict, announce: bool) -> None:
+    if not announce or _announcer is None:
+        return
+    try:
+        _announcer(project_id, record)
+    except Exception:  # noqa: BLE001 - 卡片是增强信息
+        _log.warning("项目 %s 的变更集 %s 卡片没更新", project_id, record.get("id"), exc_info=True)
+
+
+def revert_round(manager, project_id: str, changeset_id: str, *, actor: str) -> dict:
+    """撤回这一轮（CS-05，F3）：合入过的写反向提交，回到这一轮之前的内容，另存一个版本；之后别处的修改保留，
+    之后又改到这一轮的同一条时不硬撤（409 merge_conflict，说明是哪几条）。冲突中还没合入的照旧撤回副本。
+
+    返回 {state: reverted|discarded, commit, version_label, record}。"""
+    record = get(manager, project_id, changeset_id)
+    if record["state"] in store.OPEN_STATES:
+        out = discard(manager, project_id, changeset_id, actor=actor)
+        return {**out, "commit": None, "version_label": None}
+    if record["state"] != "merged" or not (record.get("merged") or {}).get("commit"):
+        raise WorkspaceError("这一轮没有生效过的修改", 409, "changeset_closed", {"state": record["state"]})
+    if record.get("reverted"):
+        raise WorkspaceError("这一轮已经撤回过", 409, "changeset_closed", {"state": "reverted"})
+    if activity(project_id).get("running"):
+        raise WorkspaceError("助手还在跑，先打断或等它停下", 409, "changeset_in_progress",
+                             {"conversation_id": activity(project_id).get("conversation_id")})
+    root = manager.project_root(project_id)
+    keep, rewrite = _blueprint_members_rewrite(root, record)
+    try:
+        out = revert_merged(manager, project_id, changeset_id, actor=actor, source="revert", keep=keep,
+                            rewrite=rewrite)
+    except WorkspaceError as exc:
+        if exc.code != "merge_conflict":
+            raise
+        names = "、".join(str(item.get("name") or item.get("key")) for item in (exc.details or {}).get("entities") or [])
+        raise WorkspaceError(f"「{names}」在这一轮之后又改过，撤回会连同后来的修改一起撤掉，这一轮没有撤回", 409,
+                             "merge_conflict", exc.details) from exc
+    _forget_slice_steps(root, record)
+    try:
+        from ...services.flow import change_lists
+
+        change_lists.on_changeset_closed(root, record["id"], "discarded")
+    except Exception:  # noqa: BLE001 - 清单状态是附加信息
+        _log.warning("撤回 %s 后变更点清单没回到编辑中", record["id"], exc_info=True)
+    record = store.get(root, changeset_id) or record
+    _audit(actor, project_id, "changeset.revert", record)
+    return {"state": "reverted", "commit": out["commit"], "version_label": out["version_label"], "record": record}
+
+
+def _blueprint_members_rewrite(root: Path, record: dict) -> tuple[tuple[str, ...], dict]:
+    """按段建模的一轮会把新建的条目记进蓝图的这一段：撤回时只去掉这一轮记进去的，蓝图别的修改不动（同自主构建
+    按段撤回）；建出蓝图的那一轮（资料分析）整份撤回。"""
+    from ...services.flow import blueprint
+
+    steps = record.get("slice_steps") or []
+    commit = (record.get("merged") or {}).get("commit")
+    if not steps or not commit or worktree.read_blob(root, f"{commit}^", blueprint.BLUEPRINT_REL) is None:
+        return (), {}
+    slice_ids = list(dict.fromkeys(slice_id for slice_id, _step in steps if slice_id and slice_id != "all"))
+    if not slice_ids:
+        return (), {}
+
+    def members(parent: bytes | None, merged: bytes | None, current: bytes | None) -> bytes | None:
+        out = current
+        for slice_id in slice_ids:
+            out = blueprint.drop_added_members(root, slice_id, parent, merged, out) or out
+        return out if out != current else None
+
+    return (blueprint.BLUEPRINT_REL,), {blueprint.BLUEPRINT_REL: members}
+
+
+def _forget_slice_steps(root: Path, record: dict) -> None:
+    """撤回之后这一轮记过的段、步骤作废，按主线现状重算（条目没了就回到可开始）。"""
+    from ...services.flow import slices
+
+    by_slice: dict[str, list[str]] = {}
+    for slice_id, step in record.get("slice_steps") or []:
+        by_slice.setdefault(slice_id, []).append(step)
+    for slice_id, steps in by_slice.items():
+        try:
+            slices.forget(root, slice_id, steps)
+        except Exception:  # noqa: BLE001
+            _log.warning("撤回 %s 后段 %s 的记录没清掉", record["id"], slice_id, exc_info=True)
+
+
 def discard(manager, project_id: str, changeset_id: str, *, actor: str) -> dict:
-    """撤回这一轮（CS-05）：副本分支与副本重置到主线，主线不受影响。"""
+    """撤回还没合入的修改（合入冲突时、自主构建放弃一段）：副本分支与副本重置到主线，主线不受影响。"""
     root = manager.project_root(project_id)
     with manager._project_lock(project_id):
         record = _require_open(manager, project_id, changeset_id)  # 锁里重读：确认生效可能刚做完（审查第 5 条）
@@ -944,7 +1113,7 @@ def startup_repair(manager) -> dict | None:
     """启动恢复步骤 changeset_copies：核对副本（worktree.repair_all）、补记已合入的变更集、清掉副本里上次留下的
     命令锁与写入范围（启动时没有命令在跑，审查第 9 条）。"""
     report = worktree.repair_all(manager)
-    reconciled = []
+    reconciled, settled, conflicts = [], [], []
     for root in manager._project_dirs():
         try:
             with manager._project_lock(root.name):
@@ -954,12 +1123,29 @@ def startup_repair(manager) -> dict | None:
                 copy = existing_copy(root)
                 if copy is not None:
                     worktree.clear_run_state(copy)
+            # 升级迁移与崩溃恢复（F3）：副本里已经提交、还没记下的改动先记进变更集，遗留的待确认变更集合入；
+            # 有冲突的进待处理。自主构建没结束的运行由它启动后续跑时自己合入
+            record = store.current(root)
+            if record is not None and record.get("source") == "autobuild" \
+                    and _run_active(root.name, record.get("run_id")):
+                continue
+            if copy is not None:
+                observe(manager, root.name, running=False)
+            outcome = settle(manager, root.name, announce=True)
+            if outcome and outcome["state"] == "merged":
+                settled.append(root.name)
+            elif outcome and outcome["state"] == "conflict":
+                conflicts.append(root.name)
         except Exception:  # noqa: BLE001 - 单个项目核对不了不挡启动
             _log.warning("项目 %s 的变更集核对失败", root.name, exc_info=True)
-    if reconciled and report is None:
+    if (reconciled or settled or conflicts) and report is None:
+        parts = [f"补记了 {len(reconciled)} 个已合入的变更集" if reconciled else "",
+                 f"合入了 {len(settled)} 个项目遗留的修改" if settled else "",
+                 f"{len(conflicts)} 个项目遗留的修改有冲突，已放进待处理" if conflicts else ""]
         report = {"id": "changeset_copies", "title": "助手副本", "result": "cleared", "tone": "fix", "failed": [],
-                  "detail": f"补记了 {len(reconciled)} 个已合入的变更集",
-                  "projects": [{"project_id": name, "count": 1, "paths": []} for name in reconciled]}
+                  "detail": "；".join(part for part in parts if part),
+                  "projects": [{"project_id": name, "count": 1, "paths": []}
+                               for name in dict.fromkeys(reconciled + settled + conflicts)]}
     return report
 
 
@@ -1086,18 +1272,20 @@ def scope_lock(manager, project_id: str) -> dict:
     sliced = doc is not None and current_slice is not None
     if running:
         label = node.get("title") or "这一步"
-        reason = (f"助手正在改「{current_slice['name']}」这一片，确认生效或撤回之前这些内容只读" if sliced else
-                  f"助手正在{('执行「' + label + '」') if node.get('title') else '改这个项目'}，确认生效或撤回之前这些内容只读")
+        reason = (f"助手正在改「{current_slice['name']}」这一段，这一轮结束后才能编辑" if sliced else
+                  f"助手正在{('执行「' + label + '」') if node.get('title') else '改这个项目'}，这一轮结束后才能编辑")
         lock_state = "assistant_running"
     else:
-        reason = "这一轮的修改还没确认，确认生效或撤回之后才能编辑"
+        # 一轮结束就合入：只剩合入冲突（等你在待处理里选）和合入前的一瞬
+        reason = ("这一轮和你的修改有冲突，在待处理里选好保留哪边后才能编辑"
+                  if (record or {}).get("state") == "conflict" else "这一轮的修改正在保存")
         lock_state = "pending_confirm"
     if record is not None and record.get("source") == "autobuild" and record.get("state") in ("open", "pending_confirm") \
             and _run_active(project_id, record.get("run_id")):
         # 自主构建的一片（契约 2.4、EP-03）：锁到这一片自动合入为止
         lock_state = "autobuild_slice"
         name = (current_slice or {}).get("name") or (node.get("title") if running else "") or ""
-        reason = f"自主构建正在做「{name}」这一片" if sliced else "自主构建正在做这一步"
+        reason = f"自主构建正在做「{name}」这一段" if sliced else "自主构建正在做这一步"
     since = (record or {}).get("created_at") or exec_record.get("started_at")
     return {
         "state": lock_state,
@@ -1115,7 +1303,7 @@ def scope_lock(manager, project_id: str) -> dict:
 
 
 def _run_active(project_id: str, run_id: str | None) -> bool:
-    """自主构建的这次运行还没结束（运行出错停下后，这一片的修改按陪伴建模的「修改待确认」锁）。"""
+    """自主构建的这次运行还没结束（运行结束后遗留的那一段由 `settle` 合入）。"""
     from ...services.autobuild import store as runs
 
     active = runs.active(project_id)

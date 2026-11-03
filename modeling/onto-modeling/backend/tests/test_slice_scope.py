@@ -49,7 +49,7 @@ def test_running_slice_locks_only_its_entries(env, monkeypatch):
     assert "ontology/object/*" not in lock["paths"] and "ontology/object/订单.md" in lock["paths"]
     assert "ontology/testcase/受理订单.md" in lock["paths"]  # 这一片的场景也在范围里
     assert {ref["id"] for ref in lock["entries"]} >= {"object:订单", "operation:受理订单"}
-    assert "「订单受理」这一片" in lock["reason_text"]
+    assert "「订单受理」这一段" in lock["reason_text"]
     with pytest.raises(WorkspaceError) as exc:
         workspaces.write_file(project_id, "ontology/object/订单.md", obj("订单", "你在网页上改"), author="employee_0001")
     assert exc.value.status == 423
