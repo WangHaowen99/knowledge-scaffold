@@ -1083,7 +1083,18 @@ merge 4e6ed10f，衔接 ee03c022。修订 B4d 节的几条：
 12. **AB-03 / AB-04**：开始前先合入遗留的一轮；只有合入冲突时 AB-04 回 `409 changeset_in_progress`（「有一轮的修改和你的修改冲突……」），AB-03 的 `warnings` 同一句。
 13. **策略代答**：资料分析里（任何构建方式、没有运行）决定流程走向的问题（问题里说「接下来 / 下一步……建、做、提取」，或至少两个选项是流程动作）不出卡、不代答，从提问里拿掉，回给引擎的答案是「停在蓝图确认」；同一次提问里的业务问题照常。
 14. **叫法**：契约 1.13 新增「叫法」一节：`slice` 等字段界面叫「段」，变更集界面不出现。原 1.13 维护模式改为 1.14。
-15. **内置包版本**：codegen 0.9.3、evo 0.3.3（只改了清单说明，见 gaps F3 第 4 条）。
+15. **内置包版本**：F3 曾把 codegen、evo 手工升到 0.9.3、0.3.3（只改了清单说明会撞版本）；F3b 改成摘要算清单，两者退回 0.9.2、0.3.2，所有内置包按新规则换一次版本号（见 F3b 第 6 条）。
+
+## 2026-11-03 · F3b（插件门禁一律只提示、内置包摘要算清单）
+
+主控定（F3 回报的待定项）。
+
+1. **写入事务的提交门禁一律只提示**：包声明 `on: commit` 的门禁不再让写入回 `422 gate_failed`；没过的规则随写入结果带回（形状 `{code: "pack_gate", level, gate, gate_label, pack, message, target, path}`），照常提交。回退（`Onto-Source: revert`）照旧不查。CS-02 与 round_changes 卡的 `checks.findings` 里，包门禁问题是 `{code: 门禁 id, level, label, message, path}`（`label` 取门禁的 label）。
+2. **AR-05 保存 / AR-06 新建**：字段定义不合法（解析不了、取值不在枚举里）照旧 `422 artifact_schema_invalid`；包声明的保存门禁（`on: save`）与提交门禁都只提示，响应多 `warnings: [{code: "pack_gate", level: "warning", message, field, gate, gate_label}]`，不再回 `422 gate_failed`。
+3. **AR-08 校验**：门禁问题从 `errors` 挪到 `warnings`（`code: "pack_gate"`），`ok` 只看字段定义与格式自带的检查。
+4. **FL-05 开始脚本节点**：输出照常写进版本，响应 `run` 多 `warnings: [{code: "pack_gate", level: "warning", message, gate, path}]`；不再因门禁回 422。
+5. **`gate_failed` 只剩发布门禁链**（PB-01 / PB-02 的 `GateResult` 与发布被挡）：写入事务、产物编辑器、脚本节点都不再回它。
+6. **内置包版本号**：清单版本 + 内容摘要，摘要算清单（去掉版本号）加全部文件；只改清单也是一个新版本，镜像启动时入库、把 stable 指过去，跟随 stable 的项目下一条消息前升级。这一次所有内置包都换一个版本号。
 
 ## 2026-11-03 · F4a（连接器网关第一版：文档转换、资料的文本版、「数据接入」）
 

@@ -367,9 +367,9 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 
 | code | 状态 | 含义 | details |
 |---|---|---|---|
-| `write_scope_locked` | 423 | 目标在助手写入范围内，确认生效或撤回前只读 | `ScopeLock` |
+| `write_scope_locked` | 423 | 目标在助手写入范围内：这一轮结束前只读，合入冲突时到选好保留哪边为止 | `ScopeLock` |
 | `check_rejected` | 422 | 确定性检查有硬伤，拒绝保存 | `errors[]: Finding, warnings[]: Finding` |
-| `gate_failed` | 422 | 门禁链不通过 | `findings[]: Finding` |
+| `gate_failed` | 422 | 发布门禁链不通过（F3b 起只在发布时出现：写入事务、产物编辑器、脚本节点遇到包声明的门禁都只提示，不回它） | `findings[]: Finding` |
 | `changeset_not_found` | 404 | 变更集不存在 | — |
 | `changeset_in_progress` | 409 | 助手还在跑，不能确认或撤回 | `conversation_id` |
 | `changeset_closed` | 409 | 变更集已经合入或撤回 | `state` |
@@ -1565,7 +1565,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 响应：`Changeset`，加：
   - `groups: [{kind: "object"|"operation"|"rule"|"metric"|"script"|"scenario"|"artifact", items: [{target: EntryRef|ArtifactRef, change: "add"|"mod"|"del", detail, checks: "passed"|"warning"|"failed"}]}]`；
-  - `checks: {errors, warnings, findings: Finding[]}`（只提示；指向蓝图里已规划、还没建的内容的链接不在这里，记在卡片的 `checks.pending`）；
+  - `checks: {errors, warnings, findings: Finding[]}`（只提示；指向蓝图里已规划、还没建的内容的链接不在这里，记在卡片的 `checks.pending`）。`findings` 里有两种来源：规则检查（`code` 是检查类别，如「链接失效」「结构缺失」）与包声明的提交门禁（`code` 是门禁 id，另带 `label` 门禁名，F3b）；`round_changes` 卡的 `hints` 由它们算出；
   - `next_version_label`。
 - 用户在 Studio 或文件里另外保存的改动不算在这里（方案 C12）。
 
@@ -1913,6 +1913,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 请求：`{slice_id?, args?: object, origin: {page, label}}`。
 - 等价于用节点声明的 `entry.command` 调 `S-20`。
 - 响应 `202`：同 `S-20`。
+- 脚本节点（`kind: script`）当场在沙箱里跑完，响应 `200`：节点视图加 `run: {state, output, commit, version_label, duration_ms, runtime, warnings}`。`warnings: [{code: "pack_gate", level: "warning", message, gate, path}]` 是输出没过的包提交门禁：只提示，输出照常写进版本（F3b）。
 - 错误：`node_not_found`、`flow_assembly_failed`、`autobuild_running`。
 
 #### BP-01 建模蓝图
@@ -2487,9 +2488,10 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 请求：`{base_revision, fields?: object, sections?: {[title]: string}, content?: any, summary?: string}`。
   - `fields`、`sections` 用于 md-frontmatter；`content` 用于 yaml、json、jsonl、csv、drawio。
-- 响应：`{artifact: Artifact, commit, version_label}`。
+- 响应：`{artifact: Artifact, commit, version_label, warnings: Finding[]}`。
+  - `warnings` 是包声明的保存门禁（`on: save`）与提交门禁（`on: commit`）没过的规则：`{code: "pack_gate", level: "warning", message, field, gate, gate_label}`。只提示，照常保存（F3b：建模过程中检查只提示，发布时才拦）。
 - 错误：
-  - `artifact_schema_invalid`、`gate_failed`；
+  - `artifact_schema_invalid`：字段定义不合法（解析不了、类型不对、取值不在枚举里），照旧拒绝；
   - `revision_conflict`、`write_scope_locked`；
   - `artifact_readonly`、`format_migration_required`。
 
@@ -2498,7 +2500,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `POST /api/v1/projects/{id}/artifacts/{type}` · 所有者 · 旧：— · 审计：是 · 依据：5.9.4 · 页面：scenarios、studio-table（新建流程图，经 `ST-09`）
 
 - 请求：`{key?: string, fields?, sections?, content?}`。路径只能落在 `ext/<包名>/` 下。
-- 响应 `201`：同 `AR-05`。
+- 响应 `201`：同 `AR-05`（含 `warnings`）。
 
 #### AR-07 删除产物
 
@@ -2513,7 +2515,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 - 请求：`{content?: any}`。不带时校验已保存版本。
 - 按格式定义和包声明的确定性规则校验，不调模型。
-- 响应：`{ok: bool, errors: Finding[], warnings: Finding[]}`。
+- 响应：`{ok: bool, errors: Finding[], warnings: Finding[]}`。`ok` 只看字段定义与格式自带的检查；包声明的门禁没过的规则在 `warnings`（`code: "pack_gate"`），不影响 `ok`（F3b）。
 - 流程图的全量刷新在对话里提，不在这里。
 
 #### AR-09 产物汇总
@@ -4132,7 +4134,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `build_choice` | 确认后怎么建 | `{options: [{mode: "L2", label}, {mode: "L4", label}], policy_link: true}` | wb-blueprint |
 | `step_output` | 本步产出卡 | `{entry: EntryRef, eyebrow: "操作 · 本轮新抽出", state: "pending"\|"confirmed", inputs: (EntryRef\|{text})[], steps: [{n, text_md, anchors, awaiting_question_id: string\|null}], outputs: (EntryRef\|{text})[], rules: [{ref: EntryRef, state}], sources: [{n, anchor, label, scheme}]}` | wb-l2、chat-states；点条目名去 Studio |
 | `flowchart` | 流程图卡 | `{artifact: ArtifactRef, state: "draft"\|"confirmed", summary: "8 个节点、1 个判断", thumbnail: {nodes: [{id, type, label, pending: bool}], edges: [{from, to, label}]}, locked: bool}`；`open={dialog, "flowchart"}` | wb-l2、flowchart、chat-states；只在图示包启用时出现 |
-| `round_changes` | 这一轮改了什么 | `{changeset_id, title: "改了 3 处", checks: {errors, warnings, pending}, hints: [{tone: "info"\|"warn", text}]（如「3 处指向第 2 段待建的内容」「1 处链接找不到对象」「2 处结构缺失」）, groups: [{kind, label, items: [{change: "mod"\|"add"\|"del"\|"test", target: EntryRef\|ArtifactRef, text, comparable: bool}]}], state: "merged"\|"reverted"\|"conflict"\|"pending", merged_version_label: string\|null, reverted_version_label: string\|null, inbox_item_id: string\|null}`；一个变更集（一轮）一张卡，之后原地更新（F3） | wb-l2、chat-states 第 8 项、incremental；按钮：查看改动（`CS-03`）、撤回这一轮（`CS-05`）；冲突时「去处理」到待处理 |
+| `round_changes` | 这一轮改了什么 | `{changeset_id, title: "改了 3 处", checks: {errors, warnings, pending}, hints: [{tone: "info"\|"warn", text}]（如「3 处指向第 2 段待建的内容」「1 处链接找不到对象」「2 处结构缺失」；包声明的提交门禁没过时按门禁名说「1 处<门禁名>」，F3b）, groups: [{kind, label, items: [{change: "mod"\|"add"\|"del"\|"test", target: EntryRef\|ArtifactRef, text, comparable: bool}]}], state: "merged"\|"reverted"\|"conflict"\|"pending", merged_version_label: string\|null, reverted_version_label: string\|null, inbox_item_id: string\|null}`；一个变更集（一轮）一张卡，之后原地更新（F3） | wb-l2、chat-states 第 8 项、incremental；按钮：查看改动（`CS-03`）、撤回这一轮（`CS-05`）；冲突时「去处理」到待处理 |
 | `change_list` | 变更点清单卡 | `{change_list_id, source: {path, label}, count, low_confidence: int, rows: ChangePoint[≤10], state: "editing"\|"confirmed"\|"executed"}`；`open={dialog, "change_list"}` | incremental、chat-states |
 | `impact` | 影响面卡 | `Impact` 加 `{change_list_id, executed: bool}` | incremental |
 | `regression` | 回归结果卡 | `{passed, total, rows: [{scenario: ArtifactRef, type: "affected"\|"guard", result: "pass"\|"fail", reason: string\|null}]}` | incremental |
