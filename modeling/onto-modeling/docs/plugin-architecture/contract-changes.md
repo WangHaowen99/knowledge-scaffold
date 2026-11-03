@@ -1110,3 +1110,15 @@ ADR-0073。契约改动已写进 `docs/api-v1.md` 与 `_plan/api-v1.md`：
 8. **事件 EP-25** `materials.text.updated`：`{path, text: MaterialText}`，转换中、等待、失败这些不出提交的状态也推。
 9. **运维**：O-13 / 就绪检查的 `connector_gateway` 从占位改为真实探测（`已加载 N 个转换器`；没配网关地址为 warn「未部署」，不可达为 fail，不挡就绪）；O-35 启动报告多一步 `material_text`「资料文本版」（后台补转）；O-42 版本清单列出转换器（`category=provider`、`converter: true`）。
 10. **网关接口**（内核与网关之间，不在 `/api/v1`）：`GET /health`、`GET /v1/providers`、`POST /v1/convert`（请求体原文件，`Authorization: Bearer <Ed25519 JWT>`）；内核 `GET /api/v1/connector/issuer-key` 给网关取公钥，免鉴权。
+
+## 2026-11-03 · F5（对话页回到旧版样式、开始自主构建可接管、截断不再当成完成）
+
+用户 11-03 定，推翻 F2-chat 第 2、3 条里「过程话收进工作过程」「子代理挂进工作过程组」两处。
+
+1. **过程话照常发 `message.assistant`**：工具调用之间的话不再作为 `state=info` 的一步进组，前端也不再去掉在流的片段。前面做完的步骤照旧收成一段（EC-20/21 形状不变）。F2 写进历史的 `narration: true` 记录回放时仍不出正文（那一步已经在组里）。
+2. **子任务单独成卡**：派出子任务（Task / Agent）不在工作过程里占一步，派出时前面做完的步骤收成一段；`subagent.updated` 照发（形状不变），前端按 `task_id` 在时间线上单独成卡，排在第一次出现的位置，不再按 `group_id` 挂进组。
+3. **AB-03 `busy`、AB-04 `take_over`**：预览时别的对话正占着助手，返回 `busy: {conversation_id, waiting}`；开始时带 `take_over: true` 就先撤回没回答的问题（EC-34，`reason`「已交给自主构建，按「拿不准时」的策略处理」）、打断那一轮，再开始。AB-04 的 `session_busy` 多带 `details.waiting`，`message` 分「在等你回答」与「在另一条对话里干活」两种。
+4. **「拿不准时」的说法**：`below_threshold_text` 改为「先按最稳妥的做法往下做，做完列出来给你复核」/「先跳过这一项，留给你来定」；自动决定的 `reason_text` 改为「没有把握，先按最稳妥的做法往下做，等你复核」/「有把握，按推荐的做法」。取值（`conservative_assumption`、`suspend`）不变。
+5. **工作区不显示金额**：自主构建开始卡的「预算」写时长与 token（原来是金额与时长）；运行条、运行详情、运行报告卡、开始前预览、待处理里的运行摘要不再显示费用。接口里的 `cost` 字段照旧返回，费用上限仍在项目设置里配置、仍然生效。
+6. **内测引擎输出截断**：一次模型调用因长度截断（`finish_reason=length`）、没有工具调用、正文几乎为空时，带一句提示续一次；连续第二次截断就结束——子代理以失败返回原因（`subagent.updated` 为 `failed`），主助手给出「这一步模型的输出被截断（思考过长），没有产出结果。可以发「继续」让助手接着做。」。原来这种情况被当成正常完成，子代理返回一个字的残片。
+

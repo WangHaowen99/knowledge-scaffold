@@ -34,6 +34,8 @@ from . import budget, hint, limits, plan, store, views
 _log = logging.getLogger(__name__)
 
 PREVIEW_TTL_S = 600
+# 开始自主构建时撤回别的对话里没回答的问题：问题卡上写的原因
+TAKE_OVER_REASON = "已交给自主构建，按「拿不准时」的策略处理"
 CONTINUE_LIMIT = 3
 ERROR_LIMIT = 2
 WAIT_TICK_S = 5.0
@@ -125,6 +127,7 @@ class AutobuildRunner:
         slots = limits.max_runs()
         busy = len(store.all_runs(store.RUNNING))
         queued = busy >= slots
+        live = _manager().live_status(project_id)
         from . import policy as policy_module
 
         return {
@@ -133,14 +136,17 @@ class AutobuildRunner:
             "below_threshold_text": policy_module.BELOW_TEXT[policy_doc["advanced"]["below_threshold"]],
             "warnings": warnings, "queued": queued,
             "queue_position": (len(store.all_runs(("queued",))) + 1) if queued else None,
+            # 别的对话正占着助手：在等你回答（waiting）还是在干活；开始时带 take_over 就先接过来
+            "busy": {"conversation_id": live["conversation_id"], "waiting": live["waiting"]}
+            if live and live["busy"] else None,
         }
 
-    async def start(self, project_id: str, token: str, *, actor: str, owner: str) -> dict:
+    async def start(self, project_id: str, token: str, *, actor: str, owner: str, take_over: bool = False) -> dict:
         """AB-04：开一条「自主构建 · 运行 #n」对话，记下运行，轮到时开始。同一项目的两次开始串行（审查 H）。"""
         async with self._project_lock(project_id):
-            return await self._start(project_id, token, actor=actor, owner=owner)
+            return await self._start(project_id, token, actor=actor, owner=owner, take_over=take_over)
 
-    async def _start(self, project_id: str, token: str, *, actor: str, owner: str) -> dict:
+    async def _start(self, project_id: str, token: str, *, actor: str, owner: str, take_over: bool = False) -> dict:
         from ...governance import quota
         from ...governance.http import reject_new_session
         from ...kernel.changesets import store as changeset_store
@@ -153,10 +159,15 @@ class AutobuildRunner:
         if running is not None:
             raise ApiError("autobuild_running", "这个项目有一次自主构建还没结束", 409, {"run_id": running["run_id"]})
         reject_new_session(project_id)
-        live = _manager().live_status(project_id)
+        manager = _manager()
+        live = manager.live_status(project_id)
+        if live and live["busy"] and take_over:
+            await manager.take_over(project_id, TAKE_OVER_REASON)
+            live = manager.live_status(project_id)
         if live and live["busy"]:
-            raise ApiError("session_busy", "有对话正在运行，请等它结束或先打断", 409,
-                           {"running_conversation_id": live["conversation_id"]})
+            message = "助手在等你回答一个问题，回答或打断后再开始" if live["waiting"] else "助手正在另一条对话里干活，等它结束或先打断"
+            raise ApiError("session_busy", message, 409,
+                           {"running_conversation_id": live["conversation_id"], "waiting": live["waiting"]})
         ws = _ws()
         root = ws.project_root(project_id)
         # 上一轮遗留的修改先合入成版本（F3）；只有合入冲突要你先处理

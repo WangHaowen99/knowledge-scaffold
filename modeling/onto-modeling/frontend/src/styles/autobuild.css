@@ -52,7 +52,7 @@
 .g2-cell.run{background:linear-gradient(90deg,#E0ECFF,#fff,#E0ECFF);background-size:200% 100%;animation:shimmer 1.4s linear infinite;border-color:var(--blue3);color:var(--blue2);box-shadow:0 0 0 3px rgba(59,130,246,.15)}
 .g2-cell.q{border-style:dashed}
 .g2-cell.skip{background:repeating-linear-gradient(135deg,#F1F5F9 0 5px,#fff 5px 10px);color:var(--faint,#94A3B8)}
-.g2-mini{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.g2-mini{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
 .g2-mini div{background:var(--panel2);border-radius:10px;padding:8px 10px}
 .g2-mini b{font-size:16px;display:block;font-variant-numeric:tabular-nums}
 .g2-mini span{font-size:11px;color:var(--ink3)}

@@ -80,7 +80,7 @@ test('BP-02 请求体：只带改过的部分；分段按数组顺序给整份�
 });
 
 test('自主构建预算文案', () => {
-  assert.equal(budgetText({ max_duration_min: 120, max_tokens: 2000000, max_cost: { amount: 80, currency: 'CNY' } }), '时长 ≤ 2 小时 · token ≤ 2M · 费用 ≤ ¥80');
+  assert.equal(budgetText({ max_duration_min: 120, max_tokens: 2000000, max_cost: { amount: 80, currency: 'CNY' } }), '时长 ≤ 2 小时 · token ≤ 2M');
   assert.equal(budgetText({ max_duration_min: 45, max_tokens: 1500000 }), '时长 ≤ 45 分钟 · token ≤ 1.5M');
   assert.equal(budgetText(null), '—');
 });

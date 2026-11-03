@@ -253,16 +253,11 @@ export const isDirty = (body) => ['out_of_scope', 'slices', 'term_choices', 'ans
 
 // ---------- 自主构建预览（AB-03 / BP-03 next=L4） ----------
 const fmtCount = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(n % 1e6 ? 1 : 0)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n ?? 0));
-export function money(m) {
-  if (!m || m.amount == null) return '—';
-  return `${m.currency === 'USD' ? '$' : '¥'}${m.amount}`;
-}
 export function budgetText(budget) {
   if (!budget) return '—';
   const parts = [];
   if (budget.max_duration_min) parts.push(`时长 ≤ ${budget.max_duration_min >= 60 && budget.max_duration_min % 60 === 0 ? `${budget.max_duration_min / 60} 小时` : `${budget.max_duration_min} 分钟`}`);
   if (budget.max_tokens) parts.push(`token ≤ ${fmtCount(budget.max_tokens)}`);
-  if (budget.max_cost) parts.push(`费用 ≤ ${money(budget.max_cost)}`);
   return parts.join(' · ') || '—';
 }
 

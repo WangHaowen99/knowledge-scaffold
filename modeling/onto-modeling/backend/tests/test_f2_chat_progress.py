@@ -1,4 +1,6 @@
-"""F2 第 2、5 条：工作过程按时间顺序分段，子代理的每一步进对话流（session_host/timeline）。"""
+"""F2 第 2、5 条：工作过程按时间顺序分段，子代理的每一步进对话流（session_host/timeline）。
+
+助手的话一律进正文、派出的子任务单独成卡（不进工作过程组），与旧版对话页一致。"""
 
 from __future__ import annotations
 
@@ -70,8 +72,8 @@ def test_text_without_steps_before_it_does_not_add_an_empty_segment():
     assert all(item["data"]["steps"] for item in envelopes if item["type"].startswith("progress"))
 
 
-def test_jiuwen_subagent_hangs_under_its_dispatch_step_without_a_duplicate_step():
-    """内测引擎先报子代理开始、后报带这段话与派发调用的消息：子代理挂在这段话后面那一段，不另加一步。"""
+def test_jiuwen_subagent_card_follows_the_dispatch_message_and_takes_no_step():
+    """内测引擎先报子代理开始、后报带这段话与派发调用的消息：子任务卡排在这段话后面，工作过程里不加「派出子任务」。"""
     turn = timeline.Turn.new()
     sub = {"task_id": "call-9", "tool_use_id": "call-9", "description": "子任务", "agent_type": "general-purpose"}
     envelopes = run(turn, [
@@ -88,17 +90,21 @@ def test_jiuwen_subagent_hangs_under_its_dispatch_step_without_a_duplicate_step(
         {"type": "subagent_activity", **sub, "step_id": "call-9-say-3", "kind": "text", "text": "两份都读完了\n要点如下"},
         {"type": "subagent_finished", **sub, "status": "completed", "usage": {"duration_ms": 4000}},
         done("call-9"),
+        {"type": "assistant_message", "blocks": [tool("t2", "Read", file_path="resource/b.md")]},
     ])
     texts = [item["data"]["text_md"] for item in envelopes if item["type"] == "message.assistant"]
     assert texts == [BODY]
     groups = [item["data"] for item in envelopes if item["type"].startswith("progress")]
-    last = groups[-1]
-    assert [step["text"] for step in last["steps"]] == ["派出子任务"]  # 没有再加一步「子任务「子任务」」
-    subs = [item["data"] for item in envelopes if item["type"] == "subagent.updated"]
-    assert {item["group_id"] for item in subs} == {last["group_id"]}
-    assert subs[0]["status"] == "started" and subs[0]["step"] is None
+    assert all("派出子任务" not in step["text"] for group in groups for step in group["steps"])
     order = [item["type"] for item in envelopes]
-    assert order.index("message.assistant") < order.index("subagent.updated")
+    first_sub = order.index("subagent.updated")
+    assert order.index("message.assistant") < first_sub
+    # 子任务之后的步骤另起一段，排在子任务卡后面
+    later = [item["data"] for item in envelopes[first_sub:] if item["type"].startswith("progress")]
+    assert later and later[0]["group_id"] != groups[0]["group_id"]
+    assert [step["text"] for step in later[-1]["steps"]] == ["读取「b.md」"]
+    subs = [item["data"] for item in envelopes if item["type"] == "subagent.updated"]
+    assert subs[0]["status"] == "started" and subs[0]["step"] is None
     steps = [item["step"] for item in subs if item["step"]]
     assert steps[0] == {"id": "s-a", "kind": "tool", "text": "读取「临期与报损管理办法.md」", "state": "running"}
     assert steps[1]["text"] == "读取表格结构" and steps[1]["state"] == "running"
@@ -111,8 +117,8 @@ def test_jiuwen_subagent_hangs_under_its_dispatch_step_without_a_duplicate_step(
     assert subs[-1]["status"] == "done"
 
 
-def test_subagent_reported_after_its_dispatch_step_attaches_to_that_step():
-    """稳定引擎：派发调用先到、子代理开始后到。"""
+def test_subagent_reported_after_its_dispatch_call_is_sent_at_once():
+    """稳定引擎：派发调用先到、子代理开始后到；只派子任务的一条消息不出空的工作过程组。"""
     turn = timeline.Turn.new()
     envelopes = run(turn, [
         {"type": "assistant_message", "blocks": [tool("tu-2", "Task", description="语义检查")]},
@@ -121,10 +127,10 @@ def test_subagent_reported_after_its_dispatch_step_attaches_to_that_step():
          "summary": "没有问题"},
         done("tu-2"),
     ])
-    groups = [item["data"] for item in envelopes if item["type"].startswith("progress")]
-    assert [step["text"] for step in groups[-1]["steps"]] == ["派出子任务「语义检查」"]
+    assert not [item for item in envelopes if item["type"].startswith("progress")]
     subs = [item["data"] for item in envelopes if item["type"] == "subagent.updated"]
     assert [item["status"] for item in subs] == ["started", "done"] and subs[-1]["summary"] == "没有问题"
+    assert subs[0]["title"] == "语义检查"
 
 
 def test_legacy_subagent_records_project_with_unknown_step_text():
@@ -141,38 +147,32 @@ def test_legacy_subagent_records_project_with_unknown_step_text():
     assert end["progress_text"] == ""
 
 
-def test_short_talk_between_tool_calls_goes_into_the_work_process():
-    """F2 第 5 条（主控补充）：工具调用之间的过程话（「先做前置检查」）收进工作过程，正文只留成段的说明、提问和小结。"""
+def test_talk_between_tool_calls_is_printed_in_the_body():
+    """工具调用之间的话（「先做前置检查」）照常进正文，前面做完的步骤收成一段，与旧版对话页一致。"""
     turn = timeline.Turn.new("资料分析")
     envelopes = run(turn, [
         {"type": "stream_delta", "kind": "text", "text": "先做前置检查。"},
         {"type": "assistant_message", "blocks": [{"kind": "thinking", "text": "想一想"},
-                                                 {"kind": "text", "text": "先做**前置检查**，再获取 `research` 的执行锁。"},
+                                                 {"kind": "text", "text": "先做前置检查。"},
                                                  tool("t1", "Bash", description="检查命令锁")]},
         done("t1"),
-        {"type": "assistant_message", "blocks": [{"kind": "text", "text": "资料目录里有：\n\n- a.md\n- b.md"},
+        {"type": "assistant_message", "blocks": [{"kind": "text", "text": "再读资料。"},
                                                  tool("t2", "Read", file_path="resource/a.md")]},
         done("t2"),
-        {"type": "assistant_message", "blocks": [{"kind": "text", "text": "需要你定一下口径。"},
-                                                 tool("t3", "AskUserQuestion", questions=[])]},
-        {"type": "assistant_message", "blocks": [{"kind": "text", "text": "读完了，小结如下：两份资料都讲补货。"}]},
     ])
     texts = [item["data"]["text_md"] for item in envelopes if item["type"] == "message.assistant"]
-    # 成段的说明（带清单）、提问前的话、收尾小结留在正文；过程话不进正文
-    assert texts == ["资料目录里有：\n\n- a.md\n- b.md", "需要你定一下口径。", "读完了，小结如下：两份资料都讲补货。"]
-    first = [item["data"] for item in envelopes if item["type"].startswith("progress")][0]
-    steps = [item["data"] for item in envelopes if item["type"].startswith("progress")
-             and item["data"]["group_id"] == first["group_id"]][-1]["steps"]
-    assert steps[0]["text"] == "先做前置检查，再获取 research 的执行锁。" and steps[0]["state"] == "info"
-    assert steps[1]["text"] == "检查命令锁"
-    # 下一段话的流式增量换了消息号（过程话那一段的增量不会接到正文上）
-    deltas = [item for item in envelopes if item["type"] == "message.delta"]
-    assert deltas and all(item["data"]["message_id"] for item in deltas)
-    assert all(item["data"]["message_id"] != deltas[0]["data"]["message_id"]
-               for item in envelopes if item["type"] == "message.assistant")
+    assert texts == ["先做前置检查。", "再读资料。"]
+    groups = [item["data"] for item in envelopes if item["type"].startswith("progress")]
+    assert all(step["state"] != "info" for group in groups for step in group["steps"])
+    assert len({group["group_id"] for group in groups}) == 2
+    # 流式片段和整条消息是同一个消息号，前端原位收尾
+    delta = next(item for item in envelopes if item["type"] == "message.delta")
+    first = next(item for item in envelopes if item["type"] == "message.assistant")
+    assert delta["data"]["message_id"] == first["data"]["message_id"]
 
 
-def test_narration_record_keeps_text_for_history_replay_but_is_not_projected():
+def test_legacy_narration_record_is_not_projected():
+    """旧版收进工作过程的短话：那一步已经在组里，回放时不再出正文。"""
     record = {"type": "assistant_message", "narration": True, "seq": 2,
               "blocks": [{"kind": "text", "text": "先做前置检查。"}]}
     assert timeline.project(record, "p1", "c1") is None

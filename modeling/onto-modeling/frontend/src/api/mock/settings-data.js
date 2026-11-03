@@ -168,7 +168,7 @@ export function checkPolicy(p, sourceIds) {
   return null;
 }
 
-const BELOW = { conservative_assumption: '采用保守选项并记为假设', suspend: '挂起这一项，跳到下一段' };
+const BELOW = { conservative_assumption: '先按最稳妥的做法往下做，做完列出来给你复核', suspend: '先跳过这一项，留给你来定' };
 
 // AB-03：按策略算这次的范围（flow 里没完成的分段）、生产库、警告
 export function previewOf(policy, flowSlices, sourceName = (id) => id) {

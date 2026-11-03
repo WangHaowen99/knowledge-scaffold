@@ -6,6 +6,7 @@ import { navigate, pagePath } from '../../app/router.js';
 import { Icon, cx } from '../../ui/index.jsx';
 import { inlineTokens, preprocessMd, stripLinks } from './md.js';
 import { layoutThumb } from './thumb.js';
+import { subagentEnded } from '../../state/conversation.js';
 
 // 渲染上下文：项目 id、条目名 → EntryRef、当前块的出处编号 → 锚点
 export const WbCtx = createContext({ pid: null, entries: {} });
@@ -168,7 +169,6 @@ export function WxProc({ group }) {
             <span className="m">{s.meta || ''}</span>
           </div>
         ))}
-        {group.subagents?.length ? <SubagentRows list={group.subagents} /> : null}
       </div>
     </details>
   );
@@ -207,45 +207,19 @@ function useStickBottom(dep) {
   return { ref, onScroll };
 }
 
-const SUB_STATUS = { started: ['已启动', 'gray'], running: ['执行中', 'blue'], done: ['完成', 'blue'], failed: ['失败', 'red'] };
-const subEnded = (s) => s.status === 'done' || s.status === 'failed';
+const SUB_TITLE = { done: '子任务完成', failed: '子任务失败' };
 
-// 子代理一行：名称 · 正在做的那一步；下面是它自己的步骤（在跑时展开，做完收起，点这一行切换）
-function SubagentRow({ s }) {
-  const [open, setOpen] = useState(null);
-  const steps = (s.steps || []).filter((x) => x.text);
-  const isOpen = steps.length > 0 && (open ?? !subEnded(s));
-  const [label, tone] = SUB_STATUS[s.status] || ['', 'gray'];
-  // 正在做的那一步：最后一个还在跑的；都做完了就是最近的一步
-  const current = subEnded(s) ? '' : ([...steps].reverse().find((x) => x.state === 'running') || steps[steps.length - 1])?.text || s.progress_text || '';
-  const list = useStickBottom(steps.length);
+// 派出的子任务：时间线上单独一张卡（沿用旧版对话页的样式），第二行是它正在做的那一步或做完的小结
+export function SubagentCard({ s }) {
+  const ended = subagentEnded(s);
+  const line = ended ? s.summary : (s.progress_text || '独立子代理执行中，主对话稍后汇总结果');
   return (
-    <>
-      <div className={cx('r', steps.length && 'tg')} onClick={steps.length ? () => setOpen(!isOpen) : undefined}>
-        {s.status === 'running' ? <span className="spin" /> : <Icon name={s.status === 'done' ? 'check' : s.status === 'failed' ? 'alert' : 'dot'} size={14} />}
-        <span className="grow ell">{s.title}{current ? ` · ${current}` : ''}</span>
-        {s.summary ? <span className="xs muted">{s.summary}</span> : null}
-        <span className={cx('chip sm', tone)}>{label}</span>
-        {steps.length ? <Icon name="chevd" size={12} className={cx('cv', isOpen && 'on')} /> : null}
-      </div>
-      {isOpen ? (
-        <div className="g2-sub-steps" ref={list.ref} onScroll={list.onScroll}>
-          {steps.map((x) => (
-            <div key={x.id} className={cx('r2', x.state === 'running' && 'run', x.kind === 'text' && 'say')}>
-              <span className="t">{x.text}</span>
-              {x.state === 'failed' ? <span className="m">出错</span> : null}
-            </div>
-          ))}
-        </div>
-      ) : null}
-    </>
-  );
-}
-
-export function SubagentRows({ list }) {
-  return (
-    <div className="g2-sub">
-      {list.map((s) => <SubagentRow key={s.task_id} s={s} />)}
+    <div className={cx('subagent-card', ended ? s.status : 'running')}>
+      <span className="subagent-icon">{ended ? <Icon name={s.status === 'done' ? 'check' : 'alert'} size={14} /> : <span className="spin" />}</span>
+      <span className="subagent-main">
+        <span className="subagent-title">{SUB_TITLE[s.status] || '子任务运行中'} · {s.title}</span>
+        {line ? <span className="subagent-hint">{line}</span> : null}
+      </span>
     </div>
   );
 }
@@ -268,11 +242,7 @@ export function LiveRow({ thinking }) {
 export function TimelineGroup({ group }) {
   return (
     <div className="tl">
-      {(group.steps || []).map((s, i) => (
-        <Tli key={s.id} k={s.state} t={s.text} m={s.meta}>
-          {s.state === 'running' && i === (group.steps.length - 1) && group.subagents?.length ? <SubagentRows list={group.subagents} /> : null}
-        </Tli>
-      ))}
+      {(group.steps || []).map((s) => <Tli key={s.id} k={s.state} t={s.text} m={s.meta} />)}
     </div>
   );
 }

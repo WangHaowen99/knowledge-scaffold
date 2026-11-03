@@ -20,6 +20,7 @@ from app.main import app
 from app.services import agent_sessions
 from app.services.agent_sessions import SessionManager
 from app.services.autobuild import store
+from app.services.autobuild import runner as runner_module
 from app.services.autobuild.runner import runner
 from app.routers import sessions as session_routes
 from tests.autobuild_helpers import (AutoEngine, ab, ask, gate, history, project_events, run_of, start,  # noqa: F401
@@ -138,6 +139,32 @@ def test_messages_during_a_run_are_409_elsewhere_and_a_note_in_the_run_conversat
     assert users == [{**users[0], "text": "门店编号统一用四位", "delivery": "deferred"}]
     assert client.post(f"/api/v1/projects/{project_id}/conversations/{elsewhere}/messages",
                        json={"text": "你好"}).status_code == 202
+
+
+def test_start_takes_over_a_conversation_waiting_for_an_answer(ab):
+    """别的对话停在问题卡上：不带 take_over 时 409 并说清是在等回答；带上就撤回问题、打断那一轮，再开始。"""
+    client, _workspaces, project_id, _root = ab
+    AutoEngine.hooks["你好"] = [ask([{"question": "已有的操作怎么处理", "options": [{"label": "保留（推荐）"}]}])]
+    default = client.get(f"/api/v1/projects/{project_id}/conversations").json()["items"][0]["id"]
+    assert client.post(f"/api/v1/projects/{project_id}/conversations/{default}/messages",
+                       json={"text": "你好"}).status_code == 202
+
+    def asked():
+        return [item for item in history(client, project_id, default) if item["type"] == "question.asked"]
+    question = wait_until(asked)[0]["data"]
+    base = f"/api/v1/projects/{project_id}/autobuild"
+    client.put(f"{base}/policy", json=SLICES_ONLY)
+    preview = client.post(f"{base}/runs/preview", json={}).json()
+    assert preview["busy"] == {"conversation_id": default, "waiting": True}
+    refused = client.post(f"{base}/runs", json={"preview_token": preview["preview_token"]})
+    assert refused.status_code == 409 and refused.json()["code"] == "session_busy"
+    assert refused.json()["details"] == {"running_conversation_id": default, "waiting": True}
+    assert "等你回答" in refused.json()["message"]
+    started = client.post(f"{base}/runs", json={"preview_token": preview["preview_token"], "take_over": True})
+    assert started.status_code == 201, started.text
+    withdrawn = [item["data"] for item in history(client, project_id, default) if item["type"] == "question.withdrawn"]
+    assert withdrawn == [{"question_id": question["question_id"], "reason": runner_module.TAKE_OVER_REASON}]
+    wait_state(client, project_id, started.json()["run_id"], "completed")
 
 
 def test_pause_then_stop_at_safe_point_then_convert(ab):

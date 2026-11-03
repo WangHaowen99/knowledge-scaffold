@@ -169,7 +169,7 @@ export function parseWindow(text) {
 export const scopeText = (arr) => (arr || []).join('、');
 export const parseScope = (text) => (text || '').split(/[、,，;；\s]+/).map((x) => x.trim()).filter(Boolean);
 
-const BELOW_TEXT = { conservative_assumption: '低于阈值采用保守选项并记为假设', suspend: '低于阈值挂起这一项' };
+const BELOW_TEXT = { conservative_assumption: '拿不准时先按最稳妥的做法往下做', suspend: '拿不准时先跳过，留给你来定' };
 const shortSource = (s) => (s || '').replace(/^\d+\s*/, '');
 export function advancedSummary(adv) {
   if (!adv) return '';

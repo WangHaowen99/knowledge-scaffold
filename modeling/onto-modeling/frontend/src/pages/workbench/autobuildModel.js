@@ -45,14 +45,9 @@ export function fmtTok(n) {
   return String(n);
 }
 
-export function money(m) {
-  if (!m || m.amount == null) return '—';
-  return `${m.currency === 'USD' ? '$' : '¥'}${Math.round(m.amount)}`;
-}
-
 const pct = (a, b) => (b ? Math.max(0, Math.min(100, Math.round((a / b) * 100))) : 0);
 
-// 运行条的三格指标：[标签, 当前, 上限, 百分比]
+// 运行条的指标：[标签, 当前, 上限, 百分比]；工作区不显示金额，费用上限只在项目设置里
 export function stripMetrics(run) {
   if (!run) return [];
   const { ended } = runFlags(run);
@@ -63,7 +58,6 @@ export function stripMetrics(run) {
   return [
     time,
     ['token', fmtTok(run.tokens?.used), fmtTok(run.tokens?.limit), pct(run.tokens?.used, run.tokens?.limit)],
-    ['费用', money(run.cost?.used), money(run.cost?.budget), pct(run.cost?.used?.amount, run.cost?.budget?.amount)],
   ];
 }
 
@@ -131,21 +125,20 @@ export function sliceSegments(timeline) {
 
 export const confidenceColor = (v, threshold = 0.8) => (v >= threshold ? '#2563EB' : '#F59E0B');
 
-// 运行详情抽屉的六格小指标
+// 运行详情抽屉的五格小指标
 export function miniMetrics(run) {
   if (!run) return [];
   const { ended } = runFlags(run);
   return [
     [fmtDur(run.elapsed_ms), ended ? `用时 · 预算 ${fmtDur((run.policy?.budget?.max_duration_min || 0) * 60000)}` : `已用时 · 预计${fmtEst(run.est_total_ms)}`],
     [fmtTok(run.tokens?.used), `token · 上限 ${fmtTok(run.tokens?.limit)}`],
-    [money(run.cost?.used), `费用 · 预算 ${money(run.cost?.budget)}`],
     [`${run.checks?.errors ?? 0} / ${run.checks?.warnings ?? 0}`, '写入即查：错误 / 提醒'],
     [`${run.scenarios?.passed ?? 0} / ${run.scenarios?.total ?? 0}`, '场景推演通过'],
     [`${run.fix_rounds?.used ?? 0} / ${run.fix_rounds?.limit ?? 0}`, '修复轮次 / 上限'],
   ];
 }
 
-// 运行报告卡的八格指标
+// 运行报告卡的八格指标（不显示金额）
 export function reportMetrics(r) {
   const m = r?.metrics;
   if (!m) return [];
@@ -158,7 +151,7 @@ export function reportMetrics(r) {
     ['场景推演', `${m.scenarios.passed} / ${m.scenarios.total}`, m.scenarios.suspended_failures ? `${m.scenarios.suspended_failures} 个未通过已挂起` : m.scenarios.total ? '全部通过' : ''],
     ['自动决策', `${m.decisions.total} 项`, `高置信 ${m.decisions.high_confidence} · 需看 ${m.decisions.needs_look}`],
     ['挂起', `${m.suspended} 项`, m.suspended ? '已放进待处理' : '没有挂起'],
-    ['费用', money(m.cost), `token ${fmtTok(m.tokens)} · 预算 ${money(m.budget)}`],
+    ['token', fmtTok(m.tokens), ''],
   ];
 }
 
@@ -175,5 +168,18 @@ export const REPORT_CHIP = { completed: ['全部分段完成', 'blue'], stopped:
 // AB-04 开始自主构建失败的说法：有没确认的助手修改（changeset_in_progress）时说清是哪件事，其余按通用错误文案
 export function startErrorText(e, fallback) {
   if (e?.code === 'changeset_in_progress') return '助手这一轮还没结束';
+  if (e?.code === 'session_busy') return e.details?.waiting ? '助手在等你回答一个问题，回答或打断后再开始' : '助手正在另一条对话里干活，等它结束或先打断';
   return fallback(e);
+}
+
+// 预览时别的对话正占着助手（AB-03 busy）：开始前说清会发生什么，按钮写明要先打断
+export function takeOverText(busy) {
+  return busy.waiting
+    ? '助手还在等你回答一个问题。开始后这个问题不用再答，交给自主构建按「拿不准时」的做法处理。'
+    : '助手正在另一条对话里干活。开始会先打断它，已经保存的修改不受影响。';
+}
+
+export function startLabel(preview) {
+  if (preview.busy && !preview.busy.waiting) return '打断并开始';
+  return preview.queued ? '开始（排队）' : '开始自主构建';
 }

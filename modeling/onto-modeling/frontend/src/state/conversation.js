@@ -40,43 +40,10 @@ function patch(state, key, fn) {
   return { ...state, items: { ...state.items, [key]: fn(cur) } };
 }
 
-const FREE = 'subagents:free';
-
-// 子代理的一步（EC-22 step）：同一个 id 后到的只改状态；说法为 null 时沿用先到的
-function mergeStep(steps, step) {
-  if (!step) return steps;
-  const i = steps.findIndex((x) => x.id === step.id);
-  if (i < 0) return [...steps, step];
-  return steps.map((x, j) => (j === i ? { ...x, ...step, text: step.text ?? x.text } : x));
-}
-
-// 同一个子任务的更新按到达顺序合并（后到的字段盖住先到的）；步骤累积，空的进展说法不盖掉先到的
-function mergeSub(list, sub) {
-  const i = list.findIndex((s) => s.task_id === sub.task_id);
-  const prev = i >= 0 ? list[i] : {};
-  const { step, ...rest } = sub;
-  const next = { ...prev, ...rest, progress_text: sub.progress_text || prev.progress_text || '', steps: mergeStep(prev.steps || [], step) };
-  return i >= 0 ? list.map((s, j) => (j === i ? next : s)) : [...list, next];
-}
-
-// 过程话收进了工作过程（宿主不再发它的完整消息）：还在流的片段随进展组到达去掉
-function dropStreaming(state) {
-  const gone = state.order.filter((k) => state.items[k]?.kind === 'assistant' && state.items[k].streaming);
-  if (!gone.length) return state;
-  const items = { ...state.items };
-  gone.forEach((k) => { delete items[k]; });
-  return { ...state, items, order: state.order.filter((k) => !gone.includes(k)) };
-}
-
-// 从「无组」那一栏去掉这些子任务；空了就整栏去掉
-function dropFree(state, taskIds) {
-  const free = state.items[FREE];
-  if (!free || !taskIds.length) return state;
-  const rest = free.subagents.filter((s) => !taskIds.includes(s.task_id));
-  if (rest.length === free.subagents.length) return state;
-  if (rest.length) return { ...state, items: { ...state.items, [FREE]: { ...free, subagents: rest } } };
-  const { [FREE]: _gone, ...items } = state.items;
-  return { ...state, items, order: state.order.filter((k) => k !== FREE) };
+// 同一个子任务的更新按到达顺序合并（后到的字段盖住先到的）；空的进展说法不盖掉先到的
+function mergeSubagent(prev, sub) {
+  const { step: _step, ...rest } = sub;
+  return { ...prev, ...rest, progress_text: sub.progress_text || prev?.progress_text || '' };
 }
 
 // 一个事件 → 新状态
@@ -138,21 +105,13 @@ export function applyEvent(state, env) {
     case 'progress.updated': {
       const key = `progress:${d.group_id}`;
       const cur = state.items[key];
-      // 历史窗口从组中间开始时，子任务先于组到达、进了「无组」那一栏：组出现后收回组里
-      const adopted = (state.items[FREE]?.subagents || []).filter((s) => s.group_id && s.group_id === d.group_id);
-      const merged = adopted.reduce((list, s) => mergeSub(list, s), cur?.subagents || []);
-      return upsert(dropStreaming({ ...dropFree(state, adopted.map((s) => s.task_id)), thinking: '' }), key, {
-        ...d, ts: cur?.ts || ts, seq: cur?.seq ?? seq, subagents: merged, kind: 'progress',
-      });
+      return upsert({ ...state, thinking: '' }, key, { ...d, ts: cur?.ts || ts, seq: cur?.seq ?? seq, kind: 'progress' });
     }
     case 'subagent.updated': {
-      const gkey = d.group_id ? `progress:${d.group_id}` : null;
-      if (gkey && state.items[gkey]) {
-        return patch(dropFree(state, [d.task_id]), gkey, (g) => ({ ...g, subagents: mergeSub(g.subagents || [], d) }));
-      }
-      const key = FREE;
+      // 子任务在时间线上单独成卡，排在第一次出现的位置
+      const key = `sub:${d.task_id}`;
       const cur = state.items[key];
-      return upsert(state, key, { kind: 'subagents', ts: cur?.ts || ts, subagents: mergeSub(cur?.subagents || [], d) });
+      return upsert(state, key, { ...mergeSubagent(cur, d), ts: cur?.ts || ts, kind: 'subagent' });
     }
     case 'tool.activity':
       return state; // 内部步骤只进执行日志，不渲染
@@ -241,7 +200,7 @@ export function applySnapshot(state, snap) {
 
 const ASSISTANT_SIDE = new Set([
   'assistant', 'progress', 'card', 'permission', 'error', 'interrupted', 'config_pending',
-  'reconnected', 'compacted', 'subagents',
+  'reconnected', 'compacted', 'subagent',
 ]);
 
 /**
@@ -277,7 +236,7 @@ export function timelineBlocks(state) {
 
 /**
  * 助手在跑、却没有别的东西在动时（刚发出消息、两次工具调用之间模型在想），时间线末尾显示「思考中」：
- * 正文在流、有在跑的步骤、在等你回答时不显示。返回 null 或 {kind: 'waiting'|'thinking', thinking}。
+ * 正文在流、有在跑的步骤或子任务、在等你回答时不显示。返回 null 或 {kind: 'waiting'|'thinking', thinking}。
  */
 export function liveActivity(state) {
   if (state.session.state !== 'running') return null;
@@ -287,6 +246,10 @@ export function liveActivity(state) {
     if (it.kind === 'assistant' && it.streaming) return null;
     if (it.kind === 'question' && it.state === 'open') return null;
     if (it.kind === 'permission' && !it.resolved) return null;
+    if (it.kind === 'subagent') {
+      if (!subagentEnded(it)) return null; // 子任务卡自己在转
+      continue;
+    }
     if (it.kind === 'progress' && it.state === 'running' && (it.steps || []).some((s) => s.state === 'running')) return null;
     if (it.kind === 'progress' || it.kind === 'assistant' || it.kind === 'user' || it.kind === 'card') break;
   }
@@ -296,6 +259,10 @@ export function liveActivity(state) {
 // 等你决定的问题：输入框上方的建议条要禁用主推
 export function openQuestions(state) {
   return state.order.map((k) => state.items[k]).filter((x) => x.kind === 'question' && x.state === 'open');
+}
+
+export function subagentEnded(sub) {
+  return sub.status === 'done' || sub.status === 'failed';
 }
 
 export function isBusy(state) {

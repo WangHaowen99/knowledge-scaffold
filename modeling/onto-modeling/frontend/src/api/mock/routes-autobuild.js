@@ -201,7 +201,7 @@ export function register(ctx) {
         ...R.startCard(), card_id: `ab${n}-start`, title: `自主构建 · 运行 #${n}`, run_id: run.run_id, run_no: n,
         chips: [
           { label: '范围', value: `${policy.scope.mode === 'selected' ? '选中的' : '未完成的'} ${included.length} 段` },
-          { label: '预算', value: `¥${b.max_cost.amount} · ${b.max_duration_min % 60 ? `${b.max_duration_min} 分钟` : `${b.max_duration_min / 60} 小时`}` },
+          { label: '预算', value: `${b.max_duration_min % 60 ? `${b.max_duration_min} 分钟` : `${b.max_duration_min / 60} 小时`} · ${b.max_tokens >= 1e6 ? `${b.max_tokens / 1e6}M` : `${Math.round(b.max_tokens / 1e3)}k`} token` },
           { label: '生产库', value: pv.production }, { label: '拿不准时', value: pv.below_threshold_text },
         ],
       }),

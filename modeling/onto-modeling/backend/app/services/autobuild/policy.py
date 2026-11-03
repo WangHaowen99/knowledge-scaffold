@@ -20,7 +20,9 @@ from . import limits, store
 _log = logging.getLogger(__name__)
 
 BELOW_THRESHOLD = ("conservative_assumption", "suspend")
-BELOW_TEXT = {"conservative_assumption": "采用保守选项并记为假设", "suspend": "挂起这一项，跳到下一步"}
+# 「拿不准时」怎么办的说法（预览、开始卡、设置页）：用户看得懂的话，不用「保守选项」「假设」「挂起」
+BELOW_TEXT = {"conservative_assumption": "先按最稳妥的做法往下做，做完列出来给你复核",
+              "suspend": "先跳过这一项，留给你来定"}
 SCOPE_MODES = ("all_pending", "selected")
 NOT_ENFORCED = ("production_collection",)
 DEFAULT_BUDGET = {"max_duration_min": 120, "max_tokens": 1_000_000, "max_cost": 30.0}

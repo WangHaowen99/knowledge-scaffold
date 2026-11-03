@@ -9,7 +9,7 @@ import {
   Button, Card, Check, Chip, Field, Icon, Inp, KV, Modal, Note, Prog, Radio, Seg, St, Toggle, cx, useOutside,
 } from '../../ui/index.jsx';
 import { evidenceFromSources } from '../../state/evidence.js';
-import { startErrorText } from '../workbench/autobuildModel.js';
+import { startErrorText, startLabel, takeOverText } from '../workbench/autobuildModel.js';
 import { budgetText } from '../workbench/materials/model.js';
 import {
   advancedSummary, budgetOptions, budgetPct, finalizePolicy, fmtDuration, fmtMoney, fmtTokens, isRecommended, lastRunText,
@@ -125,7 +125,7 @@ export function StartDialog({ preview: initial, evidenceOn, onClose }) {
   const start = async () => {
     setBusy(true);
     try {
-      const run = await api.startAutobuild(pid, { preview_token: preview.preview_token });
+      const run = await api.startAutobuild(pid, { preview_token: preview.preview_token, ...(preview.busy ? { take_over: true } : {}) });
       toast(run.state === 'queued' ? `运行 #${run.run_no} 已排队，轮到时自动开始` : '自主构建已开始', 'rocket');
       onClose(true);
       navigate(pagePath('l4-run', pid), run.conversation_id ? { c: run.conversation_id } : undefined);
@@ -143,7 +143,7 @@ export function StartDialog({ preview: initial, evidenceOn, onClose }) {
       foot={(
         <>
           <Button onClick={() => onClose(false)}>取消</Button>
-          <Button kind="l4" icon="rocket" disabled={busy} onClick={start}>{preview.queued ? '开始（排队）' : '开始自主构建'}</Button>
+          <Button kind="l4" icon="rocket" disabled={busy} onClick={start}>{startLabel(preview)}</Button>
         </>
       )}
     >
@@ -164,6 +164,7 @@ export function StartDialog({ preview: initial, evidenceOn, onClose }) {
         ]}
       />
       {(preview.warnings || []).map((w) => <Note key={w} tone="amber" className="mt12">{w}</Note>)}
+      {preview.busy ? <Note tone="amber" className="mt12">{takeOverText(preview.busy)}</Note> : null}
       {preview.queued ? <Note tone="gray" className="mt12">平台已满，开始后排队{preview.queue_position ? `（第 ${preview.queue_position} 位）` : ''}</Note> : null}
     </Modal>
   );
@@ -397,8 +398,8 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
                   <Sec no="B" title="低于阈值时">
                     <div className="grid2" style={{ gap: 8 }}>
                       {[
-                        ['conservative_assumption', 'A', '采用保守选项，记为假设'],
-                        ['suspend', 'B', '挂起这一项，跳到下一段'],
+                        ['conservative_assumption', 'A', '先按最稳妥的做法往下做，做完列出来给你复核'],
+                        ['suspend', 'B', '先跳过这一项，留给你来定'],
                       ].map(([k, key, t]) => (
                         <div key={k} className={cx('opt', a.below_threshold === k && 'on')} onClick={() => !locked && setAdvanced({ below_threshold: k })}>
                           <span className="k">{key}</span><div><div className="t">{t}</div></div>
