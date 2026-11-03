@@ -97,10 +97,13 @@ def decide(question: dict, raw: dict, advanced: dict) -> dict:
     value = UNSTATED_CONFIDENCE if value is None else value
     threshold = float(advanced.get("confidence_threshold") or 0.8)
     options = _options(question)
-    must = any(kind and kind in text for kind in advanced.get("must_suspend_kinds") or [])
+    must = next((kind for kind in advanced.get("must_suspend_kinds") or [] if kind and kind in text), None)
     below = value < threshold
     if must or not options or (below and advanced.get("below_threshold") == "suspend"):
-        return {"kind": "suspension", "confidence": value, "text": text}
+        # 挂起的原因给人看（待处理「原因」），不放问题的 header
+        reason = (f"涉及「{must}」，按策略一律挂起" if must else "没有可选的选项" if not options
+                  else f"置信度 {value:.2f}，低于阈值 {threshold:.2f}")
+        return {"kind": "suspension", "confidence": value, "text": text, "reason": reason}
     recommended = next((option for option in options if tag(option) == "推荐"), None)
     conservative = next((option for option in options if tag(option) == "保守"), None)
     chosen = (conservative or recommended or options[0]) if below else (recommended or options[0])
@@ -132,7 +135,7 @@ def record(project_id: str, run_id: str, questions: list[dict], raws: list[dict]
             found = anchors(outcome["text"])
             if outcome["kind"] == "suspension":
                 item = {"id": f"sp-{uuid.uuid4().hex[:8]}", "run_id": run["run_id"], "at": now, "slice": slice_ref,
-                        "title": question.get("title") or "", "reason": str(raw.get("header") or "").strip(),
+                        "title": question.get("title") or "", "reason": outcome["reason"],
                         "handled_as": "跳过这一项，先做下一步", "kind": "question", "options": options,
                         "allow_custom": True, "actions": [], "state": "open", "step": step, "exec_id": exec_id,
                         "confidence": outcome["confidence"], "anchors": found}

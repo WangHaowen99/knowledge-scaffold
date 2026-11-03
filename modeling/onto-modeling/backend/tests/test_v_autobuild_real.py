@@ -108,3 +108,21 @@ def test_ledger_anchor_label_for_ranges():
     found = decide.anchors("依据：resource/others/合成制度.docx#p:10~p:11、resource/excel/合成清单.xlsx#sheet:备件")
     assert [item["label"] for item in found] == ["合成制度.docx §10~11", "合成清单.xlsx §备件"]
     assert found[0]["anchor"] == "file:resource/others/合成制度.docx#p:10~p:11"
+
+
+def test_suspension_reason_says_why():
+    """挂起的「原因」原来直接放问题的 header（真实运行里是「置信度 0.85」），看不出为什么挂起。"""
+    from app.services.autobuild import decide
+    from app.services.session_host import timeline
+
+    def outcome(header: str, advanced: dict, labels=("确认（推荐）", "修改")) -> dict:
+        tool_input = {"questions": [{"question": "合成规则的产物是否确认", "header": header,
+                                     "options": [{"label": label} for label in labels]}]}
+        question = timeline.build_questions("r1", tool_input, conversation_id="c")[0]
+        return decide.decide(question, tool_input["questions"][0],
+                             {"confidence_threshold": 0.8, "below_threshold": "conservative_assumption",
+                              "must_suspend_kinds": [], **advanced})
+
+    assert outcome("置信度 0.85", {"must_suspend_kinds": ["规则"]})["reason"] == "涉及「规则」，按策略一律挂起"
+    assert outcome("置信度 0.6", {"below_threshold": "suspend"})["reason"] == "置信度 0.60，低于阈值 0.80"
+    assert outcome("置信度 0.9", {}, labels=())["reason"] == "没有可选的选项"
