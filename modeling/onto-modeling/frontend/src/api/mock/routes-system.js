@@ -304,10 +304,9 @@ export function register(ctx) {
     const r = body.max_concurrent_runs;
     if (Number.isInteger(r) && r < 1) return err(422, 'invalid_argument', '同时运行上限至少是 1', { fields: { max_concurrent_runs: 'min' }, min: 1 });
     if (!Number.isInteger(r) || r > 16) return err(400, 'invalid_argument', '同时运行上限要在 1–16 之间', { fields: { max_concurrent_runs: 'range' } });
-    if (!(body.max_duration_min > 0) || !(body.max_tokens > 0) || !(body.max_cost?.amount > 0)) {
-      return err(400, 'invalid_argument', '单次上限要大于 0', { fields: { budget: 'invalid' } });
-    }
-    st.limits = { ...st.limits, ...body, running: st.limits.running };
+    // 只收认得的几项（F6 起没有单次时长、token、费用上限）
+    const known = ['max_concurrent_runs', 'allow_production_collection', 'night_priority'].filter((k) => k in body);
+    st.limits = { ...st.limits, ...Object.fromEntries(known.map((k) => [k, body[k]])), running: st.limits.running };
     return json(200, st.limits);
   });
 

@@ -13,9 +13,9 @@ import { evidenceInProject } from '../../state/evidence.js';
 import { CC, Tli, WbCtx } from './parts.jsx';
 import '../../styles/autobuild.css';
 
-const POLICY_ICON = { 范围: 'layers', 预算: 'gauge', 生产库: 'db', 拿不准时: 'scale' };
+const POLICY_ICON = { 范围: 'layers', 生产库: 'db', 拿不准时: 'scale' };
 
-// 开始时的策略：范围 / 预算 / 生产库 / 拿不准时（生产库一格随证据源出现，本期不开放）
+// 开始时的策略：范围 / 生产库 / 拿不准时（生产库一格随证据源出现，本期不开放）
 function AutobuildStartCard({ card }) {
   const { pid } = useContext(WbCtx);
   const evidenceOn = evidenceInProject(useProject());

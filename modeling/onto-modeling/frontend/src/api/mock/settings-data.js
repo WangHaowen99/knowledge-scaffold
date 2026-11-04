@@ -141,9 +141,9 @@ export function mcpTokens() {
 }
 
 // ---------- 自主构建策略（AB-01～AB-04，路由在 routes-autobuild.js） ----------
-export const PLATFORM_LIMITS = { max_duration_min: 240, max_tokens: 10000000, max_cost: { amount: 300, currency: 'CNY' }, allow_production_collection: true };
-export const QUOTA_REMAINING = { tokens: 42000000, cost: { amount: 1240, currency: 'CNY' } };
-const READONLY_POLICY_KEYS = ['boundary_text', 'platform_limits', 'quota_remaining', 'last_run', 'revision', 'base_revision'];
+export const PLATFORM_LIMITS = { allow_production_collection: true };
+// 只读字段；budget 是 F6 取消的预算，老客户端发来也不收
+const READONLY_POLICY_KEYS = ['boundary_text', 'platform_limits', 'last_run', 'revision', 'base_revision', 'budget'];
 
 // AB-02 的请求体并进当前策略（只读字段不收）
 export function mergePolicy(current, body) {
@@ -154,12 +154,6 @@ export function mergePolicy(current, body) {
 
 // 返回 null 表示合法；否则 [status, code, message, details]
 export function checkPolicy(p, sourceIds) {
-  const b = p.budget || {};
-  const L = PLATFORM_LIMITS;
-  if (b.max_duration_min > L.max_duration_min) return [422, 'budget_exceeds_quota', '时长超出平台上限', { dimension: 'duration', max: L.max_duration_min }];
-  if (b.max_tokens > Math.min(L.max_tokens, QUOTA_REMAINING.tokens)) return [422, 'budget_exceeds_quota', 'token 超出平台上限', { dimension: 'tokens', max: L.max_tokens }];
-  if (b.max_cost?.amount > Math.min(L.max_cost.amount, QUOTA_REMAINING.cost.amount)) return [422, 'budget_exceeds_quota', '费用超出平台上限', { dimension: 'cost', max: L.max_cost.amount }];
-  if (!(b.max_duration_min > 0 && b.max_tokens > 0 && b.max_cost?.amount > 0)) return [400, 'invalid_argument', '预算要大于 0', { fields: { budget: 'required' } }];
   const t = p.advanced?.confidence_threshold;
   if (t != null && !(t >= 0.5 && t <= 1)) return [400, 'invalid_argument', '阈值在 0.5～1.0 之间', { fields: { 'advanced.confidence_threshold': 'out_of_range' } }];
   const bad = (p.production_collection || []).find((x) => !sourceIds.includes(x.source_id));
@@ -184,16 +178,17 @@ export function previewOf(policy, flowSlices, sourceName = (id) => id) {
   const warnings = slices.some((s) => s.included && s.group === 'now') ? ['有 1 个未决决策会被按策略决定'] : [];
   return {
     slices: slices.map(({ group, ...s }) => s),
-    budget: policy.budget, production, below_threshold_text: BELOW[policy.advanced?.below_threshold] || BELOW.conservative_assumption,
+    production, below_threshold_text: BELOW[policy.advanced?.below_threshold] || BELOW.conservative_assumption,
     warnings, queued: false, queue_position: null,
   };
 }
 
 // AB-04 起的新一次运行：mock 不模拟推进，停在「排队中」
-export function queuedRun(n, policy, total) {
+export function queuedRun(n, total) {
   return {
     run_id: `run-${n}`, run_no: n, state: 'queued', current: null, elapsed_ms: 0, est_total_ms: null,
-    tokens: { used: 0, limit: policy.budget.max_tokens }, cost: { used: { amount: 0, currency: policy.budget.max_cost.currency }, budget: policy.budget.max_cost },
+    tokens: { used: 0 }, cost: { used: { amount: 0, currency: 'CNY' } },
     slices: { done: 0, total }, decisions: 0, suspended: 0, needs_review: 0, started_at: new Date().toISOString(), ended_at: null,
+    acknowledged: false, pause_reason: null,
   };
 }

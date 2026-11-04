@@ -9,7 +9,7 @@ const FEATS = [
   ['book', '资料分析', '自动分析资料并沉淀领域知识'],
   ['cube', '对象与逻辑提取', '把资料结构化为业务实体与流程'],
   ['shieldok', '校验与追踪', '规则 + 语义检查、场景推演验证'],
-  ['rocket', 'L4 自主构建', '设好范围和预算，一路建完再集中复核', true],
+  ['rocket', 'L4 自主构建', '设好范围，一路建完再集中复核', true],
 ];
 const RULES = [['len', '至少 8 位'], ['max', '不超过 128 位'], ['classes', '至少含三类字符'], ['contains_username', '不能包含用户名'], ['common', '不是常见密码'], ['edge_space', '首尾不能有空格']];
 function Graph() {

@@ -9,7 +9,6 @@ import {
 } from '../../../ui/index.jsx';
 import { evidenceInProject } from '../../../state/evidence.js';
 import { startErrorText, startLabel, takeOverText } from '../autobuildModel.js';
-import { budgetText } from './model.js';
 
 async function currentBlueprint(api, pid) {
   try {
@@ -66,7 +65,6 @@ export function AutobuildPreviewDialog({ preview: initial, onClose }) {
               </div>
             </div>
           )],
-          ['预算', budgetText(preview.budget)],
           // 证据源本期不开放：生产库采集这一行随证据源出现
           ...(evidenceInProject(project) ? [['生产库', preview.production || '—']] : []),
           ['拿不准时', preview.below_threshold_text || '—'],

@@ -1,6 +1,6 @@
 """自主构建策略、平台限制、模型单价（详设 8.5、4.10.1；方案 B13、B14；契约 AB-01、AB-02、SY-17、SY-18）。
 
-- 预算只能设在平台上限与剩余配额之内（`budget_exceeds_quota` 带 `dimension`、`max`）；
+- 没有预算（F6）：老请求带的 `budget` 忽略，策略和平台限制里都不再有单次上限；
 - 生产库授权原样存、标明不生效；做到哪一步不能是发布；
 - 同时运行数上限是配置项（设置页保存的优先于环境变量）；
 - 费用 = token × 单价；没有单价时用引擎报的费用（单价表是美元时），都没有记 0 并标估算。
@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from app.governance import config_registry, quota
+from app.governance import config_registry
 from app.services import model_pricing
 from tests.test_flow_states import env  # noqa: F401 - 共用 fixture
 
@@ -22,18 +22,16 @@ def _url(project_id: str, tail: str = "policy") -> str:
 def test_policy_defaults_and_save(env):
     client, _workspaces, _manager, project_id, _root = env
     first = client.get(_url(project_id)).json()
-    assert set(first) == {"scope", "budget", "production_collection", "advanced", "platform_limits",
-                          "quota_remaining", "last_run", "revision", "not_enforced"}
+    assert set(first) == {"scope", "production_collection", "advanced", "platform_limits", "last_run", "revision",
+                          "not_enforced"}
     assert first["scope"]["mode"] == "all_pending" and first["advanced"]["confidence_threshold"] == 0.8
-    assert first["platform_limits"]["max_tokens"] == 10_000_000 and first["last_run"] is None
+    assert first["platform_limits"] == {"allow_production_collection": False} and first["last_run"] is None
     assert first["not_enforced"] == ["production_collection"]
-    assert first["budget"]["max_cost"]["currency"] == "USD"
-    body = {"base_revision": first["revision"], "budget": {"max_duration_min": 60, "max_tokens": 500_000,
-                                                           "max_cost": {"amount": 10, "currency": "USD"}},
+    body = {"base_revision": first["revision"], "budget": {"max_duration_min": 60, "max_tokens": 500_000},
             "advanced": {"below_threshold": "suspend", "must_suspend_kinds": ["新增对象"]},
             "production_collection": [{"source_id": "src-1", "allowed": True}]}
     saved = client.put(_url(project_id), json=body).json()
-    assert saved["budget"]["max_tokens"] == 500_000 and saved["advanced"]["below_threshold"] == "suspend"
+    assert "budget" not in saved and saved["advanced"]["below_threshold"] == "suspend"  # 老客户端带的预算忽略
     assert saved["advanced"]["confidence_threshold"] == 0.8  # 没给的项保留
     assert saved["production_collection"] == [{"source_id": "src-1", "allowed": True, "window": None, "scope": []}]
     assert saved["revision"] != first["revision"]
@@ -41,29 +39,18 @@ def test_policy_defaults_and_save(env):
     assert stale.status_code == 409 and stale.json()["code"] == "revision_conflict"
 
 
-def test_policy_validation_and_budget_caps(env):
+def test_policy_validation(env):
     client, _workspaces, _manager, project_id, _root = env
-    over = client.put(_url(project_id), json={"budget": {"max_tokens": 20_000_000}})
-    assert over.status_code == 422 and over.json()["code"] == "budget_exceeds_quota"
-    # 平台上限 1000 万，用户当日配额默认 200 万：取小的
-    assert over.json()["details"] == {"dimension": "tokens", "max": 2_000_000}
-    over_cost = client.put(_url(project_id), json={"budget": {"max_cost": {"amount": 500}}})
-    assert over_cost.json()["details"] == {"dimension": "cost", "max": 100.0}
-    # 剩余配额比平台上限小：按剩余配额卡
-    quota.service().set_limits({}, {"monthly_tokens": 400_000})
-    tight = client.put(_url(project_id), json={"budget": {"max_tokens": 500_000}})
-    assert tight.status_code == 422 and tight.json()["details"]["max"] == 400_000
-    assert client.get(_url(project_id)).json()["quota_remaining"]["tokens"] == 400_000
+    # 预算不再有上限可超：再大的数也照常保存（字段本身忽略）
+    assert client.put(_url(project_id), json={"budget": {"max_tokens": 20_000_000}}).status_code == 200
     for bad, field in (({"advanced": {"confidence_threshold": 0.3}}, "advanced.confidence_threshold"),
                        ({"advanced": {"max_fix_rounds": 5}}, "advanced.max_fix_rounds"),
                        ({"scope": {"until_node": "core.publish"}}, "scope.until_node"),
                        ({"scope": {"mode": "selected", "slice_ids": []}}, "scope.slice_ids"),
-                       ({"scope": {"mode": "selected", "slice_ids": ["s9"]}}, "scope.slice_ids"),
-                       ({"budget": {"max_duration_min": 0, "max_tokens": 1000}}, "budget.max_duration_min")):
+                       ({"scope": {"mode": "selected", "slice_ids": ["s9"]}}, "scope.slice_ids")):
         response = client.put(_url(project_id), json=bad)
         assert response.status_code == 400 and field in response.json()["details"]["fields"], bad
-    ok = client.put(_url(project_id), json={"budget": {"max_tokens": 300_000},
-                                            "scope": {"until_node": "core.validate"}})
+    ok = client.put(_url(project_id), json={"scope": {"until_node": "core.validate"}})
     assert ok.status_code == 200 and ok.json()["scope"]["until_node"] == "core.validate"
 
 
@@ -71,12 +58,12 @@ def test_platform_limits_and_config_item(env):
     client, *_ = env
     limits = client.get("/api/v1/admin/autobuild-limits").json()
     assert limits["max_concurrent_runs"] == 2 and limits["running"] == 0
-    assert limits["max_cost"] == {"amount": 100.0, "currency": "USD"}
+    assert not {"max_duration_min", "max_tokens", "max_cost"} & set(limits)
     assert set(limits["not_enforced"]) == {"allow_production_collection", "night_priority"}
     saved = client.put("/api/v1/admin/autobuild-limits", json={
         "max_concurrent_runs": 5, "max_tokens": 2_000_000, "night_priority": {"enabled": True, "start": "21:00",
                                                                                 "end": "07:00"}}).json()
-    assert saved["max_concurrent_runs"] == 5 and saved["max_tokens"] == 2_000_000
+    assert saved["max_concurrent_runs"] == 5 and "max_tokens" not in saved  # F6 去掉的单次上限忽略
     assert config_registry.resolve("ONTO_WEB_AUTOBUILD_MAX_RUNS") == (5, "data_dir")
     bad = client.put("/api/v1/admin/autobuild-limits", json={"max_concurrent_runs": 17, "night_priority": {}})
     assert bad.status_code == 400 and set(bad.json()["details"]["fields"]) == {"max_concurrent_runs", "night_priority"}

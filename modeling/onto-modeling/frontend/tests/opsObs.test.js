@@ -10,7 +10,7 @@ import {
   traceSearchQuery, traceTags, waterfallRows, MAX_LOG_LINES,
 } from '../src/pages/ops/obsModel.js';
 import {
-  adviceView, alertView, autobuildTodayView, barRects, callsText, fmtBytes, fmtDur, fmtMoney, moneyPair, nameMap, relTime,
+  adviceView, alertView, autobuildTodayView, barRects, callsText, fmtBytes, fmtDur, fmtMoney, nameMap, relTime,
   runRow, startupItemView, statCards, usageSummary,
 } from '../src/pages/ops/overviewModel.js';
 
@@ -18,14 +18,12 @@ const MIN = 60000;
 
 // ---------- 运维总览 ----------
 
-test('金额：人民币取整、美元两位小数、金额为 null 显示「—」；预算列「¥ 37 / 60」', () => {
+test('金额：人民币取整、美元两位小数、金额为 null 显示「—」', () => {
   assert.equal(fmtMoney({ amount: 12846, currency: 'CNY' }), '¥ 12,846');
   assert.equal(fmtMoney({ amount: 3.27, currency: 'USD' }), '$ 3.27');
   assert.equal(fmtMoney({ amount: 1784.2, currency: 'USD' }), '$ 1,784');
   assert.equal(fmtMoney({ amount: null, currency: 'USD' }), '—');
   assert.equal(fmtMoney(null), '—');
-  assert.equal(moneyPair({ amount: 37, currency: 'CNY' }, { amount: 60, currency: 'CNY' }), '¥ 37 / 60');
-  assert.equal(moneyPair({ amount: 37, currency: 'CNY' }, null), '¥ 37');
 });
 
 test('大小、时长、相对时间', () => {
@@ -128,8 +126,9 @@ test('统计卡：B2 口径下 accounts、autobuild.limit 为 null 时不出说�
 
 test('自主构建今日小结：平均成本为 null 显示「—」', () => {
   const v = autobuildTodayView(D.overview({ p1: true }).autobuild_today);
-  assert.deepEqual(v.map((x) => x[1]), ['0', '—', '—', '0']);
-  assert.deepEqual(autobuildTodayView(D.overview().autobuild_today).map((x) => x[1]), ['3', '1 小时 52 分', '¥ 41', '1']);
+  assert.deepEqual(v.map((x) => x[1]), ['0', '—', '—']);
+  assert.deepEqual(autobuildTodayView(D.overview().autobuild_today).map((x) => x[0]), ['今日已完成', '平均用时', '平均成本']);
+  assert.deepEqual(autobuildTodayView(D.overview().autobuild_today).map((x) => x[1]), ['3', '1 小时 52 分', '¥ 41']);
 });
 
 test('用户活跃：今日调用为 null 或 0 显示「—」；所有者显示名从用户列表取，找不到用用户名', () => {
@@ -171,7 +170,7 @@ test('运行中的 L4 与启动自检摘要', () => {
   assert.equal(r.elapsed, '38 分');
   assert.equal(r.slices, '2 / 5 段');
   assert.equal(r.pct, 58);
-  assert.equal(r.budget, '¥ 25 / 60');
+  assert.equal(r.cost, '¥ 25');
   assert.deepEqual(r.state, { k: 'running', label: '运行中' });
   assert.equal(runRow({ project: null, progress: { done: 1, total: 4 }, state: 'paused' }).pct, 25);
   const items = D.overview().startup.items.map(startupItemView);

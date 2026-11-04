@@ -17,7 +17,7 @@ from tests.autobuild_helpers import (AutoEngine, ab, ask, gate, run_of, start, w
                                      wait_until)
 from tests.test_changesets import git, main_write, obj
 
-ONE = {"scope": {"mode": "selected", "slice_ids": ["s1"], "until_node": "core.model"}, "budget": {"max_tokens": 500_000}}
+ONE = {"scope": {"mode": "selected", "slice_ids": ["s1"], "until_node": "core.model"}}
 
 
 def _apply(rel: str, text: str):
@@ -82,8 +82,7 @@ def test_B_autobuild_never_deletes_confirmed_content(ab):
     client, _workspaces, project_id, root = ab
     main_write(root, "ontology/object/门店.md", obj("门店", "已确认的对象"), "web: 门店")
     AutoEngine.hooks["/ontology-validate"] = [_delete("ontology/object/门店.md")]
-    run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s1"], "until_node": "core.validate"},
-                budget={"max_tokens": 500_000})
+    run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s1"], "until_node": "core.validate"})
     wait_state(client, project_id, run["run_id"], "completed")
     # 合入时发现删了主线上已有的条目：这一步不生效，挂起，主线上的文件还在
     assert (root / "ontology/object/门店.md").is_file()
@@ -138,8 +137,7 @@ def test_B_guard_blocks_release_tags_in_any_mode(tmp_path, monkeypatch):
 # C、E、M 与推断：停机、崩溃、并发控制
 # ---------------------------------------------------------------------------
 
-THREE = {"scope": {"mode": "selected", "slice_ids": ["s1", "s2", "s3"], "until_node": "core.model"},
-         "budget": {"max_tokens": 500_000}}
+THREE = {"scope": {"mode": "selected", "slice_ids": ["s1", "s2", "s3"], "until_node": "core.model"}}
 
 
 def _restart(monkeypatch):
@@ -333,7 +331,7 @@ def test_F_concurrent_session_quota_does_not_end_the_run(ab):
     assert client.post(f"/api/v1/projects/{other}/conversations/{conversation}/messages",
                        json={"text": "你好"}).status_code == 202
     run = start(client, project_id, **ONE)
-    assert wait_state(client, project_id, run["run_id"], "completed", "budget_exhausted", "failed")["state"] == "completed"
+    assert wait_state(client, project_id, run["run_id"], "completed", "failed")["state"] == "completed"
 
 
 # ---------------------------------------------------------------------------
@@ -377,7 +375,7 @@ ASK_TWO = [{"question": "临期按几级分", "header": "置信度 0.6", "option
 def test_G_reverted_slices_refuse_rejudge_and_answers(ab):
     client, _workspaces, project_id, _root = ab
     AutoEngine.hooks["/ontology-extract-operation:s1"] = [ask(ASK_TWO)]
-    run = start(client, project_id, scope=ONE["scope"], budget=ONE["budget"],
+    run = start(client, project_id, scope=ONE["scope"],
                 advanced={"must_suspend_kinds": ["新增对象"]})
     wait_state(client, project_id, run["run_id"], "completed")
     record = store.get(project_id, run["run_id"])
@@ -396,7 +394,7 @@ def test_G_reverted_slices_refuse_rejudge_and_answers(ab):
 def test_I_defer_to_next_run_keeps_the_answer_and_the_next_run_uses_it(ab):
     client, _workspaces, project_id, _root = ab
     AutoEngine.hooks["/ontology-extract-operation:s1"] = [ask(ASK_TWO[1:])]
-    first = start(client, project_id, scope=ONE["scope"], budget=ONE["budget"],
+    first = start(client, project_id, scope=ONE["scope"],
                   advanced={"must_suspend_kinds": ["新增对象"]})
     wait_state(client, project_id, first["run_id"], "completed")
     item = store.get(project_id, first["run_id"])["suspensions"][0]
@@ -407,7 +405,7 @@ def test_I_defer_to_next_run_keeps_the_answer_and_the_next_run_uses_it(ab):
     assert f"suspension:{item['id']}" in [entry["id"] for entry in inbox["items"]]
     AutoEngine.hints.clear()
     # 下一次运行：这一段做完了，也为它补做挂起的那一步，注入里带上回答
-    second = start(client, project_id, scope=ONE["scope"], budget=ONE["budget"])
+    second = start(client, project_id, scope=ONE["scope"])
     wait_state(client, project_id, second["run_id"], "completed")
     assert any("审批交给谁" in hint and "门店" in hint for hint in AutoEngine.hints)
     assert store.get(project_id, first["run_id"])["suspensions"][0]["state"] == "answered"

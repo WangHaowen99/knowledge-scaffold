@@ -1,6 +1,7 @@
 // 自主构建（l4-run）的纯函数：运行状态分类、运行条文案与指标、流水线格子、按段进展块的分段
 
 export const RUNNING_STATES = ['queued', 'running', 'pausing', 'stopping', 'converting'];
+// budget_exhausted 只出现在老运行记录里（F6 起预算不再判停）
 export const ENDED_STATES = ['completed', 'stopped', 'converted', 'budget_exhausted', 'failed'];
 
 export function runFlags(run) {
@@ -13,6 +14,14 @@ export function runFlags(run) {
     paused: ['paused', 'interrupted'].includes(st),
     ended: ENDED_STATES.includes(st),
   };
+}
+
+// 运行条显示不显示：别的对话里只在运行还没结束时显示；运行对话里结束后留着看报告，点过「确认」就收起
+export function stripShown(run, inConversation) {
+  if (!run) return false;
+  const { ended } = runFlags(run);
+  if (!ended) return true;
+  return !!inConversation && !run.acknowledged;
 }
 
 // 这一轮能不能打断：运行对话里自主构建在跑时由运行条暂停、停在安全点控制（S-08 回 409 autobuild_running）
@@ -47,25 +56,21 @@ export function fmtTok(n) {
 
 const pct = (a, b) => (b ? Math.max(0, Math.min(100, Math.round((a / b) * 100))) : 0);
 
-// 运行条的指标：[标签, 当前, 上限, 百分比]；工作区不显示金额，费用上限只在项目设置里
+// 运行条的指标：[标签, 当前, 参照, 百分比]；参照只有运行中的预计用时，没有参照时不画进度条（null）。工作区不显示金额
 export function stripMetrics(run) {
   if (!run) return [];
   const { ended } = runFlags(run);
-  const budgetMs = (run.policy?.budget?.max_duration_min || 0) * 60000;
-  const time = ended
-    ? ['用时', fmtDur(run.elapsed_ms), fmtDur(budgetMs), pct(run.elapsed_ms, budgetMs)]
-    : ['已用时', fmtDur(run.elapsed_ms), run.est_total_ms ? fmtEst(run.est_total_ms) : '—', pct(run.elapsed_ms, run.est_total_ms || budgetMs)];
-  return [
-    time,
-    ['token', fmtTok(run.tokens?.used), fmtTok(run.tokens?.limit), pct(run.tokens?.used, run.tokens?.limit)],
-  ];
+  const time = ended || !run.est_total_ms
+    ? [ended ? '用时' : '已用时', fmtDur(run.elapsed_ms), null, null]
+    : ['已用时', fmtDur(run.elapsed_ms), fmtEst(run.est_total_ms), pct(run.elapsed_ms, run.est_total_ms)];
+  return [time, ['token', fmtTok(run.tokens?.used), null, null]];
 }
 
 const ENDED_TEXT = {
   completed: ['已完成', '全部分段完成'],
   stopped: ['已停下', '在安全点停下'],
   converted: ['已转为陪伴', '剩下的逐个确认'],
-  budget_exhausted: ['预算用完', '在安全点停下'],
+  budget_exhausted: ['预算用完', '在安全点停下'], // 老运行记录
   failed: ['出错停下', '已保存到最近的安全点'],
 };
 
@@ -80,7 +85,7 @@ export function stripTitle(run) {
     case 'pausing': return { title: `正在暂停 · ${n}`, sub: '当前步骤做完后暂停' };
     case 'stopping': return { title: `停在安全点 · ${n}`, sub: run.current ? `「${run.current.slice_name}」做完后停下` : '这一段做完后停下' };
     case 'converting': return { title: `转为陪伴 · ${n}`, sub: run.current ? `「${run.current.slice_name}」做完后转为逐个确认` : '这一段做完后转为逐个确认' };
-    case 'paused': return { title: `已暂停 · ${n}`, sub: cur ? `停在：${cur}` : '' };
+    case 'paused': return { title: `已暂停 · ${n}`, sub: run.pause_reason === 'quota' ? '配额用完，补足后点续跑' : cur ? `停在：${cur}` : '' };
     case 'interrupted': return { title: `${n} 中断了`, sub: '服务重启' };
     default: {
       const [t, tail] = ENDED_TEXT[run.state] || ['已结束', ''];
@@ -130,8 +135,8 @@ export function miniMetrics(run) {
   if (!run) return [];
   const { ended } = runFlags(run);
   return [
-    [fmtDur(run.elapsed_ms), ended ? `用时 · 预算 ${fmtDur((run.policy?.budget?.max_duration_min || 0) * 60000)}` : `已用时 · 预计${fmtEst(run.est_total_ms)}`],
-    [fmtTok(run.tokens?.used), `token · 上限 ${fmtTok(run.tokens?.limit)}`],
+    [fmtDur(run.elapsed_ms), ended ? '用时' : `已用时 · 预计${fmtEst(run.est_total_ms)}`],
+    [fmtTok(run.tokens?.used), 'token'],
     [`${run.checks?.errors ?? 0} / ${run.checks?.warnings ?? 0}`, '写入即查：错误 / 提醒'],
     [`${run.scenarios?.passed ?? 0} / ${run.scenarios?.total ?? 0}`, '场景推演通过'],
     [`${run.fix_rounds?.used ?? 0} / ${run.fix_rounds?.limit ?? 0}`, '修复轮次 / 上限'],
@@ -144,7 +149,7 @@ export function reportMetrics(r) {
   if (!m) return [];
   const partial = m.slices?.partial?.length ? `${m.slices.partial.join('、')}部分完成` : '全部完成';
   return [
-    ['用时', fmtDur(m.duration_ms), `预算 ${fmtDur(m.budget_duration_ms)}`],
+    ['用时', fmtDur(m.duration_ms), ''],
     ['分段', `${m.slices.done} / ${m.slices.total}`, partial],
     ['产出', `+${m.produced.objects} / +${m.produced.operations} / +${m.produced.rules}`, '对象 / 操作 / 规则'],
     ['检查', `${m.checks.errors} 错误`, `${m.checks.warnings} 个提醒`],

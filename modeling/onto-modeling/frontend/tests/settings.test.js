@@ -1,4 +1,4 @@
-// 项目设置（proj-settings）：页面纯逻辑，mock 的能力切换、对外 MCP、自主构建策略（AB-01～AB-04、AB-18）
+// 项目设置（proj-settings）：页面纯逻辑，mock 的能力切换、对外 MCP、自主构建策略（AB-01～AB-04、AB-18、AB-19）
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
@@ -6,8 +6,8 @@ import { register as registerAutobuild } from '../src/api/mock/routes-autobuild.
 import { actionsOf, extensionState, register as registerSettings } from '../src/api/mock/routes-settings.js';
 import { mcpServers, projectPacks, remainingText } from '../src/api/mock/settings-data.js';
 import {
-  activeSection, advancedSummary, basicPatch, budgetOptions, budgetPct, createdText, defaultConfigTab, engineCards, finalizePolicy,
-  fmtDuration, fmtMoney, fmtTokens, isRecommended, lastRunText, modelDisplayName, modelSourceText, moveItem, nameProblem, packToolsText, parseScope,
+  activeSection, advancedSummary, basicPatch, createdText, defaultConfigTab, engineCards, finalizePolicy,
+  isRecommended, lastRunText, modelDisplayName, modelSourceText, moveItem, nameProblem, packToolsText, parseScope,
   parseWindow, pendingSummary, policyBody, policyDirty, policyForm, rowActions, scopeLabel, sectionTarget, sliceRows, startBlocker,
   statusChip, switchToast, thresholdAt, thresholdPos, tokenBody, tokenProblems, toolList, toolsText, uiCell, visibleMcp, windowText,
 } from '../src/pages/settings/settingsModel.js';
@@ -58,14 +58,14 @@ test('引擎卡：界面只显示标签；内测引擎不再挂「内测」小�
   assert.equal(modelDisplayName(undefined), '使用我的模型配置');
 });
 
-test('策略表单：只读字段不提交；生产库的时间窗口、采集范围文字并进表单', () => {
+test('策略表单：只读字段与老策略里的预算不提交；生产库的时间窗口、采集范围文字并进表单', () => {
   const policy = { scope: { mode: 'all_pending', slice_ids: [] }, budget: { max_duration_min: 120, max_tokens: 6e6, max_cost: { amount: 150, currency: 'CNY' } }, production_collection: [{ source_id: 'erp-prod', allowed: false, window: null, scope: [] }], advanced: { confidence_threshold: 0.8 }, boundary_text: 'x', revision: 'p3', platform_limits: {} };
   const form = policyForm(policy);
-  assert.deepEqual(Object.keys(form), ['scope', 'budget', 'production_collection', 'advanced']);
+  assert.deepEqual(Object.keys(form), ['scope', 'production_collection', 'advanced']);
   assert.equal(policyDirty(policy, form), false);
-  form.budget.max_tokens = 4e6;
+  form.advanced.confidence_threshold = 0.9;
   assert.equal(policyDirty(policy, form), true);
-  assert.equal(policy.budget.max_tokens, 6e6, '深拷贝，不改原策略');
+  assert.equal(policy.advanced.confidence_threshold, 0.8, '深拷贝，不改原策略');
   assert.equal(policyBody(form, 'p3').base_revision, 'p3');
 
   const on = { ...form, production_collection: [{ ...form.production_collection[0], allowed: true }] };
@@ -80,20 +80,6 @@ test('策略表单：只读字段不提交；生产库的时间窗口、采集�
   assert.deepEqual(parseWindow('22:00-06:00'), { value: { start: '22:00', end: '06:00' } });
   assert.equal(windowText({ start: '22:00', end: '06:00' }), '22:00 – 06:00');
   assert.deepEqual(parseScope('补货标准表，商品品类表 ;门店清单'), ['补货标准表', '商品品类表', '门店清单']);
-});
-
-test('预算：写法同设计稿，下拉只给平台上限以内的，进度条按上限算', () => {
-  assert.equal(fmtDuration(120), '2 小时');
-  assert.equal(fmtDuration(90), '1 小时 30 分');
-  assert.equal(fmtDuration(45), '45 分钟');
-  assert.equal(fmtTokens(6e6), '6M');
-  assert.equal(fmtTokens(2.5e6), '2.5M');
-  assert.equal(fmtMoney({ amount: 150, currency: 'CNY' }), '¥150');
-  const limits = { max_duration_min: 240, max_tokens: 10e6, max_cost: { amount: 300, currency: 'CNY' } };
-  assert.deepEqual(budgetOptions('duration', limits, 120), [30, 60, 90, 120, 180, 240]);
-  assert.deepEqual(budgetOptions('cost', limits, 150), [30, 50, 100, 150, 200, 300]);
-  assert.deepEqual(budgetOptions('tokens', limits, 5e6), [1e6, 2e6, 4e6, 5e6, 6e6, 8e6, 10e6]);
-  assert.deepEqual([budgetPct(120, 240), budgetPct(6e6, 10e6), budgetPct(150, 300)], [50, 60, 50]);
 });
 
 test('高级设置：摘要、是否推荐值、阈值滑块、资料优先级排序', () => {
@@ -217,6 +203,24 @@ function harness({ sc = {}, stage = null } = {}) {
   return { call, events, cards, ctx, convs, seeded };
 }
 
+test('mock AB-19：确认结束的运行，运行条收起、项目回到陪伴建模；没结束的不能确认', async () => {
+  const live = harness({ stage: 'l4' });
+  const busy = await live.call('POST', `${P}/autobuild/runs/run-3/acknowledge`, {});
+  assert.deepEqual([busy.status, busy.body.code], [409, 'autobuild_not_running']);
+
+  const { call, events, cards } = harness();
+  cards.find((c) => c.id === F.MAIN_PID).build_mode = 'L4';
+  assert.equal((await call('GET', `${P}/autobuild/runs/run-3`)).body.acknowledged, false);
+  const r = await call('POST', `${P}/autobuild/runs/run-3/acknowledge`, {});
+  assert.equal(r.status, 200);
+  assert.deepEqual([r.body.state, r.body.acknowledged], ['completed', true]);
+  assert.equal(cards.find((c) => c.id === F.MAIN_PID).build_mode, 'L2');
+  const upd = events.find((e) => e.type === 'project.updated');
+  assert.deepEqual([upd.data.fields, upd.data.meta.build_mode], [['build_mode'], 'L2']);
+  assert.equal(events.find((e) => e.type === 'autobuild.run.updated').data.acknowledged, true);
+  assert.equal((await call('POST', `${P}/autobuild/runs/run-9/acknowledge`, {})).status, 404);
+});
+
 test('mock PL-05～PL-11：停用带页面的能力，左栏立刻少一页、发两个事件；撤销后回来', async () => {
   const { call, events, ctx } = harness();
   const list = await call('GET', `${P}/packs`);
@@ -312,20 +316,22 @@ test('mock AB-01～AB-04、AB-18：保存的策略决定预览；开始后开一
   const p0 = (await call('GET', `${P}/autobuild/policy`)).body;
   assert.equal(p0.revision, 'p3');
   assert.equal(p0.last_run.run_no, 3);
-  assert.equal(p0.platform_limits.max_duration_min, 240);
+  assert.deepEqual(p0.platform_limits, { allow_production_collection: true });
+  assert.equal(p0.budget, undefined);
 
   assert.equal((await call('PUT', `${P}/autobuild/policy`, { base_revision: 'old' })).body.code, 'revision_conflict');
-  const over = await call('PUT', `${P}/autobuild/policy`, { ...policyForm(p0), budget: { ...p0.budget, max_tokens: 20e6 }, base_revision: 'p3' });
-  assert.equal(over.status, 422);
-  assert.deepEqual([over.body.code, over.body.details.dimension], ['budget_exceeds_quota', 'tokens']);
-  assert.equal((await call('PUT', `${P}/autobuild/policy`, { ...policyForm(p0), production_collection: [{ source_id: 'nope', allowed: true, window: null, scope: [] }], base_revision: 'p3' })).body.code, 'source_not_authorized');
+  // 老客户端还发预算：不收、不报错
+  const legacy = await call('PUT', `${P}/autobuild/policy`, { ...policyForm(p0), budget: { max_tokens: 20e6 }, base_revision: 'p3' });
+  assert.equal(legacy.status, 200);
+  assert.equal(legacy.body.budget, undefined);
+  assert.equal((await call('PUT', `${P}/autobuild/policy`, { ...policyForm(p0), production_collection: [{ source_id: 'nope', allowed: true, window: null, scope: [] }], base_revision: legacy.body.revision })).body.code, 'source_not_authorized');
 
   const form = policyForm(p0);
   form.scope = { ...form.scope, mode: 'selected', slice_ids: ['s3', 's4'] };
   form.production_collection = [{ source_id: 'erp-prod', allowed: true, window: { start: '22:00', end: '06:00' }, scope: ['补货标准表'] }];
-  const saved = await call('PUT', `${P}/autobuild/policy`, policyBody(form, 'p3'));
+  const saved = await call('PUT', `${P}/autobuild/policy`, policyBody(form, legacy.body.revision));
   assert.equal(saved.status, 200);
-  assert.notEqual(saved.body.revision, 'p3');
+  assert.notEqual(saved.body.revision, legacy.body.revision);
   assert.deepEqual((await call('GET', `${P}/autobuild/policy`)).body.scope.slice_ids, ['s3', 's4']);
 
   const pv = (await call('POST', `${P}/autobuild/runs/preview`, {})).body;
@@ -342,7 +348,9 @@ test('mock AB-01～AB-04、AB-18：保存的策略决定预览；开始后开一
   assert.deepEqual([conv.id, conv.title, conv.kind, conv.live], [run.body.conversation_id, '自主构建 · 运行 #4', 'autobuild', true]);
   const start = seeded.get(`${F.MAIN_PID}:${conv.id}`).find((e) => e.type === 'card').data;
   assert.equal(start.card_type, 'autobuild_start');
-  assert.deepEqual(start.chips.map((c) => c.value), ['选中的 2 段', '2 小时 · 6M token', '允许采集 ERP 生产库（22:00 – 06:00）', '先按最稳妥的做法往下做，做完列出来给你复核']);
+  assert.deepEqual(start.chips.map((c) => c.label), ['范围', '生产库', '拿不准时']);
+  assert.deepEqual(start.chips.map((c) => c.value), ['选中的 2 段', '允许采集 ERP 生产库（22:00 – 06:00）', '先按最稳妥的做法往下做，做完列出来给你复核']);
+  assert.deepEqual([run.body.tokens, run.body.acknowledged], [{ used: 0 }, false]);
 
   const running = (await call('GET', `${P}/autobuild/runs?state=running`)).body.items;
   assert.deepEqual(running.map((r) => [r.run_no, r.state]), [[4, 'queued']]);

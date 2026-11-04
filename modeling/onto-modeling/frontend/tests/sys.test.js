@@ -339,23 +339,19 @@ test('单独设置：对象、项、值、原因都要；同一对象同一项�
   assert.equal(quotaValueText('collections_per_source_per_hour', 5), '每小时 5 次');
 });
 
-test('L4 平台限制：时长按小时填、按分钟存；校验 0–16 与正数；夜间时段沿用原值', () => {
+test('L4 平台限制：同时运行上限校验 1–16；没有单次时长、token、费用上限；夜间时段沿用原值', () => {
   const l = S.autobuildLimits();
   const f = limitsForm(l);
-  assert.deepEqual([f.hours, f.max_tokens, f.cost, f.currency], ['4', '10,000,000', '300', 'CNY']);
+  assert.deepEqual(Object.keys(f), ['max_concurrent_runs', 'allow_production_collection', 'night']);
   assert.equal(limitsDirty(l, f), false);
   assert.deepEqual(limitsProblems(f), {});
   assert.equal(limitsProblems({ ...f, max_concurrent_runs: '17' }).max_concurrent_runs, '整数 1–16');
   // 最小值 1（主控定：0 不合法）
   assert.equal(limitsProblems({ ...f, max_concurrent_runs: '0' }).max_concurrent_runs, '整数 1–16');
-  assert.equal(limitsProblems({ ...f, hours: '0' }).hours, '0–72 小时');
-  assert.equal(limitsProblems({ ...f, cost: '' }).cost, '填大于 0 的金额');
-  const body = limitsBody({ ...f, hours: '1.5', night: false }, l);
-  assert.equal(body.max_duration_min, 90);
+  const body = limitsBody({ ...f, night: false }, l);
   assert.deepEqual(body.night_priority, { enabled: false, start: '20:00', end: '08:00' });
   assert.ok(!('running' in body));
-  // 与项目设置（AB-01 platform_limits）同一份上限
-  assert.equal(l.max_tokens, 10000000);
+  assert.ok(!['max_duration_min', 'max_tokens', 'max_cost'].some((k) => k in body || k in l));
 });
 
 // ---------- 模型单价（SY-18）、服务令牌（X-06） ----------

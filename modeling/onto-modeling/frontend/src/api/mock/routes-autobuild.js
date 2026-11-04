@@ -1,4 +1,4 @@
-// 3.22 自主构建（AB-01～AB-18）
+// 3.22 自主构建（AB-01～AB-19）
 // 阶段 l4：主示例项目 ?mock=stage:l4 进入运行 #3（设计稿 l4-run），?mock=stage:l4,run:ended 是运行结束；
 // 共享单车故障诊断默认就在这一阶段。主示例项目在其他阶段时，运行 #3 已经跑完（待处理里的复核来自它）。
 import { RIDER_PID, riderReport, riderSummary } from './inbox-data.js';
@@ -53,8 +53,8 @@ export const stages = {
 export const projectStages = { 'bike-fleet-7b20e4a1': 'l4' };
 
 const summaryOf = (run) => {
-  const { run_id, run_no, state, current, elapsed_ms, est_total_ms, tokens, cost, slices, decisions, suspended, needs_review, started_at, ended_at } = run;
-  return { run_id, run_no, state, current, elapsed_ms, est_total_ms, tokens, cost, slices, decisions, suspended, needs_review, started_at, ended_at };
+  const { run_id, run_no, state, current, elapsed_ms, est_total_ms, tokens, cost, slices, decisions, suspended, needs_review, started_at, ended_at, acknowledged, pause_reason } = run;
+  return { run_id, run_no, state, current, elapsed_ms, est_total_ms, tokens, cost, slices, decisions, suspended, needs_review, started_at, ended_at, acknowledged, pause_reason };
 };
 
 export function register(ctx) {
@@ -88,7 +88,7 @@ export function register(ctx) {
       if (run.state === 'running') {
         Object.assign(c, {
           status: ['active', 'autobuild'], landing_page: 'l4-run',
-          autobuild: { run_id: run.run_id, run_no: run.run_no, state: 'running', slice_done: 2, slice_total: 4, progress_pct: 45, eta_ms: 46 * 60000, decisions: run.decisions, suspended: run.suspended, budget_used_pct: 21, needs_review: 0, duration_ms: run.elapsed_ms },
+          autobuild: { run_id: run.run_id, run_no: run.run_no, state: 'running', slice_done: 2, slice_total: 4, progress_pct: 45, eta_ms: 46 * 60000, decisions: run.decisions, suspended: run.suspended, needs_review: 0, duration_ms: run.elapsed_ms },
         });
       }
     }
@@ -151,7 +151,6 @@ export function register(ctx) {
   on('GET', '/projects/([^/]+)/autobuild/policy', ({ m }) => json(200, {
     ...policyOf(m[1]),
     platform_limits: S.PLATFORM_LIMITS,
-    quota_remaining: S.QUOTA_REMAINING,
     last_run: lastRunOf(m[1]),
   })); // AB-01
   on('PUT', '/projects/([^/]+)/autobuild/policy', ({ m, body }) => {
@@ -162,7 +161,7 @@ export function register(ctx) {
     if (bad) return err(...bad);
     next.revision = `p${uid()}`;
     db.abPolicy.set(m[1], next);
-    return json(200, { ...next, platform_limits: S.PLATFORM_LIMITS, quota_remaining: S.QUOTA_REMAINING, last_run: lastRunOf(m[1]) });
+    return json(200, { ...next, platform_limits: S.PLATFORM_LIMITS, last_run: lastRunOf(m[1]) });
   }); // AB-02
   on('POST', '/projects/([^/]+)/autobuild/runs/preview', ({ m, body }) => {
     const pid = m[1];
@@ -186,14 +185,13 @@ export function register(ctx) {
     const pv = S.previewOf(policy, ctx.flowOf(pid).slices, sourceName);
     const included = pv.slices.filter((s) => s.included);
     const n = (storeOf(pid)?.run().run_no || 0) + 1;
-    const run = S.queuedRun(n, policy, included.length);
+    const run = S.queuedRun(n, included.length);
     // 运行在自己的对话里进行（契约 3.22）：开一条「自主构建 · 运行 #n」，先放开始卡和排队提示
     const list = ctx.convsOf(pid);
     const now = new Date().toISOString();
     const conv = { id: uid().padStart(12, '0').slice(-12), title: `自主构建 · 运行 #${n}`, title_manual: false, created_at: now, updated_at: now, live: true, state: 'idle', kind: 'autobuild', run_id: run.run_id };
     list.forEach((c) => { c.live = false; });
     list.unshift(conv);
-    const b = policy.budget;
     const ev = (id, type, data) => ({ id: String(id), type, ts: now, project_id: pid, conversation_id: conv.id, data });
     ctx.hub.seed(ctx.convKey(pid, conv.id), 'conversation', [
       ev(1, 'day.marker', { label: '今天' }),
@@ -201,7 +199,6 @@ export function register(ctx) {
         ...R.startCard(), card_id: `ab${n}-start`, title: `自主构建 · 运行 #${n}`, run_id: run.run_id, run_no: n,
         chips: [
           { label: '范围', value: `${policy.scope.mode === 'selected' ? '选中的' : '未完成的'} ${included.length} 段` },
-          { label: '预算', value: `${b.max_duration_min % 60 ? `${b.max_duration_min} 分钟` : `${b.max_duration_min / 60} 小时`} · ${b.max_tokens >= 1e6 ? `${b.max_tokens / 1e6}M` : `${Math.round(b.max_tokens / 1e3)}k`} token` },
           { label: '生产库', value: pv.production }, { label: '拿不准时', value: pv.below_threshold_text },
         ],
       }),
@@ -224,7 +221,7 @@ export function register(ctx) {
     if (st) items.push(summaryOf(st.run()));
     if (pid === RIDER_PID) {
       const s = riderSummary();
-      items.push({ run_id: s.run_id, run_no: s.run_no, state: s.state, current: null, elapsed_ms: 112 * 60000, est_total_ms: null, tokens: { used: 3800000, limit: 6000000 }, cost: { used: s.cost, budget: { amount: 100, currency: 'CNY' } }, slices: { done: 5, total: 6 }, decisions: 13, suspended: 2, needs_review: 2, started_at: s.started_at, ended_at: s.ended_at });
+      items.push({ run_id: s.run_id, run_no: s.run_no, state: s.state, current: null, elapsed_ms: 112 * 60000, est_total_ms: null, tokens: { used: 3800000 }, cost: { used: s.cost }, slices: { done: 5, total: 6 }, decisions: 13, suspended: 2, needs_review: 2, started_at: s.started_at, ended_at: s.ended_at, acknowledged: false, pause_reason: null });
     }
     const want = query.get('state');
     const filtered = want === 'running' ? items.filter((r) => RUNNING.has(r.state)) : want ? items.filter((r) => r.state === want) : items;
@@ -321,6 +318,19 @@ export function register(ctx) {
   on('POST', '/projects/([^/]+)/autobuild/runs/([^/]+)/stop-at-safe-point', control('stop')); // AB-07
   on('POST', '/projects/([^/]+)/autobuild/runs/([^/]+)/convert-to-l2', control('convert')); // AB-08
   on('POST', '/projects/([^/]+)/autobuild/runs/([^/]+)/resume', control('resume')); // AB-09
+  // 确认结束的运行：运行条收起；没有别的运行在跑时项目回到陪伴建模
+  on('POST', '/projects/([^/]+)/autobuild/runs/([^/]+)/acknowledge', ({ m }) => {
+    const pid = m[1];
+    const st = runOr404(pid, m[2]);
+    if (!st) return err(404, 'run_not_found', '运行不存在');
+    if (!R.ENDED.has(st.state)) return err(409, 'autobuild_not_running', '运行还没结束', { state: st.state });
+    st.acknowledged = true;
+    const c = cardOf(pid);
+    if (c && !db.autobuildActiveOf(pid)) c.build_mode = 'L2';
+    emitRun(pid, st);
+    if (c) emitProj(pid, 'project.updated', { fields: ['build_mode'], meta: F.projectMeta(c) });
+    return json(200, st.run());
+  }); // AB-19
 
   on('POST', '/projects/([^/]+)/autobuild/ledger/([^/]+)/accept', ({ m }) => {
     const st = storeOf(m[1]);

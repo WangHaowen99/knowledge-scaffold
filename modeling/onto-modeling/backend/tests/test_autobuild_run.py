@@ -1,10 +1,11 @@
-"""自主构建运行器（详设 8.5、13 章 P3 验收；方案 B12～B14；契约 AB-03～AB-09、AB-18、EP-14～EP-17、4.7 卡片）。
+"""自主构建运行器（详设 8.5、13 章 P3 验收；方案 B12～B14；契约 AB-03～AB-09、AB-18、AB-19、EP-14～EP-17、4.7 卡片）。
 
 - 一个 5 段的项目一路跑完：每段一个变更集、自动合入（来源 autobuild）、分段显示「自主完成」，台账与报告进 git；
 - 运行中确认卡、决策卡由策略立即作答并记台账；
 - 运行中用户在别的对话发消息 409，在运行对话里是补充说明（不打断，下一步带给助手）；
 - 暂停（这一步做完）、停在安全点（这一段做完）、转为陪伴；
-- 预算 80% 提醒、100% 停在安全点；
+- 用量只记不拦，运行一直做到完；配额用完暂停在这一步，续跑接着做（F6）；
+- 结束后确认：运行条收起，构建方式回到陪伴建模（AB-19）；
 - 重启后按执行记录续跑。
 
 假引擎按消息现做（tests/autobuild_helpers.py），等待一律按条件。测试数据全部为合成内容。
@@ -16,8 +17,9 @@ import json
 
 from fastapi.testclient import TestClient
 
+from app.governance.quota import QuotaExceeded
 from app.main import app
-from app.services import agent_sessions
+from app.services import agent_sessions, notifications
 from app.services.agent_sessions import SessionManager
 from app.services.autobuild import store
 from app.services.autobuild import runner as runner_module
@@ -27,7 +29,7 @@ from tests.autobuild_helpers import (AutoEngine, ab, ask, gate, history, project
                                      wait_state, wait_until)
 from tests.test_changesets import git, trailers
 
-SLICES_ONLY = {"scope": {"until_node": "core.model"}, "budget": {"max_tokens": 500_000}}
+SLICES_ONLY = {"scope": {"until_node": "core.model"}}
 
 
 def test_five_slice_project_runs_to_the_end_with_policy_answers(ab):
@@ -210,19 +212,81 @@ def test_pause_then_stop_at_safe_point_then_convert(ab):
                        json={"text": "接着做下一段"}).status_code == 202
 
 
-def test_budget_warns_at_80_and_stops_at_the_safe_point_at_100(ab):
+def test_usage_is_recorded_but_never_ends_the_run(ab):
     client, _workspaces, project_id, _root = ab
-    # 每轮 125 token；第一段 3 步 = 375，到 400 的 80% 提醒；第二段第一步后过 100%，做完这一段停
-    run = start(client, project_id, scope={"until_node": "core.model"},
-                budget={"max_tokens": 400, "max_duration_min": 60, "max_cost": {"amount": 50}})
-    ended = wait_state(client, project_id, run["run_id"], "budget_exhausted")
-    warnings = project_events(project_id, "autobuild.budget_warning")
-    assert [event["data"]["dimension"] for event in warnings] == ["tokens"]
-    assert warnings[0]["data"]["used_pct"] >= 80
-    assert ended["slices"]["done"] == 2 and ended["tokens"]["used"] >= 400
-    assert project_events(project_id, "autobuild.safe_point")[-1]["data"]["next"] == "stopped"
-    finished = wait_until(lambda: project_events(project_id, "autobuild.finished"))
-    assert finished[-1]["data"]["state"] == "budget_exhausted"
+    # 每轮 125 token，老客户端带的 400 token 预算忽略：用量照记，运行一直做到完
+    run = start(client, project_id, scope={"until_node": "core.model"}, budget={"max_tokens": 400})
+    done = wait_state(client, project_id, run["run_id"], "completed")
+    assert done["slices"] == {"done": 5, "total": 5} and done["tokens"]["used"] > 400
+    assert set(done["tokens"]) == {"used"} and set(done["cost"]) == {"used"} and "budget" not in done["policy"]
+    assert not project_events(project_id, "autobuild.budget_warning")
+    report = client.get(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/report").json()
+    assert not {"budget", "budget_duration_ms"} & set(report["metrics"])
+
+
+def test_quota_exhausted_pauses_the_run_and_resume_finishes_it(ab, monkeypatch):
+    client, _workspaces, project_id, _root = ab
+    manager = agent_sessions.manager
+    original = manager.send
+    blocked = {"on": True}
+
+    async def send(pid, root, text, *args, **kwargs):
+        if blocked["on"] and text.startswith("/ontology-extract-object slice=s2"):
+            raise QuotaExceeded("daily_tokens", 1000, 1000, {"kind": "user", "id": "employee_0001"})
+        return await original(pid, root, text, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "send", send)
+    run = start(client, project_id, **SLICES_ONLY)
+    paused = wait_state(client, project_id, run["run_id"], "paused")
+    assert paused["pause_reason"] == "quota" and paused["slices"]["done"] == 1
+    assert not store.get(project_id, run["run_id"]).get("failure")  # 配额用完不算出错
+    notices = [item["title"] for item in notifications.list_notifications("employee_0001")
+               if item["kind"] == "autobuild_stopped"]
+    assert notices == ["自主构建已暂停"]
+    blocked["on"] = False
+    resumed = client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/resume").json()
+    assert resumed["pause_reason"] is None
+    done = wait_state(client, project_id, run["run_id"], "completed")
+    assert done["slices"] == {"done": 5, "total": 5}
+
+
+def test_stop_while_quota_is_exhausted_ends_the_run(ab, monkeypatch):
+    client, _workspaces, project_id, _root = ab
+    manager = agent_sessions.manager
+    original = manager.send
+
+    async def send(pid, root, text, *args, **kwargs):
+        if text.startswith("/ontology-extract-object slice=s2"):
+            raise QuotaExceeded("daily_tokens", 1000, 1000, {"kind": "user", "id": "employee_0001"})
+        return await original(pid, root, text, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "send", send)
+    run = start(client, project_id, **SLICES_ONLY)
+    wait_state(client, project_id, run["run_id"], "paused")
+    # 配额还没补：停在安全点要做完这一段也做不完，直接按停下结束，不再暂停回去
+    client.post(f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}/stop-at-safe-point")
+    assert wait_state(client, project_id, run["run_id"], "stopped")["slices"]["done"] == 1
+
+
+def test_acknowledge_ended_run_returns_to_companion_mode(ab):
+    client, _workspaces, project_id, _root = ab
+    base = f"/api/v1/projects/{project_id}"
+    assert client.put(f"{base}/build-mode", json={"build_mode": "L4"}).status_code == 200
+    release = gate("/ontology-extract-object:s1")
+    run = start(client, project_id, **SLICES_ONLY)
+    ack = f"{base}/autobuild/runs/{run['run_id']}/acknowledge"
+    early = client.post(ack)
+    assert early.status_code == 409 and early.json()["code"] == "autobuild_not_running"
+    release.set()
+    done = wait_state(client, project_id, run["run_id"], "completed")
+    assert done["acknowledged"] is False
+    acked = client.post(ack)
+    assert acked.status_code == 200 and acked.json()["acknowledged"] is True
+    assert client.get(f"{base}/build-mode").json()["build_mode"] == "L2"
+    updated = project_events(project_id, "project.updated")[-1]["data"]
+    assert updated["fields"] == ["build_mode"] and updated["meta"]["build_mode"] == "L2"
+    assert client.post(ack).status_code == 200  # 再确认一次照样成功
+    assert run_of(client, project_id, run["run_id"])["acknowledged"] is True
 
 
 def test_restart_resumes_from_the_checkpoint(ab, monkeypatch):

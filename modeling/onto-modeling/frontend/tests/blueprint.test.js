@@ -3,7 +3,7 @@ import test from 'node:test';
 import * as F from '../src/api/mock/fixtures.js';
 import { mockData, register, stages } from '../src/api/mock/routes-materials.js';
 import {
-  addSlice, blueprintPayload, budgetText, depAfter, depLabel, editableSlices, goalPending, goalQuestion, isDirty,
+  addSlice, blueprintPayload, depAfter, depLabel, editableSlices, goalPending, goalQuestion, isDirty,
   mergeSlices, moveSlice, orderLabel, renameSlice, sliceInputs, toggleExcluded,
 } from '../src/pages/workbench/materials/model.js';
 
@@ -78,12 +78,6 @@ test('BP-02 请求体：只带改过的部分；分段按数组顺序给整份�
   assert.deepEqual(body.answers, [{ question_id: 'bq-ledger', option_id: 'A' }]);
   assert.ok(isDirty(body));
   assert.deepEqual(Object.keys(sliceInputs(edit.slices)[0]).sort(), ['core_flow', 'depends_on', 'excluded', 'id', 'name']);
-});
-
-test('自主构建预算文案', () => {
-  assert.equal(budgetText({ max_duration_min: 120, max_tokens: 2000000, max_cost: { amount: 80, currency: 'CNY' } }), '时长 ≤ 2 小时 · token ≤ 2M');
-  assert.equal(budgetText({ max_duration_min: 45, max_tokens: 1500000 }), '时长 ≤ 45 分钟 · token ≤ 1.5M');
-  assert.equal(budgetText(null), '—');
 });
 
 // mock 路由：BP-01 / BP-02 / BP-03

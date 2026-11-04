@@ -102,7 +102,7 @@ export function projectCards() {
       slices: { total: 5, confirmed: 2, cells: ['confirmed', 'confirmed', 'running', 'not_ready', 'not_ready'] },
       autobuild: {
         run_id: 'run-3', run_no: 3, state: 'running', slice_done: 2, slice_total: 5, progress_pct: 58, eta_ms: 25 * MIN,
-        decisions: 9, suspended: 1, budget_used_pct: 41, needs_review: 0, duration_ms: 38 * MIN,
+        decisions: 9, suspended: 1, needs_review: 0, duration_ms: 38 * MIN,
       },
     }),
     card({
@@ -112,7 +112,7 @@ export function projectCards() {
       slices: { total: 6, confirmed: 5, cells: ['confirmed', 'confirmed', 'needs_review', 'confirmed', 'needs_review', 'not_ready'] },
       autobuild: {
         run_id: 'run-2', run_no: 2, state: 'completed', slice_done: 5, slice_total: 6, progress_pct: 100, eta_ms: null,
-        decisions: 13, suspended: 2, budget_used_pct: 76, needs_review: 4, duration_ms: 112 * MIN,
+        decisions: 13, suspended: 2, needs_review: 4, duration_ms: 112 * MIN,
       },
     }),
     card({

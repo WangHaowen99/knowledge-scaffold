@@ -6,42 +6,16 @@ import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import {
-  Button, Card, Check, Chip, Field, Icon, Inp, KV, Modal, Note, Prog, Radio, Seg, St, Toggle, cx, useOutside,
+  Button, Card, Check, Chip, Field, Icon, Inp, KV, Modal, Note, Radio, Seg, St, Toggle, cx,
 } from '../../ui/index.jsx';
 import { evidenceFromSources } from '../../state/evidence.js';
 import { startErrorText, startLabel, takeOverText } from '../workbench/autobuildModel.js';
-import { budgetText } from '../workbench/materials/model.js';
 import {
-  advancedSummary, budgetOptions, budgetPct, finalizePolicy, fmtDuration, fmtMoney, fmtTokens, isRecommended, lastRunText,
-  moveItem, pendingSliceIds, policyBody, policyDirty, policyForm, runStateText, scopeText, sliceRows, startBlocker,
-  thresholdAt, thresholdPos, windowText,
+  advancedSummary, finalizePolicy, isRecommended, lastRunText, moveItem, pendingSliceIds, policyBody, policyDirty, policyForm,
+  runStateText, scopeText, sliceRows, startBlocker, thresholdAt, thresholdPos, windowText,
 } from './settingsModel.js';
 
 const ENV_LABEL = { production: '生产环境', staging: '预发环境', test: '测试环境', dev: '开发环境' };
-
-function BudgetSelect({ value, options, fmt, onChange, error, disabled }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-  useOutside(ref, () => setOpen(false), open);
-  return (
-    <div className="ps-bsel" ref={ref}>
-      <div className={cx('inp', error && 'err')} onClick={() => !disabled && setOpen((o) => !o)} role="button" style={disabled ? { opacity: 0.6, cursor: 'not-allowed' } : undefined}>
-        <span className="grow ell">{fmt(value)}</span>
-        <span className="xs faint"><Icon name="chevd" size={12} /></span>
-      </div>
-      {open ? (
-        <div className="menu">
-          {options.map((o) => (
-            <div key={o} className="mi" onClick={() => { setOpen(false); onChange(o); }}>
-              <span>{fmt(o)}</span>
-              {o === value ? <span className="k"><Icon name="check" size={12} /></span> : null}
-            </div>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
 
 function ThresholdSlider({ value, onChange, disabled }) {
   const ref = useRef(null);
@@ -158,7 +132,6 @@ export function StartDialog({ preview: initial, evidenceOn, onClose }) {
               </div>
             </div>
           )],
-          ['预算', budgetText(preview.budget)],
           ...(evidenceOn ? [['生产库', preview.production || '—']] : []),
           ['拿不准时', preview.below_threshold_text || '—'],
         ]}
@@ -201,7 +174,6 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
 
   const setF = (k, fn) => setForm((f) => ({ ...f, [k]: fn(f[k]) }));
   const setScope = (patch) => setF('scope', (s) => ({ ...s, ...patch }));
-  const setBudget = (patch) => setF('budget', (b) => ({ ...b, ...patch }));
   const setAdvanced = (patch) => setF('advanced', (a) => ({ ...a, ...patch }));
   const setProd = (sid, patch) => setF('production_collection', (list) => list.map((x) => (x.source_id === sid ? { ...x, ...patch } : x)));
   const setDraft = (sid, patch) => setDrafts((x) => ({ ...x, [sid]: { ...x[sid], ...patch } }));
@@ -223,7 +195,6 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
       setErrors({});
       return r;
     } catch (e) {
-      if (e.code === 'budget_exceeds_quota') setErrors({ [`budget:${e.details?.dimension || 'cost'}`]: errorText(e) });
       if (e.code === 'revision_conflict') reload('policy');
       throw e;
     }
@@ -274,7 +245,6 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
   const all = scope.mode !== 'selected';
   const picked = (id) => (all ? true : (scope.slice_ids || []).includes(id));
   const toggleSlice = (id) => setScope({ slice_ids: picked(id) ? scope.slice_ids.filter((x) => x !== id) : [...(scope.slice_ids || []), id] });
-  const budget = form.budget || {};
   const a = form.advanced || {};
   const last = policy?.last_run;
 
@@ -289,7 +259,7 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
           <div className="grid2">
             {[
               ['L2', 'users', '陪伴建模', '每个决定等你确认'],
-              ['L4', 'rocket', '自主构建', '按范围和预算一路建完，结束后集中复核'],
+              ['L4', 'rocket', '自主构建', '按范围一路建完，结束后集中复核'],
             ].map(([k, icon, title, desc]) => (
               <div key={k} className={cx('evd-eng evd-bm', mode === k && 'on', modeLocked && mode !== k && 'lock')} onClick={() => { if (!modeLocked) setMode(k); else if (active) toast('自主构建运行中，构建方式等这次运行结束后再改', 'lock'); }}>
                 <span className="ic"><Icon name={icon} size={18} /></span>
@@ -334,23 +304,6 @@ export function BuildSection({ d, put, reload, archived, active, autoStart, onAu
                 <span className="row sm"><Toggle on={scope.refresh_stale_first} disabled={locked} onChange={(v) => setScope({ refresh_stale_first: v })} />先处理过期的内容</span>
                 {hasPlugin('scenarios') ? <span className="row sm"><Toggle on={scope.generate_scenarios} disabled={locked} onChange={(v) => setScope({ generate_scenarios: v })} />生成场景并推演</span> : null}
                 <span className="row sm"><Toggle on={scope.include_optional} disabled={locked} onChange={(v) => setScope({ include_optional: v })} />包括可选步骤：规则与指标、流程图</span>
-              </div>
-            </Card>
-
-            <Card title="预算" icon="gauge">
-              <div className="grid3" style={{ gap: 12 }}>
-                {[
-                  ['最长时长', 'duration', budget.max_duration_min, limits.max_duration_min, fmtDuration, (v) => setBudget({ max_duration_min: v }), `平台上限 ${fmtDuration(limits.max_duration_min)}`],
-                  ['token 上限', 'tokens', budget.max_tokens, limits.max_tokens, fmtTokens, (v) => setBudget({ max_tokens: v }), `平台上限 ${fmtTokens(limits.max_tokens)}`],
-                  ['费用上限', 'cost', budget.max_cost?.amount, limits.max_cost?.amount, (v) => fmtMoney({ amount: v, currency: budget.max_cost?.currency || 'CNY' }), (v) => setBudget({ max_cost: { ...budget.max_cost, amount: v } }), `平台上限 ${fmtMoney(limits.max_cost)}`],
-                ].map(([label, kind, value, limit, fmt, set, cap]) => (
-                  <Field
-                    key={kind} label={label}
-                    hint={<><div className="row" style={errors[`budget:${kind}`] ? { color: 'var(--red)' } : undefined}>{errors[`budget:${kind}`] || cap}</div><Prog p={budgetPct(value, limit)} thin /></>}
-                  >
-                    <BudgetSelect value={value} options={budgetOptions(kind, limits, value)} fmt={fmt} onChange={set} error={!!errors[`budget:${kind}`]} disabled={locked} />
-                  </Field>
-                ))}
               </div>
             </Card>
 

@@ -272,9 +272,9 @@ export function riderReport() {
   return {
     run_id: 'run-2', run_no: 2, state: 'completed', started_at: new Date(end - 112 * MIN).toISOString(), ended_at: new Date(end).toISOString(), recovered_restarts: 0, base_version_label: 'v0.7',
     metrics: {
-      duration_ms: 112 * MIN, budget_duration_ms: 120 * MIN, slices: { done: 5, total: 6, partial: [] }, produced: { objects: 6, operations: 4, rules: 8 },
+      duration_ms: 112 * MIN, slices: { done: 5, total: 6, partial: [] }, produced: { objects: 6, operations: 4, rules: 8 },
       checks: { errors: 0, warnings: 2 }, scenarios: { passed: 11, total: 12, suspended_failures: 1 }, decisions: { total: 13, high_confidence: 11, needs_look: 2 },
-      suspended: 2, cost: { amount: 64, currency: 'CNY' }, tokens: 3800000, budget: { amount: 100, currency: 'CNY' },
+      suspended: 2, cost: { amount: 64, currency: 'CNY' }, tokens: 3800000,
     },
     slices: [
       s('t1', '订单预测读取', 'partial', '部分完成 · 挂起 1 项', '+2 对象 +1 操作', 1, 2, 'v0.8'),

@@ -1,10 +1,10 @@
-"""模型单价表（方案 B14、契约 SY-18）：费用 = token × 单价，自主构建的预算与运行报告按它算。
+"""模型单价表（方案 B14、契约 SY-18）：费用 = token × 单价，自主构建的用量与运行报告按它算。
 
 - 表存在数据目录 `governance/model-pricing.json`：`{currency, items: [{engine, model, input_per_mtok,
   output_per_mtok, cache_read_per_mtok}]}`，单价按每百万 token；
 - 查价：先按（引擎, 模型）精确匹配，再取同一引擎 `model="*"` 的一行；
 - 没有单价时：引擎自己报了费用（Claude SDK 的 `total_cost_usd`）就用它，否则记 0 并标为估算——Jiuwen 不报费用，
-  没配单价时只能按 token 记账（预算的 token 维度照常生效）。
+  没配单价时只能按 token 记账。
 """
 
 from __future__ import annotations
@@ -144,6 +144,6 @@ def cost(usage: dict, *, engine: str, model: str, reported: float | None = None,
 
 
 def tokens_of(usage: dict) -> int:
-    """计入预算的 token：输入 + 缓存读 + 输出（与配额台账同一口径）。"""
+    """计入用量的 token：输入 + 缓存读 + 输出（与配额台账同一口径）。"""
     usage = usage or {}
     return sum(max(0, int(usage.get(key) or 0)) for key in ("input_tokens", "cache_read_input_tokens", "output_tokens"))

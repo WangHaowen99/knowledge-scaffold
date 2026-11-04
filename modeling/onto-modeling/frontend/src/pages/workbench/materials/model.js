@@ -254,16 +254,6 @@ export const isDirty = (body) => ['slices', 'term_choices', 'answers'].some((k) 
 export const goalQuestion = (questions = []) => questions.find((q) => q.kind === 'goal') || null;
 export const goalPending = (card) => Boolean(card?.goal_question && !card.goal_question.answered);
 
-// ---------- 自主构建预览（AB-03 / BP-03 next=L4） ----------
-const fmtCount = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(n % 1e6 ? 1 : 0)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n ?? 0));
-export function budgetText(budget) {
-  if (!budget) return '—';
-  const parts = [];
-  if (budget.max_duration_min) parts.push(`时长 ≤ ${budget.max_duration_min >= 60 && budget.max_duration_min % 60 === 0 ? `${budget.max_duration_min / 60} 小时` : `${budget.max_duration_min} 分钟`}`);
-  if (budget.max_tokens) parts.push(`token ≤ ${fmtCount(budget.max_tokens)}`);
-  return parts.join(' · ') || '—';
-}
-
 // 「确认后怎么建」（R3）并进蓝图卡底部：按卡上的 confirm_options 画（草案时给，自主构建登记了才有 L4，已确认时为空）；
 // 早于 B4d 合并的旧卡没有这个字段，只给「一段一段来」
 const DEFAULT_CONFIRM = [{ mode: 'L2', label: '确认，一段一段来' }];

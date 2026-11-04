@@ -58,7 +58,7 @@ function ProjectCardView({ p, index = 0, onMenu, onRestore }) {
             <span className="muted">第 {Math.min(ab.slice_total, ab.slice_done + 1)}/{ab.slice_total} 段{ab.eta_ms ? ` · 预计 ${Math.round(ab.eta_ms / 60000)} 分钟` : ''}</span>
           </div>
           <div className="mt8"><Prog p={ab.progress_pct} tone="l4" thin /></div>
-          <div className="xs muted mt4">已自动决定 {ab.decisions} 项 · 挂起 {ab.suspended} 个问题 · 预算用了 {ab.budget_used_pct}%</div>
+          <div className="xs muted mt4">已自动决定 {ab.decisions} 项 · 挂起 {ab.suspended} 个问题</div>
         </div>
       ) : null}
       {done ? (

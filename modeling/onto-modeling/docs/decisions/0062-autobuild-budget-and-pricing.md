@@ -1,5 +1,8 @@
 # 0062 自主构建的预算与模型单价表
 
+> 2026-11-04：预算部分（第 4、5 条，EP-16、`budget_exceeds_quota`、SY-17 的单次上限）由
+> [0077](0077-autobuild-no-budget-stop.md) 取代；模型单价表与记账（第 1～3 条）照旧。
+
 ## Context
 
 方案 B14：token 用 counted_usage；费用 = token × 单价表（模型配置里新增，Jiuwen 现在没有费用）；时长用墙钟；80% 提醒，

@@ -384,7 +384,7 @@ def overview(request: Request, range: str = "14d"):  # noqa: A002  契约查询�
 
 def _autobuild_runs() -> list[dict]:
     """O-01 运行中的自主构建（元数据视图，不含项目内容）。"""
-    from ..services.autobuild import budget, store, views
+    from ..services.autobuild import store, views
 
     items = []
     for run in store.all_runs(("queued", *store.RUNNING)):
@@ -397,14 +397,13 @@ def _autobuild_runs() -> list[dict]:
             "project": project_meta_view(meta, deps.workspaces.project_root(run["project_id"])),
             "run_no": run["run_no"], "elapsed_ms": summary["elapsed_ms"],
             "progress": {"done": done, "total": total, "pct": round(done * 100 / total) if total else 0},
-            "budget_used_pct": round(max(budget.used_pct(run).values() or [0]), 1),
-            "cost": summary["cost"]["used"], "budget": summary["cost"]["budget"], "state": run["state"],
+            "cost": summary["cost"]["used"], "state": run["state"],
         })
     return items
 
 
 def _autobuild_today(now: float) -> dict:
-    """O-01 今天结束的自主构建：完成数、平均用时与费用、因预算停下的次数。"""
+    """O-01 今天结束的自主构建：完成数、平均用时与费用。"""
     from ..services.autobuild import budget, store, views
 
     start = now - (now % 86400)
@@ -415,8 +414,7 @@ def _autobuild_today(now: float) -> dict:
     costs = [float((run.get("budget") or {}).get("cost") or 0) for run in completed]
     return {"completed": len(completed),
             "avg_duration_ms": int(sum(durations) / len(durations)) if durations else None,
-            "avg_cost": {"amount": round(sum(costs) / len(costs), 2) if costs else None, "currency": currency},
-            "stopped_by_budget": sum(1 for run in ended if run["state"] == "budget_exhausted")}
+            "avg_cost": {"amount": round(sum(costs) / len(costs), 2) if costs else None, "currency": currency}}
 
 
 # ---- O-13 健康详情 ----

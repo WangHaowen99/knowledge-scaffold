@@ -90,8 +90,7 @@ def test_matrix_does_not_mark_steps_left_out_as_done(ab):
 
     client, _workspaces, project_id, _root = ab
     run = start(client, project_id, scope={"until_node": "core.model", "generate_scenarios": False,
-                                            "mode": "selected", "slice_ids": ["s1"]},
-                budget={"max_tokens": 500_000})
+                                            "mode": "selected", "slice_ids": ["s1"]})
     done = wait_state(client, project_id, run["run_id"], "completed")
     cells = done["matrix"][0]["cells"]
     flow = client.get(f"/api/v1/projects/{project_id}/flow").json()
@@ -136,8 +135,7 @@ def test_inbox_rejudge_of_an_autobuild_decision(ab):
     client, _workspaces, project_id, _root = ab
     AutoEngine.hooks["/ontology-extract-object:s1"] = [ask([
         {"question": "报修单号几位", "header": "置信度 0.6", "options": [{"label": "八位（推荐）"}, {"label": "十位（保守）"}]}])]
-    run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s1"], "until_node": "core.model"},
-                budget={"max_tokens": 500_000})
+    run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s1"], "until_node": "core.model"})
     wait_state(client, project_id, run["run_id"], "completed")
     items = client.get(f"/api/v1/projects/{project_id}/inbox", params={"filter": "autobuild_review"}).json()["items"]
     item = next(entry for entry in items if entry["kind"] == "review" and entry["title"].endswith("十位"))

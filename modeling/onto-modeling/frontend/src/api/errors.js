@@ -193,7 +193,6 @@ export const ERROR_MESSAGES = {
   slice_reverted: '这一段已经撤回',
   autobuild_not_running: '自主构建不在可以控制的状态',
   run_not_found: '这次自主构建运行不存在',
-  budget_exceeds_quota: '预算超出平台上限或剩余配额',
   ledger_entry_not_found: '这条自动决定不存在',
   suspension_not_found: '这个挂起的问题不存在或已回答',
   slice_not_revertible: '这一段不能回退（未生效、已回退过，或后面的分段依赖它）',

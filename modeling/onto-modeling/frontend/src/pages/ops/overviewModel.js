@@ -23,13 +23,6 @@ export function fmtMoney(m) {
   return `${sym} ${fmtNum(a, digits)}`.trim();
 }
 
-// 预算消耗列：「¥ 37 / 60」
-export function moneyPair(cost, budget) {
-  const left = fmtMoney(cost);
-  if (!budget || budget.amount == null) return left;
-  return `${left} / ${fmtNum(budget.amount, Number.isInteger(Number(budget.amount)) ? 0 : 2)}`;
-}
-
 // 字节（十进制）→「412 MB」「1.2 GB」「330 GB」
 export function fmtBytes(n) {
   if (n == null) return DASH;
@@ -246,8 +239,7 @@ export function runRow(r) {
     elapsed: fmtDur(r.elapsed_ms),
     pct: p.pct ?? (p.total ? Math.round(((p.done || 0) / p.total) * 100) : 0),
     slices: p.total ? `${p.done ?? 0} / ${p.total} 段` : DASH,
-    budgetPct: r.budget_used_pct ?? 0,
-    budget: moneyPair(r.cost, r.budget),
+    cost: fmtMoney(r.cost),
     state: runStateView(r.state),
   };
 }
@@ -258,7 +250,6 @@ export function autobuildTodayView(t) {
     ['今日已完成', fmtNum(x.completed ?? 0), '次'],
     ['平均用时', x.avg_duration_ms == null ? DASH : fmtDur(x.avg_duration_ms), ''],
     ['平均成本', fmtMoney(x.avg_cost), ''],
-    ['因预算停止', fmtNum(x.stopped_by_budget ?? 0), '次'],
   ];
 }
 

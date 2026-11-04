@@ -6,7 +6,7 @@ import { register } from '../src/api/mock/routes-studio.js';
 import {
   anchorChipLabel, backlinkView, commitSummary, evidenceShortLabel, fieldErrorMap, filterRows, flowPreviewLayout, flowchartNodeSummary,
   formFromEntry, kindSegments, lockActionTarget, lockCopy, mergeFlowchartRows, rawNotices, rejectSummary, relationText, resolutionLabel,
-  rowStatus, summarizeFormChanges,
+  rowQuery, rowStatus, summarizeFormChanges,
 } from '../src/pages/studio/studioModel.js';
 import { boxHeight, erData, erLayout, hasErView } from '../src/pages/studio/erModel.js';
 
@@ -28,6 +28,12 @@ test('条目表：类型分段带计数，图示包没启用时没有「流程�
   assert.equal(filterRows(rows, 'all', 'DISPLAY').length, 1);
   assert.equal(filterRows(rows, 'rule', '').length, 1);
   assert.equal(filterRows(rows, 'object', 'r09').length, 0);
+});
+
+test('条目表：点一行时带着对话链接给的搜索词，点页签（地址不带 q）才清掉', () => {
+  assert.deepEqual(rowQuery({ q: '陈列量标准' }, 'object:display_qty_std'), { entry: 'object:display_qty_std', q: '陈列量标准' });
+  assert.deepEqual(rowQuery({ entry: 'rule:r09' }, 'object:display_qty_std'), { entry: 'object:display_qty_std' });
+  assert.deepEqual(rowQuery(undefined, 'rule:r09'), { entry: 'rule:r09' });
 });
 
 test('状态列：本人有草稿显示「编辑中」，其余按显示态', () => {

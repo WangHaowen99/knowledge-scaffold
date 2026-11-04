@@ -619,10 +619,6 @@ export const moneySymbol = (c) => SYMBOL[c] || c || '';
 export function limitsForm(l) {
   return {
     max_concurrent_runs: l?.max_concurrent_runs == null ? '' : String(l.max_concurrent_runs),
-    hours: l?.max_duration_min == null ? '' : String(Math.round((l.max_duration_min / 60) * 100) / 100),
-    max_tokens: l?.max_tokens == null ? '' : fmtInt(l.max_tokens),
-    cost: l?.max_cost?.amount == null ? '' : String(l.max_cost.amount),
-    currency: l?.max_cost?.currency || 'CNY',
     allow_production_collection: !!l?.allow_production_collection,
     night: !!l?.night_priority?.enabled,
   };
@@ -631,21 +627,12 @@ export function limitsProblems(f) {
   const out = {};
   const r = parseIntText(f.max_concurrent_runs);
   if (r === null || Number.isNaN(r) || r < 1 || r > 16) out.max_concurrent_runs = '整数 1–16';
-  const h = parseNumText(f.hours);
-  if (h === null || Number.isNaN(h) || h <= 0 || h > 72) out.hours = '0–72 小时';
-  const t = parseIntText(f.max_tokens);
-  if (t === null || Number.isNaN(t) || t <= 0) out.max_tokens = '填正整数';
-  const c = parseNumText(f.cost);
-  if (c === null || Number.isNaN(c) || c <= 0) out.cost = '填大于 0 的金额';
   return out;
 }
 /** SY-17 PUT（running 只读，不发）；夜间时段沿用原值 */
 export function limitsBody(f, prev) {
   return {
     max_concurrent_runs: parseIntText(f.max_concurrent_runs),
-    max_duration_min: Math.round(parseNumText(f.hours) * 60),
-    max_tokens: parseIntText(f.max_tokens),
-    max_cost: { amount: parseNumText(f.cost), currency: f.currency || prev?.max_cost?.currency || 'CNY' },
     allow_production_collection: !!f.allow_production_collection,
     night_priority: { ...(prev?.night_priority || { start: '20:00', end: '08:00' }), enabled: !!f.night },
   };

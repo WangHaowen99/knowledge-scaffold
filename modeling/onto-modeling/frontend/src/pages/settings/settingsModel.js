@@ -93,7 +93,7 @@ export function modelSourceText(source, cfg) {
 
 // ---------- 自主构建策略 ----------
 export const RECOMMENDED = { confidence_threshold: 0.8, below_threshold: 'conservative_assumption', max_fix_rounds: 2 };
-const POLICY_FIELDS = ['scope', 'budget', 'production_collection', 'advanced'];
+const POLICY_FIELDS = ['scope', 'production_collection', 'advanced'];
 
 // 可编辑的那部分（深拷贝），AB-02 按它提交
 export function policyForm(policy) {
@@ -106,42 +106,6 @@ export function policyDirty(policy, form) {
 }
 export function policyBody(form, revision) {
   return { ...policyForm(form), base_revision: revision };
-}
-
-export function fmtDuration(min) {
-  if (!min) return '—';
-  return min % 60 === 0 ? `${min / 60} 小时` : min > 60 ? `${Math.floor(min / 60)} 小时 ${min % 60} 分` : `${min} 分钟`;
-}
-export function fmtTokens(n) {
-  if (!n) return '—';
-  if (n >= 1e6) return `${Number((n / 1e6).toFixed(1))}M`;
-  if (n >= 1e3) return `${Math.round(n / 1e3)}k`;
-  return String(n);
-}
-const SYMBOL = { CNY: '¥', USD: '$' };
-export function fmtMoney(m) {
-  if (!m || m.amount == null) return '—';
-  return `${SYMBOL[m.currency] || ''}${Math.round(m.amount)}${SYMBOL[m.currency] ? '' : ` ${m.currency}`}`;
-}
-
-// 预算下拉的候选：只给平台上限以内的；当前值不在候选里时补进去
-export function budgetOptions(kind, limits, current) {
-  const cap = {
-    duration: limits?.max_duration_min || 240,
-    tokens: limits?.max_tokens || 10e6,
-    cost: limits?.max_cost?.amount || 300,
-  }[kind];
-  const base = {
-    duration: [30, 60, 90, 120, 180, 240, 360, 480],
-    tokens: [1e6, 2e6, 4e6, 6e6, 8e6, 10e6, 20e6],
-    cost: [30, 50, 100, 150, 200, 300, 500],
-  }[kind].filter((v) => v <= cap);
-  if (current != null && !base.includes(current)) base.push(current);
-  return base.sort((a, b) => a - b);
-}
-export function budgetPct(value, limit) {
-  if (!value || !limit) return 0;
-  return Math.max(0, Math.min(100, Math.round((value / limit) * 100)));
 }
 
 // 范围里的分段：BP-01 给清单，FL-01 给现状；group 取 flow 的 done | wait | now | todo
