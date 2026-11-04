@@ -109,7 +109,7 @@ export function roundLockNote(lock) {
 }
 
 /**
- * 输入框状态：运行中也能补充说明（deferred），归档、只读维护模式、自主构建运行中另有限制
+ * 输入框状态：运行中也能补充说明（插话 steer；自主构建运行中是 deferred，下一步开始前带给助手），归档、只读维护模式另有限制
  */
 export function composerState({ sessionState, archived, maintenance, autobuildRunning, researching }) {
   if (archived) return { disabled: true, placeholder: '项目已归档，只能查看' };
@@ -117,8 +117,9 @@ export function composerState({ sessionState, archived, maintenance, autobuildRu
     return { disabled: true, placeholder: maintenance.message || '平台正在维护，暂时只能查看' };
   }
   if (autobuildRunning) return { disabled: false, placeholder: '补充说明，不打断运行…', delivery: 'deferred' };
+  // 运行中打字是插话，助手下次想下一步时看到；发命令排在这一轮之后
   if (sessionState === 'running' || sessionState === 'connecting') {
-    return { disabled: false, placeholder: '补充说明，不打断运行…', delivery: 'deferred' };
+    return { disabled: false, placeholder: '补充说明，助手接着做时会看到…', delivery: 'steer' };
   }
   if (sessionState === 'queued') return { disabled: false, placeholder: '正在排队，补充说明会和消息一起送达', delivery: 'queued' };
   if (maintenance?.active && maintenance.mode === 'reject_new_sessions' && sessionState !== 'running') {

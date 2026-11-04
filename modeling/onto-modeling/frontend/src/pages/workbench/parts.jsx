@@ -193,7 +193,7 @@ export function Tli({ k, t, m, children }) {
 }
 
 // 一段可滚动的列表：新内容到达时，停在底部附近就跟到底
-function useStickBottom(dep) {
+export function useStickBottom(dep) {
   const ref = useRef(null);
   const stick = useRef(true);
   useLayoutEffect(() => {
@@ -223,21 +223,6 @@ export function SubagentCard({ s, ended = false }) {
         <span className="subagent-title">{SUB_TITLE[status] || '子任务运行中'} · {s.title}</span>
         {line ? <span className="subagent-hint">{line}</span> : null}
       </span>
-    </div>
-  );
-}
-
-// 助手在跑、别的都没动时的一行「思考中」；有思考片段时可以展开看
-export function LiveRow({ thinking }) {
-  const [open, setOpen] = useState(false);
-  const box = useStickBottom(thinking);
-  return (
-    <div className="wb-live">
-      <div className={cx('hd', thinking && 'tg')} onClick={thinking ? () => setOpen(!open) : undefined}>
-        <span className="spin" /><span className="t">思考中</span>
-        {thinking ? <Icon name="chevd" size={12} className={cx('cv', open && 'on')} /> : null}
-      </div>
-      {open && thinking ? <div className="bd" ref={box.ref} onScroll={box.onScroll}>{thinking}</div> : null}
     </div>
   );
 }

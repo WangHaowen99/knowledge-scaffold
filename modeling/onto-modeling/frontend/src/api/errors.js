@@ -136,13 +136,15 @@ export const ERROR_MESSAGES = {
   entry_referenced: '这个条目被其他条目引用，不能删除',
   // 2.5 会话与执行
   conversation_not_found: '对话不存在或已删除',
-  session_busy: '另一条对话正在运行，结束或打断后再试',
+  session_busy: '助手正在运行，停止后再试',
   message_empty: '请输入内容或添加附件',
   engine_not_installed: '会话引擎暂时不可用',
   permission_request_gone: '这个请求已处理或已超时',
   question_gone: '这个问题已回答或已失效',
   answer_invalid: '请先选择一个选项',
   not_queued: '当前不在排队',
+  next_occupied: (d) => `已经排着「${d?.label || '一条命令'}」`,
+  next_not_found: '没有排着的命令',
   exec_not_found: '执行记录不存在',
   exec_not_resumable: (d) => ({
     inputs_changed: '输入已经变了，不能续跑，请从头再来',

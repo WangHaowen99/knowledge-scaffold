@@ -144,6 +144,9 @@ export function createApi(client) {
     replyPermission: (id, cid, rid, body) => client.post(`${C(id, cid)}/permissions/${enc(rid)}`, body), // S-10
     answerQuestion: (id, cid, qid, body) => client.post(`${C(id, cid)}/questions/${enc(qid)}/answer`, body), // S-11
     cancelQueue: (id, cid) => client.post(`${C(id, cid)}/queue/cancel`, {}), // S-12
+    // 平台代存的下一条命令（运行中发的命令）：取消、现在开始
+    cancelNext: (id, cid) => client.post(`${C(id, cid)}/next/cancel`, {}),
+    startNext: (id, cid) => client.post(`${C(id, cid)}/next/start`, {}),
     conversationEventsUrl: (id, cid, q) => client.url(`${C(id, cid)}/events`, q), // S-13
     retryTurn: (id, cid) => client.post(`${C(id, cid)}/retry`, {}), // S-14
     resumeExec: (id, execId, conversation_id) => client.post(`${P(id)}/execs/${enc(execId)}/resume`, conversation_id ? { conversation_id } : {}), // S-16
