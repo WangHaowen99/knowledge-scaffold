@@ -184,3 +184,5 @@ deploy.sh 部署完成后会自动检测 `mw-modeling` 容器（可用
 `ONTO_MODELING_MIGRATE_FROM=<容器名>` 覆盖），存在即执行
 `migrate-from-modeling.sh` 把项目/资料/知识包迁入本服务；迁移幂等，
 已迁移的项目自动跳过，也可随时手动重跑该脚本。
+Workbench 数据库处于 WAL 模式，脚本在 `mw-modeling` 容器内用 `VACUUM INTO` 导出一致性快照再迁移，
+因此需要该容器在运行中。迁移失败不影响 Onto Modeling 本身，deploy.sh 会打印 `[WARN]` 和重跑命令。

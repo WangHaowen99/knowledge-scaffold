@@ -332,11 +332,17 @@ container_mount_volume() {
         2>/dev/null | head -n 1
 }
 
+# 先读容器配置里的端口绑定：容器停止后仍然有效；docker port 只对运行中的容器有结果，
+# 仅在绑定未写死宿主端口时兜底
 legacy_host_port() {
     container_name="$1"
     container_port="$2"
-    docker port "${container_name}" "${container_port}/tcp" 2>/dev/null \
-        | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -n 1
+    host_port="$(docker container inspect "${container_name}" \
+        --format '{{range $port, $bindings := .HostConfig.PortBindings}}{{if eq $port "'"${container_port}"'/tcp"}}{{range $bindings}}{{println .HostPort}}{{end}}{{end}}{{end}}' \
+        2>/dev/null | sed -n '/^[0-9][0-9]*$/p' | head -n 1 || true)"
+    [ -n "${host_port}" ] || host_port="$(docker port "${container_name}" "${container_port}/tcp" 2>/dev/null \
+        | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -n 1 || true)"
+    printf '%s' "${host_port}"
 }
 
 validate_legacy_modeling_container() {
@@ -544,22 +550,38 @@ upgrade_install() {
     done
 
     modeling_volume="$(resolve_legacy_volume mw-modeling mw-modeling_modeling-data)"
-    agent_volume="$(resolve_legacy_volume mw-modeling-agent mw-modeling_modeling-agent-data)"
     modeling_image="$(docker container inspect mw-modeling --format '{{.Config.Image}}' 2>/dev/null || true)"
-    agent_image="$(docker container inspect mw-modeling-agent --format '{{.Config.Image}}' 2>/dev/null || true)"
     if [ -z "${modeling_image}" ]; then
         modeling_image="$(sed -n \
             's/^[[:space:]]*"modeling_image":[[:space:]]*"\([^"]*\)".*/\1/p' \
             "${CONSUMER_DIR}/deploy/manifest.json" | head -n 1)"
     fi
-    if [ -z "${agent_image}" ]; then
-        agent_image="$(sed -n \
-            's/^[[:space:]]*"modeling_agent_image":[[:space:]]*"\([^"]*\)".*/\1/p' \
-            "${CONSUMER_DIR}/deploy/manifest.json" | head -n 1)"
-    fi
     [ -n "${modeling_image}" ] || die "无法确定旧 Modeling 镜像"
-    [ -n "${agent_image}" ] || die "无法确定旧 Modeling Agent 镜像"
-    precheck_onto_modeling "$(legacy_host_port mw-modeling 5100 || true)"
+
+    # 0.26.9.0 起合并部署才带 mw-modeling-agent；更早的旧版只有 Workbench，Agent 由新包首次创建。
+    # 旧清单声明了 Agent 却找不到容器属于异常现场，不猜测数据去向
+    legacy_agent_image="$(sed -n \
+        's/^[[:space:]]*"modeling_agent_image":[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "${CONSUMER_DIR}/deploy/manifest.json" 2>/dev/null | head -n 1 || true)"
+    agent_volume=""
+    agent_image=""
+    if docker container inspect mw-modeling-agent >/dev/null 2>&1; then
+        agent_volume="$(resolve_legacy_volume mw-modeling-agent mw-modeling_modeling-agent-data)"
+        agent_image="$(docker container inspect mw-modeling-agent --format '{{.Config.Image}}' 2>/dev/null || true)"
+        agent_image="${agent_image:-${legacy_agent_image}}"
+        [ -n "${agent_image}" ] || die "无法确定旧 Modeling Agent 镜像"
+    elif [ -n "${legacy_agent_image}" ]; then
+        die "旧部署清单声明了 Modeling Agent（${legacy_agent_image}），但容器 mw-modeling-agent 不存在；请确认 Agent 数据去向后再升级"
+    else
+        log "旧合并部署没有 Modeling Agent，升级后由新发布包首次创建"
+    fi
+
+    # 端口必须在停止旧容器前确定；Workbench 端口读不到时不能静默落回新包默认值
+    legacy_modeling_port="${MODELING_PORT:-$(legacy_host_port mw-modeling 5100 || true)}"
+    legacy_modeling_mcp_port="${MODELING_MCP_PORT:-$(legacy_host_port mw-modeling 5188 || true)}"
+    [ -n "${legacy_modeling_port}" ] || die \
+        "无法读取旧 Modeling Workbench 的宿主端口；请用 MODELING_PORT 显式指定后重试"
+    precheck_onto_modeling "${legacy_modeling_port}"
 
     mkdir -p "${INSTALL_ROOT}"
     stage_dir="$(mktemp -d "${INSTALL_ROOT}/.consumer-modeling-upgrade.XXXXXX")" \
@@ -610,7 +632,7 @@ upgrade_install() {
     log "备份旧 Modeling 数据卷，卷名保持不变"
     backup_docker_volume "${modeling_volume}" "${modeling_image}" \
         modeling-data.tar.gz "${backup_dir}"
-    backup_docker_volume "${agent_volume}" "${agent_image}" \
+    [ -z "${agent_volume}" ] || backup_docker_volume "${agent_volume}" "${agent_image}" \
         modeling-agent-data.tar.gz "${backup_dir}"
 
     log "原地升级 Consumer：${CONSUMER_DIR}"
@@ -648,16 +670,9 @@ upgrade_install() {
         done
     done
     write_env_value "${MODELING_DIR}/.env" MODELING_SERVICE_TOKEN "${legacy_token}"
-    legacy_modeling_port="$(legacy_host_port mw-modeling 5100 || true)"
-    legacy_modeling_mcp_port="$(legacy_host_port mw-modeling 5188 || true)"
-    [ -n "${legacy_modeling_port}" ] \
-        && write_env_value "${MODELING_DIR}/.env" MODELING_PORT "${legacy_modeling_port}"
-    [ -n "${legacy_modeling_mcp_port}" ] \
-        && write_env_value "${MODELING_DIR}/.env" MODELING_MCP_PORT "${legacy_modeling_mcp_port}"
-    [ -z "${MODELING_PORT:-}" ] \
-        || write_env_value "${MODELING_DIR}/.env" MODELING_PORT "${MODELING_PORT}"
-    [ -z "${MODELING_MCP_PORT:-}" ] \
-        || write_env_value "${MODELING_DIR}/.env" MODELING_MCP_PORT "${MODELING_MCP_PORT}"
+    write_env_value "${MODELING_DIR}/.env" MODELING_PORT "${legacy_modeling_port}"
+    [ -z "${legacy_modeling_mcp_port}" ] \
+        || write_env_value "${MODELING_DIR}/.env" MODELING_MCP_PORT "${legacy_modeling_mcp_port}"
 
     modeling_handoff_started=true
     for container_name in mw-modeling-nl2sql mw-modeling mw-modeling-agent; do
@@ -666,15 +681,16 @@ upgrade_install() {
         fi
     done
 
-    log "部署独立 Modeling，并复用 ${modeling_volume} 和 ${agent_volume}"
+    log "部署独立 Modeling，并复用 ${modeling_volume}${agent_volume:+ 和 ${agent_volume}}"
     if ! (cd "${MODELING_DIR}" && bash deploy/install.sh); then
         die "Modeling 部署失败；旧数据卷和备份均已保留，备份位于 ${backup_dir}"
     fi
 
     [ "$(container_mount_volume mw-modeling /data)" = "${modeling_volume}" ] || die \
         "升级后 Modeling 未挂载原数据卷"
-    [ "$(container_mount_volume mw-modeling-agent /data)" = "${agent_volume}" ] || die \
-        "升级后 Modeling Agent 未挂载原数据卷"
+    [ "$(container_mount_volume mw-modeling-agent /data)" \
+        = "${agent_volume:-mw-modeling_modeling-agent-data}" ] || die \
+        "升级后 Modeling Agent 未挂载${agent_volume:+原}数据卷"
 
     cleanup_upgrade_stage
     trap - EXIT
