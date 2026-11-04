@@ -183,6 +183,28 @@ def view(project_id: str, root: Path, rel: str, data: bytes | None = None, *, he
     return out
 
 
+def unready(project_id: str, root: Path, paths: list[str] | None = None, *, heal: bool = False) -> list[dict]:
+    """还没有可用文本版、或正在（重新）转换的文档资料：[{path, state, reason, has_text}]，按资料顺序。
+
+    建模命令开始前、等转换时都要调：有文本版、记录也不在转换中的直接跳过，不逐份读原件算摘要；
+    其余按 view 判（heal 时缺文本版又没排上的顺手排队）。paths 给定时只看这几份。
+    """
+    from ..research_view import material_paths
+
+    records = store.items(project_id)
+    found = []
+    for rel in material_paths(root) if paths is None else paths:
+        if kind_of(rel) != "document":
+            continue
+        if (records.get(rel) or {}).get("state") not in ACTIVE + ("failed", "unsupported") and text_header(root, rel):
+            continue
+        info = view(project_id, root, rel, heal=heal)
+        if info is not None and (info["state"] in ACTIVE or not info["has_text"]):
+            found.append({"path": rel, "state": info["state"], "reason": info.get("reason"),
+                          "has_text": info["has_text"]})
+    return found
+
+
 def text_file(root: Path, rel: str) -> str | None:
     """文本版全文，含第一行文件头（行号和工作区里的文件一致，出处 `#L<n>` 按它数）；没有或对不上原文件时 None。"""
     path = Path(root) / resource_text_path(rel)

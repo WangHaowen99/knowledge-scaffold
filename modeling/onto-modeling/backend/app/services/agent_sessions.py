@@ -29,7 +29,7 @@ from .conversation_store import DEFAULT_ID as DEFAULT_CONVERSATION
 from .engines import EngineContext, get_engine_class
 from .engines.base import CONFIG_ERROR, FRIENDLY_ERROR, safe_json as _safe_json
 from .session_host import fingerprint as _fingerprint
-from .session_host import injection, timeline, turns
+from .session_host import injection, material_wait, timeline, turns
 from .session_host.views import iso as views_iso
 
 # 兼容重导出：既有测试与调用方从本模块取这些符号（引擎实现已移至 engines/claude.py）
@@ -350,6 +350,8 @@ class Session:
     on_change: Any = field(default=None, repr=False)
     # 一轮出了 result、收尾（执行记录、变更集）还没做完：这期间状态已是 idle，等它的不能当成这一轮结束了
     finishing: bool = False
+    # 建模命令在等资料转成文本（session_host/material_wait）：消息已收下、记在 pending_prompts 里，等完再交给引擎
+    material_wait: Any = field(default=None, repr=False)
 
     @property
     def client(self) -> Any:
@@ -609,10 +611,11 @@ class SessionManager:
         self._runs: dict[str, str] = {}
         self._signals: dict[str, asyncio.Event] = {}
 
-    def _spawn(self, coro) -> None:
+    def _spawn(self, coro) -> asyncio.Task:
         task = asyncio.create_task(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        return task
 
     # ---- 自主构建（方案 B13）----
 
@@ -932,6 +935,8 @@ class SessionManager:
             session.broadcast({"type": "session_state", "state": "running", "turn_started_at": session.turn_started_at,
                                "reason": None})
         outcome = {"delivery": "immediate", "message_id": record["message_id"], "record": record, "next": None}
+        if await self._hold_for_materials(session, text):
+            return outcome
         if session.engine is not None:
             await self._send_turn(session, session.engine, text)
             session.set_state("running")
@@ -940,6 +945,79 @@ class SessionManager:
         session.pending_prompts.append(text)
         await self._request_slot(session)
         return outcome
+
+    # ---- 建模命令开始前等资料转成文本 ----
+
+    async def _hold_for_materials(self, session: Session, text: str) -> bool:
+        """建模命令开始时还有资料在转文本：消息先收下（记在 pending_prompts，插话照常排着、会话不被回收），
+        状态显示在等资料，后台等转完再交给引擎。返回是否在等。"""
+        if session.discarded or not material_wait.applies(text):
+            return False
+        try:
+            paths = await asyncio.to_thread(material_wait.converting, session.project_id)
+        except Exception:  # noqa: BLE001 - 查不了转换状态不挡命令
+            _log.warning("项目 %s 查资料转换状态失败，命令照常开始", session.project_id, exc_info=True)
+            return False
+        if not paths:
+            return False
+        session.pending_prompts.append(text)
+        session.material_wait = self._spawn(self._start_after_materials(session, text, paths))
+        self._show_running(session, material_wait.REASON)
+        return True
+
+    @staticmethod
+    def _show_running(session: Session, reason: str | None) -> None:
+        if session.state != "running":
+            session.set_state("running", reason=reason)
+            return
+        # 接着上一轮开始的命令、等完资料：状态一直是 running，只换「在等什么」
+        session.broadcast({"type": "session_state", "state": "running", "turn_started_at": session.turn_started_at,
+                           "reason": reason})
+
+    def _holds(self, session: Session, text: str) -> bool:
+        """这条命令还在等资料：没被打断、关闭，项目也没删。"""
+        return (self._sessions.get(session.project_id) is session and not session.discarded
+                and session.material_wait is not None and text in session.pending_prompts)
+
+    async def _start_after_materials(self, session: Session, text: str, paths: list[str]) -> None:
+        """等资料转完（最多 material_wait.WAIT_LIMIT_S 秒）再交给引擎；仍没有文本版的由这一轮的注入点名。"""
+        me = asyncio.current_task()
+        try:
+            left = await material_wait.wait(session.project_id, paths, stop=lambda: not self._holds(session, text))
+            if left:
+                _log.info("项目 %s 有 %d 份资料等到点仍没转完，命令照常开始", session.project_id, len(left))
+        except Exception:  # noqa: BLE001 - 等不了也照常开始
+            _log.warning("项目 %s 等资料转换出错，命令照常开始", session.project_id, exc_info=True)
+        finally:
+            held = self._holds(session, text)
+            if session.material_wait is me:
+                session.material_wait = None
+        if not held:
+            return
+        session.pending_prompts.remove(text)
+        self._show_running(session, None)
+        try:
+            if session.engine is not None:
+                # 等的这一会儿主线可能有了新提交：起点跟着换，产物卡只算这一轮的改动
+                session.round_base_commit, session.round_base_tree = await asyncio.to_thread(_round_start, session.cwd)
+                await self._send_turn(session, session.engine, text)
+                await self._flush_steers(session)
+                return
+            session.pending_prompts.append(text)
+            await self._request_slot(session)
+        except Exception as exc:  # noqa: BLE001 - 交不出去按这一轮出错收尾，不能停在运行中
+            error_id = self._log_error(session, "session_send", str(exc))
+            self._turn_failed(session, error_id, FRIENDLY_ERROR)
+
+    @staticmethod
+    def _drop_material_wait(session: Session) -> bool:
+        """撤回还在等资料的命令（打断、删除项目）；返回是否有。"""
+        task, session.material_wait = session.material_wait, None
+        if task is None:
+            return False
+        task.cancel()
+        session.pending_prompts.clear()
+        return True
 
     # ---- 运行中发来的消息：插话（steer）与代存的下一条命令（next）----
 
@@ -1576,6 +1654,7 @@ class SessionManager:
         engine = None
         if session is not None:
             session.discarded = True
+            self._drop_material_wait(session)
             session.pending_prompts.clear()
             for request in list(session.pending_permissions.values()):
                 if not request.future.done():
@@ -1654,6 +1733,12 @@ class SessionManager:
         key = (project_id, conversation_id)
         # 代存的命令留着但不自动开始（你按了停止，就是要停下来）
         self._pause_next(project_id, conversation_id)
+        if self._drop_material_wait(session):
+            # 命令还在等资料、没交给引擎：撤回它，执行记为你打断，回到空闲
+            self.returned_steers[key] = self._return_steers(session, None)
+            await self._mark_user_interrupt(session)
+            session.set_state("idle")
+            return False
         if session.engine is None:
             # 排队/连接中：清空积压消息并退出队列（排队的取消出口）
             async with self._lock:

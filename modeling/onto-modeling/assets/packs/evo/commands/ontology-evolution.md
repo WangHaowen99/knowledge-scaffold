@@ -103,7 +103,7 @@ stopped after a repeated failure."之类只说明运行被中止，真正原因�
   - 在属性别名/对象别名中补充问题里出现的业务叫法（保持别名占位规范：无别名写 `无`，多个用 `, ` 分隔）；
   - 重写含混的描述——描述要能独立回答"这个字段/对象是什么、什么取值代表什么"。
 - **C 数据映射**：
-  - 有相关数据表时先跑 `python3 .claude/scripts/table_profile.py {数据表路径}` 拿三方对账差异（数据列 ↔ schema ↔ 属性英文名）；
+  - 有相关数据表时先跑 `python3 .claude/scripts/table_profile.py {表名或数据表路径}`（csv 或 Excel 的文本版路径 `resource/text/…/x.xlsx.md`，不写 Excel 原件）拿三方对账差异（数据列 ↔ schema ↔ 属性英文名）；
   - 对象绑不到表时，在对象文档的 `# 数据来源` 段写**真实表名**（即数据表资料里的 Sheet 名，
     逐字相同）——该段是发布包「来源Sheet」列与 `mappings/object-data-mappings.json` 的唯一来源，
     留空或写对象名都会让这个对象在数据问答里查不到；纯概念、不落库的对象写 `无`；
@@ -133,7 +133,7 @@ stopped after a repeated failure."之类只说明运行被中止，真正原因�
    检出"与用例原文连续雷同 ≥30 字"或"出现标准答案/判分等应试措辞"即为硬错误——
    必须改写该文档（换成自己的业务表达、去掉考核语境），改完复跑至通过。
    **不得通过调大 `--threshold` 或跳过本步来规避。**
-5. 若实施过 C 类修订：复跑 `table_profile.py {数据表路径}` 确认对账差异清零。
+5. 若实施过 C 类修订：复跑 `table_profile.py {表名或数据表路径}` 确认对账差异清零。
 
 ## Step 5: 演进报告
 

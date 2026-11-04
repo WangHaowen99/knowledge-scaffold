@@ -55,6 +55,17 @@ test('运行状态行：子任务在跑时写在等哪个子任务，做完了�
   assert.equal(runStatus(s), null);
 });
 
+test('运行状态行：建模命令开始前平台在等资料转成文本，等完回到思考中', () => {
+  n = 0;
+  let s = applyEvents(initialConversation(), [
+    ev('message.user', { message_id: 'm1', text: '/ontology-extract-object', delivery: 'immediate' }),
+    ev('session.state', { state: 'running', turn_started_at: '2026-11-03T03:56:00.000Z', reason: 'waiting_materials' }),
+  ]);
+  assert.equal(runStatus(s).doing, '等资料转成文本');
+  s = applyEvent(s, ev('session.state', { state: 'running', turn_started_at: '2026-11-03T03:56:00.000Z', reason: null }));
+  assert.equal(runStatus(s).doing, '思考中');
+});
+
 test('运行状态行：在跑的步骤、等你回答；思考片段跟着走，正文到了清掉', () => {
   n = 0;
   let s = applyEvents(initialConversation(), [ev('session.state', { state: 'running' }), ev('message.user', { message_id: 'm1', text: '开始' })]);

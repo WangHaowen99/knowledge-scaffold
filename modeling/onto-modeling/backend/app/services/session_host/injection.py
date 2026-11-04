@@ -13,6 +13,7 @@
   （`register_prompt_hint_provider`，启动时在 `app/wiring.py` 登记；Jiuwen worker 进程自己登记一份）。
 
 - 自主构建（方案 B12）：运行中给这条对话注入段说明、台账摘要与用户补充，每条都带（`register_autobuild_hint_provider`）。
+- 资料文本版：建模命令开始时仍没有文本版的资料（`material_wait.note`），点名按未读处理，每条建模命令都带。
 
 宿主给每个引擎实例建一个 `Injector`（经 EngineContext 交给引擎）：引擎在消息真正送到模型的那一刻
 调 `context_for(原文)`——Claude 在 send() 时，Jiuwen 在轮内积压的消息开始跑时——阶段与下一步按
@@ -139,7 +140,8 @@ def build_context(
             stage_part = hint
     rules = prompt_hint(project_root, user_text)
     autobuild = autobuild_hint(project_root, conversation_id)
-    text = "\n\n".join(part for part in (stage_part, autobuild, rules) if part)
+    materials = material_hint(project_root, user_text)
+    text = "\n\n".join(part for part in (stage_part, autobuild, materials, rules) if part)
     return InjectionResult(text=text, digest=digest, stage_hint=stage_part, prompt_hint=rules)
 
 
@@ -307,4 +309,17 @@ def autobuild_hint(project_root: Path, conversation_id: str | None) -> str:
         return provider(Path(project_root), conversation_id) or ""
     except Exception:  # noqa: BLE001 - 注入是增强信息
         _log.warning("项目 %s 的自主构建注入算不出来，本条不带", Path(project_root).name, exc_info=True)
+        return ""
+
+
+# ---- 资料文本版（数据 schema 自动处理）----
+
+
+def material_hint(project_root: Path, user_text: str) -> str:
+    from . import material_wait
+
+    try:
+        return material_wait.note(Path(project_root), user_text)
+    except Exception:  # noqa: BLE001 - 注入是增强信息
+        _log.warning("项目 %s 的资料文本版说明算不出来，本条不带", Path(project_root).name, exc_info=True)
         return ""

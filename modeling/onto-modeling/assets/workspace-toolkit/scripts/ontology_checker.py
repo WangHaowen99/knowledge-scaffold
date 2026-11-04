@@ -30,7 +30,8 @@ from operation_relations import (
     stops_before_call,
     sub_operation_call_sites as _extract_sub_operation_refs,
 )
-from table_profile import table_headers as _read_table_headers, table_profiles as _read_table_profiles
+from table_profile import missing_text_versions as _missing_text_versions, table_headers as _read_table_headers, \
+    table_profiles as _read_table_profiles
 import field_semantics
 import industry_rules
 import onto_metamodel as mm
@@ -719,15 +720,24 @@ def _source_declaration(doc: OntologyDoc, by_lower: dict) -> tuple:
     return declared, table
 
 
-def check_object_columns(doc: OntologyDoc, tables: dict) -> list:
+def check_object_columns(doc: OntologyDoc, tables: dict, missing_text: list | None = None) -> list:
     """存储属性的英文名称必须是所声明数据表的真实列名（与发布包 mapping 同一口径）。
 
     声明的表不在现有数据表里是错误（发布时该对象会被阻断）；项目里还没有任何数据表时，
-    声明无从核对，只提示——多半是凭空写的表名，发布包不会绑定它。
+    声明无从核对，只提示——多半是凭空写的表名，发布包不会绑定它。missing_text 是已标为
+    schema、还没有文本版的资料：这时读不到表头不等于没有数据表，提示等转换，不提示去标 schema。
     """
     declared, table = _source_declaration(doc, {name.lower(): name for name in tables})
     if not declared:
         return []
+    if not tables and missing_text:
+        return [Issue(
+            file=_rel(doc), severity='警告', category='列名对账',
+            message=f'「# 数据来源」声明了表「{declared[:40]}」，但 schema 资料'
+                    f'{"、".join(Path(rel).name for rel in missing_text[:5])}还没有文本版（转换中、暂不支持或转换失败），'
+                    '这次核对不了列名；资料区能看到原因，转好后重新检查',
+            source='规则检查',
+        )]
     if not tables:
         return [Issue(
             file=_rel(doc), severity='警告', category='列名对账',
@@ -791,6 +801,47 @@ def check_object_columns(doc: OntologyDoc, tables: dict) -> list:
             source='规则检查',
         ))
     return issues
+
+
+# 没写数据表的对象与某张表重合的列数达到这个数就提示候选表（与后端 package_mapping 推断绑定同一门槛）
+MIN_CANDIDATE_COLUMNS = 2
+MAX_SOURCE_CANDIDATES = 3
+
+
+def source_candidates(doc: OntologyDoc, tables: dict) -> list:
+    """「# 数据来源」是「无」或没写表名的对象 → [(表名, 同名列)]：存储属性英文名与表头同名（不分大小写）
+    至少 MIN_CANDIDATE_COLUMNS 列，且含全部主键列（主键不在表里实例身份无从确定，同后端 _match_table），
+    按重合列数从多到少。"""
+    first = _source_first_line(doc)
+    if first and not _declares_none(first):
+        return []
+    stored = [row for row in doc.attribute_rows if (row.get('英文名称') or '').strip() not in ('', '无', '-')
+              and not any(marker in row.get('属性规则', '') for marker in _NON_STORED_MARKERS)]
+    keys = {row['英文名称'].strip().lower(): row['英文名称'].strip() for row in stored}
+    primary = {row['英文名称'].strip().lower() for row in stored if row.get('主键', '').strip() == '是'}
+    ranked = []
+    for name, columns in tables.items():
+        lowered = {column.lower() for column in columns}
+        same = [keys[key] for key in keys if key in lowered]
+        if len(same) >= MIN_CANDIDATE_COLUMNS and primary <= lowered:
+            ranked.append((-len(same), name, same))
+    return [(name, same) for _, name, same in sorted(ranked)[:MAX_SOURCE_CANDIDATES]]
+
+
+def check_object_source_candidates(doc: OntologyDoc, tables: dict) -> list:
+    """对象没写数据表、属性却和某张 schema 表对得上好几列：提示候选表（只提示，不要求每个对象都绑表）。"""
+    candidates = source_candidates(doc, tables)
+    if not candidates:
+        return []
+    listed = '；'.join(f'{name}（{len(same)} 列同名：{"、".join(same[:5])}{"…" if len(same) > 5 else ""}）'
+                      for name, same in candidates)
+    stated = '写的是「无」' if _source_first_line(doc) else '没有写表名'
+    return [Issue(
+        file=_rel(doc), severity='警告', category='数据来源候选',
+        message=f'「# 数据来源」{stated}，但属性英文名与这些 schema 表的列对得上：{listed}。'
+                '是这张表的数据就把首行改为表名（逐字相同）；确实不落库就保留「无」',
+        source='规则检查',
+    )]
 
 
 # --- 属性类型：写法合法、与所绑数据表的取值一致（口径见 field_semantics）---
@@ -2293,9 +2344,11 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
     issues += check_unpackaged_knowledge(ontology_dir)
     issues += check_solver_bindings(ontology_dir)
     term_map = build_term_map(all_docs)
+    missing_text = []
     if tables is None:
         tables = load_table_headers(ontology_dir)
         profiles = load_table_profiles(ontology_dir) if profiles is None else profiles
+        missing_text = _missing_text_versions(ontology_dir.resolve().parent)
     elif profiles is None:
         profiles = {}
     report_categories = load_report_categories(ontology_dir)
@@ -2312,7 +2365,8 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
         if doc.doc_type == 'object':
             issues += check_object_structure(doc)
             issues += check_object_data_source(doc)
-            issues += check_object_columns(doc, tables)
+            issues += check_object_columns(doc, tables, missing_text)
+            issues += check_object_source_candidates(doc, tables)
             issues += check_object_table(doc)
             issues += check_object_field_name_conflicts(doc)
             issues += check_object_primary_key(doc)

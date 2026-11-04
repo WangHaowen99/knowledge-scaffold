@@ -85,26 +85,12 @@ python3 .claude/scripts/state_helper.py release extract-object
 Set `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = empty`。Proceed to Step 2。
 
 **模式 C — 仅有资料分析报告（`SUMMARIES` 空，`REPORTS` 非空）：**
-`python3 .claude/scripts/state_helper.py acquire extract-object confirm`，then tell user:
-"未找到流程图摘要，将仅基于资料分析报告「{报告名}」提取对象。流程图是可选步骤，概念明确时可跳过。
-- 回复 **继续** → 仅基于资料分析报告提取对象
-- 回复 **先做流程图** → 转入 /ontology-flowchart 创建流程图后再回来
-"
-- **继续**: `acquire extract-object source`；set `SUMMARY_PATHS = empty`, `REPORT_PATHS = REPORTS`，进入 Step 2。
-- **先做流程图**: 先 `python3 .claude/scripts/state_helper.py release extract-object`；再读取 `.claude/commands/ontology-flowchart.md`（图示能力；文件不在说明本项目没启用，告诉用户去项目设置启用） 并执行；完成后 Claude 重新运行本命令。
-- **取消**: `python3 .claude/scripts/state_helper.py release extract-object`，stop。
+不问用户（流程图是可选步骤）：set `SUMMARY_PATHS = empty`, `REPORT_PATHS = REPORTS`，工作过程里说一句
+"没有流程图，这次按资料分析报告「{报告名}」提取对象。"，进入 Step 2。
 
 **模式 D — 两者都有：**
-`python3 .claude/scripts/state_helper.py acquire extract-object confirm`，then tell user（回复后 `acquire extract-object source`）:
-"已发现流程图摘要 {N} 份和资料分析报告 {M} 份。
-- 回复 **两者结合**（推荐）→ 流程图为主，资料分析报告补充细节
-- 回复 **跳过资料分析** → 只用流程图摘要
-- 回复 **跳过流程图** → 只用资料分析报告（适合流程图过时或不完整时）
-"
-- **两者结合**（或默认）: `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = REPORTS`。
-- **跳过资料分析**: `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = empty`。
-- **跳过流程图**: `SUMMARY_PATHS = empty`, `REPORT_PATHS = REPORTS`。
-- **取消**: `python3 .claude/scripts/state_helper.py release extract-object`，stop。
+不问用户，按两者结合：`SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = REPORTS`（流程图为主，资料分析报告补充细节）。
+用户在 `$ARGUMENTS` 或这条消息里明确说了只用流程图（`REPORT_PATHS = empty`）或只用资料分析报告（`SUMMARY_PATHS = empty`）时照他说的。
 
 ## Step 1.5: Bind Excel supplements to selected flowcharts
 
@@ -148,10 +134,11 @@ Set `EXCEL_CONTEXT` = 脚本 stdout。若 stdout 为空，置为 `（无同名 E
   - 空表头、重名列、主键歧义 → 先 `acquire extract-object confirm`，用业务化的选项询问用户，不自行决断；回复后切回 `source`。
 - 存在 `purpose=term` 的术语表时，对象命名、别名、属性中文名必须与术语表对齐；冲突时以术语表为准并在文档"来源"处标注。
 - 需要全文读取的资料（`reading_mode=full`，或没有写 `reading_mode` 的文档类资料，规则见 CLAUDE.md 8.1）在提取前必须已全文读取。
-- 运行 `python3 .claude/scripts/table_profile.py --headers`，stdout（JSON：`{Sheet 名: [表头列]}`，来自 schema 资料）记为 `TABLE_HEADERS`；为空（`{}`）时记为 `（无）`。
-  `TABLE_HEADERS` 非空时，它是表名与列名的**唯一依据**：对象「# 数据来源」取其中的 Sheet 名，对不上任何 Sheet 的对象填「无」；从库里读取的属性英文名称逐字取自该 Sheet 的表头；数据字典类文档、资料分析报告里的字段名与之冲突时以 `TABLE_HEADERS` 为准，冲突清单写进返回摘要的注意事项。提取后的规则检查会按对象逐列对账：声明的表不存在、一列都对不上、或属性别名里才是真实列名，均判为错误并阻止提交（发布时同样会被阻断）。
-  `TABLE_HEADERS` 为 `（无）` 时，先看 `resource/` 下有没有像数据库表的表格资料（首行是英文列名）：有的话按 CLAUDE.md 8.1 请用户在资料列表把它标为「数据 Schema」，标好后重跑上面的命令；用户确认没有数据表时，所有对象的「# 数据来源」填「无」，不得臆造表名；规则检查会对声明了表名的对象给出警告。
-- `TABLE_HEADERS` 非空时再运行 `python3 .claude/scripts/table_profile.py --profile`，stdout 记为 `TABLE_PROFILE`（每列取值形态的计数与推断类型，不含单元格原值，每表最多读 2000 行）。`omitted_tables` 非空时用 `--profile --tables {这些表名}` 分批补读，合并后再传给 agent。`TABLE_HEADERS` 为 `（无）` 时 `TABLE_PROFILE` 也记为 `（无）`。它是属性「类型」的取值证据：类型与取值矛盾、数值列无依据地写成字符串，提取后的规则检查会报「类型冲突」「类型待确认」。
+- 运行 `python3 .claude/scripts/table_profile.py --headers`：全部表头写进 `.ontology-state/table-headers.json`，stdout 是摘要 JSON（`status`、`file`、`tables` 表名 → 列数、`missing_text`）。表头不在对话里转述：要看时读这个文件，派子代理时只传路径。`tables` 非空时 `TABLE_HEADERS_FILE` 记为 `file`，否则记为 `（无）`。
+  `TABLE_HEADERS_FILE` 非空时，文件里的表头是表名与列名的**唯一依据**：对象「# 数据来源」取其中的 Sheet 名，对不上任何 Sheet 的对象填「无」；从库里读取的属性英文名称逐字取自该 Sheet 的表头；数据字典类文档、资料分析报告里的字段名与之冲突时以表头为准，冲突清单写进返回摘要的注意事项。提取后的规则检查会按对象逐列对账：声明的表不存在、一列都对不上、或属性别名里才是真实列名，均判为错误并阻止提交（发布时同样会被阻断）。
+  `missing_text` 非空（`status` 为 `text_missing`）：这些资料已经标为数据 Schema，只是还没有文本版（转换中、暂不支持或转换失败），按未读处理——不读原件、不再请用户标 Schema，在本轮摘要里点名"「{文件名}」还没有文本版，这次没有用它的表头，转好后重新提取对象可补上"。其余表照常用；一张表都读不到时，对象「# 数据来源」段留空（不填「无」，转好后发布能按列名自动匹配）。
+  只有 `status` 为 `no_schema`（项目里没有 schema 表格资料）时，才看 `resource/` 下有没有像数据库表的表格资料（首行是英文列名）：有的话按 CLAUDE.md 8.1 请用户在资料页把它的用途改为「数据 Schema」，改好后重跑上面的命令；用户确认没有数据表时，所有对象的「# 数据来源」填「无」，不得臆造表名；规则检查会对声明了表名的对象给出警告。
+- `TABLE_HEADERS_FILE` 非空时再运行 `python3 .claude/scripts/table_profile.py --profile`，stdout 记为 `TABLE_PROFILE`（每列取值形态的计数与推断类型，不含单元格原值，每表最多读 2000 行）。`omitted_tables` 非空时用 `--profile --tables {这些表名}` 分批补读，合并后再传给 agent。`TABLE_HEADERS_FILE` 为 `（无）` 时 `TABLE_PROFILE` 也记为 `（无）`。它是属性「类型」的取值证据：类型与取值矛盾、数值列无依据地写成字符串，提取后的规则检查会报「类型冲突」「类型待确认」。
 
 ## Step 2: Determine object mode
 
@@ -194,8 +181,7 @@ SUMMARY_PATHS: {逗号分隔的摘要文件路径}
 PAIRED_EXCEL_PATHS: {逗号分隔的同名 Excel 路径；无则写 (无同名 Excel 补充表)}
 EXCEL_CONTEXT:
 {EXCEL_CONTEXT}
-TABLE_HEADERS:
-{TABLE_HEADERS}
+TABLE_HEADERS_FILE: {TABLE_HEADERS_FILE}
 TABLE_PROFILE:
 {TABLE_PROFILE}
 
@@ -253,7 +239,8 @@ Display coverage results. Handle gaps（全部补充 / 选择性补充 / 跳过�
 
 - 没有执行的检查不得显示为通过。types 退出码 2（登记的数据表缺失、无法解析或缺解析依赖）时，类型验收显示「无法核验：{reason}」，不得写成通过或省略。
 - 整列为空、只有表头、未绑定数据表的字段是「未验证」，既不是「通过」，也不能据此定为字符串。
-- 类型验收 `failed` 时不进入确认：按下方候选修订流程修正后重新核验。`pending` 时逐条列给用户，由用户决定修正或保留（保留时在属性规则写明 `文本保留：原因`、`混合标识：归一化规则` 或布尔取值含义），不得自行补零、去零、改大小写。
+- 类型验收 `failed` 时不进入确认：按下方候选修订流程修正后重新核验。`pending` 不逐条问用户：这些字段保持现有类型，在验收表的类型验收一栏和本轮摘要里列为「待确认」（字段、声明类型、数据推断、依据），用户在确认时一并看；要改的走下方候选修订流程，保留的在属性规则写明 `文本保留：原因`、`混合标识：归一化规则` 或布尔取值含义。不得自行补零、去零、改大小写。
+- `unverifiable` 且带 `missing_text` 时，类型验收显示「无法核验：{reason}」，同 Step 1.6 点名这些还没有文本版的资料，不请用户标 Schema。
 - `items` 只列前 80 条；`omitted` 非零时注明「另有 N 条未列出」。
 
 `python3 .claude/scripts/state_helper.py acquire extract-object confirm`，then ask: "对象产物已生成，共 {N} 个，验收结果如上。如需修改请直接说明；确认无误请回复 **确认**。"

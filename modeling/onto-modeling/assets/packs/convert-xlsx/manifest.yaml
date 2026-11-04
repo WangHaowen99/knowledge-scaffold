@@ -1,10 +1,10 @@
 # 数据接入：Excel（xlsx）转文本（ADR-0073）。转换器随连接器网关镜像交付，跑在网关的子进程里，内核不导入它。
 name: convert-xlsx
-version: 1.0.0
+version: 1.1.0
 kind: provider
 category: provider
 label: Excel 转换
-description: 把 Excel 的每个工作表转成一张表格；大表只转前 2000 行。
+description: 把 Excel 的每个工作表转成一张表格；表头保留全部工作表、全部列，大表只转前 2000 行。
 publisher: {kind: official, label: 平台}
 kernel_api: ">=1.0 <2.0"
 engines: [claude, jiuwen]
@@ -13,5 +13,5 @@ converter:
   entry: converter.py
   types: [".xlsx", ".xlsm"]
   license: openpyxl（MIT）
-changelog: 首版。
+changelog: 表头保留全部工作表、全部列（原先只转前 50 个工作表、前 50 列）；宽表少转几行数据。
 checksums: checksums.sha256
