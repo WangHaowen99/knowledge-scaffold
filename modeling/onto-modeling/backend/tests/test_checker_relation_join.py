@@ -171,3 +171,12 @@ def test_literal_current_object_name_placeholder_is_checked(checker, tmp_path: P
 
     messages = join_issues(checker, ontology)
     assert len(messages) == 1 and "未声明关联字段" in messages[0]
+
+
+def test_anchor_on_the_other_end_still_matches_its_join(checker, tmp_path: Path):
+    """对端写 `[[客户#锚点]]`：按元模型解析成同一个对象，对端声明的关联字段照样算数，本端不误报「未声明关联字段」。"""
+    ontology = tmp_path / "ontology"
+    write(ontology, "订单", "订单表", ORDER_ROWS, "- 当前对象 → 属于（BUYER_NO → CUST_NO） → [[客户#客户编号]]")
+    write(ontology, "客户", "客户表", CUSTOMER_ROWS, "- [[订单]] → 属于 → 当前对象")
+
+    assert join_issues(checker, ontology) == []

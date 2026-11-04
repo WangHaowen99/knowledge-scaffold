@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-建模蓝图 —— 资料分析产出的分段规划（详设第 9 章建议 2、6.8；契约 BP-01～BP-03、7.8 Blueprint）。
+建模蓝图 —— 资料分析记下的统一叫法与待定问题（详设第 9 章建议 2、6.8；契约 BP-01～BP-03、7.8 Blueprint）。
+
+F8 起不再分段：建模命令一次做完整个项目（与插件化之前一致），蓝图只有一段「全部」；`mode()` 恒为 full。
+多段的字段、函数留着读老蓝图（F8 之前按段建的项目），新写的蓝图不再有多段。
 
 文件 `research/blueprint.json`（JSON，进 git），只由本文件的函数写：
 - 资料分析时助手先写一份草稿 JSON，`blueprint.py write <草稿>` 校验、编号后落盘；
@@ -25,7 +28,7 @@
     next_ids                     下一个编号 {slice, term, question}
     updated_at / confirmed_at
 
-全量模式：没有蓝图，或没排除的分段只有一段（小项目、存量项目）——建模节点按整类条目走，不按段收窄。
+全量模式：建模节点按整类条目走，不按段收窄。F8 起所有项目都是全量模式（老蓝图里的多段只作记录）。
 
 只用标准库，不调用模型。子命令：
 
@@ -63,6 +66,7 @@ FLOW_MAX = 80
 TEXT_MAX = 2000
 LIST_MAX = 200
 SLICES_MAX = 50
+TERMS_LINE_MAX = 30  # 注入给模型的统一叫法最多几条（每条 ≤ 约 100 字，最坏约 3000 字）
 _SLICE_ID_RE = re.compile(r'^(s[1-9][0-9]{0,3}|all)$')
 
 
@@ -283,9 +287,16 @@ def from_draft(draft: dict, previous: dict | None = None) -> dict:
             if target not in resolved:
                 resolved.append(target)
         item['depends_on'] = resolved
-    if len(doc['slices']) == 1 and not previous:
-        # 只有一段就是全量模式
-        doc['slices'][0]['id'] = FULL_SLICE_ID
+    # F8 不再分段：草稿里的段合成一段「全部」，条目与依据并进来（老草稿带多段也照此处理）
+    merged = _slice(FULL_SLICE_ID, FULL_SLICE_NAME)
+    for item in doc['slices']:
+        if item.get('excluded'):
+            continue
+        for field in ('objects', 'operations', 'rules'):
+            merged[field] = _names([*merged[field], *item.get(field, [])])
+        merged['sources'] = [*merged['sources'], *item.get('sources', [])][:LIST_MAX]
+    doc['slices'] = [merged]
+    if not previous:
         doc['next_ids']['slice'] = 1
     terms = draft.get('terms') or {}
     doc['terms']['aligned'] = _names(terms.get('aligned'))
@@ -328,8 +339,8 @@ def live_slices(doc: dict | None) -> list:
 
 
 def mode(doc: dict | None) -> str:
-    """full：没有蓝图或只有一段；sliced：按段走。"""
-    return 'sliced' if len(live_slices(doc)) > 1 else 'full'
+    """恒为 full（F8 不再分段）：老蓝图里有多段也按全量走，建模命令一次做完整个项目。"""
+    return 'full'
 
 
 def validate(doc: dict) -> list:
@@ -642,7 +653,8 @@ def view(doc: dict) -> dict:
 def brief(doc: dict | None, slice_id: str | None) -> str:
     """一段的说明（Markdown）：建模命令按它只做这一段；自主构建（B5b）逐段注入同一份。"""
     if doc is None or mode(doc) == 'full':
-        return '全量模式：没有分段规划，按全部资料建模。'
+        terms = terms_line(doc)
+        return '全量模式：按全部资料建模。' + (f'\n{terms}' if terms else '')
     item = find_slice(doc, slice_id)
     if item is None or item.get('excluded'):
         return f'分段 {slice_id} 不存在或已排除。'
@@ -667,6 +679,13 @@ def brief(doc: dict | None, slice_id: str | None) -> str:
     if others:
         lines.append('别的段的对象（只引用、不改）：' + '；'.join(others))
     return '\n'.join(lines)
+
+
+def terms_line(doc: dict | None) -> str:
+    """资料分析定下的统一叫法，一行；没有时空串。建模命令、自主构建按它给条目命名。"""
+    chosen = [f"{term['chosen']}（不用 {'、'.join(v for v in term['variants'] if v != term['chosen'])}）"
+              for term in ((doc or {}).get('terms') or {}).get('ambiguous') or [] if term.get('chosen')]
+    return ('统一叫法：' + '；'.join(chosen[:TERMS_LINE_MAX])) if chosen else ''
 
 
 def current_slice(root: Path = Path('.')) -> str | None:

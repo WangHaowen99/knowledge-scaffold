@@ -253,6 +253,9 @@ def _node_actions(node: dict, *, verify_first: bool = False) -> list:
     actions = [action for action in node.get('actions') or [] if action.get('command') or action.get('page')]
     if verify_first:
         actions = sorted(actions, key=lambda action: not action.get('verify'))
+    else:
+        # 「核验报告」只在报告挡着后续阶段时给：平时没有要核验的报告（F8 去掉「分段规划」后它会挤进前三个）
+        actions = [action for action in actions if not action.get('verify')]
     return actions
 
 
@@ -265,23 +268,14 @@ def _slice_step(next_step: dict) -> dict:
     return action
 
 
-def _blueprint_candidates(context: dict) -> list:
-    """蓝图草案等你确认：确认蓝图、调整分段，再加重新划分（还在资料分析那一轮里时换成撤回这一轮）。"""
-    blueprint = context.get('blueprint') or {}
-    if blueprint.get('goal_pending'):
-        # 资料和建模目标对不上的那个问题没答：确认会被拦（blueprint_question_pending），先去回答（F4b）
-        confirm = _item('answer_goal', '回答目标问题',
-                        {'type': 'navigate', 'page': 'wb-blueprint', 'params': {'dialog': 'blueprint'}},
-                        reason='资料和建模目标对不上，先定以哪个为准', priority=4, icon='target')
-    else:
-        confirm = _item('confirm_blueprint', '确认蓝图', {'type': 'confirm_blueprint', 'next': blueprint.get('next') or 'L2'},
-                        reason='建模蓝图等你确认', priority=4, icon='check')
-    adjust = _item('adjust_blueprint', '调整分段',
+def _goal_items(flow: dict, nodes: list, states: dict, context: dict) -> list:
+    """6. 资料和建模目标对不上的那个问题没答：主推去回答，后面跟主线下一步——不拦着开始建模（F8，没回答按原目标建）。"""
+    if not (context.get('blueprint') or {}).get('goal_pending'):
+        return []
+    answer = _item('answer_goal', '回答目标问题',
                    {'type': 'navigate', 'page': 'wb-blueprint', 'params': {'dialog': 'blueprint'}},
-                   reason='建模蓝图等你确认', priority=4, icon='layers')
-    redo = _item('replan', '重新规划分段', _send('/ontology-research phase=blueprint'), reason='建模蓝图等你确认',
-                 priority=4, icon='refresh')
-    return [confirm, adjust, redo]
+                   reason='资料和建模目标对不上，先定以哪个为准', priority=4, icon='target')
+    return [answer, *_mainline_items(flow, nodes, states, context)]
 
 
 def _stale_items(nodes: list, state_of: dict, context: dict) -> list:
@@ -345,10 +339,6 @@ def _mainline_items(flow: dict, nodes: list, states: dict, context: dict) -> lis
             for index, action in enumerate(actions[:SUGGESTIONS_MAX]):
                 out.append(_item(f"{current['id']}#{index}", action['label'], _action(action),
                                  reason='下一步', priority=4))
-        blueprint = context.get('blueprint') or {}
-        if out and blueprint.get('state') == 'none' and state_of.get('core.research') in ('confirmed', 'stale'):
-            out.append(_item('plan_slices', '规划分段', _send('/ontology-research phase=blueprint'),
-                             reason='可选步骤', priority=5, icon='layers'))
         return out
     out.append(_item('overview', '查看整体视图', _send('/ontology-overview'), reason='必经步骤都已完成', priority=5))
     available = flow.get('available_commands')
@@ -414,12 +404,11 @@ def _flow_rules(flow: dict, states: dict, context: dict) -> list:
     """6～10，按顺序：(规则号, 条目)。"""
     nodes = [node for node in flow.get('nodes') or [] if node.get('id') in states]
     state_of = {node_id: (item or {}).get('state') for node_id, item in states.items()}
-    blueprint = context.get('blueprint') or {}
     return [
-        (6, _blueprint_candidates(context) if blueprint.get('state') == 'draft' else []),
+        (6, _goal_items(flow, nodes, states, context)),
         (7, _stale_items(nodes, state_of, context)),
         (8, _check_items(nodes, state_of, context)),
-        (9, _mainline_items(flow, nodes, states, context) if blueprint.get('state') != 'draft' else []),
+        (9, _mainline_items(flow, nodes, states, context)),
     ]
 
 
@@ -456,7 +445,7 @@ def suggest(flow: dict, states: dict, context: dict | None = None, check=None) -
     - unfinished：这一轮结束了、命令没收尾的执行 {id, label}；
     - changeset：当前的变更集 {id, state}：合入冲突时主推去待处理选保留哪边；
     - stage：旧版线性阶段（资料分析待核验时核验排第一、校验待审阅时继续校验）；report_pending：报告有待处理项；
-    - blueprint：建模蓝图 {state: none|draft|confirmed, where: mainline|changeset, next}，草案时主推「确认蓝图」；
+    - blueprint：建模蓝图 {state: none|draft|confirmed, where: mainline|changeset, next, goal_pending}，目标问题没答时主推「回答目标问题」（F8 起草案不用确认）；
     - slice_next：按段的节点这一段的下一步 {slice_id, slice_name, step, label, command, sliced}；
     - slice_stale：按段的节点过期的那几段那几步 [{slice_id, slice_name, step, step_label, command, sliced, upstream}]；
     - stale_upstream：其余过期节点 → 上游的说法（「对象、操作」）。

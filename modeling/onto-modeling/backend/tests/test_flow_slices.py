@@ -1,12 +1,13 @@
-"""按详设 6.8 重排的主流程与按段的节点状态（详设 6.6、6.8、第 9 章；契约 FL-01 slices / slice_stages、
-FL-03～FL-05、PB-01 流程关卡；ADR-0051）。
+"""建模节点的状态与主流程（详设 6.6、6.8；契约 FL-01 slices / slice_stages、FL-03～FL-05、PB-01 流程关卡；
+ADR-0051、ADR-0078）。
 
-- 流程形状：资料分析 → 建模（按段）→ 校验（装了场景走查是「校验与走查」+ 全量回归）→ 全局一致性 → 发布；
-  场景走查往分段里加「场景」一步；没升级的包写的旧锚点照样认；
-- 按段算状态：进行中、待确认、已确认、过期、跳过（没规划规则）、写入即查；节点按各段汇总、给「n/m 段」；
-- 全量模式：没有蓝图（存量项目）时只有一段「全部」；0.2 的已确认状态映射过来，进度不往回退；
-- 执行记录按命令带的分段（或这一步还没做完的第一段）记分段与步骤；确认生效时这一段这一步记为确认过；
-- 下一步：这一段的下一步、蓝图草案时「确认蓝图」；按段建模时全局一致性挡住发布。
+F8（ADR-0078）起不再分段：建模节点只有一段「全部」，命令一次做完整个项目（与插件化之前一致）；F8 之前按段建的项目
+（蓝图里存着多段）照样按全量算。
+- 流程形状：资料分析 → 建模 → 校验（装了场景走查是「校验与走查」+ 全量回归）→ 发布；规则是建模里可选的补抽，
+  全局一致性是旁支、不挡发布；场景走查不再往建模里加「场景」一步；没升级的包写的旧锚点照样认；
+- 「全部」的状态：进行中、待确认、已确认、过期、跳过规则；0.2 的已确认状态映射过来，进度不往回退；
+- 执行记录一律记在「全部」（老命令带的 slice= 也一样）；一轮结束不再把新条目归到某一段；
+- 下一步：蓝图草案不用确认，资料分析做完直接往下建；目标问题没答时先推荐去回答，不拦着。
 
 测试数据全部为合成内容；假引擎不起真实 CLI。
 """
@@ -48,9 +49,18 @@ def op(name: str, links: str = "") -> str:
     return f"# {name}\n\n## 业务描述\n\n合成操作{links}\n"
 
 
-def _blueprint(root: Path, *, confirmed: bool = True) -> dict:
+def _blueprint(root: Path, *, confirmed: bool = True, old: bool = True, draft: dict | None = None) -> dict:
+    """写蓝图进主线。old：F8 之前按段写下的三段蓝图（现在的脚本不再写多段，按老格式拼出来）；否则是现在的一段「全部」。"""
     module = contracts.default().load("blueprint")
-    doc = module.from_draft(DRAFT)
+    doc = module.from_draft(draft or DRAFT)
+    if old:
+        base = doc["slices"][0]
+        doc["slices"] = [{**base, "id": f"s{n}", "name": item["name"], "objects": item.get("objects", []),
+                          "operations": item.get("operations", []), "rules": item.get("rules", []),
+                          "depends_on": [f"s{n - 1}"] if n > 1 else []}
+                         for n, item in enumerate((draft or DRAFT)["slices"], start=1)]
+        doc["next_ids"]["slice"] = len(doc["slices"]) + 1
+        assert module.validate(doc) == [] and module.mode(doc) == "full"
     if confirmed:
         doc = module.confirm(doc)
     main_write(root, "research/blueprint.json", module.dumps(doc), "research: 合成蓝图")
@@ -62,27 +72,38 @@ def _slices(root: Path) -> dict:
     return {item["id"]: item for item in built["slices"]}, built
 
 
+def _node(built: dict, node_id: str) -> dict:
+    return next(node for node in built["nodes"] if node["id"] == node_id)
+
+
+FULL = {"id": "all", "name": "全部"}
+
+
 # ---------------------------------------------------------------------------
 # 流程形状
 # ---------------------------------------------------------------------------
 
 
-def test_flow_shape_with_and_without_scenario_walkthrough():
+def test_flow_shape_without_slicing_and_with_scenario_walkthrough():
     core = ("core", "0.3.0", _yaml("workspace-toolkit/flow.yaml"))
     bare = assemble.assemble([core])
     ids = [node["id"] for node in bare["nodes"]]
     assert ids[:6] == ["core.research", "core.model", "core.metric", "core.validate", "core.consistency", "core.publish"]
     by_id = {node["id"]: node for node in bare["nodes"]}
     assert by_id["core.validate"]["title"] == "校验" and by_id["core.consistency"]["after"] == "core.validate"
-    assert [step["id"] for step in by_id["core.model"]["steps"]] == ["object", "operation", "rule", "check"]
-    assert by_id["core.publish"]["placement"] == "spine" and by_id["core.consistency"]["blocks"] == ["core.publish"]
+    steps = by_id["core.model"]["steps"]
+    assert [step["id"] for step in steps] == ["object", "operation", "rule", "check"]
+    assert next(step for step in steps if step["id"] == "rule")["optional"] is True  # 规则随操作一起抽，这一步是补抽
+    # 全局一致性是旁支：不在主线上、不挡发布（插件化之前没有这一步）
+    consistency = by_id["core.consistency"]
+    assert consistency["placement"] == "branch" and consistency["optional"] and not consistency.get("blocks")
+    assert by_id["core.publish"]["placement"] == "spine"
     assert by_id["core.metric"]["placement"] == "branch" and by_id["core.metric"]["optional"]
     with_trace = assemble.assemble([core, ("trace", "0.10.0", _yaml("packs/trace/flow.yaml"))])
     by_id = {node["id"]: node for node in with_trace["nodes"]}
     assert by_id["core.validate"]["title"] == "校验与走查"
-    steps = by_id["core.model"]["steps"]
-    assert [step["id"] for step in steps] == ["object", "operation", "rule", "check", "scenario"]
-    assert steps[-1]["pack"] == "trace"
+    # 场景走查不再往建模里加「场景」一步：走查在校验之后做
+    assert [step["id"] for step in by_id["core.model"]["steps"]] == ["object", "operation", "rule", "check"]
     assert {"from": "core.validate", "to": "trace.trace"} in with_trace["edges"]
     assert {"from": "trace.trace", "to": "core.consistency"} in with_trace["edges"]
     assert "trace.mock" not in by_id and with_trace["commands"]["mock"]["node"] == "trace.trace"
@@ -104,20 +125,19 @@ def test_flow_shape_with_and_without_scenario_walkthrough():
 def test_flow_api_shape_for_a_new_project(env):
     _client, _workspaces, _manager, _project_id, root = env
     built = view.build(root)
-    model = next(node for node in built["nodes"] if node["id"] == "core.model")
+    model = _node(built, "core.model")
     assert model["per_slice"] is True and model["progress"] is None
-    assert [stage["id"] for stage in built["slice_stages"]] == ["object", "operation", "rule", "check", "scenario"]
-    assert built["slice_stages"][-1] == {"id": "scenario", "label": "场景", "plugin": "trace"}
-    # 没有蓝图：全量模式，只有一段「全部」；`blueprint.state` 让前端把「调整分段」换成发起分段规划
+    assert [stage["id"] for stage in built["slice_stages"]] == ["object", "operation", "rule", "check"]
+    # 没有蓝图：只有一段「全部」
     assert [item["id"] for item in built["slices"]] == ["all"] and built["blueprint"] == {"state": "none"}
     assert set(built["slices"][0]) == {"id", "name", "core_flow", "group", "stages", "note", "no_rules"}
-    publish = next(node for node in built["nodes"] if node["id"] == "core.publish")
+    publish = _node(built, "core.publish")
     assert publish["actions"] == [{"kind": "start", "label": "去发布", "target": "publish"}]
     assert built["commands"]["extract-object"] == "core.model"
 
 
 # ---------------------------------------------------------------------------
-# 按段的状态
+# 「全部」的状态
 # ---------------------------------------------------------------------------
 
 
@@ -128,94 +148,76 @@ def _no_gate(monkeypatch):
     monkeypatch.setattr(gates, "compare", lambda *args, **kwargs: {"errors": 0, "warnings": 0, "findings": []})
 
 
-def test_slice_states_running_pending_confirmed_skipped_and_stale(env, monkeypatch):
+def test_old_sliced_project_runs_as_one_full_slice(env, monkeypatch):
+    """F8 之前按段建的项目（蓝图里三段）：只算「全部」一段，进行中、待确认、已确认、过期照常。"""
     _client, workspaces, _manager, project_id, root = env
     _no_gate(monkeypatch)
     main_write(root, "research/20260101-合成.md", "# 合成资料分析\n")
     _blueprint(root)
     rows, built = _slices(root)
-    assert list(rows) == ["s1", "s2", "s3"] and all(row["group"] == "todo" for row in rows.values())
-    model = next(node for node in built["nodes"] if node["id"] == "core.model")
-    # 资料分析还没验收：建模未就绪
-    assert model["progress"] == {"done": 0, "total": 3, "label": "0/3 段"} and model["state"] == "not_ready"
-    # s1 的对象已经在主线上（存量）：对象一步已确认；没规划规则：规则跳过、不挡这一段
+    assert list(rows) == ["all"] and rows["all"]["group"] == "todo" and rows["all"]["no_rules"] is False
+    # 资料分析还没验收：建模未就绪；不按段，没有「n/m 段」
+    assert _node(built, "core.model")["progress"] is None and _node(built, "core.model")["state"] == "not_ready"
+    # 对象已经在主线上（存量）：对象一步已确认；规则是可选的补抽，不挡建模
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
     main_write(root, "ontology/object/商品.md", obj("商品", "合成商品"))
     rows, built = _slices(root)
-    assert rows["s1"]["stages"]["object"] == "confirmed" and rows["s1"]["stages"]["operation"] == "ready"
-    assert rows["s1"]["stages"]["rule"] == "skipped" and rows["s1"]["no_rules"] is True
-    assert rows["s1"]["group"] == "now" and rows["s1"]["note"] == "停在「操作」"
-    assert rows["s2"]["stages"]["rule"] == "not_ready" and rows["s2"]["no_rules"] is False
-    assert next(node for node in built["nodes"] if node["id"] == "core.model")["state"] == "running"
-    assert built["suggestions"]["primary"]["action"] == {"type": "send", "text": "", "command": "/ontology-extract-operation",
-                                                         "args": {"slice": "s1"}}
-    # 进行中：执行记录带分段与步骤
+    full = rows["all"]
+    assert full["stages"]["object"] == "confirmed" and full["stages"]["operation"] == "ready"
+    assert full["stages"]["rule"] == "not_ready" and full["no_rules"] is False
+    assert full["group"] == "now" and full["note"] == "停在「操作」"
+    assert _node(built, "core.model")["state"] == "running"
+    # 下一步不带分段
+    assert built["suggestions"]["primary"]["action"] == {"type": "send", "text": "",
+                                                         "command": "/ontology-extract-operation"}
+    # 进行中：老命令带了 slice=s1 也记在「全部」
     flow = flow_model.load_for(root)
     record = exec_records.start(project_id, "default", root=root, flow=flow, command="/ontology-extract-operation",
                                 command_name="extract-operation", text="/ontology-extract-operation slice=s1")
-    assert record["node"]["id"] == "core.model" and record["slice"] == {"id": "s1", "name": "申请受理"}
-    assert record["step"] == "operation"
+    assert record["node"]["id"] == "core.model" and record["slice"] == FULL and record["step"] == "operation"
     rows, built = _slices(root)
-    assert rows["s1"]["stages"]["operation"] == "running" and rows["s1"]["group"] == "now"
-    assert rows["s1"]["note"] == "正在做「操作」"
-    assert built["suggestions"]["primary"] is None or built["suggestions"]["primary"]["id"] != "core.model:s1:operation"
-    # 待确认：变更集里做了 s1 的操作
+    assert rows["all"]["stages"]["operation"] == "running" and rows["all"]["note"] == "正在做「操作」"
+    # 待确认：变更集里做了操作
     copy = changesets.copy_for_turn(workspaces, project_id, root)
     agent_write(copy, "ontology/operation/受理申请.md", op("受理申请", "[[门店]][[商品]]"), commit="agent: 受理申请")
     exec_records.update(project_id, record["id"], state="done")
     changeset = changesets.observe(workspaces, project_id, running=False, conversation_id="default",
                                    exec_record=exec_records.get(project_id, record["id"]))
-    assert changeset["slice_steps"] == [["s1", "operation"]] and changeset["slice_id"] == "s1"
+    assert changeset["slice_steps"] == [["all", "operation"]] and changeset["slice_id"] == "all"
     rows, _built = _slices(root)
-    assert rows["s1"]["stages"]["operation"] == "pending_confirm" and rows["s1"]["stages"]["check"] == "pending_confirm"
-    assert rows["s1"]["group"] == "wait" and rows["s1"]["note"] == "待确认"
-    # 确认生效：这一段这一步记为确认过；写入即查跟着确认；这一段做完
+    assert rows["all"]["stages"]["operation"] == "pending_confirm" and rows["all"]["stages"]["check"] == "pending_confirm"
+    assert rows["all"]["group"] == "wait" and rows["all"]["note"] == "待确认"
+    # 合入：这一步记为确认过，写入即查跟着确认；对象、操作都有了，建模做完（规则、场景不挡）
     changesets.merge(workspaces, project_id, changeset["id"], actor="employee_0001")
     from app import wiring
 
     wiring._confirm_nodes(project_id, changeset.get("nodes") or ["core.model"],
                           changesets.get(workspaces, project_id, changeset["id"]))
     rows, built = _slices(root)
-    assert rows["s1"]["stages"]["operation"] == "confirmed" and rows["s1"]["stages"]["check"] == "confirmed"
-    # 装了场景走查：这一段还差「场景」一步
-    assert rows["s1"]["stages"]["scenario"] == "ready" and rows["s1"]["note"] == "停在「场景」"
-    main_write(root, "ontology/testcase/受理申请.md", "# 测试场景：受理申请\n\n## 场景 1：合成\n")
-    rows, built = _slices(root)
-    assert rows["s1"]["group"] == "done" and rows["s1"]["stages"]["scenario"] == "confirmed"
-    assert next(node for node in built["nodes"] if node["id"] == "core.model")["progress"]["label"] == "1/3 段"
-    stored = node_state.load(root)
-    assert stored["slices"]["s1"]["operation"]["merged"] is True
-    # 过期：s1 的对象在主线上又改了，操作一步过期；节点显示过期
+    assert rows["all"]["stages"]["operation"] == "confirmed" and rows["all"]["stages"]["check"] == "confirmed"
+    assert rows["all"]["group"] == "done" and _node(built, "core.model")["state"] == "confirmed"
+    assert node_state.load(root)["slices"]["all"]["operation"]["merged"] is True
+    # 过期：对象在主线上又改了，操作一步过期；节点显示过期
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店（改了口径）"))
     rows, built = _slices(root)
-    assert rows["s1"]["stages"]["operation"] == "stale" and rows["s1"]["group"] == "wait"
-    assert rows["s1"]["note"].endswith("步过期")
-    assert next(node for node in built["nodes"] if node["id"] == "core.model")["state"] == "stale"
-    # 别的段的条目变了不影响 s2（按段取上游）
-    assert rows["s2"]["stages"]["object"] == "ready"
+    assert rows["all"]["stages"]["operation"] == "stale" and rows["all"]["group"] == "wait"
+    assert rows["all"]["note"].endswith("步过期")
+    assert _node(built, "core.model")["state"] == "stale"
 
 
-def test_slice_completion_progress_and_project_list(env):
+def test_old_sliced_blueprint_does_not_hold_back_completion(env):
+    """老蓝图里第二段的操作还没建：不按段算，对象、操作都有了建模就做完；项目列表的进度与 FL-01 同口径。"""
     _client, _workspaces, _manager, _project_id, root = env
-    module = contracts.default().load("blueprint")
-    doc = module.from_draft({"slices": [{"name": "甲", "objects": ["对象一"], "operations": ["操作一"]},
-                                        {"name": "乙", "objects": ["对象二"], "operations": ["操作二"]}]})
-    main_write(root, "research/blueprint.json", module.dumps(module.confirm(doc)), "research: 合成蓝图")
-    for name in ("对象一", "对象二"):
-        main_write(root, f"ontology/object/{name}.md", obj(name, "合成"))
-    main_write(root, "ontology/operation/操作一.md", op("操作一", "[[对象一]]"))
-    main_write(root, "ontology/testcase/操作一.md", "# 测试场景：操作一\n\n## 场景 1：合成\n")
+    _blueprint(root, draft={"slices": [{"name": "甲", "objects": ["对象一"], "operations": ["操作一"]},
+                                       {"name": "乙", "objects": ["对象二"], "operations": ["操作二"]}]})
+    main_write(root, "ontology/object/对象一.md", obj("对象一", "合成"))
     rows, built = _slices(root)
-    assert rows["s1"]["group"] == "done" and rows["s2"]["group"] == "now"
-    model = next(node for node in built["nodes"] if node["id"] == "core.model")
-    assert model["progress"]["label"] == "1/2 段" and model["state"] == "running"
-    # 项目列表的进度与 FL-01 同口径：按段模式下要全部段做完建模才算完成
+    assert list(rows) == ["all"] and _node(built, "core.model")["state"] == "running"
     assert flow_model.progress(root)["hits"]["core.model"] is False
-    main_write(root, "ontology/operation/操作二.md", op("操作二", "[[对象二]]"))
-    main_write(root, "ontology/testcase/操作二.md", "# 测试场景：操作二\n\n## 场景 1：合成\n")
+    main_write(root, "ontology/operation/操作一.md", op("操作一", "[[对象一]]"))
     rows, built = _slices(root)
-    model = next(node for node in built["nodes"] if node["id"] == "core.model")
-    assert model["state"] == "confirmed" and model["progress"]["label"] == "2/2 段"
+    assert rows["all"]["group"] == "done" and _node(built, "core.model")["state"] == "confirmed"
+    assert _node(built, "core.model")["progress"] is None
     assert flow_model.progress(root)["hits"]["core.model"] is True
 
 
@@ -252,11 +254,11 @@ def test_full_mode_and_legacy_confirmations_do_not_regress(env):
 
 
 # ---------------------------------------------------------------------------
-# 执行记录、跳过、开始、自动归段
+# 执行记录、跳过、开始、不再归段
 # ---------------------------------------------------------------------------
 
 
-def test_exec_records_pick_the_slice_and_step(env):
+def test_exec_records_land_on_the_full_slice(env):
     _client, _workspaces, _manager, project_id, root = env
     _blueprint(root)
     flow = flow_model.load_for(root)
@@ -267,31 +269,32 @@ def test_exec_records_pick_the_slice_and_step(env):
         return exec_records.start(project_id, "default", root=root, flow=flow, command=command, command_name=name,
                                   text=text)
 
+    # 带分段的规则提取（F8 之前的写法）仍是建模的「规则」一步，记在「全部」；不带是指标旁支
     rule = start("/ontology-extract-rule-metric slice=s2")
-    assert (rule["node"]["id"], rule["slice"]["id"], rule["step"]) == ("core.model", "s2", "rule")
+    assert (rule["node"]["id"], rule["slice"], rule["step"]) == ("core.model", FULL, "rule")
     metric = start("/ontology-extract-rule-metric")
     assert metric["node"]["id"] == "core.metric" and metric["slice"] is None
     inferred = start("/ontology-extract-object")
-    assert inferred["slice"] == {"id": "s1", "name": "申请受理"} and inferred["step"] == "object"
+    assert inferred["slice"] == FULL and inferred["step"] == "object"
     unknown = start("/ontology-extract-object slice=s9")
-    assert unknown["node"]["id"] == "core.model" and unknown["slice"] is None
+    assert unknown["node"]["id"] == "core.model" and unknown["slice"] == FULL
 
 
-def test_skip_rule_step_and_start_a_slice(env):
+def test_skip_rule_step_and_start_the_next_step(env):
     client, _workspaces, _manager, project_id, root = env
     _blueprint(root)
     base = f"/api/v1/projects/{project_id}/flow/nodes/core.model"
     assert client.post(f"{base}/skip", json={}).json()["code"] == "node_not_skippable"
-    assert client.post(f"{base}/skip", json={"slice_id": "s2", "step": "object"}).json()["code"] == "node_not_skippable"
-    skipped = client.post(f"{base}/skip", json={"slice_id": "s2", "reason": "资料里没有规则"})
+    assert client.post(f"{base}/skip", json={"slice_id": "all", "step": "object"}).json()["code"] == "node_not_skippable"
+    skipped = client.post(f"{base}/skip", json={"slice_id": "all", "reason": "资料里没有规则"})
     assert skipped.status_code == 200, skipped.text
     rows, _built = _slices(root)
-    assert rows["s2"]["stages"]["rule"] == "skipped"
-    assert client.post(f"{base}/restore", json={"slice_id": "s2"}).status_code == 200
-    assert client.post(f"{base}/restore", json={"slice_id": "s2"}).json()["code"] == "node_not_skipped"
+    assert rows["all"]["stages"]["rule"] == "skipped"
+    assert client.post(f"{base}/restore", json={"slice_id": "all"}).status_code == 200
+    assert client.post(f"{base}/restore", json={"slice_id": "all"}).json()["code"] == "node_not_skipped"
     main_write(root, "ontology/object/门店.md", obj("门店", "合成"))
     main_write(root, "ontology/object/商品.md", obj("商品", "合成"))
-    started = client.post(f"{base}/start", json={"slice_id": "s1", "origin": {"page": "wb-l2", "label": "开始"}})
+    started = client.post(f"{base}/start", json={"origin": {"page": "wb-l2", "label": "开始"}})
     assert started.status_code == 202, started.text
     from tests.test_session_host import FakeEngine
     import time
@@ -300,22 +303,23 @@ def test_skip_rule_step_and_start_a_slice(env):
         if FakeEngine.sent:
             break
         time.sleep(0.01)
-    assert FakeEngine.sent[0].startswith("/ontology-extract-operation slice=s1")
+    # 下一步是操作提取，一次做完整个项目，不带分段
+    assert FakeEngine.sent[0].startswith("/ontology-extract-operation") and "slice=" not in FakeEngine.sent[0]
 
 
-def test_new_entries_are_assigned_to_the_slice_at_turn_end(env):
+def test_new_entries_are_not_assigned_to_slices_at_turn_end(env):
+    """F8 之前一轮结束时把新条目记进这一段；现在不分段，老蓝图、带老分段的执行记录也不再改蓝图。"""
     _client, workspaces, _manager, project_id, root = env
     _blueprint(root)
+    before = (root / "research" / "blueprint.json").read_text(encoding="utf-8")
     copy = changesets.copy_for_turn(workspaces, project_id, root)
     agent_write(copy, "ontology/object/补货台账.md", obj("补货台账", "合成"), commit="agent: 新对象")
-    agent_write(copy, "ontology/object/门店.md", obj("门店", "合成"), commit="agent: 规划里的对象")
     record = changesets.observe(workspaces, project_id, running=False, conversation_id="default",
                                 exec_record={"id": "ex-1", "command_label": "建模",
                                              "node": {"id": "core.model", "version": "core@0.3.0"},
                                              "slice": {"id": "s2", "name": "库存测算"}, "step": "object"})
-    doc = json.loads((copy / "research" / "blueprint.json").read_text(encoding="utf-8"))
-    assert "补货台账" in doc["slices"][1]["objects"] and "门店" not in doc["slices"][1]["objects"]
-    assert "research/blueprint.json" in record["paths"]
+    assert (copy / "research" / "blueprint.json").read_text(encoding="utf-8") == before
+    assert "research/blueprint.json" not in record["paths"]
 
 
 # ---------------------------------------------------------------------------
@@ -323,45 +327,51 @@ def test_new_entries_are_assigned_to_the_slice_at_turn_end(env):
 # ---------------------------------------------------------------------------
 
 
-def test_blueprint_draft_suggestions_and_research_waits_for_confirmation(env):
+def test_draft_blueprint_does_not_stop_after_research(env):
+    """F8：蓝图草案不用确认，资料分析做完就是做完；目标问题没答时主推去回答，后面跟主线下一步。"""
     _client, _workspaces, _manager, _project_id, root = env
     main_write(root, "research/20260101-合成.md", "# 合成资料分析\n")
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
-    _blueprint(root, confirmed=False)
+    _blueprint(root, confirmed=False, old=False)
     built = view.build(root)
-    research = next(node for node in built["nodes"] if node["id"] == "core.research")
-    assert research["state"] == "pending_confirm"
-    assert research["actions"][0] == {"kind": "confirm", "label": "去确认", "target": "wb-blueprint"}
-    primary = built["suggestions"]["primary"]
-    assert built["blueprint"] == {"state": "draft"}
-    assert primary["label"] == "确认蓝图" and primary["action"] == {"type": "confirm_blueprint", "next": "L2"}
-    labels = [item["label"] for item in built["suggestions"]["secondary"]]
-    assert labels == ["调整分段", "重新规划分段"]
+    research = _node(built, "core.research")
+    assert research["state"] == "confirmed" and built["blueprint"] == {"state": "draft"}
+    every = [built["suggestions"]["primary"], *built["suggestions"]["secondary"]]
+    assert every[0]["action"]["command"] == "/ontology-extract-operation"
+    assert not {"确认蓝图", "调整分段", "重新规划分段", "规划分段"} & {item["label"] for item in every}
+    goal = {"kind": "goal", "title": "资料讲的是门店盘点，和目标对不上，以哪个为准？", "background": "合成",
+            "suggested_goal": "合成目标：按盘点结果生成补货单"}
+    _blueprint(root, confirmed=False, old=False, draft={**DRAFT, "questions": [goal]})
+    built = view.build(root)
+    primary, secondary = built["suggestions"]["primary"], built["suggestions"]["secondary"]
+    assert primary["id"] == "answer_goal" and primary["action"]["params"] == {"dialog": "blueprint"}
+    assert secondary[0]["action"]["command"] == "/ontology-extract-operation"
+    assert _node(built, "core.research")["state"] == "confirmed"
 
 
-def test_consistency_gates_publish_only_when_slicing(env):
+def test_consistency_never_gates_publish(env):
+    """F8：全局一致性是旁支，按段建过的项目（老蓝图）也不再挡发布。"""
     client, _workspaces, _manager, project_id, root = env
     main_write(root, "ontology/object/门店.md", obj("门店", "合成门店"))
-    check = client.get(f"/api/v1/projects/{project_id}/publish/check").json()
-    assert not [gate for gate in check["gates"] if gate["source"]["kind"] == "flow"]
     _blueprint(root)
     check = client.get(f"/api/v1/projects/{project_id}/publish/check").json()
-    gate = next(gate for gate in check["gates"] if gate["source"]["kind"] == "flow")
-    assert gate["id"] == "flow:core.consistency" and gate["blocking"] and gate["status"] == "not_run"
-    assert gate["action"] == {"type": "start_node", "node_id": "core.consistency"}
-    refused = client.post(f"/api/v1/projects/{project_id}/releases", json={"degrade": True})
-    assert refused.status_code == 422 and refused.json()["code"] == "gate_blocked"
-    publish = next(node for node in view.build(root)["nodes"] if node["id"] == "core.publish")
-    assert publish["state"] == "blocked"
+    assert not [gate for gate in check["gates"] if gate["source"]["kind"] == "flow"]
+    assert _node(view.build(root), "core.publish")["state"] != "blocked"
 
 
-def test_consistency_check_script_reports_relations_terms_and_cross_slice(tmp_path):
+def test_consistency_check_script_reports_relations_and_terms(tmp_path):
+    """一致性检查只看关系与口径；老蓝图里的分段不再报「没归段」「规划了没建」。"""
     import subprocess
     import sys
 
     module = contracts.default().load("blueprint")
     doc = module.from_draft({**DRAFT, "terms": {"ambiguous": [{"variants": ["门店", "要货方"]}]}})
     doc = module.apply_edit(doc, {"mode": "draft", "term_choices": [{"term_id": "t1", "chosen": "门店"}]})
+    base = doc["slices"][0]
+    doc["slices"] = [{**base, "id": f"s{n}", "name": item["name"], "objects": item.get("objects", []),
+                      "operations": item.get("operations", []), "rules": item.get("rules", []), "depends_on": []}
+                     for n, item in enumerate(DRAFT["slices"], start=1)]
+    doc["next_ids"]["slice"] = 4
     (tmp_path / "research").mkdir()
     (tmp_path / "research" / "blueprint.json").write_text(module.dumps(doc), encoding="utf-8")
     for rel, text in {
@@ -378,11 +388,11 @@ def test_consistency_check_script_reports_relations_terms_and_cross_slice(tmp_pa
     assert done.returncode == 1, done.stderr
     result = json.loads(done.stdout)
     codes = {item["code"] for item in result["findings"]}
-    assert {"dangling_link", "term_variant", "unassigned", "planned_missing"} <= codes
+    assert {"dangling_link", "term_variant"} <= codes and not codes & {"unassigned", "planned_missing"}
     report = (tmp_path / "reports" / "consistency" / "consistency.md").read_text(encoding="utf-8")
     assert "- [ ]" in report and "要货方" in report
     # 已勾掉的结论下一次保留
-    first = next(item for item in result["findings"] if item["code"] == "orphan_object" or item["code"] == "unassigned")
+    first = result["findings"][0]
     report = report.replace(f"- [ ] {first['text']} ({first['id']})", f"- [x] {first['text']} ({first['id']})")
     (tmp_path / "reports" / "consistency" / "consistency.md").write_text(report, encoding="utf-8")
     again = json.loads(subprocess.run([sys.executable, str(script), "--json"], cwd=tmp_path, capture_output=True,
@@ -420,18 +430,14 @@ def test_project_card_and_run_slices_for_autobuild(env):
     from app.services.flow import blueprint
 
     card = next(item for item in client.get("/api/v1/projects").json()["items"] if item["id"] == project_id)
-    assert card["slices"] is None  # 全量模式：分段待规划
+    assert card["slices"] is None
     full = blueprint.run_slices(workspaces, project_id)
     assert [item["id"] for item in full] == ["all"] and full[0]["brief"].startswith("全量模式")
+    # 老的三段蓝图：项目卡片不显示分段，自主构建也只跑「全部」一段、说明是全量模式
     _blueprint(root)
     main_write(root, "ontology/object/门店.md", obj("门店", "合成"))
     card = next(item for item in client.get("/api/v1/projects").json()["items"] if item["id"] == project_id)
-    # 规划的对象还差一个：这一段还没开始
-    assert card["slices"] == {"total": 3, "confirmed": 0, "cells": ["ready", "ready", "ready"]}
-    main_write(root, "ontology/object/商品.md", obj("商品", "合成"))
-    card = next(item for item in client.get("/api/v1/projects").json()["items"] if item["id"] == project_id)
-    assert card["slices"] == {"total": 3, "confirmed": 0, "cells": ["running", "ready", "ready"]}
+    assert card["slices"] is None
     items = blueprint.run_slices(workspaces, project_id)
-    assert [item["id"] for item in items] == ["s1", "s2", "s3"] and items[1]["depends_on"] == ["s1"]
-    assert items[0]["group"] == "now" and items[0]["stages"]["object"] == "confirmed"
-    assert items[1]["brief"].startswith("分段：库存测算（s2）")
+    assert [item["id"] for item in items] == ["all"] and items[0]["depends_on"] == []
+    assert items[0]["brief"].startswith("全量模式") and items[0]["stages"]["object"] == "confirmed"

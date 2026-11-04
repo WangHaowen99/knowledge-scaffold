@@ -104,18 +104,15 @@ class AutobuildRunner:
     def preview(self, project_id: str, policy_doc: dict) -> dict:
         """AutobuildPreview；`policy_doc` 已校验过。在线程里调。"""
         from ...kernel.changesets import store as changeset_store
-        from ..flow import blueprint
 
         ws = _ws()
         running = store.active(project_id)
         if running is not None:
             raise ApiError("autobuild_running", "这个项目有一次自主构建还没结束", 409, {"run_id": running["run_id"]})
-        doc = blueprint.effective_doc(ws, project_id)
-        if doc is None or doc.get("state") != "confirmed":
-            raise ApiError("blueprint_not_confirmed", "建模蓝图还没确认", 409)
+        # F8 不再分段：不要求先确认蓝图（没有蓝图时按全量模式建）
         units, rows = plan.build(ws, project_id, policy_doc)
         if not units:
-            raise ApiError("invalid_argument", "范围里没有要做的分段", 400, {"fields": {"scope": "empty"}})
+            raise ApiError("invalid_argument", "范围里没有要做的步骤", 400, {"fields": {"scope": "empty"}})
         warnings = []
         pending = changeset_store.current(ws.project_root(project_id))
         if pending is not None and pending.get("state") == "conflict":
@@ -185,7 +182,7 @@ class AutobuildRunner:
         policy_doc = item["policy"]
         units, rows = await asyncio.to_thread(plan.build, ws, project_id, policy_doc)
         if not units:
-            raise ApiError("invalid_argument", "范围里没有要做的分段", 400, {"fields": {"scope": "empty"}})
+            raise ApiError("invalid_argument", "范围里没有要做的步骤", 400, {"fields": {"scope": "empty"}})
         run_no = store.next_run_no(project_id)
         run_id = f"run-{run_no}"
         conversation = conversation_store.create(project_id, kind="autobuild", run_id=run_id,

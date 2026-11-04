@@ -107,6 +107,21 @@ def goal_hint(project_root: Path) -> str:
     return f"建模目标（建项目时用户写的，以它为准；不要改写，也不要另拟一份）：{goal}"
 
 
+def terms_hint(project_root: Path) -> str:
+    """资料分析定下的统一叫法（F8：不分段以后由这里带给建模命令，原来在段说明里）。读助手所在的工作区
+    （副本里刚写的蓝图也算）；没有蓝图、没有定下的叫法、项目锁定的旧 core 没有这个函数时返回空串。"""
+    from ...kernel.changesets import worktree
+    from ..flow import blueprint
+
+    root = Path(project_root)
+    try:
+        module = blueprint.script(worktree.main_root(root))
+        line = module.terms_line(module.load(root)) if hasattr(module, "terms_line") else ""
+    except Exception:  # noqa: BLE001 - 蓝图读不出来不挡消息，本条不带
+        return ""
+    return f"{line}（资料分析定的，条目命名和正文照用）" if line else ""
+
+
 def build_context(
     project_root: Path,
     *,
@@ -122,7 +137,7 @@ def build_context(
     脚本超时）时本条不带阶段提示，digest 原样传回。
     """
     hint = stage_hint(project_root)
-    goal = goal_hint(project_root)
+    goal = "\n".join(part for part in (goal_hint(project_root), terms_hint(project_root)) if part)
     digest = last_injected
     stage_part = ""
     if hint is not None or goal:

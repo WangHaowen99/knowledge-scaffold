@@ -187,6 +187,14 @@ async def _run_action(project_id: str, item: dict, action: str, request: Request
     if action == "accept" and item["kind"] == "review":
         node_state.accept_review(root, source_id)
         return {"accepted": True}
+    if action == "send_to_assistant" and item["kind"] == "check_findings":
+        listed = "；".join(extra.get("messages") or [])
+        payload = {"command": "/ontology-validate", "origin": {"page": "inbox", "label": "交给助手处理"},
+                   "text": f"修正上一轮平台代存版本里检查没过的问题：{listed}", "conversation_id": "-",
+                   "display_text": "修正上一轮检查没过的问题"}
+        response = await session_routes.dispatch_command(project_id, root, request, payload)
+        inbox.dismiss(root, item["id"], by=actor, fingerprint=item.get("_fp"))
+        return {"command_task": _json(response).get("task")}
     if action == "send_to_assistant":
         payload = {"command": "/ontology-validate", "origin": {"page": "inbox", "label": "发给助手修复"},
                    "text": f"处理报告 {extra.get('path')} 里还没处理的 [ ] 条目", "conversation_id": "-",

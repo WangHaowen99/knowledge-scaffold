@@ -1082,8 +1082,9 @@ def check_object_relation_joins(doc: OntologyDoc, all_docs: dict, tables: dict) 
             if not opposite:
                 continue
             left, rel_name, right, rel_note = opposite
-            left = other if left == '当前对象' else left
-            right = other if right == '当前对象' else right
+            # 对端的端点和本端一样按元模型解析（`[[X#锚点]]`、编码后的文件名），否则带锚点的同一条关系对不上
+            left = other if left in (*_CURRENT_OBJECT_ALIASES, other) else (mm.resolve(left, all_docs) or left)
+            right = other if right in (*_CURRENT_OBJECT_ALIASES, other) else (mm.resolve(right, all_docs) or right)
             if (left, rel_name, right) != (source, name, target):
                 continue
             a, b, err = _parse_join_note(rel_note, _field_keys(source_doc), _field_keys(target_doc))

@@ -529,7 +529,8 @@ def round_card(manager, project_id: str, record: dict, card_id: str) -> dict:
         "change_list_id": record.get("change_list_id"),
         "checks": {"errors": int(checks.get("errors") or 0), "warnings": int(checks.get("warnings") or 0),
                    "pending": int(checks.get("pending") or 0)},
-        "hints": check_hints(checks),
+        "hints": ([{"tone": "warn", "text": "助手没提交完，平台代存了这一轮，检查没过的在待处理里"}]
+                  if record.get("collected") and int(checks.get("errors") or 0) else []) + check_hints(checks),
         "groups": [{"kind": kind, "label": GROUP_LABELS[kind], "items": groups[kind]}
                    for kind in GROUP_ORDER if kind in groups],
         "state": card_state,
@@ -687,7 +688,9 @@ def merge(manager, project_id: str, changeset_id: str, *, actor: str, expected_h
         main = worktree.rev(root)
         if expected_head and expected_head != main:
             raise WorkspaceError("有新的版本，请刷新后重试", 409, "head_moved", {"head": main})
-        worktree.commit_pending(copy, "chore: 收拢这一轮没提交的改动")
+        # 助手没提交完（打断、出错、提交被检查拦下后没修完）时平台代存：这些改动没经过提交前的检查，
+        # 合入检查照样只提示，问题记进改动卡与待处理（F8）
+        collected = bool(worktree.commit_pending(copy, "chore: 收拢这一轮没提交的改动"))
         head = worktree.rev(copy)
         merged_tree, result = _merged_tree(manager, project_id, root, record, main, head, choices,
                                            forbid_deletes=source == "autobuild")
@@ -704,7 +707,8 @@ def merge(manager, project_id: str, changeset_id: str, *, actor: str, expected_h
         record = store.update(root, record["id"], state="merged", closed_at=now, conflict=None,
                               merged={"commit": commit, "version_label": version_label, "at": now,
                                       **({} if commit else {"noop": True})},
-                              needs_review=needs_review, checks={**result, "tree": record.get("tree")}) or record
+                              needs_review=needs_review, checks={**result, "tree": record.get("tree")},
+                              collected=collected) or record
     _notify(project_id, "changeset", record)
     _audit(actor, project_id, "changeset.merge", record)
     return {"state": "merged", "commit": commit, "version_label": version_label, "merged_at": _iso(now),

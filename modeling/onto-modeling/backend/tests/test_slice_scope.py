@@ -1,9 +1,10 @@
-"""写入范围收窄到当前分段（详设 4.3「落到当前分段」；契约 7.6 ScopeLock、CS-06、2.4；ADR-0052）。
+"""写入范围（详设 4.3；契约 7.6 ScopeLock、CS-06、2.4；ADR-0052、ADR-0078）。
 
-- 助手在跑：建模节点只锁这一段的条目（加上这一轮改过的、决策卡预览列出的），别的段照常能改；
-- 这一轮结束、修改待确认：锁变更集里做过的那几段；
-- 全量模式（没有蓝图或只有一段）：仍按节点声明的整类条目；
-- 守卫一侧：state_helper acquire 按这一段记下段外已有的条目（protect），守卫不让助手改它们，新建的照常。
+F8（ADR-0078）起不分段：写入范围一律按节点声明的整类条目，不再收窄到某一段。F8 之前按段建的项目（蓝图里存着多段）、
+带老分段的执行记录与变更集照样按整类条目锁：
+- 助手在跑：建模节点锁整类条目，别的条目也要等这一轮结束；
+- 这一轮结束、修改还没合入：锁变更集做过的节点的整类条目；
+- 守卫一侧：state_helper acquire 不再记 protect，守卫不按段挡助手。
 
 测试数据全部为合成内容。
 """
@@ -29,9 +30,15 @@ DRAFT = {"slices": [{"name": "订单受理", "objects": ["订单"], "operations"
 
 
 def _blueprint(root: Path) -> None:
+    """F8 之前写下的两段蓝图（现在的脚本不再写多段，按老格式拼出来）。"""
     module = contracts.default().load("blueprint")
-    main_write(root, "research/blueprint.json", module.dumps(module.confirm(module.from_draft(DRAFT))),
-               "research: 合成蓝图")
+    doc = module.from_draft(DRAFT)
+    base = doc["slices"][0]
+    doc["slices"] = [{**base, "id": f"s{n}", "name": item["name"], "objects": item["objects"],
+                      "operations": item["operations"], "rules": [], "depends_on": []}
+                     for n, item in enumerate(DRAFT["slices"], start=1)]
+    doc["next_ids"]["slice"] = 3
+    main_write(root, "research/blueprint.json", module.dumps(module.confirm(doc)), "research: 合成蓝图")
 
 
 def running(slice_ref=None, affected=None):
@@ -40,33 +47,23 @@ def running(slice_ref=None, affected=None):
     return lambda pid: {"running": True, "conversation_id": "default", "exec": record, "affected": affected or []}
 
 
-def test_running_slice_locks_only_its_entries(env, monkeypatch):
+def test_running_old_slice_record_locks_the_whole_class(env, monkeypatch):
     client, workspaces, project_id, root = env
     _blueprint(root)
     monkeypatch.setattr(service, "_activity_provider", running({"id": "s1", "name": "订单受理"}))
     lock = service.scope_lock(workspaces, project_id)
-    assert lock["state"] == "assistant_running" and lock["slice"] == {"id": "s1", "name": "订单受理"}
-    assert "ontology/object/*" not in lock["paths"] and "ontology/object/订单.md" in lock["paths"]
-    assert "ontology/testcase/受理订单.md" in lock["paths"]  # 这一段的场景也在范围里
-    assert {ref["id"] for ref in lock["entries"]} >= {"object:订单", "operation:受理订单"}
-    assert "「订单受理」这一段" in lock["reason_text"]
-    with pytest.raises(WorkspaceError) as exc:
-        workspaces.write_file(project_id, "ontology/object/订单.md", obj("订单", "你在网页上改"), author="employee_0001")
-    assert exc.value.status == 423
-    # 别的段的条目照常改，不再锁整类
-    saved = workspaces.write_file(project_id, "ontology/object/客户.md", obj("客户", "别的段照常改"),
+    assert lock["state"] == "assistant_running" and lock["slice"] is None
+    assert "ontology/object/*" in lock["paths"] and "这一段" not in lock["reason_text"]
+    for name in ("订单", "客户"):  # 老蓝图里另一段的条目也一样锁住
+        with pytest.raises(WorkspaceError) as exc:
+            workspaces.write_file(project_id, f"ontology/object/{name}.md", obj(name, "你在网页上改"),
                                   author="employee_0001")
-    assert saved["commit"]
+        assert exc.value.status == 423
     base = f"/api/v1/projects/{project_id}/scope"
-    assert client.get(base, params={"target": "object:订单"}).json()["state"] == "assistant_running"
-    assert client.get(base, params={"target": "object:客户"}).json()["state"] == "none"
-    # 决策卡预览列出的段外条目也进范围
-    affected = [{"kind": "object", "id": "object:客户", "key": "客户", "name": "客户"}]
-    monkeypatch.setattr(service, "_activity_provider", running({"id": "s1", "name": "订单受理"}, affected))
     assert client.get(base, params={"target": "object:客户"}).json()["state"] == "assistant_running"
 
 
-def test_pending_changeset_locks_the_slices_it_worked_on(env, monkeypatch):
+def test_pending_changeset_with_old_slice_steps_locks_the_whole_class(env, monkeypatch):
     _client, workspaces, project_id, root = env
     _blueprint(root)
     copy = service.copy_for_turn(workspaces, project_id, root)
@@ -77,11 +74,9 @@ def test_pending_changeset_locks_the_slices_it_worked_on(env, monkeypatch):
                                           "slice": {"id": "s1", "name": "订单受理"}, "step": "object"})
     assert record["slice_steps"] == [["s1", "object"]]
     lock = service.scope_lock(workspaces, project_id)
-    assert lock["state"] == "pending_confirm" and lock["slice"] == {"id": "s1", "name": "订单受理"}
-    assert "ontology/operation/受理订单.md" in lock["paths"] and "ontology/object/*" not in lock["paths"]
-    workspaces.write_file(project_id, "ontology/object/客户.md", obj("客户", "段外照常改"), author="employee_0001")
+    assert lock["state"] == "pending_confirm" and lock["slice"] is None and "ontology/object/*" in lock["paths"]
     with pytest.raises(WorkspaceError):
-        workspaces.write_file(project_id, "ontology/operation/受理订单.md", "# 受理订单\n", author="employee_0001")
+        workspaces.write_file(project_id, "ontology/object/客户.md", obj("客户", "另一段的也锁住"), author="employee_0001")
 
 
 def test_full_mode_keeps_the_whole_class_scope(env, monkeypatch):
@@ -94,20 +89,18 @@ def test_full_mode_keeps_the_whole_class_scope(env, monkeypatch):
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="需要 bash")
-def test_guard_keeps_the_assistant_inside_its_slice(env):
+def test_guard_does_not_narrow_to_old_slices(env):
     _client, workspaces, project_id, root = env
     _blueprint(root)
     copy = service.copy_for_turn(workspaces, project_id, root)
-    agent_write(copy, "ontology/object/新对象.md", obj("新对象", "这一轮新建"))  # 这一轮自己建的不算段外
+    assert (copy / "ontology/object/客户.md").is_file()  # 老蓝图里另一段已有的对象
     (copy / ".onto" / "run").mkdir(parents=True, exist_ok=True)
     (copy / ".onto" / "run" / "exec.json").write_text(json.dumps({"exec_id": "ex-1", "node": "core.model",
                                                                   "slice": {"id": "s1", "name": "订单受理"}}))
     helper = ["python3", str(copy / ".claude" / "scripts" / "state_helper.py")]
     subprocess.run([*helper, "acquire", "extract-object", "objects"], cwd=copy, check=True, capture_output=True)
     spec = json.loads((copy / ".onto" / "run" / "active.json").read_text(encoding="utf-8"))["commands"]["extract-object"]
-    assert spec["node"] == "core.model" and spec["slice"] == "s1"
-    assert "ontology/object/客户.md" in spec["protect"] and "ontology/object/订单.md" not in spec["protect"]
-    assert "ontology/object/新对象.md" not in spec["protect"]
+    assert spec["node"] == "core.model" and "slice" not in spec and "protect" not in spec
 
     def guard(rel: str) -> str:
         payload = {"tool_name": "Write", "tool_input": {"file_path": str(copy / rel), "content": "x"}}
@@ -121,18 +114,6 @@ def test_guard_keeps_the_assistant_inside_its_slice(env):
         return bool(output) and json.loads(output.splitlines()[-1]).get("hookSpecificOutput", {}).get(
             "permissionDecision") == "deny"
 
-    assert denied(guard("ontology/object/客户.md"))
-    assert "别的段已有的条目只读" in guard("ontology/object/客户.md")
-    assert not denied(guard("ontology/object/订单.md"))
-    assert not denied(guard("ontology/object/又一个新对象.md"))
+    # 老蓝图里另一段的对象照常能改（一次做完整个项目）
+    assert not denied(guard("ontology/object/客户.md")) and not denied(guard("ontology/object/订单.md"))
     subprocess.run([*helper, "release", "extract-object"], cwd=copy, check=True, capture_output=True)
-    # 带分段的规则提取：命令本来归指标旁支，这一次是建模的「规则」一步，按这一段收窄
-    (copy / ".onto" / "run" / "exec.json").write_text(json.dumps({"exec_id": "ex-2", "node": "core.model",
-                                                                  "slice": {"id": "s1", "name": "订单受理"},
-                                                                  "step": "rule"}))
-    subprocess.run([*helper, "acquire", "extract-rule-metric", "rule-metric"], cwd=copy, check=True,
-                   capture_output=True)
-    spec = json.loads((copy / ".onto" / "run" / "active.json").read_text(encoding="utf-8"))["commands"]["extract-rule-metric"]
-    assert spec["node"] == "core.model" and spec["slice"] == "s1"
-    assert "ontology/metric/*" in spec["allow"] and "ontology/object/客户.md" in spec["protect"]
-    subprocess.run([*helper, "release", "extract-rule-metric"], cwd=copy, check=True, capture_output=True)

@@ -3,11 +3,11 @@
 B4d（建模蓝图、按段的主流程）与 B5c（节点包：可补做、已停用、熔断、人工节点、节点钩子、包的发布门禁）都改了流程
 运行时的同一条计算链，这里证明两边的行为同时成立：
 
-- 按段建模的项目里，节点包的关卡挡住建模（做了一部分也显示被挡住）、熔断解除关卡，分段照常按段算；
-- 可补做在按段的新流程里照样成立：不计进度分母、不抢主线下一步，主推仍是这一段的下一步；
+- 节点包的关卡挡住建模（做了一部分也显示被挡住）、熔断解除关卡；F8 起不分段，F8 之前按段建的项目也只算「全部」一段；
+- 可补做照样成立：不计进度分母、不抢主线下一步；
 - 待处理里人工节点的决策卡和建模蓝图的待答问题并存，各自回答各自消失；
 - 发布页的节点（发布）开始时回「在页面里操作」，人工节点照常出卡；
-- 发布门禁链：平台门禁在前，流程关卡（全局一致性、包的关卡节点）在后。
+- 发布门禁链：平台门禁在前，流程关卡（包的关卡节点；F8 起全局一致性是旁支，不再是关卡）在后。
 
 节点包、蓝图全部合成；假引擎不起真实 CLI。
 """
@@ -37,8 +37,14 @@ DRAFT = {"slices": [{"name": "借书", "objects": ["读者"], "operations": ["�
 
 
 def _blueprint(root, *, confirmed: bool = True) -> None:
+    """F8 之前写下的两段蓝图（现在的脚本不再写多段，按老格式拼出来）。"""
     module = contracts.default().load("blueprint")
     doc = module.from_draft(DRAFT)
+    base = doc["slices"][0]
+    doc["slices"] = [{**base, "id": f"s{n}", "name": item["name"], "objects": item["objects"],
+                      "operations": item["operations"], "rules": [], "depends_on": [f"s{n - 1}"] if n > 1 else []}
+                     for n, item in enumerate(DRAFT["slices"], start=1)]
+    doc["next_ids"]["slice"] = 3
     main_write(root, "research/blueprint.json", module.dumps(module.confirm(doc) if confirmed else doc),
                "research: 合成蓝图")
 
@@ -47,7 +53,7 @@ def _research(root) -> None:
     main_write(root, "research/20260101-合成.md", "# 合成资料分析\n")
 
 
-def _slice_done(root, obj_name: str, op_name: str) -> None:
+def _entries_done(root, obj_name: str, op_name: str) -> None:
     main_write(root, f"ontology/object/{obj_name}.md", obj(obj_name, "合成"))
     main_write(root, f"ontology/operation/{op_name}.md", f"# {op_name}\n\n合成操作 [[{obj_name}]]\n")
     main_write(root, f"ontology/testcase/{op_name}.md", f"# 测试场景：{op_name}\n\n## 场景 1：合成\n")
@@ -59,7 +65,13 @@ def _gate_before_model(**fields) -> dict:
     return flow
 
 
-def test_pack_gate_and_breaker_in_the_sliced_flow(env):
+def _step_after_research() -> dict:
+    flow = copy.deepcopy(NODE_PACK_FLOW)
+    flow["nodes"][0]["after"] = "core.research"
+    return flow
+
+
+def test_pack_gate_and_breaker_with_an_old_sliced_blueprint(env):
     client, manager, project_id, tmp_path = env
     root = manager.project_root(project_id)
     _research(root)
@@ -70,59 +82,56 @@ def test_pack_gate_and_breaker_in_the_sliced_flow(env):
     built = view.build(root)
     nodes = {node["id"]: node for node in built["nodes"]}
     assert nodes["core.model"]["state"] == "blocked" and nodes["naming.check"]["state"] == "ready"
-    assert [item["id"] for item in built["slices"]] == ["s1", "s2"]  # 分段照常按段算
+    assert [item["id"] for item in built["slices"]] == ["all"]  # 老的两段蓝图也只算「全部」
     assert built["slices"][0]["stages"]["object"] == "confirmed"
     ops_state.set_breaker("naming", "0.1.0", "open", "ops")
     try:
         nodes = nodes_of(root)
         assert nodes["naming.check"]["state"] == "skipped" and nodes["naming.check"]["actions"] == []
-        assert nodes["core.model"]["state"] == "running"  # 关卡解除，按各段汇总（第一段做了一部分）
-        assert nodes["core.model"]["progress"]["label"] == "0/2 段"
+        assert nodes["core.model"]["state"] == "running"  # 关卡解除：对象做了、操作还没做
+        assert nodes["core.model"]["progress"] is None
     finally:
         ops_state.set_breaker("naming", "0.1.0", "close", "ops")
         ops_state.set_breaker("naming", "0.1.0", "close", "ops")
 
 
-def test_backfill_keeps_out_of_the_way_of_the_slice_next_step(env):
+def test_backfill_keeps_out_of_the_way_of_the_mainline_next_step(env):
     client, manager, project_id, tmp_path = env
     root = manager.project_root(project_id)
     _research(root)
     _blueprint(root)
-    _slice_done(root, "读者", "借书")
-    main_write(root, "ontology/object/图书.md", obj("图书", "合成"))
-    # 全局一致性已经做过：挂在校验之后的命名检查是新插进来的、被越过了
-    main_write(root, "reports/consistency/consistency.md", "# 全局一致性检查\n\n没有发现问题。\n")
+    _entries_done(root, "读者", "借书")
     before = view.build(root)
     total_before = flow_model.progress(root)["total"]
-    install(manager, tmp_path)  # NODE_PACK_FLOW：串在校验之后
+    # 建模已经做完（老蓝图第二段没做也算：不分段）：串在资料分析之后的命名检查是新插进来的、被越过了
+    install(manager, tmp_path, flow=_step_after_research())
     enable_and_apply(client, manager, project_id)
     built = view.build(root)
     check = next(node for node in built["nodes"] if node["id"] == "naming.check")
     assert check["flags"]["backfill"] is True and check["counts_in_progress"] is False
     assert built["progress"] == before["progress"] and flow_model.progress(root)["total"] == total_before
     model = next(node for node in built["nodes"] if node["id"] == "core.model")
-    assert model["progress"]["label"] == "1/2 段"
+    assert model["state"] == "confirmed" and model["progress"] is None
+    # 主推仍是主线下一步：校验
     primary = built["suggestions"]["primary"]
-    assert primary["id"] == "core.model:s2:operation" and primary["action"]["args"] == {"slice": "s2"}
-    assert not any(item["id"].startswith("backfill:") for item in [primary])
+    assert primary["action"]["command"] == "/ontology-validate" and not primary["id"].startswith("backfill:")
     every = [primary, *built["suggestions"]["secondary"]]
     assert all(item["priority"] <= 5 for item in every)
 
 
-def test_progress_combines_slices_and_backfill(env):
+def test_progress_matches_flow_with_an_old_sliced_blueprint_and_backfill(env):
     client, manager, project_id, tmp_path = env
     root = manager.project_root(project_id)
     _research(root)
     _blueprint(root)
-    _slice_done(root, "读者", "借书")
-    main_write(root, "reports/consistency/consistency.md", "# 全局一致性检查\n\n没有发现问题。\n")
-    install(manager, tmp_path)
+    _entries_done(root, "读者", "借书")
+    install(manager, tmp_path, flow=_step_after_research())
     enable_and_apply(client, manager, project_id)
     info = flow_model.progress(root)
-    assert info["hits"]["core.model"] is False  # 按段：第二段还没做
+    assert info["hits"]["core.model"] is True  # 不分段：老蓝图第二段没做，建模也算做完
     built = view.build(root)
     assert info["done"] == built["progress"]["done"] and info["total"] == built["progress"]["total"]
-    _slice_done(root, "图书", "还书")
+    _entries_done(root, "图书", "还书")
     info = flow_model.progress(root)
     assert info["hits"]["core.model"] is True and info["done"] == view.build(root)["progress"]["done"]
 
@@ -168,9 +177,9 @@ def test_publish_node_is_a_page_and_flow_gates_follow_platform_gates(env):
     gates = client.get(f"/api/v1/projects/{project_id}/publish/check").json()["gates"]
     kinds = [item["source"]["kind"] for item in gates]
     flow_gates = [item for item in gates if item["source"]["kind"] == "flow"]
-    assert [item["id"] for item in flow_gates] == ["flow:core.consistency", "flow:naming.check"]
+    assert [item["id"] for item in flow_gates] == ["flow:naming.check"]  # F8：全局一致性不再是发布关卡
     # 关卡来源写包清单里的名字（F 第 10 条：原来写包名）
-    assert flow_gates[1]["source"] == {"kind": "flow", "label": "naming 包", "pack": "naming"}
+    assert flow_gates[0]["source"] == {"kind": "flow", "label": "naming 包", "pack": "naming"}
     assert kinds.index("flow") == len(kinds) - len(flow_gates)  # 流程关卡排在最后
     assert [item["order"] for item in gates] == list(range(1, len(gates) + 1))
-    assert nodes_of(root)["core.publish"]["state"] == "blocked"  # 两道流程关卡都没过
+    assert nodes_of(root)["core.publish"]["state"] == "blocked"  # 包的流程关卡没过

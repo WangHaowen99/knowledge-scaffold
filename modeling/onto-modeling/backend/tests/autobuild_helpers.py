@@ -1,7 +1,9 @@
 """自主构建测试共用的假引擎、项目与等待（测试数据全部为合成内容）。
 
-假引擎按收到的消息现做：对象提取写这一段规划的对象、操作提取写操作、场景走查写场景文件，命令锁开、放都按
-工具箱的样子；测试可以往 `AutoEngine.hooks` 里放「在某条命令里先做的动作」（提问、等测试放行）。不起真实 CLI。
+F8 起不分段：项目是全量模式，一次运行只有一段「全部」（后面可以再跟校验等主线节点）。假引擎按收到的消息现做：
+对象提取一次写全部合成对象、操作提取写全部操作、场景走查写场景文件，命令锁开、放都按工具箱的样子；测试可以往
+`AutoEngine.hooks` 里放「在某条命令里先做的动作」（提问、等测试放行），键是「命令:段」（`/ontology-extract-object:all`）
+或只写命令。不起真实 CLI。
 """
 
 from __future__ import annotations
@@ -29,9 +31,12 @@ from app.services.packs import contracts
 from app.services.workspace import WorkspaceManager
 from tests.test_changesets import main_write, obj
 
-SLICES = 5
-DRAFT = {"goal_md": "合成目标", "slices": [
-    {"name": f"合成段{n}", "objects": [f"对象{n}"], "operations": [f"操作{n}"]} for n in range(1, SLICES + 1)]}
+ENTRIES = 5
+OBJECTS = [f"对象{n}" for n in range(1, ENTRIES + 1)]
+OPERATIONS = [f"操作{n}" for n in range(1, ENTRIES + 1)]
+# 草稿写成老样子的多段也行：from_draft 合成一段「全部」（F8）
+DRAFT = {"goal_md": "合成目标", "slices": [{"name": "合成业务", "objects": OBJECTS, "operations": OPERATIONS}]}
+UNIT = "all"
 COMMANDS = {"/ontology-extract-object": "extract-object", "/ontology-extract-operation": "extract-operation",
             "/ontology-trace": "trace", "/ontology-validate": "validate", "/ontology-consistency": "consistency"}
 
@@ -116,18 +121,21 @@ class AutoEngine:
 
         AutoEngine.hints.append(injection.autobuild_hint(Path(self.ctx.cwd), self.ctx.conversation_id))
         head = text.split()[0] if text.strip() else ""
-        found = re.search(r"slice=s(\d+)", text)
-        n = found.group(1) if found else self._marker_slice()
+        found = re.search(r"slice=(s\d+|all)", text)
+        unit = found.group(1) if found else self._marker_slice()
         command = COMMANDS.get(head)
-        key = f"{head}:s{n}"
+        key = f"{head}:{unit}"
         items = list(AutoEngine.hooks.pop(key, [])) + list(AutoEngine.hooks.pop(head, []))
-        if key in AutoEngine.gates:
-            items.insert(0, AutoEngine.gates.pop(key))
+        for name in (key, head):
+            if name in AutoEngine.gates:
+                items.insert(0, AutoEngine.gates.pop(name))
+                break
         if command is None:
             return [*items, _release_all, result()]
-        writes = {"extract-object": [(f"ontology/object/对象{n}.md", obj(f"对象{n}", "合成对象"))],
-                  "extract-operation": [(f"ontology/operation/操作{n}.md", op(f"操作{n}"))],
-                  "trace": [(f"ontology/testcase/操作{n}.md", f"# 测试场景：操作{n}\n\n## 场景 1：合成\n")],
+        writes = {"extract-object": [(f"ontology/object/{name}.md", obj(name, "合成对象")) for name in OBJECTS],
+                  "extract-operation": [(f"ontology/operation/{name}.md", op(name)) for name in OPERATIONS],
+                  "trace": [(f"ontology/testcase/{name}.md", f"# 测试场景：{name}\n\n## 场景 1：合成\n")
+                            for name in OPERATIONS],
                   "validate": [("reports/20260101-rule.md", "# 规则检查\n\n- [x] 合成\n")],
                   "consistency": [("reports/consistency/20260101.md", "# 全局一致性\n\n- [x] 合成\n")]}[command]
         steps = [_lock(command), *items, *(_write(rel, body) for rel, body in writes)]
@@ -136,12 +144,12 @@ class AutoEngine:
         return [*steps, result()]
 
     def _marker_slice(self) -> str:
-        """续跑指令不带分段：命令按执行标记里的这一段做（与工具箱 blueprint.py brief 一样）。"""
+        """指令不带分段：按执行标记里的这一段（全量模式是「全部」，与工具箱 blueprint.py brief 一样）。"""
         try:
             marker = json.loads((Path(self.ctx.cwd) / ".onto" / "run" / "exec.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return "0"
-        return str(((marker.get("slice") or {}).get("id") or "s0"))[1:]
+            return UNIT
+        return str((marker.get("slice") or {}).get("id") or UNIT)
 
     async def send(self, text: str, context: str | None = None) -> None:
         AutoEngine.sent.append(text)
@@ -181,9 +189,9 @@ class AutoEngine:
 
 
 def blueprint(root: Path) -> None:
+    """资料分析写下的蓝图草案（F8 起不用确认，自主构建照样能开始）。"""
     module = contracts.default().load("blueprint")
-    main_write(root, "research/blueprint.json", module.dumps(module.confirm(module.from_draft(DRAFT))),
-               "research: 合成蓝图")
+    main_write(root, "research/blueprint.json", module.dumps(module.from_draft(DRAFT)), "research: 合成蓝图")
 
 
 def wait_until(predicate, timeout: float = 90.0, message: str = "条件没等到"):
@@ -233,7 +241,7 @@ def _no_gate(*args, **kwargs):
 
 @pytest.fixture()
 def ab(tmp_path: Path, monkeypatch):
-    """一个有 5 段已确认蓝图的项目；门禁放行（合成文档不全，门禁另有用例）。"""
+    """一个有蓝图（全量模式，一段「全部」）的项目；门禁放行（合成文档不全，门禁另有用例）。"""
     from app import wiring
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
