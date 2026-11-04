@@ -172,6 +172,13 @@ def test_build_release_vendors_wheels_from_overridable_index(
     assert f"--build-arg PIP_INDEX_URL={index_url}" in _onto_modeling_build_command(log_dir)
 
 
+def test_build_release_no_longer_bundles_the_knowledge_hub(tmp_path: Path) -> None:
+    """Hub 是独立交付包（knowledge-hub/build.sh），onto-modeling 包不再构建或携带其镜像。"""
+    _, log_dir = _run_build_release(tmp_path, "")
+
+    assert "knowledge-hub" not in (log_dir / "docker.log").read_text(encoding="utf-8")
+
+
 def test_onto_modeling_dockerfile_takes_pip_index_from_build_arg() -> None:
     dockerfile = (ONTO_MODELING_ROOT / "Dockerfile").read_text(encoding="utf-8")
 

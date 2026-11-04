@@ -83,7 +83,7 @@ def auth_server(tmp_path):
         data_dir=tmp_path / "auth-server-data",
         # issuer 与 RemoteAuthBackend 的默认约定（issuer 留空 = base_url）对齐
         issuer=base_url,
-        audience="meta-wise",
+        audience="knowledge-scaffold",
         access_ttl_seconds=60,  # server 允许的最小值；测试内旧 access 始终处于 TTL 窗口
         admin_token=ADMIN_API_TOKEN,
         bootstrap_admin_password=BOOTSTRAP_ADMIN_PASSWORD,
@@ -523,7 +523,7 @@ def test_build_runtime_services_assembles_remote_backend(auth_server, tmp_path, 
     monkeypatch.setenv("AUTH_SERVER_URL", auth_server.base_url)
     monkeypatch.setenv("AUTH_SERVER_ADMIN_TOKEN", ADMIN_API_TOKEN)
     monkeypatch.setenv("AUTH_SERVER_ISSUER", auth_server.base_url)
-    monkeypatch.setenv("AUTH_SERVER_AUDIENCE", "meta-wise")
+    monkeypatch.setenv("AUTH_SERVER_AUDIENCE", "knowledge-scaffold")
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / "project"))
 
     # remote 是唯一路径：无需 AUTH_MODE，装配即得 RemoteAuthBackend

@@ -1265,7 +1265,7 @@ export default function SolverModelPanel({
       setConfirming(false);
       setConflict(null);
       setSummary('');
-      message.success(saved.commit ? '求解契约已保存并记录版本' : '求解契约没有变化');
+      message.success(saved.commit ? '求解契约已保存并记录迭代' : '求解契约没有变化');
       if (saved.commit) onWorkspaceChanged?.();
       // 保存失败（被拒、冲突、出错）不发命令，处理后需重新点击
       if (command) onCommand?.(command);
@@ -1539,7 +1539,7 @@ export default function SolverModelPanel({
           )}
           <Input
             maxLength={80}
-            placeholder="改动说明（可选，写进版本记录）"
+            placeholder="改动说明（可选，写进迭代说明）"
             value={summary}
             onChange={(event) => setSummary(event.target.value)}
           />

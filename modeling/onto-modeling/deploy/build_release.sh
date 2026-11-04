@@ -135,6 +135,8 @@ AUTH_SERVER_SRC="${REPOSITORY_ROOT}/auth-server"
 (cd "${AUTH_SERVER_SRC}" && ${BUILD_CMD} -t "onto-modeling-auth-server:${VERSION}" .)
 (cd "${IMAGES_DIR}" && docker save -o "onto-modeling-auth-server-${VERSION}.tar" "onto-modeling-auth-server:${VERSION}")
 
+# 知识包 Hub 是独立交付包（knowledge-hub/build.sh），不随本包打入镜像
+
 cp "${SCRIPT_DIR}/docker-compose.release.yml" "${BUNDLE_DIR}/"
 cp "${SCRIPT_DIR}/deploy.sh" "${SCRIPT_DIR}/preflight.sh" \
    "${SCRIPT_DIR}/configure-modeling-association.sh" \

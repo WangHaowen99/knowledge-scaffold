@@ -34,6 +34,7 @@ import CenterPane from './components/CenterPane.jsx';
 import ChatPane from './components/ChatPane.jsx';
 import LeftPane from './components/LeftPane.jsx';
 import LoginPage from './components/LoginPage.jsx';
+import HubPackagesDialog from './components/HubPackagesDialog.jsx';
 import { MAX_NAME_LENGTH, useNameConflict } from './components/NameConflictDialog.jsx';
 import { usePackagePublish } from './components/PublishCheckDialog.jsx';
 import CreatePage from './components/home/CreatePage.jsx';
@@ -102,6 +103,7 @@ export default function App() {
   const [transferBusy, setTransferBusy] = useState(false);
   const transferInputRef = useRef(null);
   const importInputRef = useRef(null);
+  const [hubPackagesOpen, setHubPackagesOpen] = useState(false);
   // 删除确认与提示用 hook 实例（随首页渲染）：静态 Modal.confirm / message.* 拿不到
   // ConfigProvider 的主题与语言配置
   const [modal, modalContext] = Modal.useModal();
@@ -275,7 +277,7 @@ export default function App() {
     const created = await api.transferImport(file, projectName);
     await refreshProjects(); // 同上：先拿到新任务再进入
     nav(`#/p/${created.id}`);
-    message.success('迁移导入完成（版本历史已保留）');
+    message.success('迁移导入完成（迭代历史已保留）');
   };
 
   // 重命名 / 克隆：名称作参数传入，同名冲突改名后用新名称重试。失败抛出，由调用方分流
@@ -322,7 +324,7 @@ export default function App() {
       title: `删除任务「${item.name}」？`,
       content:
         '无论任务当前状态如何都会直接删除：进行中的建模会话、排队中的消息和数据评测立即强制终止。'
-        + '删除后不可恢复，工作区文件、对话记录与版本历史将被永久清除。',
+        + '删除后不可恢复，工作区文件、对话记录与迭代历史将被永久清除。',
       okText: '确认删除',
       okButtonProps: { danger: true },
       onOk: async () => {
@@ -352,6 +354,7 @@ export default function App() {
       { type: 'divider' },
       { key: 'export-onto', label: '导出知识包（原始产物）' },
       { key: 'export-pkg', label: '发布为知识包（供消费端导入）' },
+      { key: 'published-versions', label: '已发布版本（知识包评测）' },
       { key: 'export-ws', label: '导出迁移包（完整工作区）' },
       { type: 'divider' },
       { key: 'delete', label: '删除', danger: true },
@@ -383,6 +386,7 @@ export default function App() {
       }
       if (key === 'export-onto') window.open(api.exportUrl(item.id, 'ontology'));
       if (key === 'export-pkg') homePublish.publish(item.id);
+      if (key === 'published-versions') homePublish.showVersions(item.id);
       if (key === 'export-ws') window.open(api.exportUrl(item.id, 'workspace'));
       if (key === 'delete') removeProject(item);
     },
@@ -540,6 +544,8 @@ export default function App() {
       <div className="mwr shell">
         {modalContext}
         {messageContext}
+        <HubPackagesDialog open={hubPackagesOpen} onClose={() => setHubPackagesOpen(false)}
+          onImported={async (created) => { await refreshProjects(); nav(`#/p/${created.id}`); }} />
         <div className="topbar">
           <div className="logo"><span className="mk">知</span>知识工程建模工作台</div>
           <span className="crumb">项目</span>
@@ -547,7 +553,7 @@ export default function App() {
             <button
               className="tb-btn"
               disabled={transferBusy}
-              title="从其他环境导入完整项目迁移包（含版本历史）"
+              title="从其他环境导入完整项目迁移包（含迭代历史）"
               onClick={() => transferInputRef.current?.click()}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
@@ -574,13 +580,27 @@ export default function App() {
                 }
               }}
             />
-            <button
-              className="tb-btn"
-              title="导入已发布知识包或建模任务工作区内容（格式自动识别）"
-              onClick={() => importInputRef.current?.click()}
+            <Dropdown
+              trigger={['click']}
+              menu={{
+                items: [
+                  { key: 'published', label: '已发布知识包' },
+                  { key: 'local', label: '本地知识包' },
+                ],
+                onClick: ({ key }) => {
+                  if (key === 'published') setHubPackagesOpen(true);
+                  if (key === 'local') importInputRef.current?.click();
+                },
+              }}
             >
-              导入已有知识包
-            </button>
+              <button
+                type="button"
+                className="tb-btn"
+                title="选择已发布知识包或本地知识包"
+              >
+                导入已有知识包 ▾
+              </button>
+            </Dropdown>
             <input
               ref={importInputRef}
               type="file"

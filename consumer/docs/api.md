@@ -1927,7 +1927,7 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
   "auth": {
     "auth_server_url": "http://auth-server:5056",
     "has_auth_server_admin_token": true,
-    "auth_server_audience": "meta-wise",
+    "auth_server_audience": "knowledge-scaffold",
     "auth_server_issuer": ""
   },
   "agent": {
@@ -2173,7 +2173,7 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 | --- | --- | --- |
 | `auth_server_url` | string | 独立 auth-server 地址（必填），如 `http://auth-server:5056` |
 | `auth_server_admin_token` | secret | auth-server Admin API 共享管理令牌（对外仅返回 `has_auth_server_admin_token` 布尔） |
-| `auth_server_audience` | string | JWT 本地验签 audience，默认 `meta-wise` |
+| `auth_server_audience` | string | JWT 本地验签 audience，默认 `knowledge-scaffold` |
 | `auth_server_issuer` | string | JWT issuer，留空 = 使用 `auth_server_url` |
 
 #### `agent`

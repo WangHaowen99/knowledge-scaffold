@@ -141,7 +141,7 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
         "auth_server_audience": {
             "env": "AUTH_SERVER_AUDIENCE",
             "type": "str",
-            "default": "meta-wise",
+            "default": "knowledge-scaffold",
         },
         # 留空时 RemoteAuthBackend 使用 auth_server_url 作为 issuer。
         "auth_server_issuer": {"env": "AUTH_SERVER_ISSUER", "type": "str", "default": ""},

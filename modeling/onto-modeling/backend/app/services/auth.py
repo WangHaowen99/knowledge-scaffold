@@ -17,7 +17,7 @@ from jwt import PyJWKClient
 
 AUTH_URL = os.environ.get("ONTO_WEB_AUTH_URL", "").rstrip("/")
 ISSUER = os.environ.get("ONTO_WEB_AUTH_ISSUER", AUTH_URL)
-AUDIENCE = os.environ.get("ONTO_WEB_AUTH_AUDIENCE", "meta-wise")
+AUDIENCE = os.environ.get("ONTO_WEB_AUTH_AUDIENCE", "knowledge-scaffold")
 
 # 产品由 meta-wise 改名为 knowledge-scaffold：Consumer 升级会把 auth-server 签发的 audience
 # 迁到新名（只迁仍等于旧默认值的部署），这里的配置却可能仍是旧名，两边一错开登录后所有请求都 401。
