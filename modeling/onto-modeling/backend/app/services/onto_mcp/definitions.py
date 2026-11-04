@@ -1,7 +1,7 @@
 """Public tool contract compatible with Modeling; persistence belongs to Onto."""
 from .errors import McpError
 
-SCOPES = ("ontology.read", "ontology.change.validate", "ontology.change.apply")
+SCOPES = ("ontology.read", "ontology.change.validate", "ontology.change.apply", "package.publish")
 KEY_PATTERN = r"^[^/\\#?&|\r\n\t]{1,80}$"
 TEXT = {"type": "string"}
 STRINGS = {"type": "array", "items": TEXT}
@@ -57,6 +57,30 @@ def definitions():
         "expected_revision": TEXT, "resource_type": {"enum": ["operation", "rule"]},
         "action": {"enum": ["create", "update", "delete"]}, "resource_id": TEXT, "payload": {"type": "object"}},
         ["expected_revision", "resource_type", "action", "resource_id"], "validate"))
+    package_tools = (
+        ("preview_package_publish", "预览知识包版本发布", {
+            "request_id": {"type": "string", "pattern": r"^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,127}$"},
+            "allow_unbound": {"type": "boolean"},
+        }, (), True),
+        ("publish_package_version", "确认发布知识包新版本", {
+            "request_id": {"type": "string", "pattern": r"^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,127}$"},
+            "confirmation_token": {"type": "string", "pattern": r"^[A-Za-z0-9_-]+\.[a-f0-9]{64}$"},
+        }, ("request_id", "confirmation_token"), False),
+        ("get_package_publish_status", "查询知识包版本发布状态", {
+            "job_id": {"type": "string", "pattern": r"^[a-f0-9]{32}$"},
+        }, ("job_id",), True),
+    )
+    for name, title, props, required, read_only in package_tools:
+        result.append({
+            "name": name,
+            "title": title,
+            "description": title + "（发布当前 MCP 端点绑定的项目）",
+            "scope": "package.publish",
+            "toolset": "change",
+            "readOnly": read_only,
+            "inputSchema": {"type": "object", "properties": props, "required": list(required),
+                            "additionalProperties": False},
+        })
     return result
 
 
@@ -74,11 +98,12 @@ def validate_input(value, schema, path="arguments"):
             except McpError:
                 pass
         raise McpError("INVALID_INPUT", f"{path} 类型不符合要求")
-    types = {"object": dict, "array": list, "string": str, "integer": int}
+    types = {"object": dict, "array": list, "string": str, "integer": int, "boolean": bool}
     kind = schema.get("type")
     if kind in types and not isinstance(value, types[kind]):
         raise McpError("INVALID_INPUT", f"{path} 必须是 {kind}")
-    if kind == "integer" and isinstance(value, bool):
+    if ((kind == "integer" and isinstance(value, bool))
+            or (kind == "boolean" and type(value) is not bool)):
         raise McpError("INVALID_INPUT", f"{path} 必须是 {kind}")
     if "enum" in schema and value not in schema["enum"]:
         raise McpError("INVALID_INPUT", f"{path} 不在允许值中")
