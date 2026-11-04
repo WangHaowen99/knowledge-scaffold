@@ -385,15 +385,19 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | code | 状态 | 含义 | details |
 |---|---|---|---|
 | `conversation_not_found` | 404 | 对话不存在或已删除 | — |
-| `session_busy` | 409 | 另一条对话正在运行，或运行中不能切换、新建、删除 | `running_conversation_id`；AB-04 另带 `waiting`（那条对话停在没回答的问题上） |
+| `session_busy` | 409 | 助手正在运行（这条或另一条对话），或运行中不能切换、新建、删除 | `running_conversation_id`；AB-04 另带 `waiting`（那条对话停在没回答的问题上） |
 | `message_empty` | 400 | 消息正文和附件都为空 | — |
 | `engine_not_installed` | 503 | 引擎运行时不可用 | `engine` |
 | `permission_request_gone` | 410 | 确认请求已处理、超时或会话已重启 | — |
 | `question_gone` | 410 | 问题已回答、撤回或失效 | `state` |
 | `answer_invalid` | 400 | 选项不存在，或要求自定义回答却为空 | — |
 | `not_queued` | 409 | 当前不在排队，无法取消排队 | — |
+| `next_occupied` | 409 | 运行中已经排着一条命令（F6，最多一条） | `label`；请求带 `replace: true` 时替换 |
+| `next_not_found` | 404 | 没有排着的命令 | — |
+| `subagent_not_found` | 404 | 这条对话里没有这个子任务的记录 | — |
+| `suggestion_stale` | 409 | 建议条发起的请求（带 `from_suggestion`）：看到按钮到点下去之间情况变了 | `reason`、`suggestions`（重算后的一份，界面直接换上） |
 | `exec_not_found` | 404 | 执行记录不存在 | — |
-| `exec_not_resumable` | 409 | 不能续跑 | `reason`：`inputs_changed\|node_upgraded\|already_finished` |
+| `exec_not_resumable` | 409 | 这一步已经做完了（F6 起能力升级、输入改过时 S-16 按新版重新执行，不再拒绝） | `reason`：`already_finished` |
 | `nothing_to_retry` | 409 | 没有可重试的出错轮次 | — |
 | `title_invalid` | 400 | 对话名称须为 1–60 个字符 | — |
 
@@ -1701,7 +1705,9 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - `pending_permission`、`open_questions[]`；
   - `active_exec: ExecRecord|null`、`open_changeset: Changeset|null`；
   - `config_pending: ConfigPending|null`；
-  - `autobuild_run_id`。
+  - `autobuild_run_id`；
+  - `next: NextCommand|null`：运行中发的命令由平台代存，这一轮结束后开始（F6，见 S-07）。
+    `NextCommand = {id, label（业务名）, command, text, origin, created_at, paused: bool}`；`paused` 为打断或出错后暂停，不自动开始。
 
 #### S-06 对话历史
 
@@ -1724,15 +1730,21 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `attachments` | string[] | 否 | `U-01` 的 `upload_id`，最多 10 个。作为资料附件：确认使用时落到 `resource/` |
 | `references` | `(EntryRef\|ArtifactRef\|{kind: "anchor", anchor})[]` | 否 | 「问助手」带进来的条目引用，最多 20 个 |
 | `client_message_id` | string | 否 | 幂等键，同一键重复提交只生效一次 |
+| `replace` | bool | 否 | 运行中发命令、已经排着一条时替换它（F6） |
+| `from_suggestion` | bool | 否 | 建议条发起的（F6）：先按建议条同一份检查校验，不能执行时回 `suggestion_stale` |
 
-响应 `202`：`{message_id, seq, conversation_id, state, delivery: "immediate"|"deferred"|"queued", queue_position: int|null}`。
+响应 `202`：`{message_id: string|null, seq, conversation_id, state, delivery: "immediate"|"steer"|"next"|"deferred"|"queued", queue_position: int|null, next: NextCommand|null}`。
 
-- `deferred`：助手正在跑这一轮，消息在这一步结束后送达。「运行中也能补充说明」和自主构建的「补充说明不打断运行」都是这种。
+- `steer`（F6）：助手正在跑这一轮，发的是文字：插进这一轮，主助手下一次调用模型之前看到。送到哪了看 `message.delivery`（EC-15）。
+  主助手在等子任务时插不进去，等子任务结束；这一轮里一直没被看到的，这一轮结束后作为下一轮开始（`new_turn`）。
+- `next`（F6）：助手正在跑这一轮，发的是命令（正文以 `/` 开头）：平台代存，这一轮结束后在同一步里开始，中间不报空闲、不推建议条。
+  这时还没有用户气泡，`message_id` 为 null，开始时才写 `message.user`（`delivery="immediate"`，带原来的 `origin`）。最多存一条，已有时回 `next_occupied`。
+- `deferred`：自主构建运行对话里的补充说明，下一步开始前带给助手（不打断运行）。
 - `queued`：会话池满，排队。
 
 错误：
 
-- `message_empty`、`session_busy`（另一条对话正在运行）；
+- `message_empty`、`session_busy`（另一条对话正在运行）、`next_occupied`、`suggestion_stale`；
 - `engine_not_installed`、`quota_exceeded`；
 - `maintenance_no_new_sessions`、`project_archived`；
 - `upload_expired`。
@@ -1741,8 +1753,10 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `POST /api/v1/projects/{id}/conversations/{cid}/interrupt` · 所有者 · 旧：`POST /api/projects/{id}/session/interrupt` · 审计：是 · 依据：④、8.4 · 页面：chat-states（第 3 项「打断」）、wb-materials（「打断」）、flowchart（锁定条「回到对话里打断它」）
 
-- 响应：`{interrupted: bool, exec: ExecRecord|null}`。
+- 响应：`{interrupted: bool, exec: ExecRecord|null, returned: {message_id, text}[]}`。
 - 已保存的内容不会丢。执行记录标为「在某阶段中断」，对话流发 `session.interrupted`。
+- 还没被助手看到的插话一律撤回（引擎侧也撤回，打断后不会自己再跑起来），列在 `returned` 里，界面放回输入框；
+  每条发 `message.delivery`（`state="returned"`）。代存的命令保留、`paused=true`，不自动开始（F6）。
 - 自主构建运行中不能用它，要用 `AB-06` 暂停，否则返回 `autobuild_running`。
 
 #### S-09 重启对话
@@ -1796,6 +1810,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `POST /api/v1/projects/{id}/conversations/{cid}/retry` · 所有者 · 旧：— · 审计：是 · 依据：4.10.1 错误留档 · 页面：chat-states（第 15 项「重试」）
 
 - 重新发起最近一轮出错的请求。
+- 请求：`{from_suggestion?: bool}`（F6，同 S-07）。
 - 响应 `202`：同 `S-07`。
 - 错误：`nothing_to_retry`、`session_busy`。
 
@@ -1810,15 +1825,18 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 `POST /api/v1/projects/{id}/execs/{exec_id}/resume` · 所有者 · 旧：— · 审计：是 · 依据：8.4、方案 B6 · 页面：chat-states（第 4、5 项「从打断处继续」「从步骤 3 续跑」）、inbox
 
-- 请求：`{conversation_id?: string}`。缺省用执行记录所在的对话。
-- 往对话发一条续跑指令。
-- 响应 `202`：`{exec: ExecRecord, message_id, conversation_id}`。
-- 错误：`exec_not_found`、`exec_not_resumable`（输入变了或节点升级了）、`session_busy`。
+- 请求：`{conversation_id?: string, from_suggestion?: bool}`。缺省用执行记录所在的对话。
+- 能续跑时往对话发一条续跑指令，接着原来那份执行记录（`mode="resume"`）。
+- 能力升级、输入改过时（F6）按新版重新执行这条命令（`mode="rerun"`）：原记录记为放弃（`replaced_by` 指向新记录），
+  新开一份，提示词带上「已经保存的修改保留，不要重做」；续跑卡改为「已按新版重新做」。
+- 响应 `202`：`{mode: "resume"|"rerun", exec: ExecRecord, replaced?: ExecRecord, message_id, conversation_id}`。
+- 错误：`exec_not_found`、`exec_not_resumable`（已经做完了）、`session_busy`、`autobuild_running`、`suggestion_stale`。
 
 #### S-17 放弃执行
 
 `POST /api/v1/projects/{id}/execs/{exec_id}/abandon` · 所有者 · 旧：— · 审计：是 · 依据：8.4 · 页面：chat-states（「放弃，从头再来」）、inbox
 
+- 请求：`{conversation_id?: string, from_suggestion?: bool}`（F6，建议条「放弃这一步」）。
 - 响应：`{exec: ExecRecord}`（`state="abandoned"`）。
 - 已经保存的版本不回退。
 
@@ -1851,14 +1869,39 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `display_text` | string | 否 | 对话里显示的说明（F4b-paths）；不给时用 `text`。对话里只显示「命令 + 说明」，不带 `args`，说明里的工作区路径换成业务名；发给助手的仍是命令、参数和 `text` 原文 |
 | `origin` | `{page, label}` | 是 | 对话里显示「来自「场景走查」页」用 |
 | `conversation_id` | string | 否 | 缺省：引擎当前绑定的对话，没有就取最近更新的一条 |
+| `replace` | bool | 否 | 同 S-07（F6） |
+| `from_suggestion` | bool | 否 | 同 S-07（F6） |
 
-- 响应 `202`：`{task: CommandTask, conversation_id, message_id}`。
+- 响应 `202`：`{task: CommandTask, conversation_id, message_id: string|null, delivery: "immediate"|"next"|"queued", next: NextCommand|null}`。
+  - 助手正在跑时命令由平台代存（`delivery="next"`，同 S-07），这一轮结束后开始；被替换的那条的页面命令任务记为 `cancelled`。
   - 对话里出现一条带 `origin` 的用户消息；
   - 进度经项目流 `command.progress` 推送；
   - 跑完结果回到页面列表（`artifacts.updated`）。
 - 错误：
   - `pack_not_enabled`：按钮所属的包没启用，或要等下一条消息才生效；这时 `details.effective="next_message"`；
-  - `autobuild_running`、`session_busy`、`invalid_argument`。
+  - `autobuild_running`、`session_busy`、`invalid_argument`、`next_occupied`、`suggestion_stale`。
+
+#### S-21 子任务的步骤
+
+`GET /api/v1/projects/{id}/conversations/{cid}/subagents/{task_id}/steps` · 所有者 · 旧：— · 审计：否 · 依据：F6 · 页面：全部工作台页（点子任务卡打开的进度面板）
+
+- 查询参数：`cursor?`、`limit?`（默认 50，最大 200）；游标分页（1.6），游标绑定 `task_id`。
+- 响应：`{task: {task_id, title, brief: string|null, status, started_at, ended_at, step_count, summary}, items: {id, kind: "tool"|"text", text, state, started_at, ended_at, duration_ms}[], next_cursor}`。
+- 数据来自对话历史里这个子任务的记录。一个子任务最多记 200 步，最坏约 100 KB；时间线上的 `subagent.updated` 只带当前一步，面板打开时才拉明细。
+- 错误：`subagent_not_found`。
+
+#### S-22 取消代存的命令
+
+`POST /api/v1/projects/{id}/conversations/{cid}/next/cancel` · 所有者 · 旧：— · 审计：是 · 依据：F6 · 页面：全部工作台页（输入框上方的排队条）
+
+- 响应：`{next: null}`，对话流发 `next.updated`。这条命令的页面命令任务记为 `cancelled`。没有排着的也返回同样结果（幂等）。
+
+#### S-23 现在开始代存的命令
+
+`POST /api/v1/projects/{id}/conversations/{cid}/next/start` · 所有者 · 旧：— · 审计：是 · 依据：F6 · 页面：全部工作台页（打断后排队条的「现在开始」）
+
+- 响应 `202`：同 S-07（`delivery="immediate"`）。
+- 错误：`next_not_found`、`session_busy`（在跑，这一轮结束会自动开始）。
 
 ---
 
@@ -1905,11 +1948,22 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 `GET /api/v1/projects/{id}/flow/suggestions` · 所有者 · 旧：— · 审计：否 · 依据：6.10、㊸（`state_helper suggest` 同源） · 页面：全部工作台页（建议条）、chat-states（第 18 项）
 
 - 查询参数：`conversation_id?`。
-- 响应：`Suggestions`。规则：
-  - 1 个主推，最多 2 个次选；
-  - 优先级按 6.10；
-  - 自主构建运行中 `mode="autobuild_controls"`，返回运行控制，不推荐下一步；
-  - 有未回答的决策卡时 `mode="waiting_decision"`，主推是禁用的「先做上面的决定」。
+- 响应：`Suggestions`。规则（F6，详设 6.10）：从上往下判，命中第一条就停；1 个主推，最多 2 个次选。
+  1. 这条对话在跑：`mode="running"`，不给建议；
+  2. 有等你回答的问题：`mode="waiting_decision"`，主推「去回答」（`focus_question`，可点）；
+  3. 这一轮出错：`mode="failed"`，主推「重试这一轮」（`retry`）；
+  4. 刚被打断且有执行记录：`mode="interrupted"`，主推「继续「命令名」」（`resume_exec`，能力升级时按新版重新做），次选「放弃这一步」（`abandon_exec`）；
+     这一轮结束了、命令没收尾时同样两项（主推发「继续」）；
+  5. 合入冲突：主推「处理冲突」，其余按 6～10 补齐；
+  6. 建模蓝图草案待确认：确认蓝图或回答目标问题，次选调整分段、重新规划分段；
+  7. 过期的步骤：「刷新「段名 · 步骤名」」，说明行写上游哪里改过；
+  8. 报告里有待处理问题、挡住发布的关卡没过：继续校验或关卡的操作；
+  9. 主线下一个必经步骤（按段时按钮带段名）；
+  10. 必经都做完：查看整体视图，次选扫描脚本候选、补做插件步骤。
+  - 自主构建运行中 `mode="autobuild_controls"`，返回运行控制，不推荐下一步。
+  - 能显示就能执行：每个条目的动作先过「此刻能不能执行」的检查（与接口收到 `from_suggestion` 请求时同一份），不能的不出现，整条规则没有能执行的就往下一条判。
+  - 第 3、4、7 条带说明行 `note`（主推的 `reason`），其余为 null。
+  - 会话变为运行中、回到空闲、出现等你回答的问题、出错、打断时，对话流推新的一份（EC-53）；`rev` 递增，界面取 `rev` 大的那份。
 
 #### FL-03 跳过节点
 
@@ -3987,11 +4041,13 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 | 编号 | type | 持久 | 载荷 | 用在哪 |
 |---|---|---|---|---|
-| EC-10 | `message.user` | 是 | `{message_id, text, attachments: AttachmentRef[], references: (EntryRef\|ArtifactRef\|{kind: "anchor", anchor})[], origin: {kind: "page"\|"inbox"\|"studio"\|"report", page, label, task_id}\|null, delivery: "immediate"\|"deferred"\|"queued"}` | 用户气泡；带 `origin` 时显示「来自「场景走查」页」（第 19 项） |
+| EC-10 | `message.user` | 是 | `{message_id, text, attachments: AttachmentRef[], references: (EntryRef\|ArtifactRef\|{kind: "anchor", anchor})[], origin: {kind: "page"\|"inbox"\|"studio"\|"report", page, label, task_id}\|null, delivery: "immediate"\|"steer"\|"deferred"\|"queued"}` | 用户气泡；带 `origin` 时显示「来自「场景走查」页」（第 19 项）；`steer` 是运行中的插话，送达状态看 EC-15 |
 | EC-11 | `message.delta` | 否 | `{message_id, kind: "text"\|"thinking", text}` | 流式输出 |
 | EC-12 | `message.assistant` | 是 | `{message_id, text_md, anchors: [{n: int, anchor}], entry_links: EntryRef[], continued: bool}` | 助手正文。正文里 `[[名称]]` 渲染成去 Studio 的链接，出处角标按 `anchors` 编号悬停看原文。`continued=true` 表示与上一条连续，不重复署名 |
 | EC-13 | `notice` | 是 | `{kind: "merged"\|"discarded"\|"decided"\|"info"\|"warning", text, version_label: string\|null, changeset_id: string\|null, align: "center"\|"left"}` | 系统提示行，如「分段「订单与配送时限」已确认生效 · 版本 v0.12」「步骤 2 选了 A：…」 |
 | EC-14 | `day.marker` | 是 | `{label: string}` | 日期分隔（「今天」） |
+| EC-15 | `message.delivery` | 是 | `{message_id, state: "pending"\|"seen"\|"new_turn"\|"returned", at, waiting_on: {kind: "subagent", title, since}\|null}` | 运行中插话（`delivery="steer"`）送到哪了（F6）：等助手看到 → 已看到 / 这一轮结束后作为下一轮开始 / 打断时撤回。主助手在等子任务时 `waiting_on` 写等哪个，子任务开始、结束时再发一次。历史里每条消息只留最后一个状态 |
+| EC-16 | `next.updated` | 是 | `{next: NextCommand\|null}` | 平台代存的下一条命令（F6，见 S-05、S-07）：输入框上方的排队条 |
 
 #### 进展与子代理
 
@@ -3999,7 +4055,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 |---|---|---|---|---|
 | EC-20 | `progress` | 是 | `ProgressGroup`：`{group_id, title, desc, state: "running"\|"done"\|"failed"\|"waiting"\|"interrupted", started_at, duration_ms: int\|null, collapsed: bool, steps: [{id, text, meta: string（耗时或状态文字）, state: "done"\|"running"\|"waiting"\|"failed"\|"info", duration_ms}]}` | 「工作过程」折叠块和时间线（wb-l2「已完成 3 步」，wb-materials 读资料进度，chat-states 第 3、4、15、17、19 项） |
 | EC-21 | `progress.updated` | 是 | 同 EC-20，同一 `group_id` 整体替换 | 运行中步骤逐条回填耗时 |
-| EC-22 | `subagent.updated` | 是 | `{task_id, group_id: string\|null, title: string（业务名，如「语义检查」）, status: "started"\|"running"\|"done"\|"failed", progress_text: string（如「第 6 / 11 个操作」）, summary: string\|null, step: {id, kind: "tool"\|"text", text: string\|null, state: "running"\|"done"\|"failed"}\|null}`（`step` 是子代理自己的一步，同一 `id` 后到的只改状态，`text` 为 null 时沿用先到的） | 时间线上的子任务卡（沿用旧版对话页样式：第二行是 `progress_text`，做完是 `summary`）；`group_id` 只记派出时在哪一段，前端不按它挂 |
+| EC-22 | `subagent.updated` | 是 | `{task_id, group_id: string\|null, title: string（业务名，如「语义检查」；依次取描述、任务说明第一行、子代理类型）, status: "started"\|"running"\|"done"\|"failed", progress_text: string（如「第 6 / 11 个操作」）, summary: string\|null, step: {id, kind: "tool"\|"text", text: string\|null, state: "running"\|"done"\|"failed"}\|null, step_count: int, brief: string\|null（派给它的任务说明，≤2000 字，只在开始那条里有）, thinking: {since, elapsed_ms}\|null}`（`step` 是子代理自己的一步，同一 `id` 后到的只改状态，`text` 为 null 时沿用先到的；`thinking` 是一次模型调用超过 15 秒还没出结果时每 15 秒的心跳，瞬时，不进历史。步骤明细见 S-21） | 时间线上的子任务卡（沿用旧版对话页样式：第二行是 `progress_text`，做完是 `summary`）；`group_id` 只记派出时在哪一段，前端不按它挂 |
 | EC-23 | `tool.activity` | 是 | `{tool_use_id, visibility: "internal", tool, summary, state: "started"\|"done"\|"failed"}` | 默认不渲染；内部步骤只进执行日志（第 9 章建议 4），留给排障 |
 
 内部步骤由执行记录的阶段（㊶）和子代理事件归并成业务话的 `progress`。工具调用原文不进用户可见的事件。
@@ -4893,7 +4949,9 @@ type Flow = {
 
 type SuggestionAction =
   | { type: "send"; text: string; command?: string; args?: object }
-  | { type: "resume_exec"; exec_id: string }
+  | { type: "resume_exec" | "abandon_exec"; exec_id: string }
+  | { type: "retry" }                                   // F6：重试出错的一轮（S-14）
+  | { type: "focus_question"; question_id?: string }    // F6：滚动到等你回答的问题卡
   | { type: "merge_changeset" | "discard_changeset" | "show_changes"; changeset_id: string }
   | { type: "start_node"; node_id: string; slice_id?: string }
   | { type: "navigate"; page: string; params?: Record<string, string> }
@@ -4904,10 +4962,12 @@ type Suggestion = { id: string; label: string; icon?: string; primary: boolean; 
                     reason: string; priority: 1 | 2 | 3 | 4 | 5; action: SuggestionAction };
 
 type Suggestions = {
-  mode: "normal" | "interrupted" | "waiting_decision" | "autobuild_controls";   // F3 起没有 pending_confirm；历史里留下的前端不画「确认生效」
+  mode: "normal" | "running" | "failed" | "interrupted" | "waiting_decision" | "autobuild_controls";   // F3 起没有 pending_confirm；历史里留下的前端不画「确认生效」
   primary: Suggestion | null;
   secondary: Suggestion[];        // 最多 2 个
   all_commands: true;             // 末尾固定有「全部命令」
+  note: string | null;            // F6：主推下面的一行说明（出错原因、能力升级后按新版从头做、上游哪里改过）
+  rev: number;                    // F6：越大越新；F6 之前的历史记录没有，按 0 算
 };
 
 type BlueprintSlice = {

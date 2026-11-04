@@ -1,4 +1,4 @@
-"""会话、对话、执行记录、命令（API 契约 3.11）：S-01～S-21。
+"""会话、对话、执行记录、命令（API 契约 3.11）：S-01～S-23。
 
 一个项目可以有多条对话，同一时刻只有一个在线引擎。对话流与历史按契约 1.11 的信封输出：
 `{id, type, ts, project_id, conversation_id, data}`；载荷按第 4.2 节逐类给（会话宿主
@@ -404,6 +404,7 @@ async def interrupt(project_id: str, cid: str, request: Request):
 
 @router.post("/conversations/{cid}/next/cancel")
 async def cancel_next(project_id: str, cid: str, request: Request):
+    """S-22：取消代存的命令（输入框上方排队条的「取消」）；没有排着的也照样返回（幂等）。"""
     deps.require_writable(project_id, request)
     conversation_id = _resolve(project_id, cid)
     manager.cancel_next(project_id, conversation_id)
@@ -412,7 +413,7 @@ async def cancel_next(project_id: str, cid: str, request: Request):
 
 @router.post("/conversations/{cid}/next/start")
 async def start_next(project_id: str, cid: str, request: Request):
-    """现在开始代存的命令（打断后暂停的那条）；在跑时 409 session_busy（这一轮结束会自动开始）。"""
+    """S-23：现在开始代存的命令（打断后暂停的那条）；在跑时 409 session_busy（这一轮结束会自动开始）。"""
     deps.require_writable(project_id, request)
     conversation_id = _resolve(project_id, cid)
     autobuild_store.ensure_no_run(project_id)

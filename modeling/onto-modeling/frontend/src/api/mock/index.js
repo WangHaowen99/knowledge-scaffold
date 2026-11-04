@@ -638,12 +638,11 @@ export function createMockServer() {
   });
   on('POST', '/projects/([^/]+)/conversations/([^/]+)/queue/cancel', () => err(409, 'not_queued', '当前不在排队'));
   on('POST', '/projects/([^/]+)/conversations/([^/]+)/next/cancel', ({ m }) => {
-    if (!db.next.has(`${m[1]}:${m[2]}`)) return err(409, 'next_not_found', '没有排着的命令');
-    setNext(m[1], m[2], null);
+    if (db.next.has(`${m[1]}:${m[2]}`)) setNext(m[1], m[2], null);
     return json(200, { next: null });
   });
   on('POST', '/projects/([^/]+)/conversations/([^/]+)/next/start', ({ m }) => {
-    if (!db.next.has(`${m[1]}:${m[2]}`)) return err(409, 'next_not_found', '没有排着的命令');
+    if (!db.next.has(`${m[1]}:${m[2]}`)) return err(404, 'next_not_found', '没有排着的命令');
     if (db.running.has(`${m[1]}:${m[2]}`)) return err(409, 'session_busy', '运行中');
     startNext(m[1], m[2]);
     return json(202, { next: null });
