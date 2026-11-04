@@ -11,8 +11,7 @@ const EMPTY_PATHS = new Set();
 const MODAL_WIDTH = 'min(1280px, calc(100vw - 96px))';
 const bodyStyle = { maxHeight: 'calc(100vh - 200px)', overflow: 'auto', padding: '0 12px' };
 
-// 报告内容读自评测服务：完整回答附件要等评测优化导入后才在工作区，文件链接也不在弹窗内跳转
-const showAnswerHint = () => { message.info('完整回答会在执行评测优化后写入工作区 reports/ 目录'); return true; };
+// 报告内容读自评测服务：完整回答按结果 ID 从评测服务附件预览；文件链接不在弹窗内跳转
 const showFileHint = (path) => message.info(`请在建模工作区中查看 ${path}`);
 
 // 打开时向评测服务对账一次；仍有评测或产物在进行时轮询本地索引，并定期再对账
@@ -72,7 +71,7 @@ function useArtifact(load, target) {
   return { ...state, retry: () => setRevision((n) => n + 1) };
 }
 
-function ArtifactBody({ loading, error, retry, data }) {
+function ArtifactBody({ loading, error, retry, data, onOpenAnswer }) {
   if (loading) return <div style={{ textAlign: 'center', padding: 32 }}><Spin /></div>;
   if (error) {
     return <Alert type="error" showIcon message={error}
@@ -81,14 +80,41 @@ function ArtifactBody({ loading, error, retry, data }) {
   if (!data?.content) return null;
   return (
     <div style={bodyStyle}>
-      <Markdown content={data.content} knownPaths={EMPTY_PATHS} onOpenFile={showFileHint} onOpenAnswer={showAnswerHint} />
+      <Markdown content={data.content} knownPaths={EMPTY_PATHS} onOpenFile={showFileHint} onOpenAnswer={onOpenAnswer} />
     </div>
   );
+}
+
+// 点击报告中的「完整回答」：按结果 ID 读取评测服务附件中的单条回答，在弹窗内预览
+function useAnswerPreview(projectId, runId) {
+  const [answer, setAnswer] = useState(null);
+  const open = (resultId) => {
+    api.packageEvaluationAnswer(projectId, runId, resultId)
+      .then(setAnswer)
+      .catch((e) => message.error(`完整回答读取失败：${e.message}`));
+    return true; // 已处理，Markdown 不再回退到文件打开
+  };
+  const modal = (
+    <Modal title="完整回答" open={!!answer} footer={null} onCancel={() => setAnswer(null)} width={860} destroyOnHidden>
+      {answer && (
+        <>
+          <div className="erd-full-answer-meta">
+            {answer.originalLength} 字符{answer.truncated ? `，附件仅保留前 ${answer.fullAnswer.length} 字符` : ''}
+          </div>
+          <div className="erd-full-answer">
+            <Markdown content={answer.fullAnswer} />
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+  return { open, modal };
 }
 
 // target: { runId, version }
 export function EvaluationReportModal({ projectId, target, onClose }) {
   const artifact = useArtifact((t) => api.packageEvaluationReport(projectId, t.runId), target);
+  const preview = useAnswerPreview(projectId, target?.runId);
   return (
     <Modal title={`评测报告 — 版本 ${target?.version || ''}`} open={!!target} onCancel={onClose} width={MODAL_WIDTH} centered
       footer={(
@@ -99,8 +125,9 @@ export function EvaluationReportModal({ projectId, target, onClose }) {
       )} destroyOnHidden>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         {artifact.data?.truncated && <Alert type="info" showIcon message={REPORT_LIMIT_HINT} />}
-        <ArtifactBody {...artifact} />
+        <ArtifactBody {...artifact} onOpenAnswer={preview.open} />
       </Space>
+      {preview.modal}
     </Modal>
   );
 }
@@ -108,6 +135,7 @@ export function EvaluationReportModal({ projectId, target, onClose }) {
 // target: { runId, version }；blockReason 非空时评测优化置灰
 export function EvaluationSuggestionsModal({ projectId, target, blockReason, onClose, onRegenerated, onOptimized }) {
   const artifact = useArtifact((t) => api.packageEvaluationSuggestions(projectId, t.runId), target);
+  const preview = useAnswerPreview(projectId, target?.runId);
   const [regenerating, setRegenerating] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
   const failed = artifact.data?.status === 'failed';
@@ -152,8 +180,9 @@ export function EvaluationSuggestionsModal({ projectId, target, blockReason, onC
           <Alert type="error" showIcon message="优化建议生成失败" description={artifact.data.error}
             action={<Button size="small" loading={regenerating} onClick={regenerate}>重新生成</Button>} />
         )}
-        <ArtifactBody {...artifact} />
+        <ArtifactBody {...artifact} onOpenAnswer={preview.open} />
       </Space>
+      {preview.modal}
     </Modal>
   );
 }

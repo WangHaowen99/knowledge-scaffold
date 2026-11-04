@@ -233,6 +233,26 @@ def test_documents_only_for_runs_of_the_project_package(env, monkeypatch):
     assert client.get(f'/api/projects/{pid}/package/evaluations/not-a-run/report').status_code == 404
 
 
+def test_full_answer_preview_reads_the_attachment_without_writing_the_workspace(env):
+    manager, pid, stub, client = env
+    stub.files['answers.json'] = json.dumps({'roundId': RUN, 'answers': [
+        {'resultId': 'case-1', 'question': '合成问题一', 'finalAnswer': '简短回答', 'originalLength': 4, 'truncated': False},
+        {'resultId': 'case-2', 'question': '合成问题二', 'finalAnswer': '甲' * 8000, 'originalLength': 9000, 'truncated': True},
+    ]}, ensure_ascii=False).encode()
+    url = f'/api/projects/{pid}/package/evaluations/{RUN}/answers'
+    value = client.get(f'{url}/case-2').json()
+    assert value == {'resultId': 'case-2', 'question': '合成问题二', 'fullAnswer': '甲' * 8000,
+                     'originalLength': 9000, 'truncated': True}
+    assert stub.calls[-1][1] == f'/runs/{RUN}/artifacts/answers.json'
+    assert not list((manager.project_root(pid) / 'reports').glob('*.answers.json'))
+    assert client.get(f'{url}/case-3').status_code == 404
+    assert client.get(f'{url}/case-0').status_code == 404 and client.get(f'{url}/answers').status_code == 404
+    stub.run['artifacts'] = artifacts(report='pending')
+    assert client.get(f'{url}/case-1').json()['code'] == 'artifacts_not_ready'
+    stub.run['base_ref'] = {'ontology_id': 'pkg_other', 'release_id': 'release_one', 'version': '0.1.1'}
+    assert client.get(f'{url}/case-1').status_code == 404
+
+
 def test_regenerate_marks_index_generating(env):
     _, pid, stub, client = env
     stub.listing = {**stub.listing, 'releases': [entry()]}

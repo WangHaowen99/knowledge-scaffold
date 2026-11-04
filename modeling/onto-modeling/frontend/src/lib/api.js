@@ -270,6 +270,8 @@ export const api = {
     request(`/api/projects/${pid}/package/evaluations?reconcile=${reconcile ? 1 : 0}`),
   packageEvaluationReport: (pid, runId) =>
     request(`/api/projects/${pid}/package/evaluations/${encodeURIComponent(runId)}/report`),
+  packageEvaluationAnswer: (pid, runId, resultId) =>
+    request(`/api/projects/${pid}/package/evaluations/${encodeURIComponent(runId)}/answers/${encodeURIComponent(resultId)}`),
   packageEvaluationSuggestions: (pid, runId) =>
     request(`/api/projects/${pid}/package/evaluations/${encodeURIComponent(runId)}/suggestions`),
   regeneratePackageEvaluation: (pid, runId) =>

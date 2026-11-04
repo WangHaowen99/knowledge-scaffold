@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from './api.js';
@@ -7,19 +7,32 @@ import { Alert, Badge, Button, Modal, Skeleton, useAction } from './ui.jsx';
 
 const HISTORY_PAGE = 3;
 const MARKDOWN_PLUGINS = [remarkGfm];
-const MARKDOWN_COMPONENTS = {
-  // Relative links point into the modeling workspace (reports/…), which this service cannot open.
-  a: ({ href = '', children }) =>
-    /^https?:\/\//i.test(href) ? (
-      <a href={href} target="_blank" rel="noreferrer">
-        {children}
-      </a>
-    ) : (
-      <span className="markdown-link" title={`建模工作区文件：${href}`}>
-        {children}
-      </span>
-    ),
-};
+// The report links each long answer to its entry in this run's answers attachment.
+const ANSWER_LINK = /^reports\/[^\s#]+\.answers\.json#(case-\d+)$/;
+
+function markdownComponents(onOpenAnswer) {
+  return {
+    a: ({ href = '', children }) => {
+      const answer = ANSWER_LINK.exec(href);
+      if (answer)
+        return (
+          <button type="button" className="text-link" onClick={() => onOpenAnswer(answer[1])}>
+            {children}
+          </button>
+        );
+      // Other relative links point into the modeling workspace (reports/…), which this service cannot open.
+      return /^https?:\/\//i.test(href) ? (
+        <a href={href} target="_blank" rel="noreferrer">
+          {children}
+        </a>
+      ) : (
+        <span className="markdown-link" title={`建模工作区文件：${href}`}>
+          {children}
+        </span>
+      );
+    },
+  };
+}
 
 // Report and suggestions of a stopped run, and whether onto-modeling has been told about them.
 export function RunArtifacts({ run, onChanged }) {
@@ -80,7 +93,9 @@ export function RunArtifacts({ run, onChanged }) {
 
 function ArtifactViewer({ run, kind, onClose }) {
   const [text, setText] = useState(null),
-    [error, setError] = useState('');
+    [error, setError] = useState(''),
+    [answerId, setAnswerId] = useState(null);
+  const components = useMemo(() => markdownComponents(setAnswerId), []);
   useEffect(() => {
     let live = true;
     api(`/runs/${run.id}/artifacts/${kind === 'report' ? 'report.md' : 'suggestions.md'}`, undefined, 'GET', true, 'text')
@@ -91,17 +106,61 @@ function ArtifactViewer({ run, kind, onClose }) {
     };
   }, [run.id, kind, run.artifacts?.revision]);
   return (
-    <Modal title={kind === 'report' ? '评测报告' : '优化建议'} onClose={onClose} drawer>
+    <>
+      <Modal title={kind === 'report' ? '评测报告' : '优化建议'} onClose={onClose} drawer>
+        {error ? (
+          <Alert tone="red">{error}</Alert>
+        ) : text === null ? (
+          <Skeleton />
+        ) : (
+          <article className="markdown-body artifact-markdown">
+            <Markdown remarkPlugins={MARKDOWN_PLUGINS} components={components}>
+              {text}
+            </Markdown>
+          </article>
+        )}
+      </Modal>
+      {/* A sibling, not a child: Escape and backdrop clicks close only the preview. */}
+      {answerId && <AnswerPreview run={run} resultId={answerId} onClose={() => setAnswerId(null)} />}
+    </>
+  );
+}
+
+// One full answer from the answers attachment of the current revision, by result ID (case-N).
+function AnswerPreview({ run, resultId, onClose }) {
+  const [record, setRecord] = useState(null),
+    [error, setError] = useState('');
+  useEffect(() => {
+    let live = true;
+    api(`/runs/${run.id}/artifacts/answers.json`)
+      .then((value) => {
+        if (!live) return;
+        const found = (value.answers || []).find((item) => item.resultId === resultId);
+        if (found) setRecord(found);
+        else setError('完整回答不存在，报告可能已重新生成，请重新打开');
+      })
+      .catch((e) => live && setError(e.message));
+    return () => {
+      live = false;
+    };
+  }, [run.id, resultId, run.artifacts?.revision]);
+  const number = resultId.slice('case-'.length);
+  return (
+    <Modal title={`用例 ${number} · 完整回答`} onClose={onClose}>
       {error ? (
         <Alert tone="red">{error}</Alert>
-      ) : text === null ? (
+      ) : record === null ? (
         <Skeleton />
       ) : (
-        <article className="markdown-body artifact-markdown">
-          <Markdown remarkPlugins={MARKDOWN_PLUGINS} components={MARKDOWN_COMPONENTS}>
-            {text}
-          </Markdown>
-        </article>
+        <>
+          <p className="muted">
+            原始回答 {record.originalLength} 字符
+            {record.truncated && `，附件仅保留前 ${String(record.finalAnswer || '').length} 字符`}
+          </p>
+          <article className="markdown-body artifact-markdown">
+            <Markdown remarkPlugins={MARKDOWN_PLUGINS}>{String(record.finalAnswer || '')}</Markdown>
+          </article>
+        </>
       )}
     </Modal>
   );

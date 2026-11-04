@@ -47,6 +47,13 @@ def report(project_id: str, run_id: str, request: Request):
     return package_evaluations.document(project_id, subject, token, run_id, 'report')
 
 
+@router.get('/api/projects/{project_id}/package/evaluations/{run_id}/answers/{result_id}')
+def answer(project_id: str, run_id: str, result_id: str, request: Request):
+    """报告中「完整回答」附件的单条预览，读自评测服务，不需要先执行评测优化。"""
+    token, subject = caller(project_id, request)
+    return package_evaluations.answer(project_id, subject, token, run_id, result_id)
+
+
 @router.get('/api/projects/{project_id}/package/evaluations/{run_id}/suggestions')
 def suggestions(project_id: str, run_id: str, request: Request):
     token, subject = caller(project_id, request)

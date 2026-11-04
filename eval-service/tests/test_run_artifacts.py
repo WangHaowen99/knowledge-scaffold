@@ -133,6 +133,10 @@ def test_report_keeps_the_legacy_layout_and_score():
     assert '实际运行评测快照 0.1.1-eval.1' in report and '⚠️ 轮次异常终止：Synthetic stop（已执行 3/5 条' in report
     assert '### 2. ⚠️ partial' in report and '### 3. 🛑 error' in report and '### 4. 📝 manual' in report
     assert f'[按结果 ID 查看附件](reports/{stem}.answers.json#case-2)' in report
+    # Length and attachment follow the answer quote as their own list, not inside it.
+    assert (f"  > {'A' * 600}\n\n  - **原始回答长度**：700 字符；是否截断：是\n"
+            f'  - **完整回答**：[按结果 ID 查看附件](reports/{stem}.answers.json#case-2)\n') in report
+    assert '  > - **原始回答长度**' not in report
     assert '- **问题**：Synthetic partial' in report
     assert '`execute_script` · 退出码 2' in report and 'token=***' in report and 'synthetic-invalid' not in report
     assert '本用例未执行（轮次已结束）' in report

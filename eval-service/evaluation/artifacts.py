@@ -218,9 +218,10 @@ def render_report(run, stem, now):
         verdict, reason = outcome(case)
         answer = str(case.get('answer') or '')
         display = answer[:ANSWER_CHARS]
-        meta = ['  >', f"  > - **原始回答长度**：{len(answer)} 字符；是否截断：{'是' if len(answer) > len(display) else '否'}"]
+        # Outside the answer quote: these describe the answer, they are not part of it.
+        meta = ['', f"  - **原始回答长度**：{len(answer)} 字符；是否截断：{'是' if len(answer) > len(display) else '否'}"]
         if len(answer) > len(display):
-            meta.append(f'  > - **完整回答**：[按结果 ID 查看附件](reports/{stem}.answers.json#case-{index})')
+            meta.append(f'  - **完整回答**：[按结果 ID 查看附件](reports/{stem}.answers.json#case-{index})')
         lines += [f"### {index}. {MARKS.get(verdict, '🛑')} {verdict}", '',
                   # One line: check_eval_generalization.py collects the corpus from these lines.
                   f"- **问题**：{clip(' '.join(str(case.get('question') or '').split()), QUESTION_CHARS)}", '',
