@@ -36,6 +36,11 @@ export function filterRows(rows, kind, q) {
     && (!s || `${r.name}\n${r.key}`.toLowerCase().includes(s)));
 }
 
+// 点一行时的地址：带着对话链接给的搜索词（q），地址里的 q 不变，搜索框就不会被清掉
+export function rowQuery(query, id) {
+  return query?.q ? { entry: id, q: query.q } : { entry: id };
+}
+
 // 类型分段的项：全部在前，流程图只在图示包启用时出现（counts.flowchart 为 null 表示没启用）
 export function kindSegments(counts, { flowchartEnabled } = {}) {
   const c = counts || {};

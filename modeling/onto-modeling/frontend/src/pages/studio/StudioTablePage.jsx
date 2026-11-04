@@ -11,7 +11,7 @@ import '../../styles/studio.css';
 import EntryEditor from './EntryEditor.jsx';
 import FlowchartPanel from './FlowchartPanel.jsx';
 import { KindChip, LockIcon, PlugMark, RowStatus, useLockCopy } from './parts.jsx';
-import { filterRows, kindSegments, mergeFlowchartRows } from './studioModel.js';
+import { filterRows, kindSegments, mergeFlowchartRows, rowQuery } from './studioModel.js';
 
 const NEW_KINDS = [['object', '对象'], ['operation', '操作'], ['rule', '规则'], ['metric', '指标']];
 
@@ -87,7 +87,9 @@ export default function StudioTablePage({ route }) {
   }, [api, pid, flowchartEnabled]);
   useEffect(() => { load(); }, [load, tick]);
   useEffect(() => subscribe((env) => { if (env.type === 'workspace.changed') setTick((t) => t + 1); }), [subscribe]);
-  useEffect(() => { if (route.query?.q) setQ(route.query.q); }, [route.query?.q]);
+  // 搜索词跟着地址走：对话里的条目链接带 q 进来就按它筛；点页签回到不带 q 的地址时清掉。
+  // 换地址不会重建这一页，只在有 q 时才设，筛选会一直留着，新出的条目看不到
+  useEffect(() => { setQ(route.query?.q || ''); }, [route.query?.q]);
 
   const rows = data?.rows || [];
   // 没指定条目时：先接着编辑自己有草稿的那条，没有就选第一条；选定后不随列表刷新跳走
@@ -99,7 +101,7 @@ export default function StudioTablePage({ route }) {
   const selected = rows.find((r) => r.id === selectedId) || null;
   const shown = useMemo(() => filterRows(rows, kind, q), [rows, kind, q]);
   const segs = kindSegments(data?.counts, { flowchartEnabled });
-  const select = (id) => navigate(pagePath('studio-table', pid), { entry: id });
+  const select = (id) => navigate(pagePath('studio-table', pid), rowQuery(route.query, id));
   // 从别处跳来（报告「定位」、对话里的条目链接）时，把选中的行滚进视野
   const bodyRef = useRef(null);
   useEffect(() => {
