@@ -843,30 +843,49 @@ def test_interactive_installer_never_guesses_consumer_network() -> None:
 # 安装器升级路径共用的 docker stub：mw-modeling* 归属 STUB_MODELING_OWNER，Consumer
 # 容器归属 STUB_CONSUMER_DIR 且在 onto-agent_default 网络上；设置 STUB_ONTO_MODELING_DIR
 # 时模拟已有 onto-modeling 容器，设置 STUB_LEGACY_MODELING_PORT 时模拟旧 Modeling 的宿主端口。
+# STUB_RUNNING=1 时容器在 docker stop 之前处于运行状态；与真实 docker 一样，docker port
+# 只对运行中的容器有结果，端口绑定配置停止后仍可读。STUB_NO_LEGACY_AGENT=1 模拟只有
+# Workbench 的旧版，mw-modeling-agent 直到新 Modeling 安装后才存在。docker run 记录到
+# $CALLS_FILE.docker-run，不混入步骤记录。
 _UPGRADE_DOCKER_STUB = """\
+stopped_file="${CALLS_FILE}.stopped"
+is_stopped() { [ -z "${STUB_RUNNING:-}" ] || grep -qx "$1" "${stopped_file}" 2>/dev/null; }
 case "$1" in
     container) ;;
     image) [ "${4:-}" != --format ] || printf 'sha256:%064d\\n' 0; exit 0 ;;
     port)
+        is_stopped "$2" && exit 0
         [ "$2 $3" != "mw-modeling 5100/tcp" ] || [ -z "${STUB_LEGACY_MODELING_PORT:-}" ] \\
             || printf '0.0.0.0:%s\\n' "${STUB_LEGACY_MODELING_PORT}"
         exit 0 ;;
+    stop) printf '%s\\n' "$2" >> "${stopped_file}"; exit 0 ;;
+    run) printf '%s\\n' "$*" >> "${CALLS_FILE}.docker-run"; exit 0 ;;
     *) exit 0 ;;
 esac
 [ "$2" = inspect ] || exit 1
 name="$3"
 format="${5:-}"
 case "${name}" in
-    mw-modeling|mw-modeling-agent) owner="${STUB_MODELING_OWNER}" ;;
+    mw-modeling) owner="${STUB_MODELING_OWNER}" ;;
+    mw-modeling-agent)
+        owner="${STUB_MODELING_OWNER}"
+        [ -z "${STUB_NO_LEGACY_AGENT:-}" ] \\
+            || grep -qx modeling-install "${CALLS_FILE}" 2>/dev/null || exit 1 ;;
     onto-agent-*) owner="${STUB_CONSUMER_DIR}" ;;
     onto-modeling) owner="${STUB_ONTO_MODELING_DIR:-}"; [ -n "${owner}" ] || exit 1 ;;
     *) exit 1 ;;
 esac
 case "${format}" in
+    *PortBindings*)
+        case "${name} ${format}" in
+            'mw-modeling '*'"5100/tcp"'*)
+                [ -z "${STUB_LEGACY_MODELING_PORT:-}" ] \\
+                    || printf '%s\\n' "${STUB_LEGACY_MODELING_PORT}" ;;
+        esac ;;
     *working_dir*) printf '%s\\n' "${owner}" ;;
     *Mounts*) printf 'mw-modeling_%s-data\\n' "${name#mw-}" ;;
     *Config.Image*) printf '%s:previous\\n' "${name}" ;;
-    *State.Running*) printf 'false\\n' ;;
+    *State.Running*) is_stopped "${name}" && printf 'false\\n' || printf 'true\\n' ;;
     *Networks*) printf 'onto-agent_default\\n' ;;
 esac\
 """
@@ -1238,6 +1257,9 @@ def _prepare_legacy_upgrade(tmp_path: Path) -> dict:
     (legacy / "backend" / ".env").write_text(
         f"MODELING_SERVICE_TOKEN={MODELING_SERVICE_TOKEN}\n", encoding="utf-8"
     )
+    (legacy / "deploy" / "manifest.json").write_text(
+        '{\n  "modeling_image": "mw-modeling:v-previous"\n}\n', encoding="utf-8"
+    )
     setup["legacy"] = legacy
     setup["env"] = {
         **setup["env"],
@@ -1296,6 +1318,111 @@ def test_legacy_migration_without_onto_modeling_package_is_unchanged(tmp_path: P
     assert rc == 0, output
     assert _calls(setup) == ["consumer-upgrade", "modeling-install"]
     assert not (setup["legacy"].parent / "onto-modeling").exists()
+
+
+def _run_legacy_upgrade(setup: dict, **env: str):
+    consumer_package, modeling_package, _ = setup["packages"]
+    # 不显式指定 INSTALL_ROOT：独立 Modeling 默认落在旧合并部署旁
+    run_env = {key: value for key, value in setup["env"].items() if key != "INSTALL_ROOT"}
+    return subprocess.run(
+        [
+            _bash_executable(),
+            str(DEPLOY_ROOT / "install-consumer-modeling.sh"),
+            "--upgrade-from",
+            str(setup["legacy"]),
+            "--consumer-package",
+            str(consumer_package),
+            "--modeling-package",
+            str(modeling_package),
+        ],
+        env={**run_env, **env},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _volume_backups(setup: dict) -> str:
+    runs = Path(f"{setup['calls']}.docker-run")
+    return runs.read_text(encoding="utf-8") if runs.exists() else ""
+
+
+@pytest.mark.parametrize("legacy_has_agent", [False, True])
+def test_installer_legacy_upgrade_keeps_custom_workbench_port(
+    tmp_path: Path, legacy_has_agent: bool
+) -> None:
+    """回归：0.26.8.2 合并部署只有 mw-modeling，升级报“旧 Modeling 容器不存在：mw-modeling-agent”；
+    旧 Workbench 停止后才读端口，自定义的 48100 被新包默认 8100 覆盖。"""
+    setup = _prepare_legacy_upgrade(tmp_path)
+    env = {"STUB_RUNNING": "1", "STUB_LEGACY_MODELING_PORT": "48100"}
+    if not legacy_has_agent:
+        env["STUB_NO_LEGACY_AGENT"] = "1"
+
+    result = _run_legacy_upgrade(setup, **env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _calls(setup) == ["consumer-upgrade", "modeling-install"]
+    modeling_env = (setup["legacy"].parent / "modeling" / ".env").read_text(encoding="utf-8")
+    assert "MODELING_PORT=48100" in modeling_env
+    backups = _volume_backups(setup)
+    assert "mw-modeling_modeling-data:/source:ro" in backups
+    assert ("mw-modeling_modeling-agent-data:/source:ro" in backups) is legacy_has_agent
+    assert ("旧合并部署没有 Modeling Agent" in result.stdout) is not legacy_has_agent
+
+
+def test_installer_legacy_upgrade_refuses_declared_but_missing_agent(tmp_path: Path) -> None:
+    setup = _prepare_legacy_upgrade(tmp_path)
+    (setup["legacy"] / "deploy" / "manifest.json").write_text(
+        '{\n  "modeling_image": "mw-modeling:v-previous",\n'
+        '  "modeling_agent_image": "mw-modeling-agent:v-previous"\n}\n',
+        encoding="utf-8",
+    )
+
+    result = _run_legacy_upgrade(setup, STUB_NO_LEGACY_AGENT="1")
+
+    assert result.returncode != 0
+    assert "旧部署清单声明了 Modeling Agent" in result.stderr
+    assert _calls(setup) == []
+    assert _volume_backups(setup) == ""
+
+
+def test_installer_legacy_upgrade_refuses_unreadable_workbench_port(tmp_path: Path) -> None:
+    setup = _prepare_legacy_upgrade(tmp_path)
+
+    result = _run_legacy_upgrade(setup, STUB_LEGACY_MODELING_PORT="")
+
+    assert result.returncode != 0
+    assert "无法读取旧 Modeling Workbench 的宿主端口" in result.stderr
+    assert _calls(setup) == []
+
+    retried = _run_legacy_upgrade(setup, STUB_LEGACY_MODELING_PORT="", MODELING_PORT="55100")
+
+    assert retried.returncode == 0, retried.stdout + retried.stderr
+    modeling_env = (setup["legacy"].parent / "modeling" / ".env").read_text(encoding="utf-8")
+    assert "MODELING_PORT=55100" in modeling_env
+
+
+def test_legacy_migration_without_agent_keeps_custom_workbench_port(tmp_path: Path) -> None:
+    setup = _prepare_legacy_upgrade(tmp_path)
+    env = {
+        **setup["env"],
+        "STUB_RUNNING": "1",
+        "STUB_NO_LEGACY_AGENT": "1",
+        "STUB_LEGACY_MODELING_PORT": "48100",
+    }
+
+    rc, output = _drive_tty(
+        DEPLOY_ROOT / "upgrade-consumer-modeling-legacy-interactive.sh",
+        _legacy_answers(setup, ""),
+        env,
+    )
+
+    assert rc == 0, output
+    assert "旧合并部署没有 Modeling Agent" in output
+    assert _calls(setup) == ["consumer-upgrade", "modeling-install"]
+    modeling_env = (setup["legacy"].parent / "modeling" / ".env").read_text(encoding="utf-8")
+    assert "MODELING_PORT=48100" in modeling_env
+    assert "mw-modeling_modeling-agent-data" not in _volume_backups(setup)
 
 
 def _host_port_default(compose_text: str, var: str) -> str:
