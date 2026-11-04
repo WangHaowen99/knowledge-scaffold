@@ -193,6 +193,7 @@ def conversation_state(project_id: str, cid: str, request: Request):
         "active_exec": _exec_view(project_id, active),
         "open_changeset": _open_changeset(project_id, conversation_id),
         "config_pending": config_pending,
+        "next": manager.next_view(project_id, conversation_id),
         "autobuild_run_id": view.get("run_id"),
         "pool": _pool(),
     }
@@ -287,25 +288,50 @@ def _reference_text(references: list) -> str:
 
 
 async def _send(project_id: str, root: Path, conversation_id: str, request: Request, text: str, meta: dict) -> dict:
-    """发给对话并给出 S-07 的响应形状；会话层的错误转契约错误码。自主构建没结束时一律 409（契约 2.10）。"""
+    """发给对话并给出 S-07 的响应形状；会话层的错误转契约错误码。自主构建没结束时一律 409（契约 2.10）。
+
+    在跑的时候：文字插进这一轮（delivery=steer）；命令由平台代存（delivery=next，还没有用户气泡，message_id 为 null，
+    另给 next），已有一条时 409 next_occupied，meta 带 replace 时替换。"""
     autobuild_store.ensure_no_run(project_id)
     reject_new_session(project_id)
     _ensure_not_busy(project_id, conversation_id)
-    live = manager.get(project_id)
-    was_running = bool(live and live.conversation_id == conversation_id and live.state == "running")
-    session = await manager.send(project_id, root, text, conversation_id, username=deps.username(request), meta=meta)
-    record = next((event for event in reversed(session.events) if event.get("type") == "user_message"), None)
-    seq = timeline.external_id(record) if record else None
+    try:
+        session, outcome = await manager.submit(project_id, root, text, conversation_id,
+                                                username=deps.username(request), meta=meta)
+    except SessionError as exc:
+        if getattr(exc, "code", "") == "next_occupied":  # 页面命令（S-20）按 ApiError 收尾任务
+            raise ApiError("next_occupied", str(exc), 409, getattr(exc, "details", None)) from exc
+        raise
+    return _send_view(project_id, session, outcome)
+
+
+def _send_view(project_id: str, session, outcome: dict) -> dict:
+    record = outcome.get("record")
     queue_position = manager.queue_position(project_id)
-    delivery = "queued" if queue_position is not None else ("deferred" if was_running else "immediate")
+    delivery = outcome["delivery"]
+    if delivery == "immediate" and queue_position is not None:
+        delivery = "queued"
     return {
         "message_id": timeline.message_id(record) if record else None,
-        "seq": seq,
+        "seq": timeline.external_id(record) if record else None,
         "conversation_id": session.conversation_id,
         "state": "queued" if queue_position is not None else _STATE.get(session.state, session.state),
         "delivery": delivery,
         "queue_position": queue_position,
+        "next": outcome.get("next"),
     }
+
+
+def _command_label(root: Path, text: str) -> str | None:
+    """手打的斜杠命令在命令目录里的业务名（代存时排队条显示它）。"""
+    head = timeline._leading_command(text)
+    if not head:
+        return None
+    for group in command_catalog(root)["groups"]:
+        for item in group["items"]:
+            if item["command"] == head:
+                return item["label"]
+    return None
 
 
 @router.post("/conversations/{cid}/messages")
@@ -330,7 +356,9 @@ async def send_message(project_id: str, cid: str, request: Request):
         prompt = f"（我通过界面上传了资料：{'、'.join(item['path'] for item in saved)}）\n{prompt}"
     prompt += _reference_text(references)
     meta = {"display_text": text.strip() or "（附件）", "attachments": [item["ref"] for item in saved],
-            "references": references, "origin": None}
+            "references": references, "origin": None, "replace": bool(body.get("replace"))}
+    if not saved and text.lstrip().startswith("/"):
+        meta["command_label"] = _command_label(root, text)
     run = autobuild_store.active(project_id)
     if run is not None and run.get("conversation_id") == conversation_id:
         # 运行对话里发的是补充说明（契约 3.22）：不打断运行，下一步开始前带给助手
@@ -339,7 +367,7 @@ async def send_message(project_id: str, cid: str, request: Request):
         record = runner.note(project_id, run, prompt, meta)
         result = {"message_id": timeline.message_id(record), "seq": timeline.external_id(record),
                   "conversation_id": conversation_id, "state": "running", "delivery": "deferred",
-                  "queue_position": None}
+                  "queue_position": None, "next": None}
     else:
         result = await _send(project_id, root, conversation_id, request, prompt, meta)
     if key:
@@ -360,9 +388,37 @@ async def interrupt(project_id: str, cid: str, request: Request):
     live = manager.get(project_id)
     running = bool(live and live.conversation_id == conversation_id and live.state in ("running", "connecting"))
     manager.interrupted_execs.pop((project_id, conversation_id), None)
+    manager.returned_steers.pop((project_id, conversation_id), None)
     reconciled = await manager.interrupt(project_id, conversation_id)
     record = manager.interrupted_execs.pop((project_id, conversation_id), None)
-    return {"interrupted": running or bool(reconciled), "exec": _exec_view(project_id, record)}
+    # 还没被助手看到的插话撤回来（界面放回输入框）；代存的命令留着但暂停（next.paused）
+    returned = manager.returned_steers.pop((project_id, conversation_id), None) or []
+    return {"interrupted": running or bool(reconciled), "exec": _exec_view(project_id, record), "returned": returned}
+
+
+# ---- 代存的下一条命令（契约 EC-10 补充：运行中发的命令 delivery=next）----
+
+
+@router.post("/conversations/{cid}/next/cancel")
+async def cancel_next(project_id: str, cid: str, request: Request):
+    deps.require_writable(project_id, request)
+    conversation_id = _resolve(project_id, cid)
+    manager.cancel_next(project_id, conversation_id)
+    return {"next": None}
+
+
+@router.post("/conversations/{cid}/next/start")
+async def start_next(project_id: str, cid: str, request: Request):
+    """现在开始代存的命令（打断后暂停的那条）；在跑时 409 session_busy（这一轮结束会自动开始）。"""
+    deps.require_writable(project_id, request)
+    conversation_id = _resolve(project_id, cid)
+    autobuild_store.ensure_no_run(project_id)
+    reject_new_session(project_id)
+    _ensure_not_busy(project_id, conversation_id)
+    if manager.next_view(project_id, conversation_id) is None:
+        raise ApiError("next_not_found", "没有排着的命令", 404)
+    session, outcome = await manager.start_next(project_id, conversation_id, deps.username(request))
+    return JSONResponse(status_code=202, content=_send_view(project_id, session, outcome))
 
 
 @router.post("/conversations/{cid}/restart")
@@ -755,7 +811,7 @@ async def dispatch_command(project_id: str, root: Path, request: Request, body: 
     display = f"{command}\n\n{workspace_labels.humanize(shown)}" if shown else command
     meta = {"display_text": display, "origin": {"kind": "page", "page": str(origin.get("page")),
                                              "label": str(origin.get("label") or ""), "task_id": task["task_id"]},
-            "task_id": task["task_id"], "command": name}
+            "task_id": task["task_id"], "command": name, "command_label": label, "replace": bool(body.get("replace"))}
     try:
         result = await _send(project_id, root, conversation_id, request, text, meta)
     except ApiError:
@@ -768,4 +824,5 @@ async def dispatch_command(project_id: str, root: Path, request: Request, body: 
     task = command_tasks.update(project_id, task["task_id"], **fields) or task
     return JSONResponse(status_code=202, content={"task": command_tasks.view(task),
                                                   "conversation_id": result["conversation_id"],
-                                                  "message_id": result["message_id"]})
+                                                  "message_id": result["message_id"],
+                                                  "delivery": result["delivery"], "next": result.get("next")})

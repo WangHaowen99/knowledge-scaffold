@@ -32,6 +32,9 @@ PASSTHROUGH = {
     "question_asked": "question.asked",
     "question_answered": "question.answered",
     "question_withdrawn": "question.withdrawn",
+    # 插话的去向、代存的下一条命令（契约 EC-10 补充）
+    "message_delivery": "message.delivery",
+    "next_updated": "next.updated",
 }
 STEPS_MAX = 30
 ASK_TOOL = "AskUserQuestion"
@@ -773,11 +776,19 @@ def project(record: dict, project_id: str, conversation_id: str) -> dict | None:
 
 
 def collapse(envelopes: list[dict]) -> list[dict]:
-    """S-06：卡片、工作过程组、子任务卡按最新内容放在第一次出现的位置；问题带上回答后的状态。"""
+    """S-06：卡片、工作过程组、子任务卡按最新内容放在第一次出现的位置；问题带上回答后的状态；
+    插话的去向、代存的命令只留最后一条。"""
     latest_card: dict[str, dict] = {}
     latest_group: dict[str, dict] = {}
     latest_sub: dict[str, dict] = {}
     question_state: dict[str, dict] = {}
+    last_delivery: dict[str, int] = {}
+    last_next = None
+    for index, envelope in enumerate(envelopes):
+        if envelope["type"] == "message.delivery":
+            last_delivery[(envelope.get("data") or {}).get("message_id")] = index
+        elif envelope["type"] == "next.updated":
+            last_next = index
     for envelope in envelopes:
         data = envelope.get("data") or {}
         kind = envelope["type"]
@@ -797,9 +808,13 @@ def collapse(envelopes: list[dict]) -> list[dict]:
         elif kind == "question.withdrawn":
             question_state[data.get("question_id")] = {"state": "withdrawn"}
     result, seen_cards, seen_groups, seen_subs = [], set(), set(), set()
-    for envelope in envelopes:
+    for index, envelope in enumerate(envelopes):
         data = envelope.get("data") or {}
         kind = envelope["type"]
+        if kind == "message.delivery" and last_delivery.get(data.get("message_id")) != index:
+            continue
+        if kind == "next.updated" and index != last_next:
+            continue
         if kind == "subagent.updated" and data.get("task_id"):
             if data["task_id"] in seen_subs:
                 continue

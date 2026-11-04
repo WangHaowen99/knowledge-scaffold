@@ -330,8 +330,13 @@ class Session:
     turn_title: str = ""
     turn_started_at: float | None = None
     exec_id: str | None = None
-    # 运行中收下、要等前一步结束才开始的消息（原文、页面命令任务 ID）：前一轮出 result 时接上
-    deferred: list = field(default_factory=list)
+    # 运行中发来的文字（插话，契约 EC-10 delivery=steer）：message_id → {text 界面原话, prompt 发给模型的全文,
+    # sent 已交给引擎, waiting_on}。引擎插进这一轮（seen）或拿它开下一轮（new_turn）时移出；打断时撤回
+    steers: dict = field(default_factory=dict)
+    # 主 agent 派出去、还没结束的子任务：task_id → (名称, 开始时间)。插话等它们结束才能被看到（waiting_on）
+    open_subagents: dict = field(default_factory=dict)
+    # 上一轮结束、代存的下一条命令正在开始（另起的任务里）：这期间收到的插话先记下，命令交给引擎后再送
+    chaining: bool = False
     # 出错卡（EC-04）：最近一次留档的错误编号、连续重试次数、出错那一轮的消息（S-14 重试用）
     last_error_id: str | None = None
     retries: int = 0
@@ -430,7 +435,14 @@ def _recyclable(session: "Session") -> bool:
         and not session.pending_prompts
         and not session.sending
         and not session.run_id
+        and not session.steers
+        and not session.chaining
     )
+
+
+def _is_command(text: str, meta: dict) -> bool:
+    """运行中发来的是命令（排到这一轮之后）还是文字（插进这一轮）：页面命令带 command，手打的以 / 开头。"""
+    return bool(meta.get("command")) or str(text or "").lstrip().startswith("/")
 
 
 def _unfinished(session: "Session") -> bool:
@@ -449,6 +461,11 @@ def _mark_interrupted(session: "Session", reason: str, message: str) -> None:
         session.turn.finish("interrupted")
         session.broadcast(session.turn.progress_record())
     session.turn = None
+    for message_id in list(session.steers):  # 停机、运维断开：没送到的插话不再送（界面放回输入框）
+        session.broadcast({"type": "message_delivery", "payload": {
+            "message_id": message_id, "state": "returned", "at": views_iso(time.time()), "waiting_on": None}})
+    session.steers.clear()
+    session.open_subagents.clear()
     record, card = turns.interrupt_exec(session, _EXEC_REASONS.get(reason, "engine_exit"), card=not session.run_id)
     now = time.time()
     session.broadcast({"type": "session_interrupted", "reason": reason, "message": message, "ts": now,
@@ -517,6 +534,20 @@ def _expire_orphan_permissions(session: "Session") -> None:
                                "payload": {"question_id": question_id, "reason": "会话已重启"}})
 
 
+async def _interrupt_engine(engine: Any) -> list[str] | None:
+    """打断引擎并撤回还没插进去的插话；返回撤回的 message_id，引擎不支持撤回（单测的假引擎）时返回 None。"""
+    import inspect
+
+    try:
+        accepts = "cancel_queued" in inspect.signature(engine.interrupt).parameters
+    except (TypeError, ValueError):
+        accepts = False
+    if not accepts:
+        await engine.interrupt()
+        return None
+    return await engine.interrupt(cancel_queued=True)
+
+
 async def _stop_engine(engine: Any) -> None:
     """断开引擎；CLI 悬死不应答时超时硬杀，保证调用方总能返回。"""
     # disconnect 要等 CLI 应答，CLI 悬死时会永久挂起，并把 _lock 一起拖住——
@@ -547,6 +578,10 @@ class SessionManager:
         self._watchers: dict[tuple[str, str], set[asyncio.Queue]] = {}
         # 最近一次被你打断的执行（S-08 的响应带它）
         self.interrupted_execs: dict[tuple[str, str], dict | None] = {}
+        # 最近一次打断撤回的插话（S-08 的响应带它，界面放回输入框）
+        self.returned_steers: dict[tuple[str, str], list[dict]] = {}
+        # 运行中发来的命令（契约 delivery=next）：（项目, 对话）→ 代存的一条；这一轮结束后开始，打断后暂停
+        self._next: dict[tuple[str, str], dict] = {}
         # 自主构建（方案 B13）：项目 → 正在跑的运行；各项目一个信号，状态变了、一轮结束时置位
         self._runs: dict[str, str] = {}
         self._signals: dict[str, asyncio.Event] = {}
@@ -652,6 +687,7 @@ class SessionManager:
         for request in list(session.pending_permissions.values()):
             if not request.future.done():
                 request.future.set_result({"behavior": "deny", "message": reason})
+        self.cancel_next(project_id, session.conversation_id, summary="开始了自主构建，排着的命令不再执行")
         await self.interrupt(project_id, session.conversation_id)
         deadline = time.monotonic() + INTERRUPT_TIMEOUT_SECONDS
         while _busy(session) and time.monotonic() < deadline:
@@ -715,8 +751,24 @@ class SessionManager:
         *,
         meta: dict | None = None,
     ) -> Session:
-        """发一条消息。meta 是界面上显示的内容（契约 EC-10）：display_text（用户原话，text 是发给模型的
-        全文）、attachments、references、origin，以及页面命令任务 task_id。
+        session, _ = await self.submit(project_id, cwd, text, conversation_id, username, meta=meta)
+        return session
+
+    async def submit(
+        self,
+        project_id: str,
+        cwd: Path,
+        text: str,
+        conversation_id: str | None = None,
+        username: str = "",
+        *,
+        meta: dict | None = None,
+    ) -> tuple[Session, dict]:
+        """发一条消息，返回（会话, 去向）。meta 是界面上显示的内容（契约 EC-10）：display_text（用户原话，text 是发给
+        模型的全文）、attachments、references、origin，以及页面命令任务 task_id、命令名 command 与业务名 command_label。
+
+        去向 {delivery, message_id, record, next}：空闲时 immediate（开一轮）；在跑时文字是 steer（插进这一轮），
+        命令是 next（平台代存，这一轮结束后开始，此时还没有用户气泡）。
 
         模型配置固定用项目所有者的（方案 B3）：谁发的消息都一样，Studio 复核等后端内部发的消息也是。
         username 只用于审计口径，不再决定用谁的 Key。
@@ -751,10 +803,10 @@ class SessionManager:
             self._bind_model_owner(session, owner, engine_cls.name)
             session.sending += 1
         try:
-            await self._deliver(session, cwd, text, meta or {})
+            outcome = await self._deliver(session, cwd, text, meta or {}, username=username)
         finally:
             session.sending -= 1
-        return session
+        return session, outcome
 
     async def _bind_session(
         self, project_id: str, conversation_id: str | None
@@ -802,20 +854,24 @@ class SessionManager:
             except personal_model_settings.PersonalConfigError as exc:
                 raise SessionError(str(exc), exc.status) from exc
 
-    async def _deliver(self, session: Session, cwd: Path, text: str, meta: dict | None = None) -> None:
+    async def _deliver(self, session: Session, cwd: Path, text: str, meta: dict | None = None, *,
+                       username: str = "") -> dict:
         meta = meta or {}
         session.last_activity = time.time()
-        running = session.state == "running"
-        if not running:
-            # 助手在变更集副本里改（方案 C7）：一轮开始前先合入上一轮遗留的修改（F3），建或修副本、跟上主线；
-            # 建不了时退回主线工作区
-            if not session.run_id:
-                await self._settle_leftover(session)
-            session.cwd = await asyncio.to_thread(_agent_cwd, session.project_id, cwd)
-            session.round_base_commit, session.round_base_tree = await asyncio.to_thread(_round_start, session.cwd)
-        elif session.cwd is None:
-            session.cwd = cwd
-        if not running and session.engine is not None and session.engine_cwd != session.cwd:
+        chained = bool(meta.pop("_chain", False))
+        # 在跑（含消息已收下、引擎还在连接或排队）：平台不再把消息塞给引擎排着（引擎排着的平台不知道，执行记录会
+        # 挂错命令）。文字插进这一轮，命令代存到这一轮结束
+        if not chained and (session.state == "running" or session.pending_prompts or session.chaining):
+            if _is_command(text, meta):
+                return await self._hold_next(session, cwd, text, meta, username)
+            return await self._steer(session, cwd, text, meta)
+        # 助手在变更集副本里改（方案 C7）：一轮开始前先合入上一轮遗留的修改（F3），建或修副本、跟上主线；
+        # 建不了时退回主线工作区
+        if not session.run_id:
+            await self._settle_leftover(session)
+        session.cwd = await asyncio.to_thread(_agent_cwd, session.project_id, cwd)
+        session.round_base_commit, session.round_base_tree = await asyncio.to_thread(_round_start, session.cwd)
+        if session.engine is not None and session.engine_cwd != session.cwd:
             # 这一轮的工作目录换了（建副本失败退回主线、或副本恢复了）：引擎还在旧目录里改，改动就进不了
             # 变更集。断开，这条消息按新目录重连（resume 续接上下文）
             if session.reader_task:
@@ -823,55 +879,301 @@ class SessionManager:
             await session.engine.disconnect()
             session.engine = None
         # 会话配置指纹（模型、归属、装配、流程、MCP、权限模式）变了：断开重连（resume 续接上下文），
-        # 让新配置、新装配目录在这条消息生效（方案 B2、详设 8.1 第 4 步）。正在跑的一轮不能切断：
-        # 只记待重载，这条消息仍交给旧引擎，等手头的轮次都出 result 再断开（_read_loop）
+        # 让新配置、新装配目录在这条消息生效（方案 B2、详设 8.1 第 4 步）
         if session.engine is not None:
-            if session.state != "running":
-                # 没有正在跑的一轮：先跟随通道、按锁文件装配并切换 .claude（只动纯数据包时不必重连）
-                await asyncio.to_thread(_fingerprint.prepare, session.project_id)
+            # 没有正在跑的一轮：先跟随通道、按锁文件装配并切换 .claude（只动纯数据包时不必重连）
+            await asyncio.to_thread(_fingerprint.prepare, session.project_id)
             changes = await asyncio.to_thread(
                 _fingerprint.changes, session.engine, session.project_id, session.model_owner, session.fingerprint
             )
             if changes:
                 telemetry.count("onto_reconnects_total", project=session.project_id)
                 session.pending_changes = changes
-                if session.state == "running":
-                    if not session.reload_pending:
-                        session.broadcast({
-                            "type": "session_config_pending",
-                            "changes": _fingerprint.describe(changes),
-                            "effective": "next_message",
-                            "detail_link": None,
-                        })
-                    session.reload_pending = True
-                else:
-                    if session.reader_task:
-                        session.reader_task.cancel()
-                    await session.engine.disconnect()
-                    session.engine = None
-        self._user_message(session, text, meta, deferred=running)
+                if session.reader_task:
+                    session.reader_task.cancel()
+                await session.engine.disconnect()
+                session.engine = None
+        record = self._user_message(session, text, meta, delivery="immediate")
         if not session.discarded:  # 已删除项目再写标题会重建出会话索引
             conversation_store.note_message(
                 session.project_id, session.conversation_id, meta.get("display_text") or text
             )
-        # 执行记录与这一轮：运行中收下的消息等前一步结束再开始（_finish_turn 接上）
-        if running:
-            session.deferred.append((text, meta.get("task_id")))
-        else:
-            await asyncio.to_thread(turns.begin, session, text, task_id=meta.get("task_id"),
-                                    resume_exec=meta.get("resume_exec"))
-            session.turn = timeline.Turn.new(session.turn_title)
-            session.last_prompt = text
-            project_events.scope_changed(session.project_id)
+        await asyncio.to_thread(turns.begin, session, text, task_id=meta.get("task_id"),
+                                resume_exec=meta.get("resume_exec"))
+        session.turn = timeline.Turn.new(session.turn_title)
+        session.last_prompt = text
+        project_events.scope_changed(session.project_id)
+        if chained:
+            # 接着上一轮开始：状态一直是 running，只把这一轮的开始时间换掉
+            session.turn_started_at = time.time()
+            session.broadcast({"type": "session_state", "state": "running", "turn_started_at": session.turn_started_at,
+                               "reason": None})
+        outcome = {"delivery": "immediate", "message_id": record["message_id"], "record": record, "next": None}
         if session.engine is not None:
             await self._send_turn(session, session.engine, text)
             session.set_state("running")
-            return
+            await self._flush_steers(session)
+            return outcome
         session.pending_prompts.append(text)
         await self._request_slot(session)
+        return outcome
+
+    # ---- 运行中发来的消息：插话（steer）与代存的下一条命令（next）----
+
+    async def _steer(self, session: Session, cwd: Path, text: str, meta: dict) -> dict:
+        """运行中发来的文字：记用户气泡（delivery=steer），交给正在跑的这一轮；引擎还没连上或下一条命令正在开始时，
+        等那条交给引擎后再送（_flush_steers）。"""
+        if session.cwd is None:
+            session.cwd = cwd
+        record = self._user_message(session, text, meta, delivery="steer")
+        if not session.discarded:
+            conversation_store.note_message(
+                session.project_id, session.conversation_id, meta.get("display_text") or text
+            )
+        message_id = record["message_id"]
+        waiting = self._waiting_on(session)
+        session.steers[message_id] = {"text": meta.get("display_text") or text, "prompt": text, "sent": False,
+                                      "waiting_on": waiting}
+        self._delivery(session, message_id, "pending", waiting)
+        if session.engine is not None and not session.pending_prompts and not session.chaining:
+            await self._flush_steers(session)
+        await self._note_config_change(session)
+        return {"delivery": "steer", "message_id": message_id, "record": record, "next": None}
+
+    async def _flush_steers(self, session: Session) -> None:
+        """还没交给引擎的插话交出去。不会插话的引擎（单测的假引擎）当一条新消息发：它照旧一次发送一个 result。"""
+        engine = session.engine
+        if engine is None:
+            return
+        for message_id, entry in list(session.steers.items()):
+            if entry.get("sent"):
+                continue
+            entry["sent"] = True
+            steer = getattr(engine, "steer", None)
+            if steer is not None:
+                await steer(entry["prompt"], message_id)
+            else:
+                await engine.send(entry["prompt"])
+
+    async def _note_config_change(self, session: Session) -> None:
+        """在跑的时候又收到消息：会话配置变了只记待重载（正在跑的一轮不能切断），等手头的轮次都结束再断开重连。"""
+        if session.engine is None:
+            return
+        changes = await asyncio.to_thread(
+            _fingerprint.changes, session.engine, session.project_id, session.model_owner, session.fingerprint
+        )
+        if not changes:
+            return
+        telemetry.count("onto_reconnects_total", project=session.project_id)
+        session.pending_changes = changes
+        if not session.reload_pending:
+            session.broadcast({
+                "type": "session_config_pending",
+                "changes": _fingerprint.describe(changes),
+                "effective": "next_message",
+                "detail_link": None,
+            })
+        session.reload_pending = True
 
     @staticmethod
-    def _user_message(session: Session, text: str, meta: dict, *, deferred: bool) -> None:
+    def _delivery(session: Session, message_id: str, state: str, waiting_on: dict | None = None) -> None:
+        """插话的去向（契约 EC-10 message.delivery）：pending | seen | new_turn | returned。"""
+        session.broadcast({"type": "message_delivery", "payload": {
+            "message_id": message_id, "state": state, "at": views_iso(time.time()), "waiting_on": waiting_on}})
+
+    @staticmethod
+    def _waiting_on(session: Session) -> dict | None:
+        """插话在等谁：主 agent 在等子任务时，等最早派出去的那个结束才能看到。"""
+        if not session.open_subagents:
+            return None
+        title, since = min(session.open_subagents.values(), key=lambda item: item[1])
+        return {"kind": "subagent", "title": title, "since": views_iso(since)}
+
+    def _track_subagent(self, session: Session, event: dict) -> None:
+        task_id = str(event.get("task_id") or event.get("tool_use_id") or "")
+        if not task_id:
+            return
+        if event.get("type") == "subagent_started":
+            # 和子任务卡同一个叫法（描述 → 任务说明第一行 → 类型）
+            title = timeline.subagent_title(event.get("description"), event.get("brief"), event.get("agent_type"))
+            session.open_subagents[task_id] = (title, time.time())
+        else:
+            session.open_subagents.pop(task_id, None)
+        self._refresh_waiting(session)
+
+    def _refresh_waiting(self, session: Session) -> None:
+        waiting = self._waiting_on(session)
+        for message_id, entry in session.steers.items():
+            if entry.get("waiting_on") != waiting:
+                entry["waiting_on"] = waiting
+                self._delivery(session, message_id, "pending", waiting)
+
+    async def _on_delivery(self, session: Session, event: dict) -> None:
+        """引擎报插话送到了：seen 移出待送达；new_turn 是引擎拿它开了下一轮，宿主这边接着开这一轮。"""
+        message_id = str(event.get("message_id") or "")
+        if message_id not in session.steers:
+            return
+        if event.get("state") == "new_turn":
+            await self._steer_turn(session, message_id)
+            return
+        session.steers.pop(message_id, None)
+        self._delivery(session, message_id, "seen")
+
+    async def _steer_turn(self, session: Session, message_id: str) -> None:
+        """插话没赶上上一轮、引擎拿它开了下一轮：执行记录与这一轮从它开始（普通消息接着等待中的执行）。"""
+        entry = session.steers.pop(message_id, None)
+        if entry is None:
+            return
+        self._delivery(session, message_id, "new_turn")
+        await asyncio.to_thread(turns.begin, session, entry["prompt"])
+        session.turn = timeline.Turn.new(session.turn_title)
+        session.last_prompt = entry["prompt"]
+        session.turns_in_flight += 1
+        session.turn_started_at = time.time()
+        if session.state == "running":
+            session.broadcast({"type": "session_state", "state": "running", "turn_started_at": session.turn_started_at,
+                               "reason": None})
+        else:
+            session.set_state("running")
+
+    def _mark_consumed(self, session: Session, message_ids: list | None) -> None:
+        """result 报的这一轮消耗的消息里有插话：没等到 seen 的也算看到了。"""
+        for message_id in message_ids or []:
+            if session.steers.pop(str(message_id), None) is not None:
+                self._delivery(session, str(message_id), "seen")
+
+    def _return_steers(self, session: Session, withdrawn: list | None) -> list[dict]:
+        """打断、出错：还没被看到的插话撤回（returned）。withdrawn 是引擎撤回的（None = 引擎说不清，全部算撤回）；
+        交给了引擎却不在撤回之列的，已被打断的那一轮收下（seen）。"""
+        returned = []
+        for message_id, entry in list(session.steers.items()):
+            if withdrawn is None or message_id in withdrawn or not entry.get("sent"):
+                returned.append({"message_id": message_id, "text": entry["text"]})
+                self._delivery(session, message_id, "returned")
+            else:
+                self._delivery(session, message_id, "seen")
+        session.steers.clear()
+        return returned
+
+    async def _hold_next(self, session: Session, cwd: Path, text: str, meta: dict, username: str) -> dict:
+        """运行中发来的命令：平台代存一条，这一轮结束后开始（此时才记用户气泡）。已有一条时 409，带 replace 替换。"""
+        key = (session.project_id, session.conversation_id)
+        existing = self._next.get(key)
+        if existing is not None and not meta.get("replace"):
+            error = SessionError("已经有一条排着的命令", 409)
+            error.code, error.details = "next_occupied", {"label": existing["view"]["label"]}
+            raise error
+        if existing is not None:
+            self._drop_next_task(existing, "被新的命令替换了")
+        command = meta.get("command") or timeline._leading_command(text) or ""
+        view = {
+            "id": f"nx-{uuid.uuid4().hex[:8]}",
+            "label": meta.get("command_label") or command.lstrip("/") or "命令",
+            "command": command,
+            "text": meta.get("display_text") or text,
+            "created_at": views_iso(time.time()),
+            "paused": False,
+            "origin": meta.get("origin"),
+        }
+        self._next[key] = {"view": view, "prompt": text, "root": cwd, "username": username,
+                           "project_id": session.project_id,
+                           "meta": {name: value for name, value in meta.items() if name != "replace"}}
+        self._publish_next(*key)
+        await self._note_config_change(session)
+        return {"delivery": "next", "message_id": None, "record": None, "next": view}
+
+    def next_view(self, project_id: str, conversation_id: str) -> dict | None:
+        entry = self._next.get((project_id, conversation_id))
+        return dict(entry["view"]) if entry is not None else None
+
+    def _publish_next(self, project_id: str, conversation_id: str) -> None:
+        self.append_record(project_id, conversation_id,
+                           {"type": "next_updated", "payload": {"next": self.next_view(project_id, conversation_id)}})
+
+    def _pause_next(self, project_id: str, conversation_id: str) -> None:
+        """打断、出错之后代存的命令不自动开始：留着，界面上给「现在开始」。"""
+        entry = self._next.get((project_id, conversation_id))
+        if entry is not None and not entry["view"]["paused"]:
+            entry["view"]["paused"] = True
+            self._publish_next(project_id, conversation_id)
+
+    @staticmethod
+    def _drop_next_task(entry: dict, summary: str) -> None:
+        task_id = entry["meta"].get("task_id")
+        if not task_id:
+            return
+        from .session_host import command_tasks
+
+        try:
+            command_tasks.update(entry["project_id"], task_id, state="cancelled", result={"summary": summary, "refs": []})
+        except Exception:  # noqa: BLE001 - 任务是增强信息
+            _log.exception("取消排着的命令任务失败")
+
+    def cancel_next(self, project_id: str, conversation_id: str, *, summary: str = "取消了排着的命令") -> bool:
+        entry = self._next.pop((project_id, conversation_id), None)
+        if entry is None:
+            return False
+        self._drop_next_task(entry, summary)
+        self._publish_next(project_id, conversation_id)
+        return True
+
+    async def start_next(self, project_id: str, conversation_id: str, username: str = "") -> tuple[Session, dict]:
+        """现在开始代存的命令（打断后暂停的那条）。在跑时 409 session_busy。"""
+        session = self._sessions.get(project_id)
+        if session is not None and session.conversation_id == conversation_id and (
+                session.state == "running" or session.pending_prompts or session.chaining):
+            error = SessionError("对话正在运行，等这一轮结束会自动开始", 409)
+            error.code, error.details = "session_busy", {"running_conversation_id": conversation_id}
+            raise error
+        entry = self._next.pop((project_id, conversation_id), None)
+        if entry is None:
+            raise SessionError("没有排着的命令", 404)
+        self._publish_next(project_id, conversation_id)
+        try:
+            return await self.submit(project_id, entry["root"], entry["prompt"], conversation_id,
+                                     username or entry["username"], meta=dict(entry["meta"]))
+        except BaseException:
+            entry["view"]["paused"] = True
+            self._next.setdefault((project_id, conversation_id), entry)
+            self._publish_next(project_id, conversation_id)
+            raise
+
+    def _startable_next(self, session: Session) -> dict | None:
+        entry = self._next.get((session.project_id, session.conversation_id))
+        if entry is None or entry["view"]["paused"] or session.pending_permissions or session.run_id:
+            return None
+        return entry
+
+    async def _chain_next(self, session: Session) -> None:
+        """上一轮结束、接着开始代存的命令（另起任务：开始前可能要断开重连，不能在读循环里做）。
+        状态一直是 running，中间不发 idle、不推建议条；开始不了时命令暂停，会话照常收尾成空闲。"""
+        project_id, conversation_id = session.project_id, session.conversation_id
+        entry = self._next.pop((project_id, conversation_id), None)
+        try:
+            if entry is None:
+                raise SessionError("排着的命令已经取消了")
+            self._publish_next(project_id, conversation_id)
+            await self.submit(project_id, entry["root"], entry["prompt"], conversation_id, entry["username"],
+                              meta={**entry["meta"], "_chain": True})
+        except Exception as exc:  # noqa: BLE001 - 开始不了（配额、引擎）不能让会话停在 running
+            _log.warning("代存的命令没能开始：%s", exc)
+            if entry is not None:
+                entry["view"]["paused"] = True
+                self._next.setdefault((project_id, conversation_id), entry)
+                self._publish_next(project_id, conversation_id)
+            session.chaining = False
+            if (self._sessions.get(project_id) is session and session.state == "running"
+                    and not session.turns_in_flight and not session.pending_prompts):
+                self._return_steers(session, None)  # 这期间收下的插话没有一轮可插了
+                session.set_state("idle")
+                record = await asyncio.to_thread(turns.suggestions_record, session)
+                if record is not None:
+                    session.broadcast(record)
+        finally:
+            session.chaining = False
+
+    @staticmethod
+    def _user_message(session: Session, text: str, meta: dict, *, delivery: str) -> dict:
         """用户气泡（EC-10）：界面显示原话，发给模型的全文另存（Jiuwen 回放历史用）；新的一天先放日期分隔。"""
         today = time.strftime("%Y-%m-%d")
         if not session.last_day and session.events:
@@ -890,7 +1192,7 @@ class SessionManager:
             "attachments": meta.get("attachments") or [],
             "references": meta.get("references") or [],
             "origin": meta.get("origin"),
-            "delivery": "deferred" if deferred else "immediate",
+            "delivery": delivery,
         }
         if meta.get("command"):
             record["command"] = meta["command"]
@@ -899,6 +1201,7 @@ class SessionManager:
         if display != text:
             record["prompt"] = text
         session.broadcast(record)
+        return record
 
     async def _request_slot(self, session: Session) -> None:
         """为无引擎的会话申请槽位：够用直接连，可驱逐则驱逐，否则排队。"""
@@ -1066,6 +1369,8 @@ class SessionManager:
             for prompt in prompts:
                 await self._send_turn(session, engine, prompt)
             session.set_state("running" if prompts else "idle")
+            if prompts:
+                await self._flush_steers(session)
         except Exception as exc:
             if session.discarded:  # 项目已删除，工作区没了连接失败是预期内的，不报错
                 return
@@ -1242,6 +1547,8 @@ class SessionManager:
         """
         if project_id in self._waiters:
             self._waiters.remove(project_id)
+        for key in [key for key in self._next if key[0] == project_id]:
+            self._next.pop(key, None)
         session = self._sessions.pop(project_id, None)
         engine = None
         if session is not None:
@@ -1276,6 +1583,7 @@ class SessionManager:
                 if _busy(session):
                     raise SessionError("会话正在运行，请等它结束或先打断后再删除", 409)
                 await self._recycle(session)
+            self._next.pop((project_id, conversation_id), None)
             remaining = conversation_store.delete(project_id, conversation_id)
         await self._drain_waiters()
         return remaining
@@ -1320,6 +1628,9 @@ class SessionManager:
             # 引擎没绑定这条会话（未启动，或正绑着另一条——那条不该被这里打断）：
             # 不 404——若历史尾部停在非终态（重启幽灵），补写终态
             return _reconcile_stale_history(project_id, conversation_id) is not None
+        key = (project_id, conversation_id)
+        # 代存的命令留着但不自动开始（你按了停止，就是要停下来）
+        self._pause_next(project_id, conversation_id)
         if session.engine is None:
             # 排队/连接中：清空积压消息并退出队列（排队的取消出口）
             async with self._lock:
@@ -1327,6 +1638,7 @@ class SessionManager:
                     self._waiters.remove(project_id)
                 session.pending_prompts.clear()
                 self._broadcast_queue_positions()
+            self.returned_steers[key] = self._return_steers(session, None)
             if not session.is_connecting():
                 session.set_state("idle")
             return False
@@ -1334,7 +1646,7 @@ class SessionManager:
         session.interrupting = True
         session.interrupt_requested = True
         try:
-            await asyncio.wait_for(engine.interrupt(), timeout=INTERRUPT_TIMEOUT_SECONDS)
+            withdrawn = await asyncio.wait_for(_interrupt_engine(engine), timeout=INTERRUPT_TIMEOUT_SECONDS)
         except Exception:  # 含 wait_for 的 TimeoutError
             # 优雅打断失败：硬终止引擎，槽位与状态立即恢复可用
             error_log.log(project_id, "interrupt_force", "打断超时，已硬终止引擎进程")
@@ -1343,10 +1655,12 @@ class SessionManager:
             await _kill_engine(engine)
             session.engine = None
             self._settle_after_failure(session)
+            self.returned_steers[key] = self._return_steers(session, None)
             await self._mark_user_interrupt(session)
             session.set_state("idle")
             await self._drain_waiters()
             return False
+        self.returned_steers[key] = self._return_steers(session, withdrawn)
         await self._mark_user_interrupt(session)
         return False
 
@@ -1359,7 +1673,7 @@ class SessionManager:
             session.turn.finish("interrupted")
             session.broadcast(session.turn.progress_record())
         session.turn = None
-        session.deferred.clear()
+        session.open_subagents.clear()
         record, _ = await asyncio.to_thread(turns.interrupt_exec, session, "user", card=False)
         self.interrupted_execs[(session.project_id, session.conversation_id)] = record
         session.broadcast({"type": "session_interrupted", "reason": "user", "by": "user",
@@ -1368,8 +1682,10 @@ class SessionManager:
         if suggestions is not None:
             session.broadcast(suggestions)
             session.keep_suggestions = True
+        entry = self._next.get((session.project_id, session.conversation_id))
+        keep = {entry["meta"]["task_id"]} if entry is not None and entry["meta"].get("task_id") else set()
         try:
-            await asyncio.to_thread(command_tasks.on_interrupt, session.project_id, session.conversation_id)
+            await asyncio.to_thread(command_tasks.on_interrupt, session.project_id, session.conversation_id, keep=keep)
         except Exception:  # noqa: BLE001 - 任务收尾是增强信息
             pass
 
@@ -1700,7 +2016,17 @@ class SessionManager:
                 return
             if kind == "_cli_state":
                 session.on_cli_state(event.get("state"))
+                handed = any(entry.get("sent") for entry in session.steers.values())
+                if event.get("state") == "idle" and handed and not session.turns_in_flight and not session.chaining:
+                    # CLI 停下了却没拿插话开下一轮（出错后 CLI 不再接着跑）：撤回，会话照常收尾成空闲
+                    self._return_steers(session, None)
+                    session.set_state("idle")
                 continue
+            if kind == "_delivery":
+                await self._on_delivery(session, event)
+                continue
+            if kind in ("subagent_started", "subagent_finished"):
+                self._track_subagent(session, event)
             if kind == "result":
                 try:
                     if await self._finish_turn(session, event, getattr(engine, "name", "")):
@@ -1738,33 +2064,40 @@ class SessionManager:
         session.turn = None
         telemetry.record_turn(session.project_id, event, engine_name)
         session.turns_in_flight = max(0, session.turns_in_flight - 1)
+        session.open_subagents.clear()
         await self._emit_workspace_changes(session)
         session.retries = 0 if not failed else session.retries
-        session.on_turn_result()
+        stopping = session.interrupting or session.interrupt_requested
+        message_ids = event.get("message_ids")
+        self._mark_consumed(session, message_ids)
+        # 还有插话没被看到：引擎会拿它开下一轮（报 new_turn）；说不清消耗了哪些的引擎一次发送一个 result，
+        # 下一条插话就是下一轮。都不是空闲，中间不发 idle、不推建议条
+        handed = [message_id for message_id, entry in session.steers.items() if entry.get("sent")]
+        legacy_next = handed[0] if handed and message_ids is None and not stopping else None
+        engine_continues = bool(handed) and not stopping
+        chain = (not engine_continues and not failed and not stopping and self._startable_next(session) is not None)
+        if not (engine_continues or chain):
+            session.on_turn_result()
         # 待重载的会话先断开旧引擎（手头的轮次都出了 result），收尾的记账放在后面
-        reload = session.reload_pending and session.turns_in_flight == 0
+        reload = session.reload_pending and session.turns_in_flight == 0 and not engine_continues
         if reload:
             await self._reload_after_turn(session)
-        # 运行中收下的下一条消息：引擎接着跑它，这里开它的执行记录与这一轮（与收尾同一次线程往返）
-        deferred = session.deferred.pop(0) if session.deferred else None
-        for record in await asyncio.to_thread(self._after_turn, session, failed, deferred):
-            if record.get("type") == "suggestions" and session.keep_suggestions:
+        for record in await asyncio.to_thread(self._after_turn, session, failed):
+            if record.get("type") == "suggestions" and (session.keep_suggestions or engine_continues or chain):
                 continue
             session.broadcast(record)
         session.keep_suggestions = False
-        if deferred is not None:
-            session.turn = timeline.Turn.new(session.turn_title)
-            session.last_prompt = deferred[0]
+        if legacy_next is not None:
+            await self._steer_turn(session, legacy_next)
+        elif chain:
+            session.chaining = True
+            self._spawn(self._chain_next(session))
         return reload
 
     @staticmethod
-    def _after_turn(session: Session, failed: bool, deferred: tuple | None) -> list[dict]:
-        """线程里做的收尾：执行记录、任务、下一步建议；接着开下一条（运行中收下的）消息。"""
-        records = turns.end_turn(session, failed=failed, waiting_user=bool(session.pending_permissions))
-        if deferred is not None:
-            text, task_id = deferred
-            turns.begin(session, text, task_id=task_id)
-        return records
+    def _after_turn(session: Session, failed: bool) -> list[dict]:
+        """线程里做的收尾：执行记录、任务、下一步建议。"""
+        return turns.end_turn(session, failed=failed, waiting_user=bool(session.pending_permissions))
 
     def _turn_failed(self, session: Session, error_id: str, message: str) -> None:
         """这一轮出错（引擎异常结束、连不上）：工作过程收成出错，执行记为中断并放续跑卡，出错卡带错误编号。"""
@@ -1772,7 +2105,9 @@ class SessionManager:
             session.turn.finish("failed")
             session.broadcast(session.turn.progress_record())
         session.turn = None
-        session.deferred.clear()
+        session.open_subagents.clear()
+        self._return_steers(session, None)
+        self._pause_next(session.project_id, session.conversation_id)
         self._settle_after_failure(session)
         record, card = turns.interrupt_exec(session, "engine_exit", card=not session.run_id)
         if card is not None:

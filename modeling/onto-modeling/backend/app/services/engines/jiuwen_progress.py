@@ -40,6 +40,11 @@ _CURRENT_TASK: contextvars.ContextVar[Any] = contextvars.ContextVar(
 )
 
 
+def in_subagent() -> bool:
+    """当前回调是不是子代理里的：派发子任务时 task_tool 把它设上，子代理的回调都在它里面跑。"""
+    return _CURRENT_TASK.get() is not None
+
+
 @contextmanager
 def progress_scope(tracker: JiuwenProgressTracker):
     token = _CURRENT_TRACKER.set(tracker)

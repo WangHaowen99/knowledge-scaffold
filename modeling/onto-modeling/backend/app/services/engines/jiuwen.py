@@ -548,6 +548,36 @@ def _truncation_rail():
     return TruncationRail()
 
 
+# 插话（契约 EC-10 delivery=steer）：一轮进行中用户发来的文字，主 agent 下次调模型前插进上下文
+STEER_NOTE = (
+    "<system-reminder>\n用户在你工作时发来一条新消息：\n{text}\n\n"
+    "这条消息是在这一轮进行中送到的，不是新的一轮：继续这一轮的工作，同时处理这条消息。\n</system-reminder>"
+)
+
+
+def _steer_rail(take: Callable[[], list], delivered: Callable[[list], Any]):
+    """插话 Rail：只挂在主 agent 上（子代理的 rails 不含它，回调里再按子代理上下文挡一次），
+    每次调模型前把积压的插话加进主 agent 的上下文，随存档落盘。"""
+    from openjiuwen.core.foundation.llm import UserMessage
+    from openjiuwen.harness.rails.base import DeepAgentRail
+
+    from .jiuwen_progress import in_subagent
+
+    class SteerRail(DeepAgentRail):
+        async def before_model_call(self, ctx: Any) -> None:
+            if in_subagent():
+                return
+            items = take()
+            if not items:
+                return
+            model_context = getattr(ctx.inputs, "model_context", None) or ctx.context
+            for _message_id, text in items:
+                await model_context.add_messages(UserMessage(content=STEER_NOTE.format(text=text)))
+            await delivered([message_id for message_id, _ in items])
+
+    return SteerRail()
+
+
 def _req_get(request: Any, key: str, default: Any = None) -> Any:
     """interaction 请求兼容取值：runtime 可能给对象也可能给 dict。"""
     if isinstance(request, dict):
@@ -734,7 +764,10 @@ class JiuwenEngine(ObservableEngine):
         self.resume_attempted = False
         self._queue: asyncio.Queue = asyncio.Queue()
         self._turn_task: asyncio.Task | None = None
-        self._buffered: list[str] = []  # 轮内追加的消息（用户原文），本轮结束后接续
+        # 插话（用户原文）：(message_id, 原文)。主 agent 下次调模型前插进去；本轮结束时还没插的拿来开下一轮
+        self._steers: list[tuple[str, str]] = []
+        # 这一轮消耗的消息（开这一轮的那条 + 插进来的），随 result 报给会话层
+        self._turn_ids: list[str] = []
         # 宿主注入（session_host.injection.Injector，方案 B4）：宿主经 ctx 给，单测直接构造时自建
         self._injector = ctx.injector or injection.Injector(ctx.cwd, ctx.conversation_id)
         # 上下文引擎与流式运行都按这个 id 寻址：每条会话一个，default 沿用单会话时期的值
@@ -886,6 +919,7 @@ class JiuwenEngine(ObservableEngine):
             AskUserRail(),
             build_hooks_rail(self._loader, self._ctx.cwd),
         ]
+        steer_rail = _steer_rail(self._take_steers, self._steers_delivered)
         gp_spec = _general_purpose_spec(
             model=model,
             system_prompt=system_prompt,
@@ -903,7 +937,8 @@ class JiuwenEngine(ObservableEngine):
                 description="DeepAgent instance",
             ),
             system_prompt=system_prompt,
-            rails=[*rails, _context_processor_rail(context["trigger_ratio"])],
+            # 插话只给主 agent：子代理的 rails（gp_spec）不带它
+            rails=[*rails, steer_rail, _context_processor_rail(context["trigger_ratio"])],
             workspace=Workspace(root_path=str(shadow), language="cn"),
             sys_operation=sys_operation,
             enable_task_loop=True,
@@ -925,15 +960,37 @@ class JiuwenEngine(ObservableEngine):
         _bind_subagent_workspace_rotation(agent, gp_spec, subagent_root)
         return agent, tracker
 
-    async def send(self, text: str, context: str | None = None) -> None:
+    async def send(self, text: str, context: str | None = None, message_id: str | None = None) -> None:
         # 存用户原文：命令展开与注入等真正送达模型时再做，积压的消息拿到的是那时的阶段。
         # 宿主显式给的上下文（P2 两引擎统一注入）放在原文前，同样不进会话历史
         if context:
             text = injection.compose_query(text, context)
         if self._turn_task and not self._turn_task.done():
-            self._buffered.append(text)
+            # 会话层只在空闲时开新一轮；直接调引擎的旧调用方在跑的时候发来的按插话处理
+            self._steers.append((message_id or "", text))
             return
+        self._turn_ids = [message_id] if message_id else []
         self._turn_task = asyncio.create_task(self._run_turn(text))
+
+    async def steer(self, text: str, message_id: str) -> None:
+        if self._turn_task and not self._turn_task.done():
+            self._steers.append((message_id, text))
+            return
+        # 这一轮刚好结束了：拿它开下一轮
+        await self._queue.put({"type": "_delivery", "message_id": message_id, "state": "new_turn"})
+        self._turn_ids = [message_id]
+        self._turn_task = asyncio.create_task(self._run_turn(text))
+
+    def _take_steers(self) -> list[tuple[str, str]]:
+        items, self._steers = self._steers, []
+        return items
+
+    async def _steers_delivered(self, message_ids: list[str]) -> None:
+        self._touch()
+        for message_id in message_ids:
+            if message_id:
+                self._turn_ids.append(message_id)
+                await self._queue.put({"type": "_delivery", "message_id": message_id, "state": "seen"})
 
     async def _model_query(self, text: str) -> str:
         """发给模型的 query：斜杠命令展开后，前面附上宿主注入的阶段提示与包的提示规则。
@@ -949,7 +1006,11 @@ class JiuwenEngine(ObservableEngine):
             return expanded
         return injection.compose_query(expanded, context)
 
-    async def interrupt(self) -> None:
+    async def interrupt(self, cancel_queued: bool = False) -> list[str] | None:
+        withdrawn = None
+        if cancel_queued:
+            # 还没插进去的插话撤回：打断之后不能再自己拿它们开一轮
+            withdrawn = [message_id for message_id, _ in self._take_steers() if message_id]
         agent = self.client
         if agent is not None:
             try:
@@ -965,11 +1026,13 @@ class JiuwenEngine(ObservableEngine):
             await asyncio.wait({task}, timeout=5)
             if not task.done():
                 task.cancel()
+        return withdrawn
 
     async def disconnect(self) -> None:
         if self._progress_tracker is not None:
             await self._progress_tracker.finish_all("stopped")
         self._closed = True
+        self._steers = []
         if self._turn_task and not self._turn_task.done():
             self._turn_task.cancel()
         agent = self.client
@@ -1072,6 +1135,7 @@ class JiuwenEngine(ObservableEngine):
             "num_turns": 1,
             "usage": {key: after[key] - before[key] for key in after},
             "usage_per_call": True,
+            "message_ids": list(self._turn_ids),
         }
 
     def _track_context(self, event: dict) -> None:
@@ -1171,8 +1235,13 @@ class JiuwenEngine(ObservableEngine):
                 await self._queue.put(self._turn_result("success", started, before))
                 started = time.time()
                 before = self._usage_snapshot()
-                if self._buffered:
-                    queries.append(self._buffered.pop(0))
+                if self._steers:
+                    # 这一轮结束时还没插进去的插话：拿第一条开下一轮，其余照旧等下一轮的模型调用前插
+                    message_id, follow = self._steers.pop(0)
+                    if message_id:
+                        await self._queue.put({"type": "_delivery", "message_id": message_id, "state": "new_turn"})
+                    self._turn_ids = [message_id] if message_id else []
+                    queries.append(follow)
         except asyncio.CancelledError:
             if self._stalled:
                 # 挂起兜底掐断的这一轮：按出错收尾（执行记为中断、出续跑卡），不是用户打断
