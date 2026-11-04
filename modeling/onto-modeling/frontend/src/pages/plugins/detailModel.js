@@ -4,7 +4,7 @@
 
 // 主线 5 段（详设 6.8；core 的 flow.yaml 定义）
 export const MAINLINE = [
-  ['research', '资料分析'], ['model', '建模（按段）'], ['validate', '校验与走查'], ['consistency', '全局一致性'], ['publish', '发布'],
+  ['research', '资料分析'], ['model', '建模'], ['validate', '校验与走查'], ['consistency', '全局一致性'], ['publish', '发布'],
 ];
 const MAIN_IDS = MAINLINE.map(([id]) => id);
 

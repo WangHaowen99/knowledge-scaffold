@@ -14,7 +14,7 @@ export function staticItems({ projectId, inboxCount, hasPlugin, hasSubpage, user
   return [
     ['跳转', '打开 Studio 图谱', 'graph', 'studio'], ['跳转', `待处理（${inboxCount ?? 0}）`, 'inbox', 'inbox'],
     ...(hasSubpage('schema') ? [['跳转', '证据浏览器', 'db', 'schema']] : []), ['跳转', 'Studio 报告', 'filetext', 'reports'],
-    ['建模', '发起增量更新…', 'refresh', 'incremental'], ['建模', '调整业务分段…', 'layers', 'wb-blueprint', { dialog: 'blueprint' }],
+    ['建模', '发起增量更新…', 'refresh', 'incremental'], ['建模', '建模蓝图…', 'layers', 'wb-blueprint', { dialog: 'blueprint' }],
     // 开始自主构建走项目设置的开始入口（AB-03 预览 → 确认 → AB-04，契约 5.0）
     ['建模', '开始自主构建…', 'rocket', 'proj-settings', { section: 'autobuild', dialog: 'start' }], ['建模', '自主构建设置', 'gear', 'proj-settings', { section: 'autobuild' }],
     ...(hasPlugin('scenarios') ? [['建模', '补齐过期场景', 'flask', 'scenarios']] : []),

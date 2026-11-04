@@ -1,6 +1,6 @@
-// 资料分析与建模蓝图的纯逻辑：资料地图的状态文案、出处标记、核验排序、蓝图分段列表的编辑（契约 R-07、R-09、BP-01、BP-02）
+// 资料分析与建模蓝图的纯逻辑：资料地图的状态文案、出处标记、核验排序、蓝图的回答与叫法（契约 R-07、R-09、BP-01、BP-02）
 
-// 工作台地址里 ?dialog= 能直接打开的弹窗（next 只给 build 用：L2 / L4）
+// 工作台地址里 ?dialog= 能直接打开的弹窗（next 只给 build 用：L4 是开始自主构建前的预览）
 export const MATERIAL_DIALOGS = ['material_map', 'verification', 'blueprint', 'build'];
 
 // ---------- 资料用途（契约 PurposeOption，R-01 不在时用这份） ----------
@@ -143,104 +143,9 @@ export function verificationNote(items = []) {
 }
 
 // ---------- 建模蓝图（BP-01 / BP-02） ----------
-// 编辑用的分段：带上原始顺序，判断位置是否动过
-export function editableSlices(slices = []) {
-  return slices.map((s, i) => ({ ...s, depends_on: [...(s.depends_on || [])], origin: i, merged_from: s.merged_from || undefined }));
-}
-
-export function moveSlice(list, from, to) {
-  if (from === to || from < 0 || to < 0 || from >= list.length || to >= list.length) return list;
-  const next = [...list];
-  const [x] = next.splice(from, 1);
-  next.splice(to, 0, x);
-  return next;
-}
-
-let seq = 0;
-const newId = () => `new-${Date.now().toString(36)}-${(seq += 1)}`;
-
-// 合并：在第一段的位置放一段新的，依赖取并集（去掉被合并的段），其他段对被合并段的依赖改指向新段
-export function mergeSlices(list, ids) {
-  const picked = list.filter((s) => ids.includes(s.id));
-  if (picked.length < 2) return { list, merged: null };
-  const id = newId();
-  const merged = {
-    id,
-    name: picked.map((s) => s.name).join('、'),
-    core_flow: picked.map((s) => s.core_flow).filter(Boolean).join(' · '),
-    scale: {
-      objects: picked.reduce((n, s) => n + (s.scale?.objects || 0), 0),
-      rules: picked.reduce((n, s) => n + (s.scale?.rules || 0), 0),
-    },
-    depends_on: [...new Set(picked.flatMap((s) => s.depends_on || []))].filter((d) => !ids.includes(d)),
-    excluded: false,
-    merged_from: picked.flatMap((s) => s.merged_from || [s.id]),
-    order_label: '',
-    origin: -1,
-  };
-  const at = list.findIndex((s) => ids.includes(s.id));
-  const rest = list.filter((s) => !ids.includes(s.id)).map((s) => {
-    const deps = (s.depends_on || []).map((d) => (ids.includes(d) ? id : d));
-    return { ...s, depends_on: [...new Set(deps)] };
-  });
-  rest.splice(at, 0, merged);
-  return { list: rest, merged };
-}
-
-export function toggleExcluded(list, ids) {
-  const allExcluded = list.filter((s) => ids.includes(s.id)).every((s) => s.excluded);
-  return list.map((s) => (ids.includes(s.id) ? { ...s, excluded: !allExcluded } : s));
-}
-
-export function renameSlice(list, id, name) {
-  const n = String(name || '').trim();
-  if (!n) return list;
-  return list.map((s) => (s.id === id ? { ...s, name: n } : s));
-}
-
-export function addSlice(list, name = '新分段') {
-  const s = { id: newId(), name, core_flow: '', scale: { objects: 0, rules: 0 }, depends_on: [], excluded: false, order_label: '', origin: -1 };
-  return { list: [...list, s], added: s };
-}
-
-// 依赖显示成当前序号：「无」或「1、2」
-export function depLabel(slice, list) {
-  const deps = (slice.depends_on || []).map((d) => list.findIndex((s) => s.id === d)).filter((i) => i >= 0).map((i) => i + 1).sort((a, b) => a - b);
-  return deps.length ? deps.join('、') : '无';
-}
-
-// 依赖的段排在了后面（保存时服务端会拒绝：slice_invalid）
-export function depAfter(slice, list) {
-  const at = list.findIndex((s) => s.id === slice.id);
-  return (slice.depends_on || []).some((d) => list.findIndex((s) => s.id === d) > at);
-}
-
-// 顺序标签：位置没动用服务端给的推荐，动过就按新位置写「第 n 个」
-export function orderLabel(slice, index) {
-  if (slice.excluded) return { text: '已排除', tone: 'faint' };
-  const text = slice.origin === index && slice.order_label ? slice.order_label : `第 ${index + 1} 个`;
-  if (text === '推荐先做') return { text, tone: 'blue' };
-  if (text === '建议最后做') return { text, tone: 'amber' };
-  return { text, tone: 'faint' };
-}
-
-// BP-02 的分段列表（BlueprintSliceInput）：顺序就是数组顺序
-export function sliceInputs(list) {
-  return list.map((s) => {
-    const x = { id: s.id, name: s.name, core_flow: s.core_flow || '', depends_on: s.depends_on || [], excluded: !!s.excluded };
-    if (s.merged_from?.length) x.merged_from = s.merged_from;
-    return x;
-  });
-}
-
-export function sameSlices(a = [], b = []) {
-  return JSON.stringify(sliceInputs(a)) === JSON.stringify(sliceInputs(b));
-}
-
-// 整份调整请求：只带改过的部分
-export function blueprintPayload(bp, edit, mode) {
-  const body = { base_revision: bp.revision, mode };
-  if (!sameSlices(edit.slices, bp.slices)) body.slices = sliceInputs(edit.slices);
+// F8 起不分段：蓝图只记统一叫法与待定问题，保存只带改过的叫法和回答（mode=draft，同待处理里回答）
+export function blueprintPayload(bp, edit) {
+  const body = { base_revision: bp.revision, mode: 'draft' };
   const terms = (bp.terms?.ambiguous || []).filter((t) => edit.terms[t.id] && edit.terms[t.id] !== t.chosen).map((t) => ({ term_id: t.id, chosen: edit.terms[t.id] }));
   if (terms.length) body.term_choices = terms;
   const answers = (bp.questions || []).filter((q) => edit.answers[q.id] && edit.answers[q.id] !== q.answer?.option_id).map((q) => ({ question_id: q.id, option_id: edit.answers[q.id] }));
@@ -248,13 +153,8 @@ export function blueprintPayload(bp, edit, mode) {
   return body;
 }
 
-export const isDirty = (body) => ['slices', 'term_choices', 'answers'].some((k) => body[k] !== undefined);
+export const isDirty = (body) => ['term_choices', 'answers'].some((k) => body[k] !== undefined);
 
-// 资料和建模目标对不上时的那个问题（kind=goal）：没答之前不能确认蓝图（F4b）
+// 资料和建模目标对不上时的那个问题（kind=goal）：不挡建模，没答之前按原目标建（F8）
 export const goalQuestion = (questions = []) => questions.find((q) => q.kind === 'goal') || null;
 export const goalPending = (card) => Boolean(card?.goal_question && !card.goal_question.answered);
-
-// 「确认后怎么建」（R3）并进蓝图卡底部：按卡上的 confirm_options 画（草案时给，自主构建登记了才有 L4，已确认时为空）；
-// 早于 B4d 合并的旧卡没有这个字段，只给「一段一段来」
-const DEFAULT_CONFIRM = [{ mode: 'L2', label: '确认，一段一段来' }];
-export const confirmOptions = (card) => (card?.state === 'confirmed' ? [] : (Array.isArray(card?.confirm_options) ? card.confirm_options : DEFAULT_CONFIRM));

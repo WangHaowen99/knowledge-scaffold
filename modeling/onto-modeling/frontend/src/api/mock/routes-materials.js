@@ -2,11 +2,11 @@
 // 阶段（主示例项目用 ?mock=stage:<名> 切换）：
 //   materials        读资料中：7 份资料读到 5/7（设计稿 wb-materials）
 //   materials-empty  还没传资料：欢迎与上传卡
-//   blueprint        资料分析完成、建模蓝图草案 v2（设计稿 wb-blueprint）
+//   blueprint        资料分析完成、建模蓝图草案 v2（F8 起不分段、不用确认，资料分析之后直接提取对象）
 //   estate-empty     「物业报修工单处理」的落地页：和 materials-empty 同一屏，换成它自己的名称和目标
 import { ANCHORS, ANCHOR_RESOLUTIONS, MAIN_PID, projectCards } from './fixtures.js';
 import { catalogFor, materialView, previewBlocks, previewCoverage, webCommit } from './resources-data.js';
-import { DB_SOURCE, ENTRIES, MATERIALS, SLICES } from './scenario.js';
+import { DB_SOURCE, ENTRIES, MATERIALS } from './scenario.js';
 
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
@@ -230,7 +230,6 @@ function verificationItems(reading) {
 }
 
 // ---------- 建模蓝图（BP-01） ----------
-const bs = (s, scale, depends_on, order, order_label) => ({ id: s.id, name: s.name, core_flow: s.core_flow, scale, depends_on, order, order_label, excluded: false });
 function blueprintOf(confirmed = false) {
   return {
     version_no: 2,
@@ -239,13 +238,8 @@ function blueprintOf(confirmed = false) {
     goal_md: '店长一句话说明门店、品类、库存和到货周期，智能体查基础数据，按补货规则生成补货单，并列出与标准不一致的地方',
     goal_anchor: null,
     goal_anchor_label: null,
-    slices: [
-      bs(SLICES[0], { objects: 4, rules: 2 }, [], 1, '推荐先做'),
-      bs(SLICES[1], { objects: 3, rules: 3 }, ['s1'], 2, '第 2 个'),
-      bs(SLICES[2], { objects: 2, rules: 2 }, ['s1'], 3, '第 3 个'),
-      bs(SLICES[3], { objects: 3, rules: 2 }, ['s1'], 4, '第 4 个'),
-      bs(SLICES[4], { objects: 3, rules: 2 }, ['s2', 's3', 's4'], 5, '建议最后做'),
-    ],
+    // F8 起不分段：草稿里的分段并成一段「全部」
+    slices: [{ id: 'all', name: '全部', core_flow: '', scale: { objects: 15, rules: 11 }, depends_on: [], order: 1, order_label: '', excluded: false }],
     terms: {
       aligned: ['商品品类', '到货周期', '适用标准', '超量项', '区域审批', '补货台账', '安全库存', '陈列量', '临期损耗', '日均销量', '门店特殊需求', '审批提示', '下单'],
       ambiguous: [
@@ -268,15 +262,13 @@ function blueprintOf(confirmed = false) {
   };
 }
 
-const autobuildOff = () => typeof window !== 'undefined' && /(^|[?&,=])autobuild:off/.test(window.location.search);
-
 function blueprintCard(bp) {
   return {
     card_id: BP_CARD, card_type: 'blueprint', eyebrow: '', title: `建模蓝图 · ${bp.version_label}`,
     subtitle: '',
-    status: bp.state === 'confirmed' ? { key: 'confirmed', label: '已确认' } : null, plugin: null,
-    // 后端口径（contract-changes B4d 合并第 1 条）：草案时给，L4 只在自主构建登记后出现，已确认时为空
-    confirm_options: bp.state === 'confirmed' ? [] : [{ mode: 'L2', label: '确认，一段一段来' }, ...(autobuildOff() ? [] : [{ mode: 'L4', label: '确认，一路建完…' }])],
+    status: null, plugin: null,
+    // F8 起蓝图不用确认：后端恒给空
+    confirm_options: [],
     open: { kind: 'dialog', target: 'blueprint' },
     version_label: bp.version_label, state: bp.state, goal_md: bp.goal_md, goal_anchor: null, goal_anchor_label: null,
     goal_question: null, slices: bp.slices,
@@ -339,14 +331,13 @@ export function emptySuggestions() {
     all_commands: true,
   };
 }
-// 设计稿画了 4 个（确认蓝图、调整分段、重新划分、一路建完）；契约 FL-02 是 1 个主推 + 最多 2 个次选，「一路建完」在上面的卡片里
+// F8：资料分析之后不停，主推下一步「提取对象」；蓝图里的问题不挡建模，次选里去回答
 export function blueprintSuggestions() {
   return {
     mode: 'normal',
-    primary: sg('sg-confirm', '确认蓝图', 'check', { type: 'confirm_blueprint', next: 'L2' }, { primary: true, priority: 2 }),
+    primary: sg('core.model:object', '提取对象', 'cube', { type: 'send', text: '', command: '/ontology-extract-object', args: {} }, { primary: true, priority: 4 }),
     secondary: [
-      sg('sg-adjust', '调整分段', 'layers', { type: 'navigate', page: 'wb-blueprint', params: { dialog: 'blueprint' } }),
-      sg('sg-redo', '重新划分', 'refresh', { type: 'send', text: '重新划分分段', command: '/ontology-research', args: { phase: 'slices', redo: true } }),
+      sg('sg-blueprint', '建模蓝图', 'layers', { type: 'navigate', page: 'wb-blueprint', params: { dialog: 'blueprint' } }),
     ],
     all_commands: true,
   };
@@ -401,7 +392,7 @@ function materialsHistory() {
         { id: 'r2', text: '读完场景说明和两份样例补货单，覆盖 100%', meta: '1 分 12 秒', state: 'done', duration_ms: 72000 },
         { id: 'r3', text: '读完门店清单 3 个工作表，找到 12 个字段', meta: '9 秒', state: 'done', duration_ms: 9000 },
         { id: 'r4', text: '正在读补货规则第 10 章「临期损耗」', meta: '78% · 预计还要 1 分钟', state: 'running', duration_ms: null },
-        { id: 'r5', text: '接下来：读商品陈列说明，然后提出业务分段和建模蓝图', meta: '', state: 'dot', duration_ms: null },
+        { id: 'r5', text: '接下来：读商品陈列说明，然后整理统一叫法和待定问题', meta: '', state: 'dot', duration_ms: null },
       ],
     }, t1),
     e('card', materialMapCard(makeMap('reading')), t1),
@@ -420,26 +411,24 @@ function blueprintHistory() {
     e('card', researchSummaryCard(), t0),
     e('message.user', { message_id: 'm-u-bp', text: '可以，按这个出蓝图吧', attachments: [], references: [], origin: null, delivery: 'immediate' }, t1),
     e('progress', {
-      group_id: 'pg-bp', title: '', desc: '', state: 'waiting', started_at: t1, duration_ms: null, collapsed: false,
+      group_id: 'pg-bp', title: '', desc: '', state: 'done', started_at: t1, duration_ms: 23000, collapsed: false,
       steps: [
-        { id: 'b1', text: '按补货规则的章节和业务项，提出 5 段', meta: '规则第 4、6、7、10、11 章各对应一条业务链路', state: 'done', duration_ms: 21000 },
-        { id: 'b2', text: '「超量与审批提示」要用到另外 3 段的标准，排在最后', meta: '依赖分析 · 2 秒', state: 'done', duration_ms: 2000 },
-        { id: 'b3', text: '等你确认蓝图', meta: '3 个问题、2 个口径待定', state: 'waiting', duration_ms: null },
+        { id: 'b1', text: '对齐了 13 个叫法，2 个有歧义', meta: '「门店 / 要货方」「临期 / 近效期」', state: 'done', duration_ms: 21000 },
+        { id: 'b2', text: '记下 3 个待你回答的问题', meta: '不挡建模', state: 'done', duration_ms: 2000 },
       ],
     }, t1),
     e('message.assistant', {
       message_id: 'm-a-bp',
-      text_md: '每段是一条能单独讲清楚、单独验证的业务链路：1 个主操作、3–8 个对象、几条规则，约半天能走完一圈。「商品品类」三段都会用到，先在第 1 段建好，其他段引用。',
+      text_md: '蓝图里 2 个叫法有歧义、3 个问题待你回答，都不挡建模：没答之前按资料原文建，答了再按你的口径改。接下来提取对象。',
       anchors: [], entry_links: [], continued: true,
     }, t1),
-    // ?mock=autobuild:off：自主构建没登记（BP-03 409 autobuild_not_available），蓝图卡的 confirm_options 没有 L4
     e('card', blueprintCard(blueprintOf()), t1),
     e('suggestions.updated', blueprintSuggestions(), t1),
   ];
 }
 
 // ---------- 流程（FL-01） ----------
-function stageFlow(base, research, slices = []) {
+function stageFlow(base, research, bpState = 'none', modelReady = false) {
   const nodes = base.nodes.map((n) => {
     if (n.id === 'core.research') return { ...n, ...research };
     if (n.id === 'evo.evolution') return n;
@@ -447,22 +436,14 @@ function stageFlow(base, research, slices = []) {
     if (n.id === 'trace.trace') return { ...reset, note: '场景走查 · 建模之后才有场景' };
     if (n.id === 'core.update') return { ...reset, note: '资料有修订时再用' };
     if (n.section === 'optional') return { ...reset, actions: [{ kind: 'skip', label: '跳过' }] };
+    if (n.id === 'core.model' && modelReady) return { ...reset, state: 'ready', display_state: 'ready' };
     return reset;
   });
-  // 没有蓝图时后端给一段「全部」（全量模式）与 blueprint.state=none（contract-changes B4d 第 8 条、B4d 合并第 2 条）
-  const draft = slices.length > 0;
+  // F8 起不分段：后端恒给一段「全部」；还没有蓝图时 blueprint.state=none，有草稿时 draft（不用确认，不挡后面的步骤）
   const all = [{ id: 'all', name: '全部', core_flow: '', group: 'todo', stages: Object.fromEntries(base.slice_stages.map((x) => [x.id, 'not_ready'])), note: '', no_rules: false }];
-  return { ...base, flow_hash: `${base.flow_hash.slice(0, 6)}m${slices.length}`, nodes, slices: draft ? slices : all, blueprint: { state: draft ? 'draft' : 'none' }, notices: [], suggestions: null };
+  return { ...base, flow_hash: `${base.flow_hash.slice(0, 6)}m${bpState}`, nodes, slices: all, blueprint: { state: bpState }, notices: [], suggestions: null };
 }
 const emptyResearch = { state: 'ready', display_state: 'pending', progress: { done: 0, total: 0, label: '等资料' }, actions: [] };
-function draftSlices(base) {
-  return SLICES.map((s, i) => ({
-    id: s.id, name: s.name, core_flow: s.core_flow, group: 'todo',
-    stages: Object.fromEntries(base.slice_stages.map((x) => [x.id, 'not_ready'])),
-    note: i === 0 ? '未开始 · 蓝图里推荐先做' : '未开始', no_rules: false,
-  }));
-}
-
 export const stages = {
   materials: {
     conversations: () => conversation(atDaysAgo(0, 9, 12)),
@@ -482,10 +463,8 @@ export const stages = {
   blueprint: {
     conversations: () => conversation(atDaysAgo(0, 9, 12)),
     history: blueprintHistory,
-    flow: (base) => stageFlow(base, {
-      state: 'pending_confirm', display_state: 'pending', progress: { done: 7, total: 7, label: '蓝图待确认' },
-      actions: [{ kind: 'confirm', label: '去确认', target: 'wb-blueprint' }],
-    }, draftSlices(base)),
+    // F8：资料分析之后不停，资料分析已确认，建模可开始
+    flow: (base) => stageFlow(base, { state: 'confirmed', display_state: 'confirmed', progress: null, actions: [] }, 'draft', true),
   },
 };
 
@@ -693,29 +672,13 @@ export function register(ctx) {
     return bp ? json(200, bp) : err(404, 'blueprint_not_found', '还没有建模蓝图');
   });
 
-  // BP-02 保存蓝图调整：整份分段列表替换
+  // BP-02 保存叫法与回答（F8 起不分段，前端不再发 slices）
   on('PUT', '/projects/([^/]+)/blueprint', ({ m, body }) => {
     const pid = m[1];
     const s = st(pid);
     const bp = s.blueprint;
     if (!bp) return err(404, 'blueprint_not_found', '还没有建模蓝图');
     if (body.base_revision !== bp.revision) return err(409, 'revision_conflict', '蓝图已被改过', { current_revision: bp.revision });
-    if (body.slices) {
-      if (!body.slices.some((x) => !x.excluded)) return err(400, 'slice_invalid', '至少留一段', { reason: 'empty' });
-      const ids = body.slices.map((x) => x.id);
-      const bad = body.slices.find((x, i) => (x.depends_on || []).some((d) => ids.indexOf(d) > i));
-      if (bad) return err(400, 'slice_invalid', '依赖的分段排在后面', { slice_id: bad.id, reason: 'dependency_order' });
-      const prev = new Map(bp.slices.map((x) => [x.id, x]));
-      const live = body.slices.filter((x) => !x.excluded);
-      bp.slices = body.slices.map((x) => {
-        const old = prev.get(x.id);
-        const from = (x.merged_from || []).map((id) => prev.get(id)).filter(Boolean);
-        const scale = old?.scale || (from.length ? { objects: from.reduce((n, y) => n + y.scale.objects, 0), rules: from.reduce((n, y) => n + y.scale.rules, 0) } : { objects: 0, rules: 0 });
-        const k = live.indexOf(x);
-        const label = x.excluded ? '' : k === 0 && !(x.depends_on || []).length ? '推荐先做' : k === live.length - 1 && (x.depends_on || []).length > 1 ? '建议最后做' : `第 ${k + 1} 个`;
-        return { id: x.id, name: x.name, core_flow: x.core_flow || '', scale, depends_on: x.depends_on || [], order: k + 1, order_label: label, excluded: !!x.excluded };
-      });
-    }
     (body.term_choices || []).forEach((t) => { const x = bp.terms.ambiguous.find((y) => y.id === t.term_id); if (x) x.chosen = t.chosen; });
     (body.answers || []).forEach((a) => { const q = bp.questions.find((y) => y.id === a.question_id); if (q) q.answer = { option_id: a.option_id, custom_text: a.custom_text }; });
     if (body.mode === 'adjust') {
@@ -728,7 +691,7 @@ export function register(ctx) {
     return json(200, bp);
   });
 
-  // BP-03 确认蓝图：L2 往对话发「开始第一段」；L4 返回自主构建预览，前端确认后再调 AB-04
+  // BP-03 确认蓝图（F8 起界面不再调，留给 F8 之前缓存的卡片）：L2 往对话发「开始提取对象」；L4 返回自主构建预览
   on('POST', '/projects/([^/]+)/blueprint/confirm', ({ m, body }) => {
     const pid = m[1];
     const s = st(pid);
@@ -740,16 +703,14 @@ export function register(ctx) {
       bp.version_label = `v${bp.version_no}`;
       bp.revision = `bp-r${uid()}`;
       emitConv(pid, cidOf(pid), 'card.updated', blueprintCard(bp));
-      const live = bp.slices.filter((x) => !x.excluded);
       setResearch(pid, { state: 'confirmed', display_state: 'confirmed', progress: null, actions: [] });
       const f = flowOf(pid);
       const model = f.nodes.find((x) => x.id === 'core.model');
-      Object.assign(model, { state: 'ready', display_state: 'ready', progress: { done: 0, total: live.length, label: `0/${live.length} 段` } });
+      Object.assign(model, { state: 'ready', display_state: 'ready', progress: null });
       emitProj(pid, 'flow.updated', { flow_hash: f.flow_hash, nodes: [{ id: model.id, state: model.state, display_state: model.display_state, flags: model.flags, progress: model.progress }], slices: [], suggestions_changed: true });
     }
-    const first = bp.slices.find((x) => !x.excluded);
     if ((body.next || 'L2') === 'L2') {
-      const t = command(pid, { page: 'wb-blueprint', label: '建模蓝图' }, `确认蓝图，开始第一段「${first?.name || ''}」`);
+      const t = command(pid, { page: 'wb-blueprint', label: '建模蓝图' }, '确认蓝图，开始提取对象');
       emitConv(pid, cidOf(pid), 'suggestions.updated', { mode: 'normal', primary: null, secondary: [], all_commands: true });
       return json(200, { blueprint: bp, command_task: t });
     }

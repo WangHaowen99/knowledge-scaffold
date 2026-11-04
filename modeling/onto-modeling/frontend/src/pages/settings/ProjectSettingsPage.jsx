@@ -23,9 +23,6 @@ const RUNNING = ['queued', 'running', 'pausing', 'paused', 'stopping', 'converti
 // 一次取齐各分区的数据（都到了再渲染，地址参数定位时位置才稳）
 function useSettingsData(pid) {
   const { api } = useApp();
-  const { flow } = useProject();
-  const flowRef = useRef(flow);
-  flowRef.current = flow;
   const [d, setD] = useState(null);
   const put = useCallback((k, v) => setD((x) => ({ ...x, [k]: typeof v === 'function' ? v(x?.[k]) : v })), []);
   const loaders = useRef({});
@@ -36,12 +33,6 @@ function useSettingsData(pid) {
     buildMode: () => api.buildMode(pid),
     policy: () => api.autobuildPolicy(pid),
     runs: () => api.autobuildRuns(pid),
-    // 没有蓝图（FL-01 blueprint.state === 'none'）时不读 BP-01，免得每次进设置都多一个 404
-    blueprint: async () => {
-      const f = flowRef.current || await api.flow(pid).catch(() => null);
-      if (f?.blueprint?.state === 'none') return null;
-      return api.blueprint(pid).catch((e) => (e.code === 'blueprint_not_found' ? null : Promise.reject(e)));
-    },
     sources: () => api.evidenceSources({ project_id: pid }),
     packs: () => api.projectPacks(pid),
     assembly: () => api.assembly(pid),

@@ -10,6 +10,7 @@ import {
   REPORT_CHIP, hhmm, reportMetrics, reportSub, sliceSegments,
 } from './autobuildModel.js';
 import { evidenceInProject } from '../../state/evidence.js';
+import { multiSlice, sliceName, unitTitle } from '../../state/flow.js';
 import { CC, Tli, WbCtx } from './parts.jsx';
 import '../../styles/autobuild.css';
 
@@ -71,7 +72,7 @@ export function Suspended({ card }) {
 const SG = { done: ['done', 'bot'], running: ['run', null], queued: ['queue', 'clock'], partial: ['part', 'pause'] };
 const STEP_K = { done: 'ok', running: 'running', waiting: 'waiting', failed: 'failed', info: 'info', interrupted: 'interrupted' };
 
-// 按段的进展块：可展开，带版本标签
+// 进展块：可展开，带版本标签（F8 之前按段跑时每段一块）
 function SliceProgressCard({ card }) {
   const [cls, icon] = SG[card.state] || SG.done;
   const segs = sliceSegments(card.timeline);
@@ -82,7 +83,7 @@ function SliceProgressCard({ card }) {
     <details className={cx('g2-sg', cls)} open={hasBody && open}>
       <summary onClick={(e) => { e.preventDefault(); if (hasBody) setOpen(!open); }}>
         <span className="si">{icon ? <Icon name={icon} size={12} /> : <span className="spin" style={{ width: 10, height: 10 }} />}</span>
-        <span className="nm">{card.slice?.name || card.title}</span>
+        <span className="nm">{unitTitle(card.slice?.id, card.slice?.name) || card.title}</span>
         <span className="xs muted grow ell">{card.summary}</span>
         {card.version_label ? <span className="tag">{card.version_label}</span> : null}
         {card.state !== 'queued' ? <Icon name="chevd" size={12} /> : null}
@@ -104,12 +105,12 @@ function SliceProgressCard({ card }) {
   );
 }
 
-function ReportRow({ row, card, onRevert, busy }) {
+function ReportRow({ row, card, multi, onRevert, busy }) {
   const { pid } = useContext(WbCtx);
   const tone = row.reverted || row.result === 'skipped' ? 'gray' : row.result === 'partial' || /部分/.test(row.result_text) ? 'amber' : 'indigo';
   return (
     <tr>
-      <td><b style={{ fontWeight: 600 }}>{row.name}</b></td>
+      <td><b style={{ fontWeight: 600 }}>{unitTitle(row.slice_id, row.name)}</b></td>
       <td><Chip tone={tone} sm>{row.result_text}</Chip></td>
       <td className="muted">{row.produced_text}</td>
       <td className="num">{row.scenarios?.total ? `${row.scenarios.passed} / ${row.scenarios.total}` : '—'}</td>
@@ -117,14 +118,14 @@ function ReportRow({ row, card, onRevert, busy }) {
       <td>
         <span className="row g4">
           <Button size="xs" onClick={() => navigate(pagePath('versions', pid), { v: row.version_label, run: card.run_id, slice: row.slice_id })}>查看改动</Button>
-          <Button size="xs" kind="ghost" disabled={!row.revertible || busy} title={row.revertible ? '回退到运行前，另存新版本' : '这一段不能撤回'} onClick={() => onRevert(row)}>回退这一段</Button>
+          <Button size="xs" kind="ghost" disabled={!row.revertible || busy} title={row.revertible ? '回退到运行前，另存新版本' : '不能撤回'} onClick={() => onRevert(row)}>{multi ? '回退这一段' : '回退到运行前'}</Button>
         </span>
       </td>
     </tr>
   );
 }
 
-// 运行报告卡：产出汇总、按段结果、去复核
+// 运行报告卡：产出汇总、结果（F8 之前按段跑时每段一行）、去复核
 function RunReportCard({ card }) {
   const { api } = useApp();
   const { pid } = useContext(WbCtx);
@@ -132,11 +133,13 @@ function RunReportCard({ card }) {
   const [busy, setBusy] = useState(false);
   const [chipText, chipTone] = REPORT_CHIP[card.state] || ['已结束', 'gray'];
   const review = ab?.run?.run_id === card.run_id ? (ab.run.needs_review ?? card.review_count) : card.review_count;
+  const multi = multiSlice((card.slices || []).map((row) => row.slice_id));
   const revert = async (row) => {
     setBusy(true);
     try {
       const r = await api.revertAutobuildSlice(pid, card.run_id, row.slice_id);
-      toast(`已回退「${row.name}」，存为 ${r.version_label}`, 'undo');
+      const name = sliceName(row.slice_id, row.name);
+      toast(name ? `已回退「${name}」，存为 ${r.version_label}` : `已回退到运行前，存为 ${r.version_label}`, 'undo');
     } catch (e) {
       toast(errorText(e), 'alert');
     } finally {
@@ -169,8 +172,8 @@ function RunReportCard({ card }) {
       </div>
       <div className="tbl-wrap mt12">
         <table className="tbl compact">
-          <thead><tr><th>分段</th><th>结果</th><th>产出</th><th>场景</th><th>版本</th><th /></tr></thead>
-          <tbody>{(card.slices || []).map((row) => <ReportRow key={row.slice_id} row={row} card={card} onRevert={revert} busy={busy} />)}</tbody>
+          <thead><tr><th>{multi ? '分段' : ''}</th><th>结果</th><th>产出</th><th>场景</th><th>版本</th><th /></tr></thead>
+          <tbody>{(card.slices || []).map((row) => <ReportRow key={row.slice_id} row={row} card={card} multi={multi} onRevert={revert} busy={busy} />)}</tbody>
         </table>
       </div>
     </CC>

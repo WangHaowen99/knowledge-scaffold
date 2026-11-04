@@ -6,7 +6,7 @@ import { useApp, useProject } from '../../app/context.js';
 import { navigate, pagePath } from '../../app/router.js';
 import { toast } from '../../app/toast.jsx';
 import { errorText, relativeTime } from '../../api/errors.js';
-import { commandFromTarget, commandNode, nodeActionKind, planSlicesCommand, suggestionCommand, overlayRunning, scriptRunView, sectionGroups, sliceStageTitle, trackNodes, withoutEvidence } from '../../state/flow.js';
+import { commandFromTarget, commandNode, nodeActionKind, suggestionCommand, overlayRunning, scriptRunView, sectionGroups, trackNodes, withoutEvidence } from '../../state/flow.js';
 import { evidenceInProject, withoutEvidenceSuggestions } from '../../state/evidence.js';
 import { composerState, readonlyInfo } from '../../state/readonly.js';
 import { runStatus } from '../../state/conversation.js';
@@ -15,7 +15,6 @@ import {
   Button, Drawer, Field, Icon, Menu, Modal, Ring, Seg, St, cx, useOutside,
 } from '../../ui/index.jsx';
 import { FLOWCHART_TYPE, latestFlowchartArtifact, pendingChangeset } from '../../app/packUi.js';
-import { cellClass } from '../projects/projectCard.js';
 import { AutobuildBar, AutobuildCtx, useAutobuild } from './autobuild.jsx';
 import { useModeSwitch } from './buildMode.jsx';
 import { canInterrupt } from './autobuildModel.js';
@@ -59,7 +58,7 @@ function Track({ flow, onOpen }) {
   );
 }
 
-// 建模步骤抽屉：分段 × 步骤（P2 起有）、按 sections 分组的节点；节点动作的执行方式见 nodeActionKind
+// 建模步骤抽屉：按 sections 分组的节点（F8 起不分段，没有「业务分段」一栏）；节点动作的执行方式见 nodeActionKind
 function StepsDrawer({ open, onClose, flow, cid }) {
   const { api } = useApp();
   const { pid, reloadFlow } = useProject();
@@ -98,16 +97,6 @@ function StepsDrawer({ open, onClose, flow, cid }) {
       toast(errorText(e), 'alert');
     }
   };
-  const adjustSlices = async () => {
-    const plan = planSlicesCommand(flow);
-    if (!plan) { onClose(); navigate(pagePath('wb-blueprint', pid), { dialog: 'blueprint' }); return; }
-    try {
-      await api.sendCommand(pid, { ...plan, origin: { page: 'wb-l2', label: '建模步骤' }, conversation_id: cid || undefined });
-      onClose();
-    } catch (e) {
-      toast(errorText(e), 'alert');
-    }
-  };
   const row = (n) => {
     const label = n.progress?.label || (n.section === 'on_demand' && n.display_state === 'ready' && recommended && /incremental|update$/.test(n.id) ? '推荐' : undefined);
     // 面板入口的节点（如求解适配）不走对话命令；同一节点的多个命令只摆第一个，其余收进「⋯」
@@ -140,32 +129,9 @@ function StepsDrawer({ open, onClose, flow, cid }) {
   };
   return (
     <Drawer open={open} onClose={onClose} icon="branch" title="建模步骤" w={440}>
-      {flow.slices.length ? (
-        <>
-          <div className="sec-t"><Icon name="layers" size={14} />业务分段 {flow.slices.length}<span className="sp" /><Button size="xs" kind="ghost" icon="layers" onClick={adjustSlices}>调整分段</Button></div>
-          {/* 小进度条的列头：和每格对齐（同运行详情「分段流水线」的表头） */}
-          <div className="wb-sr wb-sr-h">
-            <span className="ix" />
-            <span className="grow" />
-            <div className="wb-sh">{flow.slice_stages.map((st) => <span key={st.id}>{st.id === 'check' ? '查' : st.label}</span>)}</div>
-          </div>
-          {flow.slices.map((s, i) => (
-            <div key={s.id} className={cx('wb-sr', s.group === 'now' && 'now')}>
-              <span className="ix">{s.group === 'done' ? <Icon name="check" size={12} /> : i + 1}</span>
-              <div className="grow" style={{ minWidth: 0 }}>
-                <div className="b ell" style={{ fontSize: 13 }}>{s.name}</div>
-                <div className="xs muted ell">{s.note || s.core_flow}</div>
-              </div>
-              <div className="segbar">
-                {flow.slice_stages.map((st) => <i key={st.id} className={cellClass(s.stages[st.id]) || undefined} data-pop={sliceStageTitle(st, s.stages[st.id])} />)}
-              </div>
-            </div>
-          ))}
-        </>
-      ) : null}
       {sectionGroups(flow).map((g, gi) => (
         <div key={g.id}>
-          <div className={cx('sec-t', (gi || flow.slices.length) && 'mt16')}><Icon name={SECTION_ICON[g.id] || 'flow'} size={14} />{g.title}</div>
+          <div className={cx('sec-t', gi && 'mt16')}><Icon name={SECTION_ICON[g.id] || 'flow'} size={14} />{g.title}</div>
           {g.nodes.map(row)}
         </div>
       ))}
@@ -721,13 +687,14 @@ export default function WorkbenchPage({ route }) {
         case 'navigate': navigate(pagePath(a.page, pid), a.params); break;
         case 'autobuild': await ab.act(a.op); break;
         case 'clear_input': comp.current.clear?.(); break;
-        // 资料分析中「打断」（S-08）、建模蓝图「确认蓝图」（BP-03）
+        // 资料分析中「打断」（S-08）
         case 'interrupt': {
           const r = await api.interrupt(pid, cid);
           if (!r?.interrupted) toast('现在没有正在跑的步骤', 'info');
           break;
         }
-        case 'confirm_blueprint': setMDialog({ kind: 'build', next: a.next || 'L2' }); break;
+        // F8 之前缓存下来的「确认蓝图」：蓝图不用确认了，自主构建直接走开始前预览，其余打开蓝图看一眼
+        case 'confirm_blueprint': setMDialog(a.next === 'L4' ? { kind: 'build', next: 'L4' } : { kind: 'blueprint' }); break;
         // 增量更新：确认清单并执行（INC-04）、开始增量更新
         case 'execute_change_list':
         case 'start_incremental': await inc.onAction(a); break;
@@ -782,9 +749,9 @@ export default function WorkbenchPage({ route }) {
   const ctxPct = Math.round(ctx?.pct ?? 0);
   const notice = (flow?.notices || []).find((n) => n.kind === 'new_materials');
   const convTitle = list?.items?.find((c) => c.id === cid)?.title || '对话';
-  // 资料分析节点没确认：蓝图待确认时是分段规划，其余是读资料（含还没传资料）
+  // 资料分析节点没确认：还在读资料（含还没传资料）
   const research = (flow?.nodes || []).find((n) => n.id === 'core.research');
-  const researching = !research || ['confirmed', 'skipped'].includes(research.state) ? false : research.state === 'pending_confirm' ? 'blueprint' : 'materials';
+  const researching = !!research && !['confirmed', 'skipped'].includes(research.state);
   const st = composerState({ sessionState: state.session.state, archived: meta?.archived, maintenance, autobuildRunning: !!state.session.autobuild || ab.running, researching });
   const wbCtx = useMemo(() => {
     const entries = {};
@@ -891,7 +858,6 @@ export default function WorkbenchPage({ route }) {
           ) : null}
           {mDialog ? <Suspense fallback={null}><MaterialsDialogs dialog={mDialog} onClose={closeMDialog} /></Suspense> : null}
           {inc.element}
-          {modeSw.guideEl}
         </WbCtx.Provider>
         </AutobuildCtx.Provider>
       </ActionsCtx.Provider>

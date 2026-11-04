@@ -29,6 +29,7 @@ export const KIND_STYLE = {
   stale: ['stale', 'refresh'],
   resumable: ['resume', 'history'],
   feedback: ['feedback', 'inbox'],
+  check_findings: ['conflict', 'alert'],
 };
 export const kindStyle = (kind) => KIND_STYLE[kind] || ['resume', 'inbox'];
 
@@ -58,12 +59,10 @@ export function ageText(item, now = Date.now()) {
   return `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
-export const SORTS = [['default', '默认顺序'], ['newest', '最新在前'], ['slice', '按段']];
+export const SORTS = [['default', '默认顺序'], ['newest', '最新在前']];
 export function sortItems(items, sort) {
   const list = [...(items || [])];
   if (sort === 'newest') return list.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
-  // 按段：没有分段的放最后
-  if (sort === 'slice') return list.sort((a, b) => (!a.slice?.name - !b.slice?.name) || (a.slice?.name || '').localeCompare(b.slice?.name || '', 'zh'));
   return list;
 }
 
@@ -190,9 +189,9 @@ export function anchorLabel(anchor) {
   return name || s;
 }
 
-// 汇总条副标题：「15:10 – 17:02 · 全部分段完成 · 费用 ¥86」
+// 汇总条副标题：「15:10 – 17:02 · 全部完成 · 费用 ¥86」
 const RUN_STATE_TEXT = {
-  completed: '全部分段完成', stopped: '在安全点停下', converted: '已转为陪伴', budget_exhausted: '预算用完，在安全点停下', failed: '出错停下',
+  completed: '全部完成', stopped: '在安全点停下', converted: '已转为陪伴', budget_exhausted: '预算用完，在安全点停下', failed: '出错停下',
   running: '运行中', pausing: '正在暂停', paused: '已暂停', stopping: '停在安全点', converting: '转为陪伴', queued: '排队中',
 };
 export function summarySub(s) {

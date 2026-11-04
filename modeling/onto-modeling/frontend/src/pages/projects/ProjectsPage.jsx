@@ -7,9 +7,9 @@ import { errorText } from '../../api/errors.js';
 import { evidenceFromSources } from '../../state/evidence.js';
 import { PageHead, ShellG } from '../../shell/Shell.jsx';
 import {
-  Button, Check, Empty, Field, Icon, Modal, Note, Prog, Seg, SegBar, Select, cx, useOutside,
+  Button, Check, Empty, Field, Icon, Modal, Note, Prog, Seg, Select, cx, useOutside,
 } from '../../ui/index.jsx';
-import { activityText, cellClass, projectLook } from './projectCard.js';
+import { activityText, projectLook } from './projectCard.js';
 
 function ModeChip({ mode }) {
   return mode === 'L4'
@@ -17,12 +17,18 @@ function ModeChip({ mode }) {
     : <span className="chip blue sm" title="陪伴建模"><Icon name="hand" />陪伴</span>;
 }
 
+// 自主构建中的进度说明：F8 起不分段，只说预计还要多久；F8 之前按段跑的运行照旧说第几段
+function runProgressText(ab) {
+  const eta = ab.eta_ms ? `预计 ${Math.round(ab.eta_ms / 60000)} 分钟` : '';
+  if (ab.slice_total > 1) return `第 ${Math.min(ab.slice_total, ab.slice_done + 1)}/${ab.slice_total} 段${eta ? ` · ${eta}` : ''}`;
+  return eta;
+}
+
 function ProjectCardView({ p, index = 0, onMenu, onRestore }) {
   const look = projectLook(p);
   const ab = p.autobuild;
   const live = ab && ['running', 'queued', 'pausing'].includes(ab.state);
   const done = ab && ab.state === 'completed' && ab.needs_review > 0;
-  const cells = p.slices ? p.slices.cells.map(cellClass) : ['', '', '', ''];
   const open = () => navigate(pagePath(p.landing_page || 'wb-l2', p.id));
   const durText = (ms) => {
     const m = Math.round(ms / 60000);
@@ -43,19 +49,12 @@ function ProjectCardView({ p, index = 0, onMenu, onRestore }) {
         </button>
       </div>
       <div className="goal">{p.goal}</div>
-      <div className="mt12">
-        <SegBar states={cells} />
-        <div className="row xs muted mt4">
-          <span>分段进度</span><span className="sp" />
-          <span>{p.slices ? `已确认 ${p.slices.confirmed}/${p.slices.total} 段` : '分段待规划'}</span>
-        </div>
-      </div>
       {live ? (
         <div className="en-live">
           <div className="row xs">
             <span className="row g4" style={{ color: 'var(--blue2)', fontWeight: 650 }}><i className="ld" />自主构建中</span>
             <span className="sp" />
-            <span className="muted">第 {Math.min(ab.slice_total, ab.slice_done + 1)}/{ab.slice_total} 段{ab.eta_ms ? ` · 预计 ${Math.round(ab.eta_ms / 60000)} 分钟` : ''}</span>
+            <span className="muted">{runProgressText(ab)}</span>
           </div>
           <div className="mt8"><Prog p={ab.progress_pct} tone="l4" thin /></div>
           <div className="xs muted mt4">已自动决定 {ab.decisions} 项 · 挂起 {ab.suspended} 个问题</div>
@@ -64,7 +63,7 @@ function ProjectCardView({ p, index = 0, onMenu, onRestore }) {
       {done ? (
         <div className="note amber mt8" style={{ padding: '8px 10px' }}>
           <Icon name="bot" />
-          <div className="grow xs"><b>自主构建完成 · 需复核 {ab.needs_review} 项</b><br />{durText(ab.duration_ms)} · {ab.slice_done}/{ab.slice_total} 段完成</div>
+          <div className="grow xs"><b>自主构建完成 · 需复核 {ab.needs_review} 项</b><br />{durText(ab.duration_ms)}{ab.slice_total > 1 ? ` · ${ab.slice_done}/${ab.slice_total} 段完成` : ''}</div>
         </div>
       ) : null}
       {p.publishable && !p.archived ? (

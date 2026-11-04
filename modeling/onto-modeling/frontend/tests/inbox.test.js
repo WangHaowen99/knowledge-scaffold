@@ -24,7 +24,8 @@ test('排序、上下条、处理完去哪', () => {
   const items = [{ id: 'a', created_at: at(1, 9, 0), slice: { name: '乙' } }, { id: 'b', created_at: at(1, 12, 0), slice: { name: '甲' } }, { id: 'c', created_at: at(1, 10, 0) }];
   assert.deepEqual(sortItems(items, 'default').map((x) => x.id), ['a', 'b', 'c']);
   assert.deepEqual(sortItems(items, 'newest').map((x) => x.id), ['b', 'c', 'a']);
-  assert.equal(sortItems(items, 'slice').at(-1).id, 'c');
+  // F8 起不分段，没有「按段」排序；老链接里的 slice 按默认顺序
+  assert.deepEqual(sortItems(items, 'slice').map((x) => x.id), ['a', 'b', 'c']);
   assert.equal(stepId(items, 'a', 1), 'b');
   assert.equal(stepId(items, 'c', 1), 'c');
   assert.equal(stepId(items, 'a', -1), 'a');
@@ -74,7 +75,7 @@ test('出处短标签、汇总条副标题、今天的进度、变更点文字�
   assert.equal(anchorLabel('file:resource/others/02-门店补货规则.docx#p:9.2'), '§9.2');
   assert.equal(anchorLabel('file:resource/schema/06-商品品类表.xlsx#cell:品类表!D12'), '品类表 D12');
   assert.equal(anchorLabel('db:erp-prod/erp.replenish_std.max_qty'), '数据库');
-  assert.equal(summarySub({ started_at: at(1, 15, 10), ended_at: at(1, 17, 2), state: 'completed', cost: { amount: 86, currency: 'CNY' } }), '15:10 – 17:02 · 全部分段完成');
+  assert.equal(summarySub({ started_at: at(1, 15, 10), ended_at: at(1, 17, 2), state: 'completed', cost: { amount: 86, currency: 'CNY' } }), '15:10 – 17:02 · 全部完成');
   assert.equal(summarySub({ started_at: at(1, 15, 10), ended_at: null, state: 'running', cost: null }), '15:10 开始 · 运行中');
   // 只列有剩余的几类，每类只给剩余数
   assert.deepEqual(todayRows({ remaining_by_filter: { decision: 2, autobuild_review: 8, stale: 0 } }), [['决策', '2 剩余'], ['自主构建复核', '8 剩余']]);

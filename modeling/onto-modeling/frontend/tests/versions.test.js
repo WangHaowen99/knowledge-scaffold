@@ -61,7 +61,7 @@ test('落地：查看改动按版本号选中，对不上运行和分段时改�
   // 版本号找到了但属于别的分段：还有这一段的版本就改选它，没有就仍选中并说明
   const q = pickLanding(LIST.filter((v) => v.n <= 16), { v: 'v0.14', run: 'run-3', slice: 's5' });
   assert.equal(LIST.find((v) => v.commit === q.commit).version_label, 'v0.14');
-  assert.match(q.note, /不是这一段生成的/);
+  assert.match(q.note, /不是这次运行生成的/);
   // 版本没带运行信息（P1 后端）：只认版本号，不提示
   const bare = LIST.map((v) => ({ ...v, run: null }));
   assert.deepEqual(pickLanding(bare, { v: 'v0.15', run: 'run-3', slice: 's3' }), { commit: '8d3f6a10', note: '' });

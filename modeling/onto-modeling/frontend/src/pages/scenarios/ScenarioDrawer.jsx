@@ -10,7 +10,7 @@ import {
 } from '../../ui/index.jsx';
 import { ScopeLockBar, SendButton } from '../plugin/parts.jsx';
 import {
-  INPUT_KIND, SCENARIO, enumLabel, failHint, lastRun, rowLocked, rowLockPop, rowState, walkCommand,
+  INPUT_KIND, SCENARIO, enumLabel, failHint, lastRun, rowLocked, rowLockPop, rowState, showSlice, walkCommand,
 } from './scenariosModel.js';
 
 const EDITABLE = ['输入', '预期结论'];
@@ -118,7 +118,7 @@ export function ScenarioDrawer({ row, type, lock, tasks, onClose, onChanged }) {
           w="88px"
           pairs={[
             ['状态', <span key="s" data-pop={st === 'fail' ? failHint(row) : undefined}><St k={st} sm /></span>],
-            ['分段', enumLabel(type, 'slice', f.slice)],
+            ...(showSlice(type) ? [['分段', enumLabel(type, 'slice', f.slice)]] : []),
             ['推演的操作', f.operation ? <span key="o" className="wl" onClick={() => navigate(pagePath('studio-table', pid), { entry: f.operation.id })}>{f.operation.name}</span> : '—'],
             ['来源', f.source ? <Ev key="e" anchor={f.source} label={f.source_label} /> : '—'],
             ['输入', <Chip key="i" tone={inputTone} sm>{inputLabel}</Chip>],

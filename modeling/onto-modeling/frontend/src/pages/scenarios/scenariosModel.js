@@ -1,4 +1,5 @@
 // 场景走查页的纯逻辑：场景行的状态与筛选、统计卡文字、写入范围只读、页面命令（S-20）、趋势线（契约 AR-02 / AR-09、7.11）
+import { sliceName } from '../../state/flow.js';
 import { isLocked, lockState } from '../../state/readonly.js';
 
 export const SCENARIO = 'trace.scenario';
@@ -33,6 +34,9 @@ export function enumOptions(type, field) {
   const f = type?.schema?.fields?.find((x) => x.name === field);
   return (f?.enum || []).map((e) => ({ value: e.value, label: e.label }));
 }
+
+// 「分段」筛选和列：F8 起不分段，字段没有两个以上的取值时不出
+export const showSlice = (type) => enumOptions(type, 'slice').length > 1;
 
 export const INPUT_KIND = { custom: ['自定义输入', 'indigo'], mock: ['来自示例数据', 'line'] };
 
@@ -114,7 +118,8 @@ export function lockBarText(lock, lockedRows) {
   const c = countRows(lockedRows);
   const sum = `通过 ${c.pass} · 失败 ${c.fail} · 过期 ${c.stale}`;
   const batch = fromBatch(lock);
-  const slice = lock?.slice?.name ? `「${lock.slice.name}」` : '这部分内容';
+  const name = sliceName(lock?.slice?.id, lock?.slice?.name);
+  const slice = name ? `「${name}」` : '这部分内容';
   return {
     running: batch ? [`助手正在推演 ${n} 个场景，暂时只读`] : [`助手正在改${slice}，${n} 个场景暂时只读`],
     pending: [`和助手这一轮的修改有冲突，${n} 个场景暂时只读`, sum],

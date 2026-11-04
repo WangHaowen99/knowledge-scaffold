@@ -93,15 +93,15 @@ export function projectCards() {
     card({
       id: MAIN_PID, name: '门店补货单编制', package_name: 'retail-restock', goal: GOAL, build_mode: 'L2', version_label: 'v0.12',
       industry_label: '零售连锁', last_activity_at: ago(5 * MIN), inbox_count: 18, status: ['active'], landing_page: 'wb-l2',
-      slices: { total: 5, confirmed: 1, cells: ['confirmed', 'pending', 'stale', 'not_ready', 'running'] },
+      slices: null,
     }),
     card({
       id: 'bike-fleet-7b20e4a1', name: '共享单车故障诊断', package_name: 'bike-fleet', goal: '根据骑行上报、锁况与巡检记录判断单车故障类型，并给出处置建议',
       build_mode: 'L4', version_label: 'v0.4', industry_label: '出行服务', last_activity_at: ago(2 * MIN), inbox_count: 0,
       status: ['active', 'autobuild'], landing_page: 'l4-run',
-      slices: { total: 5, confirmed: 2, cells: ['confirmed', 'confirmed', 'running', 'not_ready', 'not_ready'] },
+      slices: null,
       autobuild: {
-        run_id: 'run-3', run_no: 3, state: 'running', slice_done: 2, slice_total: 5, progress_pct: 58, eta_ms: 25 * MIN,
+        run_id: 'run-3', run_no: 3, state: 'running', slice_done: 0, slice_total: 1, progress_pct: 58, eta_ms: 25 * MIN,
         decisions: 9, suspended: 1, needs_review: 0, duration_ms: 38 * MIN,
       },
     }),
@@ -109,9 +109,9 @@ export function projectCards() {
       id: 'rider-shifts-52c9d0f3', name: '外卖骑手排班求解', package_name: 'rider-shifts', goal: '按月度订单预测与站点约束求解排班方案，输出每班骑手数、时段和天数',
       build_mode: 'L4', version_label: 'v0.9', industry_label: '即时配送', last_activity_at: ago(HOUR), inbox_count: 4,
       status: ['active', 'autobuild_done'], landing_page: 'inbox',
-      slices: { total: 6, confirmed: 5, cells: ['confirmed', 'confirmed', 'needs_review', 'confirmed', 'needs_review', 'not_ready'] },
+      slices: null,
       autobuild: {
-        run_id: 'run-2', run_no: 2, state: 'completed', slice_done: 5, slice_total: 6, progress_pct: 100, eta_ms: null,
+        run_id: 'run-2', run_no: 2, state: 'completed', slice_done: 1, slice_total: 1, progress_pct: 100, eta_ms: null,
         decisions: 13, suspended: 2, needs_review: 4, duration_ms: 112 * MIN,
       },
     }),
@@ -119,7 +119,7 @@ export function projectCards() {
       id: 'library-desk-1e8f6a07', name: '图书借阅管理', package_name: 'library-desk', goal: '馆员一句话描述读者情况，判断能不能续借或预约并推荐合适的图书',
       build_mode: 'L2', version_label: 'v1.3', industry_label: '图书馆', last_activity_at: yesterdayAt(18, 20), inbox_count: 0,
       status: ['publishable'], landing_page: 'wb-l2',
-      slices: { total: 4, confirmed: 4, cells: ['confirmed', 'confirmed', 'confirmed', 'confirmed'] },
+      slices: null,
       last_release: { version: 'v1.2', at: dayOf(10, 28) },
       publishable: { gates_passed: true, last_release: { version: 'v1.2', at: dayOf(10, 28) } },
     }),
@@ -132,7 +132,7 @@ export function projectCards() {
       id: 'demo-takeout-0a9e3f66', name: '外卖订单（示例）', package_name: 'demo-takeout', goal: '示例项目：从下单、接单到配送完成的完整建模流程',
       build_mode: 'L2', version_label: 'v1.0', industry_label: '示例', last_activity_at: dayOf(10, 12), inbox_count: 0,
       archived: true, archived_at: dayOf(10, 12), status: ['archived'], landing_page: 'wb-l2', created_from: 'example',
-      slices: { total: 3, confirmed: 3, cells: ['confirmed', 'confirmed', 'confirmed'] },
+      slices: null,
     }),
   ];
 }
@@ -280,7 +280,7 @@ export function flow({ trace = true } = {}) {
   const nodes = [
     node({ id: 'core.research', title: '资料分析', state: 'confirmed', display_state: 'confirmed' }),
     node({ id: 'rev.evidence', title: '系统取证', placement: 'step', state: 'confirmed', display_state: 'confirmed', version: 'rev@0.3.0', note: '登记了业务系统数据源才有这一步', plugin: { name: 'reverse', label: '系统逆向建模' } }),
-    node({ id: 'core.model', title: '建模', state: 'running', display_state: 'running', progress: { done: 3, total: 5, label: '3/5 段' }, per_slice: true }),
+    node({ id: 'core.model', title: '建模', state: 'running', display_state: 'running', progress: null, per_slice: true }),
     node({ id: 'core.validate', title: trace ? '校验与走查' : '校验', note: trace ? '场景走查插件把全量回归串在这一步里' : null }),
     // 全量回归随 core 拆出、串在校验之后（spine，contract-changes B4d 合并第 4 条）
     ...(trace ? [node({ id: 'trace.trace', title: '全量回归', state: 'stale', display_state: 'stale', version: 'trace@0.10.0', note: '场景走查 · 09 修订通知改了陈列量标准，3 个场景过期', actions: [{ kind: 'refresh', label: '刷新', target: 'scenarios' }], plugin: { name: 'trace', label: '场景走查' } })] : []),
@@ -313,12 +313,9 @@ export function flow({ trace = true } = {}) {
       { id: 'object', label: '对象' }, { id: 'operation', label: '操作' }, { id: 'rule', label: '规则' }, { id: 'check', label: '写入即查' },
       ...(trace ? [{ id: 'scenario', label: '场景', plugin: 'trace' }] : []),
     ],
+    // F8 起不分段：建模只有一段「全部」
     slices: [
-      { id: 's1', name: '补货申请与门店需求', core_flow: '受理三道校验', group: 'done', stages: st(['confirmed', 'confirmed', 'skipped', 'confirmed', 'confirmed']), note: '已生效 · 资料里没有规则，已跳过', no_rules: true },
-      { id: 's2', name: '安全库存测算', core_flow: '按类取标准再取严', group: 'wait', stages: st(['confirmed', 'confirmed', 'pending_confirm', 'confirmed', 'ready']), note: '2 条规则待确认', no_rules: false },
-      { id: 's3', name: '陈列量核定', core_flow: '到货周期 × 陈列上限', group: 'wait', stages: st(['confirmed', 'stale', 'stale', 'not_ready', 'stale']), note: '3 项过期 · 来自 09 修订通知', no_rules: false },
-      { id: 's4', name: '临期与损耗检查', core_flow: '临期损耗限值', group: 'todo', stages: st(['ready', 'not_ready', 'not_ready', 'not_ready', 'not_ready']), note: '未开始 · 推荐下一个做', no_rules: false },
-      { id: 's5', name: '超量与审批提示', core_flow: '超量清单与审批提示', group: 'now', stages: st(['confirmed', 'pending_confirm', 'draft', 'running', 'not_ready']), note: '正在做 · 停在「操作」', no_rules: false },
+      { id: 'all', name: '全部', core_flow: '', group: 'now', stages: st(['confirmed', 'pending_confirm', 'skipped', 'running', 'not_ready']), note: '正在做 · 停在「操作」', no_rules: false },
     ],
     blueprint: { state: 'confirmed' },
     suggestions: null,
@@ -618,7 +615,7 @@ export function wbHistory() {
   const e = (type, data, ts = t1) => ({ id: String(++seq), type, ts, project_id: MAIN_PID, conversation_id: 'c7a1e2f03b44', data });
   return [
     e('day.marker', { label: '今天' }, t0),
-    e('notice', { kind: 'merged', text: '分段「临期与损耗检查」已生效 · 版本 v0.12', version_label: 'v0.12', changeset_id: 'cs-30', align: 'center' }, t0),
+    e('notice', { kind: 'merged', text: '「操作提取」已生效 · 版本 v0.12', version_label: 'v0.12', changeset_id: 'cs-30', align: 'center' }, t0),
     e('message.user', { message_id: 'm-u-41', text: '继续做「超量与审批提示」', attachments: [], references: [], origin: null, delivery: 'immediate' }, todayAt(15, 20)),
     e('message.assistant', { message_id: 'm-a-42', text_md: '好。这一段要把门店申请和标准逐项比较，生成超量清单和审批提示。', anchors: [], entry_links: [], continued: false }),
     e('progress', {
@@ -651,8 +648,8 @@ export function suggestionsWaiting() {
 export function suggestionsAfterMerge() {
   return {
     mode: 'normal',
-    // 建模的下一步（contract-changes B4d 第 14 条）：send 的 text 为空串，命令与分段在 command、args 里
-    primary: { id: 'core.model:s2:rule', label: '提取规则', icon: 'scale', primary: true, disabled: false, reason: '', priority: 4, action: { type: 'send', text: '', command: '/ontology-extract-rule-metric', args: { slice: 's2' } } },
+    // 建模的下一步（contract-changes B4d 第 14 条）：send 的 text 为空串，命令在 command 里；F8 起不分段，args 不带 slice
+    primary: { id: 'core.validate', label: '校验', icon: 'check', primary: true, disabled: false, reason: '', priority: 4, action: { type: 'send', text: '', command: '/ontology-validate', args: {} } },
     secondary: [
       { id: 'sg-sc', label: '看场景推演', icon: 'flask', primary: false, disabled: false, reason: '', priority: 4, action: { type: 'navigate', page: 'scenarios' } },
     ],
@@ -680,12 +677,12 @@ export function commandCatalog() {
     groups: [
       { id: 'model', label: '建模', items: [
         item('guide', '引导式建模', '从头带你走一遍', '/ontology'),
-        item('research', '资料分析', '读全资料，提出分段', '/ontology-research'),
+        item('research', '资料分析', '读全资料，统一叫法', '/ontology-research'),
         item('objects', '提取对象', '从资料里抽出业务对象', '/ontology-extract-object'),
         item('operations', '提取操作', '抽出业务流程和步骤', '/ontology-extract-operation'),
         item('rules', '规则与指标', '抽出判断规则和统计口径', '/ontology-extract-rule-metric'),
         item('check', '校验', '规则检查 + 语义检查', '/ontology-validate'),
-        item('consistency', '全局一致性', '关系、口径与分段衔接', '/ontology-consistency'),
+        item('consistency', '全局一致性', '关系与口径', '/ontology-consistency'),
         item('incremental', '增量更新', '资料变了，只改受影响的部分', '/ontology-update'),
       ] },
       { id: 'optional', label: '可选能力', items: [

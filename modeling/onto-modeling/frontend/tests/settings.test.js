@@ -8,7 +8,7 @@ import { mcpServers, projectPacks, remainingText } from '../src/api/mock/setting
 import {
   activeSection, advancedSummary, basicPatch, createdText, defaultConfigTab, engineCards, finalizePolicy,
   isRecommended, lastRunText, modelDisplayName, modelSourceText, moveItem, nameProblem, packToolsText, parseScope,
-  parseWindow, pendingSummary, policyBody, policyDirty, policyForm, rowActions, scopeLabel, sectionTarget, sliceRows, startBlocker,
+  parseWindow, pendingSummary, policyBody, policyDirty, policyForm, rowActions, scopeLabel, sectionTarget, startBlocker,
   statusChip, switchToast, thresholdAt, thresholdPos, tokenBody, tokenProblems, toolList, toolsText, uiCell, visibleMcp, windowText,
 } from '../src/pages/settings/settingsModel.js';
 
@@ -75,7 +75,8 @@ test('策略表单：只读字段与老策略里的预算不提交；生产库�
   assert.deepEqual(ok.form.production_collection[0].scope, ['补货标准表', '商品品类表']);
   const bad = finalizePolicy(on, { 'erp-prod': { window: '晚上' } });
   assert.match(bad.problems['window:erp-prod'], /22:00 – 06:00/);
-  assert.deepEqual(finalizePolicy({ ...form, scope: { mode: 'selected', slice_ids: [] } }).problems, { scope: '至少选一段' });
+  // F8 起不分段：老策略里「只跑选中的分段」不再在前端拦，服务端按全部处理
+  assert.deepEqual(finalizePolicy({ ...form, scope: { mode: 'selected', slice_ids: [] } }).problems, {});
   assert.deepEqual(parseWindow('8:00-9:00'), { error: '写成「22:00 – 06:00」这样的起止时间' });
   assert.deepEqual(parseWindow('22:00-06:00'), { value: { start: '22:00', end: '06:00' } });
   assert.equal(windowText({ start: '22:00', end: '06:00' }), '22:00 – 06:00');
@@ -98,15 +99,10 @@ test('高级设置：摘要、是否推荐值、阈值滑块、资料优先级�
   assert.equal(moveItem(adv.source_priority, 1, 9), adv.source_priority);
 });
 
-test('范围与开始：分段现状取流程，已确认的不进范围；运行中、归档时不能开始', () => {
-  const rows = sliceRows([{ id: 's1', name: '补货申请与门店需求' }, { id: 's2', name: '安全库存测算' }], F.flow().slices);
-  assert.deepEqual(rows.map((r) => [r.id, r.group, r.done]), [['s1', 'done', true], ['s2', 'wait', false]]);
-  assert.equal(rows[1].note, '2 条规则待确认');
-  assert.equal(sliceRows(null, F.flow().slices).length, 5);
-  assert.equal(startBlocker({ archived: false, active: null, rows }), null);
-  assert.equal(startBlocker({ archived: true, active: null, rows }), '项目已归档，不能开始自主构建');
-  assert.equal(startBlocker({ active: { run_no: 4, state: 'queued' }, rows }), '运行 #4 排队中，结束后才能开始下一次');
-  assert.equal(startBlocker({ rows: [rows[0]] }), '没有未完成的分段');
+test('开始：运行中、归档时不能开始；还有没有要做的由开始前预览判定（F8 起不分段）', () => {
+  assert.equal(startBlocker({ archived: false, active: null }), null);
+  assert.equal(startBlocker({ archived: true, active: null }), '项目已归档，不能开始自主构建');
+  assert.equal(startBlocker({ active: { run_no: 4, state: 'queued' } }), '运行 #4 排队中，结束后才能开始下一次');
   assert.equal(lastRunText({ run_no: 3, ended_at: '2026-11-01T09:02:00Z', duration_ms: 112 * 60000, reviewed: false }), `上次运行 #3 · 11-01 · 1 小时 52 分 · 待复核`);
   assert.equal(lastRunText(null), '还没有运行过自主构建');
 });
@@ -332,24 +328,28 @@ test('mock AB-01～AB-04、AB-18：保存的策略决定预览；开始后开一
   const saved = await call('PUT', `${P}/autobuild/policy`, policyBody(form, legacy.body.revision));
   assert.equal(saved.status, 200);
   assert.notEqual(saved.body.revision, legacy.body.revision);
-  assert.deepEqual((await call('GET', `${P}/autobuild/policy`)).body.scope.slice_ids, ['s3', 's4']);
+  // F8 起不分段：老客户端选的分段不认，按全部没做完的处理（不报错）
+  const kept = (await call('GET', `${P}/autobuild/policy`)).body.scope;
+  assert.equal(kept.mode, 'all_pending');
+  assert.deepEqual(kept.slice_ids, []);
 
   const pv = (await call('POST', `${P}/autobuild/runs/preview`, {})).body;
-  assert.deepEqual(pv.slices.filter((s) => s.included).map((s) => s.id), ['s3', 's4']);
+  assert.deepEqual(pv.slices.filter((s) => s.included).map((s) => s.id), ['all']);
   assert.equal(pv.production, '允许采集 ERP 生产库（22:00 – 06:00）');
-  assert.deepEqual(pv.warnings, []);
+  // 「全部」正做到一半（有待确认的一步）：会按策略决定
+  assert.deepEqual(pv.warnings, ['有 1 个未决决策会被按策略决定']);
   assert.ok(pv.preview_token);
 
   assert.equal((await call('POST', `${P}/autobuild/runs`, {})).body.code, 'preview_expired');
   const run = await call('POST', `${P}/autobuild/runs`, { preview_token: pv.preview_token });
   assert.equal(run.status, 201);
-  assert.deepEqual([run.body.run_no, run.body.state, run.body.slices.total], [4, 'queued', 2]);
+  assert.deepEqual([run.body.run_no, run.body.state, run.body.slices.total], [4, 'queued', 1]);
   const conv = convs.get(F.MAIN_PID)[0];
   assert.deepEqual([conv.id, conv.title, conv.kind, conv.live], [run.body.conversation_id, '自主构建 · 运行 #4', 'autobuild', true]);
   const start = seeded.get(`${F.MAIN_PID}:${conv.id}`).find((e) => e.type === 'card').data;
   assert.equal(start.card_type, 'autobuild_start');
   assert.deepEqual(start.chips.map((c) => c.label), ['范围', '生产库', '拿不准时']);
-  assert.deepEqual(start.chips.map((c) => c.value), ['选中的 2 段', '允许采集 ERP 生产库（22:00 – 06:00）', '先按最稳妥的做法往下做，做完列出来给你复核']);
+  assert.deepEqual(start.chips.map((c) => c.value), ['全部没做完的步骤', '允许采集 ERP 生产库（22:00 – 06:00）', '先按最稳妥的做法往下做，做完列出来给你复核']);
   assert.deepEqual([run.body.tokens, run.body.acknowledged], [{ used: 0 }, false]);
 
   const running = (await call('GET', `${P}/autobuild/runs?state=running`)).body.items;

@@ -88,7 +88,7 @@ function Rendered({ events, running }) {
 
 const PCS = [
   ['资料地图卡', 'map', 'blue', '双击打开资料地图弹窗：可以改资料用途、让助手补读漏掉的部分', '弹窗编辑', 'wb-materials'],
-  ['建模蓝图卡', 'layers', 'blue', '双击打开蓝图弹窗：拖动排序、合并、拆分、改名分段，确认后开始建模', '弹窗编辑', 'wb-blueprint'],
+  ['建模蓝图卡', 'layers', 'blue', '双击打开蓝图弹窗：回答目标问题、统一叫法；不用确认，建模照常往下走', '弹窗编辑', 'wb-blueprint'],
   ['本步产出卡', 'cube', 'blue', '卡片只读；点条目名去 Studio 编辑，「查看改动」在卡内展开对比', '跳 Studio', 'wb-l2'],
   ['流程图卡', 'branch', 'indigo', '双击打开流程图编辑弹窗，和 Studio 里是同一份；在助手写入范围内时，这一轮结束前只读', '弹窗编辑', 'flowchart'],
   ['变更点清单卡', 'refresh', 'amber', '双击打开弹窗逐条改写、接受变更点，确认后才动手修改', '弹窗编辑', 'incremental'],
@@ -132,7 +132,7 @@ export default function ChatStatesPage() {
     </Item>,
     <Item key={8} n={8} title="本轮改了什么 · 展开明细" feat="只算助手这一轮" head={false}><RoundChangesDetail card={S.ROUND_DETAIL} onCollapse={demo()} /></Item>,
     <Item key={9} n={9} title="排队中" feat="第 2 位" headProps={{ state: <Chip tone="amber" sm dot>排队中</Chip> }}>
-      <div className="g2-msg g2-me">把临期与损耗检查这一段做完</div>
+      <div className="g2-msg g2-me">把临期与损耗检查做完</div>
       <div className="g2-q mt12">
         <b>2</b>
         <div className="grow">
