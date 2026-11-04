@@ -23,8 +23,18 @@ export const RUNNING_EVENTS = [
       { id: 'b', text: '质量检查：同时派出 3 个子任务', meta: '进行中', state: 'running' },
     ],
   }),
-  ev('subagent.updated', { task_id: 't1', group_id: 'g3', title: '规则检查', status: 'done', progress_text: '', summary: '0 个错误' }),
-  ev('subagent.updated', { task_id: 't2', group_id: 'g3', title: '语义检查', status: 'running', progress_text: '第 6 / 11 个操作', summary: null }),
+  ev('subagent.updated', { task_id: 't1', group_id: 'g3', title: '规则检查', status: 'done', progress_text: '', summary: '0 个错误', step_count: 2 }),
+  ev('subagent.updated', { task_id: 't2', group_id: 'g3', title: '语义检查', status: 'started', progress_text: '', summary: null, step_count: 0 }),
+  ev('subagent.updated', { task_id: 't2', group_id: 'g3', title: '语义检查', status: 'running', progress_text: '读取规则「陈列量上限」', summary: null, step_count: 5, step: { id: 's5', kind: 'tool', text: '读取规则「陈列量上限」', state: 'done' } }),
+  // 子代理只在想、不调工具：卡片和面板上显示想了多久（瞬时事件，没有 id）
+  {
+    type: 'subagent.updated',
+    ts: '2026-11-01T06:06:00.000Z',
+    data: {
+      task_id: 't2', group_id: 'g3', title: '语义检查', status: 'running', progress_text: '', summary: null, step: null, step_count: 5,
+      thinking: { since: new Date(Date.now() - 190 * 1000).toISOString(), elapsed_ms: 190000 },
+    },
+  },
   ev('subagent.updated', { task_id: 't3', group_id: 'g3', title: '覆盖检查', status: 'started', progress_text: '等待子任务反馈', summary: null }),
 ];
 

@@ -82,7 +82,7 @@ def test_step_input_keeps_only_summary_keys():
     async def scenario():
         events = []
         tracker = JiuwenProgressTracker(events.append)
-        task = await tracker.start("call-1", {"task_description": "# 合成提示词\n" * 80})
+        task = await tracker.start("call-1", {"task_description": "# 合成提示词\n" * 400})
         await tracker.step(
             task,
             "step-1",
@@ -97,9 +97,104 @@ def test_step_input_keeps_only_summary_keys():
 
     events = asyncio.run(scenario())
 
-    assert events[0]["description"] == "子任务"  # 整段提示词不当标题
+    # 整段提示词不当名称，整段作任务说明（只留前 2000 字），名称由会话宿主回退
+    assert events[0]["description"] == ""
+    assert events[0]["brief"].startswith("# 合成提示词") and len(events[0]["brief"]) == 2000
     assert set(events[1]["input"]) == {"file_path", "description"}
     assert "SYNTHETIC-BODY" not in json.dumps(events, ensure_ascii=False)
+
+
+def test_short_task_description_names_the_card():
+    async def scenario():
+        events = []
+        tracker = JiuwenProgressTracker(events.append)
+        await tracker.start("call-1", {"task_description": "检查合成操作的语义", "subagent_type": "general-purpose"})
+        await tracker.start("call-2", {"description": "规则检查", "task_description": "第一行\n第二行"})
+        return events
+
+    events = asyncio.run(scenario())
+    assert events[0]["description"] == "检查合成操作的语义" and events[0]["brief"] == "检查合成操作的语义"
+    assert events[1]["description"] == "规则检查" and events[1]["brief"] == "第一行\n第二行"
+
+
+def test_thinking_reported_every_interval_until_the_model_returns():
+    """子代理只在想、不调工具：每个间隔报一次「思考中」（带开始时刻），模型回来就停；不占步骤额度。"""
+    async def scenario():
+        rail = build_progress_rail(_TOOL_NAME_MAP)
+        events = []
+        tracker = JiuwenProgressTracker(events.append, thinking_every=0.02)
+        parent = context("task_tool", {"task_description": "合成任务"}, "parent-call")
+        child = context("", {}, "child-model")
+        with progress_scope(tracker):
+            await rail.before_tool_call(parent)
+            await rail.before_model_call(child)
+            await asyncio.sleep(0.07)
+            child.inputs.response = SimpleNamespace(content="想完了", tool_calls=None)
+            await rail.after_model_call(child)
+            count = len(events)
+            await asyncio.sleep(0.05)
+            assert len(events) == count  # 模型回来之后不再报
+            await rail.before_model_call(child)
+            await rail.on_model_exception(child)  # 出错也停
+            await asyncio.sleep(0.05)
+            assert len(events) == count
+            await rail.after_tool_call(parent)
+        return events, tracker
+
+    events, tracker = asyncio.run(scenario())
+    thinking = [event for event in events if event.get("kind") == "thinking"]
+    assert len(thinking) >= 2
+    assert all(event["type"] == "subagent_activity" and event["step_id"] == "parent-call-thinking" for event in thinking)
+    assert thinking[0]["since"] == thinking[-1]["since"] and thinking[-1]["elapsed_ms"] >= thinking[0]["elapsed_ms"]
+    assert [event.get("text") for event in events if event.get("kind") == "text"] == ["想完了"]
+    assert tracker._tasks == {}
+
+
+def test_thinking_does_not_count_as_activity_for_the_stall_guard(tmp_path):
+    from app.services.engines.base import EngineContext
+
+    engine = JiuwenEngine(EngineContext(
+        project_id="project_alpha", cwd=tmp_path, request_permission=None,
+        load_resume_token=lambda: None, save_resume_token=lambda token: None,
+        clear_resume_token=lambda: None, log_error=lambda kind, text: None,
+    ))
+
+    async def scenario():
+        engine._last_activity = 0.0
+        await engine._progress_put({"type": "subagent_activity", "kind": "thinking", "since": 1.0})
+        thinking_seen = engine._last_activity
+        await engine._progress_put({"type": "subagent_activity", "kind": "tool", "step_id": "s1"})
+        return thinking_seen, engine._last_activity
+
+    thinking_seen, after_step = asyncio.run(scenario())
+    assert thinking_seen == 0.0 and after_step > 0.0
+
+
+def test_finish_reports_a_short_summary_and_hides_raw_failures():
+    from app.services.engines.jiuwen import TRUNCATION_FAILURE
+
+    async def scenario():
+        rail = build_progress_rail(_TOOL_NAME_MAP)
+        events = []
+        tracker = JiuwenProgressTracker(events.append)
+        ok = context("task_tool", {"task_description": "合成任务甲"}, "call-ok")
+        ok.inputs.tool_result = SimpleNamespace(success=True, data={"output": "检查完了：\n  3 个问题" + "。" * 400})
+        cut = context("task_tool", {"task_description": "合成任务乙"}, "call-cut")
+        raw = context("task_tool", {"task_description": "合成任务丙"}, "call-raw")
+        cut.exception = RuntimeError(f"Subagent general-purpose execution failed: {TRUNCATION_FAILURE}")
+        raw.exception = RuntimeError("synthetic private exception detail")
+        with progress_scope(tracker):
+            for parent in (ok, cut, raw):
+                await rail.before_tool_call(parent)
+                await rail.after_tool_call(parent)
+        return {event["task_id"]: event for event in events if event["type"] == "subagent_finished"}
+
+    final = asyncio.run(scenario())
+    assert final["call-ok"]["status"] == "completed"
+    assert final["call-ok"]["summary"].startswith("检查完了： 3 个问题") and len(final["call-ok"]["summary"]) == 301
+    assert final["call-cut"]["status"] == "failed" and final["call-cut"]["summary"] == TRUNCATION_FAILURE
+    assert final["call-raw"]["summary"] == "子任务出错，没有交回结果"
+    assert "synthetic private exception detail" not in json.dumps(final, ensure_ascii=False)
 
 
 def test_step_budget_caps_activity_events():
@@ -116,6 +211,9 @@ def test_step_budget_caps_activity_events():
     activity = [event for event in events if event["type"] == "subagent_activity"]
     starts = [event for event in activity if "status" not in event]
 
+    assert _MAX_STEPS == 200
+    # 最坏一个子任务的步骤事件总量约 100 KB 以内（参数摘要截断仍然生效）
+    assert len(json.dumps(events, ensure_ascii=False).encode()) < 100_000
     assert len(starts) == _MAX_STEPS + 1  # 最后一条是省略提示
     assert starts[-1]["kind"] == "text" and "省略" in starts[-1]["text"]
     # 被省略的步骤不会再出现状态更新

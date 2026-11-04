@@ -41,10 +41,41 @@ function patch(state, key, fn) {
   return { ...state, items: { ...state.items, [key]: fn(cur) } };
 }
 
-// 同一个子任务的更新按到达顺序合并（后到的字段盖住先到的）；空的进展说法不盖掉先到的
-function mergeSubagent(prev, sub) {
-  const { step: _step, ...rest } = sub;
-  return { ...prev, ...rest, progress_text: sub.progress_text || prev?.progress_text || '' };
+// 子任务卡在本页上收到的逐步明细只留最近这么多步（后端每个子任务最多 200 步）
+export const SUB_STEPS_MAX = 200;
+
+// 子任务的一步并进明细：同一步后到的只改状态（说法为 null 时沿用先到的），记下开始、结束的时刻
+export function mergeSubSteps(steps, step, ts) {
+  const list = steps || [];
+  if (!step?.id) return list;
+  const i = list.findIndex((x) => x.id === step.id);
+  const over = step.state !== 'running';
+  if (i < 0) {
+    const next = [...list, { ...step, started_at: ts, ended_at: over && step.kind === 'tool' ? ts : null }];
+    return next.length > SUB_STEPS_MAX ? next.slice(-SUB_STEPS_MAX) : next;
+  }
+  const cur = list[i];
+  const next = list.slice();
+  next[i] = { ...cur, state: step.state, text: step.text || cur.text, ended_at: cur.ended_at || (over ? ts : null) };
+  return next;
+}
+
+// 同一个子任务的更新按到达顺序合并（后到的字段盖住先到的）；空的进展说法、任务说明不盖掉先到的。
+// 「思考中」只在最新这条是思考心跳时成立，有了新的一步就清掉
+function mergeSubagent(prev, sub, ts) {
+  const { step, ...rest } = sub;
+  const over = sub.status === 'done' || sub.status === 'failed';
+  return {
+    ...prev,
+    ...rest,
+    progress_text: sub.progress_text || prev?.progress_text || '',
+    brief: sub.brief || prev?.brief || null,
+    step_count: Math.max(prev?.step_count || 0, sub.step_count || 0),
+    thinking: over ? null : sub.thinking || null,
+    started_at: prev?.started_at || ts,
+    ended_at: prev?.ended_at || (over ? ts : null),
+    steps: mergeSubSteps(prev?.steps, step, ts),
+  };
 }
 
 // 一个事件 → 新状态
@@ -131,7 +162,7 @@ export function applyEvent(state, env) {
       // 子任务在时间线上单独成卡，排在第一次出现的位置
       const key = `sub:${d.task_id}`;
       const cur = state.items[key];
-      return upsert(state, key, { ...mergeSubagent(cur, d), ts: cur?.ts || ts, kind: 'subagent' });
+      return upsert(state, key, { ...mergeSubagent(cur, d, ts), ts: cur?.ts || ts, kind: 'subagent' });
     }
     case 'tool.activity':
       return state; // 内部步骤只进执行日志，不渲染

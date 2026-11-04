@@ -149,6 +149,7 @@ export function createApi(client) {
     startNext: (id, cid) => client.post(`${C(id, cid)}/next/start`, {}),
     conversationEventsUrl: (id, cid, q) => client.url(`${C(id, cid)}/events`, q), // S-13
     retryTurn: (id, cid) => client.post(`${C(id, cid)}/retry`, {}), // S-14
+    subagentSteps: (id, cid, taskId, query) => client.get(`${C(id, cid)}/subagents/${enc(taskId)}/steps`, { query }), // S-21
     resumeExec: (id, execId, conversation_id) => client.post(`${P(id)}/execs/${enc(execId)}/resume`, conversation_id ? { conversation_id } : {}), // S-16
     abandonExec: (id, execId) => client.post(`${P(id)}/execs/${enc(execId)}/abandon`, {}), // S-17
     commandCatalog: (id) => client.get(`${P(id)}/commands/catalog`), // S-18

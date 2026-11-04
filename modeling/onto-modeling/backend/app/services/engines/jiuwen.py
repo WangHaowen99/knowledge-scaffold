@@ -1018,7 +1018,9 @@ class JiuwenEngine(ObservableEngine):
         self._last_activity = time.monotonic()
 
     async def _progress_put(self, event: dict) -> None:
-        self._touch()
+        # 子代理「思考中」只说明还在等模型，不算有动静：网关不响应时照样由挂起兜底掐断
+        if event.get("kind") != "thinking":
+            self._touch()
         await self._queue.put(event)
 
     async def _watch_stall(self, turn: asyncio.Task) -> None:

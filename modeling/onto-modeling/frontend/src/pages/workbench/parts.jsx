@@ -3,7 +3,6 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { createContext, useContext, useLayoutEffect, useRef, useState } from 'react';
 import { navigate, pagePath } from '../../app/router.js';
-import { subagentStatus } from '../../state/conversation.js';
 import { Icon, cx } from '../../ui/index.jsx';
 import { inlineTokens, preprocessMd, stripLinks } from './md.js';
 import { layoutThumb } from './thumb.js';
@@ -205,26 +204,6 @@ export function useStickBottom(dep) {
     if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
   };
   return { ref, onScroll };
-}
-
-const SUB_TITLE = { done: '子任务完成', failed: '子任务失败', interrupted: '子任务已中断' };
-const SUB_ICON = { done: 'check', failed: 'alert', interrupted: 'pause' };
-
-// 派出的子任务：时间线上单独一张卡（沿用旧版对话页的样式），第二行是它正在做的那一步或做完的小结；
-// 会话已停下还没收到终态的显示已中断（ADR-0009）
-export function SubagentCard({ s, ended = false }) {
-  const status = subagentStatus(s, ended);
-  const over = Boolean(SUB_ICON[status]);
-  const line = over ? s.summary : (s.progress_text || '独立子代理执行中，主对话稍后汇总结果');
-  return (
-    <div className={cx('subagent-card', over ? status : 'running')}>
-      <span className="subagent-icon">{over ? <Icon name={SUB_ICON[status]} size={14} /> : <span className="spin" />}</span>
-      <span className="subagent-main">
-        <span className="subagent-title">{SUB_TITLE[status] || '子任务运行中'} · {s.title}</span>
-        {line ? <span className="subagent-hint">{line}</span> : null}
-      </span>
-    </div>
-  );
 }
 
 export function TimelineGroup({ group }) {

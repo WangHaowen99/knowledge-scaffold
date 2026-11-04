@@ -9,8 +9,9 @@ import {
   CardItem, CompactedItem, ConfigPendingItem, ErrorItem, InterruptedItem, ReconnectedItem, useActions,
 } from './cards.jsx';
 import {
-  MA, MDay, MSys, Md, SubagentCard, TimelineGroup, WxFile, WxProc, hhmm,
+  MA, MDay, MSys, Md, TimelineGroup, WxFile, WxProc, hhmm,
 } from './parts.jsx';
+import { SubagentCard } from './subagent.jsx';
 import { deliveryNote } from './composerModel.js';
 import { useTick } from './RunLine.jsx';
 import { DecidedRow, PermissionCard, QuestionCard } from './questions.jsx';

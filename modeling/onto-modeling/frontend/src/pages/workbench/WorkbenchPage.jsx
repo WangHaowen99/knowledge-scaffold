@@ -759,8 +759,8 @@ export default function WorkbenchPage({ route }) {
       (it.entry_links || it.card?.entry_links || []).forEach((r) => { entries[r.name] = r; });
       if (it.card?.entry) entries[it.card.entry.name] = it.card.entry;
     });
-    return { pid, entries };
-  }, [pid, state.order, state.items]);
+    return { pid, cid, entries };
+  }, [pid, cid, state.order, state.items]);
 
   const head = (
     <div className="wx-head" ref={headRef}>

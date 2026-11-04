@@ -462,11 +462,11 @@ export function Drawer(all) {
   const ghostRef = useLeaveGhost();
   if (!shown) return null;
   const {
-    onClose, icon, title, sub, w, children, foot,
+    onClose, icon, title, sub, w, children, foot, className,
   } = props;
   return (
     <OverlayPortal>
-      <div ref={ghostRef} className={cx('drawer', leaving && 'mo-leave')} style={w ? { width: w } : undefined} role="dialog">
+      <div ref={ghostRef} className={cx('drawer', className, leaving && 'mo-leave')} style={w ? { width: w } : undefined} role="dialog">
         <div className="drawer-h">
           {icon ? <Icon name={icon} size={18} /> : null}
           <div className="grow">
