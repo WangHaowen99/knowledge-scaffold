@@ -7,7 +7,9 @@ table_profile（--profile 取值画像）和抽取命令（确认前展示）共
 用法（工作区根目录执行）：
   python3 .claude/scripts/field_semantics.py types [--files 对象名 ...]
       逐字段给出「声明类型 / 数据推断 / 结论 / 依据」，并分开报告字段覆盖与导入验证状态。
-      退出码：0 无冲突；1 有冲突或非法类型；2 无法核验（登记的数据表缺失、无法解析或缺依赖）。
+      schema 字段：ok 有登记的数据表；no_schema 项目里没有 schema 表格资料。
+      退出码：0 无冲突；1 有冲突或非法类型；2 无法核验（登记的数据表缺失、无法解析、缺依赖，
+      或还没有文本版——missing_text 列出这些资料）。
   python3 .claude/scripts/field_semantics.py joins [--objects 对象名 ...]
       列出已声明的关联字段对和各对象的标识字段，供操作抽取引用；--objects 只列涉及这些对象的部分。
       退出码 0。
@@ -762,6 +764,13 @@ def types_report(root: Path, files: list | None = None) -> tuple[dict, int]:
     import table_profile
     import ontology_checker
 
+    missing_text = table_profile.missing_text_versions(root)
+    if missing_text:
+        # 资料已标为 schema、只是还没转成文本：一次列全，不按「没有数据表」处理
+        names = '、'.join(Path(rel).name for rel in missing_text[:10])
+        return {'status': 'unverifiable', 'reason': f'{len(missing_text)} 份 schema 资料还没有文本版（转换中、暂不支持'
+                f'或转换失败），字段核验未完成：{names}', 'missing_text': missing_text[:LIST_LIMIT],
+                'import_validation': IMPORT_NOT_RUN}, 2
     try:
         tables, profiles = table_profile.load_registered_tables(root)
     except ValueError as error:
@@ -798,6 +807,7 @@ def types_report(root: Path, files: list | None = None) -> tuple[dict, int]:
         'import_validation': IMPORT_NOT_RUN,
         'profile': {'tables_read': len(profiles), 'row_limit': PROFILE_ROW_LIMIT,
                     'sampled_tables': sampled[:LIST_LIMIT]},
+        'schema': 'ok' if tables else 'no_schema',
     }
     return report, 1 if status == 'failed' else 0
 

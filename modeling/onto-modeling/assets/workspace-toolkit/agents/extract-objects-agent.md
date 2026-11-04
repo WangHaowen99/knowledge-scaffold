@@ -14,7 +14,7 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
 - `SUMMARY_PATHS`: paths to flowchart summary files in `ontology/diagrams-summary/`，**may be empty or absent** when the caller chose to extract from research reports alone.
 - `PAIRED_EXCEL_PATHS` (optional): same-name Excel supplements in `ontology/excel/`; these are provenance paths for `EXCEL_CONTEXT`.
 - `EXCEL_CONTEXT` (optional): markdown exported from the paired Excel 补充表. Treat it as detail for the same-name flowchart, not as a standalone global source.
-- `TABLE_HEADERS` (optional): JSON `{Sheet 名: [表头列]}` from schema materials. When present, it is the only source of table names and column names — do not take them from data-dictionary documents or reports.
+- `TABLE_HEADERS_FILE` (optional): path of the JSON file written by `table_profile.py --headers` (`{"tables": {Sheet 名: [表头列]}, "missing_text": [...]}`, from schema materials). Read the file yourself before extracting (one column per line; read it in parts when it is long) — its `tables` is what this document calls `TABLE_HEADERS`; `（无）` or absent means `TABLE_HEADERS` is empty. When present, it is the only source of table names and column names — copy them from the file verbatim, do not take them from data-dictionary documents, reports or any header list quoted elsewhere in the prompt. `missing_text` lists schema materials that have no text version yet: treat them as unread and never open their originals.
 - `TABLE_PROFILE` (optional): JSON from `table_profile.py --profile`, giving each column's value-kind counts (`kinds`: integer / decimal / zero_padded / boolean / boolean_short / date / text), `empty`, `long_integers`, `short_booleans`, `binary01`, `source_type` (the table's own type-description row, if any) and `inferred`. It contains counts only, never cell values. When present, it is the evidence for the 类型 column (see the type rules in Step 2).
 - `REPORT_PATHS` (optional): paths to research report files. When `SUMMARY_PATHS` is empty, these become the **primary source** instead of supplementary context.
 - `OBJECTS_DIR`: target directory for object docs (e.g. `ontology/object/`)
@@ -27,7 +27,7 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
 ## Step 1: Read inputs
 
 Read every file in whichever of SUMMARY_PATHS / REPORT_PATHS is non-empty.
-Read `EXCEL_CONTEXT` when present. Do not read `.xlsx` files directly; their content is already exported into `EXCEL_CONTEXT`.
+Read `EXCEL_CONTEXT` when present, and the file at `TABLE_HEADERS_FILE` when it is a path. Do not read `.xlsx` files directly; their content is already exported into `EXCEL_CONTEXT` and `TABLE_HEADERS_FILE`.
 
 Identify candidate business objects by analyzing:
 - **From flowchart summaries (when present):** data entities referenced in flowchart nodes (nouns that represent business data); input/output parameters in start/end nodes; objects referenced in operation descriptions and decision conditions; entities that appear across multiple flowcharts.

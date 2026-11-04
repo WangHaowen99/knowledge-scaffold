@@ -3,17 +3,24 @@
 
 登记的数据表 = resource/materials.json 中 purpose=schema 的表格资料（一个 Sheet = 一张表，首行 = 列名）。
 对象「# 数据来源」的表名、存储属性的英文名称以它为准；规则检查、产物核验、资料分析验收与
-候选修订都经这里读表，与后端发布包的数据绑定（package_mapping）同一口径。
+候选修订都经这里读表，与后端发布包的数据绑定（package_mapping）同一口径。资料区的 Excel 只读
+数据接入转出的文本版（resource/text/<分组>/<原文件名>.md），还没有文本版的单独列出，不当作「没有表」。
 
 三方对账（确定性检查，不经模型）：命令行给出的数据表列 ↔ schema 资料字段 ↔ 对象属性英文名
 （ontology/object/*.md 的「对象属性清单」表格「英文名称」列）。
 
 用法（工作区根目录执行）：
-  python3 .claude/scripts/table_profile.py [--json] path/to/xx.xlsx ...   # 三方对账给出的数据表
-  python3 .claude/scripts/table_profile.py --headers   # 输出 {Sheet 名: [表头列]} JSON，供对象抽取取表名与列名
+  python3 .claude/scripts/table_profile.py [--json] 表名或数据表路径 ...
+      # 三方对账给出的数据表：schema 资料里的表名（Sheet 名）、csv 路径，或 Excel 的文本版路径
+      # （resource/text/excel/业务数据.xlsx.md）；不要写 Excel 原件路径，原件不在这里解析
+  python3 .claude/scripts/table_profile.py --headers
+      # 全部表头写到 .ontology-state/table-headers.json（{"tables": {Sheet 名: [表头列]}, "missing_text": [...]}，
+      # 一列一行），stdout 只给摘要 JSON：status（ok / no_schema 没有 schema 资料 / text_missing 有 schema 资料还没有
+      # 文本版）、file、tables（表名 → 列数，最多 200 张）、missing_text（最多 50 份），约 20KB 以内
   python3 .claude/scripts/table_profile.py --profile [--tables 表名 ...]
       # 输出各列取值画像 JSON（每表最多读 2000 行；只有类别计数与推断类型，不含任何单元格原值），
-      # 供对象抽取按取值证据定类型；最多 400 列（约 50KB），其余表名列入 omitted_tables
+      # 供对象抽取按取值证据定类型；最多 400 列（约 50KB），其余表名列入 omitted_tables；
+      # status、missing_text 同 --headers
 
 退出码：0=全部通过（或无可对账项）；1=存在差异；2=数据/依赖错误。
 """
@@ -32,6 +39,9 @@ import field_semantics
 TABLE_SUFFIXES = (".xlsx", ".xlsm", ".xls", ".csv")
 PROFILE_ROW_LIMIT = field_semantics.PROFILE_ROW_LIMIT
 PROFILE_COLUMN_LIMIT = 400
+HEADERS_FILE = Path(".ontology-state") / "table-headers.json"
+SUMMARY_TABLE_LIMIT = 200
+MISSING_LIMIT = 50
 EXCEL_DEPENDENCY_MESSAGE = "需要 openpyxl 解析 Excel（pip install openpyxl），字段核验未完成"
 
 
@@ -143,6 +153,44 @@ def read_tables(path: Path) -> dict[str, list[str]]:
 def schema_files(root: Path) -> list[str]:
     """materials.json 里标了 schema 的资料（工作区相对路径，按登记顺序）。"""
     return [p for p, d in load_directives(root).items() if isinstance(d, dict) and d.get("purpose") == "schema"]
+
+
+def missing_text_versions(root: Path) -> list[str]:
+    """登记了 schema、原件在、却还没有文本版的 Excel（转换中、暂不支持或转换失败）。
+    它们的表头读不到，不能当作「项目里没有这张表」，也不能再去请用户把它标为 schema。"""
+    missing = []
+    for rel in registered_table_files(root):
+        path = root / rel
+        text = resource_text(path)
+        if text is not None and path.is_file() and not text.is_file():
+            missing.append(rel)
+    return missing
+
+
+def schema_status(root: Path) -> str:
+    """ok；no_schema 没有 schema 表格资料；text_missing 有 schema 资料还没有文本版。"""
+    if not registered_table_files(root):
+        return "no_schema"
+    return "text_missing" if missing_text_versions(root) else "ok"
+
+
+def write_headers(root: Path) -> dict:
+    """--headers：全部表头写到 HEADERS_FILE（子代理按路径读，主助手不转述），返回给 stdout 的摘要。"""
+    tables = table_headers(root)
+    missing = missing_text_versions(root)
+    target = root / HEADERS_FILE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # 一列一行：读文件的工具按行截断超长的行，宽表的表头也不会被截掉
+    target.write_text(json.dumps({"tables": tables, "missing_text": missing}, ensure_ascii=False, indent=1) + "\n",
+                      encoding="utf-8")
+    names = list(tables)
+    return {
+        "status": schema_status(root),
+        "file": HEADERS_FILE.as_posix(),
+        "tables": {name: len(tables[name]) for name in names[:SUMMARY_TABLE_LIMIT]},
+        "tables_omitted": max(len(names) - SUMMARY_TABLE_LIMIT, 0),
+        "missing_text": missing[:MISSING_LIMIT],
+    }
 
 
 def table_headers(root: Path) -> dict[str, list[str]]:
@@ -329,8 +377,26 @@ def object_attribute_names(root: Path) -> set[str]:
     return names
 
 
+def target_tables(root: Path, target: str) -> dict[str, list[str]] | None:
+    """三方对账的一个对象 → {表名: 表头列}：csv、Excel 的文本版（resource/text/…/x.xlsx.md），
+    或 schema 资料里的表名。原件路径照样按它的文本版读。找不到返回 None。"""
+    path = root / target
+    if path.is_file() and within_workspace(root, path):
+        if path.suffix.lower() == ".md":
+            sheets = text_sheets(path) or {}
+            return {name: headers for name, rows in sheets.items()
+                    if (headers := [cell.strip() for cell in rows[0] if cell.strip()])}
+        if target.lower().endswith(TABLE_SUFFIXES):
+            return read_tables(path)
+    headers = table_headers(root)
+    return {target: headers[target]} if target in headers else None
+
+
 def check_file(root: Path, rel: str, schema_columns: set[str], attr_names: set[str]) -> dict:
-    tables = read_tables(root / rel)
+    tables = target_tables(root, rel)
+    if tables is None:
+        return {"path": rel, "status": "warn", "sheets": [],
+                "reason": "找不到这张表：写 schema 资料里的表名、csv 路径或 Excel 的文本版路径"}
     sheets = []
     status = "ok"
     for name, headers in tables.items():
@@ -369,11 +435,13 @@ def main() -> int:
     as_json = "--json" in sys.argv
     root = Path.cwd()
     if "--headers" in sys.argv:
-        print(json.dumps(table_headers(root), ensure_ascii=False))
+        print(json.dumps(write_headers(root), ensure_ascii=False))
         return 0
     if "--profile" in sys.argv:
         names = _option_values(sys.argv, "--tables")
-        print(json.dumps(profile_summary(table_profiles(root), names), ensure_ascii=False))
+        summary = profile_summary(table_profiles(root), names)
+        summary.update(status=schema_status(root), missing_text=missing_text_versions(root)[:MISSING_LIMIT])
+        print(json.dumps(summary, ensure_ascii=False))
         return 0
 
     schema = schema_files(root)
@@ -389,6 +457,7 @@ def main() -> int:
         "schema_files": schema,
         "schema_columns": len(schema_columns),
         "object_attributes": len(attr_names),
+        "missing_text": missing_text_versions(root)[:MISSING_LIMIT],
         "files": [],
     }
     if not schema_columns and not attr_names:
@@ -396,8 +465,6 @@ def main() -> int:
     if not targets:
         result["status"] = "no_files"
     for rel in targets:
-        if not str(rel).lower().endswith(TABLE_SUFFIXES) or not (root / rel).exists():
-            continue
         result["files"].append(check_file(root, str(rel), schema_columns, attr_names))
     if "status" not in result:
         result["status"] = (
@@ -411,7 +478,7 @@ def main() -> int:
               f"对象属性 {len(attr_names)} 个")
         for f in result["files"]:
             mark = "✅" if f["status"] == "ok" else "⚠️"
-            print(f"\n{mark} {f['path']}")
+            print(f"\n{mark} {f['path']}" + (f"：{f['reason']}" if f.get("reason") else ""))
             for s in f["sheets"]:
                 print(f"  表「{s['name']}」{s['columns']} 列："
                       f"schema 命中 {len(s['schema_matched'])}，属性命中 {len(s['attr_matched'])}")
@@ -419,10 +486,12 @@ def main() -> int:
                     print(f"    - schema 中不存在的列：{', '.join(s['data_only'])}")
                 if s["attr_unmatched"]:
                     print(f"    - 未映射到对象属性的列：{', '.join(s['attr_unmatched'])}")
+        if result["missing_text"]:
+            print(f"\n（schema 资料还没有文本版，这次没有用到：{'、'.join(result['missing_text'])}）")
         if result["status"] == "no_schema":
             print("\n（无 schema 资料与对象属性可对账——先给结构表打 schema 标签或完成对象提取）")
         elif result["status"] == "no_files":
-            print("\n（没有给出要对账的数据表：在命令行列出数据表路径，如 resource/excel/业务数据.xlsx）")
+            print("\n（没有给出要对账的数据表：在命令行列出表名或文本版路径，如 订单表、resource/text/excel/业务数据.xlsx.md）")
     return 1 if result["status"] == "warn" else 0
 
 

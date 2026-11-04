@@ -342,9 +342,12 @@ def test_profile_cli_outputs_counts_without_cell_values(table_profile, tmp_path,
     assert 'SYNTH-VALUE-7731' not in out
     table = json.loads(out)['tables']['items']
     assert table['rows'] == 2 and table['columns']['ITEM_ID']['inferred'] == '整数'
+    assert json.loads(out)['status'] == 'ok' and json.loads(out)['missing_text'] == []
     monkeypatch.setattr('sys.argv', ['table_profile.py', '--headers'])
     assert table_profile.main() == 0
-    assert json.loads(capsys.readouterr().out) == {'items': ['ITEM_ID', 'NOTE']}
+    assert json.loads(capsys.readouterr().out)['tables'] == {'items': 2}
+    saved = json.loads((tmp_path / '.ontology-state/table-headers.json').read_text(encoding='utf-8'))
+    assert saved['tables'] == {'items': ['ITEM_ID', 'NOTE']}
 
 
 def test_verification_fails_on_type_conflict(verifier, tmp_path):

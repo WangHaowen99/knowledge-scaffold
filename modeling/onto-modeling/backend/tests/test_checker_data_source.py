@@ -236,7 +236,12 @@ def test_headers_flag_lists_schema_tables(toolkit, tmp_path: Path, monkeypatch, 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sys.argv", ["table_profile.py", "--headers"])
     assert table_profile.main() == 0
-    assert json.loads(capsys.readouterr().out) == {"T_ORDER": ["ORDER_ID", "name", "AMOUNT"]}
+    # stdout 只给摘要，全部表头写进状态目录里的文件，子代理按路径读
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "ok", "file": ".ontology-state/table-headers.json", "tables": {"T_ORDER": 3},
+        "tables_omitted": 0, "missing_text": []}
+    saved = json.loads((tmp_path / ".ontology-state" / "table-headers.json").read_text(encoding="utf-8"))
+    assert saved == {"tables": {"T_ORDER": ["ORDER_ID", "name", "AMOUNT"]}, "missing_text": []}
 
 
 def test_old_script_name_forwards_for_one_release(tmp_path: Path):
@@ -251,7 +256,7 @@ def test_old_script_name_forwards_for_one_release(tmp_path: Path):
         cwd=tmp_path, capture_output=True, text=True, timeout=60,
     )
     assert old.returncode == new.returncode == 0
-    assert old.stdout == new.stdout and json.loads(old.stdout) == {"T_ORDER": ["ORDER_ID", "name", "AMOUNT"]}
+    assert old.stdout == new.stdout and json.loads(old.stdout)["tables"] == {"T_ORDER": 3}
     assert "table_profile.py" in old.stderr
 
 
@@ -271,3 +276,11 @@ def test_reconcile_given_tables(tmp_path: Path):
     result = json.loads(checked.stdout)
     assert checked.returncode == 1 and result["status"] == "warn"
     assert result["files"][0]["sheets"][0]["attr_unmatched"] == ["AMOUNT", "name"]
+    # 守卫不放行 Excel 原件路径：用法改成表名或文本版路径，结果一样
+    for target in ("T_ORDER", "resource/text/excel/结构.xlsx.md"):
+        again = subprocess.run([sys.executable, script, "--json", target],
+                               cwd=tmp_path, capture_output=True, text=True, timeout=60)
+        assert json.loads(again.stdout)["files"][0]["sheets"][0]["attr_unmatched"] == ["AMOUNT", "name"]
+    unknown = subprocess.run([sys.executable, script, "--json", "T_UNKNOWN"],
+                             cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    assert unknown.returncode == 1 and "找不到这张表" in json.loads(unknown.stdout)["files"][0]["reason"]
