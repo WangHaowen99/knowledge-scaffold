@@ -410,7 +410,7 @@ HTTP 状态码是这个错误码的默认值。少数错误码在不同接口里
 | `node_not_skipped` | 409 | 节点没有被跳过，无法恢复 | — |
 | `flow_assembly_failed` | 422 | 流程组装不通过（锚点、环、输出冲突、版本） | `problems[]` |
 | `blueprint_not_found` | 404 | 还没有建模蓝图 | — |
-| `blueprint_not_confirmed` | 409 | 蓝图还没确认（启动自主构建等操作需要） | — |
+| `blueprint_not_confirmed` | 409 | 蓝图还没确认（F8 起不再返回：自主构建不要求先确认蓝图） | — |
 | `blueprint_question_pending` | 409 | 资料和建模目标对不上的那个问题还没答，不能确认蓝图（F4b） | `question_id` |
 | `slice_invalid` | 400 | 分段编辑不合法（合并少于 2 段、依赖成环、名称重复等） | `reason` |
 | `low_confidence_batch` | 422 | 把握低的变更点不能批量接受，必须单独确认 | `point_ids` |
@@ -1955,7 +1955,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   4. 刚被打断且有执行记录：`mode="interrupted"`，主推「继续「命令名」」（`resume_exec`，能力升级时按新版重新做），次选「放弃这一步」（`abandon_exec`）；
      这一轮结束了、命令没收尾时同样两项（主推发「继续」）；
   5. 合入冲突：主推「处理冲突」，其余按 6～10 补齐；
-  6. 建模蓝图草案待确认：确认蓝图或回答目标问题，次选调整分段、重新规划分段；
+  6. 目标问题没答（F8）：主推「回答目标问题」，次选是主线下一步，不拦着开始建模（蓝图草案不用确认）；
   7. 过期的步骤：「刷新「段名 · 步骤名」」，说明行写上游哪里改过；
   8. 报告里有待处理问题、挡住发布的关卡没过：继续校验或关卡的操作；
   9. 主线下一个必经步骤（按段时按钮带段名）；
@@ -2052,6 +2052,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 | `feedback` | 外部反馈 | 评测服务回传（㉔） | `send_to_evolution`、`dismiss` |
 | `report` | 报告待处理 | 某份报告里还没处理的条目，一份报告合成一项 | `send_to_assistant` |
 | `changeset_conflict` | 合入冲突 | 这一轮合入时和你的修改改到同一条（F3 起唯一会出现的变更集事项；没有「修改待确认」） | `resolve`、`discard`（撤回这一轮） |
+| `check_findings` | 检查未过 | 助手这一轮没提交完、平台代存了版本，合入检查有错误（F8；最近一个合入的变更集才出，`impact` 列错误，最多 20 条） | `send_to_assistant`（发 `/ontology-validate` 修正，发出后算处理过） |
 | `format_migration` | 格式待迁移 | 插件升级改了产物格式（5.9.4） | `migrate` |
 | `notification` | 通知 | 提名审核结果等 | `dismiss` |
 
@@ -3131,7 +3132,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
   - `warnings`，如「有 1 个未决决策会被按策略决定」；
   - `queued`：平台同时运行数满了时为 true；
   - `busy`：别的对话正占着助手时为 `{conversation_id, waiting}`（`waiting` 为 true 表示它停在没回答的问题上），否则为 null。前端据此在开始前说明，并在 AB-04 带 `take_over`。
-- 错误：`blueprint_not_confirmed`、`budget_exceeds_quota`、`autobuild_running`。
+- 错误：`autobuild_running`（F8 起不再回 `blueprint_not_confirmed`；`budget_exceeds_quota` F6 已删）。
 
 #### AB-04 开始自主构建
 
@@ -4029,7 +4030,7 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 
 | 编号 | type | 持久 | 载荷 | 用在哪 |
 |---|---|---|---|---|
-| EC-01 | `session.state` | 是 | `{state: "idle"\|"connecting"\|"running"\|"waiting_user"\|"queued"\|"error"\|"closed", since: time, turn_started_at: time\|null, reason: string\|null}` | 顶栏状态 chip、运行计时（chat-states 第 3 项「2:14」）、运行中禁止切换会话（第 1 项） |
+| EC-01 | `session.state` | 是 | `{state: "idle"\|"connecting"\|"running"\|"waiting_user"\|"queued"\|"error"\|"closed", since: time, turn_started_at: time\|null, reason: string\|null}` | 顶栏状态 chip、运行计时（chat-states 第 3 项「2:14」）、运行中禁止切换会话（第 1 项） ；`running` 且 `reason: "waiting_materials"`：建模命令在等资料转成文本，还没交给助手（F8） |
 | EC-02 | `session.queued` | 是 | `{position: int, ahead: int, pool: {active, max}, progress_pct: number}` | chat-states 第 9 项排队卡 |
 | EC-03 | `session.started` | 是 | `{engine_label, resumed: bool, context_kept: bool}` | — |
 | EC-04 | `session.error` | 是 | `{error_id: "err-7f3a", message: string（友好提示）, retries: int, retryable: bool, actions: ("retry"\|"redirect")[]}` | chat-states 第 15 项出错卡 |
@@ -5005,7 +5006,8 @@ type Blueprint = {
 type InboxItem = {
   id: string;                     // "<kind>:<来源ID>"
   kind: "decision" | "evidence_conflict" | "change_list" | "review" | "suspension" | "stale" | "resumable"
-      | "feedback" | "report" | "changeset_conflict" | "format_migration" | "notification";
+      | "feedback" | "report" | "changeset_conflict" | "format_migration" | "notification"
+      | "check_findings";             // F8：平台代存的那一轮检查没过（最近一个合入的变更集 collected 且有错误）
   kind_label: string;
   title: string; meta: string;    // 「4 个选项 · 推荐 A」「置信度 0.72 · 记为假设」
   slice: { id: string; name: string } | null;

@@ -1207,3 +1207,38 @@ ADR-0076。
 
 影响：Studio 复核、`autobuild/review.py` 在助手运行中发的消息分别变成插话、代存命令（后者已有一条时失败；正常只在运行结束后发）。
 Claude 引擎依赖 SDK 的私有接口（`_query`、`_send_control_request`、`message_parser`），SDK 升级失效时退回旧行为（插话变成下一轮）。
+
+## 2026-11-04 · F8（建模不分段、资料分析之后不停、平台代存的改动进待处理、零售包默认关、数据 schema 自动处理）
+
+用户 11-04 定，推翻 B4d 的分段建模（ADR-0050～0052），见 ADR-0078。起因：同一模型下 3 段项目从对象提取到校验 10 轮、
+107 分钟，插件化之前同样三步 3 轮、43～46 分钟；分段还让前段对象写不进跨段关系的另一半。
+
+1. **BP-01 / `Blueprint`**：`mode` 恒为 `full`，`slices` 只有一段 `all`「全部」（老蓝图里的多段照样返回，界面按全量显示）；
+   `questions`、`terms` 不变。BP-02 改分段照常校验，但不再影响建模。BP-03 保留，界面不再调。
+2. **蓝图卡** `confirm_options` 恒为 `[]`；`goal_question` 照旧，没答不再挡任何操作。
+3. **FL-01 / FL-02**：资料分析做完不再显示「等你确认」；建议条去掉「确认蓝图」「调整分段」「重新规划分段」「规划分段」；
+   目标问题没答时主推 `answer_goal`「回答目标问题」，次选是主线下一步（一般是「提取对象」）。
+   建模节点的「规则」一步可选，没过期不推荐；`core.consistency` 改为旁支（`placement: branch`、`optional`），不挡发布。
+4. **AB-03 / AB-04**：不再回 `409 blueprint_not_confirmed`；单元只有一段 `all`，可选的「规则」一步只在过期或
+   `include_optional` 时排；场景走查不再是建模里的一步。AB-02 的 `scope.slice_ids` 里对不上的编号忽略，`mode: selected`
+   没剩下的按 `all_pending` 处理，不回 400。
+5. **宿主注入**：建模目标后面加一行统一叫法（`统一叫法：X（不用 Y）…`，最多 30 条），只进发给模型的消息。
+6. **变更集**：记录多 `collected: bool`（平台在一轮结束时代为提交了助手没提交的改动）；`round_changes` 卡在
+   `collected` 且有错误时 `hints` 首条为 `{tone: "warn", text: "助手没提交完，平台代存了这一轮，检查没过的在待处理里"}`。
+7. **IN-01** 新类型 `check_findings`「检查未过」：最近一个合入的变更集 `collected` 且检查有错误时出一条，`impact` 列出错误
+   （最多 20 条、每条 ≤200 字），动作 `send_to_assistant`（发 `/ontology-validate` 修正这些问题，发出后这条算处理过）、`dismiss`。
+8. **能力包**：`industry-retail` 的 `default_on` 改为 `false`（新建项目默认不启用；已启用的项目不变）。
+9. **工作区资产**：删 `SLICE_MODE.md`；三个建模命令去掉「分段建模」一节；资料分析 Step 6 只写统一叫法与待定问题；
+   `blueprint.py brief` 全量模式带统一叫法；`ontology_checker` 关系对端的端点按元模型解析（`[[X#锚点]]` 不再误报两端不一致）。
+10. **数据 schema 自动处理**（用户 11-04 要求「数据 schema 自动识别，自动处理」）：
+   - 建模命令（资料分析、对象 / 操作 / 规则提取、校验）交给引擎前，项目里有资料在转文本就先等，最多 10 分钟：EC-01
+     `session.state` 为 `running`、`reason: "waiting_materials"`，运行状态行显示「等资料转成文本」。等完仍没有文本版的
+     （没等到、转换失败、暂不支持）在这一轮的宿主注入里点名，按未读处理。打断（S-08）、删项目会撤回还在等的命令。
+   - `table_profile.py --headers` 把全部表头写到 `.ontology-state/table-headers.json`，stdout 改为摘要（`status`：`ok` /
+     `no_schema` / `text_missing`，`file`，表名 → 列数，`missing_text`）；`--profile` 与 `field_semantics.py types` 同样分出
+     `text_missing`，不再当成「没有表」去请用户标 Schema。对象提取的子代理按路径读表头（`TABLE_HEADERS_FILE`）。
+   - Excel 转换（convert-xlsx 1.1.0）：表头保留全部工作表、全部列；每表数据最多 2000 行、10 万格；全文上限不变。
+     `ConvertLimits` 去掉 `max_columns`、`max_sheets`，加 `max_sheet_cells`。
+   - 规则检查新增警告「数据来源候选」：「# 数据来源」为「无」或没写表的对象，存储属性英文名与某张 schema 表有 ≥2 列同名
+     （含全部主键）时列出候选表；只提示，不要求每个对象都绑表。
+   - 对象提取不再问来源怎么用（默认流程图与资料分析报告结合）、不再逐条问待确认的类型（列进本轮摘要）。
