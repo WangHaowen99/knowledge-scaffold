@@ -336,7 +336,7 @@ def test_blueprint_draft_suggestions_and_research_waits_for_confirmation(env):
     assert built["blueprint"] == {"state": "draft"}
     assert primary["label"] == "确认蓝图" and primary["action"] == {"type": "confirm_blueprint", "next": "L2"}
     labels = [item["label"] for item in built["suggestions"]["secondary"]]
-    assert labels == ["调整分段", "重新划分"]
+    assert labels == ["调整分段", "重新规划分段"]
 
 
 def test_consistency_gates_publish_only_when_slicing(env):

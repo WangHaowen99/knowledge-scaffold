@@ -116,12 +116,10 @@ export default function ChatStatesPage() {
     <Item key={3} n={3} title="运行中：子代理进度与打断" feat="可随时打断" headProps={{ state: <span className="chip blue sm"><span className="spin" style={{ width: 9, height: 9 }} />2:14</span> }} comp={{ ph: '运行中也能补充说明，这一步结束后送达' }}>
       <Rendered events={S.RUNNING_EVENTS} running />
     </Item>,
-    <Item key={4} n={4} title="打断之后" feat="继续 · 从打断处继续 · 换个方向">
+    <Item key={4} n={4} title="打断之后" feat="继续「X」· 放弃这一步">
       <div className="tl"><Tli k="ok" t="生成验收场景 2 / 4" m="门店更严、门店超量 · 已保存" /><Tli k="gray" t="你在生成第 3 个场景时打断了" m="14:06 · 已打断" /></div>
-      <SugStrip items={[['继续刚才的任务', 'play', 1], ['从打断处继续', 'redo'], ['换个方向', 'refresh']]} />
-      <div className="mt8" style={{ fontSize: 11.5, color: 'var(--ink3)', lineHeight: 1.7 }}>
-        <b style={{ color: 'var(--ink2)' }}>继续刚才的任务</b>：重新发起「生成验收场景」<br /><b style={{ color: 'var(--ink2)' }}>从打断处继续</b>：从第 3 个场景接着做<br /><b style={{ color: 'var(--ink2)' }}>换个方向</b>：清空输入框，重新下达指令
-      </div>
+      <SugStrip items={[['继续「生成验收场景」', 'redo', 1], ['放弃这一步', 'x']]} />
+      <div className="wb-sug-note">从「生成场景」接着做，已保存的 2 处修改保留</div>
     </Item>,
     <Item key={5} n={5} title="中断续跑卡" feat="服务重启后也能接着做"><ResumeCard card={S.RESUME_CARD} /></Item>,
     <Item key={6} n={6} title="权限确认卡" feat="允许 / 拒绝 · 超时按拒绝">

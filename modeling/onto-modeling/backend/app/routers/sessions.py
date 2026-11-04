@@ -23,6 +23,7 @@ from ..governance.http import reject_new_session
 from ..services import conversation_store, project_events, streams, uploads, workspace_labels
 from ..services.agent_sessions import SessionError, manager
 from ..services.autobuild import store as autobuild_store
+from ..services.flow import next_step
 from ..services.session_host import command_tasks, exec_records, subagents, timeline, turns
 from ..services.session_host import views as session_views
 
@@ -347,6 +348,8 @@ async def send_message(project_id: str, cid: str, request: Request):
     if not text.strip() and not attachments:
         raise ApiError("message_empty", "消息正文和附件都为空", 400)
     conversation_id = _resolve(project_id, cid)
+    if body.get("from_suggestion"):
+        await asyncio.to_thread(next_step.guard, project_id, conversation_id, {"type": "send", "text": text}, root)
     key = str(body.get("client_message_id") or "")
     if key and (project_id, conversation_id, key) in _SENT:
         return JSONResponse(status_code=202, content=_SENT[(project_id, conversation_id, key)])
@@ -553,6 +556,9 @@ async def retry(project_id: str, cid: str, request: Request):
     """重新发起最近一轮出错的请求（出错卡的「重试」）。"""
     root = deps.require_writable(project_id, request)
     conversation_id = _resolve(project_id, cid)
+    body = await deps.json_body(request)
+    if body.get("from_suggestion"):
+        await asyncio.to_thread(next_step.guard, project_id, conversation_id, {"type": "retry"}, root)
     session = manager.get(project_id)
     if session is None or session.conversation_id != conversation_id or session.state != "error" or not session.last_prompt:
         raise ApiError("nothing_to_retry", "没有可重试的出错轮次", 409)
@@ -592,38 +598,65 @@ def _exec_or_404(project_id: str, exec_id: str) -> dict:
 
 @router.post("/execs/{exec_id}/resume")
 async def resume_exec(project_id: str, exec_id: str, request: Request):
-    """续跑：往对话发一条续跑指令，接着原来那份执行记录（输入变了或节点升级了不能续跑）。"""
+    """继续一步（F6）：能续跑就往对话发续跑指令，接着原来那份执行记录（mode=resume）；能力升级或输入改过时
+    按新版重新执行这条命令（mode=rerun）：原记录记为放弃，新开一份，已经保存的修改保留。做完了的不能继续。"""
     root = deps.require_writable(project_id, request)
     body = await deps.json_body(request)
     record = _exec_or_404(project_id, exec_id)
+    conversation_id = _resolve(project_id, str(body.get("conversation_id") or record.get("conversation_id") or "-"))
+    if body.get("from_suggestion"):
+        await asyncio.to_thread(next_step.guard, project_id, conversation_id,
+                                {"type": "resume_exec", "exec_id": exec_id}, root)
     flow = turns._flow(root)
     reason = exec_records.not_resumable_reason(record, root, flow)
     if reason is None and record.get("state") != "interrupted":
         reason = "already_finished"
-    if reason is not None:
-        raise ApiError("exec_not_resumable", "这一步不能续跑", 409, {"reason": reason})
-    conversation_id = _resolve(project_id, str(body.get("conversation_id") or record.get("conversation_id") or "-"))
+    if reason == "already_finished":
+        raise ApiError("exec_not_resumable", "这一步已经做完了", 409, {"reason": reason})
+    autobuild_store.ensure_no_run(project_id)
     live = manager.live_status(project_id)
     if live and live["busy"]:
         raise ApiError("session_busy", "有对话正在运行，请等它结束或先打断", 409,
                        {"running_conversation_id": live["conversation_id"]})
-    text = turns.resume_text(record)
     label = record.get("command_label") or "命令"
-    result = await _send(project_id, root, conversation_id, request, text,
-                         {"display_text": f"从打断处继续「{label}」", "origin": None, "resume_exec": exec_id})
-    updated = exec_records.get(project_id, exec_id) or record
-    _update_resume_card(project_id, conversation_id, updated, root, flow)
-    return JSONResponse(status_code=202, content={"exec": exec_records.view(updated, root=root, flow=flow),
-                                                  "message_id": result["message_id"],
-                                                  "conversation_id": result["conversation_id"]})
+    if reason is None:
+        text = turns.resume_text(record)
+        result = await _send(project_id, root, conversation_id, request, text,
+                             {"display_text": f"从打断处继续「{label}」", "origin": None, "resume_exec": exec_id})
+        updated = exec_records.get(project_id, exec_id) or record
+        _update_resume_card(project_id, conversation_id, updated, root, flow)
+        return JSONResponse(status_code=202, content={"mode": "resume",
+                                                      "exec": exec_records.view(updated, root=root, flow=flow),
+                                                      "message_id": result["message_id"],
+                                                      "conversation_id": result["conversation_id"]})
+    # 能力升级、输入改过：原来那份不能接着做，按新版重新执行（原记录放弃，已经保存的版本不回退）。
+    # 先清掉原来那条命令留下的锁与写入范围，新的一份同名命令开始后再清就清掉新的了
+    _clear_command_scope(root, record)
+    result = await _send(project_id, root, conversation_id, request, turns.rerun_text(record, reason),
+                         {"display_text": f"按新版重新做「{label}」", "origin": None})
+    session = manager.get(project_id)
+    new_id = session.exec_id if session is not None and session.exec_id != exec_id else None
+    old = exec_records.update(project_id, exec_id, state="abandoned", ended_at=time.time(),
+                              replaced_by=new_id) or record
+    turns.publish_exec(project_id, old, root, flow)
+    _update_resume_card(project_id, conversation_id, old, root, flow)
+    new = exec_records.get(project_id, new_id) if new_id else None
+    return JSONResponse(status_code=202, content={
+        "mode": "rerun", "exec": exec_records.view(new or old, root=root, flow=flow),
+        "replaced": exec_records.view(old, root=root, flow=flow),
+        "message_id": result["message_id"], "conversation_id": result["conversation_id"]})
 
 
 @router.post("/execs/{exec_id}/abandon")
 async def abandon_exec(project_id: str, exec_id: str, request: Request):
     """放弃：已经保存的版本不回退；续跑卡变为已处理。"""
     root = deps.require_writable(project_id, request)
-    autobuild_store.ensure_no_run(project_id)
+    body = await deps.json_body(request)
     record = _exec_or_404(project_id, exec_id)
+    if body.get("from_suggestion"):
+        await asyncio.to_thread(next_step.guard, project_id, str(body.get("conversation_id") or record.get(
+            "conversation_id") or ""), {"type": "abandon_exec", "exec_id": exec_id}, root)
+    autobuild_store.ensure_no_run(project_id)
     if record.get("state") in ("done", "abandoned"):
         raise ApiError("exec_not_resumable", "这一步已经结束", 409, {"reason": "already_finished"})
     session = manager.get(project_id)
@@ -666,8 +699,12 @@ def _update_resume_card(project_id: str, conversation_id: str, record: dict, roo
         return
     view = exec_records.view(record, root=root, flow=flow)
     card = exec_records.resume_card(record, view)
-    card["status"] = {"key": "running" if record.get("state") == "running" else "skipped",
-                      "label": "已续跑" if record.get("state") == "running" else "已放弃"}
+    if record.get("state") == "running":
+        card["status"] = {"key": "running", "label": "已续跑"}
+    elif "replaced_by" in record:
+        card["status"] = {"key": "running", "label": "已按新版重新做"}
+    else:
+        card["status"] = {"key": "skipped", "label": "已放弃"}
     manager.append_record(project_id, conversation_id, {"type": "card_updated", "payload": card})
 
 
@@ -801,6 +838,8 @@ async def dispatch_command(project_id: str, root: Path, request: Request, body: 
         raise ApiError("pack_not_enabled", "这条命令所属的能力没有启用", 409,
                        {"command": name, "effective": "next_message" if pending else None})
     conversation_id = _resolve(project_id, str(body.get("conversation_id") or "-"))
+    if body.get("from_suggestion"):
+        await asyncio.to_thread(next_step.guard, project_id, conversation_id, {"type": "send", "command": name}, root)
     _ensure_not_busy(project_id, conversation_id)
     text = _render_command(command, args, str(body.get("text") or ""))
     label = known[name]["label"]

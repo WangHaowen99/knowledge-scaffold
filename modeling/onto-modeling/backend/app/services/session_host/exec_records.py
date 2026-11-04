@@ -557,7 +557,7 @@ def resume_card(record: dict, view_data: dict) -> dict:
         "title": f"上次没做完：{view_data['command_label']}在{where}中断",
         "subtitle": interrupted.get("reason_text") or "",
         "status": {"key": "pending" if view_data["resumable"] else "stale",
-                   "label": "可以续跑" if view_data["resumable"] else "不能续跑"},
+                   "label": "可以续跑" if view_data["resumable"] else "要按新版重新做"},
         "plugin": None,
         "open": None,
         "exec_id": record["id"],

@@ -203,7 +203,9 @@ def test_flow_api_suggests_mainline_next_step(manager: WorkspaceManager, monkeyp
     body = client.get(f"/api/v1/projects/{root.name}/flow").json()
     assert body["suggestions"]["primary"]["action"]["command"] == "/ontology-research"
     assert len(body["suggestions"]["secondary"]) <= 2 and body["suggestions"]["all_commands"] is True
-    assert client.get(f"/api/v1/projects/{root.name}/flow/suggestions").json() == body["suggestions"]
+    again = client.get(f"/api/v1/projects/{root.name}/flow/suggestions").json()
+    assert again["rev"] > body["suggestions"]["rev"]  # 每算一次版本号都往上走，界面取大的那份
+    assert {**again, "rev": 0} == {**body["suggestions"], "rev": 0}
     sections = {section["id"]: section["nodes"] for section in body["sections"]}
     assert "core.update" in sections["on_demand"] and "diagram.flowchart" in sections["optional"]
     assert body["commands"]["extract-object"] == "core.model"

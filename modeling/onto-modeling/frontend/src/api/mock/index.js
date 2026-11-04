@@ -649,7 +649,7 @@ export function createMockServer() {
     return json(202, { next: null });
   });
   on('POST', '/projects/([^/]+)/conversations/([^/]+)/retry', () => err(409, 'nothing_to_retry', '没有可重试的一轮'));
-  on('POST', '/projects/([^/]+)/execs/([^/]+)/(resume|abandon)', ({ m }) => json(m[3] === 'resume' ? 202 : 200, { exec: { id: m[2], state: m[3] === 'resume' ? 'running' : 'abandoned' }, message_id: `m-${uid()}`, conversation_id: convsOf(m[1])[0].id }));
+  on('POST', '/projects/([^/]+)/execs/([^/]+)/(resume|abandon)', ({ m }) => json(m[3] === 'resume' ? 202 : 200, { ...(m[3] === 'resume' ? { mode: 'resume' } : {}), exec: { id: m[2], state: m[3] === 'resume' ? 'running' : 'abandoned' }, message_id: `m-${uid()}`, conversation_id: convsOf(m[1])[0].id }));
   on('GET', '/projects/([^/]+)/commands/catalog', () => json(200, F.commandCatalog()));
   // ---------- 页面命令（S-19 / S-20，契约 5.9.3：页面只发命令，进度经项目流 command.progress） ----------
   // routes-*.js 往 ctx.commandHooks 里放 { match(body) → bool, title?(body), steps?: string[], start?(pid, body, task), doneText?(body, task), finish?(pid, body, task) }：

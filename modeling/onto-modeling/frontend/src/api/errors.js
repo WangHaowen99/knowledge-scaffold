@@ -147,11 +147,9 @@ export const ERROR_MESSAGES = {
   next_not_found: '没有排着的命令',
   exec_not_found: '执行记录不存在',
   subagent_not_found: '这个子任务的记录找不到了',
-  exec_not_resumable: (d) => ({
-    inputs_changed: '输入已经变了，不能续跑，请从头再来',
-    node_upgraded: '这一步的能力已升级，不能续跑，请从头再来',
-    already_finished: '这一步已经做完了',
-  }[d?.reason] || '不能续跑'),
+  // F6 起能力升级、输入改过时「继续」按新版重新执行，只有做完了的才拒绝
+  exec_not_resumable: '这一步已经做完了',
+  suggestion_stale: '情况变了，建议已更新',
   nothing_to_retry: '没有可以重试的一轮',
   title_invalid: '对话名称须为 1–60 个字符',
   // 2.6 流程与蓝图

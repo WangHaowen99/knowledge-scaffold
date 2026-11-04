@@ -106,9 +106,10 @@ def test_stale_when_upstream_fingerprint_changes(env):
     assert model["state"] == "stale" and model["actions"][0]["kind"] == "refresh"
     assert built["slices"][0]["stages"]["operation"] == "stale"
     stale = [item for item in [built["suggestions"]["primary"], *built["suggestions"]["secondary"]]
-             if item["id"] == "refresh:core.model"]
+             if item["id"].startswith("refresh:core.model")]
     assert stale and stale[0]["priority"] == 2
     assert stale[0]["action"]["command"] == "/ontology-extract-operation"  # 刷新过期的那一步
+    assert stale[0]["label"] == "刷新「操作」" and built["suggestions"]["note"] == "上游「对象」改过"  # F6：写清哪一步
     # 重新跑过（这一步的变更集确认生效）：按新的上游重记基线
     from app.services.flow import slices
 
@@ -193,7 +194,7 @@ def test_state_helper_suggest_matches_flow_and_host_injection(env):
     assert copy is not None and (copy / ".onto" / "run" / "flow-state.json").is_file()
     from_ui = client.get(f"/api/v1/projects/{project_id}/flow/suggestions").json()
     from_helper = next_steps.suggest(copy)
-    assert from_helper == from_ui
+    assert from_helper == {key: value for key, value in from_ui.items() if key != "rev"}  # 版本号只有后端给
     # F3：这一轮结束已经合入，建议条直接给下一步
     assert from_ui["mode"] == "normal" and from_ui["primary"]["label"] != "确认生效"
     assert len([from_ui["primary"], *from_ui["secondary"]]) <= 3

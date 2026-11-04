@@ -84,19 +84,23 @@ async def after_close(project_id: str, record: dict, kind: str, text: str) -> No
     conversations = {conversation_id for conversation_id, _item in records}
     if record.get("conversation_id"):
         conversations.add(record["conversation_id"])
-    suggestions = await asyncio.to_thread(_suggestions_after_close, project_id)
-    for conversation_id in sorted(conversations) if suggestions is not None else ():
+    for conversation_id in sorted(conversations):
+        suggestions = await asyncio.to_thread(_suggestions_after_close, project_id, conversation_id)
+        if suggestions is None:
+            continue
         try:
             manager.append_record(project_id, conversation_id, {"type": "suggestions", "payload": suggestions})
         except Exception:  # noqa: BLE001 - 同上
             continue
 
 
-def _suggestions_after_close(project_id: str) -> dict | None:
+def _suggestions_after_close(project_id: str, conversation_id: str | None = None) -> dict | None:
+    """按那条对话算（在跑、刚被打断、等你回答都要算进去），和 FL-02 同一份。"""
     from ..services.flow import view
 
     try:
-        return dict(view.build(deps.workspaces.project_root(project_id))["suggestions"])
+        return dict(view.build(deps.workspaces.project_root(project_id),
+                               conversation_id=conversation_id)["suggestions"])
     except Exception:  # noqa: BLE001 - 算不出建议不影响合入结果，下一轮结束时照常给
         return None
 

@@ -54,7 +54,8 @@ CONTRACT = {
     "turn.completed": {"turn_id", "duration_ms", "is_error", "usage", "cost"},
     "context.usage": {"used", "window", "pct", "compact_at_pct", "breakdown", "last_call"},
     "context.compacted": {"trigger", "pre_tokens", "post_tokens", "freed_tokens", "kept", "at"},
-    "suggestions.updated": {"mode", "primary", "secondary", "all_commands"},
+    # F6：note 是主推下面那一行说明（只在要解释时有），rev 是版本号（推来的和刷新取到的取大的那份）
+    "suggestions.updated": {"mode", "primary", "secondary", "all_commands", "note", "rev"},
 }
 # 4.6 Question 的共有字段；4.7 卡片的共有字段与两种宿主出的卡
 QUESTION = {"question_id", "kind", "conversation_id", "exec_id", "step_label", "eyebrow", "title", "background_md",

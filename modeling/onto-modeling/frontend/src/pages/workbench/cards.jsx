@@ -222,13 +222,13 @@ export function ResumeCard({ card }) {
             ['原因', card.reason],
             ['中断位置', card.position?.label],
             ['已保存', card.saved ? `${card.saved.files} 个文件，版本 ${card.saved.version_label}` : '—'],
-            [card.resumable ? '可以续跑' : '不能续跑', card.resumable ? '输入没有变化' : (card.not_resumable_reason || '输入已经变了')],
+            ['怎么继续', card.resumable ? '从中断处接着做' : `${card.not_resumable_reason || '输入已经变了'}，按新版从头做`],
           ]} />
         </div>
         <div className="row mt12">
           <Button size="sm" kind="ghost" onClick={() => actions.abandon?.(card.exec_id)}>放弃，从头再来</Button>
           <span className="sp" />
-          {card.resumable ? <Button size="sm" kind="primary" icon="play" onClick={() => actions.resume?.(card.exec_id)}>从步骤 {card.position?.step} 续跑</Button> : null}
+          {card.state === 'interrupted' ? <Button size="sm" kind="primary" icon="play" onClick={() => actions.resume?.(card.exec_id)}>{card.resumable ? `从步骤 ${card.position?.step} 续跑` : '按新版重新做'}</Button> : null}
         </div>
       </div>
     </>
@@ -315,7 +315,6 @@ export function ErrorItem({ item }) {
       <div className="tl"><Tli k="err" t={`这一步没完成：${item.message}`} m={item.retries ? `已自动重试 ${item.retries} 次` : ''} /></div>
       <div className="row" style={{ marginLeft: 30 }}>
         {item.retryable !== false ? <Button size="sm" kind="primary" icon="refresh" onClick={() => actions.retry?.()}>重试</Button> : null}
-        <Button size="sm" onClick={() => actions.clearInput?.()}>换个方向</Button>
       </div>
       <div className="xs muted mt12" style={{ marginLeft: 30 }}>
         错误编号 {item.error_id}{canSee ? <> · <a className="link" href={`#/ops-users?tab=errors&error=${encodeURIComponent(item.error_id)}`}>查看</a></> : null}

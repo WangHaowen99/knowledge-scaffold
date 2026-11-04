@@ -32,9 +32,14 @@ from tests.test_session_host import FakeEngine, lock, release, result
 from tests.test_session_host import settle as _settle
 
 
+def _quiet(session) -> bool:
+    # 回到空闲之后收尾还在线程里记执行记录（finishing）：等它做完，否则紧接着停机会把这一步记成中断
+    return session.state == "idle" and not session.sending and not session.finishing
+
+
 async def settle(manager, project_id, *, until=None):
     # 全量跑时机器忙：多等一会儿（等不到就让后面的断言去失败）
-    return await _settle(manager, project_id, until=until, rounds=1500)
+    return await _settle(manager, project_id, until=until or _quiet, rounds=1500)
 
 
 class SteerEngine(FakeEngine):
