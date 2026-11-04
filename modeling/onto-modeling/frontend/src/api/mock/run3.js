@@ -160,7 +160,6 @@ export function suspensions() {
 export function policy() {
   return {
     scope: { mode: 'all_pending', slice_ids: ['s2', 's3', 's4', 's5'], refresh_stale_first: true, generate_scenarios: true, include_optional: false, until_node: null },
-    budget: { max_duration_min: 120, max_tokens: 6000000, max_cost: cny(150) },
     production_collection: [{ source_id: 'erp-prod', allowed: false, window: null, scope: [] }],
     advanced: { confidence_threshold: THRESHOLD, below_threshold: 'conservative_assumption', must_suspend_kinds: [], source_priority: ['09 修订通知', '补货规则', '样例补货单', '数据库'], max_fix_rounds: 2 },
     boundary_text: '自主构建不会发布、不会删除已确认内容、不会改资料区、不会在未授权时采集生产库',
@@ -172,7 +171,7 @@ const C = 'confirmed';
 const AU = 'auto';
 const Q = 'queued';
 
-// state：running | pausing | paused | stopping | converting | completed | stopped | converted
+// state：running | pausing | paused | stopping | converting | completed | stopped | converted（budget_exhausted 只在老运行里）
 export const ENDED = new Set(['completed', 'stopped', 'converted', 'budget_exhausted', 'failed']);
 // 这个状态下运行已经走到哪个时刻（台账、挂起只看这之前的）
 export function cutoffOf(state) {
@@ -181,7 +180,7 @@ export function cutoffOf(state) {
 }
 export const upTo = (state) => (x) => { const c = cutoffOf(state); return !c || x.at <= c; };
 
-export function runOf(state = 'running', { led = ledger().filter(upTo(state)), sus = suspensions().filter(upTo(state)) } = {}) {
+export function runOf(state = 'running', { led = ledger().filter(upTo(state)), sus = suspensions().filter(upTo(state)), acknowledged = false } = {}) {
   const ended = ENDED.has(state);
   const done = state === 'completed';
   const matrix = [
@@ -200,14 +199,16 @@ export function runOf(state = 'running', { led = ledger().filter(upTo(state)), s
     current: ended ? null : { slice_id: 's4', slice_name: SL.s4.name, step_label: '提取规则' },
     elapsed_ms: done ? 112 * MIN : ended ? 46 * MIN : 38 * MIN,
     est_total_ms: ended ? null : 84 * MIN,
-    tokens: { used: done ? 5100000 : 2100000, limit: 6000000 },
-    cost: { used: cny(done ? 86 : 31), budget: cny(150) },
+    tokens: { used: done ? 5100000 : 2100000 },
+    cost: { used: cny(done ? 86 : 31) },
     slices: { done: done ? 4 : ended ? 3 : 2, total: 4 },
     decisions: led.length,
     suspended: sus.length,
     needs_review: led.length,
     started_at: hm('15:10'),
     ended_at: done ? hm('17:02') : ended ? hm('15:56') : null,
+    acknowledged: ended && acknowledged,
+    pause_reason: null,
     conversation_id: RUN_CONV_ID,
     policy: policy(),
     checks: { errors: 0, warnings: 3 },
@@ -237,7 +238,6 @@ export function reportOf(state = 'completed') {
     base_version_label: BASE_VERSION,
     metrics: {
       duration_ms: done ? 112 * MIN : 46 * MIN,
-      budget_duration_ms: 120 * MIN,
       slices: { done: done ? 5 : 4, total: 5, partial: [SL.s4.name] },
       produced: done ? { objects: 5, operations: 2, rules: 7 } : { objects: 3, operations: 1, rules: 4 },
       checks: { errors: 0, warnings: 3 },
@@ -246,7 +246,6 @@ export function reportOf(state = 'completed') {
       suspended: done ? 3 : 2,
       cost: cny(done ? 86 : 35),
       tokens: done ? 5100000 : 2400000,
-      budget: cny(150),
     },
     slices: [
       slice(SL.s2, 'done', '完成', '+1 规则', 4, 4, 'v0.14'),
@@ -353,7 +352,7 @@ export function startCard() {
   return {
     card_id: 'ab3-start', card_type: 'autobuild_start', eyebrow: '', title: '自主构建 · 运行 #3', subtitle: '', status: null, plugin: null,
     open: { kind: 'page', target: 'proj-settings' }, run_id: RUN_ID, run_no: RUN_NO,
-    chips: [{ label: '范围', value: '未完成的 4 段' }, { label: '预算', value: '2 小时 · 6M token' }, { label: '生产库', value: '不采集' }, { label: '拿不准时', value: '先按最稳妥的做法往下做，做完列出来给你复核' }],
+    chips: [{ label: '范围', value: '未完成的 4 段' }, { label: '生产库', value: '不采集' }, { label: '拿不准时', value: '先按最稳妥的做法往下做，做完列出来给你复核' }],
   };
 }
 
@@ -385,7 +384,7 @@ export function history(state = 'running') {
   const out = [
     e('day.marker', { label: '今天' }, '15:08'),
     e('notice', { kind: 'merged', text: '15:08 · 分段「补货申请与门店需求」已存成版本 v0.12', version_label: BASE_VERSION, changeset_id: 'cs-29', align: 'center' }, '15:08'),
-    e('message.user', { message_id: 'm-u-ab3', text: '剩下的你自己做完，预算 150 以内', attachments: [], references: [], origin: null, delivery: 'immediate' }, '15:09'),
+    e('message.user', { message_id: 'm-u-ab3', text: '剩下的你自己做完', attachments: [], references: [], origin: null, delivery: 'immediate' }, '15:09'),
     e('message.assistant', { message_id: 'm-a-ab3', text_md: '好，转为自主构建，按「项目设置 › 构建方式」里的策略跑：', anchors: [], entry_links: [], continued: false }, '15:10'),
     e('card', startCard(), '15:10'),
     e('card', sliceCard('s2'), '15:10'),
@@ -414,16 +413,18 @@ export function runConversation(state = 'running') {
 
 // ---------- 一次运行的可变状态：台账复核、挂起回答、按段撤回（AB-11～AB-17 与待处理共用） ----------
 export function createRunStore(initial) {
-  const s = { state: initial, ledger: ledger(), suspensions: suspensions(), reverted: new Map(), version: 19 };
+  const s = { state: initial, ledger: ledger(), suspensions: suspensions(), reverted: new Map(), version: 19, acknowledged: false };
   const visibleLedger = () => s.ledger.filter(upTo(s.state)).filter((l) => !s.reverted.has(l.slice.id));
   const visibleSuspensions = () => s.suspensions.filter(upTo(s.state)).filter((x) => !s.reverted.has(x.slice.id));
   const store = {
     get state() { return s.state; },
     set state(v) { s.state = v; },
+    get acknowledged() { return s.acknowledged; },
+    set acknowledged(v) { s.acknowledged = v; },
     ledger: visibleLedger,
     suspensions: visibleSuspensions,
     run() {
-      const r = runOf(s.state, { led: visibleLedger(), sus: visibleSuspensions() });
+      const r = runOf(s.state, { led: visibleLedger(), sus: visibleSuspensions(), acknowledged: s.acknowledged });
       r.needs_review = visibleLedger().filter((l) => l.review_state === 'pending').length;
       r.suspended = visibleSuspensions().filter((x) => x.state === 'open').length;
       return r;

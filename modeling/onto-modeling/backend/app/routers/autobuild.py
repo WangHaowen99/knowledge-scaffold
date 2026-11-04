@@ -1,4 +1,4 @@
-"""自主构建（契约 3.22 AB-01～AB-18）与平台限制、模型单价（SY-17、SY-18）。
+"""自主构建（契约 3.22 AB-01～AB-19）与平台限制、模型单价（SY-17、SY-18）。
 
 逻辑在 `services/autobuild/`；这里只做鉴权、请求体检查、错误码与专项审计。
 """
@@ -40,17 +40,16 @@ def _policy_inputs(project_id: str) -> tuple[list[str], list[str]]:
 
 def normalized_policy(project_id: str, body: dict | None) -> dict:
     """当前策略并上请求里给的，校验后返回（AB-02、AB-03 共用）。"""
-    owner = owner_of(project_id)
-    merged = policy.merge(policy.load(project_id, owner), body)
+    merged = policy.merge(policy.load(project_id), body)
     slice_ids, node_ids = _policy_inputs(project_id)
-    return policy.normalize(project_id, owner, merged, slice_ids=slice_ids, node_ids=node_ids)
+    return policy.normalize(merged, slice_ids=slice_ids, node_ids=node_ids)
 
 
 @router.get("/policy")
 async def get_policy(project_id: str, request: Request):
     """AB-01。"""
     deps.require_owner(project_id, request)
-    return await asyncio.to_thread(policy.view, project_id, owner_of(project_id))
+    return await asyncio.to_thread(policy.view, project_id)
 
 
 @router.put("/policy")
@@ -58,8 +57,7 @@ async def put_policy(project_id: str, request: Request):
     """AB-02：给了哪组改哪组；`base_revision` 不对回 409。"""
     deps.require_writable(project_id, request)
     body = await deps.json_body(request)
-    owner = owner_of(project_id)
-    current = await asyncio.to_thread(policy.load, project_id, owner)
+    current = await asyncio.to_thread(policy.load, project_id)
     expected = body.get("base_revision")
     actual = policy.revision(current)
     if expected not in (None, "") and expected != actual:
@@ -67,7 +65,7 @@ async def put_policy(project_id: str, request: Request):
                        {"target": "autobuild_policy", "expected": expected, "actual": actual})
     fresh = await asyncio.to_thread(normalized_policy, project_id, body)
     await asyncio.to_thread(policy.save, project_id, fresh)
-    return await asyncio.to_thread(policy.view, project_id, owner, fresh)
+    return await asyncio.to_thread(policy.view, project_id, fresh)
 
 
 # ---- SY-17 平台限制、SY-18 模型单价 ----
@@ -119,7 +117,7 @@ def _run_or_404(project_id: str, run_id: str) -> dict:
 
 
 def preview_for(project_id: str, overrides: dict | None) -> dict:
-    """AB-03 与 BP-03 `next=L4` 共用：策略并上临时改的、校验、算范围与预算。"""
+    """AB-03 与 BP-03 `next=L4` 共用：策略并上临时改的、校验、算范围。"""
     return runner.preview(project_id, normalized_policy(project_id, overrides))
 
 
@@ -193,8 +191,18 @@ async def convert_run(project_id: str, run_id: str, request: Request):
 
 @router.post("/runs/{run_id}/resume")
 async def resume_run(project_id: str, run_id: str, request: Request):
-    """AB-09：暂停或中断的运行接着跑，预算按剩余额度。"""
+    """AB-09：暂停（含配额用完）或中断的运行接着跑。"""
     return await _control(project_id, run_id, request, "resume")
+
+
+@router.post("/runs/{run_id}/acknowledge")
+async def acknowledge_run(project_id: str, run_id: str, request: Request):
+    """AB-19：确认结束的运行，运行条收起，构建方式回到陪伴建模。"""
+    deps.require_writable(project_id, request)
+    _run_or_404(project_id, run_id)
+    run = await runner.acknowledge(project_id, run_id)
+    _special_audit(request, project_id, "autobuild.acknowledge", f"运行 #{run['run_no']} 确认", run_id=run_id)
+    return run
 
 
 # ---- AB-10～AB-17 台账、挂起、报告、按段撤回 ----

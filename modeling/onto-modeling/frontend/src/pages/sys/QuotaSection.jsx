@@ -11,7 +11,7 @@ import {
 } from '../../ui/index.jsx';
 import { FieldErr, LoadNote, Loading, SysHead, useLoad } from './parts.jsx';
 import {
-  QUOTA_ITEMS, limitsBody, limitsDirty, limitsForm, limitsProblems, moneySymbol, nightText, overrideBody, overrideProblems,
+  QUOTA_ITEMS, limitsBody, limitsDirty, limitsForm, limitsProblems, nightText, overrideBody, overrideProblems,
   quotaBody, quotaDirty, quotaForm, quotaItemLabel, quotaProblems, quotaValueText, subjectText,
 } from './sysModel.js';
 
@@ -142,7 +142,6 @@ export function QuotaSection() {
   const overrides = quota.data?.overrides || [];
   // 不显示的项：SY-15 not_enforced 列出的，加上证据源不可用时的采集频率、快照体积（字段保留、照常能存）
   const hidden = new Set([...(quota.data?.not_enforced || []), ...(evidenceOn ? [] : ['collections_per_source_per_hour', 'snapshot_git_mb'])]);
-  const sym = moneySymbol(lForm?.currency);
   return (
     <>
       {head}
@@ -206,18 +205,6 @@ export function QuotaSection() {
             <div className="grid4">
               <Field label="同时运行上限" hint={err(lp, 'max_concurrent_runs', null)}>
                 <Inp mono value={lForm.max_concurrent_runs} error={!!lp.max_concurrent_runs} onChange={setL('max_concurrent_runs')} />
-              </Field>
-              <Field label="单次时长上限" hint={err(lp, 'hours', null)}>
-                <Inp value={lForm.hours} error={!!lp.hours} onChange={setL('hours')} after={<span className="muted sm">小时</span>} />
-              </Field>
-              <Field label="单次 token 上限" hint={err(lp, 'max_tokens', null)}>
-                <Inp mono value={lForm.max_tokens} error={!!lp.max_tokens} onChange={setL('max_tokens')} />
-              </Field>
-              <Field label="单次费用上限" hint={err(lp, 'cost', null)}>
-                <div className={cx('inp', lp.cost && 'err')}>
-                  <span className="muted">{sym}</span>
-                  <input value={lForm.cost} aria-label="单次费用上限" onChange={setL('cost')} />
-                </div>
               </Field>
             </div>
             {evidenceOn && !limitsOff.has('allow_production_collection') ? (

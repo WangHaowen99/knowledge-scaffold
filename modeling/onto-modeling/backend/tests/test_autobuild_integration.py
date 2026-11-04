@@ -22,8 +22,7 @@ from tests.autobuild_helpers import (DRAFT, AutoEngine, ab, gate, run_of, start,
                                      wait_until)
 from tests.test_changesets import main_write
 
-ONE = {"scope": {"mode": "selected", "slice_ids": ["s1"], "until_node": "core.model"},
-       "budget": {"max_tokens": 500_000}}
+ONE = {"scope": {"mode": "selected", "slice_ids": ["s1"], "until_node": "core.model"}}
 
 
 def test_cards_ops_views_and_guards_while_running(ab, monkeypatch):
@@ -90,8 +89,7 @@ def test_concurrency_limit_queues_and_maintenance_pauses_at_the_safe_point(ab):
     # 维护模式：在跑的做完这一段就暂停（O-21 autobuild=pause_at_safe_point）
     assert client.put("/api/v1/admin/autobuild-limits", json={"max_concurrent_runs": 2}).status_code == 200
     release2 = gate("/ontology-extract-object:s2")
-    run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s2", "s3"], "until_node": "core.model"},
-                budget={"max_tokens": 500_000})
+    run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s2", "s3"], "until_node": "core.model"})
     wait_until(lambda: store.get(project_id, run["run_id"])["cursor"].get("exec_id"))
     ops_state.enter_maintenance("reject_new_sessions", "合成维护", "ops")
     from app.services.autobuild.runner import runner

@@ -11,7 +11,7 @@ from tests.autobuild_helpers import (AutoEngine, ab, gate, run_of, start, wait_s
                                      wait_until)
 from tests.test_changesets import git, main_write
 
-ONE = {"scope": {"mode": "selected", "slice_ids": ["s1"], "until_node": "core.model"}, "budget": {"max_tokens": 500_000}}
+ONE = {"scope": {"mode": "selected", "slice_ids": ["s1"], "until_node": "core.model"}}
 OWNER = "employee_0001"
 
 
@@ -47,7 +47,7 @@ def test_autobuild_writes_and_symlink_guards_coexist(ab, tmp_path):
     outside = tmp_path / "outside.md"
     outside.write_text("# 外面\n", encoding="utf-8")
     os.symlink(str(outside), root / "ontology" / "object" / "外链.md")  # 每轮核对会删掉指到根外的链接
-    run = start(client, project_id, scope={"until_node": "core.model"}, budget={"max_tokens": 500_000})
+    run = start(client, project_id, scope={"until_node": "core.model"})
     wait_state(client, project_id, run["run_id"], "completed")
     assert not os.path.lexists(root / "ontology" / "object" / "外链.md")
     record = store.get(project_id, run["run_id"])

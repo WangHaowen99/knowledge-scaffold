@@ -6,7 +6,7 @@ import { toast } from '../../app/toast.jsx';
 import { errorText } from '../../api/errors.js';
 import { Button, Chip, Drawer, Ev, Icon, St, cx } from '../../ui/index.jsx';
 import {
-  CELL, confidenceColor, hhmm, matrixTone, miniMetrics, runFlags, stripMetrics, stripTitle,
+  CELL, confidenceColor, hhmm, matrixTone, miniMetrics, runFlags, stripMetrics, stripShown, stripTitle,
 } from './autobuildModel.js';
 import '../../styles/autobuild.css';
 
@@ -19,12 +19,12 @@ const OP = {
   stop_at_safe_point: ['stopAutobuildAtSafePoint', '会在当前分段的安全点停下', 'stop'],
   convert_to_l2: ['convertAutobuildToL2', '这一段做完后转为陪伴', 'hand'],
   resume: ['resumeAutobuild', '继续运行', 'play'],
+  acknowledge: ['acknowledgeAutobuild', '已回到陪伴建模', 'check'],
 };
-const DIMENSION = { duration: '时长', tokens: 'token', cost: '费用' };
 
 export function useAutobuild({ pid, cid, list }) {
   const { api } = useApp();
-  const { subscribe } = useProject();
+  const { subscribe, setMeta } = useProject();
   const convRun = list?.items?.find((c) => c.id === cid)?.run_id || null;
   // 当前对话不是运行对话，但项目里有运行在跑：运行条照样显示
   const [projectRun, setProjectRun] = useState(null);
@@ -58,7 +58,6 @@ export function useAutobuild({ pid, cid, list }) {
     if (!runId || (d.run_id && d.run_id !== runId)) return;
     switch (env.type) {
       case 'autobuild.run.updated': setRun((r) => (r ? { ...r, ...d } : r)); break;
-      case 'autobuild.budget_warning': toast(`${DIMENSION[d.dimension] || '预算'}已用 ${Math.round(d.used_pct)}%`, 'gauge'); break;
       case 'autobuild.safe_point': if (d.next !== 'continue') load().catch(() => {}); break;
       case 'autobuild.finished': load().catch(() => {}); break;
       default: break;
@@ -73,6 +72,8 @@ export function useAutobuild({ pid, cid, list }) {
     try {
       const r = await api[spec[0]](pid, run.run_id);
       setRun((x) => ({ ...x, ...r }));
+      // 确认结束的运行：项目回到陪伴建模（服务端随后发 project.updated，以那份为准）
+      if (op === 'acknowledge') setMeta((m) => (m ? { ...m, build_mode: 'L2' } : m));
       toast(spec[1], spec[2]);
       return true;
     } catch (e) {
@@ -81,11 +82,10 @@ export function useAutobuild({ pid, cid, list }) {
     } finally {
       setBusy(null);
     }
-  }, [api, pid, run]);
+  }, [api, pid, run, setMeta]);
 
   const flags = runFlags(run);
-  // 别的对话里只在运行还没结束时显示运行条；结束后回到运行对话看报告
-  const shown = !!run && (!!convRun || !flags.ended);
+  const shown = stripShown(run, !!convRun);
   return {
     run: shown ? run : null,
     ...flags,
@@ -132,8 +132,8 @@ export function AutobuildBar({ ab }) {
           <div className="g2-rs-m">
             {stripMetrics(run).map(([lb, v, cap, p]) => (
               <div className="m" key={lb}>
-                <span>{lb}</span><b>{v}</b> <small>/ {cap}</small>
-                <div className="bar"><i style={{ width: `${p}%` }} /></div>
+                <span>{lb}</span><b>{v}</b>{cap ? <> <small>/ {cap}</small></> : null}
+                {p == null ? null : <div className="bar"><i style={{ width: `${p}%` }} /></div>}
               </div>
             ))}
           </div>
@@ -155,11 +155,12 @@ export function AutobuildBar({ ab }) {
               {btn('resume', 'play', '续跑', true)}
             </>
           ) : null}
-          {ab.ended ? (
-            <button type="button" className="g2-wbtn w" onClick={() => navigate(pagePath('inbox', pid), { filter: 'autobuild_review' })}>
-              <Icon name="inbox" size={14} />{review ? `去复核 ${review} 项` : '去待处理'}
+          {ab.ended && review ? (
+            <button type="button" className="g2-wbtn" onClick={() => navigate(pagePath('inbox', pid), { filter: 'autobuild_review' })}>
+              <Icon name="inbox" size={14} />去复核 {review} 项
             </button>
           ) : null}
+          {ab.ended ? btn('acknowledge', 'check', '确认', true) : null}
         </div>
       </div>
       <RunDrawer ab={ab} />

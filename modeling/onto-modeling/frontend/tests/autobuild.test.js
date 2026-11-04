@@ -4,7 +4,8 @@ import {
   ENDED, createRunStore, history, reportOf, runOf,
 } from '../src/api/mock/run3.js';
 import {
-  canInterrupt, fmtDur, fmtEst, fmtTok, matrixTone, miniMetrics, reportMetrics, reportSub, runFlags, sliceSegments, stripMetrics, stripTitle,
+  canInterrupt, fmtDur, fmtEst, fmtTok, matrixTone, miniMetrics, reportMetrics, reportSub, runFlags, sliceSegments, stripMetrics, stripShown,
+  stripTitle,
 } from '../src/pages/workbench/autobuildModel.js';
 import { composerState, readonlyInfo } from '../src/state/readonly.js';
 
@@ -29,12 +30,13 @@ test('时长、token 的写法同设计稿', () => {
   assert.equal(fmtTok(820000), '820k');
 });
 
-test('运行条：运行中显示已用时 / 预计，结束后显示用时 / 预算', () => {
+test('运行条：运行中显示已用时 / 预计，结束后只给用时；token 只给用量，没有上限', () => {
   const run = runOf('running');
-  assert.deepEqual(stripMetrics(run).map((m) => m.slice(0, 3)), [['已用时', '38 分', '约 84 分'], ['token', '2.1M', '6M']]);
-  assert.deepEqual(stripMetrics(run).map((m) => m[3]), [45, 35]);
+  assert.deepEqual(stripMetrics(run), [['已用时', '38 分', '约 84 分', 45], ['token', '2.1M', null, null]]);
+  // 还没有预计（刚开始）时不画进度条
+  assert.deepEqual(stripMetrics({ ...run, est_total_ms: null })[0], ['已用时', '38 分', null, null]);
   const done = runOf('completed');
-  assert.deepEqual(stripMetrics(done)[0], ['用时', '1 小时 52 分', '2 小时', 93]);
+  assert.deepEqual(stripMetrics(done), [['用时', '1 小时 52 分', null, null], ['token', '5.1M', null, null]]);
   assert.equal(stripTitle(run).title, '自主构建中 · 运行 #3');
   assert.equal(stripTitle(run).sub, '当前：临期与损耗检查 › 提取规则');
   assert.equal(stripTitle({ ...done, started_at: at(15, 10), ended_at: at(17, 2) }).sub, '15:10 – 17:02 · 全部分段完成');
@@ -42,6 +44,23 @@ test('运行条：运行中显示已用时 / 预计，结束后显示用时 / �
   // 暂停在两步之间（真实运行：当前步骤为空）不留「›」
   assert.equal(stripTitle({ ...run, state: 'paused', current: { ...run.current, step_label: '' } }).sub, '停在：临期与损耗检查');
   assert.match(stripTitle({ ...run, state: 'stopping' }).sub, /「临期与损耗检查」做完后停下/);
+  // 配额用完而暂停：说清怎么继续
+  assert.equal(stripTitle({ ...run, state: 'paused', pause_reason: 'quota' }).sub, '配额用完，补足后点续跑');
+  // 老运行记录里的「预算用完」照常显示
+  assert.equal(stripTitle({ ...done, state: 'budget_exhausted' }).title, '运行 #3 预算用完');
+});
+
+test('运行条什么时候收起：没结束一直显示；结束后只在运行对话里留着，点过「确认」收起', () => {
+  const running = runOf('running');
+  const done = runOf('completed');
+  assert.equal(stripShown(running, false), true);
+  assert.equal(stripShown(running, true), true);
+  assert.equal(stripShown(done, false), false);
+  assert.equal(stripShown(done, true), true);
+  assert.equal(stripShown({ ...done, acknowledged: true }, true), false);
+  // 没结束的运行带着 acknowledged 也不收（只对结束态有意义）
+  assert.equal(stripShown({ ...running, acknowledged: true }, true), true);
+  assert.equal(stripShown(null, true), false);
 });
 
 test('流水线结果列的颜色', () => {
@@ -64,9 +83,11 @@ test('按段的进展块：连续步骤合成一段，自动决定、挂起按�
 test('运行详情六格与报告卡八格', () => {
   assert.deepEqual(miniMetrics(runOf('running')).map((x) => x[0]), ['38 分', '2.1M', '0 / 3', '14 / 15', '1 / 2']);
   assert.equal(miniMetrics(runOf('running'))[0][1], '已用时 · 预计约 84 分');
+  assert.deepEqual(miniMetrics(runOf('completed')).slice(0, 2).map((x) => x[1]), ['用时', 'token']);
   const r = reportOf('completed');
   const m = reportMetrics(r);
   assert.equal(m.length, 8);
+  assert.deepEqual(m[0], ['用时', '1 小时 52 分', '']);
   assert.deepEqual(m[1], ['分段', '5 / 5', '临期与损耗检查部分完成']);
   assert.deepEqual(m[5], ['自动决策', '17 项', '高置信 13 · 需看 4']);
   assert.ok(!m.some(([label]) => label === '费用')); // 工作区不显示金额

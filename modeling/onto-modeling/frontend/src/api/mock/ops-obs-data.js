@@ -109,16 +109,16 @@ export function overview({ range = '14d', p1 = false, now = Date.now() } = {}) {
     autobuild_runs: p1 ? [] : [
       {
         project: byId('bike-fleet-7b20e4a1'), run_no: 3, elapsed_ms: 38 * MIN, progress: { done: 2, total: 5, pct: 58 },
-        budget_used_pct: 41, cost: money(25), budget: money(60), state: 'running',
+        cost: money(25), state: 'running',
       },
       {
         project: byId('parcel-sort-6c1f2a90'), run_no: 1, elapsed_ms: 12 * MIN, progress: { done: 1, total: 4, pct: 25 },
-        budget_used_pct: 14, cost: money(7), budget: money(50), state: 'running',
+        cost: money(7), state: 'running',
       },
     ],
     autobuild_today: p1
-      ? { completed: 0, avg_duration_ms: null, avg_cost: { amount: null, currency: 'USD' }, stopped_by_budget: 0 }
-      : { completed: 3, avg_duration_ms: 112 * MIN, avg_cost: money(41), stopped_by_budget: 1 },
+      ? { completed: 0, avg_duration_ms: null, avg_cost: { amount: null, currency: 'USD' } }
+      : { completed: 3, avg_duration_ms: 112 * MIN, avg_cost: money(41) },
     // 与 ops-ctl 的 O-35 是同一次自检（ops-ctl-data.js startupReport：进程 2 小时 40 分钟前启动、11 秒后自检完），摘要取四项
     startup: {
       at: iso(now - 2 * HOUR - 40 * MIN + 11 * 1000),

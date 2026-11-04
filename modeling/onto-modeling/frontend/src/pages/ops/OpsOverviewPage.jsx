@@ -90,13 +90,13 @@ function RunsCard({ runs, today, ownerName }) {
       {rows.length ? (
         <Table
           compact
-          cols={['项目', '所有者', '已运行', '进度', '预算消耗', '状态']}
+          cols={['项目', '所有者', '已运行', '进度', '费用', '状态']}
           rows={rows.map((r) => [
             <b key="n" title="只能看元数据，内容只归所有者">{r.name}</b>,
             ownerName(r.owner),
             r.elapsed,
             <div key="p" className="row"><Prog p={r.pct} tone="l4" w="90px" /><span className="xs muted">{r.slices}</span></div>,
-            <div key="b" className="row"><Prog p={r.budgetPct} w="70px" /><span className="xs muted num">{r.budget}</span></div>,
+            <span key="c" className="num">{r.cost}</span>,
             r.state.k ? <St key="s" k={r.state.k} sm label={r.state.label} /> : <Chip key="s" tone={r.state.tone} sm>{r.state.label}</Chip>,
           ])}
         />

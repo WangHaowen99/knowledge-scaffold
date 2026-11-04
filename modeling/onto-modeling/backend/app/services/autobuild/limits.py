@@ -1,8 +1,9 @@
-"""自主构建的平台限制（契约 SY-17、详设 8.5 / 4.10.1）：同时运行数上限与单次预算上限，管理员在系统设置里改，立即生效。
+"""自主构建的平台限制（契约 SY-17、详设 8.5 / 4.10.1）：同时运行数上限，管理员在系统设置里改，立即生效。
 
 - 存数据目录 `governance/autobuild-limits.json`；同时运行数也是配置项 `ONTO_WEB_AUTOBUILD_MAX_RUNS`
   （配置注册表，设置页保存的值优先于环境变量）；
-- 金额的币种跟模型单价表走（SY-18），这里只存数额；
+- 单次运行的时长、token、费用上限在 F6 去掉了（运行不按用量判停，花费的硬上限是配额）：老文件里的这几项不再读，
+  请求里带了也忽略；
 - `allow_production_collection`、`night_priority` 保存、回显，本期不生效（证据源只留接口；夜间优先没有调度器）。
 """
 
@@ -12,13 +13,13 @@ import re
 from pathlib import Path
 
 from ... import config
-from .. import model_pricing
 from . import store
 
 MAX_RUNS_KEY = "ONTO_WEB_AUTOBUILD_MAX_RUNS"
 MAX_RUNS_MIN, MAX_RUNS_CAP = 1, 16
-DEFAULTS = {"max_duration_min": 240, "max_tokens": 10_000_000, "max_cost": 100.0}
 NOT_ENFORCED = ("allow_production_collection", "night_priority")
+# F6 去掉的单次上限：老文件里有，下次保存时清掉
+RETIRED = ("max_duration_min", "max_tokens", "max_cost")
 _TIME = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -49,20 +50,12 @@ def max_runs() -> int:
     return max(MAX_RUNS_MIN, min(MAX_RUNS_CAP, value))
 
 
-def _number(value, default):
-    return value if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else default
-
-
 def current() -> dict:
     """SY-17 对象；`running` 是现在占着名额的运行数。"""
     data = stored()
-    currency = model_pricing.load()["currency"]
     night = data.get("night_priority") if isinstance(data.get("night_priority"), dict) else {}
     return {
         "max_concurrent_runs": max_runs(),
-        "max_duration_min": int(_number(data.get("max_duration_min"), DEFAULTS["max_duration_min"])),
-        "max_tokens": int(_number(data.get("max_tokens"), DEFAULTS["max_tokens"])),
-        "max_cost": {"amount": float(_number(data.get("max_cost"), DEFAULTS["max_cost"])), "currency": currency},
         "allow_production_collection": bool(data.get("allow_production_collection", False)),
         "night_priority": {"enabled": bool(night.get("enabled", False)),
                            "start": night.get("start") if _TIME.match(str(night.get("start") or "")) else "20:00",
@@ -78,7 +71,7 @@ def _int(value, low: int, high: int) -> bool:
 
 def save(body: dict) -> dict:
     """SY-17 PUT：给了哪项改哪项；不合法抛 LimitsError。"""
-    data = stored()
+    data = {key: value for key, value in stored().items() if key not in RETIRED}
     fields: dict[str, str] = {}
     if "max_concurrent_runs" in body:
         value = body["max_concurrent_runs"]
@@ -89,18 +82,6 @@ def save(body: dict) -> dict:
             data["max_concurrent_runs"] = value
         else:
             fields["max_concurrent_runs"] = "range"
-    for key, high in (("max_duration_min", 24 * 60), ("max_tokens", 10**10)):
-        if key in body:
-            if _int(body[key], 1, high):
-                data[key] = body[key]
-            else:
-                fields[key] = "range"
-    if "max_cost" in body:
-        amount = (body["max_cost"] or {}).get("amount") if isinstance(body["max_cost"], dict) else None
-        if _number(amount, None) is None:
-            fields["max_cost"] = "invalid"
-        else:
-            data["max_cost"] = float(amount)
     if "allow_production_collection" in body:
         if isinstance(body["allow_production_collection"], bool):
             data["allow_production_collection"] = body["allow_production_collection"]
@@ -121,5 +102,4 @@ def save(body: dict) -> dict:
 
 def platform_limits() -> dict:
     """AB-01 的 platform_limits。"""
-    limits = current()
-    return {key: limits[key] for key in ("max_duration_min", "max_tokens", "max_cost", "allow_production_collection")}
+    return {"allow_production_collection": current()["allow_production_collection"]}

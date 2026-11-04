@@ -342,7 +342,7 @@ export default function CreatePage() {
                 </div>
                 {buildMode === 'L4' ? (
                   <div className="en-l4n">
-                    <div className="row g8"><Icon name="info" size={14} /><span className="sm">范围和预算在「项目设置 › 构建方式」里调</span></div>
+                    <div className="row g8"><Icon name="info" size={14} /><span className="sm">范围在「项目设置 › 构建方式」里调</span></div>
                   </div>
                 ) : null}
               </div>

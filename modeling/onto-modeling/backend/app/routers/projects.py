@@ -72,7 +72,7 @@ _CARD_RUN_STATE = {"stopping": "running", "converting": "running", "interrupted"
 def _autobuild_card(project_id: str) -> tuple[dict | None, str | None]:
     """项目卡片上的自主构建（契约 7.3 ProjectCard.autobuild）：没结束的运行，或结束了还有要复核的那次。
     返回 (卡片字段, 状态标签 autobuild|autobuild_done)。"""
-    from ..services.autobuild import budget, store, views
+    from ..services.autobuild import store, views
 
     runs = store.runs(project_id)
     run = next((item for item in runs if item["state"] in store.ACTIVE), None)
@@ -88,8 +88,7 @@ def _autobuild_card(project_id: str) -> tuple[dict | None, str | None]:
     return {"run_id": run["run_id"], "run_no": run["run_no"], "state": _CARD_RUN_STATE.get(run["state"], run["state"]),
             "slice_done": done, "slice_total": total, "progress_pct": round(done * 100 / total) if total else 0,
             "eta_ms": max(0, eta) if eta is not None else None, "decisions": summary["decisions"],
-            "suspended": summary["suspended"], "budget_used_pct": round(max(budget.used_pct(run).values() or [0]), 1),
-            "needs_review": summary["needs_review"], "duration_ms": summary["elapsed_ms"]}, tag
+            "suspended": summary["suspended"], "needs_review": summary["needs_review"], "duration_ms": summary["elapsed_ms"]}, tag
 
 
 def _card(meta: dict) -> dict:

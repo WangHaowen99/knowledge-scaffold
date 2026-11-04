@@ -1,4 +1,4 @@
-"""自主构建运行器（方案 B12、B13；详设 8.5、8.4；契约 AB-03～AB-09、7.15、EP-14～EP-17）。
+"""自主构建运行器（方案 B12、B13；详设 8.5、8.4；契约 AB-03～AB-09、AB-19、7.15、EP-14～EP-17）。
 
 按蓝图逐段执行，每段：
 
@@ -9,7 +9,9 @@
 4. 自动合入（`changesets.merge(source="autobuild", needs_review=True)`）；合入前检查有新错误时让助手修，最多策略
    里的轮数，还有就照样合入（F3：检查只提示，发布时才拦），这一段标需复核；要删除已确认的内容时挂起这一段、撤回
    这一段的修改；合入冲突停下（冲突进待处理）；
-5. 合入之后是安全点：停在安全点、转为陪伴、预算用完在这里结束；暂停在一步做完之后生效。
+5. 合入之后是安全点：停在安全点、转为陪伴在这里结束；暂停在一步做完之后生效。
+
+运行只在做完、叫停、出错时结束，不按用量判停（F6）；发一步时配额用完就暂停在这一步，补足后续跑。
 
 分段之后主线上的几步（校验、走查、全局一致性）各算一个单元，同样一步一个变更集、自动合入。运行状态与台账在
 数据目录（`store`），结束时台账与运行报告写进工作区 `reports/autobuild/<运行号>/`（进 git）。运行在自己的
@@ -41,13 +43,12 @@ CONTINUE_LIMIT = 3
 ERROR_LIMIT = 2
 WAIT_TICK_S = 5.0
 REPORT_DIR = "reports/autobuild"
-END_NOTICE = {"completed": "已完成", "stopped": "已在安全点停下", "converted": "已转为陪伴",
-              "budget_exhausted": "预算用完，已在安全点停下", "failed": "出错停下"}
+END_NOTICE = {"completed": "已完成", "stopped": "已在安全点停下", "converted": "已转为陪伴", "failed": "出错停下"}
 NOTIFY_KIND = {"completed": "autobuild_finished", "converted": "autobuild_finished"}
 
 
 class _Stop(Exception):
-    """一步发不出去：预算（配额）用完或会话出错。"""
+    """一步发不出去：配额用完（outcome=quota，运行暂停，补足后续跑）或会话出错（failed）。"""
 
     def __init__(self, outcome: str, reason: str = ""):
         super().__init__(reason or outcome)
@@ -133,7 +134,7 @@ class AutobuildRunner:
 
         return {
             "preview_token": token, "expires_at": views.iso(now + PREVIEW_TTL_S),
-            "slices": rows, "budget": policy_doc["budget"],
+            "slices": rows,
             "below_threshold_text": policy_module.BELOW_TEXT[policy_doc["advanced"]["below_threshold"]],
             "warnings": warnings, "queued": queued,
             "queue_position": (len(store.all_runs(("queued",))) + 1) if queued else None,
@@ -289,11 +290,15 @@ class AutobuildRunner:
                     await self._pause(project_id, run_id)
                     return
                 outcome = await self._run_unit(project_id, run_id, unit)
-                if outcome == "paused":
-                    await self._pause(project_id, run_id)
+                if outcome == "quota" and self._ending(store.get(project_id, run_id) or run):
+                    # 叫停或转为陪伴之后撞上配额：这一段做不完，按叫停的方式结束（已有的修改照样合入）
+                    await self._finish(project_id, run_id, self._ending(store.get(project_id, run_id) or run))
                     return
-                if outcome in ("failed", "budget"):
-                    await self._finish(project_id, run_id, "budget_exhausted" if outcome == "budget" else "failed")
+                if outcome in ("paused", "quota"):
+                    await self._pause(project_id, run_id, reason="quota" if outcome == "quota" else None)
+                    return
+                if outcome == "failed":
+                    await self._finish(project_id, run_id, "failed")
                     return
                 nxt = await self._safe_point(project_id, run_id, unit)
                 if nxt == "paused":
@@ -323,9 +328,8 @@ class AutobuildRunner:
 
     @staticmethod
     def _ending(run: dict) -> str | None:
+        """要在安全点结束的原因：只有用户叫停、转为陪伴；用量不判停（F6）。"""
         flags = run.get("flags") or {}
-        if flags.get("budget"):
-            return "budget_exhausted"
         if flags.get("stop"):
             return "stopped"
         if flags.get("convert"):
@@ -386,8 +390,7 @@ class AutobuildRunner:
             try:
                 outcome = await self._run_step(project_id, run_id, unit, step)
             except _Stop as stop:
-                self._fail(project_id, run_id, stop.reason or stop.outcome)
-                return stop.outcome
+                return self._stopped(project_id, run_id, stop)
             if outcome == "failed":
                 return "failed"
             run = store.get(project_id, run_id)
@@ -397,8 +400,13 @@ class AutobuildRunner:
         try:
             return await self._merge(project_id, run_id, unit)
         except _Stop as stop:
+            return self._stopped(project_id, run_id, stop)
+
+    def _stopped(self, project_id: str, run_id: str, stop: _Stop) -> str:
+        """发不出去的一步：会话出错记为失败原因；配额用完不算失败，运行暂停。"""
+        if stop.outcome != "quota":
             self._fail(project_id, run_id, stop.reason or stop.outcome)
-            return stop.outcome
+        return stop.outcome
 
     @staticmethod
     def _merged_already(project_id: str, run: dict, unit: dict) -> dict | None:
@@ -464,13 +472,13 @@ class AutobuildRunner:
             session = await manager.send(project_id, _ws().project_root(project_id), text, run["conversation_id"],
                                          username=run.get("owner") or "", meta=meta)
         except QuotaExceeded as exc:
-            raise _Stop("budget", "quota") from exc
+            raise _Stop("quota") from exc
         except SessionError as exc:
             raise _Stop("failed", f"session:{exc.status}") from exc
         return session.exec_id
 
     async def _wait_turn(self, project_id: str, run_id: str, conversation_id: str) -> str:
-        """按条件等这一轮结束：idle、error、gone（会话被回收或换了对话）。等的过程中按墙钟看预算。"""
+        """按条件等这一轮结束：idle、error、gone（会话被回收或换了对话）。等的过程中隔一会儿记一次用量。"""
         manager = _manager()
         while True:
             event = manager.signal(project_id)
@@ -740,7 +748,7 @@ class AutobuildRunner:
             store.update(project_id, ref["run_id"], change)
 
     async def _safe_point(self, project_id: str, run_id: str, unit: dict) -> str:
-        """一段合入之后：EP-15；停在安全点、转为陪伴、预算用完、在安全点暂停（维护）在这里生效。"""
+        """一段合入之后：EP-15；停在安全点、转为陪伴、在安全点暂停（维护）在这里生效。"""
         await self._account(project_id, run_id)
         run = store.get(project_id, run_id)
         flags = run.get("flags") or {}
@@ -750,30 +758,21 @@ class AutobuildRunner:
         _publish(project_id, "autobuild.safe_point", {
             "run_id": run_id, "slice_id": unit["id"], "slice_name": unit["name"],
             "version_label": info.get("version_label"),
-            "next": {"budget_exhausted": "stopped"}.get(nxt, nxt)})
+            "next": nxt})
         return nxt
 
     async def _account(self, project_id: str, run_id: str) -> None:
-        """记用量、看预算：80% 提醒一次（EP-16），100% 改为停在安全点。"""
+        """记用量（只记不拦，F6）。"""
         run = store.get(project_id, run_id)
         if run is None:
             return
         events = await asyncio.to_thread(_manager().get_history, project_id, run["conversation_id"])
-        result = {}
 
         def change(record: dict) -> None:
             budget.add_usage(project_id, record, list(events))
             record["budget"]["tick_at"] = time.time()
-            fresh, exhausted = budget.check(record)
-            result.update(fresh=fresh, exhausted=exhausted)
-            if exhausted and record.get("state") in store.RUNNING:
-                record.setdefault("flags", {})["budget"] = exhausted
-                if record["state"] == "running":
-                    record["state"] = "stopping"
 
         run = store.update(project_id, run_id, change)
-        for dimension, pct in result.get("fresh") or []:
-            _publish(project_id, "autobuild.budget_warning", {"run_id": run_id, "dimension": dimension, "used_pct": pct})
         self._updated(run)
 
     def _fail(self, project_id: str, run_id: str, reason: str) -> None:
@@ -783,9 +782,11 @@ class AutobuildRunner:
     # 停下：暂停、结束
     # ------------------------------------------------------------------
 
-    async def _pause(self, project_id: str, run_id: str) -> None:
+    async def _pause(self, project_id: str, run_id: str, *, reason: str | None = None) -> None:
+        """暂停在当前位置；reason=quota 是配额用完（补足后续跑），其余是用户或维护要求的暂停。"""
         def change(record: dict) -> None:
             record["state"] = "paused"
+            record["pause_reason"] = reason
             record.setdefault("flags", {}).pop("pause", None)
             record["flags"].pop("safe_pause", None)
             budget.stop_clock(record)
@@ -796,6 +797,8 @@ class AutobuildRunner:
         self._updated(run)
         self._post_controls(run)
         self._refresh(project_id)
+        if reason == "quota":
+            self._notify(run, "autobuild_stopped")  # 人不在页面上也要知道运行停了、等着补配额
         await self.admit()
 
     async def _finish(self, project_id: str, run_id: str, state: str, *, reason: str | None = None) -> None:
@@ -964,7 +967,8 @@ class AutobuildRunner:
         if op == "resume":
             if state not in ("paused", "interrupted"):
                 raise ApiError("autobuild_not_running", "运行不在可以续跑的状态", 409, {"state": state})
-            run = store.update(project_id, run_id, lambda record: record.update(state="queued", resume_pending=False))
+            run = store.update(project_id, run_id,
+                               lambda record: record.update(state="queued", resume_pending=False, pause_reason=None))
             self._post_controls(run)
             await self.admit()
             return run_view(store.get(project_id, run_id) or run)
@@ -1005,6 +1009,25 @@ class AutobuildRunner:
             store.update(project_id, run_id, queue)
             await self.admit()
         return run_view(store.get(project_id, run_id) or run)
+
+    async def acknowledge(self, project_id: str, run_id: str) -> dict:
+        """AB-19：看过结束的运行后确认——运行条收起；项目没有别的运行在进行时，构建方式回到陪伴建模（L2）。"""
+        from .. import project_events
+
+        async with self._project_lock(project_id):
+            run = store.get(project_id, run_id)
+            if run is None:
+                raise ApiError("run_not_found", "运行不存在", 404)
+            if run["state"] not in store.ENDED or run.get("finishing"):
+                raise ApiError("autobuild_not_running", "运行还没结束", 409, {"state": run["state"]})
+            if not run.get("acknowledged_at"):
+                run = store.update(project_id, run_id, lambda record: record.update(acknowledged_at=time.time())) or run
+            if store.active(project_id) is None:
+                await asyncio.to_thread(_ws()._update_meta, project_id, build_mode="L2")
+            # 不论改没改都发：各个标签页以服务端的构建方式为准
+            project_events.project_changed(project_id, ["build_mode"])
+            self._updated(run)
+            return run_view(run)
 
     @staticmethod
     def _in_slice(run: dict) -> bool:
@@ -1108,7 +1131,8 @@ class AutobuildRunner:
         title, body = {
             "autobuild_finished": ("自主构建完成", f"需复核 {summary['needs_review']} 项"),
             "autobuild_suspension": ("新增挂起问题", f"{summary.get('suspended') or count} 个"),
-        }.get(kind, ("自主构建已停下", END_NOTICE.get(run["state"], "")))
+        }.get(kind, ("自主构建已暂停", "配额用完，补足后点续跑") if summary["pause_reason"] == "quota"
+              else ("自主构建已停下", END_NOTICE.get(run["state"], "")))
         action = ({"label": "去复核", "page": "inbox", "params": {"filter": "autobuild_review"}}
                   if kind != "autobuild_stopped" else
                   {"label": "查看", "page": "l4-run", "params": {"c": run["conversation_id"]}})

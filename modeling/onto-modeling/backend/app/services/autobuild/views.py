@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 
+from .. import model_pricing
 from . import budget, policy, store
 
 STEP_CELL = {"done": "auto", "running": "running", "queued": "queued", "skipped": "skipped", "partial": "auto"}
@@ -33,7 +34,9 @@ def money(amount, currency: str) -> dict:
 
 
 def currency_of(run: dict) -> str:
-    return ((run.get("policy") or {}).get("budget") or {}).get("max_cost", {}).get("currency") or "USD"
+    """费用的币种跟模型单价表走（SY-18）；F6 之前的运行记在策略的预算里。"""
+    old = ((run.get("policy") or {}).get("budget") or {}).get("max_cost") or {}
+    return old.get("currency") or model_pricing.load()["currency"]
 
 
 def live_ledger(run: dict) -> list[dict]:
@@ -93,7 +96,6 @@ def summary(run: dict, now: float | None = None) -> dict:
     """AutobuildRunSummary（EP-14 的载荷、AB-18 的一行）。"""
     now = now or time.time()
     currency = currency_of(run)
-    limits = (run.get("policy") or {}).get("budget") or {}
     slices = _units(run, "slice")
     done_slices = sum(1 for unit in slices if _info(run, unit["id"]).get("state") in ("done", "partial"))
     elapsed = budget.elapsed_ms(run, now)
@@ -105,14 +107,16 @@ def summary(run: dict, now: float | None = None) -> dict:
     return {
         "run_id": run["run_id"], "run_no": run["run_no"], "state": run["state"], "current": _current(run),
         "elapsed_ms": elapsed, "est_total_ms": estimate,
-        "tokens": {"used": int((run.get("budget") or {}).get("tokens") or 0), "limit": int(limits.get("max_tokens") or 0)},
-        "cost": {"used": money((run.get("budget") or {}).get("cost") or 0, currency),
-                 "budget": money((limits.get("max_cost") or {}).get("amount"), currency)},
+        "tokens": {"used": int((run.get("budget") or {}).get("tokens") or 0)},
+        "cost": {"used": money((run.get("budget") or {}).get("cost") or 0, currency)},
         "slices": {"done": done_slices, "total": len(slices)},
         "decisions": len(ledger),
         "suspended": sum(1 for item in live_suspensions(run) if item.get("state") in UNRESOLVED),
         "needs_review": sum(1 for entry in ledger if entry.get("review_state") == "pending"),
         "started_at": iso(run.get("started_at") or run.get("created_at")), "ended_at": iso(run.get("ended_at")),
+        # 配额用完而暂停（补足后续跑）；结束后看过、确认了（AB-19，运行条收起）
+        "pause_reason": run.get("pause_reason") if run.get("state") == "paused" else None,
+        "acknowledged": bool(run.get("acknowledged_at")),
     }
 
 
@@ -169,8 +173,7 @@ def run_view(run: dict, stage_ids: list[str], now: float | None = None) -> dict:
     return {
         **summary(run, now),
         "conversation_id": run["conversation_id"],
-        "policy": {key: (run.get("policy") or {}).get(key) for key in ("scope", "budget", "production_collection",
-                                                                        "advanced")},
+        "policy": {key: (run.get("policy") or {}).get(key) for key in policy.GROUPS},
         "checks": {"errors": sum(int((item.get("checks") or {}).get("errors") or 0) for item in info),
                    "warnings": sum(int((item.get("checks") or {}).get("warnings") or 0) for item in info)},
         "scenarios": {"passed": 0, "total": 0},
@@ -198,7 +201,6 @@ def produced_text(produced: dict) -> str:
 def report(run: dict, now: float | None = None) -> dict:
     """AutobuildReport：按段结果、能否撤回随复核与撤回变化，每次现算。"""
     currency = currency_of(run)
-    limits = (run.get("policy") or {}).get("budget") or {}
     ledger = live_ledger(run)
     threshold = float(((run.get("policy") or {}).get("advanced") or {}).get("confidence_threshold") or 0.8)
     produced = {key: 0 for key in KIND_LABELS}
@@ -228,7 +230,6 @@ def report(run: dict, now: float | None = None) -> dict:
         "base_version_label": run.get("base_version_label"),
         "metrics": {
             "duration_ms": budget.elapsed_ms(run, now),
-            "budget_duration_ms": int(float(limits.get("max_duration_min") or 0) * 60_000),
             "slices": {"done": sum(1 for row in slices if row["result"] != "skipped"), "total": len(slices),
                        "partial": partial},
             "produced": produced,
@@ -239,7 +240,6 @@ def report(run: dict, now: float | None = None) -> dict:
             "suspended": sum(1 for item in live_suspensions(run) if item.get("state") in UNRESOLVED),
             "cost": money((run.get("budget") or {}).get("cost") or 0, currency),
             "tokens": int((run.get("budget") or {}).get("tokens") or 0),
-            "budget": money((limits.get("max_cost") or {}).get("amount"), currency),
         },
         "slices": slices,
         "note": "",
@@ -256,25 +256,12 @@ def _card(card_id: str, card_type: str, title: str, open_=None) -> dict:
             "status": None, "plugin": None, "open": open_}
 
 
-def _tokens_text(tokens: int) -> str:
-    if tokens >= 1_000_000:
-        return f"{tokens / 1_000_000:g}M"
-    return f"{round(tokens / 1000)}k" if tokens >= 1000 else str(tokens)
-
-
-def _duration_text(minutes: int) -> str:
-    return f"{minutes // 60} 小时" if minutes % 60 == 0 and minutes >= 60 else f"{minutes} 分钟"
-
-
 def start_card(run: dict) -> dict:
     pol = run.get("policy") or {}
-    scope, limits = pol.get("scope") or {}, pol.get("budget") or {}
+    scope = pol.get("scope") or {}
     slices = len(_units(run, "slice"))
     chips = [
         {"label": "范围", "value": f"{'选中的' if scope.get('mode') == 'selected' else '未完成的'} {slices} 段"},
-        # 对话里不显示金额：预算只写时长与 token
-        {"label": "预算", "value": f"{_duration_text(int(limits.get('max_duration_min') or 0))} · "
-                                  f"{_tokens_text(int(limits.get('max_tokens') or 0))} token"},
         {"label": "拿不准时", "value": policy.BELOW_TEXT.get((pol.get("advanced") or {}).get("below_threshold"), "")},
     ]
     return {**_card(f"ab{run['run_no']}-start", "autobuild_start", f"自主构建 · 运行 #{run['run_no']}",

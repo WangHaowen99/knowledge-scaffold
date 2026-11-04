@@ -301,6 +301,7 @@ export function createApi(client) {
     autobuildReport: (id, runId) => client.get(`${P(id)}/autobuild/runs/${enc(runId)}/report`), // AB-16
     revertAutobuildSlice: (id, runId, sliceId, body) => client.post(`${P(id)}/autobuild/runs/${enc(runId)}/slices/${enc(sliceId)}/revert`, body || {}), // AB-17
     autobuildRuns: (id, query) => client.get(`${P(id)}/autobuild/runs`, { query }), // AB-18
+    acknowledgeAutobuild: (id, runId) => client.post(`${P(id)}/autobuild/runs/${enc(runId)}/acknowledge`, {}), // AB-19
 
     // 3.23 对外 MCP
     mcp: (id) => client.get(`${P(id)}/mcp`), // M-01

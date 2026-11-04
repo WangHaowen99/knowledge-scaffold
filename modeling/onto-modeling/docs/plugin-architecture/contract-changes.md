@@ -1164,3 +1164,18 @@ ADR-0076。
 5. **工作区不显示金额**：自主构建开始卡的「预算」写时长与 token（原来是金额与时长）；运行条、运行详情、运行报告卡、开始前预览、待处理里的运行摘要不再显示费用。接口里的 `cost` 字段照旧返回，费用上限仍在项目设置里配置、仍然生效。
 6. **内测引擎输出截断**：一次模型调用因长度截断（`finish_reason=length`）、没有工具调用、正文几乎为空时，带一句提示续一次；连续第二次截断就结束——子代理以失败返回原因（`subagent.updated` 为 `failed`），主助手给出「这一步模型的输出被截断（思考过长），没有产出结果。可以发「继续」让助手接着做。」。原来这种情况被当成正常完成，子代理返回一个字的残片。
 
+
+## 2026-11-04 · F6（自主构建不按预算判停、结束后确认回到陪伴建模、Studio 表格搜索词跟着地址走）
+
+用户 11-04 定：自主构建只在做完、叫停、出错时结束，预算这套设置整套拿掉；运行结束后点「确认」回到陪伴建模。推翻 B5b「预算」与 F5 第 5 条里「费用上限仍然生效」。
+
+1. **策略没有预算**（AB-01、AB-02、AB-03）：AB-01 不再返回 `budget`、`quota_remaining`，`platform_limits` 只剩 `{allow_production_collection}`；AB-02、AB-03 的 `policy_overrides` 带了 `budget` 忽略，不再回 422 `budget_exceeds_quota`（错误码删除）。AB-03 预览不再返回 `budget`。运行记录里的 `policy` 不再有 `budget`。
+2. **运行不按用量判停**：删除 EP-16 `autobuild.budget_warning`；运行不再进入 `budget_exhausted`（F6 之前的老运行仍可能是这个状态，前端照旧显示）。用量照常记：`AutobuildRunSummary.tokens` 只有 `{used}`，`cost` 只有 `{used}`；AB-16 报告的 `metrics` 去掉 `budget_duration_ms`、`budget`；开始卡 `autobuild_start` 的 chips 去掉「预算」。`autobuild.safe_point.next` 不再出现由预算换来的 `stopped`。
+3. **配额用完暂停**：发一步时撞上配额（`quota_exceeded`），运行变为 `paused`，`AutobuildRunSummary` 新增 `pause_reason: "quota"|null`（只在 `paused` 时有值），不记失败原因；AB-09 续跑照常，续跑后 `pause_reason` 清空。花费的硬上限只剩配额（SY-15、SY-16）。
+4. **新增 AB-19 确认结束的运行** `POST /api/v1/projects/{id}/autobuild/runs/{run_id}/acknowledge` · 所有者 · 审计：是（`autobuild.acknowledge`）。
+   - 只对已结束的运行；还没结束或正在收尾回 409 `autobuild_not_running`，运行不存在 404 `run_not_found`。可以重复调。
+   - 记下确认；项目没有别的进行中运行时把构建方式改回 `L2`；不论改没改都发一条 EP-20 `project.updated`（`fields: ["build_mode"]`），各标签页以它为准。
+   - 响应 `AutobuildRun`；`AutobuildRunSummary` 新增 `acknowledged: bool`，运行对话里已确认的结束运行不再显示运行条。
+5. **SY-17 去掉单次上限**：不再有 `max_duration_min`、`max_tokens`、`max_cost`；PUT 带了忽略，旧文件里的这几项下次保存时清掉。剩 `max_concurrent_runs`、`allow_production_collection`、`night_priority`、`running`、`not_enforced`。
+6. **项目卡、运维总览**：P-01 `ProjectCard.autobuild` 去掉 `budget_used_pct`；O-01 `autobuild_runs[]` 去掉 `budget_used_pct`、`budget`（`cost` 保留），`autobuild_today` 去掉 `stopped_by_budget`。
+7. **Studio 表格的搜索词跟着地址走**（前端）：对话里的条目链接带 `q` 进表格时按它筛；点「表格与条目」页签回到不带 `q` 的地址时清掉；点一行时地址带着原来的 `q`。原来换地址不重建这一页、搜索词只在有 `q` 时才设，从链接进来后再点页签仍只显示那一条，新出的条目看不到，要先切到图谱再切回来。

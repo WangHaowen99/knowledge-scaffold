@@ -758,7 +758,6 @@ export function register(ctx) {
       autobuild_preview: {
         preview_token: `pv-${uid()}`, expires_at: new Date(Date.now() + 10 * MIN).toISOString(),
         slices: bp.slices.map((x) => ({ id: x.id, name: x.name, current: '未开始', included: !x.excluded })),
-        budget: { max_duration_min: 120, max_tokens: 2000000, max_cost: { amount: 80, currency: 'CNY' } },
         production: `不采集生产库（${DB_SOURCE.id} 没授权给自主构建）`,
         below_threshold_text: '把握低于 0.80 时按保守假设先做，记进决策台账，结束后集中复核',
         warnings: [`蓝图里还有 ${bp.questions.filter((q) => !q.answer).length} 个待答问题，会按策略决定并记账`],

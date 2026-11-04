@@ -18,7 +18,7 @@ from app.services.autobuild import prerun, store
 from tests.autobuild_helpers import (AutoEngine, ab, ask, history, start, wait_state,  # noqa: F401
                                      wait_until)
 
-SLICES_ONLY = {"scope": {"until_node": "core.model"}, "budget": {"max_tokens": 500_000}}
+SLICES_ONLY = {"scope": {"until_node": "core.model"}}
 OWNER = "employee_0001"
 CONFIRM = {"question": "对象产物已生成，共 3 个，验收结果如上。确认无误吗？",
            "options": [{"label": "确认"}, {"label": "需要修改"}]}

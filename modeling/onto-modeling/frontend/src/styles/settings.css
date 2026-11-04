@@ -42,10 +42,6 @@
 .evd-eng.lock{cursor:not-allowed}
 /* 模型来源：只读显示，样子同下拉 */
 .ps-src{cursor:default}
-/* 预算下拉 */
-.ps-bsel{position:relative}
-.ps-bsel .inp{cursor:pointer}
-.ps-bsel .menu{position:absolute;top:40px;left:0;right:0;z-index:40;max-height:240px;overflow:auto}
 /* 生产库授权行里的两个输入框 */
 .g2s-mf .field label{font-size:12px}
 .g2s-mf .hint.err{color:var(--red)}

@@ -15,7 +15,6 @@ from tests.autobuild_helpers import (AutoEngine, ab, ask, history, start, wait_s
 from tests.test_changesets import git, main_write, obj
 
 THREE = {"scope": {"mode": "selected", "slice_ids": ["s1", "s2", "s3"], "until_node": "core.model"},
-         "budget": {"max_tokens": 500_000},
          "advanced": {"must_suspend_kinds": ["新增对象"]}}
 
 
@@ -126,7 +125,7 @@ def test_rejudge_during_a_run_is_queued_until_it_ends(ab):
 
 def test_reverting_one_slice_leaves_the_others_alone(ab):
     client, _workspaces, project_id, root = ab
-    run = start(client, project_id, scope={"until_node": "core.model"}, budget={"max_tokens": 500_000})
+    run = start(client, project_id, scope={"until_node": "core.model"})
     wait_state(client, project_id, run["run_id"], "completed")
     base = f"/api/v1/projects/{project_id}/autobuild/runs/{run['run_id']}"
     before = git(root, "rev-list", "--first-parent", "--count", "HEAD").strip()
@@ -176,8 +175,7 @@ def test_check_errors_are_fixed_a_few_rounds_then_merged_anyway(ab, monkeypatch)
         return {"errors": 0, "warnings": 0, "findings": []}
 
     monkeypatch.setattr(gates, "compare", compare)
-    run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s1", "s2"], "until_node": "core.model"},
-                budget={"max_tokens": 500_000}, advanced={"max_fix_rounds": 2})
+    run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s1", "s2"], "until_node": "core.model"}, advanced={"max_fix_rounds": 2})
     done = wait_state(client, project_id, run["run_id"], "completed")
     fixes = [text for text in AutoEngine.sent if text.startswith("合入前的检查发现 1 个新问题")]
     assert len(fixes) == 2 and "合成错误" in fixes[0]
@@ -200,8 +198,7 @@ def test_a_failed_run_does_not_leave_the_slice_waiting_for_confirmation(ab, monk
 
     real_merge = changeset_service.merge
     monkeypatch.setattr("app.kernel.changesets.service.merge", unavailable)
-    run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s1"], "until_node": "core.model"},
-                budget={"max_tokens": 500_000})
+    run = start(client, project_id, scope={"mode": "selected", "slice_ids": ["s1"], "until_node": "core.model"})
     failed = wait_state(client, project_id, run["run_id"], "failed")
     assert failed["matrix"][0]["result"] in ("未开始", "部分完成")
     assert not [item for item in _inbox(client, project_id)["items"] if item["kind"] == "pending_changeset"]

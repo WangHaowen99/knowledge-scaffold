@@ -8,7 +8,7 @@
 - 台账只管本月和上月：更早的事件不入账，去重指纹也随之清掉；
 - 限额：DATA_DIR/governance/quotas.json，默认值加单独设置（覆盖到某个用户或项目），0 表示不限；
 - 检查：发消息前（QuotaGate）查并发会话、用户当日 token、项目当月 token；采集按数据源每小时次数；
-  自主构建的预算只能设在剩余配额之内（autobuild_budget_cap）；
+  自主构建每一步也走这道检查，配额用完时运行暂停（F6，自主构建没有单独的预算）；
 - 配额自身出错一律放行并记日志：配额不能拖垮服务。
 """
 
@@ -90,19 +90,6 @@ class QuotaExceeded(ApiError):
                    "reset_at": deps.iso(reset_at)}
         super().__init__("quota_exceeded", message, 429, details)
         self.item, self.limit, self.used, self.subject, self.reset_at = item, limit, used, subject, reset_at
-
-
-class BudgetExceedsQuota(ApiError):
-    """自主构建的 token 预算超出剩余配额（契约 2.10 budget_exceeds_quota，422）。
-
-    dimension 是预算字段（tokens，前端据此标红输入框），quota 是卡住的那一项配额，max 即剩余量。
-    """
-
-    def __init__(self, quota: str, requested: int | None, remaining: int):
-        super().__init__(
-            "budget_exceeds_quota", f"token 预算超出剩余配额（还剩 {remaining:,} token）", 422,
-            {"dimension": "tokens", "quota": quota, "max": remaining, "requested": requested, "remaining": remaining},
-        )
 
 
 # ---- 小工具 ----
@@ -592,14 +579,6 @@ class QuotaService:
             candidates.append((max(0, monthly - self.used_month(project_id)), "monthly_tokens"))
         tokens, dimension = min(candidates, key=lambda candidate: candidate[0])
         return {"tokens": tokens, "dimension": dimension}
-
-    def autobuild_budget_cap(self, project_id: str, username: str, requested_tokens: int | None) -> None:
-        """自主构建的 token 预算只能设在剩余配额之内（AB-02、AB-03）；None 表示预算不限。"""
-        left = self.remaining(project_id, username)
-        if left["tokens"] is None:
-            return
-        if requested_tokens is None or requested_tokens > left["tokens"]:
-            raise BudgetExceedsQuota(left["dimension"], requested_tokens, left["tokens"])
 
     def check_collection(self, source_id: str, username: str, record: bool = True) -> None:
         """证据采集（EV-14）：同一用户对同一数据源每小时的次数；没超时默认记一次。

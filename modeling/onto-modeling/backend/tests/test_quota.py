@@ -279,26 +279,17 @@ def test_override_takes_precedence_over_default(env):
     assert env.svc.limit("daily_tokens", "user", "alice") == 1000
 
 
-def test_remaining_and_autobuild_budget_cap(env):
+def test_remaining(env):
     pid = _project(env, "replenish-0013", "alice")
     env.svc.set_limits({"daily_tokens": 1000}, {"monthly_tokens": 5000})
     _append(pid, _usage(300))
     assert env.svc.remaining(pid, "alice") == {"tokens": 700, "dimension": "daily_tokens"}
-    env.svc.autobuild_budget_cap(pid, "alice", 700)
-    with pytest.raises(quota.BudgetExceedsQuota) as caught:
-        env.svc.autobuild_budget_cap(pid, "alice", 701)
-    assert caught.value.code == "budget_exceeds_quota" and caught.value.status == 422
-    assert caught.value.details == {"dimension": "tokens", "quota": "daily_tokens", "max": 700, "requested": 701,
-                                    "remaining": 700}
 
     _append(pid, _usage(4500, ts=NOW - 3 * DAY))
     assert env.svc.remaining(pid, "alice") == {"tokens": 200, "dimension": "monthly_tokens"}
-    with pytest.raises(quota.BudgetExceedsQuota):
-        env.svc.autobuild_budget_cap(pid, "alice", None)  # 预算不限，但配额有限
 
     env.svc.set_limits({"daily_tokens": 0}, {"monthly_tokens": 0})
     assert env.svc.remaining(pid, "alice") == {"tokens": None, "dimension": None}
-    env.svc.autobuild_budget_cap(pid, "alice", None)
 
 
 def test_collections_per_source_per_hour(env):

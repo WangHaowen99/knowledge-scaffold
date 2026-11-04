@@ -151,9 +151,6 @@ export function quotas() {
 export function autobuildLimits() {
   return {
     max_concurrent_runs: 4,
-    max_duration_min: PLATFORM_LIMITS.max_duration_min,
-    max_tokens: PLATFORM_LIMITS.max_tokens,
-    max_cost: { ...PLATFORM_LIMITS.max_cost },
     allow_production_collection: PLATFORM_LIMITS.allow_production_collection,
     night_priority: { enabled: true, start: '20:00', end: '08:00' },
     running: 2,

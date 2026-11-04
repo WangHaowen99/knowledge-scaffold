@@ -1,4 +1,4 @@
-"""自主构建的运行记录（数据目录，不进 git）：每次运行一份 JSON，含状态、进度、预算、决策台账与挂起的问题。
+"""自主构建的运行记录（数据目录，不进 git）：每次运行一份 JSON，含状态、进度、用量、决策台账与挂起的问题。
 
 `DATA_DIR/autobuild/<项目>/runs/<run_id>.json`，策略在同一目录的 `policy.json`。台账与运行报告另在运行结束时
 写进工作区 `reports/autobuild/<运行号>/`（进 git，见 runner）；这里是运行期间与复核时的工作副本——复核状态
@@ -21,6 +21,7 @@ from ... import config
 ACTIVE = ("queued", "running", "pausing", "paused", "stopping", "converting", "interrupted")
 # 占着平台并发名额的（在跑、或正走向安全点）
 RUNNING = ("running", "pausing", "stopping", "converting")
+# budget_exhausted 是 F6 之前「预算用完」停下的老运行，之后不再产生
 ENDED = ("completed", "stopped", "budget_exhausted", "failed", "converted")
 _lock = threading.RLock()
 
