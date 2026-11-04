@@ -224,7 +224,7 @@ export default function ChatStatesPage() {
   return (
     <ShellP active="chat-states">
       <ActionsCtx.Provider value={DEMO_ACTIONS}>
-        <WbCtx.Provider value={{ pid, entries: {} }}>
+        <WbCtx.Provider value={{ pid, cid: 'c1', entries: {} }}>
           <PageHead
             eyebrow="工作台 · 对话"
             title="对话卡片与状态"

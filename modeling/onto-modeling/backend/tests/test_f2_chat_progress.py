@@ -185,3 +185,105 @@ def test_subagent_text_step_drops_markdown_marks():
     data = timeline.project(record, "p1", "c1")["data"]
     assert data["step"]["text"] == "资料要点汇总\n门店补货作业规范：docx，规定补货流程"
     assert data["progress_text"] == "资料要点汇总"
+
+
+# ---- F6：子任务卡的名称、任务说明、思考中与稳定引擎子代理的步骤 ----
+
+
+def test_subagent_title_falls_back_to_brief_first_line_then_type():
+    assert timeline.subagent_title("语义检查", "# 你是检查代理\n...", "general-purpose") == "语义检查"
+    line = "检查三个合成操作的字段、对象引用与规则引用是否一致，逐条给出问题清单、所在步骤和修改建议"
+    assert len(line) > 40
+    assert timeline.subagent_title("", f"\n## {line}\n第二行") == line[:40] + "…"
+    assert timeline.subagent_title("", "- 列出问题\n第二行") == "列出问题"
+    assert timeline.subagent_title("", "", "rule-check-agent") == "rule-check-agent"
+    assert timeline.subagent_title("", None, "general-purpose") == "子任务"
+
+
+def test_thinking_is_transient_and_keeps_the_card_title():
+    turn = timeline.Turn.new()
+    sub = {"task_id": "call-9", "tool_use_id": "call-9", "description": "", "agent_type": "general-purpose"}
+    records = []
+    for event in [
+        {"type": "subagent_started", **sub, "brief": "检查合成操作\n细节……"},
+        {"type": "subagent_activity", **sub, "step_id": "s-a", "kind": "tool", "tool": "Read",
+         "input": {"file_path": "resource/a.md"}},
+        {"type": "subagent_activity", **sub, "step_id": "call-9-thinking", "kind": "thinking",
+         "since": 1_700_000_000.0, "elapsed_ms": 15000},
+    ]:
+        records += timeline.ingest(turn, event)
+    started, step, thinking = records
+    assert started[1] is False and step[1] is False
+    assert thinking[1] is True  # 瞬时：只刷新界面，不进历史
+    envelopes = [timeline.project({**record, "ts": 1_700_000_001.0}, "p1", "c1") for record, _ in records]
+    first, second, third = (item["data"] for item in envelopes)
+    assert first["brief"] == "检查合成操作\n细节……" and second["brief"] is None
+    assert {first["title"], second["title"], third["title"]} == {"检查合成操作"}
+    assert second["step_count"] == 1 and third["step_count"] == 1
+    assert third["thinking"] == {"since": timeline.iso(1_700_000_000.0), "elapsed_ms": 15000}
+    assert third["step"] is None and third["progress_text"] == "" and first["thinking"] is None
+
+
+def test_claude_subagent_messages_become_steps_of_its_card():
+    """稳定引擎：子代理自己的消息带派发调用 ID，工具调用和说的话记成子任务卡的步骤，任务说明取 Task 调用的 prompt。"""
+    turn = timeline.Turn.new()
+    envelopes = run(turn, [
+        {"type": "assistant_message", "blocks": [tool("tu-2", "Task", description="语义检查",
+                                                      prompt="检查三个操作的字段\n逐条列出问题", subagent_type="x")]},
+        {"type": "subagent_started", "task_id": "task-1", "tool_use_id": "tu-2", "description": "语义检查",
+         "agent_type": "x"},
+        {"type": "assistant_message", "subagent": True, "parent_tool_use_id": "tu-2",
+         "blocks": [{"kind": "thinking", "text": "想一想"}, {"kind": "text", "text": "先读对象"},
+                    tool("s-1", "Read", file_path="ontology/object/合成对象.md", content="不进历史" * 50)]},
+        done("s-1"),
+        {"type": "assistant_message", "subagent": True, "parent_tool_use_id": "tu-2",
+         "blocks": [tool("s-2", "Grep", pattern="合成", path="ontology/")]},
+        done("s-2", error=True),
+        {"type": "subagent_finished", "task_id": "task-1", "tool_use_id": "tu-2", "status": "completed",
+         "summary": "发现 2 个问题"},
+        done("tu-2"),
+    ])
+    subs = [item["data"] for item in envelopes if item["type"] == "subagent.updated"]
+    assert subs[0]["brief"] == "检查三个操作的字段\n逐条列出问题" and subs[0]["title"] == "语义检查"
+    steps = [item["step"] for item in subs if item["step"]]
+    assert [(step["kind"], step["state"]) for step in steps] == [
+        ("text", "done"), ("tool", "running"), ("tool", "done"), ("tool", "running"), ("tool", "failed")]
+    assert steps[1]["text"] == steps[2]["text"] and "合成对象" in steps[1]["text"]
+    assert subs[-1]["status"] == "done" and subs[-1]["step_count"] == 2 and subs[-1]["summary"] == "发现 2 个问题"
+    # 子代理的工具调用不进主工作过程，也不把参数原文写进历史
+    assert not [item for item in envelopes if item["type"].startswith("progress")]
+    assert "不进历史" not in str([item for item in envelopes if item["type"] == "subagent.updated"])
+
+
+def test_claude_subagent_steps_are_capped():
+    turn = timeline.Turn.new()
+    events = [{"type": "assistant_message", "blocks": [tool("tu-2", "Task", description="长任务")]},
+              {"type": "subagent_started", "task_id": "task-1", "tool_use_id": "tu-2", "description": "长任务"}]
+    for index in range(timeline.SUBAGENT_STEPS_MAX + 5):
+        events.append({"type": "assistant_message", "parent_tool_use_id": "tu-2",
+                       "blocks": [tool(f"s-{index}", "Read", file_path=f"resource/{index}.md")]})
+    subs = [item["data"] for item in run(turn, events) if item["type"] == "subagent.updated"]
+    steps = [item["step"] for item in subs if item["step"]]
+    assert len(steps) == timeline.SUBAGENT_STEPS_MAX + 1
+    assert steps[-1]["kind"] == "text" and "省略" in steps[-1]["text"]
+
+
+def test_history_keeps_one_subagent_card_with_its_latest_state():
+    turn = timeline.Turn.new()
+    sub = {"task_id": "call-9", "tool_use_id": "call-9", "description": "规则检查", "agent_type": "general-purpose"}
+    envelopes = run(turn, [
+        {"type": "subagent_started", **sub, "brief": "任务说明"},
+        {"type": "assistant_message", "blocks": [tool("call-9", "Task")]},
+        {"type": "subagent_activity", **sub, "step_id": "s-a", "kind": "tool", "tool": "Read",
+         "input": {"file_path": "resource/a.md"}},
+        {"type": "subagent_activity", **sub, "step_id": "s-a", "kind": "tool", "tool": "Read", "status": "ok"},
+        {"type": "subagent_finished", **sub, "status": "completed"},
+    ])
+    collapsed = timeline.collapse(envelopes)
+    subs = [item for item in collapsed if item["type"] == "subagent.updated"]
+    assert len(subs) == 1
+    first = next(item for item in envelopes if item["type"] == "subagent.updated")
+    assert subs[0]["id"] == first["id"]  # 放在第一次出现的位置
+    data = subs[0]["data"]
+    assert data["status"] == "done" and data["brief"] == "任务说明" and data["step_count"] == 1
+    assert data["progress_text"] == "读取资料「a」"
