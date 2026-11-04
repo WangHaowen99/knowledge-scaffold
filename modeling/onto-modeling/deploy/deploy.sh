@@ -115,5 +115,6 @@ if [ -f "${SCRIPT_DIR}/migrate-from-modeling.sh" ] \
     echo
     echo "检测到 modeling 服务（${MODELING_CONTAINER}）正在运行，开始迁移其项目数据…"
     bash "${SCRIPT_DIR}/migrate-from-modeling.sh" "${MODELING_CONTAINER}" onto-modeling \
-        || echo "迁移未完成（不影响本次部署），可稍后手动执行 migrate-from-modeling.sh"
+        || echo "[WARN] 项目迁移失败：原项目仍在 ${MODELING_CONTAINER}，尚未迁入 Onto Modeling（Onto Modeling 本身已部署）。" \
+            "修复后执行：bash ${SCRIPT_DIR}/migrate-from-modeling.sh ${MODELING_CONTAINER} onto-modeling" >&2
 fi
