@@ -1131,7 +1131,7 @@ class AutobuildRunner:
         title, body = {
             "autobuild_finished": ("自主构建完成", f"需复核 {summary['needs_review']} 项"),
             "autobuild_suspension": ("新增挂起问题", f"{summary.get('suspended') or count} 个"),
-        }.get(kind, ("自主构建已暂停", "配额用完，补足后点续跑") if summary["pause_reason"] == "quota"
+        }.get(kind, ("自主构建已暂停", "配额用完，补足后点续跑") if summary.get("pause_reason") == "quota"
               else ("自主构建已停下", END_NOTICE.get(run["state"], "")))
         action = ({"label": "去复核", "page": "inbox", "params": {"filter": "autobuild_review"}}
                   if kind != "autobuild_stopped" else
