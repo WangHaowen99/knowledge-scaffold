@@ -52,10 +52,12 @@ def _node_has_sqlite() -> bool:
     node = shutil.which("node")
     if node is None:
         return False
-    probe = subprocess.run(
+    # 安全审查：argv 是 PATH 中解析出的 node 绝对路径加字面量参数，以序列传入、不经 shell 解析
+    probe = subprocess.run(  # NOSONAR(S4721)
         [node, "--no-warnings", "--experimental-sqlite", "-e", "require('node:sqlite')"],
         capture_output=True,
         check=False,
+        shell=False,
     )
     return probe.returncode == 0
 
@@ -93,9 +95,14 @@ def test_migration_exports_committed_rows_still_in_wal(tmp_path: Path) -> None:
         migrated = tmp_path / "migrated"
         workdir = tmp_path / "work"
         workdir.mkdir()
+        script = tmp_path / MIGRATE_SCRIPT.name
+        shutil.copyfile(MIGRATE_SCRIPT, script)
+        script.chmod(0o755)
 
-        result = subprocess.run(
-            ["bash", str(MIGRATE_SCRIPT)],
+        # 安全审查：argv 只有复制到 tmp_path 的仓库自带迁移脚本，以序列传入、不经 shell 解析；
+        # 它调用的 docker 是本测试写入 tmp_path 的替身。
+        result = subprocess.run(  # NOSONAR(S4721)
+            [str(script)],
             cwd=workdir,
             env={
                 "PATH": f"{bin_dir}:/usr/local/bin:/usr/bin:/bin",
@@ -105,6 +112,7 @@ def test_migration_exports_committed_rows_still_in_wal(tmp_path: Path) -> None:
             text=True,
             capture_output=True,
             check=False,
+            shell=False,
         )
     finally:
         workbench.close()
