@@ -461,6 +461,9 @@ def _mark_interrupted(session: "Session", reason: str, message: str) -> None:
         session.turn.finish("interrupted")
         session.broadcast(session.turn.progress_record())
     session.turn = None
+    for message_id in list(session.steers):  # 停机、运维断开：没送到的插话不再送（界面放回输入框）
+        session.broadcast({"type": "message_delivery", "payload": {
+            "message_id": message_id, "state": "returned", "at": views_iso(time.time()), "waiting_on": None}})
     session.steers.clear()
     session.open_subagents.clear()
     record, card = turns.interrupt_exec(session, _EXEC_REASONS.get(reason, "engine_exit"), card=not session.run_id)
@@ -2011,7 +2014,8 @@ class SessionManager:
                 return
             if kind == "_cli_state":
                 session.on_cli_state(event.get("state"))
-                if event.get("state") == "idle" and session.steers and not session.turns_in_flight:
+                handed = any(entry.get("sent") for entry in session.steers.values())
+                if event.get("state") == "idle" and handed and not session.turns_in_flight and not session.chaining:
                     # CLI 停下了却没拿插话开下一轮（出错后 CLI 不再接着跑）：撤回，会话照常收尾成空闲
                     self._return_steers(session, None)
                     session.set_state("idle")

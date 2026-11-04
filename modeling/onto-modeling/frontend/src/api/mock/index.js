@@ -7,6 +7,7 @@
 // F2、F3 各页的接口按分组放在 routes-*.js，每个文件导出 register(ctx)、可选的 stages、projectStages、lockScope、taskSeeds。
 import * as F from './fixtures.js';
 import { StreamHub } from './hub.js';
+import { subagentTask } from './subagent-data.js';
 import * as artifactRoutes from './routes-artifacts.js';
 import * as autobuildRoutes from './routes-autobuild.js';
 import * as inboxRoutes from './routes-inbox.js';
@@ -549,6 +550,12 @@ export function createMockServer() {
     const limit = Number(query.get('limit') || 200);
     const page = items.slice(-limit);
     return json(200, { items: page, has_more: items.length > page.length, first_seq: Number(page[0]?.id || 0), last_seq: Number(page.at(-1)?.id || 0) });
+  });
+  // S-21 子任务步骤（说明页示例里的 t1～t3；不分页，三个子任务都不到一页）
+  on('GET', '/projects/([^/]+)/conversations/([^/]+)/subagents/([^/]+)/steps', ({ m }) => {
+    const found = subagentTask(decodeURIComponent(m[3]));
+    if (!found) return err(404, 'subagent_not_found', '子任务不存在');
+    return json(200, { ...found, next_cursor: null });
   });
   on('GET', '/projects/([^/]+)/conversations/([^/]+)/events', ({ m, query }) => { convsOf(m[1]); return hub.open(convKey(m[1], m[2]), 'conversation', query); });
   on('POST', '/projects/([^/]+)/conversations/([^/]+)/messages', ({ m, body }) => {

@@ -3,11 +3,13 @@
 子代理的 chunk 全部留在 task_tool 内部（见 openjiuwen task_tool 的
 ``_run_subagent_with_observable_stream``），主会话收不到。这里用 Rail 回调把
 "子代理执行了哪一步"桥回主事件队列：父 ``task_tool`` 的 before/after 负责
-开卡与收卡，子代理的工具/模型回调产出步骤事件。
+开卡与收卡，子代理的工具/模型回调产出步骤事件。子代理一次模型调用超过 15 秒还没
+出结果（只在思考、不调工具）时，每 15 秒报一次「思考中」，界面据此显示已想了多久。
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import inspect
 import json
@@ -19,12 +21,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # 单个子任务的步骤事件上限：事件会逐条进 JSONL 历史并参与回放，长子任务
-# 不能把历史刷爆（CLAUDE.md §6 结果体积封顶）
-_MAX_STEPS = 60
+# 不能把历史刷爆（CLAUDE.md §6 结果体积封顶）。最坏一个子任务 200 步 × 约 500 字节 ≈ 100 KB
+_MAX_STEPS = 200
 # 工具参数里只保留卡片摘要需要的键：子代理的 write_file 参数可能携带整段文件内容
 _SUMMARY_KEYS = ("file_path", "path", "pattern", "command", "description", "url", "query")
 _SUMMARY_LIMIT = 200
 _TEXT_LIMIT = 300
+# 派给子代理的任务说明：面板上能展开看，只留前 2000 字
+_BRIEF_LIMIT = 2000
+# 子代理一次模型调用期间「思考中」的上报间隔（秒）；不到一个间隔就出结果的调用不报
+THINKING_EVERY = 15.0
 
 _CURRENT_TRACKER: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "onto_jiuwen_progress_tracker", default=None
@@ -57,18 +63,22 @@ class _TaskProgress:
     emitted: int = 0  # 已发出的步骤事件数（含省略提示），用于封顶
     open_steps: dict[str, str] = field(default_factory=dict)  # step_id → 工具名
     finished: bool = False
+    brief: str = ""
+    thinking: asyncio.Task | None = None  # 这次模型调用的「思考中」上报
 
 
 class JiuwenProgressTracker:
-    """每个派发任务一条有界步骤流；无心跳，耗时只在终态上报一次。"""
+    """每个派发任务一条有界步骤流；模型调用久了报「思考中」，耗时在终态上报一次。"""
 
     def __init__(
         self,
         emit: Callable[[dict], Any],
         clock: Callable[[], float] = time.monotonic,
+        thinking_every: float = THINKING_EVERY,
     ):
         self._emit = emit
         self._clock = clock
+        self._thinking_every = thinking_every
         self._tasks: dict[str, _TaskProgress] = {}
 
     def _event(self, task: _TaskProgress, event_type: str, **extra: Any) -> dict:
@@ -108,19 +118,47 @@ class JiuwenProgressTracker:
         existing = self._tasks.get(call_id)
         if existing is not None:
             return existing
-        # task_description 常常是一整段提示词资产，只有简短单行标签适合做卡片标题
-        label = str(args.get("description") or args.get("task_description") or "").strip()
-        if not label or len(label) > 120 or "\n" in label:
-            label = "子任务"
+        # task_description 常常是一整段提示词资产：只有简短单行的才直接当名称，
+        # 其余整段作任务说明，名称由会话宿主按「说明第一行 → 子代理类型」回退（timeline.subagent_title）
+        label = str(args.get("description") or "").strip()
+        brief = str(args.get("task_description") or "").strip()
+        if not label and brief and len(brief) <= 120 and "\n" not in brief:
+            label = brief
+        if len(label) > 120 or "\n" in label:
+            label = ""
         task = _TaskProgress(
             call_id=call_id,
             description=label,
             agent_type=str(args.get("subagent_type") or "general-purpose")[:80],
             started=self._clock(),
+            brief=brief[:_BRIEF_LIMIT],
         )
         self._tasks[call_id] = task
-        await self._emit_event(self._event(task, "subagent_started"))
+        await self._emit_event(self._event(task, "subagent_started", brief=task.brief))
         return task
+
+    def thinking_start(self, task: _TaskProgress) -> None:
+        """子代理开始一次模型调用：超过一个间隔还没结果就开始报「思考中」。"""
+        self.thinking_stop(task)
+        if task.finished:
+            return
+        task.thinking = asyncio.create_task(self._think(task, time.time()))
+
+    def thinking_stop(self, task: _TaskProgress) -> None:
+        if task.thinking is not None:
+            task.thinking.cancel()
+            task.thinking = None
+
+    async def _think(self, task: _TaskProgress, since: float) -> None:
+        # 不占步骤额度：「思考中」是瞬时事件，不进历史（timeline.ingest），只刷新界面
+        while not task.finished:
+            await asyncio.sleep(self._thinking_every)
+            if task.finished:
+                return
+            await self._emit_event(self._event(
+                task, "subagent_activity", step_id=f"{task.call_id}-thinking", kind="thinking",
+                since=since, elapsed_ms=int((time.time() - since) * 1000),
+            ))
 
     async def step(
         self, task: _TaskProgress, step_id: str, tool_name: str, args: Any
@@ -172,17 +210,20 @@ class JiuwenProgressTracker:
             )
         )
 
-    async def finish(self, task: _TaskProgress, status: str) -> None:
+    async def finish(self, task: _TaskProgress, status: str, summary: str = "") -> None:
         if task.finished:
             return
         task.finished = True
+        self.thinking_stop(task)
         self._tasks.pop(task.call_id, None)
+        extra = {"summary": summary} if summary else {}
         await self._emit_event(
             self._event(
                 task,
                 "subagent_finished",
                 status=status,
                 usage={"duration_ms": max(0, int((self._clock() - task.started) * 1000))},
+                **extra,
             )
         )
 
@@ -227,6 +268,21 @@ def _failed(ctx: Any) -> bool:
     result = getattr(ctx.inputs, "tool_result", None)
     success = result.get("success") if isinstance(result, dict) else getattr(result, "success", None)
     return getattr(ctx, "exception", None) is not None or success is False
+
+
+def _result_summary(ctx: Any, failed: bool) -> str:
+    """子任务结束时卡片和面板上的一句话：做完了取它交回的结果开头；失败只给平台自己写的原因，
+    原始异常文本不进界面。"""
+    if failed:
+        from .jiuwen import TRUNCATION_FAILURE
+
+        raw = f"{getattr(ctx, 'exception', '') or ''} {getattr(ctx.inputs, 'tool_result', '') or ''}"
+        return TRUNCATION_FAILURE if TRUNCATION_FAILURE[:12] in raw else "子任务出错，没有交回结果"
+    result = getattr(ctx.inputs, "tool_result", None)
+    data = result.get("data") if isinstance(result, dict) else getattr(result, "data", None)
+    output = data.get("output") if isinstance(data, dict) else None
+    text = " ".join(str(output or "").split())
+    return text[:_TEXT_LIMIT] + ("…" if len(text) > _TEXT_LIMIT else "")
 
 
 def _response_text(response: Any) -> str:
@@ -291,7 +347,8 @@ def build_progress_rail(tool_names: dict[str, str]):
             if owner is not None:
                 try:
                     if tracker is not None:
-                        await tracker.finish(owner, "failed" if failed else "completed")
+                        await tracker.finish(owner, "failed" if failed else "completed",
+                                             _result_summary(ctx, failed))
                 finally:
                     token = getattr(ctx, "_onto_progress_token", None)
                     if token is not None:
@@ -312,11 +369,22 @@ def build_progress_rail(tool_names: dict[str, str]):
             if getattr(ctx, "_onto_progress_owner", None) is None:
                 await tracker.step_done(task, _call_id(ctx), True)
 
+        async def before_model_call(self, ctx: Any) -> None:
+            tracker, task = _CURRENT_TRACKER.get(), _CURRENT_TASK.get()
+            if tracker is not None and task is not None:
+                tracker.thinking_start(task)
+
+        async def on_model_exception(self, ctx: Any) -> None:
+            tracker, task = _CURRENT_TRACKER.get(), _CURRENT_TASK.get()
+            if tracker is not None and task is not None:
+                tracker.thinking_stop(task)
+
         async def after_model_call(self, ctx: Any) -> None:
             tracker, task = _CURRENT_TRACKER.get(), _CURRENT_TASK.get()
-            if tracker is None or task is None or task.finished:
+            if tracker is None or task is None:
                 return
-            if getattr(ctx, "exception", None) is not None:
+            tracker.thinking_stop(task)
+            if task.finished or getattr(ctx, "exception", None) is not None:
                 return
             await tracker.say(task, _response_text(getattr(ctx.inputs, "response", None)))
 

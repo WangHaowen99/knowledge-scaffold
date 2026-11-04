@@ -144,6 +144,7 @@ export const ERROR_MESSAGES = {
   answer_invalid: '请先选择一个选项',
   not_queued: '当前不在排队',
   exec_not_found: '执行记录不存在',
+  subagent_not_found: '这个子任务的记录找不到了',
   exec_not_resumable: (d) => ({
     inputs_changed: '输入已经变了，不能续跑，请从头再来',
     node_upgraded: '这一步的能力已升级，不能续跑，请从头再来',

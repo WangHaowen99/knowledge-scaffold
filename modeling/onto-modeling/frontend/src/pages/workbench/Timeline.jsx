@@ -9,8 +9,9 @@ import {
   CardItem, CompactedItem, ConfigPendingItem, ErrorItem, InterruptedItem, ReconnectedItem, useActions,
 } from './cards.jsx';
 import {
-  LiveRow, MA, MDay, MSys, Md, SubagentCard, TimelineGroup, WxFile, WxProc, hhmm,
+  LiveRow, MA, MDay, MSys, Md, TimelineGroup, WxFile, WxProc, hhmm,
 } from './parts.jsx';
+import { SubagentCard } from './subagent.jsx';
 import { DecidedRow, PermissionCard, QuestionCard } from './questions.jsx';
 
 // 正文按内容记忆：流式片段到达时只重画在流的那一条，不重新解析前面的 Markdown

@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 from ... import config
 from .base import FRIENDLY_ERROR, EngineContext, ObservableEngine, config_error_for, safe_json
+from .jiuwen_progress import THINKING_EVERY
 
 _RAW_ERROR_PATTERN = None  # 延迟编译
 _CONFIG_ERROR_PATTERN = None
@@ -480,6 +482,10 @@ class ClaudeEngine(ObservableEngine):
         self._outbox: dict[str, dict] = {}
         self._lifecycle = False  # 见过 command_lifecycle：这版 CLI 会报送达（2.1.3xx 起），否则按一次发送一个 result
         self._turn_open = False
+        # 子代理「思考中」（与 Jiuwen 同一事件）：派发调用 ID → 子任务；正在等模型的 → 这次调用开始、上次上报的时刻
+        self._thinking_every = THINKING_EVERY
+        self._subagents: dict[str, dict] = {}
+        self._sub_calls: dict[str, dict] = {}
 
     # ---- 连接生命周期 ----
 
@@ -691,9 +697,86 @@ class ClaudeEngine(ObservableEngine):
                 consumed.append(entry["message_id"])
         return consumed
 
+    async def _ticked(self, source):
+        """原始消息流里插进「思考中」的节拍：有子代理在等模型时，到点产出 (None, None)。
+        读消息放在另一个任务里，等下一条消息不会挡住节拍；读消息出的错照旧在这里抛出。"""
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def pump():
+            try:
+                async for item in source:
+                    await queue.put(("item", item))
+                await queue.put(("end", None))
+            except Exception as exc:  # noqa: BLE001 - 交给消费方按原样处理
+                await queue.put(("error", exc))
+
+        reader = asyncio.create_task(pump())
+        try:
+            while True:
+                due = [call["beat"] + self._thinking_every for call in self._sub_calls.values()]
+                timeout = max(0.0, min(due) - time.monotonic()) if due else None
+                try:
+                    kind, value = await asyncio.wait_for(queue.get(), timeout)
+                except asyncio.TimeoutError:
+                    yield None, None
+                    continue
+                if kind == "end":
+                    return
+                if kind == "error":
+                    raise value
+                yield value
+        finally:
+            reader.cancel()
+
+    def _thinking_events(self) -> list[dict]:
+        """到点的子代理各报一次「思考中」（只在思考、不调工具时有）。"""
+        now = time.monotonic()
+        events = []
+        for parent, call in self._sub_calls.items():
+            if now - call["beat"] < self._thinking_every:
+                continue
+            call["beat"] = now
+            task = self._subagents.get(parent) or {}
+            events.append({
+                "type": "subagent_activity", "task_id": task.get("task_id") or parent, "tool_use_id": parent,
+                "description": task.get("description") or "", "agent_type": task.get("agent_type") or "",
+                "step_id": f"{task.get('task_id') or parent}-thinking", "kind": "thinking",
+                "since": call["since"], "elapsed_ms": int((time.time() - call["since"]) * 1000),
+            })
+        return events
+
+    def _observe_subagent(self, message: Any, event: dict | None) -> None:
+        """子代理一次模型调用的起止：开始执行、收到工具结果之后开始等模型；它说了话（整条消息到了）就结束。"""
+        kind = (event or {}).get("type")
+        if kind == "subagent_started" and event.get("tool_use_id"):
+            parent = str(event["tool_use_id"])
+            self._subagents[parent] = {key: event.get(key) for key in ("task_id", "description", "agent_type")}
+            self._sub_calls[parent] = {"since": time.time(), "beat": time.monotonic()}
+            return
+        if kind == "subagent_finished":
+            parent = str(event.get("tool_use_id") or "")
+            self._subagents.pop(parent, None)
+            self._sub_calls.pop(parent, None)
+            return
+        if kind == "result":
+            self._subagents.clear()
+            self._sub_calls.clear()
+            return
+        parent = str(getattr(message, "parent_tool_use_id", None) or "")
+        if not parent or parent not in self._subagents:
+            return
+        if isinstance(message, AssistantMessage):
+            self._sub_calls.pop(parent, None)
+        elif isinstance(message, UserMessage):
+            self._sub_calls[parent] = {"since": time.time(), "beat": time.monotonic()}
+
     async def _events(self):
         try:
-            async for message, raw in self._incoming():
+            async for message, raw in self._ticked(self._incoming()):
+                if message is None and raw is None:
+                    for event in self._thinking_events():
+                        yield event
+                    continue
                 if message is None:
                     for event in self._on_lifecycle(raw):
                         yield event
@@ -734,6 +817,7 @@ class ClaudeEngine(ObservableEngine):
                         self._pending_assistant = None
 
                 event = normalize_message(message)
+                self._observe_subagent(message, event)
                 if event and event.get("type") == "result":
                     event["message_ids"] = self._consumed(raw)
                 assistant_error = getattr(message, "error", None)

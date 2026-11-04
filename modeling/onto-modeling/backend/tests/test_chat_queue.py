@@ -549,6 +549,42 @@ def test_claude_without_lifecycle_reports_unknown_consumption(tmp_path):
     assert next(event for event in events if event["type"] == "result")["message_ids"] is None
 
 
+def test_claude_subagent_waiting_on_model_reports_thinking(tmp_path):
+    """子代理一次模型调用久了（只在思考、不调工具）：和 Jiuwen 一样按间隔报「思考中」，它说了话就停。"""
+    started = {"type": "system", "subtype": "task_started", "task_id": "task-1", "tool_use_id": "tu-1",
+               "description": "语义检查", "task_type": "general-purpose", "session_id": "s-1", "uuid": "u-1"}
+    said = {"type": "assistant", "parent_tool_use_id": "tu-1", "session_id": "s-1", "uuid": "u-2",
+            "message": {"role": "assistant", "model": "m", "content": [{"type": "text", "text": "查完了"}]}}
+
+    async def scenario():
+        engine = claude_engine(tmp_path)
+        engine._thinking_every = 0.05
+        inbox = engine.client._query.inbox
+        events = []
+
+        async def read():
+            async for event in engine.events():
+                events.append(event)
+
+        reader = asyncio.create_task(read())
+        inbox.put_nowait(started)
+        await asyncio.sleep(0.18)
+        inbox.put_nowait(said)
+        await asyncio.sleep(0.05)
+        quiet = len(events)
+        await asyncio.sleep(0.15)
+        reader.cancel()
+        return events, quiet
+
+    events, quiet = asyncio.run(scenario())
+    thinking = [event for event in events if event.get("kind") == "thinking"]
+    assert len(thinking) >= 2
+    assert all(event["type"] == "subagent_activity" and event["task_id"] == "task-1"
+               and event["tool_use_id"] == "tu-1" and event["step_id"] == "task-1-thinking" for event in thinking)
+    assert thinking[-1]["elapsed_ms"] > thinking[0]["elapsed_ms"] and thinking[0]["since"]
+    assert len(events) == quiet  # 子代理说了话：这次调用结束，不再报
+
+
 # ---- Jiuwen 引擎：主 agent 的插话 Rail、没插上的开下一轮、打断撤回 ----
 
 

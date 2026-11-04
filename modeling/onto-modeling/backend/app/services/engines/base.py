@@ -6,10 +6,11 @@
 - ``assistant_message``   助手消息（blocks: text / thinking / tool_use）；
   ``parent_tool_use_id`` 非空表示这是子代理消息，归到对应子任务卡
 - ``tool_results``        工具结果摘录（blocks: tool_result）
-- ``subagent_started``    子代理开始执行（task_id / tool_use_id / description）
-- ``subagent_activity``   子代理单步过程（step_id / kind: tool | text），同
-  step_id 的后续事件只更新 status；参数只留摘要键，步骤数有上限
-- ``subagent_finished``   子代理终态（completed / failed / stopped，usage.duration_ms）
+- ``subagent_started``    子代理开始执行（task_id / tool_use_id / description / brief：派给它的任务说明，≤2000 字）
+- ``subagent_activity``   子代理单步过程（step_id / kind: tool | text | thinking），同
+  step_id 的后续事件只更新 status；参数只留摘要键，步骤数有上限；thinking 是一次模型调用久了的
+  「思考中」（since / elapsed_ms），瞬时，不进历史
+- ``subagent_finished``   子代理终态（completed / failed / stopped，usage.duration_ms，summary）
 - ``system``              运行时系统事件（已过滤，不进入会话历史）
 - ``model_usage``         一次模型调用的用量（usage: input_tokens / output_tokens），
   逐次计入项目用量；不是对话行

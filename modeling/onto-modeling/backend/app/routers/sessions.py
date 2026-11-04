@@ -1,4 +1,4 @@
-"""会话、对话、执行记录、命令（API 契约 3.11）：S-01～S-20。
+"""会话、对话、执行记录、命令（API 契约 3.11）：S-01～S-21。
 
 一个项目可以有多条对话，同一时刻只有一个在线引擎。对话流与历史按契约 1.11 的信封输出：
 `{id, type, ts, project_id, conversation_id, data}`；载荷按第 4.2 节逐类给（会话宿主
@@ -23,7 +23,7 @@ from ..governance.http import reject_new_session
 from ..services import conversation_store, project_events, streams, uploads, workspace_labels
 from ..services.agent_sessions import SessionError, manager
 from ..services.autobuild import store as autobuild_store
-from ..services.session_host import command_tasks, exec_records, timeline, turns
+from ..services.session_host import command_tasks, exec_records, subagents, timeline, turns
 from ..services.session_host import views as session_views
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}", tags=["session"])
@@ -226,6 +226,21 @@ def conversation_messages(project_id: str, cid: str, request: Request, before_se
         "first_seq": int(envelopes[0]["id"]) if envelopes else None,
         "last_seq": len(history) if history else None,
     }
+
+
+@router.get("/conversations/{cid}/subagents/{task_id}/steps")
+def subagent_steps(project_id: str, cid: str, task_id: str, request: Request, cursor: str = "", limit: int = 0):
+    """S-21：一个子任务的名称、任务说明、状态与逐步明细（游标分页，每页默认 50、最多 200 步）。
+
+    时间线上的子任务卡只带当前一步；一个子任务最多 200 步，最坏一页约 100 KB。"""
+    deps.require_owner(project_id, request)
+    conversation_id = _resolve(project_id, cid)
+    found = subagents.steps_of(manager.get_history(project_id, conversation_id), task_id)
+    if found is None:
+        raise ApiError("subagent_not_found", "子任务不存在", 404)
+    task, steps = found
+    page = deps.page(steps, cursor, limit, binding={"task_id": task_id})
+    return {"task": task, "items": page["items"], "next_cursor": page["next_cursor"]}
 
 
 # ---- S-07 发消息 ----

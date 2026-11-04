@@ -43,7 +43,9 @@ CONTRACT = {
     "day.marker": {"label"},
     "progress": {"group_id", "title", "desc", "state", "started_at", "duration_ms", "collapsed", "steps"},
     "progress.updated": {"group_id", "title", "desc", "state", "started_at", "duration_ms", "collapsed", "steps"},
-    "subagent.updated": {"task_id", "group_id", "title", "status", "progress_text", "summary", "step"},
+    # F6：子任务卡带已做的步骤数、任务说明（只在开始那条）、思考中（瞬时）
+    "subagent.updated": {"task_id", "group_id", "title", "status", "progress_text", "summary", "step", "step_count",
+                         "brief", "thinking"},
     "tool.activity": {"tool_use_id", "visibility", "tool", "summary", "state"},
     "permission.requested": {"request_id", "title", "description", "details_text", "timeout_s", "expires_at"},
     "permission.resolved": {"request_id", "behavior", "by", "message"},
