@@ -163,9 +163,10 @@ def on_turn_end(project_id: str, conversation_id: str, *, failed: bool, exec_bou
                percent=None if failed else 100)
 
 
-def on_interrupt(project_id: str, conversation_id: str) -> None:
+def on_interrupt(project_id: str, conversation_id: str, *, keep: set[str] | frozenset = frozenset()) -> None:
+    """打断：没有执行记录的任务记为中断；keep 是代存着、打断后暂停的命令的任务，照旧排着。"""
     for task in active_for_conversation(project_id, conversation_id):
-        if not task.get("exec_id"):
+        if not task.get("exec_id") and task["task_id"] not in keep:
             update(project_id, task["task_id"], state="interrupted",
                    result={"summary": "你打断了这一步", "refs": []})
 

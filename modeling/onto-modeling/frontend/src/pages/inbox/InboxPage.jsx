@@ -279,7 +279,7 @@ function StaleBody({ d, item, act, batch, staleCount, busy }) {
   );
 }
 
-const NOT_RESUMABLE = { inputs_changed: '不能，输入已经变了', node_upgraded: '不能，这一步的能力已经升级' };
+const NOT_RESUMABLE = { inputs_changed: '输入已经变了，按新版从头做', node_upgraded: '这一步的能力已经升级，按新版从头做' };
 function ResumableBody({ d, act, busy }) {
   const { api } = useApp();
   const { pid } = useProject();
@@ -294,11 +294,11 @@ function ResumableBody({ d, act, busy }) {
     <div className="card pad mt16" style={AMBER_CARD}>
       <KV w="72px" pairs={[
         ['原因', why || '—'], ['中断位置', d.phase?.label || '—'], ['已保存', d.saved ? `${d.saved.files} 个文件，版本 ${d.saved.version_label || '—'}` : '—'],
-        ['能否续跑', d.resumable ? '可以，输入和上次一致' : NOT_RESUMABLE[d.not_resumable_reason] || '不能'], ['所在会话', conv || '—'],
+        ['怎么继续', d.resumable ? '从中断处接着做' : NOT_RESUMABLE[d.not_resumable_reason] || '按新版从头做'], ['所在会话', conv || '—'],
       ]} />
       <div className="row mt16">
         <Button size="sm" kind="ghost" disabled={busy} onClick={() => act('abandon')}>放弃，从头再来</Button><span className="sp" />
-        {d.resumable ? <Button size="sm" kind="primary" icon="play" disabled={busy} onClick={() => act('resume')}>从步骤 {d.phase?.index} 续跑</Button> : null}
+        <Button size="sm" kind="primary" icon="play" disabled={busy} onClick={() => act('resume')}>{d.resumable ? `从步骤 ${d.phase?.index} 续跑` : '按新版重新做'}</Button>
       </div>
     </div>
   );

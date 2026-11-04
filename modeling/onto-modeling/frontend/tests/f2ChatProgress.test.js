@@ -1,7 +1,7 @@
-// F2 第 2、5 条：派出的子任务单独成卡（旧版对话页样式）；思考中有动静；工具调用之间的话照常进正文
+// F2 第 2、5 条：派出的子任务单独成卡（旧版对话页样式）；工具调用之间的话照常进正文。F7：运行状态行说清在做什么、在等什么
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyEvent, applyEvents, initialConversation, liveActivity, timelineBlocks } from '../src/state/conversation.js';
+import { applyEvent, applyEvents, initialConversation, runStatus, timelineBlocks } from '../src/state/conversation.js';
 
 let n = 0;
 const ev = (type, data) => ({ id: String(++n), type, ts: '2026-11-03T03:56:00.000Z', data });
@@ -37,32 +37,36 @@ test('子任务卡排在第一次出现的位置，之后的工作过程排在�
   assert.deepEqual(timelineBlocks(s)[0].items.map((x) => x.key), ['progress:g1', 'sub:call-9', 'progress:g1-1']);
 });
 
-test('子任务在跑时不另出「思考中」，做完了才出', () => {
+test('运行状态行：子任务在跑时写在等哪个子任务，做完了回到思考中', () => {
   n = 0;
   let s = applyEvents(initialConversation(), [
-    ev('session.state', { state: 'running' }),
-    ev('message.user', { message_id: 'm1', text: '开始' }),
-    sub(null, { status: 'running' }),
+    ev('session.state', { state: 'running', turn_started_at: '2026-11-03T03:56:00.000Z' }),
+    ev('message.user', { message_id: 'm1', text: '/ontology-validate', delivery: 'immediate' }),
+    ev('progress', { group_id: 'g1', title: '校验与走查', state: 'done', steps: [{ id: 's1', text: '列出资料', state: 'done' }] }),
+    sub(null, { status: 'running', title: '语义检查' }),
   ]);
-  assert.equal(liveActivity(s), null);
-  s = applyEvent(s, sub(null, { status: 'done' }));
-  assert.deepEqual(liveActivity(s), { kind: 'waiting', thinking: '' });
+  assert.deepEqual(runStatus(s), { title: '校验与走查', doing: '等子任务「语义检查」', since: '2026-11-03T03:56:00.000Z', thinking: '' });
+  s = applyEvent(s, sub(null, { status: 'done', title: '语义检查' }));
+  assert.equal(runStatus(s).doing, '思考中');
+  // 运行中插的话不算开启新的一轮：标题还是这一轮的
+  s = applyEvent(s, ev('message.user', { message_id: 'm2', text: '顺便看看规则', delivery: 'steer' }));
+  assert.equal(runStatus(s).title, '校验与走查');
+  s = applyEvent(s, ev('session.state', { state: 'idle' }));
+  assert.equal(runStatus(s), null);
 });
 
-test('思考的流式片段攒成「思考中」，正文、步骤、回答到了就清掉', () => {
+test('运行状态行：在跑的步骤、等你回答；思考片段跟着走，正文到了清掉', () => {
   n = 0;
   let s = applyEvents(initialConversation(), [ev('session.state', { state: 'running' }), ev('message.user', { message_id: 'm1', text: '开始' })]);
-  assert.deepEqual(liveActivity(s), { kind: 'waiting', thinking: '' });
+  assert.equal(runStatus(s).doing, '思考中');
   s = applyEvents(s, [delta('thinking', 'Let me '), delta('thinking', 'check.')]);
-  assert.deepEqual(liveActivity(s), { kind: 'thinking', thinking: 'Let me check.' });
-  s = applyEvent(s, delta('text', '好'));
-  assert.equal(liveActivity(s), null); // 正文在流：看正文
+  assert.equal(runStatus(s).thinking, 'Let me check.');
   s = applyEvent(s, ev('message.assistant', { message_id: 'a1', text_md: '好', anchors: [] }));
-  assert.deepEqual(liveActivity(s), { kind: 'waiting', thinking: '' });
-  s = applyEvent(s, ev('progress', { group_id: 'g2', title: '工作过程', state: 'running', steps: [{ id: 's1', text: '运行脚本', state: 'running' }] }));
-  assert.equal(liveActivity(s), null); // 有在跑的步骤：看步骤
-  s = applyEvent(s, ev('session.state', { state: 'idle' }));
-  assert.equal(liveActivity(s), null);
+  assert.equal(runStatus(s).thinking, '');
+  s = applyEvent(s, ev('progress', { group_id: 'g2', title: '', state: 'running', steps: [{ id: 's1', text: '运行脚本', state: 'running' }] }));
+  assert.equal(runStatus(s).doing, '运行脚本');
+  s = applyEvent(s, ev('question.asked', { question_id: 'q1', title: '选哪个', options: [] }));
+  assert.equal(runStatus(s).doing, '等你回答');
 });
 
 test('思考的片段只留最后一段，不无限增长', () => {

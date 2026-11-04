@@ -17,6 +17,8 @@ import functools
 import json
 import logging
 import os
+import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -60,45 +62,103 @@ def _lock_alive(root: Path, command: str) -> bool:
 
 
 def _suggest_module(root: Path, state):
-    """本项目锁定版本的 flow_state 有 suggest 就用它，旧 core 版本没有时用镜像版本。"""
-    if hasattr(state, "suggest"):
+    """本项目锁定版本的 flow_state 支持这一版建议条判定（SUGGEST_RULES）就用它，旧 core 版本用镜像版本：
+    规则表、能否执行的检查与说明行（F7）三处要同一份，升级前的项目不能还按旧的判。"""
+    if getattr(state, "SUGGEST_RULES", 0) >= 2:
         return state
     from ..packs import contracts
 
     return contracts.default().load("flow_state")
 
 
-def _session_context(project_id: str, conversation_id: str | None) -> dict:
-    """会话侧的上下文：这条对话刚被打断（建议条换成打断后的三项）、有等你回答的问题。"""
+def _session_context(project_id: str, conversation_id: str | None, root: Path, flow: dict,
+                     interrupted_exec: str | None = None) -> dict:
+    """会话侧的上下文（详设 6.10 第 1～4 条），只按给定的对话算：在跑（同一个引擎在别的对话跑也算，这时这里
+    发不出去）、等你回答的问题、这一轮出错、刚被打断的那一步。interrupted_exec：调用方刚记为中断的执行。"""
+    if not conversation_id:
+        return {}
     try:
         from ..agent_sessions import manager
     except Exception:  # noqa: BLE001
         return {}
     context: dict = {}
     session = manager.get(project_id)
-    if session is not None and (conversation_id in (None, "", session.conversation_id)):
-        waiting = [request for request in session.pending_permissions.values()
-                   if request.future is not None and not request.future.done()]
-        if waiting:
-            context["waiting_decision"] = True
-    if conversation_id:
-        try:
-            history = manager.get_history(project_id, conversation_id)
-        except Exception:  # noqa: BLE001 - 对话不存在
-            return context
-        for event in reversed(history):
-            kind = event.get("type")
-            if kind == "user_message":
-                break
-            if kind == "suggestions":
-                payload = event.get("payload") or {}
-                if payload.get("mode") == "interrupted":
-                    primary = payload.get("primary") or {}
-                    action = primary.get("action") or {}
-                    context["interrupted"] = {"id": action.get("exec_id")} if action.get("type") == "resume_exec" else {}
-                    context["interrupted_reason"] = primary.get("reason") or ""
-                break
+    if session is not None:
+        question = _pending_question(session) if session.conversation_id == conversation_id else None
+        if question is not None:
+            context["question"] = question
+        elif _engine_running(session):
+            context["running"] = True
+    try:
+        history = manager.get_history(project_id, conversation_id)
+    except Exception:  # noqa: BLE001 - 对话不存在
+        return context
+    error, exec_id = _since_last_message(history)
+    if error is not None:
+        context["failed"] = {"reason": error}
+    interrupted = _interrupted(project_id, interrupted_exec or exec_id, root, flow)
+    if interrupted is not None:
+        context["interrupted"] = interrupted
     return context
+
+
+def _engine_running(session) -> bool:
+    """引擎在跑一轮（打断已经发出的不算：等它停下的这一会儿，建议条给打断后的那一份）。"""
+    if getattr(session, "interrupt_requested", False):
+        return False
+    return session.state in ("running", "queued") or session.is_connecting()
+
+
+def _pending_question(session) -> dict | None:
+    """第一个还没回答的问题（决策卡里的一问，或者一张确认卡）。"""
+    for request in session.pending_permissions.values():
+        if request.future is None or request.future.done():
+            continue
+        questions = getattr(request, "questions", None) or []
+        answered = set(getattr(request, "answers", None) or {})
+        for question in questions:
+            if question.get("question_id") not in answered:
+                return {"id": question["question_id"], "kind": "question"}
+        if not questions:
+            return {"id": request.id, "kind": "permission"}
+    return None
+
+
+def _since_last_message(history: list) -> tuple[str | None, str | None]:
+    """最近一条用户消息之后：这一轮出错的说法、被打断（或出错中断）的执行。"""
+    error, exec_id = None, None
+    for event in reversed(history):
+        kind = event.get("type")
+        if kind == "user_message":
+            break
+        payload = event.get("payload") or {}
+        if kind == "session_error" and error is None:
+            error = str(event.get("error") or "")
+        if exec_id is not None:
+            continue
+        if kind == "session_interrupted" and event.get("exec_id"):
+            exec_id = event["exec_id"]
+        elif kind == "card" and payload.get("card_type") == "resume" and payload.get("exec_id"):
+            exec_id = payload["exec_id"]
+        elif kind == "suggestions" and (payload.get("primary") or {}).get("action", {}).get("type") == "resume_exec":
+            exec_id = payload["primary"]["action"].get("exec_id")  # F7 之前的历史：打断后推的建议条里有
+    return error, exec_id
+
+
+def _interrupted(project_id: str, exec_id: str | None, root: Path, flow: dict) -> dict | None:
+    """还停在中断的执行 → 第 4 条用的 {id, label, mode, why, saved_files, phase}：能续跑 resume，能力升级或输入
+    改过 rerun（按新版从头做）。已经续跑、放弃、做完的不算。"""
+    if not exec_id:
+        return None
+    from ..session_host import exec_records
+
+    record = exec_records.get(project_id, exec_id)
+    if record is None or record.get("state") != "interrupted" or record.get("run_id"):
+        return None
+    data = exec_records.view(record, root=root, flow=flow)
+    return {"id": record["id"], "label": data["command_label"], "mode": "resume" if data["resumable"] else "rerun",
+            "why": data["not_resumable_reason"], "saved_files": data["saved"]["files"],
+            "phase": data["phase"]["label"]}
 
 
 _autobuild_context = None
@@ -122,32 +182,58 @@ def _run_context(project_id: str) -> dict:
 
 
 def _paused_controls() -> dict:
-    """暂停、中断的运行：不推荐下一步，只留「运行详情」（续跑、停在安全点在运行条上）。"""
-    details = {"id": "autobuild_details", "label": "运行详情", "icon": "list", "primary": False, "disabled": False,
+    """暂停、中断的运行：不推荐下一步，只留「查看运行详情」（续跑、停在安全点在运行条上）。"""
+    details = {"id": "autobuild_details", "label": "查看运行详情", "icon": "list", "primary": False, "disabled": False,
                "reason": "", "priority": 1, "action": {"type": "autobuild", "op": "details"}}
-    return {"mode": "autobuild_controls", "primary": None, "secondary": [details], "all_commands": True}
+    return {"mode": "autobuild_controls", "primary": None, "secondary": [details], "all_commands": True, "note": None}
 
 
-def _unfinished_step(project_id: str, conversation_id: str | None, roots: list[Path], flow: dict) -> bool:
+_rev_lock = threading.Lock()
+_last_rev = 0
+
+
+def next_rev() -> int:
+    """建议条的版本号：毫秒时间戳，同一进程里只增不减。界面上推来的和刷新取到的，取版本号大的那份。"""
+    global _last_rev
+    with _rev_lock:
+        _last_rev = max(_last_rev + 1, time.time_ns() // 1_000_000)
+        return _last_rev
+
+
+def running_suggestions() -> dict:
+    """第 1 条：运行中不显示建议（会话变为运行中时直接推这一份，不必重算流程）。"""
+    return {"mode": "running", "primary": None, "secondary": [], "all_commands": True, "note": None,
+            "rev": next_rev()}
+
+
+def _unfinished_step(project_id: str, conversation_id: str | None, roots: list[Path], flow: dict) -> dict | None:
     """这条对话里的命令这一轮结束了、命令锁却还在（执行记录「等待」，又没有等你回答的问题），锁也不在「等你回复」
-    的阶段：助手没收尾（真实模型常见：正文说做完了，没释放锁），节点一直显示进行中。"""
+    的阶段：助手没收尾（真实模型常见：正文说做完了，没释放锁），节点一直显示进行中。返回 {id, label}。"""
     if not conversation_id:
-        return False
+        return None
     from ..session_host import exec_records
 
     record = exec_records.open_record(project_id, conversation_id)
     if record is None or record.get("state") != "waiting":
-        return False
+        return None
     command = record.get("command_name") or ""
-    return any(exec_records.unfinished(root, flow, command) for root in roots if Path(root).is_dir())
+    if not any(exec_records.unfinished(root, flow, command) for root in roots if Path(root).is_dir()):
+        return None
+    return {"id": record["id"], "label": record.get("command_label") or ""}
 
 
-def _with_continue(suggestions: dict) -> dict:
-    """没收尾的这一步：主推「继续」让助手做完收尾，原来的建议降为次选。"""
-    cont = {"id": "continue", "label": "继续", "icon": "redo", "primary": True, "disabled": False,
-            "reason": "这一步还没收尾", "priority": 1, "action": {"type": "send", "text": "继续"}}
-    rest = [item for item in [suggestions.get("primary"), *(suggestions.get("secondary") or [])] if item]
-    return {**suggestions, "primary": cont, "secondary": [{**item, "primary": False} for item in rest][:2]}
+def _stale_upstream(flow: dict, states: dict) -> dict:
+    """过期的节点（按段的除外）→ 上游的说法：「对象、操作」。"""
+    from .. import workspace_labels
+
+    out = {}
+    for node in flow.get("nodes") or []:
+        if node.get("per_slice") or (states.get(node["id"]) or {}).get("state") != "stale":
+            continue
+        kinds = [workspace_labels.KIND_LABELS.get(str(kind), str(kind)) for kind in node.get("stale_on") or []]
+        if kinds:
+            out[node["id"]] = "、".join(dict.fromkeys(kinds))
+    return out
 
 
 def _changeset_context(root: Path) -> dict | None:
@@ -282,19 +368,27 @@ def build(root: Path, *, conversation_id: str | None = None, context: dict | Non
             if changed != node["state"]:
                 node["state"] = changed
                 node["display_state"] = node_state.display(changed, node["flags"])
+    extra = dict(context or {})
+    interrupted_exec = extra.pop("interrupted_exec", None)
     suggest_context = {"stage": suggest_stage, "changeset": changeset, "blueprint": blueprint_context,
                        "slice_next": (sliced or {}).get("slice_next"),
-                       **_session_context(root.name, conversation_id), **_run_context(root.name), **(context or {})}
-    suggestions = suggester.suggest(flow, simple_states, suggest_context)
-    if suggestions.get("mode") == "normal" and _unfinished_step(root.name, conversation_id, [copy, root], flow):
-        suggestions = _with_continue(suggestions)
-    if suggestions.get("mode") == "interrupted" and suggest_context.get("interrupted_reason"):
-        # 出错中断推过去的是「出错中断」，刷新后（FL-02）同一个说法（flow_state 只会写「刚被打断」）
-        reason = suggest_context["interrupted_reason"]
-        suggestions = {**suggestions, "primary": suggestions.get("primary") and {**suggestions["primary"], "reason": reason},
-                       "secondary": [{**item, "reason": reason} for item in suggestions.get("secondary") or []]}
+                       "slice_stale": (sliced or {}).get("slice_stale") or [],
+                       "stale_upstream": _stale_upstream(flow, simple_states),
+                       **_session_context(root.name, conversation_id, root, flow, interrupted_exec),
+                       **_run_context(root.name), **extra}
+    unfinished = _unfinished_step(root.name, conversation_id, [copy, root], flow)
+    if unfinished is not None:
+        suggest_context.setdefault("unfinished", unfinished)
+    check = None
+    if conversation_id:
+        # 按对话算的（建议条、FL-02）：只给此刻能执行的，和接口收到建议条的请求时同一份检查（next_step）
+        from . import next_step
+
+        check = functools.partial(next_step.allowed, root.name, conversation_id, root=root)
+    suggestions = suggester.suggest(flow, simple_states, suggest_context, check)
     if suggest_context.get("autobuild_paused"):
         suggestions = _paused_controls()
+    suggestions = {**suggestions, "note": suggestions.get("note"), "rev": next_rev()}
     progress_nodes = [node for node in nodes if node["counts_in_progress"]]
     result = {
         "flow_hash": flow.get("flow_hash") or "",
@@ -415,7 +509,8 @@ def _write_flow_state(root: Path, copy: Path, flow: dict, states: dict, context:
         "mainline_head": mainline.state(root)["head"],
         "nodes": states,
         "context": {key: value for key, value in context.items()
-                    if key in ("stage", "changeset", "autobuild", "blueprint", "slice_next")},
+                    if key in ("stage", "changeset", "autobuild", "blueprint", "slice_next", "slice_stale",
+                               "stale_upstream")},
         "suggestions": suggestions,
     }
     for target in ([copy] if (copy / ".git").is_file() else [root]):

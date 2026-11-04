@@ -492,7 +492,7 @@ class AutobuildRunner:
                 return "error"
             busy = (session.sending or session.finishing or session.pending_prompts or session.is_connecting()
                     or manager.queue_position(project_id) is not None or session.state in ("running", "queued")
-                    or session.turns_in_flight > 0 or session.deferred)
+                    or session.turns_in_flight > 0 or session.steers or session.chaining)
             if not busy:
                 return "idle"
             try:

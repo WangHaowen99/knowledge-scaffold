@@ -7,6 +7,7 @@
 // F2、F3 各页的接口按分组放在 routes-*.js，每个文件导出 register(ctx)、可选的 stages、projectStages、lockScope、taskSeeds。
 import * as F from './fixtures.js';
 import { StreamHub } from './hub.js';
+import { subagentTask } from './subagent-data.js';
 import * as artifactRoutes from './routes-artifacts.js';
 import * as autobuildRoutes from './routes-autobuild.js';
 import * as inboxRoutes from './routes-inbox.js';
@@ -84,6 +85,8 @@ export function createMockServer() {
     scope: new Map(),
     flows: new Map(),
     running: new Map(),
+    steer: new Map(), // 运行中插的话，还没被助手看到：`${pid}:${cid}` → [{ message_id, text, timer }]
+    next: new Map(), // 平台代存的下一条命令：`${pid}:${cid}` → { id, label, command, text, origin, created_at, paused, body }
     tasks: new Map(),
     seeded: new Set(),
     seq: 2000,
@@ -186,7 +189,21 @@ export function createMockServer() {
     const c = list.find((x) => x.id === cid);
     if (c) c.state = state;
     emitConv(pid, cid, 'session.state', { state, since: new Date().toISOString(), turn_started_at: state === 'running' ? new Date().toISOString() : null, reason: null });
+    // 这一轮结束：代存的命令（没被打断暂停的）接着开始
+    const nx = db.next.get(`${pid}:${cid}`);
+    if (state === 'idle' && nx && !nx.paused) setTimeout(() => startNext(pid, cid), 0);
   };
+  const setNext = (pid, cid, next) => {
+    if (next) db.next.set(`${pid}:${cid}`, next); else db.next.delete(`${pid}:${cid}`);
+    const { body: _b, ...view } = next || {};
+    emitConv(pid, cid, 'next.updated', { next: next ? view : null });
+  };
+  function startNext(pid, cid) {
+    const nx = db.next.get(`${pid}:${cid}`);
+    if (!nx) return;
+    setNext(pid, cid, null);
+    runCommand(pid, cid, nx.body);
+  }
   const scopeOf = (pid) => db.scope.get(pid) || { state: 'none', changeset_id: null, conversation_id: null, run_id: null, slice: null, node: null, entries: [], artifacts: [], paths: [], reason_text: '', since: null };
   const setScope = (pid, lock) => { db.scope.set(pid, lock); emitProj(pid, 'scope.updated', lock); };
   const scopeLock = (state, cid) => ({
@@ -249,7 +266,7 @@ export function createMockServer() {
     setSession(pid, cid, 'running');
     const gid = `pg-${uid()}`;
     emitConv(pid, cid, 'progress', { group_id: gid, title: '', desc: '', state: 'running', started_at: new Date().toISOString(), duration_ms: null, collapsed: false, steps: [{ id: 's1', text: '理解你的补充说明', meta: '进行中', state: 'running', duration_ms: null }] });
-    later(pid, cid, 1200, () => {
+    later(pid, cid, sc.reply === 'slow' ? 90000 : 1200, () => {
       emitConv(pid, cid, 'progress.updated', { group_id: gid, title: '', desc: '', state: 'done', started_at: new Date().toISOString(), duration_ms: 3000, collapsed: false, steps: [{ id: 's1', text: '理解你的补充说明', meta: '3 秒', state: 'done', duration_ms: 3000 }] });
       emitConv(pid, cid, 'message.assistant', { message_id: `m-${uid()}`, text_md: `收到：「${text.slice(0, 40)}」。我按这个说明接着做。`, anchors: [], entry_links: [], continued: false });
       setSession(pid, cid, 'idle');
@@ -539,6 +556,7 @@ export function createMockServer() {
       conversation_id: c.id, state: c.state, live: c.live, turn_started_at: null, queue_position: null, last_seq: Number(hist.at(-1)?.id || 0), history_count: hist.length,
       context: { used: 84000, window: 200000, pct: 42, compact_at_pct: 80, breakdown: { rules: 18000, materials: 30000, conversation: 26000, tool_results: 10000 }, last_call: { input: 18400, output: 1200, estimated: true } },
       pending_permission: null, open_questions: [], active_exec: null, open_changeset: null, config_pending: null, autobuild_run_id: null, pool,
+      next: (({ body: _b, ...view }) => (view.id ? view : null))(db.next.get(`${m[1]}:${m[2]}`) || {}),
     });
   });
   on('GET', '/projects/([^/]+)/conversations/([^/]+)/messages', ({ m, query }) => {
@@ -549,6 +567,12 @@ export function createMockServer() {
     const limit = Number(query.get('limit') || 200);
     const page = items.slice(-limit);
     return json(200, { items: page, has_more: items.length > page.length, first_seq: Number(page[0]?.id || 0), last_seq: Number(page.at(-1)?.id || 0) });
+  });
+  // S-21 子任务步骤（说明页示例里的 t1～t3；不分页，三个子任务都不到一页）
+  on('GET', '/projects/([^/]+)/conversations/([^/]+)/subagents/([^/]+)/steps', ({ m }) => {
+    const found = subagentTask(decodeURIComponent(m[3]));
+    if (!found) return err(404, 'subagent_not_found', '子任务不存在');
+    return json(200, { ...found, next_cursor: null });
   });
   on('GET', '/projects/([^/]+)/conversations/([^/]+)/events', ({ m, query }) => { convsOf(m[1]); return hub.open(convKey(m[1], m[2]), 'conversation', query); });
   on('POST', '/projects/([^/]+)/conversations/([^/]+)/messages', ({ m, body }) => {
@@ -563,9 +587,19 @@ export function createMockServer() {
       const ext = (u?.filename || '').split('.').pop().toLowerCase();
       return { upload_id: id, filename: u?.filename || id, size: u?.size || 0, kind: /docx?/.test(ext) ? 'doc' : /xlsx?|csv/.test(ext) ? 'xls' : ext === 'pdf' ? 'pdf' : /png|jpe?g/.test(ext) ? 'image' : 'file' };
     });
-    const ev = emitConv(pid, cid, 'message.user', { message_id: msgId, text: body.text || '', attachments, references: body.references || [], origin: null, delivery: running ? 'deferred' : 'immediate' });
+    const ev = emitConv(pid, cid, 'message.user', { message_id: msgId, text: body.text || '', attachments, references: body.references || [], origin: null, delivery: running ? 'steer' : 'immediate' });
     if (!running) runReply(pid, cid, body.text || '附件');
-    return json(202, { message_id: msgId, seq: Number(ev.id), conversation_id: cid, state: running ? 'running' : 'running', delivery: running ? 'deferred' : 'immediate', queue_position: null });
+    else {
+      // 运行中的插话：过一会儿「助手已看到」；打断时还没看到的撤回
+      const key = `${pid}:${cid}`;
+      const item = { message_id: msgId, text: body.text || '' };
+      item.timer = setTimeout(() => {
+        db.steer.set(key, (db.steer.get(key) || []).filter((x) => x !== item));
+        emitConv(pid, cid, 'message.delivery', { message_id: msgId, state: 'seen', at: new Date().toISOString(), waiting_on: null });
+      }, sc.steer === 'slow' ? 120000 : 2500);
+      db.steer.set(key, [...(db.steer.get(key) || []), item]);
+    }
+    return json(202, { message_id: msgId, seq: Number(ev.id), conversation_id: cid, state: 'running', delivery: running ? 'steer' : 'immediate', queue_position: null });
   });
   on('POST', '/projects/([^/]+)/conversations/([^/]+)/interrupt', ({ m }) => {
     const [pid, cid] = [m[1], m[2]];
@@ -573,11 +607,16 @@ export function createMockServer() {
     if (!t) return json(200, { interrupted: false, exec: null });
     clearTimeout(t);
     db.running.delete(`${pid}:${cid}`);
+    const returned = (db.steer.get(`${pid}:${cid}`) || []).map((x) => { clearTimeout(x.timer); return { message_id: x.message_id, text: x.text }; });
+    db.steer.delete(`${pid}:${cid}`);
+    returned.forEach((x) => emitConv(pid, cid, 'message.delivery', { message_id: x.message_id, state: 'returned', at: new Date().toISOString(), waiting_on: null }));
+    const nx = db.next.get(`${pid}:${cid}`);
+    if (nx) setNext(pid, cid, { ...nx, paused: true });
     emitConv(pid, cid, 'session.interrupted', { by: 'user', at: new Date().toISOString(), exec_id: 'ex-0412', position_label: '你在修改步骤 2 时打断了', saved: { files: 0, version_label: 'v0.12' } });
     setSession(pid, cid, 'idle');
     if (scopeOf(pid).state === 'assistant_running') setScope(pid, { ...scopeOf(pid), state: 'none', entries: [], artifacts: [], paths: [] });
     emitConv(pid, cid, 'suggestions.updated', F.suggestionsInterrupted());
-    return json(200, { interrupted: true, exec: null });
+    return json(200, { interrupted: true, exec: null, returned });
   });
   on('POST', '/projects/([^/]+)/conversations/([^/]+)/restart', ({ m }) => {
     if (db.running.has(`${m[1]}:${m[2]}`)) return err(409, 'session_busy', '运行中，先打断');
@@ -598,8 +637,18 @@ export function createMockServer() {
     return json(200, { ok: true });
   });
   on('POST', '/projects/([^/]+)/conversations/([^/]+)/queue/cancel', () => err(409, 'not_queued', '当前不在排队'));
+  on('POST', '/projects/([^/]+)/conversations/([^/]+)/next/cancel', ({ m }) => {
+    if (db.next.has(`${m[1]}:${m[2]}`)) setNext(m[1], m[2], null);
+    return json(200, { next: null });
+  });
+  on('POST', '/projects/([^/]+)/conversations/([^/]+)/next/start', ({ m }) => {
+    if (!db.next.has(`${m[1]}:${m[2]}`)) return err(404, 'next_not_found', '没有排着的命令');
+    if (db.running.has(`${m[1]}:${m[2]}`)) return err(409, 'session_busy', '运行中');
+    startNext(m[1], m[2]);
+    return json(202, { next: null });
+  });
   on('POST', '/projects/([^/]+)/conversations/([^/]+)/retry', () => err(409, 'nothing_to_retry', '没有可重试的一轮'));
-  on('POST', '/projects/([^/]+)/execs/([^/]+)/(resume|abandon)', ({ m }) => json(m[3] === 'resume' ? 202 : 200, { exec: { id: m[2], state: m[3] === 'resume' ? 'running' : 'abandoned' }, message_id: `m-${uid()}`, conversation_id: convsOf(m[1])[0].id }));
+  on('POST', '/projects/([^/]+)/execs/([^/]+)/(resume|abandon)', ({ m }) => json(m[3] === 'resume' ? 202 : 200, { ...(m[3] === 'resume' ? { mode: 'resume' } : {}), exec: { id: m[2], state: m[3] === 'resume' ? 'running' : 'abandoned' }, message_id: `m-${uid()}`, conversation_id: convsOf(m[1])[0].id }));
   on('GET', '/projects/([^/]+)/commands/catalog', () => json(200, F.commandCatalog()));
   // ---------- 页面命令（S-19 / S-20，契约 5.9.3：页面只发命令，进度经项目流 command.progress） ----------
   // routes-*.js 往 ctx.commandHooks 里放 { match(body) → bool, title?(body), steps?: string[], start?(pid, body, task), doneText?(body, task), finish?(pid, body, task) }：
@@ -640,6 +689,18 @@ export function createMockServer() {
     const pid = m[1];
     if (!body.origin) return err(400, 'invalid_argument', '缺少 origin', { fields: { origin: 'required' } });
     const cid = body.conversation_id || convsOf(pid)[0].id;
+    if (convsOf(pid).find((x) => x.id === cid)?.state === 'running') {
+      // 运行中发的命令：平台代存，这一轮结束后开始（最多一条）
+      const cur = db.next.get(`${pid}:${cid}`);
+      if (cur && !body.replace) return err(409, 'next_occupied', '已经排着一条命令', { label: cur.label });
+      const next = { id: `nx-${uid()}`, label: (body.text || body.command || '').replace(/^\//, ''), command: body.command || null, text: body.text || '', origin: body.origin, created_at: new Date().toISOString(), paused: false, body };
+      setNext(pid, cid, next);
+      const { body: _b, ...view } = next;
+      return json(202, { task: null, conversation_id: cid, message_id: null, delivery: 'next', next: view });
+    }
+    return runCommand(pid, cid, body);
+  });
+  function runCommand(pid, cid, body) {
     const msgId = `m-${uid()}`;
     const text = body.text || body.command || '';
     emitConv(pid, cid, 'message.user', { message_id: msgId, text, command: body.command || null, attachments: [], references: [], origin: { kind: 'page', ...body.origin, task_id: null }, delivery: 'immediate' });
@@ -666,8 +727,8 @@ export function createMockServer() {
         hook.finish?.(pid, body, done);
       });
     }
-    return json(202, { task, conversation_id: cid, message_id: msgId });
-  });
+    return json(202, { task, conversation_id: cid, message_id: msgId, delivery: 'immediate' });
+  }
 
   // ---------- 检索、插件、证据 ----------
   on('GET', '/projects/([^/]+)/search', ({ query }) => {

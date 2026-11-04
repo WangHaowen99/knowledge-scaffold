@@ -9,12 +9,13 @@ export function initialConversation() {
     items: {},
     session: { state: 'idle', since: null, turn_started_at: null, reason: null },
     queue: null,
+    next: null, // 平台代存的下一条命令（运行中发的命令，这一轮结束后开始）
     context: null,
     suggestions: null,
     usage: { input_tokens: 0, output_tokens: 0, cost: null, turns: 0 },
     configPending: null,
     engineLabel: null,
-    thinking: '', // 这一次模型调用到目前的思考片段（瞬时，只给「思考中」看）
+    thinking: '', // 这一次模型调用到目前的思考片段（瞬时，运行状态行展开看）
   };
 }
 
@@ -40,10 +41,41 @@ function patch(state, key, fn) {
   return { ...state, items: { ...state.items, [key]: fn(cur) } };
 }
 
-// 同一个子任务的更新按到达顺序合并（后到的字段盖住先到的）；空的进展说法不盖掉先到的
-function mergeSubagent(prev, sub) {
-  const { step: _step, ...rest } = sub;
-  return { ...prev, ...rest, progress_text: sub.progress_text || prev?.progress_text || '' };
+// 子任务卡在本页上收到的逐步明细只留最近这么多步（后端每个子任务最多 200 步）
+export const SUB_STEPS_MAX = 200;
+
+// 子任务的一步并进明细：同一步后到的只改状态（说法为 null 时沿用先到的），记下开始、结束的时刻
+export function mergeSubSteps(steps, step, ts) {
+  const list = steps || [];
+  if (!step?.id) return list;
+  const i = list.findIndex((x) => x.id === step.id);
+  const over = step.state !== 'running';
+  if (i < 0) {
+    const next = [...list, { ...step, started_at: ts, ended_at: over && step.kind === 'tool' ? ts : null }];
+    return next.length > SUB_STEPS_MAX ? next.slice(-SUB_STEPS_MAX) : next;
+  }
+  const cur = list[i];
+  const next = list.slice();
+  next[i] = { ...cur, state: step.state, text: step.text || cur.text, ended_at: cur.ended_at || (over ? ts : null) };
+  return next;
+}
+
+// 同一个子任务的更新按到达顺序合并（后到的字段盖住先到的）；空的进展说法、任务说明不盖掉先到的。
+// 「思考中」只在最新这条是思考心跳时成立，有了新的一步就清掉
+function mergeSubagent(prev, sub, ts) {
+  const { step, ...rest } = sub;
+  const over = sub.status === 'done' || sub.status === 'failed';
+  return {
+    ...prev,
+    ...rest,
+    progress_text: sub.progress_text || prev?.progress_text || '',
+    brief: sub.brief || prev?.brief || null,
+    step_count: Math.max(prev?.step_count || 0, sub.step_count || 0),
+    thinking: over ? null : sub.thinking || null,
+    started_at: prev?.started_at || ts,
+    ended_at: prev?.ended_at || (over ? ts : null),
+    steps: mergeSubSteps(prev?.steps, step, ts),
+  };
 }
 
 // 一个事件 → 新状态
@@ -67,6 +99,15 @@ export function applyEvent(state, env) {
       };
     case 'session.queued':
       return { ...state, queue: { ...d } };
+    case 'next.updated':
+      return { ...state, next: d.next || null };
+    case 'message.delivery': {
+      // 运行中发的插话送到哪了：等助手看到 → 已看到 / 作为下一轮开始 / 打断时撤回。本地气泡还没换成服务端那条时按 message_id 找
+      const key = state.items[`msg:${d.message_id}`] ? `msg:${d.message_id}`
+        : state.order.find((k) => state.items[k]?.local && state.items[k].message_id === d.message_id);
+      if (!key) return state;
+      return patch(state, key, (m) => ({ ...m, delivery_state: { state: d.state, at: d.at || ts, waiting_on: d.waiting_on || null } }));
+    }
     case 'session.started':
       return { ...state, engineLabel: d.engine_label || state.engineLabel };
     case 'session.error':
@@ -121,7 +162,7 @@ export function applyEvent(state, env) {
       // 子任务在时间线上单独成卡，排在第一次出现的位置
       const key = `sub:${d.task_id}`;
       const cur = state.items[key];
-      return upsert(state, key, { ...mergeSubagent(cur, d), ts: cur?.ts || ts, kind: 'subagent' });
+      return upsert(state, key, { ...mergeSubagent(cur, d, ts), ts: cur?.ts || ts, kind: 'subagent' });
     }
     case 'tool.activity':
       return state; // 内部步骤只进执行日志，不渲染
@@ -241,6 +282,7 @@ export function applySnapshot(state, snap) {
       reason: state.session.reason,
     },
     queue: snap.state === 'queued' ? (state.queue || { position: snap.queue_position, ahead: Math.max(0, (snap.queue_position || 1) - 1), pool: snap.pool }) : null,
+    next: snap.next === undefined ? state.next : snap.next,
     context: snap.context || state.context,
     configPending: snap.config_pending || state.configPending,
   };
@@ -282,26 +324,32 @@ export function timelineBlocks(state) {
   return blocks;
 }
 
-/**
- * 助手在跑、却没有别的东西在动时（刚发出消息、两次工具调用之间模型在想），时间线末尾显示「思考中」：
- * 正文在流、有在跑的步骤或子任务、在等你回答时不显示。返回 null 或 {kind: 'waiting'|'thinking', thinking}。
- */
-export function liveActivity(state) {
-  if (state.session.state !== 'running') return null;
+// 输入框上方的运行状态行：这一轮在做哪一步（工作过程的标题）、此刻在等什么、从什么时候开始。
+// 只看这一轮：往回找到开启这一轮的用户消息为止（运行中插的话不算开启新一轮）
+export function runStatus(state) {
+  if (!['running', 'connecting'].includes(state.session.state)) return null;
+  let title = '';
+  let doing = '';
   for (let i = state.order.length - 1; i >= 0; i -= 1) {
     const it = state.items[state.order[i]];
-    if (!it || it.kind === 'notice' || it.kind === 'day') continue;
-    if (it.kind === 'assistant' && it.streaming) return null;
-    if (it.kind === 'question' && it.state === 'open') return null;
-    if (it.kind === 'permission' && !it.resolved) return null;
-    if (it.kind === 'subagent') {
-      if (!['done', 'failed'].includes(subagentStatus(it, false))) return null; // 子任务卡自己在转
-      continue;
+    if (!it) continue;
+    if (it.kind === 'user') {
+      if (it.delivery === 'steer') continue;
+      break;
     }
-    if (it.kind === 'progress' && it.state === 'running' && (it.steps || []).some((s) => s.state === 'running')) return null;
-    if (it.kind === 'progress' || it.kind === 'assistant' || it.kind === 'user' || it.kind === 'card') break;
+    if (!doing) {
+      if (it.kind === 'question' && it.state === 'open') doing = '等你回答';
+      else if (it.kind === 'permission' && !it.resolved) doing = '等你确认';
+      else if (it.kind === 'subagent' && !['done', 'failed'].includes(subagentStatus(it, false))) doing = `等子任务「${it.title || '子任务'}」`;
+      else if (it.kind === 'progress' && it.state === 'running') {
+        const step = [...(it.steps || [])].reverse().find((x) => x.state === 'running');
+        if (step?.text) doing = step.text;
+      }
+    }
+    if (!title && it.kind === 'progress' && it.title) title = it.title;
   }
-  return { kind: state.thinking ? 'thinking' : 'waiting', thinking: state.thinking };
+  if (!doing) doing = state.session.state === 'connecting' ? '正在连接' : '思考中';
+  return { title, doing, since: state.session.turn_started_at || state.session.since || null, thinking: state.thinking || '' };
 }
 
 // 等你决定的问题：输入框上方的建议条要禁用主推

@@ -70,15 +70,15 @@ test('核验：有问题的排前面，通过的默认只露两条；说明里�
   assert.equal(verificationNote(mockData.verificationItems(false)), '');
 });
 
-test('输入框占位：读资料和分段规划不同；运行中仍是「补充说明、这一步结束后送达」', () => {
+test('输入框占位：读资料和分段规划不同；运行中是插话（助手接着做时看到）', () => {
   assert.equal(composerState({ sessionState: 'idle', researching: 'materials' }).placeholder, '给助手补充说明，或者继续拖入资料…');
   assert.equal(composerState({ sessionState: 'idle', researching: true }).placeholder, '给助手补充说明，或者继续拖入资料…');
   assert.match(composerState({ sessionState: 'idle', researching: 'blueprint' }).placeholder, /^对蓝图有意见直接说/);
-  // 运行中不再是读资料的占位，补充说明延后送达（文案由外壳的只读口径定）
+  // 运行中不再是读资料的占位，补充说明插进这一轮（文案由外壳的只读口径定）
   const running = composerState({ sessionState: 'running', researching: 'materials' });
   assert.match(running.placeholder, /补充说明/);
   assert.notEqual(running.placeholder, '给助手补充说明，或者继续拖入资料…');
-  assert.equal(running.delivery, 'deferred');
+  assert.equal(running.delivery, 'steer');
 });
 
 test('mock 阶段 materials：资料地图卡、资料用途问题卡、建议条（1 个主推 + 2 个次选）、流程条「读资料 5/7」', () => {

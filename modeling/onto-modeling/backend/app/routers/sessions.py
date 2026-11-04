@@ -1,4 +1,4 @@
-"""会话、对话、执行记录、命令（API 契约 3.11）：S-01～S-20。
+"""会话、对话、执行记录、命令（API 契约 3.11）：S-01～S-23。
 
 一个项目可以有多条对话，同一时刻只有一个在线引擎。对话流与历史按契约 1.11 的信封输出：
 `{id, type, ts, project_id, conversation_id, data}`；载荷按第 4.2 节逐类给（会话宿主
@@ -23,7 +23,8 @@ from ..governance.http import reject_new_session
 from ..services import conversation_store, project_events, streams, uploads, workspace_labels
 from ..services.agent_sessions import SessionError, manager
 from ..services.autobuild import store as autobuild_store
-from ..services.session_host import command_tasks, exec_records, timeline, turns
+from ..services.flow import next_step
+from ..services.session_host import command_tasks, exec_records, subagents, timeline, turns
 from ..services.session_host import views as session_views
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}", tags=["session"])
@@ -193,6 +194,7 @@ def conversation_state(project_id: str, cid: str, request: Request):
         "active_exec": _exec_view(project_id, active),
         "open_changeset": _open_changeset(project_id, conversation_id),
         "config_pending": config_pending,
+        "next": manager.next_view(project_id, conversation_id),
         "autobuild_run_id": view.get("run_id"),
         "pool": _pool(),
     }
@@ -225,6 +227,21 @@ def conversation_messages(project_id: str, cid: str, request: Request, before_se
         "first_seq": int(envelopes[0]["id"]) if envelopes else None,
         "last_seq": len(history) if history else None,
     }
+
+
+@router.get("/conversations/{cid}/subagents/{task_id}/steps")
+def subagent_steps(project_id: str, cid: str, task_id: str, request: Request, cursor: str = "", limit: int = 0):
+    """S-21：一个子任务的名称、任务说明、状态与逐步明细（游标分页，每页默认 50、最多 200 步）。
+
+    时间线上的子任务卡只带当前一步；一个子任务最多 200 步，最坏一页约 100 KB。"""
+    deps.require_owner(project_id, request)
+    conversation_id = _resolve(project_id, cid)
+    found = subagents.steps_of(manager.get_history(project_id, conversation_id), task_id)
+    if found is None:
+        raise ApiError("subagent_not_found", "子任务不存在", 404)
+    task, steps = found
+    page = deps.page(steps, cursor, limit, binding={"task_id": task_id})
+    return {"task": task, "items": page["items"], "next_cursor": page["next_cursor"]}
 
 
 # ---- S-07 发消息 ----
@@ -272,25 +289,50 @@ def _reference_text(references: list) -> str:
 
 
 async def _send(project_id: str, root: Path, conversation_id: str, request: Request, text: str, meta: dict) -> dict:
-    """发给对话并给出 S-07 的响应形状；会话层的错误转契约错误码。自主构建没结束时一律 409（契约 2.10）。"""
+    """发给对话并给出 S-07 的响应形状；会话层的错误转契约错误码。自主构建没结束时一律 409（契约 2.10）。
+
+    在跑的时候：文字插进这一轮（delivery=steer）；命令由平台代存（delivery=next，还没有用户气泡，message_id 为 null，
+    另给 next），已有一条时 409 next_occupied，meta 带 replace 时替换。"""
     autobuild_store.ensure_no_run(project_id)
     reject_new_session(project_id)
     _ensure_not_busy(project_id, conversation_id)
-    live = manager.get(project_id)
-    was_running = bool(live and live.conversation_id == conversation_id and live.state == "running")
-    session = await manager.send(project_id, root, text, conversation_id, username=deps.username(request), meta=meta)
-    record = next((event for event in reversed(session.events) if event.get("type") == "user_message"), None)
-    seq = timeline.external_id(record) if record else None
+    try:
+        session, outcome = await manager.submit(project_id, root, text, conversation_id,
+                                                username=deps.username(request), meta=meta)
+    except SessionError as exc:
+        if getattr(exc, "code", "") == "next_occupied":  # 页面命令（S-20）按 ApiError 收尾任务
+            raise ApiError("next_occupied", str(exc), 409, getattr(exc, "details", None)) from exc
+        raise
+    return _send_view(project_id, session, outcome)
+
+
+def _send_view(project_id: str, session, outcome: dict) -> dict:
+    record = outcome.get("record")
     queue_position = manager.queue_position(project_id)
-    delivery = "queued" if queue_position is not None else ("deferred" if was_running else "immediate")
+    delivery = outcome["delivery"]
+    if delivery == "immediate" and queue_position is not None:
+        delivery = "queued"
     return {
         "message_id": timeline.message_id(record) if record else None,
-        "seq": seq,
+        "seq": timeline.external_id(record) if record else None,
         "conversation_id": session.conversation_id,
         "state": "queued" if queue_position is not None else _STATE.get(session.state, session.state),
         "delivery": delivery,
         "queue_position": queue_position,
+        "next": outcome.get("next"),
     }
+
+
+def _command_label(root: Path, text: str) -> str | None:
+    """手打的斜杠命令在命令目录里的业务名（代存时排队条显示它）。"""
+    head = timeline._leading_command(text)
+    if not head:
+        return None
+    for group in command_catalog(root)["groups"]:
+        for item in group["items"]:
+            if item["command"] == head:
+                return item["label"]
+    return None
 
 
 @router.post("/conversations/{cid}/messages")
@@ -306,6 +348,8 @@ async def send_message(project_id: str, cid: str, request: Request):
     if not text.strip() and not attachments:
         raise ApiError("message_empty", "消息正文和附件都为空", 400)
     conversation_id = _resolve(project_id, cid)
+    if body.get("from_suggestion"):
+        await asyncio.to_thread(next_step.guard, project_id, conversation_id, {"type": "send", "text": text}, root)
     key = str(body.get("client_message_id") or "")
     if key and (project_id, conversation_id, key) in _SENT:
         return JSONResponse(status_code=202, content=_SENT[(project_id, conversation_id, key)])
@@ -315,7 +359,9 @@ async def send_message(project_id: str, cid: str, request: Request):
         prompt = f"（我通过界面上传了资料：{'、'.join(item['path'] for item in saved)}）\n{prompt}"
     prompt += _reference_text(references)
     meta = {"display_text": text.strip() or "（附件）", "attachments": [item["ref"] for item in saved],
-            "references": references, "origin": None}
+            "references": references, "origin": None, "replace": bool(body.get("replace"))}
+    if not saved and text.lstrip().startswith("/"):
+        meta["command_label"] = _command_label(root, text)
     run = autobuild_store.active(project_id)
     if run is not None and run.get("conversation_id") == conversation_id:
         # 运行对话里发的是补充说明（契约 3.22）：不打断运行，下一步开始前带给助手
@@ -324,7 +370,7 @@ async def send_message(project_id: str, cid: str, request: Request):
         record = runner.note(project_id, run, prompt, meta)
         result = {"message_id": timeline.message_id(record), "seq": timeline.external_id(record),
                   "conversation_id": conversation_id, "state": "running", "delivery": "deferred",
-                  "queue_position": None}
+                  "queue_position": None, "next": None}
     else:
         result = await _send(project_id, root, conversation_id, request, prompt, meta)
     if key:
@@ -345,9 +391,38 @@ async def interrupt(project_id: str, cid: str, request: Request):
     live = manager.get(project_id)
     running = bool(live and live.conversation_id == conversation_id and live.state in ("running", "connecting"))
     manager.interrupted_execs.pop((project_id, conversation_id), None)
+    manager.returned_steers.pop((project_id, conversation_id), None)
     reconciled = await manager.interrupt(project_id, conversation_id)
     record = manager.interrupted_execs.pop((project_id, conversation_id), None)
-    return {"interrupted": running or bool(reconciled), "exec": _exec_view(project_id, record)}
+    # 还没被助手看到的插话撤回来（界面放回输入框）；代存的命令留着但暂停（next.paused）
+    returned = manager.returned_steers.pop((project_id, conversation_id), None) or []
+    return {"interrupted": running or bool(reconciled), "exec": _exec_view(project_id, record), "returned": returned}
+
+
+# ---- 代存的下一条命令（契约 EC-10 补充：运行中发的命令 delivery=next）----
+
+
+@router.post("/conversations/{cid}/next/cancel")
+async def cancel_next(project_id: str, cid: str, request: Request):
+    """S-22：取消代存的命令（输入框上方排队条的「取消」）；没有排着的也照样返回（幂等）。"""
+    deps.require_writable(project_id, request)
+    conversation_id = _resolve(project_id, cid)
+    manager.cancel_next(project_id, conversation_id)
+    return {"next": None}
+
+
+@router.post("/conversations/{cid}/next/start")
+async def start_next(project_id: str, cid: str, request: Request):
+    """S-23：现在开始代存的命令（打断后暂停的那条）；在跑时 409 session_busy（这一轮结束会自动开始）。"""
+    deps.require_writable(project_id, request)
+    conversation_id = _resolve(project_id, cid)
+    autobuild_store.ensure_no_run(project_id)
+    reject_new_session(project_id)
+    _ensure_not_busy(project_id, conversation_id)
+    if manager.next_view(project_id, conversation_id) is None:
+        raise ApiError("next_not_found", "没有排着的命令", 404)
+    session, outcome = await manager.start_next(project_id, conversation_id, deps.username(request))
+    return JSONResponse(status_code=202, content=_send_view(project_id, session, outcome))
 
 
 @router.post("/conversations/{cid}/restart")
@@ -482,6 +557,9 @@ async def retry(project_id: str, cid: str, request: Request):
     """重新发起最近一轮出错的请求（出错卡的「重试」）。"""
     root = deps.require_writable(project_id, request)
     conversation_id = _resolve(project_id, cid)
+    body = await deps.json_body(request)
+    if body.get("from_suggestion"):
+        await asyncio.to_thread(next_step.guard, project_id, conversation_id, {"type": "retry"}, root)
     session = manager.get(project_id)
     if session is None or session.conversation_id != conversation_id or session.state != "error" or not session.last_prompt:
         raise ApiError("nothing_to_retry", "没有可重试的出错轮次", 409)
@@ -521,38 +599,65 @@ def _exec_or_404(project_id: str, exec_id: str) -> dict:
 
 @router.post("/execs/{exec_id}/resume")
 async def resume_exec(project_id: str, exec_id: str, request: Request):
-    """续跑：往对话发一条续跑指令，接着原来那份执行记录（输入变了或节点升级了不能续跑）。"""
+    """继续一步（F7）：能续跑就往对话发续跑指令，接着原来那份执行记录（mode=resume）；能力升级或输入改过时
+    按新版重新执行这条命令（mode=rerun）：原记录记为放弃，新开一份，已经保存的修改保留。做完了的不能继续。"""
     root = deps.require_writable(project_id, request)
     body = await deps.json_body(request)
     record = _exec_or_404(project_id, exec_id)
+    conversation_id = _resolve(project_id, str(body.get("conversation_id") or record.get("conversation_id") or "-"))
+    if body.get("from_suggestion"):
+        await asyncio.to_thread(next_step.guard, project_id, conversation_id,
+                                {"type": "resume_exec", "exec_id": exec_id}, root)
     flow = turns._flow(root)
     reason = exec_records.not_resumable_reason(record, root, flow)
     if reason is None and record.get("state") != "interrupted":
         reason = "already_finished"
-    if reason is not None:
-        raise ApiError("exec_not_resumable", "这一步不能续跑", 409, {"reason": reason})
-    conversation_id = _resolve(project_id, str(body.get("conversation_id") or record.get("conversation_id") or "-"))
+    if reason == "already_finished":
+        raise ApiError("exec_not_resumable", "这一步已经做完了", 409, {"reason": reason})
+    autobuild_store.ensure_no_run(project_id)
     live = manager.live_status(project_id)
     if live and live["busy"]:
         raise ApiError("session_busy", "有对话正在运行，请等它结束或先打断", 409,
                        {"running_conversation_id": live["conversation_id"]})
-    text = turns.resume_text(record)
     label = record.get("command_label") or "命令"
-    result = await _send(project_id, root, conversation_id, request, text,
-                         {"display_text": f"从打断处继续「{label}」", "origin": None, "resume_exec": exec_id})
-    updated = exec_records.get(project_id, exec_id) or record
-    _update_resume_card(project_id, conversation_id, updated, root, flow)
-    return JSONResponse(status_code=202, content={"exec": exec_records.view(updated, root=root, flow=flow),
-                                                  "message_id": result["message_id"],
-                                                  "conversation_id": result["conversation_id"]})
+    if reason is None:
+        text = turns.resume_text(record)
+        result = await _send(project_id, root, conversation_id, request, text,
+                             {"display_text": f"从打断处继续「{label}」", "origin": None, "resume_exec": exec_id})
+        updated = exec_records.get(project_id, exec_id) or record
+        _update_resume_card(project_id, conversation_id, updated, root, flow)
+        return JSONResponse(status_code=202, content={"mode": "resume",
+                                                      "exec": exec_records.view(updated, root=root, flow=flow),
+                                                      "message_id": result["message_id"],
+                                                      "conversation_id": result["conversation_id"]})
+    # 能力升级、输入改过：原来那份不能接着做，按新版重新执行（原记录放弃，已经保存的版本不回退）。
+    # 先清掉原来那条命令留下的锁与写入范围，新的一份同名命令开始后再清就清掉新的了
+    _clear_command_scope(root, record)
+    result = await _send(project_id, root, conversation_id, request, turns.rerun_text(record, reason),
+                         {"display_text": f"按新版重新做「{label}」", "origin": None})
+    session = manager.get(project_id)
+    new_id = session.exec_id if session is not None and session.exec_id != exec_id else None
+    old = exec_records.update(project_id, exec_id, state="abandoned", ended_at=time.time(),
+                              replaced_by=new_id) or record
+    turns.publish_exec(project_id, old, root, flow)
+    _update_resume_card(project_id, conversation_id, old, root, flow)
+    new = exec_records.get(project_id, new_id) if new_id else None
+    return JSONResponse(status_code=202, content={
+        "mode": "rerun", "exec": exec_records.view(new or old, root=root, flow=flow),
+        "replaced": exec_records.view(old, root=root, flow=flow),
+        "message_id": result["message_id"], "conversation_id": result["conversation_id"]})
 
 
 @router.post("/execs/{exec_id}/abandon")
 async def abandon_exec(project_id: str, exec_id: str, request: Request):
     """放弃：已经保存的版本不回退；续跑卡变为已处理。"""
     root = deps.require_writable(project_id, request)
-    autobuild_store.ensure_no_run(project_id)
+    body = await deps.json_body(request)
     record = _exec_or_404(project_id, exec_id)
+    if body.get("from_suggestion"):
+        await asyncio.to_thread(next_step.guard, project_id, str(body.get("conversation_id") or record.get(
+            "conversation_id") or ""), {"type": "abandon_exec", "exec_id": exec_id}, root)
+    autobuild_store.ensure_no_run(project_id)
     if record.get("state") in ("done", "abandoned"):
         raise ApiError("exec_not_resumable", "这一步已经结束", 409, {"reason": "already_finished"})
     session = manager.get(project_id)
@@ -595,8 +700,12 @@ def _update_resume_card(project_id: str, conversation_id: str, record: dict, roo
         return
     view = exec_records.view(record, root=root, flow=flow)
     card = exec_records.resume_card(record, view)
-    card["status"] = {"key": "running" if record.get("state") == "running" else "skipped",
-                      "label": "已续跑" if record.get("state") == "running" else "已放弃"}
+    if record.get("state") == "running":
+        card["status"] = {"key": "running", "label": "已续跑"}
+    elif "replaced_by" in record:
+        card["status"] = {"key": "running", "label": "已按新版重新做"}
+    else:
+        card["status"] = {"key": "skipped", "label": "已放弃"}
     manager.append_record(project_id, conversation_id, {"type": "card_updated", "payload": card})
 
 
@@ -730,6 +839,8 @@ async def dispatch_command(project_id: str, root: Path, request: Request, body: 
         raise ApiError("pack_not_enabled", "这条命令所属的能力没有启用", 409,
                        {"command": name, "effective": "next_message" if pending else None})
     conversation_id = _resolve(project_id, str(body.get("conversation_id") or "-"))
+    if body.get("from_suggestion"):
+        await asyncio.to_thread(next_step.guard, project_id, conversation_id, {"type": "send", "command": name}, root)
     _ensure_not_busy(project_id, conversation_id)
     text = _render_command(command, args, str(body.get("text") or ""))
     label = known[name]["label"]
@@ -740,7 +851,7 @@ async def dispatch_command(project_id: str, root: Path, request: Request, body: 
     display = f"{command}\n\n{workspace_labels.humanize(shown)}" if shown else command
     meta = {"display_text": display, "origin": {"kind": "page", "page": str(origin.get("page")),
                                              "label": str(origin.get("label") or ""), "task_id": task["task_id"]},
-            "task_id": task["task_id"], "command": name}
+            "task_id": task["task_id"], "command": name, "command_label": label, "replace": bool(body.get("replace"))}
     try:
         result = await _send(project_id, root, conversation_id, request, text, meta)
     except ApiError:
@@ -753,4 +864,5 @@ async def dispatch_command(project_id: str, root: Path, request: Request, body: 
     task = command_tasks.update(project_id, task["task_id"], **fields) or task
     return JSONResponse(status_code=202, content={"task": command_tasks.view(task),
                                                   "conversation_id": result["conversation_id"],
-                                                  "message_id": result["message_id"]})
+                                                  "message_id": result["message_id"],
+                                                  "delivery": result["delivery"], "next": result.get("next")})

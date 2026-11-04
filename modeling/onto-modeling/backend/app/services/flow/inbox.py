@@ -6,7 +6,7 @@
 | kind | 来源 |
 |---|---|
 | decision 决策 | 在线会话里没回答的决策卡；人工节点出的、没回答的决策卡（节点不在当前流程里的不列）；建模蓝图里没回答的问题 |
-| resumable 续跑 | 中断、能续跑的执行记录 |
+| resumable 续跑 | 中断的执行记录（能续跑的接着做，能力升级、输入改过的按新版重新执行） |
 | changeset_conflict 合入冲突 | 合入时检测到实体冲突的变更集（F3 起助手每轮自动合入，这是用户唯一会看到变更集的情况） |
 | stale 过期 | 过期的节点（所属包版本被熔断的不列） |
 | review 需复核 | 节点升级、导入；熔断的同上。自主构建的按决策台账出：低于阈值的一条一项，高置信的同一次运行合成一项 |
@@ -217,9 +217,8 @@ def _resumables(project_id: str, root: Path, flow: dict) -> list[dict]:
     for record in exec_records.query(project_id, ["interrupted"]):
         if record.get("run_id"):
             continue  # 自主构建的一步由运行器按执行记录续跑（AB-09）
+        # 能力升级、输入改过的也列：「继续」按新版重新执行（F7），不再只剩「放弃」
         view = exec_records.view(record, root=root, flow=flow)
-        if not view["resumable"]:
-            continue
         items.append(_item("resumable", record["id"], f"「{view['command_label']}」没做完",
                            source="restart" if (record.get("interrupted") or {}).get("reason") == "restart" else "assistant",
                            created_at=(record.get("interrupted") or {}).get("at") or record.get("ended_at"),

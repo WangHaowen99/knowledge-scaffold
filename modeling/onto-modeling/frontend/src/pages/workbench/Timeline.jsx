@@ -3,14 +3,17 @@ import {
   Fragment, memo, useEffect, useRef, useState,
 } from 'react';
 import { toast } from '../../app/toast.jsx';
-import { liveActivity, timelineBlocks } from '../../state/conversation.js';
-import { Button, Icon, cx } from '../../ui/index.jsx';
+import { timelineBlocks } from '../../state/conversation.js';
+import { Icon, cx } from '../../ui/index.jsx';
 import {
   CardItem, CompactedItem, ConfigPendingItem, ErrorItem, InterruptedItem, ReconnectedItem, useActions,
 } from './cards.jsx';
 import {
-  LiveRow, MA, MDay, MSys, Md, SubagentCard, TimelineGroup, WxFile, WxProc, hhmm,
+  MA, MDay, MSys, Md, TimelineGroup, WxFile, WxProc, hhmm,
 } from './parts.jsx';
+import { SubagentCard } from './subagent.jsx';
+import { deliveryNote } from './composerModel.js';
+import { useTick } from './RunLine.jsx';
 import { DecidedRow, PermissionCard, QuestionCard } from './questions.jsx';
 
 // 正文按内容记忆：流式片段到达时只重画在流的那一条，不重新解析前面的 Markdown
@@ -41,16 +44,22 @@ const AssistantText = memo(function AssistantText({ item }) {
   );
 }, sameText);
 
-function ProgressItem({ item, running, onInterrupt }) {
+function ProgressItem({ item }) {
+  return item.title ? <WxProc group={item} /> : <TimelineGroup group={item} />;
+}
+
+// 气泡下面的送达说明：运行中插的话等了多久、在等什么；等久了给「打断并发送」
+function DeliveryNote({ item }) {
+  const actions = useActions();
+  const waiting = item.delivery === 'steer' && (item.delivery_state?.state || 'pending') === 'pending';
+  const now = useTick(waiting, 15000);
+  const note = deliveryNote(item, now);
+  if (!note) return null;
   return (
-    <>
-      {item.title ? <WxProc group={item} /> : <TimelineGroup group={item} />}
-      {item.state === 'running' && running && onInterrupt ? (
-        <div className="row mt8">
-          <Button size="sm" kind="danger" icon="stop" title="打断（Esc）" onClick={onInterrupt}>打断</Button>
-        </div>
-      ) : null}
-    </>
+    <div className="xs faint mt4 row g6">
+      <span>{note.text}</span>
+      {note.stopAndSend && actions.stopAndSend && item.message_id ? <span className="link" onClick={() => actions.stopAndSend(item.message_id)}>打断并发送</span> : null}
+    </div>
   );
 }
 
@@ -65,8 +74,7 @@ function UserMessage({ item, enter }) {
           {fromPage ? <div className="xs muted row g4" style={{ marginBottom: 3 }}><Icon name="puzzle" size={12} />来自「{o.label}」{o.kind === 'page' ? '页' : ''}</div> : null}
           {item.text}
         </div>
-        {item.delivery === 'deferred' ? <div className="xs faint mt4">这一步结束后送达</div> : null}
-        {item.delivery === 'queued' ? <div className="xs faint mt4">排队中</div> : null}
+        <DeliveryNote item={item} />
       </div>
     </div>
   );
@@ -75,9 +83,9 @@ function UserMessage({ item, enter }) {
 export function AssistantItem({ it, ctx }) {
   switch (it.kind) {
     case 'assistant': return <AssistantText item={it} />;
-    case 'progress': return <ProgressItem item={it} running={ctx.running} onInterrupt={ctx.onInterrupt} />;
+    case 'progress': return <ProgressItem item={it} />;
     case 'card': return <CardItem card={it.card} scope={ctx.scope} />;
-    case 'permission': return <PermissionCard item={it} />;
+    case 'permission': return <div data-qid={it.request_id}><PermissionCard item={it} /></div>;
     case 'error': return <ErrorItem item={it} />;
     case 'interrupted': return <InterruptedItem item={it} />;
     case 'config_pending': return <ConfigPendingItem item={it} />;
@@ -86,20 +94,6 @@ export function AssistantItem({ it, ctx }) {
     case 'subagent': return <SubagentCard s={it} ended={!ctx.running} />;
     default: return null;
   }
-}
-
-// 时间线末尾：助手在跑时的「思考中」和打断（打断放在最后，不随某一段工作过程走）
-function LiveTail({ activity, onInterrupt }) {
-  return (
-    <>
-      {activity ? <LiveRow thinking={activity.thinking} /> : null}
-      {onInterrupt ? (
-        <div className="row mt8">
-          <Button size="sm" kind="danger" icon="stop" title="打断（Esc）" onClick={onInterrupt}>打断</Button>
-        </div>
-      ) : null}
-    </>
-  );
 }
 
 // 卡片类的条目入场带弹性，文字类只上浮淡入
@@ -156,19 +150,12 @@ export function EarlierHistory({ older, onLoad, rootRef }) {
   );
 }
 
-export function Timeline({
-  state, scope, onInterrupt, live = true,
-}) {
+// 在做什么、停止按钮在输入框那里（RunLine、Composer），时间线末尾不再放「思考中」和打断
+export function Timeline({ state, scope }) {
   const blocks = timelineBlocks(state);
   const fresh = useFreshKeys(state);
   const running = ['running', 'connecting'].includes(state.session.state);
   const lastOpenQ = [...blocks].reverse().find((b) => b.type === 'question');
-  // 自主构建的运行对话里分段进展块已经在说正在做什么，不再加「思考中」
-  const activity = live ? liveActivity(state) : null;
-  const tailInterrupt = running ? onInterrupt : null;
-  const hasTail = !!(activity || tailInterrupt);
-  const lastBlock = blocks[blocks.length - 1];
-  const tail = hasTail ? <LiveTail activity={activity} onInterrupt={tailInterrupt} /> : null;
   const rendered = blocks.map((b) => {
     const enter = (cls) => (fresh(b.key) ? cls : undefined);
     switch (b.type) {
@@ -177,7 +164,7 @@ export function Timeline({
       case 'user': return <UserMessage key={b.item.local_key || b.key} item={b.item} enter={fresh(b.key)} />;
       case 'decided': return <DecidedRow key={b.key} item={b.item} />;
       case 'withdrawn': return <MSys key={b.key} left className={enter('mo-fade')}>这个问题已失效：{b.item.withdrawn_reason || b.item.question.title}</MSys>;
-      case 'question': return <MA key={b.key} className={enter('mo-ask')}><QuestionCard q={b.item.question} active={b === lastOpenQ} /></MA>;
+      case 'question': return <MA key={b.key} className={enter('mo-ask')}><div data-qid={b.item.question.question_id}><QuestionCard q={b.item.question} active={b === lastOpenQ} /></div></MA>;
       case 'assistant': {
         // 新的一块整块上浮；已有的块里后到的条目各自入场
         const blockFresh = fresh(b.items[0].key);
@@ -185,22 +172,19 @@ export function Timeline({
           <MA key={b.key} time={hhmm(b.ts)} className={blockFresh ? 'mo-up' : undefined}>
             {b.items.map((it, i) => (fresh(it.key) && (i > 0 || !blockFresh) ? (
               <div key={it.key} className={cx('mo-in', POP_KINDS.has(it.kind) ? 'mo-pop' : 'mo-up')}>
-                <AssistantItem it={it} ctx={{ running, onInterrupt: null, scope }} />
+                <AssistantItem it={it} ctx={{ running, scope }} />
               </div>
             ) : (
               <Fragment key={it.key}>
-                <AssistantItem it={it} ctx={{ running, onInterrupt: null, scope }} />
+                <AssistantItem it={it} ctx={{ running, scope }} />
               </Fragment>
             )))}
-            {b === lastBlock ? tail : null}
           </MA>
         );
       }
       default: return null;
     }
   });
-  // 最后一块不是助手的（刚发出消息）：「思考中」另起一块
-  if (hasTail && lastBlock?.type !== 'assistant') rendered.push(<MA key="live-tail">{tail}</MA>);
   return rendered;
 }
 

@@ -60,7 +60,7 @@ def idle(manager, project_id: str):
     def done():
         session = manager.get(project_id)
         return (session is not None and session.engine is not None and session.state == "idle"
-                and not session.sending and not session.deferred and not session.turns_in_flight)
+                and not session.sending and not session.steers and not session.turns_in_flight)
     return wait(done)
 
 

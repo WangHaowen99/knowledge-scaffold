@@ -6,15 +6,21 @@
 - ``assistant_message``   助手消息（blocks: text / thinking / tool_use）；
   ``parent_tool_use_id`` 非空表示这是子代理消息，归到对应子任务卡
 - ``tool_results``        工具结果摘录（blocks: tool_result）
-- ``subagent_started``    子代理开始执行（task_id / tool_use_id / description）
-- ``subagent_activity``   子代理单步过程（step_id / kind: tool | text），同
-  step_id 的后续事件只更新 status；参数只留摘要键，步骤数有上限
-- ``subagent_finished``   子代理终态（completed / failed / stopped，usage.duration_ms）
+- ``subagent_started``    子代理开始执行（task_id / tool_use_id / description / brief：派给它的任务说明，≤2000 字）
+- ``subagent_activity``   子代理单步过程（step_id / kind: tool | text | thinking），同
+  step_id 的后续事件只更新 status；参数只留摘要键，步骤数有上限；thinking 是一次模型调用久了的
+  「思考中」（since / elapsed_ms），瞬时，不进历史
+- ``subagent_finished``   子代理终态（completed / failed / stopped，usage.duration_ms，summary）
 - ``system``              运行时系统事件（已过滤，不进入会话历史）
 - ``model_usage``         一次模型调用的用量（usage: input_tokens / output_tokens），
   逐次计入项目用量；不是对话行
 - ``result``              一轮终态（成本 / usage / 时长）；``usage_per_call`` 为真表示
-  本轮用量已由 model_usage 逐次计入，usage 只供单轮展示，统计时不再累加
+  本轮用量已由 model_usage 逐次计入，usage 只供单轮展示，统计时不再累加；
+  ``message_ids`` 是这一轮消耗的消息（开这一轮的那条 + 轮内插进来的），None = 引擎说不清
+  （旧版 CLI、单测假引擎），会话层按「一次发送一个 result」处理
+- ``_delivery``           插话（steer）送到了哪儿（message_id / state: seen | new_turn）：
+  seen = 插进这一轮、模型已看到；new_turn = 这一轮结束时还没插进去，引擎拿它开了下一轮
+  （紧接着的事件都属于新的一轮）。会话层消化，不落历史
 - ``_engine_end``         引擎内部终止信号（reason: closed | error），由
   SessionManager 消化为 session_error / 状态迁移，不落历史、不发给前端
 
@@ -141,8 +147,14 @@ class AgentEngine(Protocol):
         """建立运行时连接；返回是否带 resume 续接。失败抛异常。"""
         ...
 
-    async def send(self, text: str, context: str | None = None) -> None:
-        """向运行中的会话投递一条用户消息；context 是宿主在两轮之间注入的上下文（不进会话历史）。"""
+    async def send(self, text: str, context: str | None = None, message_id: str | None = None) -> None:
+        """空闲时开一轮；context 是宿主在两轮之间注入的上下文（不进会话历史）。
+        message_id 是会话层给这条消息的编号，result 的 message_ids 按它报。"""
+        ...
+
+    async def steer(self, text: str, message_id: str) -> None:
+        """一轮进行中的插话：主 agent 下次调模型前插进去（发 ``_delivery`` seen）；这一轮结束时还没插进去的，
+        引擎拿它开下一轮（发 ``_delivery`` new_turn）。没有在跑的一轮时直接开一轮（同样发 new_turn）。"""
         ...
 
     def events(self) -> AsyncIterator[dict]:
@@ -150,8 +162,9 @@ class AgentEngine(Protocol):
         不向外抛异常（CancelledError 除外）。"""
         ...
 
-    async def interrupt(self) -> None:
-        """打断当前轮。"""
+    async def interrupt(self, cancel_queued: bool = False) -> list[str] | None:
+        """打断当前轮。cancel_queued：还没插进去的插话一并撤回，打断后不再自己跑起来；
+        返回撤回的 message_id（None = 引擎说不清，会话层按全部撤回处理）。"""
         ...
 
     async def disconnect(self) -> None:

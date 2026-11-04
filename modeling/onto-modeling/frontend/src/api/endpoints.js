@@ -144,10 +144,15 @@ export function createApi(client) {
     replyPermission: (id, cid, rid, body) => client.post(`${C(id, cid)}/permissions/${enc(rid)}`, body), // S-10
     answerQuestion: (id, cid, qid, body) => client.post(`${C(id, cid)}/questions/${enc(qid)}/answer`, body), // S-11
     cancelQueue: (id, cid) => client.post(`${C(id, cid)}/queue/cancel`, {}), // S-12
+    // 平台代存的下一条命令（运行中发的命令）：取消（S-22）、现在开始（S-23）
+    cancelNext: (id, cid) => client.post(`${C(id, cid)}/next/cancel`, {}),
+    startNext: (id, cid) => client.post(`${C(id, cid)}/next/start`, {}),
     conversationEventsUrl: (id, cid, q) => client.url(`${C(id, cid)}/events`, q), // S-13
-    retryTurn: (id, cid) => client.post(`${C(id, cid)}/retry`, {}), // S-14
-    resumeExec: (id, execId, conversation_id) => client.post(`${P(id)}/execs/${enc(execId)}/resume`, conversation_id ? { conversation_id } : {}), // S-16
-    abandonExec: (id, execId) => client.post(`${P(id)}/execs/${enc(execId)}/abandon`, {}), // S-17
+    // extra：建议条发起时带 { from_suggestion: true }（F7，情况变了回 suggestion_stale）
+    retryTurn: (id, cid, extra) => client.post(`${C(id, cid)}/retry`, { ...extra }), // S-14
+    subagentSteps: (id, cid, taskId, query) => client.get(`${C(id, cid)}/subagents/${enc(taskId)}/steps`, { query }), // S-21
+    resumeExec: (id, execId, conversation_id, extra) => client.post(`${P(id)}/execs/${enc(execId)}/resume`, { ...(conversation_id ? { conversation_id } : {}), ...extra }), // S-16
+    abandonExec: (id, execId, extra) => client.post(`${P(id)}/execs/${enc(execId)}/abandon`, { ...extra }), // S-17
     commandCatalog: (id) => client.get(`${P(id)}/commands/catalog`), // S-18
     commandTasks: (id, query) => client.get(`${P(id)}/commands/tasks`, { query }), // S-19
     sendCommand: (id, body) => client.post(`${P(id)}/commands`, body), // S-20

@@ -43,7 +43,9 @@ CONTRACT = {
     "day.marker": {"label"},
     "progress": {"group_id", "title", "desc", "state", "started_at", "duration_ms", "collapsed", "steps"},
     "progress.updated": {"group_id", "title", "desc", "state", "started_at", "duration_ms", "collapsed", "steps"},
-    "subagent.updated": {"task_id", "group_id", "title", "status", "progress_text", "summary", "step"},
+    # F7：子任务卡带已做的步骤数、任务说明（只在开始那条）、思考中（瞬时）
+    "subagent.updated": {"task_id", "group_id", "title", "status", "progress_text", "summary", "step", "step_count",
+                         "brief", "thinking"},
     "tool.activity": {"tool_use_id", "visibility", "tool", "summary", "state"},
     "permission.requested": {"request_id", "title", "description", "details_text", "timeout_s", "expires_at"},
     "permission.resolved": {"request_id", "behavior", "by", "message"},
@@ -52,7 +54,8 @@ CONTRACT = {
     "turn.completed": {"turn_id", "duration_ms", "is_error", "usage", "cost"},
     "context.usage": {"used", "window", "pct", "compact_at_pct", "breakdown", "last_call"},
     "context.compacted": {"trigger", "pre_tokens", "post_tokens", "freed_tokens", "kept", "at"},
-    "suggestions.updated": {"mode", "primary", "secondary", "all_commands"},
+    # F7：note 是主推下面那一行说明（只在要解释时有），rev 是版本号（推来的和刷新取到的取大的那份）
+    "suggestions.updated": {"mode", "primary", "secondary", "all_commands", "note", "rev"},
 }
 # 4.6 Question 的共有字段；4.7 卡片的共有字段与两种宿主出的卡
 QUESTION = {"question_id", "kind", "conversation_id", "exec_id", "step_label", "eyebrow", "title", "background_md",

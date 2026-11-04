@@ -181,6 +181,10 @@
 .wb-sug .s.p{background:#2563EB;border-color:#2563EB;color:#fff}
 .wb-sug .s.p:hover{background:#1D4ED8;color:#fff}
 .wb-sug .s.dis{background:transparent;border-style:dashed;color:#98A3B5;cursor:default}
+.wb-sug-note{flex-basis:100%;font-size:12px;line-height:1.5;color:#7A879B;padding:0 2px}
+/* 建议条「去回答」：滚到那张卡后闪一下 */
+.wb-flash{border-radius:14px;animation:wb-flash 1.6s ease-out}
+@keyframes wb-flash{0%,35%{box-shadow:0 0 0 3px rgba(37,99,235,.35)}100%{box-shadow:0 0 0 3px rgba(37,99,235,0)}}
 .wb-comp{border:1px solid rgba(15,23,42,.12);border-radius:22px;background:#fff;padding:12px 10px 8px 16px;box-shadow:0 22px 44px -26px rgba(15,23,42,.30),0 2px 6px -3px rgba(15,23,42,.07);transition:border-color .18s,box-shadow .18s}
 .wb-comp:focus-within{border-color:rgba(37,99,235,.45);box-shadow:0 22px 44px -26px rgba(15,23,42,.30),0 0 0 4px rgba(37,99,235,.08)}
 .wb-comp textarea{width:100%;border:0;outline:0;resize:none;height:46px;font-size:14.5px;line-height:1.6;background:transparent;color:#0E1726;font-family:var(--font)}

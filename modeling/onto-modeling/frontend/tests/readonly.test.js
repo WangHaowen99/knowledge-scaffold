@@ -65,8 +65,8 @@ test('这一轮卡片的锁定说明随状态变', () => {
   assert.notEqual(roundLockNote(lock('pending_confirm')), roundLockNote(lock('autobuild_slice')));
 });
 
-test('输入框：运行中可补充说明（deferred），归档与只读维护时禁用', () => {
-  assert.equal(composerState({ sessionState: 'running' }).delivery, 'deferred');
+test('输入框：运行中可插话（steer），自主构建运行中下一步前带给助手（deferred），归档与只读维护时禁用', () => {
+  assert.equal(composerState({ sessionState: 'running' }).delivery, 'steer');
   assert.match(composerState({ sessionState: 'running' }).placeholder, /补充说明/);
   assert.equal(composerState({ sessionState: 'idle', autobuildRunning: true }).delivery, 'deferred');
   assert.equal(composerState({ sessionState: 'idle', archived: true }).disabled, true);

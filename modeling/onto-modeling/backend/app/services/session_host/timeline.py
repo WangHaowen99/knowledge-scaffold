@@ -32,6 +32,9 @@ PASSTHROUGH = {
     "question_asked": "question.asked",
     "question_answered": "question.answered",
     "question_withdrawn": "question.withdrawn",
+    # 插话的去向、代存的下一条命令（契约 EC-10 补充）
+    "message_delivery": "message.delivery",
+    "next_updated": "next.updated",
 }
 STEPS_MAX = 30
 ASK_TOOL = "AskUserQuestion"
@@ -43,6 +46,25 @@ _INTERRUPT_BY = {
     "engine_exit": "engine_exit", "shutdown": "shutdown", "recycled": "restart",
 }
 _SUBAGENT_STATUS = {"completed": "done", "failed": "failed", "stopped": "failed", "killed": "failed"}
+# 稳定引擎子代理的步骤上限（内测引擎在 jiuwen_progress 封顶，同一个数）；任务说明只留前 2000 字
+SUBAGENT_STEPS_MAX = 200
+SUBAGENT_BRIEF_MAX = 2000
+_SUBAGENT_TEXT_MAX = 300
+_SUBAGENT_INPUT_KEYS = ("file_path", "path", "pattern", "command", "description", "url", "query")
+_GENERIC_AGENT_TYPES = frozenset({"", "general-purpose"})
+
+
+def subagent_title(description, brief=None, agent_type=None) -> str:
+    """子任务的名称：简短描述 → 任务说明第一行 → 子代理类型（通用的不算）；都没有时叫「子任务」。"""
+    text = " ".join(str(description or "").split())
+    if text:
+        return text[:60]
+    for line in str(brief or "").splitlines():
+        line = line.strip().lstrip("#>*-·•").strip()
+        if line:
+            return line[:40] + ("…" if len(line) > 40 else "")
+    kind = str(agent_type or "").strip()
+    return kind[:60] if kind not in _GENERIC_AGENT_TYPES else "子任务"
 
 
 def external_id(record: dict) -> int | None:
@@ -138,6 +160,11 @@ class Turn:
     pending_subagents: dict = field(default_factory=dict)  # 派发调用还没到的子代理：工具调用 ID → 开始事件
     sub_steps: dict = field(default_factory=dict)  # (子任务 ID, 步骤 ID) → 步骤说法（收尾事件不带参数）
     sub_groups: dict = field(default_factory=dict)  # 子任务 ID → 它挂在哪一段（之后分段了也不挪）
+    sub_titles: dict = field(default_factory=dict)  # 子任务 ID → 名称（开始时按任务说明定下，之后的事件沿用）
+    sub_counts: dict = field(default_factory=dict)  # 子任务 ID → 已记的工具步骤数
+    sub_briefs: dict = field(default_factory=dict)  # 派发调用 ID → 稳定引擎 Task 调用的 {description, brief}
+    sub_tasks: dict = field(default_factory=dict)  # 派发调用 ID → 稳定引擎的子任务（子代理消息按派发调用归卡）
+    sub_tool_steps: dict = field(default_factory=dict)  # 稳定引擎子代理的工具调用 ID → 派发调用 ID
 
     def sub_group(self, event: dict, attach: bool = False) -> str:
         task_id = str(event.get("task_id") or "")
@@ -236,6 +263,10 @@ def ingest(turn: Turn, event: dict) -> list[tuple[dict, bool]]:
         changed = False
         for block in event.get("blocks") or []:
             tool_use_id = block.get("tool_use_id")
+            parent = turn.sub_tool_steps.pop(str(tool_use_id or ""), None)
+            if parent is not None:  # 稳定引擎子代理自己的一步做完了
+                records += _claude_sub_step_done(turn, parent, str(tool_use_id), bool(block.get("is_error")))
+                continue
             tool = turn.tool_names.get(tool_use_id, "")
             failed = bool(block.get("is_error"))
             records.append(({"type": "tool_activity", "tool_use_id": tool_use_id, "tool": tool,
@@ -245,6 +276,7 @@ def ingest(turn: Turn, event: dict) -> list[tuple[dict, bool]]:
             records.append((turn.progress_record(), False))
         return records
     if kind == "subagent_started":
+        event = _subagent_started(turn, event)
         tool_use_id = str(event.get("tool_use_id") or "")
         if not tool_use_id or tool_use_id in turn.tool_names:
             return [({**event, "group_id": turn.sub_group(event, attach=True)}, False)]
@@ -254,12 +286,94 @@ def ingest(turn: Turn, event: dict) -> list[tuple[dict, bool]]:
         return []
     if kind == "subagent_finished":
         records = _flush_subagent(turn, event.get("tool_use_id"))
-        records.append(({**event, "group_id": turn.sub_group(event)}, False))
+        records.append(({**event, **_sub_fields(turn, event), "group_id": turn.sub_group(event)}, False))
         return records
     if kind == "subagent_activity":
         records = _flush_subagent(turn, event.get("tool_use_id"))
-        return records + [({**event, "group_id": turn.sub_group(event), "step_text": _sub_step_text(turn, event)}, False)]
+        return records + _subagent_activity(turn, event)
     return [(event, False)]
+
+
+def _subagent_started(turn: Turn, event: dict) -> dict:
+    """子任务开始：补上派发时的任务说明（稳定引擎从 Task 调用参数取），定下名称。"""
+    dispatch = turn.sub_briefs.get(str(event.get("tool_use_id") or "")) or {}
+    brief = str(event.get("brief") or dispatch.get("brief") or "")[:SUBAGENT_BRIEF_MAX]
+    description = event.get("description") or dispatch.get("description") or ""
+    task_id = str(event.get("task_id") or "")
+    turn.sub_titles[task_id] = subagent_title(description, brief, event.get("agent_type"))
+    turn.sub_counts.setdefault(task_id, 0)
+    if event.get("tool_use_id"):
+        turn.sub_tasks[str(event["tool_use_id"])] = {key: event.get(key) for key in ("task_id", "description",
+                                                                                     "agent_type")}
+    return {**event, "description": description, "brief": brief, **_sub_fields(turn, event)}
+
+
+def _sub_fields(turn: Turn, event: dict) -> dict:
+    """每条子任务记录都带上名称与已做的步骤数：投影是逐条做的，读不到开始那条里的任务说明。"""
+    task_id = str(event.get("task_id") or "")
+    fields = {"step_count": turn.sub_counts.get(task_id, 0)}
+    if task_id in turn.sub_titles:
+        fields["title"] = turn.sub_titles[task_id]
+    return fields
+
+
+def _subagent_activity(turn: Turn, event: dict) -> list[tuple[dict, bool]]:
+    """子代理的一步。「思考中」是瞬时事件：只刷新界面上想了多久，不进历史。"""
+    group = turn.sub_group(event)
+    if event.get("kind") == "thinking":
+        return [({**event, **_sub_fields(turn, event), "group_id": group}, True)]
+    if event.get("kind") == "tool" and not event.get("status"):
+        task_id = str(event.get("task_id") or "")
+        turn.sub_counts[task_id] = turn.sub_counts.get(task_id, 0) + 1
+    return [({**event, **_sub_fields(turn, event), "group_id": group, "step_text": _sub_step_text(turn, event)},
+             False)]
+
+
+def _claude_sub_steps(turn: Turn, event: dict) -> list[tuple[dict, bool]]:
+    """稳定引擎子代理的消息（带派发调用 ID）→ 子任务的步骤：工具调用一步一条，说的话一条。"""
+    parent = str(event.get("parent_tool_use_id") or "")
+    task = turn.sub_tasks.get(parent)
+    if task is None:
+        return []  # 子任务开始还没报：只留档
+    base = {"type": "subagent_activity", "tool_use_id": parent, **task}
+    task_id = str(task.get("task_id") or "")
+    records: list[tuple[dict, bool]] = []
+    for block in event.get("blocks") or []:
+        used = turn.sub_counts.get(task_id, 0)
+        if used > SUBAGENT_STEPS_MAX:
+            break
+        if used == SUBAGENT_STEPS_MAX:
+            turn.sub_counts[task_id] = used + 1
+            records += _subagent_activity(turn, {**base, "step_id": f"{parent}-truncated", "kind": "text",
+                                                 "text": "步骤较多，后续过程已省略"})
+            break
+        if block.get("kind") == "tool_use":
+            step_id = str(block.get("tool_use_id") or "")
+            turn.sub_tool_steps[step_id] = parent
+            records += _subagent_activity(turn, {**base, "step_id": step_id, "kind": "tool",
+                                                 "tool": str(block.get("tool") or ""),
+                                                 "input": _sub_input(block.get("input"))})
+        elif block.get("kind") == "text" and str(block.get("text") or "").strip():
+            text = str(block["text"]).strip()
+            records += _subagent_activity(turn, {
+                **base, "step_id": f"{parent}-say-{uuid.uuid4().hex[:6]}", "kind": "text",
+                "text": text[:_SUBAGENT_TEXT_MAX] + ("…" if len(text) > _SUBAGENT_TEXT_MAX else "")})
+    return records
+
+
+def _claude_sub_step_done(turn: Turn, parent: str, step_id: str, failed: bool) -> list[tuple[dict, bool]]:
+    task = turn.sub_tasks.get(parent)
+    if task is None:
+        return []
+    return _subagent_activity(turn, {"type": "subagent_activity", "tool_use_id": parent, **task,
+                                     "step_id": step_id, "kind": "tool", "status": "error" if failed else "ok"})
+
+
+def _sub_input(data) -> dict:
+    """子代理工具参数只留说步骤用的几个键：写文件的参数可能带整段正文，不进历史。"""
+    if not isinstance(data, dict):
+        return {}
+    return {key: data[key][:200] for key in _SUBAGENT_INPUT_KEYS if isinstance(data.get(key), str) and data[key].strip()}
 
 
 def _flush_subagent(turn: Turn, tool_use_id) -> list[tuple[dict, bool]]:
@@ -287,7 +401,8 @@ _SUBAGENT_TOOLS = frozenset({"Task", "Agent"})
 def _assistant(turn: Turn, event: dict) -> list[tuple[dict, bool]]:
     """助手的话一律进正文，前面做完的步骤收成一段；派出的子任务在时间线上单独成卡，不进工作过程。"""
     if event.get("subagent") or event.get("parent_tool_use_id"):
-        return [(event, False)]  # 子代理的内部消息：只留档，不进用户可见的事件
+        # 子代理的内部消息：原样只留档；其中的工具调用和说的话另记成子任务的步骤
+        return [(event, False)] + _claude_sub_steps(turn, event)
     blocks = event.get("blocks") or []
     text_blocks = [block for block in blocks if block.get("kind") in ("text", "thinking")]
     tool_blocks = [block for block in blocks if block.get("kind") == "tool_use"]
@@ -312,6 +427,11 @@ def _assistant(turn: Turn, event: dict) -> list[tuple[dict, bool]]:
         tool = str(block.get("tool") or "")
         tool_use_id = block.get("tool_use_id")
         turn.tool_names[tool_use_id] = tool
+        if tool in _SUBAGENT_TOOLS and isinstance(block.get("input"), dict):
+            data = block["input"]
+            turn.sub_briefs[str(tool_use_id)] = {
+                "description": str(data.get("description") or "").strip(),
+                "brief": str(data.get("prompt") or data.get("task_description") or "").strip()[:SUBAGENT_BRIEF_MAX]}
         text = step_text(tool, block.get("input"))
         records.append(({"type": "tool_activity", "tool_use_id": tool_use_id, "tool": tool, "summary": text,
                          "state": "started"}, False))
@@ -523,12 +643,20 @@ def payload(record: dict) -> tuple[str | None, dict | None]:
     if kind in ("subagent_started", "subagent_activity", "subagent_finished"):
         status = {"subagent_started": "started", "subagent_activity": "running"}.get(kind) or _SUBAGENT_STATUS.get(
             str(record.get("status") or ""), "failed")
-        step = _sub_step(record) if kind == "subagent_activity" else None
+        thinking = kind == "subagent_activity" and record.get("kind") == "thinking"
+        step = _sub_step(record) if kind == "subagent_activity" and not thinking else None
         progress_text = (step["text"] or "").strip().split("\n", 1)[0] if step else ""
         return "subagent.updated", {
             "task_id": record.get("task_id") or "", "group_id": record.get("group_id"),
-            "title": str(record.get("description") or record.get("agent_type") or "子任务"), "status": status,
-            "progress_text": progress_text[:120], "summary": record.get("summary") or None, "step": step,
+            "title": str(record.get("title") or subagent_title(record.get("description"), record.get("brief"),
+                                                               record.get("agent_type"))),
+            "status": status, "progress_text": progress_text[:120], "summary": record.get("summary") or None,
+            "step": step, "step_count": record.get("step_count"),
+            # 开始那条带派给它的任务说明（≤2000 字），其余为 null
+            "brief": (record.get("brief") or None) if kind == "subagent_started" else None,
+            # 子代理在想（瞬时事件，不回放）：从什么时候开始想的
+            "thinking": {"since": iso(record.get("since")), "elapsed_ms": int(record.get("elapsed_ms") or 0)}
+            if thinking else None,
         }
     if kind == "result":
         cost = record.get("total_cost_usd")
@@ -648,26 +776,51 @@ def project(record: dict, project_id: str, conversation_id: str) -> dict | None:
 
 
 def collapse(envelopes: list[dict]) -> list[dict]:
-    """S-06：卡片、工作过程组按最新内容放在第一次出现的位置；问题带上回答后的状态。"""
+    """S-06：卡片、工作过程组、子任务卡按最新内容放在第一次出现的位置；问题带上回答后的状态；
+    插话的去向、代存的命令只留最后一条。"""
     latest_card: dict[str, dict] = {}
     latest_group: dict[str, dict] = {}
+    latest_sub: dict[str, dict] = {}
     question_state: dict[str, dict] = {}
+    last_delivery: dict[str, int] = {}
+    last_next = None
+    for index, envelope in enumerate(envelopes):
+        if envelope["type"] == "message.delivery":
+            last_delivery[(envelope.get("data") or {}).get("message_id")] = index
+        elif envelope["type"] == "next.updated":
+            last_next = index
     for envelope in envelopes:
         data = envelope.get("data") or {}
         kind = envelope["type"]
         if kind in ("card", "card.updated") and data.get("card_id"):
             latest_card[data["card_id"]] = data
+        elif kind == "subagent.updated" and data.get("task_id"):
+            # 子任务卡只要最新的状态；逐步的明细由子任务步骤接口分页取
+            prev = latest_sub.get(data["task_id"]) or {}
+            latest_sub[data["task_id"]] = {
+                **prev, **data, "progress_text": data.get("progress_text") or prev.get("progress_text") or "",
+                "brief": data.get("brief") or prev.get("brief"),
+                "step_count": max(int(prev.get("step_count") or 0), int(data.get("step_count") or 0))}
         elif kind in ("progress", "progress.updated") and data.get("group_id"):
             latest_group[data["group_id"]] = data
         elif kind == "question.answered":
             question_state[data.get("question_id")] = {"state": "answered", "answer": data.get("answer")}
         elif kind == "question.withdrawn":
             question_state[data.get("question_id")] = {"state": "withdrawn"}
-    result, seen_cards, seen_groups = [], set(), set()
-    for envelope in envelopes:
+    result, seen_cards, seen_groups, seen_subs = [], set(), set(), set()
+    for index, envelope in enumerate(envelopes):
         data = envelope.get("data") or {}
         kind = envelope["type"]
-        if kind in ("card", "card.updated") and data.get("card_id"):
+        if kind == "message.delivery" and last_delivery.get(data.get("message_id")) != index:
+            continue
+        if kind == "next.updated" and index != last_next:
+            continue
+        if kind == "subagent.updated" and data.get("task_id"):
+            if data["task_id"] in seen_subs:
+                continue
+            seen_subs.add(data["task_id"])
+            envelope = {**envelope, "data": latest_sub[data["task_id"]]}
+        elif kind in ("card", "card.updated") and data.get("card_id"):
             if data["card_id"] in seen_cards:
                 continue
             seen_cards.add(data["card_id"])

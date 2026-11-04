@@ -9,6 +9,7 @@ import { errorText, relativeTime } from '../../api/errors.js';
 import { commandFromTarget, commandNode, nodeActionKind, planSlicesCommand, suggestionCommand, overlayRunning, scriptRunView, sectionGroups, sliceStageTitle, trackNodes, withoutEvidence } from '../../state/flow.js';
 import { evidenceInProject, withoutEvidenceSuggestions } from '../../state/evidence.js';
 import { composerState, readonlyInfo } from '../../state/readonly.js';
+import { runStatus } from '../../state/conversation.js';
 import { ShellP } from '../../shell/Shell.jsx';
 import {
   Button, Drawer, Field, Icon, Menu, Modal, Ring, Seg, St, cx, useOutside,
@@ -18,10 +19,13 @@ import { cellClass } from '../projects/projectCard.js';
 import { AutobuildBar, AutobuildCtx, useAutobuild } from './autobuild.jsx';
 import { useModeSwitch } from './buildMode.jsx';
 import { canInterrupt } from './autobuildModel.js';
+import { needsRefetch, pickSuggestions, staleSuggestions, suggestionBarHidden } from './suggestionModel.js';
 import { ActionsCtx, ContextPanel, QueueCard } from './cards.jsx';
 import { WbCtx } from './parts.jsx';
 import { ScopePicker } from '../knowledge/ScopePicker.jsx';
 import { EarlierHistory, Timeline } from './Timeline.jsx';
+import { NextBar, RunLine } from './RunLine.jsx';
+import { restoreText, sendButtonMode } from './composerModel.js';
 import { useConversation } from './useConversation.js';
 import { MATERIAL_DIALOGS } from './materials/model.js';
 import { useIncremental, useIncrementalTarget } from './incremental/useIncremental.jsx';
@@ -318,7 +322,7 @@ function KnowledgeDialog({ item, onClose }) {
 }
 
 const MODES = [['L2', 'users', '陪伴建模'], ['L4', 'rocket', '自主构建']];
-function Composer({ pid, cid, apiRef, st, buildMode, modeLabel, onMode, onSend, catalog }) {
+function Composer({ pid, apiRef, st, buildMode, modeLabel, onMode, onSend, onCommand, onStop, catalog }) {
   const { api, services } = useApp();
   const [text, setText] = useState('');
   const [atts, setAtts] = useState([]);
@@ -346,6 +350,8 @@ function Composer({ pid, cid, apiRef, st, buildMode, modeLabel, onMode, onSend, 
       addFiles,
       clear: () => { setText(''); taRef.current?.focus(); },
       setText: (t) => { setText(t); if (t === '/') setPop('cmd'); taRef.current?.focus(); },
+      // 打断时撤回的话放回来，接在已经敲了的字后面
+      restore: (texts) => { setText((t) => restoreText(t, texts)); taRef.current?.focus(); },
       addRef: (r) => { setRefs((x) => (x.some((y) => y.id === r.id) ? x : [...x, r])); taRef.current?.focus(); },
     };
   }, [addFiles, apiRef]);
@@ -379,14 +385,12 @@ function Composer({ pid, cid, apiRef, st, buildMode, modeLabel, onMode, onSend, 
       setRefs((r) => (r.length ? r : draft.refs));
     }
   };
-  const runCommand = async (c) => {
+  const runCommand = (c) => {
     setPop(null);
-    try {
-      await api.sendCommand(pid, { command: c.command, text: c.label, origin: { page: 'wb-l2', label: '全部命令' }, conversation_id: cid });
-    } catch (e) {
-      toast(errorText(e), 'alert');
-    }
+    onCommand({ command: c.command, text: c.label, origin: { page: 'wb-l2', label: '全部命令' } });
   };
+  // 有字就发送（运行中：文字插进这一轮，命令排在这一轮之后）；没字时运行中是停止、空闲时灰掉
+  const mode = sendButtonMode({ canStop: !!onStop, hasContent: !!text.trim() || atts.length > 0, disabled: st.disabled || uploading });
   return (
     <div className="wb-comp" ref={wrapRef} style={{ position: 'relative' }}>
       {atts.length || refs.length ? (
@@ -421,7 +425,11 @@ function Composer({ pid, cid, apiRef, st, buildMode, modeLabel, onMode, onSend, 
         <span className={cx('wx-mode', buildMode === 'L4' && 'l4')} onClick={() => !st.disabled && setPop(pop === 'mode' ? null : 'mode')}>
           <i />{modeLabel}
         </span>
-        <span key={pressed} className={cx('wx-send', pressed && 'mo-press')} title="发送" onClick={send} style={st.disabled || uploading ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}><Icon name="arrow" size={16} /></span>
+        {mode === 'stop' ? (
+          <span className="wx-send stop" title="停止（Esc）" onClick={onStop}><i /></span>
+        ) : (
+          <span key={pressed} className={cx('wx-send', pressed && 'mo-press', mode === 'off' && 'off')} title="发送" onClick={send}><Icon name="arrow" size={16} /></span>
+        )}
       </div>
       {pop === 'cmd' ? (
         <div className="g2-cmd wb-pop wb-cmd-pop">
@@ -487,6 +495,7 @@ function SuggestionBar({ sug, quick = [], onAction, onAll, onQuick }) {
       {!inline ? <span className="sp" /> : null}
       {!inline ? quickEls : null}
       {sug?.all_commands !== false && !inline ? <span className="s" style={{ border: 0 }} onClick={onAll}><Icon name="cmd" size={12} />全部命令<Icon name="chevd" size={12} /></span> : null}
+      {sug?.note && sug.primary ? <div className="wb-sug-note">{sug.note}</div> : null}
     </div>
   );
 }
@@ -522,7 +531,14 @@ export default function WorkbenchPage({ route }) {
   useOutside(headRef, () => setMenu(null), !!menu && menu !== 'ctx-hover');
 
   useEffect(() => { api.commandCatalog(pid).then(setCatalog).catch(() => {}); }, [api, pid]);
-  useEffect(() => { if (cid) api.suggestions(pid, cid).then(setSuggestions).catch(() => {}); }, [api, pid, cid]);
+  // FL-02：进对话时取一份；项目流说建议变了（别处改了主线、装配变了）时再取，推来的和取到的按版本号取新的
+  const refetchSuggestions = useCallback(() => {
+    if (cid) api.suggestions(pid, cid).then(setSuggestions).catch(() => {});
+  }, [api, pid, cid]);
+  useEffect(() => { setSuggestions(null); refetchSuggestions(); }, [refetchSuggestions]);
+  useEffect(() => project.subscribe((env) => {
+    if (env.type === 'flow.updated' && env.data?.suggestions_changed) refetchSuggestions();
+  }), [project.subscribe, refetchSuggestions]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (menu === 'ctx') api.projectUsage(pid).then(setUsage).catch(() => {}); }, [api, pid, menu]);
   // flowchart 页（设计稿）= 工作台 + 图示包的流程图编辑器；地址带 key 时打开那一张，
   // 不带时等对话历史到了，打开最近一张流程图卡的那张图；对话里没有就交给编辑器取 AR-02 的第一张；图示包没启用时说「插件已停用」
@@ -600,8 +616,37 @@ export default function WorkbenchPage({ route }) {
   }, [state.historyGen]);
 
   const running = ['running', 'connecting'].includes(state.session.state);
+  // 停止（S-08）：还没被助手看到的插话撤回，放回输入框
   const interrupt = useCallback(async () => {
-    try { await api.interrupt(pid, cid); } catch (e) { toast(errorText(e), 'alert'); }
+    try {
+      const r = await api.interrupt(pid, cid);
+      const back = (r?.returned || []).map((x) => x.text).filter(Boolean);
+      if (back.length) comp.current.restore?.(back);
+    } catch (e) { toast(errorText(e), 'alert'); }
+  }, [api, pid, cid]);
+  // 插话等太久时的「打断并发送」：停下这一轮，这句话作为新的一轮发出；其余撤回的话放回输入框
+  const stopAndSend = useCallback(async (messageId) => {
+    try {
+      const r = await api.interrupt(pid, cid);
+      const returned = r?.returned || [];
+      const mine = returned.find((x) => x.message_id === messageId);
+      const rest = returned.filter((x) => x !== mine).map((x) => x.text).filter(Boolean);
+      if (rest.length) comp.current.restore?.(rest);
+      if (mine?.text) await api.sendMessage(pid, cid, { text: mine.text, client_message_id: `cm-${Date.now()}` });
+    } catch (e) { toast(errorText(e), 'alert'); }
+  }, [api, pid, cid]);
+  // 发命令（全部命令、快捷项）：运行中由平台代存到这一轮结束；已经排着一条时问要不要替换
+  const [replaceAsk, setReplaceAsk] = useState(null);
+  const sendCommand = useCallback(async (body, replace = false) => {
+    try {
+      await api.sendCommand(pid, { ...body, conversation_id: cid, ...(replace ? { replace: true } : {}) });
+    } catch (e) {
+      if (e?.code === 'next_occupied' && !replace) setReplaceAsk({ body, label: e.details?.label || '' });
+      else toast(errorText(e), 'alert');
+    }
+  }, [api, pid, cid]);
+  const nextOp = useCallback(async (op) => {
+    try { await (op === 'start' ? api.startNext(pid, cid) : api.cancelNext(pid, cid)); } catch (e) { toast(errorText(e), 'alert'); }
   }, [api, pid, cid]);
 
   useEffect(() => {
@@ -642,16 +687,34 @@ export default function WorkbenchPage({ route }) {
     openChangeList: inc.openChangeList,
     executeChangeList: inc.execute,
     conversationId: cid,
-  }), [api, pid, cid, hasPlugin]); // eslint-disable-line react-hooks/exhaustive-deps
+    stopAndSend,
+  }), [api, pid, cid, hasPlugin, stopAndSend]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 等你回答：滚到那张卡并闪一下；找不到这一问时去最后一张没答的
+  const focusQuestion = (id) => {
+    const root = mainRef.current;
+    const all = root ? [...root.querySelectorAll('[data-qid]')] : [];
+    const el = all.find((x) => x.dataset.qid === id) || all[all.length - 1];
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.remove('wb-flash');
+    void el.offsetWidth; // eslint-disable-line no-void -- 重新触发动画
+    el.classList.add('wb-flash');
+  };
+
+  // 建议条发起的请求都带 from_suggestion：点下去之前情况变了，接口回 suggestion_stale 并带回新的一份，直接换上
   const onSuggestion = async (a) => {
+    const flag = { from_suggestion: true };
     try {
       switch (a.type) {
         case 'send':
-          if (a.command) await api.sendCommand(pid, { ...suggestionCommand(a), origin: { page: 'wb-l2', label: '下一步建议' }, conversation_id: cid });
-          else await api.sendMessage(pid, cid, { text: a.text, client_message_id: `cm-${Date.now()}` });
+          if (a.command) await api.sendCommand(pid, { ...suggestionCommand(a), origin: { page: 'wb-l2', label: '下一步建议' }, conversation_id: cid, ...flag });
+          else await api.sendMessage(pid, cid, { text: a.text, client_message_id: `cm-${Date.now()}`, ...flag });
           break;
-        case 'resume_exec': await actions.resume(a.exec_id); break;
+        case 'resume_exec': await api.resumeExec(pid, a.exec_id, cid, flag); break;
+        case 'abandon_exec': await api.abandonExec(pid, a.exec_id, { ...flag, conversation_id: cid }); toast('已放弃，已经保存的修改保留', 'undo'); break;
+        case 'retry': await api.retryTurn(pid, cid, flag); break;
+        case 'focus_question': focusQuestion(a.question_id); break;
         case 'discard_changeset': await actions.discard(a.changeset_id); break;
         case 'show_changes': rounds.current.get(a.changeset_id)?.(); break;
         case 'start_node': await api.startNode(pid, a.node_id, { slice_id: a.slice_id, origin: { page: 'wb-l2', label: '下一步建议' } }); break;
@@ -671,18 +734,15 @@ export default function WorkbenchPage({ route }) {
         default: break;
       }
     } catch (e) {
-      fail(e);
+      const fresh = staleSuggestions(e);
+      if (!fresh) { fail(e); return; }
+      setSuggestions(fresh);
+      toast('情况变了，建议已更新', 'info');
     }
   };
 
   const quickActions = useMemo(() => (extensions?.entries || []).filter((e) => e.kind === 'quick_action' && e.command), [extensions]);
-  const runQuick = async (q) => {
-    try {
-      await api.sendCommand(pid, { command: q.command, text: q.label, origin: { page: 'wb-l2', label: q.label, pack: q.pack }, conversation_id: cid });
-    } catch (e) {
-      fail(e);
-    }
-  };
+  const runQuick = (q) => sendCommand({ command: q.command, text: q.label, origin: { page: 'wb-l2', label: q.label, pack: q.pack } });
 
   const send = async (body) => {
     const localId = `cm-${Date.now()}`;
@@ -702,7 +762,12 @@ export default function WorkbenchPage({ route }) {
   };
 
   const evidenceOn = evidenceInProject(project);
-  const sug = withoutEvidenceSuggestions(inc.decorate(state.suggestions || suggestions), evidenceOn);
+  const picked = pickSuggestions(state.suggestions, suggestions);
+  const sug = withoutEvidenceSuggestions(inc.decorate(picked), evidenceOn);
+  const sugHidden = suggestionBarHidden(picked, state.session.state);
+  // 会话已经停下、手里那份还是「运行中」（推送丢了）：再取一份
+  const stuck = needsRefetch(picked, state.session.state);
+  useEffect(() => { if (stuck) refetchSuggestions(); }, [stuck, refetchSuggestions]);
   // 对话正在跑的命令属于哪个节点（FL-01 commands）；服务端标出进行中之前，进度条先按它显示
   const runningCmd = ['running', 'connecting'].includes(state.session.state) ? lastUserText(state) : null;
   const viewFlow = useMemo(() => {
@@ -728,8 +793,8 @@ export default function WorkbenchPage({ route }) {
       (it.entry_links || it.card?.entry_links || []).forEach((r) => { entries[r.name] = r; });
       if (it.card?.entry) entries[it.card.entry.name] = it.card.entry;
     });
-    return { pid, entries };
-  }, [pid, state.order, state.items]);
+    return { pid, cid, entries };
+  }, [pid, cid, state.order, state.items]);
 
   const head = (
     <div className="wx-head" ref={headRef}>
@@ -790,14 +855,17 @@ export default function WorkbenchPage({ route }) {
               <div className="wbc-col">
                 {conv.loadError ? <div className="note red mt16"><Icon name="alert" /><div className="grow">{errorText(conv.loadError)}</div></div> : null}
                 {inc.hideTimeline ? null : <EarlierHistory older={conv.older} onLoad={onLoadEarlier} rootRef={mainRef} />}
-                {inc.hideTimeline ? null : <Timeline state={state} scope={scope} onInterrupt={canInterrupt(running, ab) ? interrupt : null} live={!ab.running} />}
+                {inc.hideTimeline ? null : <Timeline state={state} scope={scope} />}
                 {state.session.state === 'queued' && state.queue ? <QueueCard queue={state.queue} onCancel={() => api.cancelQueue(pid, cid).catch(fail)} /> : null}
               </div>
             </div>
             <div className="wbc-foot">
               <div className="in">
-                <SuggestionBar sug={sug} quick={quickActions} onAction={onSuggestion} onQuick={runQuick} onAll={() => comp.current.setText?.('/')} />
-                <Composer pid={pid} cid={cid} apiRef={comp} st={st} buildMode={modeSw.mode} modeLabel={modeSw.label} onMode={modeSw.switchTo} onSend={send} catalog={catalog} />
+                {/* 自主构建的运行对话由运行条说明在做什么、控制暂停停下 */}
+                {ab.running ? null : <RunLine info={runStatus(state)} />}
+                <NextBar next={state.next} running={running} onStart={() => nextOp('start')} onCancel={() => nextOp('cancel')} />
+                {sugHidden ? null : <SuggestionBar sug={sug} quick={quickActions} onAction={onSuggestion} onQuick={runQuick} onAll={() => comp.current.setText?.('/')} />}
+                <Composer pid={pid} apiRef={comp} st={st} buildMode={modeSw.mode} modeLabel={modeSw.label} onMode={modeSw.switchTo} onSend={send} onCommand={sendCommand} onStop={canInterrupt(running, ab) ? interrupt : null} catalog={catalog} />
               </div>
             </div>
             {drag ? <div className="wb-dropmask"><Icon name="upload" size={24} /><b>松开以添加附件</b><span className="xs muted">Markdown、Word、Excel、PDF、Drawio、TXT · 单个不超过 20 MB</span></div> : null}
@@ -808,6 +876,12 @@ export default function WorkbenchPage({ route }) {
             foot={<><Button onClick={() => setRestart(false)}>取消</Button><Button kind="primary" onClick={async () => { setRestart(false); try { await api.restartConversation(pid, cid); toast('会话已重启', 'check'); } catch (e) { fail(e); } }}>重启会话</Button></>}
           >
             <div className="sm muted">对话记录保留；稳定引擎会清空模型上下文</div>
+          </Modal>
+          <Modal
+            open={!!replaceAsk} onClose={() => setReplaceAsk(null)} icon="clock" title={`替换排队中的「${replaceAsk?.label || '命令'}」？`} w={440}
+            foot={<><Button onClick={() => setReplaceAsk(null)}>取消</Button><Button kind="primary" onClick={() => { const b = replaceAsk.body; setReplaceAsk(null); sendCommand(b, true); }}>替换</Button></>}
+          >
+            <div className="sm muted">这一轮结束后改做「{replaceAsk?.body?.text || replaceAsk?.body?.command}」</div>
           </Modal>
           <KnowledgeDialog item={knItem} onClose={() => setKnItem(null)} />
           {opened ? (

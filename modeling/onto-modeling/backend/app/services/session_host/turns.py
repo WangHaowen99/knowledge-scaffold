@@ -221,30 +221,21 @@ def interrupted_fields(record: dict | None) -> dict:
             "saved": record.get("saved")}
 
 
-def suggestions_record(session, *, interrupted: dict | None = None, reason: str = "刚被打断") -> dict | None:
-    """EC-53：这一轮结束或被打断后，输入框上方的建议条（与 FL-02 同一份；打断、出错时换成打断后的三项）。"""
-    data = _safe("算下一步建议", suggestions, session, interrupted=interrupted, reason=reason)
+def suggestions_record(session, *, interrupted: dict | None = None, failed: str | None = None) -> dict | None:
+    """EC-53：这一轮结束、被打断、出错后，输入框上方的建议条（与 FL-02 同一份，规则表见 flow_state.suggest）。
+    interrupted：刚记为中断的执行记录；failed：这一轮出错的说法。"""
+    data = _safe("算下一步建议", suggestions, session, interrupted=interrupted, failed=failed)
     return {"type": "suggestions", "payload": data} if data is not None else None
 
 
-def suggestions(session, *, interrupted: dict | None = None, reason: str = "刚被打断") -> dict | None:
-    if interrupted is not None:
-        primary = {
-            "id": "resume", "label": "从打断处继续", "icon": "redo", "primary": True, "disabled": False,
-            "reason": reason, "priority": 1, "action": {"type": "resume_exec", "exec_id": interrupted["id"]},
-        } if interrupted.get("id") else {
-            "id": "continue", "label": "继续", "primary": True, "disabled": False, "reason": reason,
-            "priority": 1, "action": {"type": "send", "text": "继续"},
-        }
-        secondary = [
-            {"id": "continue", "label": "继续", "primary": False, "disabled": False, "reason": reason,
-             "priority": 1, "action": {"type": "send", "text": "继续"}},
-            {"id": "redirect", "label": "换个方向", "primary": False, "disabled": False, "reason": reason,
-             "priority": 1, "action": {"type": "clear_input"}},
-        ]
-        if primary["id"] == "continue":
-            secondary = secondary[1:]
-        return {"mode": "interrupted", "primary": primary, "secondary": secondary, "all_commands": True}
+def running_suggestions_record() -> dict:
+    """会话变为运行中：不显示建议（第 1 条），直接推空的一份，不必重算流程。"""
+    from ..flow import view
+
+    return {"type": "suggestions", "payload": view.running_suggestions()}
+
+
+def suggestions(session, *, interrupted: dict | None = None, failed: str | None = None) -> dict | None:
     from ...kernel.changesets import worktree
 
     root = worktree.main_root(session.cwd)
@@ -252,13 +243,13 @@ def suggestions(session, *, interrupted: dict | None = None, reason: str = "刚�
         return None
     from ..flow import view
 
-    # 带上对话：「没收尾主推继续」、打断后的建议都按这条对话算，和 FL-02 同一份（界面以推来的这份为准）
-    result = dict(view.build(root, conversation_id=session.conversation_id)["suggestions"])
-    if session.pending_permissions:
-        result["mode"] = "waiting_decision"
-        if result.get("primary"):
-            result["primary"] = {**result["primary"], "disabled": True, "reason": "先做上面的决定"}
-    return result
+    context: dict = {}
+    if interrupted and interrupted.get("id"):
+        context["interrupted_exec"] = interrupted["id"]
+    if failed is not None:
+        context["failed"] = {"reason": failed}
+    # 带上对话：等你回答、出错、打断、没收尾都按这条对话算，和 FL-02 同一份（界面以推来的这份为准）
+    return dict(view.build(root, conversation_id=session.conversation_id, context=context)["suggestions"])
 
 
 def resume_text(record: dict) -> str:
@@ -267,6 +258,20 @@ def resume_text(record: dict) -> str:
     where = f"「{phase}」阶段" if phase else "中断的地方"
     return (f"{record.get('command') or ''} 继续上次没做完的「{record.get('command_label') or '命令'}」："
             f"从{where}接着做，已经保存的内容不要重做。").strip()
+
+
+RERUN_WHY = {"node_upgraded": "这一步的能力升级了", "inputs_changed": "输入的资料或上游内容改过了"}
+
+
+def rerun_text(record: dict, reason: str) -> str:
+    """按新版重新执行（不能续跑时的「继续」）：带上原命令与分段，说明为什么从头做、已经保存的不要重做。"""
+    slice_ref = record.get("slice") or {}
+    command = record.get("command") or ""
+    if slice_ref.get("id") and slice_ref["id"] != "all":
+        command = f"{command} slice={slice_ref['id']}"
+    why = RERUN_WHY.get(reason, "上次的进度接不上了")
+    return (f"{command} {why}，按新版重新做「{record.get('command_label') or '命令'}」："
+            f"已经保存的修改保留，不要重做。").strip()
 
 
 def write_identity_marker(root: Path | None, *, engine: str, engine_id: str, conversation_id: str,
@@ -300,5 +305,5 @@ def write_identity_marker(root: Path | None, *, engine: str, engine_id: str, con
 
 __all__ = [
     "begin", "observe", "end_turn", "interrupt_exec", "interrupted_fields", "suggestions_record",
-    "suggestions", "resume_text", "publish_exec", "write_identity_marker", "timeline",
+    "running_suggestions_record", "suggestions", "resume_text", "rerun_text", "publish_exec", "write_identity_marker", "timeline",
 ]
