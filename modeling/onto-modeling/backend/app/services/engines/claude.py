@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -107,6 +108,11 @@ try:
     SDK_AVAILABLE = True
 except ImportError:  # pragma: no cover - 取决于部署环境
     SDK_AVAILABLE = False
+
+try:
+    from claude_agent_sdk._internal.message_parser import parse_message as _parse_message
+except ImportError:  # pragma: no cover - SDK 内部结构变了：退回 SDK 解析好的消息流
+    _parse_message = None
 
 
 def _mcp_servers(project_id: str = "") -> dict:
@@ -469,6 +475,11 @@ class ClaudeEngine(ObservableEngine):
         # Hold text-only assistant messages until the same turn's structured
         # result confirms success or failure of a legacy CLI envelope.
         self._pending_assistant: dict | None = None
+        # 发给 CLI 的用户消息（CLI 侧 uuid → 会话层 message_id、是不是开一轮的那条）：CLI 用 command_lifecycle
+        # 报每条的去向，result 的 user_message_uuids 报这一轮消耗了哪几条
+        self._outbox: dict[str, dict] = {}
+        self._lifecycle = False  # 见过 command_lifecycle：这版 CLI 会报送达（2.1.3xx 起），否则按一次发送一个 result
+        self._turn_open = False
 
     # ---- 连接生命周期 ----
 
@@ -493,6 +504,8 @@ class ClaudeEngine(ObservableEngine):
         self.resume_attempted = bool(resume_id)
         self._received_any = False
         self.client = client
+        self._outbox.clear()
+        self._lifecycle = self._turn_open = False
         self._fingerprint = _env_fingerprint(self._ctx.model_owner)
         self._context_used = None
         self._cancel_limits_task()
@@ -539,15 +552,50 @@ class ClaudeEngine(ObservableEngine):
             self._limits_task.cancel()
         self._limits_task = None
 
-    async def send(self, text: str, context: str | None = None) -> None:
+    async def send(self, text: str, context: str | None = None, message_id: str | None = None) -> None:
         if context:
             from ..session_host import injection
 
             text = injection.compose_query(text, context)
-        await self.client.query(text)
+        await self._write_user(text, message_id, starter=True)
 
-    async def interrupt(self) -> None:
-        await self.client.interrupt()
+    async def steer(self, text: str, message_id: str) -> None:
+        # CLI 自己会在下一个工具结果里插进去；最后一次模型调用期间才到的，CLI 在 result 之后拿它另开一轮
+        await self._write_user(text, message_id, starter=False)
+
+    async def _write_user(self, text: str, message_id: str | None, *, starter: bool) -> None:
+        if getattr(self.client, "_query", None) is None:
+            # 拿不到原始消息流（单测的假客户端）：照旧发原文，送达按一次发送一个 result 算
+            await self.client.query(text)
+            return
+        command_uuid = str(uuid.uuid4())
+        self._outbox[command_uuid] = {"message_id": message_id or "", "starter": starter}
+        message = {"type": "user", "message": {"role": "user", "content": text}, "parent_tool_use_id": None,
+                   "uuid": command_uuid}
+
+        async def single():
+            yield message
+
+        await self.client.query(single())
+
+    async def interrupt(self, cancel_queued: bool = False) -> list[str] | None:
+        query = getattr(self.client, "_query", None)
+        if not cancel_queued or query is None or not hasattr(query, "_send_control_request"):
+            await self.client.interrupt()
+            return None
+        # SDK 的 interrupt() 不带 cancel_queued：不带时 CLI 打断后会接着跑排着的消息
+        response = await query._send_control_request({"subtype": "interrupt", "cancel_queued": True})
+        cancelled = response.get("cancelled") if isinstance(response, dict) else None
+        if not isinstance(cancelled, list):
+            return None
+        uuids = {str(command_uuid) for command_uuid in cancelled}
+        uuids |= {command_uuid for command_uuid, entry in self._outbox.items() if entry.get("cancelled")}
+        withdrawn = []
+        for command_uuid in uuids:
+            entry = self._outbox.pop(command_uuid, None)
+            if entry and entry["message_id"]:
+                withdrawn.append(entry["message_id"])
+        return withdrawn
 
     async def disconnect(self) -> None:
         self._cancel_limits_task()
@@ -592,9 +640,64 @@ class ClaudeEngine(ObservableEngine):
             self._notify(event)
             yield event
 
+    async def _incoming(self):
+        """(SDK 消息, 原始 dict)。SDK 会丢掉 command_lifecycle、result 也不带 user_message_uuids，所以读原始流、
+        已知类型再交给 SDK 解析；拿不到原始流（单测的假客户端）时原始 dict 为 None。"""
+        query = getattr(self.client, "_query", None)
+        if query is None or _parse_message is None:
+            async for message in self.client.receive_messages():
+                yield message, None
+            return
+        async for data in query.receive_messages():
+            if isinstance(data, dict) and data.get("type") == "command_lifecycle":
+                yield None, data
+                continue
+            message = _parse_message(data)
+            if message is not None:
+                yield message, data
+
+    def _on_lifecycle(self, data: dict) -> list[dict]:
+        """CLI 报的一条消息的去向 → 插话送达（_delivery）。开一轮的那条只用来记「这一轮开着」。"""
+        self._lifecycle = True
+        command_uuid = str(data.get("command_uuid") or "")
+        entry = self._outbox.get(command_uuid)
+        state = data.get("state")
+        if entry is None:
+            return []
+        if state == "cancelled":
+            # 打断撤回的：CLI 先报这条、后回打断的应答，留着让 interrupt() 认出来
+            entry["cancelled"] = True
+            return []
+        if state != "started" or entry.get("started"):
+            return []
+        entry["started"] = True
+        if entry["starter"]:
+            self._turn_open = True
+            return []
+        delivery = "seen" if self._turn_open else "new_turn"
+        self._turn_open = True
+        return [{"type": "_delivery", "message_id": entry["message_id"], "state": delivery}] if entry["message_id"] else []
+
+    def _consumed(self, data: dict | None) -> list[str] | None:
+        """result 消耗了哪些消息；这版 CLI 不报送达时给 None（会话层按一次发送一个 result 处理）。"""
+        self._turn_open = False
+        uuids = data.get("user_message_uuids") if isinstance(data, dict) else None
+        if not self._lifecycle or not isinstance(uuids, list):
+            return None
+        consumed = []
+        for command_uuid in uuids:
+            entry = self._outbox.pop(str(command_uuid), None)
+            if entry and entry["message_id"]:
+                consumed.append(entry["message_id"])
+        return consumed
+
     async def _events(self):
         try:
-            async for message in self.client.receive_messages():
+            async for message, raw in self._incoming():
+                if message is None:
+                    for event in self._on_lifecycle(raw):
+                        yield event
+                    continue
                 self._received_any = True
                 token = getattr(message, "session_id", None)
                 if not token and isinstance(message, SystemMessage):
@@ -631,6 +734,8 @@ class ClaudeEngine(ObservableEngine):
                         self._pending_assistant = None
 
                 event = normalize_message(message)
+                if event and event.get("type") == "result":
+                    event["message_ids"] = self._consumed(raw)
                 assistant_error = getattr(message, "error", None)
                 usage_event = self._track_context(event) if event else None
                 if event and event.get("type") == "assistant_message":

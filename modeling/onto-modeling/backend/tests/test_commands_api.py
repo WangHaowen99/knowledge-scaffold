@@ -76,7 +76,8 @@ def test_page_command_returns_task_and_tracks_exec_until_done(api):
         "origin": {"page": "reports", "label": "报告"}})
     assert response.status_code == 202, response.text
     body = response.json()
-    assert set(body) == {"task", "conversation_id", "message_id"} and set(body["task"]) == TASK
+    assert set(body) == {"task", "conversation_id", "message_id", "delivery", "next"} and set(body["task"]) == TASK
+    assert body["delivery"] == "immediate" and body["next"] is None
     task_id = body["task"]["task_id"]
     assert wait(lambda: FakeEngine.sent)[0] == '/ontology-validate scope=全部 keys=["s-01", "s-02"]\n\n只看规则'
     done = wait(lambda: next((task for task in command_tasks.query(project_id, states=["done"])

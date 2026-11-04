@@ -334,10 +334,10 @@ def test_jiuwen_buffered_messages_get_injection_when_delivered(tmp_path, monkeyp
         gate["running"], gate["release"] = asyncio.Event(), asyncio.Event()
         await engine.send("第一条")
         await asyncio.wait_for(gate["running"].wait(), timeout=2)
-        # 轮内追加：积压在引擎里，记的是原文
+        # 轮内追加：按插话积压在引擎里，记的是原文；这一轮没有模型调用可插，结束后逐条开下一轮
         await engine.send("我们这边规则是先审后派")
         await engine.send("/ontology-research 示例领域")
-        assert engine._buffered == ["我们这边规则是先审后派", "/ontology-research 示例领域"]
+        assert [text for _, text in engine._steers] == ["我们这边规则是先审后派", "/ontology-research 示例领域"]
         stage["text"] = "本体项目当前阶段：资料分析待核验。"
         gate["release"].set()
         await asyncio.wait_for(engine._turn_task, timeout=5)
