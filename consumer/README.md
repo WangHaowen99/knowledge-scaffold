@@ -345,7 +345,7 @@ data: {"schema_version":"1.0","seq":1,"event_type":"token.delta",...}
 | `AUTH_SERVER_URL` | 独立 auth-server 地址【必填】，如 `http://auth-server:5056`，未配置后端启动报错 |
 | `AUTH_SERVER_ADMIN_TOKEN` | 与 auth-server 共享的管理令牌，用户管理必填 |
 | `AUTH_BOOTSTRAP_ADMIN_PASSWORD` | 首次创建 auth-server 用户文件时必填的管理员初始强密码；初始化后可移除 |
-| `AUTH_SERVER_AUDIENCE` | JWT 本地验签 audience，默认 `meta-wise` |
+| `AUTH_SERVER_AUDIENCE` | JWT 本地验签 audience，默认 `knowledge-scaffold` |
 | `AUTH_SERVER_ISSUER` | JWT issuer，留空 = 使用 `AUTH_SERVER_URL` |
 | `SECRET_ENCRYPTION_KEY` | 可选的 32 字节 base64 加密根密钥，用于加密落盘 API key 和业务数据源 secret |
 | `MEMORY_MODE` | 记忆后端模式，默认 `filesystem` |

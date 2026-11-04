@@ -1466,6 +1466,7 @@ def _run_sync(
             modeling_project=None, round_id=None,
             error_code=None, error_details=None,
             object_fingerprint=object_fingerprint,
+            hub_snapshot_id=None, hub_snapshot_digest=None,
             data_source_name=data_source.get("name") or eval_data_sources.default_name(data_source),
             eval_set_name=eval_set_name,
             judge_source="onto-modeling" if judge_model else "modeling",
@@ -1480,11 +1481,21 @@ def _run_sync(
         )
         relation_report: dict = {}
         try:
-            manager.export_package_zip(
-                project_id, zip_path, binding=binding, graph=is_graph(data_source),
-                relation_report=relation_report, allow_unbound=allow_unbound,
-                object_texts=object_texts,
+            from . import hub_packages, auth
+            from .workspace import WorkspaceError
+            claims = auth.verify_access_token(tok()) if auth.ENABLED else None
+            if not claims or not claims.get('sub'):
+                raise WorkspaceError('Hub 评测快照需要有效用户身份', 401)
+            subject = json.dumps([claims.get('iss', auth.ISSUER), claims['sub']], ensure_ascii=False)
+            snapshot = hub_packages.publish(
+                manager, project_id, uuid.uuid4().hex, tok(), subject, allow_unbound,
+                kind='evaluation_snapshot', binding=binding, graph=is_graph(data_source),
+                relation_report=relation_report, object_texts=object_texts,
             )
+            hub_packages.download(snapshot['ontology_id'], snapshot['release_id'], tok(), zip_path)
+            _write_state(root, hub_snapshot_id=snapshot['release_id'],
+                         ontology_id=snapshot['ontology_id'],
+                         hub_snapshot_digest=snapshot['package_digest'])
         finally:
             if is_graph(data_source):
                 _write_state(root, graph_import={
@@ -1504,6 +1515,8 @@ def _run_sync(
         _write_state(root, phase="import", message="导入 modeling 评测工作区")
         package_name = f"onto-eval-{project_id}"
         content = zip_path.read_bytes()
+        zip_path.unlink(missing_ok=True)
+        zip_path.parent.rmdir()
         try:
             body, ctype = _multipart_zip(
                 "file", "package.zip", content, {"package_name": package_name}

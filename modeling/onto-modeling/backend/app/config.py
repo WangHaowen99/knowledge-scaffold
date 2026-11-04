@@ -43,6 +43,12 @@ JIUWEN_MAX_ITERATIONS = int(os.environ.get("ONTO_WEB_JIUWEN_MAX_ITERATIONS", "60
 # 未配置 URL 时「数据评测」阶段自动隐藏；TOKEN 为无共享 auth 部署的兜底令牌
 # （共享账号中心/方案 A 下透传当前用户 token，无需配置）
 ONTO_MCP_PUBLIC_BASE_URL = os.environ.get("ONTO_WEB_MCP_PUBLIC_BASE_URL", "").rstrip("/")
+# 评测服务在浏览器中的入口地址，由用户浏览器访问（不是容器网络地址）。留空时浏览器按建模页面同主机的 8090 端口打开；
+# 评测在其他主机、端口或经 HTTPS 时填写完整地址；不接受相对路径
+EVAL_PUBLIC_URL = os.environ.get("ONTO_WEB_EVAL_PUBLIC_URL", "").strip()
+# 评测服务在容器网络中的地址（如 http://knowledge-evaluation:8090），供后端以当前用户登录读取评测结果与产物；
+# 留空时已发布版本不显示评测报告与优化建议
+EVAL_URL = os.environ.get("ONTO_WEB_EVAL_URL", "").rstrip("/")
 MODELING_URL = os.environ.get("ONTO_WEB_MODELING_URL", "").rstrip("/")
 MODELING_TOKEN = os.environ.get("ONTO_WEB_MODELING_TOKEN", "")
 # 独立的导入/MCP 补关联通道；不影响新建项目的全局 Modeling 配置

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from app import config
-from app.services import auth, eval_judge_config, model_settings, modeling_eval, personal_model_settings
+from app.services import auth, eval_judge_config, hub_packages, model_settings, modeling_eval, personal_model_settings
 
 
 @pytest.fixture
@@ -160,7 +160,6 @@ def test_route_does_not_require_judge_for_cases_without_reference(tmp_path, monk
 
 def test_judge_configuration_only_appears_in_evaluate_request(tmp_path, monkeypatch):
     import tempfile
-    from app.services.workspace import WorkspaceManager
 
     root = tmp_path / "workspace_demo"
     root.mkdir()
@@ -170,7 +169,13 @@ def test_judge_configuration_only_appears_in_evaluate_request(tmp_path, monkeypa
     settings = {"api_key": "synthetic-private-judge-key", "model": "synthetic-judge-model"}
     monkeypatch.setattr(modeling_eval, "evaluation_object_snapshot", lambda root: {})
     monkeypatch.setattr(modeling_eval.package_mapping, "resolve_object_tables", lambda *args, **kwargs: {"issues": []})
-    monkeypatch.setattr(WorkspaceManager, "export_package_zip", lambda self, pid, target, **kwargs: target.write_bytes(b"synthetic package"))
+    # The evaluation snapshot is published to and downloaded from Hub under the initiating user.
+    monkeypatch.setattr(auth, "ENABLED", True)
+    monkeypatch.setattr(auth, "verify_access_token", lambda token: {"sub": "operator_a", "iss": "https://example.com"})
+    monkeypatch.setattr(hub_packages, "publish", lambda *args, **kwargs: {
+        "ontology_id": "package_demo", "release_id": "release_demo", "package_digest": "a" * 64,
+    })
+    monkeypatch.setattr(hub_packages, "download", lambda package_id, release_id, token, dest: Path(dest).write_bytes(b"synthetic package"))
     monkeypatch.setattr(modeling_eval, "_poll_round", lambda *args: None)
     # Automatic reuse would keep the previous user's judge credentials.
     monkeypatch.setattr(modeling_eval, "_try_resume", lambda *args, **kwargs: pytest.fail("must use new user configuration"))

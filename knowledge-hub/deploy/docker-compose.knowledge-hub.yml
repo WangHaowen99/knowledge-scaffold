@@ -1,0 +1,45 @@
+# 知识包 Hub 容器编排：独立 compose 项目，与 onto-modeling 解耦部署，各自重建、升级互不影响。
+# 加入与账号中心、onto-modeling 共享的 Docker 网络（整栈即 consumer 网络）：onto-modeling 经
+# http://knowledge-hub:8200 访问 Hub；Hub 经 auth-server 校验用户令牌；包和共享资料统一使用本体授权。
+# 推荐通过仓库 deploy/deploy.sh（--knowledge-hub-only 或整栈）、本目录 deploy.sh 或离线包内 deploy.sh 调用：
+# 由脚本注入网络、生成并同步服务凭据，源码模式先构建镜像。不发布宿主端口。
+#
+# 插值变量：
+#   CONSUMER_NETWORK      共享网络名（必填；单独部署 onto-modeling 时为其 compose 网络）
+#   HUB_SERVICE_TOKEN     建模服务身份（必填），须与 onto-modeling 的 ONTO_HUB_SERVICE_TOKEN 一致
+#   HUB_AUTH_URL / HUB_AUTH_ISSUER                             统一账号服务地址与稳定 issuer 命名空间
+#   HUB_EVALUATION_SERVICE_TOKEN  评测服务身份，部署脚本缺失时生成，评测部署沿用
+#   HUB_CONSUMER_SERVICE_TOKEN    消费服务身份（未接入可不配）
+
+# 项目名固定：数据卷全名 knowledge-hub_knowledge-hub-data 不随调用目录变化
+name: knowledge-hub
+
+services:
+  knowledge-hub:
+    image: ${KNOWLEDGE_HUB_IMAGE:-knowledge-hub:latest}
+    container_name: knowledge-hub
+    restart: unless-stopped
+    environment:
+      - HUB_DATA_DIR=/data/knowledge-hub
+      - HUB_SERVICE_TOKEN=${HUB_SERVICE_TOKEN:?Set HUB_SERVICE_TOKEN to the onto-modeling ONTO_HUB_SERVICE_TOKEN}
+      - HUB_AUTH_URL=${HUB_AUTH_URL:-http://auth-server:5056}
+      - HUB_AUTH_ISSUER=${HUB_AUTH_ISSUER:-}
+      - HUB_EVALUATION_SERVICE_TOKEN=${HUB_EVALUATION_SERVICE_TOKEN:-}
+      - HUB_CONSUMER_SERVICE_TOKEN=${HUB_CONSUMER_SERVICE_TOKEN:-}
+    volumes:
+      - knowledge-hub-data:/data
+    networks:
+      - consumer-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8200/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  consumer-net:
+    external: true
+    name: ${CONSUMER_NETWORK:?Set CONSUMER_NETWORK to the Docker network shared with onto-modeling and auth-server}
+
+volumes:
+  knowledge-hub-data:

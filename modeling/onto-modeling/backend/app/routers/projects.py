@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .. import config
 from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets, package_mapping
-from ..services import modeling_cleanup, modeling_mcp, package_archive, solver_contract
+from ..services import modeling_cleanup, modeling_mcp, package_archive, solver_contract, knowledge_hub
 from ..services.workspace import GOAL_PENDING, WorkspaceError, WorkspaceManager, remove_tree
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -345,7 +345,7 @@ async def delete_project(project_id: str, request: Request, background: Backgrou
     meta = workspaces.get_project(project_id)  # 删除后读不到，级联清理要用，先取
     eval_round = modeling_eval.abort_for_delete(project_id, root, _modeling_token(request))
     await manager.discard(project_id)
-    staged = await asyncio.to_thread(workspaces.stage_delete, project_id)
+    staged = await asyncio.to_thread(knowledge_hub.stage_delete, workspaces, project_id)
     await manager.discard(project_id)  # 移走期间并发发消息新建的会话一并清掉
     eval_data_sources.purge_project(project_id)
     studio.purge_project(project_id)
@@ -444,15 +444,97 @@ def export_project(
     ensure_access(project_id, request)
     if scope not in ("ontology", "workspace", "package"):
         raise WorkspaceError("scope 必须是 ontology、workspace 或 package")
+    if scope == "package":
+        raise WorkspaceError('请先发布，再从已发布版本列表下载指定版本', 400)
     meta = workspaces.get_project(project_id)
     dest = Path(tempfile.mkdtemp()) / f"{meta['name']}-{scope}.zip"
-    if scope == "package":
-        workspaces.publish_package(
-            project_id, dest, allow_unbound=allow_unbound, author=_request_user(request)
-        )
-    else:
-        workspaces.export_zip(project_id, scope, dest)
-    return FileResponse(dest, filename=dest.name, media_type="application/zip")
+    workspaces.export_zip(project_id, scope, dest)
+    import shutil
+    from starlette.background import BackgroundTask
+    return FileResponse(dest, filename=dest.name, media_type="application/zip",
+                        background=BackgroundTask(shutil.rmtree, dest.parent))
+
+
+class ReleaseBody(BaseModel):
+    model_config = {"extra": "forbid"}
+    request_id: str = Field(min_length=1, max_length=128)
+    allow_unbound: bool = False
+
+
+@router.post("/{project_id}/package/releases")
+def publish_release(project_id: str, body: ReleaseBody, request: Request):
+    from .hub_packages import identity
+    from ..services import hub_packages
+    token, subject, _ = identity(request)
+    ensure_access(project_id, request, write=True)
+    return hub_packages.publish(workspaces, project_id, body.request_id, token, subject, body.allow_unbound)
+
+
+@router.get("/{project_id}/package/releases")
+def package_releases(project_id: str, request: Request, offset: int = 0, limit: int = 20):
+    from .hub_packages import identity
+    from ..services import hub_packages
+    token, subject, _ = identity(request)
+    ensure_access(project_id, request)
+    if offset < 0 or not 1 <= limit <= 100:
+        raise WorkspaceError('分页参数无效')
+    return hub_packages.releases(project_id, subject, token, offset, limit)
+
+
+@router.get("/{project_id}/package/releases/{release_id}/download")
+def download_release(project_id: str, release_id: str, request: Request):
+    from .hub_packages import identity, download
+    from ..services import hub_packages
+    _, subject, _ = identity(request)
+    ensure_access(project_id, request)
+    linked = hub_packages.association(project_id, subject)
+    if not linked:
+        raise WorkspaceError('尚未关联个人 Hub 包', 404)
+    return download(linked['ontology_id'], release_id, request)
+
+
+@router.get("/{project_id}/package/resources/status")
+def hub_resource_status(project_id: str, request: Request):
+    ensure_access(project_id, request)
+    return knowledge_hub.resource_status(project_id, workspaces)
+
+
+class SharedResourcesBody(BaseModel):
+    model_config = {"extra": "forbid"}
+    paths: list[str] = Field(max_length=10000)
+    confirm_shared: bool
+
+
+@router.put("/{project_id}/package/resources")
+def share_hub_resources(project_id: str, body: SharedResourcesBody, request: Request):
+    ensure_access(project_id, request, write=True)
+    if not body.confirm_shared:
+        raise WorkspaceError('请确认所选资料可向全部 Hub 授权用户共享', 422)
+    return knowledge_hub.sync_resources(workspaces, project_id, knowledge_hub.token_of(request), body.paths)
+
+
+@router.get("/{project_id}/package/resources")
+def hub_resources(project_id: str, request: Request, offset: int = 0, limit: int = 20):
+    ensure_access(project_id, request)
+    return knowledge_hub.call('GET', f'/api/packages/{hub_ontology_id(project_id)}/resources/current?offset={offset}&limit={limit}',
+                              knowledge_hub.token_of(request))
+
+
+@router.get("/{project_id}/package/resources/{file_id}/download")
+def hub_resource_download(project_id: str, file_id: str, request: Request):
+    import shutil
+    from starlette.background import BackgroundTask
+    ensure_access(project_id, request)
+    knowledge_hub.identifier(file_id)
+    directory = Path(tempfile.mkdtemp(prefix='onto-hub-resource-'))
+    dest = directory / 'resource'
+    try:
+        knowledge_hub.call('GET', f'/api/packages/{hub_ontology_id(project_id)}/resources/current/{file_id}',
+                           knowledge_hub.token_of(request), download=dest)
+    except Exception:
+        shutil.rmtree(directory)
+        raise
+    return FileResponse(dest, filename=file_id, background=BackgroundTask(shutil.rmtree, directory))
 
 
 @router.get("/{project_id}/package/check")
@@ -669,6 +751,7 @@ def metrics(project_id: str, request: Request):
 async def upload_resource(
     project_id: str,
     request: Request,
+    background: BackgroundTasks,
     subdir: str = Form(...),
     file: UploadFile = File(...),
     purpose: str = Form("auto"),
@@ -677,7 +760,7 @@ async def upload_resource(
     ensure_access(project_id, request, write=True)
     data = await file.read()
     # 大文件同步写盘会卡住事件循环（SSE 全体停摆），挪到线程执行
-    return await asyncio.to_thread(
+    result = await asyncio.to_thread(
         workspaces.save_resource,
         project_id,
         subdir,
@@ -686,6 +769,7 @@ async def upload_resource(
         purpose,
         reading_mode,
     )
+    return result
 
 
 @router.get("/{project_id}/resource-meta")
@@ -705,17 +789,19 @@ class ResourceDirectiveBody(BaseModel):
 
 
 @router.patch("/{project_id}/resource-meta")
-def set_resource_meta(project_id: str, body: ResourceDirectiveBody, request: Request):
+def set_resource_meta(project_id: str, body: ResourceDirectiveBody, request: Request, background: BackgroundTasks):
     ensure_access(project_id, request, write=True)
-    return workspaces.set_resource_directive(
+    result = workspaces.set_resource_directive(
         project_id, body.path, body.purpose, body.reading_mode
     )
+    return result
 
 
 @router.delete("/{project_id}/resources")
-def delete_resource(project_id: str, path: str, request: Request):
+def delete_resource(project_id: str, path: str, request: Request, background: BackgroundTasks):
     ensure_access(project_id, request, write=True)
-    return workspaces.delete_resource(project_id, path)
+    result = workspaces.delete_resource(project_id, path)
+    return result
 
 
 class ProjectMcpBody(BaseModel):
@@ -1520,6 +1606,19 @@ def versions(project_id: str, request: Request):
     return {"versions": workspaces.versions(project_id)}
 
 
+@router.get("/{project_id}/history")
+def history(project_id: str, request: Request, limit: int = 50, cursor: str = ""):
+    """历史时间线：迭代与发布版本按时间倒序合并分页，游标由后端生成。"""
+    from .hub_packages import identity
+    from ..services import auth, version_history
+    # 未启用统一账号时没有个人 Hub 包，时间线只含迭代
+    token, subject = identity(request)[:2] if auth.ENABLED else ("", "")
+    ensure_access(project_id, request)
+    if not 1 <= limit <= 50:
+        raise WorkspaceError("分页参数无效")
+    return version_history.page(workspaces, project_id, subject, token, limit, cursor)
+
+
 @router.post("/{project_id}/versions/revert")
 def revert(project_id: str, body: RevertBody, request: Request):
     ensure_access(project_id, request, write=True)
@@ -1536,3 +1635,11 @@ def tag_version(project_id: str, body: TagBody, request: Request):
 def delete_tag(project_id: str, tag_name: str, request: Request):
     ensure_access(project_id, request, write=True)
     return workspaces.delete_tag(project_id, tag_name)
+
+
+def hub_ontology_id(project_id):
+    from ..services.hub_packages import association
+    linked = association(project_id)
+    if not linked:
+        raise WorkspaceError('项目尚未发布到 Hub', 404)
+    return linked['ontology_id']

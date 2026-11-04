@@ -958,6 +958,8 @@ class WorkspaceManager:
         relation_report: dict | None = None,
         allow_unbound: bool = False,
         object_texts: dict[str, str] | None = None,
+        version: str | None = None,
+        ontology_id: str | None = None,
     ) -> Path:
         """发布为知识包（consumer 可导入的 ontology-package v0.1）。
 
@@ -979,8 +981,10 @@ class WorkspaceManager:
         """
         root = self.project_root(project_id)
         meta = self.get_project(project_id)
-        version = f"0.1.{len(self.versions(project_id))}"
-        pkg = meta["id"]
+        version = version or f"0.1.{len(self.versions(project_id))}"
+        pkg = ontology_id or meta["id"]
+        if not re.fullmatch(r'[a-zA-Z0-9_][a-zA-Z0-9_-]{0,127}', pkg):
+            raise WorkspaceError('知识包标识无效')
 
         report_names: dict[tuple[str, str], str] = {}
 
@@ -1930,9 +1934,12 @@ class WorkspaceManager:
 
     # ---- 版本 ----
 
-    def versions(self, project_id: str, limit: int = 50) -> list[dict]:
+    def versions(self, project_id: str, limit: int = 50, offset: int = 0) -> list[dict]:
         root = self.project_root(project_id)
-        out = _git(root, "log", f"--max-count={limit}", "--pretty=format:%H%x1f%ct%x1f%s")
+        total = int(_git(root, "rev-list", "--count", "HEAD").strip())
+        out = _git(
+            root, "log", f"--skip={offset}", f"--max-count={limit}", "--pretty=format:%H%x1f%ct%x1f%s"
+        )
         tags = self._tags_by_commit(root)
         entries = []
         for line in out.splitlines():
@@ -1946,10 +1953,9 @@ class WorkspaceManager:
                         "tags": tags.get(parts[0], []),
                     }
                 )
-        # "已保存版本 N"：N = 距基线的序号，最早的提交是版本 1
-        total = len(entries)
+        # 「迭代 N」：N = 第几次提交，最早的提交是 1；不随分页和新保存变化
         for index, entry in enumerate(entries):
-            entry["version"] = total - index
+            entry["version"] = total - offset - index
         return entries
 
     @staticmethod

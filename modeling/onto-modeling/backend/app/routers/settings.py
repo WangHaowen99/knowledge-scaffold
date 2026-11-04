@@ -215,6 +215,17 @@ def put_runtime(body: RuntimeBody, request: Request):
     return {"permission_mode": runtime_settings.permission_mode()}
 
 
+@router.get("/evaluation/entry")
+def get_evaluation_entry():
+    """所有登录用户可读的评测入口；url 为空时由前端按建模页面同主机推导。"""
+    from ..services import evaluation_entry
+
+    try:
+        return {"url": evaluation_entry.public_url()}
+    except ValueError as exc:
+        return JSONResponse(status_code=500, content={"error": f"ONTO_WEB_EVAL_PUBLIC_URL 无效：{exc}"})
+
+
 @router.get("/sandbox")
 def get_sandbox_status(request: Request):
     """是否连上 onto-agent-jiuwenbox；连不上时脚本运行验证在 onto-modeling 容器内执行。"""

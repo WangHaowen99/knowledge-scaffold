@@ -42,6 +42,7 @@ from api.dependencies import (
 )
 from agent.runtime.errors import WorkspaceBusyError
 from api.exceptions import APIError
+from api.evaluation_workspaces import provision_evaluation_workspace
 from api.request_parsing import read_optional_json_object
 from api.workspace_acl_service import (
     WorkspaceIdentityDirectoryUnavailableError,
@@ -255,6 +256,37 @@ async def ensure_modeling_shadow_workspace_api(request: Request):
         except ValueError as exc:
             return JSONResponse({"detail": str(exc)}, status_code=400)
     return {"created": False, "workspace": current}
+
+
+@workspaces_router.post("/internal/evaluation/workspaces")
+@workspaces_router.post("/internal/evaluation/workspaces/ensure", include_in_schema=False)
+async def ensure_evaluation_workspace_api(
+    request: Request,
+    user: AuthUser = Depends(require_authenticated_user),
+):
+    """Provision one private evaluation space; ownership always comes from the user."""
+    from api.auth.service_auth import evaluation_service_authorized
+
+    if not evaluation_service_authorized(request):
+        return JSONResponse(
+            {"error": "Evaluation service authorization failed", "code": "EVALUATION_SERVICE_ACCESS_DENIED"},
+            status_code=403,
+        )
+    payload = await _request_json_object(request)
+    run_id = str(payload.get("run_id") or "")
+    if not re.fullmatch(r"[a-f0-9]{32}", run_id) or set(payload) != {"run_id"}:
+        return JSONResponse({"error": "Invalid evaluation run"}, status_code=422)
+    try:
+        return await run_in_runtime_pool(
+            request, "short_io", provision_evaluation_workspace,
+            get_auth_manager(request), owner=user.username, run_id=run_id,
+        )
+    except WorkspaceAuthorizationError:
+        return _workspace_forbidden()
+    except _WORKSPACE_IDENTITY_ERRORS as exc:
+        return _workspace_identity_error(exc)
+    except ValueError:
+        return JSONResponse({"error": "Evaluation workspace unavailable"}, status_code=409)
 
 
 @workspaces_router.get("/workspaces")

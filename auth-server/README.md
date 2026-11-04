@@ -72,7 +72,7 @@ meta-wise 解耦鉴权系统的**预置 auth server v1**。设计依据见
 | --- | --- | --- |
 | `AUTH_SERVER_DATA_DIR` | `./data` | users.json 与 keys/ 所在目录 |
 | `AUTH_SERVER_ISSUER` | `http://auth-server:5056` | JWT iss |
-| `AUTH_SERVER_AUDIENCE` | `meta-wise` | JWT aud |
+| `AUTH_SERVER_AUDIENCE` | `knowledge-scaffold` | JWT aud |
 | `AUTH_ACCESS_TTL_SECONDS` | `900` | access TTL，硬上限 3600 |
 | `AUTH_REFRESH_TTL_SECONDS` | `259200` | refresh TTL |
 | `AUTH_SERVER_ADMIN_TOKEN` | 未设置 | Admin API 共享密钥；未设置则 /admin/* 全部 503 |

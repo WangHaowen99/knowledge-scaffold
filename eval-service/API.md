@@ -1,0 +1,69 @@
+# Evaluation API
+
+前缀 `/evaluation/api`。除 health、client-config、账号登录/刷新及受 scene 凭据保护的 NL2SQL 外，均要求 `Authorization: Bearer <access-token>`。身份在线验证并按 issuer/subject 隔离；不接受建模项目归属或请求体 owner。
+
+| 接口 | 行为 |
+| --- | --- |
+| `GET /health` | 活性，不代表依赖就绪；允许任意来源读取 |
+| `GET /client-config` | 可向评测页面交接登录的建模来源列表 |
+| `GET /session` | 当前主体键、user（从已验证 userinfo 取得的 username / role）、当前用户生效的非敏感 Judge 配置（含 source：personal / settings / deployment / disabled）及独立的 judge_configured 标记；用户名仅供当前会话展示，不写入任务归属或存储 |
+| `GET /judge-settings` | 默认 Judge 配置的来源（页面配置或部署配置）、模型、配置版本及 enabled（默认配置是否对用户启用）；管理员额外可见网关地址和是否已配置 Key，从不返回 Key |
+| `PUT /judge-settings/enabled` | 仅管理员；`{"enabled": bool}` 启用或停用默认配置，不改变配置版本。停用后没有个人配置的用户生效来源为 `disabled`，新建轮次返回 judge_default_disabled（409），其排队及进行中的轮次停止判分；重新启用后可恢复。NL2SQL 不受影响 |
+| `PUT /judge-settings` | 仅管理员；base_url、model、可选 api_key。保存后替换部署配置，Key 加密存储；网关不变时 api_key 留空沿用原 Key，更换网关须重填。值不变时保留配置版本，否则生成新版本，排队及进行中的轮次随之停止判分 |
+| `DELETE /judge-settings` | 仅管理员；删除页面配置，恢复部署配置 |
+| `POST /judge-settings/test` | 仅管理员；用提交的值执行与轮次预检相同的结构化判分检查，不保存。网关认证、权限、接口、限流、超时、协议错误返回对应安全提示；模型 Key 的 401/403 映射为 422，避免误触发用户登录失效 |
+| `GET /judge-settings/me` | 任意登录用户；返回 `personal`（本人个人配置的网关、模型、配置版本、是否已配置 Key，未配置为 null）与 `active`（本人新轮次将使用的配置来源、模型、版本、是否完整），从不返回 Key |
+| `PUT /judge-settings/me` | 保存本人个人配置，覆盖默认配置，只影响本人新创建的轮次；api_key 留空仅沿用本人同一网关的已存 Key，不借用默认配置的 Key；值不变时保留配置版本 |
+| `DELETE /judge-settings/me` | 删除本人个人配置，恢复使用默认配置 |
+| `POST /judge-settings/me/test` | 任意登录用户；测试提交的个人配置，不保存，错误映射同上 |
+| `POST /auth/login`、`/auth/refresh` | 直连统一账号，响应不缓存；不保存用户令牌 |
+| `GET /packages`、`/packages/{id}/releases` | 当前用户 Hub 包及正式版本列表 |
+| `GET /packages/{id}/releases/{rid}` | 精确版本回执，用于跳转到历史版本 |
+| `GET/POST /eval-sets`、`/data-sources` | 用户定义列表和创建 |
+| `GET/PUT/DELETE /eval-sets/{id}`、`/data-sources/{id}` | 读取、带 revision 更新、删除定义；不改历史快照。数据源读取额外返回 connection_view、secret_configured 和 inputs 文件元数据，不返回凭据值 |
+| `POST /data-source-inspections` | provider、connection、可选 data_source_id；从 Scene 对应数据库读取表字段，返回 inspection_id、schema、tables、read_at。固定只读元数据查询，不接受客户端 SQL |
+| `POST /data-source-previews` | data_source_id、package_ref；只读预览对象绑定、实体实例与关系数量、缺失列、警告和截断标志；不发布或写入外部数据 |
+| `POST /graph-import-checks` | data_source_id、package_ref、可选 preparation_id；只读检查 Workspace 与 Ontology 同时匹配的节点、范围内关系和跨范围关系，返回 id、scope、计数、expires_at；启动用检查必须绑定 preparation_id |
+| `POST /inputs` | multipart file，CSV/XLSX，返回受控句柄和摘要 |
+| `GET /inputs/{id}` | 当前主体上传文件的元数据，不返回内容 |
+| `POST /package-preparations` | request_id、package_ref、可选 data_source_id；冻结输入、生成 mapping、必要时发布快照。同一基础版本加相同 mapping 复用已提交的评测快照，不再占用新版本号 |
+| `GET /package-preparations/{id}` | 状态、固定包引用及有界映射预览 |
+| `POST /package-publications` | request_id、preparation_id；创建正式 mapping 派生版本，返回 Hub 回执 |
+| `GET /package-publications` | 分页查询本地发布任务及 Hub 回执 |
+| `GET /package-publications/{id}` | 本地持久发布任务状态；任务 ID 可由发布查询列表获得 |
+| `POST /runs` | request_id、preparation_id、eval_set_id、可选 eval_set_revision；Neo4j 导入还需 graph_check_id，存在旧数据时必须显式传 replace_existing_graph=true。可选 concurrency（1 到 8，默认 4，同时发送给 consumer 的问题数）与 model_profile_id（`global:<id>`，consumer 全局模型池中已启用的模型，留空用 consumer 默认模型）。活动任务冲突、版本冲突和缺少确认在创建前拒绝，持久化后返回 202；所选模型在执行时已停用则轮次中断并提示 model_unavailable |
+| `GET /consumer-models` | consumer 全局模型池中已启用的模型（最多 100 个），字段 id、name、model、provider、is_default；consumer 不可用时返回 `available: false`，新轮次使用 consumer 默认模型 |
+| `GET /runs`、`/runs/{id}` | 摘要、进度和统计；列表按 offset 分页，可选 limit（1 到 20，默认 20），可选 ontology_id 只列该知识包的执行记录。新任务保留 eval_set_id、eval_set_name、data_source_name、created_at、started_at、updated_at、finished_at。`base_ref` 为用户选择的发布版本，`package_ref` 为实际运行的包（mapping 变化时为评测快照）；本字段之前创建的任务由其准备记录补出 `base_ref`，仅用于返回，不改写已存记录 |
+| `GET /modeling-projects` | 重复的 ontology_id，每次 1 到 20 个；以当前用户登录向建模服务查询关联项目名称，仅供展示、不落盘。返回 `available` 与 `items[{ontology_id,projects,total}]`，每包最多 5 个名称；建模不可用或拒绝时返回 `available: false`，不报错 |
+| `GET /runs/{id}/results` | 有界分页用例摘要；执行异常、判分异常的用例带 `error`（code、message，message 截断到 256 字符）。执行异常的原因取自 consumer 运行状态与错误码，如 `consumer 执行失败（错误码）：说明`、等待用户补充信息、完成但未返回回答；`SESSION_PREPARE_FAILED` 会换新会话重试，最终仍失败时说明末尾注明“已换新会话重试 N 次” |
+| `GET /runs/{id}/results/{case_id}/answer` | 单用例完整答案、判分、改判历史及未获得答案时的完整原因（不超过 1000 字符） |
+| `GET /runs/{id}/results/{case_id}/evidence` | 从 consumer 按需读取有界执行事件索引，不复制完整工具报文 |
+| `GET /runs/{id}/report` | 可重建的统计投影、包与模型引用 |
+| `POST /runs/{id}/cancel`、`/resume`、`/credentials` | 取消意图、对账恢复或更新内存授权；恢复后立即返回准备中的轮次。与 `POST /runs` 一样可带请求头 `X-Refresh-Token`（不超过 8 KiB），执行引擎只在内存中保存，用于 access token 到期前自动续期；登录失效时轮次以 `login_expired`（401）进入待授权 |
+| `POST /runs/{id}/results/{case_id}/override` | verdict、reason、revision；保留审计，不允许无答案或活动任务改判 |
+| `DELETE /runs/{id}` | 删除评测记录并清理自有资源，清理任务可重试。已结束（completed / cancelled / failed）可删除；interrupted / waiting_auth 在没有 executing / unknown 用例时可删除；执行中或仍有未对账提交返回 run_active（409），须先停止评测 |
+| `GET /package-tasks` | 按知识包合并的任务列表：每个知识包的最新一次执行、执行次数及是否有执行中的评测，按 offset 分页 |
+| `GET /package-evaluations` | ontology_id；每个发布版本最近一次已生成报告的评测（最多 100 个版本）及该知识包执行中的评测，供建模服务对账；`owner` 为调用者的所有者标识，与完成通知中的 owner 相同，建模服务据此按用户存放评测状态 |
+| `GET /runs/{id}/artifacts`、`/runs/{id}/artifacts/{name}` | 报告与优化建议的状态、建模通知投递状态；name 为 report.md、answers.json、context.json、suggestions.md，只返回当前修订，响应头带 `X-Artifact-Revision` 与 `X-Artifact-Stem` |
+| `POST /runs/{id}/artifacts/regenerate` | 已停止且有用例结果的任务重新生成报告与优化建议，修订号加一；执行中返回 run_active（409） |
+| `POST /runs/{id}/notifications/retry` | 立即重发该任务最新一条完成通知（含已被拒收的）；未配置通知凭据返回 notification_disabled（409） |
+
+评测停止、人工改判或重新生成后，评测服务按修订号生成报告与优化建议（只保留最新修订），并向建模服务 `POST /api/internal/evaluation/notifications` 发送完成通知，服务凭据放在 `X-Evaluation-Service-Token` 头。通知先写入本地发件箱再投递，失败按指数退避重试（最长 1 小时），400/413/422 视为拒收不再自动重试；建模服务按 run_id 与 sequence 去重。通知只含版本、状态与得分汇总，不含报告正文，建模服务查看时以用户自己的登录读取。
+
+Hub 查询默认每页 20、最多 100；本地列表每页 20，按 next_offset 翻页。用例列表截短问题/理由，完整答案单独读取。映射预览最多 20 个对象，有 truncated 标志。consumer 单次响应最多 2 MiB、事件索引源最多 1 MiB/输出最多 100 项；超限明确失败，不伪装成完整结果。
+
+新表单的 NL2SQL 数据源保存传 inspection_id，结构由服务端读取结果填入；句柄须属于当前主体且与 Provider / 连接指纹一致，不能把旧库结构套用到新连接。每次读取最多 100 张表、每表 256 字段，每批响应最多 1 MiB；空结构、权限失败、重复分页或超限明确报错。外部服务地址和凭据不进入错误正文。旧客户端的 connection / tables 请求仍按原契约处理。
+
+Neo4j 查询模式允许无 tables；导入模式需要文件和明确的 import_data。表单支持 workspace_property / workspace_value / ontology_property，ontology_value 在执行时由固定知识包补入。新建表单默认 `d2o_workspace_id` / `d2o_ontology_id`，与 consumer 图数据的范围字段一致；保存时 workspace_property 留空按 `d2o_workspace_id` 处理。图导入预览最多 100 个对象、100 条关系与 20 条提示，truncated 标记不完整结果。节点实例按主键去重；关系按源 / 目标主键与关联字段统计，预览不提交任何图写入。
+
+Neo4j 导入使用配置的 Workspace 值与知识包 Ontology 值同时匹配。`graph-import-checks` 使用固定只读查询，不接受客户端 Cypher，返回值只有范围、计数和受控检查句柄，不返回节点属性或凭据。检查最多 10 万个节点、20 万条关系，有效期 10 分钟；句柄绑定当前用户、准备结果和冻结数据源。存在跨范围关系时拒绝替换，未确认时不删除也不导入。执行前核对图范围指纹，变化时返回 graph_scope_changed 并中断；清理范围内关系、删除节点和导入在同一事务中完成。导入回执与数据同事务保存，恢复先查回执，避免因提交响应丢失再次删除新数据。旧的 eval_<run_id> 图范围保持原样，不纳入配置范围的替换。缺检查、未确认、过期、范围冲突分别返回 graph_check_required、graph_confirmation_required、graph_check_expired、graph_boundary_conflict（409）。
+
+同一图数据范围的活动导入评测互斥，冲突返回 graph_scope_busy（409），提示不暴露其他账号或任务身份。恢复已完成图导入的任务时还会核对当前范围的导入回执；被后续任务替换时要求重新创建评测，避免旧任务继续读取新一轮的数据。
+
+普通请求体最多 1 MiB，数据上传最多 50 MiB，实际接收大小也检查。Hub ZIP 最大 256 MiB、展开最大 1 GiB、成员最多 10000，拒绝路径穿越、符号链接、重复路径及过高压缩比。
+
+错误格式 `code,message,phase,retryable`；依赖原始错误、连接地址和秘密不回显。鉴权失败 401/403，不存在或无权访问本地记录 404，并发或幂等冲突 409，过期 410，超限 413，格式错误 422，依赖不可用 503。依赖的拒绝只按其错误码细分，不转述正文：消费服务因评测工作空间中已有同名但本体 ID 不同的知识包而拒绝安装时，任务以 `package_name_conflict`（409，阶段 `package_install`）中断，提示清理旧知识包或更换评测工作空间后恢复；评测服务不删除用户配置的工作空间中的内容。
+
+准备/发布/启动使用稳定 request_id，同键不同输入冲突；超时沿用原请求。Hub 发布与快照命名空间分开，服务不生成本地成功回执。数据库删除保留请求墓碑，不能通过重复请求重新创建已删轮次。
+
+可选 NL2SQL：`POST /nl2sql/api/v1/query`、`/sql`。请求使用专属 scene HMAC 凭据，不使用用户登录；只允许本轮 eval 库的受限 SELECT、最多 1000 行。连接配置仅作为 consumer 运行设置，不进入 Hub 包。

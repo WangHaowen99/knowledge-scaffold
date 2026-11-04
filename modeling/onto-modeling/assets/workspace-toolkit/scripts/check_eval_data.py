@@ -6,7 +6,8 @@
 - 对账是确定性检查，不经模型。
 
 三方来源：
-1. 数据表：评测数据源上传的 Excel（.ontology-state/eval-data/<文件ID>/，或命令行显式指定路径）；
+1. 数据表：评测数据源上传的 Excel（.ontology-state/eval-data/<文件ID>/）、评测优化从独立评测服务导入的
+   只有表头的 CSV（.ontology-state/eval-data/eval-service/），或命令行显式指定路径；
 2. schema：materials.json 中 purpose=schema 的表格资料的表头（结构契约）；
 3. 对象属性：ontology/object/*.md 的「对象属性清单」表格「英文名称」列。
 
@@ -46,7 +47,7 @@ def uploaded_eval_files(root: Path) -> list[str]:
     return sorted(
         path.relative_to(root).as_posix()
         for path in folder.glob("*/*")
-        if path.is_file() and path.suffix.lower() in (".xlsx", ".xlsm")
+        if path.is_file() and path.suffix.lower() in (".xlsx", ".xlsm", ".csv")
     )
 
 
