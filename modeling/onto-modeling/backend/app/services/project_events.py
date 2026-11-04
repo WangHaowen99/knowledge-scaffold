@@ -289,7 +289,8 @@ def refresh_flow(project_id: str) -> dict | None:
         for item in flow.get("slices") or []
         if old_slices.get(item.get("id")) != item
     ]
-    suggestions_changed = previous is None or previous.get("suggestions") != flow.get("suggestions")
+    suggestions_changed = previous is None or _without_rev(previous.get("suggestions")) != _without_rev(
+        flow.get("suggestions"))
     hash_changed = previous is not None and previous.get("flow_hash") != flow.get("flow_hash")
     if not (nodes or slices or suggestions_changed or hash_changed):
         # 流程没变，待处理的来源（决策卡、续跑、报告……）可能变了
@@ -302,6 +303,11 @@ def refresh_flow(project_id: str) -> dict | None:
     if previous is None or previous.get("progress") != flow.get("progress"):
         card_changed(project_id)
     return envelope
+
+
+def _without_rev(suggestions: dict | None) -> dict | None:
+    """比较建议有没有变时不看版本号（每算一次都会变）。"""
+    return {key: value for key, value in suggestions.items() if key != "rev"} if suggestions else suggestions
 
 
 def _refresh_inbox(project_id: str) -> None:

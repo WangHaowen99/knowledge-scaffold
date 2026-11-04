@@ -387,6 +387,28 @@ class Session:
                 project_events.conversation_changed(self.project_id, self.conversation_id)
             if self.on_change is not None:
                 self.on_change()
+            if state in ("running", "idle"):
+                self.push_suggestions()
+
+    def push_suggestions(self) -> None:
+        """建议条跟着会话状态走（F6）：变为运行中直接推空的一份；回到空闲、出现等你回答的问题时在后台重算再推。
+        一轮收尾（finishing）自己会算一份、自主构建的一步由运行器推运行控制，这两种不推。"""
+        if self.discarded or self.run_id or self.finishing:
+            return
+        if self.state == "running" and not self.pending_permissions:
+            self.broadcast(turns.running_suggestions_record())
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._push_suggestions())
+
+    async def _push_suggestions(self) -> None:
+        record = await asyncio.to_thread(turns.suggestions_record, self)
+        # 算的这一会儿又开始跑了：不推旧的那份（开始跑时已经推过空的）
+        if record is not None and not (self.state == "running" and not self.pending_permissions):
+            self.broadcast(record)
 
     def on_turn_result(self) -> None:
         """主轮结束。CLI 不上报状态、已报 idle 或用户点了停止时置空闲；
@@ -409,8 +431,9 @@ class Session:
             self.set_state("running")
 
     def show_state(self, state: str) -> None:
-        """只给界面看的状态（等你回答 waiting_user）：不改会话池调度用的 state。"""
+        """只给界面看的状态（等你回答 waiting_user）：不改会话池调度用的 state。建议条跟着换（去回答 / 运行中）。"""
         self.broadcast({"type": "session_state", "state": state, "turn_started_at": self.turn_started_at})
+        self.push_suggestions()
 
     def current_turn(self) -> Any:
         if self.turn is None:
@@ -1777,10 +1800,6 @@ class SessionManager:
         record, card = turns.interrupt_exec(session, "engine_exit", card=not session.run_id)
         if card is not None:
             session.broadcast(card)
-            # 和你打断时一样主推「从打断处继续」（原来建议条还是出错前那一份）；续跑卡上的按钮照旧
-            suggestions = turns.suggestions_record(session, interrupted=record, reason="出错中断")
-            if suggestions is not None:
-                session.broadcast(suggestions)
         from .session_host import command_tasks
 
         try:
@@ -1792,6 +1811,11 @@ class SessionManager:
             "retryable": bool(session.last_prompt), "actions": ["retry", "redirect"] if session.last_prompt else ["redirect"],
         })
         session.set_state("error", reason=message)
+        if not session.run_id:
+            # 建议条按出错之后的样子算（F6 第 3 条）：主推「重试这一轮」，不能重试时给中断的那一步
+            suggestions = turns.suggestions_record(session, interrupted=record, failed=message)
+            if suggestions is not None:
+                session.broadcast(suggestions)
 
     async def _reload_after_turn(self, session: Session) -> None:
         """待重载的会话在本轮收尾后断开旧引擎；下一条消息按新配置 resume 重连。

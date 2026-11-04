@@ -124,4 +124,4 @@ def test_19_suggest_does_not_count_mainline_saves_as_copy_changes(env):
     from_ui = client.get(f"/api/v1/projects/{project_id}/flow/suggestions").json()
     from_helper = next_steps.suggest(copy)
     assert from_ui["mode"] == "normal" and from_helper["mode"] == "normal"
-    assert from_helper == from_ui
+    assert from_helper == {key: value for key, value in from_ui.items() if key != "rev"}  # 版本号只有后端给

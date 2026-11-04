@@ -34,8 +34,10 @@ async def announce(project_id: str) -> None:
         except Exception:  # noqa: BLE001 - 对话已删除：卡片不更新
             continue
     # 蓝图卡所在对话的建议条跟着换（确认之后不再是「确认蓝图 / 调整分段」）
-    suggestions = await asyncio.to_thread(_suggestions_after_close, project_id) if conversations else None
-    for conversation_id in sorted(conversations) if suggestions is not None else ():
+    for conversation_id in sorted(conversations):
+        suggestions = await asyncio.to_thread(_suggestions_after_close, project_id, conversation_id)
+        if suggestions is None:
+            continue
         try:
             manager.append_record(project_id, conversation_id, {"type": "suggestions", "payload": suggestions})
         except Exception:  # noqa: BLE001 - 同上

@@ -77,7 +77,7 @@ export function AssistantItem({ it, ctx }) {
     case 'assistant': return <AssistantText item={it} />;
     case 'progress': return <ProgressItem item={it} running={ctx.running} onInterrupt={ctx.onInterrupt} />;
     case 'card': return <CardItem card={it.card} scope={ctx.scope} />;
-    case 'permission': return <PermissionCard item={it} />;
+    case 'permission': return <div data-qid={it.request_id}><PermissionCard item={it} /></div>;
     case 'error': return <ErrorItem item={it} />;
     case 'interrupted': return <InterruptedItem item={it} />;
     case 'config_pending': return <ConfigPendingItem item={it} />;
@@ -177,7 +177,7 @@ export function Timeline({
       case 'user': return <UserMessage key={b.item.local_key || b.key} item={b.item} enter={fresh(b.key)} />;
       case 'decided': return <DecidedRow key={b.key} item={b.item} />;
       case 'withdrawn': return <MSys key={b.key} left className={enter('mo-fade')}>这个问题已失效：{b.item.withdrawn_reason || b.item.question.title}</MSys>;
-      case 'question': return <MA key={b.key} className={enter('mo-ask')}><QuestionCard q={b.item.question} active={b === lastOpenQ} /></MA>;
+      case 'question': return <MA key={b.key} className={enter('mo-ask')}><div data-qid={b.item.question.question_id}><QuestionCard q={b.item.question} active={b === lastOpenQ} /></div></MA>;
       case 'assistant': {
         // 新的一块整块上浮；已有的块里后到的条目各自入场
         const blockFresh = fresh(b.items[0].key);

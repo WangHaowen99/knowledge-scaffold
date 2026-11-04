@@ -640,9 +640,11 @@ export function wbHistory() {
 export function suggestionsWaiting() {
   return {
     mode: 'waiting_decision',
-    primary: { id: 'sg-wait', label: '先做上面的决定', icon: 'hand', primary: true, disabled: true, reason: '有未回答的决策卡', priority: 1, action: { type: 'clear_input' } },
-    secondary: [{ id: 'sg-inbox', label: '其他待处理 17', icon: 'inbox', primary: false, disabled: false, reason: '', priority: 3, action: { type: 'navigate', page: 'inbox' } }],
+    // F6 第 2 条：等你回答时主推「去回答」，滚到那张卡
+    primary: { id: 'answer', label: '去回答', icon: 'hand', primary: true, disabled: false, reason: '有等你回答的问题', priority: 1, action: { type: 'focus_question', question_id: decisionQuestion().question_id } },
+    secondary: [],
     all_commands: true,
+    note: null,
   };
 }
 
@@ -653,21 +655,22 @@ export function suggestionsAfterMerge() {
     primary: { id: 'core.model:s2:rule', label: '提取规则', icon: 'scale', primary: true, disabled: false, reason: '', priority: 4, action: { type: 'send', text: '', command: '/ontology-extract-rule-metric', args: { slice: 's2' } } },
     secondary: [
       { id: 'sg-sc', label: '看场景推演', icon: 'flask', primary: false, disabled: false, reason: '', priority: 4, action: { type: 'navigate', page: 'scenarios' } },
-      { id: 'sg-pause', label: '先到这里', icon: 'pause', primary: false, disabled: false, reason: '', priority: 5, action: { type: 'clear_input' } },
     ],
     all_commands: true,
+    note: null,
   };
 }
 
 export function suggestionsInterrupted() {
   return {
     mode: 'interrupted',
-    primary: { id: 'sg-cont', label: '继续刚才的任务', icon: 'play', primary: true, disabled: false, reason: '刚被打断', priority: 1, action: { type: 'send', text: '继续刚才的任务' } },
+    // F6 第 4 条：一个「继续「X」」（能续跑就续跑，能力升级时按新版重新做），次选放弃这一步
+    primary: { id: 'resume', label: '继续「操作提取」', icon: 'redo', primary: true, disabled: false, reason: '从「写入操作」接着做，已保存的 2 处修改保留', priority: 1, action: { type: 'resume_exec', exec_id: 'ex-0412' } },
     secondary: [
-      { id: 'sg-resume', label: '从打断处继续', icon: 'redo', primary: false, disabled: false, reason: '', priority: 1, action: { type: 'resume_exec', exec_id: 'ex-0412' } },
-      { id: 'sg-redirect', label: '换个方向', icon: 'refresh', primary: false, disabled: false, reason: '', priority: 1, action: { type: 'clear_input' } },
+      { id: 'abandon', label: '放弃这一步', primary: false, disabled: false, reason: '已经保存的修改不回退', priority: 1, action: { type: 'abandon_exec', exec_id: 'ex-0412' } },
     ],
     all_commands: true,
+    note: '从「写入操作」接着做，已保存的 2 处修改保留',
   };
 }
 
