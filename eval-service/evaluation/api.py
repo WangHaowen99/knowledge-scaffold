@@ -167,7 +167,7 @@ def create_app(config=None,transport=None):
     @app.middleware('http')
     async def limits(request,call_next):
         # Bound the actual body, including chunked requests, before multipart parsing.
-        maximum=50*1024*1024+65536 if request.url.path==prefix+'/inputs' else 1024*1024
+        maximum=50*1024*1024+65536 if request.url.path==f'{prefix}/inputs' else 1024*1024
         try:
             length=int(request.headers.get('content-length','0'))
         except ValueError:
@@ -214,24 +214,24 @@ def create_app(config=None,transport=None):
         # Pages and API keep the /evaluation prefix so a same-origin gateway can route by path.
         return RedirectResponse('/evaluation/',status_code=302)
 
-    @app.get(prefix+'/health')
+    @app.get(f'{prefix}/health')
     def health(response:Response):
         # Liveness only, so any origin may check it before opening the evaluation page.
         response.headers['Access-Control-Allow-Origin']='*'
         return {'status':'ok','service':'evaluation'}
 
-    @app.get(prefix+'/client-config')
+    @app.get(f'{prefix}/client-config')
     def client_config():
         # An empty list means only pages on this host name (loopback names count as one) may hand over a login.
         return {'trusted_origins':trusted_origins(config.trusted_origins)}
 
-    @app.post(prefix+'/nl2sql/api/v1/{operation}')
+    @app.post(f'{prefix}/nl2sql/api/v1/{{operation}}')
     def sql_query(operation:str,body:dict,request:Request):
         if operation not in ('query','sql'): raise Failure('not_found','操作不存在',404)
         header=request.headers.get('authorization','')
         return QueryService(config,http,judge_settings).query(body,header[7:] if header.startswith('Bearer ') else '',operation=='sql')
 
-    @app.get(prefix+'/session')
+    @app.get(f'{prefix}/session')
     def session(request:Request):
         header=request.headers.get('authorization','')
         profile=identity.profile(header[7:] if header.startswith('Bearer ') else '')
@@ -240,28 +240,28 @@ def create_app(config=None,transport=None):
                 'judge':{'model':current['model'],'revision':current['revision'],'source':current['source']},
                 'judge_configured':current['configured'],'model_configuration':'MODEL-CONFIG-01'}
 
-    @app.get(prefix+'/judge-settings')
+    @app.get(f'{prefix}/judge-settings')
     def judge_settings_view(request:Request):
         _,role=account(request)
         return judge_settings.view(role=='admin')
 
-    @app.put(prefix+'/judge-settings')
+    @app.put(f'{prefix}/judge-settings')
     def judge_settings_save(body:JudgeConfig,request:Request):
         judge_settings.save(body.base_url,body.model,body.api_key,administrator(request))
         return judge_settings.view(True)
 
-    @app.delete(prefix+'/judge-settings')
+    @app.delete(f'{prefix}/judge-settings')
     def judge_settings_reset(request:Request):
         administrator(request)
         judge_settings.reset()
         return judge_settings.view(True)
 
-    @app.put(prefix+'/judge-settings/enabled')
+    @app.put(f'{prefix}/judge-settings/enabled')
     def judge_settings_switch(body:JudgeSwitch,request:Request):
         judge_settings.set_default_enabled(body.enabled,administrator(request))
         return judge_settings.view(True)
 
-    @app.post(prefix+'/judge-settings/test')
+    @app.post(f'{prefix}/judge-settings/test')
     def judge_settings_test(body:JudgeConfig,request:Request):
         # Runs the same structured-verdict check as run preflight, without saving.
         administrator(request)
@@ -273,24 +273,24 @@ def create_app(config=None,transport=None):
         return {'ok':True}
 
     # Personal configuration: overrides the shared default for the caller's own new runs only.
-    @app.get(prefix+'/judge-settings/me')
+    @app.get(f'{prefix}/judge-settings/me')
     def judge_settings_mine(request:Request):
         owner,_=actor(request)
         return judge_settings.personal_view(owner)
 
-    @app.put(prefix+'/judge-settings/me')
+    @app.put(f'{prefix}/judge-settings/me')
     def judge_settings_save_mine(body:JudgeConfig,request:Request):
         owner,_=actor(request)
         judge_settings.save_personal(owner,body.base_url,body.model,body.api_key)
         return judge_settings.personal_view(owner)
 
-    @app.delete(prefix+'/judge-settings/me')
+    @app.delete(f'{prefix}/judge-settings/me')
     def judge_settings_reset_mine(request:Request):
         owner,_=actor(request)
         judge_settings.reset_personal(owner)
         return judge_settings.personal_view(owner)
 
-    @app.post(prefix+'/judge-settings/me/test')
+    @app.post(f'{prefix}/judge-settings/me/test')
     def judge_settings_test_mine(body:JudgeConfig,request:Request):
         owner,_=actor(request)
         candidate=dict(judge_settings.candidate(body.base_url,body.model,body.api_key,owner),revision='test')
@@ -300,7 +300,7 @@ def create_app(config=None,transport=None):
             raise connection_test_failure(exc) from exc
         return {'ok':True}
 
-    @app.post(prefix+'/auth/{operation}')
+    @app.post(f'{prefix}/auth/{{operation}}')
     def auth(operation:str,body:dict):
         if operation=='refresh':
             payload={'grant_type':'refresh_token','refresh_token':body.get('refresh_token','')}
@@ -310,22 +310,22 @@ def create_app(config=None,transport=None):
         result=http.json('POST',config.auth_url,'/token',json=payload,limit=16384)
         return {k:result[k] for k in ('access_token','refresh_token','expires_in','token_type') if k in result}
 
-    @app.get(prefix+'/packages')
+    @app.get(f'{prefix}/packages')
     def list_packages(request:Request,offset:int=Query(0,ge=0),limit:int=Query(20,ge=1,le=100)):
         _,token=actor(request)
         return packages.call('GET',f'/api/packages?offset={offset}&limit={limit}',token)
 
-    @app.get(prefix+'/packages/{pid}/releases')
+    @app.get(f'{prefix}/packages/{{pid}}/releases')
     def list_releases(pid:str,request:Request,offset:int=Query(0,ge=0)):
         from urllib.parse import quote
         _,token=actor(request)
-        return packages.call('GET','/api/packages/'+quote(pid,safe='')+f'/releases?offset={offset}&limit=20',token)
+        return packages.call('GET',f"/api/packages/{quote(pid,safe='')}/releases?offset={offset}&limit=20",token)
 
-    @app.get(prefix+'/packages/{pid}/releases/{rid}')
+    @app.get(f'{prefix}/packages/{{pid}}/releases/{{rid}}')
     def release_receipt(pid:str,rid:str,request:Request):
         from urllib.parse import quote
         _,token=actor(request)
-        return packages.call('GET','/api/packages/'+quote(pid,safe='')+'/releases/'+quote(rid,safe=''),token)
+        return packages.call('GET',f"/api/packages/{quote(pid,safe='')}/releases/{quote(rid,safe='')}",token)
 
     def definition(kind,body,owner,existing=None):
         if not isinstance(body,dict) or not isinstance(body.get('name'),str) or not 0<len(body['name'])<=128:
@@ -366,7 +366,10 @@ def create_app(config=None,transport=None):
         value=dict(name=body['name'],mode=mode,provider=provider,input_ids=ids,tables=body.get('tables',{}),import_data=bool(body.get('import_data')))
         # Form payloads use a narrow connection schema; old API clients may still submit
         # their existing connection/tables contract without the new inspection handle.
-        if mode=='connection' and ('inspection_id' in body or 'evaluation_workspace_id' in body.get('connection',{}) or provider=='neo4j' and 'workspace_value' in body.get('connection',{})):
+        form=body.get('connection',{})
+        graph_form=provider=='neo4j' and 'workspace_value' in form
+        form_payload='inspection_id' in body or 'evaluation_workspace_id' in form or graph_form
+        if mode=='connection' and form_payload:
             connection=source_config.connection(owner,provider,body.get('connection'),existing)
             value['connection']=store.encrypt(connection)
             if provider!='neo4j':
@@ -382,30 +385,32 @@ def create_app(config=None,transport=None):
         if mode=='connection' and not value.get('connection'): raise Failure('connection_missing','需要连接配置',422)
         return value
 
-    @app.post(prefix+'/data-source-inspections')
+    @app.post(f'{prefix}/data-source-inspections')
     def inspect_source(body:SourceInspection,request:Request):
         owner,_=actor(request)
         existing=store.get(owner,body.data_source_id,'data-sources') if body.data_source_id else None
         connection=source_config.connection(owner,body.provider,body.connection,existing)
         return source_config.inspect(owner,body.provider,connection)
 
-    @app.post(prefix+'/graph-import-checks')
+    @app.post(f'{prefix}/graph-import-checks')
     def inspect_graph(body:GraphInspection,request:Request):
         owner,token=actor(request)
         prep=store.get(owner,body.preparation_id,'preparations') if body.preparation_id else None
         source=prep['source'] if prep else store.get(owner,body.data_source_id,'data-sources')
-        if prep and (prep['status']!='ready' or source.get('id')!=body.data_source_id or
-                     any(body.package_ref.model_dump()[key]!=prep['base'][key] for key in ('ontology_id','release_id'))):
-            raise Failure('graph_check_stale','准备结果与当前数据源或知识包不一致，请重新准备',409,'data_import')
+        if prep:
+            ref=body.package_ref.model_dump()
+            package_changed=any(ref[key]!=prep['base'][key] for key in ('ontology_id','release_id'))
+            if prep['status']!='ready' or source.get('id')!=body.data_source_id or package_changed:
+                raise Failure('graph_check_stale','准备结果与当前数据源或知识包不一致，请重新准备',409,'data_import')
         _,receipt=packages.fetch(body.package_ref.model_dump(),token)
         return sources.graph.inspect(owner,source,receipt['ontology_id'],body.preparation_id)
 
-    @app.get(prefix+'/inputs/{rid}')
+    @app.get(f'{prefix}/inputs/{{rid}}')
     def input_metadata(rid:str,request:Request):
         owner,_=actor(request)
         return public(store.get(owner,rid,'inputs'))
 
-    @app.post(prefix+'/data-source-previews')
+    @app.post(f'{prefix}/data-source-previews')
     def source_preview(body:SourcePreview,request:Request):
         owner,token=actor(request)
         source=store.get(owner,body.data_source_id,'data-sources')
@@ -490,7 +495,7 @@ def create_app(config=None,transport=None):
         app.add_api_route(prefix+'/'+kind+'/{rid}',delete,methods=['DELETE'])
     for kind in ('eval-sets','data-sources'): register_definitions(kind)
 
-    @app.post(prefix+'/inputs')
+    @app.post(f'{prefix}/inputs')
     async def upload(request:Request,file:UploadFile=File(...)):
         owner,_=actor(request)
         raw=await file.read(50*1024*1024+1)
@@ -499,7 +504,7 @@ def create_app(config=None,transport=None):
             tables={k:v['columns'] for k,v in tables.items()},content=store.encrypt(tables),created=time.time()))
         return public(record)
 
-    @app.post(prefix+'/package-preparations')
+    @app.post(f'{prefix}/package-preparations')
     def prepare(body:Prepare,request:Request):
         owner,token=actor(request)
         intent=body.model_dump()
@@ -519,31 +524,31 @@ def create_app(config=None,transport=None):
         prep.update(status='ready',package_ref=ref)
         return public(store.save(owner,prep['id'],prep))
 
-    @app.get(prefix+'/package-preparations/{rid}')
+    @app.get(f'{prefix}/package-preparations/{{rid}}')
     def preparation(rid:str,request:Request):
         owner,_=actor(request)
         return public(store.get(owner,rid,'preparations'))
 
-    @app.post(prefix+'/package-publications')
+    @app.post(f'{prefix}/package-publications')
     def publication(body:Publication,request:Request):
         owner,token=actor(request)
         prep=store.get(owner,body.preparation_id,'preparations')
         if prep['status']!='ready': raise Failure('not_ready','包准备尚未完成',409)
         return packages.publish(owner,prep,token,body.request_id,'release')
 
-    @app.get(prefix+'/package-publications')
+    @app.get(f'{prefix}/package-publications')
     def publications(request:Request,offset:int=Query(0,ge=0)):
         owner,_=actor(request)
         page=store.list(owner,'publications',offset)
         page['items']=[public(item) for item in page['items']]
         return page
 
-    @app.get(prefix+'/package-publications/{rid}')
+    @app.get(f'{prefix}/package-publications/{{rid}}')
     def publication_status(rid:str,request:Request):
         owner,_=actor(request)
         return public(store.get(owner,rid,'publications'))
 
-    @app.post(prefix+'/runs',status_code=202)
+    @app.post(f'{prefix}/runs',status_code=202)
     def start(body:Start,request:Request):
         owner,token=actor(request)
         intent=body.model_dump(exclude={'graph_check_id','replace_existing_graph'})
@@ -609,20 +614,20 @@ def create_app(config=None,transport=None):
         return dict(**public(with_base(owner,run)),summary=report(run),artifacts=jobs.view(owner,run['id']),
                     notification=notifier.status(run['id']))
 
-    @app.get(prefix+'/runs')
+    @app.get(f'{prefix}/runs')
     def runs(request:Request,offset:int=Query(0,ge=0),limit:int=Query(20,ge=1,le=20),ontology_id:str=Query('',max_length=128)):
         owner,_=actor(request)
         page=store.package_runs(owner,ontology_id,offset,limit) if ontology_id else store.list(owner,'runs',offset,limit)
         page['items']=[run_view(owner,r) for r in page['items']]
         return page
 
-    @app.get(prefix+'/modeling-projects')
+    @app.get(f'{prefix}/modeling-projects')
     def modeling_projects(request:Request,ontology_id:list[str]=Query(...)):
         # Display only: names come from onto-modeling with the user's own login and are never stored.
         _,token=actor(request)
         return linked_projects(config,http,token,ontology_id)
 
-    @app.get(prefix+'/consumer-models')
+    @app.get(f'{prefix}/consumer-models')
     def consumer_models(request:Request):
         # Choices for a new run's answering model; when unavailable the run uses the consumer default.
         _,token=actor(request)
@@ -631,12 +636,12 @@ def create_app(config=None,transport=None):
         except Failure:
             return {'available':False,'items':[]}
 
-    @app.get(prefix+'/runs/{rid}')
+    @app.get(f'{prefix}/runs/{{rid}}')
     def run(rid:str,request:Request):
         owner,_=actor(request)
         return run_view(owner,store.get(owner,rid,'runs'))
 
-    @app.get(prefix+'/runs/{rid}/results')
+    @app.get(f'{prefix}/runs/{{rid}}/results')
     def results(rid:str,request:Request,offset:int=Query(0,ge=0)):
         owner,_=actor(request)
         cases=store.get(owner,rid,'runs')['cases']
@@ -650,14 +655,14 @@ def create_app(config=None,transport=None):
             items.append(item)
         return dict(items=items,total=len(cases),next_offset=offset+20 if offset+20<len(cases) else None)
 
-    @app.get(prefix+'/runs/{rid}/results/{cid}/answer')
+    @app.get(f'{prefix}/runs/{{rid}}/results/{{cid}}/answer')
     def answer(rid:str,cid:int,request:Request):
         owner,_=actor(request)
         cases=store.get(owner,rid,'runs')['cases']
         if not 0<=cid<len(cases): raise Failure('not_found','用例不存在',404)
         return cases[cid]
 
-    @app.get(prefix+'/runs/{rid}/results/{cid}/evidence')
+    @app.get(f'{prefix}/runs/{{rid}}/results/{{cid}}/evidence')
     def evidence(rid:str,cid:int,request:Request):
         owner,_=actor(request)
         run=store.get(owner,rid,'runs')
@@ -667,7 +672,7 @@ def create_app(config=None,transport=None):
             return {'trace_status':'unavailable','events':[],'message':'消费执行尚未结算'}
         _,token=actor(request)
         try:
-            raw=http.request('GET',config.consumer_url,'/agentic/runs/'+case['remote_id']+'/events?after=0',
+            raw=http.request('GET',config.consumer_url,f"/agentic/runs/{case['remote_id']}/events?after=0",
                              token=token,workspace=run['workspace'],limit=1024*1024)
             events=[]
             for block in raw.decode('utf-8').split('\n\n'):
@@ -681,23 +686,23 @@ def create_app(config=None,transport=None):
             return {'package_ref':run['package_ref'],'consumer':case.get('evidence',{}),
                     'trace_status':'available' if events else 'unavailable','events':events,
                     'truncated':len(events)>=100,'message':'完整工具内容由消费服务管理，此处展示运行事件索引'}
-        except (Failure,ValueError,UnicodeError):
+        except (Failure,ValueError):  # also UnicodeDecodeError
             return {'trace_status':'unavailable','events':[],'message':'消费证据暂不可用，未伪造工具轨迹'}
 
-    @app.get(prefix+'/runs/{rid}/report')
+    @app.get(f'{prefix}/runs/{{rid}}/report')
     def get_report(rid:str,request:Request):
         owner,_=actor(request)
         return report(store.get(owner,rid,'runs'))
 
-    @app.post(prefix+'/runs/{rid}/cancel')
+    @app.post(f'{prefix}/runs/{{rid}}/cancel')
     def cancel(rid:str,request:Request):
         owner,token=actor(request)
         value=engine.stop(owner,rid)
         engine.start(owner,rid,token,refresh_of(request))
         return public(value)
 
-    @app.post(prefix+'/runs/{rid}/resume')
-    @app.post(prefix+'/runs/{rid}/credentials')
+    @app.post(f'{prefix}/runs/{{rid}}/resume')
+    @app.post(f'{prefix}/runs/{{rid}}/credentials')
     def resume(rid:str,request:Request):
         owner,token=actor(request)
         run=store.get(owner,rid,'runs')
@@ -713,13 +718,15 @@ def create_app(config=None,transport=None):
             # The engine marks a resumed run as preparing before it works; return that, not the state read above.
             return public(store.get(owner,rid,'runs'))
 
-    @app.post(prefix+'/runs/{rid}/results/{cid}/override')
+    @app.post(f'{prefix}/runs/{{rid}}/results/{{cid}}/override')
     def override(rid:str,cid:int,body:dict,request:Request):
         owner,token=actor(request)
         with engine.guard:
             run=store.get(owner,rid,'runs')
             if (owner,rid) in engine.active: raise Failure('run_active','运行中不能改判',409)
-            if not 0<=cid<len(run['cases']) or body.get('verdict') not in ('pass','partial','fail') or not isinstance(body.get('reason'),str) or not 0<len(body['reason'])<=4000:
+            reason=body.get('reason')
+            valid_reason=isinstance(reason,str) and 0<len(reason)<=4000
+            if not 0<=cid<len(run['cases']) or body.get('verdict') not in ('pass','partial','fail') or not valid_reason:
                 raise Failure('override_invalid','请提供判定及原因',422)
             if body.get('revision')!=run['revision']: raise Failure('revision_conflict','请刷新后重试',409)
             case=run['cases'][cid]
@@ -731,7 +738,7 @@ def create_app(config=None,transport=None):
         jobs.schedule(owner,rid,token)  # The verdict changed: rebuild the report and tell onto-modeling.
         return saved
 
-    @app.delete(prefix+'/runs/{rid}')
+    @app.delete(f'{prefix}/runs/{{rid}}')
     def delete_run(rid:str,request:Request):
         owner,token=actor(request)
         with engine.guard:
@@ -745,7 +752,7 @@ def create_app(config=None,transport=None):
             task=store.create(owner,'cleanup_tasks',{'run_id':rid,'workspace_done':False,'data_done':False},rid,identity={'run_id':rid})
             if run.get('managed_workspace') and not task['workspace_done']:
                 try:
-                    consumer.call('DELETE','/workspaces/'+run['workspace'],token)
+                    consumer.call('DELETE',f"/workspaces/{run['workspace']}",token)
                 except Failure as exc:
                     if exc.status!=404: raise
                 task['workspace_done']=True

@@ -33,25 +33,28 @@ def test_sql_inspection_readonly_metadata_owner_scope_and_secret_roundtrip(envir
     saved=client.post('/evaluation/api/data-sources',json=payload)
     assert saved.status_code==200,saved.text
     record=saved.json()
-    read=client.get('/evaluation/api/data-sources/'+record['id'])
+    read=client.get(f"/evaluation/api/data-sources/{record['id']}")
     assert read.json()['connection_view']['scene']=='workspace_demo'
     assert read.json()['secret_configured'] is True
     assert 'token' not in read.json()['connection_view']
     assert 'synthetic-invalid-token' not in read.text
     without_token={k:v for k,v in connection.items() if k!='token'}
-    updated=client.put('/evaluation/api/data-sources/'+record['id'],json={**payload,'connection':without_token,'revision':record['revision']})
+    updated=client.put(f"/evaluation/api/data-sources/{record['id']}",json={**payload,'connection':without_token,'revision':record['revision']})
     assert updated.status_code==200,updated.text
     stale=client.post('/evaluation/api/data-sources',json={**payload,'connection':{**connection,'scene':'other_demo'}})
     assert stale.status_code==409
     client.headers['Authorization']='Bearer synthetic-user-b'
     assert client.post('/evaluation/api/data-sources',json=payload).status_code==404
-    assert client.get('/evaluation/api/data-sources/'+record['id']).status_code==404
+    assert client.get(f"/evaluation/api/data-sources/{record['id']}").status_code==404
 
 
 def test_schema_failure_hides_dependency_body_and_duplicate_pages(environment):
     client,app,deps,cfg=environment
     original=deps.json
-    deps.json=lambda method,base,path,**kw: {'success':False,'error':'synthetic dependency diagnostic'} if path=='/api/v1/sql' else original(method,base,path,**kw)
+    def failing_sql(method,base,path,**kw):
+        if path=='/api/v1/sql': return {'success':False,'error':'synthetic dependency diagnostic'}
+        return original(method,base,path,**kw)
+    deps.json=failing_sql
     response=client.post('/evaluation/api/data-source-inspections',json={'provider':'nl2sql_http','connection':sql_connection()})
     assert response.status_code==422
     assert 'synthetic dependency diagnostic' not in response.text
@@ -88,7 +91,7 @@ def test_preview_upload_and_active_task_creation_guard(environment):
     client,app,deps,cfg=environment
     uploaded=client.post('/evaluation/api/inputs',files={'file':('items.csv',b'id,value\nitem_0001,2\n','text/csv')}).json()
     source=client.post('/evaluation/api/data-sources',json={'name':'Synthetic data','mode':'dataset','input_ids':[uploaded['id']]}).json()
-    detail=client.get('/evaluation/api/data-sources/'+source['id']).json()
+    detail=client.get(f"/evaluation/api/data-sources/{source['id']}").json()
     assert detail['inputs'][0]['name']=='items.csv'
     preview=client.post('/evaluation/api/data-source-previews',json={'data_source_id':source['id'],'package_ref':{'ontology_id':'knowledge_package_demo','release_id':'release_demo'}})
     assert preview.status_code==200,preview.text
@@ -120,7 +123,7 @@ def test_graph_preview_uses_uploaded_rows_and_rejects_missing_primary_keys(envir
     assert preview.json()['graph'] is True
     assert preview.json()['instances']==1
     empty=client.post('/evaluation/api/inputs',files={'file':('items.csv',b'id,value\n,2\n','text/csv')}).json()
-    changed=client.put('/evaluation/api/data-sources/'+source['id'],json={**payload,'input_ids':[empty['id']],'revision':source['revision']})
+    changed=client.put(f"/evaluation/api/data-sources/{source['id']}",json={**payload,'input_ids':[empty['id']],'revision':source['revision']})
     assert changed.status_code==200
     assert client.post('/evaluation/api/data-source-previews',json=query).status_code==422
     assert not deps.requests
@@ -130,7 +133,10 @@ def test_sql_pagination_detects_repeated_metadata_and_refuses_secret_retarget(en
     client,app,deps,cfg=environment
     original=deps.json
     rows=[{'table_name':'items','column_name':f'field_{i}','data_type':'int','is_nullable':'YES'} for i in range(200)]
-    deps.json=lambda method,base,path,**kw: {'success':True,'data':rows} if path=='/api/v1/sql' else original(method,base,path,**kw)
+    def repeating_sql(method,base,path,**kw):
+        if path=='/api/v1/sql': return {'success':True,'data':rows}
+        return original(method,base,path,**kw)
+    deps.json=repeating_sql
     response=client.post('/evaluation/api/data-source-inspections',json={'provider':'nl2sql_http','connection':sql_connection()})
     assert response.status_code==409
     assert response.json()['code']=='schema_changed'
@@ -147,7 +153,7 @@ def test_start_rejects_changed_case_revision_before_creating_task(environment):
     client,app,deps,cfg=environment
     prep=preparation(client)
     cases=client.post('/evaluation/api/eval-sets',json={'name':'Synthetic set','cases':[{'question':'Synthetic question'}]}).json()
-    client.put('/evaluation/api/eval-sets/'+cases['id'],json={'name':'Changed synthetic set','cases':[{'question':'Changed synthetic question'}],'revision':cases['revision']})
+    client.put(f"/evaluation/api/eval-sets/{cases['id']}",json={'name':'Changed synthetic set','cases':[{'question':'Changed synthetic question'}],'revision':cases['revision']})
     response=client.post('/evaluation/api/runs',json={'request_id':'run_changed_demo','preparation_id':prep['id'],'eval_set_id':cases['id'],'eval_set_revision':cases['revision']})
     assert response.status_code==409
     assert client.get('/evaluation/api/runs').json()['total']==0
@@ -159,6 +165,6 @@ def test_neo4j_blank_workspace_field_defaults_to_consumer_scope_property(environ
                 'workspace_property':'','workspace_value':'workspace_demo','ontology_property':''}
     saved=client.post('/evaluation/api/data-sources',json={'name':'graph_default_demo','mode':'connection','provider':'neo4j','connection':connection,'import_data':False})
     assert saved.status_code==200,saved.text
-    view=client.get('/evaluation/api/data-sources/'+saved.json()['id']).json()['connection_view']
+    view=client.get(f"/evaluation/api/data-sources/{saved.json()['id']}").json()['connection_view']
     assert view['workspace_property']=='d2o_workspace_id' and view['database']=='neo4j'
     assert 'password' not in view

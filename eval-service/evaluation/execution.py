@@ -2,6 +2,7 @@
 import base64
 import json
 import random
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -13,6 +14,8 @@ from .judge_settings import connection_test_failure
 
 TERMINAL={'completed','failed','cancelled','awaiting_input'}
 SETTLED={'settled','execution_error','cancelled','manual'}
+# Workspace IDs consumer issues for evaluation runs.
+EVAL_WORKSPACE=re.compile(r'eval-[0-9a-f]{32}')
 # Questions of one run sent to consumer at the same time; chosen per run when it is created.
 DEFAULT_CONCURRENCY=4
 MAX_CONCURRENCY=8
@@ -93,7 +96,7 @@ class Consumer:
     def __init__(self,config,http): self.config,self.http=config,http
 
     def call(self,method,path,token,workspace='',**kwargs):
-        return self.http.json(method,self.config.consumer_url,'/agentic'+path,token=token,workspace=workspace,**kwargs)
+        return self.http.json(method,self.config.consumer_url,f'/agentic{path}',token=token,workspace=workspace,**kwargs)
 
     def ensure(self,token,run_id):
         if not self.config.consumer_token:
@@ -113,7 +116,7 @@ class Consumer:
                           exc.status, 'workspace_prepare',upstream_status=status) from exc
         workspace=result.get('workspace') if isinstance(result,dict) else None
         workspace_id=workspace.get('id') if isinstance(workspace,dict) else None
-        if not isinstance(workspace_id,str) or not workspace_id.startswith('eval-') or len(workspace_id)!=37 or any(c not in '0123456789abcdef' for c in workspace_id[5:]):
+        if not isinstance(workspace_id,str) or not EVAL_WORKSPACE.fullmatch(workspace_id):
             raise Failure('consumer_workspace_protocol','consumer 未返回有效的评测空间标识，请检查服务版本',502,'workspace_prepare')
         return workspace_id
 
@@ -123,7 +126,7 @@ class Consumer:
         Only the user's own workspace permissions are used: create it when missing, otherwise reuse it only
         when this user owns it and has not shared it, because the run imports and activates a package there.
         """
-        path='/workspaces/'+quote(workspace_id,safe='')
+        path=f"/workspaces/{quote(workspace_id,safe='')}"
         taken=Failure('workspace_not_owned',f'consumer 工作空间 {workspace_id} 不是你独占的空间，评测不会在他人或共享的空间中导入知识包；请更换数据源中的工作空间 ID',409,'workspace_prepare')
         try:
             current=self.call('GET',path,token)
@@ -155,7 +158,7 @@ class Consumer:
         numbered in call order and stored apart from the case as evidence for optimization suggestions.
         """
         try:
-            raw=self.http.request('GET',self.config.consumer_url,'/agentic/runs/'+quote(remote_id,safe='')+'/events?after_seq=0',
+            raw=self.http.request('GET',self.config.consumer_url,f"/agentic/runs/{quote(remote_id,safe='')}/events?after_seq=0",
                                   token=token,workspace=ws,limit=1024*1024,timeout=15)
             calls,failures,items,open_calls=0,[],[],[]
             for block in raw.decode('utf-8').split('\n\n'):
@@ -193,7 +196,7 @@ class Consumer:
             return {'status':'complete','tool_calls':calls,'tool_failures':failures,'calls':kept,'omitted_calls':len(items)-len(kept)}
         except Failure as exc:
             return {'status':'unavailable','error':exc.message}
-        except (ValueError,UnicodeError):
+        except ValueError:  # also UnicodeDecodeError
             return {'status':'unavailable','error':'执行事件格式无法解析'}
 
     def global_models(self,token):
@@ -236,7 +239,7 @@ class Consumer:
             if exc.status!=409 or exc.code=='package_name_conflict': raise
             # Retry the exact immutable Hub bytes of this version, also in a reused graph workspace.
             upload(data={'action':'overwrite_version'})
-        result=self.call('PUT','/ontologies/'+quote(receipt['ontology_id'],safe='')+'/active-version',token,ws,
+        result=self.call('PUT',f"/ontologies/{quote(receipt['ontology_id'],safe='')}/active-version",token,ws,
                          json={'version':receipt['version']})
         if result.get('active_version')!=receipt['version']:
             raise Failure('activation_mismatch','消费激活版本不一致',409,'package_activate')
@@ -492,8 +495,8 @@ class Engine:
                 source_definition['connection']=self.store.encrypt(graph_config)
             source=self.data.prepare(rid,source_definition,run.get('mapping'),run.get('relations'))
             if source:
-                self.consumer.call('PUT','/ontologies/'+quote(run['package_ref']['ontology_id'],safe='')+'/data-source',token,ws,json=source)
-                probe=self.consumer.call('POST','/ontologies/'+quote(run['package_ref']['ontology_id'],safe='')+'/data-source/test',token,ws,json={})
+                self.consumer.call('PUT',f"/ontologies/{quote(run['package_ref']['ontology_id'],safe='')}/data-source",token,ws,json=source)
+                probe=self.consumer.call('POST',f"/ontologies/{quote(run['package_ref']['ontology_id'],safe='')}/data-source/test",token,ws,json={})
                 if probe.get('success') is not True:
                     raise Failure('data_source_unavailable','消费数据源连接检查失败',503,'data_import')
             run=self.update(owner,rid,data_ready=True)
@@ -546,9 +549,9 @@ class Engine:
                         raise Failure('remote_timeout','消费运行尚未结束，请对账恢复',504,'cases')
                     token=self.token(owner,rid)
                     cancelling=self.store.get(owner,rid,'runs').get('cancel_requested',False)
-                    remote_path='/runs/'+quote(case['remote_id'],safe='')
+                    remote_path=f"/runs/{quote(case['remote_id'],safe='')}"
                     if cancelling:
-                        self.consumer.call('POST',remote_path+'/cancel',token,ws,json={})
+                        self.consumer.call('POST',f'{remote_path}/cancel',token,ws,json={})
                     response=self.consumer.call('GET',remote_path,token,ws)
                     if response['status'] in TERMINAL: break
                     time.sleep(1)
@@ -618,8 +621,8 @@ class Engine:
                 case['remote_id']=self.submit(token,rid,run,index,case)
                 self.update(owner,rid,cases=run['cases'])
             if case.get('remote_id'):
-                path='/runs/'+quote(case['remote_id'],safe='')
-                self.consumer.call('POST',path+'/cancel',token,run['workspace'],json={})
+                path=f"/runs/{quote(case['remote_id'],safe='')}"
+                self.consumer.call('POST',f'{path}/cancel',token,run['workspace'],json={})
                 deadline=time.monotonic()+30
                 while True:
                     if self.stopping: return

@@ -132,7 +132,7 @@ def test_duplicate_keys_unknown_objects_and_runtime_bindings_are_rejected(store)
     base = publish(store)
     actor, result, _ = derived(store, base)
     invalid = mapping()
-    invalid['objects']['object_demo']['password'] = 'synthetic-placeholder'
+    invalid['objects']['object_demo']['password'] = 'synthetic-invalid-password'
     for data in (archive(result['version'], invalid),
                  archive(result['version'], mapping(), {'manifest.yaml': 'id: a\nid: b\n'}),
                  archive(result['version'], {'schema_version': '0.1', 'objects': {'missing': {}}})):
@@ -269,8 +269,8 @@ def test_http_contract_with_real_authorization_boundary(api):
             package_url = '/api/packages/ontology_demo'
             assert client.get('/api/packages', headers=headers[service]).json()['items'][0]['creator'] == creator
             assert client.get(package_url, headers=headers[service]).json()['creator'] == creator
-            assert client.get(package_url + '/releases', headers=headers[service]).json()['items'][0]['creator'] == creator
-            assert client.get(package_url + '/releases/' + receipt['release_id'],
+            assert client.get(f'{package_url}/releases', headers=headers[service]).json()['items'][0]['creator'] == creator
+            assert client.get(f"{package_url}/releases/{receipt['release_id']}",
                               headers=headers[service]).json()['creator'] == creator
             response = client.get(url, headers=headers[service])
             assert response.status_code == 200 and response.content == data

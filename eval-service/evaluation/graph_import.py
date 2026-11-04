@@ -46,11 +46,12 @@ def snapshot(tx, scope, include_ids=False):
     if nodes > MAX_NODES or relationships + external > MAX_RELATIONSHIPS:
         raise Failure('graph_scope_limit', '图范围超过 10 万个节点或 20 万条关系，请缩小范围后重新检查', 413, 'data_import')
     fingerprint = hashlib.sha256()
-    identifiers = {'node': [], 'relationship': []}
+    node_ids, relationship_ids = [], []
     # Only bounded element identifiers are streamed; graph properties never leave the database.
-    for kind, query, count, maximum in (
-        ('node', match + ' RETURN elementId(n) AS id ORDER BY id LIMIT $maximum', nodes, MAX_NODES),
-        ('relationship', internal + ' RETURN elementId(r) AS id ORDER BY id LIMIT $maximum', relationships, MAX_RELATIONSHIPS),
+    for kind, query, count, maximum, ids in (
+        ('node', match + ' RETURN elementId(n) AS id ORDER BY id LIMIT $maximum', nodes, MAX_NODES, node_ids),
+        ('relationship', internal + ' RETURN elementId(r) AS id ORDER BY id LIMIT $maximum', relationships,
+         MAX_RELATIONSHIPS, relationship_ids),
     ):
         observed = 0
         for record in tx.run(query, **params, maximum=maximum + 1):
@@ -58,12 +59,12 @@ def snapshot(tx, scope, include_ids=False):
             if observed > maximum:
                 raise Failure('graph_scope_changed', '图数据在检查期间发生变化，请重新检查并确认', 409, 'data_import')
             fingerprint.update(canonical([kind, record['id']]).encode())
-            if include_ids: identifiers[kind].append(record['id'])
+            if include_ids: ids.append(record['id'])
         if observed != count:
             raise Failure('graph_scope_changed', '图数据在检查期间发生变化，请重新检查并确认', 409, 'data_import')
     result = {'node_count': nodes, 'relationship_count': relationships, 'boundary_relationship_count': external,
               'snapshot': fingerprint.hexdigest()}
-    if include_ids: result['identifiers'] = identifiers
+    if include_ids: result['identifiers'] = {'node': node_ids, 'relationship': relationship_ids}
     return result
 
 

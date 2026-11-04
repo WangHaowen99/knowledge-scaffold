@@ -63,20 +63,20 @@ def test_resource_authorization_and_atomic_target_validation(api, monkeypatch):
         client.post('/api/package-publish-requests/request_demo/commit', headers=headers['consumer'])
         url = '/api/packages/ontology_demo'
         assert client.get(url, headers=headers['evaluation']).json()['name'] == 'knowledge_package_demo'
-        assert client.get(url + '/resources/current', headers=headers['evaluation']).json()['files'] == []
-        assert client.delete(url + '/resources/current', headers={**headers['consumer'], 'X-Resource-Generation':'1'}).status_code == 403
-        assert client.delete(url + '/resources/current', headers={**headers['modeling'], 'X-Resource-Generation':'1'}).json()['empty']
+        assert client.get(f'{url}/resources/current', headers=headers['evaluation']).json()['files'] == []
+        assert client.delete(f'{url}/resources/current', headers={**headers['consumer'], 'X-Resource-Generation':'1'}).status_code == 403
+        assert client.delete(f'{url}/resources/current', headers={**headers['modeling'], 'X-Resource-Generation':'1'}).json()['empty']
         target = {'issuer': 'https://service.example.net', 'sub': 'operator_not_registered'}
-        response = client.put(url + '/authorized-users', headers=headers['consumer'],
+        response = client.put(f'{url}/authorized-users', headers=headers['consumer'],
                               json={'users': [target]})
         assert response.status_code == 200
-        response = client.put(url + '/authorized-users', headers=headers['consumer'],
+        response = client.put(f'{url}/authorized-users', headers=headers['consumer'],
                               json={'users': [dict(target, sub='operator_new'),
                                               dict(target, issuer='https://other.example.com')]})
         assert response.status_code == 422
-        assert client.get(url + '/authorized-users', headers=headers['consumer']).json()['total'] == 2
+        assert client.get(f'{url}/authorized-users', headers=headers['consumer']).json()['total'] == 2
     with patch('hub.user_auth.urllib.request.OpenerDirector.open', side_effect=lambda *a, **k: userinfo('operator_other')):
-        assert client.get(url + '/resources/current', headers=headers['consumer']).status_code == 404
+        assert client.get(f'{url}/resources/current', headers=headers['consumer']).status_code == 404
         assert client.post('/api/package-publish-requests', headers=headers['consumer'],
                            json=dict(body, request_id='duplicate_other')).status_code == 404
 

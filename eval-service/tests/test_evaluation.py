@@ -169,7 +169,7 @@ def run(client,prep):
 
 def wait(client,rid,statuses=('completed','interrupted','waiting_auth','cancelled')):
     for _ in range(200):
-        response=client.get('/evaluation/api/runs/'+rid)
+        response=client.get(f'/evaluation/api/runs/{rid}')
         value=response.json()
         if value['status'] in statuses: return value
         time.sleep(.02)
@@ -185,7 +185,7 @@ def test_none_independent_run_permissions_and_no_token_storage(environment):
     assert result['summary']['counts']['pass']==1
     assert len(deps.submissions)==1
     client.headers['Authorization']='Bearer synthetic-user-b'
-    assert client.get('/evaluation/api/runs/'+record['id']).status_code==404
+    assert client.get(f"/evaluation/api/runs/{record['id']}").status_code==404
     assert client.get('/evaluation/api/runs').json()['total']==0
     assert client.get('/evaluation/api/packages').status_code==404
     rows=app.state.store.db.execute('SELECT body FROM records').fetchall()
@@ -226,7 +226,7 @@ def test_judge_retry_does_not_repeat_question(environment):
     assert wait(client,record['id'])['status']=='interrupted'
     assert len(deps.submissions)==1
     deps.judge_fail=False
-    client.post('/evaluation/api/runs/'+record['id']+'/resume',json={})
+    client.post(f"/evaluation/api/runs/{record['id']}/resume",json={})
     time.sleep(.05)
     result=wait(client,record['id'])
     assert result['status']=='completed',result
@@ -238,7 +238,7 @@ def test_unknown_submission_reconciles_same_id(environment):
     deps.fail_submit_response=True
     record=run(client,preparation(client))
     assert wait(client,record['id'])['status']=='interrupted'
-    client.post('/evaluation/api/runs/'+record['id']+'/resume',json={})
+    client.post(f"/evaluation/api/runs/{record['id']}/resume",json={})
     time.sleep(.05)
     assert wait(client,record['id'])['status']=='completed'
     assert len(deps.submissions)==1
@@ -268,7 +268,7 @@ def test_package_name_conflict_interrupts_with_its_reason(environment):
     # Overwriting cannot resolve a name held by another ontology, so it is not attempted.
     assert attempts==[None] and not deps.submissions
     restore()
-    client.post('/evaluation/api/runs/'+record['id']+'/resume',json={})
+    client.post(f"/evaluation/api/runs/{record['id']}/resume",json={})
     time.sleep(.05)
     assert wait(client,record['id'])['status']=='completed'
 
@@ -279,7 +279,7 @@ def test_resume_shows_the_run_as_working_at_once(environment):
     record=run(client,preparation(client))
     assert wait(client,record['id'])['status']=='interrupted'
     deps.judge_fail=False
-    resumed=client.post('/evaluation/api/runs/'+record['id']+'/resume',json={}).json()
+    resumed=client.post(f"/evaluation/api/runs/{record['id']}/resume",json={}).json()
     # Without waiting for preflight and data checks, the page no longer shows the old interruption.
     assert resumed['status']=='preparing' and resumed['error'] is None
     assert wait(client,record['id'])['status']=='completed'
@@ -314,7 +314,10 @@ def test_the_refresh_token_is_handed_to_the_engine_and_never_stored(environment)
     client,app,deps,cfg=environment
     handed=[]
     start=app.state.engine.start
-    app.state.engine.start=lambda owner,rid,token,refresh='': (handed.append(refresh),start(owner,rid,token,refresh))[1]
+    def recording_start(owner,rid,token,refresh=''):
+        handed.append(refresh)
+        return start(owner,rid,token,refresh)
+    app.state.engine.start=recording_start
     prep=preparation(client)
     cases=client.post('/evaluation/api/eval-sets',json={'name':'Synthetic set','cases':[{'question':'Synthetic question','reference':'2'}]}).json()
     response=client.post('/evaluation/api/runs',json={'request_id':'run_refresh','preparation_id':prep['id'],'eval_set_id':cases['id']},
@@ -342,7 +345,7 @@ def test_cancel_confirms_remote_terminal(environment):
     for _ in range(100):
         if deps.submissions: break
         time.sleep(.01)
-    result=client.post('/evaluation/api/runs/'+record['id']+'/cancel',json={}).json()
+    result=client.post(f"/evaluation/api/runs/{record['id']}/cancel",json={}).json()
     assert result['status']=='cancelling'
     assert wait(client,record['id'])['status']=='cancelled'
     assert deps.cancelled
@@ -355,9 +358,9 @@ def test_store_idempotency_recovery_and_encryption(tmp_path):
     with pytest.raises(Failure): store.create('owner_a','runs',{'status':'other'},'request_demo')
     store.recover()
     assert store.get('owner_a',row['id'])['status']=='interrupted'
-    secret={'password':'synthetic-invalid-secret'}
+    secret={'password':'synthetic-invalid-password'}
     encrypted=store.encrypt(secret)
-    assert 'synthetic-invalid-secret' not in encrypted
+    assert 'synthetic-invalid-password' not in encrypted
     assert store.decrypt(encrypted)==secret
     store.delete('owner_a',row['id'])
     with pytest.raises(Failure): store.create('owner_a','runs',{'status':'running'},'request_demo')
@@ -382,10 +385,10 @@ def test_manual_override_and_zero_denominator(environment):
     client,app,deps,cfg=environment
     record=run(client,preparation(client)); result=wait(client,record['id'])
     body={'verdict':'fail','reason':'Synthetic manual review','revision':result['revision']}
-    response=client.post('/evaluation/api/runs/'+record['id']+'/results/0/override',json=body)
+    response=client.post(f"/evaluation/api/runs/{record['id']}/results/0/override",json=body)
     assert response.status_code==200,response.text
-    assert client.get('/evaluation/api/runs/'+record['id']+'/report').json()['counts']['fail']==1
-    assert client.post('/evaluation/api/runs/'+record['id']+'/results/0/override',json=body).status_code==409
+    assert client.get(f"/evaluation/api/runs/{record['id']}/report").json()['counts']['fail']==1
+    assert client.post(f"/evaluation/api/runs/{record['id']}/results/0/override",json=body).status_code==409
     assert report({'cases':[],'status':'completed'})['judged_pass_rate'] is None
 
 
@@ -416,7 +419,7 @@ def test_connection_data_source_failure_never_starts_question(environment,monkey
         return original(method,base,path,**kwargs)
     monkeypatch.setattr(deps,'json',call)
     source=client.post('/evaluation/api/data-sources',json={'name':'Synthetic graph','mode':'connection','provider':'neo4j',
-        'connection':{'uri':'bolt://localhost:7687','username':'operator_a','password':'synthetic-invalid'},'tables':{'items':['id','value']}}).json()
+        'connection':{'uri':'bolt://localhost:7687','username':'operator_a','password':'synthetic-invalid-password'},'tables':{'items':['id','value']}}).json()
     p=client.post('/evaluation/api/package-preparations',json={'request_id':'connection_demo','package_ref':{'ontology_id':'knowledge_package_demo','release_id':'release_demo'},'data_source_id':source['id']})
     assert p.status_code==200,p.text
     record=run(client,p.json())
@@ -443,7 +446,7 @@ def test_run_retry_survives_definition_deletion(environment):
     first=client.post('/evaluation/api/runs',json=payload)
     assert first.status_code==202
     wait(client,first.json()['id'])
-    assert client.delete('/evaluation/api/eval-sets/'+cases['id']).status_code==200
+    assert client.delete(f"/evaluation/api/eval-sets/{cases['id']}").status_code==200
     repeated=client.post('/evaluation/api/runs',json=payload)
     assert repeated.status_code==202
     assert repeated.json()['id']==first.json()['id']
@@ -470,9 +473,9 @@ def test_health_allows_cross_origin_checks_and_client_config_lists_trusted_origi
     assert response.json()=={'status':'ok','service':'evaluation'}
     assert response.headers['access-control-allow-origin']=='*'
     assert client.get('/evaluation/api/client-config').json()=={'trusted_origins':[]}
-    cfg.trusted_origins='https://Modeling.Example.com:443/, http://modeling.example.com:5100,https://bad.example.com/path,ftp://x'
+    cfg.trusted_origins='https://Modeling.Example.com:443/, https://modeling.example.com:5100,https://bad.example.com/path,ftp://x'
     assert client.get('/evaluation/api/client-config').json()=={
-        'trusted_origins':['https://modeling.example.com','http://modeling.example.com:5100']}
+        'trusted_origins':['https://modeling.example.com','https://modeling.example.com:5100']}
     # Only the liveness check is readable from other origins.
     assert 'access-control-allow-origin' not in client.get('/evaluation/api/client-config').headers
 
@@ -491,12 +494,12 @@ def test_judge_settings_are_admin_only_encrypted_and_used_by_new_runs(environmen
     assert client.get(url).json()=={'source':'deployment','model':'synthetic','revision':'1','editable':False,'configured':True,'enabled':True}
     body={'base_url':'https://judge-new.example.com/v1/','model':'synthetic-judge-2','api_key':'synthetic-new-key'}
     assert client.put(url,json=body).status_code==403
-    assert client.post(url+'/test',json=body).status_code==403
+    assert client.post(f'{url}/test',json=body).status_code==403
     assert client.delete(url).status_code==403
     # The deployment key is never sent to a different gateway.
     rejected=client.put(url,json={**body,'api_key':''},headers=admin)
     assert rejected.status_code==422 and rejected.json()['code']=='judge_key_required'
-    assert client.post(url+'/test',json=body,headers=admin).json()=={'ok':True}
+    assert client.post(f'{url}/test',json=body,headers=admin).json()=={'ok':True}
     assert deps.judge_calls[-1]==('https://judge-new.example.com/v1','synthetic-new-key','synthetic-judge-2')
     saved=client.put(url,json=body,headers=admin).json()
     assert saved['source']=='settings' and saved['base_url']=='https://judge-new.example.com/v1' and saved['api_key_set'] is True

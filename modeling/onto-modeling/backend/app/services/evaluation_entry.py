@@ -20,7 +20,7 @@ def normalize(value: str) -> str:
     url = urlsplit(value)
     if url.scheme not in ("http", "https") or not url.hostname:
         raise ValueError("评测服务地址必须是完整的独立 http(s) 地址")
-    if url.username or url.password or url.query or url.fragment:
+    if any((url.username, url.password, url.query, url.fragment)):
         raise ValueError("评测服务地址不能包含账号、查询参数或片段")
     if url.path.rstrip("/") not in ("", "/evaluation"):
         raise ValueError("评测服务地址的路径必须是 /evaluation/")

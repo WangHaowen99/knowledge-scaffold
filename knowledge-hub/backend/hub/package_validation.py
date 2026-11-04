@@ -35,7 +35,12 @@ StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, yam
 
 
 def parse_yaml(raw):
-    return yaml.load(raw, Loader=StrictLoader)
+    # StrictLoader is a SafeLoader that also rejects aliases and duplicate keys.
+    loader = StrictLoader(raw)
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
 
 
 def validate_mapping(raw, files):
@@ -106,12 +111,13 @@ def inspect_package(store, path, ontology_id, version):
                 relative = info.filename[len(ontology_id) + 1:]
                 with archive.open(info) as stream:
                     files[relative] = hashlib.file_digest(stream, 'sha256').hexdigest()
-            manifest_path = ontology_id + '/manifest.yaml'
+            manifest_path = f'{ontology_id}/manifest.yaml'
             if archive.getinfo(manifest_path).file_size > 65536:
                 raise ValueError('Oversized manifest')
             manifest = parse_yaml(archive.read(manifest_path))
-            if not isinstance(manifest, dict) or any(manifest.get(k) != v for k, v in {
-                    'id': ontology_id, 'version': version, 'kind': 'ontology-package'}.items()) or manifest.get('schema_version') not in ('0.1', '0.2'):
+            identity = {'id': ontology_id, 'version': version, 'kind': 'ontology-package'}
+            if (not isinstance(manifest, dict) or any(manifest.get(k) != v for k, v in identity.items())
+                    or manifest.get('schema_version') not in ('0.1', '0.2')):
                 raise ValueError('Unsupported manifest or identity mismatch')
             if manifest['schema_version'] == '0.2' and manifest.get('solver_layout') != 'operation-centric.v1':
                 raise ValueError('Unsupported solver layout')
@@ -138,7 +144,7 @@ def inspect_package(store, path, ontology_id, version):
                     raise ValueError('Oversized mapping')
                 validate_mapping(archive.read(ontology_id + '/' + MAPPING), files)
         return manifest, files
-    except (ValueError, TypeError, KeyError, UnicodeError, yaml.YAMLError, RecursionError) as exc:
+    except (ValueError, TypeError, KeyError, yaml.YAMLError, RecursionError) as exc:
         raise PackageError('invalid_package', 'Invalid or unsupported package structure') from exc
 
 
@@ -151,6 +157,8 @@ def validate_derivation(store, new_path, receipt, base_path=None, base_receipt=N
     before.pop('version')
     # Current 0.1 export has no derived checksum index. All other manifest fields
     # and Markdown indexes remain unchanged; future schemas need explicit rules.
-    unchanged = lambda values: {k: v for k, v in values.items() if k not in (MAPPING, 'manifest.yaml')}
+    def unchanged(values):
+        return {k: v for k, v in values.items() if k not in (MAPPING, 'manifest.yaml')}
+
     if MAPPING not in files or manifest != before or unchanged(files) != unchanged(previous):
         raise PackageError('mapping_scope_violation', 'Mapping publication changes knowledge content', 409)

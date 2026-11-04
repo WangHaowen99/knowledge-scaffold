@@ -60,6 +60,6 @@ def test_runs_recorded_before_base_ref_show_the_release_kept_by_their_preparatio
     legacy = {k: v for k, v in store.get(owner, record['id'], 'runs').items() if k not in ('id', 'revision', 'base_ref')}
     store.save(owner, record['id'], legacy)
     assert client.get('/evaluation/api/runs').json()['items'][0]['base_ref']['version'] == '0.1.1'
-    assert client.get('/evaluation/api/runs/' + record['id']).json()['base_ref']['version'] == '0.1.1'
+    assert client.get(f"/evaluation/api/runs/{record['id']}").json()['base_ref']['version'] == '0.1.1'
     # Display only: the stored run keeps its original shape.
     assert 'base_ref' not in store.get(owner, record['id'], 'runs')

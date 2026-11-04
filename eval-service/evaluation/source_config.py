@@ -8,6 +8,7 @@ from .data_sources import identifier
 
 SQL_KEYS = ('url', 'scene', 'evaluation_workspace_id', 'token')
 GRAPH_KEYS = ('uri', 'database', 'username', 'password', 'workspace_property', 'workspace_value', 'ontology_property')
+GRAPH_SCHEMES = ('bolt', 'neo4j', 'bolt+s', 'neo4j+s', 'bolt+ssc', 'neo4j+ssc')
 
 
 class SourceConfig:
@@ -43,7 +44,8 @@ class SourceConfig:
             value[secret] = previous.get(secret, '')
         if provider == 'neo4j':
             uri = urlsplit(value['uri'])
-            if uri.scheme not in ('bolt', 'neo4j', 'bolt+s', 'neo4j+s', 'bolt+ssc', 'neo4j+ssc') or not uri.hostname or uri.username or uri.password or uri.query or uri.fragment:
+            extras = (uri.username, uri.password, uri.query, uri.fragment)
+            if uri.scheme not in GRAPH_SCHEMES or not uri.hostname or any(extras):
                 raise Failure('connection_invalid', '请填写有效的 Neo4j URL', 422)
             if not value['username'] or not value['password']:
                 raise Failure('connection_invalid', '请填写图库账号与密码', 422)

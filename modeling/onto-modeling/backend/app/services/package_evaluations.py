@@ -173,7 +173,8 @@ def receive(notification):
 def reconcile(package_id, subject, token):
     """Replace the caller's index with the evaluation service's view, so deleted runs disappear from it."""
     started = time.time()
-    value = eval_client.call('GET', '/package-evaluations?' + urllib.parse.urlencode({'ontology_id': package_id}), token)
+    query = urllib.parse.urlencode({'ontology_id': package_id})
+    value = eval_client.call('GET', f'/package-evaluations?{query}', token)
     if not isinstance(value, dict) or not isinstance(value.get('releases'), list):
         raise _invalid_response()
     owner = value.get('owner')
@@ -242,7 +243,7 @@ def _linked_run(pid, subject, token, run_id):
         raise WorkspaceError('尚未关联个人 Hub 包', 404)
     if not re.fullmatch(RUN_PATTERN, run_id):
         raise _not_found()
-    run = eval_client.call('GET', '/runs/' + run_id, token)
+    run = eval_client.call('GET', f'/runs/{run_id}', token)
     if not isinstance(run, dict):
         raise _invalid_response()
     package_id = _reference(run, 'base_ref').get('ontology_id') or _reference(run, 'package_ref').get('ontology_id')
@@ -346,7 +347,9 @@ def _previous_import(root, run_id, artifacts):
     """The record of this exact artifact revision, unless its files are gone or suggestions arrived since."""
     state = root.joinpath(*STATE_DIR)
     record = knowledge_hub.load(state / 'imports.json', {}).get(run_id)
-    if not record or record['revision'] != artifacts.revision or (artifacts.suggestions == 'ready' and not record['suggestions']):
+    if not record or record['revision'] != artifacts.revision:
+        return None
+    if artifacts.suggestions == 'ready' and not record['suggestions']:
         return None
     reports = [f'{record["stem"]}.md', f'{record["stem"]}.answers.json'] + ([record['suggestions']] if record['suggestions'] else [])
     if all((root / 'reports' / name).is_file() for name in reports) and (state / f'{record["stem"]}.json').is_file():

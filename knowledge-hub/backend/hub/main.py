@@ -53,8 +53,7 @@ def stream_file(path, filename, digest, media_type='application/octet-stream'):
     handle = path.open('rb')
     def chunks():
         try:
-            while chunk := handle.read(1024 * 1024):
-                yield chunk
+            yield from iter(lambda: handle.read(1024 * 1024), b'')
         finally:
             handle.close()
     return StreamingResponse(chunks(), media_type=media_type,

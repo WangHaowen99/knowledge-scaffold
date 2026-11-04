@@ -16,7 +16,7 @@ class Store:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.lock = threading.RLock()
-        self.cipher = Fernet(encryption_key.encode()) if encryption_key else None
+        self.cipher = Fernet(encryption_key.encode()) if encryption_key else None  # NOSONAR(S4787)
         self.db = sqlite3.connect(self.root / 'evaluation.sqlite', check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript('''

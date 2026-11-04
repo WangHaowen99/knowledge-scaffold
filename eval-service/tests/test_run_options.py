@@ -125,6 +125,7 @@ def test_graph_runs_use_the_workspace_value_as_the_consumer_workspace(environmen
             return consumer_data_source(kwargs['json'])
         if path.endswith('/data-source/test'):
             return {'success': True}
+        return None
 
     wrap(deps, consumer)
     created = graph_run(client, deps, 'run_graph_created')
@@ -138,7 +139,7 @@ def test_graph_runs_use_the_workspace_value_as_the_consumer_workspace(environmen
     assert reused['status'] == 'completed', reused
     assert ('POST', '/agentic/workspaces', '') not in calls
     # The user's graph workspace is shared by later runs and is never deleted with a run.
-    assert client.delete('/evaluation/api/runs/' + created['id']).json() == {'deleted': True}
+    assert client.delete(f"/evaluation/api/runs/{created['id']}").json() == {'deleted': True}
     assert not any(method == 'DELETE' for method, _, _ in calls)
 
 
@@ -154,6 +155,7 @@ def test_graph_runs_refuse_foreign_or_shared_workspaces(environment):
             return {'success': True}
         if path == '/agentic/workspaces/workspace_foreign':
             raise Failure('dependency_rejected', 'Forbidden', 403, 'dependency', upstream_status=403)
+        return None
 
     wrap(deps, consumer)
     deps.workspaces['workspace_shared'] = {'id': 'workspace_shared', 'role': 'admin', 'members': ['operator_b']}
@@ -176,6 +178,7 @@ def test_nl2sql_runs_use_the_evaluation_workspace_id_as_the_consumer_workspace(e
             return consumer_data_source(kwargs['json'])
         if path.endswith('/data-source/test'):
             return {'success': True}
+        return None
 
     wrap(deps, consumer)
     connection = {'url': 'https://service.example.net', 'scene': 'scene_demo',
@@ -193,5 +196,5 @@ def test_nl2sql_runs_use_the_evaluation_workspace_id_as_the_consumer_workspace(e
     assert {ws for _, path, ws in calls if path.endswith('/import-zip') or path == '/agentic/runs'} == {'workspace_sql_demo'}
     sent = next(kwargs['json'] for _, path, kwargs in captured if path.endswith('/data-source'))
     assert sent['config'] == {'url': 'https://service.example.net', 'scene': 'scene_demo', 'token': 'synthetic-invalid-token'}
-    assert client.delete('/evaluation/api/runs/' + result['id']).json() == {'deleted': True}
+    assert client.delete(f"/evaluation/api/runs/{result['id']}").json() == {'deleted': True}
     assert not any(method == 'DELETE' for method, _, _ in calls)

@@ -27,7 +27,8 @@ def test_actual_route_cannot_spoof_owner_and_is_idempotent(monkeypatch):
         records.setdefault(rid,{'id':rid,'owner':owner})
         return {'created':created,'workspace':records[rid]}
     fake=ModuleType('api.auth.service_auth')
-    fake.evaluation_service_authorized=lambda request:request.service_valid
+    def authorized(request): return request.service_valid
+    fake.evaluation_service_authorized=authorized
     monkeypatch.setitem(sys.modules,'api.auth.service_auth',fake)
     from fastapi.responses import JSONResponse
     import re

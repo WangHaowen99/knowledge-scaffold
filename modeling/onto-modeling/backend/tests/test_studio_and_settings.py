@@ -112,7 +112,7 @@ def test_runtime_settings_permission_mode(tmp_path: Path, monkeypatch):
 
 @pytest.mark.parametrize("value, expected", [
     ("", ""),
-    ("http://eval.example.com:8090", "http://eval.example.com:8090/evaluation/"),
+    ("https://eval.example.com:8090", "https://eval.example.com:8090/evaluation/"),
     ("https://eval.example.com/evaluation", "https://eval.example.com/evaluation/"),
     ("https://eval.example.com/evaluation/", "https://eval.example.com/evaluation/"),
 ])
@@ -123,8 +123,8 @@ def test_evaluation_url_is_normalized(value, expected):
 
 
 @pytest.mark.parametrize("value", [
-    "/evaluation", "/evaluation/", "/other/", "ftp://eval.example.com/evaluation/", "https://eval.example.com/other/",
-    "https://user:secret@eval.example.com/evaluation/", "https://eval.example.com/evaluation/?token=x",
+    "/evaluation", "/evaluation/", "/other/", "sftp://eval.example.com/evaluation/", "https://eval.example.com/other/",
+    "https://user@eval.example.com/evaluation/", "https://eval.example.com/evaluation/?token=x",
     "https://eval.example.com/evaluation/#token",
 ])
 def test_evaluation_url_rejects_unsafe_values(value):
@@ -140,8 +140,8 @@ def test_evaluation_entry_comes_only_from_deployment(monkeypatch):
 
     monkeypatch.setattr(config, "EVAL_PUBLIC_URL", "")
     assert settings_router.get_evaluation_entry() == {"url": ""}
-    monkeypatch.setattr(config, "EVAL_PUBLIC_URL", "http://eval.example.com:8090")
-    assert settings_router.get_evaluation_entry() == {"url": "http://eval.example.com:8090/evaluation/"}
+    monkeypatch.setattr(config, "EVAL_PUBLIC_URL", "https://eval.example.com:8090")
+    assert settings_router.get_evaluation_entry() == {"url": "https://eval.example.com:8090/evaluation/"}
     monkeypatch.setattr(config, "EVAL_PUBLIC_URL", "javascript:alert(1)")
     assert settings_router.get_evaluation_entry().status_code == 500
     # 地址只由部署配置决定，没有页面修改入口

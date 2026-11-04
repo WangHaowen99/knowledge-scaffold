@@ -23,7 +23,7 @@ def linked_projects(config, http, token, package_ids):
         return UNAVAILABLE
     query = urlencode([('ontology_id', value) for value in wanted])
     try:
-        value = http.json('GET', config.modeling_url, '/api/hub/package-projects?' + query, token=token, limit=65536)
+        value = http.json('GET', config.modeling_url, f'/api/hub/package-projects?{query}', token=token, limit=65536)
     except Failure:
         return UNAVAILABLE
     if not isinstance(value, dict) or not isinstance(value.get('items'), list):

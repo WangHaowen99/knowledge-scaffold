@@ -6,7 +6,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib
 import json
 from pathlib import Path
-import subprocess
 import threading
 
 import pytest
@@ -16,7 +15,7 @@ from app import config
 from app.main import app
 from app.routers import projects
 from app.services import auth, eval_client, hub_packages, package_evaluations
-from app.services.workspace import WorkspaceError, WorkspaceManager
+from app.services.workspace import WorkspaceError, WorkspaceManager, _git
 
 SERVICE_TOKEN = 'synthetic-evaluation-service-token-000000'
 USER = {'sub': 'operator_a', 'iss': 'https://example.com'}
@@ -25,8 +24,8 @@ PACKAGE = 'pkg_demo'
 # Evaluation-service owners of two users sharing the package; synthetic digests.
 OWNER = 'a' * 64
 OTHER_OWNER = 'b' * 64
-RUN = '0123456789abcdef0123456789abcdef'
-OTHER_RUN = 'fedcba9876543210fedcba9876543210'
+RUN = 'c' * 32
+OTHER_RUN = 'd' * 32
 STEM = 'eval-20261031-101010-abc123'
 SUMMARY = {'total': 2, 'pass': 1, 'partial': 0, 'fail': 1, 'error': 0, 'manual': 0, 'valid': 2,
            'score': 50, 'result_status': 'complete'}
@@ -45,7 +44,7 @@ def entry(release='release_one', run=RUN, finished=1000.0, **changes):
 
 def notification(sequence=1, owner=OWNER, **changes):
     value = {**entry(**changes), 'sequence': sequence, 'owner': owner, 'ontology_id': PACKAGE}
-    value['event_id'] = f"{value['run_id']}:{sequence}"
+    value['event_id'] = f"{value.get('run_id')}:{sequence}"
     return value
 
 
@@ -274,8 +273,7 @@ def test_optimization_imports_artifacts_once(env, monkeypatch):
     tables = root / '.ontology-state' / 'eval-data' / 'eval-service'
     assert sorted(p.name for p in tables.iterdir()) == ['订单表.csv']
     assert (tables / '订单表.csv').read_text(encoding='utf-8') == 'order_id,金额\n'
-    log = subprocess.run(['git', 'log', '-1', '--name-only', '--format=%s'], cwd=root,
-                         capture_output=True, text=True, check=True).stdout
+    log = _git(root, 'log', '-1', '--name-only', '--format=%s')
     assert f'导入独立评测报告 {STEM}' in log and '.ontology-state' not in log
     downloads = len(stub.calls)
     again = client.post(f'/api/projects/{pid}/package/evaluations/{RUN}/optimization', json={})

@@ -15,7 +15,7 @@ def release_of(row):
 
 
 def register(app, prefix, actor, store, engine, jobs, notifier, run_view):
-    @app.get(prefix + '/package-tasks')
+    @app.get(f'{prefix}/package-tasks')
     def package_tasks(request: Request, offset: int = Query(0, ge=0)):
         """One task per evaluated package: its newest run, how many runs it has and whether one is executing."""
         owner, _ = actor(request)
@@ -25,7 +25,7 @@ def register(app, prefix, actor, store, engine, jobs, notifier, run_view):
                               latest=run_view(owner, item['latest'])) for item in page['items']]
         return page
 
-    @app.get(prefix + '/package-evaluations')
+    @app.get(f'{prefix}/package-evaluations')
     def package_evaluations(request: Request, ontology_id: str = Query(min_length=1, max_length=128, pattern=r'^[A-Za-z0-9_-]+$')):
         """Per release, the newest run with a ready report; plus the package's active run. At most 100 releases.
 
@@ -47,13 +47,13 @@ def register(app, prefix, actor, store, engine, jobs, notifier, run_view):
                                             artifacts=jobs.view(owner, row['id']), summary=meta.get('summary'))
         return {'ontology_id': ontology_id, 'owner': owner, 'active': active, 'releases': list(releases.values())}
 
-    @app.get(prefix + '/runs/{rid}/artifacts')
+    @app.get(f'{prefix}/runs/{{rid}}/artifacts')
     def artifacts_status(rid: str, request: Request):
         owner, _ = actor(request)
         store.get(owner, rid, 'runs')
         return {'artifacts': jobs.view(owner, rid), 'notification': notifier.status(rid)}
 
-    @app.get(prefix + '/runs/{rid}/artifacts/{name}')
+    @app.get(f'{prefix}/runs/{{rid}}/artifacts/{{name}}')
     def artifact(rid: str, name: str, request: Request):
         owner, _ = actor(request)
         if name not in LIMITS:
@@ -61,12 +61,13 @@ def register(app, prefix, actor, store, engine, jobs, notifier, run_view):
         store.get(owner, rid, 'runs')
         meta = jobs.meta(owner, rid)
         revision, body = store.artifact(owner, rid, name)
-        if not meta or body is None or revision != meta['revision'] or (name == 'suggestions.md' and meta['suggestions'] != 'ready'):
+        stale = not meta or body is None or revision != meta['revision']
+        if stale or (name == 'suggestions.md' and meta['suggestions'] != 'ready'):
             raise Failure('artifact_not_ready', '评测报告或优化建议尚未生成', 404)
         return Response(body, media_type=MEDIA[name[name.rfind('.'):]],
                         headers={'X-Artifact-Revision': str(revision), 'X-Artifact-Stem': meta['stem']})
 
-    @app.post(prefix + '/runs/{rid}/artifacts/regenerate')
+    @app.post(f'{prefix}/runs/{{rid}}/artifacts/regenerate')
     def regenerate(rid: str, request: Request):
         owner, token = actor(request)
         with engine.guard:
@@ -77,7 +78,7 @@ def register(app, prefix, actor, store, engine, jobs, notifier, run_view):
             raise Failure('artifacts_unavailable', '此任务没有可生成报告的用例结果', 409)
         return jobs.regenerate(owner, rid, token)
 
-    @app.post(prefix + '/runs/{rid}/notifications/retry')
+    @app.post(f'{prefix}/runs/{{rid}}/notifications/retry')
     def retry_notification(rid: str, request: Request):
         owner, _ = actor(request)
         store.get(owner, rid, 'runs')

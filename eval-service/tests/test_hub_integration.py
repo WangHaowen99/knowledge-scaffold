@@ -13,7 +13,7 @@ from test_evaluation import synthetic_package
 
 # Test-only import of the public Hub implementation, never a runtime dependency.
 HUB_BACKEND=Path(__file__).resolve().parents[2]/'knowledge-hub/backend'
-sys.path.insert(0,str(HUB_BACKEND))
+sys.path.append(str(HUB_BACKEND))
 from hub.storage import Store
 from hub.package_store import PackageStore
 from hub.user_auth import Identity

@@ -3,7 +3,6 @@ import ast
 import io
 import json
 from pathlib import Path
-import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -47,7 +46,7 @@ def test_connection_snapshot_and_graph_mapping(tmp_path):
     store=Store(tmp_path,config.encryption_key)
     data=DataSources(config,store)
     source={'mode':'connection','provider':'neo4j','tables':{'items':['id','value']},
-            'connection':store.encrypt({'uri':'bolt://localhost:7687','username':'operator_a','password':'synthetic-invalid'})}
+            'connection':store.encrypt({'uri':'bolt://localhost:7687','username':'operator_a','password':'synthetic-invalid-password'})}
     frozen,tables=data.freeze('synthetic-owner',source)
     mapping,preview=generate_mapping(synthetic_package(),{k:v['columns'] for k,v in tables.items()},graph=True)
     assert mapping['objects']['item']['resource']=='item'
@@ -65,21 +64,19 @@ def test_consumer_evaluation_auth_requires_distinct_service_and_user_dependency(
     exec(compile(module.read_text(),str(module),'exec'),namespace)
     monkeypatch.setenv('EVALUATION_SERVICE_TOKEN','synthetic-evaluation-'+'x'*32)
     request=SimpleNamespace(headers={'X-Evaluation-Service-Token':'synthetic-evaluation-'+'x'*32})
-    assert namespace['evaluation_service_authorized'](request)
+    authorized=namespace.get('evaluation_service_authorized')
+    assert authorized(request)
     monkeypatch.setenv('MODELING_SERVICE_TOKEN','synthetic-evaluation-'+'x'*32)
-    assert not namespace['evaluation_service_authorized'](request)
+    assert not authorized(request)
     tree=ast.parse((root/'consumer/backend/api/routes/workspaces.py').read_text())
     route=next(n for n in tree.body if isinstance(n,ast.AsyncFunctionDef) and n.name=='ensure_evaluation_workspace_api')
     assert 'Depends(require_authenticated_user)' in ast.unparse(route.args)
     assert 'owner=user.username' in ast.unparse(route)
 
 
-def test_independent_deploy_dispatch(tmp_path):
+def test_independent_deploy_compose():
+    # Root deploy flag combinations are covered by deploy/tests/test_knowledge_hub_deploy.py.
     root=Path(__file__).resolve().parents[2]
-    script=root/'deploy/deploy.sh'
-    result=subprocess.run(['bash',str(script),'--eval-only','--onto-modeling-only'],capture_output=True,text=True)
-    assert result.returncode!=0
-    assert 'cannot be combined' in result.stderr
     compose=(root/'eval-service/deploy/docker-compose.eval-service.yml').read_text()
     assert 'container_name: knowledge-evaluation' in compose
     assert 'name: ${CONSUMER_NETWORK:?' in compose and 'external: true' in compose
@@ -136,7 +133,7 @@ def test_graph_import_uses_both_configured_scope_values_and_builds_relations(tmp
     data=DataSources(config,store)
     tables={'items':{'columns':['id','value'],'rows':[['item_0001',2]]}}
     mapping,_=generate_mapping(synthetic_package(),{'items':['id','value']},graph=True)
-    connection={'uri':'bolt://localhost:7687','username':'operator_a','password':'synthetic-invalid',
+    connection={'uri':'bolt://localhost:7687','username':'operator_a','password':'synthetic-invalid-password',
                 'workspace_property':'evaluation_scope','workspace_value':'workspace_demo',
                 'ontology_property':'knowledge_package_id','ontology_value':'knowledge_package_demo'}
     source={'mode':'connection','provider':'neo4j','import_data':True,'tables_snapshot':store.encrypt(tables),

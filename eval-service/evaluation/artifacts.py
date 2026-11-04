@@ -83,8 +83,8 @@ def tool_failure_line(failure):
         if isinstance(error.get('issues'), list) else []
     if parsed:
         top = parsed.get('error')
-        message = ' '.join(str(v) for v in (error.get('message'), top if isinstance(top, str) else '',
-                                               error.get('stderr') or parsed.get('stderr')) if v)
+        pieces = (error.get('message'), top if isinstance(top, str) else '', error.get('stderr') or parsed.get('stderr'))
+        message = ' '.join(str(v) for v in pieces if v)
     else:
         match = _JSON_MESSAGE_RE.search(raw)
         message = match.group(1) if match else raw

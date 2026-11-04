@@ -260,9 +260,8 @@ def test_hub_deploy_rejects_a_short_token(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "至少需要 32 个字符" in result.stderr
-    assert not any(call.startswith(("build", "compose --env-file")) for call in _lines(
-        tmp_path / "docker-calls.txt"
-    ))
+    calls = _lines(tmp_path / "docker-calls.txt")
+    assert not any(call.startswith(("build", "compose --env-file")) for call in calls)
 
 
 @pytest.mark.parametrize("network", ["", "missing-net"])
@@ -273,9 +272,8 @@ def test_hub_deploy_requires_an_existing_shared_network(tmp_path: Path, network:
 
     assert result.returncode != 0
     assert ("未指定共享 Docker 网络" if not network else "Docker 网络不存在") in result.stderr
-    assert not any(call.startswith(("build", "compose --env-file")) for call in _lines(
-        tmp_path / "docker-calls.txt"
-    ))
+    calls = _lines(tmp_path / "docker-calls.txt")
+    assert not any(call.startswith(("build", "compose --env-file")) for call in calls)
 
 
 def test_hub_deploy_from_package_loads_only_the_release_image(tmp_path: Path) -> None:
@@ -451,10 +449,13 @@ def test_onto_modeling_only_does_not_redeploy_the_hub(tmp_path: Path) -> None:
     _evaluation_token(_lines(tmp_path / "modeling" / "onto-modeling" / ".env"))
 
 
-def test_only_flags_cannot_be_combined(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "flags", [("--knowledge-hub-only", "--onto-modeling-only"), ("--eval-only", "--onto-modeling-only")]
+)
+def test_only_flags_cannot_be_combined(tmp_path: Path, flags: tuple[str, str]) -> None:
     deploy_dir, env = _source_checkout(tmp_path)
 
-    result = _run([str(deploy_dir / "deploy.sh"), "--knowledge-hub-only", "--onto-modeling-only"], env)
+    result = _run([str(deploy_dir / "deploy.sh"), *flags], env)
 
     assert result.returncode != 0
     assert "cannot be combined" in result.stderr

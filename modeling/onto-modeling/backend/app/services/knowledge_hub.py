@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import http.client
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -15,6 +16,8 @@ import zipfile
 from .. import config
 from . import package_mapping
 from .workspace import WorkspaceError, WorkspaceManager, META_FILE
+
+_log = logging.getLogger(__name__)
 
 
 def configured():
@@ -65,7 +68,7 @@ def token_of(request):
 def call(method, path, token='', body=None, upload=None, headers=None, download=None, upload_name=None):
     """Bounded JSON responses; stream ZIP transfers without encoding them as JSON."""
     url = urllib.parse.urlsplit(os.environ.get('ONTO_HUB_URL', '').rstrip('/'))
-    if url.scheme not in ('http', 'https') or not url.hostname or url.username or url.password:
+    if url.scheme not in ('http', 'https') or not url.hostname or any((url.username, url.password)):
         raise WorkspaceError('知识包 Hub 未配置', 503, 'hub_unavailable')
     secret = os.environ.get('ONTO_HUB_SERVICE_TOKEN', '')
     if not secret:
@@ -97,7 +100,7 @@ def call(method, path, token='', body=None, upload=None, headers=None, download=
         if upload:
             conn.send(prefix)
             with Path(upload).open('rb') as f:
-                while chunk := f.read(1024 * 1024):
+                for chunk in iter(lambda: f.read(1024 * 1024), b''):
                     conn.send(chunk)
             conn.send(suffix)
         elif payload:
@@ -120,7 +123,7 @@ def call(method, path, token='', body=None, upload=None, headers=None, download=
             target.parent.mkdir(parents=True, exist_ok=True)
             with target.open('wb') as f:
                 total = 0
-                while chunk := response.read(1024 * 1024):
+                for chunk in iter(lambda: response.read(1024 * 1024), b''):
                     total += len(chunk)
                     if total > int(os.environ.get('ONTO_HUB_MAX_DOWNLOAD_BYTES', 256 * 1024**2)):
                         target.unlink(missing_ok=True)
@@ -241,7 +244,8 @@ async def scheduler_loop(manager):
         try:
             await asyncio.to_thread(retry_tasks, manager)
         except Exception:
-            pass
+            # The next round retries; one failed round must not stop the scheduler.
+            _log.warning('knowledge hub maintenance round failed', exc_info=True)
         await asyncio.sleep(30)
 
 
