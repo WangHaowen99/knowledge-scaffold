@@ -9,11 +9,14 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import pytest
 import uvicorn
 
 from app import config
 from app.services import knowledge_hub, hub_packages
 from app.services.workspace import WorkspaceManager, WorkspaceError
+
+pytest.importorskip('hub')
 
 
 def test_publish_list_download_and_revocation_over_http(tmp_path, monkeypatch):

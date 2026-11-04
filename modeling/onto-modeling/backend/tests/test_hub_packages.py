@@ -15,6 +15,8 @@ from app import config
 from app.routers import projects, hub_packages as routes
 from app.services import auth, hub_packages, knowledge_hub
 from app.services.workspace import WorkspaceError, WorkspaceManager
+
+pytest.importorskip('hub')
 from hub.package_store import PackageStore
 from hub.storage import Store
 from hub.user_auth import Identity
