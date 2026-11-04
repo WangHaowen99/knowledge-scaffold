@@ -3217,6 +3217,12 @@ code {
   border-bottom: 1px dashed currentColor;
   cursor: help;
 }
+/* Answer attachment links in a report open a preview: same size and colour as the surrounding text links. */
+.markdown-body .text-link {
+  color: var(--primary);
+  font-size: inherit;
+  text-decoration: underline;
+}
 @media (max-width: 1100px) {
   .run-outputs-grid {
     grid-template-columns: minmax(0, 1fr);

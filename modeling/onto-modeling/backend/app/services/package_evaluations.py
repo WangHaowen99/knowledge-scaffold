@@ -5,9 +5,9 @@ evaluation-service owner, fed by the service's notifications and replaced by the
 reconciled. A shared package is evaluated by several users whose runs are private to each of them, so one
 user's runs never enable another user's buttons. The owner of the signed-in user is learned from the
 service when reconciling, rather than derived locally from an issuer the two services may configure
-differently. Reports and optimization suggestions are read with the user's own login when viewed, and
-copied into the workspace only when the user starts an evaluation optimization of the version the project
-is currently on.
+differently. Reports, optimization suggestions and the full answers they link to are read with the user's own
+login when viewed, and copied into the workspace only when the user starts an evaluation optimization of the
+version the project is currently on.
 """
 import hashlib
 import json
@@ -24,6 +24,8 @@ from .workspace import WorkspaceError, _git, remove_tree
 ID_PATTERN = r'^[A-Za-z0-9_-]{1,128}$'
 RUN_PATTERN = r'^[a-f0-9]{32}$'
 STEM_PATTERN = r'^eval-\d{8}-\d{6}-[a-f0-9]{6}$'
+# answers.json 中的结果 ID：报告里第 N 个用例为 case-N
+RESULT_PATTERN = r'^case-[1-9][0-9]{0,5}$'
 STATUS_PATTERN = r'^[a-z_]{1,32}$'
 # 与评测服务一致的表名、字段名规则，也保证表名可以直接作文件名、字段名无需 CSV 转义
 TABLE_NAME = re.compile(r'[A-Za-z_一-鿿][A-Za-z0-9_一-鿿]{0,63}')
@@ -291,6 +293,33 @@ def document(pid, subject, token, run_id, kind):
     if revision.isdigit():
         result['revision'] = int(revision)
     return result
+
+
+def answer(pid, subject, token, run_id, result_id):
+    """One full answer of the report's answers attachment, for preview; nothing is written to the workspace.
+
+    The evaluation service keeps at most 8000 characters per answer, so the result stays below about 40 KiB.
+    """
+    if not re.fullmatch(RESULT_PATTERN, result_id):
+        raise _not_found()
+    run, _ = _linked_run(pid, subject, token, run_id)
+    artifacts = _artifacts(run)
+    if not artifacts or artifacts.report != 'ready':
+        raise WorkspaceError('评测报告尚未生成', 409, 'artifacts_not_ready')
+    data, _, _ = _download(run_id, 'answers.json', token)
+    try:
+        answers = json.loads(data).get('answers')
+    except (ValueError, AttributeError) as exc:
+        raise _invalid_response() from exc
+    if not isinstance(answers, list):
+        raise _invalid_response()
+    record = next((item for item in answers if isinstance(item, dict) and item.get('resultId') == result_id), None)
+    if record is None:
+        raise WorkspaceError('完整回答不存在', 404, 'answer_not_found')
+    full = str(record.get('finalAnswer') or '')
+    length = record.get('originalLength')
+    return dict(resultId=result_id, question=str(record.get('question') or ''), fullAnswer=full,
+                originalLength=length if isinstance(length, int) else len(full), truncated=record.get('truncated') is True)
 
 
 def regenerate(pid, subject, token, run_id):
